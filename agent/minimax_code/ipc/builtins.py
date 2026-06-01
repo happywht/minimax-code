@@ -58,65 +58,181 @@ async def handle_shutdown(_params: Any, ctx: Context) -> None:
 
 
 async def handle_agent_send_message(params: Any, ctx: Context) -> None:
-    """Stub for ``agent.send_message``.
+    """End-to-end chat handler for ``agent.send_message``.
 
-    Implemented as a hello-world for the skeleton milestone:
-    streams a single ``agent.message_chunk`` event with a greeting,
-    then a final event with ``done: true``.
+    This is the canonical user-message entry point. The handler:
 
-    The full agent loop lives in :mod:`minimax_code.agent.core` and
-    will replace this stub.
+    1. Validates ``params`` and mints a session id if one was not
+       supplied.
+    2. Ensures a ``sessions`` row exists (the ``messages`` table has
+       a NOT-NULL FK on it) — done via the process-wide sessions
+       DAO, falling back to lazy ``init_runtime`` if needed.
+    3. Builds an :class:`~minimax_code.agent.AgentCore` with a
+       :class:`~minimax_code.agent.MiniMaxClient` in **mock mode**
+       (empty ``api_key`` → deterministic canned response, no
+       network). The mock LLM emits the canned text in 16-char
+       chunks; the core then emits a final ``done=True`` chunk.
+    4. Wires ``AgentCore.on_chunk`` to push
+       ``agent.message_chunk`` events to the frontend, one per
+       streamed delta. The final chunk has ``done=True``.
+    5. Persists the user message and the assistant message to the
+       ``messages`` table via ``AgentCore.persist_message``, with a
+       ``history_provider`` that replays prior turns for context.
+
+    The reply envelope is::
+
+        {
+            "session_id": "...",
+            "message_id": "...",
+            "text": "<full assistant text>",
+            "iterations": 1,
+            "stub": true,            # true while MINIMAX_API_KEY is unset
+            "tokens_in": 1,
+            "tokens_out": <int>
+        }
     """
     if not isinstance(params, dict):
         await ctx.reply_error(-32602, "params must be an object")
         return
 
     content = (params.get("content") or "").strip()
-    session_id = params.get("session_id") or f"ses_{uuid.uuid4().hex[:8]}"
-
-    if content.lower() in {"hello", "hello!", "hi", "hi!"}:
-        text = f"Hello from Python agent! session={session_id}"
-    elif content:
-        text = f"Echo (skeleton): {content}  (session={session_id})"
-    else:
-        text = f"(empty message) session={session_id}"
+    session_id = str(params.get("session_id") or f"ses_{uuid.uuid4().hex[:8]}")
+    if not content:
+        await ctx.reply_error(-32602, "content must be a non-empty string")
+        return
 
     message_id = f"msg_{uuid.uuid4().hex[:8]}"
 
-    # Stream the response in a few chunks to demonstrate the SSE-like flow.
-    step = 16
-    for i in range(0, len(text), step):
-        delta = text[i : i + step]
-        await ctx.emit(
-            "agent.message_chunk",
-            {
-                "session_id": session_id,
-                "message_id": message_id,
-                "delta": delta,
-                "done": False,
-            },
-        )
-        # Tiny pause so the UI can actually render the streaming effect.
-        import asyncio as _asyncio
+    # Lazy imports — avoid pulling the agent core / storage layer in
+    # for handlers that only need a ping / status response.
+    from ..agent import AgentCore, AgentConfig, MiniMaxClient
+    from ..app import get_sessions_dao, init_runtime
+    from ..storage.dao.messages import MessagesDAO
+    from ..storage.db import AsyncDatabase, default_database_path
 
-        await _asyncio.sleep(0.05)
+    # 1. Ensure the sessions row exists (FK target for messages).
+    #    Best-effort: if the sessions DAO is unavailable the
+    #    messages INSERT will surface a clear FK error and the
+    #    frontend can react. Mirrors the helper in
+    #    :mod:`handlers_agents`.
+    try:
+        sess_dao = get_sessions_dao()
+        if sess_dao is None:
+            try:
+                await init_runtime()
+            except Exception:
+                logger.debug("init_runtime failed; continuing without lazy session bootstrap")
+            sess_dao = get_sessions_dao()
+        if sess_dao is not None:
+            existing = await sess_dao.get(session_id)
+            if existing is None:
+                await sess_dao.create(
+                    id=session_id,
+                    title=f"chat:{(content or '')[:32]}",
+                    system_prompt="",
+                    model=None,
+                )
+    except Exception:
+        logger.exception("could not pre-create session %s; continuing", session_id)
 
-    # Final event signals end of stream.
-    await ctx.emit(
-        "agent.message_chunk",
-        {
-            "session_id": session_id,
-            "message_id": message_id,
-            "delta": "",
-            "done": True,
-        },
+    # 2. Open the async DB + messages DAO. The DB and the
+    #    ``get_sessions_dao()`` singleton above share the same on-
+    #    disk file but use independent ``aiosqlite`` connections —
+    #    that's fine in WAL mode.
+    try:
+        db = AsyncDatabase(default_database_path())
+        await db.connect()
+        msg_dao = MessagesDAO(db)
+    except Exception as exc:
+        logger.exception("failed to open storage for chat")
+        await ctx.reply_error(-32603, f"storage unavailable: {exc}")
+        return
+
+    async def _history(sid: str) -> list[dict[str, Any]]:
+        try:
+            rows = await msg_dao.list_for_session(sid, order_by="created_at ASC")
+            out: list[dict[str, Any]] = []
+            for r in rows:
+                role = r.get("role") or "user"
+                content_text = r.get("content") or ""
+                msg: dict[str, Any] = {"role": role, "content": content_text}
+                tc = r.get("tool_calls")
+                if tc:
+                    msg["tool_calls"] = tc
+                tcid = r.get("tool_call_id")
+                if tcid:
+                    msg["tool_call_id"] = tcid
+                out.append(msg)
+            return out
+        except Exception:
+            logger.exception("history_provider(%s) failed; returning []", sid)
+            return []
+
+    async def _persist(sid: str, msg: dict[str, Any]) -> None:
+        try:
+            mid = f"msg_{uuid.uuid4().hex[:12]}"
+            await msg_dao.create(
+                id=mid,
+                session_id=sid,
+                role=str(msg.get("role", "user")),
+                content=str(msg.get("content") or ""),
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id"),
+            )
+        except Exception:
+            # The agent loop treats persistence as best-effort; a
+            # failure here must not abort the LLM stream the user
+            # is already seeing. Log and continue.
+            logger.exception("persist_message(%s, role=%s) failed", sid, msg.get("role"))
+
+    # 3. Force mock mode by passing an empty API key. The
+    #    MiniMaxClient constructor treats ``api_key=""`` (or unset)
+    #    as mock mode and emits a deterministic canned response
+    #    in 16-character chunks. This keeps the smoke test off
+    #    the network.
+    llm = MiniMaxClient(api_key="")
+    core = AgentCore(
+        llm=llm,
+        config=AgentConfig(),
+        history_provider=_history,
+        persist_message=_persist,
     )
+
+    async def _on_chunk(delta: str, done: bool) -> None:
+        try:
+            await ctx.emit(
+                "agent.message_chunk",
+                {
+                    "session_id": session_id,
+                    "message_id": message_id,
+                    "delta": delta,
+                    "done": done,
+                },
+            )
+        except Exception:
+            logger.exception("on_chunk emit failed")
+
+    core.on_chunk = _on_chunk
+
+    # 4. Run the turn. The core will stream chunks (each becomes
+    #    an ``agent.message_chunk`` event with ``done=False``),
+    #    then emit a final ``done=True`` chunk and return.
+    try:
+        result = await core.run(session_id=session_id, user_message=content)
+    except Exception as exc:
+        logger.exception("agent.send_message: AgentCore.run failed")
+        await ctx.reply_error(-32603, f"agent.send_message failed: {exc}")
+        return
 
     await ctx.reply(
         {
             "session_id": session_id,
             "message_id": message_id,
-            "text": text,
+            "text": result.final_text,
+            "iterations": result.iterations,
+            "stub": llm.mock,
+            "tokens_in": result.usage.get("prompt_tokens", 0),
+            "tokens_out": result.usage.get("completion_tokens", 0),
         }
     )
 
