@@ -87,6 +87,8 @@ async def _maybe_open_db() -> Any:
         from .storage.db import AsyncDatabase, default_database_path
         from .storage.dao.sessions import SessionsDAO
         from .storage.dao.tasks import TaskDAO
+        from .storage.dao.mobile_devices import MobileDeviceDAO
+        from .mobile import PairingManagerWithDAO, set_pairing_manager
         from .progress import ProgressTracker
     except Exception:  # pragma: no cover — storage not yet bootstrapped
         logger.debug("storage layer not importable; running with in-memory skill registry")
@@ -103,6 +105,12 @@ async def _maybe_open_db() -> Any:
         # Same lifecycle for the sessions DAO that backs the
         # ``session.*`` IPC namespace.
         _set_sessions_dao(SessionsDAO(db))
+        # And for the mobile-pairing surface: a process-wide
+        # :class:`PairingManager` wired to the device DAO. The
+        # ``public_key`` is opaque for the PoC (Phase 2 swaps
+        # in a verified cert fingerprint).
+        mobile_dao = MobileDeviceDAO(db)
+        set_pairing_manager(PairingManagerWithDAO(mobile_dao))
         return db
     except Exception:  # pragma: no cover — defensive
         logger.exception("failed to open storage; running with in-memory skill registry")
@@ -229,10 +237,15 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # the DB on first call. Tests can inject a scheduler with
     # the ``scheduler=`` kwarg to skip the lazy path.
     register_scheduled_handlers(server)
+    # The mobile handlers lazily resolve the DAO + pairing manager
+    # (or accept them via the ``dao=`` / ``manager=`` kwargs for
+    # tests). Token cache is process-local; DB rows persist.
+    from .ipc.handlers_mobile import register_mobile_handlers
+    register_mobile_handlers(server)
     logger.info(
         "registered application handlers "
         "(1 agent.* + 5 skill.* + 6 task.* + 5 session.* + "
-        "5 permission.* + 6 schedule.*)"
+        "5 permission.* + 6 schedule.* + 5 mobile.*)"
     )
 
 
