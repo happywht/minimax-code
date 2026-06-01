@@ -29,6 +29,7 @@ from .messages import MessagesDAO
 from .messages import create_sync as create_message_sync
 from .mobile_devices import MobileDevicesDAO
 from .mobile_devices import upsert_sync as upsert_device_sync
+from .permissions import PermissionRuleDAO
 from .permissions import PermissionRulesDAO
 from .permissions import create_sync as create_permission_sync
 from .scheduled_jobs import ScheduledJobsDAO
@@ -37,6 +38,7 @@ from .sessions import SessionsDAO
 from .sessions import create_sync as create_session_sync
 from .skills import SkillsDAO
 from .skills import upsert_sync as upsert_skill_sync
+from .tasks import TaskDAO
 from .tasks import TasksDAO
 from .tasks import create_sync as create_task_sync
 
@@ -45,10 +47,12 @@ __all__ = [
     "AgentsDAO",
     "MessagesDAO",
     "MobileDevicesDAO",
+    "PermissionRuleDAO",
     "PermissionRulesDAO",
     "ScheduledJobsDAO",
     "SessionsDAO",
     "SkillsDAO",
+    "TaskDAO",
     "TasksDAO",
     # Sync helpers
     "create_agent_sync",

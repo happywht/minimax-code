@@ -67,7 +67,14 @@ def default_data_dir() -> Path:
     ``${XDG_DATA_HOME:-~/.local/share}/MiniMaxCode``. The directory is
     *not* created by this function; callers should use
     :func:`ensure_data_dir` for that.
+
+    Override via the ``MINIMAX_CODE_DATA_DIR`` environment variable —
+    used by tests and smoke tests to point at a scratch directory
+    without polluting the real user profile.
     """
+    override = os.environ.get("MINIMAX_CODE_DATA_DIR")
+    if override:
+        return Path(override).expanduser()
     return Path(
         platformdirs.user_data_dir(
             appname=_APP_NAME,
