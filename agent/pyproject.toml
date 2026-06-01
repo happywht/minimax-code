@@ -13,6 +13,7 @@ dependencies = [
     "httpx>=0.27",
     "aiosqlite>=0.20",
     "apscheduler>=3.10",
+    "platformdirs>=4.0",  # cross-platform user data dir resolution
 ]
 
 [project.optional-dependencies]

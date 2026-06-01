@@ -1,0 +1,276 @@
+"""DAO — session storage.
+
+A *session* is a single conversation thread with the agent. It owns
+its title, the model in use, an optional system prompt, and the
+archive flag (set when the user tucks the session away in the
+sidebar). Message bodies live in :mod:`messages`; we only keep
+metadata here.
+
+Usage
+-----
+
+    from minimax_code.storage.db import AsyncDatabase, Database
+    from minimax_code.storage.dao.sessions import SessionsDAO
+
+    db = AsyncDatabase("/tmp/data.db")
+    await db.connect()
+    await db.migrate()
+
+    dao = SessionsDAO(db)
+    sid = await dao.create(title="hello", model="gpt-4o")
+    sess = await dao.get(sid)
+    sessions = await dao.list(limit=20, archived=False)
+
+For the synchronous variant (used by the background scheduler and
+the test-suite fixture), use :func:`create_sync` /
+:func:`get_sync` / :func:`list_sync` / etc. on a :class:`Database`
+instance.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from ._base import (
+    apply_pagination,
+    now_iso,
+    parse_order_by,
+    row_to_dict,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# Columns safe to sort by. Anything outside this list is rejected.
+_SORTABLE: tuple[str, ...] = ("created_at", "updated_at", "title", "id")
+
+
+# ---------------------------------------------------------------------------
+# Async DAO
+# ---------------------------------------------------------------------------
+
+
+class SessionsDAO:
+    """Async DAO for the ``sessions`` table."""
+
+    def __init__(self, db) -> None:  # type: ignore[no-untyped-def]
+        self._db = db
+
+    async def create(
+        self,
+        *,
+        id: str,
+        title: str = "",
+        created_at: str | None = None,
+        updated_at: str | None = None,
+        archived: bool = False,
+        model: str | None = None,
+        system_prompt: str | None = None,
+    ) -> dict[str, Any]:
+        """Insert a new session row; returns the persisted dict.
+
+        ``created_at`` / ``updated_at`` default to "now" if not
+        supplied — the agent rarely wants to back-date them.
+        """
+        now = now_iso()
+        sql = (
+            "INSERT INTO sessions "
+            "(id, title, created_at, updated_at, archived, model, system_prompt) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)"
+        )
+        params = (
+            id,
+            title,
+            created_at or now,
+            updated_at or now,
+            1 if archived else 0,
+            model,
+            system_prompt,
+        )
+        async with self._db.transaction() as conn:
+            await conn.execute(sql, params)
+        row = await self._db.fetchone(
+            "SELECT * FROM sessions WHERE id = ?", (id,)
+        )
+        return _hydrate(row)
+
+    async def get(self, session_id: str) -> dict[str, Any] | None:
+        """Fetch a single session by primary key, or ``None``."""
+        row = await self._db.fetchone(
+            "SELECT * FROM sessions WHERE id = ?", (session_id,)
+        )
+        return _hydrate(row)
+
+    async def update(
+        self,
+        session_id: str,
+        *,
+        title: str | None = None,
+        archived: bool | None = None,
+        model: str | None = None,
+        system_prompt: str | None = None,
+        touch_updated: bool = True,
+    ) -> dict[str, Any] | None:
+        """Patch one or more fields; returns the updated row.
+
+        Setting ``archived=True`` is the canonical "archive" action.
+        Pass ``touch_updated=False`` to update without bumping
+        ``updated_at`` (rare; useful in tests).
+        """
+        sets: list[str] = []
+        params: list[Any] = []
+        if title is not None:
+            sets.append("title = ?")
+            params.append(title)
+        if archived is not None:
+            sets.append("archived = ?")
+            params.append(1 if archived else 0)
+        if model is not None:
+            sets.append("model = ?")
+            params.append(model)
+        if system_prompt is not None:
+            sets.append("system_prompt = ?")
+            params.append(system_prompt)
+        if touch_updated:
+            sets.append("updated_at = ?")
+            params.append(now_iso())
+        if not sets:
+            return await self.get(session_id)
+        params.append(session_id)
+        sql = f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?"
+        async with self._db.transaction() as conn:
+            await conn.execute(sql, params)
+        return await self.get(session_id)
+
+    async def delete(self, session_id: str) -> bool:
+        """Hard-delete a session. Returns True if a row was removed.
+
+        Cascades to ``messages`` and ``tasks`` via FK ON DELETE CASCADE.
+        """
+        async with self._db.transaction() as conn:
+            cur = await conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            return cur.rowcount > 0
+
+    async def archive(self, session_id: str) -> dict[str, Any] | None:
+        return await self.update(session_id, archived=True)
+
+    async def unarchive(self, session_id: str) -> dict[str, Any] | None:
+        return await self.update(session_id, archived=False)
+
+    async def touch(self, session_id: str) -> dict[str, Any] | None:
+        """Bump ``updated_at`` (called on every new message)."""
+        return await self.update(session_id, touch_updated=True)
+
+    async def list(
+        self,
+        *,
+        archived: bool | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        order_by: str | None = None,
+        search: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List sessions with optional filters + pagination.
+
+        ``search`` is a case-insensitive substring match on
+        ``title``; it's deliberately simple to keep the index
+        useful. Empty string is treated as "no filter".
+        """
+        where: list[str] = []
+        params: list[Any] = []
+        if archived is not None:
+            where.append("archived = ?")
+            params.append(1 if archived else 0)
+        if search:
+            where.append("title LIKE ? COLLATE NOCASE")
+            params.append(f"%{search}%")
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        sql = f"SELECT * FROM sessions {where_sql} ORDER BY {parse_order_by(order_by, _SORTABLE)}"
+        sql, params = apply_pagination(sql, params, limit=limit, offset=offset)
+        rows = await self._db.fetchall(sql, tuple(params))
+        return [_hydrate(r) for r in rows]
+
+    async def count(self, *, archived: bool | None = None) -> int:
+        where = ""
+        params: tuple = ()
+        if archived is not None:
+            where = "WHERE archived = ?"
+            params = (1 if archived else 0,)
+        row = await self._db.fetchone(f"SELECT COUNT(*) AS n FROM sessions {where}", params)
+        return int(row["n"]) if row else 0
+
+
+# ---------------------------------------------------------------------------
+# Sync helpers
+# ---------------------------------------------------------------------------
+
+
+def _hydrate(row: Any) -> dict[str, Any] | None:
+    d = row_to_dict(row)
+    if d is None:
+        return None
+    d["archived"] = bool(d.get("archived", 0))
+    return d
+
+
+def create_sync(db, **fields) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+    """Sync variant of :meth:`SessionsDAO.create`."""
+    now = now_iso()
+    sql = (
+        "INSERT INTO sessions "
+        "(id, title, created_at, updated_at, archived, model, system_prompt) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)"
+    )
+    params = (
+        fields["id"],
+        fields.get("title", ""),
+        fields.get("created_at") or now,
+        fields.get("updated_at") or now,
+        1 if fields.get("archived") else 0,
+        fields.get("model"),
+        fields.get("system_prompt"),
+    )
+    with db.transaction() as conn:
+        conn.execute(sql, params)
+    row = db.fetchone("SELECT * FROM sessions WHERE id = ?", (fields["id"],))
+    return _hydrate(row)
+
+
+def get_sync(db, session_id: str) -> dict[str, Any] | None:  # type: ignore[no-untyped-def]
+    row = db.fetchone("SELECT * FROM sessions WHERE id = ?", (session_id,))
+    return _hydrate(row)
+
+
+def list_sync(
+    db,  # type: ignore[no-untyped-def]
+    *,
+    archived: bool | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
+    order_by: str | None = None,
+) -> list[dict[str, Any]]:
+    where = ""
+    params: list[Any] = []
+    if archived is not None:
+        where = "WHERE archived = ?"
+        params.append(1 if archived else 0)
+    sql = f"SELECT * FROM sessions {where} ORDER BY {parse_order_by(order_by, _SORTABLE)}"
+    sql, params = apply_pagination(sql, params, limit=limit, offset=offset)
+    rows = db.fetchall(sql, tuple(params))
+    return [_hydrate(r) for r in rows]
+
+
+def delete_sync(db, session_id: str) -> bool:  # type: ignore[no-untyped-def]
+    with db.transaction() as conn:
+        cur = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        return cur.rowcount > 0
+
+
+__all__ = [
+    "SessionsDAO",
+    "create_sync",
+    "delete_sync",
+    "get_sync",
+    "list_sync",
+]
