@@ -34,6 +34,7 @@ from typing import Any
 
 from ._base import (
     apply_pagination,
+    loads_json,
     now_iso,
     parse_order_by,
     row_to_dict,
@@ -157,6 +158,61 @@ class SessionsDAO:
 
     async def unarchive(self, session_id: str) -> dict[str, Any] | None:
         return await self.update(session_id, archived=False)
+
+    async def set_archived(
+        self, session_id: str, archived: bool
+    ) -> dict[str, Any] | None:
+        """Flip the ``archived`` flag explicitly.
+
+        This is a thin convenience wrapper around
+        :meth:`update` that returns the row so the IPC layer can
+        echo the new state in its reply. Returns ``None`` if the
+        session id does not exist.
+        """
+        return await self.update(session_id, archived=bool(archived))
+
+    async def get_messages(
+        self,
+        session_id: str,
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return up to ``limit`` recent messages for a session.
+
+        Performs a single JOIN-style query against the
+        ``messages`` table — we use the FK on ``session_id`` and
+        order by ``created_at DESC`` so the caller (the chat UI)
+        gets the tail of the conversation without an extra
+        round-trip. ``tool_calls`` is decoded back to a Python
+        object so the JSON-RPC reply stays valid JSON.
+
+        The list is returned newest-first; the UI can reverse it
+        for display.
+
+        ``limit`` is clamped to ``[1, 1000]`` — calling with 0
+        would return an empty list (not what callers want) and
+        a 100k cap protects against accidental unbounded reads.
+        """
+        effective_limit = max(1, min(int(limit or 1), 1000))
+        # JOIN is implicit (messages.session_id = ?); we keep the
+        # WHERE shape so the index ``idx_messages_session_created``
+        # is still hit. The right-side ``created_at DESC`` gives
+        # us the most recent ``limit`` messages in one pass.
+        sql = (
+            "SELECT * FROM messages "
+            "WHERE session_id = ? "
+            "ORDER BY created_at DESC, id DESC "
+            "LIMIT ?"
+        )
+        rows = await self._db.fetchall(sql, (session_id, effective_limit))
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            d = row_to_dict(r)
+            if d is None:
+                continue
+            d["tool_calls"] = loads_json(d.get("tool_calls"))
+            out.append(d)
+        return out
 
     async def touch(self, session_id: str) -> dict[str, Any] | None:
         """Bump ``updated_at`` (called on every new message)."""

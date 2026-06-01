@@ -76,14 +76,16 @@ async def _maybe_open_db() -> Any:
     """Open the async database if storage can be initialised.
 
     As a side effect, this *also* populates the
-    :data:`_PROGRESS_TRACKER` singleton once a DB handle is
-    available, so the ``task.*`` IPC handlers can find the
-    tracker without having to open the DB themselves.
+    :data:`_PROGRESS_TRACKER` and :data:`_SESSIONS_DAO` singletons
+    once a DB handle is available, so the ``task.*`` and
+    ``session.*`` IPC handlers can find them without having to
+    open the DB themselves.
     """
     if os.environ.get("MINIMAX_CODE_NO_DB") == "1":
         return None
     try:
         from .storage.db import AsyncDatabase, default_database_path
+        from .storage.dao.sessions import SessionsDAO
         from .storage.dao.tasks import TaskDAO
         from .progress import ProgressTracker
     except Exception:  # pragma: no cover — storage not yet bootstrapped
@@ -98,6 +100,9 @@ async def _maybe_open_db() -> Any:
         # the DB open) keeps the singleton's lifetime tied to
         # the DB's lifetime.
         _set_progress_tracker(ProgressTracker(TaskDAO(db)))
+        # Same lifecycle for the sessions DAO that backs the
+        # ``session.*`` IPC namespace.
+        _set_sessions_dao(SessionsDAO(db))
         return db
     except Exception:  # pragma: no cover — defensive
         logger.exception("failed to open storage; running with in-memory skill registry")
@@ -144,6 +149,36 @@ def _set_progress_tracker(tracker: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Sessions DAO singleton
+# ---------------------------------------------------------------------------
+
+
+_SESSIONS_DAO: Any = None  # type: ignore[no-untyped-def]
+
+
+def get_sessions_dao() -> Any:
+    """Return the process-wide :class:`SessionsDAO`, or ``None``.
+
+    The DAO is created by :func:`_maybe_open_db` the first time
+    the storage layer is opened. Tests can replace it via
+    :func:`set_sessions_dao`.
+    """
+    return _SESSIONS_DAO
+
+
+def set_sessions_dao(dao: Any) -> None:
+    """Replace the cached sessions DAO (test seam)."""
+    global _SESSIONS_DAO
+    _SESSIONS_DAO = dao
+
+
+def _set_sessions_dao(dao: Any) -> None:
+    """Internal setter used by :func:`_maybe_open_db`."""
+    global _SESSIONS_DAO
+    _SESSIONS_DAO = dao
+
+
+# ---------------------------------------------------------------------------
 # Handler registration
 # ---------------------------------------------------------------------------
 
@@ -162,6 +197,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.builtins import handle_agent_send_message
     from .ipc.handlers_permissions import register_permission_handlers
     from .ipc.handlers_scheduled import register_scheduled_handlers
+    from .ipc.handlers_sessions import register_session_handlers
     from .ipc.handlers_skills import register_skill_handlers
     from .ipc.handlers_tasks import register_task_handlers
 
@@ -178,6 +214,11 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # opens the DB on first call). Inject a tracker when you
     # need to bypass the storage layer (e.g. unit tests).
     register_task_handlers(server)
+    # The session handlers resolve the sessions DAO via
+    # :func:`get_sessions_dao` (also lazy, also opens the DB on
+    # first call). Tests can inject a DAO via the ``dao=`` kwarg
+    # to skip the lazy path.
+    register_session_handlers(server)
     # The permission handlers lazily open the async DB and build a
     # :class:`~.permissions.PermissionStore` on first call. Tests
     # that pre-built a store can pass it via the ``store=`` kwarg
@@ -190,15 +231,18 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     register_scheduled_handlers(server)
     logger.info(
         "registered application handlers "
-        "(1 agent.* + 5 skill.* + 3 task.* + 5 permission.* + 6 schedule.*)"
+        "(1 agent.* + 5 skill.* + 6 task.* + 5 session.* + "
+        "5 permission.* + 6 schedule.*)"
     )
 
 
 __all__ = [
     "get_progress_tracker",
     "get_runtime",
+    "get_sessions_dao",
     "init_runtime",
     "register_app_handlers",
     "set_progress_tracker",
     "set_runtime",
+    "set_sessions_dao",
 ]
