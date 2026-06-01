@@ -129,6 +129,61 @@ async def test_set_archived_unknown_id_returns_none(
 
 
 # ---------------------------------------------------------------------------
+# SessionsDAO.count — search kwarg (regression for the previous bug)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_count_with_search_filters_substring(
+    sessions_dao: SessionsDAO, id_factory: Any
+) -> None:
+    """``count(search=...)`` mirrors the ``list`` search filter.
+
+    Three sessions: two titles contain "alpha" (case-insensitive),
+    one does not. ``count(search="alpha")`` must return ``2``,
+    not the unfiltered total ``3``.
+    """
+    await sessions_dao.create(id=id_factory("ses"), title="Alpha Bravo")
+    await sessions_dao.create(id=id_factory("ses"), title="Bravo Charlie")
+    await sessions_dao.create(id=id_factory("ses"), title="Charlie alpha")
+    assert await sessions_dao.count() == 3
+    assert await sessions_dao.count(search="alpha") == 2
+    # Empty string is treated as "no filter" (same as list()).
+    assert await sessions_dao.count(search="") == 3
+    # No match.
+    assert await sessions_dao.count(search="zzz_nope") == 0
+
+
+@pytest.mark.asyncio
+async def test_count_with_archived_and_search_combine(
+    sessions_dao: SessionsDAO, id_factory: Any
+) -> None:
+    """``count(archived=, search=)`` must AND the filters like
+    :meth:`list` does — not drop one of them."""
+    a1 = id_factory("ses")
+    a2 = id_factory("ses")
+    a3 = id_factory("ses")
+    a4 = id_factory("ses")
+    await sessions_dao.create(id=a1, title="Alpha open")
+    await sessions_dao.create(id=a2, title="Alpha archived")
+    await sessions_dao.create(id=a3, title="Beta open")
+    await sessions_dao.create(id=a4, title="Beta archived")
+    await sessions_dao.set_archived(a2, True)
+    await sessions_dao.set_archived(a4, True)
+
+    # "alpha" + archived=True: 1 row (Alpha archived)
+    assert await sessions_dao.count(search="alpha", archived=True) == 1
+    # "alpha" + archived=False: 1 row (Alpha open)
+    assert await sessions_dao.count(search="alpha", archived=False) == 1
+    # "alpha" with no archive filter: 2 rows
+    assert await sessions_dao.count(search="alpha") == 2
+    # no search, archived=True: 2 rows
+    assert await sessions_dao.count(archived=True) == 2
+    # no filters: 4 rows
+    assert await sessions_dao.count() == 4
+
+
+# ---------------------------------------------------------------------------
 # SessionsDAO.get_messages (JOIN)
 # ---------------------------------------------------------------------------
 
@@ -321,7 +376,10 @@ async def test_session_ipc_list_search_fuzzy(
 
     SQLite's ``LIKE`` is case-insensitive when we add
     ``COLLATE NOCASE``; this test exercises both case-folded
-    and substring matches.
+    and substring matches. It also asserts ``total`` matches
+    the page length — the previous attempt shipped a bug where
+    ``total`` was computed without the search filter, and this
+    test missed it because it never checked ``total``.
     """
     await sessions_dao.create(id=id_factory("ses"), title="Alpha Bravo")
     await sessions_dao.create(id=id_factory("ses"), title="Bravo Charlie")
@@ -331,10 +389,13 @@ async def test_session_ipc_list_search_fuzzy(
         client = IPCClient()
         # Lowercase needle matches both "Alpha Bravo" and "Charlie alpha"
         # because the DAO uses COLLATE NOCASE.
-        matches = (await client.request("session.list", {"search": "alpha"}))[
-            "sessions"
-        ]
+        reply = await client.request("session.list", {"search": "alpha"})
+        matches = reply["sessions"]
         assert len(matches) == 2
+        assert reply["total"] == 2, (
+            f"total must reflect the search filter, got {reply['total']!r} "
+            f"with {len(matches)} matches"
+        )
         titles = sorted(s["title"] for s in matches)
         assert titles == ["Alpha Bravo", "Charlie alpha"]
     finally:
@@ -464,5 +525,126 @@ async def test_session_ipc_missing_session_id_param_returns_error(
         with pytest.raises(Exception) as excinfo:
             await client.request("session.archive", {})
         assert "session_id" in str(excinfo.value)
+    finally:
+        set_sessions_dao(None)
+
+
+@pytest.mark.asyncio
+async def test_session_ipc_list_total_reflects_all_filters(
+    async_db: AsyncDatabase,
+    sessions_dao: SessionsDAO,
+    id_factory: Any,
+) -> None:
+    """Regression test: ``session.list`` ``total`` must be filter-aware.
+
+    The previous attempt shipped a bug where ``count()`` did not
+    accept a ``search`` kwarg, so the ``total`` returned to the
+    UI ignored the search filter (it only reflected the
+    ``archived`` filter, if any). This test seeds a mix of
+    titles and archive states and asserts ``total`` agrees with
+    the page contents for every filter combination — search
+    alone, archive alone, both, and neither.
+    """
+    a_open = id_factory("ses")
+    a_arch = id_factory("ses")
+    b_open = id_factory("ses")
+    b_arch = id_factory("ses")
+    await sessions_dao.create(id=a_open, title="Alpha active")
+    await sessions_dao.create(id=a_arch, title="Alpha archived")
+    await sessions_dao.create(id=b_open, title="Bravo active")
+    await sessions_dao.create(id=b_arch, title="Bravo archived")
+    await sessions_dao.set_archived(a_arch, True)
+    await sessions_dao.set_archived(b_arch, True)
+    set_sessions_dao(sessions_dao)
+    try:
+        client = IPCClient()
+
+        # No filters: total = 4
+        reply = await client.request("session.list", {})
+        assert reply["total"] == 4
+        assert len(reply["sessions"]) == 4
+
+        # search=alpha only: 2 rows match (case-insensitive),
+        # total must also be 2 (not 4).
+        reply = await client.request("session.list", {"search": "alpha"})
+        assert len(reply["sessions"]) == 2
+        assert reply["total"] == 2, (
+            f"search filter must be applied to total, got {reply['total']!r}"
+        )
+
+        # archived=true only: 2 rows, total = 2.
+        reply = await client.request("session.list", {"archived": True})
+        assert len(reply["sessions"]) == 2
+        assert reply["total"] == 2
+
+        # search=alpha + archived=true: 1 row (Alpha archived),
+        # total = 1.
+        reply = await client.request(
+            "session.list", {"search": "alpha", "archived": True}
+        )
+        assert len(reply["sessions"]) == 1
+        assert reply["total"] == 1, (
+            f"combined search+archive must AND the filters, "
+            f"got total={reply['total']!r}"
+        )
+        assert reply["sessions"][0]["id"] == a_arch
+
+        # search=alpha + archived=false: 1 row (Alpha active),
+        # total = 1.
+        reply = await client.request(
+            "session.list", {"search": "alpha", "archived": False}
+        )
+        assert len(reply["sessions"]) == 1
+        assert reply["total"] == 1
+        assert reply["sessions"][0]["id"] == a_open
+
+        # No matches: empty list, total = 0.
+        reply = await client.request("session.list", {"search": "zzz_nope"})
+        assert reply["sessions"] == []
+        assert reply["total"] == 0
+    finally:
+        set_sessions_dao(None)
+
+
+@pytest.mark.asyncio
+async def test_session_ipc_list_pagination_total_stable(
+    sessions_dao: SessionsDAO, id_factory: Any
+) -> None:
+    """``total`` is the unfiltered-row count for the same query
+    regardless of which page we ask for.
+
+    A subtle bug: if the handler computes ``total`` from the
+    already-paginated list, the page-2 reply would have
+    ``total == page_size`` instead of the real total. This
+    test makes that mistake loud.
+    """
+    # Seed 12 sessions.
+    ids = []
+    for i in range(12):
+        sid = id_factory("ses")
+        await sessions_dao.create(id=sid, title=f"page-{i:02d}")
+        ids.append(sid)
+    set_sessions_dao(sessions_dao)
+    try:
+        client = IPCClient()
+        # First page: 5 rows
+        page1 = await client.request("session.list", {"limit": 5, "offset": 0})
+        assert len(page1["sessions"]) == 5
+        assert page1["total"] == 12
+        # Second page: 5 rows, same total
+        page2 = await client.request("session.list", {"limit": 5, "offset": 5})
+        assert len(page2["sessions"]) == 5
+        assert page2["total"] == 12
+        # Third page: 2 rows, same total
+        page3 = await client.request("session.list", {"limit": 5, "offset": 10})
+        assert len(page3["sessions"]) == 2
+        assert page3["total"] == 12
+        # No overlap between pages.
+        all_returned = (
+            {s["id"] for s in page1["sessions"]}
+            | {s["id"] for s in page2["sessions"]}
+            | {s["id"] for s in page3["sessions"]}
+        )
+        assert all_returned == set(ids)
     finally:
         set_sessions_dao(None)

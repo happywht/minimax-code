@@ -100,7 +100,17 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 limit=limit,
                 offset=offset,
             )
-            total = await sess_dao.count(archived=archived)
+            # ``total`` must reflect the *same* filter combo as the
+            # page above — otherwise a paginated search returns
+            # e.g. ``{"sessions": [..2 rows..], "total": 17}`` and
+            # the UI's "page X of Y" indicator is wrong. This is
+            # the bug the previous attempt shipped: count() did
+            # not accept a search kwarg so the search filter was
+            # silently dropped from the total.
+            total = await sess_dao.count(
+                archived=archived,
+                search=search if search else None,
+            )
             await ctx.reply({"sessions": sessions, "total": total})
         except _HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)

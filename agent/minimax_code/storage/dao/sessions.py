@@ -247,13 +247,34 @@ class SessionsDAO:
         rows = await self._db.fetchall(sql, tuple(params))
         return [_hydrate(r) for r in rows]
 
-    async def count(self, *, archived: bool | None = None) -> int:
-        where = ""
-        params: tuple = ()
+    async def count(
+        self,
+        *,
+        archived: bool | None = None,
+        search: str | None = None,
+    ) -> int:
+        """Return the row count matching the same filters as :meth:`list`.
+
+        ``search`` is a case-insensitive substring match on
+        ``title`` — same semantics as :meth:`list`. Pass the same
+        arguments to :meth:`count` that you pass to :meth:`list`
+        to get a meaningful "total" for the ``session.list`` IPC
+        reply. Without this, the handler's ``total`` would only
+        reflect the archive filter, not the search filter — a
+        subtle but real bug for the sidebar's "search box" UI.
+        """
+        where: list[str] = []
+        params: list[Any] = []
         if archived is not None:
-            where = "WHERE archived = ?"
-            params = (1 if archived else 0,)
-        row = await self._db.fetchone(f"SELECT COUNT(*) AS n FROM sessions {where}", params)
+            where.append("archived = ?")
+            params.append(1 if archived else 0)
+        if search:
+            where.append("title LIKE ? COLLATE NOCASE")
+            params.append(f"%{search}%")
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        row = await self._db.fetchone(
+            f"SELECT COUNT(*) AS n FROM sessions {where_sql}", tuple(params)
+        )
         return int(row["n"]) if row else 0
 
 
