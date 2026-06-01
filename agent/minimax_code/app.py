@@ -95,7 +95,8 @@ def _default_skills_root() -> Path:
     if env:
         return Path(env)
     # agent/minimax_code/app.py  ->  agent/skills/
-    return Path(__file__).resolve().parents[2] / "skills"
+    # parents[0] = agent/minimax_code/  parents[1] = agent/  parents[2] = repo root
+    return Path(__file__).resolve().parents[2] / "agent" / "skills"
 
 
 # ---------------------------------------------------------------------------
