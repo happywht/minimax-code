@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from sqlite3 import IntegrityError
 from typing import Any
 
 from ._base import apply_pagination, dumps_json, loads_json, now_iso, row_to_dict
@@ -264,9 +265,17 @@ class AgentDAO:
                 model,
                 now_iso(),
             )
-            async with self._db.transaction() as conn:
-                await conn.execute(sql, params)
-        else:
+            try:
+                async with self._db.transaction() as conn:
+                    await conn.execute(sql, params)
+            except IntegrityError:
+                # Another coroutine won the race and inserted
+                # the same name first — fall through to the
+                # update path below.
+                existing = await self.get(name)
+                if existing is None:  # pragma: no cover — defensive
+                    raise
+        if existing is not None:
             sets: list[str] = []
             params: list[Any] = []
             # Always overwrite system_prompt on upsert (it's a
