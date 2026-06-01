@@ -23,6 +23,7 @@ from . import agents, messages, mobile_devices, permissions, scheduled_jobs, ses
 
 # Public re-exports — keep these stable; the agent loop imports
 # ``SessionsDAO`` from this module, not from the submodule.
+from .agents import AgentDAO
 from .agents import AgentsDAO
 from .agents import create_sync as create_agent_sync
 from .messages import MessagesDAO
@@ -45,6 +46,7 @@ from .tasks import create_sync as create_task_sync
 
 __all__ = [
     # Async DAOs
+    "AgentDAO",
     "AgentsDAO",
     "MessagesDAO",
     "MobileDeviceDAO",

@@ -208,6 +208,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     to skip the lazy path.
     """
     from .ipc.builtins import handle_agent_send_message
+    from .ipc.handlers_agents import register_agent_handlers
     from .ipc.handlers_permissions import register_permission_handlers
     from .ipc.handlers_scheduled import register_scheduled_handlers
     from .ipc.handlers_sessions import register_session_handlers
@@ -215,6 +216,10 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_tasks import register_task_handlers
 
     server.register("agent.send_message", handle_agent_send_message)
+    # The agent.* (sub-agent) namespace — config CRUD + invoke.
+    # The DAO is built lazily on the first call (same pattern
+    # as the other storage-backed namespaces).
+    register_agent_handlers(server)
     if runtime is not None:
         set_runtime(runtime)
     # The skill handlers build the runtime themselves via
@@ -249,7 +254,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     register_mobile_handlers(server)
     logger.info(
         "registered application handlers "
-        "(1 agent.* + 5 skill.* + 6 task.* + 5 session.* + "
+        "(1 agent.* + 6 agent.* + 5 skill.* + 6 task.* + 5 session.* + "
         "5 permission.* + 6 schedule.* + 5 mobile.*)"
     )
 
