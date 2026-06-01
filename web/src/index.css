@@ -1,0 +1,23 @@
+/* Global styles + Tailwind base */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: theme("fontFamily.sans");
+  background: theme("colors.minimax.bg");
+  color: theme("colors.minimax.fg");
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}

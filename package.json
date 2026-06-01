@@ -1,0 +1,30 @@
+{
+  "name": "minimax-code",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MiniMax Code desktop — Tauri + React + Python agent",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "pnpm --filter @minimax/web dev",
+    "dev:agent": "node scripts/dev-agent.mjs",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "build": "pnpm --filter @minimax/web build",
+    "lint": "pnpm --filter @minimax/web lint",
+    "test": "pnpm --filter @minimax/web test",
+    "py:install": "cd agent && uv sync",
+    "py:run": "cd agent && uv run python -m minimax_code",
+    "py:test": "cd agent && uv run pytest"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0",
+    "concurrently": "^9.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "pnpm@9.12.0"
+}

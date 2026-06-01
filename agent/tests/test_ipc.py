@@ -1,0 +1,105 @@
+"""Smoke tests for the JSON-RPC over stdio bridge."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+import pytest
+
+from minimax_code.ipc.client import IPCClient
+from minimax_code.ipc.protocol import (
+    METHOD_NOT_FOUND,
+    PARSE_ERROR,
+    Request,
+)
+from minimax_code.ipc.server import IPCServer, Context
+from minimax_code.app import register_app_handlers
+
+
+@pytest.mark.asyncio
+async def test_ping_round_trip() -> None:
+    client = IPCClient()
+    result = await client.request("ping")
+    assert result["pong"] > 0
+    assert "uptime_s" in result
+    assert result["server"] == "minimax-code-agent"
+
+
+@pytest.mark.asyncio
+async def test_status() -> None:
+    client = IPCClient()
+    result = await client.request("status")
+    assert result["agent"] == "minimax-code-agent"
+    assert result["version"] == "0.1.0"
+    assert result["python"].startswith("3.")
+
+
+@pytest.mark.asyncio
+async def test_unknown_method_returns_error_envelope() -> None:
+    client = IPCClient()
+    # Manually craft a request to an unknown method and verify the
+    # server emits a JSON-RPC error envelope.
+    from minimax_code.config import Config
+
+    out = []
+    server = IPCServer(
+        config=Config.from_env(),
+        stdin=__import__("io").StringIO(),
+        stdout=__import__("io").StringIO(),
+    )
+    original_send = server._send
+
+    async def capture(payload: bytes) -> None:
+        await original_send(payload)
+        out.append(server.stdout.getvalue().splitlines()[-1])
+
+    server._send = capture  # type: ignore[assignment]
+    req = Request(id="bad-1", method="does.not.exist", params=None)
+    await server._handle_line(req.to_line() + "\n")
+    assert out, "expected an error envelope"
+    obj = json.loads(out[-1])
+    assert obj["id"] == "bad-1"
+    assert obj["error"]["code"] == METHOD_NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_parse_error_envelope() -> None:
+    client = IPCClient()
+    # Forge a raw bad-JSON message.
+    from minimax_code.config import Config
+
+    captured = []
+    server = IPCServer(
+        config=Config.from_env(),
+        stdin=__import__("io").StringIO(),
+        stdout=__import__("io").StringIO(),
+    )
+    original_send = server._send
+
+    async def capture(payload: bytes) -> None:
+        await original_send(payload)
+        captured.append(server.stdout.getvalue().splitlines()[-1])
+
+    server._send = capture  # type: ignore[assignment]
+    await server._handle_line("{not json}\n")
+    assert captured
+    obj = json.loads(captured[-1])
+    assert obj["error"]["code"] == PARSE_ERROR
+
+
+@pytest.mark.asyncio
+async def test_agent_send_message_streams_hello() -> None:
+    client = IPCClient()
+    events_task = asyncio.create_task(client.collect_events(5, timeout=2.0))
+    reply = await client.request(
+        "agent.send_message", {"content": "hello", "session_id": None}
+    )
+    events = await events_task
+    assert reply["text"].startswith("Hello from Python agent!")
+    assert reply["session_id"].startswith("ses_")
+    # All emitted events are message_chunks.
+    assert all(e["event"] == "agent.message_chunk" for e in events)
+    # The final event must have done=True.
+    final = [e for e in events if e["data"].get("done") is True]
+    assert final, "expected a final done event"

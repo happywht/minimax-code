@@ -1,0 +1,69 @@
+# Node / pnpm
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# TypeScript build mode emit (from tsc -b composite)
+web/vite.config.js
+web/vite.config.d.ts
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/Cargo.lock
+src-tauri/gen/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+.eggs/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+secrets/
+*.key
+*.pem
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+pnpm-debug.log*
+
+# Coverage / test
+coverage/
+.nyc_output/
+
+# Tauri runtime
+src-tauri/.cargo/
+
+# Local tool state
+.opencode/
+.mavis/

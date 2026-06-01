@@ -1,0 +1,46 @@
+[project]
+name = "minimax-code-agent"
+version = "0.1.0"
+description = "MiniMax Code Python agent — JSON-RPC 2.0 over stdio server"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "MiniMax Code Team" },
+]
+dependencies = [
+    # Phase 1 (skeleton only — these are listed for future tasks, not yet imported):
+    "pydantic>=2.7",
+    "httpx>=0.27",
+    "aiosqlite>=0.20",
+    "apscheduler>=3.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+minimax-code-agent = "minimax_code.__main__:cli_entry"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["minimax_code"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
