@@ -11,6 +11,7 @@ covers.
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any
 
 from ._base import (
@@ -42,7 +43,7 @@ class ScheduledJobsDAO:
     async def create(
         self,
         *,
-        id: str,
+        id: str | None = None,
         name: str,
         cron_expr: str,
         payload: dict[str, Any] | None = None,
@@ -51,13 +52,20 @@ class ScheduledJobsDAO:
         next_run_at: str | None = None,
         created_at: str | None = None,
     ) -> dict[str, Any]:
+        """Insert a scheduled job.
+
+        ``id`` is auto-generated (``job_xxxxxxxx``) when not provided, so
+        callers that don't care about the storage format can just pass
+        ``name``, ``cron_expr``, and ``payload``.
+        """
+        row_id = id or f"job_{uuid.uuid4().hex[:10]}"
         sql = (
             "INSERT INTO scheduled_jobs "
             "(id, name, cron_expr, payload, enabled, last_run_at, next_run_at, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         )
         params = (
-            id,
+            row_id,
             name,
             cron_expr,
             dumps_json(payload) if payload is not None else None,
@@ -68,7 +76,9 @@ class ScheduledJobsDAO:
         )
         async with self._db.transaction() as conn:
             await conn.execute(sql, params)
-        row = await self._db.fetchone("SELECT * FROM scheduled_jobs WHERE id = ?", (id,))
+        row = await self._db.fetchone(
+            "SELECT * FROM scheduled_jobs WHERE id = ?", (row_id,)
+        )
         return _hydrate(row)
 
     async def get(self, job_id: str) -> dict[str, Any] | None:
@@ -141,6 +151,55 @@ class ScheduledJobsDAO:
             f"SELECT COUNT(*) AS n FROM scheduled_jobs {where}", tuple(params)
         )
         return int(row["n"]) if row else 0
+
+    # -----------------------------------------------------------------------
+    # Task-spec method names (thin aliases — keep the public surface stable
+    # even if internal names differ). The scheduler task asks for these
+    # exact names; we don't break the older names above because other code
+    # (storage tests, internal queries) already uses them.
+    # -----------------------------------------------------------------------
+
+    async def list_all(self) -> list[dict[str, Any]]:
+        """Return every scheduled job, regardless of ``enabled`` flag.
+
+        Equivalent to ``list(enabled=None)`` with a deterministic order
+        so IPC consumers can render a stable list.
+        """
+        return await self.list(order_by="name ASC")
+
+    async def update_enabled(
+        self, job_id: str, enabled: bool
+    ) -> dict[str, Any] | None:
+        """Flip the ``enabled`` flag on a job and return the new row."""
+        return await self.set_enabled(job_id, enabled)
+
+    async def enable(self, job_id: str) -> dict[str, Any] | None:
+        return await self.set_enabled(job_id, True)
+
+    async def disable(self, job_id: str) -> dict[str, Any] | None:
+        return await self.set_enabled(job_id, False)
+
+    async def update_last_run(
+        self, job_id: str, ts: str
+    ) -> dict[str, Any] | None:
+        """Set ``last_run_at`` only — leaves ``next_run_at`` untouched."""
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                "UPDATE scheduled_jobs SET last_run_at = ? WHERE id = ?",
+                (ts, job_id),
+            )
+        return await self.get(job_id)
+
+    async def update_next_run(
+        self, job_id: str, ts: str
+    ) -> dict[str, Any] | None:
+        """Set ``next_run_at`` only — leaves ``last_run_at`` untouched."""
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                "UPDATE scheduled_jobs SET next_run_at = ? WHERE id = ?",
+                (ts, job_id),
+            )
+        return await self.get(job_id)
 
 
 # ---------------------------------------------------------------------------

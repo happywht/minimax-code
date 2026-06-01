@@ -40,6 +40,12 @@ class IPCClient:
         # Wire up the same handlers the real `__main__` registers.
         register_app_handlers(self.server)
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        # Track the byte position of the most recent write so each
+        # ``request`` only scans lines emitted *after* it was issued.
+        # Without this, two requests issued in the same millisecond
+        # could share the same ``req_id`` (built from
+        # ``loop.time()``) and the first one would shadow the second.
+        self._output_pos = 0
         # Wrap the server's writer to also fan out events to our queue.
         original_send = self.server._send
 
@@ -63,13 +69,17 @@ class IPCClient:
         req_id = f"test-{method}-{asyncio.get_event_loop().time()}"
         req = Request(id=req_id, method=method, params=params)
         line = req.to_line()
+        # Capture the buffer position BEFORE the request so we only
+        # inspect lines emitted in response to this call.
+        baseline_pos = self._output.tell() if hasattr(self._output, "tell") else len(self._output.getvalue())
         # Drive the dispatcher directly.
         await self.server._handle_line(line + "\n")
         # Read the response that was emitted.
         deadline = asyncio.get_event_loop().time() + timeout
         while asyncio.get_event_loop().time() < deadline:
-            # Search the accumulated output for a response with our id.
-            for raw in self._output.getvalue().splitlines():
+            full = self._output.getvalue()
+            tail = full[baseline_pos:]
+            for raw in tail.splitlines():
                 try:
                     obj = json.loads(raw)
                 except json.JSONDecodeError:

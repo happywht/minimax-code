@@ -7,7 +7,8 @@ meets the rest of the agent. At startup it:
 2. Builds a :class:`~.agent.skills.SkillRuntime` wired to the
    storage, the LLM client, and the global tool registry.
 3. Loads the built-in skills + any user skills on disk.
-4. Registers the IPC handlers: ``agent.*`` and ``skill.*``.
+4. Registers the IPC handlers: ``agent.*``, ``skill.*``, and
+   ``task.*``.
 
 The runtime is built lazily on the first ``skill.*`` call, so
 tests can construct an :class:`IPCServer` without dragging in
@@ -72,11 +73,19 @@ def set_runtime(runtime: SkillRuntime | None) -> None:
 
 
 async def _maybe_open_db() -> Any:
-    """Open the async database if storage can be initialised."""
+    """Open the async database if storage can be initialised.
+
+    As a side effect, this *also* populates the
+    :data:`_PROGRESS_TRACKER` singleton once a DB handle is
+    available, so the ``task.*`` IPC handlers can find the
+    tracker without having to open the DB themselves.
+    """
     if os.environ.get("MINIMAX_CODE_NO_DB") == "1":
         return None
     try:
         from .storage.db import AsyncDatabase, default_database_path
+        from .storage.dao.tasks import TaskDAO
+        from .progress import ProgressTracker
     except Exception:  # pragma: no cover — storage not yet bootstrapped
         logger.debug("storage layer not importable; running with in-memory skill registry")
         return None
@@ -84,6 +93,11 @@ async def _maybe_open_db() -> Any:
         db = AsyncDatabase(default_database_path())
         await db.connect()
         await db.migrate()
+        # Spin up the process-wide progress tracker that backs
+        # the ``task.*`` IPC namespace. Doing it here (next to
+        # the DB open) keeps the singleton's lifetime tied to
+        # the DB's lifetime.
+        _set_progress_tracker(ProgressTracker(TaskDAO(db)))
         return db
     except Exception:  # pragma: no cover — defensive
         logger.exception("failed to open storage; running with in-memory skill registry")
@@ -100,6 +114,36 @@ def _default_skills_root() -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Progress tracker singleton
+# ---------------------------------------------------------------------------
+
+
+_PROGRESS_TRACKER: Any = None  # type: ignore[no-untyped-def]
+
+
+def get_progress_tracker() -> Any:
+    """Return the process-wide :class:`ProgressTracker`, or ``None``.
+
+    The tracker is created by :func:`_maybe_open_db` the first
+    time the storage layer is opened. Tests can replace it via
+    :func:`set_progress_tracker`.
+    """
+    return _PROGRESS_TRACKER
+
+
+def set_progress_tracker(tracker: Any) -> None:
+    """Replace the cached progress tracker (test seam)."""
+    global _PROGRESS_TRACKER
+    _PROGRESS_TRACKER = tracker
+
+
+def _set_progress_tracker(tracker: Any) -> None:
+    """Internal setter used by :func:`_maybe_open_db`."""
+    global _PROGRESS_TRACKER
+    _PROGRESS_TRACKER = tracker
+
+
+# ---------------------------------------------------------------------------
 # Handler registration
 # ---------------------------------------------------------------------------
 
@@ -109,11 +153,17 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
 
     The ``skill.*`` handlers call :func:`init_runtime` on every
     invocation and cache the resulting runtime in
-    :data:`_RUNTIME`. Tests can pre-build and inject a runtime
-    via the ``runtime=`` kwarg to skip the lazy path.
+    :data:`_RUNTIME`. The ``task.*`` handlers look up the
+    :class:`ProgressTracker` singleton in
+    :data:`_PROGRESS_TRACKER`. Tests can pre-build and inject
+    either via the matching ``runtime=`` / ``tracker=`` kwargs
+    to skip the lazy path.
     """
     from .ipc.builtins import handle_agent_send_message
+    from .ipc.handlers_permissions import register_permission_handlers
+    from .ipc.handlers_scheduled import register_scheduled_handlers
     from .ipc.handlers_skills import register_skill_handlers
+    from .ipc.handlers_tasks import register_task_handlers
 
     server.register("agent.send_message", handle_agent_send_message)
     if runtime is not None:
@@ -123,12 +173,32 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # ``runtime=`` argument is optional and only used as a
     # cache hint.
     register_skill_handlers(server, runtime=runtime)
-    logger.info("registered application handlers (1 agent.* + 5 skill.*)")
+    # The task handlers resolve the tracker lazily via
+    # :func:`get_progress_tracker`, which is itself lazy (it
+    # opens the DB on first call). Inject a tracker when you
+    # need to bypass the storage layer (e.g. unit tests).
+    register_task_handlers(server)
+    # The permission handlers lazily open the async DB and build a
+    # :class:`~.permissions.PermissionStore` on first call. Tests
+    # that pre-built a store can pass it via the ``store=`` kwarg
+    # (see :func:`register_permission_handlers`).
+    register_permission_handlers(server)
+    # The schedule handlers build the JobScheduler lazily via
+    # :func:`minimax_code.scheduler.get_scheduler`, which opens
+    # the DB on first call. Tests can inject a scheduler with
+    # the ``scheduler=`` kwarg to skip the lazy path.
+    register_scheduled_handlers(server)
+    logger.info(
+        "registered application handlers "
+        "(1 agent.* + 5 skill.* + 3 task.* + 5 permission.* + 6 schedule.*)"
+    )
 
 
 __all__ = [
+    "get_progress_tracker",
     "get_runtime",
     "init_runtime",
     "register_app_handlers",
+    "set_progress_tracker",
     "set_runtime",
 ]
