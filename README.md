@@ -1,179 +1,152 @@
 # MiniMax Code
 
-Desktop AI coding agent — Tauri 2.x (Rust) + React + Python sidecar.
-复刻 MiniMax Code 全量功能。
+桌面端 AI 编码 Agent 复刻项目。对标 MiniMax Code 全量功能：多轮对话、技能系统、定时任务、多 Agent 协作、移动互联、授权管理、进度面板。
 
-> Skeleton milestone. The IPC channel and a hello-world round-trip
-> work; storage, agent loop, and full UI land in subsequent tasks.
+## 当前状态
 
-## Stack
+- **Phase 1（基础闭环）**：✅ 已完成 — Tauri 2.x 桌面壳 + React 18 前端 + Python agent 核心 + SQLite 存储 + 技能系统
+- **Phase 2a（授权 / 调度 / 进度）**：✅ 已完成
+- **Phase 2b（会话历史 / 移动配对 / 多 Agent）**：✅ 已完成 — 49 个单测全过 + 17 步集成端到端 smoke 全过
+- **Phase 3（端到端 chat + 文档）**：
+  - ✅ `agent.send_message` 真接通 AgentCore + mock LLM + 消息持久化
+  - ⚠️ Tauri release build 卡在你的开发机环境（见"已知限制"），源码本身完整
 
-| Layer       | Tech                                                 |
-|-------------|------------------------------------------------------|
-| Shell       | Tauri 2.x (Rust)                                     |
-| Frontend    | React 18 + Vite + TypeScript + Tailwind + Zustand    |
-| Agent       | Python 3.11+ (asyncio JSON-RPC 2.0 over stdio)       |
-| IPC         | JSON-RPC 2.0 line-delimited JSON, single `\n` framing |
-| Storage     | SQLite (aiosqlite) — *not yet wired*                 |
-| Scheduler   | APScheduler — *not yet wired*                        |
-| LLM         | MiniMax API via httpx — *not yet wired*              |
+## 架构
 
-See [`docs/architecture.md`](docs/architecture.md) for the full design
-and [`docs/ipc-contract.md`](docs/ipc-contract.md) for the wire format.
+| 层 | 技术 | 备注 |
+|---|---|---|
+| 桌面壳 | Tauri 2.x (Rust) | sidecar 模式 spawn Python |
+| 前端 | React 18 + Vite + TypeScript + Tailwind + Zustand | 见 `web/src/` |
+| Agent 核心 | Python 3.11+ (asyncio) | JSON-RPC 2.0 over stdio |
+| LLM 客户端 | httpx (async) | MiniMax API；mock mode（无 KEY 时降级） |
+| 存储 | SQLite (aiosqlite) | 8 张表（sessions / messages / tasks / skills / scheduled_jobs / permission_rules / mobile_devices / agents） |
+| 调度 | APScheduler | 持久化 cron |
+| 测试 | pytest + pytest-asyncio | 单元 + subprocess 端到端 smoke |
 
-## Project layout
+详细见 [`docs/architecture.md`](docs/architecture.md)。
+
+## 目录结构
 
 ```
 .
-├── docs/                       # Architecture & IPC contract
-│   ├── architecture.md
-│   └── ipc-contract.md
-├── scripts/                    # Standalone runners
-│   ├── dev.mjs                 # Vite + Python agent in parallel
-│   ├── dev-agent.mjs
-│   ├── start-agent.sh
-│   └── start-agent.ps1
-├── src-tauri/                  # Tauri Rust shell
-│   ├── Cargo.toml
-│   ├── tauri.conf.json
-│   ├── capabilities/default.json
+├── docs/                  # 架构 / IPC 契约 / 构建报告
+├── src-tauri/             # Tauri Rust 壳（main.rs / lib.rs / ipc.rs / commands.rs）
+├── web/                   # React + Vite 前端
 │   └── src/
-│       ├── main.rs
-│       ├── lib.rs              # Tauri builder + setup
-│       ├── ipc.rs              # stdio <-> Tauri event bridge
-│       └── commands.rs         # `invoke` handlers
-├── web/                        # React + Vite frontend
-│   ├── package.json
-│   ├── vite.config.ts
-│   ├── tailwind.config.js
-│   ├── tsconfig.json
-│   ├── index.html
-│   ├── src/
-│   │   ├── main.tsx
-│   │   ├── App.tsx
-│   │   ├── components/         # Sidebar / ChatPanel / MessageInput / ProgressPanel
-│   │   ├── stores/             # Zustand chat store
-│   │   ├── ipc/                # IPC client (wraps Tauri invoke/listen)
-│   │   └── types/              # shared JSON-RPC type contracts
-│   └── tests/                  # vitest
-├── agent/                      # Python agent (uv-managed)
-│   ├── pyproject.toml
+│       ├── components/    # Sidebar / ChatPanel / MessageInput / ProgressPanel ...
+│       ├── stores/        # Zustand stores
+│       ├── ipc/           # IPC client (Tauri invoke/listen 包装)
+│       └── types/         # 共享类型
+├── agent/                 # Python agent 核心
 │   ├── minimax_code/
-│   │   ├── __init__.py
-│   │   ├── __main__.py         # `python -m minimax_code`
-│   │   ├── app.py              # handler registration seam
-│   │   ├── config.py
-│   │   ├── logging_setup.py
-│   │   ├── ipc/                # asyncio JSON-RPC server
-│   │   ├── agent/              # conversation loop (stub)
-│   │   ├── tools/              # file_ops / terminal / edit / search (stub)
-│   │   ├── skills/             # SKILL.md loader (stub)
-│   │   ├── storage/            # SQLite layer (stub)
-│   │   ├── scheduler/          # APScheduler (stub)
-│   │   ├── orchestrator/       # multi-agent (Phase 2, stub)
-│   │   ├── auth/               # permissions (stub)
-│   │   └── mobile/             # mobile pairing (Phase 2, stub)
-│   ├── skills/                 # built-in SKILL.md files
-│   └── tests/                  # pytest + pytest-asyncio
-├── tests/                      # e2e (TBD)
-├── package.json                # pnpm workspace root
+│   │   ├── ipc/           # asyncio JSON-RPC server + handlers
+│   │   ├── agent/         # AgentCore + MiniMaxClient (LLM)
+│   │   ├── tools/         # file_ops / terminal / edit / search / skill
+│   │   ├── skills/        # SKILL.md loader + registry + runtime
+│   │   ├── storage/       # SQLite + 8 个 DAO + migrations
+│   │   ├── scheduler/     # APScheduler
+│   │   ├── orchestrator/  # SubAgentRuntime
+│   │   ├── auth/          # PermissionStore
+│   │   ├── mobile/        # PairingManager
+│   │   └── progress/      # ProgressTracker
+│   └── tests/             # pytest 单元
+├── tests/                 # e2e subprocess smoke（black-box）
+│   └── e2e/
+│       ├── smoke_sessions.py
+│       ├── smoke_mobile.py
+│       ├── smoke_agents.py
+│       ├── smoke_phase2b.py
+│       └── smoke_chat.py
+├── package.json
 ├── pnpm-workspace.yaml
 └── README.md
 ```
 
-## Prerequisites
+## 前置环境
 
-- **Node.js 20+** (tested on 22.18)
-- **pnpm 9+** (run `npm i -g pnpm` if missing)
-- **Rust 1.77+** with the MSVC toolchain (Windows) or `build-essential` (Linux)
-- **Python 3.11+** (tested on 3.12)
-- **uv** — `pip install uv` or grab the standalone binary from
-  [astral-sh/uv](https://docs.astral.sh/uv/)
+- **Node.js 20+** (测试用 22.18)
+- **pnpm 9+** — `npm i -g pnpm`
+- **Python 3.11+** (测试用 3.12)
+- **uv** — `pip install uv` 或下载 [astral-sh/uv](https://docs.astral.sh/uv/)
+- **Rust 1.77+** + Tauri 工具链（见"已知限制"）
 
-## Quick start (dev)
+## 快速启动（dev mode）
 
 ```bash
-# 1. Install JS deps (Tauri CLI, Vite, React, …)
+# 1. 装 JS 依赖
 pnpm install
 
-# 2. Install Python deps for the agent
-pnpm py:install
+# 2. 装 Python 依赖（agent 端）
+cd agent
+uv pip install -e .        # 或 pip install -e .
+cd ..
 
-# 3. Run Vite + Python agent in parallel
+# 3. 三个终端，分别跑：
+# 终端 1 — Python agent（IPC server）
+cd agent
+python -m minimax_code
+# 或：uv run python -m minimax_code
+
+# 终端 2 — Vite 前端 dev server
+cd web
 pnpm dev
+# 监听 http://localhost:5173
 
-# 4. Or run the full Tauri app (Vite + Rust shell + Python agent)
-pnpm tauri dev
+# 终端 3 — Tauri 桌面壳（用 webview 打开 web 端 + 调 Python agent）
+cd src-tauri
+cargo tauri dev
 ```
 
-The Vite dev server listens on `http://localhost:5173`. Open it in a
-browser to see the skeleton UI. To run the full Tauri app, use
-`pnpm tauri:dev` — this is what the demo **really** needs because the
-Tauri `invoke` / `listen` APIs only exist inside the Tauri webview.
+> Tauri 的 `invoke` / `listen` API **只在 Tauri webview 里可用** — 真要看完整 demo 必须用 `cargo tauri dev`，普通浏览器看 `localhost:5173` 只能用 stub IPC。
 
-### Run the agent alone
+## 测试
 
 ```bash
-# bash / WSL
-./scripts/start-agent.sh
+# Python 单元（49 个 case）
+cd agent
+pytest -q
 
-# PowerShell
-.\scripts\start-agent.ps1
-
-# or directly via uv
-cd agent && uv run python -m minimax_code
+# e2e subprocess smoke（每个 smoke 是独立的 black-box 端到端）
+# 都遵循统一约定：spawn 真实 agent 进程、跑 IPC、读磁盘
+cd tests
+python e2e/smoke_sessions.py  <python> <agent_dir> <workdir>
+python e2e/smoke_mobile.py    <python> <agent_dir> <workdir>
+python e2e/smoke_agents.py    <python> <agent_dir> <workdir>
+python e2e/smoke_phase2b.py   <python> <agent_dir> <workdir>
+python e2e/smoke_chat.py      <python> <agent_dir> <workdir>
 ```
 
-You can drive it manually by piping a JSON-RPC request into stdin:
+> 跑 smoke 时 `<workdir>` 必须是**新创建的**空目录 — 所有 smoke 内部用 `MINIMAX_CODE_DATA_DIR=<workdir>` 隔离 DB，避免相互污染。
+
+## 打包发布
 
 ```bash
-echo '{"jsonrpc":"2.0","id":"1","method":"ping"}' \
-  | uv run python -m minimax_code
+cd src-tauri
+cargo tauri build
+# 产出：src-tauri/target/release/bundle/{nsis,msi,dmg,deb,appimage}/
 ```
 
-## The hello round-trip
+> 前提：开发机已装对应平台的工具链（见"已知限制"）。
 
-1. Launch `pnpm tauri:dev` (or open Vite at `localhost:5173` inside
-   the Tauri webview).
-2. Type `hello` in the input box and press **Enter**.
-3. The Rust bridge forwards the request to Python over stdio.
-4. The Python agent's `agent.send_message` handler emits 4
-   `agent.message_chunk` events, then a final response.
-5. The React store appends each chunk to a streaming bubble in the
-   chat panel.
+## 已知限制
 
-## IPC at a glance
+### 1. Tauri release build 需要完整平台工具链
 
-- One JSON object per line, `\n`-terminated.
-- Frontend → Python: `{jsonrpc, id, method, params}`.
-- Python → Frontend: response (`{jsonrpc, id, result/error}`) or push
-  event (`{jsonrpc, event, data}`).
-- The Rust sidecar (`src-tauri/src/ipc.rs`) is a dumb bridge: it
-  spawns Python, reads stdout, and re-emits each line as a Tauri
-  event (`ipc:response` for responses, `ipc:event` for pushes).
+当前 `src-tauri/` 源码完整（~320 LOC，5 个 IPC handler / JSON-RPC bridge / Tauri 2.x setup），但 `cargo tauri build` 在开发机上失败 — 缺 MSVC 工具链 / rustup / MinGW。详细：
 
-See [`docs/ipc-contract.md`](docs/ipc-contract.md) for the full
-schema, error codes, and event catalogue.
+[`docs/build-reports/2026-06-02-tauri-build-blocked.md`](docs/build-reports/2026-06-02-tauri-build-blocked.md)
 
-## Tests
+修复路径（二选一）：
 
-```bash
-# Python (uv)
-pnpm py:test
+- **Windows** — 装 [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-studio-build-tools/) "Desktop development with C++" workload
+- **跨平台** — 装 [rustup](https://rustup.rs/) 然后 `rustup default stable-gnu` + MinGW-w64
 
-# Frontend (vitest)
-pnpm test
-```
+### 2. Sub-agent LLM 走 mock mode
 
-## Tasks ahead
+`SubAgentRuntime` 当前用 `AgentCore(llm=None)` — LLM 调用是 stub，返回确定性文本。Phase 4 会切真 MiniMax API（设置 `MINIMAX_API_KEY` env 即可启用）。
 
-This skeleton is the foundation. The next tasks build on it:
+主 chat 链路（`agent.send_message`）的 mock mode 触发条件是 `MINIMAX_API_KEY` 为空 — 走 `MiniMaxClient` 的内置 fixture，方便本地/CI 跑端到端。
 
-- `storage-layer` — SQLite + DAOs (sessions, messages, tasks, …)
-- `agent-core` — LLM client, tool registry, conversation loop
-- `ui-shell` — full React component tree (ChatPanel + sidebar + …)
-- `skills-system` — SKILL.md loader + enable/disable + invocation
-- `scheduler` — APScheduler integration
+### 3. Phase 1.x 已 documented 的旧 README 段落
 
-Each task must keep `docs/architecture.md` and `docs/ipc-contract.md`
-in sync.
+仓库原 README（Phase 1 skeleton 时代）里"Tasks ahead"等段已过时 — 当前所有 Phase 1+2a+2b+3 任务都已完成。本 README 是最终态。
