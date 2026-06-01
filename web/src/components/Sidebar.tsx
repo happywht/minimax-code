@@ -1,45 +1,156 @@
-import { useChat } from "../stores";
-
 /**
- * Skeleton sidebar — later tasks will fill in sessions, skills,
- * scheduler, etc. For now it's a single button to clear the chat.
+ * Left sidebar — 240px wide. Contains:
+ *   - Brand mark
+ *   - "New task" button
+ *   - Primary nav (skills, scheduler, mobile, etc.)
+ *   - Session history (loaded from sessionStore)
+ *   - Footer: UserBadge
  */
-export function Sidebar() {
-  const reset = useChat((s) => s.reset);
+import { useEffect } from "react";
+import {
+  Bot,
+  CalendarClock,
+  History,
+  Plug,
+  Plus,
+  Sparkles,
+  Wrench,
+} from "lucide-react";
+import { NavItem } from "./NavItem";
+import { UserBadge } from "./UserBadge";
+import { useSessionStore, type SessionFilter } from "../stores";
+
+export interface SidebarProps {
+  testId?: string;
+  onMobileClick?: () => void;
+}
+
+const NAV_ITEMS: Array<{
+  id: SessionFilter | "skills" | "agents";
+  label: string;
+  icon: JSX.Element;
+  group: "primary" | "history";
+}> = [
+  { id: "skills", label: "技能", icon: <Wrench size={14} />, group: "primary" },
+  { id: "scheduled", label: "定时任务", icon: <CalendarClock size={14} />, group: "primary" },
+  { id: "history", label: "任务历史", icon: <History size={14} />, group: "primary" },
+  { id: "agents", label: "Agents", icon: <Bot size={14} />, group: "primary" },
+  { id: "archived", label: "已归档", icon: <Plug size={14} />, group: "history" },
+];
+
+export function Sidebar({ testId = "sidebar", onMobileClick }: SidebarProps): JSX.Element {
+  const filter = useSessionStore((s) => s.filter);
+  const setFilter = useSessionStore((s) => s.setFilter);
+  const sessions = useSessionStore((s) => s.sessions);
+  const currentId = useSessionStore((s) => s.currentSessionId);
+  const setCurrent = useSessionStore((s) => s.setCurrent);
+  const createSession = useSessionStore((s) => s.create);
+  const refresh = useSessionStore((s) => s.refresh);
+
+  useEffect(() => {
+    if (sessions.length === 0) {
+      void refresh();
+    }
+  }, [sessions.length, refresh]);
+
+  const visibleSessions = sessions
+    .filter((s) => (filter === "archived" ? s.archived : !s.archived))
+    .sort((a, b) => b.updated_at - a.updated_at)
+    .slice(0, 30);
+
   return (
-    <aside className="w-56 shrink-0 border-r border-minimax-border bg-minimax-panel p-3">
-      <div className="mb-4">
-        <h1 className="text-sm font-semibold">MiniMax Code</h1>
-        <p className="text-xs text-minimax-muted">Skeleton (Phase 1.0)</p>
-      </div>
-      <nav className="space-y-1 text-sm">
-        <button
-          onClick={reset}
-          className="w-full rounded px-2 py-1.5 text-left hover:bg-minimax-border"
-        >
-          + New task
-        </button>
-        <div className="mt-4 space-y-1 text-minimax-muted">
-          <div className="px-2 py-1 text-xs uppercase tracking-wider">
-            Sections
-          </div>
-          <div className="rounded px-2 py-1 text-xs italic opacity-60">
-            技能 (skills)
-          </div>
-          <div className="rounded px-2 py-1 text-xs italic opacity-60">
-            定时任务
-          </div>
-          <div className="rounded px-2 py-1 text-xs italic opacity-60">
-            连接手机
-          </div>
-          <div className="rounded px-2 py-1 text-xs italic opacity-60">
-            任务历史
-          </div>
-          <div className="rounded px-2 py-1 text-xs italic opacity-60">
-            Agents
-          </div>
+    <aside
+      data-testid={testId}
+      className="flex w-60 shrink-0 flex-col border-r border-minimax-border bg-minimax-panel"
+    >
+      {/* Brand */}
+      <div className="flex items-center gap-2 border-b border-minimax-border px-3 py-3">
+        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-minimax-accent/20 text-minimax-accent">
+          <Sparkles size={14} />
         </div>
+        <div className="min-w-0">
+          <h1
+            data-testid="sidebar-brand"
+            className="truncate text-sm font-semibold text-minimax-fg"
+          >
+            MiniMax Code
+          </h1>
+          <p className="truncate text-[10px] text-minimax-muted">
+            AI coding agent · v0.1
+          </p>
+        </div>
+      </div>
+
+      {/* New task */}
+      <div className="px-3 py-3">
+        <button
+          type="button"
+          data-testid="sidebar-new-task"
+          onClick={() => void createSession("New task")}
+          className="flex w-full items-center gap-2 rounded-md border border-minimax-border bg-minimax-bg/40 px-2.5 py-1.5 text-sm text-minimax-fg hover:border-minimax-accent/50"
+        >
+          <Plus size={14} className="text-minimax-accent" />
+          <span>新任务</span>
+        </button>
+      </div>
+
+      {/* Primary nav */}
+      <nav className="space-y-0.5 px-2" data-testid="sidebar-nav">
+        {NAV_ITEMS.filter((n) => n.group === "primary").map((n) => (
+          <NavItem
+            key={n.id}
+            icon={n.icon}
+            label={n.label}
+            selected={filter === n.id}
+            onClick={() => setFilter(n.id as SessionFilter)}
+            testId={`sidebar-nav-${n.id}`}
+          />
+        ))}
       </nav>
+
+      {/* Session list (history) */}
+      <div className="mt-4 flex min-h-0 flex-1 flex-col">
+        <div className="flex items-center justify-between px-4 pt-1 text-[10px] uppercase tracking-wider text-minimax-muted">
+          <span>任务历史</span>
+          <span>{visibleSessions.length}</span>
+        </div>
+        <ul
+          data-testid="sidebar-session-list"
+          className="mt-1 flex-1 space-y-0.5 overflow-y-auto px-2"
+        >
+          {visibleSessions.length === 0 && (
+            <li className="px-2 py-2 text-[11px] italic text-minimax-muted">
+              No sessions yet — start a new task ↑
+            </li>
+          )}
+          {visibleSessions.map((s) => (
+            <li key={s.id}>
+              <NavItem
+                icon={<History size={12} />}
+                label={s.title || "(untitled)"}
+                selected={s.id === currentId}
+                onClick={() => setCurrent(s.id)}
+                testId={`sidebar-session-${s.id}`}
+              />
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {/* Mobile pairing link */}
+      <div className="px-2 py-2">
+        <NavItem
+          icon={<Plug size={14} />}
+          label="连接手机"
+          onClick={onMobileClick}
+          testId="sidebar-mobile"
+        />
+      </div>
+
+      {/* Footer user badge */}
+      <div className="border-t border-minimax-border p-2">
+        <UserBadge name="Demo User" email="demo@minimax.code" plan="Max Plan" />
+      </div>
     </aside>
   );
 }
