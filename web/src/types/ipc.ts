@@ -1,5 +1,6 @@
 /**
- * JSON-RPC 2.0 envelope types — must match `agent/minimax_code/ipc/protocol.py`.
+ * JSON-RPC 2.0 envelope types + shared protocol types — must match
+ * `agent/minimax_code/ipc/protocol.py`.
  *
  * The Rust sidecar re-emits the raw JSON; the frontend is responsible
  * for type-narrowing with these interfaces.
@@ -55,7 +56,86 @@ export const ErrorCode = {
 
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];
 
-/** Event payload shapes — see docs/ipc-contract.md. */
+/* ───────────────────────── Domain types ───────────────────────── */
+
+/** A model entry returned by `model.list`. */
+export interface ModelInfo {
+  id: string;
+  name: string;
+  provider: string;
+  context_window: number;
+  supports_tools: boolean;
+  is_default?: boolean;
+}
+
+/** A session record returned by `session.list` / `session.create`. */
+export interface Session {
+  id: string;
+  title: string;
+  archived: boolean;
+  created_at: number;
+  updated_at: number;
+  model_id: string | null;
+  message_count?: number;
+}
+
+/** A persisted chat message (also used for in-flight streaming). */
+export type MessageRole = "user" | "assistant" | "system" | "tool";
+
+export interface Message {
+  id: string;
+  role: MessageRole;
+  text: string;
+  /** True while a stream is still in progress. */
+  streaming: boolean;
+  created_at: number;
+  /** Optional tool call metadata for assistant messages. */
+  tool_call_id?: string;
+  tool_name?: string;
+  tool_args?: Record<string, unknown>;
+  /** Optional parent linkage (e.g. tool_result of a tool_call). */
+  parent_id?: string;
+}
+
+/** A scheduled job record. */
+export interface ScheduledJob {
+  id: string;
+  name: string;
+  cron: string;
+  prompt: string;
+  enabled: boolean;
+  last_run_at: number | null;
+  next_run_at: number | null;
+}
+
+/** A skill record. */
+export interface SkillInfo {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  builtin: boolean;
+}
+
+/** A sub-agent record. */
+export interface AgentInfo {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+}
+
+/** A permission rule. */
+export interface PermissionRule {
+  id: string;
+  tool: string;
+  pattern: string;
+  decision: "allow" | "deny" | "ask";
+  created_at: number;
+}
+
+/* ─────────────────────── Event payload shapes ─────────────────────── */
+
 export interface MessageChunkData {
   session_id: string;
   message_id: string;
@@ -69,7 +149,42 @@ export interface AgentStatusData {
   detail?: string;
 }
 
-/** Method-result shapes. */
+export interface ToolCallData {
+  session_id: string;
+  tool_call_id: string;
+  name: string;
+  args: Record<string, unknown>;
+  message_id: string;
+}
+
+export interface ToolResultData {
+  session_id: string;
+  tool_call_id: string;
+  result: unknown;
+  error?: string;
+  message_id: string;
+}
+
+export interface PermissionRequestData {
+  request_id: string;
+  tool: string;
+  args: Record<string, unknown>;
+}
+
+export interface PermissionResolvedData {
+  request_id: string;
+  decision: "allow" | "deny";
+}
+
+export interface TaskProgressData {
+  task_id: string;
+  progress: number; // 0..1
+  message?: string;
+  status: "running" | "done" | "error" | "cancelled";
+}
+
+/* ─────────────────────── Method-result shapes ─────────────────────── */
+
 export interface PingResult {
   pong: number;
   uptime_s: number;
@@ -86,4 +201,69 @@ export interface SendMessageResult {
   session_id: string;
   message_id: string;
   text: string;
+}
+
+export interface ListSessionsResult {
+  sessions: Session[];
+}
+
+export interface CreateSessionResult {
+  session_id: string;
+}
+
+export interface ListMessagesResult {
+  messages: Message[];
+}
+
+export interface ListModelsResult {
+  models: ModelInfo[];
+  current: string | null;
+}
+
+export interface ListSkillsResult {
+  skills: SkillInfo[];
+}
+
+export interface ListAgentsResult {
+  agents: AgentInfo[];
+}
+
+export interface ListJobsResult {
+  jobs: ScheduledJob[];
+}
+
+export interface ListRulesResult {
+  rules: PermissionRule[];
+}
+
+export interface SetModelResult {
+  current: string;
+}
+
+export interface SetRuleResult {
+  rule: PermissionRule;
+}
+
+export interface SpawnSubagentResult {
+  agent_run_id: string;
+  agent_id: string;
+}
+
+/** All known event names — used to keep listeners strongly typed. */
+export const StreamEvent = {
+  MessageChunk: "agent.message_chunk",
+  AgentStatus: "agent.status",
+  ToolCall: "agent.tool_call",
+  ToolResult: "agent.tool_result",
+  PermissionRequest: "permission.request",
+  PermissionResolved: "permission.resolved",
+  TaskProgress: "task.progress",
+} as const;
+
+export type StreamEventName = (typeof StreamEvent)[keyof typeof StreamEvent];
+
+/** Shape for the optional sidecar status event from Rust. */
+export interface SidecarEvent {
+  status: "started" | "stopped" | "error";
+  error?: string;
 }
