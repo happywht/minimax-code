@@ -71,33 +71,23 @@ def register_mobile_handlers(
         mgr = manager
         d = dao
         if mgr is None or d is None:
-            from ..mobile import get_pairing_manager, set_pairing_manager
-            from .. import mobile as _mobile
+            from ..mobile import get_mobile_dao, get_pairing_manager
 
             if mgr is None:
                 mgr = get_pairing_manager()
-            if mgr is None:
+            if d is None:
+                d = get_mobile_dao()
+            if mgr is None or d is None:
                 # Try to bring up the runtime to wire the singletons.
                 try:
                     from ..app import init_runtime
                     await init_runtime()
                 except Exception:  # pragma: no cover — defensive
                     logger.debug("init_runtime failed; trying without")
-                mgr = get_pairing_manager()
-            if d is None:
-                from ..storage.db import AsyncDatabase
-                from ..storage.dao.mobile_devices import MobileDeviceDAO
-
-                try:
-                    from ..app import get_db
-                    db = get_db()
-                except Exception:
-                    db = None
-                if db is not None:
-                    d = MobileDeviceDAO(db)
-            if mgr is not None and d is not None and getattr(mgr, "_dao", None) is None:
-                # Wire the DAO into the manager so the async path uses it.
-                mgr._dao = d  # type: ignore[attr-defined]
+                if mgr is None:
+                    mgr = get_pairing_manager()
+                if d is None:
+                    d = get_mobile_dao()
         return mgr, d
 
     async def handle_pair_start(params: Any, ctx: Context) -> None:

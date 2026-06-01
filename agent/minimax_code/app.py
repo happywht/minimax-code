@@ -88,7 +88,11 @@ async def _maybe_open_db() -> Any:
         from .storage.dao.sessions import SessionsDAO
         from .storage.dao.tasks import TaskDAO
         from .storage.dao.mobile_devices import MobileDeviceDAO
-        from .mobile import PairingManagerWithDAO, set_pairing_manager
+        from .mobile import (
+            PairingManagerWithDAO,
+            set_pairing_manager,
+            set_mobile_dao,
+        )
         from .progress import ProgressTracker
     except Exception:  # pragma: no cover — storage not yet bootstrapped
         logger.debug("storage layer not importable; running with in-memory skill registry")
@@ -110,6 +114,7 @@ async def _maybe_open_db() -> Any:
         # ``public_key`` is opaque for the PoC (Phase 2 swaps
         # in a verified cert fingerprint).
         mobile_dao = MobileDeviceDAO(db)
+        set_mobile_dao(mobile_dao)
         set_pairing_manager(PairingManagerWithDAO(mobile_dao))
         return db
     except Exception:  # pragma: no cover — defensive

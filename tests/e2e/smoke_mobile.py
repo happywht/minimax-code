@@ -33,17 +33,22 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
     failures: list[str] = []
     actual_events: list[dict] = []
 
-    def call(proc, method: str, params: dict | None = None, timeout: float = 8.0):
+    async def call(proc, method: str, params: dict | None = None, timeout: float = 8.0):
         req_id = f"req-{method}-{time.time_ns()}"
         req = {"jsonrpc": "2.0", "id": req_id, "method": method, "params": params or {}}
         proc.stdin.write((json.dumps(req) + "\n").encode("utf-8"))
-        proc.stdin_drain = proc.stdin.drain()
+        await proc.stdin.drain()
 
         deadline = time.time() + timeout
         while time.time() < deadline:
-            raw = await asyncio.wait_for(
-                proc.stdout.readline(), timeout=max(0.05, deadline - time.time())
-            )
+            try:
+                raw = await asyncio.wait_for(
+                    proc.stdout.readline(), timeout=max(0.05, deadline - time.time())
+                )
+            except asyncio.TimeoutError:
+                break
+            if not raw:
+                break
             obj = json.loads(raw.decode("utf-8").strip())
             if obj.get("id") == req_id:
                 return obj

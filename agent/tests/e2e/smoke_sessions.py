@@ -135,6 +135,7 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
         "    await db._conn.commit()\n"
         "    await db.close()\n"
         "asyncio.run(main())\n" % (agent_dir, seed_id),
+        cwd=agent_dir,
         env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,

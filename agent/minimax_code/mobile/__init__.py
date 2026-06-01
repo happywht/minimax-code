@@ -342,6 +342,7 @@ def new_pairing_session_id() -> str:
 
 
 _MANAGER: PairingManager | None = None
+_MOBILE_DAO: Any | None = None
 _MANAGER_LOCK = threading.Lock()
 
 
@@ -362,12 +363,31 @@ def set_pairing_manager(manager: PairingManager | None) -> None:
     _MANAGER = manager
 
 
+def get_mobile_dao() -> Any | None:
+    """Return the process-wide :class:`MobileDeviceDAO`, or ``None``.
+
+    Populated by :func:`minimax_code.app.register_app_handlers` once
+    the DB is open. The ``mobile.*`` IPC handlers read from this
+    singleton so they always see the same rows that
+    :meth:`PairingManagerWithDAO.confirm_pairing` wrote.
+    """
+    return _MOBILE_DAO
+
+
+def set_mobile_dao(dao: Any | None) -> None:
+    """Replace the cached DAO (test seam)."""
+    global _MOBILE_DAO
+    _MOBILE_DAO = dao
+
+
 __all__ = [
     "DEFAULT_TOKEN_TTL_SECONDS",
     "PairingError",
     "PairingManager",
     "PairingManagerWithDAO",
+    "get_mobile_dao",
     "get_pairing_manager",
     "new_pairing_session_id",
+    "set_mobile_dao",
     "set_pairing_manager",
 ]
