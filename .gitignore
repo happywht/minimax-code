@@ -6,10 +6,17 @@ node_modules/
 dist/
 build/
 *.tsbuildinfo
+web/tsconfig.tsbuildinfo
+web/tsconfig.node.tsbuildinfo
 
 # TypeScript build mode emit (from tsc -b composite)
 web/vite.config.js
 web/vite.config.d.ts
+
+# Python test/build cache
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Tauri / Rust
 src-tauri/target/
