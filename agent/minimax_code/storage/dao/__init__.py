@@ -27,6 +27,7 @@ from .agents import AgentsDAO
 from .agents import create_sync as create_agent_sync
 from .messages import MessagesDAO
 from .messages import create_sync as create_message_sync
+from .mobile_devices import MobileDeviceDAO
 from .mobile_devices import MobileDevicesDAO
 from .mobile_devices import upsert_sync as upsert_device_sync
 from .permissions import PermissionRuleDAO
@@ -46,6 +47,7 @@ __all__ = [
     # Async DAOs
     "AgentsDAO",
     "MessagesDAO",
+    "MobileDeviceDAO",
     "MobileDevicesDAO",
     "PermissionRuleDAO",
     "PermissionRulesDAO",
