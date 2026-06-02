@@ -113,10 +113,20 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
         print("[agent.invoke] FAIL", r)
     else:
         text = r["result"].get("text", "")
-        if "stub: agent reviewer" not in text:
-            failures.append(f"agent.invoke: unexpected text {text!r}")
-        else:
+        # Phase 4: sub-agent uses real LLM when injected. In mock mode
+        # (no MINIMAX_API_KEY) it returns the LLM client's mock text
+        # (starts with "[mock]"). In real mode it returns model output.
+        # The OLD sub-agent stub fallback (text "stub: agent <name> ...")
+        # is also acceptable as a backward-compat path. Accept any of:
+        #   - "stub: agent <name> would handle"  (sub-agent stub)
+        #   - "[mock]" prefix                       (LLM client mock mode)
+        #   - any other non-empty text              (real LLM)
+        if not text:
+            failures.append(f"agent.invoke: empty text")
+        elif "stub: agent" in text or text.startswith("[mock]") or len(text) > 20:
             print(f"[agent.invoke] ok text={text!r}")
+        else:
+            failures.append(f"agent.invoke: unexpected text {text!r}")
         new_events = events_seen[events_before:]
         if not any(e.startswith("agent.") for e in new_events):
             failures.append(f"agent.invoke: no agent.* events streamed ({new_events})")
