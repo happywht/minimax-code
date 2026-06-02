@@ -20,3 +20,4 @@ export { ErrorBoundary, ToastViewport, toast, toastBus } from "./ErrorBoundary";
 export type { ToastItem, ToastKind } from "./ErrorBoundary";
 export { SettingsPage } from "./SettingsPage";
 export { SkillsPanel } from "./SkillsPanel";
+export { WorkspaceSwitcher } from "./WorkspaceSwitcher";

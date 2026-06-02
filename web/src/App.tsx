@@ -1,16 +1,16 @@
 import { useEffect, useState } from "react";
+import { Settings as SettingsIcon } from "lucide-react";
 import {
   ChatPanel,
   ErrorBoundary,
   MessageInput,
-  ModelSelector,
   PermissionRequestModal,
-  PermissionToggle,
   RightPanel,
   SettingsPage,
   Sidebar,
   SkillsPanel,
   ToastViewport,
+  WorkspaceSwitcher,
   toast,
 } from "./components";
 import { ipc, isTauri, typedIPC } from "./ipc";
@@ -24,8 +24,10 @@ type AppView = "chat" | "skills" | "settings";
  *   - <Sidebar /> (left, 240px) — brand, nav, session list, user badge
  *   - <ChatPanel /> + <MessageInput /> (center) — or <SettingsPage /> / <SkillsPanel />
  *   - <RightPanel /> (right, 280px, collapsible) — progress + agent team
- * The <ModelSelector /> and <PermissionToggle /> live in the input
- * footer so they're always reachable.
+ *
+ * The mode indicator and the "always allow" / model picker controls
+ * used to live in a separate footer; they have moved inline into the
+ * floating <MessageInput /> pill, so the footer is no longer needed.
  */
 export default function App() {
   const init = useChat((s) => s.init);
@@ -61,47 +63,52 @@ export default function App() {
     <ErrorBoundary>
       <div
         data-testid="app-root"
-        className="flex h-full w-full bg-minimax-bg text-minimax-fg"
+        className="flex h-full w-full flex-col bg-minimax-bg text-minimax-fg"
       >
-        <Sidebar
-          view={view}
-          onViewChange={(v) => setView(v)}
-        />
-        <main className="relative flex flex-1 flex-col">
-          {view === "settings" ? (
-            <SettingsPage />
-          ) : view === "skills" ? (
-            <SkillsPanel />
+        <header
+          data-testid="app-topbar"
+          className="flex h-10 shrink-0 items-center justify-between border-b border-minimax-border bg-minimax-panel px-4"
+        >
+          <WorkspaceSwitcher />
+          <button
+            type="button"
+            data-testid="app-topbar-settings"
+            onClick={() => setView("settings")}
+            className="flex items-center gap-1.5 rounded-md border border-transparent px-2 py-1 text-xs text-minimax-fg/80 hover:border-minimax-border hover:text-minimax-fg"
+          >
+            <SettingsIcon size={12} className="text-minimax-muted" />
+            <span>Settings</span>
+          </button>
+        </header>
+        <div className="flex min-h-0 flex-1">
+          <Sidebar
+            view={view}
+            onViewChange={(v) => setView(v)}
+          />
+          <main className="relative flex flex-1 flex-col">
+            {view === "settings" ? (
+              <SettingsPage />
+            ) : view === "skills" ? (
+              <SkillsPanel />
           ) : (
             <>
               <ChatPanel />
-              <footer className="flex items-center justify-between gap-2 border-t border-minimax-border bg-minimax-bg/40 px-4 py-2">
-                <div className="flex items-center gap-2">
-                  <PermissionToggle />
-                  <span
-                    data-testid="mode-indicator"
-                    className="rounded-md border border-minimax-border bg-minimax-panel px-2 py-0.5 text-[10px] text-minimax-muted"
-                  >
-                    {isTauri() ? "Tauri shell" : "Browser / mock"}
-                  </span>
-                </div>
-                <ModelSelector />
-              </footer>
               <MessageInput />
             </>
           )}
-        </main>
-        <RightPanel />
-        <ToastViewport />
-        <PermissionRequestModal />
-        {!agentReady && view === "chat" && (
-          <div
-            data-testid="agent-not-ready"
-            className="pointer-events-none fixed bottom-2 right-2 rounded bg-minimax-panel/80 px-2 py-1 text-xs text-minimax-muted"
-          >
-            {isTauri() ? "connecting to agent…" : "browser-only mode (no Tauri shell) — IPC will be mocked"}
-          </div>
-        )}
+          </main>
+          <RightPanel />
+          <ToastViewport />
+          <PermissionRequestModal />
+          {!agentReady && view === "chat" && (
+            <div
+              data-testid="agent-not-ready"
+              className="pointer-events-none fixed bottom-2 right-2 rounded bg-minimax-panel/80 px-2 py-1 text-xs text-minimax-muted"
+            >
+              {isTauri() ? "connecting to agent…" : "browser-only mode (no Tauri shell) — IPC will be mocked"}
+            </div>
+          )}
+        </div>
       </div>
     </ErrorBoundary>
   );
