@@ -21,7 +21,7 @@ export interface PermissionState {
 
   refresh: () => Promise<void>;
   setAlwaysAllow: (v: boolean) => void;
-  upsertRule: (rule: Omit<PermissionRule, "id" | "created_at"> & { id?: string }) => Promise<void>;
+  upsertRule: (rule: Omit<PermissionRule, "id" | "created_at"> & { id?: string }) => Promise<PermissionRuleEntry | null>;
   removeRule: (id: string) => Promise<void>;
 }
 
@@ -54,9 +54,11 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
           ? [...existing, r.rule]
           : existing.map((x) => (x.id === r.rule.id ? r.rule : x));
       set({ rules: next });
+      return r.rule;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       toast.error("Failed to save rule", message);
+      return null;
     }
   },
 

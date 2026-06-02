@@ -13,6 +13,7 @@ import {
   History,
   Plug,
   Plus,
+  Settings as SettingsIcon,
   Sparkles,
   Wrench,
 } from "lucide-react";
@@ -23,6 +24,10 @@ import { useSessionStore, type SessionFilter } from "../stores";
 export interface SidebarProps {
   testId?: string;
   onMobileClick?: () => void;
+  /** Current top-level view — when "settings" the Settings nav is highlighted. */
+  view?: "chat" | "settings";
+  /** Toggle between chat and settings views. */
+  onViewChange?: (v: "chat" | "settings") => void;
 }
 
 const NAV_ITEMS: Array<{
@@ -38,7 +43,12 @@ const NAV_ITEMS: Array<{
   { id: "archived", label: "已归档", icon: <Plug size={14} />, group: "history" },
 ];
 
-export function Sidebar({ testId = "sidebar", onMobileClick }: SidebarProps): JSX.Element {
+export function Sidebar({
+  testId = "sidebar",
+  onMobileClick,
+  view = "chat",
+  onViewChange,
+}: SidebarProps): JSX.Element {
   const filter = useSessionStore((s) => s.filter);
   const setFilter = useSessionStore((s) => s.setFilter);
   const sessions = useSessionStore((s) => s.sessions);
@@ -101,11 +111,23 @@ export function Sidebar({ testId = "sidebar", onMobileClick }: SidebarProps): JS
             key={n.id}
             icon={n.icon}
             label={n.label}
-            selected={filter === n.id}
-            onClick={() => setFilter(n.id as SessionFilter)}
+            selected={view === "chat" && filter === n.id}
+            onClick={() => {
+              onViewChange?.("chat");
+              setFilter(n.id as SessionFilter);
+            }}
             testId={`sidebar-nav-${n.id}`}
           />
         ))}
+        {onViewChange && (
+          <NavItem
+            icon={<SettingsIcon size={14} />}
+            label="设置"
+            selected={view === "settings"}
+            onClick={() => onViewChange("settings")}
+            testId="sidebar-nav-settings"
+          />
+        )}
       </nav>
 
       {/* Session list (history) */}

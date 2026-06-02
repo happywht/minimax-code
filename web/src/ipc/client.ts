@@ -324,11 +324,14 @@ export interface TypedIPC {
   disableSkill(skillId: string): Promise<{ ok: true }>;
   invokeSkill(skillId: string, args: unknown): Promise<{ ok: true; output: unknown }>;
 
-  // scheduler
+  // scheduler — wire = ``schedule.*`` (per handlers_scheduled.py).
+  // The JS API is friendlier (cron / prompt) than the wire (cron_expr / payload)
+  // and the binding translates at the boundary.
   listJobs(): Promise<ListJobsResult>;
   createJob(opts: { name: string; cron: string; prompt: string }): Promise<{ job: ScheduledJob }>;
   deleteJob(jobId: string): Promise<{ ok: true }>;
-  toggleJob(jobId: string, enabled: boolean): Promise<{ ok: true }>;
+  enableJob(jobId: string): Promise<{ job: ScheduledJob }>;
+  disableJob(jobId: string): Promise<{ job: ScheduledJob }>;
 
   // agent (multi-agent)
   listAgents(): Promise<ListAgentsResult>;
@@ -385,16 +388,20 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         args,
       }),
 
-    listJobs: () => client.request<ListJobsResult>("scheduler.list_jobs", {}),
+    listJobs: () => client.request<ListJobsResult>("schedule.list", {}),
     createJob: (opts) =>
-      client.request<{ job: ScheduledJob }>("scheduler.create_job", opts),
-    deleteJob: (jid) =>
-      client.request<{ ok: true }>("scheduler.delete_job", { job_id: jid }),
-    toggleJob: (jid, enabled) =>
-      client.request<{ ok: true }>("scheduler.toggle_job", {
-        job_id: jid,
-        enabled,
+      client.request<{ job: ScheduledJob }>("schedule.create", {
+        name: opts.name,
+        // Wire names differ from the JS API for historical reasons.
+        cron_expr: opts.cron,
+        payload: { prompt: opts.prompt },
       }),
+    deleteJob: (jid) =>
+      client.request<{ ok: true }>("schedule.delete", { job_id: jid }),
+    enableJob: (jid) =>
+      client.request<{ job: ScheduledJob }>("schedule.enable", { job_id: jid }),
+    disableJob: (jid) =>
+      client.request<{ job: ScheduledJob }>("schedule.disable", { job_id: jid }),
 
     listAgents: () => client.request<ListAgentsResult>("agent.list_agents", {}),
     spawnSubagent: (opts) =>
@@ -601,8 +608,7 @@ function mockHandle(
     case "agent.cancel":
     case "skill.enable":
     case "skill.disable":
-    case "scheduler.delete_job":
-    case "scheduler.toggle_job":
+    case "schedule.delete":
     case "permission.delete_rule":
     case "mobile.send":
       return { ok: true };
@@ -622,22 +628,36 @@ function mockHandle(
     case "skill.invoke":
       return { ok: true, output: { skill: (params as { skill_id: string }).skill_id } };
 
-    case "scheduler.list_jobs":
+    case "schedule.list":
       return { jobs: mockJobs };
 
-    case "scheduler.create_job": {
-      const p = params as { name: string; cron: string; prompt: string };
+    case "schedule.create": {
+      // The wire speaks ``cron_expr`` + ``payload``; we accept either
+      // (caller may use either) and normalise to the ScheduledJob
+      // shape the UI consumes (``cron`` + ``prompt``).
+      const p = params as
+        | { name: string; cron_expr?: string; cron?: string; payload?: { prompt?: string }; prompt?: string };
+      const cron = p.cron_expr ?? p.cron ?? "";
+      const prompt = p.prompt ?? p.payload?.prompt ?? "";
       const job: ScheduledJob = {
         id: `job_${Math.random().toString(36).slice(2, 10)}`,
         name: p.name,
-        cron: p.cron,
-        prompt: p.prompt,
+        cron,
+        prompt,
         enabled: true,
         last_run_at: null,
         next_run_at: null,
       };
       mockJobs.push(job);
       return { job };
+    }
+
+    case "schedule.enable":
+    case "schedule.disable": {
+      const p = params as { job_id: string };
+      const job = mockJobs.find((j) => j.id === p.job_id);
+      if (job) job.enabled = method === "schedule.enable";
+      return { job: job ?? null };
     }
 
     case "agent.list_agents":

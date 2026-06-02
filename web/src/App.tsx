@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   ChatPanel,
   ErrorBoundary,
@@ -6,6 +6,7 @@ import {
   ModelSelector,
   PermissionToggle,
   ProgressPanel,
+  SettingsPage,
   Sidebar,
   ToastViewport,
   toast,
@@ -13,11 +14,13 @@ import {
 import { ipc, isTauri, typedIPC } from "./ipc";
 import { useChat, useModelStore, usePermissionStore, useSessionStore } from "./stores";
 
+type AppView = "chat" | "settings";
+
 /**
  * Top-level layout. Bootstraps stores on mount, then renders the
  * three-pane shell:
  *   - <Sidebar /> (left)
- *   - <ChatPanel /> + <MessageInput /> (center)
+ *   - <ChatPanel /> + <MessageInput /> (center) — or <SettingsPage />
  *   - <ProgressPanel /> (right, floating)
  * The <ModelSelector /> and <PermissionToggle /> live in the input
  * footer so they're always reachable.
@@ -28,6 +31,7 @@ export default function App() {
   const refreshModels = useModelStore((s) => s.refresh);
   const refreshSessions = useSessionStore((s) => s.refresh);
   const refreshRules = usePermissionStore((s) => s.refresh);
+  const [view, setView] = useState<AppView>("chat");
 
   useEffect(() => {
     (async () => {
@@ -57,26 +61,35 @@ export default function App() {
         data-testid="app-root"
         className="flex h-full w-full bg-minimax-bg text-minimax-fg"
       >
-        <Sidebar />
+        <Sidebar
+          view={view}
+          onViewChange={setView}
+        />
         <main className="relative flex flex-1 flex-col">
-          <ProgressPanel />
-          <ChatPanel />
-          <footer className="flex items-center justify-between gap-2 border-t border-minimax-border bg-minimax-bg/40 px-4 py-2">
-            <div className="flex items-center gap-2">
-              <PermissionToggle />
-              <span
-                data-testid="mode-indicator"
-                className="rounded-md border border-minimax-border bg-minimax-panel px-2 py-0.5 text-[10px] text-minimax-muted"
-              >
-                {isTauri() ? "Tauri shell" : "Browser / mock"}
-              </span>
-            </div>
-            <ModelSelector />
-          </footer>
-          <MessageInput />
+          {view === "settings" ? (
+            <SettingsPage />
+          ) : (
+            <>
+              <ProgressPanel />
+              <ChatPanel />
+              <footer className="flex items-center justify-between gap-2 border-t border-minimax-border bg-minimax-bg/40 px-4 py-2">
+                <div className="flex items-center gap-2">
+                  <PermissionToggle />
+                  <span
+                    data-testid="mode-indicator"
+                    className="rounded-md border border-minimax-border bg-minimax-panel px-2 py-0.5 text-[10px] text-minimax-muted"
+                  >
+                    {isTauri() ? "Tauri shell" : "Browser / mock"}
+                  </span>
+                </div>
+                <ModelSelector />
+              </footer>
+              <MessageInput />
+            </>
+          )}
         </main>
         <ToastViewport />
-        {!agentReady && (
+        {!agentReady && view === "chat" && (
           <div
             data-testid="agent-not-ready"
             className="pointer-events-none fixed bottom-2 right-2 rounded bg-minimax-panel/80 px-2 py-1 text-xs text-minimax-muted"

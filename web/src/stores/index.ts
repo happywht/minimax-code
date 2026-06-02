@@ -27,3 +27,7 @@ export {
   type TaskProgressEntry,
   type TaskStatus,
 } from "./taskStore";
+export {
+  useScheduleStore,
+  type ScheduledJobEntry,
+} from "./scheduleStore";

@@ -16,3 +16,4 @@ export { PermissionToggle } from "./PermissionToggle";
 export { UserBadge } from "./UserBadge";
 export { ErrorBoundary, ToastViewport, toast, toastBus } from "./ErrorBoundary";
 export type { ToastItem, ToastKind } from "./ErrorBoundary";
+export { SettingsPage } from "./SettingsPage";
