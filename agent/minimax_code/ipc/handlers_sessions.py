@@ -18,6 +18,7 @@ by :mod:`handlers_scheduled` and :mod:`handlers_tasks`.
 Schema
 ------
 
+``session.create``   -> ``{ session_id, title, created_at }``
 ``session.list``     -> ``{ sessions: [...], total: N }``
 ``session.get``      -> ``{ session: {...}, recent_messages: [...] }``
 ``session.archive``  -> ``{ ok: true, session: {...} }``
@@ -28,12 +29,21 @@ Schema
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import datetime
 from typing import Any
 
 from .protocol import INTERNAL_ERROR, INVALID_PARAMS
 from .server import Context
 
 logger = logging.getLogger(__name__)
+
+
+# Default title used when the frontend calls ``session.create``
+# without supplying one (e.g. the "new task" button in the
+# sidebar). Format matches what the UI shows before the user
+# types a real prompt.
+_DEFAULT_TITLE_FMT = "New chat — %Y-%m-%d %H:%M"
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +78,50 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
         :func:`minimax_code.app.get_sessions_dao` on each call.
     """
     dao_factory = _make_dao_factory(dao)
+
+    # ----------------------------------------------------------------- create
+
+    async def handle_session_create(params: Any, ctx: Context) -> None:
+        try:
+            sess_dao = await dao_factory()
+            p = params or {}
+            # Title is optional — the "new task" button in the
+            # sidebar calls us with no title at all and we want a
+            # sensible default like "New chat — 2026-06-02 15:30"
+            # so the user immediately sees *something* in the
+            # history pane. An explicit empty string is treated
+            # the same as omitted — there's no value in saving
+            # a session with a blank title that the UI would
+            # then have to special-case.
+            title = p.get("title")
+            if title is None or (isinstance(title, str) and not title.strip()):
+                title = datetime.now().strftime(_DEFAULT_TITLE_FMT)
+            elif not isinstance(title, str):
+                raise _HandlerError(
+                    INVALID_PARAMS, "title must be a string if provided"
+                )
+            # Generate a new id; we use the same ``ses_`` prefix
+            # convention the chat send_message flow uses so the
+            # id format stays consistent across the codebase.
+            new_id = f"ses_{uuid.uuid4().hex[:8]}"
+            row = await sess_dao.create(id=new_id, title=title)
+            # ``row`` is the persisted dict; echo back the
+            # subset the frontend's CreateSessionResult wants
+            # plus a human-readable created_at for the UI.
+            await ctx.reply(
+                {
+                    "session_id": row["id"],
+                    "title": row["title"],
+                    "created_at": row["created_at"],
+                }
+            )
+        except _HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.exception("session.create failed")
+            await ctx.reply_error(
+                INTERNAL_ERROR, f"session.create failed: {exc}"
+            )
 
     # ------------------------------------------------------------------ list
 
@@ -210,6 +264,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 INTERNAL_ERROR, f"session.delete failed: {exc}"
             )
 
+    server.register("session.create", handle_session_create)
     server.register("session.list", handle_session_list)
     server.register("session.get", handle_session_get)
     server.register("session.archive", handle_session_archive)

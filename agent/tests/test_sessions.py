@@ -301,6 +301,86 @@ async def test_concurrent_archive_unarchive_does_not_corrupt(
 
 
 # ---------------------------------------------------------------------------
+# IPC handler round-trip — session.create
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_session_ipc_create_returns_id(
+    sessions_dao: SessionsDAO,
+) -> None:
+    """``session.create`` with no params returns a ``session_id`` and
+    synthesizes a default title like ``New chat — 2026-06-02 15:30``.
+
+    The default title is generated from ``datetime.now()`` so we
+    only assert the ``New chat —`` prefix is present and the
+    row is persisted — not the exact timestamp.
+    """
+    set_sessions_dao(sessions_dao)
+    try:
+        client = IPCClient()
+        reply = await client.request("session.create", {})
+        assert "session_id" in reply
+        assert reply["session_id"], "session_id must be a non-empty string"
+        assert reply["session_id"].startswith("ses_"), (
+            f"session_id should follow the ses_<hex> convention, "
+            f"got {reply['session_id']!r}"
+        )
+        # The reply echoes the title and created_at the UI displays.
+        assert reply["title"].startswith("New chat —"), (
+            f"default title should be 'New chat — <timestamp>', "
+            f"got {reply['title']!r}"
+        )
+        assert reply["created_at"], "created_at should be a non-empty string"
+        # The row is actually persisted: session.get must return it.
+        fetched = await client.request(
+            "session.get", {"session_id": reply["session_id"]}
+        )
+        assert fetched["session"]["id"] == reply["session_id"]
+        assert fetched["session"]["title"] == reply["title"]
+    finally:
+        set_sessions_dao(None)
+
+
+@pytest.mark.asyncio
+async def test_session_ipc_create_with_title(
+    sessions_dao: SessionsDAO,
+) -> None:
+    """``session.create { title: 'foo' }`` uses the supplied title
+    verbatim and the new row is immediately visible in
+    ``session.list``.
+
+    This is the core regression we're guarding: the sidebar's
+    "new task" button called ``session.create`` (or used to be
+    wired to it) and the row should appear in the history list
+    without a refresh. The follow-up ``session.list`` call
+    exercises that path end-to-end.
+    """
+    set_sessions_dao(sessions_dao)
+    try:
+        client = IPCClient()
+        reply = await client.request(
+            "session.create", {"title": "smoke-test"}
+        )
+        assert reply["title"] == "smoke-test"
+        new_id = reply["session_id"]
+
+        # session.list must see the row without a manual refresh.
+        list_reply = await client.request("session.list", {})
+        ids = [s["id"] for s in list_reply["sessions"]]
+        assert new_id in ids, (
+            f"newly created session {new_id!r} should be visible in "
+            f"session.list, got {ids}"
+        )
+        # And the listed row's title matches what we sent.
+        created_row = next(s for s in list_reply["sessions"] if s["id"] == new_id)
+        assert created_row["title"] == "smoke-test"
+        assert created_row["archived"] is False
+    finally:
+        set_sessions_dao(None)
+
+
+# ---------------------------------------------------------------------------
 # IPC handler round-trip — session.list / get / archive / unarchive / delete
 # ---------------------------------------------------------------------------
 

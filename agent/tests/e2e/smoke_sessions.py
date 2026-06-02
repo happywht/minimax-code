@@ -4,19 +4,24 @@ This is a black-box subprocess test. It:
 
 1. Spawns the agent via ``python -m minimax_code`` (the same
    entry point Tauri uses).
-2. Calls ``session.list`` to discover the existing sessions.
-3. Picks the first session id, calls ``session.get`` to confirm
+2. Calls ``session.create { title: 'smoke-test' }`` and
+   confirms the row shows up in the very next ``session.list``
+   (this is the sidebar "new task" button path).
+3. Calls ``session.list`` to discover the existing sessions.
+4. Picks the first session id, calls ``session.get`` to confirm
    the recent_messages field is present (possibly empty).
-4. Calls ``session.archive`` to archive it, then
+5. Calls ``session.archive`` to archive it, then
    ``session.list { archived: True }`` to confirm it shows up.
-5. Calls ``session.unarchive`` to restore it, then
+6. Calls ``session.unarchive`` to restore it, then
    ``session.list { archived: False }`` to confirm it's back.
-6. Shuts the agent down cleanly.
+7. Shuts the agent down cleanly.
 
 Pass criteria
 -------------
 
 * Every JSON-RPC call returns without an error envelope.
+* ``session.create`` returns a ``session_id`` string and the
+  row is immediately visible in ``session.list``.
 * ``session.list`` returns at least 0 sessions — the agent's
   default DB is populated on first run by the test fixture, so
   we expect at least one.
@@ -111,6 +116,54 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
     if "error" in r:
         failures.append(f"status call failed: {r['error']}")
     print("[status]", "ok" if "result" in r else f"FAIL: {r.get('error')}")
+
+    # 1b. session.create — the sidebar "new task" button goes
+    # through this. It must return a session_id and the row must
+    # show up in the very next session.list call (the UI
+    # optimistically prepends it; we want to confirm the row is
+    # actually persisted, not just synthesised in the client).
+    r = await call("session.create", {"title": "smoke-test"})
+    if "error" in r:
+        failures.append(f"session.create failed: {r['error']}")
+        print("[session.create] FAIL", r)
+        return _finish(proc, failures)
+    created_id = r["result"].get("session_id")
+    created_title = r["result"].get("title")
+    if not created_id or not isinstance(created_id, str):
+        failures.append(
+            f"session.create: missing or bad session_id, got {r['result']!r}"
+        )
+        return _finish(proc, failures)
+    if created_title != "smoke-test":
+        failures.append(
+            f"session.create: expected title='smoke-test', got {created_title!r}"
+        )
+    print(
+        f"[session.create] ok, session_id={created_id!r} "
+        f"title={created_title!r} created_at={r['result'].get('created_at')!r}"
+    )
+
+    # 1c. The new row must be visible in the very next
+    # session.list (no manual refresh needed). This is the
+    # exact code path the sidebar's "session list re-render
+    # after create" use case hits.
+    r = await call("session.list", {})
+    if "error" in r:
+        failures.append(
+            f"session.list (post-create) failed: {r['error']}"
+        )
+    else:
+        ids = [s["id"] for s in r["result"]["sessions"]]
+        if created_id not in ids:
+            failures.append(
+                f"session.create: created id {created_id!r} not visible "
+                f"in session.list, got {ids}"
+            )
+        else:
+            print(
+                f"[session.list post-create] ok, total={r['result']['total']} "
+                f"new row present"
+            )
 
     # 2. Seed at least one session so ``session.list`` is non-empty.
     # We do this through a separate small Python process that opens
@@ -270,6 +323,7 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
         for f in failures:
             print(f"  FAIL: {f}")
         return 1
+    print("  PASS: session.create returns session_id and persists the row")
     print("  PASS: session.list / get / archive / unarchive round-tripped")
     print("  PASS: archived-list filter and active-list filter agree with the row state")
     return 0
