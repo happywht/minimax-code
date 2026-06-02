@@ -273,18 +273,15 @@ function PermissionsTab(): JSX.Element {
             data-testid="settings-permission-add"
             disabled={!draftPattern.trim() || !draftTool.trim()}
             onClick={async () => {
-              const pattern = draftPattern.trim();
-              const tool = draftTool.trim();
-              await upsertRule({ tool, pattern, decision: draftDecision });
-              // ``upsertRule`` swallows errors and toasts internally;
-              // we only clear the input on the success path (the
-              // store's local rules list is the source of truth).
-              if (usePermissionStore.getState().rules.some(
-                (r) => r.tool === tool && r.pattern === pattern,
-              )) {
+              const created = await upsertRule({
+                tool: draftTool.trim(),
+                pattern: draftPattern.trim(),
+                decision: draftDecision,
+              });
+              if (created) {
                 toast.success(
                   "Rule saved",
-                  `${tool} ${pattern} → ${draftDecision}`,
+                  `${draftTool} ${draftPattern} → ${draftDecision}`,
                 );
                 setDraftPattern("");
               }
