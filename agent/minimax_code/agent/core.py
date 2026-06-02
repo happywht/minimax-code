@@ -48,6 +48,42 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Permission gating
+# ---------------------------------------------------------------------------
+#
+# The agent loop is wired with two optional collaborators:
+#
+# * ``permission_store`` — a :class:`~minimax_code.permissions.PermissionStore`
+#   that knows the current rule set (action=allow/deny/ask per tool).
+# * ``permission_gater`` — a :class:`~minimax_code.perm_consent.PermissionGater`
+#   that emits the ``permission.request`` event and blocks until the
+#   frontend POSTs ``permission.resolve``.
+#
+# When ``permission_gater`` is None the loop falls back to the store's
+# ``is_allowed`` decision (default-allow for unconfigured tools), which
+# is the behaviour every test that didn't opt in continues to see.
+
+
+def _check_rule(
+    store: Any,
+    tool_name: str,
+) -> str | None:
+    """Return the configured action for ``tool_name`` (or ``None``).
+
+    The result is one of ``"allow"`` / ``"deny"`` / ``"ask"`` /
+    ``None`` (no rule). The :class:`PermissionStore` already returns
+    ``True`` for unconfigured tools, but here we need the raw action
+    string so we can distinguish "ask" from the default-allow path.
+    """
+    if store is None:
+        return None
+    rule = store.lookup(tool_name)
+    if not rule:
+        return None
+    return str(rule.get("action") or "").strip().lower() or None
+
+
+# ---------------------------------------------------------------------------
 # Callback types
 # ---------------------------------------------------------------------------
 
@@ -165,6 +201,8 @@ class AgentCore:
         config: AgentConfig | None = None,
         history_provider: Callable[[str], Awaitable[Sequence[Message]]] | None = None,
         persist_message: Callable[[str, Message], Awaitable[None]] | None = None,
+        permission_store: Any | None = None,
+        permission_gater: Any | None = None,
     ) -> None:
         self.llm = llm or MiniMaxClient()
         self.registry = registry or get_default_registry()
@@ -172,6 +210,8 @@ class AgentCore:
         self._history_provider = history_provider
         self._persist_message = persist_message
         self._cancel = asyncio.Event()
+        self._permission_store = permission_store
+        self._permission_gater = permission_gater
         self.on_chunk: ChunkCallback | None = None
         self.on_tool_call: ToolCallCallback | None = None
         self.on_tool_result: ToolResultCallback | None = None
@@ -330,7 +370,24 @@ class AgentCore:
         return _assemble_chunks(chunks, model=self.config.model)
 
     async def _dispatch_tool(self, call: dict[str, Any]) -> ToolResult:
-        """Execute one tool call and emit status / result events."""
+        """Execute one tool call and emit status / result events.
+
+        Permission gating
+        -----------------
+
+        Before invoking the tool, the dispatcher consults
+        :attr:`_permission_store` (if set) for a matching rule. The
+        resolved action drives three branches:
+
+        * ``"allow"`` — proceed.
+        * ``"deny"`` — return a failed :class:`ToolResult` without
+          running the tool.
+        * ``"ask"`` (or no rule when a gater is wired) — block on
+          :attr:`_permission_gater.request_consent`, which emits
+          ``permission.request`` and waits for ``permission.resolve``.
+        * no rule, no gater — proceed (the default-allow path
+          preserves the behaviour every non-opted-in test sees).
+        """
         name = call.get("name") or (call.get("function") or {}).get("name", "")
         raw_args = call.get("arguments")
         if raw_args is None and isinstance(call.get("function"), dict):
@@ -349,6 +406,38 @@ class AgentCore:
 
         tool_call_id = call.get("id") or f"call_{uuid.uuid4().hex[:8]}"
         call_log = {**call, "id": tool_call_id, "name": name, "args": args}
+
+        # 1. Permission check (configurable, default-allow).
+        action = _check_rule(self._permission_store, name)
+        if action == "deny":
+            denied = ToolResult.fail(
+                f"tool '{name}' denied by permission policy (action=deny)",
+                output={"permission": "deny", "tool": name, "args": args},
+                permission="deny",
+            )
+            await self._maybe_emit_tool_call(call_log, None)
+            await self._maybe_emit_tool_result(call_log, denied)
+            await self._emit_status(
+                "permission_denied", {"tool": name, "tool_call_id": tool_call_id}
+            )
+            return denied
+        if action == "ask" and self._permission_gater is not None:
+            await self._maybe_emit_tool_call(call_log, None)
+            allowed = await self._permission_gater.request_consent(
+                tool=name, args=args
+            )
+            if not allowed:
+                denied = ToolResult.fail(
+                    f"tool '{name}' denied by user",
+                    output={"permission": "user_deny", "tool": name, "args": args},
+                    permission="user_deny",
+                )
+                await self._maybe_emit_tool_result(call_log, denied)
+                await self._emit_status(
+                    "permission_denied",
+                    {"tool": name, "tool_call_id": tool_call_id, "by": "user"},
+                )
+                return denied
 
         await self._maybe_emit_tool_call(call_log, None)
         await self._emit_status("tool_running", {"tool": name})

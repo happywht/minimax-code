@@ -4,6 +4,7 @@ import {
   ErrorBoundary,
   MessageInput,
   ModelSelector,
+  PermissionRequestModal,
   PermissionToggle,
   ProgressPanel,
   SettingsPage,
@@ -89,6 +90,7 @@ export default function App() {
           )}
         </main>
         <ToastViewport />
+        <PermissionRequestModal />
         {!agentReady && view === "chat" && (
           <div
             data-testid="agent-not-ready"

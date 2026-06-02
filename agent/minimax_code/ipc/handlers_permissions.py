@@ -14,6 +14,10 @@ Endpoints
 ``permission.set``     -> ``{"rule": {...}}``         (upsert)
 ``permission.delete``  -> ``{"ok": true, "deleted": N}``
 ``permission.check``   -> ``{"allowed": bool, "action": str | null}``
+``permission.resolve`` -> ``{"ok": true, "request_id": "..."}``
+                          (paired with the ``permission.request`` event
+                          emitted by :class:`~.perm_consent.PermissionGater`
+                          when a tool is gated)
 """
 
 from __future__ import annotations
@@ -56,6 +60,61 @@ _STORE_ATTR = "_permission_store"
 _LOCK_ATTR = "_permission_store_lock"
 
 
+async def _ensure_permission_store(server: Any) -> Any:
+    """Resolve the cached :class:`PermissionStore` (build it on first call).
+
+    Public helper — the ``handle_agent_send_message`` flow in
+    :mod:`.builtins` calls this so the agent loop can gate tool
+    invocations against the same store the IPC handlers expose.
+    The factory is idempotent and async-safe (guarded by
+    ``server._permission_store_lock``).
+    """
+    existing = getattr(server, _STORE_ATTR, None)
+    if existing is not None:
+        return existing
+    lock = getattr(server, _LOCK_ATTR, None)
+    if lock is None:
+        lock = asyncio.Lock()
+        setattr(server, _LOCK_ATTR, lock)
+    async with lock:
+        existing = getattr(server, _STORE_ATTR, None)
+        if existing is not None:
+            return existing
+        from ..storage.dao.permissions import PermissionRuleDAO
+        from ..storage.db import AsyncDatabase, default_database_path
+        from ..permissions import PermissionStore
+
+        # Honour the same env-var opt-out as app._maybe_open_db so
+        # tests / smoke runs can run with storage disabled.
+        if os.environ.get("MINIMAX_CODE_NO_DB") == "1":
+            raise _HandlerError(
+                STORAGE_ERROR,
+                "storage is disabled (MINIMAX_CODE_NO_DB=1); permission handlers need a DB",
+            )
+        db = AsyncDatabase(default_database_path())
+        try:
+            await db.connect()
+            await db.migrate()
+        except Exception as exc:
+            logger.exception("failed to open storage for permission handlers")
+            raise _HandlerError(
+                STORAGE_ERROR,
+                f"failed to open storage: {exc}",
+            ) from exc
+        dao = PermissionRuleDAO(db)
+        store_obj = PermissionStore(dao)
+        try:
+            await store_obj.warm()
+        except Exception as exc:
+            logger.exception("permission store warm() failed")
+            raise _HandlerError(
+                INTERNAL_ERROR,
+                f"permission store warm failed: {exc}",
+            ) from exc
+        setattr(server, _STORE_ATTR, store_obj)
+        return store_obj
+
+
 def register_permission_handlers(
     server: Any,
     store: Any = None,
@@ -80,50 +139,7 @@ def register_permission_handlers(
         setattr(server, _LOCK_ATTR, asyncio.Lock())
 
     async def _ensure_store() -> Any:
-        existing = getattr(server, _STORE_ATTR, None)
-        if existing is not None:
-            return existing
-        lock = getattr(server, _LOCK_ATTR, None)
-        if lock is None:
-            lock = asyncio.Lock()
-            setattr(server, _LOCK_ATTR, lock)
-        async with lock:
-            existing = getattr(server, _STORE_ATTR, None)
-            if existing is not None:
-                return existing
-            from ..storage.dao.permissions import PermissionRuleDAO
-            from ..storage.db import AsyncDatabase, default_database_path
-            from ..permissions import PermissionStore
-
-            # Honour the same env-var opt-out as app._maybe_open_db so
-            # tests / smoke runs can run with storage disabled.
-            if os.environ.get("MINIMAX_CODE_NO_DB") == "1":
-                raise _HandlerError(
-                    STORAGE_ERROR,
-                    "storage is disabled (MINIMAX_CODE_NO_DB=1); permission handlers need a DB",
-                )
-            db = AsyncDatabase(default_database_path())
-            try:
-                await db.connect()
-                await db.migrate()
-            except Exception as exc:
-                logger.exception("failed to open storage for permission handlers")
-                raise _HandlerError(
-                    STORAGE_ERROR,
-                    f"failed to open storage: {exc}",
-                ) from exc
-            dao = PermissionRuleDAO(db)
-            store_obj = PermissionStore(dao)
-            try:
-                await store_obj.warm()
-            except Exception as exc:
-                logger.exception("permission store warm() failed")
-                raise _HandlerError(
-                    INTERNAL_ERROR,
-                    f"permission store warm failed: {exc}",
-                ) from exc
-            setattr(server, _STORE_ATTR, store_obj)
-            return store_obj
+        return await _ensure_permission_store(server)
 
     # ---- handlers ---------------------------------------------------------
 
@@ -205,11 +221,88 @@ def register_permission_handlers(
             logger.exception("permission.check failed")
             await ctx.reply_error(INTERNAL_ERROR, f"permission.check failed: {exc}")
 
+    async def handle_permission_resolve(params: Any, ctx: Context) -> None:
+        """Resolve a pending ``permission.request`` event.
+
+        The frontend's permission modal POSTs this when the user
+        clicks 允许/拒绝. The handler delegates to the active
+        :class:`~.perm_consent.PermissionGater` stashed on the
+        server by :func:`minimax_code.ipc.builtins.handle_agent_send_message`.
+
+        Params
+        ------
+        ``request_id``: opaque id from the ``permission.request`` event.
+        ``decision``:   ``"allow"`` or ``"deny"`` (or boolean true/false).
+
+        Reply
+        -----
+        ``{"ok": true, "request_id": "..."}`` — ``ok=false`` is
+        only set on the *error* envelope (unknown request id,
+        missing param, etc.) so the frontend can distinguish
+        "I made the decision" from "the decision was lost".
+        """
+        try:
+            _check_params(params, expected_keys={"request_id", "decision"})
+            request_id = str(params["request_id"]).strip()
+            if not request_id:
+                raise _HandlerError(INVALID_PARAMS, "request_id must be a non-empty string")
+            decision_raw = params["decision"]
+            if isinstance(decision_raw, bool):
+                decision = decision_raw
+            else:
+                decision_str = str(decision_raw).strip().lower()
+                if decision_str in ("allow", "yes", "true", "1"):
+                    decision = True
+                elif decision_str in ("deny", "no", "false", "0"):
+                    decision = False
+                else:
+                    raise _HandlerError(
+                        INVALID_PARAMS,
+                        f"decision must be 'allow' or 'deny' (got {decision_raw!r})",
+                    )
+            gater = getattr(ctx.server, "_permission_gater", None)
+            if gater is None:
+                # No gater → the agent loop isn't waiting on a
+                # consent decision. Treat as a no-op success so the
+                # frontend's modal can close cleanly even after a
+                # race (e.g. user clicked after the agent gave up).
+                await ctx.reply(
+                    {
+                        "ok": False,
+                        "request_id": request_id,
+                        "reason": "no active consent gater",
+                    }
+                )
+                return
+            ok = gater.resolve(request_id, decision)
+            if not ok:
+                await ctx.reply(
+                    {
+                        "ok": False,
+                        "request_id": request_id,
+                        "reason": "unknown or already-resolved request_id",
+                    }
+                )
+                return
+            await ctx.reply(
+                {
+                    "ok": True,
+                    "request_id": request_id,
+                    "decision": "allow" if decision else "deny",
+                }
+            )
+        except _HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.exception("permission.resolve failed")
+            await ctx.reply_error(INTERNAL_ERROR, f"permission.resolve failed: {exc}")
+
     server.register("permission.list", handle_permission_list)
     server.register("permission.get", handle_permission_get)
     server.register("permission.set", handle_permission_set)
     server.register("permission.delete", handle_permission_delete)
     server.register("permission.check", handle_permission_check)
+    server.register("permission.resolve", handle_permission_resolve)
 
 
 # ---------------------------------------------------------------------------
@@ -250,4 +343,4 @@ def _check_params(params: Any, *, expected_keys: set[str]) -> None:
             )
 
 
-__all__ = ["register_permission_handlers"]
+__all__ = ["register_permission_handlers", "_ensure_permission_store"]

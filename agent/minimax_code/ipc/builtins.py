@@ -191,11 +191,37 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     #    in 16-character chunks. This keeps the smoke test off
     #    the network.
     llm = MiniMaxClient(api_key="")
+
+    # 3a. Resolve the permission store (lazily built by the
+    #     ``permission.*`` handlers) and create a per-request
+    #     :class:`PermissionGater` so the agent loop actually
+    #     pauses for ``ask`` rules instead of silently
+    #     default-allowing them.
+    perm_store = None
+    try:
+        from ..ipc.handlers_permissions import _ensure_permission_store
+
+        perm_store = await _ensure_permission_store(ctx.server)
+    except Exception:
+        logger.debug("permission store unavailable; running without gating")
+
+    from ..perm_consent import PermissionGater
+
+    gater = PermissionGater(emit=ctx.emit)
+    # Stash the gater on the server so the ``permission.resolve``
+    # handler (registered earlier in the same server) can find it.
+    # The gater is request-scoped; the handler races on the
+    # request_id-keyed map, so concurrent ``agent.send_message``
+    # invocations stay isolated.
+    setattr(ctx.server, "_permission_gater", gater)
+
     core = AgentCore(
         llm=llm,
         config=AgentConfig(),
         history_provider=_history,
         persist_message=_persist,
+        permission_store=perm_store,
+        permission_gater=gater,
     )
 
     async def _on_chunk(delta: str, done: bool) -> None:

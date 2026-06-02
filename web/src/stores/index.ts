@@ -21,6 +21,9 @@ export {
 export {
   usePermissionStore,
   type PermissionRuleEntry,
+  type PendingPermission,
+  type Decision as PermissionDecision,
+  _resetPermissionStoreListeners,
 } from "./permissionStore";
 export {
   useTaskStore,

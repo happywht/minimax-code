@@ -13,6 +13,7 @@ export { MessageInput } from "./MessageInput";
 export { ProgressPanel } from "./ProgressPanel";
 export { ModelSelector } from "./ModelSelector";
 export { PermissionToggle } from "./PermissionToggle";
+export { PermissionRequestModal } from "./PermissionRequestModal";
 export { UserBadge } from "./UserBadge";
 export { ErrorBoundary, ToastViewport, toast, toastBus } from "./ErrorBoundary";
 export type { ToastItem, ToastKind } from "./ErrorBoundary";

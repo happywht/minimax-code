@@ -346,6 +346,10 @@ export interface TypedIPC {
   listRules(): Promise<ListRulesResult>;
   setRule(rule: Omit<PermissionRule, "id" | "created_at"> & { id?: string }): Promise<SetRuleResult>;
   deleteRule(ruleId: string): Promise<{ ok: true }>;
+  resolvePermission(opts: {
+    request_id: string;
+    decision: "allow" | "deny";
+  }): Promise<{ ok: boolean; request_id: string; decision?: string; reason?: string }>;
 }
 
 export function bindTypedIPC(client: IPCClient): TypedIPC {
@@ -424,6 +428,13 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<SetRuleResult>("permission.set_rule", rule),
     deleteRule: (rid) =>
       client.request<{ ok: true }>("permission.delete_rule", { rule_id: rid }),
+    resolvePermission: (opts) =>
+      client.request<{
+        ok: boolean;
+        request_id: string;
+        decision?: string;
+        reason?: string;
+      }>("permission.resolve", opts),
   };
 }
 
@@ -690,6 +701,18 @@ function mockHandle(
         created_at: Date.now(),
       };
       return { rule };
+    }
+
+    case "permission.resolve": {
+      // Mock backend: simply echo ok=true so the UI can close the
+      // modal in tests. The real sidecar has the actual gater that
+      // unblocks the agent loop.
+      const p = params as { request_id: string; decision: "allow" | "deny" };
+      return {
+        ok: true,
+        request_id: p.request_id,
+        decision: p.decision,
+      };
     }
 
     default:
