@@ -274,6 +274,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_sessions import register_session_handlers
     from .ipc.handlers_skills import register_skill_handlers
     from .ipc.handlers_tasks import register_task_handlers
+    from .ipc.handlers_secrets import register_secret_handlers
 
     server.register("agent.send_message", handle_agent_send_message)
     # The agent.* (sub-agent) namespace — config CRUD + invoke.
@@ -317,10 +318,15 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # a :class:`~.storage.dao.ModelPrefsDAO` on first call. Tests
     # can inject a DAO via the ``dao=`` kwarg to skip the lazy path.
     register_model_handlers(server)
+    # The secrets handlers expose ``secrets.status`` / ``secrets.set``
+    # / ``secrets.clear`` for the Settings page's API-key tab. They
+    # are stateless — every call goes straight to
+    # :mod:`minimax_code.secrets`.
+    register_secret_handlers(server)
     logger.info(
         "registered application handlers "
         "(1 agent.* + 6 agent.* + 5 skill.* + 6 task.* + 5 session.* + "
-        "5 permission.* + 6 schedule.* + 5 mobile.* + 3 model.*)"
+        "5 permission.* + 6 schedule.* + 5 mobile.* + 3 model.* + 3 secrets.*)"
     )
 
 

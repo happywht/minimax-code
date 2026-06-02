@@ -10,7 +10,16 @@ import {
   useModelStore,
   usePermissionStore,
   useScheduleStore,
+  useSecretStore,
 } from "../src/stores";
+import type { SecretStatus } from "../src/types/ipc";
+
+// Per-test mutable backing store for the secrets mock — the
+// IPC factory closure returns fresh `getSecretStatus` / `setSecret`
+// / `clearSecret` that read/write this single object.
+const mockSecretState: { current: SecretStatus } = {
+  current: { configured: false, source: "none" },
+};
 
 // Mock the typed IPC so we can drive each namespace independently.
 vi.mock("../src/ipc", async () => {
@@ -77,6 +86,19 @@ vi.mock("../src/ipc", async () => {
           next_run_at: null,
         },
       })),
+      getSecretStatus: vi.fn(async () => mockSecretState.current),
+      setSecret: vi.fn(async (value: string) => {
+        const trimmed = value.trim();
+        if (!trimmed) {
+          throw new Error("invalid params: 'value' must be a non-empty string");
+        }
+        mockSecretState.current = { configured: true, source: "keyring" };
+        return mockSecretState.current;
+      }),
+      clearSecret: vi.fn(async () => {
+        mockSecretState.current = { configured: false, source: "none" };
+        return mockSecretState.current;
+      }),
     },
   };
 });
@@ -85,6 +107,9 @@ beforeEach(() => {
   useModelStore.setState({ models: [], current: null, loading: false });
   usePermissionStore.setState({ rules: [], alwaysAllow: false, loading: false });
   useScheduleStore.setState({ jobs: [], loading: false });
+  useSecretStore.setState({ status: null, loading: false });
+  // Default: no key configured.
+  mockSecretState.current = { configured: false, source: "none" };
 });
 
 describe("SettingsPage", () => {
@@ -196,6 +221,125 @@ describe("SettingsPage", () => {
     fireEvent.click(checkbox);
     await waitFor(() => {
       expect(typedIPC.disableJob).toHaveBeenCalledWith("job_1");
+    });
+  });
+
+  // ─────────────────────── API Key tab ───────────────────────
+
+  it("switches to the API Key tab and shows the 'not configured' state", async () => {
+    const { typedIPC } = await import("../src/ipc");
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByTestId("settings-tab-api-key"));
+    expect(screen.getByTestId("settings-api-key")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(typedIPC.getSecretStatus).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("settings-api-key-status-text").textContent).toMatch(
+        /Not configured/,
+      );
+    });
+    // The 'Clear keyring' button only appears when the source is
+    // 'keyring' (since clearing a non-existent entry would be a
+    // no-op but we want to keep the UI honest).
+    expect(screen.queryByTestId("settings-api-key-clear")).toBeNull();
+  });
+
+  it("shows 'Using environment variable' when the backend reports source=env", async () => {
+    mockSecretState.current = { configured: true, source: "env" };
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByTestId("settings-tab-api-key"));
+    await waitFor(() => {
+      expect(screen.getByTestId("settings-api-key-status-text").textContent).toMatch(
+        /environment variable/i,
+      );
+    });
+  });
+
+  it("saves a key into the keyring and flips the status pill", async () => {
+    const { typedIPC } = await import("../src/ipc");
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByTestId("settings-tab-api-key"));
+    fireEvent.change(screen.getByTestId("settings-api-key-input"), {
+      target: { value: "sk-test-1" },
+    });
+    // The save button is disabled until draft is non-empty + the
+    // async re-render lands — wait for the button to enable.
+    const save = await waitFor(() => {
+      const btn = screen.getByTestId("settings-api-key-save") as HTMLButtonElement;
+      expect(btn.disabled).toBe(false);
+      return btn;
+    });
+    fireEvent.click(save);
+    await waitFor(() => {
+      expect(typedIPC.setSecret).toHaveBeenCalledWith("sk-test-1");
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("settings-api-key-status-text").textContent).toMatch(
+        /OS keyring/,
+      );
+    });
+    // The input was cleared after a successful save.
+    await waitFor(() => {
+      expect(
+        (screen.getByTestId("settings-api-key-input") as HTMLInputElement).value,
+      ).toBe("");
+    });
+    // And the 'Clear keyring' affordance now appears.
+    expect(screen.getByTestId("settings-api-key-clear")).toBeInTheDocument();
+  });
+
+  it("disables the save button while the input is empty", async () => {
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByTestId("settings-tab-api-key"));
+    const save = screen.getByTestId("settings-api-key-save") as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.change(screen.getByTestId("settings-api-key-input"), {
+      target: { value: "sk-anything" },
+    });
+    await waitFor(() => {
+      expect(save.disabled).toBe(false);
+    });
+  });
+
+  it("toggles the password reveal button to plain-text input", async () => {
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByTestId("settings-tab-api-key"));
+    const input = screen.getByTestId("settings-api-key-input") as HTMLInputElement;
+    expect(input.type).toBe("password");
+    fireEvent.click(screen.getByTestId("settings-api-key-reveal"));
+    await waitFor(() => {
+      expect(
+        (screen.getByTestId("settings-api-key-input") as HTMLInputElement).type,
+      ).toBe("text");
+    });
+    fireEvent.click(screen.getByTestId("settings-api-key-reveal"));
+    await waitFor(() => {
+      expect(
+        (screen.getByTestId("settings-api-key-input") as HTMLInputElement).type,
+      ).toBe("password");
+    });
+  });
+
+  it("clears the keyring when the user clicks 'Clear keyring'", async () => {
+    // Seed a keyring entry so the 'Clear keyring' button shows up.
+    mockSecretState.current = { configured: true, source: "keyring" };
+    useSecretStore.setState({
+      status: { configured: true, source: "keyring" },
+      loading: false,
+    });
+    const { typedIPC } = await import("../src/ipc");
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByTestId("settings-tab-api-key"));
+    expect(screen.getByTestId("settings-api-key-clear")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("settings-api-key-clear"));
+    await waitFor(() => {
+      expect(typedIPC.clearSecret).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("settings-api-key-status-text").textContent).toMatch(
+        /Not configured/,
+      );
     });
   });
 });

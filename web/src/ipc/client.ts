@@ -38,6 +38,7 @@ import {
   type PermissionResolvedData,
   type PermissionRule,
   type SendMessageResult,
+  type SecretStatus,
   type Session,
   type SetModelResult,
   type SetRuleResult,
@@ -350,6 +351,11 @@ export interface TypedIPC {
     request_id: string;
     decision: "allow" | "deny";
   }): Promise<{ ok: boolean; request_id: string; decision?: string; reason?: string }>;
+
+  // secrets (API key) — drive the Settings page's API Key tab.
+  getSecretStatus(): Promise<SecretStatus>;
+  setSecret(value: string): Promise<SecretStatus>;
+  clearSecret(): Promise<SecretStatus>;
 }
 
 export function bindTypedIPC(client: IPCClient): TypedIPC {
@@ -435,6 +441,10 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         decision?: string;
         reason?: string;
       }>("permission.resolve", opts),
+
+    getSecretStatus: () => client.request<SecretStatus>("secrets.status", {}),
+    setSecret: (value) => client.request<SecretStatus>("secrets.set", { value }),
+    clearSecret: () => client.request<SecretStatus>("secrets.clear", {}),
   };
 }
 
@@ -524,6 +534,14 @@ const mockAgents: AgentInfo[] = [
   },
 ];
 const mockJobs: ScheduledJob[] = [];
+
+/**
+ * Mock secret store — pretends to be the OS keyring for browser /
+ * unit-test runs. Stored values never persist across reloads (it's
+ * just an in-process Map), which is fine because the mock is for
+ * UI plumbing only. The real backend is the OS Credential Manager.
+ */
+const mockSecrets: { keyring: string | null } = { keyring: null };
 
 function mockHandle(
   method: string,
@@ -713,6 +731,32 @@ function mockHandle(
         request_id: p.request_id,
         decision: p.decision,
       };
+    }
+
+    case "secrets.status": {
+      // The mock has no env-var lookup — it can only see its own
+      // in-process "keyring" store.
+      return {
+        configured: mockSecrets.keyring !== null,
+        source: mockSecrets.keyring !== null ? "keyring" : "none",
+      };
+    }
+
+    case "secrets.set": {
+      const v = (params as { value?: string } | undefined)?.value ?? "";
+      const trimmed = v.trim();
+      if (!trimmed) {
+        // Mirror the real handler's INVALID_PARAMS so the UI's
+        // error toast path is exercised in tests.
+        throw new Error("invalid params: 'value' must be a non-empty string");
+      }
+      mockSecrets.keyring = trimmed;
+      return { configured: true, source: "keyring" };
+    }
+
+    case "secrets.clear": {
+      mockSecrets.keyring = null;
+      return { configured: false, source: "none" };
     }
 
     default:

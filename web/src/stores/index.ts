@@ -34,3 +34,7 @@ export {
   useScheduleStore,
   type ScheduledJobEntry,
 } from "./scheduleStore";
+export {
+  useSecretStore,
+  type SecretSource,
+} from "./secretStore";

@@ -83,6 +83,37 @@ def get_api_key() -> str | None:
     return _read_env()
 
 
+def has_api_key() -> bool:
+    """``True`` iff :func:`get_api_key` would return a non-empty value.
+
+    Convenience for the UI's "is the agent in mock mode?" check.
+    Same failure semantics as :func:`get_api_key` (never raises).
+    """
+    return get_api_key() is not None
+
+
+def key_source() -> str:
+    """Return which lookup layer is currently serving the API key.
+
+    One of:
+
+    * ``"keyring"`` — read from the OS keyring.
+    * ``"env"``    — read from ``MINIMAX_API_KEY`` env var.
+    * ``"none"``   — no key configured; the agent is in mock mode.
+
+    The IPC ``secrets.status`` endpoint exposes this verbatim so
+    the UI can show *where* the active key is coming from. Never
+    raises — backend failures (keyring down) silently fall
+    through to the env-var / none tiers, same as
+    :func:`get_api_key`.
+    """
+    if _read_keyring():
+        return "keyring"
+    if _read_env():
+        return "env"
+    return "none"
+
+
 def set_api_key(value: str) -> None:
     """Persist ``value`` to the OS keyring.
 
@@ -165,5 +196,7 @@ __all__ = [
     "KEYRING_USERNAME",
     "clear_api_key",
     "get_api_key",
+    "has_api_key",
+    "key_source",
     "set_api_key",
 ]

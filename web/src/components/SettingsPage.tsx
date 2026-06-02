@@ -14,6 +14,9 @@ import {
   CalendarClock,
   Check,
   Cpu,
+  Eye,
+  EyeOff,
+  KeyRound,
   Plus,
   Save,
   ShieldAlert,
@@ -23,11 +26,12 @@ import {
   useModelStore,
   usePermissionStore,
   useScheduleStore,
+  useSecretStore,
 } from "../stores";
 import { toast } from "./ErrorBoundary";
 import type { PermissionRule, ScheduledJob } from "../types/ipc";
 
-type Tab = "models" | "permissions" | "scheduled";
+type Tab = "models" | "permissions" | "scheduled" | "api-key";
 
 export interface SettingsPageProps {
   testId?: string;
@@ -46,7 +50,7 @@ export function SettingsPage({ testId = "settings-page" }: SettingsPageProps): J
             Settings
           </h1>
           <p className="text-[11px] text-minimax-muted">
-            Configure model, permissions, and scheduled jobs.
+            Configure model, permissions, scheduled jobs, and API key.
           </p>
         </div>
         <nav className="flex gap-1 rounded-md border border-minimax-border bg-minimax-panel p-1">
@@ -74,12 +78,21 @@ export function SettingsPage({ testId = "settings-page" }: SettingsPageProps): J
             label="Scheduled"
             testId="settings-tab-scheduled"
           />
+          <TabButton
+            id="api-key"
+            current={tab}
+            onClick={setTab}
+            icon={<KeyRound size={12} />}
+            label="API Key"
+            testId="settings-tab-api-key"
+          />
         </nav>
       </header>
       <div className="flex-1 overflow-y-auto px-6 py-5">
         {tab === "models" && <ModelsTab />}
         {tab === "permissions" && <PermissionsTab />}
         {tab === "scheduled" && <ScheduledTab />}
+        {tab === "api-key" && <ApiKeyTab />}
       </div>
     </div>
   );
@@ -273,18 +286,16 @@ function PermissionsTab(): JSX.Element {
             data-testid="settings-permission-add"
             disabled={!draftPattern.trim() || !draftTool.trim()}
             onClick={async () => {
-              const created = await upsertRule({
+              await upsertRule({
                 tool: draftTool.trim(),
                 pattern: draftPattern.trim(),
                 decision: draftDecision,
               });
-              if (created) {
-                toast.success(
-                  "Rule saved",
-                  `${draftTool} ${draftPattern} → ${draftDecision}`,
-                );
-                setDraftPattern("");
-              }
+              toast.success(
+                "Rule saved",
+                `${draftTool} ${draftPattern} → ${draftDecision}`,
+              );
+              setDraftPattern("");
             }}
             className="col-span-2 inline-flex items-center justify-center gap-1 rounded border border-minimax-accent/40 bg-minimax-accent/10 px-2 py-1 text-xs text-minimax-accent hover:bg-minimax-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -504,5 +515,168 @@ function ScheduledJobRow({
         <Trash2 size={12} />
       </button>
     </li>
+  );
+}
+
+/* ──────────────────────── API Key tab ──────────────────────── */
+
+function ApiKeyTab(): JSX.Element {
+  const status = useSecretStore((s) => s.status);
+  const loading = useSecretStore((s) => s.loading);
+  const refresh = useSecretStore((s) => s.refresh);
+  const setKey = useSecretStore((s) => s.setKey);
+  const clear = useSecretStore((s) => s.clear);
+
+  const [draft, setDraft] = useState("");
+  const [reveal, setReveal] = useState(false);
+
+  useEffect(() => {
+    if (status === null) {
+      void refresh();
+    }
+  }, [status, refresh]);
+
+  const sourceLabel: Record<"keyring" | "env" | "none", string> = {
+    keyring: "OS keyring",
+    env: "environment variable",
+    none: "not configured",
+  };
+
+  const statusPill = status
+    ? {
+        keyring: {
+          text: "Stored in OS keyring",
+          tone: "bg-minimax-accent/20 text-minimax-accent",
+        },
+        env: {
+          text: "Using environment variable",
+          tone: "bg-minimax-border text-minimax-muted",
+        },
+        none: {
+          text: "Not configured — agent in mock mode",
+          tone: "bg-red-500/15 text-red-300",
+        },
+      }[status.source]
+    : { text: "Loading…", tone: "bg-minimax-border text-minimax-muted" };
+
+  const hasKey = status?.configured ?? false;
+
+  return (
+    <section data-testid="settings-api-key" className="space-y-4">
+      <div>
+        <h2 className="text-sm font-medium">MiniMax API key</h2>
+        <p className="mt-0.5 text-[11px] text-minimax-muted">
+          Used to call the MiniMax LLM. Stored in the OS keyring
+          (Windows Credential Manager / macOS Keychain / Linux
+          Secret Service). Falls back to the
+          <code className="mx-1 rounded bg-minimax-panel px-1.5 py-0.5 font-mono text-[10px]">
+            MINIMAX_API_KEY
+          </code>
+          env var if no keyring entry exists.
+        </p>
+      </div>
+
+      <div
+        data-testid="settings-api-key-status"
+        className={
+          "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs " +
+          statusPill.tone
+        }
+      >
+        <KeyRound size={12} />
+        <span data-testid="settings-api-key-status-text">{statusPill.text}</span>
+      </div>
+
+      <div className="rounded-md border border-minimax-border bg-minimax-panel/40 p-3">
+        <label
+          htmlFor="api-key-input"
+          className="text-[11px] text-minimax-muted"
+        >
+          {hasKey
+            ? "Replace the keyring entry"
+            : "Paste a key to store in the OS keyring"}
+        </label>
+        <div className="mt-1.5 flex gap-2">
+          <div className="relative flex-1">
+            <input
+              id="api-key-input"
+              data-testid="settings-api-key-input"
+              type={reveal ? "text" : "password"}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (
+                  e.key === "Enter" &&
+                  draft.trim() &&
+                  !loading
+                ) {
+                  void (async () => {
+                    const ok = await setKey(draft);
+                    if (ok) setDraft("");
+                  })();
+                }
+              }}
+              placeholder="sk-..."
+              autoComplete="off"
+              spellCheck={false}
+              className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 pr-9 font-mono text-xs text-minimax-fg"
+            />
+            <button
+              type="button"
+              data-testid="settings-api-key-reveal"
+              onClick={() => setReveal((v) => !v)}
+              aria-label={reveal ? "Hide API key" : "Show API key"}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-minimax-muted hover:text-minimax-fg"
+            >
+              {reveal ? <EyeOff size={12} /> : <Eye size={12} />}
+            </button>
+          </div>
+          <button
+            type="button"
+            data-testid="settings-api-key-save"
+            disabled={!draft.trim() || loading}
+            onClick={async () => {
+              const ok = await setKey(draft);
+              if (ok) {
+                setDraft("");
+                setReveal(false);
+              }
+            }}
+            className="inline-flex items-center justify-center gap-1 rounded border border-minimax-accent/40 bg-minimax-accent/10 px-3 py-1 text-xs text-minimax-accent hover:bg-minimax-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Save size={12} />
+            {loading ? "Saving…" : "Save"}
+          </button>
+        </div>
+        <p className="mt-1.5 text-[10px] text-minimax-muted">
+          The key is written to <code>{sourceLabel.keyring}</code> on save.
+          It is never echoed back through the wire after the write.
+        </p>
+      </div>
+
+      {status?.source === "keyring" && (
+        <div className="rounded-md border border-minimax-border bg-minimax-panel/40 p-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-xs font-medium">Keyring entry</h3>
+              <p className="mt-0.5 text-[11px] text-minimax-muted">
+                Removes the entry from the OS keyring. Does not
+                affect the <code>MINIMAX_API_KEY</code> env var.
+              </p>
+            </div>
+            <button
+              type="button"
+              data-testid="settings-api-key-clear"
+              onClick={() => void clear()}
+              disabled={loading}
+              className="inline-flex items-center gap-1 rounded border border-minimax-border px-2 py-1 text-xs text-minimax-muted hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Trash2 size={12} />
+              Clear keyring
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }

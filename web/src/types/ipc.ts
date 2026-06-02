@@ -232,6 +232,12 @@ export interface ListJobsResult {
   jobs: ScheduledJob[];
 }
 
+/** Snapshot of the API key state — return shape of `secrets.status`. */
+export interface SecretStatus {
+  configured: boolean;
+  source: "keyring" | "env" | "none";
+}
+
 export interface ListRulesResult {
   rules: PermissionRule[];
 }
