@@ -12,20 +12,20 @@
 
 | 类型 | 文件 | 大小 | SHA256 |
 |------|------|-----:|--------|
-| **NSIS 安装包**（推荐） | `MiniMax Code_0.1.0_x64-setup.exe` | 3.18 MB (3,326,699 字节) | `A72FEFF7D10F7F56E663014DDF979B2C46783C62CDCEAA2D925EDD6921ABBCE7` |
-| **MSI 包** | `MiniMax Code_0.1.0_x64_en-US.msi` | 3.86 MB (4,042,752 字节) | `7BA9CDF144A3ADB03B35517682ECBA950D28EA1EAA7B93F3CAC8356A84A16F08` |
+| **NSIS 安装包**（推荐） | `MiniMax Code_0.1.0_x64-setup.exe` | 3.18 MB (3,333,052 字节) | `2F68DE51F6B9C9979AE16499EF593C004AB68D35D4ED6D993C9B0C7E9AFBDC04` |
+| **MSI 包** | `MiniMax Code_0.1.0_x64_en-US.msi` | 3.86 MB (4,050,944 字节) | `1ABC2D67DA06BB661FA566ADE676C62165FF59E0D03FBD4AE588A28945170367` |
 
 校验：
 
 ```powershell
 Get-FileHash "MiniMax Code_0.1.0_x64-setup.exe" -Algorithm SHA256
-# 期望：A72FEFF7D10F7F56E663014DDF979B2C46783C62CDCEAA2D925EDD6921ABBCE7
+# 期望：2F68DE51F6B9C9979AE16499EF593C004AB68D35D4ED6D993C9B0C7E9AFBDC04
 
 Get-FileHash "MiniMax Code_0.1.0_x64_en-US.msi" -Algorithm SHA256
-# 期望：7BA9CDF144A3ADB03B35517682ECBA950D28EA1EAA7B93F3CAC8356A84A16F08
+# 期望：1ABC2D67DA06BB661FA566ADE676C62165FF59E0D03FBD4AE588A28945170367
 ```
 
-> 文件位置（开发机构建产物）：`src-tauri/target/release/bundle/{nsis,msi}/`。`v0.1.0` 标签对应 git commit `9023e45+`（含本 README 与 CHANGELOG 的提交）。
+> 文件位置（开发机构建产物）：`src-tauri/target/release/bundle/{nsis,msi}/`。`v0.1.0` annotated tag 直接指向本 release commit。
 
 ### 开发者 — 从源码构建
 
