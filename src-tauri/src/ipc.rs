@@ -29,9 +29,16 @@ pub const EVENT_NAME: &str = "ipc:event";
 /// Name of the Tauri event carrying sidecar lifecycle changes (started/exited).
 pub const SIDE_CAR_EVENT: &str = "ipc:sidecar";
 
-/// Locate the sidecar binary. In production builds, Tauri places it next to
-/// the main executable. In dev mode, we fall back to a path relative to the
-/// project root so `tauri dev` works without bundling.
+/// Locate the sidecar binary. In production builds, Tauri 2.x places the
+/// `externalBin` next to the main executable with the target-triple suffix
+/// stripped, so the resolved path is `<resource_dir>/<cmd_name>`. The
+/// `binaries/` prefix in the source layout (`src-tauri/binaries/<name>-<triple>.exe`)
+/// does NOT survive into the bundle.
+///
+/// In dev mode (`cargo tauri dev`), the sidecar source is at
+/// `src-tauri/binaries/<name>-<triple>.exe` and Tauri does NOT copy or symlink
+/// it into the resource dir. We fall back to invoking `python -m minimax_code`
+/// directly, which is the standard dev workflow.
 fn sidecar_command(app: &AppHandle) -> Command {
     let cmd_name = if cfg!(windows) {
         "minimax-code-agent.exe"
@@ -39,49 +46,45 @@ fn sidecar_command(app: &AppHandle) -> Command {
         "minimax-code-agent"
     };
 
-    // Tauri injects the sidecar next to the executable in production.
-    // In dev, we construct a command that invokes Python directly.
-    let mut command = if let Ok(exe) = app
+    // Production: Tauri 2.x externalBin places the sidecar at the resource
+    // root (install dir on Windows), named WITHOUT the target-triple suffix.
+    if let Ok(exe) = app
         .path()
-        .resolve(format!("binaries/{}", cmd_name), tauri::path::BaseDirectory::Resource)
+        .resolve(cmd_name, tauri::path::BaseDirectory::Resource)
     {
         let mut c = Command::new(exe);
         c.env("MINIMAX_CODE_ENV", "production");
-        c
-    } else {
-        // Dev mode: invoke Python directly with the unbuffered stdio flag.
-        let project_root = app
-            .path()
-            .resource_dir()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        c.stdin(Stdio::piped());
+        c.stdout(Stdio::piped());
+        c.stderr(Stdio::piped());
+        c.kill_on_drop(true);
+        return c;
+    }
 
-        let agent_dir = project_root.join("agent");
-        let python = std::env::var("MINIMAX_CODE_PYTHON")
-            .unwrap_or_else(|_| "python".to_string());
+    // Dev mode fallback: invoke Python directly with the unbuffered stdio flag.
+    let project_root = app
+        .path()
+        .resource_dir()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
-        let mut c = Command::new(python);
-        c.current_dir(&agent_dir)
-            .arg("-m")
-            .arg("minimax_code")
-            .env("PYTHONUNBUFFERED", "1")
-            .env("PYTHONIOENCODING", "utf-8")
-            .env("MINIMAX_CODE_ENV", "development")
-            // Make sure child stdio is wired correctly.
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        c
-    };
+    let agent_dir = project_root.join("agent");
+    let python = std::env::var("MINIMAX_CODE_PYTHON")
+        .unwrap_or_else(|_| "python".to_string());
 
-    command
+    let mut c = Command::new(python);
+    c.current_dir(&agent_dir)
+        .arg("-m")
+        .arg("minimax_code")
+        .env("PYTHONUNBUFFERED", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("MINIMAX_CODE_ENV", "development")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        // Detach the child from the parent's console on Windows.
         .kill_on_drop(true);
-    command
+    c
 }
 
 /// Shared handle to the sidecar process. The stdin writer is wrapped in an

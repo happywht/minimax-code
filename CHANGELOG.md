@@ -5,6 +5,43 @@ All notable changes to MiniMax Code are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-06-03
+
+**v0.1.1 hotfix.** Fixes the sidecar path resolution that made v0.1.1
+white-screen and exit on launch. **Internal users who installed v0.1.0
+or v0.1.1 must reinstall v0.1.2** — both earlier builds are unusable
+in production.
+
+### Fixed
+- **Sidecar path resolution in `ipc::sidecar_command`.** Tauri 2.x
+  `externalBin` configuration places the bundled sidecar at the
+  resource root (install dir on Windows), named WITHOUT the
+  target-triple suffix. The previous code looked for
+  `binaries/minimax-code-agent.exe` (with `binaries/` prefix), which
+  does not exist in the bundle. In production, `app.path().resolve(...)`
+  failed, and the code fell through to the dev-mode Python fallback —
+  but production users don't have `python` in PATH and the agent
+  module isn't installed. `init_agent_bridge` returned `Err`,
+  `setup()` returned `Err`, Tauri refused to start the app, and the
+  user saw a white window that exited immediately. Fix: resolve
+  `minimax-code-agent.exe` (no prefix) at `BaseDirectory::Resource`,
+  which matches Tauri 2.x's `externalBin` bundling convention.
+
+### Changed
+- `tauri.conf.json` + `src-tauri/Cargo.toml` version bumped `0.1.1`
+  → `0.1.2`.
+- README install section updated with v0.1.2 SHA-256 + file sizes.
+- "Known limitations" expanded to cover both the v0.1.0 manage() race
+  and the v0.1.1 sidecar path bug, with a single combined
+  "v0.1.0 / v0.1.1 launch crash" section explaining how v0.1.2 fixes
+  both.
+
+### Artifacts
+- MSI: `MiniMax Code_0.1.2_x64_en-US.msi` (3.93 MB / 4,124,672 B)
+  — SHA-256 `1DAA16151C6BF5F36180728F59ED0BD467C131A93E489D74D52D9A45FC10E32E`
+- NSIS: `MiniMax Code_0.1.2_x64-setup.exe` (3.18 MB / 3,333,019 B)
+  — SHA-256 `2DD04D11B24AD7D58A7B989F3D6634E3D49587AA351B7253020DCE7C54216C2D`
+
 ## [0.1.1] - 2026-06-03
 
 **v0.1.0 hotfix.** Fixes the Tauri 2.x `app.manage()` race that broke
@@ -182,5 +219,6 @@ IPC namespaces + 7 e2e smokes (all green).
   release artifacts, no Tauri updater wired. v0.2 plan: add GitHub Releases
   + Tauri auto-update.
 
+[0.1.2]: #012---2026-06-03
 [0.1.1]: #011---2026-06-03
 [0.1.0]: #010---2026-06-02
