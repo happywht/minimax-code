@@ -38,3 +38,7 @@ export {
   useSecretStore,
   type SecretSource,
 } from "./secretStore";
+export {
+  useSkillStore,
+  type SkillEntry,
+} from "./skillStore";

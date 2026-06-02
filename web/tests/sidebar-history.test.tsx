@@ -1,0 +1,174 @@
+/**
+ * Tests for the redesigned sidebar history list — verifies each row
+ * shows the status dot, a truncated title, a relative timestamp, and
+ * that the list is scrollable (max-height + overflow-y-auto).
+ */
+import { describe, expect, it, beforeEach, vi } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { Sidebar } from "../src/components/Sidebar";
+import { useSessionStore } from "../src/stores";
+
+vi.mock("../src/components/ErrorBoundary", () => ({
+  toast: { error: vi.fn(), info: vi.fn(), success: vi.fn() },
+  toastBus: { push: vi.fn(), dismiss: vi.fn() },
+}));
+
+vi.mock("../src/ipc", async () => {
+  const actual = await vi.importActual<typeof import("../src/ipc")>("../src/ipc");
+  return {
+    ...actual,
+    typedIPC: {
+      ...actual.typedIPC,
+      listSessions: vi.fn(async () => ({ sessions: [] })),
+    },
+  };
+});
+
+const NOW = new Date("2026-06-02T12:00:00Z").getTime();
+const HOUR = 60 * 60 * 1_000;
+const DAY = 24 * HOUR;
+
+describe("Sidebar history list", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW));
+    useSessionStore.setState({
+      sessions: [],
+      currentSessionId: null,
+      loading: false,
+      filter: "all",
+    });
+  });
+
+  it("renders one row per session with a status dot and a title", () => {
+    useSessionStore.setState({
+      sessions: [
+        {
+          id: "ses_active",
+          title: "Refactor",
+          archived: false,
+          created_at: NOW - HOUR,
+          updated_at: NOW - HOUR,
+          model_id: null,
+        },
+        {
+          id: "ses_other",
+          title: "Other task",
+          archived: false,
+          created_at: NOW - 2 * DAY,
+          updated_at: NOW - 2 * DAY,
+          model_id: null,
+        },
+      ],
+    });
+    render(<Sidebar />);
+
+    expect(screen.getByTestId("sidebar-session-row-ses_active")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-session-row-ses_other")).toBeInTheDocument();
+
+    const activeDot = screen.getByTestId("sidebar-session-dot-ses_active");
+    expect(activeDot).toHaveAttribute("data-status", "active");
+
+    expect(screen.getByText("Refactor")).toBeInTheDocument();
+    expect(screen.getByText("Other task")).toBeInTheDocument();
+  });
+
+  it("marks the dot 'archived' when a session is in the archived filter", () => {
+    useSessionStore.setState({
+      filter: "archived",
+      sessions: [
+        {
+          id: "ses_archived",
+          title: "Old thing",
+          archived: true,
+          created_at: NOW - 2 * DAY,
+          updated_at: NOW - 2 * DAY,
+          model_id: null,
+        },
+      ],
+    });
+    render(<Sidebar />);
+
+    expect(screen.getByTestId("sidebar-session-row-ses_archived")).toBeInTheDocument();
+    const dot = screen.getByTestId("sidebar-session-dot-ses_archived");
+    expect(dot).toHaveAttribute("data-status", "archived");
+  });
+
+  it("truncates long titles to <= 24 characters and shows ellipsis", () => {
+    useSessionStore.setState({
+      sessions: [
+        {
+          id: "ses_long",
+          title:
+            "This is a really really long session title that should be truncated for the sidebar",
+          archived: false,
+          created_at: NOW,
+          updated_at: NOW,
+          model_id: null,
+        },
+      ],
+    });
+    render(<Sidebar />);
+    const rendered = screen.getByText(/This is a really really/);
+    expect(rendered.textContent?.length).toBeLessThanOrEqual(24);
+    expect(rendered.textContent?.endsWith("…")).toBe(true);
+  });
+
+  it("renders a relative timestamp per row (h/d/just now)", () => {
+    useSessionStore.setState({
+      sessions: [
+        {
+          id: "ses_recent",
+          title: "Just now",
+          archived: false,
+          created_at: NOW,
+          updated_at: NOW,
+          model_id: null,
+        },
+        {
+          id: "ses_hours",
+          title: "Hours ago",
+          archived: false,
+          created_at: NOW - 3 * HOUR,
+          updated_at: NOW - 3 * HOUR,
+          model_id: null,
+        },
+        {
+          id: "ses_days",
+          title: "Days ago",
+          archived: false,
+          created_at: NOW - 2 * DAY,
+          updated_at: NOW - 2 * DAY,
+          model_id: null,
+        },
+      ],
+    });
+    render(<Sidebar />);
+
+    const recent = screen.getByTestId("sidebar-session-time-ses_recent");
+    const hours = screen.getByTestId("sidebar-session-time-ses_hours");
+    const days = screen.getByTestId("sidebar-session-time-ses_days");
+    expect(recent.textContent).toBe("just now");
+    expect(hours.textContent).toBe("3h ago");
+    expect(days.textContent).toBe("2d ago");
+  });
+
+  it("scrollable: the list element uses overflow-y-auto and a max-height", () => {
+    useSessionStore.setState({
+      sessions: [
+        {
+          id: "ses_x",
+          title: "x",
+          archived: false,
+          created_at: NOW,
+          updated_at: NOW,
+          model_id: null,
+        },
+      ],
+    });
+    render(<Sidebar />);
+    const list = screen.getByTestId("sidebar-session-list");
+    expect(list.className).toMatch(/overflow-y-auto/);
+    expect(list.style.maxHeight).toBe("60vh");
+  });
+});

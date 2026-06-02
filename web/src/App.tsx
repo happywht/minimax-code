@@ -9,20 +9,22 @@ import {
   ProgressPanel,
   SettingsPage,
   Sidebar,
+  SkillsPanel,
   ToastViewport,
   toast,
 } from "./components";
 import { ipc, isTauri, typedIPC } from "./ipc";
 import { useChat, useModelStore, usePermissionStore, useSessionStore } from "./stores";
 
-type AppView = "chat" | "settings";
+type AppView = "chat" | "skills" | "settings";
 
 /**
  * Top-level layout. Bootstraps stores on mount, then renders the
  * three-pane shell:
  *   - <Sidebar /> (left)
- *   - <ChatPanel /> + <MessageInput /> (center) — or <SettingsPage />
- *   - <ProgressPanel /> (right, floating)
+ *   - <ChatPanel /> + <MessageInput /> (center) — or <SettingsPage /> or <SkillsPanel />
+ *   - <ProgressPanel /> (right, floating) wrapped in a `right-panel`
+ *     testId container so the smoke test can find it.
  * The <ModelSelector /> and <PermissionToggle /> live in the input
  * footer so they're always reachable.
  */
@@ -64,14 +66,18 @@ export default function App() {
       >
         <Sidebar
           view={view}
-          onViewChange={setView}
+          onViewChange={(v) => setView(v)}
         />
         <main className="relative flex flex-1 flex-col">
           {view === "settings" ? (
             <SettingsPage />
+          ) : view === "skills" ? (
+            <SkillsPanel />
           ) : (
             <>
-              <ProgressPanel />
+              <div data-testid="right-panel" className="contents">
+                <ProgressPanel />
+              </div>
               <ChatPanel />
               <footer className="flex items-center justify-between gap-2 border-t border-minimax-border bg-minimax-bg/40 px-4 py-2">
                 <div className="flex items-center gap-2">

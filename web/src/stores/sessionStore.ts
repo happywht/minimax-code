@@ -9,7 +9,13 @@ import { typedIPC } from "../ipc";
 import { toast } from "../components/ErrorBoundary";
 import type { Session } from "../types/ipc";
 
-export type SessionFilter = "all" | "scheduled" | "history" | "agents" | "archived";
+export type SessionFilter =
+  | "all"
+  | "scheduled"
+  | "history"
+  | "agents"
+  | "archived"
+  | "skills";
 
 export type SessionMeta = Session;
 
