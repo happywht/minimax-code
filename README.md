@@ -2,30 +2,30 @@
 
 桌面端 AI 编码 Agent 复刻项目。对标 MiniMax Code 全量功能：多轮对话、技能系统、定时任务、多 Agent 协作、移动互联、授权管理、进度面板。
 
-> **v0.1.0 内部首发版。** 完整 Phase 1 → Phase 6 全部完成（端到端 chat、技能系统、调度、进度、移动配对、子 Agent、模型选择、设置、权限真弹窗、密钥 keyring、三栏布局、工作区切换、per-turn 摘要、Tauri release build）。详见 [`CHANGELOG.md`](CHANGELOG.md)。
+> **v0.1.1 内部首发版。** v0.1.0 修复版 — 修了一个 Tauri `app.manage()` race（首次启动 IPC 全失败），详见下方"已知限制"段与 [`CHANGELOG.md`](CHANGELOG.md)。完整 Phase 1 → Phase 6 已完成（端到端 chat、技能系统、调度、进度、移动配对、子 Agent、模型选择、设置、权限真弹窗、密钥 keyring、三栏布局、工作区切换、per-turn 摘要）。
 
 ## 安装
 
 ### Windows 用户 — 下载安装包
 
-`v0.1.0` 内部发布版提供两种 Windows 安装包（build by Tauri 2.x）：
+`v0.1.1` 内部发布版提供两种 Windows 安装包（build by Tauri 2.x）：
 
 | 类型 | 文件 | 大小 | SHA256 |
 |------|------|-----:|--------|
-| **NSIS 安装包**（推荐） | `MiniMax Code_0.1.0_x64-setup.exe` | 3.18 MB (3,333,052 字节) | `2F68DE51F6B9C9979AE16499EF593C004AB68D35D4ED6D993C9B0C7E9AFBDC04` |
-| **MSI 包** | `MiniMax Code_0.1.0_x64_en-US.msi` | 3.86 MB (4,050,944 字节) | `1ABC2D67DA06BB661FA566ADE676C62165FF59E0D03FBD4AE588A28945170367` |
+| **NSIS 安装包**（推荐） | `MiniMax Code_0.1.1_x64-setup.exe` | 3.18 MB (3,332,302 字节) | `DC544C02ACA9C955A869C325D45247FFE27F5B7DD22855F939FBBD088F525F7B` |
+| **MSI 包** | `MiniMax Code_0.1.1_x64_en-US.msi` | 3.93 MB (4,124,672 字节) | `F8C8840AB8EB3858E56F40728F38F4431E08224349C0E50798072870DE7562EB` |
 
 校验：
 
 ```powershell
-Get-FileHash "MiniMax Code_0.1.0_x64-setup.exe" -Algorithm SHA256
-# 期望：2F68DE51F6B9C9979AE16499EF593C004AB68D35D4ED6D993C9B0C7E9AFBDC04
+Get-FileHash "MiniMax Code_0.1.1_x64-setup.exe" -Algorithm SHA256
+# 期望：DC544C02ACA9C955A869C325D45247FFE27F5B7DD22855F939FBBD088F525F7B
 
-Get-FileHash "MiniMax Code_0.1.0_x64_en-US.msi" -Algorithm SHA256
-# 期望：1ABC2D67DA06BB661FA566ADE676C62165FF59E0D03FBD4AE588A28945170367
+Get-FileHash "MiniMax Code_0.1.1_x64_en-US.msi" -Algorithm SHA256
+# 期望：F8C8840AB8EB3858E56F40728F38F4431E08224349C0E50798072870DE7562EB
 ```
 
-> 文件位置（开发机构建产物）：`src-tauri/target/release/bundle/{nsis,msi}/`。`v0.1.0` annotated tag 直接指向本 release commit。
+> 文件位置（开发机构建产物）：`src-tauri/target/release/bundle/{nsis,msi}/`。`v0.1.1` annotated tag 直接指向本 release commit；`v0.1.0` tag 保留为历史记录（已被 v0.1.1 取代）。
 
 ### 开发者 — 从源码构建
 
@@ -180,9 +180,13 @@ cargo tauri build
 
 ## 已知限制
 
+### 0. v0.1.0 启动崩溃（v0.1.1 已修）
+
+`v0.1.0` 的 Tauri `setup()` 把 `app.manage(AppState)` 放在 fire-and-forget 的 async task 里跑 — webview 一 mount，前端 `session.list` / `agent.list` 等首批 IPC 调用撞上 state 还没注册，5 个 toast 全是 `state not managed for field 'state' on command 'ipc_request'`。**v0.1.1 把 `init_agent_bridge` 改成 sync：在 setup 闭包内 spawn child + 立即 `app.manage(...)`，webview 起来时 state 已就绪。** 装 v0.1.0 看到的 toast 全部消失。
+
 ### 1. Tauri 端到端 e2e smoke 未在已安装包上跑
 
-代码层面所有 Phase 1–6 e2e smoke（sessions / mobile / agents / chat / progress / model）均通过，但**未在 `MiniMax Code_0.1.0_x64-setup.exe` 安装后的实际桌面环境里跑过端到端**。PoC 阶段决策：先出包、把 release 验证留给首次装机用户。Phase 7 (v0.2) 计划加 Playwright / WebDriver 自动化跑已装包。
+代码层面所有 Phase 1–6 e2e smoke（sessions / mobile / agents / chat / progress / model）均通过，**v0.1.1 起也已在装好的桌面端手动验证 5 个首批 IPC 调用不报错**，但**未用 Playwright / WebDriver 自动化跑过**。v0.1.2 计划加。
 
 ### 2. `thinking_count` metadata 字段未实现
 

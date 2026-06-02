@@ -11,8 +11,6 @@
 pub mod commands;
 pub mod ipc;
 
-use tauri::Manager;
-
 /// Application entry point invoked by `src-tauri/src/main.rs`.
 pub fn run() {
     // Configure logging — default to INFO unless overridden by RUST_LOG.
@@ -28,9 +26,19 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            // Spawn the Python agent sidecar and start bridging stdio <-> Tauri events.
-            let handle = app.handle().clone();
-            ipc::spawn_agent_sidecar(handle);
+            // Spawn the Python agent sidecar and register the Tauri-managed
+            // `AppState` BEFORE returning. The synchronous variant is
+            // critical: the webview mounts immediately after this closure
+            // returns, and the React app fires IPC calls (`session.list`,
+            // `agent.list`, ...) on mount. If we did this asynchronously
+            // (fire-and-forget), those calls would land before
+            // `app.manage(...)` ran and Tauri would reject them with
+            // "state not managed for field 'state'".
+            if let Err(e) = ipc::init_agent_bridge(&app.handle().clone()) {
+                tracing::error!(error = ?e, "agent bridge init failed");
+                let boxed: Box<dyn std::error::Error + Send + Sync> = format!("{e:#}").into();
+                return Err(boxed);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

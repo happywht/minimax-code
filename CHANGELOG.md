@@ -5,6 +5,45 @@ All notable changes to MiniMax Code are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-06-03
+
+**v0.1.0 hotfix.** Fixes the Tauri 2.x `app.manage()` race that broke
+first-launch IPC in v0.1.0. **Internal users who installed v0.1.0 must
+reinstall v0.1.1** — the v0.1.0 build is unusable out of the box.
+
+### Fixed
+- **Tauri `app.manage()` race on first launch.** `src-tauri/src/lib.rs`
+  `setup()` originally called `ipc::spawn_agent_sidecar(handle)`,
+  which fire-and-forget spawned a background task that eventually
+  called `app.manage(AppState { ... })`. The webview mounted before
+  the task reached the `manage` line, so the React app's first batch
+  of IPC calls (`session.list`, `agent.list`, `model.list`,
+  `permission.list`, etc.) all failed with `state not managed for
+  field 'state' on command 'ipc_request'`. Fix: replaced
+  `spawn_agent_sidecar` + `run_bridge` with `init_agent_bridge` —
+  synchronously spawns the child, calls `app.manage(...)` in the
+  setup closure, then spawns a long-lived `pump_stdio` task. The
+  state is registered before the setup closure returns.
+- Removed unused `tauri::Manager` import in `lib.rs` (post-fix
+  cleanup).
+- Removed unused `std::sync::Mutex` import in `ipc.rs` (pre-existing
+  dead import, cleaned up alongside the refactor).
+
+### Changed
+- `tauri.conf.json` + `src-tauri/Cargo.toml` version bumped `0.1.0`
+  → `0.1.1`.
+- README install section updated with v0.1.1 SHA-256 + file sizes.
+- Tauri release e2e "known limitation" softened: v0.1.1 is now
+  manually verified on installed package (the bug above was the
+  only thing blocking the installed-package smoke); Playwright /
+  WebDriver automation still v0.1.2 scope.
+
+### Artifacts
+- MSI: `MiniMax Code_0.1.1_x64_en-US.msi` (3.93 MB / 4,124,672 B)
+  — SHA-256 `F8C8840AB8EB3858E56F40728F38F4431E08224349C0E50798072870DE7562EB`
+- NSIS: `MiniMax Code_0.1.1_x64-setup.exe` (3.18 MB / 3,332,302 B)
+  — SHA-256 `DC544C02ACA9C955A869C325D45247FFE27F5B7DD22855F939FBBD088F525F7B`
+
 ## [0.1.0] - 2026-06-02
 
 **First internal release.** Full Phase 1 → Phase 6 implementation. Windows
@@ -143,4 +182,5 @@ IPC namespaces + 7 e2e smokes (all green).
   release artifacts, no Tauri updater wired. v0.2 plan: add GitHub Releases
   + Tauri auto-update.
 
+[0.1.1]: #011---2026-06-03
 [0.1.0]: #010---2026-06-02

@@ -1,6 +1,6 @@
 [package]
 name = "minimax-code"
-version = "0.1.0"
+version = "0.1.1"
 description = "MiniMax Code desktop"
 authors = ["MiniMax Code Team"]
 license = "MIT"

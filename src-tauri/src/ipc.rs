@@ -12,13 +12,12 @@
 
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex as AsyncMutex;
 
 /// Name of the Tauri event carrying a JSON-RPC response to a previous request.
@@ -119,26 +118,23 @@ pub struct Envelope {
     pub data: Option<Value>,
 }
 
-/// Spawn the Python sidecar and start the stdio pump.
-pub fn spawn_agent_sidecar(app: AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        match run_bridge(app.clone()).await {
-            Ok(_) => {
-                tracing::info!("agent bridge exited cleanly");
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "agent bridge crashed");
-                let _ = app.emit(
-                    SIDE_CAR_EVENT,
-                    serde_json::json!({"status": "error", "error": e.to_string()}),
-                );
-            }
-        }
-    });
-}
-
-async fn run_bridge(app: AppHandle) -> anyhow::Result<()> {
-    let mut command = sidecar_command(&app);
+/// Synchronously spawn the Python sidecar and register the `AppState` with
+/// Tauri BEFORE returning to the setup closure.
+///
+/// **Why synchronous, not fire-and-forget?**
+/// `lib.rs` calls this from inside `tauri::Builder::setup()`. If we spawned a
+/// background task that calls `app.manage(...)` later, the webview would
+/// mount and the React app would fire its initial IPC calls
+/// (`session.list`, `agent.list`, ...) before `AppState` is registered.
+/// Tauri would then reject every command with
+/// `state not managed for field 'state' on command 'ipc_request'`.
+///
+/// By spawning the child + calling `app.manage()` synchronously here, the
+/// state is guaranteed to be in Tauri's registry before the setup closure
+/// returns and the webview starts loading. The stdio pumps still run
+/// asynchronously — they just need the `Arc<AgentProcess>` we hand back.
+pub fn init_agent_bridge(app: &AppHandle) -> anyhow::Result<()> {
+    let mut command = sidecar_command(app);
     let mut child = command.spawn()?;
 
     let stdout = child
@@ -154,10 +150,7 @@ async fn run_bridge(app: AppHandle) -> anyhow::Result<()> {
         .take()
         .ok_or_else(|| anyhow::anyhow!("agent stdin missing"))?;
 
-    let _ = app.emit(
-        SIDE_CAR_EVENT,
-        serde_json::json!({"status": "started"}),
-    );
+    let _ = app.emit(SIDE_CAR_EVENT, serde_json::json!({"status": "started"}));
 
     let agent = Arc::new(AgentProcess {
         child: AsyncMutex::new(child),
@@ -167,23 +160,39 @@ async fn run_bridge(app: AppHandle) -> anyhow::Result<()> {
         agent: agent.clone(),
     });
 
-    // Spawn stdout pump.
+    // Hand the stdio handles to a long-running pump task. This MUST run
+    // after `app.manage(...)` so the agent handle is visible to commands
+    // that need to write to stdin.
+    tauri::async_runtime::spawn(pump_stdio(app.clone(), agent, stdout, stderr));
+
+    Ok(())
+}
+
+/// Pump the agent's stdout and stderr for the lifetime of the process.
+/// Returns when the child closes its stdout (crash or clean shutdown).
+async fn pump_stdio(
+    app: AppHandle,
+    _agent: Arc<AgentProcess>,
+    stdout: ChildStdout,
+    stderr: ChildStderr,
+) {
     let app_for_out = app.clone();
-    tauri::async_runtime::spawn(async move {
+    let stdout_handle = tauri::async_runtime::spawn(async move {
         if let Err(e) = pump_stdout(app_for_out, stdout).await {
             tracing::error!(error = %e, "stdout pump exited");
         }
     });
 
-    // Spawn stderr pump (just logs).
-    tauri::async_runtime::spawn(async move {
+    // Stderr is for human-readable logs only — just forward to tracing.
+    let stderr_handle = tauri::async_runtime::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             tracing::warn!(target: "agent_stderr", "{}", line);
         }
     });
 
-    Ok(())
+    let _ = stdout_handle.await;
+    let _ = stderr_handle.await;
 }
 
 async fn pump_stdout(app: AppHandle, stdout: ChildStdout) -> anyhow::Result<()> {
