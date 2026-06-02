@@ -5,6 +5,41 @@ All notable changes to MiniMax Code are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-06-03
+
+**v0.1.2 hotfix.** Fixes the `tokio::process::ChildStdin::flush()` race
+that broke first-launch IPC in v0.1.2. **Internal users who installed
+v0.1.2 must reinstall v0.1.3** — the first batch of IPC calls
+(session.list, model.list, agent.list, permission.list) failed on
+mount with `failed to flush agent stdin: 管道正在被关闭 (os error 232)`.
+UI rendered + chat.send_message worked later, but the data-loading
+toasts persisted and the agent list stayed on "Loading agents...".
+
+### Fixed
+- **`send_to_agent` removed `stdin.flush().await`.** `tokio::process::ChildStdin`
+  wraps a raw OS pipe with no userspace buffer; `write_all` is sufficient.
+  The `flush` call triggered an internal sync that saw the child end
+  as "closing" during the brief window between sidecar process spawn
+  and the asyncio IPC server reaching "waiting for messages" state
+  (~50 ms). Bytes had already been written to the kernel pipe buffer
+  but `flush` returned `ERROR_NO_DATA` (os error 232, "pipe is being
+  closed"). The protocol framing (`\n` terminator) and the OS pipe
+  buffer (≥ 4 KB) handle any transient backpressure.
+
+### Changed
+- `tauri.conf.json` + `src-tauri/Cargo.toml` version bumped `0.1.2`
+  → `0.1.3`.
+- README install section updated with v0.1.3 SHA-256 + file sizes.
+- "Known limitations" expanded to cover the v0.1.0 / v0.1.1 / v0.1.2
+  chain (manage race → sidecar path → pipe flush race), with v0.1.3
+  fixing all three.
+
+### Artifacts
+- MSI: `MiniMax Code_0.1.3_x64_en-US.msi` (3.93 MB / 4,124,672 B)
+  — SHA-256 `74FA6F5983D13EB129F8187D53C86C18DC66973D4CF6F4DA4F48684BED766F84`
+- NSIS: `MiniMax Code_0.1.3_x64-setup.exe` (3.18 MB / 3,331,122 B)
+  — SHA-256 `088D6D0DCE5393787C5901F64D4445B038BC500B5E142B1E26E773CB1F92B32A`
+
 ## [0.1.2] - 2026-06-03
 
 **v0.1.1 hotfix.** Fixes the sidecar path resolution that made v0.1.1
@@ -219,6 +254,7 @@ IPC namespaces + 7 e2e smokes (all green).
   release artifacts, no Tauri updater wired. v0.2 plan: add GitHub Releases
   + Tauri auto-update.
 
+[0.1.3]: #013---2026-06-03
 [0.1.2]: #012---2026-06-03
 [0.1.1]: #011---2026-06-03
 [0.1.0]: #010---2026-06-02

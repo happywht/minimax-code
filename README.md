@@ -2,30 +2,30 @@
 
 桌面端 AI 编码 Agent 复刻项目。对标 MiniMax Code 全量功能：多轮对话、技能系统、定时任务、多 Agent 协作、移动互联、授权管理、进度面板。
 
-> **v0.1.2 内部首发版。** v0.1.1 修复版 — 修了 sidecar 路径解析错（v0.1.1 装完白屏退出），详见下方"已知限制"段与 [`CHANGELOG.md`](CHANGELOG.md)。完整 Phase 1 → Phase 6 已完成（端到端 chat、技能系统、调度、进度、移动配对、子 Agent、模型选择、设置、权限真弹窗、密钥 keyring、三栏布局、工作区切换、per-turn 摘要）。
+> **v0.1.3 内部首发版。** v0.1.2 修复版 — 修了首次启动首批 IPC 撞 `tokio pipe flush` race（os error 232 / "管道正在被关闭"），详见下方"已知限制"段与 [`CHANGELOG.md`](CHANGELOG.md)。完整 Phase 1 → Phase 6 已完成。
 
 ## 安装
 
 ### Windows 用户 — 下载安装包
 
-`v0.1.2` 内部发布版提供两种 Windows 安装包（build by Tauri 2.x）：
+`v0.1.3` 内部发布版提供两种 Windows 安装包（build by Tauri 2.x）：
 
 | 类型 | 文件 | 大小 | SHA256 |
 |------|------|-----:|--------|
-| **NSIS 安装包**（推荐） | `MiniMax Code_0.1.2_x64-setup.exe` | 3.18 MB (3,333,019 字节) | `2DD04D11B24AD7D58A7B989F3D6634E3D49587AA351B7253020DCE7C54216C2D` |
-| **MSI 包** | `MiniMax Code_0.1.2_x64_en-US.msi` | 3.93 MB (4,124,672 字节) | `1DAA16151C6BF5F36180728F59ED0BD467C131A93E489D74D52D9A45FC10E32E` |
+| **NSIS 安装包**（推荐） | `MiniMax Code_0.1.3_x64-setup.exe` | 3.18 MB (3,331,122 字节) | `088D6D0DCE5393787C5901F64D4445B038BC500B5E142B1E26E773CB1F92B32A` |
+| **MSI 包** | `MiniMax Code_0.1.3_x64_en-US.msi` | 3.93 MB (4,124,672 字节) | `74FA6F5983D13EB129F8187D53C86C18DC66973D4CF6F4DA4F48684BED766F84` |
 
 校验：
 
 ```powershell
-Get-FileHash "MiniMax Code_0.1.2_x64-setup.exe" -Algorithm SHA256
-# 期望：2DD04D11B24AD7D58A7B989F3D6634E3D49587AA351B7253020DCE7C54216C2D
+Get-FileHash "MiniMax Code_0.1.3_x64-setup.exe" -Algorithm SHA256
+# 期望：088D6D0DCE5393787C5901F64D4445B038BC500B5E142B1E26E773CB1F92B32A
 
-Get-FileHash "MiniMax Code_0.1.2_x64_en-US.msi" -Algorithm SHA256
-# 期望：1DAA16151C6BF5F36180728F59ED0BD467C131A93E489D74D52D9A45FC10E32E
+Get-FileHash "MiniMax Code_0.1.3_x64_en-US.msi" -Algorithm SHA256
+# 期望：74FA6F5983D13EB129F8187D53C86C18DC66973D4CF6F4DA4F48684BED766F84
 ```
 
-> 文件位置（开发机构建产物）：`src-tauri/target/release/bundle/{nsis,msi}/`。`v0.1.2` annotated tag 直接指向本 release commit；`v0.1.0` / `v0.1.1` tag 保留为历史记录（均已被 v0.1.2 取代）。
+> 文件位置（开发机构建产物）：`src-tauri/target/release/bundle/{nsis,msi}/`。`v0.1.3` annotated tag 直接指向本 release commit；`v0.1.0` / `v0.1.1` / `v0.1.2` tag 保留为历史记录。
 
 ### 开发者 — 从源码构建
 
@@ -180,17 +180,19 @@ cargo tauri build
 
 ## 已知限制
 
-### 0. v0.1.0 / v0.1.1 启动崩溃（v0.1.2 已修）
+### 0. v0.1.0 / v0.1.1 / v0.1.2 启动 race（v0.1.3 已修）
 
 **v0.1.0**: Tauri `setup()` 把 `app.manage(AppState)` 放在 fire-and-forget 的 async task 里跑 — webview 一 mount，前端 `session.list` 等首批 IPC 调用撞上 state 还没注册，5 个 toast 全是 `state not managed`。
 
-**v0.1.1**: 修 race，setup 改成同步 `init_agent_bridge` + 立即 `app.manage(...)`，但**暴露了第二个 bug：sidecar 路径解析错**。`ipc::sidecar_command` 用了 `"binaries/{}"` 前缀，而 Tauri 2.x `externalBin` 在 production bundle 里把 sidecar 放到资源根目录（install dir）且**不带 target-triple 后缀**。结果 `app.path().resolve("binaries/minimax-code-agent.exe", Resource)` 失败，回退到 dev 分支调 `python -m minimax_code`，但 production 用户的 PATH 里通常没有 `python`，且 agent 模块也没装。setup 返回 Err，Tauri 白屏 + 立刻退出。
+**v0.1.1**: 修 race，setup 改成同步 `init_agent_bridge` + 立即 `app.manage(...)`，但**暴露了第二个 bug：sidecar 路径解析错**（`binaries/` 前缀），setup 返回 Err，Tauri 白屏退出。
 
-**v0.1.2**: 改成 `app.path().resolve("minimax-code-agent.exe", BaseDirectory::Resource)`（无 `binaries/` 前缀），命中 production sidecar 路径。dev fallback 保留。装完应该看到正常启动 + 5 个首批 IPC 不报错 + 列表加载。
+**v0.1.2**: 路径修对，正常启动，**但暴露了第三个 bug：首次首批 IPC（session.list / model.list）撞 `tokio pipe flush` race**。`send_to_agent` 在 `write_all` 之后调了 `stdin.flush().await`，但 `tokio::process::ChildStdin` 是裸 OS pipe 没有用户态缓冲，`write_all` 已经把字节放进 kernel pipe buffer。`flush` 触发内部 sync，撞上 sidecar 还在 startup 阶段（~50ms init + asyncio server "waiting for messages"），OS 报 `ERROR_NO_DATA`（os error 232）/"管道正在被关闭"。首批 IPC 全部失败，但稍后用户交互（chat.send_message）sidecar 已就绪，反而能用。
+
+**v0.1.3**: 删掉 `stdin.flush().await`。pipe 上不需要 flush（kernel buffer ≥ 4KB，`\n` 分帧保证消息完整）。装完首批 IPC 应该正常返回。
 
 ### 1. Tauri 端到端 e2e smoke 未在已安装包上跑
 
-代码层面所有 Phase 1–6 e2e smoke（sessions / mobile / agents / chat / progress / model）均通过，**v0.1.2 起需在装好的桌面端手动验证**，自动化（Playwright / WebDriver）放 v0.1.3。
+代码层面所有 Phase 1–6 e2e smoke（sessions / mobile / agents / chat / progress / model）均通过，**v0.1.3 起需在装好的桌面端手动验证**，自动化（Playwright / WebDriver）放 v0.1.4。
 
 ### 2. `thinking_count` metadata 字段未实现
 

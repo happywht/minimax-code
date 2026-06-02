@@ -257,6 +257,17 @@ fn is_definitely_incomplete(e: &serde_json::Error) -> bool {
 ///
 /// Appends a `\n` terminator as required by the protocol. The write is
 /// guarded by an async mutex so concurrent commands cannot interleave.
+///
+/// **No `flush()` call**: `tokio::process::ChildStdin` is a raw OS pipe
+/// with no userspace buffer, so `write_all` is sufficient. Calling
+/// `flush().await` on a pipe can spuriously fail with os error 232
+/// (`ERROR_NO_DATA` / "pipe is being closed") during the brief window
+/// between sidecar process spawn and its IPC server reaching the
+/// "waiting for messages" state — the bytes are already in the kernel
+/// pipe buffer but `flush` triggers an internal sync that sees the
+/// child end as "closing". Removing `flush` eliminates this race; the
+/// protocol framing (`\n` terminator) and the OS pipe buffer (≥4 KB
+/// default) handle any transient backpressure.
 pub async fn send_to_agent(
     state: &AppState,
     message: &str,
@@ -268,9 +279,5 @@ pub async fn send_to_agent(
         .write_all(&payload)
         .await
         .map_err(|e| format!("failed to write to agent stdin: {e}"))?;
-    stdin
-        .flush()
-        .await
-        .map_err(|e| format!("failed to flush agent stdin: {e}"))?;
     Ok(())
 }
