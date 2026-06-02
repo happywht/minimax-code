@@ -34,7 +34,7 @@ describe("App smoke test", () => {
     expect(screen.getByTestId("message-input")).toBeInTheDocument();
     expect(screen.getByTestId("model-selector")).toBeInTheDocument();
     expect(screen.getByTestId("permission-toggle")).toBeInTheDocument();
-    expect(screen.getByTestId("progress-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("right-panel")).toBeInTheDocument();
     expect(screen.getByTestId("user-badge")).toBeInTheDocument();
   });
 

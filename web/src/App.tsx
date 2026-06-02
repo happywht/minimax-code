@@ -6,7 +6,7 @@ import {
   ModelSelector,
   PermissionRequestModal,
   PermissionToggle,
-  ProgressPanel,
+  RightPanel,
   SettingsPage,
   Sidebar,
   SkillsPanel,
@@ -21,10 +21,9 @@ type AppView = "chat" | "skills" | "settings";
 /**
  * Top-level layout. Bootstraps stores on mount, then renders the
  * three-pane shell:
- *   - <Sidebar /> (left)
- *   - <ChatPanel /> + <MessageInput /> (center) — or <SettingsPage /> or <SkillsPanel />
- *   - <ProgressPanel /> (right, floating) wrapped in a `right-panel`
- *     testId container so the smoke test can find it.
+ *   - <Sidebar /> (left, 240px) — brand, nav, session list, user badge
+ *   - <ChatPanel /> + <MessageInput /> (center) — or <SettingsPage /> / <SkillsPanel />
+ *   - <RightPanel /> (right, 280px, collapsible) — progress + agent team
  * The <ModelSelector /> and <PermissionToggle /> live in the input
  * footer so they're always reachable.
  */
@@ -75,9 +74,6 @@ export default function App() {
             <SkillsPanel />
           ) : (
             <>
-              <div data-testid="right-panel" className="contents">
-                <ProgressPanel />
-              </div>
               <ChatPanel />
               <footer className="flex items-center justify-between gap-2 border-t border-minimax-border bg-minimax-bg/40 px-4 py-2">
                 <div className="flex items-center gap-2">
@@ -95,6 +91,7 @@ export default function App() {
             </>
           )}
         </main>
+        <RightPanel />
         <ToastViewport />
         <PermissionRequestModal />
         {!agentReady && view === "chat" && (
