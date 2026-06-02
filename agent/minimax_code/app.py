@@ -94,6 +94,7 @@ async def _maybe_open_db() -> Any:
             set_mobile_dao,
         )
         from .progress import ProgressTracker
+        from .agent.llm import MiniMaxClient
     except Exception:  # pragma: no cover — storage not yet bootstrapped
         logger.debug("storage layer not importable; running with in-memory skill registry")
         return None
@@ -116,6 +117,12 @@ async def _maybe_open_db() -> Any:
         mobile_dao = MobileDeviceDAO(db)
         set_mobile_dao(mobile_dao)
         set_pairing_manager(PairingManagerWithDAO(mobile_dao))
+        # Sub-agent runtime — wire a process-wide MiniMaxClient
+        # so ``agent.invoke`` calls reach the real LLM (or the
+        # mock-mode canned response when MINIMAX_API_KEY is
+        # unset). One client per process keeps the underlying
+        # ``httpx.AsyncClient`` connection pool shared.
+        _set_subagent_llm(MiniMaxClient())
         return db
     except Exception:  # pragma: no cover — defensive
         logger.exception("failed to open storage; running with in-memory skill registry")
@@ -189,6 +196,58 @@ def _set_sessions_dao(dao: Any) -> None:
     """Internal setter used by :func:`_maybe_open_db`."""
     global _SESSIONS_DAO
     _SESSIONS_DAO = dao
+
+
+# ---------------------------------------------------------------------------
+# Sub-agent LLM singleton
+# ---------------------------------------------------------------------------
+#
+# The ``agent.invoke`` IPC handler drives sub-agents through
+# :class:`~minimax_code.orchestrator.subagent.SubAgentRuntime`. That
+# runtime needs a :class:`MiniMaxClient` to make real model calls;
+# without one it falls back to a deterministic stub response.
+#
+# The client is created once at process boot (from
+# :func:`_maybe_open_db`, next to the other storage-bound
+# singletons) so the underlying ``httpx.AsyncClient`` connection
+# pool is shared across every ``agent.invoke`` request.
+
+_SUBAGENT_LLM: Any = None  # type: ignore[no-untyped-def]
+
+
+def get_subagent_llm() -> Any:
+    """Return the process-wide sub-agent :class:`MiniMaxClient`, or ``None``.
+
+    The client is created by :func:`_maybe_open_db` the first time
+    the storage layer is opened. Tests can replace it via
+    :func:`set_subagent_llm`.
+    """
+    return _SUBAGENT_LLM
+
+
+def set_subagent_llm(llm: Any) -> None:
+    """Replace the cached sub-agent LLM client (test seam)."""
+    global _SUBAGENT_LLM
+    _SUBAGENT_LLM = llm
+
+
+def _set_subagent_llm(llm: Any) -> None:
+    """Internal setter used by :func:`_maybe_open_db`.
+
+    Also builds the :class:`SubAgentRuntime` singleton (lazily) so
+    the IPC layer can grab a runtime that already has the LLM
+    wired in. The runtime lives in
+    :mod:`minimax_code.orchestrator.subagent`; we update it via
+    :func:`minimax_code.orchestrator.subagent.set_subagent_runtime`.
+    """
+    global _SUBAGENT_LLM
+    _SUBAGENT_LLM = llm
+    try:
+        from .orchestrator.subagent import SubAgentRuntime, set_subagent_runtime
+
+        set_subagent_runtime(SubAgentRuntime(llm=llm))
+    except Exception:  # pragma: no cover — defensive
+        logger.debug("could not set subagent runtime; continuing")
 
 
 # ---------------------------------------------------------------------------
@@ -269,9 +328,11 @@ __all__ = [
     "get_progress_tracker",
     "get_runtime",
     "get_sessions_dao",
+    "get_subagent_llm",
     "init_runtime",
     "register_app_handlers",
     "set_progress_tracker",
     "set_runtime",
     "set_sessions_dao",
+    "set_subagent_llm",
 ]

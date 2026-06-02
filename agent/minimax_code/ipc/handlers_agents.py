@@ -13,15 +13,21 @@ can dispatch work to. The handlers do two jobs:
   :class:`~minimax_code.orchestrator.subagent.SubAgentHandle` from
   the named config, runs it through the
   :class:`SubAgentRuntime`, emits a streamed ``agent.message_chunk``
-  event for the (stubbed) response, and writes a single progress
-  row to the ``tasks`` table (start → 50 → complete) so the rest
-  of the system sees a real task lifecycle.
+  event for the response, and writes a single progress row to the
+  ``tasks`` table (start → 50 → complete) so the rest of the system
+  sees a real task lifecycle.
 
-The runtime is **stubbed** in PoC mode — the LLM call is replaced
-by a deterministic canned response, no real model is invoked, and
-no child process is spawned. The wire protocol is identical, so
-swapping in the real LLM later is a one-line change inside
-:meth:`SubAgentRuntime.invoke`.
+The runtime is **real LLM** by default — a process-wide
+:class:`MiniMaxClient` is built at app boot (in
+:func:`minimax_code.app._maybe_open_db`) and injected into the
+runtime singleton, so :meth:`SubAgentRuntime.invoke` forwards
+to :meth:`AgentCore.run` and the wire response carries
+``stub=False`` plus the model's actual text. When the runtime
+singleton isn't set (e.g. a test that never bootstrapped the
+app, or a process running without storage), the runtime falls
+back to a deterministic stub envelope (``stub=True``) so the
+IPC layer can still exercise the full event flow. No child
+process is spawned in either path.
 
 Wire-up
 -------
@@ -41,7 +47,11 @@ Schema
 ``agent.update``   -> ``{ agent: {...} }``
 ``agent.delete``   -> ``{ ok: true }``
 ``agent.invoke``   -> streamed ``agent.message_chunk`` events +
-                      final ``{ agent, request, session_id, text, task_id, stub }``
+                      final ``{ agent, request, session_id, text, task_id,
+                                iterations, tool_calls, stub }``
+                      (``stub=False`` when the runtime has an LLM,
+                      ``stub=True`` when it falls back to the
+                      deterministic stub envelope.)
 """
 
 from __future__ import annotations
@@ -89,12 +99,26 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
     """
     dao_factory = _make_dao_factory(dao)
     # The runtime is process-wide — one instance handles every
-    # ``agent.invoke`` call. Construction is cheap (no I/O); we
-    # just import the class lazily so the handlers module can be
-    # imported without dragging in :mod:`minimax_code.agent.core`.
-    from ..orchestrator import SubAgentRuntime
+    # ``agent.invoke`` call. We resolve it lazily on every
+    # invocation rather than capturing at registration time, so
+    # that the singleton set up by :func:`minimax_code.app._maybe_open_db`
+    # (which runs after the handler registration in the current
+    # boot order) is picked up correctly. When the singleton
+    # hasn't been built yet (e.g. a test that skipped the app
+    # init), we fall back to a default ``SubAgentRuntime()`` so
+    # handlers stay usable.
+    from ..orchestrator import SubAgentRuntime, get_subagent_runtime
 
-    runtime = SubAgentRuntime()
+    def _resolve_runtime() -> Any:
+        """Return the current process-wide runtime, or build a default one.
+
+        Resolved lazily on every :meth:`handle_agent_invoke` call
+        so the LLM-injected runtime set by
+        :func:`minimax_code.app._maybe_open_db` is picked up
+        even when the DB opens *after* handler registration
+        (the current boot order).
+        """
+        return get_subagent_runtime() or SubAgentRuntime()
 
     # ------------------------------------------------------------------ list
 
@@ -252,13 +276,20 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
 
         Params: ``{"name": "...", "request": "...", "session_id"?: "..."}``
         Reply:  ``{"agent": ..., "request": ..., "session_id": ...,
-                  "text": ..., "task_id": ..., "iterations": N, "stub": True}``
+                  "text": ..., "task_id": ..., "iterations": N, "stub": <bool>}``
+
+        When the runtime singleton (set by
+        :func:`minimax_code.app._maybe_open_db`) carries a
+        :class:`MiniMaxClient`, ``runtime.invoke`` returns the
+        model's actual final text and ``stub=False``. When no
+        LLM is injected (e.g. a test path), the deterministic
+        stub envelope is returned (``stub=True``).
 
         Side effects
         ------------
 
-        1. Emits a ``agent.message_chunk`` event with the stubbed
-           final text (so the frontend sees a stream, not just a
+        1. Emits a ``agent.message_chunk`` event with the final
+           text (so the frontend sees a stream, not just a
            reply). Marks ``done=True`` on the final emission.
         2. Writes a single progress row through
            :func:`minimax_code.app.get_progress_tracker` — start
@@ -304,6 +335,12 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 model=config_row.get("model"),
                 id=config_row.get("id"),
             )
+            # Resolve the runtime lazily — the singleton is set
+            # by :func:`minimax_code.app._maybe_open_db`, which
+            # may not have run yet at handler-registration time
+            # (the boot order registers handlers first, then
+            # opens the DB on the first ``skill.*`` call).
+            runtime = _resolve_runtime()
             handle = runtime.build(config)
 
             # Ensure a sessions row exists so the FK in ``tasks``
@@ -324,32 +361,41 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                     emit=ctx.emit,
                 )
 
-            # 2. Stream a stub chunk. In PoC mode there's only
-            # one chunk; future LLM wiring will iterate
-            # ``runtime.invoke_async_iter`` (or forward to
-            # ``core.run``) and emit many.
-            stub_text = (
-                f"{SubAgentRuntime.STUB_PREFIX} {name} would handle: {request}"
+            # 2. Run the sub-agent. When the runtime has an LLM
+            # injected, this forwards to AgentCore.run and
+            # returns the model's actual final text (and sets
+            # ``stub=False``). When the runtime is unconfigured
+            # (no LLM), the deterministic stub envelope is
+            # returned (``stub=True``).
+            result = await runtime.invoke(
+                handle, session_id=session_id, request=request
             )
+            is_stub = bool(result.get("stub", True))
+            final_text = result.get("text", "")
+
+            # 3. Stream a single agent.message_chunk with the
+            # final text so the frontend sees a stream. The
+            # streamed delta and the final reply text are kept
+            # in sync (both come from ``final_text``).
             await ctx.emit(
                 "agent.message_chunk",
                 {
                     "session_id": session_id,
                     "message_id": message_id,
-                    "delta": stub_text,
+                    "delta": final_text,
                     "done": False,
                     "agent": name,
                 },
             )
-            # 3. Bump the progress to 50 (mid-stream).
+            # 4. Bump the progress to 50 (mid-stream).
             if tracker is not None and task_id is not None:
                 await tracker.update(
                     task_id,
                     50,
-                    message="stub: half-way through",
+                    message=("stub: half-way through" if is_stub else "half-way through"),
                     emit=ctx.emit,
                 )
-            # 4. Final chunk marker.
+            # 5. Final chunk marker.
             await ctx.emit(
                 "agent.message_chunk",
                 {
@@ -360,13 +406,6 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                     "agent": name,
                 },
             )
-            # 5. Run the (stub) invoke to keep parity with the
-            # future real-LLM path — it also returns the final
-            # text in a single envelope, so callers can rely on
-            # the shape.
-            result = await runtime.invoke(
-                handle, session_id=session_id, request=request
-            )
             # 6. Mark the task complete.
             if tracker is not None and task_id is not None:
                 await tracker.complete(task_id, emit=ctx.emit)
@@ -375,12 +414,12 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                     "agent": name,
                     "request": request,
                     "session_id": session_id,
-                    "text": result.get("text", stub_text),
+                    "text": final_text,
                     "iterations": result.get("iterations", 0),
                     "tool_calls": result.get("tool_calls", []),
                     "task_id": task_id,
                     "message_id": message_id,
-                    "stub": True,
+                    "stub": is_stub,
                 }
             )
         except _HandlerError as exc:

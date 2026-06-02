@@ -19,7 +19,9 @@ from .subagent import (
     SubAgentConfigError,
     SubAgentHandle,
     SubAgentRuntime,
+    get_subagent_runtime,
     make_session_id,
+    set_subagent_runtime,
 )
 
 __all__ = [
@@ -27,5 +29,7 @@ __all__ = [
     "SubAgentConfigError",
     "SubAgentHandle",
     "SubAgentRuntime",
+    "get_subagent_runtime",
     "make_session_id",
+    "set_subagent_runtime",
 ]

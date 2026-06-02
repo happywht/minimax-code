@@ -181,3 +181,75 @@ def test_subagent_handles_are_independent() -> None:
     h2 = runtime.build(SubAgentConfig(name="a", system_prompt="x"))
     # Two builds → two independent AgentCore instances.
     assert h1.core is not h2.core
+
+
+# ---------------------------------------------------------------------------
+# SubAgentRuntime with injected LLM
+# ---------------------------------------------------------------------------
+
+
+class _FakeLLM:
+    """Minimal stand-in for :class:`MiniMaxClient` used by the
+    sub-agent runtime test.
+
+    Records every :meth:`stream_chat` invocation and emits a
+    single canned text chunk. Mirrors the contract
+    :class:`AgentCore` needs (an async ``stream_chat`` method
+    that yields :class:`StreamChunk` values).
+    """
+
+    def __init__(self, text: str = "(real-LLM canned reply)") -> None:
+        self.text = text
+        self.stream_calls: int = 0
+
+    async def stream_chat(self, messages, **_kwargs):  # type: ignore[no-untyped-def]
+        from minimax_code.agent.llm import StreamChunk
+
+        self.stream_calls += 1
+        yield StreamChunk(delta=self.text)
+        yield StreamChunk(
+            finish_reason="stop",
+            usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        )
+
+
+@pytest.mark.asyncio
+async def test_subagent_invoke_uses_injected_llm_not_stub() -> None:
+    """An LLM injected into SubAgentRuntime makes invoke() forward to
+    AgentCore.run (real path), not return the deterministic stub."""
+    fake = _FakeLLM(text="hello from real LLM")
+    runtime = SubAgentRuntime(llm=fake)
+    handle = runtime.build(
+        SubAgentConfig(name="reviewer", system_prompt="x", model="MiniMax-M3")
+    )
+    # The handle's core must be wired to the same LLM instance.
+    assert handle.core is not None
+    assert handle.core.llm is fake
+
+    result = await runtime.invoke(
+        handle, session_id="sess-x", request="review this"
+    )
+    # The real-LLM path is taken.
+    assert result["stub"] is False
+    assert result["text"] == "hello from real LLM"
+    assert "stub:" not in result["text"]
+    assert fake.stream_calls == 1, "stream_chat must be called once"
+    # Echo fields match.
+    assert result["agent"] == "reviewer"
+    assert result["request"] == "review this"
+    assert result["session_id"] == "sess-x"
+
+
+@pytest.mark.asyncio
+async def test_subagent_invoke_falls_back_to_stub_when_llm_is_none() -> None:
+    """Backward-compat: no LLM → deterministic stub envelope."""
+    runtime = SubAgentRuntime()  # llm=None
+    handle = runtime.build(
+        SubAgentConfig(name="reviewer", system_prompt="x")
+    )
+    result = await runtime.invoke(
+        handle, session_id="sess-y", request="review this"
+    )
+    assert result["stub"] is True
+    assert result["text"].startswith(SubAgentRuntime.STUB_PREFIX)
+    assert "review this" in result["text"]

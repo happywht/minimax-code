@@ -43,6 +43,7 @@ from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover — only for type hints
     from ..agent.core import AgentCore
+    from ..agent.llm import MiniMaxClient
 
 logger = logging.getLogger(__name__)
 
@@ -125,10 +126,16 @@ class SubAgentRuntime:
     #: data.
     STUB_PREFIX = "stub: agent"
 
-    def __init__(self, *, llm: Any = None) -> None:
-        # ``llm`` is accepted for forward compatibility — once a real
-        # MiniMax client is wired into sub-agents we'll pass it through
-        # to the new :class:`AgentCore`. In PoC mode it's never used.
+    def __init__(self, *, llm: "MiniMaxClient | None" = None) -> None:
+        # ``llm`` is the process-wide :class:`MiniMaxClient`. When
+        # ``None`` (the default), :meth:`invoke` returns the
+        # deterministic stub envelope so the IPC layer can still
+        # exercise the full event flow without an API key. When
+        # a real client is injected, :meth:`invoke` forwards the
+        # request to the :class:`AgentCore` instance and returns
+        # the streamed LLM response — the same wire shape, but
+        # the ``stub`` flag is set to ``False`` and ``text`` is
+        # the model's actual answer.
         self._llm = llm
 
     # -- construction ------------------------------------------------------
@@ -167,7 +174,7 @@ class SubAgentRuntime:
         core = AgentCore(llm=self._llm, registry=registry, config=core_config)
         return SubAgentHandle(agent_id=config.id, config=config, core=core)
 
-    # -- stub invoke -------------------------------------------------------
+    # -- invoke ------------------------------------------------------------
 
     async def invoke(
         self,
@@ -176,24 +183,30 @@ class SubAgentRuntime:
         session_id: str,
         request: str,
     ) -> dict[str, Any]:
-        """Stub invoke — produces a deterministic response envelope.
+        """Drive the sub-agent and return a final-text envelope.
 
-        The PoC shape is::
+        Two paths:
+
+        1. **Real LLM** (``self._llm is not None``) — forward to
+           :meth:`AgentCore.run` with ``user_message=request``. The
+           response envelope uses the model's actual ``final_text``
+           and reports ``stub=False``.
+        2. **Stub fallback** (``self._llm is None``) — produce the
+           deterministic canned response so the IPC layer can
+           still exercise the full event flow without an API key.
+           ``stub=True``.
+
+        The wire shape is identical::
 
             {
                 "agent": <name>,
                 "request": <echoed request>,
                 "session_id": <echoed session_id>,
-                "text": "stub: agent <name> would handle: <request>",
-                "iterations": 0,
-                "tool_calls": [],
-                "stub": True,
+                "text": <final text or stub>,
+                "iterations": N,
+                "tool_calls": [...],
+                "stub": <True|False>,
             }
-
-        When the real LLM is wired in, this method will forward to
-        :meth:`AgentCore.run` and stitch the streaming response +
-        progress events through the same ``emit`` callback the
-        tracker uses.
         """
         if not request or not isinstance(request, str):
             raise SubAgentConfigError(
@@ -203,14 +216,42 @@ class SubAgentRuntime:
             raise SubAgentConfigError(
                 f"session_id must be a non-empty string, got {session_id!r}"
             )
+
+        # Stub path — keeps backwards compatibility for callers
+        # that haven't yet wired an LLM (legacy unit tests, docs
+        # examples, the no-API-key CI lane).
+        if self._llm is None:
+            return {
+                "agent": handle.config.name,
+                "request": request,
+                "session_id": session_id,
+                "text": f"{self.STUB_PREFIX} {handle.config.name} would handle: {request}",
+                "iterations": 0,
+                "tool_calls": [],
+                "stub": True,
+            }
+
+        # Real-LLM path — drive the AgentCore. The core already
+        # has ``self._llm`` wired in by :meth:`build`, so the
+        # response will be a genuine model answer (or a mock-mode
+        # canned string if the client was built with ``mock=True``).
+        core = handle.core
+        if core is None:  # pragma: no cover — defensive
+            raise SubAgentConfigError(
+                f"sub-agent {handle.config.name!r} has no AgentCore; "
+                "did you forget to call SubAgentRuntime.build?"
+            )
+        run_result = await core.run(
+            session_id=session_id, user_message=request
+        )
         return {
             "agent": handle.config.name,
             "request": request,
             "session_id": session_id,
-            "text": f"{self.STUB_PREFIX} {handle.config.name} would handle: {request}",
-            "iterations": 0,
-            "tool_calls": [],
-            "stub": True,
+            "text": run_result.final_text or "",
+            "iterations": run_result.iterations,
+            "tool_calls": list(run_result.tool_calls),
+            "stub": False,
         }
 
 
@@ -230,10 +271,51 @@ def make_session_id(prefix: str = "subagent") -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
+# ---------------------------------------------------------------------------
+# Process-wide runtime singleton
+# ---------------------------------------------------------------------------
+#
+# The IPC layer needs a single :class:`SubAgentRuntime` instance so
+# that the LLM client injected at app boot (see
+# :func:`minimax_code.app._maybe_open_db`) is reused across every
+# ``agent.invoke`` request. We don't want to construct a fresh
+# ``MiniMaxClient`` (and a fresh ``httpx.AsyncClient`` under it)
+# for every call.
+#
+# Tests use :func:`set_subagent_runtime` to swap in a runtime
+# bound to a mock LLM, then restore via ``set_subagent_runtime(None)``
+# or by saving/replacing the previous value.
+
+_SUBAGENT_RUNTIME: "SubAgentRuntime | None" = None
+
+
+def get_subagent_runtime() -> "SubAgentRuntime | None":
+    """Return the process-wide :class:`SubAgentRuntime`, or ``None``.
+
+    Returns ``None`` if the runtime hasn't been built yet (e.g.
+    very early at process boot, or in a test that never set it).
+    Callers that need a runtime should fall back to constructing
+    a default :class:`SubAgentRuntime` themselves.
+    """
+    return _SUBAGENT_RUNTIME
+
+
+def set_subagent_runtime(runtime: "SubAgentRuntime | None") -> None:
+    """Replace the cached :class:`SubAgentRuntime` (test seam).
+
+    Pass ``None`` to clear. :func:`get_subagent_runtime` will then
+    return ``None`` until something is set again.
+    """
+    global _SUBAGENT_RUNTIME
+    _SUBAGENT_RUNTIME = runtime
+
+
 __all__ = [
     "SubAgentConfig",
     "SubAgentHandle",
     "SubAgentRuntime",
     "SubAgentConfigError",
+    "get_subagent_runtime",
     "make_session_id",
+    "set_subagent_runtime",
 ]

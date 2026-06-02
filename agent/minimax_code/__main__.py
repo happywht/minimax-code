@@ -31,6 +31,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 async def amain(config: Config) -> int:
+    # Eagerly bring up the runtime singletons (progress tracker,
+    # sessions DAO, sub-agent LLM, …) before registering handlers
+    # so that the very first ``agent.invoke`` request finds the
+    # injected ``MiniMaxClient`` in
+    # :func:`minimax_code.orchestrator.subagent.get_subagent_runtime`
+    # instead of falling back to the deterministic stub.
+    # ``init_runtime`` is idempotent and async-safe.
+    try:
+        from .app import init_runtime
+
+        await init_runtime()
+    except Exception:
+        # Storage may be disabled (MINIMAX_CODE_NO_DB=1) or the
+        # DB may be briefly unavailable at boot — both are fine,
+        # the handlers will lazily retry on first use.
+        pass
     server = IPCServer(config=config, stdin=sys.stdin, stdout=sys.stdout)
     register_app_handlers(server)
     await server.run_forever()
