@@ -209,6 +209,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     """
     from .ipc.builtins import handle_agent_send_message
     from .ipc.handlers_agents import register_agent_handlers
+    from .ipc.handlers_model import register_model_handlers
     from .ipc.handlers_permissions import register_permission_handlers
     from .ipc.handlers_scheduled import register_scheduled_handlers
     from .ipc.handlers_sessions import register_session_handlers
@@ -252,10 +253,15 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # tests). Token cache is process-local; DB rows persist.
     from .ipc.handlers_mobile import register_mobile_handlers
     register_mobile_handlers(server)
+    # The model handlers expose ``model.list`` / ``model.get_current``
+    # / ``model.set_current`` and lazily open the async DB to build
+    # a :class:`~.storage.dao.ModelPrefsDAO` on first call. Tests
+    # can inject a DAO via the ``dao=`` kwarg to skip the lazy path.
+    register_model_handlers(server)
     logger.info(
         "registered application handlers "
         "(1 agent.* + 6 agent.* + 5 skill.* + 6 task.* + 5 session.* + "
-        "5 permission.* + 6 schedule.* + 5 mobile.*)"
+        "5 permission.* + 6 schedule.* + 5 mobile.* + 3 model.*)"
     )
 
 

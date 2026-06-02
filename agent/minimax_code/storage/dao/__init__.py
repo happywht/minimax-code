@@ -19,7 +19,7 @@ Conventions
 
 from __future__ import annotations
 
-from . import agents, messages, mobile_devices, permissions, scheduled_jobs, sessions, skills, tasks
+from . import agents, messages, mobile_devices, model_prefs, permissions, scheduled_jobs, sessions, skills, tasks
 
 # Public re-exports — keep these stable; the agent loop imports
 # ``SessionsDAO`` from this module, not from the submodule.
@@ -31,6 +31,18 @@ from .messages import create_sync as create_message_sync
 from .mobile_devices import MobileDeviceDAO
 from .mobile_devices import MobileDevicesDAO
 from .mobile_devices import upsert_sync as upsert_device_sync
+from .model_prefs import (
+    DEFAULT_MODEL as DEFAULT_PREF_MODEL,
+)
+from .model_prefs import (
+    ModelPrefsDAO,
+)
+from .model_prefs import (
+    get_current_sync as get_current_model_sync,
+)
+from .model_prefs import (
+    set_current_sync as set_current_model_sync,
+)
 from .permissions import PermissionRuleDAO
 from .permissions import PermissionRulesDAO
 from .permissions import create_sync as create_permission_sync
@@ -51,6 +63,7 @@ __all__ = [
     "MessagesDAO",
     "MobileDeviceDAO",
     "MobileDevicesDAO",
+    "ModelPrefsDAO",
     "PermissionRuleDAO",
     "PermissionRulesDAO",
     "ScheduledJobsDAO",
@@ -59,18 +72,22 @@ __all__ = [
     "TaskDAO",
     "TasksDAO",
     # Sync helpers
+    "DEFAULT_PREF_MODEL",
     "create_agent_sync",
     "create_job_sync",
     "create_message_sync",
     "create_permission_sync",
     "create_session_sync",
     "create_task_sync",
+    "get_current_model_sync",
+    "set_current_model_sync",
     "upsert_device_sync",
     "upsert_skill_sync",
     # Submodules
     "agents",
     "messages",
     "mobile_devices",
+    "model_prefs",
     "permissions",
     "scheduled_jobs",
     "sessions",
