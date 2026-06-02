@@ -2,14 +2,55 @@
 
 桌面端 AI 编码 Agent 复刻项目。对标 MiniMax Code 全量功能：多轮对话、技能系统、定时任务、多 Agent 协作、移动互联、授权管理、进度面板。
 
-## 当前状态
+> **v0.1.0 内部首发版。** 完整 Phase 1 → Phase 6 全部完成（端到端 chat、技能系统、调度、进度、移动配对、子 Agent、模型选择、设置、权限真弹窗、密钥 keyring、三栏布局、工作区切换、per-turn 摘要、Tauri release build）。详见 [`CHANGELOG.md`](CHANGELOG.md)。
 
-- **Phase 1（基础闭环）**：✅ 已完成 — Tauri 2.x 桌面壳 + React 18 前端 + Python agent 核心 + SQLite 存储 + 技能系统
-- **Phase 2a（授权 / 调度 / 进度）**：✅ 已完成
-- **Phase 2b（会话历史 / 移动配对 / 多 Agent）**：✅ 已完成 — 49 个单测全过 + 17 步集成端到端 smoke 全过
-- **Phase 3（端到端 chat + 文档）**：
-  - ✅ `agent.send_message` 真接通 AgentCore + mock LLM + 消息持久化
-  - ⚠️ Tauri release build 卡在你的开发机环境（见"已知限制"），源码本身完整
+## 安装
+
+### Windows 用户 — 下载安装包
+
+`v0.1.0` 内部发布版提供两种 Windows 安装包（build by Tauri 2.x）：
+
+| 类型 | 文件 | 大小 | SHA256 |
+|------|------|-----:|--------|
+| **NSIS 安装包**（推荐） | `MiniMax Code_0.1.0_x64-setup.exe` | 3.18 MB (3,326,699 字节) | `A72FEFF7D10F7F56E663014DDF979B2C46783C62CDCEAA2D925EDD6921ABBCE7` |
+| **MSI 包** | `MiniMax Code_0.1.0_x64_en-US.msi` | 3.86 MB (4,042,752 字节) | `7BA9CDF144A3ADB03B35517682ECBA950D28EA1EAA7B93F3CAC8356A84A16F08` |
+
+校验：
+
+```powershell
+Get-FileHash "MiniMax Code_0.1.0_x64-setup.exe" -Algorithm SHA256
+# 期望：A72FEFF7D10F7F56E663014DDF979B2C46783C62CDCEAA2D925EDD6921ABBCE7
+
+Get-FileHash "MiniMax Code_0.1.0_x64_en-US.msi" -Algorithm SHA256
+# 期望：7BA9CDF144A3ADB03B35517682ECBA950D28EA1EAA7B93F3CAC8356A84A16F08
+```
+
+> 文件位置（开发机构建产物）：`src-tauri/target/release/bundle/{nsis,msi}/`。`v0.1.0` 标签对应 git commit `9023e45+`（含本 README 与 CHANGELOG 的提交）。
+
+### 开发者 — 从源码构建
+
+```bash
+# 1. 装依赖
+pnpm install
+cd agent && uv pip install -e . && cd ..
+
+# 2. 出 Windows 安装包（NSIS + MSI）
+cd src-tauri
+cargo tauri build
+# 产物：src-tauri/target/release/bundle/{nsis,msi}/
+```
+
+> 前置：Node 20+、Python 3.11+、Rust 1.77+、Tauri 2.x 工具链（`cargo install tauri-cli@^2`）、Windows NSIS（自动随 Tauri 安装）、WiX 3.x（出 MSI 时需要）。
+
+## 当前状态（v0.1.0）
+
+- **Phase 1（基础闭环）**：✅ — Tauri 2.x 桌面壳 + React 18 前端 + Python agent 核心 + SQLite 存储 + 技能系统
+- **Phase 2a（授权 / 调度 / 进度）**：✅
+- **Phase 2b（会话历史 / 移动配对 / 多 Agent）**：✅ — 49+ 单测全过 + 17 步集成 e2e smoke 全过
+- **Phase 3（端到端 chat + 文档）**：✅ — `agent.send_message` 真接通 AgentCore + mock LLM + 消息持久化
+- **Phase 4（模型选择 + 子 Agent 真 LLM）**：✅ — `model.list/get_current/set_current` IPC + `SubAgentRuntime` 走真 MiniMax API（注入式）
+- **Phase 5（设置页 + 权限真弹窗 + 密钥 keyring）**：✅ — Settings 三 Tab、tool-call 运行时授权弹窗、API Key 走 OS keyring
+- **Phase 6（前端完成度 + Tauri release build）**：✅ — 技能面板 + 三栏布局 + 工作区切换 + per-turn 摘要 + Tauri NSIS/MSI 包成功出
 
 ## 架构
 
@@ -21,7 +62,7 @@
 | LLM 客户端 | httpx (async) | MiniMax API；mock mode（无 KEY 时降级） |
 | 存储 | SQLite (aiosqlite) | 8 张表（sessions / messages / tasks / skills / scheduled_jobs / permission_rules / mobile_devices / agents） |
 | 调度 | APScheduler | 持久化 cron |
-| 测试 | pytest + pytest-asyncio | 单元 + subprocess 端到端 smoke |
+| 测试 | pytest + pytest-asyncio | 单元 + subprocess e2e smoke |
 
 详细见 [`docs/architecture.md`](docs/architecture.md)。
 
@@ -33,7 +74,7 @@
 ├── src-tauri/             # Tauri Rust 壳（main.rs / lib.rs / ipc.rs / commands.rs）
 ├── web/                   # React + Vite 前端
 │   └── src/
-│       ├── components/    # Sidebar / ChatPanel / MessageInput / ProgressPanel ...
+│       ├── components/    # Sidebar / ChatPanel / MessageInput / ProgressPanel / SkillPanel / ...
 │       ├── stores/        # Zustand stores
 │       ├── ipc/           # IPC client (Tauri invoke/listen 包装)
 │       └── types/         # 共享类型
@@ -48,7 +89,8 @@
 │   │   ├── orchestrator/  # SubAgentRuntime
 │   │   ├── auth/          # PermissionStore
 │   │   ├── mobile/        # PairingManager
-│   │   └── progress/      # ProgressTracker
+│   │   ├── progress/      # ProgressTracker
+│   │   └── secrets/       # OS keyring + env-var fallback
 │   └── tests/             # pytest 单元
 ├── tests/                 # e2e subprocess smoke（black-box）
 │   └── e2e/
@@ -56,21 +98,27 @@
 │       ├── smoke_mobile.py
 │       ├── smoke_agents.py
 │       ├── smoke_phase2b.py
-│       └── smoke_chat.py
+│       ├── smoke_chat.py
+│       ├── smoke_progress.py
+│       └── smoke_model.py
 ├── package.json
 ├── pnpm-workspace.yaml
-└── README.md
+├── README.md
+└── CHANGELOG.md
 ```
 
-## 前置环境
+## 前置环境（仅源码构建 / 开发需要）
 
 - **Node.js 20+** (测试用 22.18)
 - **pnpm 9+** — `npm i -g pnpm`
 - **Python 3.11+** (测试用 3.12)
 - **uv** — `pip install uv` 或下载 [astral-sh/uv](https://docs.astral.sh/uv/)
-- **Rust 1.77+** + Tauri 工具链（见"已知限制"）
+- **Rust 1.77+** + Tauri 2.x CLI（`cargo install tauri-cli@^2`）
+- **Windows** — Visual Studio Build Tools "Desktop development with C++" workload（出 MSI 还要 WiX 3.x）
 
-## 快速启动（dev mode）
+> 终端用户直接用安装包，不需要上面这些。
+
+## 快速启动（dev mode — 三终端）
 
 ```bash
 # 1. 装 JS 依赖
@@ -97,56 +145,57 @@ cd src-tauri
 cargo tauri dev
 ```
 
-> Tauri 的 `invoke` / `listen` API **只在 Tauri webview 里可用** — 真要看完整 demo 必须用 `cargo tauri dev`，普通浏览器看 `localhost:5173` 只能用 stub IPC。
+> Tauri 的 `invoke` / `listen` API **只在 Tauri webview 里可用** — 普通浏览器看 `localhost:5173` 只能用 stub IPC。要看完整 demo 必须用 `cargo tauri dev`，或直接装 `MiniMax Code_0.1.0_x64-setup.exe` 跑 release 客户端。
 
 ## 测试
 
 ```bash
-# Python 单元（49 个 case）
+# Python 单元
 cd agent
 pytest -q
 
 # e2e subprocess smoke（每个 smoke 是独立的 black-box 端到端）
 # 都遵循统一约定：spawn 真实 agent 进程、跑 IPC、读磁盘
 cd tests
-python e2e/smoke_sessions.py  <python> <agent_dir> <workdir>
-python e2e/smoke_mobile.py    <python> <agent_dir> <workdir>
-python e2e/smoke_agents.py    <python> <agent_dir> <workdir>
-python e2e/smoke_phase2b.py   <python> <agent_dir> <workdir>
-python e2e/smoke_chat.py      <python> <agent_dir> <workdir>
+python e2e/smoke_sessions.py   <python> <agent_dir> <workdir>
+python e2e/smoke_mobile.py     <python> <agent_dir> <workdir>
+python e2e/smoke_agents.py     <python> <agent_dir> <workdir>
+python e2e/smoke_phase2b.py    <python> <agent_dir> <workdir>
+python e2e/smoke_chat.py       <python> <agent_dir> <workdir>
+python e2e/smoke_progress.py   <python> <agent_dir> <workdir>
+python e2e/smoke_model.py      <python> <agent_dir> <workdir>
 ```
 
 > 跑 smoke 时 `<workdir>` 必须是**新创建的**空目录 — 所有 smoke 内部用 `MINIMAX_CODE_DATA_DIR=<workdir>` 隔离 DB，避免相互污染。
 
-## 打包发布
+## 出包（release build）
 
 ```bash
 cd src-tauri
 cargo tauri build
-# 产出：src-tauri/target/release/bundle/{nsis,msi,dmg,deb,appimage}/
+# 产物：src-tauri/target/release/bundle/{nsis,msi}/
 ```
 
-> 前提：开发机已装对应平台的工具链（见"已知限制"）。
+> v0.1.0 已成功出包 — 见"安装"段的 SHA256 校验值。
 
 ## 已知限制
 
-### 1. Tauri release build 需要完整平台工具链
+### 1. Tauri 端到端 e2e smoke 未在已安装包上跑
 
-当前 `src-tauri/` 源码完整（~320 LOC，5 个 IPC handler / JSON-RPC bridge / Tauri 2.x setup），但 `cargo tauri build` 在开发机上失败 — 缺 MSVC 工具链 / rustup / MinGW。详细：
+代码层面所有 Phase 1–6 e2e smoke（sessions / mobile / agents / chat / progress / model）均通过，但**未在 `MiniMax Code_0.1.0_x64-setup.exe` 安装后的实际桌面环境里跑过端到端**。PoC 阶段决策：先出包、把 release 验证留给首次装机用户。Phase 7 (v0.2) 计划加 Playwright / WebDriver 自动化跑已装包。
 
-[`docs/build-reports/2026-06-02-tauri-build-blocked.md`](docs/build-reports/2026-06-02-tauri-build-blocked.md)
+### 2. `thinking_count` metadata 字段未实现
 
-修复路径（二选一）：
+Web 端 `MessageMetadata` 类型里预留了 `thinkingCount: number` 字段，但当前 AgentCore 的 `metadata` payload 不发这个键。前端会安全地 fallback 到 `0`。Phase 7 计划接通真实 MiniMax API 的 thinking-token 计数。
 
-- **Windows** — 装 [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-studio-build-tools/) "Desktop development with C++" workload
-- **跨平台** — 装 [rustup](https://rustup.rs/) 然后 `rustup default stable-gnu` + MinGW-w64
+### 3. Sub-agent LLM 走 mock mode（除注入式之外）
 
-### 2. Sub-agent LLM 走 mock mode
+`SubAgentRuntime` 默认用 `AgentCore(llm=None)` — stub 模式返回确定性文本。主 chat 链路（`agent.send_message`）的 mock mode 触发条件是 `MINIMAX_API_KEY` 为空。Phase 4 已加 `SubAgentRuntime.inject_llm(client)` 入口：测试用真 LLM 时手动注入 `MiniMaxClient` 即可。`smoke_agents` 已支持这种注入式 e2e。
 
-`SubAgentRuntime` 当前用 `AgentCore(llm=None)` — LLM 调用是 stub，返回确定性文本。Phase 4 会切真 MiniMax API（设置 `MINIMAX_API_KEY` env 即可启用）。
+### 4. 旧 README "Tasks ahead" 段
 
-主 chat 链路（`agent.send_message`）的 mock mode 触发条件是 `MINIMAX_API_KEY` 为空 — 走 `MiniMaxClient` 的内置 fixture，方便本地/CI 跑端到端。
+仓库原 README（Phase 1 skeleton 时代）里"Tasks ahead"等段已过时 — 当前所有 Phase 1–6 任务都已完成。本 README 是 v0.1.0 终态。完整变更见 [`CHANGELOG.md`](CHANGELOG.md)。
 
-### 3. Phase 1.x 已 documented 的旧 README 段落
+## License
 
-仓库原 README（Phase 1 skeleton 时代）里"Tasks ahead"等段已过时 — 当前所有 Phase 1+2a+2b+3 任务都已完成。本 README 是最终态。
+Internal use only.
