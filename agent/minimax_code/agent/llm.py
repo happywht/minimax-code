@@ -50,6 +50,8 @@ from typing import Any
 
 import httpx
 
+from .. import secrets
+
 logger = logging.getLogger(__name__)
 
 
@@ -158,7 +160,15 @@ class MiniMaxClient:
         mock: bool | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        resolved_key = api_key if api_key is not None else os.environ.get("MINIMAX_API_KEY", "")
+        # Caller-supplied key wins (used by tests and by the IPC
+        # layer when a session has its own credential). Otherwise
+        # delegate to `secrets` so we pick up the OS keyring value
+        # before falling back to the env var.
+        if api_key is not None:
+            resolved_key = api_key
+        else:
+            secret_value = secrets.get_api_key()
+            resolved_key = secret_value or ""
         resolved_base = base_url if base_url is not None else os.environ.get("MINIMAX_API_BASE", DEFAULT_BASE_URL)
 
         self.api_key = resolved_key or ""

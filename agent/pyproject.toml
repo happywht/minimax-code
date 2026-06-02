@@ -14,6 +14,7 @@ dependencies = [
     "aiosqlite>=0.20",
     "apscheduler>=3.10",
     "platformdirs>=4.0",  # cross-platform user data dir resolution
+    "keyring>=24",  # OS keyring storage for the MiniMax API key (env var fallback)
 ]
 
 [project.optional-dependencies]
