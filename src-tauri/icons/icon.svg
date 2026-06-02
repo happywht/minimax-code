@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  MiniMax Code app icon — source-of-truth SVG asset.
+  Rasterized to PNG/ICO by scripts/gen_tauri_icons.py (Pillow primitives, same design).
+  Design: 512x512 viewBox, black rounded square, sky-500 ("M") letter, system-ui bold fallback.
+  No copyrighted fonts. Single-colour geometric.
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 512 512"
+     width="512" height="512"
+     role="img"
+     aria-label="MiniMax Code">
+  <title>MiniMax Code</title>
+  <!-- Rounded black background -->
+  <rect x="0" y="0" width="512" height="512" rx="96" ry="96" fill="#000000"/>
+  <!-- "M" letter — bold sans-serif, sky-500 (#0EA5E9) -->
+  <text x="256" y="256"
+        text-anchor="middle"
+        dominant-baseline="central"
+        font-family="system-ui, -apple-system, 'Segoe UI', Arial, sans-serif"
+        font-weight="900"
+        font-size="380"
+        fill="#0EA5E9">M</text>
+</svg>
