@@ -1,13 +1,26 @@
 /**
- * Composer + send button. Uses a local controlled <textarea> so the
- * input doesn't re-render the whole chat tree on every keystroke.
+ * Floating composer.
  *
- * Listens for `minimax:suggestion` events from the empty-state
- * suggestions in MessageList.
+ * The input now lives in a `fixed bottom` pill that floats above the
+ * message list, horizontally centered, capped at 720px wide. Two
+ * affordances used to live in the App footer and have moved inline:
+ *
+ *   - `chat-input-always-allow` — toggles `usePermissionStore.alwaysAllow`,
+ *     which makes the IPC layer auto-resolve every `permission.request`
+ *     with `allow`. Toggling fires a toast so the user knows they've
+ *     armed the bypass.
+ *   - `chat-input-model-select` — a slim ModelSelector (variant="inline")
+ *     that opens its dropdown upward and stays anchored to the right
+ *     edge of the input.
+ *
+ * The message list in `ChatPanel` reserves bottom padding so the last
+ * message doesn't slide under the floating pill.
  */
 import { useEffect, useRef, useState } from "react";
-import { Paperclip, Send, Square } from "lucide-react";
-import { useChat } from "../stores";
+import { Paperclip, Send, Shield, ShieldCheck, Square } from "lucide-react";
+import { useChat, usePermissionStore } from "../stores";
+import { ModelSelector } from "./ModelSelector";
+import { toast } from "./ErrorBoundary";
 
 export interface MessageInputProps {
   testId?: string;
@@ -21,11 +34,13 @@ export function MessageInput({ testId = "message-input" }: MessageInputProps): J
   const send = useChat((s) => s.send);
   const cancel = useChat((s) => s.cancel);
   const reset = useChat((s) => s.reset);
+  const alwaysAllow = usePermissionStore((s) => s.alwaysAllow);
+  const setAlwaysAllow = usePermissionStore((s) => s.setAlwaysAllow);
   const ref = useRef<HTMLTextAreaElement>(null);
   const disabled = status === "sending" || status === "streaming";
   const streaming = status === "streaming" || status === "sending";
 
-  // Auto-grow textarea up to 8 rows.
+  // Auto-grow textarea up to ~8 rows.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -54,14 +69,26 @@ export function MessageInput({ testId = "message-input" }: MessageInputProps): J
     await send(text);
   };
 
+  const handleToggleAlwaysAllow = () => {
+    const next = !alwaysAllow;
+    setAlwaysAllow(next);
+    toast.info(
+      next ? "始终授权已开启" : "始终授权已关闭",
+      next
+        ? "所有 tool 调用将自动放行（仅当前会话）"
+        : "tool 调用将再次弹窗询问",
+    );
+  };
+
   return (
     <form
       onSubmit={handleSubmit}
       data-testid={testId}
-      className="border-t border-minimax-border bg-minimax-bg/40 px-4 py-3"
+      data-floating="true"
+      className="pointer-events-none fixed inset-x-0 bottom-6 z-20 flex justify-center px-4"
     >
-      <div className="mx-auto max-w-3xl">
-        <div className="flex items-end gap-2 rounded-xl border border-minimax-border bg-minimax-panel px-2 py-2 shadow-sm focus-within:border-minimax-accent/50">
+      <div className="pointer-events-auto w-full max-w-[720px] rounded-xl border border-minimax-border bg-minimax-panel/95 shadow-2xl backdrop-blur supports-[backdrop-filter]:bg-minimax-panel/80">
+        <div className="flex items-end gap-2 px-2.5 py-2">
           <button
             type="button"
             aria-label="Attach file"
@@ -111,9 +138,34 @@ export function MessageInput({ testId = "message-input" }: MessageInputProps): J
             </button>
           )}
         </div>
-        <div className="mt-1.5 flex items-center justify-between text-[10px] text-minimax-muted">
-          <span>Enter to send · Shift+Enter for newline</span>
-          <span>Mock IPC: {value.length}/8000 chars</span>
+        <div className="flex items-center justify-between border-t border-minimax-border/60 px-2.5 py-1.5">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={alwaysAllow}
+            data-testid="chat-input-always-allow"
+            onClick={handleToggleAlwaysAllow}
+            className={
+              "inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] transition-colors " +
+              (alwaysAllow
+                ? "text-emerald-300 hover:bg-emerald-500/10"
+                : "text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg")
+            }
+            title={
+              alwaysAllow
+                ? "始终授权已开启 — tool 调用将自动放行"
+                : "始终授权：下次 tool 调用前不再询问"
+            }
+          >
+            {alwaysAllow ? <ShieldCheck size={11} /> : <Shield size={11} />}
+            {alwaysAllow ? "始终授权：开" : "始终授权"}
+          </button>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-minimax-muted">
+              {value.length}/8000
+            </span>
+            <ModelSelector variant="inline" />
+          </div>
         </div>
       </div>
     </form>

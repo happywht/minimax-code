@@ -32,8 +32,10 @@ describe("App smoke test", () => {
     expect(screen.getByTestId("sidebar-brand")).toBeInTheDocument();
     expect(screen.getByTestId("chat-panel")).toBeInTheDocument();
     expect(screen.getByTestId("message-input")).toBeInTheDocument();
-    expect(screen.getByTestId("model-selector")).toBeInTheDocument();
-    expect(screen.getByTestId("permission-toggle")).toBeInTheDocument();
+    // Always-allow and model picker are now inline in the floating
+    // composer — the legacy footer is gone.
+    expect(screen.getByTestId("chat-input-always-allow")).toBeInTheDocument();
+    expect(screen.getByTestId("chat-input-model-select")).toBeInTheDocument();
     expect(screen.getByTestId("right-panel")).toBeInTheDocument();
     expect(screen.getByTestId("user-badge")).toBeInTheDocument();
   });

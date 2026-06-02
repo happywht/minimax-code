@@ -43,7 +43,9 @@ export function MessageList({ testId = "message-list" }: MessageListProps): JSX.
     <div
       ref={scrollRef}
       data-testid={testId}
-      className="flex-1 overflow-y-auto px-4 py-4"
+      // pb-44 (~176px) reserves space for the floating composer in
+      // <MessageInput /> so the last message never slides under it.
+      className="flex-1 overflow-y-auto px-4 pb-44 pt-4"
     >
       {messages.length === 0 ? (
         <div

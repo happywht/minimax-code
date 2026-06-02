@@ -2,17 +2,73 @@
  * Single message bubble. Renders user, assistant, tool, and system
  * roles. Markdown (with GFM) is rendered for assistant / system
  * messages; code blocks go through shiki for syntax highlighting.
+ *
+ * Assistant messages also get a per-turn summary row at the top —
+ * "思考 N 次 · 查看 M 个文件 · 修改 K 个文件" — derived from the
+ * tool-call/tool-result messages that follow the assistant bubble in
+ * the same turn (bounded by the next user/assistant message).
  */
 import { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ChevronDown, ChevronRight, Copy, Check } from "lucide-react";
+import { Brain, ChevronDown, ChevronRight, Copy, Check, Eye, FileEdit } from "lucide-react";
 import type { Message } from "../types/ipc";
 import { codeToHtml, bundledLanguages } from "shiki";
+import { useChat } from "../stores";
 
 export interface MessageItemProps {
   message: Message;
   testId?: string;
+}
+
+interface TurnSummary {
+  thinkingCount: number;
+  filesViewed: number;
+  filesModified: number;
+}
+
+/**
+ * Walk the global message log starting at `startIdx + 1` and bucket
+ * tool calls into "viewed" (read_file / list_files / glob_files /
+ * search_files) vs "modified" (write_file / edit_file / create_file
+ * / delete_file). Stops at the next user or assistant message.
+ *
+ * `thinkingCount` reads `message.metadata?.thinking_count` if the
+ * store ever exposes it; otherwise falls back to 0. The fallback keeps
+ * the summary row non-empty even on plain mock-mode runs.
+ */
+function summarizeTurn(
+  messages: Message[],
+  startIdx: number,
+  self: Message,
+): TurnSummary {
+  const VIEW_NAMES = new Set([
+    "read_file",
+    "list_files",
+    "glob_files",
+    "search_files",
+    "list_directory",
+  ]);
+  const MOD_NAMES = new Set([
+    "write_file",
+    "edit_file",
+    "create_file",
+    "delete_file",
+    "patch_file",
+  ]);
+  let filesViewed = 0;
+  let filesModified = 0;
+  for (let i = startIdx + 1; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role === "user" || m.role === "assistant") break;
+    if (m.role === "tool" && m.tool_name) {
+      if (VIEW_NAMES.has(m.tool_name)) filesViewed += 1;
+      else if (MOD_NAMES.has(m.tool_name)) filesModified += 1;
+    }
+  }
+  const md = (self as Message & { metadata?: { thinking_count?: number } }).metadata;
+  const thinkingCount = md?.thinking_count ?? 0;
+  return { thinkingCount, filesViewed, filesModified };
 }
 
 /* ─────────────────────── Code block with shiki ─────────────────────── */
@@ -102,6 +158,18 @@ export function MessageItem({ message, testId }: MessageItemProps): JSX.Element 
   const isUser = message.role === "user";
   const isTool = message.role === "tool";
   const isSystem = message.role === "system";
+  const isAssistant = message.role === "assistant";
+
+  // Per-turn summary is only meaningful for assistant messages.
+  // We pull the full message log from the chat store so we can count
+  // tool calls that happened in the same turn.
+  const messages = useChat((s) => s.messages);
+  const summary = useMemo<TurnSummary | null>(() => {
+    if (!isAssistant) return null;
+    const idx = messages.findIndex((m) => m.id === message.id);
+    if (idx < 0) return { thinkingCount: 0, filesViewed: 0, filesModified: 0 };
+    return summarizeTurn(messages, idx, message);
+  }, [isAssistant, messages, message]);
 
   // Tool bubbles are collapsible to keep the chat scannable.
   const [expanded, setExpanded] = useState(false);
@@ -157,6 +225,26 @@ export function MessageItem({ message, testId }: MessageItemProps): JSX.Element 
               : "max-w-[85%] rounded-2xl rounded-bl-md border border-minimax-border bg-minimax-panel px-4 py-2 text-sm text-minimax-fg shadow-sm"
         }
       >
+        {isAssistant && summary && (
+          <div
+            data-testid={`message-summary-${message.id}`}
+            className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 border-b border-minimax-border/40 pb-1.5 text-[10px] text-minimax-muted"
+            aria-label="turn summary"
+          >
+            <span className="inline-flex items-center gap-1">
+              <Brain size={10} className="text-minimax-muted" />
+              思考 {summary.thinkingCount} 次
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <Eye size={10} className="text-minimax-muted" />
+              查看 {summary.filesViewed} 个文件
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <FileEdit size={10} className="text-minimax-muted" />
+              修改 {summary.filesModified} 个文件
+            </span>
+          </div>
+        )}
         <div className="prose prose-invert prose-sm max-w-none break-words leading-relaxed">
           {isUser ? (
             <p className="m-0 whitespace-pre-wrap">{message.text}</p>
