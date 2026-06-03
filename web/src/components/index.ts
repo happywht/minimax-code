@@ -21,3 +21,7 @@ export type { ToastItem, ToastKind } from "./ErrorBoundary";
 export { SettingsPage } from "./SettingsPage";
 export { SkillsPanel } from "./SkillsPanel";
 export { WorkspaceSwitcher } from "./WorkspaceSwitcher";
+export { SubAgentPanel } from "./SubAgentPanel";
+export { SubAgentResultCard } from "./SubAgentResultCard";
+export { GitStatusBar } from "./GitStatusBar";
+export { TopBar } from "./TopBar";

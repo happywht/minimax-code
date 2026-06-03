@@ -2,10 +2,16 @@
  * Scrollable list of messages. Auto-scrolls to bottom on new messages
  * and during streaming, but only if the user is already near the bottom
  * (so they can scroll up to read history without being yanked back).
+ *
+ * v0.3.0 §2: completed sub-agent runs whose ``parent_session_id``
+ * matches the current session are interleaved as
+ * ``<SubAgentResultCard />`` instances after the chat messages that
+ * triggered them.
  */
-import { useEffect, useRef } from "react";
-import { useChat } from "../stores";
+import { useEffect, useMemo, useRef } from "react";
+import { useChat, useSessionStore, useSubAgentStore } from "../stores";
 import { MessageItem } from "./MessageItem";
+import { SubAgentResultCard } from "./SubAgentResultCard";
 
 export interface MessageListProps {
   testId?: string;
@@ -13,6 +19,8 @@ export interface MessageListProps {
 
 export function MessageList({ testId = "message-list" }: MessageListProps): JSX.Element {
   const messages = useChat((s) => s.messages);
+  const sessionId = useSessionStore((s) => s.currentSessionId);
+  const runs = useSubAgentStore((s) => s.runs);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stuckAtBottom = useRef(true);
 
@@ -37,7 +45,21 @@ export function MessageList({ testId = "message-list" }: MessageListProps): JSX.
     if (stuckAtBottom.current && typeof el.scrollTo === "function") {
       el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     }
-  }, [messages]);
+  }, [messages, runs]);
+
+  // Completed sub-agent runs scoped to the current session, sorted
+  // by finished time so the cards appear in the right order.
+  const finishedRuns = useMemo(
+    () =>
+      Object.values(runs)
+        .filter(
+          (r) =>
+            (r.status === "completed" || r.status === "failed") &&
+            (sessionId == null || r.parent_session_id === sessionId),
+        )
+        .sort((a, b) => (a.finished_at ?? a.updated_at) - (b.finished_at ?? b.updated_at)),
+    [runs, sessionId],
+  );
 
   return (
     <div
@@ -47,7 +69,7 @@ export function MessageList({ testId = "message-list" }: MessageListProps): JSX.
       // <MessageInput /> so the last message never slides under it.
       className="flex-1 overflow-y-auto px-4 pb-44 pt-4"
     >
-      {messages.length === 0 ? (
+      {messages.length === 0 && finishedRuns.length === 0 ? (
         <div
           data-testid="empty-state"
           className="mx-auto mt-16 max-w-md text-center"
@@ -73,6 +95,16 @@ export function MessageList({ testId = "message-list" }: MessageListProps): JSX.
           {messages.map((m) => (
             <MessageItem key={m.id} message={m} />
           ))}
+          {finishedRuns.length > 0 && (
+            <div
+              data-testid="sub-agent-results"
+              className="flex flex-col gap-1 border-t border-minimax-border/40 pt-2"
+            >
+              {finishedRuns.map((r) => (
+                <SubAgentResultCard key={r.run_id} runId={r.run_id} />
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

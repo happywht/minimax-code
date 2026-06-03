@@ -33,6 +33,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { ProgressPanel } from "./ProgressPanel";
+import { SubAgentPanel } from "./SubAgentPanel";
 import { typedIPC } from "../ipc";
 import { useTaskStore } from "../stores";
 import type { AgentInfo } from "../types/ipc";
@@ -56,6 +57,7 @@ export function RightPanel({
   const [collapsed, setCollapsed] = useState<boolean>(defaultCollapsed);
   const [progressOpen, setProgressOpen] = useState<boolean>(true);
   const [teamOpen, setTeamOpen] = useState<boolean>(true);
+  const [subOpen, setSubOpen] = useState<boolean>(true);
 
   const [agents, setAgents] = useState<AgentInfo[] | null>(initialAgents ?? null);
   const [agentsLoading, setAgentsLoading] = useState<boolean>(!initialAgents);
@@ -159,6 +161,15 @@ export function RightPanel({
             error={agentsError}
             testId={`${testId}-team`}
           />
+        </Section>
+
+        <Section
+          testId={`${testId}-sub`}
+          title="Sub-agents"
+          open={subOpen}
+          onToggle={() => setSubOpen((v) => !v)}
+        >
+          <SubAgentPanel testId={`${testId}-sub-panel`} />
         </Section>
       </div>
     </aside>

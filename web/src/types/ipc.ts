@@ -95,6 +95,22 @@ export interface Message {
   tool_args?: Record<string, unknown>;
   /** Optional parent linkage (e.g. tool_result of a tool_call). */
   parent_id?: string;
+  /**
+   * Optional per-turn metadata — populated on assistant messages
+   * by the chat store. Carries the v0.3.0 ``thinking_count`` wire
+   * shape (``{thinking_count, tokens_in, tokens_out}``) the
+   * :class:`MessageItem` summary row reads from. We keep a copy
+   * here so the summary renders correctly even when the message
+   * is re-rendered before the next ``agent.message_chunk`` event.
+   */
+  metadata?: MessageMetadata;
+}
+
+/** Per-turn metadata snapshot for the v0.3.0 thinking_count channel. */
+export interface MessageMetadata {
+  thinking_count: number;
+  tokens_in: number;
+  tokens_out: number;
 }
 
 /** A scheduled job record. */
@@ -125,6 +141,15 @@ export interface AgentInfo {
   enabled: boolean;
 }
 
+/** Params for `agent.spawn_subagent` (extended in v0.3.0 §2). */
+export interface SpawnSubagentParams {
+  agent_id: string;
+  prompt: string;
+  parent_session_id?: string;
+  context_message_id?: string;
+  display_name?: string;
+}
+
 /** A permission rule. */
 export interface PermissionRule {
   id: string;
@@ -141,6 +166,15 @@ export interface MessageChunkData {
   message_id: string;
   delta: string;
   done: boolean;
+  /**
+   * Optional per-turn metadata — populated on the trailing
+   * ``done=True`` chunk (and possibly the first text chunk) by
+   * the v0.3.0 ``thinking_count`` wire format. Earlier chunks in
+   * the same turn omit the field; the store keeps the latest
+   * non-null value per message so the UI sees a stable snapshot
+   * even before the stream ends.
+   */
+  metadata?: MessageMetadata;
 }
 
 export interface AgentStatusData {
@@ -255,6 +289,87 @@ export interface SpawnSubagentResult {
   agent_id: string;
 }
 
+/* ─────────────────────── Git integration (§3-4 of v0.3.0 design) ─────────────────────── */
+
+/** Return shape of `git.status`. */
+export interface GitStatusResult {
+  branch: string;
+  clean: boolean;
+  ahead: number;
+  behind: number;
+  modified: string[];
+  untracked: string[];
+  staged: string[];
+}
+
+/** Return shape of `git.diff`. */
+export interface GitDiffResult {
+  scope: string;
+  ref?: string;
+  diff: string;
+}
+
+/** A single `git.log` entry. */
+export interface GitLogEntry {
+  sha: string;
+  author: string;
+  message: string;
+  files_changed: string[];
+}
+
+/** Return shape of `git.log`. */
+export interface GitLogResult {
+  entries: GitLogEntry[];
+}
+
+/* ─────────────────────── Sub-agent progress (§2 of v0.3.0 design) ─────────────────────── */
+
+/** Lifecycle status of a single sub-agent run. */
+export type SubAgentStatus =
+  | "started"
+  | "thinking"
+  | "tool_call"
+  | "tool_result"
+  | "completed"
+  | "failed";
+
+/** Wire shape of one ``agent.subagent_progress`` event. */
+export interface SubAgentProgress {
+  run_id: string;
+  agent_id: string;
+  parent_session_id?: string;
+  context_message_id?: string;
+  status: SubAgentStatus;
+  progress: number; // 0..1
+  summary: string;
+  /** Final text once ``status === "completed"``. */
+  text?: string;
+  /** Error message once ``status === "failed"``. */
+  error?: string;
+  /** Wall-clock timestamp set by the receiver (ms since epoch). */
+  received_at: number;
+}
+
+/** Frontend-tracked row for a single sub-agent run (UI state). */
+export interface SubAgentRun {
+  run_id: string;
+  agent_id: string;
+  agent_name: string;
+  display_name?: string;
+  parent_session_id?: string;
+  context_message_id?: string;
+  prompt: string;
+  status: SubAgentStatus;
+  progress: number;
+  summary: string;
+  text?: string;
+  error?: string;
+  started_at: number;
+  updated_at: number;
+  /** Set once ``status === "completed"`` | ``"failed"``. */
+  finished_at?: number;
+}
+
 /** All known event names — used to keep listeners strongly typed. */
 export const StreamEvent = {
   MessageChunk: "agent.message_chunk",
@@ -264,6 +379,7 @@ export const StreamEvent = {
   PermissionRequest: "permission.request",
   PermissionResolved: "permission.resolved",
   TaskProgress: "task.progress",
+  SubAgentProgress: "agent.subagent_progress",
 } as const;
 
 export type StreamEventName = (typeof StreamEvent)[keyof typeof StreamEvent];

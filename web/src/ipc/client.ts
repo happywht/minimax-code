@@ -29,6 +29,9 @@ import {
   StreamEvent,
   type AgentInfo,
   type CreateSessionResult,
+  type GitDiffResult,
+  type GitLogResult,
+  type GitStatusResult,
   type JsonRpcError,
   type JsonRpcEvent,
   type JsonRpcId,
@@ -55,7 +58,9 @@ import {
   type SetRuleResult,
   type SidecarEvent,
   type SkillInfo,
+  type SpawnSubagentParams,
   type SpawnSubagentResult,
+  type SubAgentProgress,
   type TaskProgressData,
   type ToolCallData,
   type ToolResultData,
@@ -161,6 +166,8 @@ export interface IPCClientOptions {
   baseUrl?: string;
   /** Force the in-process mock backend (bypasses the `/health` probe). */
   mockMode?: boolean;
+  /** Alias for ``mockMode`` — kept for backward-compat with test callers. */
+  forceMock?: boolean;
 }
 
 export class IPCClient {
@@ -186,7 +193,7 @@ export class IPCClient {
         : DEFAULT_AGENT_BASE_URL
     ).replace(/\/+$/, "");
     this.forceMock =
-      !!opts?.mockMode || readViteEnv("VITE_AGENT_MODE") === "mock";
+      !!opts?.mockMode || !!opts?.forceMock || readViteEnv("VITE_AGENT_MODE") === "mock";
     // Pre-set the mode so the client behaves correctly even if a
     // caller invokes `request()` / `ping()` before `start()`. This
     // matches the v0.1.x contract where `useMock` was decided in
@@ -647,7 +654,7 @@ export interface TypedIPC {
 
   // agent (multi-agent)
   listAgents(): Promise<ListAgentsResult>;
-  spawnSubagent(opts: { agent_id: string; prompt: string }): Promise<SpawnSubagentResult>;
+  spawnSubagent(opts: SpawnSubagentParams): Promise<SpawnSubagentResult>;
 
   // mobile
   pairDevice(opts: { code: string }): Promise<{ device_id: string }>;
@@ -667,6 +674,14 @@ export interface TypedIPC {
   getSecretStatus(): Promise<SecretStatus>;
   setSecret(value: string): Promise<SecretStatus>;
   clearSecret(): Promise<SecretStatus>;
+
+  // git (v0.3.0) — drives the top-bar GitStatusBar widget and the
+  // code-review flow. ``gitStatus`` is the cheap call (the widget
+  // polls it on a short interval); ``gitDiff`` and ``gitLog`` are
+  // on-demand.
+  gitStatus(): Promise<GitStatusResult>;
+  gitDiff(opts: { scope?: "staged" | "branch" | "working"; ref?: string }): Promise<GitDiffResult>;
+  gitLog(opts?: { n?: number }): Promise<GitLogResult>;
 }
 
 export function bindTypedIPC(client: IPCClient): TypedIPC {
@@ -756,6 +771,10 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     getSecretStatus: () => client.request<SecretStatus>("secrets.status", {}),
     setSecret: (value) => client.request<SecretStatus>("secrets.set", { value }),
     clearSecret: () => client.request<SecretStatus>("secrets.clear", {}),
+
+    gitStatus: () => client.request<GitStatusResult>("git.status", {}),
+    gitDiff: (opts) => client.request<GitDiffResult>("git.diff", opts ?? {}),
+    gitLog: (opts) => client.request<GitLogResult>("git.log", opts ?? {}),
   };
 }
 
@@ -1003,11 +1022,39 @@ function mockHandle(
     case "agent.list_agents":
       return { agents: mockAgents };
 
-    case "agent.spawn_subagent":
-      return {
-        agent_run_id: `run_${Math.random().toString(36).slice(2, 10)}`,
-        agent_id: (params as { agent_id: string }).agent_id,
+    case "agent.spawn_subagent": {
+      // The mock backend fabricates a stream of ``agent.subagent_progress``
+      // events that mirror the real backend's v0.3.0 shape (see
+      // ``docs/v0.3.0-design.md`` §2). This lets the UI exercise the
+      // full progress / completion lifecycle in offline mode.
+      const p = params as SpawnSubagentParams;
+      const runId = `run_${Math.random().toString(36).slice(2, 10)}`;
+      const agentId = p.agent_id || "general";
+      const basePayload = {
+        run_id: runId,
+        agent_id: agentId,
+        parent_session_id: p.parent_session_id,
+        context_message_id: p.context_message_id,
+        received_at: Date.now(),
       };
+      const stages: Array<{ status: SubAgentProgress["status"]; progress: number; summary: string; text?: string }> = [
+        { status: "started", progress: 0.05, summary: `starting ${agentId}` },
+        { status: "thinking", progress: 0.25, summary: `thinking about: ${p.prompt.slice(0, 40)}` },
+        { status: "tool_call", progress: 0.55, summary: "calling read_file" },
+        { status: "tool_result", progress: 0.7, summary: "got 2 lines" },
+        { status: "completed", progress: 1.0, summary: "done", text: `(mock sub-agent reply) ${p.prompt}` },
+      ];
+      stages.forEach((stage, i) => {
+        setTimeout(() => {
+          client._emit(StreamEvent.SubAgentProgress, {
+            ...basePayload,
+            ...stage,
+            received_at: Date.now(),
+          } satisfies SubAgentProgress);
+        }, 80 * (i + 1));
+      });
+      return { agent_run_id: runId, agent_id: agentId };
+    }
 
     case "mobile.list_devices":
       return { devices: [] };
@@ -1068,6 +1115,33 @@ function mockHandle(
     case "secrets.clear": {
       mockSecrets.keyring = null;
       return { configured: false, source: "none" };
+    }
+
+    case "git.status": {
+      // Mock backend has no real git binary. Return a clean
+      // main branch so the top-bar widget shows a sensible
+      // "no changes" state when the agent isn't reachable. The
+      // unit tests for ``useGitStore`` override ``gitStatus``
+      // via the typedIPC mock, so this fallback only fires in
+      // browser-only mode.
+      return {
+        branch: "main",
+        clean: true,
+        ahead: 0,
+        behind: 0,
+        modified: [],
+        untracked: [],
+        staged: [],
+      } satisfies GitStatusResult;
+    }
+
+    case "git.diff": {
+      const p = params as { scope?: string; ref?: string } | undefined;
+      return { diff: "", scope: p?.ref ?? p?.scope ?? "working" } satisfies GitDiffResult;
+    }
+
+    case "git.log": {
+      return { entries: [] } satisfies GitLogResult;
     }
 
     default:

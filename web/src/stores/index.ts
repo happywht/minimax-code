@@ -42,3 +42,9 @@ export {
   useSkillStore,
   type SkillEntry,
 } from "./skillStore";
+export {
+  useSubAgentStore,
+  runsForSession,
+  type SubAgentState,
+} from "./subAgent";
+export { useGitStore, type GitState } from "./git";

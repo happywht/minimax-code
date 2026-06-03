@@ -430,12 +430,231 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
             logger.exception("agent.invoke failed")
             await ctx.reply_error(INTERNAL_ERROR, f"agent.invoke failed: {exc}")
 
+    # ----------------------------------------------------------------- spawn
+    #
+    # v0.3.0 §2: ``agent.spawn_subagent`` is the chat-flow entry point
+    # for spawning a sub-agent from a user message. It is similar to
+    # ``agent.invoke`` but emits the ``agent.subagent_progress`` event
+    # stream (status, progress 0..1, human summary) so the frontend
+    # can render a live progress panel and a result card once the
+    # run reaches ``completed`` | ``failed``.
+    #
+    # Params (all optional except ``name`` and ``request``):
+    #     name:                 sub-agent name (FK to ``agents`` row)
+    #     request:              the prompt to send
+    #     parent_session_id?:   session the spawn was triggered from
+    #     context_message_id?:  the user message that triggered the spawn
+    #     display_name?:        override the agent name shown in the UI
+    #
+    # Reply:
+    #     { agent_run_id, agent_id, text, status, iterations, tool_calls,
+    #       task_id, message_id, parent_session_id, context_message_id,
+    #       display_name, stub }
+    #
+    # Side effects (per stage of the run):
+    #     1. emit "agent.subagent_progress" { status: "started",     progress: 0.05 }
+    #     2. emit "agent.subagent_progress" { status: "thinking",    progress: 0.30 }
+    #     3. emit "agent.subagent_progress" { status: "tool_call",   progress: 0.55 } (when tool calls present)
+    #     4. emit "agent.subagent_progress" { status: "tool_result", progress: 0.70 } (when tool calls present)
+    #     5. emit "agent.subagent_progress" { status: "completed",   progress: 1.0,  text: ... }
+    #
+    # On any exception the handler emits a final ``failed`` event
+    # before replying with the error envelope.
+
+    async def handle_agent_spawn_subagent(params: Any, ctx: Context) -> None:
+        run_id = f"run_{uuid.uuid4().hex[:12]}"
+        message_id = f"msg_{uuid.uuid4().hex[:8]}"
+        name = "unknown"
+        parent_session_id: str | None = None
+        context_message_id: str | None = None
+        try:
+            agent_dao = await dao_factory()
+            if agent_dao is None:
+                raise _HandlerError(
+                    INTERNAL_ERROR,
+                    "storage layer is not available; agent registry disabled",
+                )
+            _check_params(params, expected_keys={"name", "request"})
+            name = str(params["name"])
+            request = str(params["request"])
+            parent_session_id = (
+                str(params["parent_session_id"])
+                if params.get("parent_session_id")
+                else None
+            )
+            context_message_id = (
+                str(params["context_message_id"])
+                if params.get("context_message_id")
+                else None
+            )
+            display_name = (
+                str(params["display_name"]) if params.get("display_name") else None
+            )
+
+            config_row = await agent_dao.get(name)
+            if config_row is None:
+                await ctx.reply_error(
+                    INVALID_PARAMS, f"unknown agent name: {name!r}"
+                )
+                return
+
+            from ..orchestrator import SubAgentConfig, make_session_id
+
+            config = SubAgentConfig(
+                name=config_row["name"],
+                system_prompt=config_row.get("system_prompt") or "",
+                tool_allowlist=config_row.get("tool_allowlist"),
+                model=config_row.get("model"),
+                id=config_row.get("id"),
+            )
+            runtime = _resolve_runtime()
+            handle = runtime.build(config)
+
+            # Sub-agent run needs a session row (FK constraint). We
+            # anchor the synthetic session to the parent's id when
+            # provided so the run shows up alongside the parent
+            # chat in the UI; otherwise we mint a placeholder.
+            sub_session_id = (
+                str(parent_session_id)
+                if parent_session_id
+                else make_session_id("subagent")
+            )
+            await _ensure_session(sub_session_id, title=f"subagent:{name}")
+
+            # 1. started.
+            await _emit_subagent_progress(
+                ctx,
+                run_id=run_id,
+                agent_id=name,
+                parent_session_id=parent_session_id,
+                context_message_id=context_message_id,
+                status="started",
+                progress=0.05,
+                summary=f"starting {name}",
+            )
+            # 2. thinking.
+            await _emit_subagent_progress(
+                ctx,
+                run_id=run_id,
+                agent_id=name,
+                parent_session_id=parent_session_id,
+                context_message_id=context_message_id,
+                status="thinking",
+                progress=0.3,
+                summary=f"thinking about: {str(request)[:60]!s}",
+            )
+
+            # Drive the sub-agent. ``runtime.invoke`` either forwards
+            # to ``AgentCore.run`` (real LLM) or returns the
+            # deterministic stub envelope. The wire shape is the same.
+            result = await runtime.invoke(
+                handle, session_id=sub_session_id, request=request
+            )
+            is_stub = bool(result.get("stub", True))
+            final_text = result.get("text", "")
+            tool_calls = list(result.get("tool_calls", []))
+
+            # 3 + 4. tool_call / tool_result stages when the LLM
+            # actually invoked tools; the stub path has an empty
+            # list and we skip these stages.
+            if tool_calls:
+                await _emit_subagent_progress(
+                    ctx,
+                    run_id=run_id,
+                    agent_id=name,
+                    parent_session_id=parent_session_id,
+                    context_message_id=context_message_id,
+                    status="tool_call",
+                    progress=0.55,
+                    summary=f"called {len(tool_calls)} tool(s): {', '.join(str(t.get('name', '?')) for t in tool_calls[:3])}",
+                )
+                await _emit_subagent_progress(
+                    ctx,
+                    run_id=run_id,
+                    agent_id=name,
+                    parent_session_id=parent_session_id,
+                    context_message_id=context_message_id,
+                    status="tool_result",
+                    progress=0.7,
+                    summary=f"got {len(tool_calls)} result(s)",
+                )
+
+            # 5. completed.
+            await _emit_subagent_progress(
+                ctx,
+                run_id=run_id,
+                agent_id=name,
+                parent_session_id=parent_session_id,
+                context_message_id=context_message_id,
+                status="completed",
+                progress=1.0,
+                summary="done",
+                text=final_text,
+            )
+
+            await ctx.reply(
+                {
+                    "agent_run_id": run_id,
+                    "agent_id": name,
+                    "text": final_text,
+                    "iterations": result.get("iterations", 0),
+                    "tool_calls": tool_calls,
+                    "task_id": None,
+                    "message_id": message_id,
+                    "parent_session_id": parent_session_id,
+                    "context_message_id": context_message_id,
+                    "display_name": display_name,
+                    "stub": is_stub,
+                }
+            )
+        except _HandlerError as exc:
+            # Best-effort: surface the failure on the progress stream
+            # so the UI flips the row to ``failed`` and the user
+            # sees an error rather than a hung "running" pill.
+            try:
+                await _emit_subagent_progress(
+                    ctx,
+                    run_id=run_id,
+                    agent_id=name,
+                    parent_session_id=parent_session_id,
+                    context_message_id=context_message_id,
+                    status="failed",
+                    progress=1.0,
+                    summary="failed",
+                    error=exc.message,
+                )
+            except Exception:  # pragma: no cover — defensive
+                logger.debug("failed to emit subagent_progress failure event")
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except ValueError as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.exception("agent.spawn_subagent failed")
+            try:
+                await _emit_subagent_progress(
+                    ctx,
+                    run_id=run_id,
+                    agent_id=name,
+                    parent_session_id=parent_session_id,
+                    context_message_id=context_message_id,
+                    status="failed",
+                    progress=1.0,
+                    summary="failed",
+                    error=str(exc),
+                )
+            except Exception:  # pragma: no cover — defensive
+                logger.debug("failed to emit subagent_progress failure event")
+            await ctx.reply_error(
+                INTERNAL_ERROR, f"agent.spawn_subagent failed: {exc}"
+            )
+
     server.register("agent.list", handle_agent_list)
     server.register("agent.get", handle_agent_get)
     server.register("agent.create", handle_agent_create)
     server.register("agent.update", handle_agent_update)
     server.register("agent.delete", handle_agent_delete)
     server.register("agent.invoke", handle_agent_invoke)
+    server.register("agent.spawn_subagent", handle_agent_spawn_subagent)
 
 
 # ---------------------------------------------------------------------------
@@ -570,6 +789,41 @@ def _check_params(params: Any, *, expected_keys: set[str]) -> None:
             raise _HandlerError(
                 INVALID_PARAMS, f"param {key!r} must be a non-empty value"
             )
+
+
+async def _emit_subagent_progress(
+    ctx: Any,
+    *,
+    run_id: str,
+    agent_id: str,
+    parent_session_id: str | None,
+    context_message_id: str | None,
+    status: str,
+    progress: float,
+    summary: str,
+    text: str | None = None,
+    error: str | None = None,
+) -> None:
+    """Push a single ``agent.subagent_progress`` event.
+
+    See ``docs/v0.3.0-design.md`` §2 for the wire shape. The
+    ``received_at`` field is added by the receiver (frontend) so
+    wall-clock skew between the agent and the webview is irrelevant.
+    """
+    payload: dict[str, Any] = {
+        "run_id": run_id,
+        "agent_id": agent_id,
+        "parent_session_id": parent_session_id,
+        "context_message_id": context_message_id,
+        "status": status,
+        "progress": max(0.0, min(1.0, float(progress))),
+        "summary": summary,
+    }
+    if text is not None:
+        payload["text"] = text
+    if error is not None:
+        payload["error"] = error
+    await ctx.emit("agent.subagent_progress", payload)
 
 
 def _normalise_allowlist(value: Any) -> list[str] | None:
