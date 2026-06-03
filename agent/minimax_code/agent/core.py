@@ -88,11 +88,21 @@ def _check_rule(
 # ---------------------------------------------------------------------------
 
 
-ChunkCallback = Callable[[str, bool], Awaitable[None]]
-"""(delta_text, done_flag) — pushed after every streamed chunk.
+ChunkCallback = Callable[[str, bool, dict[str, Any] | None], Awaitable[None]]
+"""(delta_text, done_flag, metadata) — pushed after every streamed chunk.
 
 ``done_flag`` is ``True`` only on the final chunk of the *whole
 turn* (i.e. after all tool calls have been resolved).
+
+``metadata`` is an optional dict the loop populates with the
+per-turn thinking / token counts (``{"thinking_count": int,
+"tokens_in": int, "tokens_out": int}``). It is set on **at most
+one** chunk per turn — the loop picks a single chunk to carry
+it (the one emitted right after the LLM call returns) and passes
+``None`` for the rest. The downstream handler is free to ignore
+it; the v0.3.0 ``agent.message_chunk`` wire format expects it on
+at least one chunk per turn so the UI can render the
+"思考 N 次" summary.
 """
 
 ToolCallCallback = Callable[[dict[str, Any]], Awaitable[None]]
@@ -303,7 +313,11 @@ class AgentCore:
                 # Final answer.
                 final_text = assistant_msg.get("content") or ""
                 final_message = assistant_msg
-                await self._emit_chunk("", True)
+                # Attach the per-turn metadata to the done=True
+                # chunk so the UI can paint the "思考 N 次" line.
+                # All earlier chunks passed ``metadata=None``; the
+                # store keeps the latest non-null value per message.
+                await self._emit_chunk("", True, response.metadata)
                 await self._emit_status("done", {"iterations": iterations})
                 break
 
@@ -366,8 +380,22 @@ class AgentCore:
                 break
             chunks.append(chunk)
             if chunk.delta:
-                await self._emit_chunk(chunk.delta, False)
-        return _assemble_chunks(chunks, model=self.config.model)
+                await self._emit_chunk(chunk.delta, False, None)
+        response = _assemble_chunks(chunks, model=self.config.model)
+        # Build the per-turn metadata snapshot. Reading
+        # ``self.llm.thinking_count`` here is the only way the
+        # streaming path can pick up the value — the per-call
+        # counter is reset at the top of every ``stream_chat`` and
+        # updated as the final usage chunk is parsed.
+        thinking_count = int(getattr(self.llm, "thinking_count", 0) or 0)
+        tokens_in = int(response.usage.get("prompt_tokens", 0) or 0)
+        tokens_out = int(response.usage.get("completion_tokens", 0) or 0)
+        response.metadata = {
+            "thinking_count": thinking_count,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+        }
+        return response
 
     async def _dispatch_tool(self, call: dict[str, Any]) -> ToolResult:
         """Execute one tool call and emit status / result events.
@@ -463,11 +491,16 @@ class AgentCore:
 
     # -- callback helpers --------------------------------------------------
 
-    async def _emit_chunk(self, delta: str, done: bool) -> None:
+    async def _emit_chunk(
+        self,
+        delta: str,
+        done: bool,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         if self.on_chunk is None:
             return
         try:
-            await self.on_chunk(delta, done)
+            await self.on_chunk(delta, done, metadata)
         except Exception:  # pragma: no cover — defensive
             logger.exception("on_chunk callback raised")
 

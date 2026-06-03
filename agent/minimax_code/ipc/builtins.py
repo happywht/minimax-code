@@ -224,8 +224,16 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         permission_gater=gater,
     )
 
-    async def _on_chunk(delta: str, done: bool) -> None:
+    async def _on_chunk(
+        delta: str, done: bool, metadata: dict | None = None
+    ) -> None:
         try:
+            # The agent loop only attaches ``metadata`` to the
+            # trailing ``done=True`` chunk per turn; every earlier
+            # delta passes ``None``. ``ctx.emit`` with
+            # ``metadata=`` merges it into the data dict when
+            # present, so the wire format matches the v0.3.0
+            # design (``data.metadata = {thinking_count, ...}``).
             await ctx.emit(
                 "agent.message_chunk",
                 {
@@ -234,6 +242,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
                     "delta": delta,
                     "done": done,
                 },
+                metadata=metadata,
             )
         except Exception:
             logger.exception("on_chunk emit failed")

@@ -176,10 +176,8 @@ describe("MessageItem per-turn summary", () => {
   });
 
   it("reads thinking_count from message.metadata when present", () => {
-    const self = baseMessage({
-      id: "a1",
-    }) as Message & { metadata?: { thinking_count?: number } };
-    self.metadata = { thinking_count: 3 };
+    const self = baseMessage({ id: "a1" });
+    self.metadata = { thinking_count: 3, tokens_in: 12, tokens_out: 3 };
     setMessages([self]);
     render(<MessageItem message={self} />);
     expect(screen.getByTestId("message-summary-a1")).toHaveTextContent(

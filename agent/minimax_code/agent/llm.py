@@ -101,6 +101,11 @@ class LLMResponse:
     usage: dict[str, int]
     finish_reason: str
     model: str
+    # Per-turn metadata snapshot the v0.3.0 ``thinking_count`` wire
+    # relies on. Populated by ``AgentCore._stream_turn`` after the
+    # stream exhausts; ``None`` when the LLM was bypassed (tests that
+    # short-circuit via a fake ``stream_chat`` may leave it unset).
+    metadata: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +184,17 @@ class MiniMaxClient:
         self.mock = mock if mock is not None else (not bool(self.api_key))
         self._client = client  # caller may inject an httpx mock transport
 
+        # ``thinking_count`` is the value the agent should attach to
+        # the next ``agent.message_chunk`` event's ``metadata``. The
+        # mock path increments it on every ``stream_chat`` call (one
+        # "think" per call), and the real path reads it from the
+        # upstream API's ``usage.thinking_tokens`` field. Either way
+        # it is a per-call snapshot, not a running total — the
+        # ``AgentCore`` reads the value *after* the call returns
+        # and emits it on the final chunk. The frontend uses it to
+        # render the "思考 N 次" summary row in the assistant bubble.
+        self.thinking_count: int = 0
+
         logger.info(
             "MiniMaxClient initialised (mock=%s, base_url=%s, model=%s, max_retries=%d)",
             self.mock, self.base_url, self.default_model, self.max_retries,
@@ -233,9 +249,31 @@ class MiniMaxClient:
         Each yield is a :class:`StreamChunk`. The final chunk has
         ``finish_reason`` set to a non-None value (``stop`` /
         ``tool_calls`` / ``length``) and a populated ``usage`` dict.
+
+        Side effect
+        -----------
+
+        Updates :attr:`thinking_count` after the stream completes so
+        the caller can attach it to the next ``agent.message_chunk``
+        event's ``metadata`` envelope. Mock mode increments per call
+        (each canned call is one "think"); the real path reads the
+        upstream API's ``usage.thinking_tokens`` field (else 0).
+        The value is reset to 0 at the start of every call so a
+        partial / failed call cannot leak state from the previous
+        one.
         """
+        self.thinking_count = 0
         if self.mock:
-            async for c in _mock_stream(self.default_model if model is None else (model or self.default_model)):
+            mock_thinking = 1  # one synthetic "think" per call
+            async for c in _mock_stream(
+                self.default_model if model is None else (model or self.default_model)
+            ):
+                # The mock always finishes with a usage chunk; we
+                # surface the thinking count there and then commit
+                # it to the instance. The caller sees the value
+                # after the stream exhausts.
+                if c.usage:
+                    self.thinking_count = mock_thinking
                 yield c
             return
 
@@ -250,6 +288,11 @@ class MiniMaxClient:
             stream=True,
         )
         async for chunk in self._post_streaming(payload):
+            # Real servers report the count in the final usage
+            # block. If the field is missing (e.g. upstream doesn't
+            # support ``thinking_tokens`` yet) we keep the value 0.
+            if chunk.usage and isinstance(chunk.usage.get("thinking_tokens"), int):
+                self.thinking_count = int(chunk.usage["thinking_tokens"])
             yield chunk
 
     async def close(self) -> None:

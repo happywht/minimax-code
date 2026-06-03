@@ -297,7 +297,7 @@ async def test_loop_dispatches_tool_then_finalizes() -> None:
     statuses: list[str] = []
 
     core = AgentCore(llm=fake, registry=_fresh_registry(tool))
-    core.on_chunk = lambda d, done: _maybe_coro(chunks.append(d))
+    core.on_chunk = lambda d, done, _metadata=None: _maybe_coro(chunks.append(d))
     core.on_tool_call = lambda c: _maybe_coro(tool_calls_seen.append(c))
     core.on_tool_result = lambda c, r: _maybe_coro(tool_results_seen.append(r))
     core.on_status = lambda s, _d: _maybe_coro(statuses.append(s))

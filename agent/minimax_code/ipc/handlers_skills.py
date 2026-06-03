@@ -147,10 +147,66 @@ def register_skill_handlers(
             model = params.get("model")
             max_iterations = params.get("max_iterations")
 
+            # v0.3.0 — short-circuit the code-review skill when the
+            # caller passes a ``diff`` in params. This is the path
+            # the CodeReviewPanel uses: it pulls a diff via
+            # ``git.diff`` and asks the skill to review it directly,
+            # without dragging the full LLM tool loop into the
+            # picture. The mock-mode implementation in
+            # :func:`code_review.review_diff` is deterministic; a
+            # future iteration can swap it for a real LLM call
+            # without changing the wire shape.
+            diff_param = params.get("diff")
+            if (
+                isinstance(diff_param, str)
+                and diff_param
+                and skill_id == "code-review:code-review"
+            ):
+                from ..agent.skills._builtin.code_review import _review_diff
+
+                review = _review_diff(diff_param)
+                message_id = f"msg_{uuid.uuid4().hex[:8]}"
+                # Stream the summary text as a single chunk so the
+                # chat log / ProgressPanel get the same shape they
+                # would from a regular LLM invocation.
+                await ctx.emit(
+                    "agent.message_chunk",
+                    {
+                        "session_id": session_id,
+                        "message_id": message_id,
+                        "delta": review["text"],
+                        "done": True,
+                        "skill_id": skill_id,
+                    },
+                )
+                await ctx.reply(
+                    {
+                        "session_id": session_id,
+                        "message_id": message_id,
+                        "skill_id": skill_id,
+                        "text": review["text"],
+                        "iterations": review.get("iterations", 0),
+                        "tool_calls": review.get("tool_calls", 0),
+                        "cancelled": False,
+                        "truncated": False,
+                        "comments": review.get("comments", []),
+                        "stats": review.get("stats", {}),
+                    }
+                )
+                return
+
             # Skill-specific message id so the UI can correlate chunks.
             message_id = f"msg_{uuid.uuid4().hex[:8]}"
 
-            async def _on_chunk(delta: str, done: bool) -> None:
+            async def _on_chunk(
+                delta: str, done: bool, metadata: dict | None = None
+            ) -> None:
+                # Skill invocations don't surface a per-turn
+                # thinking count (the skill runtime is itself the
+                # "think"), so the metadata channel is unused
+                # here. We still accept the kwarg so the callback
+                # matches the v0.3.0 :data:`ChunkCallback` shape
+                # and could be plumbed through in the future.
                 await ctx.emit(
                     "agent.message_chunk",
                     {
@@ -160,6 +216,7 @@ def register_skill_handlers(
                         "done": done,
                         "skill_id": skill_id,
                     },
+                    metadata=metadata,
                 )
 
             async def _on_tool_call(call: dict[str, Any]) -> None:

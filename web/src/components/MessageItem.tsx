@@ -66,8 +66,11 @@ function summarizeTurn(
       else if (MOD_NAMES.has(m.tool_name)) filesModified += 1;
     }
   }
-  const md = (self as Message & { metadata?: { thinking_count?: number } }).metadata;
-  const thinkingCount = md?.thinking_count ?? 0;
+  // ``Message.metadata`` (v0.3.0) carries ``{thinking_count,
+  // tokens_in, tokens_out}`` populated by the chat store from the
+  // latest ``agent.message_chunk`` event. Falls back to 0 for
+  // older runs that haven't migrated yet.
+  const thinkingCount = self.metadata?.thinking_count ?? 0;
   return { thinkingCount, filesViewed, filesModified };
 }
 

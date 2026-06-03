@@ -92,7 +92,35 @@ class Context:
         # behaviour is preserved for the CLI debug case.
         self.server.notify(env.model_dump(exclude_none=True))
 
-    async def emit(self, event: str, data: Any = None) -> None:
+    async def emit(
+        self,
+        event: str,
+        data: Any = None,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        # v0.3.0 §1: ``metadata`` is a transport-level envelope
+        # field (e.g. ``agent.message_chunk`` carries
+        # ``{thinking_count, tokens_in, tokens_out}`` on the
+        # trailing chunk of a turn). We merge it into the data
+        # dict so receivers that only see ``data.metadata`` work
+        # uniformly, and we leave the wire envelope itself
+        # untouched so older clients (v0.2.0) keep functioning.
+        if metadata:
+            if not isinstance(data, dict):
+                # We only know how to attach metadata to a dict
+                # payload; for other shapes (None, list, scalar)
+                # we surface a warning so the bug is visible in
+                # tests but we don't break the emit.
+                import logging as _log
+
+                _log.getLogger(__name__).warning(
+                    "Context.emit received metadata= but data is %s; "
+                    "metadata is dropped",
+                    type(data).__name__,
+                )
+            else:
+                data = {**data, "metadata": metadata}
         env = Event(event=event, data=data)
         await self.server._send(env.to_bytes())
         # Mirror to in-process listeners — the HTTP/WS bridge

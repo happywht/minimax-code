@@ -74,6 +74,14 @@ export const useChat = create<ChatState>((set, get) => ({
         const data = env.data;
         if (!data) return;
         set((s) => {
+          // The v0.3.0 thinking_count channel attaches a
+          // ``metadata`` field to the final ``done=True`` chunk
+          // (sometimes also the first chunk). Replace, don't
+          // sum — the wire spec says it's a snapshot, not a
+          // counter. We only assign when the field is present
+          // so an earlier chunk's metadata isn't clobbered by a
+          // later one that omits it.
+          const metadata = data.metadata;
           const exists = s.messages.some((m) => m.id === data.message_id);
           const next = exists
             ? s.messages.map((m) =>
@@ -82,6 +90,7 @@ export const useChat = create<ChatState>((set, get) => ({
                       ...m,
                       text: m.text + (data.delta || ""),
                       streaming: !data.done,
+                      ...(metadata ? { metadata } : {}),
                     }
                   : m,
               )
@@ -91,6 +100,7 @@ export const useChat = create<ChatState>((set, get) => ({
                 text: data.delta || "",
                 streaming: !data.done,
                 created_at: Date.now(),
+                ...(metadata ? { metadata } : {}),
               });
           return {
             messages: next,

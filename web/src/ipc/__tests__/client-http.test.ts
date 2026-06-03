@@ -405,6 +405,66 @@ describe("WebSocket event dispatch", () => {
     expect((seen[0] as { delta: string }).delta).toBe("hi");
   });
 
+  it("forwards the v0.3.0 metadata envelope on agent.message_chunk", async () => {
+    // v0.3.0 wire format: ``data.metadata`` carries
+    // ``{thinking_count, tokens_in, tokens_out}`` on the trailing
+    // ``done=True`` chunk. The transport must hand it to listeners
+    // untouched so the chat store can keep it on the message.
+    const client = await startedClient();
+    const seen: Array<{ data: unknown }> = [];
+    client.on(StreamEvent.MessageChunk, (env) => {
+      seen.push({ data: env.data });
+    });
+    StubWebSocket.instances[0].simulateMessage({
+      jsonrpc: "2.0",
+      method: StreamEvent.MessageChunk,
+      params: {
+        session_id: "s1",
+        message_id: "m1",
+        delta: "hi",
+        done: false,
+        metadata: { thinking_count: 1, tokens_in: 12, tokens_out: 3 },
+      },
+    });
+    expect(seen).toHaveLength(1);
+    const data = seen[0].data as {
+      delta: string;
+      done: boolean;
+      metadata?: { thinking_count: number; tokens_in: number; tokens_out: number };
+    };
+    expect(data.delta).toBe("hi");
+    expect(data.done).toBe(false);
+    expect(data.metadata).toEqual({
+      thinking_count: 1,
+      tokens_in: 12,
+      tokens_out: 3,
+    });
+  });
+
+  it("tolerates metadata-less chunks (backward compat with v0.2.0)", async () => {
+    // v0.2.0 agents never set ``metadata``; the client must
+    // accept the chunk and hand ``undefined`` (not an error) to
+    // the listener so the chat store can keep the previous
+    // message's metadata snapshot.
+    const client = await startedClient();
+    const seen: unknown[] = [];
+    client.on(StreamEvent.MessageChunk, (env) => seen.push(env.data));
+    StubWebSocket.instances[0].simulateMessage({
+      jsonrpc: "2.0",
+      method: StreamEvent.MessageChunk,
+      params: {
+        session_id: "s1",
+        message_id: "m1",
+        delta: "no-metadata",
+        done: false,
+      },
+    });
+    expect(seen).toHaveLength(1);
+    const data = seen[0] as { delta: string; metadata?: unknown };
+    expect(data.delta).toBe("no-metadata");
+    expect(data.metadata).toBeUndefined();
+  });
+
   it("ignores agent.ready (lifecycle — no listener fan-out)", async () => {
     const client = await startedClient();
     const seen: unknown[] = [];
