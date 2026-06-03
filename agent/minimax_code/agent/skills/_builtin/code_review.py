@@ -27,6 +27,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -414,5 +415,193 @@ class Provider(SkillToolProvider):
         for cls in (RunLinterTool, FindComplexFunctionsTool):
             tool_registry.unregister(cls.name)
 
+    # -- v0.3.0 diff-based review ------------------------------------------
+    #
+    # The IPC layer's ``skill.invoke`` short-circuits to
+    # :meth:`Provider.review_diff` when the caller passes a ``diff``
+    # in the params. The result shape is a small dict the handler
+    # then folds back into the canonical ``skill.invoke`` envelope.
 
-__all__ = ["RunLinterTool", "FindComplexFunctionsTool", "Provider"]
+    def review_diff(self, diff: str) -> dict[str, Any]:
+        """Produce a structured review for a unified diff.
+
+        The current implementation is a deterministic, mock-mode
+        analyser: it walks the diff hunk headers, picks the first
+        added line in the first modified file, and emits a single
+        inline comment anchored to that file/line. The ``text``
+        field is a one-line summary mentioning the change count so
+        the UI can render a header.
+
+        A future v0.3.x iteration will swap the canned comment for
+        a real LLM call (the diff is small enough to fit in the
+        model context). The wire shape is stable so the UI won't
+        need to change.
+        """
+        return _review_diff(diff)
+
+
+def _review_diff(diff: str) -> dict[str, Any]:
+    """Walk ``diff`` and produce a structured review payload.
+
+    Returned shape::
+
+        {
+            "text":     "I see you changed N lines across M file(s).",
+            "comments": [
+                {
+                    "file":     "src/foo.py",
+                    "line":     42,
+                    "severity": "info" | "warning" | "error",
+                    "message":  "Consider adding a docstring.",
+                },
+                ...
+            ],
+            "iterations": 0,
+            "tool_calls": 0,
+            "stats":      {"files": int, "additions": int, "deletions": int},
+        }
+    """
+    stats = _diff_stats(diff)
+    comments = _diff_comments(diff)
+    text = _review_text(stats, len(comments))
+    return {
+        "text": text,
+        "comments": comments,
+        "iterations": 0,
+        "tool_calls": 0,
+        "stats": stats,
+    }
+
+
+# Diff line prefixes the unified format uses. ``+++`` and ``---``
+# are the file headers; ``@@`` are the hunk headers. We treat any
+# line starting with a single ``+`` or ``-`` (not the headers) as
+# a content line.
+_DIFF_FILE_RE = re.compile(r"^\+\+\+\s+(?P<file>\S+)")
+_DIFF_HUNK_RE = re.compile(
+    r"^@@\s+-\d+(?:,\d+)?\s+\+(?P<new_start>\d+)(?:,(?P<new_count>\d+))?\s+@@"
+)
+
+
+def _diff_stats(diff: str) -> dict[str, int]:
+    """Return ``{files, additions, deletions}`` for ``diff``.
+
+    ``files`` counts the number of distinct ``+++ <path>`` headers
+    (minus the ``/dev/null`` pseudo-file used when a file is
+    brand-new — that line still counts as a new file, but we
+    record it as the "before" file's path).
+    """
+    files: set[str] = set()
+    additions = 0
+    deletions = 0
+    for line in diff.splitlines():
+        if line.startswith("+++ ") and not line.startswith("+++ /dev/null"):
+            m = _DIFF_FILE_RE.match(line)
+            if m:
+                # ``a/foo`` style paths appear without the ``b/``
+                # prefix in some git configurations; we keep the
+                # raw value so the UI can match it against the
+                # file list.
+                path = m.group("file")
+                if path.startswith("b/"):
+                    path = path[2:]
+                files.add(path)
+        elif line.startswith("+") and not line.startswith("+++"):
+            additions += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            deletions += 1
+    return {"files": len(files), "additions": additions, "deletions": deletions}
+
+
+def _diff_comments(diff: str) -> list[dict[str, Any]]:
+    """Build inline comments for ``diff``.
+
+    Strategy (mock mode):
+      * Walk hunks. For each hunk in each file, remember the
+        running "new file line number" counter.
+      * For every added line (``+`` prefix, not ``+++``), increment
+        the counter and remember the line.
+      * Pick the first 3 added lines per file as comment anchors
+        with a canned, severity="info" message that names the
+        "file:line" so the UI can render a useful hint.
+      * If the added line is suspiciously long (>120 chars) we
+        bump severity to "warning" — long lines are a classic
+        readability smell.
+    """
+    comments: list[dict[str, Any]] = []
+    current_file: str | None = None
+    new_line = 0
+    # Track how many comments we've already emitted per file so
+    # we cap at 3 and don't drown the UI in noise.
+    per_file_count: dict[str, int] = {}
+    PER_FILE_CAP = 3
+
+    for raw in diff.splitlines():
+        if raw.startswith("+++ ") and not raw.startswith("+++ /dev/null"):
+            m = _DIFF_FILE_RE.match(raw)
+            if m:
+                path = m.group("file")
+                if path.startswith("b/"):
+                    path = path[2:]
+                current_file = path
+                new_line = 0
+            continue
+        if raw.startswith("--- "):
+            # End of the per-file header block — reset.
+            continue
+        if raw.startswith("@@"):
+            m = _DIFF_HUNK_RE.match(raw)
+            if m:
+                new_line = int(m.group("new_start"))
+            continue
+        if not current_file:
+            continue
+        if raw.startswith("+"):
+            line_text = raw[1:]
+            severity = "warning" if len(line_text) > 120 else "info"
+            if per_file_count.get(current_file, 0) >= PER_FILE_CAP:
+                new_line += 1
+                continue
+            comments.append(
+                {
+                    "file": current_file,
+                    "line": new_line,
+                    "severity": severity,
+                    "message": (
+                        "Review this addition for correctness."
+                        if severity == "info"
+                        else "Long line (>120 chars) — consider wrapping."
+                    ),
+                }
+            )
+            per_file_count[current_file] = per_file_count.get(current_file, 0) + 1
+            new_line += 1
+        elif raw.startswith("-"):
+            # Deletion — does not advance the new-file line counter.
+            continue
+        else:
+            # Context line — advances the new-file counter (and is
+            # present on both sides of the diff).
+            new_line += 1
+    return comments
+
+
+def _review_text(stats: dict[str, int], comment_count: int) -> str:
+    """Build the one-line summary that becomes the message header."""
+    f = stats["files"]
+    a = stats["additions"]
+    d = stats["deletions"]
+    if f == 0 and a == 0 and d == 0:
+        return "I don't see any changes in this diff."
+    return (
+        f"I see you changed {a} line(s) (and removed {d}) across {f} file(s). "
+        f"Flagged {comment_count} item(s) for review."
+    )
+
+
+__all__ = [
+    "RunLinterTool",
+    "FindComplexFunctionsTool",
+    "Provider",
+    "_review_diff",  # exposed for unit tests
+]
