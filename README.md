@@ -2,85 +2,78 @@
 
 桌面端 AI 编码 Agent 复刻项目。对标 MiniMax Code 全量功能：多轮对话、技能系统、定时任务、多 Agent 协作、移动互联、授权管理、进度面板。
 
-> **v0.1.3 内部首发版。** v0.1.2 修复版 — 修了首次启动首批 IPC 撞 `tokio pipe flush` race（os error 232 / "管道正在被关闭"），详见下方"已知限制"段与 [`CHANGELOG.md`](CHANGELOG.md)。完整 Phase 1 → Phase 6 已完成。
+> **v0.2.0 内部版 — 全面 web 化，丢掉 Tauri 桌面打包。两条命令在两个终端跑起来。**
+> v0.1.x 阶段曾用 Tauri 2.x 做桌面壳（v0.1.0 → v0.1.3 修过启动 race / sidecar 路径 / pipe flush 三个 bug），现以内部 web 工具继续开发 — 见 [`CHANGELOG.md`](CHANGELOG.md) 历史段。
 
-## 安装
-
-### Windows 用户 — 下载安装包
-
-`v0.1.3` 内部发布版提供两种 Windows 安装包（build by Tauri 2.x）：
-
-| 类型 | 文件 | 大小 | SHA256 |
-|------|------|-----:|--------|
-| **NSIS 安装包**（推荐） | `MiniMax Code_0.1.3_x64-setup.exe` | 3.18 MB (3,331,122 字节) | `088D6D0DCE5393787C5901F64D4445B038BC500B5E142B1E26E773CB1F92B32A` |
-| **MSI 包** | `MiniMax Code_0.1.3_x64_en-US.msi` | 3.93 MB (4,124,672 字节) | `74FA6F5983D13EB129F8187D53C86C18DC66973D4CF6F4DA4F48684BED766F84` |
-
-校验：
-
-```powershell
-Get-FileHash "MiniMax Code_0.1.3_x64-setup.exe" -Algorithm SHA256
-# 期望：088D6D0DCE5393787C5901F64D4445B038BC500B5E142B1E26E773CB1F92B32A
-
-Get-FileHash "MiniMax Code_0.1.3_x64_en-US.msi" -Algorithm SHA256
-# 期望：74FA6F5983D13EB129F8187D53C86C18DC66973D4CF6F4DA4F48684BED766F84
-```
-
-> 文件位置（开发机构建产物）：`src-tauri/target/release/bundle/{nsis,msi}/`。`v0.1.3` annotated tag 直接指向本 release commit；`v0.1.0` / `v0.1.1` / `v0.1.2` tag 保留为历史记录。
-
-### 开发者 — 从源码构建
+## 快速启动（dev mode — 两终端）
 
 ```bash
-# 1. 装依赖
-pnpm install
-cd agent && uv pip install -e . && cd ..
+# 终端 1 — Python agent（HTTP 服务，默认绑 127.0.0.1:8765）
+cd agent
+uv run python -m minimax_code
+#  → "agent server listening on http://127.0.0.1:8765"
 
-# 2. 出 Windows 安装包（NSIS + MSI）
-cd src-tauri
-cargo tauri build
-# 产物：src-tauri/target/release/bundle/{nsis,msi}/
+# 终端 2 — Vite 前端 dev server
+pnpm dev
+#  → vite ready
+
+# 浏览器开 http://localhost:5173
 ```
 
-> 前置：Node 20+、Python 3.11+、Rust 1.77+、Tauri 2.x 工具链（`cargo install tauri-cli@^2`）、Windows NSIS（自动随 Tauri 安装）、WiX 3.x（出 MSI 时需要）。
+> 想单终端跑：`AGENT_SKIP=1 pnpm dev` 只起 Vite，agent 单独在另一终端跑（`scripts/dev.mjs`
+> 默认通过 `concurrently` 同时拉起 agent + Vite，分开跑可避免端口竞用）。
 
-## 当前状态（v0.1.0）
+### 首次安装依赖
 
-- **Phase 1（基础闭环）**：✅ — Tauri 2.x 桌面壳 + React 18 前端 + Python agent 核心 + SQLite 存储 + 技能系统
+```bash
+# 1. 装 JS 依赖
+pnpm install
+
+# 2. 装 Python 依赖（agent 端）
+cd agent && uv sync && cd ..
+```
+
+完整契约见 [`docs/architecture.md`](docs/architecture.md) / [`docs/ipc-contract.md`](docs/ipc-contract.md) / [`docs/v0.2.0-web-architecture.md`](docs/v0.2.0-web-architecture.md)。
+
+## 当前状态（v0.2.0）
+
+- **Phase 1（基础闭环）**：✅ — Vite + React 18 前端 + Python agent 核心 + SQLite 存储 + 技能系统
 - **Phase 2a（授权 / 调度 / 进度）**：✅
 - **Phase 2b（会话历史 / 移动配对 / 多 Agent）**：✅ — 49+ 单测全过 + 17 步集成 e2e smoke 全过
 - **Phase 3（端到端 chat + 文档）**：✅ — `agent.send_message` 真接通 AgentCore + mock LLM + 消息持久化
 - **Phase 4（模型选择 + 子 Agent 真 LLM）**：✅ — `model.list/get_current/set_current` IPC + `SubAgentRuntime` 走真 MiniMax API（注入式）
 - **Phase 5（设置页 + 权限真弹窗 + 密钥 keyring）**：✅ — Settings 三 Tab、tool-call 运行时授权弹窗、API Key 走 OS keyring
-- **Phase 6（前端完成度 + Tauri release build）**：✅ — 技能面板 + 三栏布局 + 工作区切换 + per-turn 摘要 + Tauri NSIS/MSI 包成功出
+- **Phase 6（前端完成度 + Playwright e2e + 切到 web）**：✅ — 技能面板 + 三栏布局 + 工作区切换 + per-turn 摘要 + Playwright 跨栈 e2e 跑通
+- **v0.2.0 切换（删 Tauri）**：✅ — 去掉 `src-tauri/`、去掉 `@tauri-apps/api`、`scripts/dev.mjs` 起 agent + Vite，dev 工作流从 3 终端简化为 2 终端
 
 ## 架构
 
 | 层 | 技术 | 备注 |
 |---|---|---|
-| 桌面壳 | Tauri 2.x (Rust) | sidecar 模式 spawn Python |
-| 前端 | React 18 + Vite + TypeScript + Tailwind + Zustand | 见 `web/src/` |
-| Agent 核心 | Python 3.11+ (asyncio) | JSON-RPC 2.0 over stdio |
+| 前端 | React 18 + Vite + TypeScript + Tailwind + Zustand | 见 `web/src/`；Vite-served SPA |
+| Transport | HTTP + WebSocket (FastAPI on agent) | POST `/rpc` + GET `/ws`（`127.0.0.1:8765`） |
+| Agent 核心 | Python 3.11+ (asyncio) | JSON-RPC 2.0 over HTTP/WS；stdio 模式保留给测试 |
 | LLM 客户端 | httpx (async) | MiniMax API；mock mode（无 KEY 时降级） |
 | 存储 | SQLite (aiosqlite) | 8 张表（sessions / messages / tasks / skills / scheduled_jobs / permission_rules / mobile_devices / agents） |
 | 调度 | APScheduler | 持久化 cron |
-| 测试 | pytest + pytest-asyncio | 单元 + subprocess e2e smoke |
+| 测试 | pytest + vitest + Playwright | 单元 + e2e smoke + 跨栈 e2e |
 
-详细见 [`docs/architecture.md`](docs/architecture.md)。
+详细见 [`docs/architecture.md`](docs/architecture.md) / [`docs/ipc-contract.md`](docs/ipc-contract.md)。
 
 ## 目录结构
 
 ```
 .
-├── docs/                  # 架构 / IPC 契约 / 构建报告
-├── src-tauri/             # Tauri Rust 壳（main.rs / lib.rs / ipc.rs / commands.rs）
+├── docs/                  # 架构 / IPC 契约 / 设计文档
 ├── web/                   # React + Vite 前端
 │   └── src/
 │       ├── components/    # Sidebar / ChatPanel / MessageInput / ProgressPanel / SkillPanel / ...
 │       ├── stores/        # Zustand stores
-│       ├── ipc/           # IPC client (Tauri invoke/listen 包装)
+│       ├── ipc/           # IPC client (HTTP/WS 包装)
 │       └── types/         # 共享类型
 ├── agent/                 # Python agent 核心
 │   ├── minimax_code/
-│   │   ├── ipc/           # asyncio JSON-RPC server + handlers
+│   │   ├── ipc/           # asyncio JSON-RPC server (HTTP + stdio) + handlers
 │   │   ├── agent/         # AgentCore + MiniMaxClient (LLM)
 │   │   ├── tools/         # file_ops / terminal / edit / search / skill
 │   │   ├── skills/        # SKILL.md loader + registry + runtime
@@ -92,70 +85,42 @@ cargo tauri build
 │   │   ├── progress/      # ProgressTracker
 │   │   └── secrets/       # OS keyring + env-var fallback
 │   └── tests/             # pytest 单元
-├── tests/                 # e2e subprocess smoke（black-box）
-│   └── e2e/
-│       ├── smoke_sessions.py
-│       ├── smoke_mobile.py
-│       ├── smoke_agents.py
-│       ├── smoke_phase2b.py
-│       ├── smoke_chat.py
-│       ├── smoke_progress.py
-│       └── smoke_model.py
+├── tests/                 # e2e 测试
+│   ├── e2e/               # Python 黑盒 smoke（agent stdio）
+│   └── e2e-web/           # Playwright 跨栈 e2e
+├── scripts/               # dev.mjs / dev-agent.mjs / start-agent.*
 ├── package.json
 ├── pnpm-workspace.yaml
 ├── README.md
 └── CHANGELOG.md
 ```
 
-## 前置环境（仅源码构建 / 开发需要）
+## 前置环境（仅源码开发需要）
 
 - **Node.js 20+** (测试用 22.18)
 - **pnpm 9+** — `npm i -g pnpm`
 - **Python 3.11+** (测试用 3.12)
 - **uv** — `pip install uv` 或下载 [astral-sh/uv](https://docs.astral.sh/uv/)
-- **Rust 1.77+** + Tauri 2.x CLI（`cargo install tauri-cli@^2`）
-- **Windows** — Visual Studio Build Tools "Desktop development with C++" workload（出 MSI 还要 WiX 3.x）
 
-> 终端用户直接用安装包，不需要上面这些。
-
-## 快速启动（dev mode — 三终端）
-
-```bash
-# 1. 装 JS 依赖
-pnpm install
-
-# 2. 装 Python 依赖（agent 端）
-cd agent
-uv pip install -e .        # 或 pip install -e .
-cd ..
-
-# 3. 三个终端，分别跑：
-# 终端 1 — Python agent（IPC server）
-cd agent
-python -m minimax_code
-# 或：uv run python -m minimax_code
-
-# 终端 2 — Vite 前端 dev server
-cd web
-pnpm dev
-# 监听 http://localhost:5173
-
-# 终端 3 — Tauri 桌面壳（用 webview 打开 web 端 + 调 Python agent）
-cd src-tauri
-cargo tauri dev
-```
-
-> Tauri 的 `invoke` / `listen` API **只在 Tauri webview 里可用** — 普通浏览器看 `localhost:5173` 只能用 stub IPC。要看完整 demo 必须用 `cargo tauri dev`，或直接装 `MiniMax Code_0.1.0_x64-setup.exe` 跑 release 客户端。
+> v0.1.x 时代需要的 Rust / Tauri CLI / Visual Studio Build Tools / WiX 已全部丢弃。
+> 普通用户直接 clone 仓库 + 两终端命令即可，不再有安装包。
 
 ## 测试
 
 ```bash
 # Python 单元
-cd agent
-pytest -q
+pnpm py:test
+# 等价于：cd agent && uv run pytest
 
-# e2e subprocess smoke（每个 smoke 是独立的 black-box 端到端）
-# 都遵循统一约定：spawn 真实 agent 进程、跑 IPC、读磁盘
+# 前端单元（vitest）
+pnpm test
+# 等价于：pnpm --filter @minimax/web test
+
+# e2e 跨栈（Playwright）— 起两终端的 dev 服务后跑
+pnpm test:e2e
+# 等价于：playwright test
+
+# Python 黑盒 smoke（subprocess 驱动，跑前需在另一终端起 agent）
 cd tests
 python e2e/smoke_sessions.py   <python> <agent_dir> <workdir>
 python e2e/smoke_mobile.py     <python> <agent_dir> <workdir>
@@ -166,45 +131,37 @@ python e2e/smoke_progress.py   <python> <agent_dir> <workdir>
 python e2e/smoke_model.py      <python> <agent_dir> <workdir>
 ```
 
-> 跑 smoke 时 `<workdir>` 必须是**新创建的**空目录 — 所有 smoke 内部用 `MINIMAX_CODE_DATA_DIR=<workdir>` 隔离 DB，避免相互污染。
+> 跑 Python smoke 时 `<workdir>` 必须是**新创建的**空目录 — 所有 smoke 内部用
+> `MINIMAX_CODE_DATA_DIR=<workdir>` 隔离 DB，避免相互污染。
 
-## 出包（release build）
+## 分发（release build）
+
+**v0.2.0 内部无打包流程。** 项目是内部 web 工具，**不分发安装包**。要给同事用：
 
 ```bash
-cd src-tauri
-cargo tauri build
-# 产物：src-tauri/target/release/bundle/{nsis,msi}/
+git clone <repo>
+pnpm install
+cd agent && uv sync
+# 然后发"两条命令两终端"的说明即可
 ```
 
-> v0.1.0 已成功出包 — 见"安装"段的 SHA256 校验值。
+v0.1.x 时代的 Tauri NSIS / MSI 安装包保留在 `src-tauri/target/release/bundle/`（如历史
+artifact 还在硬盘上），不再被任何文档引用。要彻底删 `src-tauri/` 目录，可 `git rm` 整
+个目录（团队已实施）。
 
 ## 已知限制
 
-### 0. v0.1.0 / v0.1.1 / v0.1.2 启动 race（v0.1.3 已修）
+### 1. `thinking_count` metadata 字段未实现
 
-**v0.1.0**: Tauri `setup()` 把 `app.manage(AppState)` 放在 fire-and-forget 的 async task 里跑 — webview 一 mount，前端 `session.list` 等首批 IPC 调用撞上 state 还没注册，5 个 toast 全是 `state not managed`。
+Web 端 `MessageMetadata` 类型里预留了 `thinkingCount: number` 字段，但当前 AgentCore 的 `metadata` payload 不发这个键。前端会安全地 fallback 到 `0`。后续计划接通真实 MiniMax API 的 thinking-token 计数。
 
-**v0.1.1**: 修 race，setup 改成同步 `init_agent_bridge` + 立即 `app.manage(...)`，但**暴露了第二个 bug：sidecar 路径解析错**（`binaries/` 前缀），setup 返回 Err，Tauri 白屏退出。
+### 2. Sub-agent LLM 走 mock mode（除注入式之外）
 
-**v0.1.2**: 路径修对，正常启动，**但暴露了第三个 bug：首次首批 IPC（session.list / model.list）撞 `tokio pipe flush` race**。`send_to_agent` 在 `write_all` 之后调了 `stdin.flush().await`，但 `tokio::process::ChildStdin` 是裸 OS pipe 没有用户态缓冲，`write_all` 已经把字节放进 kernel pipe buffer。`flush` 触发内部 sync，撞上 sidecar 还在 startup 阶段（~50ms init + asyncio server "waiting for messages"），OS 报 `ERROR_NO_DATA`（os error 232）/"管道正在被关闭"。首批 IPC 全部失败，但稍后用户交互（chat.send_message）sidecar 已就绪，反而能用。
+`SubAgentRuntime` 默认用 `AgentCore(llm=None)` — stub 模式返回确定性文本。主 chat 链路（`agent.send_message`）的 mock mode 触发条件是 `MINIMAX_API_KEY` 为空。已加 `SubAgentRuntime.inject_llm(client)` 入口：测试用真 LLM 时手动注入 `MiniMaxClient` 即可。`smoke_agents` 已支持这种注入式 e2e。
 
-**v0.1.3**: 删掉 `stdin.flush().await`。pipe 上不需要 flush（kernel buffer ≥ 4KB，`\n` 分帧保证消息完整）。装完首批 IPC 应该正常返回。
+### 3. 旧 README "Tasks ahead" 段
 
-### 1. Tauri 端到端 e2e smoke 未在已安装包上跑
-
-代码层面所有 Phase 1–6 e2e smoke（sessions / mobile / agents / chat / progress / model）均通过，**v0.1.3 起需在装好的桌面端手动验证**，自动化（Playwright / WebDriver）放 v0.1.4。
-
-### 2. `thinking_count` metadata 字段未实现
-
-Web 端 `MessageMetadata` 类型里预留了 `thinkingCount: number` 字段，但当前 AgentCore 的 `metadata` payload 不发这个键。前端会安全地 fallback 到 `0`。Phase 7 计划接通真实 MiniMax API 的 thinking-token 计数。
-
-### 3. Sub-agent LLM 走 mock mode（除注入式之外）
-
-`SubAgentRuntime` 默认用 `AgentCore(llm=None)` — stub 模式返回确定性文本。主 chat 链路（`agent.send_message`）的 mock mode 触发条件是 `MINIMAX_API_KEY` 为空。Phase 4 已加 `SubAgentRuntime.inject_llm(client)` 入口：测试用真 LLM 时手动注入 `MiniMaxClient` 即可。`smoke_agents` 已支持这种注入式 e2e。
-
-### 4. 旧 README "Tasks ahead" 段
-
-仓库原 README（Phase 1 skeleton 时代）里"Tasks ahead"等段已过时 — 当前所有 Phase 1–6 任务都已完成。本 README 是 v0.1.0 终态。完整变更见 [`CHANGELOG.md`](CHANGELOG.md)。
+仓库原 README（Phase 1 skeleton 时代）里"Tasks ahead"等段已过时 — 当前所有 Phase 1–6 + v0.2.0 切换任务都已完成。本 README 是 v0.2.0 终态。完整变更见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## License
 

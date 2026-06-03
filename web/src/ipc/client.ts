@@ -1,24 +1,33 @@
 /**
- * IPC client — wraps Tauri `invoke` and `event` so the rest of the
- * frontend never has to know the wire format.
+ * IPC client — fetch + WebSocket transport to the Python agent.
  *
- * Features:
- *  - Per-id response promise map (concurrent requests don't interfere).
- *  - Strongly-typed `request<T>(method, params)` for ergonomic RPC.
- *  - Stream subscriptions via `on(event, cb)` returning an unlisten.
- *  - Browser / unit-test fallback: if running outside Tauri, methods
- *    go through a tiny in-process mock so the UI shell is shippable
- *    without the Python sidecar.
- *  - Toast-able IPCError with code + data for ErrorBoundary display.
+ * Replaces the v0.1.x Tauri `invoke` / `listen` bridge. The wire
+ * format is the same JSON-RPC 2.0 envelope the agent already speaks;
+ * only the transport changes.
  *
- * See `docs/ipc-contract.md` for the protocol.
+ *   POST /rpc   — JSON-RPC request → response (one-shot)
+ *   GET  /ws    — server-push events (agent.message_chunk, …)
+ *   GET  /health— liveness probe used by `ping()` and `start()`.
+ *
+ * Mode selection:
+ *   - `VITE_AGENT_MODE === "mock"` (or `mockMode: true` in opts)
+ *     forces the in-process mock backend. Useful for tests and
+ *     browser-only UI work.
+ *   - Otherwise `start()` probes `GET /health`. A 2xx flips to
+ *     `mode = "http"`. A failure (network error, 5xx, timeout)
+ *     falls back to mock so the UI keeps working offline.
+ *
+ * The mock backend (the big `mockHandle` switch) is preserved
+ * verbatim so existing UI plumbing and Vitest snapshots keep
+ * working without changes.
+ *
+ * See `docs/v0.2.0-web-architecture.md` for the protocol details.
  */
 
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   ErrorCode,
   StreamEvent,
+  type AgentInfo,
   type CreateSessionResult,
   type JsonRpcError,
   type JsonRpcEvent,
@@ -34,28 +43,27 @@ import {
   type ListSkillsResult,
   type MessageChunkData,
   type Message as ProtocolMessage,
+  type ModelInfo,
   type PermissionRequestData,
   type PermissionResolvedData,
   type PermissionRule,
-  type SendMessageResult,
+  type ScheduledJob,
   type SecretStatus,
+  type SendMessageResult,
   type Session,
   type SetModelResult,
   type SetRuleResult,
   type SidecarEvent,
   type SkillInfo,
-  type ScheduledJob,
-  type AgentInfo,
-  type ModelInfo,
   type SpawnSubagentResult,
   type TaskProgressData,
   type ToolCallData,
   type ToolResultData,
 } from "../types/ipc";
 
-const RESPONSE_EVENT = "ipc:response";
-const EVENT_NAME = "ipc:event";
-const SIDE_CAR_EVENT = "ipc:sidecar";
+/* ─────────────────────── Internal types ─────────────────────── */
+
+type ClientMode = "http" | "mock";
 
 type Pending = {
   resolve: (value: unknown) => void;
@@ -65,6 +73,36 @@ type Pending = {
 type EventListener = (payload: JsonRpcEvent) => void;
 type ResponseListener = (payload: JsonRpcResponse) => void;
 type SideCarListener = (payload: SidecarEvent) => void;
+
+/* ─────────────────────── Env helpers ─────────────────────── */
+
+/**
+ * Read a Vite-injected env var without dragging in `vite/client`
+ * (we don't currently include that types file). Falls back to
+ * `undefined` outside a Vite build (Vitest, raw node).
+ */
+function readViteEnv(key: string): string | undefined {
+  try {
+    const env = (import.meta as ImportMeta & { env?: Record<string, string | undefined> })
+      .env;
+    if (env && typeof env[key] === "string") {
+      return env[key] as string;
+    }
+  } catch {
+    // import.meta.env unavailable (e.g. raw node test runner) — skip
+  }
+  return undefined;
+}
+
+const DEFAULT_AGENT_BASE_URL = "http://127.0.0.1:8765";
+
+/** Convert an `http://host:port` base URL to its `ws://` equivalent. */
+function toWebSocketUrl(baseUrl: string, path: string): string {
+  const wsBase = baseUrl.replace(/^http/i, "ws").replace(/\/+$/, "");
+  return `${wsBase}${path}`;
+}
+
+/* ─────────────────────── Public API ─────────────────────── */
 
 /** Public IPC error class — also exported for ErrorBoundary. */
 export class IPCError extends Error {
@@ -90,12 +128,39 @@ export type StreamEventPayload =
   | { event: typeof StreamEvent.PermissionResolved; data: PermissionResolvedData }
   | { event: typeof StreamEvent.TaskProgress; data: TaskProgressData };
 
-/** Returns true when the runtime is inside a Tauri webview. */
+/**
+ * @deprecated Retained as a no-op stub for backward compatibility
+ * with `App.tsx` and any external callers. We never run inside a
+ * Tauri webview anymore, so this always returns `false`. Use
+ * `isAgentReachable(baseUrl?)` for runtime detection.
+ */
 export function isTauri(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    "__TAURI_INTERNALS__" in (window as unknown as Record<string, unknown>)
-  );
+  return false;
+}
+
+/**
+ * Async liveness probe — returns `true` if `GET <baseUrl>/health`
+ * responds with a 2xx. Defaults to the standard agent base URL.
+ * `null` / undefined / empty `baseUrl` falls through to the default.
+ */
+export async function isAgentReachable(baseUrl?: string): Promise<boolean> {
+  const url = baseUrl && baseUrl.length > 0 ? baseUrl : DEFAULT_AGENT_BASE_URL;
+  try {
+    const resp = await fetch(`${url.replace(/\/+$/, "")}/health`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+    });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+export interface IPCClientOptions {
+  /** Override the agent base URL. Default: `VITE_AGENT_URL` || `http://127.0.0.1:8765`. */
+  baseUrl?: string;
+  /** Force the in-process mock backend (bypasses the `/health` probe). */
+  mockMode?: boolean;
 }
 
 export class IPCClient {
@@ -103,68 +168,106 @@ export class IPCClient {
   private listeners = new Map<string, Set<EventListener>>();
   private responseListeners = new Set<ResponseListener>();
   private sideCarListeners = new Set<SideCarListener>();
-  private unlistenResponse: UnlistenFn | null = null;
-  private unlistenEvent: UnlistenFn | null = null;
-  private unlistenSideCar: UnlistenFn | null = null;
+  private ws: WebSocket | null = null;
+  private wsReconnectAttempts = 0;
+  private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private wsOpen = false;
   private started = false;
-  private readonly useMock: boolean;
+  private mode: ClientMode = "http";
+  private readonly baseUrl: string;
+  private readonly forceMock: boolean;
 
-  constructor(opts?: { forceMock?: boolean }) {
-    this.useMock = !!opts?.forceMock || !isTauri();
+  constructor(opts?: IPCClientOptions) {
+    const envUrl = readViteEnv("VITE_AGENT_URL");
+    this.baseUrl = (opts?.baseUrl && opts.baseUrl.length > 0
+      ? opts.baseUrl
+      : envUrl && envUrl.length > 0
+        ? envUrl
+        : DEFAULT_AGENT_BASE_URL
+    ).replace(/\/+$/, "");
+    this.forceMock =
+      !!opts?.mockMode || readViteEnv("VITE_AGENT_MODE") === "mock";
+    // Pre-set the mode so the client behaves correctly even if a
+    // caller invokes `request()` / `ping()` before `start()`. This
+    // matches the v0.1.x contract where `useMock` was decided in
+    // the constructor. `start()` will only flip the mode if the
+    // constructor left it on the default "http" path AND the
+    // /health probe fails.
+    this.mode = this.forceMock ? "mock" : "http";
   }
 
-  /** True when this client is running in mock mode (no Tauri shell). */
+  /** True when this client is running in mock mode (no real agent). */
   get isMock(): boolean {
-    return this.useMock;
+    return this.mode === "mock";
   }
 
-  /** Subscribe to Tauri events exactly once. Idempotent. */
+  /** True after `start()` has selected the transport. */
+  get isHttp(): boolean {
+    return this.mode === "http";
+  }
+
+  /** Resolved agent base URL (post env-var merge, trailing slash stripped). */
+  get agentBaseUrl(): string {
+    return this.baseUrl;
+  }
+
+  /**
+   * Boot the transport.
+   *
+   *  - In forced-mock mode (constructor opt or `VITE_AGENT_MODE=mock`)
+   *    skip the probe and use the in-process mock.
+   *  - Otherwise `GET /health`. 2xx → `mode = "http"` and a WebSocket
+   *    is opened. Failure → `mode = "mock"` and the UI keeps working.
+   *
+   * Idempotent. Returns once mode is decided; the WebSocket will
+   * reconnect in the background if it drops.
+   */
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
-    if (this.useMock) {
-      this.started = true;
+
+    if (this.forceMock) {
+      this.mode = "mock";
       return;
     }
-    this.unlistenResponse = await listen<JsonRpcResponse>(RESPONSE_EVENT, (e) => {
-      const resp = e.payload;
-      this.responseListeners.forEach((cb) => cb(resp));
-      const pending = this.pending.get(resp.id);
-      if (!pending) return;
-      this.pending.delete(resp.id);
-      if (resp.error) {
-        pending.reject(resp.error);
-      } else {
-        pending.resolve(resp.result);
-      }
-    });
 
-    this.unlistenEvent = await listen<JsonRpcEvent>(EVENT_NAME, (e) => {
-      const evt = e.payload;
-      const set = this.listeners.get(evt.event);
-      if (set) {
-        set.forEach((cb) => cb(evt));
-      }
-    });
-
-    this.unlistenSideCar = await listen<SidecarEvent>(SIDE_CAR_EVENT, (e) => {
-      this.sideCarListeners.forEach((cb) => cb(e.payload));
-    });
+    const reachable = await isAgentReachable(this.baseUrl);
+    if (reachable) {
+      this.mode = "http";
+      this.connectWs();
+    } else {
+      this.mode = "mock";
+    }
   }
 
+  /** Tear down transport — useful for tests. */
   async stop(): Promise<void> {
-    this.unlistenResponse?.();
-    this.unlistenResponse = null;
-    this.unlistenEvent?.();
-    this.unlistenEvent = null;
-    this.unlistenSideCar?.();
-    this.unlistenSideCar = null;
+    if (this.wsReconnectTimer != null) {
+      clearTimeout(this.wsReconnectTimer);
+      this.wsReconnectTimer = null;
+    }
+    if (this.ws) {
+      try {
+        this.ws.close();
+      } catch {
+        // ignore — close is best-effort
+      }
+      this.ws = null;
+    }
+    this.wsOpen = false;
+    this.rejectAllPending({
+      code: ErrorCode.InternalError,
+      message: "IPC client stopped",
+    });
     this.started = false;
   }
 
   /**
-   * Send a JSON-RPC request and await its response. The Rust sidecar
-   * assigns a uuid if we don't pass one.
+   * Send a JSON-RPC request and await its response.
+   *
+   *  - In mock mode: dispatches to the in-process mock backend.
+   *  - In HTTP mode: `POST /rpc`, returns `result`, throws `IPCError`
+   *    on `error` envelope.
    */
   async request<T = unknown>(
     method: string,
@@ -172,45 +275,43 @@ export class IPCClient {
     id?: JsonRpcId,
   ): Promise<T> {
     const requestId = id ?? this.uuid();
-    // We deliberately build the full envelope here for parity with the
-    // wire format (also makes debugging easier if we ever log it).
+    // Build the envelope for parity with the wire format. The HTTP
+    // path re-serialises the same fields below.
     const envelope: JsonRpcRequest = {
       jsonrpc: "2.0",
       id: requestId,
       method,
       params,
     };
-    void envelope; // currently unused — invoke sends the fields directly
+    void envelope;
 
-    if (this.useMock) {
+    if (this.mode === "mock") {
       return mockRequest<T>(method, params, this);
     }
-    void this;
 
-    const promise = new Promise<unknown>((resolve, reject) => {
-      this.pending.set(requestId, { resolve, reject });
-    });
-    await invoke("ipc_request", {
-      method,
-      params: params ?? null,
-      id: id ?? null,
-    });
-    try {
-      return (await promise) as T;
-    } catch (err) {
-      throw new IPCError(err as JsonRpcError);
-    }
+    return this.httpRequest<T>(method, params, requestId);
   }
 
   /** Fire-and-forget notification (no id, no response expected). */
   async notify(method: string, params?: unknown): Promise<void> {
-    if (this.useMock) {
+    if (this.mode === "mock") {
       mockNotify(method, params, this);
       return;
     }
-    await invoke("ipc_notify", {
-      method,
-      params: params ?? null,
+    // HTTP mode: POST without awaiting a body. Swallow network
+    // errors with a console warning so a flaky network doesn't
+    // ripple into the UI loop.
+    void fetch(`${this.baseUrl}/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        method,
+        params: params ?? null,
+      }),
+    }).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn(`[ipc] notify(${method}) failed:`, err);
     });
   }
 
@@ -250,15 +351,13 @@ export class IPCClient {
     };
   }
 
-  /** Liveness probe — true once the Rust bridge has started. */
+  /** Liveness probe — `true` if the agent answered `/health` (or mock). */
   async ping(): Promise<boolean> {
-    if (this.useMock) return true;
-    try {
-      return (await invoke("ping_agent")) as boolean;
-    } catch {
-      return false;
-    }
+    if (this.mode === "mock") return true;
+    return isAgentReachable(this.baseUrl);
   }
+
+  /* ────────── Mock-mode helpers (for tests + offline UI) ────────── */
 
   /** Mock-mode event emitter (for browser / tests). */
   _emit(event: string, data: unknown): void {
@@ -288,6 +387,218 @@ export class IPCClient {
   /** Mock-mode sidecar emitter. */
   _emitSideCar(payload: SidecarEvent): void {
     this.sideCarListeners.forEach((cb) => cb(payload));
+  }
+
+  /* ────────── Private: WebSocket + dispatch ────────── */
+
+  private connectWs(): void {
+    if (this.ws) {
+      // Already connecting/connected — bail.
+      return;
+    }
+    const wsUrl = toWebSocketUrl(this.baseUrl, "/ws");
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch (err) {
+      // Constructing the WS can throw synchronously in some
+      // environments (e.g. invalid URL). Treat as a connection
+      // failure and schedule a reconnect.
+      this.ws = null;
+      this.scheduleReconnect();
+      void err;
+      return;
+    }
+    this.ws = ws;
+
+    ws.addEventListener("open", () => {
+      this.wsOpen = true;
+      // Note: we deliberately do NOT reset `wsReconnectAttempts` on
+      // open. The task spec (and the tests in __tests__/client-http.test.ts)
+      // require the backoff sequence to monotonically grow through
+      // repeated failures — 250, 500, 1000, 2000, 4000, 5000, 5000...
+      // Resetting would collapse every reconnect back to 250ms.
+      this.dispatchSideCar({ status: "started" });
+    });
+
+    ws.addEventListener("message", (e) => {
+      this.handleWsMessage(e.data);
+    });
+
+    ws.addEventListener("close", () => {
+      const wasOpen = this.wsOpen;
+      this.wsOpen = false;
+      this.ws = null;
+      if (wasOpen) {
+        this.dispatchSideCar({ status: "stopped" });
+      }
+      // Reject in-flight pending so callers can retry.
+      this.rejectAllPending({
+        code: ErrorCode.InternalError,
+        message: "WebSocket disconnected",
+      });
+      this.scheduleReconnect();
+    });
+
+    ws.addEventListener("error", () => {
+      // Errors always fire `close` after — let that handler do the
+      // reconnect bookkeeping. Forward as a sidecar event for UIs
+      // that care.
+      this.dispatchSideCar({
+        status: "error",
+        error: "WebSocket error",
+      });
+    });
+  }
+
+  private handleWsMessage(raw: unknown): void {
+    if (typeof raw !== "string") return;
+    let env: unknown;
+    try {
+      env = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (!env || typeof env !== "object") return;
+    this.handleEnvelope(env as Record<string, unknown>);
+  }
+
+  /**
+   * Dispatch a single JSON-RPC envelope to the right subscriber set.
+   * Routing rules:
+   *  - Envelopes with an `id` AND (`result` or `error`) are
+   *    responses → resolve/reject `pending` + notify `responseListeners`.
+   *  - Envelopes with a `method` (no `id`) are events/notifications.
+   *    Special-cased:
+   *      - `agent.ready` is lifecycle, no listener fan-out.
+   *      - `sidecar.*` (or method === "sidecar") → `sideCarListeners`.
+   *    Otherwise → `listeners.get(method)`.
+   */
+  private handleEnvelope(env: Record<string, unknown>): void {
+    const id = env.id as JsonRpcId | undefined;
+    const hasResult = "result" in env;
+    const hasError = "error" in env;
+    if (id !== undefined && (hasResult || hasError)) {
+      const resp = env as unknown as JsonRpcResponse;
+      this.responseListeners.forEach((cb) => cb(resp));
+      const pending = this.pending.get(resp.id);
+      if (pending) {
+        this.pending.delete(resp.id);
+        if (resp.error) {
+          pending.reject(resp.error);
+        } else {
+          pending.resolve(resp.result);
+        }
+      }
+      return;
+    }
+
+    const method = env.method;
+    if (typeof method !== "string" || method.length === 0) return;
+
+    // Lifecycle — server confirms the runtime is up. No listener
+    // fan-out; presence of an open WebSocket is the signal UIs use.
+    if (method === "agent.ready") return;
+
+    // Sidecar events: method = "sidecar" or "sidecar.*". We accept
+    // either bare status (top-level `params.status`) or a fully
+    // shaped `SidecarEvent` in `params`.
+    if (method === "sidecar" || method.startsWith("sidecar.")) {
+      const params = (env.params ?? {}) as Partial<SidecarEvent>;
+      if (params.status === "started" || params.status === "stopped" || params.status === "error") {
+        this.dispatchSideCar({ status: params.status, error: params.error });
+      } else {
+        this.dispatchSideCar({ status: "started" });
+      }
+      return;
+    }
+
+    // Regular stream event.
+    const set = this.listeners.get(method);
+    if (!set || set.size === 0) return;
+    const evt: JsonRpcEvent = {
+      jsonrpc: "2.0",
+      event: method,
+      data: env.params,
+    };
+    for (const cb of set) {
+      cb(evt);
+    }
+  }
+
+  private dispatchSideCar(payload: SidecarEvent): void {
+    this.sideCarListeners.forEach((cb) => cb(payload));
+  }
+
+  private scheduleReconnect(): void {
+    if (!this.started || this.mode !== "http") return;
+    if (this.wsReconnectTimer != null) return;
+    this.wsReconnectAttempts += 1;
+    // 250ms → 500ms → 1s → 2s, cap at 5s.
+    const delay = Math.min(
+      5000,
+      250 * 2 ** Math.min(this.wsReconnectAttempts - 1, 5),
+    );
+    this.wsReconnectTimer = setTimeout(() => {
+      this.wsReconnectTimer = null;
+      this.connectWs();
+    }, delay);
+  }
+
+  private rejectAllPending(err: JsonRpcError): void {
+    if (this.pending.size === 0) return;
+    for (const [, pending] of this.pending) {
+      pending.reject(err);
+    }
+    this.pending.clear();
+  }
+
+  private async httpRequest<T>(
+    method: string,
+    params: unknown,
+    id: JsonRpcId,
+  ): Promise<T> {
+    let resp: Response;
+    try {
+      resp = await fetch(`${this.baseUrl}/rpc`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method,
+          params: params ?? null,
+        }),
+      });
+    } catch (err) {
+      throw new IPCError({
+        code: ErrorCode.InternalError,
+        message: `network error: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+
+    if (!resp.ok) {
+      // 5xx / non-2xx → transport-level failure, not a JSON-RPC error.
+      throw new IPCError({
+        code: ErrorCode.InternalError,
+        message: `HTTP ${resp.status} ${resp.statusText}`,
+      });
+    }
+
+    let envelope: JsonRpcResponse;
+    try {
+      envelope = (await resp.json()) as JsonRpcResponse;
+    } catch (err) {
+      throw new IPCError({
+        code: ErrorCode.ParseError,
+        message: `failed to parse response: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+
+    if (envelope.error) {
+      throw new IPCError(envelope.error);
+    }
+    return envelope.result as T;
   }
 
   private uuid(): string {
@@ -452,8 +763,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
 
 /**
  * The mock backend is intentionally minimal — it just lets the UI shell
- * render in a plain browser (or under vitest) without the Tauri Rust
- * shell. Real answers come from the Python agent.
+ * render in a plain browser (or under vitest) without the Python agent.
+ * Real answers come from the Python agent over HTTP + WebSocket.
  */
 function mockRequest<T>(
   method: string,
@@ -766,7 +1077,7 @@ function mockHandle(
 
 /* ─────────────────────── Module-level singleton ─────────────────────── */
 
-/** Singleton for the app — Tauri or mock depending on the runtime. */
+/** Singleton for the app — http transport when the agent is up, mock otherwise. */
 export const ipc = new IPCClient();
 
 /** Typed binding on top of the singleton. */

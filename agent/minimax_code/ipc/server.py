@@ -6,6 +6,9 @@ Responsibilities
 2. Classify each line as request / notification / event / response.
 3. Dispatch requests and notifications to registered handlers.
 4. Push responses, notifications, and events to stdout.
+5. Optionally fan out events/notifications to in-process listeners
+   so non-stdio transports (e.g. the HTTP/WS bridge) can observe
+   what the server emits.
 
 The server is intentionally decoupled from the rest of the agent —
 handlers receive a ``Context`` object that gives them the ability to
@@ -24,6 +27,7 @@ from typing import Any, Awaitable, Callable, IO, Optional
 from ..config import Config
 from .protocol import (
     Event,
+    INTERNAL_ERROR,
     INVALID_REQUEST,
     METHOD_NOT_FOUND,
     Notification,
@@ -62,27 +66,39 @@ class Context:
     async def reply(self, result: Any) -> None:
         if self.request_id is None:
             raise RuntimeError("cannot reply to a notification")
-        await self.server._send(
-            Response(id=self.request_id, result=result).to_bytes()
-        )
+        resp = Response(id=self.request_id, result=result)
+        # Capture for non-stdio transports (HTTP) that need the
+        # response object directly without re-parsing stdout.
+        self._extra["_response"] = resp.model_dump(exclude_none=True)
+        await self.server._send(resp.to_bytes())
         self._extra["_replied"] = True
 
     async def reply_error(self, code: int, message: str, data: Any = None) -> None:
         if self.request_id is None:
             raise RuntimeError("cannot reply_error to a notification")
-        await self.server._send(
-            Response(
-                id=self.request_id,
-                error=RPCError(code=code, message=message, data=data),
-            ).to_bytes()
+        resp = Response(
+            id=self.request_id,
+            error=RPCError(code=code, message=message, data=data),
         )
+        self._extra["_response"] = resp.model_dump(exclude_none=True)
+        await self.server._send(resp.to_bytes())
         self._extra["_replied"] = True
 
     async def notify(self, method: str, params: Any = None) -> None:
-        await self.server._send(Notification(method=method, params=params).to_bytes())
+        env = Notification(method=method, params=params)
+        await self.server._send(env.to_bytes())
+        # Mirror to in-process listeners so e.g. the HTTP/WS
+        # bridge can forward outbound notifications. Stdout
+        # behaviour is preserved for the CLI debug case.
+        self.server.notify(env.model_dump(exclude_none=True))
 
     async def emit(self, event: str, data: Any = None) -> None:
-        await self.server._send(Event(event=event, data=data).to_bytes())
+        env = Event(event=event, data=data)
+        await self.server._send(env.to_bytes())
+        # Mirror to in-process listeners — the HTTP/WS bridge
+        # subscribes here and forwards the event to every open
+        # WebSocket. Stdout behaviour is unchanged.
+        self.server.notify(env.model_dump(exclude_none=True))
 
 
 class IPCServer:
@@ -112,6 +128,14 @@ class IPCServer:
         self._notification_handlers: dict[str, NotificationHandler] = {}
         self._write_lock = asyncio.Lock()
         self._stop = asyncio.Event()
+        # In-process event/notification subscribers. The HTTP/WS
+        # bridge adds itself here so that anything handlers emit
+        # via ``ctx.emit`` / ``ctx.notify`` is mirrored to open
+        # WebSocket clients. The callback is a sync callable that
+        # receives a plain dict (the serialised envelope). It must
+        # not block; ``notify`` wraps each call in try/except so
+        # a single misbehaving listener cannot stop the others.
+        self.listeners: list[Callable[[dict[str, Any]], None]] = []
         # Default handlers — registered in `register_defaults`.
         self._register_defaults()
 
@@ -126,6 +150,45 @@ class IPCServer:
         if method in self._notification_handlers:
             raise ValueError(f"duplicate notification handler for {method!r}")
         self._notification_handlers[method] = handler
+
+    def register_listener(self, callback: Callable[[dict[str, Any]], None]) -> None:
+        """Subscribe to in-process server events.
+
+        ``callback`` is invoked (synchronously, but never allowed to
+        block the dispatch loop) for every :class:`Event` and
+        :class:`Notification` written by a handler. ``reply`` /
+        ``reply_error`` responses are *not* fanned out — those
+        belong to the originating transport.
+
+        The callback must be cheap. Schedule any I/O via
+        ``asyncio.create_task`` from inside the callback; the
+        server runs on a single event loop and the callback fires
+        on the handler's hot path.
+        """
+        if callback not in self.listeners:
+            self.listeners.append(callback)
+
+    def unregister_listener(self, callback: Callable[[dict[str, Any]], None]) -> None:
+        """Remove a previously-registered listener. No-op if absent."""
+        try:
+            self.listeners.remove(callback)
+        except ValueError:
+            pass
+
+    def notify(self, env: dict[str, Any]) -> None:
+        """Fan ``env`` out to every registered listener.
+
+        Each listener is wrapped in its own try/except so one
+        misbehaving subscriber cannot prevent the rest from
+        receiving the event. Iterates over a snapshot of the
+        listener list so listeners may safely unregister
+        themselves from within the callback.
+        """
+        for cb in list(self.listeners):
+            try:
+                cb(env)
+            except Exception:  # pragma: no cover — defensive
+                logger.exception("ipc listener raised; continuing")
 
     def _register_defaults(self) -> None:
         """Built-in handlers (always available)."""
@@ -287,6 +350,88 @@ class IPCServer:
                         ),
                     ).to_bytes()
                 )
+
+    # -- request API (transport-agnostic) -----------------------------------
+
+    async def handle_request(self, obj: dict[str, Any]) -> dict[str, Any] | None:
+        """Process a single parsed JSON-RPC 2.0 envelope and return the response.
+
+        Used by the HTTP/WS bridge (``POST /rpc``) and any other
+        non-stdio transport that already has a parsed object. The
+        stdio path uses :meth:`_handle_line` instead — it owns
+        the line framing, BOM stripping, and per-line error
+        envelopes. This method only handles the dispatch.
+
+        Returns
+        -------
+        dict | None
+            - ``None`` when ``obj`` is a notification (or an inbound
+              event the server is ignoring) — no reply expected.
+            - A JSON-RPC 2.0 response dict for requests. The dict
+              has the canonical ``{"jsonrpc": "2.0", "id": ..., "result"|"error": ...}``
+              shape and is safe to hand to ``json.dumps``.
+
+        Side effects
+        ------------
+        - Calls :meth:`notify` for any events / notifications
+          emitted by the handler (via ``ctx.emit`` / ``ctx.notify``).
+        - Still writes to ``self.stdout`` for parity with the
+          stdio path — production HTTP setups just redirect
+          stdout to a log file. Tests pass a ``StringIO`` to keep
+          the buffer out of the response.
+        """
+        if "event" in obj and "method" not in obj and "id" not in obj:
+            logger.debug("ignoring inbound event: %s", obj.get("event"))
+            return None
+
+        if "method" not in obj:
+            return Response(
+                id=obj.get("id", 0),
+                error=RPCError(code=INVALID_REQUEST, message="missing 'method'"),
+            ).model_dump(exclude_none=True)
+
+        method = str(obj["method"])
+        params = obj.get("params")
+        request_id = obj.get("id")
+
+        if request_id is None:
+            # Notification — dispatch, no response.
+            handler = self._notification_handlers.get(method) or self._handlers.get(method)
+            if handler is None:
+                logger.debug("no handler for notification %s", method)
+                return None
+            ctx = Context(server=self, method=method, request_id=None)
+            try:
+                await handler(params, ctx)
+            except Exception:  # pragma: no cover — defensive
+                logger.exception("notification handler %s crashed", method)
+            return None
+
+        # Request — dispatch and reply.
+        handler = self._handlers.get(method)
+        if handler is None:
+            return Response(
+                id=request_id,
+                error=RPCError(
+                    code=METHOD_NOT_FOUND,
+                    message=f"unknown method: {method}",
+                ),
+            ).model_dump(exclude_none=True)
+
+        ctx = Context(server=self, method=method, request_id=request_id)
+        try:
+            result = await handler(params, ctx)
+            if not ctx._extra.get("_replied"):
+                await ctx.reply(result)
+            return ctx._extra.get("_response") or Response(
+                id=request_id, result=None
+            ).model_dump(exclude_none=True)
+        except Exception as exc:
+            logger.exception("handler %s raised", method)
+            return Response(
+                id=request_id,
+                error=RPCError(code=INTERNAL_ERROR, message=f"internal error: {exc}"),
+            ).model_dump(exclude_none=True)
 
     # -- outbound ----------------------------------------------------------
 

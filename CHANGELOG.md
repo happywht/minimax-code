@@ -5,6 +5,106 @@ All notable changes to MiniMax Code are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-06-03
+
+**Drop Tauri, go full web.** v0.1.x 阶段项目以 Tauri 2.x 桌面壳为承载
+（NSIS / MSI 双包，启动期踩过 `app.manage()` race / sidecar 路径 /
+`tokio pipe flush` 三个 bug，详见 v0.1.1 / v0.1.2 / v0.1.3 三段 hotfix）。
+v0.2.0 起切换为 **web SPA + 本地 Python agent** 形态：
+
+- **为什么删 Tauri**：v0.1.x 的桌面壳没有真正的安装必要性 —— 项目本来就是
+  内部工具（只 LAN 内几个人用），Tauri 带来的"轻量 webview 桌面壳"价值
+  不如它引入的"必须出 MSI / NSIS / 必须装 Rust 工具链 / 启动 race 难调"
+  成本。直接打开浏览器跑 `localhost:5173` 更省事，热重载和调试都更标准。
+- **保留什么**：v0.1.x 阶段实现的 Phase 1–6 全部功能（多轮对话 / 技能
+  系统 / 定时任务 / 多 Agent / 移动配对 / 授权管理 / 进度面板 / 端到端
+  chat / 模型选择 / 子 Agent 真 LLM / 设置页 / 权限真弹窗 / 密钥 keyring
+  / 前端三栏布局）一字不动地进入 v0.2.0。Python agent 核心 / SQLite 存储
+  / 7 个 e2e smoke / IPC handler registry 全部保留。
+- **改了 transport**：从前端通过 Tauri `invoke` 调 Rust 再 stdio 转 Python
+  sidecar，改成前端直接 `fetch POST /rpc` + `WebSocket /ws` 打到 Python
+  agent 的 FastAPI 薄 transport。两套 transport **共享同一份 handler
+  registry**（`IPCServer.handle_request` + `IPCServer.register_listener`），
+  不是平行两份实现。Stdio 模式保留给 tests + CLI（`--stdio` flag）。
+
+### Added
+- **Agent HTTP + WebSocket transport**（`agent/minimax_code/ipc/http_server.py`）：
+  FastAPI 薄 transport，bind `127.0.0.1:8765`，暴露 `POST /rpc` /
+  `GET /ws` / `GET /health`（SSE fallback `GET /events`）。CORS allow-list
+  仅 `http://localhost:5173`（Vite dev）。复用 `IPCServer` 的 handler
+  registry —— POST 收到 envelope 后直接 `await server.handle_request(env)`，
+  流式事件经 `register_listener(cb)` 推到所有 WebSocket 客户端。
+- **Web IPC client 重写**（`web/src/ipc/client.ts`）：`IPCClient.request` /
+  `IPCClient.on` / `IPCClient.ping` 内部切到 `fetch` + `WebSocket`，
+  公开 `TypedIPC` 形状（`ping` / `listSessions` / `createSession` /
+  `sendMessage` / `listModels` 等）零变化，React stores 一行未动。WS
+  reconnect 走指数退避（250ms → 500ms → 1s → 2s, cap 5s）。`useMock`
+  fallback 走 `/health` 200ms 探针 + 既有 in-process `mockHandle`。
+- **Playwright 跨栈 e2e**（`tests/e2e-web/` + `pnpm test:e2e`）：接替
+  v0.1.x "Tauri 桌面端 e2e 未在已安装包上跑" 这个 known limitation。真
+  浏览器（Chromium）跑 web 端，真起 agent（HTTP 模式），完整覆盖会话
+  创建 → 消息发送 → 流式响应 → 状态更新链路。
+- **设计文档** [`docs/v0.2.0-web-architecture.md`](docs/v0.2.0-web-architecture.md)：
+  v0.2.0 切换的 API 契约（端点表 / 错误码 / CORS / 环境变量 / dev workflow
+  / 删什么 / 留什么）的 source of truth，所有平行 worker（HTTP server /
+  web client / e2e / docs）开工前先读。
+- **`dev.mjs` 双模式**：`pnpm dev` 默认通过 `concurrently` 同时拉起
+  agent + Vite；`AGENT_SKIP=1 pnpm dev` 只起 Vite（agent 单独跑）。
+
+### Removed
+- **Tauri 桌面壳**（`src-tauri/`）：整个目录已删 —— Rust 源码、
+  `Cargo.toml`、`tauri.conf.json`、icons、`target/`、`tauri.conf.json`
+  配置、`build.rs`、`src/main.rs` / `ipc.rs` / `commands.rs`。v0.1.0 →
+  v0.1.3 的 4 个 NSIS / MSI 安装包随 `src-tauri/` 一起从源码树消失；
+  历史 artifact 留在 git 历史（如需可 `git show v0.1.3:src-tauri/...` 找回）。
+- **`@tauri-apps/api` / `@tauri-apps/cli`** 依赖：从根 `package.json` 和
+  `web/package.json` 删除。
+- **`tauri:dev` / `tauri:build` / `tauri`** npm scripts。
+- **Tauri Rust 工具链**作为前置条件（Visual Studio Build Tools / WiX
+  3.x / `cargo install tauri-cli@^2`）—— 普通用户 clone 仓库 + 两终端
+  命令即可。
+- **Known limitation #0**（"v0.1.0 / v0.1.1 / v0.1.2 启动 race"）和
+  **Known limitation #1**（"Tauri 端到端 e2e smoke 未在已安装包上跑"）
+  —— 前者随 Tauri 删除一并消失；后者被 Playwright 跨栈 e2e 接替（见
+  Added）。
+
+### Changed
+- **Dev workflow 从 3 终端简化为 2 终端**：
+  - 终端 1（agent）：`cd agent && uv run python -m minimax_code`
+    → `agent server listening on http://127.0.0.1:8765`
+  - 终端 2（web）：`pnpm dev` → `vite ready`
+  - 浏览器开 `http://localhost:5173`
+  - 原来的终端 3（`cd src-tauri && cargo tauri dev`）整个消失。
+- **IPC 契约**（`docs/ipc-contract.md`）：Transport 段重写为双模式
+  （stdio 给 tests + CLI；HTTP + WebSocket 给 web client）；端点表
+  加 `GET /health` / `POST /rpc` / `GET /ws` / `GET /events`；lifecycle
+  段从 "Tauri-level `ipc:sidecar` 事件" 改为 "WebSocket `agent.ready` +
+  `/health` 探针 + stdio EOF"；test surface 表加 Playwright 行；version
+  对齐从"Tauri `Cargo.toml` + agent `__init__.py` 两处"改为
+  "root `package.json` + `web/package.json` + agent `__init__.py` 三处"。
+- **架构文档**（`docs/architecture.md`）：技术栈表删 Tauri 行，加
+  "Transport: HTTP + WebSocket (FastAPI on agent)" 行；架构图把
+  "Tauri Window (WebView)" 换成 "Browser (Chromium / Firefox / Edge) +
+  Vite-served React SPA"；目录树删 `src-tauri/`；关键技术决策加
+  "打包 = 无（内部 web 工具）"；Phase 划分加 "v0.2.0 切换（删 Tauri）"
+  段。
+- **README**：头部 banner 改为"v0.2.0 内部版 — 全面 web 化，丢掉 Tauri
+  桌面打包"；"安装"段换成"快速启动（dev mode — 两终端）"；"前置环境"
+  段去掉 Rust / Tauri CLI / Visual Studio / WiX；"测试"段加
+  `pnpm test:e2e`（Playwright）；"出包"段改为"内部无打包流程；要分发
+  就 git clone + 两终端"；Known limitations 段重排版（剩 3 条：
+  `thinking_count` / sub-agent LLM mock / 旧 README 收尾）。
+
+### Notes
+- **不动 git tag**：`v0.1.0` / `v0.1.1` / `v0.1.2` / `v0.1.3` 四个 tag
+  保留在 git 历史作为"v0.1.x Tauri 时代的归档"。本 changelog 的 v0.1.x
+  段也是历史记录。**`v0.2.0` tag 由 owner 决定何时打，team 不会写**。
+- **不动 Python 代码 / web 代码**：本轮 docs 切换只改 4 个文件
+  （README / architecture / ipc-contract / 本文件）。其他 4 个 worker
+  分头实现 HTTP server / web client / Playwright e2e / 删 `src-tauri/`。
+- **CORS / auth**：v0.2.0 不做多用户 / 远程；单用户、本机、`127.0.0.1`
+  only，无 token 鉴权。需要时再加。
+
 ## [0.1.3] - 2026-06-03
 
 **v0.1.2 hotfix.** Fixes the `tokio::process::ChildStdin::flush()` race
@@ -254,6 +354,7 @@ IPC namespaces + 7 e2e smokes (all green).
   release artifacts, no Tauri updater wired. v0.2 plan: add GitHub Releases
   + Tauri auto-update.
 
+[0.2.0]: #020---2026-06-03
 [0.1.3]: #013---2026-06-03
 [0.1.2]: #012---2026-06-03
 [0.1.1]: #011---2026-06-03

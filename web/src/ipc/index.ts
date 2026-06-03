@@ -7,12 +7,21 @@ export {
   ipc,
   IPCClient,
   IPCError,
+  /**
+   * @deprecated Use `isAgentReachable` for runtime detection.
+   * Retained for backward compatibility with `App.tsx`; always
+   * returns `false` since we no longer run inside a Tauri webview.
+   */
   isTauri,
+  isAgentReachable,
   typedIPC,
   bindTypedIPC,
-  ErrorCode,
 } from "./client";
-export type { TypedIPC, StreamEventPayload } from "./client";
+export type { IPCClientOptions, TypedIPC, StreamEventPayload } from "./client";
+export {
+  ErrorCode,
+  StreamEvent,
+} from "../types/ipc";
 export type {
   JsonRpcRequest,
   JsonRpcResponse,
@@ -25,7 +34,6 @@ export type {
   PingResult,
   SidecarEvent,
   StreamEventName,
-  StreamEvent,
   AgentStatusData,
   ToolCallData,
   ToolResultData,
