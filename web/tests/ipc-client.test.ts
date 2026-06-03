@@ -114,17 +114,18 @@ describe("TypedIPC wrappers", () => {
 });
 
 describe("isTauri", () => {
-  it("returns true when __TAURI_INTERNALS__ is present", () => {
-    Object.defineProperty(window, "__TAURI_INTERNALS__", {
-      value: {},
-      configurable: true,
-    });
-    expect(isTauri()).toBe(true);
+  // Tauri was dropped in v0.2.0 — the shell no longer exists and
+  // ``isTauri()`` is a constant ``false``. The legacy
+  // ``__TAURI_INTERNALS__`` global is irrelevant; we just pin the
+  // contract so a future "we're back inside a Tauri shell" change
+  // has to update this test on purpose.
+  it("always returns false (Tauri removed in v0.2.0)", () => {
+    const w = window as unknown as Record<string, unknown>;
+    w.__TAURI_INTERNALS__ = {};
+    expect(isTauri()).toBe(false);
   });
 
-  it("returns false when running in a plain browser", () => {
-    // jsdom doesn't have it by default; this test asserts the negative
-    // case after removing any leftover from previous tests.
+  it("does not crash when __TAURI_INTERNALS__ is unset", () => {
     const w = window as unknown as Record<string, unknown>;
     delete w.__TAURI_INTERNALS__;
     expect(isTauri()).toBe(false);

@@ -5,6 +5,70 @@ All notable changes to MiniMax Code are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-06-03
+
+**Four feature tracks land together.** v0.2.0 把项目从 Tauri 桌面壳切到
+web SPA + 本地 Python agent，但 chat 流里只能看到 LLM 的最终答案 —— 看
+不到"它想了多少次 / 它调了哪些子 agent / 它看过的代码改动"这些过程信息。
+v0.3.0 起把这四块补齐，让一次 chat 真的能"看进去"。
+
+### Added
+- **`thinking_count` 通道**（agent: `core.py` / `llm.py` / `builtins.py` /
+  `server.py`）：`agent.message_chunk` 事件在每个 turn 收尾的那条 chunk 上
+  携带 `data.metadata = {thinking_count, tokens_in, tokens_out}`。Mock
+  模式每调一次 LLM 自增 1，真实模式从 upstream `usage.thinking_tokens` 读。
+  Web 端 `MessageItem` 把这个数渲染成 "思考 N 次" 摘要行。详细见
+  [`docs/v0.3.0-design.md`](docs/v0.3.0-design.md) §1。
+- **Sub-Agent UI**（agent: `handlers_agents.py` + web: `SubAgentPanel` /
+  `SubAgentResultCard` / `subAgent.ts`）：chat 输入框新增 `@agent` 触发器
+  下拉，敲 Enter / Tab 选中 sub-agent 后 prime marker 并触发
+  `agent.spawn_subagent`。后端 handler 跑
+  `SubAgentRuntime.invoke` 时按 `started → thinking → (tool_call →
+  tool_result)? → completed` 节奏推 `agent.subagent_progress` 事件流；失败
+  时最后一个 `failed` 事件先于 error reply 发出，UI 不会卡在"运行中"。
+  Right rail 新增 "Sub-agents" 段，inflight 进度条 + 完成后折叠卡片
+  回填到主消息流。
+- **Code Review**（agent: `code_review._review_diff` + `handlers_skills` 短
+  路径 + web: `CodeReviewPanel` / `DiffView`）：`skill.invoke` 收到
+  `params.diff` 时直接走 `_review_diff(diff)` 而非 LLM 工具循环。Mock
+  analyser 走 unified diff 的 hunks，给每文件最多 3 条 `severity=info`
+  评论（行长 >120 字符的升 `warning`）。`git.diff` 拿到的真实 diff 直接
+  喂进 skill，UI 在 CodeReviewPanel 里渲染 file:line 锚定评论。
+- **Git 集成**（agent: `handlers_git.py` + web: `GitStatusBar` /
+  `TopBar` / `git.ts`）：新增 `git.status` / `git.diff` / `git.log` 三个
+  JSON-RPC handler。Read-only（不替用户 commit / push），每次调用
+  `subprocess.run` 跑 5s timeout。`status` 解析 `--porcelain=v2 -z` 把
+  paths 分到 `modified` / `untracked` / `staged` 三桶。Top bar 替换
+  旧 `WorkspaceSwitcher` 为 `TopBar`，渲染分支 + 干净/脏指示灯 +
+  popover 列出改动的文件路径。E2E `smoke-boot` 加一条
+  `[data-testid=git-status-bar]` 存在性断言。
+- **设计文档** [`docs/v0.3.0-design.md`](docs/v0.3.0-design.md)：四块
+  feature 的 IPC 契约 / store API / 组件边界 / sequencing 的 source of
+  truth，所有 v0.3.0 worker 开工前先读。
+
+### Test coverage added
+- `agent/tests/test_thinking_count.py` — 6 cases
+  （LLM counter / _stream_turn 注入 / Context.emit metadata / IPC round-trip）
+- `agent/tests/test_subagent_spawn.py` — 4 cases
+  （happy path / 缺 name / 未知 agent / runtime 失败 → failed 事件）
+- `agent/tests/test_git_handlers.py` — 18 cases
+  （status 3 buckets / diff 4 个 scope / log 字段 / not-a-repo / review-diff）
+- `web/tests/chat-thinking-count.test.ts` — 4 cases
+  （捕获 / 渲染 / 缺失时降级）
+- `web/tests/subagent-store.test.ts` + `subagent-panel.test.tsx`
+  （store 状态机 / panel 渲染）
+- `web/tests/git-store.test.ts` + `git-status-bar.test.tsx`
+  （store API / 组件渲染）
+- `e2e/smoke-subagent.spec.ts` + `e2e/smoke-thinking-count.spec.ts`
+  （端到端真浏览器跑通）
+- `e2e/smoke-boot.spec.ts` 扩展 git-status-bar 断言
+
+### Known limitations
+- **`_review_diff` 是 mock-mode analyser** —— 当前实现是确定性 diff walker，
+  不调真 LLM。wire shape 稳定所以可以无破坏地升级到 LLM 路径，留作 v0.3.1。
+- **`git.*` 是 read-only** —— 不暴露 `git add` / `commit` / `push`，
+  这些仍走用户自己 shell。
+
 ## [0.2.0] - 2026-06-03
 
 **Drop Tauri, go full web.** v0.1.x 阶段项目以 Tauri 2.x 桌面壳为承载
