@@ -18,11 +18,6 @@ web/vite.config.d.ts
 .ruff_cache/
 .mypy_cache/
 
-# Tauri / Rust
-src-tauri/target/
-src-tauri/Cargo.lock
-src-tauri/gen/
-
 # Python
 __pycache__/
 *.py[cod]
@@ -33,9 +28,6 @@ venv/
 env/
 .eggs/
 *.egg-info/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
 .coverage
 htmlcov/
 
@@ -68,9 +60,11 @@ pnpm-debug.log*
 coverage/
 .nyc_output/
 
-# Tauri runtime
-src-tauri/.cargo/
-
 # Local tool state
 .opencode/
 .mavis/
+
+# Playwright e2e
+playwright-report/
+test-results/
+.playwright/
