@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { Settings as SettingsIcon } from "lucide-react";
 import {
   ChatPanel,
   ErrorBoundary,
@@ -10,7 +9,7 @@ import {
   Sidebar,
   SkillsPanel,
   ToastViewport,
-  WorkspaceSwitcher,
+  TopBar,
   toast,
 } from "./components";
 import { ipc, isTauri, typedIPC } from "./ipc";
@@ -21,6 +20,7 @@ type AppView = "chat" | "skills" | "settings";
 /**
  * Top-level layout. Bootstraps stores on mount, then renders the
  * three-pane shell:
+ *   - <TopBar /> — workspace switcher + git status + settings shortcut
  *   - <Sidebar /> (left, 240px) — brand, nav, session list, user badge
  *   - <ChatPanel /> + <MessageInput /> (center) — or <SettingsPage /> / <SkillsPanel />
  *   - <RightPanel /> (right, 280px, collapsible) — progress + agent team
@@ -65,21 +65,7 @@ export default function App() {
         data-testid="app-root"
         className="flex h-full w-full flex-col bg-minimax-bg text-minimax-fg"
       >
-        <header
-          data-testid="app-topbar"
-          className="flex h-10 shrink-0 items-center justify-between border-b border-minimax-border bg-minimax-panel px-4"
-        >
-          <WorkspaceSwitcher />
-          <button
-            type="button"
-            data-testid="app-topbar-settings"
-            onClick={() => setView("settings")}
-            className="flex items-center gap-1.5 rounded-md border border-transparent px-2 py-1 text-xs text-minimax-fg/80 hover:border-minimax-border hover:text-minimax-fg"
-          >
-            <SettingsIcon size={12} className="text-minimax-muted" />
-            <span>Settings</span>
-          </button>
-        </header>
+        <TopBar onOpenSettings={() => setView("settings")} />
         <div className="flex min-h-0 flex-1">
           <Sidebar
             view={view}

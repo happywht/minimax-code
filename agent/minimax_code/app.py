@@ -268,6 +268,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     """
     from .ipc.builtins import handle_agent_send_message
     from .ipc.handlers_agents import register_agent_handlers
+    from .ipc.handlers_git import register_git_handlers
     from .ipc.handlers_model import register_model_handlers
     from .ipc.handlers_permissions import register_permission_handlers
     from .ipc.handlers_scheduled import register_scheduled_handlers
@@ -323,10 +324,15 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # are stateless — every call goes straight to
     # :mod:`minimax_code.secrets`.
     register_secret_handlers(server)
+    # The git handlers expose ``git.status`` / ``git.diff`` /
+    # ``git.log`` for the v0.3.0 code-review flow and the top-bar
+    # ``GitStatusBar`` widget. Stateless — every call shells out
+    # to ``git`` and parses the result.
+    register_git_handlers(server)
     logger.info(
         "registered application handlers "
-        "(1 agent.* + 6 agent.* + 5 skill.* + 6 task.* + 5 session.* + "
-        "5 permission.* + 6 schedule.* + 5 mobile.* + 3 model.* + 3 secrets.*)"
+        "(1 agent.* + 7 agent.* + 5 skill.* + 6 task.* + 5 session.* + "
+        "5 permission.* + 6 schedule.* + 5 mobile.* + 3 model.* + 3 secrets.* + 3 git.*)"
     )
 
 

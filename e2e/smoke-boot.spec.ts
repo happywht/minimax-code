@@ -6,6 +6,8 @@
  *   2. The MiniMax Code brand string is visible.
  *   3. The agent `/health` endpoint responds ok from the page context
  *      (proves the CORS config lets the browser talk to the agent).
+ *   4. The v0.3.0 top bar contains the new ``GitStatusBar`` widget
+ *      (proves the git IPC namespace is wired into the shell).
  *
  * Does NOT depend on the agent being reachable on first paint — the
  * web client is designed to fall back to mock mode if /health fails.
@@ -32,6 +34,15 @@ test("boot: page renders and agent health probe succeeds", async ({ page, reques
   // bar — either is fine. Use the sidebar's text to avoid matching
   // the document title in the head.
   await expect(page.getByText("MiniMax Code").first()).toBeVisible({
+    timeout: 10_000,
+  });
+
+  // v0.3.0: the top bar must contain the GitStatusBar widget
+  // (data-testid="git-status-bar"). We don't assert the branch
+  // text — the project is in a real git repo but the agent
+  // subprocess runs from its own CWD, so the displayed branch
+  // depends on the agent's environment, not the test runner's.
+  await expect(page.locator("[data-testid='git-status-bar']").first()).toBeVisible({
     timeout: 10_000,
   });
 });
