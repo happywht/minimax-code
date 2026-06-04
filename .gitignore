@@ -68,3 +68,22 @@ coverage/
 playwright-report/
 test-results/
 .playwright/
+
+# Smoke test temp directories (both agent/ and tests/)
+.smoke*/
+**/.smoke*/
+
+# Local databases
+*.db
+data.db
+
+# Claude Code session data
+.claude/
+
+# Spec workflow temp
+.spec-workflow/
+.smoke_workdir/
+
+# E2e runtime artifacts
+e2e/.runtime/
+e2e/__screenshots__/
