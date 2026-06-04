@@ -740,8 +740,17 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<{ job: ScheduledJob }>("schedule.disable", { job_id: jid }),
 
     listAgents: () => client.request<ListAgentsResult>("agent.list_agents", {}),
+    // Map frontend keys (agent_id, prompt) → backend keys (name, request).
+    // The backend handler requires `name` and `request`; the frontend
+    // type uses `agent_id` and `prompt` for clarity.
     spawnSubagent: (opts) =>
-      client.request<SpawnSubagentResult>("agent.spawn_subagent", opts),
+      client.request<SpawnSubagentResult>("agent.spawn_subagent", {
+        name: opts.agent_id,
+        request: opts.prompt,
+        parent_session_id: opts.parent_session_id,
+        context_message_id: opts.context_message_id,
+        display_name: opts.display_name,
+      }),
 
     pairDevice: (opts) =>
       client.request<{ device_id: string }>("mobile.pair", opts),
@@ -1027,22 +1036,28 @@ function mockHandle(
       // events that mirror the real backend's v0.3.0 shape (see
       // ``docs/v0.3.0-design.md`` §2). This lets the UI exercise the
       // full progress / completion lifecycle in offline mode.
-      const p = params as SpawnSubagentParams;
+      //
+      // NOTE: ``bindTypedIPC.spawnSubagent`` maps the frontend-facing
+      // ``SpawnSubagentParams`` fields (``agent_id``, ``prompt``) to the
+      // backend wire format (``name``, ``request``). The mock handler
+      // sees the mapped payload, so we read from ``name``/``request``.
+      const p = params as Record<string, unknown>;
+      const agentName = (p.name as string) || "general";
+      const requestText = (p.request as string) || "";
       const runId = `run_${Math.random().toString(36).slice(2, 10)}`;
-      const agentId = p.agent_id || "general";
       const basePayload = {
         run_id: runId,
-        agent_id: agentId,
+        agent_id: agentName,
         parent_session_id: p.parent_session_id,
         context_message_id: p.context_message_id,
         received_at: Date.now(),
       };
       const stages: Array<{ status: SubAgentProgress["status"]; progress: number; summary: string; text?: string }> = [
-        { status: "started", progress: 0.05, summary: `starting ${agentId}` },
-        { status: "thinking", progress: 0.25, summary: `thinking about: ${p.prompt.slice(0, 40)}` },
+        { status: "started", progress: 0.05, summary: `starting ${agentName}` },
+        { status: "thinking", progress: 0.25, summary: `thinking about: ${requestText.slice(0, 40)}` },
         { status: "tool_call", progress: 0.55, summary: "calling read_file" },
         { status: "tool_result", progress: 0.7, summary: "got 2 lines" },
-        { status: "completed", progress: 1.0, summary: "done", text: `(mock sub-agent reply) ${p.prompt}` },
+        { status: "completed", progress: 1.0, summary: "done", text: `(mock sub-agent reply) ${requestText}` },
       ];
       stages.forEach((stage, i) => {
         setTimeout(() => {
@@ -1053,7 +1068,7 @@ function mockHandle(
           } satisfies SubAgentProgress);
         }, 80 * (i + 1));
       });
-      return { agent_run_id: runId, agent_id: agentId };
+      return { agent_run_id: runId, agent_id: agentName };
     }
 
     case "mobile.list_devices":

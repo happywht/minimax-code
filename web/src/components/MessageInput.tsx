@@ -46,6 +46,7 @@ export function MessageInput({
   const [picker, setPicker] = useState<PickerState>(INITIAL_PICKER);
   const status = useChat((s) => s.status);
   const send = useChat((s) => s.send);
+  const addLocalMessage = useChat((s) => s.addLocalMessage);
   const cancel = useChat((s) => s.cancel);
   const reset = useChat((s) => s.reset);
   const alwaysAllow = usePermissionStore((s) => s.alwaysAllow);
@@ -152,14 +153,14 @@ export function MessageInput({
           parent_session_id: sessionId ?? undefined,
           display_name: agent.name,
         });
-        // Mirror the trigger to the chat stream as a normal user msg
-        // so the user sees the pick in history.
-        await send(`${marker}${promptText}`);
+        // Mirror the trigger to the chat stream as a local user msg
+        // so the user sees the pick in history — no backend round-trip.
+        addLocalMessage(`${marker}${promptText}`);
       } catch (err) {
         toast.error("Sub-agent spawn failed", err instanceof Error ? err.message : String(err));
       }
     },
-    [value, picker.anchor, closePicker, subInit, subRegister, send],
+    [value, picker.anchor, closePicker, subInit, subRegister, addLocalMessage],
   );
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {

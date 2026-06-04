@@ -135,11 +135,14 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     except Exception:
         logger.exception("could not pre-create session %s; continuing", session_id)
 
-    # 2. Open the async DB + messages DAO. The DB and the
-    #    ``get_sessions_dao()`` singleton above share the same on-
-    #    disk file but use independent ``aiosqlite`` connections —
-    #    that's fine in WAL mode.
+    # 2. Resolve the process-wide database and messages DAO.
+    #    Reuse the singleton opened by ``init_runtime`` so we never
+    #    leak a second aiosqlite connection per request.
     try:
+        await init_runtime()
+        from ..storage.db import AsyncDatabase, default_database_path
+        from ..storage.dao.messages import MessagesDAO
+
         db = AsyncDatabase(default_database_path())
         await db.connect()
         msg_dao = MessagesDAO(db)
@@ -185,12 +188,13 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
             # is already seeing. Log and continue.
             logger.exception("persist_message(%s, role=%s) failed", sid, msg.get("role"))
 
-    # 3. Force mock mode by passing an empty API key. The
-    #    MiniMaxClient constructor treats ``api_key=""`` (or unset)
-    #    as mock mode and emits a deterministic canned response
-    #    in 16-character chunks. This keeps the smoke test off
-    #    the network.
-    llm = MiniMaxClient(api_key="")
+    # 3. Build the LLM client. ``MiniMaxClient()`` with no arguments
+    #    reads the API key from the secrets module (OS keyring →
+    #    ``MINIMAX_API_KEY`` env var). When no key is configured the
+    #    client enters mock mode and emits a deterministic canned
+    #    response — so existing smoke tests still pass without
+    #    ``MINIMAX_API_KEY`` set.
+    llm = MiniMaxClient()
 
     # 3a. Resolve the permission store (lazily built by the
     #     ``permission.*`` handlers) and create a per-request
@@ -248,6 +252,44 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
             logger.exception("on_chunk emit failed")
 
     core.on_chunk = _on_chunk
+
+    async def _on_status(status: str) -> None:
+        """Push ``agent.status`` events so the frontend sees
+        thinking / error / idle transitions."""
+        try:
+            await ctx.emit(
+                "agent.status",
+                {"session_id": session_id, "status": status},
+            )
+        except Exception:
+            logger.exception("on_status emit failed")
+
+    core.on_status = _on_status
+
+    async def _on_tool_call(tool_name: str, args: dict) -> None:
+        """Push ``agent.tool_call`` events so the frontend can
+        render tool-execution steps in the chat."""
+        try:
+            await ctx.emit(
+                "agent.tool_call",
+                {"session_id": session_id, "tool": tool_name, "args": args},
+            )
+        except Exception:
+            logger.exception("on_tool_call emit failed")
+
+    core.on_tool_call = _on_tool_call
+
+    async def _on_tool_result(tool_name: str, result: str) -> None:
+        """Push ``agent.tool_result`` events with the tool output."""
+        try:
+            await ctx.emit(
+                "agent.tool_result",
+                {"session_id": session_id, "tool": tool_name, "result": result},
+            )
+        except Exception:
+            logger.exception("on_tool_result emit failed")
+
+    core.on_tool_result = _on_tool_result
 
     # 4. Run the turn. The core will stream chunks (each becomes
     #    an ``agent.message_chunk`` event with ``done=False``),

@@ -31,6 +31,8 @@ export interface ChatState {
 
   init: () => Promise<void>;
   send: (content: string) => Promise<void>;
+  /** Add a user message to the chat log without triggering a backend call. */
+  addLocalMessage: (content: string) => void;
   reset: () => void;
   cancel: () => Promise<void>;
 }
@@ -164,6 +166,23 @@ export const useChat = create<ChatState>((set, get) => ({
 
     const ready = await ipc.ping();
     set({ agentReady: ready });
+  },
+
+  addLocalMessage: (content: string) => {
+    const text = content.trim();
+    if (!text) return;
+    set((s) => ({
+      messages: [
+        ...s.messages,
+        {
+          id: `user-${Date.now()}`,
+          role: "user",
+          text,
+          streaming: false,
+          created_at: Date.now(),
+        },
+      ],
+    }));
   },
 
   send: async (content: string) => {
