@@ -42,6 +42,29 @@ let toolCallUnsub: (() => void) | null = null;
 let toolResultUnsub: (() => void) | null = null;
 let statusUnsub: (() => void) | null = null;
 
+/** Frontend stall watchdog — resets on every chunk, fires after 60 s idle. */
+const STALL_TIMEOUT_MS = 60_000;
+let _stallTimer: ReturnType<typeof setTimeout> | null = null;
+
+function resetStallWatchdog() {
+  if (_stallTimer) clearTimeout(_stallTimer);
+  _stallTimer = setTimeout(() => {
+    const s = useChat.getState();
+    if (s.status === "streaming" || s.status === "sending") {
+      useChat.setState({ status: "error", error: "Stream timed out — no response for 60 s" });
+      toast.error("Stream timed out", "No data received for 60 seconds. The connection may have stalled.");
+    }
+    _stallTimer = null;
+  }, STALL_TIMEOUT_MS);
+}
+
+function clearStallWatchdog() {
+  if (_stallTimer) {
+    clearTimeout(_stallTimer);
+    _stallTimer = null;
+  }
+}
+
 function ensureMessage(
   messages: Message[],
   patch: Partial<Message> & { id: string },
@@ -109,6 +132,12 @@ export const useChat = create<ChatState>((set, get) => ({
             status: data.done ? "idle" : "streaming",
           };
         });
+        // Stall watchdog: reset on every chunk, clear on done.
+        if (data.done) {
+          clearStallWatchdog();
+        } else {
+          resetStallWatchdog();
+        }
       });
     }
     if (!toolCallUnsub) {
@@ -200,6 +229,7 @@ export const useChat = create<ChatState>((set, get) => ({
       status: "sending",
       error: null,
     }));
+    resetStallWatchdog();
     const sessionId = useSessionStore.getState().currentSessionId;
     try {
       const result = await typedIPC.sendMessage({
@@ -247,6 +277,7 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   cancel: async () => {
+    clearStallWatchdog();
     const sid = useSessionStore.getState().currentSessionId;
     if (!sid) return;
     try {
@@ -259,6 +290,7 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   reset: () => {
+    clearStallWatchdog();
     set({ messages: [], status: "idle", error: null });
   },
 }));

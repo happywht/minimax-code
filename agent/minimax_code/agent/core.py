@@ -139,6 +139,10 @@ class AgentConfig:
     # is truncated before being fed back to the LLM. Prevents
     # accidental 100-MB cat-bombs from blowing the context window.
     max_tool_output_bytes: int = 50_000
+    # Per-chunk idle timeout (seconds). If no SSE chunk arrives from
+    # the LLM within this window the turn is aborted with a
+    # TimeoutError.  Set to 0 or None to disable.
+    stall_timeout: float = 30.0
 
 
 # ---------------------------------------------------------------------------
@@ -366,16 +370,41 @@ class AgentCore:
         is just ``stream_chat`` with all chunks buffered. The
         ``on_chunk`` callback fires after every chunk so the
         frontend sees the text appearing live.
+
+        A per-chunk idle timeout (``config.stall_timeout``) aborts the
+        turn if the LLM stops sending data mid-stream.  This protects
+        against silently hanging connections where the SSE stream is
+        open but no bytes arrive.
         """
         tools_payload = self.registry.to_llm_functions()
         chunks: list[StreamChunk] = []
-        async for chunk in self.llm.stream_chat(
+        stall = self.config.stall_timeout or 0
+        aiter = self.llm.stream_chat(
             messages,
             model=self.config.model,
             tools=tools_payload or None,
             tool_choice="auto" if tools_payload else None,
             temperature=self.config.temperature,
-        ):
+        ).__aiter__()
+        while True:
+            try:
+                if stall and stall > 0:
+                    chunk = await asyncio.wait_for(aiter.__anext__(), timeout=stall)
+                else:
+                    chunk = await aiter.__anext__()
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "stream stall: no chunk for %.0fs, aborting turn", stall,
+                )
+                await self._emit_chunk(
+                    "\n\n⚠️ _Stream timed out — no response from LLM for "
+                    f"{stall:.0f}s._",
+                    True,
+                    None,
+                )
+                break
             if self.cancelled:
                 break
             chunks.append(chunk)

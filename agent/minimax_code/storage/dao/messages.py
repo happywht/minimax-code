@@ -56,6 +56,7 @@ class MessagesDAO:
         created_at: str | None = None,
         tokens_in: int = 0,
         tokens_out: int = 0,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if role not in _VALID_ROLES:
             raise ValueError(
@@ -64,8 +65,8 @@ class MessagesDAO:
         sql = (
             "INSERT INTO messages "
             "(id, session_id, role, content, tool_calls, tool_call_id, "
-            " parent_id, created_at, tokens_in, tokens_out) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " parent_id, created_at, tokens_in, tokens_out, metadata) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         params = (
             id,
@@ -78,6 +79,7 @@ class MessagesDAO:
             created_at or now_iso(),
             tokens_in,
             tokens_out,
+            dumps_json(metadata) if metadata is not None else None,
         )
         async with self._db.transaction() as conn:
             await conn.execute(sql, params)
@@ -171,6 +173,7 @@ def _hydrate(row: Any) -> dict[str, Any] | None:
     if d is None:
         return None
     d["tool_calls"] = loads_json(d.get("tool_calls"))
+    d["metadata"] = loads_json(d.get("metadata"))
     return d
 
 
@@ -180,9 +183,10 @@ def create_sync(db, **fields) -> dict[str, Any]:  # type: ignore[no-untyped-def]
     sql = (
         "INSERT INTO messages "
         "(id, session_id, role, content, tool_calls, tool_call_id, "
-        " parent_id, created_at, tokens_in, tokens_out) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        " parent_id, created_at, tokens_in, tokens_out, metadata) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
+    md = fields.get("metadata")
     params = (
         fields["id"],
         fields["session_id"],
@@ -194,6 +198,7 @@ def create_sync(db, **fields) -> dict[str, Any]:  # type: ignore[no-untyped-def]
         fields.get("created_at") or now_iso(),
         fields.get("tokens_in", 0),
         fields.get("tokens_out", 0),
+        dumps_json(md) if md is not None else None,
     )
     with db.transaction() as conn:
         conn.execute(sql, params)

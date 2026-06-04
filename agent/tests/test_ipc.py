@@ -31,7 +31,7 @@ async def test_status() -> None:
     client = IPCClient()
     result = await client.request("status")
     assert result["agent"] == "minimax-code-agent"
-    assert result["version"] == "0.1.0"
+    assert result["version"] == "0.3.0"
     assert result["python"].startswith("3.")
 
 
@@ -91,15 +91,16 @@ async def test_parse_error_envelope() -> None:
 @pytest.mark.asyncio
 async def test_agent_send_message_streams_hello() -> None:
     client = IPCClient()
-    events_task = asyncio.create_task(client.collect_events(5, timeout=2.0))
+    events_task = asyncio.create_task(client.collect_events(50, timeout=5.0))
     reply = await client.request(
         "agent.send_message", {"content": "hello", "session_id": None}
     )
     events = await events_task
-    assert reply["text"].startswith("Hello from Python agent!")
+    assert reply["text"].startswith("[mock] Hello!")
     assert reply["session_id"].startswith("ses_")
-    # All emitted events are message_chunks.
-    assert all(e["event"] == "agent.message_chunk" for e in events)
-    # The final event must have done=True.
-    final = [e for e in events if e["data"].get("done") is True]
+    # Events include message_chunks and possibly status events.
+    chunks = [e for e in events if e["event"] == "agent.message_chunk"]
+    assert chunks, "expected at least one message_chunk event"
+    # The final message_chunk must have done=True.
+    final = [e for e in chunks if e["data"].get("done") is True]
     assert final, "expected a final done event"

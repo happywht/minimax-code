@@ -44,7 +44,7 @@ async def handle_status(_params: Any, ctx: Context) -> None:
             "uptime_s": time.time() - _START_TIME,
             "python": sys.version.split()[0],
             "agent": "minimax-code-agent",
-            "version": "0.1.0",
+            "version": "0.3.0",
             "active_sessions": len(_SESSIONS),
         }
     )
@@ -140,9 +140,6 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     #    leak a second aiosqlite connection per request.
     try:
         await init_runtime()
-        from ..storage.db import AsyncDatabase, default_database_path
-        from ..storage.dao.messages import MessagesDAO
-
         db = AsyncDatabase(default_database_path())
         await db.connect()
         msg_dao = MessagesDAO(db)
@@ -174,6 +171,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     async def _persist(sid: str, msg: dict[str, Any]) -> None:
         try:
             mid = f"msg_{uuid.uuid4().hex[:12]}"
+            md = msg.get("metadata")
             await msg_dao.create(
                 id=mid,
                 session_id=sid,
@@ -181,6 +179,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
                 content=str(msg.get("content") or ""),
                 tool_calls=msg.get("tool_calls"),
                 tool_call_id=msg.get("tool_call_id"),
+                metadata=md if isinstance(md, dict) else None,
             )
         except Exception:
             # The agent loop treats persistence as best-effort; a
@@ -253,38 +252,54 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
 
     core.on_chunk = _on_chunk
 
-    async def _on_status(status: str) -> None:
+    async def _on_status(status: str, detail: dict) -> None:
         """Push ``agent.status`` events so the frontend sees
         thinking / error / idle transitions."""
         try:
             await ctx.emit(
                 "agent.status",
-                {"session_id": session_id, "status": status},
+                {"session_id": session_id, "status": status, **detail},
             )
         except Exception:
             logger.exception("on_status emit failed")
 
     core.on_status = _on_status
 
-    async def _on_tool_call(tool_name: str, args: dict) -> None:
+    async def _on_tool_call(call: dict) -> None:
         """Push ``agent.tool_call`` events so the frontend can
         render tool-execution steps in the chat."""
         try:
+            tool_name = call.get("function", {}).get("name", "unknown")
+            args = call.get("function", {}).get("arguments", {})
+            tool_call_id = call.get("id", "")
             await ctx.emit(
                 "agent.tool_call",
-                {"session_id": session_id, "tool": tool_name, "args": args},
+                {
+                    "session_id": session_id,
+                    "tool_call_id": tool_call_id,
+                    "name": tool_name,
+                    "args": args,
+                },
             )
         except Exception:
             logger.exception("on_tool_call emit failed")
 
     core.on_tool_call = _on_tool_call
 
-    async def _on_tool_result(tool_name: str, result: str) -> None:
+    async def _on_tool_result(call: dict, result: Any) -> None:
         """Push ``agent.tool_result`` events with the tool output."""
         try:
+            tool_name = call.get("function", {}).get("name", "unknown")
+            tool_call_id = call.get("id", "")
             await ctx.emit(
                 "agent.tool_result",
-                {"session_id": session_id, "tool": tool_name, "result": result},
+                {
+                    "session_id": session_id,
+                    "tool_call_id": tool_call_id,
+                    "name": tool_name,
+                    "result": result.output if hasattr(result, "output") else str(result),
+                    "error": result.error if hasattr(result, "error") else None,
+                },
             )
         except Exception:
             logger.exception("on_tool_result emit failed")
