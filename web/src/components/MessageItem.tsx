@@ -120,7 +120,7 @@ function MarkdownCode({ className, children, inline }: CodeProps): JSX.Element {
   }
 
   return (
-    <div className="my-2 overflow-hidden rounded-md border border-minimax-border bg-[#0d1117]">
+    <div className="my-2 overflow-hidden rounded-md border border-minimax-border bg-minimax-bg">
       <div className="flex items-center justify-between border-b border-minimax-border/60 bg-minimax-bg/40 px-2 py-1 text-[10px] uppercase tracking-wider text-minimax-muted">
         <span>{lang}</span>
         <button

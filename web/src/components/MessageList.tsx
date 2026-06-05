@@ -7,6 +7,10 @@
  * matches the current session are interleaved as
  * ``<SubAgentResultCard />`` instances after the chat messages that
  * triggered them.
+ *
+ * v0.3.1: optional ``searchQuery`` prop filters messages by case-insensitive
+ * text match. When a query is active only matching messages are shown;
+ * an empty query shows all.
  */
 import { useEffect, useMemo, useRef } from "react";
 import { useChat, useSessionStore, useSubAgentStore } from "../stores";
@@ -15,9 +19,11 @@ import { SubAgentResultCard } from "./SubAgentResultCard";
 
 export interface MessageListProps {
   testId?: string;
+  /** When non-empty, only messages whose text contains this string (case-insensitive) are shown. */
+  searchQuery?: string;
 }
 
-export function MessageList({ testId = "message-list" }: MessageListProps): JSX.Element {
+export function MessageList({ testId = "message-list", searchQuery }: MessageListProps): JSX.Element {
   const messages = useChat((s) => s.messages);
   const sessionId = useSessionStore((s) => s.currentSessionId);
   const runs = useSubAgentStore((s) => s.runs);
@@ -61,6 +67,16 @@ export function MessageList({ testId = "message-list" }: MessageListProps): JSX.
     [runs, sessionId],
   );
 
+  // Apply search filter when query is active.
+  const filtered = useMemo(() => {
+    if (!searchQuery) return messages;
+    const q = searchQuery.toLowerCase();
+    return messages.filter((m) => m.text.toLowerCase().includes(q));
+  }, [messages, searchQuery]);
+
+  const hasQuery = !!searchQuery;
+  const isFiltered = hasQuery && filtered.length < messages.length;
+
   return (
     <div
       ref={scrollRef}
@@ -92,10 +108,18 @@ export function MessageList({ testId = "message-list" }: MessageListProps): JSX.
         </div>
       ) : (
         <div className="mx-auto flex max-w-3xl flex-col gap-3">
-          {messages.map((m) => (
+          {isFiltered && (
+            <div
+              data-testid="chat-search-summary"
+              className="rounded-md border border-minimax-border bg-minimax-panel px-3 py-1.5 text-center text-xs text-minimax-muted"
+            >
+              Showing {filtered.length} of {messages.length} messages
+            </div>
+          )}
+          {filtered.map((m) => (
             <MessageItem key={m.id} message={m} />
           ))}
-          {finishedRuns.length > 0 && (
+          {!hasQuery && finishedRuns.length > 0 && (
             <div
               data-testid="sub-agent-results"
               className="flex flex-col gap-1 border-t border-minimax-border/40 pt-2"

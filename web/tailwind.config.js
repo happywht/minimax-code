@@ -1,6 +1,7 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  darkMode: "class",
   theme: {
     extend: {
       fontFamily: {
@@ -22,12 +23,12 @@ export default {
       },
       colors: {
         minimax: {
-          bg: "#0b0d10",
-          panel: "#14181d",
-          border: "#22272e",
-          fg: "#e6e9ef",
-          muted: "#8a93a6",
-          accent: "#7c8cff",
+          bg: "var(--minimax-bg)",
+          panel: "var(--minimax-panel)",
+          border: "var(--minimax-border)",
+          fg: "var(--minimax-fg)",
+          muted: "var(--minimax-muted)",
+          accent: "var(--minimax-accent)",
         },
       },
     },

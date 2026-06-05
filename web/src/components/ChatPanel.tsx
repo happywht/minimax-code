@@ -2,9 +2,13 @@
  * Chat container — header (session title + actions) on top, message
  * list in the middle. The composer lives in a sibling component so the
  * text input doesn't re-render the message list on every keystroke.
+ *
+ * v0.3.1: the session title in the header is now editable — double-click
+ * or click the pencil icon to enter edit mode. Enter saves, Escape
+ * cancels, blur saves.
  */
-import { useEffect, useMemo } from "react";
-import { Loader2, MessageSquare, MoreHorizontal, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Loader2, MessageSquare, MoreHorizontal, Pencil, RefreshCw, Search, X } from "lucide-react";
 import { MessageList } from "./MessageList";
 import { useChat, useSessionStore } from "../stores";
 
@@ -18,8 +22,19 @@ export function ChatPanel({ testId = "chat-panel", onMenuClick }: ChatPanelProps
   const currentId = useSessionStore((s) => s.currentSessionId);
   const createSession = useSessionStore((s) => s.create);
   const refreshSessions = useSessionStore((s) => s.refresh);
+  const renameSession = useSessionStore((s) => s.rename);
   const status = useChat((s) => s.status);
   const error = useChat((s) => s.error);
+
+  // Inline title editing state
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Search state
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
 
   // Lazily bootstrap an empty session on first paint.
   useEffect(() => {
@@ -32,6 +47,38 @@ export function ChatPanel({ testId = "chat-panel", onMenuClick }: ChatPanelProps
     () => sessions.find((s) => s.id === currentId) ?? null,
     [sessions, currentId],
   );
+
+  // Focus the input when entering edit mode
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editing]);
+
+  // Focus search input when search bar opens
+  useEffect(() => {
+    if (searchOpen) {
+      searchRef.current?.focus();
+    }
+  }, [searchOpen]);
+
+  const startEditing = useCallback(() => {
+    if (!current) return;
+    setEditValue(current.title);
+    setEditing(true);
+  }, [current]);
+
+  const commitEdit = useCallback(() => {
+    setEditing(false);
+    const trimmed = editValue.trim();
+    if (!current || !trimmed || trimmed === current.title) return;
+    void renameSession(current.id, trimmed);
+  }, [current, editValue, renameSession]);
+
+  const cancelEdit = useCallback(() => {
+    setEditing(false);
+  }, []);
 
   const headerStatus = (() => {
     switch (status) {
@@ -62,12 +109,42 @@ export function ChatPanel({ testId = "chat-panel", onMenuClick }: ChatPanelProps
       <header className="flex items-center justify-between border-b border-minimax-border bg-minimax-bg/60 px-4 py-2.5">
         <div className="flex min-w-0 items-center gap-2">
           <MessageSquare size={14} className="shrink-0 text-minimax-muted" />
-          <h2
-            data-testid="chat-header-title"
-            className="truncate text-sm font-medium text-minimax-fg"
-          >
-            {current?.title ?? "New task"}
-          </h2>
+          {editing ? (
+            <input
+              ref={inputRef}
+              data-testid="chat-header-title-input"
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); commitEdit(); }
+                if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
+              }}
+              onBlur={commitEdit}
+              className="min-w-0 rounded border border-minimax-accent bg-minimax-bg px-1.5 py-0.5 text-sm text-minimax-fg outline-none"
+              style={{ width: `${Math.max(editValue.length * 8, 80)}px` }}
+            />
+          ) : (
+            <h2
+              data-testid="chat-header-title"
+              className="truncate text-sm font-medium text-minimax-fg"
+              onDoubleClick={startEditing}
+              title="Double-click to rename"
+            >
+              {current?.title ?? "New task"}
+            </h2>
+          )}
+          {current && !editing && (
+            <button
+              type="button"
+              data-testid="chat-header-rename-btn"
+              onClick={startEditing}
+              className="shrink-0 rounded p-0.5 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
+              title="Rename session"
+              aria-label="Rename session"
+            >
+              <Pencil size={12} />
+            </button>
+          )}
           <span
             data-testid="chat-header-status"
             className={
@@ -102,6 +179,22 @@ export function ChatPanel({ testId = "chat-panel", onMenuClick }: ChatPanelProps
           </button>
           <button
             type="button"
+            data-testid="chat-search-toggle"
+            onClick={() => {
+              setSearchOpen((v) => !v);
+              if (searchOpen) setSearchQuery("");
+            }}
+            className={
+              "rounded-md p-1.5 hover:bg-minimax-border hover:text-minimax-fg " +
+              (searchOpen ? "text-minimax-accent" : "text-minimax-muted")
+            }
+            title="Search messages"
+            aria-label="Search messages"
+          >
+            <Search size={12} />
+          </button>
+          <button
+            type="button"
             data-testid="chat-header-refresh"
             onClick={() => void refreshSessions()}
             className="rounded-md p-1.5 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
@@ -122,8 +215,38 @@ export function ChatPanel({ testId = "chat-panel", onMenuClick }: ChatPanelProps
         </div>
       </header>
 
+      {/* Search bar */}
+      {searchOpen && (
+        <div className="flex items-center gap-2 border-b border-minimax-border bg-minimax-panel/60 px-4 py-1.5">
+          <Search size={12} className="shrink-0 text-minimax-muted" />
+          <input
+            ref={searchRef}
+            data-testid="chat-search-input"
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search messages…"
+            className="flex-1 bg-transparent text-xs text-minimax-fg placeholder:text-minimax-muted focus:outline-none"
+          />
+          {searchQuery && (
+            <span className="text-[10px] text-minimax-muted">
+              filtering
+            </span>
+          )}
+          <button
+            type="button"
+            data-testid="chat-search-clear"
+            onClick={() => setSearchQuery("")}
+            className="rounded p-0.5 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
+            aria-label="Clear search"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+
       {/* Message list */}
-      <MessageList />
+      <MessageList searchQuery={searchOpen ? searchQuery : undefined} />
     </div>
   );
 }

@@ -30,6 +30,7 @@ export interface SessionState {
   archive: (id: string) => Promise<void>;
   unarchive: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
+  rename: (id: string, title: string) => Promise<void>;
   setCurrent: (id: string | null) => void;
   setFilter: (filter: SessionFilter) => void;
 }
@@ -112,6 +113,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       toast.error("Delete failed", message);
+    }
+  },
+
+  rename: async (id: string, title: string) => {
+    try {
+      const r = await typedIPC.updateSession(id, { title });
+      if (r.session) {
+        set((s) => ({
+          sessions: s.sessions.map((x) =>
+            x.id === id ? { ...x, title: r.session.title, updated_at: r.session.updated_at } : x,
+          ),
+        }));
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Rename failed", message);
     }
   },
 

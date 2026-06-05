@@ -9,29 +9,35 @@
  * The component is mounted by `App.tsx` when the sidebar nav is
  * "settings" and is otherwise hidden.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
+  Bot,
   CalendarClock,
   Check,
+  ChevronDown,
+  ChevronRight,
   Cpu,
   Eye,
   EyeOff,
   KeyRound,
   Plus,
+  Play,
   Save,
   ShieldAlert,
   Trash2,
 } from "lucide-react";
 import {
+  useAgentStore,
   useModelStore,
   usePermissionStore,
   useScheduleStore,
   useSecretStore,
+  useTaskStore,
 } from "../stores";
 import { toast } from "./ErrorBoundary";
 import type { PermissionRule, ScheduledJob } from "../types/ipc";
 
-type Tab = "models" | "permissions" | "scheduled" | "api-key";
+type Tab = "models" | "permissions" | "scheduled" | "api-key" | "agents";
 
 export interface SettingsPageProps {
   testId?: string;
@@ -86,6 +92,14 @@ export function SettingsPage({ testId = "settings-page" }: SettingsPageProps): J
             label="API Key"
             testId="settings-tab-api-key"
           />
+          <TabButton
+            id="agents"
+            current={tab}
+            onClick={setTab}
+            icon={<Bot size={12} />}
+            label="Agents"
+            testId="settings-tab-agents"
+          />
         </nav>
       </header>
       <div className="flex-1 overflow-y-auto px-6 py-5">
@@ -93,6 +107,7 @@ export function SettingsPage({ testId = "settings-page" }: SettingsPageProps): J
         {tab === "permissions" && <PermissionsTab />}
         {tab === "scheduled" && <ScheduledTab />}
         {tab === "api-key" && <ApiKeyTab />}
+        {tab === "agents" && <AgentsTab />}
       </div>
     </div>
   );
@@ -382,6 +397,7 @@ function ScheduledTab(): JSX.Element {
   const create = useScheduleStore((s) => s.create);
   const remove = useScheduleStore((s) => s.remove);
   const setEnabled = useScheduleStore((s) => s.setEnabled);
+  const runNow = useScheduleStore((s) => s.runNow);
   const loading = useScheduleStore((s) => s.loading);
 
   const [draftName, setDraftName] = useState("");
@@ -464,6 +480,7 @@ function ScheduledTab(): JSX.Element {
             job={j}
             onToggle={(enabled) => void setEnabled(j.id, enabled)}
             onDelete={() => void remove(j.id)}
+            onRunNow={() => void runNow(j.id)}
           />
         ))}
       </ul>
@@ -475,46 +492,136 @@ function ScheduledJobRow({
   job,
   onToggle,
   onDelete,
+  onRunNow,
 }: {
   job: ScheduledJob;
   onToggle: (enabled: boolean) => void;
   onDelete: () => void;
+  onRunNow: () => void;
 }): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+  const tasks = useTaskStore((s) => s.tasks);
+
+  // Find tasks related to this job by matching job name in the task message
+  // or task_id prefix. The scheduler creates tasks with labels containing
+  // the job name, so a simple substring match works well enough.
+  const relatedTasks = useMemo(() => {
+    const allTasks = Object.values(tasks);
+    if (allTasks.length === 0) return [];
+    const jobName = job.name.toLowerCase();
+    return allTasks.filter(
+      (t) =>
+        (t.message && t.message.toLowerCase().includes(jobName)) ||
+        t.task_id.toLowerCase().includes(job.id.toLowerCase().slice(0, 6)),
+    );
+  }, [tasks, job.name, job.id]);
+
   return (
     <li
       data-testid={`settings-job-row-${job.id}`}
-      className="flex items-center gap-2 rounded-md border border-minimax-border bg-minimax-panel/40 px-3 py-2 text-sm"
+      className="rounded-md border border-minimax-border bg-minimax-panel/40"
     >
-      <span className="flex-1 min-w-0">
-        <span className="block truncate font-medium text-minimax-fg">
-          {job.name}
+      <div className="flex items-center gap-2 px-3 py-2 text-sm">
+        <button
+          type="button"
+          data-testid={`settings-job-expand-${job.id}`}
+          onClick={() => setExpanded((v) => !v)}
+          className="shrink-0 rounded p-0.5 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
+          aria-label={expanded ? "Collapse" : "Expand"}
+        >
+          {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </button>
+        <span className="flex-1 min-w-0">
+          <span className="block truncate font-medium text-minimax-fg">
+            {job.name}
+          </span>
+          <span className="block truncate font-mono text-[11px] text-minimax-muted">
+            {job.cron} · {job.prompt || "(no prompt)"}
+          </span>
         </span>
-        <span className="block truncate font-mono text-[11px] text-minimax-muted">
-          {job.cron} · {job.prompt || "(no prompt)"}
-        </span>
-      </span>
-      <label
-        className="inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-minimax-muted"
-        data-testid={`settings-job-toggle-${job.id}`}
-      >
-        <input
-          type="checkbox"
-          checked={job.enabled}
-          onChange={(e) => onToggle(e.target.checked)}
-          className="h-3 w-3 accent-minimax-accent"
-        />
-        {job.enabled ? "enabled" : "disabled"}
-      </label>
-      <button
-        type="button"
-        data-testid={`settings-job-delete-${job.id}`}
-        onClick={onDelete}
-        aria-label="Delete job"
-        className="rounded border border-minimax-border p-1 text-minimax-muted hover:text-red-300"
-      >
-        <Trash2 size={12} />
-      </button>
+        <label
+          className="inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-minimax-muted"
+          data-testid={`settings-job-toggle-${job.id}`}
+        >
+          <input
+            type="checkbox"
+            checked={job.enabled}
+            onChange={(e) => onToggle(e.target.checked)}
+            className="h-3 w-3 accent-minimax-accent"
+          />
+          {job.enabled ? "enabled" : "disabled"}
+        </label>
+        <button
+          type="button"
+          data-testid={`settings-job-run-now-${job.id}`}
+          onClick={onRunNow}
+          aria-label="Run job now"
+          className="rounded border border-minimax-border p-1 text-minimax-muted hover:text-emerald-300"
+        >
+          <Play size={12} />
+        </button>
+        <button
+          type="button"
+          data-testid={`settings-job-delete-${job.id}`}
+          onClick={onDelete}
+          aria-label="Delete job"
+          className="rounded border border-minimax-border p-1 text-minimax-muted hover:text-red-300"
+        >
+          <Trash2 size={12} />
+        </button>
+      </div>
+      {expanded && (
+        <div
+          data-testid={`settings-job-tasks-${job.id}`}
+          className="border-t border-minimax-border/60 px-3 py-2"
+        >
+          {relatedTasks.length === 0 ? (
+            <div className="text-[11px] italic text-minimax-muted">
+              No task runs recorded yet.
+            </div>
+          ) : (
+            <ul className="space-y-1">
+              {relatedTasks.map((t) => (
+                <li
+                  key={t.task_id}
+                  className="flex items-center justify-between text-[11px]"
+                >
+                  <div className="min-w-0 flex items-center gap-1.5">
+                    <TaskStatusDot status={t.status} />
+                    <span className="truncate text-minimax-fg">
+                      {t.message || t.task_id}
+                    </span>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2 text-minimax-muted">
+                    <span>{Math.round(t.progress * 100)}%</span>
+                    <span>
+                      {t.status === "running"
+                        ? "running"
+                        : new Date(t.updated_at).toLocaleTimeString()}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </li>
+  );
+}
+
+function TaskStatusDot({ status }: { status: string }): JSX.Element {
+  const colors: Record<string, string> = {
+    running: "bg-minimax-accent animate-pulse",
+    done: "bg-emerald-400",
+    error: "bg-red-400",
+    cancelled: "bg-minimax-muted",
+  };
+  return (
+    <span
+      aria-hidden
+      className={`inline-block h-1.5 w-1.5 rounded-full ${colors[status] ?? "bg-minimax-muted"}`}
+    />
   );
 }
 
@@ -676,6 +783,149 @@ function ApiKeyTab(): JSX.Element {
             </button>
           </div>
         </div>
+      )}
+    </section>
+  );
+}
+
+/* ─────────────────────── Agents tab ─────────────────────── */
+
+function AgentsTab(): JSX.Element {
+  const agents = useAgentStore((s) => s.agents);
+  const loading = useAgentStore((s) => s.loading);
+  const refresh = useAgentStore((s) => s.refresh);
+  const create = useAgentStore((s) => s.create);
+  const remove = useAgentStore((s) => s.remove);
+
+  const [showForm, setShowForm] = useState(false);
+  const [formName, setFormName] = useState("");
+  const [formPrompt, setFormPrompt] = useState("");
+
+  useEffect(() => {
+    if (agents.length === 0) {
+      void refresh();
+    }
+  }, [agents.length, refresh]);
+
+  const handleCreate = async () => {
+    if (!formName.trim() || !formPrompt.trim()) return;
+    const a = await create({ name: formName.trim(), system_prompt: formPrompt.trim() });
+    if (a) {
+      setFormName("");
+      setFormPrompt("");
+      setShowForm(false);
+    }
+  };
+
+  return (
+    <section data-testid="settings-agents" className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-medium">Sub-agents</h2>
+          <p className="mt-0.5 text-[11px] text-minimax-muted">
+            Manage agents that can be invoked via <code className="rounded bg-minimax-panel px-1 font-mono text-[10px]">@agent</code> in chat.
+          </p>
+        </div>
+        <button
+          type="button"
+          data-testid="settings-agent-create"
+          onClick={() => setShowForm((v) => !v)}
+          className="inline-flex items-center gap-1 rounded border border-minimax-accent/40 bg-minimax-accent/10 px-2 py-1 text-xs text-minimax-accent hover:bg-minimax-accent/20"
+        >
+          <Plus size={12} />
+          New Agent
+        </button>
+      </div>
+
+      {showForm && (
+        <div
+          data-testid="settings-agent-form"
+          className="rounded-md border border-minimax-border bg-minimax-panel/40 p-3 space-y-2"
+        >
+          <input
+            data-testid="settings-agent-form-name"
+            value={formName}
+            onChange={(e) => setFormName(e.target.value)}
+            placeholder="Agent name (e.g. code-reviewer)"
+            className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs text-minimax-fg"
+          />
+          <textarea
+            data-testid="settings-agent-form-prompt"
+            value={formPrompt}
+            onChange={(e) => setFormPrompt(e.target.value)}
+            placeholder="System prompt…"
+            rows={3}
+            className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs text-minimax-fg resize-none"
+          />
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setShowForm(false)}
+              className="rounded border border-minimax-border px-2 py-1 text-xs text-minimax-muted hover:text-minimax-fg"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              data-testid="settings-agent-form-submit"
+              onClick={() => void handleCreate()}
+              disabled={!formName.trim() || !formPrompt.trim()}
+              className="rounded border border-minimax-accent/40 bg-minimax-accent/10 px-2 py-1 text-xs text-minimax-accent hover:bg-minimax-accent/20 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Create
+            </button>
+          </div>
+        </div>
+      )}
+
+      {loading && agents.length === 0 ? (
+        <div className="py-4 text-center text-xs text-minimax-muted">Loading agents…</div>
+      ) : agents.length === 0 ? (
+        <div className="py-4 text-center text-xs italic text-minimax-muted">
+          No sub-agents configured. Click "New Agent" to create one.
+        </div>
+      ) : (
+        <ul className="space-y-2">
+          {agents.map((a) => (
+            <li
+              key={a.id}
+              data-testid={`settings-agent-row-${a.name}`}
+              className="flex items-center justify-between rounded-md border border-minimax-border bg-minimax-panel/40 p-3"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <Bot size={12} className="text-minimax-accent" />
+                  <span className="truncate text-xs font-medium text-minimax-fg">
+                    {a.name}
+                  </span>
+                  {a.enabled ? (
+                    <span className="rounded bg-emerald-500/10 px-1 py-0.5 text-[9px] text-emerald-300">
+                      enabled
+                    </span>
+                  ) : (
+                    <span className="rounded bg-minimax-border px-1 py-0.5 text-[9px] text-minimax-muted">
+                      disabled
+                    </span>
+                  )}
+                </div>
+                {a.description && (
+                  <p className="mt-0.5 truncate text-[10px] text-minimax-muted">
+                    {a.description}
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                data-testid={`settings-agent-delete-${a.name}`}
+                onClick={() => void remove(a.name)}
+                aria-label={`Delete agent ${a.name}`}
+                className="ml-2 rounded border border-minimax-border p-1 text-minimax-muted hover:text-red-300"
+              >
+                <Trash2 size={12} />
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
     </section>
   );

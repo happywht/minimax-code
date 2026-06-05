@@ -5,6 +5,37 @@ All notable changes to MiniMax Code are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-06-05
+
+**IPC 契约修复 + 功能补齐。** v0.3.1 补齐了 7 项前端功能，本轮修复了全部
+IPC 方法名不匹配和缺失的后端 handler，新增 Git 查看器和 `schedule.run_now`。
+
+### Fixed
+- **IPC 方法名修复**（P0）：`agent.list_agents` → `agent.list`、
+  `permission.list_rules` → `permission.list`、`permission.set_rule` →
+  `permission.set`、`permission.delete_rule` → `permission.delete`。
+  前端 binding + mockHandle 同步更新，消除生产环境调用失败。
+- **IPC 参数键修复**（P0）：`permission.delete` 从 `{rule_id}` 改为
+  `{tool_pattern}`，`skill.invoke` 从 `{args}` 改为 `{request}`。
+- **幽灵方法清理**（P0）：移除前端 `sendToDevice`（`mobile.send` 无后端实现）。
+- **RightPanel DOM 嵌套警告**：Section header 从 `<button>` 改为
+  `<div role="button" tabIndex={0}>`，消除 `validateDOMNesting` 警告。
+
+### Added
+- **`agent.cancel` handler**（P0）：后端 `builtins.py` 新增 `_ACTIVE_CORES`
+  字典追踪运行中的 AgentCore，`agent.cancel` handler 调用 `core.cancel()`
+  设置 asyncio.Event 通知 LLM 循环中止。前端 Stop 按钮终于生效。
+- **Git Diff/Log 查看器**（P1）：新增 `GitViewerModal` 组件，双 Tab
+  （Diff 按 +行绿/-行红渲染、Log 列出最近 commits）。`GitStatusBar`
+  popover 底部新增 "View Diff" / "View Log" 按钮。
+- **`schedule.run_now` 前端绑定**（P1）：TypedIPC 新增 `runNowJob`，
+  scheduleStore 新增 `runNow()` 方法，Settings 页 ScheduledJobRow
+  新增 Play 图标按钮。
+
+### Changed
+- 版本号统一升级到 `0.3.2`（pyproject.toml、__init__.py、package.json ×2、
+  version.ts）。
+
 ## [0.3.0] - 2026-06-03
 
 **Four feature tracks land together.** v0.2.0 把项目从 Tauri 桌面壳切到

@@ -1,15 +1,14 @@
-"""MiniMax LLM client.
+"""MiniMax LLM client — Anthropic-compatible transport.
 
-Thin wrapper around :mod:`httpx` (async) that targets the OpenAI-
-compatible chat-completions endpoint exposed at
-``{MINIMAX_API_BASE}/chat/completions``. We use that contract
-because:
+Uses the ``anthropic`` Python SDK to talk to MiniMax's
+Anthropic-compatible endpoint (``api.minimaxi.com/anthropic``).
+This is the official path for **Token Plan** subscription keys.
 
-* It is the format MiniMax, OpenAI, Anthropic-via-gateway, and
-  most local OpenAI-compatible servers (vLLM, llama.cpp, Ollama)
-  all speak. One client, many backends.
-* Tool-calling (``tools=[...]``, ``tool_calls=[...]``) is part of
-  the same payload, so we get function-calling for free.
+The client exposes the same :class:`StreamChunk` /
+:class:`LLMResponse` interface that :mod:`core` expects.  All
+Anthropic-specific wire formats (message shapes, tool schemas,
+streaming events) are translated inside this module so the rest
+of the agent sees a stable, OpenAI-inspired contract.
 
 Behavioural contract
 --------------------
@@ -26,15 +25,14 @@ Behavioural contract
   are accumulated and emitted as a :class:`StreamChunk` with
   ``tool_call_deltas`` populated.
 
-* **Retries.** Network errors, ``5xx`` and ``429`` responses are
-  retried with exponential backoff (1s → 2s → 4s, max 3
-  attempts). ``4xx`` (other than 429) is treated as fatal —
-  retrying is pointless and the error is wrapped in
-  :class:`LLMError`.
+* **Retries.** The ``anthropic`` SDK retries 429 / 5xx /
+  network errors with exponential backoff automatically
+  (controlled by ``max_retries``).
 
-* **Token counts.** Pulled from the response body's
-  ``usage`` field when present; some servers also expose
-  ``x-usage-*`` headers which we honour first.
+* **Thinking.** MiniMax-M3 returns native ``ThinkingBlock``
+  content. The adapter counts thinking blocks and exposes the
+  count via ``self.thinking_count`` so the agent core can render
+  the "思考 N 次" UI badge.
 """
 
 from __future__ import annotations
@@ -43,12 +41,11 @@ import asyncio
 import json
 import logging
 import os
-import random
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-import httpx
+import anthropic
 
 from .. import secrets
 
@@ -56,7 +53,15 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_MODEL = "MiniMax-M3"
-DEFAULT_BASE_URL = "https://api.minimax.com/v1"
+DEFAULT_BASE_URL = "https://api.minimaxi.com/anthropic"
+
+# Anthropic → OpenAI finish_reason mapping
+_STOP_REASON_MAP: dict[str, str] = {
+    "end_turn": "stop",
+    "tool_use": "tool_calls",
+    "max_tokens": "length",
+    "stop_sequence": "stop",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -122,36 +127,287 @@ _MOCK_TEXT = (
 
 
 # ---------------------------------------------------------------------------
+# Anthropic ↔ OpenAI format converters (private)
+# ---------------------------------------------------------------------------
+
+
+def _extract_system_prompt(
+    messages: Sequence[Mapping[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
+    """Pull the first ``role: system`` message out of the list.
+
+    Anthropic accepts the system prompt as a top-level ``system``
+    parameter, not as a message.  Returns ``(system_text,
+    remaining_messages)``.
+    """
+    system = ""
+    remaining: list[dict[str, Any]] = []
+    for msg in messages:
+        m = dict(msg)
+        if m.get("role") == "system" and not system:
+            content = m.get("content", "")
+            system = str(content) if content else ""
+        else:
+            remaining.append(m)
+    return system, remaining
+
+
+def _convert_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Convert OpenAI-style messages to Anthropic format.
+
+    Key differences handled:
+    * ``content`` strings become ``[{"type": "text", "text": ...}]``.
+    * ``tool_calls`` become ``tool_use`` content blocks.
+    * ``role: tool`` messages become ``role: user`` with
+      ``tool_result`` content blocks (consecutive ones are merged).
+    """
+    result: list[dict[str, Any]] = []
+    pending_tool_results: list[dict[str, Any]] = []
+
+    def _flush_tool_results() -> None:
+        nonlocal pending_tool_results
+        if pending_tool_results:
+            result.append({"role": "user", "content": pending_tool_results})
+            pending_tool_results = []
+
+    for msg in messages:
+        role = msg.get("role", "")
+
+        # Flush pending tool results before any non-tool message.
+        if role != "tool":
+            _flush_tool_results()
+
+        if role == "user":
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                content = [{"type": "text", "text": content}]
+            result.append({"role": "user", "content": content})
+
+        elif role == "assistant":
+            blocks: list[dict[str, Any]] = []
+            text = msg.get("content") or ""
+            if text:
+                blocks.append({"type": "text", "text": str(text)})
+            for tc in msg.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                args = fn.get("arguments", "{}")
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args) if args.strip() else {}
+                    except json.JSONDecodeError:
+                        args = {}
+                blocks.append({
+                    "type": "tool_use",
+                    "id": tc.get("id", ""),
+                    "name": fn.get("name", ""),
+                    "input": args,
+                })
+            if not blocks:
+                blocks.append({"type": "text", "text": ""})
+            result.append({"role": "assistant", "content": blocks})
+
+        elif role == "tool":
+            pending_tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": msg.get("tool_call_id", ""),
+                "content": str(msg.get("content", "")),
+            })
+
+        elif role == "system":
+            # System messages should have been extracted already.
+            # If one slips through, treat it as a user message.
+            result.append({
+                "role": "user",
+                "content": [{"type": "text", "text": str(msg.get("content", ""))}],
+            })
+
+    _flush_tool_results()
+    return result
+
+
+def _convert_tools(
+    tools: Sequence[Mapping[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
+    """Convert OpenAI tool schemas to Anthropic format.
+
+    ``{type: "function", function: {name, description, parameters}}``
+    → ``{name, description, input_schema}``
+    """
+    if not tools:
+        return None
+    out: list[dict[str, Any]] = []
+    for tool in tools:
+        fn = tool.get("function", {})
+        out.append({
+            "name": fn.get("name", ""),
+            "description": fn.get("description", ""),
+            "input_schema": fn.get("parameters", {
+                "type": "object",
+                "properties": {},
+            }),
+        })
+    return out
+
+
+def _convert_tool_choice(
+    tool_choice: str | Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Map OpenAI ``tool_choice`` values to Anthropic equivalents."""
+    if tool_choice is None:
+        return None
+    if isinstance(tool_choice, str):
+        if tool_choice == "auto":
+            return {"type": "auto"}
+        if tool_choice == "none":
+            return None
+        if tool_choice == "required":
+            return {"type": "any"}
+    if isinstance(tool_choice, dict):
+        fn = tool_choice.get("function", {})
+        if fn.get("name"):
+            return {"type": "tool", "name": fn["name"]}
+    return {"type": "auto"}
+
+
+async def _anthropic_stream_to_chunks(
+    stream: anthropic.AsyncMessageStream,
+) -> AsyncIterator[StreamChunk]:
+    """Convert Anthropic stream events into :class:`StreamChunk`.
+
+    The adapter handles raw events from the SDK's stream context:
+    * ``content_block_delta`` with ``text_delta`` → text delta
+    * ``content_block_start`` with ``tool_use`` → tool call header
+    * ``content_block_delta`` with ``input_json_delta`` → tool arg delta
+    * ``message_delta`` → finish_reason + usage
+
+    Thinking blocks are counted (but their content is not forwarded
+    to the caller — the agent core only tracks the count).
+    """
+    input_tokens = 0
+    tool_blocks: dict[int, dict[str, str]] = {}  # index → {id, name}
+    thinking_count = 0
+
+    async for event in stream:
+        etype = event.type
+
+        if etype == "message_start":
+            # Capture input token count from the initial message.
+            usage = getattr(event.message, "usage", None)
+            if usage:
+                input_tokens = usage.input_tokens or 0
+
+        elif etype == "content_block_start":
+            block = event.content_block
+            idx = event.index
+            btype = getattr(block, "type", "")
+
+            if btype == "tool_use":
+                tool_blocks[idx] = {
+                    "id": block.id,
+                    "name": block.name,
+                }
+                # Emit the tool-call "header" delta (id + name).
+                yield StreamChunk(
+                    tool_call_deltas=[{
+                        "index": idx,
+                        "id": block.id,
+                        "type": "function",
+                        "function": {
+                            "name": block.name,
+                            "arguments": "",
+                        },
+                    }],
+                )
+
+        elif etype == "content_block_delta":
+            delta = event.delta
+            idx = event.index
+            dtype = getattr(delta, "type", "")
+
+            if dtype == "text_delta":
+                yield StreamChunk(delta=delta.text)
+
+            elif dtype == "input_json_delta":
+                info = tool_blocks.get(idx, {"id": "", "name": ""})
+                yield StreamChunk(
+                    tool_call_deltas=[{
+                        "index": idx,
+                        "id": info.get("id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": "",
+                            "arguments": delta.partial_json,
+                        },
+                    }],
+                )
+
+            elif dtype == "thinking_delta":
+                # Count thinking blocks but don't forward content.
+                # The thinking_count is emitted in usage on the final chunk.
+                thinking_count += 1
+
+        elif etype == "message_delta":
+            # Final event: stop_reason + output token usage.
+            output_tokens = 0
+            if hasattr(event, "usage") and event.usage:
+                output_tokens = event.usage.output_tokens or 0
+
+            stop_reason = "stop"
+            if hasattr(event, "delta") and event.delta:
+                sr = getattr(event.delta, "stop_reason", None)
+                if sr:
+                    stop_reason = _STOP_REASON_MAP.get(sr, "stop")
+
+            usage: dict[str, int] = {
+                "prompt_tokens": input_tokens,
+                "completion_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            }
+            if thinking_count > 0:
+                usage["thinking_tokens"] = thinking_count
+
+            yield StreamChunk(
+                finish_reason=stop_reason,
+                usage=usage,
+            )
+
+        # content_block_stop, message_stop: informational, skip.
+
+
+# ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
 
 
 class MiniMaxClient:
-    """Async client for the MiniMax chat-completions endpoint.
+    """Async client for the MiniMax Anthropic-compatible endpoint.
 
     Parameters
     ----------
     api_key:
-        Bearer token. Pulled from ``MINIMAX_API_KEY`` if omitted.
-        Empty / missing values put the client in **mock mode** —
-        every call returns the canned response above.
+        Bearer token. Pulled from ``MINIMAX_API_KEY`` / OS keyring
+        if omitted.  Empty / missing values put the client in
+        **mock mode** — every call returns the canned response.
     base_url:
         Root of the API. Pulled from ``MINIMAX_API_BASE`` if
-        omitted; defaults to the public MiniMax endpoint.
+        omitted; defaults to MiniMax's Anthropic-compatible proxy.
     model:
         Default model name used by :meth:`chat` and
         :meth:`stream_chat`. Individual calls can override.
     timeout:
-        Per-request timeout in seconds. Streaming is broken up
-        into chunked reads, but a hung connection will be killed
-        at this wall time.
+        Per-request timeout in seconds.
     max_retries:
         Number of attempts on transient errors (network, 5xx,
-        429). ``1`` means "no retry".
+        429). The ``anthropic`` SDK handles backoff automatically.
     mock:
         Force mock mode. Mostly useful in tests; if you set this
         you should also pass a deterministic ``api_key`` to make
         the client trivially mockable.
+    client:
+        Optional pre-built ``anthropic.AsyncAnthropic`` instance
+        (useful for injecting test doubles).
     """
 
     def __init__(
@@ -163,7 +419,7 @@ class MiniMaxClient:
         timeout: float = 60.0,
         max_retries: int = 3,
         mock: bool | None = None,
-        client: httpx.AsyncClient | None = None,
+        client: anthropic.AsyncAnthropic | None = None,
     ) -> None:
         # Caller-supplied key wins (used by tests and by the IPC
         # layer when a session has its own credential). Otherwise
@@ -174,7 +430,11 @@ class MiniMaxClient:
         else:
             secret_value = secrets.get_api_key()
             resolved_key = secret_value or ""
-        resolved_base = base_url if base_url is not None else os.environ.get("MINIMAX_API_BASE", DEFAULT_BASE_URL)
+        resolved_base = (
+            base_url
+            if base_url is not None
+            else os.environ.get("MINIMAX_API_BASE", DEFAULT_BASE_URL)
+        )
 
         self.api_key = resolved_key or ""
         self.base_url = (resolved_base or DEFAULT_BASE_URL).rstrip("/")
@@ -182,17 +442,16 @@ class MiniMaxClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.mock = mock if mock is not None else (not bool(self.api_key))
-        self._client = client  # caller may inject an httpx mock transport
+        self._client = client  # caller may inject an anthropic mock
 
         # ``thinking_count`` is the value the agent should attach to
         # the next ``agent.message_chunk`` event's ``metadata``. The
         # mock path increments it on every ``stream_chat`` call (one
         # "think" per call), and the real path reads it from the
-        # upstream API's ``usage.thinking_tokens`` field. Either way
-        # it is a per-call snapshot, not a running total — the
+        # adapter's ``usage.thinking_tokens`` field. Either way it
+        # is a per-call snapshot, not a running total — the
         # ``AgentCore`` reads the value *after* the call returns
-        # and emits it on the final chunk. The frontend uses it to
-        # render the "思考 N 次" summary row in the assistant bubble.
+        # and emits it on the final chunk.
         self.thinking_count: int = 0
 
         logger.info(
@@ -257,47 +516,57 @@ class MiniMaxClient:
         the caller can attach it to the next ``agent.message_chunk``
         event's ``metadata`` envelope. Mock mode increments per call
         (each canned call is one "think"); the real path reads the
-        upstream API's ``usage.thinking_tokens`` field (else 0).
+        adapter's ``usage.thinking_tokens`` field (else 0).
         The value is reset to 0 at the start of every call so a
         partial / failed call cannot leak state from the previous
         one.
         """
         self.thinking_count = 0
+
+        # ---- mock path (unchanged) --------------------------------------
         if self.mock:
             mock_thinking = 1  # one synthetic "think" per call
             async for c in _mock_stream(
                 self.default_model if model is None else (model or self.default_model)
             ):
-                # The mock always finishes with a usage chunk; we
-                # surface the thinking count there and then commit
-                # it to the instance. The caller sees the value
-                # after the stream exhausts.
                 if c.usage:
                     self.thinking_count = mock_thinking
                 yield c
             return
 
-        payload = _build_payload(
-            messages,
-            model=model or self.default_model,
-            tools=tools,
-            tool_choice=tool_choice,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            extra=extra,
-            stream=True,
-        )
-        async for chunk in self._post_streaming(payload):
-            # Real servers report the count in the final usage
-            # block. If the field is missing (e.g. upstream doesn't
-            # support ``thinking_tokens`` yet) we keep the value 0.
-            if chunk.usage and isinstance(chunk.usage.get("thinking_tokens"), int):
-                self.thinking_count = int(chunk.usage["thinking_tokens"])
-            yield chunk
+        # ---- Anthropic path ----------------------------------------------
+        system_prompt, remaining = _extract_system_prompt(messages)
+        a_messages = _convert_messages(remaining)
+        a_tools = _convert_tools(tools)
+
+        client = self._ensure_client()
+
+        try:
+            async with client.messages.stream(
+                model=model or self.default_model,
+                system=system_prompt or anthropic.NOT_GIVEN,
+                messages=a_messages,
+                tools=a_tools or anthropic.NOT_GIVEN,
+                tool_choice=(
+                    _convert_tool_choice(tool_choice)
+                    if a_tools
+                    else anthropic.NOT_GIVEN
+                ),
+                temperature=temperature if temperature is not None else anthropic.NOT_GIVEN,
+                max_tokens=max_tokens or 4096,
+            ) as stream:
+                async for chunk in _anthropic_stream_to_chunks(stream):
+                    if chunk.usage and isinstance(
+                        chunk.usage.get("thinking_tokens"), int
+                    ):
+                        self.thinking_count = chunk.usage["thinking_tokens"]
+                    yield chunk
+        except anthropic.APIError as exc:
+            raise LLMError(f"Anthropic API error: {exc}") from exc
 
     async def close(self) -> None:
         if self._client is not None:
-            await self._client.aclose()
+            await self._client.close()
             self._client = None
 
     async def __aenter__(self) -> MiniMaxClient:
@@ -308,144 +577,20 @@ class MiniMaxClient:
 
     # -- internals ---------------------------------------------------------
 
-    def _ensure_client(self) -> httpx.AsyncClient:
+    def _ensure_client(self) -> anthropic.AsyncAnthropic:
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=self.timeout)
+            self._client = anthropic.AsyncAnthropic(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                timeout=self.timeout,
+                max_retries=self.max_retries,
+            )
         return self._client
 
-    async def _post_streaming(
-        self, payload: dict[str, Any]
-    ) -> AsyncIterator[StreamChunk]:
-        url = f"{self.base_url}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-        }
-        attempt = 0
-        last_exc: Exception | None = None
-        while attempt < self.max_retries:
-            attempt += 1
-            try:
-                client = self._ensure_client()
-                async with client.stream(
-                    "POST", url, json=payload, headers=headers
-                ) as resp:
-                    if resp.status_code == 429 or 500 <= resp.status_code < 600:
-                        body_snip = (await resp.aread()).decode("utf-8", "replace")[:200]
-                        last_exc = LLMError(
-                            f"transient HTTP {resp.status_code}: {body_snip}"
-                        )
-                        await self._sleep_backoff(attempt)
-                        continue
-                    if 400 <= resp.status_code < 500:
-                        body = (await resp.aread()).decode("utf-8", "replace")
-                        raise LLMError(
-                            f"HTTP {resp.status_code}: {body[:500]}"
-                        )
-                    # status_code 2xx — stream it
-                    async for chunk in _parse_sse(resp):
-                        yield chunk
-                    return
-            except (httpx.TransportError, httpx.TimeoutException) as exc:
-                last_exc = exc
-                logger.warning("llm transport error (attempt %d): %s", attempt, exc)
-                await self._sleep_backoff(attempt)
-                continue
-        raise LLMError(f"giving up after {self.max_retries} attempts: {last_exc}")
-
-    async def _sleep_backoff(self, attempt: int) -> None:
-        # Exponential: 1, 2, 4, 8s … capped at 16s. Add a small
-        # jitter so a thundering herd does not retry in lockstep.
-        base = min(16, 2 ** (attempt - 1))
-        await asyncio.sleep(base + random.random() * 0.25)
-
 
 # ---------------------------------------------------------------------------
-# Payload assembly
+# Assembly helpers
 # ---------------------------------------------------------------------------
-
-
-def _build_payload(
-    messages: Sequence[Mapping[str, Any]],
-    *,
-    model: str,
-    tools: Sequence[Mapping[str, Any]] | None,
-    tool_choice: str | Mapping[str, Any] | None,
-    temperature: float | None,
-    max_tokens: int | None,
-    extra: Mapping[str, Any] | None,
-    stream: bool,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "model": model,
-        "messages": list(messages),
-        "stream": stream,
-    }
-    if tools:
-        payload["tools"] = list(tools)
-    if tool_choice is not None:
-        payload["tool_choice"] = tool_choice
-    if temperature is not None:
-        payload["temperature"] = float(temperature)
-    if max_tokens is not None:
-        payload["max_tokens"] = int(max_tokens)
-    if extra:
-        for k, v in extra.items():
-            if k not in payload:
-                payload[k] = v
-    return payload
-
-
-# ---------------------------------------------------------------------------
-# SSE parsing
-# ---------------------------------------------------------------------------
-
-
-async def _parse_sse(resp: httpx.Response) -> AsyncIterator[StreamChunk]:
-    """Yield :class:`StreamChunk` from an OpenAI-style SSE stream.
-
-    The wire format is::
-
-        data: {"id": "...", "choices": [{"delta": {...}, "finish_reason": null}], "usage": {...}}
-        data: [DONE]
-
-    Lines beginning with anything other than ``data: `` are
-    ignored (some servers emit ``event:`` / ``id:`` / ``:`` heartbeats).
-    """
-    buffer = ""
-    async for raw in resp.aiter_text():
-        buffer += raw
-        while "\n" in buffer:
-            line, buffer = buffer.split("\n", 1)
-            line = line.strip()
-            if not line or not line.startswith("data:"):
-                continue
-            data = line[5:].lstrip()
-            if data == "[DONE]":
-                return
-            try:
-                obj = json.loads(data)
-            except json.JSONDecodeError as exc:
-                logger.warning("bad SSE chunk: %r (%s)", data[:200], exc)
-                continue
-            usage = obj.get("usage") or {}
-            chunk = StreamChunk(
-                delta="",
-                tool_call_deltas=[],
-                finish_reason=None,
-                usage=usage if isinstance(usage, dict) else {},
-            )
-            for choice in obj.get("choices") or []:
-                delta = choice.get("delta") or {}
-                if isinstance(delta.get("content"), str):
-                    chunk.delta += delta["content"]
-                if isinstance(delta.get("tool_calls"), list):
-                    chunk.tool_call_deltas.extend(delta["tool_calls"])
-                fr = choice.get("finish_reason")
-                if fr:
-                    chunk.finish_reason = fr
-            yield chunk
 
 
 def _assemble(chunks: Iterable[StreamChunk], *, model: str) -> LLMResponse:
@@ -480,9 +625,9 @@ def _assemble(chunks: Iterable[StreamChunk], *, model: str) -> LLMResponse:
 def _merge_tool_call_delta(acc: list[dict[str, Any]], delta: dict[str, Any]) -> None:
     """Merge one streamed ``tool_calls`` delta into the accumulator.
 
-    OpenAI's streaming format splits each tool call across many
-    chunks: first a ``{index, id, type, function: {name}}`` and
-    then many ``{index, function: {arguments: "<piece>"}}``.
+    The adapter emits deltas in OpenAI streaming format:
+    first ``{index, id, type, function: {name}}`` and then many
+    ``{index, function: {arguments: "<piece>"}}``.
     """
     try:
         index = int(delta.get("index", 0))

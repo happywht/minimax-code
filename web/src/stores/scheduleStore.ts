@@ -30,6 +30,7 @@ export interface ScheduleState {
   enable: (jobId: string) => Promise<void>;
   disable: (jobId: string) => Promise<void>;
   setEnabled: (jobId: string, enabled: boolean) => Promise<void>;
+  runNow: (jobId: string) => Promise<void>;
 }
 
 export const useScheduleStore = create<ScheduleState>((set, get) => ({
@@ -102,6 +103,16 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       await get().enable(jobId);
     } else {
       await get().disable(jobId);
+    }
+  },
+
+  runNow: async (jobId) => {
+    try {
+      await typedIPC.runNowJob(jobId);
+      toast.info("Job triggered", `Job ${jobId} has been triggered.`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Failed to trigger job", message);
     }
   },
 }));

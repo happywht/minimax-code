@@ -152,7 +152,9 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
 
   removeRule: async (id: string) => {
     try {
-      await typedIPC.deleteRule(id);
+      // Backend `permission.delete` expects `tool_pattern`, not DB id.
+      const rule = get().rules.find((x) => x.id === id);
+      await typedIPC.deleteRule(rule?.tool ?? id);
       set((s) => ({ rules: s.rules.filter((x) => x.id !== id) }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

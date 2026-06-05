@@ -264,12 +264,41 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 INTERNAL_ERROR, f"session.delete failed: {exc}"
             )
 
+    # ----------------------------------------------------------------- update
+
+    async def handle_session_update(params: Any, ctx: Context) -> None:
+        try:
+            sess_dao = await dao_factory()
+            _check_params(params, expected_keys={"session_id"})
+            session_id = str(params["session_id"])
+            updates: dict[str, Any] = {}
+            if "title" in params and params["title"] is not None:
+                updates["title"] = str(params["title"])
+            if not updates:
+                raise _HandlerError(
+                    INVALID_PARAMS, "session.update: no fields to update"
+                )
+            row = await sess_dao.update(session_id, **updates)
+            if row is None:
+                raise _HandlerError(
+                    INVALID_PARAMS, f"unknown session_id: {session_id!r}"
+                )
+            await ctx.reply({"ok": True, "session": row})
+        except _HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.exception("session.update failed")
+            await ctx.reply_error(
+                INTERNAL_ERROR, f"session.update failed: {exc}"
+            )
+
     server.register("session.create", handle_session_create)
     server.register("session.list", handle_session_list)
     server.register("session.get", handle_session_get)
     server.register("session.archive", handle_session_archive)
     server.register("session.unarchive", handle_session_unarchive)
     server.register("session.delete", handle_session_delete)
+    server.register("session.update", handle_session_update)
 
 
 # ---------------------------------------------------------------------------

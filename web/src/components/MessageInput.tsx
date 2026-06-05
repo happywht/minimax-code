@@ -9,7 +9,7 @@
  * keeps the existing chat send behaviour.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AtSign, Bot, Paperclip, Send, Shield, ShieldCheck, Square } from "lucide-react";
+import { AtSign, Bot, Paperclip, Send, Shield, ShieldCheck, Square, X } from "lucide-react";
 import { useChat, usePermissionStore, useSubAgentStore } from "../stores";
 import { typedIPC } from "../ipc";
 import { ModelSelector } from "./ModelSelector";
@@ -24,6 +24,15 @@ export interface MessageInputProps {
 }
 
 const SUGGESTION_EVENT = "minimax:suggestion";
+const MAX_ATTACHMENTS = 5;
+const MAX_FILE_CHARS = 32_000;
+
+const ACCEPTED_EXTS =
+  ".txt,.md,.py,.ts,.tsx,.js,.jsx,.json,.yaml,.yml,.toml,.cfg,.sh,.bat,.sql,.html,.css,.csv,.log,.xml,.ini,.env,.gitignore,.editorconfig,.eslintrc,.prettierrc";
+
+interface AttachedFile {
+  name: string;
+}
 
 interface PickerState {
   open: boolean;
@@ -48,12 +57,14 @@ export function MessageInput({
   const send = useChat((s) => s.send);
   const addLocalMessage = useChat((s) => s.addLocalMessage);
   const cancel = useChat((s) => s.cancel);
-  const reset = useChat((s) => s.reset);
   const alwaysAllow = usePermissionStore((s) => s.alwaysAllow);
   const setAlwaysAllow = usePermissionStore((s) => s.setAlwaysAllow);
   const subInit = useSubAgentStore((s) => s.init);
   const subRegister = useSubAgentStore((s) => s.register);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
+  const [dragging, setDragging] = useState(false);
   const disabled = status === "sending" || status === "streaming";
   const streaming = status === "streaming" || status === "sending";
 
@@ -211,11 +222,87 @@ export function MessageInput({
     }
   };
 
+  /** Read one or more files and inject code blocks into the textarea. */
+  const processFiles = useCallback(
+    (files: File[]) => {
+      const remaining = MAX_ATTACHMENTS - attachedFiles.length;
+      if (remaining <= 0) {
+        toast.info("文件数量上限", `最多同时附加 ${MAX_ATTACHMENTS} 个文件`);
+        return;
+      }
+      const batch = files.slice(0, remaining);
+      if (files.length > remaining) {
+        toast.info("文件数量上限", `仅附加前 ${remaining} 个文件（上限 ${MAX_ATTACHMENTS}）`);
+      }
+      for (const file of batch) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const raw = reader.result as string;
+          const truncated = raw.length > MAX_FILE_CHARS;
+          const snippet = truncated ? raw.slice(0, MAX_FILE_CHARS) + "\n… (truncated)" : raw;
+          const ext = file.name.includes(".") ? file.name.split(".").pop()! : "txt";
+          const block = `\n\`\`\`${ext}\n${snippet}\n\`\`\`\n`;
+          setAttachedFiles((prev) => {
+            if (prev.length >= MAX_ATTACHMENTS) return prev;
+            return [...prev, { name: file.name }];
+          });
+          setValue((v) => v + block);
+          ref.current?.focus();
+        };
+        reader.onerror = () => toast.error("Failed to read file", file.name);
+        reader.readAsText(file);
+      }
+    },
+    [attachedFiles.length],
+  );
+
+  const handleFileSelect = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files ?? []);
+      if (files.length > 0) processFiles(files);
+      // Reset so the same file can be re-selected.
+      e.target.value = "";
+    },
+    [processFiles],
+  );
+
+  const removeFile = useCallback((index: number) => {
+    setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  // ── Drag-and-drop ───────────────────────────────────────────
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer.types.includes("Files")) setDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragging(false);
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setDragging(false);
+      const files = Array.from(e.dataTransfer.files).filter((f) => {
+        const ext = f.name.includes(".") ? `.${f.name.split(".").pop()!.toLowerCase()}` : "";
+        return ACCEPTED_EXTS.split(",").includes(ext) || f.type.startsWith("text/");
+      });
+      if (files.length > 0) processFiles(files);
+    },
+    [processFiles],
+  );
+
   const handleSubmit = async (e?: React.FormEvent | React.KeyboardEvent) => {
     e?.preventDefault();
     if (!value.trim() || disabled) return;
     const text = value;
     setValue("");
+    setAttachedFiles([]);
     closePicker();
     await send(text);
   };
@@ -238,17 +325,70 @@ export function MessageInput({
       data-floating="true"
       className="pointer-events-none fixed inset-x-0 bottom-6 z-20 flex justify-center px-4"
     >
-      <div className="pointer-events-auto relative w-full max-w-[720px] rounded-xl border border-minimax-border bg-minimax-panel/95 shadow-2xl backdrop-blur supports-[backdrop-filter]:bg-minimax-panel/80">
+      <div
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={
+          "pointer-events-auto relative w-full max-w-[720px] rounded-xl border bg-minimax-panel/95 shadow-2xl backdrop-blur supports-[backdrop-filter]:bg-minimax-panel/80 " +
+          (dragging
+            ? "border-minimax-accent ring-2 ring-minimax-accent/30"
+            : "border-minimax-border")
+        }
+      >
+        {/* Drop zone overlay */}
+        {dragging && (
+          <div
+            data-testid="message-input-dropzone"
+            className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-minimax-accent/5"
+          >
+            <span className="text-xs font-medium text-minimax-accent">
+              Drop files here…
+            </span>
+          </div>
+        )}
+        {attachedFiles.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 border-b border-minimax-border px-3 py-1.5 text-xs text-minimax-muted">
+            <Paperclip size={10} className="shrink-0" />
+            {attachedFiles.map((f, i) => (
+              <span
+                key={`${f.name}-${i}`}
+                data-testid={`message-attached-file-${i}`}
+                className="inline-flex items-center gap-1 rounded bg-minimax-border/50 px-1.5 py-0.5"
+              >
+                <span className="truncate max-w-[120px]">{f.name}</span>
+                <button
+                  type="button"
+                  aria-label={`Remove ${f.name}`}
+                  className="rounded p-0.5 hover:bg-minimax-border hover:text-minimax-fg"
+                  onClick={() => removeFile(i)}
+                >
+                  <X size={8} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="flex items-end gap-2 px-2.5 py-2">
           <button
             type="button"
             aria-label="Attach file"
-            onClick={reset}
+            data-testid="message-attach-btn"
+            onClick={() => fileInputRef.current?.click()}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
-            title="Attach (placeholder — uses reset() in mock mode)"
+            title="Attach a text file"
           >
             <Paperclip size={14} />
           </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept={ACCEPTED_EXTS}
+            className="hidden"
+            data-testid="message-file-input"
+            onChange={handleFileSelect}
+          />
           <textarea
             ref={ref}
             value={value}

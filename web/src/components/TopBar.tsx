@@ -4,36 +4,36 @@
  * Three slots, left to right:
  *
  *   ┌──────────────────────────────────────────────────────┐
- *   │  [WorkspaceSwitcher] [GitStatusBar]   …   [Settings] │
+ *   │  [≡] [WorkspaceSwitcher] [GitStatusBar] … [🌙][⚙️]  │
  *   └──────────────────────────────────────────────────────┘
  *
- * The right side is reserved for the settings shortcut;
- * future widgets (e.g. a "what's new" badge) hook into the
- * flex-1 spacer between the two clusters so they stay
- * right-aligned with the icon button.
+ * The hamburger button (≡) is only visible on mobile (< md) and
+ * toggles the sidebar overlay. Desktop users always see the sidebar.
  *
  * Extracted out of ``App.tsx`` in v0.3.0 so the
  * ``GitStatusBar`` can live next to the workspace switcher
- * without dragging in the rest of the shell. The shell
- * composition (Sidebar / ChatPanel / RightPanel) is
- * unchanged.
+ * without dragging in the rest of the shell.
  */
 import type { ReactNode } from "react";
-import { Settings as SettingsIcon } from "lucide-react";
+import { Menu, Settings as SettingsIcon } from "lucide-react";
 import { GitStatusBar } from "./GitStatusBar";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
+import { ThemeToggle } from "./ThemeToggle";
 
 export interface TopBarProps {
   testId?: string;
   /** Render-prop for the right-hand action cluster. */
   rightSlot?: ReactNode;
   onOpenSettings?: () => void;
+  /** Toggle the mobile sidebar overlay. Ignored on md+ screens. */
+  onToggleSidebar?: () => void;
 }
 
 export function TopBar({
   testId = "app-topbar",
   rightSlot,
   onOpenSettings,
+  onToggleSidebar,
 }: TopBarProps): JSX.Element {
   return (
     <header
@@ -44,6 +44,17 @@ export function TopBar({
         data-testid="app-topbar-left"
         className="flex items-center gap-2"
       >
+        {onToggleSidebar && (
+          <button
+            type="button"
+            data-testid="app-topbar-hamburger"
+            onClick={onToggleSidebar}
+            aria-label="Toggle sidebar"
+            className="flex h-7 w-7 items-center justify-center rounded-md text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg md:hidden"
+          >
+            <Menu size={16} />
+          </button>
+        )}
         <WorkspaceSwitcher />
         <GitStatusBar />
       </div>
@@ -52,6 +63,7 @@ export function TopBar({
         className="flex items-center gap-2"
       >
         {rightSlot}
+        <ThemeToggle />
         <button
           type="button"
           data-testid="app-topbar-settings"

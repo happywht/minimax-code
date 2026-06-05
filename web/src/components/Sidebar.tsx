@@ -27,6 +27,7 @@ import { NavItem } from "./NavItem";
 import { UserBadge } from "./UserBadge";
 import { useSessionStore, type SessionFilter } from "../stores";
 import { formatRelative } from "../lib/time";
+import { APP_VERSION } from "../version";
 
 export interface SidebarProps {
   testId?: string;
@@ -117,7 +118,7 @@ export function Sidebar({
             MiniMax Code
           </h1>
           <p className="truncate text-[10px] text-minimax-muted">
-            AI coding agent · v0.1
+            AI coding agent · v{APP_VERSION}
           </p>
         </div>
       </div>

@@ -139,6 +139,9 @@ export interface AgentInfo {
   name: string;
   description: string;
   enabled: boolean;
+  system_prompt?: string;
+  tool_allowlist?: string[];
+  model?: string;
 }
 
 /** Params for `agent.spawn_subagent` (extended in v0.3.0 §2). */
@@ -243,6 +246,12 @@ export interface ListSessionsResult {
 
 export interface CreateSessionResult {
   session_id: string;
+}
+
+/** Return shape of `session.update`. */
+export interface UpdateSessionResult {
+  ok: boolean;
+  session: Session;
 }
 
 export interface ListMessagesResult {

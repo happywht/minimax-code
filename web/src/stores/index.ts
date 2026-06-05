@@ -48,3 +48,7 @@ export {
   type SubAgentState,
 } from "./subAgent";
 export { useGitStore, type GitState } from "./git";
+export { useThemeStore, type Theme } from "./themeStore";
+export { useAgentStore } from "./agentStore";
+export { useMobileStore, type PairedDevice } from "./mobileStore";
+export { useCodeReviewStore, type ReviewComment, type ReviewStats } from "./codeReviewStore";

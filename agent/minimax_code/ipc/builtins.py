@@ -13,6 +13,8 @@ import time
 import uuid
 from typing import Any
 
+from minimax_code import __version__
+
 from .protocol import Event, NOT_IMPLEMENTED, RPCError
 from .server import Context
 
@@ -22,6 +24,10 @@ logger = logging.getLogger(__name__)
 # replace this with SQLite-backed sessions.
 _START_TIME = time.time()
 _SESSIONS: dict[str, dict[str, Any]] = {}
+
+# Active AgentCore instances keyed by session_id, so that
+# ``agent.cancel`` can signal a running core to abort its LLM loop.
+_ACTIVE_CORES: dict[str, Any] = {}  # {session_id: AgentCore}
 
 
 async def handle_ping(params: Any, ctx: Context) -> None:
@@ -44,7 +50,7 @@ async def handle_status(_params: Any, ctx: Context) -> None:
             "uptime_s": time.time() - _START_TIME,
             "python": sys.version.split()[0],
             "agent": "minimax-code-agent",
-            "version": "0.3.0",
+            "version": __version__,
             "active_sessions": len(_SESSIONS),
         }
     )
@@ -250,6 +256,9 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         except Exception:
             logger.exception("on_chunk emit failed")
 
+    # 3b. Register the core so ``agent.cancel`` can find it.
+    _ACTIVE_CORES[session_id] = core
+
     core.on_chunk = _on_chunk
 
     async def _on_status(status: str, detail: dict) -> None:
@@ -315,6 +324,8 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         logger.exception("agent.send_message: AgentCore.run failed")
         await ctx.reply_error(-32603, f"agent.send_message failed: {exc}")
         return
+    finally:
+        _ACTIVE_CORES.pop(session_id, None)
 
     await ctx.reply(
         {
@@ -329,9 +340,38 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     )
 
 
+async def handle_agent_cancel(params: Any, ctx: Context) -> None:
+    """Cancel a running ``agent.send_message`` call by session id.
+
+    Looks up the :class:`AgentCore` in :data:`_ACTIVE_CORES` and
+    calls :meth:`AgentCore.cancel` on it.  If no active core is found
+    for the given ``session_id`` the handler returns a graceful
+    ``{"ok": true, "note": "no active session"}`` so the caller does
+    not need to distinguish between "already finished" and "never
+    started".
+    """
+    if not isinstance(params, dict):
+        await ctx.reply_error(-32602, "params must be an object")
+        return
+
+    session_id = params.get("session_id")
+    if not session_id:
+        await ctx.reply_error(-32602, "session_id is required")
+        return
+
+    core = _ACTIVE_CORES.get(str(session_id))
+    if core is None:
+        await ctx.reply({"ok": True, "note": "no active session"})
+        return
+
+    core.cancel()
+    await ctx.reply({"ok": True, "cancelled": str(session_id)})
+
+
 __all__ = [
     "handle_ping",
     "handle_status",
     "handle_shutdown",
     "handle_agent_send_message",
+    "handle_agent_cancel",
 ]

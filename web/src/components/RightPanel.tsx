@@ -10,7 +10,7 @@
  *      its own empty state — both are present, only one shows at a
  *      time depending on collapse).
  *
- *   2. **Agent Team** — pulls ``agent.list_agents`` on mount and
+ *   2. **Agent Team** — pulls ``agent.list`` on mount and
  *      whenever the user clicks the refresh chevron, then renders a
  *      card per sub-agent with name + status dot (idle / running /
  *      done) + a short description of the task they're working on
@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import { ProgressPanel } from "./ProgressPanel";
 import { SubAgentPanel } from "./SubAgentPanel";
+import { CodeReviewPanel } from "./CodeReviewPanel";
 import { typedIPC } from "../ipc";
 import { useTaskStore } from "../stores";
 import type { AgentInfo } from "../types/ipc";
@@ -58,6 +59,7 @@ export function RightPanel({
   const [progressOpen, setProgressOpen] = useState<boolean>(true);
   const [teamOpen, setTeamOpen] = useState<boolean>(true);
   const [subOpen, setSubOpen] = useState<boolean>(true);
+  const [reviewOpen, setReviewOpen] = useState<boolean>(false);
 
   const [agents, setAgents] = useState<AgentInfo[] | null>(initialAgents ?? null);
   const [agentsLoading, setAgentsLoading] = useState<boolean>(!initialAgents);
@@ -171,6 +173,15 @@ export function RightPanel({
         >
           <SubAgentPanel testId={`${testId}-sub-panel`} />
         </Section>
+
+        <Section
+          testId={`${testId}-review`}
+          title="Code Review"
+          open={reviewOpen}
+          onToggle={() => setReviewOpen((v) => !v)}
+        >
+          <CodeReviewPanel testId={`${testId}-review-panel`} />
+        </Section>
       </div>
     </aside>
   );
@@ -196,12 +207,14 @@ function Section({
       data-testid={testId}
       className="border-b border-minimax-border"
     >
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
         onClick={onToggle}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onToggle(); }}
         data-testid={`${testId}-header`}
         aria-expanded={open}
-        className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-minimax-border/40"
+        className="flex w-full cursor-pointer items-center justify-between px-3 py-2 text-left hover:bg-minimax-border/40"
       >
         <span className="text-[11px] font-medium uppercase tracking-wider text-minimax-muted">
           {title}
@@ -210,7 +223,7 @@ function Section({
           {actions}
           {open ? <ChevronDown size={12} className="text-minimax-muted" /> : <ChevronRight size={12} className="text-minimax-muted" />}
         </span>
-      </button>
+      </div>
       {open && <div data-testid={`${testId}-body`}>{children}</div>}
     </section>
   );

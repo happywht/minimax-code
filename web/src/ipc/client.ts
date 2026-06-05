@@ -60,6 +60,7 @@ import {
   type SkillInfo,
   type SpawnSubagentParams,
   type SpawnSubagentResult,
+  type UpdateSessionResult,
   type SubAgentProgress,
   type TaskProgressData,
   type ToolCallData,
@@ -627,11 +628,18 @@ export interface TypedIPC {
   archiveSession(sessionId: string): Promise<{ ok: true }>;
   unarchiveSession(sessionId: string): Promise<{ ok: true }>;
   deleteSession(sessionId: string): Promise<{ ok: true }>;
+  updateSession(sessionId: string, fields: { title?: string }): Promise<UpdateSessionResult>;
   listMessages(sessionId: string, opts?: { limit?: number; before?: string }): Promise<ListMessagesResult>;
 
   // agent
   sendMessage(opts: { session_id: string | null; content: string; attachments?: unknown }): Promise<SendMessageResult>;
   cancelAgent(sessionId: string): Promise<{ ok: true }>;
+
+  // agent CRUD
+  getAgent(name: string): Promise<{ agent: AgentInfo }>;
+  createAgent(opts: { name: string; system_prompt: string; tool_allowlist?: string[]; model?: string }): Promise<{ agent: AgentInfo }>;
+  updateAgent(opts: { name: string; system_prompt?: string; tool_allowlist?: string[]; model?: string; enabled?: boolean }): Promise<{ agent: AgentInfo }>;
+  deleteAgent(name: string): Promise<{ ok: true }>;
 
   // model
   listModels(): Promise<ListModelsResult>;
@@ -651,16 +659,16 @@ export interface TypedIPC {
   deleteJob(jobId: string): Promise<{ ok: true }>;
   enableJob(jobId: string): Promise<{ job: ScheduledJob }>;
   disableJob(jobId: string): Promise<{ job: ScheduledJob }>;
+  runNowJob(jobId: string): Promise<{ ok: true; job_id: string; triggered_at: number | null }>;
 
   // agent (multi-agent)
   listAgents(): Promise<ListAgentsResult>;
   spawnSubagent(opts: SpawnSubagentParams): Promise<SpawnSubagentResult>;
 
   // mobile
-  pairDevice(opts: { code: string }): Promise<{ device_id: string }>;
+  startPairing(opts?: { suggested_name?: string }): Promise<{ token: string; expires_at: number; qr_payload: string }>;
   listDevices(): Promise<{ devices: { id: string; name: string; paired_at: number }[] }>;
-  sendToDevice(deviceId: string, payload: unknown): Promise<{ ok: true }>;
-
+  unpairDevice(deviceId: string): Promise<{ ok: true; device_id: string }>;
   // permission
   listRules(): Promise<ListRulesResult>;
   setRule(rule: Omit<PermissionRule, "id" | "created_at"> & { id?: string }): Promise<SetRuleResult>;
@@ -698,6 +706,11 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<{ ok: true }>("session.unarchive", { session_id: sid }),
     deleteSession: (sid) =>
       client.request<{ ok: true }>("session.delete", { session_id: sid }),
+    updateSession: (sid, fields) =>
+      client.request<UpdateSessionResult>("session.update", {
+        session_id: sid,
+        ...fields,
+      }),
     listMessages: (sid, opts) =>
       client.request<ListMessagesResult>("message.list", {
         session_id: sid,
@@ -708,6 +721,16 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<SendMessageResult>("agent.send_message", opts),
     cancelAgent: (sid) =>
       client.request<{ ok: true }>("agent.cancel", { session_id: sid }),
+
+    // Agent CRUD
+    getAgent: (name) =>
+      client.request<{ agent: AgentInfo }>("agent.get", { name }),
+    createAgent: (opts) =>
+      client.request<{ agent: AgentInfo }>("agent.create", opts),
+    updateAgent: (opts) =>
+      client.request<{ agent: AgentInfo }>("agent.update", opts),
+    deleteAgent: (name) =>
+      client.request<{ ok: true }>("agent.delete", { name }),
 
     listModels: () => client.request<ListModelsResult>("model.list", {}),
     setCurrentModel: (modelId) =>
@@ -721,7 +744,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     invokeSkill: (sid, args) =>
       client.request<{ ok: true; output: unknown }>("skill.invoke", {
         skill_id: sid,
-        args,
+        request: args,
       }),
 
     listJobs: () => client.request<ListJobsResult>("schedule.list", {}),
@@ -738,8 +761,10 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<{ job: ScheduledJob }>("schedule.enable", { job_id: jid }),
     disableJob: (jid) =>
       client.request<{ job: ScheduledJob }>("schedule.disable", { job_id: jid }),
+    runNowJob: (jid) =>
+      client.request<{ ok: true; job_id: string; triggered_at: number | null }>("schedule.run_now", { job_id: jid }),
 
-    listAgents: () => client.request<ListAgentsResult>("agent.list_agents", {}),
+    listAgents: () => client.request<ListAgentsResult>("agent.list", {}),
     // Map frontend keys (agent_id, prompt) → backend keys (name, request).
     // The backend handler requires `name` and `request`; the frontend
     // type uses `agent_id` and `prompt` for clarity.
@@ -752,23 +777,24 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         display_name: opts.display_name,
       }),
 
-    pairDevice: (opts) =>
-      client.request<{ device_id: string }>("mobile.pair", opts),
+    startPairing: (opts) =>
+      client.request<{ token: string; expires_at: number; qr_payload: string }>(
+        "mobile.pair_start",
+        opts ?? {},
+      ),
     listDevices: () =>
       client.request<{
         devices: { id: string; name: string; paired_at: number }[];
-      }>("mobile.list_devices", {}),
-    sendToDevice: (did, payload) =>
-      client.request<{ ok: true }>("mobile.send", {
+      }>("mobile.list", {}),
+    unpairDevice: (did) =>
+      client.request<{ ok: true; device_id: string }>("mobile.unpair", {
         device_id: did,
-        payload,
       }),
-
-    listRules: () => client.request<ListRulesResult>("permission.list_rules", {}),
+    listRules: () => client.request<ListRulesResult>("permission.list", {}),
     setRule: (rule) =>
-      client.request<SetRuleResult>("permission.set_rule", rule),
-    deleteRule: (rid) =>
-      client.request<{ ok: true }>("permission.delete_rule", { rule_id: rid }),
+      client.request<SetRuleResult>("permission.set", rule),
+    deleteRule: (toolPattern) =>
+      client.request<{ ok: true }>("permission.delete", { tool_pattern: toolPattern }),
     resolvePermission: (opts) =>
       client.request<{
         ok: boolean;
@@ -950,6 +976,17 @@ function mockHandle(
       return { ok: true };
     }
 
+    case "session.update": {
+      const p = params as { session_id: string; title?: string };
+      const s = mockSessions.get(p.session_id);
+      if (!s) return { ok: false, session: null };
+      if (p.title !== undefined) {
+        s.title = p.title;
+        s.updated_at = Date.now();
+      }
+      return { ok: true, session: s };
+    }
+
     case "message.list": {
       return { messages: [] as ProtocolMessage[] };
     }
@@ -977,9 +1014,27 @@ function mockHandle(
     case "skill.enable":
     case "skill.disable":
     case "schedule.delete":
-    case "permission.delete_rule":
-    case "mobile.send":
+    case "permission.delete":
+    case "agent.delete":
       return { ok: true };
+
+    case "agent.get": {
+      const p = params as { name: string };
+      const a = mockAgents.find((x) => x.name === p.name);
+      return { agent: a ?? null };
+    }
+    case "agent.create": {
+      const p = params as { name: string; system_prompt: string };
+      const a: AgentInfo = { id: `agent_${Date.now()}`, name: p.name, description: p.system_prompt.slice(0, 40), enabled: true, system_prompt: p.system_prompt };
+      mockAgents.push(a);
+      return { agent: a };
+    }
+    case "agent.update": {
+      const p = params as { name: string };
+      const a = mockAgents.find((x) => x.name === p.name);
+      if (a && "enabled" in p) a.enabled = p.enabled as boolean;
+      return { agent: a ?? null };
+    }
 
     case "model.list":
       return { models: mockModels, current: mockModels[0].id };
@@ -1027,8 +1082,12 @@ function mockHandle(
       if (job) job.enabled = method === "schedule.enable";
       return { job: job ?? null };
     }
+    case "schedule.run_now": {
+      const p = params as { job_id: string };
+      return { ok: true as const, job_id: p.job_id, triggered_at: Date.now() / 1000 };
+    }
 
-    case "agent.list_agents":
+    case "agent.list":
       return { agents: mockAgents };
 
     case "agent.spawn_subagent": {
@@ -1048,8 +1107,8 @@ function mockHandle(
       const basePayload = {
         run_id: runId,
         agent_id: agentName,
-        parent_session_id: p.parent_session_id,
-        context_message_id: p.context_message_id,
+        parent_session_id: p.parent_session_id as string | undefined,
+        context_message_id: p.context_message_id as string | undefined,
         received_at: Date.now(),
       };
       const stages: Array<{ status: SubAgentProgress["status"]; progress: number; summary: string; text?: string }> = [
@@ -1071,16 +1130,23 @@ function mockHandle(
       return { agent_run_id: runId, agent_id: agentName };
     }
 
-    case "mobile.list_devices":
+    case "mobile.list":
       return { devices: [] };
 
-    case "mobile.pair":
-      return { device_id: `dev_${Math.random().toString(36).slice(2, 10)}` };
+    case "mobile.pair_start":
+      return {
+        token: "mock_token_abc123",
+        expires_at: Date.now() + 600_000,
+        qr_payload: "minimax-code://pair?token=mock_token_abc123",
+      };
 
-    case "permission.list_rules":
+    case "mobile.unpair":
+      return { ok: true, device_id: (params as { device_id: string }).device_id };
+
+    case "permission.list":
       return { rules: [] };
 
-    case "permission.set_rule": {
+    case "permission.set": {
       const p = params as Omit<PermissionRule, "id" | "created_at"> & {
         id?: string;
       };

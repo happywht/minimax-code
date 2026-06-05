@@ -33,8 +33,9 @@
  * list — opening the popover is itself a refresh.
  */
 import { useEffect, useRef, useState } from "react";
-import { GitBranch as Branch, CheckCircle2, CircleAlert, FileText, Loader2 } from "lucide-react";
+import { GitBranch as Branch, CheckCircle2, CircleAlert, FileText, Loader2, FileDiff, GitCommit as CommitIcon } from "lucide-react";
 import { useGitStore } from "../stores";
+import { GitViewerModal } from "./GitViewerModal";
 
 const POLL_INTERVAL_MS = 15_000;
 
@@ -49,6 +50,8 @@ export function GitStatusBar({
   const loading = useGitStore((s) => s.loading);
   const refreshStatus = useGitStore((s) => s.refreshStatus);
   const [open, setOpen] = useState(false);
+  const [showViewer, setShowViewer] = useState(false);
+  const [viewerTab, setViewerTab] = useState<"diff" | "log">("diff");
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Initial fetch on mount + light polling so the indicator
@@ -223,8 +226,34 @@ export function GitStatusBar({
               </div>
             ) : null}
           </div>
+          {/* Viewer trigger buttons */}
+          <div className="flex gap-1 border-t border-minimax-border px-2 py-1.5">
+            <button
+              type="button"
+              data-testid="git-status-bar-view-diff"
+              onClick={() => { setViewerTab("diff"); setShowViewer(true); }}
+              className="flex flex-1 items-center justify-center gap-1 rounded border border-minimax-border px-2 py-1 text-[10px] text-minimax-muted hover:text-minimax-fg"
+            >
+              <FileDiff size={10} />
+              View Diff
+            </button>
+            <button
+              type="button"
+              data-testid="git-status-bar-view-log"
+              onClick={() => { setViewerTab("log"); setShowViewer(true); }}
+              className="flex flex-1 items-center justify-center gap-1 rounded border border-minimax-border px-2 py-1 text-[10px] text-minimax-muted hover:text-minimax-fg"
+            >
+              <CommitIcon size={10} />
+              View Log
+            </button>
+          </div>
         </div>
       ) : null}
+      <GitViewerModal
+        open={showViewer}
+        onClose={() => setShowViewer(false)}
+        initialTab={viewerTab}
+      />
     </div>
   );
 }

@@ -13,6 +13,7 @@ import json
 from collections.abc import AsyncIterator, Iterable
 from typing import Any
 
+import anthropic
 import httpx
 import pytest
 
@@ -125,6 +126,18 @@ def _make_transport(responder):
     return httpx.MockTransport(responder)
 
 
+def _make_anthropic_client(
+    handler, *, api_key: str = "test", base_url: str = "https://example.invalid", max_retries: int = 3,
+) -> anthropic.AsyncAnthropic:
+    """Create an ``anthropic.AsyncAnthropic`` backed by a mock httpx transport."""
+    return anthropic.AsyncAnthropic(
+        api_key=api_key,
+        base_url=base_url,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        max_retries=max_retries,
+    )
+
+
 def test_mock_mode_skips_network() -> None:
     client = MiniMaxClient(api_key="", mock=True)
     assert client.mock is True
@@ -155,52 +168,61 @@ def test_streaming_yields_text_in_order() -> None:
 
 
 def test_retries_on_5xx_then_succeeds() -> None:
+    """The Anthropic SDK retries 5xx errors internally."""
     attempts: list[int] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         attempts.append(1)
         if len(attempts) < 3:
-            return httpx.Response(503, json={"error": "unavailable"})
-        # On the third attempt, return a valid streaming body.
+            return httpx.Response(
+                503,
+                json={"type": "error", "error": {"type": "api_error", "message": "unavailable"}},
+            )
         return httpx.Response(
             200,
             headers={"content-type": "text/event-stream"},
-            content=_sse(
-                _text_response_body("hi from retry"),
-            ),
+            content=_anthropic_sse_text("hi from retry"),
         )
 
     async def run() -> None:
+        mock_anthropic = _make_anthropic_client(handler, max_retries=3)
         client = MiniMaxClient(
             api_key="test",
             base_url="https://example.invalid",
             max_retries=3,
-            client=httpx.AsyncClient(transport=_make_transport(handler)),
+            client=mock_anthropic,
         )
         resp = await client.chat([{"role": "user", "content": "hi"}])
         assert resp.message["content"] == "hi from retry"
+        await mock_anthropic.close()
 
     asyncio.run(run())
     assert len(attempts) == 3
 
 
 def test_4xx_is_fatal_no_retry() -> None:
+    """The Anthropic SDK does not retry 4xx errors."""
     attempts: list[int] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         attempts.append(1)
-        return httpx.Response(401, json={"error": "unauthorized"})
+        return httpx.Response(
+            401,
+            json={"type": "error", "error": {"type": "authentication_error", "message": "unauthorized"}},
+        )
 
     async def run() -> None:
+        mock_anthropic = _make_anthropic_client(handler, api_key="bad", max_retries=5)
         client = MiniMaxClient(
             api_key="bad",
             base_url="https://example.invalid",
             max_retries=5,
-            client=httpx.AsyncClient(transport=_make_transport(handler)),
+            client=mock_anthropic,
         )
         with pytest.raises(LLMError) as excinfo:
             await client.chat([{"role": "user", "content": "hi"}])
         assert "401" in str(excinfo.value)
+        await mock_anthropic.close()
 
     asyncio.run(run())
     assert len(attempts) == 1
@@ -210,22 +232,25 @@ def test_tool_call_streaming_assembly() -> None:
     """Chunks of a single tool_call should be merged into one entry."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        body = (
-            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"","arguments":""}}]}}]}\n\n'
-            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"echo","arguments":"{\\"text\\":"}}]}}]}\n\n'
-            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"hi\\"}"}}]}}]}\n\n'
-            'data: {"choices":[{"finish_reason":"tool_calls","delta":{}}]}\n\n'
-            'data: [DONE]\n\n'
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_anthropic_sse_tool_use(
+                "c1", "echo",
+                ['{"text":', '"hi"}'],
+            ),
         )
-        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
 
     async def run() -> LLMResponse:
+        mock_anthropic = _make_anthropic_client(handler, api_key="x")
         client = MiniMaxClient(
             api_key="x",
             base_url="https://example.invalid",
-            client=httpx.AsyncClient(transport=_make_transport(handler)),
+            client=mock_anthropic,
         )
-        return await client.chat([{"role": "user", "content": "go"}])
+        result = await client.chat([{"role": "user", "content": "go"}])
+        await mock_anthropic.close()
+        return result
 
     resp = asyncio.run(run())
     assert resp.finish_reason == "tool_calls"
@@ -236,26 +261,90 @@ def test_tool_call_streaming_assembly() -> None:
 
 
 # ---------------------------------------------------------------------------
-# SSE helpers for transport testing
+# Anthropic SSE helpers for transport testing
 # ---------------------------------------------------------------------------
 
 
-def _sse(*bodies: str) -> str:
-    """Build a minimal SSE response body."""
-    out: list[str] = []
-    for b in bodies:
-        out.append(b)
-        if not b.endswith("\n\n"):
-            out[-1] = b.rstrip() + "\n\n"
-    out.append("data: [DONE]\n\n")
-    return "".join(out)
-
-
-def _text_response_body(text: str) -> str:
+def _anthropic_sse_text(
+    text: str, input_tokens: int = 1, output_tokens: int = 1,
+) -> str:
+    """Build Anthropic-format SSE for a text response."""
+    msg_start = json.dumps({
+        "type": "message_start",
+        "message": {
+            "id": "msg_test", "type": "message", "role": "assistant",
+            "content": [], "model": "test",
+            "stop_reason": None, "stop_sequence": None,
+            "usage": {"input_tokens": input_tokens, "output_tokens": 0},
+        },
+    })
+    block_start = json.dumps({
+        "type": "content_block_start", "index": 0,
+        "content_block": {"type": "text", "text": ""},
+    })
+    block_delta = json.dumps({
+        "type": "content_block_delta", "index": 0,
+        "delta": {"type": "text_delta", "text": text},
+    })
+    block_stop = json.dumps({"type": "content_block_stop", "index": 0})
+    msg_delta = json.dumps({
+        "type": "message_delta",
+        "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+        "usage": {"output_tokens": output_tokens},
+    })
+    msg_stop = json.dumps({"type": "message_stop"})
     return (
-        f'data: {{"choices":[{{"delta":{{"content":"{text}"}}}}]}}\n\n'
-        'data: {"choices":[{"finish_reason":"stop","delta":{}}],'
-        '"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n'
+        f"event: message_start\ndata: {msg_start}\n\n"
+        f"event: content_block_start\ndata: {block_start}\n\n"
+        f"event: content_block_delta\ndata: {block_delta}\n\n"
+        f"event: content_block_stop\ndata: {block_stop}\n\n"
+        f"event: message_delta\ndata: {msg_delta}\n\n"
+        f"event: message_stop\ndata: {msg_stop}\n\n"
+    )
+
+
+def _anthropic_sse_tool_use(
+    tool_id: str,
+    tool_name: str,
+    partial_json_fragments: list[str],
+    input_tokens: int = 1,
+    output_tokens: int = 4,
+) -> str:
+    """Build Anthropic-format SSE for a tool_use response."""
+    msg_start = json.dumps({
+        "type": "message_start",
+        "message": {
+            "id": "msg_test", "type": "message", "role": "assistant",
+            "content": [], "model": "test",
+            "stop_reason": None, "stop_sequence": None,
+            "usage": {"input_tokens": input_tokens, "output_tokens": 0},
+        },
+    })
+    block_start = json.dumps({
+        "type": "content_block_start", "index": 0,
+        "content_block": {"type": "tool_use", "id": tool_id, "name": tool_name},
+    })
+    delta_events = ""
+    for fragment in partial_json_fragments:
+        delta_events += (
+            f"event: content_block_delta\ndata: "
+            f'{json.dumps({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": fragment}})}'
+            "\n\n"
+        )
+    block_stop = json.dumps({"type": "content_block_stop", "index": 0})
+    msg_delta = json.dumps({
+        "type": "message_delta",
+        "delta": {"stop_reason": "tool_use", "stop_sequence": None},
+        "usage": {"output_tokens": output_tokens},
+    })
+    msg_stop = json.dumps({"type": "message_stop"})
+    return (
+        f"event: message_start\ndata: {msg_start}\n\n"
+        f"event: content_block_start\ndata: {block_start}\n\n"
+        + delta_events
+        + f"event: content_block_stop\ndata: {block_stop}\n\n"
+        f"event: message_delta\ndata: {msg_delta}\n\n"
+        f"event: message_stop\ndata: {msg_stop}\n\n"
     )
 
 

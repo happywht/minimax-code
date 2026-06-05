@@ -3,6 +3,24 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Theme tokens (dark default, light via .light class) ── */
+:root {
+  --minimax-bg: #0b0d10;
+  --minimax-panel: #14181d;
+  --minimax-border: #22272e;
+  --minimax-fg: #e6e9ef;
+  --minimax-muted: #8a93a6;
+  --minimax-accent: #7c8cff;
+}
+:root.light {
+  --minimax-bg: #ffffff;
+  --minimax-panel: #f6f8fa;
+  --minimax-border: #d0d7de;
+  --minimax-fg: #1f2328;
+  --minimax-muted: #656d76;
+  --minimax-accent: #6e40c9;
+}
+
 html,
 body,
 #root {
@@ -12,8 +30,8 @@ body,
 
 body {
   font-family: theme("fontFamily.sans");
-  background: theme("colors.minimax.bg");
-  color: theme("colors.minimax.fg");
+  background: var(--minimax-bg);
+  color: var(--minimax-fg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
