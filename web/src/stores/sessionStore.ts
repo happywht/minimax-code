@@ -8,6 +8,7 @@ import { create } from "zustand";
 import { typedIPC } from "../ipc";
 import { toast } from "../components/ErrorBoundary";
 import type { Session } from "../types/ipc";
+import { useChat } from "./chat";
 
 export type SessionFilter =
   | "all"
@@ -132,7 +133,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
-  setCurrent: (id: string | null) => set({ currentSessionId: id }),
+  setCurrent: (id: string | null) => {
+    set({ currentSessionId: id });
+    // When switching sessions, load the persisted messages for
+    // the new session so the chat panel shows the history.
+    if (id) {
+      void useChat.getState().loadMessages(id);
+    } else {
+      useChat.getState().reset();
+    }
+  },
   setFilter: (filter: SessionFilter) => set({ filter }),
 
   // expose for tests

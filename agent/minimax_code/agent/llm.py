@@ -41,6 +41,7 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -198,9 +199,15 @@ def _convert_messages(
                         args = json.loads(args) if args.strip() else {}
                     except json.JSONDecodeError:
                         args = {}
+                # Anthropic requires non-empty, unique tool_use IDs.
+                # If the stored ID is empty (e.g. from a partial stream
+                # or mock mode), generate a unique one via uuid4.
+                tc_id = tc.get("id") or ""
+                if not tc_id.strip():
+                    tc_id = f"toolu_{uuid.uuid4().hex[:24]}"
                 blocks.append({
                     "type": "tool_use",
-                    "id": tc.get("id", ""),
+                    "id": tc_id,
                     "name": fn.get("name", ""),
                     "input": args,
                 })
@@ -209,9 +216,14 @@ def _convert_messages(
             result.append({"role": "assistant", "content": blocks})
 
         elif role == "tool":
+            # tool_use_id must match the corresponding tool_use block.
+            # If empty, generate a unique placeholder to avoid API rejection.
+            tool_use_id = msg.get("tool_call_id") or ""
+            if not tool_use_id.strip():
+                tool_use_id = f"toolu_{uuid.uuid4().hex[:24]}"
             pending_tool_results.append({
                 "type": "tool_result",
-                "tool_use_id": msg.get("tool_call_id", ""),
+                "tool_use_id": tool_use_id,
                 "content": str(msg.get("content", "")),
             })
 

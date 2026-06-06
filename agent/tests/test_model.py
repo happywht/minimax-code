@@ -204,11 +204,15 @@ class TestModelIPC:
         client = _make_client_with_model_handlers(prefs_dao)
         result = await client.request("model.list", {})
         assert "models" in result
-        assert tuple(result["models"]) == CANDIDATE_MODELS
+        models = result["models"]
+        # Each entry is a rich ModelInfo dict with id, name, provider, etc.
+        ids = tuple(m["id"] for m in models)
+        assert ids == CANDIDATE_MODELS
+        assert "current" in result
         # Sanity: the three names we promised in the spec.
-        assert "MiniMax-M3" in result["models"]
-        assert "MiniMax-M3-fast" in result["models"]
-        assert "MiniMax-Code" in result["models"]
+        assert "MiniMax-M3" in ids
+        assert "MiniMax-M3-fast" in ids
+        assert "MiniMax-Code" in ids
 
     @pytest.mark.asyncio
     async def test_get_current_default(
@@ -226,7 +230,9 @@ class TestModelIPC:
         result = await client.request(
             "model.set_current", {"model": "MiniMax-Code"}
         )
-        assert result == {"ok": True, "model": "MiniMax-Code"}
+        assert result["ok"] is True
+        assert result["model"] == "MiniMax-Code"
+        assert result["current"] == "MiniMax-Code"
         # And the DAO agrees.
         assert await prefs_dao.get_current() == "MiniMax-Code"
         # get_current also reports it.
@@ -253,7 +259,7 @@ class TestModelIPC:
         client = _make_client_with_model_handlers(prefs_dao)
         with pytest.raises(RuntimeError) as ei:
             await client.request("model.set_current", {})
-        assert "missing required param" in str(ei.value)
+        assert "non-empty" in str(ei.value)
 
     @pytest.mark.asyncio
     async def test_set_current_rejects_empty_string(

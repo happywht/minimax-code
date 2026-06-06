@@ -146,8 +146,12 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     #    leak a second aiosqlite connection per request.
     try:
         await init_runtime()
-        db = AsyncDatabase(default_database_path())
-        await db.connect()
+        from ..app import get_db
+        db = get_db()
+        if db is None:
+            # Fallback: open a fresh connection (only when no DB singleton yet).
+            db = AsyncDatabase(default_database_path())
+            await db.connect()
         msg_dao = MessagesDAO(db)
     except Exception as exc:
         logger.exception("failed to open storage for chat")

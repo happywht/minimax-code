@@ -33,6 +33,8 @@ export interface ChatState {
   send: (content: string) => Promise<void>;
   /** Add a user message to the chat log without triggering a backend call. */
   addLocalMessage: (content: string) => void;
+  /** Load persisted messages for a session from the backend. */
+  loadMessages: (sessionId: string) => Promise<void>;
   reset: () => void;
   cancel: () => Promise<void>;
 }
@@ -239,18 +241,31 @@ export const useChat = create<ChatState>((set, get) => ({
       if (result.session_id && !sessionId) {
         useSessionStore.getState().setCurrent(result.session_id);
       }
-      // Add a streaming assistant message; the chunk events will
-      // append to it.
-      set((s) => ({
-        messages: ensureMessage(s.messages, {
-          id: result.message_id,
-          role: "assistant",
-          text: "",
-          streaming: true,
-          created_at: Date.now(),
-        }),
-        status: "streaming",
-      }));
+      // The HTTP response arrives *after* all WebSocket chunk events
+      // have been processed (the agent streams chunks via WS, then
+      // sends the JSON-RPC reply).  If the message was already
+      // populated by chunk events, we must NOT overwrite the
+      // accumulated text with "" — doing so would erase everything
+      // the user just saw stream in.  Only create a fallback message
+      // when no chunks were received (e.g. mock mode timing edge).
+      set((s) => {
+        const existing = s.messages.find((m) => m.id === result.message_id);
+        if (existing) {
+          // Already populated via WebSocket chunks — finalise status.
+          return { status: existing.streaming ? "streaming" : "idle" };
+        }
+        // No chunks received — create message from the full reply text.
+        return {
+          messages: ensureMessage(s.messages, {
+            id: result.message_id,
+            role: "assistant",
+            text: result.text || "",
+            streaming: false,
+            created_at: Date.now(),
+          }),
+          status: "idle",
+        };
+      });
     } catch (err) {
       const message =
         err instanceof IPCError
@@ -287,6 +302,29 @@ export const useChat = create<ChatState>((set, get) => ({
       toast.error("Cancel failed", message);
     }
     set({ status: "idle" });
+  },
+
+  loadMessages: async (sessionId: string) => {
+    if (!sessionId) return;
+    try {
+      const result = await typedIPC.listMessages(sessionId);
+      // Convert backend rows (content → text, add streaming: false)
+      const msgs: Message[] = (result.messages ?? []).map((m: any) => ({
+        id: m.id,
+        role: m.role,
+        text: m.text ?? m.content ?? "",
+        streaming: false,
+        created_at: m.created_at,
+        metadata: m.metadata,
+        tool_call_id: m.tool_call_id,
+      }));
+      set({ messages: msgs, status: "idle", error: null });
+    } catch (err) {
+      // If loading fails (e.g. session has no messages yet), just clear.
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn("loadMessages failed:", message);
+      set({ messages: [], status: "idle", error: null });
+    }
   },
 
   reset: () => {

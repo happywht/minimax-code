@@ -80,6 +80,33 @@ CANDIDATE_MODELS: tuple[str, ...] = (
 )
 _DEFAULT_MODEL = CANDIDATE_MODELS[0]
 
+#: Rich metadata for each candidate model — returned by ``model.list``
+#: as a list of dicts matching the frontend ``ModelInfo`` TypeScript type.
+MODEL_META: dict[str, dict[str, Any]] = {
+    "MiniMax-M3": {
+        "id": "MiniMax-M3",
+        "name": "MiniMax-M3",
+        "provider": "MiniMax",
+        "context_window": 200_000,
+        "supports_tools": True,
+        "is_default": True,
+    },
+    "MiniMax-M3-fast": {
+        "id": "MiniMax-M3-fast",
+        "name": "MiniMax-M3-fast",
+        "provider": "MiniMax",
+        "context_window": 128_000,
+        "supports_tools": True,
+    },
+    "MiniMax-Code": {
+        "id": "MiniMax-Code",
+        "name": "MiniMax-Code",
+        "provider": "MiniMax",
+        "context_window": 1_000_000,
+        "supports_tools": True,
+    },
+}
+
 
 def is_valid_model(name: str) -> bool:
     """Return True iff ``name`` is in the candidate set."""
@@ -154,9 +181,16 @@ def register_model_handlers(
 
     async def handle_model_list(params: Any, ctx: Context) -> None:
         try:
-            # Candidate list is process-static — no DB access needed.
             _check_params(params, expected_keys=set())
-            await ctx.reply({"models": list(CANDIDATE_MODELS)})
+            models = [MODEL_META[m] for m in CANDIDATE_MODELS]
+            # Best-effort: read current selection from DB.
+            current: str | None = None
+            try:
+                dao_obj = await _ensure_dao()
+                current = await dao_obj.get_current()
+            except _HandlerError:
+                pass  # DB not ready yet — return list without current.
+            await ctx.reply({"models": models, "current": current})
         except _HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
@@ -178,11 +212,15 @@ def register_model_handlers(
     async def handle_model_set_current(params: Any, ctx: Context) -> None:
         try:
             dao_obj = await _ensure_dao()
-            _check_params(params, expected_keys={"model"})
-            model = str(params["model"]).strip()
+            # Accept both "model" (internal/test) and "model_id" (frontend).
+            _check_params(params, expected_keys=set())
+            model = str(
+                params.get("model_id") or params.get("model") or ""
+            ).strip()
             if not model:
                 raise _HandlerError(
-                    INVALID_PARAMS, "param 'model' must be a non-empty string"
+                    INVALID_PARAMS,
+                    "param 'model_id' must be a non-empty string",
                 )
             if not is_valid_model(model):
                 # -32602 INVALID_PARAMS — the frontend can show this
@@ -193,7 +231,7 @@ def register_model_handlers(
                     data={"valid": list(CANDIDATE_MODELS)},
                 )
             await dao_obj.set_current(model)
-            await ctx.reply({"ok": True, "model": model})
+            await ctx.reply({"ok": True, "model": model, "current": model})
         except _HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive

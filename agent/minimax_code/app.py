@@ -99,9 +99,11 @@ async def _maybe_open_db() -> Any:
         logger.debug("storage layer not importable; running with in-memory skill registry")
         return None
     try:
+        global _DB_SINGLETON
         db = AsyncDatabase(default_database_path())
         await db.connect()
         await db.migrate()
+        _DB_SINGLETON = db
         # Spin up the process-wide progress tracker that backs
         # the ``task.*`` IPC namespace. Doing it here (next to
         # the DB open) keeps the singleton's lifetime tied to
@@ -144,6 +146,12 @@ def _default_skills_root() -> Path:
 
 
 _PROGRESS_TRACKER: Any = None  # type: ignore[no-untyped-def]
+_DB_SINGLETON: Any = None  # process-wide AsyncDatabase
+
+
+def get_db() -> Any:
+    """Return the process-wide :class:`AsyncDatabase`, or ``None``."""
+    return _DB_SINGLETON
 
 
 def get_progress_tracker() -> Any:

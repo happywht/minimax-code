@@ -89,7 +89,11 @@ async def test_parse_error_envelope() -> None:
 
 
 @pytest.mark.asyncio
-async def test_agent_send_message_streams_hello() -> None:
+async def test_agent_send_message_streams_hello(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Force mock mode so the test works regardless of keyring contents.
+    monkeypatch.setattr("minimax_code.secrets.get_api_key", lambda: None)
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+
     client = IPCClient()
     events_task = asyncio.create_task(client.collect_events(50, timeout=30.0))
     reply = await client.request(

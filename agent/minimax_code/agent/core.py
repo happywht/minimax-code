@@ -605,9 +605,14 @@ def _extract_tool_calls(message: Message) -> list[dict[str, Any]]:
         args = call.get("arguments")
         if args is None:
             args = fn.get("arguments", "")
+        # Ensure every tool call has a non-empty, unique ID.
+        # Anthropic API rejects duplicate or empty tool_use IDs.
+        call_id = call.get("id") or ""
+        if not call_id.strip():
+            call_id = f"call_{uuid.uuid4().hex[:12]}"
         out.append(
             {
-                "id": call.get("id", ""),
+                "id": call_id,
                 "type": call.get("type", "function"),
                 "name": name,
                 "arguments": args,
@@ -619,9 +624,12 @@ def _extract_tool_calls(message: Message) -> list[dict[str, Any]]:
 def _tool_message(call: dict[str, Any], result: ToolResult) -> Message:
     """Format a tool result as the ``tool`` role message OpenAI expects."""
     payload = json.dumps(result.to_dict(), ensure_ascii=False, default=str)
+    tc_id = call.get("id") or ""
+    if not tc_id.strip():
+        tc_id = f"call_{uuid.uuid4().hex[:12]}"
     return {
         "role": "tool",
-        "tool_call_id": call.get("id", ""),
+        "tool_call_id": tc_id,
         "name": call.get("name", ""),
         "content": payload,
     }

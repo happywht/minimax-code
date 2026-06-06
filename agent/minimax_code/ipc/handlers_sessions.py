@@ -292,6 +292,64 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 INTERNAL_ERROR, f"session.update failed: {exc}"
             )
 
+    # -------------------------------------------------------------- message.list
+
+    async def handle_message_list(params: Any, ctx: Context) -> None:
+        """``message.list`` → ``{ messages: [...] }``.
+
+        Returns messages for a given session, ordered by ``created_at``.
+        The frontend calls this when switching sessions in the sidebar
+        to repopulate the chat panel with the conversation history.
+        """
+        try:
+            _check_params(params, expected_keys={"session_id"})
+            session_id = str(params["session_id"])
+            limit = _clamp_int(params.get("limit"), default=100, lo=1, hi=500)
+            before = params.get("before")
+            if before is not None and not isinstance(before, str):
+                raise _HandlerError(
+                    INVALID_PARAMS, "before must be an ISO timestamp string"
+                )
+            from ..storage.dao.messages import MessagesDAO
+            from ..app import get_db, init_runtime
+
+            await init_runtime()
+            from ..app import get_db as _get_db
+
+            db = _get_db()
+            if db is None:
+                await ctx.reply({"messages": []})
+                return
+            msg_dao = MessagesDAO(db)
+            rows = await msg_dao.list_for_session(
+                session_id, limit=limit, before=before, order_by="created_at ASC"
+            )
+            # Convert backend rows to the frontend Message shape.
+            # Backend: {id, role, content, tool_calls, tool_call_id, metadata, created_at}
+            # Frontend: {id, role, text, streaming, created_at, metadata, ...}
+            messages = []
+            for r in rows:
+                msg: dict[str, Any] = {
+                    "id": r.get("id", ""),
+                    "role": r.get("role", "user"),
+                    "text": r.get("content") or "",
+                    "streaming": False,
+                    "created_at": r.get("created_at", ""),
+                }
+                if r.get("tool_call_id"):
+                    msg["tool_call_id"] = r["tool_call_id"]
+                if r.get("metadata"):
+                    msg["metadata"] = r["metadata"]
+                if r.get("tool_calls"):
+                    msg["tool_calls"] = r["tool_calls"]
+                messages.append(msg)
+            await ctx.reply({"messages": messages})
+        except _HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.exception("message.list failed")
+            await ctx.reply_error(INTERNAL_ERROR, f"message.list failed: {exc}")
+
     server.register("session.create", handle_session_create)
     server.register("session.list", handle_session_list)
     server.register("session.get", handle_session_get)
@@ -299,6 +357,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
     server.register("session.unarchive", handle_session_unarchive)
     server.register("session.delete", handle_session_delete)
     server.register("session.update", handle_session_update)
+    server.register("message.list", handle_message_list)
 
 
 # ---------------------------------------------------------------------------
