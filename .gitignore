@@ -87,3 +87,4 @@ data.db
 # E2e runtime artifacts
 e2e/.runtime/
 e2e/__screenshots__/
+agent/fetch_news.py

@@ -180,4 +180,5 @@ A: 1) 在对应的 `handlers_*.py` 中实现 handler 函数；2) 在 `app.py` �
 
 ## 变更记录 (Changelog)
 
+- **2026-06-06** — 新增 [`minimax_code/SELF.md`](minimax_code/SELF.md)，定义主 agent 行为准则（边界地图、自进化层定位、给下一个对话窗口的开局指引）。是 `CLAUDE.md` 的人本补充，新会话开局请优先阅读。
 - **2026-06-04** — 初始化 agent 模块 CLAUDE.md
