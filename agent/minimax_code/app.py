@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 _RUNTIME: SkillRuntime | None = None
 _RUNTIME_LOCK = asyncio.Lock()
+_PROVIDER_DAO_SINGLETON: Any = None  # type: ignore[no-untyped-def]
 
 
 def get_runtime() -> SkillRuntime | None:
@@ -119,12 +120,16 @@ async def _maybe_open_db() -> Any:
         mobile_dao = MobileDeviceDAO(db)
         set_mobile_dao(mobile_dao)
         set_pairing_manager(PairingManagerWithDAO(mobile_dao))
+        # Build a ProviderDAO singleton so both ``model.*`` and
+        # ``provider.*`` handlers can share it without opening a
+        # second DB connection.
+        from .storage.dao.providers import ProviderDAO
+        global _PROVIDER_DAO_SINGLETON
+        _PROVIDER_DAO_SINGLETON = ProviderDAO(db)
         # Sub-agent runtime — wire a process-wide MiniMaxClient
-        # so ``agent.invoke`` calls reach the real LLM (or the
-        # mock-mode canned response when MINIMAX_API_KEY is
-        # unset). One client per process keeps the underlying
-        # ``httpx.AsyncClient`` connection pool shared.
-        _set_subagent_llm(MiniMaxClient())
+        # built from the stored model preference + provider config
+        # (or fall back to defaults when no DB preference exists).
+        _set_subagent_llm(await _rebuild_subagent_llm(db))
         return db
     except Exception:  # pragma: no cover — defensive
         logger.exception("failed to open storage; running with in-memory skill registry")
@@ -259,6 +264,79 @@ def _set_subagent_llm(llm: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Provider DAO singleton
+# ---------------------------------------------------------------------------
+
+
+def get_provider_dao() -> Any:
+    """Return the process-wide :class:`ProviderDAO`, or ``None``."""
+    return _PROVIDER_DAO_SINGLETON
+
+
+# ---------------------------------------------------------------------------
+# Rebuild sub-agent LLM from stored preferences
+# ---------------------------------------------------------------------------
+
+
+async def _rebuild_subagent_llm(db: Any) -> Any:
+    """Build a :class:`MiniMaxClient` from the stored model preference.
+
+    Reads the current model + provider from the DB, resolves the
+    protocol / base_url / api_key, and constructs a client ready for
+    real API calls (or mock mode when no key is configured).
+
+    Falls back to ``MiniMaxClient()`` defaults on any error so the
+    agent always boots — even with a corrupt DB or missing provider.
+    """
+    try:
+        from .storage.dao.model_prefs import ModelPrefsDAO
+        from .storage.dao.providers import ProviderDAO
+        from .agent.llm import MiniMaxClient
+        from . import secrets
+
+        prefs_dao = ModelPrefsDAO(db)
+        pref = await prefs_dao.get_current()
+        model_id = pref.get("model_id", "MiniMax-M3") if isinstance(pref, dict) else "MiniMax-M3"
+        provider_id = pref.get("provider_id", "builtin-minimax") if isinstance(pref, dict) else "builtin-minimax"
+
+        prov_dao = ProviderDAO(db)
+        provider = await prov_dao.get(provider_id)
+
+        if provider is None:
+            logger.debug("provider %s not found; falling back to defaults", provider_id)
+            return MiniMaxClient()
+
+        protocol = provider.get("protocol", "anthropic")
+        base_url = provider.get("base_url", "")
+        api_key = secrets.get_provider_key(provider_id) or ""
+
+        return MiniMaxClient(
+            protocol=protocol,
+            api_key=api_key or None,
+            base_url=base_url or None,
+            model=model_id,
+        )
+    except Exception:
+        logger.exception("rebuild_subagent_llm failed; falling back to defaults")
+        from .agent.llm import MiniMaxClient
+        return MiniMaxClient()
+
+
+async def rebuild_subagent_llm() -> Any:
+    """Public helper — rebuild the sub-agent LLM client from stored prefs.
+
+    Called after ``model.set_current`` and ``provider.*`` mutations so
+    the next ``agent.invoke`` / ``agent.send_message`` uses the updated
+    config.  No-op when the DB singleton is not yet available.
+    """
+    db = get_db()
+    if db is None:
+        return
+    llm = await _rebuild_subagent_llm(db)
+    _set_subagent_llm(llm)
+
+
+# ---------------------------------------------------------------------------
 # Handler registration
 # ---------------------------------------------------------------------------
 
@@ -279,6 +357,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_git import register_git_handlers
     from .ipc.handlers_model import register_model_handlers
     from .ipc.handlers_permissions import register_permission_handlers
+    from .ipc.handlers_providers import register_provider_handlers
     from .ipc.handlers_scheduled import register_scheduled_handlers
     from .ipc.handlers_sessions import register_session_handlers
     from .ipc.handlers_skills import register_skill_handlers
@@ -333,6 +412,11 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # are stateless — every call goes straight to
     # :mod:`minimax_code.secrets`.
     register_secret_handlers(server)
+    # The provider handlers expose ``provider.list`` / ``provider.create``
+    # / ``provider.update`` / ``provider.delete`` / ``provider.set_api_key``
+    # / ``provider.clear_api_key`` for the Settings page's Providers tab.
+    # The DAO is lazily opened on first call.
+    register_provider_handlers(server)
     # The git handlers expose ``git.status`` / ``git.diff`` /
     # ``git.log`` for the v0.3.0 code-review flow and the top-bar
     # ``GitStatusBar`` widget. Stateless — every call shells out
@@ -341,16 +425,19 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     logger.info(
         "registered application handlers "
         "(1 agent.* + 7 agent.* + 5 skill.* + 6 task.* + 5 session.* + "
-        "5 permission.* + 6 schedule.* + 5 mobile.* + 3 model.* + 3 secrets.* + 3 git.*)"
+        "5 permission.* + 6 schedule.* + 5 mobile.* + 3 model.* + "
+        "7 provider.* + 3 secrets.* + 3 git.*)"
     )
 
 
 __all__ = [
     "get_progress_tracker",
+    "get_provider_dao",
     "get_runtime",
     "get_sessions_dao",
     "get_subagent_llm",
     "init_runtime",
+    "rebuild_subagent_llm",
     "register_app_handlers",
     "set_progress_tracker",
     "set_runtime",

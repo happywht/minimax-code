@@ -197,13 +197,44 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
             # is already seeing. Log and continue.
             logger.exception("persist_message(%s, role=%s) failed", sid, msg.get("role"))
 
-    # 3. Build the LLM client. ``MiniMaxClient()`` with no arguments
-    #    reads the API key from the secrets module (OS keyring →
-    #    ``MINIMAX_API_KEY`` env var). When no key is configured the
-    #    client enters mock mode and emits a deterministic canned
-    #    response — so existing smoke tests still pass without
-    #    ``MINIMAX_API_KEY`` set.
+    # 3. Build the LLM client from stored model preference + provider
+    #    config. The previous code used ``MiniMaxClient()`` with no
+    #    arguments every time — the user's model selector choice was
+    #    silently ignored. Now we read the current model + provider
+    #    from the DB and construct a properly configured client.
     llm = MiniMaxClient()
+    try:
+        from ..app import get_db
+        db = get_db()
+        if db is not None:
+            from ..storage.dao.model_prefs import ModelPrefsDAO
+            from ..storage.dao.providers import ProviderDAO
+            from .. import secrets as _secrets
+
+            prefs_dao = ModelPrefsDAO(db)
+            pref = await prefs_dao.get_current()
+            model_id = pref.get("model_id", "MiniMax-M3") if isinstance(pref, dict) else "MiniMax-M3"
+            provider_id = pref.get("provider_id", "builtin-minimax") if isinstance(pref, dict) else "builtin-minimax"
+
+            prov_dao = ProviderDAO(db)
+            provider = await prov_dao.get(provider_id)
+            if provider is not None:
+                protocol = provider.get("protocol", "anthropic")
+                base_url = provider.get("base_url", "")
+                api_key = _secrets.get_provider_key(provider_id) or ""
+
+                llm = MiniMaxClient(
+                    protocol=protocol,
+                    api_key=api_key or None,
+                    base_url=base_url or None,
+                    model=model_id,
+                )
+            else:
+                # Provider not found — use default client but with
+                # the user's model choice at least.
+                llm = MiniMaxClient(model=model_id)
+    except Exception:
+        logger.exception("failed to build LLM from stored prefs; using defaults")
 
     # 3a. Resolve the permission store (lazily built by the
     #     ``permission.*`` handlers) and create a per-request
