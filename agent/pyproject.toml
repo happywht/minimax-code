@@ -22,6 +22,8 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "anthropic>=0.105.2",
+    # v0.4.0 dual-protocol: OpenAI-compatible transport for 智谱/DeepSeek/etc.
+    "openai>=1.30",
 ]
 
 [project.optional-dependencies]

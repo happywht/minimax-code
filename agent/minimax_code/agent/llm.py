@@ -1,52 +1,29 @@
-"""MiniMax LLM client — Anthropic-compatible transport.
+"""MiniMax LLM client — transport-based architecture.
 
-Uses the ``anthropic`` Python SDK to talk to MiniMax's
-Anthropic-compatible endpoint (``api.minimaxi.com/anthropic``).
-This is the official path for **Token Plan** subscription keys.
+The client delegates to a :class:`~minimax_code.agent.transports.LLMTransport`
+implementation based on the ``protocol`` parameter:
 
-The client exposes the same :class:`StreamChunk` /
-:class:`LLMResponse` interface that :mod:`core` expects.  All
-Anthropic-specific wire formats (message shapes, tool schemas,
-streaming events) are translated inside this module so the rest
-of the agent sees a stable, OpenAI-inspired contract.
+* ``"anthropic"`` (default) — talks Anthropic's native protocol
+* ``"openai"`` — talks any OpenAI-compatible API
+* mock mode — deterministic canned responses (no API key)
 
-Behavioural contract
---------------------
-
-* **Mock mode.** When ``MINIMAX_API_KEY`` is unset or empty the
-  client returns a deterministic canned response so the agent
-  can be exercised in CI / on a fresh checkout without leaking
-  secrets. Streaming in mock mode emits the canned text in
-  16-character chunks.
-
-* **Streaming.** ``stream_chat`` returns an async iterator of
-  :class:`StreamChunk` values. The agent loop appends ``delta``
-  strings to the assistant message; non-text deltas (tool calls)
-  are accumulated and emitted as a :class:`StreamChunk` with
-  ``tool_call_deltas`` populated.
-
-* **Retries.** The ``anthropic`` SDK retries 429 / 5xx /
-  network errors with exponential backoff automatically
-  (controlled by ``max_retries``).
-
-* **Thinking.** MiniMax-M3 returns native ``ThinkingBlock``
-  content. The adapter counts thinking blocks and exposes the
-  count via ``self.thinking_count`` so the agent core can render
-  the "思考 N 次" UI badge.
+The public interface (:class:`StreamChunk`, :class:`LLMResponse`,
+:meth:`MiniMaxClient.stream_chat`) is unchanged from the pre-refactor
+design, so existing consumers (``core.py``, ``builtins.py``, tests)
+continue to work without modification.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import os
-import uuid
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
 from typing import Any
 
-import anthropic
+from .transports import LLMTransport
+from .transports.anthropic_transport import AnthropicTransport
+from .transports.mock_transport import MockTransport
+from .types import LLMConfigError, LLMError, LLMResponse, StreamChunk
 
 from .. import secrets
 
@@ -56,376 +33,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "MiniMax-M3"
 DEFAULT_BASE_URL = "https://api.minimaxi.com/anthropic"
 
-# Anthropic → OpenAI finish_reason mapping
-_STOP_REASON_MAP: dict[str, str] = {
-    "end_turn": "stop",
-    "tool_use": "tool_calls",
-    "max_tokens": "length",
-    "stop_sequence": "stop",
-}
-
-
-# ---------------------------------------------------------------------------
-# Exceptions
-# ---------------------------------------------------------------------------
-
-
-class LLMError(RuntimeError):
-    """Raised when the LLM server returns an unrecoverable error."""
-
-
-class LLMConfigError(LLMError):
-    """Raised when the client is mis-configured (missing base URL, etc.)."""
-
-
-# ---------------------------------------------------------------------------
-# Message + chunk types
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class StreamChunk:
-    """One chunk of an in-flight LLM response.
-
-    Either ``delta`` (text) or ``tool_call_deltas`` (partial JSON
-    for an in-progress function call) is populated; the
-    ``finish_reason`` is ``None`` except on the final chunk.
-    """
-
-    delta: str = ""
-    tool_call_deltas: list[dict[str, Any]] = field(default_factory=list)
-    finish_reason: str | None = None
-    # Set on the *final* chunk (and on the non-streaming reply).
-    usage: dict[str, int] = field(default_factory=dict)
-
-
-@dataclass
-class LLMResponse:
-    """The final, fully-assembled response from a chat call."""
-
-    message: dict[str, Any]
-    usage: dict[str, int]
-    finish_reason: str
-    model: str
-    # Per-turn metadata snapshot the v0.3.0 ``thinking_count`` wire
-    # relies on. Populated by ``AgentCore._stream_turn`` after the
-    # stream exhausts; ``None`` when the LLM was bypassed (tests that
-    # short-circuit via a fake ``stream_chat`` may leave it unset).
-    metadata: dict[str, Any] | None = None
-
-
-# ---------------------------------------------------------------------------
-# Mock responses
-# ---------------------------------------------------------------------------
-
-
-_MOCK_TEXT = (
-    "[mock] Hello! I'm running in mock mode because MINIMAX_API_KEY is not set. "
-    "Set the env var to call the real MiniMax API. I can still help you build and "
-    "test the agent core — try running tests, exploring the codebase, or wiring up "
-    "the storage layer."
-)
-
-
-# ---------------------------------------------------------------------------
-# Anthropic ↔ OpenAI format converters (private)
-# ---------------------------------------------------------------------------
-
-
-def _extract_system_prompt(
-    messages: Sequence[Mapping[str, Any]],
-) -> tuple[str, list[dict[str, Any]]]:
-    """Pull the first ``role: system`` message out of the list.
-
-    Anthropic accepts the system prompt as a top-level ``system``
-    parameter, not as a message.  Returns ``(system_text,
-    remaining_messages)``.
-    """
-    system = ""
-    remaining: list[dict[str, Any]] = []
-    for msg in messages:
-        m = dict(msg)
-        if m.get("role") == "system" and not system:
-            content = m.get("content", "")
-            system = str(content) if content else ""
-        else:
-            remaining.append(m)
-    return system, remaining
-
-
-def _convert_messages(
-    messages: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Convert OpenAI-style messages to Anthropic format.
-
-    Key differences handled:
-    * ``content`` strings become ``[{"type": "text", "text": ...}]``.
-    * ``tool_calls`` become ``tool_use`` content blocks.
-    * ``role: tool`` messages become ``role: user`` with
-      ``tool_result`` content blocks (consecutive ones are merged).
-    """
-    result: list[dict[str, Any]] = []
-    pending_tool_results: list[dict[str, Any]] = []
-    # Track tool_use IDs that we've emitted so we can drop orphaned
-    # tool_result entries (e.g. from ghost tool calls filtered above).
-    emitted_tool_ids: set[str] = set()
-
-    def _flush_tool_results() -> None:
-        nonlocal pending_tool_results
-        if pending_tool_results:
-            result.append({"role": "user", "content": pending_tool_results})
-            pending_tool_results = []
-
-    for msg in messages:
-        role = msg.get("role", "")
-
-        # Flush pending tool results before any non-tool message.
-        if role != "tool":
-            _flush_tool_results()
-
-        if role == "user":
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                content = [{"type": "text", "text": content}]
-            result.append({"role": "user", "content": content})
-
-        elif role == "assistant":
-            blocks: list[dict[str, Any]] = []
-            text = msg.get("content") or ""
-            if text:
-                blocks.append({"type": "text", "text": str(text)})
-            for tc in msg.get("tool_calls") or []:
-                fn = tc.get("function") or {}
-                tc_name = tc.get("name") or fn.get("name", "")
-                # --- Skip ghost tool calls (empty name) -------------------
-                # ``_merge_tool_call_delta`` pads the accumulator list so that
-                # ``acc[index]`` is valid.  When the LLM outputs a text block
-                # at index 0 and a tool_use at index 1, the pad creates a
-                # phantom entry with empty name/arguments.  Sending such a
-                # block to Anthropic triggers ``invalid params (2013)``.
-                if not tc_name.strip():
-                    logger.warning(
-                        "convert_messages: skipping ghost tool_use (id=%r, name=%r)",
-                        tc.get("id", ""), tc_name,
-                    )
-                    continue
-                args = fn.get("arguments", "{}") if fn.get("arguments") is not None else tc.get("arguments", "{}")
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args) if args.strip() else {}
-                    except json.JSONDecodeError:
-                        args = {}
-                # Anthropic requires non-empty, unique tool_use IDs.
-                # If the stored ID is empty (e.g. from a partial stream
-                # or mock mode), generate a unique one via uuid4.
-                tc_id = tc.get("id") or ""
-                if not tc_id.strip():
-                    tc_id = f"toolu_{uuid.uuid4().hex[:24]}"
-                    logger.warning(
-                        "convert_messages: empty tool_use id, generated %s "
-                        "(fn.name=%r)", tc_id, tc_name,
-                    )
-                emitted_tool_ids.add(tc_id)
-                blocks.append({
-                    "type": "tool_use",
-                    "id": tc_id,
-                    "name": tc_name,
-                    "input": args,
-                })
-            if not blocks:
-                blocks.append({"type": "text", "text": ""})
-            result.append({"role": "assistant", "content": blocks})
-
-        elif role == "tool":
-            # tool_use_id must match the corresponding tool_use block.
-            # If empty, generate a unique placeholder to avoid API rejection.
-            tool_use_id = msg.get("tool_call_id") or ""
-            if not tool_use_id.strip():
-                tool_use_id = f"toolu_{uuid.uuid4().hex[:24]}"
-                logger.warning("convert_messages: empty tool_result id, generated %s", tool_use_id)
-            # Drop orphaned tool results whose tool_use was filtered as
-            # a ghost (empty name).  Anthropic rejects unmatched results.
-            if tool_use_id not in emitted_tool_ids:
-                logger.warning(
-                    "convert_messages: skipping orphaned tool_result "
-                    "tool_use_id=%s (no matching tool_use block)",
-                    tool_use_id,
-                )
-                continue
-            logger.debug(
-                "convert_messages: tool_result tool_use_id=%s content_len=%d",
-                tool_use_id, len(str(msg.get("content", ""))),
-            )
-            pending_tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": tool_use_id,
-                "content": str(msg.get("content", "")),
-            })
-
-        elif role == "system":
-            # System messages should have been extracted already.
-            # If one slips through, treat it as a user message.
-            result.append({
-                "role": "user",
-                "content": [{"type": "text", "text": str(msg.get("content", ""))}],
-            })
-
-    _flush_tool_results()
-    return result
-
-
-def _convert_tools(
-    tools: Sequence[Mapping[str, Any]] | None,
-) -> list[dict[str, Any]] | None:
-    """Convert OpenAI tool schemas to Anthropic format.
-
-    ``{type: "function", function: {name, description, parameters}}``
-    → ``{name, description, input_schema}``
-    """
-    if not tools:
-        return None
-    out: list[dict[str, Any]] = []
-    for tool in tools:
-        fn = tool.get("function", {})
-        out.append({
-            "name": fn.get("name", ""),
-            "description": fn.get("description", ""),
-            "input_schema": fn.get("parameters", {
-                "type": "object",
-                "properties": {},
-            }),
-        })
-    return out
-
-
-def _convert_tool_choice(
-    tool_choice: str | Mapping[str, Any] | None,
-) -> dict[str, Any] | None:
-    """Map OpenAI ``tool_choice`` values to Anthropic equivalents."""
-    if tool_choice is None:
-        return None
-    if isinstance(tool_choice, str):
-        if tool_choice == "auto":
-            return {"type": "auto"}
-        if tool_choice == "none":
-            return None
-        if tool_choice == "required":
-            return {"type": "any"}
-    if isinstance(tool_choice, dict):
-        fn = tool_choice.get("function", {})
-        if fn.get("name"):
-            return {"type": "tool", "name": fn["name"]}
-    return {"type": "auto"}
-
-
-async def _anthropic_stream_to_chunks(
-    stream: anthropic.AsyncMessageStream,
-) -> AsyncIterator[StreamChunk]:
-    """Convert Anthropic stream events into :class:`StreamChunk`.
-
-    The adapter handles raw events from the SDK's stream context:
-    * ``content_block_delta`` with ``text_delta`` → text delta
-    * ``content_block_start`` with ``tool_use`` → tool call header
-    * ``content_block_delta`` with ``input_json_delta`` → tool arg delta
-    * ``message_delta`` → finish_reason + usage
-
-    Thinking blocks are counted (but their content is not forwarded
-    to the caller — the agent core only tracks the count).
-    """
-    input_tokens = 0
-    tool_blocks: dict[int, dict[str, str]] = {}  # index → {id, name}
-    thinking_count = 0
-
-    async for event in stream:
-        etype = event.type
-
-        if etype == "message_start":
-            # Capture input token count from the initial message.
-            usage = getattr(event.message, "usage", None)
-            if usage:
-                input_tokens = usage.input_tokens or 0
-
-        elif etype == "content_block_start":
-            block = event.content_block
-            idx = event.index
-            btype = getattr(block, "type", "")
-
-            if btype == "tool_use":
-                logger.debug(
-                    "stream: content_block_start tool_use idx=%s id=%r name=%r",
-                    idx, block.id, block.name,
-                )
-                tool_blocks[idx] = {
-                    "id": block.id,
-                    "name": block.name,
-                }
-                # Emit the tool-call "header" delta (id + name).
-                yield StreamChunk(
-                    tool_call_deltas=[{
-                        "index": idx,
-                        "id": block.id,
-                        "type": "function",
-                        "function": {
-                            "name": block.name,
-                            "arguments": "",
-                        },
-                    }],
-                )
-
-        elif etype == "content_block_delta":
-            delta = event.delta
-            idx = event.index
-            dtype = getattr(delta, "type", "")
-
-            if dtype == "text_delta":
-                yield StreamChunk(delta=delta.text)
-
-            elif dtype == "input_json_delta":
-                info = tool_blocks.get(idx, {"id": "", "name": ""})
-                yield StreamChunk(
-                    tool_call_deltas=[{
-                        "index": idx,
-                        "id": info.get("id", ""),
-                        "type": "function",
-                        "function": {
-                            "name": "",
-                            "arguments": delta.partial_json,
-                        },
-                    }],
-                )
-
-            elif dtype == "thinking_delta":
-                # Count thinking blocks but don't forward content.
-                # The thinking_count is emitted in usage on the final chunk.
-                thinking_count += 1
-
-        elif etype == "message_delta":
-            # Final event: stop_reason + output token usage.
-            output_tokens = 0
-            if hasattr(event, "usage") and event.usage:
-                output_tokens = event.usage.output_tokens or 0
-
-            stop_reason = "stop"
-            if hasattr(event, "delta") and event.delta:
-                sr = getattr(event.delta, "stop_reason", None)
-                if sr:
-                    stop_reason = _STOP_REASON_MAP.get(sr, "stop")
-
-            usage: dict[str, int] = {
-                "prompt_tokens": input_tokens,
-                "completion_tokens": output_tokens,
-                "total_tokens": input_tokens + output_tokens,
-            }
-            if thinking_count > 0:
-                usage["thinking_tokens"] = thinking_count
-
-            yield StreamChunk(
-                finish_reason=stop_reason,
-                usage=usage,
-            )
-
-        # content_block_stop, message_stop: informational, skip.
-
 
 # ---------------------------------------------------------------------------
 # Client
@@ -433,16 +40,20 @@ async def _anthropic_stream_to_chunks(
 
 
 class MiniMaxClient:
-    """Async client for the MiniMax Anthropic-compatible endpoint.
+    """Async LLM client with pluggable transport.
 
     Parameters
     ----------
+    protocol:
+        Wire protocol — ``"anthropic"`` (default), ``"openai"``, or
+        ``"mock"``.  When omitted and ``api_key`` is empty, falls back
+        to mock mode automatically.
     api_key:
-        Bearer token. Pulled from ``MINIMAX_API_KEY`` / OS keyring
+        Bearer token.  Pulled from ``MINIMAX_API_KEY`` / OS keyring
         if omitted.  Empty / missing values put the client in
-        **mock mode** — every call returns the canned response.
+        **mock mode** (unless ``protocol`` is explicitly set).
     base_url:
-        Root of the API. Pulled from ``MINIMAX_API_BASE`` if
+        Root of the API.  Pulled from ``MINIMAX_API_BASE`` if
         omitted; defaults to MiniMax's Anthropic-compatible proxy.
     model:
         Default model name used by :meth:`chat` and
@@ -450,37 +61,35 @@ class MiniMaxClient:
     timeout:
         Per-request timeout in seconds.
     max_retries:
-        Number of attempts on transient errors (network, 5xx,
-        429). The ``anthropic`` SDK handles backoff automatically.
+        Number of attempts on transient errors (network, 5xx, 429).
     mock:
-        Force mock mode. Mostly useful in tests; if you set this
-        you should also pass a deterministic ``api_key`` to make
-        the client trivially mockable.
+        Force mock mode.  If ``None`` (default), mock mode is
+        auto-detected from the presence of ``api_key``.
     client:
-        Optional pre-built ``anthropic.AsyncAnthropic`` instance
-        (useful for injecting test doubles).
+        Optional pre-built SDK client instance (useful for injecting
+        test doubles).  Type depends on the transport:
+        ``anthropic.AsyncAnthropic`` or ``openai.AsyncOpenAI``.
     """
 
     def __init__(
         self,
         *,
+        protocol: str | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
         model: str = DEFAULT_MODEL,
         timeout: float = 60.0,
         max_retries: int = 3,
         mock: bool | None = None,
-        client: anthropic.AsyncAnthropic | None = None,
+        client: Any = None,
     ) -> None:
-        # Caller-supplied key wins (used by tests and by the IPC
-        # layer when a session has its own credential). Otherwise
-        # delegate to `secrets` so we pick up the OS keyring value
-        # before falling back to the env var.
+        # Resolve API key.
         if api_key is not None:
             resolved_key = api_key
         else:
             secret_value = secrets.get_api_key()
             resolved_key = secret_value or ""
+
         resolved_base = (
             base_url
             if base_url is not None
@@ -492,22 +101,29 @@ class MiniMaxClient:
         self.default_model = model
         self.timeout = timeout
         self.max_retries = max_retries
-        self.mock = mock if mock is not None else (not bool(self.api_key))
-        self._client = client  # caller may inject an anthropic mock
 
-        # ``thinking_count`` is the value the agent should attach to
-        # the next ``agent.message_chunk`` event's ``metadata``. The
-        # mock path increments it on every ``stream_chat`` call (one
-        # "think" per call), and the real path reads it from the
-        # adapter's ``usage.thinking_tokens`` field. Either way it
-        # is a per-call snapshot, not a running total — the
-        # ``AgentCore`` reads the value *after* the call returns
-        # and emits it on the final chunk.
-        self.thinking_count: int = 0
+        # Determine effective protocol.
+        force_mock = mock if mock is not None else (not bool(self.api_key))
+        if protocol == "mock" or force_mock:
+            effective_protocol = "mock"
+        else:
+            effective_protocol = (protocol or "anthropic").lower()
+
+        self.protocol = effective_protocol
+        self.mock = effective_protocol == "mock"
+
+        # Build transport.
+        self._transport: LLMTransport = self._build_transport(
+            effective_protocol, client
+        )
+        self._client = client  # retain for legacy close() compat
+        self._thinking_count = 0
 
         logger.info(
-            "MiniMaxClient initialised (mock=%s, base_url=%s, model=%s, max_retries=%d)",
-            self.mock, self.base_url, self.default_model, self.max_retries,
+            "MiniMaxClient initialised (protocol=%s, mock=%s, "
+            "base_url=%s, model=%s, max_retries=%d)",
+            effective_protocol, self.mock, self.base_url,
+            self.default_model, self.max_retries,
         )
 
     # -- public surface ----------------------------------------------------
@@ -556,69 +172,29 @@ class MiniMaxClient:
     ) -> AsyncIterator[StreamChunk]:
         """Stream the assistant response chunk-by-chunk.
 
-        Each yield is a :class:`StreamChunk`. The final chunk has
+        Delegates to the active transport.  The final chunk has
         ``finish_reason`` set to a non-None value (``stop`` /
         ``tool_calls`` / ``length``) and a populated ``usage`` dict.
 
         Side effect
         -----------
 
-        Updates :attr:`thinking_count` after the stream completes so
-        the caller can attach it to the next ``agent.message_chunk``
-        event's ``metadata`` envelope. Mock mode increments per call
-        (each canned call is one "think"); the real path reads the
-        adapter's ``usage.thinking_tokens`` field (else 0).
-        The value is reset to 0 at the start of every call so a
-        partial / failed call cannot leak state from the previous
-        one.
+        Updates :attr:`thinking_count` after the stream completes.
         """
-        self.thinking_count = 0
-
-        # ---- mock path (unchanged) --------------------------------------
-        if self.mock:
-            mock_thinking = 1  # one synthetic "think" per call
-            async for c in _mock_stream(
-                self.default_model if model is None else (model or self.default_model)
-            ):
-                if c.usage:
-                    self.thinking_count = mock_thinking
-                yield c
-            return
-
-        # ---- Anthropic path ----------------------------------------------
-        system_prompt, remaining = _extract_system_prompt(messages)
-        a_messages = _convert_messages(remaining)
-        a_tools = _convert_tools(tools)
-
-        client = self._ensure_client()
-
-        try:
-            async with client.messages.stream(
-                model=model or self.default_model,
-                system=system_prompt or anthropic.NOT_GIVEN,
-                messages=a_messages,
-                tools=a_tools or anthropic.NOT_GIVEN,
-                tool_choice=(
-                    _convert_tool_choice(tool_choice)
-                    if a_tools
-                    else anthropic.NOT_GIVEN
-                ),
-                temperature=temperature if temperature is not None else anthropic.NOT_GIVEN,
-                max_tokens=max_tokens or 4096,
-            ) as stream:
-                async for chunk in _anthropic_stream_to_chunks(stream):
-                    if chunk.usage and isinstance(
-                        chunk.usage.get("thinking_tokens"), int
-                    ):
-                        self.thinking_count = chunk.usage["thinking_tokens"]
-                    yield chunk
-        except anthropic.APIError as exc:
-            raise LLMError(f"Anthropic API error: {exc}") from exc
+        async for chunk in self._transport.stream_chat(
+            messages,
+            model=model or self.default_model,
+            tools=tools,
+            tool_choice=tool_choice,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        ):
+            yield chunk
+        # Sync thinking_count from the transport after stream completes.
+        self._thinking_count = self._transport.thinking_count
 
     async def close(self) -> None:
-        if self._client is not None:
-            await self._client.close()
-            self._client = None
+        await self._transport.close()
 
     async def __aenter__(self) -> MiniMaxClient:
         return self
@@ -626,17 +202,42 @@ class MiniMaxClient:
     async def __aexit__(self, *exc: Any) -> None:
         await self.close()
 
+    # -- thinking count (public attribute) ---------------------------------
+
+    @property
+    def thinking_count(self) -> int:
+        """Thinking-block count from the most recent call."""
+        return self._thinking_count
+
+    @thinking_count.setter
+    def thinking_count(self, value: int) -> None:
+        self._thinking_count = value
+
     # -- internals ---------------------------------------------------------
 
-    def _ensure_client(self) -> anthropic.AsyncAnthropic:
-        if self._client is None:
-            self._client = anthropic.AsyncAnthropic(
+    def _build_transport(self, protocol: str, client: Any) -> LLMTransport:
+        """Instantiate the correct transport for *protocol*."""
+        if protocol == "mock":
+            return MockTransport()
+
+        if protocol == "openai":
+            from .transports.openai_transport import OpenAITransport
+            return OpenAITransport(
                 api_key=self.api_key,
                 base_url=self.base_url,
                 timeout=self.timeout,
                 max_retries=self.max_retries,
+                client=client,
             )
-        return self._client
+
+        # Default: anthropic
+        return AnthropicTransport(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            timeout=self.timeout,
+            max_retries=self.max_retries,
+            client=client,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -660,6 +261,14 @@ def _assemble(chunks: Iterable[StreamChunk], *, model: str) -> LLMResponse:
             finish_reason = c.finish_reason
         for delta in c.tool_call_deltas:
             _merge_tool_call_delta(tool_calls, delta)
+
+    # Ghost-slot filter — phantom entries created by _merge_tool_call_delta
+    # padding must not leak into the assembled response.
+    tool_calls = [
+        tc for tc in tool_calls
+        if (tc.get("id") or "").strip()
+        or ((tc.get("function") or {}).get("name") or "").strip()
+    ]
 
     message: dict[str, Any] = {"role": "assistant", "content": "".join(text_parts)}
     if tool_calls:
@@ -709,32 +318,8 @@ def _merge_tool_call_delta(acc: list[dict[str, Any]], delta: dict[str, Any]) -> 
         )
 
 
-# ---------------------------------------------------------------------------
-# Mock stream
-# ---------------------------------------------------------------------------
-
-
-async def _mock_stream(model: str) -> AsyncIterator[StreamChunk]:
-    """Deterministic mock for offline / CI runs.
-
-    Emits the canned text in 16-character chunks then a final
-    chunk with synthetic token counts. No tools are called
-    (mock mode is for plumbing tests, not for tool exercises).
-    """
-    step = 16
-    for i in range(0, len(_MOCK_TEXT), step):
-        await asyncio.sleep(0.005)
-        yield StreamChunk(delta=_MOCK_TEXT[i : i + step])
-    yield StreamChunk(
-        finish_reason="stop",
-        usage={
-            "prompt_tokens": 1,
-            "completion_tokens": max(1, len(_MOCK_TEXT) // 4),
-            "total_tokens": 1 + max(1, len(_MOCK_TEXT) // 4),
-        },
-    )
-
-
+# Re-export types for backward compat — existing ``from .llm import StreamChunk``
+# continues to work.
 __all__ = [
     "DEFAULT_BASE_URL",
     "DEFAULT_MODEL",
