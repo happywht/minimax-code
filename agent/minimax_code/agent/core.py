@@ -449,6 +449,10 @@ class AgentCore:
         raw_args = call.get("arguments")
         if raw_args is None and isinstance(call.get("function"), dict):
             raw_args = call["function"].get("arguments")
+        logger.debug(
+            "dispatch_tool: id=%s name=%r raw_args_type=%s",
+            call.get("id", ""), name, type(raw_args).__name__,
+        )
         if isinstance(raw_args, str):
             try:
                 args = json.loads(raw_args) if raw_args.strip() else {}
@@ -461,7 +465,7 @@ class AgentCore:
         else:
             args = {}
 
-        tool_call_id = call.get("id") or f"call_{uuid.uuid4().hex[:8]}"
+        tool_call_id = call.get("id") or f"toolu_{uuid.uuid4().hex[:24]}"
         call_log = {**call, "id": tool_call_id, "name": name, "args": args}
 
         # 1. Permission check (configurable, default-allow).
@@ -596,8 +600,9 @@ def _extract_tool_calls(message: Message) -> list[dict[str, Any]]:
     always present at the top level for convenience.
     """
     raw = message.get("tool_calls") or []
+    logger.debug("extract_tool_calls: raw=%s", json.dumps(raw, default=str)[:500])
     out: list[dict[str, Any]] = []
-    for call in raw:
+    for i, call in enumerate(raw):
         if not isinstance(call, dict):
             continue
         fn = call.get("function") or {}
@@ -606,10 +611,17 @@ def _extract_tool_calls(message: Message) -> list[dict[str, Any]]:
         if args is None:
             args = fn.get("arguments", "")
         # Ensure every tool call has a non-empty, unique ID.
-        # Anthropic API rejects duplicate or empty tool_use IDs.
+        # Anthropic API requires ``toolu_`` prefix; using the same
+        # prefix here keeps IDs consistent when ``_convert_messages``
+        # processes the original message later in the loop.
         call_id = call.get("id") or ""
         if not call_id.strip():
-            call_id = f"call_{uuid.uuid4().hex[:12]}"
+            call_id = f"toolu_{uuid.uuid4().hex[:24]}"
+            # Propagate the generated ID back to the original
+            # message so ``_convert_messages`` sees the same value
+            # when building the next Anthropic API request.
+            call["id"] = call_id
+            logger.warning("extract_tool_calls: empty id at index %d, generated %s", i, call_id)
         out.append(
             {
                 "id": call_id,
@@ -618,6 +630,7 @@ def _extract_tool_calls(message: Message) -> list[dict[str, Any]]:
                 "arguments": args,
             }
         )
+    logger.debug("extract_tool_calls: result=%s", json.dumps(out, default=str)[:500])
     return out
 
 
@@ -626,7 +639,7 @@ def _tool_message(call: dict[str, Any], result: ToolResult) -> Message:
     payload = json.dumps(result.to_dict(), ensure_ascii=False, default=str)
     tc_id = call.get("id") or ""
     if not tc_id.strip():
-        tc_id = f"call_{uuid.uuid4().hex[:12]}"
+        tc_id = f"toolu_{uuid.uuid4().hex[:24]}"
     return {
         "role": "tool",
         "tool_call_id": tc_id,

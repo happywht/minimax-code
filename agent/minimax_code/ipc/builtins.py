@@ -282,8 +282,13 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         """Push ``agent.tool_call`` events so the frontend can
         render tool-execution steps in the chat."""
         try:
-            tool_name = call.get("function", {}).get("name", "unknown")
-            args = call.get("function", {}).get("arguments", {})
+            # ``call`` is the ``call_log`` dict built by
+            # ``AgentCore._dispatch_tool`` — it uses the *flat*
+            # normalised format {id, name, args, arguments, …}
+            # produced by ``_extract_tool_calls``, NOT the nested
+            # OpenAI format with a ``function`` wrapper.
+            tool_name = call.get("name", "unknown")
+            args = call.get("args") or call.get("arguments", {})
             tool_call_id = call.get("id", "")
             await ctx.emit(
                 "agent.tool_call",
@@ -302,7 +307,8 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     async def _on_tool_result(call: dict, result: Any) -> None:
         """Push ``agent.tool_result`` events with the tool output."""
         try:
-            tool_name = call.get("function", {}).get("name", "unknown")
+            # Flat format — see _on_tool_call above.
+            tool_name = call.get("name", "unknown")
             tool_call_id = call.get("id", "")
             await ctx.emit(
                 "agent.tool_result",

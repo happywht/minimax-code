@@ -205,6 +205,10 @@ def _convert_messages(
                 tc_id = tc.get("id") or ""
                 if not tc_id.strip():
                     tc_id = f"toolu_{uuid.uuid4().hex[:24]}"
+                    logger.warning(
+                        "convert_messages: empty tool_use id, generated %s "
+                        "(fn.name=%r)", tc_id, fn.get("name", ""),
+                    )
                 blocks.append({
                     "type": "tool_use",
                     "id": tc_id,
@@ -221,6 +225,11 @@ def _convert_messages(
             tool_use_id = msg.get("tool_call_id") or ""
             if not tool_use_id.strip():
                 tool_use_id = f"toolu_{uuid.uuid4().hex[:24]}"
+                logger.warning("convert_messages: empty tool_result id, generated %s", tool_use_id)
+            logger.debug(
+                "convert_messages: tool_result tool_use_id=%s content_len=%d",
+                tool_use_id, len(str(msg.get("content", ""))),
+            )
             pending_tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
@@ -316,6 +325,10 @@ async def _anthropic_stream_to_chunks(
             btype = getattr(block, "type", "")
 
             if btype == "tool_use":
+                logger.debug(
+                    "stream: content_block_start tool_use idx=%s id=%r name=%r",
+                    idx, block.id, block.name,
+                )
                 tool_blocks[idx] = {
                     "id": block.id,
                     "name": block.name,
