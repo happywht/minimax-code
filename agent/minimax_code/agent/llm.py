@@ -166,6 +166,9 @@ def _convert_messages(
     """
     result: list[dict[str, Any]] = []
     pending_tool_results: list[dict[str, Any]] = []
+    # Track tool_use IDs that we've emitted so we can drop orphaned
+    # tool_result entries (e.g. from ghost tool calls filtered above).
+    emitted_tool_ids: set[str] = set()
 
     def _flush_tool_results() -> None:
         nonlocal pending_tool_results
@@ -193,7 +196,20 @@ def _convert_messages(
                 blocks.append({"type": "text", "text": str(text)})
             for tc in msg.get("tool_calls") or []:
                 fn = tc.get("function") or {}
-                args = fn.get("arguments", "{}")
+                tc_name = tc.get("name") or fn.get("name", "")
+                # --- Skip ghost tool calls (empty name) -------------------
+                # ``_merge_tool_call_delta`` pads the accumulator list so that
+                # ``acc[index]`` is valid.  When the LLM outputs a text block
+                # at index 0 and a tool_use at index 1, the pad creates a
+                # phantom entry with empty name/arguments.  Sending such a
+                # block to Anthropic triggers ``invalid params (2013)``.
+                if not tc_name.strip():
+                    logger.warning(
+                        "convert_messages: skipping ghost tool_use (id=%r, name=%r)",
+                        tc.get("id", ""), tc_name,
+                    )
+                    continue
+                args = fn.get("arguments", "{}") if fn.get("arguments") is not None else tc.get("arguments", "{}")
                 if isinstance(args, str):
                     try:
                         args = json.loads(args) if args.strip() else {}
@@ -207,12 +223,13 @@ def _convert_messages(
                     tc_id = f"toolu_{uuid.uuid4().hex[:24]}"
                     logger.warning(
                         "convert_messages: empty tool_use id, generated %s "
-                        "(fn.name=%r)", tc_id, fn.get("name", ""),
+                        "(fn.name=%r)", tc_id, tc_name,
                     )
+                emitted_tool_ids.add(tc_id)
                 blocks.append({
                     "type": "tool_use",
                     "id": tc_id,
-                    "name": fn.get("name", ""),
+                    "name": tc_name,
                     "input": args,
                 })
             if not blocks:
@@ -226,6 +243,15 @@ def _convert_messages(
             if not tool_use_id.strip():
                 tool_use_id = f"toolu_{uuid.uuid4().hex[:24]}"
                 logger.warning("convert_messages: empty tool_result id, generated %s", tool_use_id)
+            # Drop orphaned tool results whose tool_use was filtered as
+            # a ghost (empty name).  Anthropic rejects unmatched results.
+            if tool_use_id not in emitted_tool_ids:
+                logger.warning(
+                    "convert_messages: skipping orphaned tool_result "
+                    "tool_use_id=%s (no matching tool_use block)",
+                    tool_use_id,
+                )
+                continue
             logger.debug(
                 "convert_messages: tool_result tool_use_id=%s content_len=%d",
                 tool_use_id, len(str(msg.get("content", ""))),

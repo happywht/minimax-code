@@ -610,6 +610,15 @@ def _extract_tool_calls(message: Message) -> list[dict[str, Any]]:
         args = call.get("arguments")
         if args is None:
             args = fn.get("arguments", "")
+        # --- Skip ghost tool calls ------------------------------------------
+        # When the LLM returns a text block at content index 0 and a
+        # tool_use block at index 1, ``_merge_tool_call_delta`` creates a
+        # phantom slot at index 0 with empty id/name/arguments.  Although
+        # ``_assemble_chunks`` filters these out, we guard here too as a
+        # safety net.
+        if not name.strip():
+            logger.warning("extract_tool_calls: skipping ghost entry at index %d (no name)", i)
+            continue
         # Ensure every tool call has a non-empty, unique ID.
         # Anthropic API requires ``toolu_`` prefix; using the same
         # prefix here keeps IDs consistent when ``_convert_messages``
@@ -663,6 +672,18 @@ def _assemble_chunks(chunks: Sequence[StreamChunk], *, model: str) -> LLMRespons
             finish_reason = c.finish_reason
         for delta in c.tool_call_deltas:
             _merge_tool_call_delta(tool_calls, delta)
+    # --- Ghost-slot filter ---------------------------------------------------
+    # ``_merge_tool_call_delta`` pads the accumulator so that
+    # ``acc[index]`` is always valid (it uses ``while len(acc) <= index``).
+    # When Anthropic returns a text block at index 0 followed by a
+    # tool_use block at index 1, the pad creates a phantom entry at
+    # index 0 with empty id/name/arguments.  Such entries must be
+    # stripped out before they reach ``_extract_tool_calls``.
+    tool_calls = [
+        tc for tc in tool_calls
+        if (tc.get("id") or "").strip()
+        or ((tc.get("function") or {}).get("name") or "").strip()
+    ]
     message: dict[str, Any] = {"role": "assistant", "content": "".join(text_parts)}
     if tool_calls:
         message["tool_calls"] = tool_calls
