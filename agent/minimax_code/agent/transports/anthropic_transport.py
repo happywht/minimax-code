@@ -270,6 +270,10 @@ async def _anthropic_stream_to_chunks(
                     }],
                 )
 
+            elif btype == "thinking":
+                # Count distinct thinking blocks, not delta fragments.
+                thinking_count += 1
+
         elif etype == "content_block_delta":
             delta = event.delta
             idx = event.index
@@ -293,7 +297,7 @@ async def _anthropic_stream_to_chunks(
                 )
 
             elif dtype == "thinking_delta":
-                thinking_count += 1
+                pass  # counted at content_block_start
 
         elif etype == "message_delta":
             output_tokens = 0

@@ -164,7 +164,7 @@ async def _openai_stream_to_chunks(
             # carrying only ``usage``.
             if hasattr(chunk, "usage") and chunk.usage:
                 yield StreamChunk(
-                    finish_reason="stop",
+                    finish_reason=None,
                     usage={
                         "prompt_tokens": chunk.usage.prompt_tokens or 0,
                         "completion_tokens": chunk.usage.completion_tokens or 0,

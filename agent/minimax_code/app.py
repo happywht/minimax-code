@@ -406,7 +406,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # / ``model.set_current`` and lazily open the async DB to build
     # a :class:`~.storage.dao.ModelPrefsDAO` on first call. Tests
     # can inject a DAO via the ``dao=`` kwarg to skip the lazy path.
-    register_model_handlers(server)
+    register_model_handlers(server, provider_dao=_PROVIDER_DAO_SINGLETON)
     # The secrets handlers expose ``secrets.status`` / ``secrets.set``
     # / ``secrets.clear`` for the Settings page's API-key tab. They
     # are stateless — every call goes straight to
@@ -415,8 +415,9 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # The provider handlers expose ``provider.list`` / ``provider.create``
     # / ``provider.update`` / ``provider.delete`` / ``provider.set_api_key``
     # / ``provider.clear_api_key`` for the Settings page's Providers tab.
-    # The DAO is lazily opened on first call.
-    register_provider_handlers(server)
+    # Pass the process-wide ProviderDAO singleton (if available) so
+    # handlers reuse the same DB connection instead of opening extras.
+    register_provider_handlers(server, dao=_PROVIDER_DAO_SINGLETON)
     # The git handlers expose ``git.status`` / ``git.diff`` /
     # ``git.log`` for the v0.3.0 code-review flow and the top-bar
     # ``GitStatusBar`` widget. Stateless — every call shells out

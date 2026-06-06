@@ -116,7 +116,6 @@ class MiniMaxClient:
         self._transport: LLMTransport = self._build_transport(
             effective_protocol, client
         )
-        self._client = client  # retain for legacy close() compat
         self._thinking_count = 0
 
         logger.info(
@@ -137,7 +136,6 @@ class MiniMaxClient:
         tool_choice: str | Mapping[str, Any] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
-        extra: Mapping[str, Any] | None = None,
     ) -> LLMResponse:
         """One-shot, non-streaming chat call.
 
@@ -153,7 +151,6 @@ class MiniMaxClient:
             tool_choice=tool_choice,
             temperature=temperature,
             max_tokens=max_tokens,
-            extra=extra,
         ):
             chunks.append(c)
 
@@ -168,7 +165,6 @@ class MiniMaxClient:
         tool_choice: str | Mapping[str, Any] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
-        extra: Mapping[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream the assistant response chunk-by-chunk.
 

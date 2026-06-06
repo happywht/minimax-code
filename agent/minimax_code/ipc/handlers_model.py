@@ -297,6 +297,13 @@ def register_model_handlers(
                 )
 
             await dao_obj.set_current(model, provider_id=provider_id)
+            # Rebuild sub-agent LLM so the next agent.send_message uses
+            # the updated model / provider config.
+            try:
+                from ..app import rebuild_subagent_llm
+                await rebuild_subagent_llm()
+            except Exception:
+                logger.debug("rebuild_subagent_llm after set_current failed; continuing")
             await ctx.reply({"ok": True, "model": model, "current": model})
         except _HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)

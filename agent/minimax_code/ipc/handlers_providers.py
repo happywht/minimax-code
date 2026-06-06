@@ -103,8 +103,21 @@ async def _ensure_dao(server: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def register_provider_handlers(server: Any) -> None:
-    """Register the ``provider.*`` handlers on ``server``."""
+def register_provider_handlers(server: Any, dao: Any = None) -> None:
+    """Register the ``provider.*`` handlers on ``server``.
+
+    Parameters
+    ----------
+    server:
+        The :class:`~minimax_code.ipc.server.IPCServer` instance.
+    dao:
+        Optional pre-built :class:`~.ProviderDAO`. When ``None``,
+        the first ``provider.*`` call opens the async database and
+        constructs the DAO lazily.
+    """
+    if dao is not None:
+        setattr(server, _DAO_ATTR, dao)
+        setattr(server, _LOCK_ATTR, asyncio.Lock())
 
     # ---- provider.list -----------------------------------------------------
 
@@ -197,6 +210,15 @@ def register_provider_handlers(server: Any) -> None:
             from .. import secrets
 
             provider["api_key_configured"] = secrets.has_provider_key(provider["id"])
+
+            # Rebuild sub-agent LLM so the next agent.send_message
+            # picks up the new provider's models.
+            try:
+                from ..app import rebuild_subagent_llm
+                await rebuild_subagent_llm()
+            except Exception:
+                logger.debug("rebuild_subagent_llm after provider.create failed")
+
             await ctx.reply({"provider": provider})
         except _HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
@@ -262,6 +284,15 @@ def register_provider_handlers(server: Any) -> None:
             from .. import secrets
 
             provider["api_key_configured"] = secrets.has_provider_key(provider_id)
+
+            # Rebuild sub-agent LLM — base_url / protocol / key may have
+            # changed, and the model list may differ now.
+            try:
+                from ..app import rebuild_subagent_llm
+                await rebuild_subagent_llm()
+            except Exception:
+                logger.debug("rebuild_subagent_llm after provider.update failed")
+
             await ctx.reply({"provider": provider})
         except _HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
@@ -296,6 +327,15 @@ def register_provider_handlers(server: Any) -> None:
             except Exception:
                 logger.debug("clear_provider_key(%s) failed; continuing", provider_id)
             await dao.delete(provider_id)
+
+            # Rebuild sub-agent LLM — the deleted provider's models are
+            # gone from the dynamic list; active config must refresh.
+            try:
+                from ..app import rebuild_subagent_llm
+                await rebuild_subagent_llm()
+            except Exception:
+                logger.debug("rebuild_subagent_llm after provider.delete failed")
+
             await ctx.reply({"ok": True, "deleted": provider_id})
         except _HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
