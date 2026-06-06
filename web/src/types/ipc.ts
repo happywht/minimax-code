@@ -66,6 +66,33 @@ export interface ModelInfo {
   context_window: number;
   supports_tools: boolean;
   is_default?: boolean;
+  /** Provider ID — populated by the dynamic model list. */
+  provider_id?: string;
+  /** Protocol used by the parent provider ("anthropic" | "openai"). */
+  protocol?: string;
+}
+
+/** A model entry nested inside a provider. */
+export interface ProviderModel {
+  id: string;
+  name: string;
+  context_window: number;
+  supports_tools: boolean;
+  is_default?: boolean;
+}
+
+/** An LLM provider record — matches the `providers` table row. */
+export interface ProviderInfo {
+  id: string;
+  name: string;
+  protocol: "anthropic" | "openai";
+  base_url: string;
+  /** Whether an API key is stored in keyring for this provider. */
+  api_key_configured: boolean;
+  models: ProviderModel[];
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 /** A session record returned by `session.list` / `session.create`. */
@@ -287,6 +314,29 @@ export interface ListRulesResult {
 
 export interface SetModelResult {
   current: string;
+}
+
+export interface ListProvidersResult {
+  providers: ProviderInfo[];
+}
+
+export interface CreateProviderResult {
+  provider: ProviderInfo;
+}
+
+export interface UpdateProviderResult {
+  provider: ProviderInfo;
+}
+
+export interface DeleteProviderResult {
+  ok: true;
+  deleted: string;
+}
+
+export interface SetProviderApiKeyResult {
+  ok: true;
+  provider_id: string;
+  api_key_configured: boolean;
 }
 
 export interface SetRuleResult {

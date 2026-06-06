@@ -1,0 +1,113 @@
+/**
+ * Provider store — list of LLM providers + CRUD operations.
+ * Persisted to the Python agent (which writes to SQLite + OS keyring).
+ */
+
+import { create } from "zustand";
+import { typedIPC } from "../ipc";
+import { toast } from "../components/ErrorBoundary";
+import type { ProviderInfo, ProviderModel } from "../types/ipc";
+
+export interface ProviderState {
+  providers: ProviderInfo[];
+  loading: boolean;
+
+  refresh: () => Promise<void>;
+  create: (opts: {
+    name: string;
+    protocol: "anthropic" | "openai";
+    base_url: string;
+    api_key?: string;
+    models?: ProviderModel[];
+    enabled?: boolean;
+  }) => Promise<ProviderInfo | null>;
+  update: (opts: {
+    provider_id: string;
+    name?: string;
+    protocol?: "anthropic" | "openai";
+    base_url?: string;
+    api_key?: string;
+    models?: ProviderModel[];
+    enabled?: boolean;
+  }) => Promise<ProviderInfo | null>;
+  remove: (providerId: string) => Promise<boolean>;
+  setApiKey: (providerId: string, apiKey: string) => Promise<boolean>;
+  clearApiKey: (providerId: string) => Promise<boolean>;
+}
+
+export const useProviderStore = create<ProviderState>((set, get) => ({
+  providers: [],
+  loading: false,
+
+  refresh: async () => {
+    set({ loading: true });
+    try {
+      const r = await typedIPC.listProviders();
+      set({ providers: r.providers, loading: false });
+    } catch (err) {
+      set({ loading: false });
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Failed to load providers", message);
+    }
+  },
+
+  create: async (opts) => {
+    try {
+      const r = await typedIPC.createProvider(opts);
+      await get().refresh();
+      return r.provider;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Failed to create provider", message);
+      return null;
+    }
+  },
+
+  update: async (opts) => {
+    try {
+      const r = await typedIPC.updateProvider(opts);
+      await get().refresh();
+      return r.provider;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Failed to update provider", message);
+      return null;
+    }
+  },
+
+  remove: async (providerId) => {
+    try {
+      await typedIPC.deleteProvider(providerId);
+      await get().refresh();
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Failed to delete provider", message);
+      return false;
+    }
+  },
+
+  setApiKey: async (providerId, apiKey) => {
+    try {
+      await typedIPC.setProviderApiKey(providerId, apiKey);
+      await get().refresh();
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Failed to set API key", message);
+      return false;
+    }
+  },
+
+  clearApiKey: async (providerId) => {
+    try {
+      await typedIPC.clearProviderApiKey(providerId);
+      await get().refresh();
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Failed to clear API key", message);
+      return false;
+    }
+  },
+}));

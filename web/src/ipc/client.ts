@@ -28,7 +28,9 @@ import {
   ErrorCode,
   StreamEvent,
   type AgentInfo,
+  type CreateProviderResult,
   type CreateSessionResult,
+  type DeleteProviderResult,
   type GitDiffResult,
   type GitLogResult,
   type GitStatusResult,
@@ -41,6 +43,7 @@ import {
   type ListJobsResult,
   type ListMessagesResult,
   type ListModelsResult,
+  type ListProvidersResult,
   type ListRulesResult,
   type ListSessionsResult,
   type ListSkillsResult,
@@ -50,21 +53,23 @@ import {
   type PermissionRequestData,
   type PermissionResolvedData,
   type PermissionRule,
+  type ProviderInfo,
   type ScheduledJob,
   type SecretStatus,
   type SendMessageResult,
   type Session,
   type SetModelResult,
+  type SetProviderApiKeyResult,
   type SetRuleResult,
   type SidecarEvent,
   type SkillInfo,
   type SpawnSubagentParams,
   type SpawnSubagentResult,
-  type UpdateSessionResult,
   type SubAgentProgress,
   type TaskProgressData,
   type ToolCallData,
   type ToolResultData,
+  type UpdateProviderResult,
 } from "../types/ipc";
 
 /* ─────────────────────── Internal types ─────────────────────── */
@@ -683,6 +688,29 @@ export interface TypedIPC {
   setSecret(value: string): Promise<SecretStatus>;
   clearSecret(): Promise<SecretStatus>;
 
+  // provider — drive the Settings page's Providers tab.
+  listProviders(): Promise<ListProvidersResult>;
+  createProvider(opts: {
+    name: string;
+    protocol: "anthropic" | "openai";
+    base_url: string;
+    api_key?: string;
+    models?: { id: string; name: string; context_window: number; supports_tools: boolean; is_default?: boolean }[];
+    enabled?: boolean;
+  }): Promise<CreateProviderResult>;
+  updateProvider(opts: {
+    provider_id: string;
+    name?: string;
+    protocol?: "anthropic" | "openai";
+    base_url?: string;
+    api_key?: string;
+    models?: { id: string; name: string; context_window: number; supports_tools: boolean; is_default?: boolean }[];
+    enabled?: boolean;
+  }): Promise<UpdateProviderResult>;
+  deleteProvider(providerId: string): Promise<DeleteProviderResult>;
+  setProviderApiKey(providerId: string, apiKey: string): Promise<SetProviderApiKeyResult>;
+  clearProviderApiKey(providerId: string): Promise<SetProviderApiKeyResult>;
+
   // git (v0.3.0) — drives the top-bar GitStatusBar widget and the
   // code-review flow. ``gitStatus`` is the cheap call (the widget
   // polls it on a short interval); ``gitDiff`` and ``gitLog`` are
@@ -807,6 +835,18 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     setSecret: (value) => client.request<SecretStatus>("secrets.set", { value }),
     clearSecret: () => client.request<SecretStatus>("secrets.clear", {}),
 
+    listProviders: () => client.request<ListProvidersResult>("provider.list", {}),
+    createProvider: (opts) =>
+      client.request<CreateProviderResult>("provider.create", opts),
+    updateProvider: (opts) =>
+      client.request<UpdateProviderResult>("provider.update", opts),
+    deleteProvider: (providerId) =>
+      client.request<DeleteProviderResult>("provider.delete", { provider_id: providerId }),
+    setProviderApiKey: (providerId, apiKey) =>
+      client.request<SetProviderApiKeyResult>("provider.set_api_key", { provider_id: providerId, api_key: apiKey }),
+    clearProviderApiKey: (providerId) =>
+      client.request<SetProviderApiKeyResult>("provider.clear_api_key", { provider_id: providerId }),
+
     gitStatus: () => client.request<GitStatusResult>("git.status", {}),
     gitDiff: (opts) => client.request<GitDiffResult>("git.diff", opts ?? {}),
     gitLog: (opts) => client.request<GitLogResult>("git.log", opts ?? {}),
@@ -899,6 +939,24 @@ const mockAgents: AgentInfo[] = [
   },
 ];
 const mockJobs: ScheduledJob[] = [];
+
+const mockProviders: ProviderInfo[] = [
+  {
+    id: "builtin-minimax",
+    name: "MiniMax",
+    protocol: "anthropic",
+    base_url: "https://api.minimaxi.com/anthropic",
+    api_key_configured: false,
+    models: [
+      { id: "MiniMax-M3", name: "MiniMax-M3", context_window: 200000, supports_tools: true, is_default: true },
+      { id: "MiniMax-M3-fast", name: "MiniMax-M3-fast", context_window: 128000, supports_tools: true },
+      { id: "MiniMax-Code", name: "MiniMax-Code", context_window: 1000000, supports_tools: true },
+    ],
+    enabled: true,
+    created_at: "2026-06-06T00:00:00Z",
+    updated_at: "2026-06-06T00:00:00Z",
+  },
+];
 
 /**
  * Mock secret store — pretends to be the OS keyring for browser /
@@ -1223,6 +1281,98 @@ function mockHandle(
 
     case "git.log": {
       return { entries: [] } satisfies GitLogResult;
+    }
+
+    // ── provider.* mock ──────────────────────────────────────────────
+
+    case "provider.list": {
+      return {
+        providers: mockProviders,
+      } satisfies ListProvidersResult;
+    }
+
+    case "provider.create": {
+      const p = params as {
+        name: string;
+        protocol: "anthropic" | "openai";
+        base_url: string;
+        models?: { id: string; name: string; context_window: number; supports_tools: boolean; is_default?: boolean }[];
+        enabled?: boolean;
+      };
+      const provider: ProviderInfo = {
+        id: `prov_${Math.random().toString(36).slice(2, 10)}`,
+        name: p.name,
+        protocol: p.protocol,
+        base_url: p.base_url,
+        api_key_configured: false,
+        models: (p.models ?? []).map((m) => ({
+          id: m.id,
+          name: m.name,
+          context_window: m.context_window,
+          supports_tools: m.supports_tools,
+          is_default: m.is_default,
+        })),
+        enabled: p.enabled ?? true,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      mockProviders.push(provider);
+      return { provider } satisfies CreateProviderResult;
+    }
+
+    case "provider.update": {
+      const p = params as {
+        provider_id: string;
+        name?: string;
+        protocol?: "anthropic" | "openai";
+        base_url?: string;
+        models?: { id: string; name: string; context_window: number; supports_tools: boolean; is_default?: boolean }[];
+        enabled?: boolean;
+      };
+      const prov = mockProviders.find((x) => x.id === p.provider_id);
+      if (!prov) return { provider: null as unknown as ProviderInfo };
+      if (p.name !== undefined) prov.name = p.name;
+      if (p.protocol !== undefined) prov.protocol = p.protocol;
+      if (p.base_url !== undefined) prov.base_url = p.base_url;
+      if (p.models !== undefined) prov.models = p.models;
+      if (p.enabled !== undefined) prov.enabled = p.enabled;
+      prov.updated_at = new Date().toISOString();
+      return { provider: prov } satisfies UpdateProviderResult;
+    }
+
+    case "provider.delete": {
+      const p = params as { provider_id: string };
+      const idx = mockProviders.findIndex((x) => x.id === p.provider_id);
+      if (idx >= 0) mockProviders.splice(idx, 1);
+      return { ok: true, deleted: p.provider_id } satisfies DeleteProviderResult;
+    }
+
+    case "provider.set_api_key": {
+      const p = params as { provider_id: string; api_key: string };
+      const prov = mockProviders.find((x) => x.id === p.provider_id);
+      if (prov) {
+        prov.api_key_configured = true;
+        prov.updated_at = new Date().toISOString();
+      }
+      return {
+        ok: true,
+        provider_id: p.provider_id,
+        api_key_configured: true,
+      } satisfies SetProviderApiKeyResult;
+    }
+
+    case "provider.clear_api_key": {
+      const p = params as { provider_id: string };
+      const prov = mockProviders.find((x) => x.id === p.provider_id);
+      if (prov) {
+        prov.api_key_configured = false;
+        prov.updated_at = new Date().toISOString();
+      }
+      return {
+        ok: true,
+        provider_id: p.provider_id,
+        api_key_configured: false,
+      } satisfies SetProviderApiKeyResult;
     }
 
     default:
