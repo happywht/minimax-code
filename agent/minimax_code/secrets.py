@@ -154,23 +154,84 @@ def clear_api_key() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Per-provider key management
+# ---------------------------------------------------------------------------
+
+
+def get_provider_key(provider_id: str) -> str | None:
+    """Return the API key for a specific provider.
+
+    Lookup order:
+    1. OS keyring (``minimax-code / provider:<provider_id>``).
+    2. Legacy global key via :func:`get_api_key` (fallback).
+
+    Returns ``None`` if no key is found anywhere.
+    """
+    key = _read_keyring_username(f"provider:{provider_id}")
+    if key:
+        return key
+    # Fallback to global key for backward compat.
+    return get_api_key()
+
+
+def set_provider_key(provider_id: str, value: str) -> None:
+    """Persist an API key for a specific provider to the OS keyring."""
+    import keyring
+    import keyring.errors
+
+    if not value:
+        raise ValueError("api key must be a non-empty string")
+    try:
+        keyring.set_password(
+            KEYRING_SERVICE, f"provider:{provider_id}", value
+        )
+    except keyring.errors.KeyringError:
+        logger.exception("failed to write provider key to keyring")
+        raise
+
+
+def clear_provider_key(provider_id: str) -> None:
+    """Remove a provider-specific API key from the OS keyring.
+
+    Idempotent — calling when no entry exists is a no-op.
+    """
+    import keyring
+    import keyring.errors
+
+    username = f"provider:{provider_id}"
+    try:
+        keyring.delete_password(KEYRING_SERVICE, username)
+    except keyring.errors.PasswordDeleteError:
+        return
+    except keyring.errors.KeyringError:
+        logger.exception("failed to delete provider key from keyring")
+        raise
+
+
+def has_provider_key(provider_id: str) -> bool:
+    """``True`` iff a specific provider has an API key configured."""
+    return get_provider_key(provider_id) is not None
+
+
+# ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
 
 
 def _read_keyring() -> str | None:
     """Try the OS keyring. Returns ``None`` on any failure."""
+    return _read_keyring_username(KEYRING_USERNAME)
+
+
+def _read_keyring_username(username: str) -> str | None:
+    """Try the OS keyring for an arbitrary username. Returns ``None`` on failure."""
     import keyring
     import keyring.errors
 
     try:
-        value = keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
+        value = keyring.get_password(KEYRING_SERVICE, username)
     except keyring.errors.KeyringError as exc:
-        # Backend unavailable (no keyring daemon, headless container,
-        # locked credential store). Fall back to env var — the
-        # caller can't tell the difference anyway, and the env
-        # var is exactly the kind of override a CI box uses.
-        logger.debug("keyring unavailable, falling back to env: %s", exc)
+        logger.debug("keyring unavailable for %s: %s", username, exc)
         return None
     if value:
         return value
@@ -195,8 +256,11 @@ __all__ = [
     "KEYRING_SERVICE",
     "KEYRING_USERNAME",
     "clear_api_key",
+    "clear_provider_key",
     "get_api_key",
+    "get_provider_key",
     "has_api_key",
     "key_source",
     "set_api_key",
+    "set_provider_key",
 ]

@@ -77,16 +77,18 @@ class TestModelPrefsDAO:
     ) -> None:
         """Fresh DB after migrate() should have current_model == DEFAULT_MODEL."""
         current = await prefs_dao.get_current()
-        assert current == DEFAULT_MODEL
-        assert current == "MiniMax-M3"
+        assert current["model_id"] == DEFAULT_MODEL
+        assert current["provider_id"] == "builtin-minimax"
 
     @pytest.mark.asyncio
     async def test_set_then_get(self, prefs_dao: ModelPrefsDAO) -> None:
         await prefs_dao.set_current("MiniMax-Code")
-        assert await prefs_dao.get_current() == "MiniMax-Code"
+        result = await prefs_dao.get_current()
+        assert result["model_id"] == "MiniMax-Code"
         # And back to default
         await prefs_dao.set_current(DEFAULT_MODEL)
-        assert await prefs_dao.get_current() == DEFAULT_MODEL
+        result = await prefs_dao.get_current()
+        assert result["model_id"] == DEFAULT_MODEL
 
     @pytest.mark.asyncio
     async def test_set_updates_timestamp(
@@ -109,7 +111,8 @@ class TestModelPrefsDAO:
         owns the candidate-list check. We deliberately do *not*
         reject unknown model names here."""
         await prefs_dao.set_current("some-future-model")
-        assert await prefs_dao.get_current() == "some-future-model"
+        result = await prefs_dao.get_current()
+        assert result["model_id"] == "some-future-model"
 
     @pytest.mark.asyncio
     async def test_sync_helpers_round_trip(self, db_path: Path) -> None:
@@ -125,11 +128,11 @@ class TestModelPrefsDAO:
 
         # Read back via the sync Database.
         with Database(db_path) as sync_db:
-            assert get_current_sync(sync_db) == "MiniMax-Code"
+            assert get_current_sync(sync_db)["model_id"] == "MiniMax-Code"
             row = set_current_sync(sync_db, "MiniMax-M3-fast")
             assert row["current_model"] == "MiniMax-M3-fast"
             assert row["id"] == 1
-            assert get_current_sync(sync_db) == "MiniMax-M3-fast"
+            assert get_current_sync(sync_db)["model_id"] == "MiniMax-M3-fast"
 
     @pytest.mark.asyncio
     async def test_concurrent_set_no_corruption(
@@ -145,11 +148,11 @@ class TestModelPrefsDAO:
 
         await asyncio.gather(*(flip(i) for i in range(50)))
         final = await prefs_dao.get_current()
-        assert final in CANDIDATE_MODELS
+        assert final["model_id"] in CANDIDATE_MODELS
         # Table still has exactly one row.
         state = await prefs_dao.get_state()
         assert state["id"] == 1
-        assert state["current_model"] == final
+        assert state["current_model"] == final["model_id"]
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +175,7 @@ class TestModelPersistence:
         db2 = AsyncDatabase(path)
         await db2.connect()
         dao2 = ModelPrefsDAO(db2)
-        assert await dao2.get_current() == "MiniMax-Code"
+        assert (await dao2.get_current())["model_id"] == "MiniMax-Code"
         await db2.close()
 
 
@@ -234,7 +237,7 @@ class TestModelIPC:
         assert result["model"] == "MiniMax-Code"
         assert result["current"] == "MiniMax-Code"
         # And the DAO agrees.
-        assert await prefs_dao.get_current() == "MiniMax-Code"
+        assert (await prefs_dao.get_current())["model_id"] == "MiniMax-Code"
         # get_current also reports it.
         get_result = await client.request("model.get_current", {})
         assert get_result == {"model": "MiniMax-Code"}
@@ -250,7 +253,7 @@ class TestModelIPC:
         assert "unknown model" in msg.lower()
         assert "fake-model" in msg
         # The DAO was not mutated.
-        assert await prefs_dao.get_current() == DEFAULT_MODEL
+        assert (await prefs_dao.get_current())["model_id"] == DEFAULT_MODEL
 
     @pytest.mark.asyncio
     async def test_set_current_rejects_missing_param(

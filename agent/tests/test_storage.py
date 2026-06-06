@@ -117,13 +117,13 @@ def test_database_creates_parent_dirs(tmp_path: Path) -> None:
 def test_sync_migrate_is_idempotent(sync_db: Database) -> None:
     """Re-running migrate() must apply zero new versions."""
     assert sync_db.migrate() == []
-    assert sync_db.applied_versions() == {1, 2, 3, 4}
+    assert sync_db.applied_versions() == {1, 2, 3, 4, 5}
 
 
 @pytest.mark.asyncio
 async def test_async_migrate_is_idempotent(async_db: AsyncDatabase) -> None:
     assert await async_db.migrate() == []
-    assert await async_db.applied_versions() == {1, 2, 3, 4}
+    assert await async_db.applied_versions() == {1, 2, 3, 4, 5}
 
 
 @pytest.mark.asyncio

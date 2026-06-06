@@ -51,21 +51,27 @@ class ModelPrefsDAO:
     def __init__(self, db) -> None:  # type: ignore[no-untyped-def]
         self._db = db
 
-    async def get_current(self) -> str:
-        """Return the user's currently-selected model name.
+    async def get_current(self) -> dict[str, str]:
+        """Return the user's currently-selected model and provider.
 
-        Falls back to :data:`DEFAULT_MODEL` if the row is absent
-        (which can only happen on a corrupted / truncated DB — the
-        migration always seeds it).
+        Returns ``{"model_id": ..., "provider_id": ...}``.
+        Falls back to defaults if the row is absent.
         """
         row = await self._db.fetchone(
-            "SELECT current_model FROM model_prefs WHERE id = ?",
+            "SELECT current_model, provider_id FROM model_prefs WHERE id = ?",
             (_PK,),
         )
         if row is None:
-            return DEFAULT_MODEL
-        value = row["current_model"] if hasattr(row, "keys") else row[0]
-        return str(value) if value else DEFAULT_MODEL
+            return {"model_id": DEFAULT_MODEL, "provider_id": "builtin-minimax"}
+        model = row["current_model"] if hasattr(row, "keys") else row[0]
+        provider = (
+            row["provider_id"]
+            if hasattr(row, "keys") and "provider_id" in (row.keys() if hasattr(row, "keys") else [])
+            else "builtin-minimax"
+        )
+        model = str(model) if model else DEFAULT_MODEL
+        provider = str(provider) if provider else "builtin-minimax"
+        return {"model_id": model, "provider_id": provider}
 
     async def get_state(self) -> dict[str, Any]:
         """Return the full ``{id, current_model, updated_at}`` row.
@@ -89,19 +95,20 @@ class ModelPrefsDAO:
             }
         return row_to_dict(row) or {}
 
-    async def set_current(self, model: str) -> dict[str, Any]:
-        """Persist a new current model; return the updated row.
+    async def set_current(
+        self, model: str, provider_id: str | None = None
+    ) -> dict[str, Any]:
+        """Persist a new current model (and optionally provider); return the updated row.
 
-        ``model`` is stored verbatim. The IPC handler is expected to
-        have validated the value against the candidate list before
-        calling this method, so we do not re-validate here — the DAO
-        is a thin persistence wrapper, not a policy gate.
+        ``model`` is stored verbatim. ``provider_id`` defaults to
+        ``"builtin-minimax"`` when omitted.
         """
+        pid = provider_id or "builtin-minimax"
         async with self._db.transaction() as conn:
             await conn.execute(
-                "UPDATE model_prefs SET current_model = ?, updated_at = ? "
-                "WHERE id = ?",
-                (str(model), now_iso(), _PK),
+                "UPDATE model_prefs SET current_model = ?, provider_id = ?, "
+                "updated_at = ? WHERE id = ?",
+                (str(model), pid, now_iso(), _PK),
             )
         return await self.get_state()
 
@@ -112,25 +119,33 @@ class ModelPrefsDAO:
 # ---------------------------------------------------------------------------
 
 
-def get_current_sync(db) -> str:  # type: ignore[no-untyped-def]
-    """Sync helper — read the current model from a stdlib ``Database``."""
+def get_current_sync(db) -> dict[str, str]:  # type: ignore[no-untyped-def]
+    """Sync helper — read the current model + provider from a stdlib ``Database``."""
     row = db.fetchone(
-        "SELECT current_model FROM model_prefs WHERE id = ?",
+        "SELECT current_model, provider_id FROM model_prefs WHERE id = ?",
         (_PK,),
     )
     if row is None:
-        return DEFAULT_MODEL
-    value = row["current_model"] if hasattr(row, "keys") else row[0]
-    return str(value) if value else DEFAULT_MODEL
+        return {"model_id": DEFAULT_MODEL, "provider_id": "builtin-minimax"}
+    model = row["current_model"] if hasattr(row, "keys") else row[0]
+    provider = (
+        row["provider_id"]
+        if hasattr(row, "keys") and "provider_id" in (row.keys() if hasattr(row, "keys") else [])
+        else "builtin-minimax"
+    )
+    model = str(model) if model else DEFAULT_MODEL
+    provider = str(provider) if provider else "builtin-minimax"
+    return {"model_id": model, "provider_id": provider}
 
 
-def set_current_sync(db, model: str) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+def set_current_sync(db, model: str, provider_id: str | None = None) -> dict[str, Any]:  # type: ignore[no-untyped-def]
     """Sync helper — write a new current model and return the row."""
+    pid = provider_id or "builtin-minimax"
     with db.transaction() as conn:
         conn.execute(
-            "UPDATE model_prefs SET current_model = ?, updated_at = ? "
-            "WHERE id = ?",
-            (str(model), now_iso(), _PK),
+            "UPDATE model_prefs SET current_model = ?, provider_id = ?, "
+            "updated_at = ? WHERE id = ?",
+            (str(model), pid, now_iso(), _PK),
         )
     row = db.fetchone("SELECT * FROM model_prefs WHERE id = ?", (_PK,))
     return row_to_dict(row) or {}

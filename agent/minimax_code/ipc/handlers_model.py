@@ -187,7 +187,8 @@ def register_model_handlers(
             current: str | None = None
             try:
                 dao_obj = await _ensure_dao()
-                current = await dao_obj.get_current()
+                pref = await dao_obj.get_current()
+                current = pref["model_id"] if isinstance(pref, dict) else pref
             except _HandlerError:
                 pass  # DB not ready yet — return list without current.
             await ctx.reply({"models": models, "current": current})
@@ -201,7 +202,8 @@ def register_model_handlers(
         try:
             dao_obj = await _ensure_dao()
             _check_params(params, expected_keys=set())
-            model = await dao_obj.get_current()
+            pref = await dao_obj.get_current()
+            model = pref["model_id"] if isinstance(pref, dict) else pref
             await ctx.reply({"model": model})
         except _HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
