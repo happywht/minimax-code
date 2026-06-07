@@ -147,53 +147,154 @@ def register_skill_handlers(
             model = params.get("model")
             max_iterations = params.get("max_iterations")
 
-            # v0.3.0 — short-circuit the code-review skill when the
-            # caller passes a ``diff`` in params. This is the path
-            # the CodeReviewPanel uses: it pulls a diff via
-            # ``git.diff`` and asks the skill to review it directly,
-            # without dragging the full LLM tool loop into the
-            # picture. The mock-mode implementation in
-            # :func:`code_review.review_diff` is deterministic; a
-            # future iteration can swap it for a real LLM call
-            # without changing the wire shape.
+            # v0.4.0 — Code Review with real LLM support.
+            # When the caller passes a ``diff`` in params, the
+            # CodeReviewPanel is asking for a diff review. If a real
+            # LLM is available (non-mock), we route through the full
+            # skill runtime so the model can use run_linter /
+            # find_complex_functions and produce a high-quality
+            # review. In mock mode we fall back to the deterministic
+            # diff walker for zero-dependency operation.
             diff_param = params.get("diff")
             if (
                 isinstance(diff_param, str)
                 and diff_param
                 and skill_id == "code-review:code-review"
             ):
-                from ..agent.skills._builtin.code_review import _review_diff
+                from ..agent.skills._builtin.code_review import _diff_stats, _review_diff
 
-                review = _review_diff(diff_param)
-                message_id = f"msg_{uuid.uuid4().hex[:8]}"
-                # Stream the summary text as a single chunk so the
-                # chat log / ProgressPanel get the same shape they
-                # would from a regular LLM invocation.
-                await ctx.emit(
-                    "agent.message_chunk",
-                    {
-                        "session_id": session_id,
-                        "message_id": message_id,
-                        "delta": review["text"],
-                        "done": True,
-                        "skill_id": skill_id,
-                    },
-                )
-                await ctx.reply(
-                    {
-                        "session_id": session_id,
-                        "message_id": message_id,
-                        "skill_id": skill_id,
-                        "text": review["text"],
-                        "iterations": review.get("iterations", 0),
-                        "tool_calls": review.get("tool_calls", 0),
-                        "cancelled": False,
-                        "truncated": False,
-                        "comments": review.get("comments", []),
-                        "stats": review.get("stats", {}),
-                    }
-                )
-                return
+                # Always compute stats for UI compatibility.
+                stats = _diff_stats(diff_param)
+
+                # Decide path: real LLM vs mock fallback.
+                llm = getattr(runtime_obj, "llm", None)
+                use_real_llm = llm is not None and not getattr(llm, "mock", True)
+
+                if use_real_llm:
+                    # Real LLM path: craft a review request and
+                    # invoke the skill through the runtime.
+                    review_request = (
+                        "Review the following unified diff. Identify bugs, "
+                        "style issues, and complexity hot-spots. Use "
+                        "`run_linter` and `find_complex_functions` on the "
+                        "changed files when applicable.\n\n"
+                        f"```diff\n{diff_param}\n```"
+                    )
+                    message_id = f"msg_{uuid.uuid4().hex[:8]}"
+
+                    async def _on_chunk(
+                        delta: str, done: bool, metadata: dict | None = None
+                    ) -> None:
+                        await ctx.emit(
+                            "agent.message_chunk",
+                            {
+                                "session_id": session_id,
+                                "message_id": message_id,
+                                "delta": delta,
+                                "done": done,
+                                "skill_id": skill_id,
+                            },
+                            metadata=metadata,
+                        )
+
+                    async def _on_tool_call(call: dict[str, Any]) -> None:
+                        await ctx.emit(
+                            "agent.tool_call",
+                            {
+                                "session_id": session_id,
+                                "tool_call_id": call.get("id", ""),
+                                "name": call.get("name", ""),
+                                "args": call.get("args", {}),
+                                "skill_id": skill_id,
+                            },
+                        )
+
+                    async def _on_tool_result(
+                        call: dict[str, Any], result: Any
+                    ) -> None:
+                        result_payload = (
+                            result.to_dict()
+                            if hasattr(result, "to_dict")
+                            else result
+                        )
+                        await ctx.emit(
+                            "agent.tool_result",
+                            {
+                                "session_id": session_id,
+                                "tool_call_id": call.get("id", ""),
+                                "name": call.get("name", ""),
+                                "result": result_payload,
+                                "skill_id": skill_id,
+                            },
+                        )
+
+                    async def _on_status(
+                        status: str, detail: dict[str, Any]
+                    ) -> None:
+                        await ctx.emit(
+                            "agent.status",
+                            {
+                                "session_id": session_id,
+                                "status": status,
+                                "detail": {**detail, "skill_id": skill_id},
+                            },
+                        )
+
+                    result = await runtime_obj.invoke(
+                        skill_id,
+                        request=review_request,
+                        session_id=session_id,
+                        on_chunk=_on_chunk,
+                        on_tool_call=_on_tool_call,
+                        on_tool_result=_on_tool_result,
+                        on_status=_on_status,
+                        model=model,
+                        max_iterations=max_iterations,
+                    )
+                    await ctx.reply(
+                        {
+                            "session_id": session_id,
+                            "message_id": message_id,
+                            "skill_id": skill_id,
+                            "text": result.final_text,
+                            "iterations": result.iterations,
+                            "tool_calls": result.tool_calls,
+                            "cancelled": result.cancelled,
+                            "truncated": result.truncated,
+                            "comments": [],
+                            "stats": stats,
+                        }
+                    )
+                    return
+                else:
+                    # Mock fallback: deterministic diff walker.
+                    review = _review_diff(diff_param)
+                    message_id = f"msg_{uuid.uuid4().hex[:8]}"
+                    await ctx.emit(
+                        "agent.message_chunk",
+                        {
+                            "session_id": session_id,
+                            "message_id": message_id,
+                            "delta": review["text"],
+                            "done": True,
+                            "skill_id": skill_id,
+                        },
+                    )
+                    await ctx.reply(
+                        {
+                            "session_id": session_id,
+                            "message_id": message_id,
+                            "skill_id": skill_id,
+                            "text": review["text"],
+                            "iterations": review.get("iterations", 0),
+                            "tool_calls": review.get("tool_calls", 0),
+                            "cancelled": False,
+                            "truncated": False,
+                            "comments": review.get("comments", []),
+                            "stats": stats,
+                        }
+                    )
+                    return
 
             # Skill-specific message id so the UI can correlate chunks.
             message_id = f"msg_{uuid.uuid4().hex[:8]}"

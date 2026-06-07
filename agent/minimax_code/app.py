@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 _RUNTIME: SkillRuntime | None = None
 _RUNTIME_LOCK = asyncio.Lock()
 _PROVIDER_DAO_SINGLETON: Any = None  # type: ignore[no-untyped-def]
+_REPO_MAP_INDEXER: Any = None  # type: ignore[no-untyped-def]
 
 
 def get_runtime() -> SkillRuntime | None:
@@ -431,9 +432,51 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     )
 
 
+# ---------------------------------------------------------------------------
+# Repo-Map indexer singleton (v0.4.0 Perception Engine)
+# ---------------------------------------------------------------------------
+
+
+def get_repo_map_indexer() -> Any:
+    """Return the process-wide :class:`RepoMapIndexer`, or ``None``."""
+    return _REPO_MAP_INDEXER
+
+
+def set_repo_map_indexer(indexer: Any) -> None:
+    """Replace the cached repo-map indexer (test seam)."""
+    global _REPO_MAP_INDEXER
+    _REPO_MAP_INDEXER = indexer
+
+
+async def ensure_repo_map_indexer() -> Any:
+    """Build the repo-map indexer on first call, cache it, and return it.
+
+    The indexer walks the workspace and extracts a compressed symbol
+    tree that is injected into the LLM's system prompt. Building the
+    map is async-safe and idempotent — a second call returns the
+    cached instance.
+    """
+    global _REPO_MAP_INDEXER
+    if _REPO_MAP_INDEXER is not None:
+        return _REPO_MAP_INDEXER
+    try:
+        from .agent.perception.indexer import RepoMapIndexer
+
+        workspace = Path(os.environ.get("MINIMAX_CODE_WORKSPACE", os.getcwd()))
+        indexer = RepoMapIndexer(workspace, max_tokens=2000)
+        _REPO_MAP_INDEXER = indexer
+        logger.info("repo-map indexer initialised (workspace=%s)", workspace)
+        return indexer
+    except Exception:
+        logger.exception("failed to initialise repo-map indexer; continuing without")
+        return None
+
+
 __all__ = [
+    "ensure_repo_map_indexer",
     "get_progress_tracker",
     "get_provider_dao",
+    "get_repo_map_indexer",
     "get_runtime",
     "get_sessions_dao",
     "get_subagent_llm",
@@ -441,6 +484,7 @@ __all__ = [
     "rebuild_subagent_llm",
     "register_app_handlers",
     "set_progress_tracker",
+    "set_repo_map_indexer",
     "set_runtime",
     "set_sessions_dao",
     "set_subagent_llm",

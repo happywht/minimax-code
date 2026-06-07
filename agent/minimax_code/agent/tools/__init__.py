@@ -17,6 +17,7 @@ from .file_ops import (
     WriteFileTool,
     safe_resolve,
 )
+from .glob import GlobFindTool
 from .search import SearchFilesTool
 from .terminal import ExecCommandTool
 
@@ -27,6 +28,7 @@ __all__ = [
     "get_default_registry",
     "register_tool",
     "EditFileTool",
+    "GlobFindTool",
     "ListDirectoryTool",
     "PathSecurityError",
     "ReadFileTool",

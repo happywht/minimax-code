@@ -63,6 +63,28 @@ async def handle_shutdown(_params: Any, ctx: Context) -> None:
     ctx.server.stop()
 
 
+async def _build_system_prompt_extra() -> str | None:
+    """Build the ``system_prompt_extra`` payload for the current turn.
+
+    Assembles context from the repo-map indexer (v0.4.0 Perception
+    Engine). Returns ``None`` when no extra context is available so
+    ``AgentConfig`` stays clean for callers that don't need it.
+    """
+    parts: list[str] = []
+    try:
+        from ..app import ensure_repo_map_indexer
+
+        indexer = await ensure_repo_map_indexer()
+        if indexer is not None:
+            repo_map = await indexer.build_map()
+            if repo_map:
+                parts.append(repo_map)
+    except Exception:
+        logger.debug("repo-map generation failed; continuing without")
+
+    return "\n\n".join(parts) if parts else None
+
+
 async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     """End-to-end chat handler for ``agent.send_message``.
 
@@ -261,7 +283,9 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
 
     core = AgentCore(
         llm=llm,
-        config=AgentConfig(),
+        config=AgentConfig(
+            system_prompt_extra=await _build_system_prompt_extra(),
+        ),
         history_provider=_history,
         persist_message=_persist,
         permission_store=perm_store,

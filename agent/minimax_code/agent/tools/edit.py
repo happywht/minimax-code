@@ -74,6 +74,14 @@ class EditFileTool(Tool):
         except OSError as exc:
             return ToolResult.fail(f"read failed: {exc}")
 
+        # Pre-edit backup (best-effort, never blocks).
+        backup_meta = None
+        try:
+            from ..backup import BackupManager
+            backup_meta = BackupManager().backup(target)
+        except Exception:
+            pass
+
         occurrences = original.count(old)
         if occurrences == 0:
             # Provide a helpful hint with the closest matching block.
@@ -116,6 +124,7 @@ class EditFileTool(Tool):
                 "lines_removed": removed,
                 "lines_added": added,
                 "diff": diff,
+                **({"backup": backup_meta} if backup_meta else {}),
             },
             replacements=occurrences if replace_all else 1,
             lines_removed=removed,

@@ -261,6 +261,16 @@ class WriteFileTool(Tool):
             return ToolResult.fail(f"path is an existing directory: {target}")
 
         existed = target.exists()
+
+        # Pre-write backup for existing files (best-effort, never blocks).
+        backup_meta = None
+        if existed:
+            try:
+                from ..backup import BackupManager
+                backup_meta = BackupManager().backup(target)
+            except Exception:
+                pass
+
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             # ``newline=""`` keeps the bytes the caller passed
@@ -279,6 +289,7 @@ class WriteFileTool(Tool):
                 "created": not existed,
                 "overwritten": existed,
                 "size_bytes": size,
+                **({"backup": backup_meta} if backup_meta else {}),
             },
             created=not existed,
             size_bytes=size,

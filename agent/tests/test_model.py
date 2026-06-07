@@ -210,7 +210,11 @@ class TestModelIPC:
         models = result["models"]
         # Each entry is a rich ModelInfo dict with id, name, provider, etc.
         ids = tuple(m["id"] for m in models)
-        assert ids == CANDIDATE_MODELS
+        # The list is now dynamic from ProviderDAO — it may include models
+        # from providers the user added manually.  Assert that all three
+        # built-in MiniMax candidates are present (superset check).
+        for expected in CANDIDATE_MODELS:
+            assert expected in ids, f"built-in model {expected!r} missing from {ids}"
         assert "current" in result
         # Sanity: the three names we promised in the spec.
         assert "MiniMax-M3" in ids

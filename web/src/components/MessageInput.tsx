@@ -13,6 +13,7 @@ import { AtSign, Bot, Paperclip, Send, Shield, ShieldCheck, Square, X } from "lu
 import { useChat, usePermissionStore, useSubAgentStore } from "../stores";
 import { typedIPC } from "../ipc";
 import { ModelSelector } from "./ModelSelector";
+import { ContextIndicator } from "./ContextIndicator";
 import { toast } from "./ErrorBoundary";
 import type { AgentInfo } from "../types/ipc";
 import { useSessionStore } from "../stores";
@@ -494,6 +495,7 @@ export function MessageInput({
             {alwaysAllow ? "始终授权：开" : "始终授权"}
           </button>
           <div className="flex items-center gap-2">
+            <ContextIndicator />
             <span className="text-[10px] text-minimax-muted">
               {value.length}/8000
             </span>

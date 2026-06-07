@@ -143,6 +143,13 @@ class AgentConfig:
     # the LLM within this window the turn is aborted with a
     # TimeoutError.  Set to 0 or None to disable.
     stall_timeout: float = 30.0
+    # Compaction: when the conversation history exceeds this fraction
+    # of the context window, older turns are summarised.  None disables
+    # compaction (default).  Typical value: 0.8.
+    compaction_threshold: float | None = None
+    # Context window size (tokens) for the current model.  Used by
+    # compaction to decide when to summarise.  None = unknown / disabled.
+    context_window: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +273,20 @@ class AgentCore:
         history: list[Message] = []
         if self._history_provider is not None:
             history = list(await self._history_provider(session_id) or [])
+
+        # Compaction: compress older turns if approaching context limit.
+        if self.config.compaction_threshold and self.config.context_window:
+            from .compaction import compact_history, estimate_tokens
+            total = sum(estimate_tokens(str(m)) for m in history)
+            threshold = int(self.config.context_window * self.config.compaction_threshold)
+            if total > threshold:
+                logger.info(
+                    "compacting history: %d estimated tokens > %d threshold",
+                    total, threshold,
+                )
+                history = compact_history(
+                    history, max_tokens=threshold, keep_recent=4,
+                )
 
         system_prompt = build_system_prompt(
             extra=self.config.system_prompt_extra,
