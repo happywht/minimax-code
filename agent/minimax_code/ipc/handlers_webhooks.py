@@ -19,6 +19,8 @@ import logging
 from typing import Any
 
 from ..storage.dao.webhooks import WebhookDAO
+from .handler_utils import HandlerError as _HandlerError
+from .protocol import INVALID_PARAMS
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +73,7 @@ async def _create(params: dict[str, Any], ctx: Any) -> dict[str, Any]:
     name = params.get("name")
     source = params.get("source", "custom")
     if not name:
-        raise RuntimeError("'name' is required")
+        raise _HandlerError(INVALID_PARAMS, "'name' is required")
     action_type = params.get("action_type", "send-message")
     action_config = params.get("action_config")
     secret = params.get("secret")

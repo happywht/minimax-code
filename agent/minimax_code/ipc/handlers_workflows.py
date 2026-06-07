@@ -15,6 +15,7 @@ workflow.trigger       Manually trigger a workflow run
 
 from __future__ import annotations
 
+from .handler_utils import HandlerError
 import asyncio
 import json
 import logging
@@ -33,13 +34,6 @@ logger = logging.getLogger(__name__)
 _DAO_ATTR = "_workflow_dao"
 _DAO_LOCK_ATTR = "_workflow_dao_lock"
 _FACTORY_ATTR = "_workflow_dao_factory"
-
-
-class _HandlerError(Exception):
-    def __init__(self, code: int, message: str) -> None:
-        self.code = code
-        self.message = message
-
 
 def _make_workflow_dao_factory(server: Any) -> Any:
     factory = getattr(server, _FACTORY_ATTR, None)
@@ -63,7 +57,7 @@ def _make_workflow_dao_factory(server: Any) -> Any:
 
             db = get_db()
             if db is None:
-                raise _HandlerError(
+                raise HandlerError(
                     -32004, "storage not initialised"
                 )
             dao = WorkflowDAO(db)
@@ -73,16 +67,13 @@ def _make_workflow_dao_factory(server: Any) -> Any:
     setattr(server, _FACTORY_ATTR, _factory)
     return _factory
 
-
 async def _ensure_dao(ctx: Context) -> WorkflowDAO:
     factory = _make_workflow_dao_factory(ctx.server)
     return await factory()
 
-
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
-
 
 async def handle_workflow_list(params: dict[str, Any], ctx: Context) -> dict[str, Any]:
     dao = await _ensure_dao(ctx)
@@ -99,15 +90,14 @@ async def handle_workflow_list(params: dict[str, Any], ctx: Context) -> dict[str
     )
     return {"entries": entries, "total": total}
 
-
 async def handle_workflow_create(params: dict[str, Any], ctx: Context) -> dict[str, Any]:
     dao = await _ensure_dao(ctx)
     name = params.get("name")
     if not name:
-        raise _HandlerError(-32001, "Missing 'name'")
+        raise HandlerError(-32001, "Missing 'name'")
     trigger_type = params.get("trigger_type")
     if not trigger_type:
-        raise _HandlerError(-32001, "Missing 'trigger_type'")
+        raise HandlerError(-32001, "Missing 'trigger_type'")
 
     trigger_config = params.get("trigger_config")
     if isinstance(trigger_config, str):
@@ -133,12 +123,11 @@ async def handle_workflow_create(params: dict[str, Any], ctx: Context) -> dict[s
     )
     return entry
 
-
 async def handle_workflow_update(params: dict[str, Any], ctx: Context) -> dict[str, Any]:
     dao = await _ensure_dao(ctx)
     wid = params.get("id")
     if not wid:
-        raise _HandlerError(-32001, "Missing 'id'")
+        raise HandlerError(-32001, "Missing 'id'")
 
     trigger_config = params.get("trigger_config")
     if isinstance(trigger_config, str):
@@ -162,52 +151,48 @@ async def handle_workflow_update(params: dict[str, Any], ctx: Context) -> dict[s
         steps=steps,
     )
     if entry is None:
-        raise _HandlerError(-32002, f"Workflow '{wid}' not found")
+        raise HandlerError(-32002, f"Workflow '{wid}' not found")
     return entry
-
 
 async def handle_workflow_delete(params: dict[str, Any], ctx: Context) -> dict[str, Any]:
     dao = await _ensure_dao(ctx)
     wid = params.get("id")
     if not wid:
-        raise _HandlerError(-32001, "Missing 'id'")
+        raise HandlerError(-32001, "Missing 'id'")
     ok = await dao.delete(wid)
     if not ok:
-        raise _HandlerError(-32002, f"Workflow '{wid}' not found")
+        raise HandlerError(-32002, f"Workflow '{wid}' not found")
     return {"deleted": True}
-
 
 async def handle_workflow_enable(params: dict[str, Any], ctx: Context) -> dict[str, Any]:
     dao = await _ensure_dao(ctx)
     wid = params.get("id")
     if not wid:
-        raise _HandlerError(-32001, "Missing 'id'")
+        raise HandlerError(-32001, "Missing 'id'")
     entry = await dao.enable(wid)
     if entry is None:
-        raise _HandlerError(-32002, f"Workflow '{wid}' not found")
+        raise HandlerError(-32002, f"Workflow '{wid}' not found")
     return entry
-
 
 async def handle_workflow_disable(params: dict[str, Any], ctx: Context) -> dict[str, Any]:
     dao = await _ensure_dao(ctx)
     wid = params.get("id")
     if not wid:
-        raise _HandlerError(-32001, "Missing 'id'")
+        raise HandlerError(-32001, "Missing 'id'")
     entry = await dao.disable(wid)
     if entry is None:
-        raise _HandlerError(-32002, f"Workflow '{wid}' not found")
+        raise HandlerError(-32002, f"Workflow '{wid}' not found")
     return entry
-
 
 async def handle_workflow_trigger(params: dict[str, Any], ctx: Context) -> dict[str, Any]:
     """Manually trigger a workflow run."""
     dao = await _ensure_dao(ctx)
     wid = params.get("id")
     if not wid:
-        raise _HandlerError(-32001, "Missing 'id'")
+        raise HandlerError(-32001, "Missing 'id'")
     workflow = await dao.get(wid)
     if workflow is None:
-        raise _HandlerError(-32002, f"Workflow '{wid}' not found")
+        raise HandlerError(-32002, f"Workflow '{wid}' not found")
 
     context = params.get("context") or {}
     engine = get_workflow_engine()
@@ -215,11 +200,9 @@ async def handle_workflow_trigger(params: dict[str, Any], ctx: Context) -> dict[
     await dao.increment_run(wid)
     return {"ok": True, **result}
 
-
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
-
 
 def register_workflow_handlers(server: Any) -> None:
     server.register("workflow.list", handle_workflow_list)
@@ -230,6 +213,5 @@ def register_workflow_handlers(server: Any) -> None:
     server.register("workflow.disable", handle_workflow_disable)
     server.register("workflow.trigger", handle_workflow_trigger)
     logger.info("Registered workflow.* handlers")
-
 
 __all__ = ["register_workflow_handlers"]

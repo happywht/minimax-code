@@ -35,29 +35,18 @@ import logging
 from typing import Any
 
 from .protocol import INTERNAL_ERROR, INVALID_PARAMS
+from .handler_utils import HandlerError, check_params
 from .server import Context
 
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
 
-
-class _HandlerError(Exception):
-    """Internal sentinel — handlers raise it with a JSON-RPC code."""
-
-    def __init__(self, code: int, message: str, data: Any = None) -> None:
-        self.code = code
-        self.message = message
-        self.data = data
-
-
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
-
 
 def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
     """Register ``task.list`` / ``task.get`` / ``task.cancel`` on ``server``.
@@ -105,11 +94,11 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
         try:
             tk = await _get_tracker()
             if tk is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR,
                     "storage layer is not available; task tracking disabled",
                 )
-            _check_params(params, expected_keys=set())
+            check_params(params, expected_keys=set())
             session_id = (params or {}).get("session_id")
             status = (params or {}).get("status")
             tasks = await tk.list(
@@ -117,21 +106,21 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
                 status=status if status else None,
             )
             await ctx.reply({"tasks": tasks})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("task.list failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"task.list failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "task.list failed")
 
     async def handle_task_get(params: Any, ctx: Context) -> None:
         try:
             tk = await _get_tracker()
             if tk is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR,
                     "storage layer is not available; task tracking disabled",
                 )
-            _check_params(params, expected_keys={"task_id"})
+            check_params(params, expected_keys={"task_id"})
             task_id = str(params["task_id"])
             task = await tk.get(task_id)
             if task is None:
@@ -140,11 +129,11 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
                 )
                 return
             await ctx.reply({"task": task})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("task.get failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"task.get failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "task.get failed")
 
     async def handle_task_start(params: Any, ctx: Context) -> None:
         """``task.start`` — create a new task and emit the ``started`` event.
@@ -155,11 +144,11 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
         try:
             tk = await _get_tracker()
             if tk is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR,
                     "storage layer is not available; task tracking disabled",
                 )
-            _check_params(params, expected_keys={"session_id", "title"})
+            check_params(params, expected_keys={"session_id", "title"})
             session_id = str(params["session_id"])
             title = str(params["title"])
             # Pre-flight: confirm the session row exists. This
@@ -178,11 +167,11 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
                 session_id, title, emit=ctx.emit
             )
             await ctx.reply({"task_id": task_id})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("task.start failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"task.start failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "task.start failed")
 
     async def handle_task_update(params: Any, ctx: Context) -> None:
         """``task.update`` — push a progress value and emit a ``progress`` event.
@@ -193,11 +182,11 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
         try:
             tk = await _get_tracker()
             if tk is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR,
                     "storage layer is not available; task tracking disabled",
                 )
-            _check_params(params, expected_keys={"task_id", "progress"})
+            check_params(params, expected_keys={"task_id", "progress"})
             task_id = str(params["task_id"])
             progress = int(params["progress"])
             message = params.get("message")
@@ -210,7 +199,7 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
                 )
                 return
             await ctx.reply({"task": task})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except (TypeError, ValueError) as exc:
             await ctx.reply_error(
@@ -218,7 +207,7 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
             )
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("task.update failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"task.update failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "task.update failed")
 
     async def handle_task_complete(params: Any, ctx: Context) -> None:
         """``task.complete`` — close a task and emit a terminal event.
@@ -229,11 +218,11 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
         try:
             tk = await _get_tracker()
             if tk is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR,
                     "storage layer is not available; task tracking disabled",
                 )
-            _check_params(params, expected_keys={"task_id"})
+            check_params(params, expected_keys={"task_id"})
             task_id = str(params["task_id"])
             success = bool(params.get("success", True))
             error = params.get("error")
@@ -246,21 +235,21 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
                 )
                 return
             await ctx.reply({"task": task})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("task.complete failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"task.complete failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "task.complete failed")
 
     async def handle_task_cancel(params: Any, ctx: Context) -> None:
         try:
             tk = await _get_tracker()
             if tk is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR,
                     "storage layer is not available; task tracking disabled",
                 )
-            _check_params(params, expected_keys={"task_id"})
+            check_params(params, expected_keys={"task_id"})
             task_id = str(params["task_id"])
             existing = await tk.get(task_id)
             if existing is None:
@@ -280,11 +269,11 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
                 return
             updated = await tk.cancel(task_id, emit=ctx.emit)
             await ctx.reply({"ok": True, "task": updated})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("task.cancel failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"task.cancel failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "task.cancel failed")
 
     server.register("task.list", handle_task_list)
     server.register("task.get", handle_task_get)
@@ -293,39 +282,8 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
     server.register("task.complete", handle_task_complete)
     server.register("task.cancel", handle_task_cancel)
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _check_params(params: Any, *, expected_keys: set[str]) -> None:
-    """Validate the JSON-RPC params shape; raise :class:`_HandlerError` on bad input.
-
-    Mirrors the helper in :mod:`handlers_skills` so the two
-    handler modules present the same JSON-RPC surface to the
-    frontend.
-    """
-    if not expected_keys:
-        return
-    if params is None or not isinstance(params, dict):
-        raise _HandlerError(
-            INVALID_PARAMS,
-            "params must be a JSON object with the required keys",
-        )
-    missing = expected_keys - set(params.keys())
-    if missing:
-        raise _HandlerError(
-            INVALID_PARAMS,
-            f"missing required param(s): {sorted(missing)}",
-        )
-    for key in expected_keys:
-        if params[key] is None or (
-            isinstance(params[key], str) and not params[key].strip()
-        ):
-            raise _HandlerError(
-                INVALID_PARAMS, f"param {key!r} must be a non-empty value"
-            )
-
 
 __all__ = ["register_task_handlers"]

@@ -13,6 +13,7 @@ notification.purge         Bulk-delete by criteria
 
 from __future__ import annotations
 
+from .handler_utils import HandlerError
 import asyncio
 import logging
 from typing import Any
@@ -29,13 +30,6 @@ logger = logging.getLogger(__name__)
 _DAO_ATTR = "_notification_dao"
 _DAO_LOCK_ATTR = "_notification_dao_lock"
 _FACTORY_ATTR = "_notification_dao_factory"
-
-
-class _HandlerError(Exception):
-    def __init__(self, code: int, message: str) -> None:
-        self.code = code
-        self.message = message
-
 
 def _make_notification_dao_factory(server: Any) -> Any:
     """Return (and cache) an async factory that produces ``NotificationDAO``."""
@@ -60,7 +54,7 @@ def _make_notification_dao_factory(server: Any) -> Any:
 
             db = get_db()
             if db is None:
-                raise _HandlerError(
+                raise HandlerError(
                     -32004, "storage not initialised"
                 )
             dao = NotificationDAO(db)
@@ -70,16 +64,13 @@ def _make_notification_dao_factory(server: Any) -> Any:
     setattr(server, _FACTORY_ATTR, _factory)
     return _factory
 
-
 async def _ensure_dao(ctx: Context) -> NotificationDAO:
     factory = _make_notification_dao_factory(ctx.server)
     return await factory()
 
-
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
-
 
 async def handle_notification_list(params: dict[str, Any], ctx: Context) -> dict[str, Any]:
     dao = await _ensure_dao(ctx)
@@ -98,15 +89,14 @@ async def handle_notification_list(params: dict[str, Any], ctx: Context) -> dict
     )
     return {"entries": entries, "total": total}
 
-
 async def handle_notification_mark_read(params: dict[str, Any], ctx: Context) -> dict[str, Any]:
     dao = await _ensure_dao(ctx)
     nid = params.get("id")
     if not nid:
-        raise _HandlerError(-32001, "Missing 'id'")
+        raise HandlerError(-32001, "Missing 'id'")
     entry = await dao.mark_read(nid)
     if entry is None:
-        raise _HandlerError(-32002, f"Notification '{nid}' not found")
+        raise HandlerError(-32002, f"Notification '{nid}' not found")
     # Push read event so other clients can update UI
     try:
         ctx.server.notify({"event": "notification.read", "data": entry})
@@ -114,23 +104,20 @@ async def handle_notification_mark_read(params: dict[str, Any], ctx: Context) ->
         logger.warning("Failed to push notification.read event", exc_info=True)
     return entry
 
-
 async def handle_notification_mark_all_read(params: dict[str, Any], ctx: Context) -> dict[str, Any]:
     dao = await _ensure_dao(ctx)
     count = await dao.mark_all_read()
     return {"marked": count}
 
-
 async def handle_notification_delete(params: dict[str, Any], ctx: Context) -> dict[str, Any]:
     dao = await _ensure_dao(ctx)
     nid = params.get("id")
     if not nid:
-        raise _HandlerError(-32001, "Missing 'id'")
+        raise HandlerError(-32001, "Missing 'id'")
     ok = await dao.delete(nid)
     if not ok:
-        raise _HandlerError(-32002, f"Notification '{nid}' not found")
+        raise HandlerError(-32002, f"Notification '{nid}' not found")
     return {"deleted": True}
-
 
 async def handle_notification_purge(params: dict[str, Any], ctx: Context) -> dict[str, Any]:
     dao = await _ensure_dao(ctx)
@@ -139,11 +126,9 @@ async def handle_notification_purge(params: dict[str, Any], ctx: Context) -> dic
     count = await dao.purge(before_iso=before_iso, read_only=read_only)
     return {"purged": count}
 
-
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
-
 
 def register_notification_handlers(server: Any) -> None:
     server.register("notification.list", handle_notification_list)
@@ -152,6 +137,5 @@ def register_notification_handlers(server: Any) -> None:
     server.register("notification.delete", handle_notification_delete)
     server.register("notification.purge", handle_notification_purge)
     logger.info("Registered notification.* handlers")
-
 
 __all__ = ["register_notification_handlers"]

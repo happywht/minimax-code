@@ -201,7 +201,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         msg_dao = MessagesDAO(db)
     except Exception as exc:
         logger.exception("failed to open storage for chat")
-        await ctx.reply_error(-32603, f"storage unavailable: {exc}")
+        await ctx.reply_error(-32603, "storage unavailable")
         return
 
     async def _history(sid: str) -> list[dict[str, Any]]:
@@ -390,7 +390,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         result = await core.run(session_id=session_id, user_message=content)
     except Exception as exc:
         logger.exception("agent.send_message: AgentCore.run failed")
-        await ctx.reply_error(-32603, f"agent.send_message failed: {exc}")
+        await ctx.reply_error(-32603, "agent.send_message failed")
         return
     finally:
         _ACTIVE_CORES.pop(session_id, None)

@@ -66,7 +66,7 @@ class IPCClient:
 
     async def request(self, method: str, params: Any = None, *, timeout: float = 5.0) -> Any:
         """Send a request and await its response."""
-        req_id = f"test-{method}-{asyncio.get_event_loop().time()}"
+        req_id = f"test-{method}-{asyncio.get_running_loop().time()}"
         req = Request(id=req_id, method=method, params=params)
         line = req.to_line()
         # Capture the buffer position BEFORE the request so we only
@@ -75,8 +75,8 @@ class IPCClient:
         # Drive the dispatcher directly.
         await self.server._handle_line(line + "\n")
         # Read the response that was emitted.
-        deadline = asyncio.get_event_loop().time() + timeout
-        while asyncio.get_event_loop().time() < deadline:
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
             full = self._output.getvalue()
             tail = full[baseline_pos:]
             for raw in tail.splitlines():
@@ -94,8 +94,8 @@ class IPCClient:
     async def collect_events(self, n: int, *, timeout: float = 5.0) -> list[dict[str, Any]]:
         """Block until ``n`` events have been emitted, or timeout."""
         out: list[dict[str, Any]] = []
-        deadline = asyncio.get_event_loop().time() + timeout
-        while len(out) < n and asyncio.get_event_loop().time() < deadline:
+        deadline = asyncio.get_running_loop().time() + timeout
+        while len(out) < n and asyncio.get_running_loop().time() < deadline:
             try:
                 evt = await asyncio.wait_for(self._events.get(), timeout=0.5)
                 out.append(evt)

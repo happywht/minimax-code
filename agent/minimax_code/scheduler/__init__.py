@@ -267,7 +267,7 @@ class JobScheduler:
             # ``run_now`` so the bookkeeping (tasks row, last_run_at)
             # is identical between manual and cron triggers.
             try:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
             except RuntimeError:
                 # No running loop in this thread — fall back to
                 # creating a fresh one. Should not happen in normal
@@ -485,7 +485,7 @@ def _run_payload_sync(
     payload. This keeps the main asyncio loop free for IPC.
     """
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
     if loop is not None and loop.is_running():

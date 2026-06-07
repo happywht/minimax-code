@@ -35,29 +35,18 @@ from .protocol import (
     INVALID_PARAMS,
     NOT_IMPLEMENTED,
 )
+from .handler_utils import HandlerError, check_params
 from .server import Context
 
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
 
-
-class _HandlerError(Exception):
-    """Internal sentinel — handlers raise it with a JSON-RPC code."""
-
-    def __init__(self, code: int, message: str, data: Any = None) -> None:
-        self.code = code
-        self.message = message
-        self.data = data
-
-
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
-
 
 def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
     """Register the ``schedule.*`` handlers on ``server``.
@@ -76,27 +65,27 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
     async def handle_schedule_list(params: Any, ctx: Context) -> None:
         try:
             sched = await scheduler_factory()
-            _check_params(params, expected_keys=set())
+            check_params(params, expected_keys=set())
             enabled_only = bool((params or {}).get("enabled_only", False)) if params else False
             jobs = await sched.list_jobs()
             if enabled_only:
                 jobs = [j for j in jobs if j.get("enabled")]
             await ctx.reply({"jobs": jobs})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("schedule.list failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"schedule.list failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "schedule.list failed")
 
     async def handle_schedule_create(params: Any, ctx: Context) -> None:
         try:
             sched = await scheduler_factory()
-            _check_params(params, expected_keys={"name", "cron_expr"})
+            check_params(params, expected_keys={"name", "cron_expr"})
             name = str(params["name"]).strip()
             cron_expr = str(params["cron_expr"]).strip()
             payload = params.get("payload")
             if payload is not None and not isinstance(payload, dict):
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS, "payload must be a JSON object if provided"
                 )
             enabled = bool(params.get("enabled", True))
@@ -107,7 +96,7 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
                 enabled=enabled,
             )
             await ctx.reply({"job": job})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             msg = str(exc)
@@ -117,57 +106,57 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
                 await ctx.reply_error(INVALID_PARAMS, msg)
                 return
             logger.exception("schedule.create failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"schedule.create failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "schedule.create failed")
 
     async def handle_schedule_delete(params: Any, ctx: Context) -> None:
         try:
             sched = await scheduler_factory()
-            _check_params(params, expected_keys={"job_id"})
+            check_params(params, expected_keys={"job_id"})
             job_id = str(params["job_id"])
             ok = await sched.remove_job(job_id)
             if not ok:
-                raise _HandlerError(INVALID_PARAMS, f"unknown job_id: {job_id!r}")
+                raise HandlerError(INVALID_PARAMS, f"unknown job_id: {job_id!r}")
             await ctx.reply({"ok": True, "job_id": job_id})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("schedule.delete failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"schedule.delete failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "schedule.delete failed")
 
     async def handle_schedule_enable(params: Any, ctx: Context) -> None:
         try:
             sched = await scheduler_factory()
-            _check_params(params, expected_keys={"job_id"})
+            check_params(params, expected_keys={"job_id"})
             job_id = str(params["job_id"])
             job = await sched.enable(job_id)
             if job is None:
-                raise _HandlerError(INVALID_PARAMS, f"unknown job_id: {job_id!r}")
+                raise HandlerError(INVALID_PARAMS, f"unknown job_id: {job_id!r}")
             await ctx.reply({"job": job})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("schedule.enable failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"schedule.enable failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "schedule.enable failed")
 
     async def handle_schedule_disable(params: Any, ctx: Context) -> None:
         try:
             sched = await scheduler_factory()
-            _check_params(params, expected_keys={"job_id"})
+            check_params(params, expected_keys={"job_id"})
             job_id = str(params["job_id"])
             job = await sched.disable(job_id)
             if job is None:
-                raise _HandlerError(INVALID_PARAMS, f"unknown job_id: {job_id!r}")
+                raise HandlerError(INVALID_PARAMS, f"unknown job_id: {job_id!r}")
             await ctx.reply({"job": job})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("schedule.disable failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"schedule.disable failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "schedule.disable failed")
 
     async def handle_schedule_run_now(params: Any, ctx: Context) -> None:
         try:
             sched = await scheduler_factory()
-            _check_params(params, expected_keys={"job_id"})
+            check_params(params, expected_keys={"job_id"})
             job_id = str(params["job_id"])
             # We don't await the fire — the cron task is fire-and-
             # forget. The IPC reply just confirms the kick. The
@@ -177,7 +166,7 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
             try:
                 ack = await sched.run_now(job_id)
             except SchedulerError as exc:
-                raise _HandlerError(INVALID_PARAMS, str(exc))
+                raise HandlerError(INVALID_PARAMS, str(exc))
             await ctx.reply(
                 {
                     "ok": True,
@@ -186,11 +175,11 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
                     "run_id": None,  # the task id is only known after the fire completes
                 }
             )
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("schedule.run_now failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"schedule.run_now failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "schedule.run_now failed")
 
     server.register("schedule.list", handle_schedule_list)
     server.register("schedule.create", handle_schedule_create)
@@ -199,11 +188,9 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
     server.register("schedule.disable", handle_schedule_disable)
     server.register("schedule.run_now", handle_schedule_run_now)
 
-
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
-
 
 def _make_scheduler_factory(scheduler: Any | None) -> Any:
     """Return an async factory that yields a scheduler, building it lazily.
@@ -247,42 +234,8 @@ def _make_scheduler_factory(scheduler: Any | None) -> Any:
 
     return _factory
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _check_params(params: Any, *, expected_keys: set[str]) -> None:
-    """Validate the JSON-RPC params shape; raise :class:`_HandlerError` on bad input.
-
-    Rules
-    -----
-    * ``params`` may be ``None`` (notification-style) only when
-      ``expected_keys`` is empty.
-    * Otherwise ``params`` must be a dict containing at least
-      the keys in ``expected_keys``.
-    """
-    if not expected_keys:
-        return
-    if params is None or not isinstance(params, dict):
-        raise _HandlerError(
-            INVALID_PARAMS,
-            "params must be a JSON object with the required keys",
-        )
-    missing = expected_keys - set(params.keys())
-    if missing:
-        raise _HandlerError(
-            INVALID_PARAMS,
-            f"missing required param(s): {sorted(missing)}",
-        )
-    for key in expected_keys:
-        if params[key] is None or (
-            isinstance(params[key], str) and not params[key].strip()
-        ):
-            raise _HandlerError(
-                INVALID_PARAMS, f"param {key!r} must be a non-empty value"
-            )
-
 
 __all__ = ["register_scheduled_handlers"]

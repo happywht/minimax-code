@@ -22,26 +22,14 @@ import logging
 from typing import Any
 
 from .protocol import INTERNAL_ERROR, INVALID_PARAMS
+from .handler_utils import HandlerError
 from .server import Context
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Errors
-# ---------------------------------------------------------------------------
-
-
-class _HandlerError(Exception):
-    def __init__(self, code: int, message: str) -> None:
-        self.code = code
-        self.message = message
-
-
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
-
 
 def register_mobile_handlers(
     server: Any,
@@ -96,13 +84,13 @@ def register_mobile_handlers(
         try:
             mgr, _ = await _resolve_manager_and_dao()
             if mgr is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR,
                     "pairing manager is not available; agent not fully initialized",
                 )
             suggested_name = (params or {}).get("suggested_name") if params else None
             if suggested_name is not None and not isinstance(suggested_name, str):
-                raise _HandlerError(INVALID_PARAMS, "suggested_name must be a string")
+                raise HandlerError(INVALID_PARAMS, "suggested_name must be a string")
             pair_info = mgr.generate_pairing_token(suggested_name=suggested_name)
             qr_payload = f"minimax-code://pair?token={pair_info['token']}"
             await ctx.reply(
@@ -112,25 +100,25 @@ def register_mobile_handlers(
                     "qr_payload": qr_payload,
                 }
             )
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
         except Exception as exc:  # pragma: no cover
             logger.exception("mobile.pair_start failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"mobile.pair_start failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "mobile.pair_start failed")
 
     async def handle_pair_confirm(params: Any, ctx: Context) -> None:
         try:
             mgr, _ = await _resolve_manager_and_dao()
             if mgr is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR, "pairing manager is not available"
                 )
             if not isinstance(params, dict):
-                raise _HandlerError(INVALID_PARAMS, "params must be an object")
+                raise HandlerError(INVALID_PARAMS, "params must be an object")
             for key in ("token", "device_id", "name", "public_key"):
                 val = params.get(key)
                 if not isinstance(val, str) or not val.strip():
-                    raise _HandlerError(
+                    raise HandlerError(
                         INVALID_PARAMS, f"param {key!r} must be a non-empty string"
                     )
             try:
@@ -144,78 +132,78 @@ def register_mobile_handlers(
                 # PairingError or other DAO errors → INVALID_PARAMS or INTERNAL_ERROR
                 from ..mobile import PairingError
                 if isinstance(exc, PairingError):
-                    raise _HandlerError(INVALID_PARAMS, exc.message)
+                    raise HandlerError(INVALID_PARAMS, exc.message)
                 logger.exception("mobile.pair_confirm failed")
-                raise _HandlerError(INTERNAL_ERROR, f"mobile.pair_confirm failed: {exc}")
+                raise HandlerError(INTERNAL_ERROR, "mobile.pair_confirm failed")
             await ctx.reply({"device": device})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
         except Exception as exc:  # pragma: no cover
             logger.exception("mobile.pair_confirm failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"mobile.pair_confirm failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "mobile.pair_confirm failed")
 
     async def handle_list(params: Any, ctx: Context) -> None:
         try:
             _, d = await _resolve_manager_and_dao()
             if d is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR, "mobile storage is not available"
                 )
             devices = await d.list_all()
             await ctx.reply({"devices": devices})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
         except Exception as exc:  # pragma: no cover
             logger.exception("mobile.list failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"mobile.list failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "mobile.list failed")
 
     async def handle_unpair(params: Any, ctx: Context) -> None:
         try:
             _, d = await _resolve_manager_and_dao()
             if d is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR, "mobile storage is not available"
                 )
             if not isinstance(params, dict):
-                raise _HandlerError(INVALID_PARAMS, "params must be an object")
+                raise HandlerError(INVALID_PARAMS, "params must be an object")
             device_id = params.get("device_id")
             if not isinstance(device_id, str) or not device_id.strip():
-                raise _HandlerError(INVALID_PARAMS, "device_id must be a non-empty string")
+                raise HandlerError(INVALID_PARAMS, "device_id must be a non-empty string")
             removed = await d.unregister(device_id)
             if not removed:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS, f"unknown device_id: {device_id!r}"
                 )
             await ctx.reply({"ok": True, "device_id": device_id})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
         except Exception as exc:  # pragma: no cover
             logger.exception("mobile.unpair failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"mobile.unpair failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "mobile.unpair failed")
 
     async def handle_touch(params: Any, ctx: Context) -> None:
         try:
             _, d = await _resolve_manager_and_dao()
             if d is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR, "mobile storage is not available"
                 )
             if not isinstance(params, dict):
-                raise _HandlerError(INVALID_PARAMS, "params must be an object")
+                raise HandlerError(INVALID_PARAMS, "params must be an object")
             device_id = params.get("device_id")
             if not isinstance(device_id, str) or not device_id.strip():
-                raise _HandlerError(INVALID_PARAMS, "device_id must be a non-empty string")
+                raise HandlerError(INVALID_PARAMS, "device_id must be a non-empty string")
             row = await d.touch_last_seen(device_id)
             if row is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS, f"unknown device_id: {device_id!r}"
                 )
             await ctx.reply({"ok": True, "device": row})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
         except Exception as exc:  # pragma: no cover
             logger.exception("mobile.touch failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"mobile.touch failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "mobile.touch failed")
 
     async def handle_push_notification(params: Any, ctx: Context) -> None:
         """Push a notification payload to one or all connected devices.
@@ -227,14 +215,14 @@ def register_mobile_handlers(
         try:
             _, d = await _resolve_manager_and_dao()
             if d is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR, "mobile storage is not available"
                 )
             if not isinstance(params, dict):
-                raise _HandlerError(INVALID_PARAMS, "params must be an object")
+                raise HandlerError(INVALID_PARAMS, "params must be an object")
             notification = params.get("notification")
             if not isinstance(notification, dict) or not notification.get("title"):
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS,
                     "notification must be an object with at least a 'title' field",
                 )
@@ -254,7 +242,7 @@ def register_mobile_handlers(
             except Exception:
                 pass
             if ws_mgr is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR,
                     "WebSocket manager not available; HTTP server not running",
                 )
@@ -274,7 +262,7 @@ def register_mobile_handlers(
                     "total_devices": len(online),
                     "delivered": delivered,
                 })
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
         except Exception as exc:  # pragma: no cover
             logger.exception("mobile.push_notification failed")
@@ -292,7 +280,7 @@ def register_mobile_handlers(
         try:
             _, d = await _resolve_manager_and_dao()
             if d is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR, "mobile storage is not available"
                 )
             devices = await d.list_all()
@@ -313,7 +301,7 @@ def register_mobile_handlers(
                 entry["online"] = dev_id in online_set
                 result.append(entry)
             await ctx.reply({"devices": result})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
         except Exception as exc:  # pragma: no cover
             logger.exception("mobile.device_status failed")
@@ -328,6 +316,5 @@ def register_mobile_handlers(
     server.register("mobile.touch", handle_touch)
     server.register("mobile.push_notification", handle_push_notification)
     server.register("mobile.device_status", handle_device_status)
-
 
 __all__ = ["register_mobile_handlers"]

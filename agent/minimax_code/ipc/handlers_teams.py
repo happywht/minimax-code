@@ -21,15 +21,14 @@ import logging
 from typing import Any
 
 from .protocol import INTERNAL_ERROR, INVALID_PARAMS
+from .handler_utils import HandlerError, check_params
 from .server import Context
 
 logger = logging.getLogger(__name__)
 
-
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
-
 
 def register_team_handlers(server: Any, *, dao: Any = None) -> None:
     """Register the ``team.*`` handlers on ``server``.
@@ -59,7 +58,7 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
             await ctx.reply({"teams": teams})
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("team.list failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"team.list failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "team.list failed")
 
     # ------------------------------------------------------------------- get
 
@@ -69,7 +68,7 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
             if team_dao is None:
                 await ctx.reply_error(INTERNAL_ERROR, "storage unavailable")
                 return
-            _check_params(params, expected_keys={"name"})
+            check_params(params, expected_keys={"name"})
             name = str(params["name"])
             team = await team_dao.get_by_name(name)
             if team is None:
@@ -79,11 +78,11 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
                 return
             await ctx.reply({"team": team})
         except Exception as exc:
-            if isinstance(exc, _ParamError):
+            if isinstance(exc, HandlerError):
                 await ctx.reply_error(exc.code, exc.message)
             else:
                 logger.exception("team.get failed")
-                await ctx.reply_error(INTERNAL_ERROR, f"team.get failed: {exc}")
+                await ctx.reply_error(INTERNAL_ERROR, "team.get failed")
 
     # ---------------------------------------------------------------- create
 
@@ -93,14 +92,16 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
             if team_dao is None:
                 await ctx.reply_error(INTERNAL_ERROR, "storage unavailable")
                 return
-            _check_params(params, expected_keys={"name"})
-            name = str(params["name"])
+            check_params(params, expected_keys={"name"})
+            name = str(params["name"]).strip()
+            if not name:
+                raise HandlerError(INVALID_PARAMS, "name must be a non-empty string")
             description = str(params.get("description", ""))
             icon = str(params.get("icon", ""))
             color = str(params.get("color", ""))
             agents = params.get("agents")
             if agents is not None and not isinstance(agents, list):
-                raise _ParamError(
+                raise HandlerError(
                     INVALID_PARAMS, "agents must be a list of strings"
                 )
             orchestration_mode = str(
@@ -115,13 +116,13 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
                 orchestration_mode=orchestration_mode,
             )
             await ctx.reply({"team": team})
-        except _ParamError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
         except ValueError as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("team.create failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"team.create failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "team.create failed")
 
     # ---------------------------------------------------------------- update
 
@@ -131,7 +132,7 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
             if team_dao is None:
                 await ctx.reply_error(INTERNAL_ERROR, "storage unavailable")
                 return
-            _check_params(params, expected_keys={"name"})
+            check_params(params, expected_keys={"name"})
             name = str(params["name"])
             # All fields optional on update
             updates: dict[str, Any] = {}
@@ -144,7 +145,7 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
             if "agents" in params:
                 agents = params["agents"]
                 if not isinstance(agents, list):
-                    raise _ParamError(
+                    raise HandlerError(
                         INVALID_PARAMS, "agents must be a list of strings"
                     )
                 updates["agents"] = agents
@@ -157,13 +158,13 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
                 )
                 return
             await ctx.reply({"team": team})
-        except _ParamError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
         except ValueError as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("team.update failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"team.update failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "team.update failed")
 
     # ---------------------------------------------------------------- delete
 
@@ -173,7 +174,7 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
             if team_dao is None:
                 await ctx.reply_error(INTERNAL_ERROR, "storage unavailable")
                 return
-            _check_params(params, expected_keys={"name"})
+            check_params(params, expected_keys={"name"})
             name = str(params["name"])
             ok = await team_dao.delete(name)
             if not ok:
@@ -182,13 +183,13 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
                 )
                 return
             await ctx.reply({"ok": True, "name": name})
-        except _ParamError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
         except ValueError as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("team.delete failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"team.delete failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "team.delete failed")
 
     # --------------------------------------------------------------- enable
 
@@ -198,7 +199,7 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
             if team_dao is None:
                 await ctx.reply_error(INTERNAL_ERROR, "storage unavailable")
                 return
-            _check_params(params, expected_keys={"name"})
+            check_params(params, expected_keys={"name"})
             name = str(params["name"])
             team = await team_dao.set_enabled(name, True)
             if team is None:
@@ -207,11 +208,11 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
                 )
                 return
             await ctx.reply({"team": team})
-        except _ParamError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("team.enable failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"team.enable failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "team.enable failed")
 
     # -------------------------------------------------------------- disable
 
@@ -221,7 +222,7 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
             if team_dao is None:
                 await ctx.reply_error(INTERNAL_ERROR, "storage unavailable")
                 return
-            _check_params(params, expected_keys={"name"})
+            check_params(params, expected_keys={"name"})
             name = str(params["name"])
             team = await team_dao.set_enabled(name, False)
             if team is None:
@@ -230,11 +231,11 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
                 )
                 return
             await ctx.reply({"team": team})
-        except _ParamError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("team.disable failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"team.disable failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "team.disable failed")
 
     # --------------------------------------------------------------- spawn
 
@@ -244,7 +245,7 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
         Emits ``agent.team_progress`` events during execution.
         """
         try:
-            _check_params(params, expected_keys={"team_name", "request"})
+            check_params(params, expected_keys={"team_name", "request"})
             team_name = str(params["team_name"])
             request = str(params["request"])
             session_id = params.get("session_id")
@@ -318,11 +319,11 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
                 "task_id": result.task_id,
                 "success": result.success,
             })
-        except _ParamError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
         except Exception as exc:
             logger.exception("team.spawn failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"team.spawn failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "team.spawn failed")
 
     server.register("team.list", handle_team_list)
     server.register("team.get", handle_team_get)
@@ -333,43 +334,9 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
     server.register("team.disable", handle_team_disable)
     server.register("team.spawn", handle_team_spawn)
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-class _ParamError(Exception):
-    """Internal sentinel for parameter validation errors."""
-
-    def __init__(self, code: int, message: str) -> None:
-        self.code = code
-        self.message = message
-
-
-def _check_params(params: Any, *, expected_keys: set[str]) -> None:
-    """Validate JSON-RPC params; raise :class:`_ParamError` on failure."""
-    if not expected_keys:
-        return
-    if params is None or not isinstance(params, dict):
-        raise _ParamError(
-            INVALID_PARAMS,
-            "params must be a JSON object with the required keys",
-        )
-    missing = expected_keys - set(params.keys())
-    if missing:
-        raise _ParamError(
-            INVALID_PARAMS,
-            f"missing required param(s): {sorted(missing)}",
-        )
-    for key in expected_keys:
-        if params[key] is None or (
-            isinstance(params[key], str) and not params[key].strip()
-        ):
-            raise _ParamError(
-                INVALID_PARAMS, f"param {key!r} must be a non-empty value"
-            )
-
 
 def _make_dao_factory(dao: Any | None) -> Any:
     """Return an async factory yielding an :class:`AgentTeamDAO`."""
@@ -396,7 +363,6 @@ def _make_dao_factory(dao: Any | None) -> Any:
 
     return _factory
 
-
 async def _make_agent_dao() -> Any:
     """Lazily build an :class:`AgentDAO` from the process-wide DB singleton."""
     try:
@@ -411,6 +377,5 @@ async def _make_agent_dao() -> Any:
     except Exception:  # pragma: no cover — defensive
         logger.exception("failed to build agent DAO for team.spawn")
         return None
-
 
 __all__ = ["register_team_handlers"]

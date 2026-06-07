@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Permissions tab — list / upsert / remove permission rules.
  */
 import { useEffect, useState } from "react";
@@ -94,7 +94,7 @@ function PermissionRuleRow({ rule, onDelete, onUpdate }: {
   return (
     <li data-testid={`settings-permission-row-${rule.id}`}
       className="flex items-center gap-2 rounded-md border border-minimax-border bg-minimax-panel/40 px-3 py-2 text-sm">
-      <span className="rounded bg-minimax-bg px-1.5 py-0.5 text-[10px] text-minimax-muted">{rule.tool}</span>
+      <span className="rounded bg-minimax-bg px-1.5 py-0.5 text-[11px] text-minimax-muted">{rule.tool}</span>
       <code className="flex-1 truncate font-mono text-xs text-minimax-fg">{rule.pattern}</code>
       <select data-testid={`settings-permission-decision-${rule.id}`} value={rule.decision}
         onChange={(e) => onUpdate(e.target.value as "allow" | "deny" | "ask")}

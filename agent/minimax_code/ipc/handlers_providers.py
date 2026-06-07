@@ -35,24 +35,14 @@ from .protocol import (
     INVALID_PARAMS,
     STORAGE_ERROR,
 )
+from .handler_utils import HandlerError, check_params
 from .server import Context
 
 logger = logging.getLogger(__name__)
 
-
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
-
-
-class _HandlerError(Exception):
-    """Internal sentinel — handlers raise it with a JSON-RPC code."""
-
-    def __init__(self, code: int, message: str, data: Any = None) -> None:
-        self.code = code
-        self.message = message
-        self.data = data
-
 
 # ---------------------------------------------------------------------------
 # DAO lazy-build (same pattern as handlers_model / handlers_permissions)
@@ -60,7 +50,6 @@ class _HandlerError(Exception):
 
 _DAO_ATTR = "_provider_dao"
 _LOCK_ATTR = "_provider_dao_lock"
-
 
 async def _ensure_dao(server: Any) -> Any:
     """Return a cached :class:`ProviderDAO`, creating one on first call."""
@@ -79,7 +68,7 @@ async def _ensure_dao(server: Any) -> Any:
         from ..storage.db import AsyncDatabase, default_database_path
 
         if os.environ.get("MINIMAX_CODE_NO_DB") == "1":
-            raise _HandlerError(
+            raise HandlerError(
                 STORAGE_ERROR,
                 "storage is disabled (MINIMAX_CODE_NO_DB=1); "
                 "provider handlers need a DB",
@@ -90,18 +79,16 @@ async def _ensure_dao(server: Any) -> Any:
             await db.migrate()
         except Exception as exc:
             logger.exception("failed to open storage for provider handlers")
-            raise _HandlerError(
+            raise HandlerError(
                 STORAGE_ERROR, f"failed to open storage: {exc}"
             ) from exc
         dao_obj = ProviderDAO(db)
         setattr(server, _DAO_ATTR, dao_obj)
         return dao_obj
 
-
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
-
 
 def register_provider_handlers(server: Any, dao: Any = None) -> None:
     """Register the ``provider.*`` handlers on ``server``.
@@ -123,7 +110,7 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
 
     async def handle_provider_list(params: Any, ctx: Context) -> None:
         try:
-            _check_params(params, expected_keys=set())
+            check_params(params, expected_keys=set())
             dao = await _ensure_dao(ctx.server)
             providers = await dao.list()
             # Annotate each provider with ``api_key_configured`` from
@@ -133,22 +120,22 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
             for p in providers:
                 p["api_key_configured"] = secrets.has_provider_key(p["id"])
             await ctx.reply({"providers": providers})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:
             logger.exception("provider.list failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"provider.list failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "provider.list failed")
 
     # ---- provider.get ------------------------------------------------------
 
     async def handle_provider_get(params: Any, ctx: Context) -> None:
         try:
             dao = await _ensure_dao(ctx.server)
-            _check_params(params, expected_keys={"provider_id"})
+            check_params(params, expected_keys={"provider_id"})
             provider_id = str(params["provider_id"]).strip()
             provider = await dao.get(provider_id)
             if provider is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS,
                     f"provider {provider_id!r} not found",
                 )
@@ -156,35 +143,35 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
 
             provider["api_key_configured"] = secrets.has_provider_key(provider_id)
             await ctx.reply({"provider": provider})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:
             logger.exception("provider.get failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"provider.get failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "provider.get failed")
 
     # ---- provider.create ---------------------------------------------------
 
     async def handle_provider_create(params: Any, ctx: Context) -> None:
         try:
             dao = await _ensure_dao(ctx.server)
-            _check_params(params, expected_keys={"name", "protocol", "base_url"})
+            check_params(params, expected_keys={"name", "protocol", "base_url"})
             name = str(params["name"]).strip()
             protocol = str(params["protocol"]).strip().lower()
             base_url = str(params["base_url"]).strip()
             if not name:
-                raise _HandlerError(INVALID_PARAMS, "'name' must be non-empty")
+                raise HandlerError(INVALID_PARAMS, "'name' must be non-empty")
             if protocol not in ("anthropic", "openai"):
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS,
                     f"unsupported protocol {protocol!r}; "
                     "must be 'anthropic' or 'openai'",
                 )
             if not base_url:
-                raise _HandlerError(INVALID_PARAMS, "'base_url' must be non-empty")
+                raise HandlerError(INVALID_PARAMS, "'base_url' must be non-empty")
 
             models = params.get("models")
             if models is not None and not isinstance(models, list):
-                raise _HandlerError(INVALID_PARAMS, "'models' must be a list")
+                raise HandlerError(INVALID_PARAMS, "'models' must be a list")
             enabled = params.get("enabled", True)
             if isinstance(enabled, str):
                 enabled = enabled.lower() in ("true", "1", "yes")
@@ -220,22 +207,22 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
                 logger.debug("rebuild_subagent_llm after provider.create failed")
 
             await ctx.reply({"provider": provider})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:
             logger.exception("provider.create failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"provider.create failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "provider.create failed")
 
     # ---- provider.update ---------------------------------------------------
 
     async def handle_provider_update(params: Any, ctx: Context) -> None:
         try:
             dao = await _ensure_dao(ctx.server)
-            _check_params(params, expected_keys={"provider_id"})
+            check_params(params, expected_keys={"provider_id"})
             provider_id = str(params["provider_id"]).strip()
             existing = await dao.get(provider_id)
             if existing is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS,
                     f"provider {provider_id!r} not found",
                 )
@@ -246,7 +233,7 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
             if "protocol" in params and params["protocol"] is not None:
                 protocol = str(params["protocol"]).strip().lower()
                 if protocol not in ("anthropic", "openai"):
-                    raise _HandlerError(
+                    raise HandlerError(
                         INVALID_PARAMS,
                         f"unsupported protocol {protocol!r}",
                     )
@@ -256,7 +243,7 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
             if "models" in params and params["models"] is not None:
                 models = params["models"]
                 if not isinstance(models, list):
-                    raise _HandlerError(INVALID_PARAMS, "'models' must be a list")
+                    raise HandlerError(INVALID_PARAMS, "'models' must be a list")
                 kwargs["models"] = models
             if "enabled" in params and params["enabled"] is not None:
                 enabled = params["enabled"]
@@ -294,28 +281,28 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
                 logger.debug("rebuild_subagent_llm after provider.update failed")
 
             await ctx.reply({"provider": provider})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:
             logger.exception("provider.update failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"provider.update failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "provider.update failed")
 
     # ---- provider.delete ---------------------------------------------------
 
     async def handle_provider_delete(params: Any, ctx: Context) -> None:
         try:
             dao = await _ensure_dao(ctx.server)
-            _check_params(params, expected_keys={"provider_id"})
+            check_params(params, expected_keys={"provider_id"})
             provider_id = str(params["provider_id"]).strip()
             existing = await dao.get(provider_id)
             if existing is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS,
                     f"provider {provider_id!r} not found",
                 )
             # Guard: refuse to delete the built-in provider.
             if provider_id == "builtin-minimax":
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS,
                     "cannot delete the built-in MiniMax provider",
                 )
@@ -337,25 +324,25 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
                 logger.debug("rebuild_subagent_llm after provider.delete failed")
 
             await ctx.reply({"ok": True, "deleted": provider_id})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:
             logger.exception("provider.delete failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"provider.delete failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "provider.delete failed")
 
     # ---- provider.set_api_key ----------------------------------------------
 
     async def handle_provider_set_api_key(params: Any, ctx: Context) -> None:
         try:
             dao = await _ensure_dao(ctx.server)
-            _check_params(params, expected_keys={"provider_id", "api_key"})
+            check_params(params, expected_keys={"provider_id", "api_key"})
             provider_id = str(params["provider_id"]).strip()
             api_key = str(params["api_key"]).strip()
             if not api_key:
-                raise _HandlerError(INVALID_PARAMS, "'api_key' must be non-empty")
+                raise HandlerError(INVALID_PARAMS, "'api_key' must be non-empty")
             existing = await dao.get(provider_id)
             if existing is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS,
                     f"provider {provider_id!r} not found",
                 )
@@ -366,7 +353,7 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
             await ctx.reply(
                 {"ok": True, "provider_id": provider_id, "api_key_configured": True}
             )
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:
             logger.exception("provider.set_api_key failed")
@@ -379,11 +366,11 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
     async def handle_provider_clear_api_key(params: Any, ctx: Context) -> None:
         try:
             dao = await _ensure_dao(ctx.server)
-            _check_params(params, expected_keys={"provider_id"})
+            check_params(params, expected_keys={"provider_id"})
             provider_id = str(params["provider_id"]).strip()
             existing = await dao.get(provider_id)
             if existing is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS,
                     f"provider {provider_id!r} not found",
                 )
@@ -397,7 +384,7 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
             await ctx.reply(
                 {"ok": True, "provider_id": provider_id, "api_key_configured": False}
             )
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:
             logger.exception("provider.clear_api_key failed")
@@ -413,34 +400,8 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
     server.register("provider.set_api_key", handle_provider_set_api_key)
     server.register("provider.clear_api_key", handle_provider_clear_api_key)
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _check_params(params: Any, *, expected_keys: set[str]) -> None:
-    """Validate the JSON-RPC params shape; raise :class:`_HandlerError` on bad input."""
-    if not expected_keys:
-        return
-    if params is None or not isinstance(params, dict):
-        raise _HandlerError(
-            INVALID_PARAMS,
-            "params must be a JSON object with the required keys",
-        )
-    missing = expected_keys - set(params.keys())
-    if missing:
-        raise _HandlerError(
-            INVALID_PARAMS,
-            f"missing required param(s): {sorted(missing)}",
-        )
-    for key in expected_keys:
-        if params[key] is None or (
-            isinstance(params[key], str) and not params[key].strip()
-        ):
-            raise _HandlerError(
-                INVALID_PARAMS, f"param {key!r} must be a non-empty value"
-            )
-
 
 __all__ = ["register_provider_handlers"]

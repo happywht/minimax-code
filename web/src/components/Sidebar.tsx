@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Left sidebar — 240px wide. Contains:
  *   - Brand mark
  *   - "New task" button
@@ -117,7 +117,7 @@ export function Sidebar({
           >
             MiniMax Code
           </h1>
-          <p className="truncate text-[10px] text-minimax-muted">
+          <p className="truncate text-[11px] text-minimax-muted">
             AI coding agent · v{APP_VERSION}
           </p>
         </div>
@@ -176,7 +176,7 @@ export function Sidebar({
 
       {/* Session list (history) — redesigned row format. */}
       <div className="mt-4 flex min-h-0 flex-1 flex-col">
-        <div className="flex items-center justify-between px-4 pt-1 text-[10px] uppercase tracking-wider text-minimax-muted">
+        <div className="flex items-center justify-between px-4 pt-1 text-[11px] uppercase tracking-wider text-minimax-muted">
           <span>任务历史</span>
           <span data-testid="sidebar-session-count">{visibleSessions.length}</span>
         </div>
@@ -208,7 +208,7 @@ export function Sidebar({
                 trailing={
                   <span
                     data-testid={`sidebar-session-time-${s.id}`}
-                    className="ml-1 shrink-0 text-[9px] text-minimax-muted"
+                    className="ml-1 shrink-0 text-[11px] text-minimax-muted"
                   >
                     {formatRelative(s.updated_at)}
                   </span>

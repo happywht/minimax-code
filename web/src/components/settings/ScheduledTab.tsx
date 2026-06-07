@@ -13,6 +13,7 @@ import {
 import { useScheduleStore, useTaskStore } from "../../stores";
 import { toast } from "../ErrorBoundary";
 import type { ScheduledJob } from "../../types/ipc";
+import { formatTime } from "../../lib/time";
 
 export { ScheduledTab };
 
@@ -131,7 +132,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow }: {
                   </div>
                   <div className="flex shrink-0 items-center gap-2 text-minimax-muted">
                     <span>{Math.round(t.progress * 100)}%</span>
-                    <span>{t.status === "running" ? "running" : new Date(t.updated_at).toLocaleTimeString()}</span>
+                    <span>{t.status === "running" ? "running" : formatTime(t.updated_at)}</span>
                   </div>
                 </li>
               ))}

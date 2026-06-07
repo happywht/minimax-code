@@ -42,29 +42,18 @@ import logging
 from typing import Any
 
 from .protocol import INVALID_PARAMS
+from .handler_utils import HandlerError
 from .server import Context
 
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
 
-
-class _HandlerError(Exception):
-    """Internal sentinel — handlers raise it with a JSON-RPC code."""
-
-    def __init__(self, code: int, message: str, data: Any = None) -> None:
-        self.code = code
-        self.message = message
-        self.data = data
-
-
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
-
 
 def register_secret_handlers(server: Any) -> None:
     """Register the ``secrets.*`` handlers on ``server``."""
@@ -86,17 +75,17 @@ def register_secret_handlers(server: Any) -> None:
     async def handle_secrets_set(params: Any, ctx: Context) -> None:
         try:
             if not isinstance(params, dict) or "value" not in params:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS, "params must include a 'value' string"
                 )
             value = params["value"]
             if not isinstance(value, str):
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS, "'value' must be a string"
                 )
             value = value.strip()
             if not value:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS, "'value' must be a non-empty string"
                 )
             from .. import secrets
@@ -108,14 +97,14 @@ def register_secret_handlers(server: Any) -> None:
                     "source": secrets.key_source(),
                 }
             )
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:
             # The ``secrets`` module already logs the underlying
             # keyring error; we just translate to a friendly IPC
             # envelope so the UI can surface it.
             logger.exception("secrets.set failed")
-            await ctx.reply_error(-32603, f"could not write to keyring: {exc}")
+            await ctx.reply_error(-32603, "could not write to keyring")
 
     async def handle_secrets_clear(_params: Any, ctx: Context) -> None:
         try:
@@ -130,11 +119,10 @@ def register_secret_handlers(server: Any) -> None:
             )
         except Exception as exc:
             logger.exception("secrets.clear failed")
-            await ctx.reply_error(-32603, f"could not clear keyring entry: {exc}")
+            await ctx.reply_error(-32603, "could not clear keyring entry")
 
     server.register("secrets.status", handle_secrets_status)
     server.register("secrets.set", handle_secrets_set)
     server.register("secrets.clear", handle_secrets_clear)
-
 
 __all__ = ["register_secret_handlers"]

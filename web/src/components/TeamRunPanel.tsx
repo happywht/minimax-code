@@ -1,4 +1,4 @@
-/**
+﻿/**
  * TeamRunPanel — visualises live team spawn runs in the right panel.
  *
  * Shows a list of team runs with progress bars, agent counts, and
@@ -20,7 +20,7 @@ import {
   useTeamRunStore,
   initTeamRunListener,
   type TeamRunEntry,
-} from "@/stores/teamRunStore";
+} from "../stores/teamRunStore";
 
 function statusIcon(status: TeamRunEntry["status"]) {
   switch (status) {
@@ -70,7 +70,7 @@ function RunCard({ run, onRemove }: { run: TeamRunEntry; onRemove: () => void })
           <span className="font-medium text-minimax-fg">{run.team_name}</span>
         </div>
         <div className="flex items-center gap-1">
-          <span className="text-[9px] text-minimax-muted">
+          <span className="text-[11px] text-minimax-muted">
             {run.agents_completed}/{run.agents_total} agents
           </span>
           {isDone && (
@@ -90,14 +90,14 @@ function RunCard({ run, onRemove }: { run: TeamRunEntry; onRemove: () => void })
 
       {/* Active agent */}
       {run.agent_name && !isDone && (
-        <div className="mt-1 text-[10px] text-minimax-muted">
+        <div className="mt-1 text-[11px] text-minimax-muted">
           Running: <span className="text-minimax-fg">{run.agent_name}</span>
         </div>
       )}
 
       {/* Conflicts */}
       {hasConflicts ? (
-        <div className="mt-1 flex items-center gap-1 text-[10px] text-yellow-300">
+        <div className="mt-1 flex items-center gap-1 text-[11px] text-yellow-300">
           <AlertTriangle size={10} />
           <span>
             {run.result!.conflicts.length} file conflict(s) detected
@@ -107,7 +107,7 @@ function RunCard({ run, onRemove }: { run: TeamRunEntry; onRemove: () => void })
 
       {/* Summary for completed */}
       {run.result?.merged_text && isDone && (
-        <p className="mt-1 line-clamp-3 text-[10px] text-minimax-muted">
+        <p className="mt-1 line-clamp-3 text-[11px] text-minimax-muted">
           {run.result.merged_text.slice(0, 300)}
         </p>
       )}
@@ -137,11 +137,11 @@ export function TeamRunPanel(): JSX.Element {
   return (
     <div data-testid="team-run-panel" className="space-y-2">
       <div className="flex items-center justify-between">
-        <h3 className="text-[11px] font-medium text-minimap-fg">
+        <h3 className="text-[11px] font-medium text-minimax-fg">
           <Users size={11} className="mr-1 inline text-minimax-accent" />
           Team Runs
         </h3>
-        <span className="text-[9px] text-minimax-muted">{runs.length} active</span>
+        <span className="text-[11px] text-minimax-muted">{runs.length} active</span>
       </div>
       <div className="space-y-1.5">
         {runs.map((r) => (

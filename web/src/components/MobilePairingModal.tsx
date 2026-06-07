@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Mobile pairing modal — displays the pairing token / QR payload and
  * lists already-paired devices with unpair actions and online status.
  *
@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { Bell, Copy, QrCode, Smartphone, Trash2, X } from "lucide-react";
 import { useMobileStore } from "../stores/mobileStore";
 import { useFocusTrap } from "../lib/useFocusTrap";
+import { formatDateTime } from "../lib/time";
 import { toast } from "./ErrorBoundary";
 
 export interface MobilePairingModalProps {
@@ -148,7 +149,7 @@ export function MobilePairingModal({
           ) : (
             <div data-testid="mobile-pairing-active" className="space-y-2">
               <div className="rounded-md border border-minimax-border bg-minimax-bg p-3 text-center">
-                <div className="mb-1 text-[10px] uppercase tracking-wider text-minimax-muted">
+                <div className="mb-1 text-[11px] uppercase tracking-wider text-minimax-muted">
                   Pairing Token
                 </div>
                 <div
@@ -160,7 +161,7 @@ export function MobilePairingModal({
                   {pairingToken}
                 </div>
                 {countdown && (
-                  <div className="mt-1 text-[10px] text-minimax-muted">
+                  <div className="mt-1 text-[11px] text-minimax-muted">
                     Expires in {countdown}
                   </div>
                 )}
@@ -187,7 +188,7 @@ export function MobilePairingModal({
           {/* Device list */}
           {devices.length > 0 && (
             <div>
-              <div className="mb-1.5 text-[10px] uppercase tracking-wider text-minimax-muted">
+              <div className="mb-1.5 text-[11px] uppercase tracking-wider text-minimax-muted">
                 Paired Devices ({devices.length})
               </div>
               <ul data-testid="mobile-paired-list" className="space-y-1">
@@ -208,8 +209,8 @@ export function MobilePairingModal({
                         <div className="truncate text-xs font-medium text-minimax-fg">
                           {d.name || d.id}
                         </div>
-                        <div className="text-[10px] text-minimax-muted">
-                          {d.online ? "Online" : "Offline"} · Paired {new Date(d.paired_at).toLocaleDateString()}
+                        <div className="text-[11px] text-minimax-muted">
+                          {d.online ? "Online" : "Offline"} · Paired {formatDateTime(d.paired_at)}
                         </div>
                       </div>
                     </div>

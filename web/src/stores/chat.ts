@@ -45,6 +45,9 @@ let toolCallUnsub: (() => void) | null = null;
 let toolResultUnsub: (() => void) | null = null;
 let statusUnsub: (() => void) | null = null;
 
+/** Monotonic counter to prevent stale loadMessages from overwriting state. */
+let _loadSeq = 0;
+
 /** Frontend stall watchdog — resets on every chunk, fires after 60 s idle. */
 const STALL_TIMEOUT_MS = 60_000;
 let _stallTimer: ReturnType<typeof setTimeout> | null = null;
@@ -323,8 +326,13 @@ export const useChat = create<ChatState>((set, get) => ({
 
   loadMessages: async (sessionId: string) => {
     if (!sessionId) return;
+    // Bump the sequence counter so any in-flight load from a
+    // previous session is silently discarded.
+    const seq = ++_loadSeq;
     try {
       const result = await typedIPC.listMessages(sessionId);
+      // Stale response — the user has already switched away.
+      if (seq !== _loadSeq) return;
       // Convert backend rows (content → text, add streaming: false)
       const msgs: Message[] = (result.messages ?? []).map((m: any) => ({
         id: m.id,
@@ -337,6 +345,8 @@ export const useChat = create<ChatState>((set, get) => ({
       }));
       set({ messages: trimArray(msgs, MAX_MESSAGES), status: "idle", error: null });
     } catch (err) {
+      // Stale — skip error toast for abandoned requests.
+      if (seq !== _loadSeq) return;
       // If loading fails (e.g. session has no messages yet), just clear.
       const message = err instanceof Error ? err.message : String(err);
       toast.error("Failed to load messages", message);

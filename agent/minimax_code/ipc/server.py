@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, IO, Optional
 
 from ..config import Config
+from .handler_utils import HandlerError
 from .protocol import (
     Event,
     INTERNAL_ERROR,
@@ -368,13 +369,22 @@ class IPCServer:
                 if not ctx._extra.get("_replied"):
                     await ctx.reply(result)
                 ctx._extra["_replied"] = True
+            except HandlerError as exc:
+                # Handler raised but didn't catch — convert to JSON-RPC error.
+                logger.debug("handler %s raised HandlerError: %s", method, exc.message)
+                await self._send(
+                    Response(
+                        id=request_id,
+                        error=RPCError(code=exc.code, message=exc.message, data=exc.data),
+                    ).to_bytes()
+                )
             except Exception as exc:
                 logger.exception("handler %s raised", method)
                 await self._send(
                     Response(
                         id=request_id,
                         error=RPCError(
-                            code=-32603, message=f"internal error: {exc}"
+                            code=-32603, message="internal error"
                         ),
                     ).to_bytes()
                 )
@@ -454,11 +464,17 @@ class IPCServer:
             return ctx._extra.get("_response") or Response(
                 id=request_id, result=None
             ).model_dump(exclude_none=True)
+        except HandlerError as exc:
+            logger.debug("handler %s raised HandlerError: %s", method, exc.message)
+            return Response(
+                id=request_id,
+                error=RPCError(code=exc.code, message=exc.message, data=exc.data),
+            ).model_dump(exclude_none=True)
         except Exception as exc:
             logger.exception("handler %s raised", method)
             return Response(
                 id=request_id,
-                error=RPCError(code=INTERNAL_ERROR, message=f"internal error: {exc}"),
+                error=RPCError(code=INTERNAL_ERROR, message="internal error"),
             ).model_dump(exclude_none=True)
 
     # -- outbound ----------------------------------------------------------

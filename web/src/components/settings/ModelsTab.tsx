@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Models tab — list and select LLM models via `model.*` IPC.
  */
 import { useEffect } from "react";
@@ -50,10 +50,10 @@ function ModelsTab(): JSX.Element {
                   <span className="font-medium text-minimax-fg">{m.name}</span>
                   {isCurrent && (
                     <span data-testid={`settings-model-current-${m.id}`}
-                      className="rounded bg-minimax-accent/20 px-1.5 py-0.5 text-[10px] text-minimax-accent">current</span>
+                      className="rounded bg-minimax-accent/20 px-1.5 py-0.5 text-[11px] text-minimax-accent">current</span>
                   )}
                   {m.protocol && (
-                    <span className="rounded bg-minimax-border px-1 py-0.5 text-[9px] font-mono text-minimax-muted">{m.protocol}</span>
+                    <span className="rounded bg-minimax-border px-1 py-0.5 text-[11px] font-mono text-minimax-muted">{m.protocol}</span>
                   )}
                 </div>
                 <div className="mt-0.5 text-[11px] text-minimax-muted">

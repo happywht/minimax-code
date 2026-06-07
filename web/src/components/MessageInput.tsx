@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Floating composer with an @-agent picker.
  *
  * v0.3.0 §2: typing ``@`` in the textarea opens a dropdown listing
@@ -600,16 +600,16 @@ export function MessageInput({
             data-testid="message-input-agent-picker"
             className="absolute bottom-full left-2.5 right-2.5 mb-1.5 overflow-hidden rounded-md border border-minimax-border bg-minimax-panel shadow-lg"
           >
-            <div className="flex items-center gap-1 border-b border-minimax-border/60 px-2 py-1 text-[10px] uppercase tracking-wider text-minimax-muted">
+            <div className="flex items-center gap-1 border-b border-minimax-border/60 px-2 py-1 text-[11px] uppercase tracking-wider text-minimax-muted">
               <AtSign size={10} />
               <span>Spawn sub-agent</span>
             </div>
             {agentsError ? (
-              <div className="px-2 py-1.5 text-[10px] text-red-300" title={agentsError}>
+              <div className="px-2 py-1.5 text-[11px] text-red-300" title={agentsError}>
                 Failed to load agents
               </div>
             ) : filtered.length === 0 ? (
-              <div className="px-2 py-1.5 text-[10px] italic text-minimax-muted">
+              <div className="px-2 py-1.5 text-[11px] italic text-minimax-muted">
                 No agents match “{picker.query}”
               </div>
             ) : (
@@ -629,10 +629,10 @@ export function MessageInput({
                     >
                       <Bot size={10} className="text-minimax-accent" />
                       <span className="font-medium">{a.name}</span>
-                      <span className="font-mono text-[10px] text-minimax-muted">
+                      <span className="font-mono text-[11px] text-minimax-muted">
                         @{a.id}
                       </span>
-                      <span className="flex-1 truncate text-[10px] text-minimax-muted">
+                      <span className="flex-1 truncate text-[11px] text-minimax-muted">
                         {a.description}
                       </span>
                     </button>
@@ -666,7 +666,7 @@ export function MessageInput({
           </button>
           <div className="flex items-center gap-2">
             <ContextIndicator />
-            <span className="text-[10px] text-minimax-muted">
+            <span className="text-[11px] text-minimax-muted">
               {value.length}/8000
             </span>
             <ModelSelector variant="inline" />

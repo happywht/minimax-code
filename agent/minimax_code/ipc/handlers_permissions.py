@@ -32,33 +32,21 @@ from .protocol import (
     INVALID_PARAMS,
     STORAGE_ERROR,
 )
+from .handler_utils import HandlerError, check_params
 from .server import Context
 
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
 
-
-class _HandlerError(Exception):
-    """Internal sentinel — handlers raise it with a JSON-RPC code."""
-
-    def __init__(self, code: int, message: str, data: Any = None) -> None:
-        self.code = code
-        self.message = message
-        self.data = data
-
-
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
-
 _STORE_ATTR = "_permission_store"
 _LOCK_ATTR = "_permission_store_lock"
-
 
 async def _ensure_permission_store(server: Any) -> Any:
     """Resolve the cached :class:`PermissionStore` (build it on first call).
@@ -87,7 +75,7 @@ async def _ensure_permission_store(server: Any) -> Any:
         # Honour the same env-var opt-out as app._maybe_open_db so
         # tests / smoke runs can run with storage disabled.
         if os.environ.get("MINIMAX_CODE_NO_DB") == "1":
-            raise _HandlerError(
+            raise HandlerError(
                 STORAGE_ERROR,
                 "storage is disabled (MINIMAX_CODE_NO_DB=1); permission handlers need a DB",
             )
@@ -97,7 +85,7 @@ async def _ensure_permission_store(server: Any) -> Any:
             await db.migrate()
         except Exception as exc:
             logger.exception("failed to open storage for permission handlers")
-            raise _HandlerError(
+            raise HandlerError(
                 STORAGE_ERROR,
                 f"failed to open storage: {exc}",
             ) from exc
@@ -107,13 +95,12 @@ async def _ensure_permission_store(server: Any) -> Any:
             await store_obj.warm()
         except Exception as exc:
             logger.exception("permission store warm() failed")
-            raise _HandlerError(
+            raise HandlerError(
                 INTERNAL_ERROR,
                 f"permission store warm failed: {exc}",
             ) from exc
         setattr(server, _STORE_ATTR, store_obj)
         return store_obj
-
 
 def register_permission_handlers(
     server: Any,
@@ -146,31 +133,31 @@ def register_permission_handlers(
     async def handle_permission_list(params: Any, ctx: Context) -> None:
         try:
             store_obj = await _ensure_store()
-            _check_params(params, expected_keys=set())
+            check_params(params, expected_keys=set())
             await ctx.reply({"rules": store_obj.list_rules()})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("permission.list failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"permission.list failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "permission.list failed")
 
     async def handle_permission_get(params: Any, ctx: Context) -> None:
         try:
             store_obj = await _ensure_store()
-            _check_params(params, expected_keys={"tool_pattern"})
+            check_params(params, expected_keys={"tool_pattern"})
             tool_pattern = str(params["tool_pattern"])
             rule = store_obj.get(tool_pattern)
             await ctx.reply({"rule": rule})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover
             logger.exception("permission.get failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"permission.get failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "permission.get failed")
 
     async def handle_permission_set(params: Any, ctx: Context) -> None:
         try:
             store_obj = await _ensure_store()
-            _check_params(params, expected_keys={"tool_pattern", "action"})
+            check_params(params, expected_keys={"tool_pattern", "action"})
             tool_pattern = str(params["tool_pattern"])
             action = str(params["action"])
             scope = str(params.get("scope") or "global")
@@ -178,31 +165,31 @@ def register_permission_handlers(
                 tool_pattern=tool_pattern, action=action, scope=scope
             )
             await ctx.reply({"rule": rule})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except ValueError as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
         except Exception as exc:  # pragma: no cover
             logger.exception("permission.set failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"permission.set failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "permission.set failed")
 
     async def handle_permission_delete(params: Any, ctx: Context) -> None:
         try:
             store_obj = await _ensure_store()
-            _check_params(params, expected_keys={"tool_pattern"})
+            check_params(params, expected_keys={"tool_pattern"})
             tool_pattern = str(params["tool_pattern"])
             deleted = await store_obj.delete(tool_pattern)
             await ctx.reply({"ok": True, "deleted": deleted})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover
             logger.exception("permission.delete failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"permission.delete failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "permission.delete failed")
 
     async def handle_permission_check(params: Any, ctx: Context) -> None:
         try:
             store_obj = await _ensure_store()
-            _check_params(params, expected_keys={"tool_name"})
+            check_params(params, expected_keys={"tool_name"})
             tool_name = str(params["tool_name"])
             scope = str(params.get("scope") or "global")
             allowed = store_obj.is_allowed(tool_name, scope=scope)
@@ -215,11 +202,11 @@ def register_permission_handlers(
                     "rule": rule,
                 }
             )
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover
             logger.exception("permission.check failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"permission.check failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "permission.check failed")
 
     async def handle_permission_resolve(params: Any, ctx: Context) -> None:
         """Resolve a pending ``permission.request`` event.
@@ -242,10 +229,10 @@ def register_permission_handlers(
         "I made the decision" from "the decision was lost".
         """
         try:
-            _check_params(params, expected_keys={"request_id", "decision"})
+            check_params(params, expected_keys={"request_id", "decision"})
             request_id = str(params["request_id"]).strip()
             if not request_id:
-                raise _HandlerError(INVALID_PARAMS, "request_id must be a non-empty string")
+                raise HandlerError(INVALID_PARAMS, "request_id must be a non-empty string")
             decision_raw = params["decision"]
             if isinstance(decision_raw, bool):
                 decision = decision_raw
@@ -256,7 +243,7 @@ def register_permission_handlers(
                 elif decision_str in ("deny", "no", "false", "0"):
                     decision = False
                 else:
-                    raise _HandlerError(
+                    raise HandlerError(
                         INVALID_PARAMS,
                         f"decision must be 'allow' or 'deny' (got {decision_raw!r})",
                     )
@@ -303,11 +290,11 @@ def register_permission_handlers(
                 })
             except Exception:
                 logger.warning("Failed to push permission.resolved event", exc_info=True)
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("permission.resolve failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"permission.resolve failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "permission.resolve failed")
 
     server.register("permission.list", handle_permission_list)
     server.register("permission.get", handle_permission_get)
@@ -316,43 +303,8 @@ def register_permission_handlers(
     server.register("permission.check", handle_permission_check)
     server.register("permission.resolve", handle_permission_resolve)
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _check_params(params: Any, *, expected_keys: set[str]) -> None:
-    """Validate the JSON-RPC params shape; raise :class:`_HandlerError` on bad input.
-
-    Rules
-    -----
-    * ``params`` may be ``None`` (notification-style) only when
-      ``expected_keys`` is empty.
-    * Otherwise ``params`` must be a dict containing at least
-      the keys in ``expected_keys``.
-    * Required string values must be non-empty after stripping.
-    """
-    if not expected_keys:
-        return
-    if params is None or not isinstance(params, dict):
-        raise _HandlerError(
-            INVALID_PARAMS,
-            "params must be a JSON object with the required keys",
-        )
-    missing = expected_keys - set(params.keys())
-    if missing:
-        raise _HandlerError(
-            INVALID_PARAMS,
-            f"missing required param(s): {sorted(missing)}",
-        )
-    for key in expected_keys:
-        if params[key] is None or (
-            isinstance(params[key], str) and not params[key].strip()
-        ):
-            raise _HandlerError(
-                INVALID_PARAMS, f"param {key!r} must be a non-empty value"
-            )
-
 
 __all__ = ["register_permission_handlers", "_ensure_permission_store"]

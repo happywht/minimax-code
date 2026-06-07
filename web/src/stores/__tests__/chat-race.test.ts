@@ -1,0 +1,133 @@
+/**
+ * Tests for P2#33: session quick-switch race condition.
+ *
+ * Verifies that loadMessages uses a monotonic sequence counter
+ * so stale responses don't overwrite the current session's messages.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { useChat } from "../chat";
+import { useSessionStore } from "../sessionStore";
+import { typedIPC } from "../../ipc";
+import type { Session } from "../../types/ipc";
+
+// Mock the IPC module
+vi.mock("../../ipc", () => ({
+  ipc: {
+    start: vi.fn().mockResolvedValue(undefined),
+    on: vi.fn().mockReturnValue(() => {}),
+    ping: vi.fn().mockResolvedValue(true),
+  },
+  IPCError: class extends Error {},
+  typedIPC: {
+    listSessions: vi.fn().mockResolvedValue({ sessions: [] }),
+    createSession: vi.fn(),
+    listMessages: vi.fn(),
+    sendMessage: vi.fn(),
+    archiveSession: vi.fn(),
+    unarchiveSession: vi.fn(),
+    deleteSession: vi.fn(),
+    updateSession: vi.fn(),
+    cancelAgent: vi.fn(),
+  },
+}));
+
+describe("P2#33: session quick-switch race condition", () => {
+  beforeEach(() => {
+    // Reset stores
+    useChat.getState().reset();
+    useSessionStore.setState({
+      sessions: [],
+      currentSessionId: null,
+      loading: false,
+      filter: "all",
+    });
+  });
+
+  it("stale loadMessages should not overwrite newer session data", async () => {
+    const sessionA = "session-a";
+    const sessionB = "session-b";
+
+    const messagesA = [
+      { id: "msg-a1", role: "user", text: "Hello A", created_at: 1 },
+    ];
+    const messagesB = [
+      { id: "msg-b1", role: "user", text: "Hello B", created_at: 2 },
+    ];
+
+    // Make listMessages return different results with different delays
+    let callCount = 0;
+    vi.mocked(typedIPC.listMessages).mockImplementation(async (sid: string) => {
+      callCount++;
+      if (sid === sessionA) {
+        // Simulate slow response for session A
+        await new Promise((r) => setTimeout(r, 100));
+        return { messages: messagesA };
+      }
+      // Fast response for session B
+      return { messages: messagesB };
+    });
+
+    // Switch to session A (slow)
+    const loadPromiseA = useChat.getState().loadMessages(sessionA);
+
+    // Immediately switch to session B (fast) — this should win
+    await useChat.getState().loadMessages(sessionB);
+
+    // Wait for session A's response to arrive
+    await loadPromiseA;
+
+    // The store should contain session B's messages, not A's
+    const msgs = useChat.getState().messages;
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].id).toBe("msg-b1");
+    expect(msgs[0].text).toBe("Hello B");
+  });
+
+  it("rapid switching keeps only the latest session's messages", async () => {
+    const sessions = ["s1", "s2", "s3", "s4", "s5"];
+    const loadData: Record<string, any[]> = {
+      s1: [{ id: "m1", role: "user", text: "Session 1", created_at: 1 }],
+      s2: [{ id: "m2", role: "user", text: "Session 2", created_at: 2 }],
+      s3: [{ id: "m3", role: "user", text: "Session 3", created_at: 3 }],
+      s4: [{ id: "m4", role: "user", text: "Session 4", created_at: 4 }],
+      s5: [{ id: "m5", role: "user", text: "Session 5", created_at: 5 }],
+    };
+
+    vi.mocked(typedIPC.listMessages).mockImplementation(async (sid: string) => {
+      return { messages: loadData[sid] || [] };
+    });
+
+    // Rapid-fire switch through all sessions
+    const promises = sessions.map((sid) => useChat.getState().loadMessages(sid));
+    await Promise.all(promises);
+
+    // Only the last session's messages should be present
+    const msgs = useChat.getState().messages;
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].id).toBe("m5");
+    expect(msgs[0].text).toBe("Session 5");
+  });
+
+  it("error from stale request is silently ignored", async () => {
+    const sessionA = "session-a-err";
+    const sessionB = "session-b-ok";
+
+    vi.mocked(typedIPC.listMessages).mockImplementation(async (sid: string) => {
+      if (sid === sessionA) {
+        await new Promise((r) => setTimeout(r, 100));
+        throw new Error("Network error for A");
+      }
+      return { messages: [{ id: "m-b", role: "user", text: "B ok", created_at: 1 }] };
+    });
+
+    const loadPromiseA = useChat.getState().loadMessages(sessionA);
+    await useChat.getState().loadMessages(sessionB);
+    await loadPromiseA;
+
+    // Should have B's messages, no error state
+    const state = useChat.getState();
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0].text).toBe("B ok");
+    expect(state.error).toBeNull();
+  });
+});

@@ -7,8 +7,8 @@
  * v0.7.0 — Mobile Connectivity Enhancement
  */
 import { create } from "zustand";
-import { typedIPC, ipc } from "@/ipc/client";
-import type { StreamEventName, NotificationEntry, ListNotificationsResult } from "@/types/ipc";
+import { typedIPC, ipc } from "../ipc/client";
+import type { StreamEventName, NotificationEntry, ListNotificationsResult } from "../types/ipc";
 import { toast } from "../components/ErrorBoundary";
 import { trimArray, MAX_NOTIFICATIONS } from "../lib/eviction";
 

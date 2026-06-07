@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Providers tab — manage LLM providers via `provider.*` IPC.
  * Includes ProviderCard sub-component and PROVIDER_PRESETS.
  */
@@ -174,12 +174,12 @@ function ProvidersTab(): JSX.Element {
           {/* Preset buttons */}
           {!editingId && (
             <div className="space-y-1.5">
-              <span className="text-[10px] text-minimax-muted">Quick presets:</span>
+              <span className="text-[11px] text-minimax-muted">Quick presets:</span>
               <div className="flex flex-wrap gap-1.5">
                 {PROVIDER_PRESETS.map((p) => (
                   <button key={p.label} type="button"
                     onClick={() => applyPreset(p)}
-                    className="rounded border border-minimax-border bg-minimax-bg px-2 py-0.5 text-[10px] text-minimax-fg hover:border-minimax-accent/40"
+                    className="rounded border border-minimax-border bg-minimax-bg px-2 py-0.5 text-[11px] text-minimax-fg hover:border-minimax-accent/40"
                   >{p.label}</button>
                 ))}
               </div>
@@ -189,13 +189,13 @@ function ProvidersTab(): JSX.Element {
           {/* Main fields */}
           <div className="grid grid-cols-12 gap-2">
             <div className="col-span-4">
-              <label className="text-[10px] text-minimax-muted">Name</label>
+              <label className="text-[11px] text-minimax-muted">Name</label>
               <input value={formName} onChange={(e) => setFormName(e.target.value)}
                 placeholder="e.g. DeepSeek"
                 className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs text-minimax-fg" />
             </div>
             <div className="col-span-3">
-              <label className="text-[10px] text-minimax-muted">Protocol</label>
+              <label className="text-[11px] text-minimax-muted">Protocol</label>
               <select value={formProtocol} onChange={(e) => setFormProtocol(e.target.value as "anthropic" | "openai")}
                 className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs text-minimax-fg">
                 <option value="openai">OpenAI</option>
@@ -203,7 +203,7 @@ function ProvidersTab(): JSX.Element {
               </select>
             </div>
             <div className="col-span-5">
-              <label className="text-[10px] text-minimax-muted">Base URL</label>
+              <label className="text-[11px] text-minimax-muted">Base URL</label>
               <input value={formBaseUrl} onChange={(e) => setFormBaseUrl(e.target.value)}
                 placeholder="https://api.example.com/v1"
                 className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs font-mono text-minimax-fg" />
@@ -212,7 +212,7 @@ function ProvidersTab(): JSX.Element {
 
           {/* API key */}
           <div>
-            <label className="text-[10px] text-minimax-muted">API Key {editingId ? "(leave empty to keep current)" : ""}</label>
+            <label className="text-[11px] text-minimax-muted">API Key {editingId ? "(leave empty to keep current)" : ""}</label>
             <div className="mt-0.5 flex gap-2">
               <div className="relative flex-1">
                 <input
@@ -232,13 +232,13 @@ function ProvidersTab(): JSX.Element {
 
           {/* Models list */}
           <div>
-            <label className="text-[10px] text-minimax-muted">Models</label>
+            <label className="text-[11px] text-minimax-muted">Models</label>
             {formModels.length > 0 && (
               <ul className="mt-1 space-y-1">
                 {formModels.map((m, i) => (
                   <li key={m.id} className="flex items-center gap-2 rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs">
                     <span className="flex-1 text-minimax-fg">{m.name || m.id}</span>
-                    <span className="text-[10px] text-minimax-muted">{(m.context_window / 1000).toFixed(0)}k</span>
+                    <span className="text-[11px] text-minimax-muted">{(m.context_window / 1000).toFixed(0)}k</span>
                     <button type="button" onClick={() => removeModelFromList(i)}
                       className="text-minimax-muted hover:text-red-300"><Trash2 size={10} /></button>
                   </li>
@@ -322,19 +322,19 @@ function ProviderCard({ provider, onEdit, onDelete, onSetKey, onClearKey }: {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="truncate text-xs font-medium text-minimax-fg">{provider.name}</span>
-            <span className={`rounded px-1 py-0.5 text-[9px] font-mono ${protocolColor}`}>
+            <span className={`rounded px-1 py-0.5 text-[11px] font-mono ${protocolColor}`}>
               {provider.protocol}
             </span>
             {!provider.enabled && (
-              <span className="rounded bg-minimax-border px-1 py-0.5 text-[9px] text-minimax-muted">disabled</span>
+              <span className="rounded bg-minimax-border px-1 py-0.5 text-[11px] text-minimax-muted">disabled</span>
             )}
             {provider.api_key_configured ? (
-              <span className="rounded bg-emerald-500/10 px-1 py-0.5 text-[9px] text-emerald-300">key ✓</span>
+              <span className="rounded bg-emerald-500/10 px-1 py-0.5 text-[11px] text-emerald-300">key ✓</span>
             ) : (
-              <span className="rounded bg-red-500/10 px-1 py-0.5 text-[9px] text-red-300">no key</span>
+              <span className="rounded bg-red-500/10 px-1 py-0.5 text-[11px] text-red-300">no key</span>
             )}
           </div>
-          <span className="block truncate text-[10px] font-mono text-minimax-muted">{provider.base_url}</span>
+          <span className="block truncate text-[11px] font-mono text-minimax-muted">{provider.base_url}</span>
         </div>
         <button type="button" onClick={() => setExpanded((v) => !v)}
           className="shrink-0 rounded p-1 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg">
@@ -358,11 +358,11 @@ function ProviderCard({ provider, onEdit, onDelete, onSetKey, onClearKey }: {
           {/* Models */}
           {provider.models.length > 0 && (
             <div>
-              <h4 className="text-[10px] font-medium text-minimax-muted mb-1">Models ({provider.models.length})</h4>
+              <h4 className="text-[11px] font-medium text-minimax-muted mb-1">Models ({provider.models.length})</h4>
               <div className="flex flex-wrap gap-1">
                 {provider.models.map((m) => (
                   <span key={m.id}
-                    className="rounded bg-minimax-bg border border-minimax-border px-1.5 py-0.5 text-[10px] text-minimax-fg">
+                    className="rounded bg-minimax-bg border border-minimax-border px-1.5 py-0.5 text-[11px] text-minimax-fg">
                     {m.name || m.id}
                     <span className="ml-1 text-minimax-muted">{(m.context_window / 1000).toFixed(0)}k</span>
                   </span>
@@ -373,7 +373,7 @@ function ProviderCard({ provider, onEdit, onDelete, onSetKey, onClearKey }: {
 
           {/* API key management */}
           <div>
-            <h4 className="text-[10px] font-medium text-minimap-muted mb-1">API Key</h4>
+            <h4 className="text-[11px] font-medium text-minimax-muted mb-1">API Key</h4>
             <div className="flex gap-2">
               <div className="relative flex-1">
                 <input

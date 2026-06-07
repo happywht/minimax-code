@@ -66,10 +66,10 @@ import subprocess
 from typing import Any
 
 from .protocol import INVALID_PARAMS
+from .handler_utils import HandlerError
 from .server import Context
 
 logger = logging.getLogger(__name__)
-
 
 # Application-level error code for "not a git repository" / "git
 # invocation failed". -32000 is the JSON-RPC 2.0 reserved app
@@ -85,31 +85,19 @@ _GIT_ERROR = -32000
 # "diff is empty".
 _GIT_TIMEOUT_S = 5.0
 
-
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
-
-
-class _HandlerError(Exception):
-    """Internal sentinel — handlers raise it with a JSON-RPC code."""
-
-    def __init__(self, code: int, message: str, data: Any = None) -> None:
-        self.code = code
-        self.message = message
-        self.data = data
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-
 def _run_git(args: list[str], *, cwd: str | os.PathLike[str] | None = None) -> str:
     """Run ``git <args>`` and return stdout.
 
     On any non-zero exit (including "not a git repository") the
-    whole stderr is wrapped in a :class:_HandlerError with code
+    whole stderr is wrapped in a :class:HandlerError with code
     :data:_GIT_ERROR` so handlers don't have to re-implement the
     translation. The timeout is shared across all calls.
     """
@@ -124,13 +112,13 @@ def _run_git(args: list[str], *, cwd: str | os.PathLike[str] | None = None) -> s
             check=False,
         )
     except FileNotFoundError as exc:  # pragma: no cover — host without git
-        raise _HandlerError(
+        raise HandlerError(
             _GIT_ERROR,
             "git binary not found on PATH",
             data={"cmd": cmd},
         ) from exc
     except subprocess.TimeoutExpired as exc:
-        raise _HandlerError(
+        raise HandlerError(
             _GIT_ERROR,
             f"git {' '.join(args)} timed out after {_GIT_TIMEOUT_S}s",
             data={"cmd": cmd, "timeout_s": _GIT_TIMEOUT_S},
@@ -138,13 +126,12 @@ def _run_git(args: list[str], *, cwd: str | os.PathLike[str] | None = None) -> s
 
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip() or "git failed with no stderr"
-        raise _HandlerError(
+        raise HandlerError(
             _GIT_ERROR,
             stderr,
             data={"cmd": cmd, "returncode": proc.returncode},
         )
     return proc.stdout
-
 
 def _resolve_cwd(params: dict[str, Any] | None) -> str | None:
     """Pull an optional ``cwd`` override out of ``params``.
@@ -160,12 +147,11 @@ def _resolve_cwd(params: dict[str, Any] | None) -> str | None:
     if cwd is None or cwd == "":
         return None
     if not isinstance(cwd, str):
-        raise _HandlerError(
+        raise HandlerError(
             INVALID_PARAMS,
             "'cwd' must be a string when provided",
         )
     return cwd
-
 
 def _parse_status_porcelain_v2(text: str) -> tuple[list[str], list[str], list[str]]:
     """Split ``git status --porcelain=v2 -z`` output into three buckets.
@@ -236,11 +222,9 @@ def _parse_status_porcelain_v2(text: str) -> tuple[list[str], list[str], list[st
             modified.append(path)
     return modified, untracked, staged
 
-
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
-
 
 def register_git_handlers(server: Any) -> None:
     """Register the ``git.*`` handlers on ``server``."""
@@ -271,7 +255,7 @@ def register_git_handlers(server: Any) -> None:
                     left, right = rev_out.split("\t", 1)
                     ahead = int(left)
                     behind = int(right)
-            except _HandlerError:
+            except HandlerError:
                 # No upstream configured — fall back to 0/0.
                 ahead = 0
                 behind = 0
@@ -299,11 +283,11 @@ def register_git_handlers(server: Any) -> None:
                     "staged": staged,
                 }
             )
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("git.status failed")
-            await ctx.reply_error(_GIT_ERROR, f"git.status failed: {exc}")
+            await ctx.reply_error(_GIT_ERROR, "git.status failed")
 
     async def handle_git_diff(params: Any, ctx: Context) -> None:
         try:
@@ -312,11 +296,11 @@ def register_git_handlers(server: Any) -> None:
             scope = p.get("scope", "working")
             ref = p.get("ref")
             if not isinstance(scope, str):
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS, "'scope' must be a string when provided"
                 )
             if ref is not None and not isinstance(ref, str):
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS, "'ref' must be a string when provided"
                 )
 
@@ -339,7 +323,7 @@ def register_git_handlers(server: Any) -> None:
             elif scope == "working":
                 diff_target = None  # plain ``git diff`` = unstaged + untracked
             else:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS,
                     f"unknown scope {scope!r}; expected 'staged' | 'branch' | 'working' or an explicit 'ref'",
                 )
@@ -356,11 +340,11 @@ def register_git_handlers(server: Any) -> None:
                     "scope": ref if ref is not None else scope,
                 }
             )
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("git.diff failed")
-            await ctx.reply_error(_GIT_ERROR, f"git.diff failed: {exc}")
+            await ctx.reply_error(_GIT_ERROR, "git.diff failed")
 
     async def handle_git_log(params: Any, ctx: Context) -> None:
         try:
@@ -368,7 +352,7 @@ def register_git_handlers(server: Any) -> None:
             cwd = _resolve_cwd(p)
             n = p.get("n", 10)
             if not isinstance(n, int) or n <= 0:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS, "'n' must be a positive integer"
                 )
             # Cap to a sane bound — the UI's log viewer is a
@@ -431,21 +415,19 @@ def register_git_handlers(server: Any) -> None:
                     )
 
             await ctx.reply({"entries": entries})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("git.log failed")
-            await ctx.reply_error(_GIT_ERROR, f"git.log failed: {exc}")
+            await ctx.reply_error(_GIT_ERROR, "git.log failed")
 
     server.register("git.status", handle_git_status)
     server.register("git.diff", handle_git_diff)
     server.register("git.log", handle_git_log)
 
-
 # ---------------------------------------------------------------------------
 # Re-exports for tests + the code-review skill to share
 # ---------------------------------------------------------------------------
-
 
 __all__ = [
     "_parse_status_porcelain_v2",  # exposed for unit tests

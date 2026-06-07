@@ -28,29 +28,18 @@ from .protocol import (
     INVALID_PARAMS,
     NOT_IMPLEMENTED,
 )
+from .handler_utils import HandlerError, check_params
 from .server import Context
 
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
 
-
-class _HandlerError(Exception):
-    """Internal sentinel — handlers raise it with a JSON-RPC code."""
-
-    def __init__(self, code: int, message: str, data: Any = None) -> None:
-        self.code = code
-        self.message = message
-        self.data = data
-
-
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
-
 
 def register_skill_handlers(
     server: Any,
@@ -74,23 +63,23 @@ def register_skill_handlers(
     async def handle_skill_list(params: Any, ctx: Context) -> None:
         try:
             runtime_obj = await runtime_factory()
-            _check_params(params, expected_keys=set())
+            check_params(params, expected_keys=set())
             enabled_only = bool((params or {}).get("enabled_only", False)) if params else False
             search = (params or {}).get("search") if params else None
             skills = runtime_obj.registry.list(
                 enabled=True if enabled_only else None, search=search
             )
             await ctx.reply({"skills": [s.manifest() for s in skills]})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("skill.list failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"skill.list failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "skill.list failed")
 
     async def handle_skill_get(params: Any, ctx: Context) -> None:
         try:
             runtime_obj = await runtime_factory()
-            _check_params(params, expected_keys={"skill_id"})
+            check_params(params, expected_keys={"skill_id"})
             skill_id = str(params["skill_id"])
             skill = runtime_obj.registry.get(skill_id)
             payload = skill.manifest()
@@ -99,48 +88,48 @@ def register_skill_handlers(
             available = runtime_obj.registry._available_tools
             payload["missing_tools"] = skill.missing_tools(available)
             await ctx.reply({"skill": payload})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except KeyError:
             await ctx.reply_error(INVALID_PARAMS, f"unknown skill_id: {params.get('skill_id')!r}")
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("skill.get failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"skill.get failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "skill.get failed")
 
     async def handle_skill_enable(params: Any, ctx: Context) -> None:
         try:
             runtime_obj = await runtime_factory()
-            _check_params(params, expected_keys={"skill_id"})
+            check_params(params, expected_keys={"skill_id"})
             skill_id = str(params["skill_id"])
             skill = await runtime_obj.registry.enable(skill_id)
             await ctx.reply({"skill": skill.manifest()})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except KeyError:
             await ctx.reply_error(INVALID_PARAMS, f"unknown skill_id: {params.get('skill_id')!r}")
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("skill.enable failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"skill.enable failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "skill.enable failed")
 
     async def handle_skill_disable(params: Any, ctx: Context) -> None:
         try:
             runtime_obj = await runtime_factory()
-            _check_params(params, expected_keys={"skill_id"})
+            check_params(params, expected_keys={"skill_id"})
             skill_id = str(params["skill_id"])
             skill = await runtime_obj.registry.disable(skill_id)
             await ctx.reply({"skill": skill.manifest()})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except KeyError:
             await ctx.reply_error(INVALID_PARAMS, f"unknown skill_id: {params.get('skill_id')!r}")
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("skill.disable failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"skill.disable failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "skill.disable failed")
 
     async def handle_skill_invoke(params: Any, ctx: Context) -> None:
         try:
             runtime_obj = await runtime_factory()
-            _check_params(params, expected_keys={"skill_id", "request"})
+            check_params(params, expected_keys={"skill_id", "request"})
             skill_id = str(params["skill_id"])
             request = str(params["request"])
             session_id = str(params.get("session_id") or f"skill_{uuid.uuid4().hex[:8]}")
@@ -380,7 +369,7 @@ def register_skill_handlers(
                     "truncated": result.truncated,
                 }
             )
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except KeyError as exc:
             await ctx.reply_error(INVALID_PARAMS, f"unknown skill_id: {exc.args[0]!r}")
@@ -394,7 +383,6 @@ def register_skill_handlers(
     server.register("skill.enable", handle_skill_enable)
     server.register("skill.disable", handle_skill_disable)
     server.register("skill.invoke", handle_skill_invoke)
-
 
 def _make_runtime_factory(runtime: Any | None) -> Any:
     """Return an async factory that yields a runtime, building it lazily if needed.
@@ -420,35 +408,8 @@ def _make_runtime_factory(runtime: Any | None) -> Any:
 
     return _factory
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _check_params(params: Any, *, expected_keys: set[str]) -> None:
-    """Validate the JSON-RPC params shape; raise :class:`_HandlerError` on bad input.
-
-    Rules
-    -----
-    * ``params`` may be ``None`` (notification-style) only when
-      ``expected_keys`` is empty.
-    * Otherwise ``params`` must be a dict containing at least
-      the keys in ``expected_keys``.
-    """
-    if not expected_keys:
-        return
-    if params is None or not isinstance(params, dict):
-        raise _HandlerError(INVALID_PARAMS, "params must be a JSON object with the required keys")
-    missing = expected_keys - set(params.keys())
-    if missing:
-        raise _HandlerError(
-            INVALID_PARAMS,
-            f"missing required param(s): {sorted(missing)}",
-        )
-    for key in expected_keys:
-        if params[key] is None or (isinstance(params[key], str) and not params[key].strip()):
-            raise _HandlerError(INVALID_PARAMS, f"param {key!r} must be a non-empty value")
-
 
 __all__ = ["register_skill_handlers"]

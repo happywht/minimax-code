@@ -1,4 +1,4 @@
-/**
+﻿/**
  * SubAgentPanel — right-rail live list of in-flight sub-agent runs.
  *
  * Lives in the RightPanel (a new section next to Progress / Agent
@@ -77,7 +77,7 @@ export function SubAgentPanel({
   return (
     <div data-testid={testId} className="px-3 pb-3">
       <div className="mb-2 flex items-center justify-between">
-        <span className="text-[10px] uppercase tracking-wider text-minimax-muted">
+        <span className="text-[11px] uppercase tracking-wider text-minimax-muted">
           {runs.length === 0 ? "Idle" : `${runs.length} run${runs.length === 1 ? "" : "s"}`}
         </span>
         {completedCount > 0 && (
@@ -85,7 +85,7 @@ export function SubAgentPanel({
             type="button"
             data-testid={`${testId}-clear`}
             onClick={clearCompleted}
-            className="text-[10px] text-minimax-muted hover:text-minimax-fg"
+            className="text-[11px] text-minimax-muted hover:text-minimax-fg"
             title="Drop completed / failed runs from the list"
           >
             Clear done
@@ -172,7 +172,7 @@ function SubAgentRow({
       </div>
       <div
         data-testid={`${testId}-${run.run_id}-summary`}
-        className="mt-1 truncate text-[10px] text-minimax-muted"
+        className="mt-1 truncate text-[11px] text-minimax-muted"
         title={run.summary}
       >
         {run.summary || <span className="italic">…</span>}
@@ -180,7 +180,7 @@ function SubAgentRow({
       {expanded && (
         <div
           data-testid={`${testId}-${run.run_id}-detail`}
-          className="mt-2 space-y-1 border-t border-minimax-border/60 pt-2 text-[10px] text-minimax-muted"
+          className="mt-2 space-y-1 border-t border-minimax-border/60 pt-2 text-[11px] text-minimax-muted"
         >
           <div>
             <span className="text-minimax-fg/80">run_id:</span>{" "}
@@ -236,7 +236,7 @@ function StatusPill({
     <span
       data-testid={testId}
       className={
-        "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] " +
+        "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[11px] " +
         tone.cls
       }
     >

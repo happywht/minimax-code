@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Chat container — header (session title + actions) on top, message
  * list in the middle. The composer lives in a sibling component so the
  * text input doesn't re-render the message list on every keystroke.
@@ -148,7 +148,7 @@ export function ChatPanel({ testId = "chat-panel", onMenuClick }: ChatPanelProps
           <span
             data-testid="chat-header-status"
             className={
-              "ml-2 inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] " +
+              "ml-2 inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[11px] " +
               toneClass[headerStatus.tone]
             }
           >
@@ -160,7 +160,7 @@ export function ChatPanel({ testId = "chat-panel", onMenuClick }: ChatPanelProps
           {error && (
             <span
               data-testid="chat-header-error"
-              className="ml-2 truncate text-[10px] text-red-300"
+              className="ml-2 truncate text-[11px] text-red-300"
               title={error}
             >
               {error}
@@ -229,7 +229,7 @@ export function ChatPanel({ testId = "chat-panel", onMenuClick }: ChatPanelProps
             className="flex-1 bg-transparent text-xs text-minimax-fg placeholder:text-minimax-muted focus:outline-none"
           />
           {searchQuery && (
-            <span className="text-[10px] text-minimax-muted">
+            <span className="text-[11px] text-minimax-muted">
               filtering
             </span>
           )}

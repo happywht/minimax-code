@@ -1,4 +1,4 @@
-/**
+﻿/**
  * NotificationCenter — dropdown panel listing recent notifications.
  *
  * Rendered inside ``NotificationBell`` as a floating panel.
@@ -8,8 +8,9 @@
 import { useEffect } from "react";
 import { Check, Trash2, Info, AlertTriangle, XCircle, Webhook, Shield, Workflow, X } from "lucide-react";
 import { SkeletonTable } from "./Skeleton";
-import { useNotificationStore } from "@/stores/notificationStore";
-import type { NotificationEntry } from "@/stores/notificationStore";
+import { useNotificationStore } from "../stores/notificationStore";
+import type { NotificationEntry } from "../stores/notificationStore";
+import { formatRelative } from "../lib/time";
 
 const TYPE_ICON: Record<string, typeof Info> = {
   info: Info,
@@ -22,16 +23,6 @@ const TYPE_ICON: Record<string, typeof Info> = {
 
 function typeIcon(type: string) {
   return TYPE_ICON[type] ?? Info;
-}
-
-function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
 }
 
 export function NotificationCenter(): JSX.Element {
@@ -66,7 +57,7 @@ export function NotificationCenter(): JSX.Element {
             <button
               type="button"
               onClick={() => markAllRead()}
-              className="rounded px-1.5 py-0.5 text-[10px] text-minimax-accent hover:bg-minimax-border"
+              className="rounded px-1.5 py-0.5 text-[11px] text-minimax-accent hover:bg-minimax-border"
               title="Mark all as read"
             >
               <Check size={12} className="inline -mt-px mr-0.5" />
@@ -131,8 +122,8 @@ function NotificationItem({
           <span className="font-medium text-minimax-fg leading-tight">
             {entry.title}
           </span>
-          <span className="shrink-0 text-[10px] text-minimax-muted">
-            {timeAgo(entry.created_at)}
+          <span className="shrink-0 text-[11px] text-minimax-muted">
+            {formatRelative(entry.created_at)}
           </span>
         </div>
         {entry.body && (
@@ -145,7 +136,7 @@ function NotificationItem({
             <button
               type="button"
               onClick={() => onMarkRead(entry.id)}
-              className="text-[10px] text-minimax-accent hover:underline"
+              className="text-[11px] text-minimax-accent hover:underline"
             >
               Mark read
             </button>
@@ -153,7 +144,7 @@ function NotificationItem({
           <button
             type="button"
             onClick={() => onDelete(entry.id)}
-            className="text-[10px] text-red-400 hover:underline"
+            className="text-[11px] text-red-400 hover:underline"
           >
             Delete
           </button>

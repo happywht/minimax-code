@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Webhooks tab — manage inbound webhook endpoints.
  */
 import { useEffect, useState } from "react";
@@ -132,38 +132,38 @@ function WebhooksTab(): JSX.Element {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-semibold">{wh.name}</span>
-                  <span className="rounded bg-minimax-accent/20 px-1.5 py-0.5 text-[10px] text-minimax-accent">{wh.source}</span>
-                  <span className="rounded bg-minimax-bg px-1.5 py-0.5 text-[10px] text-minimax-muted">{wh.action_type}</span>
+                  <span className="rounded bg-minimax-accent/20 px-1.5 py-0.5 text-[11px] text-minimax-accent">{wh.source}</span>
+                  <span className="rounded bg-minimax-bg px-1.5 py-0.5 text-[11px] text-minimax-muted">{wh.action_type}</span>
                 </div>
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
-                    className={`rounded px-1.5 py-0.5 text-[10px] ${wh.enabled ? "text-green-400" : "text-minimax-muted"}`}
+                    className={`rounded px-1.5 py-0.5 text-[11px] ${wh.enabled ? "text-green-400" : "text-minimax-muted"}`}
                     onClick={() => update(wh.id, { enabled: !wh.enabled })}
                   >
                     {wh.enabled ? "Enabled" : "Disabled"}
                   </button>
                   <button
                     type="button"
-                    className="rounded px-1.5 py-0.5 text-[10px] text-minimax-muted hover:text-minimax-accent"
+                    className="rounded px-1.5 py-0.5 text-[11px] text-minimax-muted hover:text-minimax-accent"
                     onClick={() => regenerateSecret(wh.id)}
                   >
                     Re-secret
                   </button>
                   <button
                     type="button"
-                    className="rounded px-1.5 py-0.5 text-[10px] text-red-400 hover:text-red-300"
+                    className="rounded px-1.5 py-0.5 text-[11px] text-red-400 hover:text-red-300"
                     onClick={() => remove(wh.id)}
                   >
                     <Trash2 size={11} />
                   </button>
                 </div>
               </div>
-              <div className="text-[10px] text-minimax-muted font-mono">
+              <div className="text-[11px] text-minimax-muted font-mono">
                 POST {wh.url_path}
               </div>
               {wh.secret && (
-                <div className="flex items-center gap-1 text-[10px] text-minimax-muted">
+                <div className="flex items-center gap-1 text-[11px] text-minimax-muted">
                   <span>Secret:</span>
                   <span className="font-mono">{revealedSecrets.has(wh.id) ? wh.secret : "••••••••"}</span>
                   <button
@@ -180,7 +180,7 @@ function WebhooksTab(): JSX.Element {
         </div>
       )}
 
-      <div className="text-[10px] text-minimax-muted">
+      <div className="text-[11px] text-minimax-muted">
         {total} webhook(s) configured
       </div>
     </section>

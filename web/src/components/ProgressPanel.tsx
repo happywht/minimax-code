@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ProgressPanel — content-only progress list for the right column.
  *
  * Historical role: this used to be a floating, collapsible overlay pinned
@@ -80,7 +80,7 @@ export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps)
           {runningCount > 0 && (
             <span
               data-testid={`${testId}-running-count`}
-              className="ml-1 rounded bg-minimax-accent/20 px-1.5 text-[10px] text-minimax-accent"
+              className="ml-1 rounded bg-minimax-accent/20 px-1.5 text-[11px] text-minimax-accent"
             >
               {runningCount} running
             </span>
@@ -108,7 +108,7 @@ export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps)
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <StatusDot status={t.status} />
-                    <span className="truncate font-mono text-[10px] text-minimax-muted">
+                    <span className="truncate font-mono text-[11px] text-minimax-muted">
                       {t.task_id}
                     </span>
                   </div>
@@ -138,7 +138,7 @@ export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps)
                   />
                 </div>
                 {t.message && (
-                  <div className="mt-1 truncate text-[10px] text-minimax-muted">
+                  <div className="mt-1 truncate text-[11px] text-minimax-muted">
                     {t.message}
                   </div>
                 )}
@@ -162,7 +162,7 @@ function AgentStatusInline({
     return (
       <span
         data-testid="progress-agent-status"
-        className="flex items-center gap-1 text-[10px] text-emerald-400"
+        className="flex items-center gap-1 text-[11px] text-emerald-400"
         title={detail}
       >
         <CheckCircle2 size={10} />
@@ -174,7 +174,7 @@ function AgentStatusInline({
     return (
       <span
         data-testid="progress-agent-status"
-        className="flex items-center gap-1 text-[10px] text-red-400"
+        className="flex items-center gap-1 text-[11px] text-red-400"
         title={detail}
       >
         <CircleAlert size={10} />
@@ -185,7 +185,7 @@ function AgentStatusInline({
   return (
     <span
       data-testid="progress-agent-status"
-      className="flex items-center gap-1 text-[10px] text-amber-400"
+      className="flex items-center gap-1 text-[11px] text-amber-400"
       title={detail}
     >
       <Loader2 size={10} className="animate-spin" />
@@ -218,7 +218,7 @@ function StatusBadge({ status }: { status: string }): JSX.Element {
     <span
       data-testid={`task-status-${status}`}
       className={
-        "rounded px-1.5 py-0.5 text-[9px] font-medium uppercase " +
+        "rounded px-1.5 py-0.5 text-[11px] font-medium uppercase " +
         (map[status] ?? "bg-minimax-border text-minimax-muted")
       }
     >

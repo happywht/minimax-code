@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Code review panel — multi-dimensional review UI.
  *
  * v0.3.1: embedded in RightPanel as a collapsible section.
@@ -120,7 +120,7 @@ export function CodeReviewPanel({
               data-testid={`code-review-tab-${tab.key}`}
               onClick={() => setActiveTab(tab.key)}
               className={
-                "flex items-center gap-1 border-b-2 px-2 py-1 text-[10px] font-medium transition-colors " +
+                "flex items-center gap-1 border-b-2 px-2 py-1 text-[11px] font-medium transition-colors " +
                 (isActive
                   ? "border-minimax-accent text-minimax-accent"
                   : "border-transparent text-minimax-muted hover:text-minimax-fg")
@@ -150,7 +150,7 @@ export function CodeReviewPanel({
       {displayStats && (
         <div
           data-testid="code-review-stats"
-          className="mt-2 flex items-center gap-3 rounded-md border border-minimax-border bg-minimax-bg/40 px-2 py-1.5 text-[10px] text-minimax-muted"
+          className="mt-2 flex items-center gap-3 rounded-md border border-minimax-border bg-minimax-bg/40 px-2 py-1.5 text-[11px] text-minimax-muted"
         >
           <span className="flex items-center gap-1">
             <FileCode size={9} />
@@ -174,12 +174,12 @@ export function CodeReviewPanel({
               >
                 <div className="flex items-center gap-1.5">
                   <span
-                    className={`inline-flex items-center gap-0.5 rounded border px-1 py-0.5 text-[9px] font-medium ${badge.cls}`}
+                    className={`inline-flex items-center gap-0.5 rounded border px-1 py-0.5 text-[11px] font-medium ${badge.cls}`}
                   >
                     {badge.icon}
                     {c.severity}
                   </span>
-                  <span className="truncate font-mono text-[10px] text-minimax-muted">
+                  <span className="truncate font-mono text-[11px] text-minimax-muted">
                     {c.file}{c.line != null ? `:${c.line}` : ""}
                   </span>
                 </div>
@@ -196,7 +196,7 @@ export function CodeReviewPanel({
       {!displayComments.length && rawText && activeTab === "overview" && (
         <pre
           data-testid="code-review-raw"
-          className="mt-2 max-h-48 overflow-auto rounded-md border border-minimax-border bg-minimax-bg/40 p-2 text-[10px] text-minimax-muted whitespace-pre-wrap"
+          className="mt-2 max-h-48 overflow-auto rounded-md border border-minimax-border bg-minimax-bg/40 p-2 text-[11px] text-minimax-muted whitespace-pre-wrap"
         >
           {rawText}
         </pre>

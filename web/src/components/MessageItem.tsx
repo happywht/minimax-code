@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Single message bubble. Renders user, assistant, tool, and system
  * roles. Markdown (with GFM) is rendered for assistant / system
  * messages; code blocks go through shiki for syntax highlighting.
@@ -121,7 +121,7 @@ function MarkdownCode({ className, children, inline }: CodeProps): JSX.Element {
 
   return (
     <div className="my-2 overflow-hidden rounded-md border border-minimax-border bg-minimax-bg">
-      <div className="flex items-center justify-between border-b border-minimax-border/60 bg-minimax-bg/40 px-2 py-1 text-[10px] uppercase tracking-wider text-minimax-muted">
+      <div className="flex items-center justify-between border-b border-minimax-border/60 bg-minimax-bg/40 px-2 py-1 text-[11px] uppercase tracking-wider text-minimax-muted">
         <span>{lang}</span>
         <button
           type="button"
@@ -234,7 +234,7 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
         {isAssistant && summary && (
           <div
             data-testid={`message-summary-${message.id}`}
-            className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 border-b border-minimax-border/40 pb-1.5 text-[10px] text-minimax-muted"
+            className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 border-b border-minimax-border/40 pb-1.5 text-[11px] text-minimax-muted"
             aria-label="turn summary"
           >
             <span className="inline-flex items-center gap-1">

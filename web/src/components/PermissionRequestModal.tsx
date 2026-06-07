@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Permission request modal — pops up when the Python sidecar emits a
  * `permission.request` event (a tool with an `ask` rule is about to
  * run, and we want real human approval before the agent loop continues).
@@ -134,7 +134,7 @@ export function PermissionRequestModal({
           </button>
         </div>
 
-        <p className="mt-3 text-[10px] text-minimax-muted">
+        <p className="mt-3 text-[11px] text-minimax-muted">
           按 Esc 拒绝 · 关闭右侧 × 等同于拒绝
         </p>
       </div>

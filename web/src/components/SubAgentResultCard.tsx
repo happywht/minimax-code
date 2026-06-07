@@ -1,4 +1,4 @@
-/**
+﻿/**
  * SubAgentResultCard — collapsible card rendered in the chat stream
  * once a sub-agent run reaches ``completed`` | ``failed``.
  *
@@ -71,7 +71,7 @@ export function SubAgentResultCard({
         <span
           data-testid={`${testId}-status`}
           className={
-            "rounded-full border px-1.5 py-0.5 text-[9px] " +
+            "rounded-full border px-1.5 py-0.5 text-[11px] " +
             (failed
               ? "border-red-500/30 text-red-300"
               : "border-emerald-500/30 text-emerald-300")
@@ -88,7 +88,7 @@ export function SubAgentResultCard({
             type="button"
             data-testid={`${testId}-open`}
             onClick={() => onOpenRun(run)}
-            className="inline-flex items-center gap-0.5 text-[10px] text-minimax-muted hover:text-minimax-fg"
+            className="inline-flex items-center gap-0.5 text-[11px] text-minimax-muted hover:text-minimax-fg"
             title="Open in sub-agent panel"
           >
             <ExternalLink size={9} />
@@ -111,7 +111,7 @@ export function SubAgentResultCard({
       {run.summary && (
         <div
           data-testid={`${testId}-summary`}
-          className="border-t border-minimax-border/40 px-3 py-1 text-[10px] text-minimax-muted"
+          className="border-t border-minimax-border/40 px-3 py-1 text-[11px] text-minimax-muted"
         >
           {run.summary}
         </div>
@@ -127,7 +127,7 @@ export function SubAgentResultCard({
       {failed && run.error && (
         <div
           data-testid={`${testId}-error`}
-          className="border-t border-red-500/30 px-3 py-1 text-[10px] text-red-300"
+          className="border-t border-red-500/30 px-3 py-1 text-[11px] text-red-300"
         >
           {run.error}
         </div>

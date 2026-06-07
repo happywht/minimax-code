@@ -41,10 +41,10 @@ from .protocol import (
     INVALID_PARAMS,
     STORAGE_ERROR,
 )
+from .handler_utils import HandlerError, check_params
 from .server import Context
 
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Backward-compatible constants
@@ -85,7 +85,6 @@ MODEL_META: dict[str, dict[str, Any]] = {
     },
 }
 
-
 def is_valid_model(name: str) -> bool:
     """Return True iff ``name`` is in the built-in candidate set.
 
@@ -93,20 +92,9 @@ def is_valid_model(name: str) -> bool:
     """
     return isinstance(name, str) and name in CANDIDATE_MODELS
 
-
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
-
-
-class _HandlerError(Exception):
-    """Internal sentinel — handlers raise it with a JSON-RPC code."""
-
-    def __init__(self, code: int, message: str, data: Any = None) -> None:
-        self.code = code
-        self.message = message
-        self.data = data
-
 
 # ---------------------------------------------------------------------------
 # Registration
@@ -116,7 +104,6 @@ _DAO_ATTR = "_model_prefs_dao"
 _LOCK_ATTR = "_model_prefs_dao_lock"
 _PROV_DAO_ATTR = "_provider_dao_for_model"
 _PROV_LOCK_ATTR = "_provider_dao_for_model_lock"
-
 
 def register_model_handlers(
     server: Any,
@@ -163,7 +150,7 @@ def register_model_handlers(
             from ..storage.db import AsyncDatabase, default_database_path
 
             if os.environ.get("MINIMAX_CODE_NO_DB") == "1":
-                raise _HandlerError(
+                raise HandlerError(
                     STORAGE_ERROR,
                     "storage is disabled (MINIMAX_CODE_NO_DB=1); model handlers need a DB",
                 )
@@ -173,7 +160,7 @@ def register_model_handlers(
                 await db.migrate()
             except Exception as exc:
                 logger.exception("failed to open storage for model handlers")
-                raise _HandlerError(
+                raise HandlerError(
                     STORAGE_ERROR,
                     f"failed to open storage: {exc}",
                 ) from exc
@@ -202,7 +189,7 @@ def register_model_handlers(
             from ..storage.db import AsyncDatabase, default_database_path
 
             if os.environ.get("MINIMAX_CODE_NO_DB") == "1":
-                raise _HandlerError(
+                raise HandlerError(
                     STORAGE_ERROR,
                     "storage is disabled (MINIMAX_CODE_NO_DB=1)",
                 )
@@ -212,7 +199,7 @@ def register_model_handlers(
                 await db.migrate()
             except Exception as exc:
                 logger.exception("failed to open storage for provider dao")
-                raise _HandlerError(
+                raise HandlerError(
                     STORAGE_ERROR,
                     f"failed to open storage: {exc}",
                 ) from exc
@@ -224,13 +211,13 @@ def register_model_handlers(
 
     async def handle_model_list(params: Any, ctx: Context) -> None:
         try:
-            _check_params(params, expected_keys=set())
+            check_params(params, expected_keys=set())
             # Dynamic model list from all enabled providers.
             models: list[dict[str, Any]] = []
             try:
                 prov_dao = await _ensure_provider_dao()
                 models = await prov_dao.list_models()
-            except _HandlerError:
+            except HandlerError:
                 pass  # DB not ready yet — return empty list.
             except Exception:
                 logger.exception("provider_dao.list_models failed; returning []")
@@ -240,38 +227,38 @@ def register_model_handlers(
                 dao_obj = await _ensure_dao()
                 pref = await dao_obj.get_current()
                 current = pref["model_id"] if isinstance(pref, dict) else pref
-            except _HandlerError:
+            except HandlerError:
                 pass  # DB not ready yet — return list without current.
             await ctx.reply({"models": models, "current": current})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("model.list failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"model.list failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "model.list failed")
 
     async def handle_model_get_current(params: Any, ctx: Context) -> None:
         try:
             dao_obj = await _ensure_dao()
-            _check_params(params, expected_keys=set())
+            check_params(params, expected_keys=set())
             pref = await dao_obj.get_current()
             model = pref["model_id"] if isinstance(pref, dict) else pref
             await ctx.reply({"model": model})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("model.get_current failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"model.get_current failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "model.get_current failed")
 
     async def handle_model_set_current(params: Any, ctx: Context) -> None:
         try:
             dao_obj = await _ensure_dao()
             # Accept both "model" (internal/test) and "model_id" (frontend).
-            _check_params(params, expected_keys=set())
+            check_params(params, expected_keys=set())
             model = str(
                 params.get("model_id") or params.get("model") or ""
             ).strip()
             if not model:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS,
                     "param 'model_id' must be a non-empty string",
                 )
@@ -286,11 +273,11 @@ def register_model_handlers(
                 prov_dao = await _ensure_provider_dao()
                 for m in await prov_dao.list_models():
                     valid_models.add(m.get("id"))
-            except _HandlerError:
+            except HandlerError:
                 pass  # DB unavailable — skip validation (best-effort).
 
             if valid_models and model not in valid_models:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS,
                     f"unknown model {model!r}; valid options: {sorted(valid_models)}",
                     data={"valid": sorted(valid_models)},
@@ -305,49 +292,19 @@ def register_model_handlers(
             except Exception:
                 logger.debug("rebuild_subagent_llm after set_current failed; continuing")
             await ctx.reply({"ok": True, "model": model, "current": model})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("model.set_current failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"model.set_current failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "model.set_current failed")
 
     server.register("model.list", handle_model_list)
     server.register("model.get_current", handle_model_get_current)
     server.register("model.set_current", handle_model_set_current)
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _check_params(params: Any, *, expected_keys: set[str]) -> None:
-    """Validate the JSON-RPC params shape; raise :class:`_HandlerError` on bad input.
-
-    Mirrors the helper in :mod:`handlers_permissions` so every
-    storage-backed namespace parses params the same way.
-    """
-    if not expected_keys:
-        return
-    if params is None or not isinstance(params, dict):
-        raise _HandlerError(
-            INVALID_PARAMS,
-            "params must be a JSON object with the required keys",
-        )
-    missing = expected_keys - set(params.keys())
-    if missing:
-        raise _HandlerError(
-            INVALID_PARAMS,
-            f"missing required param(s): {sorted(missing)}",
-        )
-    for key in expected_keys:
-        if params[key] is None or (
-            isinstance(params[key], str) and not params[key].strip()
-        ):
-            raise _HandlerError(
-                INVALID_PARAMS, f"param {key!r} must be a non-empty value"
-            )
-
 
 __all__ = [
     "CANDIDATE_MODELS",

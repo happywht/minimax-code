@@ -1,4 +1,4 @@
-/**
+﻿/**
  * A single navigation row in the sidebar. Shows an icon, a label, an
  * optional count badge, and a "selected" state.
  */
@@ -42,7 +42,7 @@ export function NavItem({
       </span>
       <span className="flex-1 truncate">{label}</span>
       {count != null && count > 0 && (
-        <span className="ml-auto rounded bg-minimax-border px-1.5 py-0.5 text-[10px] font-medium text-minimax-muted">
+        <span className="ml-auto rounded bg-minimax-border px-1.5 py-0.5 text-[11px] font-medium text-minimax-muted">
           {count}
         </span>
       )}

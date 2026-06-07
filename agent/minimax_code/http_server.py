@@ -132,6 +132,12 @@ class _WSManager:
         self._listener: Any = None  # the IPCServer listener callback
         # v0.7.0 — device-level tracking for targeted push
         self._device_connections: dict[str, WebSocket] = {}
+        # v0.8.0 — heartbeat: periodic ping to detect dead connections
+        self._ping_task: asyncio.Task[None] | None = None
+        # v0.8.0 — backpressure: per-client send queues with bounded depth
+        self._send_queues: dict[int, asyncio.Queue[dict[str, Any] | None]] = {}
+        self._sender_tasks: dict[int, asyncio.Task[None]] = {}
+        self._max_queue_depth: int = 256  # drop oldest when exceeded
 
     @property
     def has_clients(self) -> bool:
@@ -178,6 +184,11 @@ class _WSManager:
             if self._listener is None:
                 self._listener = self._on_event
                 self._server.register_listener(self._listener)
+            # Start heartbeat ping task when first client connects
+            if self._ping_task is None:
+                self._ping_task = asyncio.create_task(self._heartbeat_loop())
+            # Start per-client sender queue for backpressure
+            self._start_sender(ws)
         # Send the lifecycle event. Done after the lock release so
         # the listener is fully wired before any handler can fire
         # events. ``agent.ready`` is the one event we *don't* route
@@ -206,6 +217,8 @@ class _WSManager:
     async def _cleanup_disconnect(self, ws: WebSocket) -> None:
         async with self._lock:
             self._clients.discard(ws)
+            # Stop per-client sender queue
+            self._stop_sender(ws)
             # Remove any device_id mapping pointing to this ws
             to_remove = [did for did, s in self._device_connections.items() if s is ws]
             for did in to_remove:
@@ -213,6 +226,99 @@ class _WSManager:
             if not self._clients and self._listener is not None:
                 self._server.unregister_listener(self._listener)
                 self._listener = None
+            # Stop heartbeat when last client disconnects
+            if not self._clients and self._ping_task is not None:
+                self._ping_task.cancel()
+                self._ping_task = None
+
+    async def _heartbeat_loop(self) -> None:
+        """Periodically send WS protocol-level pings to detect dead clients.
+
+        Runs as a background task while any client is connected.
+        Sends a ping every 30 seconds; clients that fail to pong
+        within the WebSocket library timeout are auto-disconnected
+        by FastAPI / Starlette.
+        """
+        try:
+            while True:
+                await asyncio.sleep(30)
+                dead: list[WebSocket] = []
+                for ws in list(self._clients):
+                    try:
+                        await ws.send_json(
+                            {"jsonrpc": "2.0", "method": "agent.ping", "params": None}
+                        )
+                    except Exception:
+                        dead.append(ws)
+                # Clean up clients that failed to receive the ping
+                for ws in dead:
+                    logger.warning("heartbeat ping failed; dropping client")
+                    await self._cleanup_disconnect(ws)
+        except asyncio.CancelledError:
+            pass  # Normal shutdown
+        except Exception:
+            logger.exception("heartbeat loop crashed")
+
+    def _start_sender(self, ws: WebSocket) -> None:
+        """Spawn a per-client sender task that drains the queue sequentially."""
+        ws_id = id(ws)
+        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(
+            maxsize=self._max_queue_depth
+        )
+        self._send_queues[ws_id] = queue
+
+        async def _sender() -> None:
+            """Consume from the queue and send to the client in order."""
+            try:
+                while True:
+                    item = await queue.get()
+                    if item is None:
+                        break  # Sentinel — shut down
+                    try:
+                        await ws.send_json(item)
+                    except Exception:
+                        logger.warning("ws send failed; stopping sender for client")
+                        break
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("ws sender task crashed")
+
+        self._sender_tasks[ws_id] = asyncio.create_task(_sender())
+
+    def _stop_sender(self, ws: WebSocket) -> None:
+        """Stop the per-client sender task and clean up."""
+        ws_id = id(ws)
+        queue = self._send_queues.pop(ws_id, None)
+        task = self._sender_tasks.pop(ws_id, None)
+        if queue is not None:
+            # Send sentinel to wake up the sender
+            try:
+                queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
+        if task is not None:
+            task.cancel()
+
+    def _enqueue(self, ws: WebSocket, payload: dict[str, Any]) -> None:
+        """Queue a payload for a client. Drops the oldest item if full."""
+        ws_id = id(ws)
+        queue = self._send_queues.get(ws_id)
+        if queue is None:
+            return
+        try:
+            queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            # Backpressure: drop the oldest queued item to make room
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                queue.put_nowait(payload)
+            except asyncio.QueueFull:
+                logger.warning("ws queue still full after drop; discarding event")
+
 
     def _on_event(self, env: dict[str, Any]) -> None:
         """IPCServer listener — fan ``env`` out to every open client.
@@ -241,16 +347,9 @@ class _WSManager:
         # with concurrent connect/disconnect.
         for ws in list(self._clients):
             try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = None
-            try:
-                if loop is not None and loop.is_running():
-                    loop.create_task(ws.send_json(payload))
-                else:  # pragma: no cover — defensive
-                    pass
+                self._enqueue(ws, payload)
             except Exception:
-                logger.exception("failed to schedule ws send; dropping client")
+                logger.exception("failed to enqueue ws send; dropping client")
                 self._clients.discard(ws)
 
 
@@ -407,7 +506,7 @@ def build_app(
                     id=0,
                     error=RPCError(
                         code=PARSE_ERROR,
-                        message=f"request body could not be read: {exc}",
+                        message="request body could not be read",
                     ),
                 ).model_dump(exclude_none=True),
                 status_code=200,
@@ -454,6 +553,10 @@ def build_app(
                     continue
                 if not isinstance(parsed, dict):
                     continue
+                # Heartbeat pong from client — acknowledged silently.
+                method = parsed.get("method")
+                if method == "agent.pong":
+                    continue
                 # The web client uses the HTTP endpoint for
                 # requests, so we do nothing here beyond draining.
                 logger.debug("ws received (ignored): %s", parsed)
@@ -468,8 +571,19 @@ def build_app(
 
     @app.get("/health")
     async def get_health() -> dict[str, Any]:
+        db_ok = False
+        try:
+            from .app import get_db
+
+            db = get_db()
+            if db is not None:
+                await db.execute("SELECT 1")
+                db_ok = True
+        except Exception:
+            pass
         return {
-            "ok": True,
+            "ok": db_ok,
+            "db": db_ok,
             "version": app_version,
             "uptime_s": int(time.time() - started_at),
         }

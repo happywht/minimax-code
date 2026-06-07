@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Agents tab — sub-agent CRUD via `agent.*` IPC.
  */
 import { useEffect, useState } from "react";
@@ -32,7 +32,7 @@ function AgentsTab(): JSX.Element {
         <div>
           <h2 className="text-sm font-medium">Sub-agents</h2>
           <p className="mt-0.5 text-[11px] text-minimax-muted">
-            Manage agents that can be invoked via <code className="rounded bg-minimax-panel px-1 font-mono text-[10px]">@agent</code> in chat.
+            Manage agents that can be invoked via <code className="rounded bg-minimax-panel px-1 font-mono text-[11px]">@agent</code> in chat.
           </p>
         </div>
         <button type="button" data-testid="settings-agent-create"
@@ -74,12 +74,12 @@ function AgentsTab(): JSX.Element {
                   <Bot size={12} className="text-minimax-accent" />
                   <span className="truncate text-xs font-medium text-minimax-fg">{a.name}</span>
                   {a.enabled ? (
-                    <span className="rounded bg-emerald-500/10 px-1 py-0.5 text-[9px] text-emerald-300">enabled</span>
+                    <span className="rounded bg-emerald-500/10 px-1 py-0.5 text-[11px] text-emerald-300">enabled</span>
                   ) : (
-                    <span className="rounded bg-minimax-border px-1 py-0.5 text-[9px] text-minimax-muted">disabled</span>
+                    <span className="rounded bg-minimax-border px-1 py-0.5 text-[11px] text-minimax-muted">disabled</span>
                   )}
                 </div>
-                {a.description && <p className="mt-0.5 truncate text-[10px] text-minimax-muted">{a.description}</p>}
+                {a.description && <p className="mt-0.5 truncate text-[11px] text-minimax-muted">{a.description}</p>}
               </div>
               <button type="button" data-testid={`settings-agent-delete-${a.name}`}
                 onClick={() => void remove(a.name)} aria-label={`Delete agent ${a.name}`}

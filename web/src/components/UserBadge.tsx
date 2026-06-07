@@ -1,4 +1,4 @@
-/**
+﻿/**
  * User badge — bottom-left avatar + plan info.
  *
  * Layout:
@@ -138,12 +138,12 @@ export function UserBadge({
                 }
               }}
               onClick={(e) => e.stopPropagation()}
-              className="mt-0.5 w-full rounded-sm border border-minimax-accent/40 bg-minimax-bg/40 px-1 py-0 text-[10px] text-minimax-fg outline-none focus:border-minimax-accent"
+              className="mt-0.5 w-full rounded-sm border border-minimax-accent/40 bg-minimax-bg/40 px-1 py-0 text-[11px] text-minimax-fg outline-none focus:border-minimax-accent"
             />
           ) : (
             <span
               data-testid="user-badge-plan"
-              className="mt-0.5 flex items-center gap-1 truncate text-[10px] text-minimax-muted"
+              className="mt-0.5 flex items-center gap-1 truncate text-[11px] text-minimax-muted"
             >
               <Crown size={10} className="shrink-0 text-amber-400" />
               <span
@@ -180,7 +180,7 @@ export function UserBadge({
         >
           <div className="px-2 py-1.5">
             <div className="truncate text-xs text-minimax-fg">{name}</div>
-            <div className="truncate text-[10px] text-minimax-muted">
+            <div className="truncate text-[11px] text-minimax-muted">
               {email}
             </div>
           </div>

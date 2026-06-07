@@ -245,8 +245,8 @@ async def test_notification_dao_factory_returns_error_when_no_db():
     """When get_db() returns None, the factory must raise _HandlerError."""
     from minimax_code.ipc.handlers_notifications import (
         _make_notification_dao_factory,
-        _HandlerError,
     )
+    from minimax_code.ipc.handler_utils import HandlerError as _HandlerError
 
     with patch("minimax_code.app.get_db", return_value=None):
         server = IPCServer(Config())
@@ -276,8 +276,8 @@ async def test_workflow_dao_factory_returns_error_when_no_db():
     """When get_db() returns None, the factory must raise _HandlerError."""
     from minimax_code.ipc.handlers_workflows import (
         _make_workflow_dao_factory,
-        _HandlerError,
     )
+    from minimax_code.ipc.handler_utils import HandlerError as _HandlerError
 
     with patch("minimax_code.app.get_db", return_value=None):
         server = IPCServer(Config())

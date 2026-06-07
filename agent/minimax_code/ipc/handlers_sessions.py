@@ -34,10 +34,10 @@ from datetime import datetime
 from typing import Any
 
 from .protocol import INTERNAL_ERROR, INVALID_PARAMS
+from .handler_utils import HandlerError, check_params
 from .server import Context
 
 logger = logging.getLogger(__name__)
-
 
 # Default title used when the frontend calls ``session.create``
 # without supplying one (e.g. the "new task" button in the
@@ -45,25 +45,13 @@ logger = logging.getLogger(__name__)
 # types a real prompt.
 _DEFAULT_TITLE_FMT = "New chat — %Y-%m-%d %H:%M"
 
-
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
 
-
-class _HandlerError(Exception):
-    """Internal sentinel — handlers raise it with a JSON-RPC code."""
-
-    def __init__(self, code: int, message: str, data: Any = None) -> None:
-        self.code = code
-        self.message = message
-        self.data = data
-
-
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
-
 
 def register_session_handlers(server: Any, *, dao: Any = None) -> None:
     """Register the ``session.*`` handlers on ``server``.
@@ -97,7 +85,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
             if title is None or (isinstance(title, str) and not title.strip()):
                 title = datetime.now().strftime(_DEFAULT_TITLE_FMT)
             elif not isinstance(title, str):
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS, "title must be a string if provided"
                 )
             # Generate a new id; we use the same ``ses_`` prefix
@@ -115,7 +103,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                     "created_at": row["created_at"],
                 }
             )
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("session.create failed")
@@ -128,7 +116,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
     async def handle_session_list(params: Any, ctx: Context) -> None:
         try:
             sess_dao = await dao_factory()
-            _check_params(params, expected_keys=set())
+            check_params(params, expected_keys=set())
             p = params or {}
             # The frontend passes ``archived`` as a tri-state: missing
             # (no filter), ``true`` (only archived), ``false`` (active
@@ -142,7 +130,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 archived = bool(archived_raw)
             search = p.get("search")
             if search is not None and not isinstance(search, str):
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS, "search must be a string if provided"
                 )
             # Clamp pagination so a typo can't drag a million rows back.
@@ -166,22 +154,22 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 search=search if search else None,
             )
             await ctx.reply({"sessions": sessions, "total": total})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("session.list failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"session.list failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "session.list failed")
 
     # ------------------------------------------------------------------- get
 
     async def handle_session_get(params: Any, ctx: Context) -> None:
         try:
             sess_dao = await dao_factory()
-            _check_params(params, expected_keys={"session_id"})
+            check_params(params, expected_keys={"session_id"})
             session_id = str(params["session_id"])
             session = await sess_dao.get(session_id)
             if session is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS, f"unknown session_id: {session_id!r}"
                 )
             # Default to 100 recent messages; the chat UI scrolls
@@ -195,26 +183,26 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
             await ctx.reply(
                 {"session": session, "recent_messages": recent_messages}
             )
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("session.get failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"session.get failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "session.get failed")
 
     # -------------------------------------------------------------- archive
 
     async def handle_session_archive(params: Any, ctx: Context) -> None:
         try:
             sess_dao = await dao_factory()
-            _check_params(params, expected_keys={"session_id"})
+            check_params(params, expected_keys={"session_id"})
             session_id = str(params["session_id"])
             session = await sess_dao.set_archived(session_id, True)
             if session is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS, f"unknown session_id: {session_id!r}"
                 )
             await ctx.reply({"ok": True, "session": session})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("session.archive failed")
@@ -227,15 +215,15 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
     async def handle_session_unarchive(params: Any, ctx: Context) -> None:
         try:
             sess_dao = await dao_factory()
-            _check_params(params, expected_keys={"session_id"})
+            check_params(params, expected_keys={"session_id"})
             session_id = str(params["session_id"])
             session = await sess_dao.set_archived(session_id, False)
             if session is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS, f"unknown session_id: {session_id!r}"
                 )
             await ctx.reply({"ok": True, "session": session})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("session.unarchive failed")
@@ -248,15 +236,15 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
     async def handle_session_delete(params: Any, ctx: Context) -> None:
         try:
             sess_dao = await dao_factory()
-            _check_params(params, expected_keys={"session_id"})
+            check_params(params, expected_keys={"session_id"})
             session_id = str(params["session_id"])
             ok = await sess_dao.delete(session_id)
             if not ok:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS, f"unknown session_id: {session_id!r}"
                 )
             await ctx.reply({"ok": True, "session_id": session_id})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("session.delete failed")
@@ -269,22 +257,22 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
     async def handle_session_update(params: Any, ctx: Context) -> None:
         try:
             sess_dao = await dao_factory()
-            _check_params(params, expected_keys={"session_id"})
+            check_params(params, expected_keys={"session_id"})
             session_id = str(params["session_id"])
             updates: dict[str, Any] = {}
             if "title" in params and params["title"] is not None:
                 updates["title"] = str(params["title"])
             if not updates:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS, "session.update: no fields to update"
                 )
             row = await sess_dao.update(session_id, **updates)
             if row is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS, f"unknown session_id: {session_id!r}"
                 )
             await ctx.reply({"ok": True, "session": row})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("session.update failed")
@@ -302,12 +290,12 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
         to repopulate the chat panel with the conversation history.
         """
         try:
-            _check_params(params, expected_keys={"session_id"})
+            check_params(params, expected_keys={"session_id"})
             session_id = str(params["session_id"])
             limit = _clamp_int(params.get("limit"), default=100, lo=1, hi=500)
             before = params.get("before")
             if before is not None and not isinstance(before, str):
-                raise _HandlerError(
+                raise HandlerError(
                     INVALID_PARAMS, "before must be an ISO timestamp string"
                 )
             from ..storage.dao.messages import MessagesDAO
@@ -344,11 +332,11 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                     msg["tool_calls"] = r["tool_calls"]
                 messages.append(msg)
             await ctx.reply({"messages": messages})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("message.list failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"message.list failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "message.list failed")
 
     server.register("session.create", handle_session_create)
     server.register("session.list", handle_session_list)
@@ -359,11 +347,9 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
     server.register("session.update", handle_session_update)
     server.register("message.list", handle_message_list)
 
-
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
-
 
 def _make_dao_factory(dao: Any | None) -> Any:
     """Return an async factory yielding a :class:`SessionsDAO`.
@@ -398,40 +384,9 @@ def _make_dao_factory(dao: Any | None) -> Any:
 
     return _factory
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _check_params(params: Any, *, expected_keys: set[str]) -> None:
-    """Validate the JSON-RPC params shape; raise :class:`_HandlerError`.
-
-    Mirrors the helper in :mod:`handlers_tasks` /
-    :mod:`handlers_scheduled` so all three handler modules
-    present the same JSON-RPC surface to the frontend.
-    """
-    if not expected_keys:
-        return
-    if params is None or not isinstance(params, dict):
-        raise _HandlerError(
-            INVALID_PARAMS,
-            "params must be a JSON object with the required keys",
-        )
-    missing = expected_keys - set(params.keys())
-    if missing:
-        raise _HandlerError(
-            INVALID_PARAMS,
-            f"missing required param(s): {sorted(missing)}",
-        )
-    for key in expected_keys:
-        if params[key] is None or (
-            isinstance(params[key], str) and not params[key].strip()
-        ):
-            raise _HandlerError(
-                INVALID_PARAMS, f"param {key!r} must be a non-empty value"
-            )
-
 
 def _clamp_int(value: Any, *, default: int, lo: int, hi: int) -> int:
     """Coerce a possibly-bad int param into ``[lo, hi]``.
@@ -448,6 +403,5 @@ def _clamp_int(value: Any, *, default: int, lo: int, hi: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(lo, min(n, hi))
-
 
 __all__ = ["register_session_handlers"]

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Workspace switcher — compact dropdown button in the top header
  * that shows the current workspace name and lets the user pick a
  * different one. The list is persisted to `localStorage`; a fresh
@@ -143,7 +143,7 @@ export function WorkspaceSwitcher({
                   <span className="flex-1 truncate">
                     <span className="block text-minimax-fg">{w.name}</span>
                     {w.path && (
-                      <span className="block text-[10px] text-minimax-muted">
+                      <span className="block text-[11px] text-minimax-muted">
                         {w.path}
                       </span>
                     )}

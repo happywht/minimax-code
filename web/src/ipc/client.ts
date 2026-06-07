@@ -525,6 +525,12 @@ export class IPCClient {
     // fan-out; presence of an open WebSocket is the signal UIs use.
     if (method === "agent.ready") return;
 
+    // Heartbeat ping — reply with pong to keep the connection alive.
+    if (method === "agent.ping" && this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "agent.pong" }));
+      return;
+    }
+
     // Sidecar events: method = "sidecar" or "sidecar.*". We accept
     // either bare status (top-level `params.status`) or a fully
     // shaped `SidecarEvent` in `params`.

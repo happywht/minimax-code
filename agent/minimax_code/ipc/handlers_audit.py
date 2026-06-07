@@ -21,6 +21,7 @@ import logging
 from typing import Any
 
 from .protocol import INTERNAL_ERROR, STORAGE_ERROR
+from .handler_utils import HandlerError
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,6 @@ logger = logging.getLogger(__name__)
 
 _DAO_ATTR = "_audit_log_dao"
 _DAO_LOCK_ATTR = "_audit_log_dao_lock"
-
 
 def _make_audit_dao_factory(server: Any):
     """Return an async factory that lazily creates an ``AuditLogDAO``."""
@@ -67,22 +67,9 @@ def _make_audit_dao_factory(server: Any):
 
     return _factory
 
-
-# ---------------------------------------------------------------------------
-# Errors
-# ---------------------------------------------------------------------------
-
-
-class _HandlerError(Exception):
-    def __init__(self, code: int, message: str) -> None:
-        self.code = code
-        self.message = message
-
-
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
-
 
 async def _handle_audit_list(params: Any, ctx: Context) -> None:
     try:
@@ -104,12 +91,11 @@ async def _handle_audit_list(params: Any, ctx: Context) -> None:
             tool_name=tool_name, session_id=session_id,
         )
         await ctx.reply({"entries": entries, "total": total})
-    except _HandlerError as exc:
+    except HandlerError as exc:
         await ctx.reply_error(exc.code, exc.message)
     except Exception as exc:
         logger.exception("audit.list failed")
-        await ctx.reply_error(INTERNAL_ERROR, f"audit.list failed: {exc}")
-
+        await ctx.reply_error(INTERNAL_ERROR, "audit.list failed")
 
 async def _handle_audit_stats(params: Any, ctx: Context) -> None:
     try:
@@ -119,12 +105,11 @@ async def _handle_audit_stats(params: Any, ctx: Context) -> None:
             return
         result = await dao.stats()
         await ctx.reply(result)
-    except _HandlerError as exc:
+    except HandlerError as exc:
         await ctx.reply_error(exc.code, exc.message)
     except Exception as exc:
         logger.exception("audit.stats failed")
-        await ctx.reply_error(INTERNAL_ERROR, f"audit.stats failed: {exc}")
-
+        await ctx.reply_error(INTERNAL_ERROR, "audit.stats failed")
 
 async def _handle_audit_purge(params: Any, ctx: Context) -> None:
     try:
@@ -137,19 +122,17 @@ async def _handle_audit_purge(params: Any, ctx: Context) -> None:
             return
         deleted = await dao.purge_before(params["before_iso"])
         await ctx.reply({"deleted": deleted})
-    except _HandlerError as exc:
+    except HandlerError as exc:
         await ctx.reply_error(exc.code, exc.message)
     except Exception as exc:
         logger.exception("audit.purge failed")
-        await ctx.reply_error(INTERNAL_ERROR, f"audit.purge failed: {exc}")
-
+        await ctx.reply_error(INTERNAL_ERROR, "audit.purge failed")
 
 # ---------------------------------------------------------------------------
 # DAO accessor
 # ---------------------------------------------------------------------------
 
 _FACTORY_ATTR = "_audit_log_dao_factory"
-
 
 def _ensure_dao(ctx: Context) -> Any:
     """Return the DAO via the lazy factory stored on the server."""
@@ -159,11 +142,9 @@ def _ensure_dao(ctx: Context) -> Any:
         setattr(ctx.server, _FACTORY_ATTR, factory)
     return factory()
 
-
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
-
 
 def register_audit_handlers(server: Any) -> None:
     """Register all ``audit.*`` JSON-RPC methods on *server*."""
@@ -171,6 +152,5 @@ def register_audit_handlers(server: Any) -> None:
     server.register("audit.stats", _handle_audit_stats)
     server.register("audit.purge", _handle_audit_purge)
     logger.debug("registered audit.* handlers")
-
 
 __all__ = ["register_audit_handlers"]

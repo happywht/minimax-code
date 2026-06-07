@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Audit tab — audit log viewer with stats, filter, and pagination.
  * Includes StatusBadge sub-component.
  */
@@ -6,6 +6,7 @@ import { useEffect } from "react";
 import { SkeletonTable } from "../Skeleton";
 import { useAuditStore } from "../../stores";
 import type { AuditEntry } from "../../types/ipc";
+import { formatDateTime } from "../../lib/time";
 
 export { AuditTab };
 
@@ -32,17 +33,17 @@ function AuditTab(): JSX.Element {
         <div className="grid grid-cols-3 gap-3 text-center">
           <div className="rounded border border-minimax-border bg-minimax-panel px-3 py-2">
             <div className="text-lg font-bold">{stats.total}</div>
-            <div className="text-[10px] text-minimax-muted">Total Calls</div>
+            <div className="text-[11px] text-minimax-muted">Total Calls</div>
           </div>
           <div className="rounded border border-minimax-border bg-minimax-panel px-3 py-2">
             <div className="text-lg font-bold">{Object.keys(stats.by_tool).length}</div>
-            <div className="text-[10px] text-minimax-muted">Tools Used</div>
+            <div className="text-[11px] text-minimax-muted">Tools Used</div>
           </div>
           <div className="rounded border border-minimax-border bg-minimax-panel px-3 py-2">
             <div className="text-lg font-bold text-green-400">
               {stats.by_status.success ?? 0}
             </div>
-            <div className="text-[10px] text-minimax-muted">Successes</div>
+            <div className="text-[11px] text-minimax-muted">Successes</div>
           </div>
         </div>
       )}
@@ -93,7 +94,7 @@ function AuditTab(): JSX.Element {
             <tbody>
               {entries.map((e: AuditEntry) => (
                 <tr key={e.id} className="border-b border-minimax-border/40 hover:bg-minimax-panel">
-                  <td className="px-2 py-1 whitespace-nowrap">{e.created_at ? new Date(e.created_at).toLocaleString() : "—"}</td>
+                  <td className="px-2 py-1 whitespace-nowrap">{e.created_at ? formatDateTime(e.created_at) : "—"}</td>
                   <td className="px-2 py-1 font-mono">{e.tool_name}</td>
                   <td className="px-2 py-1">
                     <StatusBadge status={e.result_status} />

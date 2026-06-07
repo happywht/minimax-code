@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Workflows tab — manage automation workflows.
  */
 import { useEffect, useState } from "react";
@@ -6,6 +6,7 @@ import { SkeletonTable } from "../Skeleton";
 import { Play, Plus, Trash2, Workflow } from "lucide-react";
 import { useWorkflowStore } from "../../stores";
 import type { WorkflowEntry } from "../../types/ipc";
+import { formatDateTime } from "../../lib/time";
 
 export { WorkflowsTab };
 
@@ -117,13 +118,13 @@ function WorkflowsTab(): JSX.Element {
                 <div className="flex items-center gap-2">
                   <Workflow size={14} className="text-minimax-accent" />
                   <span className="text-xs font-semibold">{wf.name}</span>
-                  <span className="rounded bg-minimax-accent/20 px-1.5 py-0.5 text-[10px] text-minimax-accent">{wf.trigger_type}</span>
-                  <span className="rounded bg-minimax-bg px-1.5 py-0.5 text-[10px] text-minimax-muted">{wf.steps.length} step(s)</span>
+                  <span className="rounded bg-minimax-accent/20 px-1.5 py-0.5 text-[11px] text-minimax-accent">{wf.trigger_type}</span>
+                  <span className="rounded bg-minimax-bg px-1.5 py-0.5 text-[11px] text-minimax-muted">{wf.steps.length} step(s)</span>
                 </div>
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
-                    className={`rounded px-1.5 py-0.5 text-[10px] ${wf.enabled ? "text-green-400" : "text-minimax-muted"}`}
+                    className={`rounded px-1.5 py-0.5 text-[11px] ${wf.enabled ? "text-green-400" : "text-minimax-muted"}`}
                     onClick={() => wf.enabled ? disable(wf.id) : enable(wf.id)}
                   >
                     {wf.enabled ? "Enabled" : "Disabled"}
@@ -131,7 +132,7 @@ function WorkflowsTab(): JSX.Element {
                   <button
                     type="button"
                     data-testid={`workflow-trigger-${wf.id}`}
-                    className="rounded px-1.5 py-0.5 text-[10px] text-minimax-accent hover:text-minimax-accent/80"
+                    className="rounded px-1.5 py-0.5 text-[11px] text-minimax-accent hover:text-minimax-accent/80"
                     onClick={() => trigger(wf.id)}
                     title="Manually trigger this workflow"
                   >
@@ -139,7 +140,7 @@ function WorkflowsTab(): JSX.Element {
                   </button>
                   <button
                     type="button"
-                    className="rounded px-1.5 py-0.5 text-[10px] text-red-400 hover:text-red-300"
+                    className="rounded px-1.5 py-0.5 text-[11px] text-red-400 hover:text-red-300"
                     onClick={() => remove(wf.id)}
                   >
                     <Trash2 size={11} />
@@ -147,18 +148,18 @@ function WorkflowsTab(): JSX.Element {
                 </div>
               </div>
               {wf.description && (
-                <p className="text-[10px] text-minimax-muted">{wf.description}</p>
+                <p className="text-[11px] text-minimax-muted">{wf.description}</p>
               )}
-              <div className="flex items-center gap-3 text-[10px] text-minimax-muted">
+              <div className="flex items-center gap-3 text-[11px] text-minimax-muted">
                 <span>Runs: {wf.run_count}</span>
-                {wf.last_run_at && <span>Last: {new Date(wf.last_run_at).toLocaleString()}</span>}
+                {wf.last_run_at && <span>Last: {formatDateTime(wf.last_run_at)}</span>}
               </div>
             </div>
           ))}
         </div>
       )}
 
-      <div className="text-[10px] text-minimax-muted">
+      <div className="text-[11px] text-minimax-muted">
         {total} workflow(s) configured
       </div>
     </section>

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Skills panel — full-page view that lists every installed skill
  * with a per-row enable / disable toggle. The panel is mounted by
  * `App.tsx` when the sidebar nav switches to the "skills" view.
@@ -83,7 +83,7 @@ export function SkillsPanel({ testId = "skills-panel" }: SkillsPanelProps): JSX.
                       {skill.name}
                     </span>
                     {skill.builtin && (
-                      <span className="rounded bg-minimax-border px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-minimax-muted">
+                      <span className="rounded bg-minimax-border px-1.5 py-0.5 text-[11px] uppercase tracking-wider text-minimax-muted">
                         built-in
                       </span>
                     )}

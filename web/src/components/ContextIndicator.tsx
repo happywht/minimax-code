@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Context usage indicator — shows how much of the model's context
  * window is consumed by the current session.
  *
@@ -76,7 +76,7 @@ export function ContextIndicator() {
         />
       </div>
       {/* Text label */}
-      <span className={`text-[10px] tabular-nums ${textColor}`}>
+      <span className={`text-[11px] tabular-nums ${textColor}`}>
         {fmtTokens(used)}{total > 0 ? `/${fmtTokens(total)}` : ""}
       </span>
     </div>

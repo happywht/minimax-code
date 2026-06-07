@@ -61,29 +61,18 @@ import uuid
 from typing import Any
 
 from .protocol import INTERNAL_ERROR, INVALID_PARAMS
+from .handler_utils import HandlerError, check_params
 from .server import Context
 
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
 
-
-class _HandlerError(Exception):
-    """Internal sentinel — handlers raise it with a JSON-RPC code."""
-
-    def __init__(self, code: int, message: str, data: Any = None) -> None:
-        self.code = code
-        self.message = message
-        self.data = data
-
-
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
-
 
 def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
     """Register the ``agent.*`` handlers on ``server``.
@@ -126,18 +115,18 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
         try:
             agent_dao = await dao_factory()
             if agent_dao is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR,
                     "storage layer is not available; agent registry disabled",
                 )
-            _check_params(params, expected_keys=set())
+            check_params(params, expected_keys=set())
             agents = await agent_dao.list_all()
             await ctx.reply({"agents": agents})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("agent.list failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"agent.list failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "agent.list failed")
 
     # ------------------------------------------------------------------- get
 
@@ -145,11 +134,11 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
         try:
             agent_dao = await dao_factory()
             if agent_dao is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR,
                     "storage layer is not available; agent registry disabled",
                 )
-            _check_params(params, expected_keys={"name"})
+            check_params(params, expected_keys={"name"})
             name = str(params["name"])
             agent = await agent_dao.get(name)
             if agent is None:
@@ -158,13 +147,13 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 )
                 return
             await ctx.reply({"agent": agent})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except ValueError as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("agent.get failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"agent.get failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "agent.get failed")
 
     # ---------------------------------------------------------------- create
 
@@ -172,11 +161,11 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
         try:
             agent_dao = await dao_factory()
             if agent_dao is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR,
                     "storage layer is not available; agent registry disabled",
                 )
-            _check_params(params, expected_keys={"name", "system_prompt"})
+            check_params(params, expected_keys={"name", "system_prompt"})
             name = str(params["name"])
             system_prompt = str(params["system_prompt"])
             tool_allowlist = _normalise_allowlist(params.get("tool_allowlist"))
@@ -204,11 +193,11 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 upsert_kwargs["category"] = str(category)
             if tags is not None:
                 if not isinstance(tags, list):
-                    raise _HandlerError(INVALID_PARAMS, "tags must be a list of strings")
+                    raise HandlerError(INVALID_PARAMS, "tags must be a list of strings")
                 upsert_kwargs["tags"] = tags
             if skills is not None:
                 if not isinstance(skills, list):
-                    raise _HandlerError(INVALID_PARAMS, "skills must be a list of strings")
+                    raise HandlerError(INVALID_PARAMS, "skills must be a list of strings")
                 upsert_kwargs["skills"] = skills
             if max_iterations is not None:
                 upsert_kwargs["max_iterations"] = int(max_iterations)
@@ -222,13 +211,13 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 **upsert_kwargs,
             )
             await ctx.reply({"agent": agent})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except ValueError as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("agent.create failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"agent.create failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "agent.create failed")
 
     # ---------------------------------------------------------------- update
 
@@ -236,11 +225,11 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
         try:
             agent_dao = await dao_factory()
             if agent_dao is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR,
                     "storage layer is not available; agent registry disabled",
                 )
-            _check_params(params, expected_keys={"name"})
+            check_params(params, expected_keys={"name"})
             name = str(params["name"])
             existing = await agent_dao.get(name)
             if existing is None:
@@ -272,12 +261,12 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
             if "tags" in params:
                 tags = params["tags"]
                 if not isinstance(tags, list):
-                    raise _HandlerError(INVALID_PARAMS, "tags must be a list of strings")
+                    raise HandlerError(INVALID_PARAMS, "tags must be a list of strings")
                 upsert_kwargs["tags"] = tags
             if "skills" in params:
                 skills = params["skills"]
                 if not isinstance(skills, list):
-                    raise _HandlerError(INVALID_PARAMS, "skills must be a list of strings")
+                    raise HandlerError(INVALID_PARAMS, "skills must be a list of strings")
                 upsert_kwargs["skills"] = skills
             if "max_iterations" in params:
                 upsert_kwargs["max_iterations"] = int(params["max_iterations"])
@@ -291,13 +280,13 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 **upsert_kwargs,
             )
             await ctx.reply({"agent": agent})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except ValueError as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("agent.update failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"agent.update failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "agent.update failed")
 
     # ---------------------------------------------------------------- delete
 
@@ -305,11 +294,11 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
         try:
             agent_dao = await dao_factory()
             if agent_dao is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR,
                     "storage layer is not available; agent registry disabled",
                 )
-            _check_params(params, expected_keys={"name"})
+            check_params(params, expected_keys={"name"})
             name = str(params["name"])
             ok = await agent_dao.delete(name)
             if not ok:
@@ -318,13 +307,13 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 )
                 return
             await ctx.reply({"ok": True, "name": name})
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except ValueError as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("agent.delete failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"agent.delete failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "agent.delete failed")
 
     # ---------------------------------------------------------------- invoke
 
@@ -357,11 +346,11 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
         try:
             agent_dao = await dao_factory()
             if agent_dao is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR,
                     "storage layer is not available; agent registry disabled",
                 )
-            _check_params(params, expected_keys={"name", "request"})
+            check_params(params, expected_keys={"name", "request"})
             name = str(params["name"])
             request = str(params["request"])
             session_id = params.get("session_id")
@@ -479,13 +468,13 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                     "stub": is_stub,
                 }
             )
-        except _HandlerError as exc:
+        except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except ValueError as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("agent.invoke failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"agent.invoke failed: {exc}")
+            await ctx.reply_error(INTERNAL_ERROR, "agent.invoke failed")
 
     # ----------------------------------------------------------------- spawn
     #
@@ -527,11 +516,11 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
         try:
             agent_dao = await dao_factory()
             if agent_dao is None:
-                raise _HandlerError(
+                raise HandlerError(
                     INTERNAL_ERROR,
                     "storage layer is not available; agent registry disabled",
                 )
-            _check_params(params, expected_keys={"name", "request"})
+            check_params(params, expected_keys={"name", "request"})
             name = str(params["name"])
             request = str(params["request"])
             parent_session_id = (
@@ -664,7 +653,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                     "stub": is_stub,
                 }
             )
-        except _HandlerError as exc:
+        except HandlerError as exc:
             # Best-effort: surface the failure on the progress stream
             # so the UI flips the row to ``failed`` and the user
             # sees an error rather than a hung "running" pill.
@@ -713,11 +702,9 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
     server.register("agent.invoke", handle_agent_invoke)
     server.register("agent.spawn_subagent", handle_agent_spawn_subagent)
 
-
 # ---------------------------------------------------------------------------
 # Factory + helpers
 # ---------------------------------------------------------------------------
-
 
 def _make_dao_factory(dao: Any | None) -> Any:
     """Return an async factory yielding an :class:`AgentDAO`.
@@ -760,7 +747,6 @@ def _make_dao_factory(dao: Any | None) -> Any:
 
     return _factory
 
-
 async def _get_tracker() -> Any:
     """Resolve the progress tracker singleton; ``None`` if unavailable.
 
@@ -781,7 +767,6 @@ async def _get_tracker() -> Any:
         return get_progress_tracker()
     except Exception:  # pragma: no cover — defensive
         return None
-
 
 async def _ensure_session(session_id: str, *, title: str) -> None:
     """Best-effort: insert a placeholder ``sessions`` row.
@@ -818,36 +803,6 @@ async def _ensure_session(session_id: str, *, title: str) -> None:
     except Exception:  # pragma: no cover — defensive
         logger.debug("ensure_session(%s) failed; continuing", session_id)
 
-
-def _check_params(params: Any, *, expected_keys: set[str]) -> None:
-    """Validate the JSON-RPC params shape; raise :class:`_HandlerError`.
-
-    Mirrors the helper in :mod:`handlers_tasks` /
-    :mod:`handlers_sessions` so all the handler modules present
-    the same JSON-RPC surface to the frontend.
-    """
-    if not expected_keys:
-        return
-    if params is None or not isinstance(params, dict):
-        raise _HandlerError(
-            INVALID_PARAMS,
-            "params must be a JSON object with the required keys",
-        )
-    missing = expected_keys - set(params.keys())
-    if missing:
-        raise _HandlerError(
-            INVALID_PARAMS,
-            f"missing required param(s): {sorted(missing)}",
-        )
-    for key in expected_keys:
-        if params[key] is None or (
-            isinstance(params[key], str) and not params[key].strip()
-        ):
-            raise _HandlerError(
-                INVALID_PARAMS, f"param {key!r} must be a non-empty value"
-            )
-
-
 async def _emit_subagent_progress(
     ctx: Any,
     *,
@@ -882,7 +837,6 @@ async def _emit_subagent_progress(
         payload["error"] = error
     await ctx.emit("agent.subagent_progress", payload)
 
-
 def _normalise_allowlist(value: Any) -> list[str] | None:
     """Coerce the IPC ``tool_allowlist`` field into a list of strings.
 
@@ -913,6 +867,5 @@ def _normalise_allowlist(value: Any) -> list[str] | None:
         if item.strip():
             out.append(item)
     return out or None
-
 
 __all__ = ["register_agent_handlers"]

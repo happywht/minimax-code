@@ -1,4 +1,4 @@
-/**
+﻿/**
  * GitViewerModal — full-screen-ish modal for browsing git diffs and logs.
  *
  * Two tabs:
@@ -210,14 +210,14 @@ function LogContent({
           key={c.sha}
           className="flex items-start gap-3 px-4 py-2.5 hover:bg-minimax-border/30"
         >
-          <span className="mt-0.5 shrink-0 font-mono text-[10px] text-minimax-accent">
+          <span className="mt-0.5 shrink-0 font-mono text-[11px] text-minimax-accent">
             {c.sha.slice(0, 7)}
           </span>
           <div className="min-w-0 flex-1">
             <div className="truncate text-xs text-minimax-fg">
               {c.message}
             </div>
-            <div className="mt-0.5 flex items-center gap-2 text-[10px] text-minimax-muted">
+            <div className="mt-0.5 flex items-center gap-2 text-[11px] text-minimax-muted">
               <span>{c.author}</span>
               {c.files_changed != null && c.files_changed.length > 0 ? (
                 <span>{c.files_changed.length} files</span>

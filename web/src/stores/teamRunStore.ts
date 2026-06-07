@@ -8,7 +8,7 @@
  */
 
 import { create } from "zustand";
-import { typedIPC, ipc } from "@/ipc/client";
+import { typedIPC, ipc } from "../ipc/client";
 import { StreamEvent } from "../types/ipc";
 import type { TeamProgressData } from "../types/ipc";
 import { toast } from "../components/ErrorBoundary";

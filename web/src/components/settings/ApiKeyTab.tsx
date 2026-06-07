@@ -1,4 +1,4 @@
-/**
+﻿/**
  * API Key tab — legacy MiniMax key management via `secrets.*` IPC.
  */
 import { useEffect, useState } from "react";
@@ -41,7 +41,7 @@ function ApiKeyTab(): JSX.Element {
           Legacy key for the built-in MiniMax provider. For multi-provider setups, use the Providers tab.
           Stored in the OS keyring (Windows Credential Manager / macOS Keychain / Linux Secret Service).
           Falls back to the
-          <code className="mx-1 rounded bg-minimax-panel px-1.5 py-0.5 font-mono text-[10px]">MINIMAX_API_KEY</code>
+          <code className="mx-1 rounded bg-minimax-panel px-1.5 py-0.5 font-mono text-[11px]">MINIMAX_API_KEY</code>
           env var if no keyring entry exists.
         </p>
       </div>
@@ -86,7 +86,7 @@ function ApiKeyTab(): JSX.Element {
             <Save size={12} /> {loading ? "Saving…" : "Save"}
           </button>
         </div>
-        <p className="mt-1.5 text-[10px] text-minimax-muted">
+        <p className="mt-1.5 text-[11px] text-minimax-muted">
           The key is written to <code>{sourceLabel.keyring}</code> on save.
           It is never echoed back through the wire after the write.
         </p>

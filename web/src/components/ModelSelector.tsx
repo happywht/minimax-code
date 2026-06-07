@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Model selector — dropdown of available LLM models. Bound to the
  * model store; the default option is marked with a checkmark.
  *
@@ -129,13 +129,13 @@ export function ModelSelector({
             <div key={g.providerId}>
               {/* Provider group header */}
               <div className="sticky top-0 z-10 flex items-center gap-1.5 border-b border-minimax-border/60 bg-minimax-panel px-3 py-1.5">
-                <span className="text-[10px] font-medium text-minimax-fg">{g.providerName}</span>
+                <span className="text-[11px] font-medium text-minimax-fg">{g.providerName}</span>
                 {g.protocol && (
                   <span className={`rounded px-1 py-0.5 text-[8px] font-mono ${protocolBadge(g.protocol)}`}>
                     {g.protocol}
                   </span>
                 )}
-                <span className="ml-auto text-[9px] text-minimax-muted">{g.models.length}</span>
+                <span className="ml-auto text-[11px] text-minimax-muted">{g.models.length}</span>
               </div>
               {/* Model items */}
               <ul>
@@ -161,7 +161,7 @@ export function ModelSelector({
                       >
                         <span className="flex-1 min-w-0">
                           <span className="block truncate text-minimax-fg">{m.name}</span>
-                          <span className="block text-[10px] text-minimax-muted">
+                          <span className="block text-[11px] text-minimax-muted">
                             {(m.context_window / 1000).toFixed(0)}k ctx
                             {m.supports_tools ? " · tools" : ""}
                           </span>

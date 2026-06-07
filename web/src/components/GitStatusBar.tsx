@@ -1,4 +1,4 @@
-/**
+﻿/**
  * GitStatusBar — slim top-bar widget showing the current branch
  * and a dirty/clean indicator. Click to open a popover with the
  * full modified-file list.
@@ -177,7 +177,7 @@ export function GitStatusBar({
             {status && status.ahead > 0 ? (
               <span
                 data-testid="git-status-bar-ahead"
-                className="ml-auto rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-300"
+                className="ml-auto rounded bg-emerald-500/10 px-1.5 py-0.5 text-[11px] text-emerald-300"
               >
                 ↑ {status.ahead}
               </span>
@@ -185,7 +185,7 @@ export function GitStatusBar({
             {status && status.behind > 0 ? (
               <span
                 data-testid="git-status-bar-behind"
-                className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-300"
+                className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[11px] text-amber-300"
               >
                 ↓ {status.behind}
               </span>
@@ -232,7 +232,7 @@ export function GitStatusBar({
               type="button"
               data-testid="git-status-bar-view-diff"
               onClick={() => { setViewerTab("diff"); setShowViewer(true); }}
-              className="flex flex-1 items-center justify-center gap-1 rounded border border-minimax-border px-2 py-1 text-[10px] text-minimax-muted hover:text-minimax-fg"
+              className="flex flex-1 items-center justify-center gap-1 rounded border border-minimax-border px-2 py-1 text-[11px] text-minimax-muted hover:text-minimax-fg"
             >
               <FileDiff size={10} />
               View Diff
@@ -241,7 +241,7 @@ export function GitStatusBar({
               type="button"
               data-testid="git-status-bar-view-log"
               onClick={() => { setViewerTab("log"); setShowViewer(true); }}
-              className="flex flex-1 items-center justify-center gap-1 rounded border border-minimax-border px-2 py-1 text-[10px] text-minimax-muted hover:text-minimax-fg"
+              className="flex flex-1 items-center justify-center gap-1 rounded border border-minimax-border px-2 py-1 text-[11px] text-minimax-muted hover:text-minimax-fg"
             >
               <CommitIcon size={10} />
               View Log
@@ -273,7 +273,7 @@ function FileBucket({ label, testId, paths, empty }: FileBucketProps): JSX.Eleme
   if (paths.length === 0 && empty === null) return null;
   return (
     <div data-testid={testId} className="py-1">
-      <div className="flex items-center gap-1 px-2 pb-1 text-[10px] uppercase tracking-wide text-minimax-muted">
+      <div className="flex items-center gap-1 px-2 pb-1 text-[11px] uppercase tracking-wide text-minimax-muted">
         {label}
         {paths.length > 0 ? (
           <span data-testid={`${testId}-count`} className="ml-1 text-minimax-fg/80">

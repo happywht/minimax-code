@@ -1,4 +1,4 @@
-/**
+﻿/**
  * RightPanel — third column of the three-pane shell.
  *
  * Hosts two collapsible sections stacked top-to-bottom:
@@ -343,13 +343,13 @@ function AgentTeamList({
                 {t ? (
                   <div
                     data-testid={`${testId}-card-${a.id}-task`}
-                    className="mt-0.5 truncate text-[10px] text-minimax-muted"
+                    className="mt-0.5 truncate text-[11px] text-minimax-muted"
                     title={t.message ?? ""}
                   >
                     {t.message || t.task_id}
                   </div>
                 ) : (
-                  <div className="mt-0.5 truncate text-[10px] italic text-minimax-muted">
+                  <div className="mt-0.5 truncate text-[11px] italic text-minimax-muted">
                     {a.description || (a.enabled ? "idle" : "disabled")}
                   </div>
                 )}

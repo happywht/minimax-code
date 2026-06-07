@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Teams tab — agent team management (v0.8.0).
  * Includes TEAM_COLORS preset array.
  */
@@ -76,7 +76,7 @@ function TeamsTab(): JSX.Element {
           <h2 className="text-sm font-medium">Agent Teams</h2>
           <p className="mt-0.5 text-[11px] text-minimax-muted">
             Create named groups of agents that work together. Trigger with{" "}
-            <code className="rounded bg-minimax-panel px-1 font-mono text-[10px]">@team:team-name</code> in chat.
+            <code className="rounded bg-minimax-panel px-1 font-mono text-[11px]">@team:team-name</code> in chat.
           </p>
         </div>
         <button type="button" data-testid="settings-team-create"
@@ -97,13 +97,13 @@ function TeamsTab(): JSX.Element {
 
           <div className="grid grid-cols-12 gap-2">
             <div className="col-span-4">
-              <label className="text-[10px] text-minimax-muted">Team Name</label>
+              <label className="text-[11px] text-minimax-muted">Team Name</label>
               <input value={formName} onChange={(e) => setFormName(e.target.value)}
                 placeholder="e.g. fullstack-review"
                 className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs text-minimax-fg" />
             </div>
             <div className="col-span-4">
-              <label className="text-[10px] text-minimax-muted">Orchestration</label>
+              <label className="text-[11px] text-minimax-muted">Orchestration</label>
               <select value={formMode} onChange={(e) => setFormMode(e.target.value as OrchestrationMode)}
                 className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs text-minimax-fg">
                 <option value="parallel">Parallel</option>
@@ -112,7 +112,7 @@ function TeamsTab(): JSX.Element {
               </select>
             </div>
             <div className="col-span-4">
-              <label className="text-[10px] text-minimax-muted">Color</label>
+              <label className="text-[11px] text-minimax-muted">Color</label>
               <div className="flex flex-wrap gap-1 mt-0.5">
                 {TEAM_COLORS.slice(0, 5).map((c) => (
                   <button key={c} type="button"
@@ -125,17 +125,17 @@ function TeamsTab(): JSX.Element {
           </div>
 
           <div>
-            <label className="text-[10px] text-minimax-muted">Description</label>
+            <label className="text-[11px] text-minimax-muted">Description</label>
             <input value={formDescription} onChange={(e) => setFormDescription(e.target.value)}
               placeholder="What does this team do?"
               className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs text-minimax-fg" />
           </div>
 
           <div>
-            <label className="text-[10px] text-minimax-muted">Agents ({formAgents.length} selected)</label>
+            <label className="text-[11px] text-minimax-muted">Agents ({formAgents.length} selected)</label>
             <div className="mt-1 flex flex-wrap gap-1.5">
               {agents.length === 0 && (
-                <span className="text-[10px] italic text-minimax-muted">No agents available — create some first.</span>
+                <span className="text-[11px] italic text-minimax-muted">No agents available — create some first.</span>
               )}
               {agents.map((a) => {
                 const selected = formAgents.includes(a.name);
@@ -143,7 +143,7 @@ function TeamsTab(): JSX.Element {
                   <button key={a.id} type="button"
                     onClick={() => toggleAgent(a.name)}
                     className={
-                      "inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] " +
+                      "inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[11px] " +
                       (selected
                         ? "border-minimax-accent/40 bg-minimax-accent/10 text-minimax-accent"
                         : "border-minimax-border bg-minimax-bg text-minimax-muted hover:text-minimax-fg")
@@ -187,20 +187,20 @@ function TeamsTab(): JSX.Element {
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5">
                       <span className="truncate text-xs font-medium text-minimax-fg">{t.name}</span>
-                      <span className="rounded bg-minimax-accent/20 px-1 py-0.5 text-[9px] text-minimax-accent">
+                      <span className="rounded bg-minimax-accent/20 px-1 py-0.5 text-[11px] text-minimax-accent">
                         {t.orchestration_mode}
                       </span>
                       {t.enabled ? (
-                        <span className="rounded bg-emerald-500/10 px-1 py-0.5 text-[9px] text-emerald-300">enabled</span>
+                        <span className="rounded bg-emerald-500/10 px-1 py-0.5 text-[11px] text-emerald-300">enabled</span>
                       ) : (
-                        <span className="rounded bg-minimax-border px-1 py-0.5 text-[9px] text-minimax-muted">disabled</span>
+                        <span className="rounded bg-minimax-border px-1 py-0.5 text-[11px] text-minimax-muted">disabled</span>
                       )}
                     </div>
-                    {t.description && <p className="mt-0.5 truncate text-[10px] text-minimax-muted">{t.description}</p>}
+                    {t.description && <p className="mt-0.5 truncate text-[11px] text-minimax-muted">{t.description}</p>}
                     {t.agents.length > 0 && (
                       <div className="mt-1 flex flex-wrap gap-1">
                         {t.agents.map((a) => (
-                          <span key={a} className="rounded bg-minimax-bg border border-minimax-border px-1.5 py-0.5 text-[9px] text-minimax-fg">
+                          <span key={a} className="rounded bg-minimax-bg border border-minimax-border px-1.5 py-0.5 text-[11px] text-minimax-fg">
                             {a}
                           </span>
                         ))}
@@ -211,7 +211,7 @@ function TeamsTab(): JSX.Element {
                 <div className="flex items-center gap-1 ml-2">
                   <button type="button" data-testid={`settings-team-toggle-${t.name}`}
                     onClick={() => void (t.enabled ? disable(t.name) : enable(t.name))}
-                    className="rounded border border-minimax-border px-1.5 py-0.5 text-[10px] text-minimax-muted hover:text-minimax-fg">
+                    className="rounded border border-minimax-border px-1.5 py-0.5 text-[11px] text-minimax-muted hover:text-minimax-fg">
                     {t.enabled ? "Disable" : "Enable"}
                   </button>
                   <button type="button" data-testid={`settings-team-delete-${t.name}`}
