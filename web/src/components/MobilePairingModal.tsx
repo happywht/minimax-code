@@ -7,9 +7,10 @@
  * v0.7.0: Added online/offline indicator (green/gray dot) per device
  * and fetches device status on mount.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Bell, Copy, QrCode, Smartphone, Trash2, X } from "lucide-react";
 import { useMobileStore } from "../stores/mobileStore";
+import { useFocusTrap } from "../lib/useFocusTrap";
 import { toast } from "./ErrorBoundary";
 
 export interface MobilePairingModalProps {
@@ -21,6 +22,8 @@ export function MobilePairingModal({
   testId = "mobile-pairing-modal",
   onClose,
 }: MobilePairingModalProps): JSX.Element {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, true); // always active when rendered
   const devices = useMobileStore((s) => s.devices);
   const pairingToken = useMobileStore((s) => s.pairingToken);
   const qrPayload = useMobileStore((s) => s.qrPayload);
@@ -97,7 +100,11 @@ export function MobilePairingModal({
 
   return (
     <div
+      ref={dialogRef}
       data-testid={testId}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Mobile pairing"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >

@@ -17,8 +17,8 @@
   --minimax-panel: #f6f8fa;
   --minimax-border: #d0d7de;
   --minimax-fg: #1f2328;
-  --minimax-muted: #656d76;
-  --minimax-accent: #6e40c9;
+  --minimax-muted: #57606a;      /* AA 5.3:1 on panel #f6f8fa, 5.7:1 on #fff */
+  --minimax-accent: #5a32a3;     /* AA 6.4:1 on #fff — deeper purple */
 }
 
 html,
@@ -98,7 +98,7 @@ body {
   margin: 0.6em 0;
 }
 
-/* Custom scrollbar — Linear-style */
+/* Custom scrollbar — Linear-style (dark) */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -112,4 +112,12 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.16);
+}
+
+/* Light mode scrollbar override */
+:root.light ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.13);
+}
+:root.light ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.22);
 }

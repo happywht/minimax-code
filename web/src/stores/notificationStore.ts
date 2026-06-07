@@ -9,6 +9,8 @@
 import { create } from "zustand";
 import { typedIPC, ipc } from "@/ipc/client";
 import type { StreamEventName, NotificationEntry, ListNotificationsResult } from "@/types/ipc";
+import { toast } from "../components/ErrorBoundary";
+import { trimArray, MAX_NOTIFICATIONS } from "../lib/eviction";
 
 // Re-export for convenience
 export type { NotificationEntry, ListNotificationsResult };
@@ -53,12 +55,14 @@ export const useNotificationStore = create<NotificationState>((set, get) => {
       try {
         const res = await typedIPC.listNotifications(opts ?? {});
         set({
-          entries: res.entries,
+          entries: trimArray(res.entries, MAX_NOTIFICATIONS),
           total: res.total,
           unreadCount: res.entries.filter((e) => !e.read).length,
         });
       } catch (err: unknown) {
-        set({ error: String(err) });
+        const msg = String(err);
+        toast.error("Failed to load notifications", msg);
+        set({ error: msg });
       } finally {
         set({ loading: false });
       }
@@ -72,7 +76,9 @@ export const useNotificationStore = create<NotificationState>((set, get) => {
           unreadCount: Math.max(0, s.unreadCount - 1),
         }));
       } catch (err: unknown) {
-        set({ error: String(err) });
+        const msg = String(err);
+        toast.error("Failed to mark notification as read", msg);
+        set({ error: msg });
       }
     },
 
@@ -84,7 +90,9 @@ export const useNotificationStore = create<NotificationState>((set, get) => {
           unreadCount: 0,
         }));
       } catch (err: unknown) {
-        set({ error: String(err) });
+        const msg = String(err);
+        toast.error("Failed to mark all notifications as read", msg);
+        set({ error: msg });
       }
     },
 
@@ -100,7 +108,9 @@ export const useNotificationStore = create<NotificationState>((set, get) => {
           };
         });
       } catch (err: unknown) {
-        set({ error: String(err) });
+        const msg = String(err);
+        toast.error("Failed to delete notification", msg);
+        set({ error: msg });
       }
     },
 
@@ -110,7 +120,9 @@ export const useNotificationStore = create<NotificationState>((set, get) => {
         // Refresh to get accurate state after purge
         await get().refresh();
       } catch (err: unknown) {
-        set({ error: String(err) });
+        const msg = String(err);
+        toast.error("Failed to purge notifications", msg);
+        set({ error: msg });
       }
     },
 
@@ -130,7 +142,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => {
         if (eventName === "notification.new") {
           const entry = data as NotificationEntry;
           set((s) => ({
-            entries: [entry, ...s.entries],
+            entries: trimArray([entry, ...s.entries], MAX_NOTIFICATIONS),
             total: s.total + 1,
             unreadCount: s.unreadCount + (entry.read ? 0 : 1),
           }));

@@ -8,6 +8,7 @@
 import { create } from "zustand";
 import { typedIPC } from "@/ipc/client";
 import type { AgentTeam, OrchestrationMode } from "../types/ipc";
+import { toast } from "../components/ErrorBoundary";
 
 export interface TeamState {
   teams: AgentTeam[];
@@ -49,7 +50,9 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       const result = await typedIPC.listTeams();
       set({ teams: result.teams, loading: false });
     } catch (e) {
-      set({ error: String(e), loading: false });
+      const msg = String(e);
+      toast.error("Failed to load teams", msg);
+      set({ error: msg, loading: false });
     }
   },
 
@@ -59,7 +62,9 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       await get().refresh();
       return team.team;
     } catch (e) {
-      set({ error: String(e) });
+      const msg = String(e);
+      toast.error("Failed to create team", msg);
+      set({ error: msg });
       return null;
     }
   },
@@ -69,7 +74,9 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       await typedIPC.updateTeam(name, fields);
       await get().refresh();
     } catch (e) {
-      set({ error: String(e) });
+      const msg = String(e);
+      toast.error("Failed to update team", msg);
+      set({ error: msg });
     }
   },
 
@@ -78,7 +85,9 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       await typedIPC.deleteTeam(name);
       await get().refresh();
     } catch (e) {
-      set({ error: String(e) });
+      const msg = String(e);
+      toast.error("Failed to delete team", msg);
+      set({ error: msg });
     }
   },
 
@@ -87,7 +96,9 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       await typedIPC.enableTeam(name);
       await get().refresh();
     } catch (e) {
-      set({ error: String(e) });
+      const msg = String(e);
+      toast.error("Failed to enable team", msg);
+      set({ error: msg });
     }
   },
 
@@ -96,7 +107,9 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       await typedIPC.disableTeam(name);
       await get().refresh();
     } catch (e) {
-      set({ error: String(e) });
+      const msg = String(e);
+      toast.error("Failed to disable team", msg);
+      set({ error: msg });
     }
   },
 }));

@@ -479,7 +479,21 @@ class IPCServer:
     # -- control -----------------------------------------------------------
 
     def stop(self) -> None:
+        """Signal the server to stop and cancel in-flight agent runs."""
         self._stop.set()
+        # Cancel any active agent cores so they don't hang the
+        # event loop during shutdown.
+        try:
+            from .builtins import _ACTIVE_CORES
+
+            for sid, core in list(_ACTIVE_CORES.items()):
+                try:
+                    core.cancel()
+                except Exception:
+                    pass
+            _ACTIVE_CORES.clear()
+        except Exception:
+            pass
 
 
 __all__ = ["IPCServer", "Context"]

@@ -11,6 +11,8 @@ import { create } from "zustand";
 import { typedIPC, ipc } from "@/ipc/client";
 import { StreamEvent } from "../types/ipc";
 import type { TeamProgressData } from "../types/ipc";
+import { toast } from "../components/ErrorBoundary";
+import { trimArray, MAX_TEAM_RUNS } from "../lib/eviction";
 
 /** A single team run tracked in the UI. */
 export interface TeamRunEntry {
@@ -78,6 +80,8 @@ export const useTeamRunStore = create<TeamRunState>((set, _get) => ({
       }));
     } catch (e) {
       // Mark the latest run for this team as failed
+      const msg = String(e);
+      toast.error("Failed to spawn team", msg);
       set((s) => {
         const idx = s.runs.findIndex(
           (r) => r.team_name === opts.team_name && (r.status === "started" || r.status === "agent_started"),
@@ -139,7 +143,7 @@ export function initTeamRunListener(): () => void {
       }
       // New run
       return {
-        runs: [
+        runs: trimArray([
           ...s.runs,
           {
             task_id: evt.task_id,
@@ -153,7 +157,7 @@ export function initTeamRunListener(): () => void {
             started_at: Date.now(),
             updated_at: Date.now(),
           },
-        ],
+        ], MAX_TEAM_RUNS),
       };
     });
   });

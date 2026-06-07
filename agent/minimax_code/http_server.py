@@ -68,6 +68,10 @@ CORS_ALLOW_ORIGINS: list[str] = [
 CORS_ALLOW_METHODS: list[str] = ["GET", "POST"]
 CORS_ALLOW_HEADERS: list[str] = ["Content-Type", "Authorization"]
 
+# Maximum request body size for POST /rpc (10 MB).
+# Prevents OOM from oversized payloads.
+MAX_RPC_BODY_BYTES: int = 10 * 1024 * 1024
+
 
 # ---------------------------------------------------------------------------
 # Version
@@ -285,13 +289,58 @@ def build_app(
         try:
             yield
         finally:
-            # Best-effort: close any still-open sockets. uvicorn
-            # also closes them on shutdown; this is belt-and-braces.
+            # ── Graceful shutdown sequence ──────────────────────────
+            # 1. Cancel any in-flight agent runs.
+            from .ipc.builtins import _ACTIVE_CORES
+
+            for sid, core in list(_ACTIVE_CORES.items()):
+                try:
+                    core.cancel()
+                except Exception:
+                    pass
+            _ACTIVE_CORES.clear()
+            logger.info("graceful shutdown: cancelled %d active cores", len(_ACTIVE_CORES))
+
+            # 2. Stop the APScheduler if it is running.
+            try:
+                from .scheduler import get_scheduler
+
+                sched = get_scheduler()
+                if sched is not None:
+                    sched.shutdown(wait=False)
+                    logger.info("graceful shutdown: scheduler stopped")
+            except Exception:
+                pass
+
+            # 3. Close the LLM client (httpx connection pool).
+            try:
+                from .app import get_subagent_llm
+
+                llm = get_subagent_llm()
+                if llm is not None and hasattr(llm, "close"):
+                    await llm.close()
+                    logger.info("graceful shutdown: LLM client closed")
+            except Exception:
+                pass
+
+            # 4. Close the SQLite database.
+            try:
+                from .app import get_db
+
+                db = get_db()
+                if db is not None and hasattr(db, "close"):
+                    await db.close()
+                    logger.info("graceful shutdown: database closed")
+            except Exception:
+                pass
+
+            # 5. Close any still-open WebSocket connections.
             for ws in list(ws_manager._clients):
                 try:
                     await ws.close()
                 except Exception:
                     pass
+            logger.info("graceful shutdown: %d ws clients closed", len(ws_manager._clients))
 
     app = FastAPI(
         title="minimax-code-agent",
@@ -325,6 +374,21 @@ def build_app(
         # automatically.
         try:
             raw = await request.body()
+            # Reject oversized payloads before parsing.
+            if len(raw) > MAX_RPC_BODY_BYTES:
+                return JSONResponse(
+                    content=Response(
+                        id=0,
+                        error=RPCError(
+                            code=PARSE_ERROR,
+                            message=(
+                                f"request body too large "
+                                f"({len(raw)} > {MAX_RPC_BODY_BYTES} bytes)"
+                            ),
+                        ),
+                    ).model_dump(exclude_none=True),
+                    status_code=200,
+                )
             obj = json.loads(raw)
         except json.JSONDecodeError as exc:
             return JSONResponse(

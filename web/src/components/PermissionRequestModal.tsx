@@ -16,8 +16,9 @@
  */
 
 import { ShieldAlert, ShieldCheck, X } from "lucide-react";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { usePermissionStore, type PendingPermission } from "../stores";
+import { useFocusTrap } from "../lib/useFocusTrap";
 
 export interface PermissionRequestModalProps {
   testId?: string;
@@ -28,6 +29,9 @@ export function PermissionRequestModal({
 }: PermissionRequestModalProps): JSX.Element | null {
   const pendingMap = usePermissionStore((s) => s.pending);
   const resolve = usePermissionStore((s) => s.resolve);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const isOpen = useMemo(() => Object.keys(pendingMap).length > 0, [pendingMap]);
+  useFocusTrap(dialogRef, isOpen);
 
   // Pick the oldest pending request (FIFO). Multiple simultaneous
   // prompts are stacked; the modal only shows the head of the queue.
@@ -58,6 +62,7 @@ export function PermissionRequestModal({
 
   return (
     <div
+      ref={dialogRef}
       data-testid={testId}
       data-request-id={current.request_id}
       role="dialog"

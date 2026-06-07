@@ -53,15 +53,16 @@ def _make_notification_dao_factory(server: Any) -> Any:
             dao = getattr(server, _DAO_ATTR, None)
             if dao is not None:
                 return dao
-            # Prefer shared DB from app module
-            try:
-                from ..app import get_db
+            # Use the process-wide DB singleton — never open a
+            # second connection (avoids connection leaks and
+            # ``AsyncDatabase()`` without a path).
+            from ..app import get_db
 
-                db = get_db()
-            except Exception:
-                from ..storage.db import AsyncDatabase
-
-                db = AsyncDatabase()
+            db = get_db()
+            if db is None:
+                raise _HandlerError(
+                    -32004, "storage not initialised"
+                )
             dao = NotificationDAO(db)
             setattr(server, _DAO_ATTR, dao)
             return dao

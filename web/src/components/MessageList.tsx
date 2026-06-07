@@ -16,6 +16,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { useChat, useSessionStore, useSubAgentStore } from "../stores";
 import { MessageItem } from "./MessageItem";
 import { SubAgentResultCard } from "./SubAgentResultCard";
+import { useMessageWindow } from "../lib/useMessageWindow";
 
 export interface MessageListProps {
   testId?: string;
@@ -77,6 +78,10 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
   const hasQuery = !!searchQuery;
   const isFiltered = hasQuery && filtered.length < messages.length;
 
+  // Windowed rendering: only show the most recent messages by default.
+  // "Load earlier" button expands the window.
+  const { visible, hasMore, hiddenCount, loadMore } = useMessageWindow(filtered, 50);
+
   return (
     <div
       ref={scrollRef}
@@ -116,7 +121,17 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
               Showing {filtered.length} of {messages.length} messages
             </div>
           )}
-          {filtered.map((m) => (
+          {hasMore && (
+            <button
+              type="button"
+              data-testid="load-earlier-messages"
+              onClick={loadMore}
+              className="rounded-md border border-minimax-border bg-minimax-panel px-3 py-2 text-center text-xs text-minimax-muted hover:border-minimax-accent/40 hover:text-minimax-fg"
+            >
+              ↑ Load {Math.min(hiddenCount, 50)} earlier messages ({hiddenCount} hidden)
+            </button>
+          )}
+          {visible.map((m) => (
             <MessageItem key={m.id} message={m} />
           ))}
           {!hasQuery && finishedRuns.length > 0 && (

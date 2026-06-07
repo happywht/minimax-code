@@ -7,6 +7,7 @@
  */
 import { useEffect } from "react";
 import { Check, Trash2, Info, AlertTriangle, XCircle, Webhook, Shield, Workflow, X } from "lucide-react";
+import { SkeletonTable } from "./Skeleton";
 import { useNotificationStore } from "@/stores/notificationStore";
 import type { NotificationEntry } from "@/stores/notificationStore";
 
@@ -85,8 +86,8 @@ export function NotificationCenter(): JSX.Element {
       {/* Body */}
       <div className="max-h-80 overflow-y-auto">
         {loading && entries.length === 0 && (
-          <div className="px-3 py-6 text-center text-xs text-minimax-muted">
-            Loading...
+          <div className="p-3">
+            <SkeletonTable rows={3} />
           </div>
         )}
         {!loading && entries.length === 0 && (

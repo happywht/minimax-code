@@ -8,6 +8,7 @@
 import { create } from "zustand";
 import { typedIPC } from "@/ipc/client";
 import type { WorkflowEntry } from "../types/ipc";
+import { toast } from "../components/ErrorBoundary";
 
 export interface WorkflowState {
   entries: WorkflowEntry[];
@@ -51,7 +52,9 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       const result = await typedIPC.listWorkflows(opts);
       set({ entries: result.entries, total: result.total, loading: false });
     } catch (e) {
-      set({ error: String(e), loading: false });
+      const msg = String(e);
+      toast.error("Failed to load workflows", msg);
+      set({ error: msg, loading: false });
     }
   },
 
@@ -61,7 +64,9 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       await get().refresh();
       return wf;
     } catch (e) {
-      set({ error: String(e) });
+      const msg = String(e);
+      toast.error("Failed to create workflow", msg);
+      set({ error: msg });
       return null;
     }
   },
@@ -71,7 +76,9 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       await typedIPC.updateWorkflow(id, fields);
       await get().refresh();
     } catch (e) {
-      set({ error: String(e) });
+      const msg = String(e);
+      toast.error("Failed to update workflow", msg);
+      set({ error: msg });
     }
   },
 
@@ -80,7 +87,9 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       await typedIPC.deleteWorkflow(id);
       await get().refresh();
     } catch (e) {
-      set({ error: String(e) });
+      const msg = String(e);
+      toast.error("Failed to delete workflow", msg);
+      set({ error: msg });
     }
   },
 
@@ -89,7 +98,9 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       await typedIPC.enableWorkflow(id);
       await get().refresh();
     } catch (e) {
-      set({ error: String(e) });
+      const msg = String(e);
+      toast.error("Failed to enable workflow", msg);
+      set({ error: msg });
     }
   },
 
@@ -98,7 +109,9 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       await typedIPC.disableWorkflow(id);
       await get().refresh();
     } catch (e) {
-      set({ error: String(e) });
+      const msg = String(e);
+      toast.error("Failed to disable workflow", msg);
+      set({ error: msg });
     }
   },
 
@@ -107,7 +120,9 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       await typedIPC.triggerWorkflow(id, context);
       await get().refresh();
     } catch (e) {
-      set({ error: String(e) });
+      const msg = String(e);
+      toast.error("Failed to trigger workflow", msg);
+      set({ error: msg });
     }
   },
 }));

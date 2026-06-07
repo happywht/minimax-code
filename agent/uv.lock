@@ -504,7 +504,7 @@ wheels = [
 
 [[package]]
 name = "minimax-code-agent"
-version = "0.3.2"
+version = "0.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },

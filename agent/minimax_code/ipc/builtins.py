@@ -162,7 +162,6 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     from ..agent import AgentCore, AgentConfig, MiniMaxClient
     from ..app import get_sessions_dao, init_runtime
     from ..storage.dao.messages import MessagesDAO
-    from ..storage.db import AsyncDatabase, default_database_path
 
     # 1. Ensure the sessions row exists (FK target for messages).
     #    Best-effort: if the sessions DAO is unavailable the
@@ -197,9 +196,8 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         from ..app import get_db
         db = get_db()
         if db is None:
-            # Fallback: open a fresh connection (only when no DB singleton yet).
-            db = AsyncDatabase(default_database_path())
-            await db.connect()
+            await ctx.reply_error(-32603, "storage unavailable: database not initialised")
+            return
         msg_dao = MessagesDAO(db)
     except Exception as exc:
         logger.exception("failed to open storage for chat")
@@ -252,44 +250,16 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
             # is already seeing. Log and continue.
             logger.exception("persist_message(%s, role=%s) failed", sid, msg.get("role"))
 
-    # 3. Build the LLM client from stored model preference + provider
-    #    config. The previous code used ``MiniMaxClient()`` with no
-    #    arguments every time — the user's model selector choice was
-    #    silently ignored. Now we read the current model + provider
-    #    from the DB and construct a properly configured client.
-    llm = MiniMaxClient()
-    try:
-        from ..app import get_db
-        db = get_db()
-        if db is not None:
-            from ..storage.dao.model_prefs import ModelPrefsDAO
-            from ..storage.dao.providers import ProviderDAO
-            from .. import secrets as _secrets
-
-            prefs_dao = ModelPrefsDAO(db)
-            pref = await prefs_dao.get_current()
-            model_id = pref.get("model_id", "MiniMax-M3") if isinstance(pref, dict) else "MiniMax-M3"
-            provider_id = pref.get("provider_id", "builtin-minimax") if isinstance(pref, dict) else "builtin-minimax"
-
-            prov_dao = ProviderDAO(db)
-            provider = await prov_dao.get(provider_id)
-            if provider is not None:
-                protocol = provider.get("protocol", "anthropic")
-                base_url = provider.get("base_url", "")
-                api_key = _secrets.get_provider_key(provider_id) or ""
-
-                llm = MiniMaxClient(
-                    protocol=protocol,
-                    api_key=api_key or None,
-                    base_url=base_url or None,
-                    model=model_id,
-                )
-            else:
-                # Provider not found — use default client but with
-                # the user's model choice at least.
-                llm = MiniMaxClient(model=model_id)
-    except Exception:
-        logger.exception("failed to build LLM from stored prefs; using defaults")
+    # 3. Reuse the process-wide LLM client singleton.  It is built
+    #    once at process boot (via ``_rebuild_subagent_llm`` in
+    #    ``app.py``) and kept in sync when the user changes model or
+    #    provider.  Creating a new ``MiniMaxClient`` per request would
+    #    open a fresh httpx connection pool and re-read the DB every
+    #    time — wasteful and slow.
+    from ..app import get_subagent_llm
+    llm = get_subagent_llm()
+    if llm is None:
+        llm = MiniMaxClient()
 
     # 3a. Resolve the permission store (lazily built by the
     #     ``permission.*`` handlers) and create a per-request

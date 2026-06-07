@@ -12,9 +12,11 @@
  * selected tab.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { X, FileText, GitCommit as CommitIcon } from "lucide-react";
+import { SkeletonTable } from "./Skeleton";
 import { useGitStore } from "../stores";
+import { useFocusTrap } from "../lib/useFocusTrap";
 import type { GitLogEntry } from "../types/ipc";
 
 export interface GitViewerModalProps {
@@ -32,6 +34,8 @@ export function GitViewerModal({
   testId = "git-viewer-modal",
 }: GitViewerModalProps): JSX.Element | null {
   const [tab, setTab] = useState<"diff" | "log">(initialTab);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, open);
 
   const lastDiff = useGitStore((s) => s.lastDiff);
   const lastLog = useGitStore((s) => s.lastLog);
@@ -57,7 +61,11 @@ export function GitViewerModal({
 
   return (
     <div
+      ref={dialogRef}
       data-testid={testId}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Git viewer"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
@@ -109,8 +117,8 @@ export function GitViewerModal({
         {/* Content */}
         <div className="min-h-0 flex-1 overflow-y-auto">
           {loading && !lastDiff && !lastLog ? (
-            <div className="flex items-center justify-center py-12 text-xs text-minimax-muted">
-              Loading…
+            <div className="p-4">
+              <SkeletonTable rows={6} />
             </div>
           ) : tab === "diff" ? (
             <DiffContent

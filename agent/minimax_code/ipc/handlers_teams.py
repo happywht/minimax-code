@@ -265,10 +265,17 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
             # Build agent DAO
             agent_dao = await _make_agent_dao()
 
-            # Build emit callback from server context
+            # Build emit callback from server context.
+            # IPCServer has no ``emit()`` method — we mirror what
+            # ``Context.emit()`` does: create an Event envelope,
+            # write it to stdout, then fan out to WS listeners.
             async def _emit(event_name: str, payload: Any) -> None:
                 try:
-                    await server.emit(event_name, payload)
+                    from .protocol import Event
+
+                    env = Event(event=event_name, data=payload)
+                    await server._send(env.to_bytes())
+                    server.notify(env.model_dump(exclude_none=True))
                 except Exception:
                     logger.warning("Failed to emit %s", event_name, exc_info=True)
 
@@ -375,21 +382,14 @@ def _make_dao_factory(dao: Any | None) -> Any:
 
     async def _factory() -> Any:
         try:
-            from ..app import init_runtime
+            from ..app import get_db
             from ..storage.dao.agent_teams import AgentTeamDAO
-            from ..storage.db import AsyncDatabase, default_database_path
 
-            try:
-                await init_runtime()
-            except Exception:
-                pass
-            try:
-                db = AsyncDatabase(default_database_path())
-                await db.connect()
-                return AgentTeamDAO(db)
-            except Exception:  # pragma: no cover — defensive
-                logger.exception("failed to open team DAO")
+            db = get_db()
+            if db is None:
+                logger.warning("storage not initialised; team DAO unavailable")
                 return None
+            return AgentTeamDAO(db)
         except Exception:  # pragma: no cover — defensive
             logger.exception("failed to open team DAO")
             return None
@@ -398,13 +398,15 @@ def _make_dao_factory(dao: Any | None) -> Any:
 
 
 async def _make_agent_dao() -> Any:
-    """Lazily build an :class:`AgentDAO` from the default database."""
+    """Lazily build an :class:`AgentDAO` from the process-wide DB singleton."""
     try:
+        from ..app import get_db
         from ..storage.dao.agents import AgentDAO
-        from ..storage.db import AsyncDatabase, default_database_path
 
-        db = AsyncDatabase(default_database_path())
-        await db.connect()
+        db = get_db()
+        if db is None:
+            logger.warning("storage not initialised; agent DAO unavailable")
+            return None
         return AgentDAO(db)
     except Exception:  # pragma: no cover — defensive
         logger.exception("failed to build agent DAO for team.spawn")

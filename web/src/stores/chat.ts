@@ -20,6 +20,7 @@ import {
 } from "../types/ipc";
 import type { Message, ContentPart } from "../types/ipc";
 import { useSessionStore } from "./sessionStore";
+import { trimArray, MAX_MESSAGES } from "../lib/eviction";
 
 export type ChatStatus = "idle" | "sending" | "streaming" | "error";
 
@@ -130,7 +131,7 @@ export const useChat = create<ChatState>((set, get) => ({
                 ...(metadata ? { metadata } : {}),
               });
           return {
-            messages: next,
+            messages: trimArray(next, MAX_MESSAGES),
             status: data.done ? "idle" : "streaming",
           };
         });
@@ -148,7 +149,7 @@ export const useChat = create<ChatState>((set, get) => ({
         if (!data) return;
         const id = `tc-${data.tool_call_id}`;
         set((s) => ({
-          messages: ensureMessage(s.messages, {
+          messages: trimArray(ensureMessage(s.messages, {
             id,
             role: "tool",
             text: `🔧 ${data.name}(${JSON.stringify(data.args)})`,
@@ -157,7 +158,7 @@ export const useChat = create<ChatState>((set, get) => ({
             tool_args: data.args,
             created_at: Date.now(),
             streaming: false,
-          }),
+          }), MAX_MESSAGES),
           status: "streaming",
         }));
       });
@@ -171,14 +172,14 @@ export const useChat = create<ChatState>((set, get) => ({
           ? `✗ ${data.error}`
           : `✓ ${typeof data.result === "string" ? data.result : JSON.stringify(data.result)}`;
         set((s) => ({
-          messages: ensureMessage(s.messages, {
+          messages: trimArray(ensureMessage(s.messages, {
             id,
             role: "tool",
             text,
             tool_call_id: data.tool_call_id,
             created_at: Date.now(),
             streaming: false,
-          }),
+          }), MAX_MESSAGES),
         }));
       });
     }
@@ -203,7 +204,7 @@ export const useChat = create<ChatState>((set, get) => ({
     const text = content.trim();
     if (!text) return;
     set((s) => ({
-      messages: [
+      messages: trimArray([
         ...s.messages,
         {
           id: `user-${Date.now()}`,
@@ -212,7 +213,7 @@ export const useChat = create<ChatState>((set, get) => ({
           streaming: false,
           created_at: Date.now(),
         },
-      ],
+      ], MAX_MESSAGES),
     }));
   },
 
@@ -241,7 +242,7 @@ export const useChat = create<ChatState>((set, get) => ({
       created_at: Date.now(),
     };
     set((s) => ({
-      messages: [...s.messages, userMessage],
+      messages: trimArray([...s.messages, userMessage], MAX_MESSAGES),
       status: "sending",
       error: null,
     }));
@@ -272,13 +273,13 @@ export const useChat = create<ChatState>((set, get) => ({
         }
         // No chunks received — create message from the full reply text.
         return {
-          messages: ensureMessage(s.messages, {
+          messages: trimArray(ensureMessage(s.messages, {
             id: result.message_id,
             role: "assistant",
             text: result.text || "",
             streaming: false,
             created_at: Date.now(),
-          }),
+          }), MAX_MESSAGES),
           status: "idle",
         };
       });
@@ -292,7 +293,7 @@ export const useChat = create<ChatState>((set, get) => ({
       set((s) => ({
         status: "error",
         error: message,
-        messages: [
+        messages: trimArray([
           ...s.messages,
           {
             id: `err-${Date.now()}`,
@@ -301,7 +302,7 @@ export const useChat = create<ChatState>((set, get) => ({
             streaming: false,
             created_at: Date.now(),
           },
-        ],
+        ], MAX_MESSAGES),
       }));
       toast.error("Send failed", message);
     }
@@ -334,11 +335,11 @@ export const useChat = create<ChatState>((set, get) => ({
         metadata: m.metadata,
         tool_call_id: m.tool_call_id,
       }));
-      set({ messages: msgs, status: "idle", error: null });
+      set({ messages: trimArray(msgs, MAX_MESSAGES), status: "idle", error: null });
     } catch (err) {
       // If loading fails (e.g. session has no messages yet), just clear.
       const message = err instanceof Error ? err.message : String(err);
-      console.warn("loadMessages failed:", message);
+      toast.error("Failed to load messages", message);
       set({ messages: [], status: "idle", error: null });
     }
   },

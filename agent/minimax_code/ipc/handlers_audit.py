@@ -50,7 +50,8 @@ def _make_audit_dao_factory(server: Any):
             existing = getattr(server, _DAO_ATTR, None)
             if existing is not None:
                 return existing
-            # Try to reuse the process-wide DB singleton.
+            # Use the process-wide DB singleton — avoid opening extra
+            # connections that are never closed (connection leak).
             try:
                 from ..app import get_db
 
@@ -58,21 +59,8 @@ def _make_audit_dao_factory(server: Any):
             except Exception:
                 db = None
             if db is None:
-                import os
-
-                if os.environ.get("MINIMAX_CODE_NO_DB") == "1":
-                    return None
-                from ..storage.db import AsyncDatabase, default_database_path
-
-                db = AsyncDatabase(default_database_path())
-                try:
-                    await db.connect()
-                    await db.migrate()
-                except Exception as exc:
-                    logger.exception("failed to open storage for audit dao")
-                    raise _HandlerError(
-                        STORAGE_ERROR, f"failed to open storage: {exc}"
-                    ) from exc
+                logger.warning("storage not initialised; audit DAO unavailable")
+                return None
             dao = AuditLogDAO(db)
             setattr(server, _DAO_ATTR, dao)
             return dao

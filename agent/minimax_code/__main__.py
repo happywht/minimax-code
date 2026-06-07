@@ -126,6 +126,25 @@ async def amain(config: Config, mode: str, port: int, host: str) -> int:
         access_log=False,
     )
     server_uv = uvicorn.Server(config_uv)
+
+    # Install signal handlers for graceful shutdown.
+    # uvicorn installs its own SIGINT handler that sets
+    # ``should_exit``; we just make sure the process doesn't
+    # hard-crash on SIGTERM.
+    import signal
+
+    def _sigterm_handler(signum: int, frame: Any) -> None:
+        logger.info("received SIGTERM, triggering graceful shutdown")
+        server_uv.should_exit = True
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.add_signal_handler(signal.SIGTERM, _sigterm_handler)
+    except (NotImplementedError, OSError):
+        # Windows doesn't support add_signal_handler; fall back
+        # to signal.signal which works but is less precise.
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+
     # Print the canonical "listening on …" line so the dev
     # workflow scripts (and the architecture doc) can grep for it.
     logger = __import__("logging").getLogger("minimax_code")

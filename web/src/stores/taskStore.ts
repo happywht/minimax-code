@@ -7,6 +7,7 @@
 import { create } from "zustand";
 import { ipc } from "../ipc";
 import { StreamEvent, type TaskProgressData } from "../types/ipc";
+import { evictOldest, MAX_TASKS } from "../lib/eviction";
 
 export type TaskStatus = "running" | "done" | "error" | "cancelled";
 
@@ -36,8 +37,8 @@ export const useTaskStore = create<TaskState>((set) => ({
   startListening: () => {
     return ipc.on<TaskProgressData>(StreamEvent.TaskProgress, (env) => {
       if (env.data) {
-        set((s) => ({
-          tasks: {
+        set((s) => {
+          const updated = {
             ...s.tasks,
             [env.data!.task_id]: {
               task_id: env.data!.task_id,
@@ -46,15 +47,16 @@ export const useTaskStore = create<TaskState>((set) => ({
               message: env.data!.message,
               updated_at: Date.now(),
             },
-          },
-        }));
+          };
+          return { tasks: evictOldest(updated, MAX_TASKS, (e) => e.updated_at) };
+        });
       }
     });
   },
 
   upsert: (data) =>
-    set((s) => ({
-      tasks: {
+    set((s) => {
+      const updated = {
         ...s.tasks,
         [data.task_id]: {
           task_id: data.task_id,
@@ -63,8 +65,9 @@ export const useTaskStore = create<TaskState>((set) => ({
           message: data.message,
           updated_at: Date.now(),
         },
-      },
-    })),
+      };
+      return { tasks: evictOldest(updated, MAX_TASKS, (e) => e.updated_at) };
+    }),
 
   remove: (taskId) =>
     set((s) => {

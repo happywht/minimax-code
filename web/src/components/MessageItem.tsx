@@ -8,12 +8,12 @@
  * tool-call/tool-result messages that follow the assistant bubble in
  * the same turn (bounded by the next user/assistant message).
  */
-import { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Brain, ChevronDown, ChevronRight, Copy, Check, Eye, FileEdit } from "lucide-react";
 import type { Message } from "../types/ipc";
-import { codeToHtml, bundledLanguages } from "shiki";
+import { highlight } from "../lib/shikiLoader";
 import { useChat } from "../stores";
 
 export interface MessageItemProps {
@@ -90,16 +90,16 @@ function MarkdownCode({ className, children, inline }: CodeProps): JSX.Element {
   // react-markdown 9: inline code has no `language-*` className. We
   // also fall back to the `inline` prop for older runtimes.
   const isInline = inline || (!hasLang && !code.includes("\n"));
-  const lang = langMatch?.[1] && bundledLanguages[langMatch[1] as keyof typeof bundledLanguages]
-    ? langMatch[1]
-    : "text";
+  // Language detection deferred to highlight() — unknown langs return null.
+  const lang = langMatch?.[1] ?? "text";
   const [html, setHtml] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  useMemo(() => {
+  // Lazy-load shiki on first code block render
+  useEffect(() => {
     let cancelled = false;
     if (isInline || !code) return;
-    codeToHtml(code, { lang, theme: "github-dark" })
+    highlight(code, lang)
       .then((h) => {
         if (!cancelled) setHtml(h);
       })
@@ -157,7 +157,7 @@ function MarkdownCode({ className, children, inline }: CodeProps): JSX.Element {
 
 /* ─────────────────────────── MessageItem ─────────────────────────── */
 
-export function MessageItem({ message, testId }: MessageItemProps): JSX.Element {
+export const MessageItem = React.memo(function MessageItem({ message, testId }: MessageItemProps): JSX.Element {
   const isUser = message.role === "user";
   const isTool = message.role === "tool";
   const isSystem = message.role === "system";
@@ -166,13 +166,16 @@ export function MessageItem({ message, testId }: MessageItemProps): JSX.Element 
   // Per-turn summary is only meaningful for assistant messages.
   // We pull the full message log from the chat store so we can count
   // tool calls that happened in the same turn.
+  // Optimization: use a stable selector key (message count) to avoid
+  // unnecessary re-computation when unrelated parts of the store change.
+  const msgCount = useChat((s) => s.messages.length);
   const messages = useChat((s) => s.messages);
   const summary = useMemo<TurnSummary | null>(() => {
     if (!isAssistant) return null;
     const idx = messages.findIndex((m) => m.id === message.id);
     if (idx < 0) return { thinkingCount: 0, filesViewed: 0, filesModified: 0 };
     return summarizeTurn(messages, idx, message);
-  }, [isAssistant, messages, message]);
+  }, [isAssistant, msgCount, messages, message]);
 
   // Tool bubbles are collapsible to keep the chat scannable.
   const [expanded, setExpanded] = useState(false);
@@ -283,4 +286,4 @@ export function MessageItem({ message, testId }: MessageItemProps): JSX.Element 
       </div>
     </div>
   );
-}
+});

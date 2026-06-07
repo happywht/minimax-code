@@ -17,6 +17,7 @@ import {
   type SubAgentRun,
   type SubAgentStatus,
 } from "../types/ipc";
+import { evictOldest, MAX_SUBAGENT_RUNS } from "../lib/eviction";
 
 export interface SubAgentState {
   /** Keyed by run_id. */
@@ -83,7 +84,7 @@ export const useSubAgentStore = create<SubAgentState>((set, get) => ({
 
   register: (run) =>
     set((s) => ({
-      runs: { ...s.runs, [run.run_id]: run },
+      runs: evictOldest({ ...s.runs, [run.run_id]: run }, MAX_SUBAGENT_RUNS, (r) => r.updated_at),
     })),
 
   applyProgress: (progress) =>
@@ -126,7 +127,7 @@ export const useSubAgentStore = create<SubAgentState>((set, get) => ({
           ? (base.finished_at ?? progress.received_at)
           : base.finished_at,
       };
-      return { runs: { ...s.runs, [progress.run_id]: next } };
+      return { runs: evictOldest({ ...s.runs, [progress.run_id]: next }, MAX_SUBAGENT_RUNS, (r) => r.updated_at) };
     }),
 
   clearCompleted: () =>
