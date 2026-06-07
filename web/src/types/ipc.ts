@@ -189,6 +189,53 @@ export interface PermissionRule {
   created_at: number;
 }
 
+/** An audit log entry — matches `audit_log` table row. */
+export interface AuditEntry {
+  id: string;
+  session_id: string | null;
+  tool_name: string;
+  tool_args: string | null;
+  permission: string | null;
+  result_status: "success" | "fail" | "timeout" | "denied";
+  exit_code: number | null;
+  duration_ms: number | null;
+  error: string | null;
+  created_at: string;
+}
+
+/** Result shape for `audit.list`. */
+export interface ListAuditResult {
+  entries: AuditEntry[];
+  total: number;
+}
+
+/** Aggregate audit stats — result of `audit.stats`. */
+export interface AuditStats {
+  total: number;
+  by_tool: Record<string, number>;
+  by_status: Record<string, number>;
+}
+
+/** A webhook config entry — matches `webhooks` table row. */
+export interface WebhookConfig {
+  id: string;
+  name: string;
+  source: "github" | "gitee" | "custom";
+  url_path: string;
+  secret: string | null;
+  enabled: boolean;
+  action_type: "code-review" | "send-message";
+  action_config: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Result shape for `webhook.list`. */
+export interface ListWebhooksResult {
+  entries: WebhookConfig[];
+  total: number;
+}
+
 /* ─────────────────────── Event payload shapes ─────────────────────── */
 
 export interface MessageChunkData {

@@ -28,22 +28,26 @@ import {
   Plus,
   Play,
   Save,
+  ScrollText,
   ShieldAlert,
   Trash2,
+  Webhook,
 } from "lucide-react";
 import {
   useAgentStore,
+  useAuditStore,
   useModelStore,
   usePermissionStore,
   useProviderStore,
+  useWebhookStore,
   useScheduleStore,
   useSecretStore,
   useTaskStore,
 } from "../stores";
 import { toast } from "./ErrorBoundary";
-import type { PermissionRule, ProviderInfo, ProviderModel, ScheduledJob } from "../types/ipc";
+import type { AuditEntry, PermissionRule, ProviderInfo, ProviderModel, ScheduledJob, WebhookConfig } from "../types/ipc";
 
-type Tab = "models" | "providers" | "permissions" | "scheduled" | "api-key" | "agents";
+type Tab = "models" | "providers" | "permissions" | "scheduled" | "api-key" | "agents" | "audit" | "webhooks";
 
 export interface SettingsPageProps {
   testId?: string;
@@ -72,6 +76,8 @@ export function SettingsPage({ testId = "settings-page" }: SettingsPageProps): J
           <TabButton id="scheduled" current={tab} onClick={setTab} icon={<CalendarClock size={12} />} label="Scheduled" testId="settings-tab-scheduled" />
           <TabButton id="api-key" current={tab} onClick={setTab} icon={<KeyRound size={12} />} label="API Key" testId="settings-tab-api-key" />
           <TabButton id="agents" current={tab} onClick={setTab} icon={<Bot size={12} />} label="Agents" testId="settings-tab-agents" />
+          <TabButton id="audit" current={tab} onClick={setTab} icon={<ScrollText size={12} />} label="Audit" testId="settings-tab-audit" />
+          <TabButton id="webhooks" current={tab} onClick={setTab} icon={<Webhook size={12} />} label="Webhooks" testId="settings-tab-webhooks" />
         </nav>
       </header>
       <div className="flex-1 overflow-y-auto px-6 py-5">
@@ -81,6 +87,8 @@ export function SettingsPage({ testId = "settings-page" }: SettingsPageProps): J
         {tab === "scheduled" && <ScheduledTab />}
         {tab === "api-key" && <ApiKeyTab />}
         {tab === "agents" && <AgentsTab />}
+        {tab === "audit" && <AuditTab />}
+        {tab === "webhooks" && <WebhooksTab />}
       </div>
     </div>
   );
@@ -992,6 +1000,313 @@ function AgentsTab(): JSX.Element {
           ))}
         </ul>
       )}
+    </section>
+  );
+}
+
+/* ─────────────────────── Audit Tab ─────────────────────── */
+
+function AuditTab(): JSX.Element {
+  const { entries, total, stats, loading, page, pageSize, filterTool, refresh, loadStats, setPage, setFilterTool } = useAuditStore();
+
+  useEffect(() => {
+    refresh();
+    loadStats();
+  }, []);
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  return (
+    <section data-testid="settings-audit-section" className="space-y-4">
+      <h2 className="text-sm font-semibold">Audit Log</h2>
+      <p className="text-[11px] text-minimax-muted">
+        Every tool dispatch is recorded for full traceability. Use this to review what the agent did and when.
+      </p>
+
+      {/* Stats dashboard */}
+      {stats && stats.total > 0 && (
+        <div className="grid grid-cols-3 gap-3 text-center">
+          <div className="rounded border border-minimax-border bg-minimax-panel px-3 py-2">
+            <div className="text-lg font-bold">{stats.total}</div>
+            <div className="text-[10px] text-minimax-muted">Total Calls</div>
+          </div>
+          <div className="rounded border border-minimax-border bg-minimax-panel px-3 py-2">
+            <div className="text-lg font-bold">{Object.keys(stats.by_tool).length}</div>
+            <div className="text-[10px] text-minimax-muted">Tools Used</div>
+          </div>
+          <div className="rounded border border-minimax-border bg-minimax-panel px-3 py-2">
+            <div className="text-lg font-bold text-green-400">
+              {stats.by_status.success ?? 0}
+            </div>
+            <div className="text-[10px] text-minimax-muted">Successes</div>
+          </div>
+        </div>
+      )}
+
+      {/* Filter */}
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] text-minimax-muted">Filter by tool:</span>
+        <select
+          data-testid="audit-filter-tool"
+          className="rounded border border-minimax-border bg-minimax-panel px-2 py-1 text-xs"
+          value={filterTool ?? ""}
+          onChange={(e) => setFilterTool(e.target.value || null)}
+        >
+          <option value="">All</option>
+          {stats && Object.keys(stats.by_tool).map((t) => (
+            <option key={t} value={t}>{t} ({stats.by_tool[t]})</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          className="ml-auto rounded border border-minimax-border px-2 py-1 text-xs hover:bg-minimax-accent/20"
+          onClick={() => { refresh(); loadStats(); }}
+        >
+          Refresh
+        </button>
+      </div>
+
+      {/* Table */}
+      {loading ? (
+        <div className="py-8 text-center text-xs text-minimax-muted">Loading…</div>
+      ) : entries.length === 0 ? (
+        <div className="py-8 text-center text-xs text-minimax-muted">
+          No audit entries yet. Tool calls will appear here once the agent executes tools.
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-[11px]">
+            <thead>
+              <tr className="border-b border-minimax-border text-minimax-muted">
+                <th className="px-2 py-1">Time</th>
+                <th className="px-2 py-1">Tool</th>
+                <th className="px-2 py-1">Status</th>
+                <th className="px-2 py-1">Duration</th>
+                <th className="px-2 py-1">Permission</th>
+                <th className="px-2 py-1">Error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((e: AuditEntry) => (
+                <tr key={e.id} className="border-b border-minimax-border/40 hover:bg-minimax-panel">
+                  <td className="px-2 py-1 whitespace-nowrap">{e.created_at ? new Date(e.created_at).toLocaleString() : "—"}</td>
+                  <td className="px-2 py-1 font-mono">{e.tool_name}</td>
+                  <td className="px-2 py-1">
+                    <StatusBadge status={e.result_status} />
+                  </td>
+                  <td className="px-2 py-1">{e.duration_ms != null ? `${e.duration_ms}ms` : "—"}</td>
+                  <td className="px-2 py-1">{e.permission ?? "—"}</td>
+                  <td className="px-2 py-1 max-w-[200px] truncate text-red-400" title={e.error ?? ""}>{e.error ?? ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-2 text-xs text-minimax-muted">
+          <button
+            type="button"
+            className="rounded border border-minimax-border px-2 py-1 disabled:opacity-40"
+            disabled={page === 0}
+            onClick={() => setPage(page - 1)}
+          >
+            ← Prev
+          </button>
+          <span>Page {page + 1} of {totalPages}</span>
+          <button
+            type="button"
+            className="rounded border border-minimax-border px-2 py-1 disabled:opacity-40"
+            disabled={page + 1 >= totalPages}
+            onClick={() => setPage(page + 1)}
+          >
+            Next →
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function StatusBadge({ status }: { status: string }): JSX.Element {
+  const colors: Record<string, string> = {
+    success: "text-green-400",
+    fail: "text-red-400",
+    timeout: "text-yellow-400",
+    denied: "text-orange-400",
+  };
+  return <span className={colors[status] ?? "text-minimax-muted"}>{status}</span>;
+}
+
+/* ─────────────────────── Webhooks Tab ─────────────────────── */
+
+function WebhooksTab(): JSX.Element {
+  const { entries, total, loading, error, refresh, create, remove, regenerateSecret, update } = useWebhookStore();
+  const [showCreate, setShowCreate] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newSource, setNewSource] = useState<"github" | "gitee" | "custom">("github");
+  const [newAction, setNewAction] = useState<"code-review" | "send-message">("send-message");
+  const [revealedSecrets, setRevealedSecrets] = useState<Set<string>>(new Set());
+
+  useEffect(() => { refresh(); }, []);
+
+  const handleCreate = async () => {
+    if (!newName.trim()) return;
+    await create({ name: newName.trim(), source: newSource, action_type: newAction });
+    setNewName("");
+    setShowCreate(false);
+  };
+
+  const toggleSecret = (id: string) => {
+    setRevealedSecrets((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  return (
+    <section data-testid="settings-webhooks-section" className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-semibold">Webhooks</h2>
+          <p className="text-[11px] text-minimax-muted">
+            Configure inbound webhook endpoints for GitHub / Gitee push events and custom integrations.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            className="rounded border border-minimax-border px-2 py-1 text-xs hover:bg-minimax-accent/20"
+            onClick={() => refresh()}
+          >
+            Refresh
+          </button>
+          <button
+            type="button"
+            data-testid="webhook-create-btn"
+            className="flex items-center gap-1 rounded bg-minimax-accent px-2 py-1 text-xs text-white hover:bg-minimax-accent/80"
+            onClick={() => setShowCreate(!showCreate)}
+          >
+            <Plus size={12} /> New
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-400">{error}</div>}
+
+      {/* Create form */}
+      {showCreate && (
+        <div className="space-y-2 rounded border border-minimax-border bg-minimax-panel p-3">
+          <div className="flex items-center gap-2">
+            <input
+              data-testid="webhook-name-input"
+              className="flex-1 rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs"
+              placeholder="Webhook name"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }}
+            />
+            <select
+              className="rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs"
+              value={newSource}
+              onChange={(e) => setNewSource(e.target.value as "github" | "gitee" | "custom")}
+            >
+              <option value="github">GitHub</option>
+              <option value="gitee">Gitee</option>
+              <option value="custom">Custom</option>
+            </select>
+            <select
+              className="rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs"
+              value={newAction}
+              onChange={(e) => setNewAction(e.target.value as "code-review" | "send-message")}
+            >
+              <option value="send-message">Send Message</option>
+              <option value="code-review">Code Review</option>
+            </select>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button type="button" className="text-xs text-minimax-muted" onClick={() => setShowCreate(false)}>Cancel</button>
+            <button
+              type="button"
+              data-testid="webhook-create-submit"
+              className="rounded bg-minimax-accent px-3 py-1 text-xs text-white hover:bg-minimax-accent/80"
+              onClick={handleCreate}
+            >
+              Create
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* List */}
+      {loading ? (
+        <div className="py-8 text-center text-xs text-minimax-muted">Loading…</div>
+      ) : entries.length === 0 ? (
+        <div className="py-8 text-center text-xs text-minimax-muted">
+          No webhooks configured. Click "New" to create one.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {entries.map((wh: WebhookConfig) => (
+            <div key={wh.id} className="rounded border border-minimax-border bg-minimax-panel p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold">{wh.name}</span>
+                  <span className="rounded bg-minimax-accent/20 px-1.5 py-0.5 text-[10px] text-minimax-accent">{wh.source}</span>
+                  <span className="rounded bg-minimax-bg px-1.5 py-0.5 text-[10px] text-minimax-muted">{wh.action_type}</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    className={`rounded px-1.5 py-0.5 text-[10px] ${wh.enabled ? "text-green-400" : "text-minimax-muted"}`}
+                    onClick={() => update(wh.id, { enabled: !wh.enabled })}
+                  >
+                    {wh.enabled ? "Enabled" : "Disabled"}
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded px-1.5 py-0.5 text-[10px] text-minimax-muted hover:text-minimax-accent"
+                    onClick={() => regenerateSecret(wh.id)}
+                  >
+                    Re-secret
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded px-1.5 py-0.5 text-[10px] text-red-400 hover:text-red-300"
+                    onClick={() => remove(wh.id)}
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              </div>
+              <div className="text-[10px] text-minimax-muted font-mono">
+                POST {wh.url_path}
+              </div>
+              {wh.secret && (
+                <div className="flex items-center gap-1 text-[10px] text-minimax-muted">
+                  <span>Secret:</span>
+                  <span className="font-mono">{revealedSecrets.has(wh.id) ? wh.secret : "••••••••"}</span>
+                  <button
+                    type="button"
+                    className="text-minimax-muted hover:text-minimax-fg"
+                    onClick={() => toggleSecret(wh.id)}
+                  >
+                    {revealedSecrets.has(wh.id) ? <EyeOff size={10} /> : <Eye size={10} />}
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="text-[10px] text-minimax-muted">
+        {total} webhook(s) configured
+      </div>
     </section>
   );
 }

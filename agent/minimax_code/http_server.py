@@ -366,6 +366,59 @@ def build_app(
             "uptime_s": int(time.time() - started_at),
         }
 
+    # ---- POST /hooks/{path} — inbound webhooks (v0.5.0) ----------------
+
+    @app.post("/hooks/{path:path}")
+    async def post_webhook(path: str, request: Request) -> JSONResponse:
+        """Receive inbound webhook events (GitHub / Gitee / custom).
+
+        1. Look up the webhook config by ``url_path``.
+        2. Verify HMAC signature (if a secret is configured).
+        3. Parse the payload and dispatch the mapped action.
+        4. Always return 200 so the sender does not retry.
+        """
+        from .webhooks import WebhookReceiver, dispatch_webhook_action
+        from .storage.dao.webhooks import WebhookDAO
+
+        url_path = f"/hooks/{path}"
+        body = await request.body()
+        headers = {
+            k: v for k, v in request.headers.items()
+            if k.lower().startswith("x-")
+        }
+
+        # Resolve the webhook config from storage.
+        db = server._app_state.get("db") if hasattr(server, "_app_state") else None
+        if db is None:
+            from .app import get_db
+            db = get_db()
+        if db is None:
+            return JSONResponse(content={"ok": False, "error": "no db"}, status_code=200)
+
+        dao = WebhookDAO(db)
+        cfg = await dao.get_by_path(url_path)
+        if cfg is None:
+            logger.warning("webhook not found for path=%s", url_path)
+            return JSONResponse(content={"ok": False, "error": "not found"}, status_code=200)
+
+        receiver = WebhookReceiver()
+        payload = await receiver.handle_request(cfg, headers, body)
+        if payload is None:
+            return JSONResponse(content={"ok": False, "error": "signature mismatch"}, status_code=200)
+
+        # Fire-and-forget dispatch.
+        try:
+            await dispatch_webhook_action(
+                payload,
+                action_type=cfg.get("action_type", "send-message"),
+                action_config=cfg.get("action_config", {}),
+                webhook_id=cfg.get("id", ""),
+            )
+        except Exception:
+            logger.exception("webhook action dispatch failed for %s", cfg.get("id"))
+
+        return JSONResponse(content={"ok": True}, status_code=200)
+
     return app
 
 

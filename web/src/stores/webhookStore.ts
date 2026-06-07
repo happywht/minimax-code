@@ -1,0 +1,98 @@
+/**
+ * Webhook management store — CRUD operations for webhook endpoints.
+ *
+ * Drives the Settings page's Webhooks tab. All mutations go through
+ * the TypedIPC client so the backend stays in sync.
+ */
+
+import { create } from "zustand";
+import { getTypedIPC } from "../ipc/client";
+import type { WebhookConfig } from "../types/ipc";
+
+export interface WebhookState {
+  entries: WebhookConfig[];
+  total: number;
+  loading: boolean;
+  error: string | null;
+
+  refresh: (opts?: { source?: string }) => Promise<void>;
+  create: (opts: {
+    name: string;
+    source?: string;
+    action_type?: string;
+    action_config?: Record<string, unknown>;
+  }) => Promise<WebhookConfig | null>;
+  update: (
+    id: string,
+    fields: Partial<
+      Pick<
+        WebhookConfig,
+        "name" | "source" | "enabled" | "action_type" | "action_config"
+      >
+    >,
+  ) => Promise<void>;
+  remove: (id: string) => Promise<void>;
+  regenerateSecret: (id: string) => Promise<WebhookConfig | null>;
+}
+
+export const useWebhookStore = create<WebhookState>((set, get) => ({
+  entries: [],
+  total: 0,
+  loading: false,
+  error: null,
+
+  refresh: async (opts) => {
+    set({ loading: true, error: null });
+    try {
+      const ipc = getTypedIPC();
+      const result = await ipc.listWebhooks(opts);
+      set({ entries: result.entries, total: result.total, loading: false });
+    } catch (e) {
+      set({ error: String(e), loading: false });
+    }
+  },
+
+  create: async (opts) => {
+    try {
+      const ipc = getTypedIPC();
+      const wh = await ipc.createWebhook(opts);
+      await get().refresh();
+      return wh;
+    } catch (e) {
+      set({ error: String(e) });
+      return null;
+    }
+  },
+
+  update: async (id, fields) => {
+    try {
+      const ipc = getTypedIPC();
+      await ipc.updateWebhook(id, fields);
+      await get().refresh();
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  remove: async (id) => {
+    try {
+      const ipc = getTypedIPC();
+      await ipc.deleteWebhook(id);
+      await get().refresh();
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  regenerateSecret: async (id) => {
+    try {
+      const ipc = getTypedIPC();
+      const wh = await ipc.regenerateWebhookSecret(id);
+      await get().refresh();
+      return wh;
+    } catch (e) {
+      set({ error: String(e) });
+      return null;
+    }
+  },
+}));

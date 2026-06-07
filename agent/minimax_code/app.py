@@ -355,6 +355,8 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     """
     from .ipc.builtins import handle_agent_send_message, handle_agent_cancel
     from .ipc.handlers_agents import register_agent_handlers
+    from .ipc.handlers_audit import register_audit_handlers
+    from .ipc.handlers_webhooks import register_webhook_handlers
     from .ipc.handlers_git import register_git_handlers
     from .ipc.handlers_model import register_model_handlers
     from .ipc.handlers_permissions import register_permission_handlers
@@ -424,11 +426,20 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # ``GitStatusBar`` widget. Stateless — every call shells out
     # to ``git`` and parses the result.
     register_git_handlers(server)
+    # The audit handlers expose ``audit.list`` / ``audit.stats``
+    # / ``audit.purge`` for the Settings page's Audit tab. The DAO
+    # is built lazily on first call (same pattern as scheduled jobs).
+    register_audit_handlers(server)
+    # The webhook handlers expose ``webhook.list`` / ``webhook.create``
+    # / ``webhook.update`` / ``webhook.delete`` /
+    # ``webhook.regenerate_secret`` for the Settings page's Webhooks tab.
+    # The DAO is built lazily on first call (same pattern as audit).
+    register_webhook_handlers(server)
     logger.info(
         "registered application handlers "
         "(1 agent.* + 7 agent.* + 5 skill.* + 6 task.* + 5 session.* + "
         "5 permission.* + 6 schedule.* + 5 mobile.* + 3 model.* + "
-        "7 provider.* + 3 secrets.* + 3 git.*)"
+        "7 provider.* + 3 secrets.* + 3 git.* + 3 audit.* + 5 webhook.*)"
     )
 
 

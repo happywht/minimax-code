@@ -53,3 +53,5 @@ export { useAgentStore } from "./agentStore";
 export { useMobileStore, type PairedDevice } from "./mobileStore";
 export { useCodeReviewStore, type ReviewComment, type ReviewStats } from "./codeReviewStore";
 export { useProviderStore, type ProviderInfo as ProviderInfoEntry } from "./providerStore";
+export { useAuditStore, type AuditState } from "./auditStore";
+export { useWebhookStore, type WebhookState } from "./webhookStore";

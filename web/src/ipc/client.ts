@@ -28,6 +28,7 @@ import {
   ErrorCode,
   StreamEvent,
   type AgentInfo,
+  type AuditStats,
   type CreateProviderResult,
   type CreateSessionResult,
   type DeleteProviderResult,
@@ -40,6 +41,7 @@ import {
   type JsonRpcRequest,
   type JsonRpcResponse,
   type ListAgentsResult,
+  type ListAuditResult,
   type ListJobsResult,
   type ListMessagesResult,
   type ListModelsResult,
@@ -47,6 +49,8 @@ import {
   type ListRulesResult,
   type ListSessionsResult,
   type ListSkillsResult,
+  type ListWebhooksResult,
+  type WebhookConfig,
   type MessageChunkData,
   type Message as ProtocolMessage,
   type ModelInfo,
@@ -718,6 +722,18 @@ export interface TypedIPC {
   gitStatus(): Promise<GitStatusResult>;
   gitDiff(opts: { scope?: "staged" | "branch" | "working"; ref?: string }): Promise<GitDiffResult>;
   gitLog(opts?: { n?: number }): Promise<GitLogResult>;
+
+  // audit — drive the Settings page's Audit tab.
+  listAudit(opts?: { limit?: number; offset?: number; tool_name?: string; session_id?: string }): Promise<ListAuditResult>;
+  auditStats(): Promise<AuditStats>;
+  purgeAudit(beforeIso: string): Promise<{ deleted: number }>;
+
+  // webhook — drive the Settings page's Webhooks tab.
+  listWebhooks(opts?: { limit?: number; offset?: number; source?: string }): Promise<ListWebhooksResult>;
+  createWebhook(opts: { name: string; source?: string; action_type?: string; action_config?: Record<string, unknown> }): Promise<WebhookConfig>;
+  updateWebhook(id: string, fields: Partial<Pick<WebhookConfig, "name" | "source" | "enabled" | "action_type" | "action_config">>): Promise<WebhookConfig>;
+  deleteWebhook(id: string): Promise<{ deleted: boolean }>;
+  regenerateWebhookSecret(id: string): Promise<WebhookConfig>;
 }
 
 export function bindTypedIPC(client: IPCClient): TypedIPC {
@@ -850,6 +866,16 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     gitStatus: () => client.request<GitStatusResult>("git.status", {}),
     gitDiff: (opts) => client.request<GitDiffResult>("git.diff", opts ?? {}),
     gitLog: (opts) => client.request<GitLogResult>("git.log", opts ?? {}),
+
+    listAudit: (opts) => client.request<ListAuditResult>("audit.list", opts ?? {}),
+    auditStats: () => client.request<AuditStats>("audit.stats", {}),
+    purgeAudit: (beforeIso) => client.request<{ deleted: number }>("audit.purge", { before_iso: beforeIso }),
+
+    listWebhooks: (opts) => client.request<ListWebhooksResult>("webhook.list", opts ?? {}),
+    createWebhook: (opts) => client.request<WebhookConfig>("webhook.create", opts),
+    updateWebhook: (id, fields) => client.request<WebhookConfig>("webhook.update", { id, ...fields }),
+    deleteWebhook: (id) => client.request<{ deleted: boolean }>("webhook.delete", { id }),
+    regenerateWebhookSecret: (id) => client.request<WebhookConfig>("webhook.regenerate_secret", { id }),
   };
 }
 
@@ -1377,6 +1403,67 @@ function mockHandle(
 
     default:
       return { ok: true };
+
+    // ── audit.* mock ──────────────────────────────────────────────
+
+    case "audit.list":
+      return { entries: [], total: 0 } satisfies ListAuditResult;
+
+    case "audit.stats":
+      return { total: 0, by_tool: {}, by_status: {} } satisfies AuditStats;
+
+    case "audit.purge":
+      return { deleted: 0 };
+
+    // ── webhook.* mock ──────────────────────────────────────────────
+
+    case "webhook.list":
+      return { entries: [], total: 0 } satisfies ListWebhooksResult;
+
+    case "webhook.create":
+      return {
+        id: "wh_mock_" + Math.random().toString(36).slice(2, 8),
+        name: (params as Record<string, unknown>).name as string,
+        source: ((params as Record<string, unknown>).source as string) || "custom",
+        url_path: "/hooks/wh_mock",
+        secret: null,
+        enabled: true,
+        action_type: ((params as Record<string, unknown>).action_type as string) || "send-message",
+        action_config: {},
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      } satisfies WebhookConfig;
+
+    case "webhook.update":
+      return {
+        id: (params as Record<string, unknown>).id as string,
+        name: "updated",
+        source: "custom",
+        url_path: "/hooks/wh_mock",
+        secret: null,
+        enabled: true,
+        action_type: "send-message",
+        action_config: {},
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      } satisfies WebhookConfig;
+
+    case "webhook.delete":
+      return { deleted: true };
+
+    case "webhook.regenerate_secret":
+      return {
+        id: (params as Record<string, unknown>).id as string,
+        name: "mock",
+        source: "custom",
+        url_path: "/hooks/wh_mock",
+        secret: "new_mock_secret_" + Math.random().toString(36).slice(2),
+        enabled: true,
+        action_type: "send-message",
+        action_config: {},
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      } satisfies WebhookConfig;
   }
 }
 

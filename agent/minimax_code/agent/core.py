@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -233,6 +234,10 @@ class AgentCore:
         self._cancel = asyncio.Event()
         self._permission_store = permission_store
         self._permission_gater = permission_gater
+        # Audit DAO — when set, every tool dispatch is recorded for
+        # traceability.  Set externally via ``core.audit_dao = dao``.
+        self.audit_dao: Any | None = None
+        self._audit_session_id: str | None = None
         self.on_chunk: ChunkCallback | None = None
         self.on_tool_call: ToolCallCallback | None = None
         self.on_tool_result: ToolResultCallback | None = None
@@ -502,6 +507,10 @@ class AgentCore:
             await self._emit_status(
                 "permission_denied", {"tool": name, "tool_call_id": tool_call_id}
             )
+            # Audit: denied by policy.
+            await self._record_audit(
+                call_log, "denied", permission="deny", duration_ms=0,
+            )
             return denied
         if action == "ask" and self._permission_gater is not None:
             await self._maybe_emit_tool_call(call_log, None)
@@ -519,11 +528,16 @@ class AgentCore:
                     "permission_denied",
                     {"tool": name, "tool_call_id": tool_call_id, "by": "user"},
                 )
+                # Audit: denied by user.
+                await self._record_audit(
+                    call_log, "denied", permission="user_deny", duration_ms=0,
+                )
                 return denied
 
         await self._maybe_emit_tool_call(call_log, None)
         await self._emit_status("tool_running", {"tool": name})
 
+        t0 = time.monotonic()
         try:
             result = await asyncio.wait_for(
                 self.registry.dispatch(name, args),
@@ -536,12 +550,61 @@ class AgentCore:
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("tool %s crashed", name)
             result = ToolResult.fail(f"{type(exc).__name__}: {exc}")
+        duration_ms = int((time.monotonic() - t0) * 1000)
 
         # Truncate pathological output to keep the context window sane.
         result = _truncate_result(result, self.config.max_tool_output_bytes)
 
         await self._maybe_emit_tool_result(call_log, result)
+
+        # Audit: record the tool dispatch (fire-and-forget).
+        status = "success" if result.ok else ("timeout" if "timeout" in (result.error or "") else "fail")
+        exit_code = getattr(result, "exit_code", None)
+        await self._record_audit(
+            call_log, status,
+            permission=action,
+            duration_ms=duration_ms,
+            error=result.error if not result.ok else None,
+            exit_code=exit_code,
+        )
+
         return result
+
+    # -- audit ---------------------------------------------------------------
+
+    _SANITIZE_KEYS = frozenset({
+        "api_key", "token", "secret", "password", "authorization",
+        "apikey", "access_token", "refresh_token", "private_key",
+    })
+
+    async def _record_audit(
+        self,
+        call_log: dict[str, Any],
+        result_status: str,
+        *,
+        permission: str | None = None,
+        duration_ms: int = 0,
+        error: str | None = None,
+        exit_code: int | None = None,
+    ) -> None:
+        """Write an audit record (fire-and-forget). Errors are logged but
+        never propagated — the audit trail must not break the tool loop."""
+        dao = self.audit_dao
+        if dao is None:
+            return
+        try:
+            await dao.record(
+                session_id=self._audit_session_id,
+                tool_name=call_log.get("name", "unknown"),
+                tool_args=_sanitize_args(call_log.get("args", {}), self._SANITIZE_KEYS),
+                permission=permission,
+                result_status=result_status,
+                exit_code=exit_code,
+                duration_ms=duration_ms,
+                error=error,
+            )
+        except Exception:  # pragma: no cover — defensive
+            logger.exception("audit recording failed for tool %s", call_log.get("name"))
 
     # -- callback helpers --------------------------------------------------
 
@@ -733,6 +796,24 @@ def _merge_tool_call_delta(acc: list[dict[str, Any]], delta: dict[str, Any]) -> 
         target["function"]["name"] = target["function"].get("name", "") + fn_delta["name"]
     if isinstance(fn_delta.get("arguments"), str):
         target["function"]["arguments"] = target["function"].get("arguments", "") + fn_delta["arguments"]
+
+
+def _sanitize_args(
+    args: dict[str, Any],
+    sensitive_keys: frozenset[str],
+) -> dict[str, Any]:
+    """Return a copy of *args* with sensitive values replaced by '***'."""
+    if not isinstance(args, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for k, v in args.items():
+        if isinstance(k, str) and k.lower() in sensitive_keys:
+            out[k] = "***"
+        elif isinstance(v, dict):
+            out[k] = _sanitize_args(v, sensitive_keys)
+        else:
+            out[k] = v
+    return out
 
 
 def _truncate_result(result: ToolResult, max_bytes: int) -> ToolResult:
