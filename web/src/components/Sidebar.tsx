@@ -33,9 +33,9 @@ export interface SidebarProps {
   testId?: string;
   onMobileClick?: () => void;
   /** Current top-level view — drives which NavItem is highlighted. */
-  view?: "chat" | "skills" | "settings";
-  /** Toggle between chat / skills / settings views. */
-  onViewChange?: (v: "chat" | "skills" | "settings") => void;
+  view?: "chat" | "skills" | "settings" | "preview";
+  /** Toggle between top-level views. */
+  onViewChange?: (v: "chat" | "skills" | "settings" | "preview") => void;
 }
 
 type PrimaryNavId = SessionFilter | "skills" | "agents";

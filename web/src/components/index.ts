@@ -33,3 +33,7 @@ export { MobilePairingModal } from "./MobilePairingModal";
 export type { MobilePairingModalProps } from "./MobilePairingModal";
 export { CodeReviewPanel } from "./CodeReviewPanel";
 export type { CodeReviewPanelProps } from "./CodeReviewPanel";
+export { ImagePreview } from "./ImagePreview";
+export type { ImagePreviewProps } from "./ImagePreview";
+export { PreviewPanel } from "./PreviewPanel";
+export type { PreviewPanelProps } from "./PreviewPanel";

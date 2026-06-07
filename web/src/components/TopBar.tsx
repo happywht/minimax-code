@@ -15,7 +15,7 @@
  * without dragging in the rest of the shell.
  */
 import type { ReactNode } from "react";
-import { Menu, Settings as SettingsIcon } from "lucide-react";
+import { Eye, Menu, Settings as SettingsIcon } from "lucide-react";
 import { GitStatusBar } from "./GitStatusBar";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { ThemeToggle } from "./ThemeToggle";
@@ -27,6 +27,10 @@ export interface TopBarProps {
   onOpenSettings?: () => void;
   /** Toggle the mobile sidebar overlay. Ignored on md+ screens. */
   onToggleSidebar?: () => void;
+  /** Toggle the live-preview panel. */
+  onTogglePreview?: () => void;
+  /** Whether the preview panel is currently active. */
+  previewActive?: boolean;
 }
 
 export function TopBar({
@@ -34,6 +38,8 @@ export function TopBar({
   rightSlot,
   onOpenSettings,
   onToggleSidebar,
+  onTogglePreview,
+  previewActive = false,
 }: TopBarProps): JSX.Element {
   return (
     <header
@@ -63,6 +69,22 @@ export function TopBar({
         className="flex items-center gap-2"
       >
         {rightSlot}
+        {onTogglePreview && (
+          <button
+            type="button"
+            data-testid="app-topbar-preview"
+            onClick={onTogglePreview}
+            className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs ${
+              previewActive
+                ? "border-minimax-accent text-minimax-accent"
+                : "border-transparent text-minimax-fg/80 hover:border-minimax-border hover:text-minimax-fg"
+            }`}
+            title="Toggle live preview"
+          >
+            <Eye size={12} />
+            <span className="hidden sm:inline">Preview</span>
+          </button>
+        )}
         <ThemeToggle />
         <button
           type="button"

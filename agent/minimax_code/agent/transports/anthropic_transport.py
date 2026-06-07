@@ -90,7 +90,21 @@ def _convert_messages(
             content = msg.get("content", "")
             if isinstance(content, str):
                 content = [{"type": "text", "text": content}]
-            result.append({"role": "user", "content": content})
+            # Convert image blocks to Anthropic format
+            converted: list[dict[str, Any]] = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "image":
+                    converted.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": block.get("media_type", "image/png"),
+                            "data": block["data"],
+                        },
+                    })
+                else:
+                    converted.append(block)
+            result.append({"role": "user", "content": converted})
 
         elif role == "assistant":
             blocks: list[dict[str, Any]] = []

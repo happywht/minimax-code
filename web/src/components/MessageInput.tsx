@@ -9,13 +9,14 @@
  * keeps the existing chat send behaviour.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AtSign, Bot, Paperclip, Send, Shield, ShieldCheck, Square, X } from "lucide-react";
+import { AtSign, Bot, Camera, Mic, MicOff, Paperclip, Send, Shield, ShieldCheck, Square, X } from "lucide-react";
 import { useChat, usePermissionStore, useSubAgentStore } from "../stores";
 import { typedIPC } from "../ipc";
 import { ModelSelector } from "./ModelSelector";
 import { ContextIndicator } from "./ContextIndicator";
+import { ImagePreview } from "./ImagePreview";
 import { toast } from "./ErrorBoundary";
-import type { AgentInfo } from "../types/ipc";
+import type { AgentInfo, ContentPartImage } from "../types/ipc";
 import { useSessionStore } from "../stores";
 
 export interface MessageInputProps {
@@ -66,8 +67,12 @@ export function MessageInput({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [dragging, setDragging] = useState(false);
+  const [attachedImages, setAttachedImages] = useState<ContentPartImage[]>([]);
+  const [listening, setListening] = useState(false);
   const disabled = status === "sending" || status === "streaming";
   const streaming = status === "streaming" || status === "sending";
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const recognitionRef = useRef<any>(null);
 
   // Auto-grow textarea up to ~8 rows.
   useEffect(() => {
@@ -271,6 +276,102 @@ export function MessageInput({
     setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
+  // ── Image handling ──────────────────────────────────────────
+  const MAX_IMAGES = 5;
+
+  const processImageFiles = useCallback(
+    (files: File[]) => {
+      const remaining = MAX_IMAGES - attachedImages.length;
+      if (remaining <= 0) {
+        toast.info("图片数量上限", `最多同时附加 ${MAX_IMAGES} 张图片`);
+        return;
+      }
+      const batch = files.slice(0, remaining);
+      for (const file of batch) {
+        if (!file.type.startsWith("image/")) continue;
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          // dataUrl is "data:<media>;base64,<data>" — extract base64 part
+          const base64 = dataUrl.split(",")[1] || "";
+          const mediaType = file.type || "image/png";
+          setAttachedImages((prev) => {
+            if (prev.length >= MAX_IMAGES) return prev;
+            return [...prev, { type: "image", media_type: mediaType, data: base64 }];
+          });
+        };
+        reader.onerror = () => toast.error("Failed to read image", file.name);
+        reader.readAsDataURL(file);
+      }
+    },
+    [attachedImages.length],
+  );
+
+  const handleImageSelect = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files ?? []);
+      if (files.length > 0) processImageFiles(files);
+      e.target.value = "";
+    },
+    [processImageFiles],
+  );
+
+  const removeImage = useCallback((index: number) => {
+    setAttachedImages((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  // ── Voice input (SpeechRecognition) ────────────────────────
+  const toggleVoice = useCallback(() => {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) {
+      toast.info("语音输入不可用", "当前浏览器不支持 SpeechRecognition API");
+      return;
+    }
+
+    if (listening && recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+      setListening(false);
+      return;
+    }
+
+    const recognition = new SR();
+    recognition.lang = "zh-CN";
+    recognition.continuous = false;
+    recognition.interimResults = true;
+
+    recognition.onresult = (event: any) => {
+      let transcript = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript;
+      }
+      if (transcript) {
+        setValue((v) => {
+          // Append voice text to existing content
+          const sep = v && !v.endsWith(" ") && !v.endsWith("\n") ? " " : "";
+          return v + sep + transcript;
+        });
+      }
+    };
+
+    recognition.onend = () => {
+      setListening(false);
+      recognitionRef.current = null;
+    };
+
+    recognition.onerror = (event: any) => {
+      setListening(false);
+      recognitionRef.current = null;
+      if (event.error !== "no-speech") {
+        toast.error("语音识别出错", event.error);
+      }
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    setListening(true);
+  }, [listening]);
+
   // ── Drag-and-drop ───────────────────────────────────────────
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -300,12 +401,32 @@ export function MessageInput({
 
   const handleSubmit = async (e?: React.FormEvent | React.KeyboardEvent) => {
     e?.preventDefault();
-    if (!value.trim() || disabled) return;
-    const text = value;
-    setValue("");
-    setAttachedFiles([]);
-    closePicker();
-    await send(text);
+    if (disabled) return;
+
+    const hasText = value.trim().length > 0;
+    const hasImages = attachedImages.length > 0;
+    if (!hasText && !hasImages) return;
+
+    if (hasImages) {
+      // Build multimodal ContentPart array
+      const parts: import("../types/ipc").ContentPart[] = [];
+      if (hasText) {
+        parts.push({ type: "text", text: value.trim() });
+      }
+      parts.push(...attachedImages);
+      setValue("");
+      setAttachedFiles([]);
+      setAttachedImages([]);
+      closePicker();
+      await send(parts);
+    } else {
+      const text = value;
+      setValue("");
+      setAttachedFiles([]);
+      setAttachedImages([]);
+      closePicker();
+      await send(text);
+    }
   };
 
   const handleToggleAlwaysAllow = () => {
@@ -370,6 +491,19 @@ export function MessageInput({
             ))}
           </div>
         )}
+        {attachedImages.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 border-b border-minimax-border px-3 py-1.5">
+            {attachedImages.map((img, i) => (
+              <ImagePreview
+                key={`img-${i}`}
+                data={img.data}
+                mediaType={img.media_type}
+                index={i}
+                onRemove={() => removeImage(i)}
+              />
+            ))}
+          </div>
+        )}
         <div className="flex items-end gap-2 px-2.5 py-2">
           <button
             type="button"
@@ -381,6 +515,25 @@ export function MessageInput({
           >
             <Paperclip size={14} />
           </button>
+          <button
+            type="button"
+            aria-label="Attach image"
+            data-testid="message-image-btn"
+            onClick={() => imageInputRef.current?.click()}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
+            title="Attach an image"
+          >
+            <Camera size={14} />
+          </button>
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            data-testid="message-image-input"
+            onChange={handleImageSelect}
+          />
           <input
             ref={fileInputRef}
             type="file"
@@ -413,16 +566,33 @@ export function MessageInput({
               <Square size={12} />
             </button>
           ) : (
-            <button
-              type="submit"
-              data-testid="message-input-send"
-              disabled={!value.trim()}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-minimax-accent text-white disabled:opacity-40"
-              title="Send"
-              aria-label="Send"
-            >
-              <Send size={14} />
-            </button>
+            <>
+              <button
+                type="button"
+                aria-label={listening ? "Stop voice input" : "Start voice input"}
+                data-testid="message-voice-btn"
+                onClick={toggleVoice}
+                className={
+                  "flex h-8 w-8 shrink-0 items-center justify-center rounded-md " +
+                  (listening
+                    ? "bg-red-500/20 text-red-400 animate-pulse"
+                    : "text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg")
+                }
+                title={listening ? "Listening… click to stop" : "Voice input"}
+              >
+                {listening ? <MicOff size={14} /> : <Mic size={14} />}
+              </button>
+              <button
+                type="submit"
+                data-testid="message-input-send"
+                disabled={!value.trim() && attachedImages.length === 0}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-minimax-accent text-white disabled:opacity-40"
+                title="Send"
+                aria-label="Send"
+              >
+                <Send size={14} />
+              </button>
+            </>
           )}
         </div>
         {picker.open && (

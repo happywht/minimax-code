@@ -419,6 +419,11 @@ def build_app(
 
         return JSONResponse(content={"ok": True}, status_code=200)
 
+    # ---- POST /complete — inline code completion (v0.6.0) ---------------
+
+    from .agent.completion_routes import register_completion_routes
+    register_completion_routes(app, server)
+
     return app
 
 

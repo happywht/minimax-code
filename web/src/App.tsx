@@ -5,6 +5,7 @@ import {
   MessageInput,
   MobilePairingModal,
   PermissionRequestModal,
+  PreviewPanel,
   RightPanel,
   SettingsPage,
   Sidebar,
@@ -16,7 +17,7 @@ import {
 import { ipc, isTauri, typedIPC } from "./ipc";
 import { useChat, useModelStore, usePermissionStore, useSessionStore } from "./stores";
 
-type AppView = "chat" | "skills" | "settings";
+type AppView = "chat" | "skills" | "settings" | "preview";
 
 /**
  * Top-level layout. Bootstraps stores on mount, then renders the
@@ -71,6 +72,8 @@ export default function App() {
         <TopBar
           onOpenSettings={() => setView("settings")}
           onToggleSidebar={() => setSidebarOpen((v) => !v)}
+          onTogglePreview={() => setView((v) => v === "preview" ? "chat" : "preview")}
+          previewActive={view === "preview"}
         />
         <div className="relative flex min-h-0 flex-1">
           {/* Desktop sidebar — always visible on md+ */}
@@ -102,6 +105,8 @@ export default function App() {
               <SettingsPage />
             ) : view === "skills" ? (
               <SkillsPanel />
+            ) : view === "preview" ? (
+              <PreviewPanel onClose={() => setView("chat")} />
           ) : (
             <>
               <ChatPanel />

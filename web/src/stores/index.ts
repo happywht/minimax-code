@@ -55,3 +55,5 @@ export { useCodeReviewStore, type ReviewComment, type ReviewStats } from "./code
 export { useProviderStore, type ProviderInfo as ProviderInfoEntry } from "./providerStore";
 export { useAuditStore, type AuditState } from "./auditStore";
 export { useWebhookStore, type WebhookState } from "./webhookStore";
+export { useCompletionStore, type CompletionState } from "./completionStore";
+export { usePreviewStore, type PreviewState } from "./previewStore";

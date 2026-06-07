@@ -79,9 +79,11 @@ class OpenAITransport(LLMTransport):
         client = self._ensure_client()
 
         # Build kwargs — omit None values so the SDK uses its defaults.
+        # Convert image blocks in user messages to OpenAI vision format.
+        converted_messages = _convert_openai_messages(messages)
         kwargs: dict[str, Any] = {
             "model": model,
-            "messages": [dict(m) for m in messages],
+            "messages": converted_messages,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
@@ -145,6 +147,39 @@ def _sanitize_tools(
             fn["parameters"] = {"type": "object", "properties": {}}
         out.append(t)
     return out
+
+
+def _convert_openai_messages(
+    messages: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Convert messages, handling image blocks in user messages.
+
+    Transforms internal image blocks ``{type: "image", media_type, data}``
+    into OpenAI vision format ``{type: "image_url", image_url: {url}}``.
+    String content and other roles are passed through unchanged.
+    """
+    result: list[dict[str, Any]] = []
+    for msg in messages:
+        m = dict(msg)
+        role = m.get("role", "")
+        content = m.get("content")
+
+        if role == "user" and isinstance(content, list):
+            converted: list[dict[str, Any]] = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "image":
+                    media = block.get("media_type", "image/png")
+                    data = block.get("data", "")
+                    converted.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{media};base64,{data}"},
+                    })
+                else:
+                    converted.append(block)
+            m["content"] = converted
+
+        result.append(m)
+    return result
 
 
 async def _openai_stream_to_chunks(

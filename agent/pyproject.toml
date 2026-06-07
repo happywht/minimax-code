@@ -24,6 +24,8 @@ dependencies = [
     "anthropic>=0.105.2",
     # v0.4.0 dual-protocol: OpenAI-compatible transport for 智谱/DeepSeek/etc.
     "openai>=1.30",
+    # v0.6.0 live preview — file-system watcher for hot-reload
+    "watchfiles>=0.21",
 ]
 
 [project.optional-dependencies]

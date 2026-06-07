@@ -1,3 +1,20 @@
+---
+name: smart-debug
+version: 1.0.0
+description: |
+  Intelligent debugging assistant that systematically diagnoses
+  and fixes bugs through reproduction, analysis, and targeted fixes.
+when_to_use: |
+  Use when the user reports a bug, asks for help debugging, or
+  wants to trace a failure. Triggers on "debug this", "fix this error",
+  "why does this crash", "something is broken".
+tools:
+  - exec_command
+  - read_file
+  - search_files
+  - edit_file
+---
+
 # Smart Debug
 
 Intelligent debugging assistant that systematically diagnoses and fixes bugs.

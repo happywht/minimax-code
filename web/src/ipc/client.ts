@@ -641,7 +641,7 @@ export interface TypedIPC {
   listMessages(sessionId: string, opts?: { limit?: number; before?: string }): Promise<ListMessagesResult>;
 
   // agent
-  sendMessage(opts: { session_id: string | null; content: string; attachments?: unknown }): Promise<SendMessageResult>;
+  sendMessage(opts: { session_id: string | null; content: string | import("../types/ipc").ContentPart[]; attachments?: unknown }): Promise<SendMessageResult>;
   cancelAgent(sessionId: string): Promise<{ ok: true }>;
 
   // agent CRUD

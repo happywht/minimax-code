@@ -9,4 +9,4 @@ See ``ipc.server`` for the wire format and ``app`` for handler
 registration.
 """
 
-__version__ = "0.3.2"
+__version__ = "0.6.0"

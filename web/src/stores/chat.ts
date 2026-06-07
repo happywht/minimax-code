@@ -18,7 +18,7 @@ import {
   type ToolCallData,
   type ToolResultData,
 } from "../types/ipc";
-import type { Message } from "../types/ipc";
+import type { Message, ContentPart } from "../types/ipc";
 import { useSessionStore } from "./sessionStore";
 
 export type ChatStatus = "idle" | "sending" | "streaming" | "error";
@@ -30,7 +30,7 @@ export interface ChatState {
   agentReady: boolean;
 
   init: () => Promise<void>;
-  send: (content: string) => Promise<void>;
+  send: (content: string | ContentPart[]) => Promise<void>;
   /** Add a user message to the chat log without triggering a backend call. */
   addLocalMessage: (content: string) => void;
   /** Load persisted messages for a session from the backend. */
@@ -216,13 +216,27 @@ export const useChat = create<ChatState>((set, get) => ({
     }));
   },
 
-  send: async (content: string) => {
-    const text = content.trim();
-    if (!text) return;
+  send: async (content: string | ContentPart[]) => {
+    // Normalize to wire format
+    const isString = typeof content === "string";
+    const text = isString ? (content as string).trim() : "";
+    const parts = !isString ? (content as ContentPart[]) : undefined;
+
+    // Build display text for the local user message bubble
+    let displayText = text;
+    if (parts) {
+      const textParts = parts.filter((p) => p.type === "text").map((p) => p.text);
+      const imgCount = parts.filter((p) => p.type === "image").length;
+      displayText = textParts.join(" ") + (imgCount > 0 ? ` [${imgCount} image${imgCount > 1 ? "s" : ""}]` : "");
+      displayText = displayText.trim();
+    }
+
+    if (!displayText && !parts?.length) return;
+
     const userMessage: Message = {
       id: `user-${Date.now()}`,
       role: "user",
-      text,
+      text: displayText,
       streaming: false,
       created_at: Date.now(),
     };
@@ -234,9 +248,11 @@ export const useChat = create<ChatState>((set, get) => ({
     resetStallWatchdog();
     const sessionId = useSessionStore.getState().currentSessionId;
     try {
+      // Send string for pure text, list for multimodal
+      const wireContent = parts ?? text;
       const result = await typedIPC.sendMessage({
         session_id: sessionId,
-        content: text,
+        content: wireContent,
       });
       if (result.session_id && !sessionId) {
         useSessionStore.getState().setCurrent(result.session_id);

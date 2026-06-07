@@ -46,6 +46,8 @@ class MockTransport(LLMTransport):
         max_tokens: int | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self._thinking_count = 1  # one synthetic "think" per call
+        # Extract text from messages (handles multimodal list content)
+        _extract_text(messages)
         step = 16
         for i in range(0, len(_MOCK_TEXT), step):
             await asyncio.sleep(0.005)
@@ -61,3 +63,21 @@ class MockTransport(LLMTransport):
 
     async def close(self) -> None:
         pass  # no resources to release
+
+
+def _extract_text(messages: Sequence[Mapping[str, Any]]) -> str:
+    """Extract concatenated text from messages (handles multimodal list content).
+
+    This is used by MockTransport to validate that multimodal messages
+    are parseable. The actual mock response is canned regardless.
+    """
+    parts: list[str] = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+    return " ".join(parts)

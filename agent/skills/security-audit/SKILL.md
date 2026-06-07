@@ -1,3 +1,19 @@
+---
+name: security-audit
+version: 1.0.0
+description: |
+  Automated and manual security review for codebases.
+  Scans for vulnerabilities, insecure patterns, and dependency issues.
+when_to_use: |
+  Use when the user wants a security review, asks about vulnerabilities,
+  or wants to run a security scan. Triggers on "security audit",
+  "check for vulnerabilities", "is this code secure", "security review".
+tools:
+  - exec_command
+  - read_file
+  - search_files
+---
+
 # Security Audit
 
 Automated and manual security review for codebases.

@@ -123,11 +123,37 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         await ctx.reply_error(-32602, "params must be an object")
         return
 
-    content = (params.get("content") or "").strip()
+    raw_content = params.get("content")
+    if isinstance(raw_content, list):
+        content = raw_content  # multimodal — list of ContentPart dicts
+    elif isinstance(raw_content, str):
+        content = raw_content.strip()
+    else:
+        content = ""
+
     session_id = str(params.get("session_id") or f"ses_{uuid.uuid4().hex[:8]}")
-    if not content:
+
+    # Validate non-empty: for string, check .strip(); for list, check length
+    if isinstance(content, str) and not content:
         await ctx.reply_error(-32602, "content must be a non-empty string")
         return
+    if isinstance(content, list) and not content:
+        await ctx.reply_error(-32602, "content must be a non-empty list")
+        return
+
+    # Extract a display-safe title string from the content.
+    if isinstance(content, str):
+        _title_hint = content[:32]
+    elif isinstance(content, list):
+        _title_hint = ""
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text" and part.get("text"):
+                _title_hint = part["text"][:32]
+                break
+        if not _title_hint:
+            _title_hint = "[multimodal]"
+    else:
+        _title_hint = ""
 
     message_id = f"msg_{uuid.uuid4().hex[:8]}"
 
@@ -156,7 +182,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
             if existing is None:
                 await sess_dao.create(
                     id=session_id,
-                    title=f"chat:{(content or '')[:32]}",
+                    title=f"chat:{_title_hint}",
                     system_prompt="",
                     model=None,
                 )
@@ -204,11 +230,18 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         try:
             mid = f"msg_{uuid.uuid4().hex[:12]}"
             md = msg.get("metadata")
+            # Serialize list content (multimodal) as JSON string
+            raw_cont = msg.get("content")
+            if isinstance(raw_cont, list):
+                import json as _json
+                cont_str = _json.dumps(raw_cont)
+            else:
+                cont_str = str(raw_cont or "")
             await msg_dao.create(
                 id=mid,
                 session_id=sid,
                 role=str(msg.get("role", "user")),
-                content=str(msg.get("content") or ""),
+                content=cont_str,
                 tool_calls=msg.get("tool_calls"),
                 tool_call_id=msg.get("tool_call_id"),
                 metadata=md if isinstance(md, dict) else None,

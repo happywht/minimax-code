@@ -495,3 +495,43 @@ export interface SidecarEvent {
   status: "started" | "stopped" | "error";
   error?: string;
 }
+
+// ---------------------------------------------------------------------------
+// v0.6.0 — Code Completion
+// ---------------------------------------------------------------------------
+
+/** Request body for POST /complete (not an IPC method — direct HTTP). */
+export interface CompletionRequest {
+  file_path: string;
+  content_before?: string;
+  content_after?: string;
+  language?: string;
+  max_tokens?: number;
+  temperature?: number;
+}
+
+/** Response from POST /complete. */
+export interface CompletionResponse {
+  text: string;
+  model: string;
+  tokens_in: number;
+  tokens_out: number;
+  latency_ms: number;
+}
+
+// ---------------------------------------------------------------------------
+// v0.6.0 — Multimodal Content Parts
+// ---------------------------------------------------------------------------
+
+export interface ContentPartText {
+  type: "text";
+  text: string;
+}
+
+export interface ContentPartImage {
+  type: "image";
+  media_type: string;
+  data: string; // base64-encoded
+}
+
+export type ContentPart = ContentPartText | ContentPartImage;
