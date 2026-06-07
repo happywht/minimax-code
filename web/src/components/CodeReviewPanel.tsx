@@ -1,11 +1,23 @@
 /**
- * Code review panel — displays review results from the code-review skill.
+ * Code review panel — multi-dimensional review UI.
  *
- * v0.3.1: embedded in RightPanel as a collapsible section. "Run Review"
- * triggers the store's ``runReview()`` which fetches a git diff and
- * invokes the ``code-review:code-review`` skill.
+ * v0.3.1: embedded in RightPanel as a collapsible section.
+ * v0.8.0: multi-dimensional tabs — Overview | Security | Performance | Style.
+ * Each dimension invokes its own tool. "Run All" triggers all checks.
  */
-import { AlertTriangle, FileCode, Loader2, Play, Trash2, XCircle, Info } from "lucide-react";
+
+import { useState } from "react";
+import {
+  AlertTriangle,
+  FileCode,
+  Info,
+  Loader2,
+  Play,
+  ShieldAlert,
+  Trash2,
+  Zap,
+  XCircle,
+} from "lucide-react";
 import { useCodeReviewStore } from "../stores/codeReviewStore";
 
 export interface CodeReviewPanelProps {
@@ -21,16 +33,40 @@ const SEVERITY_BADGE: Record<string, { icon: JSX.Element; cls: string }> = {
   error: { icon: <XCircle size={10} />, cls: "bg-red-500/10 text-red-300 border-red-500/30" },
 };
 
+type DimensionTab = "overview" | "security" | "performance" | "style";
+
+const TABS: { key: DimensionTab; label: string; icon: JSX.Element }[] = [
+  { key: "overview", label: "Overview", icon: <FileCode size={9} /> },
+  { key: "security", label: "Security", icon: <ShieldAlert size={9} /> },
+  { key: "performance", label: "Perf", icon: <Zap size={9} /> },
+  { key: "style", label: "Style", icon: <AlertTriangle size={9} /> },
+];
+
 export function CodeReviewPanel({
   testId = "code-review-panel",
 }: CodeReviewPanelProps): JSX.Element {
+  const [activeTab, setActiveTab] = useState<DimensionTab>("overview");
+
   const comments = useCodeReviewStore((s) => s.comments);
   const stats = useCodeReviewStore((s) => s.stats);
   const rawText = useCodeReviewStore((s) => s.rawText);
   const loading = useCodeReviewStore((s) => s.loading);
   const error = useCodeReviewStore((s) => s.error);
+  const dimensions = useCodeReviewStore((s) => s.dimensions);
   const runReview = useCodeReviewStore((s) => s.runReview);
+  const runAllChecks = useCodeReviewStore((s) => s.runAllChecks);
   const clear = useCodeReviewStore((s) => s.clear);
+
+  // Select comments for active dimension
+  const displayComments =
+    activeTab === "overview"
+      ? comments
+      : dimensions[activeTab]?.comments ?? [];
+
+  const displayStats =
+    activeTab === "overview"
+      ? stats
+      : dimensions[activeTab]?.stats ?? null;
 
   return (
     <div data-testid={testId} className="px-3 pb-3">
@@ -44,9 +80,20 @@ export function CodeReviewPanel({
           className="flex items-center gap-1 rounded-md bg-minimax-accent/10 border border-minimax-accent/30 px-2 py-1 text-[11px] text-minimax-accent hover:bg-minimax-accent/20 disabled:opacity-40"
         >
           {loading ? <Loader2 size={10} className="animate-spin" /> : <Play size={10} />}
-          {loading ? "Reviewing…" : "Run Review"}
+          {loading ? "Reviewing…" : "Review Diff"}
         </button>
-        {(comments.length > 0 || rawText) && (
+        <button
+          type="button"
+          data-testid="code-review-run-all-btn"
+          onClick={() => void runAllChecks()}
+          disabled={loading}
+          className="flex items-center gap-1 rounded-md bg-minimax-border/40 border border-minimax-border px-2 py-1 text-[11px] text-minimax-fg hover:bg-minimax-border disabled:opacity-40"
+          title="Run all dimension checks"
+        >
+          <Play size={10} />
+          Run All
+        </button>
+        {(comments.length > 0 || rawText || Object.keys(dimensions).length > 0) && (
           <button
             type="button"
             onClick={clear}
@@ -56,6 +103,37 @@ export function CodeReviewPanel({
             <Trash2 size={10} />
           </button>
         )}
+      </div>
+
+      {/* Dimension tabs */}
+      <div className="mt-2 flex gap-0.5 border-b border-minimax-border">
+        {TABS.map((tab) => {
+          const isActive = activeTab === tab.key;
+          const hasFindings =
+            tab.key === "overview"
+              ? comments.length > 0
+              : (dimensions[tab.key]?.comments?.length ?? 0) > 0;
+          return (
+            <button
+              key={tab.key}
+              type="button"
+              data-testid={`code-review-tab-${tab.key}`}
+              onClick={() => setActiveTab(tab.key)}
+              className={
+                "flex items-center gap-1 border-b-2 px-2 py-1 text-[10px] font-medium transition-colors " +
+                (isActive
+                  ? "border-minimax-accent text-minimax-accent"
+                  : "border-transparent text-minimax-muted hover:text-minimax-fg")
+              }
+            >
+              {tab.icon}
+              {tab.label}
+              {hasFindings && (
+                <span className="ml-0.5 inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {/* Error */}
@@ -69,24 +147,24 @@ export function CodeReviewPanel({
       )}
 
       {/* Stats banner */}
-      {stats && (
+      {displayStats && (
         <div
           data-testid="code-review-stats"
           className="mt-2 flex items-center gap-3 rounded-md border border-minimax-border bg-minimax-bg/40 px-2 py-1.5 text-[10px] text-minimax-muted"
         >
           <span className="flex items-center gap-1">
             <FileCode size={9} />
-            {stats.files} file{stats.files !== 1 ? "s" : ""}
+            {displayStats.files} file{displayStats.files !== 1 ? "s" : ""}
           </span>
-          <span className="text-emerald-400">+{stats.additions}</span>
-          <span className="text-red-400">−{stats.deletions}</span>
+          <span className="text-emerald-400">+{displayStats.additions}</span>
+          <span className="text-red-400">−{displayStats.deletions}</span>
         </div>
       )}
 
       {/* Comments list */}
-      {comments.length > 0 && (
+      {displayComments.length > 0 && (
         <ul data-testid="code-review-comments" className="mt-2 space-y-1.5">
-          {comments.map((c, i) => {
+          {displayComments.map((c, i) => {
             const badge = SEVERITY_BADGE[c.severity] ?? SEVERITY_BADGE.info;
             return (
               <li
@@ -115,7 +193,7 @@ export function CodeReviewPanel({
       )}
 
       {/* Raw text fallback */}
-      {!comments.length && rawText && (
+      {!displayComments.length && rawText && activeTab === "overview" && (
         <pre
           data-testid="code-review-raw"
           className="mt-2 max-h-48 overflow-auto rounded-md border border-minimax-border bg-minimax-bg/40 p-2 text-[10px] text-minimax-muted whitespace-pre-wrap"
@@ -124,10 +202,10 @@ export function CodeReviewPanel({
         </pre>
       )}
 
-      {/* Empty state (no review run yet) */}
-      {!loading && !error && !comments.length && !rawText && (
+      {/* Empty state */}
+      {!loading && !error && !displayComments.length && !rawText && !Object.keys(dimensions).length && (
         <div className="mt-2 text-center text-[11px] italic text-minimax-muted">
-          Click "Run Review" to analyze recent changes.
+          Click "Review Diff" or "Run All" to analyze code.
         </div>
       )}
     </div>

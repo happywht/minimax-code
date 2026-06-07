@@ -1,12 +1,14 @@
 """Built-in skill tool providers.
 
-This module wires the 4 built-in skills shipped in
+This module wires the 6 built-in skills shipped in
 ``agent/skills/`` to the runtime:
 
-* ``commit-helper``     — :mod:`.commit_helper`
-* ``code-review``       — :mod:`.code_review`
-* ``test-generator``    — :mod:`.test_generator`
-* ``refactor-assistant`` — :mod:`.refactor`
+* ``commit-helper``      — :mod:`.commit_helper`
+* ``code-review``        — :mod:`.code_review`
+* ``test-generator``     — :mod:`.test_generator`
+* ``refactor-assistant``  — :mod:`.refactor`
+* ``coding-standards``   — :mod:`.coding_standards`
+* ``doc-generator``      — :mod:`.doc_generator`
 
 Each sub-module exposes a :class:`SkillToolProvider` subclass and
 an ``install(runtime)`` helper. The application bootstrap calls
@@ -32,7 +34,14 @@ def install_builtin_providers(runtime: SkillRuntime) -> int:
     with a warning). Idempotent: a second call replaces the
     previous provider for any given skill.
     """
-    from . import code_review, commit_helper, refactor, test_generator
+    from . import (
+        code_review,
+        coding_standards,
+        commit_helper,
+        doc_generator,
+        refactor,
+        test_generator,
+    )
 
     count = 0
     for module, name in (
@@ -40,6 +49,8 @@ def install_builtin_providers(runtime: SkillRuntime) -> int:
         (code_review, "code-review"),
         (test_generator, "test-generator"),
         (refactor, "refactor-assistant"),
+        (coding_standards, "coding-standards"),
+        (doc_generator, "doc-generator"),
     ):
         skill = runtime.registry.get_by_name(name)
         if skill is None:

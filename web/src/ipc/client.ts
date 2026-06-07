@@ -28,6 +28,7 @@ import {
   ErrorCode,
   StreamEvent,
   type AgentInfo,
+  type AgentTeam,
   type AuditStats,
   type CreateProviderResult,
   type CreateSessionResult,
@@ -49,6 +50,7 @@ import {
   type ListRulesResult,
   type ListSessionsResult,
   type ListSkillsResult,
+  type ListTeamsResult,
   type ListWebhooksResult,
   type WebhookConfig,
   type ListNotificationsResult,
@@ -58,6 +60,7 @@ import {
   type MessageChunkData,
   type Message as ProtocolMessage,
   type ModelInfo,
+  type OrchestrationMode,
   type PermissionRequestData,
   type PermissionResolvedData,
   type PermissionRule,
@@ -75,6 +78,7 @@ import {
   type SpawnSubagentResult,
   type SubAgentProgress,
   type TaskProgressData,
+  type TeamProgressData as _TeamProgressData,
   type ToolCallData,
   type ToolResultData,
   type UpdateProviderResult,
@@ -650,8 +654,35 @@ export interface TypedIPC {
 
   // agent CRUD
   getAgent(name: string): Promise<{ agent: AgentInfo }>;
-  createAgent(opts: { name: string; system_prompt: string; tool_allowlist?: string[]; model?: string }): Promise<{ agent: AgentInfo }>;
-  updateAgent(opts: { name: string; system_prompt?: string; tool_allowlist?: string[]; model?: string; enabled?: boolean }): Promise<{ agent: AgentInfo }>;
+  createAgent(opts: {
+    name: string;
+    system_prompt: string;
+    tool_allowlist?: string[];
+    model?: string;
+    description?: string;
+    icon?: string;
+    color?: string;
+    category?: string;
+    tags?: string[];
+    skills?: string[];
+    max_iterations?: number;
+    temperature?: number;
+  }): Promise<{ agent: AgentInfo }>;
+  updateAgent(opts: {
+    name: string;
+    system_prompt?: string;
+    tool_allowlist?: string[];
+    model?: string;
+    enabled?: boolean;
+    description?: string;
+    icon?: string;
+    color?: string;
+    category?: string;
+    tags?: string[];
+    skills?: string[];
+    max_iterations?: number;
+    temperature?: number;
+  }): Promise<{ agent: AgentInfo }>;
   deleteAgent(name: string): Promise<{ ok: true }>;
 
   // model
@@ -759,6 +790,53 @@ export interface TypedIPC {
   enableWorkflow(id: string): Promise<WorkflowEntry>;
   disableWorkflow(id: string): Promise<WorkflowEntry>;
   triggerWorkflow(id: string, context?: Record<string, unknown>): Promise<{ ok: boolean; steps_completed: number; steps_failed: number }>;
+
+  // team (v0.8.0) — drive the Settings page's Teams tab.
+  listTeams(): Promise<ListTeamsResult>;
+  getTeam(name: string): Promise<{ team: AgentTeam }>;
+  createTeam(opts: {
+    name: string;
+    description?: string;
+    icon?: string;
+    color?: string;
+    agents?: string[];
+    orchestration_mode?: OrchestrationMode;
+  }): Promise<{ team: AgentTeam }>;
+  updateTeam(name: string, fields: {
+    description?: string;
+    icon?: string;
+    color?: string;
+    agents?: string[];
+    orchestration_mode?: OrchestrationMode;
+  }): Promise<{ team: AgentTeam }>;
+  deleteTeam(name: string): Promise<{ ok: true; name: string }>;
+  enableTeam(name: string): Promise<{ team: AgentTeam }>;
+  disableTeam(name: string): Promise<{ team: AgentTeam }>;
+  spawnTeam(opts: {
+    team_name: string;
+    request: string;
+    session_id?: string;
+    parent_session_id?: string;
+  }): Promise<{
+    team_name: string;
+    orchestration_mode: string;
+    merged_text: string;
+    agents_run: Array<{
+      agent_name: string;
+      success: boolean;
+      text: string;
+      error: string;
+      iterations: number;
+      stub: boolean;
+    }>;
+    conflicts: Array<{
+      file_path: string;
+      agents: string[];
+      conflict_type: string;
+    }>;
+    task_id: string | null;
+    success: boolean;
+  }>;
 }
 
 export function bindTypedIPC(client: IPCClient): TypedIPC {
@@ -936,6 +1014,16 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<WorkflowEntry>("workflow.disable", { id }),
     triggerWorkflow: (id, context) =>
       client.request<{ ok: boolean; steps_completed: number; steps_failed: number }>("workflow.trigger", { id, context }),
+
+    // team (v0.8.0)
+    listTeams: () => client.request<ListTeamsResult>("team.list", {}),
+    getTeam: (name) => client.request<{ team: AgentTeam }>("team.get", { name }),
+    createTeam: (opts) => client.request<{ team: AgentTeam }>("team.create", opts),
+    updateTeam: (name, fields) => client.request<{ team: AgentTeam }>("team.update", { name, ...fields }),
+    deleteTeam: (name) => client.request<{ ok: true; name: string }>("team.delete", { name }),
+    enableTeam: (name) => client.request<{ team: AgentTeam }>("team.enable", { name }),
+    disableTeam: (name) => client.request<{ team: AgentTeam }>("team.disable", { name }),
+    spawnTeam: (opts) => client.request("team.spawn", opts),
   };
 }
 
@@ -1025,6 +1113,22 @@ const mockAgents: AgentInfo[] = [
   },
 ];
 const mockJobs: ScheduledJob[] = [];
+
+// v0.8.0 — mock teams
+const mockTeams: AgentTeam[] = [
+  {
+    id: "team_mock_fullstack",
+    name: "fullstack-team",
+    description: "A full-stack review team",
+    icon: "Users",
+    color: "#6366f1",
+    agents: ["general", "researcher"],
+    orchestration_mode: "parallel",
+    enabled: true,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+];
 
 const mockProviders: ProviderInfo[] = [
   {
@@ -1621,6 +1725,95 @@ function mockHandle(
 
     case "workflow.trigger":
       return { ok: true, steps_completed: 0, steps_failed: 0 };
+
+    // ── team.* mock (v0.8.0) ──────────────────────────────────────────
+
+    case "team.list":
+      return { teams: mockTeams } satisfies ListTeamsResult;
+
+    case "team.get": {
+      const p = params as { name: string };
+      const t = mockTeams.find((x) => x.name === p.name);
+      if (!t) return { team: null as unknown as AgentTeam };
+      return { team: t };
+    }
+
+    case "team.create": {
+      const p = params as {
+        name: string;
+        description?: string;
+        icon?: string;
+        color?: string;
+        agents?: string[];
+        orchestration_mode?: string;
+      };
+      const now = new Date().toISOString();
+      const team: AgentTeam = {
+        id: `team_mock_${Math.random().toString(36).slice(2, 8)}`,
+        name: p.name,
+        description: p.description ?? "",
+        icon: p.icon ?? "",
+        color: p.color ?? "",
+        agents: p.agents ?? [],
+        orchestration_mode: (p.orchestration_mode as OrchestrationMode) ?? "parallel",
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+      };
+      mockTeams.push(team);
+      return { team } satisfies { team: AgentTeam };
+    }
+
+    case "team.update": {
+      const p = params as {
+        name: string;
+        description?: string;
+        icon?: string;
+        color?: string;
+        agents?: string[];
+        orchestration_mode?: string;
+      };
+      const t = mockTeams.find((x) => x.name === p.name);
+      if (!t) return { team: null as unknown as AgentTeam };
+      if (p.description !== undefined) t.description = p.description;
+      if (p.icon !== undefined) t.icon = p.icon;
+      if (p.color !== undefined) t.color = p.color;
+      if (p.agents !== undefined) t.agents = p.agents;
+      if (p.orchestration_mode !== undefined) t.orchestration_mode = p.orchestration_mode as OrchestrationMode;
+      t.updated_at = new Date().toISOString();
+      return { team: t } satisfies { team: AgentTeam };
+    }
+
+    case "team.delete": {
+      const p = params as { name: string };
+      const idx = mockTeams.findIndex((x) => x.name === p.name);
+      if (idx >= 0) mockTeams.splice(idx, 1);
+      return { ok: true, name: p.name };
+    }
+
+    case "team.enable":
+    case "team.disable": {
+      const p = params as { name: string };
+      const t = mockTeams.find((x) => x.name === p.name);
+      if (!t) return { team: null as unknown as AgentTeam };
+      t.enabled = method === "team.enable";
+      t.updated_at = new Date().toISOString();
+      return { team: t } satisfies { team: AgentTeam };
+    }
+    case "team.spawn": {
+      const p = params as { team_name: string; request: string };
+      return {
+        team_name: p.team_name,
+        orchestration_mode: "parallel",
+        merged_text: `[mock] Team ${p.team_name} processed: ${p.request}`,
+        agents_run: [
+          { agent_name: "agent-1", success: true, text: `Handled: ${p.request}`, error: "", iterations: 1, stub: true },
+        ],
+        conflicts: [],
+        task_id: `teamrun_mock_${Date.now()}`,
+        success: true,
+      };
+    }
   }
 }
 

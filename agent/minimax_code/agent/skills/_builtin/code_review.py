@@ -36,6 +36,14 @@ from ...tools.base import Tool, ToolResult
 from ...tools.file_ops import PathSecurityError, safe_resolve
 from ..runtime import SkillToolProvider
 
+# v0.8.0 — lazy imports for new review dimensions. They are
+# registered inside Provider.install() so that the import cost
+# is only paid when the code-review skill is actually activated.
+# from .security import SecurityScanTool
+# from .performance import PerformanceCheckTool
+# from .type_check import TypeCheckTool
+# from .test_coverage import TestCoverageTool
+
 # Default complexity threshold; matches the "code is too complex"
 # guidance popular in the Python community.
 _DEFAULT_THRESHOLD = 10
@@ -397,13 +405,32 @@ def _parse_linter_output(
 
 
 class Provider(SkillToolProvider):
-    """Adds the code-review tools to the agent's tool registry."""
+    """Adds the code-review tools to the agent's tool registry.
+
+    v0.8.0 registers 6 tools: the original 2 (RunLinterTool,
+    FindComplexFunctionsTool) plus 4 new dimension tools
+    (SecurityScanTool, PerformanceCheckTool, TypeCheckTool,
+    TestCoverageTool) lazy-imported to keep startup cheap.
+    """
+
+    # All tool classes to register (core 2 first, then dimensions)
+    _CORE_TOOLS: tuple[type[Tool], ...] = (RunLinterTool, FindComplexFunctionsTool)
+
+    def _dimension_tools(self) -> tuple[type[Tool], ...]:
+        """Lazy-load the v0.8.0 dimension tools."""
+        from .performance import PerformanceCheckTool
+        from .security import SecurityScanTool
+        from .test_coverage import TestCoverageTool
+        from .type_check import TypeCheckTool
+
+        return (SecurityScanTool, PerformanceCheckTool, TypeCheckTool, TestCoverageTool)
 
     def install(self, tool_registry: Any) -> set[str]:
         if tool_registry is None:
             return set()
         added: set[str] = set()
-        for cls in (RunLinterTool, FindComplexFunctionsTool):
+        all_tools = self._CORE_TOOLS + self._dimension_tools()
+        for cls in all_tools:
             if not tool_registry.has(cls.name):
                 tool_registry.register(cls())
                 added.add(cls.name)
@@ -412,7 +439,8 @@ class Provider(SkillToolProvider):
     def uninstall(self, tool_registry: Any) -> None:
         if tool_registry is None:
             return
-        for cls in (RunLinterTool, FindComplexFunctionsTool):
+        all_tools = self._CORE_TOOLS + self._dimension_tools()
+        for cls in all_tools:
             tool_registry.unregister(cls.name)
 
     # -- v0.3.0 diff-based review ------------------------------------------

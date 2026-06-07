@@ -467,12 +467,18 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # as audit / webhooks / notifications).
     from .ipc.handlers_workflows import register_workflow_handlers
     register_workflow_handlers(server)
+    # The team handlers expose ``team.list`` / ``team.create`` /
+    # ``team.get`` / ``team.update`` / ``team.delete`` /
+    # ``team.enable`` / ``team.disable`` for the Settings page's
+    # Teams tab.  The DAO is built lazily on first call.
+    from .ipc.handlers_teams import register_team_handlers
+    register_team_handlers(server)
     logger.info(
         "registered application handlers "
         "(1 agent.* + 7 agent.* + 5 skill.* + 6 task.* + 5 session.* + "
         "5 permission.* + 6 schedule.* + 7 mobile.* + 3 model.* + "
         "7 provider.* + 3 secrets.* + 3 git.* + 3 audit.* + 5 webhook.* + "
-        "5 notification.* + 7 workflow.*)"
+        "5 notification.* + 7 workflow.* + 7 team.*)"
     )
 
 

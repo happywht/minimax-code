@@ -183,11 +183,43 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
             model = params.get("model")
             if model is not None:
                 model = str(model)
+            # v0.8.0 extended fields
+            description = params.get("description")
+            icon = params.get("icon")
+            color = params.get("color")
+            category = params.get("category")
+            tags = params.get("tags")
+            skills = params.get("skills")
+            max_iterations = params.get("max_iterations")
+            temperature = params.get("temperature")
+            # Build kwargs for extended upsert
+            upsert_kwargs: dict[str, Any] = {}
+            if description is not None:
+                upsert_kwargs["description"] = str(description)
+            if icon is not None:
+                upsert_kwargs["icon"] = str(icon)
+            if color is not None:
+                upsert_kwargs["color"] = str(color)
+            if category is not None:
+                upsert_kwargs["category"] = str(category)
+            if tags is not None:
+                if not isinstance(tags, list):
+                    raise _HandlerError(INVALID_PARAMS, "tags must be a list of strings")
+                upsert_kwargs["tags"] = tags
+            if skills is not None:
+                if not isinstance(skills, list):
+                    raise _HandlerError(INVALID_PARAMS, "skills must be a list of strings")
+                upsert_kwargs["skills"] = skills
+            if max_iterations is not None:
+                upsert_kwargs["max_iterations"] = int(max_iterations)
+            if temperature is not None:
+                upsert_kwargs["temperature"] = float(temperature)
             agent = await agent_dao.upsert(
                 name=name,
                 system_prompt=system_prompt,
                 tool_allowlist=tool_allowlist,
                 model=model,
+                **upsert_kwargs,
             )
             await ctx.reply({"agent": agent})
         except _HandlerError as exc:
@@ -227,11 +259,36 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 new_model = str(new_model) if new_model is not None else None
             else:
                 new_model = existing.get("model")
+            # v0.8.0 extended fields for update
+            upsert_kwargs: dict[str, Any] = {}
+            if "description" in params:
+                upsert_kwargs["description"] = str(params["description"])
+            if "icon" in params:
+                upsert_kwargs["icon"] = str(params["icon"])
+            if "color" in params:
+                upsert_kwargs["color"] = str(params["color"])
+            if "category" in params:
+                upsert_kwargs["category"] = str(params["category"])
+            if "tags" in params:
+                tags = params["tags"]
+                if not isinstance(tags, list):
+                    raise _HandlerError(INVALID_PARAMS, "tags must be a list of strings")
+                upsert_kwargs["tags"] = tags
+            if "skills" in params:
+                skills = params["skills"]
+                if not isinstance(skills, list):
+                    raise _HandlerError(INVALID_PARAMS, "skills must be a list of strings")
+                upsert_kwargs["skills"] = skills
+            if "max_iterations" in params:
+                upsert_kwargs["max_iterations"] = int(params["max_iterations"])
+            if "temperature" in params:
+                upsert_kwargs["temperature"] = float(params["temperature"])
             agent = await agent_dao.upsert(
                 name=name,
                 system_prompt=str(new_prompt),
                 tool_allowlist=new_allowlist,
                 model=new_model,
+                **upsert_kwargs,
             )
             await ctx.reply({"agent": agent})
         except _HandlerError as exc:

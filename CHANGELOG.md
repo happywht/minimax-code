@@ -5,6 +5,56 @@ All notable changes to MiniMax Code are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-06-07
+
+**企业多Agent (Enterprise Multi-Agent)。** 四大模块：Agent 团队模板系统、多Agent
+并行编排+冲突检测、中文编码规范+双语文档生成、Code Review 多维度升级。
+
+### Added — Stage 1: Agent 团队模板系统
+- **`agent_teams` 表**（migration 010）：团队名称、描述、图标、颜色、编排模式
+  （parallel/sequential/round-robin）、关联 agents JSON。
+- **`agents` 表扩展**（migration 010）：新增 description、enabled、icon、color、
+  category、tags、team_id、skills、max_iterations、temperature 列。
+- **`AgentTeamDAO`**：CRUD + enable/disable + 分页列表。
+- **`handlers_teams.py`**：7 个 IPC 方法（team.list/create/get/update/delete/
+  enable/disable）。
+- **前端 TeamsTab**：SettingsPage 新 Tab，团队列表 + 创建表单 + Agent 分配。
+- **增强 AgentsTab**：description textarea、category 下拉、skills 多选。
+
+### Added — Stage 2: 多Agent 并行编排 + 冲突检测
+- **`TeamOrchestrator`**：三种编排模式（sequential 串行传递、parallel 并发合并、
+  round-robin 均分），内置文件写入冲突检测。
+- **`team.spawn` IPC**：团队级 spawn，发射 `agent.team_progress` 流式事件。
+- **前端 `TeamRunPanel`**：并行运行可视化，分支进度 + 冲突警告。
+- **`@team:` 触发器**：MessageInput 支持 `@team:` 前缀快速选择团队。
+
+### Added — Stage 3: 中文编码规范 + 双语文档生成
+- **`coding-standards` 技能**：check_style（ruff/AST 回退）、check_naming
+  （PascalCase/snake_case）、check_docstring（覆盖率 + Google/NumPy/Sphinx 验证）。
+- **`doc-generator` 技能**：extract_api_signatures（Python AST 签名提取）、
+  generate_doc（双语 Markdown 文档生成，含 TOC）。
+
+### Added — Stage 4: Code Review 多维度升级
+- **`SecurityScanTool`**：SEC001-006 六项 AST 检测（硬编码密钥、SQL 注入、
+  eval/exec、shell=True、pickle、弱哈希）。bandit 可用时自动升级。
+- **`PerformanceCheckTool`**：PERF001-004（async 阻塞、循环字符串拼接、
+  不必要拷贝、N+1 查询模式）。
+- **`TypeCheckTool`**：mypy → pyright → AST 注解覆盖率三级回退。TYPE001/002。
+- **`TestCoverageTool`**：pytest --cov → heuristic 文件映射回退。
+- **预置审查 Agent**（migration 011）：security-reviewer（red）、
+  performance-reviewer（yellow）、style-reviewer（blue）。
+- **`CodeReviewPanel` 多维度 Tab**：Overview | Security | Performance | Style，
+  "Run All" 按钮并行触发三项检查。
+- **`codeReviewStore` 扩展**：`dimensions` 分组 + `runAllChecks()` 流式编排。
+
+### Tests
+- Stage 1: 30+ 新增（DAO CRUD、IPC handlers、扩展 agents 字段）
+- Stage 2: 23+ 新增（TeamOrchestrator 三模式、冲突检测、team.spawn）
+- Stage 3: 25 新增（coding_standards 14 + doc_generator 11）
+- Stage 4: 15 新增（security 5 + performance 4 + type_check 2 + coverage 1
+  + migration 1 + provider 2）
+- 全量：Python 751 passed / Frontend 208 passed
+
 ## [0.3.2] - 2026-06-05
 
 **IPC 契约修复 + 功能补齐。** v0.3.1 补齐了 7 项前端功能，本轮修复了全部

@@ -35,6 +35,7 @@ import {
 import { ProgressPanel } from "./ProgressPanel";
 import { SubAgentPanel } from "./SubAgentPanel";
 import { CodeReviewPanel } from "./CodeReviewPanel";
+import { TeamRunPanel } from "./TeamRunPanel";
 import { typedIPC } from "../ipc";
 import { useTaskStore } from "../stores";
 import type { AgentInfo } from "../types/ipc";
@@ -60,6 +61,7 @@ export function RightPanel({
   const [teamOpen, setTeamOpen] = useState<boolean>(true);
   const [subOpen, setSubOpen] = useState<boolean>(true);
   const [reviewOpen, setReviewOpen] = useState<boolean>(false);
+  const [teamRunOpen, setTeamRunOpen] = useState<boolean>(true);
 
   const [agents, setAgents] = useState<AgentInfo[] | null>(initialAgents ?? null);
   const [agentsLoading, setAgentsLoading] = useState<boolean>(!initialAgents);
@@ -181,6 +183,15 @@ export function RightPanel({
           onToggle={() => setReviewOpen((v) => !v)}
         >
           <CodeReviewPanel testId={`${testId}-review-panel`} />
+        </Section>
+
+        <Section
+          testId={`${testId}-teamrun`}
+          title="Team Runs"
+          open={teamRunOpen}
+          onToggle={() => setTeamRunOpen((v) => !v)}
+        >
+          <TeamRunPanel />
         </Section>
       </div>
     </aside>

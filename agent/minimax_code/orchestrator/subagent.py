@@ -68,6 +68,8 @@ class SubAgentConfig:
 
     Mirrors the columns of the ``agents`` table, but with native
     Python types (``tool_allowlist`` is a list, not a JSON string).
+    v0.8.0 adds description, icon, color, category, tags, team_id,
+    skills, max_iterations, and temperature for enterprise features.
     """
 
     name: str
@@ -77,6 +79,17 @@ class SubAgentConfig:
     # Filled in by the DAO when the row is loaded; the runtime
     # doesn't generate new ids, it consumes them.
     id: str | None = None
+    # v0.8.0 extended fields
+    description: str = ""
+    enabled: bool = True
+    icon: str = ""
+    color: str = ""
+    category: str = ""
+    tags: list[str] | None = None
+    team_id: str | None = None
+    skills: list[str] | None = None
+    max_iterations: int = 8
+    temperature: float | None = None
 
 
 @dataclass
@@ -170,6 +183,7 @@ class SubAgentRuntime:
         core_config = AgentConfig(
             model=config.model or "MiniMax-M3",
             system_prompt_extra=config.system_prompt or None,
+            max_iterations=config.max_iterations,
         )
         core = AgentCore(llm=self._llm, registry=registry, config=core_config)
         return SubAgentHandle(agent_id=config.id, config=config, core=core)

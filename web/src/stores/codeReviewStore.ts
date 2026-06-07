@@ -1,10 +1,10 @@
 /**
- * Code review store — orchestrates the "Run Review" flow.
+ * Code review store — orchestrates the multi-dimensional review flow.
  *
- * v0.3.1: fetches a git diff via ``gitDiff()``, then invokes the
- * ``code-review:code-review`` skill with the diff as argument. The
- * skill returns structured ``{ comments, stats }`` parsed by this
- * store for the CodeReviewPanel to render.
+ * v0.3.1: fetches a git diff, invokes the code-review skill.
+ * v0.8.0: adds ``runAllChecks()`` that runs security_scan,
+ * performance_check, and style checks as separate dimensions,
+ * each populating its own tab in CodeReviewPanel.
  */
 
 import { create } from "zustand";
@@ -24,6 +24,12 @@ export interface ReviewStats {
   deletions: number;
 }
 
+export interface DimensionResult {
+  comments: ReviewComment[];
+  stats: ReviewStats | null;
+  rawText: string;
+}
+
 export interface CodeReviewState {
   comments: ReviewComment[];
   stats: ReviewStats | null;
@@ -31,7 +37,11 @@ export interface CodeReviewState {
   loading: boolean;
   error: string | null;
 
+  /** Per-dimension results keyed by dimension name. */
+  dimensions: Record<string, DimensionResult>;
+
   runReview: (scope?: "staged" | "branch" | "working") => Promise<void>;
+  runAllChecks: (path?: string) => Promise<void>;
   clear: () => void;
 }
 
@@ -41,6 +51,7 @@ export const useCodeReviewStore = create<CodeReviewState>((set) => ({
   rawText: "",
   loading: false,
   error: null,
+  dimensions: {},
 
   runReview: async (scope?: "staged" | "branch" | "working") => {
     set({ loading: true, error: null, comments: [], stats: null, rawText: "" });
@@ -61,7 +72,7 @@ export const useCodeReviewStore = create<CodeReviewState>((set) => ({
         { diff },
       );
 
-      // 3. Parse the result — the skill returns structured or text output
+      // 3. Parse the result
       const output = skillResult.output as Record<string, unknown> | string;
       if (typeof output === "object" && output !== null) {
         const comments = Array.isArray(output.comments)
@@ -70,7 +81,6 @@ export const useCodeReviewStore = create<CodeReviewState>((set) => ({
         const stats = output.stats as ReviewStats | null;
         set({ comments, stats, rawText: JSON.stringify(output, null, 2), loading: false });
       } else {
-        // Text-only output — display as raw text
         set({ rawText: String(output), loading: false });
       }
 
@@ -86,10 +96,82 @@ export const useCodeReviewStore = create<CodeReviewState>((set) => ({
     }
   },
 
-  clear: () => {
-    set({ comments: [], stats: null, rawText: "", error: null });
+  runAllChecks: async (path?: string) => {
+    set({ loading: true, error: null, dimensions: {} });
+    const newDimensions: Record<string, DimensionResult> = {};
+    let allComments: ReviewComment[] = [];
+
+    const checks: Array<{
+      key: string;
+      tool: string;
+      args: Record<string, unknown>;
+    }> = [
+      { key: "security", tool: "security_scan", args: { path: path ?? "." } },
+      { key: "performance", tool: "performance_check", args: { path: path ?? "." } },
+      { key: "style", tool: "check_style", args: { path: path ?? "." } },
+    ];
+
+    try {
+      for (const check of checks) {
+        try {
+          const result = await typedIPC.invokeSkill(
+            "code-review:code-review",
+            { tool: check.tool, ...check.args },
+          );
+
+          const output = result.output as Record<string, unknown> | string;
+          if (typeof output === "object" && output !== null) {
+            const findings = Array.isArray(output.findings)
+              ? (output.findings as Array<Record<string, unknown>>)
+              : [];
+            const comments: ReviewComment[] = findings.map((f) => ({
+              file: String(f.file ?? ""),
+              line: f.line != null ? Number(f.line) : null,
+              severity: (String(f.severity ?? "info") as ReviewComment["severity"]),
+              message: String(f.message ?? ""),
+            }));
+            newDimensions[check.key] = {
+              comments,
+              stats: null,
+              rawText: JSON.stringify(output, null, 2),
+            };
+            allComments = allComments.concat(comments);
+          } else {
+            newDimensions[check.key] = {
+              comments: [],
+              stats: null,
+              rawText: String(output),
+            };
+          }
+        } catch {
+          newDimensions[check.key] = {
+            comments: [],
+            stats: null,
+            rawText: `Check '${check.key}' failed.`,
+          };
+        }
+      }
+
+      set({
+        loading: false,
+        dimensions: newDimensions,
+        comments: allComments,
+        rawText: "",
+        stats: null,
+      });
+
+      toast.success(
+        "All checks complete",
+        `${allComments.length} total finding(s)`,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ loading: false, error: message, dimensions: newDimensions });
+      toast.error("Check failed", message);
+    }
   },
 
-  // expose for tests
-  __getState: () => useCodeReviewStore.getState,
+  clear: () => {
+    set({ comments: [], stats: null, rawText: "", error: null, dimensions: {} });
+  },
 }));

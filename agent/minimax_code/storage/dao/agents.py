@@ -105,6 +105,15 @@ class AgentsDAO:
         system_prompt: str | None = None,
         tool_allowlist: list[str] | None = None,
         model: str | None = None,
+        description: str | None = None,
+        icon: str | None = None,
+        color: str | None = None,
+        category: str | None = None,
+        tags: list[str] | None = None,
+        team_id: str | None = None,
+        skills: list[str] | None = None,
+        max_iterations: int | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any] | None:
         sets: list[str] = []
         params: list[Any] = []
@@ -117,8 +126,38 @@ class AgentsDAO:
         if model is not None:
             sets.append("model = ?")
             params.append(model)
+        # v0.8.0 extended fields
+        if description is not None:
+            sets.append("description = ?")
+            params.append(description)
+        if icon is not None:
+            sets.append("icon = ?")
+            params.append(icon)
+        if color is not None:
+            sets.append("color = ?")
+            params.append(color)
+        if category is not None:
+            sets.append("category = ?")
+            params.append(category)
+        if tags is not None:
+            sets.append("tags = ?")
+            params.append(dumps_json(tags))
+        if team_id is not None:
+            sets.append("team_id = ?")
+            params.append(team_id)
+        if skills is not None:
+            sets.append("skills = ?")
+            params.append(dumps_json(skills))
+        if max_iterations is not None:
+            sets.append("max_iterations = ?")
+            params.append(max_iterations)
+        if temperature is not None:
+            sets.append("temperature = ?")
+            params.append(temperature)
         if not sets:
             return await self.get(agent_id)
+        sets.append("updated_at = ?")
+        params.append(now_iso())
         params.append(agent_id)
         sql = f"UPDATE agents SET {', '.join(sets)} WHERE id = ?"
         async with self._db.transaction() as conn:
@@ -141,6 +180,10 @@ def _hydrate(row: Any) -> dict[str, Any] | None:
     if d is None:
         return None
     d["tool_allowlist"] = loads_json(d.get("tool_allowlist"))
+    # v0.8.0 extended columns — safe no-op when columns don't exist yet
+    d["tags"] = loads_json(d.get("tags"))
+    d["skills"] = loads_json(d.get("skills"))
+    d["enabled"] = bool(d.get("enabled", 1))
     return d
 
 
@@ -219,6 +262,16 @@ class AgentDAO:
         system_prompt: str = "",
         tool_allowlist: list[str] | None = None,
         model: str | None = None,
+        *,
+        description: str | None = None,
+        icon: str | None = None,
+        color: str | None = None,
+        category: str | None = None,
+        tags: list[str] | None = None,
+        team_id: str | None = None,
+        skills: list[str] | None = None,
+        max_iterations: int | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         """Insert-or-update by ``name``.
 
@@ -252,10 +305,13 @@ class AgentDAO:
         existing = await self.get(name)
         if existing is None:
             agent_id = f"agent_{uuid.uuid4().hex[:12]}"
+            now = now_iso()
             sql = (
                 "INSERT INTO agents "
-                "(id, name, system_prompt, tool_allowlist, model, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)"
+                "(id, name, system_prompt, tool_allowlist, model, "
+                "description, icon, color, category, tags, team_id, "
+                "skills, max_iterations, temperature, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             params = (
                 agent_id,
@@ -263,24 +319,28 @@ class AgentDAO:
                 system_prompt,
                 dumps_json(tool_allowlist) if tool_allowlist is not None else None,
                 model,
-                now_iso(),
+                description or "",
+                icon or "",
+                color or "",
+                category or "",
+                dumps_json(tags) if tags is not None else None,
+                team_id,
+                dumps_json(skills) if skills is not None else None,
+                max_iterations if max_iterations is not None else 8,
+                temperature,
+                now,
+                now,
             )
             try:
                 async with self._db.transaction() as conn:
                     await conn.execute(sql, params)
             except IntegrityError:
-                # Another coroutine won the race and inserted
-                # the same name first — fall through to the
-                # update path below.
                 existing = await self.get(name)
                 if existing is None:  # pragma: no cover — defensive
                     raise
         if existing is not None:
             sets: list[str] = []
             params: list[Any] = []
-            # Always overwrite system_prompt on upsert (it's a
-            # field the caller is always expected to send, even
-            # if it's the empty string).
             sets.append("system_prompt = ?")
             params.append(system_prompt)
             if tool_allowlist is not None:
@@ -289,6 +349,36 @@ class AgentDAO:
             if model is not None:
                 sets.append("model = ?")
                 params.append(model)
+            # v0.8.0 extended fields
+            if description is not None:
+                sets.append("description = ?")
+                params.append(description)
+            if icon is not None:
+                sets.append("icon = ?")
+                params.append(icon)
+            if color is not None:
+                sets.append("color = ?")
+                params.append(color)
+            if category is not None:
+                sets.append("category = ?")
+                params.append(category)
+            if tags is not None:
+                sets.append("tags = ?")
+                params.append(dumps_json(tags))
+            if team_id is not None:
+                sets.append("team_id = ?")
+                params.append(team_id)
+            if skills is not None:
+                sets.append("skills = ?")
+                params.append(dumps_json(skills))
+            if max_iterations is not None:
+                sets.append("max_iterations = ?")
+                params.append(max_iterations)
+            if temperature is not None:
+                sets.append("temperature = ?")
+                params.append(temperature)
+            sets.append("updated_at = ?")
+            params.append(now_iso())
             params.append(name)
             sql = f"UPDATE agents SET {', '.join(sets)} WHERE name = ?"
             async with self._db.transaction() as conn:

@@ -160,7 +160,7 @@ export interface SkillInfo {
   builtin: boolean;
 }
 
-/** A sub-agent record. */
+/** A sub-agent record — v0.8.0 extended with icon, category, tags, etc. */
 export interface AgentInfo {
   id: string;
   name: string;
@@ -169,6 +169,15 @@ export interface AgentInfo {
   system_prompt?: string;
   tool_allowlist?: string[];
   model?: string;
+  // v0.8.0 extended fields
+  icon?: string;
+  color?: string;
+  category?: string;
+  tags?: string[];
+  team_id?: string | null;
+  skills?: string[];
+  max_iterations?: number;
+  temperature?: number | null;
 }
 
 /** Params for `agent.spawn_subagent` (extended in v0.3.0 §2). */
@@ -488,6 +497,7 @@ export const StreamEvent = {
   SubAgentProgress: "agent.subagent_progress",
   NotificationNew: "notification.new",
   NotificationRead: "notification.read",
+  TeamProgress: "agent.team_progress",
 } as const;
 
 export type StreamEventName = (typeof StreamEvent)[keyof typeof StreamEvent];
@@ -598,3 +608,41 @@ export interface ContentPartImage {
 }
 
 export type ContentPart = ContentPartText | ContentPartImage;
+
+// ---------------------------------------------------------------------------
+// v0.8.0 — Agent Teams (Enterprise Multi-Agent)
+// ---------------------------------------------------------------------------
+
+/** Orchestration modes for an agent team. */
+export type OrchestrationMode = "parallel" | "sequential" | "round-robin";
+
+/** An agent team template — matches `agent_teams` table row. */
+export interface AgentTeam {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  color: string;
+  agents: string[]; // array of agent names
+  orchestration_mode: OrchestrationMode;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Result of ``team.list`` IPC call. */
+export interface ListTeamsResult {
+  teams: AgentTeam[];
+}
+
+/** Team progress event payload — pushed via WebSocket during team.spawn. */
+export interface TeamProgressData {
+  team_name: string;
+  task_id: string;
+  status: "started" | "agent_started" | "agent_completed" | "completed" | "failed";
+  agent_name?: string;
+  progress: number; // 0..1
+  summary?: string;
+  agents_completed?: number;
+  agents_total?: number;
+}

@@ -1,21 +1,25 @@
 ---
 name: code-review
-version: 1.0.0
+version: 2.0.0
 description: |
-  Reviews Python code for correctness, style, and complexity.
-  Combines a real linter (ruff → flake8 → pyflakes) with a
-  custom cyclomatic-complexity analyser.
+  Reviews Python code across multiple dimensions: style, complexity,
+  security, performance, type safety, and test coverage. Combines
+  external tools (ruff, bandit, mypy) with built-in AST analysis.
 when_to_use: |
-  Use this skill when the user asks the agent to "review" a
-  file or directory, flag risky code, or produce a structured
-  critique of a change. The skill surfaces concrete findings
-  with file/line/severity, not a vague "looks fine".
+  Use this skill when the user asks to "review" code, run a
+  "security scan", check "performance", verify "type safety",
+  or assess "test coverage". The skill surfaces concrete findings
+  with file/line/severity across multiple dimensions.
 
-  Do NOT use for non-Python files — both tools are
-  Python-specific.
+  Primary focus is Python; some tools support other languages
+  when external checkers (eslint, checkstyle) are available.
 tools:
   - run_linter
   - find_complex_functions
+  - security_scan
+  - performance_check
+  - type_check
+  - test_coverage
 ---
 
 # Code Review
