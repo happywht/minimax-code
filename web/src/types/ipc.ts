@@ -486,6 +486,8 @@ export const StreamEvent = {
   PermissionResolved: "permission.resolved",
   TaskProgress: "task.progress",
   SubAgentProgress: "agent.subagent_progress",
+  NotificationNew: "notification.new",
+  NotificationRead: "notification.read",
 } as const;
 
 export type StreamEventName = (typeof StreamEvent)[keyof typeof StreamEvent];
@@ -494,6 +496,67 @@ export type StreamEventName = (typeof StreamEvent)[keyof typeof StreamEvent];
 export interface SidecarEvent {
   status: "started" | "stopped" | "error";
   error?: string;
+}
+
+// ---------------------------------------------------------------------------
+// v0.7.0 — Notifications
+// ---------------------------------------------------------------------------
+
+/** A single notification entry from the notification centre. */
+export interface NotificationEntry {
+  id: string;
+  type: string;
+  title: string;
+  body: string;
+  source?: string;
+  source_id?: string;
+  priority: number;
+  read: boolean;
+  created_at: string;
+  read_at?: string;
+}
+
+/** Result of ``notification.list`` IPC call. */
+export interface ListNotificationsResult {
+  entries: NotificationEntry[];
+  total: number;
+}
+
+// ---------------------------------------------------------------------------
+// v0.7.0 — Workflows
+// ---------------------------------------------------------------------------
+
+/** A single workflow step — condition branch or action execution. */
+export interface WorkflowStep {
+  type: "condition" | "action";
+  /** For condition steps: the if-clause. */
+  if?: { field: string; op: "eq" | "neq" | "contains" | "startswith"; value: string };
+  then_step?: number;
+  else_step?: number;
+  /** For action steps: what action to execute. */
+  action_type?: "notify" | "send-message" | "code-review" | "run-skill";
+  config?: Record<string, unknown>;
+}
+
+/** A workflow entry — matches `workflows` table row. */
+export interface WorkflowEntry {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  trigger_type: "webhook" | "schedule" | "agent_event";
+  trigger_config: Record<string, unknown>;
+  steps: WorkflowStep[];
+  last_run_at: string | null;
+  run_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Result of ``workflow.list`` IPC call. */
+export interface ListWorkflowsResult {
+  entries: WorkflowEntry[];
+  total: number;
 }
 
 // ---------------------------------------------------------------------------

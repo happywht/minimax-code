@@ -31,7 +31,7 @@ async def test_status() -> None:
     client = IPCClient()
     result = await client.request("status")
     assert result["agent"] == "minimax-code-agent"
-    assert result["version"] == "0.3.2"
+    assert result["version"] == "0.7.0"
     assert result["python"].startswith("3.")
 
 

@@ -6,7 +6,7 @@
  */
 
 import { create } from "zustand";
-import { getTypedIPC } from "../ipc/client";
+import { typedIPC } from "@/ipc/client";
 import type { WebhookConfig } from "../types/ipc";
 
 export interface WebhookState {
@@ -44,7 +44,7 @@ export const useWebhookStore = create<WebhookState>((set, get) => ({
   refresh: async (opts) => {
     set({ loading: true, error: null });
     try {
-      const ipc = getTypedIPC();
+      const ipc = typedIPC;
       const result = await ipc.listWebhooks(opts);
       set({ entries: result.entries, total: result.total, loading: false });
     } catch (e) {
@@ -54,7 +54,7 @@ export const useWebhookStore = create<WebhookState>((set, get) => ({
 
   create: async (opts) => {
     try {
-      const ipc = getTypedIPC();
+      const ipc = typedIPC;
       const wh = await ipc.createWebhook(opts);
       await get().refresh();
       return wh;
@@ -66,7 +66,7 @@ export const useWebhookStore = create<WebhookState>((set, get) => ({
 
   update: async (id, fields) => {
     try {
-      const ipc = getTypedIPC();
+      const ipc = typedIPC;
       await ipc.updateWebhook(id, fields);
       await get().refresh();
     } catch (e) {
@@ -76,7 +76,7 @@ export const useWebhookStore = create<WebhookState>((set, get) => ({
 
   remove: async (id) => {
     try {
-      const ipc = getTypedIPC();
+      const ipc = typedIPC;
       await ipc.deleteWebhook(id);
       await get().refresh();
     } catch (e) {
@@ -86,7 +86,7 @@ export const useWebhookStore = create<WebhookState>((set, get) => ({
 
   regenerateSecret: async (id) => {
     try {
-      const ipc = getTypedIPC();
+      const ipc = typedIPC;
       const wh = await ipc.regenerateWebhookSecret(id);
       await get().refresh();
       return wh;

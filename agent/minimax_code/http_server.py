@@ -113,6 +113,11 @@ class _WSManager:
     every handler that calls ``ctx.emit`` / ``ctx.notify``. Each
     per-client send is scheduled as a separate task so a slow /
     disconnected client cannot block the others.
+
+    v0.7.0: Added ``_device_connections`` for targeted push to
+    specific mobile devices.  When a WebSocket connection includes
+    a ``device_id`` query parameter, the mapping is stored so
+    handlers can push notifications to individual devices.
     """
 
     def __init__(self, server: "IPCServer", version: str) -> None:
@@ -121,16 +126,51 @@ class _WSManager:
         self._clients: set[WebSocket] = set()
         self._lock = asyncio.Lock()
         self._listener: Any = None  # the IPCServer listener callback
+        # v0.7.0 — device-level tracking for targeted push
+        self._device_connections: dict[str, WebSocket] = {}
 
     @property
     def has_clients(self) -> bool:
         return bool(self._clients)
 
+    def get_online_devices(self) -> set[str]:
+        """Return the set of device IDs with active WS connections."""
+        return set(self._device_connections.keys())
+
+    async def send_to_device(self, device_id: str, payload: dict[str, Any]) -> bool:
+        """Send *payload* to a specific device. Returns ``True`` on success."""
+        ws = self._device_connections.get(device_id)
+        if ws is None:
+            return False
+        try:
+            await ws.send_json(payload)
+            return True
+        except Exception:
+            logger.warning("send_to_device failed for %s; removing mapping", device_id)
+            self._device_connections.pop(device_id, None)
+            return False
+
     async def on_connect(self, ws: WebSocket) -> None:
-        """Accept the upgrade, send ``agent.ready``, register listener."""
+        """Accept the upgrade, send ``agent.ready``, register listener.
+
+        If the WS upgrade request includes a ``device_id`` query
+        parameter, the mapping is stored for targeted push.
+        """
         await ws.accept()
+        # Extract device_id from query params (v0.7.0)
+        device_id: str | None = None
+        try:
+            for key, val in ws.query_params.items():
+                if key == "device_id" and val:
+                    device_id = val
+                    break
+        except Exception:
+            pass
+
         async with self._lock:
             self._clients.add(ws)
+            if device_id:
+                self._device_connections[device_id] = ws
             if self._listener is None:
                 self._listener = self._on_event
                 self._server.register_listener(self._listener)
@@ -162,6 +202,10 @@ class _WSManager:
     async def _cleanup_disconnect(self, ws: WebSocket) -> None:
         async with self._lock:
             self._clients.discard(ws)
+            # Remove any device_id mapping pointing to this ws
+            to_remove = [did for did, s in self._device_connections.items() if s is ws]
+            for did in to_remove:
+                del self._device_connections[did]
             if not self._clients and self._listener is not None:
                 self._server.unregister_listener(self._listener)
                 self._listener = None

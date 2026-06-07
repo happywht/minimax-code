@@ -115,6 +115,9 @@ async def amain(config: Config, mode: str, port: int, host: str) -> int:
     from .http_server import build_app
 
     app = build_app(server)
+    # Stash the FastAPI app so mobile push handlers can reach the WSManager
+    from .app import set_http_app
+    set_http_app(app)
     config_uv = uvicorn.Config(
         app,
         host=host,

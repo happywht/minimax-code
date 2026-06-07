@@ -265,6 +265,24 @@ def _set_subagent_llm(llm: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# HTTP app singleton (v0.7.0 — mobile push needs WSManager)
+# ---------------------------------------------------------------------------
+
+_HTTP_APP: Any = None
+
+
+def get_http_app() -> Any:
+    """Return the process-wide FastAPI app, or ``None``."""
+    return _HTTP_APP
+
+
+def set_http_app(app: Any) -> None:
+    """Replace the cached FastAPI app (called by ``__main__`` after build_app)."""
+    global _HTTP_APP
+    _HTTP_APP = app
+
+
+# ---------------------------------------------------------------------------
 # Provider DAO singleton
 # ---------------------------------------------------------------------------
 
@@ -435,11 +453,26 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # ``webhook.regenerate_secret`` for the Settings page's Webhooks tab.
     # The DAO is built lazily on first call (same pattern as audit).
     register_webhook_handlers(server)
+    # The notification handlers expose ``notification.list`` /
+    # ``notification.mark_read`` / ``notification.mark_all_read`` /
+    # ``notification.delete`` / ``notification.purge`` for the
+    # NotificationBell / NotificationCenter UI.  The DAO is built lazily
+    # on first call (same pattern as audit / webhooks).
+    from .ipc.handlers_notifications import register_notification_handlers
+    register_notification_handlers(server)
+    # The workflow handlers expose ``workflow.list`` / ``workflow.create``
+    # / ``workflow.update`` / ``workflow.delete`` / ``workflow.enable``
+    # / ``workflow.disable`` / ``workflow.trigger`` for the Settings page's
+    # Workflows tab.  The DAO is built lazily on first call (same pattern
+    # as audit / webhooks / notifications).
+    from .ipc.handlers_workflows import register_workflow_handlers
+    register_workflow_handlers(server)
     logger.info(
         "registered application handlers "
         "(1 agent.* + 7 agent.* + 5 skill.* + 6 task.* + 5 session.* + "
-        "5 permission.* + 6 schedule.* + 5 mobile.* + 3 model.* + "
-        "7 provider.* + 3 secrets.* + 3 git.* + 3 audit.* + 5 webhook.*)"
+        "5 permission.* + 6 schedule.* + 7 mobile.* + 3 model.* + "
+        "7 provider.* + 3 secrets.* + 3 git.* + 3 audit.* + 5 webhook.* + "
+        "5 notification.* + 7 workflow.*)"
     )
 
 
@@ -485,6 +518,7 @@ async def ensure_repo_map_indexer() -> Any:
 
 __all__ = [
     "ensure_repo_map_indexer",
+    "get_http_app",
     "get_progress_tracker",
     "get_provider_dao",
     "get_repo_map_indexer",
@@ -494,6 +528,7 @@ __all__ = [
     "init_runtime",
     "rebuild_subagent_llm",
     "register_app_handlers",
+    "set_http_app",
     "set_progress_tracker",
     "set_repo_map_indexer",
     "set_runtime",

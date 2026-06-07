@@ -51,6 +51,10 @@ import {
   type ListSkillsResult,
   type ListWebhooksResult,
   type WebhookConfig,
+  type ListNotificationsResult,
+  type NotificationEntry,
+  type WorkflowEntry,
+  type ListWorkflowsResult,
   type MessageChunkData,
   type Message as ProtocolMessage,
   type ModelInfo,
@@ -676,8 +680,13 @@ export interface TypedIPC {
 
   // mobile
   startPairing(opts?: { suggested_name?: string }): Promise<{ token: string; expires_at: number; qr_payload: string }>;
-  listDevices(): Promise<{ devices: { id: string; name: string; paired_at: number }[] }>;
+  listDevices(): Promise<{ devices: { id: string; name: string; paired_at: number; online?: boolean }[] }>;
   unpairDevice(deviceId: string): Promise<{ ok: true; device_id: string }>;
+  pushNotification(opts: {
+    device_id?: string;
+    notification: { type?: string; title: string; body?: string; priority?: number };
+  }): Promise<{ ok: boolean; delivered?: boolean; broadcast?: boolean; total_devices?: number }>;
+  deviceStatus(): Promise<{ devices: { id: string; name: string; paired_at: number; online: boolean }[] }>;
   // permission
   listRules(): Promise<ListRulesResult>;
   setRule(rule: Omit<PermissionRule, "id" | "created_at"> & { id?: string }): Promise<SetRuleResult>;
@@ -734,6 +743,22 @@ export interface TypedIPC {
   updateWebhook(id: string, fields: Partial<Pick<WebhookConfig, "name" | "source" | "enabled" | "action_type" | "action_config">>): Promise<WebhookConfig>;
   deleteWebhook(id: string): Promise<{ deleted: boolean }>;
   regenerateWebhookSecret(id: string): Promise<WebhookConfig>;
+
+  // notification — drive the NotificationBell / NotificationCenter UI.
+  listNotifications(opts?: { limit?: number; offset?: number; type?: string; source?: string; unread_only?: boolean }): Promise<ListNotificationsResult>;
+  markNotificationRead(id: string): Promise<NotificationEntry>;
+  markAllNotificationsRead(): Promise<{ marked: number }>;
+  deleteNotification(id: string): Promise<{ deleted: boolean }>;
+  purgeNotifications(beforeIso: string, readOnly?: boolean): Promise<{ purged: number }>;
+
+  // workflow — drive the Settings page's Workflows tab.
+  listWorkflows(opts?: { limit?: number; offset?: number; trigger_type?: string; enabled_only?: boolean }): Promise<ListWorkflowsResult>;
+  createWorkflow(opts: { name: string; trigger_type: string; description?: string; trigger_config?: Record<string, unknown>; steps?: unknown[]; enabled?: boolean }): Promise<WorkflowEntry>;
+  updateWorkflow(id: string, fields: { name?: string; description?: string; trigger_config?: Record<string, unknown>; steps?: unknown[] }): Promise<WorkflowEntry>;
+  deleteWorkflow(id: string): Promise<{ deleted: boolean }>;
+  enableWorkflow(id: string): Promise<WorkflowEntry>;
+  disableWorkflow(id: string): Promise<WorkflowEntry>;
+  triggerWorkflow(id: string, context?: Record<string, unknown>): Promise<{ ok: boolean; steps_completed: number; steps_failed: number }>;
 }
 
 export function bindTypedIPC(client: IPCClient): TypedIPC {
@@ -828,12 +853,21 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       ),
     listDevices: () =>
       client.request<{
-        devices: { id: string; name: string; paired_at: number }[];
+        devices: { id: string; name: string; paired_at: number; online?: boolean }[];
       }>("mobile.list", {}),
     unpairDevice: (did) =>
       client.request<{ ok: true; device_id: string }>("mobile.unpair", {
         device_id: did,
       }),
+    pushNotification: (opts) =>
+      client.request<{
+        ok: boolean; delivered?: boolean; broadcast?: boolean;
+        total_devices?: number; device_id?: string;
+      }>("mobile.push_notification", opts),
+    deviceStatus: () =>
+      client.request<{
+        devices: { id: string; name: string; paired_at: number; online: boolean }[];
+      }>("mobile.device_status", {}),
     listRules: () => client.request<ListRulesResult>("permission.list", {}),
     setRule: (rule) =>
       client.request<SetRuleResult>("permission.set", rule),
@@ -876,6 +910,32 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     updateWebhook: (id, fields) => client.request<WebhookConfig>("webhook.update", { id, ...fields }),
     deleteWebhook: (id) => client.request<{ deleted: boolean }>("webhook.delete", { id }),
     regenerateWebhookSecret: (id) => client.request<WebhookConfig>("webhook.regenerate_secret", { id }),
+
+    listNotifications: (opts) =>
+      client.request<ListNotificationsResult>("notification.list", opts ?? {}),
+    markNotificationRead: (id) =>
+      client.request<NotificationEntry>("notification.mark_read", { id }),
+    markAllNotificationsRead: () =>
+      client.request<{ marked: number }>("notification.mark_all_read", {}),
+    deleteNotification: (id) =>
+      client.request<{ deleted: boolean }>("notification.delete", { id }),
+    purgeNotifications: (beforeIso, readOnly) =>
+      client.request<{ purged: number }>("notification.purge", { before_iso: beforeIso, read_only: readOnly ?? false }),
+
+    listWorkflows: (opts) =>
+      client.request<ListWorkflowsResult>("workflow.list", opts ?? {}),
+    createWorkflow: (opts) =>
+      client.request<WorkflowEntry>("workflow.create", opts),
+    updateWorkflow: (id, fields) =>
+      client.request<WorkflowEntry>("workflow.update", { id, ...fields }),
+    deleteWorkflow: (id) =>
+      client.request<{ deleted: boolean }>("workflow.delete", { id }),
+    enableWorkflow: (id) =>
+      client.request<WorkflowEntry>("workflow.enable", { id }),
+    disableWorkflow: (id) =>
+      client.request<WorkflowEntry>("workflow.disable", { id }),
+    triggerWorkflow: (id, context) =>
+      client.request<{ ok: boolean; steps_completed: number; steps_failed: number }>("workflow.trigger", { id, context }),
   };
 }
 
@@ -1227,6 +1287,12 @@ function mockHandle(
     case "mobile.unpair":
       return { ok: true, device_id: (params as { device_id: string }).device_id };
 
+    case "mobile.push_notification":
+      return { ok: true, broadcast: true, total_devices: 0, delivered: 0 };
+
+    case "mobile.device_status":
+      return { devices: [] };
+
     case "permission.list":
       return { rules: [] };
 
@@ -1464,6 +1530,97 @@ function mockHandle(
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       } satisfies WebhookConfig;
+
+    // ── notification.* mock ──────────────────────────────────────────
+
+    case "notification.list":
+      return { entries: [], total: 0 } satisfies ListNotificationsResult;
+
+    case "notification.mark_read": {
+      const p = params as { id: string };
+      return {
+        id: p.id,
+        type: "info",
+        title: "mock",
+        body: "",
+        priority: 0,
+        read: true,
+        created_at: new Date().toISOString(),
+      } satisfies NotificationEntry;
+    }
+
+    case "notification.mark_all_read":
+      return { marked: 0 };
+
+    case "notification.delete":
+      return { deleted: true };
+
+    case "notification.purge":
+      return { purged: 0 };
+
+    // ── workflow.* mock ──────────────────────────────────────────
+
+    case "workflow.list":
+      return { entries: [], total: 0 } satisfies ListWorkflowsResult;
+
+    case "workflow.create": {
+      const p = params as { name: string; trigger_type: string; description?: string };
+      const now = new Date().toISOString();
+      return {
+        id: `wf_mock${Date.now().toString(36)}`,
+        name: p.name,
+        description: p.description ?? "",
+        enabled: true,
+        trigger_type: p.trigger_type as WorkflowEntry["trigger_type"],
+        trigger_config: {},
+        steps: [],
+        last_run_at: null,
+        run_count: 0,
+        created_at: now,
+        updated_at: now,
+      } satisfies WorkflowEntry;
+    }
+
+    case "workflow.update": {
+      const p = params as { id: string; name?: string };
+      return {
+        id: p.id,
+        name: p.name ?? "updated",
+        description: "",
+        enabled: true,
+        trigger_type: "webhook" as const,
+        trigger_config: {},
+        steps: [],
+        last_run_at: null,
+        run_count: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      } satisfies WorkflowEntry;
+    }
+
+    case "workflow.delete":
+      return { deleted: true };
+
+    case "workflow.enable":
+    case "workflow.disable": {
+      const p = params as { id: string };
+      return {
+        id: p.id,
+        name: "mock",
+        description: "",
+        enabled: method === "workflow.enable",
+        trigger_type: "webhook" as const,
+        trigger_config: {},
+        steps: [],
+        last_run_at: null,
+        run_count: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      } satisfies WorkflowEntry;
+    }
+
+    case "workflow.trigger":
+      return { ok: true, steps_completed: 0, steps_failed: 0 };
   }
 }
 

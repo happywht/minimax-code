@@ -367,3 +367,190 @@ class _PairingManagerHelper:
     def mint(self) -> dict[str, Any]:
         pm = PairingManager(ttl_seconds=60, clock=lambda: 1_000.0)
         return pm.generate_pairing_token()
+
+
+# ---------------------------------------------------------------------------
+# v0.7.0 — Mobile push notification + device status tests
+# ---------------------------------------------------------------------------
+
+
+class _FakeWSManager:
+    """Stub WSManager for push_notification / device_status tests."""
+
+    def __init__(self, online: set[str] | None = None) -> None:
+        self._online = online or set()
+        self.sent: list[tuple[str, dict[str, Any]]] = []
+
+    def get_online_devices(self) -> set[str]:
+        return set(self._online)
+
+    async def send_to_device(self, device_id: str, payload: dict[str, Any]) -> bool:
+        if device_id not in self._online:
+            return False
+        self.sent.append((device_id, payload))
+        return True
+
+
+class _FakeApp:
+    """Minimal FastAPI app state stand-in."""
+
+    class _State:
+        def __init__(self, ws_manager: _FakeWSManager) -> None:
+            self.ws_manager = ws_manager
+
+    def __init__(self, ws_manager: _FakeWSManager) -> None:
+        self.state = self._State(ws_manager)
+
+
+def _build_server_with_ws(
+    dao: _StubDAO | None = None,
+    ws_mgr: _FakeWSManager | None = None,
+) -> tuple[_FakeServer, _StubDAO, _FakeWSManager]:
+    """Build a fake server + DAO + WSManager for push/status tests."""
+    dao = dao or _StubDAO()
+    ws_mgr = ws_mgr or _FakeWSManager()
+    server = _FakeServer()
+    register_mobile_handlers(server, dao=dao)
+    return server, dao, ws_mgr
+
+
+def test_push_notification_to_specific_device() -> None:
+    dao = _StubDAO()
+    ws_mgr = _FakeWSManager(online={"dev-1"})
+    server, _, _ = _build_server_with_ws(dao, ws_mgr)
+
+    # Inject the fake HTTP app so the handler can find ws_manager
+    import minimax_code.app as _app_mod
+    fake_app = _FakeApp(ws_mgr)
+    old_app = _app_mod._HTTP_APP
+    _app_mod._HTTP_APP = fake_app
+    try:
+        ctx = _FakeCtx()
+        asyncio.run(
+            _bind("mobile.push_notification", server)(
+                {
+                    "device_id": "dev-1",
+                    "notification": {"title": "Hello", "body": "World"},
+                },
+                ctx,
+            )
+        )
+        assert not ctx.errors, ctx.errors
+        assert ctx.replies[0]["ok"] is True
+        assert ctx.replies[0]["delivered"] is True
+        assert len(ws_mgr.sent) == 1
+        assert ws_mgr.sent[0][0] == "dev-1"
+    finally:
+        _app_mod._HTTP_APP = old_app
+
+
+def test_push_notification_broadcast() -> None:
+    dao = _StubDAO()
+    ws_mgr = _FakeWSManager(online={"dev-1", "dev-2"})
+    server, _, _ = _build_server_with_ws(dao, ws_mgr)
+
+    import minimax_code.app as _app_mod
+    fake_app = _FakeApp(ws_mgr)
+    old_app = _app_mod._HTTP_APP
+    _app_mod._HTTP_APP = fake_app
+    try:
+        ctx = _FakeCtx()
+        asyncio.run(
+            _bind("mobile.push_notification", server)(
+                {
+                    "notification": {"title": "Broadcast", "body": "To all"},
+                },
+                ctx,
+            )
+        )
+        assert not ctx.errors, ctx.errors
+        assert ctx.replies[0]["ok"] is True
+        assert ctx.replies[0]["broadcast"] is True
+        assert ctx.replies[0]["total_devices"] == 2
+        assert ctx.replies[0]["delivered"] == 2
+        assert len(ws_mgr.sent) == 2
+    finally:
+        _app_mod._HTTP_APP = old_app
+
+
+def test_push_notification_offline_device() -> None:
+    dao = _StubDAO()
+    ws_mgr = _FakeWSManager(online=set())  # no devices online
+    server, _, _ = _build_server_with_ws(dao, ws_mgr)
+
+    import minimax_code.app as _app_mod
+    fake_app = _FakeApp(ws_mgr)
+    old_app = _app_mod._HTTP_APP
+    _app_mod._HTTP_APP = fake_app
+    try:
+        ctx = _FakeCtx()
+        asyncio.run(
+            _bind("mobile.push_notification", server)(
+                {
+                    "device_id": "dev-1",
+                    "notification": {"title": "Hello", "body": "World"},
+                },
+                ctx,
+            )
+        )
+        assert not ctx.errors
+        assert ctx.replies[0]["ok"] is True
+        assert ctx.replies[0]["delivered"] is False
+    finally:
+        _app_mod._HTTP_APP = old_app
+
+
+def test_push_notification_missing_title() -> None:
+    server, _, _ = _build_server_with_ws()
+
+    ctx = _FakeCtx()
+    asyncio.run(
+        _bind("mobile.push_notification", server)(
+            {"notification": {"body": "No title"}},
+            ctx,
+        )
+    )
+    assert ctx.errors
+    assert ctx.errors[0]["code"] == INVALID_PARAMS
+
+
+def test_device_status_shows_online() -> None:
+    dao = _StubDAO()
+    asyncio.run(dao.register("dev-1", "iPhone", "pk1"))
+    asyncio.run(dao.register("dev-2", "iPad", "pk2"))
+    ws_mgr = _FakeWSManager(online={"dev-1"})
+    server, _, _ = _build_server_with_ws(dao, ws_mgr)
+
+    import minimax_code.app as _app_mod
+    fake_app = _FakeApp(ws_mgr)
+    old_app = _app_mod._HTTP_APP
+    _app_mod._HTTP_APP = fake_app
+    try:
+        ctx = _FakeCtx()
+        asyncio.run(_bind("mobile.device_status", server)(None, ctx))
+        assert not ctx.errors, ctx.errors
+        devices = ctx.replies[0]["devices"]
+        by_id = {d.get("id") or d.get("device_id"): d for d in devices}
+        assert by_id["dev-1"]["online"] is True
+        assert by_id["dev-2"]["online"] is False
+    finally:
+        _app_mod._HTTP_APP = old_app
+
+
+def test_device_status_no_app() -> None:
+    """When HTTP app is not running, all devices are offline."""
+    dao = _StubDAO()
+    asyncio.run(dao.register("dev-1", "iPhone", "pk1"))
+    server, _, _ = _build_server_with_ws(dao)
+
+    import minimax_code.app as _app_mod
+    old_app = _app_mod._HTTP_APP
+    _app_mod._HTTP_APP = None
+    try:
+        ctx = _FakeCtx()
+        asyncio.run(_bind("mobile.device_status", server)(None, ctx))
+        assert not ctx.errors
+        devices = ctx.replies[0]["devices"]
+        assert all(not d["online"] for d in devices)
+    finally:
+        _app_mod._HTTP_APP = old_app

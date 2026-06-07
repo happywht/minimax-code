@@ -19,6 +19,7 @@ import { Eye, Menu, Settings as SettingsIcon } from "lucide-react";
 import { GitStatusBar } from "./GitStatusBar";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { ThemeToggle } from "./ThemeToggle";
+import { NotificationBell } from "./NotificationBell";
 
 export interface TopBarProps {
   testId?: string;
@@ -85,6 +86,7 @@ export function TopBar({
             <span className="hidden sm:inline">Preview</span>
           </button>
         )}
+        <NotificationBell />
         <ThemeToggle />
         <button
           type="button"

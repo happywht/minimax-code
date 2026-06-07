@@ -23,11 +23,17 @@ class WebhookPayload:
     """Normalised webhook event data."""
 
     source: str  # 'github' | 'gitee' | 'custom'
-    event: str  # 'push' | 'ping' | 'custom'
+    event: str  # 'push' | 'merge_request' | 'pull_request' | 'issue' | 'note' | 'tag_push' | 'ping' | 'custom'
     repo: str = ""
     branch: str = ""
     commits: list[dict[str, Any]] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
+    # v0.7.0 — enriched fields for merge_request / issue / note / tag
+    action: str = ""  # 'opened', 'merged', 'closed', 'created', …
+    pull_request: dict[str, Any] | None = None
+    issue: dict[str, Any] | None = None
+    comment: dict[str, Any] | None = None
+    tag: str = ""
 
 
 class WebhookReceiver:
@@ -109,38 +115,108 @@ class WebhookReceiver:
 
     @staticmethod
     def _parse_github(event: str, raw: dict[str, Any]) -> WebhookPayload:
+        repo = raw.get("repository", {}).get("full_name", "")
         if event == "push":
             return WebhookPayload(
                 source="github",
                 event="push",
-                repo=raw.get("repository", {}).get("full_name", ""),
+                repo=repo,
                 branch=(raw.get("ref") or "").replace("refs/heads/", ""),
                 commits=raw.get("commits", []),
                 raw=raw,
             )
-        # ping / other events.
+        if event == "pull_request":
+            pr = raw.get("pull_request", {})
+            return WebhookPayload(
+                source="github",
+                event="pull_request",
+                repo=repo,
+                branch=pr.get("base", {}).get("ref", ""),
+                action=raw.get("action", ""),
+                pull_request=pr,
+                raw=raw,
+            )
+        if event == "issues":
+            return WebhookPayload(
+                source="github",
+                event="issues",
+                repo=repo,
+                action=raw.get("action", ""),
+                issue=raw.get("issue"),
+                raw=raw,
+            )
+        if event == "issue_comment":
+            return WebhookPayload(
+                source="github",
+                event="issue_comment",
+                repo=repo,
+                action=raw.get("action", ""),
+                comment=raw.get("comment"),
+                raw=raw,
+            )
+        # ping / release / other events
         return WebhookPayload(
             source="github",
             event=event,
-            repo=raw.get("repository", {}).get("full_name", ""),
+            repo=repo,
             raw=raw,
         )
 
     @staticmethod
     def _parse_gitee(event: str, raw: dict[str, Any]) -> WebhookPayload:
+        repo = raw.get("repository", {}).get("full_name", "")
         if event == "push":
             return WebhookPayload(
                 source="gitee",
                 event="push",
-                repo=raw.get("repository", {}).get("full_name", ""),
+                repo=repo,
                 branch=(raw.get("ref") or "").replace("refs/heads/", ""),
                 commits=raw.get("commits", []),
+                raw=raw,
+            )
+        if event == "merge_request":
+            mr = raw.get("pull_request") or raw.get("merge_request") or {}
+            return WebhookPayload(
+                source="gitee",
+                event="merge_request",
+                repo=repo,
+                branch=mr.get("base", {}).get("ref", ""),
+                action=raw.get("action", ""),
+                pull_request=mr,
+                raw=raw,
+            )
+        if event == "note":
+            return WebhookPayload(
+                source="gitee",
+                event="note",
+                repo=repo,
+                action=raw.get("action", ""),
+                comment=raw.get("comment") or raw.get("note"),
+                raw=raw,
+            )
+        if event == "tag_push":
+            ref = raw.get("ref") or ""
+            tag_name = ref.replace("refs/tags/", "")
+            return WebhookPayload(
+                source="gitee",
+                event="tag_push",
+                repo=repo,
+                tag=tag_name,
+                raw=raw,
+            )
+        if event == "issues":
+            return WebhookPayload(
+                source="gitee",
+                event="issues",
+                repo=repo,
+                action=raw.get("action", ""),
+                issue=raw.get("issue"),
                 raw=raw,
             )
         return WebhookPayload(
             source="gitee",
             event=event,
-            repo=raw.get("repository", {}).get("full_name", ""),
+            repo=repo,
             raw=raw,
         )
 

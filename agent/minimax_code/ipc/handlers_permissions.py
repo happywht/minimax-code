@@ -291,6 +291,18 @@ def register_permission_handlers(
                     "decision": "allow" if decision else "deny",
                 }
             )
+            # Fan-out resolved event so all WS clients (desktop + mobile)
+            # can dismiss the consent modal.  This was missing before v0.7.0.
+            try:
+                ctx.server.notify({
+                    "event": "permission.resolved",
+                    "data": {
+                        "request_id": request_id,
+                        "decision": "allow" if decision else "deny",
+                    },
+                })
+            except Exception:
+                logger.warning("Failed to push permission.resolved event", exc_info=True)
         except _HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover — defensive

@@ -15,7 +15,7 @@ import {
   toast,
 } from "./components";
 import { ipc, isTauri, typedIPC } from "./ipc";
-import { useChat, useModelStore, usePermissionStore, useSessionStore } from "./stores";
+import { useChat, useModelStore, usePermissionStore, useSessionStore, initNotificationStore } from "./stores";
 
 type AppView = "chat" | "skills" | "settings" | "preview";
 
@@ -47,6 +47,8 @@ export default function App() {
         await ipc.start();
         await init();
         await Promise.all([refreshSessions(), refreshModels(), refreshRules()]);
+        // Initialise notification store WS listeners (v0.7.0)
+        initNotificationStore();
         // Touch the typed API once so the wire is proven end-to-end
         // even when the agent isn't running yet.
         try {

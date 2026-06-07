@@ -1,12 +1,14 @@
 /**
  * Mobile pairing modal — displays the pairing token / QR payload and
- * lists already-paired devices with unpair actions.
+ * lists already-paired devices with unpair actions and online status.
  *
  * v0.3.1: opened from the Sidebar "连接手机" button. The pairing
  * token auto-expires after 10 minutes (countdown shown in UI).
+ * v0.7.0: Added online/offline indicator (green/gray dot) per device
+ * and fetches device status on mount.
  */
 import { useEffect, useState } from "react";
-import { Copy, QrCode, Smartphone, Trash2, X } from "lucide-react";
+import { Bell, Copy, QrCode, Smartphone, Trash2, X } from "lucide-react";
 import { useMobileStore } from "../stores/mobileStore";
 import { toast } from "./ErrorBoundary";
 
@@ -27,15 +29,18 @@ export function MobilePairingModal({
   const error = useMobileStore((s) => s.error);
   const startPairing = useMobileStore((s) => s.startPairing);
   const fetchDevices = useMobileStore((s) => s.fetchDevices);
+  const fetchDeviceStatus = useMobileStore((s) => s.fetchDeviceStatus);
   const unpair = useMobileStore((s) => s.unpair);
   const clearPairing = useMobileStore((s) => s.clearPairing);
+  const pushNotification = useMobileStore((s) => s.pushNotification);
 
   const [countdown, setCountdown] = useState<string>("");
 
-  // Fetch devices on mount
+  // Fetch devices + online status on mount
   useEffect(() => {
     void fetchDevices();
-  }, [fetchDevices]);
+    void fetchDeviceStatus();
+  }, [fetchDevices, fetchDeviceStatus]);
 
   // Countdown timer for pairing token expiry
   useEffect(() => {
@@ -79,6 +84,15 @@ export function MobilePairingModal({
         () => toast.error("Copy failed"),
       );
     }
+  };
+
+  const handleTestPush = (deviceId: string, name: string) => {
+    void pushNotification({
+      device_id: deviceId,
+      notification: { type: "info", title: "Test Push", body: `Hello from MiniMax Code, ${name}!` },
+    }).then((r) => {
+      if (r.ok) toast.info("Push sent");
+    });
   };
 
   return (
@@ -175,24 +189,46 @@ export function MobilePairingModal({
                     key={d.id}
                     className="flex items-center justify-between rounded-md border border-minimax-border bg-minimax-bg px-3 py-2"
                   >
-                    <div className="min-w-0">
-                      <div className="truncate text-xs font-medium text-minimax-fg">
-                        {d.name || d.id}
-                      </div>
-                      <div className="text-[10px] text-minimax-muted">
-                        Paired {new Date(d.paired_at).toLocaleDateString()}
+                    <div className="flex items-center gap-2 min-w-0">
+                      {/* Online/Offline indicator */}
+                      <span
+                        className={`inline-block h-2 w-2 rounded-full shrink-0 ${
+                          d.online ? "bg-green-400" : "bg-minimax-border"
+                        }`}
+                        title={d.online ? "Online" : "Offline"}
+                      />
+                      <div className="min-w-0">
+                        <div className="truncate text-xs font-medium text-minimax-fg">
+                          {d.name || d.id}
+                        </div>
+                        <div className="text-[10px] text-minimax-muted">
+                          {d.online ? "Online" : "Offline"} · Paired {new Date(d.paired_at).toLocaleDateString()}
+                        </div>
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      data-testid={`mobile-unpair-${d.id}`}
-                      onClick={() => void unpair(d.id)}
-                      className="shrink-0 rounded p-1 text-minimax-muted hover:bg-red-500/10 hover:text-red-300"
-                      title="Unpair"
-                      aria-label={`Unpair ${d.name || d.id}`}
-                    >
-                      <Trash2 size={12} />
-                    </button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {d.online && (
+                        <button
+                          type="button"
+                          onClick={() => handleTestPush(d.id, d.name || d.id)}
+                          className="rounded p-1 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
+                          title="Send test notification"
+                          aria-label={`Push test to ${d.name || d.id}`}
+                        >
+                          <Bell size={11} />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        data-testid={`mobile-unpair-${d.id}`}
+                        onClick={() => void unpair(d.id)}
+                        className="rounded p-1 text-minimax-muted hover:bg-red-500/10 hover:text-red-300"
+                        title="Unpair"
+                        aria-label={`Unpair ${d.name || d.id}`}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
                   </li>
                 ))}
               </ul>
