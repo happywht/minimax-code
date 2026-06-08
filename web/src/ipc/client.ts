@@ -86,7 +86,7 @@ import {
 
 /* ─────────────────────── Internal types ─────────────────────── */
 
-type ClientMode = "http" | "mock";
+type ClientMode = "pending" | "http" | "mock";
 
 type Pending = {
   resolve: (value: unknown) => void;
@@ -198,9 +198,12 @@ export class IPCClient {
   private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private wsOpen = false;
   private started = false;
-  private mode: ClientMode = "http";
+  private mode: ClientMode = "pending";
   private readonly baseUrl: string;
   private readonly forceMock: boolean;
+  /** Resolved when `start()` finishes the mode-selection probe. */
+  private startPromise: Promise<void> | null = null;
+  private startResolve: (() => void) | null = null;
 
   constructor(opts?: IPCClientOptions) {
     const envUrl = readViteEnv("VITE_AGENT_URL");
@@ -212,18 +215,20 @@ export class IPCClient {
     ).replace(/\/+$/, "");
     this.forceMock =
       !!opts?.mockMode || !!opts?.forceMock || readViteEnv("VITE_AGENT_MODE") === "mock";
-    // Pre-set the mode so the client behaves correctly even if a
-    // caller invokes `request()` / `ping()` before `start()`. This
-    // matches the v0.1.x contract where `useMock` was decided in
-    // the constructor. `start()` will only flip the mode if the
-    // constructor left it on the default "http" path AND the
-    // /health probe fails.
-    this.mode = this.forceMock ? "mock" : "http";
+    // Start in "pending" — no network requests until `start()` probes
+    // /health and decides between "http" and "mock".  This prevents
+    // the ERR_CONNECTION_REFUSED console-spam that occurs when
+    // components fire useEffect IPC calls before the async `start()`
+    // resolves.
+    this.mode = this.forceMock ? "mock" : "pending";
+    if (this.mode === "pending") {
+      this.startPromise = new Promise<void>((r) => { this.startResolve = r; });
+    }
   }
 
   /** True when this client is running in mock mode (no real agent). */
   get isMock(): boolean {
-    return this.mode === "mock";
+    return this.mode === "mock" || this.mode === "pending";
   }
 
   /** True after `start()` has selected the transport. */
@@ -248,21 +253,24 @@ export class IPCClient {
    * reconnect in the background if it drops.
    */
   async start(): Promise<void> {
-    if (this.started) return;
+    if (this.started) {
+      // Already started but mode may still be "pending" if another
+      // caller invoked start() first and the probe hasn't resolved.
+      if (this.startPromise) await this.startPromise;
+      return;
+    }
     this.started = true;
 
     if (this.forceMock) {
       this.mode = "mock";
+      this.startResolve?.();
       return;
     }
 
     const reachable = await isAgentReachable(this.baseUrl);
-    if (reachable) {
-      this.mode = "http";
-      this.connectWs();
-    } else {
-      this.mode = "mock";
-    }
+    this.mode = reachable ? "http" : "mock";
+    if (reachable) this.connectWs();
+    this.startResolve?.();
   }
 
   /** Tear down transport — useful for tests. */
@@ -285,11 +293,14 @@ export class IPCClient {
       message: "IPC client stopped",
     });
     this.started = false;
+    this.startPromise = null;
+    this.startResolve = null;
   }
 
   /**
    * Send a JSON-RPC request and await its response.
    *
+   *  - In pending mode: waits for `start()` to resolve first.
    *  - In mock mode: dispatches to the in-process mock backend.
    *  - In HTTP mode: `POST /rpc`, returns `result`, throws `IPCError`
    *    on `error` envelope.
@@ -299,6 +310,13 @@ export class IPCClient {
     params?: unknown,
     id?: JsonRpcId,
   ): Promise<T> {
+    // Block until start() resolves the mode — prevents the
+    // ERR_CONNECTION_REFUSED flood that happens when components
+    // fire IPC calls before the /health probe completes.
+    if (this.mode === "pending") {
+      await this.startPromise;
+    }
+
     const requestId = id ?? this.uuid();
     // Build the envelope for parity with the wire format. The HTTP
     // path re-serialises the same fields below.
@@ -319,6 +337,10 @@ export class IPCClient {
 
   /** Fire-and-forget notification (no id, no response expected). */
   async notify(method: string, params?: unknown): Promise<void> {
+    // Pending: start() hasn't resolved yet — silently drop the
+    // notification.  Since notify() is fire-and-forget by design,
+    // queuing would add complexity for no real user benefit.
+    if (this.mode === "pending") return;
     if (this.mode === "mock") {
       mockNotify(method, params, this);
       return;
@@ -378,6 +400,9 @@ export class IPCClient {
 
   /** Liveness probe — `true` if the agent answered `/health` (or mock). */
   async ping(): Promise<boolean> {
+    if (this.mode === "pending") {
+      await this.startPromise;
+    }
     if (this.mode === "mock") return true;
     return isAgentReachable(this.baseUrl);
   }

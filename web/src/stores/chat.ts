@@ -164,6 +164,8 @@ export const useChat = create<ChatState>((set, get) => ({
           }), MAX_MESSAGES),
           status: "streaming",
         }));
+        // Tool execution is activity — reset stall watchdog.
+        resetStallWatchdog();
       });
     }
     if (!toolResultUnsub) {
@@ -184,6 +186,8 @@ export const useChat = create<ChatState>((set, get) => ({
             streaming: false,
           }), MAX_MESSAGES),
         }));
+        // Tool result is activity — reset stall watchdog.
+        resetStallWatchdog();
       });
     }
     if (!statusUnsub) {
@@ -196,6 +200,8 @@ export const useChat = create<ChatState>((set, get) => ({
         } else if (d.status === "idle") {
           set({ status: "idle" });
         }
+        // Status change is activity — reset stall watchdog.
+        resetStallWatchdog();
       });
     }
 
