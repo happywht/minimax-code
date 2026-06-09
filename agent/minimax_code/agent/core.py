@@ -558,13 +558,13 @@ class AgentCore:
         await self._maybe_emit_tool_result(call_log, result)
 
         # Audit: record the tool dispatch (fire-and-forget).
-        status = "success" if result.ok else ("timeout" if "timeout" in (result.error or "") else "fail")
+        status = "success" if result.success else ("timeout" if "timeout" in (result.error or "") else "fail")
         exit_code = getattr(result, "exit_code", None)
         await self._record_audit(
             call_log, status,
             permission=action,
             duration_ms=duration_ms,
-            error=result.error if not result.ok else None,
+            error=result.error if not result.success else None,
             exit_code=exit_code,
         )
 

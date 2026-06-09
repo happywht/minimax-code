@@ -63,6 +63,9 @@ import {
   type OrchestrationMode,
   type PermissionRequestData,
   type PermissionResolvedData,
+  type RunCompletedData,
+  type RunCreatedData,
+  type RunStepData,
   type PermissionRule,
   type ProviderInfo,
   type ScheduledJob,
@@ -150,7 +153,11 @@ export type StreamEventPayload =
   | { event: typeof StreamEvent.ToolResult; data: ToolResultData }
   | { event: typeof StreamEvent.PermissionRequest; data: PermissionRequestData }
   | { event: typeof StreamEvent.PermissionResolved; data: PermissionResolvedData }
-  | { event: typeof StreamEvent.TaskProgress; data: TaskProgressData };
+  | { event: typeof StreamEvent.TaskProgress; data: TaskProgressData }
+  | { event: typeof StreamEvent.RunCreated; data: RunCreatedData }
+  | { event: typeof StreamEvent.RunStepStarted; data: RunStepData }
+  | { event: typeof StreamEvent.RunStepCompleted; data: RunStepData }
+  | { event: typeof StreamEvent.RunCompleted; data: RunCompletedData };
 
 /**
  * @deprecated Retained as a no-op stub for backward compatibility

@@ -33,6 +33,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { ProgressPanel } from "./ProgressPanel";
+import { RunTimelinePanel } from "./RunTimelinePanel";
 import { SubAgentPanel } from "./SubAgentPanel";
 import { CodeReviewPanel } from "./CodeReviewPanel";
 import { TeamRunPanel } from "./TeamRunPanel";
@@ -57,6 +58,7 @@ export function RightPanel({
   loadAgents,
 }: RightPanelProps): JSX.Element {
   const [collapsed, setCollapsed] = useState<boolean>(defaultCollapsed);
+  const [timelineOpen, setTimelineOpen] = useState<boolean>(true);
   const [progressOpen, setProgressOpen] = useState<boolean>(true);
   const [teamOpen, setTeamOpen] = useState<boolean>(true);
   const [subOpen, setSubOpen] = useState<boolean>(true);
@@ -128,6 +130,15 @@ export function RightPanel({
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        <Section
+          testId={`${testId}-timeline`}
+          title="Run Timeline"
+          open={timelineOpen}
+          onToggle={() => setTimelineOpen((v) => !v)}
+        >
+          <RunTimelinePanel testId={`${testId}-timeline-panel`} />
+        </Section>
+
         <Section
           testId={`${testId}-progress`}
           title="进度"

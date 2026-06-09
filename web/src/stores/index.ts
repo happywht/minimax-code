@@ -31,6 +31,10 @@ export {
   type TaskStatus,
 } from "./taskStore";
 export {
+  useRunTimelineStore,
+  type RunTimelineEntry,
+} from "./runStore";
+export {
   useScheduleStore,
   type ScheduledJobEntry,
 } from "./scheduleStore";

@@ -12,6 +12,7 @@ import logging
 import os
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from minimax_code import __version__
@@ -31,6 +32,196 @@ _SESSIONS: dict[str, dict[str, Any]] = {}
 # ``agent.cancel_subagent`` can signal a running core to abort.
 _ACTIVE_RUNS: dict[str, dict[str, Any]] = {}
 # {key: {"core": AgentCore, "type": "main"|"subagent"}}
+
+
+def _preview_value(value: Any, *, limit: int = 600) -> str:
+    """Return a compact display preview for timeline rows."""
+    try:
+        import json
+
+        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        text = str(value)
+    text = text.replace("\r\n", "\n")
+    return text if len(text) <= limit else text[:limit] + f"\n...(truncated, {len(text) - limit} chars)"
+
+
+class _RunRecorder:
+    """Small adapter that mirrors AgentCore callbacks into run timeline rows."""
+
+    def __init__(
+        self,
+        *,
+        dao: Any,
+        emit: Callable[[str, dict[str, Any]], Awaitable[None]],
+        session_id: str,
+        title: str,
+        assistant_message_id: str,
+        mode: str = "chat",
+    ) -> None:
+        self.dao = dao
+        self.emit = emit
+        self.session_id = session_id
+        self.title = title
+        self.assistant_message_id = assistant_message_id
+        self.mode = mode
+        self.run_id = f"run_{uuid.uuid4().hex[:12]}"
+        self._status_steps: dict[str, str] = {}
+        self._tool_steps: dict[str, str] = {}
+
+    async def create(self) -> dict[str, Any] | None:
+        if self.dao is None:
+            return None
+        run = await self.dao.create_run(
+            id=self.run_id,
+            session_id=self.session_id,
+            mode=self.mode,
+            status="running",
+            title=self.title,
+            assistant_message_id=self.assistant_message_id,
+        )
+        await self.emit("run.created", {"run": run})
+        return run
+
+    async def status(self, status: str, detail: dict[str, Any]) -> None:
+        if self.dao is None:
+            return
+        if status == "thinking":
+            previous = self._status_steps.pop("thinking", None)
+            if previous:
+                completed = await self.dao.complete_step(previous, summary="Continued")
+                await self.emit("run.step.completed", {"run_id": self.run_id, "step": completed})
+            step = await self.dao.create_step(
+                run_id=self.run_id,
+                session_id=self.session_id,
+                kind="thought",
+                title="Thinking",
+                summary=f"Iteration {detail.get('iteration', '')}".strip(),
+                payload={"status": status, "detail": detail},
+            )
+            self._status_steps["thinking"] = step["id"]
+            await self.emit("run.step.started", {"run_id": self.run_id, "step": step})
+            return
+
+        if status in {"calling_tool", "tool_running"}:
+            return
+
+        if status in {"done", "max_iterations"}:
+            step_id = self._status_steps.pop("thinking", None)
+            if step_id:
+                step = await self.dao.complete_step(
+                    step_id,
+                    summary="Done thinking",
+                    payload={"status": status, "detail": detail},
+                )
+                await self.emit("run.step.completed", {"run_id": self.run_id, "step": step})
+            return
+
+        if status in {"error", "permission_denied"}:
+            step = await self.dao.create_step(
+                run_id=self.run_id,
+                session_id=self.session_id,
+                kind="status",
+                status="failed" if status == "error" else "completed",
+                title=status.replace("_", " ").title(),
+                summary=_preview_value(detail, limit=300),
+                payload={"status": status, "detail": detail},
+            )
+            await self.emit("run.step.completed", {"run_id": self.run_id, "step": step})
+
+    async def tool_call(self, call: dict[str, Any]) -> None:
+        if self.dao is None:
+            return
+        tool_name = str(call.get("name") or "unknown")
+        tool_call_id = str(call.get("id") or f"toolu_{uuid.uuid4().hex[:10]}")
+        args = call.get("args") or call.get("arguments") or {}
+        step = await self.dao.create_step(
+            run_id=self.run_id,
+            session_id=self.session_id,
+            kind="tool_call",
+            title=tool_name,
+            summary=_preview_value(args, limit=300),
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            payload={"args": args},
+        )
+        self._tool_steps[tool_call_id] = step["id"]
+        await self.emit("run.step.started", {"run_id": self.run_id, "step": step})
+
+    async def tool_result(self, call: dict[str, Any], result: Any) -> None:
+        if self.dao is None:
+            return
+        tool_name = str(call.get("name") or "unknown")
+        tool_call_id = str(call.get("id") or "")
+        parent_id = self._tool_steps.get(tool_call_id)
+        output = result.output if hasattr(result, "output") else str(result)
+        error = result.error if hasattr(result, "error") else None
+        success = bool(getattr(result, "success", error is None))
+        if parent_id:
+            call_step = await self.dao.complete_step(
+                parent_id,
+                status="completed" if success else "failed",
+                summary="Completed" if success else str(error or "Tool failed"),
+                error=error,
+            )
+            await self.emit("run.step.completed", {"run_id": self.run_id, "step": call_step})
+        step = await self.dao.create_step(
+            run_id=self.run_id,
+            session_id=self.session_id,
+            kind="observation",
+            title=f"{tool_name} result",
+            summary=_preview_value(error or output, limit=600),
+            tool_call_id=tool_call_id or None,
+            tool_name=tool_name,
+            parent_id=parent_id,
+            payload={
+                "success": success,
+                "output_preview": _preview_value(output, limit=1200),
+                "metadata": getattr(result, "metadata", None),
+            },
+        )
+        step = await self.dao.complete_step(
+            step["id"],
+            status="completed" if success else "failed",
+            summary=_preview_value(error or output, limit=600),
+            error=error,
+        )
+        await self.emit("run.step.completed", {"run_id": self.run_id, "step": step})
+
+    async def complete(self, result: Any) -> None:
+        if self.dao is None:
+            return
+        step = await self.dao.create_step(
+            run_id=self.run_id,
+            session_id=self.session_id,
+            kind="final",
+            title="Final response",
+            summary=_preview_value(getattr(result, "final_text", ""), limit=600),
+            payload={
+                "iterations": getattr(result, "iterations", None),
+                "usage": getattr(result, "usage", None),
+                "truncated": getattr(result, "truncated", False),
+            },
+        )
+        step = await self.dao.complete_step(step["id"])
+        await self.emit("run.step.completed", {"run_id": self.run_id, "step": step})
+        run = await self.dao.update_run_status(
+            self.run_id,
+            status="cancelled" if getattr(result, "cancelled", False) else "completed",
+            assistant_message_id=self.assistant_message_id,
+            metadata={
+                "iterations": getattr(result, "iterations", None),
+                "usage": getattr(result, "usage", None),
+                "truncated": getattr(result, "truncated", False),
+            },
+        )
+        await self.emit("run.completed", {"run": run})
+
+    async def fail(self, error: str) -> None:
+        if self.dao is None:
+            return
+        run = await self.dao.update_run_status(self.run_id, status="failed", error=error)
+        await self.emit("run.completed", {"run": run})
 
 
 async def handle_ping(params: Any, ctx: Context) -> None:
@@ -202,6 +393,8 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
             await ctx.reply_error(-32603, "storage unavailable: database not initialised")
             return
         msg_dao = MessagesDAO(db)
+        from ..storage.dao.runs import AgentRunsDAO
+        runs_dao = AgentRunsDAO(db)
     except Exception as exc:
         logger.exception("failed to open storage for chat")
         await ctx.reply_error(-32603, "storage unavailable")
@@ -304,6 +497,25 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         permission_gater=gater,
     )
 
+    async def _emit_run_event(event: str, data: dict[str, Any]) -> None:
+        try:
+            await ctx.emit(event, data)
+        except Exception:
+            logger.exception("%s emit failed", event)
+
+    recorder = _RunRecorder(
+        dao=runs_dao,
+        emit=_emit_run_event,
+        session_id=session_id,
+        title=_title_hint,
+        assistant_message_id=message_id,
+    )
+    try:
+        await recorder.create()
+    except Exception:
+        logger.exception("run recorder create failed; continuing without timeline")
+        recorder.dao = None
+
     async def _on_chunk(
         delta: str, done: bool, metadata: dict | None = None
     ) -> None:
@@ -340,6 +552,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
                 "agent.status",
                 {"session_id": session_id, "status": status, **detail},
             )
+            await recorder.status(status, detail)
         except Exception:
             logger.exception("on_status emit failed")
 
@@ -366,6 +579,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
                     "args": args,
                 },
             )
+            await recorder.tool_call(call)
         except Exception:
             logger.exception("on_tool_call emit failed")
 
@@ -387,6 +601,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
                     "error": result.error if hasattr(result, "error") else None,
                 },
             )
+            await recorder.tool_result(call, result)
         except Exception:
             logger.exception("on_tool_result emit failed")
 
@@ -399,15 +614,19 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         result = await core.run(session_id=session_id, user_message=content)
     except Exception as exc:
         logger.exception("agent.send_message: AgentCore.run failed")
+        await recorder.fail(str(exc))
         await ctx.reply_error(-32603, "agent.send_message failed")
         return
     finally:
         _ACTIVE_RUNS.pop(session_id, None)
 
+    await recorder.complete(result)
+
     await ctx.reply(
         {
             "session_id": session_id,
             "message_id": message_id,
+            "run_id": recorder.run_id,
             "text": result.final_text,
             "iterations": result.iterations,
             "stub": llm.mock,

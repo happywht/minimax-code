@@ -19,7 +19,7 @@ Conventions
 
 from __future__ import annotations
 
-from . import agents, messages, mobile_devices, model_prefs, permissions, scheduled_jobs, sessions, skills, tasks
+from . import agents, messages, mobile_devices, model_prefs, permissions, runs, scheduled_jobs, sessions, skills, tasks
 
 # Public re-exports — keep these stable; the agent loop imports
 # ``SessionsDAO`` from this module, not from the submodule.
@@ -46,6 +46,7 @@ from .model_prefs import (
 from .permissions import PermissionRuleDAO
 from .permissions import PermissionRulesDAO
 from .permissions import create_sync as create_permission_sync
+from .runs import AgentRunsDAO
 from .scheduled_jobs import ScheduledJobsDAO
 from .scheduled_jobs import create_sync as create_job_sync
 from .sessions import SessionsDAO
@@ -66,6 +67,7 @@ __all__ = [
     "ModelPrefsDAO",
     "PermissionRuleDAO",
     "PermissionRulesDAO",
+    "AgentRunsDAO",
     "ScheduledJobsDAO",
     "SessionsDAO",
     "SkillsDAO",
@@ -89,6 +91,7 @@ __all__ = [
     "mobile_devices",
     "model_prefs",
     "permissions",
+    "runs",
     "scheduled_jobs",
     "sessions",
     "skills",

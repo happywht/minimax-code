@@ -305,6 +305,78 @@ export interface TaskProgressData {
   status: "running" | "done" | "error" | "cancelled";
 }
 
+export type AgentRunStatus =
+  | "planning"
+  | "running"
+  | "awaiting_approval"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type AgentRunStepKind =
+  | "thought"
+  | "status"
+  | "plan"
+  | "tool_call"
+  | "observation"
+  | "approval"
+  | "patch"
+  | "final";
+
+export type AgentRunStepStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface AgentRun {
+  id: string;
+  session_id: string;
+  mode: "chat" | "plan" | "execute";
+  status: AgentRunStatus;
+  title: string;
+  user_message_id?: string | null;
+  assistant_message_id?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  error?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface AgentRunStep {
+  id: string;
+  run_id: string;
+  session_id: string;
+  kind: AgentRunStepKind;
+  status: AgentRunStepStatus;
+  title: string;
+  summary: string;
+  tool_call_id?: string | null;
+  tool_name?: string | null;
+  parent_id?: string | null;
+  payload?: Record<string, unknown> | null;
+  started_at: string;
+  completed_at?: string | null;
+  duration_ms?: number | null;
+  error?: string | null;
+  ordinal: number;
+}
+
+export interface RunCreatedData {
+  run: AgentRun;
+}
+
+export interface RunStepData {
+  run_id: string;
+  step: AgentRunStep;
+}
+
+export interface RunCompletedData {
+  run: AgentRun;
+}
+
 /* ─────────────────────── Method-result shapes ─────────────────────── */
 
 export interface PingResult {
@@ -322,6 +394,7 @@ export interface StatusResult extends PingResult {
 export interface SendMessageResult {
   session_id: string;
   message_id: string;
+  run_id?: string;
   text: string;
 }
 
@@ -501,6 +574,10 @@ export const StreamEvent = {
   NotificationNew: "notification.new",
   NotificationRead: "notification.read",
   TeamProgress: "agent.team_progress",
+  RunCreated: "run.created",
+  RunStepStarted: "run.step.started",
+  RunStepCompleted: "run.step.completed",
+  RunCompleted: "run.completed",
 } as const;
 
 export type StreamEventName = (typeof StreamEvent)[keyof typeof StreamEvent];
