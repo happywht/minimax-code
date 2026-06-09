@@ -94,7 +94,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           className="flex h-full w-full items-center justify-center bg-minimax-bg p-8 text-minimax-fg"
         >
           <div className="max-w-md rounded-lg border border-red-500/40 bg-red-500/10 p-6">
-            <div className="flex items-center gap-2 text-red-300">
+            <div className="flex items-center gap-2 text-status-error">
               <AlertTriangle size={18} />
               <h2 className="text-sm font-semibold">Something went wrong</h2>
             </div>

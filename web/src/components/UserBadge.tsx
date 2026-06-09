@@ -24,7 +24,8 @@
  * React ``validateDOMNesting`` warning. Spans are still keyboard
  * accessible (Enter / Space activate) via the ``onKeyDown`` handler.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Crown, LogOut, Pencil, Settings } from "lucide-react";
 
 const PLAN_STORAGE_KEY = "minimax-code:plan";
@@ -106,22 +107,19 @@ export function UserBadge({
     setEditing(true);
   }
 
+  const triggerRef = useRef<HTMLDivElement>(null);
+
   return (
-    <div className="relative" data-testid="user-badge">
-      <button
-        type="button"
-        data-testid="user-badge-trigger"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-minimax-border/60"
-      >
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-minimax-accent/30 text-[11px] font-semibold text-minimax-fg">
-          {initials || "U"}
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-xs font-medium text-minimax-fg">
-            {name}
+    <div ref={triggerRef} className="relative" data-testid="user-badge">
+      {editing ? (
+        <div className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-minimax-accent/30 text-[11px] font-semibold text-minimax-fg">
+            {initials || "U"}
           </span>
-          {editing ? (
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-xs font-medium text-minimax-fg">
+              {name}
+            </span>
             <input
               autoFocus
               data-testid="user-badge-plan-input"
@@ -137,15 +135,29 @@ export function UserBadge({
                   cancelEdit();
                 }
               }}
-              onClick={(e) => e.stopPropagation()}
               className="mt-0.5 w-full rounded-sm border border-minimax-accent/40 bg-minimax-bg/40 px-1 py-0 text-[11px] text-minimax-fg outline-none focus:border-minimax-accent"
             />
-          ) : (
+          </span>
+        </div>
+      ) : (
+        <button
+          type="button"
+          data-testid="user-badge-trigger"
+          onClick={() => setOpen((v) => !v)}
+          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-minimax-border/60"
+        >
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-minimax-accent/30 text-[11px] font-semibold text-minimax-fg">
+            {initials || "U"}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-xs font-medium text-minimax-fg">
+              {name}
+            </span>
             <span
               data-testid="user-badge-plan"
               className="mt-0.5 flex items-center gap-1 truncate text-[11px] text-minimax-muted"
             >
-              <Crown size={10} className="shrink-0 text-amber-400" />
+              <Crown size={10} className="shrink-0 text-status-warning" />
               <span
                 role="button"
                 tabIndex={0}
@@ -170,43 +182,51 @@ export function UserBadge({
                 />
               </span>
             </span>
-          )}
-        </span>
-      </button>
-      {open && !editing && (
-        <div
-          className="absolute bottom-full left-0 mb-1 w-56 rounded-md border border-minimax-border bg-minimax-panel p-1 shadow-xl"
-          role="menu"
-        >
-          <div className="px-2 py-1.5">
-            <div className="truncate text-xs text-minimax-fg">{name}</div>
-            <div className="truncate text-[11px] text-minimax-muted">
-              {email}
-            </div>
-          </div>
-          <hr className="border-minimax-border" />
-          <button
-            type="button"
-            onClick={() => {
-              setOpen(false);
-              onSettings?.();
-            }}
-            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-minimax-fg hover:bg-minimax-border"
-          >
-            <Settings size={12} /> Settings
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setOpen(false);
-              onSignOut?.();
-            }}
-            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-red-300 hover:bg-minimax-border"
-          >
-            <LogOut size={12} /> Sign out
-          </button>
-        </div>
+          </span>
+        </button>
       )}
+      {open && !editing && typeof document !== "undefined" && (() => {
+        const rect = triggerRef.current?.getBoundingClientRect();
+        return createPortal(
+          <div
+            className="fixed z-50 w-56 rounded-md border border-minimax-border bg-minimax-panel p-1 shadow-xl"
+            style={{
+              left: rect?.left ?? 0,
+              bottom: rect ? window.innerHeight - rect.top + 4 : 0,
+            }}
+            role="menu"
+          >
+            <div className="px-2 py-1.5">
+              <div className="truncate text-xs text-minimax-fg">{name}</div>
+              <div className="truncate text-[11px] text-minimax-muted">
+                {email}
+              </div>
+            </div>
+            <hr className="border-minimax-border" />
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                onSettings?.();
+              }}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-minimax-fg hover:bg-minimax-border"
+            >
+              <Settings size={12} /> Settings
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                onSignOut?.();
+              }}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-status-error hover:bg-minimax-border"
+            >
+              <LogOut size={12} /> Sign out
+            </button>
+          </div>,
+          document.body,
+        );
+      })()}
     </div>
   );
 }

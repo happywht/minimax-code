@@ -162,7 +162,7 @@ function AgentStatusInline({
     return (
       <span
         data-testid="progress-agent-status"
-        className="flex items-center gap-1 text-[11px] text-emerald-400"
+        className="flex items-center gap-1 text-[11px] text-status-success"
         title={detail}
       >
         <CheckCircle2 size={10} />
@@ -174,7 +174,7 @@ function AgentStatusInline({
     return (
       <span
         data-testid="progress-agent-status"
-        className="flex items-center gap-1 text-[11px] text-red-400"
+        className="flex items-center gap-1 text-[11px] text-status-error"
         title={detail}
       >
         <CircleAlert size={10} />
@@ -185,7 +185,7 @@ function AgentStatusInline({
   return (
     <span
       data-testid="progress-agent-status"
-      className="flex items-center gap-1 text-[11px] text-amber-400"
+      className="flex items-center gap-1 text-[11px] text-status-warning"
       title={detail}
     >
       <Loader2 size={10} className="animate-spin" />
@@ -196,13 +196,13 @@ function AgentStatusInline({
 
 function StatusDot({ status }: { status: string }): JSX.Element {
   if (status === "running") {
-    return <Loader2 size={10} className="animate-spin text-amber-400" />;
+    return <Loader2 size={10} className="animate-spin text-status-warning" />;
   }
   if (status === "done") {
-    return <CheckCircle2 size={10} className="text-emerald-400" />;
+    return <CheckCircle2 size={10} className="text-status-success" />;
   }
   if (status === "error") {
-    return <CircleAlert size={10} className="text-red-400" />;
+    return <CircleAlert size={10} className="text-status-error" />;
   }
   return <span className="block h-2 w-2 rounded-full bg-minimax-muted" />;
 }
@@ -211,7 +211,7 @@ function StatusBadge({ status }: { status: string }): JSX.Element {
   const map: Record<string, string> = {
     running: "bg-amber-500/20 text-amber-300",
     done: "bg-emerald-500/20 text-emerald-300",
-    error: "bg-red-500/20 text-red-300",
+    error: "bg-red-500/20 text-status-error",
     cancelled: "bg-minimax-border text-minimax-muted",
   };
   return (

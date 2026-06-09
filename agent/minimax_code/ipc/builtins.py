@@ -9,6 +9,7 @@ bootstrap in :mod:`minimax_code.app` (introduced in a later task).
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from typing import Any
@@ -25,9 +26,11 @@ logger = logging.getLogger(__name__)
 _START_TIME = time.time()
 _SESSIONS: dict[str, dict[str, Any]] = {}
 
-# Active AgentCore instances keyed by session_id, so that
-# ``agent.cancel`` can signal a running core to abort its LLM loop.
-_ACTIVE_CORES: dict[str, Any] = {}  # {session_id: AgentCore}
+# Active AgentCore instances keyed by session_id (main agent) or
+# run_id (sub-agent), so that ``agent.cancel`` /
+# ``agent.cancel_subagent`` can signal a running core to abort.
+_ACTIVE_RUNS: dict[str, dict[str, Any]] = {}
+# {key: {"core": AgentCore, "type": "main"|"subagent"}}
 
 
 async def handle_ping(params: Any, ctx: Context) -> None:
@@ -284,10 +287,16 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     # invocations stay isolated.
     setattr(ctx.server, "_permission_gater", gater)
 
+    # Allow operators to tune or disable the per-chunk stall watchdog.
+    # ``MINIMAX_STALL_TIMEOUT=60`` → 60 s; ``0`` → disable.
+    _stall_env = os.environ.get("MINIMAX_STALL_TIMEOUT", "")
+    stall_timeout = float(_stall_env) if _stall_env else 30.0
+
     core = AgentCore(
         llm=llm,
         config=AgentConfig(
             system_prompt_extra=await _build_system_prompt_extra(),
+            stall_timeout=stall_timeout,
         ),
         history_provider=_history,
         persist_message=_persist,
@@ -319,7 +328,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
             logger.exception("on_chunk emit failed")
 
     # 3b. Register the core so ``agent.cancel`` can find it.
-    _ACTIVE_CORES[session_id] = core
+    _ACTIVE_RUNS[session_id] = {"core": core, "type": "main"}
 
     core.on_chunk = _on_chunk
 
@@ -393,7 +402,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         await ctx.reply_error(-32603, "agent.send_message failed")
         return
     finally:
-        _ACTIVE_CORES.pop(session_id, None)
+        _ACTIVE_RUNS.pop(session_id, None)
 
     await ctx.reply(
         {
@@ -411,7 +420,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
 async def handle_agent_cancel(params: Any, ctx: Context) -> None:
     """Cancel a running ``agent.send_message`` call by session id.
 
-    Looks up the :class:`AgentCore` in :data:`_ACTIVE_CORES` and
+    Looks up the :class:`AgentCore` in :data:`_ACTIVE_RUNS` and
     calls :meth:`AgentCore.cancel` on it.  If no active core is found
     for the given ``session_id`` the handler returns a graceful
     ``{"ok": true, "note": "no active session"}`` so the caller does
@@ -427,12 +436,12 @@ async def handle_agent_cancel(params: Any, ctx: Context) -> None:
         await ctx.reply_error(-32602, "session_id is required")
         return
 
-    core = _ACTIVE_CORES.get(str(session_id))
-    if core is None:
+    entry = _ACTIVE_RUNS.pop(str(session_id), None)
+    if entry is None or not entry.get("core"):
         await ctx.reply({"ok": True, "note": "no active session"})
         return
 
-    core.cancel()
+    entry["core"].cancel()
     await ctx.reply({"ok": True, "cancelled": str(session_id)})
 
 

@@ -8,13 +8,13 @@
  * tool-call/tool-result messages that follow the assistant bubble in
  * the same turn (bounded by the next user/assistant message).
  */
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Brain, ChevronDown, ChevronRight, Copy, Check, Eye, FileEdit } from "lucide-react";
 import type { Message } from "../types/ipc";
 import { highlight } from "../lib/shikiLoader";
-import { useChat } from "../stores";
+import { useChat, useThemeStore } from "../stores";
 
 export interface MessageItemProps {
   message: Message;
@@ -94,6 +94,7 @@ function MarkdownCode({ className, children, inline }: CodeProps): JSX.Element {
   const lang = langMatch?.[1] ?? "text";
   const [html, setHtml] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Lazy-load shiki on first code block render
   useEffect(() => {
@@ -110,6 +111,13 @@ function MarkdownCode({ className, children, inline }: CodeProps): JSX.Element {
       cancelled = true;
     };
   }, [code, lang, isInline]);
+
+  // Cleanup copy feedback timer on unmount
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
 
   if (isInline) {
     return (
@@ -129,7 +137,8 @@ function MarkdownCode({ className, children, inline }: CodeProps): JSX.Element {
             try {
               await navigator.clipboard.writeText(code);
               setCopied(true);
-              setTimeout(() => setCopied(false), 1500);
+              if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+              copyTimerRef.current = setTimeout(() => setCopied(false), 1500);
             } catch {
               // ignore
             }
@@ -162,6 +171,7 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
   const isTool = message.role === "tool";
   const isSystem = message.role === "system";
   const isAssistant = message.role === "assistant";
+  const theme = useThemeStore((s) => s.theme);
 
   // Per-turn summary is only meaningful for assistant messages.
   // We pull the full message log from the chat store so we can count
@@ -227,7 +237,7 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
           isUser
             ? "max-w-[80%] rounded-2xl rounded-br-md bg-minimax-accent px-4 py-2 text-sm text-white shadow-sm"
             : isSystem
-              ? "max-w-[80%] rounded-md border border-red-500/30 bg-red-500/5 px-3 py-1.5 text-xs italic text-red-300"
+              ? "max-w-[80%] rounded-md border border-red-500/30 bg-red-500/5 px-3 py-1.5 text-xs italic text-status-error"
               : "max-w-[85%] rounded-2xl rounded-bl-md border border-minimax-border bg-minimax-panel px-4 py-2 text-sm text-minimax-fg shadow-sm"
         }
       >
@@ -251,7 +261,7 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
             </span>
           </div>
         )}
-        <div className="prose prose-invert prose-sm max-w-none break-words leading-relaxed">
+        <div className={`prose prose-sm max-w-none break-words leading-relaxed${theme === "dark" ? " prose-invert" : ""}`}>
           {isUser ? (
             <p className="m-0 whitespace-pre-wrap">{message.text}</p>
           ) : (
@@ -271,7 +281,7 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
                 ),
               }}
             >
-              {message.text || (message.streaming ? "▍" : "")}
+              {message.text || ""}
             </ReactMarkdown>
           )}
         </div>

@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { NavItem } from "./NavItem";
 import { UserBadge } from "./UserBadge";
+import { SkeletonLine } from "./Skeleton";
 import { useSessionStore, type SessionFilter } from "../stores";
 import { formatRelative } from "../lib/time";
 import { APP_VERSION } from "../version";
@@ -84,6 +85,7 @@ export function Sidebar({
   const filter = useSessionStore((s) => s.filter);
   const setFilter = useSessionStore((s) => s.setFilter);
   const sessions = useSessionStore((s) => s.sessions);
+  const loading = useSessionStore((s) => s.loading);
   const currentId = useSessionStore((s) => s.currentSessionId);
   const setCurrent = useSessionStore((s) => s.setCurrent);
   const createSession = useSessionStore((s) => s.create);
@@ -183,9 +185,18 @@ export function Sidebar({
         <ul
           data-testid="sidebar-session-list"
           className="mt-1 flex-1 space-y-0.5 overflow-y-auto px-2"
-          style={{ maxHeight: "60vh" }}
         >
-          {visibleSessions.length === 0 && (
+          {loading && visibleSessions.length === 0 && (
+            <>
+              {Array.from({ length: 5 }, (_, i) => (
+                <li key={`skel-${i}`} className="flex items-center gap-2 px-2 py-1.5">
+                  <div className="h-2 w-2 rounded-sm animate-shimmer" />
+                  <SkeletonLine className="h-3.5 flex-1" />
+                </li>
+              ))}
+            </>
+          )}
+          {!loading && visibleSessions.length === 0 && (
             <li className="px-2 py-2 text-[11px] italic text-minimax-muted">
               No sessions yet — start a new task ↑
             </li>

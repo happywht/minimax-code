@@ -287,6 +287,14 @@ async def _anthropic_stream_to_chunks(
             elif btype == "thinking":
                 # Count distinct thinking blocks, not delta fragments.
                 thinking_count += 1
+                # Heartbeat: yield an empty-delta chunk so the
+                # stall-watchdog in ``AgentCore._stream_turn`` does
+                # not fire while the LLM is mid-thought.  The chunk
+                # is filtered out by both ``_emit_chunk`` (``if
+                # chunk.delta:``) and ``_assemble_chunks`` (``if
+                # c.delta:``) so it is invisible to the UI and to
+                # the final text.
+                yield StreamChunk()
 
         elif etype == "content_block_delta":
             delta = event.delta
@@ -311,7 +319,12 @@ async def _anthropic_stream_to_chunks(
                 )
 
             elif dtype == "thinking_delta":
-                pass  # counted at content_block_start
+                # Counted at ``content_block_start`` (one tick per
+                # block, not per delta).  Yield an empty-delta
+                # heartbeat so the stall watchdog does not fire on
+                # long thinking-block deltas — same rationale as
+                # the heartbeat in ``content_block_start``.
+                yield StreamChunk()
 
         elif etype == "message_delta":
             output_tokens = 0

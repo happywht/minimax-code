@@ -82,6 +82,7 @@ import {
   type ToolCallData,
   type ToolResultData,
   type UpdateProviderResult,
+  type UpdateSessionResult,
 } from "../types/ipc";
 
 /* ─────────────────────── Internal types ─────────────────────── */
@@ -187,6 +188,20 @@ export interface IPCClientOptions {
   /** Alias for ``mockMode`` — kept for backward-compat with test callers. */
   forceMock?: boolean;
 }
+
+/**
+ * Long-running RPC methods that need a higher HTTP timeout.
+ *
+ * ``agent.send_message`` streams chunks via WebSocket but the HTTP POST
+ * only resolves after the entire agent loop finishes (potentially
+ * minutes).  Without a generous timeout the frontend aborts the request
+ * at 30 s, producing a misleading ``[-32603] timed out`` error even
+ * though the backend is still running and WS chunks are flowing.
+ */
+const LONG_RUNNING_METHODS: Record<string, number> = {
+  "agent.send_message": 300_000, // 5 min — agent loop + tool calls
+  "skill.invoke": 120_000,       // 2 min — skill execution
+};
 
 export class IPCClient {
   private pending = new Map<JsonRpcId, Pending>();
@@ -463,11 +478,11 @@ export class IPCClient {
 
     ws.addEventListener("open", () => {
       this.wsOpen = true;
-      // Note: we deliberately do NOT reset `wsReconnectAttempts` on
-      // open. The task spec (and the tests in __tests__/client-http.test.ts)
-      // require the backoff sequence to monotonically grow through
-      // repeated failures — 250, 500, 1000, 2000, 4000, 5000, 5000...
-      // Resetting would collapse every reconnect back to 250ms.
+      // Reset backoff on successful connect so the next reconnect
+      // cycle starts fresh at 250ms.  The monotonic growth is only
+      // needed across *consecutive failures* — once we've connected
+      // the sequence should begin again from the base.
+      this.wsReconnectAttempts = 0;
       this.dispatchSideCar({ status: "started" });
     });
 
@@ -614,6 +629,12 @@ export class IPCClient {
     params: unknown,
     id: JsonRpcId,
   ): Promise<T> {
+    // Per-method timeout — streaming agent calls can run for minutes
+    // while the frontend receives progress via WebSocket; fast CRUD
+    // methods keep the default 30 s ceiling.
+    const timeout = LONG_RUNNING_METHODS[method] ?? 30_000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
     let resp: Response;
     try {
       resp = await fetch(`${this.baseUrl}/rpc`, {
@@ -625,12 +646,21 @@ export class IPCClient {
           method,
           params: params ?? null,
         }),
+        signal: controller.signal,
       });
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        throw new IPCError({
+          code: ErrorCode.InternalError,
+          message: `request timed out (${timeout / 1000}s): ${method}`,
+        });
+      }
       throw new IPCError({
         code: ErrorCode.InternalError,
         message: `network error: ${err instanceof Error ? err.message : String(err)}`,
       });
+    } finally {
+      clearTimeout(timer);
     }
 
     if (!resp.ok) {
@@ -739,6 +769,7 @@ export interface TypedIPC {
   // agent (multi-agent)
   listAgents(): Promise<ListAgentsResult>;
   spawnSubagent(opts: SpawnSubagentParams): Promise<SpawnSubagentResult>;
+  cancelSubagent(runId: string): Promise<{ ok: boolean; cancelled: boolean }>;
 
   // mobile
   startPairing(opts?: { suggested_name?: string }): Promise<{ token: string; expires_at: number; qr_payload: string }>;
@@ -953,7 +984,10 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         parent_session_id: opts.parent_session_id,
         context_message_id: opts.context_message_id,
         display_name: opts.display_name,
+        run_id: opts.run_id,
       }),
+    cancelSubagent: (runId) =>
+      client.request<{ ok: boolean; cancelled: boolean }>("agent.cancel_subagent", { run_id: runId }),
 
     startPairing: (opts) =>
       client.request<{ token: string; expires_at: number; qr_payload: string }>(
@@ -1382,7 +1416,8 @@ function mockHandle(
       const p = params as Record<string, unknown>;
       const agentName = (p.name as string) || "general";
       const requestText = (p.request as string) || "";
-      const runId = `run_${Math.random().toString(36).slice(2, 10)}`;
+      // Prefer client-supplied run_id; fall back to server-generated.
+      const runId = (p.run_id as string) || `run_${Math.random().toString(36).slice(2, 10)}`;
       const basePayload = {
         run_id: runId,
         agent_id: agentName,
@@ -1408,6 +1443,9 @@ function mockHandle(
       });
       return { agent_run_id: runId, agent_id: agentName };
     }
+
+    case "agent.cancel_subagent":
+      return { ok: true, cancelled: false };
 
     case "mobile.list":
       return { devices: [] };
@@ -1625,11 +1663,11 @@ function mockHandle(
       return {
         id: "wh_mock_" + Math.random().toString(36).slice(2, 8),
         name: (params as Record<string, unknown>).name as string,
-        source: ((params as Record<string, unknown>).source as string) || "custom",
+        source: ((params as Record<string, unknown>).source as WebhookConfig["source"]) || "custom",
         url_path: "/hooks/wh_mock",
         secret: null,
         enabled: true,
-        action_type: ((params as Record<string, unknown>).action_type as string) || "send-message",
+        action_type: ((params as Record<string, unknown>).action_type as WebhookConfig["action_type"]) || "send-message",
         action_config: {},
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),

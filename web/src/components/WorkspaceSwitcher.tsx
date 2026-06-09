@@ -14,7 +14,7 @@
  * 40px tall, panel background, bottom border, workspace name with a
  * chevron-down, and a 240px dropdown on click.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Check, ChevronDown, Folder } from "lucide-react";
 import {
   getCurrentWorkspace,
@@ -22,6 +22,7 @@ import {
   setCurrentWorkspace,
   type WorkspaceEntry,
 } from "../lib/workspace";
+import { useClickOutside } from "../lib/useClickOutside";
 import { useSessionStore } from "../stores";
 import { toast } from "./ErrorBoundary";
 
@@ -41,20 +42,9 @@ export function WorkspaceSwitcher({
 
   const refreshSessions = useSessionStore((s) => s.refresh);
 
-  // Close on outside click — same pattern as ModelSelector.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
-      ) {
-        setOpen(false);
-      }
-    };
-    window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
-  }, [open]);
+  // Close on outside click — shared hook replaces inline mousedown listener.
+  const closeMenu = useCallback(() => setOpen(false), []);
+  useClickOutside(containerRef, closeMenu, { enabled: open });
 
   // Keep state in sync if some other code path (e.g. tests) mutates
   // localStorage directly between renders.

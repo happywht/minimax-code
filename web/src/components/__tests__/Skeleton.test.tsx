@@ -7,7 +7,7 @@
  *   4. SkeletonCard renders the correct number of content lines
  */
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render } from "@testing-library/react";
 import {
   SkeletonLine,
   SkeletonCircle,
@@ -16,12 +16,11 @@ import {
 } from "../Skeleton";
 
 describe("Skeleton components (P1#13)", () => {
-  it("SkeletonLine renders with pulse animation", () => {
+  it("SkeletonLine renders with shimmer animation", () => {
     const { container } = render(<SkeletonLine />);
     const el = container.firstElementChild as HTMLElement;
-    expect(el.className).toContain("animate-pulse");
+    expect(el.className).toContain("animate-shimmer");
     expect(el.className).toContain("rounded");
-    expect(el.className).toContain("bg-minimax-border/40");
   });
 
   it("SkeletonLine appends custom className", () => {
@@ -29,20 +28,20 @@ describe("Skeleton components (P1#13)", () => {
     const el = container.firstElementChild as HTMLElement;
     expect(el.className).toContain("w-2/3");
     expect(el.className).toContain("h-6");
-    expect(el.className).toContain("animate-pulse");
+    expect(el.className).toContain("animate-shimmer");
   });
 
   it("SkeletonCircle renders as a round element", () => {
     const { container } = render(<SkeletonCircle />);
     const el = container.firstElementChild as HTMLElement;
     expect(el.className).toContain("rounded-full");
-    expect(el.className).toContain("animate-pulse");
+    expect(el.className).toContain("animate-shimmer");
   });
 
   it("SkeletonCard renders with header + content lines", () => {
     const { container } = render(<SkeletonCard lines={3} />);
     // Should have header line + 3 content lines = 4 skeleton lines total
-    const lines = container.querySelectorAll(".animate-pulse");
+    const lines = container.querySelectorAll(".animate-shimmer");
     expect(lines.length).toBe(4); // 1 header + 3 content
   });
 

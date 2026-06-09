@@ -225,10 +225,11 @@ describe("IPCClient pending mode", () => {
   it("ping() blocks until start() resolves", async () => {
     // Simulate a slow /health probe that takes a real delay.
     // ping() is called before start() resolves — it must wait.
-    let healthCallTime = 0;
+    let _healthCallTime = 0;
     installFetch((url) => {
       if (url.endsWith("/health")) {
-        healthCallTime = Date.now();
+        _healthCallTime = Date.now();
+        void _healthCallTime;
         // Return a response after a short delay
         return new Promise<Response>((resolve) => {
           setTimeout(() => resolve(okJson({ ok: true })), 30);

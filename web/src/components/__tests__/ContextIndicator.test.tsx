@@ -51,13 +51,13 @@ function userMsg(id: string): Message {
 function renderWith(messages: Message[], currentModelId: string | null, contextWindow: number) {
   const modelId = contextWindow > 0 ? (currentModelId ?? "model-1") : currentModelId;
 
-  useChat.setState({ messages } as Partial<typeof useChat.state>);
+  useChat.setState({ messages } as Parameters<typeof useChat.setState>[0]);
   useModelStore.setState({
     models: modelId
       ? [{ id: modelId, name: "Test Model", provider: "test", context_window: contextWindow, supports_tools: false }]
       : [],
     current: modelId,
-  } as Partial<typeof useModelStore.state>);
+  } as Parameters<typeof useModelStore.setState>[0]);
 
   return render(<ContextIndicator />);
 }
@@ -102,7 +102,7 @@ describe("ContextIndicator", () => {
     renderWith([assistantMsg("a1", 100_000)], "model-1", 200_000);
     const label = screen.getByText("100.0k/200.0k");
     // The <span> carries the text color class.
-    expect(label.className).toContain("text-emerald-400");
+    expect(label.className).toContain("text-status-success");
     // The progress bar carries the bg color class.
     // It is the only element with an inline style (width: N%).
     const bar = label.parentElement!.querySelector("div[style]");
@@ -113,7 +113,7 @@ describe("ContextIndicator", () => {
     // 150k tokens used, 200k context window → 75% → amber
     renderWith([assistantMsg("a1", 150_000)], "model-1", 200_000);
     const label = screen.getByText("150.0k/200.0k");
-    expect(label.className).toContain("text-amber-400");
+    expect(label.className).toContain("text-status-warning");
     const bar = label.parentElement!.querySelector("div[style]");
     expect(bar?.className).toContain("bg-amber-400");
   });
@@ -122,7 +122,7 @@ describe("ContextIndicator", () => {
     // 190k tokens used, 200k context window → 95% → red
     renderWith([assistantMsg("a1", 190_000)], "model-1", 200_000);
     const label = screen.getByText("190.0k/200.0k");
-    expect(label.className).toContain("text-red-400");
+    expect(label.className).toContain("text-status-error");
     const bar = label.parentElement!.querySelector("div[style]");
     expect(bar?.className).toContain("bg-red-400");
   });

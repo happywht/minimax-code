@@ -27,7 +27,7 @@ function ApiKeyTab(): JSX.Element {
   const statusPill = status
     ? { keyring: { text: "Stored in OS keyring", tone: "bg-minimax-accent/20 text-minimax-accent", loading: false },
         env: { text: "Using environment variable", tone: "bg-minimax-border text-minimax-muted", loading: false },
-        none: { text: "Not configured — agent in mock mode", tone: "bg-red-500/15 text-red-300", loading: false },
+        none: { text: "Not configured — agent in mock mode", tone: "bg-red-500/15 text-status-error", loading: false },
       }[status.source]
     : { text: "", tone: "", loading: true as const };
 
@@ -103,7 +103,7 @@ function ApiKeyTab(): JSX.Element {
             </div>
             <button type="button" data-testid="settings-api-key-clear"
               onClick={() => void clear()} disabled={loading}
-              className="inline-flex items-center gap-1 rounded border border-minimax-border px-2 py-1 text-xs text-minimax-muted hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50">
+              className="inline-flex items-center gap-1 rounded border border-minimax-border px-2 py-1 text-xs text-minimax-muted hover:text-status-error disabled:cursor-not-allowed disabled:opacity-50">
               <Trash2 size={12} /> Clear keyring
             </button>
           </div>

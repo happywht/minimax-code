@@ -240,7 +240,7 @@ function ProvidersTab(): JSX.Element {
                     <span className="flex-1 text-minimax-fg">{m.name || m.id}</span>
                     <span className="text-[11px] text-minimax-muted">{(m.context_window / 1000).toFixed(0)}k</span>
                     <button type="button" onClick={() => removeModelFromList(i)}
-                      className="text-minimax-muted hover:text-red-300"><Trash2 size={10} /></button>
+                      className="text-minimax-muted hover:text-status-error"><Trash2 size={10} /></button>
                   </li>
                 ))}
               </ul>
@@ -331,7 +331,7 @@ function ProviderCard({ provider, onEdit, onDelete, onSetKey, onClearKey }: {
             {provider.api_key_configured ? (
               <span className="rounded bg-emerald-500/10 px-1 py-0.5 text-[11px] text-emerald-300">key ✓</span>
             ) : (
-              <span className="rounded bg-red-500/10 px-1 py-0.5 text-[11px] text-red-300">no key</span>
+              <span className="rounded bg-red-500/10 px-1 py-0.5 text-[11px] text-status-error">no key</span>
             )}
           </div>
           <span className="block truncate text-[11px] font-mono text-minimax-muted">{provider.base_url}</span>
@@ -346,7 +346,7 @@ function ProviderCard({ provider, onEdit, onDelete, onSetKey, onClearKey }: {
         </button>
         {!isBuiltin && (
           <button type="button" onClick={onDelete} aria-label="Delete provider"
-            className="shrink-0 rounded border border-minimax-border p-1 text-minimax-muted hover:text-red-300">
+            className="shrink-0 rounded border border-minimax-border p-1 text-minimax-muted hover:text-status-error">
             <Trash2 size={12} />
           </button>
         )}
@@ -396,7 +396,7 @@ function ProviderCard({ provider, onEdit, onDelete, onSetKey, onClearKey }: {
               </button>
               {provider.api_key_configured && (
                 <button type="button" onClick={() => void onClearKey()}
-                  className="inline-flex items-center gap-1 rounded border border-minimax-border px-2 py-1 text-[11px] text-minimax-muted hover:text-red-300">
+                  className="inline-flex items-center gap-1 rounded border border-minimax-border px-2 py-1 text-[11px] text-minimax-muted hover:text-status-error">
                   <Trash2 size={10} /> Clear
                 </button>
               )}

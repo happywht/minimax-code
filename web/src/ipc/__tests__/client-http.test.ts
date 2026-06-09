@@ -580,33 +580,28 @@ describe("WebSocket reconnect backoff", () => {
     vi.useRealTimers();
   });
 
-  it("uses 250ms → 500ms → 1000ms → 2000ms → 4000ms → 5000ms (capped) delays", async () => {
+  it("uses 250ms → 500ms → 1000ms → 2000ms → 4000ms → 5000ms (capped) delays on consecutive failures", async () => {
     installFetch(() => okJson({ ok: true }));
     const client = new IPCClient({ baseUrl: "http://a" });
     await client.start();
-    const ws0 = StubWebSocket.instances[0];
-    ws0.simulateOpen();
+    let ws = StubWebSocket.instances[0];
+    ws.simulateOpen();
 
-    // Force closes 6 times. After each close the client schedules
-    // a reconnect via setTimeout — which is mocked by
-    // vi.useFakeTimers(). Walk the fake clock forward in 50ms
-    // steps until a new WebSocket is constructed, recording the
-    // accumulated delay.
-    //
-    // `Date.now()` is faked by useFakeTimers (default config),
-    // so it advances with the timer — NOT the wall clock.
+    // Force closes 6 times WITHOUT re-opening — this tests the
+    // monotonic backoff across consecutive connection failures.
+    // We close the *current* WS each time (not a stale one).
     const delays: number[] = [];
     for (let i = 0; i < 6; i++) {
       const beforeCount = StubWebSocket.instances.length;
       const beforeNow = Date.now();
-      ws0.simulateClose();
+      ws.simulateClose();
       for (let elapsed = 0; elapsed < 6000; elapsed += 50) {
         await vi.advanceTimersByTimeAsync(50);
         if (StubWebSocket.instances.length > beforeCount) break;
       }
       delays.push(Date.now() - beforeNow);
-      const ws = StubWebSocket.instances[StubWebSocket.instances.length - 1];
-      ws.simulateOpen();
+      // Grab the newly-created WS but do NOT open it — keep failing.
+      ws = StubWebSocket.instances[StubWebSocket.instances.length - 1];
     }
     // Per the client's `scheduleReconnect()` formula
     //   min(5000, 250 * 2^min(n-1, 5))
@@ -617,6 +612,34 @@ describe("WebSocket reconnect backoff", () => {
     expect(delays[3]).toBe(2000);
     expect(delays[4]).toBe(4000);
     expect(delays[5]).toBe(5000);
+    await client.stop();
+  });
+
+  it("resets backoff to 250ms after a successful reconnect", async () => {
+    installFetch(() => okJson({ ok: true }));
+    const client = new IPCClient({ baseUrl: "http://a" });
+    await client.start();
+    let ws = StubWebSocket.instances[0];
+    ws.simulateOpen();
+
+    // Disconnect and let it reconnect successfully.
+    ws.simulateClose();
+    await vi.advanceTimersByTimeAsync(300); // 250ms backoff
+    expect(StubWebSocket.instances.length).toBe(2);
+    ws = StubWebSocket.instances[1];
+    ws.simulateOpen(); // success → resets wsReconnectAttempts to 0
+
+    // Now disconnect again — should start from 250ms, not continue
+    // the previous backoff sequence.
+    const before = Date.now();
+    ws.simulateClose();
+    for (let elapsed = 0; elapsed < 1000; elapsed += 50) {
+      await vi.advanceTimersByTimeAsync(50);
+      if (StubWebSocket.instances.length > 2) break;
+    }
+    const delay = Date.now() - before;
+    expect(delay).toBe(250); // Reset after successful connect
+    await client.stop();
   });
 });
 

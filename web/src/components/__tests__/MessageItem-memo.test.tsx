@@ -25,6 +25,7 @@ vi.mock("../../stores", () => {
       streaming: false,
       currentSessionId: "test-session",
     }),
+    useThemeStore: ms({ theme: "dark" }),
   };
 });
 
@@ -41,7 +42,6 @@ vi.mock("../../lib/shikiLoader", () => ({
   highlight: () => Promise.resolve(null),
 }));
 
-import React from "react";
 import { MessageItem } from "../../components/MessageItem";
 import type { Message } from "../../types/ipc";
 
@@ -66,6 +66,7 @@ describe("MessageItem React.memo optimization (P1#16)", () => {
       id: "m-memo-1",
       role: "user",
       text: "Hello memo test",
+      streaming: false,
       created_at: Date.now(),
     };
     render(<MessageItem message={msg} />);
@@ -77,6 +78,7 @@ describe("MessageItem React.memo optimization (P1#16)", () => {
       id: "m-memo-2",
       role: "assistant",
       text: "I am an assistant",
+      streaming: false,
       created_at: Date.now(),
     };
     render(<MessageItem message={msg} />);

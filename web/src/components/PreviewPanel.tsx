@@ -116,7 +116,7 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
         </button>
         <div className="flex items-center gap-1 text-xs">
           {connected ? (
-            <Wifi size={12} className="text-green-400" />
+            <Wifi size={12} className="text-status-success" />
           ) : (
             <WifiOff size={12} className="text-minimax-muted" />
           )}

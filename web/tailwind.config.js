@@ -30,6 +30,12 @@ export default {
           muted: "var(--minimax-muted)",
           accent: "var(--minimax-accent)",
         },
+        status: {
+          error: "var(--status-error)",
+          warning: "var(--status-warning)",
+          success: "var(--status-success)",
+          info: "var(--status-info)",
+        },
       },
     },
   },

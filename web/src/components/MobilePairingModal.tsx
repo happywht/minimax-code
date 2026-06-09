@@ -109,7 +109,7 @@ export function MobilePairingModal({
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="relative w-full max-w-sm rounded-xl border border-minimax-border bg-minimax-panel shadow-2xl">
+      <div className="animate-modal-in relative w-full max-w-sm rounded-xl border border-minimax-border bg-minimax-panel shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-minimax-border px-4 py-3">
           <div className="flex items-center gap-2 text-sm font-medium text-minimax-fg">
@@ -129,7 +129,7 @@ export function MobilePairingModal({
         <div className="px-4 py-3 space-y-3">
           {/* Error */}
           {error && (
-            <div data-testid="mobile-pairing-error" className="rounded-md bg-red-500/10 px-3 py-2 text-xs text-red-300">
+            <div data-testid="mobile-pairing-error" className="rounded-md bg-red-500/10 px-3 py-2 text-xs text-status-error">
               {error}
             </div>
           )}
@@ -230,7 +230,7 @@ export function MobilePairingModal({
                         type="button"
                         data-testid={`mobile-unpair-${d.id}`}
                         onClick={() => void unpair(d.id)}
-                        className="rounded p-1 text-minimax-muted hover:bg-red-500/10 hover:text-red-300"
+                        className="rounded p-1 text-minimax-muted hover:bg-red-500/10 hover:text-status-error"
                         title="Unpair"
                         aria-label={`Unpair ${d.name || d.id}`}
                       >

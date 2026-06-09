@@ -19,6 +19,7 @@ import {
   CircleAlert,
   Loader2,
   Sparkles,
+  StopCircle,
 } from "lucide-react";
 import {
   useSubAgentStore,
@@ -41,8 +42,13 @@ const STATUS_TONE: Record<SubAgentStatus, { label: string; cls: string; icon: "s
   tool_call: { label: "Tool call", cls: "text-amber-300 bg-amber-500/10 border-amber-500/30", icon: "spin" },
   tool_result: { label: "Tool result", cls: "text-amber-300 bg-amber-500/10 border-amber-500/30", icon: "spin" },
   completed: { label: "Completed", cls: "text-emerald-300 bg-emerald-500/10 border-emerald-500/30", icon: "ok" },
-  failed: { label: "Failed", cls: "text-red-300 bg-red-500/10 border-red-500/30", icon: "err" },
+  failed: { label: "Failed", cls: "text-status-error bg-red-500/10 border-red-500/30", icon: "err" },
+  cancelled: { label: "Cancelled", cls: "text-minimax-muted bg-minimax-border/40 border-minimax-border", icon: "idle" },
 };
+
+/** Terminal states — sorted to the bottom and cleared by "Clear done". */
+const isFinished = (s: SubAgentStatus) =>
+  s === "completed" || s === "failed" || s === "cancelled";
 
 export function SubAgentPanel({
   testId = "sub-agent-panel",
@@ -61,18 +67,16 @@ export function SubAgentPanel({
     () => runsForSession({ runs: runsMap, subscribed: true, error: null } as SubAgentState, sessionId),
     [runsMap, sessionId],
   );
-  // Sort: in-flight first (oldest first), then completed/failed (newest first).
+  // Sort: in-flight first (oldest first), then finished (newest first).
   runs.sort((a, b) => {
-    const aDone = a.status === "completed" || a.status === "failed";
-    const bDone = b.status === "completed" || b.status === "failed";
+    const aDone = isFinished(a.status);
+    const bDone = isFinished(b.status);
     if (aDone !== bDone) return aDone ? 1 : -1;
     if (aDone) return b.updated_at - a.updated_at;
     return a.started_at - b.started_at;
   });
 
-  const completedCount = runs.filter(
-    (r) => r.status === "completed" || r.status === "failed",
-  ).length;
+  const completedCount = runs.filter((r) => isFinished(r.status)).length;
 
   return (
     <div data-testid={testId} className="px-3 pb-3">
@@ -125,12 +129,16 @@ function SubAgentRow({
       data-testid={`${testId}-${run.run_id}`}
       className="rounded-md border border-minimax-border bg-minimax-bg/40 p-2"
     >
-      <button
-        type="button"
+      {/* Row header — clickable to expand/collapse. Using <div> instead of
+          <button> to avoid nesting the cancel <button> inside a <button>. */}
+      <div
+        role="button"
+        tabIndex={0}
         onClick={() => setExpanded((v) => !v)}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setExpanded((v) => !v); }}
         data-testid={`${testId}-${run.run_id}-header`}
         aria-expanded={expanded}
-        className="flex w-full items-center gap-2 text-left"
+        className="flex w-full cursor-pointer items-center gap-2 text-left"
       >
         <span
           className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-minimax-accent/20 text-minimax-accent"
@@ -146,12 +154,26 @@ function SubAgentRow({
           {run.display_name || run.agent_name}
         </span>
         <StatusPill tone={tone} testId={`${testId}-${run.run_id}-status`} />
+        {!isFinished(run.status) && (
+          <button
+            type="button"
+            data-testid={`${testId}-${run.run_id}-cancel`}
+            onClick={(e) => {
+              e.stopPropagation();
+              useSubAgentStore.getState().cancelRun(run.run_id);
+            }}
+            className="shrink-0 rounded-full p-0.5 text-minimax-muted transition-colors hover:bg-red-500/20 hover:text-status-error"
+            title="Cancel this run"
+          >
+            <StopCircle size={12} />
+          </button>
+        )}
         {expanded ? (
           <ChevronDown size={10} className="text-minimax-muted" />
         ) : (
           <ChevronRight size={10} className="text-minimax-muted" />
         )}
-      </button>
+      </div>
       <div
         className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-minimax-border/60"
         aria-label="progress"
@@ -161,7 +183,7 @@ function SubAgentRow({
           data-testid={`${testId}-${run.run_id}-progress-bar`}
           className={
             "h-full transition-all " +
-            (run.status === "failed"
+            (run.status === "failed" || run.status === "cancelled"
               ? "bg-red-400"
               : run.status === "completed"
                 ? "bg-emerald-400"
@@ -205,7 +227,7 @@ function SubAgentRow({
             </div>
           )}
           {run.error && (
-            <div className="text-red-300" data-testid={`${testId}-${run.run_id}-error`}>
+            <div className="text-status-error" data-testid={`${testId}-${run.run_id}-error`}>
               {run.error}
             </div>
           )}

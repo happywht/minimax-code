@@ -500,14 +500,16 @@ class IPCServer:
         # Cancel any active agent cores so they don't hang the
         # event loop during shutdown.
         try:
-            from .builtins import _ACTIVE_CORES
+            from .builtins import _ACTIVE_RUNS
 
-            for sid, core in list(_ACTIVE_CORES.items()):
+            for sid, entry in list(_ACTIVE_RUNS.items()):
                 try:
-                    core.cancel()
+                    core = entry.get("core") if isinstance(entry, dict) else entry
+                    if core:
+                        core.cancel()
                 except Exception:
                     pass
-            _ACTIVE_CORES.clear()
+            _ACTIVE_RUNS.clear()
         except Exception:
             pass
 

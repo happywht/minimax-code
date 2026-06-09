@@ -170,9 +170,9 @@ function DiffContent({
         } else if (line.startsWith("@@")) {
           cls = "text-minimax-muted";
         } else if (line.startsWith("+")) {
-          cls = "text-emerald-400";
+          cls = "text-status-success";
         } else if (line.startsWith("-")) {
-          cls = "text-red-400";
+          cls = "text-status-error";
         }
         return (
           <div key={i} className={cls}>

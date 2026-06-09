@@ -8,7 +8,7 @@
  */
 import { create } from "zustand";
 import { typedIPC, ipc } from "../ipc/client";
-import type { StreamEventName, NotificationEntry, ListNotificationsResult } from "../types/ipc";
+import type { NotificationEntry, ListNotificationsResult } from "../types/ipc";
 import { toast } from "../components/ErrorBoundary";
 import { trimArray, MAX_NOTIFICATIONS } from "../lib/eviction";
 
@@ -84,7 +84,8 @@ export const useNotificationStore = create<NotificationState>((set, get) => {
 
     async markAllRead() {
       try {
-        const { marked } = await typedIPC.markAllNotificationsRead();
+        const _marked = (await typedIPC.markAllNotificationsRead()) as { marked: number };
+        void _marked;
         set((s) => ({
           entries: s.entries.map((e) => ({ ...e, read: true })),
           unreadCount: 0,
@@ -116,7 +117,8 @@ export const useNotificationStore = create<NotificationState>((set, get) => {
 
     async purge(beforeIso, readOnly) {
       try {
-        const { purged } = await typedIPC.purgeNotifications(beforeIso, readOnly);
+        const _purged = (await typedIPC.purgeNotifications(beforeIso, readOnly)) as { purged: number };
+        void _purged;
         // Refresh to get accurate state after purge
         await get().refresh();
       } catch (err: unknown) {
@@ -138,30 +140,34 @@ export const useNotificationStore = create<NotificationState>((set, get) => {
       // Fetch initial data
       get().refresh();
 
-      const handler = (eventName: StreamEventName, data: unknown) => {
-        if (eventName === "notification.new") {
-          const entry = data as NotificationEntry;
-          set((s) => ({
-            entries: trimArray([entry, ...s.entries], MAX_NOTIFICATIONS),
-            total: s.total + 1,
-            unreadCount: s.unreadCount + (entry.read ? 0 : 1),
-          }));
-        }
-        if (eventName === "notification.read") {
-          const entry = data as NotificationEntry;
-          set((s) => {
-            const prev = s.entries.find((e) => e.id === entry.id);
-            const wasUnread = prev && !prev.read;
-            return {
-              entries: s.entries.map((e) => (e.id === entry.id ? { ...e, read: true } : e)),
-              unreadCount: wasUnread ? Math.max(0, s.unreadCount - 1) : s.unreadCount,
-            };
-          });
-        }
-      };
+      // P0 fix: ipc.on() requires (event, callback) — was called with a
+      // single function that never matched the signature, so real-time
+      // notifications were completely broken.  Split into two typed
+      // subscriptions; each returns an unsubscribe function.
+      const unsubNew = ipc.on<NotificationEntry>("notification.new", (env) => {
+        const entry = env.data;
+        if (!entry) return;
+        set((s) => ({
+          entries: trimArray([entry, ...s.entries], MAX_NOTIFICATIONS),
+          total: s.total + 1,
+          unreadCount: s.unreadCount + (entry.read ? 0 : 1),
+        }));
+      });
 
-      ipc.on(handler);
-      _unsub = () => ipc.off(handler);
+      const unsubRead = ipc.on<NotificationEntry>("notification.read", (env) => {
+        const entry = env.data;
+        if (!entry) return;
+        set((s) => {
+          const prev = s.entries.find((e) => e.id === entry.id);
+          const wasUnread = prev && !prev.read;
+          return {
+            entries: s.entries.map((e) => (e.id === entry.id ? { ...e, read: true } : e)),
+            unreadCount: wasUnread ? Math.max(0, s.unreadCount - 1) : s.unreadCount,
+          };
+        });
+      });
+
+      _unsub = () => { unsubNew(); unsubRead(); };
       return _unsub;
     },
   };

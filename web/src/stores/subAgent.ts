@@ -10,7 +10,7 @@
  * filters for ``status === "completed" | "failed"``.
  */
 import { create } from "zustand";
-import { ipc } from "../ipc";
+import { ipc, typedIPC } from "../ipc";
 import {
   StreamEvent,
   type SubAgentProgress,
@@ -32,6 +32,8 @@ export interface SubAgentState {
   register: (run: SubAgentRun) => void;
   /** Update an existing run from a push event payload. */
   applyProgress: (progress: SubAgentProgress) => void;
+  /** Cancel a running sub-agent by run_id. */
+  cancelRun: (runId: string) => Promise<void>;
   /** Drop every completed run (used by ``clearCompleted`` button). */
   clearCompleted: () => void;
   /** Reset state — used by tests. */
@@ -48,6 +50,7 @@ function coerceStatus(value: unknown): SubAgentStatus {
     "tool_result",
     "completed",
     "failed",
+    "cancelled",
   ];
   return allowed.includes(value as SubAgentStatus)
     ? (value as SubAgentStatus)
@@ -108,7 +111,7 @@ export const useSubAgentStore = create<SubAgentState>((set, get) => ({
           context_message_id: progress.context_message_id,
         };
       const status = coerceStatus(progress.status);
-      const finished = status === "completed" || status === "failed";
+      const finished = status === "completed" || status === "failed" || status === "cancelled";
       const next: SubAgentRun = {
         ...base,
         agent_id: progress.agent_id,
@@ -134,12 +137,44 @@ export const useSubAgentStore = create<SubAgentState>((set, get) => ({
     set((s) => {
       const next: Record<string, SubAgentRun> = {};
       for (const [k, v] of Object.entries(s.runs)) {
-        if (v.status !== "completed" && v.status !== "failed") {
+        if (v.status !== "completed" && v.status !== "failed" && v.status !== "cancelled") {
           next[k] = v;
         }
       }
       return { runs: next };
     }),
+
+  cancelRun: async (runId: string) => {
+    // Optimistic update — mark as cancelled immediately.
+    set((s) => {
+      const run = s.runs[runId];
+      if (!run) return s;
+      return {
+        runs: {
+          ...s.runs,
+          [runId]: { ...run, status: "cancelled" as SubAgentStatus, updated_at: Date.now() },
+        },
+      };
+    });
+    try {
+      await typedIPC.cancelSubagent(runId);
+    } catch (err) {
+      // The backend may still be running — revert optimistic status
+      // to "failed" so the user knows the cancel didn't go through.
+      const msg = err instanceof Error ? err.message : String(err);
+      set((s) => {
+        const run = s.runs[runId];
+        if (!run) return s;
+        return {
+          runs: {
+            ...s.runs,
+            [runId]: { ...run, status: "failed" as SubAgentStatus, error: msg, updated_at: Date.now() },
+          },
+          error: msg,
+        };
+      });
+    }
+  },
 
   reset: () => set({ runs: {}, subscribed: false, error: null }),
 }));

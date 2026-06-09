@@ -554,15 +554,15 @@ async def test_send_message_rejects_no_db_with_clear_error():
 @pytest.mark.asyncio
 async def test_server_stop_cancels_active_cores():
     """Calling server.stop() must cancel all active AgentCore instances."""
-    from minimax_code.ipc.builtins import _ACTIVE_CORES
+    from minimax_code.ipc.builtins import _ACTIVE_RUNS
 
     server = IPCServer(Config())
 
     # Simulate 2 active cores
     mock_core_1 = MagicMock()
     mock_core_2 = MagicMock()
-    _ACTIVE_CORES["ses_a"] = mock_core_1
-    _ACTIVE_CORES["ses_b"] = mock_core_2
+    _ACTIVE_RUNS["ses_a"] = {"core": mock_core_1, "type": "main"}
+    _ACTIVE_RUNS["ses_b"] = {"core": mock_core_2, "type": "main"}
 
     try:
         server.stop()
@@ -571,22 +571,22 @@ async def test_server_stop_cancels_active_cores():
         mock_core_1.cancel.assert_called_once()
         mock_core_2.cancel.assert_called_once()
         # And removed from the registry
-        assert len(_ACTIVE_CORES) == 0
+        assert len(_ACTIVE_RUNS) == 0
     finally:
-        _ACTIVE_CORES.clear()
+        _ACTIVE_RUNS.clear()
 
 
 @pytest.mark.asyncio
 async def test_shutdown_handler_triggers_stop():
     """The ``shutdown`` IPC handler must call server.stop() which
     cancels active cores."""
-    from minimax_code.ipc.builtins import _ACTIVE_CORES
+    from minimax_code.ipc.builtins import _ACTIVE_RUNS
 
     server = IPCServer(Config())
     # __init__ already registers the default handlers (ping, shutdown, etc.)
 
     mock_core = MagicMock()
-    _ACTIVE_CORES["ses_active"] = mock_core
+    _ACTIVE_RUNS["ses_active"] = {"core": mock_core, "type": "main"}
 
     try:
         ctx = _CapturedReply(server=server)
@@ -594,9 +594,9 @@ async def test_shutdown_handler_triggers_stop():
 
         assert ctx.reply_value == {"ok": True}
         mock_core.cancel.assert_called_once()
-        assert len(_ACTIVE_CORES) == 0
+        assert len(_ACTIVE_RUNS) == 0
     finally:
-        _ACTIVE_CORES.clear()
+        _ACTIVE_RUNS.clear()
 
 
 @pytest.mark.asyncio

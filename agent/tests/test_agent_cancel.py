@@ -3,7 +3,7 @@
 Validates:
 - Graceful response when no active core exists for the session.
 - The ``cancel()`` method is called on the matching AgentCore.
-- The ``_ACTIVE_CORES`` dict is cleaned up after a core finishes.
+- The ``_ACTIVE_RUNS`` dict is cleaned up after a core finishes.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from minimax_code.ipc.builtins import (
-    _ACTIVE_CORES,
+    _ACTIVE_RUNS,
     handle_agent_cancel,
 )
 from minimax_code.ipc.server import Context, IPCServer
@@ -37,11 +37,11 @@ def _make_ctx() -> Context:
 
 
 @pytest.fixture(autouse=True)
-def _clean_active_cores():
-    """Ensure ``_ACTIVE_CORES`` is empty before and after each test."""
-    _ACTIVE_CORES.clear()
+def _clean_active_runs():
+    """Ensure ``_ACTIVE_RUNS`` is empty before and after each test."""
+    _ACTIVE_RUNS.clear()
     yield
-    _ACTIVE_CORES.clear()
+    _ACTIVE_RUNS.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +67,7 @@ async def test_cancel_active_session_sets_event():
     """When a core is registered, ``cancel()`` is called on it."""
     core = MagicMock()
     core.cancel = MagicMock()
-    _ACTIVE_CORES["ses_running"] = core
+    _ACTIVE_RUNS["ses_running"] = {"core": core, "type": "main"}
 
     ctx = _make_ctx()
     await handle_agent_cancel({"session_id": "ses_running"}, ctx)
@@ -102,8 +102,8 @@ async def test_cancel_non_dict_params_returns_error():
 
 
 @pytest.mark.asyncio
-async def test_active_cores_cleanup_after_run():
-    """Verify that a core registered in ``_ACTIVE_CORES`` is removed
+async def test_active_runs_cleanup_after_run():
+    """Verify that a core registered in ``_ACTIVE_RUNS`` is removed
     after ``handle_agent_send_message`` completes (via the ``finally``
     block in builtins.py).
 
@@ -113,9 +113,9 @@ async def test_active_cores_cleanup_after_run():
     simulates the ``finally`` behaviour.
     """
     # Simulate what builtins.py does: register before run, pop after.
-    _ACTIVE_CORES["ses_test"] = MagicMock()
-    assert "ses_test" in _ACTIVE_CORES
+    _ACTIVE_RUNS["ses_test"] = {"core": MagicMock(), "type": "main"}
+    assert "ses_test" in _ACTIVE_RUNS
 
     # Simulate the finally block.
-    _ACTIVE_CORES.pop("ses_test", None)
-    assert "ses_test" not in _ACTIVE_CORES
+    _ACTIVE_RUNS.pop("ses_test", None)
+    assert "ses_test" not in _ACTIVE_RUNS

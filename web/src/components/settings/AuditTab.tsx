@@ -40,7 +40,7 @@ function AuditTab(): JSX.Element {
             <div className="text-[11px] text-minimax-muted">Tools Used</div>
           </div>
           <div className="rounded border border-minimax-border bg-minimax-panel px-3 py-2">
-            <div className="text-lg font-bold text-green-400">
+            <div className="text-lg font-bold text-status-success">
               {stats.by_status.success ?? 0}
             </div>
             <div className="text-[11px] text-minimax-muted">Successes</div>
@@ -101,7 +101,7 @@ function AuditTab(): JSX.Element {
                   </td>
                   <td className="px-2 py-1">{e.duration_ms != null ? `${e.duration_ms}ms` : "—"}</td>
                   <td className="px-2 py-1">{e.permission ?? "—"}</td>
-                  <td className="px-2 py-1 max-w-[200px] truncate text-red-400" title={e.error ?? ""}>{e.error ?? ""}</td>
+                  <td className="px-2 py-1 max-w-[200px] truncate text-status-error" title={e.error ?? ""}>{e.error ?? ""}</td>
                 </tr>
               ))}
             </tbody>
@@ -137,9 +137,9 @@ function AuditTab(): JSX.Element {
 
 function StatusBadge({ status }: { status: string }): JSX.Element {
   const colors: Record<string, string> = {
-    success: "text-green-400",
-    fail: "text-red-400",
-    timeout: "text-yellow-400",
+    success: "text-status-success",
+    fail: "text-status-error",
+    timeout: "text-status-warning",
     denied: "text-orange-400",
   };
   return <span className={colors[status] ?? "text-minimax-muted"}>{status}</span>;

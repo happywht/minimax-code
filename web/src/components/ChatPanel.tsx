@@ -96,7 +96,7 @@ export function ChatPanel({ testId = "chat-panel", onMenuClick }: ChatPanelProps
   const toneClass: Record<string, string> = {
     amber: "text-amber-300 bg-amber-500/10 border-amber-500/30",
     accent: "text-minimax-accent bg-minimax-accent/10 border-minimax-accent/30",
-    red: "text-red-300 bg-red-500/10 border-red-500/30",
+    red: "text-status-error bg-red-500/10 border-red-500/30",
     emerald: "text-emerald-300 bg-emerald-500/10 border-emerald-500/30",
   };
 
@@ -160,7 +160,7 @@ export function ChatPanel({ testId = "chat-panel", onMenuClick }: ChatPanelProps
           {error && (
             <span
               data-testid="chat-header-error"
-              className="ml-2 truncate text-[11px] text-red-300"
+              className="ml-2 truncate text-[11px] text-status-error"
               title={error}
             >
               {error}

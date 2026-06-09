@@ -83,7 +83,7 @@ function AgentsTab(): JSX.Element {
               </div>
               <button type="button" data-testid={`settings-agent-delete-${a.name}`}
                 onClick={() => void remove(a.name)} aria-label={`Delete agent ${a.name}`}
-                className="ml-2 rounded border border-minimax-border p-1 text-minimax-muted hover:text-red-300">
+                className="ml-2 rounded border border-minimax-border p-1 text-minimax-muted hover:text-status-error">
                 <Trash2 size={12} />
               </button>
             </li>

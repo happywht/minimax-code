@@ -508,7 +508,15 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
     # before replying with the error envelope.
 
     async def handle_agent_spawn_subagent(params: Any, ctx: Context) -> None:
-        run_id = f"run_{uuid.uuid4().hex[:12]}"
+        # Prefer the client-supplied run_id (avoids orphaned optimistic
+        # UI rows); fall back to a server-generated one when absent.
+        run_id = (
+            str(params["run_id"])
+            if isinstance(params, dict)
+            and params.get("run_id")
+            and str(params["run_id"]).strip()
+            else f"run_{uuid.uuid4().hex[:12]}"
+        )
         message_id = f"msg_{uuid.uuid4().hex[:8]}"
         name = "unknown"
         parent_session_id: str | None = None
@@ -593,9 +601,16 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
             # Drive the sub-agent. ``runtime.invoke`` either forwards
             # to ``AgentCore.run`` (real LLM) or returns the
             # deterministic stub envelope. The wire shape is the same.
-            result = await runtime.invoke(
-                handle, session_id=sub_session_id, request=request
-            )
+            # Register the core so ``agent.cancel_subagent`` can find it.
+            from .builtins import _ACTIVE_RUNS
+            if hasattr(handle, "core") and handle.core is not None:
+                _ACTIVE_RUNS[run_id] = {"core": handle.core, "type": "subagent"}
+            try:
+                result = await runtime.invoke(
+                    handle, session_id=sub_session_id, request=request
+                )
+            finally:
+                _ACTIVE_RUNS.pop(run_id, None)
             is_stub = bool(result.get("stub", True))
             final_text = result.get("text", "")
             tool_calls = list(result.get("tool_calls", []))
@@ -694,6 +709,42 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 INTERNAL_ERROR, f"agent.spawn_subagent failed: {exc}"
             )
 
+    # ---------------------------------------------------------------- cancel sub
+    async def handle_agent_cancel_subagent(params: Any, ctx: Context) -> None:
+        """Cancel a running sub-agent by ``run_id``.
+
+        Looks up the :class:`AgentCore` in :data:`_ACTIVE_RUNS`
+        (registered by ``handle_agent_spawn_subagent``) and signals
+        cooperative cancellation.  Emits a ``failed`` subagent_progress
+        event so the frontend row transitions to ``failed``.
+        """
+        run_id = (
+            params.get("run_id") if isinstance(params, dict) else None
+        )
+        if not run_id:
+            await ctx.reply_error(-32602, "run_id is required")
+            return
+        from .builtins import _ACTIVE_RUNS
+
+        entry = _ACTIVE_RUNS.pop(str(run_id), None)
+        if entry and entry.get("core"):
+            entry["core"].cancel()
+            # Notify the UI that this run was cancelled.
+            await _emit_subagent_progress(
+                ctx,
+                run_id=str(run_id),
+                agent_id="",
+                parent_session_id=None,
+                context_message_id=None,
+                status="failed",
+                progress=1.0,
+                summary="cancelled",
+                error="cancelled by user",
+            )
+            await ctx.reply({"ok": True, "cancelled": True})
+        else:
+            await ctx.reply({"ok": True, "cancelled": False, "note": "no active run"})
+
     server.register("agent.list", handle_agent_list)
     server.register("agent.get", handle_agent_get)
     server.register("agent.create", handle_agent_create)
@@ -701,6 +752,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
     server.register("agent.delete", handle_agent_delete)
     server.register("agent.invoke", handle_agent_invoke)
     server.register("agent.spawn_subagent", handle_agent_spawn_subagent)
+    server.register("agent.cancel_subagent", handle_agent_cancel_subagent)
 
 # ---------------------------------------------------------------------------
 # Factory + helpers

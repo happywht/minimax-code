@@ -103,7 +103,7 @@ function PermissionRuleRow({ rule, onDelete, onUpdate }: {
       </select>
       <button type="button" data-testid={`settings-permission-delete-${rule.id}`}
         onClick={onDelete} aria-label="Delete rule"
-        className="rounded border border-minimax-border p-1 text-minimax-muted hover:text-red-300">
+        className="rounded border border-minimax-border p-1 text-minimax-muted hover:text-status-error">
         <Trash2 size={12} />
       </button>
     </li>

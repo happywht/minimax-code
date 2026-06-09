@@ -66,7 +66,7 @@ describe("MessageItem", () => {
     );
     const el = screen.getByTestId("message-system");
     expect(el).toHaveAttribute("data-role", "system");
-    expect(el.querySelector("div")?.className).toContain("text-red-300");
+    expect(el.querySelector("div")?.className).toContain("text-status-error");
   });
 
   it("shows the streaming cursor when streaming is true (assistant)", () => {

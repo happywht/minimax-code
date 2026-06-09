@@ -59,7 +59,7 @@ function WorkflowsTab(): JSX.Element {
         </div>
       </div>
 
-      {error && <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-400">{error}</div>}
+      {error && <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-status-error">{error}</div>}
 
       {/* Create form */}
       {showCreate && (
@@ -124,7 +124,7 @@ function WorkflowsTab(): JSX.Element {
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
-                    className={`rounded px-1.5 py-0.5 text-[11px] ${wf.enabled ? "text-green-400" : "text-minimax-muted"}`}
+                    className={`rounded px-1.5 py-0.5 text-[11px] ${wf.enabled ? "text-status-success" : "text-minimax-muted"}`}
                     onClick={() => wf.enabled ? disable(wf.id) : enable(wf.id)}
                   >
                     {wf.enabled ? "Enabled" : "Disabled"}
@@ -140,7 +140,7 @@ function WorkflowsTab(): JSX.Element {
                   </button>
                   <button
                     type="button"
-                    className="rounded px-1.5 py-0.5 text-[11px] text-red-400 hover:text-red-300"
+                    className="rounded px-1.5 py-0.5 text-[11px] text-status-error hover:text-status-error"
                     onClick={() => remove(wf.id)}
                   >
                     <Trash2 size={11} />

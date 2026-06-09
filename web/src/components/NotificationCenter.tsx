@@ -6,7 +6,7 @@
  * v0.7.0 — Mobile Connectivity Enhancement
  */
 import { useEffect } from "react";
-import { Check, Trash2, Info, AlertTriangle, XCircle, Webhook, Shield, Workflow, X } from "lucide-react";
+import { Check, Info, AlertTriangle, XCircle, Webhook, Shield, Workflow, X } from "lucide-react";
 import { SkeletonTable } from "./Skeleton";
 import { useNotificationStore } from "../stores/notificationStore";
 import type { NotificationEntry } from "../stores/notificationStore";
@@ -144,7 +144,7 @@ function NotificationItem({
           <button
             type="button"
             onClick={() => onDelete(entry.id)}
-            className="text-[11px] text-red-400 hover:underline"
+            className="text-[11px] text-status-error hover:underline"
           >
             Delete
           </button>

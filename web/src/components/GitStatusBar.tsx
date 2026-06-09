@@ -32,9 +32,10 @@
  * paused while the popover is open and the user is reading the
  * list — opening the popover is itself a refresh.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { GitBranch as Branch, CheckCircle2, CircleAlert, FileText, Loader2, FileDiff, GitCommit as CommitIcon } from "lucide-react";
 import { useGitStore } from "../stores";
+import { useClickOutside } from "../lib/useClickOutside";
 import { GitViewerModal } from "./GitViewerModal";
 
 const POLL_INTERVAL_MS = 15_000;
@@ -68,20 +69,9 @@ export function GitStatusBar({
     return () => clearInterval(id);
   }, [refreshStatus, open]);
 
-  // Close on outside click — same pattern as ModelSelector.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
-      ) {
-        setOpen(false);
-      }
-    };
-    window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
-  }, [open]);
+  // Close on outside click — shared hook replaces inline mousedown listener.
+  const closePopover = useCallback(() => setOpen(false), []);
+  useClickOutside(containerRef, closePopover, { enabled: open });
 
   // Opening the popover always triggers a fresh fetch so the
   // file list is up to date by the time the user reads it.
@@ -136,8 +126,8 @@ export function GitStatusBar({
             (clean === null
               ? "text-minimax-muted"
               : clean
-                ? "text-emerald-400"
-                : "text-amber-400")
+                ? "text-status-success"
+                : "text-status-warning")
           }
         >
           {clean === null ? (

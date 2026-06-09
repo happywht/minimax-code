@@ -45,6 +45,17 @@ let toolCallUnsub: (() => void) | null = null;
 let toolResultUnsub: (() => void) | null = null;
 let statusUnsub: (() => void) | null = null;
 
+// HMR cleanup — tear down WS listeners when this module is hot-replaced
+// so stale subscriptions don't accumulate and cause duplicate event handling.
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    chunkUnsub?.();
+    toolCallUnsub?.();
+    toolResultUnsub?.();
+    statusUnsub?.();
+  });
+}
+
 /** Monotonic counter to prevent stale loadMessages from overwriting state. */
 let _loadSeq = 0;
 
@@ -227,6 +238,11 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   send: async (content: string | ContentPart[]) => {
+    // Concurrency guard — prevent double-send from rapid clicks or
+    // multiple call sites.  The UI disables the button but the store
+    // is the source of truth.
+    if (get().status === "sending" || get().status === "streaming") return;
+
     // Normalize to wire format
     const isString = typeof content === "string";
     const text = isString ? (content as string).trim() : "";
@@ -299,21 +315,43 @@ export const useChat = create<ChatState>((set, get) => ({
           : err instanceof Error
             ? err.message
             : String(err);
-      set((s) => ({
-        status: "error",
-        error: message,
-        messages: trimArray([
-          ...s.messages,
-          {
-            id: `err-${Date.now()}`,
-            role: "system",
-            text: `Error: ${message}`,
-            streaming: false,
-            created_at: Date.now(),
-          },
-        ], MAX_MESSAGES),
-      }));
-      toast.error("Send failed", message);
+      const isTimeout = message.includes("timed out");
+
+      set((s) => {
+        // If we already received streaming chunks via WebSocket, the
+        // backend is still working — the HTTP POST just timed out.
+        // Finalise the partial response instead of showing an error.
+        const hasPartial = s.messages.some(
+          (m) => m.role === "assistant" && m.streaming,
+        );
+        if (hasPartial && isTimeout) {
+          return {
+            messages: s.messages.map((m) =>
+              m.streaming ? { ...m, streaming: false } : m,
+            ),
+            status: "idle",
+          };
+        }
+        return {
+          status: "error",
+          error: message,
+          messages: trimArray([
+            ...s.messages,
+            {
+              id: `err-${Date.now()}`,
+              role: "system",
+              text: `Error: ${message}`,
+              streaming: false,
+              created_at: Date.now(),
+            },
+          ], MAX_MESSAGES),
+        };
+      });
+      if (isTimeout) {
+        toast.info("Agent is still working", "The request is taking longer than expected. Stream updates continue via WebSocket.");
+      } else {
+        toast.error("Send failed", message);
+      }
     }
   },
 

@@ -390,15 +390,18 @@ def build_app(
         finally:
             # ── Graceful shutdown sequence ──────────────────────────
             # 1. Cancel any in-flight agent runs.
-            from .ipc.builtins import _ACTIVE_CORES
+            from .ipc.builtins import _ACTIVE_RUNS
 
-            for sid, core in list(_ACTIVE_CORES.items()):
+            for key, entry in list(_ACTIVE_RUNS.items()):
                 try:
-                    core.cancel()
+                    core = entry.get("core") if isinstance(entry, dict) else entry
+                    if core:
+                        core.cancel()
                 except Exception:
                     pass
-            _ACTIVE_CORES.clear()
-            logger.info("graceful shutdown: cancelled %d active cores", len(_ACTIVE_CORES))
+            count = len(_ACTIVE_RUNS)
+            _ACTIVE_RUNS.clear()
+            logger.info("graceful shutdown: cancelled %d active runs", count)
 
             # 2. Stop the APScheduler if it is running.
             try:

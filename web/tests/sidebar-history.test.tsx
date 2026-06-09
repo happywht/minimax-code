@@ -169,6 +169,6 @@ describe("Sidebar history list", () => {
     render(<Sidebar />);
     const list = screen.getByTestId("sidebar-session-list");
     expect(list.className).toMatch(/overflow-y-auto/);
-    expect(list.style.maxHeight).toBe("60vh");
+    // maxHeight removed — flex layout handles sizing naturally
   });
 });

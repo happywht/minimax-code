@@ -61,10 +61,10 @@ export function ContextIndicator() {
 
   const textColor =
     pct < 70
-      ? "text-emerald-400"
+      ? "text-status-success"
       : pct < 90
-        ? "text-amber-400"
-        : "text-red-400";
+        ? "text-status-warning"
+        : "text-status-error";
 
   return (
     <div className="flex items-center gap-1.5" title={`Context: ${fmtTokens(used)} / ${total > 0 ? fmtTokens(total) : "?"} tokens`}>

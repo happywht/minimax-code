@@ -216,7 +216,7 @@ function TeamsTab(): JSX.Element {
                   </button>
                   <button type="button" data-testid={`settings-team-delete-${t.name}`}
                     onClick={() => void remove(t.name)} aria-label={`Delete team ${t.name}`}
-                    className="rounded border border-minimax-border p-1 text-minimax-muted hover:text-red-300">
+                    className="rounded border border-minimax-border p-1 text-minimax-muted hover:text-status-error">
                     <Trash2 size={12} />
                   </button>
                 </div>

@@ -28,6 +28,7 @@ export interface MessageInputProps {
 const SUGGESTION_EVENT = "minimax:suggestion";
 const MAX_ATTACHMENTS = 5;
 const MAX_FILE_CHARS = 32_000;
+const MAX_INPUT_CHARS = 8000;
 
 const ACCEPTED_EXTS =
   ".txt,.md,.py,.ts,.tsx,.js,.jsx,.json,.yaml,.yml,.toml,.cfg,.sh,.bat,.sql,.html,.css,.csv,.log,.xml,.ini,.env,.gitignore,.editorconfig,.eslintrc,.prettierrc";
@@ -71,14 +72,17 @@ export function MessageInput({
   const [listening, setListening] = useState(false);
   const disabled = status === "sending" || status === "streaming";
   const streaming = status === "streaming" || status === "sending";
+  const overLimit = value.length > MAX_INPUT_CHARS;
   const imageInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
 
-  // Auto-grow textarea up to ~8 rows.
+  // Auto-grow textarea up to ~8 rows — shrink back when text is deleted.
+  // Setting height to "0px" first forces the browser to recalculate
+  // scrollHeight from the actual content, preventing stale height values.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    el.style.height = "auto";
+    el.style.height = "0px";
     el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
   }, [value]);
 
@@ -169,6 +173,7 @@ export function MessageInput({
           prompt: promptText,
           parent_session_id: sessionId ?? undefined,
           display_name: agent.name,
+          run_id: runId,
         });
         // Mirror the trigger to the chat stream as a local user msg
         // so the user sees the pick in history — no backend round-trip.
@@ -402,6 +407,7 @@ export function MessageInput({
   const handleSubmit = async (e?: React.FormEvent | React.KeyboardEvent) => {
     e?.preventDefault();
     if (disabled) return;
+    if (overLimit) return;
 
     const hasText = value.trim().length > 0;
     const hasImages = attachedImages.length > 0;
@@ -575,7 +581,7 @@ export function MessageInput({
                 className={
                   "flex h-8 w-8 shrink-0 items-center justify-center rounded-md " +
                   (listening
-                    ? "bg-red-500/20 text-red-400 animate-pulse"
+                    ? "bg-red-500/20 text-status-error animate-pulse"
                     : "text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg")
                 }
                 title={listening ? "Listening… click to stop" : "Voice input"}
@@ -585,7 +591,7 @@ export function MessageInput({
               <button
                 type="submit"
                 data-testid="message-input-send"
-                disabled={!value.trim() && attachedImages.length === 0}
+                disabled={(!value.trim() && attachedImages.length === 0) || overLimit}
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-minimax-accent text-white disabled:opacity-40"
                 title="Send"
                 aria-label="Send"
@@ -605,7 +611,7 @@ export function MessageInput({
               <span>Spawn sub-agent</span>
             </div>
             {agentsError ? (
-              <div className="px-2 py-1.5 text-[11px] text-red-300" title={agentsError}>
+              <div className="px-2 py-1.5 text-[11px] text-status-error" title={agentsError}>
                 Failed to load agents
               </div>
             ) : filtered.length === 0 ? (
@@ -666,8 +672,8 @@ export function MessageInput({
           </button>
           <div className="flex items-center gap-2">
             <ContextIndicator />
-            <span className="text-[11px] text-minimax-muted">
-              {value.length}/8000
+            <span className={`text-[11px] ${overLimit ? "text-status-error font-semibold" : "text-minimax-muted"}`}>
+              {value.length}/{MAX_INPUT_CHARS}
             </span>
             <ModelSelector variant="inline" />
           </div>

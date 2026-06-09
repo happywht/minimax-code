@@ -75,9 +75,14 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   },
 
   purge: async (beforeIso: string) => {
-    const result = await typedIPC.purgeAudit(beforeIso);
-    await get().refresh();
-    await get().loadStats();
-    return result.deleted;
+    try {
+      const result = await typedIPC.purgeAudit(beforeIso);
+      await get().refresh();
+      await get().loadStats();
+      return result.deleted;
+    } catch (e) {
+      set({ error: String(e) });
+      return 0;
+    }
   },
 }));

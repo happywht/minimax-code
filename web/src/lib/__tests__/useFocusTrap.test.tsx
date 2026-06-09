@@ -6,7 +6,7 @@
  *   3. Focus restores to trigger when deactivated
  *   4. All 3 modals have role="dialog" and aria-modal="true"
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRef, useState } from "react";
@@ -57,7 +57,8 @@ describe("useFocusTrap hook", () => {
     const user = userEvent.setup();
     render(<FocusTrapTestComponent active={true} />);
 
-    const first = screen.getByTestId("btn-first");
+    const _first = screen.getByTestId("btn-first");
+    void _first;
     const last = screen.getByTestId("btn-last");
 
     // Focus starts on first; Shift+Tab should wrap to last

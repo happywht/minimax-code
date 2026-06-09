@@ -45,7 +45,7 @@ export function SubAgentResultCard({
     : "border-minimax-accent/40 bg-minimax-accent/5";
   const label = run.display_name || run.agent_name;
   const icon = failed ? (
-    <CircleAlert size={12} className="text-red-300" />
+    <CircleAlert size={12} className="text-status-error" />
   ) : (
     <Bot size={12} className="text-minimax-accent" />
   );
@@ -73,7 +73,7 @@ export function SubAgentResultCard({
           className={
             "rounded-full border px-1.5 py-0.5 text-[11px] " +
             (failed
-              ? "border-red-500/30 text-red-300"
+              ? "border-red-500/30 text-status-error"
               : "border-emerald-500/30 text-emerald-300")
           }
         >
@@ -127,7 +127,7 @@ export function SubAgentResultCard({
       {failed && run.error && (
         <div
           data-testid={`${testId}-error`}
-          className="border-t border-red-500/30 px-3 py-1 text-[11px] text-red-300"
+          className="border-t border-red-500/30 px-3 py-1 text-[11px] text-status-error"
         >
           {run.error}
         </div>

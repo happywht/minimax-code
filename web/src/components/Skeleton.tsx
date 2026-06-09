@@ -1,16 +1,16 @@
 /**
- * Reusable skeleton/pulse placeholder components.
+ * Reusable skeleton/shimmer placeholder components.
  *
  * Used during data loading states to provide visual feedback instead
  * of plain "Loading…" text. Each variant matches a common UI pattern:
  *
- * - `<SkeletonLine />` — generic pulsing bar (table row, list item, etc.)
+ * - `<SkeletonLine />` — generic shimmer bar (table row, list item, etc.)
  * - `<SkeletonCircle />` — avatar or icon placeholder
  * - `<SkeletonCard />` — card-like block with header + 2 lines
  * - `<SkeletonTable rows={N} />` — table with N rows of varying widths
  *
- * All variants share the `animate-pulse` CSS animation and respect
- * the theme's muted color token.
+ * All variants share the `animate-shimmer` CSS animation (gradient sweep)
+ * defined in `index.css` for a premium loading feel.
  */
 interface SkeletonBaseProps {
   className?: string;
@@ -19,7 +19,7 @@ interface SkeletonBaseProps {
 export function SkeletonLine({ className }: SkeletonBaseProps): JSX.Element {
   return (
     <div
-      className={`h-4 rounded bg-minimax-border/40 animate-pulse ${className ?? ""}`}
+      className={`h-4 rounded animate-shimmer ${className ?? ""}`}
     />
   );
 }
@@ -27,7 +27,7 @@ export function SkeletonLine({ className }: SkeletonBaseProps): JSX.Element {
 export function SkeletonCircle({ className }: SkeletonBaseProps): JSX.Element {
   return (
     <div
-      className={`h-8 w-8 rounded-full bg-minimax-border/40 animate-pulse shrink-0 ${className ?? ""}`}
+      className={`h-8 w-8 rounded-full animate-shimmer shrink-0 ${className ?? ""}`}
     />
   );
 }
@@ -57,7 +57,7 @@ export function SkeletonTable({ className, rows = 5 }: SkeletonTableProps): JSX.
   return (
     <div className={`space-y-2 ${className ?? ""}`}>
       {Array.from({ length: rows }, (_, i) => (
-        <div key={i} className="flex items-center gap-3 rounded-md border border-minimax-border/40 bg-minimax-panel/60 px-3 py-2.5">
+        <div key={i} className="flex items-center gap-3 rounded-md border border-minimax-border/40 px-3 py-2.5">
           <SkeletonLine className="w-1/4" />
           <SkeletonLine className={widths[i % widths.length]} />
           <SkeletonLine className="w-1/6 ml-auto" />

@@ -30,7 +30,7 @@ const SEVERITY_BADGE: Record<string, { icon: JSX.Element; cls: string }> = {
     icon: <AlertTriangle size={10} />,
     cls: "bg-amber-500/10 text-amber-300 border-amber-500/30",
   },
-  error: { icon: <XCircle size={10} />, cls: "bg-red-500/10 text-red-300 border-red-500/30" },
+  error: { icon: <XCircle size={10} />, cls: "bg-red-500/10 text-status-error border-red-500/30" },
 };
 
 type DimensionTab = "overview" | "security" | "performance" | "style";
@@ -140,7 +140,7 @@ export function CodeReviewPanel({
       {error && (
         <div
           data-testid="code-review-error"
-          className="mt-2 rounded-md bg-red-500/10 px-2 py-1.5 text-[11px] text-red-300"
+          className="mt-2 rounded-md bg-red-500/10 px-2 py-1.5 text-[11px] text-status-error"
         >
           {error}
         </div>
@@ -156,8 +156,8 @@ export function CodeReviewPanel({
             <FileCode size={9} />
             {displayStats.files} file{displayStats.files !== 1 ? "s" : ""}
           </span>
-          <span className="text-emerald-400">+{displayStats.additions}</span>
-          <span className="text-red-400">−{displayStats.deletions}</span>
+          <span className="text-status-success">+{displayStats.additions}</span>
+          <span className="text-status-error">−{displayStats.deletions}</span>
         </div>
       )}
 

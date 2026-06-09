@@ -11,6 +11,12 @@
   --minimax-fg: #e6e9ef;
   --minimax-muted: #8a93a6;
   --minimax-accent: #7c8cff;
+
+  /* Status semantic colors — visible on dark backgrounds */
+  --status-error: #f87171;       /* red-300 */
+  --status-warning: #fbbf24;     /* amber-400 */
+  --status-success: #34d399;     /* emerald-400 */
+  --status-info: #60a5fa;        /* blue-400 */
 }
 :root.light {
   --minimax-bg: #ffffff;
@@ -19,6 +25,12 @@
   --minimax-fg: #1f2328;
   --minimax-muted: #57606a;      /* AA 5.3:1 on panel #f6f8fa, 5.7:1 on #fff */
   --minimax-accent: #5a32a3;     /* AA 6.4:1 on #fff — deeper purple */
+
+  /* Status semantic colors — AA accessible on light backgrounds */
+  --status-error: #dc2626;       /* red-600 — AA 5.5:1 on #fff */
+  --status-warning: #b45309;     /* amber-700 — AA 5.2:1 on #fff */
+  --status-success: #047857;     /* emerald-700 — AA 5.8:1 on #fff */
+  --status-info: #1d4ed8;        /* blue-700 — AA 7.1:1 on #fff */
 }
 
 html,
@@ -120,4 +132,33 @@ body {
 }
 :root.light ::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.22);
+}
+
+/* ── Animation keyframes ── */
+
+/* Shimmer effect for loading skeleton placeholders */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.animate-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--minimax-border) 25%,
+    var(--minimax-panel) 50%,
+    var(--minimax-border) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* Modal entrance animation */
+@keyframes modal-in {
+  0% { opacity: 0; transform: scale(0.95) translateY(8px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.animate-modal-in {
+  animation: modal-in 0.15s ease-out;
 }

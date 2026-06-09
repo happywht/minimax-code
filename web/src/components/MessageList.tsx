@@ -12,7 +12,8 @@
  * text match. When a query is active only matching messages are shown;
  * an empty query shows all.
  */
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { ChevronDown } from "lucide-react";
 import { useChat, useSessionStore, useSubAgentStore } from "../stores";
 import { MessageItem } from "./MessageItem";
 import { SubAgentResultCard } from "./SubAgentResultCard";
@@ -30,6 +31,7 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
   const runs = useSubAgentStore((s) => s.runs);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stuckAtBottom = useRef(true);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
 
   // Track whether the user has scrolled away from the bottom.
   useEffect(() => {
@@ -37,7 +39,9 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
     if (!el) return;
     const onScroll = () => {
       const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-      stuckAtBottom.current = distance < 80;
+      const atBottom = distance < 80;
+      stuckAtBottom.current = atBottom;
+      setShowScrollBtn(!atBottom);
     };
     el.addEventListener("scroll", onScroll);
     return () => el.removeEventListener("scroll", onScroll);
@@ -54,6 +58,14 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
     }
   }, [messages, runs]);
 
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    stuckAtBottom.current = true;
+    setShowScrollBtn(false);
+  }, []);
+
   // Completed sub-agent runs scoped to the current session, sorted
   // by finished time so the cards appear in the right order.
   const finishedRuns = useMemo(
@@ -68,11 +80,21 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
     [runs, sessionId],
   );
 
-  // Apply search filter when query is active.
+  // Apply search filter when query is active — search text, tool_name,
+  // and tool_args (JSON-stringified) for comprehensive coverage.
   const filtered = useMemo(() => {
     if (!searchQuery) return messages;
     const q = searchQuery.toLowerCase();
-    return messages.filter((m) => m.text.toLowerCase().includes(q));
+    return messages.filter((m) => {
+      if (m.text.toLowerCase().includes(q)) return true;
+      if (m.tool_name && m.tool_name.toLowerCase().includes(q)) return true;
+      if (m.tool_args) {
+        try {
+          if (JSON.stringify(m.tool_args).toLowerCase().includes(q)) return true;
+        } catch { /* non-serializable args — skip */ }
+      }
+      return false;
+    });
   }, [messages, searchQuery]);
 
   const hasQuery = !!searchQuery;
@@ -83,13 +105,14 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
   const { visible, hasMore, hiddenCount, loadMore } = useMessageWindow(filtered, 50);
 
   return (
-    <div
-      ref={scrollRef}
-      data-testid={testId}
-      // pb-44 (~176px) reserves space for the floating composer in
-      // <MessageInput /> so the last message never slides under it.
-      className="flex-1 overflow-y-auto px-4 pb-44 pt-4"
-    >
+    <div className="relative flex-1">
+      <div
+        ref={scrollRef}
+        data-testid={testId}
+        // pb-44 (~176px) reserves space for the floating composer in
+        // <MessageInput /> so the last message never slides under it.
+        className="h-full overflow-y-auto px-4 pb-44 pt-4"
+      >
       {messages.length === 0 && finishedRuns.length === 0 ? (
         <div
           data-testid="empty-state"
@@ -145,6 +168,19 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
             </div>
           )}
         </div>
+      )}
+      </div>
+      {/* Floating "jump to bottom" button — appears when user scrolls up */}
+      {showScrollBtn && (
+        <button
+          type="button"
+          data-testid="scroll-to-bottom-btn"
+          onClick={scrollToBottom}
+          className="absolute bottom-48 left-1/2 z-10 -translate-x-1/2 rounded-full border border-minimax-border bg-minimax-panel/90 p-1.5 shadow-lg backdrop-blur-sm transition-opacity hover:bg-minimax-border"
+          title="Jump to bottom"
+        >
+          <ChevronDown size={16} className="text-minimax-muted" />
+        </button>
       )}
     </div>
   );

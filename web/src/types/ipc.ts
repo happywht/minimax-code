@@ -187,6 +187,8 @@ export interface SpawnSubagentParams {
   parent_session_id?: string;
   context_message_id?: string;
   display_name?: string;
+  /** Client-generated run_id — passed to backend to avoid orphaned optimistic rows. */
+  run_id?: string;
 }
 
 /** A permission rule. */
@@ -446,7 +448,8 @@ export type SubAgentStatus =
   | "tool_call"
   | "tool_result"
   | "completed"
-  | "failed";
+  | "failed"
+  | "cancelled";
 
 /** Wire shape of one ``agent.subagent_progress`` event. */
 export interface SubAgentProgress {

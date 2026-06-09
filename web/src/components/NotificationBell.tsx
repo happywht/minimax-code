@@ -5,10 +5,11 @@
  *
  * v0.7.0 — Mobile Connectivity Enhancement
  */
-import { useRef, useEffect } from "react";
+import { useRef, useCallback } from "react";
 import { Bell } from "lucide-react";
 import { useNotificationStore } from "../stores/notificationStore";
 import { NotificationCenter } from "./NotificationCenter";
+import { useClickOutside } from "../lib/useClickOutside";
 
 export function NotificationBell(): JSX.Element {
   const unreadCount = useNotificationStore((s) => s.unreadCount);
@@ -17,17 +18,9 @@ export function NotificationBell(): JSX.Element {
   const setOpen = useNotificationStore((s) => s.setOpen);
   const ref = useRef<HTMLDivElement>(null);
 
-  // Close on outside click
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open, setOpen]);
+  // Close on outside click — shared hook replaces inline mousedown listener.
+  const closePanel = useCallback(() => setOpen(false), [setOpen]);
+  useClickOutside(ref, closePanel, { enabled: open });
 
   return (
     <div ref={ref} className="relative" data-testid="notification-bell">

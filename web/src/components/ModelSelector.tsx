@@ -12,9 +12,10 @@
  *     and stays anchored to the right edge (used inside the floating
  *     composer in `MessageInput`).
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Check, ChevronDown, Cpu } from "lucide-react";
 import { useModelStore } from "../stores";
+import { useClickOutside } from "../lib/useClickOutside";
 import type { ModelInfo } from "../types/ipc";
 
 export type ModelSelectorVariant = "default" | "inline";
@@ -49,16 +50,8 @@ export function ModelSelector({
     }
   }, [models.length, refresh]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
-  }, [open]);
+  const closeMenu = useCallback(() => setOpen(false), []);
+  useClickOutside(ref, closeMenu, { enabled: open });
 
   /** Group models by provider_id (or provider name as fallback). */
   const groups = useMemo<ProviderGroup[]>(() => {

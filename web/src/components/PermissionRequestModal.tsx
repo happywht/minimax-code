@@ -72,7 +72,7 @@ export function PermissionRequestModal({
     >
       <div
         data-testid="permission-request-modal-card"
-        className="relative mx-4 w-full max-w-md rounded-lg border border-minimax-border bg-minimax-bg p-5 shadow-2xl"
+        className="animate-modal-in relative mx-4 w-full max-w-md rounded-lg border border-minimax-border bg-minimax-bg p-5 shadow-2xl"
       >
         <button
           type="button"
@@ -119,7 +119,7 @@ export function PermissionRequestModal({
             type="button"
             data-testid="permission-request-modal-deny"
             onClick={() => void resolve(current.request_id, "deny")}
-            className="rounded-md border border-minimax-border bg-minimax-panel px-3 py-1.5 text-xs text-minimax-fg hover:border-red-500/40 hover:text-red-300"
+            className="rounded-md border border-minimax-border bg-minimax-panel px-3 py-1.5 text-xs text-minimax-fg hover:border-red-500/40 hover:text-status-error"
           >
             拒绝
           </button>

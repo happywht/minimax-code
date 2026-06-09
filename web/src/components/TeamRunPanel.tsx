@@ -29,9 +29,9 @@ function statusIcon(status: TeamRunEntry["status"]) {
     case "agent_completed":
       return <Loader2 size={12} className="animate-spin text-minimax-accent" />;
     case "completed":
-      return <CheckCircle2 size={12} className="text-emerald-400" />;
+      return <CheckCircle2 size={12} className="text-status-success" />;
     case "failed":
-      return <XCircle size={12} className="text-red-400" />;
+      return <XCircle size={12} className="text-status-error" />;
     default:
       return null;
   }

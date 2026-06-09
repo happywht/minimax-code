@@ -29,7 +29,7 @@ describe("App smoke test", () => {
     await waitFor(() => {
       expect(screen.getByTestId("app-root")).toBeInTheDocument();
     });
-    expect(screen.getByTestId("sidebar-brand")).toBeInTheDocument();
+    expect(screen.getAllByTestId("sidebar-brand")[0]).toBeInTheDocument();
     expect(screen.getByTestId("chat-panel")).toBeInTheDocument();
     expect(screen.getByTestId("message-input")).toBeInTheDocument();
     // Always-allow and model picker are now inline in the floating
@@ -37,7 +37,7 @@ describe("App smoke test", () => {
     expect(screen.getByTestId("chat-input-always-allow")).toBeInTheDocument();
     expect(screen.getByTestId("chat-input-model-select")).toBeInTheDocument();
     expect(screen.getByTestId("right-panel")).toBeInTheDocument();
-    expect(screen.getByTestId("user-badge")).toBeInTheDocument();
+    expect(screen.getAllByTestId("user-badge")[0]).toBeInTheDocument();
   });
 
   it("submits a message on Enter and shows it as a user bubble", async () => {

@@ -116,7 +116,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow }: {
         <button type="button" data-testid={`settings-job-run-now-${job.id}`} onClick={onRunNow} aria-label="Run job now"
           className="rounded border border-minimax-border p-1 text-minimax-muted hover:text-emerald-300"><Play size={12} /></button>
         <button type="button" data-testid={`settings-job-delete-${job.id}`} onClick={onDelete} aria-label="Delete job"
-          className="rounded border border-minimax-border p-1 text-minimax-muted hover:text-red-300"><Trash2 size={12} /></button>
+          className="rounded border border-minimax-border p-1 text-minimax-muted hover:text-status-error"><Trash2 size={12} /></button>
       </div>
       {expanded && (
         <div data-testid={`settings-job-tasks-${job.id}`} className="border-t border-minimax-border/60 px-3 py-2">

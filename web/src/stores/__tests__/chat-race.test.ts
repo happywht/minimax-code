@@ -4,11 +4,11 @@
  * Verifies that loadMessages uses a monotonic sequence counter
  * so stale responses don't overwrite the current session's messages.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useChat } from "../chat";
 import { useSessionStore } from "../sessionStore";
 import { typedIPC } from "../../ipc";
-import type { Session } from "../../types/ipc";
+import type { Message } from "../../types/ipc";
 
 // Mock the IPC module
 vi.mock("../../ipc", () => ({
@@ -47,11 +47,11 @@ describe("P2#33: session quick-switch race condition", () => {
     const sessionA = "session-a";
     const sessionB = "session-b";
 
-    const messagesA = [
-      { id: "msg-a1", role: "user", text: "Hello A", created_at: 1 },
+    const messagesA: Message[] = [
+      { id: "msg-a1", role: "user", text: "Hello A", streaming: false, created_at: 1 },
     ];
-    const messagesB = [
-      { id: "msg-b1", role: "user", text: "Hello B", created_at: 2 },
+    const messagesB: Message[] = [
+      { id: "msg-b1", role: "user", text: "Hello B", streaming: false, created_at: 2 },
     ];
 
     // Make listMessages return different results with different delays
@@ -86,11 +86,11 @@ describe("P2#33: session quick-switch race condition", () => {
   it("rapid switching keeps only the latest session's messages", async () => {
     const sessions = ["s1", "s2", "s3", "s4", "s5"];
     const loadData: Record<string, any[]> = {
-      s1: [{ id: "m1", role: "user", text: "Session 1", created_at: 1 }],
-      s2: [{ id: "m2", role: "user", text: "Session 2", created_at: 2 }],
-      s3: [{ id: "m3", role: "user", text: "Session 3", created_at: 3 }],
-      s4: [{ id: "m4", role: "user", text: "Session 4", created_at: 4 }],
-      s5: [{ id: "m5", role: "user", text: "Session 5", created_at: 5 }],
+      s1: [{ id: "m1", role: "user", text: "Session 1", streaming: false, created_at: 1 }],
+      s2: [{ id: "m2", role: "user", text: "Session 2", streaming: false, created_at: 2 }],
+      s3: [{ id: "m3", role: "user", text: "Session 3", streaming: false, created_at: 3 }],
+      s4: [{ id: "m4", role: "user", text: "Session 4", streaming: false, created_at: 4 }],
+      s5: [{ id: "m5", role: "user", text: "Session 5", streaming: false, created_at: 5 }],
     };
 
     vi.mocked(typedIPC.listMessages).mockImplementation(async (sid: string) => {
@@ -117,7 +117,7 @@ describe("P2#33: session quick-switch race condition", () => {
         await new Promise((r) => setTimeout(r, 100));
         throw new Error("Network error for A");
       }
-      return { messages: [{ id: "m-b", role: "user", text: "B ok", created_at: 1 }] };
+      return { messages: [{ id: "m-b", role: "user", text: "B ok", streaming: false, created_at: 1 }] };
     });
 
     const loadPromiseA = useChat.getState().loadMessages(sessionA);
