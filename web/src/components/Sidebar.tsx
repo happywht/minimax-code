@@ -16,6 +16,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Bot,
   CalendarClock,
+  GitBranch,
   History,
   LayoutDashboard,
   Plug,
@@ -93,6 +94,7 @@ export function Sidebar({
   const currentId = useSessionStore((s) => s.currentSessionId);
   const setCurrent = useSessionStore((s) => s.setCurrent);
   const createSession = useSessionStore((s) => s.create);
+  const createWorktree = useSessionStore((s) => s.createWorktree);
   const refresh = useSessionStore((s) => s.refresh);
   const [historyQuery, setHistoryQuery] = useState("");
 
@@ -138,15 +140,25 @@ export function Sidebar({
       </div>
 
       {/* New task */}
-      <div className="px-3 py-3">
+      <div className="flex gap-1.5 px-3 py-3">
         <button
           type="button"
           data-testid="sidebar-new-task"
           onClick={() => void createSession("New task")}
-          className="flex w-full items-center gap-2 rounded-md border border-minimax-border bg-minimax-bg/40 px-2.5 py-1.5 text-sm text-minimax-fg hover:border-minimax-accent/50"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-minimax-border bg-minimax-bg/40 px-2.5 py-1.5 text-sm text-minimax-fg hover:border-minimax-accent/50"
         >
           <Plus size={14} className="text-minimax-accent" />
           <span>新任务</span>
+        </button>
+        <button
+          type="button"
+          data-testid="sidebar-new-worktree-task"
+          onClick={() => void createWorktree("Worktree task", "HEAD")}
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-minimax-border bg-minimax-bg/40 text-minimax-muted transition-colors duration-200 hover:border-minimax-accent/50 hover:text-minimax-accent"
+          title="Create isolated worktree task"
+          aria-label="Create isolated worktree task"
+        >
+          <GitBranch size={14} />
         </button>
       </div>
 
@@ -282,11 +294,22 @@ export function Sidebar({
                 }
                 label={truncate(s.title || "(untitled)", MAX_TITLE_LEN)}
                 trailing={
-                  <span
-                    data-testid={`sidebar-session-time-${s.id}`}
-                    className="ml-1 shrink-0 text-[11px] text-minimax-muted"
-                  >
-                    {formatRelative(s.updated_at)}
+                  <span className="ml-1 flex shrink-0 items-center gap-1">
+                    {s.workspace_mode === "worktree" && (
+                      <span
+                        data-testid={`sidebar-session-workspace-${s.id}`}
+                        className="rounded border border-minimax-accent/30 bg-minimax-accent/10 px-1 py-0.5 text-[10px] text-minimax-accent"
+                        title={s.workspace_path ?? "Worktree"}
+                      >
+                        WT
+                      </span>
+                    )}
+                    <span
+                      data-testid={`sidebar-session-time-${s.id}`}
+                      className="text-[11px] text-minimax-muted"
+                    >
+                      {formatRelative(s.updated_at)}
+                    </span>
                   </span>
                 }
                 selected={s.id === currentId}

@@ -92,7 +92,20 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
             # convention the chat send_message flow uses so the
             # id format stays consistent across the codebase.
             new_id = f"ses_{uuid.uuid4().hex[:8]}"
-            row = await sess_dao.create(id=new_id, title=title)
+            workspace_mode = _optional_string(p, "workspace_mode") or "local"
+            if workspace_mode not in {"local", "worktree"}:
+                raise HandlerError(
+                    INVALID_PARAMS,
+                    "workspace_mode must be 'local' or 'worktree'",
+                )
+            row = await sess_dao.create(
+                id=new_id,
+                title=title,
+                workspace_mode=workspace_mode,
+                workspace_path=_optional_string(p, "workspace_path"),
+                worktree_branch=_optional_string(p, "worktree_branch"),
+                base_branch=_optional_string(p, "base_branch"),
+            )
             # ``row`` is the persisted dict; echo back the
             # subset the frontend's CreateSessionResult wants
             # plus a human-readable created_at for the UI.
@@ -101,6 +114,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                     "session_id": row["id"],
                     "title": row["title"],
                     "created_at": row["created_at"],
+                    "session": row,
                 }
             )
         except HandlerError as exc:
@@ -403,5 +417,14 @@ def _clamp_int(value: Any, *, default: int, lo: int, hi: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(lo, min(n, hi))
+
+
+def _optional_string(params: dict[str, Any], key: str) -> str | None:
+    value = params.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise HandlerError(INVALID_PARAMS, f"{key} must be a string")
+    return value.strip() or None
 
 __all__ = ["register_session_handlers"]

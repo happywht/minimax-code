@@ -104,6 +104,10 @@ export interface Session {
   updated_at: number;
   model_id: string | null;
   message_count?: number;
+  workspace_mode?: "local" | "worktree";
+  workspace_path?: string | null;
+  worktree_branch?: string | null;
+  base_branch?: string | null;
 }
 
 /** A persisted chat message (also used for in-flight streaming). */
@@ -430,6 +434,9 @@ export interface ListSessionsResult {
 
 export interface CreateSessionResult {
   session_id: string;
+  session?: Session;
+  worktree_path?: string;
+  base_branch?: string;
 }
 
 /** Return shape of `session.update`. */

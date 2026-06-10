@@ -68,6 +68,10 @@ class SessionsDAO:
         archived: bool = False,
         model: str | None = None,
         system_prompt: str | None = None,
+        workspace_mode: str = "local",
+        workspace_path: str | None = None,
+        worktree_branch: str | None = None,
+        base_branch: str | None = None,
     ) -> dict[str, Any]:
         """Insert a new session row; returns the persisted dict.
 
@@ -77,8 +81,9 @@ class SessionsDAO:
         now = now_iso()
         sql = (
             "INSERT INTO sessions "
-            "(id, title, created_at, updated_at, archived, model, system_prompt) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)"
+            "(id, title, created_at, updated_at, archived, model, system_prompt, "
+            "workspace_mode, workspace_path, worktree_branch, base_branch) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         params = (
             id,
@@ -88,6 +93,10 @@ class SessionsDAO:
             1 if archived else 0,
             model,
             system_prompt,
+            workspace_mode,
+            workspace_path,
+            worktree_branch,
+            base_branch,
         )
         async with self._db.transaction() as conn:
             await conn.execute(sql, params)
@@ -111,6 +120,10 @@ class SessionsDAO:
         archived: bool | None = None,
         model: str | None = None,
         system_prompt: str | None = None,
+        workspace_mode: str | None = None,
+        workspace_path: str | None = None,
+        worktree_branch: str | None = None,
+        base_branch: str | None = None,
         touch_updated: bool = True,
     ) -> dict[str, Any] | None:
         """Patch one or more fields; returns the updated row.
@@ -133,6 +146,18 @@ class SessionsDAO:
         if system_prompt is not None:
             sets.append("system_prompt = ?")
             params.append(system_prompt)
+        if workspace_mode is not None:
+            sets.append("workspace_mode = ?")
+            params.append(workspace_mode)
+        if workspace_path is not None:
+            sets.append("workspace_path = ?")
+            params.append(workspace_path)
+        if worktree_branch is not None:
+            sets.append("worktree_branch = ?")
+            params.append(worktree_branch)
+        if base_branch is not None:
+            sets.append("base_branch = ?")
+            params.append(base_branch)
         if touch_updated:
             sets.append("updated_at = ?")
             params.append(now_iso())
@@ -288,6 +313,7 @@ def _hydrate(row: Any) -> dict[str, Any] | None:
     if d is None:
         return None
     d["archived"] = bool(d.get("archived", 0))
+    d["workspace_mode"] = d.get("workspace_mode") or "local"
     return d
 
 
@@ -296,8 +322,9 @@ def create_sync(db, **fields) -> dict[str, Any]:  # type: ignore[no-untyped-def]
     now = now_iso()
     sql = (
         "INSERT INTO sessions "
-        "(id, title, created_at, updated_at, archived, model, system_prompt) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)"
+        "(id, title, created_at, updated_at, archived, model, system_prompt, "
+        "workspace_mode, workspace_path, worktree_branch, base_branch) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     params = (
         fields["id"],
@@ -307,6 +334,10 @@ def create_sync(db, **fields) -> dict[str, Any]:  # type: ignore[no-untyped-def]
         1 if fields.get("archived") else 0,
         fields.get("model"),
         fields.get("system_prompt"),
+        fields.get("workspace_mode", "local"),
+        fields.get("workspace_path"),
+        fields.get("worktree_branch"),
+        fields.get("base_branch"),
     )
     with db.transaction() as conn:
         conn.execute(sql, params)

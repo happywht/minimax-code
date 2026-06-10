@@ -201,6 +201,9 @@ on the next `readline() == ""`.
 | `session.list`             | req/res   | Reserved (storage-layer).                          |
 | `session.archive`          | req/res   | Reserved.                                          |
 | `session.delete`           | req/res   | Reserved.                                          |
+| `workspace.create_worktree_session` | req/res | Create an isolated Git worktree-backed session. |
+| `workspace.list_worktrees` | req/res | List sessions whose `workspace_mode` is `worktree`. |
+| `workspace.delete_worktree` | req/res | Remove a managed worktree and mark the session local. |
 | `message.list`             | req/res   | Reserved.                                          |
 | `skill.list` / `skill.enable` / `skill.disable` / `skill.invoke` | req/res | Reserved (skills-system). |
 | `scheduler.*`              | req/res   | Reserved.                                          |
@@ -208,6 +211,45 @@ on the next `readline() == ""`.
 | `mobile.*`                 | req/res   | Phase 2.                                            |
 | `permission.*`             | req/res   | Phase 1.4 (ui-shell).                              |
 | `model.list` / `model.set_current` | req/res | Reserved.                                   |
+
+Session records may include workspace metadata:
+
+```json
+{
+  "id": "ses_1234",
+  "title": "Worktree task",
+  "workspace_mode": "worktree",
+  "workspace_path": "C:\\Users\\me\\AppData\\Roaming\\MiniMaxCode\\worktrees\\ses_1234",
+  "worktree_branch": null,
+  "base_branch": "HEAD"
+}
+```
+
+### 6.0.1 `workspace.create_worktree_session`
+
+Creates a Git worktree under the MiniMax Code data directory and persists a
+session bound to that worktree.
+
+Request:
+
+```json
+{"method":"workspace.create_worktree_session","params":{"title":"Worktree task","base_ref":"HEAD"}}
+```
+
+Response:
+
+```json
+{
+  "session_id": "ses_1234",
+  "session": {"id":"ses_1234","workspace_mode":"worktree"},
+  "worktree_path": ".../worktrees/ses_1234",
+  "base_branch": "HEAD"
+}
+```
+
+`workspace.delete_worktree` accepts `{ "session_id": "ses_1234" }`, removes
+only managed worktrees under the data-dir `worktrees/` root, and marks the
+session back to `workspace_mode: "local"`.
 
 ### 6.1 `agent.send_message` — the streaming example
 

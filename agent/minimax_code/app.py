@@ -386,6 +386,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_skills import register_skill_handlers
     from .ipc.handlers_tasks import register_task_handlers
     from .ipc.handlers_secrets import register_secret_handlers
+    from .ipc.handlers_workspace import register_workspace_handlers
 
     server.register("agent.send_message", handle_agent_send_message)
     server.register("agent.cancel", handle_agent_cancel)
@@ -413,6 +414,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # first call). Tests can inject a DAO via the ``dao=`` kwarg
     # to skip the lazy path.
     register_session_handlers(server)
+    register_workspace_handlers(server)
     # The permission handlers lazily open the async DB and build a
     # :class:`~.permissions.PermissionStore` on first call. Tests
     # that pre-built a store can pass it via the ``store=`` kwarg
@@ -484,7 +486,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     register_team_handlers(server)
     logger.info(
         "registered application handlers "
-        "(1 agent.* + 7 agent.* + 5 skill.* + 6 task.* + 5 session.* + "
+        "(1 agent.* + 7 agent.* + 5 skill.* + 6 task.* + 5 session.* + 3 workspace.* + "
         "5 permission.* + 6 schedule.* + 7 mobile.* + 3 model.* + "
         "7 provider.* + 3 secrets.* + 3 git.* + 1 patch.* + 3 audit.* + 5 webhook.* + "
         "5 notification.* + 7 workflow.* + 7 team.*)"

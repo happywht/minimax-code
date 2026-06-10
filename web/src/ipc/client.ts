@@ -726,7 +726,17 @@ export interface TypedIPC {
 
   // session
   listSessions(opts?: { archived?: boolean; limit?: number; offset?: number }): Promise<ListSessionsResult>;
-  createSession(opts?: { title?: string; model_id?: string }): Promise<CreateSessionResult>;
+  createSession(opts?: {
+    title?: string;
+    model_id?: string;
+    workspace_mode?: "local" | "worktree";
+    workspace_path?: string;
+    worktree_branch?: string;
+    base_branch?: string;
+  }): Promise<CreateSessionResult>;
+  createWorktreeSession(opts?: { title?: string; base_ref?: string }): Promise<CreateSessionResult>;
+  listWorktreeSessions(): Promise<ListSessionsResult>;
+  deleteWorktree(sessionId: string): Promise<UpdateSessionResult>;
   archiveSession(sessionId: string): Promise<{ ok: true }>;
   unarchiveSession(sessionId: string): Promise<{ ok: true }>;
   deleteSession(sessionId: string): Promise<{ ok: true }>;
@@ -936,6 +946,12 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<ListSessionsResult>("session.list", opts ?? {}),
     createSession: (opts) =>
       client.request<CreateSessionResult>("session.create", opts ?? {}),
+    createWorktreeSession: (opts) =>
+      client.request<CreateSessionResult>("workspace.create_worktree_session", opts ?? {}),
+    listWorktreeSessions: () =>
+      client.request<ListSessionsResult>("workspace.list_worktrees", {}),
+    deleteWorktree: (sid) =>
+      client.request<UpdateSessionResult>("workspace.delete_worktree", { session_id: sid }),
     archiveSession: (sid) =>
       client.request<{ ok: true }>("session.archive", { session_id: sid }),
     unarchiveSession: (sid) =>
@@ -1295,9 +1311,54 @@ function mockHandle(
         created_at: now,
         updated_at: now,
         model_id: null,
+        workspace_mode: (params as { workspace_mode?: "local" | "worktree" } | undefined)?.workspace_mode ?? "local",
+        workspace_path: (params as { workspace_path?: string } | undefined)?.workspace_path ?? null,
+        worktree_branch: (params as { worktree_branch?: string } | undefined)?.worktree_branch ?? null,
+        base_branch: (params as { base_branch?: string } | undefined)?.base_branch ?? null,
       };
       mockSessions.set(sid, session);
-      return { session_id: sid };
+      return { session_id: sid, session };
+    }
+
+    case "workspace.create_worktree_session": {
+      const sid = `ses_${Math.random().toString(36).slice(2, 10)}`;
+      const now = Date.now();
+      const p = params as { title?: string; base_ref?: string } | undefined;
+      const session: Session = {
+        id: sid,
+        title: p?.title ?? "Worktree task",
+        archived: false,
+        created_at: now,
+        updated_at: now,
+        model_id: null,
+        workspace_mode: "worktree",
+        workspace_path: `/tmp/minimax-code/worktrees/${sid}`,
+        worktree_branch: null,
+        base_branch: p?.base_ref ?? "HEAD",
+      };
+      mockSessions.set(sid, session);
+      return { session_id: sid, session, worktree_path: session.workspace_path ?? undefined };
+    }
+
+    case "workspace.list_worktrees": {
+      return {
+        sessions: Array.from(mockSessions.values())
+          .filter((s) => s.workspace_mode === "worktree")
+          .sort((a, b) => b.updated_at - a.updated_at),
+      };
+    }
+
+    case "workspace.delete_worktree": {
+      const sid = (params as { session_id: string }).session_id;
+      const s = mockSessions.get(sid);
+      if (s) {
+        s.workspace_mode = "local";
+        s.workspace_path = null;
+        s.worktree_branch = null;
+        s.base_branch = null;
+        s.updated_at = Date.now();
+      }
+      return { ok: true, session: s };
     }
 
     case "session.list": {

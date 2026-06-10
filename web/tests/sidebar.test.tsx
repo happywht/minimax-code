@@ -17,6 +17,20 @@ vi.mock("../src/ipc", async () => {
       createSession: vi.fn(async (_opts: { title?: string } = {}) => ({
         session_id: "ses_test_1",
       })),
+      createWorktreeSession: vi.fn(async (_opts: { title?: string; base_ref?: string } = {}) => ({
+        session_id: "ses_wt_1",
+        session: {
+          id: "ses_wt_1",
+          title: "Worktree task",
+          archived: false,
+          created_at: Date.now(),
+          updated_at: Date.now(),
+          model_id: null,
+          workspace_mode: "worktree",
+          workspace_path: "C:/tmp/worktrees/ses_wt_1",
+          base_branch: "HEAD",
+        },
+      })),
     },
   };
 });
@@ -49,6 +63,20 @@ describe("Sidebar", () => {
     expect(useSessionStore.getState().currentSessionId).toBe("ses_test_1");
   });
 
+  it("creates a worktree session when the worktree task button is clicked", async () => {
+    const { typedIPC } = await import("../src/ipc");
+    render(<Sidebar />);
+    fireEvent.click(screen.getByTestId("sidebar-new-worktree-task"));
+    await waitFor(() => {
+      expect(typedIPC.createWorktreeSession).toHaveBeenCalledWith({
+        title: "Worktree task",
+        base_ref: "HEAD",
+      });
+    });
+    expect(useSessionStore.getState().currentSessionId).toBe("ses_wt_1");
+    expect(useSessionStore.getState().sessions[0].workspace_mode).toBe("worktree");
+  });
+
   it("switches the session filter when a nav item is clicked", async () => {
     render(<Sidebar />);
     await waitFor(() => {
@@ -76,11 +104,14 @@ describe("Sidebar", () => {
           created_at: 1,
           updated_at: 1,
           model_id: null,
+          workspace_mode: "worktree",
+          workspace_path: "C:/tmp/worktrees/ses_2",
         },
       ],
     });
     render(<Sidebar />);
     expect(screen.getByTestId("sidebar-session-ses_1")).toBeInTheDocument();
     expect(screen.getByTestId("sidebar-session-ses_2")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-session-workspace-ses_2")).toHaveTextContent("WT");
   });
 });

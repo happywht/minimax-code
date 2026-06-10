@@ -28,6 +28,7 @@ export interface SessionState {
 
   refresh: () => Promise<void>;
   create: (title?: string) => Promise<string>;
+  createWorktree: (title?: string, baseRef?: string) => Promise<string>;
   archive: (id: string) => Promise<void>;
   unarchive: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
@@ -60,13 +61,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Optimistically add to the list.
       set((s) => ({
         sessions: [
-          {
+          r.session ?? {
             id: r.session_id,
             title: title ?? "New task",
             archived: false,
             created_at: Date.now(),
             updated_at: Date.now(),
             model_id: null,
+            workspace_mode: "local",
           },
           ...s.sessions,
         ],
@@ -76,6 +78,34 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       toast.error("Failed to create session", message);
+      throw err;
+    }
+  },
+
+  createWorktree: async (title?: string, baseRef?: string) => {
+    try {
+      const r = await typedIPC.createWorktreeSession({ title, base_ref: baseRef });
+      set((s) => ({
+        sessions: [
+          r.session ?? {
+            id: r.session_id,
+            title: title ?? "Worktree task",
+            archived: false,
+            created_at: Date.now(),
+            updated_at: Date.now(),
+            model_id: null,
+            workspace_mode: "worktree",
+            workspace_path: r.worktree_path ?? null,
+            base_branch: baseRef ?? "HEAD",
+          },
+          ...s.sessions,
+        ],
+        currentSessionId: r.session_id,
+      }));
+      return r.session_id;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Failed to create worktree task", message);
       throw err;
     }
   },
