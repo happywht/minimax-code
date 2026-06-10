@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   ChatPanel,
   ConnectionBanner,
@@ -20,7 +20,9 @@ import { ipc, typedIPC } from "./ipc";
 import { useChat, useModelStore, usePermissionStore, useSessionStore, initNotificationStore } from "./stores";
 import type { SidecarEvent } from "./types/ipc";
 
-type AppView = "chat" | "skills" | "settings" | "preview";
+type MainView = "chat" | "preview";
+type OverlayView = "skills" | "settings";
+type SidebarView = MainView | OverlayView;
 
 /** Connection status derived from sidecar events. */
 type ConnectionState = "connecting" | "connected" | "disconnected" | "error";
@@ -43,7 +45,8 @@ export default function App() {
   const refreshModels = useModelStore((s) => s.refresh);
   const refreshSessions = useSessionStore((s) => s.refresh);
   const refreshRules = usePermissionStore((s) => s.refresh);
-  const [view, setView] = useState<AppView>("chat");
+  const [view, setView] = useState<MainView>("chat");
+  const [overlayView, setOverlayView] = useState<OverlayView | null>(null);
   const [mobileModalOpen, setMobileModalOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -63,6 +66,15 @@ export default function App() {
       setRetryAttempt((attempt) => attempt + 1);
       setConnState("error");
     }
+  }, []);
+
+  const handleViewChange = useCallback((next: SidebarView) => {
+    if (next === "skills" || next === "settings") {
+      setOverlayView(next);
+      return;
+    }
+    setOverlayView(null);
+    setView(next);
   }, []);
 
   useEffect(() => {
@@ -154,17 +166,20 @@ export default function App() {
         className="flex h-full w-full flex-col bg-minimax-bg text-minimax-fg"
       >
         <TopBar
-          onOpenSettings={() => setView("settings")}
+          onOpenSettings={() => setOverlayView("settings")}
           onToggleSidebar={() => setSidebarOpen((v) => !v)}
-          onTogglePreview={() => setView((v) => v === "preview" ? "chat" : "preview")}
+          onTogglePreview={() => {
+            setOverlayView(null);
+            setView((v) => v === "preview" ? "chat" : "preview");
+          }}
           previewActive={view === "preview"}
         />
         <div className="relative flex min-h-0 flex-1">
           {/* Desktop sidebar — always visible on md+ */}
-          <div className="hidden md:block">
+          <div className="hidden h-full md:block">
             <Sidebar
-              view={view}
-              onViewChange={(v) => { setView(v); }}
+              view={overlayView ?? view}
+              onViewChange={handleViewChange}
               onMobileClick={() => setMobileModalOpen(true)}
             />
           </div>
@@ -181,26 +196,31 @@ export default function App() {
               />
               <div className="relative z-50 h-full max-w-[85vw] animate-in slide-in-from-left-4 duration-200">
                 <Sidebar
-                  view={view}
-                  onViewChange={(v) => { setView(v); setSidebarOpen(false); }}
+                  view={overlayView ?? view}
+                  onViewChange={(v) => { handleViewChange(v); setSidebarOpen(false); }}
                   onMobileClick={() => { setMobileModalOpen(true); setSidebarOpen(false); }}
                 />
               </div>
             </div>
           )}
           <main className="relative flex flex-1 flex-col">
-            {view === "settings" ? (
-              <SettingsPage onClose={() => setView("chat")} />
-            ) : view === "skills" ? (
-              <SkillsPanel />
-            ) : view === "preview" ? (
+            {view === "preview" ? (
               <PreviewPanel onClose={() => setView("chat")} />
-          ) : (
-            <>
-              <ChatPanel />
-              <MessageInput />
-            </>
-          )}
+            ) : (
+              <>
+                <ChatPanel />
+                <MessageInput />
+              </>
+            )}
+            {overlayView && (
+              <WorkspaceOverlay onClose={() => setOverlayView(null)}>
+                {overlayView === "settings" ? (
+                  <SettingsPage onClose={() => setOverlayView(null)} />
+                ) : (
+                  <SkillsPanel onClose={() => setOverlayView(null)} />
+                )}
+              </WorkspaceOverlay>
+            )}
           </main>
           <div className="hidden lg:block">
             <RightPanel />
@@ -223,5 +243,38 @@ export default function App() {
         </div>
       </div>
     </ErrorBoundary>
+  );
+}
+
+function WorkspaceOverlay({
+  children,
+  onClose,
+}: {
+  children: ReactNode;
+  onClose: () => void;
+}): JSX.Element {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  return (
+    <div
+      data-testid="workspace-overlay"
+      className="absolute inset-0 z-30 bg-minimax-bg/65 p-3 backdrop-blur-sm transition-opacity duration-200 md:p-4"
+    >
+      <button
+        type="button"
+        aria-label="Close overlay"
+        className="absolute inset-0 cursor-default"
+        onClick={onClose}
+      />
+      <div className="relative h-full overflow-hidden rounded-lg border border-minimax-border bg-minimax-bg shadow-2xl shadow-black/20 animate-in fade-in-0 zoom-in-95 duration-200">
+        {children}
+      </div>
+    </div>
   );
 }

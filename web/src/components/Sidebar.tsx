@@ -17,6 +17,7 @@ import {
   Bot,
   CalendarClock,
   History,
+  LayoutDashboard,
   Plug,
   Plus,
   Search,
@@ -41,7 +42,7 @@ export interface SidebarProps {
   onViewChange?: (v: "chat" | "skills" | "settings" | "preview") => void;
 }
 
-type PrimaryNavId = SessionFilter | "skills" | "agents";
+type PrimaryNavId = SessionFilter | "skills" | "agents" | "chat";
 
 const NAV_ITEMS: Array<{
   id: PrimaryNavId;
@@ -49,6 +50,7 @@ const NAV_ITEMS: Array<{
   icon: JSX.Element;
   group: "primary" | "history";
 }> = [
+  { id: "chat", label: "工作台", icon: <LayoutDashboard size={14} />, group: "primary" },
   { id: "skills", label: "技能", icon: <Wrench size={14} />, group: "primary" },
   { id: "scheduled", label: "定时任务", icon: <CalendarClock size={14} />, group: "primary" },
   { id: "history", label: "任务历史", icon: <History size={14} />, group: "primary" },
@@ -115,7 +117,7 @@ export function Sidebar({
   return (
     <aside
       data-testid={testId}
-      className="flex w-60 shrink-0 flex-col border-r border-minimax-border bg-minimax-panel"
+      className="flex h-full w-60 shrink-0 flex-col border-r border-minimax-border bg-minimax-panel"
     >
       {/* Brand */}
       <div className="flex items-center gap-2 border-b border-minimax-border px-3 py-3">
@@ -156,11 +158,18 @@ export function Sidebar({
             icon={n.icon}
             label={n.label}
             selected={
-              n.id === "skills"
+              n.id === "chat"
+                ? view === "chat" && filter === "all"
+                : n.id === "skills"
                 ? view === "skills"
                 : view === "chat" && filter === n.id
             }
             onClick={() => {
+              if (n.id === "chat") {
+                onViewChange?.("chat");
+                setFilter("all");
+                return;
+              }
               if (n.id === "skills") {
                 onViewChange?.("skills");
                 // Keep the legacy "skills" filter in sync so older
@@ -175,6 +184,21 @@ export function Sidebar({
             testId={`sidebar-nav-${n.id}`}
           />
         ))}
+        <div className="pt-2">
+          {NAV_ITEMS.filter((n) => n.group === "history").map((n) => (
+            <NavItem
+              key={n.id}
+              icon={n.icon}
+              label={n.label}
+              selected={view === "chat" && filter === n.id}
+              onClick={() => {
+                onViewChange?.("chat");
+                setFilter(n.id as SessionFilter);
+              }}
+              testId={`sidebar-nav-${n.id}`}
+            />
+          ))}
+        </div>
         {onViewChange && (
           <NavItem
             icon={<SettingsIcon size={14} />}

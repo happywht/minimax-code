@@ -8,14 +8,15 @@
  * pick from registry, etc.) lives in a follow-up.
  */
 import { useEffect } from "react";
-import { Plus, Wrench } from "lucide-react";
+import { Plus, Wrench, X } from "lucide-react";
 import { useSkillStore } from "../stores";
 
 export interface SkillsPanelProps {
   testId?: string;
+  onClose?: () => void;
 }
 
-export function SkillsPanel({ testId = "skills-panel" }: SkillsPanelProps): JSX.Element {
+export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelProps): JSX.Element {
   const skills = useSkillStore((s) => s.skills);
   const loading = useSkillStore((s) => s.loading);
   const refresh = useSkillStore((s) => s.refresh);
@@ -28,6 +29,9 @@ export function SkillsPanel({ testId = "skills-panel" }: SkillsPanelProps): JSX.
   return (
     <section
       data-testid={testId}
+      role={onClose ? "dialog" : undefined}
+      aria-modal={onClose ? true : undefined}
+      aria-labelledby="skills-title"
       className="flex h-full w-full flex-col overflow-hidden bg-minimax-bg text-minimax-fg"
     >
       <header className="flex items-center justify-between border-b border-minimax-border px-6 py-4">
@@ -44,16 +48,29 @@ export function SkillsPanel({ testId = "skills-panel" }: SkillsPanelProps): JSX.
             with the agent; custom skills can be added later.
           </p>
         </div>
-        <button
-          type="button"
-          data-testid="skills-add"
-          disabled
-          title="Install skill (coming soon)"
-          className="flex items-center gap-1.5 rounded-md border border-minimax-border bg-minimax-panel/60 px-2.5 py-1.5 text-xs text-minimax-muted opacity-60"
-        >
-          <Plus size={12} />
-          <span>Add skill</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            data-testid="skills-add"
+            disabled
+            title="Install skill (coming soon)"
+            className="flex items-center gap-1.5 rounded-md border border-minimax-border bg-minimax-panel/60 px-2.5 py-1.5 text-xs text-minimax-muted opacity-60"
+          >
+            <Plus size={12} />
+            <span>Add skill</span>
+          </button>
+          {onClose && (
+            <button
+              type="button"
+              data-testid="skills-close"
+              aria-label="Close skills"
+              onClick={onClose}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-minimax-muted transition-colors duration-200 hover:bg-minimax-border hover:text-minimax-fg"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto px-6 py-5">

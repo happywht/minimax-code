@@ -24,13 +24,16 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Activity,
   Bot,
   CheckCircle2,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  GitCompare,
+  ListChecks,
   Loader2,
   RefreshCw,
+  Users,
 } from "lucide-react";
 import { ProgressPanel } from "./ProgressPanel";
 import { PatchPreviewPanel } from "./PatchPreviewPanel";
@@ -46,26 +49,46 @@ export interface RightPanelProps {
   testId?: string;
   /** When true, render the panel pre-collapsed. Mainly for tests. */
   defaultCollapsed?: boolean;
+  /** Initial inspector tab. Mainly for tests and future deep links. */
+  defaultTab?: InspectorTab;
   /** Override agent list for tests. */
   initialAgents?: AgentInfo[];
   /** Override the IPC listAgents call for tests. */
   loadAgents?: () => Promise<AgentInfo[]>;
 }
 
+type InspectorTab =
+  | "timeline"
+  | "diff"
+  | "progress"
+  | "agents"
+  | "subagents"
+  | "review"
+  | "teamruns";
+
+const INSPECTOR_TABS: Array<{
+  id: InspectorTab;
+  label: string;
+  icon: JSX.Element;
+}> = [
+  { id: "timeline", label: "Timeline", icon: <Activity size={12} /> },
+  { id: "diff", label: "Diff", icon: <GitCompare size={12} /> },
+  { id: "progress", label: "Progress", icon: <ListChecks size={12} /> },
+  { id: "agents", label: "Agents", icon: <Bot size={12} /> },
+  { id: "subagents", label: "Sub", icon: <Users size={12} /> },
+  { id: "review", label: "Review", icon: <CheckCircle2 size={12} /> },
+  { id: "teamruns", label: "Runs", icon: <Loader2 size={12} /> },
+];
+
 export function RightPanel({
   testId = "right-panel",
   defaultCollapsed = false,
+  defaultTab = "timeline",
   initialAgents,
   loadAgents,
 }: RightPanelProps): JSX.Element {
   const [collapsed, setCollapsed] = useState<boolean>(defaultCollapsed);
-  const [timelineOpen, setTimelineOpen] = useState<boolean>(true);
-  const [patchOpen, setPatchOpen] = useState<boolean>(true);
-  const [progressOpen, setProgressOpen] = useState<boolean>(true);
-  const [teamOpen, setTeamOpen] = useState<boolean>(true);
-  const [subOpen, setSubOpen] = useState<boolean>(true);
-  const [reviewOpen, setReviewOpen] = useState<boolean>(false);
-  const [teamRunOpen, setTeamRunOpen] = useState<boolean>(true);
+  const [activeTab, setActiveTab] = useState<InspectorTab>(defaultTab);
 
   const [agents, setAgents] = useState<AgentInfo[] | null>(initialAgents ?? null);
   const [agentsLoading, setAgentsLoading] = useState<boolean>(!initialAgents);
@@ -96,7 +119,7 @@ export function RightPanel({
     return (
       <div
         data-testid={`${testId}-collapsed`}
-        className="flex w-7 shrink-0 flex-col items-center border-l border-minimax-border bg-minimax-panel transition-all duration-200"
+        className="flex h-full w-7 shrink-0 flex-col items-center border-l border-minimax-border bg-minimax-panel transition-all duration-200"
       >
         <button
           type="button"
@@ -114,12 +137,17 @@ export function RightPanel({
   return (
     <aside
       data-testid={testId}
-      className="flex w-64 shrink-0 flex-col border-l border-minimax-border bg-minimax-panel transition-all duration-200 xl:w-[280px]"
+      className="flex h-full w-64 shrink-0 flex-col border-l border-minimax-border bg-minimax-panel transition-all duration-200 xl:w-[280px]"
     >
       <header className="flex items-center justify-between border-b border-minimax-border px-3 py-2">
-        <span className="text-[11px] font-medium uppercase tracking-wider text-minimax-muted">
-          Workspace
-        </span>
+        <div className="min-w-0">
+          <span className="block text-[11px] font-medium uppercase tracking-wider text-minimax-muted">
+            Inspector
+          </span>
+          <span className="block truncate text-[11px] text-minimax-muted/80">
+            Context for the current run
+          </span>
+        </div>
         <button
           type="button"
           aria-label="Collapse right panel"
@@ -131,131 +159,129 @@ export function RightPanel({
         </button>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-        <Section
-          testId={`${testId}-timeline`}
-          title="Run Timeline"
-          open={timelineOpen}
-          onToggle={() => setTimelineOpen((v) => !v)}
-        >
-          <RunTimelinePanel testId={`${testId}-timeline-panel`} />
-        </Section>
-
-        <Section
-          testId={`${testId}-patch`}
-          title="Diff Preview"
-          open={patchOpen}
-          onToggle={() => setPatchOpen((v) => !v)}
-        >
-          <PatchPreviewPanel testId={`${testId}-patch-panel`} />
-        </Section>
-
-        <Section
-          testId={`${testId}-progress`}
-          title="进度"
-          open={progressOpen}
-          onToggle={() => setProgressOpen((v) => !v)}
-        >
-          <ProgressPanel testId={`${testId}-progress-panel`} />
-        </Section>
-
-        <Section
-          testId={`${testId}-team`}
-          title="Agent Team"
-          open={teamOpen}
-          onToggle={() => setTeamOpen((v) => !v)}
-          actions={
+      <div
+        role="tablist"
+        aria-label="Inspector panels"
+        className="grid grid-cols-4 gap-1 border-b border-minimax-border px-2 py-2 xl:grid-cols-7"
+      >
+        {INSPECTOR_TABS.map((tab) => {
+          const selected = activeTab === tab.id;
+          return (
             <button
+              key={tab.id}
               type="button"
-              aria-label="Refresh agent list"
-              data-testid={`${testId}-team-refresh`}
-              onClick={(e) => {
-                e.stopPropagation();
-                void fetchAgents();
-              }}
-              className="flex h-5 w-5 items-center justify-center rounded text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
+              role="tab"
+              aria-selected={selected}
+              aria-controls={`${testId}-${tab.id}-panel`}
+              data-testid={`${testId}-tab-${tab.id}`}
+              onClick={() => setActiveTab(tab.id)}
+              className={[
+                "flex h-8 items-center justify-center gap-1 rounded-md px-1.5 text-[11px] transition-colors duration-200",
+                selected
+                  ? "bg-minimax-accent/15 text-minimax-accent"
+                  : "text-minimax-muted hover:bg-minimax-border/60 hover:text-minimax-fg",
+              ].join(" ")}
             >
-              <RefreshCw size={10} className={agentsLoading ? "animate-spin" : ""} />
+              {tab.icon}
+              <span className="hidden xl:inline">{tab.label}</span>
             </button>
-          }
-        >
-          <AgentTeamList
-            agents={agents}
-            loading={agentsLoading}
-            error={agentsError}
-            testId={`${testId}-team`}
-          />
-        </Section>
+          );
+        })}
+      </div>
 
-        <Section
-          testId={`${testId}-sub`}
-          title="Sub-agents"
-          open={subOpen}
-          onToggle={() => setSubOpen((v) => !v)}
-        >
-          <SubAgentPanel testId={`${testId}-sub-panel`} />
-        </Section>
-
-        <Section
-          testId={`${testId}-review`}
-          title="Code Review"
-          open={reviewOpen}
-          onToggle={() => setReviewOpen((v) => !v)}
-        >
-          <CodeReviewPanel testId={`${testId}-review-panel`} />
-        </Section>
-
-        <Section
-          testId={`${testId}-teamrun`}
-          title="Team Runs"
-          open={teamRunOpen}
-          onToggle={() => setTeamRunOpen((v) => !v)}
-        >
-          <TeamRunPanel />
-        </Section>
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        <InspectorContent
+          activeTab={activeTab}
+          agents={agents}
+          agentsLoading={agentsLoading}
+          agentsError={agentsError}
+          fetchAgents={fetchAgents}
+          testId={testId}
+        />
       </div>
     </aside>
   );
 }
 
-function Section({
+function InspectorContent({
+  activeTab,
+  agents,
+  agentsLoading,
+  agentsError,
+  fetchAgents,
   testId,
-  title,
-  open,
-  onToggle,
-  actions,
-  children,
 }: {
+  activeTab: InspectorTab;
+  agents: AgentInfo[] | null;
+  agentsLoading: boolean;
+  agentsError: string | null;
+  fetchAgents: () => Promise<void>;
   testId: string;
-  title: string;
-  open: boolean;
-  onToggle: () => void;
-  actions?: React.ReactNode;
-  children: React.ReactNode;
 }): JSX.Element {
+  if (activeTab === "timeline") {
+    return (
+      <section id={`${testId}-timeline-panel`} role="tabpanel" data-testid={`${testId}-timeline-body`}>
+        <RunTimelinePanel testId={`${testId}-timeline-panel`} />
+      </section>
+    );
+  }
+  if (activeTab === "diff") {
+    return (
+      <section id={`${testId}-diff-panel`} role="tabpanel" data-testid={`${testId}-patch-body`}>
+        <PatchPreviewPanel testId={`${testId}-patch-panel`} />
+      </section>
+    );
+  }
+  if (activeTab === "progress") {
+    return (
+      <section id={`${testId}-progress-panel`} role="tabpanel" data-testid={`${testId}-progress-body`}>
+        <ProgressPanel testId={`${testId}-progress-panel`} />
+      </section>
+    );
+  }
+  if (activeTab === "agents") {
+    return (
+      <section id={`${testId}-agents-panel`} role="tabpanel" data-testid={`${testId}-team-body`}>
+        <div className="flex items-center justify-between border-b border-minimax-border px-3 py-2">
+          <span className="text-[11px] font-medium uppercase tracking-wider text-minimax-muted">
+            Agent Team
+          </span>
+          <button
+            type="button"
+            aria-label="Refresh agent list"
+            data-testid={`${testId}-team-refresh`}
+            onClick={() => void fetchAgents()}
+            className="flex h-6 w-6 items-center justify-center rounded text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
+          >
+            <RefreshCw size={10} className={agentsLoading ? "animate-spin" : ""} />
+          </button>
+        </div>
+        <AgentTeamList
+          agents={agents}
+          loading={agentsLoading}
+          error={agentsError}
+          testId={`${testId}-team`}
+        />
+      </section>
+    );
+  }
+  if (activeTab === "subagents") {
+    return (
+      <section id={`${testId}-subagents-panel`} role="tabpanel" data-testid={`${testId}-sub-body`}>
+        <SubAgentPanel testId={`${testId}-sub-panel`} />
+      </section>
+    );
+  }
+  if (activeTab === "review") {
+    return (
+      <section id={`${testId}-review-panel`} role="tabpanel" data-testid={`${testId}-review-body`}>
+        <CodeReviewPanel testId={`${testId}-review-panel`} />
+      </section>
+    );
+  }
   return (
-    <section
-      data-testid={testId}
-      className="border-b border-minimax-border"
-    >
-      <div
-        role="button"
-        tabIndex={0}
-        onClick={onToggle}
-        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onToggle(); }}
-        data-testid={`${testId}-header`}
-        aria-expanded={open}
-        className="flex w-full cursor-pointer items-center justify-between px-3 py-2 text-left hover:bg-minimax-border/40"
-      >
-        <span className="text-[11px] font-medium uppercase tracking-wider text-minimax-muted">
-          {title}
-        </span>
-        <span className="flex items-center gap-1.5">
-          {actions}
-          {open ? <ChevronDown size={12} className="text-minimax-muted" /> : <ChevronRight size={12} className="text-minimax-muted" />}
-        </span>
-      </div>
-      {open && <div data-testid={`${testId}-body`}>{children}</div>}
+    <section id={`${testId}-teamruns-panel`} role="tabpanel" data-testid={`${testId}-teamrun-body`}>
+      <TeamRunPanel />
     </section>
   );
 }

@@ -1,7 +1,7 @@
 /**
  * Tests for the RightPanel — the right column of the three-pane
- * shell. Covers the Progress section, the Agent Team section,
- * the section-collapse toggles, and the panel-level collapse pill.
+ * shell. Covers the tabbed inspector model, the Agent Team panel,
+ * and the panel-level collapse pill.
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
@@ -30,21 +30,22 @@ beforeEach(() => {
 });
 
 describe("RightPanel — chrome", () => {
-  it("renders the right panel with the workspace header and both section headers", () => {
+  it("renders the right panel as a tabbed inspector", () => {
     render(<RightPanel initialAgents={[]} />);
     expect(screen.getByTestId("right-panel")).toBeInTheDocument();
-    expect(screen.getByText("Workspace")).toBeInTheDocument();
-    expect(screen.getByTestId("right-panel-patch-header")).toBeInTheDocument();
-    expect(screen.getByTestId("right-panel-progress-header")).toBeInTheDocument();
-    expect(screen.getByTestId("right-panel-team-header")).toBeInTheDocument();
+    expect(screen.getByText("Inspector")).toBeInTheDocument();
+    expect(screen.getByTestId("right-panel-tab-timeline")).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("right-panel-tab-diff")).toBeInTheDocument();
+    expect(screen.getByTestId("right-panel-tab-agents")).toBeInTheDocument();
+    expect(screen.getByTestId("right-panel-timeline-body")).toBeInTheDocument();
+    expect(screen.queryByTestId("right-panel-patch-body")).toBeNull();
   });
 
   it("collapses the entire panel to a strip when the chevron is clicked", () => {
     render(<RightPanel initialAgents={[]} />);
     fireEvent.click(screen.getByTestId("right-panel-collapse"));
     expect(screen.getByTestId("right-panel-collapsed")).toBeInTheDocument();
-    // The original section headers are gone.
-    expect(screen.queryByTestId("right-panel-progress-header")).toBeNull();
+    expect(screen.queryByTestId("right-panel-tab-progress")).toBeNull();
   });
 
   it("re-expands the panel when the strip chevron is clicked", () => {
@@ -56,30 +57,34 @@ describe("RightPanel — chrome", () => {
 });
 
 describe("RightPanel — Progress section", () => {
-  it("shows the progress section body when expanded (default)", () => {
+  it("shows the progress body when the progress tab is selected", () => {
     render(<RightPanel initialAgents={[]} />);
+    fireEvent.click(screen.getByTestId("right-panel-tab-progress"));
     expect(screen.getByTestId("right-panel-progress-body")).toBeInTheDocument();
+    expect(screen.getByTestId("right-panel-tab-progress")).toHaveAttribute("aria-selected", "true");
   });
 
-  it("hides the progress section body when the section header is clicked twice", () => {
+  it("switches between inspector tabs without keeping stale bodies mounted", () => {
     render(<RightPanel initialAgents={[]} />);
-    const header = screen.getByTestId("right-panel-progress-header");
-    fireEvent.click(header);
-    expect(screen.queryByTestId("right-panel-progress-body")).toBeNull();
-    fireEvent.click(header);
+    fireEvent.click(screen.getByTestId("right-panel-tab-progress"));
     expect(screen.getByTestId("right-panel-progress-body")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("right-panel-tab-diff"));
+    expect(screen.queryByTestId("right-panel-progress-body")).toBeNull();
+    expect(screen.getByTestId("right-panel-patch-body")).toBeInTheDocument();
   });
 });
 
 describe("RightPanel — Agent Team section", () => {
   it("shows the empty state when no agents are returned", () => {
     render(<RightPanel initialAgents={[]} />);
+    fireEvent.click(screen.getByTestId("right-panel-tab-agents"));
     expect(screen.getByTestId("right-panel-team-empty")).toBeInTheDocument();
     expect(screen.getByText("No sub-agents")).toBeInTheDocument();
   });
 
   it("renders one card per agent with name + idle status dot", () => {
     render(<RightPanel initialAgents={SAMPLE_AGENTS} />);
+    fireEvent.click(screen.getByTestId("right-panel-tab-agents"));
     expect(screen.getByTestId("right-panel-team-list")).toBeInTheDocument();
     expect(screen.getByTestId("right-panel-team-card-agent_explorer")).toBeInTheDocument();
     expect(screen.getByTestId("right-panel-team-card-agent_coder")).toBeInTheDocument();
@@ -95,14 +100,17 @@ describe("RightPanel — Agent Team section", () => {
       message: "scanning src/",
     });
     render(<RightPanel initialAgents={SAMPLE_AGENTS} />);
+    fireEvent.click(screen.getByTestId("right-panel-tab-agents"));
     const card = screen.getByTestId("right-panel-team-card-agent_explorer");
     expect(card.querySelector('[data-testid="agent-status-running"]')).toBeTruthy();
     expect(screen.getByTestId("right-panel-team-card-agent_explorer-task").textContent).toBe("scanning src/");
   });
 
-  it("collapses the team section via the section header", () => {
+  it("unmounts the team panel when another tab is selected", () => {
     render(<RightPanel initialAgents={SAMPLE_AGENTS} />);
-    fireEvent.click(screen.getByTestId("right-panel-team-header"));
+    fireEvent.click(screen.getByTestId("right-panel-tab-agents"));
+    expect(screen.getByTestId("right-panel-team-list")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("right-panel-tab-timeline"));
     expect(screen.queryByTestId("right-panel-team-list")).toBeNull();
   });
 
@@ -112,6 +120,7 @@ describe("RightPanel — Agent Team section", () => {
     await waitFor(() => {
       expect(loadAgents).toHaveBeenCalledTimes(1);
     });
+    fireEvent.click(screen.getByTestId("right-panel-tab-agents"));
     expect(screen.getByTestId("right-panel-team-card-agent_explorer")).toBeInTheDocument();
   });
 
@@ -120,6 +129,7 @@ describe("RightPanel — Agent Team section", () => {
       throw new Error("boom");
     });
     render(<RightPanel loadAgents={loadAgents} />);
+    fireEvent.click(screen.getByTestId("right-panel-tab-agents"));
     await waitFor(() => {
       expect(screen.getByTestId("right-panel-team-error")).toBeInTheDocument();
     });
@@ -132,6 +142,7 @@ describe("RightPanel — Agent Team section", () => {
     await waitFor(() => {
       expect(loadAgents).toHaveBeenCalledTimes(1);
     });
+    fireEvent.click(screen.getByTestId("right-panel-tab-agents"));
     fireEvent.click(screen.getByTestId("right-panel-team-refresh"));
     await waitFor(() => {
       expect(loadAgents).toHaveBeenCalledTimes(2);

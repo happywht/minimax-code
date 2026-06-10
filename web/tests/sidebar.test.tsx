@@ -49,8 +49,11 @@ describe("Sidebar", () => {
     expect(useSessionStore.getState().currentSessionId).toBe("ses_test_1");
   });
 
-  it("switches the session filter when a nav item is clicked", () => {
+  it("switches the session filter when a nav item is clicked", async () => {
     render(<Sidebar />);
+    await waitFor(() => {
+      expect(screen.getByTestId("sidebar-nav-skills")).toBeInTheDocument();
+    });
     fireEvent.click(screen.getByTestId("sidebar-nav-skills"));
     expect(useSessionStore.getState().filter).toBe("skills");
   });

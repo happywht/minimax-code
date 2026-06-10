@@ -71,4 +71,25 @@ describe("App smoke test", () => {
     expect(screen.queryByTestId("shortcuts-overlay")).toBeNull();
     expect(textarea).toHaveValue("?");
   });
+
+  it("opens management views as overlays without unmounting the chat workbench", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId("chat-panel")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId("sidebar-nav-skills"));
+    expect(screen.getByTestId("workspace-overlay")).toBeInTheDocument();
+    expect(screen.getByTestId("skills-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("chat-panel")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("skills-close"));
+    expect(screen.queryByTestId("workspace-overlay")).toBeNull();
+
+    await user.click(screen.getByTestId("sidebar-nav-settings"));
+    expect(screen.getByTestId("workspace-overlay")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-page")).toBeInTheDocument();
+    expect(screen.getByTestId("chat-panel")).toBeInTheDocument();
+  });
 });
