@@ -57,6 +57,7 @@ export {
   type PatchPreviewScope,
   type PatchPreviewState,
 } from "./patchPreviewStore";
+export { useTerminalStore, type TerminalState } from "./terminalStore";
 export { useThemeStore, type Theme } from "./themeStore";
 export { useAgentStore } from "./agentStore";
 export { useMobileStore, type PairedDevice } from "./mobileStore";

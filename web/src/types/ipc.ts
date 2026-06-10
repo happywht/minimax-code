@@ -594,6 +594,42 @@ export interface PatchHunkOperationResult {
   hunk_index: number;
 }
 
+export type TerminalStatus = "starting" | "running" | "completed" | "failed" | "cancelled";
+export type TerminalStream = "stdout" | "stderr";
+
+export interface TerminalSession {
+  id: string;
+  command: string;
+  cwd: string;
+  status: TerminalStatus;
+  started_at: number;
+  updated_at: number;
+  completed_at: number | null;
+  exit_code: number | null;
+  error: string | null;
+  next_seq: number;
+}
+
+export interface TerminalChunk {
+  seq: number;
+  stream: TerminalStream;
+  text: string;
+  received_at: number;
+}
+
+export interface TerminalStartResult {
+  session: TerminalSession;
+}
+
+export interface TerminalReadResult {
+  session: TerminalSession;
+  chunks: TerminalChunk[];
+}
+
+export interface TerminalListResult {
+  sessions: TerminalSession[];
+}
+
 /** A single `git.log` entry. */
 export interface GitLogEntry {
   sha: string;

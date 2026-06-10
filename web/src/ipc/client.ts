@@ -87,6 +87,11 @@ import {
   type SubAgentProgress,
   type TaskProgressData,
   type TeamProgressData as _TeamProgressData,
+  type TerminalChunk,
+  type TerminalListResult,
+  type TerminalReadResult,
+  type TerminalSession,
+  type TerminalStartResult,
   type ToolCallData,
   type ToolResultData,
   type UpdateProviderResult,
@@ -865,6 +870,10 @@ export interface TypedIPC {
   patchPreview(opts?: { scope?: "staged" | "branch" | "working"; ref?: string }): Promise<PatchPreviewResult>;
   patchApplyHunk(opts: PatchHunkOperationParams): Promise<PatchHunkOperationResult>;
   patchRevertHunk(opts: PatchHunkOperationParams): Promise<PatchHunkOperationResult>;
+  startTerminal(opts: { command: string; cwd?: string; timeout_s?: number }): Promise<TerminalStartResult>;
+  readTerminal(opts: { session_id: string; after_seq?: number }): Promise<TerminalReadResult>;
+  stopTerminal(sessionId: string): Promise<TerminalStartResult>;
+  listTerminals(): Promise<TerminalListResult>;
 
   // audit — drive the Settings page's Audit tab.
   listAudit(opts?: { limit?: number; offset?: number; tool_name?: string; session_id?: string }): Promise<ListAuditResult>;
@@ -1098,6 +1107,10 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     patchPreview: (opts) => client.request<PatchPreviewResult>("patch.preview", opts ?? {}),
     patchApplyHunk: (opts) => client.request<PatchHunkOperationResult>("patch.apply_hunk", opts),
     patchRevertHunk: (opts) => client.request<PatchHunkOperationResult>("patch.revert_hunk", opts),
+    startTerminal: (opts) => client.request<TerminalStartResult>("terminal.start", opts),
+    readTerminal: (opts) => client.request<TerminalReadResult>("terminal.read", opts),
+    stopTerminal: (sessionId) => client.request<TerminalStartResult>("terminal.stop", { session_id: sessionId }),
+    listTerminals: () => client.request<TerminalListResult>("terminal.list", {}),
 
     listAudit: (opts) => client.request<ListAuditResult>("audit.list", opts ?? {}),
     auditStats: () => client.request<AuditStats>("audit.stats", {}),
@@ -1276,6 +1289,8 @@ const mockProviders: ProviderInfo[] = [
  * UI plumbing only. The real backend is the OS Credential Manager.
  */
 const mockSecrets: { keyring: string | null } = { keyring: null };
+const mockTerminalSessions = new Map<string, TerminalSession>();
+const mockTerminalChunks = new Map<string, TerminalChunk[]>();
 
 function mockHandle(
   method: string,
@@ -1756,6 +1771,66 @@ function mockHandle(
         file_path: p.file_path,
         hunk_index: p.hunk_index,
       } satisfies PatchHunkOperationResult;
+    }
+
+    case "terminal.start": {
+      const p = params as { command: string; cwd?: string };
+      const now = Date.now() / 1000;
+      const id = `term_mock_${Math.random().toString(36).slice(2, 10)}`;
+      const session: TerminalSession = {
+        id,
+        command: p.command,
+        cwd: p.cwd ?? "",
+        status: "completed",
+        started_at: now,
+        updated_at: now,
+        completed_at: now,
+        exit_code: 0,
+        error: null,
+        next_seq: 2,
+      };
+      const chunks: TerminalChunk[] = [
+        {
+          seq: 1,
+          stream: "stdout",
+          text: `$ ${p.command}\n(mock terminal output)\n`,
+          received_at: now,
+        },
+      ];
+      mockTerminalSessions.set(id, session);
+      mockTerminalChunks.set(id, chunks);
+      return { session } satisfies TerminalStartResult;
+    }
+
+    case "terminal.read": {
+      const p = params as { session_id: string; after_seq?: number };
+      const session = mockTerminalSessions.get(p.session_id);
+      if (!session) throw new Error(`unknown terminal session: ${p.session_id}`);
+      const after = p.after_seq ?? 0;
+      return {
+        session,
+        chunks: (mockTerminalChunks.get(p.session_id) ?? []).filter((chunk) => chunk.seq > after),
+      } satisfies TerminalReadResult;
+    }
+
+    case "terminal.stop": {
+      const p = params as { session_id: string };
+      const session = mockTerminalSessions.get(p.session_id);
+      if (!session) throw new Error(`unknown terminal session: ${p.session_id}`);
+      const now = Date.now() / 1000;
+      session.status = "cancelled";
+      session.error = "stopped by user";
+      session.updated_at = now;
+      session.completed_at = now;
+      return { session } satisfies TerminalStartResult;
+    }
+
+    case "terminal.list": {
+      return {
+        sessions: Array.from(mockTerminalSessions.values()).sort(
+          (a, b) => b.started_at - a.started_at,
+        ),
+      } satisfies TerminalListResult;
     }
 
     case "git.log": {

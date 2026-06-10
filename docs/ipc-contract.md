@@ -199,6 +199,10 @@ on the next `readline() == ""`.
 | `patch.preview`            | req/res   | Return structured file/hunk preview for a git diff scope. |
 | `patch.apply_hunk`         | req/res   | Stage one working-tree hunk after validating the current diff. |
 | `patch.revert_hunk`        | req/res   | Discard one working hunk or unstage one staged hunk. |
+| `terminal.start`           | req/res   | Start a lightweight command session. |
+| `terminal.read`            | req/res   | Read incremental stdout/stderr chunks for a session. |
+| `terminal.stop`            | req/res   | Stop a running command session. |
+| `terminal.list`            | req/res   | List recent in-memory terminal sessions. |
 | `session.create`           | req/res   | Reserved (storage-layer).                          |
 | `session.list`             | req/res   | Reserved (storage-layer).                          |
 | `session.archive`          | req/res   | Reserved.                                          |
@@ -377,6 +381,63 @@ Response:
   }
 }
 ```
+
+### 6.4 `terminal.*` — lightweight command sessions
+
+`terminal.*` is a command-session runner for the inspector panel. It is
+not a full interactive PTY yet: clients start a command, poll output
+chunks, and stop a running process.
+
+Start request:
+```json
+{
+  "jsonrpc":"2.0",
+  "id":"term-1",
+  "method":"terminal.start",
+  "params":{"command":"pnpm test","cwd":"D:\\repo","timeout_s":600}
+}
+```
+
+Start response:
+```json
+{
+  "jsonrpc":"2.0",
+  "id":"term-1",
+  "result":{
+    "session":{
+      "id":"term_abcd1234",
+      "command":"pnpm test",
+      "cwd":"D:\\repo",
+      "status":"running",
+      "started_at":1781020000.0,
+      "updated_at":1781020000.0,
+      "completed_at":null,
+      "exit_code":null,
+      "error":null,
+      "next_seq":1
+    }
+  }
+}
+```
+
+Read request:
+```json
+{"method":"terminal.read","params":{"session_id":"term_abcd1234","after_seq":12}}
+```
+
+Read response:
+```json
+{
+  "session":{"id":"term_abcd1234","status":"completed","exit_code":0},
+  "chunks":[
+    {"seq":13,"stream":"stdout","text":"ok\\n","received_at":1781020001.0}
+  ]
+}
+```
+
+`terminal.stop` accepts `{ "session_id": "term_abcd1234" }` and returns
+the updated session. Sessions are process-local and intentionally
+in-memory; after an agent restart the UI should treat the list as empty.
 
 ## 7. Event names
 

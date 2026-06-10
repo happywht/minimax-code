@@ -386,6 +386,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_skills import register_skill_handlers
     from .ipc.handlers_tasks import register_task_handlers
     from .ipc.handlers_secrets import register_secret_handlers
+    from .ipc.handlers_terminal import register_terminal_handlers
     from .ipc.handlers_workspace import register_workspace_handlers
 
     server.register("agent.send_message", handle_agent_send_message)
@@ -455,6 +456,8 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # derives from git diff but keeps ``git.diff`` raw and backward
     # compatible for LLM/code-review flows.
     register_patch_handlers(server)
+    # Lightweight command sessions for the inspector terminal panel.
+    register_terminal_handlers(server)
     # The audit handlers expose ``audit.list`` / ``audit.stats``
     # / ``audit.purge`` for the Settings page's Audit tab. The DAO
     # is built lazily on first call (same pattern as scheduled jobs).
@@ -488,7 +491,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
         "registered application handlers "
         "(1 agent.* + 7 agent.* + 5 skill.* + 6 task.* + 5 session.* + 3 workspace.* + "
         "5 permission.* + 6 schedule.* + 7 mobile.* + 3 model.* + "
-        "7 provider.* + 3 secrets.* + 3 git.* + 1 patch.* + 3 audit.* + 5 webhook.* + "
+        "7 provider.* + 3 secrets.* + 3 git.* + 3 patch.* + 4 terminal.* + 3 audit.* + 5 webhook.* + "
         "5 notification.* + 7 workflow.* + 7 team.*)"
     )
 

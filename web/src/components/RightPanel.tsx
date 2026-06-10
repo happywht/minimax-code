@@ -33,6 +33,7 @@ import {
   ListChecks,
   Loader2,
   RefreshCw,
+  TerminalSquare,
   Users,
 } from "lucide-react";
 import { ProgressPanel } from "./ProgressPanel";
@@ -41,6 +42,7 @@ import { RunTimelinePanel } from "./RunTimelinePanel";
 import { SubAgentPanel } from "./SubAgentPanel";
 import { CodeReviewPanel } from "./CodeReviewPanel";
 import { TeamRunPanel } from "./TeamRunPanel";
+import { TerminalPanel } from "./TerminalPanel";
 import { typedIPC } from "../ipc";
 import {
   usePatchPreviewStore,
@@ -48,6 +50,7 @@ import {
   useRunTimelineStore,
   useSubAgentStore,
   useTaskStore,
+  useTerminalStore,
 } from "../stores";
 import type { AgentInfo } from "../types/ipc";
 
@@ -70,7 +73,8 @@ type InspectorTab =
   | "agents"
   | "subagents"
   | "review"
-  | "teamruns";
+  | "teamruns"
+  | "terminal";
 
 const INSPECTOR_TABS: Array<{
   id: InspectorTab;
@@ -84,6 +88,7 @@ const INSPECTOR_TABS: Array<{
   { id: "subagents", label: "Sub", icon: <Users size={12} /> },
   { id: "review", label: "Review", icon: <CheckCircle2 size={12} /> },
   { id: "teamruns", label: "Runs", icon: <Loader2 size={12} /> },
+  { id: "terminal", label: "Term", icon: <TerminalSquare size={12} /> },
 ];
 
 export function RightPanel({
@@ -117,6 +122,12 @@ export function RightPanel({
   });
   const permissionSignal = usePermissionStore((s) => `${s.pending.length}`);
   const diffSignal = usePatchPreviewStore((s) => `${s.result?.files?.length ?? 0}`);
+  const terminalSignal = useTerminalStore((s) => {
+    const sessions = Object.values(s.sessions);
+    const running = sessions.filter((session) => session.status === "running" || session.status === "starting").length;
+    const latest = sessions.reduce((max, session) => Math.max(max, session.updated_at), 0);
+    return `${running}:${latest}`;
+  });
 
   const fetchAgents = useCallback(async () => {
     setAgentsLoading(true);
@@ -162,6 +173,11 @@ export function RightPanel({
     if (!followRun || diffSignal === "0") return;
     setActiveTab("diff");
   }, [diffSignal, followRun]);
+
+  useEffect(() => {
+    if (!followRun || terminalSignal.startsWith("0:")) return;
+    setActiveTab("terminal");
+  }, [followRun, terminalSignal]);
 
   const selectTab = useCallback((tab: InspectorTab) => {
     setActiveTab(tab);
@@ -220,7 +236,7 @@ export function RightPanel({
       <div
         role="tablist"
         aria-label="Inspector panels"
-        className="grid grid-cols-4 gap-1 border-b border-minimax-border px-2 py-2 xl:grid-cols-7"
+        className="grid grid-cols-4 gap-1 border-b border-minimax-border px-2 py-2 xl:grid-cols-8"
       >
         {INSPECTOR_TABS.map((tab) => {
           const selected = activeTab === tab.id;
@@ -348,6 +364,13 @@ function InspectorContent({
     return (
       <section id={`${testId}-review-panel`} role="tabpanel" data-testid={`${testId}-review-body`}>
         <CodeReviewPanel testId={`${testId}-review-panel`} />
+      </section>
+    );
+  }
+  if (activeTab === "terminal") {
+    return (
+      <section id={`${testId}-terminal-panel`} role="tabpanel" data-testid={`${testId}-terminal-body`}>
+        <TerminalPanel testId={`${testId}-terminal-panel`} />
       </section>
     );
   }

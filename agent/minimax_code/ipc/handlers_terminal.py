@@ -1,0 +1,281 @@
+"""JSON-RPC handlers for lightweight terminal command sessions.
+
+This is deliberately not a full PTY yet.  P1.1 gives the UI a
+Codex-like command runner loop: start a command, poll stdout/stderr
+chunks, and stop a long-running process.  The session registry is
+in-memory because terminal processes are process-local by nature.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import time
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from .handler_utils import HandlerError
+from .protocol import INVALID_PARAMS
+from .server import Context
+
+_TERMINAL_ERROR = -32000
+_MAX_COMMAND_LEN = 4_000
+_MAX_CHUNKS_PER_SESSION = 2_000
+_DEFAULT_TIMEOUT_S = 10 * 60
+_MAX_TIMEOUT_S = 60 * 60
+
+
+@dataclass
+class TerminalChunk:
+    seq: int
+    stream: str
+    text: str
+    received_at: float
+
+
+@dataclass
+class TerminalSession:
+    id: str
+    command: str
+    cwd: str
+    status: str = "starting"
+    started_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    completed_at: float | None = None
+    exit_code: int | None = None
+    error: str | None = None
+    process: asyncio.subprocess.Process | None = None
+    task: asyncio.Task[None] | None = None
+    chunks: list[TerminalChunk] = field(default_factory=list)
+    next_seq: int = 1
+
+    def append(self, stream: str, text: str) -> None:
+        if not text:
+            return
+        self.chunks.append(
+            TerminalChunk(
+                seq=self.next_seq,
+                stream=stream,
+                text=text,
+                received_at=time.time(),
+            )
+        )
+        self.next_seq += 1
+        self.updated_at = time.time()
+        if len(self.chunks) > _MAX_CHUNKS_PER_SESSION:
+            del self.chunks[: len(self.chunks) - _MAX_CHUNKS_PER_SESSION]
+
+    def to_wire(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "command": self.command,
+            "cwd": self.cwd,
+            "status": self.status,
+            "started_at": self.started_at,
+            "updated_at": self.updated_at,
+            "completed_at": self.completed_at,
+            "exit_code": self.exit_code,
+            "error": self.error,
+            "next_seq": self.next_seq,
+        }
+
+
+_SESSIONS: dict[str, TerminalSession] = {}
+
+
+def _require_params(params: Any) -> dict[str, Any]:
+    if not isinstance(params, dict):
+        raise HandlerError(INVALID_PARAMS, "params must be a JSON object")
+    return params
+
+
+def _command_from_params(params: dict[str, Any]) -> str:
+    command = params.get("command")
+    if not isinstance(command, str) or not command.strip():
+        raise HandlerError(INVALID_PARAMS, "'command' must be a non-empty string")
+    command = command.strip()
+    if len(command) > _MAX_COMMAND_LEN:
+        raise HandlerError(INVALID_PARAMS, f"'command' must be <= {_MAX_COMMAND_LEN} chars")
+    return command
+
+
+def _cwd_from_params(params: dict[str, Any]) -> str:
+    raw = params.get("cwd")
+    if raw is None or raw == "":
+        return str(Path.cwd())
+    if not isinstance(raw, str):
+        raise HandlerError(INVALID_PARAMS, "'cwd' must be a string when provided")
+    path = Path(raw).expanduser().resolve()
+    if not path.exists() or not path.is_dir():
+        raise HandlerError(INVALID_PARAMS, "'cwd' must point to an existing directory")
+    return str(path)
+
+
+def _timeout_from_params(params: dict[str, Any]) -> float:
+    raw = params.get("timeout_s", _DEFAULT_TIMEOUT_S)
+    if not isinstance(raw, (int, float)) or raw <= 0:
+        raise HandlerError(INVALID_PARAMS, "'timeout_s' must be a positive number")
+    return float(min(raw, _MAX_TIMEOUT_S))
+
+
+def _session_from_params(params: dict[str, Any]) -> TerminalSession:
+    session_id = params.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        raise HandlerError(INVALID_PARAMS, "'session_id' must be a non-empty string")
+    session = _SESSIONS.get(session_id)
+    if session is None:
+        raise HandlerError(INVALID_PARAMS, f"unknown terminal session: {session_id!r}")
+    return session
+
+
+async def _read_stream(session: TerminalSession, stream: asyncio.StreamReader, name: str) -> None:
+    while True:
+        data = await stream.read(4096)
+        if not data:
+            return
+        session.append(name, data.decode("utf-8", errors="replace"))
+
+
+async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
+    if proc.returncode is not None:
+        return
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=2.0)
+        return
+    except asyncio.TimeoutError:
+        pass
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        return
+    await proc.wait()
+
+
+async def _run_session(session: TerminalSession, timeout_s: float) -> None:
+    try:
+        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+        process = await asyncio.create_subprocess_shell(
+            session.command,
+            cwd=session.cwd,
+            env=env,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        session.process = process
+        session.status = "running"
+        session.updated_at = time.time()
+        assert process.stdout is not None
+        assert process.stderr is not None
+        stdout_task = asyncio.create_task(_read_stream(session, process.stdout, "stdout"))
+        stderr_task = asyncio.create_task(_read_stream(session, process.stderr, "stderr"))
+        try:
+            session.exit_code = await asyncio.wait_for(process.wait(), timeout=timeout_s)
+            await asyncio.gather(stdout_task, stderr_task)
+            if session.status != "cancelled":
+                session.status = "completed" if session.exit_code == 0 else "failed"
+        except asyncio.TimeoutError:
+            session.status = "cancelled"
+            session.error = f"command timed out after {timeout_s:g}s"
+            await _terminate_process(process)
+            session.exit_code = process.returncode
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+        finally:
+            session.completed_at = time.time()
+            session.updated_at = session.completed_at
+    except Exception as exc:
+        session.status = "failed"
+        session.error = str(exc)
+        session.completed_at = time.time()
+        session.updated_at = session.completed_at
+
+
+async def _stop_session(session: TerminalSession) -> None:
+    if session.status in {"completed", "failed", "cancelled"}:
+        return
+    session.status = "cancelled"
+    session.error = "stopped by user"
+    session.updated_at = time.time()
+    if session.process is not None:
+        await _terminate_process(session.process)
+
+
+def _chunks_after(session: TerminalSession, after_seq: int) -> list[dict[str, Any]]:
+    return [
+        {
+            "seq": chunk.seq,
+            "stream": chunk.stream,
+            "text": chunk.text,
+            "received_at": chunk.received_at,
+        }
+        for chunk in session.chunks
+        if chunk.seq > after_seq
+    ]
+
+
+def register_terminal_handlers(server: Any) -> None:
+    """Register ``terminal.*`` handlers."""
+
+    async def handle_start(params: Any, ctx: Context) -> None:
+        try:
+            p = _require_params(params)
+            command = _command_from_params(p)
+            cwd = _cwd_from_params(p)
+            timeout_s = _timeout_from_params(p)
+            session = TerminalSession(
+                id=f"term_{uuid.uuid4().hex[:10]}",
+                command=command,
+                cwd=cwd,
+            )
+            _SESSIONS[session.id] = session
+            session.task = asyncio.create_task(_run_session(session, timeout_s))
+            await ctx.reply({"session": session.to_wire()})
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception as exc:
+            await ctx.reply_error(_TERMINAL_ERROR, "terminal.start failed", {"error": str(exc)})
+
+    async def handle_read(params: Any, ctx: Context) -> None:
+        try:
+            p = _require_params(params)
+            session = _session_from_params(p)
+            after_seq = p.get("after_seq", 0)
+            if not isinstance(after_seq, int) or after_seq < 0:
+                raise HandlerError(INVALID_PARAMS, "'after_seq' must be a non-negative integer")
+            await ctx.reply({"session": session.to_wire(), "chunks": _chunks_after(session, after_seq)})
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception as exc:
+            await ctx.reply_error(_TERMINAL_ERROR, "terminal.read failed", {"error": str(exc)})
+
+    async def handle_stop(params: Any, ctx: Context) -> None:
+        try:
+            p = _require_params(params)
+            session = _session_from_params(p)
+            await _stop_session(session)
+            await ctx.reply({"session": session.to_wire()})
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception as exc:
+            await ctx.reply_error(_TERMINAL_ERROR, "terminal.stop failed", {"error": str(exc)})
+
+    async def handle_list(params: Any, ctx: Context) -> None:
+        try:
+            sessions = sorted(_SESSIONS.values(), key=lambda item: item.started_at, reverse=True)
+            await ctx.reply({"sessions": [session.to_wire() for session in sessions[:20]]})
+        except Exception as exc:
+            await ctx.reply_error(_TERMINAL_ERROR, "terminal.list failed", {"error": str(exc)})
+
+    server.register("terminal.start", handle_start)
+    server.register("terminal.read", handle_read)
+    server.register("terminal.stop", handle_stop)
+    server.register("terminal.list", handle_list)
+
+
+__all__ = ["register_terminal_handlers"]
