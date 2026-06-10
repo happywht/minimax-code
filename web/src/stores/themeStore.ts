@@ -4,7 +4,7 @@
  * On init the store reads ``localStorage("minimax-theme")`` and
  * applies the corresponding class to ``document.documentElement``.
  * Calling ``toggle()`` flips the value, persists it, and updates
- * the class — no page reload needed.
+ * the html class — no page reload needed.
  */
 
 import { create } from "zustand";
@@ -48,7 +48,9 @@ function applyTheme(t: Theme): void {
   const el = document.documentElement;
   if (t === "light") {
     el.classList.add("light");
+    el.classList.remove("dark");
   } else {
+    el.classList.add("dark");
     el.classList.remove("light");
   }
 }
