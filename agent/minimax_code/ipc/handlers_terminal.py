@@ -30,6 +30,8 @@ _MAX_CHUNKS_PER_SESSION = 2_000
 _DEFAULT_TIMEOUT_S = 10 * 60
 _MAX_TIMEOUT_S = 60 * 60
 _OUTPUT_TAIL_LIMIT = 1_200
+_WORKSPACE_ENV_KEYS = ("MINIMAX_CODE_WORKSPACE", "MINIMAX_CODE_WORKSPACE_ROOT")
+_WORKSPACE_MARKERS = ("pnpm-workspace.yaml", "AGENTS.md", ".git")
 
 
 @dataclass
@@ -135,10 +137,26 @@ def _command_from_params(params: dict[str, Any]) -> str:
     return command
 
 
+def default_working_directory() -> str:
+    for key in _WORKSPACE_ENV_KEYS:
+        raw = os.environ.get(key)
+        if not raw:
+            continue
+        path = Path(raw).expanduser().resolve()
+        if path.exists() and path.is_dir():
+            return str(path)
+
+    current = Path.cwd().resolve()
+    for candidate in (current, *current.parents):
+        if any((candidate / marker).exists() for marker in _WORKSPACE_MARKERS):
+            return str(candidate)
+    return str(current)
+
+
 def _cwd_from_params(params: dict[str, Any]) -> str:
     raw = params.get("cwd")
     if raw is None or raw == "":
-        return str(Path.cwd())
+        return default_working_directory()
     if not isinstance(raw, str):
         raise HandlerError(INVALID_PARAMS, "'cwd' must be a string when provided")
     path = Path(raw).expanduser().resolve()

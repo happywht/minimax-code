@@ -133,7 +133,7 @@ export function RunnerPanel({ testId = "runner-panel" }: RunnerPanelProps): JSX.
           value={cwd}
           onChange={(event) => setCwd(event.target.value)}
           className="mt-1 h-7 w-full rounded border border-minimax-border bg-minimax-bg px-2 font-mono text-[10px] text-minimax-muted outline-none transition-colors duration-200 placeholder:text-minimax-muted/70 focus:border-minimax-accent/60"
-          placeholder="cwd"
+          placeholder="cwd (default workspace root)"
         />
       </form>
 

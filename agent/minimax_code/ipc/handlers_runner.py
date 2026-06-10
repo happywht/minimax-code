@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .handler_utils import HandlerError
-from .handlers_terminal import start_terminal_command
+from .handlers_terminal import default_working_directory, start_terminal_command
 from .protocol import INVALID_PARAMS
 from .server import Context
 
@@ -162,7 +162,7 @@ def _command_from_params(params: dict[str, Any]) -> str:
 def _cwd_from_params(params: dict[str, Any]) -> str:
     raw = params.get("cwd")
     if raw is None or raw == "":
-        return str(Path.cwd())
+        return default_working_directory()
     if not isinstance(raw, str):
         raise HandlerError(INVALID_PARAMS, "'cwd' must be a string when provided")
     path = Path(raw).expanduser().resolve()

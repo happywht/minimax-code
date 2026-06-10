@@ -389,6 +389,9 @@ Response:
 `terminal.*` is a command-session runner for the inspector panel. It is
 not a full interactive PTY yet: clients start a command, poll output
 chunks, and stop a running process.
+When `cwd` is omitted, the backend uses `MINIMAX_CODE_WORKSPACE` or
+`MINIMAX_CODE_WORKSPACE_ROOT` when set, then falls back to the nearest
+parent with `pnpm-workspace.yaml`, `AGENTS.md`, or `.git`.
 
 Start request:
 ```json
@@ -547,6 +550,8 @@ Runner safety options:
 
 All runner starts return a terminal session and use the same stdout,
 stderr, cancel, timeout, and run timeline plumbing as `terminal.start`.
+When `cwd` is omitted, runners use the same workspace-root default as
+`terminal.start`.
 
 ## 7. Event names
 

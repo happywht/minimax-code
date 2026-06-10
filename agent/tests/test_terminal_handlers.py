@@ -11,7 +11,7 @@ import pytest
 
 from minimax_code.config import Config
 from minimax_code.ipc import handlers_terminal
-from minimax_code.ipc.handlers_terminal import register_terminal_handlers
+from minimax_code.ipc.handlers_terminal import default_working_directory, register_terminal_handlers
 from minimax_code.ipc.server import IPCServer
 from minimax_code.storage.dao.runs import AgentRunsDAO
 from minimax_code.storage.dao.sessions import SessionsDAO
@@ -48,6 +48,15 @@ def _make_handler(method: str) -> tuple[Callable[..., Coroutine[Any, Any, None]]
 def _python_command(code: str) -> str:
     escaped = code.replace('"', '\\"')
     return f'"{sys.executable}" -c "{escaped}"'
+
+
+def test_default_working_directory_prefers_workspace_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("MINIMAX_CODE_WORKSPACE", str(tmp_path))
+
+    assert default_working_directory() == str(tmp_path.resolve())
 
 
 async def _read_until_done(session_id: str, *, timeout_s: float = 5.0) -> dict[str, Any]:
