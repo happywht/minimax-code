@@ -7,6 +7,22 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MessageInput } from "../src/components/MessageInput";
 import { useChat } from "../src/stores";
+import type { AgentInfo } from "../src/types/ipc";
+
+const AGENTS: AgentInfo[] = [
+  {
+    id: "general",
+    name: "General",
+    description: "default helper",
+    enabled: true,
+  },
+  {
+    id: "code-reviewer",
+    name: "Code Reviewer",
+    description: "reviews diffs",
+    enabled: true,
+  },
+];
 
 describe("MessageInput", () => {
   beforeEach(() => {
@@ -75,5 +91,15 @@ describe("MessageInput", () => {
     fireEvent.change(textarea, { target: { value: "a".repeat(8001) } });
     expect(screen.getByTestId("message-input-token-warning")).toHaveTextContent("已超限");
     expect(screen.getByTestId("message-input-send")).toBeDisabled();
+  });
+
+  it("opens the unified mention picker for @agent queries", async () => {
+    const user = userEvent.setup();
+    render(<MessageInput loadAgents={async () => AGENTS} />);
+    await user.type(screen.getByTestId("message-input-textarea"), "@code");
+
+    expect(await screen.findByTestId("message-input-agent-picker")).toBeInTheDocument();
+    expect(screen.getByTestId("message-input-agent-picker-item-code-reviewer")).toHaveTextContent("Code Reviewer");
+    expect(screen.queryByTestId("message-input-agent-picker-item-general")).toBeNull();
   });
 });

@@ -18,6 +18,14 @@ import { ImagePreview } from "./ImagePreview";
 import { toast } from "./ErrorBoundary";
 import type { AgentInfo, ContentPartImage } from "../types/ipc";
 import { useSessionStore } from "../stores";
+import {
+  INITIAL_MENTION_STATE,
+  agentMentionOptions,
+  detectMentionToken,
+  filterMentionOptions,
+  type MentionOption,
+  type MentionState,
+} from "../lib/mentions";
 
 export interface MessageInputProps {
   testId?: string;
@@ -37,17 +45,6 @@ interface AttachedFile {
   name: string;
 }
 
-interface PickerState {
-  open: boolean;
-  query: string;
-  /** Index in the filtered list, -1 = none. */
-  cursor: number;
-  /** Anchor position (textarea character offset) where the @ token starts. */
-  anchor: number;
-}
-
-const INITIAL_PICKER: PickerState = { open: false, query: "", cursor: -1, anchor: -1 };
-
 export function MessageInput({
   testId = "message-input",
   loadAgents,
@@ -55,7 +52,7 @@ export function MessageInput({
   const [value, setValue] = useState("");
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [agentsError, setAgentsError] = useState<string | null>(null);
-  const [picker, setPicker] = useState<PickerState>(INITIAL_PICKER);
+  const [picker, setPicker] = useState<MentionState>(INITIAL_MENTION_STATE);
   const status = useChat((s) => s.status);
   const send = useChat((s) => s.send);
   const addLocalMessage = useChat((s) => s.addLocalMessage);
@@ -135,23 +132,17 @@ export function MessageInput({
     };
   }, [loadAgents]);
 
-  const filtered = useMemo(() => {
-    if (!picker.open) return [];
-    const q = picker.query.toLowerCase();
-    return agents
-      .filter(
-        (a) =>
-          !q ||
-          a.id.toLowerCase().includes(q) ||
-          a.name.toLowerCase().includes(q),
-      )
-      .slice(0, 6);
-  }, [agents, picker.open, picker.query]);
+  const mentionOptions = useMemo(() => agentMentionOptions(agents), [agents]);
+  const filtered = useMemo(
+    () => filterMentionOptions(mentionOptions, picker),
+    [mentionOptions, picker],
+  );
 
-  const closePicker = useCallback(() => setPicker(INITIAL_PICKER), []);
+  const closePicker = useCallback(() => setPicker(INITIAL_MENTION_STATE), []);
 
   const handlePickerSelect = useCallback(
-    async (agent: AgentInfo) => {
+    async (option: MentionOption) => {
+      const agent = option.payload;
       const el = ref.current;
       // Build the prompt by stripping the @token (everything up to and
       // including the active @ match). The token sits between
@@ -225,13 +216,11 @@ export function MessageInput({
     setValue(next);
     // Detect the @-token at-or-before the caret.
     const caret = e.target.selectionStart ?? next.length;
-    const head = next.slice(0, caret);
-    const match = /(^|\s)@([\w-]*)$/.exec(head);
-    if (match) {
-      const anchor = caret - match[2].length - 1; // -1 for the "@" itself
-      setPicker({ open: true, query: match[2], cursor: 0, anchor });
+    const nextMention = detectMentionToken(next, caret);
+    if (nextMention.open) {
+      setPicker(nextMention);
     } else if (picker.open) {
-      setPicker(INITIAL_PICKER);
+      setPicker(INITIAL_MENTION_STATE);
     }
   };
 
@@ -659,12 +648,12 @@ export function MessageInput({
               </div>
             ) : (
               <ul data-testid="message-input-agent-picker-list">
-                {filtered.map((a, i) => (
-                  <li key={a.id}>
+                {filtered.map((option, i) => (
+                  <li key={option.id}>
                     <button
                       type="button"
-                      data-testid={`message-input-agent-picker-item-${a.id}`}
-                      onClick={() => void handlePickerSelect(a)}
+                      data-testid={`message-input-agent-picker-item-${option.id}`}
+                      onClick={() => void handlePickerSelect(option)}
                       className={
                         "flex w-full items-center gap-2 px-2 py-1 text-left text-[11px] " +
                         (i === picker.cursor
@@ -673,12 +662,12 @@ export function MessageInput({
                       }
                     >
                       <Bot size={10} className="text-minimax-accent" />
-                      <span className="font-medium">{a.name}</span>
+                      <span className="font-medium">{option.label}</span>
                       <span className="font-mono text-[11px] text-minimax-muted">
-                        @{a.id}
+                        @{option.id}
                       </span>
                       <span className="flex-1 truncate text-[11px] text-minimax-muted">
-                        {a.description}
+                        {option.detail}
                       </span>
                     </button>
                   </li>
