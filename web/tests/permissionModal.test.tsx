@@ -136,6 +136,63 @@ describe("PermissionRequestModal", () => {
     resolveSpy.mockRestore();
   });
 
+  it("approves with Enter and denies with Escape", async () => {
+    const resolveSpy = vi.spyOn(typedIPC, "resolvePermission").mockResolvedValue({
+      ok: true,
+      request_id: "perm_keys",
+      decision: "allow",
+    });
+
+    usePermissionStore.setState({
+      pending: {
+        perm_keys: {
+          request_id: "perm_keys",
+          tool: "edit_file",
+          args: { path: "app.ts" },
+          received_at: Date.now(),
+        },
+      },
+    });
+    render(<PermissionRequestModal />);
+
+    fireEvent.keyDown(window, { key: "Enter" });
+    await waitFor(() => {
+      expect(resolveSpy).toHaveBeenCalledWith({
+        request_id: "perm_keys",
+        decision: "allow",
+      });
+    });
+
+    resolveSpy.mockClear();
+    act(() => {
+      usePermissionStore.setState({
+        pending: {
+          perm_keys_2: {
+            request_id: "perm_keys_2",
+            tool: "edit_file",
+            args: { path: "app.ts" },
+            received_at: Date.now(),
+          },
+        },
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("permission-request-modal")).toHaveAttribute(
+        "data-request-id",
+        "perm_keys_2",
+      );
+    });
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => {
+      expect(resolveSpy).toHaveBeenCalledWith({
+        request_id: "perm_keys_2",
+        decision: "deny",
+      });
+    });
+    resolveSpy.mockRestore();
+  });
+
   it("responds to incoming permission.request events via the IPC client", async () => {
     render(<PermissionRequestModal />);
     // The store wires its listener at module-import time, so by the

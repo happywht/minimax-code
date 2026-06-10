@@ -45,13 +45,16 @@ export function PermissionRequestModal({
     );
   }, [pendingMap]);
 
-  // Esc to deny — matches the OS-level "deny on cancel" convention.
+  // Enter approves, Esc denies — keeps the approval card keyboard-first.
   useEffect(() => {
     if (!current) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
         void resolve(current.request_id, "deny");
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        void resolve(current.request_id, "allow");
       }
     };
     window.addEventListener("keydown", onKey);
@@ -144,7 +147,7 @@ export function PermissionRequestModal({
         </div>
 
         <p className="mt-3 text-[11px] text-minimax-muted">
-          按 Esc 拒绝 · 关闭右侧 × 等同于拒绝
+          Enter 允许 · Esc 拒绝 · 关闭右侧 × 等同于拒绝
         </p>
       </div>
     </div>
