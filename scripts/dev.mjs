@@ -12,7 +12,9 @@ import { spawn } from "node:child_process";
 import process from "node:process";
 
 const isWindows = process.platform === "win32";
-const npmCmd = isWindows ? "npm.cmd" : "npm";
+const packageRunner = process.env.npm_execpath
+  ? { cmd: process.execPath, baseArgs: [process.env.npm_execpath] }
+  : { cmd: isWindows ? "pnpm.cmd" : "pnpm", baseArgs: [] };
 
 function run(label, cmd, args, opts = {}) {
   const child = spawn(cmd, args, {
@@ -48,12 +50,12 @@ function run(label, cmd, args, opts = {}) {
 const procs = [];
 
 if (!process.env.AGENT_SKIP) {
-  procs.push(run("agent", npmCmd, ["run", "-s", "dev:agent"]));
+  procs.push(run("agent", packageRunner.cmd, [...packageRunner.baseArgs, "run", "-s", "dev:agent"]));
 } else {
   console.log("[agent] skipped (AGENT_SKIP=1)");
 }
 
-procs.push(run("web", npmCmd, ["run", "-s", "dev:web"]));
+procs.push(run("web", packageRunner.cmd, [...packageRunner.baseArgs, "run", "-s", "dev:web"]));
 
 const shutdown = () => {
   procs.forEach((p) => {

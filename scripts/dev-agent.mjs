@@ -25,6 +25,7 @@ const child = spawn(
     shell: false,
     env: {
       ...process.env,
+      MINIMAX_CODE_WORKSPACE: process.env.MINIMAX_CODE_WORKSPACE ?? repoRoot,
       PYTHONUNBUFFERED: "1",
       PYTHONIOENCODING: "utf-8",
     },
