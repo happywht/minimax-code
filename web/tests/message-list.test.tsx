@@ -46,6 +46,37 @@ describe("MessageList", () => {
     expect(screen.getByTestId("message-assistant")).toHaveTextContent("world");
   });
 
+  it("groups consecutive tool messages into a compact rail", () => {
+    useChat.setState({
+      messages: [
+        { id: "a1", role: "assistant", text: "checking", streaming: false, created_at: 1 },
+        {
+          id: "t1",
+          role: "tool",
+          text: "read ok",
+          tool_name: "read_file",
+          streaming: false,
+          created_at: 2,
+        },
+        {
+          id: "t2",
+          role: "tool",
+          text: "grep ok",
+          tool_name: "search",
+          streaming: false,
+          created_at: 3,
+        },
+        { id: "a2", role: "assistant", text: "done", streaming: false, created_at: 4 },
+      ],
+    });
+
+    render(<MessageList />);
+
+    expect(screen.getByTestId("message-tool-group")).toBeInTheDocument();
+    expect(screen.getByText("read_file")).toBeInTheDocument();
+    expect(screen.getByText("search")).toBeInTheDocument();
+  });
+
   it("pauses auto-follow when user scrolls up and resumes on button click", async () => {
     useChat.setState({
       messages: [

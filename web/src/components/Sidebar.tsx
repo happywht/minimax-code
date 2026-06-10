@@ -223,7 +223,7 @@ export function Sidebar({
       </nav>
 
       {/* Session list (history) — redesigned row format. */}
-      <div className="mt-4 flex min-h-0 flex-1 flex-col">
+      <div className="mt-3 flex min-h-0 flex-1 flex-col">
         <div className="flex items-center justify-between px-4 pt-1 text-[11px] uppercase tracking-wider text-minimax-muted">
           <span>任务历史</span>
           <span data-testid="sidebar-session-count">{visibleSessions.length}</span>
@@ -256,7 +256,7 @@ export function Sidebar({
         </div>
         <ul
           data-testid="sidebar-session-list"
-          className="mt-1 flex-1 space-y-0.5 overflow-y-auto px-2"
+          className="mt-1 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2"
         >
           {loading && visibleSessions.length === 0 && (
             <>
@@ -324,18 +324,20 @@ export function Sidebar({
       </div>
 
       {/* Mobile pairing link */}
-      <div className="px-2 py-2">
-        <NavItem
-          icon={<Plug size={14} />}
-          label="连接手机"
-          onClick={onMobileClick}
-          testId="sidebar-mobile"
-        />
-      </div>
+      <div className="shrink-0 border-t border-minimax-border bg-minimax-panel">
+        <div className="px-2 py-2">
+          <NavItem
+            icon={<Plug size={14} />}
+            label="连接手机"
+            onClick={onMobileClick}
+            testId="sidebar-mobile"
+          />
+        </div>
 
-      {/* Footer user badge */}
-      <div className="border-t border-minimax-border p-2">
-        <UserBadge name="Demo User" email="demo@minimax.code" plan="Max Plan" />
+        {/* Footer user badge */}
+        <div className="border-t border-minimax-border p-2">
+          <UserBadge name="Demo User" email="demo@minimax.code" plan="Max Plan" />
+        </div>
       </div>
     </aside>
   );

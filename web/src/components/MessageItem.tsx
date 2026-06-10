@@ -582,21 +582,25 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
         data-role="tool"
         className="flex justify-start"
       >
-        <div className="max-w-[85%] rounded-md border border-minimax-border bg-minimax-panel/60 px-3 py-2 text-xs">
+        <div className="max-w-full rounded-md border border-minimax-border/70 bg-minimax-panel/35 px-2 py-1.5 text-xs transition-colors duration-200 hover:border-minimax-border hover:bg-minimax-panel/60">
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
-            className="flex w-full items-center gap-1.5 text-left font-mono text-minimax-muted hover:text-minimax-fg"
+            className="flex w-full items-center gap-1.5 text-left font-mono text-[11px] text-minimax-muted hover:text-minimax-fg"
             aria-expanded={expanded}
           >
             {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
             <span className="truncate">
               {message.tool_name ?? "tool"}
-              {message.tool_args ? `(${Object.keys(message.tool_args).join(", ")})` : ""}
             </span>
+            {message.tool_args && (
+              <span className="truncate text-[10px] text-minimax-muted/70">
+                {Object.keys(message.tool_args).join(", ")}
+              </span>
+            )}
           </button>
           {expanded && (
-            <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all text-[11px] text-minimax-fg">
+            <pre className="mt-1.5 max-h-64 overflow-auto rounded border border-minimax-border/50 bg-minimax-bg/70 px-2 py-1.5 whitespace-pre-wrap break-all text-[11px] text-minimax-fg">
               {message.text}
             </pre>
           )}

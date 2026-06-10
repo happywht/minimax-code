@@ -1,5 +1,5 @@
 ﻿/**
- * Floating composer with an @-agent picker.
+ * Bottom composer with an @-agent picker.
  *
  * v0.3.0 §2: typing ``@`` in the textarea opens a dropdown listing
  * sub-agents the user can dispatch to. Selecting one (click or
@@ -477,15 +477,15 @@ export function MessageInput({
     <form
       onSubmit={handleSubmit}
       data-testid={testId}
-      data-floating="true"
-      className="pointer-events-none fixed inset-x-0 bottom-6 z-20 flex justify-center px-4"
+      data-floating="false"
+      className="shrink-0 border-t border-minimax-border bg-minimax-bg/92 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-minimax-bg/78"
     >
       <div
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         className={
-          "pointer-events-auto relative w-full max-w-[720px] rounded-xl border bg-minimax-panel/95 shadow-2xl backdrop-blur supports-[backdrop-filter]:bg-minimax-panel/80 " +
+          "relative mx-auto w-full max-w-[780px] rounded-xl border bg-minimax-panel/95 shadow-lg shadow-black/10 backdrop-blur supports-[backdrop-filter]:bg-minimax-panel/85 " +
           (dragging
             ? "border-minimax-accent ring-2 ring-minimax-accent/30"
             : "border-minimax-border")

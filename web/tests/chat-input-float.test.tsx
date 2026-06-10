@@ -1,9 +1,9 @@
 /**
- * Tests for the floating MessageInput composer.
+ * Tests for the bottom MessageInput composer.
  *
  * Covers:
- *   - The form is `position: fixed` at the bottom, horizontally
- *     centered, with a `max-width` of 720px.
+ *   - The form is anchored in the main workspace flow, horizontally
+ *     centered, with a capped width.
  *   - The always-allow inline toggle (`chat-input-always-allow`)
  *     flips `usePermissionStore.alwaysAllow` on click.
  *   - The inline model picker (`chat-input-model-select`) renders
@@ -48,24 +48,21 @@ vi.mock("../src/ipc", async () => {
   };
 });
 
-describe("MessageInput — floating composer", () => {
+describe("MessageInput — bottom composer", () => {
   beforeEach(() => {
     useChat.setState({ messages: [], status: "idle", error: null, agentReady: false });
     usePermissionStore.setState({ alwaysAllow: false });
     useModelStore.setState({ models: [], current: null });
   });
 
-  it("is a fixed-position bottom-anchored form with capped width", () => {
+  it("is an in-flow bottom composer with capped width", () => {
     render(<MessageInput />);
     const form = screen.getByTestId("message-input");
-    expect(form).toHaveAttribute("data-floating", "true");
-    // jsdom doesn't compute layout but the Tailwind utility classes
-    // assert the intent: fixed positioning, bottom anchor, centered.
-    expect(form.className).toMatch(/\bfixed\b/);
-    expect(form.className).toMatch(/\bbottom-6\b/);
-    expect(form.className).toMatch(/\bjustify-center\b/);
+    expect(form).toHaveAttribute("data-floating", "false");
+    expect(form.className).not.toMatch(/\bfixed\b/);
+    expect(form.className).toMatch(/\bshrink-0\b/);
     const inner = form.querySelector("div");
-    expect(inner?.className ?? "").toContain("max-w-[720px]");
+    expect(inner?.className ?? "").toContain("max-w-[780px]");
   });
 
   it("renders the always-allow inline toggle bound to the store", () => {

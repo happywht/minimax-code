@@ -32,6 +32,7 @@ type MessageListRow =
   | { type: "search-summary"; key: string }
   | { type: "load-more"; key: string }
   | { type: "message"; key: string; message: Message }
+  | { type: "tool-group"; key: string; messages: Message[] }
   | { type: "sub-agent-results"; key: string; runIds: string[] };
 
 export function MessageList({ testId = "message-list", searchQuery }: MessageListProps): JSX.Element {
@@ -94,9 +95,25 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
     const next: MessageListRow[] = [];
     if (isFiltered) next.push({ type: "search-summary", key: "search-summary" });
     if (hasMore) next.push({ type: "load-more", key: `load-more-${hiddenCount}` });
+    let toolBuffer: Message[] = [];
+    const flushTools = () => {
+      if (toolBuffer.length === 0) return;
+      next.push({
+        type: "tool-group",
+        key: `tool-group-${toolBuffer.map((message) => message.id).join("-")}`,
+        messages: toolBuffer,
+      });
+      toolBuffer = [];
+    };
     for (const message of visible) {
-      next.push({ type: "message", key: `message-${message.id}`, message });
+      if (message.role === "tool") {
+        toolBuffer.push(message);
+      } else {
+        flushTools();
+        next.push({ type: "message", key: `message-${message.id}`, message });
+      }
     }
+    flushTools();
     if (!hasQuery && finishedRuns.length > 0) {
       next.push({
         type: "sub-agent-results",
@@ -128,9 +145,7 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
       <div
         ref={scrollRef}
         data-testid={testId}
-        // pb-44 (~176px) reserves space for the floating composer in
-        // <MessageInput /> so the last message never slides under it.
-        className="h-full overflow-y-auto px-4 pb-44 pt-4"
+        className="h-full overflow-y-auto px-4 pb-6 pt-4"
       >
       {messages.length === 0 && finishedRuns.length === 0 ? (
         <div
@@ -193,7 +208,7 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
           type="button"
           data-testid="scroll-to-bottom-btn"
           onClick={() => scrollToBottom("smooth")}
-          className="absolute bottom-48 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-minimax-border bg-minimax-panel/95 px-2.5 py-1.5 text-[11px] text-minimax-fg shadow-lg backdrop-blur-sm transition-all duration-200 hover:-translate-y-0.5 hover:bg-minimax-border"
+          className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-minimax-border bg-minimax-panel/95 px-2.5 py-1.5 text-[11px] text-minimax-fg shadow-lg backdrop-blur-sm transition-all duration-200 hover:-translate-y-0.5 hover:bg-minimax-border"
           title="Jump to latest message"
         >
           <ChevronDown size={14} className="text-minimax-muted" />
@@ -254,6 +269,19 @@ function MessageListRowView({
     );
   }
 
+  if (row.type === "tool-group") {
+    return (
+      <div
+        data-testid="message-tool-group"
+        className="ml-1 flex max-w-[620px] flex-col gap-1 border-l border-minimax-border/70 pl-2"
+      >
+        {row.messages.map((message) => (
+          <MessageItem key={message.id} message={message} />
+        ))}
+      </div>
+    );
+  }
+
   return <MessageItem message={row.message} />;
 }
 
@@ -261,6 +289,7 @@ function estimateRowSize(row: MessageListRow | undefined): number {
   if (!row) return 96;
   if (row.type === "search-summary") return 40;
   if (row.type === "load-more") return 44;
+  if (row.type === "tool-group") return Math.min(220, 34 + row.messages.length * 42);
   if (row.type === "sub-agent-results") return 96;
   const textLength = row.message.text.length;
   if (row.message.role === "user") return Math.min(180, 48 + textLength / 4);

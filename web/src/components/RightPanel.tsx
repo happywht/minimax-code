@@ -198,6 +198,7 @@ export function RightPanel({
   const resumeFollow = useCallback(() => {
     setFollowRun(true);
   }, []);
+  const activeTabMeta = INSPECTOR_TABS.find((tab) => tab.id === activeTab) ?? INSPECTOR_TABS[0];
 
   // Collapsed strip — just the expand button.
   if (collapsed) {
@@ -229,8 +230,9 @@ export function RightPanel({
           <span className="block text-[11px] font-medium uppercase tracking-wider text-minimax-muted">
             Inspector
           </span>
-          <span className="block truncate text-[11px] text-minimax-muted/80">
-            Context for the current run
+          <span className="flex items-center gap-1.5 truncate text-[11px] text-minimax-muted/80">
+            <span className="text-minimax-accent">{activeTabMeta.icon}</span>
+            <span className="truncate">{activeTabMeta.label}</span>
           </span>
         </div>
         <button
@@ -247,7 +249,7 @@ export function RightPanel({
       <div
         role="tablist"
         aria-label="Inspector panels"
-        className="grid grid-cols-4 gap-1 border-b border-minimax-border px-2 py-2 xl:grid-cols-9"
+        className="flex gap-1 overflow-x-auto border-b border-minimax-border px-2 py-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         {INSPECTOR_TABS.map((tab) => {
           const selected = activeTab === tab.id;
@@ -260,15 +262,16 @@ export function RightPanel({
               aria-controls={`${testId}-${tab.id}-panel`}
               data-testid={`${testId}-tab-${tab.id}`}
               onClick={() => selectTab(tab.id)}
+              title={tab.label}
               className={[
-                "flex h-8 items-center justify-center gap-1 rounded-md px-1.5 text-[11px] transition-colors duration-200",
+                "flex h-8 min-w-8 items-center justify-center rounded-md px-2 text-[11px] transition-colors duration-200",
                 selected
                   ? "bg-minimax-accent/15 text-minimax-accent"
                   : "text-minimax-muted hover:bg-minimax-border/60 hover:text-minimax-fg",
               ].join(" ")}
             >
               {tab.icon}
-              <span className="hidden xl:inline">{tab.label}</span>
+              <span className="sr-only">{tab.label}</span>
             </button>
           );
         })}
