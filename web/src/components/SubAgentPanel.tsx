@@ -27,6 +27,7 @@ import {
   type SubAgentState,
 } from "../stores";
 import type { SubAgentRun, SubAgentStatus } from "../types/ipc";
+import { StructuredErrorCallout } from "./StructuredErrorCallout";
 
 export interface SubAgentPanelProps {
   testId?: string;
@@ -227,9 +228,19 @@ function SubAgentRow({
             </div>
           )}
           {run.error && (
-            <div className="text-status-error" data-testid={`${testId}-${run.run_id}-error`}>
-              {run.error}
-            </div>
+            <StructuredErrorCallout
+              testId={`${testId}-${run.run_id}-error`}
+              title="Sub-agent failed"
+              message={run.error}
+              context={{
+                run_id: run.run_id,
+                agent_id: run.agent_id,
+                agent_name: run.agent_name,
+                parent_session_id: run.parent_session_id,
+                context_message_id: run.context_message_id,
+                prompt: run.prompt,
+              }}
+            />
           )}
           {run.text && (
             <div

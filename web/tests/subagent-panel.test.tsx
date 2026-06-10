@@ -5,8 +5,8 @@
  * preload the store with hand-crafted runs and assert the rendered
  * DOM.
  */
-import { describe, expect, it, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, expect, it, beforeEach, vi } from "vitest";
+import { act, render, screen, fireEvent } from "@testing-library/react";
 import { SubAgentPanel } from "../src/components/SubAgentPanel";
 import { SubAgentResultCard } from "../src/components/SubAgentResultCard";
 import { useSubAgentStore } from "../src/stores/subAgent";
@@ -41,8 +41,26 @@ const COMPLETED_RUN: SubAgentRun = {
   finished_at: 400,
 };
 
+const FAILED_RUN: SubAgentRun = {
+  run_id: "run_failed",
+  agent_id: "agent_28ea1cef8906",
+  agent_name: "agent_28ea1cef8906",
+  prompt: "delegate this",
+  status: "failed",
+  progress: 1,
+  summary: "spawn failed",
+  error: "[-32602] unknown agent name: 'agent_28ea1cef8906'",
+  started_at: 500,
+  updated_at: 600,
+  finished_at: 600,
+};
+
 beforeEach(() => {
   useSubAgentStore.setState({ runs: {}, subscribed: false, error: null });
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: vi.fn(async () => undefined) },
+  });
 });
 
 describe("SubAgentPanel", () => {
@@ -77,6 +95,20 @@ describe("SubAgentPanel", () => {
     fireEvent.click(screen.getByTestId("sub-agent-panel-clear"));
     expect(useSubAgentStore.getState().runs).toEqual({});
   });
+
+  it("shows a structured error with copyable diagnostics for failed runs", async () => {
+    useSubAgentStore.setState({ runs: { [FAILED_RUN.run_id]: FAILED_RUN } });
+    render(<SubAgentPanel autoInit={false} />);
+    fireEvent.click(screen.getByTestId(`sub-agent-panel-row-${FAILED_RUN.run_id}-header`));
+
+    expect(screen.getByTestId(`sub-agent-panel-row-${FAILED_RUN.run_id}-error-title`).textContent).toBe("Sub-agent failed");
+    expect(screen.getByTestId(`sub-agent-panel-row-${FAILED_RUN.run_id}-error-explanation`).textContent).toContain("no longer matches");
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId(`sub-agent-panel-row-${FAILED_RUN.run_id}-error-copy`));
+    });
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("agent_28ea1cef8906"));
+  });
 });
 
 describe("SubAgentResultCard", () => {
@@ -107,5 +139,13 @@ describe("SubAgentResultCard", () => {
     };
     render(<SubAgentResultCard runId={COMPLETED_RUN.run_id} onOpenRun={onOpenRun} />);
     fireEvent.click(screen.getByTestId("sub-agent-result-open"));
+  });
+
+  it("renders failed sub-agent results with structured details", () => {
+    useSubAgentStore.setState({ runs: { [FAILED_RUN.run_id]: FAILED_RUN } });
+    render(<SubAgentResultCard runId={FAILED_RUN.run_id} />);
+    expect(screen.getByTestId("sub-agent-result-error-title").textContent).toBe("Sub-agent failed");
+    fireEvent.click(screen.getByTestId("sub-agent-result-error-details-toggle"));
+    expect(screen.getByTestId("sub-agent-result-error-details").textContent).toContain(FAILED_RUN.run_id);
   });
 });

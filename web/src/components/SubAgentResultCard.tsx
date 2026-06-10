@@ -11,6 +11,7 @@ import { useState } from "react";
 import { Bot, ChevronDown, ChevronRight, CircleAlert, ExternalLink, Sparkles } from "lucide-react";
 import { useSubAgentStore } from "../stores";
 import type { SubAgentRun } from "../types/ipc";
+import { StructuredErrorCallout } from "./StructuredErrorCallout";
 
 export interface SubAgentResultCardProps {
   testId?: string;
@@ -125,11 +126,20 @@ export function SubAgentResultCard({
         </div>
       )}
       {failed && run.error && (
-        <div
-          data-testid={`${testId}-error`}
-          className="border-t border-red-500/30 px-3 py-1 text-[11px] text-status-error"
-        >
-          {run.error}
+        <div className="border-t border-red-500/20 p-2">
+          <StructuredErrorCallout
+            testId={`${testId}-error`}
+            title="Sub-agent failed"
+            message={run.error}
+            context={{
+              run_id: run.run_id,
+              agent_id: run.agent_id,
+              agent_name: run.agent_name,
+              parent_session_id: run.parent_session_id,
+              context_message_id: run.context_message_id,
+              prompt: run.prompt,
+            }}
+          />
         </div>
       )}
     </div>
