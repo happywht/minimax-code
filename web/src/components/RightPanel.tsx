@@ -42,7 +42,13 @@ import { SubAgentPanel } from "./SubAgentPanel";
 import { CodeReviewPanel } from "./CodeReviewPanel";
 import { TeamRunPanel } from "./TeamRunPanel";
 import { typedIPC } from "../ipc";
-import { useTaskStore } from "../stores";
+import {
+  usePatchPreviewStore,
+  usePermissionStore,
+  useRunTimelineStore,
+  useSubAgentStore,
+  useTaskStore,
+} from "../stores";
 import type { AgentInfo } from "../types/ipc";
 
 export interface RightPanelProps {
@@ -89,10 +95,28 @@ export function RightPanel({
 }: RightPanelProps): JSX.Element {
   const [collapsed, setCollapsed] = useState<boolean>(defaultCollapsed);
   const [activeTab, setActiveTab] = useState<InspectorTab>(defaultTab);
+  const [followRun, setFollowRun] = useState<boolean>(true);
 
   const [agents, setAgents] = useState<AgentInfo[] | null>(initialAgents ?? null);
   const [agentsLoading, setAgentsLoading] = useState<boolean>(!initialAgents);
   const [agentsError, setAgentsError] = useState<string | null>(null);
+
+  const timelineSignal = useRunTimelineStore((s) => {
+    const stepCount = Object.values(s.runs).reduce((sum, run) => sum + run.steps.length, 0);
+    return `${s.order.length}:${stepCount}`;
+  });
+  const subAgentSignal = useSubAgentStore((s) => {
+    const runs = Object.values(s.runs);
+    const latest = runs.reduce((max, run) => Math.max(max, run.updated_at), 0);
+    return `${runs.length}:${latest}`;
+  });
+  const taskSignal = useTaskStore((s) => {
+    const tasks = Object.values(s.tasks);
+    const latest = tasks.reduce((max, task) => Math.max(max, task.updated_at), 0);
+    return `${tasks.length}:${latest}`;
+  });
+  const permissionSignal = usePermissionStore((s) => `${s.pending.length}`);
+  const diffSignal = usePatchPreviewStore((s) => `${s.result?.files?.length ?? 0}`);
 
   const fetchAgents = useCallback(async () => {
     setAgentsLoading(true);
@@ -113,6 +137,40 @@ export function RightPanel({
     if (initialAgents) return; // tests supply static data
     void fetchAgents();
   }, [initialAgents, fetchAgents]);
+
+  useEffect(() => {
+    if (!followRun || timelineSignal === "0:0") return;
+    setActiveTab("timeline");
+  }, [followRun, timelineSignal]);
+
+  useEffect(() => {
+    if (!followRun || subAgentSignal === "0:0") return;
+    setActiveTab("subagents");
+  }, [followRun, subAgentSignal]);
+
+  useEffect(() => {
+    if (!followRun || taskSignal === "0:0") return;
+    setActiveTab("progress");
+  }, [followRun, taskSignal]);
+
+  useEffect(() => {
+    if (!followRun || permissionSignal === "0") return;
+    setActiveTab("timeline");
+  }, [followRun, permissionSignal]);
+
+  useEffect(() => {
+    if (!followRun || diffSignal === "0") return;
+    setActiveTab("diff");
+  }, [diffSignal, followRun]);
+
+  const selectTab = useCallback((tab: InspectorTab) => {
+    setActiveTab(tab);
+    setFollowRun(false);
+  }, []);
+
+  const resumeFollow = useCallback(() => {
+    setFollowRun(true);
+  }, []);
 
   // Collapsed strip — just the expand button.
   if (collapsed) {
@@ -174,7 +232,7 @@ export function RightPanel({
               aria-selected={selected}
               aria-controls={`${testId}-${tab.id}-panel`}
               data-testid={`${testId}-tab-${tab.id}`}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => selectTab(tab.id)}
               className={[
                 "flex h-8 items-center justify-center gap-1 rounded-md px-1.5 text-[11px] transition-colors duration-200",
                 selected
@@ -188,6 +246,20 @@ export function RightPanel({
           );
         })}
       </div>
+
+      {!followRun ? (
+        <div className="flex items-center justify-between border-b border-minimax-border bg-minimax-bg/45 px-3 py-1.5">
+          <span className="truncate text-[11px] text-minimax-muted">Manual tab pinned</span>
+          <button
+            type="button"
+            data-testid={`${testId}-resume-follow`}
+            onClick={resumeFollow}
+            className="rounded px-2 py-1 text-[11px] font-medium text-minimax-accent transition-colors duration-200 hover:bg-minimax-accent/10"
+          >
+            Follow run
+          </button>
+        </div>
+      ) : null}
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         <InspectorContent

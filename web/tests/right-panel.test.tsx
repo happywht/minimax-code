@@ -4,10 +4,16 @@
  * and the panel-level collapse pill.
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { RightPanel } from "../src/components/RightPanel";
-import { useTaskStore } from "../src/stores";
-import type { AgentInfo } from "../src/types/ipc";
+import {
+  usePatchPreviewStore,
+  usePermissionStore,
+  useRunTimelineStore,
+  useSubAgentStore,
+  useTaskStore,
+} from "../src/stores";
+import type { AgentInfo, SubAgentRun } from "../src/types/ipc";
 
 const SAMPLE_AGENTS: AgentInfo[] = [
   {
@@ -24,8 +30,27 @@ const SAMPLE_AGENTS: AgentInfo[] = [
   },
 ];
 
+function sampleSubAgentRun(id: string, updatedAt: number): SubAgentRun {
+  return {
+    run_id: id,
+    agent_id: "agent_explorer",
+    agent_name: "Explorer",
+    parent_session_id: "session_1",
+    prompt: "inspect the repo",
+    status: "started",
+    progress: 0.1,
+    summary: "",
+    started_at: updatedAt,
+    updated_at: updatedAt,
+  };
+}
+
 beforeEach(() => {
   useTaskStore.setState({ tasks: {}, collapsed: false });
+  useSubAgentStore.getState().reset();
+  useRunTimelineStore.getState().reset();
+  usePermissionStore.setState({ pending: {}, alwaysAllow: false, rules: [], loading: false });
+  usePatchPreviewStore.getState().reset();
   localStorage.clear();
 });
 
@@ -53,6 +78,53 @@ describe("RightPanel — chrome", () => {
     expect(screen.queryByTestId("right-panel")).toBeNull();
     fireEvent.click(screen.getByTestId("right-panel-expand"));
     expect(screen.getByTestId("right-panel")).toBeInTheDocument();
+  });
+});
+
+describe("RightPanel — run follow", () => {
+  it("auto-switches to the sub-agent tab when sub-agent activity appears", async () => {
+    render(<RightPanel initialAgents={[]} />);
+    expect(screen.getByTestId("right-panel-tab-timeline")).toHaveAttribute("aria-selected", "true");
+
+    act(() => {
+      useSubAgentStore.getState().register(sampleSubAgentRun("run_1", 100));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("right-panel-tab-subagents")).toHaveAttribute("aria-selected", "true");
+    });
+    expect(screen.getByTestId("right-panel-sub-body")).toBeInTheDocument();
+  });
+
+  it("does not steal focus after the user manually pins an inspector tab", async () => {
+    render(<RightPanel initialAgents={[]} />);
+    fireEvent.click(screen.getByTestId("right-panel-tab-diff"));
+    expect(screen.getByTestId("right-panel-tab-diff")).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("right-panel-resume-follow")).toBeInTheDocument();
+
+    act(() => {
+      useSubAgentStore.getState().register(sampleSubAgentRun("run_1", 100));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("right-panel-tab-diff")).toHaveAttribute("aria-selected", "true");
+    });
+    expect(screen.queryByTestId("right-panel-sub-body")).toBeNull();
+  });
+
+  it("resumes auto-following after the user clicks Follow run", async () => {
+    render(<RightPanel initialAgents={[]} />);
+    fireEvent.click(screen.getByTestId("right-panel-tab-diff"));
+    fireEvent.click(screen.getByTestId("right-panel-resume-follow"));
+
+    act(() => {
+      useSubAgentStore.getState().register(sampleSubAgentRun("run_1", 100));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("right-panel-tab-subagents")).toHaveAttribute("aria-selected", "true");
+    });
+    expect(screen.queryByTestId("right-panel-resume-follow")).toBeNull();
   });
 });
 
