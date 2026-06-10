@@ -10,6 +10,7 @@ from typing import Any, Callable, Coroutine
 import pytest
 
 from minimax_code.config import Config
+from minimax_code.ipc import handlers_runner
 from minimax_code.ipc import handlers_terminal
 from minimax_code.ipc.handlers_runner import register_runner_handlers
 from minimax_code.ipc.handlers_terminal import register_terminal_handlers
@@ -98,12 +99,124 @@ async def test_runner_start_native_creates_terminal_session(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_runner_start_external_cli_fails_explicitly() -> None:
+async def test_runner_start_external_cli_fails_explicitly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        handlers_runner,
+        "_runner_catalog",
+        lambda: [
+            {
+                "id": "native",
+                "label": "Native shell",
+                "kind": "native",
+                "available": True,
+                "command": None,
+                "version": None,
+                "reason": None,
+                "supports_prompt": False,
+                "supports_terminal": True,
+            },
+            {
+                "id": "codex-cli",
+                "label": "Codex CLI",
+                "kind": "external_cli",
+                "available": False,
+                "command": "codex",
+                "version": None,
+                "reason": "not runnable: permission denied",
+                "supports_prompt": True,
+                "supports_terminal": True,
+            },
+        ],
+    )
     handler, ctx = _make_handler("runner.start")
     await handler({"runner_id": "codex-cli", "command": "hello"}, ctx)
 
     assert ctx.reply_payload is None
     assert ctx.reply_error_payload is not None
     _code, message, data = ctx.reply_error_payload
-    assert "not executable yet" in message
+    assert "not runnable" in message
     assert data["runner_id"] == "codex-cli"
+
+
+@pytest.mark.asyncio
+async def test_runner_start_external_cli_delegates_to_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_start_terminal_command(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+
+        class _Session:
+            id = "term_fake"
+
+            def to_wire(self) -> dict[str, Any]:
+                return {
+                    "id": self.id,
+                    "command": kwargs["command"],
+                    "cwd": kwargs["cwd"],
+                    "session_id": kwargs["chat_session_id"],
+                    "run_id": None,
+                    "status": "starting",
+                    "started_at": 1,
+                    "updated_at": 1,
+                    "completed_at": None,
+                    "exit_code": None,
+                    "error": None,
+                    "next_seq": 1,
+                }
+
+        return _Session()
+
+    monkeypatch.setattr(
+        handlers_runner,
+        "_runner_catalog",
+        lambda: [
+            {
+                "id": "native",
+                "label": "Native shell",
+                "kind": "native",
+                "available": True,
+                "command": None,
+                "version": None,
+                "reason": None,
+                "supports_prompt": False,
+                "supports_terminal": True,
+            },
+            {
+                "id": "claude-code-cli",
+                "label": "Claude Code CLI",
+                "kind": "external_cli",
+                "available": True,
+                "command": "claude",
+                "version": "2.1.168",
+                "reason": None,
+                "supports_prompt": True,
+                "supports_terminal": True,
+            },
+        ],
+    )
+    monkeypatch.setattr(handlers_runner, "start_terminal_command", fake_start_terminal_command)
+
+    handler, ctx = _make_handler("runner.start")
+    await handler(
+        {
+            "runner_id": "claude-code-cli",
+            "command": "summarize this repo",
+            "cwd": str(tmp_path),
+            "session_id": "ses_runner",
+        },
+        ctx,
+    )
+
+    assert ctx.reply_error_payload is None
+    assert ctx.reply_payload["runner"]["id"] == "claude-code-cli"
+    assert ctx.reply_payload["session"]["id"] == "term_fake"
+    assert "claude" in captured["command"]
+    assert "--print" in captured["command"]
+    assert "summarize this repo" in captured["command"]
+    assert captured["cwd"] == str(tmp_path)
+    assert captured["chat_session_id"] == "ses_runner"

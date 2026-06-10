@@ -28,6 +28,17 @@ const runnerMocks = vi.hoisted(() => {
       supports_prompt: true,
       supports_terminal: true,
     },
+    {
+      id: "claude-code-cli",
+      label: "Claude Code CLI",
+      kind: "external_cli",
+      available: true,
+      command: "claude",
+      version: "2.1.168",
+      reason: null,
+      supports_prompt: true,
+      supports_terminal: true,
+    },
   ];
   const session: TerminalSession = {
     id: "term_runner",
@@ -115,5 +126,28 @@ describe("RunnerPanel", () => {
 
     expect(screen.getByTestId("runner-panel-start")).toBeDisabled();
     expect(screen.getByText("codex executable not found on PATH")).toBeInTheDocument();
+  });
+
+  it("starts an available external runner with the current session", async () => {
+    render(<RunnerPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("runner-panel-runner-claude-code-cli")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("runner-panel-runner-claude-code-cli"));
+    fireEvent.change(screen.getByTestId("runner-panel-command"), {
+      target: { value: "summarize this repo" },
+    });
+    fireEvent.click(screen.getByTestId("runner-panel-start"));
+
+    await waitFor(() => {
+      expect(runnerMocks.startRunner).toHaveBeenCalledWith({
+        runner_id: "claude-code-cli",
+        command: "summarize this repo",
+        cwd: undefined,
+        session_id: "ses_current",
+        timeout_s: undefined,
+      });
+    });
   });
 });

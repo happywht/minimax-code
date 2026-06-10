@@ -31,7 +31,8 @@ export function RunnerPanel({ testId = "runner-panel" }: RunnerPanelProps): JSX.
     () => runners.find((runner) => runner.id === selectedId) ?? runners[0] ?? null,
     [runners, selectedId],
   );
-  const canStart = Boolean(selected && selected.id === "native" && command.trim() && !starting);
+  const canStart = Boolean(selected?.available && command.trim() && !starting);
+  const commandPlaceholder = selected?.kind === "external_cli" ? "Ask this runner" : "pnpm test";
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -89,7 +90,7 @@ export function RunnerPanel({ testId = "runner-panel" }: RunnerPanelProps): JSX.
             value={command}
             onChange={(event) => setCommand(event.target.value)}
             className="h-8 min-w-0 flex-1 rounded border border-minimax-border bg-minimax-bg px-2 font-mono text-[11px] text-minimax-fg outline-none transition-colors duration-200 placeholder:text-minimax-muted focus:border-minimax-accent/70"
-            placeholder="pnpm test"
+            placeholder={commandPlaceholder}
           />
           <button
             type="submit"
@@ -147,7 +148,7 @@ function RunnerCard({
   onClick: () => void;
   testId: string;
 }): JSX.Element {
-  const enabled = runner.id === "native";
+  const enabled = runner.available;
   const tone = runner.available ? "bg-status-success" : "bg-status-error";
   return (
     <button

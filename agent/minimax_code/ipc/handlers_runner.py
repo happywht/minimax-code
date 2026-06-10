@@ -8,7 +8,9 @@ as detectable but not yet executable adapters.
 
 from __future__ import annotations
 
+import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -21,15 +23,52 @@ _RUNNER_ERROR = -32000
 _MAX_COMMAND_LEN = 4_000
 _DEFAULT_TIMEOUT_S = 10 * 60
 _MAX_TIMEOUT_S = 60 * 60
+_PROBE_TIMEOUT_S = 5
 
 
-def _runner_catalog() -> list[dict[str, Any]]:
-    codex_path = shutil.which("codex")
-    claude_path = shutil.which("claude")
-    return [
-        {
-            "id": "native",
-            "label": "Native shell",
+def _shell_command(args: list[str]) -> str:
+    if os.name == "nt":
+        return subprocess.list2cmdline(args)
+    import shlex
+
+    return shlex.join(args)
+
+
+def _run_probe(path: str, args: list[str]) -> tuple[bool, str | None, str | None]:
+    command = [path, *args]
+    try:
+        is_cmd = Path(path).suffix.lower() in {".cmd", ".bat"}
+        result = subprocess.run(
+            _shell_command(command) if is_cmd else command,
+            shell=is_cmd,
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_TIMEOUT_S,
+            check=False,
+        )
+    except PermissionError as exc:
+        return False, None, f"not runnable: {exc.strerror or 'permission denied'}"
+    except Exception as exc:
+        return False, None, f"not runnable: {exc}"
+    text = (result.stdout or result.stderr or "").strip()
+    version = text.splitlines()[0].strip() if text else None
+    if result.returncode != 0:
+        return False, version, text or f"probe exited with code {result.returncode}"
+    return True, version, None
+
+
+def _runner_entry(
+    *,
+    id: str,
+    label: str,
+    command_name: str | None,
+    version_args: list[str] | None,
+    supports_prompt: bool,
+) -> dict[str, Any]:
+    if command_name is None:
+        return {
+            "id": id,
+            "label": label,
             "kind": "native",
             "available": True,
             "command": None,
@@ -37,29 +76,57 @@ def _runner_catalog() -> list[dict[str, Any]]:
             "reason": None,
             "supports_prompt": False,
             "supports_terminal": True,
-        },
-        {
-            "id": "codex-cli",
-            "label": "Codex CLI",
+        }
+    path = shutil.which(command_name)
+    if not path:
+        return {
+            "id": id,
+            "label": label,
             "kind": "external_cli",
-            "available": bool(codex_path),
-            "command": codex_path,
+            "available": False,
+            "command": None,
             "version": None,
-            "reason": None if codex_path else "codex executable not found on PATH",
-            "supports_prompt": True,
+            "reason": f"{command_name} executable not found on PATH",
+            "supports_prompt": supports_prompt,
             "supports_terminal": True,
-        },
-        {
-            "id": "claude-code-cli",
-            "label": "Claude Code CLI",
-            "kind": "external_cli",
-            "available": bool(claude_path),
-            "command": claude_path,
-            "version": None,
-            "reason": None if claude_path else "claude executable not found on PATH",
-            "supports_prompt": True,
-            "supports_terminal": True,
-        },
+        }
+    ok, version, reason = _run_probe(path, version_args or ["--version"])
+    return {
+        "id": id,
+        "label": label,
+        "kind": "external_cli",
+        "available": ok,
+        "command": path,
+        "version": version,
+        "reason": reason,
+        "supports_prompt": supports_prompt,
+        "supports_terminal": True,
+    }
+
+
+def _runner_catalog() -> list[dict[str, Any]]:
+    return [
+        _runner_entry(
+            id="native",
+            label="Native shell",
+            command_name=None,
+            version_args=None,
+            supports_prompt=False,
+        ),
+        _runner_entry(
+            id="codex-cli",
+            label="Codex CLI",
+            command_name="codex",
+            version_args=["--version"],
+            supports_prompt=True,
+        ),
+        _runner_entry(
+            id="claude-code-cli",
+            label="Claude Code CLI",
+            command_name="claude",
+            version_args=["--version"],
+            supports_prompt=True,
+        ),
     ]
 
 
@@ -117,6 +184,39 @@ def _chat_session_id_from_params(params: dict[str, Any]) -> str | None:
     return raw
 
 
+def _runner_command(runner: dict[str, Any], prompt: str) -> str:
+    command = runner.get("command")
+    if not isinstance(command, str) or not command:
+        raise HandlerError(
+            _RUNNER_ERROR,
+            f"{runner['label']} is not runnable",
+            {"runner_id": runner["id"], "reason": runner.get("reason")},
+        )
+    if runner["id"] == "codex-cli":
+        return _shell_command(
+            [
+                command,
+                "exec",
+                "--sandbox",
+                "workspace-write",
+                "--ask-for-approval",
+                "never",
+                prompt,
+            ]
+        )
+    if runner["id"] == "claude-code-cli":
+        return _shell_command(
+            [
+                command,
+                "--print",
+                "--permission-mode",
+                "acceptEdits",
+                prompt,
+            ]
+        )
+    return prompt
+
+
 def register_runner_handlers(server: Any) -> None:
     """Register ``runner.*`` handlers."""
 
@@ -131,10 +231,10 @@ def register_runner_handlers(server: Any) -> None:
             p = _require_params(params)
             runner_id = _runner_id_from_params(p)
             runner = next(item for item in _runner_catalog() if item["id"] == runner_id)
-            if runner_id != "native":
+            if runner_id != "native" and not runner["available"]:
                 raise HandlerError(
                     _RUNNER_ERROR,
-                    f"{runner['label']} adapter is detected but not executable yet",
+                    f"{runner['label']} is not runnable",
                     {
                         "runner_id": runner_id,
                         "available": runner["available"],
@@ -142,8 +242,9 @@ def register_runner_handlers(server: Any) -> None:
                     },
                 )
             command = _command_from_params(p)
+            terminal_command = command if runner_id == "native" else _runner_command(runner, command)
             session = await start_terminal_command(
-                command=command,
+                command=terminal_command,
                 cwd=_cwd_from_params(p),
                 timeout_s=_timeout_from_params(p),
                 chat_session_id=_chat_session_id_from_params(p),

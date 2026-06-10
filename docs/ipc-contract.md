@@ -456,8 +456,8 @@ in-memory; after an agent restart the UI should treat the list as empty.
 ### 6.5 `runner.*` — product-facing runner adapters
 
 `runner.*` is the adapter layer above terminal sessions. It lets the UI
-show a stable set of execution engines while the backend wires each
-engine incrementally.
+show a stable set of execution engines while the backend probes whether
+each engine is actually executable.
 
 List request:
 ```json
@@ -486,7 +486,7 @@ List response:
       "available":false,
       "command":null,
       "version":null,
-      "reason":"codex executable not found on PATH",
+      "reason":"not runnable: permission denied",
       "supports_prompt":true,
       "supports_terminal":true
     }
@@ -518,9 +518,20 @@ Start response:
 }
 ```
 
-`codex-cli` and `claude-code-cli` are detectable adapters in this
-version. Starting them returns an explicit error until prompt routing,
-auth expectations, and cancellation semantics are wired.
+`available` means the executable was found and its version probe
+completed successfully. A PATH hit that fails to execute is returned as
+`available:false` with a `reason`.
+
+`runner.start` behavior:
+
+- `native`: treats `command` as a shell command.
+- `codex-cli`: treats `command` as a prompt and launches
+  `codex exec --sandbox workspace-write --ask-for-approval never <prompt>`.
+- `claude-code-cli`: treats `command` as a prompt and launches
+  `claude --print --permission-mode acceptEdits <prompt>`.
+
+All runner starts return a terminal session and use the same stdout,
+stderr, cancel, timeout, and run timeline plumbing as `terminal.start`.
 
 ## 7. Event names
 
