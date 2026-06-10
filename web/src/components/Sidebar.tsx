@@ -12,16 +12,18 @@
  * parent to switch to the SkillsPanel. Other primary nav items
  * (定时任务 / Agents / 已归档) still drive the session filter.
  */
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Bot,
   CalendarClock,
   History,
   Plug,
   Plus,
+  Search,
   Settings as SettingsIcon,
   Sparkles,
   Wrench,
+  X,
 } from "lucide-react";
 import { NavItem } from "./NavItem";
 import { UserBadge } from "./UserBadge";
@@ -90,6 +92,7 @@ export function Sidebar({
   const setCurrent = useSessionStore((s) => s.setCurrent);
   const createSession = useSessionStore((s) => s.create);
   const refresh = useSessionStore((s) => s.refresh);
+  const [historyQuery, setHistoryQuery] = useState("");
 
   useEffect(() => {
     if (sessions.length === 0) {
@@ -97,10 +100,17 @@ export function Sidebar({
     }
   }, [sessions.length, refresh]);
 
-  const visibleSessions = sessions
-    .filter((s) => (filter === "archived" ? s.archived : !s.archived))
-    .sort((a, b) => b.updated_at - a.updated_at)
-    .slice(0, 30);
+  const visibleSessions = useMemo(() => {
+    const q = historyQuery.trim().toLowerCase();
+    return sessions
+      .filter((s) => (filter === "archived" ? s.archived : !s.archived))
+      .filter((s) => {
+        if (!q) return true;
+        return s.title.toLowerCase().includes(q) || s.id.toLowerCase().includes(q);
+      })
+      .sort((a, b) => b.updated_at - a.updated_at)
+      .slice(0, 30);
+  }, [filter, historyQuery, sessions]);
 
   return (
     <aside
@@ -182,6 +192,32 @@ export function Sidebar({
           <span>任务历史</span>
           <span data-testid="sidebar-session-count">{visibleSessions.length}</span>
         </div>
+        <div className="px-2 pt-2">
+          <label className="relative block">
+            <Search
+              size={12}
+              className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-minimax-muted"
+            />
+            <input
+              data-testid="sidebar-session-search"
+              value={historyQuery}
+              onChange={(event) => setHistoryQuery(event.target.value)}
+              placeholder="Search history"
+              className="h-7 w-full rounded-md border border-minimax-border bg-minimax-bg/40 pl-7 pr-7 text-xs text-minimax-fg outline-none transition-colors duration-200 placeholder:text-minimax-muted focus:border-minimax-accent/60"
+            />
+            {historyQuery && (
+              <button
+                type="button"
+                data-testid="sidebar-session-search-clear"
+                onClick={() => setHistoryQuery("")}
+                className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-minimax-muted transition-colors duration-200 hover:bg-minimax-border hover:text-minimax-fg"
+                aria-label="Clear history search"
+              >
+                <X size={11} />
+              </button>
+            )}
+          </label>
+        </div>
         <ul
           data-testid="sidebar-session-list"
           className="mt-1 flex-1 space-y-0.5 overflow-y-auto px-2"
@@ -197,8 +233,13 @@ export function Sidebar({
             </>
           )}
           {!loading && visibleSessions.length === 0 && (
-            <li className="px-2 py-2 text-[11px] italic text-minimax-muted">
-              No sessions yet — start a new task ↑
+            <li
+              data-testid="sidebar-session-empty"
+              className="px-2 py-2 text-[11px] italic text-minimax-muted"
+            >
+              {historyQuery.trim()
+                ? "No matching sessions."
+                : "No sessions yet — start a new task ↑"}
             </li>
           )}
           {visibleSessions.map((s) => (

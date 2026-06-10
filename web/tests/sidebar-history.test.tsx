@@ -4,7 +4,7 @@
  * that the list is scrollable (max-height + overflow-y-auto).
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { Sidebar } from "../src/components/Sidebar";
 import { useSessionStore } from "../src/stores";
 
@@ -170,5 +170,45 @@ describe("Sidebar history list", () => {
     const list = screen.getByTestId("sidebar-session-list");
     expect(list.className).toMatch(/overflow-y-auto/);
     // maxHeight removed — flex layout handles sizing naturally
+  });
+
+  it("filters history locally and exposes an empty search state", () => {
+    useSessionStore.setState({
+      sessions: [
+        {
+          id: "ses_alpha",
+          title: "Refactor parser",
+          archived: false,
+          created_at: NOW,
+          updated_at: NOW,
+          model_id: null,
+        },
+        {
+          id: "ses_beta",
+          title: "Write docs",
+          archived: false,
+          created_at: NOW,
+          updated_at: NOW,
+          model_id: null,
+        },
+      ],
+    });
+    render(<Sidebar />);
+
+    fireEvent.change(screen.getByTestId("sidebar-session-search"), {
+      target: { value: "docs" },
+    });
+    expect(screen.queryByTestId("sidebar-session-row-ses_alpha")).toBeNull();
+    expect(screen.getByTestId("sidebar-session-row-ses_beta")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-session-count")).toHaveTextContent("1");
+
+    fireEvent.change(screen.getByTestId("sidebar-session-search"), {
+      target: { value: "missing" },
+    });
+    expect(screen.getByTestId("sidebar-session-empty")).toHaveTextContent("No matching sessions.");
+
+    fireEvent.click(screen.getByTestId("sidebar-session-search-clear"));
+    expect(screen.getByTestId("sidebar-session-search")).toHaveValue("");
+    expect(screen.getByTestId("sidebar-session-row-ses_alpha")).toBeInTheDocument();
   });
 });
