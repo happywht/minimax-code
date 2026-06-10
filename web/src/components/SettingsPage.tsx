@@ -4,7 +4,7 @@
  * Shell only: each tab is a self-contained component imported from `./settings/`.
  * See individual tab files for store hooks, sub-components, and IPC bindings.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Bot,
   CalendarClock,
@@ -76,6 +76,12 @@ export interface SettingsPageProps {
 
 export function SettingsPage({ testId = "settings-page", onClose }: SettingsPageProps): JSX.Element {
   const [tab, setTab] = useState<Tab>("models");
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!onClose) return;
+    closeButtonRef.current?.focus();
+  }, [onClose]);
 
   useEffect(() => {
     if (!onClose) return;
@@ -89,12 +95,15 @@ export function SettingsPage({ testId = "settings-page", onClose }: SettingsPage
   return (
     <div
       data-testid={testId}
+      role={onClose ? "dialog" : undefined}
+      aria-modal={onClose ? true : undefined}
+      aria-labelledby="settings-title"
       className="flex h-full w-full flex-col overflow-hidden bg-minimax-bg text-minimax-fg"
     >
       <header className="border-b border-minimax-border px-4 py-3 md:px-6 md:py-4">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h1 data-testid="settings-title" className="text-base font-semibold">
+            <h1 id="settings-title" data-testid="settings-title" className="text-base font-semibold">
               Settings
             </h1>
             <p className="text-[11px] text-minimax-muted">
@@ -103,6 +112,7 @@ export function SettingsPage({ testId = "settings-page", onClose }: SettingsPage
           </div>
           {onClose && (
             <button
+              ref={closeButtonRef}
               type="button"
               data-testid="settings-close"
               aria-label="Close settings"

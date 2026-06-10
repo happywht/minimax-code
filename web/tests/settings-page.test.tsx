@@ -188,6 +188,20 @@ describe("SettingsPage", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("behaves like a keyboard-closeable dialog when onClose is provided", async () => {
+    const onClose = vi.fn();
+    render(<SettingsPage onClose={onClose} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("settings-models-list").children.length).toBe(2);
+    });
+
+    expect(screen.getByTestId("settings-page")).toHaveAttribute("role", "dialog");
+    expect(screen.getByTestId("settings-close")).toHaveFocus();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("renders with the models tab open by default", async () => {
     render(<SettingsPage />);
     await waitFor(() => {
