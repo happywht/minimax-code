@@ -42,6 +42,7 @@ export function ModelSelector({
   const refresh = useModelStore((s) => s.refresh);
   const setCurrent = useModelStore((s) => s.setCurrent);
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -50,7 +51,10 @@ export function ModelSelector({
     }
   }, [models.length, refresh]);
 
-  const closeMenu = useCallback(() => setOpen(false), []);
+  const closeMenu = useCallback(() => {
+    setOpen(false);
+    setQuery("");
+  }, []);
   useClickOutside(ref, closeMenu, { enabled: open });
 
   /** Group models by provider_id (or provider name as fallback). */
@@ -70,6 +74,32 @@ export function ModelSelector({
     }
     return Array.from(map.values());
   }, [models]);
+  const filteredGroups = useMemo<ProviderGroup[]>(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return groups;
+    return groups
+      .map((group) => {
+        const providerMatches = group.providerName.toLowerCase().includes(q);
+        return {
+          ...group,
+          models: providerMatches
+            ? group.models
+            : group.models.filter((model) =>
+                [
+                  model.id,
+                  model.name,
+                  model.provider,
+                  model.protocol ?? "",
+                  String(model.context_window),
+                ]
+                  .join(" ")
+                  .toLowerCase()
+                  .includes(q),
+              ),
+        };
+      })
+      .filter((group) => group.models.length > 0);
+  }, [groups, query]);
 
   const currentModel = models.find((m) => m.id === current) ?? models[0];
   const label = currentModel ? currentModel.name : "Model";
@@ -99,7 +129,7 @@ export function ModelSelector({
         }
       >
         {!isInline && <Cpu size={12} className="text-minimax-muted" />}
-        <span>{label}</span>
+        <span className="max-w-[140px] truncate">{label}</span>
         {currentModel?.protocol && !isInline && (
           <span className={`rounded px-1 py-0.5 text-[8px] font-mono ${protocolBadge(currentModel.protocol)}`}>
             {currentModel.protocol}
@@ -111,18 +141,36 @@ export function ModelSelector({
         <div
           role="listbox"
           data-testid="model-selector-menu"
-          className="absolute bottom-full right-0 z-30 mb-1 w-64 max-h-72 overflow-y-auto overflow-x-hidden rounded-md border border-minimax-border bg-minimax-panel shadow-xl"
+          className="absolute bottom-full right-0 z-30 mb-1 w-72 max-h-80 overflow-hidden rounded-md border border-minimax-border bg-minimax-panel shadow-xl"
         >
+          <div className="border-b border-minimax-border p-2">
+            <input
+              data-testid="model-selector-search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search models..."
+              className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs text-minimax-fg placeholder:text-minimax-muted focus:border-minimax-accent focus:outline-none"
+            />
+          </div>
           {models.length === 0 && (
             <div className="px-3 py-2 text-xs text-minimax-muted">
               No models available
             </div>
           )}
-          {groups.map((g, gi) => (
+          {models.length > 0 && filteredGroups.length === 0 && (
+            <div
+              data-testid="model-selector-empty"
+              className="px-3 py-3 text-center text-xs italic text-minimax-muted"
+            >
+              No models match "{query}".
+            </div>
+          )}
+          <div className="max-h-64 overflow-y-auto overflow-x-hidden">
+          {filteredGroups.map((g, gi) => (
             <div key={g.providerId}>
               {/* Provider group header */}
-              <div className="sticky top-0 z-10 flex items-center gap-1.5 border-b border-minimax-border/60 bg-minimax-panel px-3 py-1.5">
-                <span className="text-[11px] font-medium text-minimax-fg">{g.providerName}</span>
+              <div className="sticky top-0 z-10 flex items-center gap-1.5 border-b border-minimax-border/60 bg-minimax-bg/95 px-3 py-1.5">
+                <span className="min-w-0 truncate text-[11px] font-medium text-minimax-fg">{g.providerName}</span>
                 {g.protocol && (
                   <span className={`rounded px-1 py-0.5 text-[8px] font-mono ${protocolBadge(g.protocol)}`}>
                     {g.protocol}
@@ -148,14 +196,14 @@ export function ModelSelector({
                           }
                         }}
                         className={
-                          "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-minimax-border " +
+                          "flex w-full items-start gap-2 px-3 py-2 text-left text-xs hover:bg-minimax-border/70 " +
                           (isCurrent ? "bg-minimax-accent/10" : "")
                         }
                       >
                         <span className="flex-1 min-w-0">
-                          <span className="block truncate text-minimax-fg">{m.name}</span>
-                          <span className="block text-[11px] text-minimax-muted">
-                            {(m.context_window / 1000).toFixed(0)}k ctx
+                          <span className="block truncate font-medium text-minimax-fg">{m.name}</span>
+                          <span className="mt-0.5 block text-[11px] text-minimax-muted">
+                            {(m.context_window / 1000).toFixed(0)}k context
                             {m.supports_tools ? " · tools" : ""}
                           </span>
                         </span>
@@ -170,6 +218,7 @@ export function ModelSelector({
               )}
             </div>
           ))}
+          </div>
         </div>
       )}
     </div>

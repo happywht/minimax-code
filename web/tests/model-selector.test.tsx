@@ -53,6 +53,20 @@ describe("ModelSelector", () => {
     const menu = screen.getByTestId("model-selector-menu");
     expect(menu).toBeInTheDocument();
     expect(screen.getAllByRole("option")).toHaveLength(2);
+    expect(screen.getByTestId("model-selector-search")).toBeInTheDocument();
+  });
+
+  it("filters models from the selector search", async () => {
+    render(<ModelSelector />);
+    await waitFor(() => {
+      expect(useModelStore.getState().models.length).toBe(2);
+    });
+    fireEvent.click(screen.getByTestId("model-selector-trigger"));
+    fireEvent.change(screen.getByTestId("model-selector-search"), {
+      target: { value: "M2" },
+    });
+    expect(screen.queryByTestId("chat-input-model-option-m1")).toBeNull();
+    expect(screen.getByTestId("chat-input-model-option-m2")).toBeInTheDocument();
   });
 
   it("calls setCurrentModel when another option is selected", async () => {

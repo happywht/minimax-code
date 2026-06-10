@@ -84,17 +84,17 @@ export function WorkspaceSwitcher({
   };
 
   return (
-    <div ref={containerRef} className="relative" data-testid={testId}>
+    <div ref={containerRef} className="relative min-w-0" data-testid={testId}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         data-testid="workspace-switcher-trigger"
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex items-center gap-1.5 rounded-md border border-minimax-border bg-minimax-panel/60 px-2.5 py-1 text-xs text-minimax-fg hover:border-minimax-accent/50"
+        className="flex min-w-0 max-w-[110px] items-center gap-1.5 rounded-md border border-minimax-border bg-minimax-panel/60 px-2 py-1 text-xs text-minimax-fg hover:border-minimax-accent/50 sm:max-w-[180px] sm:px-2.5"
       >
         <Folder size={12} className="text-minimax-muted" />
-        <span data-testid="workspace-switcher-label" className="truncate max-w-[160px]">
+        <span data-testid="workspace-switcher-label" className="min-w-0 truncate">
           {current}
         </span>
         <ChevronDown

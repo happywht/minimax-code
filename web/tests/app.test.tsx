@@ -30,6 +30,7 @@ describe("App smoke test", () => {
       expect(screen.getByTestId("app-root")).toBeInTheDocument();
     });
     expect(screen.getAllByTestId("sidebar-brand")[0]).toBeInTheDocument();
+    expect(screen.getAllByTestId("sidebar-brand")).toHaveLength(1);
     expect(screen.getByTestId("chat-panel")).toBeInTheDocument();
     expect(screen.getByTestId("message-input")).toBeInTheDocument();
     // Always-allow and model picker are now inline in the floating

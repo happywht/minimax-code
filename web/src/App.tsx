@@ -21,7 +21,7 @@ import type { SidecarEvent } from "./types/ipc";
 type AppView = "chat" | "skills" | "settings" | "preview";
 
 /** Connection status derived from sidecar events. */
-type ConnectionState = "connected" | "disconnected" | "error";
+type ConnectionState = "connecting" | "connected" | "disconnected" | "error";
 
 /**
  * Top-level layout. Bootstraps stores on mount, then renders the
@@ -44,7 +44,7 @@ export default function App() {
   const [view, setView] = useState<AppView>("chat");
   const [mobileModalOpen, setMobileModalOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [connState, setConnState] = useState<ConnectionState>(agentReady ? "connected" : "disconnected");
+  const [connState, setConnState] = useState<ConnectionState>(agentReady ? "connected" : "connecting");
 
   useEffect(() => {
     (async () => {
@@ -58,6 +58,7 @@ export default function App() {
         // even when the agent isn't running yet.
         try {
           await typedIPC.ping();
+          setConnState("connected");
         } catch {
           // ping failure is fine in mock mode and is reported by the
           // ProgressPanel already.
@@ -114,28 +115,26 @@ export default function App() {
               onMobileClick={() => setMobileModalOpen(true)}
             />
           </div>
-          {/* Mobile sidebar — always mounted, CSS transition for slide-in/out */}
-          <div
-            className={`fixed inset-0 z-40 md:hidden transition-opacity duration-200 ${
-              sidebarOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
-            }`}
-          >
+          {sidebarOpen && (
             <div
-              className="absolute inset-0 bg-black/50"
-              onClick={() => setSidebarOpen(false)}
-            />
-            <div
-              className={`relative z-50 h-full transition-transform duration-200 ${
-                sidebarOpen ? "translate-x-0" : "-translate-x-full"
-              }`}
+              className="fixed inset-0 z-40 md:hidden"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Navigation"
             >
-              <Sidebar
-                view={view}
-                onViewChange={(v) => { setView(v); setSidebarOpen(false); }}
-                onMobileClick={() => { setMobileModalOpen(true); setSidebarOpen(false); }}
+              <div
+                className="absolute inset-0 bg-black/50"
+                onClick={() => setSidebarOpen(false)}
               />
+              <div className="relative z-50 h-full max-w-[85vw] animate-in slide-in-from-left-4 duration-200">
+                <Sidebar
+                  view={view}
+                  onViewChange={(v) => { setView(v); setSidebarOpen(false); }}
+                  onMobileClick={() => { setMobileModalOpen(true); setSidebarOpen(false); }}
+                />
+              </div>
             </div>
-          </div>
+          )}
           <main className="relative flex flex-1 flex-col">
             {view === "settings" ? (
               <SettingsPage onClose={() => setView("chat")} />
@@ -170,6 +169,8 @@ export default function App() {
               <span className={connState === "error" ? "text-status-error" : "text-status-warning"}>
                 {connState === "error"
                   ? "Connection error — retrying…"
+                  : connState === "connecting"
+                    ? "Connecting to agent…"
                   : isTauri()
                     ? "Connecting to agent…"
                     : "Disconnected — will retry automatically"}

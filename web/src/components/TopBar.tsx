@@ -45,11 +45,11 @@ export function TopBar({
   return (
     <header
       data-testid={testId}
-      className="flex h-10 shrink-0 items-center justify-between border-b border-minimax-border bg-minimax-panel px-4"
+      className="flex h-10 w-full shrink-0 items-center justify-between gap-2 overflow-hidden border-b border-minimax-border bg-minimax-panel px-2 md:px-4"
     >
       <div
         data-testid="app-topbar-left"
-        className="flex items-center gap-2"
+        className="flex min-w-0 flex-1 items-center gap-2"
       >
         {onToggleSidebar && (
           <button
@@ -67,7 +67,7 @@ export function TopBar({
       </div>
       <div
         data-testid="app-topbar-right"
-        className="flex items-center gap-2"
+        className="flex shrink-0 items-center gap-1 sm:gap-2"
       >
         {rightSlot}
         {onTogglePreview && (
@@ -75,7 +75,7 @@ export function TopBar({
             type="button"
             data-testid="app-topbar-preview"
             onClick={onTogglePreview}
-            className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs ${
+            className={`flex h-7 items-center gap-1.5 rounded-md border px-1.5 text-xs sm:px-2 ${
               previewActive
                 ? "border-minimax-accent text-minimax-accent"
                 : "border-transparent text-minimax-fg/80 hover:border-minimax-border hover:text-minimax-fg"
@@ -92,10 +92,11 @@ export function TopBar({
           type="button"
           data-testid="app-topbar-settings"
           onClick={onOpenSettings}
-          className="flex items-center gap-1.5 rounded-md border border-transparent px-2 py-1 text-xs text-minimax-fg/80 hover:border-minimax-border hover:text-minimax-fg"
+          className="flex h-7 items-center gap-1.5 rounded-md border border-transparent px-1.5 text-xs text-minimax-fg/80 hover:border-minimax-border hover:text-minimax-fg sm:px-2"
+          aria-label="Settings"
         >
           <SettingsIcon size={12} className="text-minimax-muted" />
-          <span>Settings</span>
+          <span className="hidden sm:inline">Settings</span>
         </button>
       </div>
     </header>

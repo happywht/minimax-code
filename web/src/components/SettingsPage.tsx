@@ -33,6 +33,42 @@ import {
 
 type Tab = "models" | "providers" | "permissions" | "scheduled" | "api-key" | "agents" | "teams" | "audit" | "webhooks" | "workflows";
 
+const TAB_GROUPS: Array<{
+  label: string;
+  tabs: Array<{ id: Tab; icon: JSX.Element; label: string; testId: string }>;
+}> = [
+  {
+    label: "Core",
+    tabs: [
+      { id: "models", icon: <Cpu size={12} />, label: "Models", testId: "settings-tab-models" },
+      { id: "providers", icon: <Globe size={12} />, label: "Providers", testId: "settings-tab-providers" },
+      { id: "api-key", icon: <KeyRound size={12} />, label: "API Key", testId: "settings-tab-api-key" },
+      { id: "permissions", icon: <ShieldAlert size={12} />, label: "Permissions", testId: "settings-tab-permissions" },
+    ],
+  },
+  {
+    label: "Automation",
+    tabs: [
+      { id: "scheduled", icon: <CalendarClock size={12} />, label: "Scheduled", testId: "settings-tab-scheduled" },
+      { id: "workflows", icon: <Workflow size={12} />, label: "Workflows", testId: "settings-tab-workflows" },
+      { id: "webhooks", icon: <Webhook size={12} />, label: "Webhooks", testId: "settings-tab-webhooks" },
+    ],
+  },
+  {
+    label: "Agents",
+    tabs: [
+      { id: "agents", icon: <Bot size={12} />, label: "Agents", testId: "settings-tab-agents" },
+      { id: "teams", icon: <Users size={12} />, label: "Teams", testId: "settings-tab-teams" },
+    ],
+  },
+  {
+    label: "Governance",
+    tabs: [
+      { id: "audit", icon: <ScrollText size={12} />, label: "Audit", testId: "settings-tab-audit" },
+    ],
+  },
+];
+
 export interface SettingsPageProps {
   testId?: string;
   onClose?: () => void;
@@ -55,7 +91,7 @@ export function SettingsPage({ testId = "settings-page", onClose }: SettingsPage
       data-testid={testId}
       className="flex h-full w-full flex-col overflow-hidden bg-minimax-bg text-minimax-fg"
     >
-      <header className="flex flex-col gap-3 border-b border-minimax-border px-6 py-4">
+      <header className="border-b border-minimax-border px-4 py-3 md:px-6 md:py-4">
         <div className="flex items-start justify-between gap-3">
           <div>
             <h1 data-testid="settings-title" className="text-base font-semibold">
@@ -77,30 +113,46 @@ export function SettingsPage({ testId = "settings-page", onClose }: SettingsPage
             </button>
           )}
         </div>
-        <nav className="flex flex-wrap gap-1 rounded-md border border-minimax-border bg-minimax-panel p-1">
-          <TabButton id="models" current={tab} onClick={setTab} icon={<Cpu size={12} />} label="Models" testId="settings-tab-models" />
-          <TabButton id="providers" current={tab} onClick={setTab} icon={<Globe size={12} />} label="Providers" testId="settings-tab-providers" />
-          <TabButton id="permissions" current={tab} onClick={setTab} icon={<ShieldAlert size={12} />} label="Permissions" testId="settings-tab-permissions" />
-          <TabButton id="scheduled" current={tab} onClick={setTab} icon={<CalendarClock size={12} />} label="Scheduled" testId="settings-tab-scheduled" />
-          <TabButton id="api-key" current={tab} onClick={setTab} icon={<KeyRound size={12} />} label="API Key" testId="settings-tab-api-key" />
-          <TabButton id="agents" current={tab} onClick={setTab} icon={<Bot size={12} />} label="Agents" testId="settings-tab-agents" />
-          <TabButton id="teams" current={tab} onClick={setTab} icon={<Users size={12} />} label="Teams" testId="settings-tab-teams" />
-          <TabButton id="audit" current={tab} onClick={setTab} icon={<ScrollText size={12} />} label="Audit" testId="settings-tab-audit" />
-          <TabButton id="webhooks" current={tab} onClick={setTab} icon={<Webhook size={12} />} label="Webhooks" testId="settings-tab-webhooks" />
-          <TabButton id="workflows" current={tab} onClick={setTab} icon={<Workflow size={12} />} label="Workflows" testId="settings-tab-workflows" />
-        </nav>
       </header>
-      <div className="flex-1 overflow-y-auto px-6 py-5">
-        {tab === "models" && <ModelsTab />}
-        {tab === "providers" && <ProvidersTab />}
-        {tab === "permissions" && <PermissionsTab />}
-        {tab === "scheduled" && <ScheduledTab />}
-        {tab === "api-key" && <ApiKeyTab />}
-        {tab === "agents" && <AgentsTab />}
-        {tab === "teams" && <TeamsTab />}
-        {tab === "audit" && <AuditTab />}
-        {tab === "webhooks" && <WebhooksTab />}
-        {tab === "workflows" && <WorkflowsTab />}
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        <nav
+          data-testid="settings-nav"
+          className="flex shrink-0 gap-2 overflow-x-auto border-b border-minimax-border bg-minimax-panel/50 px-3 py-2 md:w-52 md:flex-col md:overflow-y-auto md:border-b-0 md:border-r md:px-3 md:py-4"
+          aria-label="Settings sections"
+        >
+          {TAB_GROUPS.map((group) => (
+            <div key={group.label} className="flex shrink-0 gap-1 md:flex-col">
+              <div className="hidden px-2 pb-1 text-[10px] font-medium uppercase tracking-wider text-minimax-muted md:block">
+                {group.label}
+              </div>
+              <div className="flex gap-1 md:flex-col">
+                {group.tabs.map((item) => (
+                  <TabButton
+                    key={item.id}
+                    id={item.id}
+                    current={tab}
+                    onClick={setTab}
+                    icon={item.icon}
+                    label={item.label}
+                    testId={item.testId}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </nav>
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6 md:py-5">
+          {tab === "models" && <ModelsTab />}
+          {tab === "providers" && <ProvidersTab />}
+          {tab === "permissions" && <PermissionsTab />}
+          {tab === "scheduled" && <ScheduledTab />}
+          {tab === "api-key" && <ApiKeyTab />}
+          {tab === "agents" && <AgentsTab />}
+          {tab === "teams" && <TeamsTab />}
+          {tab === "audit" && <AuditTab />}
+          {tab === "webhooks" && <WebhooksTab />}
+          {tab === "workflows" && <WorkflowsTab />}
+        </div>
       </div>
     </div>
   );
@@ -121,8 +173,8 @@ function TabButton({
       data-testid={testId}
       onClick={() => onClick(id)}
       className={
-        "flex items-center gap-1.5 rounded px-2.5 py-1 text-xs transition-colors " +
-        (active ? "bg-minimax-accent/20 text-minimax-accent" : "text-minimax-muted hover:text-minimax-fg")
+        "flex items-center gap-1.5 whitespace-nowrap rounded px-2.5 py-1.5 text-left text-xs transition-colors md:w-full " +
+        (active ? "bg-minimax-accent/15 text-minimax-accent" : "text-minimax-muted hover:bg-minimax-border/60 hover:text-minimax-fg")
       }
     >
       {icon}

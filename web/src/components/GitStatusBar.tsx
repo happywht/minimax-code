@@ -98,7 +98,7 @@ export function GitStatusBar({
         : `${totalChanges} change${totalChanges === 1 ? "" : "s"}`;
 
   return (
-    <div ref={containerRef} className="relative" data-testid={testId}>
+    <div ref={containerRef} className="relative min-w-0" data-testid={testId}>
       <button
         type="button"
         onClick={onOpen}
@@ -110,10 +110,10 @@ export function GitStatusBar({
             ? `Branch ${branch} — ${indicatorLabel}`
             : "Loading git status…"
         }
-        className="flex items-center gap-1.5 rounded-md border border-minimax-border bg-minimax-panel/60 px-2.5 py-1 text-xs text-minimax-fg hover:border-minimax-accent/50"
+        className="flex min-w-0 max-w-[132px] items-center gap-1.5 rounded-md border border-minimax-border bg-minimax-panel/60 px-2 py-1 text-xs text-minimax-fg hover:border-minimax-accent/50 sm:max-w-[220px] sm:px-2.5"
       >
         <Branch size={12} className="text-minimax-muted" />
-        <span data-testid="git-status-bar-branch" className="font-mono">
+        <span data-testid="git-status-bar-branch" className="min-w-0 truncate font-mono">
           {branch}
         </span>
         <span aria-hidden="true" className="text-minimax-muted">
@@ -141,7 +141,7 @@ export function GitStatusBar({
           ) : (
             <CircleAlert size={10} data-testid="git-status-bar-icon-dirty" />
           )}
-          <span>{indicatorLabel}</span>
+          <span className="hidden sm:inline">{indicatorLabel}</span>
           {loading && clean !== null ? (
             <Loader2
               size={10}

@@ -193,6 +193,8 @@ describe("SettingsPage", () => {
     await waitFor(() => {
       expect(screen.getByTestId("settings-models-list").children.length).toBe(2);
     });
+    expect(screen.getByTestId("settings-nav")).toBeInTheDocument();
+    expect(screen.getByText("Core")).toBeInTheDocument();
     expect(screen.getByTestId("settings-models")).toBeInTheDocument();
     expect(screen.getByTestId("settings-title")).toHaveTextContent("Settings");
   });

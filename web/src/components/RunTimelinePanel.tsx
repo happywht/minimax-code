@@ -123,6 +123,7 @@ export function RunTimelinePanel({
 function TimelineStep({ step }: { step: AgentRunStep }): JSX.Element {
   const Icon = iconForKind(step.kind);
   const statusClass = statusTone(step.status);
+  const summary = step.summary ? summarizeStepText(step.summary, step.kind) : "";
   return (
     <li
       data-testid="run-timeline-step"
@@ -146,14 +147,22 @@ function TimelineStep({ step }: { step: AgentRunStep }): JSX.Element {
             </span>
           )}
         </div>
-        {step.summary && (
+        {summary && (
           <pre className="mt-0.5 max-h-20 overflow-hidden whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-minimax-muted">
-            {step.summary}
+            {summary}
           </pre>
         )}
       </div>
     </li>
   );
+}
+
+function summarizeStepText(text: string, kind: AgentRunStepKind): string {
+  const withoutCode = text.replace(/```[\s\S]*?```/g, "[code block]");
+  const compact = withoutCode.replace(/\n{3,}/g, "\n\n").trim();
+  const limit = kind === "final" ? 180 : 260;
+  if (compact.length <= limit) return compact;
+  return `${compact.slice(0, limit - 1).trimEnd()}…`;
 }
 
 function RunStatusBadge({ status }: { status: string }): JSX.Element {

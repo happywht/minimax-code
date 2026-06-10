@@ -39,6 +39,9 @@ describe("MessageList", () => {
     });
     render(<MessageList />);
     expect(screen.getByTestId("message-list")).toBeInTheDocument();
+    expect(screen.getByTestId("message-window-row-message-u1")).toHaveStyle({
+      contentVisibility: "auto",
+    });
     expect(screen.getByTestId("message-user")).toHaveTextContent("hello");
     expect(screen.getByTestId("message-assistant")).toHaveTextContent("world");
   });
@@ -79,5 +82,24 @@ describe("MessageList", () => {
 
     fireEvent.click(screen.getByTestId("scroll-to-bottom-btn"));
     expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "smooth" });
+  });
+
+  it("virtualizes the visible message window for long conversations", () => {
+    useChat.setState({
+      messages: Array.from({ length: 80 }, (_, index) => ({
+        id: `m${index}`,
+        role: index % 2 === 0 ? "user" : "assistant",
+        text: `message ${index}`,
+        streaming: false,
+        created_at: index,
+      })),
+    });
+
+    render(<MessageList />);
+
+    expect(screen.getByTestId("message-virtualizer")).toBeInTheDocument();
+    expect(screen.queryByText("message 0")).toBeNull();
+    expect(screen.getAllByText(/message \d+/).length).toBeGreaterThan(0);
+    expect(screen.queryAllByTestId(/^message-window-row-/).length).toBeLessThan(50);
   });
 });

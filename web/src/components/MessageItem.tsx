@@ -8,9 +8,12 @@
  * tool-call/tool-result messages that follow the assistant bubble in
  * the same turn (bounded by the next user/assistant message).
  */
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import "katex/dist/katex.min.css";
 import {
   AlertCircle,
   Brain,
@@ -20,6 +23,8 @@ import {
   Copy,
   Eye,
   FileEdit,
+  FileText,
+  Hash,
   Loader2,
   RefreshCw,
 } from "lucide-react";
@@ -36,6 +41,11 @@ interface TurnSummary {
   thinkingCount: number;
   filesViewed: number;
   filesModified: number;
+}
+
+interface FileReference {
+  path: string;
+  line?: number;
 }
 
 const STATUS_LABELS = {
@@ -95,6 +105,58 @@ function summarizeTurn(
   return { thinkingCount, filesViewed, filesModified };
 }
 
+const FILE_REF_EXTENSIONS = [
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "py",
+  "md",
+  "json",
+  "yaml",
+  "yml",
+  "toml",
+  "css",
+  "scss",
+  "html",
+  "sql",
+  "rs",
+  "go",
+  "java",
+  "cpp",
+  "c",
+  "cs",
+  "sh",
+  "ps1",
+].sort((a, b) => b.length - a.length).join("|");
+
+const FILE_REF_PATTERN = new RegExp(
+  String.raw`(?:^|[\s(["'` + "`" + String.raw`])((?:[A-Za-z]:[\\/])?(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+\.(` +
+    FILE_REF_EXTENSIONS +
+    String.raw`))(?:[:#L](\d+))?`,
+  "g",
+);
+
+function stripFencedCode(text: string): string {
+  return text.replace(/```[\s\S]*?```/g, "");
+}
+
+function extractFileReferences(text: string): FileReference[] {
+  const withoutCode = stripFencedCode(text);
+  const refs: FileReference[] = [];
+  const seen = new Set<string>();
+  for (const match of withoutCode.matchAll(FILE_REF_PATTERN)) {
+    const path = match[1].replace(/\\/g, "/");
+    const line = match[3] ? Number(match[3]) : undefined;
+    const key = `${path}:${line ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    refs.push({ path, line });
+    if (refs.length >= 6) break;
+  }
+  return refs;
+}
+
 /* ─────────────────────── Code block with shiki ─────────────────────── */
 
 interface CodeProps {
@@ -106,6 +168,10 @@ interface CodeProps {
 
 function MarkdownCode({ className, children, inline }: CodeProps): JSX.Element {
   const code = String(children ?? "").replace(/\n$/, "");
+  const lineNumbers = useMemo(
+    () => Array.from({ length: Math.max(1, code.split("\n").length) }, (_, index) => index + 1),
+    [code],
+  );
   const langMatch = /language-(\w+)/.exec(className ?? "");
   const hasLang = !!langMatch;
   // react-markdown 9: inline code has no `language-*` className. We
@@ -113,6 +179,7 @@ function MarkdownCode({ className, children, inline }: CodeProps): JSX.Element {
   const isInline = inline || (!hasLang && !code.includes("\n"));
   // Language detection deferred to highlight() — unknown langs return null.
   const lang = langMatch?.[1] ?? "text";
+  const isMermaid = lang.toLowerCase() === "mermaid";
   const [html, setHtml] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -120,7 +187,7 @@ function MarkdownCode({ className, children, inline }: CodeProps): JSX.Element {
   // Lazy-load shiki on first code block render
   useEffect(() => {
     let cancelled = false;
-    if (isInline || !code) return;
+    if (isInline || isMermaid || !code) return;
     highlight(code, lang)
       .then((h) => {
         if (!cancelled) setHtml(h);
@@ -131,7 +198,7 @@ function MarkdownCode({ className, children, inline }: CodeProps): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [code, lang, isInline]);
+  }, [code, lang, isInline, isMermaid]);
 
   // Cleanup copy feedback timer on unmount
   useEffect(() => {
@@ -148,12 +215,17 @@ function MarkdownCode({ className, children, inline }: CodeProps): JSX.Element {
     );
   }
 
+  if (isMermaid) {
+    return <MermaidBlock code={code} />;
+  }
+
   return (
     <div className="my-2 overflow-hidden rounded-md border border-minimax-border bg-minimax-bg">
       <div className="flex items-center justify-between border-b border-minimax-border/60 bg-minimax-bg/40 px-2 py-1 text-[11px] uppercase tracking-wider text-minimax-muted">
         <span>{lang}</span>
         <button
           type="button"
+          data-testid="code-copy-button"
           onClick={async () => {
             try {
               await navigator.clipboard.writeText(code);
@@ -170,18 +242,274 @@ function MarkdownCode({ className, children, inline }: CodeProps): JSX.Element {
           {copied ? "Copied" : "Copy"}
         </button>
       </div>
-      {html ? (
-        <div
-          className="overflow-x-auto p-3 text-[12px] leading-relaxed"
-          // shiki output is pre-sanitized
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
-      ) : (
-        <pre className="overflow-x-auto p-3 text-[12px] leading-relaxed text-minimax-fg">
-          <code>{code}</code>
+      <div className="grid grid-cols-[auto_minmax(0,1fr)] text-[12px] leading-relaxed">
+        <pre
+          aria-hidden
+          data-testid="code-line-numbers"
+          className="select-none border-r border-minimax-border/50 bg-minimax-panel/40 px-2 py-3 text-right font-mono text-minimax-muted/70"
+        >
+          {lineNumbers.join("\n")}
         </pre>
-      )}
+        <div className="min-w-0 overflow-x-auto p-3 font-mono">
+          {html ? (
+            <div
+              className="[&_pre]:m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:font-mono [&_pre]:leading-relaxed"
+              // shiki output is pre-sanitized
+              dangerouslySetInnerHTML={{ __html: html }}
+            />
+          ) : (
+            <pre className="m-0 text-minimax-fg">
+              <code>{code}</code>
+            </pre>
+          )}
+        </div>
+      </div>
     </div>
+  );
+}
+
+function MermaidBlock({ code }: { code: string }): JSX.Element {
+  const rawId = useId();
+  const theme = useThemeStore((s) => s.theme);
+  const [svg, setSvg] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const diagramId = useMemo(
+    () => `mermaid-${rawId.replace(/[^a-zA-Z0-9_-]/g, "")}`,
+    [rawId],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    setSvg(null);
+    setError(null);
+
+    import("mermaid")
+      .then(async (mod) => {
+        const mermaid = mod.default;
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "strict",
+          theme: theme === "dark" ? "dark" : "default",
+        });
+        const result = await mermaid.render(diagramId, code);
+        if (!cancelled) setSvg(result.svg);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Unable to render Mermaid diagram");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [code, diagramId, theme]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
+
+  return (
+    <div
+      data-testid="mermaid-block"
+      className="my-2 overflow-hidden rounded-md border border-minimax-border bg-minimax-bg"
+    >
+      <div className="flex items-center justify-between border-b border-minimax-border/60 bg-minimax-bg/40 px-2 py-1 text-[11px] uppercase tracking-wider text-minimax-muted">
+        <span>Mermaid</span>
+        <button
+          type="button"
+          data-testid="mermaid-copy-button"
+          onClick={async () => {
+            try {
+              await navigator.clipboard.writeText(code);
+              setCopied(true);
+              if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+              copyTimerRef.current = setTimeout(() => setCopied(false), 1500);
+            } catch {
+              // ignore
+            }
+          }}
+          className="flex items-center gap-1 rounded px-1 py-0.5 hover:bg-minimax-border"
+        >
+          {copied ? <Check size={10} /> : <Copy size={10} />}
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <div className="min-h-32 overflow-auto p-3">
+        {error ? (
+          <div
+            data-testid="mermaid-error"
+            className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/5 p-3 text-xs text-status-error"
+          >
+            <AlertCircle size={14} className="mt-0.5 shrink-0" />
+            <span>{error}</span>
+          </div>
+        ) : svg ? (
+          <div
+            data-testid="mermaid-svg"
+            className="flex min-w-max justify-center [&_svg]:max-w-none"
+            dangerouslySetInnerHTML={{ __html: svg }}
+          />
+        ) : (
+          <div
+            data-testid="mermaid-loading"
+            className="flex items-center gap-2 rounded-md border border-minimax-border bg-minimax-panel/40 p-3 text-xs text-minimax-muted"
+          >
+            <Loader2 size={14} className="animate-spin" />
+            Rendering diagram...
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FileReferenceStrip({ refs }: { refs: FileReference[] }): JSX.Element | null {
+  if (refs.length === 0) return null;
+  return (
+    <div
+      data-testid="file-reference-strip"
+      className="mb-2 flex flex-wrap gap-1.5"
+      aria-label="Referenced files"
+    >
+      {refs.map((ref) => (
+        <FileReferenceCard key={`${ref.path}:${ref.line ?? ""}`} refInfo={ref} />
+      ))}
+    </div>
+  );
+}
+
+function FileReferenceCard({ refInfo }: { refInfo: FileReference }): JSX.Element {
+  const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const parts = refInfo.path.split("/");
+  const filename = parts.at(-1) ?? refInfo.path;
+  const directory = parts.slice(0, -1).join("/");
+  const label = refInfo.line ? `${refInfo.path}:${refInfo.line}` : refInfo.path;
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
+
+  return (
+    <div
+      data-testid="file-reference-card"
+      className="group inline-flex max-w-full items-center gap-2 rounded-md border border-minimax-border bg-minimax-bg/60 px-2 py-1 text-[11px] text-minimax-fg transition-colors duration-200 hover:border-minimax-accent/40"
+      title={label}
+    >
+      <FileText size={13} className="shrink-0 text-minimax-muted" />
+      <span className="min-w-0">
+        <span className="block truncate font-medium leading-tight">{filename}</span>
+        {directory && (
+          <span className="block max-w-56 truncate leading-tight text-minimax-muted">
+            {directory}
+          </span>
+        )}
+      </span>
+      {refInfo.line && (
+        <span
+          data-testid="file-reference-line"
+          className="inline-flex shrink-0 items-center gap-0.5 rounded border border-minimax-border bg-minimax-panel px-1 py-0.5 text-[10px] text-minimax-muted"
+        >
+          <Hash size={9} />
+          {refInfo.line}
+        </span>
+      )}
+      <button
+        type="button"
+        data-testid="file-reference-copy"
+        className="inline-flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-minimax-muted transition-colors duration-200 hover:bg-minimax-border hover:text-minimax-fg"
+        onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(label);
+            setCopied(true);
+            if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+            copyTimerRef.current = setTimeout(() => setCopied(false), 1500);
+          } catch {
+            // ignore
+          }
+        }}
+        title="Copy file reference"
+      >
+        {copied ? <Check size={11} /> : <Copy size={11} />}
+        <span>{copied ? "Copied" : "Copy"}</span>
+      </button>
+    </div>
+  );
+}
+
+const FENCE_LANGS = [
+  "mermaid",
+  "typescript",
+  "javascript",
+  "tsx",
+  "jsx",
+  "python",
+  "json",
+  "yaml",
+  "bash",
+  "shell",
+  "html",
+  "css",
+  "sql",
+  "toml",
+  "rust",
+  "go",
+  "java",
+  "cpp",
+  "csharp",
+  "markdown",
+  "md",
+  "py",
+  "ts",
+  "js",
+  "sh",
+].sort((a, b) => b.length - a.length);
+
+function normalizeMarkdownForRender(text: string): string {
+  if (!text.includes("```")) return text;
+  return text
+    .split("\n")
+    .flatMap((line) => {
+      const match = /^(\s*```)(\S+)(.*)$/.exec(line);
+      if (!match) return [line];
+      const [, fence, rawInfo, rest] = match;
+      const lower = rawInfo.toLowerCase();
+      const lang = FENCE_LANGS.find((candidate) => lower.startsWith(candidate));
+      if (!lang || (rawInfo.length === lang.length && rest.length === 0)) return [line];
+      if (rawInfo.length === lang.length && /^\s/.test(rest)) return [line];
+      return [`${fence}${rawInfo.slice(0, lang.length)}`, `${rawInfo.slice(lang.length)}${rest}`];
+    })
+    .join("\n");
+}
+
+function MarkdownBody({ text }: { text: string }): JSX.Element {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[rehypeKatex]}
+      components={{
+        code: MarkdownCode as never,
+        a: ({ href, children }) => (
+          <a
+            href={href}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="text-minimax-accent underline-offset-2 hover:underline"
+          >
+            {children}
+          </a>
+        ),
+      }}
+    >
+      {text}
+    </ReactMarkdown>
   );
 }
 
@@ -214,6 +542,14 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
     if (idx < 0) return { thinkingCount: 0, filesViewed: 0, filesModified: 0 };
     return summarizeTurn(messages, idx, message);
   }, [isAssistant, msgCount, messages, message]);
+  const renderText = useMemo(
+    () => (isUser ? message.text : normalizeMarkdownForRender(message.text || "")),
+    [isUser, message.text],
+  );
+  const fileReferences = useMemo(
+    () => extractFileReferences(renderText),
+    [renderText],
+  );
 
   // Tool bubbles are collapsible to keep the chat scannable.
   const [expanded, setExpanded] = useState(false);
@@ -324,28 +660,12 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
             <div className="h-3 w-40 animate-pulse rounded bg-minimax-border/50" />
           </div>
         ) : !isFailed ? (
-        <div className={`prose prose-sm max-w-none break-words leading-relaxed${theme === "dark" ? " prose-invert" : ""}`}>
+        <div className={`prose prose-sm max-w-none break-words leading-relaxed [&_.katex-display]:my-3 [&_.katex-display]:overflow-x-auto [&_.katex-display]:overflow-y-hidden [&_.katex-display]:py-1 [&_.katex]:text-[1.02em]${theme === "dark" ? " prose-invert" : ""}`}>
+          <FileReferenceStrip refs={fileReferences} />
           {isUser ? (
-            <p className="m-0 whitespace-pre-wrap">{message.text}</p>
+            <p className="m-0 whitespace-pre-wrap">{renderText}</p>
           ) : (
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={{
-                code: MarkdownCode as never,
-                a: ({ href, children }) => (
-                  <a
-                    href={href}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    className="text-minimax-accent underline-offset-2 hover:underline"
-                  >
-                    {children}
-                  </a>
-                ),
-              }}
-            >
-              {message.text || ""}
-            </ReactMarkdown>
+            <MarkdownBody text={renderText} />
           )}
         </div>
         ) : null}
