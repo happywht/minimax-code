@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ChatPanel,
+  ConnectionBanner,
   ErrorBoundary,
   MessageInput,
   MobilePairingModal,
@@ -15,7 +16,7 @@ import {
   TopBar,
   toast,
 } from "./components";
-import { ipc, isTauri, typedIPC } from "./ipc";
+import { ipc, typedIPC } from "./ipc";
 import { useChat, useModelStore, usePermissionStore, useSessionStore, initNotificationStore } from "./stores";
 import type { SidecarEvent } from "./types/ipc";
 
@@ -47,6 +48,22 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [connState, setConnState] = useState<ConnectionState>(agentReady ? "connected" : "connecting");
+  const [retryAttempt, setRetryAttempt] = useState(0);
+
+  const retryDelayMs = Math.min(15_000, 1000 * 2 ** retryAttempt);
+
+  const retryConnection = useCallback(async () => {
+    setConnState("connecting");
+    try {
+      await ipc.start();
+      await typedIPC.ping();
+      setRetryAttempt(0);
+      setConnState("connected");
+    } catch {
+      setRetryAttempt((attempt) => attempt + 1);
+      setConnState("error");
+    }
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -60,6 +77,7 @@ export default function App() {
         // even when the agent isn't running yet.
         try {
           await typedIPC.ping();
+          setRetryAttempt(0);
           setConnState("connected");
         } catch {
           // ping failure is fine in mock mode and is reported by the
@@ -89,12 +107,22 @@ export default function App() {
   // ── 4.7: Live connection status via sidecar events ──
   useEffect(() => {
     const unsub = ipc.onSideCar((ev: SidecarEvent) => {
-      if (ev.status === "started") setConnState("connected");
-      else if (ev.status === "stopped") setConnState("disconnected");
+      if (ev.status === "started") {
+        setRetryAttempt(0);
+        setConnState("connected");
+      } else if (ev.status === "stopped") setConnState("disconnected");
       else if (ev.status === "error") setConnState("error");
     });
     return unsub;
   }, []);
+
+  useEffect(() => {
+    if (connState === "connected") return;
+    const timer = window.setTimeout(() => {
+      void retryConnection();
+    }, retryDelayMs);
+    return () => window.clearTimeout(timer);
+  }, [connState, retryConnection, retryDelayMs]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -185,25 +213,12 @@ export default function App() {
           {shortcutsOpen && (
             <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
           )}
-          {/* ── 4.7: Live connection status indicator ── */}
           {connState !== "connected" && view === "chat" && (
-            <div
-              data-testid="connection-indicator"
-              className="pointer-events-none fixed bottom-2 right-2 z-30 flex items-center gap-1.5 rounded bg-minimax-panel/90 px-2.5 py-1 text-xs shadow backdrop-blur-sm"
-            >
-              <span className={`inline-block h-1.5 w-1.5 rounded-full ${
-                connState === "error" ? "bg-status-error" : "bg-status-warning animate-pulse"
-              }`} />
-              <span className={connState === "error" ? "text-status-error" : "text-status-warning"}>
-                {connState === "error"
-                  ? "Connection error — retrying…"
-                  : connState === "connecting"
-                    ? "Connecting to agent…"
-                  : isTauri()
-                    ? "Connecting to agent…"
-                    : "Disconnected — will retry automatically"}
-              </span>
-            </div>
+            <ConnectionBanner
+              state={connState}
+              retryDelayMs={retryDelayMs}
+              onRetry={retryConnection}
+            />
           )}
         </div>
       </div>
