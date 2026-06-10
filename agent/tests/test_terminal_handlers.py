@@ -13,12 +13,16 @@ from minimax_code.config import Config
 from minimax_code.ipc import handlers_terminal
 from minimax_code.ipc.handlers_terminal import register_terminal_handlers
 from minimax_code.ipc.server import IPCServer
+from minimax_code.storage.dao.runs import AgentRunsDAO
+from minimax_code.storage.dao.sessions import SessionsDAO
+from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 
 
 class _CapturingContext:
     def __init__(self) -> None:
         self.reply_payload: Any = None
         self.reply_error_payload: tuple[int, str, Any] | None = None
+        self.events: list[tuple[str, Any]] = []
 
     async def reply(self, result: Any) -> None:
         self.reply_payload = result
@@ -26,8 +30,8 @@ class _CapturingContext:
     async def reply_error(self, code: int, message: str, data: Any = None) -> None:
         self.reply_error_payload = (code, message, data)
 
-    async def emit(self, event: str, data: Any = None) -> None:  # pragma: no cover
-        return None
+    async def emit(self, event: str, data: Any = None) -> None:
+        self.events.append((event, data))
 
 
 @pytest.fixture(autouse=True)
@@ -60,6 +64,12 @@ async def _read_until_done(session_id: str, *, timeout_s: float = 5.0) -> dict[s
     raise AssertionError("terminal session did not finish")
 
 
+async def _await_session_task(session_id: str) -> None:
+    session = handlers_terminal._SESSIONS[session_id]  # type: ignore[attr-defined]
+    if session.task is not None:
+        await session.task
+
+
 @pytest.mark.asyncio
 async def test_terminal_start_and_read_collects_stdout(tmp_path: Path) -> None:
     start, ctx = _make_handler("terminal.start")
@@ -75,6 +85,7 @@ async def test_terminal_start_and_read_collects_stdout(tmp_path: Path) -> None:
     assert ctx.reply_error_payload is None
     session = ctx.reply_payload["session"]
     payload = await _read_until_done(session["id"])
+    await _await_session_task(session["id"])
 
     assert payload["session"]["status"] == "completed"
     assert payload["session"]["exit_code"] == 0
@@ -95,6 +106,7 @@ async def test_terminal_read_after_seq_returns_incremental_chunks(tmp_path: Path
     )
     session_id = ctx.reply_payload["session"]["id"]
     payload = await _read_until_done(session_id)
+    await _await_session_task(session_id)
     first_seq = payload["chunks"][0]["seq"]
 
     read, read_ctx = _make_handler("terminal.read")
@@ -120,6 +132,69 @@ async def test_terminal_stop_cancels_running_process(tmp_path: Path) -> None:
 
     stop, stop_ctx = _make_handler("terminal.stop")
     await stop({"session_id": session_id}, stop_ctx)
+    await _await_session_task(session_id)
 
     assert stop_ctx.reply_error_payload is None
     assert stop_ctx.reply_payload["session"]["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_terminal_session_tracks_run_timeline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from minimax_code import app as app_module
+
+    db = AsyncDatabase(make_temp_database_path(tmp_path))
+    await db.connect()
+    await db.migrate()
+    monkeypatch.setattr(app_module, "_DB_SINGLETON", db)
+    try:
+        chat_session_id = f"ses_{uuid4_hex()}"
+        await SessionsDAO(db).create(id=chat_session_id, title="terminal timeline")
+
+        start, ctx = _make_handler("terminal.start")
+        await start(
+            {
+                "command": _python_command("print('timeline terminal')"),
+                "cwd": str(tmp_path),
+                "timeout_s": 5,
+                "session_id": chat_session_id,
+            },
+            ctx,
+        )
+
+        assert ctx.reply_error_payload is None
+        session_id = ctx.reply_payload["session"]["id"]
+        payload = await _read_until_done(session_id)
+        await _await_session_task(session_id)
+
+        assert payload["session"]["session_id"] == chat_session_id
+        assert payload["session"]["run_id"]
+        event_names = [event for event, _data in ctx.events]
+        assert event_names == [
+            "run.created",
+            "run.step.started",
+            "run.step.completed",
+            "run.completed",
+        ]
+
+        dao = AgentRunsDAO(db)
+        run = await dao.get_run(payload["session"]["run_id"])
+        assert run is not None
+        assert run["mode"] == "execute"
+        assert run["status"] == "completed"
+        assert run["metadata"]["source"] == "terminal"
+        steps = await dao.list_steps(run["id"])
+        assert steps[0]["kind"] == "tool_call"
+        assert steps[0]["status"] == "completed"
+        assert "timeline terminal" in steps[0]["payload"]["output_tail"]
+    finally:
+        monkeypatch.setattr(app_module, "_DB_SINGLETON", None)
+        await db.close()
+
+
+def uuid4_hex() -> str:
+    import uuid
+
+    return uuid.uuid4().hex[:10]

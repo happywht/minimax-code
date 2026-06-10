@@ -9,9 +9,11 @@ in-memory because terminal processes are process-local by nature.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,11 +22,14 @@ from .handler_utils import HandlerError
 from .protocol import INVALID_PARAMS
 from .server import Context
 
+logger = logging.getLogger(__name__)
+
 _TERMINAL_ERROR = -32000
 _MAX_COMMAND_LEN = 4_000
 _MAX_CHUNKS_PER_SESSION = 2_000
 _DEFAULT_TIMEOUT_S = 10 * 60
 _MAX_TIMEOUT_S = 60 * 60
+_OUTPUT_TAIL_LIMIT = 1_200
 
 
 @dataclass
@@ -40,6 +45,9 @@ class TerminalSession:
     id: str
     command: str
     cwd: str
+    chat_session_id: str | None = None
+    run_id: str | None = None
+    run_step_id: str | None = None
     status: str = "starting"
     started_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -72,6 +80,8 @@ class TerminalSession:
             "id": self.id,
             "command": self.command,
             "cwd": self.cwd,
+            "session_id": self.chat_session_id,
+            "run_id": self.run_id,
             "status": self.status,
             "started_at": self.started_at,
             "updated_at": self.updated_at,
@@ -83,6 +93,24 @@ class TerminalSession:
 
 
 _SESSIONS: dict[str, TerminalSession] = {}
+
+
+def _preview_text(value: Any, *, limit: int = 600) -> str:
+    try:
+        import json
+
+        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        text = str(value)
+    text = text.replace("\r\n", "\n")
+    return text if len(text) <= limit else text[:limit] + f"\n...(truncated, {len(text) - limit} chars)"
+
+
+def _terminal_output_tail(session: TerminalSession, *, limit: int = _OUTPUT_TAIL_LIMIT) -> str:
+    text = "".join(chunk.text for chunk in session.chunks)
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
 
 
 def _require_params(params: Any) -> dict[str, Any]:
@@ -120,6 +148,15 @@ def _timeout_from_params(params: dict[str, Any]) -> float:
     return float(min(raw, _MAX_TIMEOUT_S))
 
 
+def _chat_session_id_from_params(params: dict[str, Any]) -> str | None:
+    raw = params.get("session_id")
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, str):
+        raise HandlerError(INVALID_PARAMS, "'session_id' must be a string when provided")
+    return raw
+
+
 def _session_from_params(params: dict[str, Any]) -> TerminalSession:
     session_id = params.get("session_id")
     if not isinstance(session_id, str) or not session_id:
@@ -136,6 +173,135 @@ async def _read_stream(session: TerminalSession, stream: asyncio.StreamReader, n
         if not data:
             return
         session.append(name, data.decode("utf-8", errors="replace"))
+
+
+async def _get_runs_dao() -> Any | None:
+    try:
+        from ..app import get_db, init_runtime
+        from ..storage.dao.runs import AgentRunsDAO
+
+        db = get_db()
+        if db is None:
+            try:
+                await init_runtime()
+            except Exception:
+                logger.debug("init_runtime failed while enabling terminal run tracking", exc_info=True)
+            db = get_db()
+        return AgentRunsDAO(db) if db is not None else None
+    except Exception:
+        logger.debug("terminal run tracking unavailable", exc_info=True)
+        return None
+
+
+async def _create_run_tracking(
+    session: TerminalSession,
+    emit: Callable[[str, dict[str, Any]], Awaitable[None]],
+) -> None:
+    if not session.chat_session_id:
+        return
+    dao = await _get_runs_dao()
+    if dao is None:
+        return
+    command_preview = _preview_text(session.command, limit=80).replace("\n", " ")
+    try:
+        run = await dao.create_run(
+            session_id=session.chat_session_id,
+            mode="execute",
+            status="running",
+            title=f"Terminal: {command_preview}",
+            metadata={
+                "source": "terminal",
+                "terminal_session_id": session.id,
+                "command": session.command,
+                "cwd": session.cwd,
+            },
+        )
+        session.run_id = run["id"]
+        await emit("run.created", {"run": run})
+        step = await dao.create_step(
+            run_id=session.run_id,
+            session_id=session.chat_session_id,
+            kind="tool_call",
+            title="terminal",
+            summary=_preview_text({"command": session.command, "cwd": session.cwd}, limit=300),
+            tool_call_id=session.id,
+            tool_name="terminal",
+            payload={
+                "source": "terminal",
+                "terminal_session_id": session.id,
+                "command": session.command,
+                "cwd": session.cwd,
+            },
+        )
+        session.run_step_id = step["id"]
+        await emit("run.step.started", {"run_id": session.run_id, "step": step})
+    except Exception:
+        logger.exception("failed to create terminal run tracking")
+        session.run_id = None
+        session.run_step_id = None
+
+
+async def _complete_run_tracking(
+    session: TerminalSession,
+    emit: Callable[[str, dict[str, Any]], Awaitable[None]],
+) -> None:
+    if not session.chat_session_id or not session.run_id:
+        return
+    dao = await _get_runs_dao()
+    if dao is None:
+        return
+    step_status = "completed"
+    run_status = "completed"
+    if session.status == "failed":
+        step_status = run_status = "failed"
+    elif session.status == "cancelled":
+        step_status = run_status = "cancelled"
+    output_tail = _terminal_output_tail(session)
+    payload = {
+        "source": "terminal",
+        "terminal_session_id": session.id,
+        "command": session.command,
+        "cwd": session.cwd,
+        "exit_code": session.exit_code,
+        "status": session.status,
+        "output_tail": output_tail,
+    }
+    summary = _preview_text(
+        {
+            "status": session.status,
+            "exit_code": session.exit_code,
+            "output_tail": output_tail,
+        },
+        limit=500,
+    )
+    try:
+        if session.run_step_id:
+            step = await dao.complete_step(
+                session.run_step_id,
+                status=step_status,
+                summary=summary,
+                payload=payload,
+                error=session.error if session.status == "failed" else None,
+            )
+            if step is not None:
+                await emit("run.step.completed", {"run_id": session.run_id, "step": step})
+        run = await dao.update_run_status(
+            session.run_id,
+            status=run_status,
+            error=session.error if session.status in {"failed", "cancelled"} else None,
+            metadata={
+                "source": "terminal",
+                "terminal_session_id": session.id,
+                "command": session.command,
+                "cwd": session.cwd,
+                "exit_code": session.exit_code,
+                "status": session.status,
+            },
+        )
+        if run is not None:
+            await emit("run.completed", {"run": run})
+    except Exception:
+        logger.exception("failed to complete terminal run tracking")
 
 
 async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
@@ -157,8 +323,13 @@ async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
     await proc.wait()
 
 
-async def _run_session(session: TerminalSession, timeout_s: float) -> None:
+async def _run_session(
+    session: TerminalSession,
+    timeout_s: float,
+    emit: Callable[[str, dict[str, Any]], Awaitable[None]],
+) -> None:
     try:
+        await _create_run_tracking(session, emit)
         env = {**os.environ, "PYTHONUNBUFFERED": "1"}
         process = await asyncio.create_subprocess_shell(
             session.command,
@@ -194,6 +365,8 @@ async def _run_session(session: TerminalSession, timeout_s: float) -> None:
         session.error = str(exc)
         session.completed_at = time.time()
         session.updated_at = session.completed_at
+    finally:
+        await _complete_run_tracking(session, emit)
 
 
 async def _stop_session(session: TerminalSession) -> None:
@@ -228,13 +401,15 @@ def register_terminal_handlers(server: Any) -> None:
             command = _command_from_params(p)
             cwd = _cwd_from_params(p)
             timeout_s = _timeout_from_params(p)
+            chat_session_id = _chat_session_id_from_params(p)
             session = TerminalSession(
                 id=f"term_{uuid.uuid4().hex[:10]}",
                 command=command,
                 cwd=cwd,
+                chat_session_id=chat_session_id,
             )
             _SESSIONS[session.id] = session
-            session.task = asyncio.create_task(_run_session(session, timeout_s))
+            session.task = asyncio.create_task(_run_session(session, timeout_s, ctx.emit))
             await ctx.reply({"session": session.to_wire()})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)

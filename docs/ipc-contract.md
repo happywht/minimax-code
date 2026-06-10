@@ -394,9 +394,19 @@ Start request:
   "jsonrpc":"2.0",
   "id":"term-1",
   "method":"terminal.start",
-  "params":{"command":"pnpm test","cwd":"D:\\repo","timeout_s":600}
+  "params":{
+    "command":"pnpm test",
+    "cwd":"D:\\repo",
+    "timeout_s":600,
+    "session_id":"ses_current"
+  }
 }
 ```
+
+When `session_id` is provided, the agent also creates an `execute`
+run timeline entry for the command and streams `run.*` events over the
+existing event channel. If storage is unavailable, the terminal command
+still runs; timeline tracking is skipped.
 
 Start response:
 ```json
@@ -408,6 +418,8 @@ Start response:
       "id":"term_abcd1234",
       "command":"pnpm test",
       "cwd":"D:\\repo",
+      "session_id":"ses_current",
+      "run_id":"run_abc123def456",
       "status":"running",
       "started_at":1781020000.0,
       "updated_at":1781020000.0,

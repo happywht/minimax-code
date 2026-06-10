@@ -601,6 +601,8 @@ export interface TerminalSession {
   id: string;
   command: string;
   cwd: string;
+  session_id?: string | null;
+  run_id?: string | null;
   status: TerminalStatus;
   started_at: number;
   updated_at: number;

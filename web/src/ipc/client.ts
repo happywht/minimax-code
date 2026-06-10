@@ -870,7 +870,12 @@ export interface TypedIPC {
   patchPreview(opts?: { scope?: "staged" | "branch" | "working"; ref?: string }): Promise<PatchPreviewResult>;
   patchApplyHunk(opts: PatchHunkOperationParams): Promise<PatchHunkOperationResult>;
   patchRevertHunk(opts: PatchHunkOperationParams): Promise<PatchHunkOperationResult>;
-  startTerminal(opts: { command: string; cwd?: string; timeout_s?: number }): Promise<TerminalStartResult>;
+  startTerminal(opts: {
+    command: string;
+    cwd?: string;
+    timeout_s?: number;
+    session_id?: string | null;
+  }): Promise<TerminalStartResult>;
   readTerminal(opts: { session_id: string; after_seq?: number }): Promise<TerminalReadResult>;
   stopTerminal(sessionId: string): Promise<TerminalStartResult>;
   listTerminals(): Promise<TerminalListResult>;
@@ -1774,13 +1779,15 @@ function mockHandle(
     }
 
     case "terminal.start": {
-      const p = params as { command: string; cwd?: string };
+      const p = params as { command: string; cwd?: string; session_id?: string | null };
       const now = Date.now() / 1000;
       const id = `term_mock_${Math.random().toString(36).slice(2, 10)}`;
       const session: TerminalSession = {
         id,
         command: p.command,
         cwd: p.cwd ?? "",
+        session_id: p.session_id ?? null,
+        run_id: p.session_id ? `run_mock_${Math.random().toString(36).slice(2, 10)}` : null,
         status: "completed",
         started_at: now,
         updated_at: now,

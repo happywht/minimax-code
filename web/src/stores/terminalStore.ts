@@ -12,7 +12,12 @@ export interface TerminalState {
   error: string | null;
   setActive: (sessionId: string | null) => void;
   list: () => Promise<void>;
-  start: (opts: { command: string; cwd?: string; timeout_s?: number }) => Promise<TerminalSession | null>;
+  start: (opts: {
+    command: string;
+    cwd?: string;
+    timeout_s?: number;
+    session_id?: string | null;
+  }) => Promise<TerminalSession | null>;
   read: (sessionId: string) => Promise<TerminalSession | null>;
   stop: (sessionId: string) => Promise<TerminalSession | null>;
   reset: () => void;

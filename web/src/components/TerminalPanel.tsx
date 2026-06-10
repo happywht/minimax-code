@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Play, RefreshCw, Square, TerminalSquare } from "lucide-react";
-import { useTerminalStore } from "../stores";
+import { useSessionStore, useTerminalStore } from "../stores";
 import type { TerminalChunk, TerminalSession } from "../types/ipc";
 
 export interface TerminalPanelProps {
@@ -21,6 +21,7 @@ export function TerminalPanel({ testId = "terminal-panel" }: TerminalPanelProps)
   const start = useTerminalStore((s) => s.start);
   const read = useTerminalStore((s) => s.read);
   const stop = useTerminalStore((s) => s.stop);
+  const currentSessionId = useSessionStore((s) => s.currentSessionId);
   const [command, setCommand] = useState("");
   const [cwd, setCwd] = useState("");
   const [autoFollow, setAutoFollow] = useState(true);
@@ -59,7 +60,11 @@ export function TerminalPanel({ testId = "terminal-panel" }: TerminalPanelProps)
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
-    void start({ command, cwd: cwd.trim() || undefined }).then((session) => {
+    void start({
+      command,
+      cwd: cwd.trim() || undefined,
+      session_id: currentSessionId,
+    }).then((session) => {
       if (session) {
         setCommand("");
         setAutoFollow(true);
@@ -256,6 +261,7 @@ function TerminalHeader({ session }: { session: TerminalSession }): JSX.Element 
       {"\n"}
       [{session.status}
       {session.exit_code !== null ? `:${session.exit_code}` : ""}] {session.cwd}
+      {session.run_id ? `\nrun ${session.run_id.slice(0, 12)}` : ""}
       {"\n\n"}
     </span>
   );

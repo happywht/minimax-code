@@ -1,13 +1,15 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TerminalPanel } from "../src/components/TerminalPanel";
-import { useTerminalStore } from "../src/stores";
+import { useSessionStore, useTerminalStore } from "../src/stores";
 
 const terminalMocks = vi.hoisted(() => ({
   session: {
     id: "term_1",
     command: "pnpm test",
     cwd: "D:/repo",
+    session_id: "ses_current",
+    run_id: "run_terminal",
     status: "completed" as const,
     started_at: 1,
     updated_at: 2,
@@ -34,6 +36,7 @@ vi.mock("../src/ipc", () => ({
 describe("TerminalPanel", () => {
   beforeEach(() => {
     useTerminalStore.getState().reset();
+    useSessionStore.setState({ currentSessionId: "ses_current" });
     terminalMocks.listTerminals.mockReset().mockResolvedValue({ sessions: [] });
     terminalMocks.startTerminal.mockReset().mockResolvedValue({ session: terminalMocks.session });
     terminalMocks.readTerminal.mockReset().mockResolvedValue({
@@ -57,7 +60,11 @@ describe("TerminalPanel", () => {
     fireEvent.click(screen.getByTestId("terminal-panel-run"));
 
     await waitFor(() => {
-      expect(terminalMocks.startTerminal).toHaveBeenCalledWith({ command: "pnpm test", cwd: undefined });
+      expect(terminalMocks.startTerminal).toHaveBeenCalledWith({
+        command: "pnpm test",
+        cwd: undefined,
+        session_id: "ses_current",
+      });
     });
     await waitFor(() => {
       expect(screen.getByTestId("terminal-panel-output")).toHaveTextContent("ok");
