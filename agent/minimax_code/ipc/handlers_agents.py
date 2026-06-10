@@ -87,6 +87,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
         first call) via :func:`_make_dao_factory`.
     """
     dao_factory = _make_dao_factory(dao)
+    using_injected_dao = dao is not None
     # The runtime is process-wide — one instance handles every
     # ``agent.invoke`` call. We resolve it lazily on every
     # invocation rather than capturing at registration time, so
@@ -352,6 +353,11 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 )
             check_params(params, expected_keys={"name", "request"})
             name = str(params["name"])
+            requested_agent_id = (
+                str(params["agent_id"])
+                if params.get("agent_id") and str(params["agent_id"]).strip()
+                else None
+            )
             request = str(params["request"])
             session_id = params.get("session_id")
             if session_id is None or not str(session_id).strip():
@@ -365,12 +371,32 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 session_id = make_session_id("subagent")
             session_id = str(session_id)
 
-            config_row = await agent_dao.get(name)
+            if hasattr(agent_dao, "get_by_name_or_id"):
+                config_row = await agent_dao.get_by_name_or_id(name)
+                if config_row is None and requested_agent_id:
+                    config_row = await agent_dao.get_by_name_or_id(requested_agent_id)
+            else:
+                config_row = await agent_dao.get(name)
+                if config_row is None and requested_agent_id:
+                    config_row = await agent_dao.get(requested_agent_id)
             if config_row is None:
+                error = f"unknown agent name or id: {name!r}"
+                await _emit_subagent_progress(
+                    ctx,
+                    run_id=run_id,
+                    agent_id=name,
+                    parent_session_id=parent_session_id,
+                    context_message_id=context_message_id,
+                    status="failed",
+                    progress=1.0,
+                    summary="failed",
+                    error=error,
+                )
                 await ctx.reply_error(
-                    INVALID_PARAMS, f"unknown agent name: {name!r}"
+                    INVALID_PARAMS, error
                 )
                 return
+            name = str(config_row["name"])
 
             from ..orchestrator import SubAgentConfig
 
@@ -393,7 +419,8 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
             # is satisfied. We do this through the same path the
             # ``task.start`` handler uses, but inline here so we
             # don't need a separate request.
-            await _ensure_session(session_id, title=f"subagent:{name}")
+            if not using_injected_dao:
+                await _ensure_session(session_id, title=f"subagent:{name}")
 
             # 1. Start a progress task. The tracker writes the row
             # and emits ``agent.status { status: started }`` for us.
@@ -545,12 +572,37 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 str(params["display_name"]) if params.get("display_name") else None
             )
 
-            config_row = await agent_dao.get(name)
+            requested_agent_id = (
+                str(params["agent_id"])
+                if params.get("agent_id") and str(params["agent_id"]).strip()
+                else None
+            )
+            if hasattr(agent_dao, "get_by_name_or_id"):
+                config_row = await agent_dao.get_by_name_or_id(name)
+                if config_row is None and requested_agent_id:
+                    config_row = await agent_dao.get_by_name_or_id(requested_agent_id)
+            else:
+                config_row = await agent_dao.get(name)
+                if config_row is None and requested_agent_id:
+                    config_row = await agent_dao.get(requested_agent_id)
             if config_row is None:
+                error = f"unknown agent name or id: {name!r}"
+                await _emit_subagent_progress(
+                    ctx,
+                    run_id=run_id,
+                    agent_id=name,
+                    parent_session_id=parent_session_id,
+                    context_message_id=context_message_id,
+                    status="failed",
+                    progress=1.0,
+                    summary="failed",
+                    error=error,
+                )
                 await ctx.reply_error(
-                    INVALID_PARAMS, f"unknown agent name: {name!r}"
+                    INVALID_PARAMS, error
                 )
                 return
+            name = str(config_row["name"])
 
             from ..orchestrator import SubAgentConfig, make_session_id
 
@@ -573,7 +625,8 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 if parent_session_id
                 else make_session_id("subagent")
             )
-            await _ensure_session(sub_session_id, title=f"subagent:{name}")
+            if not using_injected_dao:
+                await _ensure_session(sub_session_id, title=f"subagent:{name}")
 
             # 1. started.
             await _emit_subagent_progress(

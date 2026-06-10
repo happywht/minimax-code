@@ -1005,12 +1005,13 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<{ ok: true; job_id: string; triggered_at: number | null }>("schedule.run_now", { job_id: jid }),
 
     listAgents: () => client.request<ListAgentsResult>("agent.list", {}),
-    // Map frontend keys (agent_id, prompt) → backend keys (name, request).
-    // The backend handler requires `name` and `request`; the frontend
-    // type uses `agent_id` and `prompt` for clarity.
+    // Map frontend keys → backend keys. New callers send agent_name
+    // because the backend registry is keyed by agents.name. agent_id
+    // remains as a legacy fallback for older UI/store paths.
     spawnSubagent: (opts) =>
       client.request<SpawnSubagentResult>("agent.spawn_subagent", {
-        name: opts.agent_id,
+        name: opts.agent_name ?? opts.agent_id,
+        agent_id: opts.agent_id,
         request: opts.prompt,
         parent_session_id: opts.parent_session_id,
         context_message_id: opts.context_message_id,

@@ -204,7 +204,7 @@ on the next `readline() == ""`.
 | `message.list`             | req/res   | Reserved.                                          |
 | `skill.list` / `skill.enable` / `skill.disable` / `skill.invoke` | req/res | Reserved (skills-system). |
 | `scheduler.*`              | req/res   | Reserved.                                          |
-| `agent.list_agents` / `agent.spawn_subagent` | req/res | Phase 2. |
+| `agent.list` / `agent.spawn_subagent` | req/res | Sub-agent list and spawn. `agent.spawn_subagent` is keyed by `name` (`agents.name`); clients may also pass legacy `agent_id`, and the backend resolves by name first, then id. |
 | `mobile.*`                 | req/res   | Phase 2.                                            |
 | `permission.*`             | req/res   | Phase 1.4 (ui-shell).                              |
 | `model.list` / `model.set_current` | req/res | Reserved.                                   |

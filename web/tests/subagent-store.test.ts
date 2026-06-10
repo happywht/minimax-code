@@ -6,7 +6,7 @@
  * 5-stage progress stream when ``agent.spawn_subagent`` is
  * invoked, so the store's end-to-end wiring is exercised here.
  */
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import { IPCClient, bindTypedIPC } from "../src/ipc";
 import { useSubAgentStore, runsForSession } from "../src/stores/subAgent";
 import { StreamEvent, type SubAgentProgress } from "../src/types/ipc";
@@ -146,6 +146,34 @@ describe("useSubAgentStore", () => {
 });
 
 describe("Sub-agent progress event wiring (mock backend)", () => {
+  it("maps agent_name to the backend name field when spawning", async () => {
+    const client = new IPCClient({ mockMode: true });
+    const request = vi.spyOn(client, "request").mockResolvedValue({
+      agent_run_id: "run_test",
+      agent_id: "general",
+      text: "",
+      status: "completed",
+      iterations: 0,
+      tool_calls: [],
+    });
+    const typed = bindTypedIPC(client);
+
+    await typed.spawnSubagent({
+      agent_id: "agent_internal_123",
+      agent_name: "general",
+      prompt: "summarise",
+    });
+
+    expect(request).toHaveBeenCalledWith(
+      "agent.spawn_subagent",
+      expect.objectContaining({
+        name: "general",
+        agent_id: "agent_internal_123",
+        request: "summarise",
+      }),
+    );
+  });
+
   it("spawnSubagent returns a run_id and the mock backend emits a stream of progress events", async () => {
     const client = new IPCClient({ mockMode: true });
     const typed = bindTypedIPC(client);

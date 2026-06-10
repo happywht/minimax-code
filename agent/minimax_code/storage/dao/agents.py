@@ -254,6 +254,27 @@ class AgentDAO:
         )
         return _hydrate(row)
 
+    async def get_by_id(self, agent_id: str) -> dict[str, Any] | None:
+        """Look up by internal ``id``; ``None`` if missing."""
+        if not agent_id or not isinstance(agent_id, str):
+            raise ValueError(f"agent_id must be a non-empty string, got {agent_id!r}")
+        row = await self._db.fetchone(
+            "SELECT * FROM agents WHERE id = ?", (agent_id,)
+        )
+        return _hydrate(row)
+
+    async def get_by_name_or_id(self, value: str) -> dict[str, Any] | None:
+        """Look up a sub-agent by public name first, then internal id.
+
+        The IPC contract historically accepted ``name`` while parts of
+        the frontend used ``AgentInfo.id``. Supporting both keeps old
+        clients working while new UI paths use ``name`` explicitly.
+        """
+        found = await self.get(value)
+        if found is not None:
+            return found
+        return await self.get_by_id(value)
+
     # ---- write -----------------------------------------------------------
 
     async def upsert(

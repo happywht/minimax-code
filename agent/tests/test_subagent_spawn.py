@@ -211,6 +211,32 @@ async def test_spawn_subagent_rejects_unknown_agent(
     assert ctx.error_value is not None
     assert ctx.error_value["code"] == -32602
     assert "no-such-agent" in ctx.error_value["message"]
+    assert ctx.events, "unknown agent should still surface a failed progress event"
+    final_event, final_data = ctx.events[-1]
+    assert final_event == "agent.subagent_progress"
+    assert final_data["status"] == "failed"
+    assert "no-such-agent" in (final_data.get("error") or "")
+
+
+@pytest.mark.asyncio
+async def test_spawn_subagent_accepts_internal_id_for_legacy_clients(
+    handlers: dict[str, Any], agent_dao: AgentDAO
+) -> None:
+    name = _unique("legacy")
+    row = await agent_dao.upsert(name=name, system_prompt="x")
+    ctx = _FakeContext()
+    await handlers["agent.spawn_subagent"](
+        {"name": row["id"], "request": "hello from id"},
+        ctx,
+    )
+
+    assert ctx.error_value is None
+    assert ctx.reply_value is not None
+    assert ctx.reply_value["agent_id"] == name
+    final_event, final_data = ctx.events[-1]
+    assert final_event == "agent.subagent_progress"
+    assert final_data["agent_id"] == name
+    assert final_data["status"] == "completed"
 
 
 @pytest.mark.asyncio

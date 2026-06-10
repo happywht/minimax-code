@@ -81,6 +81,8 @@ to call.
 | `edit_file` | Replace an exact substring in a file. | `path`, `old_string`, `new_string` | `replace_all` |
 | `exec_command` | Run a shell command with hard timeout. | `cmd` (list) | `cwd`, `env`, `timeout` (default 30s, cap 600s) |
 | `search_files` | Recursive text search (ripgrep fast path, pure-Python fallback). | `pattern` | `path`, `regex`, `file_pattern`, `case_sensitive`, `max_results` |
+| `list_subagents` | List enabled sub-agents that can receive delegated specialist work. | — | `include_disabled` |
+| `spawn_subagent` | Delegate a focused task to a named sub-agent and return its final result. | `agent_name`, `prompt` | `parent_session_id` |
 
 ### Schema examples
 

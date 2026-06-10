@@ -19,6 +19,7 @@ from .file_ops import (
 )
 from .glob import GlobFindTool
 from .search import SearchFilesTool
+from .subagents import ListSubagentsTool, SpawnSubagentTool
 from .terminal import ExecCommandTool
 
 __all__ = [
@@ -34,6 +35,8 @@ __all__ = [
     "ReadFileTool",
     "WriteFileTool",
     "SearchFilesTool",
+    "ListSubagentsTool",
+    "SpawnSubagentTool",
     "ExecCommandTool",
     "safe_resolve",
 ]

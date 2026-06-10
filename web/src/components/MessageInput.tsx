@@ -161,7 +161,7 @@ export function MessageInput({
       const head = value.slice(0, picker.anchor);
       const tail = value.slice(caret);
       const promptText = tail.trim() || "(no prompt)";
-      const marker = `@${agent.id} `;
+      const marker = `@${agent.name} `;
       const newValue = `${head}${marker}${tail}`;
       setValue(newValue);
       closePicker();
@@ -170,9 +170,9 @@ export function MessageInput({
       // user-message so the chat stream shows the trigger, then
       // spawn the sub-agent.
       const sessionId = useSessionStore.getState().currentSessionId;
+      const runId = `run_${Math.random().toString(36).slice(2, 10)}`;
       try {
         await subInit();
-        const runId = `run_${Math.random().toString(36).slice(2, 10)}`;
         subRegister({
           run_id: runId,
           agent_id: agent.id,
@@ -188,6 +188,7 @@ export function MessageInput({
         });
         await typedIPC.spawnSubagent({
           agent_id: agent.id,
+          agent_name: agent.name,
           prompt: promptText,
           parent_session_id: sessionId ?? undefined,
           display_name: agent.name,
@@ -197,7 +198,23 @@ export function MessageInput({
         // so the user sees the pick in history — no backend round-trip.
         addLocalMessage(`${marker}${promptText}`);
       } catch (err) {
-        toast.error("Sub-agent spawn failed", err instanceof Error ? err.message : String(err));
+        const message = err instanceof Error ? err.message : String(err);
+        subRegister({
+          run_id: runId,
+          agent_id: agent.id,
+          agent_name: agent.name,
+          display_name: agent.name,
+          parent_session_id: sessionId ?? undefined,
+          prompt: promptText,
+          status: "failed",
+          progress: 1,
+          summary: "failed",
+          error: message,
+          started_at: Date.now(),
+          updated_at: Date.now(),
+          finished_at: Date.now(),
+        });
+        toast.error("Sub-agent spawn failed", message);
       }
     },
     [value, picker.anchor, closePicker, subInit, subRegister, addLocalMessage],

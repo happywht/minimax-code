@@ -196,6 +196,9 @@ export interface AgentInfo {
 
 /** Params for `agent.spawn_subagent` (extended in v0.3.0 §2). */
 export interface SpawnSubagentParams {
+  /** Stable human-readable lookup key used by the backend agents.name column. */
+  agent_name?: string;
+  /** Legacy/internal id. Kept for existing callers; backend now tolerates name or id. */
   agent_id: string;
   prompt: string;
   parent_session_id?: string;
