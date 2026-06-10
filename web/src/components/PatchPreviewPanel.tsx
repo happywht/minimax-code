@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   FileCode2,
   GitBranch,
@@ -28,6 +28,8 @@ export function PatchPreviewPanel({
   const error = usePatchPreviewStore((s) => s.error);
   const setScope = usePatchPreviewStore((s) => s.setScope);
   const refresh = usePatchPreviewStore((s) => s.refresh);
+  const fileRefs = useRef<Record<string, HTMLLIElement | null>>({});
+  const [activeFile, setActiveFile] = useState<string | null>(null);
 
   useEffect(() => {
     void refresh();
@@ -35,6 +37,12 @@ export function PatchPreviewPanel({
 
   const files = result?.files ?? [];
   const stats = result?.stats ?? { files: 0, additions: 0, deletions: 0 };
+
+  const jumpToFile = (file: PatchFile) => {
+    const key = fileKey(file);
+    setActiveFile(key);
+    fileRefs.current[key]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  };
 
   return (
     <div data-testid={testId} className="px-3 pb-3">
@@ -98,6 +106,38 @@ export function PatchPreviewPanel({
         </div>
       )}
 
+      {!loading && !error && files.length > 0 && (
+        <div
+          data-testid={`${testId}-file-overview`}
+          className="mt-2 flex gap-1 overflow-x-auto rounded border border-minimax-border bg-minimax-bg/30 p-1"
+          aria-label="Changed files"
+        >
+          {files.map((file) => {
+            const key = fileKey(file);
+            const active = activeFile === key;
+            return (
+              <button
+                key={key}
+                type="button"
+                data-testid={`${testId}-file-jump-${file.path}`}
+                onClick={() => jumpToFile(file)}
+                className={
+                  "inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-1 font-mono text-[10px] transition-colors duration-200 " +
+                  (active
+                    ? "bg-minimax-accent/15 text-minimax-accent"
+                    : "text-minimax-muted hover:bg-minimax-border/60 hover:text-minimax-fg")
+                }
+                title={`Jump to ${file.path}`}
+              >
+                <span className="max-w-32 truncate">{file.path}</span>
+                <span className="text-status-success">+{file.additions}</span>
+                <span className="text-status-error">-{file.deletions}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {!loading && !error && files.length === 0 && (
         <div
           data-testid={`${testId}-empty`}
@@ -110,7 +150,14 @@ export function PatchPreviewPanel({
       {files.length > 0 && (
         <ul data-testid={`${testId}-files`} className="mt-2 space-y-1.5">
           {files.map((file) => (
-            <PatchFileCard key={`${file.old_path}:${file.new_path}`} file={file} />
+            <PatchFileCard
+              key={fileKey(file)}
+              file={file}
+              active={activeFile === fileKey(file)}
+              itemRef={(node) => {
+                fileRefs.current[fileKey(file)] = node;
+              }}
+            />
           ))}
         </ul>
       )}
@@ -118,10 +165,25 @@ export function PatchPreviewPanel({
   );
 }
 
-function PatchFileCard({ file }: { file: PatchFile }): JSX.Element {
+function PatchFileCard({
+  file,
+  active,
+  itemRef,
+}: {
+  file: PatchFile;
+  active: boolean;
+  itemRef: (node: HTMLLIElement | null) => void;
+}): JSX.Element {
   const previewLines = useMemo(() => collectPreviewLines(file), [file]);
   return (
-    <li className="rounded border border-minimax-border bg-minimax-bg/40 p-2">
+    <li
+      ref={itemRef}
+      data-testid={`patch-file-card-${file.path}`}
+      className={
+        "rounded border bg-minimax-bg/40 p-2 transition-colors duration-200 " +
+        (active ? "border-minimax-accent/60 ring-1 ring-minimax-accent/30" : "border-minimax-border")
+      }
+    >
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="truncate font-mono text-[11px] text-minimax-fg" title={file.path}>
@@ -155,6 +217,10 @@ function PatchFileCard({ file }: { file: PatchFile }): JSX.Element {
       )}
     </li>
   );
+}
+
+function fileKey(file: PatchFile): string {
+  return `${file.old_path}:${file.new_path}`;
 }
 
 function PatchLineRow({ line }: { line: PatchLine }): JSX.Element {

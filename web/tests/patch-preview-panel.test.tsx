@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PatchPreviewPanel } from "../src/components/PatchPreviewPanel";
 import { usePatchPreviewStore } from "../src/stores";
@@ -51,12 +51,30 @@ describe("PatchPreviewPanel", () => {
     render(<PatchPreviewPanel />);
 
     await waitFor(() => {
-      expect(screen.getByText("app.ts")).toBeInTheDocument();
+      expect(screen.getByTestId("patch-file-card-app.ts")).toBeInTheDocument();
     });
     expect(screen.getByTestId("patch-preview-panel-stats")).toHaveTextContent("1 file");
     expect(screen.getByTestId("patch-preview-panel-stats")).toHaveTextContent("+2");
     expect(screen.getByTestId("patch-preview-panel-stats")).toHaveTextContent("-1");
     expect(screen.getByText("+new line")).toBeInTheDocument();
     expect(screen.getByText("-old line")).toBeInTheDocument();
+  });
+
+  it("jumps from the file overview to the selected diff card", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    render(<PatchPreviewPanel />);
+    await waitFor(() => {
+      expect(screen.getByTestId("patch-preview-panel-file-jump-app.ts")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("patch-preview-panel-file-jump-app.ts"));
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest", behavior: "smooth" });
+    expect(screen.getByTestId("patch-file-card-app.ts").className).toContain("ring-1");
   });
 });
