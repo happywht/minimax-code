@@ -578,6 +578,22 @@ export interface PatchPreviewResult {
   stats: PatchStats;
 }
 
+export interface PatchHunkOperationParams {
+  scope?: "working" | "staged";
+  file_path: string;
+  hunk_index: number;
+  old_start?: number;
+  new_start?: number;
+}
+
+export interface PatchHunkOperationResult {
+  ok: true;
+  operation: "apply_hunk" | "revert_hunk";
+  scope: string;
+  file_path: string;
+  hunk_index: number;
+}
+
 /** A single `git.log` entry. */
 export interface GitLogEntry {
   sha: string;

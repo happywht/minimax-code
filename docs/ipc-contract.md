@@ -197,6 +197,8 @@ on the next `readline() == ""`.
 | `run.list`                 | req/res   | List persisted agent runs for a session.           |
 | `run.steps`                | req/res   | Load one run with its ordered timeline steps.      |
 | `patch.preview`            | req/res   | Return structured file/hunk preview for a git diff scope. |
+| `patch.apply_hunk`         | req/res   | Stage one working-tree hunk after validating the current diff. |
+| `patch.revert_hunk`        | req/res   | Discard one working hunk or unstage one staged hunk. |
 | `session.create`           | req/res   | Reserved (storage-layer).                          |
 | `session.list`             | req/res   | Reserved (storage-layer).                          |
 | `session.archive`          | req/res   | Reserved.                                          |
@@ -326,6 +328,52 @@ same raw diff plus a UI-friendly structure:
         ]
       }
     ]
+  }
+}
+```
+
+### 6.3 `patch.apply_hunk` / `patch.revert_hunk` — hunk operation
+
+These methods intentionally operate only on the current `working` or
+`staged` diff. `branch` / explicit `ref` previews are read-only.
+
+`patch.apply_hunk` stages a single hunk from the working-tree diff.
+`patch.revert_hunk` discards a hunk from the working-tree diff, or
+unstages a hunk from the staged diff.
+
+Request:
+```json
+{
+  "jsonrpc":"2.0",
+  "id":"patch-op-1",
+  "method":"patch.revert_hunk",
+  "params":{
+    "scope":"working",
+    "file_path":"app.py",
+    "hunk_index":0,
+    "old_start":1,
+    "new_start":1
+  }
+}
+```
+
+The backend re-reads the current diff, verifies `file_path`,
+`hunk_index`, and optional line anchors, builds a single-hunk patch,
+runs `git apply --check`, then performs the operation. Binary files,
+renames, added/deleted file partial operations, and stale anchors return
+an error instead of attempting a risky patch.
+
+Response:
+```json
+{
+  "jsonrpc":"2.0",
+  "id":"patch-op-1",
+  "result":{
+    "ok":true,
+    "operation":"revert_hunk",
+    "scope":"working",
+    "file_path":"app.py",
+    "hunk_index":0
   }
 }
 ```

@@ -89,6 +89,32 @@ def _make_handler(method: str) -> tuple[Callable[..., Coroutine[Any, Any, None]]
     return server._handlers[method], _CapturingContext()  # type: ignore[return-value]
 
 
+def _write_numbered_file(path: Path, *, changed_a: bool = False, changed_b: bool = False) -> None:
+    lines = [f"line {i}\n" for i in range(1, 22)]
+    if changed_a:
+        lines[1] = "line 2 changed\n"
+    if changed_b:
+        lines[17] = "line 18 changed\n"
+    path.write_text("".join(lines), encoding="utf-8")
+
+
+@pytest.fixture
+def two_hunk_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo_two_hunks"
+    repo.mkdir()
+    _run_git(repo, "init", "--initial-branch=main")
+    _run_git(repo, "config", "user.email", "test@example.com")
+    _run_git(repo, "config", "user.name", "Test")
+
+    app = repo / "app.py"
+    _write_numbered_file(app)
+    _run_git(repo, "add", "app.py")
+    _run_git(repo, "commit", "-m", "initial")
+
+    _write_numbered_file(app, changed_a=True, changed_b=True)
+    return repo
+
+
 def test_parse_unified_diff_groups_files_and_hunks() -> None:
     diff = (
         "diff --git a/foo.py b/foo.py\n"
@@ -154,3 +180,75 @@ async def test_patch_preview_not_a_repo_returns_git_error(tmp_path: Path) -> Non
     code, message, _ = ctx.reply_error_payload
     assert code == GIT_ERROR
     assert message
+
+
+@pytest.mark.asyncio
+async def test_apply_hunk_stages_only_selected_working_hunk(two_hunk_repo: Path) -> None:
+    handler, ctx = _make_handler("patch.apply_hunk")
+    await handler(
+        {
+            "cwd": str(two_hunk_repo),
+            "scope": "working",
+            "file_path": "app.py",
+            "hunk_index": 0,
+            "old_start": 1,
+            "new_start": 1,
+        },
+        ctx,
+    )
+
+    assert ctx.reply_error_payload is None
+    assert ctx.reply_payload["ok"] is True
+
+    staged = _run_git(two_hunk_repo, "diff", "--cached")
+    working = _run_git(two_hunk_repo, "diff")
+    assert "line 2 changed" in staged
+    assert "line 18 changed" not in staged
+    assert "line 2 changed" not in working
+    assert "line 18 changed" in working
+
+
+@pytest.mark.asyncio
+async def test_revert_hunk_discards_only_selected_working_hunk(two_hunk_repo: Path) -> None:
+    handler, ctx = _make_handler("patch.revert_hunk")
+    await handler(
+        {
+            "cwd": str(two_hunk_repo),
+            "scope": "working",
+            "file_path": "app.py",
+            "hunk_index": 1,
+            "old_start": 15,
+            "new_start": 15,
+        },
+        ctx,
+    )
+
+    assert ctx.reply_error_payload is None
+    text = (two_hunk_repo / "app.py").read_text(encoding="utf-8")
+    assert "line 2 changed" in text
+    assert "line 18 changed" not in text
+
+
+@pytest.mark.asyncio
+async def test_revert_hunk_unstages_only_selected_staged_hunk(two_hunk_repo: Path) -> None:
+    _run_git(two_hunk_repo, "add", "app.py")
+    handler, ctx = _make_handler("patch.revert_hunk")
+    await handler(
+        {
+            "cwd": str(two_hunk_repo),
+            "scope": "staged",
+            "file_path": "app.py",
+            "hunk_index": 0,
+            "old_start": 1,
+            "new_start": 1,
+        },
+        ctx,
+    )
+
+    assert ctx.reply_error_payload is None
+    staged = _run_git(two_hunk_repo, "diff", "--cached")
+    working = _run_git(two_hunk_repo, "diff")
+    assert "line 2 changed" not in staged
+    assert "line 18 changed" in staged
+    assert "line 2 changed" in working
+    assert "line 18 changed" not in working

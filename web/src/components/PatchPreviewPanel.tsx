@@ -22,7 +22,8 @@ const SCOPES = [
   { key: "branch", label: "Branch", icon: GitBranch },
 ] as const;
 
-type HunkDecision = "approved" | "rejected";
+type DiffScope = (typeof SCOPES)[number]["key"];
+type HunkDecision = "approved" | "rejected" | "applying" | "rejecting" | "error";
 
 export function PatchPreviewPanel({
   testId = "patch-preview-panel",
@@ -33,9 +34,12 @@ export function PatchPreviewPanel({
   const error = usePatchPreviewStore((s) => s.error);
   const setScope = usePatchPreviewStore((s) => s.setScope);
   const refresh = usePatchPreviewStore((s) => s.refresh);
+  const applyHunk = usePatchPreviewStore((s) => s.applyHunk);
+  const revertHunk = usePatchPreviewStore((s) => s.revertHunk);
   const fileRefs = useRef<Record<string, HTMLLIElement | null>>({});
   const [activeFile, setActiveFile] = useState<string | null>(null);
   const [hunkDecisions, setHunkDecisions] = useState<Record<string, HunkDecision>>({});
+  const [hunkErrors, setHunkErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     void refresh();
@@ -57,10 +61,56 @@ export function PatchPreviewPanel({
       else next[key] = decision;
       return next;
     });
+    if (decision !== "error") {
+      setHunkErrors((current) => {
+        if (!(key in current)) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+    }
   };
 
-  const refreshAndReset = (opts?: { scope?: typeof scope }) => {
+  const failHunk = (key: string, err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    setHunkDecisions((current) => ({ ...current, [key]: "error" }));
+    setHunkErrors((current) => ({ ...current, [key]: message }));
+  };
+
+  const runHunkOperation = async (
+    file: PatchFile,
+    hunk: PatchHunk,
+    hunkIndex: number,
+    operation: "approve" | "reject",
+  ) => {
+    if (scope === "branch") return;
+    if (operation === "approve" && scope !== "working") return;
+    const key = hunkKey(file, hunk, hunkIndex);
+    decideHunk(key, operation === "approve" ? "applying" : "rejecting");
+    try {
+      const payload = {
+        scope,
+        file_path: file.path,
+        hunk_index: hunkIndex,
+        old_start: hunk.old_start,
+        new_start: hunk.new_start,
+      };
+      if (operation === "approve") {
+        await applyHunk(payload);
+        decideHunk(key, "approved");
+      } else {
+        await revertHunk(payload);
+        decideHunk(key, "rejected");
+      }
+      await refresh();
+    } catch (err) {
+      failHunk(key, err);
+    }
+  };
+
+  const refreshAndReset = (opts?: { scope?: DiffScope }) => {
     setHunkDecisions({});
+    setHunkErrors({});
     void refresh(opts);
   };
 
@@ -173,9 +223,13 @@ export function PatchPreviewPanel({
             <PatchFileCard
               key={fileKey(file)}
               file={file}
+              scope={scope}
               active={activeFile === fileKey(file)}
               decisions={hunkDecisions}
+              errors={hunkErrors}
               onDecide={decideHunk}
+              onApprove={(hunk, index) => void runHunkOperation(file, hunk, index, "approve")}
+              onReject={(hunk, index) => void runHunkOperation(file, hunk, index, "reject")}
               itemRef={(node) => {
                 fileRefs.current[fileKey(file)] = node;
               }}
@@ -189,15 +243,23 @@ export function PatchPreviewPanel({
 
 function PatchFileCard({
   file,
+  scope,
   active,
   decisions,
+  errors,
   onDecide,
+  onApprove,
+  onReject,
   itemRef,
 }: {
   file: PatchFile;
+  scope: DiffScope;
   active: boolean;
   decisions: Record<string, HunkDecision>;
+  errors: Record<string, string>;
   onDecide: (key: string, decision: HunkDecision | null) => void;
+  onApprove: (hunk: PatchHunk, index: number) => void;
+  onReject: (hunk: PatchHunk, index: number) => void;
   itemRef: (node: HTMLLIElement | null) => void;
 }): JSX.Element {
   return (
@@ -240,9 +302,14 @@ function PatchFileCard({
                 <PatchHunkCard
                   key={key}
                   hunk={hunk}
+                  scope={scope}
+                  hunkIndex={index}
                   hunkKeyValue={key}
                   decision={decisions[key]}
+                  error={errors[key]}
                   onDecide={onDecide}
+                  onApprove={onApprove}
+                  onReject={onReject}
                 />
               );
             })}
@@ -274,16 +341,29 @@ function PatchLineRow({ line }: { line: PatchLine }): JSX.Element {
 
 function PatchHunkCard({
   hunk,
+  scope,
+  hunkIndex,
   hunkKeyValue,
   decision,
+  error,
   onDecide,
+  onApprove,
+  onReject,
 }: {
   hunk: PatchHunk;
+  scope: DiffScope;
+  hunkIndex: number;
   hunkKeyValue: string;
   decision?: HunkDecision;
+  error?: string;
   onDecide: (key: string, decision: HunkDecision | null) => void;
+  onApprove: (hunk: PatchHunk, index: number) => void;
+  onReject: (hunk: PatchHunk, index: number) => void;
 }): JSX.Element {
   const previewLines = useMemo(() => collectHunkPreviewLines(hunk), [hunk]);
+  const busy = decision === "applying" || decision === "rejecting";
+  const approveDisabled = busy || scope !== "working";
+  const rejectDisabled = busy || scope === "branch";
   return (
     <div
       data-testid={`patch-hunk-${hunkKeyValue}`}
@@ -299,24 +379,26 @@ function PatchHunkCard({
           <button
             type="button"
             data-testid={`patch-hunk-${hunkKeyValue}-approve`}
-            onClick={() => onDecide(hunkKeyValue, "approved")}
-            className="flex h-5 w-5 items-center justify-center rounded text-minimax-muted hover:bg-emerald-500/15 hover:text-emerald-300"
-            title="Approve this hunk"
-            aria-label="Approve this hunk"
+            onClick={() => onApprove(hunk, hunkIndex)}
+            disabled={approveDisabled}
+            className="flex h-5 w-5 items-center justify-center rounded text-minimax-muted hover:bg-emerald-500/15 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+            title={scope === "working" ? "Approve and stage this hunk" : "Only working hunks can be staged"}
+            aria-label="Approve and stage this hunk"
           >
-            <Check size={10} />
+            {decision === "applying" ? <Loader2 size={10} className="animate-spin" /> : <Check size={10} />}
           </button>
           <button
             type="button"
             data-testid={`patch-hunk-${hunkKeyValue}-reject`}
-            onClick={() => onDecide(hunkKeyValue, "rejected")}
-            className="flex h-5 w-5 items-center justify-center rounded text-minimax-muted hover:bg-red-500/15 hover:text-status-error"
-            title="Reject this hunk"
-            aria-label="Reject this hunk"
+            onClick={() => onReject(hunk, hunkIndex)}
+            disabled={rejectDisabled}
+            className="flex h-5 w-5 items-center justify-center rounded text-minimax-muted hover:bg-red-500/15 hover:text-status-error disabled:cursor-not-allowed disabled:opacity-40"
+            title={scope === "staged" ? "Reject and unstage this hunk" : "Reject this hunk"}
+            aria-label={scope === "staged" ? "Reject and unstage this hunk" : "Reject this hunk"}
           >
-            <X size={10} />
+            {decision === "rejecting" ? <Loader2 size={10} className="animate-spin" /> : <X size={10} />}
           </button>
-          {decision && (
+          {decision && !busy && (
             <button
               type="button"
               data-testid={`patch-hunk-${hunkKeyValue}-reset`}
@@ -330,6 +412,15 @@ function PatchHunkCard({
           )}
         </div>
       </div>
+      {decision === "error" && error && (
+        <div
+          data-testid={`patch-hunk-${hunkKeyValue}-error`}
+          className="border-b border-red-500/20 bg-red-500/10 px-2 py-1 text-[10px] text-status-error"
+          title={error}
+        >
+          Operation failed
+        </div>
+      )}
       <pre className="max-h-28 overflow-hidden px-2 py-1 font-mono text-[10px] leading-relaxed">
         {previewLines.map((line, idx) => (
           <PatchLineRow key={idx} line={line} />
@@ -340,6 +431,27 @@ function PatchHunkCard({
 }
 
 function HunkDecisionBadge({ decision }: { decision?: HunkDecision }): JSX.Element {
+  if (decision === "applying") {
+    return (
+      <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1 py-0.5 text-[10px] text-emerald-300">
+        staging
+      </span>
+    );
+  }
+  if (decision === "rejecting") {
+    return (
+      <span className="rounded border border-red-500/30 bg-red-500/10 px-1 py-0.5 text-[10px] text-status-error">
+        rejecting
+      </span>
+    );
+  }
+  if (decision === "error") {
+    return (
+      <span className="rounded border border-red-500/30 bg-red-500/10 px-1 py-0.5 text-[10px] text-status-error">
+        failed
+      </span>
+    );
+  }
   if (decision === "approved") {
     return (
       <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1 py-0.5 text-[10px] text-emerald-300">

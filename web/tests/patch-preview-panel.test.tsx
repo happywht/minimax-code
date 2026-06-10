@@ -39,6 +39,20 @@ const PREVIEW: PatchPreviewResult = {
 vi.mock("../src/ipc", () => ({
   typedIPC: {
     patchPreview: vi.fn(async () => PREVIEW),
+    patchApplyHunk: vi.fn(async () => ({
+      ok: true,
+      operation: "apply_hunk",
+      scope: "working",
+      file_path: "app.ts",
+      hunk_index: 0,
+    })),
+    patchRevertHunk: vi.fn(async () => ({
+      ok: true,
+      operation: "revert_hunk",
+      scope: "working",
+      file_path: "app.ts",
+      hunk_index: 0,
+    })),
   },
 }));
 
@@ -85,11 +99,15 @@ describe("PatchPreviewPanel", () => {
     });
 
     fireEvent.click(screen.getByTestId("patch-hunk-app.ts-0-1-1-approve"));
-    expect(screen.getByTestId("patch-hunk-app.ts-0-1-1")).toHaveAttribute("data-decision", "approved");
+    await waitFor(() => {
+      expect(screen.getByTestId("patch-hunk-app.ts-0-1-1")).toHaveAttribute("data-decision", "approved");
+    });
     expect(screen.getByText("approved")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("patch-hunk-app.ts-0-1-1-reject"));
-    expect(screen.getByTestId("patch-hunk-app.ts-0-1-1")).toHaveAttribute("data-decision", "rejected");
+    await waitFor(() => {
+      expect(screen.getByTestId("patch-hunk-app.ts-0-1-1")).toHaveAttribute("data-decision", "rejected");
+    });
     expect(screen.getByText("rejected")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("patch-hunk-app.ts-0-1-1-reset"));
@@ -102,7 +120,9 @@ describe("PatchPreviewPanel", () => {
       expect(screen.getByTestId("patch-hunk-app.ts-0-1-1")).toBeInTheDocument();
     });
     fireEvent.click(screen.getByTestId("patch-hunk-app.ts-0-1-1-approve"));
-    expect(screen.getByTestId("patch-hunk-app.ts-0-1-1")).toHaveAttribute("data-decision", "approved");
+    await waitFor(() => {
+      expect(screen.getByTestId("patch-hunk-app.ts-0-1-1")).toHaveAttribute("data-decision", "approved");
+    });
 
     fireEvent.click(screen.getByTestId("patch-preview-panel-refresh"));
     await waitFor(() => {

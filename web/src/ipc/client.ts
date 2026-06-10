@@ -62,6 +62,8 @@ import {
   type Message as ProtocolMessage,
   type ModelInfo,
   type OrchestrationMode,
+  type PatchHunkOperationParams,
+  type PatchHunkOperationResult,
   type PatchPreviewResult,
   type PermissionRequestData,
   type PermissionResolvedData,
@@ -861,6 +863,8 @@ export interface TypedIPC {
   gitDiff(opts: { scope?: "staged" | "branch" | "working"; ref?: string }): Promise<GitDiffResult>;
   gitLog(opts?: { n?: number }): Promise<GitLogResult>;
   patchPreview(opts?: { scope?: "staged" | "branch" | "working"; ref?: string }): Promise<PatchPreviewResult>;
+  patchApplyHunk(opts: PatchHunkOperationParams): Promise<PatchHunkOperationResult>;
+  patchRevertHunk(opts: PatchHunkOperationParams): Promise<PatchHunkOperationResult>;
 
   // audit — drive the Settings page's Audit tab.
   listAudit(opts?: { limit?: number; offset?: number; tool_name?: string; session_id?: string }): Promise<ListAuditResult>;
@@ -1092,6 +1096,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     gitDiff: (opts) => client.request<GitDiffResult>("git.diff", opts ?? {}),
     gitLog: (opts) => client.request<GitLogResult>("git.log", opts ?? {}),
     patchPreview: (opts) => client.request<PatchPreviewResult>("patch.preview", opts ?? {}),
+    patchApplyHunk: (opts) => client.request<PatchHunkOperationResult>("patch.apply_hunk", opts),
+    patchRevertHunk: (opts) => client.request<PatchHunkOperationResult>("patch.revert_hunk", opts),
 
     listAudit: (opts) => client.request<ListAuditResult>("audit.list", opts ?? {}),
     auditStats: () => client.request<AuditStats>("audit.stats", {}),
@@ -1728,6 +1734,28 @@ function mockHandle(
         files: [],
         stats: { files: 0, additions: 0, deletions: 0 },
       } satisfies PatchPreviewResult;
+    }
+
+    case "patch.apply_hunk": {
+      const p = params as PatchHunkOperationParams;
+      return {
+        ok: true,
+        operation: "apply_hunk",
+        scope: p.scope ?? "working",
+        file_path: p.file_path,
+        hunk_index: p.hunk_index,
+      } satisfies PatchHunkOperationResult;
+    }
+
+    case "patch.revert_hunk": {
+      const p = params as PatchHunkOperationParams;
+      return {
+        ok: true,
+        operation: "revert_hunk",
+        scope: p.scope ?? "working",
+        file_path: p.file_path,
+        hunk_index: p.hunk_index,
+      } satisfies PatchHunkOperationResult;
     }
 
     case "git.log": {

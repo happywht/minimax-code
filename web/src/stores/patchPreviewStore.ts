@@ -1,6 +1,10 @@
 import { create } from "zustand";
 import { typedIPC } from "../ipc";
-import type { PatchPreviewResult } from "../types/ipc";
+import type {
+  PatchHunkOperationParams,
+  PatchHunkOperationResult,
+  PatchPreviewResult,
+} from "../types/ipc";
 
 export type PatchPreviewScope = "working" | "staged" | "branch";
 
@@ -11,6 +15,8 @@ export interface PatchPreviewState {
   error: string | null;
   setScope: (scope: PatchPreviewScope) => void;
   refresh: (opts?: { scope?: PatchPreviewScope; ref?: string }) => Promise<PatchPreviewResult | null>;
+  applyHunk: (opts: PatchHunkOperationParams) => Promise<PatchHunkOperationResult>;
+  revertHunk: (opts: PatchHunkOperationParams) => Promise<PatchHunkOperationResult>;
   reset: () => void;
 }
 
@@ -35,6 +41,10 @@ export const usePatchPreviewStore = create<PatchPreviewState>((set, get) => ({
       return null;
     }
   },
+
+  applyHunk: async (opts) => typedIPC.patchApplyHunk(opts),
+
+  revertHunk: async (opts) => typedIPC.patchRevertHunk(opts),
 
   reset: () => set({ scope: "working", result: null, loading: false, error: null }),
 }));
