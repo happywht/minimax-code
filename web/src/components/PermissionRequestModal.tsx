@@ -19,6 +19,8 @@ import { ShieldAlert, ShieldCheck, X } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import { usePermissionStore, type PendingPermission } from "../stores";
 import { useFocusTrap } from "../lib/useFocusTrap";
+import { buildPermissionPatchFiles } from "../lib/permissionPatchPreview";
+import { PermissionPatchPreview } from "./PermissionPatchPreview";
 
 export interface PermissionRequestModalProps {
   testId?: string;
@@ -59,6 +61,7 @@ export function PermissionRequestModal({
   if (!current) return null;
 
   const argsPreview = formatArgs(current.args);
+  const patchFiles = buildPermissionPatchFiles(current.tool, current.args);
 
   return (
     <div
@@ -113,6 +116,12 @@ export function PermissionRequestModal({
         >
           <pre className="whitespace-pre-wrap break-words font-mono">{argsPreview}</pre>
         </div>
+
+        {patchFiles.length > 0 && (
+          <div className="mb-4 rounded border border-minimax-border bg-minimax-panel/40 px-2 pb-2">
+            <PermissionPatchPreview files={patchFiles} testId="permission-request-modal-patch-preview" />
+          </div>
+        )}
 
         <div className="flex items-center justify-end gap-2">
           <button

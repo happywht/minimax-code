@@ -33,6 +33,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { ProgressPanel } from "./ProgressPanel";
+import { PatchPreviewPanel } from "./PatchPreviewPanel";
 import { RunTimelinePanel } from "./RunTimelinePanel";
 import { SubAgentPanel } from "./SubAgentPanel";
 import { CodeReviewPanel } from "./CodeReviewPanel";
@@ -59,6 +60,7 @@ export function RightPanel({
 }: RightPanelProps): JSX.Element {
   const [collapsed, setCollapsed] = useState<boolean>(defaultCollapsed);
   const [timelineOpen, setTimelineOpen] = useState<boolean>(true);
+  const [patchOpen, setPatchOpen] = useState<boolean>(true);
   const [progressOpen, setProgressOpen] = useState<boolean>(true);
   const [teamOpen, setTeamOpen] = useState<boolean>(true);
   const [subOpen, setSubOpen] = useState<boolean>(true);
@@ -137,6 +139,15 @@ export function RightPanel({
           onToggle={() => setTimelineOpen((v) => !v)}
         >
           <RunTimelinePanel testId={`${testId}-timeline-panel`} />
+        </Section>
+
+        <Section
+          testId={`${testId}-patch`}
+          title="Diff Preview"
+          open={patchOpen}
+          onToggle={() => setPatchOpen((v) => !v)}
+        >
+          <PatchPreviewPanel testId={`${testId}-patch-panel`} />
         </Section>
 
         <Section

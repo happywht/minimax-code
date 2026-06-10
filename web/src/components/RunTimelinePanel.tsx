@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import { usePermissionStore, useRunTimelineStore, useSessionStore } from "../stores";
 import type { AgentRunStep, AgentRunStepKind, AgentRunStepStatus } from "../types/ipc";
+import { buildPermissionPatchFiles } from "../lib/permissionPatchPreview";
+import { PermissionPatchPreview } from "./PermissionPatchPreview";
 
 export interface RunTimelinePanelProps {
   testId?: string;
@@ -20,6 +22,9 @@ export function RunTimelinePanel({
   testId = "run-timeline-panel",
 }: RunTimelinePanelProps): JSX.Element {
   const init = useRunTimelineStore((s) => s.init);
+  const loadForSession = useRunTimelineStore((s) => s.loadForSession);
+  const loading = useRunTimelineStore((s) => s.loading);
+  const error = useRunTimelineStore((s) => s.error);
   const runs = useRunTimelineStore((s) => s.runs);
   const order = useRunTimelineStore((s) => s.order);
   const currentSessionId = useSessionStore((s) => s.currentSessionId);
@@ -29,6 +34,10 @@ export function RunTimelinePanel({
   useEffect(() => {
     init();
   }, [init]);
+
+  useEffect(() => {
+    void loadForSession(currentSessionId);
+  }, [currentSessionId, loadForSession]);
 
   const visibleRuns = useMemo(
     () => order.map((id) => runs[id]).filter((r) => r && (!currentSessionId || r.session_id === currentSessionId)),
@@ -40,46 +49,53 @@ export function RunTimelinePanel({
   if (visibleRuns.length === 0 && pending.length === 0) {
     return (
       <div data-testid={testId} className="px-3 py-4 text-xs text-minimax-muted">
-        No active runs.
+        {loading ? "Loading runs..." : error ? "Run history unavailable." : "No active runs."}
       </div>
     );
   }
 
   return (
     <div data-testid={testId} className="divide-y divide-minimax-border">
-      {pending.map((request) => (
-        <div
-          key={request.request_id}
-          data-testid="run-timeline-approval"
-          className="px-3 py-2.5"
-        >
-          <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2">
-            <div className="flex items-center gap-1.5 text-xs font-medium text-amber-200">
-              <ShieldQuestion size={13} />
-              <span className="truncate">{request.tool}</span>
-            </div>
-            <pre className="mt-1 max-h-20 overflow-hidden whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-amber-100/80">
-              {formatArgs(request.args)}
-            </pre>
-            <div className="mt-2 flex justify-end gap-1.5">
-              <button
-                type="button"
-                onClick={() => void resolvePermission(request.request_id, "deny")}
-                className="rounded border border-minimax-border px-2 py-1 text-[11px] text-minimax-fg hover:border-red-500/40 hover:text-status-error"
-              >
-                Deny
-              </button>
-              <button
-                type="button"
-                onClick={() => void resolvePermission(request.request_id, "allow")}
-                className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-1 text-[11px] text-emerald-200 hover:bg-emerald-500/25"
-              >
-                Allow
-              </button>
+      {pending.map((request) => {
+        const patchFiles = buildPermissionPatchFiles(request.tool, request.args);
+        return (
+          <div
+            key={request.request_id}
+            data-testid="run-timeline-approval"
+            className="px-3 py-2.5"
+          >
+            <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-amber-200">
+                <ShieldQuestion size={13} />
+                <span className="truncate">{request.tool}</span>
+              </div>
+              <pre className="mt-1 max-h-20 overflow-hidden whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-amber-100/80">
+                {formatArgs(request.args)}
+              </pre>
+              <PermissionPatchPreview
+                files={patchFiles}
+                testId="run-timeline-approval-patch-preview"
+              />
+              <div className="mt-2 flex justify-end gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => void resolvePermission(request.request_id, "deny")}
+                  className="rounded border border-minimax-border px-2 py-1 text-[11px] text-minimax-fg hover:border-red-500/40 hover:text-status-error"
+                >
+                  Deny
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void resolvePermission(request.request_id, "allow")}
+                  className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-1 text-[11px] text-emerald-200 hover:bg-emerald-500/25"
+                >
+                  Allow
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
       {visibleRuns.map((run) => (
         <article key={run.id} className="px-3 py-2.5">
           <div className="mb-2 flex items-center justify-between gap-2">
