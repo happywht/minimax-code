@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Check,
   FileCode2,
   GitBranch,
   GitCommitHorizontal,
   Loader2,
   RefreshCw,
+  RotateCcw,
+  X,
 } from "lucide-react";
 import { usePatchPreviewStore } from "../stores";
-import type { PatchFile, PatchLine } from "../types/ipc";
+import type { PatchFile, PatchHunk, PatchLine } from "../types/ipc";
 
 export interface PatchPreviewPanelProps {
   testId?: string;
@@ -18,6 +21,8 @@ const SCOPES = [
   { key: "staged", label: "Staged", icon: GitCommitHorizontal },
   { key: "branch", label: "Branch", icon: GitBranch },
 ] as const;
+
+type HunkDecision = "approved" | "rejected";
 
 export function PatchPreviewPanel({
   testId = "patch-preview-panel",
@@ -30,6 +35,7 @@ export function PatchPreviewPanel({
   const refresh = usePatchPreviewStore((s) => s.refresh);
   const fileRefs = useRef<Record<string, HTMLLIElement | null>>({});
   const [activeFile, setActiveFile] = useState<string | null>(null);
+  const [hunkDecisions, setHunkDecisions] = useState<Record<string, HunkDecision>>({});
 
   useEffect(() => {
     void refresh();
@@ -42,6 +48,20 @@ export function PatchPreviewPanel({
     const key = fileKey(file);
     setActiveFile(key);
     fileRefs.current[key]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  };
+
+  const decideHunk = (key: string, decision: HunkDecision | null) => {
+    setHunkDecisions((current) => {
+      const next = { ...current };
+      if (decision === null) delete next[key];
+      else next[key] = decision;
+      return next;
+    });
+  };
+
+  const refreshAndReset = (opts?: { scope?: typeof scope }) => {
+    setHunkDecisions({});
+    void refresh(opts);
   };
 
   return (
@@ -57,7 +77,7 @@ export function PatchPreviewPanel({
                 data-testid={`${testId}-scope-${key}`}
                 onClick={() => {
                   setScope(key);
-                  void refresh({ scope: key });
+                  refreshAndReset({ scope: key });
                 }}
                 className={
                   "flex h-6 items-center gap-1 rounded px-1.5 text-[10px] " +
@@ -76,7 +96,7 @@ export function PatchPreviewPanel({
         <button
           type="button"
           data-testid={`${testId}-refresh`}
-          onClick={() => void refresh()}
+          onClick={() => refreshAndReset()}
           disabled={loading}
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg disabled:opacity-50"
           aria-label="Refresh patch preview"
@@ -154,6 +174,8 @@ export function PatchPreviewPanel({
               key={fileKey(file)}
               file={file}
               active={activeFile === fileKey(file)}
+              decisions={hunkDecisions}
+              onDecide={decideHunk}
               itemRef={(node) => {
                 fileRefs.current[fileKey(file)] = node;
               }}
@@ -168,13 +190,16 @@ export function PatchPreviewPanel({
 function PatchFileCard({
   file,
   active,
+  decisions,
+  onDecide,
   itemRef,
 }: {
   file: PatchFile;
   active: boolean;
+  decisions: Record<string, HunkDecision>;
+  onDecide: (key: string, decision: HunkDecision | null) => void;
   itemRef: (node: HTMLLIElement | null) => void;
 }): JSX.Element {
-  const previewLines = useMemo(() => collectPreviewLines(file), [file]);
   return (
     <li
       ref={itemRef}
@@ -207,12 +232,21 @@ function PatchFileCard({
           Binary file changed
         </div>
       ) : (
-        previewLines.length > 0 && (
-          <pre className="mt-1.5 max-h-28 overflow-hidden rounded bg-minimax-panel px-2 py-1 font-mono text-[10px] leading-relaxed">
-            {previewLines.map((line, idx) => (
-              <PatchLineRow key={idx} line={line} />
-            ))}
-          </pre>
+        file.hunks.length > 0 && (
+          <div className="mt-1.5 space-y-1.5">
+            {file.hunks.map((hunk, index) => {
+              const key = hunkKey(file, hunk, index);
+              return (
+                <PatchHunkCard
+                  key={key}
+                  hunk={hunk}
+                  hunkKeyValue={key}
+                  decision={decisions[key]}
+                  onDecide={onDecide}
+                />
+              );
+            })}
+          </div>
         )
       )}
     </li>
@@ -238,6 +272,95 @@ function PatchLineRow({ line }: { line: PatchLine }): JSX.Element {
   );
 }
 
+function PatchHunkCard({
+  hunk,
+  hunkKeyValue,
+  decision,
+  onDecide,
+}: {
+  hunk: PatchHunk;
+  hunkKeyValue: string;
+  decision?: HunkDecision;
+  onDecide: (key: string, decision: HunkDecision | null) => void;
+}): JSX.Element {
+  const previewLines = useMemo(() => collectHunkPreviewLines(hunk), [hunk]);
+  return (
+    <div
+      data-testid={`patch-hunk-${hunkKeyValue}`}
+      data-decision={decision ?? "pending"}
+      className="overflow-hidden rounded border border-minimax-border bg-minimax-panel"
+    >
+      <div className="flex items-center justify-between gap-2 border-b border-minimax-border/60 px-2 py-1">
+        <span className="min-w-0 truncate font-mono text-[10px] text-minimax-muted">
+          @@ -{hunk.old_start},{hunk.old_lines} +{hunk.new_start},{hunk.new_lines} @@ {hunk.header}
+        </span>
+        <div className="flex shrink-0 items-center gap-1">
+          <HunkDecisionBadge decision={decision} />
+          <button
+            type="button"
+            data-testid={`patch-hunk-${hunkKeyValue}-approve`}
+            onClick={() => onDecide(hunkKeyValue, "approved")}
+            className="flex h-5 w-5 items-center justify-center rounded text-minimax-muted hover:bg-emerald-500/15 hover:text-emerald-300"
+            title="Approve this hunk"
+            aria-label="Approve this hunk"
+          >
+            <Check size={10} />
+          </button>
+          <button
+            type="button"
+            data-testid={`patch-hunk-${hunkKeyValue}-reject`}
+            onClick={() => onDecide(hunkKeyValue, "rejected")}
+            className="flex h-5 w-5 items-center justify-center rounded text-minimax-muted hover:bg-red-500/15 hover:text-status-error"
+            title="Reject this hunk"
+            aria-label="Reject this hunk"
+          >
+            <X size={10} />
+          </button>
+          {decision && (
+            <button
+              type="button"
+              data-testid={`patch-hunk-${hunkKeyValue}-reset`}
+              onClick={() => onDecide(hunkKeyValue, null)}
+              className="flex h-5 w-5 items-center justify-center rounded text-minimax-muted hover:bg-minimax-border/70 hover:text-minimax-fg"
+              title="Reset hunk decision"
+              aria-label="Reset hunk decision"
+            >
+              <RotateCcw size={10} />
+            </button>
+          )}
+        </div>
+      </div>
+      <pre className="max-h-28 overflow-hidden px-2 py-1 font-mono text-[10px] leading-relaxed">
+        {previewLines.map((line, idx) => (
+          <PatchLineRow key={idx} line={line} />
+        ))}
+      </pre>
+    </div>
+  );
+}
+
+function HunkDecisionBadge({ decision }: { decision?: HunkDecision }): JSX.Element {
+  if (decision === "approved") {
+    return (
+      <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1 py-0.5 text-[10px] text-emerald-300">
+        approved
+      </span>
+    );
+  }
+  if (decision === "rejected") {
+    return (
+      <span className="rounded border border-red-500/30 bg-red-500/10 px-1 py-0.5 text-[10px] text-status-error">
+        rejected
+      </span>
+    );
+  }
+  return (
+    <span className="rounded border border-minimax-border bg-minimax-bg/40 px-1 py-0.5 text-[10px] text-minimax-muted">
+      pending
+    </span>
+  );
+}
+
 function StatusBadge({ status }: { status: PatchFile["status"] }): JSX.Element {
   const cls =
     status === "added"
@@ -250,15 +373,17 @@ function StatusBadge({ status }: { status: PatchFile["status"] }): JSX.Element {
   return <span className={"rounded border px-1 py-0.5 text-[10px] " + cls}>{status}</span>;
 }
 
-function collectPreviewLines(file: PatchFile): PatchLine[] {
+function hunkKey(file: PatchFile, hunk: PatchHunk, index: number): string {
+  return `${file.path}-${index}-${hunk.old_start}-${hunk.new_start}`;
+}
+
+function collectHunkPreviewLines(hunk: PatchHunk): PatchLine[] {
   const lines: PatchLine[] = [];
-  for (const hunk of file.hunks) {
-    for (const line of hunk.lines) {
-      if (line.kind === "add" || line.kind === "delete") {
-        lines.push(line);
-      }
-      if (lines.length >= 8) return lines;
+  for (const line of hunk.lines) {
+    if (line.kind === "add" || line.kind === "delete") {
+      lines.push(line);
     }
+    if (lines.length >= 8) return lines;
   }
   return lines;
 }

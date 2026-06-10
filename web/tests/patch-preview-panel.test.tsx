@@ -77,4 +77,36 @@ describe("PatchPreviewPanel", () => {
     expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest", behavior: "smooth" });
     expect(screen.getByTestId("patch-file-card-app.ts").className).toContain("ring-1");
   });
+
+  it("tracks approve, reject, and reset decisions per hunk", async () => {
+    render(<PatchPreviewPanel />);
+    await waitFor(() => {
+      expect(screen.getByTestId("patch-hunk-app.ts-0-1-1")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("patch-hunk-app.ts-0-1-1-approve"));
+    expect(screen.getByTestId("patch-hunk-app.ts-0-1-1")).toHaveAttribute("data-decision", "approved");
+    expect(screen.getByText("approved")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("patch-hunk-app.ts-0-1-1-reject"));
+    expect(screen.getByTestId("patch-hunk-app.ts-0-1-1")).toHaveAttribute("data-decision", "rejected");
+    expect(screen.getByText("rejected")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("patch-hunk-app.ts-0-1-1-reset"));
+    expect(screen.getByTestId("patch-hunk-app.ts-0-1-1")).toHaveAttribute("data-decision", "pending");
+  });
+
+  it("clears hunk decisions when the preview refreshes", async () => {
+    render(<PatchPreviewPanel />);
+    await waitFor(() => {
+      expect(screen.getByTestId("patch-hunk-app.ts-0-1-1")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("patch-hunk-app.ts-0-1-1-approve"));
+    expect(screen.getByTestId("patch-hunk-app.ts-0-1-1")).toHaveAttribute("data-decision", "approved");
+
+    fireEvent.click(screen.getByTestId("patch-preview-panel-refresh"));
+    await waitFor(() => {
+      expect(screen.getByTestId("patch-hunk-app.ts-0-1-1")).toHaveAttribute("data-decision", "pending");
+    });
+  });
 });
