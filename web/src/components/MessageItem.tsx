@@ -31,6 +31,7 @@ import {
 import type { Message } from "../types/ipc";
 import { highlight } from "../lib/shikiLoader";
 import { useChat, useThemeStore } from "../stores";
+import { toast } from "./ErrorBoundary";
 
 export interface MessageItemProps {
   message: Message;
@@ -536,6 +537,8 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
   // unnecessary re-computation when unrelated parts of the store change.
   const msgCount = useChat((s) => s.messages.length);
   const messages = useChat((s) => s.messages);
+  const [messageCopied, setMessageCopied] = useState(false);
+  const messageCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const summary = useMemo<TurnSummary | null>(() => {
     if (!isAssistant) return null;
     const idx = messages.findIndex((m) => m.id === message.id);
@@ -553,6 +556,24 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
 
   // Tool bubbles are collapsible to keep the chat scannable.
   const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      if (messageCopyTimerRef.current) clearTimeout(messageCopyTimerRef.current);
+    };
+  }, []);
+
+  const handleCopyMessage = async () => {
+    try {
+      await navigator.clipboard.writeText(message.text);
+      setMessageCopied(true);
+      if (messageCopyTimerRef.current) clearTimeout(messageCopyTimerRef.current);
+      messageCopyTimerRef.current = setTimeout(() => setMessageCopied(false), 1500);
+      toast.success("Message copied");
+    } catch {
+      toast.error("Copy failed", "Clipboard access was denied.");
+    }
+  };
 
   if (isTool) {
     return (
@@ -599,10 +620,10 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
       <div
         className={
           isUser
-            ? "max-w-[80%] rounded-2xl rounded-br-md bg-minimax-accent px-4 py-2 text-sm text-white shadow-sm transition-colors duration-200"
+            ? "group relative max-w-[80%] rounded-2xl rounded-br-md bg-minimax-accent py-2 pl-9 pr-4 text-sm text-white shadow-sm transition-colors duration-200"
             : isSystem
               ? "max-w-[80%] rounded-md border border-red-500/30 bg-red-500/5 px-3 py-1.5 text-xs italic text-status-error transition-colors duration-200"
-              : "max-w-[85%] rounded-2xl rounded-bl-md border px-4 py-2 text-sm shadow-sm transition-colors duration-200 " +
+              : "group relative max-w-[85%] rounded-2xl rounded-bl-md border py-2 pl-4 pr-9 text-sm shadow-sm transition-colors duration-200 " +
                 (isFailed
                   ? "border-red-500/40 bg-red-500/5 text-status-error"
                   : isCancelling
@@ -612,6 +633,23 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
                       : "border-minimax-border bg-minimax-panel text-minimax-fg")
         }
       >
+        {!isSystem && message.text && (
+          <button
+            type="button"
+            data-testid={`message-copy-${message.id}`}
+            onClick={() => void handleCopyMessage()}
+            className={
+              "absolute top-1.5 flex h-6 w-6 items-center justify-center rounded-md opacity-0 transition-all duration-200 focus:opacity-100 group-hover:opacity-100 " +
+              (isUser
+                ? "left-1.5 text-white/80 hover:bg-white/15 hover:text-white"
+                : "right-1.5 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg")
+            }
+            aria-label="Copy message"
+            title="Copy message"
+          >
+            {messageCopied ? <Check size={12} /> : <Copy size={12} />}
+          </button>
+        )}
         {isAssistant && summary && (
           <div
             data-testid={`message-summary-${message.id}`}

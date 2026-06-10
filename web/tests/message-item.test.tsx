@@ -14,8 +14,17 @@ const mermaidMock = vi.hoisted(() => ({
   render: vi.fn(),
 }));
 
+const toastMock = vi.hoisted(() => ({
+  success: vi.fn(),
+  error: vi.fn(),
+}));
+
 vi.mock("mermaid", () => ({
   default: mermaidMock,
+}));
+
+vi.mock("../src/components/ErrorBoundary", () => ({
+  toast: toastMock,
 }));
 
 const baseMessage = (overrides: Partial<Message> = {}): Message => ({
@@ -31,6 +40,8 @@ describe("MessageItem", () => {
   beforeEach(() => {
     mermaidMock.initialize.mockClear();
     mermaidMock.render.mockReset();
+    toastMock.success.mockClear();
+    toastMock.error.mockClear();
     mermaidMock.render.mockResolvedValue({
       svg: '<svg role="img" aria-label="diagram"><text>diagram</text></svg>',
     });
@@ -56,6 +67,31 @@ describe("MessageItem", () => {
       expect(screen.getByText("code")).toBeInTheDocument();
     });
     expect(screen.getByText("bold")).toBeInTheDocument();
+  });
+
+  it("copies a full message and surfaces toast feedback", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    render(
+      <MessageItem
+        message={baseMessage({
+          id: "copy-me",
+          role: "assistant",
+          text: "Copy this exact message.",
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("message-copy-copy-me"));
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("Copy this exact message.");
+    });
+    expect(screen.getByTestId("message-copy-copy-me")).toHaveAttribute("title", "Copy message");
+    expect(toastMock.success).toHaveBeenCalledWith("Message copied");
   });
 
   it("repairs a fenced code block when the language and first line are fused", async () => {
