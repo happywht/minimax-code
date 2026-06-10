@@ -99,11 +99,17 @@ def _preview_text(value: Any, *, limit: int = 600) -> str:
     try:
         import json
 
-        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+        text = (
+            value
+            if isinstance(value, str)
+            else json.dumps(value, ensure_ascii=False, default=str)
+        )
     except Exception:
         text = str(value)
     text = text.replace("\r\n", "\n")
-    return text if len(text) <= limit else text[:limit] + f"\n...(truncated, {len(text) - limit} chars)"
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n...(truncated, {len(text) - limit} chars)"
 
 
 def _terminal_output_tail(session: TerminalSession, *, limit: int = _OUTPUT_TAIL_LIMIT) -> str:
@@ -185,7 +191,10 @@ async def _get_runs_dao() -> Any | None:
             try:
                 await init_runtime()
             except Exception:
-                logger.debug("init_runtime failed while enabling terminal run tracking", exc_info=True)
+                logger.debug(
+                    "init_runtime failed while enabling terminal run tracking",
+                    exc_info=True,
+                )
             db = get_db()
         return AgentRunsDAO(db) if db is not None else None
     except Exception:
@@ -379,6 +388,26 @@ async def _stop_session(session: TerminalSession) -> None:
         await _terminate_process(session.process)
 
 
+async def start_terminal_command(
+    *,
+    command: str,
+    cwd: str,
+    timeout_s: float,
+    chat_session_id: str | None,
+    emit: Callable[[str, dict[str, Any]], Awaitable[None]],
+) -> TerminalSession:
+    """Start a lightweight command session and return its in-memory row."""
+    session = TerminalSession(
+        id=f"term_{uuid.uuid4().hex[:10]}",
+        command=command,
+        cwd=cwd,
+        chat_session_id=chat_session_id,
+    )
+    _SESSIONS[session.id] = session
+    session.task = asyncio.create_task(_run_session(session, timeout_s, emit))
+    return session
+
+
 def _chunks_after(session: TerminalSession, after_seq: int) -> list[dict[str, Any]]:
     return [
         {
@@ -402,14 +431,13 @@ def register_terminal_handlers(server: Any) -> None:
             cwd = _cwd_from_params(p)
             timeout_s = _timeout_from_params(p)
             chat_session_id = _chat_session_id_from_params(p)
-            session = TerminalSession(
-                id=f"term_{uuid.uuid4().hex[:10]}",
+            session = await start_terminal_command(
                 command=command,
                 cwd=cwd,
+                timeout_s=timeout_s,
                 chat_session_id=chat_session_id,
+                emit=ctx.emit,
             )
-            _SESSIONS[session.id] = session
-            session.task = asyncio.create_task(_run_session(session, timeout_s, ctx.emit))
             await ctx.reply({"session": session.to_wire()})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
@@ -423,7 +451,9 @@ def register_terminal_handlers(server: Any) -> None:
             after_seq = p.get("after_seq", 0)
             if not isinstance(after_seq, int) or after_seq < 0:
                 raise HandlerError(INVALID_PARAMS, "'after_seq' must be a non-negative integer")
-            await ctx.reply({"session": session.to_wire(), "chunks": _chunks_after(session, after_seq)})
+            await ctx.reply(
+                {"session": session.to_wire(), "chunks": _chunks_after(session, after_seq)}
+            )
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:
@@ -453,4 +483,4 @@ def register_terminal_handlers(server: Any) -> None:
     server.register("terminal.list", handle_list)
 
 
-__all__ = ["register_terminal_handlers"]
+__all__ = ["register_terminal_handlers", "start_terminal_command"]

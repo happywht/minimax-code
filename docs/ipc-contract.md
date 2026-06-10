@@ -203,6 +203,8 @@ on the next `readline() == ""`.
 | `terminal.read`            | req/res   | Read incremental stdout/stderr chunks for a session. |
 | `terminal.stop`            | req/res   | Stop a running command session. |
 | `terminal.list`            | req/res   | List recent in-memory terminal sessions. |
+| `runner.list`              | req/res   | List product-facing runner adapters. |
+| `runner.start`             | req/res   | Start a runner; `native` delegates to a terminal session. |
 | `session.create`           | req/res   | Reserved (storage-layer).                          |
 | `session.list`             | req/res   | Reserved (storage-layer).                          |
 | `session.archive`          | req/res   | Reserved.                                          |
@@ -450,6 +452,75 @@ Read response:
 `terminal.stop` accepts `{ "session_id": "term_abcd1234" }` and returns
 the updated session. Sessions are process-local and intentionally
 in-memory; after an agent restart the UI should treat the list as empty.
+
+### 6.5 `runner.*` — product-facing runner adapters
+
+`runner.*` is the adapter layer above terminal sessions. It lets the UI
+show a stable set of execution engines while the backend wires each
+engine incrementally.
+
+List request:
+```json
+{"jsonrpc":"2.0","id":"runner-1","method":"runner.list","params":{}}
+```
+
+List response:
+```json
+{
+  "runners":[
+    {
+      "id":"native",
+      "label":"Native shell",
+      "kind":"native",
+      "available":true,
+      "command":null,
+      "version":null,
+      "reason":null,
+      "supports_prompt":false,
+      "supports_terminal":true
+    },
+    {
+      "id":"codex-cli",
+      "label":"Codex CLI",
+      "kind":"external_cli",
+      "available":false,
+      "command":null,
+      "version":null,
+      "reason":"codex executable not found on PATH",
+      "supports_prompt":true,
+      "supports_terminal":true
+    }
+  ]
+}
+```
+
+Start request:
+```json
+{
+  "jsonrpc":"2.0",
+  "id":"runner-2",
+  "method":"runner.start",
+  "params":{
+    "runner_id":"native",
+    "command":"pnpm test",
+    "cwd":"D:\\repo",
+    "session_id":"ses_current",
+    "timeout_s":600
+  }
+}
+```
+
+Start response:
+```json
+{
+  "runner":{"id":"native","label":"Native shell"},
+  "session":{"id":"term_abcd1234","command":"pnpm test","run_id":"run_abc123def456"}
+}
+```
+
+`codex-cli` and `claude-code-cli` are detectable adapters in this
+version. Starting them returns an explicit error until prompt routing,
+auth expectations, and cancellation semantics are wired.
 
 ## 7. Event names
 

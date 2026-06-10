@@ -31,6 +31,8 @@ export { PatchPreviewPanel } from "./PatchPreviewPanel";
 export type { PatchPreviewPanelProps } from "./PatchPreviewPanel";
 export { TerminalPanel } from "./TerminalPanel";
 export type { TerminalPanelProps } from "./TerminalPanel";
+export { RunnerPanel } from "./RunnerPanel";
+export type { RunnerPanelProps } from "./RunnerPanel";
 export { ThemeToggle } from "./ThemeToggle";
 export type { ThemeToggleProps } from "./ThemeToggle";
 export { TopBar } from "./TopBar";

@@ -380,6 +380,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_patch import register_patch_handlers
     from .ipc.handlers_permissions import register_permission_handlers
     from .ipc.handlers_providers import register_provider_handlers
+    from .ipc.handlers_runner import register_runner_handlers
     from .ipc.handlers_runs import register_run_handlers
     from .ipc.handlers_scheduled import register_scheduled_handlers
     from .ipc.handlers_sessions import register_session_handlers
@@ -458,6 +459,9 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     register_patch_handlers(server)
     # Lightweight command sessions for the inspector terminal panel.
     register_terminal_handlers(server)
+    # Product-facing runner adapters. Native runner delegates to terminal
+    # sessions; external CLI adapters are detected before executable wiring.
+    register_runner_handlers(server)
     # The audit handlers expose ``audit.list`` / ``audit.stats``
     # / ``audit.purge`` for the Settings page's Audit tab. The DAO
     # is built lazily on first call (same pattern as scheduled jobs).
@@ -491,7 +495,8 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
         "registered application handlers "
         "(1 agent.* + 7 agent.* + 5 skill.* + 6 task.* + 5 session.* + 3 workspace.* + "
         "5 permission.* + 6 schedule.* + 7 mobile.* + 3 model.* + "
-        "7 provider.* + 3 secrets.* + 3 git.* + 3 patch.* + 4 terminal.* + 3 audit.* + 5 webhook.* + "
+        "7 provider.* + 3 secrets.* + 3 git.* + 3 patch.* + "
+        "4 terminal.* + 2 runner.* + 3 audit.* + 5 webhook.* + "
         "5 notification.* + 7 workflow.* + 7 team.*)"
     )
 

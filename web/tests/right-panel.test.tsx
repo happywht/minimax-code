@@ -9,6 +9,7 @@ import { RightPanel } from "../src/components/RightPanel";
 import {
   usePatchPreviewStore,
   usePermissionStore,
+  useRunnerStore,
   useRunTimelineStore,
   useSubAgentStore,
   useTaskStore,
@@ -53,6 +54,7 @@ beforeEach(() => {
   usePermissionStore.setState({ pending: {}, alwaysAllow: false, rules: [], loading: false });
   usePatchPreviewStore.getState().reset();
   useTerminalStore.getState().reset();
+  useRunnerStore.getState().reset();
   localStorage.clear();
 });
 
@@ -65,6 +67,7 @@ describe("RightPanel — chrome", () => {
     expect(screen.getByTestId("right-panel-tab-diff")).toBeInTheDocument();
     expect(screen.getByTestId("right-panel-tab-agents")).toBeInTheDocument();
     expect(screen.getByTestId("right-panel-tab-terminal")).toBeInTheDocument();
+    expect(screen.getByTestId("right-panel-tab-runner")).toBeInTheDocument();
     expect(screen.getByTestId("right-panel-timeline-body")).toBeInTheDocument();
     expect(screen.queryByTestId("right-panel-patch-body")).toBeNull();
   });
@@ -144,6 +147,13 @@ describe("RightPanel — Progress section", () => {
     fireEvent.click(screen.getByTestId("right-panel-tab-terminal"));
     expect(screen.getByTestId("right-panel-terminal-body")).toBeInTheDocument();
     expect(screen.getByTestId("right-panel-tab-terminal")).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("shows the runner body when the runner tab is selected", () => {
+    render(<RightPanel initialAgents={[]} />);
+    fireEvent.click(screen.getByTestId("right-panel-tab-runner"));
+    expect(screen.getByTestId("right-panel-runner-body")).toBeInTheDocument();
+    expect(screen.getByTestId("right-panel-tab-runner")).toHaveAttribute("aria-selected", "true");
   });
 
   it("switches between inspector tabs without keeping stale bodies mounted", () => {

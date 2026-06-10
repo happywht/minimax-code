@@ -632,6 +632,29 @@ export interface TerminalListResult {
   sessions: TerminalSession[];
 }
 
+export type RunnerKind = "native" | "external_cli";
+
+export interface RunnerInfo {
+  id: "native" | "codex-cli" | "claude-code-cli";
+  label: string;
+  kind: RunnerKind;
+  available: boolean;
+  command: string | null;
+  version: string | null;
+  reason: string | null;
+  supports_prompt: boolean;
+  supports_terminal: boolean;
+}
+
+export interface RunnerListResult {
+  runners: RunnerInfo[];
+}
+
+export interface RunnerStartResult {
+  runner: RunnerInfo;
+  session: TerminalSession;
+}
+
 /** A single `git.log` entry. */
 export interface GitLogEntry {
   sha: string;

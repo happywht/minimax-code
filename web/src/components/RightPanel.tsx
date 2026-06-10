@@ -33,6 +33,7 @@ import {
   ListChecks,
   Loader2,
   RefreshCw,
+  Rocket,
   TerminalSquare,
   Users,
 } from "lucide-react";
@@ -43,10 +44,12 @@ import { SubAgentPanel } from "./SubAgentPanel";
 import { CodeReviewPanel } from "./CodeReviewPanel";
 import { TeamRunPanel } from "./TeamRunPanel";
 import { TerminalPanel } from "./TerminalPanel";
+import { RunnerPanel } from "./RunnerPanel";
 import { typedIPC } from "../ipc";
 import {
   usePatchPreviewStore,
   usePermissionStore,
+  useRunnerStore,
   useRunTimelineStore,
   useSubAgentStore,
   useTaskStore,
@@ -74,7 +77,8 @@ type InspectorTab =
   | "subagents"
   | "review"
   | "teamruns"
-  | "terminal";
+  | "terminal"
+  | "runner";
 
 const INSPECTOR_TABS: Array<{
   id: InspectorTab;
@@ -89,6 +93,7 @@ const INSPECTOR_TABS: Array<{
   { id: "review", label: "Review", icon: <CheckCircle2 size={12} /> },
   { id: "teamruns", label: "Runs", icon: <Loader2 size={12} /> },
   { id: "terminal", label: "Term", icon: <TerminalSquare size={12} /> },
+  { id: "runner", label: "Run", icon: <Rocket size={12} /> },
 ];
 
 export function RightPanel({
@@ -128,6 +133,7 @@ export function RightPanel({
     const latest = sessions.reduce((max, session) => Math.max(max, session.updated_at), 0);
     return `${running}:${latest}`;
   });
+  const runnerSignal = useRunnerStore((s) => `${s.lastStart?.session.id ?? ""}:${s.starting ? 1 : 0}`);
 
   const fetchAgents = useCallback(async () => {
     setAgentsLoading(true);
@@ -178,6 +184,11 @@ export function RightPanel({
     if (!followRun || terminalSignal.startsWith("0:")) return;
     setActiveTab("terminal");
   }, [followRun, terminalSignal]);
+
+  useEffect(() => {
+    if (!followRun || runnerSignal === ":0") return;
+    setActiveTab("runner");
+  }, [followRun, runnerSignal]);
 
   const selectTab = useCallback((tab: InspectorTab) => {
     setActiveTab(tab);
@@ -236,7 +247,7 @@ export function RightPanel({
       <div
         role="tablist"
         aria-label="Inspector panels"
-        className="grid grid-cols-4 gap-1 border-b border-minimax-border px-2 py-2 xl:grid-cols-8"
+        className="grid grid-cols-4 gap-1 border-b border-minimax-border px-2 py-2 xl:grid-cols-9"
       >
         {INSPECTOR_TABS.map((tab) => {
           const selected = activeTab === tab.id;
@@ -371,6 +382,13 @@ function InspectorContent({
     return (
       <section id={`${testId}-terminal-panel`} role="tabpanel" data-testid={`${testId}-terminal-body`}>
         <TerminalPanel testId={`${testId}-terminal-panel`} />
+      </section>
+    );
+  }
+  if (activeTab === "runner") {
+    return (
+      <section id={`${testId}-runner-panel`} role="tabpanel" data-testid={`${testId}-runner-body`}>
+        <RunnerPanel testId={`${testId}-runner-panel`} />
       </section>
     );
   }

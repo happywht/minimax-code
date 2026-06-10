@@ -58,6 +58,7 @@ export {
   type PatchPreviewState,
 } from "./patchPreviewStore";
 export { useTerminalStore, type TerminalState } from "./terminalStore";
+export { useRunnerStore, type RunnerState } from "./runnerStore";
 export { useThemeStore, type Theme } from "./themeStore";
 export { useAgentStore } from "./agentStore";
 export { useMobileStore, type PairedDevice } from "./mobileStore";

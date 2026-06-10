@@ -11,6 +11,7 @@ export interface TerminalState {
   loading: boolean;
   error: string | null;
   setActive: (sessionId: string | null) => void;
+  adopt: (session: TerminalSession) => void;
   list: () => Promise<void>;
   start: (opts: {
     command: string;
@@ -44,6 +45,14 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   error: null,
 
   setActive: (activeId) => set({ activeId }),
+
+  adopt: (session) =>
+    set((state) => ({
+      ...upsertSession(state, session),
+      activeId: session.id,
+      chunks: { ...state.chunks, [session.id]: state.chunks[session.id] ?? [] },
+      lastSeq: { ...state.lastSeq, [session.id]: state.lastSeq[session.id] ?? 0 },
+    })),
 
   list: async () => {
     set({ loading: true, error: null });

@@ -69,6 +69,9 @@ import {
   type PermissionResolvedData,
   type RunCompletedData,
   type RunCreatedData,
+  type RunnerInfo,
+  type RunnerListResult,
+  type RunnerStartResult,
   type RunStepsResult,
   type RunStepData,
   type PermissionRule,
@@ -879,6 +882,14 @@ export interface TypedIPC {
   readTerminal(opts: { session_id: string; after_seq?: number }): Promise<TerminalReadResult>;
   stopTerminal(sessionId: string): Promise<TerminalStartResult>;
   listTerminals(): Promise<TerminalListResult>;
+  listRunners(): Promise<RunnerListResult>;
+  startRunner(opts: {
+    runner_id: RunnerInfo["id"];
+    command: string;
+    cwd?: string;
+    timeout_s?: number;
+    session_id?: string | null;
+  }): Promise<RunnerStartResult>;
 
   // audit — drive the Settings page's Audit tab.
   listAudit(opts?: { limit?: number; offset?: number; tool_name?: string; session_id?: string }): Promise<ListAuditResult>;
@@ -1116,6 +1127,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     readTerminal: (opts) => client.request<TerminalReadResult>("terminal.read", opts),
     stopTerminal: (sessionId) => client.request<TerminalStartResult>("terminal.stop", { session_id: sessionId }),
     listTerminals: () => client.request<TerminalListResult>("terminal.list", {}),
+    listRunners: () => client.request<RunnerListResult>("runner.list", {}),
+    startRunner: (opts) => client.request<RunnerStartResult>("runner.start", opts),
 
     listAudit: (opts) => client.request<ListAuditResult>("audit.list", opts ?? {}),
     auditStats: () => client.request<AuditStats>("audit.stats", {}),
@@ -1296,6 +1309,76 @@ const mockProviders: ProviderInfo[] = [
 const mockSecrets: { keyring: string | null } = { keyring: null };
 const mockTerminalSessions = new Map<string, TerminalSession>();
 const mockTerminalChunks = new Map<string, TerminalChunk[]>();
+const mockRunners: RunnerInfo[] = [
+  {
+    id: "native",
+    label: "Native shell",
+    kind: "native",
+    available: true,
+    command: null,
+    version: null,
+    reason: null,
+    supports_prompt: false,
+    supports_terminal: true,
+  },
+  {
+    id: "codex-cli",
+    label: "Codex CLI",
+    kind: "external_cli",
+    available: false,
+    command: null,
+    version: null,
+    reason: "codex executable not found on PATH",
+    supports_prompt: true,
+    supports_terminal: true,
+  },
+  {
+    id: "claude-code-cli",
+    label: "Claude Code CLI",
+    kind: "external_cli",
+    available: false,
+    command: null,
+    version: null,
+    reason: "claude executable not found on PATH",
+    supports_prompt: true,
+    supports_terminal: true,
+  },
+];
+
+function makeMockTerminalSession(opts: {
+  command: string;
+  cwd?: string;
+  session_id?: string | null;
+  output?: string;
+}): TerminalSession {
+  const now = Date.now() / 1000;
+  const id = `term_mock_${Math.random().toString(36).slice(2, 10)}`;
+  const session: TerminalSession = {
+    id,
+    command: opts.command,
+    cwd: opts.cwd ?? "",
+    session_id: opts.session_id ?? null,
+    run_id: opts.session_id ? `run_mock_${Math.random().toString(36).slice(2, 10)}` : null,
+    status: "completed",
+    started_at: now,
+    updated_at: now,
+    completed_at: now,
+    exit_code: 0,
+    error: null,
+    next_seq: 2,
+  };
+  const chunks: TerminalChunk[] = [
+    {
+      seq: 1,
+      stream: "stdout",
+      text: opts.output ?? `$ ${opts.command}\n(mock terminal output)\n`,
+      received_at: now,
+    },
+  ];
+  mockTerminalSessions.set(id, session);
+  mockTerminalChunks.set(id, chunks);
+  return session;
+}
 
 function mockHandle(
   method: string,
@@ -1780,33 +1863,35 @@ function mockHandle(
 
     case "terminal.start": {
       const p = params as { command: string; cwd?: string; session_id?: string | null };
-      const now = Date.now() / 1000;
-      const id = `term_mock_${Math.random().toString(36).slice(2, 10)}`;
-      const session: TerminalSession = {
-        id,
+      const session = makeMockTerminalSession({
         command: p.command,
         cwd: p.cwd ?? "",
         session_id: p.session_id ?? null,
-        run_id: p.session_id ? `run_mock_${Math.random().toString(36).slice(2, 10)}` : null,
-        status: "completed",
-        started_at: now,
-        updated_at: now,
-        completed_at: now,
-        exit_code: 0,
-        error: null,
-        next_seq: 2,
-      };
-      const chunks: TerminalChunk[] = [
-        {
-          seq: 1,
-          stream: "stdout",
-          text: `$ ${p.command}\n(mock terminal output)\n`,
-          received_at: now,
-        },
-      ];
-      mockTerminalSessions.set(id, session);
-      mockTerminalChunks.set(id, chunks);
+      });
       return { session } satisfies TerminalStartResult;
+    }
+
+    case "runner.list": {
+      return { runners: mockRunners } satisfies RunnerListResult;
+    }
+
+    case "runner.start": {
+      const p = params as {
+        runner_id: RunnerInfo["id"];
+        command: string;
+        cwd?: string;
+        session_id?: string | null;
+      };
+      const runner = mockRunners.find((item) => item.id === p.runner_id);
+      if (!runner) throw new Error(`unknown runner_id: ${p.runner_id}`);
+      if (runner.id !== "native") throw new Error(`${runner.label} adapter is not executable yet`);
+      const session = makeMockTerminalSession({
+        command: p.command,
+        cwd: p.cwd,
+        session_id: p.session_id,
+        output: `$ ${p.command}\n(mock runner output)\n`,
+      });
+      return { runner, session } satisfies RunnerStartResult;
     }
 
     case "terminal.read": {
