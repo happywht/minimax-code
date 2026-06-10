@@ -5,6 +5,7 @@
 
 /* ── Theme tokens (dark default, light via .light class) ── */
 :root {
+  color-scheme: dark;
   --minimax-bg: #0b0d10;
   --minimax-panel: #14181d;
   --minimax-border: #22272e;
@@ -19,6 +20,7 @@
   --status-info: #60a5fa;        /* blue-400 */
 }
 :root.light {
+  color-scheme: light;
   --minimax-bg: #ffffff;
   --minimax-panel: #f6f8fa;
   --minimax-border: #d0d7de;
@@ -50,6 +52,25 @@ body {
 
 * {
   box-sizing: border-box;
+}
+
+html,
+body,
+button,
+input,
+textarea,
+select {
+  transition:
+    background-color 0.3s ease,
+    border-color 0.3s ease,
+    color 0.3s ease,
+    fill 0.3s ease,
+    stroke 0.3s ease;
+}
+
+:focus-visible {
+  outline: 2px solid var(--minimax-accent);
+  outline-offset: 2px;
 }
 
 /* Prose tweaks for assistant markdown */
@@ -161,4 +182,15 @@ body {
 
 .animate-modal-in {
   animation: modal-in 0.15s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
 }

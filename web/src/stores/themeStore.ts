@@ -27,7 +27,20 @@ function readStored(): Theme {
   } catch {
     // localStorage unavailable (SSR / privacy mode)
   }
+  if (typeof window.matchMedia === "function") {
+    return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  }
   return "dark";
+}
+
+function hasStoredTheme(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const v = localStorage.getItem(STORAGE_KEY);
+    return v === "light" || v === "dark";
+  } catch {
+    return false;
+  }
 }
 
 function applyTheme(t: Theme): void {
@@ -67,3 +80,14 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
 
 // Apply on module import so the class is set before first paint.
 applyTheme(readStored());
+
+if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
+  const media = window.matchMedia("(prefers-color-scheme: light)");
+  const onSystemThemeChange = () => {
+    if (hasStoredTheme()) return;
+    const next: Theme = media.matches ? "light" : "dark";
+    useThemeStore.setState({ theme: next });
+    applyTheme(next);
+  };
+  media.addEventListener?.("change", onSystemThemeChange);
+}
