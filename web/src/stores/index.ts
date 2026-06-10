@@ -52,6 +52,11 @@ export {
   type SubAgentState,
 } from "./subAgent";
 export { useGitStore, type GitState } from "./git";
+export {
+  usePatchPreviewStore,
+  type PatchPreviewScope,
+  type PatchPreviewState,
+} from "./patchPreviewStore";
 export { useThemeStore, type Theme } from "./themeStore";
 export { useAgentStore } from "./agentStore";
 export { useMobileStore, type PairedDevice } from "./mobileStore";

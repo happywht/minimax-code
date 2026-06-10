@@ -108,6 +108,14 @@ export interface Session {
 
 /** A persisted chat message (also used for in-flight streaming). */
 export type MessageRole = "user" | "assistant" | "system" | "tool";
+export type MessageStatus =
+  | "queued"
+  | "sending"
+  | "streaming"
+  | "completed"
+  | "failed"
+  | "cancelling"
+  | "cancelled";
 
 export interface Message {
   id: string;
@@ -115,6 +123,12 @@ export interface Message {
   text: string;
   /** True while a stream is still in progress. */
   streaming: boolean;
+  /** Optional frontend lifecycle state used for richer rendering. */
+  status?: MessageStatus;
+  /** Optional error text for failed UI messages. */
+  error?: string;
+  /** Original user content used by the retry affordance. */
+  retry_content?: string;
   created_at: number;
   /** Optional tool call metadata for assistant messages. */
   tool_call_id?: string;
@@ -377,6 +391,15 @@ export interface RunCompletedData {
   run: AgentRun;
 }
 
+export interface ListRunsResult {
+  runs: AgentRun[];
+}
+
+export interface RunStepsResult {
+  run: AgentRun;
+  steps: AgentRunStep[];
+}
+
 /* ─────────────────────── Method-result shapes ─────────────────────── */
 
 export interface PingResult {
@@ -497,6 +520,52 @@ export interface GitDiffResult {
   scope: string;
   ref?: string;
   diff: string;
+}
+
+export type PatchLineKind = "context" | "add" | "delete" | "meta";
+
+export interface PatchLine {
+  kind: PatchLineKind;
+  old_line: number | null;
+  new_line: number | null;
+  content: string;
+}
+
+export interface PatchHunk {
+  old_start: number;
+  old_lines: number;
+  new_start: number;
+  new_lines: number;
+  header: string;
+  lines: PatchLine[];
+}
+
+export type PatchFileStatus = "added" | "modified" | "deleted" | "renamed";
+
+export interface PatchFile {
+  path: string;
+  old_path: string;
+  new_path: string;
+  status: PatchFileStatus;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  hunks: PatchHunk[];
+}
+
+export interface PatchStats {
+  files: number;
+  additions: number;
+  deletions: number;
+}
+
+/** Return shape of `patch.preview`. */
+export interface PatchPreviewResult {
+  scope: string;
+  ref?: string | null;
+  diff: string;
+  files: PatchFile[];
+  stats: PatchStats;
 }
 
 /** A single `git.log` entry. */

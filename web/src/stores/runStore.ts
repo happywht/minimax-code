@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { ipc } from "../ipc";
+import { ipc, typedIPC } from "../ipc";
 import {
   StreamEvent,
   type AgentRun,
@@ -17,7 +17,10 @@ export interface RunTimelineState {
   runs: Record<string, RunTimelineEntry>;
   order: string[];
   initialized: boolean;
+  loading: boolean;
+  error: string | null;
   init: () => void;
+  loadForSession: (sessionId: string | null) => Promise<void>;
   reset: () => void;
 }
 
@@ -71,6 +74,8 @@ export const useRunTimelineStore = create<RunTimelineState>((set, get) => ({
   runs: {},
   order: [],
   initialized: false,
+  loading: false,
+  error: null,
 
   init: () => {
     if (get().initialized) return;
@@ -118,8 +123,51 @@ export const useRunTimelineStore = create<RunTimelineState>((set, get) => ({
     set({ initialized: true });
   },
 
+  loadForSession: async (sessionId) => {
+    if (!sessionId) return;
+    get().init();
+    set({ loading: true, error: null });
+    try {
+      const { runs } = await typedIPC.listRuns({ session_id: sessionId, limit: MAX_RUNS });
+      const entries = await Promise.all(
+        runs.map(async (run) => {
+          try {
+            return await typedIPC.getRunSteps(run.id);
+          } catch {
+            return { run, steps: [] };
+          }
+        }),
+      );
+      set((s) => {
+        let nextRuns = { ...s.runs };
+        const loadedOrder: string[] = [];
+        for (const entry of entries) {
+          nextRuns = upsertRun(nextRuns, entry.run);
+          for (const step of entry.steps) {
+            nextRuns = upsertStep(nextRuns, entry.run.id, step);
+          }
+          loadedOrder.push(entry.run.id);
+        }
+        const order = trimOrder([
+          ...loadedOrder,
+          ...s.order.filter((id) => !loadedOrder.includes(id)),
+        ]);
+        const keep = new Set(order);
+        for (const id of Object.keys(nextRuns)) {
+          if (!keep.has(id)) delete nextRuns[id];
+        }
+        return { runs: nextRuns, order, loading: false };
+      });
+    } catch (err) {
+      set({
+        loading: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  },
+
   reset: () => {
-    set({ runs: {}, order: [], initialized: false });
+    set({ runs: {}, order: [], initialized: false, loading: false, error: null });
   },
 }));
 

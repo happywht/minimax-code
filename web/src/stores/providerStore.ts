@@ -7,6 +7,7 @@ import { create } from "zustand";
 import { typedIPC } from "../ipc";
 import { toast } from "../components/ErrorBoundary";
 import type { ProviderInfo, ProviderModel } from "../types/ipc";
+import { useModelStore } from "./modelStore";
 
 export interface ProviderState {
   providers: ProviderInfo[];
@@ -55,6 +56,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
     try {
       const r = await typedIPC.createProvider(opts);
       await get().refresh();
+      await useModelStore.getState().refresh();
       return r.provider;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -67,6 +69,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
     try {
       const r = await typedIPC.updateProvider(opts);
       await get().refresh();
+      await useModelStore.getState().refresh();
       return r.provider;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -79,6 +82,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
     try {
       await typedIPC.deleteProvider(providerId);
       await get().refresh();
+      await useModelStore.getState().refresh();
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -89,8 +93,14 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 
   setApiKey: async (providerId, apiKey) => {
     try {
-      await typedIPC.setProviderApiKey(providerId, apiKey);
+      const r = await typedIPC.setProviderApiKey(providerId, apiKey);
       await get().refresh();
+      set((s) => ({
+        providers: s.providers.map((p) =>
+          p.id === providerId ? { ...p, api_key_configured: r.api_key_configured } : p,
+        ),
+      }));
+      await useModelStore.getState().refresh();
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -101,8 +111,14 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 
   clearApiKey: async (providerId) => {
     try {
-      await typedIPC.clearProviderApiKey(providerId);
+      const r = await typedIPC.clearProviderApiKey(providerId);
       await get().refresh();
+      set((s) => ({
+        providers: s.providers.map((p) =>
+          p.id === providerId ? { ...p, api_key_configured: r.api_key_configured } : p,
+        ),
+      }));
+      await useModelStore.getState().refresh();
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

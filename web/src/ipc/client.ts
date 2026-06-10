@@ -47,6 +47,7 @@ import {
   type ListMessagesResult,
   type ListModelsResult,
   type ListProvidersResult,
+  type ListRunsResult,
   type ListRulesResult,
   type ListSessionsResult,
   type ListSkillsResult,
@@ -61,10 +62,12 @@ import {
   type Message as ProtocolMessage,
   type ModelInfo,
   type OrchestrationMode,
+  type PatchPreviewResult,
   type PermissionRequestData,
   type PermissionResolvedData,
   type RunCompletedData,
   type RunCreatedData,
+  type RunStepsResult,
   type RunStepData,
   type PermissionRule,
   type ProviderInfo,
@@ -547,6 +550,20 @@ export class IPCClient {
    *    Otherwise → `listeners.get(method)`.
    */
   private handleEnvelope(env: Record<string, unknown>): void {
+    if (typeof env.event === "string" && env.event.length > 0) {
+      const set = this.listeners.get(env.event);
+      if (!set || set.size === 0) return;
+      const evt: JsonRpcEvent = {
+        jsonrpc: "2.0",
+        event: env.event,
+        data: env.data,
+      };
+      for (const cb of set) {
+        cb(evt);
+      }
+      return;
+    }
+
     const id = env.id as JsonRpcId | undefined;
     const hasResult = "result" in env;
     const hasError = "error" in env;
@@ -715,6 +732,8 @@ export interface TypedIPC {
   deleteSession(sessionId: string): Promise<{ ok: true }>;
   updateSession(sessionId: string, fields: { title?: string }): Promise<UpdateSessionResult>;
   listMessages(sessionId: string, opts?: { limit?: number; before?: string }): Promise<ListMessagesResult>;
+  listRuns(opts?: { session_id?: string; status?: string; limit?: number; offset?: number }): Promise<ListRunsResult>;
+  getRunSteps(runId: string): Promise<RunStepsResult>;
 
   // agent
   sendMessage(opts: { session_id: string | null; content: string | import("../types/ipc").ContentPart[]; attachments?: unknown }): Promise<SendMessageResult>;
@@ -831,6 +850,7 @@ export interface TypedIPC {
   gitStatus(): Promise<GitStatusResult>;
   gitDiff(opts: { scope?: "staged" | "branch" | "working"; ref?: string }): Promise<GitDiffResult>;
   gitLog(opts?: { n?: number }): Promise<GitLogResult>;
+  patchPreview(opts?: { scope?: "staged" | "branch" | "working"; ref?: string }): Promise<PatchPreviewResult>;
 
   // audit — drive the Settings page's Audit tab.
   listAudit(opts?: { limit?: number; offset?: number; tool_name?: string; session_id?: string }): Promise<ListAuditResult>;
@@ -932,6 +952,10 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         session_id: sid,
         ...(opts ?? {}),
       }),
+    listRuns: (opts) =>
+      client.request<ListRunsResult>("run.list", opts ?? {}),
+    getRunSteps: (runId) =>
+      client.request<RunStepsResult>("run.steps", { run_id: runId }),
 
     sendMessage: (opts) =>
       client.request<SendMessageResult>("agent.send_message", opts),
@@ -1050,6 +1074,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     gitStatus: () => client.request<GitStatusResult>("git.status", {}),
     gitDiff: (opts) => client.request<GitDiffResult>("git.diff", opts ?? {}),
     gitLog: (opts) => client.request<GitLogResult>("git.log", opts ?? {}),
+    patchPreview: (opts) => client.request<PatchPreviewResult>("patch.preview", opts ?? {}),
 
     listAudit: (opts) => client.request<ListAuditResult>("audit.list", opts ?? {}),
     auditStats: () => client.request<AuditStats>("audit.stats", {}),
@@ -1130,6 +1155,7 @@ function mockNotify(method: string, params: unknown, client: IPCClient): void {
 }
 
 const mockSessions = new Map<string, Session>();
+const mockRuns = new Map<string, { run: import("../types/ipc").AgentRun; steps: import("../types/ipc").AgentRunStep[] }>();
 const mockModels: ModelInfo[] = [
   {
     id: "minimax-M2.7",
@@ -1311,10 +1337,56 @@ function mockHandle(
       return { messages: [] as ProtocolMessage[] };
     }
 
+    case "run.list": {
+      const p = params as { session_id?: string; limit?: number; offset?: number } | undefined;
+      let runs = Array.from(mockRuns.values()).map((r) => r.run);
+      if (p?.session_id) runs = runs.filter((r) => r.session_id === p.session_id);
+      runs.sort((a, b) => b.created_at.localeCompare(a.created_at));
+      const offset = p?.offset ?? 0;
+      const limit = p?.limit ?? 20;
+      return { runs: runs.slice(offset, offset + limit) } satisfies ListRunsResult;
+    }
+
+    case "run.steps": {
+      const runId = (params as { run_id: string }).run_id;
+      const entry = mockRuns.get(runId);
+      return {
+        run: entry?.run ?? null,
+        steps: entry?.steps ?? [],
+      };
+    }
+
     case "agent.send_message": {
       const p = params as { session_id: string | null; content: string };
       const sid = p.session_id ?? `ses_${Math.random().toString(36).slice(2, 10)}`;
       const mid = `msg_${Math.random().toString(36).slice(2, 10)}`;
+      const runId = `run_${Math.random().toString(36).slice(2, 10)}`;
+      const nowIso = new Date().toISOString();
+      const run: import("../types/ipc").AgentRun = {
+        id: runId,
+        session_id: sid,
+        mode: "chat",
+        status: "running",
+        title: String(p.content).slice(0, 32),
+        assistant_message_id: mid,
+        created_at: nowIso,
+        started_at: nowIso,
+      };
+      const thinkingStep: import("../types/ipc").AgentRunStep = {
+        id: `step_${Math.random().toString(36).slice(2, 10)}`,
+        run_id: runId,
+        session_id: sid,
+        kind: "thought",
+        status: "running",
+        title: "Thinking",
+        summary: "Iteration 1",
+        payload: null,
+        started_at: nowIso,
+        ordinal: 1,
+      };
+      mockRuns.set(runId, { run, steps: [thinkingStep] });
+      setTimeout(() => client._emit(StreamEvent.RunCreated, { run }), 0);
+      setTimeout(() => client._emit(StreamEvent.RunStepStarted, { run_id: runId, step: thinkingStep }), 8);
       const reply = `(mock reply) Received: ${p.content}`;
       const chunks = reply.match(/.{1,12}/g) ?? [reply];
       chunks.forEach((delta, i) => {
@@ -1325,9 +1397,43 @@ function mockHandle(
             delta,
             done: i === chunks.length - 1,
           } satisfies MessageChunkData);
+          if (i === chunks.length - 1) {
+            const completedAt = new Date().toISOString();
+            const completedStep = {
+              ...thinkingStep,
+              status: "completed" as const,
+              summary: "Done thinking",
+              completed_at: completedAt,
+              duration_ms: 100,
+            };
+            const finalStep: import("../types/ipc").AgentRunStep = {
+              id: `step_${Math.random().toString(36).slice(2, 10)}`,
+              run_id: runId,
+              session_id: sid,
+              kind: "final",
+              status: "completed",
+              title: "Final response",
+              summary: reply,
+              payload: { iterations: 1 },
+              started_at: completedAt,
+              completed_at: completedAt,
+              duration_ms: 0,
+              ordinal: 2,
+            };
+            const completedRun = {
+              ...run,
+              status: "completed" as const,
+              completed_at: completedAt,
+              metadata: { iterations: 1 },
+            };
+            mockRuns.set(runId, { run: completedRun, steps: [completedStep, finalStep] });
+            client._emit(StreamEvent.RunStepCompleted, { run_id: runId, step: completedStep });
+            client._emit(StreamEvent.RunStepCompleted, { run_id: runId, step: finalStep });
+            client._emit(StreamEvent.RunCompleted, { run: completedRun });
+          }
         }, 12 * i);
       });
-      return { session_id: sid, message_id: mid, text: "" };
+      return { session_id: sid, message_id: mid, run_id: runId, text: "" };
     }
 
     case "agent.cancel":
@@ -1549,6 +1655,17 @@ function mockHandle(
     case "git.diff": {
       const p = params as { scope?: string; ref?: string } | undefined;
       return { diff: "", scope: p?.ref ?? p?.scope ?? "working" } satisfies GitDiffResult;
+    }
+
+    case "patch.preview": {
+      const p = params as { scope?: string; ref?: string } | undefined;
+      return {
+        diff: "",
+        scope: p?.ref ?? p?.scope ?? "working",
+        ref: p?.ref ?? null,
+        files: [],
+        stats: { files: 0, additions: 0, deletions: 0 },
+      } satisfies PatchPreviewResult;
     }
 
     case "git.log": {
