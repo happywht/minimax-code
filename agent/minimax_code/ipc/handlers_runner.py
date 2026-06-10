@@ -1,9 +1,9 @@
 """JSON-RPC handlers for external agent runner discovery and launch.
 
 The runner layer is the product-facing contract above command sessions.
-P1 starts conservatively: the built-in ``native`` runner delegates to
-the existing terminal command session, while external CLIs are exposed
-as detectable but not yet executable adapters.
+The built-in ``native`` runner delegates to terminal sessions, while
+external CLI runners translate a prompt plus explicit local safety
+settings into a concrete command line.
 """
 
 from __future__ import annotations
@@ -24,6 +24,9 @@ _MAX_COMMAND_LEN = 4_000
 _DEFAULT_TIMEOUT_S = 10 * 60
 _MAX_TIMEOUT_S = 60 * 60
 _PROBE_TIMEOUT_S = 5
+_CODEX_SANDBOX_MODES = {"read-only", "workspace-write", "danger-full-access"}
+_CODEX_APPROVAL_POLICIES = {"untrusted", "on-failure", "on-request", "never"}
+_CLAUDE_PERMISSION_MODES = {"default", "acceptEdits", "bypassPermissions", "plan"}
 
 
 def _shell_command(args: list[str]) -> str:
@@ -184,7 +187,22 @@ def _chat_session_id_from_params(params: dict[str, Any]) -> str | None:
     return raw
 
 
-def _runner_command(runner: dict[str, Any], prompt: str) -> str:
+def _choice_from_params(
+    params: dict[str, Any],
+    key: str,
+    allowed: set[str],
+    default: str,
+) -> str:
+    raw = params.get(key, default)
+    if raw is None or raw == "":
+        return default
+    if not isinstance(raw, str) or raw not in allowed:
+        values = ", ".join(sorted(allowed))
+        raise HandlerError(INVALID_PARAMS, f"'{key}' must be one of: {values}")
+    return raw
+
+
+def _runner_command(runner: dict[str, Any], prompt: str, params: dict[str, Any]) -> str:
     command = runner.get("command")
     if not isinstance(command, str) or not command:
         raise HandlerError(
@@ -193,27 +211,41 @@ def _runner_command(runner: dict[str, Any], prompt: str) -> str:
             {"runner_id": runner["id"], "reason": runner.get("reason")},
         )
     if runner["id"] == "codex-cli":
+        sandbox_mode = _choice_from_params(
+            params,
+            "sandbox_mode",
+            _CODEX_SANDBOX_MODES,
+            "workspace-write",
+        )
+        approval_policy = _choice_from_params(
+            params,
+            "approval_policy",
+            _CODEX_APPROVAL_POLICIES,
+            "never",
+        )
         return _shell_command(
             [
                 command,
                 "exec",
                 "--sandbox",
-                "workspace-write",
+                sandbox_mode,
                 "--ask-for-approval",
-                "never",
+                approval_policy,
                 prompt,
             ]
         )
     if runner["id"] == "claude-code-cli":
-        return _shell_command(
-            [
-                command,
-                "--print",
-                "--permission-mode",
-                "acceptEdits",
-                prompt,
-            ]
+        permission_mode = _choice_from_params(
+            params,
+            "permission_mode",
+            _CLAUDE_PERMISSION_MODES,
+            "acceptEdits",
         )
+        args = [command, "--print"]
+        if permission_mode != "default":
+            args.extend(["--permission-mode", permission_mode])
+        args.append(prompt)
+        return _shell_command(args)
     return prompt
 
 
@@ -240,9 +272,9 @@ def register_runner_handlers(server: Any) -> None:
                         "available": runner["available"],
                         "reason": runner["reason"],
                     },
-                )
+            )
             command = _command_from_params(p)
-            terminal_command = command if runner_id == "native" else _runner_command(runner, command)
+            terminal_command = command if runner_id == "native" else _runner_command(runner, command, p)
             session = await start_terminal_command(
                 command=terminal_command,
                 cwd=_cwd_from_params(p),

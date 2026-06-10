@@ -1,6 +1,12 @@
 import { create } from "zustand";
 import { typedIPC } from "../ipc";
-import type { RunnerInfo, RunnerStartResult } from "../types/ipc";
+import type {
+  RunnerApprovalPolicy,
+  RunnerInfo,
+  RunnerPermissionMode,
+  RunnerSandboxMode,
+  RunnerStartResult,
+} from "../types/ipc";
 
 export interface RunnerState {
   runners: RunnerInfo[];
@@ -16,6 +22,9 @@ export interface RunnerState {
     cwd?: string;
     session_id?: string | null;
     timeout_s?: number;
+    sandbox_mode?: RunnerSandboxMode;
+    approval_policy?: RunnerApprovalPolicy;
+    permission_mode?: RunnerPermissionMode;
   }) => Promise<RunnerStartResult | null>;
   reset: () => void;
 }
@@ -57,6 +66,9 @@ export const useRunnerStore = create<RunnerState>((set, get) => ({
         cwd: opts.cwd,
         session_id: opts.session_id,
         timeout_s: opts.timeout_s,
+        sandbox_mode: opts.sandbox_mode,
+        approval_policy: opts.approval_policy,
+        permission_mode: opts.permission_mode,
       });
       set({ starting: false, lastStart: result });
       return result;

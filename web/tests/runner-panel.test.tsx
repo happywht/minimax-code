@@ -105,6 +105,9 @@ describe("RunnerPanel", () => {
         cwd: undefined,
         session_id: "ses_current",
         timeout_s: undefined,
+        sandbox_mode: undefined,
+        approval_policy: undefined,
+        permission_mode: undefined,
       });
     });
     await waitFor(() => {
@@ -135,6 +138,9 @@ describe("RunnerPanel", () => {
       expect(screen.getByTestId("runner-panel-runner-claude-code-cli")).toBeInTheDocument();
     });
     fireEvent.click(screen.getByTestId("runner-panel-runner-claude-code-cli"));
+    fireEvent.change(screen.getByTestId("runner-panel-permission"), {
+      target: { value: "plan" },
+    });
     fireEvent.change(screen.getByTestId("runner-panel-command"), {
       target: { value: "summarize this repo" },
     });
@@ -147,6 +153,9 @@ describe("RunnerPanel", () => {
         cwd: undefined,
         session_id: "ses_current",
         timeout_s: undefined,
+        sandbox_mode: undefined,
+        approval_policy: undefined,
+        permission_mode: "plan",
       });
     });
   });

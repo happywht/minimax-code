@@ -208,6 +208,7 @@ async def test_runner_start_external_cli_delegates_to_terminal(
             "command": "summarize this repo",
             "cwd": str(tmp_path),
             "session_id": "ses_runner",
+            "permission_mode": "plan",
         },
         ctx,
     )
@@ -217,6 +218,136 @@ async def test_runner_start_external_cli_delegates_to_terminal(
     assert ctx.reply_payload["session"]["id"] == "term_fake"
     assert "claude" in captured["command"]
     assert "--print" in captured["command"]
+    assert "--permission-mode plan" in captured["command"]
     assert "summarize this repo" in captured["command"]
     assert captured["cwd"] == str(tmp_path)
     assert captured["chat_session_id"] == "ses_runner"
+
+
+@pytest.mark.asyncio
+async def test_runner_start_codex_cli_uses_safety_options(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_start_terminal_command(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+
+        class _Session:
+            id = "term_codex"
+
+            def to_wire(self) -> dict[str, Any]:
+                return {
+                    "id": self.id,
+                    "command": kwargs["command"],
+                    "cwd": kwargs["cwd"],
+                    "session_id": kwargs["chat_session_id"],
+                    "run_id": None,
+                    "status": "starting",
+                    "started_at": 1,
+                    "updated_at": 1,
+                    "completed_at": None,
+                    "exit_code": None,
+                    "error": None,
+                    "next_seq": 1,
+                }
+
+        return _Session()
+
+    monkeypatch.setattr(
+        handlers_runner,
+        "_runner_catalog",
+        lambda: [
+            {
+                "id": "native",
+                "label": "Native shell",
+                "kind": "native",
+                "available": True,
+                "command": None,
+                "version": None,
+                "reason": None,
+                "supports_prompt": False,
+                "supports_terminal": True,
+            },
+            {
+                "id": "codex-cli",
+                "label": "Codex CLI",
+                "kind": "external_cli",
+                "available": True,
+                "command": "codex",
+                "version": "codex-cli 0.0.0",
+                "reason": None,
+                "supports_prompt": True,
+                "supports_terminal": True,
+            },
+        ],
+    )
+    monkeypatch.setattr(handlers_runner, "start_terminal_command", fake_start_terminal_command)
+
+    handler, ctx = _make_handler("runner.start")
+    await handler(
+        {
+            "runner_id": "codex-cli",
+            "command": "fix tests",
+            "cwd": str(tmp_path),
+            "sandbox_mode": "read-only",
+            "approval_policy": "on-request",
+        },
+        ctx,
+    )
+
+    assert ctx.reply_error_payload is None
+    assert "codex exec" in captured["command"]
+    assert "--sandbox read-only" in captured["command"]
+    assert "--ask-for-approval on-request" in captured["command"]
+    assert "fix tests" in captured["command"]
+
+
+@pytest.mark.asyncio
+async def test_runner_start_rejects_invalid_safety_option(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        handlers_runner,
+        "_runner_catalog",
+        lambda: [
+            {
+                "id": "native",
+                "label": "Native shell",
+                "kind": "native",
+                "available": True,
+                "command": None,
+                "version": None,
+                "reason": None,
+                "supports_prompt": False,
+                "supports_terminal": True,
+            },
+            {
+                "id": "codex-cli",
+                "label": "Codex CLI",
+                "kind": "external_cli",
+                "available": True,
+                "command": "codex",
+                "version": "codex-cli 0.0.0",
+                "reason": None,
+                "supports_prompt": True,
+                "supports_terminal": True,
+            },
+        ],
+    )
+
+    handler, ctx = _make_handler("runner.start")
+    await handler(
+        {
+            "runner_id": "codex-cli",
+            "command": "hello",
+            "sandbox_mode": "root",
+        },
+        ctx,
+    )
+
+    assert ctx.reply_payload is None
+    assert ctx.reply_error_payload is not None
+    _code, message, _data = ctx.reply_error_payload
+    assert "sandbox_mode" in message

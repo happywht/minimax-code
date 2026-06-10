@@ -70,7 +70,10 @@ import {
   type RunCompletedData,
   type RunCreatedData,
   type RunnerInfo,
+  type RunnerApprovalPolicy,
   type RunnerListResult,
+  type RunnerPermissionMode,
+  type RunnerSandboxMode,
   type RunnerStartResult,
   type RunStepsResult,
   type RunStepData,
@@ -889,6 +892,9 @@ export interface TypedIPC {
     cwd?: string;
     timeout_s?: number;
     session_id?: string | null;
+    sandbox_mode?: RunnerSandboxMode;
+    approval_policy?: RunnerApprovalPolicy;
+    permission_mode?: RunnerPermissionMode;
   }): Promise<RunnerStartResult>;
 
   // audit — drive the Settings page's Audit tab.
@@ -1881,12 +1887,24 @@ function mockHandle(
         command: string;
         cwd?: string;
         session_id?: string | null;
+        sandbox_mode?: RunnerSandboxMode;
+        approval_policy?: RunnerApprovalPolicy;
+        permission_mode?: RunnerPermissionMode;
       };
       const runner = mockRunners.find((item) => item.id === p.runner_id);
       if (!runner) throw new Error(`unknown runner_id: ${p.runner_id}`);
       if (!runner.available) throw new Error(`${runner.label} is not runnable`);
       const session = makeMockTerminalSession({
-        command: runner.id === "native" ? p.command : `${runner.id}: ${p.command}`,
+        command:
+          runner.id === "native"
+            ? p.command
+            : `${runner.id}: ${p.command} (${[
+                p.sandbox_mode,
+                p.approval_policy,
+                p.permission_mode,
+              ]
+                .filter(Boolean)
+                .join(", ")})`,
         cwd: p.cwd,
         session_id: p.session_id,
         output: `$ ${p.command}\n(mock runner output)\n`,

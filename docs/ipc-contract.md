@@ -505,7 +505,10 @@ Start request:
     "command":"pnpm test",
     "cwd":"D:\\repo",
     "session_id":"ses_current",
-    "timeout_s":600
+    "timeout_s":600,
+    "sandbox_mode":"workspace-write",
+    "approval_policy":"never",
+    "permission_mode":"acceptEdits"
   }
 }
 ```
@@ -526,9 +529,21 @@ completed successfully. A PATH hit that fails to execute is returned as
 
 - `native`: treats `command` as a shell command.
 - `codex-cli`: treats `command` as a prompt and launches
-  `codex exec --sandbox workspace-write --ask-for-approval never <prompt>`.
+  `codex exec --sandbox <sandbox_mode> --ask-for-approval <approval_policy> <prompt>`.
 - `claude-code-cli`: treats `command` as a prompt and launches
-  `claude --print --permission-mode acceptEdits <prompt>`.
+  `claude --print --permission-mode <permission_mode> <prompt>`.
+
+Runner safety options:
+
+- `sandbox_mode` is Codex-only. Allowed values: `read-only`,
+  `workspace-write`, `danger-full-access`. Default:
+  `workspace-write`.
+- `approval_policy` is Codex-only. Allowed values: `untrusted`,
+  `on-failure`, `on-request`, `never`. Default: `never`.
+- `permission_mode` is Claude-only. Allowed values: `default`,
+  `acceptEdits`, `bypassPermissions`, `plan`. Default:
+  `acceptEdits`. When set to `default`, the backend omits
+  `--permission-mode`.
 
 All runner starts return a terminal session and use the same stdout,
 stderr, cancel, timeout, and run timeline plumbing as `terminal.start`.

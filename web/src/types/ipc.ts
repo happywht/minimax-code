@@ -633,6 +633,9 @@ export interface TerminalListResult {
 }
 
 export type RunnerKind = "native" | "external_cli";
+export type RunnerSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
+export type RunnerApprovalPolicy = "untrusted" | "on-failure" | "on-request" | "never";
+export type RunnerPermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan";
 
 export interface RunnerInfo {
   id: "native" | "codex-cli" | "claude-code-cli";

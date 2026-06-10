@@ -1,11 +1,30 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Bot, Loader2, Play, RefreshCw, TerminalSquare } from "lucide-react";
 import { useRunnerStore, useSessionStore, useTerminalStore } from "../stores";
-import type { RunnerInfo } from "../types/ipc";
+import type {
+  RunnerApprovalPolicy,
+  RunnerInfo,
+  RunnerPermissionMode,
+  RunnerSandboxMode,
+} from "../types/ipc";
 
 export interface RunnerPanelProps {
   testId?: string;
 }
+
+const RUNNER_SETTINGS_KEY = "minimax-runner-settings";
+
+interface RunnerSettings {
+  sandboxMode: RunnerSandboxMode;
+  approvalPolicy: RunnerApprovalPolicy;
+  permissionMode: RunnerPermissionMode;
+}
+
+const DEFAULT_RUNNER_SETTINGS: RunnerSettings = {
+  sandboxMode: "workspace-write",
+  approvalPolicy: "never",
+  permissionMode: "acceptEdits",
+};
 
 export function RunnerPanel({ testId = "runner-panel" }: RunnerPanelProps): JSX.Element {
   const runners = useRunnerStore((s) => s.runners);
@@ -22,6 +41,7 @@ export function RunnerPanel({ testId = "runner-panel" }: RunnerPanelProps): JSX.
   const currentSessionId = useSessionStore((s) => s.currentSessionId);
   const [command, setCommand] = useState("");
   const [cwd, setCwd] = useState("");
+  const [settings, setSettings] = useState<RunnerSettings>(readRunnerSettings);
 
   useEffect(() => {
     void list();
@@ -33,6 +53,8 @@ export function RunnerPanel({ testId = "runner-panel" }: RunnerPanelProps): JSX.
   );
   const canStart = Boolean(selected?.available && command.trim() && !starting);
   const commandPlaceholder = selected?.kind === "external_cli" ? "Ask this runner" : "pnpm test";
+  const isCodex = selected?.id === "codex-cli";
+  const isClaude = selected?.id === "claude-code-cli";
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -40,6 +62,9 @@ export function RunnerPanel({ testId = "runner-panel" }: RunnerPanelProps): JSX.
       command,
       cwd: cwd.trim() || undefined,
       session_id: currentSessionId,
+      sandbox_mode: isCodex ? settings.sandboxMode : undefined,
+      approval_policy: isCodex ? settings.approvalPolicy : undefined,
+      permission_mode: isClaude ? settings.permissionMode : undefined,
     }).then((result) => {
       if (!result) return;
       adoptTerminal(result.session);
@@ -112,6 +137,49 @@ export function RunnerPanel({ testId = "runner-panel" }: RunnerPanelProps): JSX.
         />
       </form>
 
+      {selected?.kind === "external_cli" && (
+        <div
+          data-testid={`${testId}-options`}
+          className="mt-2 grid grid-cols-1 gap-1.5 border-t border-minimax-border pt-2"
+        >
+          {isCodex && (
+            <>
+              <OptionSelect
+                label="Sandbox"
+                testId={`${testId}-sandbox`}
+                value={settings.sandboxMode}
+                options={["workspace-write", "read-only", "danger-full-access"]}
+                onChange={(value) =>
+                  setSettings((current) => saveRunnerSettings({ ...current, sandboxMode: value }))
+                }
+              />
+              <OptionSelect
+                label="Approval"
+                testId={`${testId}-approval`}
+                value={settings.approvalPolicy}
+                options={["never", "on-request", "on-failure", "untrusted"]}
+                onChange={(value) =>
+                  setSettings((current) =>
+                    saveRunnerSettings({ ...current, approvalPolicy: value }),
+                  )
+                }
+              />
+            </>
+          )}
+          {isClaude && (
+            <OptionSelect
+              label="Permission"
+              testId={`${testId}-permission`}
+              value={settings.permissionMode}
+              options={["acceptEdits", "default", "plan", "bypassPermissions"]}
+              onChange={(value) =>
+                setSettings((current) => saveRunnerSettings({ ...current, permissionMode: value }))
+              }
+            />
+          )}
+        </div>
+      )}
+
       {error && (
         <div
           data-testid={`${testId}-error`}
@@ -132,6 +200,79 @@ export function RunnerPanel({ testId = "runner-panel" }: RunnerPanelProps): JSX.
         </div>
       )}
     </div>
+  );
+}
+
+function readRunnerSettings(): RunnerSettings {
+  if (typeof window === "undefined" || !window.localStorage) return DEFAULT_RUNNER_SETTINGS;
+  try {
+    const raw = window.localStorage.getItem(RUNNER_SETTINGS_KEY);
+    if (!raw) return DEFAULT_RUNNER_SETTINGS;
+    const parsed = JSON.parse(raw) as Partial<RunnerSettings>;
+    return {
+      sandboxMode: isRunnerSandboxMode(parsed.sandboxMode)
+        ? parsed.sandboxMode
+        : DEFAULT_RUNNER_SETTINGS.sandboxMode,
+      approvalPolicy: isRunnerApprovalPolicy(parsed.approvalPolicy)
+        ? parsed.approvalPolicy
+        : DEFAULT_RUNNER_SETTINGS.approvalPolicy,
+      permissionMode: isRunnerPermissionMode(parsed.permissionMode)
+        ? parsed.permissionMode
+        : DEFAULT_RUNNER_SETTINGS.permissionMode,
+    };
+  } catch {
+    return DEFAULT_RUNNER_SETTINGS;
+  }
+}
+
+function saveRunnerSettings(next: RunnerSettings): RunnerSettings {
+  if (typeof window !== "undefined" && window.localStorage) {
+    window.localStorage.setItem(RUNNER_SETTINGS_KEY, JSON.stringify(next));
+  }
+  return next;
+}
+
+function isRunnerSandboxMode(value: unknown): value is RunnerSandboxMode {
+  return value === "read-only" || value === "workspace-write" || value === "danger-full-access";
+}
+
+function isRunnerApprovalPolicy(value: unknown): value is RunnerApprovalPolicy {
+  return value === "untrusted" || value === "on-failure" || value === "on-request" || value === "never";
+}
+
+function isRunnerPermissionMode(value: unknown): value is RunnerPermissionMode {
+  return value === "default" || value === "acceptEdits" || value === "bypassPermissions" || value === "plan";
+}
+
+function OptionSelect<T extends string>({
+  label,
+  testId,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  testId: string;
+  value: T;
+  options: T[];
+  onChange: (value: T) => void;
+}): JSX.Element {
+  return (
+    <label className="flex items-center gap-2 text-[10px] text-minimax-muted">
+      <span className="w-14 shrink-0 uppercase tracking-wider">{label}</span>
+      <select
+        data-testid={testId}
+        value={value}
+        onChange={(event) => onChange(event.target.value as T)}
+        className="h-7 min-w-0 flex-1 rounded border border-minimax-border bg-minimax-bg px-2 font-mono text-[10px] text-minimax-fg outline-none transition-colors duration-200 focus:border-minimax-accent/60"
+      >
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
