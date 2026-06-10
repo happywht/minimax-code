@@ -23,7 +23,16 @@ describe("ChatPanel", () => {
   beforeEach(() => {
     useChat.setState({ messages: [], status: "idle", error: null, agentReady: false });
     useSessionStore.setState({
-      sessions: [],
+      sessions: [
+        {
+          id: "ses_existing",
+          title: "Existing task",
+          archived: false,
+          created_at: 1,
+          updated_at: 1,
+          model_id: null,
+        },
+      ],
       currentSessionId: null,
       loading: false,
       filter: "all",

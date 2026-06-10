@@ -337,6 +337,7 @@ function ProviderCard({ provider, onEdit, onDelete, onSetKey, onClearKey }: {
           <span className="block truncate text-[11px] font-mono text-minimax-muted">{provider.base_url}</span>
         </div>
         <button type="button" onClick={() => setExpanded((v) => !v)}
+          data-testid={`settings-provider-${provider.id}-expand`}
           className="shrink-0 rounded p-1 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg">
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </button>
@@ -378,6 +379,7 @@ function ProviderCard({ provider, onEdit, onDelete, onSetKey, onClearKey }: {
               <div className="relative flex-1">
                 <input
                   type={reveal ? "text" : "password"}
+                  data-testid={`settings-provider-${provider.id}-key-input`}
                   value={keyDraft} onChange={(e) => setKeyDraft(e.target.value)}
                   placeholder={provider.api_key_configured ? "Replace key…" : "Enter API key…"}
                   autoComplete="off" spellCheck={false}
@@ -389,6 +391,7 @@ function ProviderCard({ provider, onEdit, onDelete, onSetKey, onClearKey }: {
                 </button>
               </div>
               <button type="button"
+                data-testid={`settings-provider-${provider.id}-key-save`}
                 disabled={!keyDraft.trim()}
                 onClick={() => { void onSetKey(keyDraft.trim()); setKeyDraft(""); }}
                 className="inline-flex items-center gap-1 rounded border border-minimax-accent/40 bg-minimax-accent/10 px-2 py-1 text-[11px] text-minimax-accent hover:bg-minimax-accent/20 disabled:opacity-50">
@@ -396,6 +399,7 @@ function ProviderCard({ provider, onEdit, onDelete, onSetKey, onClearKey }: {
               </button>
               {provider.api_key_configured && (
                 <button type="button" onClick={() => void onClearKey()}
+                  data-testid={`settings-provider-${provider.id}-key-clear`}
                   className="inline-flex items-center gap-1 rounded border border-minimax-border px-2 py-1 text-[11px] text-minimax-muted hover:text-status-error">
                   <Trash2 size={10} /> Clear
                 </button>

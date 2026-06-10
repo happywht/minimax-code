@@ -1,9 +1,10 @@
 ﻿/**
  * Models tab — list and select LLM models via `model.*` IPC.
  */
-import { useEffect } from "react";
-import { Check } from "lucide-react";
-import { useModelStore } from "../../stores";
+import { useEffect, useState } from "react";
+import { Check, Plus, Trash2 } from "lucide-react";
+import { useModelStore, useProviderStore } from "../../stores";
+import type { ProviderInfo, ProviderModel } from "../../types/ipc";
 
 export { ModelsTab };
 
@@ -13,15 +14,71 @@ function ModelsTab(): JSX.Element {
   const refresh = useModelStore((s) => s.refresh);
   const setCurrent = useModelStore((s) => s.setCurrent);
   const loading = useModelStore((s) => s.loading);
+  const providers = useProviderStore((s) => s.providers);
+  const providersLoading = useProviderStore((s) => s.loading);
+  const refreshProviders = useProviderStore((s) => s.refresh);
+  const updateProvider = useProviderStore((s) => s.update);
+  const [drafts, setDrafts] = useState<Record<string, { id: string; name: string; ctx: string }>>({});
 
   useEffect(() => {
     if (models.length === 0) void refresh();
   }, [models.length, refresh]);
 
+  useEffect(() => {
+    if (providers.length === 0) void refreshProviders();
+  }, [providers.length, refreshProviders]);
+
+  const setDraft = (providerId: string, patch: Partial<{ id: string; name: string; ctx: string }>) => {
+    setDrafts((currentDrafts) => ({
+      ...currentDrafts,
+      [providerId]: {
+        ...(currentDrafts[providerId] ?? { id: "", name: "", ctx: "128000" }),
+        ...patch,
+      },
+    }));
+  };
+
+  const addModel = async (provider: ProviderInfo) => {
+    const draft = drafts[provider.id] ?? { id: "", name: "", ctx: "128000" };
+    const id = draft.id.trim();
+    if (!id) return;
+    const model: ProviderModel = {
+      id,
+      name: draft.name.trim() || id,
+      context_window: Number.parseInt(draft.ctx, 10) || 128000,
+      supports_tools: true,
+    };
+    const nextModels = [
+      ...(provider.models ?? []).filter((m) => m.id !== id),
+      model,
+    ];
+    const result = await updateProvider({ provider_id: provider.id, models: nextModels });
+    if (result) {
+      setDrafts((currentDrafts) => ({
+        ...currentDrafts,
+        [provider.id]: { id: "", name: "", ctx: "128000" },
+      }));
+      await refresh();
+    }
+  };
+
+  const removeModel = async (provider: ProviderInfo, modelId: string) => {
+    const result = await updateProvider({
+      provider_id: provider.id,
+      models: (provider.models ?? []).filter((m) => m.id !== modelId),
+    });
+    if (result) await refresh();
+  };
+
   return (
-    <section data-testid="settings-models" className="space-y-3">
+    <section data-testid="settings-models" className="space-y-5">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-medium">Available models</h2>
+        <div>
+          <h2 className="text-sm font-medium">Available models</h2>
+          <p className="mt-0.5 text-[11px] text-minimax-muted">
+            Select the active model, then manage each provider's model registry below.
+          </p>
+        </div>
         <button
           type="button" data-testid="settings-models-refresh"
           onClick={() => void refresh()}
@@ -75,6 +132,95 @@ function ModelsTab(): JSX.Element {
           );
         })}
       </ul>
+
+      <div data-testid="settings-model-registry" className="space-y-2 border-t border-minimax-border pt-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-xs font-medium text-minimax-fg">Provider model registry</h3>
+          {providersLoading && (
+            <span className="text-[11px] text-minimax-muted">Loading providers...</span>
+          )}
+        </div>
+        {providers.length === 0 && !providersLoading && (
+          <div className="rounded border border-dashed border-minimax-border px-3 py-3 text-center text-xs text-minimax-muted">
+            No providers found. Add a provider before registering models.
+          </div>
+        )}
+        {providers.map((provider) => {
+          const draft = drafts[provider.id] ?? { id: "", name: "", ctx: "128000" };
+          return (
+            <div
+              key={provider.id}
+              data-testid={`settings-model-provider-${provider.id}`}
+              className="rounded-md border border-minimax-border bg-minimax-panel/40 p-3"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-medium text-minimax-fg">{provider.name}</div>
+                  <div className="truncate text-[11px] font-mono text-minimax-muted">{provider.base_url}</div>
+                </div>
+                <span className="shrink-0 rounded bg-minimax-border px-1.5 py-0.5 text-[11px] text-minimax-muted">
+                  {(provider.models ?? []).length} models
+                </span>
+              </div>
+              {(provider.models ?? []).length > 0 && (
+                <ul className="mt-2 flex flex-wrap gap-1.5">
+                  {(provider.models ?? []).map((model) => (
+                    <li
+                      key={model.id}
+                      className="inline-flex min-w-0 items-center gap-1 rounded border border-minimax-border bg-minimax-bg px-1.5 py-1 text-[11px]"
+                    >
+                      <span className="max-w-[180px] truncate text-minimax-fg">{model.name || model.id}</span>
+                      <span className="text-minimax-muted">{(model.context_window / 1000).toFixed(0)}k</span>
+                      <button
+                        type="button"
+                        data-testid={`settings-model-remove-${provider.id}-${model.id}`}
+                        aria-label={`Remove ${model.id}`}
+                        onClick={() => void removeModel(provider, model.id)}
+                        className="rounded p-0.5 text-minimax-muted transition-colors duration-200 hover:bg-minimax-border hover:text-status-error"
+                      >
+                        <Trash2 size={10} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="mt-2 grid grid-cols-12 gap-1.5">
+                <input
+                  data-testid={`settings-model-add-id-${provider.id}`}
+                  value={draft.id}
+                  onChange={(e) => setDraft(provider.id, { id: e.target.value })}
+                  placeholder="model id"
+                  className="col-span-4 rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-[11px] text-minimax-fg"
+                />
+                <input
+                  data-testid={`settings-model-add-name-${provider.id}`}
+                  value={draft.name}
+                  onChange={(e) => setDraft(provider.id, { name: e.target.value })}
+                  placeholder="display name"
+                  className="col-span-4 rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-[11px] text-minimax-fg"
+                />
+                <input
+                  data-testid={`settings-model-add-ctx-${provider.id}`}
+                  value={draft.ctx}
+                  onChange={(e) => setDraft(provider.id, { ctx: e.target.value })}
+                  placeholder="context"
+                  className="col-span-2 rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-[11px] text-minimax-fg"
+                />
+                <button
+                  type="button"
+                  data-testid={`settings-model-add-submit-${provider.id}`}
+                  disabled={!draft.id.trim()}
+                  onClick={() => void addModel(provider)}
+                  className="col-span-2 inline-flex items-center justify-center gap-1 rounded border border-minimax-accent/40 bg-minimax-accent/10 px-2 py-1 text-[11px] text-minimax-accent transition-colors duration-200 hover:bg-minimax-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Plus size={10} />
+                  Add
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </section>
   );
 }

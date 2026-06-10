@@ -67,6 +67,33 @@ describe("IPC mock backend", () => {
     expect(seen.join("")).toMatch(/Received: hello/);
   });
 
+  it("agent.send_message creates mock run history", async () => {
+    const t = bindTypedIPC(client);
+    const sent = await t.sendMessage({ session_id: null, content: "timeline" });
+    expect(sent.run_id).toMatch(/^run_/);
+    await new Promise((res) => setTimeout(res, 180));
+
+    const runs = await t.listRuns({ session_id: sent.session_id });
+    expect(runs.runs.find((r) => r.id === sent.run_id)?.status).toBe("completed");
+
+    const detail = await t.getRunSteps(sent.run_id as string);
+    expect(detail.steps.map((s) => s.kind)).toContain("final");
+  });
+
+  it("dispatches event envelopes by event name", () => {
+    const seen: unknown[] = [];
+    client.on("run.created", (env) => seen.push(env.data));
+    // Private method, exercised intentionally to pin the WS envelope
+    // compatibility path used by the Python agent.
+    (client as unknown as { handleEnvelope: (env: Record<string, unknown>) => void })
+      .handleEnvelope({
+        jsonrpc: "2.0",
+        event: "run.created",
+        data: { run: { id: "run_1" } },
+      });
+    expect(seen).toEqual([{ run: { id: "run_1" } }]);
+  });
+
   it("throws an IPCError with code when the underlying request fails", async () => {
     // Inject a custom error via the mock helpers.
     const id = "x";
@@ -94,6 +121,17 @@ describe("TypedIPC wrappers", () => {
     expect(typeof t.listModels).toBe("function");
     expect(typeof t.listJobs).toBe("function");
     expect(typeof t.listRules).toBe("function");
+    expect(typeof t.listRuns).toBe("function");
+    expect(typeof t.patchPreview).toBe("function");
+  });
+
+  it("patchPreview returns an empty structured preview in mock mode", async () => {
+    const client = new IPCClient({ forceMock: true });
+    const t = bindTypedIPC(client);
+    const r = await t.patchPreview({ scope: "working" });
+    expect(r.scope).toBe("working");
+    expect(r.stats).toEqual({ files: 0, additions: 0, deletions: 0 });
+    expect(r.files).toEqual([]);
   });
 
   it("listJobs returns an empty array by default", async () => {

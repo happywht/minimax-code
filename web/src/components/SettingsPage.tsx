@@ -4,7 +4,7 @@
  * Shell only: each tab is a self-contained component imported from `./settings/`.
  * See individual tab files for store hooks, sub-components, and IPC bindings.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Bot,
   CalendarClock,
@@ -16,6 +16,7 @@ import {
   Users,
   Webhook,
   Workflow,
+  X,
 } from "lucide-react";
 import {
   ModelsTab,
@@ -34,23 +35,47 @@ type Tab = "models" | "providers" | "permissions" | "scheduled" | "api-key" | "a
 
 export interface SettingsPageProps {
   testId?: string;
+  onClose?: () => void;
 }
 
-export function SettingsPage({ testId = "settings-page" }: SettingsPageProps): JSX.Element {
+export function SettingsPage({ testId = "settings-page", onClose }: SettingsPageProps): JSX.Element {
   const [tab, setTab] = useState<Tab>("models");
+
+  useEffect(() => {
+    if (!onClose) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
   return (
     <div
       data-testid={testId}
       className="flex h-full w-full flex-col overflow-hidden bg-minimax-bg text-minimax-fg"
     >
       <header className="flex flex-col gap-3 border-b border-minimax-border px-6 py-4">
-        <div>
-          <h1 data-testid="settings-title" className="text-base font-semibold">
-            Settings
-          </h1>
-          <p className="text-[11px] text-minimax-muted">
-            Configure models, providers, permissions, scheduled jobs, and API keys.
-          </p>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 data-testid="settings-title" className="text-base font-semibold">
+              Settings
+            </h1>
+            <p className="text-[11px] text-minimax-muted">
+              Configure models, providers, permissions, scheduled jobs, and API keys.
+            </p>
+          </div>
+          {onClose && (
+            <button
+              type="button"
+              data-testid="settings-close"
+              aria-label="Close settings"
+              onClick={onClose}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-minimax-muted transition-colors duration-200 hover:bg-minimax-border hover:text-minimax-fg"
+            >
+              <X size={14} />
+            </button>
+          )}
         </div>
         <nav className="flex flex-wrap gap-1 rounded-md border border-minimax-border bg-minimax-panel p-1">
           <TabButton id="models" current={tab} onClick={setTab} icon={<Cpu size={12} />} label="Models" testId="settings-tab-models" />

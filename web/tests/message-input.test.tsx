@@ -53,4 +53,11 @@ describe("MessageInput", () => {
     render(<MessageInput />);
     expect(screen.getByTestId("message-input-cancel")).toBeInTheDocument();
   });
+
+  it("shows a stopping transition when status is cancelling", () => {
+    useChat.setState({ status: "cancelling" });
+    render(<MessageInput />);
+    expect(screen.getByTestId("message-input-cancel")).toBeDisabled();
+    expect(screen.getByTestId("message-input-stopping")).toHaveTextContent("正在停止...");
+  });
 });

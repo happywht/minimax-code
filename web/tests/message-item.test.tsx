@@ -3,9 +3,10 @@
  * assistant, tool, system), markdown rendering, and the streaming
  * cursor.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MessageItem } from "../src/components/MessageItem";
+import { useChat } from "../src/stores";
 import type { Message } from "../src/types/ipc";
 
 const baseMessage = (overrides: Partial<Message> = {}): Message => ({
@@ -80,5 +81,42 @@ describe("MessageItem", () => {
       />,
     );
     expect(screen.getByText("▍")).toBeInTheDocument();
+  });
+
+  it("renders a queued assistant message as a skeleton", () => {
+    render(
+      <MessageItem
+        message={baseMessage({
+          id: "a-waiting",
+          role: "assistant",
+          text: "",
+          streaming: true,
+          status: "queued",
+        })}
+      />,
+    );
+    expect(screen.getByTestId("message-status-a-waiting")).toHaveTextContent("Waiting");
+    expect(screen.getByTestId("message-skeleton-a-waiting")).toBeInTheDocument();
+  });
+
+  it("renders a failed assistant message with retry", () => {
+    const retrySpy = vi.spyOn(useChat.getState(), "retryMessage").mockResolvedValue(undefined);
+    render(
+      <MessageItem
+        message={baseMessage({
+          id: "a-failed",
+          role: "assistant",
+          text: "network down",
+          streaming: false,
+          status: "failed",
+          error: "network down",
+          retry_content: "try again",
+        })}
+      />,
+    );
+    expect(screen.getByTestId("message-status-a-failed")).toHaveTextContent("Failed");
+    fireEvent.click(screen.getByTestId("message-retry-a-failed"));
+    expect(retrySpy).toHaveBeenCalledWith("a-failed");
+    retrySpy.mockRestore();
   });
 });

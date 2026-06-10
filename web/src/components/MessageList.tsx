@@ -12,12 +12,13 @@
  * text match. When a query is active only matching messages are shown;
  * an empty query shows all.
  */
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useMemo } from "react";
 import { ChevronDown } from "lucide-react";
 import { useChat, useSessionStore, useSubAgentStore } from "../stores";
 import { MessageItem } from "./MessageItem";
 import { SubAgentResultCard } from "./SubAgentResultCard";
 import { useMessageWindow } from "../lib/useMessageWindow";
+import { useSmartScroll } from "../lib/useSmartScroll";
 
 export interface MessageListProps {
   testId?: string;
@@ -29,42 +30,20 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
   const messages = useChat((s) => s.messages);
   const sessionId = useSessionStore((s) => s.currentSessionId);
   const runs = useSubAgentStore((s) => s.runs);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const stuckAtBottom = useRef(true);
-  const [showScrollBtn, setShowScrollBtn] = useState(false);
-
-  // Track whether the user has scrolled away from the bottom.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-      const atBottom = distance < 80;
-      stuckAtBottom.current = atBottom;
-      setShowScrollBtn(!atBottom);
-    };
-    el.addEventListener("scroll", onScroll);
-    return () => el.removeEventListener("scroll", onScroll);
-  }, []);
-
-  // Auto-scroll on new content (only when stuck to bottom).
-  useEffect(() => {
-    const el = scrollRef.current as
-      | (HTMLDivElement & { scrollTo?: (o: { top: number; behavior?: string }) => void })
-      | null;
-    if (!el) return;
-    if (stuckAtBottom.current && typeof el.scrollTo === "function") {
-      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-    }
-  }, [messages, runs]);
-
-  const scrollToBottom = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-    stuckAtBottom.current = true;
-    setShowScrollBtn(false);
-  }, []);
+  const scrollContentKey = useMemo(
+    () =>
+      [
+        ...messages.map((m) => `${m.id}:${m.text.length}:${m.streaming ? 1 : 0}`),
+        ...Object.values(runs).map((r) => `${r.run_id}:${r.status}:${r.updated_at}`),
+      ].join("|"),
+    [messages, runs],
+  );
+  const {
+    containerRef: scrollRef,
+    showNewContentButton,
+    newContentCount,
+    scrollToBottom,
+  } = useSmartScroll<HTMLDivElement>({ contentKey: scrollContentKey, thresholdPx: 50 });
 
   // Completed sub-agent runs scoped to the current session, sorted
   // by finished time so the cards appear in the right order.
@@ -170,16 +149,16 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
         </div>
       )}
       </div>
-      {/* Floating "jump to bottom" button — appears when user scrolls up */}
-      {showScrollBtn && (
+      {showNewContentButton && (
         <button
           type="button"
           data-testid="scroll-to-bottom-btn"
-          onClick={scrollToBottom}
-          className="absolute bottom-48 left-1/2 z-10 -translate-x-1/2 rounded-full border border-minimax-border bg-minimax-panel/90 p-1.5 shadow-lg backdrop-blur-sm transition-opacity hover:bg-minimax-border"
-          title="Jump to bottom"
+          onClick={() => scrollToBottom("smooth")}
+          className="absolute bottom-48 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-minimax-border bg-minimax-panel/95 px-2.5 py-1.5 text-[11px] text-minimax-fg shadow-lg backdrop-blur-sm transition-all duration-200 hover:-translate-y-0.5 hover:bg-minimax-border"
+          title="Jump to latest message"
         >
-          <ChevronDown size={16} className="text-minimax-muted" />
+          <ChevronDown size={14} className="text-minimax-muted" />
+          {newContentCount > 0 ? `${newContentCount} new` : "Latest"}
         </button>
       )}
     </div>

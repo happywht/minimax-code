@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RunTimelinePanel } from "../src/components/RunTimelinePanel";
-import { useRunTimelineStore } from "../src/stores";
+import { usePermissionStore, useRunTimelineStore } from "../src/stores";
 
 vi.mock("../src/ipc", () => ({
   ipc: {
@@ -11,6 +11,11 @@ vi.mock("../src/ipc", () => ({
 }));
 
 describe("RunTimelinePanel", () => {
+  beforeEach(() => {
+    useRunTimelineStore.getState().reset();
+    usePermissionStore.setState({ pending: {} });
+  });
+
   it("renders run steps in timeline order", () => {
     useRunTimelineStore.setState({
       initialized: true,
@@ -45,5 +50,29 @@ describe("RunTimelinePanel", () => {
     expect(screen.getByText("Fix tests")).toBeInTheDocument();
     expect(screen.getByText("exec_command")).toBeInTheDocument();
     expect(screen.getByText('{"cmd":["pytest"]}')).toBeInTheDocument();
+  });
+
+  it("renders patch preview for edit approvals", () => {
+    usePermissionStore.setState({
+      pending: {
+        perm_1: {
+          request_id: "perm_1",
+          tool: "edit_file",
+          args: {
+            path: "src/app.ts",
+            old_string: "const value = 1;\n",
+            new_string: "const value = 2;\n",
+          },
+          received_at: 1,
+        },
+      },
+    });
+
+    render(<RunTimelinePanel />);
+
+    expect(screen.getByTestId("run-timeline-approval-patch-preview")).toBeInTheDocument();
+    expect(screen.getByText("src/app.ts")).toBeInTheDocument();
+    expect(screen.getByText("-const value = 1;")).toBeInTheDocument();
+    expect(screen.getByText("+const value = 2;")).toBeInTheDocument();
   });
 });

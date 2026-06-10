@@ -138,7 +138,7 @@ export default function App() {
           </div>
           <main className="relative flex flex-1 flex-col">
             {view === "settings" ? (
-              <SettingsPage />
+              <SettingsPage onClose={() => setView("chat")} />
             ) : view === "skills" ? (
               <SkillsPanel />
             ) : view === "preview" ? (

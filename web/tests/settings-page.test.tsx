@@ -4,21 +4,41 @@
  * can be added/deleted, and scheduled jobs can be toggled.
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { SettingsPage } from "../src/components/SettingsPage";
 import {
   useModelStore,
   usePermissionStore,
+  useProviderStore,
   useScheduleStore,
   useSecretStore,
 } from "../src/stores";
-import type { SecretStatus } from "../src/types/ipc";
+import type { ProviderInfo, SecretStatus } from "../src/types/ipc";
 
 // Per-test mutable backing store for the secrets mock — the
 // IPC factory closure returns fresh `getSecretStatus` / `setSecret`
 // / `clearSecret` that read/write this single object.
 const mockSecretState: { current: SecretStatus } = {
   current: { configured: false, source: "none" },
+};
+
+const baseProvider = (): ProviderInfo => ({
+  id: "builtin-minimax",
+  name: "MiniMax",
+  protocol: "anthropic",
+  base_url: "https://api.minimax.chat/v1",
+  api_key_configured: false,
+  models: [
+    { id: "m1", name: "Alpha", context_window: 8000, supports_tools: true },
+    { id: "m2", name: "Beta", context_window: 32000, supports_tools: true },
+  ],
+  enabled: true,
+  created_at: "2026-06-10T00:00:00Z",
+  updated_at: "2026-06-10T00:00:00Z",
+});
+
+const mockProviderState: { providers: ProviderInfo[] } = {
+  providers: [baseProvider()],
 };
 
 // Mock the typed IPC so we can drive each namespace independently.
@@ -29,10 +49,14 @@ vi.mock("../src/ipc", async () => {
     typedIPC: {
       ...actual.typedIPC,
       listModels: vi.fn(async () => ({
-        models: [
-          { id: "m1", name: "Alpha", provider: "MiniMax", context_window: 8000, supports_tools: true },
-          { id: "m2", name: "Beta", provider: "MiniMax", context_window: 32000, supports_tools: true },
-        ],
+        models: mockProviderState.providers.flatMap((p) =>
+          p.models.map((m) => ({
+            ...m,
+            provider: p.name,
+            provider_id: p.id,
+            protocol: p.protocol,
+          })),
+        ),
         current: "m1",
       })),
       setCurrentModel: vi.fn(async (modelId: string) => ({ current: modelId })),
@@ -99,6 +123,45 @@ vi.mock("../src/ipc", async () => {
         mockSecretState.current = { configured: false, source: "none" };
         return mockSecretState.current;
       }),
+      listProviders: vi.fn(async () => ({ providers: mockProviderState.providers })),
+      updateProvider: vi.fn(async (opts: {
+        provider_id: string;
+        name?: string;
+        protocol?: "anthropic" | "openai";
+        base_url?: string;
+        models?: ProviderInfo["models"];
+        enabled?: boolean;
+      }) => {
+        mockProviderState.providers = mockProviderState.providers.map((p) =>
+          p.id === opts.provider_id
+            ? {
+                ...p,
+                ...(opts.name ? { name: opts.name } : {}),
+                ...(opts.protocol ? { protocol: opts.protocol } : {}),
+                ...(opts.base_url ? { base_url: opts.base_url } : {}),
+                ...(opts.models ? { models: opts.models } : {}),
+                ...(typeof opts.enabled === "boolean" ? { enabled: opts.enabled } : {}),
+                updated_at: "2026-06-10T00:01:00Z",
+              }
+            : p,
+        );
+        return { provider: mockProviderState.providers.find((p) => p.id === opts.provider_id)! };
+      }),
+      createProvider: vi.fn(async () => ({ provider: baseProvider() })),
+      deleteProvider: vi.fn(async () => ({ ok: true, deleted: "provider-x" })),
+      setProviderApiKey: vi.fn(async (providerId: string, apiKey: string) => {
+        if (!apiKey.trim()) throw new Error("invalid key");
+        mockProviderState.providers = mockProviderState.providers.map((p) =>
+          p.id === providerId ? { ...p, api_key_configured: true } : p,
+        );
+        return { ok: true, provider_id: providerId, api_key_configured: true };
+      }),
+      clearProviderApiKey: vi.fn(async (providerId: string) => {
+        mockProviderState.providers = mockProviderState.providers.map((p) =>
+          p.id === providerId ? { ...p, api_key_configured: false } : p,
+        );
+        return { ok: true, provider_id: providerId, api_key_configured: false };
+      }),
     },
   };
 });
@@ -106,13 +169,25 @@ vi.mock("../src/ipc", async () => {
 beforeEach(() => {
   useModelStore.setState({ models: [], current: null, loading: false });
   usePermissionStore.setState({ rules: [], alwaysAllow: false, loading: false });
+  useProviderStore.setState({ providers: [], loading: false });
   useScheduleStore.setState({ jobs: [], loading: false });
   useSecretStore.setState({ status: null, loading: false });
   // Default: no key configured.
   mockSecretState.current = { configured: false, source: "none" };
+  mockProviderState.providers = [baseProvider()];
 });
 
 describe("SettingsPage", () => {
+  it("closes via the close button", async () => {
+    const onClose = vi.fn();
+    render(<SettingsPage onClose={onClose} />);
+    await waitFor(() => {
+      expect(useModelStore.getState().models.length).toBeGreaterThan(0);
+    });
+    fireEvent.click(screen.getByTestId("settings-close"));
+    expect(onClose).toHaveBeenCalled();
+  });
+
   it("renders with the models tab open by default", async () => {
     render(<SettingsPage />);
     await waitFor(() => {
@@ -147,13 +222,52 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("switches to the permissions tab and shows an empty state", async () => {
+  it("adds a provider model from the Models tab and persists it", async () => {
+    const { typedIPC } = await import("../src/ipc");
     render(<SettingsPage />);
-    fireEvent.click(screen.getByTestId("settings-tab-permissions"));
-    expect(screen.getByTestId("settings-permissions")).toBeInTheDocument();
-    expect(screen.getByTestId("settings-permissions-list").textContent).toMatch(
-      /No permission rules yet/,
-    );
+    await waitFor(() => {
+      expect(screen.getByTestId("settings-model-provider-builtin-minimax")).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId("settings-model-add-id-builtin-minimax"), {
+      target: { value: "m3" },
+    });
+    fireEvent.change(screen.getByTestId("settings-model-add-name-builtin-minimax"), {
+      target: { value: "Gamma" },
+    });
+    fireEvent.change(screen.getByTestId("settings-model-add-ctx-builtin-minimax"), {
+      target: { value: "64000" },
+    });
+    fireEvent.click(screen.getByTestId("settings-model-add-submit-builtin-minimax"));
+    await waitFor(() => {
+      expect(typedIPC.updateProvider).toHaveBeenCalledWith(expect.objectContaining({
+        provider_id: "builtin-minimax",
+        models: expect.arrayContaining([
+          expect.objectContaining({ id: "m3", name: "Gamma", context_window: 64000 }),
+        ]),
+      }));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("settings-model-m3")).toBeInTheDocument();
+    });
+  });
+
+  it("switches to the permissions tab and shows an empty state", async () => {
+    const { typedIPC } = await import("../src/ipc");
+    render(<SettingsPage />);
+    await waitFor(() => {
+      expect(useModelStore.getState().models.length).toBeGreaterThan(0);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("settings-tab-permissions"));
+    });
+    await waitFor(() => {
+      expect(typedIPC.listRules).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("settings-permissions-list").textContent).toMatch(
+        /No permission rules yet/,
+      );
+    });
   });
 
   it("adds a permission rule via the form", async () => {
@@ -340,6 +454,26 @@ describe("SettingsPage", () => {
       expect(screen.getByTestId("settings-api-key-status-text").textContent).toMatch(
         /Not configured/,
       );
+    });
+  });
+
+  it("saves a provider API key and flips the provider badge", async () => {
+    const { typedIPC } = await import("../src/ipc");
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByTestId("settings-tab-providers"));
+    await waitFor(() => {
+      expect(screen.getByTestId("settings-provider-builtin-minimax")).toHaveTextContent("no key");
+    });
+    fireEvent.click(screen.getByTestId("settings-provider-builtin-minimax-expand"));
+    fireEvent.change(screen.getByTestId("settings-provider-builtin-minimax-key-input"), {
+      target: { value: "sk-provider-test" },
+    });
+    fireEvent.click(screen.getByTestId("settings-provider-builtin-minimax-key-save"));
+    await waitFor(() => {
+      expect(typedIPC.setProviderApiKey).toHaveBeenCalledWith("builtin-minimax", "sk-provider-test");
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("settings-provider-builtin-minimax")).toHaveTextContent("key ✓");
     });
   });
 });

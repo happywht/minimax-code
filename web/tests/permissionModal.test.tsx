@@ -57,6 +57,25 @@ describe("PermissionRequestModal", () => {
     expect(screen.getByTestId("permission-request-modal-args")).toHaveTextContent("rm");
   });
 
+  it("shows patch preview for file-write approvals", () => {
+    usePermissionStore.setState({
+      pending: {
+        perm_write: {
+          request_id: "perm_write",
+          tool: "write_file",
+          args: { path: "README.md", content: "# Title\nHello\n" },
+          received_at: Date.now(),
+        },
+      },
+    });
+    render(<PermissionRequestModal />);
+
+    expect(screen.getByTestId("permission-request-modal-patch-preview")).toBeInTheDocument();
+    expect(screen.getByText("README.md")).toBeInTheDocument();
+    expect(screen.getByText("+# Title")).toBeInTheDocument();
+    expect(screen.getByText("+Hello")).toBeInTheDocument();
+  });
+
   it("clicking 允许 calls resolve(allow) and dismisses the modal", async () => {
     const resolveSpy = vi.spyOn(typedIPC, "resolvePermission").mockResolvedValue({
       ok: true,

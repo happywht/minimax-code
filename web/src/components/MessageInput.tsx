@@ -9,7 +9,7 @@
  * keeps the existing chat send behaviour.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AtSign, Bot, Camera, Mic, MicOff, Paperclip, Send, Shield, ShieldCheck, Square, X } from "lucide-react";
+import { AtSign, Bot, Camera, Loader2, Mic, MicOff, Paperclip, Send, Shield, ShieldCheck, Square, X } from "lucide-react";
 import { useChat, usePermissionStore, useSubAgentStore } from "../stores";
 import { typedIPC } from "../ipc";
 import { ModelSelector } from "./ModelSelector";
@@ -70,8 +70,9 @@ export function MessageInput({
   const [dragging, setDragging] = useState(false);
   const [attachedImages, setAttachedImages] = useState<ContentPartImage[]>([]);
   const [listening, setListening] = useState(false);
-  const disabled = status === "sending" || status === "streaming";
-  const streaming = status === "streaming" || status === "sending";
+  const disabled = status === "sending" || status === "streaming" || status === "cancelling";
+  const streaming = status === "streaming" || status === "sending" || status === "cancelling";
+  const cancelling = status === "cancelling";
   const overLimit = value.length > MAX_INPUT_CHARS;
   const imageInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
@@ -565,11 +566,12 @@ export function MessageInput({
               type="button"
               data-testid="message-input-cancel"
               onClick={() => void cancel()}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-minimax-border text-minimax-fg hover:bg-red-500/20"
-              title="Stop"
-              aria-label="Stop"
+              disabled={cancelling}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-minimax-border text-minimax-fg transition-colors duration-200 hover:bg-red-500/20 disabled:cursor-wait disabled:opacity-70"
+              title={cancelling ? "Stopping..." : "Stop"}
+              aria-label={cancelling ? "Stopping..." : "Stop"}
             >
-              <Square size={12} />
+              {cancelling ? <Loader2 size={12} className="animate-spin" /> : <Square size={12} />}
             </button>
           ) : (
             <>
@@ -671,6 +673,14 @@ export function MessageInput({
             {alwaysAllow ? "始终授权：开" : "始终授权"}
           </button>
           <div className="flex items-center gap-2">
+            {cancelling && (
+              <span
+                data-testid="message-input-stopping"
+                className="text-[11px] text-amber-300 transition-opacity duration-200"
+              >
+                正在停止...
+              </span>
+            )}
             <ContextIndicator />
             <span className={`text-[11px] ${overLimit ? "text-status-error font-semibold" : "text-minimax-muted"}`}>
               {value.length}/{MAX_INPUT_CHARS}

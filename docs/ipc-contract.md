@@ -194,6 +194,9 @@ on the next `readline() == ""`.
 |----------------------------|-----------|----------------------------------------------------|
 | `agent.send_message`       | req/res   | Streams `agent.message_chunk` events.              |
 | `agent.cancel`             | notify    | Cancel the current agent loop for a session.       |
+| `run.list`                 | req/res   | List persisted agent runs for a session.           |
+| `run.steps`                | req/res   | Load one run with its ordered timeline steps.      |
+| `patch.preview`            | req/res   | Return structured file/hunk preview for a git diff scope. |
 | `session.create`           | req/res   | Reserved (storage-layer).                          |
 | `session.list`             | req/res   | Reserved (storage-layer).                          |
 | `session.archive`          | req/res   | Reserved.                                          |
@@ -231,6 +234,60 @@ Final response:
 {"jsonrpc":"2.0","id":"hello-1","result":{"session_id":"ses_39c7c685","message_id":"msg_295faab6","text":"Hello from Python agent! session=ses_39c7c685"}}
 ```
 
+### 6.2 `patch.preview` — structured diff preview
+
+Request:
+```json
+{
+  "jsonrpc":"2.0",
+  "id":"patch-1",
+  "method":"patch.preview",
+  "params":{"scope":"working"}
+}
+```
+
+`scope` accepts `"working"`, `"staged"`, or `"branch"`; an explicit
+`ref` string overrides `scope` and is passed to `git diff --no-color -M`.
+The method is read-only. It keeps `git.diff` unchanged and returns the
+same raw diff plus a UI-friendly structure:
+
+```json
+{
+  "jsonrpc":"2.0",
+  "id":"patch-1",
+  "result":{
+    "scope":"working",
+    "ref":null,
+    "diff":"diff --git a/app.py b/app.py\n...",
+    "stats":{"files":1,"additions":2,"deletions":1},
+    "files":[
+      {
+        "path":"app.py",
+        "old_path":"app.py",
+        "new_path":"app.py",
+        "status":"modified",
+        "additions":2,
+        "deletions":1,
+        "binary":false,
+        "hunks":[
+          {
+            "old_start":1,
+            "old_lines":2,
+            "new_start":1,
+            "new_lines":3,
+            "header":"",
+            "lines":[
+              {"kind":"delete","old_line":1,"new_line":null,"content":"old"},
+              {"kind":"add","old_line":null,"new_line":1,"content":"new"}
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
 ## 7. Event names
 
 All push events use the prefix `agent.`, `task.`, or `permission.`
@@ -245,6 +302,10 @@ so the frontend can route them by name without a regex.
 | `task.progress`         | `{task_id, progress, message?}`                     |
 | `permission.request`    | `{request_id, tool, args}` — modal triggers         |
 | `permission.resolved`   | `{request_id, decision}`                            |
+| `run.created`           | `{run}`                                              |
+| `run.step.started`      | `{run_id, step}`                                    |
+| `run.step.completed`    | `{run_id, step}`                                    |
+| `run.completed`         | `{run}`                                              |
 
 ## 8. Lifecycle events
 

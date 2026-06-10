@@ -14,7 +14,8 @@
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 import { useChat } from "../chat";
-import { StreamEvent } from "../../types/ipc";
+import { typedIPC } from "../../ipc";
+import { StreamEvent, type SendMessageResult } from "../../types/ipc";
 
 // ── Capture event handlers registered via ipc.on ──────────────────
 const handlers = new Map<string, (env: any) => void>();
@@ -69,6 +70,8 @@ describe("Stall watchdog", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     toastErrorSpy.mockClear();
+    vi.mocked(typedIPC.sendMessage).mockReset();
+    vi.mocked(typedIPC.cancelAgent).mockResolvedValue({ ok: true });
     // Reset store state but keep handlers registered
     useChat.setState({ messages: [], status: "idle", error: null });
   });
@@ -259,5 +262,36 @@ describe("Stall watchdog", () => {
     // The watchdog only fires if status is streaming/sending
     expect(useChat.getState().status).toBe("idle");
     expect(useChat.getState().error).toBeNull();
+  });
+
+  it("creates a queued assistant placeholder while send is in flight", async () => {
+    let resolveSend: ((value: SendMessageResult) => void) | undefined;
+    vi.mocked(typedIPC.sendMessage).mockImplementationOnce(
+      () =>
+        new Promise<SendMessageResult>((resolve) => {
+          resolveSend = resolve;
+        }),
+    );
+
+    const sendPromise = useChat.getState().send("hello");
+    const pending = useChat.getState();
+    expect(pending.status).toBe("sending");
+    expect(pending.messages).toHaveLength(2);
+    expect(pending.messages[0]).toMatchObject({ role: "user", text: "hello", status: "completed" });
+    expect(pending.messages[1]).toMatchObject({ role: "assistant", status: "queued", streaming: true });
+
+    if (!resolveSend) throw new Error("send resolver was not captured");
+    resolveSend({ session_id: "test-session", message_id: "msg-final", text: "done" });
+    await sendPromise;
+
+    const done = useChat.getState();
+    expect(done.status).toBe("idle");
+    expect(done.messages[1]).toMatchObject({
+      id: "msg-final",
+      role: "assistant",
+      text: "done",
+      status: "completed",
+      streaming: false,
+    });
   });
 });

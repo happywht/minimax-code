@@ -34,6 +34,7 @@ describe("RightPanel — chrome", () => {
     render(<RightPanel initialAgents={[]} />);
     expect(screen.getByTestId("right-panel")).toBeInTheDocument();
     expect(screen.getByText("Workspace")).toBeInTheDocument();
+    expect(screen.getByTestId("right-panel-patch-header")).toBeInTheDocument();
     expect(screen.getByTestId("right-panel-progress-header")).toBeInTheDocument();
     expect(screen.getByTestId("right-panel-team-header")).toBeInTheDocument();
   });

@@ -3,6 +3,8 @@
  *
  * State machine:
  *   idle → sending → streaming → idle
+ *   idle → sending → error
+ *   streaming → cancelling → idle
  *
  * The store wires the IPC `agent.message_chunk` event into a streaming
  * assistant bubble. Tool-call/tool-result events are appended as
@@ -22,7 +24,7 @@ import type { Message, ContentPart } from "../types/ipc";
 import { useSessionStore } from "./sessionStore";
 import { trimArray, MAX_MESSAGES } from "../lib/eviction";
 
-export type ChatStatus = "idle" | "sending" | "streaming" | "error";
+export type ChatStatus = "idle" | "sending" | "streaming" | "error" | "cancelling";
 
 export interface ChatState {
   messages: Message[];
@@ -38,12 +40,14 @@ export interface ChatState {
   loadMessages: (sessionId: string) => Promise<void>;
   reset: () => void;
   cancel: () => Promise<void>;
+  retryMessage: (messageId: string) => Promise<void>;
 }
 
 let chunkUnsub: (() => void) | null = null;
 let toolCallUnsub: (() => void) | null = null;
 let toolResultUnsub: (() => void) | null = null;
 let statusUnsub: (() => void) | null = null;
+let pendingAssistantId: string | null = null;
 
 // HMR cleanup — tear down WS listeners when this module is hot-replaced
 // so stale subscriptions don't accumulate and cause duplicate event handling.
@@ -95,10 +99,61 @@ function ensureMessage(
       role: "assistant",
       text: "",
       streaming: false,
+      status: patch.streaming ? "streaming" : "completed",
       created_at: Date.now(),
       ...patch,
     } as Message,
   ];
+}
+
+function applyAssistantChunk(
+  messages: Message[],
+  data: MessageChunkData,
+): Message[] {
+  const metadata = data.metadata;
+  const delta = data.delta || "";
+  const nextStatus = data.done ? "completed" : "streaming";
+  const existing = messages.find((m) => m.id === data.message_id);
+
+  if (existing) {
+    return messages.map((m) =>
+      m.id === data.message_id
+        ? {
+            ...m,
+            text: m.text + delta,
+            streaming: !data.done,
+            status: nextStatus,
+            ...(metadata ? { metadata } : {}),
+          }
+        : m,
+    );
+  }
+
+  const pendingId = pendingAssistantId;
+  if (pendingId && messages.some((m) => m.id === pendingId)) {
+    return messages.map((m) =>
+      m.id === pendingId
+        ? {
+            ...m,
+            id: data.message_id,
+            text: m.text + delta,
+            streaming: !data.done,
+            status: nextStatus,
+            ...(metadata ? { metadata } : {}),
+          }
+        : m,
+    );
+  }
+
+  return ensureMessage(messages, {
+    id: data.message_id,
+    role: "assistant",
+    text: delta,
+    streaming: !data.done,
+    status: nextStatus,
+    created_at: Date.now(),
+    ...(metadata ? { metadata } : {}),
+  });
 }
 
 export const useChat = create<ChatState>((set, get) => ({
@@ -123,27 +178,7 @@ export const useChat = create<ChatState>((set, get) => ({
           // counter. We only assign when the field is present
           // so an earlier chunk's metadata isn't clobbered by a
           // later one that omits it.
-          const metadata = data.metadata;
-          const exists = s.messages.some((m) => m.id === data.message_id);
-          const next = exists
-            ? s.messages.map((m) =>
-                m.id === data.message_id
-                  ? {
-                      ...m,
-                      text: m.text + (data.delta || ""),
-                      streaming: !data.done,
-                      ...(metadata ? { metadata } : {}),
-                    }
-                  : m,
-              )
-            : ensureMessage(s.messages, {
-                id: data.message_id,
-                role: "assistant",
-                text: data.delta || "",
-                streaming: !data.done,
-                created_at: Date.now(),
-                ...(metadata ? { metadata } : {}),
-              });
+          const next = applyAssistantChunk(s.messages, data);
           return {
             messages: trimArray(next, MAX_MESSAGES),
             status: data.done ? "idle" : "streaming",
@@ -151,6 +186,7 @@ export const useChat = create<ChatState>((set, get) => ({
         });
         // Stall watchdog: reset on every chunk, clear on done.
         if (data.done) {
+          pendingAssistantId = null;
           clearStallWatchdog();
         } else {
           resetStallWatchdog();
@@ -231,6 +267,7 @@ export const useChat = create<ChatState>((set, get) => ({
           role: "user",
           text,
           streaming: false,
+          status: "completed",
           created_at: Date.now(),
         },
       ], MAX_MESSAGES),
@@ -264,10 +301,22 @@ export const useChat = create<ChatState>((set, get) => ({
       role: "user",
       text: displayText,
       streaming: false,
+      status: "completed",
+      created_at: Date.now(),
+    };
+    const assistantPlaceholderId = `assistant-pending-${Date.now()}`;
+    pendingAssistantId = assistantPlaceholderId;
+    const assistantPlaceholder: Message = {
+      id: assistantPlaceholderId,
+      role: "assistant",
+      text: "",
+      streaming: true,
+      status: "queued",
+      retry_content: parts ? displayText : text,
       created_at: Date.now(),
     };
     set((s) => ({
-      messages: trimArray([...s.messages, userMessage], MAX_MESSAGES),
+      messages: trimArray([...s.messages, userMessage, assistantPlaceholder], MAX_MESSAGES),
       status: "sending",
       error: null,
     }));
@@ -294,7 +343,31 @@ export const useChat = create<ChatState>((set, get) => ({
         const existing = s.messages.find((m) => m.id === result.message_id);
         if (existing) {
           // Already populated via WebSocket chunks — finalise status.
-          return { status: existing.streaming ? "streaming" : "idle" };
+          return {
+            messages: existing.streaming
+              ? s.messages
+              : s.messages.map((m) =>
+                  m.id === result.message_id ? { ...m, status: "completed", streaming: false } : m,
+                ),
+            status: existing.streaming ? "streaming" : "idle",
+          };
+        }
+        const pending = pendingAssistantId;
+        if (pending && s.messages.some((m) => m.id === pending)) {
+          return {
+            messages: trimArray(s.messages.map((m) =>
+              m.id === pending
+                ? {
+                    ...m,
+                    id: result.message_id,
+                    text: result.text || "",
+                    streaming: false,
+                    status: "completed",
+                  }
+                : m,
+            ), MAX_MESSAGES),
+            status: "idle",
+          };
         }
         // No chunks received — create message from the full reply text.
         return {
@@ -303,11 +376,13 @@ export const useChat = create<ChatState>((set, get) => ({
             role: "assistant",
             text: result.text || "",
             streaming: false,
+            status: "completed",
             created_at: Date.now(),
           }), MAX_MESSAGES),
           status: "idle",
         };
       });
+      pendingAssistantId = null;
     } catch (err) {
       const message =
         err instanceof IPCError
@@ -325,13 +400,35 @@ export const useChat = create<ChatState>((set, get) => ({
           (m) => m.role === "assistant" && m.streaming,
         );
         if (hasPartial && isTimeout) {
+          pendingAssistantId = null;
           return {
             messages: s.messages.map((m) =>
-              m.streaming ? { ...m, streaming: false } : m,
+              m.streaming ? { ...m, streaming: false, status: "completed" } : m,
             ),
             status: "idle",
           };
         }
+        const pending = pendingAssistantId;
+        if (pending && s.messages.some((m) => m.id === pending)) {
+          pendingAssistantId = null;
+          return {
+            status: "error",
+            error: message,
+            messages: s.messages.map((m) =>
+              m.id === pending
+                ? {
+                    ...m,
+                    text: message,
+                    streaming: false,
+                    status: "failed",
+                    error: message,
+                    retry_content: parts ? displayText : text,
+                  }
+                : m,
+            ),
+          };
+        }
+        pendingAssistantId = null;
         return {
           status: "error",
           error: message,
@@ -342,6 +439,9 @@ export const useChat = create<ChatState>((set, get) => ({
               role: "system",
               text: `Error: ${message}`,
               streaming: false,
+              status: "failed",
+              error: message,
+              retry_content: parts ? displayText : text,
               created_at: Date.now(),
             },
           ], MAX_MESSAGES),
@@ -359,13 +459,52 @@ export const useChat = create<ChatState>((set, get) => ({
     clearStallWatchdog();
     const sid = useSessionStore.getState().currentSessionId;
     if (!sid) return;
+    set((s) => ({
+      status: "cancelling",
+      messages: s.messages.map((m) =>
+        m.role === "assistant" && (m.streaming || m.status === "queued" || m.status === "streaming")
+          ? { ...m, status: "cancelling" }
+          : m,
+      ),
+    }));
     try {
       await typedIPC.cancelAgent(sid);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       toast.error("Cancel failed", message);
     }
-    set({ status: "idle" });
+    pendingAssistantId = null;
+    set((s) => ({
+      status: "idle",
+      messages: s.messages.map((m) =>
+        m.status === "cancelling"
+          ? {
+              ...m,
+              text: m.text || "Stopped.",
+              streaming: false,
+              status: "cancelled",
+            }
+          : m,
+      ),
+    }));
+  },
+
+  retryMessage: async (messageId: string) => {
+    const state = get();
+    const idx = state.messages.findIndex((m) => m.id === messageId);
+    if (idx < 0) return;
+    const failed = state.messages[idx];
+    const previousUser = [...state.messages.slice(0, idx)]
+      .reverse()
+      .find((m) => m.role === "user");
+    const content = failed.retry_content ?? previousUser?.text ?? "";
+    if (!content.trim()) return;
+    set((s) => ({
+      messages: s.messages.filter((m) => m.id !== messageId),
+      status: "idle",
+      error: null,
+    }));
+    await get().send(content);
   },
 
   loadMessages: async (sessionId: string) => {
@@ -383,6 +522,7 @@ export const useChat = create<ChatState>((set, get) => ({
         role: m.role,
         text: m.text ?? m.content ?? "",
         streaming: false,
+        status: m.status ?? "completed",
         created_at: m.created_at,
         metadata: m.metadata,
         tool_call_id: m.tool_call_id,
@@ -400,6 +540,7 @@ export const useChat = create<ChatState>((set, get) => ({
 
   reset: () => {
     clearStallWatchdog();
+    pendingAssistantId = null;
     set({ messages: [], status: "idle", error: null });
   },
 }));

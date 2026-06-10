@@ -11,7 +11,18 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Brain, ChevronDown, ChevronRight, Copy, Check, Eye, FileEdit } from "lucide-react";
+import {
+  AlertCircle,
+  Brain,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Eye,
+  FileEdit,
+  Loader2,
+  RefreshCw,
+} from "lucide-react";
 import type { Message } from "../types/ipc";
 import { highlight } from "../lib/shikiLoader";
 import { useChat, useThemeStore } from "../stores";
@@ -26,6 +37,16 @@ interface TurnSummary {
   filesViewed: number;
   filesModified: number;
 }
+
+const STATUS_LABELS = {
+  queued: "Waiting",
+  sending: "Sending",
+  streaming: "Generating",
+  completed: "",
+  failed: "Failed",
+  cancelling: "Stopping...",
+  cancelled: "Stopped",
+} as const;
 
 /**
  * Walk the global message log starting at `startIdx + 1` and bucket
@@ -172,6 +193,13 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
   const isSystem = message.role === "system";
   const isAssistant = message.role === "assistant";
   const theme = useThemeStore((s) => s.theme);
+  const retryMessage = useChat((s) => s.retryMessage);
+  const status = message.status ?? (message.streaming ? "streaming" : "completed");
+  const isFailed = status === "failed";
+  const isQueued = status === "queued" || status === "sending";
+  const isCancelling = status === "cancelling";
+  const isCancelled = status === "cancelled";
+  const showStatus = isAssistant && status !== "completed";
 
   // Per-turn summary is only meaningful for assistant messages.
   // We pull the full message log from the chat store so we can count
@@ -235,10 +263,17 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
       <div
         className={
           isUser
-            ? "max-w-[80%] rounded-2xl rounded-br-md bg-minimax-accent px-4 py-2 text-sm text-white shadow-sm"
+            ? "max-w-[80%] rounded-2xl rounded-br-md bg-minimax-accent px-4 py-2 text-sm text-white shadow-sm transition-colors duration-200"
             : isSystem
-              ? "max-w-[80%] rounded-md border border-red-500/30 bg-red-500/5 px-3 py-1.5 text-xs italic text-status-error"
-              : "max-w-[85%] rounded-2xl rounded-bl-md border border-minimax-border bg-minimax-panel px-4 py-2 text-sm text-minimax-fg shadow-sm"
+              ? "max-w-[80%] rounded-md border border-red-500/30 bg-red-500/5 px-3 py-1.5 text-xs italic text-status-error transition-colors duration-200"
+              : "max-w-[85%] rounded-2xl rounded-bl-md border px-4 py-2 text-sm shadow-sm transition-colors duration-200 " +
+                (isFailed
+                  ? "border-red-500/40 bg-red-500/5 text-status-error"
+                  : isCancelling
+                    ? "border-amber-500/30 bg-amber-500/5 text-minimax-fg"
+                    : isCancelled
+                      ? "border-minimax-border bg-minimax-panel/70 text-minimax-muted"
+                      : "border-minimax-border bg-minimax-panel text-minimax-fg")
         }
       >
         {isAssistant && summary && (
@@ -261,6 +296,34 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
             </span>
           </div>
         )}
+        {showStatus && (
+          <div
+            data-testid={`message-status-${message.id}`}
+            className={
+              "mb-1.5 inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] transition-all duration-200 " +
+              (isFailed
+                ? "border-red-500/30 bg-red-500/10 text-status-error"
+                : isCancelling
+                  ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                  : isCancelled
+                    ? "border-minimax-border bg-minimax-bg/40 text-minimax-muted"
+                    : "border-minimax-accent/20 bg-minimax-accent/10 text-minimax-accent")
+            }
+          >
+            {isFailed ? (
+              <AlertCircle size={11} />
+            ) : isQueued || isCancelling ? (
+              <Loader2 size={11} className="animate-spin" />
+            ) : null}
+            {STATUS_LABELS[status]}
+          </div>
+        )}
+        {isQueued && !message.text ? (
+          <div data-testid={`message-skeleton-${message.id}`} className="space-y-2 py-1">
+            <div className="h-3 w-52 animate-pulse rounded bg-minimax-border/70" />
+            <div className="h-3 w-40 animate-pulse rounded bg-minimax-border/50" />
+          </div>
+        ) : !isFailed ? (
         <div className={`prose prose-sm max-w-none break-words leading-relaxed${theme === "dark" ? " prose-invert" : ""}`}>
           {isUser ? (
             <p className="m-0 whitespace-pre-wrap">{message.text}</p>
@@ -285,7 +348,24 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
             </ReactMarkdown>
           )}
         </div>
-        {message.streaming && !isUser && (
+        ) : null}
+        {isFailed && (
+          <div className="mt-2 flex items-center justify-between gap-3 border-t border-red-500/20 pt-2">
+            <span className="text-[11px] text-status-error/80">
+              {message.error ?? message.text}
+            </span>
+            <button
+              type="button"
+              data-testid={`message-retry-${message.id}`}
+              onClick={() => void retryMessage(message.id)}
+              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-red-500/30 px-2 py-1 text-[11px] font-medium text-status-error transition-colors duration-200 hover:bg-red-500/10"
+            >
+              <RefreshCw size={11} />
+              Retry
+            </button>
+          </div>
+        )}
+        {status === "streaming" && !isUser && (
           <span
             aria-hidden
             className="ml-0.5 inline-block w-2 animate-pulse text-minimax-accent"
