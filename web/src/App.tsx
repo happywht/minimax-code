@@ -8,6 +8,7 @@ import {
   PreviewPanel,
   RightPanel,
   SettingsPage,
+  ShortcutsOverlay,
   Sidebar,
   SkillsPanel,
   ToastViewport,
@@ -44,6 +45,7 @@ export default function App() {
   const [view, setView] = useState<AppView>("chat");
   const [mobileModalOpen, setMobileModalOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [connState, setConnState] = useState<ConnectionState>(agentReady ? "connected" : "connecting");
 
   useEffect(() => {
@@ -93,6 +95,29 @@ export default function App() {
     });
     return unsub;
   }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const active = document.activeElement as HTMLElement | null;
+      const isEditableElement = (el: HTMLElement | null) => {
+        const tagName = el?.tagName.toLowerCase();
+        return tagName === "input" || tagName === "textarea" || !!el?.isContentEditable;
+      };
+      const isEditable = isEditableElement(target) || isEditableElement(active);
+      if (event.key === "Escape" && shortcutsOpen) {
+        event.preventDefault();
+        setShortcutsOpen(false);
+        return;
+      }
+      if (!isEditable && event.key === "?") {
+        event.preventDefault();
+        setShortcutsOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [shortcutsOpen]);
 
   return (
     <ErrorBoundary>
@@ -156,6 +181,9 @@ export default function App() {
           <PermissionRequestModal />
           {mobileModalOpen && (
             <MobilePairingModal onClose={() => setMobileModalOpen(false)} />
+          )}
+          {shortcutsOpen && (
+            <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
           )}
           {/* ── 4.7: Live connection status indicator ── */}
           {connState !== "connected" && view === "chat" && (

@@ -42,3 +42,5 @@ export { PreviewPanel } from "./PreviewPanel";
 export type { PreviewPanelProps } from "./PreviewPanel";
 export { NotificationBell } from "./NotificationBell";
 export { NotificationCenter } from "./NotificationCenter";
+export { ShortcutsOverlay } from "./ShortcutsOverlay";
+export type { ShortcutsOverlayProps } from "./ShortcutsOverlay";

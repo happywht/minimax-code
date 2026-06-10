@@ -52,4 +52,23 @@ describe("App smoke test", () => {
       expect(screen.getByText("hello")).toBeInTheDocument();
     });
   });
+
+  it("opens shortcuts with ? and closes them with Escape without stealing textarea input", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const textarea = await waitFor(() =>
+      screen.getByTestId("message-input-textarea"),
+    );
+
+    await user.keyboard("?");
+    expect(screen.getByTestId("shortcuts-overlay")).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByTestId("shortcuts-overlay")).toBeNull();
+
+    await user.click(textarea);
+    await user.keyboard("?");
+    expect(screen.queryByTestId("shortcuts-overlay")).toBeNull();
+    expect(textarea).toHaveValue("?");
+  });
 });

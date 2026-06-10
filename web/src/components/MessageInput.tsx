@@ -219,6 +219,9 @@ export function MessageInput({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "?") {
+      e.stopPropagation();
+    }
     if (picker.open && filtered.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
