@@ -152,6 +152,7 @@ class ProviderDAO:
                 entry = dict(m)
                 entry["provider_id"] = p["id"]
                 entry["provider_name"] = p["name"]
+                entry["provider"] = p["name"]
                 entry["protocol"] = p.get("protocol", "anthropic")
                 out.append(entry)
         return out

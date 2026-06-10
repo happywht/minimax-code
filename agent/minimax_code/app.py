@@ -377,8 +377,10 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_webhooks import register_webhook_handlers
     from .ipc.handlers_git import register_git_handlers
     from .ipc.handlers_model import register_model_handlers
+    from .ipc.handlers_patch import register_patch_handlers
     from .ipc.handlers_permissions import register_permission_handlers
     from .ipc.handlers_providers import register_provider_handlers
+    from .ipc.handlers_runs import register_run_handlers
     from .ipc.handlers_scheduled import register_scheduled_handlers
     from .ipc.handlers_sessions import register_session_handlers
     from .ipc.handlers_skills import register_skill_handlers
@@ -403,6 +405,9 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # opens the DB on first call). Inject a tracker when you
     # need to bypass the storage layer (e.g. unit tests).
     register_task_handlers(server)
+    # Run timeline read APIs — lets the frontend replay persisted
+    # agent runs instead of relying only on live WebSocket events.
+    register_run_handlers(server)
     # The session handlers resolve the sessions DAO via
     # :func:`get_sessions_dao` (also lazy, also opens the DB on
     # first call). Tests can inject a DAO via the ``dao=`` kwarg
@@ -444,6 +449,10 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # ``GitStatusBar`` widget. Stateless — every call shells out
     # to ``git`` and parses the result.
     register_git_handlers(server)
+    # Structured diff preview for UI approval/review surfaces. This
+    # derives from git diff but keeps ``git.diff`` raw and backward
+    # compatible for LLM/code-review flows.
+    register_patch_handlers(server)
     # The audit handlers expose ``audit.list`` / ``audit.stats``
     # / ``audit.purge`` for the Settings page's Audit tab. The DAO
     # is built lazily on first call (same pattern as scheduled jobs).
@@ -477,7 +486,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
         "registered application handlers "
         "(1 agent.* + 7 agent.* + 5 skill.* + 6 task.* + 5 session.* + "
         "5 permission.* + 6 schedule.* + 7 mobile.* + 3 model.* + "
-        "7 provider.* + 3 secrets.* + 3 git.* + 3 audit.* + 5 webhook.* + "
+        "7 provider.* + 3 secrets.* + 3 git.* + 1 patch.* + 3 audit.* + 5 webhook.* + "
         "5 notification.* + 7 workflow.* + 7 team.*)"
     )
 
