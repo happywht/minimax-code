@@ -74,6 +74,23 @@ export function MessageInput({
   const streaming = status === "streaming" || status === "sending" || status === "cancelling";
   const cancelling = status === "cancelling";
   const overLimit = value.length > MAX_INPUT_CHARS;
+  const inputUsagePct = Math.min(100, (value.length / MAX_INPUT_CHARS) * 100);
+  const inputNearLimit = inputUsagePct >= 80;
+  const inputCritical = inputUsagePct >= 95 || overLimit;
+  const tokenToneClass = overLimit
+    ? "text-status-error font-semibold"
+    : inputCritical
+      ? "text-status-error"
+      : inputNearLimit
+        ? "text-amber-300"
+        : "text-minimax-muted";
+  const meterToneClass = overLimit
+    ? "bg-status-error"
+    : inputCritical
+      ? "bg-status-error"
+      : inputNearLimit
+        ? "bg-amber-400"
+        : "bg-minimax-accent";
   const imageInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
 
@@ -682,7 +699,34 @@ export function MessageInput({
               </span>
             )}
             <ContextIndicator />
-            <span className={`text-[11px] ${overLimit ? "text-status-error font-semibold" : "text-minimax-muted"}`}>
+            <div className="flex min-w-[92px] flex-col items-end gap-1">
+              <span
+                data-testid="message-input-token-count"
+                className={`text-[11px] transition-colors duration-200 ${tokenToneClass}`}
+              >
+                {value.length}/{MAX_INPUT_CHARS}
+              </span>
+              <div
+                data-testid="message-input-token-meter"
+                className="h-0.5 w-full overflow-hidden rounded-full bg-minimax-border/60"
+                aria-hidden
+              >
+                <div
+                  className={`h-full rounded-full transition-all duration-200 ${meterToneClass}`}
+                  style={{ width: `${inputUsagePct}%` }}
+                />
+              </div>
+            </div>
+            <span
+              data-testid="message-input-token-warning"
+              className={`min-w-[74px] text-right text-[11px] transition-opacity duration-200 ${
+                inputNearLimit ? "opacity-100" : "opacity-0"
+              } ${inputCritical ? "text-status-error" : "text-amber-300"}`}
+              aria-live="polite"
+            >
+              {overLimit ? "已超限" : inputCritical ? "即将超限" : "接近上限"}
+            </span>
+            <span className="sr-only" aria-live="polite">
               {value.length}/{MAX_INPUT_CHARS}
             </span>
             <ModelSelector variant="inline" />

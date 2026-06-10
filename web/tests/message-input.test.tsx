@@ -60,4 +60,20 @@ describe("MessageInput", () => {
     expect(screen.getByTestId("message-input-cancel")).toBeDisabled();
     expect(screen.getByTestId("message-input-stopping")).toHaveTextContent("正在停止...");
   });
+
+  it("warns before the input reaches the hard limit and blocks over-limit sends", () => {
+    render(<MessageInput />);
+    const textarea = screen.getByTestId("message-input-textarea");
+
+    fireEvent.change(textarea, { target: { value: "a".repeat(6400) } });
+    expect(screen.getByTestId("message-input-token-warning")).toHaveTextContent("接近上限");
+    expect(screen.getByTestId("message-input-token-meter").firstElementChild).toHaveStyle({
+      width: "80%",
+    });
+    expect(screen.getByTestId("message-input-send")).not.toBeDisabled();
+
+    fireEvent.change(textarea, { target: { value: "a".repeat(8001) } });
+    expect(screen.getByTestId("message-input-token-warning")).toHaveTextContent("已超限");
+    expect(screen.getByTestId("message-input-send")).toBeDisabled();
+  });
 });
