@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   Circle,
@@ -45,6 +45,43 @@ export function RunTimelinePanel({
   );
 
   const pending = Object.values(pendingPermissions).sort((a, b) => a.received_at - b.received_at);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [isFollowing, setIsFollowing] = useState(true);
+  const [hasNewEvents, setHasNewEvents] = useState(false);
+  const eventCount = pending.length + visibleRuns.reduce((total, run) => total + run.steps.length, 0);
+
+  const scrollToBottom = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (typeof el.scrollTo === "function") {
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    } else {
+      el.scrollTop = el.scrollHeight;
+    }
+    setIsFollowing(true);
+    setHasNewEvents(false);
+  };
+
+  useEffect(() => {
+    if (eventCount === 0) return;
+    if (isFollowing) {
+      scrollToBottom();
+    } else {
+      setHasNewEvents(true);
+    }
+    // Only eventCount should drive this effect; isFollowing is read to decide whether
+    // the latest event should pull the panel down.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventCount]);
+
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const nearBottom = distanceFromBottom <= 50;
+    setIsFollowing(nearBottom);
+    if (nearBottom) setHasNewEvents(false);
+  };
 
   if (visibleRuns.length === 0 && pending.length === 0) {
     return (
@@ -55,67 +92,84 @@ export function RunTimelinePanel({
   }
 
   return (
-    <div data-testid={testId} className="divide-y divide-minimax-border">
-      {pending.map((request) => {
-        const patchFiles = buildPermissionPatchFiles(request.tool, request.args);
-        return (
-          <div
-            key={request.request_id}
-            data-testid="run-timeline-approval"
-            className="px-3 py-2.5"
-          >
-            <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-amber-200">
-                <ShieldQuestion size={13} />
-                <span className="truncate">{request.tool}</span>
-              </div>
-              <pre className="mt-1 max-h-20 overflow-hidden whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-amber-100/80">
-                {formatArgs(request.args)}
-              </pre>
-              <PermissionPatchPreview
-                files={patchFiles}
-                testId="run-timeline-approval-patch-preview"
-              />
-              <div className="mt-2 flex justify-end gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => void resolvePermission(request.request_id, "deny")}
-                  className="rounded border border-minimax-border px-2 py-1 text-[11px] text-minimax-fg hover:border-red-500/40 hover:text-status-error"
-                >
-                  Deny
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void resolvePermission(request.request_id, "allow")}
-                  className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-1 text-[11px] text-emerald-200 hover:bg-emerald-500/25"
-                >
-                  Allow
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })}
-      {visibleRuns.map((run) => (
-        <article key={run.id} className="px-3 py-2.5">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <div className="min-w-0">
-              <div className="truncate text-xs font-medium text-minimax-fg">
-                {run.title || "Agent run"}
-              </div>
-              <div className="mt-0.5 font-mono text-[10px] text-minimax-muted">
-                {run.id.slice(0, 12)}
+    <div data-testid={testId} className="relative">
+      <div
+        ref={scrollRef}
+        data-testid="run-timeline-scroll"
+        onScroll={handleScroll}
+        className="max-h-[min(58vh,520px)] overflow-y-auto divide-y divide-minimax-border"
+      >
+        {pending.map((request) => {
+          const patchFiles = buildPermissionPatchFiles(request.tool, request.args);
+          return (
+            <div
+              key={request.request_id}
+              data-testid="run-timeline-approval"
+              className="px-3 py-2.5"
+            >
+              <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-amber-200">
+                  <ShieldQuestion size={13} />
+                  <span className="truncate">{request.tool}</span>
+                </div>
+                <pre className="mt-1 max-h-20 overflow-hidden whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-amber-100/80">
+                  {formatArgs(request.args)}
+                </pre>
+                <PermissionPatchPreview
+                  files={patchFiles}
+                  testId="run-timeline-approval-patch-preview"
+                />
+                <div className="mt-2 flex justify-end gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => void resolvePermission(request.request_id, "deny")}
+                    className="rounded border border-minimax-border px-2 py-1 text-[11px] text-minimax-fg hover:border-red-500/40 hover:text-status-error"
+                  >
+                    Deny
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void resolvePermission(request.request_id, "allow")}
+                    className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-1 text-[11px] text-emerald-200 hover:bg-emerald-500/25"
+                  >
+                    Allow
+                  </button>
+                </div>
               </div>
             </div>
-            <RunStatusBadge status={run.status} />
-          </div>
-          <ol className="space-y-1.5">
-            {run.steps.map((step) => (
-              <TimelineStep key={step.id} step={step} />
-            ))}
-          </ol>
-        </article>
-      ))}
+          );
+        })}
+        {visibleRuns.map((run) => (
+          <article key={run.id} className="px-3 py-2.5">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="truncate text-xs font-medium text-minimax-fg">
+                  {run.title || "Agent run"}
+                </div>
+                <div className="mt-0.5 font-mono text-[10px] text-minimax-muted">
+                  {run.id.slice(0, 12)}
+                </div>
+              </div>
+              <RunStatusBadge status={run.status} />
+            </div>
+            <ol className="space-y-1.5">
+              {run.steps.map((step) => (
+                <TimelineStep key={step.id} step={step} />
+              ))}
+            </ol>
+          </article>
+        ))}
+      </div>
+      {hasNewEvents && (
+        <button
+          type="button"
+          data-testid="run-timeline-new-events"
+          onClick={scrollToBottom}
+          className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full border border-minimax-border bg-minimax-panel/95 px-2.5 py-1 text-[11px] font-medium text-minimax-fg shadow-lg backdrop-blur transition-colors duration-200 hover:bg-minimax-border"
+        >
+          New events ↓
+        </button>
+      )}
     </div>
   );
 }
