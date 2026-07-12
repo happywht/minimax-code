@@ -373,9 +373,22 @@ class AgentCore:
             truncated = True
             await self._emit_status("max_iterations", {"iterations": self.config.max_iterations})
             final_text = (
-                (final_message.get("content") if final_message else "")
-                or "I hit the iteration cap before producing a final answer."
+                f"I stopped after reaching the {self.config.max_iterations}-iteration limit "
+                "before producing a final answer."
             )
+            final_message = {
+                "role": "assistant",
+                "content": final_text,
+                "metadata": {
+                    "thinking_count": int(getattr(self.llm, "thinking_count", 0) or 0),
+                    "tokens_in": int(usage_total.get("prompt_tokens", 0) or 0),
+                    "tokens_out": int(usage_total.get("completion_tokens", 0) or 0),
+                    "truncated": True,
+                },
+            }
+            messages.append(final_message)
+            await self._maybe_persist(session_id, final_message)
+            await self._emit_chunk(final_text, True, final_message["metadata"])
 
         return AgentRunResult(
             final_text=final_text,

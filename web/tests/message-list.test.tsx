@@ -46,7 +46,7 @@ describe("MessageList", () => {
     expect(await screen.findByTestId("message-assistant", {}, { timeout: 3000 })).toHaveTextContent("world");
   });
 
-  it("groups consecutive tool messages into a compact rail", async () => {
+  it("renders tool messages as interleaved timeline rows", async () => {
     useChat.setState({
       messages: [
         { id: "a1", role: "assistant", text: "checking", streaming: false, created_at: 1 },
@@ -72,7 +72,9 @@ describe("MessageList", () => {
 
     render(<MessageList />);
 
-    expect(screen.getByTestId("message-tool-group")).toBeInTheDocument();
+    expect(screen.queryByTestId("message-tool-group")).not.toBeInTheDocument();
+    expect(screen.getByTestId("message-window-row-message-t1")).toBeInTheDocument();
+    expect(screen.getByTestId("message-window-row-message-t2")).toBeInTheDocument();
     expect(await screen.findByText("read_file")).toBeInTheDocument();
     expect(await screen.findByText("search")).toBeInTheDocument();
   });

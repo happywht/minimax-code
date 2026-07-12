@@ -214,12 +214,26 @@ def _is_dangerous_cmd(cmd: list[str]) -> str | None:
             for arg in cmd[1:]:
                 arg_lower = arg.lower()
                 for pat in patterns:
-                    if pat.lower() in arg_lower:
+                    if _matches_deny_arg(arg_lower, pat.lower()):
                         return (
                             f"'{cmd[0]} {arg}' is blocked "
                             f"(shell escape / eval pattern)"
                         )
     return None
+
+
+def _matches_deny_arg(arg: str, pattern: str) -> bool:
+    """Return true when *arg* is the dangerous flag itself.
+
+    This intentionally avoids substring matching: ``--no-color``
+    contains ``-c`` but is not a shell escape. Long options still
+    match their ``--flag=value`` form.
+    """
+    if arg == pattern:
+        return True
+    if pattern.startswith("--") or pattern.startswith("-"):
+        return arg.startswith(pattern + "=")
+    return False
 
 
 @register_tool

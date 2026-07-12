@@ -503,6 +503,9 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         except Exception:
             logger.exception("%s emit failed", event)
 
+    current_assistant_message_id = message_id
+    start_new_assistant_message = False
+
     recorder = _RunRecorder(
         dao=runs_dao,
         emit=_emit_run_event,
@@ -519,7 +522,11 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     async def _on_chunk(
         delta: str, done: bool, metadata: dict | None = None
     ) -> None:
+        nonlocal current_assistant_message_id, start_new_assistant_message
         try:
+            if start_new_assistant_message:
+                current_assistant_message_id = f"msg_{uuid.uuid4().hex[:8]}"
+                start_new_assistant_message = False
             # The agent loop only attaches ``metadata`` to the
             # trailing ``done=True`` chunk per turn; every earlier
             # delta passes ``None``. ``ctx.emit`` with
@@ -530,7 +537,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
                 "agent.message_chunk",
                 {
                     "session_id": session_id,
-                    "message_id": message_id,
+                    "message_id": current_assistant_message_id,
                     "delta": delta,
                     "done": done,
                 },
@@ -561,7 +568,17 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     async def _on_tool_call(call: dict) -> None:
         """Push ``agent.tool_call`` events so the frontend can
         render tool-execution steps in the chat."""
+        nonlocal start_new_assistant_message
         try:
+            await ctx.emit(
+                "agent.message_chunk",
+                {
+                    "session_id": session_id,
+                    "message_id": current_assistant_message_id,
+                    "delta": "",
+                    "done": True,
+                },
+            )
             # ``call`` is the ``call_log`` dict built by
             # ``AgentCore._dispatch_tool`` — it uses the *flat*
             # normalised format {id, name, args, arguments, …}
@@ -577,8 +594,10 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
                     "tool_call_id": tool_call_id,
                     "name": tool_name,
                     "args": args,
+                    "message_id": current_assistant_message_id,
                 },
             )
+            start_new_assistant_message = True
             await recorder.tool_call(call)
         except Exception:
             logger.exception("on_tool_call emit failed")
@@ -599,6 +618,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
                     "name": tool_name,
                     "result": result.output if hasattr(result, "output") else str(result),
                     "error": result.error if hasattr(result, "error") else None,
+                    "message_id": current_assistant_message_id,
                 },
             )
             await recorder.tool_result(call, result)
@@ -625,7 +645,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     await ctx.reply(
         {
             "session_id": session_id,
-            "message_id": message_id,
+            "message_id": current_assistant_message_id,
             "run_id": recorder.run_id,
             "text": result.final_text,
             "iterations": result.iterations,

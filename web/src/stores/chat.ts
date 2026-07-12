@@ -130,6 +130,13 @@ function applyAssistantChunk(
   }
 
   const pendingId = pendingAssistantId;
+  if (data.done && !delta && pendingId) {
+    const pending = messages.find((m) => m.id === pendingId);
+    if (pending && pending.role === "assistant" && !pending.text) {
+      return messages.filter((m) => m.id !== pendingId);
+    }
+  }
+
   if (pendingId && messages.some((m) => m.id === pendingId)) {
     return messages.map((m) =>
       m.id === pendingId
@@ -244,11 +251,13 @@ export const useChat = create<ChatState>((set, get) => ({
         if (d.status === "error") {
           set({ status: "error", error: d.detail ?? "agent error" });
           toast.error("Agent error", d.detail);
-        } else if (d.status === "idle") {
+          clearStallWatchdog();
+        } else if (d.status === "idle" || d.status === "done" || d.status === "max_iterations") {
           set({ status: "idle" });
+          clearStallWatchdog();
+        } else {
+          resetStallWatchdog();
         }
-        // Status change is activity — reset stall watchdog.
-        resetStallWatchdog();
       });
     }
 

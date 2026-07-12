@@ -67,10 +67,14 @@ export function useSmartScroll<T extends HTMLElement = HTMLDivElement>({
 
     if (frameRef.current != null) cancelFrame(frameRef.current);
     frameRef.current = requestFrame(() => {
-      frameRef.current = null;
       if (followingRef.current) {
-        scrollToBottom("smooth");
+        scrollToBottom("auto");
+        frameRef.current = requestFrame(() => {
+          frameRef.current = null;
+          if (followingRef.current) scrollToBottom("auto");
+        });
       } else {
+        frameRef.current = null;
         setNewContentCount((count) => count + 1);
       }
     });

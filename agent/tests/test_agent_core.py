@@ -498,14 +498,30 @@ async def test_loop_truncates_at_max_iterations() -> None:
     # Always call the tool — never produce a final answer.
     infinite = [_tool_response(_tool_call("echo", {"text": f"i{i}"}, call_id=f"c{i}")) for i in range(20)]
     fake = FakeLLM(infinite)
+    chunks: list[tuple[str, bool, dict[str, Any] | None]] = []
+    persisted: list[dict[str, Any]] = []
+
+    async def persist(_session_id: str, message: dict[str, Any]) -> None:
+        persisted.append(message)
+
     core = AgentCore(
         llm=fake,
         registry=_fresh_registry(tool),
         config=AgentConfig(max_iterations=3),
+        persist_message=persist,
     )
+    core.on_chunk = lambda d, done, metadata=None: _maybe_coro(chunks.append((d, done, metadata)))
     result = await core.run(session_id="s1", user_message="loop forever")
     assert result.truncated is True
     assert result.iterations == 3
+    assert result.final_text == "I stopped after reaching the 3-iteration limit before producing a final answer."
+    final_delta, final_done, final_metadata = chunks[-1]
+    assert final_delta == result.final_text
+    assert final_done is True
+    assert final_metadata is not None
+    assert final_metadata["truncated"] is True
+    assert persisted[-1]["role"] == "assistant"
+    assert persisted[-1]["content"] == result.final_text
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,7 @@ from minimax_code.agent.tools import (
     get_default_registry,
     safe_resolve,
 )
+from minimax_code.agent.tools.terminal import _is_dangerous_cmd
 
 # ---------------------------------------------------------------------------
 # Path-safety policy
@@ -334,6 +335,12 @@ async def test_exec_command_rejects_dangerous(workspace: Path) -> None:
     result = await tool.run(cmd=["rm", "-rf", "/"])
     assert not result.success
     assert "dangerous" in (result.error or "").lower()
+
+
+def test_exec_command_dangerous_flag_matching_is_exact() -> None:
+    assert _is_dangerous_cmd(["python", "-c", "print(1)"]) is not None
+    assert _is_dangerous_cmd(["python", "--no-color"]) is None
+    assert _is_dangerous_cmd([".venv\\Scripts\\python.exe", "fetch_news.py", "--no-color"]) is None
 
 
 @pytest.mark.asyncio

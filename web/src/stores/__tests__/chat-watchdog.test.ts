@@ -188,6 +188,20 @@ describe("Stall watchdog", () => {
     expect(useChat.getState().error).toBeNull();
   });
 
+  it("max_iterations status clears the watchdog instead of later timing out", () => {
+    startStreaming();
+
+    emit(StreamEvent.AgentStatus, {
+      status: "max_iterations",
+      iterations: 12,
+    });
+
+    vi.advanceTimersByTime(120_000);
+
+    expect(useChat.getState().status).toBe("idle");
+    expect(useChat.getState().error).toBeNull();
+  });
+
   it("simulates long tool execution: tool_call → tool_result → chunk → done", () => {
     startStreaming();
 
@@ -296,6 +310,56 @@ describe("Stall watchdog", () => {
       text: "done",
       status: "completed",
       streaming: false,
+    });
+  });
+
+  it("drops the empty queued placeholder when the model starts with a tool call", async () => {
+    let resolveSend: ((value: SendMessageResult) => void) | undefined;
+    vi.mocked(typedIPC.sendMessage).mockImplementationOnce(
+      () =>
+        new Promise<SendMessageResult>((resolve) => {
+          resolveSend = resolve;
+        }),
+    );
+
+    const sendPromise = useChat.getState().send("inspect the repo");
+    expect(useChat.getState().messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+
+    emit(StreamEvent.MessageChunk, {
+      message_id: "msg-before-tool",
+      delta: "",
+      done: true,
+    });
+    emit(StreamEvent.ToolCall, {
+      tool_call_id: "tc-first",
+      name: "list_dir",
+      args: { path: "." },
+    });
+    emit(StreamEvent.ToolResult, {
+      tool_call_id: "tc-first",
+      result: "ok",
+      error: null,
+    });
+    emit(StreamEvent.MessageChunk, {
+      message_id: "msg-after-tool",
+      delta: "Done.",
+      done: true,
+    });
+
+    if (!resolveSend) throw new Error("send resolver was not captured");
+    resolveSend({ session_id: "test-session", message_id: "msg-after-tool", text: "Done." });
+    await sendPromise;
+
+    expect(useChat.getState().messages.map((message) => message.role)).toEqual([
+      "user",
+      "tool",
+      "tool",
+      "assistant",
+    ]);
+    expect(useChat.getState().messages.at(-1)).toMatchObject({
+      id: "msg-after-tool",
+      text: "Done.",
+      status: "completed",
     });
   });
 });

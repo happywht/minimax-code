@@ -288,7 +288,16 @@ export interface MessageChunkData {
 
 export interface AgentStatusData {
   session_id: string;
-  status: "thinking" | "tool_call" | "tool_result" | "idle" | "error";
+  status:
+    | "thinking"
+    | "calling_tool"
+    | "tool_running"
+    | "tool_call"
+    | "tool_result"
+    | "done"
+    | "max_iterations"
+    | "idle"
+    | "error";
   detail?: string;
 }
 
