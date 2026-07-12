@@ -312,6 +312,8 @@ export interface ToolCallData {
 export interface ToolResultData {
   session_id: string;
   tool_call_id: string;
+  /** Tool name. Present on the Python agent stream; optional for older emitters. */
+  name?: string;
   result: unknown;
   error?: string;
   message_id: string;

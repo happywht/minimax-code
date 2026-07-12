@@ -561,8 +561,8 @@ so the frontend can route them by name without a regex.
 | Event name              | Data                                                |
 |-------------------------|-----------------------------------------------------|
 | `agent.message_chunk`   | `{session_id, message_id, delta, done}`             |
-| `agent.tool_call`       | `{session_id, tool_call_id, name, args}` (Phase 1.2)|
-| `agent.tool_result`     | `{session_id, tool_call_id, result, error?}`        |
+| `agent.tool_call`       | `{session_id, tool_call_id, name, args, message_id}` (Phase 1.2) |
+| `agent.tool_result`     | `{session_id, tool_call_id, name?, result, error?, message_id}` |
 | `agent.status`          | `{session_id, status, detail?}`                     |
 | `task.progress`         | `{task_id, progress, message?}`                     |
 | `permission.request`    | `{request_id, tool, args}` — modal triggers         |

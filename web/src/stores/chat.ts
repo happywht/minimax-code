@@ -73,6 +73,7 @@ const STALL_TIMEOUT_MS = 60_000;
 const TOOL_STALL_TIMEOUT_MS = 180_000;
 let _stallTimer: ReturnType<typeof setTimeout> | null = null;
 const activeToolCalls = new Set<string>();
+const activeToolNames = new Map<string, string>();
 
 function resetStallWatchdog(timeoutMs = STALL_TIMEOUT_MS) {
   if (_stallTimer) clearTimeout(_stallTimer);
@@ -104,6 +105,7 @@ function clearStallWatchdog() {
     _stallTimer = null;
   }
   activeToolCalls.clear();
+  activeToolNames.clear();
 }
 
 function ensureMessage(
@@ -242,6 +244,7 @@ export const useChat = create<ChatState>((set, get) => ({
         // than the normal 60 s stream silence window, so arm the wider
         // tool watchdog until a matching tool_result arrives.
         activeToolCalls.add(data.tool_call_id);
+        activeToolNames.set(data.tool_call_id, data.name);
         resetStallWatchdogForCurrentActivity();
       });
     }
@@ -253,12 +256,15 @@ export const useChat = create<ChatState>((set, get) => ({
         const text = data.error
           ? `✗ ${data.error}`
           : `✓ ${typeof data.result === "string" ? data.result : JSON.stringify(data.result)}`;
+        const toolName = data.name ?? activeToolNames.get(data.tool_call_id);
         set((s) => ({
           messages: trimArray(ensureMessage(s.messages, {
             id,
             role: "tool",
             text,
             tool_call_id: data.tool_call_id,
+            tool_name: toolName,
+            parent_id: `tc-${data.tool_call_id}`,
             created_at: Date.now(),
             streaming: false,
           }), MAX_MESSAGES),
@@ -266,6 +272,7 @@ export const useChat = create<ChatState>((set, get) => ({
         // Tool result is activity. Once all active tools have returned,
         // go back to the normal stream watchdog window.
         activeToolCalls.delete(data.tool_call_id);
+        activeToolNames.delete(data.tool_call_id);
         resetStallWatchdogForCurrentActivity();
       });
     }
@@ -331,6 +338,7 @@ export const useChat = create<ChatState>((set, get) => ({
     if (!displayText && !parts?.length) return;
 
     activeToolCalls.clear();
+    activeToolNames.clear();
     set({ status: "sending", error: null });
     let sessionId = useSessionStore.getState().currentSessionId;
     try {
@@ -450,6 +458,7 @@ export const useChat = create<ChatState>((set, get) => ({
         if (hasPartial && isTimeout) {
           pendingAssistantId = null;
           activeToolCalls.clear();
+          activeToolNames.clear();
           return {
             messages: s.messages.map((m) =>
               m.streaming ? { ...m, streaming: false, status: "completed" } : m,
@@ -461,6 +470,7 @@ export const useChat = create<ChatState>((set, get) => ({
         if (pending && s.messages.some((m) => m.id === pending)) {
           pendingAssistantId = null;
           activeToolCalls.clear();
+          activeToolNames.clear();
           return {
             status: "error",
             error: message,
@@ -480,6 +490,7 @@ export const useChat = create<ChatState>((set, get) => ({
         }
         pendingAssistantId = null;
         activeToolCalls.clear();
+        activeToolNames.clear();
         return {
           status: "error",
           error: message,

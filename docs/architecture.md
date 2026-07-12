@@ -263,7 +263,7 @@ minimax-code/                          # 仓库根
 **流式事件**（Python → 前端）：
 - `agent.message_chunk` { session_id, message_id, delta, done }
 - `agent.tool_call` { session_id, tool_call_id, name, args }
-- `agent.tool_result` { session_id, tool_call_id, result, error? }
+- `agent.tool_result` { session_id, tool_call_id, name?, result, error?, message_id }
 - `agent.status` { session_id, status, detail? }
 - `task.progress` { task_id, progress, message? }
 - `permission.request` { request_id, tool, args } — 前端弹窗确认

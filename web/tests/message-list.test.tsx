@@ -119,6 +119,48 @@ describe("MessageList", () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "smooth" });
   });
 
+  it("keeps following the latest streaming output while already at the bottom", async () => {
+    useChat.setState({
+      messages: [
+        { id: "u1", role: "user", text: "hello", streaming: false, created_at: 1 },
+        { id: "a1", role: "assistant", text: "short", streaming: true, created_at: 2 },
+      ],
+    });
+    render(<MessageList />);
+
+    const list = screen.getByTestId("message-list");
+    Object.defineProperty(list, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(list, "clientHeight", { configurable: true, value: 400 });
+    Object.defineProperty(list, "scrollTop", { configurable: true, writable: true, value: 600 });
+    const scrollTo = vi.fn((opts: ScrollToOptions) => {
+      list.scrollTop = Number(opts.top ?? 0);
+    });
+    Object.defineProperty(list, "scrollTo", { configurable: true, value: scrollTo });
+
+    fireEvent.scroll(list);
+
+    act(() => {
+      useChat.setState((s) => ({
+        messages: s.messages.map((message) =>
+          message.id === "a1"
+            ? {
+                ...message,
+                text: `${message.text}\n${Array.from(
+                  { length: 30 },
+                  (_, index) => `streaming line ${index + 1}`,
+                ).join("\n")}`,
+              }
+            : message,
+        ),
+      }));
+    });
+
+    await waitFor(() => {
+      expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "auto" });
+    });
+    expect(screen.queryByTestId("scroll-to-bottom-btn")).not.toBeInTheDocument();
+  });
+
   it("virtualizes the visible message window for long conversations", async () => {
     useChat.setState({
       messages: Array.from({ length: 80 }, (_, index) => ({

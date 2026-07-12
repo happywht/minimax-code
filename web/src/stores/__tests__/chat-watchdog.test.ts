@@ -183,6 +183,7 @@ describe("Stall watchdog", () => {
     vi.advanceTimersByTime(50_000);
     emit(StreamEvent.ToolResult, {
       tool_call_id: "tc-1",
+      name: "read_file",
       result: "file contents here",
       error: null,
     });
@@ -191,6 +192,29 @@ describe("Stall watchdog", () => {
 
     expect(useChat.getState().status).toBe("streaming");
     expect(useChat.getState().error).toBeNull();
+  });
+
+  it("keeps the tool name and parent linkage on tool_result messages", () => {
+    startStreaming();
+
+    emit(StreamEvent.ToolCall, {
+      tool_call_id: "tc-named",
+      name: "exec_command",
+      args: { command: "pnpm test" },
+    });
+    emit(StreamEvent.ToolResult, {
+      tool_call_id: "tc-named",
+      result: "ok",
+      error: null,
+    });
+
+    const resultMessage = useChat.getState().messages.find((m) => m.id === "tr-tc-named");
+    expect(resultMessage).toMatchObject({
+      role: "tool",
+      tool_call_id: "tc-named",
+      tool_name: "exec_command",
+      parent_id: "tc-tc-named",
+    });
   });
 
   it("does NOT fire timeout when agent.status arrives within 60 s", () => {
