@@ -39,6 +39,71 @@ test("chat: send a message and see the assistant reply", async ({ page }) => {
   ).toBeVisible({ timeout: 10_000 });
 });
 
+test("chat: long conversations scroll inside the middle message area", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.goto("/");
+
+  const input = page.getByPlaceholder(/Ask MiniMax anything/);
+  await expect(input).toBeVisible({ timeout: 10_000 });
+
+  const longPrompt = Array.from(
+    { length: 90 },
+    (_, index) => `scroll proof line ${String(index + 1).padStart(2, "0")}`,
+  ).join("\n");
+  await input.fill(longPrompt);
+  await page.getByTestId("message-input-send").click();
+
+  await page.waitForFunction(() => {
+    const el = document.querySelector<HTMLElement>('[data-testid="message-list"]');
+    return Boolean(
+      el &&
+        el.textContent?.includes("scroll proof line 90") &&
+        el.scrollHeight > el.clientHeight + 200,
+    );
+  });
+
+  const metrics = await page.evaluate(() => {
+    const scroller = document.querySelector<HTMLElement>('[data-testid="message-list"]');
+    const header = document.querySelector<HTMLElement>('[data-testid="chat-header-title"]');
+    const composer = document.querySelector<HTMLElement>('[data-testid="message-input"]');
+    if (!scroller || !header || !composer) {
+      throw new Error("chat layout elements missing");
+    }
+
+    const headerTopBefore = header.getBoundingClientRect().top;
+    const composerTopBefore = composer.getBoundingClientRect().top;
+    const pageScrollBefore = document.scrollingElement?.scrollTop ?? 0;
+
+    scroller.scrollTop = 0;
+    scroller.dispatchEvent(new Event("scroll"));
+    const top = scroller.scrollTop;
+
+    scroller.scrollTop = scroller.scrollHeight;
+    scroller.dispatchEvent(new Event("scroll"));
+    const bottom = scroller.scrollTop;
+
+    return {
+      top,
+      bottom,
+      clientHeight: scroller.clientHeight,
+      scrollHeight: scroller.scrollHeight,
+      headerTopBefore,
+      headerTopAfter: header.getBoundingClientRect().top,
+      composerTopBefore,
+      composerTopAfter: composer.getBoundingClientRect().top,
+      pageScrollBefore,
+      pageScrollAfter: document.scrollingElement?.scrollTop ?? 0,
+    };
+  });
+
+  expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
+  expect(metrics.top).toBe(0);
+  expect(metrics.bottom).toBeGreaterThan(0);
+  expect(metrics.headerTopAfter).toBe(metrics.headerTopBefore);
+  expect(metrics.composerTopAfter).toBe(metrics.composerTopBefore);
+  expect(metrics.pageScrollAfter).toBe(metrics.pageScrollBefore);
+});
+
 function escapeForRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

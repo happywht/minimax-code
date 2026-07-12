@@ -538,6 +538,14 @@ export const useChat = create<ChatState>((set, get) => ({
       const result = await typedIPC.listMessages(sessionId);
       // Stale response — the user has already switched away.
       if (seq !== _loadSeq) return;
+      const currentSessionId = useSessionStore.getState().currentSessionId;
+      const activeStatus = get().status;
+      if (
+        currentSessionId === sessionId &&
+        (activeStatus === "sending" || activeStatus === "streaming")
+      ) {
+        return;
+      }
       // Convert backend rows (content → text, add streaming: false)
       const msgs: Message[] = (result.messages ?? []).map((m) => ({
         id: m.id,
@@ -548,6 +556,8 @@ export const useChat = create<ChatState>((set, get) => ({
         created_at: m.created_at,
         metadata: m.metadata,
         tool_call_id: m.tool_call_id,
+        tool_name: m.tool_name,
+        tool_args: m.tool_args,
       }));
       set({ messages: trimArray(msgs, MAX_MESSAGES), status: "idle", error: null });
     } catch (err) {

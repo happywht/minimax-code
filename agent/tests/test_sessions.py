@@ -22,6 +22,7 @@ import asyncio
 import uuid
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -265,6 +266,71 @@ async def test_get_messages_decodes_tool_calls(
     out = await sessions_dao.get_messages(sid)
     assert len(out) == 1
     assert out[0]["tool_calls"] == [{"name": "search", "args": {"q": "x"}}]
+
+
+# ---------------------------------------------------------------------------
+# IPC handler round-trip — message.list
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_message_list_restores_tool_display_details(
+    async_db: AsyncDatabase,
+    sessions_dao: SessionsDAO,
+    id_factory: Any,
+) -> None:
+    """``message.list`` keeps tool rows useful after history reload.
+
+    Streaming events carry ``tool_name`` and ``tool_args`` directly, but
+    persisted tool result rows only store ``tool_call_id``. The history
+    API must recover display metadata from the assistant ``tool_calls``
+    payload so reloaded chats still show the concrete tool card instead
+    of a generic "tool" row with missing parameters.
+    """
+    sid = id_factory("ses")
+    await sessions_dao.create(id=sid, title="tool history")
+    mdao = MessagesDAO(async_db)
+    await mdao.create(
+        id=id_factory("msg"),
+        session_id=sid,
+        role="assistant",
+        content="I will inspect the file.",
+        tool_calls=[
+            {
+                "id": "call_read_1",
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "arguments": '{"path":"app.py","start":1}',
+                },
+            }
+        ],
+        created_at="2026-01-01T00:00:01+00:00",
+    )
+    await mdao.create(
+        id=id_factory("msg"),
+        session_id=sid,
+        role="tool",
+        content="file contents",
+        tool_call_id="call_read_1",
+        created_at="2026-01-01T00:00:02+00:00",
+    )
+
+    async def fake_init_runtime() -> object:
+        return object()
+
+    with (
+        patch("minimax_code.app.init_runtime", side_effect=fake_init_runtime),
+        patch("minimax_code.app.get_db", return_value=async_db),
+    ):
+        client = IPCClient()
+        reply = await client.request("message.list", {"session_id": sid})
+
+    tool_rows = [m for m in reply["messages"] if m["role"] == "tool"]
+    assert len(tool_rows) == 1
+    assert tool_rows[0]["tool_call_id"] == "call_read_1"
+    assert tool_rows[0]["tool_name"] == "read_file"
+    assert tool_rows[0]["tool_args"] == {"path": "app.py", "start": 1}
 
 
 # ---------------------------------------------------------------------------

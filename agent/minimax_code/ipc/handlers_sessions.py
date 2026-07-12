@@ -28,6 +28,7 @@ Schema
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime
@@ -357,6 +358,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
             # Convert backend rows to the frontend Message shape.
             # Backend: {id, role, content, tool_calls, tool_call_id, metadata, created_at}
             # Frontend: {id, role, text, streaming, created_at, metadata, ...}
+            tool_index = _tool_call_index(rows)
             messages = []
             for r in rows:
                 msg: dict[str, Any] = {
@@ -368,6 +370,11 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 }
                 if r.get("tool_call_id"):
                     msg["tool_call_id"] = r["tool_call_id"]
+                    if r.get("role") == "tool":
+                        tool_info = tool_index.get(str(r["tool_call_id"]))
+                        if tool_info:
+                            msg["tool_name"] = tool_info.get("name")
+                            msg["tool_args"] = tool_info.get("args")
                 if r.get("metadata"):
                     msg["metadata"] = r["metadata"]
                 if r.get("tool_calls"):
@@ -388,6 +395,50 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
     server.register("session.delete", handle_session_delete)
     server.register("session.update", handle_session_update)
     server.register("message.list", handle_message_list)
+
+
+def _tool_call_index(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Map persisted tool_call ids to their display name and args.
+
+    Tool result rows only store ``tool_call_id`` because that is what
+    model APIs need for replay. The UI, however, needs the human-readable
+    tool name and arguments after a session reload. We recover those from
+    the preceding assistant ``tool_calls`` payload.
+    """
+    index: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        calls = row.get("tool_calls")
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            call_id = str(call.get("id") or "").strip()
+            if not call_id:
+                continue
+            fn = call.get("function") if isinstance(call.get("function"), dict) else {}
+            name = str(call.get("name") or fn.get("name") or "tool")
+            raw_args = call.get("args")
+            if raw_args is None:
+                raw_args = call.get("arguments")
+            if raw_args is None:
+                raw_args = fn.get("arguments")
+            index[call_id] = {"name": name, "args": _decode_tool_args(raw_args)}
+    return index
+
+
+def _decode_tool_args(raw: Any) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"arguments": raw}
+        return parsed if isinstance(parsed, dict) else {"arguments": parsed}
+    return {"arguments": raw}
 
 # ---------------------------------------------------------------------------
 # Factory

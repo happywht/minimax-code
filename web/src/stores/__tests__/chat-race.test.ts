@@ -33,6 +33,7 @@ vi.mock("../../ipc", () => ({
 
 describe("P2#33: session quick-switch race condition", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     // Reset stores
     useChat.getState().reset();
     useSessionStore.setState({
@@ -127,5 +128,97 @@ describe("P2#33: session quick-switch race condition", () => {
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0].text).toBe("B ok");
     expect(state.error).toBeNull();
+  });
+
+  it("preserves persisted tool details when loading history", async () => {
+    vi.mocked(typedIPC.listMessages).mockResolvedValueOnce({
+      messages: [
+        {
+          id: "tool-1",
+          role: "tool",
+          text: "file contents",
+          created_at: 1,
+          tool_call_id: "call_read_1",
+          tool_name: "read_file",
+          tool_args: { path: "app.py", start: 1 },
+        },
+      ],
+    });
+
+    await useChat.getState().loadMessages("session-with-tools");
+
+    const [toolMessage] = useChat.getState().messages;
+    expect(toolMessage.tool_call_id).toBe("call_read_1");
+    expect(toolMessage.tool_name).toBe("read_file");
+    expect(toolMessage.tool_args).toEqual({ path: "app.py", start: 1 });
+  });
+
+  it("does not let history reload clear an active send", async () => {
+    useSessionStore.setState({ currentSessionId: "session-active" });
+    useChat.setState({
+      status: "sending",
+      error: null,
+      messages: [
+        {
+          id: "user-local",
+          role: "user",
+          text: "local prompt still sending",
+          streaming: false,
+          created_at: 1,
+        },
+      ],
+    });
+    vi.mocked(typedIPC.listMessages).mockResolvedValueOnce({ messages: [] });
+
+    await useChat.getState().loadMessages("session-active");
+
+    const state = useChat.getState();
+    expect(state.status).toBe("sending");
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0].text).toBe("local prompt still sending");
+  });
+
+  it("ignores a stale session refresh that predates creating the current session", async () => {
+    let resolveList: (value: { sessions: any[]; total: number }) => void = () => {};
+    vi.mocked(typedIPC.listSessions).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveList = resolve;
+        }),
+    );
+    vi.mocked(typedIPC.createSession).mockResolvedValueOnce({
+      session_id: "ses_new",
+      session: {
+        id: "ses_new",
+        title: "New task",
+        archived: false,
+        created_at: 1,
+        updated_at: 1,
+        model_id: null,
+        workspace_mode: "local",
+      },
+      reused: false,
+    });
+
+    const refreshPromise = useSessionStore.getState().refresh();
+    await useSessionStore.getState().create("New task");
+    useChat.setState({
+      status: "sending",
+      error: null,
+      messages: [
+        {
+          id: "user-local",
+          role: "user",
+          text: "new session prompt",
+          streaming: false,
+          created_at: 1,
+        },
+      ],
+    });
+    resolveList({ sessions: [], total: 0 });
+    await refreshPromise;
+
+    expect(useSessionStore.getState().currentSessionId).toBe("ses_new");
+    expect(useChat.getState().messages[0].text).toBe("new session prompt");
   });
 });

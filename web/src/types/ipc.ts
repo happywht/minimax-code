@@ -345,6 +345,8 @@ export interface PersistedMessage {
   created_at: number;
   metadata?: MessageMetadata;
   tool_call_id?: string;
+  tool_name?: string;
+  tool_args?: Record<string, unknown>;
 }
 
 export type AgentRunStatus =

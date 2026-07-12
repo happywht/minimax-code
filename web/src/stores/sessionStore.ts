@@ -22,6 +22,7 @@ export type SessionMeta = Session;
 
 const CURRENT_SESSION_STORAGE_KEY = "minimax-code:current-session";
 let createSessionInFlight: Promise<string> | null = null;
+let refreshSeq = 0;
 
 function readStoredSessionId(): string | null {
   try {
@@ -66,9 +67,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   filter: "all",
 
   refresh: async (options) => {
+    const seq = ++refreshSeq;
     set({ loading: true });
     try {
       const r = await typedIPC.listSessions();
+      if (seq !== refreshSeq) {
+        set({ loading: false });
+        return;
+      }
       const currentId = get().currentSessionId;
       const currentExists = !!currentId && r.sessions.some((session) => session.id === currentId);
       set({
@@ -101,6 +107,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           title,
           reuse_empty_session_id: reuseId,
         });
+        ++refreshSeq;
         const nextSession = r.session ?? {
           id: r.session_id,
           title: title ?? "New task",
@@ -138,6 +145,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   createWorktree: async (title?: string, baseRef?: string) => {
     try {
       const r = await typedIPC.createWorktreeSession({ title, base_ref: baseRef });
+      ++refreshSeq;
       set((s) => ({
         sessions: [
           r.session ?? {
@@ -224,6 +232,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setCurrent: (id: string | null, loadMessages = true) => {
+    ++refreshSeq;
     set({ currentSessionId: id });
     storeCurrentSessionId(id);
     useChat.getState().reset();
