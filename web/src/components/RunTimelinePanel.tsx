@@ -112,9 +112,12 @@ export function RunTimelinePanel({
                   <ShieldQuestion size={13} />
                   <span className="truncate">{request.tool}</span>
                 </div>
-                <pre className="mt-1 max-h-20 overflow-hidden whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-amber-100/80">
-                  {formatArgs(request.args)}
-                </pre>
+                <ExpandablePre
+                  text={formatArgs(request.args)}
+                  collapsedText={summarizeArgs(request.args)}
+                  className="mt-1 text-amber-100/80"
+                  testId="run-timeline-approval-args"
+                />
                 <PermissionPatchPreview
                   files={patchFiles}
                   testId="run-timeline-approval-patch-preview"
@@ -177,7 +180,8 @@ export function RunTimelinePanel({
 function TimelineStep({ step }: { step: AgentRunStep }): JSX.Element {
   const Icon = iconForKind(step.kind);
   const statusClass = statusTone(step.status);
-  const summary = step.summary ? summarizeStepText(step.summary, step.kind) : "";
+  const detailText = buildStepDetailText(step);
+  const collapsedDetail = detailText ? summarizeStepText(detailText, step.kind) : "";
   return (
     <li
       data-testid="run-timeline-step"
@@ -201,22 +205,82 @@ function TimelineStep({ step }: { step: AgentRunStep }): JSX.Element {
             </span>
           )}
         </div>
-        {summary && (
-          <pre className="mt-0.5 max-h-20 overflow-hidden whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-minimax-muted">
-            {summary}
-          </pre>
+        {detailText && (
+          <ExpandablePre
+            text={detailText}
+            collapsedText={collapsedDetail}
+            className="mt-0.5 text-minimax-muted"
+            testId="run-timeline-step-detail"
+          />
         )}
       </div>
     </li>
   );
 }
 
+function ExpandablePre({
+  text,
+  collapsedText,
+  className = "",
+  testId,
+}: {
+  text: string;
+  collapsedText?: string;
+  className?: string;
+  testId?: string;
+}): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+  const trimmed = text.trim();
+  const preview = (collapsedText ?? summarizeLongText(trimmed, 320)).trim();
+  const canExpand = preview !== trimmed;
+  const visibleText = expanded || !canExpand ? trimmed : preview;
+  const scrollClass = expanded ? "max-h-72 overflow-auto" : "max-h-20 overflow-hidden";
+
+  return (
+    <div className={className}>
+      <pre
+        data-testid={testId}
+        className={`${scrollClass} whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed`}
+      >
+        {visibleText}
+      </pre>
+      {canExpand && (
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="mt-1 rounded border border-minimax-border px-1.5 py-0.5 text-[11px] text-minimax-muted transition-colors hover:border-minimax-accent/40 hover:text-minimax-fg"
+        >
+          {expanded ? "Show less" : "Show full"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function buildStepDetailText(step: AgentRunStep): string {
+  const summary = step.summary?.trim();
+  const error = step.error?.trim();
+  const parts = [summary];
+  if (error && error !== summary) {
+    parts.push(`Error: ${error}`);
+  }
+  return parts.filter(Boolean).join("\n\n");
+}
+
 function summarizeStepText(text: string, kind: AgentRunStepKind): string {
   const withoutCode = text.replace(/```[\s\S]*?```/g, "[code block]");
   const compact = withoutCode.replace(/\n{3,}/g, "\n\n").trim();
   const limit = kind === "final" ? 180 : 260;
-  if (compact.length <= limit) return compact;
-  return `${compact.slice(0, limit - 1).trimEnd()}…`;
+  return summarizeLongText(compact, limit);
+}
+
+function summarizeArgs(args: Record<string, unknown>): string {
+  return summarizeLongText(formatArgs(args), 360);
+}
+
+function summarizeLongText(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit - 1).trimEnd()}…`;
 }
 
 function RunStatusBadge({ status }: { status: string }): JSX.Element {
