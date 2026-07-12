@@ -13,7 +13,7 @@
  * the page and the same canned reply comes back from the in-process
  * mock backend. Both paths exercise the IPCClient + UI flow.
  */
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 test("chat: send a message and see the assistant reply", async ({ page }) => {
   await page.goto("/");
@@ -126,6 +126,169 @@ test("chat: long conversations scroll inside the middle message area", async ({ 
     .toBeLessThan(beforeWheelUp);
 });
 
+test("chat: streaming follows the bottom until the user scrolls up", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("message-list")).toBeVisible({ timeout: 10_000 });
+  await waitForChatStoreReady(page);
+
+  await page.evaluate(async () => {
+    // These browser-side imports resolve to the same Vite modules used by the app.
+    // @ts-expect-error Vite serves this source module directly in the browser.
+    const { useChat } = await import("/src/stores/chat.ts");
+    const seed = Array.from({ length: 36 }, (_, index) => ({
+      id: `seed-${index}`,
+      role: index % 2 === 0 ? "user" : "assistant",
+      text: `${index}: ${"long history content ".repeat(14)}`,
+      streaming: false,
+      status: "completed",
+      created_at: index + 1,
+    }));
+    useChat.setState({ messages: seed, status: "streaming", error: null });
+  });
+
+  await expect
+    .poll(() =>
+      page.getByTestId("message-list").evaluate((el) => el.scrollHeight - el.clientHeight),
+    )
+    .toBeGreaterThan(1_000);
+
+  await page.getByTestId("message-list").evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+    el.dispatchEvent(new Event("scroll"));
+  });
+
+  await page.evaluate(async () => {
+    // @ts-expect-error Vite serves this source module directly in the browser.
+    const { ipc } = await import("/src/ipc/index.ts");
+    ipc._emit("agent.message_chunk", {
+      session_id: "scroll-session",
+      message_id: "stream-follow",
+      delta: "streaming line\n".repeat(180),
+      done: false,
+    });
+  });
+
+  await expect
+    .poll(() =>
+      page.getByTestId("message-list").evaluate(
+        (el) => el.scrollHeight - el.scrollTop - el.clientHeight,
+      ),
+    )
+    .toBeLessThanOrEqual(50);
+
+  const userScrollTop = await page.getByTestId("message-list").evaluate((el) => {
+    el.scrollTop = Math.max(0, el.scrollTop - 900);
+    el.dispatchEvent(new Event("scroll"));
+    return el.scrollTop;
+  });
+
+  await page.evaluate(async () => {
+    // @ts-expect-error Vite serves this source module directly in the browser.
+    const { ipc } = await import("/src/ipc/index.ts");
+    ipc._emit("agent.message_chunk", {
+      session_id: "scroll-session",
+      message_id: "stream-follow",
+      delta: "more output that must not steal the user's position\n".repeat(40),
+      done: false,
+    });
+  });
+
+  await expect(page.getByTestId("scroll-to-bottom-btn")).toBeVisible();
+  await expect
+    .poll(() => page.getByTestId("message-list").evaluate((el) => el.scrollTop))
+    .toBeLessThanOrEqual(userScrollTop + 5);
+});
+
+test("chat: assistant text and tool activity stay interleaved", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("message-list")).toBeVisible({ timeout: 10_000 });
+  await waitForChatStoreReady(page);
+
+  await page.evaluate(async () => {
+    // @ts-expect-error Vite serves these source modules directly in the browser.
+    const { useChat } = await import("/src/stores/chat.ts");
+    // @ts-expect-error Vite serves these source modules directly in the browser.
+    const { ipc } = await import("/src/ipc/index.ts");
+    useChat.setState({
+      messages: [{
+        id: "timeline-user",
+        role: "user",
+        text: "Inspect the project",
+        streaming: false,
+        status: "completed",
+        created_at: 1,
+      }],
+      status: "streaming",
+      error: null,
+    });
+    ipc._emit("agent.message_chunk", {
+      session_id: "timeline-session",
+      message_id: "timeline-before-tool",
+      delta: "I will inspect the files first.",
+      done: false,
+    });
+    ipc._emit("agent.message_chunk", {
+      session_id: "timeline-session",
+      message_id: "timeline-before-tool",
+      delta: "",
+      done: true,
+    });
+    ipc._emit("agent.tool_call", {
+      session_id: "timeline-session",
+      tool_call_id: "timeline-read",
+      name: "read_file",
+      args: { path: "README.md" },
+      message_id: "timeline-before-tool",
+    });
+    ipc._emit("agent.tool_result", {
+      session_id: "timeline-session",
+      tool_call_id: "timeline-read",
+      name: "read_file",
+      result: "README contents",
+      message_id: "timeline-before-tool",
+    });
+    ipc._emit("agent.message_chunk", {
+      session_id: "timeline-session",
+      message_id: "timeline-after-tool",
+      delta: "The project structure is healthy.",
+      done: true,
+    });
+  });
+
+  await expect(page.getByText("The project structure is healthy.", { exact: true })).toBeVisible();
+  const timeline = await page.getByTestId("message-list").evaluate((el) =>
+    Array.from(el.querySelectorAll<HTMLElement>("[data-role]"), (node) => ({
+      role: node.dataset.role,
+      text: node.textContent?.replace(/\s+/g, " ").trim(),
+    })),
+  );
+
+  expect(timeline.map((entry) => entry.role)).toEqual([
+    "user",
+    "assistant",
+    "tool",
+    "tool",
+    "assistant",
+  ]);
+  expect(timeline[1]?.text).toContain("I will inspect the files first.");
+  expect(timeline[2]?.text).toContain("read_file");
+  expect(timeline[3]?.text).toContain("read_file");
+  expect(timeline[4]?.text).toContain("The project structure is healthy.");
+});
+
 function escapeForRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function waitForChatStoreReady(page: Page): Promise<void> {
+  await expect
+    .poll(
+      () => page.evaluate(async () => {
+        // @ts-expect-error Vite serves this source module directly in the browser.
+        const { useChat } = await import("/src/stores/chat.ts");
+        return useChat.getState().agentReady;
+      }),
+      { timeout: 10_000 },
+    )
+    .toBe(true);
 }
