@@ -1,3 +1,4 @@
+import { useMemo, useState } from "react";
 import { FileCode2 } from "lucide-react";
 import type { PatchFile, PatchLine } from "../types/ipc";
 
@@ -10,7 +11,11 @@ export function PermissionPatchPreview({
   files,
   testId = "permission-patch-preview",
 }: PermissionPatchPreviewProps): JSX.Element | null {
-  if (files.length === 0) return null;
+  const [expanded, setExpanded] = useState(false);
+  const fileSummaries = useMemo(
+    () => files.map((file) => ({ file, lines: collectLines(file) })),
+    [files],
+  );
   const stats = files.reduce(
     (acc, file) => ({
       files: acc.files + 1,
@@ -19,6 +24,10 @@ export function PermissionPatchPreview({
     }),
     { files: 0, additions: 0, deletions: 0 },
   );
+  if (files.length === 0) return null;
+  const needsExpand =
+    files.length > 3 || fileSummaries.some(({ lines }) => lines.length > 10);
+  const visibleFiles = expanded ? fileSummaries : fileSummaries.slice(0, 3);
 
   return (
     <div data-testid={testId} className="mt-2 border-t border-minimax-border/70 pt-2">
@@ -29,16 +38,38 @@ export function PermissionPatchPreview({
         <span className="text-status-error">-{stats.deletions}</span>
       </div>
       <div className="space-y-2">
-        {files.slice(0, 3).map((file) => (
-          <PermissionPatchFile key={`${file.old_path}:${file.new_path}`} file={file} />
+        {visibleFiles.map(({ file, lines }) => (
+          <PermissionPatchFile
+            key={`${file.old_path}:${file.new_path}`}
+            file={file}
+            lines={expanded ? lines : lines.slice(0, 10)}
+            expanded={expanded}
+          />
         ))}
       </div>
+      {needsExpand && (
+        <button
+          type="button"
+          data-testid={`${testId}-toggle`}
+          onClick={() => setExpanded((value) => !value)}
+          className="mt-2 rounded border border-minimax-border px-2 py-1 text-[11px] text-minimax-muted transition-colors hover:border-minimax-accent/40 hover:text-minimax-fg"
+        >
+          {expanded ? "Show less" : "Show full patch"}
+        </button>
+      )}
     </div>
   );
 }
 
-function PermissionPatchFile({ file }: { file: PatchFile }): JSX.Element {
-  const lines = collectLines(file);
+function PermissionPatchFile({
+  file,
+  lines,
+  expanded,
+}: {
+  file: PatchFile;
+  lines: PatchLine[];
+  expanded: boolean;
+}): JSX.Element {
   return (
     <div>
       <div className="flex items-center justify-between gap-2">
@@ -50,9 +81,14 @@ function PermissionPatchFile({ file }: { file: PatchFile }): JSX.Element {
         </span>
       </div>
       {lines.length > 0 && (
-        <pre className="mt-1 max-h-24 overflow-hidden rounded bg-minimax-bg/50 px-2 py-1 font-mono text-[11px] leading-relaxed">
+        <pre
+          className={
+            "mt-1 rounded bg-minimax-bg/50 px-2 py-1 font-mono text-[11px] leading-relaxed " +
+            (expanded ? "max-h-72 overflow-auto" : "max-h-24 overflow-hidden")
+          }
+        >
           {lines.map((line, idx) => (
-            <PermissionPatchLine key={idx} line={line} />
+            <PermissionPatchLine key={idx} line={line} expanded={expanded} />
           ))}
         </pre>
       )}
@@ -60,7 +96,13 @@ function PermissionPatchFile({ file }: { file: PatchFile }): JSX.Element {
   );
 }
 
-function PermissionPatchLine({ line }: { line: PatchLine }): JSX.Element {
+function PermissionPatchLine({
+  line,
+  expanded,
+}: {
+  line: PatchLine;
+  expanded: boolean;
+}): JSX.Element {
   const prefix = line.kind === "add" ? "+" : line.kind === "delete" ? "-" : " ";
   const tone =
     line.kind === "add"
@@ -69,7 +111,7 @@ function PermissionPatchLine({ line }: { line: PatchLine }): JSX.Element {
         ? "text-status-error"
         : "text-minimax-muted";
   return (
-    <span className={"block truncate " + tone}>
+    <span className={"block " + (expanded ? "whitespace-pre-wrap break-words " : "truncate ") + tone}>
       {prefix}{line.content}
     </span>
   );
@@ -82,7 +124,6 @@ function collectLines(file: PatchFile): PatchLine[] {
       if (line.kind === "add" || line.kind === "delete" || line.kind === "meta") {
         lines.push(line);
       }
-      if (lines.length >= 10) return lines;
     }
   }
   return lines;
