@@ -324,7 +324,13 @@ function fileKey(file: PatchFile): string {
   return `${file.old_path}:${file.new_path}`;
 }
 
-function PatchLineRow({ line }: { line: PatchLine }): JSX.Element {
+function PatchLineContent({
+  line,
+  expanded,
+}: {
+  line: PatchLine;
+  expanded: boolean;
+}): JSX.Element {
   const prefix = line.kind === "add" ? "+" : line.kind === "delete" ? "-" : " ";
   const tone =
     line.kind === "add"
@@ -333,7 +339,7 @@ function PatchLineRow({ line }: { line: PatchLine }): JSX.Element {
         ? "text-status-error"
         : "text-minimax-muted";
   return (
-    <span className={"block truncate " + tone}>
+    <span className={"block " + (expanded ? "whitespace-pre-wrap break-words " : "truncate ") + tone}>
       {prefix}{line.content}
     </span>
   );
@@ -361,9 +367,14 @@ function PatchHunkCard({
   onReject: (hunk: PatchHunk, index: number) => void;
 }): JSX.Element {
   const previewLines = useMemo(() => collectHunkPreviewLines(hunk), [hunk]);
+  const [expanded, setExpanded] = useState(false);
   const busy = decision === "applying" || decision === "rejecting";
   const approveDisabled = busy || scope !== "working";
   const rejectDisabled = busy || scope === "branch";
+  const visibleLines = expanded ? hunk.lines : previewLines;
+  const canExpand =
+    hunk.lines.length > previewLines.length ||
+    hunk.lines.some((line) => line.kind === "context" || line.kind === "meta");
   return (
     <div
       data-testid={`patch-hunk-${hunkKeyValue}`}
@@ -421,11 +432,26 @@ function PatchHunkCard({
           Operation failed
         </div>
       )}
-      <pre className="max-h-28 overflow-hidden px-2 py-1 font-mono text-[11px] leading-relaxed">
-        {previewLines.map((line, idx) => (
-          <PatchLineRow key={idx} line={line} />
+      <pre
+        className={
+          "px-2 py-1 font-mono text-[11px] leading-relaxed " +
+          (expanded ? "max-h-96 overflow-auto" : "max-h-28 overflow-hidden")
+        }
+      >
+        {visibleLines.map((line, idx) => (
+          <PatchLineContent key={idx} line={line} expanded={expanded} />
         ))}
       </pre>
+      {canExpand && (
+        <button
+          type="button"
+          data-testid={`patch-hunk-${hunkKeyValue}-toggle`}
+          onClick={() => setExpanded((value) => !value)}
+          className="border-t border-minimax-border/60 px-2 py-1 text-left text-[11px] text-minimax-muted transition-colors hover:bg-minimax-border/40 hover:text-minimax-fg"
+        >
+          {expanded ? "Show less" : "Show full hunk"}
+        </button>
+      )}
     </div>
   );
 }

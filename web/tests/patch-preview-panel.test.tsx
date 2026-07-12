@@ -26,9 +26,17 @@ const PREVIEW: PatchPreviewResult = {
           new_lines: 3,
           header: "",
           lines: [
+            { kind: "context", old_line: 0, new_line: 0, content: "function answer() {" },
             { kind: "delete", old_line: 1, new_line: null, content: "old line" },
             { kind: "add", old_line: null, new_line: 1, content: "new line" },
             { kind: "add", old_line: null, new_line: 2, content: "another line" },
+            { kind: "add", old_line: null, new_line: 3, content: "line 3" },
+            { kind: "add", old_line: null, new_line: 4, content: "line 4" },
+            { kind: "add", old_line: null, new_line: 5, content: "line 5" },
+            { kind: "add", old_line: null, new_line: 6, content: "line 6" },
+            { kind: "add", old_line: null, new_line: 7, content: "line 7" },
+            { kind: "add", old_line: null, new_line: 8, content: "line 8" },
+            { kind: "add", old_line: null, new_line: 9, content: "UNIQUE_FULL_HUNK_TAIL" },
           ],
         },
       ],
@@ -72,6 +80,22 @@ describe("PatchPreviewPanel", () => {
     expect(screen.getByTestId("patch-preview-panel-stats")).toHaveTextContent("-1");
     expect(screen.getByText("+new line")).toBeInTheDocument();
     expect(screen.getByText("-old line")).toBeInTheDocument();
+  });
+
+  it("keeps long hunks compact but lets users inspect the complete hunk", async () => {
+    render(<PatchPreviewPanel />);
+    await waitFor(() => {
+      expect(screen.getByTestId("patch-hunk-app.ts-0-1-1")).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText(/function answer/)).not.toBeInTheDocument();
+    expect(screen.queryByText("+UNIQUE_FULL_HUNK_TAIL")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show full hunk" }));
+
+    expect(screen.getByText(/function answer/)).toBeInTheDocument();
+    expect(screen.getByText("+UNIQUE_FULL_HUNK_TAIL")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument();
   });
 
   it("jumps from the file overview to the selected diff card", async () => {
