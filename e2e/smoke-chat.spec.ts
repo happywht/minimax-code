@@ -102,6 +102,28 @@ test("chat: long conversations scroll inside the middle message area", async ({ 
   expect(metrics.headerTopAfter).toBe(metrics.headerTopBefore);
   expect(metrics.composerTopAfter).toBe(metrics.composerTopBefore);
   expect(metrics.pageScrollAfter).toBe(metrics.pageScrollBefore);
+
+  const box = await page.getByTestId("message-list").boundingBox();
+  expect(box).not.toBeNull();
+  if (!box) return;
+
+  const wheelMetrics = await page.evaluate(() => {
+    const scroller = document.querySelector<HTMLElement>('[data-testid="message-list"]');
+    if (!scroller) throw new Error("message list missing");
+    const maxScrollTop = scroller.scrollHeight - scroller.clientHeight;
+    scroller.scrollTop = Math.floor(maxScrollTop / 2);
+    scroller.dispatchEvent(new Event("scroll"));
+    return { scrollTop: scroller.scrollTop, maxScrollTop };
+  });
+  expect(wheelMetrics.maxScrollTop).toBeGreaterThan(200);
+  expect(wheelMetrics.scrollTop).toBeGreaterThan(0);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+
+  const beforeWheelUp = await page.getByTestId("message-list").evaluate((el) => el.scrollTop);
+  await page.mouse.wheel(0, -700);
+  await expect
+    .poll(() => page.getByTestId("message-list").evaluate((el) => el.scrollTop))
+    .toBeLessThan(beforeWheelUp);
 });
 
 function escapeForRegex(s: string): string {

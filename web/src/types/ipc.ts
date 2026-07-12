@@ -453,6 +453,7 @@ export interface SendMessageResult {
 
 export interface ListSessionsResult {
   sessions: Session[];
+  total?: number;
 }
 
 export interface CreateSessionResult {

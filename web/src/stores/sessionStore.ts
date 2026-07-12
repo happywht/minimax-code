@@ -55,6 +55,7 @@ export interface SessionState {
   unarchive: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
   rename: (id: string, title: string) => Promise<void>;
+  mergeSessions: (sessions: SessionMeta[]) => void;
   setCurrent: (id: string | null, loadMessages?: boolean) => void;
   setFilter: (filter: SessionFilter) => void;
 }
@@ -229,6 +230,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const message = err instanceof Error ? err.message : String(err);
       toast.error("Rename failed", message);
     }
+  },
+
+  mergeSessions: (nextSessions) => {
+    if (nextSessions.length === 0) return;
+    set((s) => {
+      const byId = new Map(s.sessions.map((session) => [session.id, session]));
+      for (const session of nextSessions) {
+        byId.set(session.id, { ...byId.get(session.id), ...session });
+      }
+      return {
+        sessions: Array.from(byId.values()).sort((a, b) => b.updated_at - a.updated_at),
+      };
+    });
   },
 
   setCurrent: (id: string | null, loadMessages = true) => {

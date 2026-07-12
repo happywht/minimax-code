@@ -757,7 +757,7 @@ export interface TypedIPC {
   ping(): Promise<boolean>;
 
   // session
-  listSessions(opts?: { archived?: boolean; limit?: number; offset?: number }): Promise<ListSessionsResult>;
+  listSessions(opts?: { archived?: boolean; limit?: number; offset?: number; search?: string }): Promise<ListSessionsResult>;
   createSession(opts?: {
     title?: string;
     reuse_empty_session_id?: string;
@@ -1559,10 +1559,20 @@ function mockHandle(
     }
 
     case "session.list": {
+      const p = params as { archived?: boolean; limit?: number; offset?: number; search?: string } | undefined;
+      const search = p?.search?.trim().toLowerCase() ?? "";
+      const filtered = Array.from(mockSessions.values())
+        .filter((s) => (p?.archived === undefined ? true : s.archived === Boolean(p.archived)))
+        .filter((s) => {
+          if (!search) return true;
+          return s.title.toLowerCase().includes(search) || s.id.toLowerCase().includes(search);
+        })
+        .sort((a, b) => b.updated_at - a.updated_at);
+      const offset = p?.offset ?? 0;
+      const limit = p?.limit ?? filtered.length;
       return {
-        sessions: Array.from(mockSessions.values()).sort(
-          (a, b) => b.updated_at - a.updated_at,
-        ),
+        sessions: filtered.slice(offset, offset + limit),
+        total: filtered.length,
       };
     }
 

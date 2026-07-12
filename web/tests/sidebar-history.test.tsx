@@ -3,10 +3,11 @@
  * shows the status dot, a truncated title, a relative timestamp, and
  * that the list is scrollable (max-height + overflow-y-auto).
  */
-import { describe, expect, it, beforeEach, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { Sidebar } from "../src/components/Sidebar";
 import { useSessionStore } from "../src/stores";
+import { typedIPC } from "../src/ipc";
 
 vi.mock("../src/components/ErrorBoundary", () => ({
   toast: { error: vi.fn(), info: vi.fn(), success: vi.fn() },
@@ -19,7 +20,7 @@ vi.mock("../src/ipc", async () => {
     ...actual,
     typedIPC: {
       ...actual.typedIPC,
-      listSessions: vi.fn(async () => ({ sessions: [] })),
+      listSessions: vi.fn(async () => ({ sessions: [], total: 0 })),
     },
   };
 });
@@ -32,12 +33,18 @@ describe("Sidebar history list", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(NOW));
+    vi.clearAllMocks();
+    vi.mocked(typedIPC.listSessions).mockResolvedValue({ sessions: [], total: 0 });
     useSessionStore.setState({
       sessions: [],
       currentSessionId: null,
       loading: false,
       filter: "all",
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("renders one row per session with a status dot and a title", () => {
@@ -172,7 +179,7 @@ describe("Sidebar history list", () => {
     // maxHeight removed — flex layout handles sizing naturally
   });
 
-  it("filters history locally and exposes an empty search state", () => {
+  it("filters loaded history and exposes an empty search state", async () => {
     useSessionStore.setState({
       sessions: [
         {
@@ -205,10 +212,60 @@ describe("Sidebar history list", () => {
     fireEvent.change(screen.getByTestId("sidebar-session-search"), {
       target: { value: "missing" },
     });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+      await Promise.resolve();
+    });
     expect(screen.getByTestId("sidebar-session-empty")).toHaveTextContent("No matching sessions.");
 
     fireEvent.click(screen.getByTestId("sidebar-session-search-clear"));
     expect(screen.getByTestId("sidebar-session-search")).toHaveValue("");
     expect(screen.getByTestId("sidebar-session-row-ses_alpha")).toBeInTheDocument();
+  });
+
+  it("searches the backend so older unloaded sessions can be found", async () => {
+    vi.mocked(typedIPC.listSessions).mockResolvedValueOnce({
+      sessions: [
+        {
+          id: "ses_remote",
+          title: "Remote architecture notes",
+          archived: false,
+          created_at: NOW - DAY,
+          updated_at: NOW - HOUR,
+          model_id: null,
+        },
+      ],
+      total: 1,
+    });
+    useSessionStore.setState({
+      sessions: [
+        {
+          id: "ses_local",
+          title: "Local visible task",
+          archived: false,
+          created_at: NOW,
+          updated_at: NOW,
+          model_id: null,
+        },
+      ],
+    });
+    render(<Sidebar />);
+
+    fireEvent.change(screen.getByTestId("sidebar-session-search"), {
+      target: { value: "architecture" },
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+      await Promise.resolve();
+    });
+
+    expect(typedIPC.listSessions).toHaveBeenCalledWith({
+      archived: false,
+      search: "architecture",
+      limit: 50,
+    });
+    expect(screen.getByTestId("sidebar-session-row-ses_remote")).toBeInTheDocument();
+    expect(screen.queryByTestId("sidebar-session-row-ses_local")).toBeNull();
+    expect(useSessionStore.getState().sessions.some((s) => s.id === "ses_remote")).toBe(true);
   });
 });

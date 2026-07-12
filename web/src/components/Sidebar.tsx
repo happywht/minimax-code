@@ -30,7 +30,8 @@ import {
 import { NavItem } from "./NavItem";
 import { UserBadge } from "./UserBadge";
 import { SkeletonLine } from "./Skeleton";
-import { useSessionStore, type SessionFilter } from "../stores";
+import { typedIPC } from "../ipc";
+import { useSessionStore, type SessionFilter, type SessionMeta } from "../stores";
 import { formatRelative } from "../lib/time";
 import { APP_VERSION } from "../version";
 
@@ -97,7 +98,10 @@ export function Sidebar({
   const creatingSession = useSessionStore((s) => s.creating);
   const createWorktree = useSessionStore((s) => s.createWorktree);
   const refresh = useSessionStore((s) => s.refresh);
+  const mergeSessions = useSessionStore((s) => s.mergeSessions);
   const [historyQuery, setHistoryQuery] = useState("");
+  const [remoteSearchSessions, setRemoteSearchSessions] = useState<SessionMeta[] | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
 
   useEffect(() => {
     if (sessions.length === 0) {
@@ -105,9 +109,43 @@ export function Sidebar({
     }
   }, [sessions.length, refresh]);
 
+  useEffect(() => {
+    const q = historyQuery.trim();
+    if (!q) {
+      setRemoteSearchSessions(null);
+      setSearchLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setSearchLoading(true);
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const result = await typedIPC.listSessions({
+            archived: filter === "archived",
+            search: q,
+            limit: 50,
+          });
+          if (cancelled) return;
+          setRemoteSearchSessions(result.sessions);
+          mergeSessions(result.sessions);
+        } catch {
+          if (!cancelled) setRemoteSearchSessions([]);
+        } finally {
+          if (!cancelled) setSearchLoading(false);
+        }
+      })();
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [filter, historyQuery, mergeSessions]);
+
   const visibleSessions = useMemo(() => {
     const q = historyQuery.trim().toLowerCase();
-    return sessions
+    const source = q && remoteSearchSessions ? remoteSearchSessions : sessions;
+    return source
       .filter((s) => (filter === "archived" ? s.archived : !s.archived))
       .filter((s) => {
         if (!q) return true;
@@ -115,7 +153,7 @@ export function Sidebar({
       })
       .sort((a, b) => b.updated_at - a.updated_at)
       .slice(0, 30);
-  }, [filter, historyQuery, sessions]);
+  }, [filter, historyQuery, remoteSearchSessions, sessions]);
 
   return (
     <aside
@@ -270,7 +308,7 @@ export function Sidebar({
           data-testid="sidebar-session-list"
           className="mt-1 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2"
         >
-          {loading && visibleSessions.length === 0 && (
+          {(loading || searchLoading) && visibleSessions.length === 0 && (
             <>
               {Array.from({ length: 5 }, (_, i) => (
                 <li key={`skel-${i}`} className="flex items-center gap-2 px-2 py-1.5">
@@ -280,7 +318,7 @@ export function Sidebar({
               ))}
             </>
           )}
-          {!loading && visibleSessions.length === 0 && (
+          {!loading && !searchLoading && visibleSessions.length === 0 && (
             <li
               data-testid="sidebar-session-empty"
               className="px-2 py-2 text-[11px] italic text-minimax-muted"
