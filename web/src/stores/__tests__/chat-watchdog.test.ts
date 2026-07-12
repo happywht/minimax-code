@@ -28,6 +28,7 @@ function mockIpcOn(event: string, handler: (env: any) => void): () => void {
 
 // ── Mock IPC module ───────────────────────────────────────────────
 const toastErrorSpy = vi.fn();
+const toastInfoSpy = vi.fn();
 
 vi.mock("../../ipc", () => ({
   ipc: {
@@ -52,6 +53,7 @@ vi.mock("../../ipc", () => ({
 vi.mock("../../components/ErrorBoundary", () => ({
   toast: {
     error: (...args: unknown[]) => toastErrorSpy(...args),
+    info: (...args: unknown[]) => toastInfoSpy(...args),
   },
 }));
 
@@ -75,6 +77,7 @@ describe("Stall watchdog", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     toastErrorSpy.mockClear();
+    toastInfoSpy.mockClear();
     vi.mocked(typedIPC.sendMessage).mockReset();
     vi.mocked(typedIPC.cancelAgent).mockResolvedValue({ ok: true });
     // Reset store state but keep handlers registered
@@ -108,17 +111,17 @@ describe("Stall watchdog", () => {
 
   // ── Tests ────────────────────────────────────────────────────────
 
-  it("fires timeout error after 60 s of no activity", () => {
+  it("warns after 60 s of inactivity without terminating the run", () => {
     startStreaming();
     expect(useChat.getState().status).toBe("streaming");
 
     // Advance past the 60s deadline
     vi.advanceTimersByTime(60_000);
 
-    expect(useChat.getState().status).toBe("error");
-    expect(useChat.getState().error).toContain("timed out");
-    expect(toastErrorSpy).toHaveBeenCalledWith(
-      "Stream timed out",
+    expect(useChat.getState().status).toBe("streaming");
+    expect(useChat.getState().error).toBeNull();
+    expect(toastInfoSpy).toHaveBeenCalledWith(
+      "Agent is still working",
       expect.stringContaining("60 seconds"),
     );
   });
@@ -158,7 +161,7 @@ describe("Stall watchdog", () => {
     expect(toastErrorSpy).not.toHaveBeenCalled();
   });
 
-  it("still times out if an active tool goes silent beyond the extended window", () => {
+  it("warns but keeps waiting if an active tool is silent beyond the extended window", () => {
     startStreaming();
 
     emit(StreamEvent.ToolCall, {
@@ -169,12 +172,31 @@ describe("Stall watchdog", () => {
 
     vi.advanceTimersByTime(180_000);
 
-    expect(useChat.getState().status).toBe("error");
-    expect(useChat.getState().error).toContain("180 s");
-    expect(toastErrorSpy).toHaveBeenCalledWith(
-      "Stream timed out",
+    expect(useChat.getState().status).toBe("streaming");
+    expect(useChat.getState().error).toBeNull();
+    expect(toastInfoSpy).toHaveBeenCalledWith(
+      "Agent is still working",
       expect.stringContaining("tool progress"),
     );
+  });
+
+  it("marks the streaming assistant failed when the backend reports an error", () => {
+    startStreaming();
+
+    emit(StreamEvent.AgentStatus, {
+      status: "error",
+      detail: "LLM stream timed out after 120s without data",
+    });
+
+    const state = useChat.getState();
+    expect(state.status).toBe("error");
+    expect(state.error).toContain("120s");
+    expect(state.messages.at(-1)).toMatchObject({
+      role: "assistant",
+      streaming: false,
+      status: "failed",
+      error: expect.stringContaining("120s"),
+    });
   });
 
   it("does NOT fire timeout when tool_result arrives within 60 s", () => {

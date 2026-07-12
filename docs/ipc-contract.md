@@ -140,7 +140,7 @@ that dispatches by `method` / `event` name.
 | -32603 | InternalError     | handler raised an unhandled exception                 |
 | -32001 | ToolExecutionError| a tool call inside the agent loop failed              |
 | -32002 | PermissionDenied  | user denied the tool call                             |
-| -32003 | LLMError          | upstream MiniMax API error                            |
+| -32003 | LLMError          | upstream API failure or stalled LLM stream            |
 | -32004 | StorageError      | SQLite / DAO error                                    |
 | -32005 | NotImplemented    | method is reserved for a later task                   |
 
@@ -192,7 +192,7 @@ on the next `readline() == ""`.
 
 | Method                     | Direction | Notes                                              |
 |----------------------------|-----------|----------------------------------------------------|
-| `agent.send_message`       | req/res   | Streams `agent.message_chunk` events.              |
+| `agent.send_message`       | req/res   | Streams events; the HTTP client keeps no fixed run deadline. |
 | `agent.cancel`             | notify    | Cancel the current agent loop for a session.       |
 | `run.list`                 | req/res   | List persisted agent runs for a session.           |
 | `run.steps`                | req/res   | Load one run with its ordered timeline steps.      |

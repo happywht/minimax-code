@@ -42,7 +42,7 @@ class OpenAITransport(LLMTransport):
         *,
         api_key: str,
         base_url: str,
-        timeout: float = 60.0,
+        timeout: float = 180.0,
         max_retries: int = 3,
         client: openai.AsyncOpenAI | None = None,
     ) -> None:

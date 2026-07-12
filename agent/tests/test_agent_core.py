@@ -541,12 +541,11 @@ async def test_loop_truncates_at_max_iterations() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_stall_persists_visible_timeout_notice() -> None:
-    """When the LLM stream stalls, the visible timeout notice should
-    be part of the persisted assistant message, not an ephemeral
-    websocket-only tail."""
+async def test_stream_stall_is_retryable_failure_not_completed_message() -> None:
+    """A stalled LLM stream must fail the run instead of looking complete."""
     chunks: list[tuple[str, bool, dict[str, Any] | None]] = []
     persisted: list[dict[str, Any]] = []
+    statuses: list[tuple[str, dict[str, Any]]] = []
 
     async def persist(_session_id: str, message: dict[str, Any]) -> None:
         persisted.append(message)
@@ -558,19 +557,57 @@ async def test_stream_stall_persists_visible_timeout_notice() -> None:
         persist_message=persist,
     )
     core.on_chunk = lambda d, done, metadata=None: _maybe_coro(chunks.append((d, done, metadata)))
+    core.on_status = lambda status, detail: _maybe_coro(statuses.append((status, detail)))
 
-    result = await core.run(session_id="s1", user_message="please continue")
+    with pytest.raises(LLMError, match="can be retried"):
+        await core.run(session_id="s1", user_message="please continue")
 
-    assert result.final_text.startswith("partial answer")
-    assert "Stream timed out" in result.final_text
-    assert chunks[-2][0].startswith("\n\n⚠️ _Stream timed out")
-    assert chunks[-2][1] is False
-    assert chunks[-1][0] == ""
-    assert chunks[-1][1] is True
-    assert chunks[-1][2] is not None
-    assert chunks[-1][2]["stream_timeout"] is True
-    assert persisted[-1]["role"] == "assistant"
-    assert persisted[-1]["content"] == result.final_text
+    assert chunks[0][0] == "partial answer"
+    assert chunks[-1][0].startswith("\n\nLLM stream stopped responding")
+    assert chunks[-1][1] is False
+    assert not any(done for _, done, _ in chunks)
+    assert statuses[-1][0] == "error"
+    assert "timed out" in statuses[-1][1]["detail"]
+    assert [message["role"] for message in persisted] == ["user"]
+
+
+@pytest.mark.asyncio
+async def test_tool_result_is_emitted_before_followup_llm_stall_fails_run() -> None:
+    """A post-tool LLM stall must not hide or roll back the tool result."""
+
+    class ToolThenStallLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.thinking_count = 0
+
+        async def stream_chat(self, *args: Any, **kwargs: Any) -> AsyncIterator[StreamChunk]:
+            self.calls += 1
+            if self.calls == 1:
+                for chunk in _tool_response(
+                    _tool_call("echo", {"text": "finished"}, call_id="call-before-stall")
+                ):
+                    yield chunk
+                return
+            await asyncio.sleep(1)
+            if False:  # pragma: no cover - keeps this an async generator
+                yield StreamChunk()
+
+    tool = CountingTool()
+    tool_results: list[tuple[dict[str, Any], ToolResult]] = []
+    core = AgentCore(
+        llm=ToolThenStallLLM(),  # type: ignore[arg-type]
+        registry=_fresh_registry(tool),
+        config=AgentConfig(stall_timeout=0.01),
+    )
+    core.on_tool_result = lambda call, result: _maybe_coro(tool_results.append((call, result)))
+
+    with pytest.raises(LLMError, match="can be retried"):
+        await core.run(session_id="s1", user_message="use the tool")
+
+    assert tool.calls == [{"text": "finished"}]
+    assert len(tool_results) == 1
+    assert tool_results[0][0]["id"] == "call-before-stall"
+    assert tool_results[0][1].success is True
 
 
 @pytest.mark.asyncio

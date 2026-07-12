@@ -44,6 +44,7 @@ from typing import Any
 from .llm import LLMError, LLMResponse, MiniMaxClient, StreamChunk
 from .prompts import build_system_prompt
 from .tools import ToolRegistry, ToolResult, get_default_registry
+from .types import LLMStreamTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +144,7 @@ class AgentConfig:
     # Per-chunk idle timeout (seconds). If no SSE chunk arrives from
     # the LLM within this window the turn is aborted with a
     # TimeoutError.  Set to 0 or None to disable.
-    stall_timeout: float = 30.0
+    stall_timeout: float = 120.0
     # Compaction: when the conversation history exceeds this fraction
     # of the context window, older turns are summarised.  None disables
     # compaction (default).  Typical value: 0.8.
@@ -326,7 +327,10 @@ class AgentCore:
             try:
                 response = await self._stream_turn(messages)
             except LLMError as exc:
-                await self._emit_status("error", {"iteration": iterations, "error": str(exc)})
+                await self._emit_status(
+                    "error",
+                    {"iteration": iterations, "detail": str(exc)},
+                )
                 raise
 
             _accumulate_usage(usage_total, response.usage)
@@ -425,8 +429,6 @@ class AgentCore:
             tool_choice="auto" if tools_payload else None,
             temperature=self.config.temperature,
         ).__aiter__()
-        stream_timed_out = False
-        timeout_notice = ""
         while True:
             try:
                 if stall and stall > 0:
@@ -435,29 +437,22 @@ class AgentCore:
                     chunk = await aiter.__anext__()
             except StopAsyncIteration:
                 break
-            except asyncio.TimeoutError:
+            except TimeoutError as exc:
                 logger.warning(
                     "stream stall: no chunk for %.0fs, aborting turn", stall,
                 )
-                stream_timed_out = True
                 timeout_notice = (
-                    "\n\n⚠️ _Stream timed out — no response from LLM for "
-                    f"{stall:.0f}s._"
+                    "\n\nLLM stream stopped responding. This run was stopped; "
+                    "retry to continue."
                 )
                 await self._emit_chunk(timeout_notice, False, None)
-                break
+                raise LLMStreamTimeout(stall) from exc
             if self.cancelled:
                 break
             chunks.append(chunk)
             if chunk.delta:
                 await self._emit_chunk(chunk.delta, False, None)
         response = _assemble_chunks(chunks, model=self.config.model)
-        if stream_timed_out:
-            response.message = {
-                "role": "assistant",
-                "content": f"{response.message.get('content') or ''}{timeout_notice}",
-            }
-            response.finish_reason = "timeout"
         # Build the per-turn metadata snapshot. Reading
         # ``self.llm.thinking_count`` here is the only way the
         # streaming path can pick up the value — the per-call
@@ -471,8 +466,6 @@ class AgentCore:
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
         }
-        if stream_timed_out:
-            response.metadata["stream_timeout"] = True
         return response
 
     async def _dispatch_tool(self, call: dict[str, Any]) -> ToolResult:

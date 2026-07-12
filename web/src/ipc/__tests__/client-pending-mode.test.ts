@@ -382,4 +382,43 @@ describe("IPCClient pending mode", () => {
     expect(healthCalls).toBe(1); // single probe
     expect(rpcCalls).toBe(3); // all 3 requests after mode resolved
   });
+
+  it("does not abort agent.send_message after a fixed client deadline", async () => {
+    let resolveRpc: ((response: Response) => void) | undefined;
+    let rpcSignal: AbortSignal | undefined;
+    let requestId: string | number | null = null;
+
+    installFetch((url, init) => {
+      if (url.endsWith("/health")) return okJson({ ok: true });
+      rpcSignal = init.signal as AbortSignal;
+      requestId = JSON.parse(init.body as string).id;
+      return new Promise<Response>((resolve) => {
+        resolveRpc = resolve;
+      });
+    });
+
+    const client = new IPCClient();
+    await client.start();
+    vi.useFakeTimers();
+    try {
+      const request = client.request<{ text: string }>("agent.send_message", {
+        session_id: "session-long",
+        content: "keep working",
+      });
+      await Promise.resolve();
+
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(rpcSignal?.aborted).toBe(false);
+
+      resolveRpc?.(okJson({
+        jsonrpc: "2.0",
+        id: requestId,
+        result: { text: "done" },
+      } satisfies JsonRpcResponse));
+      await expect(request).resolves.toEqual({ text: "done" });
+    } finally {
+      vi.useRealTimers();
+      client.stop();
+    }
+  });
 });

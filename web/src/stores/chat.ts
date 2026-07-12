@@ -63,7 +63,7 @@ if (import.meta.hot) {
 /** Monotonic counter to prevent stale loadMessages from overwriting state. */
 let _loadSeq = 0;
 
-/** Frontend stall watchdog — resets on every chunk, fires after 60 s idle. */
+/** Frontend inactivity notice. Only the backend may terminate a run. */
 const STALL_TIMEOUT_MS = 60_000;
 /**
  * Backend tool dispatch defaults to 120 s. While a tool is actively
@@ -78,6 +78,7 @@ const activeToolNames = new Map<string, string>();
 function resetStallWatchdog(timeoutMs = STALL_TIMEOUT_MS) {
   if (_stallTimer) clearTimeout(_stallTimer);
   _stallTimer = setTimeout(() => {
+    _stallTimer = null;
     const s = useChat.getState();
     if (s.status === "streaming" || s.status === "sending") {
       const seconds = Math.round(timeoutMs / 1000);
@@ -85,13 +86,9 @@ function resetStallWatchdog(timeoutMs = STALL_TIMEOUT_MS) {
         activeToolCalls.size > 0
           ? `No tool progress received for ${seconds} seconds. The current tool may have stalled.`
           : `No data received for ${seconds} seconds. The connection may have stalled.`;
-      useChat.setState({
-        status: "error",
-        error: `Stream timed out — no response for ${seconds} s`,
-      });
-      toast.error("Stream timed out", detail);
+      toast.info("Agent is still working", detail);
+      resetStallWatchdogForCurrentActivity();
     }
-    _stallTimer = null;
   }, timeoutMs);
 }
 
@@ -281,8 +278,24 @@ export const useChat = create<ChatState>((set, get) => ({
         const d = env.data as { status?: string; detail?: string } | undefined;
         if (!d) return;
         if (d.status === "error") {
-          set({ status: "error", error: d.detail ?? "agent error" });
-          toast.error("Agent error", d.detail);
+          const detail = d.detail ?? "Agent run failed";
+          set((s) => ({
+            status: "error",
+            error: detail,
+            messages: s.messages.map((message) =>
+              message.role === "assistant" && message.streaming
+                ? {
+                    ...message,
+                    text: message.text || detail,
+                    streaming: false,
+                    status: "failed",
+                    error: detail,
+                  }
+                : message,
+            ),
+          }));
+          pendingAssistantId = null;
+          toast.error("Agent error", detail);
           clearStallWatchdog();
         } else if (d.status === "idle" || d.status === "done" || d.status === "max_iterations") {
           set({ status: "idle" });
@@ -446,25 +459,22 @@ export const useChat = create<ChatState>((set, get) => ({
           : err instanceof Error
             ? err.message
             : String(err);
-      const isTimeout = message.includes("timed out");
+      const isTransportTimeout = message.includes("request timed out");
 
       set((s) => {
-        // If we already received streaming chunks via WebSocket, the
-        // backend is still working — the HTTP POST just timed out.
-        // Finalise the partial response instead of showing an error.
-        const hasPartial = s.messages.some(
-          (m) => m.role === "assistant" && m.streaming,
-        );
-        if (hasPartial && isTimeout) {
-          pendingAssistantId = null;
-          activeToolCalls.clear();
-          activeToolNames.clear();
-          return {
-            messages: s.messages.map((m) =>
-              m.streaming ? { ...m, streaming: false, status: "completed" } : m,
-            ),
-            status: "idle",
-          };
+        // A client/proxy timeout does not prove the backend run ended.
+        // Keep the stream active and let WebSocket status/done events
+        // provide the authoritative terminal state.
+        if (isTransportTimeout) {
+          return s;
+        }
+        // The WebSocket error event may have already marked the active
+        // assistant message as failed before the HTTP error arrives.
+        if (
+          s.status === "error" &&
+          s.messages.some((m) => m.role === "assistant" && m.status === "failed")
+        ) {
+          return s;
         }
         const pending = pendingAssistantId;
         if (pending && s.messages.some((m) => m.id === pending)) {
@@ -509,7 +519,7 @@ export const useChat = create<ChatState>((set, get) => ({
           ], MAX_MESSAGES),
         };
       });
-      if (isTimeout) {
+      if (isTransportTimeout) {
         toast.info("Agent is still working", "The request is taking longer than expected. Stream updates continue via WebSocket.");
       } else {
         toast.error("Send failed", message);

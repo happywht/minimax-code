@@ -183,6 +183,7 @@ Tool results are serialised into the conversation as OpenAI-style
 | Failure mode | Where caught | What happens |
 | --- | --- | --- |
 | Network error / timeout in HTTP call | `MiniMaxClient._post_streaming` | Retries with exponential backoff (1s→2s→4s, cap 16s, max 3 attempts). Final failure raises `LLMError`. |
+| Open LLM stream produces no event for `stall_timeout` | `AgentCore._stream_turn` | Raises `LLMStreamTimeout`; the run is recorded as failed and may be retried. It is never reported as completed. |
 | 4xx (except 429) | same | No retry. Raises `LLMError("HTTP NNN: …")` immediately. |
 | 5xx or 429 | same | Retried same as network error. |
 | LLM returns malformed `tool_calls` JSON | `AgentCore._dispatch_tool` | Returns `ToolResult.fail(...)`; the error text is fed back as the tool message so the LLM can self-correct. |
@@ -326,6 +327,11 @@ which the calling tool turns into a `ToolResult.fail(...)`.
 | `system_prompt_extra` | `None` | Appended to the system prompt |
 | `skill_instructions` | `None` | Skill runtime output (Phase 1.5) |
 | `max_tool_output_bytes` | `50_000` | Truncate tool output above this |
+| `stall_timeout` | `120.0` | Maximum silence between LLM stream events; `0` disables the watchdog |
+
+The underlying provider request timeout defaults to 180 seconds. The chat
+frontend has no independent terminal timeout for `agent.send_message`; only
+backend `done`, `error`, or cancellation events may end the visible run.
 
 `MiniMaxClient` reads:
 

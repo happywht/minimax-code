@@ -20,12 +20,11 @@ import os
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from typing import Any
 
+from .. import secrets
 from .transports import LLMTransport
 from .transports.anthropic_transport import AnthropicTransport
 from .transports.mock_transport import MockTransport
-from .types import LLMConfigError, LLMError, LLMResponse, StreamChunk
-
-from .. import secrets
+from .types import LLMConfigError, LLMError, LLMResponse, LLMStreamTimeout, StreamChunk
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +77,7 @@ class MiniMaxClient:
         api_key: str | None = None,
         base_url: str | None = None,
         model: str = DEFAULT_MODEL,
-        timeout: float = 60.0,
+        timeout: float = 180.0,
         max_retries: int = 3,
         mock: bool | None = None,
         client: Any = None,
@@ -329,6 +328,7 @@ __all__ = [
     "DEFAULT_MODEL",
     "LLMConfigError",
     "LLMError",
+    "LLMStreamTimeout",
     "LLMResponse",
     "MiniMaxClient",
     "StreamChunk",

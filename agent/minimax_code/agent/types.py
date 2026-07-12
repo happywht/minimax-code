@@ -46,6 +46,17 @@ class LLMError(RuntimeError):
     """Raised when the LLM server returns an unrecoverable error."""
 
 
+class LLMStreamTimeout(LLMError):
+    """Raised when an open LLM stream stops producing events."""
+
+    def __init__(self, timeout_seconds: float) -> None:
+        self.timeout_seconds = timeout_seconds
+        super().__init__(
+            f"LLM stream timed out after {timeout_seconds:.0f}s without data. "
+            "The run was stopped and can be retried."
+        )
+
+
 class LLMConfigError(LLMError):
     """Raised when the client is mis-configured (missing base URL, etc.)."""
 
@@ -53,6 +64,7 @@ class LLMConfigError(LLMError):
 __all__ = [
     "LLMConfigError",
     "LLMError",
+    "LLMStreamTimeout",
     "LLMResponse",
     "StreamChunk",
 ]

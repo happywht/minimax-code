@@ -17,7 +17,7 @@ from typing import Any
 
 from minimax_code import __version__
 
-from .protocol import Event, NOT_IMPLEMENTED, RPCError
+from .protocol import LLM_ERROR
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -353,7 +353,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
 
     # Lazy imports — avoid pulling the agent core / storage layer in
     # for handlers that only need a ping / status response.
-    from ..agent import AgentCore, AgentConfig, MiniMaxClient
+    from ..agent import AgentConfig, AgentCore, MiniMaxClient
     from ..app import get_sessions_dao, init_runtime
     from ..storage.dao.messages import MessagesDAO
 
@@ -395,7 +395,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         msg_dao = MessagesDAO(db)
         from ..storage.dao.runs import AgentRunsDAO
         runs_dao = AgentRunsDAO(db)
-    except Exception as exc:
+    except Exception:
         logger.exception("failed to open storage for chat")
         await ctx.reply_error(-32603, "storage unavailable")
         return
@@ -478,12 +478,12 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     # The gater is request-scoped; the handler races on the
     # request_id-keyed map, so concurrent ``agent.send_message``
     # invocations stay isolated.
-    setattr(ctx.server, "_permission_gater", gater)
+    ctx.server._permission_gater = gater
 
     # Allow operators to tune or disable the per-chunk stall watchdog.
-    # ``MINIMAX_STALL_TIMEOUT=60`` → 60 s; ``0`` → disable.
+    # ``MINIMAX_STALL_TIMEOUT=180`` → 180 s; ``0`` → disable.
     _stall_env = os.environ.get("MINIMAX_STALL_TIMEOUT", "")
-    stall_timeout = float(_stall_env) if _stall_env else 30.0
+    stall_timeout = float(_stall_env) if _stall_env else 120.0
 
     core = AgentCore(
         llm=llm,
@@ -635,7 +635,15 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     except Exception as exc:
         logger.exception("agent.send_message: AgentCore.run failed")
         await recorder.fail(str(exc))
-        await ctx.reply_error(-32603, "agent.send_message failed")
+        from ..agent.types import LLMStreamTimeout
+
+        if isinstance(exc, LLMStreamTimeout):
+            await ctx.reply_error(
+                LLM_ERROR,
+                str(exc),
+            )
+        else:
+            await ctx.reply_error(-32603, "agent.send_message failed")
         return
     finally:
         _ACTIVE_RUNS.pop(session_id, None)

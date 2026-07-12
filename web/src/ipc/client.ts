@@ -241,7 +241,7 @@ export interface IPCClientOptions {
  * though the backend is still running and WS chunks are flowing.
  */
 const LONG_RUNNING_METHODS: Record<string, number> = {
-  "agent.send_message": 300_000, // 5 min — agent loop + tool calls
+  "agent.send_message": 0,       // WS events own lifecycle; no client deadline
   "skill.invoke": 120_000,       // 2 min — skill execution
 };
 
@@ -734,7 +734,7 @@ export class IPCClient {
     // methods keep the default 30 s ceiling.
     const timeout = LONG_RUNNING_METHODS[method] ?? 30_000;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
+    const timer = timeout > 0 ? setTimeout(() => controller.abort(), timeout) : null;
     let resp: Response;
     try {
       resp = await fetch(`${this.baseUrl}/rpc`, {
@@ -749,7 +749,7 @@ export class IPCClient {
         signal: controller.signal,
       });
     } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") {
+      if (err instanceof DOMException && err.name === "AbortError" && timeout > 0) {
         throw new IPCError({
           code: ErrorCode.InternalError,
           message: `request timed out (${timeout / 1000}s): ${method}`,
@@ -760,7 +760,7 @@ export class IPCClient {
         message: `network error: ${err instanceof Error ? err.message : String(err)}`,
       });
     } finally {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
     }
 
     if (!resp.ok) {

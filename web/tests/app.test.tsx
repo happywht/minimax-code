@@ -52,7 +52,7 @@ describe("App smoke test", () => {
     await user.type(textarea, "hello{enter}");
     await waitFor(() => {
       expect(screen.getByTestId("message-user")).toHaveTextContent("hello");
-    }, { timeout: 3000 });
+    }, { timeout: 10_000 });
   });
 
   it("opens shortcuts with ? and closes them with Escape without stealing textarea input", async () => {

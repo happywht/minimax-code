@@ -6,10 +6,10 @@ Background
 ``AnthropicTransport._anthropic_stream_to_chunks`` historically
 swallowed ``thinking`` content blocks and ``thinking_delta``
 events (only counting them, never yielding a chunk).  When the
-LLM spent more than ``AgentConfig.stall_timeout`` (default 30s)
+LLM spent more than ``AgentConfig.stall_timeout`` (now default 120s)
 inside an extended-thinking block, the watchdog in
 ``AgentCore._stream_turn`` would fire and abort the turn with
-``Error: [-32603] request timed out (30s): agent.send_message``.
+an LLM stream timeout.
 
 The fix is to yield an empty-delta ``StreamChunk`` whenever a
 thinking block starts or a thinking delta arrives.  The empty
@@ -171,7 +171,7 @@ async def test_thinking_block_emits_heartbeat() -> None:
     """A thinking content_block_start must yield at least one chunk.
 
     This is the watchdog fix: previously the converter was silent
-    during the LLM's "thinking" phase, so the 30s stall watchdog
+    during the LLM's "thinking" phase, so the stall watchdog
     in ``AgentCore._stream_turn`` would fire and abort the turn.
     """
     stream = _FakeStream(
