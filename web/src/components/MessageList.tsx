@@ -133,11 +133,11 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
   }, [isFollowing, rowVirtualizer, rows.length, scrollContentKey]);
 
   return (
-    <div className="relative flex-1">
+    <div className="relative min-h-0 flex-1 overflow-hidden">
       <div
         ref={scrollRef}
         data-testid={testId}
-        className="h-full overflow-y-auto px-4 pb-6 pt-4"
+        className="h-full min-h-0 overflow-y-auto px-4 pb-6 pt-4"
       >
       {messages.length === 0 && finishedRuns.length === 0 ? (
         <div

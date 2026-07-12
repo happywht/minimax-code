@@ -112,7 +112,7 @@ export function ChatPanel({
   return (
     <div
       data-testid={testId}
-      className="relative flex flex-1 flex-col"
+      className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
     >
       {/* Header */}
       <header className="flex items-center justify-between border-b border-minimax-border bg-minimax-bg/60 px-4 py-2.5">

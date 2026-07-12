@@ -39,6 +39,8 @@ describe("MessageList", () => {
     });
     render(<MessageList />);
     expect(screen.getByTestId("message-list")).toBeInTheDocument();
+    expect(screen.getByTestId("message-list")).toHaveClass("min-h-0", "overflow-y-auto");
+    expect(screen.getByTestId("message-list").parentElement).toHaveClass("min-h-0", "overflow-hidden");
     expect(screen.getByTestId("message-window-row-message-u1")).toHaveStyle({
       contentVisibility: "auto",
     });
