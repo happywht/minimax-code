@@ -9,8 +9,9 @@
  *   - agent.status
  *
  * Previously, only message_chunk reset the watchdog, causing
- * false timeouts during long tool execution (tool_timeout=120s
- * in the backend vs 60s watchdog in the frontend).
+ * false timeouts during long tool execution. The backend tool
+ * timeout is 120s, so active tools get a wider frontend watchdog
+ * window than ordinary stream silence.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 import { useChat } from "../chat";
@@ -77,7 +78,7 @@ describe("Stall watchdog", () => {
     vi.mocked(typedIPC.sendMessage).mockReset();
     vi.mocked(typedIPC.cancelAgent).mockResolvedValue({ ok: true });
     // Reset store state but keep handlers registered
-    useChat.setState({ messages: [], status: "idle", error: null });
+    useChat.getState().reset();
   });
 
   afterEach(() => {
@@ -138,6 +139,42 @@ describe("Stall watchdog", () => {
 
     expect(useChat.getState().status).toBe("streaming");
     expect(useChat.getState().error).toBeNull();
+  });
+
+  it("does NOT fire the normal 60 s timeout while a tool is still running", () => {
+    startStreaming();
+
+    vi.advanceTimersByTime(10_000);
+    emit(StreamEvent.ToolCall, {
+      tool_call_id: "tc-long-running",
+      name: "exec_command",
+      args: { command: "slow test suite" },
+    });
+
+    vi.advanceTimersByTime(120_000);
+
+    expect(useChat.getState().status).toBe("streaming");
+    expect(useChat.getState().error).toBeNull();
+    expect(toastErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it("still times out if an active tool goes silent beyond the extended window", () => {
+    startStreaming();
+
+    emit(StreamEvent.ToolCall, {
+      tool_call_id: "tc-stalled",
+      name: "exec_command",
+      args: { command: "hung command" },
+    });
+
+    vi.advanceTimersByTime(180_000);
+
+    expect(useChat.getState().status).toBe("error");
+    expect(useChat.getState().error).toContain("180 s");
+    expect(toastErrorSpy).toHaveBeenCalledWith(
+      "Stream timed out",
+      expect.stringContaining("tool progress"),
+    );
   });
 
   it("does NOT fire timeout when tool_result arrives within 60 s", () => {

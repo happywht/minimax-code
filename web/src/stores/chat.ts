@@ -65,18 +65,37 @@ let _loadSeq = 0;
 
 /** Frontend stall watchdog — resets on every chunk, fires after 60 s idle. */
 const STALL_TIMEOUT_MS = 60_000;
+/**
+ * Backend tool dispatch defaults to 120 s. While a tool is actively
+ * running, allow a wider silence window so long shell/test/search work
+ * does not get misreported as a dead chat stream.
+ */
+const TOOL_STALL_TIMEOUT_MS = 180_000;
 let _stallTimer: ReturnType<typeof setTimeout> | null = null;
+const activeToolCalls = new Set<string>();
 
-function resetStallWatchdog() {
+function resetStallWatchdog(timeoutMs = STALL_TIMEOUT_MS) {
   if (_stallTimer) clearTimeout(_stallTimer);
   _stallTimer = setTimeout(() => {
     const s = useChat.getState();
     if (s.status === "streaming" || s.status === "sending") {
-      useChat.setState({ status: "error", error: "Stream timed out — no response for 60 s" });
-      toast.error("Stream timed out", "No data received for 60 seconds. The connection may have stalled.");
+      const seconds = Math.round(timeoutMs / 1000);
+      const detail =
+        activeToolCalls.size > 0
+          ? `No tool progress received for ${seconds} seconds. The current tool may have stalled.`
+          : `No data received for ${seconds} seconds. The connection may have stalled.`;
+      useChat.setState({
+        status: "error",
+        error: `Stream timed out — no response for ${seconds} s`,
+      });
+      toast.error("Stream timed out", detail);
     }
     _stallTimer = null;
-  }, STALL_TIMEOUT_MS);
+  }, timeoutMs);
+}
+
+function resetStallWatchdogForCurrentActivity() {
+  resetStallWatchdog(activeToolCalls.size > 0 ? TOOL_STALL_TIMEOUT_MS : STALL_TIMEOUT_MS);
 }
 
 function clearStallWatchdog() {
@@ -84,6 +103,7 @@ function clearStallWatchdog() {
     clearTimeout(_stallTimer);
     _stallTimer = null;
   }
+  activeToolCalls.clear();
 }
 
 function ensureMessage(
@@ -196,7 +216,7 @@ export const useChat = create<ChatState>((set, get) => ({
           pendingAssistantId = null;
           clearStallWatchdog();
         } else {
-          resetStallWatchdog();
+          resetStallWatchdogForCurrentActivity();
         }
       });
     }
@@ -218,8 +238,11 @@ export const useChat = create<ChatState>((set, get) => ({
           }), MAX_MESSAGES),
           status: "streaming",
         }));
-        // Tool execution is activity — reset stall watchdog.
-        resetStallWatchdog();
+        // Tool execution is activity. It can legitimately run longer
+        // than the normal 60 s stream silence window, so arm the wider
+        // tool watchdog until a matching tool_result arrives.
+        activeToolCalls.add(data.tool_call_id);
+        resetStallWatchdogForCurrentActivity();
       });
     }
     if (!toolResultUnsub) {
@@ -240,8 +263,10 @@ export const useChat = create<ChatState>((set, get) => ({
             streaming: false,
           }), MAX_MESSAGES),
         }));
-        // Tool result is activity — reset stall watchdog.
-        resetStallWatchdog();
+        // Tool result is activity. Once all active tools have returned,
+        // go back to the normal stream watchdog window.
+        activeToolCalls.delete(data.tool_call_id);
+        resetStallWatchdogForCurrentActivity();
       });
     }
     if (!statusUnsub) {
@@ -256,7 +281,7 @@ export const useChat = create<ChatState>((set, get) => ({
           set({ status: "idle" });
           clearStallWatchdog();
         } else {
-          resetStallWatchdog();
+          resetStallWatchdogForCurrentActivity();
         }
       });
     }
@@ -305,6 +330,7 @@ export const useChat = create<ChatState>((set, get) => ({
 
     if (!displayText && !parts?.length) return;
 
+    activeToolCalls.clear();
     set({ status: "sending", error: null });
     let sessionId = useSessionStore.getState().currentSessionId;
     try {
@@ -342,7 +368,7 @@ export const useChat = create<ChatState>((set, get) => ({
       set((s) => ({
         messages: trimArray([...s.messages, userMessage, assistantPlaceholder], MAX_MESSAGES),
       }));
-      resetStallWatchdog();
+      resetStallWatchdogForCurrentActivity();
       // Send string for pure text, list for multimodal
       const wireContent = parts ?? text;
       const result = await typedIPC.sendMessage({
@@ -423,6 +449,7 @@ export const useChat = create<ChatState>((set, get) => ({
         );
         if (hasPartial && isTimeout) {
           pendingAssistantId = null;
+          activeToolCalls.clear();
           return {
             messages: s.messages.map((m) =>
               m.streaming ? { ...m, streaming: false, status: "completed" } : m,
@@ -433,6 +460,7 @@ export const useChat = create<ChatState>((set, get) => ({
         const pending = pendingAssistantId;
         if (pending && s.messages.some((m) => m.id === pending)) {
           pendingAssistantId = null;
+          activeToolCalls.clear();
           return {
             status: "error",
             error: message,
@@ -451,6 +479,7 @@ export const useChat = create<ChatState>((set, get) => ({
           };
         }
         pendingAssistantId = null;
+        activeToolCalls.clear();
         return {
           status: "error",
           error: message,
