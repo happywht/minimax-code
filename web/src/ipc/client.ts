@@ -293,6 +293,11 @@ export class IPCClient {
     return this.mode === "http";
   }
 
+  /** True when mock mode was explicitly requested via options or env. */
+  get isForcedMock(): boolean {
+    return this.forceMock;
+  }
+
   /** Resolved agent base URL (post env-var merge, trailing slash stripped). */
   get agentBaseUrl(): string {
     return this.baseUrl;
@@ -350,8 +355,47 @@ export class IPCClient {
       message: "IPC client stopped",
     });
     this.started = false;
-    this.startPromise = null;
-    this.startResolve = null;
+    if (this.forceMock) {
+      this.mode = "mock";
+      this.startPromise = null;
+      this.startResolve = null;
+    } else {
+      this.mode = "pending";
+      this.startPromise = new Promise<void>((r) => { this.startResolve = r; });
+    }
+  }
+
+  /**
+   * Force a fresh transport probe.
+   *
+   * This is intentionally stronger than `start()`: once the client has
+   * fallen back to mock mode, `start()` is idempotent and will not probe
+   * `/health` again. User-facing retry controls need a real reprobe so
+   * opening the UI before the local agent starts does not permanently trap
+   * the session in mock mode.
+   */
+  async restart(): Promise<void> {
+    await this.stop();
+    await this.start();
+  }
+
+  /**
+   * Reprobe the local agent without tearing down a usable mock session.
+   *
+   * Unlike `restart()`, this does not reject pending requests or reset
+   * listeners when the agent is still unreachable. It is intended for
+   * UI retry loops that should quietly upgrade fallback mock mode to
+   * the real HTTP/WS transport as soon as the Python agent appears.
+   */
+  async reprobe(): Promise<boolean> {
+    if (this.forceMock) return true;
+    const reachable = await isAgentReachable(this.baseUrl);
+    if (!reachable) return false;
+    this.mode = "http";
+    this.started = true;
+    this.startResolve?.();
+    if (!this.ws) this.connectWs();
+    return true;
   }
 
   /**

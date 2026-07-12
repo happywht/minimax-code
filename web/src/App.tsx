@@ -79,10 +79,14 @@ export default function App() {
   const retryConnection = useCallback(async () => {
     setConnState("connecting");
     try {
-      await ipc.start();
-      await typedIPC.ping();
-      setRetryAttempt(0);
-      setConnState("connected");
+      const reachable = await ipc.reprobe();
+      if (reachable && (ipc.isHttp || ipc.isForcedMock)) {
+        setRetryAttempt(0);
+        setConnState("connected");
+      } else {
+        setRetryAttempt((attempt) => attempt + 1);
+        setConnState("error");
+      }
     } catch {
       setRetryAttempt((attempt) => attempt + 1);
       setConnState("error");
@@ -123,11 +127,16 @@ export default function App() {
         // even when the agent isn't running yet.
         try {
           await typedIPC.ping();
-          setRetryAttempt(0);
-          setConnState("connected");
+          if (ipc.isHttp || ipc.isForcedMock) {
+            setRetryAttempt(0);
+            setConnState("connected");
+          } else {
+            setRetryAttempt((attempt) => attempt + 1);
+            setConnState("error");
+          }
         } catch {
-          // ping failure is fine in mock mode and is reported by the
-          // ProgressPanel already.
+          // The banner below reports retry state; the rest of the UI
+          // can continue working against the frontend mock.
         }
       } catch (err) {
         // eslint-disable-next-line no-console

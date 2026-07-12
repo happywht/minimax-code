@@ -30,14 +30,15 @@ uv run python -m minimax_code
 #  → "agent server listening on http://127.0.0.1:8765"
 
 # 终端 2 — Vite 前端 dev server
-pnpm dev
+AGENT_SKIP=1 pnpm dev
 #  → vite ready
 
 # 浏览器开 http://localhost:5173
 ```
 
-> 想单终端跑：`AGENT_SKIP=1 pnpm dev` 只起 Vite，agent 单独在另一终端跑（`scripts/dev.mjs`
-> 默认通过 `concurrently` 同时拉起 agent + Vite，分开跑可避免端口竞用）。
+> 想单终端跑完整开发环境：直接 `pnpm dev`，它会同时拉起 agent + Vite。
+> 如果你已经在另一个终端手动启动了 agent，就用 `AGENT_SKIP=1 pnpm dev`
+> 或 `pnpm dev:web` 只启动前端，避免 8765 端口竞用。
 
 ### 首次安装依赖
 

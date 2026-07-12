@@ -109,6 +109,7 @@ describe("IPCClient pending mode", () => {
   it("forced-mock mode skips pending entirely", () => {
     const client = new IPCClient({ forceMock: true });
     expect(client.isMock).toBe(true);
+    expect(client.isForcedMock).toBe(true);
     // start() should be a no-op — mode is already "mock".
     // No network request should be made.
   });
@@ -276,6 +277,71 @@ describe("IPCClient pending mode", () => {
     // so a new start() will probe again.
     await client.start();
     expect(probeCount).toBe(2); // Second probe was made
+  });
+
+  it("restart() reprobes after mock fallback and can switch to HTTP", async () => {
+    let probeCount = 0;
+    let rpcCalled = false;
+    installFetch((url, init) => {
+      if (url.endsWith("/health")) {
+        probeCount++;
+        if (probeCount === 1) {
+          return Promise.reject(new Error("ECONNREFUSED"));
+        }
+        return okJson({ ok: true });
+      }
+      rpcCalled = true;
+      const body = JSON.parse(init.body as string);
+      return okJson({
+        jsonrpc: "2.0",
+        id: body.id,
+        result: { sessions: [], total: 0 },
+      } satisfies JsonRpcResponse);
+    });
+
+    const client = new IPCClient();
+    await client.start();
+    expect(client.isMock).toBe(true);
+    expect(client.isHttp).toBe(false);
+
+    await client.restart();
+
+    expect(probeCount).toBe(2);
+    expect(client.isHttp).toBe(true);
+    expect(StubWebSocket.instances).toHaveLength(1);
+
+    const result = await client.request<{ sessions: unknown[] }>("session.list");
+    expect(rpcCalled).toBe(true);
+    expect(result.sessions).toEqual([]);
+  });
+
+  it("reprobe() upgrades fallback mock mode without clearing listeners", async () => {
+    let probeCount = 0;
+    let sawReady = false;
+    installFetch((url) => {
+      if (url.endsWith("/health")) {
+        probeCount++;
+        if (probeCount === 1) {
+          return Promise.reject(new Error("ECONNREFUSED"));
+        }
+        return okJson({ ok: true });
+      }
+      return okJson({ jsonrpc: "2.0", id: 1, result: {} });
+    });
+
+    const client = new IPCClient();
+    client.on("agent.message_chunk", () => {
+      sawReady = true;
+    });
+
+    await client.start();
+    expect(client.isMock).toBe(true);
+    expect(await client.reprobe()).toBe(true);
+
+    expect(client.isHttp).toBe(true);
+    expect(StubWebSocket.instances).toHaveLength(1);
+    client._emit("agent.message_chunk", { delta: "kept listener" });
+    expect(sawReady).toBe(true);
   });
 
   it("no POST /rpc errors when components fire requests before start()", async () => {
