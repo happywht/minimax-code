@@ -31,6 +31,7 @@ describe("PermissionRequestModal", () => {
       rules: [],
       loading: false,
       pending: {},
+      resolving: {},
     });
     // NOTE: do NOT reset listeners — they're wired once at module
     // import. Resetting them would break the "responds to incoming
@@ -132,6 +133,36 @@ describe("PermissionRequestModal", () => {
         request_id: "perm_d1",
         decision: "deny",
       });
+    });
+    resolveSpy.mockRestore();
+  });
+
+  it("restores the request when resolving the permission fails", async () => {
+    const resolveSpy = vi.spyOn(typedIPC, "resolvePermission").mockRejectedValue(
+      new Error("connection lost"),
+    );
+    usePermissionStore.setState({
+      pending: {
+        perm_retry: {
+          request_id: "perm_retry",
+          tool: "exec_command",
+          args: { cmd: ["pnpm", "test"] },
+          received_at: Date.now(),
+        },
+      },
+    });
+
+    render(<PermissionRequestModal />);
+    fireEvent.click(screen.getByTestId("permission-request-modal-allow"));
+
+    await waitFor(() => {
+      expect(resolveSpy).toHaveBeenCalledWith({
+        request_id: "perm_retry",
+        decision: "allow",
+      });
+      expect(usePermissionStore.getState().resolving.perm_retry).toBeUndefined();
+      expect(usePermissionStore.getState().pending.perm_retry).toBeDefined();
+      expect(screen.getByTestId("permission-request-modal")).toBeInTheDocument();
     });
     resolveSpy.mockRestore();
   });

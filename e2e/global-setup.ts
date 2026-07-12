@@ -4,29 +4,29 @@
  * - Spawns `uv run python -m minimax_code` from the agent/ directory
  *   with PYTHONUNBUFFERED and a clean data dir.
  * - Polls GET /health for up to 30 seconds.
- * - Writes the child pid + spawn timestamp to
- *   e2e/.runtime/agent.json so globalTeardown can kill it.
- * - Tolerates failure: if the agent never comes up, specs still run
- *   (the web client auto-falls-back to mock mode). smoke-agent-rpc
- *   will then FAIL — which is the correct signal that the agent is
- *   not running. We log a warning rather than throwing.
+ * - Writes the child pid + spawn timestamp to a port-scoped runtime
+ *   directory so globalTeardown can kill only that process.
+ * - Fails fast when the dedicated port is occupied or the isolated
+ *   agent does not become healthy.
  */
 import { spawn, ChildProcess } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { AGENT_BASE, AGENT_PORT, WEB_BASE } from "./runtime-config";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const AGENT_PORT = 8765;
-const HEALTH_URL = `http://127.0.0.1:${AGENT_PORT}/health`;
+const HEALTH_URL = `${AGENT_BASE}/health`;
 const POLL_MS = 500;
 const DEADLINE_MS = 30_000;
 
 // Where to put runtime state for the teardown to read.
-const RUNTIME_DIR = resolve(__dirname, ".runtime");
+const RUNTIME_DIR = resolve(__dirname, ".runtime", String(AGENT_PORT));
 const PID_FILE = join(RUNTIME_DIR, "agent.json");
+const DATA_DIR = join(RUNTIME_DIR, "data");
 
 // Repo-root relative (this file is in e2e/, repo root is ..).
 const REPO_ROOT = resolve(__dirname, "..");
@@ -49,10 +49,14 @@ function spawnAgent(): ChildProcess {
       PYTHONUNBUFFERED: "1",
       PYTHONIOENCODING: "utf-8",
       MINIMAX_CODE_LOG_LEVEL: "WARNING",
-      // Empty API key -> mock LLM (matches tests/e2e/smoke_*.py convention).
+      MINIMAX_CODE_HTTP_PORT: String(AGENT_PORT),
+      MINIMAX_CODE_CORS_ORIGINS: WEB_BASE,
+      MINIMAX_CODE_FORCE_MOCK: "1",
+      // Never read or spend a developer's credential-store API key.
       MINIMAX_API_KEY: "",
+      PYTHON_KEYRING_BACKEND: "keyring.backends.null.Keyring",
       // Force a unique data dir so e2e runs don't pollute the user's dev DB.
-      MINIMAX_CODE_DATA_DIR: join(RUNTIME_DIR, "data"),
+      MINIMAX_CODE_DATA_DIR: DATA_DIR,
     },
   });
   // Forward child output prefixed so users can see boot logs.
@@ -70,6 +74,21 @@ function spawnAgent(): ChildProcess {
     }
   });
   return child;
+}
+
+async function assertPortAvailable(): Promise<void> {
+  await new Promise<void>((resolvePort, reject) => {
+    const server = createServer();
+    server.once("error", (error) => reject(error));
+    server.listen(AGENT_PORT, "127.0.0.1", () => {
+      server.close((error) => (error ? reject(error) : resolvePort()));
+    });
+  }).catch((error) => {
+    throw new Error(
+      `E2E agent port ${AGENT_PORT} is unavailable. Set MINIMAX_CODE_E2E_PORT to a free port.`,
+      { cause: error },
+    );
+  });
 }
 
 async function waitForHealth(): Promise<boolean> {
@@ -96,19 +115,15 @@ async function waitForHealth(): Promise<boolean> {
 }
 
 export default async function globalSetup(): Promise<void> {
+  await assertPortAvailable();
+  rmSync(DATA_DIR, { recursive: true, force: true });
   mkdirSync(RUNTIME_DIR, { recursive: true });
   console.log(`[global-setup] cwd: ${process.cwd()}`);
   console.log(`[global-setup] spawning agent in ${AGENT_DIR}`);
 
   const child = spawnAgent();
   const ok = await waitForHealth();
-  if (!ok) {
-    console.warn(
-      `[global-setup] WARN: agent did not respond at ${HEALTH_URL} within ${DEADLINE_MS}ms.\n` +
-        `  Web client will fall back to mock mode; smoke-agent-rpc will fail.\n` +
-        `  (This is expected if uv is not installed or agent deps are missing.)`,
-    );
-  }
+  if (!ok) throw new Error(`E2E agent did not become healthy at ${HEALTH_URL}`);
 
   writeFileSync(
     PID_FILE,

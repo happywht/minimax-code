@@ -16,6 +16,7 @@ Public surface
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,7 @@ def build_runtime(
     db: Any | None = None,
     llm: Any | None = None,
     tool_registry: Any | None = None,
+    extra_roots: Iterable[Path | str] = (),
 ) -> SkillRuntime:
     """Build a :class:`SkillRuntime` wired to the default registries.
 
@@ -71,6 +73,7 @@ def build_runtime(
     registry = SkillRegistry(
         skills_root=Path(skills_root) if skills_root else _default_skills_root(),
         db=db,
+        extra_roots=extra_roots,
         auto_persist=db is not None,
     )
     if tool_registry is None:
@@ -94,6 +97,7 @@ async def bootstrap(
     db: Any | None = None,
     llm: Any | None = None,
     tool_registry: Any | None = None,
+    extra_roots: Iterable[Path | str] = (),
 ) -> SkillRuntime:
     """Async one-stop: build the runtime, load skills, and install tool providers.
 
@@ -108,6 +112,7 @@ async def bootstrap(
         db=db,
         llm=llm,
         tool_registry=tool_registry,
+        extra_roots=extra_roots,
     )
     await runtime.registry.load_all()
 

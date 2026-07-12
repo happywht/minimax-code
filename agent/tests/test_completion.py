@@ -8,8 +8,6 @@ Covers:
 """
 from __future__ import annotations
 
-import asyncio
-import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -176,7 +174,7 @@ class TestCompletionRoute:
     """Integration tests for the FastAPI POST /complete route."""
 
     @pytest.fixture()
-    def _app(self) -> Any:
+    def _app(self, monkeypatch: pytest.MonkeyPatch) -> Any:
         """Build a FastAPI app with the completion route wired up."""
         import io
 
@@ -184,6 +182,7 @@ class TestCompletionRoute:
         from minimax_code.http_server import build_app
         from minimax_code.ipc.server import IPCServer
 
+        monkeypatch.setattr("minimax_code.secrets.get_api_key", lambda: None)
         server = IPCServer(
             config=Config.from_env(),
             stdin=io.StringIO(),

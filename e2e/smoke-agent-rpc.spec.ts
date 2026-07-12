@@ -9,13 +9,13 @@
  *   - POST /rpc      — JSON-RPC 2.0 envelope for session.list
  *
  * Both must be reachable at the agent's bind address
- * (http://127.0.0.1:8765 by default; configured in playwright.config.ts).
+ * (http://127.0.0.1:18765 by default; configured in runtime-config.ts).
  *
  * If globalSetup couldn't bring the agent up, this spec will fail —
  * which is the correct signal that the e2e environment is incomplete.
  */
 import { test, expect } from "@playwright/test";
-import { AGENT_BASE } from "../playwright.config";
+import { AGENT_BASE } from "./runtime-config";
 
 test("smoke-agent-rpc: GET /health returns ok", async ({ request }) => {
   const resp = await request.get(`${AGENT_BASE}/health`);

@@ -18,7 +18,7 @@ describe("MessageList", () => {
     expect(screen.getByText(/How can I help/)).toBeInTheDocument();
   });
 
-  it("renders messages from the chat store", () => {
+  it("renders messages from the chat store", async () => {
     useChat.setState({
       messages: [
         {
@@ -42,11 +42,11 @@ describe("MessageList", () => {
     expect(screen.getByTestId("message-window-row-message-u1")).toHaveStyle({
       contentVisibility: "auto",
     });
-    expect(screen.getByTestId("message-user")).toHaveTextContent("hello");
-    expect(screen.getByTestId("message-assistant")).toHaveTextContent("world");
+    expect(await screen.findByTestId("message-user", {}, { timeout: 3000 })).toHaveTextContent("hello");
+    expect(await screen.findByTestId("message-assistant", {}, { timeout: 3000 })).toHaveTextContent("world");
   });
 
-  it("groups consecutive tool messages into a compact rail", () => {
+  it("groups consecutive tool messages into a compact rail", async () => {
     useChat.setState({
       messages: [
         { id: "a1", role: "assistant", text: "checking", streaming: false, created_at: 1 },
@@ -73,8 +73,8 @@ describe("MessageList", () => {
     render(<MessageList />);
 
     expect(screen.getByTestId("message-tool-group")).toBeInTheDocument();
-    expect(screen.getByText("read_file")).toBeInTheDocument();
-    expect(screen.getByText("search")).toBeInTheDocument();
+    expect(await screen.findByText("read_file")).toBeInTheDocument();
+    expect(await screen.findByText("search")).toBeInTheDocument();
   });
 
   it("pauses auto-follow when user scrolls up and resumes on button click", async () => {
@@ -115,7 +115,7 @@ describe("MessageList", () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "smooth" });
   });
 
-  it("virtualizes the visible message window for long conversations", () => {
+  it("virtualizes the visible message window for long conversations", async () => {
     useChat.setState({
       messages: Array.from({ length: 80 }, (_, index) => ({
         id: `m${index}`,
@@ -130,7 +130,9 @@ describe("MessageList", () => {
 
     expect(screen.getByTestId("message-virtualizer")).toBeInTheDocument();
     expect(screen.queryByText("message 0")).toBeNull();
-    expect(screen.getAllByText(/message \d+/).length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(screen.getAllByText(/message \d+/).length).toBeGreaterThan(0);
+    });
     expect(screen.queryAllByTestId(/^message-window-row-/).length).toBeLessThan(50);
   });
 });

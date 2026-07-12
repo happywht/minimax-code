@@ -48,6 +48,8 @@ export interface PermissionState {
   loading: boolean;
   /** Active consent prompts keyed by request_id. */
   pending: Record<string, PendingPermission>;
+  /** Decisions currently being posted to the Agent. */
+  resolving: Record<string, Decision>;
 
   refresh: () => Promise<void>;
   setAlwaysAllow: (v: boolean) => void;
@@ -80,6 +82,7 @@ function ensureListeners(): void {
       const state = usePermissionStore.getState();
       // "always allow" bypass — auto-allow without showing UI.
       if (state.alwaysAllow) {
+        state._enqueueRequest(data);
         void state.resolve(data.request_id, "allow").catch(() => undefined);
         return;
       }
@@ -101,10 +104,12 @@ function ensureListeners(): void {
         const data = env.data;
         if (!data) return;
         usePermissionStore.setState((s) => {
-          if (!s.pending[data.request_id]) return {};
+          if (!s.pending[data.request_id] && !s.resolving[data.request_id]) return {};
           const next = { ...s.pending };
+          const resolving = { ...s.resolving };
           delete next[data.request_id];
-          return { pending: next };
+          delete resolving[data.request_id];
+          return { pending: next, resolving };
         });
       },
     );
@@ -119,6 +124,7 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
   rules: [],
   loading: false,
   pending: {},
+  resolving: {},
 
   refresh: async () => {
     set({ loading: true });
@@ -178,28 +184,33 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
 
   _markResolved: (data) => {
     set((s) => {
-      if (!s.pending[data.request_id]) return {};
+      if (!s.pending[data.request_id] && !s.resolving[data.request_id]) return {};
       const next = { ...s.pending };
+      const resolving = { ...s.resolving };
       delete next[data.request_id];
-      return { pending: next };
+      delete resolving[data.request_id];
+      return { pending: next, resolving };
     });
   },
 
   resolve: async (request_id, decision) => {
-    // Optimistically drop from local state so the modal closes even
-    // if the IPC call errors out. The server-side future is the
-    // source of truth — if our POST fails, the modal just reopens
-    // when the agent emits another `permission.request` (or doesn't,
-    // if the agent has already given up).
-    set((s) => {
-      if (!s.pending[request_id]) return {};
-      const next = { ...s.pending };
-      delete next[request_id];
-      return { pending: next };
-    });
+    if (get().resolving[request_id]) return;
+    set((s) => ({ resolving: { ...s.resolving, [request_id]: decision } }));
     try {
       await typedIPC.resolvePermission({ request_id, decision });
+      set((s) => {
+        const pending = { ...s.pending };
+        const resolving = { ...s.resolving };
+        delete pending[request_id];
+        delete resolving[request_id];
+        return { pending, resolving };
+      });
     } catch (err) {
+      set((s) => {
+        const resolving = { ...s.resolving };
+        delete resolving[request_id];
+        return { resolving };
+      });
       const message = err instanceof Error ? err.message : String(err);
       toast.error("Failed to resolve permission", message);
     }

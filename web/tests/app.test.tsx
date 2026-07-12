@@ -4,10 +4,11 @@
  * tree can render and a message can be sent end-to-end without the
  * Rust shell.
  */
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "../src/App";
+import { useChat, useSessionStore } from "../src/stores";
 
 // Make sure no Tauri runtime is detected — IPCClient falls back to
 // the in-process mock backend, which emits streaming chunks via
@@ -49,8 +50,8 @@ describe("App smoke test", () => {
     );
     await user.type(textarea, "hello{enter}");
     await waitFor(() => {
-      expect(screen.getByText("hello")).toBeInTheDocument();
-    });
+      expect(screen.getByTestId("message-user")).toHaveTextContent("hello");
+    }, { timeout: 3000 });
   });
 
   it("opens shortcuts with ? and closes them with Escape without stealing textarea input", async () => {
@@ -81,7 +82,9 @@ describe("App smoke test", () => {
 
     await user.click(screen.getByTestId("sidebar-nav-skills"));
     expect(screen.getByTestId("workspace-overlay")).toBeInTheDocument();
-    expect(screen.getByTestId("skills-panel")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId("skills-panel")).toBeInTheDocument();
+    });
     expect(screen.getByTestId("chat-panel")).toBeInTheDocument();
 
     await user.click(screen.getByTestId("skills-close"));
@@ -89,7 +92,52 @@ describe("App smoke test", () => {
 
     await user.click(screen.getByTestId("sidebar-nav-settings"));
     expect(screen.getByTestId("workspace-overlay")).toBeInTheDocument();
-    expect(screen.getByTestId("settings-page")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId("settings-page")).toBeInTheDocument();
+    });
     expect(screen.getByTestId("chat-panel")).toBeInTheDocument();
+  });
+
+  it("routes scheduled jobs and agents navigation to their real management tabs", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId("chat-panel")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId("sidebar-nav-scheduled"));
+    expect(await screen.findByTestId("settings-scheduled")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-nav-scheduled")).toHaveAttribute("aria-current", "page");
+
+    await user.click(screen.getByTestId("settings-close"));
+    await user.click(screen.getByTestId("sidebar-nav-agents"));
+    expect(await screen.findByTestId("settings-agents")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-nav-agents")).toHaveAttribute("aria-current", "page");
+  });
+
+  it("opens provider settings directly from the demo-mode status", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const banner = await screen.findByTestId("provider-readiness-banner");
+    expect(banner).toHaveTextContent("Demo Mode");
+    await user.click(screen.getByTestId("provider-readiness-action"));
+
+    expect(await screen.findByTestId("settings-providers")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-tab-providers")).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+});
+
+beforeEach(() => {
+  window.localStorage.clear();
+  useChat.getState().reset();
+  useSessionStore.setState({
+    sessions: [],
+    currentSessionId: null,
+    loading: false,
+    filter: "all",
   });
 });

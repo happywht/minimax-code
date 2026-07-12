@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +28,6 @@ from minimax_code.storage.dao.sessions import SessionsDAO
 from minimax_code.storage.dao.tasks import TaskDAO
 from minimax_code.storage.db import (
     AsyncDatabase,
-    Database,
     make_temp_database_path,
 )
 
@@ -500,16 +498,24 @@ async def test_task_ipc_unknown_task_id_returns_error(
 
 
 @pytest.mark.asyncio
-async def test_task_ipc_no_tracker_returns_internal_error() -> None:
+async def test_task_ipc_no_tracker_returns_internal_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """If the storage layer didn't open, the handler returns a clear
     INTERNAL_ERROR rather than a stack trace."""
-    from minimax_code.app import set_progress_tracker
+    from minimax_code.app import set_progress_tracker, set_runtime
     from minimax_code.ipc.client import IPCClient
 
+    monkeypatch.setenv("MINIMAX_CODE_NO_DB", "1")
     set_progress_tracker(None)
-    client = IPCClient()
-    with pytest.raises(Exception) as excinfo:
-        await client.request("task.list", {})
-    assert "storage" in str(excinfo.value).lower() or "unavailable" in str(
-        excinfo.value
-    ).lower()
+    set_runtime(None)
+    try:
+        client = IPCClient()
+        with pytest.raises(Exception) as excinfo:
+            await client.request("task.list", {})
+        assert "storage" in str(excinfo.value).lower() or "unavailable" in str(
+            excinfo.value
+        ).lower()
+    finally:
+        set_progress_tracker(None)
+        set_runtime(None)

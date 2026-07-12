@@ -22,7 +22,7 @@ export function PermissionPatchPreview({
 
   return (
     <div data-testid={testId} className="mt-2 border-t border-minimax-border/70 pt-2">
-      <div className="mb-1.5 flex items-center gap-2 text-[10px] text-minimax-muted">
+      <div className="mb-1.5 flex items-center gap-2 text-[11px] text-minimax-muted">
         <FileCode2 size={11} />
         <span>{stats.files} file{stats.files === 1 ? "" : "s"}</span>
         <span className="text-status-success">+{stats.additions}</span>
@@ -42,15 +42,15 @@ function PermissionPatchFile({ file }: { file: PatchFile }): JSX.Element {
   return (
     <div>
       <div className="flex items-center justify-between gap-2">
-        <span className="min-w-0 truncate font-mono text-[10px] text-minimax-fg" title={file.path}>
+        <span className="min-w-0 truncate font-mono text-[11px] text-minimax-fg" title={file.path}>
           {file.path}
         </span>
-        <span className="shrink-0 font-mono text-[10px] text-minimax-muted">
+        <span className="shrink-0 font-mono text-[11px] text-minimax-muted">
           {file.status}
         </span>
       </div>
       {lines.length > 0 && (
-        <pre className="mt-1 max-h-24 overflow-hidden rounded bg-minimax-bg/50 px-2 py-1 font-mono text-[10px] leading-relaxed">
+        <pre className="mt-1 max-h-24 overflow-hidden rounded bg-minimax-bg/50 px-2 py-1 font-mono text-[11px] leading-relaxed">
           {lines.map((line, idx) => (
             <PermissionPatchLine key={idx} line={line} />
           ))}

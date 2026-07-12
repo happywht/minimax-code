@@ -35,6 +35,10 @@ describe("MessageInput", () => {
     const send = screen.getByTestId("message-input-send");
     expect(textarea).toBeInTheDocument();
     expect(send).toBeDisabled();
+    expect(screen.queryByTestId("message-input-token-warning")).toBeNull();
+    expect(screen.getByTestId("message-input-token-count")).toHaveAccessibleName(
+      "输入字符 0/8000",
+    );
   });
 
   it("enables the send button when text is typed", async () => {

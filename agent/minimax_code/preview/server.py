@@ -41,16 +41,19 @@ class PreviewState:
         self.workspace = workspace.resolve()
         self.event_queue: asyncio.Queue[WatcherEvent] = asyncio.Queue(maxsize=256)
         self._watcher_task: asyncio.Task[None] | None = None
+        self._fanout_task: asyncio.Task[None] | None = None
         self._subscribers: list[asyncio.Queue[WatcherEvent]] = []
 
     async def start_watcher(self) -> None:
         """Start the background file-system watcher."""
+        if self._watcher_task is not None and not self._watcher_task.done():
+            return
         self._watcher_task = asyncio.create_task(
             watch_workspace(self.workspace, self.event_queue),
             name="preview-watcher",
         )
         # Fan-out task: reads from the main queue and pushes to subscribers.
-        asyncio.create_task(self._fanout(), name="preview-fanout")
+        self._fanout_task = asyncio.create_task(self._fanout(), name="preview-fanout")
 
     async def _fanout(self) -> None:
         """Read events from the main queue and fan out to subscribers."""
@@ -82,13 +85,18 @@ class PreviewState:
             pass
 
     async def stop(self) -> None:
-        """Cancel the watcher task."""
-        if self._watcher_task and not self._watcher_task.done():
-            self._watcher_task.cancel()
+        """Cancel watcher and fan-out tasks."""
+        tasks = [task for task in (self._watcher_task, self._fanout_task) if task is not None]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        for task in tasks:
             try:
-                await self._watcher_task
+                await task
             except asyncio.CancelledError:
                 pass
+        self._watcher_task = None
+        self._fanout_task = None
 
 
 def _safe_path(workspace: Path, file_path: str) -> Path | None:
@@ -145,7 +153,19 @@ def build_preview_app(workspace: Path) -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Stash state for tests / external access.
+    register_preview_routes(app, workspace, state=state)
+
+    return app
+
+
+def register_preview_routes(
+    app: FastAPI,
+    workspace: Path,
+    *,
+    state: PreviewState | None = None,
+) -> PreviewState:
+    """Register preview routes on an existing FastAPI application."""
+    state = state or PreviewState(workspace)
     app.state.preview = state
 
     # ---- GET /preview/health -------------------------------------------
@@ -159,6 +179,8 @@ def build_preview_app(workspace: Path) -> FastAPI:
     @app.get("/preview/events")
     async def preview_events(request: Request) -> StreamingResponse:
         """SSE endpoint — streams file-change events to the client."""
+
+        await state.start_watcher()
 
         async def event_stream() -> AsyncIterator[str]:
             q = state.subscribe()
@@ -211,4 +233,4 @@ def build_preview_app(workspace: Path) -> FastAPI:
             media_type=_guess_content_type(safe),
         )
 
-    return app
+    return state

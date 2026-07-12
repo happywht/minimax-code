@@ -45,6 +45,36 @@ interface AttachedFile {
   name: string;
 }
 
+interface VoiceRecognitionResult {
+  readonly [index: number]: { transcript: string };
+}
+
+interface VoiceRecognitionResultEvent {
+  resultIndex: number;
+  results: ArrayLike<VoiceRecognitionResult>;
+}
+
+interface VoiceRecognitionErrorEvent {
+  error: string;
+}
+
+interface VoiceRecognition {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((event: VoiceRecognitionResultEvent) => void) | null;
+  onend: (() => void) | null;
+  onerror: ((event: VoiceRecognitionErrorEvent) => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+type VoiceRecognitionConstructor = new () => VoiceRecognition;
+type VoiceWindow = Window & {
+  SpeechRecognition?: VoiceRecognitionConstructor;
+  webkitSpeechRecognition?: VoiceRecognitionConstructor;
+};
+
 export function MessageInput({
   testId = "message-input",
   loadAgents,
@@ -89,7 +119,7 @@ export function MessageInput({
         ? "bg-amber-400"
         : "bg-minimax-accent";
   const imageInputRef = useRef<HTMLInputElement>(null);
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<VoiceRecognition | null>(null);
 
   // Auto-grow textarea up to ~8 rows — shrink back when text is deleted.
   // Setting height to "0px" first forces the browser to recalculate
@@ -354,7 +384,8 @@ export function MessageInput({
 
   // ── Voice input (SpeechRecognition) ────────────────────────
   const toggleVoice = useCallback(() => {
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const speechWindow = window as VoiceWindow;
+    const SR = speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
     if (!SR) {
       toast.info("语音输入不可用", "当前浏览器不支持 SpeechRecognition API");
       return;
@@ -372,7 +403,7 @@ export function MessageInput({
     recognition.continuous = false;
     recognition.interimResults = true;
 
-    recognition.onresult = (event: any) => {
+    recognition.onresult = (event: VoiceRecognitionResultEvent) => {
       let transcript = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
         transcript += event.results[i][0].transcript;
@@ -391,7 +422,7 @@ export function MessageInput({
       recognitionRef.current = null;
     };
 
-    recognition.onerror = (event: any) => {
+    recognition.onerror = (event: VoiceRecognitionErrorEvent) => {
       setListening(false);
       recognitionRef.current = null;
       if (event.error !== "no-speech") {
@@ -478,7 +509,7 @@ export function MessageInput({
       onSubmit={handleSubmit}
       data-testid={testId}
       data-floating="false"
-      className="shrink-0 border-t border-minimax-border bg-minimax-bg/92 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-minimax-bg/78"
+      className="shrink-0 border-t border-minimax-border bg-minimax-bg/92 px-2 py-2 backdrop-blur supports-[backdrop-filter]:bg-minimax-bg/78 sm:px-4 sm:py-3"
     >
       <div
         onDragOver={handleDragOver}
@@ -537,7 +568,7 @@ export function MessageInput({
             ))}
           </div>
         )}
-        <div className="flex items-end gap-2 px-2.5 py-2">
+        <div className="flex items-end gap-1 px-2 py-2 sm:gap-2 sm:px-2.5">
           <button
             type="button"
             aria-label="Attach file"
@@ -578,6 +609,9 @@ export function MessageInput({
           />
           <textarea
             ref={ref}
+            aria-label="Message"
+            name="message"
+            autoComplete="off"
             value={value}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
@@ -585,7 +619,7 @@ export function MessageInput({
             rows={1}
             data-testid="message-input-textarea"
             disabled={disabled}
-            className="flex-1 resize-none bg-transparent px-1 py-1.5 text-sm text-minimax-fg placeholder:text-minimax-muted focus:outline-none"
+            className="min-w-0 flex-1 resize-none bg-transparent px-1 py-1.5 text-sm text-minimax-fg placeholder:text-minimax-muted focus:outline-none"
           />
           {streaming ? (
             <button
@@ -676,7 +710,7 @@ export function MessageInput({
             )}
           </div>
         )}
-        <div className="flex items-center justify-between border-t border-minimax-border/60 px-2.5 py-1.5">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-minimax-border/60 px-2.5 py-1.5">
           <button
             type="button"
             role="switch"
@@ -684,7 +718,7 @@ export function MessageInput({
             data-testid="chat-input-always-allow"
             onClick={handleToggleAlwaysAllow}
             className={
-              "inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] transition-colors " +
+              "inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1 text-[11px] transition-colors " +
               (alwaysAllow
                 ? "text-emerald-300 hover:bg-emerald-500/10"
                 : "text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg")
@@ -698,7 +732,7 @@ export function MessageInput({
             {alwaysAllow ? <ShieldCheck size={11} /> : <Shield size={11} />}
             {alwaysAllow ? "始终授权：开" : "始终授权"}
           </button>
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-x-2 gap-y-1">
             {cancelling && (
               <span
                 data-testid="message-input-stopping"
@@ -708,9 +742,10 @@ export function MessageInput({
               </span>
             )}
             <ContextIndicator />
-            <div className="flex min-w-[92px] flex-col items-end gap-1">
+            <div className="flex min-w-[72px] flex-col items-end gap-1 sm:min-w-[92px]">
               <span
                 data-testid="message-input-token-count"
+                aria-label={`输入字符 ${value.length}/${MAX_INPUT_CHARS}`}
                 className={`text-[11px] transition-colors duration-200 ${tokenToneClass}`}
               >
                 {value.length}/{MAX_INPUT_CHARS}
@@ -726,18 +761,17 @@ export function MessageInput({
                 />
               </div>
             </div>
-            <span
-              data-testid="message-input-token-warning"
-              className={`min-w-[74px] text-right text-[11px] transition-opacity duration-200 ${
-                inputNearLimit ? "opacity-100" : "opacity-0"
-              } ${inputCritical ? "text-status-error" : "text-amber-300"}`}
-              aria-live="polite"
-            >
-              {overLimit ? "已超限" : inputCritical ? "即将超限" : "接近上限"}
-            </span>
-            <span className="sr-only" aria-live="polite">
-              {value.length}/{MAX_INPUT_CHARS}
-            </span>
+            {inputNearLimit && (
+              <span
+                data-testid="message-input-token-warning"
+                className={`hidden min-w-[74px] text-right text-[11px] sm:inline ${
+                  inputCritical ? "text-status-error" : "text-amber-300"
+                }`}
+                aria-live="polite"
+              >
+                {overLimit ? "已超限" : inputCritical ? "即将超限" : "接近上限"}
+              </span>
+            )}
             <ModelSelector variant="inline" />
           </div>
         </div>

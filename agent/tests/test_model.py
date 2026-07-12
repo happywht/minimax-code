@@ -18,7 +18,6 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 
 import pytest
@@ -34,6 +33,7 @@ from minimax_code.storage.dao.model_prefs import (
     get_current_sync,
     set_current_sync,
 )
+from minimax_code.storage.dao.providers import ProviderDAO
 from minimax_code.storage.db import AsyncDatabase, Database, make_temp_database_path
 
 
@@ -196,6 +196,8 @@ def _make_client_with_model_handlers(
     client = IPCClient()
     setattr(client.server, "_model_prefs_dao", prefs_dao)
     setattr(client.server, "_model_prefs_dao_lock", asyncio.Lock())
+    setattr(client.server, "_provider_dao_for_model", ProviderDAO(prefs_dao._db))
+    setattr(client.server, "_provider_dao_for_model_lock", asyncio.Lock())
     return client
 
 

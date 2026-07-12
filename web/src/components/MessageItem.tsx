@@ -416,7 +416,7 @@ function FileReferenceCard({ refInfo }: { refInfo: FileReference }): JSX.Element
       {refInfo.line && (
         <span
           data-testid="file-reference-line"
-          className="inline-flex shrink-0 items-center gap-0.5 rounded border border-minimax-border bg-minimax-panel px-1 py-0.5 text-[10px] text-minimax-muted"
+          className="inline-flex shrink-0 items-center gap-0.5 rounded border border-minimax-border bg-minimax-panel px-1 py-0.5 text-[11px] text-minimax-muted"
         >
           <Hash size={9} />
           {refInfo.line}
@@ -529,13 +529,11 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
   const isCancelling = status === "cancelling";
   const isCancelled = status === "cancelled";
   const showStatus = isAssistant && status !== "completed";
+  const showSummary = isAssistant && status === "completed";
 
   // Per-turn summary is only meaningful for assistant messages.
   // We pull the full message log from the chat store so we can count
   // tool calls that happened in the same turn.
-  // Optimization: use a stable selector key (message count) to avoid
-  // unnecessary re-computation when unrelated parts of the store change.
-  const msgCount = useChat((s) => s.messages.length);
   const messages = useChat((s) => s.messages);
   const [messageCopied, setMessageCopied] = useState(false);
   const messageCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -544,7 +542,7 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
     const idx = messages.findIndex((m) => m.id === message.id);
     if (idx < 0) return { thinkingCount: 0, filesViewed: 0, filesModified: 0 };
     return summarizeTurn(messages, idx, message);
-  }, [isAssistant, msgCount, messages, message]);
+  }, [isAssistant, messages, message]);
   const renderText = useMemo(
     () => (isUser ? message.text : normalizeMarkdownForRender(message.text || "")),
     [isUser, message.text],
@@ -594,7 +592,7 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
               {message.tool_name ?? "tool"}
             </span>
             {message.tool_args && (
-              <span className="truncate text-[10px] text-minimax-muted/70">
+              <span className="truncate text-[11px] text-minimax-muted/70">
                 {Object.keys(message.tool_args).join(", ")}
               </span>
             )}
@@ -654,7 +652,7 @@ export const MessageItem = React.memo(function MessageItem({ message, testId }: 
             {messageCopied ? <Check size={12} /> : <Copy size={12} />}
           </button>
         )}
-        {isAssistant && summary && (
+        {showSummary && summary && (
           <div
             data-testid={`message-summary-${message.id}`}
             className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 border-b border-minimax-border/40 pb-1.5 text-[11px] text-minimax-muted"

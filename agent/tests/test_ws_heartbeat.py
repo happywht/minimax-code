@@ -51,6 +51,25 @@ async def test_heartbeat_starts_on_first_client() -> None:
 
 
 @pytest.mark.asyncio
+async def test_disconnect_during_ready_is_cleaned_without_error_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A client may close immediately after the upgrade is accepted."""
+    from starlette.websockets import WebSocketDisconnect
+
+    mgr = _make_manager()
+    ws = _make_mock_ws()
+    ws.send_json.side_effect = WebSocketDisconnect(code=1006)
+
+    with pytest.raises(WebSocketDisconnect):
+        await mgr.on_connect(ws)
+
+    assert ws not in mgr._clients
+    assert mgr._ping_task is None
+    assert not [record for record in caplog.records if record.levelno >= 40]
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_stops_on_last_client_disconnect() -> None:
     """Ping task should be cancelled when all clients disconnect."""
     mgr = _make_manager()

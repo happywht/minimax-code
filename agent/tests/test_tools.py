@@ -298,10 +298,9 @@ async def test_edit_file_rejects_traversal(workspace: Path) -> None:
 @pytest.mark.asyncio
 async def test_exec_command_echo(workspace: Path) -> None:
     tool = ExecCommandTool()
-    cmd = ["python", "-c", "print('hello world')"] if sys.platform != "win32" else [
-        "python", "-c", "print('hello world')"
-    ]
-    result = await tool.run(cmd=cmd)
+    script = workspace / "echo_test.py"
+    script.write_text("print('hello world')\n", encoding="utf-8")
+    result = await tool.run(cmd=[sys.executable, str(script)])
     assert result.success, result.error
     assert "hello world" in result.output["stdout"]
     assert result.output["exit_code"] == 0
@@ -310,10 +309,9 @@ async def test_exec_command_echo(workspace: Path) -> None:
 @pytest.mark.asyncio
 async def test_exec_command_nonzero_exit(workspace: Path) -> None:
     tool = ExecCommandTool()
-    cmd = ["python", "-c", "import sys; sys.exit(3)"] if sys.platform != "win32" else [
-        "python", "-c", "import sys; sys.exit(3)"
-    ]
-    result = await tool.run(cmd=cmd)
+    script = workspace / "exit_test.py"
+    script.write_text("raise SystemExit(3)\n", encoding="utf-8")
+    result = await tool.run(cmd=[sys.executable, str(script)])
     assert not result.success
     assert "code 3" in (result.error or "")
     assert result.output["exit_code"] == 3
@@ -322,10 +320,9 @@ async def test_exec_command_nonzero_exit(workspace: Path) -> None:
 @pytest.mark.asyncio
 async def test_exec_command_timeout(workspace: Path) -> None:
     tool = ExecCommandTool()
-    cmd = ["python", "-c", "import time; time.sleep(10)"] if sys.platform != "win32" else [
-        "python", "-c", "import time; time.sleep(10)"
-    ]
-    result = await tool.run(cmd=cmd, timeout=1)
+    script = workspace / "timeout_test.py"
+    script.write_text("import time\ntime.sleep(10)\n", encoding="utf-8")
+    result = await tool.run(cmd=[sys.executable, str(script)], timeout=1)
     assert not result.success
     assert "timed out" in (result.error or "")
     assert result.output["timed_out"] is True

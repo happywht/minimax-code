@@ -14,6 +14,7 @@ import { useScheduleStore, useTaskStore } from "../../stores";
 import { toast } from "../ErrorBoundary";
 import type { ScheduledJob } from "../../types/ipc";
 import { formatTime } from "../../lib/time";
+import { requestConfirmation } from "../ConfirmationDialog";
 
 export { ScheduledTab };
 
@@ -42,23 +43,29 @@ function ScheduledTab(): JSX.Element {
         </p>
       </div>
       <div className="rounded-md border border-minimax-border bg-minimax-panel/40 p-3">
-        <div className="grid grid-cols-12 gap-2 text-xs">
-          <input data-testid="settings-job-name" value={draftName}
-            onChange={(e) => setDraftName(e.target.value)} placeholder="job name"
-            className="col-span-3 rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-minimax-fg" />
-          <input data-testid="settings-job-cron" value={draftCron}
-            onChange={(e) => setDraftCron(e.target.value)} placeholder="cron expr"
-            className="col-span-3 rounded border border-minimax-border bg-minimax-bg px-2 py-1 font-mono text-minimax-fg" />
-          <input data-testid="settings-job-prompt" value={draftPrompt}
-            onChange={(e) => setDraftPrompt(e.target.value)} placeholder="prompt payload"
-            className="col-span-4 rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-minimax-fg" />
+        <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-12">
+          <label htmlFor="scheduled-job-name" className="sr-only">Job Name</label>
+          <input id="scheduled-job-name" name="scheduled-job-name" autoComplete="off"
+            data-testid="settings-job-name" value={draftName}
+            onChange={(e) => setDraftName(e.target.value)} placeholder="e.g. Nightly review…"
+            className="rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-minimax-fg sm:col-span-3" />
+          <label htmlFor="scheduled-job-cron" className="sr-only">Cron Expression</label>
+          <input id="scheduled-job-cron" name="scheduled-job-cron" autoComplete="off" spellCheck={false}
+            data-testid="settings-job-cron" value={draftCron}
+            onChange={(e) => setDraftCron(e.target.value)} placeholder="e.g. 0 2 * * *…"
+            className="rounded border border-minimax-border bg-minimax-bg px-2 py-1 font-mono text-minimax-fg sm:col-span-3" />
+          <label htmlFor="scheduled-job-prompt" className="sr-only">Prompt</label>
+          <input id="scheduled-job-prompt" name="scheduled-job-prompt" autoComplete="off"
+            data-testid="settings-job-prompt" value={draftPrompt}
+            onChange={(e) => setDraftPrompt(e.target.value)} placeholder="e.g. Review recent changes…"
+            className="rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-minimax-fg sm:col-span-4" />
           <button type="button" data-testid="settings-job-add"
             disabled={!draftName.trim() || !draftCron.trim()}
             onClick={async () => {
               const job = await create({ name: draftName.trim(), cron: draftCron.trim(), prompt: draftPrompt.trim() });
               if (job) { toast.success("Job created", job.name); setDraftName(""); setDraftCron(""); setDraftPrompt(""); }
             }}
-            className="col-span-2 inline-flex items-center justify-center gap-1 rounded border border-minimax-accent/40 bg-minimax-accent/10 px-2 py-1 text-xs text-minimax-accent hover:bg-minimax-accent/20 disabled:cursor-not-allowed disabled:opacity-50">
+            className="inline-flex items-center justify-center gap-1 rounded border border-minimax-accent/40 bg-minimax-accent/10 px-2 py-1 text-xs text-minimax-accent hover:bg-minimax-accent/20 disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-2">
             <Save size={12} /> Create
           </button>
         </div>
@@ -70,7 +77,14 @@ function ScheduledTab(): JSX.Element {
         {jobs.map((j) => (
           <ScheduledJobRow key={j.id} job={j}
             onToggle={(enabled) => void setEnabled(j.id, enabled)}
-            onDelete={() => void remove(j.id)}
+            onDelete={async () => {
+              const accepted = await requestConfirmation({
+                title: `Delete scheduled job ${j.name}?`,
+                description: "The job will stop running and its schedule will be permanently removed.",
+                confirmLabel: "Delete Job",
+              });
+              if (accepted) await remove(j.id);
+            }}
             onRunNow={() => void runNow(j.id)}
           />
         ))}

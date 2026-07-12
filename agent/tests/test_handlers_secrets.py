@@ -183,6 +183,23 @@ async def test_set_writes_to_keyring(
 
 
 @pytest.mark.asyncio
+async def test_set_rebuilds_active_llm(
+    handlers: dict[str, Any],
+    fake_keyring: FakeKeyring,
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock
+    from minimax_code import app
+
+    rebuild = AsyncMock()
+    monkeypatch.setattr(app, "rebuild_subagent_llm", rebuild)
+    ctx = _CapturedReply()
+    await handlers["set"]({"value": "sk-live"}, ctx)
+    rebuild.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
 async def test_set_strips_whitespace(
     handlers: dict[str, Any], fake_keyring: FakeKeyring, clean_env: None
 ) -> None:
@@ -240,6 +257,24 @@ async def test_clear_removes_keyring_entry(
     assert ctx.error_value is None
     assert ctx.reply_value == {"configured": False, "source": "none"}
     assert (secrets.KEYRING_SERVICE, secrets.KEYRING_USERNAME) not in fake_keyring.store
+
+
+@pytest.mark.asyncio
+async def test_clear_rebuilds_active_llm(
+    handlers: dict[str, Any],
+    fake_keyring: FakeKeyring,
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock
+    from minimax_code import app
+
+    fake_keyring.store[(secrets.KEYRING_SERVICE, secrets.KEYRING_USERNAME)] = "sk-live"
+    rebuild = AsyncMock()
+    monkeypatch.setattr(app, "rebuild_subagent_llm", rebuild)
+    ctx = _CapturedReply()
+    await handlers["clear"](None, ctx)
+    rebuild.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio

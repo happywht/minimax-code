@@ -3,8 +3,8 @@
  *
  * Tracks the preview server URL, SSE connection status,
  * and provides a manual reload trigger. The preview URL
- * defaults to ``http://127.0.0.1:8766`` and is configurable
- * via ``VITE_PREVIEW_URL``.
+ * shares the Agent origin in production and is configurable via
+ * ``VITE_PREVIEW_URL`` during development.
  */
 import { create } from "zustand";
 
@@ -24,11 +24,20 @@ export interface PreviewState {
   reload: () => void;
 }
 
-const DEFAULT_URL =
-  import.meta.env.VITE_PREVIEW_URL ?? "http://127.0.0.1:8766";
+function defaultPreviewUrl(): string {
+  const configured = import.meta.env.VITE_PREVIEW_URL;
+  if (configured) return configured.replace(/\/$/, "");
+  if (import.meta.env.DEV) {
+    return (import.meta.env.VITE_AGENT_URL ?? "http://127.0.0.1:8765").replace(/\/$/, "");
+  }
+  if (typeof window !== "undefined" && window.location.origin) {
+    return window.location.origin;
+  }
+  return "http://127.0.0.1:8765";
+}
 
 export const usePreviewStore = create<PreviewState>((set) => ({
-  url: DEFAULT_URL,
+  url: defaultPreviewUrl(),
   filePath: "index.html",
   connected: false,
   reloadCounter: 0,

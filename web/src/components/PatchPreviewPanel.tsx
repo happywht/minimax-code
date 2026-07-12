@@ -130,7 +130,7 @@ export function PatchPreviewPanel({
                   refreshAndReset({ scope: key });
                 }}
                 className={
-                  "flex h-6 items-center gap-1 rounded px-1.5 text-[10px] " +
+                  "flex h-6 items-center gap-1 rounded px-1.5 text-[11px] " +
                   (active
                     ? "bg-minimax-accent/15 text-minimax-accent"
                     : "text-minimax-muted hover:bg-minimax-border/70 hover:text-minimax-fg")
@@ -192,7 +192,7 @@ export function PatchPreviewPanel({
                 data-testid={`${testId}-file-jump-${file.path}`}
                 onClick={() => jumpToFile(file)}
                 className={
-                  "inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-1 font-mono text-[10px] transition-colors duration-200 " +
+                  "inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-1 font-mono text-[11px] transition-colors duration-200 " +
                   (active
                     ? "bg-minimax-accent/15 text-minimax-accent"
                     : "text-minimax-muted hover:bg-minimax-border/60 hover:text-minimax-fg")
@@ -277,20 +277,20 @@ function PatchFileCard({
             {file.path}
           </div>
           {file.status === "renamed" && (
-            <div className="truncate font-mono text-[10px] text-minimax-muted">
+            <div className="truncate font-mono text-[11px] text-minimax-muted">
               {file.old_path} {"->"} {file.new_path}
             </div>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <StatusBadge status={file.status} />
-          <span className="font-mono text-[10px] text-status-success">+{file.additions}</span>
-          <span className="font-mono text-[10px] text-status-error">-{file.deletions}</span>
+          <span className="font-mono text-[11px] text-status-success">+{file.additions}</span>
+          <span className="font-mono text-[11px] text-status-error">-{file.deletions}</span>
         </div>
       </div>
 
       {file.binary ? (
-        <div className="mt-1.5 rounded bg-minimax-panel px-2 py-1 text-[10px] text-minimax-muted">
+        <div className="mt-1.5 rounded bg-minimax-panel px-2 py-1 text-[11px] text-minimax-muted">
           Binary file changed
         </div>
       ) : (
@@ -371,7 +371,7 @@ function PatchHunkCard({
       className="overflow-hidden rounded border border-minimax-border bg-minimax-panel"
     >
       <div className="flex items-center justify-between gap-2 border-b border-minimax-border/60 px-2 py-1">
-        <span className="min-w-0 truncate font-mono text-[10px] text-minimax-muted">
+        <span className="min-w-0 truncate font-mono text-[11px] text-minimax-muted">
           @@ -{hunk.old_start},{hunk.old_lines} +{hunk.new_start},{hunk.new_lines} @@ {hunk.header}
         </span>
         <div className="flex shrink-0 items-center gap-1">
@@ -415,13 +415,13 @@ function PatchHunkCard({
       {decision === "error" && error && (
         <div
           data-testid={`patch-hunk-${hunkKeyValue}-error`}
-          className="border-b border-red-500/20 bg-red-500/10 px-2 py-1 text-[10px] text-status-error"
+          className="border-b border-red-500/20 bg-red-500/10 px-2 py-1 text-[11px] text-status-error"
           title={error}
         >
           Operation failed
         </div>
       )}
-      <pre className="max-h-28 overflow-hidden px-2 py-1 font-mono text-[10px] leading-relaxed">
+      <pre className="max-h-28 overflow-hidden px-2 py-1 font-mono text-[11px] leading-relaxed">
         {previewLines.map((line, idx) => (
           <PatchLineRow key={idx} line={line} />
         ))}
@@ -433,41 +433,41 @@ function PatchHunkCard({
 function HunkDecisionBadge({ decision }: { decision?: HunkDecision }): JSX.Element {
   if (decision === "applying") {
     return (
-      <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1 py-0.5 text-[10px] text-emerald-300">
+      <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1 py-0.5 text-[11px] text-emerald-300">
         staging
       </span>
     );
   }
   if (decision === "rejecting") {
     return (
-      <span className="rounded border border-red-500/30 bg-red-500/10 px-1 py-0.5 text-[10px] text-status-error">
+      <span className="rounded border border-red-500/30 bg-red-500/10 px-1 py-0.5 text-[11px] text-status-error">
         rejecting
       </span>
     );
   }
   if (decision === "error") {
     return (
-      <span className="rounded border border-red-500/30 bg-red-500/10 px-1 py-0.5 text-[10px] text-status-error">
+      <span className="rounded border border-red-500/30 bg-red-500/10 px-1 py-0.5 text-[11px] text-status-error">
         failed
       </span>
     );
   }
   if (decision === "approved") {
     return (
-      <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1 py-0.5 text-[10px] text-emerald-300">
+      <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1 py-0.5 text-[11px] text-emerald-300">
         approved
       </span>
     );
   }
   if (decision === "rejected") {
     return (
-      <span className="rounded border border-red-500/30 bg-red-500/10 px-1 py-0.5 text-[10px] text-status-error">
+      <span className="rounded border border-red-500/30 bg-red-500/10 px-1 py-0.5 text-[11px] text-status-error">
         rejected
       </span>
     );
   }
   return (
-    <span className="rounded border border-minimax-border bg-minimax-bg/40 px-1 py-0.5 text-[10px] text-minimax-muted">
+    <span className="rounded border border-minimax-border bg-minimax-bg/40 px-1 py-0.5 text-[11px] text-minimax-muted">
       pending
     </span>
   );
@@ -482,7 +482,7 @@ function StatusBadge({ status }: { status: PatchFile["status"] }): JSX.Element {
         : status === "renamed"
           ? "border-blue-500/30 bg-blue-500/10 text-blue-300"
           : "border-minimax-border bg-minimax-panel text-minimax-muted";
-  return <span className={"rounded border px-1 py-0.5 text-[10px] " + cls}>{status}</span>;
+  return <span className={"rounded border px-1 py-0.5 text-[11px] " + cls}>{status}</span>;
 }
 
 function hunkKey(file: PatchFile, hunk: PatchHunk, index: number): string {

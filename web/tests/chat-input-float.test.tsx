@@ -14,6 +14,23 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MessageInput } from "../src/components/MessageInput";
 import { useChat, useModelStore, usePermissionStore } from "../src/stores";
 
+const TEST_MODELS = [
+  {
+    id: "MiniMax-M3",
+    name: "MiniMax-M3",
+    provider: "MiniMax",
+    context_window: 200_000,
+    supports_tools: true,
+  },
+  {
+    id: "MiniMax-M3-fast",
+    name: "MiniMax-M3-fast",
+    provider: "MiniMax",
+    context_window: 64_000,
+    supports_tools: true,
+  },
+];
+
 // Mock the typed IPC client so the model store has data to render
 // and we don't round-trip to Tauri.
 vi.mock("../src/ipc", async () => {
@@ -23,22 +40,7 @@ vi.mock("../src/ipc", async () => {
     typedIPC: {
       ...actual.typedIPC,
       listModels: vi.fn(async () => ({
-        models: [
-          {
-            id: "MiniMax-M3",
-            name: "MiniMax-M3",
-            provider: "MiniMax",
-            context_window: 200_000,
-            supports_tools: true,
-          },
-          {
-            id: "MiniMax-M3-fast",
-            name: "MiniMax-M3-fast",
-            provider: "MiniMax",
-            context_window: 64_000,
-            supports_tools: true,
-          },
-        ],
+        models: TEST_MODELS,
         current: "MiniMax-M3",
       })),
       setCurrentModel: vi.fn(async ({ model_id }: { model_id: string }) => ({
@@ -52,7 +54,7 @@ describe("MessageInput — bottom composer", () => {
   beforeEach(() => {
     useChat.setState({ messages: [], status: "idle", error: null, agentReady: false });
     usePermissionStore.setState({ alwaysAllow: false });
-    useModelStore.setState({ models: [], current: null });
+    useModelStore.setState({ models: TEST_MODELS, current: "MiniMax-M3" });
   });
 
   it("is an in-flow bottom composer with capped width", () => {

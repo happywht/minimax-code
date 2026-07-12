@@ -326,6 +326,18 @@ export interface TaskProgressData {
   status: "running" | "done" | "error" | "cancelled";
 }
 
+/** Raw message row returned by `message.list` before UI normalization. */
+export interface PersistedMessage {
+  id: string;
+  role: MessageRole;
+  text?: string;
+  content?: string;
+  status?: MessageStatus;
+  created_at: number;
+  metadata?: MessageMetadata;
+  tool_call_id?: string;
+}
+
 export type AgentRunStatus =
   | "planning"
   | "running"
@@ -435,6 +447,7 @@ export interface ListSessionsResult {
 export interface CreateSessionResult {
   session_id: string;
   session?: Session;
+  reused?: boolean;
   worktree_path?: string;
   base_branch?: string;
 }
@@ -446,7 +459,7 @@ export interface UpdateSessionResult {
 }
 
 export interface ListMessagesResult {
-  messages: Message[];
+  messages: PersistedMessage[];
 }
 
 export interface ListModelsResult {

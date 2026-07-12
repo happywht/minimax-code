@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shlex
+import re
 import sys
 import time
 from collections.abc import Mapping
@@ -196,6 +196,16 @@ def _is_dangerous_cmd(cmd: list[str]) -> str | None:
     # Unconditional block — e.g. sudo, shutdown.
     if base in _UNCONDITIONAL_BLOCK:
         return f"'{cmd[0]}' is blocked (privilege escalation / destructive)"
+
+    if base in {"rm", "rmdir"}:
+        lowered = [arg.lower() for arg in cmd[1:]]
+        recursive_force = any("r" in arg and "f" in arg for arg in lowered if arg.startswith("-"))
+        root_target = any(
+            arg in {"/", "\\"} or re.fullmatch(r"[a-z]:[\\/]?", arg) is not None
+            for arg in lowered
+        )
+        if recursive_force and root_target:
+            return f"'{cmd[0]}' is blocked (destructive root deletion)"
 
     # Arg-level checks.
     if base in _DENY_COMMANDS:

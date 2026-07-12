@@ -178,6 +178,35 @@ def test_set_api_key_propagates_backend_failure(
         secrets.set_api_key("sk-will-fail")
 
 
+def test_builtin_provider_key_falls_back_to_legacy_global_key(
+    fake_keyring: FakeKeyring, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The built-in MiniMax provider remains compatible with the legacy key."""
+    monkeypatch.setenv(secrets.ENV_VAR, "sk-legacy-minimax")
+    assert secrets.get_provider_key("builtin-minimax") == "sk-legacy-minimax"
+    assert secrets.has_provider_key("builtin-minimax") is True
+
+
+def test_custom_provider_does_not_reuse_legacy_minimax_key(
+    fake_keyring: FakeKeyring, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A custom provider must have its own credential."""
+    monkeypatch.setenv(secrets.ENV_VAR, "sk-legacy-minimax")
+    assert secrets.get_provider_key("custom-openai") is None
+    assert secrets.has_provider_key("custom-openai") is False
+
+
+def test_custom_provider_uses_provider_specific_key(
+    fake_keyring: FakeKeyring, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Provider-specific credentials still take precedence."""
+    monkeypatch.setenv(secrets.ENV_VAR, "sk-legacy-minimax")
+    fake_keyring.store[
+        (secrets.KEYRING_SERVICE, "provider:custom-openai")
+    ] = "sk-custom"
+    assert secrets.get_provider_key("custom-openai") == "sk-custom"
+
+
 # ---------------------------------------------------------------------------
 # LLM integration smoke test
 # ---------------------------------------------------------------------------

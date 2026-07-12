@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useProviderStore } from "../../stores";
 import { toast } from "../ErrorBoundary";
+import { requestConfirmation } from "../ConfirmationDialog";
 import type { ProviderInfo, ProviderModel } from "../../types/ipc";
 
 export { ProvidersTab };
@@ -130,6 +131,12 @@ function ProvidersTab(): JSX.Element {
       toast.error("Cannot delete", "The built-in MiniMax provider cannot be removed.");
       return;
     }
+    const accepted = await requestConfirmation({
+      title: `Delete ${p.name}?`,
+      description: "This removes the provider, its model registry, and its saved API key from MiniMax Code. This action cannot be undone.",
+      confirmLabel: "Delete Provider",
+    });
+    if (!accepted) return;
     await remove(p.id);
     toast.success("Provider deleted", p.name);
   };
@@ -139,15 +146,21 @@ function ProvidersTab(): JSX.Element {
     if (ok) toast.success("API key saved");
   };
 
-  const handleClearKey = async (providerId: string) => {
-    const ok = await clearApiKey(providerId);
+  const handleClearKey = async (provider: ProviderInfo) => {
+    const accepted = await requestConfirmation({
+      title: `Clear ${provider.name} API key?`,
+      description: "Real model requests through this provider will stop until you save another key. Existing conversations are not deleted.",
+      confirmLabel: "Clear API Key",
+    });
+    if (!accepted) return;
+    const ok = await clearApiKey(provider.id);
     if (ok) toast.success("API key cleared");
   };
 
   return (
-    <section data-testid="settings-providers" className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
+    <section data-testid="settings-providers" className="min-w-0 space-y-4">
+      <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
           <h2 className="text-sm font-medium">LLM Providers</h2>
           <p className="mt-0.5 text-[11px] text-minimax-muted">
             Manage LLM providers and API keys. Models from enabled providers appear in the model selector.
@@ -155,7 +168,7 @@ function ProvidersTab(): JSX.Element {
         </div>
         <button type="button" data-testid="settings-provider-add"
           onClick={() => { resetForm(); setShowForm(true); }}
-          className="inline-flex items-center gap-1 rounded border border-minimax-accent/40 bg-minimax-accent/10 px-2 py-1 text-xs text-minimax-accent hover:bg-minimax-accent/20"
+          className="inline-flex shrink-0 items-center gap-1 rounded border border-minimax-accent/40 bg-minimax-accent/10 px-2 py-1 text-xs text-minimax-accent hover:bg-minimax-accent/20"
         >
           <Plus size={12} /> Add Provider
         </button>
@@ -187,42 +200,49 @@ function ProvidersTab(): JSX.Element {
           )}
 
           {/* Main fields */}
-          <div className="grid grid-cols-12 gap-2">
-            <div className="col-span-4">
-              <label className="text-[11px] text-minimax-muted">Name</label>
-              <input value={formName} onChange={(e) => setFormName(e.target.value)}
-                placeholder="e.g. DeepSeek"
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
+            <div className="min-w-0 sm:col-span-4">
+              <label htmlFor="provider-form-name" className="text-[11px] text-minimax-muted">Name</label>
+              <input id="provider-form-name" name="provider-name" autoComplete="off"
+                value={formName} onChange={(e) => setFormName(e.target.value)}
+                placeholder="e.g. DeepSeek…"
                 className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs text-minimax-fg" />
             </div>
-            <div className="col-span-3">
-              <label className="text-[11px] text-minimax-muted">Protocol</label>
-              <select value={formProtocol} onChange={(e) => setFormProtocol(e.target.value as "anthropic" | "openai")}
+            <div className="min-w-0 sm:col-span-3">
+              <label htmlFor="provider-form-protocol" className="text-[11px] text-minimax-muted">Protocol</label>
+              <select id="provider-form-protocol" name="provider-protocol"
+                value={formProtocol} onChange={(e) => setFormProtocol(e.target.value as "anthropic" | "openai")}
                 className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs text-minimax-fg">
                 <option value="openai">OpenAI</option>
                 <option value="anthropic">Anthropic</option>
               </select>
             </div>
-            <div className="col-span-5">
-              <label className="text-[11px] text-minimax-muted">Base URL</label>
-              <input value={formBaseUrl} onChange={(e) => setFormBaseUrl(e.target.value)}
-                placeholder="https://api.example.com/v1"
+            <div className="min-w-0 sm:col-span-5">
+              <label htmlFor="provider-form-base-url" className="text-[11px] text-minimax-muted">Base URL</label>
+              <input id="provider-form-base-url" name="provider-base-url" type="url"
+                autoComplete="off" spellCheck={false}
+                value={formBaseUrl} onChange={(e) => setFormBaseUrl(e.target.value)}
+                placeholder="https://api.example.com/v1…"
                 className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs font-mono text-minimax-fg" />
             </div>
           </div>
 
           {/* API key */}
           <div>
-            <label className="text-[11px] text-minimax-muted">API Key {editingId ? "(leave empty to keep current)" : ""}</label>
+            <label htmlFor="provider-form-api-key" className="text-[11px] text-minimax-muted">API Key {editingId ? "(leave empty to keep current)" : ""}</label>
             <div className="mt-0.5 flex gap-2">
-              <div className="relative flex-1">
+              <div className="relative min-w-0 flex-1">
                 <input
+                  id="provider-form-api-key"
+                  name="provider-api-key"
                   type={revealApiKey ? "text" : "password"}
                   value={formApiKey} onChange={(e) => setFormApiKey(e.target.value)}
-                  placeholder={editingId ? "••••••••" : "sk-..."}
-                  autoComplete="off" spellCheck={false}
+                  placeholder={editingId ? "Leave empty to keep current…" : "sk-…"}
+                  autoComplete="new-password" spellCheck={false}
                   className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 pr-8 font-mono text-xs text-minimax-fg"
                 />
                 <button type="button" onClick={() => setRevealApiKey((v) => !v)}
+                  aria-label={revealApiKey ? "Hide API key" : "Show API key"}
                   className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-minimax-muted hover:text-minimax-fg">
                   {revealApiKey ? <EyeOff size={12} /> : <Eye size={12} />}
                 </button>
@@ -240,20 +260,24 @@ function ProvidersTab(): JSX.Element {
                     <span className="flex-1 text-minimax-fg">{m.name || m.id}</span>
                     <span className="text-[11px] text-minimax-muted">{(m.context_window / 1000).toFixed(0)}k</span>
                     <button type="button" onClick={() => removeModelFromList(i)}
+                      aria-label={`Remove ${m.name || m.id}`}
                       className="text-minimax-muted hover:text-status-error"><Trash2 size={10} /></button>
                   </li>
                 ))}
               </ul>
             )}
-            <div className="mt-1.5 grid grid-cols-12 gap-1.5">
-              <input value={formModelId} onChange={(e) => setFormModelId(e.target.value)}
-                placeholder="model id" className="col-span-3 rounded border border-minimax-border bg-minimax-bg px-2 py-0.5 text-[11px] text-minimax-fg" />
-              <input value={formModelName} onChange={(e) => setFormModelName(e.target.value)}
-                placeholder="display name" className="col-span-3 rounded border border-minimax-border bg-minimax-bg px-2 py-0.5 text-[11px] text-minimax-fg" />
-              <input value={formModelCtx} onChange={(e) => setFormModelCtx(e.target.value)}
-                placeholder="ctx window" className="col-span-2 rounded border border-minimax-border bg-minimax-bg px-2 py-0.5 text-[11px] text-minimax-fg" />
+            <div className="mt-1.5 grid grid-cols-1 gap-1.5 sm:grid-cols-12">
+              <input name="provider-model-id" aria-label="Model ID" autoComplete="off" spellCheck={false}
+                value={formModelId} onChange={(e) => setFormModelId(e.target.value)}
+                placeholder="model id…" className="min-w-0 rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-[11px] text-minimax-fg sm:col-span-3 sm:py-0.5" />
+              <input name="provider-model-name" aria-label="Model display name" autoComplete="off"
+                value={formModelName} onChange={(e) => setFormModelName(e.target.value)}
+                placeholder="display name…" className="min-w-0 rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-[11px] text-minimax-fg sm:col-span-3 sm:py-0.5" />
+              <input name="provider-model-context" aria-label="Context window" type="number" inputMode="numeric" min="1"
+                value={formModelCtx} onChange={(e) => setFormModelCtx(e.target.value)}
+                placeholder="context…" className="min-w-0 rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-[11px] text-minimax-fg sm:col-span-2 sm:py-0.5" />
               <button type="button" onClick={addModelToList} disabled={!formModelId.trim()}
-                className="col-span-4 inline-flex items-center justify-center gap-1 rounded border border-minimax-accent/40 bg-minimax-accent/10 px-2 py-0.5 text-[11px] text-minimax-accent hover:bg-minimax-accent/20 disabled:opacity-50">
+                className="inline-flex items-center justify-center gap-1 rounded border border-minimax-accent/40 bg-minimax-accent/10 px-2 py-1 text-[11px] text-minimax-accent hover:bg-minimax-accent/20 disabled:opacity-50 sm:col-span-4 sm:py-0.5">
                 <Plus size={10} /> Add Model
               </button>
             </div>
@@ -288,7 +312,7 @@ function ProvidersTab(): JSX.Element {
               onEdit={() => startEdit(p)}
               onDelete={() => void handleDelete(p)}
               onSetKey={(key) => void handleSetKey(p.id, key)}
-              onClearKey={() => void handleClearKey(p.id)}
+              onClearKey={() => void handleClearKey(p)}
             />
           ))}
         </ul>
@@ -317,11 +341,11 @@ function ProviderCard({ provider, onEdit, onDelete, onSetKey, onClearKey }: {
     <li data-testid={`settings-provider-${provider.id}`}
       className="rounded-md border border-minimax-border bg-minimax-panel/40">
       {/* Header row */}
-      <div className="flex items-center gap-2 px-3 py-2.5">
+      <div className="flex min-w-0 items-start gap-2 px-3 py-2.5">
         <Globe size={14} className="shrink-0 text-minimax-accent" />
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <span className="truncate text-xs font-medium text-minimax-fg">{provider.name}</span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="max-w-full truncate text-xs font-medium text-minimax-fg">{provider.name}</span>
             <span className={`rounded px-1 py-0.5 text-[11px] font-mono ${protocolColor}`}>
               {provider.protocol}
             </span>
@@ -338,6 +362,7 @@ function ProviderCard({ provider, onEdit, onDelete, onSetKey, onClearKey }: {
         </div>
         <button type="button" onClick={() => setExpanded((v) => !v)}
           data-testid={`settings-provider-${provider.id}-expand`}
+          aria-label={`${expanded ? "Collapse" : "Expand"} ${provider.name}`}
           className="shrink-0 rounded p-1 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg">
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </button>
@@ -375,17 +400,21 @@ function ProviderCard({ provider, onEdit, onDelete, onSetKey, onClearKey }: {
           {/* API key management */}
           <div>
             <h4 className="text-[11px] font-medium text-minimax-muted mb-1">API Key</h4>
-            <div className="flex gap-2">
-              <div className="relative flex-1">
+            <div className="flex min-w-0 flex-col gap-2 sm:flex-row">
+              <div className="relative min-w-0 flex-1">
                 <input
+                  id={`provider-${provider.id}-api-key`}
+                  name={`provider-${provider.id}-api-key`}
+                  aria-label={`${provider.name} API key`}
                   type={reveal ? "text" : "password"}
                   data-testid={`settings-provider-${provider.id}-key-input`}
                   value={keyDraft} onChange={(e) => setKeyDraft(e.target.value)}
                   placeholder={provider.api_key_configured ? "Replace key…" : "Enter API key…"}
-                  autoComplete="off" spellCheck={false}
+                  autoComplete="new-password" spellCheck={false}
                   className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 pr-8 font-mono text-[11px] text-minimax-fg"
                 />
                 <button type="button" onClick={() => setReveal((v) => !v)}
+                  aria-label={reveal ? `Hide ${provider.name} API key` : `Show ${provider.name} API key`}
                   className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-minimax-muted hover:text-minimax-fg">
                   {reveal ? <EyeOff size={10} /> : <Eye size={10} />}
                 </button>

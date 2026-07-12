@@ -4,11 +4,11 @@
  * and see a result card appear in the chat stream once the run
  * completes.
  *
- * The mock backend (no API key / no Python agent) fabricates a
- * 5-stage progress stream in ~400ms, so the result card is
- * expected to surface well within the 15s window in the design.
+ * The real isolated Python backend runs with a deterministic mock LLM,
+ * so the result card is expected to surface within the 15s budget.
  */
 import { test, expect } from "@playwright/test";
+import { AGENT_BASE } from "./runtime-config";
 
 test("sub-agent: @-picker spawns a sub-agent and a result card appears", async ({
   page,
@@ -18,7 +18,7 @@ test("sub-agent: @-picker spawns a sub-agent and a result card appears", async (
   // already seeded by ``mockAgents``; against the live agent we
   // create it BEFORE the page mounts so the React
   // ``useEffect``-driven agent fetch sees the new row.
-  const seedResp = await page.request.post("http://127.0.0.1:8765/rpc", {
+  const seedResp = await page.request.post(`${AGENT_BASE}/rpc`, {
     data: {
       jsonrpc: "2.0",
       id: "seed-general",
@@ -53,18 +53,16 @@ test("sub-agent: @-picker spawns a sub-agent and a result card appears", async (
   );
   await expect(generalItem).toBeVisible();
 
-  // Click the agent to spawn. The mock backend emits a 5-event
-  // progress stream and the SubAgentPanel should render at least
-  // one row within the 15s budget.
+  // Click the agent to spawn. The right-rail SubAgentPanel should render
+  // at least one row while the isolated backend handles the run.
   await generalItem.click();
   await expect(
-    page.getByTestId("sub-agent-panel-list"),
+    page.getByTestId("right-panel-sub-panel-list"),
     "SubAgentPanel should render at least one row after the spawn",
   ).toBeVisible({ timeout: 10_000 });
 
   // A SubAgentResultCard should appear in the chat stream once the
-  // mock backend's "completed" event lands. The mock runs 5 events
-  // 80ms apart, so a 10s budget is comfortable.
+  // backend's completed event lands.
   const resultCard = page.getByTestId("sub-agent-result");
   await expect(resultCard).toBeVisible({ timeout: 15_000 });
   await expect(

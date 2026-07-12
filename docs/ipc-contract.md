@@ -205,7 +205,7 @@ on the next `readline() == ""`.
 | `terminal.list`            | req/res   | List recent in-memory terminal sessions. |
 | `runner.list`              | req/res   | List product-facing runner adapters. |
 | `runner.start`             | req/res   | Start a runner; `native` delegates to a terminal session. |
-| `session.create`           | req/res   | Reserved (storage-layer).                          |
+| `session.create`           | req/res   | Create a session; optionally reuse the selected empty local session. |
 | `session.list`             | req/res   | Reserved (storage-layer).                          |
 | `session.archive`          | req/res   | Reserved.                                          |
 | `session.delete`           | req/res   | Reserved.                                          |
@@ -213,7 +213,7 @@ on the next `readline() == ""`.
 | `workspace.list_worktrees` | req/res | List sessions whose `workspace_mode` is `worktree`. |
 | `workspace.delete_worktree` | req/res | Remove a managed worktree and mark the session local. |
 | `message.list`             | req/res   | Reserved.                                          |
-| `skill.list` / `skill.enable` / `skill.disable` / `skill.invoke` | req/res | Reserved (skills-system). |
+| `skill.list` / `skill.install` / `skill.uninstall` / `skill.enable` / `skill.disable` / `skill.invoke` | req/res | List, import, remove, configure, and invoke skills. |
 | `scheduler.*`              | req/res   | Reserved.                                          |
 | `agent.list` / `agent.spawn_subagent` | req/res | Sub-agent list and spawn. `agent.spawn_subagent` is keyed by `name` (`agents.name`); clients may also pass legacy `agent_id`, and the backend resolves by name first, then id. |
 | `mobile.*`                 | req/res   | Phase 2.                                            |

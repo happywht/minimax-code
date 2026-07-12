@@ -22,7 +22,7 @@
  * pinned to the *left* edge of the column. When collapsed, only the
  * strip and the expand button remain — the sections are hidden.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   Bot,
@@ -37,14 +37,7 @@ import {
   TerminalSquare,
   Users,
 } from "lucide-react";
-import { ProgressPanel } from "./ProgressPanel";
-import { PatchPreviewPanel } from "./PatchPreviewPanel";
 import { RunTimelinePanel } from "./RunTimelinePanel";
-import { SubAgentPanel } from "./SubAgentPanel";
-import { CodeReviewPanel } from "./CodeReviewPanel";
-import { TeamRunPanel } from "./TeamRunPanel";
-import { TerminalPanel } from "./TerminalPanel";
-import { RunnerPanel } from "./RunnerPanel";
 import { typedIPC } from "../ipc";
 import {
   usePatchPreviewStore,
@@ -56,6 +49,28 @@ import {
   useTerminalStore,
 } from "../stores";
 import type { AgentInfo } from "../types/ipc";
+
+const CodeReviewPanel = lazy(() =>
+  import("./CodeReviewPanel").then((module) => ({ default: module.CodeReviewPanel })),
+);
+const PatchPreviewPanel = lazy(() =>
+  import("./PatchPreviewPanel").then((module) => ({ default: module.PatchPreviewPanel })),
+);
+const ProgressPanel = lazy(() =>
+  import("./ProgressPanel").then((module) => ({ default: module.ProgressPanel })),
+);
+const RunnerPanel = lazy(() =>
+  import("./RunnerPanel").then((module) => ({ default: module.RunnerPanel })),
+);
+const SubAgentPanel = lazy(() =>
+  import("./SubAgentPanel").then((module) => ({ default: module.SubAgentPanel })),
+);
+const TeamRunPanel = lazy(() =>
+  import("./TeamRunPanel").then((module) => ({ default: module.TeamRunPanel })),
+);
+const TerminalPanel = lazy(() =>
+  import("./TerminalPanel").then((module) => ({ default: module.TerminalPanel })),
+);
 
 export interface RightPanelProps {
   testId?: string;
@@ -330,14 +345,18 @@ function InspectorContent({
   if (activeTab === "diff") {
     return (
       <section id={`${testId}-diff-panel`} role="tabpanel" data-testid={`${testId}-patch-body`}>
-        <PatchPreviewPanel testId={`${testId}-patch-panel`} />
+        <Suspense fallback={<InspectorPanelFallback />}>
+          <PatchPreviewPanel testId={`${testId}-patch-panel`} />
+        </Suspense>
       </section>
     );
   }
   if (activeTab === "progress") {
     return (
       <section id={`${testId}-progress-panel`} role="tabpanel" data-testid={`${testId}-progress-body`}>
-        <ProgressPanel testId={`${testId}-progress-panel`} />
+        <Suspense fallback={<InspectorPanelFallback />}>
+          <ProgressPanel testId={`${testId}-progress-panel`} />
+        </Suspense>
       </section>
     );
   }
@@ -370,35 +389,53 @@ function InspectorContent({
   if (activeTab === "subagents") {
     return (
       <section id={`${testId}-subagents-panel`} role="tabpanel" data-testid={`${testId}-sub-body`}>
-        <SubAgentPanel testId={`${testId}-sub-panel`} />
+        <Suspense fallback={<InspectorPanelFallback />}>
+          <SubAgentPanel testId={`${testId}-sub-panel`} />
+        </Suspense>
       </section>
     );
   }
   if (activeTab === "review") {
     return (
       <section id={`${testId}-review-panel`} role="tabpanel" data-testid={`${testId}-review-body`}>
-        <CodeReviewPanel testId={`${testId}-review-panel`} />
+        <Suspense fallback={<InspectorPanelFallback />}>
+          <CodeReviewPanel testId={`${testId}-review-panel`} />
+        </Suspense>
       </section>
     );
   }
   if (activeTab === "terminal") {
     return (
       <section id={`${testId}-terminal-panel`} role="tabpanel" data-testid={`${testId}-terminal-body`}>
-        <TerminalPanel testId={`${testId}-terminal-panel`} />
+        <Suspense fallback={<InspectorPanelFallback />}>
+          <TerminalPanel testId={`${testId}-terminal-panel`} />
+        </Suspense>
       </section>
     );
   }
   if (activeTab === "runner") {
     return (
       <section id={`${testId}-runner-panel`} role="tabpanel" data-testid={`${testId}-runner-body`}>
-        <RunnerPanel testId={`${testId}-runner-panel`} />
+        <Suspense fallback={<InspectorPanelFallback />}>
+          <RunnerPanel testId={`${testId}-runner-panel`} />
+        </Suspense>
       </section>
     );
   }
   return (
     <section id={`${testId}-teamruns-panel`} role="tabpanel" data-testid={`${testId}-teamrun-body`}>
-      <TeamRunPanel />
+      <Suspense fallback={<InspectorPanelFallback />}>
+        <TeamRunPanel />
+      </Suspense>
     </section>
+  );
+}
+
+function InspectorPanelFallback(): JSX.Element {
+  return (
+    <div className="flex min-h-24 items-center justify-center" aria-busy="true">
+      <Loader2 size={14} className="animate-spin text-minimax-muted" />
+    </div>
   );
 }
 

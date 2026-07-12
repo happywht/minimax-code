@@ -132,7 +132,7 @@ export function RunnerPanel({ testId = "runner-panel" }: RunnerPanelProps): JSX.
           data-testid={`${testId}-cwd`}
           value={cwd}
           onChange={(event) => setCwd(event.target.value)}
-          className="mt-1 h-7 w-full rounded border border-minimax-border bg-minimax-bg px-2 font-mono text-[10px] text-minimax-muted outline-none transition-colors duration-200 placeholder:text-minimax-muted/70 focus:border-minimax-accent/60"
+          className="mt-1 h-7 w-full rounded border border-minimax-border bg-minimax-bg px-2 font-mono text-[11px] text-minimax-muted outline-none transition-colors duration-200 placeholder:text-minimax-muted/70 focus:border-minimax-accent/60"
           placeholder="cwd (default workspace root)"
         />
       </form>
@@ -258,13 +258,13 @@ function OptionSelect<T extends string>({
   onChange: (value: T) => void;
 }): JSX.Element {
   return (
-    <label className="flex items-center gap-2 text-[10px] text-minimax-muted">
+    <label className="flex items-center gap-2 text-[11px] text-minimax-muted">
       <span className="w-14 shrink-0 uppercase tracking-wider">{label}</span>
       <select
         data-testid={testId}
         value={value}
         onChange={(event) => onChange(event.target.value as T)}
-        className="h-7 min-w-0 flex-1 rounded border border-minimax-border bg-minimax-bg px-2 font-mono text-[10px] text-minimax-fg outline-none transition-colors duration-200 focus:border-minimax-accent/60"
+        className="h-7 min-w-0 flex-1 rounded border border-minimax-border bg-minimax-bg px-2 font-mono text-[11px] text-minimax-fg outline-none transition-colors duration-200 focus:border-minimax-accent/60"
       >
         {options.map((option) => (
           <option key={option} value={option}>
@@ -313,14 +313,14 @@ function RunnerCard({
           <span className="block truncate text-[11px] font-medium text-minimax-fg">
             {runner.label}
           </span>
-          <span className="block truncate font-mono text-[10px] text-minimax-muted">
+          <span className="block truncate font-mono text-[11px] text-minimax-muted">
             {runner.command ?? runner.kind}
           </span>
         </span>
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${tone}`} />
       </div>
       {!enabled && (
-        <div className="mt-1 truncate text-[10px] text-minimax-muted">
+        <div className="mt-1 truncate text-[11px] text-minimax-muted">
           {runner.reason ?? "Adapter pending"}
         </div>
       )}

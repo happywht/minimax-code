@@ -24,6 +24,7 @@ serialized to the SQLite ``messages`` table.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -225,6 +226,19 @@ class ToolRegistry:
         except ValueError as exc:
             return ToolResult.fail(f"invalid args for {name}: {exc}")
         try:
+            parameters = list(inspect.signature(tool.run).parameters.values())
+            accepts_keyword_args = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+            uses_legacy_args_dict = (
+                len(parameters) == 1
+                and parameters[0].kind
+                in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+                and not accepts_keyword_args
+            )
+            if uses_legacy_args_dict:
+                return await tool.run(args)  # type: ignore[arg-type]
             return await tool.run(**args)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("tool %s raised", name)

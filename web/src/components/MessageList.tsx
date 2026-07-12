@@ -12,15 +12,18 @@
  * text match. When a query is active only matching messages are shown;
  * an empty query shows all.
  */
-import { useMemo } from "react";
+import { lazy, Suspense, useMemo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronDown } from "lucide-react";
 import { useChat, useSessionStore, useSubAgentStore } from "../stores";
-import { MessageItem } from "./MessageItem";
 import { SubAgentResultCard } from "./SubAgentResultCard";
 import { useMessageWindow } from "../lib/useMessageWindow";
 import { useSmartScroll } from "../lib/useSmartScroll";
 import type { Message } from "../types/ipc";
+
+const MessageItem = lazy(() =>
+  import("./MessageItem").then((module) => ({ default: module.MessageItem })),
+);
 
 export interface MessageListProps {
   testId?: string;
@@ -276,13 +279,28 @@ function MessageListRowView({
         className="ml-1 flex max-w-[620px] flex-col gap-1 border-l border-minimax-border/70 pl-2"
       >
         {row.messages.map((message) => (
-          <MessageItem key={message.id} message={message} />
+          <Suspense key={message.id} fallback={<MessageRowFallback />}>
+            <MessageItem message={message} />
+          </Suspense>
         ))}
       </div>
     );
   }
 
-  return <MessageItem message={row.message} />;
+  return (
+    <Suspense fallback={<MessageRowFallback />}>
+      <MessageItem message={row.message} />
+    </Suspense>
+  );
+}
+
+function MessageRowFallback(): JSX.Element {
+  return (
+    <div className="space-y-2 py-2" aria-busy="true">
+      <div className="h-3 w-2/3 animate-pulse rounded bg-minimax-border/70" />
+      <div className="h-3 w-1/2 animate-pulse rounded bg-minimax-border/50" />
+    </div>
+  );
 }
 
 function estimateRowSize(row: MessageListRow | undefined): number {

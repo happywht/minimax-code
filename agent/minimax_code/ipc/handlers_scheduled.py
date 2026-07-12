@@ -214,21 +214,16 @@ def _make_scheduler_factory(scheduler: Any | None) -> Any:
         # the other way round).
         from ..scheduler import get_scheduler
 
-        # If the singleton isn't built yet, we need a database. The
-        # storage layer exposes ``AsyncDatabase.default()`` which
-        # opens (and migrates) the on-disk DB on demand. We catch
-        # any failure here so the handler can return a clean
-        # ``INTERNAL_ERROR`` rather than a stack trace.
-        from ..storage.db import AsyncDatabase, default_database_path
+        from ..app import ensure_db
 
         # If a scheduler has already been built by another code
         # path, use it. Otherwise build one now.
         try:
             sched = await get_scheduler()
         except Exception:
-            db = AsyncDatabase(default_database_path())
-            await db.connect()
-            await db.migrate()
+            db = await ensure_db()
+            if db is None:
+                raise RuntimeError("storage is unavailable")
             sched = await get_scheduler(db)
         return sched
 

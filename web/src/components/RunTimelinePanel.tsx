@@ -112,7 +112,7 @@ export function RunTimelinePanel({
                   <ShieldQuestion size={13} />
                   <span className="truncate">{request.tool}</span>
                 </div>
-                <pre className="mt-1 max-h-20 overflow-hidden whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-amber-100/80">
+                <pre className="mt-1 max-h-20 overflow-hidden whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-amber-100/80">
                   {formatArgs(request.args)}
                 </pre>
                 <PermissionPatchPreview
@@ -146,7 +146,7 @@ export function RunTimelinePanel({
                 <div className="truncate text-xs font-medium text-minimax-fg">
                   {run.title || "Agent run"}
                 </div>
-                <div className="mt-0.5 font-mono text-[10px] text-minimax-muted">
+                <div className="mt-0.5 font-mono text-[11px] text-minimax-muted">
                   {run.id.slice(0, 12)}
                 </div>
               </div>
@@ -196,13 +196,13 @@ function TimelineStep({ step }: { step: AgentRunStep }): JSX.Element {
             {step.title || labelForKind(step.kind)}
           </span>
           {step.duration_ms != null && (
-            <span className="shrink-0 font-mono text-[10px] text-minimax-muted">
+            <span className="shrink-0 font-mono text-[11px] text-minimax-muted">
               {formatDuration(step.duration_ms)}
             </span>
           )}
         </div>
         {summary && (
-          <pre className="mt-0.5 max-h-20 overflow-hidden whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-minimax-muted">
+          <pre className="mt-0.5 max-h-20 overflow-hidden whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-minimax-muted">
             {summary}
           </pre>
         )}
@@ -227,7 +227,7 @@ function RunStatusBadge({ status }: { status: string }): JSX.Element {
         ? "border-red-500/30 bg-red-500/10 text-status-error"
         : "border-minimax-accent/30 bg-minimax-accent/10 text-minimax-accent";
   return (
-    <span className={"shrink-0 rounded border px-1.5 py-0.5 text-[10px] " + cls}>
+    <span className={"shrink-0 rounded border px-1.5 py-0.5 text-[11px] " + cls}>
       {status}
     </span>
   );

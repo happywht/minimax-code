@@ -38,9 +38,9 @@ export interface SidebarProps {
   testId?: string;
   onMobileClick?: () => void;
   /** Current top-level view — drives which NavItem is highlighted. */
-  view?: "chat" | "skills" | "settings" | "preview";
+  view?: "chat" | "skills" | "settings" | "scheduled" | "agents" | "preview";
   /** Toggle between top-level views. */
-  onViewChange?: (v: "chat" | "skills" | "settings" | "preview") => void;
+  onViewChange?: (v: "chat" | "skills" | "settings" | "scheduled" | "agents" | "preview") => void;
 }
 
 type PrimaryNavId = SessionFilter | "skills" | "agents" | "chat";
@@ -94,6 +94,7 @@ export function Sidebar({
   const currentId = useSessionStore((s) => s.currentSessionId);
   const setCurrent = useSessionStore((s) => s.setCurrent);
   const createSession = useSessionStore((s) => s.create);
+  const creatingSession = useSessionStore((s) => s.creating);
   const createWorktree = useSessionStore((s) => s.createWorktree);
   const refresh = useSessionStore((s) => s.refresh);
   const [historyQuery, setHistoryQuery] = useState("");
@@ -145,7 +146,8 @@ export function Sidebar({
           type="button"
           data-testid="sidebar-new-task"
           onClick={() => void createSession("New task")}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-minimax-border bg-minimax-bg/40 px-2.5 py-1.5 text-sm text-minimax-fg hover:border-minimax-accent/50"
+          disabled={creatingSession}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-minimax-border bg-minimax-bg/40 px-2.5 py-1.5 text-sm text-minimax-fg hover:border-minimax-accent/50 disabled:cursor-wait disabled:opacity-50"
         >
           <Plus size={14} className="text-minimax-accent" />
           <span>新任务</span>
@@ -174,6 +176,8 @@ export function Sidebar({
                 ? view === "chat" && filter === "all"
                 : n.id === "skills"
                 ? view === "skills"
+                : n.id === "scheduled" || n.id === "agents"
+                ? view === n.id
                 : view === "chat" && filter === n.id
             }
             onClick={() => {
@@ -188,6 +192,11 @@ export function Sidebar({
                 // tests / any third-party consumer that reads the
                 // filter value keeps working.
                 setFilter("skills");
+                return;
+              }
+              if (n.id === "scheduled" || n.id === "agents") {
+                onViewChange?.(n.id);
+                setFilter("all");
                 return;
               }
               onViewChange?.("chat");
@@ -236,9 +245,12 @@ export function Sidebar({
             />
             <input
               data-testid="sidebar-session-search"
+              aria-label="Search task history"
+              name="session-history-search"
+              autoComplete="off"
               value={historyQuery}
               onChange={(event) => setHistoryQuery(event.target.value)}
-              placeholder="Search history"
+              placeholder="Search history…"
               className="h-7 w-full rounded-md border border-minimax-border bg-minimax-bg/40 pl-7 pr-7 text-xs text-minimax-fg outline-none transition-colors duration-200 placeholder:text-minimax-muted focus:border-minimax-accent/60"
             />
             {historyQuery && (
@@ -298,7 +310,7 @@ export function Sidebar({
                     {s.workspace_mode === "worktree" && (
                       <span
                         data-testid={`sidebar-session-workspace-${s.id}`}
-                        className="rounded border border-minimax-accent/30 bg-minimax-accent/10 px-1 py-0.5 text-[10px] text-minimax-accent"
+                        className="rounded border border-minimax-accent/30 bg-minimax-accent/10 px-1 py-0.5 text-[11px] text-minimax-accent"
                         title={s.workspace_path ?? "Worktree"}
                       >
                         WT
@@ -336,7 +348,7 @@ export function Sidebar({
 
         {/* Footer user badge */}
         <div className="border-t border-minimax-border p-2">
-          <UserBadge name="Demo User" email="demo@minimax.code" plan="Max Plan" />
+          <UserBadge name="本地用户" email="数据仅保存在本机" plan="个人版" />
         </div>
       </div>
     </aside>

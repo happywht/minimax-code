@@ -137,7 +137,26 @@ function readViteEnv(key: string): string | undefined {
   return undefined;
 }
 
+function isViteDevelopment(): boolean {
+  try {
+    return Boolean((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV);
+  } catch {
+    return false;
+  }
+}
+
 const DEFAULT_AGENT_BASE_URL = "http://127.0.0.1:8765";
+
+function runtimeAgentBaseUrl(): string {
+  if (
+    !isViteDevelopment() &&
+    typeof window !== "undefined" &&
+    /^https?:$/.test(window.location.protocol)
+  ) {
+    return window.location.origin;
+  }
+  return DEFAULT_AGENT_BASE_URL;
+}
 
 /** Convert an `http://host:port` base URL to its `ws://` equivalent. */
 function toWebSocketUrl(baseUrl: string, path: string): string {
@@ -191,7 +210,7 @@ export function isTauri(): boolean {
  * `null` / undefined / empty `baseUrl` falls through to the default.
  */
 export async function isAgentReachable(baseUrl?: string): Promise<boolean> {
-  const url = baseUrl && baseUrl.length > 0 ? baseUrl : DEFAULT_AGENT_BASE_URL;
+  const url = baseUrl && baseUrl.length > 0 ? baseUrl : runtimeAgentBaseUrl();
   try {
     const resp = await fetch(`${url.replace(/\/+$/, "")}/health`, {
       method: "GET",
@@ -204,7 +223,7 @@ export async function isAgentReachable(baseUrl?: string): Promise<boolean> {
 }
 
 export interface IPCClientOptions {
-  /** Override the agent base URL. Default: `VITE_AGENT_URL` || `http://127.0.0.1:8765`. */
+  /** Override the agent base URL. Production defaults to the current page origin. */
   baseUrl?: string;
   /** Force the in-process mock backend (bypasses the `/health` probe). */
   mockMode?: boolean;
@@ -249,7 +268,7 @@ export class IPCClient {
       ? opts.baseUrl
       : envUrl && envUrl.length > 0
         ? envUrl
-        : DEFAULT_AGENT_BASE_URL
+        : runtimeAgentBaseUrl()
     ).replace(/\/+$/, "");
     this.forceMock =
       !!opts?.mockMode || !!opts?.forceMock || readViteEnv("VITE_AGENT_MODE") === "mock";
@@ -741,6 +760,7 @@ export interface TypedIPC {
   listSessions(opts?: { archived?: boolean; limit?: number; offset?: number }): Promise<ListSessionsResult>;
   createSession(opts?: {
     title?: string;
+    reuse_empty_session_id?: string;
     model_id?: string;
     workspace_mode?: "local" | "worktree";
     workspace_path?: string;
@@ -801,6 +821,8 @@ export interface TypedIPC {
 
   // skill
   listSkills(): Promise<ListSkillsResult>;
+  installSkill(content: string, replace?: boolean): Promise<{ skill: SkillInfo }>;
+  uninstallSkill(skillId: string): Promise<{ ok: true; skill_id: string }>;
   enableSkill(skillId: string): Promise<{ ok: true }>;
   disableSkill(skillId: string): Promise<{ ok: true }>;
   invokeSkill(skillId: string, args: unknown): Promise<{ ok: true; output: unknown }>;
@@ -973,6 +995,31 @@ export interface TypedIPC {
   }>;
 }
 
+interface WireScheduledJob {
+  id: string;
+  name: string;
+  cron?: string;
+  cron_expr?: string;
+  prompt?: string;
+  payload?: { prompt?: unknown } | null;
+  enabled: boolean;
+  last_run_at: number | null;
+  next_run_at: number | null;
+}
+
+function normalizeScheduledJob(job: WireScheduledJob): ScheduledJob {
+  const payloadPrompt = job.payload?.prompt;
+  return {
+    id: job.id,
+    name: job.name,
+    cron: job.cron ?? job.cron_expr ?? "",
+    prompt: job.prompt ?? (typeof payloadPrompt === "string" ? payloadPrompt : ""),
+    enabled: job.enabled,
+    last_run_at: job.last_run_at,
+    next_run_at: job.next_run_at,
+  };
+}
+
 export function bindTypedIPC(client: IPCClient): TypedIPC {
   return {
     ping: () => client.ping(),
@@ -1028,6 +1075,10 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<SetModelResult>("model.set_current", { model_id: modelId }),
 
     listSkills: () => client.request<ListSkillsResult>("skill.list", {}),
+    installSkill: (content, replace = false) =>
+      client.request<{ skill: SkillInfo }>("skill.install", { content, replace }),
+    uninstallSkill: (skillId) =>
+      client.request<{ ok: true; skill_id: string }>("skill.uninstall", { skill_id: skillId }),
     enableSkill: (sid) =>
       client.request<{ ok: true }>("skill.enable", { skill_id: sid }),
     disableSkill: (sid) =>
@@ -1038,20 +1089,29 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         request: args,
       }),
 
-    listJobs: () => client.request<ListJobsResult>("schedule.list", {}),
-    createJob: (opts) =>
-      client.request<{ job: ScheduledJob }>("schedule.create", {
+    listJobs: async () => {
+      const result = await client.request<{ jobs: WireScheduledJob[] }>("schedule.list", {});
+      return { jobs: result.jobs.map(normalizeScheduledJob) } satisfies ListJobsResult;
+    },
+    createJob: async (opts) => {
+      const result = await client.request<{ job: WireScheduledJob }>("schedule.create", {
         name: opts.name,
         // Wire names differ from the JS API for historical reasons.
         cron_expr: opts.cron,
         payload: { prompt: opts.prompt },
-      }),
+      });
+      return { job: normalizeScheduledJob(result.job) };
+    },
     deleteJob: (jid) =>
       client.request<{ ok: true }>("schedule.delete", { job_id: jid }),
-    enableJob: (jid) =>
-      client.request<{ job: ScheduledJob }>("schedule.enable", { job_id: jid }),
-    disableJob: (jid) =>
-      client.request<{ job: ScheduledJob }>("schedule.disable", { job_id: jid }),
+    enableJob: async (jid) => {
+      const result = await client.request<{ job: WireScheduledJob }>("schedule.enable", { job_id: jid });
+      return { job: normalizeScheduledJob(result.job) };
+    },
+    disableJob: async (jid) => {
+      const result = await client.request<{ job: WireScheduledJob }>("schedule.disable", { job_id: jid });
+      return { job: normalizeScheduledJob(result.job) };
+    },
     runNowJob: (jid) =>
       client.request<{ ok: true; job_id: string; triggered_at: number | null }>("schedule.run_now", { job_id: jid }),
 
@@ -1215,6 +1275,7 @@ function mockNotify(method: string, params: unknown, client: IPCClient): void {
 }
 
 const mockSessions = new Map<string, Session>();
+const mockSessionsWithMessages = new Set<string>();
 const mockRuns = new Map<string, { run: import("../types/ipc").AgentRun; steps: import("../types/ipc").AgentRunStep[] }>();
 const mockModels: ModelInfo[] = [
   {
@@ -1416,23 +1477,44 @@ function mockHandle(
     }
 
     case "session.create": {
+      const p = params as {
+        title?: string;
+        reuse_empty_session_id?: string;
+        workspace_mode?: "local" | "worktree";
+        workspace_path?: string;
+        worktree_branch?: string;
+        base_branch?: string;
+      } | undefined;
+      const reusable = p?.reuse_empty_session_id
+        ? mockSessions.get(p.reuse_empty_session_id)
+        : undefined;
+      if (
+        reusable
+        && !reusable.archived
+        && reusable.workspace_mode === "local"
+        && !mockSessionsWithMessages.has(reusable.id)
+      ) {
+        reusable.title = p?.title ?? "New task";
+        reusable.updated_at = Date.now();
+        return { session_id: reusable.id, session: reusable, reused: true };
+      }
+
       const sid = `ses_${Math.random().toString(36).slice(2, 10)}`;
       const now = Date.now();
       const session: Session = {
         id: sid,
-        title:
-          (params as { title?: string } | undefined)?.title ?? "New task",
+        title: p?.title ?? "New task",
         archived: false,
         created_at: now,
         updated_at: now,
         model_id: null,
-        workspace_mode: (params as { workspace_mode?: "local" | "worktree" } | undefined)?.workspace_mode ?? "local",
-        workspace_path: (params as { workspace_path?: string } | undefined)?.workspace_path ?? null,
-        worktree_branch: (params as { worktree_branch?: string } | undefined)?.worktree_branch ?? null,
-        base_branch: (params as { base_branch?: string } | undefined)?.base_branch ?? null,
+        workspace_mode: p?.workspace_mode ?? "local",
+        workspace_path: p?.workspace_path ?? null,
+        worktree_branch: p?.worktree_branch ?? null,
+        base_branch: p?.base_branch ?? null,
       };
       mockSessions.set(sid, session);
-      return { session_id: sid, session };
+      return { session_id: sid, session, reused: false };
     }
 
     case "workspace.create_worktree_session": {
@@ -1536,6 +1618,7 @@ function mockHandle(
     case "agent.send_message": {
       const p = params as { session_id: string | null; content: string };
       const sid = p.session_id ?? `ses_${Math.random().toString(36).slice(2, 10)}`;
+      mockSessionsWithMessages.add(sid);
       const mid = `msg_${Math.random().toString(36).slice(2, 10)}`;
       const runId = `run_${Math.random().toString(36).slice(2, 10)}`;
       const nowIso = new Date().toISOString();
@@ -1650,6 +1733,29 @@ function mockHandle(
 
     case "skill.list":
       return { skills: mockSkills };
+
+    case "skill.install": {
+      const content = String((params as { content?: string }).content ?? "");
+      const name = /^---[\s\S]*?^name:\s*([^\s#]+).*?^---/m.exec(content)?.[1] ?? "custom-skill";
+      const skill: SkillInfo = {
+        id: `${name}:${name}`,
+        name,
+        description: "Imported custom skill",
+        enabled: true,
+        builtin: false,
+      };
+      const index = mockSkills.findIndex((item) => item.name === name);
+      if (index >= 0) mockSkills[index] = skill;
+      else mockSkills.push(skill);
+      return { skill };
+    }
+
+    case "skill.uninstall": {
+      const skillId = String((params as { skill_id?: string }).skill_id ?? "");
+      const index = mockSkills.findIndex((item) => item.id === skillId);
+      if (index >= 0) mockSkills.splice(index, 1);
+      return { ok: true, skill_id: skillId };
+    }
 
     case "skill.invoke":
       return { ok: true, output: { skill: (params as { skill_id: string }).skill_id } };

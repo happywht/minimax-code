@@ -36,6 +36,12 @@ from minimax_code.storage.db import (
     default_database_path,
     make_temp_database_path,
 )
+from minimax_code.storage.migrations import discover_migrations
+
+
+EXPECTED_MIGRATION_VERSIONS = {
+    version for version, _run in discover_migrations(applied=[])
+}
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -117,13 +123,13 @@ def test_database_creates_parent_dirs(tmp_path: Path) -> None:
 def test_sync_migrate_is_idempotent(sync_db: Database) -> None:
     """Re-running migrate() must apply zero new versions."""
     assert sync_db.migrate() == []
-    assert sync_db.applied_versions() == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+    assert sync_db.applied_versions() == EXPECTED_MIGRATION_VERSIONS
 
 
 @pytest.mark.asyncio
 async def test_async_migrate_is_idempotent(async_db: AsyncDatabase) -> None:
     assert await async_db.migrate() == []
-    assert await async_db.applied_versions() == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+    assert await async_db.applied_versions() == EXPECTED_MIGRATION_VERSIONS
 
 
 @pytest.mark.asyncio

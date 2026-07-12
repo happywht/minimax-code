@@ -55,9 +55,7 @@ describe("P2#33: session quick-switch race condition", () => {
     ];
 
     // Make listMessages return different results with different delays
-    let callCount = 0;
     vi.mocked(typedIPC.listMessages).mockImplementation(async (sid: string) => {
-      callCount++;
       if (sid === sessionA) {
         // Simulate slow response for session A
         await new Promise((r) => setTimeout(r, 100));

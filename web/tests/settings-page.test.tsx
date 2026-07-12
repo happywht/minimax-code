@@ -14,6 +14,7 @@ import {
   useSecretStore,
 } from "../src/stores";
 import type { ProviderInfo, SecretStatus } from "../src/types/ipc";
+import { confirmationBus } from "../src/components/ConfirmationDialog";
 
 // Per-test mutable backing store for the secrets mock — the
 // IPC factory closure returns fresh `getSecretStatus` / `setSecret`
@@ -167,6 +168,7 @@ vi.mock("../src/ipc", async () => {
 });
 
 beforeEach(() => {
+  confirmationBus.reset();
   useModelStore.setState({ models: [], current: null, loading: false });
   usePermissionStore.setState({ rules: [], alwaysAllow: false, loading: false });
   useProviderStore.setState({ providers: [], loading: false });
@@ -178,6 +180,18 @@ beforeEach(() => {
 });
 
 describe("SettingsPage", () => {
+  it("opens directly on a requested management tab", async () => {
+    const { typedIPC } = await import("../src/ipc");
+    const callsBefore = vi.mocked(typedIPC.listJobs).mock.calls.length;
+    render(<SettingsPage initialTab="scheduled" />);
+    expect(screen.getByTestId("settings-tab-scheduled")).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("settings-scheduled")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(vi.mocked(typedIPC.listJobs).mock.calls.length).toBeGreaterThan(callsBefore);
+      expect(useScheduleStore.getState().loading).toBe(false);
+    });
+  });
+
   it("closes via the close button", async () => {
     const onClose = vi.fn();
     render(<SettingsPage onClose={onClose} />);
@@ -463,6 +477,9 @@ describe("SettingsPage", () => {
     fireEvent.click(screen.getByTestId("settings-tab-api-key"));
     expect(screen.getByTestId("settings-api-key-clear")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("settings-api-key-clear"));
+    expect(typedIPC.clearSecret).not.toHaveBeenCalled();
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("Clear the legacy MiniMax API key?");
+    fireEvent.click(screen.getByTestId("confirmation-confirm"));
     await waitFor(() => {
       expect(typedIPC.clearSecret).toHaveBeenCalled();
     });

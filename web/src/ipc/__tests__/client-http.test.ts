@@ -670,6 +670,42 @@ describe("mock mode isolation", () => {
 /* ────────── TypedIPC surface ────────── */
 
 describe("TypedIPC (HTTP mode)", () => {
+  it("normalizes scheduler wire fields for the UI", async () => {
+    installFetch((url, init) => {
+      if (url.endsWith("/health")) return okJson({ ok: true });
+      const body = JSON.parse((init.body as string) ?? "{}") as {
+        id: string;
+        method: string;
+      };
+      expect(body.method).toBe("schedule.list");
+      return okJson({
+        jsonrpc: "2.0",
+        id: body.id,
+        result: {
+          jobs: [{
+            id: "job_1",
+            name: "Nightly review",
+            cron_expr: "0 2 * * *",
+            payload: { prompt: "Review changes" },
+            enabled: true,
+            last_run_at: null,
+            next_run_at: 123,
+          }],
+        },
+      });
+    });
+    const client = new IPCClient({ baseUrl: "http://a" });
+    await client.start();
+
+    const result = await bindTypedIPC(client).listJobs();
+
+    expect(result.jobs[0]).toMatchObject({
+      cron: "0 2 * * *",
+      prompt: "Review changes",
+    });
+    await client.stop();
+  });
+
   it("binds all high-level methods", () => {
     installFetch(() => okJson({ ok: true }));
     const client = new IPCClient({ baseUrl: "http://a" });

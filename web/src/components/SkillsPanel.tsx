@@ -3,13 +3,22 @@
  * with a per-row enable / disable toggle. The panel is mounted by
  * `App.tsx` when the sidebar nav switches to the "skills" view.
  *
- * The "+" button at the top is intentionally disabled in this
- * iteration — the real "install skill" workflow (drag-drop a folder,
- * pick from registry, etc.) lives in a follow-up.
+ * Users can import an instruction-only or tool-referencing SKILL.md
+ * directly from disk; the Agent validates and stores it in user data.
  */
-import { useEffect } from "react";
-import { Plus, Wrench, X } from "lucide-react";
+import { useEffect, useRef } from "react";
+import { FileUp, Loader2, Trash2, Wrench, X } from "lucide-react";
 import { useSkillStore } from "../stores";
+import { toast } from "./ErrorBoundary";
+
+function readTextFile(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error ?? new Error("Unable to read file"));
+    reader.readAsText(file, "utf-8");
+  });
+}
 
 export interface SkillsPanelProps {
   testId?: string;
@@ -19,8 +28,12 @@ export interface SkillsPanelProps {
 export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelProps): JSX.Element {
   const skills = useSkillStore((s) => s.skills);
   const loading = useSkillStore((s) => s.loading);
+  const installing = useSkillStore((s) => s.installing);
   const refresh = useSkillStore((s) => s.refresh);
+  const install = useSkillStore((s) => s.install);
+  const remove = useSkillStore((s) => s.remove);
   const setEnabled = useSkillStore((s) => s.setEnabled);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     void refresh();
@@ -45,20 +58,39 @@ export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelPro
           </h1>
           <p className="mt-1 text-[11px] text-minimax-muted">
             Enable or disable installed skills. Built-in skills ship
-            with the agent; custom skills can be added later.
+            with the agent; import custom skills from a local SKILL.md.
           </p>
         </div>
         <div className="flex items-center gap-2">
           <button
             type="button"
             data-testid="skills-add"
-            disabled
-            title="Install skill (coming soon)"
-            className="flex items-center gap-1.5 rounded-md border border-minimax-border bg-minimax-panel/60 px-2.5 py-1.5 text-xs text-minimax-muted opacity-60"
+            disabled={installing}
+            title="Import a SKILL.md file"
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center gap-1.5 rounded-md border border-minimax-border bg-minimax-panel/60 px-2.5 py-1.5 text-xs text-minimax-fg hover:border-minimax-accent/50 disabled:cursor-wait disabled:opacity-60"
           >
-            <Plus size={12} />
-            <span>Add skill</span>
+            {installing ? <Loader2 size={12} className="animate-spin" /> : <FileUp size={12} />}
+            <span>{installing ? "Importing..." : "Import"}</span>
           </button>
+          <input
+            ref={fileInputRef}
+            data-testid="skills-file-input"
+            type="file"
+            accept=".md,text/markdown,text/plain"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (!file) return;
+              void readTextFile(file)
+                .then((content) => install(content))
+                .catch((error) => {
+                  const message = error instanceof Error ? error.message : String(error);
+                  toast.error("Failed to read skill file", message);
+                });
+            }}
+          />
           {onClose && (
             <button
               type="button"
@@ -109,20 +141,38 @@ export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelPro
                     {skill.description}
                   </p>
                 </div>
-                <label
-                  data-testid={`skills-toggle-${skill.id}`}
-                  className="flex shrink-0 cursor-pointer items-center gap-1.5 text-[11px] text-minimax-muted"
-                >
-                  <input
-                    type="checkbox"
-                    checked={skill.enabled}
-                    onChange={(e) =>
-                      void setEnabled(skill.id, e.target.checked)
-                    }
-                    className="h-3.5 w-3.5 cursor-pointer accent-minimax-accent"
-                  />
-                  <span>{skill.enabled ? "On" : "Off"}</span>
-                </label>
+                <div className="flex shrink-0 items-center gap-2">
+                  <label
+                    data-testid={`skills-toggle-${skill.id}`}
+                    className="flex cursor-pointer items-center gap-1.5 text-[11px] text-minimax-muted"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={skill.enabled}
+                      onChange={(e) =>
+                        void setEnabled(skill.id, e.target.checked)
+                      }
+                      className="h-3.5 w-3.5 cursor-pointer accent-minimax-accent"
+                    />
+                    <span>{skill.enabled ? "On" : "Off"}</span>
+                  </label>
+                  {!skill.builtin && (
+                    <button
+                      type="button"
+                      data-testid={`skills-remove-${skill.id}`}
+                      aria-label={`Remove skill ${skill.name}`}
+                      title="Remove custom skill"
+                      onClick={() => {
+                        if (window.confirm(`Remove custom skill ${skill.name}?`)) {
+                          void remove(skill.id);
+                        }
+                      }}
+                      className="flex h-7 w-7 items-center justify-center rounded-md text-minimax-muted hover:bg-red-500/10 hover:text-status-error"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  )}
+                </div>
               </li>
             ))}
           </ul>

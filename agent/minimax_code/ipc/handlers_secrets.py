@@ -91,6 +91,12 @@ def register_secret_handlers(server: Any) -> None:
             from .. import secrets
 
             secrets.set_api_key(value)
+            try:
+                from ..app import rebuild_subagent_llm
+
+                await rebuild_subagent_llm()
+            except Exception:
+                logger.debug("rebuild_subagent_llm after secrets.set failed")
             await ctx.reply(
                 {
                     "configured": True,
@@ -111,6 +117,12 @@ def register_secret_handlers(server: Any) -> None:
             from .. import secrets
 
             secrets.clear_api_key()
+            try:
+                from ..app import rebuild_subagent_llm
+
+                await rebuild_subagent_llm()
+            except Exception:
+                logger.debug("rebuild_subagent_llm after secrets.clear failed")
             await ctx.reply(
                 {
                     "configured": secrets.has_api_key(),

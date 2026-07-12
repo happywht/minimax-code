@@ -1,7 +1,7 @@
 # Skills
 
-> **Status:** Phase 1 minimum-viable. Hot-reload, per-skill config, and
-> marketplace-style installation are Phase 2.
+> **Status:** Local `SKILL.md` import is supported. Marketplace installation,
+> per-skill config, and filesystem hot-reload remain future work.
 
 The **skills system** packages reusable agent behaviours as
 self-contained folders. A skill is a `SKILL.md` (instructions the LLM
@@ -170,9 +170,9 @@ tool calls.
 
 ## Authoring a custom skill
 
-1. Create a folder under your skills root (default:
-   `agent/skills/<your-skill>/`).
-2. Write a `SKILL.md` with at least a `name` frontmatter entry.
+1. Create a `SKILL.md` with at least a `name` frontmatter entry.
+2. Import it from the Skills page. The agent stores it under the personal data
+   directory, separate from the built-in `agent/skills/` tree.
 3. If the skill needs custom tools, add Python modules under
    `minimax_code/agent/skills/_builtin/<your-skill>/` and wire a
    `Provider` in `_builtin/__init__.py`. (Phase 2 will let you ship

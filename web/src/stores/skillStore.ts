@@ -22,8 +22,11 @@ export type SkillEntry = SkillInfo;
 export interface SkillState {
   skills: SkillEntry[];
   loading: boolean;
+  installing: boolean;
 
   refresh: () => Promise<void>;
+  install: (content: string) => Promise<SkillEntry | null>;
+  remove: (skillId: string) => Promise<void>;
   enable: (skillId: string) => Promise<void>;
   disable: (skillId: string) => Promise<void>;
   setEnabled: (skillId: string, enabled: boolean) => Promise<void>;
@@ -32,6 +35,7 @@ export interface SkillState {
 export const useSkillStore = create<SkillState>((set, get) => ({
   skills: [],
   loading: false,
+  installing: false,
 
   refresh: async () => {
     set({ loading: true });
@@ -42,6 +46,40 @@ export const useSkillStore = create<SkillState>((set, get) => ({
       set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);
       toast.error("Failed to load skills", message);
+    }
+  },
+
+  install: async (content) => {
+    set({ installing: true });
+    try {
+      const result = await typedIPC.installSkill(content);
+      set((state) => ({
+        installing: false,
+        skills: [
+          ...state.skills.filter((skill) => skill.id !== result.skill.id),
+          result.skill,
+        ].sort((a, b) => a.name.localeCompare(b.name)),
+      }));
+      toast.success("Skill imported", result.skill.name);
+      return result.skill;
+    } catch (err) {
+      set({ installing: false });
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Failed to import skill", message);
+      return null;
+    }
+  },
+
+  remove: async (skillId) => {
+    try {
+      await typedIPC.uninstallSkill(skillId);
+      set((state) => ({
+        skills: state.skills.filter((skill) => skill.id !== skillId),
+      }));
+      toast.success("Skill removed");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Failed to remove skill", message);
     }
   },
 

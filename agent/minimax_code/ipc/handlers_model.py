@@ -146,18 +146,18 @@ def register_model_handlers(
             existing = getattr(server, _DAO_ATTR, None)
             if existing is not None:
                 return existing
+            from ..app import ensure_db
             from ..storage.dao.model_prefs import ModelPrefsDAO
-            from ..storage.db import AsyncDatabase, default_database_path
 
             if os.environ.get("MINIMAX_CODE_NO_DB") == "1":
                 raise HandlerError(
                     STORAGE_ERROR,
                     "storage is disabled (MINIMAX_CODE_NO_DB=1); model handlers need a DB",
                 )
-            db = AsyncDatabase(default_database_path())
             try:
-                await db.connect()
-                await db.migrate()
+                db = await ensure_db()
+                if db is None:
+                    raise RuntimeError("storage is unavailable")
             except Exception as exc:
                 logger.exception("failed to open storage for model handlers")
                 raise HandlerError(
@@ -185,18 +185,18 @@ def register_model_handlers(
             existing = getattr(server, _PROV_DAO_ATTR, None)
             if existing is not None:
                 return existing
+            from ..app import ensure_db
             from ..storage.dao.providers import ProviderDAO
-            from ..storage.db import AsyncDatabase, default_database_path
 
             if os.environ.get("MINIMAX_CODE_NO_DB") == "1":
                 raise HandlerError(
                     STORAGE_ERROR,
                     "storage is disabled (MINIMAX_CODE_NO_DB=1)",
                 )
-            db = AsyncDatabase(default_database_path())
             try:
-                await db.connect()
-                await db.migrate()
+                db = await ensure_db()
+                if db is None:
+                    raise RuntimeError("storage is unavailable")
             except Exception as exc:
                 logger.exception("failed to open storage for provider dao")
                 raise HandlerError(

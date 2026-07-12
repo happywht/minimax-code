@@ -43,6 +43,7 @@ test("chat: assistant message shows the thinking_count summary", async ({ page }
   // the per-turn summary feature).
   const summary = assistant.locator("[data-testid^='message-summary-']");
   await expect(summary).toBeVisible({ timeout: 10_000 });
+  await expect(summary).toContainText(/思考\s*[1-9]\d*\s*次/);
 
   // The summary line must show "思考 N 次" with N >= 1. The mock
   // LLM always reports thinking_count=1 per call (v0.3.0 spec).

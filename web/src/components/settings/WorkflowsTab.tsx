@@ -7,6 +7,7 @@ import { Play, Plus, Trash2, Workflow } from "lucide-react";
 import { useWorkflowStore } from "../../stores";
 import type { WorkflowEntry } from "../../types/ipc";
 import { formatDateTime } from "../../lib/time";
+import { requestConfirmation } from "../ConfirmationDialog";
 
 export { WorkflowsTab };
 
@@ -33,14 +34,14 @@ function WorkflowsTab(): JSX.Element {
 
   return (
     <section data-testid="settings-workflows-section" className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
           <h2 className="text-sm font-semibold">Workflows</h2>
           <p className="text-[11px] text-minimax-muted">
             Automation workflows triggered by webhooks, schedules, or agent events. Configure trigger conditions and action steps.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex shrink-0 gap-2">
           <button
             type="button"
             className="rounded border border-minimax-border px-2 py-1 text-xs hover:bg-minimax-accent/20"
@@ -64,28 +65,35 @@ function WorkflowsTab(): JSX.Element {
       {/* Create form */}
       {showCreate && (
         <div className="space-y-2 rounded border border-minimax-border bg-minimax-panel p-3">
-          <div className="flex items-center gap-2">
-            <input
-              data-testid="workflow-name-input"
-              className="flex-1 rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs"
-              placeholder="Workflow name"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }}
-            />
-            <select
-              className="rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs"
-              value={newTriggerType}
-              onChange={(e) => setNewTriggerType(e.target.value as "webhook" | "schedule" | "agent_event")}
-            >
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
+            <div className="min-w-0 sm:col-span-7">
+              <label htmlFor="workflow-name" className="mb-0.5 block text-[11px] text-minimax-muted">Name</label>
+              <input id="workflow-name" name="workflow-name" autoComplete="off"
+                data-testid="workflow-name-input"
+                className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs"
+                placeholder="e.g. Pull request review…"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }}
+              />
+            </div>
+            <div className="min-w-0 sm:col-span-5">
+              <label htmlFor="workflow-trigger-type" className="mb-0.5 block text-[11px] text-minimax-muted">Trigger</label>
+              <select id="workflow-trigger-type" name="workflow-trigger-type"
+                className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs"
+                value={newTriggerType}
+                onChange={(e) => setNewTriggerType(e.target.value as "webhook" | "schedule" | "agent_event")}
+              >
               <option value="webhook">Webhook</option>
               <option value="schedule">Schedule</option>
               <option value="agent_event">Agent Event</option>
-            </select>
+              </select>
+            </div>
           </div>
-          <input
+          <label htmlFor="workflow-description" className="text-[11px] text-minimax-muted">Description</label>
+          <input id="workflow-description" name="workflow-description" autoComplete="off"
             className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs"
-            placeholder="Description (optional)"
+            placeholder="e.g. Review incoming pull requests…"
             value={newDescription}
             onChange={(e) => setNewDescription(e.target.value)}
           />
@@ -132,18 +140,27 @@ function WorkflowsTab(): JSX.Element {
                   <button
                     type="button"
                     data-testid={`workflow-trigger-${wf.id}`}
+                    aria-label={`Run workflow ${wf.name}`}
                     className="rounded px-1.5 py-0.5 text-[11px] text-minimax-accent hover:text-minimax-accent/80"
                     onClick={() => trigger(wf.id)}
                     title="Manually trigger this workflow"
                   >
-                    <Play size={11} />
+                    <Play size={11} aria-hidden="true" />
                   </button>
                   <button
                     type="button"
+                    aria-label={`Delete workflow ${wf.name}`}
                     className="rounded px-1.5 py-0.5 text-[11px] text-status-error hover:text-status-error"
-                    onClick={() => remove(wf.id)}
+                    onClick={async () => {
+                      const accepted = await requestConfirmation({
+                        title: `Delete workflow ${wf.name}?`,
+                        description: "The workflow definition and its trigger configuration will be permanently removed.",
+                        confirmLabel: "Delete Workflow",
+                      });
+                      if (accepted) await remove(wf.id);
+                    }}
                   >
-                    <Trash2 size={11} />
+                    <Trash2 size={11} aria-hidden="true" />
                   </button>
                 </div>
               </div>

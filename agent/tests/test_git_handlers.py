@@ -110,7 +110,7 @@ def _git_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
     *not-a-repo* tests, which would otherwise find the project
     root's ``.git`` and pass.
     """
-    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", _NOT_A_REPO_CEILING)
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(_NOT_A_REPO_CEILING))
 
 
 def _build_repo(tmp_path: Path) -> Path:

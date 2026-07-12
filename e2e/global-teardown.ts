@@ -12,11 +12,12 @@ import { readFileSync, existsSync, unlinkSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
+import { AGENT_PORT } from "./runtime-config";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const RUNTIME_DIR = resolve(__dirname, ".runtime");
+const RUNTIME_DIR = resolve(__dirname, ".runtime", String(AGENT_PORT));
 const PID_FILE = join(RUNTIME_DIR, "agent.json");
 
 function isWindows() {

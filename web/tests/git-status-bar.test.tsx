@@ -194,7 +194,11 @@ describe("GitStatusBar", () => {
     expect(screen.getByTestId("git-status-bar-behind")).toHaveTextContent("1");
   });
 
-  it("shows a loading state when status is null", () => {
+  it("shows a loading state when status is null", async () => {
+    const { typedIPC } = await import("../src/ipc");
+    vi.mocked(typedIPC.gitStatus).mockImplementationOnce(
+      () => new Promise(() => {}),
+    );
     render(<GitStatusBar />);
     // Before the mount refresh resolves, the indicator shows
     // "loading…". We assert on the spinner specifically.

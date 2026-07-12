@@ -245,9 +245,11 @@ class TestRegistry:
 
         s = await reg.disable("alpha:alpha")
         assert s.enabled is False
+        assert s.builtin is True
 
         s = await reg.enable("alpha:alpha")
         assert s.enabled is True
+        assert s.builtin is True
 
     async def test_unknown_skill_raises(self, tmp_path: Path) -> None:
         reg = SkillRegistry(skills_root=tmp_path, db=None, auto_persist=False)
@@ -300,6 +302,54 @@ class TestRegistry:
         removed = await reg.unregister("a:a")
         assert removed is not None
         assert not reg.has("a:a")
+
+    async def test_install_from_text_uses_custom_root(self, tmp_path: Path) -> None:
+        builtin_root = tmp_path / "builtin"
+        custom_root = tmp_path / "custom"
+        builtin_root.mkdir()
+        _write_skill(builtin_root, "builtin-one", tools=[])
+        reg = SkillRegistry(
+            skills_root=builtin_root,
+            extra_roots=[custom_root],
+            db=None,
+            auto_persist=False,
+        )
+        await reg.load_all()
+
+        installed = await reg.install_from_text(
+            "---\nname: personal-helper\ndescription: Personal helper\ntools: []\n---\nHelp me.\n"
+        )
+
+        assert installed.skill_id == "personal-helper:personal-helper"
+        assert installed.builtin is False
+        assert (custom_root / "personal-helper" / "SKILL.md").is_file()
+        assert reg.get("builtin-one:builtin-one").builtin is True
+
+        removed = await reg.uninstall_custom(installed.skill_id)
+        assert removed.name == "personal-helper"
+        assert not (custom_root / "personal-helper").exists()
+        assert not reg.has(installed.skill_id)
+
+    async def test_install_rejects_builtin_replacement(self, tmp_path: Path) -> None:
+        builtin_root = tmp_path / "builtin"
+        custom_root = tmp_path / "custom"
+        builtin_root.mkdir()
+        _write_skill(builtin_root, "protected", tools=[])
+        reg = SkillRegistry(
+            skills_root=builtin_root,
+            extra_roots=[custom_root],
+            db=None,
+            auto_persist=False,
+        )
+        await reg.load_all()
+
+        with pytest.raises(ValueError, match="cannot replace built-in"):
+            await reg.install_from_text(
+                "---\nname: protected\ntools: []\n---\nReplacement\n",
+                replace=True,
+            )
+        with pytest.raises(ValueError, match="cannot uninstall built-in"):
+            await reg.uninstall_custom("protected:protected")
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +405,29 @@ class _FakeLLM:
 
 
 class TestRuntime:
+    async def test_instruction_only_skill_invokes_without_provider(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        root = tmp_path / "skills"
+        root.mkdir()
+        _write_skill(root, "instructions-only", tools=[], body="Follow these instructions.")
+        reg = SkillRegistry(skills_root=root, db=None, auto_persist=False)
+        await reg.load_all()
+        runtime = SkillRuntime(
+            registry=reg,
+            llm=_FakeLLM("instruction result"),
+            tool_registry=ToolRegistry(),
+        )
+
+        result = await runtime.invoke(
+            "instructions-only:instructions-only",
+            request="run",
+            session_id="s1",
+        )
+
+        assert result.final_text == "instruction result"
+
     async def test_invoke_returns_canned_text(self, tmp_path: Path) -> None:
         root = tmp_path / "skills"
         root.mkdir()

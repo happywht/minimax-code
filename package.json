@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "start": "pnpm build && pnpm dev:agent",
     "dev:web": "pnpm --filter @minimax/web dev",
     "dev:agent": "node scripts/dev-agent.mjs",
     "build": "pnpm --filter @minimax/web build",

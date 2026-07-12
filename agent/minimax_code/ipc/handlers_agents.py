@@ -829,22 +829,12 @@ def _make_dao_factory(dao: Any | None) -> Any:
 
     async def _factory() -> Any:
         # Lazy import: avoid a circular dep at module load time.
-        from ..app import init_runtime
+        from ..app import ensure_db
         from ..storage.dao.agents import AgentDAO
-        from ..storage.db import AsyncDatabase, default_database_path
-
         try:
-            await init_runtime()
-        except Exception:
-            pass
-        # ``init_runtime`` already opened the DB and built
-        # singletons for tracker / sessions. The agents DAO is
-        # a thin wrapper, so we just build one on demand here —
-        # sharing the same DB handle would require extra plumbing
-        # through ``app.py`` that the PoC doesn't need.
-        try:
-            db = AsyncDatabase(default_database_path())
-            await db.connect()
+            db = await ensure_db()
+            if db is None:
+                return None
             return AgentDAO(db)
         except Exception:  # pragma: no cover — defensive
             logger.exception("failed to open agents DAO")

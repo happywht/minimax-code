@@ -20,34 +20,69 @@ export type SessionFilter =
 
 export type SessionMeta = Session;
 
+const CURRENT_SESSION_STORAGE_KEY = "minimax-code:current-session";
+let createSessionInFlight: Promise<string> | null = null;
+
+function readStoredSessionId(): string | null {
+  try {
+    return window.localStorage.getItem(CURRENT_SESSION_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function storeCurrentSessionId(id: string | null): void {
+  try {
+    if (id) window.localStorage.setItem(CURRENT_SESSION_STORAGE_KEY, id);
+    else window.localStorage.removeItem(CURRENT_SESSION_STORAGE_KEY);
+  } catch {
+    // The in-memory selection still works when storage is unavailable.
+  }
+}
+
 export interface SessionState {
   sessions: SessionMeta[];
   currentSessionId: string | null;
   loading: boolean;
+  creating: boolean;
   filter: SessionFilter;
 
-  refresh: () => Promise<void>;
+  refresh: (options?: { loadCurrent?: boolean }) => Promise<void>;
   create: (title?: string) => Promise<string>;
   createWorktree: (title?: string, baseRef?: string) => Promise<string>;
   archive: (id: string) => Promise<void>;
   unarchive: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
   rename: (id: string, title: string) => Promise<void>;
-  setCurrent: (id: string | null) => void;
+  setCurrent: (id: string | null, loadMessages?: boolean) => void;
   setFilter: (filter: SessionFilter) => void;
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [],
-  currentSessionId: null,
+  currentSessionId: readStoredSessionId(),
   loading: false,
+  creating: false,
   filter: "all",
 
-  refresh: async () => {
+  refresh: async (options) => {
     set({ loading: true });
     try {
       const r = await typedIPC.listSessions();
-      set({ sessions: r.sessions, loading: false });
+      const currentId = get().currentSessionId;
+      const currentExists = !!currentId && r.sessions.some((session) => session.id === currentId);
+      set({
+        sessions: r.sessions,
+        currentSessionId: currentExists ? currentId : null,
+        loading: false,
+      });
+      if (!currentExists && currentId) {
+        storeCurrentSessionId(null);
+        useChat.getState().reset();
+      }
+      if (currentExists && options?.loadCurrent !== false) {
+        void useChat.getState().loadMessages(currentId);
+      }
     } catch (err) {
       set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);
@@ -56,30 +91,48 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   create: async (title?: string) => {
-    try {
-      const r = await typedIPC.createSession({ title });
-      // Optimistically add to the list.
-      set((s) => ({
-        sessions: [
-          r.session ?? {
-            id: r.session_id,
-            title: title ?? "New task",
-            archived: false,
-            created_at: Date.now(),
-            updated_at: Date.now(),
-            model_id: null,
-            workspace_mode: "local",
-          },
-          ...s.sessions,
-        ],
-        currentSessionId: r.session_id,
-      }));
-      return r.session_id;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to create session", message);
-      throw err;
-    }
+    if (createSessionInFlight) return createSessionInFlight;
+
+    const operation = (async () => {
+      set({ creating: true });
+      try {
+        const reuseId = get().currentSessionId ?? undefined;
+        const r = await typedIPC.createSession({
+          title,
+          reuse_empty_session_id: reuseId,
+        });
+        const nextSession = r.session ?? {
+          id: r.session_id,
+          title: title ?? "New task",
+          archived: false,
+          created_at: Date.now(),
+          updated_at: Date.now(),
+          model_id: null,
+          workspace_mode: "local" as const,
+        };
+        set((s) => ({
+          sessions: s.sessions.some((session) => session.id === r.session_id)
+            ? s.sessions.map((session) =>
+                session.id === r.session_id ? { ...session, ...nextSession } : session,
+              )
+            : [nextSession, ...s.sessions],
+          currentSessionId: r.session_id,
+        }));
+        storeCurrentSessionId(r.session_id);
+        useChat.getState().reset();
+        return r.session_id;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        toast.error("Failed to create session", message);
+        throw err;
+      } finally {
+        set({ creating: false });
+        createSessionInFlight = null;
+      }
+    })();
+
+    createSessionInFlight = operation;
+    return operation;
   },
 
   createWorktree: async (title?: string, baseRef?: string) => {
@@ -102,6 +155,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         ],
         currentSessionId: r.session_id,
       }));
+      storeCurrentSessionId(r.session_id);
+      useChat.getState().reset();
       return r.session_id;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -137,10 +192,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   remove: async (id: string) => {
     try {
       await typedIPC.deleteSession(id);
+      const removingCurrent = get().currentSessionId === id;
       set((s) => ({
         sessions: s.sessions.filter((x) => x.id !== id),
         currentSessionId: s.currentSessionId === id ? null : s.currentSessionId,
       }));
+      if (removingCurrent) {
+        storeCurrentSessionId(null);
+        useChat.getState().reset();
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       toast.error("Delete failed", message);
@@ -163,14 +223,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
-  setCurrent: (id: string | null) => {
+  setCurrent: (id: string | null, loadMessages = true) => {
     set({ currentSessionId: id });
+    storeCurrentSessionId(id);
+    useChat.getState().reset();
     // When switching sessions, load the persisted messages for
     // the new session so the chat panel shows the history.
-    if (id) {
+    if (id && loadMessages) {
       void useChat.getState().loadMessages(id);
-    } else {
-      useChat.getState().reset();
     }
   },
   setFilter: (filter: SessionFilter) => set({ filter }),

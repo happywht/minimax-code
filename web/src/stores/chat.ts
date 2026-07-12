@@ -296,41 +296,54 @@ export const useChat = create<ChatState>((set, get) => ({
 
     if (!displayText && !parts?.length) return;
 
-    const userMessage: Message = {
-      id: `user-${Date.now()}`,
-      role: "user",
-      text: displayText,
-      streaming: false,
-      status: "completed",
-      created_at: Date.now(),
-    };
-    const assistantPlaceholderId = `assistant-pending-${Date.now()}`;
-    pendingAssistantId = assistantPlaceholderId;
-    const assistantPlaceholder: Message = {
-      id: assistantPlaceholderId,
-      role: "assistant",
-      text: "",
-      streaming: true,
-      status: "queued",
-      retry_content: parts ? displayText : text,
-      created_at: Date.now(),
-    };
-    set((s) => ({
-      messages: trimArray([...s.messages, userMessage, assistantPlaceholder], MAX_MESSAGES),
-      status: "sending",
-      error: null,
-    }));
-    resetStallWatchdog();
-    const sessionId = useSessionStore.getState().currentSessionId;
+    set({ status: "sending", error: null });
+    let sessionId = useSessionStore.getState().currentSessionId;
     try {
+      if (!sessionId) {
+        const title = displayText.replace(/\s+/g, " ").trim().slice(0, 60) || "New task";
+        sessionId = await useSessionStore.getState().create(title);
+      } else {
+        const sessions = useSessionStore.getState();
+        const current = sessions.sessions.find((session) => session.id === sessionId);
+        if (current?.title === "New task" && get().messages.length === 0) {
+          const title = displayText.replace(/\s+/g, " ").trim().slice(0, 60) || "New task";
+          await sessions.rename(sessionId, title);
+        }
+      }
+
+      const userMessage: Message = {
+        id: `user-${Date.now()}`,
+        role: "user",
+        text: displayText,
+        streaming: false,
+        status: "completed",
+        created_at: Date.now(),
+      };
+      const assistantPlaceholderId = `assistant-pending-${Date.now()}`;
+      pendingAssistantId = assistantPlaceholderId;
+      const assistantPlaceholder: Message = {
+        id: assistantPlaceholderId,
+        role: "assistant",
+        text: "",
+        streaming: true,
+        status: "queued",
+        retry_content: parts ? displayText : text,
+        created_at: Date.now(),
+      };
+      set((s) => ({
+        messages: trimArray([...s.messages, userMessage, assistantPlaceholder], MAX_MESSAGES),
+      }));
+      resetStallWatchdog();
       // Send string for pure text, list for multimodal
       const wireContent = parts ?? text;
       const result = await typedIPC.sendMessage({
         session_id: sessionId,
         content: wireContent,
       });
-      if (result.session_id && !sessionId) {
-        useSessionStore.getState().setCurrent(result.session_id);
+      if (result.session_id && result.session_id !== sessionId) {
+        const sessions = useSessionStore.getState();
+        sessions.setCurrent(result.session_id, false);
+        await sessions.refresh({ loadCurrent: false });
       }
       // The HTTP response arrives *after* all WebSocket chunk events
       // have been processed (the agent streams chunks via WS, then
@@ -517,7 +530,7 @@ export const useChat = create<ChatState>((set, get) => ({
       // Stale response — the user has already switched away.
       if (seq !== _loadSeq) return;
       // Convert backend rows (content → text, add streaming: false)
-      const msgs: Message[] = (result.messages ?? []).map((m: any) => ({
+      const msgs: Message[] = (result.messages ?? []).map((m) => ({
         id: m.id,
         role: m.role,
         text: m.text ?? m.content ?? "",
@@ -539,6 +552,7 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   reset: () => {
+    ++_loadSeq;
     clearStallWatchdog();
     pendingAssistantId = null;
     set({ messages: [], status: "idle", error: null });

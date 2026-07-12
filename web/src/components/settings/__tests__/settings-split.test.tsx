@@ -4,7 +4,7 @@
  * rendered, and that the barrel export covers all 10 tabs.
  */
 import { describe, it, expect, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 
 // vi.mock is hoisted — factory must be self-contained, no external refs
 vi.mock("../../../stores", () => {
@@ -73,4 +73,54 @@ describe("Settings tab split (P0#3)", () => {
       expect(section).toBeTruthy();
     },
   );
+
+  it("gives compact permission and schedule controls accessible names", () => {
+    const permissions = render(<PermissionsTab />);
+    expect(screen.getByLabelText("Tool")).toHaveAttribute("name", "permission-tool");
+    expect(screen.getByLabelText("Argument Pattern")).toHaveAttribute("name", "permission-pattern");
+    expect(screen.getByLabelText("Decision")).toHaveAttribute("name", "permission-decision");
+    permissions.unmount();
+
+    const scheduled = render(<ScheduledTab />);
+    expect(screen.getByLabelText("Job Name")).toHaveAttribute("name", "scheduled-job-name");
+    expect(screen.getByLabelText("Cron Expression")).toHaveAttribute("name", "scheduled-job-cron");
+    expect(screen.getByLabelText("Prompt")).toHaveAttribute("name", "scheduled-job-prompt");
+    scheduled.unmount();
+  });
+
+  it("labels agent and team creation forms", () => {
+    const agents = render(<AgentsTab />);
+    fireEvent.click(screen.getByTestId("settings-agent-create"));
+    expect(screen.getByLabelText("Agent Name")).toHaveAttribute("name", "agent-name");
+    expect(screen.getByLabelText("System Prompt")).toHaveAttribute("name", "agent-system-prompt");
+    agents.unmount();
+
+    const teams = render(<TeamsTab />);
+    fireEvent.click(screen.getByTestId("settings-team-create"));
+    expect(screen.getByLabelText("Team Name")).toHaveAttribute("name", "team-name");
+    expect(screen.getByLabelText("Orchestration")).toHaveAttribute("name", "team-orchestration-mode");
+    expect(screen.getByLabelText("Description")).toHaveAttribute("name", "team-description");
+    expect(screen.getAllByRole("button", { name: /Use team color/ })).toHaveLength(5);
+    teams.unmount();
+  });
+
+  it("labels webhook, workflow, and audit controls", () => {
+    const webhooks = render(<WebhooksTab />);
+    fireEvent.click(screen.getByTestId("webhook-create-btn"));
+    expect(screen.getByLabelText("Name")).toHaveAttribute("name", "webhook-name");
+    expect(screen.getByLabelText("Source")).toHaveAttribute("name", "webhook-source");
+    expect(screen.getByLabelText("Action")).toHaveAttribute("name", "webhook-action");
+    webhooks.unmount();
+
+    const workflows = render(<WorkflowsTab />);
+    fireEvent.click(screen.getByTestId("workflow-create-btn"));
+    expect(screen.getByLabelText("Name")).toHaveAttribute("name", "workflow-name");
+    expect(screen.getByLabelText("Trigger")).toHaveAttribute("name", "workflow-trigger-type");
+    expect(screen.getByLabelText("Description")).toHaveAttribute("name", "workflow-description");
+    workflows.unmount();
+
+    const audit = render(<AuditTab />);
+    expect(screen.getByLabelText("Filter by tool:")).toHaveAttribute("name", "audit-filter-tool");
+    audit.unmount();
+  });
 });

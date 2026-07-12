@@ -13,8 +13,8 @@
  * SSE events from the preview server trigger an automatic iframe
  * reload. The user can also manually reload via the toolbar button.
  */
-import { useEffect, useRef, useCallback } from "react";
-import { RefreshCw, X, Wifi, WifiOff } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Loader2, RefreshCw, TriangleAlert, X, Wifi, WifiOff } from "lucide-react";
 import { usePreviewStore } from "../stores/previewStore";
 
 export interface PreviewPanelProps {
@@ -30,11 +30,45 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
   const setConnected = usePreviewStore((s) => s.setConnected);
   const reload = usePreviewStore((s) => s.reload);
 
-  const iframeRef = useRef<HTMLIFrameElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const [previewState, setPreviewState] = useState<"checking" | "ready" | "error">("checking");
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
   // Build the full preview URL.
-  const previewUrl = `${url}/preview/${filePath}`;
+  const encodedPath = filePath
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+  const previewUrl = `${url}/preview/${encodedPath}`;
+
+  const checkPreview = useCallback(async () => {
+    setPreviewState("checking");
+    setPreviewError(null);
+    try {
+      const health = await fetch(`${url}/preview/health`);
+      if (!health.ok) throw new Error(`Preview service returned ${health.status}`);
+
+      const file = await fetch(previewUrl);
+      if (!file.ok) {
+        let detail = `Preview file not found: ${filePath}`;
+        try {
+          const body = await file.json() as { error?: string; path?: string };
+          if (body.error && body.error !== "not found") detail = body.error;
+        } catch {
+          // Keep the user-facing fallback when the response is not JSON.
+        }
+        throw new Error(detail);
+      }
+      setPreviewState("ready");
+    } catch (error) {
+      setPreviewError(error instanceof Error ? error.message : String(error));
+      setPreviewState("error");
+    }
+  }, [filePath, previewUrl, url]);
+
+  useEffect(() => {
+    void checkPreview();
+  }, [checkPreview, reloadCounter]);
 
   // SSE connection to the preview server for hot-reload.
   useEffect(() => {
@@ -63,14 +97,6 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
       setConnected(false);
     };
   }, [url, setConnected, reload]);
-
-  // Reload iframe when reloadCounter changes.
-  useEffect(() => {
-    if (iframeRef.current) {
-      // eslint-disable-next-line no-self-assign
-      iframeRef.current.src = iframeRef.current.src;
-    }
-  }, [reloadCounter]);
 
   const handlePathSubmit = useCallback(
     (e: React.FormEvent<HTMLFormElement>) => {
@@ -132,16 +158,43 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
         </button>
       </div>
 
-      {/* Iframe */}
-      <div className="flex-1">
-        <iframe
-          ref={iframeRef}
-          src={previewUrl}
-          data-testid="preview-iframe"
-          sandbox="allow-scripts allow-same-origin"
-          className="h-full w-full border-0 bg-white"
-          title="Live Preview"
-        />
+      <div className="min-h-0 flex-1">
+        {previewState === "checking" ? (
+          <div
+            data-testid="preview-loading"
+            className="flex h-full items-center justify-center text-minimax-muted"
+            aria-label="Loading preview"
+          >
+            <Loader2 size={18} className="animate-spin" />
+          </div>
+        ) : previewState === "error" ? (
+          <div
+            data-testid="preview-error"
+            className="flex h-full items-center justify-center px-6"
+          >
+            <div className="max-w-md text-center">
+              <TriangleAlert size={24} className="mx-auto text-status-warning" />
+              <p className="mt-3 break-words text-sm text-minimax-fg">{previewError}</p>
+              <button
+                type="button"
+                data-testid="preview-retry-btn"
+                onClick={() => void checkPreview()}
+                className="mt-4 rounded-md border border-minimax-border px-3 py-1.5 text-xs text-minimax-fg hover:border-minimax-accent/50 hover:bg-minimax-border/50"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        ) : (
+          <iframe
+            key={`${previewUrl}:${reloadCounter}`}
+            src={previewUrl}
+            data-testid="preview-iframe"
+            sandbox="allow-scripts allow-same-origin"
+            className="h-full w-full border-0 bg-white"
+            title="Live Preview"
+          />
+        )}
       </div>
     </div>
   );

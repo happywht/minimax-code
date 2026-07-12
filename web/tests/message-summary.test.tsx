@@ -2,7 +2,7 @@
  * Tests for the per-turn summary row in MessageItem.
  *
  * The summary line "思考 N 次 · 查看 M 个文件 · 修改 K 个文件" appears
- * at the top of every assistant bubble. Counts are derived from the
+ * at the top of completed assistant bubbles. Counts are derived from the
  * tool-call/tool-result messages that follow the assistant message in
  * the same turn (bounded by the next user/assistant message).
  */
@@ -54,6 +54,20 @@ describe("MessageItem per-turn summary", () => {
     setMessages([userMsg]);
     render(<MessageItem message={userMsg} />);
     expect(screen.queryByTestId("message-summary-u1")).toBeNull();
+  });
+
+  it("does not show zero-value final statistics while a reply is streaming", () => {
+    const streaming = baseMessage({
+      id: "a-streaming",
+      streaming: true,
+      status: "streaming",
+    });
+    setMessages([streaming]);
+    render(<MessageItem message={streaming} />);
+    expect(screen.queryByTestId("message-summary-a-streaming")).toBeNull();
+    expect(screen.getByTestId("message-status-a-streaming")).toHaveTextContent(
+      "Generating",
+    );
   });
 
   it("shows all-zero counts when the turn has no tool calls", () => {

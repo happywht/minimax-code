@@ -14,6 +14,7 @@ by narrowing the path or pattern.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -131,7 +132,7 @@ async def _rg_search(
     max_results: int,
     single_file: Path | None,
 ) -> ToolResult:
-    cmd: list[str] = ["rg", "--no-heading", "--line-number", "--color=never"]
+    cmd: list[str] = ["rg", "--json", "--color=never"]
     if not regex:
         cmd.append("--fixed-strings")
     if not case_sensitive:
@@ -167,7 +168,7 @@ async def _rg_search(
             f"ripgrep exited with code {proc.returncode}: {stderr_b.decode('utf-8', 'replace')[:400]}"
         )
 
-    matches = _parse_rg_lines(stdout_b.decode("utf-8", "replace"), max_results, root)
+    matches = _parse_rg_json(stdout_b.decode("utf-8", "replace"), max_results, root)
     return ToolResult.ok(
         output={"root": str(root), "matches": matches, "engine": "ripgrep"},
         count=len(matches),
@@ -175,27 +176,31 @@ async def _rg_search(
     )
 
 
-def _parse_rg_lines(text: str, limit: int, root: Path) -> list[dict[str, Any]]:
+def _parse_rg_json(text: str, limit: int, root: Path) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for line in text.splitlines():
         if not line:
             continue
-        # rg --line-number --no-heading emits "path:lineno:content"
-        parts = line.split(":", 2)
-        if len(parts) < 3:
-            continue
-        path_str, lineno, content = parts
         try:
-            lineno_i = int(lineno)
-        except ValueError:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
             continue
-        if len(content) > 400:
-            content = content[:397] + "..."
+        if payload.get("type") != "match":
+            continue
+        data = payload.get("data") or {}
+        path_str = (data.get("path") or {}).get("text")
+        lineno = data.get("line_number")
+        content = (data.get("lines") or {}).get("text")
+        if not isinstance(path_str, str) or not isinstance(lineno, int) or not isinstance(content, str):
+            continue
+        content = content.rstrip("\r\n")
         try:
             rel = str(Path(path_str).resolve().relative_to(root))
         except ValueError:
             rel = path_str
-        out.append({"file": rel, "line": lineno_i, "text": content})
+        if len(content) > 400:
+            content = content[:397] + "..."
+        out.append({"file": rel, "line": lineno, "text": content})
         if len(out) >= limit:
             break
     return out

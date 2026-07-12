@@ -12,6 +12,7 @@ import { useModelStore } from "./modelStore";
 export interface ProviderState {
   providers: ProviderInfo[];
   loading: boolean;
+  initialized: boolean;
 
   refresh: () => Promise<void>;
   create: (opts: {
@@ -39,14 +40,15 @@ export interface ProviderState {
 export const useProviderStore = create<ProviderState>((set, get) => ({
   providers: [],
   loading: false,
+  initialized: false,
 
   refresh: async () => {
     set({ loading: true });
     try {
       const r = await typedIPC.listProviders();
-      set({ providers: r.providers, loading: false });
+      set({ providers: r.providers, loading: false, initialized: true });
     } catch (err) {
-      set({ loading: false });
+      set({ loading: false, initialized: true });
       const message = err instanceof Error ? err.message : String(err);
       toast.error("Failed to load providers", message);
     }

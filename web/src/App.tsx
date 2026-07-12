@@ -1,27 +1,46 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   ChatPanel,
   ConnectionBanner,
   ErrorBoundary,
   MessageInput,
-  MobilePairingModal,
   PermissionRequestModal,
-  PreviewPanel,
   RightPanel,
-  SettingsPage,
-  ShortcutsOverlay,
   Sidebar,
-  SkillsPanel,
   ToastViewport,
   TopBar,
   toast,
 } from "./components";
 import { ipc, typedIPC } from "./ipc";
-import { useChat, useModelStore, usePermissionStore, useSessionStore, initNotificationStore } from "./stores";
+import {
+  initNotificationStore,
+  useChat,
+  useModelStore,
+  usePermissionStore,
+  useProviderStore,
+  useSessionStore,
+} from "./stores";
+import type { SettingsTab } from "./components/SettingsPage";
 import type { SidecarEvent } from "./types/ipc";
 
+const MobilePairingModal = lazy(() =>
+  import("./components/MobilePairingModal").then((module) => ({ default: module.MobilePairingModal })),
+);
+const PreviewPanel = lazy(() =>
+  import("./components/PreviewPanel").then((module) => ({ default: module.PreviewPanel })),
+);
+const SettingsPage = lazy(() =>
+  import("./components/SettingsPage").then((module) => ({ default: module.SettingsPage })),
+);
+const ShortcutsOverlay = lazy(() =>
+  import("./components/ShortcutsOverlay").then((module) => ({ default: module.ShortcutsOverlay })),
+);
+const SkillsPanel = lazy(() =>
+  import("./components/SkillsPanel").then((module) => ({ default: module.SkillsPanel })),
+);
+
 type MainView = "chat" | "preview";
-type OverlayView = "skills" | "settings";
+type OverlayView = "skills" | "settings" | "scheduled" | "agents";
 type SidebarView = MainView | OverlayView;
 
 /** Connection status derived from sidecar events. */
@@ -45,8 +64,10 @@ export default function App() {
   const refreshModels = useModelStore((s) => s.refresh);
   const refreshSessions = useSessionStore((s) => s.refresh);
   const refreshRules = usePermissionStore((s) => s.refresh);
+  const refreshProviders = useProviderStore((s) => s.refresh);
   const [view, setView] = useState<MainView>("chat");
   const [overlayView, setOverlayView] = useState<OverlayView | null>(null);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
   const [mobileModalOpen, setMobileModalOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -69,7 +90,10 @@ export default function App() {
   }, []);
 
   const handleViewChange = useCallback((next: SidebarView) => {
-    if (next === "skills" || next === "settings") {
+    if (next === "skills" || next === "settings" || next === "scheduled" || next === "agents") {
+      if (next === "settings") setSettingsInitialTab("models");
+      if (next === "scheduled") setSettingsInitialTab("scheduled");
+      if (next === "agents") setSettingsInitialTab("agents");
       setOverlayView(next);
       return;
     }
@@ -77,12 +101,22 @@ export default function App() {
     setView(next);
   }, []);
 
+  const openSettings = useCallback((tab: SettingsTab) => {
+    setSettingsInitialTab(tab);
+    setOverlayView("settings");
+  }, []);
+
   useEffect(() => {
     (async () => {
       try {
         await ipc.start();
         await init();
-        await Promise.all([refreshSessions(), refreshModels(), refreshRules()]);
+        await Promise.all([
+          refreshSessions(),
+          refreshModels(),
+          refreshRules(),
+          refreshProviders(),
+        ]);
         // Initialise notification store WS listeners (v0.7.0)
         initNotificationStore();
         // Touch the typed API once so the wire is proven end-to-end
@@ -101,7 +135,7 @@ export default function App() {
         toast.error("UI init failed", err instanceof Error ? err.message : String(err));
       }
     })();
-  }, [init, refreshSessions, refreshModels, refreshRules]);
+  }, [init, refreshSessions, refreshModels, refreshRules, refreshProviders]);
 
   // ── 4.6: Mobile sidebar scroll lock ──
   // Prevent background scrolling when the mobile sidebar overlay is open.
@@ -163,10 +197,10 @@ export default function App() {
     <ErrorBoundary>
       <div
         data-testid="app-root"
-        className="flex h-full w-full flex-col bg-minimax-bg text-minimax-fg"
+        className="flex h-full w-full flex-col overflow-hidden bg-minimax-bg text-minimax-fg"
       >
         <TopBar
-          onOpenSettings={() => setOverlayView("settings")}
+          onOpenSettings={() => openSettings("models")}
           onToggleSidebar={() => setSidebarOpen((v) => !v)}
           onTogglePreview={() => {
             setOverlayView(null);
@@ -174,7 +208,7 @@ export default function App() {
           }}
           previewActive={view === "preview"}
         />
-        <div className="relative flex min-h-0 flex-1">
+        <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
           {/* Desktop sidebar — always visible on md+ */}
           <div className="hidden h-full md:block">
             <Sidebar
@@ -203,22 +237,33 @@ export default function App() {
               </div>
             </div>
           )}
-          <main className="relative flex flex-1 flex-col">
+          <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
             {view === "preview" ? (
-              <PreviewPanel onClose={() => setView("chat")} />
+              <Suspense fallback={<DeferredPanelFallback />}>
+                <PreviewPanel onClose={() => setView("chat")} />
+              </Suspense>
             ) : (
               <>
-                <ChatPanel />
+                <ChatPanel
+                  onOpenProviderSettings={() => openSettings("providers")}
+                  onOpenModelSettings={() => openSettings("models")}
+                />
                 <MessageInput />
               </>
             )}
             {overlayView && (
               <WorkspaceOverlay onClose={() => setOverlayView(null)}>
-                {overlayView === "settings" ? (
-                  <SettingsPage onClose={() => setOverlayView(null)} />
-                ) : (
-                  <SkillsPanel onClose={() => setOverlayView(null)} />
-                )}
+                <Suspense fallback={<DeferredPanelFallback />}>
+                  {overlayView === "skills" ? (
+                    <SkillsPanel onClose={() => setOverlayView(null)} />
+                  ) : (
+                    <SettingsPage
+                      key={overlayView}
+                      initialTab={settingsInitialTab}
+                      onClose={() => setOverlayView(null)}
+                    />
+                  )}
+                </Suspense>
               </WorkspaceOverlay>
             )}
           </main>
@@ -228,10 +273,14 @@ export default function App() {
           <ToastViewport />
           <PermissionRequestModal />
           {mobileModalOpen && (
-            <MobilePairingModal onClose={() => setMobileModalOpen(false)} />
+            <Suspense fallback={null}>
+              <MobilePairingModal onClose={() => setMobileModalOpen(false)} />
+            </Suspense>
           )}
           {shortcutsOpen && (
-            <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
+            <Suspense fallback={null}>
+              <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
+            </Suspense>
           )}
           {connState !== "connected" && view === "chat" && (
             <ConnectionBanner
@@ -243,6 +292,14 @@ export default function App() {
         </div>
       </div>
     </ErrorBoundary>
+  );
+}
+
+function DeferredPanelFallback(): JSX.Element {
+  return (
+    <div className="flex h-full min-h-0 w-full items-center justify-center" aria-busy="true">
+      <div className="h-6 w-6 animate-spin rounded-full border-2 border-minimax-border border-t-minimax-accent" />
+    </div>
   );
 }
 
@@ -264,7 +321,7 @@ function WorkspaceOverlay({
   return (
     <div
       data-testid="workspace-overlay"
-      className="absolute inset-0 z-30 bg-minimax-bg/65 p-3 backdrop-blur-sm transition-opacity duration-200 md:p-4"
+      className="absolute inset-0 z-30 min-w-0 overflow-hidden bg-minimax-bg/65 p-2 backdrop-blur-sm transition-opacity duration-200 sm:p-3 md:p-4"
     >
       <button
         type="button"
@@ -272,7 +329,7 @@ function WorkspaceOverlay({
         className="absolute inset-0 cursor-default"
         onClick={onClose}
       />
-      <div className="relative h-full overflow-hidden rounded-lg border border-minimax-border bg-minimax-bg shadow-2xl shadow-black/20 animate-in fade-in-0 zoom-in-95 duration-200">
+      <div className="relative h-full min-w-0 overflow-hidden rounded-lg border border-minimax-border bg-minimax-bg shadow-2xl shadow-black/20 animate-in fade-in-0 zoom-in-95 duration-200">
         {children}
       </div>
     </div>

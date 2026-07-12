@@ -50,8 +50,10 @@ function AuditTab(): JSX.Element {
 
       {/* Filter */}
       <div className="flex items-center gap-2">
-        <span className="text-[11px] text-minimax-muted">Filter by tool:</span>
+        <label htmlFor="audit-filter-tool" className="text-[11px] text-minimax-muted">Filter by tool:</label>
         <select
+          id="audit-filter-tool"
+          name="audit-filter-tool"
           data-testid="audit-filter-tool"
           className="rounded border border-minimax-border bg-minimax-panel px-2 py-1 text-xs"
           value={filterTool ?? ""}

@@ -130,7 +130,7 @@ export function TerminalPanel({ testId = "terminal-panel" }: TerminalPanelProps)
           data-testid={`${testId}-cwd`}
           value={cwd}
           onChange={(event) => setCwd(event.target.value)}
-          className="mt-1 h-7 w-full rounded border border-minimax-border bg-minimax-bg px-2 font-mono text-[10px] text-minimax-muted outline-none transition-colors duration-200 placeholder:text-minimax-muted/70 focus:border-minimax-accent/60"
+          className="mt-1 h-7 w-full rounded border border-minimax-border bg-minimax-bg px-2 font-mono text-[11px] text-minimax-muted outline-none transition-colors duration-200 placeholder:text-minimax-muted/70 focus:border-minimax-accent/60"
           placeholder="cwd (default workspace root)"
         />
       </form>
@@ -176,7 +176,7 @@ export function TerminalPanel({ testId = "terminal-panel" }: TerminalPanelProps)
               ref={outputRef}
               data-testid={`${testId}-output`}
               onScroll={handleScroll}
-              className="h-full min-h-48 overflow-auto rounded border border-minimax-border bg-[#07090d] px-2 py-2 font-mono text-[10px] leading-relaxed text-minimax-fg"
+              className="h-full min-h-48 overflow-auto rounded border border-minimax-border bg-[#07090d] px-2 py-2 font-mono text-[11px] leading-relaxed text-minimax-fg"
             >
               <TerminalHeader session={active} />
               {output.map((chunk) => (
@@ -243,7 +243,7 @@ function SessionPill({
       data-testid={testId}
       onClick={onClick}
       className={[
-        "inline-flex max-w-36 shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[10px] transition-colors duration-200",
+        "inline-flex max-w-36 shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] transition-colors duration-200",
         active ? "bg-minimax-accent/15 text-minimax-accent" : "text-minimax-muted hover:bg-minimax-border/70",
       ].join(" ")}
       title={session.command}

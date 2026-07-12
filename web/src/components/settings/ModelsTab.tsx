@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Check, Plus, Trash2 } from "lucide-react";
 import { useModelStore, useProviderStore } from "../../stores";
 import type { ProviderInfo, ProviderModel } from "../../types/ipc";
+import { requestConfirmation } from "../ConfirmationDialog";
 
 export { ModelsTab };
 
@@ -63,6 +64,12 @@ function ModelsTab(): JSX.Element {
   };
 
   const removeModel = async (provider: ProviderInfo, modelId: string) => {
+    const accepted = await requestConfirmation({
+      title: `Remove model ${modelId}?`,
+      description: `This removes the model from ${provider.name}. Conversations that selected it will need another active model.`,
+      confirmLabel: "Remove Model",
+    });
+    if (!accepted) return;
     const result = await updateProvider({
       provider_id: provider.id,
       models: (provider.models ?? []).filter((m) => m.id !== modelId),
@@ -71,9 +78,9 @@ function ModelsTab(): JSX.Element {
   };
 
   return (
-    <section data-testid="settings-models" className="space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
+    <section data-testid="settings-models" className="min-w-0 space-y-5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
           <h2 className="text-sm font-medium">Available models</h2>
           <p className="mt-0.5 text-[11px] text-minimax-muted">
             Select the active model, then manage each provider's model registry below.
@@ -103,8 +110,8 @@ function ModelsTab(): JSX.Element {
               }
             >
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium text-minimax-fg">{m.name}</span>
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="max-w-full truncate font-medium text-minimax-fg">{m.name}</span>
                   {isCurrent && (
                     <span data-testid={`settings-model-current-${m.id}`}
                       className="rounded bg-minimax-accent/20 px-1.5 py-0.5 text-[11px] text-minimax-accent">current</span>
@@ -113,7 +120,7 @@ function ModelsTab(): JSX.Element {
                     <span className="rounded bg-minimax-border px-1 py-0.5 text-[11px] font-mono text-minimax-muted">{m.protocol}</span>
                   )}
                 </div>
-                <div className="mt-0.5 text-[11px] text-minimax-muted">
+                <div className="mt-0.5 truncate text-[11px] text-minimax-muted">
                   {m.provider} · {(m.context_window / 1000).toFixed(0)}k ctx{m.supports_tools ? " · tools" : ""}
                 </div>
               </div>
@@ -137,7 +144,7 @@ function ModelsTab(): JSX.Element {
         <div className="flex items-center justify-between">
           <h3 className="text-xs font-medium text-minimax-fg">Provider model registry</h3>
           {providersLoading && (
-            <span className="text-[11px] text-minimax-muted">Loading providers...</span>
+            <span className="text-[11px] text-minimax-muted">Loading providers…</span>
           )}
         </div>
         {providers.length === 0 && !providersLoading && (
@@ -184,34 +191,46 @@ function ModelsTab(): JSX.Element {
                   ))}
                 </ul>
               )}
-              <div className="mt-2 grid grid-cols-12 gap-1.5">
+              <div className="mt-2 grid grid-cols-1 gap-1.5 sm:grid-cols-12">
                 <input
                   data-testid={`settings-model-add-id-${provider.id}`}
+                  name={`model-id-${provider.id}`}
+                  aria-label={`${provider.name} model ID`}
+                  autoComplete="off"
+                  spellCheck={false}
                   value={draft.id}
                   onChange={(e) => setDraft(provider.id, { id: e.target.value })}
-                  placeholder="model id"
-                  className="col-span-4 rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-[11px] text-minimax-fg"
+                  placeholder="model id…"
+                  className="min-w-0 rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-[11px] text-minimax-fg sm:col-span-4"
                 />
                 <input
                   data-testid={`settings-model-add-name-${provider.id}`}
+                  name={`model-name-${provider.id}`}
+                  aria-label={`${provider.name} model display name`}
+                  autoComplete="off"
                   value={draft.name}
                   onChange={(e) => setDraft(provider.id, { name: e.target.value })}
-                  placeholder="display name"
-                  className="col-span-4 rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-[11px] text-minimax-fg"
+                  placeholder="display name…"
+                  className="min-w-0 rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-[11px] text-minimax-fg sm:col-span-4"
                 />
                 <input
                   data-testid={`settings-model-add-ctx-${provider.id}`}
+                  name={`model-context-${provider.id}`}
+                  aria-label={`${provider.name} context window`}
+                  type="number"
+                  inputMode="numeric"
+                  min="1"
                   value={draft.ctx}
                   onChange={(e) => setDraft(provider.id, { ctx: e.target.value })}
-                  placeholder="context"
-                  className="col-span-2 rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-[11px] text-minimax-fg"
+                  placeholder="context…"
+                  className="min-w-0 rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-[11px] text-minimax-fg sm:col-span-2"
                 />
                 <button
                   type="button"
                   data-testid={`settings-model-add-submit-${provider.id}`}
                   disabled={!draft.id.trim()}
                   onClick={() => void addModel(provider)}
-                  className="col-span-2 inline-flex items-center justify-center gap-1 rounded border border-minimax-accent/40 bg-minimax-accent/10 px-2 py-1 text-[11px] text-minimax-accent transition-colors duration-200 hover:bg-minimax-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex items-center justify-center gap-1 rounded border border-minimax-accent/40 bg-minimax-accent/10 px-2 py-1 text-[11px] text-minimax-accent transition-colors duration-200 hover:bg-minimax-accent/20 disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-2"
                 >
                   <Plus size={10} />
                   Add

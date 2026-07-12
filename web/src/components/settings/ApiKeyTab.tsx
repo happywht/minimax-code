@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Eye, EyeOff, KeyRound, Save, Trash2 } from "lucide-react";
 import { useSecretStore } from "../../stores";
 import { SkeletonLine } from "../Skeleton";
+import { requestConfirmation } from "../ConfirmationDialog";
 
 export { ApiKeyTab };
 
@@ -62,7 +63,7 @@ function ApiKeyTab(): JSX.Element {
         </label>
         <div className="mt-1.5 flex gap-2">
           <div className="relative flex-1">
-            <input id="api-key-input" data-testid="settings-api-key-input"
+            <input id="api-key-input" name="legacy-minimax-api-key" data-testid="settings-api-key-input"
               type={reveal ? "text" : "password"} value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
@@ -70,7 +71,7 @@ function ApiKeyTab(): JSX.Element {
                   void (async () => { const ok = await setKey(draft); if (ok) setDraft(""); })();
                 }
               }}
-              placeholder="sk-..." autoComplete="off" spellCheck={false}
+              placeholder="sk-…" autoComplete="new-password" spellCheck={false}
               className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 pr-9 font-mono text-xs text-minimax-fg" />
             <button type="button" data-testid="settings-api-key-reveal"
               onClick={() => setReveal((v) => !v)}
@@ -102,7 +103,14 @@ function ApiKeyTab(): JSX.Element {
               </p>
             </div>
             <button type="button" data-testid="settings-api-key-clear"
-              onClick={() => void clear()} disabled={loading}
+              onClick={async () => {
+                const accepted = await requestConfirmation({
+                  title: "Clear the legacy MiniMax API key?",
+                  description: "MiniMax requests using the legacy key will stop until you save another key. Existing conversations are not deleted.",
+                  confirmLabel: "Clear API Key",
+                });
+                if (accepted) await clear();
+              }} disabled={loading}
               className="inline-flex items-center gap-1 rounded border border-minimax-border px-2 py-1 text-xs text-minimax-muted hover:text-status-error disabled:cursor-not-allowed disabled:opacity-50">
               <Trash2 size={12} /> Clear keyring
             </button>

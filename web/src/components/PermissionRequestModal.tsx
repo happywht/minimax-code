@@ -30,6 +30,9 @@ export function PermissionRequestModal({
   testId = "permission-request-modal",
 }: PermissionRequestModalProps): JSX.Element | null {
   const pendingMap = usePermissionStore((s) => s.pending);
+  // Default defensively for older persisted state and partial test/store mocks
+  // created before the resolving map was introduced.
+  const resolvingMap = usePermissionStore((s) => s.resolving ?? {});
   const resolve = usePermissionStore((s) => s.resolve);
   const dialogRef = useRef<HTMLDivElement>(null);
   const isOpen = useMemo(() => Object.keys(pendingMap).length > 0, [pendingMap]);
@@ -44,10 +47,11 @@ export function PermissionRequestModal({
       cur.received_at < oldest.received_at ? cur : oldest,
     );
   }, [pendingMap]);
+  const currentResolving = current ? resolvingMap[current.request_id] : undefined;
 
   // Enter approves, Esc denies — keeps the approval card keyboard-first.
   useEffect(() => {
-    if (!current) return;
+    if (!current || currentResolving) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -59,12 +63,13 @@ export function PermissionRequestModal({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [current, resolve]);
+  }, [current, currentResolving, resolve]);
 
   if (!current) return null;
 
   const argsPreview = formatArgs(current.args);
   const patchFiles = buildPermissionPatchFiles(current.tool, current.args);
+  const resolving = currentResolving;
 
   return (
     <div
@@ -85,7 +90,8 @@ export function PermissionRequestModal({
           aria-label="关闭"
           data-testid="permission-request-modal-close"
           onClick={() => void resolve(current.request_id, "deny")}
-          className="absolute right-3 top-3 rounded p-1 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
+          disabled={Boolean(resolving)}
+          className="absolute right-3 top-3 rounded p-1 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg disabled:cursor-wait disabled:opacity-50"
         >
           <X size={14} />
         </button>
@@ -131,18 +137,20 @@ export function PermissionRequestModal({
             type="button"
             data-testid="permission-request-modal-deny"
             onClick={() => void resolve(current.request_id, "deny")}
-            className="rounded-md border border-minimax-border bg-minimax-panel px-3 py-1.5 text-xs text-minimax-fg hover:border-red-500/40 hover:text-status-error"
+            disabled={Boolean(resolving)}
+            className="rounded-md border border-minimax-border bg-minimax-panel px-3 py-1.5 text-xs text-minimax-fg hover:border-red-500/40 hover:text-status-error disabled:cursor-wait disabled:opacity-50"
           >
-            拒绝
+            {resolving === "deny" ? "处理中..." : "拒绝"}
           </button>
           <button
             type="button"
             data-testid="permission-request-modal-allow"
             onClick={() => void resolve(current.request_id, "allow")}
-            className="flex items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-xs text-emerald-200 hover:bg-emerald-500/25"
+            disabled={Boolean(resolving)}
+            className="flex items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-xs text-emerald-200 hover:bg-emerald-500/25 disabled:cursor-wait disabled:opacity-50"
           >
             <ShieldCheck size={12} />
-            允许
+            {resolving === "allow" ? "处理中..." : "允许"}
           </button>
         </div>
 

@@ -35,13 +35,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import re
+import shutil
+import tempfile
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from .loader import Skill, load_all, validate_tools
+from .loader import Skill, load_all, load_skill_file, validate_tools
 
 logger = logging.getLogger(__name__)
+
+_INSTALL_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+_MAX_SKILL_FILE_BYTES = 512 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -122,8 +129,11 @@ class SkillRegistry:
         """
         all_skills: list[Skill] = []
         roots = [self.skills_root, *self._extra_roots]
-        for root in roots:
-            all_skills.extend(load_all(root))
+        for index, root in enumerate(roots):
+            loaded = load_all(root)
+            for skill in loaded:
+                skill.builtin = index == 0
+            all_skills.extend(loaded)
 
         # Deduplicate by name — first occurrence wins.
         dedup: dict[str, Skill] = {}
@@ -154,6 +164,73 @@ class SkillRegistry:
         async with self._lock:
             self._skills.clear()
         return await self.load_all()
+
+    async def install_from_text(self, content: str, *, replace: bool = False) -> Skill:
+        """Validate and install a custom ``SKILL.md`` into the user root."""
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("SKILL.md content is empty")
+        if len(content.encode("utf-8")) > _MAX_SKILL_FILE_BYTES:
+            raise ValueError("SKILL.md exceeds the 512 KB limit")
+        if not self._extra_roots:
+            raise RuntimeError("custom skills directory is not configured")
+
+        custom_root = self._extra_roots[0].expanduser().resolve()
+        custom_root.mkdir(parents=True, exist_ok=True)
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                suffix=".md",
+                prefix="skill-import-",
+                dir=custom_root,
+                delete=False,
+            ) as handle:
+                handle.write(content)
+                temp_path = Path(handle.name)
+            parsed = load_skill_file(temp_path)
+            if not _INSTALL_NAME_RE.fullmatch(parsed.name):
+                raise ValueError(
+                    "skill name must use 1-64 letters, numbers, dots, underscores, or hyphens"
+                )
+
+            existing = self.get_by_name(parsed.name)
+            if existing is not None and existing.builtin:
+                raise ValueError(f"cannot replace built-in skill {parsed.name!r}")
+
+            target_dir = (custom_root / parsed.name).resolve()
+            if target_dir.parent != custom_root:
+                raise ValueError("skill path escapes the custom skills directory")
+            target_file = target_dir / "SKILL.md"
+            if target_file.exists() and not replace:
+                raise FileExistsError(f"custom skill {parsed.name!r} already exists")
+            target_dir.mkdir(parents=True, exist_ok=True)
+            os.replace(temp_path, target_file)
+            temp_path = None
+            await self.reload()
+            installed = self.get_by_name(parsed.name)
+            if installed is None:  # pragma: no cover - defensive
+                raise RuntimeError("installed skill was not loaded")
+            return installed
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+
+    async def uninstall_custom(self, skill_id: str) -> Skill:
+        """Remove one imported skill from disk, memory, and persistence."""
+        skill = self.get(skill_id)
+        if skill.builtin:
+            raise ValueError(f"cannot uninstall built-in skill {skill.name!r}")
+        if not self._extra_roots:
+            raise RuntimeError("custom skills directory is not configured")
+        custom_root = self._extra_roots[0].expanduser().resolve()
+        target_dir = skill.path.expanduser().resolve()
+        if target_dir.parent != custom_root:
+            raise ValueError("skill path is outside the custom skills directory")
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        await self.unregister(skill_id)
+        return skill
 
     # -- introspection ------------------------------------------------------
 

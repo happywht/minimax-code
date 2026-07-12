@@ -64,8 +64,8 @@ async def _ensure_dao(server: Any) -> Any:
         existing = getattr(server, _DAO_ATTR, None)
         if existing is not None:
             return existing
+        from ..app import ensure_db
         from ..storage.dao.providers import ProviderDAO
-        from ..storage.db import AsyncDatabase, default_database_path
 
         if os.environ.get("MINIMAX_CODE_NO_DB") == "1":
             raise HandlerError(
@@ -73,10 +73,10 @@ async def _ensure_dao(server: Any) -> Any:
                 "storage is disabled (MINIMAX_CODE_NO_DB=1); "
                 "provider handlers need a DB",
             )
-        db = AsyncDatabase(default_database_path())
         try:
-            await db.connect()
-            await db.migrate()
+            db = await ensure_db()
+            if db is None:
+                raise RuntimeError("storage is unavailable")
         except Exception as exc:
             logger.exception("failed to open storage for provider handlers")
             raise HandlerError(
@@ -350,6 +350,12 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
 
             secrets.set_provider_key(provider_id, api_key)
             await dao.update(provider_id, api_key_set=1)
+            try:
+                from ..app import rebuild_subagent_llm
+
+                await rebuild_subagent_llm()
+            except Exception:
+                logger.debug("rebuild_subagent_llm after provider.set_api_key failed")
             await ctx.reply(
                 {"ok": True, "provider_id": provider_id, "api_key_configured": True}
             )
@@ -381,6 +387,12 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
             except Exception:
                 logger.debug("clear_provider_key(%s) failed; continuing", provider_id)
             await dao.update(provider_id, api_key_set=0)
+            try:
+                from ..app import rebuild_subagent_llm
+
+                await rebuild_subagent_llm()
+            except Exception:
+                logger.debug("rebuild_subagent_llm after provider.clear_api_key failed")
             await ctx.reply(
                 {"ok": True, "provider_id": provider_id, "api_key_configured": False}
             )

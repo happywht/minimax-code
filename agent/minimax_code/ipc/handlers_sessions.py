@@ -18,7 +18,7 @@ by :mod:`handlers_scheduled` and :mod:`handlers_tasks`.
 Schema
 ------
 
-``session.create``   -> ``{ session_id, title, created_at }``
+``session.create``   -> ``{ session_id, title, created_at, reused }``
 ``session.list``     -> ``{ sessions: [...], total: N }``
 ``session.get``      -> ``{ session: {...}, recent_messages: [...] }``
 ``session.archive``  -> ``{ ok: true, session: {...} }``
@@ -88,6 +88,33 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 raise HandlerError(
                     INVALID_PARAMS, "title must be a string if provided"
                 )
+            title = title.strip()
+
+            # Reuse the currently selected local session when it is still
+            # empty. This keeps repeated "New task" clicks idempotent and
+            # prevents abandoned blank rows from accumulating in history.
+            reuse_id = _optional_string(p, "reuse_empty_session_id")
+            if reuse_id:
+                existing = await sess_dao.get(reuse_id)
+                if (
+                    existing is not None
+                    and not existing.get("archived")
+                    and existing.get("workspace_mode", "local") == "local"
+                    and not await sess_dao.get_messages(reuse_id, limit=1)
+                ):
+                    if existing.get("title") != title:
+                        existing = await sess_dao.update(reuse_id, title=title)
+                    await ctx.reply(
+                        {
+                            "session_id": existing["id"],
+                            "title": existing["title"],
+                            "created_at": existing["created_at"],
+                            "session": existing,
+                            "reused": True,
+                        }
+                    )
+                    return
+
             # Generate a new id; we use the same ``ses_`` prefix
             # convention the chat send_message flow uses so the
             # id format stays consistent across the codebase.
@@ -115,6 +142,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                     "title": row["title"],
                     "created_at": row["created_at"],
                     "session": row,
+                    "reused": False,
                 }
             )
         except HandlerError as exc:

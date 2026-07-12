@@ -10,17 +10,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, MessageSquare, MoreHorizontal, Pencil, RefreshCw, Search, X } from "lucide-react";
 import { MessageList } from "./MessageList";
+import { ProviderReadinessBanner } from "./ProviderReadinessBanner";
 import { useChat, useSessionStore } from "../stores";
 
 export interface ChatPanelProps {
   testId?: string;
   onMenuClick?: () => void;
+  onOpenProviderSettings?: () => void;
+  onOpenModelSettings?: () => void;
 }
 
-export function ChatPanel({ testId = "chat-panel", onMenuClick }: ChatPanelProps): JSX.Element {
+export function ChatPanel({
+  testId = "chat-panel",
+  onMenuClick,
+  onOpenProviderSettings = () => {},
+  onOpenModelSettings = () => {},
+}: ChatPanelProps): JSX.Element {
   const sessions = useSessionStore((s) => s.sessions);
   const currentId = useSessionStore((s) => s.currentSessionId);
   const createSession = useSessionStore((s) => s.create);
+  const creatingSession = useSessionStore((s) => s.creating);
   const refreshSessions = useSessionStore((s) => s.refresh);
   const renameSession = useSessionStore((s) => s.rename);
   const status = useChat((s) => s.status);
@@ -113,6 +122,9 @@ export function ChatPanel({ testId = "chat-panel", onMenuClick }: ChatPanelProps
             <input
               ref={inputRef}
               data-testid="chat-header-title-input"
+              aria-label="Session title"
+              name="session-title"
+              autoComplete="off"
               value={editValue}
               onChange={(e) => setEditValue(e.target.value)}
               onKeyDown={(e) => {
@@ -172,7 +184,8 @@ export function ChatPanel({ testId = "chat-panel", onMenuClick }: ChatPanelProps
             type="button"
             data-testid="chat-header-new"
             onClick={() => void createSession("New task")}
-            className="rounded-md px-2 py-1 text-xs text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
+            disabled={creatingSession}
+            className="rounded-md px-2 py-1 text-xs text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg disabled:cursor-wait disabled:opacity-50"
             title="New task"
           >
             + New
@@ -223,6 +236,9 @@ export function ChatPanel({ testId = "chat-panel", onMenuClick }: ChatPanelProps
             ref={searchRef}
             data-testid="chat-search-input"
             type="text"
+            aria-label="Search messages"
+            name="message-search"
+            autoComplete="off"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search messages…"
@@ -247,6 +263,10 @@ export function ChatPanel({ testId = "chat-panel", onMenuClick }: ChatPanelProps
 
       {/* Message list */}
       <MessageList searchQuery={searchOpen ? searchQuery : undefined} />
+      <ProviderReadinessBanner
+        onOpenProviders={onOpenProviderSettings}
+        onOpenModels={onOpenModelSettings}
+      />
     </div>
   );
 }

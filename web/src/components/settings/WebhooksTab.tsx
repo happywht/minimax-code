@@ -7,6 +7,7 @@ import { Eye, EyeOff, Plus, Trash2 } from "lucide-react";
 import { useWebhookStore } from "../../stores";
 import type { WebhookConfig } from "../../types/ipc";
 import { required, minLength, compose } from "../../lib/validators";
+import { requestConfirmation } from "../ConfirmationDialog";
 
 export { WebhooksTab };
 
@@ -43,14 +44,14 @@ function WebhooksTab(): JSX.Element {
 
   return (
     <section data-testid="settings-webhooks-section" className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
           <h2 className="text-sm font-semibold">Webhooks</h2>
           <p className="text-[11px] text-minimax-muted">
             Configure inbound webhook endpoints for GitHub / Gitee push events and custom integrations.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex shrink-0 gap-2">
           <button
             type="button"
             className="rounded border border-minimax-border px-2 py-1 text-xs hover:bg-minimax-accent/20"
@@ -74,35 +75,44 @@ function WebhooksTab(): JSX.Element {
       {/* Create form */}
       {showCreate && (
         <div className="space-y-2 rounded border border-minimax-border bg-minimax-panel p-3">
-          <div className="flex items-center gap-2">
-            <input
-              data-testid="webhook-name-input"
-              className={`flex-1 rounded border bg-minimax-bg px-2 py-1 text-xs ${createError ? "border-red-400" : "border-minimax-border"}`}
-              placeholder="Webhook name"
-              value={newName}
-              onChange={(e) => { setNewName(e.target.value); setCreateError(""); }}
-              onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }}
-            />
-            <select
-              className="rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs"
-              value={newSource}
-              onChange={(e) => setNewSource(e.target.value as "github" | "gitee" | "custom")}
-            >
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
+            <div className="min-w-0 sm:col-span-5">
+              <label htmlFor="webhook-name" className="mb-0.5 block text-[11px] text-minimax-muted">Name</label>
+              <input id="webhook-name" name="webhook-name" autoComplete="off"
+                data-testid="webhook-name-input"
+                className={`w-full rounded border bg-minimax-bg px-2 py-1 text-xs ${createError ? "border-red-400" : "border-minimax-border"}`}
+                placeholder="e.g. GitHub push…"
+                value={newName}
+                onChange={(e) => { setNewName(e.target.value); setCreateError(""); }}
+                onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }}
+              />
+            </div>
+            <div className="min-w-0 sm:col-span-3">
+              <label htmlFor="webhook-source" className="mb-0.5 block text-[11px] text-minimax-muted">Source</label>
+              <select id="webhook-source" name="webhook-source"
+                className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs"
+                value={newSource}
+                onChange={(e) => setNewSource(e.target.value as "github" | "gitee" | "custom")}
+              >
               <option value="github">GitHub</option>
               <option value="gitee">Gitee</option>
               <option value="custom">Custom</option>
-            </select>
-            <select
-              className="rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs"
-              value={newAction}
-              onChange={(e) => setNewAction(e.target.value as "code-review" | "send-message")}
-            >
+              </select>
+            </div>
+            <div className="min-w-0 sm:col-span-4">
+              <label htmlFor="webhook-action" className="mb-0.5 block text-[11px] text-minimax-muted">Action</label>
+              <select id="webhook-action" name="webhook-action"
+                className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs"
+                value={newAction}
+                onChange={(e) => setNewAction(e.target.value as "code-review" | "send-message")}
+              >
               <option value="send-message">Send Message</option>
               <option value="code-review">Code Review</option>
-            </select>
+              </select>
+            </div>
           </div>
           {createError && (
-            <p data-testid="webhook-create-error" className="text-[11px] text-status-error">{createError}</p>
+            <p data-testid="webhook-create-error" aria-live="polite" className="text-[11px] text-status-error">{createError}</p>
           )}
           <div className="flex justify-end gap-2">
             <button type="button" className="text-xs text-minimax-muted" onClick={() => setShowCreate(false)}>Cancel</button>
@@ -146,16 +156,31 @@ function WebhooksTab(): JSX.Element {
                   <button
                     type="button"
                     className="rounded px-1.5 py-0.5 text-[11px] text-minimax-muted hover:text-minimax-accent"
-                    onClick={() => regenerateSecret(wh.id)}
+                    onClick={async () => {
+                      const accepted = await requestConfirmation({
+                        title: `Regenerate secret for ${wh.name}?`,
+                        description: "The current webhook secret will stop working immediately. Update the sender with the new secret before sending more events.",
+                        confirmLabel: "Regenerate Secret",
+                      });
+                      if (accepted) await regenerateSecret(wh.id);
+                    }}
                   >
                     Re-secret
                   </button>
                   <button
                     type="button"
+                    aria-label={`Delete webhook ${wh.name}`}
                     className="rounded px-1.5 py-0.5 text-[11px] text-status-error hover:text-status-error"
-                    onClick={() => remove(wh.id)}
+                    onClick={async () => {
+                      const accepted = await requestConfirmation({
+                        title: `Delete webhook ${wh.name}?`,
+                        description: "Inbound events sent to this webhook will no longer trigger MiniMax Code.",
+                        confirmLabel: "Delete Webhook",
+                      });
+                      if (accepted) await remove(wh.id);
+                    }}
                   >
-                    <Trash2 size={11} />
+                    <Trash2 size={11} aria-hidden="true" />
                   </button>
                 </div>
               </div>

@@ -1,9 +1,25 @@
 # MiniMax Code
 
-桌面端 AI 编码 Agent 复刻项目。对标 MiniMax Code 全量功能：多轮对话、技能系统、定时任务、多 Agent 协作、移动互联、授权管理、进度面板。
+本地优先的个人 AI 编码 Agent。支持多轮对话、代码工具、技能系统、定时任务、多 Agent 协作、授权管理、Git 与 Code Review 工作流。
 
-> **v0.2.0 内部版 — 全面 web 化，丢掉 Tauri 桌面打包。两条命令在两个终端跑起来。**
-> v0.1.x 阶段曾用 Tauri 2.x 做桌面壳（v0.1.0 → v0.1.3 修过启动 race / sidecar 路径 / pipe flush 三个 bug），现以内部 web 工具继续开发 — 见 [`CHANGELOG.md`](CHANGELOG.md) 历史段。
+当前版本：**v0.8.0**。产品采用本地 Web SPA + Python Agent 架构，默认只监听 `127.0.0.1`，会话、配置和任务数据保存在本机 SQLite 中。
+
+## 个人使用（推荐）
+
+首次安装依赖：
+
+```bash
+pnpm install
+cd agent && uv sync && cd ..
+```
+
+之后使用一个命令构建并启动完整产品：
+
+```bash
+pnpm start
+```
+
+浏览器打开 <http://127.0.0.1:8765>。Python Agent 会直接托管构建后的前端，不需要长期运行 Vite。首次进入后可在 Settings 中配置模型 Provider 和 API Key；没有密钥时会进入 mock 模式，便于体验界面和工作流。
 
 ## 快速启动（dev mode — 两终端）
 
@@ -35,7 +51,7 @@ cd agent && uv sync && cd ..
 
 完整契约见 [`docs/architecture.md`](docs/architecture.md) / [`docs/ipc-contract.md`](docs/ipc-contract.md) / [`docs/v0.2.0-web-architecture.md`](docs/v0.2.0-web-architecture.md)。
 
-## 当前状态（v0.2.0）
+## 当前状态（v0.8.0）
 
 - **Phase 1（基础闭环）**：✅ — Vite + React 18 前端 + Python agent 核心 + SQLite 存储 + 技能系统
 - **Phase 2a（授权 / 调度 / 进度）**：✅

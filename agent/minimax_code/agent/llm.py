@@ -83,8 +83,16 @@ class MiniMaxClient:
         mock: bool | None = None,
         client: Any = None,
     ) -> None:
+        env_force_mock = os.environ.get("MINIMAX_CODE_FORCE_MOCK", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         # Resolve API key.
-        if api_key is not None:
+        if env_force_mock:
+            resolved_key = ""
+        elif api_key is not None:
             resolved_key = api_key
         else:
             secret_value = secrets.get_api_key()
@@ -103,7 +111,7 @@ class MiniMaxClient:
         self.max_retries = max_retries
 
         # Determine effective protocol.
-        force_mock = mock if mock is not None else (not bool(self.api_key))
+        force_mock = env_force_mock or (mock if mock is not None else not bool(self.api_key))
         if protocol == "mock" or force_mock:
             effective_protocol = "mock"
         else:

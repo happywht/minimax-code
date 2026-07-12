@@ -5,7 +5,7 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { Sidebar } from "../src/components/Sidebar";
-import { useSessionStore } from "../src/stores";
+import { useChat, useSessionStore } from "../src/stores";
 
 vi.mock("../src/ipc", async () => {
   const actual = await vi.importActual<typeof import("../src/ipc")>("../src/ipc");
@@ -37,6 +37,8 @@ vi.mock("../src/ipc", async () => {
 
 describe("Sidebar", () => {
   beforeEach(() => {
+    window.localStorage.clear();
+    useChat.getState().reset();
     useSessionStore.setState({
       sessions: [],
       currentSessionId: null,
@@ -55,12 +57,15 @@ describe("Sidebar", () => {
 
   it("creates a new session when the new task button is clicked", async () => {
     const { typedIPC } = await import("../src/ipc");
+    useChat.getState().addLocalMessage("old session message");
     render(<Sidebar />);
     fireEvent.click(screen.getByTestId("sidebar-new-task"));
     await waitFor(() => {
       expect(typedIPC.createSession).toHaveBeenCalledWith({ title: "New task" });
     });
     expect(useSessionStore.getState().currentSessionId).toBe("ses_test_1");
+    expect(useChat.getState().messages).toEqual([]);
+    expect(window.localStorage.getItem("minimax-code:current-session")).toBe("ses_test_1");
   });
 
   it("creates a worktree session when the worktree task button is clicked", async () => {

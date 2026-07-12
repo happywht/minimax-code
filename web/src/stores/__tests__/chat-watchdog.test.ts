@@ -56,7 +56,11 @@ vi.mock("../../components/ErrorBoundary", () => ({
 
 vi.mock("../sessionStore", () => ({
   useSessionStore: {
-    getState: vi.fn().mockReturnValue({ currentSessionId: "test-session" }),
+    getState: vi.fn().mockReturnValue({
+      currentSessionId: "test-session",
+      sessions: [{ id: "test-session", title: "Existing task" }],
+      rename: vi.fn(),
+    }),
     setState: vi.fn(),
   },
 }));

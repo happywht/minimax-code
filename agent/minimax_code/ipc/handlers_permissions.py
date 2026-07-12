@@ -68,8 +68,8 @@ async def _ensure_permission_store(server: Any) -> Any:
         existing = getattr(server, _STORE_ATTR, None)
         if existing is not None:
             return existing
+        from ..app import ensure_db
         from ..storage.dao.permissions import PermissionRuleDAO
-        from ..storage.db import AsyncDatabase, default_database_path
         from ..permissions import PermissionStore
 
         # Honour the same env-var opt-out as app._maybe_open_db so
@@ -79,10 +79,10 @@ async def _ensure_permission_store(server: Any) -> Any:
                 STORAGE_ERROR,
                 "storage is disabled (MINIMAX_CODE_NO_DB=1); permission handlers need a DB",
             )
-        db = AsyncDatabase(default_database_path())
         try:
-            await db.connect()
-            await db.migrate()
+            db = await ensure_db()
+            if db is None:
+                raise RuntimeError("storage is unavailable")
         except Exception as exc:
             logger.exception("failed to open storage for permission handlers")
             raise HandlerError(

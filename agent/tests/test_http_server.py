@@ -37,6 +37,7 @@ import io
 import json
 import time
 import warnings
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 # starlette.testclient warns about the underlying httpx version;
@@ -138,6 +139,26 @@ async def test_health_uptime_advances(
     time.sleep(1.05)  # one full second so the int can move
     r2 = await client.get("/health")
     assert r2.json()["uptime_s"] >= r1.json()["uptime_s"] + 1
+
+
+@pytest.mark.asyncio
+async def test_main_app_serves_preview_routes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ipc_server: IPCServer,
+) -> None:
+    (tmp_path / "index.html").write_text("<h1>Integrated preview</h1>", encoding="utf-8")
+    monkeypatch.setenv("MINIMAX_CODE_WORKSPACE", str(tmp_path))
+    app = build_app(ipc_server, version="0.2.0-test")
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+        health = await c.get("/preview/health")
+        preview = await c.get("/preview/index.html")
+
+    assert health.status_code == 200
+    assert health.json()["workspace"] == str(tmp_path)
+    assert preview.status_code == 200
+    assert "Integrated preview" in preview.text
 
 
 # ---------------------------------------------------------------------------
@@ -387,6 +408,25 @@ async def test_cors_allows_127_origin(client: httpx.AsyncClient) -> None:
     )
     assert r.status_code == 200
     assert r.headers.get("access-control-allow-origin") == "http://127.0.0.1:5173"
+
+
+@pytest.mark.asyncio
+async def test_cors_allows_explicit_additional_origin(
+    monkeypatch: pytest.MonkeyPatch,
+    ipc_server: IPCServer,
+) -> None:
+    monkeypatch.setenv("MINIMAX_CODE_CORS_ORIGINS", "http://127.0.0.1:15173")
+    app = build_app(ipc_server, version="cors-test")
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+    ) as custom:
+        response = await custom.get(
+            "/health",
+            headers={"Origin": "http://127.0.0.1:15173"},
+        )
+    assert response.headers.get("access-control-allow-origin") == "http://127.0.0.1:15173"
 
 
 # ---------------------------------------------------------------------------

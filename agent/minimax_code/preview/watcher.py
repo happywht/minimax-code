@@ -55,6 +55,12 @@ def _classify_change(change_type: Any) -> str:
     return "changed"
 
 
+def _is_ignored_path(path: str, ignore_patterns: set[str]) -> bool:
+    """Return whether any complete path segment is ignored."""
+    ignored = {pattern.casefold() for pattern in ignore_patterns}
+    return any(part.casefold() in ignored for part in Path(path).parts)
+
+
 async def watch_workspace(
     workspace: Path,
     event_queue: asyncio.Queue[WatcherEvent],
@@ -76,7 +82,7 @@ async def watch_workspace(
         Directory names to skip. Defaults to :data:`DEFAULT_IGNORE_PATTERNS`.
     """
     try:
-        from watchfiles import awatch, Change
+        from watchfiles import awatch
     except ImportError:
         logger.warning(
             "watchfiles not installed — live-preview file watching disabled. "
@@ -88,9 +94,7 @@ async def watch_workspace(
 
     async for changes in awatch(
         str(workspace),
-        watch_filter=lambda change, path: not any(
-            f"/{pat}/" in path or path.endswith(f"/{pat}") for pat in ignores
-        ),
+        watch_filter=lambda change, path: not _is_ignored_path(path, ignores),
     ):
         for change_type, path in changes:
             event = WatcherEvent(

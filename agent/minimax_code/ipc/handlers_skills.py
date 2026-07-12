@@ -126,6 +126,42 @@ def register_skill_handlers(
             logger.exception("skill.disable failed")
             await ctx.reply_error(INTERNAL_ERROR, "skill.disable failed")
 
+    async def handle_skill_install(params: Any, ctx: Context) -> None:
+        try:
+            runtime_obj = await runtime_factory()
+            check_params(params, expected_keys={"content"})
+            content = params["content"]
+            if not isinstance(content, str):
+                raise HandlerError(INVALID_PARAMS, "content must be a string")
+            skill = await runtime_obj.registry.install_from_text(
+                content,
+                replace=bool(params.get("replace", False)),
+            )
+            await ctx.reply({"skill": skill.manifest()})
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except (FileExistsError, ValueError, RuntimeError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("skill.install failed")
+            await ctx.reply_error(INTERNAL_ERROR, "skill.install failed")
+
+    async def handle_skill_uninstall(params: Any, ctx: Context) -> None:
+        try:
+            runtime_obj = await runtime_factory()
+            check_params(params, expected_keys={"skill_id"})
+            removed = await runtime_obj.registry.uninstall_custom(str(params["skill_id"]))
+            await ctx.reply({"ok": True, "skill_id": removed.skill_id})
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except KeyError:
+            await ctx.reply_error(INVALID_PARAMS, f"unknown skill_id: {params.get('skill_id')!r}")
+        except (ValueError, RuntimeError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("skill.uninstall failed")
+            await ctx.reply_error(INTERNAL_ERROR, "skill.uninstall failed")
+
     async def handle_skill_invoke(params: Any, ctx: Context) -> None:
         try:
             runtime_obj = await runtime_factory()
@@ -382,6 +418,8 @@ def register_skill_handlers(
     server.register("skill.get", handle_skill_get)
     server.register("skill.enable", handle_skill_enable)
     server.register("skill.disable", handle_skill_disable)
+    server.register("skill.install", handle_skill_install)
+    server.register("skill.uninstall", handle_skill_uninstall)
     server.register("skill.invoke", handle_skill_invoke)
 
 def _make_runtime_factory(runtime: Any | None) -> Any:

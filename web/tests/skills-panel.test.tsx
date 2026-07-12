@@ -39,13 +39,26 @@ vi.mock("../src/ipc", async () => {
       })),
       enableSkill: vi.fn(async () => ({ ok: true })),
       disableSkill: vi.fn(async () => ({ ok: true })),
+      installSkill: vi.fn(async () => ({
+        skill: {
+          id: "personal-helper:personal-helper",
+          name: "personal-helper",
+          description: "A personal imported skill",
+          enabled: true,
+          builtin: false,
+        },
+      })),
+      uninstallSkill: vi.fn(async (skillId: string) => ({
+        ok: true as const,
+        skill_id: skillId,
+      })),
     },
   };
 });
 
 describe("SkillsPanel", () => {
   beforeEach(() => {
-    useSkillStore.setState({ skills: [], loading: false });
+    useSkillStore.setState({ skills: [], loading: false, installing: false });
   });
 
   it("calls listSkills on mount and renders one row per skill", async () => {
@@ -118,5 +131,57 @@ describe("SkillsPanel", () => {
       expect(screen.getByTestId("skills-empty")).toBeInTheDocument();
     });
     expect(screen.queryByTestId("skills-list")).toBeNull();
+  });
+
+  it("imports a local SKILL.md and adds it to the list", async () => {
+    const { typedIPC } = await import("../src/ipc");
+    render(<SkillsPanel />);
+    await waitFor(() => expect(screen.getByTestId("skills-list")).toBeInTheDocument());
+
+    const content = "---\nname: personal-helper\ndescription: A personal imported skill\ntools: []\n---\nHelp me.";
+    const file = new File([content], "SKILL.md", { type: "text/markdown" });
+    fireEvent.change(screen.getByTestId("skills-file-input"), {
+      target: { files: [file] },
+    });
+
+    await waitFor(() => expect(typedIPC.installSkill).toHaveBeenCalledWith(content));
+    expect(
+      await screen.findByTestId("skills-row-personal-helper:personal-helper"),
+    ).toBeInTheDocument();
+  });
+
+  it("removes an imported skill after confirmation", async () => {
+    const { typedIPC } = await import("../src/ipc");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    useSkillStore.setState({
+      skills: [
+        {
+          id: "personal-helper:personal-helper",
+          name: "personal-helper",
+          description: "Personal",
+          enabled: true,
+          builtin: false,
+        },
+      ],
+    });
+    vi.mocked(typedIPC.listSkills).mockResolvedValueOnce({
+      skills: useSkillStore.getState().skills,
+    });
+    render(<SkillsPanel />);
+
+    fireEvent.click(
+      await screen.findByTestId("skills-remove-personal-helper:personal-helper"),
+    );
+
+    await waitFor(() =>
+      expect(typedIPC.uninstallSkill).toHaveBeenCalledWith(
+        "personal-helper:personal-helper",
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("skills-row-personal-helper:personal-helper"),
+      ).toBeNull(),
+    );
   });
 });

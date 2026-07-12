@@ -39,6 +39,8 @@ _RUNTIME: SkillRuntime | None = None
 _RUNTIME_LOCK = asyncio.Lock()
 _PROVIDER_DAO_SINGLETON: Any = None  # type: ignore[no-untyped-def]
 _REPO_MAP_INDEXER: Any = None  # type: ignore[no-untyped-def]
+_DB_SINGLETON: Any = None  # process-wide AsyncDatabase
+_DB_LOCK = asyncio.Lock()
 
 
 def get_runtime() -> SkillRuntime | None:
@@ -57,9 +59,10 @@ async def init_runtime(*, skills_root: Path | str | None = None) -> SkillRuntime
         if _RUNTIME is not None:
             return _RUNTIME
         root = Path(skills_root) if skills_root else _default_skills_root()
-        db = await _maybe_open_db()
+        db = await ensure_db()
         runtime = await bootstrap(
             skills_root=root,
+            extra_roots=[_custom_skills_root()],
             db=db,
             llm=None,
             tool_registry=None,
@@ -85,6 +88,7 @@ async def _maybe_open_db() -> Any:
     """
     if os.environ.get("MINIMAX_CODE_NO_DB") == "1":
         return None
+    db: Any = None
     try:
         from .storage.db import AsyncDatabase, default_database_path
         from .storage.dao.sessions import SessionsDAO
@@ -134,6 +138,13 @@ async def _maybe_open_db() -> Any:
         return db
     except Exception:  # pragma: no cover — defensive
         logger.exception("failed to open storage; running with in-memory skill registry")
+        if db is not None:
+            try:
+                await db.close()
+            except Exception:
+                logger.debug("failed to close partially initialised storage", exc_info=True)
+            if _DB_SINGLETON is db:
+                _DB_SINGLETON = None
         return None
 
 
@@ -146,18 +157,38 @@ def _default_skills_root() -> Path:
     return Path(__file__).resolve().parents[2] / "agent" / "skills"
 
 
+def _custom_skills_root() -> Path:
+    configured = os.environ.get("MINIMAX_CODE_CUSTOM_SKILLS_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    from .storage.db import default_data_dir
+
+    return default_data_dir() / "skills"
+
+
 # ---------------------------------------------------------------------------
 # Progress tracker singleton
 # ---------------------------------------------------------------------------
 
 
 _PROGRESS_TRACKER: Any = None  # type: ignore[no-untyped-def]
-_DB_SINGLETON: Any = None  # process-wide AsyncDatabase
 
 
 def get_db() -> Any:
     """Return the process-wide :class:`AsyncDatabase`, or ``None``."""
     return _DB_SINGLETON
+
+
+async def ensure_db() -> Any:
+    """Return the process-wide DB, opening it once when needed."""
+    existing = get_db()
+    if existing is not None:
+        return existing
+    async with _DB_LOCK:
+        existing = get_db()
+        if existing is not None:
+            return existing
+        return await _maybe_open_db()
 
 
 def get_progress_tracker() -> Any:

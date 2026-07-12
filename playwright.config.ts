@@ -1,11 +1,12 @@
 import { defineConfig, devices } from "@playwright/test";
+import { AGENT_BASE, AGENT_PORT, WEB_BASE, WEB_PORT } from "./e2e/runtime-config";
 
 /**
  * Playwright config for MiniMax Code v0.2.0 e2e.
  *
  * Architecture:
- *   - globalSetup: spawns the agent (`uv run python -m minimax_code`)
- *     in agent/ as a real subprocess and polls /health until ready.
+ *   - globalSetup: spawns an isolated agent (`uv run python -m minimax_code`)
+ *     in agent/ and polls /health until ready.
  *   - globalTeardown: taskkill /SIGTERM the agent pid written by setup.
  *   - webServer: starts `pnpm --filter @minimax/web dev` (Vite on 5173).
  *   - specs run against the running pair: browser → Vite → fetch/WS → agent.
@@ -17,11 +18,9 @@ import { defineConfig, devices } from "@playwright/test";
  *   would land at the wrong path and the smoke would be flaky on
  *   machines with read-only home directories.
  *
- * Why no Vite proxy for /rpc + /ws:
- *   The web client has CORS allow-listed to 127.0.0.1:5173 and
- *   127.0.0.1:8765. Vite proxies are nice but optional. Skipping
- *   them keeps the dev server config identical between `pnpm dev`
- *   and `pnpm test:e2e` — fewer drift surfaces.
+ * Dedicated default ports (15173/18765) prevent a test run from reusing or
+ * mutating a developer's live product. CI can override both via
+ * MINIMAX_CODE_E2E_WEB_PORT and MINIMAX_CODE_E2E_PORT.
  */
 export default defineConfig({
   testDir: "./e2e",
@@ -33,7 +32,7 @@ export default defineConfig({
   outputDir: "test-results",
   timeout: 30_000,
   use: {
-    baseURL: "http://127.0.0.1:5173",
+    baseURL: WEB_BASE,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "off",
@@ -41,9 +40,10 @@ export default defineConfig({
   globalSetup: "./e2e/global-setup.ts",
   globalTeardown: "./e2e/global-teardown.ts",
   webServer: {
-    command: "pnpm --filter @minimax/web dev",
-    url: "http://127.0.0.1:5173",
-    reuseExistingServer: true,
+    command: `pnpm --filter @minimax/web exec vite --host 127.0.0.1 --port ${WEB_PORT} --strictPort`,
+    url: WEB_BASE,
+    env: { VITE_AGENT_URL: AGENT_BASE },
+    reuseExistingServer: false,
     timeout: 60_000,
     stdout: "ignore",
     stderr: "pipe",
@@ -56,10 +56,4 @@ export default defineConfig({
   ],
 });
 
-/**
- * Spec helpers import these so they can talk to the agent directly
- * without going through the Vite proxy. Keep in sync with globalSetup
- * defaults (port 8765, host 127.0.0.1).
- */
-export const AGENT_BASE = "http://127.0.0.1:8765";
-export const AGENT_PORT = 8765;
+export { AGENT_BASE, AGENT_PORT };

@@ -114,6 +114,7 @@ class Skill:
     tools: list[str] = field(default_factory=list)
     skill_id: str = ""
     enabled: bool = True
+    builtin: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -154,6 +155,7 @@ class Skill:
             "tools": list(self.tools),
             "path": str(self.path),
             "enabled": bool(self.enabled),
+            "builtin": bool(self.builtin),
         }
 
     def missing_tools(self, available: Iterable[str]) -> list[str]:
@@ -175,6 +177,7 @@ class Skill:
             tools=list(self.tools),
             skill_id=self.skill_id,
             enabled=bool(enabled),
+            builtin=self.builtin,
             extra=dict(self.extra),
         )
         return new
@@ -506,13 +509,15 @@ def _parse_block_list(lines: list[str], start: int, indent: int) -> tuple[int, l
 def _parse_scalar(text: str, *, line_no: int) -> Any:
     """Coerce a single-line scalar.
 
-    Supports quoted strings, ints, floats, booleans, and null —
+    Supports quoted strings, ints, floats, booleans, null, and an empty list —
     everything else falls through as a plain string. We do *not*
     try to be clever about types because the frontmatter only
     needs strings + booleans + numeric versions.
     """
     if not text:
         return ""
+    if text == "[]":
+        return []
     # Strip surrounding quotes.
     if (text[0] == text[-1]) and text[0] in ('"', "'"):
         return text[1:-1]

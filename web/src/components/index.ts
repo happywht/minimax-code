@@ -7,13 +7,16 @@
 export { Sidebar } from "./Sidebar";
 export { NavItem } from "./NavItem";
 export { ChatPanel } from "./ChatPanel";
+export { ProviderReadinessBanner } from "./ProviderReadinessBanner";
+export type { ProviderReadinessBannerProps } from "./ProviderReadinessBanner";
 export { MessageList } from "./MessageList";
-export { MessageItem } from "./MessageItem";
 export { MessageInput } from "./MessageInput";
 export { ProgressPanel } from "./ProgressPanel";
 export { RightPanel } from "./RightPanel";
 export { ModelSelector } from "./ModelSelector";
 export { PermissionRequestModal } from "./PermissionRequestModal";
+export { ConfirmationDialog, confirmationBus, requestConfirmation } from "./ConfirmationDialog";
+export type { ConfirmationOptions } from "./ConfirmationDialog";
 export { PermissionPatchPreview } from "./PermissionPatchPreview";
 export type { PermissionPatchPreviewProps } from "./PermissionPatchPreview";
 export { UserBadge } from "./UserBadge";

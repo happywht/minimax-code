@@ -25,9 +25,9 @@ These cases use the in-process :class:`IPCClient` from
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -118,14 +118,27 @@ class TestMiniMaxClientThinkingCount:
         ):
             pass
         assert client.thinking_count == 1
-        # A second call → counter still 1 (it's a per-call snapshot,
-        # reset on entry). The real LLM path will read the value
-        # off ``usage.thinking_tokens``; the mock just reports 1.
+        # A second call keeps a per-call snapshot rather than accumulating.
         async for _ in client.stream_chat(
             [{"role": "user", "content": "again"}]
         ):
             pass
         assert client.thinking_count == 1
+
+    def test_force_mock_env_ignores_configured_secret(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("MINIMAX_CODE_FORCE_MOCK", "1")
+        monkeypatch.setattr(
+            "minimax_code.agent.llm.secrets.get_api_key",
+            lambda: "real-key-must-not-be-used",
+        )
+
+        client = MiniMaxClient()
+
+        assert client.mock is True
+        assert client.api_key == ""
 
     @pytest.mark.asyncio
     async def test_real_path_reads_thinking_tokens(self) -> None:
@@ -200,7 +213,7 @@ class TestAgentCoreMetadataOnFinalChunk:
         # All earlier chunks passed metadata=None.
         non_meta = [s for s in seen if s[2] is None]
         assert len(non_meta) == len(seen) - 1
-        for delta, done, meta in non_meta:
+        for _delta, done, meta in non_meta:
             assert done is False
             assert meta is None
 
@@ -208,6 +221,35 @@ class TestAgentCoreMetadataOnFinalChunk:
 # ---------------------------------------------------------------------------
 # handle_agent_send_message end-to-end
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def isolated_chat_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> AsyncIterator[None]:
+    monkeypatch.setattr("minimax_code.secrets.get_api_key", lambda: None)
+    monkeypatch.setenv("MINIMAX_CODE_DATA_DIR", str(tmp_path))
+    yield
+
+    import minimax_code.app as app_module
+    from minimax_code.app import (
+        get_db,
+        set_progress_tracker,
+        set_runtime,
+        set_sessions_dao,
+        set_subagent_llm,
+    )
+
+    db = get_db()
+    if db is not None:
+        await db.close()
+    app_module._DB_SINGLETON = None
+    app_module._PROVIDER_DAO_SINGLETON = None
+    set_runtime(None)
+    set_progress_tracker(None)
+    set_sessions_dao(None)
+    set_subagent_llm(None)
 
 
 class TestAgentSendMessageMetadata:
@@ -224,16 +266,12 @@ class TestAgentSendMessageMetadata:
     """
 
     @pytest.mark.asyncio
-    async def test_message_chunk_has_metadata(self) -> None:
+    async def test_message_chunk_has_metadata(
+        self,
+        isolated_chat_runtime: None,
+    ) -> None:
         client = IPCClient()
 
-        # Drain the connect / list-models chatter the runtime emits
-        # during ``init_runtime`` so it doesn't pollute our chunk
-        # collector. We use a generous timeout — the mock LLM
-        # takes ~80ms to stream all 16-char chunks.
-        events_task = asyncio.create_task(
-            client.collect_events(50, timeout=8.0)
-        )
         try:
             reply = await client.request(
                 "agent.send_message",
@@ -245,10 +283,9 @@ class TestAgentSendMessageMetadata:
             # a stale data.db from a prior test). Skip rather than
             # fail — the AgentCore-level tests above already pin
             # the metadata propagation.
-            events_task.cancel()
             pytest.skip("agent.send_message init_runtime unavailable in this env")
 
-        events = await events_task
+        events = await client.collect_events(50, timeout=0.2)
         # The mock LLM's canned reply starts with the [mock]
         # preamble — we just check the reply arrived at all and
         # is non-empty. The full text is asserted elsewhere.

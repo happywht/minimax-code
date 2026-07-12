@@ -30,12 +30,14 @@ import {
   WebhooksTab,
   WorkflowsTab,
 } from "./settings";
+import { useFocusTrap } from "../lib/useFocusTrap";
+import { ConfirmationDialog } from "./ConfirmationDialog";
 
-type Tab = "models" | "providers" | "permissions" | "scheduled" | "api-key" | "agents" | "teams" | "audit" | "webhooks" | "workflows";
+export type SettingsTab = "models" | "providers" | "permissions" | "scheduled" | "api-key" | "agents" | "teams" | "audit" | "webhooks" | "workflows";
 
 const TAB_GROUPS: Array<{
   label: string;
-  tabs: Array<{ id: Tab; icon: JSX.Element; label: string; testId: string }>;
+  tabs: Array<{ id: SettingsTab; icon: JSX.Element; label: string; testId: string }>;
 }> = [
   {
     label: "Core",
@@ -72,16 +74,13 @@ const TAB_GROUPS: Array<{
 export interface SettingsPageProps {
   testId?: string;
   onClose?: () => void;
+  initialTab?: SettingsTab;
 }
 
-export function SettingsPage({ testId = "settings-page", onClose }: SettingsPageProps): JSX.Element {
-  const [tab, setTab] = useState<Tab>("models");
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (!onClose) return;
-    closeButtonRef.current?.focus();
-  }, [onClose]);
+export function SettingsPage({ testId = "settings-page", onClose, initialTab = "models" }: SettingsPageProps): JSX.Element {
+  const [tab, setTab] = useState<SettingsTab>(initialTab);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, Boolean(onClose));
 
   useEffect(() => {
     if (!onClose) return;
@@ -93,26 +92,27 @@ export function SettingsPage({ testId = "settings-page", onClose }: SettingsPage
   }, [onClose]);
 
   return (
-    <div
-      data-testid={testId}
-      role={onClose ? "dialog" : undefined}
-      aria-modal={onClose ? true : undefined}
-      aria-labelledby="settings-title"
-      className="flex h-full w-full flex-col overflow-hidden bg-minimax-bg text-minimax-fg"
-    >
+    <>
+      <div
+        ref={dialogRef}
+        data-testid={testId}
+        role={onClose ? "dialog" : undefined}
+        aria-modal={onClose ? true : undefined}
+        aria-labelledby="settings-title"
+        className="flex h-full w-full min-w-0 flex-col overflow-hidden bg-minimax-bg text-minimax-fg"
+      >
       <header className="border-b border-minimax-border px-4 py-3 md:px-6 md:py-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
+        <div className="flex min-w-0 items-start justify-between gap-3">
+          <div className="min-w-0">
             <h1 id="settings-title" data-testid="settings-title" className="text-base font-semibold">
               Settings
             </h1>
-            <p className="text-[11px] text-minimax-muted">
+            <p className="text-pretty text-[11px] text-minimax-muted">
               Configure models, providers, permissions, scheduled jobs, and API keys.
             </p>
           </div>
           {onClose && (
             <button
-              ref={closeButtonRef}
               type="button"
               data-testid="settings-close"
               aria-label="Close settings"
@@ -124,15 +124,15 @@ export function SettingsPage({ testId = "settings-page", onClose }: SettingsPage
           )}
         </div>
       </header>
-      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:flex-row">
         <nav
           data-testid="settings-nav"
-          className="flex shrink-0 gap-2 overflow-x-auto border-b border-minimax-border bg-minimax-panel/50 px-3 py-2 md:w-52 md:flex-col md:overflow-y-auto md:border-b-0 md:border-r md:px-3 md:py-4"
+          className="flex max-w-full shrink-0 gap-2 overflow-x-auto overscroll-x-contain border-b border-minimax-border bg-minimax-panel/50 px-2 py-2 sm:px-3 md:w-52 md:flex-col md:overflow-y-auto md:border-b-0 md:border-r md:px-3 md:py-4"
           aria-label="Settings sections"
         >
           {TAB_GROUPS.map((group) => (
             <div key={group.label} className="flex shrink-0 gap-1 md:flex-col">
-              <div className="hidden px-2 pb-1 text-[10px] font-medium uppercase tracking-wider text-minimax-muted md:block">
+              <div className="hidden px-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-minimax-muted md:block">
                 {group.label}
               </div>
               <div className="flex gap-1 md:flex-col">
@@ -151,7 +151,7 @@ export function SettingsPage({ testId = "settings-page", onClose }: SettingsPage
             </div>
           ))}
         </nav>
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6 md:py-5">
+        <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-3 py-4 sm:px-4 md:px-6 md:py-5">
           {tab === "models" && <ModelsTab />}
           {tab === "providers" && <ProvidersTab />}
           {tab === "permissions" && <PermissionsTab />}
@@ -164,7 +164,9 @@ export function SettingsPage({ testId = "settings-page", onClose }: SettingsPage
           {tab === "workflows" && <WorkflowsTab />}
         </div>
       </div>
-    </div>
+      </div>
+      <ConfirmationDialog />
+    </>
   );
 }
 
@@ -173,7 +175,7 @@ export function SettingsPage({ testId = "settings-page", onClose }: SettingsPage
 function TabButton({
   id, current, onClick, icon, label, testId,
 }: {
-  id: Tab; current: Tab; onClick: (t: Tab) => void;
+  id: SettingsTab; current: SettingsTab; onClick: (t: SettingsTab) => void;
   icon: JSX.Element; label: string; testId: string;
 }): JSX.Element {
   const active = id === current;

@@ -93,7 +93,21 @@ def _make_fake_db() -> AsyncMock:
     db.fetchone = AsyncMock(return_value=None)
     db.execute = AsyncMock()
     db.execute_insert = AsyncMock(return_value=None)
+    conn = AsyncMock()
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=conn)
+    transaction.__aexit__ = AsyncMock(return_value=None)
+    db.transaction = MagicMock(return_value=transaction)
     return db
+
+
+def _make_fake_runs_dao() -> MagicMock:
+    dao = MagicMock()
+    dao.create_run = AsyncMock(return_value={"id": "run_test"})
+    dao.create_step = AsyncMock(return_value={"id": "step_test"})
+    dao.complete_step = AsyncMock(return_value={"id": "step_test"})
+    dao.update_run_status = AsyncMock(return_value={"id": "run_test"})
+    return dao
 
 
 # ── P0#1: team.spawn server.emit() → server.notify() ─────────────────────────
@@ -454,6 +468,10 @@ async def test_send_message_reuses_subagent_llm():
             patch("minimax_code.app.init_runtime", return_value=MagicMock()),
             patch("minimax_code.app.get_sessions_dao", return_value=None),
             patch("minimax_code.app.get_db", return_value=_make_fake_db()),
+            patch(
+                "minimax_code.storage.dao.runs.AgentRunsDAO",
+                return_value=_make_fake_runs_dao(),
+            ),
             patch("minimax_code.agent.AgentCore", return_value=mock_core),
             patch(
                 "minimax_code.ipc.builtins._build_system_prompt_extra",
@@ -502,6 +520,10 @@ async def test_send_message_falls_back_to_default_llm():
             patch("minimax_code.app.init_runtime", return_value=MagicMock()),
             patch("minimax_code.app.get_sessions_dao", return_value=None),
             patch("minimax_code.app.get_db", return_value=_make_fake_db()),
+            patch(
+                "minimax_code.storage.dao.runs.AgentRunsDAO",
+                return_value=_make_fake_runs_dao(),
+            ),
             patch("minimax_code.agent.AgentCore", return_value=mock_core),
             patch(
                 "minimax_code.ipc.builtins._build_system_prompt_extra",
@@ -615,7 +637,7 @@ async def test_http_lifespan_cleans_up_resources():
     with (
         patch("minimax_code.app.get_subagent_llm", return_value=fake_llm),
         patch("minimax_code.app.get_db", return_value=fake_db),
-        patch("minimax_code.scheduler.get_scheduler", return_value=None),
+        patch("minimax_code.scheduler.get_scheduler", new=AsyncMock(return_value=None)),
     ):
         app = build_app(server)
 

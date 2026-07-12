@@ -25,8 +25,9 @@ Concurrency model
 
 CORS
 ----
-Allow-list is exactly the Vite dev server origins
-(``http://localhost:5173`` and ``http://127.0.0.1:5173``). The
+The default allow-list contains the Vite dev server origins
+(``http://localhost:5173`` and ``http://127.0.0.1:5173``). Additional
+trusted origins can be supplied through ``MINIMAX_CODE_CORS_ORIGINS``. The
 HTTP server binds ``127.0.0.1`` so anything on the LAN is
 unreachable, but we still set a tight CORS allow-list so a
 malicious site can't impersonate the agent.
@@ -38,13 +39,17 @@ import asyncio
 import importlib.metadata
 import json
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
-from typing import Any, TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from .ipc.protocol import (
     INVALID_REQUEST,
@@ -71,6 +76,39 @@ CORS_ALLOW_HEADERS: list[str] = ["Content-Type", "Authorization"]
 # Maximum request body size for POST /rpc (10 MB).
 # Prevents OOM from oversized payloads.
 MAX_RPC_BODY_BYTES: int = 10 * 1024 * 1024
+
+
+def _cors_allow_origins() -> list[str]:
+    """Return defaults plus explicitly configured trusted web origins."""
+    origins = list(CORS_ALLOW_ORIGINS)
+    raw = os.environ.get("MINIMAX_CODE_CORS_ORIGINS", "")
+    for value in raw.split(","):
+        origin = value.strip().rstrip("/")
+        if not origin or origin in origins:
+            continue
+        parsed = urlsplit(origin)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            logger.warning("ignoring invalid CORS origin: %s", value.strip())
+            continue
+        origins.append(origin)
+    return origins
+
+
+def _web_dist_dir() -> Path | None:
+    """Return the built SPA directory when it is available."""
+    configured = os.environ.get("MINIMAX_CODE_WEB_DIST")
+    candidates = [Path(configured).expanduser()] if configured else []
+    candidates.append(Path(__file__).resolve().parents[2] / "web" / "dist")
+    for candidate in candidates:
+        if candidate.is_dir() and (candidate / "index.html").is_file():
+            return candidate
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +243,10 @@ class _WSManager:
                     },
                 }
             )
+        except WebSocketDisconnect:
+            logger.debug("websocket disconnected before agent.ready")
+            await self._cleanup_disconnect(ws)
+            raise
         except Exception:
             logger.exception("failed to send agent.ready; closing socket")
             await self._cleanup_disconnect(ws)
@@ -375,6 +417,12 @@ def build_app(
     app_version = version if version is not None else _resolve_version()
     started_at = server_started_at if server_started_at is not None else time.time()
     ws_manager = _WSManager(server, app_version)
+    preview_workspace = Path(
+        os.environ.get("MINIMAX_CODE_WORKSPACE", os.getcwd())
+    ).resolve()
+    from .preview.server import PreviewState
+
+    preview_state = PreviewState(preview_workspace)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -388,6 +436,8 @@ def build_app(
         try:
             yield
         finally:
+            await preview_state.stop()
+
             # ── Graceful shutdown sequence ──────────────────────────
             # 1. Cancel any in-flight agent runs.
             from .ipc.builtins import _ACTIVE_RUNS
@@ -407,7 +457,7 @@ def build_app(
             try:
                 from .scheduler import get_scheduler
 
-                sched = get_scheduler()
+                sched = await get_scheduler()
                 if sched is not None:
                     sched.shutdown(wait=False)
                     logger.info("graceful shutdown: scheduler stopped")
@@ -452,7 +502,7 @@ def build_app(
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=CORS_ALLOW_ORIGINS,
+        allow_origins=_cors_allow_origins(),
         allow_credentials=True,
         allow_methods=CORS_ALLOW_METHODS,
         allow_headers=CORS_ALLOW_HEADERS,
@@ -539,7 +589,14 @@ def build_app(
 
     @app.websocket("/ws")
     async def ws_endpoint(websocket: WebSocket) -> None:
-        await ws_manager.on_connect(websocket)
+        try:
+            await ws_manager.on_connect(websocket)
+        except WebSocketDisconnect:
+            return
+        except Exception:
+            # ``on_connect`` owns logging and cleanup for initialization
+            # failures. Returning here avoids a second ASGI traceback.
+            return
         try:
             # The server is push-only over WS. We still drain
             # incoming frames so the client can send keepalives
@@ -585,7 +642,7 @@ def build_app(
         except Exception:
             pass
         return {
-            "ok": db_ok,
+            "ok": True,
             "db": db_ok,
             "version": app_version,
             "uptime_s": int(time.time() - started_at),
@@ -648,6 +705,18 @@ def build_app(
 
     from .agent.completion_routes import register_completion_routes
     register_completion_routes(app, server)
+
+    from .preview.server import register_preview_routes
+
+    register_preview_routes(app, preview_workspace, state=preview_state)
+
+    # Mount last so API and WebSocket routes keep precedence. This turns the
+    # built repository into a single-process personal product while leaving
+    # the Vite development workflow unchanged when web/dist is absent.
+    web_dist = _web_dist_dir()
+    if web_dist is not None:
+        app.mount("/", StaticFiles(directory=web_dist, html=True), name="web")
+        logger.info("serving web UI from %s", web_dist)
 
     return app
 

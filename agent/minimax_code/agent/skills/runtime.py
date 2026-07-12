@@ -197,6 +197,8 @@ class SkillRuntime:
             raise SkillInvokeError(f"skill {skill_id!r} is disabled")
 
         provider = self._tool_providers.get(skill_id)
+        if provider is None and not skill.tools:
+            provider = _NoopSkillToolProvider()
         if provider is None:
             raise SkillInvokeError(
                 f"no tool provider registered for skill {skill_id!r}"
@@ -319,6 +321,16 @@ class SkillToolProvider:
     def uninstall(self, tool_registry: Any) -> None:
         """Remove the tools added in :meth:`install`. Idempotent."""
         raise NotImplementedError
+
+
+class _NoopSkillToolProvider(SkillToolProvider):
+    """Provider for instruction-only skills that declare no tools."""
+
+    def install(self, tool_registry: Any) -> set[str]:
+        return set()
+
+    def uninstall(self, tool_registry: Any) -> None:
+        return None
 
 
 # ---------------------------------------------------------------------------

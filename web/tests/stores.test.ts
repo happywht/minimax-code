@@ -18,6 +18,8 @@ vi.mock("../src/components/ErrorBoundary", () => ({
 
 describe("sessionStore", () => {
   beforeEach(() => {
+    window.localStorage.clear();
+    useChat.getState().reset();
     useSessionStore.setState({
       sessions: [],
       currentSessionId: null,
@@ -38,8 +40,11 @@ describe("sessionStore", () => {
   });
 
   it("setCurrent updates the active id", () => {
+    useChat.getState().addLocalMessage("previous session");
     useSessionStore.getState().setCurrent("ses_1");
     expect(useSessionStore.getState().currentSessionId).toBe("ses_1");
+    expect(useChat.getState().messages).toEqual([]);
+    expect(window.localStorage.getItem("minimax-code:current-session")).toBe("ses_1");
   });
 });
 

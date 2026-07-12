@@ -163,15 +163,20 @@ def get_provider_key(provider_id: str) -> str | None:
 
     Lookup order:
     1. OS keyring (``minimax-code / provider:<provider_id>``).
-    2. Legacy global key via :func:`get_api_key` (fallback).
+    2. For the built-in MiniMax provider only, the legacy global key
+       via :func:`get_api_key` (fallback).
 
     Returns ``None`` if no key is found anywhere.
     """
     key = _read_keyring_username(f"provider:{provider_id}")
     if key:
         return key
-    # Fallback to global key for backward compat.
-    return get_api_key()
+    # The legacy global key belongs to MiniMax. Reusing it for an
+    # arbitrary OpenAI-compatible provider makes that provider look
+    # configured while sending the wrong credential.
+    if provider_id == "builtin-minimax":
+        return get_api_key()
+    return None
 
 
 def set_provider_key(provider_id: str, value: str) -> None:

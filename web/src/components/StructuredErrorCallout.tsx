@@ -151,7 +151,7 @@ export function StructuredErrorCallout({
       {expanded ? (
         <pre
           data-testid={`${testId}-details`}
-          className="max-h-40 overflow-auto whitespace-pre-wrap break-words border-t border-red-500/20 bg-minimax-bg/50 px-3 py-2 font-mono text-[10px] text-minimax-muted"
+          className="max-h-40 overflow-auto whitespace-pre-wrap break-words border-t border-red-500/20 bg-minimax-bg/50 px-3 py-2 font-mono text-[11px] text-minimax-muted"
         >
           {technicalDetails}
         </pre>
