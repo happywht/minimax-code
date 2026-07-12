@@ -425,6 +425,8 @@ class AgentCore:
             tool_choice="auto" if tools_payload else None,
             temperature=self.config.temperature,
         ).__aiter__()
+        stream_timed_out = False
+        timeout_notice = ""
         while True:
             try:
                 if stall and stall > 0:
@@ -437,12 +439,12 @@ class AgentCore:
                 logger.warning(
                     "stream stall: no chunk for %.0fs, aborting turn", stall,
                 )
-                await self._emit_chunk(
+                stream_timed_out = True
+                timeout_notice = (
                     "\n\n⚠️ _Stream timed out — no response from LLM for "
-                    f"{stall:.0f}s._",
-                    True,
-                    None,
+                    f"{stall:.0f}s._"
                 )
+                await self._emit_chunk(timeout_notice, False, None)
                 break
             if self.cancelled:
                 break
@@ -450,6 +452,12 @@ class AgentCore:
             if chunk.delta:
                 await self._emit_chunk(chunk.delta, False, None)
         response = _assemble_chunks(chunks, model=self.config.model)
+        if stream_timed_out:
+            response.message = {
+                "role": "assistant",
+                "content": f"{response.message.get('content') or ''}{timeout_notice}",
+            }
+            response.finish_reason = "timeout"
         # Build the per-turn metadata snapshot. Reading
         # ``self.llm.thinking_count`` here is the only way the
         # streaming path can pick up the value — the per-call
@@ -463,6 +471,8 @@ class AgentCore:
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
         }
+        if stream_timed_out:
+            response.metadata["stream_timeout"] = True
         return response
 
     async def _dispatch_tool(self, call: dict[str, Any]) -> ToolResult:

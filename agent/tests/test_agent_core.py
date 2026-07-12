@@ -72,6 +72,22 @@ class FakeLLM:
             yield c
 
 
+class StallingLLM:
+    """Fake LLM that emits one chunk and then stalls mid-stream."""
+
+    async def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        model: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: Any = None,
+        temperature: float | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        yield StreamChunk(delta="partial answer")
+        await asyncio.sleep(1)
+
+
 class CountingTool(Tool):
     name = "echo"
     description = "echoes its input back"
@@ -520,6 +536,39 @@ async def test_loop_truncates_at_max_iterations() -> None:
     assert final_done is True
     assert final_metadata is not None
     assert final_metadata["truncated"] is True
+    assert persisted[-1]["role"] == "assistant"
+    assert persisted[-1]["content"] == result.final_text
+
+
+@pytest.mark.asyncio
+async def test_stream_stall_persists_visible_timeout_notice() -> None:
+    """When the LLM stream stalls, the visible timeout notice should
+    be part of the persisted assistant message, not an ephemeral
+    websocket-only tail."""
+    chunks: list[tuple[str, bool, dict[str, Any] | None]] = []
+    persisted: list[dict[str, Any]] = []
+
+    async def persist(_session_id: str, message: dict[str, Any]) -> None:
+        persisted.append(message)
+
+    core = AgentCore(
+        llm=StallingLLM(),
+        registry=_fresh_registry(CountingTool()),
+        config=AgentConfig(stall_timeout=0.01),
+        persist_message=persist,
+    )
+    core.on_chunk = lambda d, done, metadata=None: _maybe_coro(chunks.append((d, done, metadata)))
+
+    result = await core.run(session_id="s1", user_message="please continue")
+
+    assert result.final_text.startswith("partial answer")
+    assert "Stream timed out" in result.final_text
+    assert chunks[-2][0].startswith("\n\n⚠️ _Stream timed out")
+    assert chunks[-2][1] is False
+    assert chunks[-1][0] == ""
+    assert chunks[-1][1] is True
+    assert chunks[-1][2] is not None
+    assert chunks[-1][2]["stream_timeout"] is True
     assert persisted[-1]["role"] == "assistant"
     assert persisted[-1]["content"] == result.final_text
 
