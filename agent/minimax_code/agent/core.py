@@ -244,6 +244,10 @@ class AgentCore:
         # traceability.  Set externally via ``core.audit_dao = dao``.
         self.audit_dao: Any | None = None
         self._audit_session_id: str | None = None
+        # Telemetry engine (R11) — when set, every tool dispatch is mirrored
+        # into the in-memory event bus for real-time observability. Set
+        # externally (mirrors audit_dao). None ⇒ disabled, zero overhead.
+        self.telemetry_engine: Any | None = None
         self.on_chunk: ChunkCallback | None = None
         self.on_tool_call: ToolCallCallback | None = None
         self.on_tool_result: ToolResultCallback | None = None
@@ -644,7 +648,41 @@ class AgentCore:
         exit_code: int | None = None,
     ) -> None:
         """Write an audit record (fire-and-forget). Errors are logged but
-        never propagated — the audit trail must not break the tool loop."""
+        never propagated — the audit trail must not break the tool loop.
+
+        Also mirrors the dispatch into the in-memory telemetry bus (R11)
+        when an engine is attached — real-time observability is independent
+        of on-disk persistence. Fail-open always.
+        """
+        engine = self.telemetry_engine
+        if engine is not None:
+            try:
+                from ..telemetry import EventType, Severity, TelemetryEvent
+
+                severity = (
+                    Severity.ERROR if result_status == "error" else Severity.INFO
+                )
+                engine.emit(
+                    TelemetryEvent(
+                        type=EventType.TOOL_CALL,
+                        session_id=self._audit_session_id,
+                        severity=severity,
+                        name=call_log.get("name", "unknown"),
+                        payload={
+                            "tool": call_log.get("name", "unknown"),
+                            "args": _sanitize_args(
+                                call_log.get("args", {}), self._SANITIZE_KEYS
+                            ),
+                            "permission": permission,
+                            "status": result_status,
+                            "exit_code": exit_code,
+                            "duration_ms": duration_ms,
+                            "error": (error or "")[:500] if error else None,
+                        },
+                    )
+                )
+            except Exception:  # noqa: BLE001 — telemetry must not break tools
+                logger.debug("telemetry tool_call emit failed", exc_info=True)
         dao = self.audit_dao
         if dao is None:
             return

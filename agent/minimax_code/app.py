@@ -49,6 +49,11 @@ _PLUGIN_REGISTRY: Any = None  # type: ignore[no-untyped-def]
 # set_hook_manager(). Plugins contribute their hooks into this manager's
 # registry so plugin lifecycle hooks become agent-active with one build.
 _HOOK_MANAGER: Any = None  # type: ignore[no-untyped-def]
+# Telemetry engine singleton (R11 — observability pillar). Lazily built by
+# ensure_telemetry_engine(); tests inject via set_telemetry_engine().
+# In-memory, fail-open event bus: session lifecycle, tool dispatch, hook
+# fire, permission. Optional everywhere — None means disabled, zero overhead.
+_TELEMETRY_ENGINE: Any = None  # type: ignore[no-untyped-def]
 
 
 def get_runtime() -> SkillRuntime | None:
@@ -98,17 +103,16 @@ async def _maybe_open_db() -> Any:
         return None
     db: Any = None
     try:
-        from .storage.db import AsyncDatabase, default_database_path
-        from .storage.dao.sessions import SessionsDAO
-        from .storage.dao.tasks import TaskDAO
-        from .storage.dao.mobile_devices import MobileDeviceDAO
         from .mobile import (
             PairingManagerWithDAO,
-            set_pairing_manager,
             set_mobile_dao,
+            set_pairing_manager,
         )
         from .progress import ProgressTracker
-        from .agent.llm import MiniMaxClient
+        from .storage.dao.mobile_devices import MobileDeviceDAO
+        from .storage.dao.sessions import SessionsDAO
+        from .storage.dao.tasks import TaskDAO
+        from .storage.db import AsyncDatabase, default_database_path
     except Exception:  # pragma: no cover — storage not yet bootstrapped
         logger.debug("storage layer not importable; running with in-memory skill registry")
         return None
@@ -375,10 +379,10 @@ async def _rebuild_subagent_llm(db: Any) -> Any:
     agent always boots — even with a corrupt DB or missing provider.
     """
     try:
+        from . import secrets
+        from .agent.llm import MiniMaxClient
         from .storage.dao.model_prefs import ModelPrefsDAO
         from .storage.dao.providers import ProviderDAO
-        from .agent.llm import MiniMaxClient
-        from . import secrets
 
         prefs_dao = ModelPrefsDAO(db)
         pref = await prefs_dao.get_current()
@@ -438,10 +442,9 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     either via the matching ``runtime=`` / ``tracker=`` kwargs
     to skip the lazy path.
     """
-    from .ipc.builtins import handle_agent_send_message, handle_agent_cancel
+    from .ipc.builtins import handle_agent_cancel, handle_agent_send_message
     from .ipc.handlers_agents import register_agent_handlers
     from .ipc.handlers_audit import register_audit_handlers
-    from .ipc.handlers_webhooks import register_webhook_handlers
     from .ipc.handlers_git import register_git_handlers
     from .ipc.handlers_model import register_model_handlers
     from .ipc.handlers_patch import register_patch_handlers
@@ -451,11 +454,13 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_runner import register_runner_handlers
     from .ipc.handlers_runs import register_run_handlers
     from .ipc.handlers_scheduled import register_scheduled_handlers
+    from .ipc.handlers_secrets import register_secret_handlers
     from .ipc.handlers_sessions import register_session_handlers
     from .ipc.handlers_skills import register_skill_handlers
     from .ipc.handlers_tasks import register_task_handlers
-    from .ipc.handlers_secrets import register_secret_handlers
+    from .ipc.handlers_telemetry import register_telemetry_handlers
     from .ipc.handlers_terminal import register_terminal_handlers
+    from .ipc.handlers_webhooks import register_webhook_handlers
     from .ipc.handlers_workspace import register_workspace_handlers
 
     server.register("agent.send_message", handle_agent_send_message)
@@ -566,13 +571,18 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # defensive posture as the DB singleton). Tests can inject a registry
     # via the ``registry=`` kwarg to skip discovery.
     register_plugin_handlers(server)
+    # The telemetry handlers expose ``telemetry.recent`` / ``telemetry.metrics``
+    # / ``telemetry.clear`` for the in-memory observability bus (R11). The
+    # engine is built lazily via :func:`ensure_telemetry_engine` and is
+    # None-safe (returns ``enabled: False`` when telemetry is off).
+    register_telemetry_handlers(server)
     logger.info(
         "registered application handlers "
         "(1 agent.* + 7 agent.* + 5 skill.* + 6 task.* + 5 session.* + 3 workspace.* + "
         "5 permission.* + 6 schedule.* + 7 mobile.* + 3 model.* + "
         "7 provider.* + 3 secrets.* + 3 git.* + 3 patch.* + "
         "4 terminal.* + 2 runner.* + 3 audit.* + 5 webhook.* + "
-        "5 notification.* + 7 workflow.* + 7 team.* + 5 plugins.*)"
+        "5 notification.* + 7 workflow.* + 7 team.* + 5 plugins.* + 3 telemetry.*)"
     )
 
 
@@ -705,6 +715,52 @@ def ensure_hook_manager() -> Any:
     return manager
 
 
+# ---------------------------------------------------------------------------
+# Telemetry engine singleton (R11 — observability pillar)
+# ---------------------------------------------------------------------------
+
+
+def get_telemetry_engine() -> Any:
+    """Return the process-wide :class:`TelemetryEngine`, or ``None``."""
+    return _TELEMETRY_ENGINE
+
+
+def set_telemetry_engine(engine: Any) -> None:
+    """Inject a pre-built TelemetryEngine (tests bypass lazy build)."""
+    global _TELEMETRY_ENGINE
+    _TELEMETRY_ENGINE = engine
+
+
+def ensure_telemetry_engine() -> Any:
+    """Return the process-wide TelemetryEngine, building it once on demand.
+
+    Fail-open: a build failure logs and returns ``None`` rather than
+    raising, so ``engine = ensure_telemetry_engine()`` followed by
+    ``if engine: engine.emit(...)`` keeps working even when telemetry
+    cannot initialise. In-memory, no external deps — rarely hit, but the
+    contract is "telemetry never breaks the agent".
+    """
+    global _TELEMETRY_ENGINE
+    if _TELEMETRY_ENGINE is not None:
+        return _TELEMETRY_ENGINE
+    # Env switch (default on). "0"/"false"/"off"/"no" disables telemetry
+    # entirely so the handlers report ``enabled: False`` without ever
+    # building an engine — useful for sandboxes that forbid observability.
+    flag = os.environ.get("MINIMAX_CODE_TELEMETRY", "").strip().lower()
+    if flag in ("0", "false", "off", "no"):
+        logger.debug("telemetry disabled by MINIMAX_CODE_TELEMETRY env")
+        return None
+    try:
+        from .telemetry import TelemetryEngine
+
+        _TELEMETRY_ENGINE = TelemetryEngine()
+        logger.info("telemetry engine initialised")
+    except Exception:
+        logger.exception("telemetry engine init failed; running without telemetry")
+        _TELEMETRY_ENGINE = None
+    return _TELEMETRY_ENGINE
+
+
 __all__ = [
     "ensure_repo_map_indexer",
     "get_http_app",
@@ -730,4 +786,7 @@ __all__ = [
     "get_plugin_registry",
     "set_hook_manager",
     "set_plugin_registry",
+    "ensure_telemetry_engine",
+    "get_telemetry_engine",
+    "set_telemetry_engine",
 ]

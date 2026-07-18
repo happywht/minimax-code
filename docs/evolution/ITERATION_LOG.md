@@ -433,3 +433,62 @@
 ### Commit
 
 `feat(platform): R10 wire plugins+hooks into agent lifecycle via ensure_hook_manager singleton`
+
+---
+
+## R11 — 遥测引擎：内存事件总线 + 三层脱敏（阶段 B 起始）
+
+- **阶段**：B（安全与可观测）— **起始回合**
+- **日期**：2026-07-19
+- **状态**：✅ 已完成并提交
+
+### 本轮目标
+
+构建 `minimax_code/telemetry/` 遥测引擎子系统，深度融合 grok-build 的 telemetry 设计理念（`TelemetryEvent` 特征 + `redact_common` 三层脱敏）到 Python 架构。**内存中、fail-open、零侵入**的事件总线：会话生命周期、工具分发、hook fire、permission 决策。与既有 `audit_log`（磁盘持久化、仅工具分发）**解耦** —— 平行通道，不耦合、不重复造轮子。本轮交付：6 个 telemetry 模块（events/redact/ringbuffer/metrics/engine/__init__）+ app.py 单例三件套 + builtins.py 生命周期接线 + core.py 工具分发镜像 + 3 个只读 IPC handler + 17 单测。**阶段 B（R11-R20）开启。**
+
+### 设计决策
+
+- **关注点分离**：`audit_log`（磁盘持久化、仅工具分发、`handlers_audit`）vs `TelemetryEngine`（内存实时、全事件类型）—— 平行通道非耦合。audit 已覆盖磁盘审计，R11 是用**内存事件总线**升级实时可观测性，而非重复造轮子。两者时间戳共用 `now_iso()`，时间线可 join。
+- **三层脱敏**（移植 grok `redact_common`）：secret-shape scrub（`sk-…`/`Bearer …`/`key=value`）→ user-path collapse（home→`~`）→ URL-origin reduction（scheme://host[:port]）。`redact_value` 是**单一隐私 chokepoint**，每字节进 ring buffer / metrics 前必过；返回新结构，输入永不 mutate。
+- **跨平台分隔符无关**：`redact_paths` 同时匹配 `/` 和 `\`，Unix 路径在 Windows 上也能脱敏（payload 来源混杂 —— 工具参数、错误信息、配置）。这是测试驱动发现的硬伤修复。
+- **app.py 单例三件套**（与 R10 `hook_manager` 完全对齐）：`_TELEMETRY_ENGINE` 槽 + `get_/set_/ensure_telemetry_engine`，lazy import 防循环。`ensure` 加 **env 开关 `MINIMAX_CODE_TELEMETRY`**（`0`/`false`/`off`/`no`）表达"disabled" —— 否则 `set(None)` 后 `ensure` 又重建，无法真正关闭；沙箱禁可观测时返回 `None` 不缓存。
+- **fail-open 契约**："遥测永不破坏 agent" —— `emit()` 包 try/except 只 `logger.debug`；`ensure` 失败返回 None；builtins/core 所有 emit 点都包 try/except。与 R10 三层 fail-open 同防御姿态。
+- **会话生命周期对称**（与 R10 hook fire 对齐）：`core.run()` 前 emit `SESSION_START`，`finally` 块 emit `SESSION_END`（异常路径也触发）。
+- **工具分发镜像**：`_record_audit` 在 dao 持久化**前**向引擎 emit `TOOL_CALL`（含脱敏参数/权限/状态/exit_code/duration/error）—— 实时观测独立于磁盘持久化，两通道并行不阻塞。
+- **StrEnum（Python 3.11+）**：`EventType`/`Severity` 用 `enum.StrEnum` 替代 `str + Enum`（ruff UP042）。成员 `==` 字符串值，过滤 API 既接受枚举也接受 `"tool_call"` 字符串。
+- **有界内存**：`RingBuffer`（`deque(maxlen)` + `threading.Lock`，热路径同步）+ `MetricsRegistry`（`OrderedDict` LRU 驱逐 `max_sessions=64`）+ latency 滑窗（最近 200 样本 p50/p95）—— 长跑进程内存不无限增长；`_GLOBAL` 模块级单例记跨会话 severity（驱逐不丢）。
+- **YAGNI**：`EventType` 闭环枚举只列 MiniMax 当前真正 emit 的 10 种（session 生命周期/turn/tool/hook/permission/plugin/error），grok 的 doom-loop/trace-upload 等待相应子系统存在再加入。
+- **轮次独立**：不动 app.py 既有 I001；不碰前端既有 tsc 错误；不修复无关遗留。
+
+### 实现 / 产出
+
+- `minimax_code/telemetry/events.py`：`EventType`（10 值 StrEnum）+ `Severity`（INFO/WARN/ERROR StrEnum）+ `TelemetryEvent`（BaseModel，`ConfigDict(extra="allow")`，`ts` 默认 `now_iso()`）。
+- `minimax_code/telemetry/redact.py`：`redact_secrets`（3 模式，key 后 `["']*` 匹配 JSON 引号）/ `redact_paths`（home→`~`，`/`+`\` 分隔符无关）/ `url_origin`（scheme://netloc）/ `redact_value`（递归 dict/list/tuple/str，返回新结构）。
+- `minimax_code/telemetry/ringbuffer.py`：`RingBuffer`（`deque` + Lock，`append`/`recent`/`clear`/`__len__`/`capacity`，坏容量 ValueError）。
+- `minimax_code/telemetry/metrics.py`：`SessionMetrics`（计数器 + latency 窗口，`as_dict` 折叠 p50/p95/max）/ `MetricsRegistry`（LRU 驱逐）/ `_GLOBAL` 跨会话 severity / `global_snapshot()`。
+- `minimax_code/telemetry/engine.py`：`TelemetryEngine`（`emit`→脱敏→buffer+metrics，`recent` 按 type/session 过滤，`metrics` 快照，`clear`，`buffered_count`，fail-open）。
+- `minimax_code/telemetry/__init__.py`：导出公共符号。
+- `minimax_code/app.py`：`_TELEMETRY_ENGINE` 槽 + `get/set/ensure` 三件套（ensure 带 env 开关 + fail-open）+ `__all__` 导出 3 符号 + `register_app_handlers` 注册 telemetry handlers（统计串 `+ 3 telemetry.*`）。
+- `minimax_code/ipc/builtins.py`：`telemetry_engine` 解析（fail-open）→ 注入 `core.telemetry_engine` + `SESSION_START`/`SESSION_END` 生命周期 emit（`fire_session_*` 后，`core.run` 前 / `finally`）。
+- `minimax_code/agent/core.py`：`telemetry_engine` 字段 + `_record_audit` 镜像 emit `TOOL_CALL`（dao 持久化前，severity 随 error 状态）。
+- `minimax_code/ipc/handlers_telemetry.py`（新）：`telemetry.recent`/`metrics`/`clear` 三个只读+管理 handler（None-safe 降级 `enabled: False`，无 DAO 工厂，亚毫秒）。
+- `tests/test_telemetry.py`（新，13 测）：redact 三层 + 递归遍历 + RingBuffer 容量/recency/clear/坏容量 + MetricsRegistry 计数/latency/LRU 驱逐 + Engine emit→脱敏→buffer→metrics/过滤/fail-open。
+- `tests/test_handlers_telemetry.py`（新，4 测）：recent/metrics/clear + env-disabled 降级（`_CapturedReply` 仿 ctx，注入真引擎）。
+
+### 验证
+
+- ✅ `ruff check telemetry/ + app.py + handlers_telemetry + builtins + core + 2 test`：**All checks passed**。
+- ✅ `pytest test_telemetry + test_handlers_telemetry`：**17 passed in 0.80s**。
+- ✅ import smoke：`engine: TelemetryEngine` 构建成功，全链路 import（app/builtins/handlers_telemetry/core/telemetry）无循环依赖。
+- 🐛 **测试驱动修复的 5 个真实 bug**（这正是单测的价值）：
+  1. `redact` 正则漏匹配 JSON `"password": "…"`（key 后引号未处理）→ key 与 `[:=]` 间加 `["']*`。
+  2. `redact_paths` 用 `os.sep` → Windows 上 Unix 路径（`/home/bob/x`）永不脱敏 → 改为 `/`+`\` 分隔符无关。
+  3. `ensure_telemetry_engine` 永远重建 → 加 env 开关 `MINIMAX_CODE_TELEMETRY`，`set(None)`+env=0 才真禁用。
+  4. redact 测试用硬编码 `/Users/alice`（与真实 home 不符）→ monkeypatch `_home` 跨平台可移植。
+  5. `Severity`/`EventType` `str + Enum` → `StrEnum`（ruff UP042，Python 3.11+ 原生）。
+- 覆盖：脱敏三层 + 递归遍历不 mutate + RingBuffer 容量丢弃 + MetricsRegistry LRU 驱逐 + Engine 全链路（emit→redact→buffer→metrics）+ fail-open（buffer 爆炸不抛）+ handler 降级 + env-disabled。
+- ⏭️ R12（阶段 B 继续）：沙箱（plugin entry 动态 import 的安全执行边界）/ 检查点 / 令牌估算 / 压缩 / 崩溃处理程序。
+
+### Commit
+
+`feat(platform): R11 telemetry engine — in-memory event bus with three-layer redaction`

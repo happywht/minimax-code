@@ -248,6 +248,75 @@ export interface AuditStats {
   by_status: Record<string, number>;
 }
 
+/** A buffered telemetry event from the in-memory observability bus (R11). */
+export interface TelemetryEventRecord {
+  type: string;
+  session_id: string | null;
+  severity: "info" | "warn" | "error";
+  name: string | null;
+  payload: Record<string, unknown>;
+  ts: string;
+}
+
+/** Result shape for `telemetry.recent`. */
+export interface TelemetryRecentResult {
+  events: TelemetryEventRecord[];
+  total: number;
+  enabled: boolean;
+  buffered: number;
+}
+
+/** Latency stats folded into `telemetry.metrics`. */
+export interface TelemetryLatencyStats {
+  count: number;
+  avg: number;
+  p50: number;
+  p95: number;
+  max: number;
+}
+
+/** One session's metrics roll-up (used in the all-sessions snapshot). */
+export interface TelemetrySessionMetrics {
+  session_id: string;
+  session_starts: number;
+  session_ends: number;
+  turns: number;
+  turn_completions: number;
+  tool_calls: number;
+  tool_errors: number;
+  hook_fires: number;
+  permissions: number;
+  plugin_loads: number;
+  errors: number;
+  warnings: number;
+  latency_ms: TelemetryLatencyStats;
+}
+
+/** Per-session / aggregate metrics — result of `telemetry.metrics` (R11). */
+export interface TelemetryMetrics {
+  enabled: boolean;
+  /** Single-session fields (present when `session_id` is passed). */
+  session_id?: string;
+  session_starts?: number;
+  session_ends?: number;
+  turns?: number;
+  turn_completions?: number;
+  tool_calls?: number;
+  tool_errors?: number;
+  hook_fires?: number;
+  permissions?: number;
+  plugin_loads?: number;
+  errors?: number;
+  warnings?: number;
+  latency_ms?: TelemetryLatencyStats;
+  /** All-sessions roll-up fields (present when no `session_id`). */
+  sessions?: number;
+  per_session?: TelemetrySessionMetrics[];
+  /** Always present. */
+  global?: { errors: number; warnings: number };
+  buffered?: number;
+}
+
 /** A webhook config entry — matches `webhooks` table row. */
 export interface WebhookConfig {
   id: string;

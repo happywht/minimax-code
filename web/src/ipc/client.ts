@@ -98,6 +98,8 @@ import {
   type SubAgentProgress,
   type TaskProgressData,
   type TeamProgressData as _TeamProgressData,
+  type TelemetryMetrics,
+  type TelemetryRecentResult,
   type TerminalChunk,
   type TerminalListResult,
   type TerminalReadResult,
@@ -973,6 +975,11 @@ export interface TypedIPC {
   auditStats(): Promise<AuditStats>;
   purgeAudit(beforeIso: string): Promise<{ deleted: number }>;
 
+  // telemetry — in-memory observability bus (R11).
+  telemetryRecent(opts?: { limit?: number; event_type?: string; session_id?: string }): Promise<TelemetryRecentResult>;
+  telemetryMetrics(opts?: { session_id?: string }): Promise<TelemetryMetrics>;
+  telemetryClear(): Promise<{ ok: boolean; cleared: number; enabled: boolean }>;
+
   // webhook — drive the Settings page's Webhooks tab.
   listWebhooks(opts?: { limit?: number; offset?: number; source?: string }): Promise<ListWebhooksResult>;
   createWebhook(opts: { name: string; source?: string; action_type?: string; action_config?: Record<string, unknown> }): Promise<WebhookConfig>;
@@ -1255,6 +1262,11 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     listAudit: (opts) => client.request<ListAuditResult>("audit.list", opts ?? {}),
     auditStats: () => client.request<AuditStats>("audit.stats", {}),
     purgeAudit: (beforeIso) => client.request<{ deleted: number }>("audit.purge", { before_iso: beforeIso }),
+    telemetryRecent: (opts) =>
+      client.request<TelemetryRecentResult>("telemetry.recent", opts ?? {}),
+    telemetryMetrics: (opts) => client.request<TelemetryMetrics>("telemetry.metrics", opts ?? {}),
+    telemetryClear: () =>
+      client.request<{ ok: boolean; cleared: number; enabled: boolean }>("telemetry.clear", {}),
 
     listWebhooks: (opts) => client.request<ListWebhooksResult>("webhook.list", opts ?? {}),
     createWebhook: (opts) => client.request<WebhookConfig>("webhook.create", opts),
@@ -2273,6 +2285,17 @@ function mockHandle(
 
     case "audit.purge":
       return { deleted: 0 };
+
+    // ── telemetry.* mock (R11) — bus is disabled in mock mode ────────
+
+    case "telemetry.recent":
+      return { events: [], total: 0, enabled: false, buffered: 0 } satisfies TelemetryRecentResult;
+
+    case "telemetry.metrics":
+      return { enabled: false } satisfies TelemetryMetrics;
+
+    case "telemetry.clear":
+      return { ok: true, cleared: 0, enabled: false };
 
     // ── webhook.* mock ──────────────────────────────────────────────
 

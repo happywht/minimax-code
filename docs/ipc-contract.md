@@ -554,6 +554,32 @@ stderr, cancel, timeout, and run timeline plumbing as `terminal.start`.
 When `cwd` is omitted, runners use the same workspace-root default as
 `terminal.start`.
 
+### `telemetry.*` — in-memory observability bus (R11)
+
+A fire-and-forget event bus that fuses grok-build's `TelemetryEvent`
+trait into MiniMax's asyncio runtime. Every observable agent moment —
+session lifecycle, turn boundaries, tool dispatch, hook fire, permission
+decision — is redacted through three layers (secret shapes → user paths
+→ URL origins) and buffered in bounded memory (ring buffer + LRU
+metrics). Telemetry never breaks the agent: `emit()` failures are
+swallowed and logged; `ensure_telemetry_engine()` returns `None` when
+disabled.
+
+| Method | Params | Result | Notes |
+|--------|--------|--------|-------|
+| `telemetry.recent` | `{ limit?: int, event_type?: str, session_id?: str }` | `{ events: TelemetryEventRecord[], total, enabled, buffered }` | `limit` default 100, capped at 1000. `event_type` accepts the enum value or member (e.g. `"tool_call"`). Returns `enabled:false` when the bus is off — never raises. |
+| `telemetry.metrics` | `{ session_id?: str }` | `{ enabled, buffered?, global?, per_session?, latency? }` | With `session_id`: per-session counters + latency p50/p95. Without: global rollup only. All metric fields absent when disabled. |
+| `telemetry.clear` | `{}` | `{ ok, cleared, enabled }` | Drains the ring buffer and resets metrics counters in place. |
+
+Env switch: `MINIMAX_CODE_TELEMETRY=0|false|off|no` disables the engine
+without a restart; the handlers then report `enabled:false` rather than
+raising.
+
+Separation of concerns: this bus is in-memory and real-time for all
+event types; `audit.*` (`handlers_audit`) is disk-persistent and
+restricted to tool dispatch. The two channels run in parallel and are
+deliberately uncoupled — disabling one never touches the other.
+
 ## 7. Event names
 
 All push events use the prefix `agent.`, `task.`, or `permission.`

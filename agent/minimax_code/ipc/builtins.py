@@ -497,6 +497,17 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     except Exception:
         logger.debug("hook manager unavailable; running without hooks")
 
+    # Resolve the process-wide TelemetryEngine (R11). Optional everywhere;
+    # None means telemetry is disabled for this run. Session lifecycle and
+    # mirrored tool-dispatch events flow through it for in-memory observability.
+    telemetry_engine = None
+    try:
+        from ..app import ensure_telemetry_engine
+
+        telemetry_engine = ensure_telemetry_engine()
+    except Exception:
+        logger.debug("telemetry engine unavailable; running without telemetry")
+
     core = AgentCore(
         llm=llm,
         config=AgentConfig(
@@ -509,6 +520,9 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         permission_gater=gater,
         hooks=hook_manager,
     )
+    # Inject the telemetry engine (R11) so every tool dispatch mirrors into
+    # the in-memory event bus. Optional — None when telemetry is disabled.
+    core.telemetry_engine = telemetry_engine
 
     async def _emit_run_event(event: str, data: dict[str, Any]) -> None:
         try:
@@ -650,6 +664,19 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
             await hook_manager.fire_session_start(session_id)
         except Exception:
             logger.exception("session_start hooks failed; continuing")
+    if telemetry_engine is not None:
+        try:
+            from ..telemetry import EventType, TelemetryEvent
+
+            telemetry_engine.emit(
+                TelemetryEvent(
+                    type=EventType.SESSION_START,
+                    session_id=session_id,
+                    payload={"message_id": message_id} if message_id else {},
+                )
+            )
+        except Exception:
+            logger.debug("telemetry session_start emit failed", exc_info=True)
     try:
         result = await core.run(session_id=session_id, user_message=content)
     except Exception as exc:
@@ -674,6 +701,21 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
                 await hook_manager.fire_session_end(session_id)
             except Exception:
                 logger.exception("session_end hooks failed; continuing")
+        # Mirror the lifecycle into telemetry (R11), symmetrically and
+        # fail-open — session_end fires even on the exception path above.
+        if telemetry_engine is not None:
+            try:
+                from ..telemetry import EventType, TelemetryEvent
+
+                telemetry_engine.emit(
+                    TelemetryEvent(
+                        type=EventType.SESSION_END,
+                        session_id=session_id,
+                        payload={"message_id": message_id} if message_id else {},
+                    )
+                )
+            except Exception:
+                logger.debug("telemetry session_end emit failed", exc_info=True)
 
     await recorder.complete(result)
 
