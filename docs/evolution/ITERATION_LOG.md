@@ -84,3 +84,41 @@
 ### Commit
 
 `docs(evolution): R2 add Grok vs MiniMax architecture gap analysis`
+
+---
+
+## R3 — MCP 协议类型契约
+
+- **回合序号**：3 / 50+
+- **所属阶段**：A
+- **开始时间**：2026-07-18
+- **状态**：✅ 完成
+
+### 本轮目标
+
+落地 MCP 协议层的**类型契约**——平台扩展的协议底座。建立 `minimax_code.mcp` 子包的常量层与 Pydantic 领域模型，为 R4（transport/client/server）和 R5（registry 桥接）打基础。
+
+### 设计决策
+
+- **镜像 MCP spec `2024-11-05`**：方法名、错误码、版本号逐字对齐公开规范，未来上游 SDK 可无缝替换。
+- **复用项目 Pydantic 风格**：`_Base(extra="allow")` 与 IPC 层一致，前向兼容未知字段。
+- **Content 用 discriminated union**：基于 `type` 字段的 PEP 604 `|` 写法 + `Field(discriminator=...)`，既满足 ruff 又保证类型安全。
+- **协议常量无依赖**：`protocol.py` 仅用 stdlib，client/server 两半都能 import。
+- **错误码不与 IPC 冲突**：MCP 应用码用 -32100 段，避开 IPC 的 -3200x 段。
+
+### 实现 / 产出
+
+- `minimax_code/mcp/__init__.py`：包入口 + scope 说明。
+- `minimax_code/mcp/protocol.py`：协议版本、26 个方法名常量、`REQUEST_METHODS` frozenset、JSON-RPC 标准码 + MCP 域码（-32100 段）。
+- `minimax_code/mcp/types.py`：16 个领域模型——Implementation、Client/ServerCapabilities、TextContent/ImageContent/EmbeddedResource（+ Content union）、Tool/ToolAnnotations、CallToolResult、Resource/ResourceTemplate/ResourceContents、ReadResourceResult、Prompt/PromptArgument/PromptMessage、GetPromptResult、InitializeRequestParams/InitializeResult、List* 结果集。
+- `tests/test_mcp_types.py`：10 个单元测试。
+
+### 验证
+
+- ✅ `ruff check`：All checks passed（修复了 PEP 604 union + 具体 ValidationError 两处）。
+- ✅ `pytest tests/test_mcp_types.py`：**10 passed in 0.17s**。
+- 覆盖：版本钉死、握手默认值、工具 schema 默认、content union 解析与 round-trip、未知类型拒绝、能力 extra 前向兼容、列表分页、请求/通知方法集分离。
+
+### Commit
+
+`feat(mcp): R3 add MCP protocol types and constants layer`
