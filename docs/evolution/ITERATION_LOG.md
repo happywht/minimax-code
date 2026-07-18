@@ -2716,3 +2716,91 @@ mcp 包缺的两个切片（ACP 扩展 wire + OAuth 配置形状），而非重�
 ### Commit
 
 `feat(platform): R34 MCP wire + oauth config (fuse grok xai-grok-mcp)`
+
+## R35 — MCP liveness 决策层（融合 grok `xai-grok-mcp` liveness）
+
+### 本轮目标
+
+**D 阶段第五轮**——MCP 子系列继续。移植 grok `xai-grok-mcp/liveness.rs` 的**纯决策层**：
+`ClientStateKind`（状态投影）+ `LivenessCheck`（三态决策）+ `classify_liveness` 状态机纯
+函数 + `DEFAULT_POLL_INTERVAL_MS` + `McpClientEventKind`（coalescing discriminant）。
+
+本轮的**关键剥离**：`liveness.rs` 重度依赖 tokio 任务 + Arc/Mutex 槽 + DropGuard 取消
+（主机运行时），但其核心 `liveness_check` 是一个**纯 match**（async 只包 mutex lock）——
+把 IO 抽象成入参 `transport_closed: bool`，决策逻辑零依赖。
+
+**关键映射决策**：grok 的**无负载 unit 枚举**（`#[derive(Copy, PartialEq, Eq)]` +
+`Hash`）映射到 Python `enum.Enum`（+ `@unique`），而非 R32 的 frozen-dataclass 联合——
+**负载决定映射**：unit 变体无负载可携，Enum 给单例值语义 + 可哈希，精确匹配 grok 的
+`Copy`/`Hash`。这是有意识的策略分化，不是不一致。
+
+### 融合结论
+
+✅ **保持：**
+- **`classify_liveness` 纯状态机**——5 行决策表的纯函数：`Ready + open → Healthy`，
+  `Ready + closed → TransportClosed`，`非 Ready → Transient`。grok `McpClient::liveness_check`
+  的纯投影（去掉 mutex acquire）。
+- **false-positive 防护不变量**——非 Ready 状态（含 Initializing + 瞬时 closed transport）
+  一律 Transient，**绝不上报 TransportClosed**。这正是 grok liveness 模块要修的 bug：
+  re-handshake 时不误报。
+- **`ClientStateKind` 4 变体 Copy 投影**——Empty/Pending/Initializing/Ready，
+  payload-stripped（grok 丢掉 PendingTransport/McpService 负载，仅留状态标签）。
+- **`LivenessCheck` 3 决策**——Healthy/TransportClosed/Transient。
+- **`McpClientEventKind` 7 变体可哈希 discriminant**——grok dispatcher 的 coalescing key
+  `(server, kind)` 第二半；distinct from 带 payload 的 `McpClientEvent`（payload 不参与
+  equality/hashing）。`#[derive(Hash)]` → Enum 可作 dict key。
+- **`DEFAULT_POLL_INTERVAL_MS = 500`**——grok `Duration::from_millis(500)`，平均检测延迟 < 1s。
+
+✅ **产品融合点：**
+- 填补现有 mcp 包（R3-R5 + R34）**缺失的传输健康故事**——当前连接的 server 静默断开后
+  与存活 server 不可区分，直到 tool call 失败。本模块是未来 liveness watcher 每 tick 调用
+  的纯谓词。
+- 集中决策表于此 → 未来 watcher 接线是 `classify_liveness + sleep` 薄循环，而非重写状态机。
+- `McpClientEventKind` 与 R34 wire 常量同源（ACP `x.ai/mcp/server_status` push 的 kind 维度）。
+
+❌ **放弃：**
+- ❌ **不做 tokio watcher 任务/spawn/Arc/Mutex 槽/DropGuard 取消**——主机运行时集成，留接线轮。
+- ❌ **不做 `McpClientEvent`（带负载大枚举）**——依赖 `McpServerName` + `u64` client_id +
+  `Vec`，留下一轮（事件层）。
+- ❌ **不做 50ms coalescing 窗口/dispatcher**——本模块只提供 key 的 discriminant，窗口留接线。
+
+### 交付
+
+| 文件 | 行数 | 内容 |
+|------|------|------|
+| `agent/minimax_code/mcp/liveness.py` | +155 | `DEFAULT_POLL_INTERVAL_MS` + 3 个 `@unique Enum`（ClientStateKind/LivenessCheck/McpClientEventKind）+ `classify_liveness` 纯函数 |
+| `agent/minimax_code/mcp/__init__.py` | +12 | 重导出 5 符号，docstring scope 加 liveness 段 |
+| `agent/tests/test_mcp_liveness.py` | +113 | 16 测试（重导出 + 间隔 + 3 枚举成员数 + classify 决策表 param 展开 + 可哈希 + 单例 + 返回类型） |
+
+契约要点：
+1. `DEFAULT_POLL_INTERVAL_MS == 500`（int）
+2. `ClientStateKind` 4 成员（EMPTY/PENDING/INITIALIZING/READY）
+3. `LivenessCheck` 3 成员（HEALTHY/TRANSPORT_CLOSED/TRANSIENT）
+4. `McpClientEventKind` 7 成员（含 TRANSPORT_CLOSED）
+5. `classify_liveness(READY, False) is HEALTHY`
+6. `classify_liveness(READY, True) is TRANSPORT_CLOSED`
+7. `classify_liveness(<非Ready>, *) is TRANSIENT`（false-positive 防护，3 状态 × 2 closed = 6 param）
+8. `McpClientEventKind` 成员可作 dict key（Hash）
+9. Enum 成员 `is` 同一性（Copy 语义）
+
+### 验证
+
+- `ruff check minimax_code/mcp/ tests/test_mcp_liveness.py` → **All checks passed!**（I001 由 `--fix` 自动修：as-别名导入拆单行块）
+- `pytest tests/test_mcp_liveness.py -v` → **16 passed**
+- 完整套件 `pytest` → **1453 passed in 89s**（R34 1437 → R35 1453，+16 精确，零回归）
+
+### YAGNI 边界
+
+- ❌ **不做 watcher 任务/spawn**——主机运行时（asyncio task），留接线轮。
+- ❌ **不做 `McpClientEvent` 带 payload 枚举**——依赖 `McpServerName` 别名 + `u64` client_id +
+  `Vec`，留下一轮。
+- ❌ **不做 50ms coalescing 窗口**——本模块只给 discriminant，窗口是 dispatcher 接线。
+- ❌ **不做 Enum 的 wire 序列化**（PascalCase vs snake_case）——grok 实际 ACP 序列化形式未定；
+  本轮 Enum 值用 snake_case 字符串（Python 惯例），序列化映射留接线。
+- ❌ **不做 `is_healthy` 谓词**——grok `is_healthy` = `state is Ready and not transport_closed`，
+  等价于 `classify == HEALTHY`；不重复暴露（调用方用 classify 返回值判断）。
+- ❌ **不做 `state_kind` 投影函数**——依赖内部 ClientState 状态机；本轮只移植 Kind 枚举，投影留接线。
+
+### Commit
+
+`feat(platform): R35 MCP liveness decision layer (fuse grok xai-grok-mcp)`

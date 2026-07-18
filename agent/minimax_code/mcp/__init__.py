@@ -21,6 +21,9 @@ Scope of this package
 * :mod:`.transport` (R4) — stdio + streamable-HTTP transports.
 * :mod:`.client` (R4) — connect to external MCP servers.
 * :mod:`.server` (R4) — expose MiniMax's own tools as an MCP server.
+* :mod:`.liveness` (R35) — per-client transport-closed poller decision layer
+  (state-machine predicate + poll interval); the host-runtime watcher task
+  is a later wiring round.
 * :mod:`.registry` (R5) — bridge external MCP tools into the existing
   :class:`minimax_code.agent.tools.base.ToolRegistry`.
 
@@ -36,6 +39,13 @@ from __future__ import annotations
 
 from . import protocol, transport, types
 from .client import MCPClient, MCPClientError
+from .liveness import (
+    DEFAULT_POLL_INTERVAL_MS,
+    ClientStateKind,
+    LivenessCheck,
+    McpClientEventKind,
+    classify_liveness,
+)
 from .oauth_config import McpOAuthConfig, McpOAuthConfigMap
 from .registry import MCPRegistry, MCPServerConfig, bridged_name
 from .transport import (
@@ -74,4 +84,10 @@ __all__ = [
     # oauth_config (R34)
     "McpOAuthConfig",
     "McpOAuthConfigMap",
+    # liveness (R35) — transport-closed poller decision layer
+    "DEFAULT_POLL_INTERVAL_MS",
+    "ClientStateKind",
+    "LivenessCheck",
+    "McpClientEventKind",
+    "classify_liveness",
 ]
