@@ -1872,3 +1872,109 @@ R24 的 YAGNI 伏笔（"IPC 推送回合 hook 由 R25 生命周期贡献者正�
 ### Commit
 
 `feat(platform): R25 lifecycle contributor hook framework (fuse grok xai-agent-lifecycle)`
+
+## R26 — plan mode 状态机（fuse grok xai-grok-*-plan_mode）（阶段 C 第 6 轮）
+
+### 本轮目标
+
+把 grok-build 的 plan-mode 纯状态机核心——`xai-grok-shell::session::plan_mode`
+（1226 行，含 ~40 测试）+ `xai-grok-workspace-types::types::plan_mode`（75 行线
+格式枚举）——前向迁移到 Python。grok 模块文档字符串明确自述："设计为可独立
+测试——无 SessionActor / 对话历史 / 异步 I/O 引用，纯状态机逻辑"。本轮严格守住
+这一纯粹性：交付一个**零 IO、零 async、可独立测试**的 `PlanModeTracker`
+四状态机 + 可持久化快照，host 集成（注入提示 / 屏蔽写工具 / 持久化）推迟后续轮次。
+
+### 融合结论
+
+✅ **保持**：
+- **4 状态机** `PlanModeState`（Inactive / Pending / Active / ExitPending）——语义
+  1:1 移植：Inactive 常态；Pending 客户端开但模型未知；Active 写工具屏蔽（除
+  plan 文件）；ExitPending turn 飞行中关闭、等 turn 结束干净退出。
+- **全 transition 方法契约**——`enter_pending` / `activate` / `activate_mid_turn`
+  / `activate_from_tool` / `deactivate_approved` / `user_exit(turn_in_flight)` /
+  `complete_deferred_exit` / `queue_exit_reminder` / `record_reminder_injected` /
+  `clear_pending_exit_reminder` / `reset_after_compaction`，含返回值（是否实际
+  改变状态）与 no-op 守卫，全部对齐 grok。
+- **中途 toggle 缓冲 + 回滚**——`activate_mid_turn` 预渲染提醒并缓冲（`PendingActivation`），
+  `take_pending_activation` 单次取走；`user_exit` 检测到未投递缓冲时回滚 Inactive 并
+  **恢复 `prior_was_previously_active`**（而非伪造 reentry）——grok 的关键不变量，
+  专测 `test_withdrawal_preserves_real_reentry_flag` 钉死。
+- **提示交替**（even=full / odd=sparse）+ **reentry 检测**（`was_previously_active
+  && Pending`）+ **ExitPending 重入直接回 Active**（模型已有 plan-mode 上下文）。
+- **瞬态折叠快照**——`Pending`/`ExitPending` 依赖 in-flight 客户端/turn 交互，重启
+  无法存活：`from_snapshot` 把 Pending→Inactive、ExitPending→Inactive+exit_reminder；
+  `awaiting_plan_approval` 通过默认值往返存活（对齐 grok `#[serde(default)]`）。
+- **序列化 parity**——grok `PlanModeState` 保留 serde 默认 PascalCase 标签
+  （`"Active"`），snapshot 字段名 snake_case；Python `StrEnum` 值精确匹配，跨实现
+  持久化 round-trip。`PromptMode` snake_case（`"agent"`/`"ask"`/`"plan"`），`from_meta_str`
+  大小写敏感（仅小写命中，未知→Agent），对齐 grok。
+- **plan 文件编辑放行 + markdown 后缀识别**——`should_auto_approve_edit`
+  （Active 且精确匹配 plan 路径）、`is_plan_file_write`（精确相等）、
+  `is_markdown_file_path`（6 后缀大小写不敏感，Unicode 安全）。
+- **5 提示模板**（full/sparse/reentry/exit_reminder/edit_rejected）逐字移植，**零硬编码
+  工具名**（全 `${{ tools.by_kind.X }}` 占位符），专测 `test_templates_have_no_hardcoded_tool_names`
+  守护。
+
+❌ **放弃（适配差异 / YAGNI）**：
+- **MiniJinja 渲染**——grok 用 `${{ }}` + `${%- if %}` 通过 TemplateRenderer；
+  MiniMax 无 Jinja 依赖，模板原文保留（占位符完整），新增轻量 `render_reminder` 用
+  正则解析 `plan_path` / `plan_has_content` 条件 / `tools.by_kind.X`，未知 kind 留原样
+  （可见而非静默清空）。不引入新依赖。
+- **tokio::fs 磁盘 IO**——grok `plan_file_has_content` 调 `tokio::fs::metadata`；
+  本轮纯状态机零 IO，`plan_file_path` 只做路径计算（`session_dir/plan.md`），磁盘
+  内容检测留 host 集成轮次。
+- **Mutex**——grok 因 SessionActor 并发调用用 `Mutex<PlanModeTracker>`；MiniMax
+  asyncio 单线程，锁冗余，直接持有裸实例。
+- **SessionActor host 集成**——grok 在 `handle_session_mode`/`handle_prompt`/
+  `handle_completion`/`run_compact` 调用 tracker；本轮只交付纯核心 + 测试，host
+  接线（提示注入对话、写工具屏蔽、snapshot 持久化）推迟，与 R25 lifecycle 框架
+  "framework 先行、host 接线后续"模式一致。
+- **EventBus 广播**——grok 注释明确"plan_mode 转换不上 EventBus"，无需移植。
+
+### 交付
+
+| 文件 | 类型 | 内容 |
+|------|------|------|
+| `agent/minimax_code/plan_mode/tracker.py` | 新建（462 行） | `PlanModeState`(StrEnum, 4 值 PascalCase) + `PromptMode`(snake_case, from_meta_str/default/is_read_only) + `PendingActivation` + `PlanModeSnapshot`(to_dict/from_dict, legacy 宽容) + `PlanModeTracker`(11 transition + 8 query + new/from_snapshot 构造) + `is_plan_file_write`/`is_markdown_file_path` |
+| `agent/minimax_code/plan_mode/templates.py` | 新建（132 行） | 5 个模板常量（原文，含 `${{ }}`/`${%- if %}` 占位符）+ `render_reminder`（正则解析条件 + plan_path + tools.by_kind，未知 kind 留原样）|
+| `agent/minimax_code/plan_mode/__init__.py` | 新建（52 行） | 公共导出 7 类型 + 5 模板 + render_reminder |
+| `agent/tests/test_plan_mode.py` | 新建（61 测试） | 核心生命周期 8 + 中途缓冲 6 + no-op 边界 11 + ExitPending 重入 3 + snapshot 7 + awaiting 3 + 辅助函数 7 + PromptMode 5 + 模板渲染 10 + PendingActivation 1 |
+
+### 验证
+
+- ✅ `ruff check`：**All checks passed**——1 个 UP035（`typing.Mapping` →
+  `collections.abc.Mapping`）手动修，无残留。
+- ✅ `pytest tests/test_plan_mode.py`：**61 passed in 0.22s**。
+- ✅ 全量 `pytest`：**1257 passed in 88.61s**（R25=1196 → R26=1257，+61 完全吻合
+  新增测试数），**零失败、零回归**——plan_mode 是纯新建包，0 修改既有文件，
+  既有 1196 测试纹丝不动。
+- ✅ **中途缓冲回滚钉死**：`test_user_exit_withdraws_undelivered_activation`
+  （回滚后 reentry 为 False）+ `test_withdrawal_preserves_real_reentry_flag`
+  （真实先验激活不被缓冲覆盖）双测守护 grok 关键不变量。
+- ✅ **快照折叠钉死**：`test_snapshot_pending_collapses_to_inactive` +
+  `test_snapshot_exit_pending_collapses_to_inactive_with_reminder` +
+  `test_snapshot_without_awaiting_field_defaults_false`（legacy JSON 容忍）。
+- ✅ **序列化 parity 钉死**：`test_snapshot_to_dict_from_dict_roundtrip` 断言 5 个
+  snake_case key + PascalCase `"Active"` state 值，与 grok 持久化格式跨实现对齐。
+- ✅ **模板零硬编码守护**：`test_templates_have_no_hardcoded_tool_names` 遍历 5 模板
+  × 6 客户端工具名，断言无硬编码（全占位符）。
+
+### YAGNI 边界（本轮不做）
+
+- ❌ 不接 AgentCore host 集成——tracker 是纯核心，run loop 边界处注入提示 /
+  屏蔽写工具 / 持久化 snapshot 的接线推迟（与 R25 lifecycle "framework 先行"对齐），
+  避免本轮 scope 蔓延；纯核心 + 61 测试已可独立验证契约正确性。
+- ❌ 不做磁盘 `plan_file_has_content`——需要 `tokio::fs::metadata` 等价物（async
+  stat），属 host 集成范畴；本轮 `plan_file_path` 只做路径计算，内容检测留真实需求。
+- ❌ 不做完整 MiniJinja 语法——`${%- if %}` 条件已支持，trim_blocks / 环路 / 过滤器
+  等高级语法无场景，`render_reminder` 用正则覆盖现有 5 模板的全部占位符。
+- ❌ 不做 `exit_plan_mode` 工具 UI——`awaiting_plan_approval` flag + snapshot 字段
+  已就位，但审批 UI chrome（grok 的 `PlanModeDecision::Approve/Reject/Defer` 往返）
+  留 host 集成轮次。
+- ❌ 不做 EventBus 广播——grok 明确 plan_mode 转换不上 EventBus，无需移植。
+- ❌ 不接 R24 interjection / R25 lifecycle——plan_mode 是独立状态机，与回合生命周期
+  的交叉（如 plan mode 下如何处理插话）留后续轮次显式设计。
+
+### Commit
+
+`feat(platform): R26 plan mode state machine (fuse grok xai-grok-*-plan_mode)`
