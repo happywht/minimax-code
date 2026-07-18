@@ -1584,3 +1584,127 @@ registry 为父级，**handlers_agents.py 无需改动**——过滤在 build() 
 `feat(platform): R22 subagent resolution + capability filter (fuse grok xai-grok-subagent-resolution)`
 
 `feat(platform): R21 transport breaker telemetry symmetry (fuse grok xai-circuit-breaker Observer)`
+
+## R23 — 两阶段并行工具调度（fuse grok xai-tool-runtime + xai-tool-protocol + xai-tool-types 并发模型）（阶段 C 第 3 轮）
+
+**本轮目标**：R22 复活了 allowlist 死代码（sub-agent 配置解析 + capability 过滤）。本轮切入
+**串行→并行**主线——`AgentCore` 的工具循环原本**严格串行**（`for call: await _dispatch_tool(call)`），
+LLM 一轮返回多个 tool_calls 时逐个 await，I/O 完全不重叠（两个各 0.25s 的读 = 0.5s 等待）。
+grok-build 的 `xai-tool-runtime` + `xai-tool-protocol` + `xai-tool-types` 三件套用**两阶段模型**：
+阶段 1 串行 `prepare_tool_call`（参数解析 / 权限 / 计划模式 / 钩子——必须有序的），阶段 2 并行
+execute（`FuturesUnordered`）。**关键规则**："仅当写入工具指向同一文件路径时才序列化"——
+`tokio::sync::Mutex` 按 `lock_path_for_args` 键控（读第一个 `file_path` / `path` / `target_file`），
+其他全并发。**R23 把此并发模型前向迁移到 Python asyncio**：`_dispatch_tool` 200 行单体拆成
+`_prepare_tool_call`（串行阶段 1）+ `_execute_tool_call`（并行阶段 2，per-file `asyncio.Lock`）+
+`_run_tool_batch`（批处理调度器，`asyncio.gather` 保序）。**关键复用**：R17 的 `CircuitBreaker`
+已用 `async with self._lock` 保护 check / record 状态转换（`circuit_breaker.py:258/299`），阶段 2
+并行 `breaker.record` 天然安全，**无需额外锁**。**关键保序**：`asyncio.gather` 在返回列表中保留
+调用顺序（非完成顺序），故工具消息与 LLM 的 tool_calls 仍 1:1 对齐。这是阶段 C 第 3 轮
+（智能体协作与感知 R21-R30）。
+
+### 融合结论（两阶段拆分 + per-file 锁 + gather 保序，串行循环→并行批处理）
+
+- ✅ **保持**：grok 两阶段拆分——prepare（串行：参数解析 / 权限 consent / pre 钩子 / 断路器
+  entry / `tool_call`+`tool_running` 状态发出——这些必须有序，并发 consent 会和 UI 抢占）+
+  execute（并行：per-file 锁定的注册表 dispatch + truncate + `post` 钩子 + audit——每调用独立）。
+- ✅ **保持**：grok "仅同文件写入序列化"——per-file `asyncio.Lock`，键 = `file_path` / `path` /
+  `target_file`（MiniMax 内置 write_file / edit_file 均用 `path`），`contextlib.nullcontext` 让
+  无锁路径零开销。读 / 搜索 / 终端 / 无路径写入全部完全并发。
+- ✅ **保持**：grok `gather` 保序——`asyncio.gather` 在返回列表中保留**调用顺序**（非完成顺序），
+  故 OpenAI 风格 tool_call↔tool_result 配对完整，尽管执行重叠。
+- ✅ **保持**：grok 断路器并发安全复用——R17 的 `CircuitBreaker` 已 `async with self._lock` 保护
+  check / record 状态转换，阶段 2 同一工具的多个并行调用 `breaker.record` 不会撕裂状态机，无需
+  新增同步原语。
+- ✅ **保持**：grok 短路语义——任何拒绝（deny / user_deny / hook_block / circuit_open /
+  malformed / cancel）在 prepare 设置 `short_circuit`（已发出 + 已审计），execute 直接返回
+  不重复发出，避免双发。
+- ❌ **放弃**：grok `ToolStream` / `ToolStreamItem`——Python async generator / yield 已等价提供
+  流式工具输出，移植是重复造轮子。
+- ❌ **放弃**：grok `ToolDyn` / `TypedToolOutput` / `Arc<dyn ToolDyn>`——Rust trait object 动态
+  分发机制，Python 鸭子类型天然支持，无等价物也不需要。
+- ❌ **放弃**：grok `max_concurrency` 信号量——当前无消费方（无"某工具最多 N 并发"需求），全
+  并发 + per-file 锁已足够，YAGNI。
+- ❌ **放弃**：grok `ToolCapabilities` / `ToolScope` / `HookKind` 线协议——MiniMax `HookManager`
+  已是单类型，R22 `FilteredToolRegistry` 已做 capability 过滤，细粒度 scope 划分无消费方。
+- ❌ **放弃**：grok `ToolFamily` / `ToolVariant`——工具家族 / 变体元数据，MiniMax 无工具分类 UI
+  需求。
+- ❌ **放弃**：grok `as_completed` 增量返回——`gather` 一次性保序返回更贴合 OpenAI 配对语义；
+  增量返回需额外重排缓冲，无消费方。
+- ❌ **放弃**：grok 权限拒绝时整批短路——MiniMax 保持每个工具独立（一个被 deny 不阻塞兄弟），
+  更符合"工具独立"心智 + 被 isolation 测试钉死。
+
+### 交付
+
+- `agent/minimax_code/agent/core.py`（编辑：4 处导入/字段 + 1 处 run() 循环 + 1 处方法体替换）：
+  ① 导入 `from contextlib import nullcontext`（无锁路径零开销包装）；② 模块级 `_PreparedToolCall`
+  数据类（`call_log` / `name` / `args` / `action` / `breaker` / `short_circuit`——阶段 1 → 阶段 2
+  的传递载体）+ `_WRITE_TOOLS = frozenset({"write_file", "edit_file"})`；③ `__init__` 新增
+  `self._write_locks: dict[str, asyncio.Lock] = {}`（per-file 写锁字典，惰性填充）；④ `run()` 工具
+  循环：串行 `for call: await self._dispatch_tool(call)` → `results = await self._run_tool_batch(
+  tool_calls)` + `zip(tool_calls, results, strict=True)` 保序消费（strict 安全——`_run_tool_batch`
+  用 `_cancel_prepared` 填充取消尾部保证等长）；⑤ **核心替换**：`_dispatch_tool`（原 678-874，
+  200 行单体 11 步调度器）→ 向后兼容壳（`prepared = await self._prepare_tool_call(call); return
+  await self._execute_tool_call(prepared)` 两行委托）+ **5 个新方法**：
+    - `_prepare_tool_call`（串行阶段 1）：参数 JSON 解析 + malformed 短路 + 权限 `_check_rule`
+      deny / `request_consent` user_deny + `pre_tool_use` 钩子 hook_block + 发出 `tool_call` +
+      断路器 `get_or_create` / `check` circuit_open + 发出 `tool_running` → 返回 `_PreparedToolCall`
+      （拒绝时带 `short_circuit`，就绪时带 breaker + action 审计追踪）；
+    - `_execute_tool_call`（并行阶段 2）：`short_circuit` 非空直接返回不重复发出 + `async with
+      (lock or nullcontext())` per-file 锁定 + `start_span` + `asyncio.wait_for(registry.dispatch,
+      tool_timeout)` + TimeoutError / crash `breaker.record(FAILURE)` + 成功 `breaker.record(SUCCESS)`
+      + `_truncate_result` + 发出 result + `post_tool_use` 钩子 fail-open + `_record_audit`；
+    - `_run_tool_batch`（批处理调度器）：循环 prepare（`self.cancelled` 时尾部追加
+      `_cancel_prepared`），再 `asyncio.gather(*(self._execute_tool_call(p) for p in prepared))`
+      保序返回；
+    - `_cancel_prepared`：构造 `action="cancelled"` + `ToolResult.fail("cancelled")` 的
+      short_circuit（不发 `tool_call` / `tool_result` 事件，但调用方仍持久化 tool 消息保持
+      OpenAI 配对完整）；
+    - `_write_lock_for`（纯函数）：`name not in _WRITE_TOOLS` → None；读 `file_path` / `path` /
+      `target_file` 路径键；惰性创建 / 返回 `self._write_locks[path]` 的 `asyncio.Lock`，无路径
+      返回 None。
+- `agent/tests/test_tool_batch_parallel.py`（新建，**9 测试**）：`_SlowTool`（sleep 可观测并行 /
+  串行）+ `_WriteTool`（enter / exit bracket 可观测序列化顺序）+ `_PingTool`（isolation 测试的
+  第二工具名——`_check_rule` 按 tool name 键控，isolation 需两个不同 name）+ `_DenyStore`（鸭子
+  类型 PermissionStore，仅 `lookup` 被 `_check_rule` 读，无需 DB / DAO）+ `_FakeLLM`（构造 core
+  用，stream_chat 不触发）。覆盖——① `_write_lock_for` 纯逻辑（读 / 搜索 / 终端 → None、写工具
+  同路径共享锁跨 write_file + edit_file、不同路径独立锁、无路径 → None）；② **并行计时**（两个
+  0.25s slow 工具总耗时 < 0.45s，串行 ≥ 0.5s，Windows 计时器余量内决断）；③ **保序**（首调用
+  0.30s 慢于次调用 0.05s，结果仍按提交顺序 first / second）；④ **同路径写序列化**（bracket
+  tags = `enter, exit, enter, exit` 严格嵌套，非交错）；⑤ **跨路径写并发**（两个 0.1s write
+  总耗时 < 0.16s，全局锁会 ≥ 0.2s）；⑥ **权限拒绝隔离**（ping 允许 + slow deny，兄弟正常执行）；
+  ⑦ **取消尾部填充**（cancel 后 3 个 call 全 cancelled，每个 tool_call id 仍有 result，配对完整）。
+
+### 验证
+
+- ✅ `ruff check minimax_code/agent/core.py tests/test_tool_batch_parallel.py`：**All checks
+  passed**——含 **1 手动修**（run() 循环 `zip(tool_calls, results)` B905 → 加 `strict=True`；因
+  `_run_tool_batch` 用 `_cancel_prepared` 填充取消尾部保证等长，strict 语义安全）。全套 154 个
+  ruff 错误均为**预存的其他文件 lint 债务**（如 `storage/dao/__base.py` 的 `rows_to_dicts` 未用
+  导入），与 R23 无关——轮次独立原则不动。
+- ✅ `pytest tests/test_tool_batch_parallel.py -v`：**9 passed in 1.78s**——并行计时（< 0.45s）+
+  保序（first/second 不随完成顺序翻转）+ 同路径序列化（严格嵌套）+ 跨路径并发（< 0.16s）+ 权限
+  拒绝隔离 + 取消尾部填充 + `_write_lock_for` 三路径纯逻辑全绿灯。
+- ✅ `pytest -q` 全套：**1146 passed in 87.71s**（1137 R22 基线 + 9 新增），**零失败、零回归**——
+  证明 `_dispatch_tool` 两阶段拆分**向后兼容**（壳委托 prepare + execute，单调用路径行为不变，
+  test_agent_core 全套绿灯）、per-file 锁不破坏既有 write_file / edit_file 测试、`_run_tool_batch`
+  保序保证 tool 消息 1:1 对齐 LLM tool_calls、断路器并行 `record` 安全（R17 `async with self._lock`
+  复用）、`zip(strict=True)` 等长保证成立。
+
+### YAGNI 边界（本轮不做）
+
+- ❌ 不做 grok `ToolStream` / `ToolStreamItem` 流式工具输出协议——Python async generator 已等价，
+  移植是重复造轮子。
+- ❌ 不做 grok `max_concurrency` 每工具并发上限信号量——当前无场景需"某工具最多 N 并发"，全并发
+  + per-file 锁已足够，留待有真实限流需求。
+- ❌ 不做 grok `ToolCapabilities` / `ToolScope` 细粒度能力线协议——MiniMax 工具是单类型，R22
+  `FilteredToolRegistry` 已做 capability 过滤，再叠 scope 划分是过度设计。
+- ❌ 不做 grok `as_completed` 增量结果返回——`gather` 保序返回更贴合 OpenAI tool_call↔tool_result
+  配对；增量返回需重排缓冲，无消费方。
+- ❌ 不做 sub-agent 真实 LLM 流式连线（`invoke` 仍 stub）——本轮聚焦工具调度并发，sub-agent LLM
+  wiring 是独立工作（R24+）。
+- ❌ 不做前端 UI"工具并行执行"可视化——后端已并行，前端 timeline 仍逐条渲染（并行工具的时间轴
+  重叠展示是独立 UX 工作）。
+
+### Commit
+
+`feat(platform): R23 two-phase parallel tool dispatch (fuse grok xai-tool-runtime concurrency)`

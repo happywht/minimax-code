@@ -38,6 +38,7 @@ import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -58,6 +59,48 @@ from .tools import ToolRegistry, ToolResult, get_default_registry
 from .types import LLMStreamTimeout
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Two-phase tool dispatch (R23 — fuse grok xai-tool-runtime concurrency model)
+# ---------------------------------------------------------------------------
+#
+# grok splits a tool call into a serial *prepare* stage (arg parse +
+# permission consent + pre-hook + breaker entry check) and a parallel
+# *execute* stage (registry dispatch + truncate + post-hook + audit),
+# so a batch of independent tool calls overlaps their I/O while same-file
+# writes stay serialized. MiniMax previously ran the whole batch strictly
+# serial. The split lives in :class:`_PreparedToolCall` — the small bag
+# handed from Phase 1 to Phase 2.
+
+
+@dataclass
+class _PreparedToolCall:
+    """Phase-1 output: one tool call parsed + permission-checked + breaker-checked.
+
+    Either ``short_circuit`` is set — the call was rejected during prepare
+    (deny / user-deny / hook-block / breaker-open / malformed-args /
+    cancel) and that result was already emitted + audited — or the call
+    is ready to execute and ``breaker`` / ``action`` are set for Phase 2.
+
+    Carried between :meth:`AgentCore._prepare_tool_call` (serial) and
+    :meth:`AgentCore._execute_tool_call` (concurrent) so the two phases
+    stay decoupled: Phase 1 never reaches into Phase 2's locals and
+    vice-versa.
+    """
+
+    call_log: dict[str, Any]
+    name: str
+    args: dict[str, Any]
+    action: str
+    breaker: CircuitBreaker | None
+    short_circuit: ToolResult | None
+
+
+#: Built-in tools whose dispatch mutates a file and so must serialize per
+#: target path. Mirrors grok's write-tool kind set; reads / searches /
+#: terminals are path-less or read-only and stay fully concurrent.
+_WRITE_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file"})
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +318,11 @@ class AgentCore:
         # breaker knobs are read from self.config at call time so they
         # stay hot-reloadable across a session.
         self._breakers = CircuitBreakerRegistry()
+        # R23 — per-file write locks. Keyed by the target file path so
+        # concurrent write_file / edit_file calls against the *same* path
+        # serialize (mirrors grok's lock_path_for_args); cross-file writes
+        # and every read / search / terminal call stay fully concurrent.
+        self._write_locks: dict[str, asyncio.Lock] = {}
         # R20 — telemetry adapter for the ``llm`` breaker. Resolves the engine
         # lazily through a closure over ``self`` (the engine is injected from
         # ``app.py`` after this constructor returns), so a late-arriving engine
@@ -417,18 +465,22 @@ class AgentCore:
                 # Resolve each tool call, feed the results back.
                 await self._emit_status("calling_tool", {"iteration": iterations, "count": len(tool_calls)})
                 tool_messages: list[Message] = []
-                for call in tool_calls:
-                    if self.cancelled:
-                        cancelled = True
-                        break
-                    result = await self._dispatch_tool(call)
+                # R23 — two-phase batch dispatch: serial prepare
+                # (permission / hooks / breaker / status emits stay
+                # ordered) then parallel execute (per-file-locked
+                # registry dispatch). gather preserves call order in the
+                # returned list so the tool messages line up 1:1 with
+                # the LLM's tool_calls, even though execution overlaps.
+                results = await self._run_tool_batch(tool_calls)
+                for call, result in zip(tool_calls, results, strict=True):
                     tool_calls_log.append(call)
                     tool_results_log.append(result)
                     tool_msg = _tool_message(call, result)
                     messages.append(tool_msg)
                     tool_messages.append(tool_msg)
                     await self._maybe_persist(session_id, tool_msg)
-                if cancelled:
+                if self.cancelled:
+                    cancelled = True
                     break
                 # Loop back to call the LLM with the tool messages.
             else:
@@ -624,30 +676,44 @@ class AgentCore:
         return response
 
     async def _dispatch_tool(self, call: dict[str, Any]) -> ToolResult:
-        """Execute one tool call and emit status / result events.
+        """Execute one tool call end-to-end (single-call entry point).
 
-        Permission gating
-        -----------------
+        R23 splits the legacy monolithic dispatch into two phases so a
+        batch of tool calls can overlap their I/O (see
+        :meth:`_run_tool_batch`). This method is the back-compat shell
+        that keeps every existing single-call call site and test working
+        unchanged — it prepares one call, then executes it.
 
-        Before invoking the tool, the dispatcher consults
-        :attr:`_permission_store` (if set) for a matching rule. The
-        resolved action drives three branches:
+        Permission gating, hook firing and circuit-breaker semantics are
+        documented on :meth:`_prepare_tool_call` / :meth:`_execute_tool_call`.
+        """
+        prepared = await self._prepare_tool_call(call)
+        return await self._execute_tool_call(prepared)
 
-        * ``"allow"`` — proceed.
-        * ``"deny"`` — return a failed :class:`ToolResult` without
-          running the tool.
-        * ``"ask"`` (or no rule when a gater is wired) — block on
-          :attr:`_permission_gater.request_consent`, which emits
-          ``permission.request`` and waits for ``permission.resolve``.
-        * no rule, no gater — proceed (the default-allow path
-          preserves the behaviour every non-opted-in test sees).
+    async def _prepare_tool_call(self, call: dict[str, Any]) -> _PreparedToolCall:
+        """Phase 1 (serial): parse args → permission → pre-hook → breaker.
+
+        Every step that must stay ordered lives here: argument parsing,
+        the interactive permission-consent prompt (concurrent prompts
+        would race the UI), the ``pre_tool_use`` policy hook, and the
+        per-tool circuit-breaker entry check (a shared state read). On
+        any rejection — deny / user-deny / hook-block / breaker-open /
+        malformed args — the call short-circuits: the offending result
+        is emitted + audited here and carried as ``short_circuit`` so
+        :meth:`_execute_tool_call` returns it without dispatching.
+
+        Returns a :class:`_PreparedToolCall` carrying the parsed args,
+        the resolved permission ``action`` (for the audit trail) and the
+        breaker handle (for the post-dispatch outcome record). The
+        ``tool_call`` / ``tool_running`` status events are emitted here so
+        the UI learns call order even when execution is parallel.
         """
         name = call.get("name") or (call.get("function") or {}).get("name", "")
         raw_args = call.get("arguments")
         if raw_args is None and isinstance(call.get("function"), dict):
             raw_args = call["function"].get("arguments")
         logger.debug(
-            "dispatch_tool: id=%s name=%r raw_args_type=%s",
+            "prepare_tool_call: id=%s name=%r raw_args_type=%s",
             call.get("id", ""), name, type(raw_args).__name__,
         )
         if isinstance(raw_args, str):
@@ -656,7 +722,11 @@ class AgentCore:
             except json.JSONDecodeError as exc:
                 err = ToolResult.fail(f"tool '{name}' got malformed JSON args: {exc}")
                 await self._maybe_emit_tool_call(call, err)
-                return err
+                return _PreparedToolCall(
+                    call_log={**call, "name": name, "args": {}},
+                    name=name, args={}, action="malformed",
+                    breaker=None, short_circuit=err,
+                )
         elif isinstance(raw_args, dict):
             args = raw_args
         else:
@@ -682,7 +752,9 @@ class AgentCore:
             await self._record_audit(
                 call_log, "denied", permission="deny", duration_ms=0,
             )
-            return denied
+            return _PreparedToolCall(
+                call_log, name, args, "deny", None, denied,
+            )
         if action == "ask" and self._permission_gater is not None:
             await self._maybe_emit_tool_call(call_log, None)
             allowed = await self._permission_gater.request_consent(
@@ -703,7 +775,9 @@ class AgentCore:
                 await self._record_audit(
                     call_log, "denied", permission="user_deny", duration_ms=0,
                 )
-                return denied
+                return _PreparedToolCall(
+                    call_log, name, args, "user_deny", None, denied,
+                )
 
         # 1b. pre_tool_use hooks — policy gate (fail-open). Runs only
         # after permission allows, so a denied tool never wastes a hook.
@@ -727,13 +801,17 @@ class AgentCore:
                 await self._record_audit(
                     call_log, "blocked", permission="hook_block", duration_ms=0,
                 )
-                return blocked
+                return _PreparedToolCall(
+                    call_log, name, args, "hook_block", None, blocked,
+                )
 
         await self._maybe_emit_tool_call(call_log, None)
         # R13 — per-tool circuit breaker. A flaky tool the LLM keeps
-        # re-invoking would otherwise burn all max_iterations (worst
-        # case: 12 × tool_timeout) before the loop gives up; the breaker
-        # fast-fails it after consecutive crashes/timeouts instead.
+        # re-invoking would otherwise burn all max_iterations before the
+        # loop gives up; the breaker fast-fails it after consecutive
+        # crashes/timeouts instead. The breaker's internal asyncio.Lock
+        # makes the entry check safe even when Phase 2 runs siblings of
+        # the same tool concurrently.
         tool_breaker: CircuitBreaker | None = None
         if name:
             tool_breaker = await self._breakers.get_or_create(
@@ -755,43 +833,77 @@ class AgentCore:
                 await self._record_audit(
                     call_log, "blocked", permission="circuit_open", duration_ms=0,
                 )
-                return blocked
+                return _PreparedToolCall(
+                    call_log, name, args, "circuit_open", None, blocked,
+                )
         await self._emit_status("tool_running", {"tool": name})
+        return _PreparedToolCall(
+            call_log, name, args, action or "allow", tool_breaker, None,
+        )
 
-        # R14 — one tool span per dispatch; nests under ``agent.turn``.
-        # Times only the registry dispatch, so the span duration is the
-        # true tool execution time (the audit write that follows is out).
-        async with self._tracer.start_span(
-            f"tool.{name}" if name else "tool.dispatch",
-            tool=name or "unknown",
-            tool_call_id=tool_call_id,
-        ):
-            t0 = time.monotonic()
-            try:
-                result = await asyncio.wait_for(
-                    self.registry.dispatch(name, args),
-                    timeout=self.config.tool_timeout,
-                )
-            except TimeoutError:
-                result = ToolResult.fail(
-                    f"tool '{name}' exceeded {self.config.tool_timeout:.0f}s timeout"
-                )
-                if tool_breaker is not None:
-                    await tool_breaker.record(Outcome.FAILURE)
-            except Exception as exc:  # pragma: no cover — defensive
-                logger.exception("tool %s crashed", name)
-                result = ToolResult.fail(f"{type(exc).__name__}: {exc}")
-                if tool_breaker is not None:
-                    await tool_breaker.record(Outcome.FAILURE)
-            else:
-                # A normal return — even a business-level ToolResult.fail
-                # (e.g. "file not found") — means the tool is reachable.
-                # Only crashes and timeouts trip the breaker, not "grep
-                # found nothing"; otherwise healthy-but-empty tools would
-                # get falsely circuit-broken.
-                if tool_breaker is not None:
-                    await tool_breaker.record(Outcome.SUCCESS)
-            duration_ms = int((time.monotonic() - t0) * 1000)
+    async def _execute_tool_call(self, prepared: _PreparedToolCall) -> ToolResult:
+        """Phase 2 (parallel): per-file-locked dispatch → truncate → emit → audit.
+
+        Runs the registry call under an optional per-file ``asyncio.Lock``
+        so concurrent writes to the *same* path serialize (mirrors grok's
+        ``lock_path_for_args`` rule — "only write tools targeting the
+        same file path are serialized"; reads, searches and cross-file
+        writes all run concurrently). ``nullcontext`` makes the no-lock
+        path zero-overhead. Everything else — truncate, the
+        ``post_tool_use`` notification hook, the audit write — is
+        independent per call, so the whole phase is ``gather``-safe.
+
+        A prepared call with a non-null ``short_circuit`` (deny / block /
+        breaker-open / malformed / cancel) is returned verbatim — the
+        rejection was already emitted + audited in
+        :meth:`_prepare_tool_call`, so we must not double-emit here.
+        """
+        if prepared.short_circuit is not None:
+            return prepared.short_circuit
+
+        name = prepared.name
+        args = prepared.args
+        call_log = prepared.call_log
+        tool_call_id = call_log.get("id", "")
+        tool_breaker = prepared.breaker
+        action = prepared.action
+        lock = self._write_lock_for(name, args)
+
+        duration_ms = 0
+        # R23 — serialize same-file writes; everything else runs free.
+        async with (lock or nullcontext()):
+            # R14 — one tool span per dispatch; nests under ``agent.turn``.
+            # Times only the registry dispatch, so the span duration is
+            # the true tool execution time (audit write is out of span).
+            async with self._tracer.start_span(
+                f"tool.{name}" if name else "tool.dispatch",
+                tool=name or "unknown",
+                tool_call_id=tool_call_id,
+            ):
+                t0 = time.monotonic()
+                try:
+                    result = await asyncio.wait_for(
+                        self.registry.dispatch(name, args),
+                        timeout=self.config.tool_timeout,
+                    )
+                except TimeoutError:
+                    result = ToolResult.fail(
+                        f"tool '{name}' exceeded {self.config.tool_timeout:.0f}s timeout"
+                    )
+                    if tool_breaker is not None:
+                        await tool_breaker.record(Outcome.FAILURE)
+                except Exception as exc:  # pragma: no cover — defensive
+                    logger.exception("tool %s crashed", name)
+                    result = ToolResult.fail(f"{type(exc).__name__}: {exc}")
+                    if tool_breaker is not None:
+                        await tool_breaker.record(Outcome.FAILURE)
+                else:
+                    # A normal return — even a business-level
+                    # ToolResult.fail — means the tool is reachable; only
+                    # crashes / timeouts trip the breaker.
+                    if tool_breaker is not None:
+                        await tool_breaker.record(Outcome.SUCCESS)
+                duration_ms = int((time.monotonic() - t0) * 1000)
 
         # Truncate pathological output to keep the context window sane.
         result = _truncate_result(result, self.config.max_tool_output_bytes)
@@ -809,7 +921,9 @@ class AgentCore:
                 logger.warning("post_tool_use hooks raised for %s", name, exc_info=True)
 
         # Audit: record the tool dispatch (fire-and-forget).
-        status = "success" if result.success else ("timeout" if "timeout" in (result.error or "") else "fail")
+        status = "success" if result.success else (
+            "timeout" if "timeout" in (result.error or "") else "fail"
+        )
         exit_code = getattr(result, "exit_code", None)
         await self._record_audit(
             call_log, status,
@@ -818,8 +932,86 @@ class AgentCore:
             error=result.error if not result.success else None,
             exit_code=exit_code,
         )
-
         return result
+
+    async def _run_tool_batch(
+        self, tool_calls: list[dict[str, Any]],
+    ) -> list[ToolResult]:
+        """Two-phase dispatch for a batch of tool calls (R23).
+
+        Phase 1 (serial ``prepare``) walks the calls one at a time so
+        interactive consent prompts, breaker entry checks and the
+        ``tool_call`` / ``tool_running`` status emits stay ordered — a UI
+        that shows "calling edit_file, then read_file" must not see them
+        interleaved.
+
+        Phase 2 (parallel ``execute``) runs every prepared call via
+        :func:`asyncio.gather`, which preserves call order in the
+        returned list even though execution overlaps. Same-file writes
+        are kept correct by the per-file lock inside
+        :meth:`_execute_tool_call`; cross-file writes, reads and every
+        other tool run concurrently — the grok ``xai-tool-runtime`` model
+        MiniMax previously lacked.
+
+        A mid-batch cancellation marks the unprepared tail as cancelled
+        (each gets a cancelled :class:`ToolResult` so the OpenAI-style
+        tool-call ↔ tool-result pairing stays complete); in-flight
+        executes are allowed to finish (bounded by ``tool_timeout``).
+        """
+        prepared: list[_PreparedToolCall] = []
+        for call in tool_calls:
+            if self.cancelled:
+                prepared.append(self._cancel_prepared(call))
+                continue
+            prepared.append(await self._prepare_tool_call(call))
+        if not prepared:
+            return []
+        return list(await asyncio.gather(
+            *(self._execute_tool_call(p) for p in prepared)
+        ))
+
+    def _cancel_prepared(self, call: dict[str, Any]) -> _PreparedToolCall:
+        """Build a short-circuiting prepared call for a cancelled slot.
+
+        The result carries ``action="cancelled"`` and a failed
+        :class:`ToolResult`; :meth:`_execute_tool_call` returns it
+        verbatim. We do NOT emit ``tool_call`` / ``tool_result`` here
+        (cancellation is silent at the event layer) — the caller still
+        persists the tool message so the LLM sees a result for every
+        tool_call id it emitted (OpenAI tool-call pairing stays whole).
+        """
+        name = call.get("name") or (call.get("function") or {}).get("name", "")
+        cancelled = ToolResult.fail(f"tool '{name}' cancelled")
+        return _PreparedToolCall(
+            call_log={**call, "name": name, "args": {}},
+            name=name, args={}, action="cancelled",
+            breaker=None, short_circuit=cancelled,
+        )
+
+    def _write_lock_for(
+        self, name: str, args: dict[str, Any],
+    ) -> asyncio.Lock | None:
+        """Return the per-file write lock for ``name``+``args``, or ``None``.
+
+        Ports grok's ``lock_path_for_args`` rule: only *write* tools that
+        target a concrete file path are serialized, and only against
+        siblings writing the *same* path. The path key is read from the
+        first present of ``file_path`` / ``path`` / ``target_file``
+        (MiniMax's built-in write tools — ``edit_file``, ``write_file`` —
+        both use ``path`` today; the alternates future-proof tools that
+        follow the grok naming). Reads, searches, terminals and path-less
+        writes return ``None`` → fully concurrent.
+        """
+        if name not in _WRITE_TOOLS:
+            return None
+        path = args.get("file_path") or args.get("path") or args.get("target_file")
+        if not isinstance(path, str) or not path:
+            return None
+        lock = self._write_locks.get(path)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._write_locks[path] = lock
+        return lock
 
     # -- audit ---------------------------------------------------------------
 
