@@ -485,6 +485,18 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     _stall_env = os.environ.get("MINIMAX_STALL_TIMEOUT", "")
     stall_timeout = float(_stall_env) if _stall_env else 120.0
 
+    # Resolve the process-wide HookManager (R10). Built once via
+    # ensure_hook_manager(), which also pours every enabled plugin's
+    # hooks into the manager — so plugin lifecycle hooks are
+    # agent-active on this run. None-safe and fail-open.
+    hook_manager = None
+    try:
+        from ..app import ensure_hook_manager
+
+        hook_manager = ensure_hook_manager()
+    except Exception:
+        logger.debug("hook manager unavailable; running without hooks")
+
     core = AgentCore(
         llm=llm,
         config=AgentConfig(
@@ -495,6 +507,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         persist_message=_persist,
         permission_store=perm_store,
         permission_gater=gater,
+        hooks=hook_manager,
     )
 
     async def _emit_run_event(event: str, data: dict[str, Any]) -> None:
@@ -630,6 +643,13 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     # 4. Run the turn. The core will stream chunks (each becomes
     #    an ``agent.message_chunk`` event with ``done=False``),
     #    then emit a final ``done=True`` chunk and return.
+    # Fire session_start hooks (R10) so plugin lifecycle hooks activate
+    # for this run. Notification-only; fail-open never blocks the turn.
+    if hook_manager is not None:
+        try:
+            await hook_manager.fire_session_start(session_id)
+        except Exception:
+            logger.exception("session_start hooks failed; continuing")
     try:
         result = await core.run(session_id=session_id, user_message=content)
     except Exception as exc:
@@ -647,6 +667,13 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         return
     finally:
         _ACTIVE_RUNS.pop(session_id, None)
+        # Fire session_end hooks (R10) symmetrically — even on failure —
+        # so plugins see the complete run lifecycle. Fail-open.
+        if hook_manager is not None:
+            try:
+                await hook_manager.fire_session_end(session_id)
+            except Exception:
+                logger.exception("session_end hooks failed; continuing")
 
     await recorder.complete(result)
 

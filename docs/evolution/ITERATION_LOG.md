@@ -392,3 +392,44 @@
 ### Commit
 
 `feat(plugins): R9 expose plugin registry via plugins.* IPC namespace`
+
+---
+
+## R10 — 三大支柱端到端打通（阶段 A 收官）
+
+- **阶段**：A（平台内核）— **收官回合**
+- **日期**：2026-07-19
+- **状态**：✅ 已完成并提交
+
+### 本轮目标
+
+把 R1-R9 分头落地的 **MCP / Hooks / Plugins 三大平台支柱**接成**一个运行中的系统**：进程级 `HookManager` 单例 + 启动时把所有启用插件的 hooks 灌进去（`apply_hooks`）+ 主 agent（`agent.send_message`）复用单例并 fire `session_start`/`session_end` 生命周期。至此"装一个带 hook 的插件 → agent 调度工具 → hook 生效"零接线成本，平台型产品的**内核闭环**成立。本轮交付：HookManager 单例三件套 + 主 agent 接线（hooks 注入 + 生命周期 fire）+ 4 个真实子进程端到端测试。**阶段 A（R1-R10）完成。**
+
+### 设计决策
+
+- **集成 seam = `ensure_hook_manager()`**：进程级单例，构建一次后 `registry.apply_hooks(manager.registry)` 把所有启用插件的 hooks 灌进同一个 `HookManager`。从此**任何复用该单例的 `AgentCore`** 都自动获得插件 hooks —— "一次构建，处处生效"。这是三大支柱从孤岛变系统的关键粘合剂。
+- **三层 fail-open**：discover 失败 → 空 registry → manager 仍建好；apply 失败 → 吞异常 → 空 hooks manager；fire 失败 → 吞异常 → 主流程不阻塞。agent 永远能启动、永远能跑完一轮（与 `_maybe_open_db` / `ensure_plugin_registry` 同防御姿态）。
+- **session 生命周期对称接线**：`fire_session_start` 在 `core.run()` 前，`fire_session_end` 在 `finally`（异常路径也触发）。hook 是通知类（不返决策），fail-open 不阻塞 turn。语义：每次 agent run = 一次会话活跃周期，plugin 的 session_start/end hook 在此激活。
+- **单例缓存复用**：`builtins.py` 每次 `send_message` 调 `ensure_hook_manager()` —— 单例已建则 O(1) 返回，避免每轮重 apply。AgentCore 本身仍 per-request 新建（承载 callbacks/state），但 hooks 单例共享。
+- **lazy import 防循环**：`ensure_hook_manager` 内部 `from .hooks import HookManager`（app.py 顶层不 import hooks）；`builtins.py` 函数内 `from ..app import ensure_hook_manager`。两处 lazy import 保证模块加载顺序无关，import smoke 验证 `hook_manager OK, total hooks = 0`。
+- **YAGNI**：session_start/end 本轮接 per-run（每次 send_message 触发），不追踪"会话是否首次"跨消息状态 —— 简单且 hook 立刻可用。语义在文档说明，后续轮次按需精化。
+- **轮次独立**：app.py 既有 I001（handler import 块未排序）非本轮引入，不碰；前端既有的 `JsonRpcId` tsc 错误与 R10 无关，不碰。
+
+### 实现 / 产出
+
+- `minimax_code/app.py`：全局 `_HOOK_MANAGER` 单例槽 + `get_/set_/ensure_hook_manager` 三件套（构建时 `ensure_plugin_registry().apply_hooks(manager.registry)`，三层 try/except fail-open，日志报告贡献 hook 数）+ `__all__` 导出 3 符号。
+- `minimax_code/ipc/builtins.py`：主 agent AgentCore 构造传 `hooks=hook_manager`（fail-open 解析，None-safe）+ `core.run()` 前 `fire_session_start` / `finally` 里 `fire_session_end`（两处 try/except fail-open，异常路径也触发 session_end）。
+- `tests/test_integration_platform.py`（新）：4 个**真实子进程**端到端测试 —— (1) apply 桥（plugin.json hook → ensure_hook_manager → registry.count==1）；(2) pre_tool_use 决策回路（plugin block decision → `fire_pre_tool_use` → outcome.blocked==True，`sys.executable` 跑 inline Python 输出 JSON decision）；(3) session_start 真实触发（plugin hook 写 marker 文件，env 传路径跨平台）；(4) fail-open（坏 manifest → 空 manager，不崩溃）。autouse fixture 每测 reset 两个单例。
+
+### 验证
+
+- ✅ `ruff check builtins.py + test_integration_platform.py`：All checks passed（修了 test 的 I001 import 排序）。
+- ✅ `pytest test_integration_platform + test_plugins + test_hooks_integration + test_hooks_manager`：**29 passed in 2.37s**（R10 新 4 + plugins 13 + hooks_integration 4 + hooks_manager 8）。
+- ✅ 后端 import smoke：`hook_manager OK, total hooks = 0`（无插件目录 fail-open 空 manager）+ `__all__` 导出 `ensure_hook_manager`/`ensure_plugin_registry` 均为 True + 无循环依赖。
+- 覆盖：插件 manifest → discover → apply → HookManager registry → 子进程执行 → JSON decision 解析 → block 回路；session_start 真实副作用；坏 manifest fail-open；三大支柱（MCP/Hooks/Plugins）通过 ensure_hook_manager 单例合流。
+- 🎉 **阶段 A（R1-R10）完成**：融合地基 + 三大平台支柱 + 端到端打通。
+- ⏭️ R11（阶段 B 起点）：安全与可观测 —— 沙箱（plugin entry 动态 import 的安全执行边界）/ 检查点 / 遥测。
+
+### Commit
+
+`feat(platform): R10 wire plugins+hooks into agent lifecycle via ensure_hook_manager singleton`

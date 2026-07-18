@@ -44,6 +44,11 @@ _DB_LOCK = asyncio.Lock()
 # Plugin registry singleton (platform pillar #3 — Plugins). Lazily
 # built by ensure_plugin_registry(); tests inject via set_plugin_registry().
 _PLUGIN_REGISTRY: Any = None  # type: ignore[no-untyped-def]
+# Hook manager singleton (platform pillar #2 — Hooks, wired end-to-end in
+# R10). Lazily built by ensure_hook_manager(); tests inject via
+# set_hook_manager(). Plugins contribute their hooks into this manager's
+# registry so plugin lifecycle hooks become agent-active with one build.
+_HOOK_MANAGER: Any = None  # type: ignore[no-untyped-def]
 
 
 def get_runtime() -> SkillRuntime | None:
@@ -648,6 +653,58 @@ def ensure_plugin_registry() -> Any:
     return registry
 
 
+# ---------------------------------------------------------------------------
+# Hook manager singleton (v0.8.x platform pillar #2 — Hooks, wired in R10)
+# ---------------------------------------------------------------------------
+
+
+def get_hook_manager() -> Any:
+    """Return the process-wide :class:`HookManager`, or ``None``."""
+    return _HOOK_MANAGER
+
+
+def set_hook_manager(manager: Any) -> None:
+    """Inject a pre-built HookManager (tests bypass plugin apply)."""
+    global _HOOK_MANAGER
+    _HOOK_MANAGER = manager
+
+
+def ensure_hook_manager() -> Any:
+    """Return the process-wide HookManager, building it once on demand.
+
+    This is the **integration seam** (R10) that turns the three platform
+    pillars into one running system: it builds a :class:`HookManager`,
+    then pours every *enabled* plugin's hooks into the manager's
+    registry via ``PluginRegistry.apply_hooks``. From that point on,
+    plugin-contributed ``pre_tool_use`` / ``session_start`` / ... hooks
+    are agent-active — the main agent (``agent.send_message``) and any
+    other ``AgentCore`` that reuses this singleton get them for free.
+
+    Fail-open on every layer: discovery failure → empty registry →
+    manager with no hooks. The agent always starts.
+    """
+    global _HOOK_MANAGER
+    if _HOOK_MANAGER is not None:
+        return _HOOK_MANAGER
+    from .hooks import HookManager
+
+    manager = HookManager()
+    try:
+        registry = ensure_plugin_registry()
+        contributed = registry.apply_hooks(manager.registry)
+        if contributed:
+            logger.info(
+                "hook manager initialised; plugins contributed %d hook(s)",
+                contributed,
+            )
+        else:
+            logger.info("hook manager initialised; no plugin hooks contributed")
+    except Exception:
+        logger.exception("hook manager init failed; running with no hooks")
+    _HOOK_MANAGER = manager
+    return manager
+
+
 __all__ = [
     "ensure_repo_map_indexer",
     "get_http_app",
@@ -667,7 +724,10 @@ __all__ = [
     "set_sessions_dao",
     "set_subagent_llm",
     "discover_plugins",
+    "ensure_hook_manager",
     "ensure_plugin_registry",
+    "get_hook_manager",
     "get_plugin_registry",
+    "set_hook_manager",
     "set_plugin_registry",
 ]
