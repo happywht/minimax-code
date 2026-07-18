@@ -2804,3 +2804,115 @@ mcp 包缺的两个切片（ACP 扩展 wire + OAuth 配置形状），而非重�
 ### Commit
 
 `feat(platform): R35 MCP liveness decision layer (fuse grok xai-grok-mcp)`
+
+## R36 — MCP client 事件层（融合 grok `xai-grok-mcp` servers）
+
+> 本轮目标：把 grok `xai-grok-mcp/servers.rs` 的 `McpServerName` 别名 +
+> `McpClientEvent` **带 payload 枚举**移植成 Python——这是 R35
+> `McpClientEventKind` discriminant 的"另一半"：Kind 是可哈希的 coalescing
+> key，Event 携带真实负载（server 名、client_id、失败原因、config diff）。
+> 本轮只做纯数据形状 + `server_name` accessor，把 MCP 包的"事件类型骨架"
+> 补完。dispatcher（50ms 合并窗口、ConfigDiff 扇出）留接线轮。承接 R35 YAGNI
+> 里"❌ 不做 McpClientEvent 带 payload 枚举——留下一轮"的承诺。
+
+### 融合结论
+
+✅ **保持**
+- `McpServerName: TypeAlias = str`（grok `pub type McpServerName = String`）
+- 8 变体 `McpClientEvent` 联合，用 **frozen=True, slots=True dataclass 联合**
+  （PEP 604 `A | B | C`，isinstance/match 分发）——复用 R32 VoiceEvent 确立的
+  **"带 struct payload 的 Rust 枚举 → frozen dataclass 联合"** 策略。
+- `server_name(event) -> str | None` 纯函数（grok
+  `McpClientEvent::server_name()`）：7 个带 server 变体返回 server，
+  `ConfigDiff` 返回 None（dispatcher 会把它扇出成 per-server 子事件）。
+- grok `Vec<McpServerName>` → `list[str]`（mutable，忠实 grok 无 Hash derive；
+  ConfigDiff 不参与哈希）。
+
+❌ **放弃（YAGNI / 主机运行时）**
+- dispatcher 接线（50ms tumbling 合并窗口 + ConfigDiff→ConfigAdded/Removed 扇出）
+- `event_kind(event) -> McpClientEventKind` 投影（grok 没有；dispatcher 需要时
+  现场用 isinstance match）
+- ACP `x.ai/mcp/server_status` push 序列化
+- `ConfigDiff` 用 tuple 替换 list 以获得可哈希性（grok 用 Vec，忠实可变语义）
+
+### 交付
+
+**新增 `agent/minimax_code/mcp/events.py`（148 行）**
+- `McpServerName: TypeAlias = str`
+- 8 个 `@dataclass(frozen=True, slots=True)`：
+  `TransportClosed{server, client_id:int}`、`HandshakeFailed{server, reason:str}`、
+  `ToolsChanged{server}`、`ResourcesChanged{server}`、`Ready{server}`、
+  `ConfigDiff{added:list[str], removed:list[str]}`、`ConfigAdded{server}`、
+  `ConfigRemoved{server}`
+- `McpClientEvent = TransportClosed | ... | ConfigRemoved`（8 路 PEP 604 联合）
+- `server_name(event)` accessor（ConfigDiff → None）
+- 模块 docstring 记录三事件来源（liveness watcher / client handler /
+  session-config 层）+ 映射决策 + 不移植边界
+
+**新增 `agent/tests/test_mcp_events.py`（13 函数，19 pytest items）**
+1. `test_reexport`（包 vs 模块 is 同一性）
+2. `test_mcp_server_name_is_str_alias`
+3. `test_transport_closed_carries_client_id`（client_id int 类型）
+4. `test_handshake_failed_carries_reason`
+5. `test_config_diff_carries_lists`（list 字段）
+6. `test_single_server_variants_construct`（5 个单 server 变体）
+7. `test_server_name_returns_server_for_payload_variants`（7 param）
+8. `test_server_name_returns_none_for_config_diff`
+9. `test_union_has_eight_frozen_variants`（8 个 dataclass）
+10. `test_frozen_immutable`（FrozenInstanceError on 写）
+11. `test_value_equality`（== / != 值相等）
+12. `test_isinstance_dispatch`（match 等价）
+13. `test_every_variant_is_part_of_union`（8 样本 isinstance 联合）
+
+**修改 `agent/minimax_code/mcp/__init__.py`**
+- 新增 `from .events import (...)`（11 符号，按字母序插在 .client 与 .liveness 之间）
+- docstring scope 加 R36 `.events` 行（紧跟 R35 `.liveness`）
+- `__all__` 加 `# events (R36)` 块（11 符号）
+
+### 契约
+
+- IPC 协议：**无变更**（纯内部类型层，不触 JSON-RPC）
+- 公开 API：mcp 包 `__all__` 新增 11 个符号（McpServerName + 8 变体 +
+  McpClientEvent 联合 + server_name 函数）
+- 跨文档：无（IPC/存储契约未动）
+
+### 映射决策（R32 策略重申）
+
+grok 的 `McpClientEvent` 是 **带 struct-variant payload 的枚举**，derive 只有
+`Debug + Clone`（无 `PartialEq`/`Eq`/`Hash`）。按 R32 确立的政策：带 payload
+的 Rust 枚举 → **frozen=True, slots=True dataclass 联合**（不是 R35 的
+`enum.Enum`）。payload 决定映射：
+
+- 单元枚举（无 payload，`Copy + Hash`）→ `@unique enum.Enum`（R35）
+- struct-variant 枚举（带 payload）→ frozen dataclass 联合（R32/R36）
+
+这是有意识的策略分歧——payload 决定映射，不是不一致。`frozen=True, slots=True`
+镜像 `Debug + Clone`（不可变实例、紧凑布局）；Python dataclass 默认 `eq=True`
+给了 grok 没有的值相等，但这是 Python 惯例且 dispatcher 去重需要（可接受偏离）。
+
+`ConfigDiff` 的 `list[str]` 字段使实例不可哈希（调用 `__hash__` 会 TypeError），
+但 grok 整体无 `Hash` derive——忠实语义。测试不哈希 ConfigDiff。
+
+### 验证
+
+- `ruff check minimax_code/mcp/events.py __init__.py tests/test_mcp_events.py`
+  → **All checks passed!**（一次通过，零 I001——import 已手动排好序）
+- `pytest tests/test_mcp_events.py + test_mcp_liveness.py + test_mcp_wire.py +
+  test_mcp_oauth_config.py -q` → **50 passed**（R34+R35+R36 mcp 层全绿）
+- 完整套件 `pytest` → **1472 passed in 90s**（R35 1453 → R36 1472，+19 精确，
+  零回归）
+
+### YAGNI 边界
+
+- ❌ **不做 dispatcher 接线**——50ms tumbling 合并窗口 + ConfigDiff 扇出 +
+  (server, kind) coalescing，是主机运行时接线轮。
+- ❌ **不做 `event_kind()` 投影**——grok 没有；dispatcher 需要时用 isinstance match。
+- ❌ **不做 ACP `server_status` push 序列化**——wire 形式未定，留接线。
+- ❌ **不为 ConfigDiff 可哈希改用 tuple**——grok 用 Vec（可变），忠实语义；
+  事件消费靠迭代不靠哈希。
+- ❌ **不做 PartialEq 的精确镜像**——Python frozen dataclass 默认 eq=True 给值相等，
+  是可接受的偏离（dispatcher 去重受益）。
+
+### Commit
+
+`feat(platform): R36 MCP client event layer (fuse grok xai-grok-mcp)`

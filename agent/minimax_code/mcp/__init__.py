@@ -24,6 +24,10 @@ Scope of this package
 * :mod:`.liveness` (R35) — per-client transport-closed poller decision layer
   (state-machine predicate + poll interval); the host-runtime watcher task
   is a later wiring round.
+* :mod:`.events` (R36) — payload-carrying MCP client events (the
+  ``McpClientEvent`` frozen-dataclass union) paired with R35's
+  ``McpClientEventKind`` discriminant; pure data shape + ``server_name``
+  accessor.
 * :mod:`.registry` (R5) — bridge external MCP tools into the existing
   :class:`minimax_code.agent.tools.base.ToolRegistry`.
 
@@ -39,6 +43,19 @@ from __future__ import annotations
 
 from . import protocol, transport, types
 from .client import MCPClient, MCPClientError
+from .events import (
+    ConfigAdded,
+    ConfigDiff,
+    ConfigRemoved,
+    HandshakeFailed,
+    McpClientEvent,
+    McpServerName,
+    Ready,
+    ResourcesChanged,
+    ToolsChanged,
+    TransportClosed,
+    server_name,
+)
 from .liveness import (
     DEFAULT_POLL_INTERVAL_MS,
     ClientStateKind,
@@ -90,4 +107,16 @@ __all__ = [
     "LivenessCheck",
     "McpClientEventKind",
     "classify_liveness",
+    # events (R36) — payload-carrying MCP client events
+    "McpServerName",
+    "TransportClosed",
+    "HandshakeFailed",
+    "ToolsChanged",
+    "ResourcesChanged",
+    "Ready",
+    "ConfigDiff",
+    "ConfigAdded",
+    "ConfigRemoved",
+    "McpClientEvent",
+    "server_name",
 ]
