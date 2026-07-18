@@ -2251,3 +2251,112 @@ compaction crate 30+ 文件中**第一个可独立交付的纯逻辑切片**，�
 ### Commit
 
 `feat(platform): R29 post-compaction reminder formatting (fuse grok xai-grok-compaction)`
+
+---
+
+## R30 — 压缩可观测性接缝层（fuse grok `xai-grok-compaction` observers）
+
+### 本轮目标
+
+融合 `grok-build/crates/common/xai-grok-compaction` 的**三个接缝类型**——
+`intra_compaction/traits.rs::CompactionTarget` + `intra_compaction/observer.rs::IntraCompactionObserver`
++ `inter_compaction/observer.rs::InterCompactionObserver`。这是 compaction 链路的**度量端**：
+R28 决定何时压缩、R29 保证压缩后上下文不丢、**R30 让压缩过程本身可观测**——每次 pass 的
+成功/失败/token 缩减/耗时、每次 inter 流水线的 re-compaction/chunk 采样事件，都通过观察者回调上报，
+而共享压缩引擎本身**零度量后端依赖**。
+
+**产品融合点（不只是移植）**：这是 **R20-R21 resilience observer 栈的 compaction 侧对称镜像**——
+R20-R21 把 circuit-breaker / retry 事件通过 observer 接入 `TelemetryEngine`，R30 用完全相同的
+"backend-free 观察者基类 + NULL 单例"模式为 compaction 预留同一接入点。未来一个 host-wiring 轮次把
+两套 observer 都路由进同一个 `TelemetryEngine`，compaction 事件就能直达进度面板。
+
+### 融合结论（✅ 保持 / ❌ 放弃）
+
+- ✅ **`CompactionTarget` 3 成员 Enum**（STEPS/HISTORY/FULL_REPLACE）+ `label()` 返回稳定低基数标签
+  （`"steps"`/`"history"`/`"full_replace"`，与 `value` 一致）——作度量维度，观察者永不触碰枚举本身。
+- ✅ **`IntraCompactionObserver` 普通基类**（非 ABC）：`on_error(status:str)` + `on_success(target,
+  tokens_before, tokens_after, turns_compacted, elapsed:float)` 全默认 no-op，可实例化。
+- ✅ **`InterCompactionObserver` 普通基类**（非 ABC）：`on_recompaction(strategy:str)` +
+  `on_chunk_sampled(success:bool, elapsed:float)` + `on_chunk_count(num_chunks:int)` 全默认 no-op。
+- ✅ **`NULL_INTRA_OBSERVER` / `NULL_INTER_OBSERVER` 单例**——grok `impl … for ()` 的 Python 模拟：
+  无度量后端的 harness / 测试直接传单例满足观察者参数，无需子类化。
+- ✅ **`on_recompaction` 接 `strategy: str`**（稳定标签），**不接 `CompactionStrategy` 枚举**——接缝
+  刻意避免依赖该枚举，保持引擎无 host 耦合。
+- ❌ **不移植 `CompactionStreamProc`**——host `Item` 泛型 trait，属 host 集成层（执行流水线），本轮只做
+  接缝；执行层留 compact.rs 移植轮次。
+- ❌ **不移植 `CompactionStrategy` 枚举**——仅作 `on_recompaction` 的字符串标签来源被引用，本身
+  （basic/divide_and_conquer/...）留执行层轮次。
+- ❌ **不接 `TelemetryEngine`**——交付纯接缝 + NULL 单例；把回调路由进 R20-R21 的 `TelemetryEngine`
+  留 host-wiring 轮次（届时 resilience + compaction 两套 observer 一起接线）。
+
+### 交付
+
+- `agent/minimax_code/compaction/observers.py`（131 行，新建）：`CompactionTarget` Enum + 2 观察者
+  基类 + 2 NULL 单例。`from __future__ import annotations` + `enum.Enum`。模块 docstring 详述
+  trait→base-class 映射决策。
+- `agent/tests/test_compaction_observers.py`（166 行，新建）：**12 个测试**（10 函数，`label()` 参数化
+  展开 +2）= 4 个 Target 守护（label×3 参数化 / 三成员 / 可哈希 / 包级 re-export）+ 3 个 Intra 守护
+  （默认 no-op / NULL 单例 / 子类 override-on_success-继承-on_error）+ 3 个 Inter 守护
+  （默认 no-op / NULL 单例 / 子类 override 全三事件）。
+- `agent/minimax_code/compaction/__init__.py`（重写）：re-export config(R28) + observers(R30) +
+  reminder(R29) + trigger(R28)，`__all__` 按 R 分组标注，crate-level discoverability。
+
+**核心设计决策——trait → 普通基类（非 ABC）**：
+
+grok trait 是"**带默认实现的接口**"，不是纯抽象接口——harness 可只 override 关心的事件，单位类型
+`()` 通过吃掉所有默认实现满足整个 trait。其忠实 Python 模拟是**默认 no-op 的普通基类**
+（`logging.Handler` / `BaseHTTPRequestHandler` / Django signal receiver 同款模式）：无需 override 即可
+实例化，子类选择性 override。因此**刻意不继承 `abc.ABC`**——那会强制 `@abstractmethod`，从而禁止
+grok `impl … for ()` 存在的理由——null observer 用例。ruff 的 **B024**（ABC 无 abstractmethod）+
+**B027**（ABC 空方法无装饰器）正是此决策的印证：初版误用 ABC 触发 9 个 ruff 错误，去 ABC 后全部消失。
+
+**12 个关键移植契约**（测试逐条锁定）：
+
+1. **`CompactionTarget` 恰三成员**（`test_compaction_target_has_three_members`）——Target(哪段, 3) ≠
+   Mode(怎么压, 4)，无 "combined" target。
+2. **`label()` == `value`**（`test_compaction_target_label` 参数化 3）——稳定低基数度量维度。
+3. **Target 可哈希**、可做 dict key / set 成员（`test_compaction_target_is_hashable_and_distinct`）。
+4. **包级 re-export**——`from minimax_code.compaction import CompactionTarget` 等价于 observers 模块
+   （`test_compaction_target_reexported_from_package`：`ReexportedTarget is CompactionTarget`）。
+5. **Intra 默认 no-op 可实例化**（`test_intra_observer_defaults_are_noops`：bare `IntraCompactionObserver()`
+   全方法返回 None，从不 raise）。
+6. **`NULL_INTRA_OBSERVER` 是基类实例**（`test_null_intra_observer_is_singleton_instance`：`isinstance` + 全 no-op）。
+7. **子类 template-method 语义**（`test_intra_subclass_records_success_and_inherits_error`：override
+   `on_success` 仍继承 `on_error` no-op）。
+8. **Inter 默认 no-op 可实例化**（`test_inter_observer_defaults_are_noops`：三方法全 None）。
+9. **`NULL_INTER_OBSERVER` 是基类实例**（`test_null_inter_observer_is_singleton_instance`）。
+10. **`on_recompaction` 接 `str` 策略标签**（`test_inter_subclass_records_all_three_events`：传
+    `"basic"` / `"divide_and_conquer"`，非枚举实例）——接缝不依赖 `CompactionStrategy` 枚举。
+11. **`on_chunk_sampled(success: bool, elapsed: float)`** 签名（`(True, 2.5)` / `(False, 0.1)`）。
+12. **`on_chunk_count(num_chunks: int)`** 签名（含 `0` 边界）。
+
+### 验证
+
+- ✅ **ruff**：`All checks passed`（E/F/W/I/B/UP，line-length 100；初版 9 错误 = B024×2 + B027×5 +
+  I001×2，**全部由"去 ABC + `--fix` 排序"根除**，零 noqa 污染）。
+- ✅ **新测试**：12 passed（含 `label()` 参数化 3 case）。
+- ✅ **完整套件零回归**：1351 passed in 90.89s = 1339 基线 + 12 新增，**精确匹配**。
+- ✅ **NULL 单例语义**：`isinstance(NULL_INTRA_OBSERVER, IntraCompactionObserver)` +
+  `isinstance(NULL_INTER_OBSERVER, InterCompactionObserver)` 双断言。
+- ✅ **Target ≠ Mode 边界**：三成员集合断言锁定（防误加第四个 "combined" target）。
+- ✅ **接缝无枚举耦合**：`on_recompaction` 测试用裸字符串标签，证明观察者可在 `CompactionStrategy`
+  枚举移植前独立工作。
+
+### YAGNI 边界（本轮不做）
+
+- ❌ **不移植 `CompactionStreamProc`**——host `Item` 泛型执行 trait（select/sample/guard/commit 流水线），
+  属 host 集成层；本轮只做度量接缝，执行层留 compact.rs 移植轮次。
+- ❌ **不移植 `CompactionStrategy` 枚举**——仅以字符串标签形式被 `on_recompaction` 引用；枚举本体
+  （basic/divide_and_conquer/...）及其 `label()` 留执行层轮次。
+- ❌ **不接 `TelemetryEngine`**——交付纯接缝 + NULL 单例；resilience（R20-R21）+ compaction（R30）
+  两套 observer 一起路由进 `TelemetryEngine` 留 host-wiring 轮次。
+- ❌ **不做 IPC 暴露**——不新增 `compaction.observer` handler / 前端度量面板；compaction 事件可视化
+  留 host 集成。
+- ❌ **不做 async/并发观察者**——grok 观察者是同步回调（`&self` 方法），本轮保持同步；async 派发
+  （若未来 TelemetryEngine 需要）留接线轮次。
+- ❌ **不做 observer 注册表/链**——单 observer 参数（grok 模式），不做多播链；harness 需多播时自建组合
+  observer（`__init__` 持 list，每方法 fan-out）。
+
+### Commit
+
+`feat(platform): R30 compaction observability seam (fuse grok xai-grok-compaction)`
