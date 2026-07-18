@@ -3007,3 +3007,107 @@ MiniMax Code 的前端在 React 中渲染 markdown，但**后端没有渲染保�
 ### Commit
 
 `feat(platform): R37 markdown analysis types + predicates (fuse grok xai-grok-markdown-core)`
+
+## R38 — mermaid 渲染守卫与类型层（融合 grok `xai-grok-mermaid`）
+
+锚定 R37 提交 `f5ff916`。
+
+### 本轮目标
+
+从 grok 的 `xai-grok-mermaid` 引入 mermaid 渲染的**类型 + 限制 + 错误守卫层**——这是
+host-agnostic 核心，为未来 Python mermaid 渲染接线程（`mmdc` CLI / `mermaid.js` over
+headless browser）奠基。**不引入渲染引擎本身**（dagre 布局 + SVG 光栅化是 Rust 渲染栈，
+推迟到接线轮）。本轮交付的是词汇表 + 守卫契约：任何未来引擎实现都被 `render_checked`
+不变地包裹。
+
+### 融合结论
+
+✅ **类型层（lib.rs）**：`Rgba`（frozen dataclass，`r/g/b/a: u8`）、`MermaidTheme`
+（`@unique Enum`，LIGHT/DARK，`#[default] Light` → `DEFAULT_THEME`）、`RenderParams`
+（frozen dataclass，theme/target_width_px/max_height_px/scale/min_width_px/background +
+`for_os_viewer` 工厂类方法）、`RenderedDiagram`（frozen dataclass，`png: bytes` +
+width/height）。`LIGHT_SURFACE`/`DARK_SURFACE` 单一事实来源常量。`surface_background()`
+方法 + `to_hex()` → 不透明 `#RRGGBB`（alpha 忽略，镜像 grok）。
+
+✅ **错误分类法（engine.rs `MermaidError` thiserror）**：6 个 Rust 变体 → Exception
+层次结构（R32 策略）：`MermaidError` 基类 + `MermaidParseError`/`MermaidLayoutError`/
+`MermaidRasterizeError`/`MermaidTimeoutError`/`MermaidUnsupportedError`/`MermaidPanicError`。
+`Variant(String)` 载荷 → `_MessageError` 基类持 `message` 属性 + `__str__` 插值
+（`f"mermaid {kind} error: {msg}"`）；`Timeout` 无载荷，固定 `__str__`。每个子类
+`_KIND` 字段对应 grok `Display` 的区分词。
+
+✅ **守卫层（engine.rs `RenderLimits` + `trait MermaidEngine` + `render_checked`）**：
+`RenderLimits`（frozen dataclass，`max_source_bytes: int = 64*1024`，grok 64 KiB 上限）；
+`MermaidEngine`（`@runtime_checkable Protocol`，镜像 grok `trait: Send + Sync`，GIL 下
+Send/Sync 无意义，duck-typed 契约 + 测试用 isinstance 分发）；`render_checked`：
+**字节长度**检查（`len(source.encode("utf-8"))` 镜像 Rust `str::len()` 字节语义，非
+字符数）→ 超限 raise `MermaidUnsupportedError`（**引擎不运行**）→ 否则
+`catch_unwind` 映射：`except MermaidError: raise`（"预期"通道透传）+ `except Exception
+as exc: raise MermaidPanicError(str(exc)) from exc`（"恐慌"通道隔离）；`BaseException`
+子类（KeyboardInterrupt/SystemExit）**故意不捕获**（镜像 `catch_unwind` 不拦截 `abort`）。
+
+❌ **渲染引擎本身**——grok `PureRustEngine`/`rasterize`/`mmdc`/subprocess 引擎是 Rust
+渲染栈（vendored `mermaid-to-svg` dagre 布局 + `resvg`/`usvg`/`tiny-skia` 光栅化），
+推迟到接线轮选 Python 实现。
+
+❌ **壁钟超时**——grok 在 pager 子进程外强制超时（每图 spawn 短命子进程），是接线关注点，
+不在本守卫层。
+
+❌ **输出像素面积/高度上限**——在光栅化器内部（未移植）。
+
+### 交付
+
+- `agent/minimax_code/mermaid/types.py`（新）— 4 frozen dataclass + 1 Enum + 3 常量 +
+  `for_os_viewer` 工厂，`__all__` 7 符号。
+- `agent/minimax_code/mermaid/errors.py`（新）— 7 类异常层次结构，`__all__` 7 符号。
+- `agent/minimax_code/mermaid/engine.py`（新）— `RenderLimits` + `MermaidEngine` Protocol
+  + `render_checked`，`__all__` 3 符号。
+- `agent/minimax_code/mermaid/__init__.py`（新）— 重导出 17 符号（engine 3 + errors 7 +
+  types 7），分组 `__all__`，docstring 声明范围与未移植边界。
+- `agent/tests/test_mermaid_types.py`（新）— 15 测试：重导出、`to_hex` 不透明 #RRGGBB
+  （含 alpha 忽略 + DARK_SURFACE→`#18181B`）、值相等、frozen（`FrozenInstanceError`）、
+  可哈希、主题 surface 亮/暗差异、surfaces 匹配常量、两变体、默认 light、默认参数
+  target-width-driven、`for_os_viewer` 工厂、参数值相等/frozen、`RenderedDiagram` 值
+  相等/可哈希。
+- `agent/tests/test_mermaid_engine.py`（新）— 16 测试：重导出、`RenderLimits` 默认 64KiB/
+  值相等/frozen、Protocol runtime-checkable、成功透传、超限拒收（引擎不运行）、
+  错误消息报字节数、限值处接受、**字节长度 vs 字符数**（`"ä"`/`"äb"`/`"äbc"` UTF-8
+  字节验证）、恐慌→PanicError、`__cause__` 链保留、`BaseException` 不捕获
+  （KeyboardInterrupt）、5 个预期错误透传、全子类是 `MermaidError`、`Display` 描述性。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+映射决策树第四次重申（payload 决定映射）：**struct-variant 载荷枚举 → frozen dataclass
+联合类型**；**单元枚举 `Debug+Clone+Copy+PartialEq+Eq` → `@unique Enum`**；
+**thiserror 枚举 → Exception 层次结构**。frozen=True+slots=True = Rust
+`Debug+Clone+Copy+PartialEq+Eq`（不可变 + 值相等 + 紧凑 + 可哈希）。`@runtime_checkable
+Protocol` = Rust `&dyn Trait` 动态分发。
+
+### 验证
+
+- `ruff check minimax_code/mermaid/ tests/test_mermaid_types.py
+  tests/test_mermaid_engine.py` → **All checks passed!**（4 个 I001 自动修复 + 3 个
+  B017 手动修复——`pytest.raises(Exception)` → `pytest.raises(FrozenInstanceError)`
+  具体异常类型，禁止盲目异常）。
+- `pytest tests/test_mermaid_types.py tests/test_mermaid_engine.py -q` →
+  **31 passed in 0.20s**（types 15 + engine 16，全绿）。
+- 完整套件 `pytest -q` → **1553 passed in 89.13s**（R37 1522 → R38 1553，
+  **+31 精确**，零回归）。
+
+### YAGNI 边界
+
+- ❌ **不接渲染引擎**——dagre 布局 + SVG 光栅化是 Rust 栈；选 `mmdc` CLI subprocess
+  还是 `mermaid.js` over headless browser 是接线轮决策，本轮只定 `MermaidEngine`
+  Protocol 契约。
+- ❌ **不做壁钟超时守卫**——grok 在 pager 子进程外强制（每图短命子进程），属接线层，
+  不在本进程内守卫。
+- ❌ **不做输出像素面积上限**——`max_height_px`/pixmap area 在光栅化器内部强制，
+  光栅化器未移植。
+- ❌ **不做 render worker → IPC 事件接线**——`agent.message_chunk` 尚未携带渲染结果，
+  是 IPC 契约变更轮。
+- ❌ **不为 `RenderParams` 加可变性**——grok 字段默认 + 构造模式需要 frozen 值类型
+  （`for_os_viewer` 工厂返回新实例），frozen 镜像 `Copy` 语义；mutable 会破坏
+  "参数即值"契约。
+
+### Commit
+
+`feat(platform): R38 mermaid render guard + types (fuse grok xai-grok-mermaid)`
