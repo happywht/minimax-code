@@ -44,6 +44,12 @@ from typing import Any
 
 from ..hooks import HookManager
 from ..telemetry.tracing import Tracer, get_tracer
+from .interjection import (
+    FormattedInterjection,
+    InterjectionBuffer,
+    PendingInterjection,
+    drain_formatted,
+)
 from .llm import LLMError, LLMResponse, MiniMaxClient, StreamChunk
 from .prompts import build_system_prompt
 from .reliability import (
@@ -323,6 +329,12 @@ class AgentCore:
         # serialize (mirrors grok's lock_path_for_args); cross-file writes
         # and every read / search / terminal call stay fully concurrent.
         self._write_locks: dict[str, asyncio.Lock] = {}
+        # R24 — mid-turn user interjection buffer (fuse grok
+        # xai-interjection-core). Producers (IPC handlers, a future watchdog)
+        # push PendingInterjection entries via queue_interjection(); the run
+        # loop drains them at the safe point between tool turns (see run()),
+        # framing each as a synthetic user message the model sees next.
+        self._interjection_buffer: InterjectionBuffer = InterjectionBuffer()
         # R20 — telemetry adapter for the ``llm`` breaker. Resolves the engine
         # lazily through a closure over ``self`` (the engine is injected from
         # ``app.py`` after this constructor returns), so a late-arriving engine
@@ -352,6 +364,35 @@ class AgentCore:
     @property
     def cancelled(self) -> bool:
         return self._cancel.is_set()
+
+    # -- mid-turn interjection (R24) ----------------------------------
+
+    def queue_interjection(self, text: str, attachments: list[Any] | None = None) -> None:
+        """Buffer a mid-turn user message for the next safe drain point.
+
+        Producers (e.g. an IPC handler receiving a message while the agent
+        is mid-turn) call this instead of injecting straight into the
+        running conversation — the run loop picks the entry up between
+        tool turns via :meth:`drain_interjections`.
+        """
+        self._interjection_buffer.push(
+            PendingInterjection(text=text, attachments=list(attachments or []))
+        )
+
+    def drain_interjections(
+        self, *, sanitize_text: Callable[[str], str] | None = None
+    ) -> list[FormattedInterjection]:
+        """Drain + frame buffered interjections as synthetic user messages.
+
+        Each drained entry becomes its own user message (never merged),
+        wrapped in the canonical mid-turn envelope. ``sanitize_text`` runs
+        on the raw text first; ``None`` ⇒ identity (the interjection flows
+        through untouched). Returns ``[]`` when the buffer is empty.
+        """
+        return drain_formatted(
+            self._interjection_buffer,
+            sanitize_text if sanitize_text is not None else (lambda s: s),
+        )
 
     # -- main entry point --------------------------------------------------
 
@@ -482,6 +523,15 @@ class AgentCore:
                 if self.cancelled:
                     cancelled = True
                     break
+                # R24 — safe drain point between tool turns: flush any
+                # mid-turn user interjections so the model sees them on its
+                # next loop iteration (mirrors grok's drain_formatted at the
+                # post-tool hook). Each drained entry becomes a synthetic
+                # user message, never merged.
+                for inj in self.drain_interjections():
+                    inj_msg = {"role": "user", "content": inj.text}
+                    messages.append(inj_msg)
+                    await self._maybe_persist(session_id, inj_msg)
                 # Loop back to call the LLM with the tool messages.
             else:
                 # Loop exhausted without a final answer.

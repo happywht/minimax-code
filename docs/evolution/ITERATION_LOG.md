@@ -1708,3 +1708,77 @@ execute（`FuturesUnordered`）。**关键规则**："仅当写入工具指向�
 ### Commit
 
 `feat(platform): R23 two-phase parallel tool dispatch (fuse grok xai-tool-runtime concurrency)`
+
+## R24 — 回合中断/插话缓冲层（fuse grok xai-interjection-core）（阶段 C 第 4 轮）
+
+### 本轮目标
+
+把 grok-build 的 `xai-interjection-core` crate（用户在 agent 回合进行中插入消息、
+而不打断对话的机制）前向迁移到 Python，接入 `AgentCore` 的 run loop。核心契约：
+生产者把 out-of-band 插话 push 进缓冲区，run loop 在**安全点**（工具回合之间，
+绝不在工具调用中途）一次性 drain，每条插话框成一条合成 `user` 消息，供模型下一轮
+迭代看到——绝不合并、绝不丢、绝不撕裂在途工具调用。
+
+### 融合结论
+
+✅ **保持**：
+- `EventQueue<E>` 共享 FIFO 队列语义——`clone()` 返回共享同一后备存储的新句柄
+  （grok `Arc<Mutex<Vec<E>>>` 契约）。Python 用 `_SharedState` 后备 + `EventQueue`
+  薄句柄实现；`push` / `push_capped(max)` / `drain_matching(pred)` / `drain_all` /
+  `clear` / `snapshot` 全套。
+- `format_interjection` + `user_query` + `LARGE_PROMPT_THRESHOLD=25_000`——
+  `<user_query>` 信封 + "The user sent a message while you are working:" 中段提示，
+  无延迟指令（让模型自行权衡）。超阈值截断保护 prompt 预算。
+- `PendingInterjection` / `FormattedInterjection` + `drain_formatted`——一次性 drain，
+  每条独占一条合成消息（never merged），`sanitize_text` 先于框成在**原始文本**上运行，
+  `attachments` 原样透传（核心从不读取）。
+- **安全 drain 点**对齐 grok 的 post-tool hook：`core.py` run loop 中
+  `_run_tool_batch` 完成 + 取消检查之后、"Loop back to call the LLM" 之前（534 行）。
+
+❌ **放弃（适配差异）**：
+- `threading.Lock` 替代 `asyncio.Lock`——队列是纯内存 list 操作无 await，生产者可能
+  来自任意线程（IPC handler / watchdog），同步锁语义等价 grok `Arc<Mutex<>>` 且免 await。
+- **字节边界截断 → 代码点边界截断**：grok 在 UTF-8 `char_indices` 字节边界截断（Rust
+  字符串是字节缓冲）；Python 字符串是代码点序列，`text[:threshold]` 天然 UTF-8 安全、
+  永不会切坏多字节字符。阈值不变 25_000。语义等价。
+- **poisoned-mutex 恢复无 Python 对应**：grok `unwrap_or_else(|e| e.into_inner())`
+  从中毒锁抢救内层状态；Python `threading.Lock` 不会中毒，无此路径。
+
+### 交付
+
+| 文件 | 类型 | 内容 |
+|------|------|------|
+| `agent/minimax_code/agent/interjection.py` | 新建（252 行） | 三段式纯逻辑：format.rs / events.rs(EventQueue) / buffer.rs(drain_formatted) |
+| `agent/minimax_code/agent/core.py` | 修改 | ① import interjection 公共 API；② `__init__` 加 `self._interjection_buffer`；③ `queue_interjection` / `drain_interjections` API；④ run loop 安全 drain 点（534 行）插话→合成 user message→persist |
+| `agent/tests/test_interjection.py` | 新建（29 测试） | format 边界 4 + EventQueue 11 + drain_formatted 7 + AgentCore API 5 + run-loop 端到端 2 |
+
+### 验证
+
+- `ruff check`：3 个 R24 文件全部通过（I001 import 排序已 `--fix`）。
+- `pytest tests/test_interjection.py`：**29 passed in 0.72s**。
+- 全量 `pytest`：**1175 passed in 89.57s**，零失败、零回归（R23=1146 → R24=1175，
+  +29 完全吻合新增测试数）。
+- 端到端 run-loop 测试 `test_run_loop_drains_interjection_as_synthetic_user_message`
+  钉死：回合前 queue 的插话，在工具回合后的 drain 点变成合成 `user` 消息，出现在
+  LLM 第二次调用的 payload 里，携带 `<user_query>` 信封 + 中段提示；drain 后缓冲区清空。
+- 回归守卫 `test_run_loop_without_interjection_is_unchanged`：无插话时 run loop 行为
+  与 R24 前完全一致，无幽灵合成消息。
+
+### YAGNI 边界
+
+- ❌ 不做完整 IPC 推送路径（`agent.*` handler 把在途消息转 push 进缓冲区）——本轮聚焦
+  缓冲层纯逻辑 + run-loop 安全 drain 接线；IPC 推送的回合 hook 由 **R25 生命周期
+  贡献者**（TurnLifecycleContributor）正式化，避免本轮硬编码 `if` 分支。
+- ❌ 不做自动 drain 的 watchdog 定时器——当前 drain 由 run loop 工具回合间自然触发，
+  已覆盖主路径；独立 watchdog 仅在"长工具无回合"场景才需要，留待真实需求。
+- ❌ 不接 R15 出站脱敏——R15 是模型→用户方向（出站），插话 sanitize 是用户→模型方向
+  （入站），方向不同，默认 identity sanitize；主机按需注入（如 strip 图片占位路径），
+  不强行复用 R15 pipeline。
+- ❌ 不做 grok 的"延迟指令"（defer instruction）——grok 刻意把"如何权衡插话 vs 在途
+  工作"的判断留给模型，不命令"放下一切"；移植保持这一克制。
+- ❌ 不做 attachments 的核心侧渲染——`PendingInterjection.attachments` 是主机定义的
+  （内联图、资产 ID），核心只透传到 `FormattedInterjection`，渲染归前端/调用方。
+
+### Commit
+
+`feat(platform): R24 mid-turn interjection buffer (fuse grok xai-interjection-core)`
