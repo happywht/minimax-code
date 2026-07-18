@@ -16,6 +16,7 @@ import openai
 
 from ..types import LLMError, StreamChunk
 from . import LLMTransport
+from ._breaker import check_or_raise, record_outcome, resolve_breaker
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,12 @@ class OpenAITransport(LLMTransport):
         """
         self._thinking_count = 0
 
+        # R18: circuit-breaker pre-check. Fail-open — a missing / disabled /
+        # faulty breaker resolves to None and check_or_raise is a no-op, so
+        # the stream proceeds unprotected rather than not at all.
+        breaker = resolve_breaker("llm:openai")
+        check_or_raise(breaker)
+
         client = self._ensure_client()
 
         # Build kwargs — omit None values so the SDK uses its defaults.
@@ -105,10 +112,17 @@ class OpenAITransport(LLMTransport):
                     self._thinking_count = chunk.usage["thinking_tokens"]
                 yield chunk
         except openai.APIError as exc:
+            record_outcome(
+                breaker,
+                success=False,
+                status_code=getattr(exc, "status_code", None),
+            )
             raise LLMError(
                 f"OpenAI API error: {exc}",
                 status_code=getattr(exc, "status_code", None),
             ) from exc
+        else:
+            record_outcome(breaker, success=True)
 
     async def close(self) -> None:
         if self._client is not None:

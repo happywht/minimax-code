@@ -1050,3 +1050,109 @@ half-open 探测恢复，外加滑动窗口、租约防卡死、Observer 钩子�
 ### Commit
 
 `feat(platform): R17 circuit breaker (fuse grok xai-circuit-breaker)`
+
+## R18 — 熔断器接入 LLM 传输热路径（fuse grok xai-circuit-breaker）（阶段 B 第 8 轮）
+
+**本轮目标**：R17 把 CircuitBreaker 内核作为平台公共组件落地，但 YAGNI 边界明确"不接
+LLM transport"。本轮把熔断器接进 LLM 传输热路径——`AnthropicTransport` /
+`OpenAITransport` 的 `stream_chat` 流式生成器。grok-build 的 `xai-circuit-breaker` 用
+同步 `guard()` 上下文管理器包裹调用；但 MiniMax 的 `stream_chat` 是**异步生成器**
+（`yield` 跨 await 点），sync `with` 进不来。本轮的核心工程抉择：放弃同步 guard 包裹，
+改用**手动三步式**——pre-check（`check_or_raise`）→ stream → record_outcome，全程
+fail-open（断路器自身故障绝不阻塞 LLM 调用）。与 R16/R17 同构——抽取因果支柱
+（fail-open 铁律 + BreakerOpen→服务不可用信号 + 基于状态码的样本过滤 + 双传输对称），
+砍掉同步 guard 仪式（async generator 场景下根本套不上）。
+
+### 融合结论（因果支柱 1:1 保留，sync guard 仪式 async 场景下砍净）
+
+- ✅ **保持**：fail-open 铁律——R17 `guard()` 的 fail-open 契约（断路器坏绝不阻塞业务）
+  在异步生成器场景下用三个独立辅助函数手动复现。`resolve_breaker` 任何故障（导入错/
+  注册表 None/构建失败/`get` 故障）→ None；`check_or_raise`/`record_outcome` 拿到
+  None→无操作。业务路径**照常执行而非不执行**——断路器是观测与保护，永不是依赖。
+- ✅ **保持**：BreakerOpen → LLMError(503) 信号转换——断路器 open 态（或 half_open 无
+  探测槽）的 `BreakerOpen` 信号翻译成传输层已有的 `LLMError(status_code=503)`。调用方
+  看到的"服务不可用"与上游真实 503 无法区分，**错误契约不破**——core.py 的现有错误
+  处理无需任何改动就能吃下熔断信号。check 抛的 `LLMError(503)` 在 try 块**之外**，所以
+  不会被 `except anthropic.APIError` 误捕（类型不同，且语义上 check 是 pre-gate）。
+- ✅ **保持**：基于状态码的样本过滤——镜像 grok 的"客户端错误不污染健康窗口"原则。成功
+  流总记 SUCCESS；失败流仅当 `status_code ∈ config.failure_codes` 时记 FAILURE（500 等
+  是下游病了）；客户端错误（400/401/404）是调用方自己的锅，**中性跳过**（非健康样本，
+  不进窗口）——避免自伤型 400 把断路器误跳闸；未知状态（None = 连接断/超时被 SDK 压平）
+  **保守记 FAILURE**（可能是下游病了，min_samples/error_rate 双闸吸收孤立抖动）。
+- ✅ **保持**：双传输对称——Anthropic + OpenAI transport 完全镜像接入（相同 import、
+  相同 try/except/else 三段式、相同的 pre-check 放在 `self._thinking_count = 0` 之后）。
+  注册表 key 分别 `llm:anthropic` / `llm:openai`，`CircuitBreakerRegistry.get` 按 key
+  各自惰性创建独立实例——两个下游的健康状态互不污染。
+- ✅ **保持**：惰性 app 导入规避循环——`resolve_breaker` 在**函数体内**
+  `from ...app import ensure_breaker_registry`（而非模块顶层），规避 transports →
+  app → core → llm → transports 循环导入。与工具层 `ensure_fs_bus` 同款手法，已验证
+  无副作用。
+- ❌ **放弃**：同步 `guard()` 包裹——async generator 跨 await 点，sync `with`
+  context manager 根本套不进来（`__enter__`/`__exit__` 不感知 await）。改手动
+  `check_or_raise` + `record_outcome`，逻辑等价但贴合流式语义，且让 pre-check 处于
+  try 块之外（避免 check 的 503 被 APIError except 误捕）——这是比 guard 更精确的
+  安放位置。
+- ❌ **放弃**：部分消耗流的 outcome 记录——流跑到一半消费者取消（`GeneratorExit`），
+  既不进 `except APIError`（类型不对）也不进 `else`（没正常跑完），即**不记 outcome**
+  （中性）。这是正确的：半截流既非成功也非明确的下游故障，记任何样本都会污染窗口。
+  grok 的 guard 在 block 异常时记 FAILURE，但 async 取消不是 block 异常，语义不同。
+
+### 交付
+
+- `minimax_code/agent/transports/_breaker.py`（新模块，~117 行，连接 R17 内核与传输层）：
+  模块 docstring 阐明 fail-open 铁律 + 异步生成器适配理由。三个故障开放适配器——
+  `resolve_breaker(key)`（惰性导入 `app.ensure_breaker_registry`，三段 try 各自
+  `# noqa: BLE001` fail-open 返回 None）+ `check_or_raise(breaker)`（None→无操作；
+  `breaker.check()`；`BreakerOpen`→`raise LLMError(..., status_code=503) from exc`；
+  其他异常吞掉）+ `record_outcome(breaker, *, success, status_code=None)`（None→无操作；
+  SUCCESS 总记；FAILURE 仅在 `is_failure_status(status_code)` 时记，None 状态保守记
+  FAILURE；记录故障吞掉）。`__all__` 登记三符号。
+- `minimax_code/agent/transports/anthropic_transport.py`（编辑，3 处）：① 加 import
+  `from ._breaker import check_or_raise, record_outcome, resolve_breaker`；② `stream_chat`
+  起头（`self._thinking_count = 0` 之后）加 `breaker = resolve_breaker("llm:anthropic");
+  check_or_raise(breaker)` + 注释；③ `except anthropic.APIError` 块加 `record_outcome(
+  breaker, success=False, status_code=getattr(exc,"status_code",None))`，新增 `else:
+  record_outcome(breaker, success=True)`。
+- `minimax_code/agent/transports/openai_transport.py`（编辑，3 处）：与 anthropic 完全
+  对称（`openai.APIError` + `"llm:openai"` key + `"OpenAI API error"` 消息）。
+- `tests/test_transport_breaker.py`（新，16 测）：① 辅助函数单元测（12 个）——`resolve_breaker`
+  （registry None→None / 同 key 同实例 / registry 故障 fail-open）、`check_or_raise`
+  （None 无操作 / open→503 翻译 / 内部故障 fail-open）、`record_outcome`（None 无操作 /
+  SUCCESS 记 / FAILURE+failure_status 记 / 客户端 400 跳过 / None 状态保守记 / 内部故障
+  fail-open）；② OpenAITransport 集成测（4 个，伪造 SDK client）——成功流记 SUCCESS /
+  open breaker 返回 503 / APIError 触发 `record_outcome(False, 500)`（spy 监视）/ registry
+  None 时无保护照常跑（fail-open 铁律端到端证明）。关键伪造：`_FakeAPIError(openai.APIError)`
+  绕过 SDK 初始化签名挂 `status_code`；`_FakeStream`（`__aiter__`/`__anext__`）；
+  `_FakeClient.chat.completions.create` 返回伪造流或抛错。
+
+### 验证
+
+- ✅ `ruff check`（`_breaker.py` + 2 transport + test_transport_breaker.py）：
+  **All checks passed**——`_breaker.py` 导入顺序 `ruff --fix` 自动修（相对导入按点级别
+  降序：`...resilience`（3 级）在 `..types`（2 级）前，同级别按名称排），4 文件一次过检。
+- ✅ `pytest tests/test_transport_breaker.py -q`：**16 passed**——辅助函数 fail-open 全路径、
+  状态码过滤、503 翻译、双传输集成全绿灯。
+- ✅ `pytest -q` 全套：**1092 passed**（1076 + 16 新增），零失败、零回归——证明传输层
+  惰性激活熔断器不影响 agent 启动、不影响既有 1076 测、fail-open 设计在无注册表环境下
+  完全透明（registry None 时业务路径零感知）。
+
+### YAGNI 边界（本轮不做）
+
+- ❌ 不接 `core.py` 重试策略——`agent/core.py` 的 LLM 调用重试目前不区分"熔断 503"与
+  "上游 503"，可能对已熔断的 503 仍重试（白白烧配额、延长用户感知故障）。`RetryPolicy
+  .classify` 已就绪（R17），接入 core 重试循环让其尊重断路器 503（不重试）是独立的
+  core 层改动，留待 R19。
+- ❌ 不接 `MockTransport`——MockTransport 总成功，无失败可记，不需要熔断器。YAGNI。
+- ❌ 不接 metrics/observability——Observer 钩子（`on_state_change`/`on_outcome`）已留，
+  把状态转换喂给 `TelemetryEngine` 是独立的桥接工作（R20+），不混入传输接入。
+- ❌ 不做断路器配置暴露 RPC——运维面板手动调参（强制 open/close、改阈值）当前无需求，
+  YAGNI。
+- ❌ 不持久化断路器状态——状态全在内存（进程重启 reset 为 closed），跨重启保持 open 态
+  会引入时序复杂度，待真实场景驱动。
+- ❌ 不做 Anthropic 传输集成测——OpenAI 集成测已证传输层三步式（pre-check/except/else）
+  正确，Anthropic 是镜像（同款 import + 同款结构），由对称性 + 辅助函数单元测覆盖。
+  重复一份 Anthropic 集成测是冗余，违背 DRY。
+
+### Commit
+
+`feat(platform): R18 wire circuit breaker into LLM transports (fuse grok xai-circuit-breaker)`
