@@ -27,6 +27,7 @@ Package layout
 from __future__ import annotations
 
 from .executor import HookExecutionResult, HookExecutor
+from .manager import HookManager, PreToolOutcome
 from .registry import HookRegistry
 from .types import (
     TOOL_EVENTS,
@@ -45,8 +46,10 @@ __all__ = [
     "HookEvent",
     "HookExecutionResult",
     "HookExecutor",
+    "HookManager",
     "HookMatcher",
     "HookRegistry",
+    "PreToolOutcome",
     "TOOL_EVENTS",
 ]
 

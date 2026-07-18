@@ -41,6 +41,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..hooks import HookManager
 from .llm import LLMError, LLMResponse, MiniMaxClient, StreamChunk
 from .prompts import build_system_prompt
 from .tools import ToolRegistry, ToolResult, get_default_registry
@@ -226,6 +227,7 @@ class AgentCore:
         persist_message: Callable[[str, Message], Awaitable[None]] | None = None,
         permission_store: Any | None = None,
         permission_gater: Any | None = None,
+        hooks: HookManager | None = None,
     ) -> None:
         self.llm = llm or MiniMaxClient()
         self.registry = registry or get_default_registry()
@@ -235,6 +237,9 @@ class AgentCore:
         self._cancel = asyncio.Event()
         self._permission_store = permission_store
         self._permission_gater = permission_gater
+        # Lifecycle hooks (R7). None ⇒ disabled, zero overhead.
+        self.hooks: HookManager | None = hooks
+        self._current_session_id: str = ""
         # Audit DAO — when set, every tool dispatch is recorded for
         # traceability.  Set externally via ``core.audit_dao = dao``.
         self.audit_dao: Any | None = None
@@ -275,6 +280,7 @@ class AgentCore:
         final text and accounting.
         """
         self.reset_cancel()
+        self._current_session_id = session_id
 
         history: list[Message] = []
         if self._history_provider is not None:
@@ -550,6 +556,30 @@ class AgentCore:
                 )
                 return denied
 
+        # 1b. pre_tool_use hooks — policy gate (fail-open). Runs only
+        # after permission allows, so a denied tool never wastes a hook.
+        if self.hooks is not None and name:
+            pre = await self.hooks.fire_pre_tool_use(
+                self._current_session_id, name, args
+            )
+            if pre.blocked:
+                blocked = ToolResult.fail(
+                    pre.block_reason
+                    or f"tool '{name}' blocked by pre_tool_use hook",
+                    output={"hook": "pre_tool_use", "tool": name, "args": args},
+                    permission="hook_block",
+                )
+                await self._maybe_emit_tool_call(call_log, None)
+                await self._maybe_emit_tool_result(call_log, blocked)
+                await self._emit_status(
+                    "hook_blocked",
+                    {"tool": name, "tool_call_id": tool_call_id},
+                )
+                await self._record_audit(
+                    call_log, "blocked", permission="hook_block", duration_ms=0,
+                )
+                return blocked
+
         await self._maybe_emit_tool_call(call_log, None)
         await self._emit_status("tool_running", {"tool": name})
 
@@ -572,6 +602,16 @@ class AgentCore:
         result = _truncate_result(result, self.config.max_tool_output_bytes)
 
         await self._maybe_emit_tool_result(call_log, result)
+
+        # post_tool_use hooks — notification (fail-open). A bad hook
+        # must never corrupt the real tool result already in hand.
+        if self.hooks is not None and name:
+            try:
+                await self.hooks.fire_post_tool_use(
+                    self._current_session_id, name, args, result.to_dict()
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("post_tool_use hooks raised for %s", name, exc_info=True)
 
         # Audit: record the tool dispatch (fire-and-forget).
         status = "success" if result.success else ("timeout" if "timeout" in (result.error or "") else "fail")
