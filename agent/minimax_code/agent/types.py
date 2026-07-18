@@ -50,10 +50,24 @@ class LLMError(RuntimeError):
     timeout error into this exception. Retry classification in
     :mod:`minimax_code.agent.reliability.retry` reads it to distinguish
     retryable from terminal failures.
+
+    ``breaker_open`` (R19) marks an error raised because a circuit breaker
+    is shedding load — the endpoint is not sick in a way another attempt can
+    fix, it has been explicitly told to back off. Such errors are classified
+    TERMINAL regardless of ``status_code`` so :func:`with_retry` fast-fails
+    instead of hammering an open breaker. Fuses grok-build's
+    "``BreakerOpen`` is a terminal disposition".
     """
 
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        breaker_open: bool = False,
+    ) -> None:
         self.status_code = status_code
+        self.breaker_open = breaker_open
         super().__init__(message)
 
 

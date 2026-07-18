@@ -256,6 +256,29 @@ def test_classify_terminal_exceptions():
     assert classify_exception(KeyError("x")) is Disposition.TERMINAL
 
 
+def test_classify_breaker_open_is_terminal_regardless_of_status():
+    """R19: a breaker shedding load is TERMINAL — retrying hammers an open
+    breaker that said "stop". The flag overrides the usual status matrix."""
+
+    # Normally-retryable 503 becomes terminal when the breaker raised it.
+    assert (
+        classify_exception(
+            LLMError("breaker open", status_code=503, breaker_open=True)
+        )
+        is Disposition.TERMINAL
+    )
+    # Same status without the flag stays retryable (real upstream 503).
+    assert (
+        classify_exception(LLMError("upstream 503", status_code=503))
+        is Disposition.RETRYABLE
+    )
+    # breaker_open wins even with no status_code (normally retryable).
+    assert (
+        classify_exception(LLMError("breaker open, no code", breaker_open=True))
+        is Disposition.TERMINAL
+    )
+
+
 # ---------------------------------------------------------------------------
 # with_retry
 # ---------------------------------------------------------------------------
@@ -326,6 +349,29 @@ async def test_terminal_exception_is_not_retried():
         )
     assert calls == 1
     assert sleeps == []
+
+
+async def test_breaker_open_error_is_not_retried():
+    """R19: with_retry fast-fails on a breaker-open error — one call, no
+    sleep — instead of burning the backoff budget hammering an open breaker."""
+
+    calls = 0
+
+    async def factory():
+        nonlocal calls
+        calls += 1
+        raise LLMError("breaker open", status_code=503, breaker_open=True)
+
+    sleeps: list[float] = []
+    with pytest.raises(LLMError) as ei:
+        await with_retry(
+            factory,
+            RetryPolicy(max_attempts=5, base_delay=0.001),
+            sleep=_rec_sleep(sleeps),
+        )
+    assert ei.value.breaker_open is True
+    assert calls == 1  # never retried
+    assert sleeps == []  # never slept
 
 
 async def test_on_retry_sync_callback_fires():

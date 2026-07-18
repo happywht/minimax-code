@@ -71,6 +71,7 @@ def check_or_raise(breaker: CircuitBreaker | None) -> None:
             f"LLM circuit breaker '{breaker.name}' open; "
             f"retry after {exc.retry_after:.1f}s",
             status_code=503,
+            breaker_open=True,
         ) from exc
     except Exception:  # noqa: BLE001 - breaker internal fault; fail-open
         logger.debug("%s: check failed; fail-open", breaker.name, exc_info=True)

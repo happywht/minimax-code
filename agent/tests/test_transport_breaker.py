@@ -84,6 +84,7 @@ def test_check_or_raise_translates_open_to_503():
     with pytest.raises(LLMError) as ei:
         check_or_raise(br)
     assert ei.value.status_code == 503
+    assert ei.value.breaker_open is True  # R19: so with_retry fast-fails
     assert "open" in str(ei.value).lower()
 
 
@@ -246,6 +247,7 @@ async def test_transport_open_breaker_returns_503(monkeypatch):
         async for _ in transport.stream_chat([], model="m"):
             pass
     assert ei.value.status_code == 503
+    assert ei.value.breaker_open is True  # R19: with_retry must not retry this
 
 
 @pytest.mark.asyncio

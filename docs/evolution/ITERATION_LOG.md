@@ -1156,3 +1156,93 @@ fail-open（断路器自身故障绝不阻塞 LLM 调用）。与 R16/R17 同构
 ### Commit
 
 `feat(platform): R18 wire circuit breaker into LLM transports (fuse grok xai-circuit-breaker)`
+
+## R19 — 重试尊重熔断信号：breaker_open 标记（fuse grok xai-circuit-breaker）（阶段 B 第 9 轮）
+
+**本轮目标**：R18 把熔断器接进传输层，OPEN 时 `check_or_raise` 抛 `LLMError(503)`。但
+core 的 `with_retry` 把 503 判 `RETRYABLE` 无脑重试 3 次——**熔断器说"别打我了"，
+with_retry 却当普通 5xx 反复撞门**。这是因果矛盾：熔断的整个意义就是"快速失败、保护下游"，
+重试层却把这个信号抹平成普通瞬时错误。本轮 fuse grok-build 的"``BreakerOpen`` 是 terminal
+disposition"语义——grok 用独立异常类型让 `classify_exception` 一眼识别；但 R18 已决定把
+`BreakerOpen` 翻译成 `LLMError(503)`（保持传输错误契约），类型信息被抹平。本轮的工程抉择：
+**不推翻 R18 的翻译，而在 LLMError 上叠加 `breaker_open` 布尔标记重新打通信号**。熔断器
+拒流时置 True，`classify_exception` 检测到判 TERMINAL，`with_retry` 立即放弃。向后兼容
+（默认 False）、因果正确、最小改动。
+
+### 融合结论（因果支柱 1:1 保留，类型识别改为标记识别）
+
+- ✅ **保持**：grok 的 "BreakerOpen = terminal" 语义——grok 用独立异常类型让 `with_retry`
+  的分类器识别熔断信号判 terminal（不重试）；我们用 `breaker_open` 标记（因 R18 已翻译成
+  LLMError），**因果等价**：都是"熔断器拒流 → 不重试 → 快速失败给上层"。
+- ✅ **保持**：标记穿透翻译层——R18 的 `BreakerOpen → LLMError(503)` 翻译保留了传输错误
+  契约（调用方统一 `except LLMError`），但抹平了类型。`breaker_open` 标记**叠加在翻译之上**
+  重新打通熔断信号，**无需推翻 R18 的决定**。标记是 LLMError 的可选字段，向后兼容（默认
+  False），既有 LLMError 零感知。
+- ✅ **保持**：classify_exception 优先级铁律——`breaker_open` 检查在 `status_code` 检查
+  **之前**（最高优先级）。即使熔断 LLMError 带的 503 平时是 RETRYABLE，`breaker_open=True`
+  直接判 TERMINAL，覆盖 status 矩阵。这条优先级是熔断"快速失败"意图穿透重试层的关键。
+- ✅ **保持**：双熔断点一致标记——transport 层 `check_or_raise`（`llm:openai`/`llm:anthropic`）
+  与 core 层 `_call_llm_with_resilience` 的 `"llm"` 熔断器 check，**两处** `BreakerOpen →
+  LLMError` 都置 `breaker_open=True`。core 层 check 虽在 `with_retry` 外（本就不重试），但
+  标记保持"凡熔断信号皆带标记"的语义一致 + 防御未来把 check 移进重试循环的重构。顺带补齐
+  core 层 LLMError 原本缺失的 `status_code=503`（之前是 None，语义不准）。
+- ❌ **放弃**：统一 `agent/reliability` 与 `minimax_code/resilience`——两套可靠性栈并存是
+  历史结果（R13 建 `agent/reliability` 给 core 用，R17 建 `minimax_code/resilience` 给
+  transport 用）。统一需迁移 core.py + 所有调用方，是跨多轮重构，违背轮次独立。R19 通过
+  **共享的 `LLMError`**（两栈都用的类型）打通信号，不碰包结构。
+- ❌ **放弃**：退回让 BreakerOpen 直接冒泡——R18 的 `LLMError(503)` 翻译契约保留（不退回
+  原始 BreakerOpen 异常冒泡）。`breaker_open` 标记是叠加而非替换，R18 的"调用方统一处理
+  服务不可用"决定不动摇。
+
+### 交付
+
+- `minimax_code/agent/types.py`（编辑）：`LLMError.__init__` 加 `breaker_open: bool = False`
+  参数 + 赋值 + docstring 扩展（说明 R19 用途："endpoint not sick in a way another attempt
+  can fix, it has been told to back off"，fuse grok "BreakerOpen = terminal disposition"）。
+- `minimax_code/agent/reliability/retry.py`（编辑）：① 模块 docstring 分类矩阵顶部加
+  `LLMError with breaker_open=True → TERMINAL` 条目；② `classify_exception` 的 LLMError
+  分支最前面加 `if getattr(exc, "breaker_open", False): return Disposition.TERMINAL`——
+  在 `status_code` 检查之前，最高优先级，带 R19 注释。
+- `minimax_code/agent/transports/_breaker.py`（编辑）：`check_or_raise` 的 `raise LLMError(...)`
+  加 `breaker_open=True`（保留 `status_code=503`）。
+- `minimax_code/agent/core.py`（编辑）：`_call_llm_with_resilience` 的 core 层 `BreakerOpen
+  → LLMError` 加 `status_code=503, breaker_open=True`（补齐原本缺失的 status_code + 一致
+  标记）。
+- `tests/test_reliability.py`（编辑）：① `test_classify_breaker_open_is_terminal_regardless_of_status`
+  ——breaker_open+503→TERMINAL / 无 flag 的 503 仍 RETRYABLE / breaker_open 无 code→TERMINAL
+  （覆盖优先级铁律）；② `test_breaker_open_error_is_not_retried`——`with_retry` 端到端：factory
+  抛 breaker_open LLMError → 只调 1 次（`calls == 1`）、不 sleep（`sleeps == []`），证明 fast-fail。
+- `tests/test_transport_breaker.py`（编辑）：`test_check_or_raise_translates_open_to_503` +
+  `test_transport_open_breaker_returns_503` 各加 `assert ei.value.breaker_open is True`，锁定
+  传输层熔断信号带标记的契约。
+
+### 验证
+
+- ✅ `ruff check`（types.py + retry.py + _breaker.py + core.py + 2 测试文件）：
+  **All checks passed**——6 文件一次过检（LLMError 的 keyword-only `breaker_open` 满足规则、
+  classify_exception 的 `getattr` 防御未设属性场景）。
+- ✅ `pytest tests/test_reliability.py tests/test_transport_breaker.py -q`：**46 passed**
+  （含 2 个 R19 新测）——classify 优先级铁律、with_retry fast-fail 全绿灯。
+- ✅ `pytest -q` 全套：**1094 passed**（1092 + 2 新增），零失败、零回归——证明 breaker_open
+  标记向后兼容（既有 LLMError 默认 False 不影响现有重试行为）、classify 优先级调整不破坏
+  既有 RETRYABLE/TERMINAL 分类。
+
+### YAGNI 边界（本轮不做）
+
+- ❌ 不统一 `agent/reliability` 与 `minimax_code/resilience`——两套栈并存，统一是跨轮重构。
+  R19 通过共享 LLMError 打通信号已足够消除当前痛点，包结构留给未来真实需求驱动。
+- ❌ 不给 `LLMStreamTimeout` 加 breaker_open——超时是"下游慢"（RETRYABLE），不是"熔断器拒流"
+  （TERMINAL），语义不同；超时仍重试。
+- ❌ 不把 breaker_open 暴露给前端——前端 `agent.status` 事件不携带 breaker_open（它是内部重试
+  分类信号）。前端 UI 显示熔断态（"模型服务暂不可用，N 秒后重试"）是独立的可观测性工作
+  （Observer 钩子 → TelemetryEngine → 前端事件桥接），留待 R20+。
+- ❌ 不做熔断器手动重置 RPC——熔断态自动恢复（half_open 探测成功→close），运维面板手动
+  force-open/close/reset 当前无需求，YAGNI。
+- ❌ 不改 `with_retry` 的 `on_retry` 回调签名——breaker_open 错误 fast-fail 根本不触发
+  `on_retry`（没重试），回调签名不变。
+- ❌ 不做 RetryPolicy 持久化——`RetryPolicy.llm()` / `.tool()` 预设是代码常量，运行时调参
+  （改 max_attempts/backoff）当前无配置入口需求。
+
+### Commit
+
+`feat(platform): R19 retry respects breaker-open signal (fuse grok xai-circuit-breaker)`

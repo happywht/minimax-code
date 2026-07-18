@@ -480,7 +480,9 @@ class AgentCore:
         except BreakerOpen as exc:
             raise LLMError(
                 "LLM circuit breaker open — too many recent failures "
-                f"(retry after {exc.retry_after:.0f}s)"
+                f"(retry after {exc.retry_after:.0f}s)",
+                status_code=503,
+                breaker_open=True,
             ) from exc
         try:
             # R14 — one LLM span per turn-loop iteration; nests under the

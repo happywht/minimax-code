@@ -10,6 +10,8 @@ raise.
 
 ``classify_exception`` maps a raised exception to a :class:`Disposition`:
 
+- ``LLMError`` with ``breaker_open=True`` → TERMINAL (R19; the breaker is
+  shedding load — retrying would just hammer an open breaker that said stop)
 - ``LLMStreamTimeout`` / ``asyncio.TimeoutError`` / ``ConnectionError`` → RETRYABLE
 - ``LLMError`` whose ``status_code`` ∈ {429,500,502,503,504} → RETRYABLE
 - ``LLMError`` whose ``status_code`` ∈ {400,401,403,404,422} → TERMINAL
@@ -68,6 +70,11 @@ def classify_exception(exc: BaseException) -> Disposition:
     if isinstance(exc, (TimeoutError, ConnectionError)):
         return Disposition.RETRYABLE
     if isinstance(exc, LLMError):
+        # R19: a breaker shedding load is TERMINAL regardless of status_code
+        # — retrying an open breaker just wastes the backoff budget hammering
+        # a gate that said "stop". Fuses grok's "BreakerOpen = terminal".
+        if getattr(exc, "breaker_open", False):
+            return Disposition.TERMINAL
         code = getattr(exc, "status_code", None)
         if code is None:
             return Disposition.RETRYABLE
