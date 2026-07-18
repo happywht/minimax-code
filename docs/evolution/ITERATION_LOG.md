@@ -46,3 +46,41 @@
 ### Commit
 
 `docs(evolution): R1 establish fusion evolution control center and 50-round roadmap`
+
+---
+
+## R2 — 架构差距分析报告
+
+- **回合序号**：2 / 50+
+- **所属阶段**：A
+- **开始时间**：2026-07-18
+- **状态**：✅ 完成
+
+### 本轮目标
+
+产出阶段 A 实现前的基线测绘：逐项对照 Grok 与 MiniMax 架构，明确每个融合项的现状、差距、融合策略与落地模块。
+
+### 设计决策
+
+- 阅读 Grok 三大支柱 crate 入口（`xai-grok-mcp`/`xai-grok-hooks`/`xai-grok-plugin-marketplace`/`xai-hooks-plugins-types`），提炼设计模式而非移植代码。
+- 关键洞察：**MiniMax 是"封闭单体"，Grok 是"开放平台"**；融合本质 = 给 MiniMax 装上扩展面。
+- 关键约束：Hooks 与现有 `permission.*` 协同（叠加而非替代）；Hooks 与 `workflow.py` 互补（守卫 vs 多步动作）。
+
+### 实现 / 产出
+
+- 新建 `docs/evolution/gap-analysis.md`：
+  - P0 三大支柱（MCP/Hooks/Plugins）逐维度对照 + 融合策略 + IPC 契约。
+  - P1 安全可观测（Sandbox/Checkpoint/Telemetry/Token/Crash）。
+  - P2 协作感知（Codebase Graph/Memory/Subagent/Lifecycle/Sampler/PromptQueue）。
+  - P3 多模态发布。
+  - 6 条融合实施红线（无 Rust、契约三方同步、前向迁移、mock 覆盖、fail-open、回合独立）。
+
+### 验证
+
+- ✅ 覆盖路线图全部 22 项能力，每项有现状 + 策略 + 落点。
+- ✅ 阶段 A 落地顺序经差距分析复核，确认 MCP 优先（是 Plugins/ComputerUse 协议底座）。
+- ⏭️ R3 进入 MCP 类型契约实现。
+
+### Commit
+
+`docs(evolution): R2 add Grok vs MiniMax architecture gap analysis`
