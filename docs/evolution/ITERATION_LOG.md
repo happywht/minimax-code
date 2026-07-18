@@ -2632,3 +2632,87 @@ async、无 grok 测试模块——零主机依赖、零集成成本，为未来
 ### Commit
 
 `feat(platform): R33 voice config + TLS-only ws_url (fuse grok xai-grok-voice)`
+
+## R34 — MCP-over-ACP wire 常量 + OAuth 配置形状（融合 grok `xai-grok-mcp`）
+
+### 本轮目标
+
+**D 阶段第四轮**——开启 MCP 子系列。移植 grok `xai-grok-mcp` 的 `wire.rs`（ACP 线路
+常量）+ `oauth_config.rs`（OAuth 配置类型）。这两个是 grok mcp crate 的**协议骨架
+切片**：纯常量 + 纯数据，零主机 IO，是 MCP 集成层最干净的入门切片。
+
+本轮的**关键认知**：现有 `mcp/` 包（阶段 A 的 R3-R5）已持有**公开 MCP 规范**协议常量
+（`protocol.py`：`2024-11-05` 版本的标准 JSON-RPC 方法如 `tools/list`、`ping`）。
+grok 的 `wire.rs` 是 **xAI 私有的 ACP-over-MCP 扩展**字符串（`x.ai/mcp/*`：
+agent↔SDK 反向通道的 method / `_meta` 键）——正交层，零语义重叠。本轮**补全**现有
+mcp 包缺的两个切片（ACP 扩展 wire + OAuth 配置形状），而非重建。
+
+### 融合结论
+
+✅ **保持：**
+- **wire 常量集中定义（单一真相源）**——4 个 `x.ai/mcp/*` 字符串作为常量，避免 magic
+  string 散落在 handler 各处。agent 与 SDK peer 共享同一组定义，不会漂移。
+- **call vs sdk_call 显式区分**——正向（client→agent：`MCP_CALL = x.ai/mcp/call`）与
+  反向（agent→SDK in-process：`MCP_SDK_CALL = x.ai/mcp/sdk_call`）用不同 method 字符串，
+  metrics/tracing 能区分两套不相交的 schema。
+- **MCP_SDK initialize 能力旗标 + MCP_SERVERS session/new `_meta` 键**——分别在握手
+  advertise 和会话创建时列出 in-process SDK MCP servers。
+- **oauth_config 是纯形状**——`McpOAuthConfig` 只持 `client_id`/`client_secret`/
+  `scopes`/`callback_port`，零网络、零 token 交换；`is_configured()` 单一谓词
+  （`client_id` 在场 = 运营者意图 OAuth）。grok `#[derive(Debug, Clone, Default)]`
+  → 普通 dataclass（可变，全默认）。
+- **`HashMap<String, McpOAuthConfig>` → `McpOAuthConfigMap: TypeAlias = dict[str, McpOAuthConfig]`**。
+
+✅ **产品融合点：**
+- wire 常量复用现有 mcp 包（R3-R5）的协议层；ACP 扩展与标准 MCP 协议**共存**于同一包，
+  `__init__.py` docstring 明确区分（`protocol` = spec namespace，`wire` = ACP extension
+  namespace）。
+- oauth_config 的凭证*值*未来交给项目已有 secrets 层（R15 脱敏 + OS keyring）；本模块
+  只是*形状*——what fields a server's OAuth block carries。
+
+❌ **放弃：**
+- ❌ **不做 OAuth 流程**（浏览器握手、token 交换）——主机层，留后续切片。
+- ❌ **不做 MCP server 连接/credentials/liveness**——主机 IO，留后续切片。
+- ❌ **不接 rmcp（Rust MCP SDK）**——grok 用 rmcp 做标准 MCP，我们用现有 `protocol.py`
+  （R3）已等价；无需 Rust 工具链。
+
+### 交付
+
+| 文件 | 行数 | 内容 |
+|------|------|------|
+| `agent/minimax_code/mcp/wire.py` | +45 | 4 个 `x.ai/mcp/*` ACP 常量 + forward/reverse 语义注释 |
+| `agent/minimax_code/mcp/oauth_config.py` | +51 | `McpOAuthConfig`（4 可选字段 + `is_configured`）+ `McpOAuthConfigMap` 别名 |
+| `agent/minimax_code/mcp/__init__.py` | +25 | 重导出 6 符号（4 wire + 2 oauth），docstring 加 R34 scope 段（wire/oauth_config 与 protocol 正交说明） |
+| `agent/tests/test_mcp_wire.py` | +54 | 8 测试（重导出 + 4 精确值 + namespace 前缀 + call/sdk_call 区分 + str 类型） |
+| `agent/tests/test_mcp_oauth_config.py` | +65 | 7 测试（重导出 + 默认未配置 + client_id 单信号 + 全配置 + map 别名 + 可变性） |
+
+契约要点：
+1. `MCP_CALL == "x.ai/mcp/call"`（client→agent 正向）
+2. `MCP_SDK_CALL == "x.ai/mcp/sdk_call"`（agent→SDK 反向，与 `MCP_CALL` 不相交）
+3. `MCP_SERVERS == "x.ai/mcp/servers"`（`session/new` `_meta` 键）
+4. `MCP_SDK == "x.ai/mcp/sdk"`（`initialize` 能力旗标）
+5. `McpOAuthConfig().is_configured() == False`（默认未配置）
+6. `McpOAuthConfig(client_id="x").is_configured() == True`（`client_id` 是单一谓词，secret 单独不算）
+
+### 验证
+
+- `ruff check minimax_code/mcp/ tests/test_mcp_wire.py tests/test_mcp_oauth_config.py` → **All checks passed!**（I001 由 `--fix` 自动修：wire 测试两个 `minimax_code.mcp` 导入分组）
+- `pytest tests/test_mcp_wire.py tests/test_mcp_oauth_config.py -q` → **15 passed**
+- 完整套件 `pytest` → **1437 passed in 89s**（R33 1422 → R34 1437，+15 精确，零回归）
+
+### YAGNI 边界
+
+- ❌ **不做 OAuth 流程模块**——oauth_config 是形状，token 交换是主机层（浏览器回调），
+  留后续切片。
+- ❌ **不做 `MCP_SERVERS` 的 `_meta` 序列化**——本轮只定义键名常量，序列化/解析由未来
+  session handler 接线。
+- ❌ **不做 wire 常量的 Enum**——grok 是 `pub const &str`，Python 模块级 `str` 常量更
+  idiomatic（可 f-string 拼接、零开销、与 grok 同形）。
+- ❌ **不做 oauth_config 的 pydantic 校验**——纯 dataclass 忠实 grok struct；接线轮次
+  再考虑。
+- ❌ **不做 `MCP_SDK` capability 协商逻辑**——本轮只定义旗标字符串，协商由未来
+  initialize handler。
+
+### Commit
+
+`feat(platform): R34 MCP wire + oauth config (fuse grok xai-grok-mcp)`
