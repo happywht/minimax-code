@@ -2916,3 +2916,94 @@ grok 的 `McpClientEvent` 是 **带 struct-variant payload 的枚举**，derive 
 ### Commit
 
 `feat(platform): R36 MCP client event layer (fuse grok xai-grok-mcp)`
+
+---
+
+## R37 — markdown 渲染保真度分析层（融合 `xai-grok-markdown-core`）
+
+锚定提交：`a3b7601`（R36）
+
+### 本轮目标
+
+从 grok 引入一个 D 阶段交互主题的**纯逻辑切片**（Computer Use / markdown
+渲染 / pager 分页 / mermaid 可视化之一），移植其 host-agnostic 核心，**不引入
+主机运行时**。本轮选择 `xai-grok-markdown-core`——grok 用它审计模型 markdown
+输出的渲染保真度。目标是把"渲染"故事补成"渲染 + 审计"：前端在 React 里渲染
+markdown，后端能审计它是否静默降级。
+
+### 融合结论
+
+- ✅ **`MarkdownStats`**（21 个元素计数器：h1–h6、tables、fenced/indented/inline
+  code、strong/emphasis/strikethrough、links/images、blockquotes、thematic_breaks、
+  inline/display_math、task_list_items/list_items）+ 派生 `headings()` 总和 +
+  `as_pairs()` 22 条固定顺序投影（序列化的单一事实来源）。
+- ✅ **`StructuralIssue`** 唯一枚举（2 变体：`MALFORMED_TABLE`、
+  `UNTERMINATED_CODE_BLOCK`）+ `as_str()`（snake_case 稳定日志键）。
+- ✅ **`MarkdownAnalysis`** 容器（`(stats, issues)`，`Default` 给空 stats + 无 issues）。
+- ✅ **4 个纯源码谓词**（`detect.py`，零 markdown 库依赖）：
+  `strip_block_prefix`、`is_table_delimiter_line`、`line_looks_like_header`、
+  `fenced_block_is_unterminated`。
+- ❌ **放弃 `analyze()` 主循环**——遍历 `pulldown-cmark` 事件流填充计数器，是
+  Rust 解析器绑定，留到选 Python markdown 解析器的整合轮。
+- ❌ **放弃 `detect_malformed_tables`**——需要解析器产出的 `parsed_spans`（真实
+  table/code block 的字节范围）来排除"合法 table 内的 `|---|`"，是解析器接线。
+- ❌ **放弃 `DoubleTildeOnlyStrike` 过滤器 + `parser_options`/`offset_events`**——
+  依赖 pulldown 的 `Event` 类型和 GFM option 结构，纯 Rust 绑定。
+
+### 映射决策（payload 决定映射树，第三次重申）
+
+`xai-grok-markdown-core` 三种类型走三条已确立的政策路径：
+
+- `MarkdownStats` / `MarkdownAnalysis`：`#[derive(Debug, Default, Clone, PartialEq,
+  Eq)]` + `#[non_exhaustive]` → **普通（非 frozen）dataclass**（R33 策略：mutable
+  聚合 + `Default` 语义 + `eq=True` 值相等）。`#[non_exhaustive]` 无 Python 等价物，
+  docstring 注明字段集开放，`as_pairs` 是手动同步的单一事实来源。`u32` → `int`，
+  `Vec<StructuralIssue>` → `list[StructuralIssue]`（`field(default_factory=list)`）。
+- `StructuralIssue`：**单元枚举** `#[derive(Debug, Clone, Copy, PartialEq, Eq)]`
+  （无 `Hash`）→ **`@unique enum.Enum`**（R35 策略：单例值语义）。Enum 天生可哈希
+  是免费副能力，不违背 grok 无 `Hash` derive 的语义（grok 不需要哈希，Python 给了
+  也不冲突）。
+- 4 个谓词：`&str`/`&'static str` → `str`；`char` 集合判断 → Python `in`/`all`；
+  `trim_start_matches(['>', ' ', '\t'])` → `lstrip("> \t")`（等价：剥除任意前导
+  这些字符的 run）。
+
+三条路径再次印证：**payload 决定映射**——mutable 聚合 → 普通 dataclass；单例值 →
+Enum。这是有意识的策略分歧，不是不一致。
+
+### 产品融合
+
+MiniMax Code 的前端在 React 中渲染 markdown，但**后端没有渲染保真度故事**。当
+模型吐出一个分隔符列数与表头不匹配的表格，或一个缺闭合围栏的代码块（吞掉消息
+剩余部分），用户看到的是静默降级输出（"画了表格但没显示" / "代码块吞了后半段"）。
+本轮移植的类型 + `detect` 谓词是这个审计层的核心：未来接线轮在模型流完成后调用，
+把这类失败提升为**结构化 issue**（`MALFORMED_TABLE` / `UNTERMINATED_CODE_BLOCK`），
+而不是让它们隐形。谓词零依赖、可跑在任何后端甚至前端，是 host-agnostic 的纯逻辑。
+
+### 验证
+
+- `ruff check minimax_code/markdown/ tests/test_markdown_stats.py
+  tests/test_markdown_detect.py` → **All checks passed!**（1 个 I001 自动修复 +
+  1 个函数名连字符语法错手动修复后全绿）
+- `pytest tests/test_markdown_stats.py tests/test_markdown_detect.py -q` →
+  **50 passed in 0.11s**（stats 13 函数 + detect 4 个参数化展开 + fenced 边界
+  用例全绿）
+- 完整套件 `pytest` → **1522 passed in 89s**（R36 1472 → R37 1522，**+50 精确**，
+  零回归）
+
+### YAGNI 边界
+
+- ❌ **不接 Python markdown 解析器**——`analyze()` 循环 + `detect_malformed_tables`
+  需要解析器的 `parsed_spans`（真实结构字节范围），是整合轮的接线决策（选
+  `markdown-it-py` 还是 `mistune`），本轮只移植不依赖解析器的核心。
+- ❌ **不做 `DoubleTildeOnlyStrike` 过滤器**——它操作 pulldown 的 `Event` 流（把
+  单 `~` 删除线重映射为字面文本），需要解析器事件类型，留整合轮。
+- ❌ **不做 issue → 前端告警的 IPC 通道**——`agent.message_chunk` 事件尚未携带
+  `issues` 字段，是 IPC 契约变更轮。
+- ❌ **不为 `MarkdownStats` 加 frozen**——grok `Default + Clone` 语义需要可变构造
+  （解析器逐字段累加），frozen 会强迫每步重建实例，违背使用模式。
+- ❌ **不做 `headings` 字段化**——它是 `h1..=h6` 的派生值，grok 用方法（非字段），
+  本轮 `headings()` 方法忠实镜像；`as_pairs` 首项用 `self.headings()` 派生。
+
+### Commit
+
+`feat(platform): R37 markdown analysis types + predicates (fuse grok xai-grok-markdown-core)`
