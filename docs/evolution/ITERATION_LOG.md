@@ -741,3 +741,78 @@ asyncio + JSON-RPC 架构上，让 LLM 调用与工具调度都套上应用级�
 ### Commit
 
 `feat(platform): R14 structured tracing — span/trace causal model`
+
+## R15 — 出站数据脱敏强化：凭据 shape 扩展 + URL userinfo 修复 + 日志 filter（阶段 B 第 5 轮）
+
+**本轮目标**：R11 已建了 telemetry 管线的 `redact_value` 脱敏闸门，但对照 grok-build
+的 `xai-grok-secrets`（纯出站数据擦除器）发现两道真实漏洞 + 一处覆盖缺口——
+(1) `url_origin` 把 `https://user:pass@host` 的 netloc 原样保留，**userinfo 泄露**；
+(2) 只认 `sk-/Bearer/api_key=` 三种 shape，**漏掉 AWS/GitHub/Slack/Google/JWT** 五类
+主流凭据；(3) 脱敏只挂在 telemetry emit 路径上，**普通 `logger.info()` 日志照样裸写到
+stderr**。本轮把脱敏从"遥测专属"升级为"遥测 + 日志"统一安全闸门。
+
+### 融合结论（grok 纯正则/JSON-walk 哲学 1:1 保留，Rust 生态依赖 YAGNI 砍净）
+
+- ✅ **保持**：`redact_value` 递归 walk（dict/list/tuple/str 四分支）——grok 的
+  serde_json walk 在 Python 用 isinstance 分发白拿；三 scrubber 顺序 cheapest-first
+  （secrets → paths → url）；保守 shape 原则（只匹配"几乎确定是凭据"的形状，绝不
+  误伤 bare word，如 "the api key is missing" 不动）。
+- ✅ **保持**：fail-open 铁律——脱敏失败绝不阻塞调用方（engine.emit 已 try/except，
+  SanitizerFilter 同样 try/except + `return True` 永远放行）。
+- ✅ **接线修复（漏洞 #1）**：`url_origin` 用 `rsplit("@", 1)[1]` 剥离 userinfo——
+  在最后一个 `@` 切，正确处理密码本身含 `@` 的情形（host 永不含 `@`，最后一 @ 必
+  是 userinfo/host 分隔）。
+- ✅ **扩展（漏洞 #2）**：`_SECRET_PATTERNS` 加 5 类 provider shape——AWS `AKIA`+16、
+  GitHub `gh[pousr]_`+36 与 `github_pat_`+40、Slack `xox[baprs]-`+10、Google `AIza`+35、
+  JWT `eyJ.….…`（eyJ 锚定 header，避免误伤普通 base64）。
+- ✅ **新增（缺口 #3）**：`SanitizerFilter`（`logging.Filter` 子类）——在 record
+  format 前对 `msg`（str）+ `args`（dict/tuple）跑 `redact_value`，挂 root logger
+  一次即被所有子 logger 继承；`configure_logging` 用 `isinstance` 守卫保证幂等
+  （重复调用不叠加 filter）。
+- ❌ **放弃**：grok 的 `url` crate（URL 凭据脱敏）——Python 标准库 `urllib.parse.
+  urlsplit` 已够，不拉 `furl`；grok 的 `regex` crate——Python `re` 已够；grok 的
+  Sentry/Mixpanel/产品事件清洗专路——MiniMax 无这些远端 sink，统一走 telemetry +
+  logging 两路即可。
+
+### 交付
+
+- `minimax_code/telemetry/redact.py`：
+  1. `_SECRET_PATTERNS` 加 5 条 provider 正则（AWS/GitHub×2/Slack/Google/JWT）；
+  2. `url_origin` 加 `@` userinfo 剥离（`rsplit("@", 1)`）；
+  3. 新 `SanitizerFilter`（`logging.Filter`，filter() 改写 record.msg/args + 永远
+     `return True` + try/except fail-open）；
+  4. `import logging`；`__all__` 加 `SanitizerFilter` 并按字母序排。
+- `minimax_code/telemetry/__init__.py`：re-export `SanitizerFilter`（import 行 +
+  `__all__`），保持包级 import 一致性。
+- `minimax_code/logging_setup.py`：`configure_logging` 在 `root.setLevel` 后、
+  `isinstance(f, SanitizerFilter)` 守卫下 `root.addFilter(SanitizerFilter())`。
+- `tests/test_telemetry.py`：+3 测——`test_url_origin_strips_userinfo`（普通
+  userinfo + 密码含 @ 双例）、`test_redact_secrets_scrubs_provider_shapes`（AWS/
+  GitHub/Slack/Google/JWT 五类各一断言）、`test_sanitizer_filter_scrubs_log_records`
+  （msg 脱敏 + args tuple 脱敏 + URL userinfo 随 args 一并清）。
+
+### 验证
+
+- ✅ `ruff check`（redact.py + __init__.py + logging_setup.py + test_telemetry.py）：
+  **All checks passed**。
+- ✅ `pytest tests/test_telemetry.py tests/test_agent_core.py tests/test_reliability.py`：
+  **60 passed in 9.28s**（R14 基线 57 + R15 新增 3 测，零回归——证明 5 类新正则
+  不误伤现有 shape 测试、url_origin 改动不破坏 path/query 剥离、SanitizerFilter
+  接入 logging_setup 不影响 agent 启动路径）。
+
+### YAGNI 边界（本轮不做）
+
+- ❌ 不拉 `furl`/`url` 依赖——stdlib `urllib.parse` 已够。
+- ❌ 不做独立 `redact_text` 函数——`redact_secrets` 已覆盖纯文本场景。
+- ❌ 不做 secrets store——`secrets.py`（keyring + env）是密钥**存储**，与**出站
+  数据脱敏**是两件事，本轮只管后者。
+- ❌ 不做规则配置文件/TOML——规则集硬编码，对齐 R11 简单风格；配置化留待真实多租户
+  需求出现。
+- ❌ 不做 per-field 白名单 / 保留字段——保守 shape 匹配已足够，精细控制 ROI 低。
+- ❌ 不给每个 logger 单独挂 filter——root logger 一处即全局生效。
+- ❌ 不做 redact 的性能 benchmark——`redact_value` 是叶子递归 + 编译期 regex，
+  telemetry emit 已是 fire-and-forget 非热路径。
+
+### Commit
+
+`feat(platform): R15 out-bound redaction hardening — secrets/log/url`

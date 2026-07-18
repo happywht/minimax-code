@@ -24,6 +24,7 @@ tool arguments are scrubbed uniformly.
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,21 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"(?i)(api[_-]?key|secret|password|passwd|token|authorization)"
         r"[\"']*\s*[:=]\s*['\"]?[A-Za-z0-9_\-\.=]{8,}"
     ),
+    # R15 — provider-specific credential shapes (grok xai-grok-secrets).
+    # AWS access key id: ``AKIA`` + 16 upper alphanumeric. (The 40-char
+    # secret access key is too generic a shape to match safely.)
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    # GitHub tokens: classic/refresh/app/user/server (``gh[pousr]_``) and
+    # fine-grained (``github_pat_``).
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{40,}\b"),
+    # Slack token family: xoxb-/xoxp-/xoxa-/xoxr-/xoxs-...
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{10,}\b"),
+    # Google API key: ``AIza`` + 35 base64-ish chars.
+    re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b"),
+    # JSON Web Token: three base64url segments joined by dots. ``eyJ``
+    # (base64 for ``{"``) anchors the header so plain base64 is not hit.
+    re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b"),
 )
 
 _HOME_CACHE: str | None = None
@@ -93,14 +109,25 @@ def redact_paths(text: str, home: str | None = None) -> str:
 
 
 def url_origin(url: str) -> str:
-    """Reduce a URL to ``scheme://host[:port]``; passthrough if unparseable."""
+    """Reduce a URL to ``scheme://host[:port]``, dropping any embedded
+    userinfo; passthrough if unparseable.
+
+    R15 — closes the credential-leak hole where a URL like
+    ``https://alice:s3cr3t@collector/v1`` kept ``alice:s3cr3t@`` in its
+    ``netloc``. We split on the *last* ``@`` so a password that itself
+    contains ``@`` is handled correctly (everything before the final
+    ``@`` is userinfo; the host never contains ``@``).
+    """
     try:
         parts = urlsplit(url)
     except ValueError:
         return url
     if not parts.scheme or not parts.netloc:
         return url
-    return f"{parts.scheme}://{parts.netloc}"
+    netloc = parts.netloc
+    if "@" in netloc:
+        netloc = netloc.rsplit("@", 1)[1]
+    return f"{parts.scheme}://{netloc}"
 
 
 def redact_value(value: Any) -> Any:
@@ -126,4 +153,40 @@ def redact_value(value: Any) -> Any:
     return value
 
 
-__all__ = ["redact_secrets", "redact_paths", "url_origin", "redact_value"]
+class SanitizerFilter(logging.Filter):
+    """Logging filter that scrubs secrets/paths/URLs from every record.
+
+    R15 — closes the gap between the telemetry pipeline (which has always
+    scrubbed payloads via :func:`redact_value`) and plain ``logger.info(...)``
+    calls, which wrote raw text straight to stderr. Attached once to the
+    root logger by :func:`minimax_code.logging_setup.configure_logging`;
+    thereafter every record's ``msg`` and ``args`` flow through
+    :func:`redact_value` before any handler formats them.
+
+    Fail-open by design: a scrubbing error never suppresses the log — the
+    record is emitted unchanged if redaction raises. Logging is the last
+    resort for diagnosing a broken system; it must never itself break.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.msg
+            if isinstance(msg, str):
+                record.msg = redact_value(msg)
+            args = record.args
+            if isinstance(args, dict):
+                record.args = {k: redact_value(v) for k, v in args.items()}
+            elif isinstance(args, tuple):
+                record.args = tuple(redact_value(a) for a in args)
+        except Exception:  # noqa: BLE001 — logging must never break
+            pass
+        return True  # always emit
+
+
+__all__ = [
+    "SanitizerFilter",
+    "redact_paths",
+    "redact_secrets",
+    "redact_value",
+    "url_origin",
+]

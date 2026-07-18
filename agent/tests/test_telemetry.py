@@ -16,6 +16,7 @@ from minimax_code.telemetry import (
     EventType,
     MetricsRegistry,
     RingBuffer,
+    SanitizerFilter,
     TelemetryEngine,
     TelemetryEvent,
     redact_paths,
@@ -58,6 +59,62 @@ def test_url_origin_drops_path_and_query() -> None:
         "https://collector.example:4318"
     )
     assert url_origin("not a url") == "not a url"
+
+
+def test_url_origin_strips_userinfo() -> None:
+    # R15 — credentials embedded in a URL must not survive redaction.
+    assert url_origin("https://alice:s3cr3t@collector.example/v1") == (
+        "https://collector.example"
+    )
+    # A password containing "@" splits on the LAST "@" so the host wins.
+    assert url_origin("https://u:p@ss@host.example/path") == "https://host.example"
+
+
+def test_redact_secrets_scrubs_provider_shapes() -> None:
+    # R15 — grok xai-grok-secrets credential shapes (AWS/GitHub/Slack/Google/JWT).
+    assert "[REDACTED]" in redact_secrets("aws key AKIAIOSFODNN7EXAMPLE leaked")
+    assert "[REDACTED]" in redact_secrets("token ghp_" + "a" * 36 + " in logs")
+    assert "[REDACTED]" in redact_secrets("slack xoxb-" + "1234567890ab" + " here")
+    assert "[REDACTED]" in redact_secrets("google AIza" + "a" * 35 + " key")
+    assert "[REDACTED]" in redact_secrets(
+        "jwt eyJhbGciOiJIUzI1NiJ9."
+        "eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+        "SflKxwRJSMeKKF2QT4fwpb"
+    )
+
+
+def test_sanitizer_filter_scrubs_log_records() -> None:
+    # R15 — the SanitizerFilter redacts record.msg and record.args so plain
+    # logger.info() calls no longer leak secrets to stderr.
+    import logging
+
+    record = logging.LogRecord(
+        name="test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="calling with key sk-abcd1234efgh5678 now",
+        args=None,
+        exc_info=None,
+    )
+    assert SanitizerFilter().filter(record) is True  # always emits
+    assert "sk-abcd1234efgh5678" not in record.msg
+    assert "[REDACTED]" in record.msg
+
+    # Args (tuple / dict) are scrubbed too, and URL userinfo goes with them.
+    record2 = logging.LogRecord(
+        name="test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="url=%s user=%s",
+        args=("https://alice:pw@host.example/p", "token ghp_" + "a" * 36),
+        exc_info=None,
+    )
+    SanitizerFilter().filter(record2)
+    rendered = str(record2.args)
+    assert "alice:pw" not in rendered
+    assert "ghp_" not in rendered
 
 
 def test_redact_value_walks_nested_structures(monkeypatch: pytest.MonkeyPatch) -> None:
