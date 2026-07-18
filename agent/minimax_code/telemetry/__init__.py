@@ -25,6 +25,7 @@ from .events import EventType, Severity, TelemetryEvent
 from .metrics import MetricsRegistry, SessionMetrics, global_snapshot
 from .redact import redact_paths, redact_secrets, redact_value, url_origin
 from .ringbuffer import RingBuffer
+from .tracing import Span, SpanStatus, Tracer, build_tree, get_tracer, set_tracer
 
 __all__ = [
     "EventType",
@@ -32,11 +33,17 @@ __all__ = [
     "RingBuffer",
     "SessionMetrics",
     "Severity",
+    "Span",
+    "SpanStatus",
     "TelemetryEngine",
     "TelemetryEvent",
+    "Tracer",
+    "build_tree",
+    "get_tracer",
     "global_snapshot",
     "redact_paths",
     "redact_secrets",
     "redact_value",
+    "set_tracer",
     "url_origin",
 ]

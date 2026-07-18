@@ -41,6 +41,10 @@ class EventType(StrEnum):
     PERMISSION = "permission"
     PLUGIN_LOAD = "plugin_load"
     ERROR = "error"
+    # R14 — one SPAN event is emitted per closed span (see telemetry.tracing).
+    # The payload carries the trace/span/parent id triple + duration, so the
+    # flat event stream can be reconstructed into a causal span tree.
+    SPAN = "span"
 
 
 class Severity(StrEnum):

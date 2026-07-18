@@ -652,3 +652,92 @@ asyncio + JSON-RPC 架构上，让 LLM 调用与工具调度都套上应用级�
 ### Commit
 
 `feat(platform): R13 reliability — circuit breaker + retry/backoff`
+
+## R14 — 结构化追踪层：span/trace 因果模型（阶段 B 第 4 轮）
+
+**本轮目标**：补齐 R11 遥测引擎的最后一块拼图——扁平事件流能回答
+"一个 turn 发生了什么"，但回答不了"这个 turn 的 3.2s 花在哪：LLM 2.1s
+还是 tool.search 0.8s"。融合 grok-build 的 `xai-tracing`（span/trace 因果
+语义 + 父子链），落到 MiniMax 的单进程 asyncio 上，让每个 turn 的耗时
+分解可观测。每关闭一个 span 就向 R11 engine emit 一条 `SPAN` 事件，
+`telemetry.trace` 重建 trace 树。
+
+### 融合结论（语义层 1:1 保留，分布式基础设施 YAGNI 砍净）
+
+- ✅ **保持**：`Span`（name/trace_id/span_id/parent_id/start_ms/end_ms/
+  status/error/attributes）——字段对字段对齐 OTel 语义；async context
+  manager（`__aenter__` 计时 + 入栈，`__aexit__` 计时 + 捕获异常 status +
+  出栈 + fire on_close）；`SpanStatus {OK | ERROR}`（OTel UNSET→OK/ERROR
+  的简化）；`Tracer.start_span` 自动从 contextvar 取 parent 串 trace_id。
+- ✅ **保持**：父子链走 `contextvars.ContextVar`——asyncio 每 task 独立
+  上下文，并发 turn / sub-agent 的 span 树天然隔离，永不串线（这是 grok
+  用 fastrace + task-local 达到的效果，Python 用 contextvars 白拿）。
+- ✅ **保持**：`build_tree`（flat span records → parent→children forest，
+  每层按 start_ms 排序，orphan parent 提升为 root，浅拷贝不污染输入）。
+- ❌ **放弃**：OTLP/gRPC exporter（`opentelemetry-otlp` + `tonic`）——
+  MiniMax 单进程，无 collector 可投递；`fastrace` 宏/层——Python 用
+  `async with` 更直接；`reqwest-middleware` 跨服务 propagation——无下游
+  服务；sampling 策略——内存 ring buffer 已自带容量上限（500）；tower
+  layer / interceptor 链——Python 中间件用装饰器/async with 即可。
+- ⚠️ **接线修复**：`_default_emit` 三层 lazy + try/except（import engine
+  失败 / engine=None / emit 抛异常全 fail-open）——tracing 必须在 engine
+  尚未 boot、被禁用、事件模型 import 失败三种早启动场景下都不打断 agent。
+
+### 交付
+
+- `minimax_code/telemetry/tracing.py`（新）：`SpanStatus`(StrEnum) +
+  `_new_id` + `_current_span`(ContextVar) + `Span`(`__slots__`，duration_ms
+  property，`set()`/`to_record()`，async CM) + `Tracer`(start_span 串父，
+  `current()` 静态) + `_default_emit`(lazy 接 R11 engine) + `get_tracer`/
+  `set_tracer`(单例 + 测试注入) + `build_tree`(flat→forest)。
+- `minimax_code/telemetry/events.py`：`EventType` 加 `SPAN = "span"`。
+- `minimax_code/telemetry/engine.py`：加 `trace_spans(trace_id)`——扫
+  ring buffer 过滤 `type==SPAN` 且 `payload.trace_id` 匹配，返回 payload
+  dict 列表（含 span_id/parent_id/duration_ms/status/attributes）。
+- `minimax_code/telemetry/__init__.py`：导出 tracing 全部公共符号。
+- `minimax_code/ipc/handlers_telemetry.py`：加 `telemetry.trace` handler
+  （engine.trace_spans → build_tree → reply `{trace_id, spans, tree,
+  span_count, enabled}`；空/非 str trace_id 报 INTERNAL_ERROR）。
+- `minimax_code/agent/core.py`（三处 span 接入）：
+  1. `__init__` 建 `self._tracer = get_tracer()`；
+  2. **root span**：`send_message` 主循环 `for...else` 整体包进
+     `agent.turn` span（session_id/user_message/max_iterations 属性），
+     所有 LLM/tool span 自动 nest；
+  3. **llm span**：`_call_llm_with_resilience` 的 with_retry 包进
+     `llm.stream` span（model 属性）；
+  4. **tool span**：`_dispatch_tool` 的 registry.dispatch 包进
+     `tool.<name>` span（tool/tool_call_id 属性），只计时真实执行不含
+     audit 写入。
+- `tests/test_tracing.py`（新，15 测）：span 计时/OK/ERROR+error 字段/
+  属性 round-trip/`set()` advisory；嵌套 span 共享 trace_id + parent 链 +
+  `current()` 栈；并发 task 树隔离；`build_tree` forest/orphan/排序/不
+  变异输入；`_default_emit` 发 SPAN 事件 + parent 链 + engine=None/
+  engine 抛异常双 fail-open；get_tracer 单例 + set_tracer 注入。
+- 前端契约同步：`web/src/types/ipc.ts` 加 `TelemetrySpanRecord`/
+  `TelemetrySpanNode`/`TelemetryTraceResult`；`web/src/ipc/client.ts`
+  四处接入（import + TypedIPC + impl + mockHandle）；`docs/ipc-contract.md`
+  加 `telemetry.trace` 方法行。
+
+### 验证
+
+- ✅ `ruff check`（tracing.py + core.py + test_tracing.py + engine.py +
+  events.py + __init__.py + handlers_telemetry.py）：**All checks passed**。
+- ✅ `pytest tests/test_tracing.py`：**15 passed in 0.93s**。
+- ✅ 回归 `pytest tests/test_agent_core.py tests/test_reliability.py
+  tests/test_telemetry.py`：**57 passed in 9.74s**（零回归——证明三处
+  span 接入不破坏对话循环/可靠性网关/R11 遥测）。
+
+### YAGNI 边界（本轮不做）
+
+- ❌ 不做 OTLP/gRPC/collector 投递——单进程内存 bus 已够。
+- ❌ 不做 sampling 策略——ring buffer 容量上限即天然采样。
+- ❌ 不做跨进程 trace propagation（W3C traceparent / B3）——无下游服务。
+- ❌ 不做前端 waterfall UI 组件——后端 `telemetry.trace` 契约已就绪，
+  可视化留待阶段 D（多模态与交互面板）。
+- ❌ 不做 span 采样概率配置 / OpenTelemetry Collector 兼容——YAGNI。
+- ❌ 不给 skill / hook / permission 决策单独开 span——本轮只覆盖三大
+  热路径（turn/llm/tool），其余事件仍走 R11 扁平事件流。
+
+### Commit
+
+`feat(platform): R14 structured tracing — span/trace causal model`

@@ -570,6 +570,7 @@ disabled.
 | `telemetry.recent` | `{ limit?: int, event_type?: str, session_id?: str }` | `{ events: TelemetryEventRecord[], total, enabled, buffered }` | `limit` default 100, capped at 1000. `event_type` accepts the enum value or member (e.g. `"tool_call"`). Returns `enabled:false` when the bus is off — never raises. |
 | `telemetry.metrics` | `{ session_id?: str }` | `{ enabled, buffered?, global?, per_session?, latency? }` | With `session_id`: per-session counters + latency p50/p95. Without: global rollup only. All metric fields absent when disabled. |
 | `telemetry.clear` | `{}` | `{ ok, cleared, enabled }` | Drains the ring buffer and resets metrics counters in place. |
+| `telemetry.trace` | `{ trace_id: str }` | `{ trace_id, spans: SpanRecord[], tree: SpanNode[], span_count, enabled }` | Reconstructs one trace's span tree (R14). `spans` is the flat payload list (trace_id/span_id/parent_id/duration_ms/status/error/attributes); `tree` is the parent→children forest from `build_tree`, each level sorted by `start_ms`. Returns `enabled:false` (and empty lists) when the bus is off — never raises. |
 
 Env switch: `MINIMAX_CODE_TELEMETRY=0|false|off|no` disables the engine
 without a restart; the handlers then report `enabled:false` rather than

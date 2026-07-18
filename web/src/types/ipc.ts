@@ -266,6 +266,34 @@ export interface TelemetryRecentResult {
   buffered: number;
 }
 
+/** One span in a trace (R14) — the flat shape buffered as a SPAN event. */
+export interface TelemetrySpanRecord {
+  trace_id: string;
+  span_id: string;
+  parent_id: string | null;
+  name: string;
+  duration_ms: number | null;
+  status: "ok" | "error";
+  error: string | null;
+  start_ms: number;
+  end_ms: number | null;
+  attributes: Record<string, unknown>;
+}
+
+/** A span node in the reconstructed trace tree, with its children (R14). */
+export interface TelemetrySpanNode extends TelemetrySpanRecord {
+  children: TelemetrySpanNode[];
+}
+
+/** Result shape for `telemetry.trace` (R14). */
+export interface TelemetryTraceResult {
+  trace_id: string | null;
+  spans: TelemetrySpanRecord[];
+  tree: TelemetrySpanNode[];
+  span_count: number;
+  enabled: boolean;
+}
+
 /** Latency stats folded into `telemetry.metrics`. */
 export interface TelemetryLatencyStats {
   count: number;

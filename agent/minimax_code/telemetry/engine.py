@@ -106,6 +106,28 @@ class TelemetryEngine:
         snapshot["buffered"] = len(self._buffer)
         return snapshot
 
+    def trace_spans(self, trace_id: str) -> list[dict[str, Any]]:
+        """Return the span payloads for one trace, oldest-first (R14).
+
+        Scans the ring buffer for ``SPAN`` events whose ``payload.trace_id``
+        matches. Returns ``[]`` when telemetry is empty or the trace is
+        unknown / aged out of the buffer. Each entry is the span's payload
+        dict (trace_id/span_id/parent_id/duration_ms/status/attributes),
+        ready to feed into :func:`minimax_code.telemetry.tracing.build_tree`.
+        """
+        try:
+            items = self._buffer.recent(limit=10_000)
+        except Exception:  # noqa: BLE001 — read path is best-effort
+            return []
+        spans: list[dict[str, Any]] = []
+        for item in items:
+            if item.get("type") != EventType.SPAN.value:
+                continue
+            payload = item.get("payload") or {}
+            if payload.get("trace_id") == trace_id:
+                spans.append(dict(payload))
+        return spans
+
     # ------------------------------------------------------------------
     # Test / admin helpers
     # ------------------------------------------------------------------

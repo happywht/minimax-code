@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..hooks import HookManager
+from ..telemetry.tracing import Tracer, get_tracer
 from .llm import LLMError, LLMResponse, MiniMaxClient, StreamChunk
 from .prompts import build_system_prompt
 from .reliability import (
@@ -274,6 +275,11 @@ class AgentCore:
         # breaker knobs are read from self.config at call time so they
         # stay hot-reloadable across a session.
         self._breakers = CircuitBreakerRegistry()
+        # R14 — process tracer. Opens one root span per turn (``agent.turn``)
+        # so every LLM/tool span inside the loop nests under a shared
+        # trace_id. Lazily wired to the telemetry engine via ``get_tracer``;
+        # emits are fail-open, so this never blocks or raises.
+        self._tracer: Tracer = get_tracer()
 
     # -- cancellation ------------------------------------------------------
 
@@ -347,83 +353,94 @@ class AgentCore:
         final_text = ""
         final_message: Message | None = None
 
-        for iteration in range(self.config.max_iterations):
-            iterations = iteration + 1
-            if self.cancelled:
-                cancelled = True
-                break
-
-            await self._emit_status("thinking", {"iteration": iterations})
-
-            try:
-                response = await self._call_llm_with_resilience(messages)
-            except LLMError as exc:
-                await self._emit_status(
-                    "error",
-                    {"iteration": iterations, "detail": str(exc)},
-                )
-                raise
-
-            _accumulate_usage(usage_total, response.usage)
-            await self._maybe_emit_usage(response.usage)
-
-            # Persist the assistant message that came out of this
-            # LLM call (may contain tool_calls).
-            assistant_msg = response.message
-            messages.append(assistant_msg)
-            await self._maybe_persist(session_id, assistant_msg)
-
-            tool_calls = _extract_tool_calls(assistant_msg)
-            if not tool_calls:
-                # Final answer.
-                final_text = assistant_msg.get("content") or ""
-                final_message = assistant_msg
-                # Attach the per-turn metadata to the done=True
-                # chunk so the UI can paint the "思考 N 次" line.
-                # All earlier chunks passed ``metadata=None``; the
-                # store keeps the latest non-null value per message.
-                await self._emit_chunk("", True, response.metadata)
-                await self._emit_status("done", {"iterations": iterations})
-                break
-
-            # Resolve each tool call, feed the results back.
-            await self._emit_status("calling_tool", {"iteration": iterations, "count": len(tool_calls)})
-            tool_messages: list[Message] = []
-            for call in tool_calls:
+        # R14 — root span wraps the whole turn so every LLM span
+        # (``_call_llm_with_resilience``) and every tool span
+        # (``_dispatch_tool``) opened inside the loop nests under one
+        # trace_id. The waterfall this produces answers "where did this
+        # turn's wall-clock go" — the flat R11 event log could not.
+        async with self._tracer.start_span(
+            "agent.turn",
+            session_id=session_id,
+            user_message=(user_message or "")[:200],
+            max_iterations=self.config.max_iterations,
+        ):
+            for iteration in range(self.config.max_iterations):
+                iterations = iteration + 1
                 if self.cancelled:
                     cancelled = True
                     break
-                result = await self._dispatch_tool(call)
-                tool_calls_log.append(call)
-                tool_results_log.append(result)
-                tool_msg = _tool_message(call, result)
-                messages.append(tool_msg)
-                tool_messages.append(tool_msg)
-                await self._maybe_persist(session_id, tool_msg)
-            if cancelled:
-                break
-            # Loop back to call the LLM with the tool messages.
-        else:
-            # Loop exhausted without a final answer.
-            truncated = True
-            await self._emit_status("max_iterations", {"iterations": self.config.max_iterations})
-            final_text = (
-                f"I stopped after reaching the {self.config.max_iterations}-iteration limit "
-                "before producing a final answer."
-            )
-            final_message = {
-                "role": "assistant",
-                "content": final_text,
-                "metadata": {
-                    "thinking_count": int(getattr(self.llm, "thinking_count", 0) or 0),
-                    "tokens_in": int(usage_total.get("prompt_tokens", 0) or 0),
-                    "tokens_out": int(usage_total.get("completion_tokens", 0) or 0),
-                    "truncated": True,
-                },
-            }
-            messages.append(final_message)
-            await self._maybe_persist(session_id, final_message)
-            await self._emit_chunk(final_text, True, final_message["metadata"])
+
+                await self._emit_status("thinking", {"iteration": iterations})
+
+                try:
+                    response = await self._call_llm_with_resilience(messages)
+                except LLMError as exc:
+                    await self._emit_status(
+                        "error",
+                        {"iteration": iterations, "detail": str(exc)},
+                    )
+                    raise
+
+                _accumulate_usage(usage_total, response.usage)
+                await self._maybe_emit_usage(response.usage)
+
+                # Persist the assistant message that came out of this
+                # LLM call (may contain tool_calls).
+                assistant_msg = response.message
+                messages.append(assistant_msg)
+                await self._maybe_persist(session_id, assistant_msg)
+
+                tool_calls = _extract_tool_calls(assistant_msg)
+                if not tool_calls:
+                    # Final answer.
+                    final_text = assistant_msg.get("content") or ""
+                    final_message = assistant_msg
+                    # Attach the per-turn metadata to the done=True
+                    # chunk so the UI can paint the "思考 N 次" line.
+                    # All earlier chunks passed ``metadata=None``; the
+                    # store keeps the latest non-null value per message.
+                    await self._emit_chunk("", True, response.metadata)
+                    await self._emit_status("done", {"iterations": iterations})
+                    break
+
+                # Resolve each tool call, feed the results back.
+                await self._emit_status("calling_tool", {"iteration": iterations, "count": len(tool_calls)})
+                tool_messages: list[Message] = []
+                for call in tool_calls:
+                    if self.cancelled:
+                        cancelled = True
+                        break
+                    result = await self._dispatch_tool(call)
+                    tool_calls_log.append(call)
+                    tool_results_log.append(result)
+                    tool_msg = _tool_message(call, result)
+                    messages.append(tool_msg)
+                    tool_messages.append(tool_msg)
+                    await self._maybe_persist(session_id, tool_msg)
+                if cancelled:
+                    break
+                # Loop back to call the LLM with the tool messages.
+            else:
+                # Loop exhausted without a final answer.
+                truncated = True
+                await self._emit_status("max_iterations", {"iterations": self.config.max_iterations})
+                final_text = (
+                    f"I stopped after reaching the {self.config.max_iterations}-iteration limit "
+                    "before producing a final answer."
+                )
+                final_message = {
+                    "role": "assistant",
+                    "content": final_text,
+                    "metadata": {
+                        "thinking_count": int(getattr(self.llm, "thinking_count", 0) or 0),
+                        "tokens_in": int(usage_total.get("prompt_tokens", 0) or 0),
+                        "tokens_out": int(usage_total.get("completion_tokens", 0) or 0),
+                        "truncated": True,
+                    },
+                }
+                messages.append(final_message)
+                await self._maybe_persist(session_id, final_message)
+                await self._emit_chunk(final_text, True, final_message["metadata"])
 
         return AgentRunResult(
             final_text=final_text,
@@ -466,10 +483,15 @@ class AgentCore:
                 f"(retry after {exc.retry_after:.0f}s)"
             ) from exc
         try:
-            response = await with_retry(
-                lambda: self._stream_turn(messages),
-                self.config.llm_retry_policy or RetryPolicy.llm(),
-            )
+            # R14 — one LLM span per turn-loop iteration; nests under the
+            # root ``agent.turn`` span via the contextvars parent chain.
+            async with self._tracer.start_span(
+                "llm.stream", model=getattr(self.config, "model", None)
+            ):
+                response = await with_retry(
+                    lambda: self._stream_turn(messages),
+                    self.config.llm_retry_policy or RetryPolicy.llm(),
+                )
         except BaseException:
             await breaker.record(Outcome.FAILURE)
             raise
@@ -673,32 +695,40 @@ class AgentCore:
                 return blocked
         await self._emit_status("tool_running", {"tool": name})
 
-        t0 = time.monotonic()
-        try:
-            result = await asyncio.wait_for(
-                self.registry.dispatch(name, args),
-                timeout=self.config.tool_timeout,
-            )
-        except TimeoutError:
-            result = ToolResult.fail(
-                f"tool '{name}' exceeded {self.config.tool_timeout:.0f}s timeout"
-            )
-            if tool_breaker is not None:
-                await tool_breaker.record(Outcome.FAILURE)
-        except Exception as exc:  # pragma: no cover — defensive
-            logger.exception("tool %s crashed", name)
-            result = ToolResult.fail(f"{type(exc).__name__}: {exc}")
-            if tool_breaker is not None:
-                await tool_breaker.record(Outcome.FAILURE)
-        else:
-            # A normal return — even a business-level ToolResult.fail
-            # (e.g. "file not found") — means the tool is reachable.
-            # Only crashes and timeouts trip the breaker, not "grep
-            # found nothing"; otherwise healthy-but-empty tools would
-            # get falsely circuit-broken.
-            if tool_breaker is not None:
-                await tool_breaker.record(Outcome.SUCCESS)
-        duration_ms = int((time.monotonic() - t0) * 1000)
+        # R14 — one tool span per dispatch; nests under ``agent.turn``.
+        # Times only the registry dispatch, so the span duration is the
+        # true tool execution time (the audit write that follows is out).
+        async with self._tracer.start_span(
+            f"tool.{name}" if name else "tool.dispatch",
+            tool=name or "unknown",
+            tool_call_id=tool_call_id,
+        ):
+            t0 = time.monotonic()
+            try:
+                result = await asyncio.wait_for(
+                    self.registry.dispatch(name, args),
+                    timeout=self.config.tool_timeout,
+                )
+            except TimeoutError:
+                result = ToolResult.fail(
+                    f"tool '{name}' exceeded {self.config.tool_timeout:.0f}s timeout"
+                )
+                if tool_breaker is not None:
+                    await tool_breaker.record(Outcome.FAILURE)
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.exception("tool %s crashed", name)
+                result = ToolResult.fail(f"{type(exc).__name__}: {exc}")
+                if tool_breaker is not None:
+                    await tool_breaker.record(Outcome.FAILURE)
+            else:
+                # A normal return — even a business-level ToolResult.fail
+                # (e.g. "file not found") — means the tool is reachable.
+                # Only crashes and timeouts trip the breaker, not "grep
+                # found nothing"; otherwise healthy-but-empty tools would
+                # get falsely circuit-broken.
+                if tool_breaker is not None:
+                    await tool_breaker.record(Outcome.SUCCESS)
+            duration_ms = int((time.monotonic() - t0) * 1000)
 
         # Truncate pathological output to keep the context window sane.
         result = _truncate_result(result, self.config.max_tool_output_bytes)

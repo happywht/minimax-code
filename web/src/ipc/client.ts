@@ -100,6 +100,7 @@ import {
   type TeamProgressData as _TeamProgressData,
   type TelemetryMetrics,
   type TelemetryRecentResult,
+  type TelemetryTraceResult,
   type RuntimeRecoveryResult,
   type TerminalChunk,
   type TerminalListResult,
@@ -980,6 +981,7 @@ export interface TypedIPC {
   telemetryRecent(opts?: { limit?: number; event_type?: string; session_id?: string }): Promise<TelemetryRecentResult>;
   telemetryMetrics(opts?: { session_id?: string }): Promise<TelemetryMetrics>;
   telemetryClear(): Promise<{ ok: boolean; cleared: number; enabled: boolean }>;
+  telemetryTrace(trace_id: string): Promise<TelemetryTraceResult>;
 
   // runtime — boot-time crash-recovery diagnostics (R12).
   runtimeRecoveryStatus(): Promise<RuntimeRecoveryResult>;
@@ -1271,6 +1273,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     telemetryMetrics: (opts) => client.request<TelemetryMetrics>("telemetry.metrics", opts ?? {}),
     telemetryClear: () =>
       client.request<{ ok: boolean; cleared: number; enabled: boolean }>("telemetry.clear", {}),
+    telemetryTrace: (trace_id) =>
+      client.request<TelemetryTraceResult>("telemetry.trace", { trace_id }),
     runtimeRecoveryStatus: () =>
       client.request<RuntimeRecoveryResult>("runtime.recovery_status", {}),
 
@@ -2302,6 +2306,9 @@ function mockHandle(
 
     case "telemetry.clear":
       return { ok: true, cleared: 0, enabled: false };
+
+    case "telemetry.trace":
+      return { trace_id: null, spans: [], tree: [], span_count: 0, enabled: false };
 
     // ── runtime.* mock (R12) — clean start, nothing recovered ──────────
     case "runtime.recovery_status":

@@ -16,6 +16,11 @@ Methods
     session; omit for an all-sessions roll-up plus global severity tallies.
 ``telemetry.clear``
     Drop buffered events + per-session metrics (admin / test hygiene).
+``telemetry.trace``
+    Reconstruct one trace's span tree (R14). Given a ``trace_id``, returns
+    the flat span payloads plus the parent→children forest built by
+    :func:`minimax_code.telemetry.tracing.build_tree`, so a UI can paint a
+    waterfall of where a turn's time went (LLM vs each tool).
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..telemetry.tracing import build_tree
 from .handler_utils import HandlerError
 from .protocol import INTERNAL_ERROR
 from .server import Context
@@ -109,6 +115,46 @@ async def _handle_telemetry_clear(params: Any, ctx: Context) -> None:
         await ctx.reply_error(INTERNAL_ERROR, "telemetry.clear failed")
 
 
+async def _handle_telemetry_trace(params: Any, ctx: Context) -> None:
+    """Reconstruct one trace's span tree (R14).
+
+    Params: ``{"trace_id": "<hex>"}``. Returns the flat span payloads
+    plus the parent→children forest from :func:`build_tree`, so a client
+    can render a waterfall of where a turn's wall-clock went.
+    """
+    try:
+        engine = _engine()
+        if engine is None:
+            await ctx.reply(
+                {"trace_id": None, "spans": [], "tree": [], "enabled": False}
+            )
+            return
+        if not isinstance(params, dict):
+            params = {}
+        trace_id = params.get("trace_id")
+        if not trace_id or not isinstance(trace_id, str):
+            await ctx.reply_error(
+                INTERNAL_ERROR, "telemetry.trace requires a non-empty 'trace_id'"
+            )
+            return
+        spans = engine.trace_spans(trace_id)
+        tree = build_tree(spans)
+        await ctx.reply(
+            {
+                "trace_id": trace_id,
+                "spans": spans,
+                "tree": tree,
+                "span_count": len(spans),
+                "enabled": True,
+            }
+        )
+    except HandlerError as exc:
+        await ctx.reply_error(exc.code, exc.message)
+    except Exception:
+        logger.exception("telemetry.trace failed")
+        await ctx.reply_error(INTERNAL_ERROR, "telemetry.trace failed")
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
@@ -119,6 +165,7 @@ def register_telemetry_handlers(server: Any) -> None:
     server.register("telemetry.recent", _handle_telemetry_recent)
     server.register("telemetry.metrics", _handle_telemetry_metrics)
     server.register("telemetry.clear", _handle_telemetry_clear)
+    server.register("telemetry.trace", _handle_telemetry_trace)
     logger.debug("registered telemetry.* handlers")
 
 
