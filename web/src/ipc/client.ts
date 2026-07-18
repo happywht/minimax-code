@@ -100,6 +100,7 @@ import {
   type TeamProgressData as _TeamProgressData,
   type TelemetryMetrics,
   type TelemetryRecentResult,
+  type RuntimeRecoveryResult,
   type TerminalChunk,
   type TerminalListResult,
   type TerminalReadResult,
@@ -980,6 +981,9 @@ export interface TypedIPC {
   telemetryMetrics(opts?: { session_id?: string }): Promise<TelemetryMetrics>;
   telemetryClear(): Promise<{ ok: boolean; cleared: number; enabled: boolean }>;
 
+  // runtime — boot-time crash-recovery diagnostics (R12).
+  runtimeRecoveryStatus(): Promise<RuntimeRecoveryResult>;
+
   // webhook — drive the Settings page's Webhooks tab.
   listWebhooks(opts?: { limit?: number; offset?: number; source?: string }): Promise<ListWebhooksResult>;
   createWebhook(opts: { name: string; source?: string; action_type?: string; action_config?: Record<string, unknown> }): Promise<WebhookConfig>;
@@ -1267,6 +1271,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     telemetryMetrics: (opts) => client.request<TelemetryMetrics>("telemetry.metrics", opts ?? {}),
     telemetryClear: () =>
       client.request<{ ok: boolean; cleared: number; enabled: boolean }>("telemetry.clear", {}),
+    runtimeRecoveryStatus: () =>
+      client.request<RuntimeRecoveryResult>("runtime.recovery_status", {}),
 
     listWebhooks: (opts) => client.request<ListWebhooksResult>("webhook.list", opts ?? {}),
     createWebhook: (opts) => client.request<WebhookConfig>("webhook.create", opts),
@@ -2296,6 +2302,17 @@ function mockHandle(
 
     case "telemetry.clear":
       return { ok: true, cleared: 0, enabled: false };
+
+    // ── runtime.* mock (R12) — clean start, nothing recovered ──────────
+    case "runtime.recovery_status":
+      return {
+        available: true,
+        clean_start: true,
+        previous_crash: false,
+        recovered_runs: 0,
+        run_ids: [],
+        sessions: [],
+      } satisfies RuntimeRecoveryResult;
 
     // ── webhook.* mock ──────────────────────────────────────────────
 

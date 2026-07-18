@@ -317,6 +317,32 @@ export interface TelemetryMetrics {
   buffered?: number;
 }
 
+/** A previously-crashed run detected on boot (R12 marker-file protocol). */
+export interface RuntimeCrashReport {
+  crashed_pid: number;
+  started_at: string;
+  detected_at: string;
+}
+
+/** Snapshot of boot-time crash recovery — result of `runtime.recovery_status` (R12).
+ *  `available:false` before recovery has run; `clean_start:true` when the
+ *  previous boot exited cleanly and no orphan runs were recovered. */
+export interface RuntimeRecoveryResult {
+  available: boolean;
+  /** Set once recovery has executed this boot. */
+  clean_start?: boolean;
+  /** True when the marker-file protocol detected an unclean exit. */
+  previous_crash?: boolean;
+  /** The consumed crash report (present when previous_crash is true). */
+  crash?: RuntimeCrashReport | null;
+  /** Number of in-flight runs flipped to failed. */
+  recovered_runs?: number;
+  run_ids?: string[];
+  sessions?: string[];
+  /** Present only when recovery could not import its deps (fail-open). */
+  reason?: string;
+}
+
 /** A webhook config entry — matches `webhooks` table row. */
 export interface WebhookConfig {
   id: string;

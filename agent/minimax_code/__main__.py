@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import os
 import sys
+from typing import Any
 
 from .app import register_app_handlers
 from .config import Config
@@ -166,6 +167,36 @@ def cli_entry() -> None:
     if args.log_level:
         config = config.model_copy(update={"log_level": args.log_level})
     configure_logging(config.log_level)
+
+    # R12 — crash detection. Install faulthandler (captures segfault
+    # tracebacks to last_fault.trace), drop a dirty-start marker, and arm
+    # ``atexit`` to clear it on graceful exit. ``atexit`` does NOT fire on
+    # hard crashes (OOM / segfault / ``kill -9``), so a leftover marker on
+    # the next boot means the previous run died unexpectedly →
+    # ``_run_crash_recovery`` (called from ``_maybe_open_db``) consumes it
+    # and recovers orphan runs. Fail-open: a missing storage layer or a
+    # locked data dir never blocks boot — the agent still starts.
+    try:
+        import atexit
+        from pathlib import Path
+
+        from .runtime.crash_detect import (
+            install_faulthandler,
+            mark_clean_exit,
+            mark_dirty_start,
+        )
+        from .storage.db import default_database_path
+
+        _data_dir = Path(default_database_path()).parent
+        install_faulthandler(_data_dir)
+        mark_dirty_start(_data_dir)
+        atexit.register(mark_clean_exit, _data_dir)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).debug(
+            "crash-detection install failed (fail-open)", exc_info=True
+        )
 
     if args.mode == "http":
         port = (

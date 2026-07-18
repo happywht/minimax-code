@@ -54,6 +54,12 @@ _HOOK_MANAGER: Any = None  # type: ignore[no-untyped-def]
 # In-memory, fail-open event bus: session lifecycle, tool dispatch, hook
 # fire, permission. Optional everywhere — None means disabled, zero overhead.
 _TELEMETRY_ENGINE: Any = None  # type: ignore[no-untyped-def]
+# Boot-time crash recovery snapshot (R12 — reliability pillar). Populated
+# exactly once by _run_crash_recovery() inside _maybe_open_db(); exposed
+# read-only via get_recovery_result() so the runtime.* IPC handlers can
+# surface "recovered N orphan runs after an unexpected shutdown" without
+# re-running recovery. None = recovery has not run yet this boot.
+_RECOVERY_RESULT: Any = None  # type: ignore[no-untyped-def]
 
 
 def get_runtime() -> SkillRuntime | None:
@@ -147,6 +153,15 @@ async def _maybe_open_db() -> Any:
         # built from the stored model preference + provider config
         # (or fall back to defaults when no DB preference exists).
         _set_subagent_llm(await _rebuild_subagent_llm(db))
+        # R12 — boot-time crash recovery. Fail-open by design: the inner
+        # call already swallows its own errors, and this outer guard is
+        # belt-and-suspenders so a recovery fault never blocks boot.
+        # Runs exactly once per boot; snapshots into _RECOVERY_RESULT
+        # for the runtime.* IPC handlers.
+        try:
+            await _run_crash_recovery(db)
+        except Exception:
+            logger.exception("crash recovery orchestration failed (fail-open)")
         return db
     except Exception:  # pragma: no cover — defensive
         logger.exception("failed to open storage; running with in-memory skill registry")
@@ -453,6 +468,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_providers import register_provider_handlers
     from .ipc.handlers_runner import register_runner_handlers
     from .ipc.handlers_runs import register_run_handlers
+    from .ipc.handlers_runtime import register_runtime_handlers
     from .ipc.handlers_scheduled import register_scheduled_handlers
     from .ipc.handlers_secrets import register_secret_handlers
     from .ipc.handlers_sessions import register_session_handlers
@@ -484,6 +500,10 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # Run timeline read APIs — lets the frontend replay persisted
     # agent runs instead of relying only on live WebSocket events.
     register_run_handlers(server)
+    # Runtime diagnostics — exposes the boot-time crash-recovery
+    # snapshot (R12) so the Settings page can surface "recovered N
+    # orphan runs after an unexpected shutdown". Read-only handler.
+    register_runtime_handlers(server)
     # The session handlers resolve the sessions DAO via
     # :func:`get_sessions_dao` (also lazy, also opens the DB on
     # first call). Tests can inject a DAO via the ``dao=`` kwarg
@@ -761,11 +781,125 @@ def ensure_telemetry_engine() -> Any:
     return _TELEMETRY_ENGINE
 
 
+# ---------------------------------------------------------------------------
+# Boot-time crash recovery (R12 — reliability pillar)
+# ---------------------------------------------------------------------------
+
+
+def get_recovery_result() -> Any:
+    """Return the snapshot produced by the last boot's crash recovery.
+
+    ``None`` until :func:`_run_crash_recovery` has executed, or when the
+    boot path skipped the DB (``MINIMAX_CODE_NO_DB=1``). The
+    ``runtime.*`` IPC handlers call this rather than re-running recovery,
+    so recovery is strictly one-shot per boot.
+    """
+    return _RECOVERY_RESULT
+
+
+def _set_recovery_result(result: Any) -> None:
+    """Inject the recovery snapshot (internal setter, also used by tests)."""
+    global _RECOVERY_RESULT
+    _RECOVERY_RESULT = result
+
+
+async def _run_crash_recovery(db: Any) -> None:
+    """Boot-time crash recovery (R12, fail-open).
+
+    Orchestrates two independent mechanisms fused from grok-build:
+
+    1. :func:`check_previous_crash` — marker-file protocol. A leftover
+       ``.minimax_code_running`` marker means the previous PID never
+       reached ``atexit`` → it crashed (OOM / segfault / ``kill -9``).
+    2. :func:`AgentRunsDAO.recover_orphans` — flips every in-flight run
+       to ``failed`` and appends a recovery ``status`` step (append-only
+       audit, grok ``RewindMarker`` semantics).
+
+    Each can fail independently without blocking the other, and the
+    whole orchestration is fail-open: a recovery fault never blocks
+    boot. The snapshot lands in :data:`_RECOVERY_RESULT` for the
+    ``runtime.recovery_status`` IPC handler, and a WARN telemetry event
+    (R11) is emitted when recovery actually did something.
+    """
+    from pathlib import Path
+
+    try:
+        from .runtime.crash_detect import check_previous_crash, crash_report_to_dict
+        from .storage.dao.runs import AgentRunsDAO
+        from .storage.db import default_database_path
+    except Exception:
+        logger.exception("crash recovery imports failed; skipping (fail-open)")
+        _set_recovery_result({"available": False, "reason": "imports failed"})
+        return
+
+    # (1) Marker-file protocol — did the previous PID crash?
+    report = None
+    crashed = False
+    try:
+        data_dir = Path(default_database_path()).parent
+        report = check_previous_crash(data_dir)
+        crashed = crash_report_to_dict(report) is not None
+    except Exception:
+        logger.exception("previous-crash detection failed (fail-open)")
+        report = None
+        crashed = False
+
+    # (2) Orphan-run recovery — flip every in-flight run to failed and
+    #     append an audit step. Idempotent on a clean DB.
+    try:
+        dao = AgentRunsDAO(db)
+        recovery = await dao.recover_orphans()
+    except Exception:
+        logger.exception("orphan-run recovery failed (fail-open)")
+        recovery = {"recovered": 0, "run_ids": [], "sessions": []}
+
+    snapshot = {
+        "available": True,
+        "clean_start": not crashed and int(recovery.get("recovered", 0)) == 0,
+        "previous_crash": crashed,
+        "crash": crash_report_to_dict(report),
+        "recovered_runs": int(recovery.get("recovered", 0)),
+        "run_ids": recovery.get("run_ids", []),
+        "sessions": recovery.get("sessions", []),
+    }
+    _set_recovery_result(snapshot)
+
+    # Emit a WARN telemetry event when recovery did something — the
+    # observability pillar (R11) records the reliability event so
+    # dashboards can alert on repeated crashes. Fail-open + non-fatal.
+    if crashed or snapshot["recovered_runs"] > 0:
+        try:
+            from .telemetry.events import EventType, Severity, TelemetryEvent
+
+            engine = ensure_telemetry_engine()
+            if engine is not None:
+                engine.emit(
+                    TelemetryEvent(
+                        type=EventType.ERROR,
+                        severity=Severity.WARN,
+                        name="crash_recovery",
+                        payload={
+                            "previous_crash": crashed,
+                            "recovered_runs": snapshot["recovered_runs"],
+                        },
+                    )
+                )
+        except Exception:
+            logger.debug("telemetry emit for recovery failed (non-fatal)", exc_info=True)
+
+    logger.info(
+        "crash recovery complete: previous_crash=%s recovered_runs=%d",
+        crashed,
+        snapshot["recovered_runs"],
+    )
+
+
 __all__ = [
     "ensure_repo_map_indexer",
     "get_http_app",
     "get_progress_tracker",
     "get_provider_dao",
+    "get_recovery_result",
     "get_repo_map_indexer",
     "get_runtime",
     "get_sessions_dao",

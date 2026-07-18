@@ -580,6 +580,33 @@ event types; `audit.*` (`handlers_audit`) is disk-persistent and
 restricted to tool dispatch. The two channels run in parallel and are
 deliberately uncoupled — disabling one never touches the other.
 
+### `runtime.*` — boot-time crash-recovery diagnostics (R12)
+
+A read-only surface for the boot-time crash-recovery pipeline, fusing
+grok-build's `xai-crash-handler` (separate crate, `install()` at entry,
+`check_previous_crash()` on next boot) and `cleanup_stale_sessions`
+(ORPHAN_RECOVERED semantics) into MiniMax's asyncio runtime. The
+marker-file protocol detects unclean exits (OOM / segfault / `kill -9`
+— anything that skips `atexit`); `AgentRunsDAO.recover_orphans()` then
+flips every in-flight run to `failed` while appending a recovery
+`status` step (grok `RewindMarker` append-only audit). The whole
+pipeline is fail-open: a recovery fault never blocks boot.
+
+| Method | Params | Result | Notes |
+|--------|--------|--------|-------|
+| `runtime.recovery_status` | `{}` | `{ available, clean_start?, previous_crash?, crash?, recovered_runs?, run_ids?, sessions?, reason? }` | `available:false` before recovery has run this boot. `clean_start:true` when the previous boot exited cleanly and nothing was recovered. `crash` carries `{crashed_pid, started_at, detected_at}` from the consumed marker. `reason` is set only when recovery could not import its deps (fail-open). |
+
+Lifecycle: `install_faulthandler()` + `mark_dirty_start()` run once in
+`cli_entry()` before the event loop; `mark_clean_exit()` is armed via
+`atexit`. On the next boot, `_run_crash_recovery()` (called from
+`_maybe_open_db`) consumes the marker, recovers orphans, snapshots the
+result into a process singleton, and emits a `WARN`-severity telemetry
+event (R11) when recovery did something.
+
+Caveat: the data dir must NOT live on a network filesystem —
+SQLite-over-NFS plus the marker's temp+rename can corrupt both. Local
+disk only.
+
 ## 7. Event names
 
 All push events use the prefix `agent.`, `task.`, or `permission.`

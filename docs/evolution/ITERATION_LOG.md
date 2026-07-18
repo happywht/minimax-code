@@ -492,3 +492,71 @@
 ### Commit
 
 `feat(platform): R11 telemetry engine — in-memory event bus with three-layer redaction`
+
+## R12 — 崩溃检测 + 孤儿 run 恢复 + 遥测接入（阶段 B 第 2 轮）
+
+**本轮目标**：聚焦 grok-build 可靠性理念里 MiniMax 完全缺失、价值最高
+的生命线——进程意外死亡（OOM / segfault / `kill -9`）后，in-flight 的
+agent run 永远卡在 `running`，前端时间线假死。融合 grok-build 的
+`xai-crash-handler`（分离 crate + `install()` 入口 +
+`check_previous_crash()` 下次启动）+ `cleanup_stale_sessions`
+（ORPHAN_RECOVERED 语义）+ `RewindMarker`（append-only 审计），落到
+MiniMax 的 asyncio + SQLite 架构上。
+
+### 融合结论（侦察驱动：保持语义层，放弃文件系统层）
+
+- ✅ **保持**：marker-file 协议（dirty start + `atexit` clean exit）；
+  faulthandler 预打开 sink 保 fd；ORPHAN_RECOVERED 状态翻转；append-only
+  recovery step（RewindMarker）；fail-open 全链路；遥测事件接入（R11）。
+- ❌ **放弃**：临时+重命名写入、FNV-1a 目录、断尾修复、sidecar 锁、
+  `io_lock`——全部被 SQLite WAL + 事务取代。
+- ⚠️ **警告**：data dir 不可在网络文件系统上（NFS + WAL = SIGBUS；
+  marker 的 temp+rename 在 NFS 上也会腐化）。
+
+### 交付
+
+- `minimax_code/runtime/crash_detect.py`（新，独立模块）：
+  `CrashReport` dataclass + `mark_dirty_start`/`mark_clean_exit`/
+  `check_previous_crash`（marker 一次性消费）+ `install_faulthandler`
+  （预打开 `_FAULT_SINK` 保 fd 不被 GC）+ `crash_report_to_dict`。
+- `minimax_code/storage/dao/runs.py`：`AgentRunsDAO.recover_orphans()`
+  ——翻转 planning/running/awaiting_approval → failed（`COALESCE`
+  completed_at 幂等）+ 每个孤儿追加 `status` recovery step（单行失败
+  不阻塞其余）。空 DB 幂等返回 0。
+- `minimax_code/app.py`：`_RECOVERY_RESULT` 槽 + `get/_set_recovery_result`
+  + `_run_crash_recovery(db)`（编排 marker 检测 + orphan 恢复 + 遥测
+  emit，三段各自 fail-open）+ `_maybe_open_db` 在 `return db` 前调用
+  （外层 try/except 双保险）+ `register_app_handlers` 注册 runtime
+  handlers + `__all__` 导出 `get_recovery_result`。
+- `minimax_code/ipc/handlers_runtime.py`（新）：`runtime.recovery_status`
+  只读 handler（`available:false` 降级当 recovery 未跑）。
+- `minimax_code/__main__.py`：`cli_entry` 在 configure_logging 后安装
+  faulthandler + mark_dirty_start + `atexit.register(mark_clean_exit)`
+  （整段 fail-open，storage 缺失也不阻塞启动）。顺手补
+  `from typing import Any`（预存 F821，因本轮已触碰该文件）。
+- 前端契约同步（`web/src/types/ipc.ts` + `client.ts` 四处：
+  import/TypedIPC/impl/mock）：`RuntimeRecoveryResult` +
+  `runtimeRecoveryStatus()`；mock 返回 clean start。
+- `docs/ipc-contract.md`：新增 `### runtime.*` 小节（方法表 + 生命周期 +
+  NFS 警告）。
+- `tests/test_crash_recovery.py`（新，8 测）：marker 写/读/消费/clean；
+  recover_orphans 翻转+append step / 只翻转 in-flight / 双恢复幂等 / 空 DB。
+
+### 验证
+
+- ✅ `ruff check` 6 个 R12 文件：**All checks passed**。
+- ✅ `pytest test_crash_recovery.py`：**8 passed in 0.43s**。
+- ✅ `eslint client.ts + ipc.ts`：无输出（干净）。
+- ✅ `tsc -b`：仅预存的 `client-pending-mode.test.ts(415)` JsonRpcId 错误
+  （R11 时就在，非 R12 引入）。
+
+### YAGNI 边界（本轮不做）
+
+- ❌ 不建 `workspace_checkpoints` 表（MiniMax 已有 `compaction.py` 的
+  token 估算 + 压缩，检查点不是真空白）。
+- ❌ 不做 NFS 运行时检测（警告写进 docstring + 文档即可）。
+- ❌ 不把压缩/令牌统计搭进 recovery（解耦，各自独立演进）。
+
+### Commit
+
+`feat(platform): R12 crash detection + orphan run recovery`

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
@@ -24,6 +25,8 @@ _VALID_STEP_KIND = frozenset(
 _VALID_STEP_STATUS = frozenset({"pending", "running", "completed", "failed", "cancelled"})
 _RUN_SORTABLE = ("created_at", "completed_at", "status", "id")
 _STEP_SORTABLE = ("ordinal", "started_at", "completed_at", "id")
+
+logger = logging.getLogger(__name__)
 
 
 class AgentRunsDAO:
@@ -251,6 +254,62 @@ class AgentRunsDAO:
         sql, params = apply_pagination(sql, params, limit=limit, offset=offset)
         rows = await self._db.fetchall(sql, tuple(params))
         return [_hydrate_step(r) for r in rows]
+
+    async def recover_orphans(
+        self,
+        *,
+        reason: str = "orphaned by unexpected shutdown",
+    ) -> dict[str, Any]:
+        """Mark every in-flight run as ``failed`` (crash recovery, R12).
+
+        Fuses grok-build's ``cleanup_stale_sessions`` + ORPHAN_RECOVERED
+        semantics into the existing ``agent_runs`` table — no new schema.
+        Idempotent: safe on every boot; when nothing is in flight it
+        returns ``recovered:0`` without touching rows.
+
+        For each orphan the run flips to ``failed`` and a recovery
+        ``status`` step is appended (grok ``RewindMarker`` append-only
+        audit: recovery records itself rather than silently mutating).
+        """
+        rows = await self._db.fetchall(
+            "SELECT id, session_id FROM agent_runs "
+            "WHERE status IN ('planning', 'running', 'awaiting_approval')",
+            (),
+        )
+        if not rows:
+            return {"recovered": 0, "run_ids": [], "sessions": []}
+        run_ids = [str(r["id"]) for r in rows]
+        sessions = [str(r["session_id"]) for r in rows]
+        ts = now_iso()
+        placeholders = ",".join("?" for _ in run_ids)
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                "UPDATE agent_runs SET status = 'failed', error = ?, "
+                "completed_at = COALESCE(completed_at, ?) "
+                f"WHERE id IN ({placeholders})",
+                (reason, ts, *run_ids),
+            )
+        # Append a recovery step per orphan — append-only audit trail so
+        # the timeline shows "recovered after crash" rather than silently
+        # flipping status. A single bad row never blocks the rest.
+        for run_id, session_id in zip(run_ids, sessions, strict=True):
+            try:
+                await self.create_step(
+                    run_id=run_id,
+                    session_id=session_id,
+                    kind="status",
+                    status="completed",
+                    title="recovered after unexpected shutdown",
+                    summary=reason,
+                    payload={
+                        "recovered_at": ts,
+                        "recovery_reason": reason,
+                        "schema_version": 1,
+                    },
+                )
+            except Exception:
+                logger.exception("failed to append recovery step for run %s", run_id)
+        return {"recovered": len(run_ids), "run_ids": run_ids, "sessions": sessions}
 
 
 def _hydrate_run(row: Any) -> dict[str, Any] | None:
