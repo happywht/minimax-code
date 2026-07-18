@@ -45,6 +45,16 @@ class EventType(StrEnum):
     # The payload carries the trace/span/parent id triple + duration, so the
     # flat event stream can be reconstructed into a causal span tree.
     SPAN = "span"
+    # R20 — reliability-stack observability. CIRCUIT_BREAKER fires on every
+    # breaker state transition (trip / open_elapsed / probe_success /
+    # probe_failure, carried in ``payload.reason``); it is endpoint-scoped so
+    # ``session_id`` is None (one ``llm`` breaker tripping affects every
+    # session). RETRY fires from ``with_retry``'s ``on_retry`` hook per
+    # retried LLM attempt and carries ``session_id`` of the owning turn.
+    # Fuses grok ``xai-circuit-breaker``'s Observer + ``xai-grok-telemetry``'s
+    # typed event set.
+    CIRCUIT_BREAKER = "circuit_breaker"
+    RETRY = "retry"
 
 
 class Severity(StrEnum):

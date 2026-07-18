@@ -1246,3 +1246,122 @@ disposition"语义——grok 用独立异常类型让 `classify_exception` 一�
 ### Commit
 
 `feat(platform): R19 retry respects breaker-open signal (fuse grok xai-circuit-breaker)`
+
+## R20 — 可靠性栈可观测性闭环：熔断/重试事件→TelemetryEngine（fuse grok xai-circuit-breaker Observer + xai-grok-telemetry）（阶段 B 第 10 轮）
+
+**本轮目标**：R17-R19 把熔断器 + 重试建得功能完备但**完全静默**——熔断 OPEN/恢复、
+重试在哪一拨放弃，这些关键事件**一个都没**流入 R11 建好的 TelemetryEngine。运维盲区：
+熔断器何时 trip、何时恢复、重试在哪一拨失败，全靠日志肉眼 grep。本轮 fuse grok 的
+`xai-circuit-breaker` Observer 三件套（`on_state_change`/`on_outcome`/`attach`）+
+`xai-grok-telemetry` 类型化事件集——给 `reliability` 栈的 CircuitBreaker 加观察者接口，
+状态转换走**稳定 reason 闭集**（`trip`/`open_elapsed`/`probe_success`/`probe_failure`），
+适配器把转换桥到 TelemetryEngine 的 `CIRCUIT_BREAKER` 事件；`with_retry` 的 `on_retry`
+钩子 emit `RETRY` 事件（携带 session_id）。**端点级 vs 轮次级作用域**是核心区分：熔断
+`session_id=None`（一个 `llm` 熔断器影响所有会话），重试 `session_id=_current_session_id`
+（归因到对话）。本轮收尾阶段 B（安全与可观测 R11-R20），主路径因果闭环。
+
+### 融合结论（因果支柱 1:1 保留，ambient 上下文改为闭包）
+
+- ✅ **保持**：grok Observer 三件套接口——`on_state_change(old,new,reason)` /
+  `on_outcome(outcome)` / `attach_observer`。接口**与 `resilience.breaker` 完全一致**，
+  故单个适配器未来可桥接任一栈。`NoopObserver` 默认零开销（telemetry 关闭时无任何
+  分配/调用）。
+- ✅ **保持**：grok 稳定 reason 闭集——`"trip"` / `"open_elapsed"` / `"probe_success"` /
+  `"probe_failure"`（小写）。稳定字符串让前端/dashboard 把 reason 映射到 UI 不需解析
+  自由文本。**四个转换点全部接线**（`_trip` / `check` 的 OPEN→HALF_OPEN / `record` 的
+  probe_success / probe_failure）。
+- ✅ **保持**：grok 类型化事件集——`CIRCUIT_BREAKER` + `RETRY` 两个 EventType 加入闭合
+  StrEnum。`CIRCUIT_BREAKER` payload=`{breaker,old,new,reason}`；`RETRY`
+  payload=`{attempt,max_attempts,delay_s,error_type,breaker_open}`（`breaker_open` 让
+  dashboard 区分"重试撞熔断 TERMINAL" vs "普通瞬时重试"）。
+- ✅ **保持**：fail-open **双层防御**——CircuitBreaker `_notify_state_change`/`_notify_outcome`
+  包 try/except（适配器故障绝不破坏状态机）；适配器自身 `engine is None` 短路（telemetry
+  off 零开销）+ `_on_llm_retry` 再包一层（telemetry 不破坏重试循环，`with_retry` 本身也包）。
+  belt and braces——可观测性任何环节挂掉都不影响可靠性。
+- ✅ **保持**：grok "endpoint-scoped vs turn-scoped" 作用域区分——`CIRCUIT_BREAKER`
+  `session_id=None`（端点级：一个 `llm` 熔断器影响所有会话，归因到任一会话都误导
+  dashboard）；`RETRY` `session_id=_current_session_id`（轮次级：重试归因到对话）。这是
+  grok `tokio::task_local` ambient `TelemetryCtx` 的 Python 等价——**闭包读
+  `_current_session_id` + engine_getter 惰性 callable，避开 contextvars 仪式**。
+- ❌ **放弃**：contextvars 全栈贯通——grok 用 ambient context 让任意深度调用拿到
+  engine+session。Python 等价是 contextvars，但熔断端点级（session_id=None）、重试
+  `_current_session_id` 闭包，**两者正确归因都不需要 contextvars**。引入它是为未来"每
+  会话独立熔断器"铺路，当前一个共享 `llm` 熔断器，YAGNI。
+- ❌ **放弃**：`resilience` 栈（transport）同步接线——`reliability` 栈（core 主路径）已
+  闭环因果。transport 的 `resilience.breaker` 也有 Observer 接口（R17 建的），但传输层
+  熔断事件桥接留 **R21**（对称性收尾）。本轮聚焦 core 主路径。
+- ❌ **放弃**：`on_outcome` emit 事件——`on_outcome` 每次调用一个事件（高频低价值），
+  event stream 会被淹没。指标层（`MetricsRegistry`）更适合 outcome 频率。适配器
+  `on_outcome` 是 no-op（接口保留为 grok 兼容）。
+
+### 交付
+
+- `telemetry/events.py`（编辑）：EventType 加 `CIRCUIT_BREAKER` + `RETRY`（闭合 StrEnum
+  扩展），带 R20 注释详述作用域（CIRCUIT_BREAKER 端点级 session_id=None / RETRY 轮次级
+  session_id=_current_session_id）+ fuse 来源（xai-circuit-breaker Observer + xai-grok-telemetry）。
+- `agent/reliability/circuit_breaker.py`（编辑）：① `Observer` ABC + `NoopObserver`
+  （接口与 resilience.breaker 一致，docstring 锁定"方法不得 raise"+稳定 reason 闭集文档）；
+  ② `CircuitBreaker.__init__` 加 `observer` 参数（默认 NoopObserver）+ `attach_observer`
+  （幂等，core 每轮 re-attach 同一观察者不重复事件）+ `_notify_state_change`/`_notify_outcome`
+  （fail-open，`# noqa: BLE001`）；③ **四转换点接线稳定 reason**——`check()` OPEN→HALF_OPEN
+  `"open_elapsed"`，`record()` HALF_OPEN FAILURE→`_trip(reason="probe_failure")` /
+  SUCCESS→CLOSED `"probe_success"`，`_trip(old→OPEN)` reason 默认 `"trip"`。
+- `agent/reliability/__init__.py`（编辑）：导出 `Observer` + `NoopObserver`（import + `__all__`）。
+- `telemetry/observer_adapter.py`（新建）：`ReliabilityTelemetryObserver`——
+  `engine_getter` 惰性 callable（解决 engine 在构造后从 app.py 注入的时序，避免持有陈旧
+  引用）+ `name` 参数；`on_state_change` emit `CIRCUIT_BREAKER`（severity: OPEN→ERROR /
+  恢复→INFO，`session_id=None`）；`on_outcome` no-op。模块 docstring 详述端点级作用域
+  决策 + lazy getter 的 Python-ambient 等价论证。
+- `agent/core.py`（编辑）：① 构造函数**延迟导入** + 创建 `self._llm_breaker_observer`
+  （`lambda: self.telemetry_engine` 闭包，规避循环导入 + 解决 engine 后期注入——与同文件
+  `_record_audit` 的延迟导入风格一致）；② `_call_llm_with_resilience` 接线
+  `breaker.attach_observer(self._llm_breaker_observer)`（每轮幂等 re-attach，捕获
+  late-arriving engine）+ `with_retry(..., on_retry=self._on_llm_retry)`；③ 新增
+  `_on_llm_retry(attempt, exc, delay)` 方法 emit `RETRY` 事件（`session_id=_current_session_id or None`,
+  `severity=WARN`，payload 含 `attempt`/`max_attempts`/`delay_s`/`error_type`/`breaker_open`）。
+- `telemetry/__init__.py`（编辑）：导出 `ReliabilityTelemetryObserver`（公开 API 完整性，
+  其他消费者可从顶层包导入）。
+- `tests/test_reliability.py`（编辑）：import 加 `Observer`；追加 `_RecordingObserver` +
+  **8 个 observer 测试**——4 转换点 reason 正确（trip/open_elapsed/probe_success/probe_failure）、
+  `on_outcome` 每次记录触发、默认 `NoopObserver` 零开销、observer 故障 fail-open（`_Boom`
+  不破坏状态机）、`attach_observer` 替换活跃观察者。
+- `tests/test_telemetry_observer.py`（新建）：**6 个适配器契约测试**——trip→ERROR 事件契约
+  （payload/severity/`session_id=None`）、恢复转换→INFO、probe_failure→ERROR、engine None
+  零开销不报错、`on_outcome` no-op 不 emit、多 breaker 按 `name`/`payload.breaker` 区分。
+
+### 验证
+
+- ✅ `ruff check`（events.py + circuit_breaker.py + reliability/__init__.py +
+  observer_adapter.py + core.py + telemetry/__init__.py + 2 测试文件）：
+  **All checks passed**——8 文件一次过检（Observer ABC + NoopObserver、四转换点稳定 reason、
+  `_notify_*` 的 `# noqa: BLE001` fail-open 注解、`_on_llm_retry` 闭包、`_Boom` 局部类
+  `# noqa: ANN001` 防御）。
+- ✅ `pytest tests/test_reliability.py tests/test_telemetry_observer.py tests/test_telemetry.py -q`：
+  **60 passed**（含 14 个 R20 新测）——4 转换点 reason 闭集、适配器事件契约、severity 策略
+  （OPEN→ERROR/恢复→INFO）、fail-open（observer 故障不破坏状态机）、engine None 零开销、
+  多 breaker 区分全绿灯。
+- ✅ `pytest -q` 全套：**1108 passed**（1094 R19 基线 + 14 新增：8 observer 触发 + 6 适配器
+  契约），零失败、零回归——证明 Observer 接口向后兼容（默认 NoopObserver 不影响既有熔断
+  行为）、EventType 闭合扩展不破坏既有事件、core 接线不改变 LLM 调用因果、延迟导入规避
+  循环成功（core 仍正常加载）。
+
+### YAGNI 边界（本轮不做）
+
+- ❌ 不接 `resilience` 栈（transport）——`reliability` 栈（core）已闭环主路径因果；
+  transport 的 `resilience.breaker` 桥接留 **R21**（对称性收尾，单适配器桥接）。
+- ❌ 不加 contextvars——熔断端点级（`session_id=None`）、重试 `_current_session_id` 闭包，
+  两者正确归因都不需要 contextvars。引入它是为"每会话独立熔断器"铺路，当前一个共享 `llm`
+  熔断器，YAGNI。
+- ❌ 不把熔断态暴露到前端 UI——`CIRCUIT_BREAKER` 事件进了 TelemetryEngine（in-memory bus），
+  但前端 `agent.status` 事件未桥接。前端横幅（"模型服务暂不可用，N 秒后重试"）是独立 UI
+  工作，留 **R22**。
+- ❌ 不 emit `on_outcome` 事件——outcome 高频低价值（每次调用一个），event stream 会被
+  淹没。指标层（`MetricsRegistry`）更适合 outcome 频率，留待真实 dashboard 需求。
+- ❌ 不做 `on_probe_admission` 钩子——grok Observer 有 `on_probe_admission`（HALF_OPEN
+  探测准入回调），当前 `half_open_max_probes=1` 单探测，准入逻辑无外部决策需求，YAGNI。
+- ❌ 不做熔断指标聚合 RPC——`TelemetryEngine.metrics()` 已有 per-session 指标；熔断转换
+  计数（trip 次数 / OPEN 累计时长）当前无 dashboard 消费需求。
+
+### Commit
+
+`feat(platform): R20 reliability telemetry loop (fuse grok xai-circuit-breaker Observer)`

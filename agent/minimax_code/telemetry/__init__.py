@@ -23,6 +23,7 @@ from __future__ import annotations
 from .engine import TelemetryEngine
 from .events import EventType, Severity, TelemetryEvent
 from .metrics import MetricsRegistry, SessionMetrics, global_snapshot
+from .observer_adapter import ReliabilityTelemetryObserver
 from .redact import SanitizerFilter, redact_paths, redact_secrets, redact_value, url_origin
 from .ringbuffer import RingBuffer
 from .tracing import Span, SpanStatus, Tracer, build_tree, get_tracer, set_tracer
@@ -30,6 +31,7 @@ from .tracing import Span, SpanStatus, Tracer, build_tree, get_tracer, set_trace
 __all__ = [
     "EventType",
     "MetricsRegistry",
+    "ReliabilityTelemetryObserver",
     "RingBuffer",
     "SanitizerFilter",
     "SessionMetrics",

@@ -27,6 +27,7 @@ from minimax_code.agent.reliability import (
     BreakerState,
     CircuitBreaker,
     CircuitBreakerRegistry,
+    Observer,
     Outcome,
     RetryPolicy,
     classify_exception,
@@ -482,3 +483,129 @@ def test_retry_policy_presets():
     assert llm.max_attempts == 3
     assert tool.max_attempts == 2
     assert tool.max_delay <= llm.max_delay
+
+
+# ---------------------------------------------------------------------------
+# Observer (R20) — breaker state-transition + outcome hooks
+# ---------------------------------------------------------------------------
+
+
+class _RecordingObserver(Observer):
+    """Captures every transition + outcome for assertion."""
+
+    def __init__(self) -> None:
+        self.transitions: list[tuple[BreakerState, BreakerState, str]] = []
+        self.outcomes: list[Outcome] = []
+
+    def on_state_change(
+        self, old: BreakerState, new: BreakerState, reason: str
+    ) -> None:
+        self.transitions.append((old, new, reason))
+
+    def on_outcome(self, outcome: Outcome) -> None:
+        self.outcomes.append(outcome)
+
+
+async def test_observer_fires_trip_transition() -> None:
+    """R20: CLOSED→OPEN emits on_state_change with the stable ``trip`` reason."""
+
+    obs = _RecordingObserver()
+    cb = CircuitBreaker(_cfg(min_samples=1), observer=obs)
+    await cb.record(Outcome.FAILURE)
+    assert obs.transitions == [(BreakerState.CLOSED, BreakerState.OPEN, "trip")]
+    assert obs.outcomes == [Outcome.FAILURE]
+
+
+async def test_observer_fires_open_elapsed_transition() -> None:
+    """R20: OPEN→HALF_OPEN after cool-down carries ``open_elapsed``."""
+
+    obs = _RecordingObserver()
+    cb = CircuitBreaker(_cfg(min_samples=1, open_duration=0.05), observer=obs)
+    await cb.record(Outcome.FAILURE)
+    obs.transitions.clear()
+    await asyncio.sleep(0.06)
+    await cb.check()  # elapsed ≥ open_duration → HALF_OPEN
+    assert obs.transitions == [
+        (BreakerState.OPEN, BreakerState.HALF_OPEN, "open_elapsed")
+    ]
+
+
+async def test_observer_fires_probe_success_transition() -> None:
+    """R20: HALF_OPEN→CLOSED on a successful probe carries ``probe_success``."""
+
+    obs = _RecordingObserver()
+    cb = CircuitBreaker(_cfg(min_samples=1, open_duration=0.05), observer=obs)
+    await cb.record(Outcome.FAILURE)
+    await asyncio.sleep(0.06)
+    await cb.check()  # → HALF_OPEN
+    obs.transitions.clear()
+    await cb.record(Outcome.SUCCESS)
+    assert obs.transitions == [
+        (BreakerState.HALF_OPEN, BreakerState.CLOSED, "probe_success")
+    ]
+
+
+async def test_observer_fires_probe_failure_transition() -> None:
+    """R20: HALF_OPEN→OPEN on a failed probe carries ``probe_failure``."""
+
+    obs = _RecordingObserver()
+    cb = CircuitBreaker(_cfg(min_samples=1, open_duration=0.05), observer=obs)
+    await cb.record(Outcome.FAILURE)
+    await asyncio.sleep(0.06)
+    await cb.check()  # → HALF_OPEN
+    obs.transitions.clear()
+    await cb.record(Outcome.FAILURE)
+    assert obs.transitions == [
+        (BreakerState.HALF_OPEN, BreakerState.OPEN, "probe_failure")
+    ]
+
+
+async def test_observer_outcome_fires_every_record() -> None:
+    """on_outcome fires once per record() call — success or failure alike."""
+
+    obs = _RecordingObserver()
+    cb = CircuitBreaker(_cfg(min_samples=10), observer=obs)  # won't trip
+    await cb.record(Outcome.SUCCESS)
+    await cb.record(Outcome.FAILURE)
+    assert obs.outcomes == [Outcome.SUCCESS, Outcome.FAILURE]
+    assert obs.transitions == []  # never tripped
+
+
+async def test_observer_default_is_noop() -> None:
+    """Without an explicit observer the breaker uses NoopObserver: zero
+    transitions captured, zero overhead, and a trip still completes cleanly."""
+
+    cb = CircuitBreaker(_cfg(min_samples=1))  # NoopObserver default
+    await cb.record(Outcome.FAILURE)
+    await cb.record(Outcome.FAILURE)
+    await cb.record(Outcome.FAILURE)  # trip — no observer to notify
+    assert cb.state is BreakerState.OPEN
+
+
+async def test_observer_fault_is_fail_open() -> None:
+    """R20: a buggy observer that raises on every hook must NOT corrupt the
+    breaker state machine — ``_notify_*`` wraps each call in try/except."""
+
+    class _Boom(Observer):
+        def on_state_change(self, old, new, reason):  # noqa: ANN001
+            raise RuntimeError("boom")
+
+        def on_outcome(self, outcome):  # noqa: ANN001
+            raise RuntimeError("boom")
+
+    cb = CircuitBreaker(_cfg(min_samples=1), observer=_Boom())
+    await cb.record(Outcome.FAILURE)  # trip path notifies + records outcome
+    assert cb.state is BreakerState.OPEN  # state machine intact despite fault
+
+
+async def test_attach_observer_replaces_active_observer() -> None:
+    """attach_observer swaps the observer; subsequent events route to the new
+    one only — the idempotent re-attach contract core.py relies on each turn."""
+
+    obs1 = _RecordingObserver()
+    cb = CircuitBreaker(_cfg(min_samples=1), observer=obs1)
+    obs2 = _RecordingObserver()
+    cb.attach_observer(obs2)  # replace
+    await cb.record(Outcome.FAILURE)
+    assert obs1.outcomes == []  # detached
+    assert obs2.outcomes == [Outcome.FAILURE]  # active

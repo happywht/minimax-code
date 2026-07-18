@@ -23,6 +23,8 @@ from .circuit_breaker import (
     BreakerState,
     CircuitBreaker,
     CircuitBreakerRegistry,
+    NoopObserver,
+    Observer,
     Outcome,
 )
 from .retry import (
@@ -42,6 +44,8 @@ __all__ = [
     "BreakerState",
     "CircuitBreaker",
     "CircuitBreakerRegistry",
+    "NoopObserver",
+    "Observer",
     "Outcome",
     "RETRYABLE_STATUS",
     "TERMINAL_STATUS",

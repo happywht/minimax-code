@@ -48,6 +48,39 @@ class Outcome(StrEnum):
     FAILURE = "failure"
 
 
+class Observer:
+    """Hooks for breaker state transitions and per-outcome events (R20).
+
+    Fuses grok-build ``xai-circuit-breaker``'s ``Observer`` trait. Override on
+    a subclass to wire breaker events into telemetry. Methods must not raise
+    — :class:`CircuitBreaker` wraps every call in a fail-open guard so a buggy
+    observer can never corrupt the state machine or block the LLM hot path.
+
+    The interface is intentionally identical to the one in
+    :mod:`minimax_code.resilience.breaker` so a single adapter can bridge
+    either stack to the telemetry engine.
+    """
+
+    def on_state_change(
+        self, old: BreakerState, new: BreakerState, reason: str
+    ) -> None:
+        """Called after a CLOSED<->OPEN<->HALF_OPEN transition.
+
+        ``reason`` is a stable lowercase string from grok's closed set —
+        ``"trip"`` (error-rate exceeded), ``"open_elapsed"`` (cool-down
+        elapsed), ``"probe_success"`` / ``"probe_failure"`` (half-open probe
+        result). Stable strings let frontends map reasons to UI without
+        parsing free text.
+        """
+
+    def on_outcome(self, outcome: Outcome) -> None:
+        """Called for every recorded outcome (success or failure)."""
+
+
+class NoopObserver(Observer):
+    """Default observer: does nothing (zero overhead when telemetry is off)."""
+
+
 # HTTP-style failure signals. Callers may ``record()`` with a raw status
 # code; codes outside this set are coerced to SUCCESS. Mirrors grok's
 # ``BreakerConfig.failure_codes`` default of {429,500,502,503,504}.
@@ -147,6 +180,7 @@ class CircuitBreaker:
         config: BreakerConfig | None = None,
         *,
         name: str = "default",
+        observer: Observer | None = None,
     ) -> None:
         self.config = config or BreakerConfig.server()
         self.name = name
@@ -155,6 +189,36 @@ class CircuitBreaker:
         self._samples: deque[tuple[float, Outcome]] = deque()
         self._half_open_inflight = 0
         self._lock = asyncio.Lock()
+        self._observer: Observer = observer or NoopObserver()
+
+    def attach_observer(self, observer: Observer) -> None:
+        """Attach or replace the observer (R20).
+
+        Idempotent re-attach of the same observer is safe — callers that fetch
+        a breaker from :class:`CircuitBreakerRegistry` on every turn re-attach
+        the same telemetry-backed observer without duplicating events.
+        """
+        self._observer = observer
+
+    def _notify_state_change(
+        self, old: BreakerState, new: BreakerState, reason: str
+    ) -> None:
+        """Fail-open observer dispatch — never lets telemetry break the gate."""
+        try:
+            self._observer.on_state_change(old, new, reason)
+        except Exception:  # noqa: BLE001 — observer fault must not corrupt state
+            logger.debug(
+                "breaker %s observer.on_state_change failed", self.name, exc_info=True
+            )
+
+    def _notify_outcome(self, outcome: Outcome) -> None:
+        """Fail-open observer dispatch for per-outcome hooks."""
+        try:
+            self._observer.on_outcome(outcome)
+        except Exception:  # noqa: BLE001 — observer fault must not corrupt state
+            logger.debug(
+                "breaker %s observer.on_outcome failed", self.name, exc_info=True
+            )
 
     @property
     def state(self) -> BreakerState:
@@ -199,6 +263,9 @@ class CircuitBreaker:
                     self._state = BreakerState.HALF_OPEN
                     self._half_open_inflight = 0
                     logger.info("breaker %s OPEN→HALF_OPEN", self.name)
+                    self._notify_state_change(
+                        BreakerState.OPEN, BreakerState.HALF_OPEN, "open_elapsed"
+                    )
                 else:
                     raise BreakerOpen(
                         self.config.open_duration - elapsed,
@@ -236,11 +303,14 @@ class CircuitBreaker:
             if self._state is BreakerState.HALF_OPEN:
                 self._half_open_inflight = max(0, self._half_open_inflight - 1)
                 if outcome is Outcome.FAILURE:
-                    self._trip(now)
+                    self._trip(now, reason="probe_failure")
                 else:
                     self._state = BreakerState.CLOSED
                     self._samples.clear()
                     logger.info("breaker %s HALF_OPEN→CLOSED", self.name)
+                    self._notify_state_change(
+                        BreakerState.HALF_OPEN, BreakerState.CLOSED, "probe_success"
+                    )
             elif self._state is BreakerState.CLOSED:
                 if (
                     len(self._samples) >= self.config.min_samples
@@ -248,8 +318,10 @@ class CircuitBreaker:
                     >= self.config.error_rate_threshold
                 ):
                     self._trip(now)
+            self._notify_outcome(outcome)
 
-    def _trip(self, now: float) -> None:
+    def _trip(self, now: float, *, reason: str = "trip") -> None:
+        old = self._state
         self._state = BreakerState.OPEN
         self._opened_at = now
         logger.warning(
@@ -258,6 +330,7 @@ class CircuitBreaker:
             self._error_rate_locked(),
             len(self._samples),
         )
+        self._notify_state_change(old, BreakerState.OPEN, reason)
 
 
 class CircuitBreakerRegistry:

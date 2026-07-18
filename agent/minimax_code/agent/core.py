@@ -275,6 +275,17 @@ class AgentCore:
         # breaker knobs are read from self.config at call time so they
         # stay hot-reloadable across a session.
         self._breakers = CircuitBreakerRegistry()
+        # R20 — telemetry adapter for the ``llm`` breaker. Resolves the engine
+        # lazily through a closure over ``self`` (the engine is injected from
+        # ``app.py`` after this constructor returns), so a late-arriving engine
+        # still observes breaker transitions on the next turn. The import is
+        # deferred to call time to mirror ``_record_audit`` and keep ``core``'s
+        # top-level import graph free of a telemetry re-entry.
+        from ..telemetry.observer_adapter import ReliabilityTelemetryObserver
+
+        self._llm_breaker_observer = ReliabilityTelemetryObserver(
+            lambda: self.telemetry_engine, name="llm"
+        )
         # R14 — process tracer. Opens one root span per turn (``agent.turn``)
         # so every LLM/tool span inside the loop nests under a shared
         # trace_id. Lazily wired to the telemetry engine via ``get_tracer``;
@@ -475,6 +486,10 @@ class AgentCore:
         breaker = await self._breakers.get_or_create(
             "llm", self.config.llm_breaker_config or BreakerConfig.server(),
         )
+        # R20 — re-attach the telemetry observer each turn (idempotent). The
+        # breaker may have been created on a prior turn before the engine was
+        # injected, so a late-arriving engine still observes future transitions.
+        breaker.attach_observer(self._llm_breaker_observer)
         try:
             await breaker.check()
         except BreakerOpen as exc:
@@ -490,15 +505,61 @@ class AgentCore:
             async with self._tracer.start_span(
                 "llm.stream", model=getattr(self.config, "model", None)
             ):
+                # R20 — on_retry emits one RETRY telemetry event per retried
+                # attempt (carrying this turn's session_id), fusing grok's
+                # xai-grok-telemetry retry-event into the in-memory bus.
                 response = await with_retry(
                     lambda: self._stream_turn(messages),
                     self.config.llm_retry_policy or RetryPolicy.llm(),
+                    on_retry=self._on_llm_retry,
                 )
         except BaseException:
             await breaker.record(Outcome.FAILURE)
             raise
         await breaker.record(Outcome.SUCCESS)
         return response
+
+    def _on_llm_retry(
+        self, attempt: int, exc: BaseException, delay: float
+    ) -> None:
+        """Emit one ``RETRY`` telemetry event per retried LLM attempt (R20).
+
+        Called from :func:`with_retry`'s ``on_retry`` hook before each backoff
+        sleep. Fail-open: a missing engine or an emit fault never breaks the
+        retry loop (``with_retry`` itself also wraps this hook in try/except,
+        so the guard here is belt-and-braces). The event carries the owning
+        turn's ``session_id`` so retries are attributable per-conversation.
+
+        ``breaker_open`` in the payload lets a dashboard distinguish retries
+        that ended TERMINAL (breaker shedding load — R19 fused this signal)
+        from ordinary transient retries; without it a breaker-open retry
+        looks identical to a flaky-network retry in the event stream.
+        """
+        engine = self.telemetry_engine
+        if engine is None:
+            return  # telemetry disabled — zero overhead, no allocation
+        try:
+            from ..telemetry import EventType, Severity, TelemetryEvent
+
+            engine.emit(
+                TelemetryEvent(
+                    type=EventType.RETRY,
+                    session_id=self._current_session_id or None,
+                    severity=Severity.WARN,
+                    name="llm",
+                    payload={
+                        "attempt": attempt,
+                        "max_attempts": (
+                            self.config.llm_retry_policy or RetryPolicy.llm()
+                        ).max_attempts,
+                        "delay_s": round(delay, 3),
+                        "error_type": type(exc).__name__,
+                        "breaker_open": bool(getattr(exc, "breaker_open", False)),
+                    },
+                )
+            )
+        except Exception:  # noqa: BLE001 — telemetry must not break retry
+            logger.debug("telemetry retry emit failed", exc_info=True)
 
     async def _stream_turn(self, messages: list[Message]) -> LLMResponse:
         """Stream one LLM call and stitch the chunks into a response.
