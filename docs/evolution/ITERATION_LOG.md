@@ -921,3 +921,132 @@ git 丰富化），落地一个进程内的 `FsEventBus`，并把两个写工具
 ### Commit
 
 `feat(platform): R16 single-causal file-change stream (fuse grok xai-fsnotify)`
+
+## R17 — 调用级熔断器：CircuitBreaker（fuse grok xai-circuit-breaker）（阶段 B 第 7 轮）
+
+**本轮目标**：grok-build 的 `xai-circuit-breaker` 是一套保护下游（LLM API、外部工具）
+免遭雪崩重试的三态熔断器——closed 累积样本 → error_rate 越阈 trip → open 冷却拒流 →
+half-open 探测恢复，外加滑动窗口、租约防卡死、Observer 钩子、RetryPolicy 分类器。MiniMax
+的 `agent/core.py` 调 LLM 和工具时，下游连续失败会无脑重试拖垮体验（也白烧 token）。本轮
+把熔断器作为**平台公共组件**落地（grok 的 `crates/common` 对应 MiniMax 的基础层），让下游
+调用在连续失败时**快速失败**（open 态直拒），半开探测恢复，全程 fail-open（断路器自身故障
+绝不阻塞调用方）。与 R16 同构——抽取因果支柱（三态机 + 滑动失败计数 + 冷却 + 半开探测 +
+租约），砍掉 Rust 生态表衣（原子/CAS/锁——Python GIL 单线程下纯属累赘）。
+
+### 融合结论（因果支柱 1:1 保留，Rust 并发表衣 GIL 下砍净）
+
+- ✅ **保持**：三态机因果核——`BreakerState`（StrEnum：closed/open/half_open）+
+  `Outcome`（success/failure）+ `BreakerOpen` 信号（带 `retry_after` 秒）。`check()` 三态
+  调度（open→raise / half_open→claim probe / closed→放行），`record()` 反馈结果驱动转换。
+  identity-map grok 的 `BreakerState=0/1/2` wire 值（语义保留，序列形式无关紧要）。
+- ✅ **保持**：滑动窗口 + min_samples 双闸——`SlidingWindow` 是 `deque[(ts,is_failure)]` +
+  增量 `_failures` 计数，`error_rate()` O(1)（热路径 record 每次读，绝不扫描）。trip 条件
+  `sample_count >= min_samples AND error_rate >= threshold`，样本不足时不跳闸（避免冷启动
+  误杀）。`MAX_WINDOW_ENTRIES=10_000` 安全帽防高压爆内存。
+- ✅ **保持**：冷却时间窗——trip 时记 `opened_until = now + open_duration`，`state` property
+  惰性检查 `now >= opened_until` 转 half_open（读路径即转换，无需额外 tick）。
+- ✅ **保持**：半开探测 + 租约回收——`half_open_max_probes` 槽位，probe 在 `check` 中
+  `+=1`，在 close/trip 中 reset 0（镜像 grok，record 不递减）。**租约铁律**：被放弃的 probe
+  （取消的 future / 忘了 record）会在 `probe_claimed_at + open_duration` 后被回收，断路器
+  永远不会卡死在 half_open 无槽可用——这是 grok 防卡死的关键机制，1:1 保留。
+- ✅ **保持**：fail-open 铁律——`guard()` 同步上下文管理器：pre-check 的 `BreakerOpen` 直
+  传播；断路器**自身**内部故障（坏 Observer / clock 抛错）被 `except Exception: # noqa:
+  BLE001` 吞掉降级（log debug），**业务调用照常执行**。业务异常记 FAILURE 并 re-raise。
+  镜像 R16 的 emit fail-open 契约——**断路器坏绝不让业务调用崩**。
+- ✅ **保持**：Observer 钩子——`on_state_change(old,new,reason)` + `on_outcome(outcome)`，
+  `NoopObserver` 默认。给遥测/日志留扩展点（未来 R18+ 把状态转换喂给 TelemetryEngine）。
+- ✅ **保持**：RetryPolicy 分类器——`Disposition`（retryable/auth_refresh/terminal）+
+  `server()`（429+5xx retry）/ `client_storage()`（401 auth-refresh / 400-404 terminal /
+  其余 retry）预设 + `classify(status)`（2xx 返回 None）。把"这个状态码怎么办"的决策收口，
+  调用方不再各自重写状态码表。
+- ✅ **三件套单例**：`app.py` 的 `get_breaker_registry` / `set_breaker_registry` /
+  `ensure_breaker_registry` 与 `ensure_fs_bus` / `ensure_telemetry_engine` 完全对齐——
+  `ensure_breaker_registry()` 惰性构建一次，`BreakerConfig.from_env()` 读 `MINIMAX_CODE_CB_*`
+  开关，环境开关 `MINIMAX_CODE_BREAKER`（"0/false/off/no" 禁用），构建失败 log + 返回 None
+  （"running unprotected"）；调用方 `reg = ensure_breaker_registry(); br = reg.get(key) if
+  reg else None`，`None` 即"无保护，照常调用"。
+- ❌ **放弃**：grok 的全部原子操作（`AtomicUsize`/`AtomicBool`/`fetch_add` CAS）——Python
+  asyncio 单线程 + GIL，状态突变无竞争，普通属性访问即 race-free。这是前向迁移的**最大简化
+  红利**：grok 的 `is_open_fast: AtomicBool` 镜像、probe 槽 CAS、OnceLock 初始化全部不需要。
+- ❌ **放弃**：grok 的 `Clock` trait + `SystemClock`/`MockClock` 类型层级——Python 直接用
+  `Callable[[], float]` 类型别名（默认 `time.monotonic`），测试注入 `MockClock` 可调用对象，
+  无需 trait 仪式。`opened_until` 存单调秒偏移（非 wall-clock），免 NTP 漂移——这条**保留**。
+- ❌ **放弃**：grok 的多 probe 并发 CAS 语义（`half_open_max_probes > 1` 时 N 个 probe 全成功
+  才 close）——默认 `max_probes=1`，单 probe 即决定（成功→close / 失败→trip）。多 probe 并发
+  在 Python 单线程 guard（无 await 点）下不会发生；YAGNI，待真实多 probe 需求再加成功计数。
+- ❌ **放弃**：grok 的 `on_probe_admission(allowed)` 钩子——本平台暂无探测准许事件的消费者，
+  YAGNI 砍掉，只保留 `on_state_change` + `on_outcome` 两个有实际消费者的钩子。
+
+### 交付
+
+- `minimax_code/resilience/state.py`（新模块，纯数据层）：`BreakerState`（StrEnum：
+  closed/open/half_open）+ `Outcome`（StrEnum：success/failure）+ `BreakerOpen`（异常，
+  带 `retry_after: float`，`__init__` clamp `>=0`）。
+- `minimax_code/resilience/window.py`（新模块）：`SlidingWindow`——`__slots__`（_entries/
+  _failures）+ `push`（超 MAX_WINDOW_ENTRIES 先驱逐最旧）+ `evict`（按 window 时窗驱逐）+
+  `error_rate`（O(1) 增量）+ `sample_count`/`clear`；模块常量 `MAX_WINDOW_ENTRIES=10_000`。
+- `minimax_code/resilience/config.py`（新模块）：`BreakerConfig`（frozen dataclass：
+  window_duration/min_samples/error_rate_threshold/open_duration/half_open_max_probes/
+  failure_codes/enabled）+ `server()`/`client()` 类方法预设 + `from_env(prefix=
+  "MINIMAX_CODE_CB_")`（WINDOW_SECS/MIN_SAMPLES/ERROR_RATE_THRESHOLD/OPEN_DURATION_SECS/
+  HALF_OPEN_MAX_PROBES/FAILURE_CODES/ENABLED，坏值 log + 回落默认）+ `is_failure_status` +
+  `with_half_open_floor`；模块级 `parse_failure_codes`（逗号分隔，坏项静默丢弃）。
+- `minimax_code/resilience/retry_policy.py`（新模块）：`Disposition`（StrEnum：
+  retryable/auth_refresh/terminal）+ `RetryPolicy`（frozen dataclass：retryable/auth_refresh/
+  terminal frozensets + default）+ `server()`/`client_storage()` 预设 + `classify(status)`（2xx
+  返回 None，否则 auth_refresh > terminal > retryable ∨ 5xx > default）+ `should_retry`。
+- `minimax_code/resilience/breaker.py`（新模块，核心）：`Clock` 类型别名 + `Observer`/
+  `NoopObserver`（on_state_change/on_outcome 钩子）+ `CircuitBreaker`——`state`/`config`/
+  `is_open`/`error_rate`/`sample_count` 只读属性 + `check()`（三态调度 + half_open probe
+  claim + 租约回收）+ `record()`（half_open probe 决定 / closed 累积 + 阈值 trip / open 防御
+  不累积）+ `_check_open`/`_try_half_open_probe`/`_trip`/`_close`/`_set_state` 私有转换 +
+  `guard()` 同步上下文管理器（fail-open 铁律）。
+- `minimax_code/resilience/registry.py`（新模块）：`CircuitBreakerRegistry`——`config`/
+  `enabled` 属性 + `get(key)`（惰性创建同 key 同实例，禁用返回 None）+ `keys`/`known_keys`/
+  `clear`。
+- `minimax_code/resilience/__init__.py`（新包）：re-export 15 个公共符号，`__all__` 登记。
+- `minimax_code/app.py`（编辑）：`_BREAKER_REGISTRY` 模块全局 + `get_breaker_registry`/
+  `set_breaker_registry`/`ensure_breaker_registry` 三件套（镜像 fs_bus，惰性构建 +
+  `BreakerConfig.from_env()` + 环境开关 `MINIMAX_CODE_BREAKER` + fail-open 返回 None）；
+  `__all__` 加三件导出。
+- `tests/test_resilience.py`（新，33 测）：`MockClock`（确定性时钟，`__call__` 返回 `t`，
+  `advance` 推进）+ `hot_config` 工厂（min_samples=4 易 trip）。覆盖——状态机（trip at
+  threshold / 不足 min_samples 不 trip / error_rate 不足不 trip / open→half_open at 边界 /
+  open sheds via check / half_open probe 成功 close+清窗 / half_open probe 失败 reopen / 槽位
+  耗尽 / **租约回收** / disabled 永不 shed）、滑动窗口（增量 error_rate / evict 旧样本 /
+  MAX cap / clear 重置失败计数）、注册表（同 key 同实例 / 异 key 异实例 / 禁用 None / clear）、
+  RetryPolicy（server 429+5xx retry+400 terminal / client_storage 401 auth+404 terminal+5xx
+  retry+default retry）、guard fail-open（记 success / 记 failure+reraise / BreakerOpen
+  传播不进 block / Observer 故障 fail-open）、Config（server/client 预设 / from_env 解析 /
+  坏值回落 / parse_failure_codes / is_failure_status）、app 三件套（set/get / env 禁用 None /
+  惰性构建缓存）。
+
+### 验证
+
+- ✅ `ruff check`（resilience/ + app.py + test_resilience.py）：**All checks passed**——
+  7 个新模块 + app.py 编辑 + 33 测一次过检（BLE001 双 noqa 已在 guard fail-open 处标注、
+  `collections.abc.Callable` 避免 UP045、StrEnum 满足 UP042、`X | None` 满足 UP037）。
+- ✅ `pytest tests/test_resilience.py -q`：**33 passed in 0.64s**——状态机全路径、租约回收、
+  guard fail-open、env 解析全部绿灯。
+- ✅ `pytest -q` 全套：**1076 passed in 84.97s**（1043 + 33 新增），零失败、零回归——R17
+  新增 33 测无缝融入，证明三件套单例不影响 agent 启动、resilience 包无副作用污染既有 1043 测。
+
+### YAGNI 边界（本轮不做）
+
+- ❌ 不接 LLM transport——`agent/llm.py` 的 `AnthropicTransport`/`OpenAITransport` 状态处理
+  在传输层，连接断路器需改传输内部（多传输实现各有状态机），是独立决策，留待 R18。
+- ❌ 不做 async guard——`guard()` 是同步上下文管理器（无 await 点），await 调用点应手动
+  `check()` + `await call` + `record()`。async with 变体待 transport 连接时按需再加。
+- ❌ 不做断路器状态持久化——状态全在内存（进程重启即 reset 为 closed）。持久化（跨重启
+  保持 open 态）是独立需求，且会引入时序复杂度，待真实场景驱动。
+- ❌ 不做多 probe 成功计数——默认 `half_open_max_probes=1`，单 probe 决定。多 probe
+  （N 个连续成功才 close）语义待真实并发探测需求再加 `_half_open_successes` 计数器。
+- ❌ 不做 metrics/observability 端点——Observer 钩子已留（on_state_change/on_outcome），
+  把状态转换喂给 TelemetryEngine 是 R18+ 的桥接工作，不混入熔断器内核。
+- ❌ 不做断路器手动远程控制（强制 open/close 的 RPC）——当前无运维面板需求，YAGNI。
+- ❌ 不把 RetryPolicy 接进 transport 重试循环——`RetryPolicy.classify` 已就绪，但 transport
+  现有 `max_retries` 逻辑未消费它；接入是 transport 连接轮（R18）的一部分。
+
+### Commit
+
+`feat(platform): R17 circuit breaker (fuse grok xai-circuit-breaker)`

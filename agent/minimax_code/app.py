@@ -831,6 +831,56 @@ def ensure_fs_bus() -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Circuit-breaker registry (R17 — resilience pillar)
+# ---------------------------------------------------------------------------
+
+_BREAKER_REGISTRY: Any = None
+
+
+def get_breaker_registry() -> Any:
+    """Return the process-wide :class:`CircuitBreakerRegistry`, or ``None``."""
+    return _BREAKER_REGISTRY
+
+
+def set_breaker_registry(registry: Any) -> None:
+    """Inject a pre-built CircuitBreakerRegistry (tests bypass lazy build)."""
+    global _BREAKER_REGISTRY
+    _BREAKER_REGISTRY = registry
+
+
+def ensure_breaker_registry() -> Any:
+    """Return the process-wide CircuitBreakerRegistry, building it once on demand.
+
+    Fail-open: a build failure logs and returns ``None`` rather than raising,
+    so ``reg = ensure_breaker_registry()`` followed by
+    ``br = reg.get(key) if reg else None`` keeps callers working even when
+    the registry cannot initialise. Callers treat ``None`` (or a disabled
+    registry returning ``None`` from ``get``) as "no protection, proceed
+    unprotected" — the contract is "business calls never break because the
+    breaker registry broke".
+    """
+    global _BREAKER_REGISTRY
+    if _BREAKER_REGISTRY is not None:
+        return _BREAKER_REGISTRY
+    # Env switch (default on). "0"/"false"/"off"/"no" disables the registry
+    # so callers short-circuit without ever building one — useful for
+    # environments that want zero resilience overhead.
+    flag = os.environ.get("MINIMAX_CODE_BREAKER", "").strip().lower()
+    if flag in ("0", "false", "off", "no"):
+        logger.debug("breaker registry disabled by MINIMAX_CODE_BREAKER env")
+        return None
+    try:
+        from .resilience import BreakerConfig, CircuitBreakerRegistry
+
+        _BREAKER_REGISTRY = CircuitBreakerRegistry(BreakerConfig.from_env())
+        logger.info("circuit-breaker registry initialised")
+    except Exception:
+        logger.exception("breaker registry init failed; running unprotected")
+        _BREAKER_REGISTRY = None
+    return _BREAKER_REGISTRY
+
+
+# ---------------------------------------------------------------------------
 # Boot-time crash recovery (R12 — reliability pillar)
 # ---------------------------------------------------------------------------
 
@@ -975,4 +1025,7 @@ __all__ = [
     "ensure_fs_bus",
     "get_fs_bus",
     "set_fs_bus",
+    "ensure_breaker_registry",
+    "get_breaker_registry",
+    "set_breaker_registry",
 ]
