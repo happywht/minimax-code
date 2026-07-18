@@ -122,3 +122,48 @@
 ### Commit
 
 `feat(mcp): R3 add MCP protocol types and constants layer`
+
+---
+
+## R4 — MCP Transport + Client（连接外部 MCP server）
+
+- **回合序号**：4 / 50+
+- **所属阶段**：A
+- **开始时间**：2026-07-18
+- **状态**：✅ 完成
+
+### 本轮目标
+
+实现 stdio/in-process transport + JSON-RPC client 握手，让 MiniMax 能**连接外部 MCP server**。先写 transport 层（字节管道），再写 client（握手 + request/response 去复用 + 通知分发），最后用进程内成对 transport 验证全链路。完成后 R5 即可把外部 MCP 工具桥接进现有 `ToolRegistry`。
+
+### 设计决策
+
+- **Transport 抽象统一**：`MCPTransport` ABC 暴露 `start/send/messages/close` 四方法；`StdioTransport`（子进程 + 换行分隔 JSON）和 `InProcessTransport`（双 asyncio.Queue 成对管道）共享同一接口，client 完全 transport 无关。
+- **请求/响应去复用**：client 后台一个 reader task，按 `id` 把 response 匹配到 `asyncio.Future`；通知（无 `id`）转发到可选 handler；传输关闭时把所有 pending future 失败，避免调用方挂死。
+- **握手严格对齐 spec**：`initialize` → 校验 `InitializeResult` → 回发 `notifications/initialized` 通知；超时用 `asyncio.wait_for`，错误码经 JSON-RPC error 通道传播为 `MCPClientError`。
+- **进程内成对 transport 是测试基石**：`make_in_process_pair()` 返回两个互连 transport，测试无需 spawn 子进程即可端到端驱动 client ↔ mock server。
+- **统一现代化导入**：`AsyncIterator/Awaitable/Callable` 从 `collections.abc` 引入，`asyncio.TimeoutError` 用内置 `TimeoutError`（ruff UP035/UP041）。
+
+### 实现 / 产出
+
+- `minimax_code/mcp/transport.py`：
+  - `MCPTransport`（ABC）、`MCPTransportError`。
+  - `StdioTransport`：`asyncio.create_subprocess_exec` 拉起 server，stdin/stdout 走换行分隔 JSON；带队列的 `_read_loop` 读取 task，`None` 作流结束哨兵；`close()` 先 terminate 再 kill（best-effort）。
+  - `InProcessTransport` + `make_in_process_pair()`：双 `asyncio.Queue` 成对管道。
+- `minimax_code/mcp/client.py`：
+  - `MCPClient`：`initialize()`（握手 + 启 reader）、`ping()`、`list_tools/call_tool/list_resources/read_resource/list_prompts`、`close()`（幂等，失败所有 pending）。
+  - `MCPClientError`（协议层错误）。
+  - 后台 `_reader_loop` 做 response 去复用 + notification 分发。
+- `minimax_code/mcp/__init__.py`：导出 transport/client 全部公共符号。
+- `tests/test_mcp_client.py`：9 个端到端测试（用 `make_in_process_pair` + mock server）。
+
+### 验证
+
+- ✅ `ruff check`：All checks passed（自动修复 7 处 UP035/UP041/I001 现代化导入）。
+- ✅ `pytest tests/test_mcp_types.py tests/test_mcp_client.py`：**19 passed in 0.21s**（含 R3 的 10 + R4 的 9）。
+- 覆盖：握手完成且记录 server_info、list_tools 返回工具、call_tool 文本内容、ping 存活、服务端 -32601 错误传播为 MCPClientError、通知转发到 handler、close 后请求快速失败、服务端静默时请求超时、close 幂等。
+- ⏭️ R5 进入 MCP registry：把外部 MCP 工具桥接进现有 `ToolRegistry`，让 agent 能调用任意 MCP server 的工具。
+
+### Commit
+
+`feat(mcp): R4 add MCP transport (stdio + in-process) and JSON-RPC client`

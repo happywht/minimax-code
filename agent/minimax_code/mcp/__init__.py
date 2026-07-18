@@ -26,6 +26,25 @@ handlers. No Rust toolchain is introduced — everything is pure Python.
 
 from __future__ import annotations
 
-from . import protocol, types
+from . import protocol, transport, types
+from .client import MCPClient, MCPClientError
+from .transport import (
+    InProcessTransport,
+    MCPTransport,
+    MCPTransportError,
+    StdioTransport,
+    make_in_process_pair,
+)
 
-__all__ = ["protocol", "types"]
+__all__ = [
+    "InProcessTransport",
+    "MCPClient",
+    "MCPClientError",
+    "MCPTransport",
+    "MCPTransportError",
+    "StdioTransport",
+    "make_in_process_pair",
+    "protocol",
+    "transport",
+    "types",
+]
