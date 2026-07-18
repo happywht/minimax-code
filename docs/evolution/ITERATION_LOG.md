@@ -1475,3 +1475,112 @@ R21-R30）。
 ### Commit
 
 `feat(platform): R21 transport breaker telemetry symmetry (fuse grok xai-circuit-breaker Observer)`
+
+## R22 — 子 agent 配置解析层与 capability 过滤（fuse grok xai-grok-subagent-resolution）（阶段 C 第 2 轮）
+
+**本轮目标**：R21 闭合了两条可靠性栈的可观测性。本轮切入**死代码复活**主线——
+`SubAgentRuntime.build()` 接受 `SubAgentConfig.tool_allowlist` 但**完全忽略它**：sub-agent
+声明的"只读"能力形同虚设，core 始终对全局 registry 构建，能看见每一个工具。这是 orchestrator
+最大的死代码面。本轮融合 grok-build `xai-grok-subagent-resolution`（纯逻辑"resolve"阶段
+crate），其 `lib.rs:17-26` 明确列出 `resolve_subagent_spec()` 组合 API + 能力过滤作为**未来
+工作**——**R22 完成此设计意图**：建立无副作用的解析层把 sub-agent 配置（model + allowlist）
+解析成冻结 `ResolvedSpec`，再映射成 `FilteredToolRegistry` 只读视图，让 agent loop **字面上
+无法**看到或 dispatch 受限工具。**关键简化**：grok 四维优先级链（explicit > role default >
+persona default > None）在 MiniMax 无 persona/role/isolation 概念，折叠为 `explicit config >
+parent default`；**关键 DRY 发现**：`build()` 已做 `base_registry = registry or
+get_default_registry()`（父级继承语义），所以 handler 传 `registry=None` 的当前路径自动以全局
+registry 为父级，**handlers_agents.py 无需改动**——过滤在 build() 内自然解析。这是阶段 C 第 2
+轮（智能体协作与感知 R21-R30）。
+
+### 融合结论（纯逻辑解析 + 只读视图，复活 allowlist 死代码）
+
+- ✅ **保持**：grok "pure-logic resolve 阶段分离"——`resolve_subagent_spec()` 是无 I/O、无全局的
+  纯函数，读 config + 调用方提供的"可用工具名快照"，返回 `ResolvedSpec` 冻结数据类。解析器不
+  持有 registry 引用，trivially testable（grok crate charter 的核心诉求）。
+- ✅ **保持**：grok 优先级链（折叠）——`explicit config field > parent default`。grok 的四维链
+  （explicit > role > persona > None）在 MiniMax 无 persona/role/isolation-worktree 等价物
+  （YAGNI），折叠成二维。model: `config.model` or 父级默认（`"MiniMax-M3"`）。
+- ✅ **保持**：grok `SubagentCapabilityMode` 二值——`ALL`（继承父级全量 surface，无 allowlist 时
+  的 parent-inheritance fallback）/ `ALLOWLIST`（仅 config 命名的工具）。
+- ✅ **保持**：grok "fail-soft 配置"——allowlist 命名父级实际不存在的工具时**静默丢弃**（不中止
+  spawn），映射 grok 非致命错误配置策略（typo / 版本偏移不应让整个 spawn 失败）。
+- ✅ **保持**：grok "schema 级过滤是最确定的门"——`FilteredToolRegistry.to_llm_functions()` 从
+  function-calling schema 移除受限工具签名，**模型连看都看不到**受限工具，是最可靠的预防（比
+  仅 dispatch 拦截更彻底）。
+- ✅ **保持**：grok "filter live registry object"——MiniMax 不过滤静态 config struct（grok 的
+  `filter_tool_config`），而是过滤 agent loop 实际持有的**实时 registry 引用**（鸭子类型视图），
+  更贴合 MiniMax registry-as-object 模型。
+- ❌ **放弃**：grok 四维优先级链的 role default / persona default / isolation-worktree 三个
+  维度——MiniMax 无 persona 文件、无 role 系统、无 worktree 隔离，YAGNI。强行引入会制造无消费方
+  的抽象。
+- ❌ **放弃**：grok persona 文件加载、resume identity 校验、`EffectiveRuntimeConfig` 复合结构体
+  的全部字段——MiniMax `ResolvedSpec` 仅保留 `model` + `capability_mode` + `allowed_tools` 三
+  字段 + `is_restricted` 属性，最小够用。
+
+### 交付
+
+- `agent/minimax_code/orchestrator/resolution.py`（新建）：纯逻辑解析层。① `CapabilityMode`
+  枚举（ALL/ALLOWLIST）；② `ResolvedSpec` 冻结数据类（`model` + `capability_mode` +
+  `allowed_tools` + `is_restricted` 属性，frozen=True 防 spawn 中途篡改）；③
+  `resolve_subagent_spec(config, *, available_tool_names, parent_model="MiniMax-M3")` 纯函数
+  ——model 优先级 + available 去重保序 + allowlist 与 available 交集（fail-soft 丢弃未知名，
+  顺序跟随 allowlist 调用方意图）+ 空 allowlist/None → ALL 模式；④ `FilteredToolRegistry` 只读
+  鸭子类型视图——`base`/`allowed` 暴露属性（测试/运维内省），`get`/`has`/`list`/`names`/
+  `to_llm_functions`/`to_openai_tools` 全过滤，`dispatch` 双重门（先 allowlist 检查短路
+  `ToolResult.fail`，再委托 base），`register`/`unregister`/`clear` 抛 `NotImplementedError`
+  （只读视图契约）。模块 docstring 详述 charter + 优先级模型 + fail-soft 策略。
+- `agent/minimax_code/orchestrator/subagent.py`（编辑）：① 模块 docstring "(in a future phase)
+  a tool registry filtered..." → "(since R22) a tool registry filtered to the row's
+  ``tool_allowlist``"；② `build()` 重写——lazy import `AgentConfig`/`AgentCore` +
+  `get_default_registry` + `FilteredToolRegistry`/`resolve_subagent_spec`；
+  `base_registry = registry or get_default_registry()`（**父级继承语义**——handler 传 None 时
+  全局默认即父级 surface）；`spec = resolve_subagent_spec(config,
+  available_tool_names=base_registry.names())`；`spec.is_restricted` →
+  `FilteredToolRegistry(base_registry, spec.allowed_tools)` 包裹，否则原样继承 base；
+  `AgentConfig(model=spec.model, ...)` 用 R22 解析的有效模型；`AgentCore(llm, registry=effective,
+  config)`；③ build() docstring 重写详述 R22 解析+映射流程；④ **顺带清理** TYPE_CHECKING 块未用
+  的 `AgentCore` 导入（F401）——本文件正在编辑，预存 lint 债一并清掉。
+- `agent/tests/test_subagent_resolution.py`（新建，**20 测试**）：`_FakeTool`/`_FakeRegistry`
+  鸭子类型替身。覆盖——① resolve 优先级模型（ALL 继承父级全量、显式 model 覆盖父级默认、
+  ALLOWLIST 切换 + 交集、未知名 fail-soft 丢弃、调用方顺序保持、`ResolvedSpec` 冻结不可变）；②
+  `FilteredToolRegistry` 视图（get 隐藏受限、has 双条件真值、list+names 排除受限、to_llm_schema
+  省略受限签名、dispatch 阻止受限 + 委托允许、register/unregister/clear 三方法抛
+  `NotImplementedError`、base+allowed 暴露）；③ `build()` 集成（allowlist → filtered view 包裹、
+  无 allowlist → base 原样继承、`registry=None` → 全局默认作父级、空 allowlist → ALL 非"零工具"）。
+
+### 验证
+
+- ✅ `ruff check`（resolution.py + subagent.py + test_subagent_resolution.py）：**All checks
+  passed**——含 **1 手动修**（`test:166` B017 盲异常 `pytest.raises(Exception)` →
+  `pytest.raises(AttributeError)`，因 `FrozenInstanceError` 在所有 Python 版本都是
+  `AttributeError` 子类）+ **8 自动修**（resolution.py UP037 去引号；subagent.py I001 导入排序 +
+  F401 删未用 `AgentCore` + UP037×4 去引号；test I001 导入排序）。subagent.py 的预存 lint 债
+  （UP037 引号 / F401 未用导入 / I001 排序）顺带清掉——本文件正在编辑，规则允许。
+- ✅ `pytest tests/test_subagent_resolution.py -q`：**20 passed in 0.76s**——resolve 优先级模型 +
+  fail-soft 交集 + 调用方顺序 + 冻结不可变；FilteredToolRegistry 全过滤契约 + read-only 抛错 +
+  dispatch 双重门；build() 三路径（allowlist 包裹 / 全量继承 / registry=None 全局默认）全绿灯。
+- ✅ `pytest -q` 全套：**1137 passed**（1117 R21 基线 + 20 新增），98.96s，**零失败、零回归**——
+  证明 build() 重写向后兼容（无 allowlist 路径原样继承、registry=None 仍走全局默认）、
+  resolution.py 新模块不影响既有导入链、FilteredToolRegistry 鸭子类型能完整替换 ToolRegistry
+  喂给 AgentCore、subagent.py docstring/导入清理不破坏运行时。
+
+### YAGNI 边界（本轮不做）
+
+- ❌ 不做 grok 四维优先级链的 role/persona/isolation 维度——MiniMax 无 persona 文件、role 系统、
+  worktree 隔离概念，强行引入会制造无消费方的抽象。留待 sub-agent 真有 persona 需求时再扩。
+- ❌ 不接前端 UI 暴露 allowlist 编辑——`FilteredToolRegistry` 已在后端生效，但前端 sub-agent
+  配置面板尚未渲染 tool_allowlist 多选。这是独立 UI 工作（AgentConfigPanel 扩展），留 **R23+**。
+- ❌ 不做 allowlist 与技能（skills）的交叉过滤——config 同时有 `skills` 和 `tool_allowlist`，当前
+  allowlist 只作用于工具，技能调度独立。两者交叉（"只读 agent 只能用只读技能"）需技能 capability
+  元数据，当前技能无此字段，YAGNI。
+- ❌ 不做 registry 变更时 filtered view 热更新——`FilteredToolRegistry` 在 build() 时快照
+  `allowed`，运行期 base registry 若 register 新工具，view 不自动纳入（除非新工具名在 allowlist）。
+  sub-agent 生命周期内 base 极少变更，YAGNI。
+- ❌ 不做 allowlist 校验 RPC（"这个 allowlist 引用了哪些不存在的工具"）——fail-soft 已静默丢弃，
+  运维内省用 `view.allowed` / `view.base.names()` 手动比对即可，无独立 RPC 需求。
+
+### Commit
+
+`feat(platform): R22 subagent resolution + capability filter (fuse grok xai-grok-subagent-resolution)`
+
+`feat(platform): R21 transport breaker telemetry symmetry (fuse grok xai-circuit-breaker Observer)`

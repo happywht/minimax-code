@@ -11,8 +11,9 @@ Scope (PoC)
 
 This module deliberately does **not** spawn a child process. A sub-agent
 runs in the same Python interpreter as its parent, with its own
-:class:`AgentCore` instance, its own system prompt, and (in a future
-phase) a tool registry filtered to the row's ``tool_allowlist``. The
+:class:`AgentCore` instance, its own system prompt, and (since R22) a
+tool registry filtered to the row's ``tool_allowlist`` via
+:func:`.resolution.resolve_subagent_spec`. The
 LLM call is currently **stubbed** — the runtime builds the core but
 does not stream a real response, so the IPC layer can demonstrate
 end-to-end flow (config CRUD + invoke + progress) without spending
@@ -39,10 +40,9 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover — only for type hints
-    from ..agent.core import AgentCore
     from ..agent.llm import MiniMaxClient
 
 logger = logging.getLogger(__name__)
@@ -139,7 +139,7 @@ class SubAgentRuntime:
     #: data.
     STUB_PREFIX = "stub: agent"
 
-    def __init__(self, *, llm: "MiniMaxClient | None" = None) -> None:
+    def __init__(self, *, llm: MiniMaxClient | None = None) -> None:
         # ``llm`` is the process-wide :class:`MiniMaxClient`. When
         # ``None`` (the default), :meth:`invoke` returns the
         # deterministic stub envelope so the IPC layer can still
@@ -162,10 +162,14 @@ class SubAgentRuntime:
         """Materialise a :class:`SubAgentHandle` from a config.
 
         The core's :class:`~minimax_code.agent.core.AgentConfig` is
-        seeded with the sub-agent's ``system_prompt`` and ``model``
-        (when provided). The tool registry defaults to the global
-        one — Phase 2 will swap in a filtered view derived from
-        ``config.tool_allowlist``.
+        seeded with the sub-agent's ``system_prompt`` and the
+        R22-resolved effective model. The tool registry is resolved
+        via :func:`.resolution.resolve_subagent_spec`: when the config
+        grants a ``tool_allowlist``, the base registry is wrapped in a
+        :class:`~.resolution.FilteredToolRegistry` read-only view so
+        the sub-agent can only dispatch its allowed tools; otherwise
+        it inherits the parent (caller-supplied or global) registry
+        in full.
         """
         if not config.name or not isinstance(config.name, str):
             raise SubAgentConfigError(
@@ -179,13 +183,37 @@ class SubAgentRuntime:
         # registry, which we don't want every consumer of the
         # orchestrator module to import.
         from ..agent.core import AgentConfig, AgentCore
+        from ..agent.tools import get_default_registry
+        from .resolution import FilteredToolRegistry, resolve_subagent_spec
+
+        # R22: resolve the effective model + capability surface in one
+        # pure-logic step, then map the spec onto a real registry. The
+        # base registry is the caller-supplied one (the global default
+        # when the handler didn't inject one) — i.e. the parent surface
+        # the sub-agent inherits from.
+        base_registry = registry or get_default_registry()
+        spec = resolve_subagent_spec(
+            config, available_tool_names=base_registry.names()
+        )
+        if spec.is_restricted:
+            # ALLOWLIST mode: wrap the base in a read-only view that
+            # hides disallowed tools. The agent loop holds this view,
+            # so it literally cannot dispatch a restricted tool.
+            effective_registry: Any = FilteredToolRegistry(
+                base_registry, spec.allowed_tools
+            )
+        else:
+            # ALL mode: inherit the parent's full surface unchanged.
+            effective_registry = base_registry
 
         core_config = AgentConfig(
-            model=config.model or "MiniMax-M3",
+            model=spec.model,
             system_prompt_extra=config.system_prompt or None,
             max_iterations=config.max_iterations,
         )
-        core = AgentCore(llm=self._llm, registry=registry, config=core_config)
+        core = AgentCore(
+            llm=self._llm, registry=effective_registry, config=core_config
+        )
         return SubAgentHandle(agent_id=config.id, config=config, core=core)
 
     # -- invoke ------------------------------------------------------------
@@ -300,10 +328,10 @@ def make_session_id(prefix: str = "subagent") -> str:
 # bound to a mock LLM, then restore via ``set_subagent_runtime(None)``
 # or by saving/replacing the previous value.
 
-_SUBAGENT_RUNTIME: "SubAgentRuntime | None" = None
+_SUBAGENT_RUNTIME: SubAgentRuntime | None = None
 
 
-def get_subagent_runtime() -> "SubAgentRuntime | None":
+def get_subagent_runtime() -> SubAgentRuntime | None:
     """Return the process-wide :class:`SubAgentRuntime`, or ``None``.
 
     Returns ``None`` if the runtime hasn't been built yet (e.g.
@@ -314,7 +342,7 @@ def get_subagent_runtime() -> "SubAgentRuntime | None":
     return _SUBAGENT_RUNTIME
 
 
-def set_subagent_runtime(runtime: "SubAgentRuntime | None") -> None:
+def set_subagent_runtime(runtime: SubAgentRuntime | None) -> None:
     """Replace the cached :class:`SubAgentRuntime` (test seam).
 
     Pass ``None`` to clear. :func:`get_subagent_runtime` will then
