@@ -105,7 +105,10 @@ class OpenAITransport(LLMTransport):
                     self._thinking_count = chunk.usage["thinking_tokens"]
                 yield chunk
         except openai.APIError as exc:
-            raise LLMError(f"OpenAI API error: {exc}") from exc
+            raise LLMError(
+                f"OpenAI API error: {exc}",
+                status_code=getattr(exc, "status_code", None),
+            ) from exc
 
     async def close(self) -> None:
         if self._client is not None:

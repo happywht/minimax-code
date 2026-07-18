@@ -560,3 +560,95 @@ MiniMax 的 asyncio + SQLite 架构上。
 ### Commit
 
 `feat(platform): R12 crash detection + orphan run recovery`
+
+---
+
+## R13 — LLM/工具调用可靠性网关：重试退避 + 断路器（阶段 B 第 3 轮）
+
+**本轮目标**：补齐 MiniMax 最大的运行时缺口——一次 429/503 就终止整轮对话、
+一个 buggy 工具被 LLM 反复调用直到 `max_iterations` 烧光。融合 grok-build 的
+`xai-circuit-breaker`（三态机 + 滑动窗口错误率 + Registry 隔离）+
+`RetryPolicy`（Disposition 分类 + 指数退避抖动），落到 MiniMax 的
+asyncio + JSON-RPC 架构上，让 LLM 调用与工具调度都套上应用级可靠性网关。
+
+### 融合结论（语义层 1:1 保留，并发原语 asyncio 化）
+
+- ✅ **保持**：`BreakerConfig` 字段对字段（window_duration/min_samples/
+  error_rate_threshold/open_duration/half_open_max_probes/failure_codes/
+  enabled）；`.server()`/`.client()` 预设；`.from_env(prefix)`；
+  `CircuitBreakerRegistry` 按 key 惰性创建；`BreakerState`/`Outcome` 枚举；
+  `BreakerOpen` 携带 `retry_after`；`check()`→`record(Outcome)` 协议；
+  状态码强制转换（健康码不熔断）；HALF_OPEN 探针并发上限。
+- ✅ **保持**：`RetryPolicy`（max_attempts/base_delay/max_delay/
+  backoff_factor/jitter_factor）+ `.llm()`/`.tool()` 预设；
+  `Disposition {Retryable | Terminal}`（删除 grok 的 AuthRefresh——
+  MiniMax transports 不做 token 刷新）；指数退避 + 对称抖动；
+  on_retry 回调（sync/async 兼容、异常吞咽）；穷尽时重抛原始异常。
+- ❌ **放弃**：`Arc<RwLock>`→`asyncio.Lock`；`VecDeque<(Instant,Outcome)>`
+  →`collections.deque` 的 `(time.monotonic(), Outcome)`；枚举改 `StrEnum`
+  替代 `(str, Enum)`（ruff UP042）。
+- ⚠️ **根因修复**：transports 把 `APIError` 扁平化为 `LLMError` 时丢失
+  `status_code`——R13 给 `LLMError` 加 `status_code` 字段，两个 transport
+  用 `getattr(exc, "status_code", None)` 透传，否则 classify 永远走
+  no-code 分支。
+
+### 交付
+
+- `minimax_code/agent/reliability/circuit_breaker.py`（新）：
+  `BreakerState`/`Outcome`(StrEnum) + `DEFAULT_FAILURE_CODES` +
+  `BreakerOpen(retry_after, state)` + `BreakerConfig`(.server()/.client()/
+  .from_env()) + `CircuitBreaker`(async check/record, .state, .is_open(),
+  .error_rate(), _prune, _trip) + `CircuitBreakerRegistry`
+  (async get_or_create, get, all_states)。三态机增量评估（每次 record
+  都检查阈值），OPEN→HALF_OPEN 在 check 时按 open_duration 转换。
+- `minimax_code/agent/reliability/retry.py`（新）：
+  `RETRYABLE_STATUS`/`TERMINAL_STATUS` + `Disposition`(StrEnum) +
+  `RetryExhausted` + `classify_exception`（LLMStreamTimeout/Timeout/
+  ConnectionError→RETRYABLE；429/5xx→RETRYABLE；4xx 终端→TERMINAL；
+  无 code→RETRYABLE）+ `RetryPolicy`(.llm()/.tool()) + `_delay_for`
+  (指数退避+对称抖动) + `with_retry`(coro_factory, policy, on_retry,
+  可注入 sleep)。
+- `minimax_code/agent/reliability/__init__.py`（新）：桶式导出全部
+  公共符号。
+- `minimax_code/agent/types.py`：`LLMError` 加 `status_code: int | None`
+  关键字参数（默认 None，向后兼容）。
+- `minimax_code/agent/transports/openai_transport.py` +
+  `anthropic_transport.py`：`APIError` 捕获处用
+  `status_code=getattr(exc, "status_code", None)` 透传给 `LLMError`。
+- `minimax_code/agent/core.py`（六刀接入）：
+  1. import reliability 全部符号；
+  2. `AgentConfig` 加 `llm_retry_policy`/`llm_breaker_config`/
+     `tool_breaker_config` 三字段（None ⇒ 用预设）；
+  3. `__init__` 建 `self._breakers = CircuitBreakerRegistry()`；
+  4. 新方法 `_call_llm_with_resilience`——check → with_retry → record；
+  5. LLM 调用点 `_stream_turn` → `_call_llm_with_resilience`；
+  6. 工具调度加 per-tool 熔断（`tool:<name>` key），崩溃/超时才 trip，
+     业务级 ToolResult.fail（如 file not found）记 SUCCESS 防误熔断。
+- `tests/test_reliability.py`（新，28 测）：BreakerConfig presets/from_env/
+  defaults；CircuitBreaker 全状态机（closed/trip/不熔/rate/状态转换/
+  探针上限/码强制/disabled）；Registry key 隔离 + 只首次建；classify
+  矩阵；with_retry 成功/穷尽/终端/on_retry(sync/async/吞异常)/默认/
+  抖动边界。
+
+### 验证
+
+- ✅ `ruff check` 全部 R13 文件：**0 errors**（UP042 StrEnum × 3、
+  UP041 builtin TimeoutError、I001 import 排序，均 ruff --fix 修复）。
+- ✅ `pytest tests/test_reliability.py`：**28 passed in 1.09s**。
+- ✅ `pytest tests/test_agent_core.py tests/test_agent_cancel.py`：
+  **21 passed in 9.95s**（零回归——证明 `_call_llm_with_resilience` +
+  per-tool 熔断接入不破坏对话循环/取消逻辑）。
+
+### YAGNI 边界（本轮不做）
+
+- ❌ 不做三层准入信号量（grok 的 token bucket / 并发令牌）——MiniMax
+  单进程 asyncio，串行 LLM 调用，无并发风暴需要节流。
+- ❌ 不做 token / $ 消耗上限——需先有计费通道，留给后续轮。
+- ❌ 不做 RPM/TPM 限流——同上，依赖未实现的配额层。
+- ❌ 不做 OS 级沙箱（grok 的 Landlock/Seatbelt）——Windows 不可用。
+- ❌ 不做前端熔断面板 / IPC 界面——遥测已 emit status，UI 留待阶段 D。
+- ❌ 遥测发射降级为 logger（fail-open），不搭 R11 的 event bus 接线。
+
+### Commit
+
+`feat(platform): R13 reliability — circuit breaker + retry/backoff`

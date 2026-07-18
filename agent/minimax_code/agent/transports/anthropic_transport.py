@@ -436,7 +436,10 @@ class AnthropicTransport(LLMTransport):
                         self._thinking_count = chunk.usage["thinking_tokens"]
                     yield chunk
         except anthropic.APIError as exc:
-            raise LLMError(f"Anthropic API error: {exc}") from exc
+            raise LLMError(
+                f"Anthropic API error: {exc}",
+                status_code=getattr(exc, "status_code", None),
+            ) from exc
 
     async def close(self) -> None:
         if self._client is not None:

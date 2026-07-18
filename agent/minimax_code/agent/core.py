@@ -44,6 +44,15 @@ from typing import Any
 from ..hooks import HookManager
 from .llm import LLMError, LLMResponse, MiniMaxClient, StreamChunk
 from .prompts import build_system_prompt
+from .reliability import (
+    BreakerConfig,
+    BreakerOpen,
+    CircuitBreaker,
+    CircuitBreakerRegistry,
+    Outcome,
+    RetryPolicy,
+    with_retry,
+)
 from .tools import ToolRegistry, ToolResult, get_default_registry
 from .types import LLMStreamTimeout
 
@@ -153,6 +162,13 @@ class AgentConfig:
     # Context window size (tokens) for the current model.  Used by
     # compaction to decide when to summarise.  None = unknown / disabled.
     context_window: int | None = None
+    # R13 reliability gates.  None ⇒ use the module preset
+    # (``RetryPolicy.llm`` / ``BreakerConfig.server`` / ``.client``).
+    # Override to tune retry counts, breaker thresholds, or disable a
+    # gate (a policy with max_attempts=1, or a breaker with enabled=False).
+    llm_retry_policy: RetryPolicy | None = None
+    llm_breaker_config: BreakerConfig | None = None
+    tool_breaker_config: BreakerConfig | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +269,11 @@ class AgentCore:
         self.on_tool_result: ToolResultCallback | None = None
         self.on_status: StatusCallback | None = None
         self.on_usage: UsageCallback | None = None
+        # R13 — circuit-breaker registry. One breaker per protected key
+        # ("llm" + "tool:<name>"), lazily created on first check. Retry +
+        # breaker knobs are read from self.config at call time so they
+        # stay hot-reloadable across a session.
+        self._breakers = CircuitBreakerRegistry()
 
     # -- cancellation ------------------------------------------------------
 
@@ -335,7 +356,7 @@ class AgentCore:
             await self._emit_status("thinking", {"iteration": iterations})
 
             try:
-                response = await self._stream_turn(messages)
+                response = await self._call_llm_with_resilience(messages)
             except LLMError as exc:
                 await self._emit_status(
                     "error",
@@ -415,6 +436,45 @@ class AgentCore:
         )
 
     # -- streaming + tool dispatch -----------------------------------------
+
+    async def _call_llm_with_resilience(self, messages: list[Message]) -> LLMResponse:
+        """LLM call wrapped in circuit-breaker + app-level retry (R13).
+
+        Wraps :meth:`_stream_turn` with two gates MiniMax previously
+        lacked:
+
+        - a per-``"llm"`` circuit breaker (``BreakerConfig.server`` preset
+          unless ``config.llm_breaker_config`` overrides). A ``BreakerOpen``
+          on the entry check is re-raised as :class:`LLMError` so the
+          caller's existing ``except LLMError`` branch handles it uniformly.
+        - :func:`with_retry` with ``config.llm_retry_policy`` (or the
+          ``RetryPolicy.llm`` preset). The original exception is preserved
+          on exhaustion so callers see the real ``LLMError`` / timeout.
+
+        Exactly one outcome (success / failure of the whole retried
+        sequence) is recorded into the breaker — mirroring grok's "one
+        record per logical call" semantics, not one per attempt.
+        """
+        breaker = await self._breakers.get_or_create(
+            "llm", self.config.llm_breaker_config or BreakerConfig.server(),
+        )
+        try:
+            await breaker.check()
+        except BreakerOpen as exc:
+            raise LLMError(
+                "LLM circuit breaker open — too many recent failures "
+                f"(retry after {exc.retry_after:.0f}s)"
+            ) from exc
+        try:
+            response = await with_retry(
+                lambda: self._stream_turn(messages),
+                self.config.llm_retry_policy or RetryPolicy.llm(),
+            )
+        except BaseException:
+            await breaker.record(Outcome.FAILURE)
+            raise
+        await breaker.record(Outcome.SUCCESS)
+        return response
 
     async def _stream_turn(self, messages: list[Message]) -> LLMResponse:
         """Stream one LLM call and stitch the chunks into a response.
@@ -585,6 +645,32 @@ class AgentCore:
                 return blocked
 
         await self._maybe_emit_tool_call(call_log, None)
+        # R13 — per-tool circuit breaker. A flaky tool the LLM keeps
+        # re-invoking would otherwise burn all max_iterations (worst
+        # case: 12 × tool_timeout) before the loop gives up; the breaker
+        # fast-fails it after consecutive crashes/timeouts instead.
+        tool_breaker: CircuitBreaker | None = None
+        if name:
+            tool_breaker = await self._breakers.get_or_create(
+                f"tool:{name}",
+                self.config.tool_breaker_config or BreakerConfig.client(),
+            )
+            try:
+                await tool_breaker.check()
+            except BreakerOpen as exc:
+                blocked = ToolResult.fail(
+                    f"tool '{name}' circuit open after repeated failures "
+                    f"(retry in {exc.retry_after:.0f}s)"
+                )
+                await self._maybe_emit_tool_result(call_log, blocked)
+                await self._emit_status(
+                    "circuit_open",
+                    {"tool": name, "tool_call_id": tool_call_id},
+                )
+                await self._record_audit(
+                    call_log, "blocked", permission="circuit_open", duration_ms=0,
+                )
+                return blocked
         await self._emit_status("tool_running", {"tool": name})
 
         t0 = time.monotonic()
@@ -597,9 +683,21 @@ class AgentCore:
             result = ToolResult.fail(
                 f"tool '{name}' exceeded {self.config.tool_timeout:.0f}s timeout"
             )
+            if tool_breaker is not None:
+                await tool_breaker.record(Outcome.FAILURE)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("tool %s crashed", name)
             result = ToolResult.fail(f"{type(exc).__name__}: {exc}")
+            if tool_breaker is not None:
+                await tool_breaker.record(Outcome.FAILURE)
+        else:
+            # A normal return — even a business-level ToolResult.fail
+            # (e.g. "file not found") — means the tool is reachable.
+            # Only crashes and timeouts trip the breaker, not "grep
+            # found nothing"; otherwise healthy-but-empty tools would
+            # get falsely circuit-broken.
+            if tool_breaker is not None:
+                await tool_breaker.record(Outcome.SUCCESS)
         duration_ms = int((time.monotonic() - t0) * 1000)
 
         # Truncate pathological output to keep the context window sane.

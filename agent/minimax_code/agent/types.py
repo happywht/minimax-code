@@ -43,7 +43,18 @@ class LLMResponse:
 
 
 class LLMError(RuntimeError):
-    """Raised when the LLM server returns an unrecoverable error."""
+    """Raised when the LLM server returns an unrecoverable error.
+
+    ``status_code`` carries the upstream HTTP status when known (e.g.
+    429 / 503), or ``None`` when the transport flattened a connection or
+    timeout error into this exception. Retry classification in
+    :mod:`minimax_code.agent.reliability.retry` reads it to distinguish
+    retryable from terminal failures.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        self.status_code = status_code
+        super().__init__(message)
 
 
 class LLMStreamTimeout(LLMError):
