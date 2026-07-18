@@ -2059,3 +2059,101 @@ R24 的 YAGNI 伏笔（"IPC 推送回合 hook 由 R25 生命周期贡献者正�
 ## Commit
 
 `feat(platform): R27 token estimation (fuse grok xai-token-estimation)`
+
+# R28 — intra-compaction 配置 + 触发决策（fuse grok xai-grok-compaction）
+
+**日期**：2026-07-19
+**来源**：`grok-build/crates/common/xai-grok-compaction/src/intra_compaction/{config.rs, trigger.rs, mod.rs}`（crate 共 30+ 文件多模块，本轮交付第一个可独立验证的纯逻辑切片）
+**提交**：见本节末
+
+## 本轮目标
+
+移植 grok intra-compaction 的**配置层 + 触发决策层**——纯决策函数 `should_compact` 决定"现在该压
+缩吗"。这是 R27 token 估算的**直接下游消费者**（`percent` 字段复用 R27 的
+`usage_percentage_truncated_u8`），形成 R27→R28 复用闭环。零 async / 零 LLM 调用 / 零 IO，
+compaction crate 30+ 文件中**第一个可独立交付的纯逻辑切片**，为后续 select/sample/apply 执行层打
+配置地基。
+
+## 融合结论
+
+- ✅ **2 枚举**：`IntraCompactionMode`（4 变体 StrEnum，snake_case）+ `IntraSummarizer`（2 变体 StrEnum）。
+- ✅ **1 配置 dataclass**：`IntraCompactionConfig`（15 字段 + Default + `effective_compaction_model_name` +
+  `from_dict` / `to_dict` serde parity）。
+- ✅ **1 结果 dataclass**：`IntraCompactionTrigger`（4 字段：last_prompt_tokens / context_window /
+  percent / step）。
+- ✅ **1 纯决策函数**：`should_compact(policy, last_prompt_tokens, context_window, current_step) → Trigger | None`。
+- ✅ **1 常量**：`DEFAULT_COMPACTION_MODEL_NAME = "grok-4.20"`。
+- ❌ **不移植**：`IntraCompactionError` / `IntraCompactionResult`（compact 执行层，本轮只做触发决策）、
+  `compact.rs` / `sampler.rs` / `select.rs` / `observer` / `traits`（host 集成层）。
+
+## 关键移植契约（1:1 锁定）
+
+1. **严格 `>` 边界（vs R27 的 `>=`）**——本轮最重要契约。grok trigger 是严格大于：
+   `last_prompt_tokens <= threshold` 返回 `None`，`threshold = context_window *
+   trigger_threshold_percent // 100`。因此**不能**直接复用 R27 的 `exceeds_threshold`（那是 `>=`），
+   `should_compact` 内联 threshold 计算 + `<=` 比较。守护测试
+   `test_boundary_exact_threshold_does_not_trigger` 锁定：cw=100_000/pct=85 → threshold=85_000，
+   85_000 不触发（`<=`），85_001 触发——刻意与 R27 的 `exceeds_threshold(850,1000,85)=True` 区分。
+2. **R27 复用闭环**——`percent` 字段直接调用
+   `minimax_code.token_estimation.usage_percentage_truncated_u8(last_prompt_tokens, context_window)`，
+   保证渲染百分比与阈值跨越同步。守护测试 `test_percent_matches_r27_usage_percentage` 在 4 组
+   （含非整除 250_000/256_000 → 97）断言 `t.percent == usage_percentage_truncated_u8(used, cw)`。
+   这是 R27 价值的真实兑现：跨模块纯函数复用，无重复算术。
+3. **FullReplace 忽略 min_steps**——默认模式 `FullReplace` 只看 token 阈值，`min_steps_before_compact`
+   字段保留但触发时不检查（大首步 prompt 也能压缩）。Partial 模式（StepsOnly / HistoryOnly /
+   HistoryThenSteps）才 gate `current_step < min_steps_before_compact`。守护测试
+   `test_full_replace_keeps_field_but_ignores_min_steps`（step=0/2 仍触发）+
+   `test_partial_modes_enforce_min_steps`（3 partial 模式 × step=2/3 参数化）。
+4. **snake_case serde parity**——两枚举的 `StrEnum` 值 = grok `#[serde(rename_all = "snake_case")]`
+   字符串（`full_replace` / `steps_only` / `history_only` / `history_then_steps` / `shared` / `legacy`），
+   Rust 实现持久化的 JSON 在此往返。守护测试 `test_mode_serde_round_trip` / `test_summarizer_serde_round_trip`
+   断言 `mode.value == "full_replace"` 且 `IntraCompactionMode("full_replace") is mode` + config 往返。
+5. **`#[serde(default)]` parity**——`from_dict` 每字段 `.get(..., default)`，部分 JSON 缺字段时填默认；
+   未知 enum 字符串回退该字段默认（`_enum_or_default` 辅助）。守护测试
+   `test_from_dict_partial_json_fills_defaults`（`{"enabled": true, "trigger": 80}` → 其余默认）+
+   `test_from_dict_unknown_enum_falls_back_to_default`（`mode: "nonsense"` → FullReplace）+
+   `test_from_dict_explicit_null_compaction_model_name`（JSON null → None → effective() 回退默认）。
+6. **`effective_compaction_model_name`**——镜像 grok `as_deref().map(trim).filter(non-empty).unwrap_or(DEFAULT)`：
+   `None` / `""` / `"   "` → `DEFAULT_COMPACTION_MODEL_NAME`，非空白 → trimmed 值。参数化守护测试
+   4 组输入。
+
+## 交付
+
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| `agent/minimax_code/compaction/__init__.py` | 30 | 包入口，re-export 6 个公共符号 |
+| `agent/minimax_code/compaction/config.py` | 226 | 2 枚举 + Config dataclass（15 字段 + Default + effective + from_dict/to_dict）+ DEFAULT 常量 + `_enum_or_default` 辅助 |
+| `agent/minimax_code/compaction/trigger.py` | 104 | Trigger dataclass（4 字段）+ `should_compact` 纯决策（复用 R27）|
+| `agent/tests/test_intra_compaction.py` | 296 | 30 测试：镜像 grok config 8 + trigger 8 + Python 守护（R27 复用 / strict-boundary / serde roundtrip / unknown enum / null cmn）|
+
+## 验证
+
+- ✅ **ruff**：`All checks passed`（E/F/W/I/B/UP，line-length 100；初始 import 排序 1 处由 `--fix` 自动修复）。
+- ✅ **新测试**：30 passed in 0.10s。
+- ✅ **完整套件零回归**：1314 passed in 89.46s = 1284 基线 + 30 新增，**精确匹配**。
+- ✅ **边界锁定**：`should_compact(p, 85000, 100000, 10) is None` 且 `should_compact(p, 85001, 100000, 10) is not None`
+  ——严格 `>` 契约，单 token 跨越。
+- ✅ **percent 钳制**：`should_compact(p, 200000, 100000, 10).percent == 100`（超窗口仍报 100，非 >100）。
+- ✅ **R27 复用**：trigger 的 percent 在 4 组（含非整除 250_000/256_000→97）与
+  `usage_percentage_truncated_u8` 直接调用逐位相等。
+- 🐛 **测试数据 bug（已修）**：初版 `test_percent_matches_r27_usage_percentage` 用 `(128_001, 256_000)`
+  作用例——仅 50% 用量，低于 85% 阈值不触发，`should_compact` 正确返回 `None`，测试断言 `is not None`
+  失败。**实现无误**（boundary 测试全过），测试数据选错；改为 `(250_000, 256_000)`（97.6% > 85%）。
+
+## YAGNI 边界（本轮不做）
+
+- ❌ 不移植 `IntraCompactionError`（11 变体）/ `IntraCompactionResult`——属于 compact 执行层
+  （采样失败、降级、拒绝），本轮只做触发决策；错误矩阵留执行层轮次。
+- ❌ 不移植 `compact.rs` / `sampler.rs` / `select.rs` / `observer` / `traits`——host 集成层
+  （真实 LLM 采样、item 选择、状态提交、CompactionItem/ItemTokenCounter trait），依赖 host item 类型，
+  本轮纯逻辑无 host 依赖。
+- ❌ 不接 AgentCore / 不在对话循环中调用 `should_compact`——本轮交付策略 + 决策核心，host 接线
+  （每步检查触发、压缩后重建上下文）留后续轮次。
+- ❌ 不做 IPC 暴露（`compaction.config` / `compaction.status` handler）——配置持久化 + 前端
+  百分比/触发事件渲染留 host 集成轮次。
+- ❌ 不实现 4 模式的差异化压缩行为——本轮只锁配置 + 触发；FullReplace/StepsOnly/HistoryOnly/
+  HistoryThenSteps 的实际 compact 策略留执行层轮次（每模式独立切片）。
+
+## Commit
+
+`feat(platform): R28 intra-compaction trigger (fuse grok xai-grok-compaction)`
