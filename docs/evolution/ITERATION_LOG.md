@@ -1978,3 +1978,84 @@ R24 的 YAGNI 伏笔（"IPC 推送回合 hook 由 R25 生命周期贡献者正�
 ### Commit
 
 `feat(platform): R26 plan mode state machine (fuse grok xai-grok-*-plan_mode)`
+
+---
+
+# R27 — 纯 token 估算原语（fuse grok xai-token-estimation）
+
+**日期**：2026-07-19
+**来源**：`grok-build/crates/codegen/xai-token-estimation`（单文件 `src/lib.rs`，255 行，`[dependencies]` 为空）
+**提交**：见本节末
+
+## 本轮目标
+
+移植 grok 上下文窗口算术的**单一真相源**——纯 token 估算原语——到 Python。这是 R28
+对话压缩的硬前置依赖（"压缩到目标 token 数"必须先会数 token）。9 个公开函数 + 2 常量，
+零 async / 零 IO / 零外部依赖，与 Rust 原版同样可独立验证。一轮可交付，为 R28 compaction
+（30+ 文件多模块 crate）打地基。
+
+## 融合结论
+
+- ✅ **2 常量**：`BYTES_PER_TOKEN = 4`、`IMAGE_TOKEN_ESTIMATE = 765`。
+- ✅ **9 纯函数 1:1 移植**：`estimate_tokens` / `estimate_chars` / `estimate_image_tokens` /
+  `usage_percentage` / `usage_percentage_u8` / `usage_percentage_truncated_u8` /
+  `free_tokens` / `exceeds_threshold` / `exceeds_threshold_with_headroom`。
+- ✅ **签名映射**：`u64` → Python `int`（任意精度，`saturating_mul` 自然恒等）；
+  `&str` → `str`；返回 `u8` → `int`（值域 0–100）。
+
+## 关键移植契约（1:1 锁定）
+
+1. **UTF-8 字节计数（非码点）**——本轮最重要发现。Rust `&str::len` 是字节数，
+   Python `len` 是码点数；`estimate_tokens` 必须用 `len(s.encode("utf-8"))`。
+   守护测试 `test_estimate_tokens_uses_bytes_not_codepoints`（CJK 字符 "日本" = 6 字节
+   → 1 token）第一次运行即捕获此 bug——docstring 已写 "UTF-8 bytes" 但实现误用码点 len，
+   测试暴露代码-文档矛盾，修复后两者一致。grok 原测试全 ASCII 故未暴露此差异。
+2. **round-half-up（非 Python banker's rounding）**——`usage_percentage_u8` 镜像
+   Rust `f64::round`（away-from-zero）。Python 内置 `round` 是 round-half-to-even，
+   会让 `42.5 → 42` 而非 grok 的 `43`。用 `math.floor(x + 0.5)` 复现非负 half-up。
+   守护测试 `test_usage_percentage_u8_rounds_half_up`（85/200→43、7/8→88）锁定方向。
+3. **`>=` 整数阈值边界**——`exceeds_threshold(850, 1000, 85)` 必须 fire
+   （`850*100 == 1000*85`），比旧版 `>` 提前 1 token。测试
+   `test_exceeds_threshold_fires_on_strict_boundary` 锁定 850/849 与 950/949 两组边界。
+4. **saturating-sub**——`exceeds_threshold_with_headroom` 右侧 `cw*pct - headroom*100`
+   用 `max(0, ...)` 钳到 0（镜像 Rust `saturating_sub`）；钳到 0 时任何非负 used 都满足。
+   守护测试 `..._headroom_larger_than_threshold_saturates`（headroom 1M on 100K×85%
+   → used=0 也 fire）锁定。
+5. **截断 vs 四舍五入刻意区分**——`usage_percentage_truncated_u8` 整数 `//` 截断
+   （85/200→42），与 `usage_percentage_u8`（→43）不同；保证
+   `exceeds_threshold(used,cw,p)` 与 `usage_percentage_truncated_u8(used,cw) >= p`
+   同步跨越阈值。
+
+## 交付
+
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| `agent/minimax_code/token_estimation.py` | 174 | 2 常量 + 9 纯函数 + `_round_half_up` 辅助；模块 docstring 记录两处 parity 陷阱（字节计数 / round 方向） |
+| `agent/tests/test_token_estimation.py` | 237 | 27 测试：镜像 grok 全部 `#[test]` + Python 特定守护（字节计数 / round-half-up / 零 total / 饱和减 / u64::MAX 路径） |
+
+## 验证
+
+- ✅ **ruff**：`All checks passed`（E/F/W/I/B/UP，line-length 100）。
+- ✅ **新测试**：27 passed in 0.07s。
+- ✅ **完整套件零回归**：1284 passed in 87.37s = 1257 基线 + 27 新增，**精确匹配**。
+- ✅ **网格一致性**：`exceeds_threshold_with_headroom(*,*,*,0) == exceeds_threshold(*)`
+  在 10 cw × 6 pct × 7 used = 420 组合参数化验证，含非圆整窗口（101/1024/128001/1000001）。
+- ✅ **u64::MAX 路径**：`usage_percentage_truncated_u8(18446744073709551615, 1) == 100`
+  镜像 Rust 饱和乘 + `min(100)` 钳制。
+
+## YAGNI 边界（本轮不做）
+
+- ❌ 不接 AgentCore / LLM 真实上下文计数——本轮是纯算术原语，把 messages[] token 求和、
+  对系统提示 + 工具定义预算、对图像附件计费留给 host 集成（R28+）。
+- ❌ 不引入真实分词器（tiktoken 等）——grok 本身就是 bytes/4 启发式，保持 parity；
+  精确分词与 R28 压缩质量优化同步考虑。
+- ❌ 不做 `saturating_mul` 显式包装——Python int 不溢出，`tokens*4` / `count*765` /
+  `used*100` 在 0–100 输出域内与 Rust 饱和乘恒等；仅 `exceeds_threshold_with_headroom`
+  的 `saturating_sub` 因可观测地改变布尔结果而显式镜像（`max(0, ...)`）。
+- ❌ 不做 IPC 暴露（`/context` handler）——百分比 renderer 层留 host 集成轮次。
+- ❌ 不接 R28 compaction——compaction crate 是 30+ 文件多模块（code/intra/inter/history），
+  本轮只交付它的 token 计数地基；压缩策略 MVP 留 R28。
+
+## Commit
+
+`feat(platform): R27 token estimation (fuse grok xai-token-estimation)`
