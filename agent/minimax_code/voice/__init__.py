@@ -1,4 +1,4 @@
-"""Voice input — language + event/error types (R31-R32).
+"""Voice input — language + event/error/config types (R31-R33).
 
 Ports the host-agnostic slices of grok-build's ``xai-grok-voice`` crate:
 
@@ -10,6 +10,11 @@ Ports the host-agnostic slices of grok-build's ``xai-grok-voice`` crate:
   utterance final / error) and the error hierarchy (``VoiceError`` + 4
   variants). Pure type layer — the signals a voice pipeline emits and the
   ways it fails, before any host wiring.
+* **R33** — the ``VoiceConfig`` transport-knob table + the TLS-only WebSocket
+  URL builder. Ties R31/R32 together and enforces two security invariants:
+  TLS-only ``api_base`` (bearer token never traverses plaintext) and
+  anti-spoof runtime-identity fields (``client_identifier`` / ``user_agent``
+  are host-stamped, never user-set).
 
 The heavier voice slices (``audio`` capture, streaming ``stt`` client,
 ``pipeline`` driver, ``probe``) are host-integration layers — audio hardware,
@@ -18,6 +23,11 @@ network streaming, the event loop — and remain future rounds.
 
 from __future__ import annotations
 
+from .config import (
+    VoiceConfig,
+    from_config_table,
+    ws_url,
+)
 from .error import (
     VoiceAuthError,
     VoiceConfigError,
@@ -61,4 +71,8 @@ __all__ = [
     "VoiceSttError",
     "VoiceAuthError",
     "VoiceWebSocketError",
+    # config (R33)
+    "VoiceConfig",
+    "ws_url",
+    "from_config_table",
 ]

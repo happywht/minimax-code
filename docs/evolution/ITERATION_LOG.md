@@ -2557,3 +2557,78 @@ async、无 grok 测试模块——零主机依赖、零集成成本，为未来
 ### Commit
 
 `feat(platform): R32 voice event/error types (fuse grok xai-grok-voice)`
+
+## R33 — voice config 表 + TLS-only URL 构造器（融合 grok `xai-grok-voice` config）
+
+### 本轮目标
+
+**D 阶段第三轮**——voice 主机无关切片的**收官**：移植 `config.rs`（186 行）的
+`VoiceConfig` 传输参数表 + `ws_url` TLS-only 构造器。这一轮把 R31（language 目录）
+和 R32（error 层次）串起来——`VoiceConfig` 用 `STT_LANGUAGE_DEFAULT` 做语言默认值，
+`ws_url` 用 `VoiceConfigError` 报不安全端点——交付一个完整的"配置 → 安全 URL +
+语言码"的纯逻辑闭环，留给未来 streaming-STT 驱动器接线。
+
+本轮的核心价值是**两个安全不变量**，必须逐字保留。
+
+### 融合结论
+
+✅ **保持：**
+- **TLS-only 强制（不降级）**——`http://`/`ws://` `api_base` 被**拒绝**
+  （raise `VoiceConfigError`），绝不静默降级为 `wss://`。原因：bearer token 走这个
+  WebSocket 连接，绝不能明文传输。这是安全关键，不是偏好。
+- **反欺骗身份字段**——`client_identifier`/`user_agent` 是运行时身份（host 在解析后
+  盖戳），**不是用户配置**：`from_config_table` 即使在 `[voice]` 表里看到它们也
+  刻意忽略（grok `#[serde(skip)]`），用户无法伪造归因 header。
+- **legacy 字段容忍（无 deny_unknown_fields）**——已移除的本地开关 `enabled`、
+  未知键 `push_to_talk` 等被静默丢弃，旧配置仍能加载（向后兼容）。
+- **struct → 普通 dataclass（非 frozen）**——grok `#[derive(..., PartialEq)]` 无
+  `Eq`/`Hash`，是可变 serde 目标；Python 用普通 `@dataclass`（可变，非 frozen）。
+- **全字段默认值**——grok `#[serde(default)]` → dataclass 字段默认；`[voice]` 表可选。
+
+✅ **产品融合点：**
+- `VoiceConfig` 接入 MiniMax Code 现有 config 加载（pydantic Config 模型之外的可选
+  `[voice]` 表），`from_config_table` 接受 `Mapping`（解耦具体 TOML 解析器）。
+- TLS-only 不变量复用项目已有的"明文端点零容忍"安全姿态（R15 出站脱敏同源）。
+
+❌ **放弃：**
+- ❌ **不做 streaming-STT 驱动器**——`run_voice_pipeline`（mic 捕获 + WebSocket 流式）
+  是主机集成层（音频硬件 + 网络），留后续。
+- ❌ **不接入 pydantic Config**——本轮纯 dataclass，忠实 grok struct；pydantic 整合
+  是接线轮次（避免跨层耦合 + 避免 pydantic 运行时验证改变 serde 语义）。
+- ❌ **不做 config 热重载/变更通知**——grok config 是启动期解析一次；本轮忠实。
+
+### 交付
+
+| 文件 | 行数 | 内容 |
+|------|------|------|
+| `agent/minimax_code/voice/config.py` | +130 | `VoiceConfig` dataclass（8 字段全默认）+ `ws_url`（TLS-only）+ `from_config_table`（anti-spoof + legacy 容忍） |
+| `agent/minimax_code/voice/__init__.py` | +14 | 重导出 R33 共 3 符号，docstring 加 R33 段 |
+| `agent/tests/test_voice_config.py` | +119 | 13 测试（7 grok 逐字移植 + 6 Python 专属守护） |
+
+契约要点：
+1. `ws_url("https://api.x.ai", "/v1/stt") == "wss://api.x.ai/v1/stt"`
+2. `ws_url("http://...", ...)` raise `VoiceConfigError`（不降级）
+3. `ws_url("api.x.ai", ...)` scheme-less → `wss://`（默认 TLS）
+4. `from_config_table({"voice": {...}})` 忽略 `client_identifier`/`user_agent`（anti-spoof）
+5. `from_config_table({})` → 全默认（`[voice]` 表可选）
+6. 默认 `api_base="https://api.x.ai"`, `language=STT_LANGUAGE_DEFAULT`("en"), `sample_rate=16000`
+
+### 验证
+
+- `ruff check minimax_code/voice/ tests/test_voice_config.py` → **All checks passed!**（I001 由 `--fix` 自动修：tomllib 标准库 / pytest 第三方分组）
+- `pytest tests/test_voice_config.py -q` → **13 passed**
+- 完整套件 `pytest -q` → **1422 passed in 87s**（R32 1409 → R33 1422，+13 精确，零回归）
+
+### YAGNI 边界
+
+- ❌ **不做 pydantic 校验**——grok serde 保证类型；Python dataclass 不做运行时类型
+  强制（忠实 grok struct 语义）。pydantic 接入是接线轮次。
+- ❌ **不做 `stt_ws_url` 的 query param 注入**——grok 的 `stt_ws_url()` 只拼 host+path，
+  language/token 是连接时 header，不在 URL；本轮忠实。
+- ❌ **不缓存 URL 构造**——`stt_ws_url()` 每次重算（grok 也是），config 低频读。
+- ❌ **不做 `__post_init__` 校验 sample_rate 范围**——grok 无此校验（serde 接受任意
+  u32）；过度设计。未来 STT 驱动器若需要再 add。
+
+### Commit
+
+`feat(platform): R33 voice config + TLS-only ws_url (fuse grok xai-grok-voice)`
