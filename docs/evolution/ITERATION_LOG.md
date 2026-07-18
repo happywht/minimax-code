@@ -2474,3 +2474,86 @@ slots=True)`：frozen 给不可变 + 可哈希 + 值相等（`__eq__`/`__hash__`
 ### Commit
 
 `feat(platform): R31 STT language code mapping (fuse grok xai-grok-voice)`
+
+## R32 — voice 事件+错误类型层（融合 grok `xai-grok-voice` event/error）
+
+### 本轮目标
+
+**D 阶段（多模态与交互）第二轮**——延续 R31 开启的 voice 包，补全 voice 的
+"类型词汇层"：流式事件（`VoiceEvent`）+ 错误层次（`VoiceError`）。两者都是 grok
+`xai-grok-voice` 的纯枚举文件（`event.rs` 12 行 / `error.rs` 24 行），无 IO、无
+async、无 grok 测试模块——零主机依赖、零集成成本，为未来 voice pipeline 驱动器
+（麦克风捕获 → STT WebSocket）铺好"信号 + 失败方式"的类型契约。
+
+本轮一次性移植两个互补的小文件：事件 = 流式信号（驱动 UI），错误 = 异常路径
+（驱动现有 MiniMax Code 按异常类型分发的错误处理）。同属 voice 类型层，合为
+一个"类型词汇"轮次，避免过度拆分。
+
+### 融合结论
+
+✅ **保持：**
+- **event.rs → tagged union of frozen dataclass**（`InterimTranscript` /
+  `UtteranceFinal` / `VoiceEventError`）+ `VoiceEvent` Union 别名。Rust
+  enum-with-struct-variant 的忠实 Python 等价；`isinstance` / `match` 分发
+  复刻 Rust `match`。frozen+slots 复刻 `Debug + Clone + PartialEq + Eq`。
+- **error.rs → Exception 层次**（`VoiceError` 基 + 4 子类），而非值枚举。关键
+  判断：grok 用 `thiserror`（`#[derive(Error)]`），明示这是"错误类型"；Python
+  错误流过 `raise`/`except`，异常层次是天然对应，比值枚举地道得多。每子类
+  `_prefix` 类属性复刻 `#[error("prefix: {0}")]` 的显示格式。
+- **event 的 Error 变体 vs error 的 VoiceError 显式分离**——grok 也是两个东西
+  （`event.rs::VoiceEvent::Error { message }` 持裸字符串 vs `error.rs::VoiceError`
+  是 thiserror 错误）。命名上 `VoiceEventError`（事件）≠ `VoiceError`（异常）避免混淆。
+
+✅ **产品融合点：**
+- `InterimTranscript` / `UtteranceFinal` 直接映射 MiniMax Code 现有流式消息通道
+  （`agent.message_chunk` 事件）——语音驱动 prompt 只是另一个流式生产者。
+- `VoiceError` 异常层次接入 MiniMax Code 现有"按异常类型路由错误"的处理路径，
+  无需字符串匹配消息。
+
+❌ **放弃：**
+- ❌ **不做 pipeline 驱动器**——`run_voice_pipeline`（mic 捕获 + STT WebSocket 流式）
+  是主机集成层（音频硬件 + 网络），留后续轮次。本轮纯类型。
+- ❌ **不做 audio/auth/stt/probe 切片**——都是主机 IO 层。
+- ❌ **VoiceError 不接入现有 agent 错误 MRO**——本轮仅定义类型；接线是后续轮次
+  （避免本轮跨层耦合）。
+- ❌ **不做 VoiceEvent 的 serde/JSON 序列化**——Rust derive 但 grok 内部无实际
+  跨进程用途；未来 IPC 跨进程时再加（YAGNI）。
+
+### 交付
+
+| 文件 | 行数 | 内容 |
+|------|------|------|
+| `agent/minimax_code/voice/event.py` | +79 | `VoiceEvent` tagged union（3 frozen dataclass + Union 别名），含 enum→union 映射文档 |
+| `agent/minimax_code/voice/error.py` | +78 | `VoiceError` Exception 基类 + 4 子类（Config/Stt/Auth/WebSocket），`_prefix` 复刻 thiserror |
+| `agent/minimax_code/voice/__init__.py` | +35 | 重导出 R32 共 9 符号（event 4 + error 5） |
+| `agent/tests/test_voice_event.py` | +92 | 11 测试项（union 成员、字段、frozen+hashable、isinstance/match 分发） |
+| `agent/tests/test_voice_error.py` | +92 | 14 测试项（前缀/display、issubclass、raise/catch、args 一致性） |
+
+契约要点：
+1. `VoiceEvent = InterimTranscript | UtteranceFinal | VoiceEventError`（PEP 604 union）
+2. `VoiceEvent.__args__` = `{InterimTranscript, UtteranceFinal, VoiceEventError}`
+3. `str(VoiceSttError("x")) == "STT: x"`（复刻 thiserror 前缀）
+4. `exc.message == "x"`（裸载荷在 `.message`，格式化串在 `args[0]`）
+5. 所有变体 `issubclass(_, VoiceError)`（异常层次单一根）
+
+### 验证
+
+- `ruff check minimax_code/voice/ tests/test_voice_*.py` → **All checks passed!**（零 noqa）
+- `pytest tests/test_voice_event.py tests/test_voice_error.py -q` → **25 passed**（event 11 + error 14）
+- 完整套件 `pytest -q` → **1409 passed in 88s**（R31 1384 → R32 1409，+25 精确，零回归）
+
+### YAGNI 边界
+
+- ❌ **不做 VoiceEvent 序列化**——Rust 有 `derive(Serialize)` 但 grok 内部无实际
+  跨进程序列化用途；MiniMax Code 前端是 TS，未来若 IPC 传事件再加（YAGNI）。
+- ❌ **不做 VoiceError 的 `__cause__` 链/`from_other` 构造器**——thiserror 的
+  `#[from]` 在 grok VoiceError 里**没有**使用（全是 `String` 变体），本轮忠实于
+  源头，不加。
+- ❌ **VoiceEvent 不带 metadata（时间戳/序列号）**——grok 的 `VoiceEvent` 只有
+  `text`/`message` 两类字段；加 metadata 是过度设计。
+- ❌ **不合并 event.py 与 error.py**——grok 分文件，Python 也分（关注点分离：
+  事件流 vs 异常路径）。
+
+### Commit
+
+`feat(platform): R32 voice event/error types (fuse grok xai-grok-voice)`
