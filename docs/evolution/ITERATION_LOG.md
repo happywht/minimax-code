@@ -2360,3 +2360,117 @@ grok `impl … for ()` 存在的理由——null observer 用例。ruff 的 **B0
 ### Commit
 
 `feat(platform): R30 compaction observability seam (fuse grok xai-grok-compaction)`
+
+---
+
+## R31 — STT 语言代码映射层（fuse grok `xai-grok-voice/language`）
+
+### 本轮目标
+
+融合 `grok-build/crates/codegen/xai-grok-voice/src/language.rs`（311 行，纯数据+纯函数，
+6 个 `#[test]`）。**D 阶段（多模态与交互）开局第一轮**——为 MiniMax Code 语音输入打语言地基。
+这是 xAI STT 端点（`api.x.ai/v1/stt`）`language` 参数的**唯一真相源**：25 语言目录 +
+把用户/配置串（含 BCP-47 / POSIX locale / 别名）规范化成 wire code 的纯函数。
+
+**产品融合点（不只是移植）**：语音输入链路（mic → 流式 STT → prompt box）的语言识别是第一关。
+本轮交付**目录 + 规范化层**，是 MiniMax Code 全新 `voice/` 包的基石。且目录与规范化器是
+**语言无关的通用构件**——BCP-47 / locale 解析、Tagalog→Filipino 别名映射——可复用于任何多语言
+场景（不止 STT）。重 IO 切片（音频捕获 `audio`、流式 STT 客户端 `stt`、认证 `auth`、流水线
+`pipeline`、麦克风探测 `probe`）是 host 集成层，留后续轮次。
+
+纯数据+纯函数：零 async、零网络、零音频、零 host 依赖。Rust 的 `&'static str` 静态生命周期在
+Python 用 intern 字符串字面量表达，`Copy + Eq` derive 用 `@dataclass(frozen=True, slots=True)`
+等价（不可变、可哈希、值相等）。
+
+### 融合结论（✅ 保持 / ❌ 放弃）
+
+- ✅ **`SttLanguage` frozen+slots dataclass**（`code: str` + `name: str`）—— Rust `Copy + Eq`
+  struct 的忠实模拟：不可变、可哈希、值相等、pass-by-reference 带值语义。
+- ✅ **25 语言目录 `STT_LANGUAGES: tuple[SttLanguage, ...]`**（按 English name 排序）—— 不可变
+  tuple 对应 Rust `&[SttLanguage]` 切片引用，pinned 到 docs.x.ai 公开目录。
+- ✅ **2 常量**：`STT_LANGUAGE_AUTO = "auto"`（client-only 哨兵，永不发 wire）+
+  `STT_LANGUAGE_DEFAULT = "en"`（unset/未识别默认）。
+- ✅ **3 公开函数**：`stt_language_by_code`（精确大小写敏感查找）+ `canonicalize_stt_language`
+  （用户串→code，含 BCP-47/locale/别名解析）+ `language_for_api`（解析 auto→系统 locale）。
+- ✅ **4 私有辅助**：`_system_stt_language`（POSIX 优先级 locale 解析）+
+  `_primary_language_subtag`（`_`/`-`/`.` 切首段）+ `_match_supported_code`（大小写不敏感匹配）+
+  `_alias_to_supported`（`tl`→`fil`）。
+- ❌ **不移植 `audio` / `stt` / `auth` / `pipeline` / `probe`** —— 音频硬件捕获、流式 STT 客户端、
+  认证、流水线、麦克风探测全属 host 集成层，本轮只做语言层。
+- ❌ **不接真实 STT API** —— 不调 xAI/MiniMax STT 端点；`language_for_api` 交付纯解析函数，
+  wire 调用留 host 集成。
+- ❌ **不做 Windows 原生 locale** —— 忠实移植 POSIX 优先级（`LC_ALL`>`LC_MESSAGES`>`LANG`）；
+  Windows 上 `GetUserDefaultLocaleName` 扩展留后续（YAGNI，POSIX 变量在 `os.environ` 仍可读写）。
+
+### 交付
+
+- `agent/minimax_code/voice/language.py`（~195 行，新建）：`SttLanguage` dataclass + 25 语言 tuple
+  + 2 常量 + 3 公开函数 + 4 私有辅助。`from __future__ import annotations` + `dataclasses` +
+  `os` + `re`。模块 docstring 详述 struct→frozen-dataclass 映射决策。
+- `agent/minimax_code/voice/__init__.py`（新建）：re-export 全部 7 个公开符号，
+  crate-level discoverability，docstring 标注 R31 范围与未移植切片。
+- `agent/tests/test_voice_language.py`（~195 行，新建）：**13 函数 / 33 测试 item** =
+  6 个 grok 镜像（catalog 匹配 docs / code 唯一+name 非空+无连字符 / 按英文名排序 /
+  canonicalize 16 case 参数化 / language_for_api 永不返回 auto / lookup 精确大小写敏感 4 case）
+  + 7 个 Python 守护（5 个 monkeypatch locale 解析：resolves_auto / empty_lcall_falls_through /
+  lcall_beats_lang / posix_is_default / alias_locale + lookup 返回 entry + frozen-hashable +
+  tuple 类型/长度 + 常量）。
+
+**核心设计决策——struct → frozen+slots dataclass**：
+
+grok `SttLanguage` derive `Copy + Eq`（值拷贝、值相等）。Python 等价是 `@dataclass(frozen=True,
+slots=True)`：frozen 给不可变 + 可哈希 + 值相等（`__eq__`/`__hash__` 自动生成），slots 给内存紧凑
++ 阻止新增属性。模块级 `STT_LANGUAGES` tuple 持 intern 字符串字面量，所以 `lang.code` 返回给调用方
+的就是 Rust `&'static str` 的稳定等价物——无需显式 interning。
+
+**15 个关键移植契约**（测试逐条锁定）：
+
+1. **25 语言精确匹配 docs.x.ai**（`test_catalog_matches_public_docs_exactly`：`DOCS_CODES` frozenset
+   pin，防目录漂移）。
+2. **code 唯一 + name 非空 + code 无 `-`**（仅 primary，`test_catalog_codes_are_unique_and_names_nonempty`）。
+3. **按 English name 排序**（`test_catalog_sorted_by_english_name`：`names == sorted(names)`）。
+4. **canonicalize 16 case**（参数化）：`None`/`""`/`"  "`→`en`；`"en"`→`en`；`"ES"`→`es`；
+   `"  fr "`→`fr`；`"auto"`/`"AUTO"`→`auto`；`"en-US"`→`en`；`"pt_BR.UTF-8"`→`pt`；`"fil"`→`fil`；
+   `"tl"`/`"tl-PH"`→`fil`；`"zh"`/`"zh-Hans"`/`"nope"`→`en`。
+5. **`language_for_api` 永不返回 `auto`**（`test_language_for_api_never_returns_auto`：无 locale→`en`）。
+6. **POSIX locale 优先级** `LC_ALL` > `LC_MESSAGES` > `LANG`（`test_language_for_api_lcall_beats_lang`）。
+7. **空 var 视为 unset**（`test_language_for_api_empty_lcall_falls_through_to_lang`：空 `LC_ALL` 不遮蔽 `LANG`）。
+8. **`C`/`POSIX` locale → 默认**（`test_language_for_api_posix_locale_is_default`）。
+9. **别名 locale 解析**（`test_language_for_api_alias_locale`：`tl_PH`→`fil`）。
+10. **`stt_language_by_code` 精确大小写敏感**（`"EN"`/`"auto"`/`"zh"`→`None`，参数化 4 case）。
+11. **lookup 返回完整 entry**（`test_lookup_returns_matching_entry`：code+name）。
+12. **`SttLanguage` frozen+hashable**（`test_stt_language_is_frozen_and_hashable`：值相等、hash 相等、
+    set 去重、赋值 raise `AttributeError`）。
+13. **`STT_LANGUAGES` 是 25 元素 tuple**（不可变序列，`test_stt_languages_is_immutable_tuple_of_25`）。
+14. **常量值锁定**（`STT_LANGUAGE_AUTO=="auto"`、`STT_LANGUAGE_DEFAULT=="en"`）。
+15. **`auto` 是 client-only 哨兵**——`canonicalize` 可返回 `auto`，但 `language_for_api` 必解析之，
+    永不上 wire（契约 5 的双面）。
+
+### 验证
+
+- ✅ **ruff**：`All checks passed`（E/F/W/I/B/UP，line-length 100，零错误零 noqa）。
+- ✅ **新测试**：33 passed in 0.08s（13 函数，canonicalize 16 + lookup 4 参数化展开）。
+- ✅ **完整套件零回归**：1384 passed in 84.92s = 1351 基线 + 33 新增，**精确匹配**。
+- ✅ **locale 解析确定性**：5 个 monkeypatch 测试覆盖 POSIX 优先级全分支
+  （`_no_posix_locale` fixture 剥离环境变量，Windows 主机亦确定）。
+- ✅ **frozen 语义**：`with pytest.raises((AttributeError, TypeError)): a.code = "fr"` 锁定不可变。
+- ✅ **目录防漂移**：`DOCS_CODES` frozenset 与 `STT_LANGUAGES` 双向集合相等断言。
+
+### YAGNI 边界（本轮不做）
+
+- ❌ **不移植 host IO 切片** —— `audio`（麦克风捕获）/ `stt`（流式 STT 客户端）/ `auth`（认证）/
+  `pipeline`（`run_voice_pipeline`）/ `probe`（麦克风探测）全属 host 集成层，本轮只做语言层。
+- ❌ **不接真实 STT API** —— 不调 xAI/MiniMax STT 端点；`language_for_api` 是纯解析函数，wire 调用
+  留 host 集成轮次。
+- ❌ **不做 Windows 原生 locale** —— 忠实移植 POSIX `LC_ALL`/`LC_MESSAGES`/`LANG` 优先级；
+  `GetUserDefaultLocaleName` 扩展留后续（POSIX 变量在 `os.environ` 仍可读写，逻辑可测）。
+- ❌ **不做 IPC 暴露** —— 不新增 `voice.language` handler / 前端语音设置 UI；语言选择的可视化留
+  host 集成。
+- ❌ **不做 TTS 语言映射** —— STT 不接受 `auto`（本轮契约），TTS 接受；TTS 目录与映射是独立 crate，
+  留后续（若 MiniMax Code 引入语音输出）。
+- ❌ **不做 catalog 持久化/序列化** —— 目录是编译期常量（Rust `&'static`），Python 模块级 tuple；
+  无 `to_dict`/`from_dict`（与 R28 config 不同，language 是纯静态目录）。
+
+### Commit
+
+`feat(platform): R31 STT language code mapping (fuse grok xai-grok-voice)`
