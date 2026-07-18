@@ -41,6 +41,9 @@ _PROVIDER_DAO_SINGLETON: Any = None  # type: ignore[no-untyped-def]
 _REPO_MAP_INDEXER: Any = None  # type: ignore[no-untyped-def]
 _DB_SINGLETON: Any = None  # process-wide AsyncDatabase
 _DB_LOCK = asyncio.Lock()
+# Plugin registry singleton (platform pillar #3 — Plugins). Lazily
+# built by ensure_plugin_registry(); tests inject via set_plugin_registry().
+_PLUGIN_REGISTRY: Any = None  # type: ignore[no-untyped-def]
 
 
 def get_runtime() -> SkillRuntime | None:
@@ -164,6 +167,34 @@ def _custom_skills_root() -> Path:
     from .storage.db import default_data_dir
 
     return default_data_dir() / "skills"
+
+
+def _default_plugins_root() -> Path:
+    """Resolve the plugin discovery root.
+
+    Honors ``MINIMAX_CODE_PLUGINS_DIR``; otherwise defaults to
+    ``<repo>/agent/plugins`` (sibling of the skills root).
+    """
+    env = os.environ.get("MINIMAX_CODE_PLUGINS_DIR")
+    if env:
+        return Path(env)
+    return Path(__file__).resolve().parents[2] / "agent" / "plugins"
+
+
+def discover_plugins() -> list[Any]:
+    """Discover plugins under the configured root (fail-open).
+
+    Returns an empty list on any error so a broken root never blocks
+    agent startup. Each entry is a :class:`~minimax_code.plugins.Plugin`;
+    entries whose manifest failed to parse carry an ``error`` field.
+    """
+    from .plugins import PluginLoader
+
+    try:
+        return PluginLoader().discover(_default_plugins_root())
+    except Exception:
+        logger.exception("plugin discovery failed; running with no plugins")
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +441,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_model import register_model_handlers
     from .ipc.handlers_patch import register_patch_handlers
     from .ipc.handlers_permissions import register_permission_handlers
+    from .ipc.handlers_plugins import register_plugin_handlers
     from .ipc.handlers_providers import register_provider_handlers
     from .ipc.handlers_runner import register_runner_handlers
     from .ipc.handlers_runs import register_run_handlers
@@ -522,13 +554,20 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # Teams tab.  The DAO is built lazily on first call.
     from .ipc.handlers_teams import register_team_handlers
     register_team_handlers(server)
+    # The plugin handlers expose ``plugins.list`` / ``plugins.info`` /
+    # ``plugins.enable`` / ``plugins.disable`` / ``plugins.reload`` for the
+    # Settings page's Plugins tab (platform pillar #3). The registry is
+    # built lazily via :func:`ensure_plugin_registry` on first call (same
+    # defensive posture as the DB singleton). Tests can inject a registry
+    # via the ``registry=`` kwarg to skip discovery.
+    register_plugin_handlers(server)
     logger.info(
         "registered application handlers "
         "(1 agent.* + 7 agent.* + 5 skill.* + 6 task.* + 5 session.* + 3 workspace.* + "
         "5 permission.* + 6 schedule.* + 7 mobile.* + 3 model.* + "
         "7 provider.* + 3 secrets.* + 3 git.* + 3 patch.* + "
         "4 terminal.* + 2 runner.* + 3 audit.* + 5 webhook.* + "
-        "5 notification.* + 7 workflow.* + 7 team.*)"
+        "5 notification.* + 7 workflow.* + 7 team.* + 5 plugins.*)"
     )
 
 
@@ -572,6 +611,43 @@ async def ensure_repo_map_indexer() -> Any:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Plugin registry singleton (v0.8.x platform pillar #3 — Plugins)
+# ---------------------------------------------------------------------------
+
+
+def get_plugin_registry() -> Any:
+    """Return the process-wide :class:`PluginRegistry`, or ``None``."""
+    return _PLUGIN_REGISTRY
+
+
+def set_plugin_registry(registry: Any) -> None:
+    """Inject a pre-built registry (tests bypass disk discovery)."""
+    global _PLUGIN_REGISTRY
+    _PLUGIN_REGISTRY = registry
+
+
+def ensure_plugin_registry() -> Any:
+    """Return the process-wide plugin registry, building it once on demand.
+
+    Fail-safe: if discovery raises, an empty registry is returned so the
+    agent always starts (same defensive posture as :func:`_maybe_open_db`).
+    """
+    global _PLUGIN_REGISTRY
+    if _PLUGIN_REGISTRY is not None:
+        return _PLUGIN_REGISTRY
+    from .plugins import PluginRegistry
+
+    registry = PluginRegistry()
+    try:
+        registry.add_many(discover_plugins())
+    except Exception:
+        logger.exception("plugin registry init failed; running with empty registry")
+        registry = PluginRegistry()
+    _PLUGIN_REGISTRY = registry
+    return registry
+
+
 __all__ = [
     "ensure_repo_map_indexer",
     "get_http_app",
@@ -590,4 +666,8 @@ __all__ = [
     "set_runtime",
     "set_sessions_dao",
     "set_subagent_llm",
+    "discover_plugins",
+    "ensure_plugin_registry",
+    "get_plugin_registry",
+    "set_plugin_registry",
 ]

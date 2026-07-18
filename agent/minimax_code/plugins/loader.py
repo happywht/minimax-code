@@ -32,6 +32,11 @@ class Plugin:
     loaded_at: str = ""
     error: str | None = None
     metadata: dict[str, str] = field(default_factory=dict)
+    # Runtime override of ``manifest.enabled`` (set by the
+    # ``plugins.enable`` / ``plugins.disable`` IPC methods). ``None``
+    # means "follow the manifest"; the override is in-memory only —
+    # persistence across restarts lands in a later round.
+    runtime_enabled: bool | None = None
 
     @property
     def ok(self) -> bool:
@@ -40,6 +45,13 @@ class Plugin:
     @property
     def name(self) -> str:
         return self.manifest.name
+
+    @property
+    def effective_enabled(self) -> bool:
+        """Resolve enabled state: runtime override wins over manifest."""
+        if self.runtime_enabled is not None:
+            return self.runtime_enabled
+        return self.manifest.enabled
 
 
 class PluginLoader:

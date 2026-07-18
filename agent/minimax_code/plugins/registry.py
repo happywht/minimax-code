@@ -68,7 +68,24 @@ class PluginRegistry:
         return [p for p in self._plugins.values() if not p.ok]
 
     def enabled(self) -> list[Plugin]:
-        return [p for p in self._plugins.values() if p.ok and p.manifest.enabled]
+        return [p for p in self._plugins.values() if p.ok and self._effective_enabled(p)]
+
+    def _effective_enabled(self, plugin: Plugin) -> bool:
+        """Resolve a plugin's enabled state (delegates to the record)."""
+        return plugin.effective_enabled
+
+    def set_enabled(self, name: str, enabled: bool) -> bool:
+        """Apply a runtime enabled override.
+
+        Returns ``False`` (no-op) when ``name`` is unknown. The override is
+        in-memory only; the manifest on disk remains the source of truth
+        across restarts until persistence lands.
+        """
+        plugin = self._plugins.get(name)
+        if plugin is None:
+            return False
+        plugin.runtime_enabled = enabled
+        return True
 
     # -- application --------------------------------------------------------
 

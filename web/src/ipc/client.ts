@@ -51,7 +51,12 @@ import {
   type ListRulesResult,
   type ListSessionsResult,
   type ListSkillsResult,
+  type ListPluginsResult,
   type ListTeamsResult,
+  type PluginInfo,
+  type PluginInfoResult,
+  type PluginReloadResult,
+  type PluginToggleResult,
   type ListWebhooksResult,
   type WebhookConfig,
   type ListNotificationsResult,
@@ -1037,6 +1042,13 @@ export interface TypedIPC {
     task_id: string | null;
     success: boolean;
   }>;
+
+  // plugins (platform pillar #3) — drive the Settings page's Plugins tab.
+  listPlugins(params?: { include_failed?: boolean; enabled_only?: boolean }): Promise<ListPluginsResult>;
+  getPlugin(name: string): Promise<PluginInfoResult>;
+  enablePlugin(name: string): Promise<PluginToggleResult>;
+  disablePlugin(name: string): Promise<PluginToggleResult>;
+  reloadPlugins(): Promise<PluginReloadResult>;
 }
 
 interface WireScheduledJob {
@@ -1285,6 +1297,13 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     enableTeam: (name) => client.request<{ team: AgentTeam }>("team.enable", { name }),
     disableTeam: (name) => client.request<{ team: AgentTeam }>("team.disable", { name }),
     spawnTeam: (opts) => client.request("team.spawn", opts),
+    // plugins (platform pillar #3)
+    listPlugins: (params) =>
+      client.request<ListPluginsResult>("plugins.list", params ?? {}),
+    getPlugin: (name) => client.request<PluginInfoResult>("plugins.info", { name }),
+    enablePlugin: (name) => client.request<PluginToggleResult>("plugins.enable", { name }),
+    disablePlugin: (name) => client.request<PluginToggleResult>("plugins.disable", { name }),
+    reloadPlugins: () => client.request<PluginReloadResult>("plugins.reload", {}),
   };
 }
 
@@ -1390,6 +1409,48 @@ const mockTeams: AgentTeam[] = [
     enabled: true,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
+  },
+];
+
+/**
+ * Mock plugin registry — mirrors what the Python agent's PluginLoader
+ * discovers on disk. Lets the Settings → Plugins tab render in a plain
+ * browser. Real data arrives via the ``plugins.*`` IPC namespace.
+ */
+const mockPlugins: PluginInfo[] = [
+  {
+    name: "code-linter",
+    version: "0.1.0",
+    description: "Pre-edit lint hook for Python and TypeScript.",
+    author: "minimax-code",
+    homepage: "",
+    enabled: true,
+    enabled_on_disk: true,
+    ok: true,
+    error: null,
+    path: "agent/plugins/code-linter/plugin.json",
+    loaded_at: "2026-07-18T00:00:00",
+    has_hooks: true,
+    has_mcp: false,
+    has_permissions: false,
+    entry: null,
+  },
+  {
+    name: "broken-example",
+    version: "0.0.0",
+    description: "",
+    author: "",
+    homepage: "",
+    enabled: false,
+    enabled_on_disk: false,
+    ok: false,
+    error: "invalid manifest: missing required field `name`",
+    path: "agent/plugins/broken-example/plugin.json",
+    loaded_at: "",
+    has_hooks: false,
+    has_mcp: false,
+    has_permissions: false,
+    entry: null,
   },
 ];
 
@@ -2441,6 +2502,43 @@ function mockHandle(
         task_id: `teamrun_mock_${Date.now()}`,
         success: true,
       };
+    }
+
+    // ── plugins.* mock (platform pillar #3) ───────────────────────────
+
+    case "plugins.list": {
+      const p = (params ?? {}) as { include_failed?: boolean; enabled_only?: boolean };
+      let items = mockPlugins.slice();
+      if (p.enabled_only) items = items.filter((x) => x.enabled);
+      if (p.include_failed === false) items = items.filter((x) => x.ok);
+      return { plugins: items, total: items.length } satisfies ListPluginsResult;
+    }
+
+    case "plugins.info": {
+      const p = params as { name: string };
+      const plugin = mockPlugins.find((x) => x.name === p.name);
+      if (!plugin) return { plugin: null as unknown as PluginInfo };
+      return { plugin } satisfies PluginInfoResult;
+    }
+
+    case "plugins.enable":
+    case "plugins.disable": {
+      const p = params as { name: string };
+      const plugin = mockPlugins.find((x) => x.name === p.name);
+      const enabled = method === "plugins.enable";
+      if (plugin) plugin.enabled = enabled;
+      return { ok: true, name: p.name, enabled } satisfies PluginToggleResult;
+    }
+
+    case "plugins.reload": {
+      const items = mockPlugins.slice();
+      return {
+        ok: true,
+        total: items.length,
+        reloaded: items.filter((x) => x.ok).length,
+        failed: items.filter((x) => !x.ok).length,
+        plugins: items,
+      } satisfies PluginReloadResult;
     }
   }
 }

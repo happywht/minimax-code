@@ -912,3 +912,64 @@ export interface TeamProgressData {
   agents_completed?: number;
   agents_total?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Plugins (platform pillar #3) — runtime-extensible plugin registry.
+// ---------------------------------------------------------------------------
+
+/** A discovered plugin's info record — mirrors the Python `Plugin` wire shape. */
+export interface PluginInfo {
+  name: string;
+  version: string;
+  description: string;
+  author: string;
+  homepage: string;
+  /** Effective enabled state (runtime override wins over manifest). */
+  enabled: boolean;
+  /** On-disk manifest enabled flag (before any runtime override). */
+  enabled_on_disk: boolean;
+  /** False when the manifest failed to parse (fail-open discovery). */
+  ok: boolean;
+  error: string | null;
+  path: string;
+  loaded_at: string;
+  has_hooks: boolean;
+  has_mcp: boolean;
+  has_permissions: boolean;
+  entry: string | null;
+}
+
+/** Optional filters accepted by ``plugins.list``. */
+export interface ListPluginsParams {
+  /** Include plugins whose manifest failed to parse (default true). */
+  include_failed?: boolean;
+  /** Only return effectively-enabled plugins. */
+  enabled_only?: boolean;
+}
+
+/** Result of ``plugins.list`` IPC call. */
+export interface ListPluginsResult {
+  plugins: PluginInfo[];
+  total: number;
+}
+
+/** Result of ``plugins.info`` IPC call. */
+export interface PluginInfoResult {
+  plugin: PluginInfo;
+}
+
+/** Result of ``plugins.enable`` / ``plugins.disable``. */
+export interface PluginToggleResult {
+  ok: true;
+  name: string;
+  enabled: boolean;
+}
+
+/** Result of ``plugins.reload``. */
+export interface PluginReloadResult {
+  ok: true;
+  total: number;
+  reloaded: number;
+  failed: number;
+  plugins: PluginInfo[];
+}

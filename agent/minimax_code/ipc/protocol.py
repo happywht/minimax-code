@@ -53,6 +53,7 @@ PERMISSION_DENIED = -32002
 LLM_ERROR = -32003
 STORAGE_ERROR = -32004
 NOT_IMPLEMENTED = -32005
+NOT_FOUND = -32006
 
 
 # ---- Outbound (Python -> stdio) ------------------------------------------

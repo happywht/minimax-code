@@ -219,6 +219,7 @@ on the next `readline() == ""`.
 | `mobile.*`                 | req/res   | Phase 2.                                            |
 | `permission.*`             | req/res   | Phase 1.4 (ui-shell).                              |
 | `model.list` / `model.set_current` | req/res | Reserved.                                   |
+| `plugins.list` / `plugins.info` / `plugins.enable` / `plugins.disable` / `plugins.reload` | req/res | Platform pillar #3 — discover, inspect, toggle, and hot-reload runtime plugins (fail-open discovery; runtime enable override is in-memory). |
 
 Session records may include workspace metadata:
 
