@@ -116,6 +116,23 @@ class EditFileTool(Tool):
             )
         )
 
+        # R16 — mirror the successful edit onto the causal file-change bus.
+        # Fail-open: a bus failure must never break the tool that just edited.
+        try:
+            from ...app import ensure_fs_bus
+
+            bus = ensure_fs_bus()
+            if bus is not None:
+                bus.emit(
+                    "modified",
+                    [str(target)],
+                    "edit_file",
+                    lines_added=added,
+                    lines_removed=removed,
+                )
+        except Exception:  # noqa: BLE001 — file edit must never break on the bus
+            pass
+
         return ToolResult.ok(
             output={
                 "path": str(target),

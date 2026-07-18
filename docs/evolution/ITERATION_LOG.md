@@ -816,3 +816,108 @@ stderr**。本轮把脱敏从"遥测专属"升级为"遥测 + 日志"统一安�
 ### Commit
 
 `feat(platform): R15 out-bound redaction hardening — secrets/log/url`
+
+---
+
+## R16 — 单一因果文件变更流：FsEventBus（fuse grok xai-fsnotify）（阶段 B 第 6 轮）
+
+**本轮目标**：grok-build 的 `xai-fsnotify` 是一套"OS 文件监视器 → 防抖窗口 → git 锁
+状态机 → 因果广播通道"的四段管线，目的是在**外部编辑器**（人类/IDE）改动文件时给出
+稳定的语义事件流。MiniMax 的根因差异在于——**我们自己就是变更源**：`write_file` /
+`edit_file` 这两个工具的写入是原子的、自归因的、本进程内的，不存在"OS 事件风暴待平
+息"。本轮从 grok 抽取**真正的因果支柱**（单一因果流 + 纯数据事件 + 序列单调顺序 +
+fail-open 铁律），砍掉**只服务于外部观察者的表衣**（OS watcher / 防抖 / 锁状态机 /
+git 丰富化），落地一个进程内的 `FsEventBus`，并把两个写工具接上——让每一次成功的
+文件写入都成为因果流上的一颗 `FsEvent`。
+
+### 融合结论（因果支柱 1:1 保留，外部观察者表衣 YAGNI 砍净）
+
+- ✅ **保持**：单一因果流——`FsEventBus` 是进程内唯一广播通道，`emit()` 既
+  append 到 `_recent` 环形缓冲（`deque(maxlen=capacity)`），又 fan-out 到全部订阅者
+  queue；一份事件，两条消费路径（recent 回看 / 实时订阅），互不干扰。
+- ✅ **保持**：纯数据事件——`FsEvent` 是 `@dataclass(frozen=True)`，无 I/O、无
+  asyncio、无包内依赖（`events.py` 只 import stdlib）。冻结保证事件不可变（消费者
+  无法篡改因果流），可整体 lift 到未来的 `-types` 包做跨进程契约。
+- ✅ **保持**：序列单调因果顺序——`itertools.count(1)` 递增 `seq`，`recent()` 按入队
+  顺序回看，订阅者按 `put_nowait` 顺序收。消费者**必须**依赖 `seq` 而非 wall-clock
+  （`monotonic_ns` 会抖动），这是因果序的语义核心。
+- ✅ **保持**：fail-open 铁律——`emit()` 外层裸 `try/except Exception` + `# noqa:
+  BLE001`，任何故障（recent 损坏 / 订阅者 queue 爆 / 类型错误）都返回 `None`、绝不
+  raise；订阅者 fan-out 内层再 try/except（broken subscriber 不连累其它订阅者）；
+  `recent()` 读路径同样 fail-open（best-effort 返回 []）。镜像 `TelemetryEngine`
+  契约——**总线坏绝不让写入工具崩**。
+- ✅ **三件套单例**：`app.py` 的 `get_fs_bus` / `set_fs_bus` / `ensure_fs_bus` 与
+  `ensure_telemetry_engine` 完全对齐——`ensure_fs_bus()` 惰性构建一次，环境开关
+  `MINIMAX_CODE_FS_BUS`（"0/false/off/no" 禁用），构建失败 log + 返回 None（"disabled,
+  zero overhead"）；写工具 `if bus: bus.emit(...)` 短路。循环引用安全：app.py 顶部只
+  import skills 不 import tools；tools 在 `run()` 内 `from ...app import ensure_fs_bus`
+  惰性导入。
+- ❌ **放弃**：grok 的 OS 文件监视器（`notify`/watch 树）——MiniMax 是变更源不是观察
+  者，自己的工具调用就是唯一的"事件源"，监视 OS 是观察外部编辑器用的，对本进程写入
+  多此一举。
+- ❌ **放弃**：grok 的防抖窗口（debounce）——OS 事件风暴需要时间沉淀（一次保存触发
+  created→modified→modified...）；工具写入是原子的单次操作，无风暴可平，防抖只会
+  增加无谓延迟。
+- ❌ **放弃**：grok 的 git 锁状态机——grok 用它区分"用户编辑"vs"git 操作"两类事件
+  源；MiniMax 的 git handlers 是只读子进程（status/diff/log），不产生写入，无需状态
+  机区分。
+- ❌ **放弃**：grok 的 git 丰富化（把 commit/branch 信息塞进事件）——`FsEvent.cause`
+  已归因到具体工具（write_file/edit_file），YAGNI，待真实需求出现再加。
+
+### 交付
+
+- `minimax_code/fsnotify/events.py`（新模块，纯数据层）：`FsEventKind`（StrEnum：
+  created/modified/removed/renamed，identity-map grok 的 wire 值）+ `FsEvent`
+  （frozen dataclass：kind/paths/cause/seq/monotonic_ns + 可选 session_id/
+  tool_call_id/attributes 元组）+ `attribute()` 读方法。
+- `minimax_code/fsnotify/bus.py`（新模块，总线）：`FsEventBus`——`__init__`（capacity
+  /subscriber_maxsize 两道 ≥1 守卫）+ `emit`（fail-open，构建+发布）+ `subscribe`/
+  `unsubscribe`（bounded queue 订阅/退订）+ `recent`（kind/cause/session_id 三路过滤，
+  best-effort）+ `buffered_count`/`subscriber_count`/`clear` 属性。
+- `minimax_code/fsnotify/__init__.py`（新包）：re-export `FsEvent`/`FsEventBus`/
+  `FsEventKind`，`__all__` 三件。
+- `minimax_code/app.py`（编辑）：`_FS_BUS` 模块全局 + `get_fs_bus`/`set_fs_bus`/
+  `ensure_fs_bus` 三件套（镜像 telemetry，惰性构建 + 环境开关 + fail-open 返回 None）；
+  `__all__` 加三件导出。
+- `minimax_code/agent/tools/file_ops.py`（编辑）：`WriteFileTool.run` 在
+  `target.stat().st_size` 后、return 前，惰性 `ensure_fs_bus()` + `bus.emit("created"
+  if not existed else "modified", [str(target)], "write_file", size_bytes=size)`，
+  外层 try/except BLE001 fail-open。
+- `minimax_code/agent/tools/edit.py`（编辑）：`EditFileTool.run` 在统一 diff 算完后、
+  return 前，惰性 `ensure_fs_bus()` + `bus.emit("modified", [str(target)],
+  "edit_file", lines_added=added, lines_removed=removed)`，同样 fail-open。
+- `tests/test_fsnotify.py`（新，11 测）：`_reset_fs_bus` autouse fixture 隔离单例 +
+  `workspace` fixture 复用 test_tools 的路径策略。覆盖——frozen 纯数据（FrozenInstance
+  Error）、emit→recent+返回值、因果 seq 单调、emit fail-open（_BrokenRecent 注入）、
+  订阅 fan-out、慢订阅者 drop-not-block（subscriber_maxsize=1）、recent 三路过滤、
+  unsubscribe 停投递、capacity 守卫、write_file 集成（CREATED + cause=write_file +
+  size_bytes=5）、edit_file 集成（MODIFIED + cause=edit_file）、路径拒绝不发事件。
+
+### 验证
+
+- ✅ `ruff check`（fsnotify/ + app.py + file_ops.py + edit.py + test_fsnotify.py）：
+  **All checks passed**（首轮 4 处告警：bus.py 的 UP037 引号类型提示 ×2、events.py 的
+  UP042 StrEnum、test_fsnotify.py 的 B017 盲 Exception——已全部修正）。
+- ✅ `pytest -q` 全套：**1043 passed in 92.25s**，零失败、零回归——R16 新增 11 测无
+  缝融入 1043 总量，证明三件套单例不影响 agent 启动、写工具 emit 不破坏 read/list/
+  edit 既有行为、fail-open 路径在总线缺失时正确短路。
+
+### YAGNI 边界（本轮不做）
+
+- ❌ 不做 OS 文件监视（inotify/ReadDirectoryChanges）——自己是变更源，无外部观察者需求。
+- ❌ 不做 git 丰富化（commit/branch 入事件）——`cause` 字段已归因到工具，commit 级
+  归因待真实消费者出现。
+- ❌ 不做事件持久化（写 SQLite/磁盘）——`_recent` 内存环形缓冲已满足回看；持久化是
+  audit log 的职责（已有 telemetry 通道），不混入因果流。
+- ❌ 不做跨进程广播（IPC/网络）——`FsEventBus` 是进程内单例；跨进程需求出现时再加
+  transport 层，事件契约（`FsEvent`）已是纯数据可整体 lift。
+- ❌ 不做 REPL/重放（把 recent 当 event sourcing 回放）——`recent()` 是 best-effort
+  回看窗口（capacity 上限会丢早期事件），不是持久化日志，不做重放语义保证。
+- ❌ 不做 fsnotify→telemetry 自动桥接——两套通道各自独立；桥接（把 FsEvent 喂给
+  TelemetryEngine）是独立决策，留待 R17+。
+- ❌ 不给 list_directory/read_file 也发事件——只对**写**操作（write/edit）发，读
+  操作不改变因果状态。
+
+### Commit
+
+`feat(platform): R16 single-causal file-change stream (fuse grok xai-fsnotify)`

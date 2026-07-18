@@ -782,6 +782,55 @@ def ensure_telemetry_engine() -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Filesystem change bus singleton (R16 — causality pillar)
+# ---------------------------------------------------------------------------
+
+_FS_BUS: Any = None
+
+
+def get_fs_bus() -> Any:
+    """Return the process-wide :class:`FsEventBus`, or ``None``."""
+    return _FS_BUS
+
+
+def set_fs_bus(bus: Any) -> None:
+    """Inject a pre-built FsEventBus (tests bypass lazy build)."""
+    global _FS_BUS
+    _FS_BUS = bus
+
+
+def ensure_fs_bus() -> Any:
+    """Return the process-wide FsEventBus, building it once on demand.
+
+    Fail-open: a build failure logs and returns ``None`` rather than
+    raising, so ``bus = ensure_fs_bus()`` followed by
+    ``if bus: bus.emit(...)`` keeps working even when the bus cannot
+    initialise. The write tools call this after a successful write and
+    treat ``None`` as "disabled, zero overhead" — the contract is "file
+    writes never break because the change bus broke".
+    """
+    global _FS_BUS
+    if _FS_BUS is not None:
+        return _FS_BUS
+    # Env switch (default on). "0"/"false"/"off"/"no" disables the bus so
+    # the write tools short-circuit without ever building one — useful for
+    # sandboxes that forbid in-memory event collection.
+    flag = os.environ.get("MINIMAX_CODE_FS_BUS", "").strip().lower()
+    if flag in ("0", "false", "off", "no"):
+        logger.debug("fs bus disabled by MINIMAX_CODE_FS_BUS env")
+        return None
+    try:
+        from .fsnotify import FsEventBus
+
+        _FS_BUS = FsEventBus()
+        logger.info("fs event bus initialised")
+    except Exception:
+        logger.exception("fs bus init failed; running without fs events")
+        _FS_BUS = None
+    return _FS_BUS
+
+
+# ---------------------------------------------------------------------------
 # Boot-time crash recovery (R12 — reliability pillar)
 # ---------------------------------------------------------------------------
 
@@ -923,4 +972,7 @@ __all__ = [
     "ensure_telemetry_engine",
     "get_telemetry_engine",
     "set_telemetry_engine",
+    "ensure_fs_bus",
+    "get_fs_bus",
+    "set_fs_bus",
 ]

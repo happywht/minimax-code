@@ -283,6 +283,21 @@ class WriteFileTool(Tool):
             return ToolResult.fail(f"write failed: {exc}")
 
         size = target.stat().st_size
+        # R16 — mirror the successful write onto the causal file-change bus.
+        # Fail-open: a bus failure must never break the tool that just wrote.
+        try:
+            from ...app import ensure_fs_bus
+
+            bus = ensure_fs_bus()
+            if bus is not None:
+                bus.emit(
+                    "created" if not existed else "modified",
+                    [str(target)],
+                    "write_file",
+                    size_bytes=size,
+                )
+        except Exception:  # noqa: BLE001 — file write must never break on the bus
+            pass
         return ToolResult.ok(
             output={
                 "path": str(target),
