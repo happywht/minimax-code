@@ -2157,3 +2157,97 @@ compaction crate 30+ 文件中**第一个可独立交付的纯逻辑切片**，�
 ## Commit
 
 `feat(platform): R28 intra-compaction trigger (fuse grok xai-grok-compaction)`
+
+---
+
+## R29 — 压缩后活动状态提醒格式化（fuse grok `xai-grok-compaction/reminder`）
+
+### 本轮目标
+
+融合 `grok-build/crates/common/xai-grok-compaction/src/reminder.rs`（crate root，520 行，纯格式化，
+12 个 `#[test]`）。这是 compaction 链路的**输出端**：R28 决定**何时**压缩，R29 保证压缩后模型**仍知
+道自己在做什么**——把 running background tasks / TODO list / running subagents 三段状态包成
+`<system-reminder>` 块追加到摘要，防止压缩丢失活动上下文（在跑的任务、待办、子 agent）。
+
+**产品融合点（不只是移植）**：三段正好映射 MiniMax Code 现有原语——
+`BackgroundTask` ↔ 后台终端任务、`TodoItem` ↔ `TaskCreate`/`TaskList`、`RunningSubagent` ↔
+`SubAgentRuntime` 子 agent。本轮交付纯格式化层 + 测试，host 接线（从真实 store/runtime 取状态）留后续。
+
+纯字符串格式化：零 async、零 LLM、零 IO、零 host 依赖。Rust 的 `&'a` 借阅视图在 Python 用 dataclass
+持 `str`/`list` 引用表达——语义同"不持有世界的私有副本"，仅以引用代替生命周期。
+
+### 融合结论（✅ 保持 / ❌ 放弃）
+
+- ✅ **`TodoStatus` 4 变体 Enum**（Pending/InProgress/Completed/Cancelled）+ `is_actionable()`
+  （Pending|InProgress 为 True）+ `tag()`（`[pending]`/`[in_progress]`/`[completed]`/`[cancelled]`）。
+- ✅ **5 个 dataclass 借阅视图**：`SubagentToolNames`(poll/cancel)、`TodoItem`(id/content/status)、
+  `BackgroundTask`(task_id/command/status/tool_name?)、`RunningSubagent`(subagent_id/type?/desc?/elapsed)、
+  `ActiveAgentReminderState`(三段 list + `is_empty`/`has_actionable_todos`)。
+- ✅ **8 个纯函数**：3 个 section 格式器 + `format_active_agent_sections` + `wrap_system_reminder` +
+  `format_active_agent_reminder` + `append_reminder_block`（+ 2 私有 `_format_*_line`/`_todo_trailer`）。
+- ❌ **不移植 harness-only 段**（files / AGENTS.md / skills / MCP / memory）——grok `reminder.rs` 里
+  这些段依赖 host 文件系统与 manifest，本轮只做活动 agent 状态三段；其余段属 host 集成层。
+- ❌ **不接 compact.rs 注入**——`append_reminder_block` 已交付纯函数，但不把它接进（尚未存在的）
+  compact 执行层把 reminder 注入真实摘要；host 接线留后续。
+
+### 交付
+
+- `agent/minimax_code/compaction/reminder.py`（288 行，新建）：`TodoStatus` Enum + 5 dataclass +
+  8 公开函数 + 2 私有辅助。`from __future__ import annotations` + `collections.abc.Iterable`。
+- `agent/tests/test_compaction_reminder.py`（306 行，新建）：**25 个测试** = 12 个 grok 镜像
+  （empty_state_is_none / missing_tool_names_omits_subagent_section_only / chat-style verbatim /
+  build-style type / renamed tools verbatim / background tasks / todo list / only-completed-is-none /
+  section order / wrap joins+skips / appends blank-line / append noop）+ 8 个 Python 守护
+  （TodoStatus.is_actionable ×4 参数化 / TodoStatus.tag ×4 参数化 / state 默认空 / completed-only 空 /
+  bg section 空 None / todo trailer 四分支组合 / subagent section 空 None）。
+- `agent/minimax_code/compaction/__init__.py`（+33 行）：re-export reminder 全部公开符号 +
+  `__all__` 扩展，crate-level discoverability。
+
+**11 个关键移植契约**（测试逐条锁定）：
+
+1. **节顺序固定** bg→todo→subagent（`test_section_order_background_todo_subagent` 用 `out.index` 比较）。
+2. **空状态→None**（`test_empty_state_is_none`：`format_active_agent_reminder(空, tools) is None`）。
+3. **subagent 工具名缺失只省略 subagent 段**——bg/todo 仍渲染
+  （`test_missing_tool_names_omits_subagent_section_only`：`subagent_tools=None` 时 subagents 段消失）。
+4. **subagent_id verbatim**——chat-style UUID（`019ea7f0-...`）原样渲染，不合成、不加 type；
+  build-style 在 id 与 task 间插 `type: \`explore\``。
+5. **重命名工具名 verbatim**——manifest 改名（`get_command_or_subagent_output`）原样插值，不硬编码
+  `get_task_output`。
+6. **TODO 折叠** completed/cancelled 成计数 trailer（`_todo_trailer` 四分支：无/仅 completed/仅
+  cancelled/两者），只列 actionable（pending/in_progress）。
+7. **wrap_system_reminder** 跳过空白段 + 双换行连接，全空→None
+  （`test_wrap_system_reminder_joins_and_skips_blank`：`["## A\nx","","  ","## B\ny"]` →
+  `<system-reminder>\n## A\nx\n\n## B\ny\n</system-reminder>`）。
+8. **append_reminder_block**：None/空白→summary 原样；非空→`summary\n\nreminder`。
+9. **em dash `—`（U+2014）保真**——`section_todo_list` 文本"compacted — it is still active"保真，非 ASCII `-`。
+10. **`TodoStatus.is_actionable`** 决定列出 vs 折叠——pending/in_progress 列行，completed/cancelled 计数。
+11. **`ActiveAgentReminderState.is_empty`**：completed-only todos 算空（无 actionable），`has_actionable_todos` 为准。
+
+### 验证
+
+- ✅ **ruff**：`All checks passed`（E/F/W/I/B/UP，line-length 100；初始 2 处——`Iterable` 应从
+  `collections.abc` 导入 UP035 + 测试 import 块排序 I001——由 `--fix` 自动修复）。
+- ✅ **新测试**：25 passed in 0.10s。
+- ✅ **完整套件零回归**：1339 passed in 88.47s = 1314 基线 + 25 新增，**精确匹配**。
+- ✅ **节顺序锁定**：`out.index("## Running Background Tasks") < out.index("## TODO List") <
+  out.index("## Running Subagents")`。
+- ✅ **wrap 双换行连接**：精确字符串断言 `<system-reminder>\n## A\nx\n\n## B\ny\n</system-reminder>`。
+- ✅ **TODO trailer 四分支**：`(0,0)→""` / `(c,0)→"\n(c completed)"` / `(0,k)→"\n(k cancelled)"` /
+  `(c,k)→"\n(c completed, k cancelled)"` 全覆盖。
+- ✅ **verbatim 守护**：chat UUID 原样渲染 + 断言 `task-019ea7f0`/`type:` 不出现（防合成）。
+
+### YAGNI 边界（本轮不做）
+
+- ❌ **不做 host 接线**——不从 `TaskStore`/`SubAgentRuntime`/后台任务管理器取真实状态构造
+  `ActiveAgentReminderState`；纯格式化层 + 构造式测试交付，host 适配层留后续轮次。
+- ❌ **不移植 harness-only 段**——files-in-flight / AGENTS.md / skills / MCP servers / memory 段
+  依赖 host 文件系统与 manifest，属 host 集成层，本轮只做活动 agent 状态三段。
+- ❌ **不接 compact 执行层**——`append_reminder_block` 是纯函数，但不把它注入（尚未实现的）compact
+  流水线把 reminder 追加到真实 LLM 摘要；待 compact.rs 移植轮次。
+- ❌ **不做 IPC 暴露**——不新增 `compaction.reminder` handler / 前端渲染；压缩后提醒的可视化留 host 集成。
+- ❌ **不做 TodoStatus 序列化**——grok 的 serde 在 Python 用 Enum 值字符串即可，本轮无持久化需求，
+  不加 `to_dict`/`from_dict`（与 R28 config 不同，reminder 是纯内存视图）。
+
+### Commit
+
+`feat(platform): R29 post-compaction reminder formatting (fuse grok xai-grok-compaction)`
