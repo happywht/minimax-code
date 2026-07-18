@@ -33,8 +33,9 @@ class Observer:
     """Hooks for breaker state transitions and per-outcome events.
 
     Override on a subclass to wire breaker events into telemetry/logs. Methods
-    must not raise — :meth:`CircuitBreaker.guard` swallows observer faults to
-    stay fail-open, but direct :meth:`check`/:meth:`record` callers do not.
+    must not raise; since R21 the breaker wraps every dispatch in a fail-open
+    guard (``_notify_state_change`` / ``_notify_outcome``), so a buggy observer
+    can never corrupt the state machine — symmetric with the reliability stack.
     """
 
     def on_state_change(
@@ -130,7 +131,7 @@ class CircuitBreaker:
         """Feed a guarded call's outcome back; may transition state."""
         if not self._config.enabled:
             return
-        self._observer.on_outcome(outcome)
+        self._notify_outcome(outcome)
         now = self._clock()
         self._window.evict(self._config.window_duration, now)
         state = self.state  # lazy OPEN -> HALF_OPEN
@@ -196,7 +197,41 @@ class CircuitBreaker:
         if old is new:
             return
         self._state = new
-        self._observer.on_state_change(old, new, reason)
+        self._notify_state_change(old, new, reason)
+
+    # ------------------------------------------------------------------
+    # Observer dispatch (R21) — fail-open, symmetric with reliability stack
+    # ------------------------------------------------------------------
+
+    def attach_observer(self, observer: Observer) -> None:
+        """Replace the active observer (idempotent swap).
+
+        Used by the registry's observer factory so a telemetry-backed observer
+        can be (re)wired without recreating the breaker. Mirrors
+        :meth:`minimax_code.agent.reliability.CircuitBreaker.attach_observer`.
+        """
+
+        self._observer = observer
+
+    def _notify_state_change(
+        self, old: BreakerState, new: BreakerState, reason: str
+    ) -> None:
+        """Fail-open dispatch: a buggy observer must never corrupt the breaker."""
+
+        try:
+            self._observer.on_state_change(old, new, reason)
+        except Exception:  # noqa: BLE001 - observer must not break the state machine
+            logger.debug(
+                "%s: observer.on_state_change failed", self.name, exc_info=True
+            )
+
+    def _notify_outcome(self, outcome: Outcome) -> None:
+        """Fail-open dispatch for per-outcome hooks."""
+
+        try:
+            self._observer.on_outcome(outcome)
+        except Exception:  # noqa: BLE001 - observer must not break the state machine
+            logger.debug("%s: observer.on_outcome failed", self.name, exc_info=True)
 
     # ------------------------------------------------------------------
     # High-level fail-open API

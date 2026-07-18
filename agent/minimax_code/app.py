@@ -848,6 +848,33 @@ def set_breaker_registry(registry: Any) -> None:
     _BREAKER_REGISTRY = registry
 
 
+def _wire_breaker_telemetry(registry: Any) -> None:
+    """Bridge every transport-layer breaker into the telemetry engine (R21).
+
+    Installs a registry-wide observer factory so each lazily-created breaker
+    (keyed by endpoint, e.g. ``"llm:anthropic"``) carries a
+    :class:`ReliabilityTelemetryObserver` resolved against the live engine at
+    emit time. The engine is read through :func:`ensure_telemetry_engine`
+    (lazy, fail-open) — the **same adapter** the reliability stack uses, so
+    both breaker fleets feed one event stream and stay distinguishable by
+    ``name`` (reliability breaker = ``"llm"``, transport breaker = endpoint).
+
+    Fail-open: a missing adapter or a registry fault is logged and swallowed;
+    the registry still works without telemetry.
+    """
+    try:
+        from .telemetry.observer_adapter import ReliabilityTelemetryObserver
+
+        def factory(key: str) -> Any:
+            # Lazy engine getter: reads the live engine at emit time so the
+            # observer tolerates the engine being injected after the breaker.
+            return ReliabilityTelemetryObserver(ensure_telemetry_engine, name=key)
+
+        registry.attach_observer_factory(factory)
+    except Exception:
+        logger.exception("breaker telemetry wiring failed; running uninstrumented")
+
+
 def ensure_breaker_registry() -> Any:
     """Return the process-wide CircuitBreakerRegistry, building it once on demand.
 
@@ -873,6 +900,7 @@ def ensure_breaker_registry() -> Any:
         from .resilience import BreakerConfig, CircuitBreakerRegistry
 
         _BREAKER_REGISTRY = CircuitBreakerRegistry(BreakerConfig.from_env())
+        _wire_breaker_telemetry(_BREAKER_REGISTRY)
         logger.info("circuit-breaker registry initialised")
     except Exception:
         logger.exception("breaker registry init failed; running unprotected")

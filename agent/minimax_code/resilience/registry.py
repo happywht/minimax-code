@@ -10,9 +10,9 @@ registry layer, mirroring the per-breaker fail-open contract).
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 
-from .breaker import CircuitBreaker
+from .breaker import CircuitBreaker, Observer
 from .config import BreakerConfig
 
 
@@ -28,6 +28,31 @@ class CircuitBreakerRegistry:
     def __init__(self, config: BreakerConfig | None = None) -> None:
         self._config = config or BreakerConfig.server()
         self._breakers: dict[str, CircuitBreaker] = {}
+        # R21: optional observer factory. When set, every newly-created breaker
+        # gets the factory's observer attached, so the whole breaker fleet is
+        # observable through one wiring point. Retrofit-friendly: existing
+        # breakers are rewired too via ``attach_observer_factory``.
+        self._observer_factory: Callable[[str], Observer | None] | None = None
+
+    def attach_observer_factory(
+        self, factory: Callable[[str], Observer | None] | None
+    ) -> None:
+        """Install an observer factory; retrofits already-materialised breakers.
+
+        Each new breaker built by :meth:`get` gets ``factory(key)`` attached
+        (skipped when the factory returns ``None``). Existing breakers are
+        rewired in place so the factory takes effect immediately for the whole
+        fleet — this is the hook ``app.py`` uses to point every transport
+        breaker at the shared telemetry observer.
+        """
+
+        self._observer_factory = factory
+        if factory is None:
+            return
+        for key, br in self._breakers.items():
+            observer = factory(key)
+            if observer is not None:
+                br.attach_observer(observer)
 
     @property
     def config(self) -> BreakerConfig:
@@ -43,7 +68,10 @@ class CircuitBreakerRegistry:
             return None
         br = self._breakers.get(key)
         if br is None:
-            br = CircuitBreaker(key, self._config)
+            observer = (
+                self._observer_factory(key) if self._observer_factory else None
+            )
+            br = CircuitBreaker(key, self._config, observer=observer)
             self._breakers[key] = br
         return br
 

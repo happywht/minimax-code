@@ -100,3 +100,60 @@ def test_observer_distinguishes_breakers_by_name() -> None:
     cbs = engine.recent(event_type=EventType.CIRCUIT_BREAKER)
     assert {e["name"] for e in cbs} == {"llm", "tool:search"}
     assert {e["payload"]["breaker"] for e in cbs} == {"llm", "tool:search"}
+
+
+def test_observer_handles_cross_stack_breaker_state() -> None:
+    """R21: the adapter uses ``==`` (StrEnum value compare), so an OPEN transition
+    from the resilience stack's separate BreakerState class still maps to ERROR.
+
+    ``resilience.BreakerState.OPEN is reliability.BreakerState.OPEN`` is False
+    (different classes), but StrEnum ``==`` compares the underlying str — so the
+    severity branch fires regardless of which stack raised the transition.
+    """
+
+    from minimax_code.resilience import BreakerState as ResilienceBreakerState
+
+    engine = TelemetryEngine()
+    obs = ReliabilityTelemetryObserver(lambda: engine, name="llm:transport")
+    obs.on_state_change(
+        ResilienceBreakerState.CLOSED, ResilienceBreakerState.OPEN, "error-rate"
+    )
+    cbs = engine.recent(event_type=EventType.CIRCUIT_BREAKER)
+    assert len(cbs) == 1
+    assert cbs[0]["severity"] == Severity.ERROR
+    assert cbs[0]["payload"]["new"] == "open"
+
+
+def test_resilience_breaker_feeds_telemetry_via_registry_factory() -> None:
+    """R21 end-to-end: a resilience-stack breaker tripping through the registry
+    observer factory emits a CIRCUIT_BREAKER event on the shared engine.
+
+    Proves the two-stack bridge: the same ``ReliabilityTelemetryObserver`` class
+    wired via the resilience registry feeds one event stream, distinguishable
+    from the reliability breaker by ``name`` (``llm:anthropic`` vs ``llm``)."""
+
+    from minimax_code.resilience import (
+        BreakerConfig as ResilienceBreakerConfig,
+    )
+    from minimax_code.resilience import (
+        CircuitBreakerRegistry,
+        Outcome,
+    )
+
+    engine = TelemetryEngine()
+    reg = CircuitBreakerRegistry(
+        ResilienceBreakerConfig(min_samples=1, open_duration=10.0)
+    )
+    reg.attach_observer_factory(
+        lambda key: ReliabilityTelemetryObserver(lambda: engine, name=key)
+    )
+    br = reg.get("llm:anthropic")
+    assert br is not None
+    br.record(Outcome.FAILURE)  # trips → OPEN
+
+    cbs = engine.recent(event_type=EventType.CIRCUIT_BREAKER)
+    assert len(cbs) == 1
+    ev = cbs[0]
+    assert ev["severity"] == Severity.ERROR  # OPEN via cross-stack == compare
+    assert ev["payload"]["breaker"] == "llm:anthropic"
+    assert ev["payload"]["new"] == "open"

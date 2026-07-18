@@ -408,3 +408,142 @@ def test_app_breaker_registry_lazy_builds_once(monkeypatch):
         assert reg.get("k") is reg.get("k")  # registry itself lazy-creates
     finally:
         app.set_breaker_registry(None)
+
+
+# ---------------------------------------------------------------------------
+# Observer dispatch (R21) — fail-open, symmetric with the reliability stack
+# ---------------------------------------------------------------------------
+
+
+class _RecordingObserver(NoopObserver):
+    """Captures every transition + outcome for assertion (R21)."""
+
+    def __init__(self) -> None:
+        self.transitions: list[tuple[BreakerState, BreakerState, str]] = []
+        self.outcomes: list[Outcome] = []
+
+    def on_state_change(
+        self, old: BreakerState, new: BreakerState, reason: str
+    ) -> None:
+        self.transitions.append((old, new, reason))
+
+    def on_outcome(self, outcome: Outcome) -> None:
+        self.outcomes.append(outcome)
+
+
+def test_observer_fires_on_trip_and_outcome() -> None:
+    """R21: a trip emits on_state_change CLOSED→OPEN and on_outcome per record."""
+
+    obs = _RecordingObserver()
+    clock = MockClock()
+    br = CircuitBreaker("t", hot_config(min_samples=1), clock=clock, observer=obs)
+    br.record(Outcome.FAILURE)
+    assert obs.outcomes == [Outcome.FAILURE]
+    assert len(obs.transitions) == 1
+    old, new, _reason = obs.transitions[0]
+    assert (old, new) == (BreakerState.CLOSED, BreakerState.OPEN)
+
+
+def test_observer_fires_on_half_open_recovery() -> None:
+    """R21: HALF_OPEN→CLOSED on a successful probe fires on_state_change."""
+
+    obs = _RecordingObserver()
+    clock = MockClock()
+    br = CircuitBreaker("t", hot_config(min_samples=1), clock=clock, observer=obs)
+    br.record(Outcome.FAILURE)  # trip
+    obs.transitions.clear()
+    clock.advance(br.config.open_duration)
+    br.check()  # → HALF_OPEN
+    br.record(Outcome.SUCCESS)
+    assert (obs.transitions[-1][0], obs.transitions[-1][1]) == (
+        BreakerState.HALF_OPEN,
+        BreakerState.CLOSED,
+    )
+
+
+def test_attach_observer_swaps_active() -> None:
+    """attach_observer replaces the active observer; later events route to it only."""
+
+    obs1 = _RecordingObserver()
+    clock = MockClock()
+    br = CircuitBreaker("t", hot_config(min_samples=1), clock=clock, observer=obs1)
+    obs2 = _RecordingObserver()
+    br.attach_observer(obs2)
+    br.record(Outcome.FAILURE)
+    assert obs1.outcomes == []  # detached
+    assert obs2.outcomes == [Outcome.FAILURE]  # active
+
+
+def test_observer_fault_is_fail_open() -> None:
+    """R21: a buggy observer raising on every hook must NOT corrupt the breaker.
+
+    The ``_notify_*`` wrappers swallow observer faults, so the state machine
+    advances normally even when on_state_change / on_outcome explode.
+    """
+
+    class _Boom(NoopObserver):
+        def on_state_change(self, old, new, reason):  # noqa: ANN001
+            raise RuntimeError("boom")
+
+        def on_outcome(self, outcome):  # noqa: ANN001
+            raise RuntimeError("boom")
+
+    clock = MockClock()
+    br = CircuitBreaker("t", hot_config(min_samples=1), clock=clock, observer=_Boom())
+    br.record(Outcome.FAILURE)  # trip path notifies + records outcome
+    assert br.state is BreakerState.OPEN  # state machine intact despite fault
+
+
+# ---------------------------------------------------------------------------
+# Registry observer factory (R21)
+# ---------------------------------------------------------------------------
+
+
+def test_registry_factory_attaches_to_new_breakers() -> None:
+    """Factory-installed observer rides every breaker the registry lazily creates."""
+
+    reg = CircuitBreakerRegistry(hot_config(min_samples=1))
+    observers: dict[str, _RecordingObserver] = {}
+
+    def factory(key: str) -> _RecordingObserver:
+        observers[key] = _RecordingObserver()
+        return observers[key]
+
+    reg.attach_observer_factory(factory)
+    br = reg.get("llm:anthropic")
+    assert br is not None
+    br.record(Outcome.FAILURE)
+    assert "llm:anthropic" in observers
+    assert observers["llm:anthropic"].outcomes == [Outcome.FAILURE]
+
+
+def test_registry_factory_retrofits_existing_breakers() -> None:
+    """attach_observer_factory rewires breakers that already exist, immediately."""
+
+    reg = CircuitBreakerRegistry(hot_config(min_samples=1))
+    reg.get("k")  # materialise BEFORE the factory is set
+    observers: dict[str, _RecordingObserver] = {}
+
+    def factory(key: str) -> _RecordingObserver:
+        observers[key] = _RecordingObserver()
+        return observers[key]
+
+    reg.attach_observer_factory(factory)
+    assert "k" in observers  # retrofit fired for the pre-existing breaker
+    br = reg.get("k")
+    assert br is not None
+    br.record(Outcome.FAILURE)
+    assert observers["k"].outcomes == [Outcome.FAILURE]  # wired in place
+
+
+def test_registry_factory_none_is_noop() -> None:
+    """Passing None clears the factory; later breakers stay unobserved."""
+
+    reg = CircuitBreakerRegistry(hot_config(min_samples=1))
+    reg.attach_observer_factory(lambda key: _RecordingObserver())
+    reg.attach_observer_factory(None)  # unset
+    # A fresh key post-clear must not trip the factory — verified by asserting
+    # no exception and the registry still serves a working breaker.
+    br = reg.get("fresh")
+    assert br is not None
+    br.record(Outcome.FAILURE)  # no observer attached; breaker works bare

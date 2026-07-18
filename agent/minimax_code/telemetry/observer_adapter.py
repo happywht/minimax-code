@@ -1,10 +1,16 @@
-"""Telemetry adapter for the reliability-stack circuit breaker (R20).
+"""Telemetry adapter for either circuit-breaker stack → telemetry (R20/R21).
 
-Bridges :class:`minimax_code.agent.reliability.Observer` to
-:class:`minimax_code.telemetry.engine.TelemetryEngine`. A breaker state
-transition becomes one ``CIRCUIT_BREAKER`` telemetry event; per-outcome hooks
-are intentionally no-op (high-frequency, low-signal — the metrics layer suits
-those better than the event stream, which would drown in one event per call).
+Bridges a breaker ``Observer`` to
+:class:`minimax_code.telemetry.engine.TelemetryEngine`. The observer is
+duck-typed — the same class works unchanged against **either** stack:
+
+* :mod:`minimax_code.agent.reliability` (async breaker, agent core path),
+* :mod:`minimax_code.resilience` (sync breaker, LLM transport path).
+
+A breaker state transition becomes one ``CIRCUIT_BREAKER`` telemetry event;
+per-outcome hooks are intentionally no-op (high-frequency, low-signal — the
+metrics layer suits those better than the event stream, which would drown in
+one event per call).
 
 The engine is resolved through an injectable ``engine_getter`` callable rather
 than a held reference: :class:`AgentCore`'s ``telemetry_engine`` is injected
@@ -26,6 +32,14 @@ it would mislead dashboards. Per-session attribution would require grok's
 ambient context (``contextvars``) plumbed through the call stack; deferred until
 a real per-session breaker exists (YAGNI today — there is one shared ``llm``
 breaker per process).
+
+Two-stack bridge (R21)
+----------------------
+The class subclasses :class:`minimax_code.agent.reliability.Observer` only as a
+type guide — at runtime it is duck-typed, so the **same** instance is attached
+to resilience-stack breakers by the transport registry. State values are
+compared with ``==`` (StrEnum value semantics) so the OPEN-severity branch
+fires no matter which stack's ``BreakerState`` the breaker passes in.
 """
 
 from __future__ import annotations
@@ -70,9 +84,12 @@ class ReliabilityTelemetryObserver(Observer):
         engine = self._engine_getter()
         if engine is None:
             return  # telemetry disabled — zero overhead, no allocation
-        # An OPEN breaker is a degraded state an operator must see; recovery
-        # transitions (HALF_OPEN, CLOSED) are informational good news.
-        severity = Severity.ERROR if new is BreakerState.OPEN else Severity.INFO
+        # Value compare (==), not identity (is): the resilience stack has its
+        # own ``BreakerState`` StrEnum (same wire values, different class), and
+        # ``resilience.BreakerState.OPEN is reliability.BreakerState.OPEN`` is
+        # False. StrEnum ``==`` compares the underlying str, so the OPEN branch
+        # fires regardless of which stack raised the transition (R21 bridge).
+        severity = Severity.ERROR if new == BreakerState.OPEN else Severity.INFO
         engine.emit(
             TelemetryEvent(
                 type=EventType.CIRCUIT_BREAKER,

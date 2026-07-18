@@ -1365,3 +1365,113 @@ disposition"语义——grok 用独立异常类型让 `classify_exception` 一�
 ### Commit
 
 `feat(platform): R20 reliability telemetry loop (fuse grok xai-circuit-breaker Observer)`
+
+## R21 — 传输层熔断可观测性对称接线：resilience 栈 Observer→TelemetryEngine（fuse grok xai-circuit-breaker Observer 对称收尾）（阶段 C 第 1 轮）
+
+**本轮目标**：R20 给 `reliability` 栈（core 主路径）的 CircuitBreaker 闭环了可观测性，
+但**留了 R21**——`resilience` 栈（LLM 传输层，R17 建）的同步 CircuitBreaker 还是**完全
+静默**。传输层熔断 OPEN/恢复事件同样进不了 TelemetryEngine，可观测性盲区只补了一半。本轮
+对称收尾：给 `resilience` 栈的同步 CircuitBreaker 加与 reliability **同构**的 Observer 接口
+（`attach_observer` + fail-open `_notify_*`），用**同一个** `ReliabilityTelemetryObserver`
+适配器接线，让两条可靠性栈的事件都流入 TelemetryEngine 且按 `name` 区分（reliability 熔断
+= `"llm"`，transport 熔断 = endpoint key 如 `"llm:anthropic"`）。**核心发现**：R17 早已在
+`resilience.breaker` 建了 Observer ABC + `NoopObserver` + `CircuitBreaker(observer=)`，但缺
+`attach_observer` 且 `_set_state`/`record` 直调 `self._observer.on_*`（无 fail-open 包装）；
+适配器原用 `new is BreakerState.OPEN`——而 `resilience.BreakerState.OPEN is
+reliability.BreakerState.OPEN` 为 `False`（不同类！），跨栈桥接存在**潜在 bug**。本轮改
+`is`→`==`（StrEnum 值比较跨类有效），单适配器真正桥接两栈。开局阶段 C（智能体协作与感知
+R21-R30）。
+
+### 融合结论（对称性收尾，单适配器双栈）
+
+- ✅ **保持**：grok Observer 对称三件套——`resilience` 栈的 `attach_observer` /
+  `_notify_state_change` / `_notify_outcome` 与 `reliability` 栈**方法签名、fail-open 语义、
+  `# noqa: BLE001` 注解逐字一致**（reliability/circuit_breaker.py:194-221 的镜像）。`Observer`
+  ABC + `NoopObserver` 默认零开销不变。
+- ✅ **保持**：grok 稳定 reason 闭集——`resilience` 栈的转换 reason（`"error-rate threshold
+  breached"` / `"cool-down elapsed"` / `"half-open probe succeeded"` / `"half-open probe
+  failed"`）原样透传到适配器，无重写。reason 闭集让前端映射 UI 不需解析自由文本。
+- ✅ **保持**：grok "registry-as-factory" 模式——`CircuitBreakerRegistry.attach_observer_factory`
+  在**一个注入点**给整支熔断器舰队挂观察者（新建 breaker 工厂注入 + 已有 breaker **retrofit**
+  回溯接线），是 `xai-circuit-breaker` `ObserverRegistry` 的 Python 等价。app.py 用这一个 hook
+  把所有传输层熔断器指向共享 telemetry 观察者。
+- ✅ **保持**：fail-open **双层防御**——breaker `_notify_*` 包 try/except（观察者故障绝不破坏
+  状态机）+ 适配器 `engine is None` 短路 + app `_wire_breaker_telemetry` 再包一层（telemetry
+  接线失败不阻断 registry 启动）。belt and braces——可观测性任何环节挂掉都不影响可靠性。
+- ✅ **保持**：grok "endpoint-scoped session_id=None" 作用域——传输层熔断 `session_id=None`
+  （端点级，同 R20 reliability 栈语义），事件按 `name` 区分两栈（`llm` vs `llm:anthropic`）。
+- ❌ **放弃**：`new is BreakerState.OPEN` 身份比较——**R21 关键修正**。`resilience` 栈有独立
+  `BreakerState` StrEnum（同 wire 值 `"open"`，但**不同类**），跨栈 `is` 为 `False`。StrEnum
+  `==` 比较底层 str，跨类有效。改 `is`→`==` 让**同一个**适配器实例桥接任一栈——这是"单适配器
+  双栈"的语义基石（已 Bash 验证：`resilience.BreakerState.OPEN == reliability.BreakerState.OPEN`
+  → `True`）。
+- ❌ **放弃**：contextvars 全栈贯通——传输层熔断端点级（`session_id=None`），适配器 `name`
+  参数承载端点 key，正确归因**不需要 contextvars**。YAGNI（当前一个共享传输熔断器配置）。
+- ❌ **放弃**：`on_outcome` emit 事件——同 R20，outcome 高频低价值（每次调用一个），event
+  stream 会被淹没。适配器 `on_outcome` no-op（接口保留为 grok 兼容）。指标层更适合 outcome
+  频率，留待真实 dashboard 需求。
+
+### 交付
+
+- `telemetry/observer_adapter.py`（编辑）：① 模块 docstring 泛化为"either circuit-breaker
+  stack → telemetry"，列举两栈 + 鸭子类型解释；② **`is`→`==` 关键修正**——`severity =
+  Severity.ERROR if new == BreakerState.OPEN` 带详注（跨栈 StrEnum 身份 vs 值比较，R21 bridge
+  基石）；③ docstring 加"Two-stack bridge (R21)"段——鸭子类型子类化作类型指南 + 跨栈 `==`
+  论证。
+- `agent/minimax_code/resilience/breaker.py`（编辑）：① `Observer` docstring 更新（移除"direct
+  callers do not [swallow]"，因 R21 在 `_notify_*` 层加 fail-open）；② 加 `attach_observer`
+  （幂等替换，registry factory 用）+ `_notify_state_change`/`_notify_outcome`（fail-open，
+  `# noqa: BLE001`，镜像 reliability/circuit_breaker.py:194-221）；③ `_set_state` 改调
+  `_notify_state_change`、`record` 改调 `_notify_outcome`（替换原裸 `self._observer.on_*`）。
+- `agent/minimax_code/resilience/registry.py`（编辑）：① imports 加 `Callable` +
+  `Observer`；② `__init__` 加 `_observer_factory` 字段；③ `attach_observer_factory(factory)`
+  （安装工厂 + retrofit 已有 breaker）；④ `get` 在创建时注入 observer
+  （`CircuitBreaker(key, cfg, observer=observer)`）。
+- `agent/minimax_code/app.py`（编辑）：① 新增 `_wire_breaker_telemetry(registry)` helper
+  （**惰性 import** `ReliabilityTelemetryObserver` 防循环 + fail-open `try/except`，工厂闭包
+  用 `ensure_telemetry_engine` 作 engine_getter）；② `ensure_breaker_registry` 构建后调用
+  `_wire_breaker_telemetry(_BREAKER_REGISTRY)`——传输层熔断器舰队自动可观测。
+- `tests/test_resilience.py`（编辑）：追加 `_RecordingObserver`（子类 `NoopObserver`）+
+  **7 个 R21 测试**——4 个 breaker 级（trip/outcome 触发、HALF_OPEN 恢复转换、`attach_observer`
+  替换活跃观察者、observer 故障 fail-open 不破坏状态机）+ 3 个 registry factory 级（新建
+  breaker 注入、retrofit 已有 breaker、`None` 解除接线）。
+- `tests/test_telemetry_observer.py`（编辑）：追加 **2 个跨栈桥接测试**——纯适配器（resilience
+  `BreakerState` 跨栈 `==` 正确映射 OPEN→ERROR）+ 端到端（resilience registry factory 接
+  telemetry observer，trip 时引擎收到 `CIRCUIT_BREAKER` ERROR 事件，按 `name="llm:anthropic"`
+  区分）。
+
+### 验证
+
+- ✅ `ruff check`（breaker.py + registry.py + observer_adapter.py + app.py +
+  test_resilience.py + test_telemetry_observer.py）：**All checks passed**——6 文件一次过检
+  （`_notify_*` 的 `# noqa: BLE001` fail-open 注解、`_Boom`/`_RecordingObserver` 局部类
+  `# noqa: ANN001`、`Callable`/`Observer` 导入排序、`is→==` 修正）。`test_telemetry_observer.py`
+  有一处 aliased import 被 isort 拆块（项目规则），功能无影响。
+- ✅ `pytest tests/test_resilience.py tests/test_telemetry_observer.py tests/test_transport_breaker.py -q`：
+  **64 passed**（含 9 个 R21 新测：7 resilience observer/registry + 2 跨栈桥接）——
+  breaker 级 fail-open、registry factory 注入/retrofit/解除、跨栈 `==` 严重性映射、端到端
+  registry factory→telemetry 闭环全绿灯；`test_transport_breaker.py` 零回归证明 registry
+  接口扩展（可选 factory）向后兼容。
+- ✅ `pytest -q` 全套：**1117 passed**（1108 R20 基线 + 9 新增），零失败、零回归——证明
+  resilience Observer 扩展向后兼容（默认 NoopObserver 不影响既有熔断行为）、registry factory
+  可选注入不破坏传输层、adapter `is→==` 不影响 reliability 栈（同栈 `==` 与 `is` 等价）、
+  app.py 惰性 import 规避循环成功（registry 仍正常初始化）。
+
+### YAGNI 边界（本轮不做）
+
+- ❌ 不把熔断态暴露到前端 UI——`CIRCUIT_BREAKER` 事件进了 TelemetryEngine（in-memory bus），
+  但前端 `agent.status` 事件未桥接。前端横幅（"模型服务暂不可用，N 秒后重试"，区分 reliability
+  vs transport 熔断）是独立 UI 工作，留 **R22**（AgentStatusData 联合类型扩展）。
+- ❌ 不为 reliability registry 加对称 factory——reliability 栈由 core.py **每 turn** re-attach
+  （捕获 late-arriving engine），是**不同的接线模式**（turn-scoped vs endpoint-scoped registry）。
+  强行对称会引入两套 registry 语义，YAGNI。
+- ❌ 不加 contextvars——传输层熔断端点级（`session_id=None`），适配器 `name` 参数承载端点 key，
+  正确归因不需要 contextvars。引入它是为"每会话独立熔断器"铺路，YAGNI。
+- ❌ 不 emit `on_outcome` 事件——同 R20，outcome 高频低价值，event stream 会被淹没。指标层
+  更适合 outcome 频率。
+- ❌ 不做熔断指标聚合 RPC——`TelemetryEngine.metrics()` 已有 per-session 指标；熔断转换计数
+  （两栈分别 trip 次数 / OPEN 累计时长）当前无 dashboard 消费需求。
+
+### Commit
+
+`feat(platform): R21 transport breaker telemetry symmetry (fuse grok xai-circuit-breaker Observer)`
