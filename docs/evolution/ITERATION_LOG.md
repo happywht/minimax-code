@@ -1782,3 +1782,93 @@ execute（`FuturesUnordered`）。**关键规则**："仅当写入工具指向�
 ### Commit
 
 `feat(platform): R24 mid-turn interjection buffer (fuse grok xai-interjection-core)`
+
+## R25 — 生命周期贡献者 hook 框架（fuse grok xai-agent-lifecycle）（阶段 C 第 5 轮）
+
+### 本轮目标
+
+把 grok-build 的 `xai-agent-lifecycle` crate（评分 9/10，16 文件 ~600 LOC，
+仅依赖 `async-trait` + `tracing`）前向迁移到 Python，落地一个**安装时能力注入
+框架**：4 个 contributor family（TurnLifecycle / SessionLifecycle / TurnInput /
+Command），每个 family 是一组带默认实现的 hook，宿主在 run loop 边界处按注册顺序
+分发。核心契约（grok 原话）——"纯数据输入 / 安装时能力注入 / 绝不接管循环控制"。
+R24 的 YAGNI 伏笔（"IPC 推送回合 hook 由 R25 生命周期贡献者正式化"）在本轮兑现为
+`TurnLifecycleContributor` 框架。
+
+### 融合结论
+
+✅ **保持**：
+- **4 family trait 切片**——Turn/Session/TurnInput/Command contributor 各自独立
+  注册、独立冻结 tuple，互不干扰（grok 四 trait 对应四 family）。
+- **trait 默认方法语义**——Rust trait 每方法带默认实现，Python 用 ABC + 非抽象
+  方法等价（子类只 override 关心的 hook，其余继承空默认）。这正是 ruff B024/B027
+  警告的模式，文件级 `# noqa` 标注"这是刻意的 trait 模式，非遗漏 @abstractmethod"。
+- **注册顺序分发**——grok `Vec` 顺序、非链式、无短路；Python tuple 同序遍历。
+- **命令名优先注册者获胜**——grok 命令字典 first-write-wins（debug panic /
+  release log）；Python `add_command` 重复名 warn + 丢弃第二个 spec，contributor
+  本身保留（其独有名仍可解析）。
+- **唯一终态保证**——每个 turn 恰好触发 done/abort/error 之一（grok 设计）。
+
+❌ **放弃（适配差异）**：
+- **双变体 trait（thread-local + `'static Clone`）**——grok 因 Rust borrow
+  checker 拆两份；Python GIL + 引用语义让第二份冗余，**一个 ABC per family** 即
+ 忠实移植（4 文件而非 16）。
+- **panic 传播 → fail-open**——grok debug panic / release log；MiniMax 全程
+  fail-open（对齐 core.py 现有 `_emit_*` 模式：`except Exception: # noqa: BLE001`
+  + `logger.exception`），一个坏扩展杀不死一个回合。
+- **turn_input / command 宿主分发**——grok 自己也**从未在 host 调用**这两个 trait
+  （crate 9/10 评分的扣分点）；MiniMax 同样只集成 TurnLifecycle 的 4 个 hook
+  （grok 实际连线的 2 个边界），framework 就位但 host 接线推迟 R26+，无成熟先例
+  可移植。
+- **`TurnAbortReason(str, Enum)` → `StrEnum`**——UP042 现代化（Python 3.11+，
+  项目最低版本）；`.value` 行为不变，测试断言 `"interrupted"` 不受影响。
+
+### 交付
+
+| 文件 | 类型 | 内容 |
+|------|------|------|
+| `agent/minimax_code/lifecycle/types.py` | 新建 | 13 个 frozen dataclass 值对象 + `TurnAbortReason(StrEnum)` + `CommandAction = CommandRewrite \| CommandActed` 联合类型 |
+| `agent/minimax_code/lifecycle/contributors.py` | 新建 | 4 个 ABC：`TurnLifecycleContributor`(4 hook) / `SessionLifecycleContributor`(1) / `TurnInputContributor`(1) / `CommandContributor`(2)，全默认实现；文件级 `# noqa: B024,B027` 标注 trait 模式 |
+| `agent/minimax_code/lifecycle/registry.py` | 新建 | `ExtensionRegistry`(frozen, `__slots__`) + `ExtensionRegistryBuilder`(链式 `add_*` + `build`)；命令优先注册者获胜 + 重复 spec 丢弃 + `all_advertised_commands` 去重（与 `command_owner` 对齐） |
+| `agent/minimax_code/lifecycle/__init__.py` | 新建 | 公共导出 4 contributor + 2 registry + 13 类型 |
+| `agent/minimax_code/agent/core.py` | 修改（+81 行） | ① import lifecycle 公共 API；② `__init__` 加 `self.lifecycle: ExtensionRegistry \| None = None`；③ 5 个 `_fire_turn_*` 方法 + `_fire_lifecycle` 分发器（fail-open）；④ run() 5 注入点（start / done / max_iter-abort / cancelled-abort / error）；⑤ 唯一终态漏斗（cancelled 在 return 前单点 dispatch） |
+| `agent/tests/test_lifecycle.py` | 新建（21 测试） | registry/builder 4 + command 策略 3 + ABC defaults 4 + 数据类型 3 + AgentCore 集成 7（done / max_iter-abort / cancel-abort / LLMError-error / fail-open / 顺序 / 无 registry 回归） |
+
+### 验证
+
+- ✅ `ruff check`：**All checks passed**——7 个 import 排序 `--fix` 自动修 + 1 个
+  UP042（`StrEnum`）手动修 + B024/B027 文件级 `# noqa` 标注 trait 默认实现意图。
+- ✅ `pytest tests/test_lifecycle.py`：**21 passed in 0.83s**。
+- ✅ 全量 `pytest`：**1196 passed in 87.57s**（R24=1175 → R25=1196，+21 完全吻合
+  新增），**零失败、零回归**——证明 `lifecycle=None`（默认）时所有 `_fire_lifecycle`
+  早返回、run loop 行为与 R25 前完全一致；core.py +81 行纯新增、0 删除。
+- ✅ **唯一终态钉死**：done→`[start, done]`；max_iterations→`[start, abort]`；
+  cancelled→`[start, abort]`；LLMError→`[start, error]`；每测试额外断言其他终态
+  未泄漏（`not any(e[0] in (...))`）。
+- ✅ **fail-open 钉死**：contributor `on_turn_done` 抛 `RuntimeError`，turn 仍正常
+  完成（`result.final_text == "hi"`），先注册的 recorder 仍收到 done。
+- ✅ **lifecycle=None 回归守卫**：`test_run_without_registry_is_noop` 钉死无
+  registry 时 run 与 R25 前一致。
+
+### YAGNI 边界（本轮不做）
+
+- ❌ 不做 turn_input 宿主分发——grok 自己从未在 host 调用 `contribute_turn_input`
+  （crate 9/10 扣分点）；framework 已就位（`TurnInputContributor` +
+  `registry.turn_input` tuple），host 接线推迟到有真实 fragment 注入需求（R26+）。
+- ❌ 不做 command 宿主路由——同上，grok 的 command trait 从未被 host 调用；
+  framework 就位（`command_owner` + `all_advertised_commands`），slash 命令解析/
+  路由推迟。
+- ❌ 不做 session_idle 宿主触发——grok 的 `on_session_idle` 无成熟触发点；推迟到
+  有真实"会话空闲"语义需求。
+- ❌ 不做 contributor 优先级 / 依赖排序——grok 是纯注册顺序；加权或 DAG 依赖是
+  过度设计，无场景。
+- ❌ 不做 contributor 动态注册 / 热插拔——registry 一次 `build()` 冻结（对齐 grok
+  "install-time capability injection"）；运行时增删 contributor 无需求。
+- ❌ 不把 R24 interjection 缓冲重构成 contributor——R24 YAGNI 提到"IPC 推送 hook
+  由 R25 正式化"，本轮交付了 framework + TurnLifecycle 接线；把 R24 的
+  `queue_interjection` 调用点迁移成 `TurnLifecycleContributor` 是独立 wiring 工作
+  （R26+），避免本轮 scope 蔓延。
+
+### Commit
+
+`feat(platform): R25 lifecycle contributor hook framework (fuse grok xai-agent-lifecycle)`

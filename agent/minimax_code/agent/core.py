@@ -43,6 +43,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..hooks import HookManager
+from ..lifecycle import (
+    ExtensionRegistry,
+    TurnAbortInput,
+    TurnAbortReason,
+    TurnDoneInput,
+    TurnErrorInput,
+    TurnStartInput,
+)
 from ..telemetry.tracing import Tracer, get_tracer
 from .interjection import (
     FormattedInterjection,
@@ -335,6 +343,12 @@ class AgentCore:
         # loop drains them at the safe point between tool turns (see run()),
         # framing each as a synthetic user message the model sees next.
         self._interjection_buffer: InterjectionBuffer = InterjectionBuffer()
+        # R25 — lifecycle contributor registry (fuse grok
+        # xai-agent-lifecycle). Optional; ``None`` ⇒ no contributors and
+        # every ``_fire_turn_*`` short-circuits. Built once at host startup
+        # via ExtensionRegistryBuilder and held for the process lifetime —
+        # contributors carry data in, never take over the run loop.
+        self.lifecycle: ExtensionRegistry | None = None
         # R20 — telemetry adapter for the ``llm`` breaker. Resolves the engine
         # lazily through a closure over ``self`` (the engine is injected from
         # ``app.py`` after this constructor returns), so a late-arriving engine
@@ -393,6 +407,56 @@ class AgentCore:
             self._interjection_buffer,
             sanitize_text if sanitize_text is not None else (lambda s: s),
         )
+
+    # -- turn lifecycle hooks (R25) -----------------------------------
+
+    async def _fire_turn_start(self, *, synthetic: bool = False) -> None:
+        """Notify every turn-lifecycle contributor a turn is starting."""
+        await self._fire_lifecycle(
+            "on_turn_start", TurnStartInput(synthetic=synthetic)
+        )
+
+    async def _fire_turn_done(self, *, iterations: int) -> None:
+        """Notify every contributor the turn finished with a final answer."""
+        await self._fire_lifecycle(
+            "on_turn_done", TurnDoneInput(iterations=iterations)
+        )
+
+    async def _fire_turn_abort(self, *, reason: TurnAbortReason) -> None:
+        """Notify every contributor the turn was stopped mid-flight."""
+        await self._fire_lifecycle(
+            "on_turn_abort", TurnAbortInput(reason=reason)
+        )
+
+    async def _fire_turn_error(self, *, message: str) -> None:
+        """Notify every contributor the turn raised an exception."""
+        await self._fire_lifecycle(
+            "on_turn_error", TurnErrorInput(message=message)
+        )
+
+    async def _fire_lifecycle(
+        self,
+        hook: str,
+        inp: TurnStartInput | TurnDoneInput | TurnAbortInput | TurnErrorInput,
+    ) -> None:
+        """Dispatch one turn-lifecycle hook to every contributor, fail-open.
+
+        Mirrors grok's "fire-and-forget across a Vec" — contributors run in
+        registration order, and a raising one is logged + skipped, never
+        propagated. One bad extension cannot abort a turn (MiniMax's
+        fail-open stance; grok propagates in debug). With no registry wired
+        this is a no-op, so R25 is opt-in and zero-cost when unused.
+        """
+        reg = self.lifecycle
+        if reg is None:
+            return
+        for contributor in reg.turn_lifecycle:
+            try:
+                await getattr(contributor, hook)(inp)
+            except Exception:  # noqa: BLE001 — a bad extension must not kill the turn
+                logger.exception(
+                    "lifecycle %s.%s raised", type(contributor).__name__, hook
+                )
 
     # -- main entry point --------------------------------------------------
 
@@ -464,6 +528,9 @@ class AgentCore:
             user_message=(user_message or "")[:200],
             max_iterations=self.config.max_iterations,
         ):
+            # R25 — turn-start lifecycle hook (one fire per turn, before
+            # the first LLM call). Mirrors grok's on_turn_start.
+            await self._fire_turn_start()
             for iteration in range(self.config.max_iterations):
                 iterations = iteration + 1
                 if self.cancelled:
@@ -479,6 +546,8 @@ class AgentCore:
                         "error",
                         {"iteration": iterations, "detail": str(exc)},
                     )
+                    # R25 — turn-error lifecycle hook.
+                    await self._fire_turn_error(message=str(exc))
                     raise
 
                 _accumulate_usage(usage_total, response.usage)
@@ -501,6 +570,8 @@ class AgentCore:
                     # store keeps the latest non-null value per message.
                     await self._emit_chunk("", True, response.metadata)
                     await self._emit_status("done", {"iterations": iterations})
+                    # R25 — turn-done lifecycle hook.
+                    await self._fire_turn_done(iterations=iterations)
                     break
 
                 # Resolve each tool call, feed the results back.
@@ -537,6 +608,8 @@ class AgentCore:
                 # Loop exhausted without a final answer.
                 truncated = True
                 await self._emit_status("max_iterations", {"iterations": self.config.max_iterations})
+                # R25 — turn-abort lifecycle hook (iteration limit hit).
+                await self._fire_turn_abort(reason=TurnAbortReason.INTERRUPTED)
                 final_text = (
                     f"I stopped after reaching the {self.config.max_iterations}-iteration limit "
                     "before producing a final answer."
@@ -554,6 +627,14 @@ class AgentCore:
                 messages.append(final_message)
                 await self._maybe_persist(session_id, final_message)
                 await self._emit_chunk(final_text, True, final_message["metadata"])
+
+        # R25 — turn-abort lifecycle hook (user cancel). Both in-loop
+        # ``break`` paths (pre-LLM and post-tool) set cancelled=True and
+        # funnel through here; the done / max_iterations / error paths
+        # dispatch their own terminal event, so exactly one of
+        # done/abort/error fires per turn.
+        if cancelled:
+            await self._fire_turn_abort(reason=TurnAbortReason.INTERRUPTED)
 
         return AgentRunResult(
             final_text=final_text,
