@@ -167,3 +167,49 @@
 ### Commit
 
 `feat(mcp): R4 add MCP transport (stdio + in-process) and JSON-RPC client`
+
+---
+
+## R5 — MCP Registry（外部工具桥接进 ToolRegistry）
+
+- **回合序号**：5 / 50+
+- **所属阶段**：A
+- **开始时间**：2026-07-18
+- **状态**：✅ 完成
+
+### 本轮目标
+
+让 MiniMax agent 能**调用任意外部 MCP server 的工具**。实现 `MCPRegistry`：管理多 server 连接，把每个 server 的工具包装成 `Tool` 注册进现有 `ToolRegistry`，命名空间隔离，fail-open 启动。完成后 agent 对话循环无需改动即可看到并调用 MCP 工具（通过 `registry.dispatch`）。
+
+### 设计决策
+
+- **命名空间隔离**：桥接工具命名 `mcp__<server>__<tool>`，双下划线前缀 + server/tool token 清洗（`[a-z0-9_]`），绝不与内置工具冲突。
+- **适配现有契约**：`_BridgedTool(Tool)` 直接复用 `ToolRegistry.register/dispatch`；`parameters` 取自 MCP `inputSchema`（补 `type/properties` 默认），`run` 转发到 `MCPClient.call_tool`。对话循环零改动。
+- **CallToolResult → ToolResult 转换**：text content 拼成 `output["text"]`，image/resource 进 `output["content"]`；`isError=True` → `ToolResult.fail(error=首条 text)`，metadata 带 server/tool/isError。
+- **fail-open 三层**：握手失败、list_tools 失败、工具名冲突 —— 一律 log + 跳过，**永不炸 agent 启动**。
+- **测试可注入**：`add_server`（建 StdioTransport）与 `_attach_client`（握手+桥接）拆分，测试用进程内 transport pair 注入 client，无需 spawn 子进程。
+- **不做的事（YAGNI）**：本轮不接 IPC handler（R9 统一做）、不持久化 server 配置（R9 迁移）、不做资源/prompt 桥接（只桥接 tools，最高频）。
+
+### 实现 / 产出
+
+- `minimax_code/mcp/registry.py`：
+  - `bridged_name()`、`_sanitize()` 命名工具。
+  - `MCPServerConfig`（name/command/env/cwd/enabled dataclass）。
+  - `_BridgedTool(Tool)`：MCP 工具 → MiniMax 工具适配器。
+  - `_to_tool_result()`：CallToolResult → ToolResult 转换器。
+  - `MCPRegistry`：`add_server`/`_attach_client`/`remove_server`/`add_many`/`shutdown`/`is_connected`/`list_servers`。
+  - `_ServerConn` 连接记录。
+- `minimax_code/mcp/__init__.py`：导出 registry 全部公共符号。
+- `tests/test_mcp_registry.py`：8 个端到端测试（进程内 mock server）。
+
+### 验证
+
+- ✅ `ruff check`（仅 R5 文件）：All checks passed（自动修复 test 的 import 排序 + 删未用 pytest）。
+- ✅ `pytest tests/test_mcp_registry.py + client + types`：**27 passed in 0.99s**。
+- ⚠️ 边界发现：`ruff check tests/`（全目录）暴露大量**项目历史遗留**问题（smoke_*.py / test_handler_utils.py 等老文件的 UP041/I001）——**非 R5 引入**，严格按"回合独立"红线不顺手修，留待后续专门清理回合。
+- 覆盖：命名清洗、attach 桥接、dispatch 转发、isError→fail、remove 注销、冲突跳过、list_servers 状态、disabled 跳过。
+- ⏭️ R6 进入 Hooks：文件发现的 JSON 生命周期钩子（session_start/pre_tool_use/post_tool_use/session_end），与现有 permission 协同。
+
+### Commit
+
+`feat(mcp): R5 add MCP registry bridging external tools into ToolRegistry`

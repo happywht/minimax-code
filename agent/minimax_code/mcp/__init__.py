@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from . import protocol, transport, types
 from .client import MCPClient, MCPClientError
+from .registry import MCPRegistry, MCPServerConfig, bridged_name
 from .transport import (
     InProcessTransport,
     MCPTransport,
@@ -40,9 +41,12 @@ __all__ = [
     "InProcessTransport",
     "MCPClient",
     "MCPClientError",
+    "MCPServerConfig",
+    "MCPRegistry",
     "MCPTransport",
     "MCPTransportError",
     "StdioTransport",
+    "bridged_name",
     "make_in_process_pair",
     "protocol",
     "transport",
