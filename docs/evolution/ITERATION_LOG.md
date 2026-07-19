@@ -6263,3 +6263,88 @@ cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
 ### Commit
 
 `feat(platform): R77 file I/O wire layer closes rpc/ namespace (fuse grok xai-grok-workspace-types rpc/ fs.rs 754 lines -> 631-line module: 10 methods[workspace.put_files/get_files service-level snake + 5 workspace.fs_* extension[Req-snake/Res-camelCase asymmetry] + 3 workspace.client_fs_* read-only client[camelCase both sides]] + 5 enums[FsNodeType/FsContentType/FsReadEncoding + ...] + ~24 wire types, lands 5 serde patterns new to layer: generic _DropNoneWire base class[@model_serializer wrap dict-comp pops ALL None keys, first generic None-elision base supplants R74 _CamelOmitNone + R75/R76 per-class pop lists, 8 Response/Data subclasses inherit verified by smoke] + rename="type" on String not enum[Field(alias=type) overrides _CAMEL to_camel nodeType, FsListNode.node_type + FsReadFileData.content_type] + Req-snake/Res-camelCase asymmetry[fs_* request no rename_all None-emits-null vs fs_* response _CAMEL + _DropNoneWire, client_fs_* camelCase both sides] + Response=() unit type via type(None)[FsWriteFileReq/FsDeleteFileReq, layer-first no-payload response] + u64/i64/usize/u32 all -> int[mtime_ms epoch millis vs modified_at RFC3339 string], KEY PITFALL: ClientFsStatRes.node_type has NO rename="type"[wire key nodeType] vs ClientFsListNode.node_type/ClientFsReadFileRes.content_type DO[wire key type], grok source fs.rs L466-481 confirms asymmetry faithfully mirrored, ~31 new TestFs tests 284 passed test_rpc 2368 total zero-regression R17 flaky passing this run, rpc/ namespace 10/10 files closed R68-R77)`
+
+## R78 — request.rs -> request.py（RequestMessage<T> 泛型 wire 信封，crate 顶层调度层入口，4 模块第 1 个）
+
+锚点:R78-1 7d5a42c
+
+### 本轮目标
+
+正向迁移 grok `xai-grok-workspace-types::request`（141 行 Rust）到 `agent/minimax_code/workspace_types/request.py`，落地 crate 顶层调度层的第 1 个模块（共 4 个：`request` → `requests` → `events` → `chunks`）。`RequestMessage<T>` 是 crate 的根调度信封——每个 workspace RPC 在运行时层包装成 `RequestMessage` 后才上线路（运行时再加 cancellation + extensions map，那些不是 wire 关注点）。本轮是 **crate 顶层调度层**的起点：R67（叶子层）+ R68-R77（`rpc/` 10 文件）是这个信封承载的叶子负载，R78 落地信封本身。本轮核心创新不在行数（141 行是最小的迁移源之一），而在 **层内首个 pydantic v2 泛型 wire 模型**——`RequestMessage(WireModel, Generic[T])`，参数化 `RequestMessage[str]`/`RequestMessage[int]` 让 pydantic 为每个 payload 类型生成独立 schema，忠实复刻 Rust `RequestMessage<T>` 无类型擦除。
+
+### 融合结论
+
+request.rs 是 crate 的 **顶层调度信封层**：`RequestMessage<T>` 包装 typed payload（`message`）+ per-call `metadata`（`Metadata`，`#[serde(default)]` 即便空也发）+ 可选绝对 `deadline`（`Option<DateTime<Utc>>`，`#[serde(default, skip_serializing_if="Option::is_none")]` None 时省略）。构建器 `new`/`with_metadata`/`with_deadline`/`map` 复刻 Rust move 语义。本轮的抽象贡献是 **层内首个通用 wire 模型**：`RequestMessage` 继承 `WireModel` 并 `Generic[T]`，`message: T` 字段在 `RequestMessage[str]` / `RequestMessage[int]` 订阅时生成 per-parameter schema——pydantic v2 原生支持泛型模型，无需 Python 侧类型擦除 hack。`IsoUtc` 类型别名（`Annotated[datetime, PlainSerializer(_dt_to_wire)]`）发 chrono 兼容的 `Z` 后缀 RFC3339，复制自 R76 `rpc/hunks.py`（刻意不 import `rpc/` 以保持顶层信封零 `rpc/` 依赖；未来轮次可提升到 `_wire.py`）。`to_wire()` 重写基类：`deadline is None` 时 pop 掉 key（精准单字段重写，比 R77 通用 `_DropNoneWire` 简单——本 struct 只有一个 Option）。
+
+### 交付
+
+**request.rs -> request.py serde 模式映射**
+
+| grok 项 | Rust serde | pydantic 映射 | 关键点 |
+|---|---|---|---|
+| `RequestMessage<T>` 泛型 | `struct RequestMessage<T>` | `class RequestMessage(WireModel, Generic[T])` | 层内首个泛型 wire 模型;`RequestMessage[str]`/`[int]` per-param schema |
+| `message: T` | typed payload | `message: T`(`T` = TypeVar) | 订阅时绑定 |
+| `metadata: Metadata` | `#[serde(default)]` 无 skip | `metadata: Metadata = Field(default_factory=Metadata)` | 即便空也发 `"metadata": {}` |
+| `deadline: Option<DateTime<Utc>>` | `#[serde(default, skip_serializing_if="Option::is_none")]` | `deadline: IsoUtc \| None = None` + `to_wire()` 重写 pop | None 时省略;有值时 Z 后缀 |
+| `DateTime<Utc>` | chrono serde `Z` 后缀 | `IsoUtc = Annotated[datetime, PlainSerializer(_dt_to_wire)]` | 复制自 R76 rpc/hunks;+00:00 重写为 Z |
+| `new`/`with_metadata`/`with_deadline` | `mut self` builder | classmethod + in-place mutate return self | Rust move 语义 |
+| `map<U>(self, f)` | `FnOnce(T) -> U` | `model_construct` 绕过验证 | [KEY PITFALL:见坑] |
+| `Metadata` 作 pydantic 字段 | `#[serde(transparent)]` over BTreeMap | `__get_pydantic_core_schema__` after-validator over dict_schema | [KEY PITFALL:见坑,改 metadata.py] |
+
+**文件**:新增 `agent/minimax_code/workspace_types/request.py`（~143 行,泛型模型 + `IsoUtc` + `_dt_to_wire` + 4 builder/map + `to_wire` 重写）;改 `metadata.py`（Metadata 加 `__get_pydantic_core_schema__` after-validator over `dict_schema(str,str)`,让 Metadata 成 pydantic 一等字段,R78 RequestMessage 复用,镜像 R76 FileContentStatusWire）;改顶层 `workspace_types/__init__.py`（barrel `from .request import RequestMessage` + `__all__` "request envelope (R78)" 段 + docstring R78 段）;改 `tests/test_workspace_types.py`（追加 TestRequestMessage 类 8 测试 + import 块加 `RequestMessage`/`warnings`）。
+
+### 映射决策树 + 坑
+
+**决策树 —— request.rs serde 模式 -> pydantic 映射**
+
+```
+request.rs 项
+├─ RequestMessage<T> 泛型 wire 模型
+│  └─ class RequestMessage(WireModel, Generic[T]);T = TypeVar
+│     RequestMessage[str]/[int] 订阅生成 per-param schema
+│     [层内首个泛型 wire 模型]
+├─ metadata: Metadata #[serde(default)] 无 skip
+│  └─ Field(default_factory=Metadata);to_wire 不省略 -> 总发 {}
+├─ deadline: Option<DateTime<Utc>> #[serde(default, skip_serializing_if=Option::is_none)]
+│  └─ deadline: IsoUtc | None = None + to_wire() 重写 pop
+│     [精准单字段重写,比 R77 _DropNoneWire 简单]
+├─ DateTime<Utc> Z 后缀
+│  └─ IsoUtc = Annotated[datetime, PlainSerializer(_dt_to_wire)]
+│     复制自 R76 rpc/hunks(刻意不 import rpc/ 保持零 rpc 依赖)
+├─ new/with_metadata/with_deadline builder(mut self)
+│  └─ classmethod + in-place mutate return self
+└─ map<U>(self, f: FnOnce(T)->U)
+   └─ RequestMessage.model_construct(message=f(..), metadata=Metadata(self.metadata), deadline=self.deadline)
+      [KEY PITFALL:绕过验证,见下]
+```
+
+**坑 1 —— Metadata 作 pydantic 字段触发 PydanticSchemaGenerationError**
+
+`RequestMessage` 把 `metadata: Metadata`（dict 子类）作为 pydantic 字段。pydantic v2 **无法为任意 dict 子类自动生成 schema** -> `PydanticSchemaGenerationError: Unable to generate pydantic-core schema for <class '...Metadata'>`。修复：在 `metadata.py` 给 Metadata 加 `__get_pydantic_core_schema__` classmethod,返回 `core_schema.no_info_after_validator_function(cls, core_schema.dict_schema(str_schema, str_schema))` —— 先按 `dict[str, str]` 验证,再 after-validator 把 dict 重新包成 Metadata 实例。这让 wire 读回的 metadata 保留 sorted-map 方法（`iter_sorted`/`to_wire`）。镜像 R76 `FileContentStatusWire.__get_pydantic_core_schema__`。选这个方案（而非 `metadata: dict[str, str]` 字段类型）因为它是 grok-faithful（Metadata 是一等类型）且 R79+ 的 request/event 模型可复用同一个 schema 路由。
+
+**坑 2 —— 未参数化 `RequestMessage(...)` 构造把 kwargs 误路由进 metadata dict 字段**
+
+`map` 第一版直接 `RequestMessage(message=f(self.message), metadata=Metadata(self), deadline=self.deadline)` -> pydantic 报 3 个 `metadata.message` / `metadata.metadata` / `metadata.deadline` 错误,所有 kwargs 被当作 **metadata dict 字段** 的键值对验证（pydantic 泛型 + Metadata 的 dict_schema 交互:T 未绑定时 `message: T`=Any 与 metadata dict_schema 的组合让构造把多余 kwargs 喂给 dict）。关键观察:参数化构造（`RequestMessage[str].new(...)` / `RequestMessage[int].new(...)`）正常工作,只有 map 内**未参数化** `RequestMessage(...)` 失败。第二版用 `model_copy(update={"message": f(self.message)})` 修复了构造,但引入新问题:实例保留源 schema（`RequestMessage[int]`）,message 值已变 str,`to_wire` 的 `model_dump` 触发 `PydanticSerializationUnexpectedValue` UserWarning（int schema 收 str 值）。最终版用 `RequestMessage.model_construct(message=f(..), metadata=Metadata(self.metadata), deadline=self.deadline)` —— `model_construct` 绕过验证,结果带**未参数化** schema（T=Any）,接受任意 payload 类型无警告。这是 Python 泛型无法在运行时改变类型参数（grok `map<U>` 返回 `RequestMessage<U>`）的务实近似:wire 行为完全正确（map 后 `to_wire` 输出 `{message: "1", metadata: {k:v}, deadline: ...Z}`）,`-W error::UserWarning` 下零警告。test `test_map_emits_no_serializer_warning` 用 `warnings.simplefilter("error", UserWarning)` 钉死这条契约。
+
+**坑 3 —— `metadata` 字段类型从 `dict` 收紧为 `Metadata`**
+
+`RequestMessage.metadata` 类型注解是 `Metadata`（不是裸 `dict`）。这要求 `__get_pydantic_core_schema__`（坑 1）正确路由,否则 pydantic 拒绝生成 schema。验证:smoke step 2 确认 `model_validate(wire)` 读回的 `back.metadata` 是 `Metadata` 实例（`isinstance` 检查通过）,保留 sorted-map 方法。
+
+### 验证
+
+- **冒烟测试**(heredoc 直跑):5 个断言全 GREEN —— string 往返 + deadline 省略 + metadata 总发 + metadata 读回 rewrap 成 Metadata + deadline Z 往返 + map 变换 payload 保留 metadata/deadline + map wire 正确重 dump + `-W error::UserWarning` 下 map 零序列化警告 + mapped wire 经 `RequestMessage[str].model_validate` 往返。
+- **pytest `tests/test_workspace_types.py`**:**70 passed**(R78 新增 TestRequestMessage 8 测试:string 往返 / metadata 总发 / metadata 往返 rewrap / deadline Z 往返 / builder in-place mutate / map 保留 + 新 Metadata 不别名 / map 零警告 / map 无 metadata/deadline 往返)。
+- **ruff**:4 文件全 clean(request.py/metadata.py/__init__.py/test_workspace_types.py)。
+- **全回归**:`2376 passed, 10 skipped, 1 warning`(1 warning 是 fastapi starlette TestClient 弃用,与 R78 无关)。零回归。
+
+### YAGNI 边界
+
+- **未迁移 `requests` / `events` / `chunks`**:本轮只迁 request.rs（crate 顶层调度层 4 模块的第 1 个）。`requests/mod.rs` 的 `WorkspaceRequest` 外部信封（相邻标记 `Tool`/`Ops`/`Session`）+ `events` + `chunks` 留给 R79+/R80+。
+- **`IsoUtc` 复制自 `rpc/hunks` 未提升**:顶层信封刻意零 `rpc/` 依赖,`_dt_to_wire` + `IsoUtc` 从 R76 `rpc/hunks.py` 复制到 `request.py`。两份相同实现是已知 DRY 债,但提升到 `_wire.py` 会改变 `_wire.py` 的职责（当前只放 `WireModel`/`sort_mappings`）,留待 DateTime 类型在顶层出现 3+ 消费者时再统一提升。
+- **`map` 用 `model_construct` 而非真泛型订阅**:Python 泛型运行时无法表达 grok `map<U> -> RequestMessage<U>` 的类型变换。`model_construct` 带未参数化 schema（T=Any）是务实近似 —— wire 完全正确,类型参数静态层面不可表达但不影响运行时。未来若需要保留强类型,可探索 `map(self, f) -> RequestMessage[Any]` 显式标注或运行时泛型工厂。
+- **不引运行时 cancellation/extensions**:request.rs 的 `RequestMessage` 只有 wire 部分（message/metadata/deadline）;运行时层加的 cancellation token + extensions map 是进程内关注点,不上线。YAGNI:本轮不实现运行时信封,只迁 wire 契约。
+- **`metadata` 字段类型收紧**:从宽松 `dict` 收紧到 `Metadata` 是 R78 驱动（让信封携带 typed metadata），不是修复 R67 bug。R67 的 Metadata 已是 dict 子类,R78 只是让它成为 pydantic 一等字段。
+
+### Commit
+
+`feat(platform): R78 request.rs -> request.py（RequestMessage<T> 泛型 wire 信封, crate 顶层调度层入口 4 模块第 1 个）[新增 request.py 143 行: RequestMessage(WireModel, Generic[T]) 层内首个泛型 wire 模型, message:T + metadata:Metadata Field(default_factory) #[serde(default)] 总发 + deadline:IsoUtc|None + to_wire 重写 pop #[skip_serializing_if Option::is_none] + IsoUtc=Annotated[datetime,PlainSerializer(_dt_to_wire)] Z 后缀复制自 R76 rpc/hunks 刻意零 rpc 依赖 + new/with_metadata/with_deadline builder in-place mutate + map<U> 用 model_construct 绕过验证; 增强 metadata.py: Metadata 加 __get_pydantic_core_schema__ after-validator over dict_schema(str,str) 让 dict 子类成 pydantic 一等字段镜像 R76 FileContentStatusWire; barrel __init__.py 导出 RequestMessage + docstring R78 段; TestRequestMessage 8 测试; KEY PITFALL 1: Metadata 作 pydantic 字段触发 PydanticSchemaGenerationError 需 __get_pydantic_core_schema__ 路由; KEY PITFALL 2: map 未参数化 RequestMessage(...) 构造把 kwargs 误路由进 metadata dict 字段(message/metadata/deadline 3 验证错误) -> model_copy 修复但留源 schema RequestMessage[int] 收 str 值触发 PydanticSerializationUnexpectedValue UserWarning -> 最终 model_construct 带 T=Any 未参数化 schema 零警告, Python 泛型运行时无法表达 map<U> RequestMessage<U> 的务实近似, test_map_emits_no_serializer_warning 用 warnings.simplefilter error 钉契约; 验证 ruff 4 文件 clean + pytest test_workspace_types.py 70 passed + 全回归 2376 passed 10 skipped 1 warning 零回归, 锚点 R78-1 7d5a42c]`

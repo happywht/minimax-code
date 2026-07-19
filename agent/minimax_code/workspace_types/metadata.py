@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 
+from pydantic_core import core_schema
+
 __all__ = [
     "META_SESSION_ID",
     "META_TRACEPARENT",
@@ -99,6 +101,23 @@ class Metadata(dict):
     @classmethod
     def from_wire(cls, data: Mapping[str, str]) -> Metadata:
         return cls(data)
+
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source_type, handler):  # noqa: ANN001, ANN206
+        """Pydantic schema: validate as ``dict[str, str]`` then rewrap as Metadata.
+
+        Metadata is a ``dict`` subclass; pydantic cannot auto-generate a schema
+        for arbitrary dict subclasses. Route through a ``dict[str, str]`` schema
+        and rewrap the validated dict as :class:`Metadata` so instances read
+        back from the wire keep the sorted-map methods (R78 lets the top-level
+        :class:`~minimax_code.workspace_types.request.RequestMessage` envelope
+        carry a typed ``Metadata`` field; future request/event models reuse
+        this). Mirrors R76's ``FileContentStatusWire.__get_pydantic_core_schema__``.
+        """
+        return core_schema.no_info_after_validator_function(
+            cls,
+            core_schema.dict_schema(core_schema.str_schema(), core_schema.str_schema()),
+        )
 
     def __repr__(self) -> str:
         return f"Metadata({dict(self)!r})"

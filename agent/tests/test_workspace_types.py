@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import json
+import warnings
 from datetime import UTC, datetime
 
 import pytest
@@ -62,6 +63,7 @@ from minimax_code.workspace_types import (
     PlanModeTransition,
     PluginInfo,
     ProjectConfig,
+    RequestMessage,
     ResolvedFile,
     RewindPoint,
     RewindResult,
@@ -541,3 +543,108 @@ def test_memory_chunk_round_trip_with_optional_score():
     mc = MemoryChunk(id="m1")
     assert mc.score is None
     assert mc.source is None
+
+
+# --------------------------------------------------------------------- RequestMessage (R78)
+
+
+_WHEN = datetime(2026, 7, 19, 12, 0, 0, tzinfo=UTC)
+
+
+class TestRequestMessage:
+    """Round-trip / builder / map tests for the R78 request envelope.
+
+    Mirrors grok's ``request.rs`` test set (string payload round-trip,
+    deadline elision, deadline ``Z`` suffix, ``map`` preservation) plus
+    the Python-specific schema contract: ``metadata`` is always emitted
+    (even empty) and rewraps as :class:`Metadata` on read-back.
+    """
+
+    def test_round_trips_with_string_payload(self):
+        r = RequestMessage[str].new("hello")
+        wire = r.to_wire()
+        assert wire == {"message": "hello", "metadata": {}}
+        # deadline omitted when None (skip_serializing_if = "Option::is_none")
+        assert "deadline" not in wire
+        back = RequestMessage[str].model_validate(wire)
+        assert back.message == "hello"
+        assert isinstance(back.metadata, Metadata)
+
+    def test_metadata_always_emitted_even_when_empty(self):
+        # #[serde(default)] with NO skip_serializing_if -> empty map still emits.
+        wire = RequestMessage[int].new(42).to_wire()
+        assert wire["metadata"] == {}
+
+    def test_metadata_round_trips_and_rewraps_as_metadata(self):
+        meta = Metadata({META_SESSION_ID: "s1"})
+        r = RequestMessage[str].new("hi").with_metadata(meta)
+        wire = r.to_wire()
+        assert wire["metadata"] == {"x-workspace-session-id": "s1"}
+        assert isinstance(r.metadata, Metadata)
+        back = RequestMessage[str].model_validate(wire)
+        # read-back rewraps the dict as a Metadata (sorted-map methods preserved)
+        assert isinstance(back.metadata, Metadata)
+        assert back.metadata == {"x-workspace-session-id": "s1"}
+
+    def test_round_trips_with_deadline_emits_z_suffix(self):
+        r = RequestMessage[int].new(42).with_deadline(_WHEN)
+        wire = r.to_wire()
+        # chrono::DateTime<Utc> emits an RFC 3339 Z suffix
+        assert wire["deadline"] == "2026-07-19T12:00:00Z"
+        assert wire == {
+            "deadline": "2026-07-19T12:00:00Z",
+            "message": 42,
+            "metadata": {},
+        }
+        back = RequestMessage[int].model_validate(wire)
+        assert back.deadline == _WHEN
+        assert back.message == 42
+
+    def test_with_metadata_and_with_deadline_builders_mutate_in_place(self):
+        r = RequestMessage[str].new("x")
+        r2 = r.with_metadata(Metadata({"k": "v"}))
+        r3 = r.with_deadline(_WHEN)
+        # builders take `mut self` and return the same instance
+        assert r is r2 is r3
+        assert r.metadata == Metadata({"k": "v"})
+        assert r.deadline == _WHEN
+
+    def test_map_preserves_metadata_and_deadline(self):
+        r = (
+            RequestMessage[int]
+            .new(1)
+            .with_metadata(Metadata({"k": "v"}))
+            .with_deadline(_WHEN)
+        )
+        mapped = r.map(lambda n: str(n))
+        assert mapped.message == "1"
+        assert mapped.metadata == Metadata({"k": "v"})
+        assert isinstance(mapped.metadata, Metadata)
+        assert mapped.deadline == _WHEN
+        # source metadata is copied into a new Metadata (move, not alias)
+        assert mapped.metadata is not r.metadata
+        # wire re-dumps correctly with the new payload type
+        assert mapped.to_wire() == {
+            "deadline": "2026-07-19T12:00:00Z",
+            "message": "1",
+            "metadata": {"k": "v"},
+        }
+
+    def test_map_emits_no_serializer_warning(self):
+        # map<U> in Python keeps an unparameterised schema (T = Any) via
+        # model_construct, so to_wire does NOT warn about an int schema
+        # receiving a str payload.
+        r = RequestMessage[int].new(1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            mapped = r.map(lambda n: str(n))
+            wire = mapped.to_wire()  # would raise under simplefilter("error")
+        assert wire["message"] == "1"
+
+    def test_map_with_no_metadata_or_deadline_round_trips(self):
+        r = RequestMessage[str].new("payload")
+        mapped = r.map(str.upper)
+        assert mapped.message == "PAYLOAD"
+        wire = mapped.to_wire()
+        assert wire == {"message": "PAYLOAD", "metadata": {}}
+        assert "deadline" not in wire

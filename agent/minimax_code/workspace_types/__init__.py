@@ -23,6 +23,13 @@ deferred to later rounds; R67 lands the dependency-free foundation:
   interaction, tools, session, plan_mode, hunk, permission, plugins,
   files, skills, memory).
 
+R78 adds the crate's top-level dispatch envelope
+(:class:`RequestMessage`) — the generic ``RequestMessage<T>`` wire
+surface that every workspace RPC is wrapped in. This is the first of
+the four top-level dispatch modules (``request`` → ``requests`` →
+``events`` → ``chunks``) to land; ``rpc/`` (R68-R77) and ``types/``
+(R67) are the leaf payloads this envelope carries.
+
 Mirrors the Rust ``lib.rs`` ``pub use`` re-exports.
 """
 
@@ -43,6 +50,7 @@ from minimax_code.workspace_types.metadata import (
     STANDARD_META_KEYS,
     Metadata,
 )
+from minimax_code.workspace_types.request import RequestMessage
 from minimax_code.workspace_types.types import (
     AgentSessionConfig,
     AgentSessionInfo,
@@ -109,6 +117,8 @@ __all__ = [
     "META_PROMPT_INDEX",
     "META_GRPC_TIMEOUT",
     "STANDARD_META_KEYS",
+    # request envelope (R78 — crate top-level dispatch surface)
+    "RequestMessage",
     # chunk discriminator
     "ChunkKind",
     # error layer
