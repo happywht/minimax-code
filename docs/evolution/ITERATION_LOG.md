@@ -4360,3 +4360,70 @@ R58 给后端 `model.list` 注入了三个可选的 reasoning_effort 字段，�
 ### Commit
 
 `feat(platform): R59 reasoning_effort enrich fields IPC contract sync (fuse grok xai-grok-sampling-types)`
+
+## R60 — reasoning_effort 前端 effort badge UI（融合 grok xai-grok-sampling-types，消费 R58/R59 ModelInfo 可选字段，闭合 catalog→IPC→UI 读取链路）
+
+> 锚定 R59（`8428df1`）。R53–R59 把 reasoning_effort 管道铺到了「config→wire 写入半边」（R53-R57）+「catalog→IPC 读取半边」（R58 后端 enrich → R59 前端契约 types/mock/docs），但**最后一公里——用户能在 UI 上看到某个模型支持 reasoning effort、默认是哪个 effort、可选哪些 effort——还没接上**。本轮补这一公里：新建纯展示组件 `ReasoningEffortBadge`，消费 `ModelInfo` 的三个可选字段（R59 定义），集成进 `ModelSelector` 的 trigger（default 变体显示当前模型 effort）+ 模型项（每个模型名字旁的 effort 徽标，tooltip 列全部可选菜单），并加 barrel export + 6 个 vitest 用例。**核心设计决策**：(1) **纯展示、零写入**——badge 只读 `ModelInfo`，不调任何 IPC、不写任何 store；切换 effort（write-back 到 agent）需要新 IPC `model.set_reasoning_effort` + 后端持久化（调研 `AgentConfig.reasoning_effort` 如何存储），grep 确认 `agent/minimax_code/ipc` 下**零** reasoning_effort handler，留 R61；(2) **不支持时返回 null**——`supports_reasoning_effort` falsy（全部 MiniMax 模型）时组件什么都不渲染，与 R60 前字节一致，零回归；(3) **tooltip 列全部 options**——用户不打开切换器就能看到 `{value, default}` 菜单，为 R61 切换器预热心智模型；(4) **`Pick<ModelInfo, ...>` props**——badge 接受完整 `ModelInfo` 或任意 Pick，调用方（ModelSelector）无需 reshape 数据。
+
+### 本轮目标
+
+R59 把 reasoning_effort 的 IPC 契约（前端 types + mock + docs）铺好了，但前端没有任何组件**消费**这三个新字段——等于管道接到了家门口却没拧开水龙头。本轮目标：闭合 catalog→IPC→UI 的**读取链路可见化**——让用户在 `ModelSelector` 里直观看到「这个 grok 模型支持 reasoning effort，默认 high，可选 low/medium/high」。**严格边界（YAGNI + 轮次独立性）**：(1) 只做**展示**，不做**切换**——切换需要新 IPC `model.set_reasoning_effort`（合约扩展：protocol.py + handlers_model.py + 前端 typedIPC + store 状态 + 后端持久化），是一个独立的、跨栈的较大轮次，留 R61；(2) 不修预先存在的 tsc/vitest 债务（R59 已 stash 证明 `client-pending-mode.test.ts:415` JsonRpcId null 与 `message-list.test.tsx` findByText 超时是预先存在）；(3) 零回归——未声明 reasoning meta 的模型（全部 MiniMax）UI 字节不变。
+
+### 融合结论
+
+- ✅ **新增**：`web/src/components/ReasoningEffortBadge.tsx` —— 纯展示组件，单一职责（SRP）。props 接受 `Pick<ModelInfo, "supports_reasoning_effort" | "reasoning_effort_default" | "reasoning_effort_options">`（兼容完整 ModelInfo，无需 reshape）；`supports_reasoning_effort` falsy 时返回 `null`（零回归）；否则渲染紫色 mono 徽标 `effort: {default}`，`title` tooltip 列全部 options（`{value}{(default)?}`）。内部 helper `formatOptionsTooltip` 处理 options 缺失/非空两分支；`DEFAULT_FALLBACK = "auto"` 处理「声明 supports 但无 default」的退化情形。docstring 标注它是 reasoning_effort 管道的**读取侧终点**（catalog meta → R53 readers → R58 enrich → R59 IPC contract → 此 badge）。
+- ✅ **集成**：`web/src/components/ModelSelector.tsx`（改 3 处）—— (1) import `ReasoningEffortBadge`；(2) trigger 按钮（default 变体）在 protocol badge 后追加 `{!isInline && currentModel && <ReasoningEffortBadge model={currentModel} />}`（inline 变体跳过，避免浮动组合器过载）；(3) 模型项名字行从 `<span className="block truncate ...">{m.name}</span>` 改为 `<span className="flex items-center gap-1">` 包裹名字 + badge（badge `shrink-0` 防挤压）。menu 副标题（context/tools）保留不变。
+- ✅ **barrel export**：`web/src/components/index.ts` —— `ModelSelector` 行后追加 `export { ReasoningEffortBadge }` + `export type { ReasoningEffortBadgeProps }`（匹配现有桶导出模式，测试套件也从此导入）。
+- ✅ **测试**：`web/src/components/ReasoningEffortBadge.test.tsx`（新，6 用例）—— (1) 无 meta 渲染 null（零回归）；(2) `supports_reasoning_effort: false` 渲染 null；(3) 支持时渲染 `effort: high`；(4) tooltip 含全部 options + default 标记；(5) 声明 supports 但无 default 时 fallback `auto`；(6) 无 options 时 tooltip 仅 default token。helper `slice()` 把 `Partial<ModelInfo>` 安全窄化成 Pick 类型。
+- ❌ **放弃**：**不实现 effort 切换 IPC** —— `model.set_reasoning_effort`（write-back 到 agent）需要 protocol.py 契约扩展 + handlers_model.py handler + 前端 typedIPC 方法 + modelStore 状态 + 后端持久化（`AgentConfig.reasoning_effort` 存储位置调研）。grep 确认 `agent/minimax_code/ipc` 下零 reasoning_effort handler——这是全新 IPC 面，跨栈较大轮次，留 R61。
+- ❌ **放弃**：**不修复预先存在前端债务** —— `client-pending-mode.test.ts:415` JsonRpcId null TSC 错误（R59 stash 已证明 R58 状态下仍存在）；本轮 R60 未触碰该文件（git status 确认仅改 ModelSelector/index/新建组件），零新增类型错误。按轮次独立性留独立轮次。
+
+### 交付
+
+- `web/src/components/ReasoningEffortBadge.tsx`（新建）— 纯展示组件：`Pick<ModelInfo, ...>` props / 不支持返回 null / 紫色 mono 徽标 + tooltip 列 options / `formatOptionsTooltip` helper / `auto` fallback / docstring 标注读取侧终点。
+- `web/src/components/ReasoningEffortBadge.test.tsx`（新建）— 6 vitest 用例覆盖零回归/null/false/默认 token/tooltip 菜单/auto fallback/无 options 退化。
+- `web/src/components/ModelSelector.tsx`（改 3 处）— import + trigger（default 变体）集成 + 模型项名字行 flex 包裹 badge。
+- `web/src/components/index.ts`（改 1 处）— barrel export 加 ReasoningEffortBadge + props 类型。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+### 映射决策树（本轮 = catalog→IPC→UI 读取链路的 UI 终点 + 纯展示零写入边界 + 零回归 null 守卫）
+
+本轮是 R58/R59 catalog-read 消费面的 **UI 终点**。决策树无新增枚举——消费 R59 定义的三可选字段。**新增的是「读取链路可见化」+「纯展示 vs 切换的 YAGNI 边界」**。
+
+**R58 enrich → R59 契约 → R60 UI 消费 三段链路矩阵**：
+
+| 链路段 | 位置 | 字段 | R60 消费方式 |
+|---|---|---|---|
+| catalog meta（raw） | `reasoningEffort` / `reasoningEfforts` / `supportsReasoningEffort` | camelCase | R58 enrich 已规范化（R60 不见 raw） |
+| R58 enrich（后端） | `enrich_model_reasoning_meta` | snake_case 注入 IPC 响应 | R60 不动后端 |
+| R59 契约（前端 types） | `ModelInfo.supports_reasoning_effort?` / `reasoning_effort_default?` / `reasoning_effort_options?` | 可选 snake_case | R60 `Pick<ModelInfo, ...>` 直接消费 |
+| **R60 UI 终点** | `ReasoningEffortBadge` | 读取 → 渲染徽标 + tooltip | **本轮闭合** |
+
+**坑 1（自发现，已预判修复）**：**纯展示 vs 切换的边界——切换需新 IPC，本轮不做**。第一直觉可能是「既然能显示 effort，那就让用户点 badge 切换」。但 grep `agent/minimax_code/ipc` 下**零** `reasoning_effort` handler——切换 effort 是 write-back 到 agent 的全新 IPC 面（`model.set_reasoning_effort`：protocol.py 信封 + handlers_model.py handler + modelStore 状态 + 后端 `AgentConfig.reasoning_effort` 持久化），是一个跨栈较大轮次。**预判正确**：R60 严格只做展示（零 IPC 调用、零 store 写入），badge 是只读组件。切换留 R61。`modelStore.setCurrent(id)` 当前只接收模型 ID（无 effort 参数），也佐证切换是新面。
+
+**坑 2（自发现，已预判修复）**：**零回归守卫——不支持时返回 null**。`supports_reasoning_effort` 是可选字段，全部 MiniMax 模型不声明（R58 enrich 只在 catalog 声明时注入）。**预判正确**：badge 第一行 `if (!model.supports_reasoning_effort) return null;`——未声明/为 false 时组件什么都不渲染，`ModelSelector` 集成点视觉与 R60 前字节一致。vitest 用例 1+2 显式 exercise 这条路径。`ModelInfo` 三字段全部可选（R59 设计）+ null 守卫 = 双保险零回归。
+
+**坑 3（自发现，设计决策）**：**tooltip 列全部 options 而非只显示 default**。badge 本体窄（`effort: high`），但 reasoning effort 的可选项（low/medium/high/max/xhigh）对用户决策很重要。**决策**：本体只显示 default token（保持紧凑，适配 inline 菜单项），`title` tooltip 列全部 options（`{value}{(default)?}`），用户 hover 即见全貌——为 R61 切换器预热心智模型，且零额外渲染成本（title 属性）。`formatOptionsTooltip` 处理 options 缺失（退化到仅 default token）与非空（join 全部）两分支。
+
+**坑 4（自发现，预先存在债务）**：**tsc 唯一错误 `client-pending-mode.test.ts:415 JsonRpcId null` 是预先存在**（R59 stash 已证明 R58 `7744a4a` 状态下仍存在）。本轮 R60 **未触碰**该文件（git status 确认仅改 `ModelSelector.tsx` / `index.ts` / 新建组件），tsc 输出与 R59 完全一致——零新增类型错误。按轮次独立性，R60 不修复该协议层债务。`ReasoningEffortBadge.tsx` 的 `JSX.Element | null` 返回类型 + `Pick` props 全部类型安全（tsc 零错误）。
+
+### 验证
+
+- `npx vitest run src/components/ReasoningEffortBadge.test.tsx` → **6/6 passed**（55ms；零回归路径 + default 渲染 + tooltip 菜单 + auto fallback + 无 options 退化全覆盖）。
+- `pnpm lint`（ESLint `src --ext .ts,.tsx`）→ **零错误零警告**（新组件 + ModelSelector 集成 + barrel 导出 lint 干净；test 文件 `no-explicit-any` 不触发——`slice()` helper 用 `Partial<ModelInfo>` 而非 any）。
+- `npx tsc -b` → 唯一错误 `client-pending-mode.test.ts(415,9) Type 'null' is not assignable to type 'JsonRpcId'` 是**预先存在**（R59 stash 验证铁证 + R60 未触碰该文件）；R60 改动**零新增类型错误**（`Pick<ModelInfo, ...>` props 类型安全；ModelSelector 集成点 `currentModel && <ReasoningEffortBadge model={currentModel} />` 经 `&&` 收窄为 ModelInfo，兼容 Pick props）。
+- **零回归**：`supports_reasoning_effort` falsy 时 badge 返回 null——MiniMax 模型 UI 字节不变；vitest 用例 1+2 显式验证。
+
+### YAGNI 边界
+
+- ❌ **不实现 effort 切换 IPC** —— `model.set_reasoning_effort`（write-back）需 protocol.py + handler + 前端 typedIPC + store + 后端持久化，跨栈较大轮次，留 R61。本轮 badge 严格只读。
+- ❌ **不给 inline 变体 trigger 加 badge** —— 浮动组合器（MessageInput）空间窄，badge 会挤压；default 变体（页脚）trigger 已加。inline 菜单项仍显示 badge（模型项集成点不受 variant 影响）。
+- ❌ **不修复 `client-pending-mode.test.ts:415` JsonRpcId null** —— 预先存在协议层债务（R59 stash 验证铁证），R60 未触碰该文件，留独立轮次。
+- ❌ **不修复 `message-list.test.tsx` findByText 超时** —— 预先存在 UI 测试债务，与 R60 无关。
+- ❌ **不让 reasoning_effort 流入 done chunk 元数据** —— write 路径观察点，与 R60 的 read/UI 半边正交，留独立轮次。
+- ❌ **不迁移 sampling-types crate 其余类型**（ChatCompletionRequest/SamplingConfig/ToolChoice/Role/Usage）—— 继续聚焦 ReasoningEffort。
+- ❌ **不做 effort 切换器的交互态设计**（选中高亮/键盘导航/确认）—— 那是 R61 切换器的 UI 范畴，R60 badge 只预热 tooltip 菜单心智。
+
+### Commit
+
+`feat(platform): R60 reasoning_effort frontend effort badge UI (fuse grok xai-grok-sampling-types)`

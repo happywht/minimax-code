@@ -17,6 +17,7 @@ import { Check, ChevronDown, Cpu } from "lucide-react";
 import { useModelStore } from "../stores";
 import { useClickOutside } from "../lib/useClickOutside";
 import type { ModelInfo } from "../types/ipc";
+import { ReasoningEffortBadge } from "./ReasoningEffortBadge";
 
 export type ModelSelectorVariant = "default" | "inline";
 
@@ -135,6 +136,7 @@ export function ModelSelector({
             {currentModel.protocol}
           </span>
         )}
+        {!isInline && currentModel && <ReasoningEffortBadge model={currentModel} />}
         <ChevronDown size={10} className="text-minimax-muted" />
       </button>
       {open && (
@@ -201,7 +203,10 @@ export function ModelSelector({
                         }
                       >
                         <span className="flex-1 min-w-0">
-                          <span className="block truncate font-medium text-minimax-fg">{m.name}</span>
+                          <span className="flex items-center gap-1">
+                            <span className="truncate font-medium text-minimax-fg">{m.name}</span>
+                            <ReasoningEffortBadge model={m} />
+                          </span>
                           <span className="mt-0.5 block text-[11px] text-minimax-muted">
                             {(m.context_window / 1000).toFixed(0)}k context
                             {m.supports_tools ? " · tools" : ""}

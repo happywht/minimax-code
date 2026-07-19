@@ -14,6 +14,8 @@ export { MessageInput } from "./MessageInput";
 export { ProgressPanel } from "./ProgressPanel";
 export { RightPanel } from "./RightPanel";
 export { ModelSelector } from "./ModelSelector";
+export { ReasoningEffortBadge } from "./ReasoningEffortBadge";
+export type { ReasoningEffortBadgeProps } from "./ReasoningEffortBadge";
 export { PermissionRequestModal } from "./PermissionRequestModal";
 export { ConfirmationDialog, confirmationBus, requestConfirmation } from "./ConfirmationDialog";
 export type { ConfirmationOptions } from "./ConfirmationDialog";
