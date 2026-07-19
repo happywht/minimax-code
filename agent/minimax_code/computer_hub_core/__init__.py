@@ -35,8 +35,15 @@ The crate's ``lib.rs`` re-exports six modules. The dependency order is:
    :class:`ToolSessionBindOutcome` / :class:`ToolSessionUnbindOutcome` +
    :class:`ConnectionCleanupReport` / :class:`SessionCleanupReport` +
    :class:`ServerRecord` + :func:`next_registration_seq` HLC.
-3. ``resolver`` (later) — ``CompoundResolver`` / ``ErasedTool`` /
-   ``ResolvedTool`` / ``ToolHandle``.
+3. ``resolver`` (R117) — :class:`CompoundResolver` (local-first,
+   remote-fallback resolution + ``resolve_and_dispatch``) /
+   :class:`ErasedTool` (the blanket ``impl<T: Tool> ToolHandle`` adapter
+   that drives a typed Tool's stream and re-encodes each terminal item
+   into a :class:`~minimax_code.tool_runtime.TypedToolOutput`) /
+   :class:`ResolvedTool` (the value :meth:`ToolRegistry.find_tool`
+   returns; closes the R116 ``registry`` <-> ``resolver`` cycle) /
+   :class:`ToolHandle` (the object-safe dispatch surface a resolved tool
+   exposes).
 4. ``inner`` (later) — ``InnerDispatchForResolver`` (the dispatch adapter
    a resolver exposes to the runtime).
 5. ``local`` (later) — ``LocalTransport`` + ``LOCAL_INVOKE_SCOPE``.
@@ -46,7 +53,7 @@ The crate's ``lib.rs`` re-exports six modules. The dependency order is:
    ``is_workspace_unavailable`` / ``output_to_value`` /
    ``progress_from_frame`` / ``tool_error_from_wire``).
 
-R116 lands leaves 1-2; this barrel will grow one module per round.
+R117 lands leaves 1-3; this barrel will grow one module per round.
 """
 
 from minimax_code.computer_hub_core.registry import (
@@ -58,6 +65,12 @@ from minimax_code.computer_hub_core.registry import (
     ToolSessionUnbindOutcome,
     next_registration_seq,
 )
+from minimax_code.computer_hub_core.resolver import (
+    CompoundResolver,
+    ErasedTool,
+    ResolvedTool,
+    ToolHandle,
+)
 from minimax_code.computer_hub_core.transport import (
     Principal,
     Transport,
@@ -65,10 +78,14 @@ from minimax_code.computer_hub_core.transport import (
 )
 
 __all__ = [
+    "CompoundResolver",
     "ConnectionCleanupReport",
+    "ErasedTool",
     "Principal",
+    "ResolvedTool",
     "SessionCleanupReport",
     "ServerRecord",
+    "ToolHandle",
     "ToolRegistry",
     "ToolSessionBindOutcome",
     "ToolSessionUnbindOutcome",

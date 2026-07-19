@@ -9745,3 +9745,69 @@ registry.rs 是 xai-computer-hub-core 的路由状态机核心。它定义了 ro
 ### Commit
 
 feat(platform): R116 migrate xai-computer-hub-core registry.rs (ToolRegistry abc.ABC + 4 outcome/report value types + ServerRecord + next_registration_seq HLC, crate leaf 2, consumes R65/R82-R106/R112, corrects R115 Protocol prediction)
+
+## R117 — 迁移 xai-computer-hub-core resolver.rs（CompoundResolver + ErasedTool + ResolvedTool + ToolHandle，crate 第 3 块叶子，闭合 R116 registry<->resolver 双向循环）
+
+锚点:R116-1 fd68e0b
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-computer-hub-core/src/resolver.rs`（281 行 Rust）。这是 xai-computer-hub-core crate 的**第三块叶子**（R115 transport、R116 registry 已落地）。本块交付 4 个符号：
+- `ResolvedTool` 判别式 dataclass（`Local`/`Remote` 变体，eq=False）—— **定义 R116 仅在 TYPE_CHECKING 下点名的前向类型，闭合 registry<->resolver 双向循环**
+- `ToolHandle` object-safe trait -> `abc.ABC`（4 抽象方法 + 1 具体默认 `should_list=True`）
+- `ErasedTool` 类型擦除适配器（`impl<T: Tool> ToolHandle`）—— **驱动 R109 明确延迟的 blanket stream-mapping**
+- `CompoundResolver` local-first / remote-fallback 解析策略 + `resolve_and_dispatch` 入口
+
+### 融合结论
+
+resolver.rs 是 xai-computer-hub-core 的工具解析策略核心。两个关键洞察：
+
+1. **R116 cycle 闭合**：R116 用 `TYPE_CHECKING` + `from __future__ import annotations` 破除了 registry<->resolver 双向循环（同构 R109 tool<->render），但只点名了 ResolvedTool 的前向引用。R117 定义真实的 `ResolvedTool`，使 R116 `find_tool -> ResolvedTool | None` 的延迟字符串注解在运行时正确解析。**三叶回归（transport+registry+resolver 98 passed）是循环干净闭合的实证**。
+
+2. **ErasedTool 是 R109 延迟工作的真正消费者**：R109 落地 `Tool`/`ToolDyn` 但明确把 blanket stream-mapping 标记为 YAGNI（"until a caller drives it"）。ErasedTool 就是那个 caller —— 它把 typed `Tool`（yield 自己的 typed `Output`）适配到 type-erased `ToolHandle`（yield `TypedToolOutput`），并对每个 terminal success item 做 custom-or-extract 重编码。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_core/resolver.py`（537 行）：4 符号完整模块 + 3 个编码辅助函数（`_encode_to_json_value` / `_model_output_of` / `_chat_completion_output_of`）
+- `agent/minimax_code/computer_hub_core/__init__.py`（barrel 扩展 leaf 3 标注 R117，重导出 4 个 resolver 符号，__all__ 现 14 符号）
+- `agent/tests/test_computer_hub_core_resolver.py`（42 个测试）
+
+### 映射决策树+坑
+
+| Rust 构造 | Python 落地 | 决策依据 |
+|---|---|---|
+| `enum ResolvedTool { Local{tool,registration}, Remote{proxy,registration} }`（#[derive(Debug,Clone)] 无 PartialEq） | `@dataclass(eq=False)` + `variant` 判别器 + `handle` 统一字段 + `Local`/`Remote` classmethod | R109 判别式 dataclass 模式；`Arc<dyn ToolHandle>` 非 Eq -> eq=False |
+| `trait ToolHandle: Send+Sync+Debug`（Arc<dyn ToolHandle>） | `class ToolHandle(abc.ABC)` | object-safe 动态分发，同 Transport(R115)/ToolRegistry(R116) 族，非 Protocol |
+| 4 抽象 (id/description/capabilities/execute) + `should_list` 默认 true | 4 `@abstractmethod` + 具体 `should_list` | R113 模式（abstract trait + 1 concrete provided method） |
+| `ErasedTool<T>`（impl<T:Tool> ToolHandle） | `class ErasedTool(ToolHandle)` + `inner` 字段 + `from_arc`/`new` classmethod | R109 延迟的 blanket impl 消费者；Python 引用语义无 Arc，两构造器收敛到同一存储但保留 Rust 调用点保真 |
+| ErasedTool execute stream-mapping | `_erase_stream` async generator | Progress 透传 / Terminal Err 透传 / Terminal Ok -> TypedToolOutput / 编码失败 -> `ToolError.custom("output_encoding")` |
+| `serde_json::to_value(&out)` 输出编码 | `_encode_to_json_value` 多形态 walk | 原语透传 / list+dict 递归 / dataclass asdict / pydantic model_dump / `__dict__`（跳过 _前缀）/ repr 回退（从不 raise） |
+| `ToolOutput::model_output()` custom-or-extract | `_model_output_of` 鸭子类型 + `extract_content_blocks` fallback | custom 非空赢，否则 extract；raising impl 视为默认 |
+| `ToolOutput::chat_completion_output()` | `_chat_completion_output_of` 鸭子类型 | None 默认；raising impl 视为默认 |
+| `serde_json::from_value::<T::Args>` args 解码 | 无操作（args `Any` 透传） | R109 `Tool.execute` 已接受 Any；Rust decode 步骤无 Python 对应物，`InvalidArguments` 解码失败路径不存在 |
+| `struct CompoundResolver { local, remote: Option }`（#[derive(Debug)] 无 PartialEq/Clone） | `@dataclass(eq=False)` + `remote: ToolRegistry \| None = None` | trait object 无 Eq -> eq=False |
+| `resolve` local-first + `resolve_and_dispatch` | 同步 `resolve` + `async resolve_and_dispatch` | local 命中遮蔽 remote；miss -> `terminal_only(ToolError.not_found)` |
+| Rust `registration()`/`handle()`/`local()`/`remote()` 访问器方法 | Python 属性访问 | R109 字段即访问器模式（同 TypedToolOutput） |
+
+**坑**：
+1. **ErasedTool Terminal-Ok 编码路径不能复用 `TypedToolOutput.from_value`**：R109 `from_value(tool_id, value)` 只覆盖 "empty custom -> extract" 单分支。ErasedTool 需要完整的 custom-or-extract 逻辑（custom 非空赢 + 附 chat_completion 卡片），所以直接构造 `TypedToolOutput(tool_id, value, model_output, chat_completion_output)`。
+2. **映射 1 vs 映射 2 协程形态**：`ToolHandle.execute` 用映射 1（`async def -> ToolStream`，await 调用），与 R115 `Transport.call` 一致；`terminal_only` 是映射 2（async generator，无 await）。`resolve_and_dispatch` 用 `async def return ToolStream` 统一两者（hit 分支 `await resolved.handle.execute`，miss 分支 `return terminal_only(...)`）。
+3. **编码失败路径触发方式**：`_encode_to_json_value` 从不 raise（最终 repr 回退），所以 encoding 失败路径只能在 `pydantic model_dump()` raises 时触发（model_dump 分支无内部 try）。测试用 `_BadEncode.model_dump() -> raise ValueError("boom")` 驱动，验证 `ToolError.custom("output_encoding", "boom")` 落地。
+
+### 验证
+
+- `uv run ruff check resolver.py __init__.py test_computer_hub_core_resolver.py`：**All checks passed**（1 自动修复：F401 删除测试文件未用 `ToolRegistration` 导入，scoped 到 R117 测试文件，零连带）
+- `uv run pytest tests/test_computer_hub_core_resolver.py`：**42 passed in 0.34s**
+- 三叶回归 `test_computer_hub_core_{transport,registry,resolver}.py`：**98 passed in 0.45s**（零回归，证明 R116<->R117 循环干净闭合）
+
+### YAGNI 边界
+
+- 只迁 `resolver.rs`（lib.rs 6 模块的第 3 个），`inner`/`local`/`remote` 3 模块留给后续回合（依赖拓扑：transport(R115) -> registry(R116) -> resolver(R117) -> inner -> local/remote）。
+- `ErasedTool` 无 Arc 步骤：Python 引用语义已共享，`from_arc`/`new` 收敛到同一存储但保留 Rust 调用点保真。
+- args 解码无操作：R109 `Tool.execute` 已接受 `Any`，Rust `serde_json::from_value::<T::Args>` 无 Python 对应物，`InvalidArguments` 解码失败路径不存在（具体 Tool 自行解码 + 自行产 ToolError）。
+- 不实现具体 registry（沿用 R116 决策）：本模块只交付解析策略 + 类型擦除适配器；测试用 per-test mock（`_Registry`/`_TypedTool`/`_RecordingHandle`）验证 trait 形状与流映射。
+- barrel `__init__.py` 现导出 14 符号（R115 3 + R116 7 + R117 4），后续回合随 inner/local/remote 叶子落地逐个增长。
+
+### Commit
+
+feat(platform): R117 migrate xai-computer-hub-core resolver.rs (CompoundResolver + ErasedTool + ResolvedTool + ToolHandle, crate leaf 3, closes R116 registry<->resolver cycle, ErasedTool drives R109-deferred blanket stream-mapping, consumes R65/R82-R106/R107-R116)
