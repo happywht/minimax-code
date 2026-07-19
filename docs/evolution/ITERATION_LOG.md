@@ -6635,3 +6635,66 @@ grok 不给 `ToolResponse` 实现 `kind() -> ChunkKind`——它是响应方向�
 ### Commit
 
 `feat(platform): R81 chunks.rs -> chunks.py（响应分块 crate 顶层调度层第 4 模块收官 4 相邻标记枚举 3 变体形态 chunk_kind 重命名 SessionAck 陷阱）[新增 chunks.py 526 行: _payload(obj) 3 行辅助复制自 R79/R80 + OpsChunk(AdjacentTagged) 17 变体(git_status|git_diff|git_branch_info|git_metadata|git_metadata(None)|hunks|skills|plugins|project_config|permissions|envrc|resolved_files|memory_chunks|plugin|ack|fuzzy_match|ripgrep_hit|ripgrep_done) 17 工厂(newtype 委托 + Option None + Vec list + struct 单例 + BTreeMap envrc 键排序 + unit ack None) + _KIND_MAP 17 条目 + chunk_kind() + SessionChunk(AdjacentTagged) 5 变体(session_id|session_info|rewind_result|rewind_points|ack) 5 工厂 + _KIND_MAP 5 条目(ack->SessionAck 陷阱) + chunk_kind() + ToolChunk(AdjacentTagged) 7 变体(output|progress|final|definitions 4 newtype + need_permission|need_user_answer|need_plan_mode_change 3 struct Need* req_id 握手) 7 工厂 + _KIND_MAP 7 条目 + chunk_kind() + ToolResponse(AdjacentTagged) 3 变体(permission|user_answer|plan_mode_change struct echo req_id 无 _KIND_MAP 无 chunk_kind); barrel 导出 4 符号 + docstring R81 段(chunk_kind 重命名说明); 4 测试类 31 测试(OpsChunk 17 变体穷举 + SessionChunk SessionAck 陷阱断言 + ToolChunk 7 变体含 Need* req_id + ToolResponse 无 chunk_kind 验证 + 4 枚举全变体 from_wire round-trip); KEY 决策 1: 4 相邻标记枚举同台复用 R67 AdjacentTagged 与 R79/R80 同构零新 serde 模式; KEY 决策 2: 3 种变体形态(newtype|struct|unit)混编 _payload 统一委托; KEY 坑 1: chunk_kind 重命名 grok kind() 方法 vs AdjacentTagged.kind 属性冲突 -> _KIND_MAP 字典; KEY 坑 2: SessionAck 歧义两 chunk 枚举 Ack arm wire tag 都 ack 映射不同 ChunkKind(Ack=ack vs SessionAck=session_ack) 不能 ChunkKind(self.kind) 反查必须显式穷举; KEY 坑 3: ToolResponse 无 chunk_kind 响应方向不参与 ProtocolMismatch; KEY 坑 4: 3 变体形态 + 4 容器(单值|Vec|Option|BTreeMap)由 _payload + 手建 dict 两种机制覆盖; 验证 ruff 3 文件 clean + pytest test_workspace_types.py 152 passed + 全回归 2458 passed 10 skipped 1 warning 零回归, 锚点 R81-1 9f055c8]`
+
+
+## R82 — xai-tool-protocol 地基层（ids + handshake + error_codes + connection，开启 tool-protocol crate 4/16 模块）
+
+锚点:R82-1 666e03b
+
+### 本轮目标
+
+开启 `xai-tool-protocol` crate（grok computer-hub 工具服务器线路协议 DTO）迁移。该 crate 6613 行 / 16 模块，是**纯线路 DTO crate**（零 I/O、零 env 读），位于 `xai-tool-types`（R65，工具 schema）与 `xai-tool-runtime`（R23，并发模型）之间。R82 落地 4 个依赖无关的地基模块（ids 241 + handshake 52 + connection 38 + error_codes 300 ≈ 631 行），建立 `tool_protocol` 包骨架；12 个较大模块（envelope / methods / capabilities / registration / frames(1549) / session_event(404) / turn_hook(700) / error_wire / output_wire / notification_wire / hook / registry_error）推迟至 R83+。这是继 `xai-grok-workspace-types`（R67-R81，rpc/ 10 模块收官）之后第二个进入迁移的大型 wire crate。
+
+### 融合结论
+
+正向迁移 Rust→Python，零 rust 工具链。crate 是纯线路 DTO，迁移为 `minimax_code.tool_protocol` 包，依赖仅 `pydantic_core`（newtype schema 钩子）+ 标准库（dataclass / StrEnum / Sequence）。**不依赖** `workspace_types._wire.WireModel`（保持 crate 自包含、可独立测试）；结构体用 dataclass + 手写 `to_wire`/`from_wire` 以精确映射 serde `skip_serializing_if` 语义（`Option::is_none` / `Vec::is_empty`）。透明 String newtype 模式复用 R67 `identity.py`，但抽出 `_OpaqueId` 基类 + `_EXTRA_VALIDATOR` ClassVar 钩子消除 7 个 newtype 的重复（DRY）。
+
+### 交付
+
+- `ids.py`（~383 行）：`IdError` 层级（基类 `ValueError` + `EmptyIdError` / `InvalidFormatIdError(value)` / `ReservedPrefixIdError(value)`，复现 Rust 3 变体 `thiserror` enum）+ 验证原语 `_is_id_char` / `_is_valid_segment` / `_ensure_non_empty` + `_opaque_str_schema` pydantic 钩子 + `_OpaqueId(str)` 基类（`_EXTRA_VALIDATOR: ClassVar` 钩子 + `__new__` 三段验证：isinstance str → 非空 → 额外验证器）+ 7 个 String newtype（`SessionId`/`UserId`/`ConnectionId`/`RequestId`/`ToolCallId` 纯非空；`ServerId` 拒 `auto:` 前缀 + `synthesize_for_tool` 绕过；`ToolId` 段格式验证）+ `FrameSeq` u64 newtype（`__slots__=("_value",)` + `new`/`get`/`to_wire`/`from_wire`(bool 拒)/`__int__`/`__index__`/`__eq__`/`__hash__`/`__lt__`/`__le__`/`__repr__`/`__str__` + pydantic `int_schema` 钩子）。
+- `connection.py`（~140 行）：`ConnectionKind` StrEnum（`Harness`/`ToolServer`，snake_case 裸串）+ `ToolDefinitionMode` **内部标记枚举**（`tag=mode`，`full` 单值 `{"mode":"full"}` / `concise` 携 `meta_search`+`meta_call`，`__slots__` + `full()`/`concise()` 工厂 + `to_wire`/`from_wire` + dunder）—— **crate 首个内部标记枚举**（workspace-types 层全用相邻标记）。
+- `handshake.py`（~129 行）：`PROTOCOL_VERSION="1.0.0"` + `HelloMsg` dataclass（`protocol_version`/`kind`/`server_id?`/`description?`/`metadata=Any`；`to_wire` 跳 None；`from_wire`）+ `HelloAckMsg` dataclass（`connection_id`/`user_id`/`computer_hub_version`/`supported_protocol_versions`/`capabilities?=None`；`to_wire` 跳空 capabilities `Vec::is_empty`；`from_wire`）。
+- `error_codes.py`（~211 行）：`ERROR_CODES` 28 条目元组（numeric↔string 双列唯一）+ `numeric_for`/`string_for` 线性扫描（未知→None）+ `WORKSPACE_UNAVAILABLE_SUBCODE`/`MESSAGE`/`JSONRPC_CODE` 三常量 + `WorkspaceGoneReason`/`WorkspaceGonePhase` StrEnum（`from_wire` 全捕获→`Unknown`，复现 `#[serde(other)]`）+ `WorkspaceUnavailableDetails` dataclass（`to_wire`/`from_wire`，reason/phase 容忍解析）。
+- `__init__.py`（~100 行）：barrel 导出 27 符号 + docstring 记录 R82 地基层 + 推迟模块清单。
+- `test_tool_protocol.py`（~560 行）：11 测试类 123 测试（`TestOpaqueIds` 5 newtype 参数化穷举 + `TestToolId` 段格式正反例 + `TestServerId` 保留前缀+绕过 + `TestFrameSeq` u64+bool 拒+排序 + `TestConnectionKind`/`TestToolDefinitionMode` 内部标记往返 + `TestHandshake` serde skip + `TestErrorCodesTable` 28 条目双射 + `TestWorkspaceUnavailableContract` `#[serde(other)]` 容忍 + `TestPackageSurface` barrel）。
+
+### 映射决策树 + 坑
+
+**KEY 决策 1 — 透明 String newtype 抽基类（DRY）：** R67 `identity.py` 每个 newtype 各写一份 `__new__`+`__get_pydantic_core_schema__`。R82 抽出 `_OpaqueId(str)` 基类 + `_opaque_str_schema` 辅助 + `_EXTRA_VALIDATOR: ClassVar[Callable[[str],None]|None]` 钩子：基类 `__new__` 跑三段（isinstance str → `_ensure_non_empty` → 可选 `_EXTRA_VALIDATOR`），7 个 newtype 只需声明 `_EXTRA_VALIDATOR`（ServerId/ToolId）或什么都不写（5 个纯非空）。`__get_pydantic_core_schema__` 在基类一次性定义。
+
+**KEY 决策 2 — FrameSeq 首个透明非串 newtype（u64）：** crate 第一个透明-*非字符串* newtype。独立类（非 str 子类），`__slots__=("_value",)`，独立 `to_wire`/`from_wire` + pydantic `int_schema` 钩子。**bool 拒绝**（bool 是 int 子类，会拓宽 u64 线路类型）：构造器 `__init__` 抛 `TypeError`，`from_wire` 抛 `ValueError`（与 Rust `u64` 反序列化器对齐）。
+
+**KEY 决策 3 — 内部标记枚举内联实现（YAGNI）：** `ToolDefinitionMode`（`tag=mode`）是 crate 首个内部标记枚举（workspace-types 全用相邻标记 `AdjacentTagged`）。决定内联实现（plain class + `to_wire`/`from_wire`）而非抽共享基类——YAGNI，直到出现第二个内部标记枚举再抽象。`full` 单值变体 → `{"mode":"full"}`；`concise` struct 变体 → 携 `meta_search`/`meta_call`。
+
+**KEY 决策 4 — `#[serde(other)]` 容忍枚举：** `WorkspaceGoneReason`/`WorkspaceGonePhase`。`Unknown` 是**命名变体**（值 `"unknown"`），所以能通过正常 `cls(value)` 查找往返；`from_wire` 用 `try/except ValueError` 全捕获未知串→`Unknown`，复现 Rust `#[serde(other)]` 吸收新 peer 未知值的向前兼容语义。
+
+**KEY 决策 5 — dataclass + 手写 to_wire（serde skip 精确控制）：** 结构体选 dataclass 而非 pydantic BaseModel，保持 crate 自包含（不跨 crate 依赖 `WireModel`）+ 精确映射 serde `skip_serializing_if`：`HelloMsg` 的 `server_id`/`description`/`metadata` 跳 None（`Option::is_none`）；`HelloAckMsg.capabilities` 跳 None 与 `[]`（`Vec::is_empty`）。
+
+**KEY 坑 1 — `_is_id_char` 运算符优先级：** `c.isascii() and c.isalnum() or c == "_" or c == "-"`。Python 中 `and` 优先级高于 `or`，等价 `(isascii and isalnum) or _ or -`。**必须限 ASCII**（否则 Unicode 数字/字母会拓宽段字母表，普通 `str.isalnum` 不会限）。
+
+**KEY 坑 2 — `str.split(":", 2)` 复现 `splitn(3, ':')`：** 最多 3 段，第 3 段（第 2 个冒号）→ `False`。`len==1` 单段、`len==2` 双段（两段都需 `_is_valid_segment`）、`len==3` 拒绝。`:name`（空首段）/`ns:`（空尾段）→ 第二段 `_is_valid_segment("")` False → `InvalidFormatIdError`。
+
+**KEY 坑 3 — `ServerId.synthesize_for_tool` 绕过验证：** 用 `str.__new__(cls, f"auto:tool:{tool_id}")` 跳过 `_OpaqueId.__new__`（跳过 `auto:` 前缀检查），复现 Rust 私有构造器。`connection_id` 在签名中（调用者不能省略连接作用域）但当前编码不混入——两连接注册同 `tool_id` 共享合成 id 但在注册表 `(connection_id, tool_id)` 主键表里保持独立。
+
+**KEY 坑 4 — `error_codes.py` 的 `Any` 导入 E402 陷阱：** 初始版本在 `from_wire(cls, data: dict[str, Any])` 用 `Any` 但顶部未导入（放文件末尾 `# noqa: E402` 临时方案，ruff E402 风险）。修复：改 `dict[str, object]`（`from __future__ import annotations` 使注解延迟求值，`object` 作运行时注解有效）+ `str()` 强制转换字段，删除 `Any` 导入。
+
+**KEY 坑 5 — `FrameSeq.__eq__` 返回 `NotImplemented` 非 `False`：** 对非 FrameSeq 返回 `NotImplemented`（让 Python 反射机制尝试右操作数 `__eq__`，最终回退 `is`）。`__hash__` 显式定义（否则定义 `__eq__` 后 Python 3 默认设 `__hash__=None` 不可哈希）。`__lt__`/`__le__` 定义，`__gt__`/`__ge__` 靠反射（`a>b` → `b.__lt__(a)`）。
+
+**KEY 坑 6 — 测试临时 `UTC` noqa F401 删除：** 初始 `test_tool_protocol.py` 有 `from datetime import UTC  # noqa: F401` 无用导入（"保持 tz-import idiom 统一"是误判，测试根本不用 UTC），违反项目代码规范，删除。
+
+### 验证
+
+`cd agent && uv run ruff check minimax_code/tool_protocol tests/test_tool_protocol.py` → **All checks passed!**（6 文件 clean）。`uv run pytest tests/test_tool_protocol.py -q` → **123 passed in 0.19s**。全量回归 `uv run pytest -q` → **2581 passed, 10 skipped, 1 warning in 102.25s**（2458 + 123 = 2581，零回归；唯一 warning 是 fastapi httpx 弃用提示，预先存在与 R82 无关）。锚点 R82-1 666e03b。
+
+### YAGNI 边界
+
+- **`ToolCallId.new_v7`（UUID v7 工厂）推迟** — Python stdlib `uuid` 无 v7 生成器，需 `uuid6` 依赖评估，后续回合处理。
+- **`from_tool_error_wire` / `workspace_unavailable_wire` 推迟** — 依赖 `error_wire::ToolErrorWire`（R83+ 的 `error_wire` 模块）。本回合已落地它们组合的全部零件（表、查找、常量、两容忍枚举、`WorkspaceUnavailableDetails`），后续回合接线时无需回改契约。
+- **12 个较大模块推迟** — envelope / methods / capabilities / registration / frames(1549) / session_event(404) / turn_hook(700) / error_wire / output_wire / notification_wire / hook / registry_error。R83+ 按 `lib.rs` `pub use` 依赖序逐模块迁移。
+- **内部标记枚举共享基类推迟** — 仅 `ToolDefinitionMode` 一个内部标记枚举，YAGNI 直到出现第二个再抽象（workspace-types 的 `AdjacentTagged` 是相邻标记，不可复用）。
+- **`ERROR_CODES` HashMap 优化推迟** — 28 条目线性扫描足够快（Rust 同理，rationale 一致），无需 dict 索引。
+- **pydantic BaseModel for 结构体推迟** — dataclass + 手写 to_wire 已满足 serde skip 精确控制；若后续回合需要 pydantic 校验链路再升级。
+
+### Commit
+
+`feat(platform): R82 xai-tool-protocol 地基层（ids + handshake + error_codes + connection，开启 tool-protocol crate 4/16 模块，crate 首个内部标记枚举 + 首个透明非串 u64 newtype）[新增 tool_protocol/ 包 5 模块: ids.py(~383) IdError 层级(基类 ValueError+Empty/InvalidFormat(value)/ReservedPrefix(value)) + _is_id_char/_is_valid_segment/_ensure_non_empty + _opaque_str_schema + _OpaqueId(str) 基类(_EXTRA_VALIDATOR ClassVar 钩子+__new__ 三段验证) + 7 String newtype(5 纯非空 + ServerId 拒 auto: 前缀+synthesize_for_tool str.__new__ 绕过 + ToolId 段格式 split(':',2)) + FrameSeq u64 newtype(__slots__+bool 拒 TypeError 构造/ValueError from_wire+pydantic int_schema) | connection.py(~140) ConnectionKind StrEnum(harness/tool_server) + ToolDefinitionMode 内部标记枚举(crate 首个 tag=mode full 单值/concise 携 meta_search+meta_call) | handshake.py(~129) PROTOCOL_VERSION 1.0.0 + HelloMsg/HelloAckMsg dataclass(Option::is_none 跳 + Vec::is_empty 跳 capabilities) | error_codes.py(~211) ERROR_CODES 28 条目双列唯一 + numeric_for/string_for 线性扫描(未知 None) + WORKSPACE_UNAVAILABLE_SUBCODE/MESSAGE/JSONRPC_CODE 3 常量 + WorkspaceGoneReason/Phase StrEnum(from_wire try/except 全捕获 #[serde(other)] Unknown 命名变体能往返) + WorkspaceUnavailableDetails dataclass | __init__.py barrel 27 符号 + 推迟模块清单 docstring; test_tool_protocol.py 11 类 123 测试(TestOpaqueIds 5 newtype 参数化 + TestToolId 段格式正反例 + TestServerId 保留前缀+绕过 + TestFrameSeq u64 bool 拒+排序+NotImplemented + TestConnectionKind + TestToolDefinitionMode 内部标记往返 + TestHandshake serde skip + TestErrorCodesTable 28 双射 + TestWorkspaceUnavailableContract other 容忍 + TestPackageSurface barrel); KEY 决策 1: 透明 String newtype 抽 _OpaqueId 基类+_EXTRA_VALIDATOR 钩子消除 7 newtype 重复 DRY 复用 R67 identity 模式; KEY 决策 2: FrameSeq 首个透明非串 u64 newtype 独立类 bool 拒绝拓宽 u64; KEY 决策 3: 内部标记枚举内联非共享基类 YAGNI(workspace-types 全相邻标记); KEY 决策 4: serde(other) Unknown 命名变体能往返+from_wire 全捕获; KEY 决策 5: dataclass+手写 to_wire 精确 serde skip 保持 crate 自包含不依赖 WireModel; KEY 坑 1: _is_id_char 运算符优先级 and 高于 or 限 ASCII; KEY 坑 2: str.split(':',2) 复现 splitn(3) len 3 拒; KEY 坑 3: synthesize_for_tool str.__new__ 绕过验证复现 Rust 私有构造; KEY 坑 4: error_codes Any 导入 E402 坑改 dict[str,object]+str() 强转; KEY 坑 5: FrameSeq __eq__ NotImplemented 非 False+__hash__ 显式+__gt__ 反射; KEY 坑 6: 测试临时 UTC noqa F401 删除; 验证 ruff 6 文件 clean + pytest test_tool_protocol.py 123 passed 0.19s + 全回归 2581 passed 10 skipped 1 warning 102s 零回归, 锚点 R82-1 666e03b]`
