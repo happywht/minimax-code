@@ -85,6 +85,8 @@ from minimax_code.tool_protocol import (
     PingFrame,
     PongFrame,
     Registered,
+    RegisterServerParams,
+    RegisterToolParams,
     Rejected,
     RenderLimited,
     RequestId,
@@ -116,6 +118,8 @@ from minimax_code.tool_protocol import (
     TracesDonateParams,
     TransportClosed,
     TransportKind,
+    UnregisterServerParams,
+    UnregisterToolParams,
     UnsupportedProtocolVersion,
     Updated,
     UserId,
@@ -133,20 +137,24 @@ from minimax_code.tool_protocol import (
 from minimax_code.tool_protocol.envelope import jsonrpc_id_from_wire
 from minimax_code.tool_protocol.error_wire import from_wire as error_from_wire
 
-# R92 + R93 — frames (tool call params/result/progress + telemetry donation +
-# heartbeat). The structs/consts travel the barrel (Rust lib.rs
-# ``pub use frames::{...}`` is the crate's largest re-export); the from_wire
-# converters stay submodule-qualified (the barrel never re-exports wire
-# converters, mirroring the Rust ``pub use`` set).
+# R92 + R93 + R94 — frames (tool call params/result/progress + telemetry
+# donation + heartbeat + registration). The structs/consts travel the barrel
+# (Rust lib.rs ``pub use frames::{...}`` is the crate's largest re-export);
+# the from_wire converters stay submodule-qualified (the barrel never
+# re-exports wire converters, mirroring the Rust ``pub use`` set).
 from minimax_code.tool_protocol.frames import (
     logs_donate_params_from_wire,
     metrics_donate_params_from_wire,
     ping_frame_from_wire,
     pong_frame_from_wire,
+    register_server_params_from_wire,
+    register_tool_params_from_wire,
     tool_call_params_from_wire,
     tool_call_progress_frame_from_wire,
     tool_call_result_from_wire,
     traces_donate_params_from_wire,
+    unregister_server_params_from_wire,
+    unregister_tool_params_from_wire,
 )
 
 # R89 — hook variants are imported from the submodule (not the barrel): the
@@ -4167,3 +4175,166 @@ class TestHeartbeatBarrelR93:
 
         assert not hasattr(pkg, "ping_frame_from_wire")
         assert not hasattr(pkg, "pong_frame_from_wire")
+
+
+# ── R94 — registration frames (params-as-DTO-wrapper consolidation) ────────
+
+
+class TestRegisterToolParams:
+    """``RegisterToolParams`` — params-as-DTO-wrapper over ``ToolRegistration``."""
+
+    def _registration(self) -> ToolRegistration:
+        return ToolRegistration(
+            tool_id=ToolId("bash"),
+            user_id=UserId("u1"),
+            description=ToolDescription(name="bash", description="d"),
+            transport_kind=TransportKind.Local,
+        )
+
+    def test_to_wire_delegates_to_embedded_dto(self):
+        # The wrapper adds exactly one key — "tool" — whose value is the
+        # embedded DTO's own to_wire output, unchanged. This is the defining
+        # shape of the params-as-DTO-wrapper pattern (no field re-ordering,
+        # no re-keying, pure delegation).
+        reg = self._registration()
+        params = RegisterToolParams(tool=reg)
+        assert params.to_wire() == {"tool": reg.to_wire()}
+
+    def test_to_wire_has_single_key(self):
+        assert list(RegisterToolParams(tool=self._registration()).to_wire()) == ["tool"]
+
+    def test_from_wire_delegates_to_dto_classmethod(self):
+        reg = self._registration()
+        back = register_tool_params_from_wire({"tool": reg.to_wire()})
+        assert isinstance(back, RegisterToolParams)
+        assert back.tool.tool_id == ToolId("bash")
+        assert back.tool.transport_kind is TransportKind.Local
+
+    def test_round_trip(self):
+        original = RegisterToolParams(tool=self._registration())
+        assert register_tool_params_from_wire(original.to_wire()) == original
+
+
+class TestRegisterServerParams:
+    """``RegisterServerParams`` — params-as-DTO-wrapper over ``ToolServerRegistration``."""
+
+    def _server(self) -> ToolServerRegistration:
+        return ToolServerRegistration(
+            server_id=ServerId("srv1"),
+            user_id=UserId("u1"),
+            tools=[
+                ToolDescriptionWithSchema(
+                    description=ToolDescription(name="bash", description="d")
+                )
+            ],
+        )
+
+    def test_to_wire_delegates_to_embedded_dto(self):
+        srv = self._server()
+        assert RegisterServerParams(server=srv).to_wire() == {"server": srv.to_wire()}
+
+    def test_to_wire_has_single_key(self):
+        assert list(RegisterServerParams(server=self._server()).to_wire()) == ["server"]
+
+    def test_round_trip(self):
+        original = RegisterServerParams(server=self._server())
+        back = register_server_params_from_wire(original.to_wire())
+        assert back == original
+        assert back.server.server_id == ServerId("srv1")
+        assert len(back.server.tools) == 1
+
+
+class TestUnregisterToolParams:
+    """``UnregisterToolParams`` — bare-newtype-as-str, mirrors ``ToolCallParams.tool_id``."""
+
+    def test_to_wire_serialises_newtype_as_str(self):
+        # ``tool_id`` is a ToolId str-newtype (R82); it serialises directly as
+        # a string — the same shape as ToolCallParams.tool_id (R92), not wrapped
+        # in any sub-object.
+        assert UnregisterToolParams(tool_id=ToolId("ns:bash")).to_wire() == {
+            "tool_id": "ns:bash"
+        }
+
+    def test_to_wire_has_single_key(self):
+        assert list(UnregisterToolParams(tool_id=ToolId("x")).to_wire()) == ["tool_id"]
+
+    def test_from_wire_lifts_as_newtype(self):
+        back = unregister_tool_params_from_wire({"tool_id": "ns:bash"})
+        assert isinstance(back, UnregisterToolParams)
+        assert back.tool_id == ToolId("ns:bash")
+
+    def test_round_trip(self):
+        original = UnregisterToolParams(tool_id=ToolId("ns:bash"))
+        assert unregister_tool_params_from_wire(original.to_wire()) == original
+
+
+class TestUnregisterServerParams:
+    """``UnregisterServerParams`` — bare-newtype-as-str over ``ServerId``."""
+
+    def test_to_wire_serialises_newtype_as_str(self):
+        assert UnregisterServerParams(server_id=ServerId("srv1")).to_wire() == {
+            "server_id": "srv1"
+        }
+
+    def test_to_wire_has_single_key(self):
+        assert list(
+            UnregisterServerParams(server_id=ServerId("x")).to_wire()
+        ) == ["server_id"]
+
+    def test_from_wire_lifts_as_newtype(self):
+        back = unregister_server_params_from_wire({"server_id": "srv1"})
+        assert isinstance(back, UnregisterServerParams)
+        assert back.server_id == ServerId("srv1")
+
+    def test_round_trip(self):
+        original = UnregisterServerParams(server_id=ServerId("srv1"))
+        assert unregister_server_params_from_wire(original.to_wire()) == original
+
+
+class TestRegistrationParamsBarrelR94:
+    """Registration params travel the barrel; from_wire stay submodule-qualified."""
+
+    def test_barrel_exports_registration_params(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "RegisterToolParams",
+            "RegisterServerParams",
+            "UnregisterToolParams",
+            "UnregisterServerParams",
+        ):
+            assert hasattr(pkg, name), f"barrel missing registration param {name}"
+
+    def test_registration_params_in_all(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "RegisterToolParams",
+            "RegisterServerParams",
+            "UnregisterToolParams",
+            "UnregisterServerParams",
+        ):
+            assert name in pkg.__all__, f"{name} not in barrel __all__"
+
+    def test_frames_submodule_exposes_from_wire(self):
+        import minimax_code.tool_protocol.frames as mod
+
+        for name in (
+            "register_tool_params_from_wire",
+            "register_server_params_from_wire",
+            "unregister_tool_params_from_wire",
+            "unregister_server_params_from_wire",
+        ):
+            assert hasattr(mod, name), f"frames submodule missing {name}"
+
+    def test_barrel_does_not_re_export_from_wire(self):
+        """from_wire converters stay submodule-qualified, mirroring the crate."""
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "register_tool_params_from_wire",
+            "register_server_params_from_wire",
+            "unregister_tool_params_from_wire",
+            "unregister_server_params_from_wire",
+        ):
+            assert not hasattr(pkg, name), f"barrel should not export {name}"

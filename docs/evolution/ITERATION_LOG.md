@@ -7752,3 +7752,102 @@ Serialize/Deserialize），转而手写序列化以在 wire 上注入一个结�
 ### Commit
 
 `feat(platform): R93 migrate frames.rs heartbeat domain (PingFrame/PongFrame, crate first non-derive custom Serialize/Deserialize)`
+
+
+## R94 — frames.rs 注册域（RegisterToolParams/RegisterServerParams/UnregisterToolParams/UnregisterServerParams，params-as-DTO-wrapper 整合轮）
+
+锚点:R94-1 17853c7
+
+### 本轮目标
+
+继续 frames.rs 域式迁移（R92 开域 + R93 心跳后的第 3 个域）。本轮选**注册域**（frames.rs
+192-218 行）：4 个单字段 params 结构体（`RegisterToolParams` / `RegisterServerParams` /
+`UnregisterToolParams` / `UnregisterServerParams`）。选该域的决策依据：
+
+1. **零依赖风险** —— 4 个结构体依赖的 `from_wire` 路径全部已存在（R87 的
+   `ToolRegistration.from_wire` classmethod、`ToolServerRegistration.from_wire` classmethod；
+   `ToolId` / `ServerId` 是 R82 str-newtype，直接 `str()` lift）。无任何前置未迁依赖。
+2. **零实施风险** —— 无工厂方法、无泛型、无枚举嵌入、无 crate-first serde 形态。纯整合轮。
+3. **形态价值** —— 引入 frames.rs 剩余域普遍使用的 "params-as-DTO-wrapper" 模式（单字段
+   结构体薄包装现有 wire DTO，`to_wire` / `from_wire` 委托给内嵌 DTO），为后续域铺路。
+
+### 融合结论
+
+grok-build `xai-tool-protocol::frames` 注册域（192-218 行）4 个结构体前向迁移到 Python
+`tool_protocol/frames.py`。Rust 侧 4 个结构体都是 `#[derive(Debug, Clone, PartialEq,
+Serialize, Deserialize)]` 无 `#[serde(...)]` 属性——纯透明包装，Python 侧对应：
+
+- `RegisterToolParams { tool: ToolRegistration }` → `to_wire` 返回 `{"tool": reg.to_wire()}`
+  （委托 R87 `ToolRegistration.to_wire`）；`from_wire` 委托 `ToolRegistration.from_wire`。
+- `RegisterServerParams { server: ToolServerRegistration }` → 同型，委托 R87 server DTO。
+- `UnregisterToolParams { tool_id: ToolId }` → bare-newtype-as-str（`tool_id` 是 R82 str-newtype，
+  直接序列化为字符串），镜像 R92 `ToolCallParams.tool_id`；`from_wire` 用 `ToolId(str(...))` lift。
+- `UnregisterServerParams { server_id: ServerId }` → 同型，bare-newtype-as-str。
+
+无 crate-first serde 形态落地（整合轮）；复用 R82 newtype-as-str + R87 DTO 委托两种既有形态。
+
+### 交付
+
+- `agent/minimax_code/tool_protocol/frames.py`：+4 dataclass（`RegisterToolParams` /
+  `RegisterServerParams` / `UnregisterToolParams` / `UnregisterServerParams`，各单字段）+
+  4 `from_wire` 函数（`register_tool_params_from_wire` /
+  `register_server_params_from_wire` / `unregister_tool_params_from_wire` /
+  `unregister_server_params_from_wire`），约 115 行。+2 import（`ServerId` 加入既有 ids import；
+  `ToolRegistration, ToolServerRegistration` 新增 registration import）+ 4 `__all__` 条目 +
+  docstring 首行追加 R94 + R94 entry 段 + deferred 描述更新（注册移出 deferred，11→10 域）。
+- `agent/minimax_code/tool_protocol/__init__.py`（barrel）：+4 符号导入（`RegisterToolParams` /
+  `RegisterServerParams` / `UnregisterToolParams` / `UnregisterServerParams`，类名字母序）+
+  4 `__all__` 条目 + docstring 首行追加 R94 + R94 entry 段 + deferred 描述更新（"10 of 14
+  domains"）。
+- `agent/tests/test_tool_protocol.py`：+4 barrel 导入（`RegisterServerParams` /
+  `RegisterToolParams` 在 Registered/Rejected 间；`UnregisterServerParams` /
+  `UnregisterToolParams` 在 TransportKind/UnsupportedProtocolVersion 间，类名字母序）+
+  4 frames 子模块 `from_wire` 导入（字母序）+ 5 测试类（`TestRegisterToolParams` /
+  `TestRegisterServerParams` / `TestUnregisterToolParams` / `TestUnregisterServerParams` /
+  `TestRegistrationParamsBarrelR94`），共 19 个新测试。
+
+### 映射决策树 + 坑
+
+1. **DTO-wrapper `to_wire` 委托** → `RegisterToolParams.to_wire()` 返回
+   `{"tool": self.tool.to_wire()}`，单键包装，DTO 输出原样透传（无重排、无重键）。Rust 侧
+   derive Serialize 自动展开嵌套 struct；Python 侧显式调 `to_wire()`。
+2. **DTO-wrapper `from_wire` 委托** → `register_tool_params_from_wire` 调
+   `ToolRegistration.from_wire(data["tool"])`（R87 classmethod）。`# type: ignore[arg-type]`
+   抑制 mypy 对 `dict[str, object]` → `dict[str, Any]` 的协变抱怨（镜像 R92
+   `tool_output_wire_from_wire` 的同型注解）。
+3. **bare-newtype-as-str** → `UnregisterToolParams.tool_id`（`ToolId` str-newtype）直接
+   `to_wire` 返回 `{"tool_id": self.tool_id}`（newtype 透传为 str）；`from_wire` 用
+   `ToolId(str(data["tool_id"]))` lift。镜像 R92 `ToolCallParams.tool_id` 的同型处理，
+   **非**嵌套子对象。
+4. **坑（自我纠正）** → 初始 Grep registration.py 用 `^def \w+_from_wire` 模式，误判
+   `tool_registration_from_wire` / `tool_server_registration_from_wire` 缺失。实际它们是
+   classmethod（`ToolRegistration.from_wire` @ 297 行、`ToolServerRegistration.from_wire` @
+   386 行），缩进定义不匹配 `^def`（模块级锚点）。改用 `def from_wire`（无 `^`）+ 读文件
+   确认两个 classmethod 存在。**教训**：`^def` 只匹配模块级函数；classmethod 需无锚点
+   模式或直读文件。避免不必要的域切换。
+
+### 验证
+
+- `uv run ruff check tests/test_tool_protocol.py minimax_code/tool_protocol/frames.py
+  minimax_code/tool_protocol/__init__.py` → **All checks passed!**
+- `uv run pytest tests/test_tool_protocol.py -q` → **628 passed**（R93 基准 609 + R94 新增 19：
+  15 个委托/往返/bare-newtype 断言分布在 4 个 params 测试类 + 4 个 barrel 契约在
+  `TestRegistrationParamsBarrelR94`）。
+- `uv run pytest -q`（全量回归）→ **3086 passed, 10 skipped**（R93 基准 3067 + R94 新增
+  19），**零回归**，1 warning（fastapi/httpx 无关警告）。
+
+### YAGNI 边界
+
+- 只迁注册域 4 个 params 结构体；其余 10 个 frames.rs 域（工具/系统通知、per-tool session
+  绑定、server discovery+binding、list & search、session lifecycle、simplified lifecycle、
+  subscriptions、hooks、service→harness pushes、tool-server status lifecycle）留 R95+。
+- 不接注册的传输层 / 调度层（wire 类型层职责；运行时如何路由 register/unregister 请求是
+  调度层决策，后续轮）。
+- 不加 4 个 params 的 envelope 包装——envelope 层 R84 已闭合，params 如何装进 JSON-RPC
+  信封属于调度层决策，wire 类型层不预判。
+- DTO 委托用 `# type: ignore[arg-type]` 而非修 protocol 签名（`from_wire(data: dict[str,
+  object])` 接受宽松 dict）——保持 R92 既定模式一致性，不为单点优化引入协议变更。
+
+### Commit
+
+`feat(platform): R94 migrate frames.rs registration domain (RegisterToolParams/RegisterServerParams/UnregisterToolParams/UnregisterServerParams, params-as-DTO-wrapper consolidation)`

@@ -1,4 +1,4 @@
-"""Tool-server frame protocol — per-method params/result payloads (R92 + R93).
+"""Tool-server frame protocol — per-method params/result payloads (R92 + R93 + R94).
 
 Fusion of grok-build's ``xai-tool-protocol::frames`` — the per-method
 ``params`` and ``result`` payload structs that ride inside a
@@ -10,12 +10,18 @@ R92 lands the **opening slice** of the crate's largest module (``frames.rs``
 is 1549 lines, 86 top-level pub symbols, 14 functional domains): the
 tool-call params/result/progress family plus the telemetry-donation family
 (tool call + trace/log/metric donation, lines 21-125 of the source). The
-remaining 12 domains — tool notification / system notify, registration,
+remaining 11 domains — tool notification / system notify, registration,
 per-tool session binding, server discovery + binding, list & search, session
 lifecycle, simplified lifecycle, subscriptions, hooks, service→harness
 pushes, tool-server status lifecycle — are deferred to R94+. R93 lands the
 heartbeat (:class:`PingFrame` / :class:`PongFrame`) — the crate's first
-**non-derive custom Serialize/Deserialize**.
+**non-derive custom Serialize/Deserialize**. R94 lands the **registration
+frames** (:class:`RegisterToolParams` / :class:`RegisterServerParams` /
+:class:`UnregisterToolParams` / :class:`UnregisterServerParams`) — a
+consolidation round exercising the "params-as-DTO-wrapper" pattern: params
+structs thin-wrap existing R82/R87 wire DTOs and delegate ``to_wire`` /
+``from_wire`` to the embedded DTO. No crate-first serde shape lands here;
+the remaining 10 domains are deferred to R95+.
 
 ``session_id`` belongs in the JSON-RPC envelope field — always. These
 params structs do NOT carry a ``session_id``; the hub reads it from
@@ -76,10 +82,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from minimax_code.tool_protocol.ids import ToolCallId, ToolId
+from minimax_code.tool_protocol.ids import ServerId, ToolCallId, ToolId
 from minimax_code.tool_protocol.methods import Method
 from minimax_code.tool_protocol.output_wire import ToolOutputWire
 from minimax_code.tool_protocol.output_wire import from_wire as tool_output_wire_from_wire
+from minimax_code.tool_protocol.registration import ToolRegistration, ToolServerRegistration
 
 __all__ = [
     # consts (first numeric usize family)
@@ -97,6 +104,11 @@ __all__ = [
     # heartbeat (R93 — crate's first non-derive custom Serialize/Deserialize)
     "PingFrame",
     "PongFrame",
+    # registration (R94 — params-as-DTO-wrapper consolidation)
+    "RegisterToolParams",
+    "RegisterServerParams",
+    "UnregisterToolParams",
+    "UnregisterServerParams",
     # wire converters
     "tool_call_params_from_wire",
     "tool_call_result_from_wire",
@@ -106,6 +118,10 @@ __all__ = [
     "metrics_donate_params_from_wire",
     "ping_frame_from_wire",
     "pong_frame_from_wire",
+    "register_tool_params_from_wire",
+    "register_server_params_from_wire",
+    "unregister_tool_params_from_wire",
+    "unregister_server_params_from_wire",
 ]
 
 
@@ -446,3 +462,118 @@ def pong_frame_from_wire(data: dict[str, object]) -> PongFrame:
             f'expected method "{Method.Pong.as_wire_str()}" but got "{method}"'
         )
     return PongFrame(ts_ms=int(data["ts_ms"]))
+
+
+# ── Registration frames (R94 — params-as-DTO-wrapper consolidation) ────────
+#
+# Four single-field params structs that thin-wrap existing R82/R87 wire DTOs:
+# ``register_tool`` / ``register_server`` / ``unregister_tool`` /
+# ``unregister_server``. This is a consolidation round — no crate-first serde
+# shape; it exercises the "params struct delegates to_wire / from_wire to an
+# embedded DTO" pattern that ``frames.rs`` uses pervasively for the remaining
+# domains. Two structs embed a full DTO (:class:`ToolRegistration` /
+# :class:`ToolServerRegistration` — delegate to the DTO's own ``to_wire`` and
+# ``from_wire``); two embed a bare identifier newtype (:class:`ToolId` /
+# :class:`ServerId` — serialise as a string directly, mirroring
+# :class:`ToolCallParams.tool_id` in R92).
+
+
+@dataclass
+class RegisterToolParams:
+    """``register_tool`` params — single-tool sugar over ``register_server``.
+
+    Thin wrapper around
+    :class:`~minimax_code.tool_protocol.registration.ToolRegistration`;
+    :meth:`to_wire` delegates to :meth:`ToolRegistration.to_wire` (R87), and
+    :func:`register_tool_params_from_wire` delegates back via
+    :meth:`ToolRegistration.from_wire`.
+    """
+
+    tool: ToolRegistration
+
+    def to_wire(self) -> dict[str, object]:
+        return {"tool": self.tool.to_wire()}
+
+
+@dataclass
+class RegisterServerParams:
+    """``register_server`` params — multi-tool batch.
+
+    Thin wrapper around
+    :class:`~minimax_code.tool_protocol.registration.ToolServerRegistration`.
+    """
+
+    server: ToolServerRegistration
+
+    def to_wire(self) -> dict[str, object]:
+        return {"server": self.server.to_wire()}
+
+
+@dataclass
+class UnregisterToolParams:
+    """``unregister_tool`` params — drop a tool entirely from the connection.
+
+    Connection-wide removal (across every session the tool was bound to).
+    For per-session removal use ``unbind_tool_session`` (later slice).
+    :attr:`tool_id` is a bare
+    :class:`~minimax_code.tool_protocol.ids.ToolId` newtype (R82), serialised
+    as a string directly — the same newtoype-as-str shape as
+    :attr:`ToolCallParams.tool_id` in R92.
+    """
+
+    tool_id: ToolId
+
+    def to_wire(self) -> dict[str, object]:
+        return {"tool_id": self.tool_id}
+
+
+@dataclass
+class UnregisterServerParams:
+    """``unregister_server`` params — drop every tool registered under the id.
+
+    :attr:`server_id` is a bare
+    :class:`~minimax_code.tool_protocol.ids.ServerId` newtype (R82).
+    """
+
+    server_id: ServerId
+
+    def to_wire(self) -> dict[str, object]:
+        return {"server_id": self.server_id}
+
+
+def register_tool_params_from_wire(data: dict[str, object]) -> RegisterToolParams:
+    """Reconstruct :class:`RegisterToolParams` from its wire form.
+
+    Delegates the embedded DTO reconstruction to
+    :meth:`ToolRegistration.from_wire` (R87 classmethod) — the params struct
+    itself adds no fields beyond the ``tool`` wrapper key.
+    """
+    return RegisterToolParams(
+        tool=ToolRegistration.from_wire(data["tool"])  # type: ignore[arg-type]
+    )
+
+
+def register_server_params_from_wire(data: dict[str, object]) -> RegisterServerParams:
+    """Reconstruct :class:`RegisterServerParams`.
+
+    Delegates to :meth:`ToolServerRegistration.from_wire` (R87 classmethod).
+    """
+    return RegisterServerParams(
+        server=ToolServerRegistration.from_wire(data["server"])  # type: ignore[arg-type]
+    )
+
+
+def unregister_tool_params_from_wire(data: dict[str, object]) -> UnregisterToolParams:
+    """Reconstruct :class:`UnregisterToolParams`.
+
+    :attr:`tool_id` lifts as :class:`ToolId` (str newtype).
+    """
+    return UnregisterToolParams(tool_id=ToolId(str(data["tool_id"])))
+
+
+def unregister_server_params_from_wire(data: dict[str, object]) -> UnregisterServerParams:
+    """Reconstruct :class:`UnregisterServerParams`.
+
+    :attr:`server_id` lifts as :class:`ServerId` (str newtype).
+    """
+    return UnregisterServerParams(server_id=ServerId(str(data["server_id"])))

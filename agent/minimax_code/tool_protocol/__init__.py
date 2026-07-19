@@ -1,4 +1,4 @@
-"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 + R90 + R91 + R92 + R93 — heartbeat frames landed).
+"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 + R90 + R91 + R92 + R93 + R94 — registration frames landed).
 
 Fusion of grok-build's ``xai-tool-protocol`` crate — the wire DTOs for
 the computer-hub tool-server protocol: identifier newtypes, registration
@@ -116,11 +116,20 @@ to mix unit + struct variants):
   struct field) and ``from_wire`` is lenient on ``method`` but raises on a
   present-but-mismatched value; values sourced from
   :meth:`Method.as_wire_str` for DRY single-source).
+* **R94 (this round)** — :mod:`frames`
+  (registration domain: :class:`RegisterToolParams` /
+  :class:`RegisterServerParams` / :class:`UnregisterToolParams` /
+  :class:`UnregisterServerParams` — a consolidation round exercising the
+  "params-as-DTO-wrapper" pattern: single-field params structs thin-wrap
+  existing R82/R87 wire DTOs (:class:`ToolRegistration` /
+  :class:`ToolServerRegistration` / :class:`ToolId` / :class:`ServerId`) and
+  delegate ``to_wire`` / ``from_wire`` to the embedded DTO; no crate-first
+  serde shape).
 * *deferred* — :mod:`frames`
-  (remainder: 11 of 14 domains — tool/system notifications, registration,
-  per-tool session binding, server discovery+binding, list & search, session
-  lifecycle, simplified lifecycle, subscriptions, hooks, service→harness
-  pushes, tool-server status lifecycle).
+  (remainder: 10 of 14 domains — tool/system notifications, per-tool session
+  binding, server discovery+binding, list & search, session lifecycle,
+  simplified lifecycle, subscriptions, hooks, service→harness pushes,
+  tool-server status lifecycle).
 
 ``from_wire`` / ``to_wire`` live on each module (instance method or module
 function); the barrel does **not** re-export them, mirroring the Rust
@@ -197,10 +206,14 @@ from minimax_code.tool_protocol.frames import (
     MetricsDonateParams,
     PingFrame,
     PongFrame,
+    RegisterServerParams,
+    RegisterToolParams,
     ToolCallParams,
     ToolCallProgressFrame,
     ToolCallResult,
     TracesDonateParams,
+    UnregisterServerParams,
+    UnregisterToolParams,
 )
 from minimax_code.tool_protocol.handshake import (
     PROTOCOL_VERSION,
@@ -394,4 +407,11 @@ __all__ = [
     "MetricsDonateParams",
     "PingFrame",
     "PongFrame",
+    # R94 — registration (params-as-DTO-wrapper consolidation: register /
+    # unregister tool / server). All 16 frames symbols travel the barrel;
+    # from_wire converters stay submodule-qualified, mirroring the crate.
+    "RegisterToolParams",
+    "RegisterServerParams",
+    "UnregisterToolParams",
+    "UnregisterServerParams",
 ]
