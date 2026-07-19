@@ -4427,3 +4427,81 @@ R59 把 reasoning_effort 的 IPC 契约（前端 types + mock + docs）铺好了
 ### Commit
 
 `feat(platform): R60 reasoning_effort frontend effort badge UI (fuse grok xai-grok-sampling-types)`
+
+## R61 — reasoning_effort 切换 IPC 后端写存储面（融合 grok xai-grok-sampling-types，新增 model.set_reasoning_effort handler + ModelPrefsDAO 持久化 + 回读暴露，闭合写入半边的存储接缝）
+
+> 锚定 R60（`76e1ed9`）。R53–R60 把 reasoning_effort 管道的**读取侧**完整铺通：catalog meta（R53 readers）→ R58 后端 enrich → R59 前端契约三同步 → R60 UI badge 展示。但 R60 的 badge 是**纯展示零写入**——用户看到 grok 模型「默认 high、可选 low/medium/high」却**无法切换**，因为切换需要一个全新的 **write-back IPC**（`model.set_reasoning_effort`）+ 后端持久化列 + DAO 写方法 + handler 验证。R60 在 YAGNI 边界里明确把这个「切换面」留给了「下一轮」。**本轮就是那一轮**：闭合写入半边的**存储接缝**——新增迁移 014（`model_prefs.reasoning_effort` 列）+ `ModelPrefsDAO.set_reasoning_effort` 写方法 + `model.set_reasoning_effort` IPC handler（严格校验 + 写入规范化）+ `model.list`/`model.get_current` **回读暴露**（前端无需单独往返即可回显选择）+ 11 个测试。**核心设计决策**：(1) **严格校验而非宽松丢弃**——`parse_effort_strict`（未知 token → `ValueError` → `-32602`）而非 `parse_effort_token`（未知 → `None` 静默），让 typo 干净报错而非存为垃圾；(2) **写入即规范化**——`canonical.as_str()` 把 `"max"` 别名落库为 `"xhigh"`（规范 wire token），读者无需 re-parse；(3) **空值 = 清除语义**——`None`/空白字符串不是错误，是「清除 override、恢复模型默认 effort」（pre-R61 行为），与 `set_current` 的非空校验刻意不同；(4) **回读暴露对称 R58**——R58 是 catalog-read（模型**支持**什么）注入 `model.list`，R61 是 prefs-read（用户**选了**什么）注入 `model.list`/`model.get_current`，两者并列字段、互不覆盖；(5) **拆分：本轮只做写存储表面 + IPC，不做运行时接线**——`rebuild_subagent_llm` 今天**不转发** effort 到 LLM 调用（grep 铁证：`_rebuild_subagent_llm` 构造 `MiniMaxClient` 时不读 effort），handler 里保留防御性 `rebuild_subagent_llm()` 调用仅为**预热接线 + 保持 client fresh**（镜像 `set_current`），**有效运行时效果留 R62**。
+
+### 本轮目标
+
+R60 把 UI badge 做成纯展示后，「切换 effort」就成了 reasoning_effort 管道最后一座未越的山头。但切换是 **write-back 到 agent 持久层** 的全新 IPC 面——它不能只加一个 handler，必须同时解决三件事：(1) **存哪里**——`model_prefs` 表当前只有 `current_model`/`provider_id`，没有 effort 列；(2) **怎么校验**——effort token 必须落在 R53 的规范集（none/minimal/low/medium/high/xhigh），`max` 别名要兑现；(3) **怎么回显**——前端切换后需要立即知道「当前选了什么」，不能等下一次 `model.list` 往返。本轮目标：闭合**写入半边的存储接缝**——迁移加列 + DAO 写方法 + handler（校验+规范化+持久化+回读）+ 测试。**严格边界（YAGNI + 轮次独立性）**：(1) **不做运行时接线**——存储的 effort 今天**不影响** LLM 调用（`_rebuild_subagent_llm` 不转发 effort），那是主 agent `AgentConfig.reasoning_effort`（R55 已存在的 config 字段）↔ 子 agent LLM 构造的运行时联动，是独立且更微妙的轮次，留 R62；(2) **不做前端 typedIPC/store/切换器 UI**——`web/src/types/ipc.ts` 加方法签名 + `modelStore` 加 effort 状态 + `ModelSelector` 加切换器，是前端轮次，留 R62；(3) **不修预先存在的 tsc/vitest 债务**（R59 stash 已证明 `client-pending-mode.test.ts:415` JsonRpcId null 与 `message-list.test.tsx` findByText 超时是预先存在）；(4) **零回归**——新列可空、无默认，所有现有行回填 `NULL`，未迁移的库行为不变。
+
+### 融合结论
+
+- ✅ **新增**：`agent/minimax_code/storage/migrations/014_model_prefs_reasoning_effort.py` —— `ALTER TABLE model_prefs ADD COLUMN reasoning_effort TEXT`（VERSION=14，`run(conn)` 调 `executescript`）。列**可空、无默认**：`NULL` = 无 override（pre-R61 行为），SQLite `ALTER TABLE ADD COLUMN` 自动给所有现有行回填 `NULL`——向后兼容零迁移数据。docstring 标注它是 R58 read-side seam（catalog meta → `model.list` enrich）的**对称写侧**：R58 透出「模型支持什么」，R61 持久化「用户选了什么」。
+- ✅ **改**：`agent/minimax_code/storage/dao/model_prefs.py` —— (1) `get_current()` SELECT 加 `reasoning_effort` 列，返回字典加 `reasoning_effort` 键（`None` 兜底），Row 解析用 `hasattr(row, "keys") and "reasoning_effort" in row.keys()` 兼容 sqlite3.Row 与 tuple；返回类型 `dict[str, str]` → `dict[str, Any]`（因 effort 可 None）；(2) 新增 `async set_reasoning_effort(effort: str | None) -> dict[str, Any]`——`async with self._db.transaction()` + `UPDATE model_prefs SET reasoning_effort = ?, updated_at = ? WHERE id = ?`，`stored = str(effort) if effort else None`（空字符串归一为 None），返回 `get_state()`（镜像 `set_current` 的「写 + touch updated_at + 返回完整行」契约）；(3) `get_current_sync` 同步读取侧镜像（加列 + 返回键）；(4) 新增 `set_reasoning_effort_sync` 镜像异步路径（CLI/脚本）；(5) `__all__` 加 `set_reasoning_effort_sync`。
+- ✅ **改**：`agent/minimax_code/ipc/handlers_model.py` —— (1) 导入 `parse_effort_strict`（R53 严格解析器）；(2) 模块 docstring 的 Endpoints/Validation 章节补 `model.set_reasoning_effort` 语义（严格校验 + `max`→`xhigh` 规范化 + None 清除）；(3) `handle_model_list` 读取 pref 的 `reasoning_effort`，响应从 `{models, current}` → `{models, current, reasoning_effort}`（回读暴露）；(4) `handle_model_get_current` 响应从 `{model}` → `{model, reasoning_effort}`；(5) 新增 `handle_model_set_reasoning_effort` + 注册——`check_params(expected_keys=set())` → 取 `params.get("reasoning_effort")` → None/空白→清除；非空则 `parse_effort_strict`（ValueError→`HandlerError(INVALID_PARAMS, ...)` 即 `-32602`）→ `canonical.as_str()` 规范化落库 → `dao.set_reasoning_effort(effort)` → 防御性 `rebuild_subagent_llm()`（try/except 吞错，注释标明今天无运行时效果、为 R62 预热）→ `ctx.reply({ok, reasoning_effort})`。
+- ✅ **改**：`agent/tests/test_model.py` —— (1) 导入加 `set_reasoning_effort_sync`；(2) **修复 2 个被新字段打破的精确断言**——`test_get_current_default` 与 `test_set_current_persists` 原本 `pref == {"model_id": ..., "provider_id": ...}` 精确字典 `==`，现在返回多了 `reasoning_effort` 键 → 主动转为键检查（`assert pref["model_id"] == ...` / `assert pref.get("reasoning_effort") is None`），既适配新结构又显式验证默认 None；(3) 新增 **4 个 DAO 测试**（默认 None / 往返持久化 / None 清除 / 独立于模型选择）；(4) 新增 **1 个 sync 测试**（`set_reasoning_effort_sync` 往返）；(5) 新增 **6 个 IPC 测试**（持久化 / `max`→`xhigh` 规范化 / None 清除 / 大小写不敏感 / 未知 token 拒绝 `-32602` / 缺 key 清除）。错误断言模式：`with pytest.raises(RuntimeError) as ei: ...; err = ei.value.args[0]; assert isinstance(err, dict); assert err.get("code") == -32602`（具体异常类型，符合 B017）。
+- ✅ **改**：`docs/ipc-contract.md` —— (1) 方法表第 221 行合并 `model.set_reasoning_effort` 进 `req/res` 行；(2) R58 小节后追加 `### model.set_reasoning_effort — reasoning-effort override write-back (R61)` 章节——请求/响应 JSON 示例 + 语义（严格校验 / `-32602` 拒绝 / `max`→`xhigh` 规范化 / null 清除 / 独立于模型）+ 回读（`model.list`/`model.get_current` 增字段）+ 存储（迁移 014，可空，运行时效果延后 R62）。
+- ❌ **放弃**：**不做运行时接线** —— `_rebuild_subagent_llm` 构造 `MiniMaxClient` 时**不读**存储的 effort、不转发给 `stream_chat`；主 agent `AgentConfig.reasoning_effort`（R55）也**不从**存储回填。grep 铁证：存储的 effort 今天**只写不读运行时**。这是独立且需谨慎的轮次（主 agent config ↔ 子 agent LLM 构造的双路径），留 R62。
+- ❌ **放弃**：**不做前端 typedIPC/store/切换器 UI** —— `web/src/types/ipc.ts` 加 `model.set_reasoning_effort` 签名 + `mockHandle` 覆盖 + `modelStore` 加 effort 状态 + `ModelSelector` 把 R60 badge 升级为可点切换器，是前端轮次，留 R62。
+- ❌ **放弃**：**不修复预先存在前端债务** —— `client-pending-mode.test.ts:415` JsonRpcId null（R59 stash 验证铁证）+ `message-list.test.tsx` findByText 超时；R61 纯后端轮次未触碰前端，零新增债务。留独立轮次。
+
+### 交付
+
+- `agent/minimax_code/storage/migrations/014_model_prefs_reasoning_effort.py`（新建）— `ALTER TABLE model_prefs ADD COLUMN reasoning_effort TEXT`（VERSION=14，可空无默认，docstring 标注 R58 对称写侧）。
+- `agent/minimax_code/storage/dao/model_prefs.py`（改 5 处）— `get_current()` 读列+返回键（Row/tuple 兼容）；新增 `set_reasoning_effort` async 写方法；`get_current_sync` 镜像；新增 `set_reasoning_effort_sync`；`__all__` 补项。返回类型 `dict[str,str]`→`dict[str,Any]`。
+- `agent/minimax_code/ipc/handlers_model.py`（改 5 处）— 导入 `parse_effort_strict`；docstring Endpoints/Validation 章节；`handle_model_list` 回读 `reasoning_effort`；`handle_model_get_current` 回读 `reasoning_effort`；新增 `handle_model_set_reasoning_effort` + 注册。
+- `agent/tests/test_model.py`（改）— 导入 + 2 个精确断言修复（键检查）+ 4 DAO 测试 + 1 sync 测试 + 6 IPC 测试（共 11 新增）。
+- `docs/ipc-contract.md`（改 2 处）— 方法表 + R61 write-back 章节。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+### 映射决策树（本轮 = 写入半边的存储接缝 + 严格校验 vs 宽松丢弃 + 写入即规范化 + 回读对称 R58 + 拆分 R62 运行时接线）
+
+本轮是 R58 catalog-read 消费面的**对称写侧**。决策树无新增枚举——复用 R53 的 `ReasoningEffort` 规范集与 `parse_effort_strict` 严格解析器。**新增的是「写入存储接缝」+「严格校验语义」+「写入即规范化」+「回读暴露」四条执行决策**。
+
+**reasoning_effort 管道全链路矩阵（R53–R61，标注本轮闭合段）**：
+
+| 链路半边 | 轮次 | 段 | 方向 | R61 角色 |
+|---|---|---|---|---|
+| **写入半边（config→wire）** | R53 | 类型层 `ReasoningEffort` + `parse_effort_*` | 类型 | 复用 `parse_effort_strict` |
+| | R54 | `stream_chat` 接收 effort | 下游传输 | 不动 |
+| | R55 | `AgentConfig.reasoning_effort` + core→client | 上游半段 | **R62 接线目标** |
+| | R56 | OpenAI wire emit | 线缆 | 不动 |
+| | R57 | Anthropic wire emit | 线缆 | 不动 |
+| **读取半边（catalog→IPC→UI）** | R58 | 后端 enrich `model.list` | catalog-read | 不动（R61 prefs-read 与之并列） |
+| | R59 | 前端契约 types/mock/docs | 契约 | 不动 |
+| | R60 | UI badge 纯展示 | UI-read | 不动（R62 升级为切换器） |
+| **写入半边（prefs→存储）** | **R61** | **迁移 014 + DAO 写 + handler + 回读** | **prefs-write 存储** | **本轮闭合** |
+| | R62（未来） | `rebuild_subagent_llm` 转发 + 前端切换器 | 运行时接线 | 留下一轮 |
+
+**坑 1（自发现，已预判修复）**：**严格校验 vs 宽松丢弃的语义选择**。R53 提供两个解析器：`parse_effort_token`（宽松：未知 token → `None`，`max` → XHIGH）与 `parse_effort_strict`（严格：未知 token → `ValueError` 列出合法集）。第一直觉可能是宽松（容错好），但**写入路径必须严格**——如果用户/前端传了 `"hgh"`（typo），宽松会把 `None` 当合法值存下（清除 override），用户以为设了 high 实际没设，**静默错误最难排查**。**预判正确**：选 `parse_effort_strict`，`ValueError` → `HandlerError(INVALID_PARAMS=-32602, str(exc))`，前端拿到清晰错误可提示「合法值: none, minimal, low, medium, high, xhigh, max」。`max` 别名仍兑现（strict 也认 `max`→XHIGH），只是落库前 `canonical.as_str()` 归一为 `"xhigh"`。
+
+**坑 2（自发现，已预判修复）**：**写入即规范化——`max` 别名存为 `xhigh` 而非 `max`**。用户传 `"max"`（grok CLI 别名），`parse_effort_strict("max")` → `ReasoningEffort.XHIGH`，然后 `canonical.as_str()` = `"xhigh"`（规范 wire token）。**预判正确**：落库 `"xhigh"` 而非 `"max"`，读者（`model.list` 回读、R62 运行时）拿到的是规范 token，**无需 re-parse 别名**——单一规范化点在写入侧，消除读取侧的分支负担。这与 R58 enrich 的分层一致（catalog 层存规范层级，emit seam 在 R56/R57 独立持有 wire 映射）。
+
+**坑 3（自发现，已预判修复）**：**空值 = 清除语义，与 `set_current` 的非空校验刻意不同**。`set_current` 要求 `model_id` 非空（`INVALID_PARAMS` if empty），但 `set_reasoning_effort` 的 `None`/空白**不是错误**——它是「清除 override、恢复模型默认 effort」。第一直觉可能是「也要求非空」，但 effort override 是**可选的**（模型自己有默认 effort，R58 catalog 已透出），用户应能「取消选择」回到默认。**预判正确**：handler 里 `raw = params.get("reasoning_effort")` → None 走清除分支；非空则 `str(raw).strip() or None`（空白归一 None 也清除）；只有**非空且解析失败**才报 `-32602`。DAO 层 `stored = str(effort) if effort else None` 双保险。
+
+**坑 4（自发现，已预判修复）**：**`get_current()` 返回类型变更打破精确字典断言**。原 `get_current()` 返回 `dict[str, str]`（`{model_id, provider_id}`），两个旧测试 `test_get_current_default`/`test_set_current_persists` 用 `pref == {"model_id": ..., "provider_id": ...}` 精确 `==`。加了 `reasoning_effort` 键后这个 `==` 必然失败。**预判正确**：主动把两个断言从精确字典 `==` 转为键检查（`assert pref["model_id"] == ...` + `assert pref.get("reasoning_effort") is None`），既适配新结构又**显式验证默认值是 None**（多一层断言价值）。返回类型 `dict[str, str]` → `dict[str, Any]`（effort 可 None，str 类型不够）。
+
+**坑 5（自发现，拆分决策）**：**`rebuild_subagent_llm()` 调用今天无运行时效果——保留它为 R62 预热**。`set_current` 调 `rebuild_subagent_llm()` 是因为切换模型后子 agent LLM 要重建。`set_reasoning_effort` 也调它看似多余（effort 今天不流入 LLM），但**预判保留**：(1) 镜像 `set_current` 的调用形状，保持两个 setter 的结构对称；(2) `rebuild_subagent_llm` 内部重建 client，保持 client fresh 无害；(3) **为 R62 预热**——R62 让 `_rebuild_subagent_llm` 读存储 effort 并转发后，这个调用**立即生效**，无需再改 handler。try/except 吞错确保即使 rebuild 失败也不影响持久化（存储是 source of truth，rebuild 是衍生）。注释明确标注「No-op today... kept here to prime that wiring」。
+
+### 验证
+
+- `cd agent && uv run pytest tests/test_model.py -q` → **29 passed**（含 R61 新增 11 测试：4 DAO + 1 sync + 6 IPC；2 个断言修复后的旧测试仍绿）。
+- `cd agent && uv run pytest tests/test_storage.py -q` → **27 passed**（迁移 014 在 discover_migrations 自动发现链路里无回归；VERSION=14 与文件名数字一致，无 RuntimeError）。
+- `cd agent && uv run ruff check minimax_code/storage/migrations/014_model_prefs_reasoning_effort.py minimax_code/storage/dao/model_prefs.py minimax_code/ipc/handlers_model.py tests/test_model.py` → **All checks passed!**（R61 新增/编辑代码零 ruff 错误；E/F/W/I/B/UP 规则集全过；行长度 100）。
+- **零回归**：迁移列可空无默认，所有现有行回填 `NULL`；`get_current()` 的 `reasoning_effort` 默认 None = pre-R61 行为；未迁移的库（`MINIMAX_CODE_DATA_DIR` 临时库）首次启动自动跑 014，无数据丢失。
+
+### YAGNI 边界
+
+- ❌ **不做运行时接线** —— `_rebuild_subagent_llm` 不转发 effort 到 `stream_chat`；主 agent `AgentConfig.reasoning_effort`（R55）不从存储回填。存储的 effort 今天**只写不读运行时**（grep 铁证）。主 agent config ↔ 子 agent LLM 双路径联动留 R62。
+- ❌ **不做前端 typedIPC/store/切换器 UI** —— `types/ipc.ts` 方法签名 + `mockHandle` 覆盖 + `modelStore` effort 状态 + `ModelSelector` 切换器，前端轮次留 R62。
+- ❌ **不修复预先存在前端债务** —— `client-pending-mode.test.ts:415` JsonRpcId null + `message-list.test.tsx` findByText 超时（R59 stash 验证铁证），与 R61 无关，留独立轮次。
+- ❌ **不让 reasoning_effort 流入 done chunk 元数据** —— write 路径观察点，与 R61 的 prefs-write 存储半边正交，留独立轮次。
+- ❌ **不迁移 sampling-types crate 其余类型**（ChatCompletionRequest/SamplingConfig/ToolChoice/Role/Usage）—— 继续聚焦 ReasoningEffort。
+- ❌ **不给 `model.set_reasoning_effort` 加 model 关联校验** —— 不校验「当前模型是否 supports_reasoning_effort」（用户可能对一个不支持的模型设 effort）。effort override 是**全局用户偏好**，独立于模型（docstring 明示），R62 运行时接线时若模型不支持可降级为忽略，但存储层不该拒绝——保持存储的模型无关性。
+- ❌ **不做迁移 014 的回滚** —— 前向迁移策略（无回滚），与 001–013 一致。
+
+### Commit
+
+`feat(platform): R61 reasoning_effort set IPC backend storage layer (fuse grok xai-grok-sampling-types)`

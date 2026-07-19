@@ -32,6 +32,7 @@ from minimax_code.storage.dao.model_prefs import (
     ModelPrefsDAO,
     get_current_sync,
     set_current_sync,
+    set_reasoning_effort_sync,
 )
 from minimax_code.storage.dao.providers import ProviderDAO
 from minimax_code.storage.db import AsyncDatabase, Database, make_temp_database_path
@@ -134,6 +135,24 @@ class TestModelPrefsDAO:
             assert get_current_sync(sync_db)["model_id"] == "MiniMax-M3-fast"
 
     @pytest.mark.asyncio
+    async def test_sync_reasoning_effort_round_trip(self, db_path: Path) -> None:
+        """The sync effort helper round-trips through the same row the
+        async DAO reads — confirming the sync and async paths share the
+        new column (R61)."""
+        async_db = AsyncDatabase(db_path)
+        await async_db.connect()
+        await async_db.migrate()
+        dao = ModelPrefsDAO(async_db)
+        await dao.set_reasoning_effort("high")
+        await async_db.close()
+
+        with Database(db_path) as sync_db:
+            assert get_current_sync(sync_db)["reasoning_effort"] == "high"
+            row = set_reasoning_effort_sync(sync_db, None)
+            assert row["reasoning_effort"] is None
+            assert get_current_sync(sync_db)["reasoning_effort"] is None
+
+    @pytest.mark.asyncio
     async def test_concurrent_set_no_corruption(
         self, prefs_dao: ModelPrefsDAO
     ) -> None:
@@ -152,6 +171,57 @@ class TestModelPrefsDAO:
         state = await prefs_dao.get_state()
         assert state["id"] == 1
         assert state["current_model"] == final["model_id"]
+
+    # --- R61: reasoning_effort write-side storage surface -------------------
+    #
+    # Symmetric to R58's read-side enrich (catalog meta → model.list).
+    # The DAO persists the user's effort override verbatim and does *not*
+    # own token validation/canonicalisation — that's the IPC layer's job.
+
+    @pytest.mark.asyncio
+    async def test_reasoning_effort_defaults_none(
+        self, prefs_dao: ModelPrefsDAO
+    ) -> None:
+        """Fresh DB after migrate() should report reasoning_effort == None.
+
+        Migration 014 back-fills NULL for the pre-existing seed row, so the
+        pre-R61 "no override" state is the default — backward compatible."""
+        current = await prefs_dao.get_current()
+        assert current["reasoning_effort"] is None
+
+    @pytest.mark.asyncio
+    async def test_set_reasoning_effort_round_trip(
+        self, prefs_dao: ModelPrefsDAO
+    ) -> None:
+        await prefs_dao.set_reasoning_effort("high")
+        assert (await prefs_dao.get_current())["reasoning_effort"] == "high"
+        # Overwrite works.
+        await prefs_dao.set_reasoning_effort("xhigh")
+        assert (await prefs_dao.get_current())["reasoning_effort"] == "xhigh"
+
+    @pytest.mark.asyncio
+    async def test_set_reasoning_effort_clears(
+        self, prefs_dao: ModelPrefsDAO
+    ) -> None:
+        """None (or empty) clears the override back to the no-override state."""
+        await prefs_dao.set_reasoning_effort("low")
+        assert (await prefs_dao.get_current())["reasoning_effort"] == "low"
+        await prefs_dao.set_reasoning_effort(None)
+        assert (await prefs_dao.get_current())["reasoning_effort"] is None
+
+    @pytest.mark.asyncio
+    async def test_reasoning_effort_independent_of_model(
+        self, prefs_dao: ModelPrefsDAO
+    ) -> None:
+        """The two columns are independent: setting the model must not
+        clobber the effort override, and vice versa."""
+        await prefs_dao.set_current("MiniMax-Code")
+        await prefs_dao.set_reasoning_effort("high")
+        # Re-setting the model leaves the effort intact.
+        await prefs_dao.set_current(DEFAULT_MODEL)
+        current = await prefs_dao.get_current()
+        assert current["model_id"] == DEFAULT_MODEL
+        assert current["reasoning_effort"] == "high"
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +298,9 @@ class TestModelIPC:
     ) -> None:
         client = _make_client_with_model_handlers(prefs_dao)
         result = await client.request("model.get_current", {})
-        assert result == {"model": DEFAULT_MODEL}
+        assert result["model"] == DEFAULT_MODEL
+        # R61: reasoning_effort defaults to None (no override stored yet).
+        assert result["reasoning_effort"] is None
 
     @pytest.mark.asyncio
     async def test_set_current_persists(
@@ -245,7 +317,8 @@ class TestModelIPC:
         assert (await prefs_dao.get_current())["model_id"] == "MiniMax-Code"
         # get_current also reports it.
         get_result = await client.request("model.get_current", {})
-        assert get_result == {"model": "MiniMax-Code"}
+        assert get_result["model"] == "MiniMax-Code"
+        assert get_result["reasoning_effort"] is None
 
     @pytest.mark.asyncio
     async def test_set_current_rejects_unknown_model(
@@ -292,6 +365,113 @@ class TestModelIPC:
         # The error object is a dict; check the code.
         assert isinstance(err, dict)
         assert err.get("code") == -32602
+
+    # --- R61: reasoning_effort write-side IPC (model.set_reasoning_effort) ---
+    #
+    # The handler validates tokens via the R53 reasoning vocabulary
+    # (``parse_effort_strict``), canonicalises the ``max`` alias of
+    # ``xhigh`` on write, persists the override, and surfaces it back via
+    # ``model.list`` / ``model.get_current``. This is the write companion
+    # to R58's read-side enrich — together they let the UI both show what
+    # a model supports (R58) and what the user picked (R61 read-back).
+
+    @pytest.mark.asyncio
+    async def test_set_reasoning_effort_persists(
+        self, prefs_dao: ModelPrefsDAO
+    ) -> None:
+        client = _make_client_with_model_handlers(prefs_dao)
+        result = await client.request(
+            "model.set_reasoning_effort", {"reasoning_effort": "high"}
+        )
+        assert result["ok"] is True
+        assert result["reasoning_effort"] == "high"
+        # The DAO agrees.
+        assert (await prefs_dao.get_current())["reasoning_effort"] == "high"
+        # model.list echoes it back (read-back for the UI switcher).
+        listing = await client.request("model.list", {})
+        assert listing["reasoning_effort"] == "high"
+        # get_current too.
+        cur = await client.request("model.get_current", {})
+        assert cur["reasoning_effort"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_set_reasoning_effort_canonicalises_max(
+        self, prefs_dao: ModelPrefsDAO
+    ) -> None:
+        """The ``max`` CLI/UX alias of ``xhigh`` is honoured on input
+        but stored as the canonical ``xhigh`` wire token (grok parity)."""
+        client = _make_client_with_model_handlers(prefs_dao)
+        result = await client.request(
+            "model.set_reasoning_effort", {"reasoning_effort": "max"}
+        )
+        assert result["ok"] is True
+        assert result["reasoning_effort"] == "xhigh"
+
+    @pytest.mark.asyncio
+    async def test_set_reasoning_effort_clears_on_none(
+        self, prefs_dao: ModelPrefsDAO
+    ) -> None:
+        """None (or empty/whitespace) clears the override back to the
+        no-override default (pre-R61 state)."""
+        client = _make_client_with_model_handlers(prefs_dao)
+        await client.request(
+            "model.set_reasoning_effort", {"reasoning_effort": "high"}
+        )
+        result = await client.request(
+            "model.set_reasoning_effort", {"reasoning_effort": None}
+        )
+        assert result["ok"] is True
+        assert result["reasoning_effort"] is None
+        # Empty/whitespace string also clears.
+        await client.request(
+            "model.set_reasoning_effort", {"reasoning_effort": "high"}
+        )
+        result = await client.request(
+            "model.set_reasoning_effort", {"reasoning_effort": "  "}
+        )
+        assert result["reasoning_effort"] is None
+
+    @pytest.mark.asyncio
+    async def test_set_reasoning_effort_case_insensitive(
+        self, prefs_dao: ModelPrefsDAO
+    ) -> None:
+        """Tokens parse case-insensitively (grok FromStr parity)."""
+        client = _make_client_with_model_handlers(prefs_dao)
+        result = await client.request(
+            "model.set_reasoning_effort", {"reasoning_effort": "HIGH"}
+        )
+        assert result["reasoning_effort"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_set_reasoning_effort_rejects_unknown(
+        self, prefs_dao: ModelPrefsDAO
+    ) -> None:
+        """An unknown token surfaces as -32602 INVALID_PARAMS (not stored
+        as garbage) — the frontend can flag a typo."""
+        client = _make_client_with_model_handlers(prefs_dao)
+        with pytest.raises(RuntimeError) as ei:
+            await client.request(
+                "model.set_reasoning_effort", {"reasoning_effort": "turbo"}
+            )
+        err = ei.value.args[0]
+        assert isinstance(err, dict)
+        assert err.get("code") == -32602
+        # Nothing was stored.
+        assert (await prefs_dao.get_current())["reasoning_effort"] is None
+
+    @pytest.mark.asyncio
+    async def test_set_reasoning_effort_missing_key_clears(
+        self, prefs_dao: ModelPrefsDAO
+    ) -> None:
+        """Calling with no reasoning_effort key clears the override
+        (a missing key is treated as None, mirroring set_current's model)."""
+        client = _make_client_with_model_handlers(prefs_dao)
+        await client.request(
+            "model.set_reasoning_effort", {"reasoning_effort": "high"}
+        )
+        result = await client.request("model.set_reasoning_effort", {})
+        assert result["ok"] is True
+        assert result["reasoning_effort"] is None
 
     # --- R58: reasoning-effort meta enrichment (first consumer of R53 readers) ---
     #

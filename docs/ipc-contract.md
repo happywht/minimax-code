@@ -218,7 +218,7 @@ on the next `readline() == ""`.
 | `agent.list` / `agent.spawn_subagent` | req/res | Sub-agent list and spawn. `agent.spawn_subagent` is keyed by `name` (`agents.name`); clients may also pass legacy `agent_id`, and the backend resolves by name first, then id. |
 | `mobile.*`                 | req/res   | Phase 2.                                            |
 | `permission.*`             | req/res   | Phase 1.4 (ui-shell).                              |
-| `model.list` / `model.set_current` | req/res | Dynamic model list + current selection; `model.list` entries may carry optional reasoning-effort meta (R58). |
+| `model.list` / `model.get_current` / `model.set_current` / `model.set_reasoning_effort` | req/res | Dynamic model list + current selection + reasoning-effort override. `model.list` entries may carry optional reasoning-effort meta (R58); the `model.list` and `model.get_current` responses echo the user's persisted `reasoning_effort` override (R61 read-back). |
 | `plugins.list` / `plugins.info` / `plugins.enable` / `plugins.disable` / `plugins.reload` | req/res | Platform pillar #3 — discover, inspect, toggle, and hot-reload runtime plugins (fail-open discovery; runtime enable override is in-memory). |
 
 ### `model.list` response — reasoning-effort fields (R58)
@@ -252,6 +252,50 @@ existing MiniMax model passes through byte-identically):
   Anthropic `"max"` / OpenAI `"high"` is a separate wire layer, R56/R57).
 * `reasoning_effort_options`: the selectable menu — only when the catalog
   `reasoningEfforts` array yields a non-empty list.
+
+### `model.set_reasoning_effort` — reasoning-effort override write-back (R61)
+
+The write companion to the R58 read-side enrich above. When the frontend
+persists the user's reasoning-effort choice it calls:
+
+```json
+{"method":"model.set_reasoning_effort","params":{"reasoning_effort":"high"}}
+```
+
+Response:
+
+```json
+{"ok": true, "reasoning_effort": "high"}
+```
+
+Semantics:
+
+* `reasoning_effort` is validated strictly via the R53 reasoning
+  vocabulary (`parse_effort_strict`). An unknown token surfaces as
+  `-32602 INVALID_PARAMS` (not stored as garbage) so the frontend can
+  flag a typo. The canonical tokens are `none`, `minimal`, `low`,
+  `medium`, `high`, `xhigh`; the `max` CLI/UX alias is honoured and
+  **canonicalised on write** (`"max"` is stored as `"xhigh"`).
+* `null` (or an empty/whitespace string, or a missing key) **clears**
+  the override — the next turn falls back to the model's own default
+  effort (the pre-R61 state).
+* The override is independent of the model selection: switching models
+  leaves the stored effort intact, and vice versa.
+
+Read-back — the persisted override is echoed alongside the model
+selection wherever the current preference is read, so the UI can show
+the chosen effort without a separate round-trip:
+
+* `model.list` response gains a top-level `reasoning_effort` field
+  (next to `current`).
+* `model.get_current` response gains a `reasoning_effort` field (next to
+  `model`). Both are `null` when no override is stored.
+
+Storage: the override lives in a new nullable `model_prefs.
+reasoning_effort` column (migration 014; back-filled `NULL` for existing
+rows — backward compatible). The runtime effect — forwarding the stored
+effort into the LLM call via `rebuild_subagent_llm` — is deferred to a
+later round; this contract only covers persistence + read-back.
 
 Session records may include workspace metadata:
 

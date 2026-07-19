@@ -9,9 +9,10 @@ instance for reuse on subsequent requests — same pattern as
 
 Endpoints
 ---------
-``model.list``         -> ``{"models": [...]}``                 (dynamic from providers)
-``model.get_current``  -> ``{"model": "..."}``                  (read persistence)
-``model.set_current``  -> ``{"ok": true, "model": "..."}``      (write, validated)
+``model.list``                  -> ``{"models": [...], "current": ..., "reasoning_effort": ...}`` (dynamic from providers + prefs)
+``model.get_current``           -> ``{"model": "...", "reasoning_effort": ...}`` (read persistence)
+``model.set_current``           -> ``{"ok": true, "model": "..."}``      (write, validated)
+``model.set_reasoning_effort``  -> ``{"ok": true, "reasoning_effort": ...}`` (write effort override, validated)
 
 Model list
 ----------
@@ -27,6 +28,14 @@ Validation
 ``set_current`` rejects unknown model names with ``-32602``
 (``INVALID_PARAMS``) so the frontend can show a "model no longer
 available" message without crashing.
+
+``set_reasoning_effort`` rejects unknown effort tokens with ``-32602``
+too — the token is parsed strictly via the R53 reasoning vocabulary
+(``parse_effort_strict``), so a typo surfaces as a clean error rather
+than being stored as garbage. The ``max`` alias of ``xhigh`` is honoured
+and canonicalised on write (``"max"`` is stored as ``"xhigh"``); passing
+``None`` (or an empty/whitespace string) clears the override, reverting
+to the model's own default effort.
 """
 
 from __future__ import annotations
@@ -36,7 +45,7 @@ import logging
 import os
 from typing import Any
 
-from ..agent.reasoning import enrich_model_reasoning_meta
+from ..agent.reasoning import enrich_model_reasoning_meta, parse_effort_strict
 from ..models import default_model_ids
 from .handler_utils import HandlerError, check_params
 from .protocol import (
@@ -234,13 +243,22 @@ def register_model_handlers(
                 logger.exception("provider_dao.list_models failed; returning []")
             # Best-effort: read current selection from DB.
             current: str | None = None
+            effort: str | None = None
             try:
                 dao_obj = await _ensure_dao()
                 pref = await dao_obj.get_current()
                 current = pref["model_id"] if isinstance(pref, dict) else pref
+                if isinstance(pref, dict):
+                    effort = pref.get("reasoning_effort")
             except HandlerError:
                 pass  # DB not ready yet — return list without current.
-            await ctx.reply({"models": models, "current": current})
+            # R61: surface the persisted reasoning-effort override so the
+            # frontend can echo the current choice in the effort switcher
+            # (write-side read-back; symmetric to the R58 read-side meta
+            # already attached to each model above).
+            await ctx.reply(
+                {"models": models, "current": current, "reasoning_effort": effort}
+            )
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception:  # pragma: no cover — defensive
@@ -253,7 +271,8 @@ def register_model_handlers(
             check_params(params, expected_keys=set())
             pref = await dao_obj.get_current()
             model = pref["model_id"] if isinstance(pref, dict) else pref
-            await ctx.reply({"model": model})
+            effort = pref.get("reasoning_effort") if isinstance(pref, dict) else None
+            await ctx.reply({"model": model, "reasoning_effort": effort})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception:  # pragma: no cover — defensive
@@ -309,9 +328,58 @@ def register_model_handlers(
             logger.exception("model.set_current failed")
             await ctx.reply_error(INTERNAL_ERROR, "model.set_current failed")
 
+    async def handle_model_set_reasoning_effort(params: Any, ctx: Context) -> None:
+        try:
+            dao_obj = await _ensure_dao()
+            check_params(params, expected_keys=set())
+            raw = params.get("reasoning_effort")
+            if raw is None:
+                effort: str | None = None
+            else:
+                effort = str(raw).strip() or None
+                if effort is not None:
+                    # Validate the token against the R53 canonical set. The
+                    # strict parser honours the ``max`` alias of ``xhigh``
+                    # and raises ValueError listing the valid tokens; we
+                    # surface that as -32602 so the frontend can flag a
+                    # typo rather than storing garbage. ``None`` / empty
+                    # is *not* an error: it clears the override (revert to
+                    # the model's own default effort — the pre-R61 state).
+                    try:
+                        canonical = parse_effort_strict(effort)
+                    except ValueError as exc:
+                        raise HandlerError(
+                            INVALID_PARAMS,
+                            str(exc),
+                        ) from exc
+                    # Canonicalise on write so the stored value is always
+                    # the wire token (``"xhigh"``, never the ``"max"``
+                    # alias) — readers need no re-parse later.
+                    effort = canonical.as_str()
+            await dao_obj.set_reasoning_effort(effort)
+            # Rebuild so a later round's runtime effect picks up the new
+            # effort on the next turn. No-op today: ``_rebuild_subagent_llm``
+            # does not yet forward reasoning_effort to the LLM call — kept
+            # here to prime that wiring and keep the client fresh, mirroring
+            # ``set_current``'s rebuild.
+            try:
+                from ..app import rebuild_subagent_llm
+                await rebuild_subagent_llm()
+            except Exception:
+                logger.debug(
+                    "rebuild_subagent_llm after set_reasoning_effort failed; continuing"
+                )
+            await ctx.reply({"ok": True, "reasoning_effort": effort})
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception:  # pragma: no cover — defensive
+            logger.exception("model.set_reasoning_effort failed")
+            await ctx.reply_error(INTERNAL_ERROR, "model.set_reasoning_effort failed")
+
     server.register("model.list", handle_model_list)
     server.register("model.get_current", handle_model_get_current)
     server.register("model.set_current", handle_model_set_current)
+    server.register("model.set_reasoning_effort", handle_model_set_reasoning_effort)
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -56,27 +56,40 @@ class ModelPrefsDAO:
     def __init__(self, db) -> None:  # type: ignore[no-untyped-def]
         self._db = db
 
-    async def get_current(self) -> dict[str, str]:
-        """Return the user's currently-selected model and provider.
+    async def get_current(self) -> dict[str, Any]:
+        """Return the user's currently-selected model, provider, and effort override.
 
-        Returns ``{"model_id": ..., "provider_id": ...}``.
-        Falls back to defaults if the row is absent.
+        Returns ``{"model_id": ..., "provider_id": ..., "reasoning_effort": ...}``.
+        ``reasoning_effort`` is ``None`` when no override is stored (the
+        pre-R61 default — use the model's own effort). Falls back to
+        defaults if the row is absent.
         """
         row = await self._db.fetchone(
-            "SELECT current_model, provider_id FROM model_prefs WHERE id = ?",
+            "SELECT current_model, provider_id, reasoning_effort "
+            "FROM model_prefs WHERE id = ?",
             (_PK,),
         )
         if row is None:
-            return {"model_id": DEFAULT_MODEL, "provider_id": "builtin-minimax"}
+            return {
+                "model_id": DEFAULT_MODEL,
+                "provider_id": "builtin-minimax",
+                "reasoning_effort": None,
+            }
         model = row["current_model"] if hasattr(row, "keys") else row[0]
         provider = (
             row["provider_id"]
             if hasattr(row, "keys") and "provider_id" in (row.keys() if hasattr(row, "keys") else [])
             else "builtin-minimax"
         )
+        effort = (
+            row["reasoning_effort"]
+            if hasattr(row, "keys") and "reasoning_effort" in (row.keys() if hasattr(row, "keys") else [])
+            else None
+        )
         model = str(model) if model else DEFAULT_MODEL
         provider = str(provider) if provider else "builtin-minimax"
-        return {"model_id": model, "provider_id": provider}
+        effort = str(effort) if effort else None
+        return {"model_id": model, "provider_id": provider, "reasoning_effort": effort}
 
     async def get_state(self) -> dict[str, Any]:
         """Return the full ``{id, current_model, updated_at}`` row.
@@ -117,6 +130,26 @@ class ModelPrefsDAO:
             )
         return await self.get_state()
 
+    async def set_reasoning_effort(self, effort: str | None) -> dict[str, Any]:
+        """Persist a reasoning-effort override; return the updated row.
+
+        ``effort`` is stored verbatim — the IPC layer owns token
+        validation (and canonicalises the ``max`` alias of ``xhigh``
+        before reaching here). ``None`` clears the override so the
+        next turn falls back to the model's own default effort
+        (the pre-R61 behaviour). Mirrors :meth:`set_current`'s shape
+        (write + touch ``updated_at`` + return full row) so the
+        caller gets a uniform "what changed" response.
+        """
+        stored = str(effort) if effort else None
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                "UPDATE model_prefs SET reasoning_effort = ?, "
+                "updated_at = ? WHERE id = ?",
+                (stored, now_iso(), _PK),
+            )
+        return await self.get_state()
+
 
 # ---------------------------------------------------------------------------
 # Sync helpers (used by ad-hoc CLI / scripts / tests that don't want
@@ -124,23 +157,34 @@ class ModelPrefsDAO:
 # ---------------------------------------------------------------------------
 
 
-def get_current_sync(db) -> dict[str, str]:  # type: ignore[no-untyped-def]
-    """Sync helper — read the current model + provider from a stdlib ``Database``."""
+def get_current_sync(db) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+    """Sync helper — read the current model + provider + effort from a stdlib ``Database``."""
     row = db.fetchone(
-        "SELECT current_model, provider_id FROM model_prefs WHERE id = ?",
+        "SELECT current_model, provider_id, reasoning_effort "
+        "FROM model_prefs WHERE id = ?",
         (_PK,),
     )
     if row is None:
-        return {"model_id": DEFAULT_MODEL, "provider_id": "builtin-minimax"}
+        return {
+            "model_id": DEFAULT_MODEL,
+            "provider_id": "builtin-minimax",
+            "reasoning_effort": None,
+        }
     model = row["current_model"] if hasattr(row, "keys") else row[0]
     provider = (
         row["provider_id"]
         if hasattr(row, "keys") and "provider_id" in (row.keys() if hasattr(row, "keys") else [])
         else "builtin-minimax"
     )
+    effort = (
+        row["reasoning_effort"]
+        if hasattr(row, "keys") and "reasoning_effort" in (row.keys() if hasattr(row, "keys") else [])
+        else None
+    )
     model = str(model) if model else DEFAULT_MODEL
     provider = str(provider) if provider else "builtin-minimax"
-    return {"model_id": model, "provider_id": provider}
+    effort = str(effort) if effort else None
+    return {"model_id": model, "provider_id": provider, "reasoning_effort": effort}
 
 
 def set_current_sync(db, model: str, provider_id: str | None = None) -> dict[str, Any]:  # type: ignore[no-untyped-def]
@@ -156,9 +200,26 @@ def set_current_sync(db, model: str, provider_id: str | None = None) -> dict[str
     return row_to_dict(row) or {}
 
 
+def set_reasoning_effort_sync(db, effort: str | None) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+    """Sync helper — write a reasoning-effort override and return the row.
+
+    Mirrors :meth:`ModelPrefsDAO.set_reasoning_effort` for the sync path
+    (CLI / ad-hoc scripts). ``None`` clears the override.
+    """
+    stored = str(effort) if effort else None
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE model_prefs SET reasoning_effort = ?, updated_at = ? WHERE id = ?",
+            (stored, now_iso(), _PK),
+        )
+    row = db.fetchone("SELECT * FROM model_prefs WHERE id = ?", (_PK,))
+    return row_to_dict(row) or {}
+
+
 __all__ = [
     "DEFAULT_MODEL",
     "ModelPrefsDAO",
     "get_current_sync",
     "set_current_sync",
+    "set_reasoning_effort_sync",
 ]
