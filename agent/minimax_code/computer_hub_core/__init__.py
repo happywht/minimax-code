@@ -50,18 +50,27 @@ The crate's ``lib.rs`` re-exports six modules. The dependency order is:
    first consumer of R113's :class:`ToolDispatch` ABC and the loop-closer
    "resolver resolves a tool -> that tool's inner calls re-enter the
    resolver").
-5. ``local`` (later) — ``LocalTransport`` + ``LOCAL_INVOKE_SCOPE``.
+5. ``local`` (R119) — :class:`LocalTransport` (the first concrete
+   :class:`Transport`, an in-process transport that authorises a bound
+   ``(user_id, session_id)`` and dispatches through a
+   :class:`CompoundResolver`; holds the resolver by a strong Python
+   reference — the ``Arc<T>`` counterpart to R118's ``Weak`` ->
+   :func:`weakref.ref` mapping) + :data:`LOCAL_INVOKE_SCOPE`.
 6. ``remote`` (later) — ``RemoteTransport`` / ``RemoteToolProxy`` /
    ``ConnectionClient`` + the wire decode helpers
    (``decode_call_result`` / ``error_from_envelope`` /
    ``is_workspace_unavailable`` / ``output_to_value`` /
    ``progress_from_frame`` / ``tool_error_from_wire``).
 
-R118 lands leaves 1-4; this barrel will grow one module per round.
+R119 lands leaves 1-5; this barrel will grow one module per round.
 """
 
 from minimax_code.computer_hub_core.inner import (
     InnerDispatchForResolver,
+)
+from minimax_code.computer_hub_core.local import (
+    LOCAL_INVOKE_SCOPE,
+    LocalTransport,
 )
 from minimax_code.computer_hub_core.registry import (
     ConnectionCleanupReport,
@@ -89,6 +98,8 @@ __all__ = [
     "ConnectionCleanupReport",
     "ErasedTool",
     "InnerDispatchForResolver",
+    "LOCAL_INVOKE_SCOPE",
+    "LocalTransport",
     "Principal",
     "ResolvedTool",
     "SessionCleanupReport",

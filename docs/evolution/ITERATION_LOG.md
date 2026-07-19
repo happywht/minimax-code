@@ -9874,3 +9874,53 @@ inner.rs 是 xai-computer-hub-core 的 inner-dispatch 适配器。两个关键�
 ### Commit
 
 feat(platform): R118 migrate xai-computer-hub-core inner.rs (InnerDispatchForResolver, crate leaf 4, first concrete ToolDispatch impl, Weak<CompoundResolver> -> weakref.ref mapping, consumes R107/R109/R113/R117, closes resolver->inner-call->resolver loop)
+
+## R119 — local.rs 迁移（LocalTransport + LOCAL_INVOKE_SCOPE，crate 第 5 叶，首个具体 Transport impl）
+
+锚点:R118-1 b7a74dc
+
+### 本轮目标
+
+迁移 grok-build `xai-computer-hub-core/src/local.rs`（78 行，2 符号），落地 crate 第 5 叶。R115 仅落地 Transport ABC（无具体实现），本轮交付**首个 `impl Transport`** 的具体类 `LocalTransport`——进程内传输，绑定 `(user_id, session_id)`，通过 `CompoundResolver` 解析调度。同时落地模块级常量 `LOCAL_INVOKE_SCOPE = "tool.invoke"`。消费链：R82 protocol ids/TransportKind + R107-R114 runtime + R115 Transport ABC + R117 CompoundResolver + R118 inner（强 vs 弱引用对比的另一极）。
+
+### 融合结论
+
+`LocalTransport` 是 crate 的**首个具体 Transport**，也是两 flavour 中更简单的一极（远程转发 transport 留待后续轮次）。本地传输无网络、无凭证验证、无连接生命周期——principal 在构造时预填，dispatch 是对 `resolve_and_dispatch` 的单一委派。本轮的灵魂在于与 R118 的**所有权对比**：R118 inner 用 `Weak<CompoundResolver>`（弱引用，防 inner-dispatch 句柄悬挂 router），R119 local 用 `Arc<CompoundResolver>`（强引用，共享所有权，transport 与 resolver 共享生命周期）。Python 落地忠实区分两者——R118 用 `weakref.ref`，R119 用纯强引用（Python 引用语义下 Arc 是 no-op），完整保留 Rust `Arc<T>` vs `Weak<T>` 的所有权纪律。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_core/local.py`（新增，~160 行）：`LOCAL_INVOKE_SCOPE` 模块级常量 + `@dataclass(eq=False) class LocalTransport(Transport)`（字段 `resolver: CompoundResolver` / `user_id: UserId` / `session_id: SessionId`；`kind() -> TransportKind.Local` 同步；`async authorize() -> Principal | ToolError` 链式 `Principal.new().with_session().with_scope()`；`async call() -> ToolStream` 委派 `resolve_and_dispatch`）。
+- `agent/tests/test_computer_hub_core_local.py`（新增，17 个测试）：LOCAL_INVOKE_SCOPE 常量、Transport 子类、具体类、字段访问、强引用持有（gc 后仍存活，与 R118 弱引用死亡的对比）、eq=False 身份相等、repr、kind 同步+返回 Local、authorize/call 协程性、authorize Principal 构建三验证（identity/scope/session）、authorize 永不返回 ToolError、call 委派+线程绑定 session。
+- `agent/minimax_code/computer_hub_core/__init__.py`（4 处编辑）：import `LOCAL_INVOKE_SCOPE` + `LocalTransport`；`__all__` 加 2 符号（字母序，LOCAL_INVOKE_SCOPE < LocalTransport < Principal）；第 5 叶文档字符串更新；落地计数 R118->R119。`__all__` 现 17 符号（R115 3 + R116 7 + R117 4 + R118 1 + R119 2）。
+
+### 映射决策树+坑
+
+1. **`Arc<CompoundResolver>` -> Python 强引用**（核心决策）：R118 `Weak -> weakref.ref` 的对称极。transport 字段 `resolver: CompoundResolver`（无 Arc 步骤，Python 引用语义）。运行时测试 `test_resolver_held_strongly_keeps_alive` 用 weakref 哨兵证明 caller 局部变量 drop 后 resolver 仍存活（transport 是额外的强引用），与 R118 `test_resolver_field_holds_weak_not_strong` 的"弱引用死亡"形成镜像。
+2. **`#[derive(Debug)]` 无 PartialEq -> `eq=False`**：CompoundResolver（R117）本身 `eq=False` 非 Eq，transport 无法结构相等。沿用 R116 ServerRecord / R117 ResolvedTool+CompoundResolver / R118 InnerDispatchForResolver 模式（第 5 个连续 eq=False crate 类型）。
+3. **`user_id()` / `session_id()` 访问器 -> 字段访问**（R109 模式）：纯属性访问，避免 dataclass 字段/方法名冲突。与 R116/R117/R118 一致。
+4. **`kind()` 同步 + `authorize`/`call` 映射1协程**：Transport ABC 三个方法中 kind 是唯一的同步方法（返回 TransportKind 判别，无 I/O）。`test_kind_is_sync_not_coroutine` 验证 `not iscoroutinefunction(kind)` 且调用直接返回值（非协程对象）。
+5. **`authorize` 返回 `Principal | ToolError` 但永不取 Err 臂**：本地路径无凭证验证、无网络 drop，永远走 Rust `Ok` 臂。类型注解忠实 Transport.authorize 契约（保留 union），实现只 return Principal。`test_authorize_never_returns_tool_error` 验证 `not isinstance(result, ToolError)`。
+6. **`Principal.new(uid).with_session(sid).with_scope(scope)` 链式**：R115 builders 是 mutate-and-return，调用点与 Rust `Principal::new(u).with_session(s).with_scope(sc)` 字面一致。`.clone()` 在 Python 省略（str 不可变，append 原值）。
+7. **`LOCAL_INVOKE_SCOPE` 模块级常量（非 struct 字段）**：忠实 Rust `pub const`，hoisted 供其他授权路径 import 匹配，无需重述字面量。
+8. **`new()` 构造函数 -> dataclass 自动 `__init__`**：与 R116/R117/R118 一致，无需显式 `__init__` 或 classmethod。
+9. **`TransportKind.Local` 确认存在**：`registration.py:128` `Local = "local"`，从 tool_protocol re-export，transport.py 第 74 行已导入。
+
+### 验证
+
+- ruff check（local.py + __init__.py + test）：**All checks passed!** 第一次尝试零错误。
+- pytest 五叶回归（transport + registry + resolver + inner + local）：**127 passed in 0.63s**。
+- 对账：R118 完成时 110 通过（四叶）+ R119 新增 17 local 测试 = 127 ✓。
+- 强引用关键测试 `test_resolver_held_strongly_keeps_alive` 通过（gc 后 weakref 哨兵非 None，镜像 R118 弱引用测试）。
+- `test_kind_is_sync_not_coroutine` 通过（区分 Transport ABC 的同步 kind vs 协程 authorize/call）。
+
+### YAGNI 边界
+
+- **未实现远程 transport**：local.rs 是两 flavour 中的简单极，remote transport（RemoteToolProxy + ConnectionClient + wire decode helpers）留待下一轮（R120+），本轮不预埋。
+- **未抽象 authorize 的 Err 路径**：本地传输授权永不失败，不预埋凭证验证/网络错误分支（远程 transport 才需要）。
+- **未引入 call 的错误包装**：call 直接转发 resolver 的 ToolStream，不在 transport 层加 NotFound/NetworkError 转换（远程 transport 的职责）。
+- **eq=False 不提供 `__hash__`**：与 R116-R118 一致，trait-object-bearing 值类型无需可哈希。
+- **LOCAL_INVOKE_SCOPE 仅授权层使用**：不预埋 scope 校验逻辑（`has_scope`/`authorizes_session` 已在 R115 Principal 提供，消费端在 router 层）。
+
+### Commit
+
+feat(platform): R119 migrate xai-computer-hub-core local.rs (LocalTransport + LOCAL_INVOKE_SCOPE, crate leaf 5, first concrete Transport impl, Arc<CompoundResolver> -> strong Python ref counterpart to R118 Weak->weakref.ref, sync kind + mapping-1 authorize/call, consumes R82/R107-R118, 5-leaf regression 127 passed)
