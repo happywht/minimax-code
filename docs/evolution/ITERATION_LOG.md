@@ -8944,3 +8944,76 @@ v1 正则 `re.search(r'__all__\s*=\s*\[(.*?)\]', text, re.DOTALL)` 非贪婪 `.*
 ### Commit
 
 `feat(platform): R106 close xai-tool-protocol crate (17/17 files, barrel reconciled with lib.rs 0-missing)`
+
+## R107 — 迁移 xai-tool-runtime error.rs（ToolError 类型契约层，tool_runtime 包骨架首块，解除 computer-hub-core 阻塞）
+
+锚点:R106-1 55555a4
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-tool-runtime/src/error.rs`（554 行）—— ToolError 类型契约层，作为 `agent/minimax_code/tool_runtime/` 包的第一块（包骨架 bootstrap）。选择 error.rs 先落地的原因：xai-tool-runtime crate 的每个其他模块（dispatch/context/streaming/tool）的签名都引用 ToolError —— `ToolStream` yields `Result<TypedToolOutput, ToolError>`，`ToolDispatch::call` 返回它，`terminal_only` 构造它 —— error 是依赖图的叶子，先落地不阻塞任何兄弟模块。它自身只依赖 ToolErrorWire（R83）+ ToolId（R82），两者都已在 `tool_protocol` 下迁移完成。本轮同时解除 `xai-computer-hub-core` crate 的阻塞 —— 其 `inner.rs` 消费 `xai_tool_runtime::{ToolCallContext, ToolDispatch, ToolError, ToolStream, TypedToolOutput, terminal_only}`，R23 只融合了 xai-tool-runtime 的并发模型而非类型契约，R107 起补这个缺口。
+
+### 融合结论
+
+error.rs 的 7 个语言构造对齐状态：
+
+1. **ToolErrorKind enum（19 变体 + as_str）→ StrEnum**：成员 *值* = snake_case 标识符（= Rust `as_str()` match 返回的单一真值源），故 `as_str()` 退化为 `self.value`。Rust 的 `#[derive(Serialize, Deserialize)]` 默认 PascalCase serde 形态**不重现** —— ToolError 本身从不上线（只有 `to_wire` 桥接才序列化 wire 变体），PascalCase serde 是 YAGNI。
+2. **ToolError struct（kind + detail + source + details）→ @dataclass**：`Option<anyhow::Error>` → `BaseException | None`；`Option<serde_json::Value>` → `Any`。
+3. **不继承 Exception**：忠实 Rust「struct 实现 std::error::Error，返回 Result 内、不抛出」的形状。`source` 是普通数据字段（非 Python `__cause__` 链）；调用者想抛出时包装。保持 dataclass 避免 source/`__cause__` 语义碰撞。
+4. **17 个静态构造助手 → @classmethod**：`new` 为核心构造，其余 16 个委托。带 tool_id 的 5 个（not_found/timeout/cancelled/execution/terminal_error）注入 `details={"tool_id": str(tool_id)}`；`custom` 注入 `details={"code": code}`。
+5. **impl From<serde_json::Error> for ToolError → from_json_error classmethod**：`serde_json::Error` → `invalid_arguments(str(error))`。Python 接受任意 `BaseException`（json 模块抛 `JSONDecodeError`，是 `ValueError` 子类）。
+6. **impl From<ToolError> for ToolErrorWire → to_wire() 方法**：19 分支 if-chain + 末尾详尽 `AssertionError`（StrEnum 完全匹配的运行期保险）。
+7. **custom_details_with_code → _custom_details_with_code 辅助**：返回浅拷贝 dict，`setdefault("code", code)`（不覆盖已有 code），非 dict 原样返回；返回拷贝避免修改调用方 dict（Rust 取 Value 所有权，Python 改拷贝）。
+
+### 交付
+
+- **`agent/minimax_code/tool_runtime/__init__.py`**（barrel 骨架，36 行）：导出 `ToolError` + `ToolErrorKind`。doc comment 说明 tool_runtime 是执行契约层（vs tool_protocol 的 wire 形状），R107 = 基础叶子，R23 融合了并发模型而非类型契约，R107 是 computer-hub-core 的解锁者。
+- **`agent/minimax_code/tool_runtime/error.py`**（~540 行）：`ToolErrorKind` StrEnum（19 变体，值=snake_case，每变体带 `#:` doc 注释）+ 5 个细节提取辅助（`_detail_get`/`_tool_id_from_details`/`_int_from_details`/`_str_from_details`/`_optional_str_from_details`/`_custom_details_with_code`）+ `@dataclass ToolError`（4 字段 + `new`/`with_details`/`with_source` 构造 + 17 个 kind classmethod + `variant_name`/`__str__`/`__repr__`/`from_json_error`/`to_wire`）。
+- **`agent/tests/test_tool_runtime.py`**（47 测试）：19 变体 StrEnum 值/as_str 全覆盖 + 核心构造与 builder + 17 构造助手（含 tool_id 注入参数化）+ variant_name/`__str__`/`__repr__`/from_json_error + to_wire 全 19 kind（9 typed 变体 + 9 Custom-subcoded + Custom-details 臂，含 tool_id/elapsed_ms/requested/card_id 提取 + 缺失/畸形回退 "unknown"）+ `_custom_details_with_code` 4 case + 忠实迁移的 4 个 Rust wire_bridge_tests（service_unavailable details 存活、5 种 rate/usage 均匀合并 subcode、existing code 不被覆盖、None/非对象透传）。
+
+### 映射决策树 + 坑
+
+**error.rs → tool_runtime/error.py 映射决策树：**
+
+```
+Rust 构造                                    Python 对等                                状态
+─────────────────────────────────────────────────────────────────────────────────────────────
+enum ToolErrorKind + #[derive(Ser,De)]   →   StrEnum（值=snake_case，as_str=self.value）  R107
+struct ToolError { kind, detail, source, →   @dataclass（kind/detail/source/details）      R107
+  details }                                    source: BaseException|None, details: Any
+17 静态构造助手（Self::new/delegate）     →   17 @classmethod（new 核心，余 delegate）      R107
+ToolId::new(s).ok().unwrap_or(unknown)   →   try: ToolId(s) except IdError: ToolId(unknown) R107
+impl From<serde_json::Error>             →   from_json_error classmethod                  R107
+impl From<ToolError> for ToolErrorWire   →   to_wire()（19 分支 if-chain）                R107
+custom_details_with_code                 →   _custom_details_with_code（浅拷贝 setdefault） R107
+```
+
+**坑 1：with_details 替换语义（非 merge）暴露测试 bug，47 测试 1 失败。**
+第一版测试写 `ToolError.timeout(ToolId("bash"), "slow").with_details({"elapsed_ms": 1500})`。但 `timeout()` 构造函数注入 `details={"tool_id": "bash"}`，随后 `.with_details({"elapsed_ms": 1500})` **替换**整个 dict（忠实 Rust `self.details = Some(details)`），丢掉 tool_id → `to_wire` 时 `_tool_id_from_details` 读不到 → 回退 `"unknown"`，断言 `w.tool_id == "bash"` 失败。修正：测试改用 `ToolError.new(KIND.TIMEOUT, "slow").with_details({"tool_id": "bash", "elapsed_ms": 1500})`，让两字段同处一个 dict，验证 wire bridge 真实的多字段提取。教训：构造函数注入的 details 与 `with_details` **不叠加** —— 工具作者补充字段（如 elapsed_ms）时必须手动带全 tool_id。这正是 Rust crate 的契约，实现忠实，错在测试。
+
+**坑 2：ToolErrorKind 变体名与 ToolErrorWire 变体类名概念重叠。**
+`ToolErrorKind.NOT_FOUND`（discriminator）vs `ToolNotFound`（wire 变体类）。若 `from ... import ToolNotFound` 直接用裸名，与「概念类型」混淆（to_wire 内既判 kind 又构造 wire 变体）。解决：导入用 `as ...Wire` 后缀别名（`ToolNotFound as ToolNotFoundWire`），10 个 wire 变体统一别名，to_wire 内 `ToolNotFoundWire(...)` 与 `kind is ToolErrorKind.NOT_FOUND` 视觉可辨。
+
+**坑 3：StrEnum serde 紧张（snake_case 值 vs Rust serde 默认 PascalCase）。**
+Rust `as_str()` 返回 snake_case（用于 metrics/log tag），但 `#[derive(Serialize, Deserialize)]` 默认序列化为 PascalCase 变体名。若 ToolError 要上线，两者会冲突（as_str 与 serde 输出不一致）。解决：成员值 = snake_case（as_str 单一真值源），serde 形态 YAGNI —— ToolError 从不上线，只有 `to_wire` 桥接序列化 wire 变体，wire 变体有自己的标签形态（R83）。直到有消费方要求 ToolError 级 serde 才补 PascalCase 形态。
+
+**坑 4：ruff isort 拆分带 `as` 别名的多行导入为单行块。**
+error.py 与测试文件都导入 10 个 wire 变体带 `as ...Wire` 别名。isort I001 把多符号 `from ... import (A as AWire, B as BWire, ...)` 拆成黑标单行 `from ... import (A as AWire,)` 块（每别名一行，ruff 的 magic-trailing-comma 风格）。安全 `--fix`（纯导入重排，无语义变化），summary 既定的 I001 安全例外。
+
+### 验证
+
+- `cd agent && uv run ruff check --fix minimax_code/tool_runtime/ tests/test_tool_runtime.py` → **All checks passed!**（I001 isort 拆分安全应用，无附带损害）
+- `uv run pytest tests/test_tool_runtime.py -q` → **47 passed in 0.34s**（19 变体全覆盖 + 4 Rust wire_bridge_tests 忠实迁移 + with_details 替换语义 + tool_id 缺失/畸形回退 "unknown" + `_custom_details_with_code` 全 4 case）
+- 导入 smoke：`from minimax_code.tool_runtime import ToolError, ToolErrorKind` → 19 kind 全部 `to_wire()` 正确投影（service_unavailable→Custom subcode 合并、custom→subcode 读 details["code"]、timeout→Timeout tool_id+elapsed_ms 提取）。
+
+### YAGNI 边界
+
+- **不重现 ToolErrorKind 的 PascalCase serde 形态**：ToolError 本身从不上线（只有 `to_wire` 桥接序列化 wire 变体），Rust 的 `#[derive(Serialize, Deserialize)]` PascalCase 是为 ToolError 直传设计；Python 无此需求，直到有消费方要求 ToolError 级 serde。
+- **不让 ToolError 继承 Exception**：忠实 Rust「struct 返回 Result 内、不抛出」契约。继承会引入 source/`__cause__` 语义碰撞，且 `source` 作为普通字段更贴合 Rust struct-not-trait-object 形状。
+- **不让 with_details 成为 merge 语义**：忠实 Rust（替换）。merge 会偏离 crate 契约；工具作者补充字段时手动带全 tool_id 是清晰契约，坑 1 的测试修正即此契约的正确用法。
+- **不在 barrel re-export wire 变体类**：error.py 内部 `as ...Wire` 别名导入，barrel 只 re-export `ToolError` + `ToolErrorKind`（运行时契约层不应泄漏 wire 形状给消费方）。
+- **不迁移 xai-tool-runtime 其余 7 模块（context/dispatch/streaming/tool/notification/render/search）**：本轮只解锁 error 叶子；其余模块各自引用 ToolError + 尚未迁移的兄弟类型（ToolCallContext/ToolStream/TypedToolOutput），逐轮迁移，避免一次性大爆炸。
+
+### Commit
+
+`feat(platform): R107 migrate xai-tool-runtime error.rs (ToolErrorKind + ToolError + wire bridge, tool_runtime package bootstrap)`
