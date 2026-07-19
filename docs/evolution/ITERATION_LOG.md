@@ -4765,3 +4765,125 @@ grok DTO 反序列化
 ### Commit
 
 `feat(platform): R64 hooks/plugins management-plane wire DTO type layer (fuse grok xai-hooks-plugins-types, 9 enums + 4 tagged unions + 16 camelCase structs + sanitize security core, zero-regression standalone module)`
+
+---
+
+## R65 — 工具 schema 类型契约层(融合 grok xai-tool-types)
+
+锚点:R64 `c7bb600`
+
+### 本轮目标
+
+融合 grok `xai-tool-types` crate(`types.rs` 1049 行 + `schema_utils.rs` 660 行)→ MiniMax Code **工具平面 schema 词汇表**。这是与 R64(管理平面 wire DTO)对称的第二个"类型契约"表面:
+
+- **R64** 回答 *shell 如何被扩展*(hooks / plugins / MCP / marketplace wire DTO)。
+- **R65** 回答 *有哪些工具*(tool / argument / type-tag / JSON-Schema 词汇)。
+
+两者共同闭合平台外壳所需的两个类型表面,为未来的 IPC handler 与 agent tool registry 提供消费/生产的纯类型契约。落地 `agent/minimax_code/tool_types/` 新顶层模块(与 `extensions/` 并行),pure types + pure logic 零 I/O,前向迁移到 Python(pydantic v2 + StrEnum + 普通类 + dataclass),不需要 Rust 工具链。
+
+### 融合结论 ✅
+
+完整迁移成功。`xai-tool-types` 的 6 个核心类型 + 1 个 JSON Schema 解析器全部从 Rust 前向迁移到 Python,保真度通过 72 个测试钉死:
+
+- `ArgumentType`(JSON Schema type tag)→ `StrEnum`,wire value == member value,自然 round-trip。
+- `SchemaType`(serde `untagged`: string | array)→ 普通类 + `_types` 元组 + `_variant` 标志,精确复刻 `Single` / `Multiple` 语义。
+- `ValidationError` / `ValidationErrors` → `@dataclass`,空 == ok(Rust `Result<(), ValidationErrors>` 语义)。
+- `ToolArgument` / `ToolDescription` → pydantic v2 `BaseModel` + `arbitrary_types_allowed=True`,手写 `to_wire()` 复刻 `skip_serializing_if` 条件省略。
+- `parse_arguments_from_schema_lossy` → 纯函数 JSON Schema 展平器,解析 schemars 生成的 `anyOf` / `$ref` / `$defs` / `oneOf` 两种 enum 形态。
+
+零回归:全量 1918 passed(R64 的 1846 + R65 新增 72)。
+
+### 交付
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `agent/minimax_code/tool_types/__init__.py` | 50 | barrel 出口,仿 R64 `extensions/__init__.py` |
+| `agent/minimax_code/tool_types/types.py` | 587 | `ArgumentType` / `SchemaType` / `ValidationError` / `ValidationErrors` / `ToolArgument` / `ToolDescription` |
+| `agent/minimax_code/tool_types/schema_parser.py` | 309 | `parse_arguments_from_schema_lossy` + 4 个 helper(`_infer_arg_type` / `_extract_enum_from_def` / `_resolve_ref_type` / `_resolve_ref_in_defs`)+ `_number` |
+| `agent/tests/test_tool_types.py` | — | 72 测试(ArgumentType 8 + SchemaType 21 + ValidationErrors 3 + ToolArgument 11 + ToolDescription 11 + schema_parser 15 + 端到端 3) |
+
+### 映射决策树 + 坑
+
+```
+grok xai-tool-types
+  ├─ ArgumentType 枚举 (rename_all="lowercase")
+  │     └─> StrEnum (wire value == member value, 自然 round-trip)
+  │           └─> wire "string" ⇄ ArgumentType.STRING (== 比较成立)
+  │
+  ├─ SchemaType (serde untagged: string | array)
+  │     └─> 普通类 + __slots__=("_types","_variant")
+  │           ├─ Single(t)   → _variant="single", _types=(t,)
+  │           ├─ Multiple([t,...]) → _variant="multiple"
+  │           │     (单元素 Multiple 保留,serde 反序列化保真)
+  │           └─ from_value: 单元素数组归一化为 Single
+  │                 (区别于 serde 反序列化,手动解析路径)
+  │
+  ├─ ToolArgument / ToolDescription struct
+  │     └─> pydantic v2 BaseModel + arbitrary_types_allowed=True
+  │           └─ to_wire() 手写(skip_serializing_if 精确语义)
+  │                 ├─ required=True → 省略
+  │                 ├─ allowed_values=[] → 省略
+  │                 └─ Optional None → 省略
+  │
+  ├─ validate() → Result<(), ValidationErrors>
+  │     └─> ValidationErrors dataclass (empty==ok, 不 raise)
+  │
+  └─ extra: Extensions 字段
+        └─> ❌ YAGNI 省略 (TypeId 类型擦除, #[serde(skip)] 从不上 wire)
+```
+
+**坑 1 — `SchemaType` untagged union 的 `_variant` 标志**
+grok `serde(untagged)` 下,`"string"` 与 `["string"]` 反序列化结果不同(前者 `Single`,后者 `Multiple`)。普通 Python 类若只用元组长度区分,会丢失"单元素 Multiple"信息。**预判**:round-trip 测试会发现 `SchemaType.multiple([STRING]).to_schema_value()` 必须返回 `["string"]` 而非 `"string"`。**钉死**:`test_multiple_variant_preserves_array_shape` + `test_single_equals_bare_argument_type`。
+
+**坑 2 — `to_wire` 不能用 `model_dump`**
+pydantic v2 `model_dump` 无法精确复刻 Rust `skip_serializing_if`(`required=True` 省略、空 list 省略、`None` 省略)。**预判**:若用 `model_dump`,会泄漏 `required: true` / `allowed_values: []` 到 wire。**钉死**:`test_to_wire_omits_required_when_true` + `test_to_wire_omits_empty_allowed_values` + `test_to_wire_emits_required_false_only`。
+
+**坑 3 — `validate_identifier` 必须 ASCII 限定**
+Rust 用 `char::is_ascii_alphanumeric | '_' | '-'`;Python `str.isalnum` 是 Unicode 宽(会误放行 `"中文"`)。**预判**:CJK 标识符会绕过校验。**钉死**:`test_validate_rejects_cjk_identifier` + `test_validate_accepts_dash_and_underscore`。
+
+**坑 4 — `extra: Extensions` 字段 YAGNI 省略**
+Rust `Extensions` 是 `TypeId`-keyed 类型擦除 map,`#[serde(skip)]` 从不上 wire,Python 无等价物,且其唯一行为效果是让 `PartialEq` 忽略它(字段移除后 moot)。**预判**:若强行迁移会产生死代码 + 引入 typing 复杂度。**决策**:YAGNI 省略,在 docstring 标注。
+
+**坑 5 — 循环依赖(`ToolDescription` ↔ `schema_parser`)**
+`schema_parser.py` 导入 `types.py`(`ToolArgument`);若 `types.py` 顶层导入 `schema_parser`(为 `to_arguments_lossy`),则成循环。**预判**:import 时报 `ImportError`。**修复**:`to_arguments_lossy` 方法内部延迟 `from .schema_parser import ...`。**钉死**:`test_to_arguments_lossy_end_to_end`。
+
+**坑 6 — `schema` 字段 shadow pydantic 警告**
+grok 字段名 `schema` 与 pydantic v1 历史 `BaseModel.schema()` 方法冲突,v2 已移除该方法(改 `model_json_schema()`),故为 false positive。**预判**:测试输出污染 `UserWarning`。**修复**:模块级 `warnings.filterwarnings("ignore", message=...)`,带详细注释说明 grok wire 保真理由。**钉死**:R65 测试套件 0 警告。
+
+**坑 7 — `default` 字段 `None` 歧义**
+Python `None` 既是缺失也是 JSON null,无法区分(对应 Rust `Option<Value>` 的 `Some(None)` vs `None`)。**务实决策**:用 `is not None` 检查(与 Rust `None` 对应),显式 null 默认值的 case 在测试场景(enum first variant 非 null)不存在。记录为 YAGNI 边界。
+
+### 验证
+
+三重验证全绿:
+
+```bash
+# 1. ruff lint(行长 100,E/F/W/I/B/UP)
+cd "/d/工作/城建院/mm code/agent" && uv run ruff check minimax_code/tool_types/ tests/test_tool_types.py
+# → All checks passed!
+
+# 2. R65 专项测试(0 警告)
+cd "/d/工作/城建院/mm code/agent" && uv run pytest tests/test_tool_types.py -q
+# → 72 passed in 0.35s
+
+# 3. 全量回归(零回归)
+cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
+# → 1918 passed, 10 skipped, 1 warning in 106.70s
+#    (唯一 warning 是 fastapi/httpx 弃用,与 R65 无关)
+```
+
+测试增长:R64 的 1846 → R65 的 1918(+72 R65 新增,零回归)。
+
+### YAGNI 边界
+
+本轮明确不做:
+
+- ❌ `extra: Extensions` 字段(TypeId 类型擦除,无 wire 存在,无 Python 等价物)。
+- ❌ 完整 JSON Schema 支持(`allOf` / `if-then-else` / `pattern` / `items` / 嵌套 properties)— grok 源 crate 同样 `# Not supported`,render tools 只需扁平顶层参数。
+- ❌ `default` 显式 null vs 缺失的区分(Python None 二义性,测试场景无此 case)。
+- ❌ 把 `tool_types/` 接入 IPC handler 或 agent tool registry(类型层先行,消费端留待后续轮次)。
+- ❌ 前端 `web/src/types/` 镜像(纯后端类型契约,无 wire 事件,前端暂不需要)。
+
+### Commit
+
+`feat(platform): R65 tool schema vocabulary type layer (fuse grok xai-tool-types, ArgumentType + SchemaType + ToolArgument + ToolDescription + ValidationErrors + lossy JSON Schema parser, 72 tests zero-regression)`
