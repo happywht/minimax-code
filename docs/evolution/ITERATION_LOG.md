@@ -4673,3 +4673,95 @@ R63 modelStore.refresh ← R63 typedIPC model.list(reasoning_effort 回读) ← 
 ### Commit
 
 `feat(platform): R63 reasoning_effort frontend switcher UI (fuse grok xai-grok-sampling-types, upgrade R60 badge to clickable switcher + typedIPC + modelStore state)`
+
+## R64 — 钩子/插件管理平面 wire DTO 类型层（融合 grok xai-hooks-plugins-types，补全 R25 钩子框架的类型词汇表半边，四层扩展架构第四块落地）
+
+**锚定**：`a97b12f` (R63)　|　**状态**：✅ 管理平面 wire DTO 层落地（纯类型，零 I/O）　|　**测试**：52 新增 / 1846 全过
+
+### 本轮目标
+
+补全 R25 留下的类型半边。R25 落地了钩子**执行**模型（4 事件配方 + stdin/stdout 子进程），但 grok `xai-hooks-plugins-types` crate（1219 行单文件）定义的是**管理平面** wire 契约——shell 与 pager 之间交换的"钩子/插件/MCP/市场"列表、动作、聚合视图的 JSON DTO。这两套类型职责正交：R25 是"怎么跑钩子"，R64 是"怎么列出/操作钩子"。未来 IPC handler（`hooks.list` / `plugins.list` / `mcp.list` / `marketplace.list` / `*.action`）需要这套 DTO 作为输入输出契约，R64 先打类型基础，**零 I/O**（无 subprocess / 文件系统 / 网络）。
+
+R64 同时闭合 MiniMax Code **四层扩展架构**的最后一块：(1) `hooks/` = 钩子执行（R25）；(2) `plugins/` = 插件声明加载（`plugin.json`）；(3) `mcp/` = MCP 客户端运行时；(4) `extensions/` = 管理平面 wire DTO（R64）。核心约束是**零回归**——新增独立模块，不动任何现有代码；以及 **wire 保真**——struct 走 camelCase、tagged union 标签走 snake_case 但变体字段保持 snake_case（serde 枚举 `rename_all` 只重命名变体名，不重命名结构体变体字段）。
+
+### 融合结论
+
+✅ **管理平面 wire DTO 层落地**。grok `xai-hooks-plugins-types` 的 16 个 struct + 3 个动作枚举 + 9 个简单枚举全部正向迁移到 Python（pydantic v2 + StrEnum），无 Rust 工具链依赖：
+
+```
+grok Rust serde DTO                       →  R64 Python pydantic v2
+──────────────────────────────────────────────────────────────────
+camelCase struct (rename_all="camelCase") →  _Wire(BaseModel) + to_camel alias
+tagged union (tag="type", snake_case)     →  _Variant(BaseModel) + Literal 判别
+serde(other) forward-compat               →  parse_plugin_origin → UnknownOrigin
+#[derive(Default)] 可空构造               →  全字段默认值
+char::is_control + bidi strip             →  strip_control_chars (unicodedata Cc)
+char_indices().nth() 码点截断             →  s[:max_chars] (Python 码点边界)
+parts.join(" · ")                         →  " · ".join(parts)
+```
+
+52 个新测试全过（枚举 snake_case / sanitize 安全核心 / tagged union 往返 / serde(other) 降级 / 嵌套 union 解析 / camelCase struct wire）；全量回归 **1846 passed / 10 skipped**（后端 pytest，零回归，R64 三文件 ruff 全绿）。
+
+### 交付
+
+| 文件 | 改动 |
+|------|------|
+| `agent/minimax_code/extensions/__init__.py` | 新建 barrel 导出：3 常量 + `strip_control_chars`/`truncate_chars` + `hook_event_display` + 4 `parse_*` 函数 + 9 StrEnums + 4 union 别名 + 10 PluginOrigin 变体 + 16 顶层 struct |
+| `agent/minimax_code/extensions/types.py` | 新建 ~933 行纯类型层：sanitize 辅助（Cc + bidi/零宽/BOM 过滤 + 码点截断）；9 StrEnums（PluginScope/HookEvent(14 变体)/HookHandlerType/HookStatus/McpStatus/OutcomeStatus/McpServerSource/McpSessionStatus/ComponentCategory）；ComponentItem + PluginComponents（categories/is_empty/summary_line 单复数+中点/sanitize 50 上限）；4 tagged union（PluginOrigin+serde(other)/HooksAction/PluginsAction/MarketplaceAction）+ 手动 parse 分发；16 camelCase struct（HookInfo/HooksListResponse/PluginInfo/PluginsListResponse/McpToolInfo/McpServerInfo/McpServersListResponse/HooksActionRequest/PluginsActionRequest/ActionOutcome/MarketplacePluginEntry/MarketplaceScanResult/MarketplaceListResponse/MarketplaceActionRequest） |
+| `agent/tests/test_extensions_types.py` | 新建 52 测试：常量 / 枚举 wire / hook_event_display / sanitize helpers / ComponentItem new+sanitize+default / PluginComponents categories+is_empty+summary_line+sanitize / PluginOrigin 往返+serde(other)降级+非字典拒绝 / 3 动作 union 往返+未知 ValueError+嵌套请求 / 顶层 struct camelCase wire / PluginInfo 未知 origin 降级 / MarketplaceListResponse.sanitize 递归+None 跳过 |
+
+### 映射决策树 + 坑
+
+**决策树（wire 形状分发）**：
+
+```
+grok DTO 反序列化
+  ├─ camelCase struct (HookInfo/PluginInfo/...)
+  │     └─> _Wire: alias_generator=to_camel + populate_by_name
+  │           └─> wire {"timeoutMs":5000} ⇄ Python timeout_ms=5000
+  │
+  ├─ tagged union 变体 (HooksAction::Enable{hook_name})
+  │     └─> _Variant: NO alias generator (serde rename_all ≠ 字段重命名)
+  │           └─> wire {"type":"enable","hook_name":"..."} ⇄ Python hook_name
+  │                 (注意：不是 hookName！变体字段保持 snake_case)
+  │
+  ├─ 嵌套 union 字段 (PluginInfo.origin / *ActionRequest.action)
+  │     └─> model_validate 类方法重写：拦截嵌套 dict → parse_* 路由 → 父验证
+  │
+  └─ 未知标签
+        ├─ PluginOrigin → parse_plugin_origin → UnknownOrigin (serde(other) 容错)
+        └─ *Action     → parse_*_action → ValueError (请求不容错)
+```
+
+**坑 1（tagged union 变体字段 snake_case，决定双基类）**：**serde 枚举 `#[serde(rename_all="snake_case")]` 只重命名变体名（标签值），不重命名结构体变体的字段**。所以 `HooksAction::Enable { hook_name }` 序列化为 `{"type":"enable","hook_name":"..."}`，**不是** `hookName`。第一直觉可能是所有模型都用 `_Wire`（camelCase alias）——但这样变体字段会被错误地 alias 成 camelCase，wire 失真。**预判正确**：双基类——`_Wire`（`alias_generator=to_camel`，给 struct 用）+ `_Variant`（**无** alias generator，给 tagged union 变体用）。测试 `test_hooks_action_toggle_source_keeps_snake_case_fields`（`hook_names`/`disable` 保持 snake_case）+ `test_plugin_origin_struct_variant_keeps_snake_case_fields`（`source_name`/`git_url` 保持 snake_case）钉这条不变式。
+
+**坑 2（serde(other) 前向兼容，决定 parse_plugin_origin 降级 vs parse_*_action 报错）**：**PluginOrigin 有 `#[serde(other)]`，动作枚举没有**。PluginOrigin 是"数据来源描述"——未来 grok 可能新增 origin 类型，旧 pager 应容错（降级为 UnknownOrigin，不崩）。但 HooksAction/PluginsAction/MarketplaceAction 是"用户请求"——未知动作是协议错误，必须报错。**预判正确**：`parse_plugin_origin` 未知标签 → `UnknownOrigin()`（数据丢弃，wire `{"type":"unknown"}`）；`parse_*_action` 未知标签 → `ValueError`。测试 `test_plugin_origin_serde_other_degrades_unknown_to_unknown`（`{"type":"cloud_install"}` → UnknownOrigin）+ 三个 `*_unknown_tag_raises` 钉两种语义。
+
+**坑 3（嵌套 union 解析，决定 model_validate 重写）**：**pydantic v2 的 tagged union 机制处理嵌套 union dict 时，未知标签会让整个父模型验证失败**。PluginInfo.origin 是 `PluginOrigin | None`，如果用 pydantic 原生 union 解析，一个未知的 origin tag 会让整个 PluginInfo 验证失败——但坑 2 要求 origin 容错。**预判正确**：4 个含嵌套 union 的 struct（PluginInfo/HooksActionRequest/PluginsActionRequest/MarketplaceActionRequest）重写 `model_validate` 类方法，拦截嵌套 dict（`obj["origin"]` / `obj["action"]`），先通过 `parse_*` 路由（应用 serde(other) 降级），再调 `super().model_validate`。测试 `test_plugin_info_degrades_unknown_origin_on_validate`（PluginInfo 带未知 origin 不崩，origin → UnknownOrigin）钉这条。
+
+**坑 4（HookEvent 命名冲突，决定文档警告）**：**`extensions.types.HookEvent`（14 变体，管理平面 wire 词汇表）与 `hooks.types.HookEvent`（4 变体，可执行子集）同名不同义**。两者在不同命名空间，但容易混淆。**预判正确**：`extensions.types.HookEvent` 的 docstring 明示"this is the wire vocabulary for listing/management; the executable subset is `hooks.types.HookEvent` — a different type in a different namespace. Do not confuse the two."。模块 docstring 也强调 extensions 是"aggregated view layer, distinct from hooks execution"。
+
+**坑 5（ComponentItem.sanitize 不 trim 空白，决定 is_empty 而非 trim）**：**grok 的 sanitize 用 `.filter(|d| !d.is_empty())`，不是 `.trim()`**。第一直觉可能是"description 纯空白应归 None"——但 grok 的 `strip_control_chars` 只过滤 Cc + bidi（`char::is_control`），**不过滤空格**（空格不是 control char）。所以 `"  "`（纯空白）保留为 `"  "`，只有 `""`（纯空）才 → None。**预判正确**：Python `strip_control_chars` 用 `unicodedata.category(c) != "Cc"`（与 Rust `is_control` 等价），`sanitize` 用 `cleaned or None`（空字符串 falsy → None，空白 truthy → 保留）。测试 `test_component_item_new_strips_control_chars_and_drops_empty_description`（`""` → None）+ `test_component_item_new_preserves_whitespace_only_description`（`"  "` → `"  "`）钉两种语义。Grep grok 源码（lib.rs:374-381）逐字符确认。
+
+**坑 6（__init__.py 残留 MarketPluginInstall，自发现已修复）**：**barrel 导出 `__all__` 列表引用了未导入的名字 `MarketPluginInstall`**（早期命名歧义：插件来源变体最初叫 `MarketPluginInstall`，易与 `MarketplaceAction::Install` 混淆，改名为 `MarketplaceInstallOrigin`，但 `__all__` 残留旧名）。这会让 `from minimax_code.extensions import *` 抛 `AttributeError`。**预判正确**：Edit 移除 `__all__` 中的 `"MarketPluginInstall"`（import 块本就没有它）。修复后 `import *` 正常，52 测试全过。
+
+### 验证
+
+- `cd agent && uv run pytest tests/test_extensions_types.py -v` → **52 passed in 0.30s**（枚举 wire 9 + sanitize helpers 3 + ComponentItem 6 + PluginComponents 5 + PluginOrigin 8 + 3 动作 union 9 + 顶层 struct 6 + MarketplaceListResponse.sanitize 2 + 常量 1，全覆盖）。
+- `cd agent && uv run pytest` → **1846 passed, 10 skipped**（后端全量回归，零回归；R64 新增 52 测试融入）。
+- `cd agent && uv run ruff check minimax_code/extensions/ tests/test_extensions_types.py` → **All checks passed!**（R64 三文件全绿；`--fix` 修复 2 个 I001 import 排序后干净）。
+- **wire 保真交叉验证**：Grep grok `lib.rs` 源码（strip_control_chars/truncate_chars/ComponentItem::sanitize/summary_line/MarketplaceListResponse::sanitize）逐行确认 Python 实现语义一致——`char::is_control`=Cc、`char_indices().nth()`=码点边界、`.filter(!is_empty)`=空字符串过滤、`parts.join(" \u{b7} ")`=`" · "`。
+- **零回归机制**：R64 是全新独立模块（`extensions/` 目录 + 1 测试文件），不动任何现有代码；`extensions.types.HookEvent` 与 `hooks.types.HookEvent` 命名空间隔离，互不影响。
+
+### YAGNI 边界
+
+- ❌ **不做 IPC handler** —— R64 只落地类型层（wire DTO）。`hooks.list` / `plugins.list` / `marketplace.list` / `*.action` 的 handler 实现（读配置、跑子进程、聚合视图）是独立轮次，需要 I/O 层设计。R64 提供 handler 的输入输出契约。
+- ❌ **不做前端 UI** —— 钩子/插件/市场管理面板（pager 视图）是独立前端轮次。R64 的 wire DTO 是未来前端 IPC client 的类型来源，但 UI 本身 YAGNI。
+- ❌ **不接入现有 hooks/plugins/mcp 运行时** —— R64 的 DTO 与 R25 hooks 执行、plugins 声明加载、mcp 客户端**类型独立**。adapter（运行时对象 → wire DTO）留独立轮次，避免本轮耦合 I/O。
+- ❌ **不用 pydantic 原生 tagged union 机制** —— 手动 `parse_*` 分发（注册表查找 + Literal 判别）而非 pydantic `Annotated[Union, Discriminator]`。原因：需要在 parse 层注入 serde(other) 降级逻辑（坑 2/3），pydantic 原生机制不容错未知标签。手动分发 + model_validate 重写是可控的。
+- ❌ **不修复预存 ruff 债务** —— 全量 `ruff check .` 报 339 错误（test_ws_heartbeat.py 等），均为预存，与 R64 无关。R64 三文件 ruff 全绿即可（轮次独立原则）。
+- ❌ **ComponentItem 不加 trim** —— grok 用 `is_empty` 不用 `trim`，R64 忠实复刻（坑 5）。加 trim 会偏离 grok wire 语义，YAGNI。
+
+### Commit
+
+`feat(platform): R64 hooks/plugins management-plane wire DTO type layer (fuse grok xai-hooks-plugins-types, 9 enums + 4 tagged unions + 16 camelCase structs + sanitize security core, zero-regression standalone module)`
