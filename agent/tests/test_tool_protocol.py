@@ -40,6 +40,7 @@ from minimax_code.tool_protocol import (
     ERROR_CODES,
     KNOWN_NOTIFICATION_KINDS,
     PROTOCOL_VERSION,
+    UNKNOWN_METHOD_MSG_PREFIX,
     WORKSPACE_UNAVAILABLE_JSONRPC_CODE,
     WORKSPACE_UNAVAILABLE_MESSAGE,
     WORKSPACE_UNAVAILABLE_SUBCODE,
@@ -69,6 +70,7 @@ from minimax_code.tool_protocol import (
     JsonRpcVersionError,
     KnownVariantCollision,
     Mcp,
+    Method,
     PayloadTooLarge,
     PermissionDenied,
     RenderLimited,
@@ -104,6 +106,7 @@ from minimax_code.tool_protocol import (
 )
 from minimax_code.tool_protocol.envelope import jsonrpc_id_from_wire
 from minimax_code.tool_protocol.error_wire import from_wire as error_from_wire
+from minimax_code.tool_protocol.methods import method_doc
 from minimax_code.tool_protocol.notification_wire import (
     Custom as NotificationCustom,
 )
@@ -1537,3 +1540,148 @@ class TestPackageSurfaceR84:
         import minimax_code.tool_protocol as pkg
 
         assert not hasattr(pkg, "jsonrpc_id_from_wire")
+
+
+# -----------------------------------------------------------------------
+# Method — JSON-RPC method catalog (R85).
+# -----------------------------------------------------------------------
+
+
+class TestMethod:
+    """Method StrEnum — 35 wire methods from a single source of truth."""
+
+    def test_all_count_is_35(self):
+        assert len(Method.ALL) == 35
+
+    def test_all_iteration_matches_declaration_order(self):
+        # Source-order direction grouping is preserved; direction
+        # enforcement is the hub's job, not the enum's.
+        all_methods = Method.ALL
+        # The first 18 are harness → service.
+        assert all_methods[0] is Method.SessionOpen
+        assert all_methods[17] is Method.Pong
+        # tool_server → service starts at index 18.
+        assert all_methods[18] is Method.ToolCallProgress
+
+    def test_as_wire_str_and_from_wire_str_round_trip_all_variants(self):
+        # Grok's round-trip test iterates every variant.
+        for method in Method.ALL:
+            wire = method.as_wire_str()
+            assert isinstance(wire, str)
+            assert Method.from_wire_str(wire) is method
+
+    def test_value_equals_wire_str(self):
+        assert Method.ToolCall.value == "tool.call"
+        assert Method.Ping.value == "ping"
+
+    def test_str_is_wire_str_display(self):
+        # StrEnum __str__ returns the value, mirroring Rust's Display →
+        # as_wire_str delegation.
+        assert str(Method.ToolCall) == "tool.call"
+        assert str(Method.Hello) == "hello"
+
+    def test_from_wire_str_returns_none_for_unknown(self):
+        # Mirrors Rust returning None from the fallible match (no panic).
+        assert Method.from_wire_str("not_a_method") is None
+        assert Method.from_wire_str("") is None
+
+    def test_specific_wire_strings(self):
+        assert Method.ToolsList.as_wire_str() == "tools.list"
+        assert Method.ToolsSearch.as_wire_str() == "tools.search"
+        assert Method.HelloAck.as_wire_str() == "hello_ack"
+        assert Method.ToolServerStatus.as_wire_str() == "tool_server.status"
+        assert Method.ToolServerEvict.as_wire_str() == "tool_server.evict"
+        assert Method.SessionBind.as_wire_str() == "session.bind"
+        assert Method.SessionUnbind.as_wire_str() == "session.unbind"
+        assert Method.TracesDonate.as_wire_str() == "traces.donate"
+        assert Method.LogsDonate.as_wire_str() == "logs.donate"
+        assert Method.MetricsDonate.as_wire_str() == "metrics.donate"
+        assert Method.ServersList.as_wire_str() == "servers.list"
+        assert Method.ToolNotification.as_wire_str() == "tool.notification"
+        assert Method.ToolCallProgress.as_wire_str() == "tool_call_progress"
+        assert Method.ToolCallRequest.as_wire_str() == "tool_call_request"
+
+    def test_serde_round_trip_matches_wire_str(self):
+        # A StrEnum member JSON-serialises as the quoted wire string,
+        # matching #[serde(rename = $wire)].
+        wire = Method.ToolCall.as_wire_str()
+        assert json.loads(json.dumps(Method.ToolCall)) == wire
+
+    def test_unknown_method_msg_prefix_pinned(self):
+        # Fleet-compat pin: terminal binaries built while the SDK keyed
+        # old-hub detection on this exact prefix remain in the field.
+        assert UNKNOWN_METHOD_MSG_PREFIX == "unknown method `"
+
+    def test_method_doc_present_for_documented_variants(self):
+        # Ten variants carry Grok #[doc] semantics worth surfacing.
+        cancel_doc = method_doc(Method.ToolCancel)
+        assert cancel_doc is not None
+        assert "Hook" in cancel_doc
+        assert method_doc(Method.SessionAttachServer) is not None
+        assert method_doc(Method.HookReply) is not None
+        assert method_doc(Method.TracesDonate) is not None
+        assert method_doc(Method.LogsDonate) is not None
+        assert method_doc(Method.MetricsDonate) is not None
+        assert method_doc(Method.ServersList) is not None
+        assert method_doc(Method.Serve) is not None
+        assert method_doc(Method.SessionBind) is not None
+        assert method_doc(Method.SessionUnbind) is not None
+
+    def test_method_doc_none_for_undocumented_variants(self):
+        assert method_doc(Method.Ping) is None
+        assert method_doc(Method.ToolCall) is None
+        assert method_doc(Method.Pong) is None
+
+    def test_envelope_consumes_method_wire_str(self):
+        # Cross-module: the envelope's `method` field is the bare wire
+        # string produced by Method.as_wire_str(), and it round-trips back
+        # to the enum via from_wire_str.
+        req = JsonRpcRequest(
+            jsonrpc=JsonRpcVersion(),
+            id=JsonRpcIdString(value="r1"),
+            method=Method.ToolCall.as_wire_str(),
+            params={"tool_call_id": "tc_1"},
+        )
+        wire = req.to_wire()
+        assert wire["method"] == "tool.call"
+        assert wire["method"] == str(Method.ToolCall)
+        recovered = Method.from_wire_str(wire["method"])  # type: ignore[arg-type]
+        assert recovered is Method.ToolCall
+
+    def test_method_is_strenum(self):
+        from enum import StrEnum
+
+        assert issubclass(Method, StrEnum)
+        # Member values are the wire strings (the StrEnum contract that
+        # makes JSON serialisation match #[serde(rename)]).
+
+    def test_barrel_method_is_single_source(self):
+        # Method imported via the barrel is the same class object as the
+        # submodule Method — no accidental duplicate enum.
+        from minimax_code.tool_protocol.methods import Method as SubmoduleMethod
+
+        assert Method is SubmoduleMethod
+
+
+class TestPackageSurfaceR85:
+    """The R85 barrel re-exports Method + UNKNOWN_METHOD_MSG_PREFIX."""
+
+    def test_barrel_exposes_method_symbols(self):
+        import minimax_code.tool_protocol as pkg
+
+        assert hasattr(pkg, "Method")
+        assert hasattr(pkg, "UNKNOWN_METHOD_MSG_PREFIX")
+
+    def test_barrel_method_is_strenum(self):
+        from enum import StrEnum
+
+        import minimax_code.tool_protocol as pkg
+
+        assert issubclass(pkg.Method, StrEnum)
+
+    def test_barrel_does_not_export_method_doc(self):
+        # method_doc lives on the submodule, mirroring Rust lib.rs
+        # pub use exporting Method + UNKNOWN_METHOD_MSG_PREFIX only.
+        import minimax_code.tool_protocol as pkg
+
+        assert not hasattr(pkg, "method_doc")

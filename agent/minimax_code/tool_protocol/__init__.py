@@ -1,4 +1,4 @@
-"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 — envelope landed).
+"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 — methods landed).
 
 Fusion of grok-build's ``xai-tool-protocol`` crate — the wire DTOs for
 the computer-hub tool-server protocol: identifier newtypes, registration
@@ -10,9 +10,9 @@ payload struct, and the numeric ↔ string error-code mapping.
 This package hosts the **pure wire types** — no I/O, no env reads, no
 dependency on the rest of the agent. The crate is large (6613 lines, 16
 modules); R82 lands the dependency-free **foundation layer**, R83 lands
-the three wire enums + the two ``error_codes`` helpers they unblock, and
-R84 lands the JSON-RPC 2.0 envelope (closing the crate's four-shape
-serde coverage with its first untagged enum):
+the three wire enums + the two ``error_codes`` helpers they unblock, R84
+lands the JSON-RPC 2.0 envelope, and R85 lands the method catalog (the
+direct consumer of the envelope's ``method`` field):
 
 * **R82** — :mod:`ids` (8 identifier newtypes + :class:`IdError`),
   :mod:`connection` (``ConnectionKind`` + ``ToolDefinitionMode``),
@@ -23,23 +23,29 @@ serde coverage with its first untagged enum):
 * **R83** — :mod:`error_wire` (``ToolErrorWire``, the
   15-variant internally-tagged enum on ``code``), :mod:`output_wire`
   (``ToolOutputWire`` adjacent-tagged on ``kind``/``value`` + ``McpBlock``
-  internally-tagged on ``type``), :mod:`notification_wire``
+  internally-tagged on ``type``), :mod:`notification_wire`
   (``WireToolNotification`` adjacent-tagged on ``shape``/``value`` + the
   forward-compat ``Custom`` with spoof-resistant
   :func:`~error_codes.check_custom_kind`); plus the R82-deferred
   ``from_tool_error_wire`` / ``workspace_unavailable_wire`` helpers in
   :mod:`error_codes` (they depend on ``ToolErrorWire`` and so return
   here to close the gap).
-* **R84 (this round)** — :mod:`envelope` (JSON-RPC 2.0
+* **R84** — :mod:`envelope` (JSON-RPC 2.0
   request/response/notification/error wrappers + the strict ``"2.0"``
   protocol-version marker + :data:`JsonRpcId`, the crate's first
   ``#[serde(untagged)]`` enum — closing the four-shape serde coverage:
   internal-tag / adjacent-tag / untagged / transparent-newtype; plus the
   ``result`` XOR ``error`` response invariant enforced via custom serde).
-* *deferred* — :mod:`methods` (method catalog), :mod:`capabilities`,
-  :mod:`registration`, :mod:`frames` (tool-server frame protocol, 1549
-  lines), :mod:`session_event`, :mod:`turn_hook`, :mod:`hook`,
-  :mod:`registry_error`.
+* **R85 (this round)** — :mod:`methods` (the closed enumeration of every
+  JSON-RPC method on the wire, defined once from a single source of
+  truth; lands as :class:`~enum.StrEnum` whose member values are the wire
+  strings, plus :meth:`Method.as_wire_str` / :meth:`Method.from_wire_str`
+  / :data:`Method.ALL` and the fleet-compat-pinned
+  :data:`UNKNOWN_METHOD_MSG_PREFIX`; the direct consumer of
+  :mod:`envelope`'s ``method`` field).
+* *deferred* — :mod:`capabilities`, :mod:`registration`, :mod:`frames`
+  (tool-server frame protocol, 1549 lines), :mod:`session_event`,
+  :mod:`turn_hook`, :mod:`hook`, :mod:`registry_error`.
 
 ``from_wire`` / ``to_wire`` live on each module (instance method or module
 function); the barrel does **not** re-export them, mirroring the Rust
@@ -119,6 +125,10 @@ from minimax_code.tool_protocol.ids import (
     ToolId,
     UserId,
 )
+from minimax_code.tool_protocol.methods import (
+    UNKNOWN_METHOD_MSG_PREFIX,
+    Method,
+)
 from minimax_code.tool_protocol.notification_wire import (
     KNOWN_NOTIFICATION_KINDS,
     KnownVariantCollision,
@@ -168,6 +178,9 @@ __all__ = [
     "ResponseOutcome",
     "ResponseResult",
     "ResponseError",
+    # methods (R85)
+    "Method",
+    "UNKNOWN_METHOD_MSG_PREFIX",
     # handshake (R82)
     "PROTOCOL_VERSION",
     "HelloMsg",

@@ -6843,3 +6843,75 @@ envelope.rs 是 JSON-RPC 2.0 协议的信封层——所有 request/response/not
 ### Commit
 
 `feat(platform): R84 xai-tool-protocol envelope.rs（JSON-RPC 2.0 信封层，crate 首个 untagged 枚举 JsonRpcId，闭合 4 种 serde 形态全覆盖里程碑）[新增 tool_protocol/envelope.py(~534) 7 Rust 符号 + Python 变体: JsonRpcVersion unit struct(custom serde 仅接受字面量 "2.0" 拒非 str/错 str raise JsonRpcVersionError + __slots__() + __eq__/__hash__ 单例可作 dict key) | JsonRpcId untagged 枚举(crate 首个) JsonRpcIdString/JsonRpcIdNumber dataclass + 联合别名 + jsonrpc_id_from_wire(按 Python 类型 dispatch bool 最先报错/str->String/int->Number/else ValueError) + Number __post_init__(拒 bool 先于 int + i64 范围 _I64_MIN/MAX) + as_request_id 双向投影(Number 7->"7" 字符串化) | JsonRpcRequest[P]/JsonRpcNotification[P] Generic[P] params:P session_id/seq Option 跳 None(Request 有 id Notification 无 id 键) + _payload_to_wire(to_wire 或透传 serde_json::Value 分支) | JsonRpcError code/message/data Option 跳 | ResponseOutcome(ResponseResult[R]|ResponseError 联合) + JsonRpcResponse[R] ok/err 构造 + with_session(mut self 链式) + to_wire(isinstance 产 result XOR error) + from_wire(data.get is not None 复现 Option null->None 两者皆在->XOR 报错 两者皆无->result or error 报错) | __init__.py barrel 重写 221 行 导出 12 envelope 符号 jsonrpc_id_from_wire 不导出(镜像 Rust pub use) docstring R84 bullet + envelope 移出推迟 import 字母序 + __all__ # envelope (R84) 段; test_tool_protocol.py +8 类 48 测试(TestJsonRpcVersion 字面量+str+接受+参数化拒错 str 6+拒非 str 6+单例 eq/hash/dict key + TestJsonRpcId string/number 往返+构造拒 bool+from_wire 拒 bool+参数化拒其他 4+Number as_request_id 字符串化+String 往返+i64 范围 3 + TestJsonRpcRequest session_id None 省略/Some 存在+往返 + TestJsonRpcNotification 无 id 键+Optionals 省略+seq/session Some+往返 + TestJsonRpcError data None 省略/Some+往返+无 data 往返 + TestJsonRpcResponseInvariant ok 仅 result/err 仅 error/ok 往返/err 往返/with_session is self/session None 省略/两者皆在拒 XOR/两者皆无拒 + TestEnvelopeSessionIdIndependence envelope vs params session_id 不 flatten 独立两层 + TestPackageSurfaceR84 barrel 12 符号+jsonrpc_id_from_wire 不导出); KEY 决策 1: JsonRpcId untagged 按 Python 类型 dispatch bool 最先(bool 是 int 子类先于 int 检查); KEY 决策 2: JsonRpcVersion 严格字面量 unit struct+__slots__ 单例 custom serde 拒非 str/错 str; KEY 决策 3: result XOR error via from_wire is not None(复现 Option null->None 非键存在检查); KEY 决策 4: 泛型 TypeVar+Any from_wire 返回 [Any] _payload_to_wire 预留 frames to_wire; KEY 决策 5: 命名前缀变体避 builtin(JsonRpcIdString/Number ResponseResult/Error + 联合别名); KEY 决策 6: envelope session_id 与 params session_id 独立两层无 flatten; KEY 决策 7: barrel jsonrpc_id_from_wire 不导出镜像 Rust pub use; KEY 坑 1: em-dash/反引号 Edit 匹配失败(tokenize U+2014 vs U+2015)->Write 重写 barrel 221 行 import/__all__ 纯 ASCII 复制; KEY 坑 2: Serena MCP 项目未激活(已知项目不含工作目录)避用全程 Edit/Write; KEY 坑 3: Number bool 拒绝(bool int 子类先于 int)+i64 范围; KEY 坑 4: dataclass 字段顺序非 default 在 default 前 session_id 最后 to_wire 手工键序; KEY 坑 5: from_wire result/error is not None 非 in 检查(Option null->None); KEY 坑 6: F401 未使用别名 JsonRpcId/ResponseOutcome 删除(barrel surface hasattr 字符串已覆盖); KEY 坑 7: R82 API 复用无 as_str 用 str() FrameSeq.new/from_wire/to_wire; 验证 ruff 3 文件 clean + pytest test_tool_protocol.py 316 passed 0.47s + 全回归 2774 passed 10 skipped 1 warning 99s 零回归, 锚点 R84-1 8567189]`
+
+
+---
+
+## R85 — xai-tool-protocol methods.rs：JSON-RPC 方法目录枚举（35 变体单源宏 → Python StrEnum，envelope method 字段消费层）
+
+锚点:R85-1 ae6e1a5
+
+### 本轮目标
+
+继续 `xai-tool-protocol` crate 的模块化迁移（R82 地基 → R83 wire 枚举 → R84 envelope → R85 methods）。本轮迁移 `crates/common/xai-tool-protocol/src/methods.rs`（209 行）：JSON-RPC 方法目录枚举 `Method`，作为 R84 `envelope.py` 的 `method` 字段消费层（envelope 的 `method` 是裸 `str`，由 `Method.as_wire_str()` 生产、`Method.from_wire_str()` 回收）。额外收获：把 R84 envelope 的保真度对照 Grok 原生 `tests/jsonrpc_envelope.rs`（13 个测试）做一次逐测试核对，确认 R84 无遗漏。
+
+### 融合结论
+
+- **单源宏 → 数据驱动 StrEnum**：Grok 用 `define_methods!` 宏从一张 `(name, wire)` 表生成枚举 + serde rename + `as_wire_str`/`from_wire_str`/`ALL` + Display。Python 用 `enum.StrEnum` 落同一纪律——成员值**就是** wire 字符串（匹配 `#[serde(rename = $wire)]`），`__str__` 返回值（匹配 Rust `Display` 委托 `as_wire_str`），JSON 序列化为带引号的 wire 字符串。无需手写 rename 表，成员声明即单一真理来源。
+- **`from_wire_str` via `_value2member_map_`**：枚举内部「值→成员」字典，O(1) 查表，未知返回 `None`（匹配 Rust 可失败匹配返回 `None`，而非 panic）。
+- **`Method.ALL = tuple(Method)`**：类主体后赋值（枚举无法在自身体内引用自身），`# type: ignore[attr-defined]`。匹配 Rust `pub const ALL: &[Method]` 切片；迭代顺序 = 声明顺序。
+- **`UNKNOWN_METHOD_MSG_PREFIX` 固定**：`"unknown method \`"` ——OLD hub 拒绝未知 method 的消息前缀形状。当前客户端已改用 `hello_ack` 的 `capabilities` 广告探测 hub 版本，但这个前缀形状必须固定，因为 SDK 早期版本构建的终端二进制仍按此精确前缀做 OLD-hub 检测，它们仍在现网。**不要随意改动。**
+- **10 个 `#[doc]` 变体语义保留**：Python `StrEnum` 成员无法在声明处携带 per-member docstring（与 Rust 不同），用 `_METHOD_DOCS` 字典 + `method_doc()` 访问器保留 10 个有语义价值的变体文档（SessionAttachServer / ToolCancel / HookReply / TracesDonate / LogsDonate / MetricsDonate / ServersList / Serve / SessionBind / SessionUnbind）。其中 `ToolCancel` 是 `Hook` + `HookEvent::Cancel` 的语法糖这种关键语义尤其要保留。
+- **方向分组保留源序**：35 变体按方向分组（harness→service 18 / tool_server→service 6 / service→tool_server 1 / service→harness 3 / server-discovery 1 / tool_server status 3 / session lifecycle 3），声明顺序与 Grok 一致。枚举是扁平的——方向强制是 hub 的职责，不是协议 crate 的。
+
+### 交付
+
+| 文件 | 变更 | 说明 |
+|---|---|---|
+| `agent/minimax_code/tool_protocol/methods.py` | 新增 ~200 行 | `Method(StrEnum)` 35 变体 + `as_wire_str`/`from_wire_str`/`ALL` + `UNKNOWN_METHOD_MSG_PREFIX` + `_METHOD_DOCS`/`method_doc()` |
+| `agent/minimax_code/tool_protocol/__init__.py` | 改 | barrel 加 `Method`/`UNKNOWN_METHOD_MSG_PREFIX` 导入 + `__all__` 段 + docstring R85 bullet（methods 从 deferred 移除） |
+| `agent/tests/test_tool_protocol.py` | 改 | barrel 导入加 2 符号 + submodule 加 `method_doc`；追加 `TestMethod`（17 测试：ALL 计数/声明序、全 35 往返、value/wire、Display via `__str__`、未知返 None、特定 wire 串、serde 往返、PREFIX 固定、方向分组、method_doc 有/无、envelope 跨模块消费、StrEnum 子类、barrel 单源）+ `TestPackageSurfaceR85`（3 测试） |
+| `docs/evolution/ITERATION_LOG.md` | 追加 | 本条目 |
+
+### 映射决策树 + 坑
+
+1. **枚举承载形态**：Rust `#[derive(Serialize, Deserialize)] enum Method` + `#[serde(rename = $wire)]` → Python `enum.StrEnum`（成员值 = wire 字符串）。决策：StrEnum 是 Rust「serde rename 枚举」的 Python 等价物——值即 wire 串，`__str__` 即 `as_wire_str`，JSON 序列化即带引号 wire 串。比「`(name, value)` 元组表 + 手写映射函数」省一个数据源（KISS/DRY）。UP042 合规（`(str, Enum)` 必须 StrEnum）。
+2. **`from_wire_str` 实现**：候选 A `_value2member_map_.get(s)`（O(1) 查表，未知返 None）；候选 B 遍历比较。选 A——枚举内部字典正是为此而生，且 None 返回匹配 Rust 可失败语义。
+3. **`ALL` 放哪**：候选 A 类内 `ALL = ...`（不可行——枚举体内无法引用自身）；候选 B 模块级 `Method.ALL = tuple(Method)` 类后赋值。选 B + `# type: ignore[attr-defined]`。
+4. **per-member docstring**：Rust `#[doc]` 在变体上；Python StrEnum 成员无 per-member docstring 槽。决策：`_METHOD_DOCS` 字典 + `method_doc()` 函数，保留 10 个有语义的变体。不强行给全部 35 个加（YAGNI——其余 25 个名字自解释）。
+5. **barrel 导入顺序**：ruff isort `order-by-type` 默认 true——SCREAMING_SNAKE 常量组内字母序（`UNKNOWN_METHOD_MSG_PREFIX` < `WORKSPACE_*`，U<W），PascalCase 组内字母序（`Mcp` < `Method`）。手写易错，用 `ruff check --fix`（仅对 R85 编辑的两个文件，无附带损害风险）一键修正。
+6. **坑（em-dash / heredoc）**：barrel docstring 含 em-dash + RST 反引号，Edit 的 em-dash 匹配不可靠 → 用 Write 整文件重写 barrel（最干净，避开 7 个 Edit 的 em-dash 锚点风险）。ITERATION_LOG 条目含反引号 → Write 临时文件 + `cat >>`（避开 heredoc 反引号坑）。
+
+### 验证
+
+- `uv run ruff check minimax_code/tool_protocol tests/test_tool_protocol.py` → `All checks passed!`（isort `--fix` 后 CLEAN）
+- `uv run pytest tests/test_tool_protocol.py -q` → **333 passed**（R84 的 316 + R85 新增 17）
+- `uv run pytest -q`（全量回归）→ **2791 passed, 10 skipped**（2774 → 2791，+17 R85，零回归）
+- **额外收获：R84 envelope 保真度核对**——对照 Grok 原生 `tests/jsonrpc_envelope.rs`（13 个测试：version literal、id string/number、bool 拒绝、i64 范围、request/notification 字段序、`session_id` skip、error `data` skip、response `result` XOR `error` 双臂/缺臂拒绝、`with_session` 链式、ok/err 构造器），逐测试与 R84 `envelope.py` 实现匹配——**保真度完美，无需修复**，确认 R84 正确。
+
+### YAGNI 边界
+
+- **未迁移** `Method` 的 `new_uuid_v7`（无对应，Rust 枚举本身不生成 id）；`UNKNOWN_METHOD_MSG_PREFIX` 的消息构造器（Grok 也没有，只导出前缀常量）；方向强制的 hub 逻辑（不在协议 crate 范围）。
+- **barrel 不导出** `method_doc`（镜像 Rust `lib.rs` `pub use methods::{Method, UNKNOWN_METHOD_MSG_PREFIX}`——只 2 符号），`method_doc` 留在 submodule，测试从 submodule 直导。
+- **docstring 概览标题**未加 R85（test 文件顶部 docstring 仍写「R82+R83+R84 envelope」）——methods 是 envelope 的消费层，语义归类进 envelope 段落合理，避免过度编辑标题（KISS）。
+- **crate 延迟模块**（lib.rs 声明）：`capabilities`, `registration`, `frames`(1549 行), `session_event`(404), `turn_hook`(700), `hook`, `registry_error`。R86+ 按依赖序迁移。
+
+### Commit
+
+```
+feat(platform): R85 迁移 xai-tool-protocol methods.rs（JSON-RPC 方法目录 StrEnum）
+
+- Method(StrEnum) 35 变体：成员值=wire 字符串（匹配 #[serde(rename)]），
+  __str__=as_wire_str（匹配 Rust Display 委托），JSON 序列化为带引号 wire 串
+- as_wire_str / from_wire_str（via _value2member_map_，O(1) 查表，未知返 None
+  匹配 Rust 可失败匹配）/ Method.ALL（类后赋值 tuple，声明序）
+- UNKNOWN_METHOD_MSG_PREFIX 固定（fleet-compat：OLD-hub 检测前缀形状，
+  SDK 早期终端二进制仍按此精确前缀，不要随意改）
+- _METHOD_DOCS 字典 + method_doc()：保留 10 个 #[doc] 变体语义
+  （StrEnum 成员无 per-member docstring 槽；ToolCancel=Hook+Cancel 糖等）
+- 方向分组保留源序（扁平枚举，方向强制是 hub 职责）
+- barrel 加 Method/UNKNOWN_METHOD_MSG_PREFIX 导入 + __all__ + docstring
+- 测试：TestMethod（17）+ TestPackageSurfaceR85（3）
+- 额外收获：R84 envelope 保真度对照 Grok 原生 jsonrpc_envelope.rs（13 测试）逐核对，完美无遗漏
+
+验证：ruff CLEAN / tool_protocol 333 passed / 全量 2791 passed(+17) +10 skipped
