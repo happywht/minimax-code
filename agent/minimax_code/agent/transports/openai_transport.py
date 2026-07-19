@@ -64,12 +64,13 @@ class OpenAITransport(LLMTransport):
     def last_reasoning_effort(self) -> ReasoningEffort | None:
         """Reasoning effort normalised from the most recent ``stream_chat`` call.
 
-        R54 pipe-through: the value is coerced and recorded for the wire layer
-        to read once the OpenAI-compatible effort contract (the official
-        ``reasoning_effort`` field accepts only ``minimal`` / ``low`` / ``medium``
-        / ``high`` — not ``none`` / ``xhigh`` / ``max`` — and many compat
-        endpoints reject it outright) is settled. Until then nothing is emitted,
-        so a ``None`` effort leaves the request kwargs unchanged.
+        R54 records the coerced value; R56 emits it on the wire via the OpenAI
+        ``reasoning_effort`` field (the emit seam
+        :meth:`ReasoningEffort.to_openai_effort_token` degrades ``xhigh`` →
+        ``high`` and drops ``none``; the official field accepts only ``minimal``
+        / ``low`` / ``medium`` / ``high``, and many compat endpoints reject it
+        outright). A ``None`` effort (the AgentConfig default) emits nothing, so
+        the request kwargs stay byte-identical to the pre-R54 path.
         """
         return self._last_reasoning_effort
 
@@ -92,13 +93,12 @@ class OpenAITransport(LLMTransport):
         ``choices[0].delta`` we map to :class:`StreamChunk`.
         """
         self._thinking_count = 0
-        # R54 pipe-through: coerce the runtime effort value once, up-front, so
-        # the wire layer can read ``self._last_reasoning_effort`` when the
-        # OpenAI-compatible effort contract settles. Nothing is emitted yet —
-        # the ``kwargs`` dict below is built from the same fields as before
-        # regardless of this value (TODO: conditionally set ``reasoning_effort``
-        # in ``kwargs`` once we confirm the endpoint accepts it and which subset
-        # of variants; the official field rejects ``none`` / ``xhigh`` / ``max``).
+        # R54 coerce + R56 emit: normalise the runtime effort once, up-front,
+        # then read it back below to emit the OpenAI ``reasoning_effort`` token.
+        # The emit seam (``to_openai_effort_token``) drops ``none`` and degrades
+        # ``xhigh`` → ``high`` (the official field accepts only minimal / low /
+        # medium / high), so a ``None`` effort (the AgentConfig default) leaves
+        # ``kwargs`` untouched — zero regression vs the pre-R54 path.
         self._last_reasoning_effort = coerce_effort(reasoning_effort)
 
         # R18: circuit-breaker pre-check. Fail-open — a missing / disabled /
@@ -126,6 +126,17 @@ class OpenAITransport(LLMTransport):
             kwargs["temperature"] = temperature
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        # R56: emit the reasoning-effort token on the wire. The emit seam drops
+        # ``none`` and degrades ``xhigh`` → ``high``; a ``None`` effort (the
+        # AgentConfig default) yields ``None`` here, so ``kwargs`` stays
+        # unchanged — byte-identical to the pre-R56 request.
+        _effort_token = (
+            self._last_reasoning_effort.to_openai_effort_token()
+            if self._last_reasoning_effort is not None
+            else None
+        )
+        if _effort_token is not None:
+            kwargs["reasoning_effort"] = _effort_token
 
         try:
             stream = await client.chat.completions.create(**kwargs)

@@ -93,6 +93,35 @@ class ReasoningEffort(StrEnum):
             return "max"
         return self.value
 
+    def to_openai_effort_token(self) -> str | None:
+        """OpenAI chat-completions ``reasoning_effort`` token; ``None`` if unsupported.
+
+        The OpenAI counterpart of :meth:`to_messages_api` (the Anthropic Messages
+        API seam). The two differ because the wire contracts differ — the
+        official OpenAI ``reasoning_effort`` request field accepts only
+        ``minimal`` / ``low`` / ``medium`` / ``high`` (it rejects ``none`` /
+        ``xhigh`` / ``max``, and many OpenAI-compatible endpoints reject the
+        field outright):
+
+        * ``None`` variant → ``None`` (not injected) — same as
+          :meth:`to_messages_api`; the field has no ``none`` tier, so the
+          endpoint falls back to its default.
+        * ``Minimal`` → ``"minimal"`` — *kept*, unlike :meth:`to_messages_api`
+          (where ``Minimal`` → ``None``): the OpenAI field accepts ``minimal``
+          as its lowest tier, so it is emitted rather than dropped.
+        * ``Xhigh`` → ``"high"`` — *degraded*, unlike :meth:`to_messages_api`
+          (where ``Xhigh`` → ``"max"``): OpenAI's highest tier is ``high``, so
+          xhigh maps to the closest supported token (best-effort semantic
+          fidelity — deeper thinking was requested, so give the deepest
+          available rather than dropping the signal).
+        * ``Low`` / ``Medium`` / ``High`` → their own value (pass-through).
+        """
+        if self is ReasoningEffort.NONE:
+            return None
+        if self is ReasoningEffort.XHIGH:
+            return "high"
+        return self.value
+
 
 def parse_effort_token(token: str) -> ReasoningEffort | None:
     """Canonical wire parse only (``max`` → ``Xhigh``); ``None`` on unknown.

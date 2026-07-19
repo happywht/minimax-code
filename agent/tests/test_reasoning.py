@@ -67,6 +67,41 @@ def test_effort_to_messages_api_xhigh_maps_to_max():
     assert R.ReasoningEffort.HIGH.to_messages_api() == "high"
 
 
+def test_effort_to_openai_token_none_omitted():
+    """OpenAI emit seam: ``None`` variant → ``None`` (not injected).
+
+    The official ``reasoning_effort`` field has no ``none`` tier (it rejects
+    ``"none"``), so the ``None`` variant maps to ``None`` — the endpoint then
+    falls back to its default. Mirrors :meth:`to_messages_api`.
+    """
+    assert R.ReasoningEffort.NONE.to_openai_effort_token() is None
+
+
+def test_effort_to_openai_token_xhigh_degrades_to_high():
+    """OpenAI emit seam: ``Xhigh`` degrades to ``"high"`` (OpenAI's highest tier).
+
+    Unlike :meth:`to_messages_api` (where ``Xhigh`` → ``"max"``), the OpenAI
+    field has no xhigh/max tier, so the closest supported token is ``high`` —
+    best-effort semantic fidelity (deeper thinking requested, deepest available
+    given) rather than dropping the signal or erroring.
+    """
+    assert R.ReasoningEffort.XHIGH.to_openai_effort_token() == "high"
+
+
+def test_effort_to_openai_token_minimal_kept_unlike_anthropic():
+    """OpenAI emit seam: ``Minimal`` → ``"minimal"`` (kept, not omitted).
+
+    This is the key divergence from :meth:`to_messages_api` (where ``Minimal``
+    → ``None``): the OpenAI field *accepts* ``minimal`` as its lowest tier, so
+    it is emitted rather than dropped. The middle variants pass through
+    unchanged (their own wire token).
+    """
+    assert R.ReasoningEffort.MINIMAL.to_openai_effort_token() == "minimal"
+    assert R.ReasoningEffort.LOW.to_openai_effort_token() == "low"
+    assert R.ReasoningEffort.MEDIUM.to_openai_effort_token() == "medium"
+    assert R.ReasoningEffort.HIGH.to_openai_effort_token() == "high"
+
+
 def test_effort_str_is_wire_token():
     """``str(effort)`` is the canonical wire token (grok ``Display → as_str``)."""
     assert str(R.ReasoningEffort.NONE) == "none"

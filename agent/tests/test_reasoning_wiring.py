@@ -18,11 +18,17 @@ these tests prove it is *wired in*.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
 from minimax_code.agent import reasoning as R
 from minimax_code.agent.core import AgentConfig, AgentCore
 from minimax_code.agent.llm import MiniMaxClient
 from minimax_code.agent.tools import ToolRegistry
 from minimax_code.agent.transports.mock_transport import MockTransport
+from minimax_code.agent.transports.openai_transport import OpenAITransport
 
 _MSGS = [{"role": "user", "content": "ping"}]
 
@@ -187,3 +193,111 @@ async def test_core_max_alias_resolves_to_xhigh():
     )
     await core._stream_turn(_PING)
     assert client.last_reasoning_effort is R.ReasoningEffort.XHIGH
+
+
+# ---------------------------------------------------------------------------
+# OpenAI transport wire emission (R56)
+# ---------------------------------------------------------------------------
+#
+# R54/R55 carried reasoning_effort end-to-end as pipe-through (coerce + record,
+# no wire signal). R56 closes the loop: ``OpenAITransport`` now *emits* the
+# ``reasoning_effort`` field on the wire via the emit seam
+# (:meth:`ReasoningEffort.to_openai_effort_token`). These tests inject a fake
+# SDK client that captures the ``kwargs`` dict passed to
+# ``chat.completions.create`` so we can assert exactly what reached the wire:
+# the default (None) leaves kwargs untouched (zero regression), HIGH/MINIMAL
+# inject their token, XHIGH degrades to "high", and the NONE variant is dropped
+# (the OpenAI field has no ``none`` tier).
+
+
+class _EmptyStream:
+    """An async stream that yields nothing — these tests inspect kwargs, not chunks."""
+
+    def __aiter__(self) -> _EmptyStream:
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+
+class _KwargsCapturingClient:
+    """Minimal fake ``openai.AsyncOpenAI`` that records the create kwargs (R56).
+
+    Modeled on ``_FakeClient`` in ``test_transport_breaker`` but specialised for
+    wire-emission assertions: it captures the exact ``kwargs`` dict the transport
+    builds so a test can assert whether ``reasoning_effort`` was injected (and
+    with what token).
+    """
+
+    def __init__(self) -> None:
+        self.captured_kwargs: dict[str, Any] | None = None
+        outer = self
+
+        class _Completions:
+            async def create(self, **kwargs: Any) -> _EmptyStream:
+                outer.captured_kwargs = dict(kwargs)
+                return _EmptyStream()
+
+        self.chat = SimpleNamespace(completions=_Completions())
+
+    async def close(self) -> None:
+        return None
+
+
+@pytest.fixture
+def openai_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[OpenAITransport, _KwargsCapturingClient]:
+    """An ``OpenAITransport`` wired to a kwargs-capturing fake (breaker disabled).
+
+    Returns ``(transport, fake)`` so a test can drive the stream then assert on
+    ``fake.captured_kwargs`` — the exact kwargs that reached
+    ``chat.completions.create``. The breaker registry is monkeypatched to ``None``
+    (fail-open) so the circuit-breaker pre-check is a no-op.
+    """
+    import minimax_code.app as app
+
+    monkeypatch.setattr(app, "ensure_breaker_registry", lambda: None)
+    fake = _KwargsCapturingClient()
+    transport = OpenAITransport(api_key="k", base_url="http://x", client=fake)
+    return transport, fake
+
+
+async def test_openai_transport_default_emits_no_reasoning_effort(openai_transport):
+    """Zero regression: no effort ⇒ kwargs has no ``reasoning_effort`` key.
+
+    The AgentConfig default (None) flows coerce → None → emit-seam None, so the
+    kwargs dict is byte-identical to the pre-R56 path (no key added).
+    """
+    transport, fake = openai_transport
+    _ = [c async for c in transport.stream_chat(_MSGS, model="m")]
+    assert fake.captured_kwargs is not None
+    assert "reasoning_effort" not in fake.captured_kwargs
+
+
+async def test_openai_transport_high_emits_high_token(openai_transport):
+    """HIGH → ``kwargs["reasoning_effort"] == "high"``."""
+    transport, fake = openai_transport
+    _ = [c async for c in transport.stream_chat(_MSGS, model="m", reasoning_effort="high")]
+    assert fake.captured_kwargs["reasoning_effort"] == "high"
+
+
+async def test_openai_transport_xhigh_degrades_to_high(openai_transport):
+    """XHIGH (via the ``"max"`` alias) → ``"high"`` (degraded; OpenAI max tier)."""
+    transport, fake = openai_transport
+    _ = [c async for c in transport.stream_chat(_MSGS, model="m", reasoning_effort="max")]
+    assert fake.captured_kwargs["reasoning_effort"] == "high"
+
+
+async def test_openai_transport_minimal_emits_minimal(openai_transport):
+    """MINIMAL → ``"minimal"`` (kept — OpenAI accepts it as the lowest tier)."""
+    transport, fake = openai_transport
+    _ = [c async for c in transport.stream_chat(_MSGS, model="m", reasoning_effort="minimal")]
+    assert fake.captured_kwargs["reasoning_effort"] == "minimal"
+
+
+async def test_openai_transport_none_variant_emits_nothing(openai_transport):
+    """The NONE variant → no ``reasoning_effort`` key (OpenAI rejects ``"none"``)."""
+    transport, fake = openai_transport
+    _ = [c async for c in transport.stream_chat(_MSGS, model="m", reasoning_effort="none")]
+    assert "reasoning_effort" not in fake.captured_kwargs

@@ -4105,3 +4105,65 @@ R54 下游半段已就位（client.stream_chat 接受 reasoning_effort），但*
 ### Commit
 
 `feat(platform): R55 reasoning_effort upstream wiring (fuse grok xai-grok-sampling-types)`
+
+## R56 — reasoning_effort 首次真实 wire 发射（融合 grok xai-grok-sampling-types OpenAI 发送接口，pipe-through 闭环）
+
+> 锚定 R55（`f458b20`）。R53（类型层）+ R54（下游 client→transport coerce/record）+ R55（上游 config→core→client）铺设了 reasoning_effort 的完整 pipe-through 管道，但**三阶段始终未发射任何 wire 信号** —— transport 只 coerce + 记录到 `last_reasoning_effort` 观察属性，wire 注入由 R54 两个 transport TODO 锚点持有。**本轮是管道的首个真实 wire 发射**：为 OpenAI-compatible transport（grok/xAI 的原生合约 —— grok-build 整个 sampling-types crate 就是为 xAI OpenAI 兼容端点服务）闭合「记录但不发射」循环。新增 `to_openai_effort_token()` emit seam（reasoning.py，与 R53 的 Anthropic 发送接口 `to_messages_api` 对称），openai_transport.stream_chat 在 kwargs 中有条件注入 `reasoning_effort` 字段。**双 emit seam 设计落地**：Anthropic 发送接口（R53，搁置待 R57）+ OpenAI 发送接口（R56，本轮发射）—— 两者不同是因为 wire 合约不同（OpenAI 字段接受 minimal/low/medium/high，拒绝 none/xhigh/max；Anthropic 接受 max 但丢弃 minimal）。
+
+### 本轮目标
+
+R55 闭合上游后，reasoning_effort 已从 `AgentConfig` 流到 transport 的 `last_reasoning_effort`，但**从未到达 wire**（YAGNI：管道有完整路径却没有出口 = 半截管）。本轮在**零行为回归**前提下发射首个 wire 信号：选 OpenAI transport（而非 Anthropic）是因为 grok-build 是 xAI = OpenAI 兼容，OpenAI wire 是 grok 的原生合约 —— 最直接的融合实现。**核心设计决策**：双 emit seam —— `to_messages_api()`（Anthropic，R53 已建但未调用）对称地新增 `to_openai_effort_token()`（OpenAI，本轮调用）；两者的语义分歧点（MINIMAL：Anthropic 丢弃 vs OpenAI 保留；XHIGH：Anthropic→"max" vs OpenAI→"high" 降级）是**有意的**，因为各自 wire 合约的最优保真不同。**零回归保证链**：默认 `AgentConfig.reasoning_effort=None` → `coerce_effort(None)=None` → 调用点 `is not None` 保护短路 → `to_openai_effort_token` 从不被调用 → kwargs 不获得 `reasoning_effort` key → 字节级与 R55 前请求一致。
+
+### 融合结论
+
+- ✅ **保留**：`ReasoningEffort.to_openai_effort_token()` —— OpenAI chat-completions `reasoning_effort` token 发送接口，与 R53 的 `to_messages_api()`（Anthropic 发送接口）对称。语义映射：`None` 变体→`None`（不注入，字段无 none 层级）；`Minimal`→`"minimal"`（**保留**，与 Anthropic 发送接口丢弃 minimal 不同 —— OpenAI 字段接受 minimal 作为最低层级）；`Xhigh`→`"high"`（**降级**，与 Anthropic 发送接口→"max" 不同 —— OpenAI 最高层级是 high，xhigh 映射到最接近的可支持 token = 尽力而为语义保真，比丢弃信号更好）；`Low`/`Medium`/`High`→原值（pass-through）。docstring 明确双发送接口对称 + 三处语义分歧点 + 零回归保证。
+- ✅ **保留**：`openai_transport.stream_chat` kwargs 注入 —— 在 `max_tokens` 条件之后、`try:` 之前注入 `_effort_token`（`self._last_reasoning_effort.to_openai_effort_token()` if `is not None` else None），仅在 token 非 None 时设置 `kwargs["reasoning_effort"]`。注释说明 emit seam 丢弃 none / 降级 xhigh，None effort（AgentConfig 默认）让 kwargs 字节不变。
+- ✅ **保留**：`last_reasoning_effort` property docstring 更新 —— 移除 R54 的「Nothing is emitted yet」措辞，改为「R54 记录强制转换后的值；R56 通过 OpenAI `reasoning_effort` 字段在 wire 上发送它」。
+- ✅ **保留**：8 个新测试 —— 3 个 reasoning.py emit-seam 单元测试（NONE 省略 / XHIGH 降级 high / MINIMAL 保留 + 中间变体 pass-through）+ 5 个 test_reasoning_wiring.py 端到端 wire emission 测试（通过 `_KwargsCapturingClient` fake 捕获 `chat.completions.create(**kwargs)` 的 kwargs 字典，断言默认零回归无 key / HIGH→"high" / XHIGH→"high" 降级 / MINIMAL→"minimal" 保留 / NONE 变体无注入）。
+- ❌ **放弃**：**不发射 Anthropic thinking-budget wire** —— 仍由 R54 `anthropic_transport.py` 第 427-428 行 TODO 锚点持有（通过 `thinking={"type":"enabled","budget_tokens":N}` 或 `output_config.effort` 发射），待 R57。本轮聚焦 OpenAI（grok 原生合约）。
+- ❌ **放弃**：**不通过 IPC 暴露 reasoning_effort**（agent.send_message 参数）—— 前端按会话设置 effort 需 IPC 契约三同步（docs/ipc-contract.md + web/src/types/ipc.ts + protocol.py），留独立轮次。
+- ❌ **放弃**：**不迁移 sampling-types crate 其余类型**（ChatCompletionRequest/SamplingConfig/ToolChoice/Role/Usage）—— 继续 R53/R54/R55/R56 聚焦策略，本轮只闭合 ReasoningEffort 的 wire 发射。
+
+### 交付
+
+- `agent/minimax_code/agent/reasoning.py`（改，1 处）— 在 `to_messages_api()` 之后（第 94 行之后）、`parse_effort_token` 之前加 `to_openai_effort_token` 方法。docstring 明确：OpenAI 发送接口 = Anthropic 发送接口的对应物；两者不同因 wire 合约不同；三处语义分歧点（NONE→None / MINIMAL→保留 / XHIGH→降级）逐条列出 + 与 `to_messages_api` 的对比。
+- `agent/minimax_code/agent/transports/openai_transport.py`（改，3 处）— (1) `last_reasoning_effort` property docstring 更新（移除「Nothing is emitted yet」，改为 R54 记录 + R56 wire 发射）；(2) R54 TODO 注释升级为 R56 注释（「R54 coerce + R56 emit: normalise the runtime effort once, up-front, then read it back below to emit the OpenAI token」）；(3) `max_tokens` 条件后、`try:` 前注入 wire 发射块（`_effort_token` 计算 + 非 None 时设置 `kwargs["reasoning_effort"]`）。
+- `agent/tests/test_reasoning.py`（改，1 处）— 在 `test_effort_to_messages_api_xhigh_maps_to_max` 之后、`test_effort_str_is_wire_token` 之前加 3 个 emit-seam 单元测试（NONE 省略 / XHIGH 降级 high / MINIMAL 保留 + LOW/MEDIUM/HIGH pass-through）。
+- `agent/tests/test_reasoning_wiring.py`（改，导入块 + 末尾追加）— (1) 导入块加 `SimpleNamespace`（types）+ `Any`（typing）+ `pytest` + `OpenAITransport`（transports.openai_transport）；(2) 文件末尾追加「OpenAI transport wire emission (R56)」段落：`_EmptyStream`（空异步迭代器，测试只查 kwargs 不查 chunk）+ `_KwargsCapturingClient` fake（嵌套 `_Completions.create(**kwargs)` 捕获 kwargs）+ `openai_transport` pytest fixture（返回 `(transport, fake)` 元组，monkeypatch `app.ensure_breaker_registry = lambda: None` 使熔断器 fail-open）+ 5 个端到端测试。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+### 映射决策树（本轮 OpenAI wire 发射 + 双 emit seam 设计 + kwargs 捕获测试模式）
+
+本轮是 R53/R54/R55 三阶段 pipe-through 管道的**出口闭合**（首个真实 wire 发射）。决策树无新增枚举 —— 复用 R53 ReasoningEffort + R54 coerce_effort + R54 `last_reasoning_effort` 观察属性。**新增的是 emit seam**：`to_openai_effort_token()` 与 R53 的 `to_messages_api()` 形成**双发送接口**，各自服务一个 wire 合约。**双 emit seam 的语义分歧点矩阵**：
+
+| 变体 | `to_messages_api`（Anthropic，R53） | `to_openai_effort_token`（OpenAI，R56） | 分歧原因 |
+|---|---|---|---|
+| `NONE` | `None`（省略） | `None`（省略） | 一致 —— 两端都无 none 层级 |
+| `MINIMAL` | `None`（省略） | `"minimal"`（**保留**） | OpenAI 字段接受 minimal 为最低层级；Anthropic 丢弃 |
+| `LOW`/`MEDIUM`/`HIGH` | 原值 | 原值 | 一致 —— pass-through |
+| `XHIGH` | `"max"` | `"high"`（**降级**） | Anthropic 有 max 层级；OpenAI 最高是 high，降级保语义 |
+
+**坑 1（自发现，已预判修复）**：**kwargs 捕获测试模式** —— 断言 wire 发射需要看到 `chat.completions.create(**kwargs)` 收到的确切 kwargs 字典。镜像 `test_transport_breaker.py` 的 `_FakeClient`/`_FakeChat`/`_FakeCompletions.create(**kwargs)` 模式（第 154-198 行），特化为 kwargs 捕获：`_KwargsCapturingClient` 嵌套 `_Completions.create` 把 `dict(kwargs)` 存到 `outer.captured_kwargs`。pytest fixture `openai_transport` 返回 `(transport, fake)` 元组 + monkeypatch `app.ensure_breaker_registry = lambda: None`（熔断器 fail-open：`resolve_breaker("llm:openai")` 返回 None → `check_or_raise` 无操作）。测试解构 `transport, fake = openai_transport` 后断言 `fake.captured_kwargs`。**结果**：5 个端到端测试一次通过，预判正确。
+
+**坑 2（自发现）**：**MINIMAL 语义分歧是双 emit seam 的关键测试点** —— 必须显式断言 OpenAI 保留 `"minimal"`（`test_effort_to_openai_token_minimal_kept_unlike_anthropic` + `test_openai_transport_minimal_emits_minimal`），否则两个 seam 的差异会模糊成「都 pass-through」。XHIGH 降级同理（`test_effort_to_openai_token_xhigh_degrades_to_high` + `test_openai_transport_xhigh_degrades_to_high`）。这两个分歧点是双 emit seam 存在的**全部理由** —— 若两端映射相同，一个发送接口就够（DRY），无需双 seam。
+
+**预存债务（非本轮引入，按轮次独立性保留）**：完整套件 `test_hunks_types.py::test_hunk_value_equality` 偶发失败 —— 两个 `_make_hunk()` 调用的 `created_at` datetime 微秒漂移（~1ms，440447 vs 441449）。**隔离重跑 `pytest tests/test_hunks_types.py::test_hunk_value_equality` → 1 passed in 0.11s**，确认是 time-sensitive flake（R39 xai-hunk-tracker 预存债务：`_make_hunk()` 两次调用 `datetime.now()`，亚毫秒漂移致 datetime 不等）。**R56 未触及任何 hunk 代码**（reasoning.py / openai_transport.py / 2 个 reasoning 测试文件，零 hunk 相关）。按 CLAUDE.md「轮次独立性：不修复不相关预存 lint/错误」原则保留 —— 在 R56 修 R39 的 time-sensitive 测试会模糊本轮「wire 发射」清晰边界，违背 YAGNI。
+
+### 验证
+
+- `ruff check` R56 改动的 4 文件（reasoning.py + openai_transport.py + test_reasoning.py + test_reasoning_wiring.py）→ **All checks passed!**（R56 新增代码零 ruff 错误）。
+- `pytest tests/test_reasoning.py tests/test_reasoning_wiring.py tests/test_transport_breaker.py -q` → **73 passed**（含 R56 新增 8 测试：3 emit-seam 单元 + 5 wire emission 端到端；test_transport_breaker 作为 kwargs 捕获模式参考零回归）。
+- 完整套件 `pytest` → **1754 passed, 10 skipped, 1 failed**（R55 1747 → R56 1755 总数 = 1754 通过 + 1 flaky；**+8 精确**，10 skip 与 R55 一致；唯一失败 = `test_hunks_types.py::test_hunk_value_equality`，R39 预存 flake，隔离重跑 1 passed，非 R56 引入）。
+
+### YAGNI 边界
+
+- ❌ **不发射 Anthropic thinking-budget wire** —— 仍由 R54 `anthropic_transport.py` TODO 持有（待 R57，通过 `thinking={"type":"enabled","budget_tokens":N}` 或 `output_config.effort`）。本轮聚焦 OpenAI（grok 原生合约）。
+- ❌ **不通过 IPC 暴露 reasoning_effort** —— 前端按会话设置 effort 需 IPC 契约三同步（docs + types + protocol），留独立轮次。
+- ❌ **不修复 test_hunks_types 的预存 flake**（created_at 微秒漂移）—— R39 预存 time-sensitive 债务，非 R56 引入，按轮次独立性保留。
+- ❌ **不迁移 sampling-types crate 其余类型**（ChatCompletionRequest/SamplingConfig/ToolChoice/Role/Usage）—— 继续聚焦 ReasoningEffort。
+- ❌ **不给 reasoning_effort 加构造期非 None 默认** —— 仅 None；构造期默认 = 隐式全局策略，应由显式配置/IPC 提供。
+- ❌ **不合并双 emit seam 为单函数** —— `to_messages_api` 与 `to_openai_effort_token` 的语义分歧（MINIMAL/XHIGH）是各自 wire 合约的最优保真，合并会丢失保真度或引入 wire 错误。
+
+### Commit
+
+`feat(platform): R56 OpenAI transport reasoning_effort wire emission (fuse grok xai-grok-sampling-types)`
