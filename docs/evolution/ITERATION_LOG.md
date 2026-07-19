@@ -3338,4 +3338,63 @@ MCP-over-ACP 常量是 dataclass 未用 pydantic 序列化面）；**纯值相�
 
 ### Commit
 
-`feat(platform): R40 prompt queue wire types (fuse grok xai-prompt-queue)`
+`feat(platform): R40 prompt queue wire types (fuse grok xai-prompt-queue)` (`5de390a`)
+
+---
+
+## R41 — 跨平台系统睡眠/唤醒通知抽象（融合 grok `xai-system-power`）（阶段 E 首轮）
+
+### 本轮目标
+
+从 grok 的 `xai-system-power`（743 行：lib.rs 180 + windows.rs 103 + linux.rs 93 + macos.rs 367）引入**跨平台系统睡眠/唤醒（挂起/恢复）通知抽象层**：`PowerEvent`（`WillSleep`/`DidWake` 单元枚举）+ `PowerState`（`FullWake`/`DarkWake`/`Unknown` 单元枚举）+ `PowerCallback` 类型别名 + `SystemPowerListener`（RAII，`start → Optional`，`Drop` 清理）+ `current_power_state()` 同步查询。
+
+**阶段 E 平台化首轮**。产品价值：MiniMax Code 的 agent 跑长生命周期循环——LLM 流式、APScheduler cron、secret 刷新、多轮工具；OS 挂起会令 asyncio 定时器停转、在途网络响应丢失（grok 的原始动机：OIDC refresh-token 轮换响应在挂起边界丢失，客户端持有死 token，用户被迫重登）。`WillSleep` 让 sleep-gate 推迟*发起*不可逆操作；`DidWake` 让它补偿（重取/重排）。本轮交付词汇表 + 通知原语，消费端（AuthManager-style sleep gate、scheduler 挂起感知 deferral）是接线轮。
+
+本轮实施：host-agnostic 抽象 + Windows ctypes 实现（`PowerRegisterSuspendResumeNotification` + `DEVICE_NOTIFY_CALLBACK`）+ no-op fallback（其他平台 `start → None`）。镜像 grok 的 `#[cfg(target_os)]` 编译时平台拆分 + no-op 模块。
+
+### 融合结论
+
+**✅ 保持（映射到 Python）**：
+- `PowerEvent`（2 单元变体，`Copy+PartialEq+Eq`）→ `@unique enum.Enum`（决策树第三分支，同 R35/R37/R38）。
+- `PowerState`（3 单元变体，`Copy+PartialEq+Eq`）→ `@unique enum.Enum`。
+- `PowerCallback`（`Box<dyn Fn(PowerEvent) + Send + Sync + 'static>`）→ `Callable[[PowerEvent], None]` 类型别名。
+- `SystemPowerListener`（RAII + `start → Option<Self>` + `Drop` 释放 OS 资源）→ Python 类（`__slots__` 持 stop 闭包 + `start` classmethod → `Optional[Self]` + `close()` 幂等 + `__del__` best-effort）；平台 impl 返回 stop 闭包，`close` 调用之。
+- 跨平台 `#[cfg(target_os)]` **编译时**平台分发 → Python `sys.platform` **运行时**分发 + 平台模块隔离（`_windows` 仅 win32 导入——`ctypes.wintypes` 在非 win32 不可导入，天然隔离）。
+- Windows FFI（`PowerRegisterSuspendResumeNotification` + `DEVICE_NOTIFY_CALLBACK` 回调 + `PowerUnregisterSuspendResumeNotification`）→ ctypes（`WINFUNCTYPE` 回调签名 + `_DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS` Structure + 回调对象/结构体由 stop 闭包捕获 pin，`stop` 调用后置 `None` 释放）。
+- `current_power_state()` Windows 返回 `Unknown`（grok windows.rs 奇偶）→ 保持。
+
+**❌ 放弃（YAGNI，环境扩展轮）**：
+- macOS IOKit 端口（grok `macos.rs` 367 行，需 pyobjc）。
+- Linux logind D-Bus 端口（grok `linux.rs` 93 行，需 dbus）。
+- macOS dark-wake 真实查询（`current_power_state` 的 `FullWake`/`DarkWake` 区分）——依赖 macOS 端口，本轮全平台返回 `Unknown`（grok Windows/Linux 已如此）。
+
+### 交付
+
+- `agent/minimax_code/system_power/types.py`（新）— `PowerEvent`（2 变体）+ `PowerState`（3 变体）`@unique Enum` + `PowerCallback` 别名 + 映射/产品文档，`__all__` 3 符号。
+- `agent/minimax_code/system_power/_windows.py`（新）— ctypes 实现：`_DEVICE_NOTIFY_CALLBACK_T`（`WINFUNCTYPE(ULONG, LPVOID, ULONG, LPVOID)`）+ `_DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS` Structure + `start()` 注册（pin cb/params 于 stop 闭包，`PBT_APMSUSPEND`→WillSleep / `PBT_APMRESUMEAUTOMATIC`+`PBT_APMRESUMESUSPEND`→DidWake，幂等双 fire 不去重）+ `current_power_state()` 返回 `Unknown`。仅 win32 导入。
+- `agent/minimax_code/system_power/_fallback.py`（新）— no-op：`start` 返回 `None`、`current_power_state` 返回 `Unknown`。
+- `agent/minimax_code/system_power/listener.py`（新）— `SystemPowerListener` RAII 类（`__slots__=("_stop",)` + `start` classmethod → `Optional` + `close()` 幂等 + `__del__` best-effort）+ `current_power_state()` 分发；`sys.platform` 选 `_impl`。
+- `agent/minimax_code/system_power/__init__.py`（新）— 重导出 5 符号 + 范围 docstring（含"不在这里"声明：macOS/Linux 端口推迟）。
+- `agent/tests/test_system_power.py`（新）— 11 测试：grok 镜像（`power_event_copy_eq`、`start_and_drop_is_clean`）+ Python 特有（PowerEvent/PowerState members、PowerState distinct、PowerCallback 别名、`current_power_state` 返回 PowerState、Unknown everywhere、fallback start→None、fallback Unknown、listener close 幂等、win32_only 真实注册清理）。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+映射决策树**第七次重申**（payload 决定映射）：本轮两个**纯单元枚举**（`Copy+PartialEq+Eq` 无 payload）→ `@unique Enum`（第三分支）。**新增首次遇到平台 FFI crate**——Rust `#[cfg(target_os)]` 编译时平台分发 → Python `sys.platform` 运行时分发 + 平台模块隔离；Rust `Box<dyn Fn + Send + Sync + 'static>` callback → `Callable` 别名（OS 线程调用）；Rust `Box::into_raw` 堆 pin（OS 持原始指针）→ ctypes 回调对象 + Structure 由 stop 闭包捕获 pin（`nonlocal cb, params` 绑定入闭包单元格，`stop` 调用后置 `None` 释放，镜像 grok `Drop` 回收堆）。
+
+### 验证
+
+- `ruff check --fix` → Found 1 error (1 fixed, 0 remaining)（I001 导入排序 listener.py）。
+- `ruff check` → **All checks passed!**
+- `pytest tests/test_system_power.py -q` → **11 passed in 0.05s**（grok 2 镜像 + 9 Python 特有，win32_only 在本机真跑 ctypes 注册）。
+- 完整套件 `pytest` → **1626 passed in 103.23s**（R40 1615 → R41 1626，**+11 精确**，零回归）。
+
+### YAGNI 边界
+
+- ❌ **不迁移 macOS IOKit 端口**——grok `macos.rs` 367 行，需 pyobjc 绑定；非当前开发平台，`_fallback` 给干净降级（`start→None`），macOS agent 不受影响。
+- ❌ **不迁移 Linux logind D-Bus 端口**——grok `linux.rs` 93 行，需 dbus；同上。
+- ❌ **不实现 macOS dark-wake 真实查询**——`current_power_state` 全平台返回 `Unknown`（grok Windows/Linux 已如此）；`FullWake`/`DarkWake` 区分推迟到 macOS 端口轮。
+- ❌ **不接 AuthManager-style sleep gate**——本轮只交付词汇表 + 通知原语；消费端（gate lower/raise、唤醒补偿重取/重排）是接线轮，挂 secret 刷新到 `WillSleep`/`DidWake`。
+- ❌ **不接 APScheduler suspend-aware 调度**——同上，挂 cron 的挂起感知 deferral 到接线轮。
+
+### Commit
+
+`feat(platform): R41 system power sleep/wake listener (fuse grok xai-system-power)`
