@@ -97,7 +97,16 @@ from minimax_code.tool_protocol import (
     ResourceBlock,
     ResponseError,
     ResponseResult,
+    ServerBindAck,
+    ServerBindOutcome,
+    ServerBindParams,
     ServerId,
+    ServerInfo,
+    ServersListParams,
+    ServersListResult,
+    ServerUnbindAck,
+    ServerUnbindOutcome,
+    ServerUnbindParams,
     SessionId,
     SessionMismatch,
     Shadowed,
@@ -178,6 +187,13 @@ from minimax_code.tool_protocol.frames import (
     pong_frame_from_wire,
     register_server_params_from_wire,
     register_tool_params_from_wire,
+    server_bind_ack_from_wire,
+    server_bind_params_from_wire,
+    server_info_from_wire,
+    server_unbind_ack_from_wire,
+    server_unbind_params_from_wire,
+    servers_list_params_from_wire,
+    servers_list_result_from_wire,
     subscribe_ack_from_wire,
     subscribe_notifications_params_from_wire,
     tool_call_params_from_wire,
@@ -5466,6 +5482,320 @@ class TestToolServerStatusLifecycleBarrelR98:
             assert hasattr(pkg, name), f"barrel missing {name}"
 
     def test_tool_server_symbols_in_all(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in self._types:
+            assert name in pkg.__all__, f"{name} not in barrel __all__"
+
+    def test_frames_submodule_exposes_from_wire(self):
+        import minimax_code.tool_protocol.frames as mod
+
+        for name in self._converters:
+            assert hasattr(mod, name), f"frames submodule missing {name}"
+
+    def test_barrel_does_not_re_export_from_wire(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in self._converters:
+            assert not hasattr(pkg, name), f"barrel should not export {name}"
+
+
+class TestServersListParams:
+    """``ServersListParams`` — empty struct; wire form is ``{}`` regardless of input."""
+
+    def test_to_wire_returns_empty_dict(self):
+        assert ServersListParams().to_wire() == {}
+
+    def test_from_wire_returns_instance_regardless_of_input(self):
+        params = servers_list_params_from_wire({"ignored": "data"})
+        assert isinstance(params, ServersListParams)
+
+    def test_round_trip_is_empty_dict(self):
+        round_tripped = servers_list_params_from_wire(ServersListParams().to_wire())
+        assert round_tripped == ServersListParams()
+
+
+class TestServerInfo:
+    """``ServerInfo`` — 6-field mixed-mode dataclass; ``status`` consumes the R98 lifecycle enum."""
+
+    def _bare(self, **overrides):
+        base = dict(
+            server_id=ServerId("srv-1"),
+            status=ToolServerLifecycleStatus.Ready,
+        )
+        base.update(overrides)
+        return ServerInfo(**base)
+
+    def test_required_fields_always_on_wire(self):
+        wire = self._bare().to_wire()
+        assert wire["server_id"] == "srv-1"
+        assert wire["status"] == "ready"
+
+    def test_default_no_skip_fields_present_at_falsy_defaults(self):
+        """description/metadata/connected_since always serialise, even when empty/null."""
+        wire = self._bare().to_wire()
+        assert "description" in wire
+        assert "metadata" in wire
+        assert "connected_since" in wire
+        assert wire["description"] == ""
+        assert wire["metadata"] is None
+        assert wire["connected_since"] == ""
+
+    def test_option_skip_session_id_omitted_at_default(self):
+        wire = self._bare().to_wire()
+        assert "session_id" not in wire
+
+    def test_option_skip_session_id_present_when_set(self):
+        wire = self._bare(session_id=SessionId("sess-7")).to_wire()
+        assert wire["session_id"] == "sess-7"
+
+    def test_status_serialises_via_r98_enum(self):
+        wire = self._bare(status=ToolServerLifecycleStatus.Busy).to_wire()
+        assert wire["status"] == "busy"
+
+    def test_from_wire_missing_required_raises_keyerror(self):
+        with pytest.raises(KeyError):
+            server_info_from_wire({})
+
+    def test_from_wire_promotes_status_via_r98_enum(self):
+        info = server_info_from_wire({"server_id": "srv-2", "status": "draining"})
+        assert info.server_id == "srv-2"
+        assert info.status is ToolServerLifecycleStatus.Draining
+        assert info.session_id is None
+        assert info.description == ""
+
+    def test_from_wire_promotes_session_id_when_present(self):
+        info = server_info_from_wire(
+            {"server_id": "srv-3", "status": "ready", "session_id": "sess-9"}
+        )
+        assert info.session_id == "sess-9"
+
+    def test_full_round_trip(self):
+        original = ServerInfo(
+            server_id=ServerId("srv-4"),
+            status=ToolServerLifecycleStatus.Busy,
+            session_id=SessionId("sess-1"),
+            description="primary fs server",
+            metadata={"region": "us-east"},
+            connected_since="2026-01-01T00:00:00Z",
+        )
+        assert server_info_from_wire(original.to_wire()) == original
+
+
+class TestServersListResult:
+    """``ServersListResult`` — list-of-ServerInfo DTO; element-wise promotion on decode."""
+
+    def test_to_wire_serialises_servers_list(self):
+        result = ServersListResult(
+            servers=[
+                ServerInfo(
+                    server_id=ServerId("srv-a"),
+                    status=ToolServerLifecycleStatus.Ready,
+                ),
+                ServerInfo(
+                    server_id=ServerId("srv-b"),
+                    status=ToolServerLifecycleStatus.Busy,
+                    session_id=SessionId("sess-b"),
+                ),
+            ]
+        )
+        wire = result.to_wire()
+        assert len(wire["servers"]) == 2
+        assert wire["servers"][0]["server_id"] == "srv-a"
+        assert wire["servers"][1]["session_id"] == "sess-b"
+
+    def test_from_wire_promotes_each_server_info(self):
+        result = servers_list_result_from_wire(
+            {
+                "servers": [
+                    {"server_id": "srv-a", "status": "ready"},
+                    {"server_id": "srv-b", "status": "busy", "session_id": "sess-b"},
+                ]
+            }
+        )
+        assert len(result.servers) == 2
+        assert result.servers[0].server_id == "srv-a"
+        assert result.servers[0].status is ToolServerLifecycleStatus.Ready
+        assert result.servers[1].status is ToolServerLifecycleStatus.Busy
+        assert result.servers[1].session_id == "sess-b"
+
+    def test_from_wire_missing_servers_raises_keyerror(self):
+        with pytest.raises(KeyError):
+            servers_list_result_from_wire({})
+
+    def test_full_round_trip(self):
+        original = ServersListResult(
+            servers=[
+                ServerInfo(
+                    server_id=ServerId("srv-a"),
+                    status=ToolServerLifecycleStatus.Ready,
+                    description="alpha",
+                )
+            ]
+        )
+        assert servers_list_result_from_wire(original.to_wire()) == original
+
+
+class TestServerBindParams:
+    """``ServerBindParams`` — server_id + session_id, both required."""
+
+    def test_to_wire_emits_both_required_fields(self):
+        params = ServerBindParams(
+            server_id=ServerId("srv-1"), session_id=SessionId("sess-1")
+        )
+        assert params.to_wire() == {"server_id": "srv-1", "session_id": "sess-1"}
+
+    def test_from_wire_missing_required_raises_keyerror(self):
+        with pytest.raises(KeyError):
+            server_bind_params_from_wire({"server_id": "srv-1"})
+
+    def test_full_round_trip(self):
+        original = ServerBindParams(
+            server_id=ServerId("srv-2"), session_id=SessionId("sess-2")
+        )
+        assert server_bind_params_from_wire(original.to_wire()) == original
+
+
+class TestServerBindOutcome:
+    """``ServerBindOutcome`` — strict snake_case StrEnum, 4 arms, no default."""
+
+    def test_member_values_are_snake_case(self):
+        assert ServerBindOutcome.Bound == "bound"
+        assert ServerBindOutcome.AlreadyBound == "already_bound"
+        assert ServerBindOutcome.ServerNotFound == "server_not_found"
+        assert ServerBindOutcome.Unavailable == "unavailable"
+
+    def test_to_wire_returns_value(self):
+        assert ServerBindOutcome.AlreadyBound.to_wire() == "already_bound"
+        assert ServerBindOutcome.ServerNotFound.to_wire() == "server_not_found"
+
+    def test_from_wire_accepts_known(self):
+        assert ServerBindOutcome.from_wire("bound") is ServerBindOutcome.Bound
+        assert ServerBindOutcome.from_wire("unavailable") is ServerBindOutcome.Unavailable
+
+    def test_from_wire_rejects_unknown(self):
+        with pytest.raises(ValueError):
+            ServerBindOutcome.from_wire("rejected")
+
+
+class TestServerBindAck:
+    """``ServerBindAck`` — outcome wrapper; embeds the ``ServerBindOutcome`` enum."""
+
+    def test_to_wire_serialises_outcome_via_enum(self):
+        ack = ServerBindAck(outcome=ServerBindOutcome.Bound)
+        assert ack.to_wire() == {"outcome": "bound"}
+
+    def test_from_wire_promotes_outcome_via_enum(self):
+        ack = server_bind_ack_from_wire({"outcome": "already_bound"})
+        assert ack.outcome is ServerBindOutcome.AlreadyBound
+
+    def test_from_wire_missing_outcome_raises_keyerror(self):
+        with pytest.raises(KeyError):
+            server_bind_ack_from_wire({})
+
+    def test_full_round_trip(self):
+        original = ServerBindAck(outcome=ServerBindOutcome.ServerNotFound)
+        assert server_bind_ack_from_wire(original.to_wire()) == original
+
+
+class TestServerUnbindParams:
+    """``ServerUnbindParams`` — server_id + session_id, both required."""
+
+    def test_to_wire_emits_both_required_fields(self):
+        params = ServerUnbindParams(
+            server_id=ServerId("srv-1"), session_id=SessionId("sess-1")
+        )
+        assert params.to_wire() == {"server_id": "srv-1", "session_id": "sess-1"}
+
+    def test_from_wire_missing_required_raises_keyerror(self):
+        with pytest.raises(KeyError):
+            server_unbind_params_from_wire({"session_id": "sess-1"})
+
+    def test_full_round_trip(self):
+        original = ServerUnbindParams(
+            server_id=ServerId("srv-9"), session_id=SessionId("sess-9")
+        )
+        assert server_unbind_params_from_wire(original.to_wire()) == original
+
+
+class TestServerUnbindOutcome:
+    """``ServerUnbindOutcome`` — strict snake_case StrEnum, 2 arms; no ``AlreadyUnbound`` (idempotent)."""
+
+    def test_member_values_are_snake_case(self):
+        assert ServerUnbindOutcome.Unbound == "unbound"
+        assert ServerUnbindOutcome.ServerNotFound == "server_not_found"
+
+    def test_no_already_unbound_member(self):
+        """Unbind is idempotent: re-unbinding a clean server stays ``Unbound``, no distinct arm."""
+        assert not hasattr(ServerUnbindOutcome, "AlreadyUnbound")
+
+    def test_to_wire_returns_value(self):
+        assert ServerUnbindOutcome.Unbound.to_wire() == "unbound"
+        assert ServerUnbindOutcome.ServerNotFound.to_wire() == "server_not_found"
+
+    def test_from_wire_accepts_known(self):
+        assert ServerUnbindOutcome.from_wire("unbound") is ServerUnbindOutcome.Unbound
+        assert (
+            ServerUnbindOutcome.from_wire("server_not_found")
+            is ServerUnbindOutcome.ServerNotFound
+        )
+
+    def test_from_wire_rejects_unknown(self):
+        with pytest.raises(ValueError):
+            ServerUnbindOutcome.from_wire("already_unbound")
+
+
+class TestServerUnbindAck:
+    """``ServerUnbindAck`` — outcome wrapper; embeds the ``ServerUnbindOutcome`` enum."""
+
+    def test_to_wire_serialises_outcome_via_enum(self):
+        ack = ServerUnbindAck(outcome=ServerUnbindOutcome.Unbound)
+        assert ack.to_wire() == {"outcome": "unbound"}
+
+    def test_from_wire_promotes_outcome_via_enum(self):
+        ack = server_unbind_ack_from_wire({"outcome": "server_not_found"})
+        assert ack.outcome is ServerUnbindOutcome.ServerNotFound
+
+    def test_from_wire_missing_outcome_raises_keyerror(self):
+        with pytest.raises(KeyError):
+            server_unbind_ack_from_wire({})
+
+    def test_full_round_trip(self):
+        original = ServerUnbindAck(outcome=ServerUnbindOutcome.Unbound)
+        assert server_unbind_ack_from_wire(original.to_wire()) == original
+
+
+class TestServerDiscoveryBindingBarrelR99:
+    """Server discovery+binding symbols travel the barrel; from_wire stay submodule-qualified."""
+
+    _types = (
+        "ServersListParams",
+        "ServerInfo",
+        "ServersListResult",
+        "ServerBindParams",
+        "ServerBindOutcome",
+        "ServerBindAck",
+        "ServerUnbindParams",
+        "ServerUnbindOutcome",
+        "ServerUnbindAck",
+    )
+    _converters = (
+        "servers_list_params_from_wire",
+        "server_info_from_wire",
+        "servers_list_result_from_wire",
+        "server_bind_params_from_wire",
+        "server_bind_ack_from_wire",
+        "server_unbind_params_from_wire",
+        "server_unbind_ack_from_wire",
+    )
+
+    def test_barrel_exports_server_symbols(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in self._types:
+            assert hasattr(pkg, name), f"barrel missing {name}"
+
+    def test_server_symbols_in_all(self):
         import minimax_code.tool_protocol as pkg
 
         for name in self._types:

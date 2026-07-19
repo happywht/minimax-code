@@ -8358,3 +8358,101 @@ everything_but_status` 钉死此行为——这是单测价值的又一次兑现
 ### Commit
 
 `feat(platform): R98 migrate frames.rs tool-server status lifecycle domain (ToolServerLifecycleStatus/ToolServerDisconnectReason/ToolServerStatusPayload/ToolServerEvictParams/ToolServerGetStatusParams/ToolServerConnectionStatus/ToolServerGetStatusResult, 20-field four-mode status payload + strict lifecycle enum with #[default] member)`
+
+
+## R99 — 迁移 frames.rs 服务发现+绑定域（消费 R98 生命周期枚举，解除 server discovery 第二段阻塞）
+
+锚点:R98-1 1753b0a
+
+### 本轮目标
+
+继续推进 `grok-build/crates/common/xai-tool-protocol/src/frames.rs` 的 deferred 域迁移。R98 落地
+tool-server 状态生命周期域后，服务发现+绑定域（frames.rs 317-394）的阻塞被解除——该域的
+`ServerInfo.status` 字段正是 R98 `ToolServerLifecycleStatus` 枚举的消费者。本轮迁移此域，构成
+迭代链上的跨域消费者边（R98 生产枚举 → R99 消费枚举），同时落地 10 个新类型符号，进一步
+收敛 frames.rs 的 deferred 域计数（7 → 6）。
+
+### 融合结论
+
+frames.rs 服务发现+绑定域 1:1 迁移至 `agent/minimax_code/tool_protocol/frames.py`，共 10 个
+类型符号 + 7 个 `from_wire` 转换器。barrel `__init__.py` 重新导出 9 个类型名（转换器保持子模块
+限定，镜像 Rust `pub use` 语义）。形态覆盖：空结构体（ServersListParams）、6 字段混合模式
+dataclass（ServerInfo）、列表 DTO（ServersListResult）、双必需字段 params（Bind/UnbindParams）、
+严格 snake_case StrEnum（Bind/UnbindOutcome）、outcome 包装 Ack（Bind/UnbindAck）。
+
+### 交付
+
+- `agent/minimax_code/tool_protocol/frames.py`：追加 R99 实现块（2 个 StrEnum +
+  7 个 dataclass + 7 个 `from_wire` 函数），docstring 第 1 行更新为
+  `(R92 + R93 + R94 + R95 + R96 + R97 + R98 + R99)`，deferred 计数 6 → 5，
+  `__all__` 新增 9 类型 + 7 转换器。
+- `agent/minimax_code/tool_protocol/__init__.py`：barrel docstring 增加 R99 段落，
+  deferred 计数 6 → 5，帧导入块 + `__all__` 各新增 9 个 Server* 类型。
+- `agent/tests/test_tool_protocol.py`：barrel 导入块 +9 类型、frames from_wire 导入块
+  +7 转换器、追加 10 个 R99 测试类（43 个测试方法）。
+
+### 映射决策树+坑
+
+1. **跨域消费者边**：`ServerInfo.status: ToolServerLifecycleStatus` 直接引用 R98 落地的枚举，
+   `from_wire` 经 `ToolServerLifecycleStatus.from_wire(str(data["status"]))` 提升。这是 R98 明确
+   解锁的依赖——证明了迭代顺序的正确性（先生产枚举，后消费枚举）。
+
+2. **ServerInfo 六字段混合模式**（按 serde 行为分类）：
+   - 必需（`data[k]`，无默认，总序列化）：`server_id`、`status`
+   - Option-skip（`SessionId | None = None`，`to_wire` 仅 not None 时出键，`from_wire` 用 `data.get`）：`session_id`
+   - default-no-skip（默认值，但总序列化即使为假）：`description=""`、`metadata=None`、`connected_since=""`
+   - Python dataclass 字段顺序约束：必需字段必须在默认字段前，打破 Rust 源顺序；wire 格式不受影响
+     （`to_wire` 控制键的存在性）。
+
+3. **不透明 `serde_json::Value` → Python `object`**：`metadata` 字段（Rust `#[serde(default)]`）
+   映射为 `metadata: object = None`（默认 JSON null，总序列化）。沿用项目惯例
+   （arguments/input_schema/chat_completion_output 同形态）。
+
+4. **严格 StrEnum 模式**：`ServerBindOutcome`（4 臂：Bound/AlreadyBound/ServerNotFound/Unavailable）、
+   `ServerUnbindOutcome`（2 臂：Unbound/ServerNotFound）。`to_wire` 返回 `self.value`，
+   `from_wire` 用 `cls._value2member_map_.get(data)`，None 则 `raise ValueError`。
+   无 catch-all、无 `#[serde(other)]`。
+
+5. **ServerUnbindOutcome 刻意无 AlreadyUnbound**：解除绑定是幂等的——对一个已干净的 server
+   再次 unbind 仍是成功（`Unbound`），无需区分臂。这是 Rust 源的设计决策，测试用
+   `test_no_already_unbound_member` + `from_wire("already_unbound") raises` 显式锁定。
+
+6. **空结构体惯例**（ServersListParams）：无字段 dataclass，`to_wire` 返回 `{}`，
+   `from_wire` 用 `cls()`（dataclass 方法上 `# noqa: ARG003`）。
+
+7. **列表 DTO 惯例**（ServersListResult）：`servers: list[ServerInfo]` 必需，
+   `from_wire` 用 `[server_info_from_wire(s) for s in data["servers"]]` 逐元素提升。
+
+8. **坑 A — ruff isort 组内 case-insensitive 排序**：组内（同为大写类名）ruff 用
+   **不区分大小写**字母序，不是纯 ASCII。`ServerInfo` / `ServersList*` / `ServerUnbind*`
+   第 7 字符 `I`/`s`/`U` → case-insensitive `i`/`s`/`u` → 顺序为
+   ServerInfo < ServersList* < ServerUnbind*。之前会话笔记"组内区分大小写（ASCII 大写优先）"
+   是错的；本轮用 `ruff --diff` 实测修正。converters 段（函数名，第 7 字符为 `_`）排序巧合不同，
+   `servers_list_*` 因第 7 字符 `s`(115) > `_`(95) 落在所有 `server_*` 之后。
+
+9. **坑 B — ruff F401 误删未消费导入**：本轮首跑 `ruff --fix` 时，9 类型 + 7 转换器导入
+   尚未被测试类消费，F401 把 16 个导入全删（17 errors = 16 F401 + 1 I001）。修正流程：
+   **导入块 Edit 与消费测试类 Edit 必须同批提交**，再跑 `ruff --fix`（此时仅 1 I001 排序，
+   0 F401）。这是 wire 类型迁移测试的通用 SOP。
+
+### 验证
+
+- `uv run ruff check tests/test_tool_protocol.py minimax_code/tool_protocol/frames.py minimax_code/tool_protocol/__init__.py` → All checks passed!
+- `uv run pytest tests/test_tool_protocol.py -k "<R99 类>"` → 43 passed, 746 deselected
+- `uv run pytest tests/test_tool_protocol.py` → 789 passed（746 既有 + 43 新增，零回归）
+- `uv run pytest`（全 agent 套件）→ 3247 passed, 10 skipped（零跨模块破坏，99.82s）
+
+### YAGNI 边界
+
+- 不为 ServerInfo 加 `terminal()` 类方法（Rust 源无此构造；status payload 有是因其有明确的
+  "断连后清零"语义，server info 是被动发现结果，无对称终态）。
+- 不为 ServersListParams 加分页/过滤字段（Rust 源是空结构体；列表语义是"返回全部已知 server"，
+  分页应在更高层 RPC 信封处理，wire 层不臆造）。
+- 不为 ServerBindOutcome/ServerUnbindOutcome 加 `default()` 类方法（Rust 源无 `#[default]`；
+  outcome 是 RPC 响应结果，调用方必须显式处理每个臂，不存在隐式默认值）。
+- 不在 barrel 导出 `from_wire` 转换器（镜像 Rust `pub use`——类型名跨模块，转换器保持子模块限定，
+  避免污染 barrel 命名空间）。
+
+### Commit
+
+`feat(platform): R99 migrate frames.rs server discovery + binding domain (ServersListParams/ServerInfo/ServersListResult/ServerBindParams/ServerBindOutcome/ServerBindAck/ServerUnbindParams/ServerUnbindOutcome/ServerUnbindAck, R98->R99 consumer edge via ServerInfo.status, two strict outcome enums + empty-struct params + six-field mixed-mode DTO + list-of-DTO result)`

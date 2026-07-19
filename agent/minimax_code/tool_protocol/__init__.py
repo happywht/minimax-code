@@ -1,4 +1,4 @@
-"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 + R90 + R91 + R92 + R93 + R94 — registration frames landed + R95 — per-tool session binding landed + R96 — list & search landed + R97 — subscriptions landed + R98 — tool-server status lifecycle landed).
+"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 + R90 + R91 + R92 + R93 + R94 — registration frames landed + R95 — per-tool session binding landed + R96 — list & search landed + R97 — subscriptions landed + R98 — tool-server status lifecycle landed + R99 — server discovery + binding landed).
 
 Fusion of grok-build's ``xai-tool-protocol`` crate — the wire DTOs for
 the computer-hub tool-server protocol: identifier newtypes, registration
@@ -166,10 +166,24 @@ to mix unit + struct variants):
   exercising four field modes: required / Option-skip / Vec-skip /
   default-no-skip). Lands the cross-domain lifecycle status referenced by
   the still-deferred "server discovery + binding" domain).
+* **R99 (this round)** — :mod:`frames`
+  (server discovery + binding domain: :class:`ServersListParams` /
+  :class:`ServerInfo` / :class:`ServersListResult` /
+  :class:`ServerBindParams` / :class:`ServerBindOutcome` /
+  :class:`ServerBindAck` / :class:`ServerUnbindParams` /
+  :class:`ServerUnbindOutcome` / :class:`ServerUnbindAck` — the hub<->client
+  tool-server discovery & routing channel, and the **R98 -> R99 consumer
+  edge**: :class:`ServerInfo.status` references the
+  :class:`ToolServerLifecycleStatus` enum R98 landed precisely to unblock
+  this domain. Two more strict snake_case outcome enums
+  (:class:`ServerBindOutcome` / :class:`ServerUnbindOutcome`, no
+  ``#[default]``), an empty-struct params, a six-field mixed-mode DTO
+  (:class:`ServerInfo`: required / Option-skip / default-no-skip with an
+  opaque ``serde_json::Value`` ``metadata``), and the crate's second
+  list-of-DTO result (:class:`ServersListResult`) round out the domain).
 * *deferred* — :mod:`frames`
-  (remainder: 6 of 14 domains — tool/system notifications, server
-  discovery+binding, session lifecycle, simplified lifecycle, hooks,
-  service→harness pushes).
+  (remainder: 5 of 14 domains — tool/system notifications, session lifecycle,
+  simplified lifecycle, hooks, service→harness pushes).
 
 ``from_wire`` / ``to_wire`` live on each module (instance method or module
 function); the barrel does **not** re-export them, mirroring the Rust
@@ -251,6 +265,15 @@ from minimax_code.tool_protocol.frames import (
     PongFrame,
     RegisterServerParams,
     RegisterToolParams,
+    ServerBindAck,
+    ServerBindOutcome,
+    ServerBindParams,
+    ServerInfo,
+    ServersListParams,
+    ServersListResult,
+    ServerUnbindAck,
+    ServerUnbindOutcome,
+    ServerUnbindParams,
     SubscribeAck,
     SubscribeNotificationsParams,
     SubscribeOutcome,
@@ -516,4 +539,17 @@ __all__ = [
     "ToolServerGetStatusResult",
     "ToolServerLifecycleStatus",
     "ToolServerStatusPayload",
+    # R99 — server discovery + binding (consumes R98 ToolServerLifecycleStatus
+    # via ServerInfo.status; two strict outcome enums + empty-struct params
+    # + six-field mixed-mode DTO + list-of-DTO result). All 9 symbols travel
+    # the barrel; from_wire converters stay submodule-qualified.
+    "ServerBindAck",
+    "ServerBindOutcome",
+    "ServerBindParams",
+    "ServerInfo",
+    "ServersListParams",
+    "ServersListResult",
+    "ServerUnbindAck",
+    "ServerUnbindOutcome",
+    "ServerUnbindParams",
 ]

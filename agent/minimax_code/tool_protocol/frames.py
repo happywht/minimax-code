@@ -1,4 +1,4 @@
-"""Tool-server frame protocol — per-method params/result payloads (R92 + R93 + R94 + R95 + R96 + R97 + R98).
+"""Tool-server frame protocol — per-method params/result payloads (R92 + R93 + R94 + R95 + R96 + R97 + R98 + R99).
 
 Fusion of grok-build's ``xai-tool-protocol::frames`` — the per-method
 ``params`` and ``result`` payload structs that ride inside a
@@ -69,7 +69,22 @@ exercising four field modes in one dataclass: required / Option-skip /
 Vec-skip / default-no-skip). This domain lands the cross-domain
 :class:`ToolServerLifecycleStatus` referenced by the still-deferred
 "server discovery + binding" domain, unblocking it for a future round.
-The remaining 6 domains are deferred to R99+.
+R99 lands the **server discovery + binding** family
+(:class:`ServersListParams` / :class:`ServerInfo` /
+:class:`ServersListResult` / :class:`ServerBindParams` /
+:class:`ServerBindOutcome` / :class:`ServerBindAck` /
+:class:`ServerUnbindParams` / :class:`ServerUnbindOutcome` /
+:class:`ServerUnbindAck`) — the hub<->client tool-server discovery & routing
+channel, and the **R98 -> R99 consumer edge**: :class:`ServerInfo.status`
+references the :class:`ToolServerLifecycleStatus` enum R98 landed precisely
+to unblock this domain. Two more strict snake_case outcome enums
+(:class:`ServerBindOutcome` / :class:`ServerUnbindOutcome`, no
+``#[default]``), an empty-struct params (:class:`ServersListParams`), a
+six-field mixed-mode DTO (:class:`ServerInfo`: required / Option-skip /
+default-no-skip, with an opaque ``serde_json::Value`` ``metadata``), and the
+crate's second list-of-DTO result (:class:`ServersListResult`) round out the
+domain.
+The remaining 5 domains are deferred to R100+.
 
 ``session_id`` belongs in the JSON-RPC envelope field — always. These
 params structs do NOT carry a ``session_id``; the hub reads it from
@@ -190,6 +205,18 @@ __all__ = [
     "ToolServerGetStatusResult",
     "ToolServerLifecycleStatus",
     "ToolServerStatusPayload",
+    # server discovery + binding (R99 — consumes R98 ToolServerLifecycleStatus
+    # via ServerInfo.status; two strict outcome enums + empty-struct params
+    # + six-field mixed-mode DTO + list-of-DTO result)
+    "ServerBindAck",
+    "ServerBindOutcome",
+    "ServerBindParams",
+    "ServerInfo",
+    "ServersListParams",
+    "ServersListResult",
+    "ServerUnbindAck",
+    "ServerUnbindOutcome",
+    "ServerUnbindParams",
     # wire converters
     "tool_call_params_from_wire",
     "tool_call_result_from_wire",
@@ -224,6 +251,14 @@ __all__ = [
     "tool_server_get_status_params_from_wire",
     "tool_server_get_status_result_from_wire",
     "tool_server_status_payload_from_wire",
+    # server discovery + binding (R99)
+    "server_bind_ack_from_wire",
+    "server_bind_params_from_wire",
+    "server_info_from_wire",
+    "server_unbind_ack_from_wire",
+    "server_unbind_params_from_wire",
+    "servers_list_params_from_wire",
+    "servers_list_result_from_wire",
 ]
 
 
@@ -1611,3 +1646,264 @@ def tool_server_get_status_result_from_wire(
             for ts in data["tool_servers"]  # type: ignore[union-attr]
         ]
     )
+
+
+# ── Server discovery + binding (R99) ──────────────────────────────────────
+#
+# The ``servers.list`` / ``server.bind`` / ``server.unbind`` family — the
+# hub<->client tool-server discovery & routing channel. This domain consumes
+# the :class:`ToolServerLifecycleStatus` enum landed in R98 (via
+# :class:`ServerInfo`'s ``status`` field), closing the dependency that R98
+# explicitly unblocked: "server discovery + binding (now unblocked by landing
+# ToolServerLifecycleStatus)".
+
+
+@dataclass
+class ServersListParams:
+    """``servers.list`` params — enumerate connected tool servers.
+
+    Empty struct (``pub struct ServersListParams {}``) — no payload fields;
+    routing lives on the JSON-RPC envelope. ``ServersListParams()`` round-trips
+    as ``{}``; :meth:`from_wire` accepts (and ignores) any payload.
+    """
+
+    def to_wire(self) -> dict[str, object]:
+        return {}
+
+    @classmethod
+    def from_wire(cls, data: dict[str, object]) -> ServersListParams:  # noqa: ARG003
+        """Reconstruct (empty struct — payload ignored)."""
+        return cls()
+
+
+@dataclass
+class ServerInfo:
+    """Metadata about a connected tool server (one entry in :class:`ServersListResult`).
+
+    Six-field mixed-mode struct mirroring ``ServerInfo``:
+
+    * :attr:`server_id` — required (no serde default); always serialised.
+    * :attr:`status` — required :class:`ToolServerLifecycleStatus` (R98);
+      always serialised as a snake_case wire string; lifts via
+      :meth:`ToolServerLifecycleStatus.from_wire`. **This is the R98 -> R99
+      consumer edge** the prior round explicitly unblocked.
+    * :attr:`session_id` — ``#[serde(default, skip_serializing_if = "Option::is_none")]``
+      -> Option-skip; omitted on the wire when ``None`` (hub may omit it on
+      ``servers.list`` responses).
+    * :attr:`description` — ``#[serde(default)]`` string -> default-no-skip;
+      ``""`` by default, always serialised (even when empty).
+    * :attr:`metadata` — ``#[serde(default)]`` ``serde_json::Value`` ->
+      default-no-skip; ``None`` (= JSON null) by default, always serialised
+      (even as ``null``). Opaque passthrough, same convention as
+      :attr:`ToolCallParams.arguments`.
+    * :attr:`connected_since` — ``#[serde(default)]`` string -> default-no-skip;
+      ``""`` by default, always serialised.
+
+    Field order diverges from the Rust source: Python dataclass rules force the
+    two required fields before the four defaulted ones; the wire format is
+    unaffected because :meth:`to_wire` controls key presence, not field order.
+    """
+
+    server_id: ServerId
+    status: ToolServerLifecycleStatus
+    session_id: SessionId | None = None
+    description: str = ""
+    metadata: object = None
+    connected_since: str = ""
+
+    def to_wire(self) -> dict[str, object]:
+        wire: dict[str, object] = {
+            "server_id": self.server_id,
+            "status": self.status.to_wire(),
+            "description": self.description,
+            "metadata": self.metadata,
+            "connected_since": self.connected_since,
+        }
+        if self.session_id is not None:
+            wire["session_id"] = self.session_id
+        return wire
+
+
+@dataclass
+class ServersListResult:
+    """Reply to :class:`ServersListParams`.
+
+    :attr:`servers` is a ``Vec<ServerInfo>`` — required (no serde default),
+    always serialised; lifts element-wise via :meth:`ServerInfo.from_wire`.
+    An empty list is a valid (if unusual) wire value.
+    """
+
+    servers: list[ServerInfo]
+
+    def to_wire(self) -> dict[str, object]:
+        return {"servers": [s.to_wire() for s in self.servers]}
+
+
+@dataclass
+class ServerBindParams:
+    """``server.bind`` params — bind a tool server's tools to a harness session.
+
+    Both :attr:`server_id` and :attr:`session_id` are required (no serde
+    defaults). :attr:`session_id` here is payload (the harness session whose
+    tool set is being mutated), distinct from any envelope-level
+    ``session_id`` — same family-scoped carve-out as
+    :class:`BindToolSessionParams` (R95).
+    """
+
+    server_id: ServerId
+    session_id: SessionId
+
+    def to_wire(self) -> dict[str, object]:
+        return {"server_id": self.server_id, "session_id": self.session_id}
+
+
+class ServerBindOutcome(StrEnum):
+    """Outcome of a ``server.bind`` request.
+
+    ``#[serde(rename_all = "snake_case")]`` with no ``#[serde(other)]``.
+    :attr:`Unavailable` covers ack-timeout / transport send-or-delivery
+    failure / malformed-or-explicit-error ack — distinct from
+    :attr:`ServerNotFound` (no such server registered at all).
+    """
+
+    Bound = "bound"
+    AlreadyBound = "already_bound"
+    ServerNotFound = "server_not_found"
+    Unavailable = "unavailable"
+
+    def to_wire(self) -> str:
+        """The snake_case wire string (``#[serde(rename_all)]``)."""
+        return self.value
+
+    @classmethod
+    def from_wire(cls, data: str) -> ServerBindOutcome:
+        """Reconstruct from a wire string; reject unknown values."""
+        member = cls._value2member_map_.get(data)
+        if member is None:
+            raise ValueError(f"unknown ServerBindOutcome wire value: {data!r}")
+        return member  # type: ignore[return-value]
+
+
+@dataclass
+class ServerBindAck:
+    """Reply to :class:`ServerBindParams` — wraps a :class:`ServerBindOutcome`.
+
+    Single required field; ``ServerBindAck`` is ``Copy`` in Rust (single-enum
+    wrapper, mirroring :class:`ServerBindAck`/``BindToolSessionAck`` shape) —
+    Python keeps it a plain one-field dataclass.
+    """
+
+    outcome: ServerBindOutcome
+
+    def to_wire(self) -> dict[str, object]:
+        return {"outcome": self.outcome.to_wire()}
+
+
+@dataclass
+class ServerUnbindParams:
+    """``server.unbind`` params — drop a tool server's tools from a session.
+
+    Mirrors :class:`ServerBindParams`; both fields required.
+    """
+
+    server_id: ServerId
+    session_id: SessionId
+
+    def to_wire(self) -> dict[str, object]:
+        return {"server_id": self.server_id, "session_id": self.session_id}
+
+
+class ServerUnbindOutcome(StrEnum):
+    """Outcome of a ``server.unbind`` request.
+
+    ``#[serde(rename_all = "snake_case")]`` with no ``#[serde(other)]``.
+    Deliberately no ``AlreadyUnbound`` arm — unbinding a non-bound session is
+    idempotent success (:attr:`Unbound`), so the only failure mode is the
+    server being gone (:attr:`ServerNotFound`).
+    """
+
+    Unbound = "unbound"
+    ServerNotFound = "server_not_found"
+
+    def to_wire(self) -> str:
+        """The snake_case wire string (``#[serde(rename_all)]``)."""
+        return self.value
+
+    @classmethod
+    def from_wire(cls, data: str) -> ServerUnbindOutcome:
+        """Reconstruct from a wire string; reject unknown values."""
+        member = cls._value2member_map_.get(data)
+        if member is None:
+            raise ValueError(f"unknown ServerUnbindOutcome wire value: {data!r}")
+        return member  # type: ignore[return-value]
+
+
+@dataclass
+class ServerUnbindAck:
+    """Reply to :class:`ServerUnbindParams` — wraps a :class:`ServerUnbindOutcome`."""
+
+    outcome: ServerUnbindOutcome
+
+    def to_wire(self) -> dict[str, object]:
+        return {"outcome": self.outcome.to_wire()}
+
+
+# ── Wire converters (server discovery + binding, R99) ─────────────────────
+
+
+def server_info_from_wire(data: dict[str, object]) -> ServerInfo:
+    """Reconstruct :class:`ServerInfo` (mixed-mode, embeds the R98 lifecycle enum).
+
+    :attr:`server_id` / :attr:`status` are wire-required (``data[...]``);
+    :attr:`session_id` is Option-skip (``data.get(...)``); :attr:`description`
+    / :attr:`metadata` / :attr:`connected_since` fall back to their dataclass
+    defaults when absent. :attr:`status` lifts via
+    :meth:`ToolServerLifecycleStatus.from_wire` — the R98 -> R99 edge.
+    """
+    session_id_raw = data.get("session_id")
+    return ServerInfo(
+        server_id=ServerId(str(data["server_id"])),
+        status=ToolServerLifecycleStatus.from_wire(str(data["status"])),
+        session_id=SessionId(str(session_id_raw)) if session_id_raw is not None else None,  # type: ignore[arg-type]
+        description=str(data.get("description", "")),
+        metadata=data.get("metadata"),
+        connected_since=str(data.get("connected_since", "")),
+    )
+
+
+def servers_list_params_from_wire(data: dict[str, object]) -> ServersListParams:
+    """Reconstruct :class:`ServersListParams` (empty struct — ignores payload)."""
+    return ServersListParams.from_wire(data)
+
+
+def servers_list_result_from_wire(data: dict[str, object]) -> ServersListResult:
+    """Reconstruct :class:`ServersListResult` (list-of-DTO, elements lift via R99)."""
+    return ServersListResult(
+        servers=[server_info_from_wire(s) for s in data["servers"]]  # type: ignore[union-attr]
+    )
+
+
+def server_bind_params_from_wire(data: dict[str, object]) -> ServerBindParams:
+    """Reconstruct :class:`ServerBindParams` (both fields required)."""
+    return ServerBindParams(
+        server_id=ServerId(str(data["server_id"])),
+        session_id=SessionId(str(data["session_id"])),
+    )
+
+
+def server_bind_ack_from_wire(data: dict[str, object]) -> ServerBindAck:
+    """Reconstruct :class:`ServerBindAck` (wraps the strict outcome enum)."""
+    return ServerBindAck(outcome=ServerBindOutcome.from_wire(str(data["outcome"])))
+
+
+def server_unbind_params_from_wire(data: dict[str, object]) -> ServerUnbindParams:
+    """Reconstruct :class:`ServerUnbindParams` (both fields required)."""
+    return ServerUnbindParams(
+        server_id=ServerId(str(data["server_id"])),
+        session_id=SessionId(str(data["session_id"])),
+    )
+
+
+def server_unbind_ack_from_wire(data: dict[str, object]) -> ServerUnbindAck:
+    """Reconstruct :class:`ServerUnbindAck` (wraps the strict outcome enum)."""
+    return ServerUnbindAck(outcome=ServerUnbindOutcome.from_wire(str(data["outcome"])))
