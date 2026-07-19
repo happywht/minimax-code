@@ -3661,3 +3661,48 @@ R45 交付了默认值**词汇表**（`models.py`：`DEFAULT_MODELS_JSON` 文档
 ### Commit
 
 `feat(platform): R46 wire default_model to storage DEFAULT_MODEL (fuse grok xai-grok-models)`
+
+---
+
+## R47 — LLM client DEFAULT_MODEL 单一来源接线（融合 grok xai-grok-models 消费端）
+
+> 锚定 R46（`98eb5b9`）。
+
+### 本轮目标
+
+R46 接了 **storage 层**的 `DEFAULT_MODEL`（`model_prefs.py`），消除了两处硬编码 `DEFAULT_MODEL = "MiniMax-M3"` 中的第一处。本轮接**第二处、也是最后一处核心硬编码**：`agent/llm.py:32` 的 `DEFAULT_MODEL`，它是 `MiniMaxClient.__init__(model: str = DEFAULT_MODEL)` 的默认参数 —— LLM client 的模型回退值。接线后，storage 种子、storage DAO None-fallback、**LLM client 默认**三者全部从 R45 的 `default_model()` 取值，R45 词汇表成为整个模型默认值的**单一事实来源**（DRY 达成）。本轮是 R46 安全接线模式的**第二次应用**（巩固模式：先读消费端确认非死代码 → 值保持不变 → 加不变量测试锁死 → 重点+完整双 pytest），证明该模式可复用于 agent 核心层。
+
+### 融合结论
+
+- ✅ **保留**：`llm.py` `DEFAULT_MODEL = default_model()` 单一来源接线 —— 消除最后一个核心硬编码，让 LLM client 默认模型与 R45 词汇表一致。
+- ✅ **保留**：`test_default_model_is_llm_client_single_source` 不变量测试 —— 锁死接线，防回归（任何回退硬编码字面量即破坏此测试）。
+- ❌ **无死代码陷阱**（本轮 R46 模式直接复用，无废弃转向）：`llm.py:32` 的 `DEFAULT_MODEL` 是 `__init__` 真实默认参数（第 79 行 `model: str = DEFAULT_MODEL`），非死代码，接线即生效。
+
+### 交付
+
+- `agent/minimax_code/agent/llm.py`（改）— (1) 新增导入 `from ..models import default_model`（ruff 一次通过，自动排在 `from .. import secrets` 与 `from .transports import LLMTransport` 之间——两点相对 `..models` 排序合规）；(2) `DEFAULT_MODEL = "MiniMax-M3"` → `DEFAULT_MODEL = default_model()`，加 6 行注释说明来源是 R45 词汇表、这是两处硬编码的第二处（R46 修 model_prefs、R47 修 llm）、改 `DEFAULT_MODELS_JSON` 即改全局默认。**值不变**（`default_model() == "MiniMax-M3"`），第 79 行 `__init__` 默认参数自动跟随。
+- `agent/tests/test_models.py`（改，177→194 行，13→14 测试）— 新增 `test_default_model_is_llm_client_single_source`：`from minimax_code.agent.llm import DEFAULT_MODEL as llm_default; assert llm_default == M.default_model()`。与 R46 的 storage 测试并列，两个消费端接线各有独立不变量测试。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+### 映射决策树（本轮无新映射 —— 第二次消费端接线，复用 R46 安全模式）
+
+本轮不引入新枚举/类型，仅让 LLM client 消费 R45 的 `default_model()`（已在 R45 走分支 a）。R46 建立的**安全接线模式**本轮第二次应用并验证：(1) **先读消费端** —— grep `DEFAULT_MODEL` 确认 llm.py 仅 3 处引用（定义/`__init__` 默认参数/`__all__`），非死代码；(2) **导入循环排查** —— `models.py` 同在顶层包 `minimax_code`，与已导入的 `secrets` 同级，`models.py` 只依赖 stdlib+pydantic，单向无循环；(3) **值保持不变** —— `default_model() == "MiniMax-M3"`，所有 `== DEFAULT_MODEL` / `model == DEFAULT_MODEL` 断言自动跟随；(4) **不变量测试锁死**；(5) **双 pytest**（重点覆盖消费路径 + 完整套件）。模式的可复用性是平台化的关键 —— R48+ 的散落字面量迁移可照此推进。
+
+**坑（自发现，已绕过）**：(1) **测试文件名误判** —— 原计划跑 `test_llm.py`，实际不存在（Glob 仅 `test_code_review_llm.py`）；改为跑覆盖 `DEFAULT_MODEL` 实际消费路径的重点集（`test_completion` + `test_agent_core` + `test_chat` + `test_model` + `test_models` + `test_handlers_providers` = 78 passed），这些测试通过 `MiniMaxClient()` 默认构造间接消费 `DEFAULT_MODEL`，零中断证明接线值不变。(2) ruff `I001` 本轮**未触发**（`from ..models import default_model` 插入位置天然合规，一次通过）—— 对比 R46 需 `--fix`，说明 R46 的排序经验已内化。无运行时错误。
+
+### 验证
+
+- `ruff check minimax_code/agent/llm.py` → **All checks passed!**（一次通过，无需 `--fix`）。
+- 重点 `pytest tests/test_completion.py tests/test_agent_core.py tests/test_chat.py tests/test_model.py tests/test_models.py tests/test_handlers_providers.py -q` → **78 passed in 13.13s**（覆盖 DEFAULT_MODEL 全部消费路径，零中断）。
+- 完整套件 `pytest` → **1690 passed, 10 skipped in 107.22s**（R46 1689 → R47 1690，**+1 精确**，零回归）。
+
+### YAGNI 边界
+
+- ❌ **不推导 `handlers_model.CANDIDATE_MODELS` 从 R45 词汇表** —— R48 候选。预研已完成：`CANDIDATE_MODELS[0] == DEFAULT_MODEL`（test_model.py:314）约束由 R45 JSON `models[0] == "MiniMax-M3"` 天然满足，推导安全；但需新增 R45 访问器 `default_model_ids()` 或在 handlers 直接推导，留 R48 决策。
+- ❌ **不推导 `MODEL_META` 从 R45 词汇表** —— R45 `DefaultModelEntry` 只建模 `model`（extra="ignore" 丢弃 `context_window`/`name`），推导 `MODEL_META` 需**先扩展 R45 entry** 建模展示元数据（独立的词汇表层演进，R49+）。
+- ❌ **不迁移 7+ 散落 `"MiniMax-M3"` 字面量 fallback** —— 散落 handlers/agent 各处，逐轮消化。
+- ❌ **不改 migration SQL 种子**（`002_model_prefs` 的 `'MiniMax-M3'`）—— 一次性快照，与运行时 `DEFAULT_MODEL` 语义不同，drift 可接受。
+
+### Commit
+
+`feat(platform): R47 wire default_model to LLM client DEFAULT_MODEL (fuse grok xai-grok-models)`

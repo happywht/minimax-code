@@ -21,6 +21,7 @@ from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from typing import Any
 
 from .. import secrets
+from ..models import default_model
 from .transports import LLMTransport
 from .transports.anthropic_transport import AnthropicTransport
 from .transports.mock_transport import MockTransport
@@ -29,7 +30,13 @@ from .types import LLMConfigError, LLMError, LLMResponse, LLMStreamTimeout, Stre
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_MODEL = "MiniMax-M3"
+#: Default model ID — sourced from the data-driven registry
+#: (:func:`minimax_code.models.default_model`, the fusion of grok's
+#: ``xai-grok-models`` from R45) so the LLM client default, the storage seed,
+#: and the IPC layer share one baked-in document. Edit ``DEFAULT_MODELS_JSON``
+#: to change the global default (R47 wiring; the second of the two hard-coded
+#: ``DEFAULT_MODEL`` literals — R46 fixed ``model_prefs``, this fixes ``llm``).
+DEFAULT_MODEL = default_model()
 DEFAULT_BASE_URL = "https://api.minimaxi.com/anthropic"
 
 

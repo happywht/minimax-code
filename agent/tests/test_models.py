@@ -175,3 +175,21 @@ def test_default_model_is_storage_single_source():
     from minimax_code.storage.dao.model_prefs import DEFAULT_MODEL as storage_default
 
     assert storage_default == M.default_model()
+
+
+# --- single-source wiring (R47) --------------------------------------------
+
+
+def test_default_model_is_llm_client_single_source():
+    """R47 wiring: the LLM client's ``DEFAULT_MODEL`` derives from this registry.
+
+    ``minimax_code.agent.llm.DEFAULT_MODEL`` is no longer a hard-coded literal
+    — it is :func:`default_model` evaluated at import time, so the client's
+    ``MiniMaxClient(model=DEFAULT_MODEL)`` default and this registry share one
+    baked-in document. This was the second of the two hard-coded
+    ``DEFAULT_MODEL`` literals (R46 fixed ``model_prefs``); this pins the last
+    one, and a regression to a hard-coded literal breaks this test.
+    """
+    from minimax_code.agent.llm import DEFAULT_MODEL as llm_default
+
+    assert llm_default == M.default_model()
