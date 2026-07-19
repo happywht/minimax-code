@@ -218,8 +218,40 @@ on the next `readline() == ""`.
 | `agent.list` / `agent.spawn_subagent` | req/res | Sub-agent list and spawn. `agent.spawn_subagent` is keyed by `name` (`agents.name`); clients may also pass legacy `agent_id`, and the backend resolves by name first, then id. |
 | `mobile.*`                 | req/res   | Phase 2.                                            |
 | `permission.*`             | req/res   | Phase 1.4 (ui-shell).                              |
-| `model.list` / `model.set_current` | req/res | Reserved.                                   |
+| `model.list` / `model.set_current` | req/res | Dynamic model list + current selection; `model.list` entries may carry optional reasoning-effort meta (R58). |
 | `plugins.list` / `plugins.info` / `plugins.enable` / `plugins.disable` / `plugins.reload` | req/res | Platform pillar #3 — discover, inspect, toggle, and hot-reload runtime plugins (fail-open discovery; runtime enable override is in-memory). |
+
+### `model.list` response — reasoning-effort fields (R58)
+
+Each entry in `model.list`'s `models` array is enriched with optional
+reasoning-effort fields **only when the model's catalog meta declares them**
+(zero regression — a model that declares none gets no new keys, so every
+existing MiniMax model passes through byte-identically):
+
+```json
+{
+  "id": "grok-1",
+  "name": "Grok-1",
+  "provider_id": "provider-...",
+  "protocol": "anthropic",
+  "supports_reasoning_effort": true,
+  "reasoning_effort_default": "high",
+  "reasoning_effort_options": [
+    {"value": "low", "id": "low", "label": "Low", "description": null, "default": false},
+    {"value": "medium", "id": "medium", "label": "Medium", "description": null, "default": false},
+    {"value": "high", "id": "high", "label": "High", "description": null, "default": true}
+  ]
+}
+```
+
+* `supports_reasoning_effort`: `true` — only when the catalog declares a truthy
+  `supportsReasoningEffort`.
+* `reasoning_effort_default`: the canonical wire token (`"medium"` / `"high"` /
+  `"xhigh"` …) — only when the catalog `reasoningEffort` resolves to a known
+  tier (the `max` CLI alias normalises to `"xhigh"`; the emit-seam mapping to
+  Anthropic `"max"` / OpenAI `"high"` is a separate wire layer, R56/R57).
+* `reasoning_effort_options`: the selectable menu — only when the catalog
+  `reasoningEfforts` array yields a non-empty list.
 
 Session records may include workspace metadata:
 

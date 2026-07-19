@@ -58,6 +58,26 @@ export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];
 
 /* ───────────────────────── Domain types ───────────────────────── */
 
+/**
+ * A selectable reasoning-effort menu entry (R58 enrich consumer surface).
+ *
+ * Mirrors the backend ``ReasoningEffortOption`` pydantic model emitted by
+ * ``reasoning_efforts_meta_value`` — ``value`` is the canonical wire token
+ * ("none" | "minimal" | "low" | "medium" | "high" | "xhigh"); ``id`` / ``label``
+ * are presentation; ``description`` is optional long-form; ``default`` marks the
+ * model's default tier. A model that declares no reasoning-effort meta omits
+ * the parent ``reasoning_effort_options`` array entirely (zero regression —
+ * the three enrich fields are all optional and only attached when the model's
+ * catalog meta declares them).
+ */
+export interface ReasoningEffortOption {
+  value: string;
+  id: string;
+  label: string;
+  description: string | null;
+  default: boolean;
+}
+
 /** A model entry returned by `model.list`. */
 export interface ModelInfo {
   id: string;
@@ -70,6 +90,12 @@ export interface ModelInfo {
   provider_id?: string;
   /** Protocol used by the parent provider ("anthropic" | "openai"). */
   protocol?: string;
+  /** Whether the model supports reasoning-effort control (R58 enrich). */
+  supports_reasoning_effort?: boolean;
+  /** Default reasoning-effort wire token, e.g. "high" (R58 enrich). */
+  reasoning_effort_default?: string;
+  /** Selectable reasoning-effort menu (R58 enrich). */
+  reasoning_effort_options?: ReasoningEffortOption[];
 }
 
 /** A model entry nested inside a provider. */

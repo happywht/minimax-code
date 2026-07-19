@@ -4297,3 +4297,66 @@ R53 的元数据读取器定义了**如何从模型字典里安全地读出 reas
 ### Commit
 
 `feat(platform): R58 reasoning_effort meta readers first consumer (fuse grok xai-grok-sampling-types)`
+
+## R59 — reasoning_effort enrich 字段 IPC 契约三同步（融合 grok xai-grok-sampling-types，前端 types + mock + docs 对齐 R58 catalog-read 消费面）
+
+> 锚定 R58（`7744a4a`）。R58 把 reasoning_effort 元数据读取器的首个消费者接上后端 `model.list`——`enrich_model_reasoning_meta` 把 catalog 的 raw `reasoningEffort` / `reasoningEfforts` / `supportsReasoningEffort` 元数据规范化为 snake_case 字段注入 IPC 响应。但 R58 **只动了后端**：前端 `web/src/types/ipc.ts` 的 `ModelInfo` 还不认这三个新字段，`docs/ipc-contract.md` 的 `model.list` 仍标着 "Reserved."，mock backend 也没有能展示 enrich 的模型。**本轮闭合契约三同步**：前端类型加可选字段（向后兼容，零回归）+ mock backend 加一个带 reasoning meta 的 grok 模型（结构与真实后端 enrich 输出一致）+ docs 补 `model.list` 响应的 reasoning_effort 字段说明。`protocol.py` 无需改——enrich 是 handler 层业务字段扩展，不是协议信封（Request/Response/Event 封装）变更。至此 R53–R58 的 reasoning_effort 管道（config→wire 写入半边 + catalog→IPC 读取半边）**两侧的 IPC 呈现面对前端完整可用**。
+
+### 本轮目标
+
+R58 给后端 `model.list` 注入了三个可选的 reasoning_effort 字段，但前端类型契约没跟上。CLAUDE.md 明确规定：「IPC 合约变更必须同步：`docs/ipc-contract.md` + `web/src/types/ipc.ts` + `agent/minimax_code/ipc/protocol.py`」。R58 的 enrich 是 handler 业务字段扩展（非协议信封），所以 `protocol.py` 不需要改，但 types + docs + mock backend 三处必须同步。**核心设计决策**：(1) **三字段全部可选（`?`）**——向后兼容零回归，未声明 reasoning meta 的模型（全部现有 MiniMax 模型）不获得这些 key，前端 `ModelInfo` 的旧消费者不受影响；(2) **`ReasoningEffortOption` 镜像后端 pydantic 输出**——`{value, id, label, description, default}` 与后端 `reasoning_efforts_meta_value` 的 dict 结构字节一致；(3) **mock backend 直接构建 snake_case 字段**——mock 绕过后端 enrich（直接返回 `ModelInfo`），所以 mock 的 grok 模型必须**手动带上规范化字段**，与真实后端经 enrich 后的结构一致（mock 模式下前端也能渲染 effort 选择器，验证 mock 与真实后端结构等价）；(4) **docs 聚焦 reasoning_effort 子集**——按轮次独立性 + YAGNI，不完整记录整个 `ModelInfo`（那会引入与 reasoning 无关的字段文档债），只补本轮引入的三个可选字段。
+
+### 融合结论
+
+- ✅ **保留**：`web/src/types/ipc.ts` —— `ModelInfo` 之前新增 `ReasoningEffortOption` interface（`{value, id, label, description: string | null, default: boolean}`，docstring 说明镜像后端 pydantic model）；`ModelInfo` 加 `supports_reasoning_effort?: boolean` / `reasoning_effort_default?: string` / `reasoning_effort_options?: ReasoningEffortOption[]` 三个可选字段（均带 R58 enrich 注释）。三字段全部可选 = 向后兼容。
+- ✅ **保留**：`web/src/ipc/client.ts` —— `mockModels` 加第 4 个 `grok-1` 条目（`provider: "xAI"` / `provider_id` / `protocol: "anthropic"` / `supports_reasoning_effort: true` / `reasoning_effort_default: "high"` / `reasoning_effort_options: [low/medium/high with default:true on high]`）；3 个 MiniMax 模型保留不带 meta（零回归对照，exercise「未声明 meta 不获得新 key」路径）。
+- ✅ **保留**：`docs/ipc-contract.md` —— 命名空间表的 `model.list` 行从 "Reserved." 改为描述句（「Dynamic model list + current selection; entries may carry optional reasoning-effort meta (R58)」）；表格后插入 `### model.list response — reasoning-effort fields (R58)` 小节（JSON 示例 + 三字段语义 + max 别名分层引用 R56/R57 emit seam）。
+- ✅ **保留（验证确认无需改）**：`agent/minimax_code/ipc/protocol.py` —— grep 无 `ModelInfo`/`reasoning`/`context_window`/`supports_tools` 匹配；protocol.py 只定义 Request/Response/Event/Notification **信封**，业务字段不在协议层定义。enrich 是 handler 业务字段扩展，不触碰信封。与 R58 判断一致（R58 也未改 protocol.py）。
+- ❌ **放弃**：**不做前端 effort 选择器 UI 组件** —— 消费 R58/R59 字段的 React 组件（`ModelSelector` 扩展或新组件），留 R60+。本轮只保证契约就位。
+- ❌ **放弃**：**不完整记录 `ModelInfo` 所有字段** —— docs 只补 reasoning_effort 三字段，不引入 `provider_id`/`protocol`/`context_window` 等无关字段文档债（YAGNI）。
+- ❌ **放弃**：**不修复预先存在前端债务** —— `client-pending-mode.test.ts:415` JsonRpcId null TSC 错误 + `message-list.test.tsx:80` findByText 超时（stash 验证铁证：R58 `7744a4a` 状态下两者仍存在，与 R59 无关；留独立轮次）。
+
+### 交付
+
+- `web/src/types/ipc.ts`（改，2 处）— (1) `ModelInfo` interface 之前新增 `ReasoningEffortOption` interface（`{value: string; id: string; label: string; description: string | null; default: boolean}`，含镜像后端 pydantic model 的 docstring）；(2) `ModelInfo` 加 `supports_reasoning_effort?: boolean` / `reasoning_effort_default?: string` / `reasoning_effort_options?: ReasoningEffortOption[]` 三可选字段（含 R58 enrich 注释）。
+- `web/src/ipc/client.ts`（改，1 处）— `mockModels` 在 `minimax-M2.7-pro` 之后追加 `grok-1` 条目（全套 reasoning meta + provider_id/protocol），含「mock 与真实后端 enrich 输出结构一致；3 个 MiniMax 模型不带 meta exercise 零回归路径」注释。
+- `docs/ipc-contract.md`（改，2 处）— (1) 命名空间表 `model.list` 行 "Reserved." → 描述句；(2) 表格后插入 `### model.list response — reasoning-effort fields (R58)` 小节（JSON 示例 + 三字段语义说明 + max→xhigh 分层 + emit seam 引用 R56/R57）。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+### 映射决策树（本轮 catalog-read 消费面的前端契约镜像 + mock 直构 snake_case + protocol.py 不动）
+
+本轮是 R58 catalog-read 消费面的**前端契约镜像**。决策树无新增枚举——复用 R58 的三字段。**新增的是「契约三同步」执行模式**：types 加可选字段（向后兼容）+ mock 直构规范化字段（绕过 enrich）+ docs 补字段语义。
+
+**R58 后端 enrich → R59 前端契约镜像矩阵**：
+
+| R58 后端 enrich 字段（snake_case） | R59 `types/ipc.ts` | R59 mock backend（`client.ts`） | R59 docs（`ipc-contract.md`） |
+|---|---|---|---|
+| `supports_reasoning_effort: True` | `ModelInfo.supports_reasoning_effort?: boolean` | grok: `supports_reasoning_effort: true` | 「仅当 catalog `supportsReasoningEffort` truthy」 |
+| `reasoning_effort_default: "high"` | `ModelInfo.reasoning_effort_default?: string` | grok: `reasoning_effort_default: "high"` | 「规范 wire token；`max`→`xhigh`（emit seam 在 R56/R57）」 |
+| `reasoning_effort_options: [{value,id,label,description,default}]` | `ModelInfo.reasoning_effort_options?: ReasoningEffortOption[]` + 新 interface | grok: `reasoning_effort_options: [low/medium/high]` | 「仅当 `reasoningEfforts` 非空」 |
+
+**坑 1（自发现，已预判修复）**：**mock backend 直接构建 `ModelInfo`，绕过后端 enrich——所以 mock 的 grok 模型必须手动带 snake_case 规范化字段**。第一直觉可能是 mock 里也存 raw `reasoningEffort`/`reasoningEfforts`（camelCase catalog 词汇表），但 mock 不经过 `enrich_model_reasoning_meta`，前端拿到的是 mock 直出的 dict。**预判正确**：mock 的 grok 模型直接写 `supports_reasoning_effort` / `reasoning_effort_default` / `reasoning_effort_options`（snake_case），与真实后端经 enrich 后的结构字节一致——这样 mock 模式下前端 effort 选择器也能渲染，证明 mock 与真实后端结构等价。3 个 MiniMax 模型保留不带 meta，exercise「未声明 meta 不获得新 key」的零回归路径。
+
+**坑 2（自发现，预先存在前端债务）**：**R59 首次重新跑前端验证（tsc + vitest），暴露两个预先存在失败**。(1) `client-pending-mode.test.ts:415` TSC 错误 `Type 'null' is not assignable to type 'JsonRpcId'`（`requestId` 类型标注含 null，而 `JsonRpcResponse.id` 是 `JsonRpcId` = string|number）—— JSON-RPC 协议层债务；(2) `message-list.test.tsx:80` vitest `findByText("read_file")` 超时——消息渲染/工具调用 UI 测试。**stash 验证铁证**：`git stash` 掉 R59 的 types + client 改动后（纯 R58 `7744a4a` 状态），TSC 错误**仍然存在**（`TSC_ON_STASH_EXIT=1`）。两个失败都与 `ModelInfo`/`reasoning_effort` 业务字段**完全无关**（协议层 id / 消息渲染 UI vs 模型业务字段）。按轮次独立性，R59 **不修复**这些预先存在债务——记录在案，留独立轮次。**根因**：R58 之前只验证 Python pytest（1771 passed），从未跑前端 tsc/vitest，所以这些债务一直潜伏；R59 是首个跑前端验证的轮次，等于把它们"曝光"。
+
+**坑 3（自发现，已预判修复）**：**`protocol.py` 是否需要改？** CLAUDE.md 规定 IPC 合约变更必须同步 protocol.py。**预判正确**：grep `protocol.py` 无 `ModelInfo`/`reasoning`/`context_window`/`supports_tools` 匹配——`protocol.py` 只定义 Request/Response/Event/Notification **信封**（`jsonrpc`/`id`/`method`/`params`/`result`/`error`），**业务字段（`ModelInfo` 的具体 keys）不在协议层定义**，而是 handler 层返回的 dict。enrich 是 handler 业务字段扩展，不触碰信封，所以 `protocol.py` **无需改**。这与 R58 的判断一致（R58 也未改 protocol.py）。CLAUDE.md 的「三同步」规则在业务字段扩展场景退化为「两同步 + 验证 protocol.py 无需改」。
+
+### 验证
+
+- `pnpm lint`（ESLint `src --ext .ts,.tsx`）→ **零错误**（client.ts grok 条目 + types/ipc.ts 新 interface/字段 lint 干净）。
+- `tsc -b`（前端类型检查）→ 唯一错误 `client-pending-mode.test.ts:415 JsonRpcId null` 是**预先存在**（stash 验证铁证：`TSC_ON_STASH_EXIT=1` on R58 状态）；R59 改动**零新增类型错误**（types 三字段全部可选，向后兼容；mock grok 条目结构合法匹配 ModelInfo）。
+- `pnpm test`（vitest）→ **444 passed / 2 failed**（57 文件，1 failed）。2 个失败（`message-list.test.tsx` `findByText("read_file")` 超时）是**预先存在** UI 测试债务，与 R59 无关；R59 相关的 444 个测试全过。
+- **零回归**：types 三字段全部可选（`?`），未声明 meta 的 MiniMax 模型不获得新 key——前端旧消费者字节不变。
+
+### YAGNI 边界
+
+- ❌ **不做前端 effort 选择器 UI 组件** —— 消费 R58/R59 字段的 React 组件（`ModelSelector` 扩展或新组件），留 R60+。本轮只保证契约就位。
+- ❌ **不完整记录 `ModelInfo` 所有字段** —— docs 只补 reasoning_effort 三字段，不引入 `provider_id`/`protocol`/`context_window` 等无关字段文档债。
+- ❌ **不修复 `client-pending-mode.test.ts` JsonRpcId null** —— 预先存在协议层债务（stash 验证铁证），与 R59 无关，留独立轮次。
+- ❌ **不修复 `message-list.test.tsx` findByText 超时** —— 预先存在 UI 测试债务，与 R59 无关。
+- ❌ **不让 reasoning_effort 流入 done chunk 元数据** —— write 路径观察点，与 R59 的 read/catalog 半边正交，留独立轮次。
+- ❌ **不迁移 sampling-types crate 其余类型**（ChatCompletionRequest/SamplingConfig/ToolChoice/Role/Usage）—— 继续聚焦 ReasoningEffort。
+
+### Commit
+
+`feat(platform): R59 reasoning_effort enrich fields IPC contract sync (fuse grok xai-grok-sampling-types)`

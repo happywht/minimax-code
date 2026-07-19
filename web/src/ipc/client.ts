@@ -1385,6 +1385,29 @@ const mockModels: ModelInfo[] = [
     context_window: 1000000,
     supports_tools: true,
   },
+  {
+    // R59: a mock model that declares reasoning-effort meta, mirroring the
+    // backend R58 enrich output (supports_reasoning_effort /
+    // reasoning_effort_default / reasoning_effort_options). Keeps the mock
+    // backend structurally identical to a real xAI provider's enriched entry
+    // so the frontend can render an effort selector in mock mode too. The
+    // three MiniMax models above intentionally declare no reasoning-effort
+    // meta — they exercise the zero-regression path (no enrich keys).
+    id: "grok-1",
+    name: "Grok-1",
+    provider: "xAI",
+    context_window: 200000,
+    supports_tools: true,
+    provider_id: "provider-mock-xai",
+    protocol: "anthropic",
+    supports_reasoning_effort: true,
+    reasoning_effort_default: "high",
+    reasoning_effort_options: [
+      { value: "low", id: "low", label: "Low", description: null, default: false },
+      { value: "medium", id: "medium", label: "Medium", description: null, default: false },
+      { value: "high", id: "high", label: "High", description: null, default: true },
+    ],
+  },
 ];
 const mockSkills: SkillInfo[] = [
   {
