@@ -6915,3 +6915,61 @@ feat(platform): R85 迁移 xai-tool-protocol methods.rs（JSON-RPC 方法目录 
 - 额外收获：R84 envelope 保真度对照 Grok 原生 jsonrpc_envelope.rs（13 测试）逐核对，完美无遗漏
 
 验证：ruff CLEAN / tool_protocol 333 passed / 全量 2791 passed(+17) +10 skipped
+
+
+## R86 — capabilities.rs（per-tool 能力位集，hello_ack.capabilities 类型 + registration 依赖）
+
+锚点:R86-1 52fc5b5
+
+### 本轮目标
+
+迁移 grok `xai-tool-protocol/src/capabilities.rs`（106 行，lib.rs `pub use` 导出 5 符号）到 Python `tool_protocol/capabilities.py`。该模块是 **handshake `hello_ack.capabilities` 的 wire 类型**（R82 handshake 的 HelloAckMsg 携带 hub 能力通告）+ **registration 的依赖**（tool-server 注册载荷含 per-tool 能力位集）。作为依赖无关的叶子层，先于 registration 落地。serde 形态：普通结构体（mixed skip 语义）+ `#[serde(rename_all = "snake_case")]` 单元变体枚举（无 `#[serde(other)]`，未知拒绝）。
+
+### 融合结论
+
+5 符号全部迁移，serde 保真逐字段对照：
+
+- `ToolCapabilities` → `@dataclass`，9 字段保守默认（`streaming=None` / `supports_cancel=False` / `max_concurrency=None` / `is_read_only=False` / `hooks=[]` / `behavior_version=None` / `max_frame_bytes=None` / `timeout_ms=None` / `tool_scope=None`），匹配 Rust `#[derive(Default)]`。**关键保真**：两个 bool 字段（`supports_cancel` / `is_read_only`）Rust 只给 `#[serde(default)]` 无 `skip_serializing_if` → `to_wire` 总在（即使 `False`）；其余 Option/Vec/HashMap 字段 None/空时省略。
+- `StreamingSpec` → `@dataclass`，`subkind` 必需 + `max_delta_bytes: int | None`（None 省略）。
+- `HookKind` → `StrEnum` 6 变体（成员值即 snake_case wire 串：`on_session_open` / `on_session_close` / `on_tool_call_start` / `on_tool_call_result` / `on_cancel` / `on_notification`），`to_wire`/`from_wire`，**未知 raise `ValueError`**（无 `#[serde(other)]` arm，严格拒绝而非吞掉）。
+- `ToolScope` → `StrEnum` 2 变体（`read` / `write`），同 HookKind 严格拒绝未知。
+- `NotificationSchemas` → `@dataclass`，2 `dict[str, Any]` 字段（`outbound` / `inbound`，空省略，缺失键 → `{}`）。
+
+`to_wire`/`from_wire` 命名与 crate 其他 wire 模块（`error_wire` / `output_wire`）统一；barrel 不重导出它们（capabilities 无模块级 `from_wire` 函数，转换是每个类型的 classmethod，匹配 Rust lib.rs `pub use` 仅导出 5 类型名）。
+
+### 交付
+
+- `agent/minimax_code/tool_protocol/capabilities.py`（265 行，5 符号 + 严格 serde 保真）
+- `agent/minimax_code/tool_protocol/__init__.py`（barrel：+capabilities import 块（isort 置于 connection 前）+ `__all__` `# capabilities (R86)` 组（methods 后、handshake 前）+ docstring R86 要点 + deferred 列表删 `capabilities`）
+- `agent/tests/test_tool_protocol.py`（+29 测试：`TestHookKind` 5 / `TestToolScope` 4 / `TestStreamingSpec` 4 / `TestToolCapabilities` 9 / `TestNotificationSchemas` 4 / `TestPackageSurfaceR86` 3）
+- `docs/evolution/ITERATION_LOG.md`（本条目）
+
+### 映射决策树 + 坑
+
+1. **StrEnum 完美匹配 rename_all snake_case 单元变体**：成员值=wire 串，JSON 序列化=带引号 wire，`__str__`=value（匹配 Rust `Display` 委托 as_wire_str）。R85（Method）已验证此模式，R86 再次确认（HookKind/ToolScope）。`from_wire` 用 `_value2member_map_.get(s)` O(1) 查找。
+2. **无 `#[serde(other)]` → 未知拒绝**：R83 notification_wire 的 `Known` 有 `#[serde(other)]` 容忍未知；capabilities 的 HookKind/ToolScope **无此 arm**，严格拒绝。`from_wire` 通过 `get` + `None` 检查 + `raise ValueError` 实现（错误信息含 `!r` repr，匹配 Rust serde 拒绝语义）。
+3. **bool 总在 vs Option/Vec/HashMap 省**：Rust 给 bool 字段 `#[serde(default)]` 无 `skip_serializing_if`，给 Option/Vec/HashMap 加 skip。Python `to_wire` 手控：bool 无条件写入 dict，Option/Vec/HashMap 条件写入。**坑**：容易把 bool 也写成条件（False 时省略），但 Rust 不省略。`test_bool_false_always_present` + `test_default_all_off_to_wire_only_bools` 钉死此语义。
+4. **空 `{}` wire → 默认实例**：每个字段 `#[serde(default)]` 意味着缺失键用默认。Python `from_wire` 用 `data.get(key, default)`。`test_empty_wire_roundtrips_to_default` 钉死。
+5. **`HashMap<String, serde_json::Value>` → `dict[str, Any]`**：value 是任意 JSON。`to_wire` 浅拷贝 `dict(self.outbound)`；`from_wire` `dict(data.get(...))`。`test_both_present` 用嵌套 list/dict 验证 opaque value 透传。
+6. **isort**：`capabilities`（c-a-p）< `connection`（c-o-n），import 块置于 connection 前。`__all__` 组逻辑放置（methods R85 后、handshake R82 前，紧邻消费层 hello_ack）。**ruff 一次通过**（零 I001，无需 --fix）。
+7. **barrel docstring 标题含 em-dash（—）→ Write 重写整个 barrel 而非 Edit**：em-dash 锚点 Edit 不可靠（LLM 重输入的 em-dash tokenize 可能不同，R85 已踩此坑）。本次 barrel 改动用 Write 整文件重写，em-dash 安全。
+8. **测试 import 区 5 符号插入用 ASCII 锚点 Edit**：5 个分散插入点（HookKind/NotificationSchemas/StreamingSpec/ToolCapabilities/ToolScope），每个一行对（如 `    HelloMsg,\n    IdError,` → 插入 HookKind），互不重叠，ASCII 锚点 100% 可靠。
+
+### 验证
+
+- `uv run ruff check minimax_code/tool_protocol/capabilities.py minimax_code/tool_protocol/__init__.py tests/test_tool_protocol.py` → **All checks passed!**（零 E/F/W/I/B/UP）
+- `uv run pytest tests/test_tool_protocol.py -q` → **362 passed**（333 R85 基线 + 29 R86 = 362）
+- `uv run pytest -q`（全量回归）→ **2820 passed, 10 skipped, 1 warning**（2791 R85 + 29 R86 = 2820，零失败零附带损害，warning 是无关的 fastapi/httpx deprecation）
+
+### YAGNI 边界
+
+- `ToolCapabilities` Rust 仅有 struct + `#[derive(Default)]`，无业务方法 → Python 不加额外方法（`to_wire`/`from_wire` 是 wire 契约，非业务逻辑）。
+- `StreamingSpec` 无 `new()` 构造器（Rust 直接结构体字面量）→ Python 用 dataclass 默认构造，不加工厂方法。
+- `NotificationSchemas` 无 schema 验证逻辑（Rust 只是 HashMap 容器）→ Python 不加 JSON schema 验证（值是 opaque `serde_json::Value`，透传即可）。
+- **未迁移 registration**（capabilities 的消费层，registration 载荷含能力位）→ 下一轮 R87 目标，capabilities 先落地作为依赖。
+- lib.rs `pub use capabilities::{HookKind, NotificationSchemas, StreamingSpec, ToolCapabilities, ToolScope}` 5 符号精确匹配，barrel 不多不少。
+- `HookKind`/`ToolScope` 的 `to_wire`/`from_wire` 是为接口一致性（与 error_wire/output_wire 统一命名），虽 StrEnum 可直接用 `.value`，但显式方法匹配 crate wire 模块约定且 `from_wire` 需承载未知拒绝逻辑。
+
+### Commit
+
+`feat(platform): R86 迁移 xai-tool-protocol capabilities.rs（per-tool 能力位集 ToolCapabilities/StreamingSpec/HookKind/ToolScope/NotificationSchemas，handshake hello_ack.capabilities 类型 + registration 依赖，bool 总在/Option·Vec·HashMap 省略 serde 保真，362+2820 测试通过）`

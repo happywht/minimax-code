@@ -54,6 +54,7 @@ from minimax_code.tool_protocol import (
     FrameSeq,
     HelloAckMsg,
     HelloMsg,
+    HookKind,
     IdError,
     ImageBlock,
     Internal,
@@ -71,6 +72,7 @@ from minimax_code.tool_protocol import (
     KnownVariantCollision,
     Mcp,
     Method,
+    NotificationSchemas,
     PayloadTooLarge,
     PermissionDenied,
     RenderLimited,
@@ -82,14 +84,17 @@ from minimax_code.tool_protocol import (
     ServerId,
     SessionId,
     SessionMismatch,
+    StreamingSpec,
     TerminalError,
     Text,
     TextBlock,
     Timeout,
     ToolCallId,
+    ToolCapabilities,
     ToolDefinitionMode,
     ToolId,
     ToolNotFound,
+    ToolScope,
     TransportClosed,
     UnsupportedProtocolVersion,
     UserId,
@@ -1685,3 +1690,240 @@ class TestPackageSurfaceR85:
         import minimax_code.tool_protocol as pkg
 
         assert not hasattr(pkg, "method_doc")
+
+
+# -----------------------------------------------------------------------
+# R86 - capabilities (per-tool capability bitset + streaming/notification
+# schemas + the two snake_case enums).
+# -----------------------------------------------------------------------
+
+
+class TestHookKind:
+    """HookKind - snake_case StrEnum, no #[serde(other)] (unknown rejects)."""
+
+    def test_six_variants_wire_values(self):
+        assert HookKind.OnSessionOpen.to_wire() == "on_session_open"
+        assert HookKind.OnSessionClose.to_wire() == "on_session_close"
+        assert HookKind.OnToolCallStart.to_wire() == "on_tool_call_start"
+        assert HookKind.OnToolCallResult.to_wire() == "on_tool_call_result"
+        assert HookKind.OnCancel.to_wire() == "on_cancel"
+        assert HookKind.OnNotification.to_wire() == "on_notification"
+
+    def test_to_wire_equals_value_and_str(self):
+        # StrEnum contract: to_wire == .value == str(member) (mirrors
+        # Rust Display delegating to the snake_case rename).
+        for hk in HookKind:
+            assert hk.to_wire() == hk.value
+            assert str(hk) == hk.value
+
+    def test_from_wire_roundtrip(self):
+        for hk in HookKind:
+            assert HookKind.from_wire(hk.to_wire()) is hk
+
+    def test_from_wire_unknown_rejects(self):
+        # No #[serde(other)] arm: serde rejects unknown variants rather
+        # than silently swallowing them.
+        with pytest.raises(ValueError):
+            HookKind.from_wire("on_session_mid")
+        with pytest.raises(ValueError):
+            HookKind.from_wire("OnSessionOpen")  # case-sensitive
+
+    def test_is_strenum(self):
+        from enum import StrEnum
+
+        assert issubclass(HookKind, StrEnum)
+
+
+class TestToolScope:
+    """ToolScope - 2-variant snake_case StrEnum (read/write)."""
+
+    def test_two_variants_wire_values(self):
+        assert ToolScope.Read.to_wire() == "read"
+        assert ToolScope.Write.to_wire() == "write"
+
+    def test_from_wire_roundtrip(self):
+        assert ToolScope.from_wire("read") is ToolScope.Read
+        assert ToolScope.from_wire("write") is ToolScope.Write
+
+    def test_from_wire_unknown_rejects(self):
+        with pytest.raises(ValueError):
+            ToolScope.from_wire("readonly")
+        with pytest.raises(ValueError):
+            ToolScope.from_wire("Read")
+
+    def test_is_strenum(self):
+        from enum import StrEnum
+
+        assert issubclass(ToolScope, StrEnum)
+
+
+class TestStreamingSpec:
+    """StreamingSpec - subkind required, max_delta_bytes optional."""
+
+    def test_subkind_only_minimal(self):
+        s = StreamingSpec(subkind="bash_output_chunk")
+        wire = s.to_wire()
+        assert wire == {"subkind": "bash_output_chunk"}
+        # max_delta_bytes omitted when None (skip_serializing_if Option::is_none).
+        assert "max_delta_bytes" not in wire
+
+    def test_with_max_delta_bytes(self):
+        s = StreamingSpec(subkind="delta", max_delta_bytes=4096)
+        assert s.to_wire() == {"subkind": "delta", "max_delta_bytes": 4096}
+
+    def test_from_wire_minimal(self):
+        s = StreamingSpec.from_wire({"subkind": "x"})
+        assert s.subkind == "x"
+        assert s.max_delta_bytes is None
+
+    def test_roundtrip(self):
+        s = StreamingSpec(subkind="k", max_delta_bytes=8192)
+        assert StreamingSpec.from_wire(s.to_wire()) == s
+
+
+class TestToolCapabilities:
+    """ToolCapabilities - 9-field conservative-default capability bitset."""
+
+    def test_default_all_off_to_wire_only_bools(self):
+        # Default instance: bool fields ALWAYS serialise (#[serde(default)]
+        # with NO skip), everything else omits when None/empty.
+        caps = ToolCapabilities()
+        assert caps.to_wire() == {"supports_cancel": False, "is_read_only": False}
+
+    def test_empty_wire_roundtrips_to_default(self):
+        # An empty {} payload deserialises to the all-off default
+        # (every field carries #[serde(default)]).
+        caps = ToolCapabilities.from_wire({})
+        assert caps == ToolCapabilities()
+
+    def test_bool_false_always_present(self):
+        # The two bool fields serialise even when False (no skip on them).
+        wire = ToolCapabilities().to_wire()
+        assert wire["supports_cancel"] is False
+        assert wire["is_read_only"] is False
+
+    def test_option_fields_omit_when_none(self):
+        caps = ToolCapabilities()  # all Option fields None
+        wire = caps.to_wire()
+        for key in (
+            "streaming",
+            "max_concurrency",
+            "behavior_version",
+            "max_frame_bytes",
+            "timeout_ms",
+            "tool_scope",
+        ):
+            assert key not in wire
+
+    def test_empty_hooks_omitted(self):
+        caps = ToolCapabilities(hooks=[])
+        assert "hooks" not in caps.to_wire()
+
+    def test_full_payload_roundtrip(self):
+        caps = ToolCapabilities(
+            streaming=StreamingSpec(subkind="k", max_delta_bytes=100),
+            supports_cancel=True,
+            max_concurrency=4,
+            is_read_only=True,
+            hooks=[HookKind.OnCancel, HookKind.OnToolCallStart],
+            behavior_version="2024-01-01",
+            max_frame_bytes=1048576,
+            timeout_ms=30_000,
+            tool_scope=ToolScope.Write,
+        )
+        wire = caps.to_wire()
+        # bool fields present (True this time).
+        assert wire["supports_cancel"] is True
+        assert wire["is_read_only"] is True
+        # hooks serialise as the snake_case wire strings.
+        assert wire["hooks"] == ["on_cancel", "on_tool_call_start"]
+        # tool_scope serialises as the snake_case wire string.
+        assert wire["tool_scope"] == "write"
+        # streaming nests its own to_wire.
+        assert wire["streaming"] == {"subkind": "k", "max_delta_bytes": 100}
+        # Round-trip preserves every field.
+        assert ToolCapabilities.from_wire(wire) == caps
+
+    def test_hooks_roundtrip_preserves_enum(self):
+        caps = ToolCapabilities(hooks=list(HookKind))
+        recovered = ToolCapabilities.from_wire(caps.to_wire())
+        assert recovered.hooks == list(HookKind)
+        assert all(isinstance(h, HookKind) for h in recovered.hooks)
+
+    def test_tool_scope_roundtrip_preserves_enum(self):
+        for scope in ToolScope:
+            caps = ToolCapabilities(tool_scope=scope)
+            recovered = ToolCapabilities.from_wire(caps.to_wire())
+            assert recovered.tool_scope is scope
+
+    def test_partial_wire_only_sets_given_fields(self):
+        # A wire payload with only supports_cancel picks up defaults
+        # for everything else.
+        caps = ToolCapabilities.from_wire({"supports_cancel": True})
+        assert caps.supports_cancel is True
+        assert caps.is_read_only is False
+        assert caps.streaming is None
+        assert caps.hooks == []
+        assert caps.tool_scope is None
+
+
+class TestNotificationSchemas:
+    """NotificationSchemas - two HashMap<String, Value> fields, empty omitted."""
+
+    def test_default_empty_omits_both(self):
+        ns = NotificationSchemas()
+        assert ns.to_wire() == {}
+
+    def test_outbound_only(self):
+        ns = NotificationSchemas(outbound={"file_changed": {"type": "string"}})
+        wire = ns.to_wire()
+        assert wire == {"outbound": {"file_changed": {"type": "string"}}}
+        assert "inbound" not in wire
+
+    def test_both_present(self):
+        ns = NotificationSchemas(
+            outbound={"a": 1},
+            inbound={"b": [1, 2, 3]},
+        )
+        assert ns.to_wire() == {"outbound": {"a": 1}, "inbound": {"b": [1, 2, 3]}}
+
+    def test_roundtrip_and_missing_keys_default_empty(self):
+        ns = NotificationSchemas(outbound={"x": "y"}, inbound={"z": 0})
+        recovered = NotificationSchemas.from_wire(ns.to_wire())
+        assert recovered == ns
+        # Missing keys -> empty dict (#[serde(default)] on HashMap).
+        empty = NotificationSchemas.from_wire({})
+        assert empty == NotificationSchemas()
+
+
+class TestPackageSurfaceR86:
+    """The R86 barrel re-exports the five capabilities symbols."""
+
+    def test_barrel_exposes_capabilities_symbols(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "ToolCapabilities",
+            "StreamingSpec",
+            "HookKind",
+            "ToolScope",
+            "NotificationSchemas",
+        ):
+            assert hasattr(pkg, name), f"barrel missing {name}"
+
+    def test_barrel_enums_are_strenum(self):
+        from enum import StrEnum
+
+        import minimax_code.tool_protocol as pkg
+
+        assert issubclass(pkg.HookKind, StrEnum)
+        assert issubclass(pkg.ToolScope, StrEnum)
+
+    def test_barrel_does_not_export_module_from_wire(self):
+        # capabilities has no module-level from_wire function (it lives as
+        # a classmethod on each type), unlike error_wire/output_wire/
+        # notification_wire. The barrel mirrors Rust lib.rs pub use of
+        # the five type names only.
+        import minimax_code.tool_protocol as pkg
+
+        assert not hasattr(pkg, "capabilities_from_wire")

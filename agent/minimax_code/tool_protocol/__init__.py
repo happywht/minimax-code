@@ -1,4 +1,4 @@
-"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 — methods landed).
+"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 — capabilities landed).
 
 Fusion of grok-build's ``xai-tool-protocol`` crate — the wire DTOs for
 the computer-hub tool-server protocol: identifier newtypes, registration
@@ -11,8 +11,10 @@ This package hosts the **pure wire types** — no I/O, no env reads, no
 dependency on the rest of the agent. The crate is large (6613 lines, 16
 modules); R82 lands the dependency-free **foundation layer**, R83 lands
 the three wire enums + the two ``error_codes`` helpers they unblock, R84
-lands the JSON-RPC 2.0 envelope, and R85 lands the method catalog (the
-direct consumer of the envelope's ``method`` field):
+lands the JSON-RPC 2.0 envelope, R85 lands the method catalog (the
+direct consumer of the envelope's ``method`` field), and R86 lands the
+per-tool capabilities bitset (the type of ``hello_ack.capabilities`` and
+a dependency of ``registration``):
 
 * **R82** — :mod:`ids` (8 identifier newtypes + :class:`IdError`),
   :mod:`connection` (``ConnectionKind`` + ``ToolDefinitionMode``),
@@ -36,14 +38,22 @@ direct consumer of the envelope's ``method`` field):
   ``#[serde(untagged)]`` enum — closing the four-shape serde coverage:
   internal-tag / adjacent-tag / untagged / transparent-newtype; plus the
   ``result`` XOR ``error`` response invariant enforced via custom serde).
-* **R85 (this round)** — :mod:`methods` (the closed enumeration of every
+* **R85** — :mod:`methods` (the closed enumeration of every
   JSON-RPC method on the wire, defined once from a single source of
   truth; lands as :class:`~enum.StrEnum` whose member values are the wire
   strings, plus :meth:`Method.as_wire_str` / :meth:`Method.from_wire_str`
   / :data:`Method.ALL` and the fleet-compat-pinned
   :data:`UNKNOWN_METHOD_MSG_PREFIX`; the direct consumer of
   :mod:`envelope`'s ``method`` field).
-* *deferred* — :mod:`capabilities`, :mod:`registration`, :mod:`frames`
+* **R86 (this round)** — :mod:`capabilities` (the per-tool
+  wire-traveling capability bitset a tool advertises:
+  :class:`ToolCapabilities` (9-field conservative-default struct, the
+  type of ``hello_ack.capabilities``), :class:`StreamingSpec`,
+  :class:`NotificationSchemas`, and the two snake_case enums
+  :class:`HookKind` / :class:`ToolScope`; the two ``bool`` fields always
+  serialise even when ``False`` while the ``Option`` / ``Vec`` / ``HashMap``
+  arms omit when ``None`` / empty — a fifth serde sub-shape landing here).
+* *deferred* — :mod:`registration`, :mod:`frames`
   (tool-server frame protocol, 1549 lines), :mod:`session_event`,
   :mod:`turn_hook`, :mod:`hook`, :mod:`registry_error`.
 
@@ -57,6 +67,13 @@ conversions. Callers reach the wire converters via the submodules
 
 from __future__ import annotations
 
+from minimax_code.tool_protocol.capabilities import (
+    HookKind,
+    NotificationSchemas,
+    StreamingSpec,
+    ToolCapabilities,
+    ToolScope,
+)
 from minimax_code.tool_protocol.connection import (
     ConnectionKind,
     ToolDefinitionMode,
@@ -181,6 +198,12 @@ __all__ = [
     # methods (R85)
     "Method",
     "UNKNOWN_METHOD_MSG_PREFIX",
+    # capabilities (R86)
+    "ToolCapabilities",
+    "StreamingSpec",
+    "HookKind",
+    "ToolScope",
+    "NotificationSchemas",
     # handshake (R82)
     "PROTOCOL_VERSION",
     "HelloMsg",
