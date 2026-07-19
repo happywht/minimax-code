@@ -275,6 +275,11 @@ __all__ = [
     # Four Option-skip arms + required session_id/event; all-required reply)
     "HookFrame",
     "HookReplyFrame",
+    # service-to-harness pushes (R105 — the active tool roster for session_id
+    # mutated; three Vec<ToolId> deltas with #[serde(default,
+    # skip_serializing_if = "Vec::is_empty")], so empty lists drop on the
+    # wire and default to [] on read)
+    "ToolsChanged",
     # wire converters
     "tool_call_params_from_wire",
     "tool_call_result_from_wire",
@@ -342,6 +347,8 @@ __all__ = [
     # hooks (R104)
     "hook_frame_from_wire",
     "hook_reply_frame_from_wire",
+    # service-to-harness pushes (R105)
+    "tools_changed_from_wire",
 ]
 
 
@@ -2838,4 +2845,58 @@ def hook_reply_frame_from_wire(data: dict[str, object]) -> HookReplyFrame:
         session_id=SessionId(str(data["session_id"])),
         hook_id=str(data["hook_id"]),
         result=data["result"],
+    )
+
+
+# ── Service-to-harness pushes ─────────────────────────────────────────────
+
+
+@dataclass
+class ToolsChanged:
+    """``tools_changed`` frame body (R105): the active tool set for
+    :attr:`session_id` changed.
+
+    A service-to-harness push — the tool server emits this when its
+    registered roster mutates. The three lists are deltas (added / removed /
+    updated), each ``Vec<ToolId>`` with ``#[serde(default,
+    skip_serializing_if = "Vec::is_empty")]``: an empty list is omitted on
+    serialise and defaults to ``[]`` on deserialise (the crate's second
+    all-skip-Vec struct after :class:`ServerBindParams`). :attr:`session_id`
+    is the only required field; at least one delta is conventionally
+    non-empty but the wire shape permits an all-empty broadcast (mirrors the
+    Rust struct, which imposes no validation on construction).
+    """
+
+    session_id: SessionId
+    #: Newly registered tool ids (``Vec<ToolId>``).
+    added: list[ToolId] = field(default_factory=list)
+    #: Deregistered tool ids.
+    removed: list[ToolId] = field(default_factory=list)
+    #: Re-registered (schema/definition changed) tool ids.
+    updated: list[ToolId] = field(default_factory=list)
+
+    def to_wire(self) -> dict[str, object]:
+        wire: dict[str, object] = {"session_id": self.session_id}
+        if self.added:
+            wire["added"] = self.added
+        if self.removed:
+            wire["removed"] = self.removed
+        if self.updated:
+            wire["updated"] = self.updated
+        return wire
+
+
+def tools_changed_from_wire(data: dict[str, object]) -> ToolsChanged:
+    """Reconstruct :class:`ToolsChanged`.
+
+    The three delta lists are ``#[serde(default, skip_serializing_if =
+    "Vec::is_empty")]``: absent on the wire when empty, defaulting to ``[]``
+    on read. Each element is a :class:`ToolId` (rejected if it contains a
+    dot; colons are fine — see :mod:`minimax_code.tool_protocol.ids`).
+    """
+    return ToolsChanged(
+        session_id=SessionId(str(data["session_id"])),
+        added=[ToolId(str(v)) for v in data["added"]] if "added" in data else [],
+        removed=[ToolId(str(v)) for v in data["removed"]] if "removed" in data else [],
+        updated=[ToolId(str(v)) for v in data["updated"]] if "updated" in data else [],
     )

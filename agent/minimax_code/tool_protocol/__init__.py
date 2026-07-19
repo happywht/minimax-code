@@ -315,6 +315,7 @@ from minimax_code.tool_protocol.frames import (
     ToolCallProgressFrame,
     ToolCallResult,
     ToolNotificationFrame,
+    ToolsChanged,
     ToolSearchResult,
     ToolServerConnectionStatus,
     ToolServerDisconnectReason,
@@ -626,4 +627,8 @@ __all__ = [
     # 2 types travel the barrel; from_wire converters stay submodule-qualified.
     "HookFrame",
     "HookReplyFrame",
+    # R105 — service-to-harness pushes (tools_changed; three Vec<ToolId>
+    # deltas with #[serde(default, skip_serializing_if = "Vec::is_empty")]).
+    # 1 type travels the barrel; from_wire converter stays submodule-qualified.
+    "ToolsChanged",
 ]

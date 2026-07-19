@@ -148,6 +148,7 @@ from minimax_code.tool_protocol import (
     ToolNotFound,
     ToolNotificationFrame,
     ToolRegistration,
+    ToolsChanged,
     ToolScope,
     ToolSearchResult,
     ToolServerConnectionStatus,
@@ -243,6 +244,7 @@ from minimax_code.tool_protocol.frames import (
     tool_server_get_status_params_from_wire,
     tool_server_get_status_result_from_wire,
     tool_server_status_payload_from_wire,
+    tools_changed_from_wire,
     tools_list_params_from_wire,
     tools_list_result_from_wire,
     tools_search_params_from_wire,
@@ -6833,3 +6835,106 @@ class TestHookDomainBarrelR104:
         # Variants + dispatcher are NOT barrel-re-exported.
         assert not hasattr(tp, "Cancel")
         assert not hasattr(tp, "hook_event_from_wire")
+
+
+class TestToolsChanged:
+    """R105 — ``tools_changed`` frame body (service-to-harness push).
+
+    The active tool roster for ``session_id`` mutated: three ``Vec<ToolId>``
+    deltas (added / removed / updated), each ``#[serde(default,
+    skip_serializing_if = "Vec::is_empty")]``. ``session_id`` is the only
+    required field; the deltas default to ``[]`` and are omitted on the wire
+    when empty (the crate's second all-skip-Vec struct after ServerBindParams).
+    """
+
+    def test_round_trip_all_three_lists(self) -> None:
+        tc = ToolsChanged(
+            session_id=SessionId("sess-1"),
+            added=[ToolId("fs:read"), ToolId("fs:write")],
+            removed=[ToolId("git:status")],
+            updated=[ToolId("fs:read")],
+        )
+        wire = tc.to_wire()
+        back = tools_changed_from_wire(wire)
+        assert back.session_id == SessionId("sess-1")
+        assert back.added == [ToolId("fs:read"), ToolId("fs:write")]
+        assert back.removed == [ToolId("git:status")]
+        assert back.updated == [ToolId("fs:read")]
+
+    def test_empty_lists_omitted_on_wire(self) -> None:
+        """skip_serializing_if = Vec::is_empty: an empty delta is absent."""
+        tc = ToolsChanged(
+            session_id=SessionId("s"),
+            added=[ToolId("fs:read")],
+            removed=[],
+            updated=[],
+        )
+        assert tc.to_wire() == {"session_id": "s", "added": ["fs:read"]}
+
+    def test_all_empty_produces_minimal_wire(self) -> None:
+        """All three deltas empty -> wire carries only session_id."""
+        tc = ToolsChanged(session_id=SessionId("s"))
+        assert tc.to_wire() == {"session_id": "s"}
+        assert tc.added == [] and tc.removed == [] and tc.updated == []
+
+    def test_absent_keys_default_to_empty(self) -> None:
+        """#[serde(default)]: absent wire keys parse to empty lists."""
+        back = tools_changed_from_wire({"session_id": "s", "added": ["x"]})
+        assert back.added == [ToolId("x")]
+        assert back.removed == []
+        assert back.updated == []
+
+    def test_tool_id_with_colon_round_trips(self) -> None:
+        """ToolId rejects dots but accepts a single namespace colon
+        (``ns:name``); the R82 ids contract allows one ``:`` separator."""
+        tc = ToolsChanged(
+            session_id=SessionId("s"), added=[ToolId("fs:read")]
+        )
+        back = tools_changed_from_wire(tc.to_wire())
+        assert back.added == [ToolId("fs:read")]
+
+    def test_session_id_is_required(self) -> None:
+        """No #[serde(default)] on session_id: absent -> KeyError (the Rust
+        Deserialize error surfaces as a missing-dict-key lookup)."""
+        with pytest.raises(KeyError):
+            tools_changed_from_wire({"added": ["x"]})
+
+    def test_partial_lists_round_trip(self) -> None:
+        """Only ``updated`` non-empty; added/removed stay absent + default."""
+        tc = ToolsChanged(
+            session_id=SessionId("s"), updated=[ToolId("u:1"), ToolId("u:2")]
+        )
+        wire = tc.to_wire()
+        assert set(wire.keys()) == {"session_id", "updated"}
+        back = tools_changed_from_wire(wire)
+        assert back.updated == [ToolId("u:1"), ToolId("u:2")]
+        assert back.added == [] and back.removed == []
+
+    def test_preserves_list_order(self) -> None:
+        """Delta order is significant -> round-trip preserves insertion order."""
+        added = [ToolId(f"t:{i}") for i in range(5, 0, -1)]
+        tc = ToolsChanged(session_id=SessionId("s"), added=added)
+        back = tools_changed_from_wire(tc.to_wire())
+        assert back.added == added
+
+
+class TestToolsChangedBarrelR105:
+    """R105 barrel contract: ToolsChanged travels the barrel; the
+    tools_changed_from_wire converter stays submodule-qualified (the barrel
+    never re-exports wire converters, mirroring Rust ``pub use``)."""
+
+    def test_type_re_exported(self) -> None:
+        import minimax_code.tool_protocol as tp
+
+        assert tp.ToolsChanged is ToolsChanged
+
+    def test_converter_not_re_exported(self) -> None:
+        import minimax_code.tool_protocol as tp
+
+        assert not hasattr(tp, "tools_changed_from_wire")
+
+    def test_type_listed_in_barrel_all(self) -> None:
+        import minimax_code.tool_protocol as tp
+
+        assert "ToolsChanged" in tp.__all__
+        assert "tools_changed_from_wire" not in tp.__all__

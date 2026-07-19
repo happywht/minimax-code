@@ -8837,3 +8837,47 @@ union-typed 字段的 wire 契约通过**委托**完成，不内联展开联合�
 ### Commit
 
 `feat(platform): R104 migrate frames.rs hooks domain`
+
+
+## R105 — 迁移 frames.rs tools_changed 域（service→harness 工具集变更推送，crate 第二个全跳过 Vec 结构体）
+
+锚点:R104-1 e6d2e06
+
+### 本轮目标
+
+完成 `grok-build/crates/common/xai-tool-protocol/src/frames.rs` 816-828 行 `tools_changed` 域的迁移——这是 service→harness 方向的工具集变更通知帧。4 字段结构：必需的 `session_id: SessionId` + 3 个 `Vec<ToolId>` delta（`added` / `removed` / `updated`），三者全部带 `#[serde(default, skip_serializing_if = "Vec::is_empty")]`——继 R87 `ServerBindParams` 之后 crate 中**第二个全跳过 Vec 结构体**（R104 的 `HookFrame` 是 Option-skip 而非 Vec-skip，二者 serde 映射语义截然不同，是本轮的核心技术点）。
+
+### 融合结论
+
+`tools_changed` 与 R104 的 hooks 在语义上完全分立：hooks 是 harness↔tool-server **双向控制流**（cancel/pause/resume/session_ended），`tools_changed` 是 tool-server **单向主动推送**——通知 harness「我注册的工具集发生了增量变化」。它是 MiniMax Code SubAgentRuntime 工具目录热更新的 wire 基石：当 MCP server 在运行中注册/注销/更新工具（schema 变更）时，通过此帧推送 delta，harness 侧的 `ToolRegistry` 据此增量刷新，**无需全量 `list_tools` 轮询**。这与项目的动态工具发现需求（技能加载、MCP server 挂载、Sub-Agent 工具子集切换）天然契合——把「工具集是静态快照」升级为「工具集是事件流」，是平台型 Agent 的关键能力跃迁。
+
+### 交付
+
+- **1 个类型**：`ToolsChanged` dataclass（`frames.py` 末尾，紧跟 `hook_reply_frame_from_wire`）——`session_id` 必需字段 + 3 个 `list[ToolId]` 默认空 list。
+- **1 个转换器**：`tools_changed_from_wire`（模块级函数，镜像 `ServerBindParams` 的全跳过 Vec 反序列化策略）。
+- **barrel**：`__init__.py` re-export 类型 `ToolsChanged`（line 318，ruff 自动定位）；`tools_changed_from_wire` 留在 from_wire import 块（line 247）但**不进 `__all__`**（wire 转换器不被 barrel re-export 的既定约定）。
+- **11 个测试方法**：`TestToolsChanged` ×8（round-trip / empty-omitted / all-empty-minimal / absent-defaults / colon-round-trip / session-required / partial-lists / preserves-order）+ `TestToolsChangedBarrelR105` ×3（type-re-exported / converter-not-re-exported / type-listed-in-barrel-all）。
+- **验证**：ruff 3 文件全清；pytest 专项 914 passed；完整套件 3372 passed / 10 skipped / 零回归。
+
+### 映射决策树 + 坑
+
+1. **关键纠正 — ruff isort 是不区分大小写的（非区分大小写）**：本次会话经实证证明。barrel `__init__.py` 中 `ToolsChanged` 被 `ruff --fix` 自动放置在 **line 318**（介于 `ToolNotificationFrame` 与 `ToolSearchResult` 之间），因为小写化后 `"toolschanged"` 按字母序排在 `"toolnotificationframe"`（第 5 字母 `n`<`s`）之后、`"toolsearchresult"`（第 6 字母 `c`<`e`）之前。此前多轮迭代（R104 等）日志误记为「区分大小写排序」。**SOP 更新：isort 比较按全小写，不区分类名前缀/函数名前缀**。初版手动插入位置（`ToolSessionUnbindOutcome` 之后）被 `--fix` 纠正；test 文件同理：`ToolsChanged` 落在 `ToolRegistration` 与 `ToolScope` 之间。**教训：先 `ruff check --fix` 再读最终位置，不要凭直觉手排。**
+2. **Vec-skip serde 模式 ≠ Option-skip 模式**（本轮核心技术点）：`Vec::is_empty` 跳过在 Python 端三处映射与 R104 的 Option-skip 完全不同——(a) dataclass：`list[ToolId] = field(default_factory=list)`（**非** `Optional[list]`）；(b) `to_wire`：**真值检查** `if self.added:`（**非** `is not None`，空 list 是 falsy）；(c) `from_wire`：`[ToolId(str(v)) for v in data["added"]] if "added" in data else []`（key 缺失默认空 list）。若误用 `is not None`，空 list 会被错误序列化为 `"added": []`，破坏「空即省略」契约。这是继 `ServerBindParams` 后第二次应用该模式，已沉淀为可复用映射。
+3. **ToolId 只允许单个命名空间冒号 `ns:name`**：`ids.py` 的 `_is_well_formed_tool_id` 只接受单冒号分隔符。`fs:read:sync`（两冒号）被拒报 `InvalidFormatIdError: identifier 'fs:read:sync' has invalid format`；点号 `.` 同样被拒。**测试值必须用 `"fs:read"`（单冒号）。** 初版 `test_tool_id_with_colon_round_trips` 用 `ToolId("fs:read:sync")` 失败，改单冒号后通过——pytest 913→914 的那 1 个失败即此。
+4. **from_wire 转换器不进 barrel `__all__`**：`tools_changed_from_wire` 在 barrel 的 from_wire import 块（line 247，全小写函数名排序：`tool_server_status_payload_from_wire` < `tools_changed_from_wire` < `tools_list_params_from_wire`），但**不在 `__all__`**。crate 约定：wire 转换器保留子模块限定调用（`from minimax_code.tool_protocol.frames import tools_changed_from_wire`），只有类型被 barrel re-export。测试用**反向断言**：`test_converter_not_re_exported` 断言 `not hasattr(tp, "tools_changed_from_wire")`。
+
+### 验证
+
+- `uv run ruff check tests/test_tool_protocol.py minimax_code/tool_protocol/frames.py minimax_code/tool_protocol/__init__.py` → **All checks passed!**（isort 经 `--fix` 纠正 barrel（line 318）+ test 后 0 error，纯导入重排无附带损害）
+- `uv run pytest tests/test_tool_protocol.py -q` → **914 passed**（903 + 11 新，2 类全绿；唯一初版失败 `test_tool_id_with_colon_round_trips` 已修复）
+- `uv run pytest -q`（完整套件）→ **3372 passed, 10 skipped, 0 failed**（零回归；R105 不触及可靠性栈，flaky breaker 本次负载下通过）
+
+### YAGNI 边界
+
+- **不迁 `ToolServerLifecycleStatus`**（frames.rs 833+）：这是 `#[serde(rename_all = "snake_case")]` 枚举，带 `#[default]` `Ready`，6 个变体（Starting/Ready/Busy/Draining/ShuttingDown/Disconnected）。语义独立——是 server 生命周期状态机（配合 R103 simplified lifecycle serve 域），非工具集变更。推迟到 R106 作为独立域迁移。
+- **不做 all-empty 广播校验**：wire shape 允许三个 delta 全空（all-empty broadcast），Rust 结构体构造时不强制校验。Python 端镜像此宽松契约——`ToolsChanged(session_id="s")` 合法，`to_wire()` 产出 `{"session_id": "s"}` 最小帧。语义校验（至少一个 delta 非空）是消费层（harness 收到后判断）的职责，非 wire 层。
+- **ToolId 不做语义存在性校验**：from_wire 只做格式校验（`ToolId(str(v))` 触发 `ids.py` 的 `_validate_tool_id`），不验证 id 是否真实存在于某 registry——wire 层只保证往返保真，registry 查询是消费层职责。
+
+### Commit
+
+`feat(platform): R105 migrate frames.rs tools_changed domain`
