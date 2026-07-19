@@ -100,9 +100,11 @@ from minimax_code.tool_protocol import (
     ResourceBlock,
     ResponseError,
     ResponseResult,
+    ServeParams,
     ServerBindAck,
     ServerBindOutcome,
     ServerBindParams,
+    ServeResult,
     ServerId,
     ServerInfo,
     ServersListParams,
@@ -112,6 +114,8 @@ from minimax_code.tool_protocol import (
     ServerUnbindParams,
     SessionAttachServerParams,
     SessionAttachServerResult,
+    SessionBindParams,
+    SessionBindResult,
     SessionBindServerParams,
     SessionBindServerResult,
     SessionCloseParams,
@@ -119,6 +123,7 @@ from minimax_code.tool_protocol import (
     SessionMismatch,
     SessionOpenParams,
     SessionOpenResult,
+    SessionUnbindParams,
     SessionUnbindServerParams,
     Shadowed,
     StreamingSpec,
@@ -201,6 +206,8 @@ from minimax_code.tool_protocol.frames import (
     pong_frame_from_wire,
     register_server_params_from_wire,
     register_tool_params_from_wire,
+    serve_params_from_wire,
+    serve_result_from_wire,
     server_bind_ack_from_wire,
     server_bind_params_from_wire,
     server_info_from_wire,
@@ -210,11 +217,14 @@ from minimax_code.tool_protocol.frames import (
     servers_list_result_from_wire,
     session_attach_server_params_from_wire,
     session_attach_server_result_from_wire,
+    session_bind_params_from_wire,
+    session_bind_result_from_wire,
     session_bind_server_params_from_wire,
     session_bind_server_result_from_wire,
     session_close_params_from_wire,
     session_open_params_from_wire,
     session_open_result_from_wire,
+    session_unbind_params_from_wire,
     session_unbind_server_params_from_wire,
     subscribe_ack_from_wire,
     subscribe_notifications_params_from_wire,
@@ -6424,6 +6434,174 @@ class TestSessionBindAttachServerBarrelR102:
         "session_bind_server_params_from_wire",
         "session_bind_server_result_from_wire",
         "session_unbind_server_params_from_wire",
+    ]
+
+    def test_frames_module_exposes_structs(self) -> None:
+        import minimax_code.tool_protocol.frames as mod
+
+        for name in self._types:
+            assert hasattr(mod, name), f"frames submodule missing {name}"
+
+    def test_session_symbols_in_all(self) -> None:
+        import minimax_code.tool_protocol as pkg
+
+        for name in self._types:
+            assert name in pkg.__all__, f"{name} not in barrel __all__"
+
+    def test_frames_submodule_exposes_from_wire(self) -> None:
+        import minimax_code.tool_protocol.frames as mod
+
+        for name in self._converters:
+            assert hasattr(mod, name), f"frames submodule missing {name}"
+
+    def test_barrel_does_not_re_export_from_wire(self) -> None:
+        import minimax_code.tool_protocol as pkg
+
+        for name in self._converters:
+            assert not hasattr(pkg, name), f"barrel should not export {name}"
+
+
+
+class TestServeParams:
+    """R103 ServeParams — required, always-emitted Vec<ToolDescriptionWithSchema>."""
+
+    def _tool(self) -> ToolDescriptionWithSchema:
+        return ToolDescriptionWithSchema(
+            description=ToolDescription(name="bash", description="run shell"),
+        )
+
+    def test_to_wire_always_emits_tools(self) -> None:
+        p = ServeParams(tools=[self._tool()])
+        wire = p.to_wire()
+        assert list(wire.keys()) == ["tools"]
+        assert wire["tools"][0]["description"]["name"] == "bash"
+
+    def test_to_wire_empty_list_still_emits(self) -> None:
+        # No skip_serializing_if — tools is always emitted, even when empty.
+        assert ServeParams(tools=[]).to_wire() == {"tools": []}
+
+    def test_from_wire_required_key(self) -> None:
+        p = serve_params_from_wire({"tools": [self._tool().to_wire()]})
+        assert len(p.tools) == 1
+        assert p.tools[0].description.name == "bash"
+
+    def test_from_wire_missing_tools_raises(self) -> None:
+        import pytest
+
+        # Rust has no #[serde(default)] on tools — required key.
+        with pytest.raises(KeyError):
+            serve_params_from_wire({})  # type: ignore[arg-type]
+
+    def test_round_trip(self) -> None:
+        p = ServeParams(tools=[self._tool()])
+        assert serve_params_from_wire(p.to_wire()) == p
+
+
+class TestServeResult:
+    """R103 ServeResult — default-0 accepted (always emitted) + Vec<ToolId> skip lists."""
+
+    def test_default_round_trip(self) -> None:
+        r = ServeResult()
+        wire = r.to_wire()
+        assert wire == {"accepted": 0}  # added/removed skipped when empty
+        assert serve_result_from_wire(wire) == r
+
+    def test_tool_id_lists(self) -> None:
+        r = ServeResult(
+            accepted=2,
+            added=[ToolId("fs:read")],
+            removed=[ToolId("fs:old")],
+        )
+        wire = r.to_wire()
+        assert wire["accepted"] == 2
+        assert wire["added"] == ["fs:read"]
+        assert wire["removed"] == ["fs:old"]
+        back = serve_result_from_wire(wire)
+        assert back.accepted == 2
+        assert back.added == [ToolId("fs:read")]
+        assert back.removed == [ToolId("fs:old")]
+
+    def test_empty_lists_skipped(self) -> None:
+        wire = ServeResult(accepted=1).to_wire()
+        assert "added" not in wire
+        assert "removed" not in wire
+
+
+class TestSessionBindParams:
+    """R103 SessionBindParams — empty unit struct."""
+
+    def test_to_wire_empty(self) -> None:
+        assert SessionBindParams().to_wire() == {}
+
+    def test_from_wire_ignores_data(self) -> None:
+        assert session_bind_params_from_wire({"ignored": True}) == SessionBindParams()
+
+    def test_round_trip(self) -> None:
+        p = SessionBindParams()
+        assert session_bind_params_from_wire(p.to_wire()) == p
+
+
+class TestSessionBindResult:
+    """R103 SessionBindResult — tools always emitted (no skip), unlike R102."""
+
+    def test_default_tools_always_emitted(self) -> None:
+        # Crucial difference from R102 SessionBindServerResult: tools is
+        # emitted even when empty (Rust has no skip_serializing_if here).
+        wire = SessionBindResult().to_wire()
+        assert wire == {"tools": []}
+
+    def test_full_payload(self) -> None:
+        r = SessionBindResult(
+            tools=[ToolDescription(name="bash", description="d")],
+            binary_version="1.2.3",
+            unserved_tool_ids=["x"],
+            resolve_error="boom",
+        )
+        wire = r.to_wire()
+        assert wire["tools"][0]["name"] == "bash"
+        assert wire["binary_version"] == "1.2.3"
+        assert wire["unserved_tool_ids"] == ["x"]
+        assert wire["resolve_error"] == "boom"
+        assert session_bind_result_from_wire(wire) == r
+
+    def test_option_fields_skipped_when_none(self) -> None:
+        wire = SessionBindResult(tools=[]).to_wire()
+        assert "binary_version" not in wire
+        assert "unserved_tool_ids" not in wire
+        assert "resolve_error" not in wire
+
+
+class TestSessionUnbindParams:
+    """R103 SessionUnbindParams — empty unit struct (notification, no id)."""
+
+    def test_to_wire_empty(self) -> None:
+        assert SessionUnbindParams().to_wire() == {}
+
+    def test_from_wire_ignores_data(self) -> None:
+        assert session_unbind_params_from_wire({}) == SessionUnbindParams()  # type: ignore[arg-type]
+
+    def test_round_trip(self) -> None:
+        p = SessionUnbindParams()
+        assert session_unbind_params_from_wire(p.to_wire()) == p
+
+
+class TestServeLifecycleBarrelR103:
+    """R103 barrel contract — 5 types travel the barrel; 5 from_wire stay
+    submodule-qualified (mirrors R102 TestSessionBindAttachServerBarrelR102)."""
+
+    _types = [
+        "ServeParams",
+        "ServeResult",
+        "SessionBindParams",
+        "SessionBindResult",
+        "SessionUnbindParams",
+    ]
+    _converters = [
+        "serve_params_from_wire",
+        "serve_result_from_wire",
+        "session_bind_params_from_wire",
+        "session_bind_result_from_wire",
+        "session_unbind_params_from_wire",
     ]
 
     def test_frames_module_exposes_structs(self) -> None:

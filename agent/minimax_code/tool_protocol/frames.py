@@ -165,7 +165,11 @@ from minimax_code.tool_protocol.notification_wire import (
 from minimax_code.tool_protocol.notification_wire import from_wire as notification_from_wire
 from minimax_code.tool_protocol.output_wire import ToolOutputWire
 from minimax_code.tool_protocol.output_wire import from_wire as tool_output_wire_from_wire
-from minimax_code.tool_protocol.registration import ToolRegistration, ToolServerRegistration
+from minimax_code.tool_protocol.registration import (
+    ToolDescriptionWithSchema,
+    ToolRegistration,
+    ToolServerRegistration,
+)
 from minimax_code.tool_types import ToolDescription
 
 __all__ = [
@@ -253,6 +257,15 @@ __all__ = [
     "SessionBindServerParams",
     "SessionBindServerResult",
     "SessionUnbindServerParams",
+    # simplified lifecycle serve (R103 — consumes R87
+    # ToolDescriptionWithSchema via a required, always-emitted
+    # Vec-of-dataclass tool list; the one frames.py field that is
+    # required-but-not-skipped on serialise)
+    "ServeParams",
+    "ServeResult",
+    "SessionBindParams",
+    "SessionBindResult",
+    "SessionUnbindParams",
     # wire converters
     "tool_call_params_from_wire",
     "tool_call_result_from_wire",
@@ -311,6 +324,12 @@ __all__ = [
     "session_bind_server_params_from_wire",
     "session_bind_server_result_from_wire",
     "session_unbind_server_params_from_wire",
+    # simplified lifecycle serve (R103)
+    "serve_params_from_wire",
+    "serve_result_from_wire",
+    "session_bind_params_from_wire",
+    "session_bind_result_from_wire",
+    "session_unbind_params_from_wire",
 ]
 
 
@@ -2239,8 +2258,9 @@ def session_open_result_from_wire(data: dict[str, object]) -> SessionOpenResult:
 # session-lifecycle domain — harness→hub requests to bind/unbind/attach a
 # tool server to the envelope session, plus the attach-discovery route enum.
 # The simplified-lifecycle serve sub-domain (ServeParams/ServeResult/
-# SessionBindParams, frames.rs 546+) remains deferred — it depends on
-# ``crate::ToolDescriptionWithSchema`` which has no Python mirror yet.
+# SessionBindParams/SessionBindResult/SessionUnbindParams, frames.rs 546+)
+# lands in R103 — its ``crate::ToolDescriptionWithSchema`` dependency was
+# unblocked by R87's registration.py mirror.
 #
 # Wire-shape notes:
 # * ``AttachRoute`` is the crate's first ``#[serde(other)]`` forward-tolerant
@@ -2495,3 +2515,209 @@ def session_attach_server_result_from_wire(data: dict[str, object]) -> SessionAt
             else None
         ),
     )
+
+
+# ── Simplified lifecycle serve (R103) ─────────────────────────────────────
+#
+# Fusion of grok-build's ``xai-tool-protocol::frames`` simplified-lifecycle
+# serve sub-domain (frames.rs 546-607): ``ServeParams`` / ``ServeResult`` /
+# ``SessionBindParams`` / ``SessionBindResult`` / ``SessionUnbindParams``.
+# This is the lower half of the session-lifecycle domain — the server→hub
+# ``serve`` snapshot plus the hub→server ``session.bind`` / ``session.unbind``
+# primitives (the session id rides on the JSON-RPC envelope, not in params).
+# The R102 comment block above marked this deferred pending a Python mirror
+# for ``crate::ToolDescriptionWithSchema``; R87's registration.py supplied
+# it (``ToolDescriptionWithSchema`` dataclass + own ``to_wire`` / ``from_wire``
+# classmethod), so the domain now lands.
+#
+# Wire-shape notes:
+# * ``ServeParams.tools`` is ``Vec<ToolDescriptionWithSchema>`` with NO
+#   ``skip_serializing_if`` and NO ``#[derive(Default)]`` on the struct — a
+#   required, always-emitted field. It is the one frames.py tool-list field
+#   that is neither default-empty-skip (R96/R102 Vec-is_empty pattern) nor
+#   bare pydantic: each element lifts via the dataclass's own ``to_wire`` /
+#   ``from_wire`` classmethod (R87 registration.py), NOT ``model_dump`` /
+#   ``model_validate``. ``from_wire`` treats ``tools`` as a required key
+#   (Rust has no ``#[serde(default)]`` on the field) — mirrors R92
+#   ``LastSeq.seq`` required-key discipline.
+# * ``ServeResult`` (``#[derive(Default)]``): ``accepted`` is a default-0
+#   ``usize`` with ``#[serde(default)]`` but NO skip (always emitted, like
+#   R101's ``resume`` bool default-no-skip rule); ``added`` / ``removed`` are
+#   ``Vec<ToolId>`` default-empty-skip — the newtype-element variant of R102's
+#   bare-pydantic skip pattern. ``ToolId`` is a str subclass (R82), so it
+#   serialises as a bare string (placed directly, mirroring
+#   ``ToolCallParams.tool_id``); lift on read via ``ToolId(str(...))``.
+# * ``SessionBindParams`` / ``SessionUnbindParams`` are empty unit structs
+#   (``#[derive(Eq)]``); their ``from_wire`` ignores ``data`` (ARG001 is not
+#   in the ruff select set E/F/W/I/B/UP).
+# * ``SessionBindResult`` (``#[derive(Default)]``) reuses the R102
+#   ``SessionBindServerResult`` four-field shape (tools / binary_version /
+#   unserved_tool_ids / resolve_error) but with a crucial wire difference:
+#   ``tools`` here is a bare ``Vec<ToolDescription>`` with NO
+#   ``skip_serializing_if`` (always emitted, even when empty), whereas R102's
+#   was default-empty-skip. The three ``Option`` / ``Vec`` tails keep their
+#   default + skip-if-absent/empty semantics.
+
+
+@dataclass
+class ServeParams:
+    """``serve`` params (server → hub). Full tool snapshot for a session.
+
+    Idempotent: re-sending replaces the tool set for the envelope
+    ``session_id``; the hub diffs against the previous snapshot and emits
+    ``tools_changed`` to subscribed harnesses. :attr:`tools` is the one
+    frames.py tool-list field that is required and always-emitted (no
+    ``skip_serializing_if``), and its elements are
+    :class:`~minimax_code.tool_protocol.registration.ToolDescriptionWithSchema`
+    dataclasses lifted via their own ``to_wire`` / ``from_wire`` (R87) — not
+    bare pydantic ``model_dump``.
+    """
+
+    tools: list[ToolDescriptionWithSchema]
+
+    def to_wire(self) -> dict[str, object]:
+        return {"tools": [t.to_wire() for t in self.tools]}
+
+
+def serve_params_from_wire(data: dict[str, object]) -> ServeParams:
+    """Reconstruct :class:`ServeParams`.
+
+    :attr:`tools` is a required key (Rust has no ``#[serde(default)]`` on the
+    field — omission is an error, mirroring R92 ``LastSeq.seq``); each element
+    lifts via :meth:`ToolDescriptionWithSchema.from_wire` (R87 dataclass
+    classmethod, NOT ``model_validate``).
+    """
+    return ServeParams(
+        tools=[
+            ToolDescriptionWithSchema.from_wire(t)  # type: ignore[arg-type]
+            for t in data["tools"]  # type: ignore[union-attr]
+        ]
+    )
+
+
+@dataclass
+class ServeResult:
+    """Reply to :class:`ServeParams`.
+
+    ``#[derive(Default)]``. :attr:`accepted` is a default-0 ``usize`` with
+    ``#[serde(default)]`` but NO ``skip_serializing_if`` (always emitted,
+    mirroring R101's ``resume`` bool default-no-skip rule). :attr:`added` /
+    :attr:`removed` are ``Vec<ToolId>`` default-empty-skip lists (the
+    newtype-element variant of R102's bare-pydantic skip pattern).
+    """
+
+    accepted: int = 0
+    added: list[ToolId] = field(default_factory=list)
+    removed: list[ToolId] = field(default_factory=list)
+
+    def to_wire(self) -> dict[str, object]:
+        wire: dict[str, object] = {"accepted": self.accepted}
+        if self.added:
+            # ToolId is a str subclass — placed directly, serialises as bare
+            # strings (mirrors ToolCallParams.tool_id).
+            wire["added"] = list(self.added)
+        if self.removed:
+            wire["removed"] = list(self.removed)
+        return wire
+
+
+def serve_result_from_wire(data: dict[str, object]) -> ServeResult:
+    """Reconstruct :class:`ServeResult`.
+
+    :attr:`accepted` defaults to 0 when omitted (``#[serde(default)]``);
+    :attr:`added` / :attr:`removed` default to empty lists and lift each
+    ``ToolId`` via ``ToolId(str(...))`` (str newtype, R82).
+    """
+    return ServeResult(
+        accepted=int(data.get("accepted", 0)),
+        added=[ToolId(str(tid)) for tid in data.get("added", [])],  # type: ignore[union-attr]
+        removed=[ToolId(str(tid)) for tid in data.get("removed", [])],  # type: ignore[union-attr]
+    )
+
+
+@dataclass
+class SessionBindParams:
+    """``session.bind`` params (hub → server).
+
+    Empty unit struct (``#[derive(Eq)]``); the session id rides on the
+    JSON-RPC envelope, not in params. The server responds with its tool
+    snapshot via the JSON-RPC response; on reconnect it replays
+    ``serve{tools}`` for every remembered session.
+    """
+
+    def to_wire(self) -> dict[str, object]:
+        return {}
+
+
+def session_bind_params_from_wire(data: dict[str, object]) -> SessionBindParams:
+    """Reconstruct :class:`SessionBindParams` (empty; ignores ``data``)."""
+    return SessionBindParams()
+
+
+@dataclass
+class SessionBindResult:
+    """Reply to :class:`SessionBindParams`. The server's tool snapshot.
+
+    ``#[derive(Default)]``. Same four-field shape as R102's
+    :class:`SessionBindServerResult` (tools / binary_version /
+    unserved_tool_ids / resolve_error) but with a crucial wire difference:
+    :attr:`tools` is a bare ``Vec<ToolDescription>`` with NO
+    ``skip_serializing_if`` (always emitted, even when empty), whereas R102's
+    was default-empty-skip. The three ``Option`` / ``Vec`` tails keep their
+    default + skip-if-absent/empty semantics.
+    """
+
+    tools: list[ToolDescription] = field(default_factory=list)
+    binary_version: str | None = None
+    unserved_tool_ids: list[str] = field(default_factory=list)
+    resolve_error: str | None = None
+
+    def to_wire(self) -> dict[str, object]:
+        # NOTE: tools is always emitted (no skip) — Rust has no
+        # skip_serializing_if on this field, unlike R102 SessionBindServerResult.
+        wire: dict[str, object] = {
+            "tools": [t.model_dump(exclude_none=True) for t in self.tools],
+        }
+        if self.binary_version is not None:
+            wire["binary_version"] = self.binary_version
+        if self.unserved_tool_ids:
+            wire["unserved_tool_ids"] = self.unserved_tool_ids
+        if self.resolve_error is not None:
+            wire["resolve_error"] = self.resolve_error
+        return wire
+
+
+def session_bind_result_from_wire(data: dict[str, object]) -> SessionBindResult:
+    """Reconstruct :class:`SessionBindResult`.
+
+    :attr:`tools` defaults to empty when the wire omits it (the Rust struct
+    is ``#[derive(Default)]``); it lifts as a list of bare pydantic models.
+    The three tail fields are default-absent / default-empty.
+    """
+    return SessionBindResult(
+        tools=[
+            ToolDescription.model_validate(t)  # type: ignore[arg-type]
+            for t in data.get("tools", [])  # type: ignore[union-attr]
+        ],
+        binary_version=data.get("binary_version"),  # type: ignore[arg-type]
+        unserved_tool_ids=list(data.get("unserved_tool_ids", [])),  # type: ignore[union-attr]
+        resolve_error=data.get("resolve_error"),  # type: ignore[arg-type]
+    )
+
+
+@dataclass
+class SessionUnbindParams:
+    """``session.unbind`` params (hub → server).
+
+    Empty unit struct (``#[derive(Eq)]``); sent as a JSON-RPC notification
+    (no ``id``) — the hub does not wait for a response. The session id rides
+    on the JSON-RPC envelope, not in params.
+    """
+
+    def to_wire(self) -> dict[str, object]:
+        return {}
+
+
+def session_unbind_params_from_wire(data: dict[str, object]) -> SessionUnbindParams:
+    """Reconstruct :class:`SessionUnbindParams` (empty; ignores ``data``)."""
+    return SessionUnbindParams()

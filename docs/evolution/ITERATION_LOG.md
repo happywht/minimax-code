@@ -8654,3 +8654,134 @@ Python 融合层的关键设计决策：**frames.py 内的 StrEnum 一律用 cla
 ### Commit
 
 `feat(platform): R102 migrate frames.rs session bind/attach server domain`
+
+
+
+
+## R103 — 迁移 frames.rs simplified lifecycle serve 子域（5 符号，消费 R87 ToolDescriptionWithSchema，闭合 serve→bind/unbind 下半场）
+
+锚点:R102-1 2e434ef
+
+### 本轮目标
+
+从 deferred 队列选下一域。优先候选：simplified lifecycle serve 子域
+（ServeParams / ServeResult / SessionBindParams / SessionBindResult /
+SessionUnbindParams, frames.rs:546-607）。该域在 R102 留下"依赖
+``crate::ToolDescriptionWithSchema`` 无 Python mirror"的阻塞注释，
+而 R87 registration.py 已迁移该 dataclass（含自定义 ``to_wire`` /
+``from_wire`` classmethod）——依赖已满足，R103 可完整迁移，无新增阻塞。
+
+### 融合结论
+
+frames.rs 546-607 的 5 个 DTO 落入 frames.py 末尾的 simplified lifecycle
+serve 区块。这是 session-lifecycle 域的下半场：server→hub 的 ``serve``
+快照（ServeParams/ServeResult）+ hub→server 的 ``session.bind`` /
+``session.unbind`` 原语（session id 走 JSON-RPC envelope，不在 params）。
+R102 已迁移上半场（attach server），R103 闭合下半场。
+
+关键融合点：ServeParams.tools 是整个 frames.py 中**唯一**的
+"required-but-not-skipped on serialise" 工具列表字段——它既不是 R96/R102
+的 default-empty-skip 模式，也不是裸 pydantic list[ToolDescription]，
+而是 list[ToolDescriptionWithSchema] dataclass 列表，每个元素经由 R87
+dataclass 自己的 ``to_wire`` / ``from_wire`` classmethod 升降（NOT
+``model_dump`` / ``model_validate``）。这是 R87 引入的"dataclass 自带
+wire 方法"消费模式的首次 frames.py 落地。
+
+### 交付
+
+**frames.py**（追加 ~210 行）：
+- 5 个 dataclass：ServeParams / ServeResult / SessionBindParams /
+  SessionBindResult / SessionUnbindParams。
+- 5 个模块级 ``*_from_wire`` 转换器。
+- 更新 R102 留下的陈旧 deferred 注释（@2241-2243）为"已落地"。
+- ``__all__`` 类型区 +5、converters 区 +5。
+- registration 导入块追加 ToolDescriptionWithSchema（isort 首位）。
+
+**__init__.py barrel**：frames 导入块 3 处分散插入（ServeParams 在
+RegisterToolParams 后；ServeResult 在 ServerBindParams 后——isort
+"serveresult" pos6='e' > "serverbindparams" pos6='b'；SessionBindParams/
+SessionBindResult 在 SessionAttachServerResult 后；SessionUnbindParams 在
+SessionOpenResult 后）+ ``__all__`` R103 新组 +5。
+
+**test_tool_protocol.py**：类型导入块 3 处 + from_wire 导入块 3 处分散
+插入 + 6 个新测试类（21 个测试，含 barrel 契约类 TestServeLifecycleBarrelR103）。
+
+### 映射决策树+坑
+
+1. **ServeParams.tools —— required-always-emitted（crate-unique）**：
+   Rust 无 ``#[serde(default)]``、无 ``skip_serializing_if``、struct 无
+   ``#[derive(Default)]``。→ Python 无默认值字段；``to_wire`` 总是发射
+   ``{"tools": [...]}``（空列表也发射 ``{"tools": []}``）；``from_wire``
+   用 ``data["tools"]``（必需键，缺失抛 KeyError，镜像 R92 LastSeq.seq）。
+   **坑**：差点误用 R96/R102 的 ``data.get("tools", [])`` default-empty
+   模式——那是给 ``#[serde(default)]`` 字段的，ServeParams.tools 不是。
+
+2. **ServeParams.tools 元素升降 —— dataclass classmethod 而非 pydantic**：
+   ``[t.to_wire() for t in self.tools]`` / ``ToolDescriptionWithSchema.from_wire(t)``
+   （R87 dataclass 模式）。**对比**：R96 ToolsListResult.tools 用
+   ``model_dump`` / ``model_validate``（裸 pydantic）。两者不可混用。
+
+3. **ServeResult.accepted —— default-no-skip（总是发射）**：
+   Rust ``#[serde(default)]`` 但无 skip → 总是序列化，默认 0 反序列化。
+   → ``to_wire`` 总是写 ``accepted``；``from_wire`` ``data.get("accepted", 0)``。
+   镜像 R101 resume bool 规则。
+
+4. **ServeResult.added/removed —— Vec<ToolId> newtype-element skip**：
+   ``list[ToolId]`` default-empty-skip（空跳过）。ToolId 是 str 子类（R82），
+   ``list(self.added)`` 直接放置序列化为字符串数组（镜像 ToolCallParams.
+   tool_id @347）；``from_wire`` ``[ToolId(str(tid)) for tid in ...]``。
+
+5. **SessionBindResult.tools —— always-emitted（与 R102 对照的关键差异）**：
+   与 R102 SessionBindServerResult 同形（tools/binary_version/
+   unserved_tool_ids/resolve_error 四字段），**但** R102 的 tools 是
+   default-empty-skip，R103 的 tools 无 skip（总是发射，即使空）。
+   → ``to_wire`` 无条件写 ``"tools": [...]``。三个尾部 Option/Vec 保持
+   default+skip 语义。
+
+6. **SessionBindParams / SessionUnbindParams —— 空 unit struct**：
+   ``to_wire`` 返回 ``{}``；``from_wire`` 忽略 data（ARG001 不在 ruff
+   select E/F/W/I/B/UP）。
+
+7. **isort 坑（已修）**：初版把 ServeParams+ServeResult 连续插在
+   RegisterToolParams 后。ruff I001 报错——ServeResult（"serveresult"
+   pos6='e'）应排在 ServerBindParams（"serverbindparams" pos6='b'）之后、
+   ServerInfo（"serverinfo" pos6='i'）之前。用 ``ruff check --fix``（isort
+   纯排序，所有导入已消费，不删除，安全）一次修复 barrel + test 两文件。
+
+8. **F401 SOP 遵守**：所有 frames.py 导入（ToolDescriptionWithSchema）+
+   5 个消费结构体 + barrel/test 分散导入 + 6 个测试类在同批次落地，
+   ``ruff check``（非 --fix）首跑即 "All checks passed!"（isort 除外，
+   isort 是排序不是 F401）。
+
+### 验证
+
+- ``ruff check tests/test_tool_protocol.py minimax_code/tool_protocol/\
+  frames.py minimax_code/tool_protocol/__init__.py`` →
+  "All checks passed!"（isort --fix 后）。
+- ``pytest tests/test_tool_protocol.py -q`` → **889 passed**（868 旧 +
+  21 新 R103）。
+- ``pytest -q``（全量）→ **3346 passed, 10 skipped, 1 failed**。唯一失败
+  ``test_reliability.py::test_open_to_half_open_after_cooldown`` 是预先存在的
+  timing-flaky（``open_duration=0.05`` + ``asyncio.sleep(0.06)``，全量 117s 高负载
+  下 event loop 调度抖动），隔离单跑 ``1 passed in 1.07s``，与 R103 frames 域零关联
+  （R103 仅碰 frames.py/__init__.py/test_tool_protocol.py，不碰 reliability 栈）。
+  符合迭代独立性边界，不在本轮修。
+- barrel 契约测试 TestServeLifecycleBarrelR103 验证：5 类型经 barrel
+  ``__all__`` 导出、5 from_wire 留在 frames 子模块（barrel 不 re-export）。
+
+### YAGNI 边界
+
+- 只迁移 frames.rs 546-607 的 5 个符号，不碰 609+ 的 subscriptions 域
+  （R97 已迁移）。
+- ServeParams.tools 的 ToolDescriptionWithSchema 不重新实现，直接消费 R87
+  既有 dataclass（DRY，单一来源）。
+- SessionBindParams/SessionUnbindParams 是空 struct，不预留"未来可能加
+  字段"的占位（YAGNI）。
+- 不实现 serve/bind/unbind 的运行时 handler（仅 wire 类型层；运行时属
+  后续 RPC 接线迭代）。
+- from_wire 的 ``# type: ignore`` 注释保留（dict[str, object] → 具体
+  类型的窄化，mypy 严格但 ruff 不管；与 R92+ 一致风格）。
+
+### Commit
+
+`feat(platform): R103 migrate frames.rs simplified lifecycle serve domain`

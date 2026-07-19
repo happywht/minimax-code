@@ -283,9 +283,11 @@ from minimax_code.tool_protocol.frames import (
     PongFrame,
     RegisterServerParams,
     RegisterToolParams,
+    ServeParams,
     ServerBindAck,
     ServerBindOutcome,
     ServerBindParams,
+    ServeResult,
     ServerInfo,
     ServersListParams,
     ServersListResult,
@@ -294,11 +296,14 @@ from minimax_code.tool_protocol.frames import (
     ServerUnbindParams,
     SessionAttachServerParams,
     SessionAttachServerResult,
+    SessionBindParams,
+    SessionBindResult,
     SessionBindServerParams,
     SessionBindServerResult,
     SessionCloseParams,
     SessionOpenParams,
     SessionOpenResult,
+    SessionUnbindParams,
     SessionUnbindServerParams,
     SubscribeAck,
     SubscribeNotificationsParams,
@@ -605,4 +610,13 @@ __all__ = [
     "SessionBindServerParams",
     "SessionBindServerResult",
     "SessionUnbindServerParams",
+    # R103 — simplified lifecycle serve (consumes R87
+    # ToolDescriptionWithSchema via a required, always-emitted tool list;
+    # ServeParams.tools is the one frames.py field with no skip_serializing_if).
+    # 5 types travel the barrel; from_wire converters stay submodule-qualified.
+    "ServeParams",
+    "ServeResult",
+    "SessionBindParams",
+    "SessionBindResult",
+    "SessionUnbindParams",
 ]
