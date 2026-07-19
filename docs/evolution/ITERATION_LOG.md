@@ -3753,3 +3753,51 @@ R46/R47 接了两处 `DEFAULT_MODEL` 硬编码（storage + LLM client）。本�
 ### Commit
 
 `feat(platform): R48 derive CANDIDATE_MODELS from model vocabulary (fuse grok xai-grok-models)`
+
+---
+
+## R49 — 迁移散落 MiniMax-M3 fallback 至 R45 词汇表（融合 grok xai-grok-models 消费端）
+
+> 锚定 R48（`ac4c105`）。
+
+### 本轮目标
+
+R46/R47/R48 接了 3 处 `DEFAULT_MODEL` / `CANDIDATE_MODELS` 硬编码。本轮转向**债务地图** —— 全仓 5 处散落的 `"MiniMax-M3"` 字面量 fallback。开局调研 grok 的 `ModelMetadata`（`xai-chat-state/commands.rs:17`）发现它只有 `resolved_model_id` + `model_fingerprint` 两字段，是**运行时解析结果**，**不是** baked-in 展示元数据（context_window/name）—— grok 根本没有 context_window/name 的结构化建模。故**放弃**"扩展 `DefaultModelEntry` 建模展示元数据"方向（会偏离 grok 的 serde 对等：grok 的 entry 故意只读 `model`，元数据留给其他消费者），改为迁移**最低风险的 2 处边缘 fallback**：`resolution.resolve_subagent_spec` 的 `parent_model` 默认参数（纯函数 leaf）+ `skills._build_agent_core` 的 `model or "MiniMax-M3"` fallback（技能 runtime）。复用 R46/R47/R48 已建立的单来源接线模式，值不变 `"MiniMax-M3"`。
+
+### 融合结论
+
+- ✅ **保留**：`resolution.py` `parent_model: str = default_model()` —— 顶层导入 `from ..models import default_model`，默认参数在定义时求值（与 R46 storage / R47 llm 的 `DEFAULT_MODEL = default_model()` 同构），纯函数 leaf 无循环风险。
+- ✅ **保留**：`runtime.py` `_build_agent_core` 的 `model=model or default_model()` —— `default_model` **懒加载**在函数内（`from ...models import default_model`，与既有 `from ..core import AgentConfig, AgentCore  # lazy: avoids circular import` 同位置），因为该文件显式声明"lazy to avoid circular import on cold start"。
+- ✅ **保留**：2 个不变量测试（resolution `inspect.signature` 默认参数锁死 + runtime `monkeypatch` AgentConfig/AgentCore 捕获 fallback 与 passthrough）。
+- ❌ **放弃**：扩展 `DefaultModelEntry` 建模 name/context_window —— grok 的 `ModelMetadata` 是运行时解析（resolved_id+fingerprint），非 baked-in 展示元数据；grok 的 serde entry 故意只读 `model`。扩展会破坏 R45 的 serde 对等契约 + 偏离 grok 哲学。
+
+### 交付
+
+- `agent/minimax_code/orchestrator/resolution.py`（改）— (1) 导入块加 `from ..models import default_model`（first-party，stdlib 组后空行分隔）；(2) `resolve_subagent_spec` 默认参数 `parent_model: str = "MiniMax-M3"` → `default_model()` + 行内注释；(3) 两处 docstring 更新（模块顶 line 50-51 + 函数 line 155-157）说明来源从字面量改为 `default_model` 词汇表，避免 doc drift。
+- `agent/minimax_code/agent/skills/runtime.py`（改）— (1) `_build_agent_core` 懒加载 `from ...models import default_model`（在 `from ..core` 之前，ruff 多点相对排序）；(2) `model=model or "MiniMax-M3"` → `model=model or default_model()`。**值不变**。ruff `--fix` 顺手清理 3 处预存 lint（顶层导入块 I001 排序 + 2× UP037 `"SkillToolProvider"` 冗余引号 —— `from __future__ import annotations` 下引号多余，去引号行为保持）。
+- `agent/tests/test_models.py`（改，222→276 行，17→19 测试）— 新增 2 测试：`test_resolve_subagent_parent_model_default_from_vocabulary`（`inspect.signature` 读 `parent_model` 默认值 `== default_model()`）/ `test_build_agent_core_model_fallback_from_vocabulary`（monkeypatch `AgentConfig`/`AgentCore` 捕获 `model`，测 `model=None` → `default_model()` + `model="explicit-model"` → passthrough）。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+### 映射决策树（本轮纯消费端接线，无新类型/枚举）
+
+本轮不引入新枚举/类型，是 R45 词汇表的**第三、四处消费端接线**（R46 storage / R47 llm / R48 CANDIDATE_MODELS / R49 resolution+runtime）。决策树四分支本轮无新增。**接线模式复用**：resolution（纯函数 leaf）用顶层导入 + `default_model()` 直接作默认参数（R46/R47 同构）；runtime（声明冷启动循环风险）用函数内懒加载导入（与既有 `from ..core import` 同模式）。两种导入策略的选择依据是**消费模块的循环风险**，非任意。
+
+**坑（自发现，已修复）**：ruff 报 4 错（全在 runtime.py）—— 1× I001 我的懒加载导入排序（`...models` 三点应在 `..core` 两点之前，多点相对优先）+ 3× 预存（顶层导入块 I001 + 2× UP037 冗余引号）。按 R48 既定模式 + CLAUDE.md「修复正在编辑文件的 ruff 错误」授权，`--fix` 一次清理全部 4 个（行为保持），重检 `All checks passed!`。无运行时错误——重点 pytest 89 测试一次通过。
+
+### 验证
+
+- `ruff check` → **All checks passed!**（`--fix` 修 I001×2 + UP037×2 后；resolution.py 本就干净）。
+- 重点 `pytest tests/test_subagent_resolution.py tests/test_skills.py tests/test_v060_skills.py tests/test_models.py -q` → **89 passed in 2.34s**（resolution + skills runtime 全路径 + models，R49 接线零破坏）。
+- `pytest tests/test_models.py -q` → **19 passed**（R48 的 17 + R49 的 2 新测试全过）。
+- 完整套件 `pytest` → **1695 passed, 10 skipped in 98.53s**（R48 1693 → R49 1695，**+2 精确**，零回归）。
+
+### YAGNI 边界
+
+- ❌ **不迁移剩余 3 处散落 fallback** —— `completion_routes.py:121` / `app.py:404` / `core.py:200`（`AgentCore.__init__` 默认参数，**核心层最高风险**），留 R50+ 逐轮消化；core.py:200 单独一轮（核心层接线需最完整 pytest + 不变量测试）。
+- ❌ **不扩展 `DefaultModelEntry` 建模展示元数据** —— grok 的 `ModelMetadata` 是运行时解析（resolved_id+fingerprint），serde entry 只读 `model`；扩展破坏 R45 serde 对等。
+- ❌ **不推导 `MODEL_META` 从词汇表** —— 仍硬编码（`handlers_model.py:68`），R50+ 需先决定 MiniMax 展示层策略（grok 无对应物，是 MiniMax 前端独有需求）。
+- ❌ **不改 migration SQL 种子**（`002_model_prefs.py` / `005_providers.py`）—— 已部署快照，不重跑。
+
+### Commit
+
+`feat(platform): R49 migrate scattered MiniMax-M3 fallbacks to model vocabulary (fuse grok xai-grok-models)`

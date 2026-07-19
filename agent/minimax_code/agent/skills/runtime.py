@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .loader import Skill
-from .registry import SkillRegistry, SkillNotFoundError
+from .registry import SkillNotFoundError, SkillRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ class SkillRuntime:
 
     # -- tool-provider registration ----------------------------------------
 
-    def register_tool_provider(self, skill: Skill, provider: "SkillToolProvider") -> None:
+    def register_tool_provider(self, skill: Skill, provider: SkillToolProvider) -> None:
         """Register a callable that exposes ``skill``'s tools to the agent.
 
         The runtime calls ``provider.install(tool_registry)`` when
@@ -225,7 +225,7 @@ class SkillRuntime:
         skill: Skill,
         request: str,
         session_id: str,
-        provider: "SkillToolProvider",
+        provider: SkillToolProvider,
         on_chunk: ChunkCallback | None,
         on_tool_call: ToolCallCallback | None,
         on_tool_result: ToolResultCallback | None,
@@ -352,10 +352,11 @@ def _build_agent_core(
     pull the whole agent package at import time (which would
     create a cycle on cold start).
     """
+    from ...models import default_model  # R49: lazy, single source for default model
     from ..core import AgentConfig, AgentCore  # lazy: avoids circular import
 
     config = AgentConfig(
-        model=model or "MiniMax-M3",
+        model=model or default_model(),
         max_iterations=int(max_iterations) if max_iterations else 8,
         skill_instructions=skill.instructions,
     )

@@ -48,7 +48,8 @@ collapses to::
     explicit config field > parent default
 
 * model: ``config.model`` if set, else the parent's model
-  (``"MiniMax-M3"`` by default).
+  (:func:`~minimax_code.models.default_model` by default — ``MiniMax-M3``,
+  wired in R49 so the resolver shares the default-model vocabulary).
 * capability: ``ALLOWLIST`` when ``config.tool_allowlist`` is non-empty,
   else ``ALL`` (inherit every tool the parent exposes).
 
@@ -64,6 +65,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
+
+from ..models import default_model
 
 if TYPE_CHECKING:  # pragma: no cover — only for type hints
     from .subagent import SubAgentConfig
@@ -133,7 +136,7 @@ def resolve_subagent_spec(
     config: SubAgentConfig,
     *,
     available_tool_names: Iterable[str],
-    parent_model: str = "MiniMax-M3",
+    parent_model: str = default_model(),  # R49: was "MiniMax-M3" literal, now from vocabulary
 ) -> ResolvedSpec:
     """Resolve a :class:`SubAgentConfig` into a :class:`ResolvedSpec`.
 
@@ -154,7 +157,8 @@ def resolve_subagent_spec(
         into the live registry.
     parent_model:
         Model id to inherit when ``config.model`` is unset. Defaults to
-        ``"MiniMax-M3"`` (the process-wide :class:`AgentConfig` default).
+        :func:`~minimax_code.models.default_model` (``MiniMax-M3``, the
+        default-model vocabulary's flagship — wired in R49 for single-source).
 
     Returns
     -------

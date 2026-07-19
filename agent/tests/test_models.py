@@ -226,3 +226,73 @@ def test_candidate_models_derived_from_vocabulary():
     assert CANDIDATE_MODELS == M.default_model_ids()
     # The backward-compat invariant preserved by the derivation.
     assert CANDIDATE_MODELS[0] == M.default_model()
+
+
+# --- scattered-fallback migration (R49) -------------------------------------
+
+
+def test_resolve_subagent_parent_model_default_from_vocabulary():
+    """R49 wiring: the resolver's ``parent_model`` default derives from registry.
+
+    ``resolve_subagent_spec``'s ``parent_model`` was a hard-coded
+    ``"MiniMax-M3"`` literal; it is now :func:`default_model` evaluated at
+    definition time, so the sub-agent resolver and the default-model registry
+    share one baked-in document. This is the first scattered ``"MiniMax-M3"``
+    fallback migrated to the vocabulary (R49); a regression to a literal
+    breaks this test.
+    """
+    import inspect
+
+    from minimax_code.orchestrator.resolution import resolve_subagent_spec
+
+    sig = inspect.signature(resolve_subagent_spec)
+    assert sig.parameters["parent_model"].default == M.default_model()
+
+
+def test_build_agent_core_model_fallback_from_vocabulary(monkeypatch):
+    """R49 wiring: skill runtime's ``_build_agent_core`` model fallback uses registry.
+
+    ``_build_agent_core``'s ``model or "MiniMax-M3"`` fallback was a hard-coded
+    literal; it is now ``model or default_model()`` (lazy import to avoid the
+    cold-start cycle), so the skill runtime and the default-model registry
+    share one baked-in document. This is the second scattered ``"MiniMax-M3"``
+    fallback migrated in R49. Monkeypatches ``AgentConfig`` / ``AgentCore`` to
+    capture the resolved model without constructing a real core.
+    """
+    import types
+
+    from minimax_code.agent import core as core_mod
+    from minimax_code.agent.skills.runtime import _build_agent_core
+
+    captured: dict[str, object] = {}
+
+    class _FakeConfig:
+        def __init__(self, **kwargs: object) -> None:
+            captured["model"] = kwargs.get("model")
+
+    class _FakeCore:
+        def __init__(self, **kwargs: object) -> None:
+            captured["core"] = kwargs
+
+    monkeypatch.setattr(core_mod, "AgentConfig", _FakeConfig)
+    monkeypatch.setattr(core_mod, "AgentCore", _FakeCore)
+
+    fake_skill = types.SimpleNamespace(instructions="test-instructions")
+    # model=None → the fallback path resolves to default_model().
+    _build_agent_core(
+        llm=None,
+        tool_registry=None,
+        skill=fake_skill,
+        model=None,
+        max_iterations=None,
+    )
+    assert captured["model"] == M.default_model()
+    # An explicit model is passed through unchanged (fallback not triggered).
+    _build_agent_core(
+        llm=None,
+        tool_registry=None,
+        skill=fake_skill,
+        model="explicit-model",
+        max_iterations=None,
+    )
+    assert captured["model"] == "explicit-model"
