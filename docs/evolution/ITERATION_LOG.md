@@ -3111,3 +3111,136 @@ Protocol` = Rust `&dyn Trait` 动态分发。
 ### Commit
 
 `feat(platform): R38 mermaid render guard + types (fuse grok xai-grok-mermaid)`
+
+## R39 — hunk 追踪 diff 计算原语（融合 grok `xai-hunk-tracker`）
+
+锚定 R38 提交 `91230de`。
+
+### 本轮目标
+
+从 grok 的 `xai-hunk-tracker` 引入 **diff patch 生成的纯计算原语 + 资源守卫**
+（`generate_unified_patch` / `generate_hunk_patch` / `compute_hunks` +
+`MAX_DIFF_FILE_SIZE` / `DIFF_TIMEOUT` 守卫）——这是 hunk 追踪的计算核心，
+host-agnostic，依赖仅 `similar`（→ Python `difflib` 标准库，零新依赖）。**不引入
+actor 层**（tokio async mpsc channel）和 **git 集成层**（gix status/index）——那两
+层是 Rust 平台栈，推迟到未来接线轮选 asyncio actor + Python git 绑定。
+
+### 融合结论
+
+✅ **类型层（types.rs）**：`HunkId`（frozen dataclass，包装 `value: str`，
+`new()`/`from_string()`/`as_str()` 类方法，`Arc<str>` → 不可变 `str`）、
+`HunkLineInfo`（frozen dataclass，`old_start/old_count/new_start/new_count`，`__str__`
+emit 统一 diff 头 `@@ -{os},{oc} +{ns},{nc} @@`）、`Hunk`（9 字段 frozen dataclass：
+`id/path/line_info/source/old_text/new_text/patch/created_at/selected`）+
+`file_created()` 工厂（`old_*` 归零，`new_start=1`，`new_count=max(lines, 1)`）。
+`DateTime<Utc>` → tz-aware `datetime.datetime`；`Uuid::new_v4` → `uuid.uuid4()`。
+
+✅ **混合枚举 HunkSource → frozen-dataclass 联合**（决策树新应用）：grok `HunkSource`
+是**混合枚举**——1 个 struct 变体 `AgentEdit{prompt_index}` + 2 个单元变体
+`ExternalEditOnAgentFile` / `External`。不同于 R35/R37/R38 的纯单元枚举（→ `Enum`），
+混合枚举映射为**全部 frozen dataclass 形成单一 PEP 604 联合类型**
+（`HunkSource = AgentEdit | ExternalEditOnAgentFile | External`）；单元变体成为无字段
+frozen dataclass，保持值相等 + 可哈希（镜像 Rust 单元变体 `PartialEq + Eq`）。grok
+`match` 穷尽分发 → Python `isinstance` 分发。这是 R32（VoiceEvent）混合枚举策略的
+第二次应用。
+
+✅ **diff 引擎（diff.rs → difflib）**：`similar::TextDiff::configure().timeout().diff_lines()`
++ `iter_all_changes()` over `ChangeTag::Equal/Delete/Insert` →
+`difflib.SequenceMatcher(autojunk=False).get_opcodes()`（equal/delete/insert/replace）。
+**`autojunk=False` 是强制的**——默认 `True` 把频繁行当"垃圾"静默改变大文件差异，
+`similar` 无此启发式，必须 opt-out。**Replace = delete+insert 对合并进同一 hunk**
+（镜像 grok 单 `HunkBuilder` 累加器跨 Equal 界限的行为）。**行号证明**：opcode
+`i1`/`j1` 是 0 索引，grok `old_start`/`new_start` 是 1 索引 → `old_start = i1+1`、
+`new_start = j1+1`；已证明等价于 grok 光标跟踪（到 opcode `(i1,i2,j1,j2)` 时，前序
+opcode 恰消耗 `i1` 旧行 / `j1` 新行，故光标正是 `i1+1`/`j1+1`）。
+
+✅ **Splitlines 双策略**：`compute_hunks` 用 `splitlines(keepends=True)`（`\n` 保留进
+`old_text`/`new_text`，镜像 grok `change.value()` 带 `\n`）；渲染函数
+（`format_unified_diff`/`generate_hunk_patch`）用普通 `splitlines()`（镜像 grok
+`str::lines()` 去 `\n` 用于显示）。这精确镜像 grok 内部（similar value 带 `\n`）vs
+显示（`.lines()` 去 `\n`）的区分。
+
+✅ **守卫层**：`MAX_DIFF_FILE_SIZE = 1 MiB`（字节长度检查 `len(s.encode("utf-8"))`
+镜像 Rust `str::len()` 字节语义，非字符数）超限短路返回空列表（grok warn + `vec![]`）。
+`generate_unified_patch` 用 `difflib.unified_diff(n=CONTEXT_LINES=3, lineterm="")` +
+`"\n".join() + "\n"`。`patch_lines` 行级补丁通过 `content.endswith("\n")` 保留尾换行。
+`hunks_overlap` 含纯插入特例（两插入仅同位置重叠；单插入落入 `[start,end]` 重叠）。
+
+❌ **actor 层（`HunkTrackerActor` over tokio mpsc）**——Rust async 平台栈；未来接线
+轮选 asyncio actor（`asyncio.Queue` + 任务）或同步 tracker。
+
+❌ **git 集成层（`gix` status/index）**——Rust git 栈；未来接线轮选 Python git 绑定
+（`pygit2` / `GitPython`）或 shell out 到 `git`。
+
+❌ **`file_deleted` 工厂**——grok 字段语义需接线轮确认（删除是否生成空 new_text 的
+特殊 hunk），YAGNI 推迟。
+
+❌ **DIFF_TIMEOUT 壁钟强制**——`difflib` 同步无超时参数，常量文档化但不强制；调用者
+（async 接线轮）用 `asyncio.wait_for(compute_hunks(...), DIFF_TIMEOUT)` 包裹。同 R38
+壁钟超时推迟到接线层的形状。
+
+### 交付
+
+- `agent/minimax_code/hunks/types.py`（新）— `HunkId`/`HunkLineInfo`/`AgentEdit`/
+  `ExternalEditOnAgentFile`/`External`/`Hunk`（6 frozen dataclass）+ `HunkSource` 联合
+  + `file_created` 工厂，`__all__` 7 符号。
+- `agent/minimax_code/hunks/diff.py`（新）— 3 常量（`CONTEXT_LINES`/`MAX_DIFF_FILE_SIZE`
+  /`DIFF_TIMEOUT`）+ 12 纯函数（`generate_unified_patch`/`compute_hunks`/
+  `_HunkBuilder`/`generate_hunk_patch`/`format_unified_diff`/`patch_lines`/
+  `hunks_match_content`/`hunk_moved`/`hunks_overlap`/`calculate_overlap_size`/
+  `find_matching_old_hunk`/`find_overlapping_hunks`），`__all__` 14 符号。
+- `agent/minimax_code/hunks/__init__.py`（新）— 重导出 21 符号（types 7 + diff 14），
+  分组 `__all__`，docstring 声明范围与未移植边界（actor/git 是接线轮关注点）。
+- `agent/tests/test_hunks_types.py`（新）— 18 测试：重导出、`HunkId` 唯一性/round-trip/
+  值相等/frozen（`FrozenInstanceError`）/可哈希、`HunkLineInfo` `__str__` 头/值相等/
+  frozen、`AgentEdit` prompt_index、单元变体值相等、联合 `isinstance` 分发、单元变体
+  可哈希、`Hunk` 默认/值相等/frozen、`file_created` 行数标记/空内容 1 行。
+- `agent/tests/test_hunks_diff.py`（新）— 31 测试：无变更空、超限守卫、**字节长度 vs
+  字符数**（`"ä"` 多字节验证）、`single_line_modification`/`insertion`/`deletion`/
+  `multiple_hunks`（镜像 grok）、source 归因、**`autojunk=False` 重复行干净 diff**、
+  replace 单 hunk、`generate_unified_patch` None/头/超限、`format_unified_diff`（镜像
+  grok）、`generate_hunk_patch` 头+变更+上下文、`patch_lines` 替换/插入/删除/尾换行/
+  无尾换行、`hunks_match_content`/`hunk_moved`/`hunks_overlap`（常规/不相交/异路径/
+  两插入同位/两插入异位）、`find_matching_old_hunk`（相同内容不同位置/最佳重叠回退/
+  无匹配 None）、`find_overlapping_hunks`。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+映射决策树第五次重申（payload 决定映射）：**混合枚举（部分 struct + 部分单元）→ 全部
+frozen dataclass 形成联合类型**（单元变体 = 无字段 frozen dataclass）——区别于纯单元
+枚举（→ `Enum`）。`similar` crate（Myers diff）→ Python `difflib` 标准库（零新依赖）。
+frozen=True+slots=True = Rust `Debug+Clone+Copy+PartialEq+Eq`。
+
+**质量记录（透明披露）**：`diff.py` 的 `compute_hunks` 首次写入时混入了离奇的占位符
+代码（虚构的 `_i2_eq`/`_j2_eq` 辅助函数 + 形如 `old_lines[i1 : i1 + (i1.__class__(0)
+or 0)]` 的损坏切片），在交付测试前自捕并单次 Edit 修复为正确的 opcode 循环
+（`for tag, i1, i2, j1, j2 in matcher.get_opcodes()` + 干净切片 `old_lines[i1:i2]` /
+`new_lines[j1:j2]`）。无占位符代码进入仓库；修复发生在验证流水线运行前。教训：大块
+代码写入后必须立即回读核对，不能依赖"写完即对"。
+
+### 验证
+
+- `ruff check minimax_code/hunks/ tests/test_hunks_types.py tests/test_hunks_diff.py`
+  → **All checks passed!**（3 个 I001 导入排序自动修复，0 remaining）。
+- `pytest tests/test_hunks_types.py tests/test_hunks_diff.py -v` →
+  **49 passed in 0.27s**（types 18 + diff 31，全绿，含 grok 8 个镜像用例 + Python 特有
+  autojunk/字节长度/frozen/联合分发断言）。
+- 完整套件 `pytest` → **1602 passed in 101.92s**（R38 1553 → R39 1602，**+49 精确**，
+  零回归）。
+
+### YAGNI 边界
+
+- ❌ **不接 actor 层**——`HunkTrackerActor` over tokio mpsc 是 Rust async 平台栈；选
+  asyncio actor（`asyncio.Queue`）还是同步 tracker 是接线轮决策，本轮纯函数被任一实现
+  不变调用。
+- ❌ **不接 git 集成**——`gix` status/index 是 Rust git 栈；选 `pygit2` / `GitPython` /
+  shell out `git` 是接线轮决策。
+- ❌ **不做 `file_deleted` 工厂**——grok 删除语义（是否空 new_text 特殊 hunk）需接线轮
+  确认，本轮只移植 `file_created`。
+- ❌ **不强制 DIFF_TIMEOUT 壁钟**——`difflib` 同步无超时参数；接线轮用
+  `asyncio.wait_for` 包裹。常量文档化接线轮须遵守的预算（同 R38 壁钟推迟形状）。
+- ❌ **不为 `Hunk` 加可变性**——grok accept/reject 生命周期不在 `Hunk` 字段（在 tracker），
+  frozen 值类型 + 替换/丢弃建模生命周期（非原地突变），frozen 镜像 `Clone` 语义。
+
+### Commit
+
+`feat(platform): R39 hunk diff compute primitives + types (fuse grok xai-hunk-tracker)`
