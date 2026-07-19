@@ -6348,3 +6348,99 @@ request.rs 项
 ### Commit
 
 `feat(platform): R78 request.rs -> request.py（RequestMessage<T> 泛型 wire 信封, crate 顶层调度层入口 4 模块第 1 个）[新增 request.py 143 行: RequestMessage(WireModel, Generic[T]) 层内首个泛型 wire 模型, message:T + metadata:Metadata Field(default_factory) #[serde(default)] 总发 + deadline:IsoUtc|None + to_wire 重写 pop #[skip_serializing_if Option::is_none] + IsoUtc=Annotated[datetime,PlainSerializer(_dt_to_wire)] Z 后缀复制自 R76 rpc/hunks 刻意零 rpc 依赖 + new/with_metadata/with_deadline builder in-place mutate + map<U> 用 model_construct 绕过验证; 增强 metadata.py: Metadata 加 __get_pydantic_core_schema__ after-validator over dict_schema(str,str) 让 dict 子类成 pydantic 一等字段镜像 R76 FileContentStatusWire; barrel __init__.py 导出 RequestMessage + docstring R78 段; TestRequestMessage 8 测试; KEY PITFALL 1: Metadata 作 pydantic 字段触发 PydanticSchemaGenerationError 需 __get_pydantic_core_schema__ 路由; KEY PITFALL 2: map 未参数化 RequestMessage(...) 构造把 kwargs 误路由进 metadata dict 字段(message/metadata/deadline 3 验证错误) -> model_copy 修复但留源 schema RequestMessage[int] 收 str 值触发 PydanticSerializationUnexpectedValue UserWarning -> 最终 model_construct 带 T=Any 未参数化 schema 零警告, Python 泛型运行时无法表达 map<U> RequestMessage<U> 的务实近似, test_map_emits_no_serializer_warning 用 warnings.simplefilter error 钉契约; 验证 ruff 4 文件 clean + pytest test_workspace_types.py 70 passed + 全回归 2376 passed 10 skipped 1 warning 零回归, 锚点 R78-1 7d5a42c]`
+
+
+## R79 — requests.rs -> requests.py（WorkspaceRequest 外部信封，crate 顶层调度层第 2 模块，4 个相邻标记枚举共享 AdjacentTagged 基类）
+
+锚点:R79-1 a3c8675
+
+### 本轮目标
+
+迁移 grok `xai-grok-workspace-types::requests` 子目录（`mod.rs` / `ops.rs` / `session.rs` / `tool.rs` 4 文件）→ 单文件 `requests.py`，落地 crate 顶层调度层的**第 2 个模块**（R78 是第 1 个 `request` 信封，R79 是它携带的**请求鉴别器**）。交付 4 个相邻标记（adjacent-tagged）枚举 `WorkspaceRequest` / `WorkspaceOpsRequest` / `SessionLifecycleRequest` / `ToolRequest` + 1 个 struct `ToolCallArgs`，共 29 个 wire 变体（18 ops + 8 session + 2 tool + 3 outer）。所有 4 枚举共享同一个 serde 形状 `#[serde(tag="type", content="data", rename_all="snake_case")]`，因此全部复用 R67 `AdjacentTagged` 基类（与 `WorkspaceError` 同构），本轮**零新 serde 模式**——是对既定相邻标记配方的一次机械展开。
+
+### 融合结论
+
+本轮的工程价值不在引入新模式，而在**两点统一**：
+
+1. **4 枚举共享 `AdjacentTagged` 基类**：grok 用 `#[serde(tag, content, rename_all)]` 宏让 4 个独立 enum 共享序列化形状；Python 侧 R67 的 `AdjacentTagged` 基类（`_VARIANTS` + 每变体工厂 classmethod + `to_wire`/`from_wire`）正是这个宏的等价抽象。`WorkspaceError`（13 变体，R67）已验证此配方；R79 把它扩展到 18+8+2+3=31 个变体（含 outer 三向派发），配方零修改可复用。这是 R67 基类设计的**正向回报**——一次抽象，四处复用。
+
+2. **`_payload()` 统一 newtype 变体负载强制转换**：grok 相邻标记的 newtype 变体（`MemoryWrite(String)` / `GitStatus(GitStatusOpts)` / `ActOnHunk(HunkAction)` / `Tool(ToolRequest)` 等）在 serde `content` 槽里放 inner 值，serde 递归调用 inner 的 `Serialize`。Python 侧 `AdjacentTagged.payload` 持有 as-typed 的 inner 值，工厂必须把它降为 wire-ready 形式。4 种 inner 值类型（相邻标记嵌套枚举 / WireModel struct / 透明 str-newtype / 原始标量）由一个 `_payload(obj)` 辅助统一处理：`hasattr(obj, "to_wire")` 路由前两种（委托各自的 `to_wire`），后两种原样直通。这是 DRY 的典范——一个 3 行辅助替代 18 个变体各自的 `isinstance` 分支。
+
+### 交付
+
+- **`agent/minimax_code/workspace_types/requests.py`（312 行，新建）**：
+  - `_payload(obj)` 辅助：`if hasattr(obj, "to_wire"): return obj.to_wire(); return obj`。
+  - `ToolCallArgs(WireModel)`：4 字段 plain wire struct（`session: SessionId` / `tool_name: str` / `input_json: str = ""` `#[serde(default)]` / `call_id: ToolCallId`）。
+  - `ToolRequest(AdjacentTagged)`：`_VARIANTS = ("call", "definitions")`，2 工厂（`call(args)` newtype over ToolCallArgs / `definitions()` unit）。
+  - `WorkspaceOpsRequest(AdjacentTagged)`：18 变体 `_VARIANTS`（git_status/git_diff/git_branch_info/git_metadata/list_hunks/act_on_hunk/ripgrep/fuzzy_search/discover_skills/discover_plugins/load_project_config/load_permissions/load_envrc/resolve_file_refs/memory_search/memory_write/install_plugin/refresh_plugins），18 工厂方法。
+  - `SessionLifecycleRequest(AdjacentTagged)`：8 变体 `_VARIANTS`（fork/destroy/list/apply_worktree/begin_prompt/end_prompt/rewind/get_rewind_points），8 工厂方法。
+  - `WorkspaceRequest(AdjacentTagged)`：`_VARIANTS = ("tool", "ops", "session")`，3 工厂（每变体 newtype over 对应子枚举，`_payload` 委托）。
+- **`agent/minimax_code/workspace_types/__init__.py`（barrel 更新）**：docstring 加 R79 段落（4 请求鉴别器）；import 块加 5 符号；`__all__` 加 `# request discriminators (R79 ...)` 块。
+- **`agent/tests/test_workspace_types.py`（+19 测试）**：5 个新测试类——`TestToolCallArgs`（2：全字段往返 + input_json 默认 ""）、`TestToolRequest`（2：call 包装 ToolCallArgs wire dict + definitions unit）、`TestWorkspaceOpsRequest`（7：9 unit 变体发 null data / 4 struct-newtype 变体委托 inner to_wire / act_on_hunk 嵌套 AdjacentTagged / 2 string-newtype 裸字符串 / resolve_file_refs 裸 list / memory_search struct 变体 u32 强制 / **18 变体穷举 from_wire 往返**）、`TestSessionLifecycleRequest`（4：list unit + 3 SessionId newtype 裸字符串 + fork 委托 AgentSessionConfig + struct 变体 u64 强制 + **8 变体穷举 from_wire 往返**）、`TestWorkspaceRequest`（3：3 变体嵌套子枚举 + 嵌套往返 + from_wire 拒绝未知变体 "events"）。
+
+### 映射决策树 + 坑
+
+```
+requests.rs（grok requests/ 子目录 4 文件）
+├─ mod.rs WorkspaceRequest { Tool/Ops/Session }（相邻标记）
+│  └─ WorkspaceRequest(AdjacentTagged) _VARIANTS=("tool","ops","session")
+│     └─ 每变体 newtype over 子枚举 -> _payload 委托子枚举 to_wire
+├─ tool.rs ToolRequest { Call(ToolCallArgs)/Definitions }（相邻标记）
+│  ├─ ToolRequest(AdjacentTagged) _VARIANTS=("call","definitions")
+│  └─ ToolCallArgs struct（session/tool_name/input_json/call_id）
+│     └─ WireModel #[serde(default)] input_json -> Field default=""
+├─ ops.rs WorkspaceOpsRequest 18 变体（相邻标记）
+│  └─ WorkspaceOpsRequest(AdjacentTagged) 18 _VARIANTS
+│     ├─ unit 变体（9：git_branch_info 等）-> cls(kind, None) data=null
+│     ├─ struct-newtype 变体（4：git_status(GitStatusOpts) 等）
+│     │  └─ _payload(opts) -> opts.to_wire()（WireModel BTreeMap 排序）
+│     ├─ 嵌套枚举 newtype 变体（1：act_on_hunk(HunkAction)）
+│     │  └─ _payload(action) -> action.to_wire() -> {"type":"accept","data":"h1"}
+│     ├─ string-newtype 变体（2：memory_write/install_plugin）-> str(text) 裸字符串
+│     ├─ Vec<String> newtype 变体（1：resolve_file_refs）-> [str(r) ...] 裸 list
+│     └─ struct 变体（1：memory_search{query,limit}）-> 手建 dict（grok 内联字段，无命名 struct）
+│        └─ u32 limit -> int(limit) 防御强制（bool/数值子类不扩 wire 类型）
+├─ session.rs SessionLifecycleRequest 8 变体（相邻标记）
+│  └─ SessionLifecycleRequest(AdjacentTagged) 8 _VARIANTS
+│     ├─ unit 变体（1：list）-> cls("list", None)
+│     ├─ AgentSessionConfig newtype 变体（1：fork）-> _payload(config) 委托
+│     ├─ SessionId newtype 变体（3：destroy/apply_worktree/get_rewind_points）
+│     │  └─ _payload(session) -> SessionId 无 to_wire 直通为裸 str 子类
+│     └─ struct 变体（3：begin_prompt/end_prompt/rewind）
+│        └─ {session: _payload(session), idx/target: int(..)} u64 防御强制
+└─ 全部复用 R67 AdjacentTagged 基类（与 WorkspaceError 同构，零新 serde 模式）
+```
+
+**坑 1 —— 单文件 vs 子目录（grok 是 `requests/` 子目录 4 文件）**
+
+grok 把 4 个 enum 拆到 `requests/{mod,ops,session,tool}.rs` 子模块（可见性 + 编译单元隔离的 Rust 惯例）。Python 侧选**单文件 `requests.py`**（312 行）而非镜像子目录，匹配 R78 `request.py` 的既定模式（R78 也是单文件信封）。理由：4 个 enum 高度耦合（outer `WorkspaceRequest` 派发到 3 个子枚举，`ToolRequest.call` 依赖 `ToolCallArgs`），拆 4 文件会引入 4 处循环 import 风险 + 4 个小模块（最小 `tool` 仅 2 变体 1 struct）。单文件让 4 枚举 + struct + `_payload` 辅助共处一文件，依赖图扁平，与 R78 `request.py`（envelope + IsoUtc + 泛型逻辑共处）一致。barrel `__init__.py` 仍统一导出 5 符号，对外 API 不受内部文件组织影响。
+
+**坑 2 —— `_payload()` 统一异构 newtype 负载（R79 核心创新）**
+
+grok 相邻标记 newtype 变体的 serde `content` 槽持有 inner 值，serde 递归调 inner 的 `Serialize`。Python 侧 `AdjacentTagged.payload` 持 as-typed inner，工厂须降为 wire-ready。4 种 inner 类型：(1) 相邻标记嵌套枚举（`HunkAction`）有 `to_wire`；(2) `WireModel` struct（`ToolCallArgs`/`AgentSessionConfig`/`GitStatusOpts`/`GitDiffArgs`/`RipgrepArgs`/`FuzzySearchArgs`/子枚举）有 `to_wire`；(3) 透明 str-newtype（`SessionId`/`ToolCallId`）**无** `to_wire`（pydantic core schema 序列化为裸 str）；(4) 原始 `str`/`list`/`int` 无 `to_wire`。关键洞察：(1)(2) 与 (3)(4) 的分界恰是 `hasattr(obj, "to_wire")`——`_payload(obj)` 一个 3 行辅助统一 4 类，前两类委托各自 `to_wire`，后两类原样直通。这替代了每变体各自的 `isinstance`/类型分派，是 DRY 的纯粹体现。验证：`act_on_hunk` 嵌套 `HunkAction` → `_payload` 调其 `to_wire` → `{"type":"act_on_hunk","data":{"type":"accept","data":"h1"}}`（两层相邻标记嵌套）；`destroy(SessionId)` → `_payload` 直通 str 子类 → `{"type":"destroy","data":"s1"}`。
+
+**坑 3 —— `AgentSessionConfig()` 无参构造失败（agent_id 必填）**
+
+测试首版用 `AgentSessionConfig()` 无参构造 `fork` 变体负载，pydantic 报 `agent_id Field required`。查 `types/config.py`：`AgentSessionConfig.agent_id: str` 是必填字段（grok `agent_id` 无 `#[serde(default)]`），但有 `.default()` 工厂返回 `cls(agent_id="")`（R67 既定约定，镜像 Rust `Default`）。修复：2 处 `AgentSessionConfig()` → `AgentSessionConfig.default()`。委托断言 `req.to_wire() == {"type":"fork","data":cfg.to_wire()}` 不关心具体值，只比较两侧相等，所以 `.default()` 的 `agent_id=""` 完全 OK。教训：写测试前应先确认目标类型的可构造性——数据驱动（pytest 失败）抓住了这个真实约束。
+
+**坑 4 —— `list()` 工厂方法名遮蔽内置**
+
+`SessionLifecycleRequest.list()` 工厂方法名与 Python 内置 `list` 同名。ruff 规则集（E/F/W/I/B/UP）**不含 `flake8-builtins`**，所以 `A003`（class-attribute-shadowing-builtin）不触发。方法体内不使用 `list` 内置，故运行时无副作用。保留 `list` 命名以匹配 grok 变体的 snake_case wire tag `"list"`（工厂方法名 == wire tag 是 AdjacentTagged 配方约定）。docstring 显式记录这个遮蔽决策与规则集依据，避免未来误判。
+
+### 验证
+
+- **ruff**：3 文件全 clean（`requests.py` / `__init__.py` / `test_workspace_types.py`）。`All checks passed!`
+- **pytest `tests/test_workspace_types.py`**：**89 passed**（R79 新增 5 类 19 测试 + 既有 70）。覆盖 18 ops 变体穷举 + 8 session 变体穷举 + 3 outer 变体嵌套 + ToolCallArgs struct 往返 + from_wire 拒绝未知变体。
+- **全回归**：`2395 passed, 10 skipped, 1 warning`（1 warning 是 fastapi starlette TestClient 弃用，与 R79 无关）。R78 是 2376，R79 +19 测试 → 2395，**零回归**。
+
+### YAGNI 边界
+
+- **未迁 `events` / `chunks`**：本轮只迁 `requests/`（crate 顶层调度层 4 模块的第 2 个）。`events/`（mod/lag/workspace 3 文件，订阅事件流）+ `chunks/`（mod/ops/session/tool 4 文件，29 变体 ChunkKind 的 RPC 响应分块）留给 R80/R81。`WorkspaceRequest` 三向派发 `Tool`/`Ops`/`Session` 刻意不含 `Events`（grok `Events` 是独立订阅类型，非请求变体），测试 `test_unknown_variant_rejected_by_from_wire` 用 `"events"` 钉死这条边界。
+- **struct 变体内联手建 dict 不引入命名 struct**：grok 的 `MemorySearch { query, limit }` / `BeginPrompt { session, idx }` 等是变体内联字段，无独立 struct 类型。Python 侧在工厂里手建 dict（`{"query": str(query), "limit": int(limit)}`），不引入新 `WireModel` 子类。理由：这些字段组合只在单一变体出现一次，命名 struct 是过度设计（YAGNI）；手建 dict 直接镜像 grok 内联声明，零抽象层。
+- **u32/u64 防御 `int()` 强制转换**：`memory_search` 的 `limit`（u32）+ `begin_prompt`/`end_prompt` 的 `idx` + `rewind` 的 `target`（u64）都在工厂里 `int(...)` 强制。这是 lib.rs wire-stability rationale（`usize` 主机相关，统一 `u64`/`u32`）的 Python 侧防御——防止 `bool`（`True`→1）或数值子类意外扩宽 wire 类型。不做范围校验（grok serde 也不校验 u32 溢出，序列化层信任上游）。
+- **不引运行时 RPC 调度**：`requests.py` 只迁 wire 契约（4 枚举 + struct 的序列化形状），不实现实际的 tool/ops/session RPC 分派逻辑（那是 runtime transport 层关注点，R68-R77 已迁 rpc/ 地基，调度接线留给后续消费轮）。
+- **`_payload` 辅助不提升为 AdjacentTagged 方法**：`_payload` 是模块级函数而非 `AdjacentTagged` 方法/staticmethod。理由：它是工厂内部的负载归一化原语，不暴露给外部调用者；提升为基类方法会扩大 `AdjacentTagged` 的公共 API 面。若未来 R80/R81 的 events/chunks 也需类似归一化，可再评估提升。
+
+### Commit
+
+`feat(platform): R79 requests.rs -> requests.py（WorkspaceRequest 外部信封 crate 顶层调度层第 2 模块 4 相邻标记枚举共享 AdjacentTagged 基类）[新增 requests.py 312 行: _payload(obj) 3 行辅助 hasattr to_wire 统一 4 类 newtype 负载(相邻标记嵌套枚举 HunkAction + WireModel struct 委托 to_wire / 透明 str-newtype SessionId + 原始 str|list|int 直通) + ToolCallArgs(WireModel) 4 字段 #[serde(default)] input_json + ToolRequest(AdjacentTagged) 2 变体 call|definitions + WorkspaceOpsRequest(AdjacentTagged) 18 变体(9 unit null data + 4 struct-newtype 委托 + act_on_hunk 嵌套 HunkAction + memory_write|install_plugin 裸 str + resolve_file_refs 裸 list + memory_search 手建 dict u32 强制) + SessionLifecycleRequest(AdjacentTagged) 8 变体(fork 委托 AgentSessionConfig + destroy|apply_worktree|get_rewind_points SessionId 裸 str + begin_prompt|end_prompt|rewind 手建 dict u64 强制 + list unit) + WorkspaceRequest(AdjacentTagged) 3 变体 tool|ops|session newtype over 子枚举; barrel __init__.py 导出 5 符号 + docstring R79 段; 5 测试类 19 测试(18 ops 变体穷举 + 8 session 变体穷举 + 3 outer 嵌套 + from_wire 拒绝 events); KEY 决策 1: 4 枚举共享 R67 AdjacentTagged 基类与 WorkspaceError 同构零新 serde 模式; KEY 坑 1: 单文件 vs 子目录选单文件匹配 R78 request.py 避免 4 文件循环 import; KEY 坑 2: _payload 统一异构 newtype 负载是 R79 核心创新 hasattr to_wire 分界; KEY 坑 3: AgentSessionConfig 无参构造失败 agent_id 必填 -> .default() 工厂; KEY 坑 4: list 工厂遮蔽内置 ruff 规则集无 flake8-builtins A003 不触发; 验证 ruff 3 文件 clean + pytest test_workspace_types.py 89 passed + 全回归 2395 passed 10 skipped 1 warning 零回归, 锚点 R79-1 a3c8675]`

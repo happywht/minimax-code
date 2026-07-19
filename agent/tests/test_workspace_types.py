@@ -71,18 +71,23 @@ from minimax_code.workspace_types import (
     RipgrepStats,
     ServerStatus,
     SessionId,
+    SessionLifecycleRequest,
     SkillInfo,
+    ToolCallArgs,
     ToolCallId,
     ToolCallResult,
     ToolDef,
     ToolOutputChunk,
     ToolProgress,
+    ToolRequest,
     ToolServerConfig,
     UserAnswer,
     UserQuestion,
     UserQuestionOption,
     VcsKind,
     WorkspaceError,
+    WorkspaceOpsRequest,
+    WorkspaceRequest,
 )
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
@@ -648,3 +653,284 @@ class TestRequestMessage:
         wire = mapped.to_wire()
         assert wire == {"message": "PAYLOAD", "metadata": {}}
         assert "deadline" not in wire
+
+
+# --------------------------------------------------------------------- requests (R79)
+
+
+class TestToolCallArgs:
+    """ToolCallArgs wire struct (R79)."""
+
+    def test_round_trips_with_all_fields(self):
+        args = ToolCallArgs(
+            session=SessionId("s1"),
+            tool_name="read_file",
+            input_json='{"path": "/etc/hosts"}',
+            call_id=ToolCallId("c1"),
+        )
+        wire1, wire2 = _round_trip(args)
+        assert wire1 == wire2
+        # BTreeMap-sorted keys (call_id < input_json < session < tool_name)
+        assert wire1 == {
+            "call_id": "c1",
+            "input_json": '{"path": "/etc/hosts"}',
+            "session": "s1",
+            "tool_name": "read_file",
+        }
+
+    def test_input_json_defaults_to_empty_string(self):
+        # #[serde(default)] -> always emitted, defaults to ""
+        args = ToolCallArgs(session=SessionId("s1"), tool_name="t", call_id=ToolCallId("c"))
+        wire = args.to_wire()
+        assert wire["input_json"] == ""
+
+
+class TestToolRequest:
+    """ToolRequest adjacent-tagged enum (R79): call + definitions."""
+
+    def test_call_variant_wraps_tool_call_args(self):
+        args = ToolCallArgs(
+            session=SessionId("s1"),
+            tool_name="read_file",
+            input_json="{}",
+            call_id=ToolCallId("c1"),
+        )
+        req = ToolRequest.call(args)
+        wire = req.to_wire()
+        assert wire == {
+            "type": "call",
+            "data": {
+                "call_id": "c1",
+                "input_json": "{}",
+                "session": "s1",
+                "tool_name": "read_file",
+            },
+        }
+        back = ToolRequest.from_wire(wire)
+        assert back.to_wire() == wire
+        assert back.kind == "call"
+
+    def test_definitions_unit_variant(self):
+        req = ToolRequest.definitions()
+        assert req.to_wire() == {"type": "definitions", "data": None}
+        back = ToolRequest.from_wire(req.to_wire())
+        assert back.kind == "definitions"
+        assert back.payload is None
+
+
+class TestWorkspaceOpsRequest:
+    """WorkspaceOpsRequest adjacent-tagged enum (R79, 18 variants)."""
+
+    def test_unit_variants_emit_null_data(self):
+        for factory, kind in [
+            (WorkspaceOpsRequest.git_branch_info, "git_branch_info"),
+            (WorkspaceOpsRequest.git_metadata, "git_metadata"),
+            (WorkspaceOpsRequest.list_hunks, "list_hunks"),
+            (WorkspaceOpsRequest.discover_skills, "discover_skills"),
+            (WorkspaceOpsRequest.discover_plugins, "discover_plugins"),
+            (WorkspaceOpsRequest.load_project_config, "load_project_config"),
+            (WorkspaceOpsRequest.load_permissions, "load_permissions"),
+            (WorkspaceOpsRequest.load_envrc, "load_envrc"),
+            (WorkspaceOpsRequest.refresh_plugins, "refresh_plugins"),
+        ]:
+            req = factory()
+            assert req.to_wire() == {"type": kind, "data": None}, kind
+            back = WorkspaceOpsRequest.from_wire(req.to_wire())
+            assert back.kind == kind
+
+    def test_struct_newtype_variants_delegate_to_inner_to_wire(self):
+        # WireModel-struct newtype variants: _payload calls the inner to_wire.
+        gs_inner = GitStatusOpts()
+        assert WorkspaceOpsRequest.git_status(gs_inner).to_wire() == {
+            "type": "git_status",
+            "data": gs_inner.to_wire(),
+        }
+        gd_inner = GitDiffArgs()
+        assert WorkspaceOpsRequest.git_diff(gd_inner).to_wire() == {
+            "type": "git_diff",
+            "data": gd_inner.to_wire(),
+        }
+        rg_inner = RipgrepArgs(pattern="TODO")
+        assert WorkspaceOpsRequest.ripgrep(rg_inner).to_wire() == {
+            "type": "ripgrep",
+            "data": rg_inner.to_wire(),
+        }
+        fz_inner = FuzzySearchArgs(query="main")
+        assert WorkspaceOpsRequest.fuzzy_search(fz_inner).to_wire() == {
+            "type": "fuzzy_search",
+            "data": fz_inner.to_wire(),
+        }
+
+    def test_act_on_hunk_nests_adjacent_tagged_enum(self):
+        # HunkAction is itself AdjacentTagged -> _payload calls its to_wire,
+        # producing a nested {type, data} object as the variant's data.
+        action = HunkAction.accept(HunkId("h1"))
+        req = WorkspaceOpsRequest.act_on_hunk(action)
+        assert req.to_wire() == {
+            "type": "act_on_hunk",
+            "data": {"type": "accept", "data": "h1"},
+        }
+        back = WorkspaceOpsRequest.from_wire(req.to_wire())
+        assert back.to_wire() == req.to_wire()
+
+    def test_string_newtype_variants_carry_bare_string(self):
+        # MemoryWrite(String) / InstallPlugin(String) -> data is the bare string.
+        assert WorkspaceOpsRequest.memory_write("note").to_wire() == {
+            "type": "memory_write",
+            "data": "note",
+        }
+        assert WorkspaceOpsRequest.install_plugin("https://x.example").to_wire() == {
+            "type": "install_plugin",
+            "data": "https://x.example",
+        }
+
+    def test_resolve_file_refs_carry_bare_list(self):
+        # ResolveFileRefs(Vec<String>) -> data is the bare list (order preserved).
+        req = WorkspaceOpsRequest.resolve_file_refs(["@README.md", "@src/main.rs"])
+        assert req.to_wire() == {
+            "type": "resolve_file_refs",
+            "data": ["@README.md", "@src/main.rs"],
+        }
+
+    def test_memory_search_struct_variant(self):
+        # MemorySearch { query, limit } -> data is a hand-built dict (u32 limit).
+        req = WorkspaceOpsRequest.memory_search("auth", 5)
+        assert req.to_wire() == {
+            "type": "memory_search",
+            "data": {"query": "auth", "limit": 5},
+        }
+        # limit coerced to int (defensive against bool / numeric subclass)
+        assert WorkspaceOpsRequest.memory_search("x", True).to_wire()["data"]["limit"] == 1
+
+    def test_all_18_variants_round_trip_via_from_wire(self):
+        samples = [
+            WorkspaceOpsRequest.git_status(GitStatusOpts()),
+            WorkspaceOpsRequest.git_diff(GitDiffArgs()),
+            WorkspaceOpsRequest.git_branch_info(),
+            WorkspaceOpsRequest.git_metadata(),
+            WorkspaceOpsRequest.list_hunks(),
+            WorkspaceOpsRequest.act_on_hunk(HunkAction.reject("h2")),
+            WorkspaceOpsRequest.ripgrep(RipgrepArgs(pattern="X")),
+            WorkspaceOpsRequest.fuzzy_search(FuzzySearchArgs(query="Y")),
+            WorkspaceOpsRequest.discover_skills(),
+            WorkspaceOpsRequest.discover_plugins(),
+            WorkspaceOpsRequest.load_project_config(),
+            WorkspaceOpsRequest.load_permissions(),
+            WorkspaceOpsRequest.load_envrc(),
+            WorkspaceOpsRequest.resolve_file_refs(["@a"]),
+            WorkspaceOpsRequest.memory_search("q", 3),
+            WorkspaceOpsRequest.memory_write("w"),
+            WorkspaceOpsRequest.install_plugin("src"),
+            WorkspaceOpsRequest.refresh_plugins(),
+        ]
+        assert len(samples) == 18
+        kinds = {s.to_wire()["type"] for s in samples}
+        assert len(kinds) == 18  # all 18 wire tags distinct
+        for s in samples:
+            wire = s.to_wire()
+            back = WorkspaceOpsRequest.from_wire(wire)
+            assert back.to_wire() == wire
+
+
+class TestSessionLifecycleRequest:
+    """SessionLifecycleRequest adjacent-tagged enum (R79, 8 variants)."""
+
+    def test_list_unit_variant_shadows_builtin(self):
+        # List -> "list" wire tag; factory method name shadows the builtin.
+        req = SessionLifecycleRequest.list()
+        assert req.to_wire() == {"type": "list", "data": None}
+
+    def test_session_id_newtype_variants_carry_bare_string(self):
+        # Destroy/ApplyWorktree/GetRewindPoints wrap SessionId, which has no
+        # to_wire -> _payload passes the str subclass through as a bare string.
+        assert SessionLifecycleRequest.destroy(SessionId("s1")).to_wire() == {
+            "type": "destroy",
+            "data": "s1",
+        }
+        assert SessionLifecycleRequest.apply_worktree(SessionId("s1")).to_wire() == {
+            "type": "apply_worktree",
+            "data": "s1",
+        }
+        assert SessionLifecycleRequest.get_rewind_points(SessionId("s1")).to_wire() == {
+            "type": "get_rewind_points",
+            "data": "s1",
+        }
+
+    def test_fork_delegates_to_agent_session_config(self):
+        cfg = AgentSessionConfig.default()
+        req = SessionLifecycleRequest.fork(cfg)
+        assert req.to_wire() == {"type": "fork", "data": cfg.to_wire()}
+
+    def test_struct_variants_carry_session_plus_u64(self):
+        # BeginPrompt/EndPrompt/Rewind: idx/target are u64 (Python int).
+        assert SessionLifecycleRequest.begin_prompt(SessionId("s1"), 0).to_wire() == {
+            "type": "begin_prompt",
+            "data": {"session": "s1", "idx": 0},
+        }
+        assert SessionLifecycleRequest.end_prompt(SessionId("s1"), 7).to_wire() == {
+            "type": "end_prompt",
+            "data": {"session": "s1", "idx": 7},
+        }
+        assert SessionLifecycleRequest.rewind(SessionId("s1"), 3).to_wire() == {
+            "type": "rewind",
+            "data": {"session": "s1", "target": 3},
+        }
+        # u64 coercion: bool -> int
+        assert SessionLifecycleRequest.begin_prompt(SessionId("s"), True).to_wire()["data"]["idx"] == 1
+
+    def test_all_8_variants_round_trip_via_from_wire(self):
+        samples = [
+            SessionLifecycleRequest.fork(AgentSessionConfig.default()),
+            SessionLifecycleRequest.destroy(SessionId("s1")),
+            SessionLifecycleRequest.list(),
+            SessionLifecycleRequest.apply_worktree(SessionId("s1")),
+            SessionLifecycleRequest.begin_prompt(SessionId("s1"), 0),
+            SessionLifecycleRequest.end_prompt(SessionId("s1"), 0),
+            SessionLifecycleRequest.rewind(SessionId("s1"), 3),
+            SessionLifecycleRequest.get_rewind_points(SessionId("s1")),
+        ]
+        assert len(samples) == 8
+        kinds = {s.to_wire()["type"] for s in samples}
+        assert len(kinds) == 8
+        for s in samples:
+            wire = s.to_wire()
+            back = SessionLifecycleRequest.from_wire(wire)
+            assert back.to_wire() == wire
+
+
+class TestWorkspaceRequest:
+    """WorkspaceRequest outer envelope (R79): tool / ops / session dispatch."""
+
+    def test_each_variant_nests_sub_enum(self):
+        tool = WorkspaceRequest.tool(ToolRequest.definitions())
+        assert tool.to_wire() == {
+            "type": "tool",
+            "data": {"type": "definitions", "data": None},
+        }
+        ops = WorkspaceRequest.ops(WorkspaceOpsRequest.list_hunks())
+        assert ops.to_wire() == {
+            "type": "ops",
+            "data": {"type": "list_hunks", "data": None},
+        }
+        sess = WorkspaceRequest.session(SessionLifecycleRequest.list())
+        assert sess.to_wire() == {
+            "type": "session",
+            "data": {"type": "list", "data": None},
+        }
+
+    def test_round_trips_through_nested_enums(self):
+        for req in [
+            WorkspaceRequest.tool(ToolRequest.call(ToolCallArgs(
+                session=SessionId("s1"), tool_name="t", call_id=ToolCallId("c1"),
+            ))),
+            WorkspaceRequest.ops(WorkspaceOpsRequest.memory_search("q", 2)),
+            WorkspaceRequest.session(SessionLifecycleRequest.rewind(SessionId("s1"), 5)),
+        ]:
+            wire = req.to_wire()
+            back = WorkspaceRequest.from_wire(wire)
+            assert back.to_wire() == wire
+
+    def test_unknown_variant_rejected_by_from_wire(self):
+        # "events" is the subscription type, not a WorkspaceRequest variant.
+        with pytest.raises(ValueError):
+            WorkspaceRequest.from_wire({"type": "events", "data": None})

@@ -30,6 +30,14 @@ the four top-level dispatch modules (``request`` → ``requests`` →
 ``events`` → ``chunks``) to land; ``rpc/`` (R68-R77) and ``types/``
 (R67) are the leaf payloads this envelope carries.
 
+R79 adds the request **discriminators** that ride inside the envelope
+(:class:`WorkspaceRequest` + the three sub-enums
+:class:`ToolRequest` / :class:`WorkspaceOpsRequest` /
+:class:`SessionLifecycleRequest`, plus the :class:`ToolCallArgs` struct)
+— the second of the four top-level dispatch modules. All four enums
+share one serde shape (adjacent-tagged), so they reuse the R67
+:class:`AdjacentTagged` base exactly as :class:`WorkspaceError` does.
+
 Mirrors the Rust ``lib.rs`` ``pub use`` re-exports.
 """
 
@@ -51,6 +59,13 @@ from minimax_code.workspace_types.metadata import (
     Metadata,
 )
 from minimax_code.workspace_types.request import RequestMessage
+from minimax_code.workspace_types.requests import (
+    SessionLifecycleRequest,
+    ToolCallArgs,
+    ToolRequest,
+    WorkspaceOpsRequest,
+    WorkspaceRequest,
+)
 from minimax_code.workspace_types.types import (
     AgentSessionConfig,
     AgentSessionInfo,
@@ -119,6 +134,12 @@ __all__ = [
     "STANDARD_META_KEYS",
     # request envelope (R78 — crate top-level dispatch surface)
     "RequestMessage",
+    # request discriminators (R79 — crate top-level dispatch surface)
+    "ToolCallArgs",
+    "ToolRequest",
+    "WorkspaceOpsRequest",
+    "SessionLifecycleRequest",
+    "WorkspaceRequest",
     # chunk discriminator
     "ChunkKind",
     # error layer
