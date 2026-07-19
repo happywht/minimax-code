@@ -3446,4 +3446,59 @@ MCP-over-ACP 常量是 dataclass 未用 pydantic 序列化面）；**纯值相�
 
 ### Commit
 
-`feat(platform): R42 version vocabulary + zero-dep semver (fuse grok xai-grok-version)`
+`feat(platform): R42 version vocabulary + zero-dep semver (fuse grok xai-grok-version)` (`19e27a3`)
+
+---
+
+## R43 — 后端环境预设 + EnvVarGuard（融合 grok `xai-grok-env`）
+
+### 本轮目标
+
+从 grok 的 `xai-grok-env`（197 行单文件 lib.rs）引入**后端环境预设词汇表**：`BuildEndpoints` frozen 端点束（5 字段）+ `BuildEnvironment` 单成员环境 enum + `resolve` env-var 覆盖机制 + `EnvVarGuard` RAII 测试 guard。
+
+**阶段 E 平台化/发布主题**——与 R42 `version` 对称的"平台基础词汇表层"。产品价值：MiniMax Code 当前 `llm.py` 硬编码 API base URL、`http_server` 硬编码 CORS origin，无统一的"后端环境预设 + env 覆盖"层。本模块把 grok 的多服务 endpoint 预设架构迁移过来，`api_base_url` 是 MiniMax Code 当前活跃消费端（llm.py 接线轮），其余 endpoint 保留为 grok 云架构的扩展槽——**平台型产品保留可扩展结构**。
+
+### 融合结论
+
+**✅ 保持（映射到 Python）**：
+- `GrokBuildEndpoints`（struct of `&'static str`，`Debug+Clone+Copy+PartialEq+Eq` 无 `Serialize`）→ `BuildEndpoints` frozen dataclass（第二分支，同 R40 `QueueEntryMeta` / R42 `Version`）；`&'static str` → `str`（不可变，无生命周期）。
+- `GrokBuildEnvironment`（单变体 `Production` enum，`Copy+PartialEq+Eq` + `#[default]` + 方法）→ `BuildEnvironment` `@unique` 单成员 `enum.Enum`（第三分支，同 R41 `PowerState`）；`from_flags` 是 public-build no-op 恒返回 Production（Dev/Staging 编译出）。
+- `unsafe { std::env::set_var / remove_var }`（Rust 2024 标记 `unsafe`，因 `std::env` 进程全局）→ `os.environ[key] = v` / `os.environ.pop`（Python 无 `unsafe` 标记，但进程全局风险相同 → `_ENV_LOCK` 串行化）。
+- `EnvVarGuard`（`#[cfg(test)]` RAII + `Drop` 恢复快照 + `ENV_LOCK` 串行）→ `EnvVarGuard` context manager（`__enter__`/`__exit__` + `close`/`__del__`），模块级 `threading.Lock`。
+- env-prefix `GROK_PRODUCTION` → `MINIMAX_PRODUCTION`（品牌化）；per-endpoint 后缀（`_CLI_CHAT_PROXY_BASE_URL` 等，操作接口）逐字保留。
+- endpoint 值 `grok.com` 域 → `api.minimax.chat` 域（产品本地化）。
+- `PROD_*` 顶层常量别名 + `Display` → `__str__` + `indicator` / `is_production` / `endpoints` / `resolve` / 5 个 per-endpoint 方法：全部直接移植。
+
+**❌ 放弃（YAGNI）**：
+- `url` / `tracing` crate 依赖（grok lib.rs 未实际使用）→ 零非标准库依赖（仅 `os`/`threading`/`dataclasses`/`enum`）。
+- Dev/Staging 环境（grok public build 也只有 Production）→ 仅 Production 单成员。
+- 真实 endpoint URL 校验（`url` crate 解析）→ URL 即 `str`，校验是消费端职责。
+- 接线 `llm.py`/`http_server` 读取 endpoint → 本轮是词汇表层，消费端接线是后续轮。
+
+### 交付
+
+- `agent/minimax_code/env_presets.py`（新）— `BuildEndpoints` frozen dataclass（5 字段）+ `PRODUCTION_ENDPOINTS` 常量 + 5 个 `PROD_*` 别名 + `BuildEnvironment` `@unique` enum（单成员 Production + `from_flags`/`indicator`/`is_production`/`env_prefix`/`endpoints`/`_resolve`/5 per-endpoint 方法 + `__str__`）+ `EnvVarGuard` context manager（`set`/`remove` classmethod + `set_value` + `close`/`__exit__`/`__del__` 幂等 + `_ENV_LOCK`），`__all__` 9 符号。
+- `agent/tests/test_env_presets.py`（新）— 17 测试：grok 4 测试镜像（env-prefix operator interface / set_value 更新+恢复 / relay≠gateway / from_flags）+ Python 映射锁定（5 字段协议前缀 / PROD_* 别名 / frozen / equality / 单成员 / is_production+indicator+str / resolve 默认+override / per-endpoint 隔离 / guard with-restore / close-idempotent / set_value-after-close-raises）。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+映射决策树**第八次重申**（payload 决定映射）：本轮 `GrokBuildEndpoints`（纯值相等无序列化）→ frozen dataclass（第二分支）；`GrokBuildEnvironment`（纯单元 enum）→ `@unique Enum`（第三分支）。**新增两点**：(1) Rust `unsafe { std::env::set_var }`（2024 process-global 标记）→ Python `os.environ`（无 `unsafe` 标记但风险相同，故 `threading.Lock` 串行化，镜像 grok `ENV_LOCK`）；Rust `Drop` 确定性释放 → Python `__exit__`/`close`/`__del__` 三重 + 幂等 `_closed` 标志（Python 无确定性 Drop，`__del__` best-effort）。(2) Rust `#[cfg(test)]` 编译时测试隔离 → Python 无条件定义 + docstring 标注"测试专用"。
+
+**坑（自发现，已修复）**：首次测试 `test_env_var_guard_remove_restores_a_prior_value` **嵌套两层 guard**（外层 `set` 持 `_ENV_LOCK`，内层 `remove` 再 acquire 不可重入的 `Lock` → 死锁，14 点后卡住，`TaskStop` 终止）。grok `std::sync::Mutex` 同样不可重入，guard 设计上**不可嵌套**——这是忠实性，不是 bug。修复：测试改用 `monkeypatch.setenv` 预设值（绕过 Lock，单层 `remove` guard），**不换 RLock**（grok 是 Mutex，YAGNI 保持忠实）。
+
+### 验证
+
+- `ruff check` → **All checks passed!**（0 fixed，导入顺序本就正确）。
+- `pytest tests/test_env_presets.py -q` → **17 passed in 0.08s**（修复死锁后）。
+- 完整套件 `pytest` → **1659 passed in 101.55s**（R42 1642 → R43 1659，**+17 精确**，零回归）。
+
+### YAGNI 边界
+
+- ❌ **不接线 `llm.py`/`http_server` 读取 endpoint**——本轮是词汇表层；消费端（让 `llm.py` 读 `BuildEnvironment.Production.cli_chat_proxy_base_url()` 替代硬编码）是后续轮。
+- ❌ **不实现 Dev/Staging 环境**——grok public build 也只有 Production（Dev/Staging 编译出），enum 单成员忠实 grok 现状。
+- ❌ **不做真实 endpoint URL 校验**（grok `url` crate）——URL 即 `str`，校验是消费端职责；`url`/`tracing` 依赖 grok lib.rs 未使用，直接丢弃。
+- ❌ **不换 `RLock` 支持嵌套 guard**——grok `std::sync::Mutex` 不可重入，guard 设计不可嵌套（忠实性）；测试用 `monkeypatch` 避免嵌套。
+- ❌ **不迁移 `#[cfg(test)]` 编译隔离**——Python 无编译时条件编译，`EnvVarGuard` 无条件定义 + docstring 标注测试专用。
+
+### Commit
+
+`feat(platform): R43 backend env presets + EnvVarGuard (fuse grok xai-grok-env)`
