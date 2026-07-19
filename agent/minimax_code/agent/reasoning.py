@@ -127,6 +127,35 @@ def parse_effort_strict(s: str) -> ReasoningEffort:
         ) from exc
 
 
+def coerce_effort(value: ReasoningEffort | str | None) -> ReasoningEffort | None:
+    """Normalise a runtime effort value to ``ReasoningEffort | None`` (R54 wiring).
+
+    The transport ``stream_chat`` call sites receive the reasoning effort from
+    three sources — an already-typed :class:`ReasoningEffort`, a bare wire-token
+    string (e.g. ``"max"`` from a CLI/UI alias), or ``None`` (the default, "do
+    not send"). This collapses all three into the canonical enum-or-None the
+    wire layer consumes:
+
+    * ``None`` → ``None`` (no effort to send — the default).
+    * :class:`ReasoningEffort` → itself (already canonical).
+    * ``str`` → :func:`parse_effort_token` (case-insensitive, honours the
+      ``max`` alias of ``xhigh``; an unknown token → ``None`` with no raise, so
+      a caller passing a typo degrades to "send nothing" rather than crashing
+      the turn).
+
+    Mirrors grok's permissive *input* surface (the CLI accepts both the typed
+    enum and the ``max`` alias string) while keeping the wire layer's strict
+    enum boundary intact — this is the parse seam; :meth:`ReasoningEffort.
+    to_messages_api` is the emit seam (R54 pipe-through normalises here; a later
+    round calls the emit seam once the MiniMax/xAI effort wire contract settles).
+    """
+    if value is None:
+        return None
+    if isinstance(value, ReasoningEffort):
+        return value
+    return parse_effort_token(value)
+
+
 def _humanize_effort_id(effort_id: str) -> str:
     """Uppercase the first character of an id for a default label.
 

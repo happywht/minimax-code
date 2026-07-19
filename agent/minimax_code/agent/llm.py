@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .. import secrets
 from ..models import default_model
@@ -26,6 +26,12 @@ from .transports import LLMTransport
 from .transports.anthropic_transport import AnthropicTransport
 from .transports.mock_transport import MockTransport
 from .types import LLMConfigError, LLMError, LLMResponse, LLMStreamTimeout, StreamChunk
+
+if TYPE_CHECKING:
+    # Annotation-only import — R54 pipe-through types the ``stream_chat`` /
+    # ``chat`` ``reasoning_effort`` kwarg on the public surface; the runtime
+    # coercion lives in each transport via ``coerce_effort``.
+    from .reasoning import ReasoningEffort
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +137,10 @@ class MiniMaxClient:
             effective_protocol, client
         )
         self._thinking_count = 0
+        # R54 pipe-through: mirrors ``self._transport.last_reasoning_effort``
+        # after each call so callers of the public ``MiniMaxClient`` surface
+        # can observe the coerced effort without reaching into the transport.
+        self._last_reasoning_effort: ReasoningEffort | None = None
 
         logger.info(
             "MiniMaxClient initialised (protocol=%s, mock=%s, "
@@ -150,6 +160,7 @@ class MiniMaxClient:
         tool_choice: str | Mapping[str, Any] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: ReasoningEffort | str | None = None,
     ) -> LLMResponse:
         """One-shot, non-streaming chat call.
 
@@ -165,6 +176,7 @@ class MiniMaxClient:
             tool_choice=tool_choice,
             temperature=temperature,
             max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
         ):
             chunks.append(c)
 
@@ -179,6 +191,7 @@ class MiniMaxClient:
         tool_choice: str | Mapping[str, Any] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: ReasoningEffort | str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream the assistant response chunk-by-chunk.
 
@@ -186,10 +199,18 @@ class MiniMaxClient:
         ``finish_reason`` set to a non-None value (``stop`` /
         ``tool_calls`` / ``length``) and a populated ``usage`` dict.
 
+        ``reasoning_effort`` (R54 pipe-through) is forwarded to the transport
+        and coerced there via :func:`minimax_code.agent.reasoning.coerce_effort`.
+        The transport records the coerced value on ``last_reasoning_effort``
+        but does **not** yet emit it on the wire (the per-protocol effort
+        contract is unsettled), so ``None`` (the default) leaves every request
+        byte-identical to the pre-R54 behaviour.
+
         Side effect
         -----------
 
-        Updates :attr:`thinking_count` after the stream completes.
+        Updates :attr:`thinking_count` and :attr:`last_reasoning_effort`
+        after the stream completes.
         """
         async for chunk in self._transport.stream_chat(
             messages,
@@ -198,10 +219,13 @@ class MiniMaxClient:
             tool_choice=tool_choice,
             temperature=temperature,
             max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
         ):
             yield chunk
-        # Sync thinking_count from the transport after stream completes.
+        # Sync thinking_count + last_reasoning_effort from the transport after
+        # the stream completes (mirrors the thinking_count sync pattern).
         self._thinking_count = self._transport.thinking_count
+        self._last_reasoning_effort = self._transport.last_reasoning_effort
 
     async def close(self) -> None:
         await self._transport.close()
@@ -222,6 +246,22 @@ class MiniMaxClient:
     @thinking_count.setter
     def thinking_count(self, value: int) -> None:
         self._thinking_count = value
+
+    # -- reasoning effort (R54 pipe-through, public attribute) -------------
+
+    @property
+    def last_reasoning_effort(self) -> ReasoningEffort | None:
+        """Reasoning effort coerced from the most recent call (R54 pipe-through).
+
+        ``None`` (the default) means no effort was supplied — the call was
+        byte-identical to the pre-R54 behaviour. A typed
+        :class:`~minimax_code.agent.reasoning.ReasoningEffort` or a wire-token
+        string passed to :meth:`stream_chat` / :meth:`chat` is normalised via
+        :func:`coerce_effort` and surfaced here once the transport finishes.
+        Nothing is emitted on the wire yet (the per-protocol effort contract is
+        unsettled); this attribute is the observation seam for a later round.
+        """
+        return self._last_reasoning_effort
 
     # -- internals ---------------------------------------------------------
 

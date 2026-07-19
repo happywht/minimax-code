@@ -14,6 +14,7 @@ from typing import Any
 
 import openai
 
+from ..reasoning import ReasoningEffort, coerce_effort
 from ..types import LLMError, StreamChunk
 from . import LLMTransport
 from ._breaker import check_or_raise, record_outcome, resolve_breaker
@@ -53,10 +54,24 @@ class OpenAITransport(LLMTransport):
         self._max_retries = max_retries
         self._client = client
         self._thinking_count = 0
+        self._last_reasoning_effort: ReasoningEffort | None = None
 
     @property
     def thinking_count(self) -> int:
         return self._thinking_count
+
+    @property
+    def last_reasoning_effort(self) -> ReasoningEffort | None:
+        """Reasoning effort normalised from the most recent ``stream_chat`` call.
+
+        R54 pipe-through: the value is coerced and recorded for the wire layer
+        to read once the OpenAI-compatible effort contract (the official
+        ``reasoning_effort`` field accepts only ``minimal`` / ``low`` / ``medium``
+        / ``high`` — not ``none`` / ``xhigh`` / ``max`` — and many compat
+        endpoints reject it outright) is settled. Until then nothing is emitted,
+        so a ``None`` effort leaves the request kwargs unchanged.
+        """
+        return self._last_reasoning_effort
 
     async def stream_chat(
         self,
@@ -67,6 +82,7 @@ class OpenAITransport(LLMTransport):
         tool_choice: str | Mapping[str, Any] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: ReasoningEffort | str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream via the OpenAI chat completions API.
 
@@ -76,6 +92,14 @@ class OpenAITransport(LLMTransport):
         ``choices[0].delta`` we map to :class:`StreamChunk`.
         """
         self._thinking_count = 0
+        # R54 pipe-through: coerce the runtime effort value once, up-front, so
+        # the wire layer can read ``self._last_reasoning_effort`` when the
+        # OpenAI-compatible effort contract settles. Nothing is emitted yet —
+        # the ``kwargs`` dict below is built from the same fields as before
+        # regardless of this value (TODO: conditionally set ``reasoning_effort``
+        # in ``kwargs`` once we confirm the endpoint accepts it and which subset
+        # of variants; the official field rejects ``none`` / ``xhigh`` / ``max``).
+        self._last_reasoning_effort = coerce_effort(reasoning_effort)
 
         # R18: circuit-breaker pre-check. Fail-open — a missing / disabled /
         # faulty breaker resolves to None and check_or_raise is a no-op, so

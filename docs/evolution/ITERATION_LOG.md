@@ -3995,3 +3995,58 @@ R52 债务清零后，本轮在 sampling-types crate 内选一个**自洽、高�
 ### Commit
 
 `feat(platform): R53 reasoning effort type layer (fuse grok xai-grok-sampling-types)`
+
+---
+
+## R54 — reasoning_effort 管道传输（融合 grok xai-grok-sampling-types 消费端，模型+推理双轴接线）
+
+> 锚定 R53（`086e521`）。R53 建立了 `ReasoningEffort` 纯类型层（R45 对应物）。**本轮是 R53 的消费端接线**（R46 对应物）—— 两阶段迁移模式（R45→R46 类型层→接线）在推理努力轴上的重演。R53 的类型层不被任何模块导入（零回归面），本轮把它**正向接到 LLM 传输管道**：reasoning_effort 从 `MiniMaxClient.stream_chat/chat` 流到 transport 层，被 R54 新增的 `coerce_effort` 运行时规范化器标准化，记录到 3 个 transport 的 `last_reasoning_effort` 观察属性 + `MiniMaxClient.last_reasoning_effort` 公开属性。**精确边界 = 管道传输（pipe-through），不注入 wire**：3 个 transport 接收 reasoning_effort kwarg 但**不发送任何线路信号**（MiniMax/xAI/OpenAI 三方 effort wire 契约未定，盲目注入 = 不可接受的回归），默认 None = 零线路字节变更 = 零行为回归。这是 R46 式的「单点接线、零线路影响」。
+
+### 本轮目标
+
+R53 类型层已就位但无消费者（YAGNI：提前接线 = 在无消费者时绑定 API）。本轮在**不破坏任何现有 LLM 调用**的前提下，铺设 reasoning_effort 的端到端管道，为后续轮次（R55+ 线路注入、AgentConfig.reasoning_effort → AgentCore → stream_chat 调用点）提供可观察、可测试的接缝。**核心设计决策：管道传输而非线路注入**。预研识别致命风险 —— 三方 effort wire 契约各异且未定：(1) OpenAI 官方 `reasoning_effort` 仅接受 minimal/low/medium/high（拒绝 none/xhigh/max，会抛 SDK/API 错误）；(2) Anthropic 用 `thinking: {type, budget_tokens}` 机制而非 effort 字段；(3) MiniMax/智谱端点 effort 字段支持未知。**盲目注入任一 = 破坏现有调用 = 不可接受**。故 R54 仅做：接收 → 规范化 → 记录 → 观察，**线路注入推迟到 wire 契约确认后**。新增运行时规范化器 `coerce_effort`（R53 的 parse seam 的运行时入口），3 个 transport 的 stream_chat 加 kwarg + 规范化记录 + 属性，MiniMaxClient stream_chat/chat 透传 + 同步属性。
+
+### 融合结论
+
+- ✅ **保留**：新增 `coerce_effort(value: ReasoningEffort | str | None) -> ReasoningEffort | None` —— transport 调用点的运行时规范化器。三源坍缩：`None`→`None`（不发送，默认）/ `ReasoningEffort`→自身（已规范化，**typed 分支优先于 str 解析**，因 StrEnum 成员也是 str 实例）/ `str`→`parse_effort_token`（大小写不敏感，max→XHIGH，unknown→None 不 raise，typo 降级为「不发送」而非崩溃回合）。镜像 grok 宽松输入面（CLI 同时接受 typed enum 和 max 别名字符串），保持 wire 层严格枚举边界 —— **coerce_effort 是 parse seam（R54 调用），`to_messages_api` 是 emit seam（R54 不调用，留 R55+）**。
+- ✅ **保留**：`LLMTransport.stream_chat` ABC 签名加 `reasoning_effort: ReasoningEffort | str | None = None` kwarg（TYPE_CHECKING 导入 ReasoningEffort，仅注解）+ docstring 说明 R54 管道传输不注入 wire。
+- ✅ **保留**：3 个 transport（Mock/Anthropic/OpenAI）的 `stream_chat` 加同 kwarg + 正文开头 `self._last_reasoning_effort = coerce_effort(reasoning_effort)` + `__init__` 加 `self._last_reasoning_effort` 存储 + `last_reasoning_effort` 只读属性。**3 个 transport 必须都接受该 kwarg**（MiniMaxClient 多态调用 `self._transport.stream_chat(..., reasoning_effort=...)`，缺一即 TypeError）。每个 transport 的属性 docstring 各自点名其 wire 契约的未定点（Mock：纯观察；Anthropic：thinking budget vs output_config.effort；OpenAI：官方字段拒绝 none/xhigh/max + 兼容端点可能整体拒绝）。
+- ✅ **保留**：`MiniMaxClient` TYPE_CHECKING 导入 ReasoningEffort + `__init__` 加 `self._last_reasoning_effort` 存储 + `stream_chat`/`chat` 加 kwarg + 透传给 transport + stream 结束后 `self._last_reasoning_effort = self._transport.last_reasoning_effort`（镜像既有 thinking_count 同步模式）+ 公开只读属性 `last_reasoning_effort`。
+- ❌ **放弃**：**不在任一 transport 注入 wire 信号** —— 留明确 TODO 锚点（Anthropic：thinking budget/output_config.effort 待定；OpenAI：kwargs["reasoning_effort"] 条件设置待定）。**默认 None = 零线路字节变更**，所有现有调用零感知。
+- ❌ **放弃**：不连接 AgentConfig.reasoning_effort → AgentCore → stream_chat 调用点（端到端管道的「上游」）—— 留 R55+，本轮仅做 client→transport 半段（下游）。
+
+### 交付
+
+- `agent/minimax_code/agent/reasoning.py`（改）— 在 `parse_effort_strict` 之后、`_humanize_effort_id` 之前新增 `coerce_effort`（27 行，含完整 docstring 说明三源坍缩语义 + parse/emit seam 双接缝定位）。复用 R53 既有 `parse_effort_token`（不重复解析逻辑，DRY）。
+- `agent/minimax_code/agent/transports/__init__.py`（改）— (1) `from typing import Any` → `from typing import TYPE_CHECKING, Any`；(2) `from ..types import StreamChunk` 后加 `if TYPE_CHECKING: from ..reasoning import ReasoningEffort`（仅注解导入）；(3) `LLMTransport.stream_chat` ABC 签名加 `reasoning_effort` kwarg + docstring R54 边界说明（不注入 wire，默认 None 字节不变）。
+- `agent/minimax_code/agent/transports/mock_transport.py`（改）— 导入 `from ..reasoning import ReasoningEffort, coerce_effort`；`__init__` 加 `self._last_reasoning_effort`；`last_reasoning_effort` 属性（纯观察，mock 不发 wire）；`stream_chat` 加 kwarg + 正文 `self._thinking_count = 1` 后规范化记录。
+- `agent/minimax_code/agent/transports/anthropic_transport.py`（改）— 导入加 `ReasoningEffort, coerce_effort`；`__init__` 加 `self._last_reasoning_effort`；`last_reasoning_effort` 属性（docstring 点名 thinking budget vs output_config.effort 待定）；`stream_chat` 加 kwarg + 正文 `self._thinking_count = 0` 后规范化记录 + TODO 注释（emit via thinking budget / output_config.effort 待 wire 契约确认）。**`client.messages.stream(...)` kwargs 与 R54 前字节一致**。
+- `agent/minimax_code/agent/transports/openai_transport.py`（改）— 导入加 `ReasoningEffort, coerce_effort`；`__init__` 加 `self._last_reasoning_effort`；`last_reasoning_effort` 属性（docstring 点名官方字段拒绝 none/xhigh/max + 兼容端点可能整体拒绝）；`stream_chat` 加 kwarg + 正文 `self._thinking_count = 0` 后规范化记录 + TODO 注释（kwargs["reasoning_effort"] 条件设置待确认端点接受性 + 变量子集）。**kwargs 构建逻辑与 R54 前一致**。
+- `agent/minimax_code/agent/llm.py`（改）— TYPE_CHECKING 导入 ReasoningEffort；`MiniMaxClient.__init__` 加 `self._last_reasoning_effort`；`stream_chat` 加 kwarg + 透传 + 流后同步 `self._last_reasoning_effort = self._transport.last_reasoning_effort`（与 thinking_count 同步对称）；`chat` 加 kwarg + 透传给 stream_chat（单一代码路径）；公开只读属性 `last_reasoning_effort`（docstring 说明 None = 零行为变更 + 观察接缝）。
+- `agent/tests/test_reasoning.py`（改，31→35 测试）— 在 `parse_effort_strict` 段落后新增 coerce_effort 段落（4 测试）：none passthrough / typed enum passthrough（锁 StrEnum 也是 str → typed 分支优先序）/ string 解析含 max 别名 / unknown string → None。
+- `agent/tests/test_reasoning_wiring.py`（新，10 测试）— 端到端管道测试，两层：(a) MockTransport 直接（max→XHIGH / 默认 None / typed 透传 / turbo→None）；(b) MiniMaxClient(mock) 公开面（"high"→HIGH / 默认 None 零行为变更 / typed MEDIUM 透传 / "max"→XHIGH / chat() 非流式路径同样透传 "xhigh"→XHIGH / chat() 默认 None）。聚焦管道传输契约（非 wire 发射），coerce_effort 本身在 test_reasoning 已单测，此处证其**被接线**。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+### 映射决策树（本轮纯消费端接线 + 一个新运行时函数）
+
+本轮是 R53 类型层的**第一处消费端接线**（类比 R45→R46 两阶段模式的接线轮）。决策树四分支本轮无新增枚举/联合 —— `coerce_effort` 是纯函数（非类型），复用 R53 既有的 `ReasoningEffort` 枚举 + `parse_effort_token` 解析器。**接线模式复用**：transport 委托架构（`_build_transport` 按 protocol 选实现，`stream_chat`/`chat` 委托 `self._transport.stream_chat`，`thinking_count` 从 transport 同步）—— R54 的 `reasoning_effort` + `last_reasoning_effort` 完全镜像既有 `thinking_count` 同步模式（流后 `self._x = self._transport.x`），认知对称。**ABC 参数兼容性**：`@abstractmethod` 具体实现可加带默认值的额外 kwarg，但 MiniMaxClient 多态调用要求**所有 3 个 transport 都接受**该 kwarg（不能只改 Mock）—— 故 4 文件（ABC + 3 transport）同步修改。
+
+**坑（自发现，已修复）**：无。8 个编辑步骤全部 `ruff check` 首次即 **All checks passed!**（无需 `--fix`）—— 导入插入位置天然满足 I001（`..reasoning` 在 `..types` 前/后的字母序，各 transport 一致）；TYPE_CHECKING 块格式遵循既有惯例。无运行时错误 —— 新测试 14 个一次通过（10 wiring + 4 coerce_effort），完整套件零回归。
+
+### 验证
+
+- `ruff check` R54 全部 8 文件（reasoning.py / llm.py / transports/__init__.py + mock/anthropic/openai + 2 测试）→ **All checks passed!**（首次干净，无 `--fix`）。
+- `pytest tests/test_reasoning.py tests/test_reasoning_wiring.py -q` → **45 passed in 5.04s**（R53 的 35 含 R54 新增 4 coerce_effort + R54 新增 10 wiring）。
+- 完整套件 `pytest` → **1743 passed, 10 skipped in 109.18s**（R53 1729 → R54 1743，**+14 精确**，零回归，10 skip 与 R53 一致）。
+
+### YAGNI 边界
+
+- ❌ **不注入任何 wire 信号** —— 三方 effort wire 契约未定（OpenAI 拒绝 none/xhigh/max；Anthropic 用 thinking budget 而非 effort；MiniMax/智谱未知），盲目注入破坏现有调用。每个 transport 留明确 TODO 锚点，待 R55+ 契约确认后逐 transport 注入。本轮默认 None = 零线路字节 = 零回归。
+- ❌ **不连接上游 AgentConfig.reasoning_effort → AgentCore → stream_chat 调用点** —— 本轮仅做 client→transport 下游半段；上游配置流入留 R55+（端到端管道完成轮）。
+- ❌ **不修改 to_messages_api 的调用点** —— R53 的 emit seam 本轮不被调用（线路注入推迟）；coerce_effort 是 parse seam 的运行时入口，两者分工明确，不在无 wire 消费者时调用 emit。
+- ❌ **不给 reasoning_effort 加 MiniMaxClient 构造期默认值** —— 仅 per-call kwarg（默认 None）；构造期默认 = 隐式全局策略，应由 AgentConfig 显式表达（R55+）。
+- ❌ **不迁移 sampling-types crate 其余类型** —— 继续 R53 的聚焦策略，本轮只接 ReasoningEffort 的下游管道。
+
+### Commit
+
+`feat(platform): R54 reasoning_effort pipe-through (fuse grok xai-grok-sampling-types)`

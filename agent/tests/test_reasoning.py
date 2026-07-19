@@ -128,6 +128,37 @@ def test_parse_effort_strict_raises_on_invalid():
     assert "none" in msg and "xhigh" in msg and "max" in msg
 
 
+# --- coerce_effort (R54 runtime normaliser, transport parse seam) ------------
+
+
+def test_coerce_effort_none_passes_through():
+    """``None`` stays ``None`` — the "do not send" sentinel (the default)."""
+    assert R.coerce_effort(None) is None
+
+
+def test_coerce_effort_typed_enum_passes_through():
+    """An already-canonical :class:`ReasoningEffort` is returned unchanged.
+
+    A ``StrEnum`` member is also a ``str`` instance, so the typed branch must
+    be taken before any string-parse fallback — this pins that ordering.
+    """
+    assert R.coerce_effort(R.ReasoningEffort.HIGH) is R.ReasoningEffort.HIGH
+    assert R.coerce_effort(R.ReasoningEffort.XHIGH) is R.ReasoningEffort.XHIGH
+
+
+def test_coerce_effort_string_parses_with_max_alias():
+    """A bare string parses via :func:`parse_effort_token` (honours ``max``)."""
+    assert R.coerce_effort("high") is R.ReasoningEffort.HIGH
+    assert R.coerce_effort("max") is R.ReasoningEffort.XHIGH  # CLI alias
+    assert R.coerce_effort("XHIGH") is R.ReasoningEffort.XHIGH  # case-insensitive
+
+
+def test_coerce_effort_unknown_string_is_none():
+    """An unknown string degrades to ``None`` (no raise) — a typo sends nothing."""
+    assert R.coerce_effort("turbo") is None
+    assert R.coerce_effort("") is None
+
+
 # --- supports_reasoning_effort_meta (grok .as_bool().unwrap_or(false)) ------
 
 

@@ -9,6 +9,7 @@ import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any
 
+from ..reasoning import ReasoningEffort, coerce_effort
 from ..types import StreamChunk
 from . import LLMTransport
 
@@ -30,10 +31,21 @@ class MockTransport(LLMTransport):
 
     def __init__(self) -> None:
         self._thinking_count = 0
+        self._last_reasoning_effort: ReasoningEffort | None = None
 
     @property
     def thinking_count(self) -> int:
         return self._thinking_count
+
+    @property
+    def last_reasoning_effort(self) -> ReasoningEffort | None:
+        """Reasoning effort normalised from the most recent ``stream_chat`` call.
+
+        R54 pipe-through: the mock records the coerced effort so a test can
+        assert the ``MiniMaxClient → transport`` plumbing carries the value
+        end-to-end. The mock emits no wire, so this is purely observational.
+        """
+        return self._last_reasoning_effort
 
     async def stream_chat(
         self,
@@ -44,8 +56,13 @@ class MockTransport(LLMTransport):
         tool_choice: str | Mapping[str, Any] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: ReasoningEffort | str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self._thinking_count = 1  # one synthetic "think" per call
+        # R54 pipe-through: normalise the runtime effort value (typed enum /
+        # bare token / None) and surface it for observation. The mock emits no
+        # wire, so this only records the coerced value.
+        self._last_reasoning_effort = coerce_effort(reasoning_effort)
         # Extract text from messages (handles multimodal list content)
         _extract_text(messages)
         step = 16
