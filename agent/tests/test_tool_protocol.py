@@ -138,6 +138,23 @@ from minimax_code.tool_protocol.output_wire import (
 from minimax_code.tool_protocol.registration import (
     registration_outcome_from_wire,
 )
+
+# R88 — registry_error variants are imported from the submodule (not the
+# barrel): the barrel only re-exports the ``RegistryError`` union, both to
+# mirror Rust lib.rs and to avoid clobbering ``error_wire.SessionMismatch``
+# (R83), which shares the name ``SessionMismatch`` with a registry_error variant.
+from minimax_code.tool_protocol.registry_error import (
+    AlreadyRegistered,
+    InvalidDescription,
+    RegistryError,
+    ServerIdCollision,
+    ServerIdInUse,
+    StaleGeneration,
+    registry_error_from_wire,
+)
+from minimax_code.tool_protocol.registry_error import (
+    SessionMismatch as RegistrySessionMismatch,
+)
 from minimax_code.tool_types import ToolDescription
 
 # -----------------------------------------------------------------------
@@ -2276,3 +2293,246 @@ class TestPackageSurfaceR87:
         import minimax_code.tool_protocol as pkg
 
         assert not hasattr(pkg, "registration_outcome_from_wire")
+
+
+# ------------------------------------------------------------------ R88
+# Registry-error variants are imported at the top of this module (see the
+# ``registry_error`` import block above) — the barrel only re-exports the
+# ``RegistryError`` union, both to mirror Rust lib.rs and to avoid clobbering
+# ``error_wire.SessionMismatch`` (R83), which shares the name ``SessionMismatch``
+# with a registry_error variant.
+
+
+class TestRegistryErrorWireTags:
+    """Each variant stamps its ``code`` tag; ``AlreadyRegistered`` carries the
+    per-variant rename override (``tool_already_registered``, NOT the
+    ``rename_all = "snake_case"`` default ``already_registered``)."""
+
+    def test_already_registered_uses_override_tag(self):
+        err = AlreadyRegistered(tool_id=ToolId("ns:bash"))
+        wire = err.to_wire()
+        assert wire["code"] == "tool_already_registered"
+        # The rename_all default would have produced "already_registered";
+        # pin the override explicitly.
+        assert wire["code"] != "already_registered"
+
+    def test_session_mismatch_tag(self):
+        wire = RegistrySessionMismatch(
+            token_session=SessionId("tok"), reg_session=SessionId("reg")
+        ).to_wire()
+        assert wire["code"] == "session_mismatch"
+
+    def test_server_id_collision_tag(self):
+        assert ServerIdCollision(server_id=ServerId("srv")).to_wire()["code"] == (
+            "server_id_collision"
+        )
+
+    def test_server_id_in_use_tag(self):
+        assert ServerIdInUse(server_id=ServerId("srv")).to_wire()["code"] == (
+            "server_id_in_use"
+        )
+
+    def test_invalid_description_tag(self):
+        assert InvalidDescription(message="bad").to_wire()["code"] == (
+            "invalid_description"
+        )
+
+    def test_stale_generation_tag(self):
+        assert StaleGeneration(expected=3, actual=7).to_wire()["code"] == (
+            "stale_generation"
+        )
+
+
+class TestRegistryErrorToWire:
+    """``to_wire`` carries the named fields alongside the ``code`` tag."""
+
+    def test_already_registered_serialises_tool_id(self):
+        assert AlreadyRegistered(tool_id=ToolId("ns:bash")).to_wire() == {
+            "code": "tool_already_registered",
+            "tool_id": "ns:bash",
+        }
+
+    def test_session_mismatch_serialises_both_sessions(self):
+        wire = RegistrySessionMismatch(
+            token_session=SessionId("tok"), reg_session=SessionId("reg")
+        ).to_wire()
+        assert wire == {
+            "code": "session_mismatch",
+            "token_session": "tok",
+            "reg_session": "reg",
+        }
+
+    def test_server_id_collision_serialises_server_id(self):
+        assert ServerIdCollision(server_id=ServerId("srv-1")).to_wire() == {
+            "code": "server_id_collision",
+            "server_id": "srv-1",
+        }
+
+    def test_server_id_in_use_serialises_server_id(self):
+        assert ServerIdInUse(server_id=ServerId("srv-2")).to_wire() == {
+            "code": "server_id_in_use",
+            "server_id": "srv-2",
+        }
+
+    def test_invalid_description_serialises_message(self):
+        assert InvalidDescription(message="reserved prefix").to_wire() == {
+            "code": "invalid_description",
+            "message": "reserved prefix",
+        }
+
+    def test_stale_generation_serialises_expected_actual(self):
+        assert StaleGeneration(expected=3, actual=7).to_wire() == {
+            "code": "stale_generation",
+            "expected": 3,
+            "actual": 7,
+        }
+
+
+class TestRegistryErrorFromWire:
+    """``registry_error_from_wire`` round-trips each variant and rejects
+    unknown / missing ``code`` tags."""
+
+    def test_round_trip_already_registered(self):
+        back = registry_error_from_wire(
+            {"code": "tool_already_registered", "tool_id": "ns:bash"}
+        )
+        assert isinstance(back, AlreadyRegistered)
+        assert back.tool_id == ToolId("ns:bash")
+
+    def test_round_trip_session_mismatch(self):
+        back = registry_error_from_wire(
+            {
+                "code": "session_mismatch",
+                "token_session": "tok",
+                "reg_session": "reg",
+            }
+        )
+        assert isinstance(back, RegistrySessionMismatch)
+        assert back.token_session == SessionId("tok")
+        assert back.reg_session == SessionId("reg")
+
+    def test_round_trip_server_id_collision(self):
+        back = registry_error_from_wire(
+            {"code": "server_id_collision", "server_id": "srv-1"}
+        )
+        assert isinstance(back, ServerIdCollision)
+        assert back.server_id == ServerId("srv-1")
+
+    def test_round_trip_server_id_in_use(self):
+        back = registry_error_from_wire(
+            {"code": "server_id_in_use", "server_id": "srv-2"}
+        )
+        assert isinstance(back, ServerIdInUse)
+        assert back.server_id == ServerId("srv-2")
+
+    def test_round_trip_invalid_description(self):
+        back = registry_error_from_wire(
+            {"code": "invalid_description", "message": "reserved prefix"}
+        )
+        assert isinstance(back, InvalidDescription)
+        assert back.message == "reserved prefix"
+
+    def test_round_trip_stale_generation(self):
+        back = registry_error_from_wire(
+            {"code": "stale_generation", "expected": 3, "actual": 7}
+        )
+        assert isinstance(back, StaleGeneration)
+        assert (back.expected, back.actual) == (3, 7)
+
+    def test_from_wire_rejects_unknown_tag(self):
+        with pytest.raises(ValueError):
+            registry_error_from_wire({"code": "nope", "tool_id": "x"})
+
+    def test_from_wire_rejects_missing_code(self):
+        with pytest.raises(KeyError):
+            registry_error_from_wire({"tool_id": "x"})
+
+    def test_from_wire_rejects_default_already_registered_tag(self):
+        # The rename override means "already_registered" (the rename_all
+        # default) is NOT a valid tag — only "tool_already_registered" is.
+        with pytest.raises(ValueError):
+            registry_error_from_wire({"code": "already_registered", "tool_id": "x"})
+
+
+class TestRegistryErrorUnion:
+    """The union alias covers all six variants."""
+
+    def test_union_has_six_variants(self):
+        from typing import get_args
+
+        args = get_args(RegistryError)
+        assert len(args) == 6
+        assert set(args) == {
+            AlreadyRegistered,
+            RegistrySessionMismatch,
+            ServerIdCollision,
+            ServerIdInUse,
+            InvalidDescription,
+            StaleGeneration,
+        }
+
+    def test_dispatch_map_covers_six_tags(self):
+        from minimax_code.tool_protocol.registry_error import _WIRE_TAG_TO_VARIANT
+
+        assert set(_WIRE_TAG_TO_VARIANT) == {
+            "tool_already_registered",
+            "session_mismatch",
+            "server_id_collision",
+            "server_id_in_use",
+            "invalid_description",
+            "stale_generation",
+        }
+
+
+class TestPackageSurfaceR88:
+    """The barrel re-exports only the ``RegistryError`` union (mirroring Rust
+    lib.rs); variants stay in-submodule so they do not clobber
+    ``error_wire.SessionMismatch`` (R83), which shares the name."""
+
+    def test_barrel_exposes_registry_error_union(self):
+        import minimax_code.tool_protocol as pkg
+
+        assert hasattr(pkg, "RegistryError")
+
+    def test_barrel_does_not_export_variants(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "AlreadyRegistered",
+            "ServerIdCollision",
+            "ServerIdInUse",
+            "InvalidDescription",
+            "StaleGeneration",
+        ):
+            assert not hasattr(pkg, name), (
+                f"barrel should not re-export registry_error variant {name} "
+                "(mirrors Rust lib.rs; avoids error_wire.SessionMismatch clash)"
+            )
+
+    def test_barrel_session_mismatch_is_error_wire_not_registry(self):
+        # The two modules both define a ``SessionMismatch`` variant. The
+        # barrel must keep R83 error_wire's, not R88 registry_error's.
+        import minimax_code.tool_protocol as pkg
+        from minimax_code.tool_protocol.error_wire import SessionMismatch as WireSm
+
+        assert pkg.SessionMismatch is WireSm
+
+    def test_barrel_does_not_export_from_wire(self):
+        import minimax_code.tool_protocol as pkg
+
+        assert not hasattr(pkg, "registry_error_from_wire")
+
+    def test_variants_accessible_via_submodule(self):
+        import minimax_code.tool_protocol.registry_error as re_mod
+
+        for name in (
+            "AlreadyRegistered",
+            "SessionMismatch",
+            "ServerIdCollision",
+            "ServerIdInUse",
+            "InvalidDescription",
+            "StaleGeneration",
+            "RegistryError",
+            "registry_error_from_wire",
+        ):
+            assert hasattr(re_mod, name), f"submodule missing {name}"

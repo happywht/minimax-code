@@ -1,4 +1,4 @@
-"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 — registration landed).
+"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 — registry_error landed).
 
 Fusion of grok-build's ``xai-tool-protocol`` crate — the wire DTOs for
 the computer-hub tool-server protocol: identifier newtypes, registration
@@ -14,9 +14,11 @@ the three wire enums + the two ``error_codes`` helpers they unblock, R84
 lands the JSON-RPC 2.0 envelope, R85 lands the method catalog (the
 direct consumer of the envelope's ``method`` field), R86 lands the
 per-tool capabilities bitset (the type of ``hello_ack.capabilities`` and
-a dependency of ``registration``), and R87 lands the registration
-payloads (the first wire DTO to embed a pydantic model and the home of
-two new serde sub-shapes):
+a dependency of ``registration``), R87 lands the registration payloads
+(the first wire DTO to embed a pydantic model and the home of two new serde
+sub-shapes), and R88 lands the registry-level error enum (the registry's
+analogue of ``ToolErrorWire`` and the crate's first per-variant rename
+override):
 
 * **R82** — :mod:`ids` (8 identifier newtypes + :class:`IdError`),
   :mod:`connection` (``ConnectionKind`` + ``ToolDefinitionMode``),
@@ -55,7 +57,7 @@ two new serde sub-shapes):
   :class:`HookKind` / :class:`ToolScope`; the two ``bool`` fields always
   serialise even when ``False`` while the ``Option`` / ``Vec`` / ``HashMap``
   arms omit when ``None`` / empty — a fifth serde sub-shape landing here).
-* **R87 (this round)** — :mod:`registration` (the tool-server
+* **R87** — :mod:`registration` (the tool-server
   registration payloads: :class:`ToolDescriptionWithSchema`,
   :class:`ToolRegistration`, :class:`ToolServerRegistration`,
   :class:`TransportKind`, and the four :data:`RegistrationOutcome`
@@ -65,9 +67,16 @@ two new serde sub-shapes):
   serde sub-shapes — the three-state ``Option<Vec<SessionId>>`` session
   set and the ``skip_serializing_if = "String::is_empty"`` bare-string
   skip on :attr:`ToolServerRegistration.description`).
+* **R88 (this round)** — :mod:`registry_error`
+  (:class:`RegistryError`, the registry's analogue of
+  :class:`~error_wire.ToolErrorWire` for structural / ownership failures:
+  internally-tagged on ``code`` with ``rename_all = "snake_case"`` across six
+  named-field variants, and the crate's first per-variant rename override —
+  :class:`AlreadyRegistered` serialises as ``"tool_already_registered"``
+  rather than the ``rename_all`` default ``"already_registered"``).
 * *deferred* — :mod:`frames`
   (tool-server frame protocol, 1549 lines), :mod:`session_event`,
-  :mod:`turn_hook`, :mod:`hook`, :mod:`registry_error`.
+  :mod:`turn_hook`, :mod:`hook`.
 
 ``from_wire`` / ``to_wire`` live on each module (instance method or module
 function); the barrel does **not** re-export them, mirroring the Rust
@@ -187,6 +196,9 @@ from minimax_code.tool_protocol.registration import (
     TransportKind,
     Updated,
 )
+from minimax_code.tool_protocol.registry_error import (
+    RegistryError,
+)
 
 __all__ = [
     # ids (R82)
@@ -286,4 +298,8 @@ __all__ = [
     "Updated",
     "Shadowed",
     "Rejected",
+    # registry_error (R88) — only the union; variants stay in-submodule to
+    # avoid clobbering error_wire.SessionMismatch (R83) at the barrel level,
+    # mirroring Rust lib.rs `pub use registry_error::RegistryError`.
+    "RegistryError",
 ]

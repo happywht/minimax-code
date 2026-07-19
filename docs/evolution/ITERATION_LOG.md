@@ -7029,3 +7029,134 @@ feat(platform): R85 迁移 xai-tool-protocol methods.rs（JSON-RPC 方法目录 
 ### Commit
 
 `feat(platform): R87 迁移 xai-tool-protocol registration.rs（工具服务器注册载荷 TransportKind/ToolDescriptionWithSchema/ToolRegistration/ToolServerRegistration/RegistrationOutcome 4 变体，crate 首个 pydantic↔wire 桥 + 三态 Option<Vec<SessionId>> sessions + 裸 String String::is_empty skip 第六种 serde 子形态 + 内部标签联合 registration_outcome_from_wire 调度，396+2854 测试通过）`
+
+
+## R88 — registry_error.rs → registry_error.py（RegistryError 内部标签错误枚举 + 首个 per-variant rename 覆盖子形态）
+
+锚点:R88-1 18db685
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-tool-protocol/src/registry_error.rs`（47 行）——
+`RegistryError` 枚举，registry 层结构性 / 所有权失败的 wire DTO。这是 registry 的
+`ToolErrorWire`（R83）对偶：`ToolErrorWire` 描述工具调用执行期的 wire 级错误，
+`RegistryError` 描述注册期（`register_*` 批处理内部）的失败——session 不匹配、
+server_id 冲突 / 占用、乐观并发 stale generation、描述结构校验失败。本轮在 R82-R87
+的 serde 形态谱上落地 crate 的**第一个 per-variant `#[serde(rename)]` 覆盖**：
+`AlreadyRegistered` 在 `#[serde(tag = "code", rename_all = "snake_case")]` 之上叠加
+`#[serde(rename = "tool_already_registered")]`，使 wire 标签不是 `rename_all` 默认的
+`"already_registered"` 而是 `"tool_already_registered"`。
+
+### 融合结论
+
+registry_error.rs 是一个 1 概念符号模块（1 枚举 = 6 变体 + 1 联合别名 + 1 模块级
+from_wire 调度器），零外部依赖（仅用 R82 ids 的 `ServerId`/`SessionId`/`ToolId`
+newtype）。融合动作：
+
+1. **6 变体 dataclass + per-variant `to_wire`**：`AlreadyRegistered` / `SessionMismatch`
+   / `ServerIdCollision` / `ServerIdInUse` / `InvalidDescription` / `StaleGeneration`，
+   每个变体的 `to_wire` 硬编码自己的 wire 标签（捕获 rename 覆盖）+ 命名字段。
+2. **`RegistryError = A | B | C | D | E | F` 联合别名**（UP007 合规，运行时 `|` 表达式）。
+3. **模块级 `registry_error_from_wire` 调度器** + `_WIRE_TAG_TO_VARIANT` 字典在 `code`
+   标签上分派——联合不能承载 classmethod，镜像 R84 `jsonrpc_id_from_wire` / R87
+   `registration_outcome_from_wire`。
+4. **Newtype 透明序列化**（R82 模式）：`str(self.tool_id)` 出，`ToolId(str(data["tool_id"]))` 入。
+5. **严格拒绝**（无 `#[serde(other)]`）：未知标签 `raise ValueError`，匹配 crate
+   惯例（`Method` / `HookKind` / `ToolScope` / `TransportKind` 同款）。
+
+本轮确立了一个跨回合复用的** barrel 命名冲突解决模式**（见坑）。
+
+### 交付
+
+| 文件 | 动作 | 行数 | 说明 |
+|------|------|------|------|
+| `agent/minimax_code/tool_protocol/registry_error.py` | 新增 | 263 | 6 变体 dataclass + RegistryError 联合 + registry_error_from_wire 调度器 + _WIRE_TAG_TO_VARIANT 分派表 |
+| `agent/minimax_code/tool_protocol/__init__.py` | 修改 | +3 | barrel 标题/摘要推进到 R88；新增 `registry_error` 导入块（仅 `RegistryError` 联合）+ `__all__` 条目 |
+| `agent/tests/test_tool_protocol.py` | 修改 | +219 | 5 个 R88 测试类（28 测试方法）+ 顶部 registry_error import 块 |
+| `docs/evolution/ITERATION_LOG.md` | 追加 | — | 本条目 |
+
+测试新增（28 方法 / 5 类）：
+- `TestRegistryErrorWireTags`（6）—— 每变体 wire 标签；**`AlreadyRegistered` 覆盖标签
+  断言 `"tool_already_registered"` 且 `!= "already_registered"`**（钉死 rename 覆盖）。
+- `TestRegistryErrorToWire`（6）—— 每变体 `to_wire` 完整 dict 等值。
+- `TestRegistryErrorFromWire`（9）—— 6 变体往返 + 未知标签 `ValueError` + 缺 `code`
+  `KeyError` + **`"already_registered"` 默认标签被拒绝**（rename 覆盖的反向钉死）。
+- `TestRegistryErrorUnion`（2）—— `get_args(RegistryError)` == 6 变体；分派表键集。
+- `TestPackageSurfaceR88`（5）—— barrel 暴露 `RegistryError`；barrel **不**导出 5 个
+  非冲突变体；**关键回归 `pkg.SessionMismatch is error_wire.SessionMismatch`**（barrel
+  未被 registry_error 污染）；barrel 不导出 `registry_error_from_wire`；子模块可达性。
+
+### 映射决策树 + 坑
+
+**Rust → Python 映射**（与 R83 error_wire / R87 registration 同族决策）：
+- `#[serde(tag = "code", rename_all = "snake_case")]` 内部标签 → 每变体 `to_wire`
+  硬编码 `code` 键 + snake_case 标签；from_wire 在 `code` 上分派。
+- **per-variant `#[serde(rename = "...")]`**（本轮新形态）→ `_WIRE_TAG_TO_VARIANT`
+  字典的键 + `AlreadyRegistered.to_wire` 的 `code` 值都写死覆盖后的标签
+  `"tool_already_registered"`，不依赖 `rename_all` 默认推导。
+- 命名字段 struct 变体 → `@dataclass` + 类型化字段。
+- 无 `#[serde(other)]` → 未知标签 `ValueError`（不是静默吞掉）。
+
+**坑 1（关键）—— barrel `SessionMismatch` 命名冲突**：
+R83 `error_wire` 已有 `SessionMismatch` 变体（`ToolErrorWire` 的一个 arm），且已导出
+到 barrel `__all__` 并被测试文件 line 88 导入。R88 `registry_error` **也有**一个
+`SessionMismatch` 变体（registry 层的 session 不匹配）。若 barrel 同时导出两者，第二个
+`from ... import SessionMismatch` 会**遮蔽**第一个，破坏 R83 的 `pkg.SessionMismatch`
+语义。**解决**：barrel **仅导出 `RegistryError` 联合别名**（不导出 6 个变体），严格
+遵循 Rust `lib.rs` 第 72 行 `pub use registry_error::RegistryError`（lib.rs 也只重导出
+枚举名，不重导出变体）。变体通过 `from minimax_code.tool_protocol.registry_error
+import AlreadyRegistered` 等子模块路径访问。这与 R87 不同——R87 把
+`Registered`/`Updated`/`Shadowed`/`Rejected` 变体导出到 barrel，因为它们**不与**
+现有 barrel 名字冲突。**决策树**：变体名与 barrel 现有导出无冲突 → 导出（R87 模式）；
+有冲突 → 仅导出联合，变体留子模块（R88 模式）。`TestPackageSurfaceR88.test_barrel_session_mismatch_is_error_wire_not_registry`
+是这条决策的永久回归守卫。
+
+**坑 2 —— 测试文件 E402**：
+R88 是 R82 以来首个需要在测试文件中**从子模块**（非 barrel）导入的轮次（因为坑 1
+使变体不在 barrel）。最初把 `from ... registry_error import (...)` 放在文件中间
+（R88 测试块前），触发 ruff E402（module-level import not at top of file）。
+pyproject 无 per-file-ignores。**解决**：把 registry_error import 块移到顶部 import
+区（`registration` 与 `tool_types` 之间，isort 正确位置），中间测试块只保留 section
+注释。`SessionMismatch as RegistrySessionMismatch` 别名避免与顶部 line 88 的 barrel
+`SessionMismatch` 同名冲突。
+
+**坑 3 —— ruff isort 拆分别名 import**：
+`ruff --fix` 处理 I001 时，把带 `as` 别名的 `SessionMismatch as RegistrySessionMismatch`
+拆成独立 import 块（isort 对 `as` 别名 import 的标准行为）。功能等价，无需干预。
+
+### 验证
+
+```
+cd agent
+uv run ruff check minimax_code/tool_protocol/registry_error.py \
+                   minimax_code/tool_protocol/__init__.py \
+                   tests/test_tool_protocol.py
+# → All checks passed!
+
+uv run pytest tests/test_tool_protocol.py -q
+# → 424 passed in 0.56s   (R87 基准 396 + R88 新增 28)
+
+uv run pytest -q
+# → 2882 passed, 10 skipped, 1 warning in 105.81s
+#    (唯一 warning: fastapi/httpx StarletteDeprecationWarning，预先存在，与 R88 无关)
+```
+
+### YAGNI 边界
+
+- **不把 6 变体导出到 barrel**（仅联合）—— 严格遵循 Rust lib.rs 的 `pub use` 集；
+  且避免 `SessionMismatch` 遮蔽 R83 error_wire 的同名变体。未来若需在 barrel 用某
+  变体，按"无冲突才导出"决策树逐个评估。
+- **不实现 `Display`/`__str__`** —— Rust `RegistryError` 在 crate 中**无** `Display`
+  impl（不像 R83 `ToolErrorWire` 有 `Display` 用于日志）；它只是 wire DTO，错误信息
+  由消费方（registry / frame 层，后续回合）自行格式化。YAGNI。
+- **不加 `#[serde(other)]` 前向兼容臂** —— crate 用严格拒绝；未知标签是协议 bug，
+  应该失败而非静默吞掉。与 `Method`/`HookKind`/`ToolScope`/`TransportKind` 一致。
+- **不做变体间的共同基类 / Protocol** —— 6 个 dataclass 各自独立，联合别名 + 调度器
+  已足够；引入 `Protocol` 会过度设计，违背 KISS。
+- **不迁移 `frames.rs`（1549 行）/ `session_event.rs` / `turn_hook.rs` / `hook.rs`** ——
+  留待后续回合按依赖顺序逐个落地；本轮只闭合 registry_error 这一个叶子模块。
+
+### Commit
+
+`feat(platform): R88 migrate registry_error.rs (RegistryError enum + per-variant rename override)`
+
