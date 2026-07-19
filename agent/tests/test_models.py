@@ -379,3 +379,68 @@ async def test_build_llm_client_model_fallback_from_vocabulary(monkeypatch):
     pref_model["model"] = "explicit-model"
     await routes._build_llm_client(server=None)
     assert captured["clients"][1]["model"] == "explicit-model"
+
+
+# --- sub-agent LLM rebuild fallback (R52, debt-map zeroed) ------------------
+
+
+async def test_rebuild_subagent_llm_model_fallback_from_vocabulary(monkeypatch):
+    """R52 wiring: app._rebuild_subagent_llm model_id fallback uses registry.
+
+    ``_rebuild_subagent_llm``'s two ``"MiniMax-M3"`` fallbacks (the dict-get
+    default + the non-dict ``else`` branch) were hard-coded literals; they
+    are now ``default_model()`` (lazy import — the function already
+    lazy-imports ``secrets`` / ``MiniMaxClient`` / the DAOs), so the
+    sub-agent LLM rebuild and the default-model registry share one baked-in
+    document. This is the **seventh and final** scattered-fallback migration
+    — after it, the ``"MiniMax-M3"`` literal debt map is zeroed (the remaining
+    occurrences are the vocabulary source JSON, the MODEL_META display layer,
+    migration seeds, and R46-R52 wiring comments). Monkeypatches the
+    secrets / MiniMaxClient / DAO chain to capture the resolved model_id
+    without a real DB, across all three fallback branches of line 405.
+    """
+    from minimax_code import app as app_mod
+    from minimax_code import secrets as secrets_mod
+    from minimax_code.agent import llm as llm_mod
+    from minimax_code.storage.dao import model_prefs, providers
+
+    captured: dict[str, list[dict[str, object]]] = {"clients": []}
+    pref_state: dict[str, object] = {"pref": None}  # mutable holder
+
+    class _FakeMiniMaxClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured["clients"].append(kwargs)
+
+    class _FakePrefsDAO:
+        def __init__(self, db: object) -> None:
+            pass
+
+        async def get_current(self) -> object:
+            return pref_state["pref"]
+
+    class _FakeProviderDAO:
+        def __init__(self, db: object) -> None:
+            pass
+
+        async def get(self, provider_id: str) -> dict[str, str]:
+            return {"protocol": "anthropic", "base_url": "u"}  # non-None → capture branch
+
+    monkeypatch.setattr(llm_mod, "MiniMaxClient", _FakeMiniMaxClient)
+    monkeypatch.setattr(secrets_mod, "get_provider_key", lambda pid: "key")
+    monkeypatch.setattr(model_prefs, "ModelPrefsDAO", _FakePrefsDAO)
+    monkeypatch.setattr(providers, "ProviderDAO", _FakeProviderDAO)
+
+    # Branch 1: pref is a dict without "model_id" → dict.get default → default_model().
+    pref_state["pref"] = {}
+    await app_mod._rebuild_subagent_llm(db=None)
+    assert captured["clients"][0]["model"] == M.default_model()
+
+    # Branch 2: pref is a dict with "model_id" → passthrough.
+    pref_state["pref"] = {"model_id": "explicit-id"}
+    await app_mod._rebuild_subagent_llm(db=None)
+    assert captured["clients"][1]["model"] == "explicit-id"
+
+    # Branch 3: pref is not a dict (None) → else branch → default_model().
+    pref_state["pref"] = None
+    await app_mod._rebuild_subagent_llm(db=None)
+    assert captured["clients"][2]["model"] == M.default_model()

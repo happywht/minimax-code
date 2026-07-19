@@ -396,12 +396,13 @@ async def _rebuild_subagent_llm(db: Any) -> Any:
     try:
         from . import secrets
         from .agent.llm import MiniMaxClient
+        from .models import default_model  # R52: lazy, single source for default model
         from .storage.dao.model_prefs import ModelPrefsDAO
         from .storage.dao.providers import ProviderDAO
 
         prefs_dao = ModelPrefsDAO(db)
         pref = await prefs_dao.get_current()
-        model_id = pref.get("model_id", "MiniMax-M3") if isinstance(pref, dict) else "MiniMax-M3"
+        model_id = pref.get("model_id", default_model()) if isinstance(pref, dict) else default_model()  # R52: was "MiniMax-M3" literal
         provider_id = pref.get("provider_id", "builtin-minimax") if isinstance(pref, dict) else "builtin-minimax"
 
         prov_dao = ProviderDAO(db)

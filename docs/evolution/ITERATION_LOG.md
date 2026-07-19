@@ -3895,3 +3895,51 @@ R50 闭环了核心层（`AgentConfig.model`）。本轮转向债务地图剩余
 ### Commit
 
 `feat(platform): R51 migrate completion_routes model fallback to vocabulary (fuse grok xai-grok-models)`
+
+---
+
+## R52 — app.py 启动层 fallback 迁移至 R45 词汇表（融合 grok xai-grok-models 消费端，债务地图清零）
+
+> 锚定 R51（`e6fefc7`）。**本轮是第 7 处、也是最后一处散落 fallback 迁移 —— 迁移完成后「MiniMax-M3」字面量债务地图正式清零**。R46→R52 单来源迁移链路完整闭环：R46 storage → R47 llm → R48 candidate set → R49 resolver+runtime → R50 AgentConfig → R51 completion_routes → **R52 app 启动层（debt-map zeroed）**。
+
+### 本轮目标
+
+R51 消化了路由层（completion_routes）。本轮收尾债务地图**最后 1 个函数** —— `app.py:405` 的 `_rebuild_subagent_llm` 启动层 fallback，该单行内含**两个**「MiniMax-M3」文字出现：(1) dict-get 默认 `pref.get("model_id", "MiniMax-M3")`；(2) 非 dict 的 else 分支 `else "MiniMax-M3"`。这是**子 agent LLM 客户端重建**（`model.set_current` / `provider.*` 变更后调用）的模型 fallback，发生在 app 启动/热重建路径。本轮将两处合并迁移为 `default_model()`，值保持 `"MiniMax-M3"`。预研关键事实：`_rebuild_subagent_llm` 已用**函数内懒加载导入**（`from . import secrets` / `MiniMaxClient` / `ModelPrefsDAO` / `ProviderDAO`），其中 `from .agent.llm import MiniMaxClient` 触发 agent 包导入链（app.py 自身被 agent 包内多处导入）—— 故 `default_model` 必须**同函数内懒加载**（跟随既有 cold-start-cycle-avoidance 模式），与 R49 runtime / R51 completion_routes 的懒加载策略同构（循环风险模块 → 函数内导入）。
+
+### 融合结论
+
+- ✅ **保留**：`_rebuild_subagent_llm` 函数内懒加载 `from .models import default_model`（在既有 4 个懒加载导入块中，ruff 字母序 `.agent.llm` → `.models` → `.storage.dao.*`，首次执行即干净）—— 跟随既有 cold-start-cycle-avoidance 模式。
+- ✅ **保留**：第 405 行 `pref.get("model_id", "MiniMax-M3") if isinstance(pref, dict) else "MiniMax-M3"` → `pref.get("model_id", default_model()) if isinstance(pref, dict) else default_model()` + 行内注释，**一处合并迁移两个文字出现**。**值不变**。
+- ✅ **保留**：1 个不变量测试（monkeypatch secrets / MiniMaxClient / DAO 链，三分支全锁死：dict 无 model_id → default_model() / dict 有 model_id → passthrough / 非 dict None → default_model()）。
+- ❌ **放弃**：无（本轮是 R51 YAGNI 边界明确点名的「app.py 启动层，留 R52 最后一轮消化」）。
+
+### 交付
+
+- `agent/minimax_code/app.py`（改）— (1) `_rebuild_subagent_llm` 函数内加 `from .models import default_model` 懒加载（与 `secrets`/`MiniMaxClient`/`ModelPrefsDAO`/`ProviderDAO` 同块，399 行）；(2) 405 行两个 `"MiniMax-M3"` → `default_model()`（dict-get 默认 + else 分支，单行合并）。**值不变**。ruff `app.py` 首次即 **All checks passed!**（字母序正确，无 `--fix` 需要）。
+- `agent/tests/test_models.py`（改，21→22 测试）— 新增 `test_rebuild_subagent_llm_model_fallback_from_vocabulary`：monkeypatch `llm_mod.MiniMaxClient`（捕获 kwargs）+ `secrets_mod.get_provider_key` + `model_prefs.ModelPrefsDAO`（可控 `get_current()` 返回）+ `providers.ProviderDAO`（`get()` 返回非 None provider dict 触发捕获分支），驱动三分支：Branch 1 `pref={}` 无 model_id → `default_model()` / Branch 2 `pref={"model_id":"explicit-id"}` → passthrough / Branch 3 `pref=None` 非 dict → `default_model()`。锁死第 405 行 if/else 双分支 + dict.get 默认三路径。ruff `--fix` 顺手清理 1× I001（测试函数内导入块重排：`minimax_code` app/secrets 同包 → `minimax_code.agent` → `minimax_code.storage.dao` 字母序），重检 **All checks passed!**。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目（含债务清零标注）。
+
+### 映射决策树（本轮纯消费端接线，无新类型/枚举）
+
+本轮不引入新枚举/类型，是 R45 词汇表的**第七处、也是最后一处消费端接线**（R46 storage / R47 llm / R48 CANDIDATE_MODELS / R49 resolution+runtime / R50 AgentConfig / R51 completion_routes / R52 app 启动层）。决策树四分支本轮无新增。**接线模式复用**：app.py 的 `_rebuild_subagent_llm` 已声明 cold-start 循环（`from .agent.llm import MiniMaxClient` 触发 agent 包导入链，而 app.py 自身被 agent 包内多处导入），故 `default_model` 用**函数内懒加载**（与 R49 runtime / R51 completion_routes 同模式：循环风险模块 → 函数内导入）。**两种导入策略（顶层 vs 函数内）的选择依据始终是消费模块的循环风险，非任意** —— R46/R47/R48/R49-parent_model/R50 用顶层导入（叶模块或无冷启动循环），R49-runtime/R51/R52 用函数内懒加载（声明了 cold-start 循环）；本轮收尾后该决策树在该维度不再有新用例。
+
+**坑（自发现，已修复）**：app.py 无 ruff 错（首次干净，字母序 `.agent.llm`/`.models`/`.storage.dao.*` 正确）；test_models.py ruff 报 1× I001（我的 R52 测试函数内导入块 4 行未排序）。按 R48-R51 既定模式 + CLAUDE.md「修复正在编辑文件的 ruff 错误」授权，`--fix` 一次清理（纯 import 排序，行为保持），重检 `All checks passed!`。无运行时错误 —— 完整套件零回归。
+
+### 验证
+
+- `ruff check app.py` → **All checks passed!**（首次干净，字母序正确）。
+- `ruff check tests/test_models.py` → **All checks passed!**（`--fix` 修 I001×1 后）。
+- 完整套件 `pytest` → **1698 passed, 10 skipped in 105.24s**（R51 1697 → R52 1698，**+1 精确**，零回归）。
+
+### YAGNI 边界（债务清零总结）
+
+**「MiniMax-M3」字面量债务地图自此清零** —— R46→R52 共迁移 **9 处文字出现 / 7 个函数位置**：R46 storage `DEFAULT_MODEL` / R47 llm `DEFAULT_MODEL` / R48 `CANDIDATE_MODELS` / R49 resolution `parent_model` + runtime `_build_agent_core` / R50 `AgentConfig.model` / R51 `_build_llm_client` / R52 `_rebuild_subagent_llm`（dict.get 默认 + else 双出现）。此后系统所有默认模型决策**单一来源**于 `models.DEFAULT_MODELS_JSON`（R45 词汇表），改一处全局传播。
+
+- ❌ **不推导 `MODEL_META` 从词汇表** —— 仍硬编码（`handlers_model.py:69`），需先决定 MiniMax 展示层策略（grok 无 context_window/name 结构化建模，是 MiniMax 前端独有需求，非债务）。
+- ❌ **不扩展 `DefaultModelEntry` 建模展示元数据** —— grok serde entry 只读 `model`（R45 对等契约）；扩展破坏对等。
+- ❌ **不改 migration SQL 种子**（`002_model_prefs.py` / `005_providers.py:44`）—— 已部署快照，不重跑。
+- ❌ **不动 R45 词汇表 JSON 源** / **handlers_model `MODEL_META` 显示层** / **migrations 002,005 SQL 种子** / **R46-R52 所有 `# Rxx: was "MiniMax-M3"` 接线注释** —— 均为合法非债务出现（数据源 / 显示层 / 已部署快照 / 审计轨迹）。
+
+### Commit
+
+`feat(platform): R52 migrate app.py subagent_llm fallback to vocabulary (fuse grok xai-grok-models)`
