@@ -9287,3 +9287,129 @@ dispatch（`dict`/`list`/scalar），等价但更动态。融合的关键映射�
 ### Commit
 
 `feat(platform): R110 migrate xai-tool-runtime render.rs (ToolOutput + extract_content_blocks 5-strategy + chat completion types)`
+
+## R111 — 迁移 xai-tool-runtime streaming.rs（PartialResultPayload + stream_chunk UTF-8 安全增量切片）
+
+锚点:R110-1 8745a18
+
+### 本轮目标
+
+迁移 `xai-tool-runtime/src/streaming.rs`（440 行，15 个 #[test] + 9 个
+`incomplete_utf8_suffix_len` 单元测试 + PartialResultPayload 测试）。这是
+tool_runtime barrel 的第 5 块叶子，落地规范的"部分结果流式契约"：工具声明
+`StreamingSpec` 后，通过 `stream_chunk` 把单调字节源切成 `ToolProgress.Custom`
+增量，下游按 envelope 的 `subkind` 派发（而非按工具身份）。本轮闭合
+"工具执行 -> 流式增量" 类型链路，是流式工具执行路径的解除阻塞器。
+
+### 融合结论
+
+streaming.rs 的灵魂是 `stream_chunk` 算法：单调 `total` 驱动 -> 后缀切片
+（new <= tail_len）vs 整尾 gap（new > tail_len）-> 每帧 cap 钳位 -> UTF-8 边界
+回退 -> 病态 cap-低于字符扩展 -> `last_total` 原地推进。核心保证：**增量是
+append-only 且无损的**——当增量会截断多字节 UTF-8 序列或超出每帧 cap 时，
+多余字节被 hold back（`last_total` 只推进过已发射字节），下一 tick 从仍在
+增长的 tail 重新切片。Python 迁移用单元素 `list[int]` 模拟 Rust `&mut u64`
+以保持 `-> ToolProgress | None` 返回类型对齐 Rust `Option<ToolProgress>`。
+
+### 交付
+
+- `agent/minimax_code/tool_runtime/streaming.py`（~242 行，新建）：
+  - `DEFAULT_MAX_DELTA_BYTES: int = 16 * 1024`（当 `StreamingSpec.max_delta_bytes`
+    未设时的每帧增量字节上限，独立于 `ToolCapabilities.max_frame_bytes` 的
+    整帧 16 MiB 上限）。
+  - `PartialResultPayload`（@dataclass）：`delta`/`total_bytes`/`truncated`/
+    `gap`，`to_dict` 总发 4 字段，`from_dict` 严格 `deny_unknown_fields`
+    解码（未知键 ValueError + 必填 delta/total_bytes 校验 + bool 默认）。
+  - `_incomplete_utf8_suffix_len(data: bytes) -> int`：字节回溯算法
+    （回溯尾部 continuation 字节 `10xxxxxx` 至 lead 字节，分类预期长度
+    ASCII=1/0xC0=2/0xE0=3/0xF0=4，actual<expected 返回 actual，否则 0；
+    非法 lead 0xF8-0xFF / 裸 continuation 返回 0）。精确匹配 Rust
+    `error_len().is_none()` 分支。
+  - `stream_chunk(spec, tail, total, last_total, truncated) -> ToolProgress | None`：
+    完整算法（无新字节短路 -> 后缀/gap 切片 -> cap 钳位 -> UTF-8 回退 ->
+    病态 cap-低于字符扩展 -> `last_total` 原地推进 -> 返回 `ToolProgress.Custom`）。
+- `agent/minimax_code/tool_runtime/__init__.py`（扩展）：barrel 从 33 增至 36
+  符号。新增 R111 docstring 段（描述第 5 块叶子定位），streaming import 块
+  （置于 tool import 前），3 符号按字母序入 `__all__`（`DEFAULT_MAX_DELTA_BYTES`
+  置 Cwd 后、`PartialResultPayload` 置 ModelOutputExtractor 后、`stream_chunk`
+  置 extractor_for 后）。
+- `agent/tests/test_tool_runtime_streaming.py`（~409 行，29 测试）：移植全部
+  Rust 15 `#[test]` + 9 `incomplete_utf8_suffix_len` 单元 + 5 PartialResultPayload
+  + subkind stamping。helper `_spec_with(max_delta_bytes)` 返回
+  `StreamingSpec(subkind="test_chunk", ...)`，`_run(...)` 断言 progress +
+  解码 payload。全部 29 测试 PASSED。
+
+### 映射决策树+坑
+
+1. **`#[serde(deny_unknown_fields)]` -> Python 严格 `from_dict` 抛 ValueError**：
+   有意做成 render 的 `#[serde(flatten)] extra` 宽容的反面——部分结果是
+   紧凑 wire 契约（未知键=bug，硬错误），chat-completion extras 是开放扩展点
+   （宽容吸收）。`_PAYLOAD_KNOWN_FIELDS` 为模块级 `frozenset` 常量（非 dataclass
+   字段——dataclass 体内定义类变量会变成字段，这是迁移陷阱）。
+
+2. **Rust `&mut u64` -> Python `list[int]`**：单元素列表，mutate `last_total[0]`，
+   保持 `-> ToolProgress | None` 返回类型对齐 Rust `Option<ToolProgress>`。
+   调用方传 `[value]`，函数原地推进。
+
+3. **`_incomplete_utf8_suffix_len` 字节回溯算法**：从尾部回溯 continuation
+   字节（`(b & 0xC0) == 0x80`）至 lead 字节，按 lead 字节高位分类预期序列长度
+   （`0x80==0` ASCII=1，`0xE0==0xC0` ->2，`0xF0==0xE0` ->3，`0xF8==0xF0` ->4），
+   `actual = n - i`，`actual < expected` 返回 `actual`（尾部不完整，hold back），
+   否则 0（尾部完整或非法 lead/裸 continuation，不 hold）。手工追踪关键用例验证：
+   `b"a\xC3"`->1、`b"\xE2\x82"`->2、`b"\xF0\x9F\x98"`->3、`b"\xFF"`->0、
+   `b"\x80"`->0、完整多字节->0、😀 的 `tail[4..7]`（3 不完整字节）->3。精确匹配
+   Rust `error_len().is_none()` 分支。
+
+4. **`stream_chunk` gap-case `last_total` 公式**：gap tick（new > tail_len，
+   中间被上游丢弃）设 `last = total - (len(delta_bytes) - min(consumed, len))`，
+   使下一 tick 的 `new` 恰好切片存活 tail 剩余；正常 tick `last = last + consumed`。
+   gap 标记是 per-tick（单次溢出），`truncated` 是 caller 累积（上游永久丢失），
+   两者故意区分。
+
+5. **病态 cap-低于字符扩展**：cap < 一个多字节字符会卡死在 cut==0 但有字节
+   剩余；此时 `cut = min(len, 4)`，向前扩展至完整字符（while 不完整则 cut+=1），
+   确保永不 stall（测试 `test_tiny_cap_below_char_still_makes_progress` 验证
+   cap=1 仍发射完整 2 字节 'é'）。
+
+6. **Rust `String::len()` 是字节 vs Python `len(str)` 是字符**：迁移陷阱！
+   所有镜像 Rust `delta.len()` 的断言用 `len(p.delta.encode())` 保持字节精确
+   （测试 `test_utf8_backoff_stays_within_three_bytes_of_cap` 的
+   `n = len(p.delta.encode())`）。ruff UP012 后实际代码用 `.encode()`
+   （默认 utf-8，语义等价）。
+
+7. **Rust `String::from_utf8_lossy` ≈ Python `decode("utf-8", errors="replace")`**：
+   U+FFFD 替换，但因 cut 总在 UTF-8 边界，replace 实际永不触发。
+
+### 验证
+
+- `uv run ruff check minimax_code/tool_runtime/streaming.py
+  minimax_code/tool_runtime/__init__.py tests/test_tool_runtime_streaming.py`
+  -> **All checks passed!**
+- `uv run pytest tests/test_tool_runtime_streaming.py -q` -> **29 passed**
+- `uv run pytest tests/test_tool_runtime.py tests/test_tool_runtime_context.py
+  tests/test_tool_runtime_render.py tests/test_tool_runtime_streaming.py
+  tests/test_tool_runtime_tool.py -q` -> **192 passed**（R107+R108+R109+R110+R111
+  tool_runtime 全 5 文件，零回归）
+- barrel import smoke：36 符号全可解析 + streaming 3 公共符号 + 无 top-level
+  import cycle（streaming 单向消费 StreamingSpec + ToolProgress，是叶模块）。
+- `uv run pytest -q` -> **3564 passed, 10 skipped, 0 failed in 108.68s**
+  （全套回归，零失败）
+
+### YAGNI 边界
+
+- **不迁移 `incomplete_utf8_suffix_len` 的逐字节 Rust 测试断言矩阵**：移植了
+  全部 9 个关键语义等价测试（空/ASCII/完整多字节/2-3-4 字节部分/非法 lead/
+  裸 continuation/完整后孤儿 continuation），但用 Python 风格组织，而非逐字
+  Rust 字节序列移植。
+- **不实现 Rust `&mut` 的显式借用语义**：Python `list[int]` 单元素列表原地
+  mutate 已等价（映射决策 2），无需引入额外包装类型。
+- **不迁移 `stream_chunk` 的 streaming.rs doc-test**：算法语义由 29 个 pytest
+  覆盖（含 ceil(new/cap) tick 数、UTF-8 回退 3 字节窗口、gap pacing 不重扫
+  丢失中间），doc-test 冗余。
+- **不引入 `PartialResultPayload` 的 pydantic 模型**：dataclass + 手写
+  `to_dict`/`from_dict` 已足够，且 `from_dict` 的严格 unknown-key 校验用
+  纯 Python 实现更直观（pydantic 的 `extra="forbid"` 等价但引入额外依赖面）。
+
+### Commit
+
+`feat(platform): R111 migrate xai-tool-runtime streaming.rs (PartialResultPayload + stream_chunk UTF-8-safe delta streaming)`

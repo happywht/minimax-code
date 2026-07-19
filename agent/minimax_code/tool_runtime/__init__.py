@@ -25,7 +25,13 @@ both prior leaves. ``tool`` and ``render`` reference each other in the
 crate, so they split across two rounds: R109's :mod:`tool` imports
 :mod:`render` only under ``TYPE_CHECKING`` (plus one function-local lazy
 import in :meth:`TypedToolOutput.from_value`); R110's :mod:`render` then
-imports :class:`ContentBlock` one-way at module level (no cycle).
+imports :class:`ContentBlock` one-way at module level (no cycle). R111
+lands the fifth leaf: :mod:`streaming` (the canonical partial-result
+streaming contract — :class:`PartialResultPayload` with
+``deny_unknown_fields`` strict decode + :func:`stream_chunk` UTF-8-safe
+delta slicing + ``DEFAULT_MAX_DELTA_BYTES``), a leaf that consumes
+:class:`StreamingSpec` (tool_protocol) and ``ToolProgress`` (tool) one-way
+with no cycle.
 Subsequent rounds migrate the remaining modules; the barrel's ``__all__``
 grows as each lands.
 
@@ -62,6 +68,11 @@ from minimax_code.tool_runtime.render import (
     extract_content_blocks,
     extractor_for,
 )
+from minimax_code.tool_runtime.streaming import (
+    DEFAULT_MAX_DELTA_BYTES,
+    PartialResultPayload,
+    stream_chunk,
+)
 from minimax_code.tool_runtime.tool import (
     ArcTool,
     ArcToolFamily,
@@ -85,8 +96,10 @@ __all__ = [
     "Cancellation",
     "ContentBlock",
     "Cwd",
+    "DEFAULT_MAX_DELTA_BYTES",
     "ListToolsContext",
     "ModelOutputExtractor",
+    "PartialResultPayload",
     "SessionContext",
     "Tool",
     "ToolCallContext",
@@ -110,6 +123,7 @@ __all__ = [
     "WorkspaceViewerContext",
     "extract_content_blocks",
     "extractor_for",
+    "stream_chunk",
     "terminal_only",
     "with_progress",
 ]
