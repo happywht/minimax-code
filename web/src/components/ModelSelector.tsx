@@ -40,8 +40,10 @@ export function ModelSelector({
 }: ModelSelectorProps): JSX.Element {
   const models = useModelStore((s) => s.models);
   const current = useModelStore((s) => s.current);
+  const reasoningEffort = useModelStore((s) => s.reasoningEffort);
   const refresh = useModelStore((s) => s.refresh);
   const setCurrent = useModelStore((s) => s.setCurrent);
+  const setReasoningEffort = useModelStore((s) => s.setReasoningEffort);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const ref = useRef<HTMLDivElement>(null);
@@ -136,7 +138,13 @@ export function ModelSelector({
             {currentModel.protocol}
           </span>
         )}
-        {!isInline && currentModel && <ReasoningEffortBadge model={currentModel} />}
+        {!isInline && currentModel && (
+          <ReasoningEffortBadge
+            model={currentModel}
+            currentEffort={reasoningEffort}
+            onEffortChange={setReasoningEffort}
+          />
+        )}
         <ChevronDown size={10} className="text-minimax-muted" />
       </button>
       {open && (
@@ -205,7 +213,11 @@ export function ModelSelector({
                         <span className="flex-1 min-w-0">
                           <span className="flex items-center gap-1">
                             <span className="truncate font-medium text-minimax-fg">{m.name}</span>
-                            <ReasoningEffortBadge model={m} />
+                            <ReasoningEffortBadge
+                              model={m}
+                              currentEffort={reasoningEffort}
+                              onEffortChange={setReasoningEffort}
+                            />
                           </span>
                           <span className="mt-0.5 block text-[11px] text-minimax-muted">
                             {(m.context_window / 1000).toFixed(0)}k context

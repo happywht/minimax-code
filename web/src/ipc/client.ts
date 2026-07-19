@@ -90,6 +90,7 @@ import {
   type Session,
   type SetModelResult,
   type SetProviderApiKeyResult,
+  type SetReasoningEffortResult,
   type SetRuleResult,
   type SidecarEvent,
   type SkillInfo,
@@ -871,6 +872,7 @@ export interface TypedIPC {
   // model
   listModels(): Promise<ListModelsResult>;
   setCurrentModel(modelId: string): Promise<SetModelResult>;
+  setReasoningEffort(effort: string | null): Promise<SetReasoningEffortResult>;
 
   // skill
   listSkills(): Promise<ListSkillsResult>;
@@ -1142,6 +1144,10 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     listModels: () => client.request<ListModelsResult>("model.list", {}),
     setCurrentModel: (modelId) =>
       client.request<SetModelResult>("model.set_current", { model_id: modelId }),
+    setReasoningEffort: (effort) =>
+      client.request<SetReasoningEffortResult>("model.set_reasoning_effort", {
+        reasoning_effort: effort,
+      }),
 
     listSkills: () => client.request<ListSkillsResult>("skill.list", {}),
     installSkill: (content, replace = false) =>
@@ -1362,6 +1368,10 @@ function mockNotify(method: string, params: unknown, client: IPCClient): void {
 const mockSessions = new Map<string, Session>();
 const mockSessionsWithMessages = new Set<string>();
 const mockRuns = new Map<string, { run: import("../types/ipc").AgentRun; steps: import("../types/ipc").AgentRunStep[] }>();
+// R63: mock-side echo of the persisted reasoning-effort override. Mirrors the
+// R61 backend write-side read-back — the frontend badge switcher consumes it
+// from `model.list` so it stays in sync with the store without a second round-trip.
+let mockReasoningEffort: string | null = null;
 const mockModels: ModelInfo[] = [
   {
     id: "minimax-M2.7",
@@ -1883,13 +1893,25 @@ function mockHandle(
     }
 
     case "model.list":
-      return { models: mockModels, current: mockModels[0].id };
+      return {
+        models: mockModels,
+        current: mockModels[0].id,
+        reasoning_effort: mockReasoningEffort,
+      };
 
     case "model.set_current":
       return {
         current:
           (params as { model_id: string }).model_id ?? mockModels[0].id,
       };
+
+    case "model.set_reasoning_effort": {
+      const raw = (params as { reasoning_effort?: string | null }).reasoning_effort;
+      const effort =
+        raw == null || String(raw).trim() === "" ? null : String(raw).trim();
+      mockReasoningEffort = effort;
+      return { ok: true as const, reasoning_effort: effort };
+    }
 
     case "skill.list":
       return { skills: mockSkills };

@@ -628,6 +628,14 @@ export interface ListMessagesResult {
 export interface ListModelsResult {
   models: ModelInfo[];
   current: string | null;
+  /**
+   * The persisted reasoning-effort override (R61 write-side read-back;
+   * R63 frontend consumer). ``null`` / undefined means "no override — use
+   * the selected model's own default effort" (the pre-R61 state). Mirrors
+   * the ``reasoning_effort`` field the backend already returns on
+   * ``model.list`` and ``model.get_current``.
+   */
+  reasoning_effort?: string | null;
 }
 
 export interface ListSkillsResult {
@@ -654,6 +662,19 @@ export interface ListRulesResult {
 
 export interface SetModelResult {
   current: string;
+}
+
+/**
+ * Result of ``model.set_reasoning_effort`` (R61 backend handler; R63 frontend
+ * contract). ``reasoning_effort`` is the canonical wire token the backend
+ * canonicalised + persisted (``"high"`` / ``"xhigh"`` / …) or ``null`` when
+ * the override was cleared (revert to the model's own default effort). The
+ * store echoes this into state so the switcher UI updates without a full
+ * ``refresh()`` round-trip.
+ */
+export interface SetReasoningEffortResult {
+  ok: true;
+  reasoning_effort: string | null;
 }
 
 export interface ListProvidersResult {

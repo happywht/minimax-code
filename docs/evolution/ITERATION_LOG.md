@@ -4583,3 +4583,93 @@ model_prefs.reasoning_effort (R61 存)
 ### Commit
 
 `feat(platform): R62 reasoning_effort backend runtime wiring singleton (fuse grok xai-grok-sampling-types)`
+
+## R63 — reasoning_effort 前端切换器 UI（融合 grok xai-grok-sampling-types，升级 R60 只读 badge 为可点切换器 + typedIPC + modelStore 状态，闭合前端写入链路）
+
+**锚定**：`d2e0351` (R62)　|　**状态**：✅ 前端写入链路闭合　|　**测试**：9 新增 / 461 全过
+
+### 本轮目标
+
+闭合 R62 打开的前端半边。R62 让存储的 `reasoning_effort` 真正流入 LLM 调用（单例转发 → AgentConfig → R55 core→client → R54 stream_chat → wire），但 R62 的 YAGNI 边界（第 4576 行）明示**「后端回路已闭合，前端切换器留 R63」**——用户当前**没有任何 UI 入口**切换 effort，R60 的 badge 是纯只读展示（`effort: high` 文本，无交互）。要让 reasoning_effort 真正「用户可操作」，必须补前端写入链路：typedIPC 方法签名 + mock 覆盖 + modelStore 状态 + 把 R60 badge 升级为可点下拉切换器。
+
+R63 的核心约束是**零破坏**：R60 的 6 个只读测试 + 所有现有调用点（`ModelSelector` trigger / menu item）必须字节级不变。解法是**双模式 badge**——`onEffortChange` 回调可选：省略时走 R60 只读分支（`<span>` 纯文本，字节不变），传入时升级为 `<button>` + 下拉 menu（Default 行 + 每个选项）。`ModelSelector` 两处调用点都接入 store 传 `currentEffort`/`onEffortChange`，让用户在模型选择器 trigger 和 menu item 两个位置都能点开切换。
+
+### 融合结论
+
+✅ **前端写入链路闭合**。grok `xai-grok-sampling-types` 的「采样配置用户可调」理念在前端落地，与 R62 后端回路对接成完整环：
+
+```
+用户点切换器 → R63 modelStore.setReasoningEffort → R63 typedIPC model.set_reasoning_effort
+            → R61 handler 持久化(model_prefs) → R62 单例转发 → R55 config→core→client
+            → R54 stream_chat(reasoning_effort=) → R56/R57 wire emit
+            ↓ (回读对称)
+R63 modelStore.refresh ← R63 typedIPC model.list(reasoning_effort 回读) ← R61 read-back
+```
+
+9 个新测试（切换器契约：trigger 渲染 / override 显示 / menu 展开 / 选 option 回调 / 选 Default 回调 null / override 高亮 / Default 高亮 / 选后关闭 / 零破坏只读）全过；全量回归 **461 passed / 0 failed**（58 文件）——零回归。省略 `onEffortChange` 时 6 个 R60 测试字节级通过。
+
+### 交付
+
+| 文件 | 改动 |
+|------|------|
+| `web/src/types/ipc.ts` | `ListModelsResult` 加 `reasoning_effort?: string \| null`（消费 R61 read-back）；新增 `SetReasoningEffortResult { ok: true; reasoning_effort: string \| null }` |
+| `web/src/ipc/client.ts` | (1) import `SetReasoningEffortResult`；(2) `IPCClient` 接口加 `setReasoningEffort(effort: string \| null): Promise<SetReasoningEffortResult>`；(3) typedIPC 实现 `model.set_reasoning_effort` 调用；(4) mock 状态 `let mockReasoningEffort: string \| null = null`；(5) mockHandle `model.list` 回读 `reasoning_effort: mockReasoningEffort` + 新增 `model.set_reasoning_effort` case（trim/空串归一 null，读写对称） |
+| `web/src/stores/modelStore.ts` | `ModelState` 加 `reasoningEffort: string \| null` + `setReasoningEffort` action；初始 `null`；`refresh` 读 `r.reasoning_effort ?? null`；action 调 typedIPC 后 `set({ reasoningEffort: r.reasoning_effort })` |
+| `web/src/components/ReasoningEffortBadge.tsx` | 双模式：`!onEffortChange` 走 R60 只读 `<span>`（字节不变）；传入时渲染 `EffortSwitcher` 子组件（trigger button + 下拉 menu：Default 行 + options）；`useState(open)` + `useRef` + `useEffect` 外部点击/Esc 关闭；3 处 `e.stopPropagation()`；effort 显示优先级 `currentEffort > modelDefault > "auto"`；字体 `text-[9px]`/`text-[10px]` → `text-[11px]`（合规），`text-[8px]` ▾ 保留 |
+| `web/src/components/ModelSelector.tsx` | store 解构加 `reasoningEffort` + `setReasoningEffort`；trigger badge（原 139 行）+ menu item badge（原 208 行）两处都传 `currentEffort={reasoningEffort}` + `onEffortChange={setReasoningEffort}` |
+| `web/src/components/ReasoningEffortBadge.test.tsx` | 导入改 vitest + fireEvent + 类型 import；保留 6 个 R60 只读测试；新增 `describe("switcher (R63)")` 9 测试 |
+
+### 映射决策树 + 坑
+
+**决策树（前端写入 + 回读对称）**：
+
+```
+用户点 option "low"
+  └─> EffortSwitcher.choose("low")
+        └─> onEffortChange("low")  ──> ModelSelector 传入的 setReasoningEffort
+              └─> modelStore.setReasoningEffort("low")
+                    └─> typedIPC.setReasoningEffort  ──> model.set_reasoning_effort IPC
+                          ├─> [真 agent] R61 handler 持久化 → R62 单例 → wire 生效
+                          └─> [mock]      mockReasoningEffort = "low"
+                    └─> set({ reasoningEffort: "low" })  ──> badge trigger 立即显示 "effort: low"
+
+用户点 "Default"
+  └─> choose(null) → onEffortChange(null) → ... → mockReasoningEffort = null
+        └─> badge 回退显示 model.reasoning_effort_default（如 "high"）= pre-R61 状态
+
+刷新（refresh）
+  └─> typedIPC.listModels() → r.reasoning_effort  ──> set({ reasoningEffort })  [回读对称]
+```
+
+**坑 1（DOM 冒泡铁律，决定 stopPropagation 必须）**：**badge 嵌在父 `<button>` 内**。`ModelSelector` 的 trigger 是 `<button onClick={() => setOpen(...)}>`，badge 作为子元素渲染其中；menu item 同理是 `<button onClick={选模型}>`。如果 badge 的点击 handler 不 `stopPropagation`，点击 effort 选项会**冒泡到父 button**——trigger 处会误开/误关模型菜单，menu item 处会**误触模型切换**（用户想改 effort 却换了模型）。**预判正确**：trigger / Default 选项 / 每个 option 三处 onClick 全加 `e.stopPropagation()`，点击被 badge 完全消费，不冒泡。
+
+**坑 2（零破坏铁律，决定双模式分支）**：**R60 的 6 个测试 + 现有调用点不能动**。第一直觉可能是「直接把 badge 改成切换器」——但 R60 测试断言 `<span>` + `title` tooltip + `effort: high` 文本，且不支持 reasoning 的模型要 `return null`。**预判正确**：`onEffortChange` 可选，`!onEffortChange` 时走只读分支（`<span className=... text-[11px]>effort: {displayDefault}</span>`，与 R60 字节一致除字体合规修复）。传入时才渲染 `EffortSwitcher`。测试 `stays read-only when onEffortChange is omitted` 专门钉这条不变式。
+
+**坑 3（显示优先级，决定三段 fallback）**：**effort 显示什么有三种来源**。(1) 用户 override（`currentEffort`，非空）——优先；(2) 模型自己的默认（`reasoning_effort_default`）——次之；(3) 都没有——`"auto"` fallback。只读分支用 `displayDefault = modelDefault ?? "auto"`；切换器分支用 `displayEffort = currentEffort?.trim() ? currentEffort : displayDefault`。**预判正确**：测试 `reflects the currentEffort override instead of the model default` 钉 override 优先（`currentEffort="low"` 时显示 `effort: low` 而非模型的 `high`）。
+
+**坑 4（菜单高亮，决定 effectiveSelection vs Default 分离）**：**option 行和 Default 行的高亮逻辑不同**。option 行高亮条件 = `effectiveSelection === o.value`，其中 `effectiveSelection = currentEffort ?? modelDefault`（override 优先，否则模型默认 option 高亮）。但 Default 行的高亮条件是 `currentEffort == null`（**仅当无 override 时** Default 高亮，即使模型默认是 "high" 也不算 Default 选中——Default 意为「清除 override，用模型默认」）。**预判正确**：测试 `highlights Default when no override is active`（`currentEffort=null` + 模型默认 "high" → Default 行 ✓，high 行无 ✓）+ `highlights the active override option`（`currentEffort="low"` → low 行 ✓）钉两条不变式。
+
+**坑 5（字体合规，自发现已修复）**：**`min-font-size.test.ts` 禁止 `text-[9px]`/`text-[10px]`**（P2#26 可访问性规则，正则 `/text-\[(9|10)px\]/`）。R60 遗留只读 badge 用了 `text-[9px]`，R63 新增 trigger 照搬 `text-[9px]`、menu 用 `text-[10px]`——全量测试 460/461，min-font-size 1 失败报 3 处违规。**预判正确**：`replace_all` 把 `text-[9px]`→`text-[11px]`（2 处：只读 badge + trigger）、`text-[10px]`→`text-[11px]`（menu）。`text-[8px]`（▾ 箭头）不在检查范围，保留。符合「修复正在编辑文件的错误」原则（R63 正在重写此文件）。
+
+**坑 6（mock 对称，决定 mockReasoningEffort 单例）**：**mock 模式下 model.list 必须回读 set 写入的值**。第一直觉可能是「model.list 固定返回 null」——但这样 mock 下切换 effort 后刷新会丢状态，store 与 mock 失配。**预判正确**：mock 顶层 `let mockReasoningEffort` 单例，`model.set_reasoning_effort` case 写入（trim/空串归一 null），`model.list` case 回读 `reasoning_effort: mockReasoningEffort`——与 R61 后端 read-back 语义完全对称。
+
+### 验证
+
+- `cd web && pnpm test -- --run src/components/ReasoningEffortBadge.test.tsx` → **15 passed**（6 R60 只读 + 9 R63 切换器契约全覆盖）。
+- `cd web && pnpm test -- --run` → **Test Files 58 passed / Tests 461 passed**（零回归；新增 9 测试 + 原有 452 全绿；min-font-size 修复后通过）。
+- `cd web && pnpm lint` → **零错误**（R63 新增/编辑代码 ESLint + @typescript-eslint 全过）。
+- **零回归机制**：`onEffortChange` 省略 → 走 R60 只读分支 → `<span>` 字节级一致（除字体 9→11px 合规修复）→ 6 个 R60 测试全过。不支持 reasoning 的模型仍 `return null`（`supports_reasoning_effort` 假值），视觉与 pre-R60 一致。
+- **IPC 合约同步**：`docs/ipc-contract.md` 已在 R61 记录 `model.set_reasoning_effort` 方法（221/256 行）+ `model.list`/`model.get_current` 的 `reasoning_effort` read-back（289/291 行）；R63 前端消费侧 `types/ipc.ts` 加 `SetReasoningEffortResult` + `ListModelsResult.reasoning_effort`——三处契约一致，无需补充文档。
+
+### YAGNI 边界
+
+- ❌ **不做键盘导航（arrow up/down 进 menu）** —— 切换器当前是鼠标点击 + Esc 关闭。完整 a11y 键盘导航（arrow / home / end / type-ahead）是独立增强，当前需求是「可点切换」，YAGNI。
+- ❌ **不做 per-model effort** —— effort 是**全局用户偏好**（R61 docstring 明示模型无关，存储层 `model_prefs` 不关联 model_id）。切换模型时 effort 保持，与 R61/R62 语义一致。per-model effort 需扩展 schema，YAGNI。
+- ❌ **不修复预先存在的前端债务** —— `client-pending-mode.test.ts` JsonRpcId null + `message-list.test.tsx` findByText 超时（R59/R62 stash 验证铁证），与 R63 无关，留独立轮次。
+- ❌ **不把 effort 流入流式 UI 观察点** —— done chunk / tool_result 元数据不携带 effort（与 R62 YAGNI 一致）。观察点（write path observability）与 R63 的前端写入（user → store）正交，留独立轮次。
+- ❌ **badge 不在 inline 变体渲染** —— `ModelSelector` 的 inline 变体（`MessageInput` composer 内 slim pill）R60 就不渲染 badge（`!isInline` 守卫），R63 保持一致。inline 场景空间局促，effort 切换入口放在 default 变体（footer）即可，YAGNI。
+- ❌ **切换器不做动画/过渡** —— menu 展开/收起是硬切（`open && <ul>`）。CSS transition / framer-motion 是视觉打磨，当前是功能闭合，YAGNI。
+
+### Commit
+
+`feat(platform): R63 reasoning_effort frontend switcher UI (fuse grok xai-grok-sampling-types, upgrade R60 badge to clickable switcher + typedIPC + modelStore state)`
