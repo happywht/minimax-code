@@ -44,8 +44,12 @@ The crate's ``lib.rs`` re-exports six modules. The dependency order is:
    returns; closes the R116 ``registry`` <-> ``resolver`` cycle) /
    :class:`ToolHandle` (the object-safe dispatch surface a resolved tool
    exposes).
-4. ``inner`` (later) — ``InnerDispatchForResolver`` (the dispatch adapter
-   a resolver exposes to the runtime).
+4. ``inner`` (R118) — :class:`InnerDispatchForResolver` (a concrete
+   :class:`~minimax_code.tool_runtime.dispatch.ToolDispatch` bound to one
+   session via a :func:`weakref.ref`-held :class:`CompoundResolver`; the
+   first consumer of R113's :class:`ToolDispatch` ABC and the loop-closer
+   "resolver resolves a tool -> that tool's inner calls re-enter the
+   resolver").
 5. ``local`` (later) — ``LocalTransport`` + ``LOCAL_INVOKE_SCOPE``.
 6. ``remote`` (later) — ``RemoteTransport`` / ``RemoteToolProxy`` /
    ``ConnectionClient`` + the wire decode helpers
@@ -53,9 +57,12 @@ The crate's ``lib.rs`` re-exports six modules. The dependency order is:
    ``is_workspace_unavailable`` / ``output_to_value`` /
    ``progress_from_frame`` / ``tool_error_from_wire``).
 
-R117 lands leaves 1-3; this barrel will grow one module per round.
+R118 lands leaves 1-4; this barrel will grow one module per round.
 """
 
+from minimax_code.computer_hub_core.inner import (
+    InnerDispatchForResolver,
+)
 from minimax_code.computer_hub_core.registry import (
     ConnectionCleanupReport,
     ServerRecord,
@@ -81,6 +88,7 @@ __all__ = [
     "CompoundResolver",
     "ConnectionCleanupReport",
     "ErasedTool",
+    "InnerDispatchForResolver",
     "Principal",
     "ResolvedTool",
     "SessionCleanupReport",

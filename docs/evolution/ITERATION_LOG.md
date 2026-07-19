@@ -9811,3 +9811,66 @@ resolver.rs 是 xai-computer-hub-core 的工具解析策略核心。两个关键
 ### Commit
 
 feat(platform): R117 migrate xai-computer-hub-core resolver.rs (CompoundResolver + ErasedTool + ResolvedTool + ToolHandle, crate leaf 3, closes R116 registry<->resolver cycle, ErasedTool drives R109-deferred blanket stream-mapping, consumes R65/R82-R106/R107-R116)
+
+## R118 — 迁移 xai-computer-hub-core inner.rs（InnerDispatchForResolver，crate 第 4 块叶子，首个 ToolDispatch 具体实现 + Weak<CompoundResolver> -> weakref.ref 映射）
+
+锚点:R117-1 36453f3
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-computer-hub-core/src/inner.rs`（73 行 Rust，crate 第 4 块叶子：transport -> registry -> resolver -> inner）。本块交付**单符号** `InnerDispatchForResolver`：
+- 一个 object-safe `ToolDispatch`（R113）的具体实现，把 inner tool 调用路由到绑定的 `CompoundResolver`（R117）。
+- 持有 resolver 的**弱引用**（Rust `Weak<CompoundResolver>`），使 inner-dispatch 句柄永不锚定 router——router 销毁后，进行中的 inner 调用干净失败为 `ToolError.custom("computer_hub_dropped")`。
+- 绑定单个 `SessionId`（构造时固定，不从 `ToolCallContext` 读），使 inner-dispatch 路径镜像外层 router 的 per-session 生命周期。
+
+### 融合结论
+
+inner.rs 是 xai-computer-hub-core 的 inner-dispatch 适配器。两个关键洞察：
+
+1. **Weak<T> -> weakref.ref 首次落地**：本融合首个明确使用 Python 弱引用机制作为 Rust `Weak<T>` 所有权纪律对应物的回合。Rust `Arc::downgrade(&resolver)`（调用方降级）映射到调用方 `weakref.ref(resolver)`；Rust `Weak::upgrade() -> Option<Arc<T>>`（referent 销毁后返回 `None`）映射到 `self.resolver()` 调用返回 obj/None。`None` 臂即 "computer hub dropped" 短路路径。**R117 `CompoundResolver` 无 `__slots__` -> 默认有 `__weakref__` slot -> 支持 weakref**，这是映射能跑通的运行时根基（写代码前必须验证，本回合用 grep 确认）。
+
+2. **循环闭合 + R113 首个消费者**：InnerDispatchForResolver 是 R113 `ToolDispatch` ABC 的**首个具体实现**，闭合 "resolver 解析一个工具 -> 该工具的 inner 调用重新进入 resolver" 的循环。它消费 R113（ToolDispatch ABC）+ R117（CompoundResolver.resolve_and_dispatch）+ R107（ToolError.custom）+ R109（terminal_only），是 computer_hub_core 四块叶子第一次全部协同。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_core/inner.py`（~180 行，1 符号 `InnerDispatchForResolver`）
+- `agent/minimax_code/computer_hub_core/__init__.py`（barrel 扩展 leaf 4 标注 R118，重导出 `InnerDispatchForResolver`，`__all__` 现 15 符号）
+- `agent/tests/test_computer_hub_core_inner.py`（12 测试）
+
+### 映射决策树+坑
+
+| Rust 构造 | Python 落地 | 决策依据 |
+|---|---|---|
+| `struct InnerDispatchForResolver { resolver: Weak<CompoundResolver>, session_id: SessionId }` | `@dataclass(eq=False)` + `resolver: weakref.ref[CompoundResolver]` + `session_id: SessionId` | Weak->weakref.ref；`#[derive(Debug)]` 无 PartialEq -> eq=False（identity-only） |
+| `Weak<CompoundResolver>` | `weakref.ref[CompoundResolver]` | 弱引用语义对应物；R117 CompoundResolver 无 `__slots__` -> 默认 `__weakref__` slot |
+| `Arc::downgrade(&resolver)`（调用方降级） | 调用方传 `weakref.ref(resolver)` | 保真：调用方明确表达弱引用意图（非构造器内部降级） |
+| `resolver.upgrade() -> Option<Arc<T>>` | `self.resolver()` -> obj/None | `weakref.ref` 调用；None 臂即 hub_dropped 路径 |
+| `impl ToolDispatch` 的 `async call` | `async def call`（映射 1） | 同 R113 `ToolDispatch.call` / R115 `Transport.call` |
+| `terminal_only(Err(ToolError::custom("computer_hub_dropped", ...)))` | `return terminal_only(ToolError.custom("computer_hub_dropped", ...))` | R107 `ToolError.custom` + R109 `terminal_only`；映射 1 `return` async iterator |
+| `resolver.resolve_and_dispatch(&self.session_id, ...).await` | `return await resolver.resolve_and_dispatch(self.session_id, ...)` | R117 `resolve_and_dispatch`；bound session 而非从 ctx 读 |
+| `pub fn session_id(&self) -> &SessionId` | 属性访问 `self.session_id`（无方法） | R109 字段即访问器；避免字段/方法名冲突（见坑 1） |
+| `call_terminal`（ToolDispatch 默认 drain） | 继承不覆写 | inner 不覆写 R113 默认 drain；`InnerDispatchForResolver.call_terminal is ToolDispatch.call_terminal` |
+
+**坑**：
+1. **字段名/方法名冲突陷阱**：初稿同时定义 dataclass 字段 `session_id` 和方法 `def session_id(self)` —— Python 实例属性遮蔽类方法，导致 `obj.session_id` 是值但 `obj.session_id()` 报 "int not callable"。决策：纯字段访问（R109 模式，同 R117 CompoundResolver 的 `local`/`remote`、R116 ServerRecord），删除方法。Rust `session_id()` 访问器在 Python 里就是字段本身。
+2. **映射 1 双臂 `return`**：dead 臂 `return terminal_only(...)`（async generator 本身**就是** AsyncIterator，满足 `ToolStream` 协议）；live 臂 `return await resolver.resolve_and_dispatch(...)`（`await` 后得到 ToolStream）。两臂都返回 `AsyncIterator[ToolStreamItem]`，与 R113 `ToolDispatch.call` 契约一致。这是 Python 相对 Rust 的优雅：async generator 既是生产者也是 AsyncIterator，无需 Rust 的 `BoxStream` 装箱。
+3. **weakref 前置条件验证**：`weakref.ref(obj)` 要求 `type(obj)` 支持 weakref（有 `__weakref__` slot）。`@dataclass` 不定义 `__slots__` 时默认支持；但若未来给 CompoundResolver 加 `__slots__` 却漏掉 `__weakref__`，inner-dispatch 会运行时崩。本回合写代码前 grep 确认 R117 CompoundResolver 无 `__slots__` 行 -> 默认支持 weakref。这是跨回合类型不变量的隐性依赖。
+
+### 验证
+
+- `uv run ruff check inner.py __init__.py test_computer_hub_core_inner.py`：**All checks passed!**（首次零修复，零自动 fix）
+- `uv run pytest tests/test_computer_hub_core_inner.py`：**12 passed**（构造/字段访问、ToolDispatch 子类、具体类可实例化、call 协程函数、weakref 不持有强引用、eq=False identity、repr、live 臂转发+参数线程、bound session 优先、dead 臂 hub_dropped 短路、call_terminal 继承不覆写）
+- 四叶回归 `test_computer_hub_core_{transport,registry,resolver,inner}.py`：**110 passed in 0.63s**（98 + 12，零回归，证明 R113<->R118 与 R117<->R118 消费链运行时正确）
+
+### YAGNI 边界
+
+- 只迁 `inner.rs`（lib.rs 6 模块的第 4 个），`local`/`remote` 2 模块留给后续回合（依赖拓扑：transport(R115) -> registry(R116) -> resolver(R117) -> inner(R118) -> local -> remote）。
+- 不覆写 `call_terminal`：继承 R113 `ToolDispatch` 的具体默认 drain（Progress 跳过 + 首个 Terminal 短路 + `stream_no_terminal` 兜底）。inner 只实现 `call`。
+- 不额外加 `session_id()` 方法：字段即访问器（R109 模式），避免字段/方法名冲突。
+- 弱引用而非强引用：忠实 Rust `Weak` 所有权纪律（inner-dispatch 句柄永不锚定 router）。Python GC 已处理强引用周期，但弱引用的"悬空检测"语义是强引用无法替代的——这是 `computer_hub_dropped` 错误路径的存在理由。
+- 测试用鸭子类型 `_FakeResolver`（无 `__slots__` -> 支持 weakref），不构造真实 CompoundResolver（避免拖入真实 ToolRegistry）。
+- barrel `__init__.py` 现导出 15 符号（R115 3 + R116 7 + R117 4 + R118 1），后续回合随 local/remote 叶子落地逐个增长。
+
+### Commit
+
+feat(platform): R118 migrate xai-computer-hub-core inner.rs (InnerDispatchForResolver, crate leaf 4, first concrete ToolDispatch impl, Weak<CompoundResolver> -> weakref.ref mapping, consumes R107/R109/R113/R117, closes resolver->inner-call->resolver loop)
