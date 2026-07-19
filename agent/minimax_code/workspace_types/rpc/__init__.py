@@ -11,9 +11,13 @@ R68 lands the foundation (envelope + protocol + 4 tool IDs) plus the two
 smallest business RPCs (:mod:`session`, :mod:`agents_md`). R69 adds the
 envelope's two consumer sides: :mod:`code_nav` (Ok side — five navigation
 RPCs with nested responses) and :mod:`deploy` (Err side — the 15-code
-``DeployError`` vocabulary carried in ``RpcError.code``). The remaining 8
-RPC files (fs / git / hooks / hunks / search / skills / workspace /
-worktree) land in R70+.
+``DeployError`` vocabulary carried in ``RpcError.code``). R70 adds
+:mod:`search` — a mixed camelCase / snake_case namespace (``workspace.ripgrep``
+content search + four ``workspace.fuzzy_*`` file searches) that lands four
+serde patterns new to the layer (camelCase ``rename_all``, untagged
+``TargetClientId`` enum, custom-default ``respect_gitignore``, primitive /
+``Value`` responses). The remaining 7 RPC files (fs / git / hooks / hunks /
+skills / workspace / worktree) land in R71+.
 """
 
 from __future__ import annotations
@@ -34,6 +38,18 @@ from minimax_code.workspace_types.rpc.code_nav import (
 )
 from minimax_code.workspace_types.rpc.deploy import DeployError
 from minimax_code.workspace_types.rpc.envelope import TURN_ACTIVE, RpcEnvelope, RpcError
+from minimax_code.workspace_types.rpc.search import (
+    ClientId,
+    ContentMatch,
+    ContentMatchFile,
+    ContentSearchData,
+    ContentSearchRequest,
+    FuzzyChangeReq,
+    FuzzyCloseReq,
+    FuzzyOpenReq,
+    FuzzyStatusReq,
+    TargetClientId,
+)
 from minimax_code.workspace_types.rpc.session import (
     BeginPromptReq,
     ConflictType,
@@ -77,6 +93,17 @@ __all__ = [
     "CodeIndexStatusResponse",
     # deploy (R69, Err side)
     "DeployError",
+    # search (R70, mixed camelCase/snake_case + untagged TargetClientId)
+    "ClientId",
+    "TargetClientId",
+    "ContentMatch",
+    "ContentMatchFile",
+    "ContentSearchData",
+    "ContentSearchRequest",
+    "FuzzyOpenReq",
+    "FuzzyChangeReq",
+    "FuzzyCloseReq",
+    "FuzzyStatusReq",
 ]
 
 #: Tool ID for the ``WorkspaceRpcHandler`` (workspace method dispatch).

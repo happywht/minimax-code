@@ -9,6 +9,8 @@ contract.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from minimax_code.workspace_types.rpc import (
@@ -19,6 +21,7 @@ from minimax_code.workspace_types.rpc import (
     WORKSPACE_TOOL_NOTIFICATIONS_TOOL_ID,
     AgentConfigFile,
     BeginPromptReq,
+    ClientId,
     CodeFindDefinitionsReq,
     CodeFindReferencesReq,
     CodeGotoDefinitionReq,
@@ -29,14 +32,23 @@ from minimax_code.workspace_types.rpc import (
     CodeNavLocation,
     CodeNavResponse,
     ConflictType,
+    ContentMatch,
+    ContentMatchFile,
+    ContentSearchData,
+    ContentSearchRequest,
     DeployError,
     DiscoverAgentsMdReq,
     EndPromptReq,
     FileRewindConflict,
     FileRewindResponse,
+    FuzzyChangeReq,
+    FuzzyCloseReq,
+    FuzzyOpenReq,
+    FuzzyStatusReq,
     RewindToReq,
     RpcEnvelope,
     RpcError,
+    TargetClientId,
     WorkspaceRpc,
 )
 
@@ -540,3 +552,234 @@ class TestDeployError:
         _, err = recovered.into_result()
         assert err is not None
         assert DeployError.from_wire_code(err.code) is DeployError.PERMISSION_DENIED
+
+
+# -- search RPCs (R70, mixed camelCase/snake_case + untagged enum) -------
+
+
+class TestSearch:
+    def test_method_constants(self) -> None:
+        assert ContentSearchRequest.METHOD == "workspace.ripgrep"
+        assert FuzzyOpenReq.METHOD == "workspace.fuzzy_open"
+        assert FuzzyChangeReq.METHOD == "workspace.fuzzy_change"
+        assert FuzzyCloseReq.METHOD == "workspace.fuzzy_close"
+        assert FuzzyStatusReq.METHOD == "workspace.fuzzy_search"
+
+    def test_response_types(self) -> None:
+        # ripgrep → ContentSearchData; fuzzy_open → String; change/close → bool;
+        # fuzzy_search → serde_json::Value (arbitrary JSON → Any).
+        assert ContentSearchRequest.Response is ContentSearchData
+        assert FuzzyOpenReq.Response is str
+        assert FuzzyChangeReq.Response is bool
+        assert FuzzyCloseReq.Response is bool
+        assert FuzzyStatusReq.Response is Any
+
+    # -- camelCase wire (content-search half) ------------------------------
+
+    def test_content_search_request_to_wire_camel_case(self) -> None:
+        # #[serde(rename_all = "camelCase")] — every multi-word key is camelCase;
+        # respect_gitignore defaults True, sibling bools default False.
+        wire = ContentSearchRequest(pattern="foo").to_wire()
+        assert wire == {
+            "caseInsensitive": False,
+            "contextId": None,
+            "cwd": None,
+            "excludeGlobs": [],
+            "includeGlobs": [],
+            "isRegex": False,
+            "maxFiles": None,
+            "maxMatches": None,
+            "pattern": "foo",
+            "respectGitignore": True,
+            "wholeWord": False,
+        }
+
+    def test_content_search_request_validates_camel_case_keys(self) -> None:
+        # populate_by_name + alias_generator → camelCase keys also parse.
+        req = ContentSearchRequest.model_validate(
+            {"pattern": "bar", "caseInsensitive": True, "maxFiles": 10}
+        )
+        assert req.pattern == "bar"
+        assert req.case_insensitive is True
+        assert req.max_files == 10
+
+    def test_content_search_request_defaults(self) -> None:
+        # Mirrors source `content_search_request_defaults`: pattern-only input
+        # → respect_gitignore=True (custom default fn), bools=False, cwd=None.
+        req = ContentSearchRequest.model_validate({"pattern": "foo"})
+        assert req.respect_gitignore is True
+        assert not req.case_insensitive
+        assert req.cwd is None
+
+    def test_content_search_request_default_pattern_empty(self) -> None:
+        # `#[derive(Default)]`: the required `pattern: String` defaults to "".
+        assert ContentSearchRequest.default().pattern == ""
+
+    # -- ContentMatch (skip_serializing_if at every depth) -----------------
+
+    def test_content_match_omits_spans_when_none(self) -> None:
+        # #[serde(default, skip_serializing_if = "Option::is_none")] on both
+        # span fields — absent when None (top level).
+        wire = ContentMatch(line=5, content="hi").to_wire()
+        assert wire == {"content": "hi", "line": 5}
+
+    def test_content_match_includes_spans_when_set(self) -> None:
+        wire = ContentMatch(line=5, content="hi", match_start=1, match_end=3).to_wire()
+        assert wire == {"content": "hi", "line": 5, "matchEnd": 3, "matchStart": 1}
+
+    def test_content_match_skip_applies_when_nested(self) -> None:
+        # The crucial model_serializer property: nested inside
+        # ContentSearchData.files[].matches[], the span keys are still omitted.
+        data = ContentSearchData(
+            files=[
+                ContentMatchFile(
+                    name="a.rs",
+                    path="/r/a.rs",
+                    matches=[ContentMatch(line=1, content="x")],
+                )
+            ],
+            total_matches=1,
+            total_files=1,
+            truncated=False,
+        )
+        wire = data.to_wire()
+        assert wire["files"][0]["matches"] == [{"content": "x", "line": 1}]
+        assert "matchStart" not in wire["files"][0]["matches"][0]
+
+    # -- ContentMatchFile::new ---------------------------------------------
+
+    def test_content_match_file_new_derives_name(self) -> None:
+        # Mirrors source `content_match_file_new_derives_name`.
+        f = ContentMatchFile.new("/repo/src/lib.rs")
+        assert f.name == "lib.rs"
+        assert f.path == "/repo/src/lib.rs"
+        assert f.matches == []
+
+    def test_content_match_file_new_bare_filename(self) -> None:
+        assert ContentMatchFile.new("lib.rs").name == "lib.rs"
+
+    def test_content_match_file_new_no_filename_falls_back(self) -> None:
+        # Path::file_name() returns None for "." / ".." → fall back to the
+        # whole path (mirrors unwrap_or_else(|| path.clone())).
+        assert ContentMatchFile.new(".").name == "."
+        assert ContentMatchFile.new("..").name == ".."
+
+    # -- ClientId + TargetClientId (untagged enum) --------------------------
+
+    def test_client_id_camel_case_round_trip(self) -> None:
+        wire = ClientId(instance_id="i-1", conn_id="c-1").to_wire()
+        assert wire == {"connId": "c-1", "instanceId": "i-1"}
+        rec = ClientId.model_validate(wire)
+        assert rec.instance_id == "i-1" and rec.conn_id == "c-1"
+
+    def test_target_client_id_untagged_round_trip(self) -> None:
+        # Mirrors source `target_client_id_untagged_round_trip`: null → None
+        # variant, {instanceId, connId} → ClientId variant.
+        none = TargetClientId.model_validate(None)
+        assert none.is_none()
+        raw = {"instanceId": "i-1", "connId": "c-1"}
+        target = TargetClientId.model_validate(raw)
+        assert not target.is_none()
+        assert target.root is not None
+        assert target.root.instance_id == "i-1"
+        assert target.to_wire() == raw
+
+    def test_target_client_id_default_is_none(self) -> None:
+        # `#[default] None` — the default constructor yields the None variant.
+        assert TargetClientId().is_none()
+        assert TargetClientId.none().to_wire() is None
+
+    def test_target_client_id_client_to_wire_camel_case(self) -> None:
+        target = TargetClientId(ClientId(instance_id="i", conn_id="c"))
+        assert target.to_wire() == {"connId": "c", "instanceId": "i"}
+
+    # -- fuzzy RPCs (snake_case half) --------------------------------------
+
+    def test_fuzzy_open_req_snake_case_with_default_target(self) -> None:
+        # No rename_all in the source → snake_case field names on the wire;
+        # target_client_id is #[serde(default)] → the None variant (wire null).
+        wire = FuzzyOpenReq(root="/r", request_id="r1").to_wire()
+        assert wire == {
+            "hidden": False,
+            "request_id": "r1",
+            "root": "/r",
+            "session_id": None,
+            "target_client_id": None,
+        }
+
+    def test_fuzzy_open_req_carries_client_in_target(self) -> None:
+        # Snake_case field name, but the nested ClientId value is camelCase.
+        req = FuzzyOpenReq(
+            target_client_id=TargetClientId(ClientId(instance_id="i", conn_id="c"))
+        )
+        assert req.to_wire()["target_client_id"] == {"connId": "c", "instanceId": "i"}
+
+    def test_fuzzy_change_req_to_wire(self) -> None:
+        wire = FuzzyChangeReq(search_id="s1", query="foo").to_wire()
+        assert wire == {
+            "dirs_only": False,
+            "limit": None,
+            "query": "foo",
+            "search_id": "s1",
+        }
+
+    def test_fuzzy_close_req_to_wire(self) -> None:
+        assert FuzzyCloseReq(search_id="s1").to_wire() == {"search_id": "s1"}
+
+    def test_fuzzy_status_req_default_search_id_empty(self) -> None:
+        # `#[derive(Default)]`: required `search_id: String` → "".
+        assert FuzzyStatusReq.default().search_id == ""
+
+    # -- envelope consumption of primitive / Value responses ---------------
+
+    def test_envelope_ok_wraps_string_response(self) -> None:
+        # FuzzyOpenReq.Response = String — a primitive rides the Ok arm.
+        wire = RpcEnvelope.ok("search-1").to_wire()
+        assert wire == {"ok": "search-1"}
+        rec = RpcEnvelope.from_wire(wire, str)
+        ok, err = rec.into_result()
+        assert err is None and ok == "search-1"
+
+    def test_envelope_ok_wraps_bool_response(self) -> None:
+        wire = RpcEnvelope.ok(True).to_wire()
+        assert wire == {"ok": True}
+        rec = RpcEnvelope.from_wire(wire, bool)
+        ok, _ = rec.into_result()
+        assert ok is True
+
+    def test_envelope_ok_wraps_arbitrary_json_response(self) -> None:
+        # FuzzyStatusReq.Response = serde_json::Value → Any (arbitrary JSON,
+        # including null when the search no longer exists).
+        payload = {"paths": ["/a", "/b"], "count": 2}
+        wire = RpcEnvelope.ok(payload).to_wire()
+        assert wire == {"ok": payload}
+        rec = RpcEnvelope.from_wire(wire, Any)
+        ok, _ = rec.into_result()
+        assert ok == payload
+
+    def test_envelope_ok_wraps_content_search_data(self) -> None:
+        # Full Ok-side consumption: a ripgrep response rides the envelope and
+        # round-trips back, camelCase keys + nested span-skip preserved.
+        data = ContentSearchData(
+            files=[
+                ContentMatchFile(
+                    name="a.rs",
+                    path="/r/a.rs",
+                    matches=[
+                        ContentMatch(line=1, content="foo", match_start=0, match_end=3),
+                        ContentMatch(line=2, content="bar"),
+                    ],
+                )
+            ],
+            total_matches=2,
+            total_files=1,
+            truncated=False,
+        )
+        wire = RpcEnvelope.ok(data).to_wire()
+        rec = RpcEnvelope.from_wire(wire, ContentSearchData)
+        ok, err = rec.into_result()
+        assert err is None
+        assert isinstance(ok, ContentSearchData)
+        assert ok.total_matches == 2
+        assert ok.files[0].matches[0].match_end == 3
+        assert ok.files[0].matches[1].match_start is None

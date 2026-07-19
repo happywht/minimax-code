@@ -5389,3 +5389,107 @@ cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
 ### Commit
 
 `feat(platform): R69 workspace RPC envelope dual-side consumer layer (fuse grok xai-grok-workspace-types rpc/ code_nav + deploy, code_nav.rs 125 + deploy.rs 100 = 225 lines → 2 modules: code_nav 5 code_* RPCs Ok-side + CodeNavResponse/CodeIndexStatusResponse + CodeNavLocation skip_serializing_if exclude_none override + CodeIndexStats + deploy DeployError 15-code Err-side vocabulary plain Enum value=wire_code + wire_code/from_wire_code + ALL class-post-assign, skip_serializing_if exclude_none equivalence boundary + DeployError non-StrEnum explicit name↔code mapping + ALL class-body tuple(cls) ban, 22 new tests zero-regression)`
+
+
+## R70 — 远程 workspace RPC search 混合命名空间层(融合 grok xai-grok-workspace-types rpc/ search.rs)
+
+锚点:R70-1 f3d8be1
+
+### 本轮目标
+
+迁移 `search.rs`(226L)= **1 个混合命名空间文件** → 1 个新模块,攻克 rpc/ 层迄今最密集的 **4+1 个 serde 模式**:
+
+- **内容搜索(`workspace.ripgrep`)**:camelCase 命名空间下的 `ContentSearchRequest`(custom-default `respect_gitignore` + 多 Option/bool 默认)+ 4 个响应 struct(`ContentMatch`[skip_serializing_if span] / `ContentMatchFile`[new 构造器推导 name] / `ContentSearchData`[Vec + 计数] / `ClientId`[camelCase 路由身份])。
+- **模糊文件搜索(4 个 `workspace.fuzzy_*`)**:snake_case 命名空间下的 `FuzzyOpenReq`(携带 `TargetClientId` untagged 枚举)/ `FuzzyChangeReq` / `FuzzyCloseReq`(Response=bool)/ `FuzzyStatusReq`(Response=任意 JSON)。
+- **`TargetClientId`**:`#[serde(untagged)]` 枚举(null → None 变体 / {instanceId, connId} → ClientId 变体),是本轮 serde 难度最高的类型。
+
+R68/R69 已确立 envelope + Ok/Err 双侧消费;**R70 把 wire 层剩余 4 个 serde 模式(camelCase / untagged / custom-default / Value Response)一次性攻克**,为剩余 7 文件(尤其同样 camelCase 的 fs/git/hunks/worktree)建立可复用模板。rpc/ 剩余 7 文件(fs 754 / git 1077 / hooks 230 / hunks 413 / skills 275 / workspace 271 / worktree 406 = ~3326 行)留 R71+。
+
+### 融合结论
+
+R69 用 code_nav(Ok)+ deploy(Err)证明 envelope 双侧能承载结构化业务;**R70 把 wire 序列化的 4 个新模式一次性落地,证明 WireModel 基类 + pydantic v2 能完整覆盖 serde 的复杂属性**:
+
+- **camelCase `rename_all`**:grok 内容搜索侧用 `#[serde(rename_all = "camelCase")]`,Python 侧 `ConfigDict(alias_generator=to_camel, populate_by_name=True)`——`to_wire` 的 `by_alias=True` dump 让字段名序列化为 camelCase,同时 `populate_by_name` 让 snake_case 也能解析。**关键**:`to_camel` 来自 `pydantic.alias_generators`,无需手写转换。
+- **untagged 枚举**:Python 无第一类 untagged 枚举;`RootModel[ClientId | None]` + `is_none()` 方法复刻 `TargetClientId::is_none` API。wire `null` ↔ None 变体,`{instanceId, connId}` ↔ ClientId 变体,`#[default]` → 默认 None 变体。
+- **custom-default fn**:grok `#[serde(default = "default_respect_gitignore")]`(返回 true,而同族 bool 默认 false)→ Python 侧直接 `respect_gitignore: bool = True`(Python 不需要默认函数,字段默认值即等价)。
+- **原始/Value Response**:`type Response = String/bool/serde_json::Value` → `Response: ClassVar[type] = str/bool` 与 `Response: ClassVar = Any`;envelope `_dump_payload` 透传原始类型(scalar 原样返回),`from_wire` 用 `TypeAdapter(Any)` 解析任意 JSON。
+
+**+1 嵌套 skip_serializing_if(关键新洞察)**:`ContentMatch.match_start/match_end` 嵌套在 `ContentSearchData.files[].matches[]` 内,但 `#[serde(skip_serializing_if)]` 在**任意嵌套深度**都生效。R67 的 `to_wire` 覆盖(exclude_none)只作用于顶层序列化,嵌套路径无效 → 本轮引入**普通 `@model_serializer`**(非 wrap 模式)手工构建 camelCase 字典,跳过 None 的 span——model_serializer 是类型级钩子,适用于所有序列化路径(含嵌套)。这是本轮最重要的架构决策。
+
+### 交付
+
+1 源文件 + barrel 扩展 + 测试扩展,226 行 Rust → 约 260 行 Python + 25 个新增专项测试:
+
+| 文件 | Rust 源 | 行数 | Python 实现 |
+|------|---------|------|------------|
+| `rpc/search.py` | `rpc/search.rs` | 226 | 5 Req(METHOD + Response ClassVar:ripgrep→ContentSearchData / fuzzy_open→str / fuzzy_change→bool / fuzzy_close→bool / fuzzy_search→Any)+ `ClientId`(camelCase)+ `TargetClientId`(RootModel[ClientId\|None] + none()/is_none())+ `ContentMatch`(@model_serializer 嵌套 skip span)+ `ContentMatchFile`(new() 推导 name + `.`/`..` 回退)+ `ContentSearchData`(Vec + 计数) |
+| `rpc/__init__.py` | mod.rs barrel | — | 重导出 search 10 符号(barrel + __all__ 同步) |
+| `tests/test_rpc.py` | — | — | +25 测试:`TestSearch`(method 常量/response 类型/camelCase wire + 解析/ContentMatch 顶层+嵌套 skip/ContentMatchFile.new 三场景/ClientId 往返/TargetClientId untagged 四场景/FuzzyOpenReq snake+嵌套 camelCase/envelope 包装 str/bool/任意 JSON/ContentSearchData) |
+
+测试增长:rpc 专项 R69 的 70 → R70 的 95(+25);全量 R69 的 2154 → R70 的 2179(+25,零回归,完美对账)。
+
+### 映射决策树 + 坑
+
+**决策树**:
+- `#[serde(rename_all = "camelCase")]`(内容搜索 4 struct + ClientId)→ `_CAMEL = ConfigDict(populate_by_name=True, alias_generator=to_camel)`,`to_camel` 从 `pydantic.alias_generators` 导入。有效是因为 `WireModel.to_wire` 已用 `by_alias=True`。
+- `#[serde(untagged)] enum TargetClientId { #[default] None, ClientId(ClientId) }` → `TargetClientId(RootModel[ClientId | None])`,`root: ClientId | None = None` + `none()` classmethod + `is_none()` 方法 + 覆盖 `to_wire`(sort_mappings 透传 None)。
+- `#[serde(default = "default_respect_gitignore")]`(respect_gitignore=true)→ 简单 `respect_gitignore: bool = True`(Python 字段默认值即 grok 默认函数的等价物)。
+- `type Response = String/bool/serde_json::Value` → `Response: ClassVar[type] = str/bool` 与 `Response: ClassVar = Any`(serde_json::Value 是任意 JSON)。
+- `#[serde(default, skip_serializing_if = "Option::is_none")]`(ContentMatch span)→ 普通 `@model_serializer` 手工 camelCase 字典 + 条件输出 span(非 R67 的 to_wire 覆盖,因需嵌套生效)。
+- `ContentMatchFile::new(path)` 的 `Path::file_name()` 推导 → `PurePosixPath(path).name`,`.`/`..`/空 回退到完整路径(`Path::file_name` 对这些返回 None)。
+- `Vec<String>`(include_globs/exclude_globs)→ `Field(default_factory=list)`(避免可变默认值)。
+- `#[derive(Default)]`(ContentSearchRequest/FuzzyStatusReq)的必需 String 字段 → 重写 `default()` classmethod 提供 `""`。
+
+**坑 1 — 嵌套 skip_serializing_if,R67 模式失效(本轮最大坑)**
+初版想用 R67 的 `to_wire` 覆盖(exclude_none)处理 `ContentMatch.match_start/match_end` 的 skip。但:(a) R67 覆盖只作用于**顶层**序列化;(b) `ContentMatch` 嵌套在 `ContentSearchData.files[].matches[]` 中,顶层是 ContentSearchData,ContentMatch 的 to_wire 覆盖在父级 `model_dump` 时**不被调用**;(c) `exclude_none` 在 ContentSearchData 顶层调用会误伤 files/total_matches 等字段语义。**修复**:在 ContentMatch 上用**普通 `@model_serializer`**(非 wrap 模式)手工构建 wire 字典——model_serializer 是**类型级**钩子,pydantic 在序列化 ContentMatch 实例时(无论嵌套多深)都调用它,跳过 None span。测试 `test_content_match_skip_applies_when_nested` 锁定该行为。
+
+**坑 2 — `@model_serializer(mode="wrap")` 调用约定的不确定性**
+设计阶段考虑 wrap 模式(可在 handler 基础上增删字段),但 pydantic v2 wrap-handler 的调用约定(`handler()` vs `handler(self)`)在不同子类/版本下行为有差异,确定性不足。**修复**:用**普通非 wrap** `@model_serializer`——完全手工构建字典,不依赖 handler,行为确定且冒烟测试一次通过。
+
+**坑 3 — untagged 枚举无第一类 Python 等价物**
+grok `#[serde(untagged)] enum TargetClientId` 是枚举(null/ClientId 两变体,无 tag)。Python 无 untagged 枚举;`Enum` + 自定义序列化过于繁琐。**修复**:`RootModel[ClientId | None]`——Union 类型本身在 wire 上就是 untagged(null → None,{instanceId, connId} → ClientId),`is_none()` 方法保留源 API 语义。`to_wire` 覆盖确保 `model_dump` 的 None 直接输出为 `null`(而非 `{"root": null}`)。
+
+**坑 4 — 混合命名空间(snake_case 外壳 + camelCase 内核)**
+`FuzzyOpenReq` 无 `rename_all`(snake_case),但其 `target_client_id` 字段的值是 `TargetClientId`(→ camelCase ClientId)。wire 形如 `{"target_client_id": {"connId": "c", "instanceId": "i"}}`——**外层 snake_case key + 内层 camelCase dict**。**关键**:这不是冲突,因 camelCase 只在 `TargetClientId`/`ClientId` 的 `_CAMEL` ConfigDict 上生效,FuzzyOpenReq 本身无 ConfigDict(默认 snake_case)。测试 `test_fuzzy_open_req_carries_client_in_target` 锁定。
+
+**坑 5 — `root` 作为 BaseModel 字段名**
+`FuzzyOpenReq.root: Option<PathBuf>` 用 `root` 作字段名。担心与 `RootModel.root` 冲突或被屏蔽。**验证**:pydantic v2 BaseModel 上 `root` 是合法字段名(无屏蔽,屏蔽只在 RootModel 子类)。冒烟测试 `FuzzyOpenReq(root="/r").to_wire() == {"root": "/r", ...}` 确认。
+
+**坑 6 — import 排序:ruff isort 全量手写易错**
+test_rpc.py 导入块需按 ruff isort 规则插入 10 个新符号(PascalCase 字母序:`ClientId` 在 `Code*` 前[C-l < C-o],`ConflictType` 在 `ContentMatch` 前[n < t],`ContentMatch` < `ContentMatchFile` < `ContentSearchData` < `ContentSearchRequest`)。**修复**:先手写粗排序,`ruff check --fix` 自动校准(本轮手写一次通过,但教训仍是交给 ruff)。
+
+### 验证
+
+三重验证全绿:
+
+```bash
+# 1. ruff lint(E/F/W/I/B/UP,行长 100)
+cd "/d/工作/城建院/mm code/agent" && uv run ruff check minimax_code/workspace_types/rpc/search.py tests/test_rpc.py --fix
+# → All checks passed!(search.py + test_rpc.py 一次干净,无残留)
+
+# 2. R70 专项测试
+cd "/d/工作/城建院/mm code/agent" && uv run pytest tests/test_rpc.py -q
+# → 95 passed in 0.32s(R69 的 70 + R70 新增 25,精确对账)
+
+# 3. 全量回归(零回归)
+cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
+# → 2179 passed, 10 skipped in 102.79s
+#    (R69 的 2154 + R70 新增 25,完美对账,零回归)
+```
+
+**wire 保真交叉验证**:对照 grok `search.rs` 源码逐行确认——`#[serde(rename_all = "camelCase")]` 覆盖范围(内容搜索 4 struct + ClientId)、`default_respect_gitignore() -> bool { true }`、`#[serde(untagged)] enum TargetClientId` 的 `#[default] None` + `ClientId` 变体 + `is_none()` 方法、`ContentMatch.match_start/match_end` 的 `#[serde(default, skip_serializing_if = "Option::is_none")]`、`ContentMatchFile::new` 的 `Path::file_name` 推导、4 个 grok 测试(method_constants / target_client_id_untagged_round_trip / content_match_file_new_derives_name / content_search_request_defaults)全部在 TestSearch 中复刻并扩展。`test_content_match_skip_applies_when_nested`(嵌套 skip)+ `test_envelope_ok_wraps_content_search_data`(envelope Ok 往返)+ `test_envelope_ok_wraps_arbitrary_json_response`(Value Response)三个集成测试闭合了"业务类型 ↔ 嵌套序列化 ↔ envelope"的完整链路。
+
+### YAGNI 边界
+
+本轮明确不做:
+
+- ❌ **rpc/ 剩余 7 文件(~3326 行)迁移** —— fs/git/hooks/hunks/skills/workspace/worktree,留 R71+(本轮只迁 search 这一个 serde 模式最密集的混合命名空间文件)。
+- ❌ **实际 ripgrep/fuzzy 搜索引擎实现** —— 本轮仅 wire 类型契约,真正的内容搜索(调用 ripgrep 子进程)与模糊搜索(文件索引/fzf 引擎)是运行时能力,不在类型层。
+- ❌ **TargetClientId 跨域路由的实际 relay** —— `ClientId(instance_id, conn_id)` 是 wire 路由身份,实际的多 client 转发逻辑在 shell 扩展层。
+- ❌ **接入 IPC handler 或远程 workspace transport** —— 类型契约层先行,wire DTO 的消费端在 shell 层。
+- ❌ **前端 `web/src/types/` 镜像** —— 纯后端 RPC 类型契约,无 wire 事件广播到前端。
+- ❌ **ClientId 与 shell-extension crate 的 ClientId 去重** —— 源码注释明确 Phase-1 独立(各 crate 各自定义),去重在 shell 集成阶段处理。
+
+### Commit
+
+`feat(platform): R70 workspace RPC search mixed-namespace layer (fuse grok xai-grok-workspace-types rpc/ search.rs 226 lines → 1 module: 5 RPCs workspace.ripgrep[→ContentSearchData] + fuzzy_open[→str]/fuzzy_change[→bool]/fuzzy_close[→bool]/fuzzy_search[→Any], lands 4+1 serde patterns new to layer: camelCase rename_all=ConfigDict(to_camel) + untagged TargetClientId=RootModel[ClientId|None]+is_none() + custom-default respect_gitignore=True + primitive/Value Response=str/bool/Any + nested skip_serializing_if via plain @model_serializer non-wrap, mixed snake_case-outer/camelCase-inner namespace + PurePosixPath name derivation + Field default_factory, 25 new tests zero-regression)`
