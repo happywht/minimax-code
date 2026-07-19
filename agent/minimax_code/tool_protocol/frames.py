@@ -1,4 +1,4 @@
-"""Tool-server frame protocol — per-method params/result payloads (R92).
+"""Tool-server frame protocol — per-method params/result payloads (R92 + R93).
 
 Fusion of grok-build's ``xai-tool-protocol::frames`` — the per-method
 ``params`` and ``result`` payload structs that ride inside a
@@ -13,7 +13,9 @@ tool-call params/result/progress family plus the telemetry-donation family
 remaining 12 domains — tool notification / system notify, registration,
 per-tool session binding, server discovery + binding, list & search, session
 lifecycle, simplified lifecycle, subscriptions, hooks, service→harness
-pushes, tool-server status lifecycle, heartbeat — are deferred to R93+.
+pushes, tool-server status lifecycle — are deferred to R94+. R93 lands the
+heartbeat (:class:`PingFrame` / :class:`PongFrame`) — the crate's first
+**non-derive custom Serialize/Deserialize**.
 
 ``session_id`` belongs in the JSON-RPC envelope field — always. These
 params structs do NOT carry a ``session_id``; the hub reads it from
@@ -75,6 +77,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from minimax_code.tool_protocol.ids import ToolCallId, ToolId
+from minimax_code.tool_protocol.methods import Method
 from minimax_code.tool_protocol.output_wire import ToolOutputWire
 from minimax_code.tool_protocol.output_wire import from_wire as tool_output_wire_from_wire
 
@@ -91,6 +94,9 @@ __all__ = [
     "TracesDonateParams",
     "LogsDonateParams",
     "MetricsDonateParams",
+    # heartbeat (R93 — crate's first non-derive custom Serialize/Deserialize)
+    "PingFrame",
+    "PongFrame",
     # wire converters
     "tool_call_params_from_wire",
     "tool_call_result_from_wire",
@@ -98,6 +104,8 @@ __all__ = [
     "traces_donate_params_from_wire",
     "logs_donate_params_from_wire",
     "metrics_donate_params_from_wire",
+    "ping_frame_from_wire",
+    "pong_frame_from_wire",
 ]
 
 
@@ -360,3 +368,81 @@ def logs_donate_params_from_wire(data: dict[str, object]) -> LogsDonateParams:
 def metrics_donate_params_from_wire(data: dict[str, object]) -> MetricsDonateParams:
     """Reconstruct :class:`MetricsDonateParams` from its wire form."""
     return MetricsDonateParams(otlp_request=str(data["otlp_request"]))
+
+
+# ── Heartbeat (R93 — crate's first non-derive custom Serialize) ───────────
+#
+# PingFrame / PongFrame carry a ``method`` discriminator on the wire so any
+# receiver (hub or SDK) can route them through a method-based demux. The
+# ``method`` value is baked into ``to_wire`` — callers just set ``ts_ms`` and
+# the correct method string (``Method.Ping`` / ``Method.Pong``) appears in the
+# JSON output. Deserialization is lenient: ``method`` is accepted but ignored,
+# so frames produced by older builds (without ``method``) still parse.
+
+
+@dataclass
+class PingFrame:
+    """Application-level heartbeat ping.
+
+    Serialises as ``{"method":"ping","ts_ms":<u64>}``. The ``method``
+    discriminator is **injected by the hand-written :meth:`to_wire`** (the
+    crate's first non-derive ``impl Serialize``), not a struct field —
+    mirroring Rust's ``PingFrame`` whose ``#[derive]`` deliberately omits
+    ``Serialize`` / ``Deserialize``. The value comes from
+    :attr:`Method.Ping <minimax_code.tool_protocol.methods.Method.Ping>` via
+    :meth:`~minimax_code.tool_protocol.methods.Method.as_wire_str` (single
+    source of truth, DRY — not a hardcoded literal).
+    """
+
+    ts_ms: int
+
+    def to_wire(self) -> dict[str, object]:
+        # Custom Serialize: always includes "method" on the wire (method first,
+        # ts_ms second — mirrors Rust's serialize_map insertion order).
+        return {"method": Method.Ping.as_wire_str(), "ts_ms": self.ts_ms}
+
+
+@dataclass
+class PongFrame:
+    """Application-level heartbeat pong (``{"method":"pong","ts_ms":<u64>}``).
+
+    The counterpart to :class:`PingFrame`; ``method`` injected by
+    :meth:`to_wire` from
+    :attr:`Method.Pong <minimax_code.tool_protocol.methods.Method.Pong>`.
+    """
+
+    ts_ms: int
+
+    def to_wire(self) -> dict[str, object]:
+        return {"method": Method.Pong.as_wire_str(), "ts_ms": self.ts_ms}
+
+
+def ping_frame_from_wire(data: dict[str, object]) -> PingFrame:
+    """Reconstruct :class:`PingFrame` from its wire form (custom Deserialize).
+
+    Lenient on ``method``: accepted but ignored — so frames produced by older
+    builds (without ``method``) still parse. But if ``method`` is **present
+    and mismatches** (e.g. a ``"pong"`` frame handed to this constructor),
+    raise :class:`ValueError` — mirrors Rust's ``serde::de::Error::custom``.
+    ``ts_ms`` is required.
+    """
+    method = data.get("method")
+    if method is not None and str(method) != Method.Ping.as_wire_str():
+        raise ValueError(
+            f'expected method "{Method.Ping.as_wire_str()}" but got "{method}"'
+        )
+    return PingFrame(ts_ms=int(data["ts_ms"]))
+
+
+def pong_frame_from_wire(data: dict[str, object]) -> PongFrame:
+    """Reconstruct :class:`PongFrame` from its wire form (custom Deserialize).
+
+    Lenient on ``method`` (accepted but ignored); raises :class:`ValueError`
+    on a present-but-mismatched ``method``. ``ts_ms`` is required.
+    """
+    method = data.get("method")
+    if method is not None and str(method) != Method.Pong.as_wire_str():
+        raise ValueError(
+            f'expected method "{Method.Pong.as_wire_str()}" but got "{method}"'
+        )
+    return PongFrame(ts_ms=int(data["ts_ms"]))

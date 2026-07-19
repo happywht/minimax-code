@@ -7669,3 +7669,86 @@ Rust 的 `frames.rs` 在 Python 侧落地为 `agent/minimax_code/tool_protocol/f
 ### Commit
 
 `feat(platform): R92 migrate frames.rs opening slice (tool call params/result + telemetry donation, 4 consts + 6 structs)`
+
+
+## R93 — frames.rs 心跳域（PingFrame/PongFrame，crate 首个非 derive 自定义 Serialize/Deserialize）
+
+锚点:R93-1 42fceb0
+
+### 本轮目标
+
+继续推进 `xai-tool-protocol::frames` 模块（1549 行 / 86 符号 / 14 域）的逐域迁移。
+R92 已落地 opening slice（域 1 工具调用 + 域 2 遥测捐赠），R93 选定**心跳域（域 14）**
+作为下一个独立切片：它是整个 crate **第一个非 derive 的手写 `impl Serialize` / `impl
+Deserialize`**——一种全新 serde 形态，值得单独迭代记录这一首创。`PingFrame` / `PongFrame`
+在结构体上刻意只 derive `Debug/Clone/Copy/PartialEq/Eq`（**不** derive
+Serialize/Deserialize），转而手写序列化以在 wire 上注入一个结构体里没有的 `method`
+判别符——任何接收方（hub 或 SDK）都能据此做 method 路由 demux。
+
+### 融合结论
+
+心跳域是 R92 consolidation 轮之后的一个 **crate 首创形态轮**（与 R92 的整合轮相反）。
+关键形态是 **`method` 判别符注入**：
+
+- Rust 源（`frames.rs:999-1059`）：`impl Serialize for PingFrame` 手写 `serialize_map`，
+  先插 `method = Method::Ping.as_wire_str()` 再插 `ts_ms`；`impl Deserialize` 把 `method`
+  读成 `Option<String>`——**宽松**（接受但忽略，兼容旧版本无 method 的帧），但若存在且
+  不匹配则 `serde::de::Error::custom`；`ts_ms: u64` 必需。
+- Python 映射：`to_wire()` 返回 `{"method": Method.Ping.as_wire_str(), "ts_ms": ...}`
+  （method 键在前，镜像 serialize_map 插入顺序）；`from_wire` 用 `data.get("method")`
+  （None 宽松接受），不匹配抛 `ValueError`，`ts_ms` 必需（`KeyError`）。`method` 值来自
+  R85 的 `Method.as_wire_str()`（DRY 单一来源，非硬编码字面量）。
+
+### 交付
+
+- `agent/minimax_code/tool_protocol/frames.py`：+2 dataclass（`PingFrame` / `PongFrame`，
+  单字段 `ts_ms: int`）+ 2 `from_wire` 函数（`ping_frame_from_wire` /
+  `pong_frame_from_wire`），约 75 行。模块 docstring 更新（R93 心跳已落地，deferred 从
+  12 域收窄到 11 域）。
+- `agent/minimax_code/tool_protocol/__init__.py`（barrel）：+2 符号导入（`PingFrame` /
+  `PongFrame`，类名字母序）+ 2 `__all__` 条目 + docstring 首行追加 R93 + R93 entry 段 +
+  deferred 描述更新（心跳移出 deferred）。
+- `agent/tests/test_tool_protocol.py`：+2 barrel 导入 + 2 frames 子模块导入 +
+  4 测试类（`TestPingFrameR93` / `TestPongFrameR93` / `TestHeartbeatSerdeShapeR93` /
+  `TestHeartbeatBarrelR93`），共 20 个新测试。
+
+### 映射决策树 + 坑
+
+1. **非 derive Serialize** → Rust 手写 `serialize_map` 注入 `method`；Python `to_wire`
+   返回 dict，method 键在前（镜像插入顺序）。`method` **不是结构体字段**——dataclass 只有
+   `ts_ms`（用 `dataclasses.fields()` 断言验证）。
+2. **非 derive Deserialize** → Rust `method: Option<String>` 宽松；Python `data.get(
+   "method")`：None 接受，不匹配 `ValueError`（镜像 `serde::de::Error::custom`），
+   `ts_ms` 必需 `KeyError`。
+3. **DRY 单一来源** → `method` 值用 `Method.Ping.as_wire_str()` / `Method.Pong.as_wire_str()`
+   （R85），镜像 Rust 的 `crate::methods::Method::Ping.as_wire_str()`，**非**硬编码
+   `"ping"` / `"pong"` 字面量。
+4. **坑（关键）** → 初始误用 `Method.PING` / `Method.PONG`（全大写变体名）。R85 实际是
+   PascalCase `Method.Ping` / `Method.Pong`（StrEnum 约定，值 `"ping"` / `"pong"`）。
+   13 个测试 `AttributeError: type object 'Method' has no attribute 'PING'. Did you mean:
+   'Ping'?` 暴露问题。`replace_all` 修正 frames.py（6 处含 docstring 交叉引用）+ 测试
+   文件（2 处）共 10 处。**教训**：summary 里的枚举变体名不可信，必须 `grep methods.py`
+   源头确认。
+
+### 验证
+
+- `uv run ruff check frames.py __init__.py test_tool_protocol.py` → **All checks passed!**
+- `uv run pytest tests/test_tool_protocol.py -q` → **609 passed**（R92 基准 589 + R93 新增 20）。
+- `uv run pytest -q`（全量回归）→ **3067 passed, 10 skipped**（R92 基准 3047 + R93 新增 20），
+  **零回归**，1 warning（fastapi/httpx 无关警告）。
+
+### YAGNI 边界
+
+- 只迁心跳域（`PingFrame` / `PongFrame`）；其余 11 个 frames.rs 域（工具/系统通知、注册、
+  per-tool session 绑定、server discovery+binding、list & search、session lifecycle、
+  simplified lifecycle、subscriptions、hooks、service→harness pushes、tool-server status
+  lifecycle）留 R94+。
+- 不接心跳的传输层 / 调度层（wire 类型层职责；运行时如何收发心跳帧是调度层决策，后续轮）。
+- 不加 `PingFrame` / `PongFrame` 的 envelope 包装——envelope 层 R84 已闭合，心跳帧如何
+  装进 JSON-RPC 信封属于调度层决策，wire 类型层不预判。
+- `ts_ms` 用 `int`（镜像 `u64`），不做范围校验——Rust serde 直接 `u64` 也无校验，保持
+  wire 类型层的纯 DTO 语义。
+
+### Commit
+
+`feat(platform): R93 migrate frames.rs heartbeat domain (PingFrame/PongFrame, crate first non-derive custom Serialize/Deserialize)`

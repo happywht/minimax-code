@@ -1,4 +1,4 @@
-"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 + R90 + R91 + R92 — frames opening slice landed).
+"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 + R90 + R91 + R92 + R93 — heartbeat frames landed).
 
 Fusion of grok-build's ``xai-tool-protocol`` crate — the wire DTOs for
 the computer-hub tool-server protocol: identifier newtypes, registration
@@ -109,12 +109,18 @@ to mix unit + struct variants):
   numeric ``usize`` constant family :data:`MAX_SPANS_PER_DONATION` etc.; a
   consolidation round exercising four serde sub-shapes in flat params/result
   context with no crate-first shape; all 10 symbols travel the barrel).
+* **R93 (this round)** — :mod:`frames`
+  (heartbeat domain: :class:`PingFrame` / :class:`PongFrame`, the crate's
+  first **non-derive custom** ``impl Serialize`` / ``impl Deserialize`` — the
+  ``method`` discriminator is injected by hand-written ``to_wire`` (not a
+  struct field) and ``from_wire`` is lenient on ``method`` but raises on a
+  present-but-mismatched value; values sourced from
+  :meth:`Method.as_wire_str` for DRY single-source).
 * *deferred* — :mod:`frames`
-  (remainder: 12 of 14 domains — tool/system notifications, registration,
+  (remainder: 11 of 14 domains — tool/system notifications, registration,
   per-tool session binding, server discovery+binding, list & search, session
   lifecycle, simplified lifecycle, subscriptions, hooks, service→harness
-  pushes, tool-server status lifecycle, heartbeat; plus the crate's first
-  non-derive custom ``impl Serialize`` on PingFrame/PongFrame).
+  pushes, tool-server status lifecycle).
 
 ``from_wire`` / ``to_wire`` live on each module (instance method or module
 function); the barrel does **not** re-export them, mirroring the Rust
@@ -189,6 +195,8 @@ from minimax_code.tool_protocol.frames import (
     MAX_SPANS_PER_DONATION,
     LogsDonateParams,
     MetricsDonateParams,
+    PingFrame,
+    PongFrame,
     ToolCallParams,
     ToolCallProgressFrame,
     ToolCallResult,
@@ -370,9 +378,10 @@ __all__ = [
     "SessionPhase",
     "ToolCallOutcome",
     # frames (R92) — tool call params/result/progress + telemetry donation.
-    # All 10 symbols travel the barrel (Rust lib.rs `pub use frames::{...}` is
-    # the crate's largest re-export); from_wire converters stay submodule-
-    # qualified, mirroring the rest of the crate.
+    # R93 — heartbeat (PingFrame/PongFrame, crate's first non-derive custom
+    # Serialize/Deserialize). All 12 symbols travel the barrel (Rust lib.rs
+    # `pub use frames::{...}` is the crate's largest re-export); from_wire
+    # converters stay submodule-qualified, mirroring the rest of the crate.
     "MAX_DONATION_BYTES",
     "MAX_LOG_RECORDS_PER_DONATION",
     "MAX_METRICS_PER_DONATION",
@@ -383,4 +392,6 @@ __all__ = [
     "TracesDonateParams",
     "LogsDonateParams",
     "MetricsDonateParams",
+    "PingFrame",
+    "PongFrame",
 ]

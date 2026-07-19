@@ -82,6 +82,8 @@ from minimax_code.tool_protocol import (
     NotificationSchemas,
     PayloadTooLarge,
     PermissionDenied,
+    PingFrame,
+    PongFrame,
     Registered,
     Rejected,
     RenderLimited,
@@ -131,14 +133,16 @@ from minimax_code.tool_protocol import (
 from minimax_code.tool_protocol.envelope import jsonrpc_id_from_wire
 from minimax_code.tool_protocol.error_wire import from_wire as error_from_wire
 
-# R92 — frames opening slice (tool call params/result/progress + telemetry
-# donation). The 6 structs + 4 consts travel the barrel (Rust lib.rs
+# R92 + R93 — frames (tool call params/result/progress + telemetry donation +
+# heartbeat). The structs/consts travel the barrel (Rust lib.rs
 # ``pub use frames::{...}`` is the crate's largest re-export); the from_wire
 # converters stay submodule-qualified (the barrel never re-exports wire
 # converters, mirroring the Rust ``pub use`` set).
 from minimax_code.tool_protocol.frames import (
     logs_donate_params_from_wire,
     metrics_donate_params_from_wire,
+    ping_frame_from_wire,
+    pong_frame_from_wire,
     tool_call_params_from_wire,
     tool_call_progress_frame_from_wire,
     tool_call_result_from_wire,
@@ -4046,3 +4050,120 @@ class TestFramesBarrelR92:
             "metrics_donate_params_from_wire",
         ):
             assert hasattr(mod, name), f"frames submodule missing {name}"
+
+
+# ── R93 — heartbeat domain (PingFrame/PongFrame) ──────────────────────────
+# The crate's first non-derive custom impl Serialize/Deserialize: the
+# ``method`` discriminator is injected by ``to_wire`` (not a struct field),
+# and ``from_wire`` is lenient on ``method`` but raises on a present-but-
+# mismatched value. Values sourced from ``Method.as_wire_str`` (DRY).
+
+
+class TestPingFrameR93:
+    """``PingFrame`` — custom Serialize injects ``method`` from Method enum."""
+
+    def test_to_wire_injects_method_ping(self):
+        wire = PingFrame(ts_ms=123).to_wire()
+        assert wire["method"] == "ping"
+        assert wire["ts_ms"] == 123
+
+    def test_to_wire_method_sourced_from_enum(self):
+        """DRY single-source: ``method`` value == ``Method.Ping.as_wire_str()``."""
+        assert PingFrame(ts_ms=0).to_wire()["method"] == Method.Ping.as_wire_str()
+
+    def test_to_wire_method_key_precedes_ts_ms(self):
+        """Mirrors Rust's serialize_map insertion order: method first."""
+        keys = list(PingFrame(ts_ms=7).to_wire())
+        assert keys[0] == "method"
+        assert keys[1] == "ts_ms"
+
+    def test_method_is_not_a_struct_field(self):
+        """``method`` is injected, not carried — dataclass has only ``ts_ms``."""
+        field_names = {f.name for f in dataclasses.fields(PingFrame)}
+        assert field_names == {"ts_ms"}
+
+
+class TestPongFrameR93:
+    """``PongFrame`` — symmetric counterpart to ``PingFrame``."""
+
+    def test_to_wire_injects_method_pong(self):
+        wire = PongFrame(ts_ms=456).to_wire()
+        assert wire["method"] == "pong"
+        assert wire["ts_ms"] == 456
+
+    def test_to_wire_method_sourced_from_enum(self):
+        assert PongFrame(ts_ms=0).to_wire()["method"] == Method.Pong.as_wire_str()
+
+    def test_method_key_precedes_ts_ms(self):
+        keys = list(PongFrame(ts_ms=9).to_wire())
+        assert keys[0] == "method"
+        assert keys[1] == "ts_ms"
+
+
+class TestHeartbeatSerdeShapeR93:
+    """Custom Deserialize: lenient on ``method``, strict on ``ts_ms``."""
+
+    def test_ping_from_wire_lenient_no_method(self):
+        """Older frames without ``method`` still parse (forward-compat)."""
+        assert ping_frame_from_wire({"ts_ms": 100}).ts_ms == 100
+
+    def test_pong_from_wire_lenient_no_method(self):
+        assert pong_frame_from_wire({"ts_ms": 200}).ts_ms == 200
+
+    def test_ping_from_wire_accepts_matching_method(self):
+        assert ping_frame_from_wire({"method": "ping", "ts_ms": 1}).ts_ms == 1
+
+    def test_ping_from_wire_rejects_mismatched_method(self):
+        """Present-but-wrong ``method`` raises ValueError (serde::de::Error::custom)."""
+        with pytest.raises(ValueError):
+            ping_frame_from_wire({"method": "pong", "ts_ms": 1})
+
+    def test_pong_from_wire_rejects_mismatched_method(self):
+        with pytest.raises(ValueError):
+            pong_frame_from_wire({"method": "ping", "ts_ms": 1})
+
+    def test_ping_from_wire_ts_ms_required(self):
+        """``ts_ms`` is required — missing raises KeyError."""
+        with pytest.raises(KeyError):
+            ping_frame_from_wire({"method": "ping"})
+
+    def test_pong_from_wire_ts_ms_required(self):
+        with pytest.raises(KeyError):
+            pong_frame_from_wire({"method": "pong"})
+
+    def test_ping_round_trip(self):
+        original = PingFrame(ts_ms=999)
+        assert ping_frame_from_wire(original.to_wire()) == original
+
+    def test_pong_round_trip(self):
+        original = PongFrame(ts_ms=888)
+        assert pong_frame_from_wire(original.to_wire()) == original
+
+
+class TestHeartbeatBarrelR93:
+    """Heartbeat symbols travel the barrel; from_wire stay submodule-qualified."""
+
+    def test_barrel_exports_heartbeat_symbols(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in ("PingFrame", "PongFrame"):
+            assert hasattr(pkg, name), f"barrel missing heartbeat symbol {name}"
+
+    def test_heartbeat_names_in_all(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in ("PingFrame", "PongFrame"):
+            assert name in pkg.__all__, f"{name} not in barrel __all__"
+
+    def test_frames_submodule_exposes_from_wire(self):
+        import minimax_code.tool_protocol.frames as mod
+
+        for name in ("ping_frame_from_wire", "pong_frame_from_wire"):
+            assert hasattr(mod, name), f"frames submodule missing {name}"
+
+    def test_barrel_does_not_re_export_from_wire(self):
+        """from_wire converters stay submodule-qualified, mirroring the crate."""
+        import minimax_code.tool_protocol as pkg
+
+        assert not hasattr(pkg, "ping_frame_from_wire")
+        assert not hasattr(pkg, "pong_frame_from_wire")
