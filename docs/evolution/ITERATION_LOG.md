@@ -5041,3 +5041,161 @@ cd "/d/工作/城建院/mm code/agent" && uv run pytest
 ### Commit
 
 `feat(platform): R66 runtime config type contract layer (fuse grok xai-grok-config-types, 6 source files 2741 lines → 7 modules: flags/permission/pool/memory/mcp/types + facade, ConfigSource+ToolFilter wire fidelity + CWE-1188 Deny default + serde flatten/untagged/tolerant/clamped patterns + 143-field RemoteSettings, 104 tests zero-regression)`
+
+## R67 — 远程 workspace API 叶子 wire 类型契约层(融合 grok xai-grok-workspace-types 叶子层)
+
+锚点:R66 `4aa9236`
+
+### 本轮目标
+
+融合 grok `xai-grok-workspace-types` crate 的**叶子层**(types/ 14 文件 1168 行 + lib.rs 116 + error.rs 593 + identity.rs 163 + metadata.rs 243 = **2283 行 Rust**)→ MiniMax Code **远程工作区 API wire 类型契约层**。这是与 R64(管理平面 hooks/plugins DTO)、R65(工具平面 schema 词汇表)、R66(运行时配置类型)对称的**第四个**"类型契约"表面,四者共同构成平台外壳的**类型契约四件套**:
+
+- **R64** 回答 *shell 如何被扩展*(hooks / plugins / MCP / marketplace wire DTO)。
+- **R65** 回答 *有哪些工具*(tool / argument / type-tag / JSON-Schema 词汇)。
+- **R66** 回答 *如何被配置*(运行时叶子配置值 + RemoteSettings 代理 payload)。
+- **R67** 回答 *远程如何被表达*(workspace session / tool call / hunk / chunk / progress / error 的 wire 线格式)。
+
+落地 `agent/minimax_code/workspace_types/` 新顶层模块(与 `extensions/`、`tool_types/`、`config_types/` 并行),pure types + pure logic 零 I/O。前向迁移到 Python(pydantic v2 + StrEnum + 透明 str 新类型 + 自定义 BTreeMap dict 子类 + adjacent-tagged enum 基类),不需要 Rust 工具链。
+
+叶子层先行:rpc/ 14 文件(4379 行,请求/响应 envelope)和 tests/wire_round_trip.rs(959 行)留待 R68+ 分轮迁移——它们依赖叶子层先就位。
+
+### 融合结论 ✅
+
+完整迁移成功。`xai-grok-workspace-types` 叶子层(types/ + lib.rs + error.rs + identity.rs + metadata.rs)2283 行 Rust 前向迁移到 21 个 Python 文件(2071 行),保真度通过 62 个测试钉死:
+
+- `identity.rs` → `identity.py`:`SessionId` / `ToolCallId` / `HunkId` 三个 `#[serde(transparent)]` String 新类型(str 子类,自定义 `__new__` + `__get_pydantic_core_schema__` pydantic hook,序列化为裸字符串)。
+- `metadata.rs` → `metadata.py`:`Metadata`(`BTreeMap<String,String>` 透明新类型,dict 子类 + `to_wire` 排序)+ 6 个 header 常量(`x-workspace-session-id` 等)+ `STANDARD_META_KEYS`。
+- `error.rs` → `errors.py`:`WorkspaceError` 13 变体(adjacent-tagged)+ 13 工厂方法 + Display 模板(每个变体一行格式化串)。
+- `lib.rs` ChunkKind → `chunk_kind.py`:29 变体 StrEnum(标记 chunk 类型)。
+- `types/` 13 leaf → `types/` 13 模块 + barrel:`config` / `files` / `git` / `hunk` / `interaction` / `memory` / `permission` / `plan_mode` / `plugins` / `search` / `session` / `skills` / `tools`。
+  - `tools.rs`:`ToolOutputChunk`(bytes_as_base64)+ `ToolProgress`(adjacent-tagged started/status/percent)+ `ToolCallResult` + `ToolDef`。
+  - `interaction.rs`:`UserQuestionOption`(preview skip_serializing_if,to_wire 覆盖)+ `UserQuestion`。
+  - `session.rs` / `hunk.rs` / `permission.rs`:各含一个 adjacent-tagged enum + 线格式 struct。
+- 新增 `_wire.py`(共享 `WireModel` + `sort_mappings`)+ `_tagged.py`(共享 `AdjacentTagged` 基类):消重 13+ 个 adjacent-tagged enum 的样板。
+
+零回归:全量 **2084 passed / 10 skipped**(R66 的 2022 + R67 新增 62,完美对账)。
+
+### 交付
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `agent/minimax_code/workspace_types/__init__.py` | 163 | barrel facade,按子模块分组导出(身份/元数据/错误/chunk/types) |
+| `agent/minimax_code/workspace_types/_wire.py` | 72 | `WireModel`(populate_by_name + to_wire + default)+ `sort_mappings`(递归 BTreeMap 排序) |
+| `agent/minimax_code/workspace_types/_tagged.py` | 98 | `AdjacentTagged` 基类(adjacent `{"type","data"}` 线格式 + variant 校验 + 工厂命名空间) |
+| `agent/minimax_code/workspace_types/identity.py` | 95 | `SessionId`/`ToolCallId`/`HunkId` 透明 str 新类型 + pydantic core_schema hook |
+| `agent/minimax_code/workspace_types/metadata.py` | 104 | `Metadata`(BTreeMap dict 子类 + to_wire 排序)+ 6 header 常量 |
+| `agent/minimax_code/workspace_types/errors.py` | 289 | `WorkspaceError` 13 变体 + 13 工厂 + Display 模板 |
+| `agent/minimax_code/workspace_types/chunk_kind.py` | 80 | `ChunkKind` 29 变体 StrEnum |
+| `agent/minimax_code/workspace_types/types/__init__.py` | 122 | types barrel facade |
+| `agent/minimax_code/workspace_types/types/config.py` | 122 | workspace config wire struct |
+| `agent/minimax_code/workspace_types/types/files.py` | 52 | 文件操作 wire struct |
+| `agent/minimax_code/workspace_types/types/git.py` | 90 | git 操作 wire struct |
+| `agent/minimax_code/workspace_types/types/hunk.py` | 69 | `Hunk` + `HunkAction` adjacent-tagged |
+| `agent/minimax_code/workspace_types/types/interaction.py` | 97 | `UserQuestion` + `UserQuestionOption`(preview skip) |
+| `agent/minimax_code/workspace_types/types/memory.py` | 32 | memory wire struct |
+| `agent/minimax_code/workspace_types/types/permission.py` | 71 | permission wire struct + enum |
+| `agent/minimax_code/workspace_types/types/plan_mode.py` | 74 | plan mode wire struct |
+| `agent/minimax_code/workspace_types/types/plugins.py` | 56 | plugins wire struct |
+| `agent/minimax_code/workspace_types/types/search.py` | 91 | search wire struct |
+| `agent/minimax_code/workspace_types/types/session.py` | 120 | session wire struct + enum |
+| `agent/minimax_code/workspace_types/types/skills.py` | 37 | skills wire struct |
+| `agent/minimax_code/workspace_types/types/tools.py` | 137 | `ToolOutputChunk`(base64)+ `ToolProgress` + `ToolCallResult` + `ToolDef` |
+| `agent/tests/test_workspace_types.py` | 543 | 62 测试(身份裸字符串/pydantic 字段往返、Metadata BTreeMap 排序、ChunkKind 29 变体、各 adjacent-tagged enum 拒绝+相等+哈希、WorkspaceError 13 工厂+Display、ToolOutputChunk base64 往返+epoch 默认、13 types 模块往返、UserQuestionOption preview 跳过) |
+
+### 映射决策树 + 坑
+
+```
+grok xai-grok-workspace-types 叶子层(serde → pydantic v2 + 自定义基类)
+  │
+  ├─ #[serde(transparent)] String 新类型
+  │     └─> str 子类 + 自定义 __new__ + __get_pydantic_core_schema__
+  │           └─ SessionId / ToolCallId / HunkId → 裸字符串(坑 1)
+  │
+  ├─ #[serde(transparent)] BTreeMap<String,String>
+  │     └─> dict 子类 + to_wire() 排序键
+  │           └─ Metadata(坑 4 三元反转)
+  │
+  ├─ #[serde(tag="type", content="data")] adjacent tagging
+  │     └─> AdjacentTagged 基类(_VARIANTS 元组 + 工厂 classmethod)
+  │           ├─ WorkspaceError 13 变体
+  │           ├─ ToolProgress 3 变体
+  │           ├─ HunkAction 3 变体
+  │           └─ session / permission / plan_mode 内嵌 enum 等
+  │
+  ├─ #[derive(Default)] + #[serde(default)] struct
+  │     └─> WireModel + default() classmethod
+  │           └─ 必填字段 default() 提供 0 值("" / ToolCallId(""))
+  │
+  ├─ bytes_as_base64 自定义 serde module
+  │     └─> field_serializer(when_used="json") + field_validator(mode="before")
+  │           └─ ToolOutputChunk.bytes(坑 2 字段名遮蔽 + 坑 3 UTF-8 默认)
+  │
+  ├─ skip_serializing_if
+  │     └─> 子类覆盖 to_wire()
+  │           └─ UserQuestionOption.preview(空时省略)
+  │
+  ├─ strum EnumVariants + Display
+  │     └─> StrEnum + 工厂 classmethod + Display 模板字符串
+  │           └─ ChunkKind 29 变体 / WorkspaceError 13 变体
+  │
+  └─ 跨 crate 依赖分类
+        ├─ serde / serde_json     → pydantic v2
+        ├─ bytes                  → base64 自定义序列化
+        ├─ chrono DateTime<Utc>   → datetime + UTC epoch 默认
+        ├─ BTreeMap               → dict 子类 + sort
+        ├─ indexmap               → dict 有序
+        └─ rpc/ + tests/          → R68+ 后续轮次(YAGNI 本轮)
+```
+
+**坑 1 — pydantic v2 不支持带自定义 `__new__` 的 str 子类**
+三个透明 String 新类型用 `__new__` 保持 str 值不可变(并加 `__slots__ = ()`)。但 pydantic v2 **不**自动支持这种子类——收集模型时抛 `PydanticSchemaGenerationError: Unable to generate pydantic-core schema for HunkId`。**预判**:`ToolOutputChunk.call_id: ToolCallId` 字段会让整个模型无法构建。**修复**:`__get_pydantic_core_schema__` 类方法返回 `core_schema.no_info_after_validator_function(cls, core_schema.str_schema())`——先按 str 校验输入,再用 `cls` 重包装;底层 `str_schema` 驱动序列化,所以 wire 仍是裸字符串。**钉死**:`test_identity_round_trips_as_bare_string`(json `"s1"` ⇄ SessionId)。
+
+**坑 2 — PEP 563 注解字符串化下的 `bytes: bytes` 字段名/类型遮蔽**
+`from __future__ import annotations` 把所有注解字符串化。`ToolOutputChunk` 有个字段名叫 `bytes`(Rust 线键 `bytes: Vec<u8>`),注解也是 `bytes`——但字段的默认值 `b""` 是**类属性**,会遮蔽 `bytes` 类型名,pydantic 解析时拿到 `unevaluable-type-annotation` / `PydanticUserError: field name clashing with type annotation`。**诊断**:坑 1 修复后 call_id 解析成功,错误前移到 bytes 字段——证明 hook 生效。**修复**:模块级别名 `_RawBytes = bytes`,字段写成 `bytes: _RawBytes = b""`(线键 `bytes` 保留,类型解析正确)。**钉死**:`test_tool_output_chunk_field_named_bytes`。
+
+**坑 3 — pydantic v2 bytes 字段 json 模式默认 UTF-8 解码,不是 base64**
+Rust `ToolOutputChunk.bytes` 用自定义 `bytes_as_base64` serde module(线格式是 RFC-4648 base64 字符串,不是 int 数组)。但 pydantic v2 的 bytes 字段在 `model_dump(mode="json")` 下是 **UTF-8 解码**——非 UTF-8 payload(如 `b"\x80"`)会抛 `UnicodeDecodeError: 'utf-8' codec can't decode byte 0x80`。**诊断**:最小复现确认默认行为是 UTF-8;`_wire.py` docstring 原本错误地声称 bytes 自动 base64。**修复**:`field_validator("bytes", mode="before")`(json 路径收到 base64 `str` 就 `b64decode`,dict 路径收到原始 bytes 放行)+ `field_serializer("bytes", when_used="json")`(`b64encode` → ascii `str`)。同时修正 `_wire.py` docstring 澄清"bytes 默认非 base64,仅 ToolOutputChunk 覆盖"。**钉死**:`test_tool_output_chunk_bytes_base64_round_trip`(随机非 UTF-8 bytes 往返)。
+
+**坑 4 — Metadata `__init__` 三元表达式反转**
+`Metadata.__init__(items=None)` 初版写成 `super().__init__(items if items is None else dict(items))`——逻辑反了,当 `items=None` 时把 `None` 传给 `dict.__init__`,抛 `TypeError: 'NoneType' object is not iterable`。**修复**:`items if items is not None else ()`(None 时传空元组)。**钉死**:`test_metadata_empty_construction`(`Metadata()` 不抛)。
+
+**坑 5 — BTreeMap 键排序 vs dict 插入序**
+Rust `Metadata` 是 `BTreeMap<String,String>`,线格式按键字典序排序。Python dict 保插入序,直接 dump 会乱序——字节哈希不稳定。**修复**:`Metadata.to_wire()` 返回 `{k: self[k] for k in sorted(self.keys())}`;`WireModel.to_wire()` 用 `sort_mappings` 递归排序所有嵌套 map(保留 list 序)。**钉死**:`test_metadata_keys_sorted_lexicographically`(`traceparent` < `x-workspace-prompt-index` < `x-workspace-session-id`)。
+
+### 验证
+
+三重验证全绿:
+
+```bash
+# 1. ruff lint(行长 100,E/F/W/I/B/UP)
+cd "/d/工作/城建院/mm code/agent" && uv run ruff check minimax_code/workspace_types/ tests/test_workspace_types.py
+# → All checks passed!(`--fix` 修复 I001 导入排序 + F401 未用 Field/AdjacentTagged + UP017 timezone.utc→UTC 后干净)
+
+# 2. R67 专项测试
+cd "/d/工作/城建院/mm code/agent" && uv run pytest tests/test_workspace_types.py -q
+# → 62 passed in 0.21s(修正 identity pydantic hook + bytes base64 序列化 + Metadata 三元反转后全绿)
+
+# 3. 全量回归(零回归)
+cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
+# → 2084 passed, 10 skipped in 93.94s
+#    (R66 的 2022 + R67 新增 62,完美对账,零回归)
+```
+
+测试增长:R66 的 2022 → R67 的 2084(+62 R67 新增,零回归)。
+
+**wire 保真交叉验证**:Grep grok 源码(identity.rs `#[serde(transparent)]`、metadata.rs `BTreeMap`、error.rs `#[serde(tag="type", content="data")]`、tools.rs `bytes_as_base64` 自定义 module、interaction.rs `skip_serializing_if`)逐行确认 Python 实现语义一致;`tests/wire_round_trip.rs`(959 行)的线格式断言作为对照基准。
+
+### YAGNI 边界
+
+本轮明确不做:
+
+- ❌ **rpc/ 14 文件(4379 行)迁移** —— 请求/响应 envelope 依赖叶子层先就位,留 R68+。本轮只迁移叶子类型(types/ + identity + metadata + error + chunk_kind + lib)。
+- ❌ **tests/wire_round_trip.rs(959 行)移植** —— grok 端的跨 struct 往返测试,作为 Python 侧 62 测试的对照基准,不直接移植(已有等价覆盖)。
+- ❌ **requests/ + events/ + chunks/ 完整 struct 体** —— 部分嵌套 struct 留待 rpc/ 一并迁移时补全。
+- ❌ **接入 IPC handler 或 workspace transport** —— 类型层先行。wire DTO 的消费端(远程 workspace client)在 shell 层,本轮只迁移线格式类型。
+- ❌ **前端 `web/src/types/` 镜像** —— 纯后端类型契约,无 wire 事件广播到前端,暂不需要。
+- ❌ **不修复预存 ruff 债务** —— 全量 ruff 报预存错误(与 R67 无关)。R67 21 文件 ruff 全绿即可(轮次独立原则)。
+
+### Commit
+
+`feat(platform): R67 remote workspace API leaf wire type contract layer (fuse grok xai-grok-workspace-types leaf tier, types/ 14 files 1168 + lib 116 + error 593 + identity 163 + metadata 243 = 2283 lines → 21 modules: identity/metadata/errors/chunk_kind + 13 leaf types + _wire/_tagged bases, transparent str newtype pydantic hook + bytes_as_base64 + BTreeMap sorted dict + adjacent-tagged enum base, 62 tests zero-regression)`
