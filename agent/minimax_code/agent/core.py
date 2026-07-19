@@ -51,6 +51,7 @@ from ..lifecycle import (
     TurnErrorInput,
     TurnStartInput,
 )
+from ..models import default_model
 from ..telemetry.tracing import Tracer, get_tracer
 from .interjection import (
     FormattedInterjection,
@@ -197,7 +198,7 @@ UsageCallback = Callable[[dict[str, int]], Awaitable[None]]
 class AgentConfig:
     """Tunable knobs for a single :class:`AgentCore` instance."""
 
-    model: str = "MiniMax-M3"
+    model: str = default_model()  # R50: was "MiniMax-M3" literal, now from vocabulary
     max_iterations: int = 12
     # Per-tool dispatch timeout (seconds). The tool itself can
     # also enforce its own (shorter) limit; this is the ceiling.

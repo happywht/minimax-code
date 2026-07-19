@@ -296,3 +296,30 @@ def test_build_agent_core_model_fallback_from_vocabulary(monkeypatch):
         max_iterations=None,
     )
     assert captured["model"] == "explicit-model"
+
+
+# --- core default wiring (R50, milestone) -----------------------------------
+
+
+def test_agent_config_model_default_from_vocabulary():
+    """R50 wiring (milestone): ``AgentConfig.model`` default derives from registry.
+
+    ``AgentConfig.model`` was a hard-coded ``"MiniMax-M3"`` dataclass field
+    default — the central conversation-loop config. It is now
+    :func:`default_model` evaluated at class-definition time, so the agent
+    core and the default-model registry share one baked-in document. This is
+    the core-layer capstone of the single-source migration (R46 storage →
+    R47 llm → R48 candidate set → R49 resolver/runtime → R50 AgentConfig); a
+    regression to a literal breaks this test.
+    """
+    import dataclasses
+
+    from minimax_code.agent.core import AgentConfig
+
+    # The field default itself (not a default_factory) is the vocabulary value.
+    model_field = next(
+        field for field in dataclasses.fields(AgentConfig) if field.name == "model"
+    )
+    assert model_field.default == M.default_model()
+    # And a default-constructed AgentConfig reflects it.
+    assert AgentConfig().model == M.default_model()

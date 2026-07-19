@@ -3801,3 +3801,50 @@ R46/R47/R48 接了 3 处 `DEFAULT_MODEL` / `CANDIDATE_MODELS` 硬编码。本轮
 ### Commit
 
 `feat(platform): R49 migrate scattered MiniMax-M3 fallbacks to model vocabulary (fuse grok xai-grok-models)`
+
+---
+
+## R50 — 核心层 AgentConfig.model 单一来源接线（融合 grok xai-grok-models 消费端，里程碑）
+
+> 锚定 R49（`8885a7b`）。**本轮达成「至少迭代超 50 回合」里程碑（第 50 轮）** —— 单来源迁移链路完整闭环：R46 storage → R47 llm → R48 candidate set → R49 resolver/runtime → **R50 AgentConfig（核心层 capstone）**。
+
+### 本轮目标
+
+R46/R47/R48/R49 五处消费端已接 R45 词汇表，剩**核心层最高风险**的一处 —— `agent/core.py` 的 `AgentConfig.model` dataclass 字段默认值（原硬编码 `model: str = "MiniMax-M3"`）。这是**对话循环的中央配置**：每个 `AgentCore` 实例（主 agent + 每个技能子 agent）的模型由它决定，是整个系统最敏感的单一字段。本轮把它从字面量改为 `default_model()` —— 在 dataclass **类定义时**求值（与函数默认参数同语义：字段默认值在类体执行时求值，模块导入即定型）。预研关键事实：`models.py` 仅导入 `functools`/`json`/`pydantic.BaseModel`（零 minimax_code 子模块），`core.py` 已通过 R47 接入 `..models` 的同层 first-party 导入（`.llm`）—— 新增 `from ..models import default_model` 不引入循环。值保持 `"MiniMax-M3"`，行为完全保持。
+
+### 融合结论
+
+- ✅ **保留**：`core.py` 导入 `from ..models import default_model` —— 插在 `lifecycle` 块与 `telemetry` 块之间（first-party 同层，ruff I001 一次干净，无 `--fix` 需要）。
+- ✅ **保留**：`AgentConfig.model: str = default_model()` —— dataclass 字段默认值在类定义时求值，与 R46 `DEFAULT_MODEL = default_model()` / R47 / R49 `parent_model = default_model()` 同构（顶层/定义时求值模式）。
+- ✅ **保留**：1 个不变量测试（`dataclasses.fields` 读字段 `default` 本身 + `AgentConfig().model` 默认构造双锁死 —— 防止退化为 `default_factory`）。
+- ❌ **放弃**：无（本轮是 R49 YAGNI 边界明确点名的「core.py:200 单独一轮」，无替代方向）。
+
+### 交付
+
+- `agent/minimax_code/agent/core.py`（改）— (1) 导入块加 `from ..models import default_model`（54 行，`lifecycle` 块 `(...TurnStartInput,)` 之后、`telemetry` 块 `from ..telemetry.tracing import ...` 之前）；(2) `AgentConfig` dataclass 字段 `model: str = "MiniMax-M3"` → `model: str = default_model()` + 行内注释 `# R50: was "MiniMax-M3" literal, now from vocabulary`。**值不变**。
+- `agent/tests/test_models.py`（改，276→326 行，19→20 测试）— 新增 `test_agent_config_model_default_from_vocabulary`：(1) `dataclasses.fields(AgentConfig)` 找 `model` 字段，断言 `.default == default_model()`（锁死字段默认值本身，非 `default_factory`）；(2) `AgentConfig().model == default_model()`（默认构造反映词汇表值）。docstring 标注这是 R46-R50 单来源迁移链路的**核心层 capstone**，退化到字面量即破坏此测试。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目（含里程碑标注）。
+
+### 映射决策树（本轮纯消费端接线，无新类型/枚举）
+
+本轮不引入新枚举/类型，是 R45 词汇表的**第五处消费端接线**（R46 storage / R47 llm / R48 CANDIDATE_MODELS / R49 resolution+runtime / R50 AgentConfig）。决策树四分支本轮无新增。**接线模式复用**：core.py 是 agent 包内模块，`AgentConfig.model` 字段默认值在类定义时求值 —— 与函数默认参数语义相同，故用顶层导入 + `default_model()` 直接作字段默认（R46/R47/R49-parent_model 同构的「定义时求值」模式，非 runtime 的懒加载）。循环风险评估：`models.py` 是零依赖叶（仅 stdlib+pydantic），`core.py` 已 first-party 导入 `..models` 同层（R47 的 `.llm` 已接），新增导入不触发循环。
+
+**坑（自发现，已修复）**：无。`ruff check core.py tests/test_models.py` 首次即 **All checks passed!**（无需 `--fix`）。导入插入位置（lifecycle 与 telemetry 块之间）天然满足 I001 first-party 字母/层级排序。无运行时错误 —— 重点 pytest 65 测试一次通过（agent_core + models + completion + chat 全消费路径）。
+
+### 验证
+
+- `ruff check core.py tests/test_models.py` → **All checks passed!**（首次干净，无 `--fix`）。
+- 重点 `pytest tests/test_agent_core.py tests/test_models.py tests/test_completion.py tests/test_chat.py -q` → **65 passed in 11.39s**（AgentConfig.model 核心字段全部消费路径零破坏）。
+- `pytest tests/test_models.py -q` → **20 passed**（R49 的 19 + R50 的 1 新测试全过）。
+- 完整套件 `pytest` → **1696 passed, 10 skipped in 104.26s**（R49 1695 → R50 1696，**+1 精确**，零回归）。
+
+### YAGNI 边界
+
+- ❌ **不迁移剩余 2 处散落 fallback** —— `completion_routes.py:121`（路由层）/ `app.py:404`（启动层），留 R51+ 逐轮消化。核心层（core.py）已闭环，剩余 2 处是边缘启动/路由路径，风险递减。
+- ❌ **不推导 `MODEL_META` 从词汇表** —— 仍硬编码（`handlers_model.py:68`），需先决定 MiniMax 展示层策略（grok 无 context_window/name 结构化建模，是 MiniMax 前端独有需求）。
+- ❌ **不扩展 `DefaultModelEntry` 建模展示元数据** —— grok serde entry 只读 `model`（R45 对等契约）；扩展破坏对等。
+- ❌ **不改 migration SQL 种子**（`002_model_prefs.py` / `005_providers.py`）—— 已部署快照，不重跑。
+
+### Commit
+
+`feat(platform): R50 wire AgentConfig.model to model vocabulary (fuse grok xai-grok-models)`
