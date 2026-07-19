@@ -1,4 +1,4 @@
-"""Numeric ↔ string error-code mapping for the wire protocol (R82).
+"""Numeric ↔ string error-code mapping for the wire protocol (R82 + R83 backfill).
 
 Fusion of grok-build's ``xai-tool-protocol::error_codes`` — the fixed
 table pairing JSON-RPC numeric codes with Grok stable string identifiers,
@@ -10,16 +10,17 @@ Receivers SHOULD switch on ``data.code`` (the snake_case string) rather
 than the numeric JSON-RPC ``error.code``: the numeric is the JSON-RPC
 envelope code; the string is the Grok stable identifier.
 
-YAGNI boundary
---------------
+R83 backfill
+------------
 
 ``from_tool_error_wire`` and ``workspace_unavailable_wire`` (the two
-helpers that build / classify a :class:`ToolErrorWire`) are deferred:
-they depend on ``error_wire::ToolErrorWire`` (a later round in this
-crate). The pieces they compose from — the table, the lookup helpers,
-the workspace-unavailable constants and the two tolerant enums plus
-:class:`WorkspaceUnavailableDetails` — land here so the later round
-wires them up without re-touching the contract.
+helpers that build / classify a :class:`ToolErrorWire`) were deferred in
+R82 pending ``error_wire::ToolErrorWire``; R83 lands that enum and the
+two helpers return here to close the gap. ``from_tool_error_wire`` maps
+each variant to its most-appropriate numeric JSON-RPC code (``Custom``
+always → ``-32603`` since its code string is not in the table by
+definition); ``workspace_unavailable_wire`` builds the recognisable
+"workspace gone" error as a :class:`~error_wire.Custom` variant.
 """
 
 from __future__ import annotations
@@ -28,16 +29,20 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
+from minimax_code.tool_protocol.error_wire import Custom, ToolErrorWire
+
 __all__ = [
     "ERROR_CODES",
     "numeric_for",
     "string_for",
+    "from_tool_error_wire",
     "WORKSPACE_UNAVAILABLE_SUBCODE",
     "WORKSPACE_UNAVAILABLE_MESSAGE",
     "WORKSPACE_UNAVAILABLE_JSONRPC_CODE",
     "WorkspaceGoneReason",
     "WorkspaceGonePhase",
     "WorkspaceUnavailableDetails",
+    "workspace_unavailable_wire",
 ]
 
 
@@ -98,6 +103,51 @@ def string_for(code: int) -> str | None:
         if numeric == code:
             return s
     return None
+
+
+# -----------------------------------------------------------------------
+# R83 backfill — from_tool_error_wire (classify a ToolErrorWire → numeric).
+# -----------------------------------------------------------------------
+
+
+#: Wire ``code`` tag → numeric JSON-RPC code (``from_tool_error_wire``).
+#:
+#: Dispatches on the variant's ``code`` ClassVar rather than the variant
+#: type, so it rides on :mod:`error_wire`'s rename-aware tags (``forbidden``
+#: etc.) and needs no per-type imports. Multiple variants fold onto
+#: ``-32603`` (``internal_error``): ``Cancelled`` / ``Execution`` /
+#: ``Internal`` / ``Custom`` all share the generic envelope code — the
+#: string ``code`` discriminator is the stable identifier, not the numeric.
+_VARIANT_CODE_TO_NUMERIC: dict[str, int] = {
+    "tool_not_found": -32011,
+    "session_mismatch": -32600,
+    "forbidden": -32003,
+    "connection_lost": -32004,
+    "timeout": -32001,
+    "cancelled": -32603,
+    "invalid_params": -32602,
+    "execution": -32603,
+    "unsupported_protocol_version": -32605,
+    "frame_too_large": -32018,
+    "behavior_version_unsupported": -32020,
+    "internal_error": -32603,
+    "render_limited": -32023,
+    "terminal_error": -32024,
+    "custom": -32603,
+}
+
+
+def from_tool_error_wire(err: ToolErrorWire) -> int:
+    """Numeric JSON-RPC code most appropriate for a :class:`ToolErrorWire`.
+
+    Mirrors ``error_codes::from_tool_error_wire``: an exhaustive match from
+    each variant to its envelope code. ``Custom`` always maps to ``-32603``
+    (``internal_error``) since its ``code`` string is not in the table by
+    definition. Dispatch is on the variant's wire ``code`` tag, so the
+    rename overrides (``forbidden`` etc.) fall out automatically without
+    importing the variant types.
+    """
+    return _VARIANT_CODE_TO_NUMERIC[err.code]
 
 
 # -----------------------------------------------------------------------
@@ -208,3 +258,35 @@ class WorkspaceUnavailableDetails:
             phase=WorkspaceGonePhase.from_wire(str(data["phase"])),
             retryable=bool(data["retryable"]),
         )
+
+
+# -----------------------------------------------------------------------
+# R83 backfill — workspace_unavailable_wire (build the Custom variant).
+# -----------------------------------------------------------------------
+
+
+def workspace_unavailable_wire(
+    reason: WorkspaceGoneReason,
+    phase: WorkspaceGonePhase,
+) -> Custom:
+    """Build the recognisable "workspace gone" error (``workspace_unavailable_wire``).
+
+    Mirrors ``error_codes::workspace_unavailable_wire``: returns a
+    :class:`~minimax_code.tool_protocol.error_wire.Custom` variant whose
+    :attr:`~.error_wire.Custom.subcode` and ``details["code"]`` are both
+    :data:`WORKSPACE_UNAVAILABLE_SUBCODE`, so a recogniser keying on either
+    matches. ``details`` carries the :class:`WorkspaceUnavailableDetails`
+    payload with ``retryable=True``. Reusing ``Custom`` (not a new variant)
+    keeps the frame deserialisable on older peers.
+    """
+    details = WorkspaceUnavailableDetails(
+        code=WORKSPACE_UNAVAILABLE_SUBCODE,
+        reason=reason,
+        phase=phase,
+        retryable=True,
+    )
+    return Custom(
+        subcode=WORKSPACE_UNAVAILABLE_SUBCODE,
+        message=WORKSPACE_UNAVAILABLE_MESSAGE,
+        details=details.to_wire(),
+    )
