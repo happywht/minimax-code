@@ -3397,4 +3397,53 @@ MCP-over-ACP 常量是 dataclass 未用 pydantic 序列化面）；**纯值相�
 
 ### Commit
 
-`feat(platform): R41 system power sleep/wake listener (fuse grok xai-system-power)`
+`feat(platform): R41 system power sleep/wake listener (fuse grok xai-system-power)` (`01bb00e`)
+
+---
+
+## R42 — 版本管理词汇表 + 零依赖 semver（融合 grok `xai-grok-version`）
+
+### 本轮目标
+
+从 grok 的 `xai-grok-version`（75 行：lib.rs + build.rs）引入**版本管理词汇表**：`VERSION` 编译时版本常量 + `TEST_VERSION_ENV` 测试覆盖钩子 + 零依赖 `Version` semver.org 解析（frozen dataclass）+ `display_version` / `display_version_with_commit` channel-label 格式化。
+
+**阶段 E 平台化/发布主题**。产品价值：MiniMax Code 的 `/health` 已返回版本、前端已展示，但版本管理无统一词汇表——自更新检查（installed vs latest release）、CHANGELOG 展示、channel-aware UI 字符串（`"0.8.0 [stable]"` vs `"0.8.0 [alpha]"`）都各写各的。本模块是这些场景的叶子原语；update-check + channel-label 来源（`xai-grok-update` 消费端）是接线轮。
+
+### 融合结论
+
+**✅ 保持（映射到 Python）**：
+- `VERSION`（编译时 `env!("CARGO_PKG_VERSION")` + `option_env!("GROK_VERSION")` 覆盖）→ 运行时 `importlib.metadata.version("minimax-code")`（单一真相源 = `pyproject.toml`）+ `_FALLBACK_VERSION` 硬编码（unpackaged 上下文，如裸 checkout）。Python 无编译时 `env!`，包元数据**即**唯一真相源。
+- `TEST_VERSION_ENV`（grok `GROK_TEST_VERSION`）→ `MINIMAX_CODE_TEST_VERSION`，`installed()` **call 时**覆盖（测试钩子，模拟升级场景而无需改包元数据）。
+- `semver::Version`（外部 crate 依赖）→ 零依赖 `Version` frozen dataclass（major/minor/patch + pre + build），regex 解析 semver.org。`packaging` 非 MiniMax Code 依赖，自带轻量解析器避免引入。
+- `installed()` / `installed_semver()` / `display_version()` / `display_version_with_commit()` → 直接移植（纯函数/方法）。
+
+**❌ 放弃（YAGNI）**：
+- build.rs `rerun-if-env-changed=GROK_VERSION` 机制——Python 无构建步骤，`importlib.metadata` 运行时读取代之。
+- `option_env!("GROK_VERSION")` 编译时 env 覆盖——Python 无对等，包元数据是真相源。
+
+### 交付
+
+- `agent/minimax_code/version.py`（新）— `VERSION` 常量（`_resolve_compiled_version()` importlib.metadata + fallback）+ `TEST_VERSION_ENV` + `Version` frozen dataclass（5 字段 + `parse()` classmethod regex + `__str__` 往返）+ `installed()`（TEST_VERSION_ENV 覆盖 + trim）+ `installed_semver()` + `display_version()` / `display_version_with_commit()`，`__all__` 7 符号。
+- `agent/tests/test_version.py`（新）— 16 测试：grok 矩阵镜像（`display_version_with_commit_matrix` 4 case alpha/stable/empty + `display_version_appends_label`）+ Python 特有（installed env 覆盖/trim/fallback/nonempty + Version parse simple/pre/build/both/invalid/str-roundtrip/equality/frozen + installed_semver returns/invalid-raises）。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+映射决策树**第七次重申**（payload 决定映射）：本轮 `semver::Version`（结构体 + 值相等 + **无序列化面**）→ `frozen=True, slots=True` dataclass（第二分支，同 R40 `QueueEntryMeta`）。**新增首次遇到编译时常量 crate**——Rust `env!("CARGO_PKG_VERSION")` 编译时从 Cargo.toml 注入 → Python `importlib.metadata.version()` 运行时从 pyproject.toml 元数据读（无编译步骤，包元数据是唯一真相源，编辑 pyproject.toml 即更新）；Rust `option_env!` 编译时 env 覆盖无 Python 对等 → 移除（包元数据即真相源）；Rust `build.rs` `rerun-if-env-changed` 重编译触发器 → Python 无构建步骤，不适用；Rust `semver::Version`（外部 crate）→ 零依赖 frozen dataclass + regex（`packaging` 非 MiniMax Code 依赖，自带解析器避免引入依赖，保持平台 crate 零额外依赖原则）。
+
+### 验证
+
+- `ruff check --fix` → Found 2 errors (2 fixed, 0 remaining)（I001 `importlib.metadata` 拆分导入）。
+- `ruff check` → **All checks passed!**
+- `pytest tests/test_version.py -q` → **16 passed in 0.07s**（grok 矩阵镜像 + 14 Python 特有）。
+- 完整套件 `pytest` → **1642 passed in 104.64s**（R41 1626 → R42 1642，**+16 精确**，零回归）。
+
+### YAGNI 边界
+
+- ❌ **不实现 pre-release 有序比较**（semver.org §11：`0.8.0-alpha < 0.8.0`）——无消费端（更新检查未接），`Version` 仅值相等；比较逻辑推迟到 update-check 接线轮。
+- ❌ **不接 channel_label 来源**（grok `xai-grok-update::channel_label()`）——`display_version` 接受外部 label 字符串，来源是 update crate 接线轮。
+- ❌ **不实现 update-check**（对比 GitHub release latest vs installed）——`installed_semver()` 提供比较原语，检查逻辑是 update crate 接线轮。
+- ❌ **不接 http_server/前端版本展示**——本轮是词汇表层；接线轮把 `/health` 和前端版本号指向 `version.VERSION` / `display_version`。
+- ❌ **不迁移 build.rs**——Python 无编译时 `env!` 机制，`importlib.metadata` 运行时读取代之。
+
+### Commit
+
+`feat(platform): R42 version vocabulary + zero-dep semver (fuse grok xai-grok-version)`
