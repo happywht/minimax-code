@@ -1,4 +1,4 @@
-"""Tests for ``minimax_code.tool_protocol`` (R82 foundation + R83 wire enums).
+"""Tests for ``minimax_code.tool_protocol`` (R82 foundation + R83 wire enums + R84 envelope).
 
 Covers the four R82 foundation modules plus the three R83 wire-enum modules
 and the two ``error_codes`` helpers R83 unblocks:
@@ -22,6 +22,12 @@ and the two ``error_codes`` helpers R83 unblocks:
 * :mod:`notification_wire` (R83) — ``WireToolNotification``
   adjacent-tagged on ``shape``/``value`` + the forward-compat ``Custom``
   with the spoof-resistant ``check_custom_kind`` guard.
+* :mod:`envelope` (R84) — the JSON-RPC 2.0 request / notification / response
+  / error wrappers, the strict literal ``"2.0"`` protocol-version marker, and
+  ``JsonRpcId`` (the crate's first ``#[serde(untagged)]`` enum, String |
+  Number); the response's ``result`` XOR ``error`` invariant is enforced via
+  custom serde, closing the four-shape coverage (internal-tag / adjacent-tag /
+  untagged / transparent-newtype).
 """
 
 from __future__ import annotations
@@ -53,6 +59,14 @@ from minimax_code.tool_protocol import (
     InvalidArguments,
     InvalidFormatIdError,
     Json,
+    JsonRpcError,
+    JsonRpcIdNumber,
+    JsonRpcIdString,
+    JsonRpcNotification,
+    JsonRpcRequest,
+    JsonRpcResponse,
+    JsonRpcVersion,
+    JsonRpcVersionError,
     KnownVariantCollision,
     Mcp,
     PayloadTooLarge,
@@ -61,6 +75,8 @@ from minimax_code.tool_protocol import (
     RequestId,
     ReservedPrefixIdError,
     ResourceBlock,
+    ResponseError,
+    ResponseResult,
     ServerId,
     SessionId,
     SessionMismatch,
@@ -86,6 +102,7 @@ from minimax_code.tool_protocol import (
     string_for,
     workspace_unavailable_wire,
 )
+from minimax_code.tool_protocol.envelope import jsonrpc_id_from_wire
 from minimax_code.tool_protocol.error_wire import from_wire as error_from_wire
 from minimax_code.tool_protocol.notification_wire import (
     Custom as NotificationCustom,
@@ -1235,3 +1252,288 @@ class TestPackageSurfaceR83:
         import minimax_code.tool_protocol as pkg
 
         assert not hasattr(pkg, "from_wire")
+
+
+# -----------------------------------------------------------------------
+# R84 — JSON-RPC 2.0 envelope (crate's first untagged enum).
+# -----------------------------------------------------------------------
+
+
+class TestJsonRpcVersion:
+    """Strict literal ``"2.0"`` protocol-version marker (custom serde)."""
+
+    def test_to_wire_is_literal_2_0(self):
+        assert JsonRpcVersion().to_wire() == "2.0"
+
+    def test_str_is_literal(self):
+        assert str(JsonRpcVersion()) == "2.0"
+
+    def test_from_wire_accepts_literal(self):
+        assert JsonRpcVersion.from_wire("2.0") == JsonRpcVersion()
+
+    @pytest.mark.parametrize("bad", ["1.0", "2", "3.0", "", "2.0.0", " 2.0"])
+    def test_from_wire_rejects_wrong_string(self, bad):
+        with pytest.raises(JsonRpcVersionError) as exc:
+            JsonRpcVersion.from_wire(bad)
+        assert "expected jsonrpc" in str(exc.value)
+        assert repr(bad) in str(exc.value)
+
+    @pytest.mark.parametrize("bad", [2.0, 2, None, True, {"jsonrpc": "2.0"}, ["2.0"]])
+    def test_from_wire_rejects_non_string(self, bad):
+        with pytest.raises(JsonRpcVersionError):
+            JsonRpcVersion.from_wire(bad)
+
+    def test_singleton_equality_and_hash(self):
+        assert JsonRpcVersion() == JsonRpcVersion()
+        assert hash(JsonRpcVersion()) == hash(JsonRpcVersion())
+        table = {JsonRpcVersion(): 1}
+        assert table[JsonRpcVersion()] == 1
+
+
+class TestJsonRpcId:
+    """``JsonRpcId`` untagged enum (String | Number), the crate's first."""
+
+    def test_string_round_trip(self):
+        s = JsonRpcIdString(value="abc")
+        assert s.to_wire() == "abc"
+        assert jsonrpc_id_from_wire("abc") == s
+
+    def test_number_round_trip(self):
+        n = JsonRpcIdNumber(value=7)
+        assert n.to_wire() == 7
+        assert jsonrpc_id_from_wire(7) == n
+
+    def test_number_rejects_bool_in_constructor(self):
+        with pytest.raises((TypeError, ValueError)):
+            JsonRpcIdNumber(value=True)
+
+    def test_from_wire_rejects_bool(self):
+        with pytest.raises(ValueError):
+            jsonrpc_id_from_wire(True)
+
+    @pytest.mark.parametrize("bad", [1.5, None, [], {}])
+    def test_from_wire_rejects_other_types(self, bad):
+        with pytest.raises(ValueError):
+            jsonrpc_id_from_wire(bad)
+
+    def test_number_as_request_id_stringifies(self):
+        # Number(7) projects to RequestId "7".
+        assert JsonRpcIdNumber(value=7).as_request_id() == RequestId("7")
+
+    def test_string_as_request_id_round_trip(self):
+        rid = RequestId("req-1")
+        projected = JsonRpcIdString.from_request_id(rid)
+        assert projected.as_request_id() == rid
+
+    def test_number_i64_range_enforced(self):
+        JsonRpcIdNumber(value=2**63 - 1)
+        JsonRpcIdNumber(value=-(2**63))
+        with pytest.raises(ValueError):
+            JsonRpcIdNumber(value=2**63)
+
+
+class TestJsonRpcRequest:
+    """Request envelope: ``session_id`` omitted when ``None``."""
+
+    def _make(self, session_id=None):
+        return JsonRpcRequest(
+            jsonrpc=JsonRpcVersion(),
+            id=JsonRpcIdNumber(value=1),
+            method="tool/call",
+            params={"name": "ls"},
+            session_id=session_id,
+        )
+
+    def test_session_id_omitted_when_none(self):
+        wire = self._make().to_wire()
+        assert "session_id" not in wire
+        assert wire["jsonrpc"] == "2.0"
+        assert wire["id"] == 1
+        assert wire["method"] == "tool/call"
+        assert wire["params"] == {"name": "ls"}
+
+    def test_session_id_present_when_some(self):
+        wire = self._make(session_id=SessionId("s-1")).to_wire()
+        assert wire["session_id"] == "s-1"
+
+    def test_round_trip(self):
+        req = self._make(session_id=SessionId("s-1"))
+        rebuilt = JsonRpcRequest.from_wire(req.to_wire())
+        assert rebuilt.method == "tool/call"
+        assert rebuilt.id == JsonRpcIdNumber(value=1)
+        assert rebuilt.session_id == SessionId("s-1")
+        assert rebuilt.params == {"name": "ls"}
+
+
+class TestJsonRpcNotification:
+    """Notification: no ``id`` key; ``seq`` + ``session_id`` omitted when None."""
+
+    def test_no_id_key_and_optionals_omitted(self):
+        wire = JsonRpcNotification(
+            jsonrpc=JsonRpcVersion(),
+            method="progress",
+            params={"p": 1},
+        ).to_wire()
+        assert "id" not in wire
+        assert "session_id" not in wire
+        assert "seq" not in wire
+        assert wire["method"] == "progress"
+
+    def test_seq_and_session_present_when_some(self):
+        wire = JsonRpcNotification(
+            jsonrpc=JsonRpcVersion(),
+            method="progress",
+            params={},
+            session_id=SessionId("s"),
+            seq=FrameSeq.new(5),
+        ).to_wire()
+        assert wire["session_id"] == "s"
+        assert wire["seq"] == 5
+
+    def test_round_trip(self):
+        n = JsonRpcNotification(
+            jsonrpc=JsonRpcVersion(),
+            method="progress",
+            params={"p": 1},
+            seq=FrameSeq.new(3),
+        )
+        rebuilt = JsonRpcNotification.from_wire(n.to_wire())
+        assert rebuilt.method == "progress"
+        assert rebuilt.seq.to_wire() == 3
+
+
+class TestJsonRpcError:
+    """Error object: ``data`` omitted when ``None``."""
+
+    def test_data_omitted_when_none(self):
+        wire = JsonRpcError(code=-32600, message="bad").to_wire()
+        assert wire == {"code": -32600, "message": "bad"}
+        assert "data" not in wire
+
+    def test_data_present_when_some(self):
+        wire = JsonRpcError(
+            code=-32600, message="bad", data={"subcode": "x"}
+        ).to_wire()
+        assert wire["data"] == {"subcode": "x"}
+
+    def test_round_trip(self):
+        e = JsonRpcError(code=-32001, message="timeout", data={"t": 1})
+        rebuilt = JsonRpcError.from_wire(e.to_wire())
+        assert rebuilt.code == -32001
+        assert rebuilt.message == "timeout"
+        assert rebuilt.data == {"t": 1}
+
+    def test_round_trip_without_data(self):
+        e = JsonRpcError(code=-32600, message="bad")
+        rebuilt = JsonRpcError.from_wire(e.to_wire())
+        assert rebuilt.data is None
+
+
+class TestJsonRpcResponseInvariant:
+    """``result`` XOR ``error`` invariant (custom serde, Flat struct pattern)."""
+
+    def test_ok_emits_only_result(self):
+        wire = JsonRpcResponse.ok(
+            JsonRpcIdString(value="1"), {"done": True}
+        ).to_wire()
+        assert "result" in wire
+        assert "error" not in wire
+        assert wire["result"] == {"done": True}
+
+    def test_err_emits_only_error(self):
+        wire = JsonRpcResponse.err(
+            JsonRpcIdString(value="1"), JsonRpcError(code=-1, message="boom")
+        ).to_wire()
+        assert "error" in wire
+        assert "result" not in wire
+
+    def test_ok_round_trip(self):
+        r = JsonRpcResponse.ok(JsonRpcIdNumber(value=2), {"v": 1})
+        rebuilt = JsonRpcResponse.from_wire(r.to_wire())
+        assert isinstance(rebuilt.outcome, ResponseResult)
+        assert rebuilt.outcome.value == {"v": 1}
+        assert rebuilt.id == JsonRpcIdNumber(value=2)
+
+    def test_err_round_trip(self):
+        r = JsonRpcResponse.err(
+            JsonRpcIdNumber(value=2),
+            JsonRpcError(code=-32600, message="bad", data={"k": 1}),
+        )
+        rebuilt = JsonRpcResponse.from_wire(r.to_wire())
+        assert isinstance(rebuilt.outcome, ResponseError)
+        assert rebuilt.outcome.error.code == -32600
+        assert rebuilt.outcome.error.data == {"k": 1}
+
+    def test_with_session_chains_and_returns_self(self):
+        r = JsonRpcResponse.ok(JsonRpcIdString(value="1"), 0)
+        same = r.with_session(SessionId("s"))
+        assert same is r
+        assert r.session_id == SessionId("s")
+
+    def test_response_session_id_omitted_when_none(self):
+        wire = JsonRpcResponse.ok(JsonRpcIdString(value="1"), 0).to_wire()
+        assert "session_id" not in wire
+
+    def test_both_arms_rejected(self):
+        with pytest.raises(ValueError, match="XOR"):
+            JsonRpcResponse.from_wire(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "1",
+                    "result": {"a": 1},
+                    "error": {"code": -1, "message": "x"},
+                }
+            )
+
+    def test_neither_arm_rejected(self):
+        with pytest.raises(ValueError, match="result"):
+            JsonRpcResponse.from_wire({"jsonrpc": "2.0", "id": "1"})
+
+
+class TestEnvelopeSessionIdIndependence:
+    """Envelope ``session_id`` is a distinct layer from ``params.session_id``."""
+
+    def test_envelope_and_params_session_ids_do_not_flatten(self):
+        req = JsonRpcRequest(
+            jsonrpc=JsonRpcVersion(),
+            id=JsonRpcIdString(value="1"),
+            method="tool/call",
+            params={"session_id": "params-layer", "x": 1},
+            session_id=SessionId("envelope-layer"),
+        )
+        wire = req.to_wire()
+        assert wire["session_id"] == "envelope-layer"
+        assert wire["params"]["session_id"] == "params-layer"
+
+        rebuilt = JsonRpcRequest.from_wire(wire)
+        assert rebuilt.session_id == SessionId("envelope-layer")
+        assert rebuilt.params["session_id"] == "params-layer"
+
+
+class TestPackageSurfaceR84:
+    """The R84 barrel re-exports the envelope symbols (but not ``from_wire``)."""
+
+    def test_barrel_exposes_envelope_symbols(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "JsonRpcVersion",
+            "JsonRpcVersionError",
+            "JsonRpcId",
+            "JsonRpcIdString",
+            "JsonRpcIdNumber",
+            "JsonRpcRequest",
+            "JsonRpcNotification",
+            "JsonRpcError",
+            "JsonRpcResponse",
+            "ResponseOutcome",
+            "ResponseResult",
+            "ResponseError",
+        ):
+            assert hasattr(pkg, name), name
+
+    def test_barrel_does_not_export_jsonrpc_id_from_wire(self):
+        # jsonrpc_id_from_wire lives on the submodule, mirroring Rust lib.rs.
+        import minimax_code.tool_protocol as pkg
+
+        assert not hasattr(pkg, "jsonrpc_id_from_wire")

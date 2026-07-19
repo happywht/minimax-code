@@ -1,4 +1,4 @@
-"""xAI Computer Hub wire-protocol types (R82 + R83 — wire enums landed).
+"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 — envelope landed).
 
 Fusion of grok-build's ``xai-tool-protocol`` crate — the wire DTOs for
 the computer-hub tool-server protocol: identifier newtypes, registration
@@ -10,7 +10,9 @@ payload struct, and the numeric ↔ string error-code mapping.
 This package hosts the **pure wire types** — no I/O, no env reads, no
 dependency on the rest of the agent. The crate is large (6613 lines, 16
 modules); R82 lands the dependency-free **foundation layer**, R83 lands
-the three wire enums + the two ``error_codes`` helpers they unblock:
+the three wire enums + the two ``error_codes`` helpers they unblock, and
+R84 lands the JSON-RPC 2.0 envelope (closing the crate's four-shape
+serde coverage with its first untagged enum):
 
 * **R82** — :mod:`ids` (8 identifier newtypes + :class:`IdError`),
   :mod:`connection` (``ConnectionKind`` + ``ToolDefinitionMode``),
@@ -18,18 +20,23 @@ the three wire enums + the two ``error_codes`` helpers they unblock:
   ``HelloAckMsg``), :mod:`error_codes` (the ``ERROR_CODES`` table +
   lookup helpers + workspace-unavailable contract + two
   ``#[serde(other)]``-tolerant enums).
-* **R83 (this round)** — :mod:`error_wire` (``ToolErrorWire``, the
+* **R83** — :mod:`error_wire` (``ToolErrorWire``, the
   15-variant internally-tagged enum on ``code``), :mod:`output_wire`
   (``ToolOutputWire`` adjacent-tagged on ``kind``/``value`` + ``McpBlock``
-  internally-tagged on ``type``), :mod:`notification_wire`
+  internally-tagged on ``type``), :mod:`notification_wire``
   (``WireToolNotification`` adjacent-tagged on ``shape``/``value`` + the
   forward-compat ``Custom`` with spoof-resistant
   :func:`~error_codes.check_custom_kind`); plus the R82-deferred
   ``from_tool_error_wire`` / ``workspace_unavailable_wire`` helpers in
   :mod:`error_codes` (they depend on ``ToolErrorWire`` and so return
   here to close the gap).
-* *deferred* — :mod:`envelope` (JSON-RPC 2.0 request/response/notification),
-  :mod:`methods` (method catalog), :mod:`capabilities`,
+* **R84 (this round)** — :mod:`envelope` (JSON-RPC 2.0
+  request/response/notification/error wrappers + the strict ``"2.0"``
+  protocol-version marker + :data:`JsonRpcId`, the crate's first
+  ``#[serde(untagged)]`` enum — closing the four-shape serde coverage:
+  internal-tag / adjacent-tag / untagged / transparent-newtype; plus the
+  ``result`` XOR ``error`` response invariant enforced via custom serde).
+* *deferred* — :mod:`methods` (method catalog), :mod:`capabilities`,
   :mod:`registration`, :mod:`frames` (tool-server frame protocol, 1549
   lines), :mod:`session_event`, :mod:`turn_hook`, :mod:`hook`,
   :mod:`registry_error`.
@@ -47,6 +54,20 @@ from __future__ import annotations
 from minimax_code.tool_protocol.connection import (
     ConnectionKind,
     ToolDefinitionMode,
+)
+from minimax_code.tool_protocol.envelope import (
+    JsonRpcError,
+    JsonRpcId,
+    JsonRpcIdNumber,
+    JsonRpcIdString,
+    JsonRpcNotification,
+    JsonRpcRequest,
+    JsonRpcResponse,
+    JsonRpcVersion,
+    JsonRpcVersionError,
+    ResponseError,
+    ResponseOutcome,
+    ResponseResult,
 )
 from minimax_code.tool_protocol.error_codes import (
     ERROR_CODES,
@@ -134,6 +155,19 @@ __all__ = [
     # connection (R82)
     "ConnectionKind",
     "ToolDefinitionMode",
+    # envelope (R84)
+    "JsonRpcVersion",
+    "JsonRpcVersionError",
+    "JsonRpcId",
+    "JsonRpcIdString",
+    "JsonRpcIdNumber",
+    "JsonRpcRequest",
+    "JsonRpcNotification",
+    "JsonRpcError",
+    "JsonRpcResponse",
+    "ResponseOutcome",
+    "ResponseResult",
+    "ResponseError",
     # handshake (R82)
     "PROTOCOL_VERSION",
     "HelloMsg",
