@@ -36,12 +36,13 @@ import logging
 import os
 from typing import Any
 
+from ..models import default_model_ids
+from .handler_utils import HandlerError, check_params
 from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
     STORAGE_ERROR,
 )
-from .handler_utils import HandlerError, check_params
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -53,11 +54,15 @@ logger = logging.getLogger(__name__)
 # list is now dynamic from ProviderDAO.list_models(), but the
 # built-in MiniMax provider seeds these same three models.
 
-CANDIDATE_MODELS: tuple[str, ...] = (
-    "MiniMax-M3",
-    "MiniMax-M3-fast",
-    "MiniMax-Code",
-)
+#: The built-in candidate set — sourced from the data-driven registry
+#: (:func:`minimax_code.models.default_model_ids`, the fusion of grok's
+#: ``xai-grok-models`` from R45/R48) so the candidate list and the default-model
+#: vocabulary share one baked-in document. The first element is
+#: :func:`~minimax_code.models.default_model` (``MiniMax-M3``), preserving the
+#: ``CANDIDATE_MODELS[0] == DEFAULT_MODEL`` invariant. Kept as a module-level
+#: tuple for backward-compat with tests that import it directly; the live list
+#: remains dynamic from :class:`~minimax_code.storage.dao.providers.ProviderDAO`.
+CANDIDATE_MODELS: tuple[str, ...] = default_model_ids()
 
 #: Legacy metadata — still used by test_model.py assertions.
 MODEL_META: dict[str, dict[str, Any]] = {
@@ -232,7 +237,7 @@ def register_model_handlers(
             await ctx.reply({"models": models, "current": current})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("model.list failed")
             await ctx.reply_error(INTERNAL_ERROR, "model.list failed")
 
@@ -245,7 +250,7 @@ def register_model_handlers(
             await ctx.reply({"model": model})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("model.get_current failed")
             await ctx.reply_error(INTERNAL_ERROR, "model.get_current failed")
 
@@ -294,7 +299,7 @@ def register_model_handlers(
             await ctx.reply({"ok": True, "model": model, "current": model})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("model.set_current failed")
             await ctx.reply_error(INTERNAL_ERROR, "model.set_current failed")
 

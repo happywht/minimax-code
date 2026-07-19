@@ -193,3 +193,36 @@ def test_default_model_is_llm_client_single_source():
     from minimax_code.agent.llm import DEFAULT_MODEL as llm_default
 
     assert llm_default == M.default_model()
+
+
+# --- candidate-set derivation (R48) ----------------------------------------
+
+
+def test_default_model_ids_returns_ordered_three_model_set():
+    """R48 vocabulary: ``default_model_ids`` lists every model in JSON order."""
+    ids = M.default_model_ids()
+    assert ids == ("MiniMax-M3", "MiniMax-M3-fast", "MiniMax-Code")
+    assert isinstance(ids, tuple)  # ordered + indexable (callers use ids[0])
+
+
+def test_default_model_ids_first_element_is_default():
+    """R48 invariant: ``ids[0] == default_model()`` — pins the
+    ``CANDIDATE_MODELS[0] == DEFAULT_MODEL`` contract that handlers + tests
+    rely on (the JSON's ``models[0]`` is the flagship ``MiniMax-M3``)."""
+    ids = M.default_model_ids()
+    assert ids[0] == M.default_model()
+
+
+def test_candidate_models_derived_from_vocabulary():
+    """R48 wiring: handlers' ``CANDIDATE_MODELS`` is the vocabulary tuple.
+
+    ``handlers_model.CANDIDATE_MODELS`` is no longer a hard-coded literal — it
+    is :func:`default_model_ids`, so the candidate set and the default-model
+    registry share one baked-in document. This pins the wiring; a regression to
+    a hard-coded tuple breaks it.
+    """
+    from minimax_code.ipc.handlers_model import CANDIDATE_MODELS
+
+    assert CANDIDATE_MODELS == M.default_model_ids()
+    # The backward-compat invariant preserved by the derivation.
+    assert CANDIDATE_MODELS[0] == M.default_model()

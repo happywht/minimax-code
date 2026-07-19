@@ -174,12 +174,28 @@ def default_session_summary_model() -> str:
     return d.session_summary or d.default
 
 
+def default_model_ids() -> tuple[str, ...]:
+    """Ordered tuple of every default model ID (R48 vocabulary extension).
+
+    Returns the ``model`` field of each entry in :data:`DEFAULT_MODELS_JSON`'s
+    ``models`` list, in document order. The first element is guaranteed to be
+    :func:`default_model` — the baked-in document pins ``models[0]`` to the
+    flagship ``MiniMax-M3`` (which is also ``default``), so callers relying on
+    ``ids[0] == default_model()`` (e.g. the backward-compatible
+    ``CANDIDATE_MODELS`` in :mod:`minimax_code.ipc.handlers_model`, wired in
+    R48) are safe. This is the consumption seam for the candidate set — the
+    vocabulary owns the ordered ID list so handlers no longer hard-code it.
+    """
+    return tuple(entry.model for entry in _load_defaults().models)
+
+
 __all__ = [
     "DEFAULT_MODELS_JSON",
     "DefaultModelEntry",
     "DefaultModels",
     "default_image_description_model",
     "default_model",
+    "default_model_ids",
     "default_session_summary_model",
     "default_web_search_model",
 ]

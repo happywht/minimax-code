@@ -3706,3 +3706,50 @@ R46 接了 **storage 层**的 `DEFAULT_MODEL`（`model_prefs.py`），消除了�
 ### Commit
 
 `feat(platform): R47 wire default_model to LLM client DEFAULT_MODEL (fuse grok xai-grok-models)`
+
+---
+
+## R48 — CANDIDATE_MODELS 从 R45 词汇表推导（融合 grok xai-grok-models 消费端）
+
+> 锚定 R47（`e083693`）。
+
+### 本轮目标
+
+R46/R47 接了两处 `DEFAULT_MODEL` 硬编码（storage + LLM client）。本轮攻克**第三个硬编码面** —— `handlers_model.CANDIDATE_MODELS`（候选模型 tuple），它是 `is_valid_model` 的校验集 + test_model.py 多处断言的基准。原硬编码 `("MiniMax-M3", "MiniMax-M3-fast", "MiniMax-Code")` 与 R45 `DEFAULT_MODELS_JSON` 的 `models` 列表重复（DRY）。本轮是**混合轮**：先在 R45 词汇表新增 `default_model_ids()` 访问器（词汇表层演进 —— 让词汇表 owning 有序 ID 列表），再把 `handlers_model.CANDIDATE_MODELS` 从硬编码 tuple 改为 `default_model_ids()` 推导（消费端接线）。预研关键约束：`test_model.py:314` `CANDIDATE_MODELS[0] == DEFAULT_MODEL` 由 R45 JSON `models[0] == "MiniMax-M3" == default` 天然满足 —— 推导后值与顺序完全不变，所有 `CANDIDATE_MODELS` 断言自动通过。
+
+### 融合结论
+
+- ✅ **保留**：R45 `models.py` 新增 `default_model_ids() -> tuple[str, ...]` 访问器 —— 词汇表层演进，返回 `_load_defaults().models` 的有序 model IDs tuple，docstring 明示 `[0] == default_model()` 不变量。
+- ✅ **保留**：`handlers_model.CANDIDATE_MODELS = default_model_ids()` 接线 —— 消费端从硬编码 tuple 改为词汇表推导，候选集与默认值词汇表共享单一 baked-in 文档。
+- ✅ **保留**：3 个不变量测试（有序三模型集 / `[0]==default` / 接线锁死）。
+- ❌ **无死代码陷阱**：预研（R47 轮已读 test_model.py 断言 + R48 读 handlers_model.py）确认 CANDIDATE_MODELS 是 `is_valid_model` 真实校验集 + 测试基准，非死代码。
+
+### 交付
+
+- `agent/minimax_code/models.py`（改，186→200 行）— R45 词汇表新增 `default_model_ids()` 访问器（在 `default_session_summary_model` 之后），返回 `tuple(entry.model for entry in _load_defaults().models)`，10 行 docstring 说明有序性 + `[0]==default_model()` 不变量 + 消费接缝（handlers R48 接线）；`__all__` 加入 `default_model_ids`（字母序）。
+- `agent/minimax_code/ipc/handlers_model.py`（改）— (1) 新增导入 `from ..models import default_model_ids`（ruff `--fix` 后排在 `from .handler_utils`/`from .protocol`/`from .server` 之前——两点相对 `..models` 优先于单点相对）；(2) `CANDIDATE_MODELS` 从硬编码 3 元素 tuple 改为 `default_model_ids()`，加 9 行注释说明来源（R45 词汇表）+ `[0]==default_model()` 不变量 + backward-compat 语义（live list 仍动态来自 `ProviderDAO`）。**值与顺序不变**。
+- `agent/tests/test_models.py`（改，194→222 行，14→17 测试）— 新增 3 测试：`test_default_model_ids_returns_ordered_three_model_set`（`== ("MiniMax-M3","MiniMax-M3-fast","MiniMax-Code")` + `isinstance tuple`）/ `test_default_model_ids_first_element_is_default`（`ids[0] == default_model()`）/ `test_candidate_models_derived_from_vocabulary`（`handlers.CANDIDATE_MODELS == M.default_model_ids()` + `[0]==default`）。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+### 映射决策树（本轮混合 —— 词汇表层演进 + 消费端接线，无新枚举映射）
+
+本轮不引入新枚举/类型，是 R45 词汇表**纵向演进**（加第 5 个访问器 `default_model_ids`，与 R45 已有的 4 个 `default_*_model` 同构）+ handlers 消费端接线。决策树四分支本轮无新增（`default_model_ids` 是普通函数，非 enum/dataclass/pydantic 新类型）。**混合轮的合法性**：词汇表层演进（R45 加访问器）与消费端接线（handlers 用它）强耦合 —— 没有访问器就无法接线 CANDIDATE_MODELS，放一轮避免「加了访问器但无人用」的中间态。这与 R46/R47 纯接线轮（消费已有 R45 函数）不同，但耦合性证明同轮合理。
+
+**坑（自发现，已修复）**：(1) ruff `I001` handlers_model.py 导入块未排序（加 `from ..models import default_model_ids` 后），`--fix` 修复（两点相对排单点相对之前）。(2) ruff `F841 ×3` —— `handlers_model.py` 第 240/253/302 行 `except Exception as exc:` 的 `exc` 未使用（model.list/get_current/set_current 的防御性 except，只用 `logger.exception()`，不需 `exc`）。这是**预存 lint**（非 R48 引入），但按 CLAUDE.md「修复正在编辑文件的 ruff 错误可以」顺手清理（行为保持：`logger.exception()` 自动从 `sys.exc_info()` 取，移除 `as exc` 无影响）。`--fix` 一次修全部 4 个，重检 `All checks passed!`。无运行时错误——重点 pytest 35 测试一次通过。
+
+### 验证
+
+- `ruff check` → **All checks passed!**（`--fix` 修 I001 + F841×3 后；models.py/test_models.py 本就干净）。
+- 重点 `pytest tests/test_model.py tests/test_models.py tests/test_handlers_providers.py -q` → **35 passed in 2.83s**（test_model 16 + test_models 17 + test_handlers_providers 2，R48 新增 3 测试全过，`CANDIDATE_MODELS` 全部消费断言自动跟随）。
+- 完整套件 `pytest` → **1693 passed, 10 skipped in 103.67s**（R47 1690 → R48 1693，**+3 精确**，零回归）。
+
+### YAGNI 边界
+
+- ❌ **不推导 `MODEL_META` 从词汇表** —— R45 `DefaultModelEntry` 只建模 `model`（extra="ignore" 丢弃 `name`/`context_window`/`description`/`temperature`/`top_p`）。推导 `MODEL_META`（含 `context_window`/`name`/`provider`/`supports_tools`/`is_default`）需**先扩展 R45 entry** 建模展示元数据 —— 独立的词汇表层演进（R49）。
+- ❌ **不迁移 5 处散落 `"MiniMax-M3"` fallback** —— `app.py:404` / `completion_routes.py:121` / `core.py:200` / `runtime.py:358` / `resolution.py:136`（债务地图已建立，逐轮消化，R50+）。
+- ❌ **不改 migration SQL 种子**（`005_providers.py:44` 的模型 JSON）—— 一次性快照，已部署 DB 不重跑；与运行时词汇表 drift 可接受（语义不同）。
+- ❌ **不扩展 `DefaultModelEntry` 建模展示元数据** —— R49 词汇表层演进，为 MODEL_META 推导铺路。
+
+### Commit
+
+`feat(platform): R48 derive CANDIDATE_MODELS from model vocabulary (fuse grok xai-grok-models)`
