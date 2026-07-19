@@ -1,0 +1,293 @@
+"""Reasoning-effort type layer — fusion of grok's ``xai-grok-sampling-types`` (R53).
+
+Pure data types for the reasoning-effort control axis (the companion to the
+R45 model vocabulary — together they are the two configuration axes of an LLM
+call). Mirrors grok ``xai-grok-sampling-types`` (types.rs:762-1008):
+
+* :class:`ReasoningEffort` — six variants (``none`` / ``minimal`` / ``low`` /
+  ``medium`` [default] / ``high`` / ``xhigh``), wire format lowercase (serde
+  ``rename_all = "lowercase"``); ``max`` is a CLI/UX alias of ``xhigh`` accepted
+  only by the strict/token parsers. On the Anthropic Messages API ``none`` /
+  ``minimal`` are omitted (→ ``None``) and ``xhigh`` surfaces as ``"max"``.
+* :func:`parse_effort_token` / :func:`parse_effort_strict` — canonical wire
+  parse (``max`` → ``Xhigh``); the strict form raises on unknown variants.
+* The model-meta readers (:func:`supports_reasoning_effort_meta`,
+  :func:`parse_reasoning_effort_meta`, :func:`parse_reasoning_effort_options`,
+  :func:`parse_reasoning_efforts_meta`) collapse absent / wrong-type /
+  unknown-variant into a single fallback path (``None``) and skip invalid
+  array entries with a warn — forward-compat for tiers a newer server
+  introduces, so a persisted user pref is never overwritten by a transient
+  mismatch.
+* :class:`ReasoningEffortOption` — a selectable menu entry that accepts either
+  a bare canonical value string (``"xhigh"``) or a full table (``value``
+  required, the rest optional); bare form derives ``id`` / ``label``.
+
+No I/O (no HTTP, no file system) — depended on by downstream request builders.
+"""
+from __future__ import annotations
+
+import logging
+from collections.abc import Mapping
+from enum import StrEnum
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, model_validator
+
+logger = logging.getLogger(__name__)
+
+# --- meta keys (grok pub const) ---------------------------------------------
+
+REASONING_EFFORT_META_KEY = "reasoningEffort"
+SUPPORTS_REASONING_EFFORT_META_KEY = "supportsReasoningEffort"
+REASONING_EFFORTS_META_KEY = "reasoningEfforts"
+
+# CLI/UX alias: ``max`` is accepted on input as ``xhigh`` (grok FromStr rule).
+_MAX_ALIAS = "max"
+
+_VALID_EFFORTS = "none, minimal, low, medium, high, xhigh, max"
+
+
+class ReasoningEffort(StrEnum):
+    """Reasoning effort level (grok ``ReasoningEffort``).
+
+    Wire format is lowercase (serde ``rename_all = "lowercase"``); ``Medium``
+    is the default. ``None`` / ``Minimal`` are omitted on the Anthropic Messages
+    API (``to_messages_api`` returns ``None``); ``Xhigh`` surfaces as ``"max"``
+    there. As a :class:`StrEnum` the member value *is* the wire string and
+    ``str(member)`` returns it (grok ``Display → as_str``), so pydantic
+    serialisation (``model_dump(mode="json")``) yields the lowercase token —
+    parity with grok's serde ``lowercase``. Object-field coercion only accepts
+    canonical tokens (``"max"`` is rejected), matching grok's serde rename; the
+    ``max`` alias is honoured solely by the bare-string / token parsers.
+    """
+
+    NONE = "none"
+    MINIMAL = "minimal"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    XHIGH = "xhigh"
+
+    @classmethod
+    def default(cls) -> ReasoningEffort:
+        """The default variant (grok ``#[default]`` on ``Medium``)."""
+        return cls.MEDIUM
+
+    def as_str(self) -> str:
+        """Canonical wire string (grok ``as_str``).
+
+        Equivalent to ``str(self)`` (StrEnum value semantics) but named to
+        mirror grok's accessor for symmetry with the meta readers.
+        """
+        return self.value
+
+    def to_messages_api(self) -> str | None:
+        """Anthropic Messages API ``output_config.effort``; ``None`` if unsupported.
+
+        ``None`` / ``Minimal`` are omitted (returned as ``None``); ``Xhigh``
+        maps to ``"max"`` (grok ``to_messages_api``).
+        """
+        if self is ReasoningEffort.NONE or self is ReasoningEffort.MINIMAL:
+            return None
+        if self is ReasoningEffort.XHIGH:
+            return "max"
+        return self.value
+
+
+def parse_effort_token(token: str) -> ReasoningEffort | None:
+    """Canonical wire parse only (``max`` → ``Xhigh``); ``None`` on unknown.
+
+    Mirrors grok ``parse_canonical_effort_token`` (``token.parse().ok()``).
+    Remapped menu ids still need a model catalog — this is the wire parser.
+    Case-insensitive.
+    """
+    lowered = token.lower()
+    if lowered == _MAX_ALIAS:
+        return ReasoningEffort.XHIGH
+    try:
+        return ReasoningEffort(lowered)
+    except ValueError:
+        return None
+
+
+def parse_effort_strict(s: str) -> ReasoningEffort:
+    """Strict parse (``max`` → ``Xhigh``); raises ``ValueError`` on invalid.
+
+    Mirrors grok ``FromStr`` (``Err = String`` → Python ``ValueError``).
+    Case-insensitive; ``max`` is accepted as a CLI/UX alias of ``xhigh``.
+    """
+    lowered = s.lower()
+    if lowered == _MAX_ALIAS:
+        return ReasoningEffort.XHIGH
+    try:
+        return ReasoningEffort(lowered)
+    except ValueError as exc:
+        raise ValueError(
+            f"invalid reasoning effort: {s!r} (expected one of: {_VALID_EFFORTS})"
+        ) from exc
+
+
+def _humanize_effort_id(effort_id: str) -> str:
+    """Uppercase the first character of an id for a default label.
+
+    ``"xhigh"`` → ``"Xhigh"``, ``"deep"`` → ``"Deep"`` (grok
+    ``humanize_effort_id``). Returns ``""`` for an empty id.
+    """
+    if not effort_id:
+        return ""
+    return effort_id[0].upper() + effort_id[1:]
+
+
+def supports_reasoning_effort_meta(meta: Mapping[str, Any] | None) -> bool:
+    """Read ``supportsReasoningEffort`` from model meta; ``False`` if absent/non-bool.
+
+    Mirrors grok ``supports_reasoning_effort_meta``
+    (``.as_bool().unwrap_or(false)``).
+    """
+    if meta is None:
+        return False
+    value = meta.get(SUPPORTS_REASONING_EFFORT_META_KEY)
+    return isinstance(value, bool) and value
+
+
+def parse_reasoning_effort_meta(
+    meta: Mapping[str, Any] | None,
+) -> ReasoningEffort | None:
+    """Read ``reasoningEffort`` from model meta; ``None`` on type-mismatch/unknown.
+
+    Returns ``None`` (with a warn log) on a non-string value or an unknown
+    variant, so a persisted user pref is never overwritten by a transient
+    mismatch (grok ``parse_reasoning_effort_meta``).
+    """
+    if meta is None:
+        return None
+    raw = meta.get(REASONING_EFFORT_META_KEY)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        logger.warning(
+            "meta.reasoningEffort: expected string, ignoring (got %r)", raw
+        )
+        return None
+    effort = parse_effort_token(raw)
+    if effort is None:
+        logger.warning(
+            "meta.reasoningEffort: parse failed, ignoring (value=%r)", raw
+        )
+    return effort
+
+
+def reasoning_effort_meta_value(effort: ReasoningEffort) -> str:
+    """Serialise an effort to its meta wire value (grok ``reasoning_effort_meta_value``).
+
+    grok emits ``serde_json::Value::String``; the Python parity is the canonical
+    wire string.
+    """
+    return effort.as_str()
+
+
+class ReasoningEffortOption(BaseModel):
+    """A single selectable reasoning-effort option for a model (grok).
+
+    ``id`` / ``label`` are presentation and input; ``value`` is the canonical
+    value sent on the wire. Accepts either a bare canonical value string
+    (``"xhigh"`` — derives ``id`` / ``label``) or a full table (``value``
+    required, the rest optional). Mirrors grok's ``Serialize`` derive + custom
+    ``Deserialize`` (untagged ``Bare`` / ``Full``): the bare form parses via
+    ``FromStr`` (so accepts ``max``), while an object's ``value`` is coerced by
+    pydantic to the enum (so rejects ``max`` — parity with grok's serde rename).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    value: ReasoningEffort
+    id: str = ""
+    label: str = ""
+    description: str | None = None
+    default: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_bare(cls, data: Any) -> Any:
+        """Bare value string → full option with derived ``id`` / ``label``.
+
+        The bare path uses :func:`parse_effort_strict` (honours the ``max``
+        alias), matching grok's ``RawReasoningEffortOption::Bare`` branch which
+        parses via ``FromStr``.
+        """
+        if isinstance(data, str):
+            value = parse_effort_strict(data)
+            effort_id = value.as_str()
+            return {
+                "value": value,
+                "id": effort_id,
+                "label": _humanize_effort_id(effort_id),
+                "description": None,
+                "default": False,
+            }
+        return data
+
+    @model_validator(mode="after")
+    def _fill_defaults(self) -> ReasoningEffortOption:
+        """Backfill ``id`` / ``label`` defaults from ``value`` (grok ``unwrap_or``).
+
+        ``id`` defaults to ``value.as_str()``; ``label`` defaults to
+        ``humanize_effort_id(id)``.
+        """
+        if not self.id:
+            self.id = self.value.as_str()
+        if not self.label:
+            self.label = _humanize_effort_id(self.id)
+        return self
+
+
+def parse_reasoning_effort_options(
+    arr: list[Any],
+) -> list[ReasoningEffortOption]:
+    """Parse a JSON array of options element-by-element, skipping invalid entries.
+
+    Forward-compat for tiers a newer server introduces: invalid entries are
+    skipped with a warn (grok ``parse_reasoning_effort_options``).
+    """
+    options: list[ReasoningEffortOption] = []
+    for el in arr:
+        try:
+            options.append(ReasoningEffortOption.model_validate(el))
+        except Exception as exc:  # noqa: BLE001 — mirror grok's broad skip
+            logger.warning("reasoningEfforts: skipping invalid entry (%s)", exc)
+    return options
+
+
+def parse_reasoning_efforts_meta(
+    meta: Mapping[str, Any] | None,
+) -> list[ReasoningEffortOption] | None:
+    """Read the per-model ``reasoningEfforts`` menu from meta; ``None`` when unusable.
+
+    Returns ``None`` when the key is absent, is not an array, or yields no
+    usable options after skip-invalid — so "absent" and "present-but-unusable"
+    collapse to the same fallback path (grok ``parse_reasoning_efforts_meta``).
+    """
+    if meta is None:
+        return None
+    raw = meta.get(REASONING_EFFORTS_META_KEY)
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        logger.warning(
+            "meta.reasoningEfforts: expected array, ignoring (got %r)", raw
+        )
+        return None
+    options = parse_reasoning_effort_options(raw)
+    return options or None
+
+
+def reasoning_efforts_meta_value(
+    opts: list[ReasoningEffortOption],
+) -> list[dict[str, Any]]:
+    """Serialise a list of options to its meta wire value (grok
+    ``reasoning_efforts_meta_value``).
+
+    grok emits ``serde_json::to_value(opts)``; the Python parity is a list of
+    JSON-native dicts (``value`` is the lowercase wire token).
+    """
+    return [opt.model_dump(mode="json") for opt in opts]

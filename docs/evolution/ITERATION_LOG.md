@@ -3943,3 +3943,55 @@ R51 消化了路由层（completion_routes）。本轮收尾债务地图**最后
 ### Commit
 
 `feat(platform): R52 migrate app.py subagent_llm fallback to vocabulary (fuse grok xai-grok-models)`
+
+---
+
+## R53 — 推理努力类型层 ReasoningEffort（融合 grok xai-grok-sampling-types，模型+推理双轴）
+
+> 锚定 R52（`6149e7f`）。R45-R52 完成「模型 ID 词汇表」的建立 + 7 处消费端单来源接线（债务清零）。**本轮切换轨道 —— 从消费端接线回到新类型层融合**，引入 LLM 调用的第二大配置轴：**推理努力（reasoning effort）**。模型回答「用谁」，推理努力回答「想多深」—— 二者共同定义一次 LLM 调用的资源配置。源 crate `xai-grok-sampling-types`（grok 采样/补全 API 纯数据类型层，7 个源文件无 I/O），本轮聚焦其中自洽的 `ReasoningEffort` 子集（types.rs:762-1008）：枚举 + 方法 + 3 个常量 + 8 个纯元解析函数 + `ReasoningEffortOption` 结构体 + `humanize_effort_id`。与 MiniMax v0.3.0 的 thinking_count 通道天然配对（reasoning_effort 是控制 thinking 强度的配置轴）。
+
+### 本轮目标
+
+R52 债务清零后，本轮在 sampling-types crate 内选一个**自洽、高价值、无 I/O** 的类型子集做正向迁移。选择 `ReasoningEffort` 块（types.rs:762-1008）的理由：(1) 与 R45-R52 模型词汇表构成「模型 + 推理强度」两大配置维度，认知对称；(2) 与 v0.3.0 thinking_count 通道天然配对；(3) 纯数据类型无 I/O（完美匹配 crate "no I/O" 设计）；(4) pydantic 友好的 serde 对等（serde rename_all lowercase → StrEnum；untagged Bare/Full → before+after 双验证器）。本轮交付**新模块** `agent/minimax_code/agent/reasoning.py`（纯类型层，无 I/O，无接线，不被任何现有模块导入 —— 零循环风险，零回归面），完整映射 grok 的 ReasoningEffort 枚举（6 变体，serde lowercase，Medium 默认）、`max` CLI 别名（仅 token 解析器接受）、Anthropic Messages API 方言（none/minimal 省略，xhigh→"max"）、8 个纯元解析函数（absent/wrong-type/unknown 三态坍缩为 None + 跳过无效数组项 + warn）、`ReasoningEffortOption`（untagged Bare/Full 反序列化）。
+
+### 融合结论
+
+- ✅ **保留**：`ReasoningEffort(StrEnum)` —— 6 变体（none/minimal/low/medium/high/xhigh），serde `rename_all="lowercase"` 对等（StrEnum 成员值即小写 wire token，pydantic `model_dump(mode="json")` 输出小写）。**遵循项目 StrEnum 惯例**（compaction/hooks/plan_mode/resilience/telemetry/lifecycle/fsnotify/agent-reliability 共 11 处 StrEnum，零处 `(str, Enum)`）。
+- ✅ **保留**：`default()`→MEDIUM（grok `#[default]`）、`as_str()`→value（grok `as_str`）、`to_messages_api()`（grok `to_messages_api`：none/minimal→None，xhigh→"max"，其余 passthrough）。**移除冗余 `__str__` 重写**（StrEnum 默认 str() 已返回 value == as_str()，KISS + 项目惯例一致）。
+- ✅ **保留**：`parse_effort_token`（grok `parse_canonical_effort_token`，max→XHIGH，unknown→None，不 raise）/ `parse_effort_strict`（grok `FromStr`，max→XHIGH，invalid→ValueError 消息含有效 token 列表）。**max 别名仅 token 解析器接受** —— 与 grok 的「serde rename 拒绝 max / FromStr 接受 max」双重语义对等。
+- ✅ **保留**：3 个常量（`REASONING_EFFORT_META_KEY`/`SUPPORTS_REASONING_EFFORT_META_KEY`/`REASONING_EFFORTS_META_KEY`）+ 8 个纯元解析函数（supports / parse_reasoning_effort_meta / reasoning_effort_meta_value / parse_reasoning_effort_options[带 `# noqa: BLE001`] / parse_reasoning_efforts_meta / reasoning_efforts_meta_value）—— 三态坍缩（absent/wrong-type/unknown→None）+ 跳过无效数组项 + warn，前向兼容（新 tier 的未知变体不覆盖已持久化的用户偏好）。
+- ✅ **保留**：`ReasoningEffortOption(BaseModel)` —— `model_config=ConfigDict(extra="ignore")`，字段 `value: ReasoningEffort`（必填）/ `id`/`label`/`description`/`default`；`@model_validator(mode="before") _accept_bare`（裸字符串 → 完整字典，走 parse_effort_strict 接受 max）+ `@model_validator(mode="after") _fill_defaults`（id 默认 value.as_str()，label 默认 humanize(id)）—— 复制 grok untagged Bare/Full 反序列化 + `unwrap_or` 默认回填。
+- ❌ **放弃**：`to_responses_api` / `from_responses_api`（grok 用于 async-openai Responses API 转换）—— MiniMax 侧无 Python async-openai 对等物（YAGNI；v0.3.0 用 thinking_count 通道，非 Responses API）。
+
+### 交付
+
+- `agent/minimax_code/agent/reasoning.py`（新，291 行）— 完整 ReasoningEffort 类型层：模块 docstring（grok crate 行号锚定）+ 3 常量 + `_MAX_ALIAS`/`_VALID_EFFORTS` 私有 + `ReasoningEffort(StrEnum)`（6 变体 + default/as_str/to_messages_api）+ `parse_effort_token`/`parse_effort_strict` + `_humanize_effort_id` + 6 个元解析纯函数 + `ReasoningEffortOption(BaseModel)`（before+after 双验证器）+ 2 个 list 序列化函数。**无 I/O，无被导入**（零回归面）。
+- `agent/tests/test_reasoning.py`（新，31 测试）— 15 个段落覆盖：meta keys 常量 / 枚举值+wire / default+as_str / to_messages_api（none+minimal→None，xhigh→"max"，中间 passthrough）/ str / **StrEnum serde 对等**（model_dump mode=json 输出小写 token）/ parse_effort_token（canonical+大小写+max 别名+unknown→None）/ parse_effort_strict（canonical+max+invalid→ValueError 消息含 token 列表）/ supports_reasoning_effort_meta（True/False/缺失/非 bool）/ parse_reasoning_effort_meta（canonical/缺失/非字符串/未知）/ reasoning_effort_meta_value / ReasoningEffortOption 裸字符串（derives id+label + max 别名）/ 完整表（仅 value 回填 + 显式 id/label/description/default passthrough + extra ignore）/ **对象 value 拒绝 max**（grok serde rename 对等，bare 接受 vs object 拒绝）/ parse_reasoning_effort_options（跳过无效保序）/ parse_reasoning_efforts_meta（数组/缺失/非数组/空/全无效→None）/ reasoning_efforts_meta_value（JSON 原生列表）。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+### 映射决策树（本轮新枚举 + 新未标记联合）
+
+本轮是**新类型层迁移**（非消费端接线），决策树两分支落地：
+
+- **分支 (e) 带 serde 小写有线格式的枚举 → `str` 枚举**：grok `ReasoningEffort` serde `rename_all="lowercase"` → Python **`StrEnum`**（非 `(str, Enum)`）。关键洞察：grok serde Deserialize 在 object 上下文拒绝 "max"，但 `FromStr` 接受 "max"→Xhigh（仅 CLI）。Python StrEnum 天然复制此双重语义 —— pydantic 强制 `ReasoningEffort` 字段接受枚举值（none..xhigh）但拒绝 "max"（enum 值集合不含 max），而裸字符串路径走 `parse_effort_strict`（接受 max）。**无需特殊分支**，str-enum 语义即对等。**项目惯例修正**：首版我写 `(str, Enum)`（决策树字面分支 (e)），ruff UP042 报错；grep 确认项目 **11 处全用 StrEnum**（compaction/hooks/plan_mode/resilience/telemetry/lifecycle/fsnotify/agent-reliability），零处 `(str, Enum)` —— 改 StrEnum 回归项目惯例（Python 3.11+ 现代等价，`requires-python>=3.11`/`target-version=py311` 支持）。
+- **分支 (f) 未标记的 Bare/Full 反序列化 → pydantic BaseModel + `before`(裸字符串) + `after`(填充默认值) 双重验证器**：`ReasoningEffortOption` 的 `@model_validator(mode="before") _accept_bare`（裸字符串 → 完整字典，复用 parse_effort_strict）+ `@model_validator(mode="after") _fill_defaults`（id/label 默认回填），精确复制 grok `RawReasoningEffortOption` 的 untagged `Bare`/`Full` 反序列化 + `unwrap_or` 默认。**extra="ignore"** 复制 grok serde「忽略未知字段」。
+
+**坑（自发现，已修复）**：首版 reasoning.py ruff 报 2 错：(1) **UP035** `from typing import Mapping` → 应 `from collections.abc import Mapping`（Python 3.9+ 弃用 typing.Mapping）；(2) **UP042** `class ReasoningEffort(str, Enum)` → 应 `StrEnum`。两个都是 UP 现代化规则，CLAUDE.md「修复正在编辑文件的 ruff 错误」授权内。修复：UP035 改导入源（typing 只留 Any），UP042 改 StrEnum 并移除冗余 `__str__` 重写（StrEnum 默认 str()==value）。重检 `All checks passed!`，31 测试无回归（StrEnum 默认行为与重写的 `__str__` 等价）。
+
+### 验证
+
+- `ruff check minimax_code/agent/reasoning.py tests/test_reasoning.py` → **All checks passed!**（首版 2× UP 错，修 UP035+UP042 后干净）。
+- `pytest tests/test_reasoning.py` → **31 passed in 1.56s**（修 UP042 前后均 31 passed，StrEnum 改造零回归）。
+- 完整套件 `pytest` → **1729 passed, 10 skipped in 104.96s**（R52 1698 → R53 1729，**+31 精确**，零回归，10 skip 与 R52 一致）。
+
+### YAGNI 边界
+
+- ❌ **不实现 `to_responses_api`/`from_responses_api`** —— grok 用于 async-openai Responses API；MiniMax 侧无 Python 对等物（v0.3.0 走 thinking_count 通道）。新增即死代码。
+- ❌ **不接线 `reasoning.py` 到任何现有模块** —— 本轮是**类型层**（纯数据 + 解析），消费者端接线（类比 R45→R46 两阶段模式）留后续轮次。提前接线 = 在无消费者时绑定 API，违反 YAGNI。
+- ❌ **不迁移 sampling-types crate 的其余类型**（ChatCompletionRequest/SamplingConfig/ApiBackend/Role/ToolChoice/Usage/SearchParameters/Compaction* 等 types.rs 64-1135）—— 本轮聚焦自洽的 ReasoningEffort 块；其余类型规模大且需先决定 ChatCompletion wire 契约，留独立轮次。
+- ❌ **不引入 `humanize_effort_id` 的公开别名** —— grok `humanize_effort_id` 是私有用例（label 默认回填），保持 `_` 前缀私有。
+- ❌ **不建模 `ReasoningEffortOption.description` 为非 Optional** —— grok 是 `Option<String>`，Optional 对等。
+
+### Commit
+
+`feat(platform): R53 reasoning effort type layer (fuse grok xai-grok-sampling-types)`
