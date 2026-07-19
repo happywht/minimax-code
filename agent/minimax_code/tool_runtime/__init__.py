@@ -44,8 +44,19 @@ dispatch interface — :class:`ToolDispatch` :class:`abc.ABC` with abstract
 :mod:`context` (R108) + :mod:`error` (R107) + the :mod:`tool` streaming
 primitives (R109), and the unblocker for the ``xai-computer-hub-core``
 crate.
-Subsequent rounds migrate the remaining modules; the barrel's ``__all__``
-grows as each lands.
+R114 lands the eighth and final leaf: :mod:`notification` (the typed
+execution-visibility messages — 19 payload structs across the bash /
+file / plan-mode / LSP / scheduled-task / monitor families +
+:class:`TaskKind` StrEnum + :class:`TaskSnapshot` + the
+:class:`ToolNotification` ``tag = "type"`` tagged union +
+:class:`ToolNotificationHandle` the ``mpsc::UnboundedSender`` wrapper),
+the crate's largest leaf (24 re-exported symbols), built on
+:class:`asyncio.Queue` (the executor-neutral ``mpsc`` equivalent) and
+dataclass inheritance (the ``#[serde(flatten)]`` equivalent).
+With R114 the crate's eight ``src`` modules — ``context``, ``dispatch``,
+``error``, ``notification``, ``render``, ``search``, ``streaming``,
+``tool`` — are all landed; this barrel IS the ``lib.rs`` re-export
+surface, so no separate ``lib`` round is needed.
 
 R23 fused this crate's *concurrency model* (the structured-concurrency /
 cancellation primitives the agent core uses) but **not** its *type
@@ -71,6 +82,32 @@ from minimax_code.tool_runtime.context import (
 )
 from minimax_code.tool_runtime.dispatch import ToolDispatch
 from minimax_code.tool_runtime.error import ToolError, ToolErrorKind
+from minimax_code.tool_runtime.notification import (
+    BashExecutionBackgrounded,
+    BashExecutionComplete,
+    BashExecutionFailed,
+    BashExecutionTimeout,
+    BashNotificationBase,
+    BashOutputChunk,
+    FileRead,
+    FileWritten,
+    LspServerCrashed,
+    LspServerFailed,
+    LspServerReady,
+    LspServerRetrying,
+    LspServerStarting,
+    MonitorEvent,
+    PlanModeEntered,
+    PlanModeExited,
+    ScheduledTaskCreated,
+    ScheduledTaskFired,
+    ScheduledTaskRemoved,
+    TaskKind,
+    TaskSnapshot,
+    ToolNotification,
+    ToolNotificationHandle,
+    UserQuestionAsked,
+)
 from minimax_code.tool_runtime.render import (
     ModelOutputExtractor,
     ToolChatCompletion,
@@ -112,17 +149,38 @@ from minimax_code.tool_runtime.tool import (
 __all__ = [
     "ArcTool",
     "ArcToolFamily",
+    "BashExecutionBackgrounded",
+    "BashExecutionComplete",
+    "BashExecutionFailed",
+    "BashExecutionTimeout",
+    "BashNotificationBase",
+    "BashOutputChunk",
     "BehaviorVersion",
     "Cancellation",
     "ContentBlock",
     "Cwd",
     "DEFAULT_MAX_DELTA_BYTES",
+    "FileRead",
+    "FileWritten",
     "ListToolsContext",
+    "LspServerCrashed",
+    "LspServerFailed",
+    "LspServerReady",
+    "LspServerRetrying",
+    "LspServerStarting",
     "ModelOutputExtractor",
+    "MonitorEvent",
     "PartialResultPayload",
+    "PlanModeEntered",
+    "PlanModeExited",
+    "ScheduledTaskCreated",
+    "ScheduledTaskFired",
+    "ScheduledTaskRemoved",
     "SearchSnapshot",
     "ServerSummary",
     "SessionContext",
+    "TaskKind",
+    "TaskSnapshot",
     "Tool",
     "ToolCallContext",
     "ToolChatCompletion",
@@ -134,6 +192,8 @@ __all__ = [
     "ToolErrorKind",
     "ToolFamily",
     "ToolIndex",
+    "ToolNotification",
+    "ToolNotificationHandle",
     "ToolOutput",
     "ToolProgress",
     "ToolSearchIndex",
@@ -145,6 +205,7 @@ __all__ = [
     "TraceContext",
     "TypedExtensions",
     "TypedToolOutput",
+    "UserQuestionAsked",
     "WorkspaceBindMetadata",
     "WorkspaceViewerContext",
     "extract_content_blocks",

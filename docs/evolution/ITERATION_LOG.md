@@ -9561,3 +9561,74 @@ Rust 的 `#[async_trait] pub trait ToolDispatch: Send + Sync` 形态（一个 ab
 ### Commit
 
 `feat(platform): R113 migrate xai-tool-runtime dispatch.rs (ToolDispatch object-safe trait + call streaming + call_terminal drain default impl)`
+
+
+## R114 — 迁移 xai-tool-runtime notification.rs（crate 第 8 也是最后一块叶子，24 符号，mpsc→asyncio.Queue，闭合全 8 src 模块）
+
+锚点:R113-1 19a81cf
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-tool-runtime/src/notification.rs`（530 行，crate 最大叶子，24 个 re-export 符号）——这是 `xai-tool-runtime` crate 的**第八块也是最后一块 src 叶子**。落地：
+
+- 19 个 payload struct，跨 6 个家族（bash 5 + file 2 + plan-mode 2 + user-question 1 + LSP 5 + scheduled-task 3 + monitor 1，外加 BashNotificationBase 公共基类 + TaskSnapshot）。
+- `TaskKind` StrEnum（snake_case wire 值 + `#[default]`）。
+- `ToolNotification` 内部标签枚举（`#[serde(tag = "type")]`，19 变体，`variant_name()` 访问器）。
+- `ToolNotificationHandle` —— `futures::channel::mpsc::UnboundedSender` 包装器（`new` / `from_sender` / `channel` / `noop` / `send` + 19 个 `send_*` 类型化 helper）。
+
+本轮回合闭合后，crate 的全部 8 个 src 模块（context / dispatch / error / notification / render / search / streaming / tool）均已落地，barrel `__init__.py` 就是 `lib.rs` re-export surface 的 1:1 等价——**无需单独的 lib round**。
+
+### 融合结论
+
+四个核心 serde / 并发形态的 Python 等价已确定，全部复用前序回合建立的模式：
+
+1. **`#[serde(flatten)] BashNotificationBase` → dataclass 继承**。Rust 把公共字段用 flatten 塞进每个 bash 变体；Python 用 `@dataclass class BashOutputChunk(BashNotificationBase)` 继承——继承字段与子类字段同居于实例，`dataclasses.asdict` 与字段级 `__eq__` 行为与 Rust 的 flatten + derived PartialEq 一致。
+2. **`#[serde(tag = "type")] enum ToolNotification` → `kind` + `payload` tagged union**。单一 `ToolNotification` dataclass 携带 `kind`（PascalCase 变体名 = serde tag 值）+ `payload`（类型化 struct）。**复用 R107 `ToolError` kind/detail 与 R109 `ToolStreamItem` kind/terminal 模式**；`variant_name()` 退化为平凡 `self.kind` 访问器。19 个 Rust 变体 `ToolNotification::X(p)` 各得一个 PascalCase classmethod `ToolNotification.X(p)`，调用站点读写与 Rust 完全一致。
+3. **`futures::channel::mpsc::UnboundedSender` → `asyncio.Queue`**。标准库、executor-neutral 的 mpsc 等价物。`send` 用 `put_nowait`（非阻塞），`QueueFull` 静默丢弃（best-effort fire-and-forget，匹配 Rust notification 流的 fire-and-forget 约定）。trait crate 因此保持 runtime-neutral（不 pin tokio）。
+4. **`#[derive(Clone)]` handle（无 PartialEq）→ `@dataclass(eq=False)`**。handle 仅 Clone 不 PartialEq，比较退化为 identity。
+
+### 交付
+
+| 文件 | 操作 | 规模 |
+|------|------|------|
+| `agent/minimax_code/tool_runtime/notification.py` | 新建 | 696 行，24 符号（`__all__`） |
+| `agent/minimax_code/tool_runtime/__init__.py` | 编辑（3 处） | barrel 42→66 符号（+24 notification）；文档字符串 +R114 段落 + 收尾句；import 块 +24；`__all__` +24 |
+| `agent/tests/test_tool_runtime_notification.py` | 新建 | 31 测试（isort I001 --fix 后干净） |
+| `docs/evolution/ITERATION_LOG.md` | 追加 | R114 条目（本条） |
+
+### 映射决策树+坑
+
+- **serde flatten 基类继承的字段排序**：`BashNotificationBase` 6 个字段全部必填（无默认）；3 个继承它的变体（`BashExecutionComplete` exit_code/signal、`BashExecutionTimeout` elapsed/timeout、`BashExecutionBackgrounded` output_file/task_id）的子类字段全部带默认值（`= None` / `= 0.0` / `= ""`）——正好满足 dataclass "无默认在前，有默认在后" 规则。测试 `test_flatten_subclass_equality_is_field_wise_including_base` 验证含基类字段的相等。
+- **`BashExecutionFailed` 不继承基类**：独立 4 字段（tool_call_id/command/cwd/error），全部必填。测试 `test_bash_execution_failed_has_no_base_struct` 验证 `isinstance(failed, BashNotificationBase) is False`。
+- **`ToolNotification` tagged union 复用 R107/R109 模式**：`kind`（serde tag 值）+ `payload`（struct），19 个 classmethod 构造函数，`variant_name()` 返回 `kind`。
+- **`FileRead` 明确保留无变体**：文档字符串标记"为未来 `ToolNotification::FileRead` 变体保留"，`ToolNotification` 无 `FileRead` classmethod、`ToolNotificationHandle` 无 `send_file_read` helper。添加枚举变体是对 exhaustive `match` 消费者的破坏性变更，推迟到下游 crate 有真实消费者（Rust 源也如此保留）。
+- **`TaskCompleted` 变体内联 `TaskSnapshot`**（而非独立 struct）——匹配 Rust enum 变体内联。测试 `test_send_task_complete_helper_emits_task_completed` 验证 `send_task_complete(snap)` 产出 `kind="TaskCompleted"` 且 `payload is snap`。
+- **`TaskKind` StrEnum**：`BASH = "bash"`（Rust `#[default]`）/ `MONITOR = "monitor"`（`#[serde(rename_all = "snake_case")]`）；`TaskSnapshot.kind` 默认值用 `field(default_factory=lambda: TaskKind.BASH)`（可变默认值安全）。
+- **`TaskSnapshot` 13 字段重排序**：Rust 混合了必填字段与 `#[serde(default)]` 字段；Python dataclass 必须重排为 8 必填在前（task_id/command/cwd/start_time/output/output_file/truncated/completed）+ 5 默认在后（display_command/end_time/exit_code/signal/kind）。文档字符串标注位置构造 + 关键字参数均可用。
+- **`duration_secs` 双路径**：`end_time` 为 None 时回退 `time.time()`（Rust `SystemTime::now()`）；delta 为负（未来 start + 更早 end）clamp 到 `0.0`（Rust duration error path 的 `unwrap_or(0.0)`）。测试 `test_task_snapshot_duration_secs_negative_clamped_to_zero` 验证 clamp。
+- **mpsc → asyncio.Queue 行为对齐**：`send` 用 `put_nowait` 非阻塞，`QueueFull` 静默丢弃；handle `eq=False` → identity 比较（测试 `test_handle_has_no_partialeq_identity_only`）；`channel()` 返回 `(handle, queue)` 配对；`noop()` 用默认 factory 创建孤儿 queue，send 写入但消费者持有不到（内存中丢弃）；`new` / `from_sender` 是别名，都包同一 queue（测试 `test_handle_new_and_from_sender_are_aliases_wrapping_same_queue` 验证两 handle 共享 queue）。
+- **send\_\* 与枚举 lockstep**：19 个 `send_*` helper 一一对应 19 个枚举变体（含 `send_task_complete` ↔ `TaskCompleted`）。文档字符串强调"加变体时同步加构造函数"。
+- **import time 函数局部化**：`duration_secs` 内 `import time`（而非模块顶部）——避免模块级副作用、保持 time 仅在该方法可达。
+
+### 验证
+
+| 检查 | 命令 | 结果 |
+|------|------|------|
+| ruff（notification + barrel + 测试） | `uv run ruff check minimax_code/tool_runtime/notification.py minimax_code/tool_runtime/__init__.py tests/test_tool_runtime_notification.py` | notification.py + `__init__.py` 直接干净；测试文件初始 I001（isort），`--fix --select I001` 后 All checks passed（安全例外） |
+| notification 测试 | `uv run pytest tests/test_tool_runtime_notification.py -q` | **31 passed** |
+| barrel 冒烟 | `python -c "import minimax_code.tool_runtime as t; print(len(t.__all__))"` | `barrel_count=66`，`notification_symbols=24`（24 符号全入 barrel） |
+| tool_runtime 全套 | `uv run pytest tests/test_tool_runtime_*.py -q` | **198 passed** |
+| 全套回归 | `uv run pytest -q` | **3617 passed, 10 skipped**（R113 的 3586 + 31 notification = 3617，对账无误），112.60s |
+
+### YAGNI 边界
+
+- **不为 19 个 `send_*` 全部写测试**：选 `send_bash_complete` / `send_file_written` / `send_monitor_event` / `send_task_complete` 代表 bash / file / monitor / snapshot 四家族，验证 lockstep 即可。
+- **不实现 bounded queue**：Python `asyncio.Queue` 默认无界，匹配 Rust `UnboundedSender`；`QueueFull` 分支保留但当前不可达（为未来 bounded 消费者预留）。
+- **不为 `FileRead` 添加 `ToolNotification` 变体**（Rust 源也保留无变体）——推迟到有真实消费者。
+- **不引入 `pathlib.Path` 包装**：`PathBuf` → `str`（项目范围惯例，保持 wire-shaped）。
+- **不迁移 `lib.rs`**：barrel `__init__.py` IS `lib.rs` re-export surface（R106 模式），无需单独 lib round。
+- **不迁移 notification.rs 内的私有 helper**：源码无私有 helper，全部 24 符号都是公开 re-export。
+
+### Commit
+
+`feat(platform): R114 migrate xai-tool-runtime notification.rs (19 payload structs + TaskKind StrEnum + TaskSnapshot + ToolNotification tag=type union + ToolNotificationHandle mpsc->asyncio.Queue)`
