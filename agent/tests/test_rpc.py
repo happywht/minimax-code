@@ -12,7 +12,9 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from pydantic import TypeAdapter
 
+from minimax_code.workspace_types._wire import sort_mappings
 from minimax_code.workspace_types.rpc import (
     TURN_ACTIVE,
     WORKSPACE_CLIENT_EXT_NOTIFICATIONS_TOOL_ID,
@@ -40,6 +42,8 @@ from minimax_code.workspace_types.rpc import (
     ContentSearchRequest,
     DeployError,
     DiscoverAgentsMdReq,
+    DiscoverPluginsReq,
+    DiscoverSkillsReq,
     DropSessionReq,
     EndPromptReq,
     FileRewindConflict,
@@ -65,6 +69,8 @@ from minimax_code.workspace_types.rpc import (
     RewindToReq,
     RpcEnvelope,
     RpcError,
+    SkillInfo,
+    SkillScope,
     TargetClientId,
     TodoSummaryWire,
     ToolDefinitionsReq,
@@ -1286,3 +1292,223 @@ class TestWorkspace:
         assert isinstance(ok, ListBackgroundTasksResponse)
         assert ok.tasks[0].task_id == "t1"
         assert ok.tasks[0].tool_name == "terminal"
+
+
+class TestSkills:
+    """R73: workspace.discover_skills / discover_plugins + SkillScope + SkillInfo."""
+
+    # -- method constants (grok method_constant) ---------------------------
+
+    def test_method_constants(self):
+        assert DiscoverSkillsReq.METHOD == "workspace.discover_skills"
+        assert DiscoverPluginsReq.METHOD == "workspace.discover_plugins"
+
+    # -- Response types (bare-list Value / typed list) ---------------------
+
+    def test_discover_skills_req_response_is_list_skill_info(self):
+        # Bare typed list response (distinct from R72's wrapped-struct
+        # ListBackgroundTasksResponse).
+        assert DiscoverSkillsReq.Response == list[SkillInfo]
+
+    def test_discover_plugins_req_response_is_list_any(self):
+        # Bare arbitrary-JSON list response (distinct from R72's scalar Any).
+        assert DiscoverPluginsReq.Response == list[Any]
+
+    def test_empty_param_requests_default(self):
+        assert DiscoverSkillsReq.default() == DiscoverSkillsReq()
+        assert DiscoverPluginsReq.default() == DiscoverPluginsReq()
+        assert DiscoverSkillsReq().to_wire() == {}
+        assert DiscoverPluginsReq().to_wire() == {}
+
+    # -- SkillScope forward-tolerant enum ----------------------------------
+
+    def test_skill_scope_known_values_decode(self):
+        cases = {
+            "local": SkillScope.LOCAL,
+            "repo": SkillScope.REPO,
+            "user": SkillScope.USER,
+            "server": SkillScope.SERVER,
+            "bundled": SkillScope.BUNDLED,
+            "plugin": SkillScope.PLUGIN,
+        }
+        for raw, expected in cases.items():
+            v = TypeAdapter(SkillScope).validate_python(raw)
+            assert v == expected, raw
+
+    def test_skill_scope_class_attrs(self):
+        assert SkillScope.LOCAL == "local"
+        assert SkillScope.REPO == "repo"
+        assert SkillScope.USER == "user"
+        assert SkillScope.SERVER == "server"
+        assert SkillScope.BUNDLED == "bundled"
+        assert SkillScope.PLUGIN == "plugin"
+
+    def test_skill_scope_unknown_round_trips_losslessly(self):
+        v = TypeAdapter(SkillScope).validate_python("galactic")
+        assert v == "galactic"
+        assert TypeAdapter(SkillScope).dump_python(v, mode="json") == "galactic"
+
+    def test_skill_scope_known_values_round_trip(self):
+        for raw in ["local", "repo", "user", "server", "bundled", "plugin"]:
+            v = TypeAdapter(SkillScope).validate_python(raw)
+            assert TypeAdapter(SkillScope).dump_python(v, mode="json") == raw
+
+    def test_skill_scope_as_str(self):
+        assert SkillScope.LOCAL.as_str() == "local"
+        # Unknown preserves the raw captured value.
+        unknown = TypeAdapter(SkillScope).validate_python("galactic")
+        assert unknown.as_str() == "galactic"
+
+    def test_skill_scope_is_str_subclass(self):
+        # The forward-tolerant shape is a str subclass (same shape as R71's
+        # HookEventNameWire), so it works wherever a plain str does.
+        assert isinstance(SkillScope.SERVER, str)
+
+    # -- SkillInfo minimal / full / round-trip ------------------------------
+
+    def test_skill_info_minimal_payload(self):
+        raw = {
+            "name": "my-skill",
+            "description": "A test skill",
+            "path": "/workspace/.grok/skills/my-skill/SKILL.md",
+            "scope": "local",
+        }
+        info = SkillInfo.model_validate(raw)
+        assert info.name == "my-skill"
+        assert info.scope == SkillScope.LOCAL
+        assert info.user_invocable is True  # default_true
+        assert info.enabled is True  # default_true
+        assert info.has_user_specified_description is False  # #[serde(default)]
+        assert info.disable_model_invocation is False
+        assert info.config_source is None
+
+    def test_skill_info_full_payload_round_trip(self):
+        raw = {
+            "name": "deploy",
+            "display_name": "Deploy Helper",
+            "description": "Deploys the app",
+            "has_user_specified_description": True,
+            "paths": ["infra/**"],
+            "when_to_use": "Use when deploying",
+            "short_description": "Deploy",
+            "author": "someone",
+            "argument_hint": "environment name",
+            "license": "Apache-2.0",
+            "compatibility": "Requires kubectl",
+            "metadata": {"team": "infra"},
+            "path": "/root/.grok/server-skills/deploy/SKILL.md",
+            "scope": "server",
+            "config_source": {"type": "user", "path": "/root/.grok/skills"},
+            "plugin_name": "infra-plugin",
+            "plugin_version": "1.0.0",
+            "plugin_root": "/root/.grok/plugins/infra-plugin",
+            "plugin_data": "/root/.grok/plugin-data/infra-plugin",
+            "allowed_tools": ["bash"],
+            "model": "grok-4",
+            "effort": "high",
+            "user_invocable": True,
+            "disable_model_invocation": False,
+            "enabled": True,
+            "body": "# Deploy\n",
+        }
+        info = SkillInfo.model_validate(raw)
+        assert info.scope == SkillScope.SERVER
+        assert info.display_name == "Deploy Helper"
+        assert info.plugin_name == "infra-plugin"
+        assert info.config_source["type"] == "user"
+        # Re-serializing reproduces the input (sorted); skip_serializing_if is
+        # a no-op here because no field is None in the full payload.
+        assert info.to_wire() == sort_mappings(raw)
+
+    def test_skill_info_omits_none_optionals(self):
+        # Only the 4 required fields + 4 bool (2 default_true, 2 default) —
+        # every one of the 18 None Option fields is dropped from the wire
+        # by the wrap model_serializer's `v is not None` filter.
+        info = SkillInfo(name="n", description="d", path="/p/SKILL.md", scope="repo")
+        assert info.to_wire() == {
+            "description": "d",
+            "disable_model_invocation": False,
+            "enabled": True,
+            "has_user_specified_description": False,
+            "name": "n",
+            "path": "/p/SKILL.md",
+            "scope": "repo",
+            "user_invocable": True,
+        }
+
+    def test_skill_info_default_true_fields_default_to_true(self):
+        info = SkillInfo(name="n", description="d", path="/p", scope="local")
+        assert info.user_invocable is True
+        assert info.enabled is True
+
+    def test_skill_info_false_bools_survive_serialization(self):
+        # default_true fields with an explicit False are still emitted — bool
+        # fields carry no skip_serializing_if, only None is elided.
+        info = SkillInfo(
+            name="n",
+            description="d",
+            path="/p",
+            scope="local",
+            user_invocable=False,
+            enabled=False,
+        )
+        wire = info.to_wire()
+        assert wire["user_invocable"] is False
+        assert wire["enabled"] is False
+
+    def test_skill_info_no_default(self):
+        # grok does not #[derive(Default)] (4 required fields); the base
+        # default() = cls() must therefore raise.
+        with pytest.raises(Exception):  # noqa: B017
+            SkillInfo.default()
+
+    def test_skill_info_ignores_unknown_fields(self):
+        raw = {
+            "name": "n",
+            "description": "d",
+            "path": "/p/SKILL.md",
+            "scope": "repo",
+            "brand_new_field": {"nested": True},
+        }
+        info = SkillInfo.model_validate(raw)
+        assert info.scope == SkillScope.REPO
+
+    def test_skill_info_empty_map_survives(self):
+        # Option::is_none elides only None, not an empty map.
+        info = SkillInfo(
+            name="n", description="d", path="/p", scope="local", metadata={}
+        )
+        assert info.to_wire()["metadata"] == {}
+
+    def test_skill_info_empty_vec_survives(self):
+        # Option::is_none elides only None, not an empty vec.
+        info = SkillInfo(
+            name="n", description="d", path="/p", scope="local", paths=[]
+        )
+        assert info.to_wire()["paths"] == []
+
+    # -- envelope round-trip with bare-list responses ----------------------
+
+    def test_envelope_ok_wraps_discover_skills(self):
+        # Bare typed list response: {"ok": [<SkillInfo>, ...]}.
+        skills = [
+            SkillInfo(name="a", description="da", path="/p/a", scope="local"),
+            SkillInfo(name="b", description="db", path="/p/b", scope="server"),
+        ]
+        wire = RpcEnvelope.ok(skills).to_wire()
+        rec = RpcEnvelope.from_wire(wire, DiscoverSkillsReq.Response)
+        ok, err = rec.into_result()
+        assert err is None
+        assert isinstance(ok, list)
+        assert all(isinstance(item, SkillInfo) for item in ok)
+        assert [s.name for s in ok] == ["a", "b"]
+        assert ok[1].scope == SkillScope.SERVER
+
+    def test_envelope_ok_wraps_discover_plugins(self):
+        # Bare arbitrary-JSON list response: {"ok": [<Value>, ...]}.
+        plugins = [{"name": "p1", "v": 1}, {"name": "p2"}]
+        wire = RpcEnvelope.ok(plugins).to_wire()
+        rec = RpcEnvelope.from_wire(wire, DiscoverPluginsReq.Response)
+        ok, err = rec.into_result()
+        assert err is None
+        assert ok == plugins

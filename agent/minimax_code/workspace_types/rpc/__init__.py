@@ -25,8 +25,14 @@ three more serde patterns new to the layer (``skip_serializing_if =
 "String::is_empty"`` non-optional elision via a wrap ``model_serializer``
 mixin, bulk ``Response = serde_json::Value`` surfaced as ``Any``, and a
 typed shape (:class:`WorkspaceInfo`) carried alongside a raw ``Value``
-response). The remaining 5 RPC files (fs / git / hunks / skills / worktree)
-land in R73+.
+response). R73 adds :mod:`skills` — the two ``workspace.discover_*`` methods
+plus the :class:`SkillScope` forward-tolerant enum and the 26-field
+:class:`SkillInfo` discovery payload, landing three more serde patterns new
+to the layer (a ``default = "default_true"`` bool field, bulk
+``Option::is_none`` elision via a wrap ``model_serializer`` that drops every
+``None``-valued key, and bare-list ``Response = Vec<Value>`` / ``Vec<SkillInfo>``
+surfaced as ``list[Any]`` / ``list[SkillInfo]``). The remaining 4 RPC files
+(fs / git / hunks / worktree) land in R74+.
 """
 
 from __future__ import annotations
@@ -72,6 +78,12 @@ from minimax_code.workspace_types.rpc.session import (
     FileRewindConflict,
     FileRewindResponse,
     RewindToReq,
+)
+from minimax_code.workspace_types.rpc.skills import (
+    DiscoverPluginsReq,
+    DiscoverSkillsReq,
+    SkillInfo,
+    SkillScope,
 )
 from minimax_code.workspace_types.rpc.workspace import (
     BackgroundTaskSummaryWire,
@@ -144,6 +156,11 @@ __all__ = [
     "FuzzyChangeReq",
     "FuzzyCloseReq",
     "FuzzyStatusReq",
+    # skills (R73, default_true bool + bulk Option::is_none wrap elision + bare-list Response)
+    "SkillScope",
+    "SkillInfo",
+    "DiscoverSkillsReq",
+    "DiscoverPluginsReq",
     # workspace (R72, skip_serializing_if=String::is_empty + bulk Response=Value + typed shape)
     "WorkspaceInfo",
     "BackgroundTaskSummaryWire",

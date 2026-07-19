@@ -5699,4 +5699,110 @@ cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
 
 ### Commit
 
-`feat(platform): R72 workspace RPC metadata/admin layer (fuse grok xai-grok-workspace-types rpc/ workspace.rs 271 lines → 1 module: 14 workspace.* methods[6 empty-param + 5 param Response=Value + 2 typed Response] + WorkspaceInfo typed shape[alongside raw Value response] + BackgroundTaskSummaryWire/TodoSummaryWire[skip_serializing_if=Option::is_none plain model_serializer] + ListBackgroundTasks/ListTodos responses, lands 3 serde patterns new to layer: skip_serializing_if=String::is_empty non-optional str elision via _OmitsEmptyCallerSessionId mixin[@model_serializer mode=wrap handler(self) pops empty caller, shared by UpdateToolConfigReq+DropSessionReq, avoids self.model_dump recursion] + bulk Response=serde_json::Value→Any[11 methods] + typed WorkspaceInfo shape alongside raw Value response, 3 skip-elision variants distinguished[#[serde(skip)] vs Option::is_none vs String::is_empty], 29 new tests zero-regression)`
+`feat(platform): R72 workspace RPC metadata/admin layer (fuse grok xai-grok-workspace-types rpc/ workspace.rs 271 lines → 1 module: 14 workspace.* methods[6 empty-param + 5 param Response=Value + 2 typed Response] + WorkspaceInfo typed shape[alongside raw Value response] + BackgroundTaskSummaryWire/TodoSummaryWire[skip_serializing_if=Option::is_none plain model_serializer] + ListBackgroundTasks/ListTodos responses, lands 3 serde patterns new to layer: skip_serializing_if=String::is_empty non-optional str elision via _OmitsEmptyCallerSessionId mixin[@model_serializer mode=wrap handler(self) pops empty caller, shared by UpdateToolConfigReq+DropSessionReq, avoids self.model_dump recursion] + bulk Response=serde_json::Value→Any[11 methods] + typed WorkspaceInfo shape alongside raw Value response, 3 skip-elision variants distinguished[#[serde(skip)] vs Option::is_none vs String::is_empty], 29 new tests zero-regression)
+
+
+## R73 — 远程 workspace RPC skills 发现/枚举层(融合 grok xai-grok-workspace-types rpc/ skills.rs)
+
+锚点:R73-1 c8fc94a
+
+### 本轮目标
+
+迁移 `skills.rs`(275L)= **1 个文件** → 1 个新模块,2 个 `workspace.discover_*` 方法 + `SkillScope` 枚举 + `SkillInfo` 26 字段发现载荷,攻克 **3 个新 serde 模式** + 本轮决定性架构问题:
+
+- **批量 `Option::is_none` 省略 via wrap exclude_none(本轮核心)**:`SkillInfo` 带 18 个 `Option` 字段,每个 `#[serde(default, skip_serializing_if = "Option::is_none")]`。R70 的 plain `model_serializer` 手建 dict 只适合 2 字段(`match_start`/`match_end`),26 字段手建太冗长 → 改用 **wrap `@model_serializer` + `handler(self)` 拿默认 dump + `{k:v for k,v in raw.items() if v is not None}` 推导式**一次性过滤全部 None。
+- **`default = "default_true"` bool 字段**:`user_invocable`/`enabled` 两个 bool 缺省为 True(grok `#[serde(default = "default_true")]`),区别于 R70/R72 的 `#[serde(default)]` bool(缺省 False)。Python `field: bool = True`,True/False 都输出(无 `skip_serializing_if`)。
+- **裸列表 `Response = Vec<Value>` / `Vec<SkillInfo>`**:`DiscoverPluginsReq` 响应是任意 JSON 列表(`list[Any]`),`DiscoverSkillsReq` 是 typed 列表(`list[SkillInfo]`)。envelope 包 `{"ok": [...]}`,区别于 R72 的 wrapped-struct 列表响应(`ListBackgroundTasksResponse` = `{"tasks": [...]}`)和 R72 的 scalar `Response = Any`。
+
+**决定性架构问题**:18 个 Option 字段一次性省略——既不能手建 26 键 dict(冗长易漏键),也不能逐个 `pop`(18 个调用)。**wrap `model_serializer` 的 `handler(self)` 返回默认 dump(26 字段全在,JSON 安全),推导式过滤 None** 是唯一可扩展方案,且复用 R72 wrap mixin 的"handler 默认 dump 后处理"范式(只是 pop 单键→批量 filter)。
+
+剩余 4 文件(fs 754 / git 1077 / hunks 413 / worktree 406 = ~2650 行)留 R74+。
+
+### 融合结论
+
+R70 plain `model_serializer` 省 2 字段,R72 wrap mixin 省 1 个空串 str 键,**R73 wrap exclude_none 批量省 18 Option**——Option 省略的第 3 种实现,把 R72 的"handler dump 后处理"从单键 pop 升级为批量 filter:
+
+- **批量 Option::is_none 省略**:grok `#[serde(default, skip_serializing_if = "Option::is_none")]` × 18 字段。Python 侧 `@model_serializer(mode="wrap")` + `handler(self)` 拿默认 dump + `{k: v for k, v in raw.items() if v is not None}`。关键:`v is not None` 只过滤 None,**保留空 vec(`[]`)/空 map(`{}`)/False bool**——与 grok `Option::is_none` 语义一致(只 None 省略)。
+- **Option 省略 3 实现谱系**:R70 plain 手建 dict(2 字段,camelCase 键需手工排);R72 wrap mixin pop 单键(空串 str caller);R73 wrap exclude_none 推导式批量(18 Option)。三者都是 `skip_serializing_if="Option::is_none"` 的实现,选型看字段数:少→plain,单键特殊→wrap pop,批量→wrap exclude_none。
+- **`default_true` bool**:grok `#[serde(default = "default_true")]`——反序列化缺省 True,序列化无 skip 所以 True/False 都输出。Python `field: bool = True`(简单)。区别于 `#[serde(default)]` bool(缺省 False,`has_user_specified_description`/`disable_model_invocation`)。
+- **SkillScope 复用 R71 形状**:R71 `HookEventNameWire`(15 known + Unknown,str-subclass,作 map key);R73 `SkillScope`(6 known + Unknown,str-subclass,作字段值)。形状一致(`__get_pydantic_core_schema__` + `no_info_after_validator_function(cls, str_schema())` + 类后 `setattr` 常量 + `as_str`),仅变体数 + 用途不同。str-subclass 在 map key 和字段值两种位置都原生工作。
+- **裸列表 Response 无需改 envelope**:`envelope._dump_payload` 已有 `list`/`tuple` 分支(逐元素递归 dump);`from_wire` 用 `TypeAdapter(response_type).validate_python(data["ok"])` 支持 `list[SkillInfo]`/`list[Any]`。R70/R72 已为 scalar/primitive 建立 envelope 支持先例,R73 裸列表零改 envelope。
+
+### 交付
+
+1 源文件 + barrel 扩展 + 测试扩展,275 行 Rust → 约 182 行 Python + 21 个新增专项测试:
+
+| 文件 | Rust 源 | 行数 | Python 实现 |
+|------|---------|------|------------|
+| `rpc/skills.py` | `rpc/skills.rs` | 275 | `SkillScope`(str-subclass 前向容忍枚举,6 known + Unknown,复用 R71 `__get_pydantic_core_schema__` 形状)+ `SkillInfo`(26 字段:4 必填 + 18 Option[wrap exclude_none 批量省略] + 4 bool[2 default_true `user_invocable`/`enabled` + 2 default False `has_user_specified_description`/`disable_model_invocation`],无 Default)+ `DiscoverSkillsReq`(Response=list[SkillInfo])+ `DiscoverPluginsReq`(Response=list[Any]) |
+| `rpc/__init__.py` | mod.rs barrel | — | 重导出 skills 4 符号(barrel + __all__ 同步 + docstring 加 R73 段落) |
+| `tests/test_rpc.py` | — | — | +21 测试:`TestSkills`(2 method 常量/2 Response 类型[typed list + Any list]/2 empty default/SkillScope 6 测试[known decode/class attrs/unknown round-trip/known round-trip/as_str/str-subclass]/SkillInfo 9 测试[minimal payload/full round-trip/omit_none 8 键/default_true True/false bool 存活/no_default/ignores unknown/empty map 存活/empty vec 存活]/envelope Ok 往返 typed list + Any list) |
+
+测试增长:rpc 专项 R72 的 138 → R73 的 159(+21);全量 R72 的 2222 → R73 的 2243(+21,零回归,完美对账)。
+
+### 映射决策树 + 坑
+
+**决策树**:
+- 2 个空参数 struct(`DiscoverSkillsReq`/`DiscoverPluginsReq`)→ 无字段 WireModel + METHOD + Response ClassVar;`#[derive(Default)]` → 基类 `default()` = `cls()`,`to_wire()` = `{}`。
+- `type Response = Vec<SkillInfo>` → `Response: ClassVar[type] = list[SkillInfo]`;`Vec<Value>` → `Response: ClassVar[type] = list[Any]`(envelope `TypeAdapter` 原生支持两者)。
+- `SkillScope` 枚举(手写 serde,6 known + Unknown(String))→ str-subclass + `__get_pydantic_core_schema__`(复用 R71),6 常量类后 `setattr`,无 catch-all 常量(Unknown = 任意 str)。
+- `SkillInfo` 4 必填字段(`name`/`description`/`path`/`scope`)→ 无默认 str + SkillScope。
+- `SkillInfo` 18 Option 字段(`#[serde(default, skip_serializing_if = "Option::is_none")]`)→ `X | None = None` + wrap `model_serializer` exclude_none 推导式批量省略。
+- `SkillInfo` 2 `default_true` bool(`user_invocable`/`enabled`)→ `bool = True`(总是输出)。
+- `SkillInfo` 2 default bool(`has_user_specified_description`/`disable_model_invocation`)→ `bool = False`(总是输出)。
+- `config_source: Option<Value>` → `Any | None`(grok 不结构化 `ConfigSource` tagged enum,RPC 客户端不解释)。
+- `SkillInfo` derive `Debug, Clone, PartialEq`(无 Default,4 必填)→ 不 override `default()`,基类 `cls()` 必失败。
+
+**坑 1 — 18 Option 字段省略不可手建 dict,改 wrap exclude_none 推导式(本轮决定性)**
+首版考虑 R70 plain `model_serializer` 手建 26 键 dict——但 18 个 Option 各写 `if self.x is not None: out["x"] = self.x` 太冗长易漏键。**改用 wrap `@model_serializer(mode="wrap")`**:`handler(self)` 拿默认 dump(pydantic 注入,返回全部 26 字段 JSON 安全),`{k: v for k, v in raw.items() if v is not None}` 一次性过滤。这与 R72 wrap mixin 同范式(handler 默认 dump 后处理),只是 pop 单键→批量 filter。关键:`is not None` 只过滤 None,空 vec/空 map/False bool 保留(对标 grok `Option::is_none`)。
+
+**坑 2 — `default_true` bool:True 和 False 都输出(无 skip_serializing_if)**
+grok `#[serde(default = "default_true")]` 只控反序列化缺省值(→ True),序列化无 skip 所以 True/False 都在 wire。Python `field: bool = True`。`test_skill_info_false_bools_survive_serialization` 断言 `user_invocable=False`/`enabled=False` 仍在 dump(omit_none 不过滤 False,因 `False is not None`)。区别于 R70/R72 的 `#[serde(default)]` bool(缺省 False)。
+
+**坑 3 — SkillScope 复用 R71 形状,字段值 vs map key 同形**
+R71 `HookEventNameWire` 作 `HookRegistryWire` 的 map key(`dict[HookEventNameWire, list[HookSpecWire]]`);R73 `SkillScope` 仅作 `SkillInfo.scope` 字段值。str-subclass + `__get_pydantic_core_schema__` 在两种位置都原生工作(validate as str→coerce subclass,serialize→plain string)。唯一差异:变体数(15→6)和 wire 值表。复用代码逐字照搬,仅改 `_KNOWN_*` 表和类名。
+
+**坑 4 — 裸列表 Response,envelope 零改**
+担心 `Response = list[SkillInfo]`/`list[Any]` 需要 envelope 特殊处理。**验证**:`envelope._dump_payload` 已有 `list`/`tuple` 分支(逐元素递归,`BaseModel`→`sort_mappings(model_dump)`,`Mapping`→递归);`from_wire` 的 `TypeAdapter(response_type).validate_python(data["ok"])` 原生支持 `list[SkillInfo]`(逐元素 validate)/`list[Any]`(透传 dict)。R73 零改 envelope,`test_envelope_ok_wraps_discover_skills`/`test_envelope_ok_wraps_discover_plugins` 验证往返。
+
+**坑 5 — omit_none 保留空 vec/空 map(只过滤 None)**
+`SkillInfo` 的 `metadata: {}`(空 map)/`paths: []`(空 vec)在 `Option::is_none` 语义下**不省略**(只有 None 省略)。wrap 推导式 `v is not None` 正确保留 `{}`/`[]`。`test_skill_info_empty_map_survives`/`test_skill_info_empty_vec_survives` 断言空集合在 wire。`test_skill_info_omits_none_optionals` 断言仅 8 键(4 必填 + 4 bool,18 Option 全省略)。
+
+**坑 6 — SkillInfo 不 derive Default,基类 default() 必失败**
+grok `SkillInfo` derive `Debug, Clone, PartialEq, Serialize, Deserialize`(**无 Default**,4 必填)。基类 `default()` = `cls()` 会因 4 必填报 ValidationError。`test_skill_info_no_default` 用 `pytest.raises(Exception)` 断言失败(`# noqa: B017`,对标 R72 WorkspaceInfo/test_workspace_info_no_default)。
+
+### 验证
+
+三重验证全绿:
+
+```bash
+# 1. ruff lint(E/F/W/I/B/UP,行长 100)
+cd "/d/工作/城建院/mm code/agent" && uv run ruff check minimax_code/workspace_types/rpc/skills.py minimax_code/workspace_types/rpc/__init__.py tests/test_rpc.py
+# → All checks passed!
+
+# 2. R73 专项测试
+cd "/d/工作/城建院/mm code/agent" && uv run pytest tests/test_rpc.py -q
+# → 159 passed in 0.58s(R72 的 138 + R73 新增 21,精确对账)
+
+# 3. 全量回归(零回归)
+cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
+# → 2243 passed, 10 skipped in 113.20s
+#    (R72 的 2222 + R73 新增 21,完美对账,零回归)
+```
+
+**wire 保真交叉验证**:对照 grok `skills.rs` 源码逐行确认——7 个 grok 测试(`skill_info_deserializes_minimal_payload`/`skill_info_deserializes_full_payload`[round-trip]/`skill_scope_known_values`/`skill_scope_unknown_value_round_trips_losslessly`/`skill_scope_known_values_round_trip`/`skill_info_ignores_unknown_fields`/`method_constant`[2 methods])全部在 TestSkills 中复刻并扩展(method 常量补全至 2 个 discover_*、SkillScope 加 class_attrs/as_str/str-subclass 3 测试、SkillInfo 加 default_true/false bool/omit_none/empty map/empty vec/no_default 6 测试)。`test_skill_info_full_payload_round_trip`(26 字段全填,`to_wire() == sort_mappings(raw)`)闭合"18 Option 省略 ↔ 4 bool 总输出 ↔ 4 必填"完整链路;`test_skill_info_omits_none_optionals`(8 键 = 4 必填 + 4 bool)+ `test_skill_info_false_bools_survive_serialization`/`test_skill_info_empty_map_survives`/`test_skill_info_empty_vec_survives`(False bool/空 map/空 vec 不过滤)闭合"omit_none 只过滤 None"边界。
+
+### YAGNI 边界
+
+本轮明确不做:
+
+- ❌ **rpc/ 剩余 4 文件(~2650 行)迁移** —— fs 754 / git 1077 / hunks 413 / worktree 406 留 R74+(本轮只迁 skills 这一个发现/枚举文件)。
+- ❌ **实际 discover_skills/discover_plugins handler 实现** —— 本轮仅 wire 类型契约,真正的技能/插件发现扫描文件系统是运行时能力,不在类型层。
+- ❌ **接入 IPC handler 或远程 workspace transport** —— 类型契约层先行,wire DTO 的消费端在 shell 层。
+- ❌ **前端 `web/src/types/` 镜像** —— 纯后端 RPC 类型契约,无 wire 事件广播到前端。
+- ❌ **SkillInfo.config_source 结构化** —— grok 留 `Option<Value>`(对应 `xai-grok-tools` 的 `ConfigSource` tagged enum,RPC 客户端不解释结构),本轮忠实保留 `Any | None`,tagged enum 解析是工具层职责。
+- ❌ **plugin 字段(plugin_name/version/root/data)结构化** —— 4 个 str Option 字段在 plugin scope 下有意义,但本轮不建 PluginInfo 子结构(grok 源码就是平铺字段),保持与源 1:1。
+
+### Commit
+
+`feat(platform): R73 skills RPC discovery layer (fuse grok xai-grok-workspace-types rpc/ skills.rs 275 lines → 1 module: 2 workspace.discover_* methods[discover_skills Response=list[SkillInfo] + discover_plugins Response=list[Any]] + SkillScope forward-tolerant str-subclass enum[6 known + Unknown, reuses R71 __get_pydantic_core_schema__ shape, field-value vs R71 map-key] + SkillInfo 26-field payload[4 required + 18 Option + 4 bool, lands 3 serde patterns new to layer: default="default_true" bool[user_invocable/enabled=True, both True and False always emitted] + bulk Option::is_none elision via @model_serializer mode=wrap handler(self) + {k:v for k,v in raw.items() if v is not None}[3rd Option-elision impl after R70 plain 2-field dict + R72 wrap-mixin single-key pop, scales to 18 fields without hand-building 26-key dict, preserves empty vec/map/False bool] + bare-list Response=Vec<Value>/Vec<SkillInfo> surfaced as list[Any]/list[SkillInfo][envelope already supports bare lists via _dump_payload list branch + TypeAdapter, no envelope change]], SkillInfo no-Default → base default() raises[pytest.raises + noqa:B017], 21 new tests zero-regression)``
