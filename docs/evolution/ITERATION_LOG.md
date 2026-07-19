@@ -5199,3 +5199,99 @@ cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
 ### Commit
 
 `feat(platform): R67 remote workspace API leaf wire type contract layer (fuse grok xai-grok-workspace-types leaf tier, types/ 14 files 1168 + lib 116 + error 593 + identity 163 + metadata 243 = 2283 lines → 21 modules: identity/metadata/errors/chunk_kind + 13 leaf types + _wire/_tagged bases, transparent str newtype pydantic hook + bytes_as_base64 + BTreeMap sorted dict + adjacent-tagged enum base, 62 tests zero-regression)`
+
+---
+
+## R68 — 远程 workspace RPC 地基 wire 契约层(融合 grok xai-grok-workspace-types rpc/ 地基)
+
+锚点:R68-1 af3270f
+
+### 本轮目标
+
+融合 workspace-types `rpc/` **地基层**(mod.rs 49 + envelope.rs 112 + session.rs 89 + agents_md.rs 59 = **309 行 Rust**)→ 新子包 `agent/minimax_code/workspace_types/rpc/`(4 文件)。这是 R67 叶子层(types/identity/metadata/error)之后的 **RPC 消费层起步**:定义 `WorkspaceRpc` 协议(METHOD ClassVar + Response 关联类型)+ `RpcEnvelope[T]` **externally-tagged** 响应信封(`{"ok":T}`/`{"err":{code,message}}`,区别于 R67 的 adjacent-tagged `{"type","data"}`)+ 两个最小业务 RPC(session prompt 追踪 3 方法 + agents_md 发现)。
+
+rpc/ 剩余 10 文件(fs 754 / git 1077 / hooks 230 / hunks 413 / search 226 / skills 275 / workspace 271 / worktree 406 / code_nav 125 / deploy 100 = 3877 行)留 R69+。
+
+### 融合结论
+
+R67 是 wire DTO 的**原子**(叶子类型);R68 是消费这些原子的 **RPC 请求/响应骨架**。两者构成 xai-grok-workspace-types 的"类型契约四件套"(扩展 R64 / 工具类型 R65 / 配置类型 R66 / workspace 叶子 R67)之后的第五个表面——**RPC 消费层**。
+
+**trait → Protocol 映射**:Rust `WorkspaceRpc` trait(associated const `METHOD: &'static str` + associated `type Response: Serialize + DeserializeOwned + Send`)映射为 Python `@runtime_checkable class WorkspaceRpc(Protocol)`(声明 `METHOD: ClassVar[str]`)+ 每个请求 struct 的 `Response: ClassVar[type]` 类属性(如 `BeginPromptReq.Response is type(None)`、`RewindToReq.Response is FileRewindResponse`、`DiscoverAgentsMdReq.Response == list[AgentConfigFile]`)。客户端/服务器共用同一 struct 表示同一方法的设计得以保留。
+
+**envelope 表示抉择**:Rust `RpcEnvelope<T>` 是 serde 默认的 **externally-tagged** enum(variant 名是唯一 key)。这与 R67 的 adjacent-tagged `#[serde(tag="type", content="data")]` 本质不同——判别前者是 key 本身,后者是内部字段。pydantic discriminated union 需要内部 discriminator 字段,不支持 externally-tagged,故 R68 用独立泛型类(`Generic[T]` + 手写 `to_wire`/`from_wire`)而非复用 R67 的 `AdjacentTagged` 基类。
+
+### 交付
+
+4 文件,309 行 Rust → 约 290 行 Python + 48 个专项测试:
+
+| 文件 | Rust 源 | 行数 | Python 实现 |
+|------|---------|------|------------|
+| `rpc/__init__.py` | `rpc/mod.rs` | 49 | `WorkspaceRpc` Protocol(METHOD ClassVar)+ 4 tool ID 常量(workspace_rpc / workspace_events / workspace_tool_notifications / workspace_client_ext_notifications)+ barrel 重导出 |
+| `rpc/envelope.py` | `rpc/envelope.rs` | 112 | `RpcEnvelope[T]` Generic(externally-tagged `{"ok"}`/`{"err"}}`)+ `RpcError`(code+message + is_turn_active + `__str__`)+ `TURN_ACTIVE` 常量 + `_dump_payload` 递归(BaseModel/list/tuple/Mapping)+ `ok`/`err_parts`/`err`/`into_result`/`to_wire`/`from_wire` |
+| `rpc/session.py` | `rpc/session.rs` | 89 | `ConflictType` StrEnum(snake_case 3 变体)+ `FileRewindConflict` + `FileRewindResponse`(success/target_prompt_index/Vec 字段必填 + error Optional)+ `BeginPromptReq`/`EndPromptReq`/`RewindToReq`(METHOD + Response ClassVar) |
+| `rpc/agents_md.py` | `rpc/agents_md.rs` | 59 | `AgentConfigFile`(forward-compat 忽略未知字段)+ `DiscoverAgentsMdReq`(空 body,derive Default,Response=list[AgentConfigFile]) |
+
+测试 `tests/test_rpc.py`:48 个,覆盖 tool ID(4)+ RpcError(4)+ envelope ok wire(6)+ envelope err wire(4)+ envelope from_wire(6)+ envelope round trip(2)+ WorkspaceRpc 协议(2)+ session 方法(8)+ ConflictType(3)+ FileRewindResponse(3)+ agents_md(6)。
+
+### 映射决策树 + 坑
+
+**决策树**:
+- `WorkspaceRpc` trait(associated const + associated type)→ `@runtime_checkable Protocol`(METHOD ClassVar)+ 每个 Req 的 `Response: ClassVar[type]` 类属性(Python 关联类型用类属性承载)。
+- `RpcEnvelope<T>` externally-tagged enum → 独立 `Generic[T]` 类 + 手写 wire(pydantic 不支持 externally-tagged discriminated union)。`into_result()` 返回 `tuple[Any, RpcError | None]`(Rust `Result<T,RpcError>` 的显式对偶)。
+- `()`(Rust unit type)→ `type(None)`(NoneType);`TypeAdapter(type(None))` 验证 null payload。
+- `Vec<T>` Response(如 `Vec<AgentConfigFile>`)→ `list[T]` + `TypeAdapter(list[AgentConfigFile])` 批量验证。
+- 空 struct `DiscoverAgentsMdReq {}`(derive Default)→ pydantic 空模型(`default()` 成功,`to_wire()` → `{}`)。
+- `#[serde(rename_all="snake_case")]` enum(`ConflictType`)→ `StrEnum` 成员值即 snake_case 字符串。
+
+**坑 1 — externally-tagged vs adjacent-tagged(serde 表示本质区别)**
+初版想复用 R67 的 `AdjacentTagged`(`{"type","data"}`)基类实现 `RpcEnvelope`。但 Rust 源码 `#[serde(rename_all="snake_case")] pub enum RpcEnvelope<T> { Ok(T), Err(RpcError) }` **无** `tag`/`content` 属性——这是 serde **默认的 externally-tagged** 表示(variant 名 `ok`/`err` 是 wire 顶层唯一 key,如 `{"ok": <value>}` / `{"err": {...}}`)。adjacent-tagged 的判别是内部 `type` 字段,externally-tagged 的判别是顶层 key 本身。pydantic v2 的 `Field(discriminator=...)` 需要内部字段,无法表达 externally-tagged。**修复**:独立 `Generic[T]` 类 + 手写 `to_wire()`(`{"ok": _dump_payload(self._ok)}` 或 `{"err": {"code":..,"message":..}}`)+ `from_wire(data, response_type)`(按 key 分发)。
+
+**坑 2 — `WorkspaceRpc` Protocol 非方法成员:issubclass 被 typing 禁止**
+`WorkspaceRpc` 的 `METHOD` 是 `ClassVar[str]`(数据成员,非方法)。`@runtime_checkable` Protocol 对**非方法成员**的 `issubclass()` 直接抛 `TypeError: Protocols with non-method members don't support issubclass()`。同时请求 struct 有必填字段(session_id/prompt_index),`req()` 实例化抛 ValidationError,`isinstance(req(), WorkspaceRpc)` 也走不通。**修复**:协议契约验证改用 `hasattr(req, "METHOD")` + `isinstance(req.METHOD, str)` + `req.METHOD.startswith("workspace.")` 直接检查类属性。`isinstance(NoMethod(), WorkspaceRpc)` 仍可用于"无 METHOD 的类不满足协议"的反例测试(runtime_checkable 的 isinstance 检查实例属性存在,对非方法成员支持)。
+
+**坑 3 — `RpcEnvelope` 泛型 `T` 运行时不可恢复**
+Rust 在编译期通过 associated `type Response` 绑定 `T`,`into_result()` 静态返回 `Result<T, _>`。Python 泛型 `Generic[T]` 在运行时擦除——`from_wire({"ok": {...}}, ?)` 不知道把 dict 反序列化成什么类型。**修复**:`from_wire(data, response_type)` 要求调用方显式传 Rust 的 `type Response`(如 `FileRewindResponse`、`list[AgentConfigFile]`、`type(None)`),用 `pydantic.TypeAdapter(response_type).validate_python(data["ok"])` 处理 struct / Vec / unit / primitive 四种形状。这是 Rust 编译期类型绑定在 Python 的"调用点显式传类型"忠实映射。
+
+**坑 4 — `list[X] is list[X]` 为 `False`(GenericAlias 不 intern)**
+初版测试 `assert DiscoverAgentsMdReq.Response is list[AgentConfigFile]` 失败:`list[AgentConfigFile]` 每次 `__class_getitem__` 构造新的 `GenericAlias` 对象,CPython 不缓存,`is` 比较为 `False`。**修复**:改用值比较 `==`(GenericAlias 的 `__eq__` 比较 `(origin, args)`)。`list[AgentConfigFile] == list[AgentConfigFile]` → `True`。
+
+**坑 5 — `RpcError` 不能继承 `Exception`(pydantic 与 Exception 元类冲突)**
+Rust `RpcError` 实现 `std::error::Error`(可 `?` 传播 + `Display`)。初版想让 Python `RpcError` 同时是 pydantic 模型 + `Exception` 子类(以便 `raise`)。但 pydantic `BaseModel` 的 `ModelMetaclass` 与 `Exception` 的 `type` 元类不兼容(多继承元类冲突)。**修复**:`RpcError` 保持纯 pydantic 数据模型,`__str__` 实现 Display 契约;`RpcEnvelope.into_result()` 返回 `tuple[Any, RpcError | None]` 显式对偶(而非 raise),调用方模式匹配而非 `except`。
+
+### 验证
+
+三重验证全绿:
+
+```bash
+# 1. ruff lint(行长 100,E/F/W/I/B/UP)
+cd "/d/工作/城建院/mm code/agent" && uv run ruff check minimax_code/workspace_types/rpc/ tests/test_rpc.py
+# → All checks passed!(`--fix` 修复 I001 导入排序 + 修正 list 闭合括号手误后干净)
+
+# 2. R68 专项测试
+cd "/d/工作/城建院/mm code/agent" && uv run pytest tests/test_rpc.py -q
+# → 48 passed in 0.26s(修正 Protocol 非方法成员 issubclass 禁止 + GenericAlias 不 intern 后全绿)
+
+# 3. 全量回归(零回归)
+cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
+# → 2132 passed, 10 skipped in 104.19s
+#    (R67 的 2084 + R68 新增 48,完美对账,零回归)
+```
+
+测试增长:R67 的 2084 → R68 的 2132(+48 R68 新增,零回归)。
+
+**wire 保真交叉验证**:Grep grok 源码(envelope.rs `#[serde(rename_all="snake_case")] pub enum RpcEnvelope<T>` 无 tag/content = externally-tagged、session.rs `ConflictType` snake_case、agents_md.rs 空 struct derive Default + 忽略未知字段测试)逐行确认 Python 实现语义一致。
+
+### YAGNI 边界
+
+本轮明确不做:
+
+- ❌ **rpc/ 剩余 10 文件(3877 行)迁移** —— fs/git/hooks/hunks/search/skills/workspace/worktree/code_nav/deploy,每个文件有自己的请求/响应 struct 群,留 R69+(本轮只迁地基层 mod + envelope + 两个最小业务 RPC)。
+- ❌ **`tests/wire_round_trip.rs`(959 行)移植** —— grok 端跨 struct 往返测试,作为 Python 侧 48 测试的对照基准,不直接移植。
+- ❌ **接入 IPC handler 或 workspace transport** —— 类型契约层先行。wire DTO 的消费端(远程 workspace client)在 shell 层,本轮只迁移请求/响应骨架类型,不接 IPC。
+- ❌ **requests/ + events/ + chunks/ 完整 struct 体** —— 部分 RPC 的嵌套请求/响应 struct 留待对应 rpc 文件迁移时补全。
+- ❌ **前端 `web/src/types/` 镜像** —— 纯后端 RPC 类型契约,无 wire 事件广播到前端,暂不需要。
+- ❌ **`RpcEnvelope` 的 `into_result()` raise 语义** —— Rust `Result` 的 `?` 传播在 Python 用显式 tuple 对偶表达(RpcError 非 Exception),不引入额外 Result 包装类型。
+
+### Commit
+
+`feat(platform): R68 remote workspace RPC foundation wire contract layer (fuse grok xai-grok-workspace-types rpc/ root, mod.rs 49 + envelope.rs 112 + session.rs 89 + agents_md.rs 59 = 309 lines → 4 modules: rpc/__init__ WorkspaceRpc Protocol + 4 tool IDs + envelope RpcEnvelope[T] externally-tagged Generic + RpcError + TURN_ACTIVE + session 3 prompt RPCs + ConflictType StrEnum + FileRewindResponse + agents_md discovery RPC + AgentConfigFile forward-compat, externally-tagged vs adjacent-tagged distinction + Protocol non-method-member issubclass ban + Generic[T] runtime type-erasure from_wire response_type param, 48 tests zero-regression)`
