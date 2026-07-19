@@ -44,6 +44,7 @@ from minimax_code.tool_protocol import (
     MAX_LOG_RECORDS_PER_DONATION,
     MAX_METRICS_PER_DONATION,
     MAX_SPANS_PER_DONATION,
+    MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES,
     PROTOCOL_VERSION,
     UNKNOWN_METHOD_MSG_PREFIX,
     WORKSPACE_UNAVAILABLE_JSONRPC_CODE,
@@ -114,6 +115,7 @@ from minimax_code.tool_protocol import (
     SubscribeAck,
     SubscribeNotificationsParams,
     SubscribeOutcome,
+    SystemNotifyParams,
     TerminalError,
     Text,
     TextBlock,
@@ -127,6 +129,7 @@ from minimax_code.tool_protocol import (
     ToolDescriptionWithSchema,
     ToolId,
     ToolNotFound,
+    ToolNotificationFrame,
     ToolRegistration,
     ToolScope,
     ToolSearchResult,
@@ -196,9 +199,11 @@ from minimax_code.tool_protocol.frames import (
     servers_list_result_from_wire,
     subscribe_ack_from_wire,
     subscribe_notifications_params_from_wire,
+    system_notify_params_from_wire,
     tool_call_params_from_wire,
     tool_call_progress_frame_from_wire,
     tool_call_result_from_wire,
+    tool_notification_frame_from_wire,
     tool_search_result_from_wire,
     tool_server_connection_status_from_wire,
     tool_server_evict_params_from_wire,
@@ -5796,6 +5801,224 @@ class TestServerDiscoveryBindingBarrelR99:
             assert hasattr(pkg, name), f"barrel missing {name}"
 
     def test_server_symbols_in_all(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in self._types:
+            assert name in pkg.__all__, f"{name} not in barrel __all__"
+
+    def test_frames_submodule_exposes_from_wire(self):
+        import minimax_code.tool_protocol.frames as mod
+
+        for name in self._converters:
+            assert hasattr(mod, name), f"frames submodule missing {name}"
+
+    def test_barrel_does_not_re_export_from_wire(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in self._converters:
+            assert not hasattr(pkg, name), f"barrel should not export {name}"
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# R100 — tool/system notifications domain (consumes R83 WireToolNotification)
+# frames.rs: ToolNotificationFrame, MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES, SystemNotifyParams
+# ═════════════════════════════════════════════════════════════════════════
+
+
+class TestToolNotificationFrame:
+    """``ToolNotificationFrame`` — required R83 notification + two Option-skip ids.
+
+    ``notification`` consumes the R83 :data:`WireToolNotification` (Known /
+    Custom) via the module-level dispatcher; the ``custom`` / ``known``
+    classmethods mirror the Rust constructors (both leave ``tool_call_id``
+    unset). ``to_wire`` follows the Rust declaration order.
+    """
+
+    @staticmethod
+    def _custom_notification():
+        from minimax_code.tool_protocol.notification_wire import (
+            Custom,
+            WireCustomNotification,
+        )
+
+        return Custom(WireCustomNotification(kind="my.progress", payload={"p": 1}))
+
+    def test_option_skip_ids_omitted_when_none(self):
+        frame = ToolNotificationFrame(notification=self._custom_notification())
+        wire = frame.to_wire()
+        assert "tool_call_id" not in wire
+        assert "tool_id" not in wire
+        assert "notification" in wire
+
+    def test_option_skip_ids_present_when_set(self):
+        wire = ToolNotificationFrame(
+            notification=self._custom_notification(),
+            tool_call_id=ToolCallId("call-1"),
+            tool_id=ToolId("fs:read"),
+        ).to_wire()
+        assert wire["tool_call_id"] == "call-1"
+        assert wire["tool_id"] == "fs:read"
+
+    def test_to_wire_emits_ids_then_notification_in_rust_decl_order(self):
+        wire = ToolNotificationFrame(
+            notification=self._custom_notification(),
+            tool_call_id=ToolCallId("c1"),
+            tool_id=ToolId("fs:read"),
+        ).to_wire()
+        assert list(wire.keys()) == ["tool_call_id", "tool_id", "notification"]
+
+    def test_custom_factory_emits_custom_shape_and_sets_tool_id(self):
+        frame = ToolNotificationFrame.custom(
+            tool_id=ToolId("fs:read"), kind="my.progress", payload={"p": 1}
+        )
+        wire = frame.to_wire()
+        assert wire["notification"]["shape"] == "custom"
+        assert wire["notification"]["value"]["kind"] == "my.progress"
+        assert wire["notification"]["value"]["payload"] == {"p": 1}
+        assert frame.tool_id == ToolId("fs:read")
+        assert frame.tool_call_id is None
+
+    def test_known_factory_emits_known_shape_and_sets_tool_id(self):
+        frame = ToolNotificationFrame.known(
+            tool_id=ToolId("fs:read"),
+            notification={"type": "FileWritten", "path": "/a"},
+        )
+        wire = frame.to_wire()
+        assert wire["notification"]["shape"] == "known"
+        assert wire["notification"]["value"] == {"type": "FileWritten", "path": "/a"}
+        assert frame.tool_call_id is None
+        assert frame.tool_id == ToolId("fs:read")
+
+    def test_from_wire_missing_required_notification_raises_keyerror(self):
+        with pytest.raises(KeyError):
+            tool_notification_frame_from_wire({})
+
+    def test_from_wire_lifts_option_ids_and_round_trips_custom(self):
+        original = ToolNotificationFrame(
+            notification=self._custom_notification(),
+            tool_call_id=ToolCallId("call-7"),
+            tool_id=ToolId("fs:read"),
+        )
+        restored = tool_notification_frame_from_wire(original.to_wire())
+        assert restored.tool_call_id == ToolCallId("call-7")
+        assert restored.tool_id == ToolId("fs:read")
+        assert restored.notification.to_wire() == original.notification.to_wire()
+
+    def test_from_wire_round_trips_known_factory(self):
+        original = ToolNotificationFrame.known(
+            tool_id=ToolId("fs:read"),
+            notification={"type": "FileWritten", "path": "/a"},
+        )
+        restored = tool_notification_frame_from_wire(original.to_wire())
+        assert restored.tool_id == ToolId("fs:read")
+        assert restored.tool_call_id is None
+        assert restored.notification.to_wire() == original.notification.to_wire()
+
+
+class TestSystemNotifyParams:
+    """``SystemNotifyParams`` — required opaque ``payload`` + default-no-skip
+    ``echo_to_subscribers`` (always on wire) + two Option-skip str fields."""
+
+    def _bare(self, **overrides):
+        base = dict(payload={"event": "reload"})
+        base.update(overrides)
+        return SystemNotifyParams(**base)
+
+    def test_default_no_skip_echo_present_at_false(self):
+        wire = self._bare().to_wire()
+        assert "echo_to_subscribers" in wire
+        assert wire["echo_to_subscribers"] is False
+
+    def test_option_skip_fields_omitted_at_default(self):
+        wire = self._bare().to_wire()
+        assert "conversation_id_override" not in wire
+        assert "request_id" not in wire
+
+    def test_option_skip_fields_present_when_set(self):
+        wire = self._bare(
+            conversation_id_override="conv-9",
+            request_id="req-1",
+        ).to_wire()
+        assert wire["conversation_id_override"] == "conv-9"
+        assert wire["request_id"] == "req-1"
+
+    def test_to_wire_emits_payload_echo_in_rust_decl_order(self):
+        wire = self._bare(conversation_id_override="c", request_id="r").to_wire()
+        assert list(wire.keys()) == [
+            "payload",
+            "conversation_id_override",
+            "echo_to_subscribers",
+            "request_id",
+        ]
+
+    def test_payload_is_opaque_verbatim_passthrough(self):
+        payload = {"nested": [1, 2, {"deep": True}]}
+        wire = self._bare(payload=payload).to_wire()
+        assert wire["payload"] == payload
+        assert wire["payload"] is payload
+
+    def test_from_wire_missing_required_payload_raises_keyerror(self):
+        with pytest.raises(KeyError):
+            system_notify_params_from_wire({})
+
+    def test_from_wire_tolerates_missing_echo_key(self):
+        restored = system_notify_params_from_wire({"payload": {"x": 1}})
+        assert restored.echo_to_subscribers is False
+        assert restored.payload == {"x": 1}
+
+    def test_from_wire_lifts_option_fields_and_echo(self):
+        restored = system_notify_params_from_wire(
+            {
+                "payload": {"x": 1},
+                "conversation_id_override": "conv",
+                "echo_to_subscribers": True,
+                "request_id": "r1",
+            }
+        )
+        assert restored.payload == {"x": 1}
+        assert restored.conversation_id_override == "conv"
+        assert restored.echo_to_subscribers is True
+        assert restored.request_id == "r1"
+
+    def test_round_trip_full(self):
+        original = self._bare(
+            conversation_id_override="c",
+            echo_to_subscribers=True,
+            request_id="r",
+        )
+        assert system_notify_params_from_wire(original.to_wire()) == original
+
+
+class TestMaxSystemNotifyPayloadBytes:
+    """``MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES`` — the ``system.notify`` payload cap."""
+
+    def test_value_matches_rust_usize_const(self):
+        # Rust source: `pub const MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES: usize = 256 * 1024;`
+        assert MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES == 256 * 1024
+        assert MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES == 262144
+
+
+class TestToolSystemNotificationsBarrelR100:
+    """Tool/system notification symbols travel the barrel; from_wire stay
+    submodule-qualified (mirrors Rust ``pub use`` surface)."""
+
+    _types = (
+        "MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES",
+        "SystemNotifyParams",
+        "ToolNotificationFrame",
+    )
+    _converters = (
+        "system_notify_params_from_wire",
+        "tool_notification_frame_from_wire",
+    )
+
+    def test_barrel_exports_notification_symbols(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in self._types:
+            assert hasattr(pkg, name), f"barrel missing {name}"
+
+    def test_notification_symbols_in_all(self):
         import minimax_code.tool_protocol as pkg
 
         for name in self._types:

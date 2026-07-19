@@ -181,9 +181,24 @@ to mix unit + struct variants):
   (:class:`ServerInfo`: required / Option-skip / default-no-skip with an
   opaque ``serde_json::Value`` ``metadata``), and the crate's second
   list-of-DTO result (:class:`ServersListResult`) round out the domain).
+* **R100 (this round)** — :mod:`frames`
+  (tool/system notifications domain: :class:`ToolNotificationFrame` /
+  :class:`SystemNotifyParams` — the notification channel for both tool
+  servers and the harness, and the **R83 -> R100 consumer edge**:
+  :class:`ToolNotificationFrame.notification` references the
+  :data:`~minimax_code.tool_protocol.notification_wire.WireToolNotification`
+  alias R83 landed (Known / Custom adjacent-tagged shapes, dispatched by the
+  module-level :func:`~minimax_code.tool_protocol.notification_wire.from_wire`).
+  Three serde modes meet here: required + Option-skip × 4 + a default-no-skip
+  ``bool`` (``echo_to_subscribers``) + an opaque ``serde_json::Value``
+  ``payload``; the ``custom`` / ``known`` classmethods on
+  :class:`ToolNotificationFrame` mirror the Rust constructors (the ``known``
+  ``Result<Self, serde_json::Error>`` arm collapses — Python payloads are
+  already JSON-ready). Also lands the ``MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES``
+  usize cap).
 * *deferred* — :mod:`frames`
-  (remainder: 5 of 14 domains — tool/system notifications, session lifecycle,
-  simplified lifecycle, hooks, service→harness pushes).
+  (remainder: 4 of 14 domains — session lifecycle, simplified lifecycle,
+  hooks, service→harness pushes).
 
 ``from_wire`` / ``to_wire`` live on each module (instance method or module
 function); the barrel does **not** re-export them, mirroring the Rust
@@ -256,6 +271,7 @@ from minimax_code.tool_protocol.frames import (
     MAX_LOG_RECORDS_PER_DONATION,
     MAX_METRICS_PER_DONATION,
     MAX_SPANS_PER_DONATION,
+    MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES,
     BindToolSessionAck,
     BindToolSessionParams,
     LogsDonateParams,
@@ -277,9 +293,11 @@ from minimax_code.tool_protocol.frames import (
     SubscribeAck,
     SubscribeNotificationsParams,
     SubscribeOutcome,
+    SystemNotifyParams,
     ToolCallParams,
     ToolCallProgressFrame,
     ToolCallResult,
+    ToolNotificationFrame,
     ToolSearchResult,
     ToolServerConnectionStatus,
     ToolServerDisconnectReason,
@@ -552,4 +570,11 @@ __all__ = [
     "ServerUnbindAck",
     "ServerUnbindOutcome",
     "ServerUnbindParams",
+    # R100 — tool/system notifications (consumes R83 WireToolNotification via
+    # ToolNotificationFrame.notification; default-no-skip bool + opaque Value
+    # payload + custom/known factory methods). All 3 symbols travel the barrel;
+    # from_wire converters stay submodule-qualified.
+    "MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES",
+    "SystemNotifyParams",
+    "ToolNotificationFrame",
 ]

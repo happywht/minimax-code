@@ -8456,3 +8456,90 @@ dataclass（ServerInfo）、列表 DTO（ServersListResult）、双必需字段 
 ### Commit
 
 `feat(platform): R99 migrate frames.rs server discovery + binding domain (ServersListParams/ServerInfo/ServersListResult/ServerBindParams/ServerBindOutcome/ServerBindAck/ServerUnbindParams/ServerUnbindOutcome/ServerUnbindAck, R98->R99 consumer edge via ServerInfo.status, two strict outcome enums + empty-struct params + six-field mixed-mode DTO + list-of-DTO result)`
+
+
+## R100 — tool/system notifications 域（frames.rs 第 9 域，消费 R83 WireToolNotification）
+
+锚点:R99-1 c55312a
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-tool-protocol/src/frames.rs:132-194` 的工具/系统通知 wire 域三件套：
+
+1. `ToolNotificationFrame` — 工具侧通知信封（required `notification` + 两个 Option-skip id + `custom`/`known` 工厂）。
+2. `MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES` — `system.notify` 负载大小上限常量（`usize = 256 * 1024`）。
+3. `SystemNotifyParams` — `system.notify` 请求参数（required 不透明 `payload` + default-no-skip `echo_to_subscribers` + 两个 Option-skip str 字段）。
+
+本轮解除 docs deferred 计数 5→4（剩余：session lifecycle / simplified lifecycle / hooks / service→harness pushes）。
+
+### 融合结论
+
+`ToolNotificationFrame.notification: WireToolNotification` 是本轮的**跨域消费者边界** —— 它直接复用 R83 `notification_wire.py` 的 `Known | Custom` 判别联合与模块级 `from_wire` 调度器。这是与 R98→R99（`ServerInfo.status: ToolServerLifecycleStatus`）完全相同的连贯迭代选择模式：**叶子域先落地、容器域后消费**，避免在本轮重复定义已迁移的子类型。
+
+**known 工厂 Result 折叠**：Rust `known<N: Serialize>` 返回 `Result<Self, serde_json::Error>`（来自 `serde_json::to_value`）。在 Python 侧 `notification` payload 已经是 JSON-ready `object`，因此没有序列化步骤、也没有 `Err` 分支 —— `Known.from_value(value)` 是零成本直传。Python 惯例用 `payload: object` 表示不透明的 `serde_json::Value`。
+
+### 交付
+
+| 文件 | 改动 |
+|------|------|
+| `agent/minimax_code/tool_protocol/frames.py` | +5 符号：`ToolNotificationFrame`（2 工厂）、`MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES`、`SystemNotifyParams`、`tool_notification_frame_from_wire`、`system_notify_params_from_wire`；docstring 版本链 +R100 |
+| `agent/minimax_code/tool_protocol/__init__.py` | barrel +3 类型（`ToolNotificationFrame`/`SystemNotifyParams`/`MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES`）+ 2 转换器留 frames 子模块限定；deferred 计数 5→4 |
+| `agent/tests/test_tool_protocol.py` | +5 导入/from_wire 插入 + 4 测试类（`TestToolNotificationFrame`/`TestSystemNotifyParams`/`TestMaxSystemNotifyPayloadBytes`/`TestToolSystemNotificationsBarrelR100`），23 新用例 |
+
+### 映射决策树+坑
+
+```
+ToolNotificationFrame
+├─ notification: WireToolNotification (R83)  → 直接 to_wire()/from_wire() 调度
+│     └─ 跨域消费，不在本轮重定义
+├─ tool_call_id/tool_id: Option<...>  → X | None = None
+│     ├─ to_wire: if x is not None: wire[k] = x   (Option-skip)
+│     └─ from_wire: ToolCallId(str(raw)) if raw is not None else None
+├─ to_wire 顺序 → Rust serde 声明序: tool_call_id → tool_id → notification
+│     └─ 用独立 dict 字面量，非 dataclass 字段序
+├─ custom(tool_id, kind, payload) 工厂 → Custom(WireCustomNotification(...)), tool_call_id 留空
+└─ known(tool_id, notification) 工厂 → Known.from_value(notification), tool_call_id 留空
+      └─ Result 折叠: payload 已是 object, 无 serde_json::to_value 步骤
+
+MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES: int = 256 * 1024  (= 262144)
+└─ barrel 常量区 case-insensitive 排序: MAX_SPANS(P) < MAX_SYSTEM(Y) < PROTOCOL(P-class)
+
+SystemNotifyParams
+├─ payload: object (不透明 serde_json::Value)  → 必要, 逐字直传
+│     ├─ to_wire: wire["payload"] is self.payload  (身份验证 verbatim)
+│     └─ from_wire: payload=data["payload"]  (KeyError if missing)
+├─ conversation_id_override/request_id: Option<String>  → Option-skip
+├─ echo_to_subscribers: bool  → default-no-skip (#[serde(default)] → 始终序列化)
+│     ├─ to_wire: 始终写, 即使 False
+│     └─ from_wire: bool(data.get("echo_to_subscribers", False))  (容忍缺失键)
+└─ to_wire 顺序 → Rust serde 声明序: payload → conversation_id_override → echo_to_subscribers → request_id
+```
+
+**坑速查：**
+
+1. **F401 三合一 SOP（R99 复现预防）**：5 处导入/from_wire 插入 Edit + 1 处测试类追加**必须同一条消息**，然后才跑 `ruff --fix`。否则 ruff 会删除所有未消费的导入。本轮用 4 个 `Edit`（barrel 常量/SystemNotifyParams/ToolNotificationFrame + 2 个 from_wire）+ 1 个 `Write` 临时文件全部在同一条消息发出。
+2. **测试类追加用 Write+cat**：`test_barrel_does_not_re_export_from_wire` 方法块在 R97/R98/R99 的 barrel 契约类各出现一次（共 3 次），Edit `old_string` 无法唯一匹配文件末尾。改用 `Write .tmp_r100_tests.py` → `cat >>` → `rm -f`，绕过唯一性问题且规避 heredoc 反引号陷阱。
+3. **测试导入最小化**：通过 `ToolNotificationFrame.custom()`/`.known()` 工厂方法 + `to_wire()` 结构比较（检查 `wire["notification"]["shape"]` / `["value"]`）来断言 Known/Custom 形态，避免在测试顶部导入 `Known`/`Custom`/`WireCustomNotification`，最大程度降低 F401 风险。仅在 `_custom_notification` staticmethod 内做局部导入。
+4. **ToolId 拒点号接受冒号**：测试值用 `ToolId("fs:read")`（R99 确认的 `_is_well_formed_tool_id` 规则）。
+5. **barrel 常量区排序**：barrel 常量区是 case-insensitive 字母序（与 frames.py `__all__` 的主题分组不同），所以 `MAX_SPANS_PER_DONATION` < `MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES` < `PROTOCOL_VERSION`（SPANS 的第 2 字符 P < SYSTEM 的 Y）。
+
+### 验证
+
+- `uv run ruff check tests/test_tool_protocol.py minimax_code/tool_protocol/frames.py minimax_code/tool_protocol/__init__.py` → **All checks passed!**（精确范围，无附带损害）
+- `uv run pytest tests/test_tool_protocol.py -q` → **811 passed in 1.13s**
+- `uv run pytest -q`（完整回归）→ **3269 passed, 10 skipped, 1 warning in 107.41s**
+
+### YAGNI 边界
+
+本轮**只迁移 wire 类型契约层**，明确不做：
+
+- 不实现 `system.notify` RPC handler（wire 类型先行，handler 留给后续 IPC 命名空间迭代）。
+- 不接 `MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES` 的运行时大小校验（仅暴露常量；校验逻辑留给消费端 handler，避免本轮引入未消费的代码）。
+- 不重定义 `check_custom_kind` / `KNOWN_NOTIFICATION_KINDS`（R83 已落地，本轮仅消费）。
+- 不迁移 notification 消费侧的 dispatch 逻辑（tool-server registry 的事件路由留给后续域）。
+
+wire 类型是契约层，先于行为层落地 —— 与 R82-R99 的全部 frames.rs 域迁移遵循同一节奏。
+
+### Commit
+
+`feat(platform): R100 migrate tool/system notification wire domain`

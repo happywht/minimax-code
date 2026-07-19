@@ -1,4 +1,4 @@
-"""Tool-server frame protocol — per-method params/result payloads (R92 + R93 + R94 + R95 + R96 + R97 + R98 + R99).
+"""Tool-server frame protocol — per-method params/result payloads (R92 + R93 + R94 + R95 + R96 + R97 + R98 + R99 + R100).
 
 Fusion of grok-build's ``xai-tool-protocol::frames`` — the per-method
 ``params`` and ``result`` payload structs that ride inside a
@@ -149,6 +149,13 @@ from enum import StrEnum
 from minimax_code.tool_protocol.connection import ToolDefinitionMode
 from minimax_code.tool_protocol.ids import ServerId, SessionId, ToolCallId, ToolId
 from minimax_code.tool_protocol.methods import Method
+from minimax_code.tool_protocol.notification_wire import (
+    Custom,
+    Known,
+    WireCustomNotification,
+    WireToolNotification,
+)
+from minimax_code.tool_protocol.notification_wire import from_wire as notification_from_wire
 from minimax_code.tool_protocol.output_wire import ToolOutputWire
 from minimax_code.tool_protocol.output_wire import from_wire as tool_output_wire_from_wire
 from minimax_code.tool_protocol.registration import ToolRegistration, ToolServerRegistration
@@ -160,6 +167,7 @@ __all__ = [
     "MAX_DONATION_BYTES",
     "MAX_LOG_RECORDS_PER_DONATION",
     "MAX_METRICS_PER_DONATION",
+    "MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES",
     # structs
     "ToolCallParams",
     "ToolCallResult",
@@ -217,6 +225,11 @@ __all__ = [
     "ServerUnbindAck",
     "ServerUnbindOutcome",
     "ServerUnbindParams",
+    # tool/system notifications (R100 — consumes R83 WireToolNotification via
+    # ToolNotificationFrame.notification; default-no-skip bool + opaque Value
+    # payload + custom/known factory methods)
+    "SystemNotifyParams",
+    "ToolNotificationFrame",
     # wire converters
     "tool_call_params_from_wire",
     "tool_call_result_from_wire",
@@ -259,6 +272,9 @@ __all__ = [
     "server_unbind_params_from_wire",
     "servers_list_params_from_wire",
     "servers_list_result_from_wire",
+    # tool/system notifications (R100)
+    "system_notify_params_from_wire",
+    "tool_notification_frame_from_wire",
 ]
 
 
@@ -1907,3 +1923,140 @@ def server_unbind_params_from_wire(data: dict[str, object]) -> ServerUnbindParam
 def server_unbind_ack_from_wire(data: dict[str, object]) -> ServerUnbindAck:
     """Reconstruct :class:`ServerUnbindAck` (wraps the strict outcome enum)."""
     return ServerUnbindAck(outcome=ServerUnbindOutcome.from_wire(str(data["outcome"])))
+
+
+# ── Tool/system notifications (R100) ─────────────────────────────────────
+
+
+@dataclass
+class ToolNotificationFrame:
+    """A notification emitted by a tool server or the harness (``ToolNotificationFrame``).
+
+    Carries an R83 :data:`~minimax_code.tool_protocol.notification_wire.WireToolNotification`
+    (``Known`` / ``Custom``) plus optional routing ids. ``notification`` is
+    required; ``tool_call_id`` and ``tool_id`` are ``Option``-skip
+    (wire-omitted when ``None``). The ``custom`` / ``known`` classmethods
+    mirror the Rust constructors — both leave ``tool_call_id`` unset, matching
+    the source (which sets it to ``None`` in both factory paths).
+
+    The Python dataclass reorders fields so the required ``notification``
+    precedes the two defaulted id fields (Python dataclass rule: required
+    before defaulted). The wire order is controlled independently by
+    :meth:`to_wire`, which follows the Rust declaration order
+    (``tool_call_id`` -> ``tool_id`` -> ``notification``).
+    """
+
+    notification: WireToolNotification
+    tool_call_id: ToolCallId | None = None
+    tool_id: ToolId | None = None
+
+    def to_wire(self) -> dict[str, object]:
+        wire: dict[str, object] = {}
+        if self.tool_call_id is not None:
+            wire["tool_call_id"] = self.tool_call_id
+        if self.tool_id is not None:
+            wire["tool_id"] = self.tool_id
+        wire["notification"] = self.notification.to_wire()
+        return wire
+
+    @classmethod
+    def custom(cls, tool_id: ToolId, kind: str, payload: object) -> ToolNotificationFrame:
+        """Build a free-form custom notification (``ToolNotificationFrame::custom``).
+
+        Wraps an app-defined ``kind`` + opaque ``payload`` in the ``Custom``
+        shape. ``tool_call_id`` is left ``None`` (matches the Rust constructor).
+        """
+        return cls(
+            notification=Custom(WireCustomNotification(kind=kind, payload=payload)),
+            tool_id=tool_id,
+        )
+
+    @classmethod
+    def known(cls, tool_id: ToolId, notification: object) -> ToolNotificationFrame:
+        """Build a notification wrapping a typed ("known") value (``ToolNotificationFrame::known``).
+
+        The ``notification`` is wrapped in the ``Known`` shape. The Rust
+        source returns ``Result<Self, serde_json::Error>`` from
+        ``serde_json::to_value``; the Python payload is already a JSON-ready
+        object (``object``), so there is no serialisation step — and therefore
+        no error arm — to reproduce.
+        """
+        return cls(
+            notification=Known.from_value(notification),
+            tool_id=tool_id,
+        )
+
+
+def tool_notification_frame_from_wire(data: dict[str, object]) -> ToolNotificationFrame:
+    """Reconstruct :class:`ToolNotificationFrame`.
+
+    ``notification`` is required and lifts via the R83 module-level
+    :func:`~minimax_code.tool_protocol.notification_wire.from_wire`
+    dispatcher; the two id fields are ``Option``-skip (absent -> ``None``,
+    present -> str newtype).
+    """
+    tool_call_id_raw = data.get("tool_call_id")
+    tool_id_raw = data.get("tool_id")
+    return ToolNotificationFrame(
+        notification=notification_from_wire(data["notification"]),  # type: ignore[arg-type]
+        tool_call_id=(
+            ToolCallId(str(tool_call_id_raw)) if tool_call_id_raw is not None else None
+        ),
+        tool_id=ToolId(str(tool_id_raw)) if tool_id_raw is not None else None,
+    )
+
+
+#: Maximum serialized size of a ``system.notify`` opaque payload (``usize``).
+MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES: int = 256 * 1024
+
+
+@dataclass
+class SystemNotifyParams:
+    """Body of a ``system.notify`` frame (``SystemNotifyParams``).
+
+    ``payload`` is an opaque JSON value (the crate's ``SystemNotification``)
+    forwarded verbatim without decoding. ``echo_to_subscribers`` is a
+    default-no-skip ``bool`` (``#[serde(default)]`` with no
+    ``skip_serializing_if`` — always on wire, even at ``False``);
+    ``conversation_id_override`` and ``request_id`` are ``Option``-skip.
+
+    Wire order follows the Rust declaration: ``payload`` ->
+    ``conversation_id_override`` (when set) -> ``echo_to_subscribers`` ->
+    ``request_id`` (when set).
+    """
+
+    payload: object
+    conversation_id_override: str | None = None
+    echo_to_subscribers: bool = False
+    request_id: str | None = None
+
+    def to_wire(self) -> dict[str, object]:
+        wire: dict[str, object] = {"payload": self.payload}
+        if self.conversation_id_override is not None:
+            wire["conversation_id_override"] = self.conversation_id_override
+        wire["echo_to_subscribers"] = self.echo_to_subscribers
+        if self.request_id is not None:
+            wire["request_id"] = self.request_id
+        return wire
+
+
+def system_notify_params_from_wire(data: dict[str, object]) -> SystemNotifyParams:
+    """Reconstruct :class:`SystemNotifyParams`.
+
+    ``payload`` is required and passed through verbatim (opaque).
+    ``echo_to_subscribers`` is a default-no-skip field on the wire, but a
+    missing key is tolerated on read (defaults to ``False``). The two
+    ``Option``-skip fields lift to ``str | None``.
+    """
+    conversation_id_override_raw = data.get("conversation_id_override")
+    request_id_raw = data.get("request_id")
+    return SystemNotifyParams(
+        payload=data["payload"],
+        conversation_id_override=(
+            str(conversation_id_override_raw)
+            if conversation_id_override_raw is not None
+            else None
+        ),
+        echo_to_subscribers=bool(data.get("echo_to_subscribers", False)),
+        request_id=str(request_id_raw) if request_id_raw is not None else None,
+    )
