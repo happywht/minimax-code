@@ -7160,3 +7160,132 @@ uv run pytest -q
 
 `feat(platform): R88 migrate registry_error.rs (RegistryError enum + per-variant rename override)`
 
+
+
+
+## R89 — 迁移 hook.rs（HookEvent 枚举，tag=type，4 单元 + Custom 前向兼容，crate 首个 PascalCase 标签 + 首个 unit+struct 混合内部标签枚举）
+
+锚点:R89-1 232a8ab
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-tool-protocol/src/hook.rs`（22 行，crate 里最小的
+wire 模块之一）→ `agent/minimax_code/tool_protocol/hook.py`。这是 harness → tool 方向
+的 hook 事件载荷枚举 `HookEvent`：harness 把这些事件投递给绑定到某个 session 的 tool
+server —— 取消一个 in-flight 调用（`Cancel`）、暂停/恢复流式（`Pause`/`Resume`）、广播
+会话结束（`SessionEnded`）。`Custom` 是给"尚未命名的 hook kind"留的前向兼容逃生舱，
+未知 kind 走 `Custom` 内部（作为 `kind` 字段），不作为顶层 tag。
+
+### 融合结论
+
+R89 一回合落地 **3 个 crate 级 serde 首创**，全部集中在 `HookEvent` 这一个枚举上：
+
+1. **`#[serde(tag = "type")]` —— `"type"` 标签键的首次出现**。此前所有内部标签枚举用
+   的是 `code`（R83 `ToolErrorWire` / R88 `RegistryError`）、`kind`（R83 `McpBlock` /
+   R86 `HookKind`）、`shape`（R83 `WireToolNotification`）。`"type"` 是 crate 第 4 个
+   标签键名，至此四种标签键全部覆盖。
+2. **无 `rename_all` —— wire 标签是 PascalCase 原样**（`"Cancel"`/`"Pause"`/`"Resume"`/
+   `"SessionEnded"`/`"Custom"`）。这是 crate **首个** PascalCase 标签的内部标签枚举
+   （R83/R86/R88 全是 snake_case）。前向兼容的关键设计选择正源于此：未知 hook kind
+   走 `Custom.kind` 字段而非顶层 tag，所以枚举能保持闭集同时可扩展。
+3. **4 个单元变体 + 1 个结构变体（`Custom`）—— 首个 unit+struct 混合的内部标签枚举**。
+   R83/R88 的变体全部带命名字段，没有单元变体。单元变体在 wire 上只序列化成
+   `{"type": "<PascalCase>"}`（无额外字段），结构变体 `Custom` 才带 `kind` + `payload`。
+
+### 交付
+
+- **`agent/minimax_code/tool_protocol/hook.py`**（167 行，新建）—— 5 个 dataclass 变体
+  （`Cancel`/`Pause`/`Resume`/`SessionEnded` 单元 + `Custom{kind, payload}` 结构）+ 每变体
+  `to_wire` + `HookEvent` 联合别名 + `_WIRE_TAG_TO_VARIANT` PascalCase 分发表 +
+  `_UNIT_VARIANTS` frozenset + 模块级 `hook_event_from_wire` 分发器（联合不能承载
+  classmethod，复用 R84 `jsonrpc_id_from_wire` / R87 `registration_outcome_from_wire` /
+  R88 `registry_error_from_wire` 的同一模式）。
+- **`agent/minimax_code/tool_protocol/__init__.py`**（barrel，5 处编辑）—— 标题/摘要段更新
+  到 R89；新增 R89 条目说明 3 个 serde 首创；延迟列表减去 `hook`（仅剩
+  `frames, session_event, turn_hook`）；导入块在 `handshake` 与 `ids` 之间插入
+  `from .hook import HookEvent`；`__all__` 在 `handshake` 组后加 `"HookEvent"`（带注释
+  说明仅联合、变体留子模块、Custom barrel 冲突同 R88 模式）。
+- **`agent/tests/test_tool_protocol.py`**（+27 测试 / 6 类）——
+  `TestHookEventWireTags`（5：4 个单元 + Custom 的 PascalCase 标签断言，含
+  `"Cancel" != "cancel"` / `"SessionEnded" != "session_ended"` 反向钉死）、
+  `TestHookEventToWire`（3：单元仅 `{"type"}`、Custom 完整字典、Custom payload 任意
+  JSON 6 种类型往返）、`TestHookEventFromWire`（9：5 变体往返 + 未知标签 ValueError +
+  snake_case 标签全部 ValueError + 缺失 `type` KeyError + Custom 任意 payload 往返）、
+  `TestHookEventUnitVariants`（3：无字段、`Cancel() == Cancel()` 值相等、
+  `_UNIT_VARIANTS == 4`）、`TestHookEventUnion`（2：`get_args(HookEvent) == 5`、
+  分发表 5 个 PascalCase 键）、`TestPackageSurfaceR89`（5：barrel 暴露 `HookEvent`、
+  不暴露单元变体、`pkg.Custom is error_wire.Custom` 关键回归、不暴露 from_wire、
+  子模块全符号可达）。
+
+### 映射决策树 + 坑
+
+**坑 1 —— `Custom` barrel 名称冲突（R88 模式复用，预设解决）**：在写 `hook.py` **之前**
+就读了 Rust `lib.rs` 第 58 行 `pub use hook::HookEvent;`（仅枚举名，不 re-export 变体），
+并预见到 `hook.Custom` 与 R83 `error_wire.Custom`（barrel 已导出的 wire 变体）同名。决策：
+barrel **仅** re-export `HookEvent` 联合（不导出 5 个变体），精确镜像 Rust `pub use` 集，
+同时避免遮蔽 R83 的 `Custom`。测试用 `pkg.Custom is WireCustom`（`from error_wire
+import Custom as WireCustom`）钉死这个回归 —— 这是 R88 的 `SessionMismatch` 冲突解法的
+直接复用，证明该模式已稳定成"无冲突才导出"的标准决策树。
+
+**坑 2 —— 测试文件 E402（R88 模式复用）**：R89 的 hook 子模块 import 块若放在文件中间
+会触发 E402（模块级 import 不在顶部）。复用 R88 解法：把 `from .hook import (Cancel,
+HookEvent, Pause, Resume, SessionEnded, hook_event_from_wire)` + `from .hook import
+(Custom as HookCustom)` 放进顶部导入区（`error_wire` 与 `methods` 之间，正确 isort 位置），
+带 R89 注释解释 barrel 冲突理由。文件中间用纯 `# ---- R89` 段注释占位。
+
+**坑 3 —— I001 import 排序（ruff --fix 精确作用域）**：追加 R89 测试后 ruff 报 I001
+（导入块未排序）。仅对 `tests/test_tool_protocol.py` 跑 `ruff check --fix`（精确路径，
+绝不附带损害 93 个预先存在的 `M` 文件）→ 修复 1 个。重验测试文件 451 passed，import
+重排未破坏逻辑。
+
+**坑 4 —— 单元变体分发（`variant()` 实例化）**：单元变体无构造字段，`hook_event_from_wire`
+用 `variant()` 空参实例化；`Custom` 结构变体单独分支读 `kind` + `payload`。`isinstance`
+dispatch 依赖每个变体是**独立** dataclass（不共享空基类），否则 `Cancel()` 与 `Pause()`
+类型不可区分 —— 这是为什么 4 个单元变体各写一个空 dataclass 而非共用基类。
+
+**坑 5 —— 严格拒绝（无 `#[serde(other)]`）**：未知标签抛 `ValueError`，与 crate 严格拒绝
+约定一致（R85 `Method` / R86 `HookKind`/`ToolScope` / R87 `TransportKind` / R88
+`RegistryError` 全部如此）。前向兼容**不在**顶层加 catch-all 臂，而是在 `Custom.kind`
+字段内承载 —— 测试用 `test_from_wire_rejects_snake_case_tags` 钉死（snake_case 标签必须
+全部 ValueError，因为无 `rename_all`）。
+
+### 验证
+
+```
+cd agent
+uv run ruff check minimax_code/tool_protocol/hook.py \
+                   minimax_code/tool_protocol/__init__.py \
+                   tests/test_tool_protocol.py
+# → All checks passed!
+
+uv run pytest tests/test_tool_protocol.py -q
+# → 451 passed in 0.60s   (R88 基准 424 + R89 新增 27)
+
+uv run pytest -q
+# → 2909 passed, 10 skipped, 1 warning in 106.53s
+#    (R88 基准 2882 + R89 新增 27 = 2909，数据自洽)
+#    (唯一 warning: fastapi/httpx StarletteDeprecationWarning，预先存在，与 R89 无关)
+```
+
+### YAGNI 边界
+
+- **不把 5 变体导出到 barrel**（仅联合）—— 严格遵循 Rust lib.rs 的 `pub use hook::HookEvent`
+  （仅枚举名）；且避免 `Custom` 遮蔽 R83 error_wire 的同名变体。这是 R88 `SessionMismatch`
+  模式的直接复用，模式已稳定。
+- **不实现 `Display`/`__str__`** —— Rust `HookEvent` 在 crate 中**无** `Display` impl；
+  它只是 wire DTO，事件语义由消费方（frame 层 / hook registry，后续回合）自行格式化。YAGNI。
+- **不加 `#[serde(other)]` 前向兼容臂** —— crate 用严格拒绝；前向兼容通过 `Custom.kind`
+  字段内承载，不在顶层加 catch-all。未知标签是协议 bug，应该失败而非静默吞掉。
+- **不做变体间的共同基类 / Protocol** —— 4 单元 + 1 结构各自独立 dataclass，联合别名 +
+  分发器已足够；引入 `Protocol` 会过度设计，违背 KISS。单元变体共享空基类会破坏
+  `isinstance` 分发（见坑 4）。
+- **`payload` 用 `Any` 而非具体 JSON 类型** —— 镜像 Rust `serde_json::Value`（任意 JSON），
+  不引入 `JsonValue` 联合别名（dict/list/str/num/bool/None）增加复杂度；`Any` 足够且与
+  crate 语义 1:1。测试用 6 种 payload 类型覆盖。
+- **不迁移 `frames.rs`（1549 行）/ `session_event.rs` / `turn_hook.rs`** —— 留待后续回合
+  按依赖/大小顺序逐个落地（下一个候选：`session_event.rs` 3 符号，或 `turn_hook.rs`
+  pub mod 无重导出）；本轮只闭合 hook 这一个叶子模块。
+
+### Commit
+
+`feat(platform): R89 migrate hook.rs (HookEvent enum — PascalCase tags + unit/struct mix)`

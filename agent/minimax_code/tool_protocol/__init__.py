@@ -1,4 +1,4 @@
-"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 — registry_error landed).
+"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 — hook landed).
 
 Fusion of grok-build's ``xai-tool-protocol`` crate — the wire DTOs for
 the computer-hub tool-server protocol: identifier newtypes, registration
@@ -16,9 +16,11 @@ direct consumer of the envelope's ``method`` field), R86 lands the
 per-tool capabilities bitset (the type of ``hello_ack.capabilities`` and
 a dependency of ``registration``), R87 lands the registration payloads
 (the first wire DTO to embed a pydantic model and the home of two new serde
-sub-shapes), and R88 lands the registry-level error enum (the registry's
+sub-shapes), R88 lands the registry-level error enum (the registry's
 analogue of ``ToolErrorWire`` and the crate's first per-variant rename
-override):
+override), and R89 lands the hook-event enum (the harness→tool payload,
+the crate's first PascalCase-tagged internally-tagged enum and the first
+to mix unit + struct variants):
 
 * **R82** — :mod:`ids` (8 identifier newtypes + :class:`IdError`),
   :mod:`connection` (``ConnectionKind`` + ``ToolDefinitionMode``),
@@ -67,16 +69,23 @@ override):
   serde sub-shapes — the three-state ``Option<Vec<SessionId>>`` session
   set and the ``skip_serializing_if = "String::is_empty"`` bare-string
   skip on :attr:`ToolServerRegistration.description`).
-* **R88 (this round)** — :mod:`registry_error`
+* **R88** — :mod:`registry_error`
   (:class:`RegistryError`, the registry's analogue of
   :class:`~error_wire.ToolErrorWire` for structural / ownership failures:
   internally-tagged on ``code`` with ``rename_all = "snake_case"`` across six
   named-field variants, and the crate's first per-variant rename override —
   :class:`AlreadyRegistered` serialises as ``"tool_already_registered"``
   rather than the ``rename_all`` default ``"already_registered"``).
+* **R89 (this round)** — :mod:`hook`
+  (:class:`HookEvent`, the harness→tool hook-event payload: internally-tagged
+  on ``type`` with **no** ``rename_all`` (the crate's first PascalCase-tagged
+  internally-tagged enum — ``"Cancel"`` / ``"SessionEnded"`` / ``"Custom"``),
+  four unit variants plus one struct variant (:class:`Custom`, the crate's
+  first internally-tagged enum to mix unit + struct arms), and the
+  forward-compatible escape hatch for unknown hook kinds via ``Custom.kind``).
 * *deferred* — :mod:`frames`
   (tool-server frame protocol, 1549 lines), :mod:`session_event`,
-  :mod:`turn_hook`, :mod:`hook`.
+  :mod:`turn_hook`.
 
 ``from_wire`` / ``to_wire`` live on each module (instance method or module
 function); the barrel does **not** re-export them, mirroring the Rust
@@ -149,6 +158,7 @@ from minimax_code.tool_protocol.handshake import (
     HelloAckMsg,
     HelloMsg,
 )
+from minimax_code.tool_protocol.hook import HookEvent
 from minimax_code.tool_protocol.ids import (
     ConnectionId,
     EmptyIdError,
@@ -243,6 +253,10 @@ __all__ = [
     "PROTOCOL_VERSION",
     "HelloMsg",
     "HelloAckMsg",
+    # hook (R89) — only the union; variants stay in-submodule to mirror
+    # Rust lib.rs `pub use hook::HookEvent` (Custom also clashes with
+    # error_wire.Custom at the barrel level — same pattern as R88).
+    "HookEvent",
     # error_codes (R82 + R83 backfill)
     "ERROR_CODES",
     "numeric_for",

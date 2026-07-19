@@ -119,6 +119,22 @@ from minimax_code.tool_protocol import (
 )
 from minimax_code.tool_protocol.envelope import jsonrpc_id_from_wire
 from minimax_code.tool_protocol.error_wire import from_wire as error_from_wire
+
+# R89 — hook variants are imported from the submodule (not the barrel): the
+# barrel only re-exports the ``HookEvent`` union, both to mirror Rust lib.rs
+# ``pub use hook::HookEvent`` and to avoid clobbering ``error_wire.Custom``
+# (R83), which shares the name ``Custom`` with a hook variant.
+from minimax_code.tool_protocol.hook import (
+    Cancel,
+    HookEvent,
+    Pause,
+    Resume,
+    SessionEnded,
+    hook_event_from_wire,
+)
+from minimax_code.tool_protocol.hook import (
+    Custom as HookCustom,
+)
 from minimax_code.tool_protocol.methods import method_doc
 from minimax_code.tool_protocol.notification_wire import (
     Custom as NotificationCustom,
@@ -2536,3 +2552,202 @@ class TestPackageSurfaceR88:
             "registry_error_from_wire",
         ):
             assert hasattr(re_mod, name), f"submodule missing {name}"
+
+
+# ------------------------------------------------------------------ R89
+# Hook variants are imported at the top of this module (see the ``hook``
+# import block above) — the barrel only re-exports the ``HookEvent`` union,
+# both to mirror Rust lib.rs and to avoid clobbering ``error_wire.Custom``
+# (R83), which shares the name ``Custom`` with a hook variant.
+
+
+class TestHookEventWireTags:
+    """Each variant stamps its ``type`` tag; tags are PascalCase (no
+    ``rename_all`` on the Rust enum — the crate's first PascalCase-tagged
+    internally-tagged enum)."""
+
+    def test_cancel_tag_is_pascalcase(self):
+        wire = Cancel().to_wire()
+        assert wire["type"] == "Cancel"
+        # Pin: NOT snake_case (no rename_all on the enum).
+        assert wire["type"] != "cancel"
+
+    def test_pause_tag(self):
+        assert Pause().to_wire()["type"] == "Pause"
+
+    def test_resume_tag(self):
+        assert Resume().to_wire()["type"] == "Resume"
+
+    def test_session_ended_tag_is_pascalcase(self):
+        wire = SessionEnded().to_wire()
+        assert wire["type"] == "SessionEnded"
+        assert wire["type"] != "session_ended"
+
+    def test_custom_tag(self):
+        assert HookCustom(kind="x", payload={}).to_wire()["type"] == "Custom"
+
+
+class TestHookEventToWire:
+    """Unit variants serialise as just the ``type`` tag; ``Custom`` carries
+    ``kind`` + ``payload`` (arbitrary JSON)."""
+
+    def test_unit_variants_have_no_extra_fields(self):
+        for variant_cls in (Cancel, Pause, Resume, SessionEnded):
+            assert variant_cls().to_wire() == {"type": variant_cls.__name__}
+
+    def test_custom_serialises_kind_and_payload(self):
+        assert HookCustom(kind="heartbeat", payload={"beat": 1}).to_wire() == {
+            "type": "Custom",
+            "kind": "heartbeat",
+            "payload": {"beat": 1},
+        }
+
+    def test_custom_payload_preserves_arbitrary_json(self):
+        # serde_json::Value → any JSON: dict / list / str / num / bool / null.
+        for payload in (
+            {"nested": [1, 2, {"x": None}]},
+            [1, "two", True, None],
+            "bare-string",
+            42,
+            True,
+            None,
+        ):
+            assert HookCustom(kind="k", payload=payload).to_wire()["payload"] == (
+                payload
+            )
+
+
+class TestHookEventFromWire:
+    """``hook_event_from_wire`` round-trips each variant and rejects unknown /
+    missing ``type`` tags."""
+
+    def test_round_trip_cancel(self):
+        assert isinstance(hook_event_from_wire({"type": "Cancel"}), Cancel)
+
+    def test_round_trip_pause(self):
+        assert isinstance(hook_event_from_wire({"type": "Pause"}), Pause)
+
+    def test_round_trip_resume(self):
+        assert isinstance(hook_event_from_wire({"type": "Resume"}), Resume)
+
+    def test_round_trip_session_ended(self):
+        back = hook_event_from_wire({"type": "SessionEnded"})
+        assert isinstance(back, SessionEnded)
+
+    def test_round_trip_custom(self):
+        back = hook_event_from_wire(
+            {"type": "Custom", "kind": "heartbeat", "payload": {"beat": 1}}
+        )
+        assert isinstance(back, HookCustom)
+        assert back.kind == "heartbeat"
+        assert back.payload == {"beat": 1}
+
+    def test_from_wire_rejects_unknown_tag(self):
+        with pytest.raises(ValueError):
+            hook_event_from_wire({"type": "Nope"})
+
+    def test_from_wire_rejects_snake_case_tags(self):
+        # No rename_all → snake_case tags are NOT valid (PascalCase only).
+        for bad in ("cancel", "session_ended", "pause", "resume", "custom"):
+            with pytest.raises(ValueError):
+                hook_event_from_wire({"type": bad})
+
+    def test_from_wire_rejects_missing_type(self):
+        with pytest.raises(KeyError):
+            hook_event_from_wire({"kind": "x"})
+
+    def test_custom_round_trip_preserves_arbitrary_payload(self):
+        for payload in ({"a": [1, None]}, [1, True, "x"], "s", 7, False, None):
+            back = hook_event_from_wire(
+                {"type": "Custom", "kind": "k", "payload": payload}
+            )
+            assert isinstance(back, HookCustom)
+            assert back.payload == payload
+
+
+class TestHookEventUnitVariants:
+    """Unit variants carry no fields; instances of the same variant are
+    value-equal (mirrors ``#[derive(PartialEq)]``)."""
+
+    def test_unit_variants_have_no_fields(self):
+        for variant_cls in (Cancel, Pause, Resume, SessionEnded):
+            assert vars(variant_cls()) == {}
+
+    def test_unit_variants_value_equality(self):
+        assert Cancel() == Cancel()
+        assert SessionEnded() == SessionEnded()
+        assert Cancel() != Pause()  # distinct classes
+
+    def test_unit_variant_frozenset(self):
+        from minimax_code.tool_protocol.hook import _UNIT_VARIANTS
+
+        assert _UNIT_VARIANTS == frozenset({Cancel, Pause, Resume, SessionEnded})
+
+
+class TestHookEventUnion:
+    """The union alias covers all five variants."""
+
+    def test_union_has_five_variants(self):
+        from typing import get_args
+
+        args = get_args(HookEvent)
+        assert len(args) == 5
+        assert set(args) == {Cancel, Pause, Resume, SessionEnded, HookCustom}
+
+    def test_dispatch_map_covers_five_tags(self):
+        from minimax_code.tool_protocol.hook import _WIRE_TAG_TO_VARIANT
+
+        assert set(_WIRE_TAG_TO_VARIANT) == {
+            "Cancel",
+            "Pause",
+            "Resume",
+            "SessionEnded",
+            "Custom",
+        }
+
+
+class TestPackageSurfaceR89:
+    """The barrel re-exports only the ``HookEvent`` union (mirroring Rust
+    lib.rs); variants stay in-submodule so they do not clobber
+    ``error_wire.Custom`` (R83), which shares the name."""
+
+    def test_barrel_exposes_hook_event_union(self):
+        import minimax_code.tool_protocol as pkg
+
+        assert hasattr(pkg, "HookEvent")
+
+    def test_barrel_does_not_export_unit_variants(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in ("Cancel", "Pause", "Resume", "SessionEnded"):
+            assert not hasattr(pkg, name), (
+                f"barrel should not re-export hook variant {name} "
+                "(mirrors Rust lib.rs; avoids error_wire.Custom clash)"
+            )
+
+    def test_barrel_custom_is_error_wire_not_hook(self):
+        # Both error_wire (R83) and hook (R89) define a ``Custom`` variant.
+        # The barrel must keep R83 error_wire's, not R89 hook's.
+        import minimax_code.tool_protocol as pkg
+        from minimax_code.tool_protocol.error_wire import Custom as WireCustom
+
+        assert pkg.Custom is WireCustom
+
+    def test_barrel_does_not_export_from_wire(self):
+        import minimax_code.tool_protocol as pkg
+
+        assert not hasattr(pkg, "hook_event_from_wire")
+
+    def test_variants_accessible_via_submodule(self):
+        import minimax_code.tool_protocol.hook as hook_mod
+
+        for name in (
+            "Cancel",
+            "Pause",
+            "Resume",
+            "SessionEnded",
+            "Custom",
+            "HookEvent",
+            "hook_event_from_wire",
+        ):
+            assert hasattr(hook_mod, name), f"submodule missing {name}"
