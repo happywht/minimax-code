@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from minimax_code.workspace_types._wire import sort_mappings
 from minimax_code.workspace_types.rpc import (
@@ -24,6 +24,12 @@ from minimax_code.workspace_types.rpc import (
     WORKSPACE_RPC_TOOL_ID,
     WORKSPACE_TOOL_NOTIFICATIONS_TOOL_ID,
     AgentConfigFile,
+    # worktree (R75)
+    ApplyMode,
+    ApplyWorktreeRequest,
+    ApplyWorktreeResponse,
+    ApplyWorktreeResponseConflicts,
+    ApplyWorktreeResponseSuccess,
     BackgroundTaskSummaryWire,
     BeginPromptReq,
     BinaryFileInfoData,
@@ -48,15 +54,25 @@ from minimax_code.workspace_types.rpc import (
     ContentMatchFile,
     ContentSearchData,
     ContentSearchRequest,
+    CopiedChangesSummary,
+    CreateWorktreeFromWorktreeRequestWire,
+    CreateWorktreeFromWorktreeResponse,
+    CreateWorktreeFromWorktreeSyncReq,
+    CreateWorktreeRequest,
+    CreateWorktreeResponse,
+    CreateWorktreeResponseCreating,
+    CreateWorktreeResponseExists,
     DeployError,
     DetectVcsKindReq,
     DiffStatsSummary,
+    DirtyStateSummary,
     DiscardScope,
     DiscoverAgentsMdReq,
     DiscoverPluginsReq,
     DiscoverSkillsReq,
     DropSessionReq,
     EndPromptReq,
+    FileConflict,
     FileRewindConflict,
     FileRewindResponse,
     FuzzyChangeReq,
@@ -105,7 +121,10 @@ from minimax_code.workspace_types.rpc import (
     LoadEnvrcReq,
     LoadPermissionsReq,
     LoadProjectConfigReq,
+    PrepareWorktreeFromWorktreeResponse,
     RefreshPluginsReq,
+    RemoveWorktreeRequest,
+    RemoveWorktreeResponse,
     RepoInfo,
     ResolveFileReferencesReq,
     RewindToReq,
@@ -123,6 +142,16 @@ from minimax_code.workspace_types.rpc import (
     WorkspaceInfo,
     WorkspaceInfoReq,
     WorkspaceRpc,
+    WorktreeCopyMode,
+    WorktreeCreateSyncReq,
+    WorktreeDbPathReq,
+    WorktreeDbPathResponse,
+    WorktreeDbRebuildReq,
+    WorktreeDbStatsReq,
+    WorktreeGcReq,
+    WorktreeListReq,
+    WorktreeShowReq,
+    WorktreeType,
 )
 
 # -- tool IDs (mod.rs) ----------------------------------------------------
@@ -1922,3 +1951,309 @@ class TestGit:
         assert err is None
         assert isinstance(ok, GitInfoData)
         assert ok.root == "/r"
+
+
+class TestWorktree:
+    """R75: workspace.worktree_* / create_worktree / remove_worktree / apply_worktree.
+
+    Pins the serde shape of grok's ``xai-grok-workspace-types::rpc::worktree``
+    — the 11 RPC method constants, the internally-tagged unions
+    (:data:`CreateWorktreeResponse`, :data:`ApplyWorktreeResponse`), the
+    transparent ``WorktreeCreateSyncReq`` newtype vs the non-transparent
+    ``CreateWorktreeFromWorktreeSyncReq`` ``{inner: …}`` wrapper, the custom
+    ``default_copy_mode`` enum default, and the mixed skip matrices.
+    """
+
+    # -- method constants (grok method_constants × 11) -----------------------
+
+    def test_method_constants(self):
+        assert CreateWorktreeRequest.METHOD == "workspace.create_worktree"
+        assert WorktreeCreateSyncReq.METHOD == "workspace.worktree_create_sync"
+        assert RemoveWorktreeRequest.METHOD == "workspace.remove_worktree"
+        assert ApplyWorktreeRequest.METHOD == "workspace.apply_worktree"
+        assert WorktreeShowReq.METHOD == "workspace.worktree_show"
+        assert WorktreeGcReq.METHOD == "workspace.worktree_gc"
+        assert WorktreeListReq.METHOD == "workspace.worktree_list"
+        assert WorktreeDbRebuildReq.METHOD == "workspace.worktree_db_rebuild"
+        assert WorktreeDbPathReq.METHOD == "workspace.worktree_db_path"
+        assert WorktreeDbStatsReq.METHOD == "workspace.worktree_db_stats"
+        assert (
+            CreateWorktreeFromWorktreeSyncReq.METHOD
+            == "workspace.worktree_create_from_worktree_sync"
+        )
+
+    # -- Response ClassVar shapes -------------------------------------------
+
+    def test_value_responses_are_any(self):
+        # serde_json::Value → Any.
+        assert CreateWorktreeRequest.Response is Any
+        assert WorktreeCreateSyncReq.Response is Any
+        assert RemoveWorktreeRequest.Response is Any
+        assert ApplyWorktreeRequest.Response is Any
+        assert WorktreeShowReq.Response is Any
+        assert WorktreeGcReq.Response is Any
+        assert WorktreeListReq.Response is Any
+        assert WorktreeDbRebuildReq.Response is Any
+        assert WorktreeDbStatsReq.Response is Any
+
+    def test_typed_responses(self):
+        # CreateWorktreeFromWorktreeSyncReq.Response is the typed response struct.
+        assert (
+            CreateWorktreeFromWorktreeSyncReq.Response
+            is CreateWorktreeFromWorktreeResponse
+        )
+        # WorktreeDbPathReq.Response is WorktreeDbPathResponse.
+        assert WorktreeDbPathReq.Response is WorktreeDbPathResponse
+
+    # -- enums (lowercase + #[default]) -------------------------------------
+
+    def test_worktree_type_lowercase_with_linked_default(self):
+        assert WorktreeType.LINKED == "linked"
+        assert WorktreeType.STANDALONE == "standalone"
+        assert WorktreeType.GIT == "git"
+        assert WorktreeType.default() is WorktreeType.LINKED
+
+    def test_worktree_copy_mode_lowercase_with_dirty_default(self):
+        assert WorktreeCopyMode.CLEAN == "clean"
+        assert WorktreeCopyMode.DIRTY == "dirty"
+        assert WorktreeCopyMode.default() is WorktreeCopyMode.DIRTY
+
+    def test_apply_mode_lowercase_with_overwrite_default(self):
+        assert ApplyMode.OVERWRITE == "overwrite"
+        assert ApplyMode.MERGE == "merge"
+        assert ApplyMode.default() is ApplyMode.OVERWRITE
+
+    # -- WorktreeType from_str round trip (grok worktree_type_from_str_round_trip)
+
+    def test_worktree_type_from_str_round_trip(self):
+        # StrEnum(value) is the Python analogue of FromStr.
+        assert WorktreeType("linked") is WorktreeType.LINKED
+        assert WorktreeType("standalone") is WorktreeType.STANDALONE
+        assert WorktreeType("git") is WorktreeType.GIT
+        with pytest.raises(ValueError):  # mirrors grok Err(())
+            WorktreeType("bogus")
+
+    # -- WorktreeCreateSyncReq transparent newtype (grok ...is_transparent) --
+
+    def test_worktree_create_sync_req_is_transparent(self):
+        req = WorktreeCreateSyncReq(session_id="s1", source_path="/repo")
+        wire = req.to_wire()
+        # Transparent: inner fields at top level, no "inner" wrapper key.
+        assert wire["sessionId"] == "s1"
+        assert wire["sourcePath"] == "/repo"
+        assert "inner" not in wire
+        # copy_mode defaults to Dirty via default_copy_mode.
+        assert wire["copyMode"] == "dirty"
+        # Option fields with #[serde(default)] (no skip) → null preserved.
+        assert wire["worktreePath"] is None
+        assert wire["gitRef"] is None
+        # Empty vec with no skip → [].
+        assert wire["ignoredSkipPatterns"] == []
+
+    # -- CreateWorktreeFromWorktreeSyncReq non-transparent wrapper -----------
+
+    def test_create_worktree_from_worktree_sync_req_keeps_inner_wrapper(self):
+        req = CreateWorktreeFromWorktreeSyncReq(
+            inner=CreateWorktreeFromWorktreeRequestWire(
+                source_worktree_path="/src", new_session_id="s2",
+            )
+        )
+        wire = req.to_wire()
+        inner = wire["inner"]
+        assert inner["sourceWorktreePath"] == "/src"
+        assert inner["copyMode"] == "dirty"
+        # The two #[serde(skip)] runtime fields are absent from the wire.
+        assert "cancellationToken" not in inner
+        assert "resolvedDestPath" not in inner
+
+    # -- CreateWorktreeResponse internally tagged union ---------------------
+
+    def test_create_worktree_response_creating_status_tagged(self):
+        # grok create_worktree_response_status_tagged.
+        resp = CreateWorktreeResponseCreating(
+            session_id="s1", worktree_path="/wt", source_git_root=None,
+        )
+        wire = resp.to_wire()
+        assert wire["status"] == "creating"
+        assert wire["sessionId"] == "s1"
+        assert wire["worktreePath"] == "/wt"
+        # sourceGitRoot skip_serializing_if Option::is_none → omitted.
+        assert "sourceGitRoot" not in wire
+
+    def test_create_worktree_response_exists_status_tagged(self):
+        resp = CreateWorktreeResponseExists(
+            session_id="s1", worktree_path="/wt", commit="abc",
+        )
+        wire = resp.to_wire()
+        assert wire["status"] == "exists"
+        assert wire["commit"] == "abc"
+        assert "sourceGitRoot" not in wire
+
+    def test_create_worktree_response_union_discriminates(self):
+        # TypeAdapter over the Annotated union picks the variant by status.
+        adapter = TypeAdapter(CreateWorktreeResponse)
+        creating = adapter.validate_python(
+            {"status": "creating", "sessionId": "s", "worktreePath": "/w"}
+        )
+        assert isinstance(creating, CreateWorktreeResponseCreating)
+        exists = adapter.validate_python(
+            {"status": "exists", "sessionId": "s", "worktreePath": "/w", "commit": "c"}
+        )
+        assert isinstance(exists, CreateWorktreeResponseExists)
+
+    # -- ApplyWorktreeResponse internally tagged union (reuses R74 types) ----
+
+    def test_apply_worktree_response_success_tagged(self):
+        files = [
+            GitFileChange(path="a.txt", change_type=ChangeType.EDIT, additions=1, deletions=0)
+        ]
+        resp = ApplyWorktreeResponseSuccess(files=files, git_root="/r")
+        wire = resp.to_wire()
+        assert wire["status"] == "success"
+        assert wire["gitRoot"] == "/r"
+        assert wire["files"][0]["type"] == "edit"  # R74 rename="type" override
+
+    def test_apply_worktree_response_conflicts_tagged(self):
+        files = [
+            GitFileChange(path="a.txt", change_type=ChangeType.EDIT, additions=1, deletions=0)
+        ]
+        conflicts = [FileConflict(path="a.txt", change_type=ChangeType.EDIT)]
+        resp = ApplyWorktreeResponseConflicts(files=files, conflicts=conflicts)
+        wire = resp.to_wire()
+        assert wire["status"] == "conflicts"
+        # FileConflict.change_type reuses R74 ChangeType with rename="type".
+        assert wire["conflicts"][0]["type"] == "edit"
+        assert wire["conflicts"][0]["path"] == "a.txt"
+
+    def test_apply_worktree_response_union_discriminates(self):
+        adapter = TypeAdapter(ApplyWorktreeResponse)
+        ok = adapter.validate_python({"status": "success", "files": [], "gitRoot": "/r"})
+        assert isinstance(ok, ApplyWorktreeResponseSuccess)
+        bad = adapter.validate_python(
+            {"status": "conflicts", "files": [], "conflicts": []}
+        )
+        assert isinstance(bad, ApplyWorktreeResponseConflicts)
+
+    # -- FileConflict reuses R74 ChangeType, keeps null Options --------------
+
+    def test_file_conflict_keeps_null_bases(self):
+        fc = FileConflict(path="a.txt", change_type=ChangeType.DELETE)
+        wire = fc.to_wire()
+        assert wire["type"] == "delete"
+        assert wire["path"] == "a.txt"
+        # base/ours/theirs: no skip_serializing_if → null preserved.
+        assert wire["base"] is None
+        assert wire["ours"] is None
+        assert wire["theirs"] is None
+
+    # -- RemoveWorktreeResponse mixed skip matrix ----------------------------
+
+    def test_remove_worktree_response_omits_none_resolved_path(self):
+        resp = RemoveWorktreeResponse(removed=True)
+        assert resp.to_wire() == {"removed": True}
+
+    def test_remove_worktree_response_emits_resolved_path_when_set(self):
+        resp = RemoveWorktreeResponse(removed=False, resolved_path="/wt")
+        wire = resp.to_wire()
+        assert wire["removed"] is False
+        assert wire["resolvedPath"] == "/wt"
+
+    # -- CreateWorktreeFromWorktreeResponse 3-Option skip matrix -------------
+
+    def test_create_worktree_from_worktree_response_omits_all_three_none(self):
+        resp = CreateWorktreeFromWorktreeResponse(
+            status="ok", new_session_id="s2", worktree_path="/wt",
+        )
+        wire = resp.to_wire()
+        assert wire["status"] == "ok"
+        assert wire["newSessionId"] == "s2"
+        assert wire["worktreePath"] == "/wt"
+        for absent in ("commit", "copiedChanges", "sourceGitRoot"):
+            assert absent not in wire
+
+    def test_create_worktree_from_worktree_response_emits_copied_changes(self):
+        summary = CopiedChangesSummary(
+            staged_copied=1, modified_copied=2, untracked_copied=3,
+            deletions_applied=0, warnings=[],
+        )
+        resp = CreateWorktreeFromWorktreeResponse(
+            status="ok", new_session_id="s2", worktree_path="/wt",
+            commit="abc", copied_changes=summary, source_git_root="/r",
+        )
+        wire = resp.to_wire()
+        assert wire["commit"] == "abc"
+        assert wire["sourceGitRoot"] == "/r"
+        assert wire["copiedChanges"]["stagedCopied"] == 1
+
+    # -- CreateWorktreeRequest copy_mode default + ignored_skip_patterns -----
+
+    def test_create_worktree_request_copy_mode_defaults_dirty(self):
+        req = CreateWorktreeRequest(session_id="s1", source_path="/repo")
+        assert req.copy_mode is WorktreeCopyMode.DIRTY
+        assert req.ignored_skip_patterns == []
+        assert req.copy_ignored_in_background is False
+
+    # -- ApplyWorktreeRequest mode default -----------------------------------
+
+    def test_apply_worktree_request_mode_defaults_overwrite(self):
+        req = ApplyWorktreeRequest(session_id="s1", worktree_path="/wt")
+        assert req.mode is ApplyMode.OVERWRITE
+        assert req.to_wire()["mode"] == "overwrite"
+
+    # -- WorktreeGcReq max_age_secs required (no #[serde(default)]) ----------
+
+    def test_worktree_gc_req_max_age_secs_nullable(self):
+        # No #[serde(default)] on max_age_secs → key required (value may be null).
+        req = WorktreeGcReq(max_age_secs=None)
+        assert req.max_age_secs is None
+        assert req.dry_run is False
+        assert req.force is False
+
+    def test_worktree_gc_req_missing_max_age_secs_raises(self):
+        with pytest.raises(ValidationError):
+            WorktreeGcReq()
+
+    # -- WorktreeListReq types rename="type" + empty vec --------------------
+
+    def test_worktree_list_req_types_alias_and_empty_vec(self):
+        req = WorktreeListReq()
+        wire = req.to_wire()
+        # rename = "type" → wire key "type", not "types".
+        assert wire["type"] == []
+        assert "types" not in wire
+        # No rename_all on this struct → snake_case keys (grok source L285-292).
+        assert wire["include_all"] is False
+        assert wire["repo"] is None
+
+    # -- WorktreeDbPathResponse keeps null path ------------------------------
+
+    def test_worktree_db_path_response_keeps_null(self):
+        assert WorktreeDbPathResponse().to_wire() == {"path": None}
+
+    # -- PrepareWorktreeFromWorktreeResponse keeps null Options --------------
+
+    def test_prepare_worktree_from_worktree_response_keeps_null(self):
+        resp = PrepareWorktreeFromWorktreeResponse(spawn_task=True)
+        wire = resp.to_wire()
+        assert wire["spawn_task"] is True
+        assert wire["response"] is None
+        assert wire["error"] is None
+
+    # -- DirtyStateSummary / CopiedChangesSummary camelCase ------------------
+
+    def test_dirty_state_summary_camel_case(self):
+        s = DirtyStateSummary(
+            staged_count=1, modified_count=2, deleted_count=3, untracked_count=4,
+            has_partially_staged=True, skipped_dirs=["node_modules"],
+        )
+        wire = s.to_wire()
+        assert wire["stagedCount"] == 1
+        assert wire["hasPartiallyStaged"] is True
+        assert wire["skippedDirs"] == ["node_modules"]
+
+    # -- empty-struct RPCs default to {} ------------------------------------
+
+    def test_empty_struct_requests(self):
+        assert WorktreeDbRebuildReq().to_wire() == {}
+        assert WorktreeDbPathReq().to_wire() == {}
+        assert WorktreeDbStatsReq().to_wire() == {}

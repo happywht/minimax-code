@@ -5918,3 +5918,114 @@ cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
 ### Commit
 
 `feat(platform): R74 git RPC namespace dependency-root layer (fuse grok xai-grok-workspace-types rpc/ git.rs 1077 lines → 1 module: 20 workspace.git_*/detect_vcs_kind methods + 4 enums[VcsKind camelCase + is_jj/is_repo, ChangeType lowercase no-Default, GitStatusFormat, DiscardScope] + ~22 wire types, lands 5 serde patterns new to layer: rename="type" Field alias override on camelCase + Vec::is_empty non-Option empty-collection elision + mixed skip matrix[GitInfoData current_branch-null-kept vs default_branch/vcs_kind-omitted] + manual Deserialize legacy-flat rewrap via model_validator(before) + Option Response shapes[str|None/GitInfoData|None/VcsKind via envelope TypeAdapter], _CamelOmitNone base camelCase+bulk None elision, dependency root for R75+ worktree/hunks ChangeType/GitFileChange reuse, 37 new tests zero-regression)`
+## R75 — 远程 workspace RPC worktree 生命周期层(融合 grok xai-grok-workspace-types rpc/ worktree.rs 406 行)
+
+锚点:R75-1 65ced8c
+
+### 本轮目标
+
+本轮迁移 grok `xai-grok-workspace-types::rpc::worktree`(406 行),是 R74 依赖根 git.rs 的**第一个消费者**:`from ...rpc.git import ChangeType, GitFileChange`(FileConflict 复用 ChangeType 的 `rename="type"` 覆盖;ApplyWorktreeResponse 嵌入 `list[GitFileChange]`)。依赖序 R74=git → R75=worktree → R76=hunks → R77=fs 本轮兑现第二步。
+
+本轮目标:一次性迁移 11 个 `workspace.worktree_*`/`create_worktree`/`remove_worktree`/`apply_worktree` 方法 + 3 枚举(WorktreeType/WorktreeCopyMode/ApplyMode 均 lowercase + `#[default]`)+ ~16 个 wire struct,**落地 5 个对本层全新的 serde 模式**:① 内部标记枚举联合 `#[serde(tag="status")]`(CreateWorktreeResponse + ApplyWorktreeResponse);② 透明 newtype `#[serde(transparent)]`(WorktreeCreateSyncReq);③ 非透明 `{inner:...}` wrapper(CreateWorktreeFromWorktreeSyncReq);④ 自定义 default 函数 `default_copy_mode`(枚举默认,类 R73 default_true bool);⑤ 混合 skip 矩阵(recurring)。零回归闭合。
+
+### 融合结论
+
+R75 验证了 R74 依赖根决策的回报:`ChangeType`/`GitFileChange` 直接 import 复用,FileConflict 的 `change_type: ChangeType = Field(alias="type")` 与 R74 GitFileChange 完全同构,ApplyWorktreeResponse 两变体嵌入 `list[GitFileChange]` 零重复定义。这与 R45→R52 模型词汇表扩散、R64→R66 类型契约层扩散同构——"先定义类型根再扩散 wire 消费"在 RPC 层再次兑现。
+
+5 个新 serde 模式中,**内部标记枚举联合**是层内首例(R70 TargetClientId 是 untagged、R74 GitStatusExtResponse 是手写 rewrap),用 pydantic `Annotated[Union[A,B], Field(discriminator="status")]` + 每变体 `Literal["<tag>"]` 字段精确复刻 Rust `#[serde(tag="status")]`。**透明 newtype**(子类化继承字段 + 仅重指 METHOD/Response ClassVar)vs **非透明 wrapper**(普通 struct + `inner` 字段)的对比,锁定 serde `transparent` 语义在 pydantic 的两种映射路径。
+
+### 交付
+
+| 符号 | Rust 源(worktree.rs) | Python 实现(worktree.py) | 说明 |
+|------|------|------|------|
+| `WorktreeType`/`WorktreeCopyMode`/`ApplyMode` | `enum` lowercase + `#[default]` | `StrEnum` + `default()` 类方法 | Linked/Dirty/Overwrite |
+| `_default_copy_mode` | `fn default_copy_mode() -> Dirty` | 模块函数 | 枚举默认(R73 default_true 的枚举版) |
+| `CreateWorktreeRequest` | rename_all=camel + `default="default_copy_mode"` | `_CAMEL` + `Field(default_factory=_default_copy_mode)` | Option 字段保 null |
+| `WorktreeCreateSyncReq` | `#[serde(transparent)]` newtype | 子类化 `CreateWorktreeRequest` | wire 与内层字节同(无 inner 键) |
+| `CreateWorktreeResponse` | `#[serde(tag="status")]` 联合 | `Annotated[Union, Field(discriminator="status")]` | creating/exists 两变体,各带 `Literal["<tag>"]` |
+| `CreateWorktreeFromWorktreeSyncReq` | **非透明** `{inner:...}` | 普通 struct + `inner` 字段 | snake_case 外键 + camelCase 内层 |
+| `FileConflict` | `rename="type"` + 3 Option 无 skip | `_CAMEL` + `Field(alias="type")` | 复用 R74 ChangeType |
+| `ApplyWorktreeResponse` | `#[serde(tag="status")]` 联合 | `Annotated[Union, Field(discriminator="status")]` | 嵌入 `list[GitFileChange]`,success/conflicts |
+| `WorktreeGcReq` | `max_age_secs` 无 default | `max_age_secs: int \| None`(必填) | 构造缺失抛 ValidationError |
+| `WorktreeListReq` | 无 rename_all + `rename="type"` | snake_case + `Field(alias="type")` | include_all 保 snake_case |
+| 11 Req struct | 11 个 `impl WorkspaceRpc` | `METHOD`/`Response` ClassVar | Value->Any / struct->type |
+
+**文件**:新增 `agent/minimax_code/workspace_types/rpc/worktree.py`(502 行);改 `rpc/__init__.py`(barrel 导入 28 符号 + `__all__` worktree 段 + docstring R75 段);改 `tests/test_rpc.py`(追加 TestWorktree 类 30 测试 + import 块)。
+
+### 映射决策树 + 坑
+
+**决策树 —— worktree.rs serde 模式 -> pydantic 映射**
+
+```
+worktree.rs 项
+├─ enum lowercase + #[default]
+│  └─ StrEnum + default() 类方法(返回默认变体)
+├─ struct rename_all="camelCase" 全字段
+│  └─ model_config = _CAMEL(alias_generator=to_camel)
+├─ 字段 #[serde(default="default_copy_mode")](枚举默认)
+│  └─ Field(default_factory=_default_copy_mode)
+├─ 内部标记联合 #[serde(tag="status")]
+│  └─ Annotated[Union[A,B], Field(discriminator="status")]
+│     每变体 status: Literal["<tag>"] 字段
+├─ 透明 newtype #[serde(transparent)]
+│  └─ 子类化内层 struct(继承字段 + model_config,仅重指 METHOD/Response)
+├─ 非透明 wrapper(无 transparent)
+│  └─ 普通 struct + inner: InnerStruct 字段(snake_case 外键)
+├─ 字段 rename="type"(per-field 覆盖)
+│  └─ Field(alias="type")(复用 R74 ChangeType)
+└─ skip_serializing_if="Option::is_none"(recurring)
+   └─ 自定义 wrap model_serializer,pop 指定 camelCase 键
+```
+
+**坑 1 — 内部标记枚举联合(层内首例 tagged union)**
+`CreateWorktreeResponse`/`ApplyWorktreeResponse` 用 `#[serde(tag="status")]`:Rust 每变体扁平展开为 `{"status":"<tag>",...变体字段...}`。pydantic 映射:`Annotated[CreateWorktreeResponseCreating | CreateWorktreeResponseExists, Field(discriminator="status")]`,每变体是 WireModel 子类带 `status: Literal["creating"]/["exists"]` 字段。判别往返用 `TypeAdapter(CreateWorktreeResponse).validate_python({...})`:带 `"status":"creating"` -> Creating 变体;`"status":"exists"` -> Exists 变体。与 R70 untagged(无 discriminator)/R74 手写 rewrap 不同,这是 serde `tag` 语义的第一次精确复刻。两变体的 `sourceGitRoot` 各带 wrap serializer pop None(混合 skip)。
+
+**坑 2 — 透明 newtype vs 非透明 wrapper(serde `transparent` 两态)**
+grok 同文件给出对比:`WorktreeCreateSyncReq(pub CreateWorktreeRequest)` 带 `#[serde(transparent)]` -> wire 与内层字节同(无 "inner" 键);`CreateWorktreeFromWorktreeSyncReq { inner: ... }` **无** transparent -> wire 保 `{"inner":{...}}`。pydantic:透明态用**子类化**(`class WorktreeCreateSyncReq(CreateWorktreeRequest):` 继承所有字段 + camelCase model_config,仅重指 METHOD/Response ClassVar);非透明态用**普通 struct + `inner` 字段**。测试 `test_worktree_create_sync_req_is_transparent` 断言 `json["sessionId"]=="s1"` 且 `"inner" not in json`;`test_create_worktree_from_worktree_sync_req_keeps_inner_wrapper` 断言 `inner["sourceWorktreePath"]=="/src"`、`inner["copyMode"]=="dirty"`、无 `cancellationToken`/`resolvedDestPath`(serde(skip) 字段已从 wire 缺席)。
+
+**坑 3 — `default_copy_mode` 枚举默认(R73 default_true 的枚举版)**
+`copy_mode: WorktreeCopyMode` 带 `#[serde(default="default_copy_mode")]`(默认 Dirty)。pydantic `Field(default_factory=_default_copy_mode)`,模块函数返回 `WorktreeCopyMode.DIRTY`。与 R73 的 `default=True` bool 默认同构,只是值类型换成枚举。两处复用(`CreateWorktreeRequest` + `CreateWorktreeFromWorktreeRequestWire`)共享同一工厂函数。`test_create_worktree_request_copy_mode_defaults_dirty` 断言默认 dump 出 `"copyMode":"dirty"`。
+
+**坑 4 — ClassVar 引用顺序(WorktreeDbPathResponse 前置)**
+`WorktreeDbPathReq.Response: ClassVar[type] = WorktreeDbPathResponse` 需在被引用前定义。Python 模块级符号顺序敏感,故把 `WorktreeDbPathResponse`(响应)定义在 `WorktreeDbPathReq`(请求)**之前**(grok 源码顺序相反:Req 在前 Response 在后,但 Rust impl 块允许前向引用)。pydantic ClassVar 求值在类体执行期,必须符号已存在。这个重排是 Rust->Python 的固有迁移差异。
+
+**坑 5 — `WorktreeListReq` 无 rename_all(测试断言陷阱)**
+`WorktreeListReq` 在 grok **无** `#[serde(rename_all="camelCase")]`(L285-292),仅 `types` 字段带 `rename="type"`。故 wire 上 `repo`/`include_all` 保 snake_case,只有 `types`->`type`。pydantic:不加 `_CAMEL`,仅 `types: list[str] = Field(alias="type")`。初版测试误断言 `wire["includeAll"]`(误以为全 camelCase),实际应为 `wire["include_all"]`——这是 rename_all 缺席的精确语义,被 `test_worktree_list_req_types_alias_and_empty_vec` 锁定(修正断言 + 注释引用源码行号)。
+
+**坑 6 — WorktreeGcReq 必填字段构造即抛**
+`max_age_secs: Option<i64>` **无** `#[serde(default)]` -> key 必填(value 可 null)。pydantic `max_age_secs: int | None`(无默认)-> 构造 `WorktreeGcReq()` 缺该字段抛 `ValidationError`。`test_worktree_gc_req_missing_max_age_secs_raises` 锁定。dry_run/force 默认 False 不受影响。
+
+### 验证
+
+三重验证全绿:
+
+```bash
+# 1. ruff lint
+cd "/d/工作/城建院/mm code/agent" && uv run ruff check --fix minimax_code/workspace_types/rpc/worktree.py minimax_code/workspace_types/rpc/__init__.py tests/test_rpc.py
+# -> Found 4 errors (4 fixed, 0 remaining) — I001 import 排序自动;再 ruff check -> All checks passed!
+
+# 2. R75 专项测试
+cd "/d/工作/城建院/mm code/agent" && uv run pytest tests/test_rpc.py -q
+# -> 225 passed(R74 的 195 + R75 新增 30 TestWorktree,精确对账)
+
+# 3. 全量回归(零回归)
+cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
+# -> 2309 passed, 10 skipped in 114.75s(零回归)
+```
+
+**wire 保真交叉验证**:对照 grok `worktree.rs` 源码逐行确认——TestWorktree 30 测试覆盖:11 method 常量、Response ClassVar 形状、3 枚举 default()(Linked/Dirty/Overwrite)+ WorktreeType from_str(linked/standalone/git OK + bogus 抛 ValueError)、透明 newtype(无 inner 键)、非透明 wrapper(inner 键在 + 无 cancellationToken/resolvedDestPath)、CreateWorktreeResponse 标记联合(creating/exists 双变体 + TypeAdapter 判别 + sourceGitRoot None 省略)、ApplyWorktreeResponse 标记联合(success/conflicts + 复用 GitFileChange/ChangeType + `wire["files"][0]["type"]=="edit"`)、FileConflict null 保留、RemoveWorktreeResponse resolvedPath 省略、CreateWorktreeFromWorktreeResponse 三 Option 省略、copy_mode 默认 dirty、apply mode 默认 overwrite、WorktreeGcReq max_age_secs 必填抛 ValidationError、WorktreeListReq types 别名 + snake_case include_all、空 struct(DbRebuild/DbPath/DbStats)。5 个新 serde 模式 + 1 个测试断言修正全部锁定。
+
+### YAGNI 边界
+
+本轮明确不做:
+
+- ❌ **rpc/ 剩余 2 文件(~1167 行)迁移** —— hunks 413(R76)/ fs 754(R77)留后续。
+- ❌ **实际 worktree handler 实现** —— 本轮仅 wire 类型契约,真正的 git worktree 子进程调用是运行时能力。
+- ❌ **接入 IPC handler 或远程 workspace transport** —— 类型契约层先行,wire DTO 消费端在 shell 层。
+- ❌ **WorktreeType/ApplyMode 其他变体扩展** —— 本轮忠实复刻 grok 的 linked/standalone/git 与 overwrite/merge,不预判新变体。
+- ❌ **前端 `web/src/types/` 镜像** —— 纯后端 RPC 类型契约,无 wire 事件广播到前端。
+- ❌ **PrepareWorktreeFromWorktreeResponse 的 response 字段强类型化** —— grok 源码该字段是 `Option<serde_json::Value>`(序列化的 CreateWorktreeResponse),保 `Any | None` 忠实复刻,不做变体收窄。
+
+### Commit
+
+`feat(platform): R75 worktree lifecycle RPC layer (fuse grok xai-grok-workspace-types rpc/ worktree.rs 406 lines -> 502-line module: 11 workspace.worktree_*/create_worktree/remove_worktree/apply_worktree methods + 3 enums[WorktreeType/WorktreeCopyMode/ApplyMode lowercase + #[default]] + ~16 wire types, first consumer of R74 dependency root[FileConflict reuses ChangeType Field(alias="type"), ApplyWorktreeResponse embeds list[GitFileChange]], lands 5 serde patterns new to layer: internally tagged enum union #[serde(tag="status")] via Annotated[Union, Field(discriminator="status")] + Literal status variant[CreateWorktreeResponse creating/exists + ApplyWorktreeResponse success/conflicts, layer-first tagged union vs R70 untagged + R74 manual rewrap] + transparent newtype WorktreeCreateSyncReq via subclass[wire byte-identical to inner, no inner key] + non-transparent {inner:...} wrapper CreateWorktreeFromWorktreeSyncReq[explicit transparent counterpart] + custom default_copy_mode enum default[enum analogue of R73 default_true bool] + recurring mixed skip matrix, 30 new TestWorktree tests 225 passed zero-regression 2309 total)`

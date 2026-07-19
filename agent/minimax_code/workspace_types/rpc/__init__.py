@@ -41,8 +41,17 @@ via ``skip_serializing_if = "Vec::is_empty"``, a mixed skip matrix where some
 ``Option`` fields keep ``null`` while others are omitted, a hand-written
 ``Deserialize`` that rewraps legacy flat payloads for version skew, and
 ``Option``-shaped ``Response`` types like ``str | None`` /
-``GitInfoData | None``). The remaining 3 RPC files (fs / hunks / worktree)
-land in R75+.
+``GitInfoData | None``). R75 adds :mod:`worktree` — the 11
+``workspace.worktree_*`` / ``create_worktree`` / ``remove_worktree`` /
+``apply_worktree`` methods plus the worktree lifecycle wire types, the first
+consumer of R74's dependency root (:class:`FileConflict` reuses
+:class:`ChangeType`; :data:`ApplyWorktreeResponse` embeds ``list[GitFileChange]``).
+It lands five more serde patterns new to the layer (an internally tagged enum
+union via ``#[serde(tag = "status")]`` reproduced with a pydantic discriminated
+union, a transparent newtype :class:`WorktreeCreateSyncReq` vs its
+non-transparent ``{inner: …}`` counterpart :class:`CreateWorktreeFromWorktreeSyncReq`,
+a custom ``default_copy_mode`` enum default, and recurring mixed skip
+matrices). The remaining 2 RPC files (fs / hunks) land in R76+.
 """
 
 from __future__ import annotations
@@ -164,6 +173,36 @@ from minimax_code.workspace_types.rpc.workspace import (
     UpdateToolConfigReq,
     WorkspaceInfo,
     WorkspaceInfoReq,
+)
+from minimax_code.workspace_types.rpc.worktree import (
+    ApplyMode,
+    ApplyWorktreeRequest,
+    ApplyWorktreeResponse,
+    ApplyWorktreeResponseConflicts,
+    ApplyWorktreeResponseSuccess,
+    CopiedChangesSummary,
+    CreateWorktreeFromWorktreeRequestWire,
+    CreateWorktreeFromWorktreeResponse,
+    CreateWorktreeFromWorktreeSyncReq,
+    CreateWorktreeRequest,
+    CreateWorktreeResponse,
+    CreateWorktreeResponseCreating,
+    CreateWorktreeResponseExists,
+    DirtyStateSummary,
+    FileConflict,
+    PrepareWorktreeFromWorktreeResponse,
+    RemoveWorktreeRequest,
+    RemoveWorktreeResponse,
+    WorktreeCopyMode,
+    WorktreeCreateSyncReq,
+    WorktreeDbPathReq,
+    WorktreeDbPathResponse,
+    WorktreeDbRebuildReq,
+    WorktreeDbStatsReq,
+    WorktreeGcReq,
+    WorktreeListReq,
+    WorktreeShowReq,
+    WorktreeType,
 )
 
 __all__ = [
@@ -289,6 +328,35 @@ __all__ = [
     "RefreshPluginsReq",
     "ListBackgroundTasksReq",
     "ListTodosReq",
+    # worktree (R75, tagged union + transparent newtype + non-transparent wrapper + default_copy_mode + mixed skip)
+    "WorktreeType",
+    "WorktreeCopyMode",
+    "ApplyMode",
+    "DirtyStateSummary",
+    "CopiedChangesSummary",
+    "CreateWorktreeRequest",
+    "WorktreeCreateSyncReq",
+    "CreateWorktreeResponse",
+    "CreateWorktreeResponseCreating",
+    "CreateWorktreeResponseExists",
+    "RemoveWorktreeRequest",
+    "RemoveWorktreeResponse",
+    "CreateWorktreeFromWorktreeResponse",
+    "CreateWorktreeFromWorktreeRequestWire",
+    "CreateWorktreeFromWorktreeSyncReq",
+    "PrepareWorktreeFromWorktreeResponse",
+    "ApplyWorktreeRequest",
+    "FileConflict",
+    "ApplyWorktreeResponse",
+    "ApplyWorktreeResponseSuccess",
+    "ApplyWorktreeResponseConflicts",
+    "WorktreeShowReq",
+    "WorktreeGcReq",
+    "WorktreeListReq",
+    "WorktreeDbRebuildReq",
+    "WorktreeDbPathReq",
+    "WorktreeDbPathResponse",
+    "WorktreeDbStatsReq",
 ]
 
 #: Tool ID for the ``WorkspaceRpcHandler`` (workspace method dispatch).
