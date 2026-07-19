@@ -51,7 +51,19 @@ union via ``#[serde(tag = "status")]`` reproduced with a pydantic discriminated
 union, a transparent newtype :class:`WorktreeCreateSyncReq` vs its
 non-transparent ``{inner: …}`` counterpart :class:`CreateWorktreeFromWorktreeSyncReq`,
 a custom ``default_copy_mode`` enum default, and recurring mixed skip
-matrices). The remaining 2 RPC files (fs / hunks) land in R76+.
+matrices). R76 adds :mod:`hunks` — the 10 ``workspace.hunk_*`` /
+``workspace.get_all_hunks`` / ``workspace.get_session_summary`` methods plus the
+wire mirrors of ``xai_hunk_tracker`` response types (deliberately mirroring, not
+importing, R39's diff primitives — grok keeps them in the lean crate to avoid a
+``gix`` dependency). It lands five more serde patterns new to the layer (an
+internally tagged enum with a ``#[serde(other)]`` fallback modelled as a flat
+``type: str`` model with forward-tolerant decode, a hand-written
+``Deserialize`` forward-tolerant string enum modelled as a ``StrEnum`` with a
+custom ``__get_pydantic_core_schema__`` routing unknowns to an ``UNKNOWN``
+member, a ``DateTime<Utc>`` RFC 3339 ``Z`` suffix restored via a
+``PlainSerializer``, ``PathBuf`` → ``str`` natural mapping, and camelCase nested
+struct lexical-sort round trips asserted by key index). The remaining 1 RPC
+file (fs) lands in R77.
 """
 
 from __future__ import annotations
@@ -127,6 +139,33 @@ from minimax_code.workspace_types.rpc.hooks import (
     HookRegistryReq,
     HookRegistryWire,
     HookSpecWire,
+)
+from minimax_code.workspace_types.rpc.hunks import (
+    BulkHunkActionResponse,
+    FileContentEntryWire,
+    FileContentStatusWire,
+    FileContentViewWire,
+    FileSummary,
+    FilteredHunksResponse,
+    HunkActionKind,
+    HunkActionReq,
+    HunkActionResponse,
+    HunkAllActionReq,
+    HunkFileActionReq,
+    HunkGetAllFileContentsReq,
+    HunkGetAllHunksReq,
+    HunkGetFileSummariesReq,
+    HunkGetFilteredHunksReq,
+    HunkGetSessionSummaryReq,
+    HunkGetStagedFilesReq,
+    HunkLineInfoWire,
+    HunkSingleActionReq,
+    HunkSourceWire,
+    HunkTurnActionReq,
+    HunkWire,
+    SessionStatsWire,
+    SessionSummaryWire,
+    TurnSummaryWire,
 )
 from minimax_code.workspace_types.rpc.search import (
     ClientId,
@@ -357,6 +396,32 @@ __all__ = [
     "WorktreeDbPathReq",
     "WorktreeDbPathResponse",
     "WorktreeDbStatsReq",
+    # hunks (R76, tagged enum #[serde(other)] + hand-written Deserialize enum + DateTime<Utc> Z + PathBuf->str)
+    "HunkActionKind",
+    "HunkSourceWire",
+    "FileContentStatusWire",
+    "HunkLineInfoWire",
+    "HunkWire",
+    "FileContentViewWire",
+    "FileContentEntryWire",
+    "SessionStatsWire",
+    "TurnSummaryWire",
+    "SessionSummaryWire",
+    "HunkActionResponse",
+    "BulkHunkActionResponse",
+    "FileSummary",
+    "FilteredHunksResponse",
+    "HunkActionReq",
+    "HunkSingleActionReq",
+    "HunkFileActionReq",
+    "HunkTurnActionReq",
+    "HunkAllActionReq",
+    "HunkGetFilteredHunksReq",
+    "HunkGetStagedFilesReq",
+    "HunkGetFileSummariesReq",
+    "HunkGetAllHunksReq",
+    "HunkGetAllFileContentsReq",
+    "HunkGetSessionSummaryReq",
 ]
 
 #: Tool ID for the ``WorkspaceRpcHandler`` (workspace method dispatch).

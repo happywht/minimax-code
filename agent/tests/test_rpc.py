@@ -9,6 +9,7 @@ contract.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -33,6 +34,8 @@ from minimax_code.workspace_types.rpc import (
     BackgroundTaskSummaryWire,
     BeginPromptReq,
     BinaryFileInfoData,
+    # hunks (R76)
+    BulkHunkActionResponse,
     ChangeType,
     CheckoutCommitResponse,
     ClientId,
@@ -73,8 +76,13 @@ from minimax_code.workspace_types.rpc import (
     DropSessionReq,
     EndPromptReq,
     FileConflict,
+    FileContentEntryWire,
+    FileContentStatusWire,
+    FileContentViewWire,
     FileRewindConflict,
     FileRewindResponse,
+    FileSummary,
+    FilteredHunksResponse,
     FuzzyChangeReq,
     FuzzyCloseReq,
     FuzzyOpenReq,
@@ -112,6 +120,22 @@ from minimax_code.workspace_types.rpc import (
     HookRegistryReq,
     HookRegistryWire,
     HookSpecWire,
+    HunkActionKind,
+    HunkActionReq,
+    HunkActionResponse,
+    HunkAllActionReq,
+    HunkFileActionReq,
+    HunkGetAllFileContentsReq,
+    HunkGetAllHunksReq,
+    HunkGetFileSummariesReq,
+    HunkGetFilteredHunksReq,
+    HunkGetSessionSummaryReq,
+    HunkGetStagedFilesReq,
+    HunkLineInfoWire,
+    HunkSingleActionReq,
+    HunkSourceWire,
+    HunkTurnActionReq,
+    HunkWire,
     IdentityData,
     InstallPluginReq,
     ListBackgroundTasksReq,
@@ -130,12 +154,15 @@ from minimax_code.workspace_types.rpc import (
     RewindToReq,
     RpcEnvelope,
     RpcError,
+    SessionStatsWire,
+    SessionSummaryWire,
     SkillInfo,
     SkillScope,
     StageData,
     TargetClientId,
     TodoSummaryWire,
     ToolDefinitionsReq,
+    TurnSummaryWire,
     UncommittedChangesData,
     UpdateToolConfigReq,
     VcsKind,
@@ -2257,3 +2284,273 @@ class TestWorktree:
         assert WorktreeDbRebuildReq().to_wire() == {}
         assert WorktreeDbPathReq().to_wire() == {}
         assert WorktreeDbStatsReq().to_wire() == {}
+
+
+class TestHunks:
+    """R76: workspace.hunk_* / get_all_hunks / get_session_summary.
+
+    Pins the serde shape of grok's ``xai-grok-workspace-types::rpc::hunks``
+    — the 10 RPC method constants (two without the ``hunk_`` prefix), the
+    forward-tolerant :class:`HunkSourceWire` tagged enum (``#[serde(other)]``
+    fallback modelled as a flat ``type: str`` model), the hand-written
+    forward-tolerant :class:`FileContentStatusWire` string enum (unknowns route
+    to ``UNKNOWN``), the ``DateTime<Utc>`` ``Z`` suffix, ``PathBuf`` → ``str``,
+    and the :class:`FileContentViewWire` mixed skip matrix. Round-trip
+    assertions use key-indexed access: :meth:`WireModel.to_wire` lexically sorts
+    keys at every depth, so they never match grok's field-ordered serde output
+    as a whole dict.
+    """
+
+    # -- method constants (grok method_constants × 10) -----------------------
+    # Note: two methods drop the ``hunk_`` prefix on the wire.
+
+    def test_method_constants(self):
+        assert HunkSingleActionReq.METHOD == "workspace.hunk_action"
+        assert HunkFileActionReq.METHOD == "workspace.hunk_file_action"
+        assert HunkTurnActionReq.METHOD == "workspace.hunk_turn_action"
+        assert HunkAllActionReq.METHOD == "workspace.hunk_all_action"
+        assert HunkGetStagedFilesReq.METHOD == "workspace.hunk_get_staged_files"
+        assert HunkGetFileSummariesReq.METHOD == "workspace.hunk_get_file_summaries"
+        assert HunkGetFilteredHunksReq.METHOD == "workspace.hunk_get_filtered_hunks"
+        assert HunkGetAllFileContentsReq.METHOD == "workspace.hunk_get_all_file_contents"
+        # Two methods without the ``hunk_`` prefix (grok source verbatim).
+        assert HunkGetAllHunksReq.METHOD == "workspace.get_all_hunks"
+        assert HunkGetSessionSummaryReq.METHOD == "workspace.get_session_summary"
+
+    # -- Response ClassVar shapes -------------------------------------------
+
+    def test_typed_responses(self):
+        assert HunkSingleActionReq.Response is HunkActionResponse
+        assert HunkFileActionReq.Response is BulkHunkActionResponse
+        assert HunkTurnActionReq.Response is BulkHunkActionResponse
+        assert HunkAllActionReq.Response is BulkHunkActionResponse
+        assert HunkGetFilteredHunksReq.Response is FilteredHunksResponse
+        assert HunkGetSessionSummaryReq.Response is SessionSummaryWire
+
+    def test_list_responses(self):
+        # bare-list Response types surfaced as list[...].
+        assert HunkGetStagedFilesReq.Response == list[str]
+        assert HunkGetFileSummariesReq.Response == list[FileSummary]
+        assert HunkGetAllHunksReq.Response == list[HunkWire]
+        assert HunkGetAllFileContentsReq.Response == list[FileContentEntryWire]
+
+    # -- HunkActionKind lowercase (no #[default]) ---------------------------
+
+    def test_hunk_action_kind_lowercase(self):
+        # grok hunk_action_kind_lowercase: #[serde(rename_all = "lowercase")].
+        assert HunkActionKind.ACCEPT == "accept"
+        assert HunkActionKind.REJECT == "reject"
+
+    def test_hunk_action_kind_from_str_round_trip(self):
+        assert HunkActionKind("accept") is HunkActionKind.ACCEPT
+        assert HunkActionKind("reject") is HunkActionKind.REJECT
+        with pytest.raises(ValueError):  # mirrors grok Err(())
+            HunkActionKind("bogus")
+
+    def test_hunk_action_kind_has_no_default(self):
+        # Unlike R75 WorktreeType/ApplyMode there is no #[default] on this enum.
+        assert not hasattr(HunkActionKind, "default")
+
+    # -- HunkSourceWire forward-tolerant tagged enum (#[serde(other)]) -------
+
+    def test_hunk_source_wire_emits_prompt_index_when_set(self):
+        wire = HunkSourceWire(type="agentEdit", prompt_index=3).to_wire()
+        # Flat model: no discriminator nesting; type at top level.
+        assert wire["type"] == "agentEdit"
+        assert wire["prompt_index"] == 3
+
+    def test_hunk_source_wire_omits_prompt_index_when_none(self):
+        wire = HunkSourceWire(type="external").to_wire()
+        assert wire["type"] == "external"
+        assert "prompt_index" not in wire  # omitted when None
+
+    def test_hunk_source_wire_forward_tolerant_unknown_tag(self):
+        # grok hunk_source_wire_unknown: #[serde(other)] → Unknown catches it.
+        # Flat-model equivalent: any tag decodes and round-trips verbatim.
+        wire = HunkSourceWire(type="futureSource").to_wire()
+        assert wire["type"] == "futureSource"
+        assert "prompt_index" not in wire
+
+    # -- FileContentStatusWire hand-written forward-tolerant string enum ----
+
+    def test_file_content_status_wire_known_values(self):
+        assert FileContentStatusWire.MISSING == "missing"
+        assert FileContentStatusWire.BINARY == "binary"
+        assert FileContentStatusWire.TOO_LARGE == "tooLarge"
+        assert FileContentStatusWire.LFS_POINTER == "lfsPointer"
+        assert FileContentStatusWire.SYMLINK == "symlink"
+        assert FileContentStatusWire.FULL == "full"
+        assert FileContentStatusWire.UNKNOWN == "unknown"
+
+    def test_file_content_status_wire_missing_default(self):
+        # grok #[default] Missing → default() returns MISSING.
+        assert FileContentStatusWire.default() is FileContentStatusWire.MISSING
+
+    def test_file_content_status_wire_known_decode(self):
+        adapter = TypeAdapter(FileContentStatusWire)
+        assert adapter.validate_python("missing") is FileContentStatusWire.MISSING
+        assert adapter.validate_python("tooLarge") is FileContentStatusWire.TOO_LARGE
+
+    def test_file_content_status_wire_unknown_decode_routes_to_unknown(self):
+        # grok file_content_status_wire_unknown: hand-written Deserialize →
+        # Unknown instead of failing the whole structured response.
+        adapter = TypeAdapter(FileContentStatusWire)
+        assert adapter.validate_python("bogus") is FileContentStatusWire.UNKNOWN
+
+    def test_file_content_status_wire_serialises_member_value(self):
+        adapter = TypeAdapter(FileContentStatusWire)
+        assert adapter.dump_python(FileContentStatusWire.TOO_LARGE) == "tooLarge"
+        assert adapter.dump_python(FileContentStatusWire.UNKNOWN) == "unknown"
+
+    # -- HunkWire round trip (camelCase + DateTime<Utc> Z + PathBuf → str) ---
+
+    def test_hunk_wire_round_trip(self):
+        # grok hunk_wire_round_trips: Z-suffixed created_at, snake_case null Options.
+        hunk = HunkWire(
+            id="h1",
+            path="/src/a.txt",
+            line_info=HunkLineInfoWire(old_start=1, old_count=2, new_start=1, new_count=3),
+            source=HunkSourceWire(type="agentEdit", prompt_index=0),
+            old_text="old\n",
+            new_text="new\n",
+            patch=None,
+            created_at=datetime(2026, 6, 23, tzinfo=UTC),
+        )
+        wire = hunk.to_wire()
+        # PathBuf → bare str.
+        assert wire["path"] == "/src/a.txt"
+        # DateTime<Utc> → RFC 3339 with Z suffix (chrono-compatible).
+        assert wire["createdAt"] == "2026-06-23T00:00:00Z"
+        # Option<String> with no skip_serializing_if → null kept.
+        assert wire["oldText"] == "old\n"
+        assert wire["patch"] is None
+        # Nested camelCase structs.
+        assert wire["lineInfo"]["oldStart"] == 1
+        assert wire["lineInfo"]["newCount"] == 3
+        assert wire["source"]["type"] == "agentEdit"
+        # prompt_index is a struct-variant field: rename_all="camelCase" renames
+        # the variant *name* (AgentEdit→agentEdit) but NOT variant *fields*, so
+        # it stays snake_case on the wire (grok source L111-114 comment).
+        assert wire["source"]["prompt_index"] == 0
+
+    def test_hunk_wire_microsecond_created_at(self):
+        hunk = HunkWire(
+            id="h2",
+            path="b.txt",
+            line_info=HunkLineInfoWire(old_start=0, old_count=0, new_start=0, new_count=0),
+            source=HunkSourceWire(type="external"),
+            new_text="x",
+            created_at=datetime(2026, 6, 23, 12, 30, 45, 500000, tzinfo=UTC),
+        )
+        # Microsecond form: fractional seconds, trailing zeros stripped.
+        assert hunk.to_wire()["createdAt"] == "2026-06-23T12:30:45.5Z"
+
+    # -- FileContentViewWire mixed skip matrix (status always, others skip) --
+
+    def test_file_content_view_wire_omits_none_byte_len_and_content(self):
+        # grok file_content_entry_wire_omits None status: status always emitted,
+        # byteLen/content skip_serializing_if Option::is_none.
+        wire = FileContentViewWire(status=FileContentStatusWire.FULL).to_wire()
+        assert wire["status"] == "full"
+        assert "byteLen" not in wire
+        assert "content" not in wire
+
+    def test_file_content_view_wire_emits_byte_len_and_content_when_set(self):
+        wire = FileContentViewWire(
+            status=FileContentStatusWire.FULL, byte_len=42, content="hi"
+        ).to_wire()
+        assert wire["byteLen"] == 42
+        assert wire["content"] == "hi"
+
+    def test_file_content_view_wire_baseline_missing_omits_fields(self):
+        # Missing status → no byteLen/content emitted (baseline of a new file).
+        wire = FileContentViewWire(status=FileContentStatusWire.MISSING).to_wire()
+        assert wire["status"] == "missing"
+        assert "byteLen" not in wire
+
+    # -- FileContentEntryWire round trip (nested mixed skip) ----------------
+
+    def test_file_content_entry_wire_round_trip(self):
+        entry = FileContentEntryWire(
+            path="/src/a.txt",
+            baseline=FileContentViewWire(status=FileContentStatusWire.MISSING),
+            current=FileContentViewWire(
+                status=FileContentStatusWire.FULL, byte_len=3, content="new"
+            ),
+            is_agent_file=True,
+            staged=False,
+        )
+        wire = entry.to_wire()
+        assert wire["path"] == "/src/a.txt"
+        assert wire["isAgentFile"] is True
+        assert wire["staged"] is False
+        # baseline: missing status, byteLen/content omitted.
+        assert wire["baseline"]["status"] == "missing"
+        assert "content" not in wire["baseline"]
+        # current: full status with content.
+        assert wire["current"]["status"] == "full"
+        assert wire["current"]["byteLen"] == 3
+        assert wire["current"]["content"] == "new"
+
+    # -- camelCase summary structs ------------------------------------------
+
+    def test_session_stats_wire_camel_case(self):
+        stats = SessionStatsWire(
+            accepted_hunks=1, rejected_hunks=2,
+            accepted_lines_added=10, accepted_lines_removed=5,
+            rejected_lines_added=3, rejected_lines_removed=1,
+        )
+        wire = stats.to_wire()
+        assert wire["acceptedHunks"] == 1
+        assert wire["acceptedLinesAdded"] == 10
+        assert wire["rejectedLinesRemoved"] == 1
+
+    def test_turn_summary_wire_camel_case_with_files(self):
+        turn = TurnSummaryWire(
+            prompt_index=0, files=["/a.txt", "/b.txt"],
+            pending_hunks=[], lines_added=4, lines_removed=2,
+        )
+        wire = turn.to_wire()
+        assert wire["promptIndex"] == 0
+        # Vec<PathBuf> → list[str].
+        assert wire["files"] == ["/a.txt", "/b.txt"]
+        assert wire["linesAdded"] == 4
+
+    # -- snake_case response / request types --------------------------------
+
+    def test_bulk_hunk_action_response_default_empty_vec(self):
+        # derive Default + no skip_serializing_if → affected: [] kept.
+        assert BulkHunkActionResponse().to_wire() == {"affected": []}
+
+    def test_filtered_hunks_response_default(self):
+        wire = FilteredHunksResponse().to_wire()
+        assert wire["hunks"] == []
+        assert wire["total"] == 0
+
+    def test_file_summary_snake_case(self):
+        wire = FileSummary(path="a.txt", hunk_count=3, is_agent_file=True).to_wire()
+        assert wire == {"path": "a.txt", "hunk_count": 3, "is_agent_file": True}
+
+    def test_hunk_single_action_req_nested_snake_case(self):
+        req = HunkSingleActionReq(
+            action=HunkActionReq(hunk_id="h1", action=HunkActionKind.ACCEPT)
+        )
+        wire = req.to_wire()
+        assert wire["action"]["hunk_id"] == "h1"
+        assert wire["action"]["action"] == "accept"
+
+    def test_hunk_get_filtered_hunks_req_defaults_null(self):
+        # #[serde(default)] on both Options + no skip → null kept.
+        wire = HunkGetFilteredHunksReq().to_wire()
+        assert wire["path"] is None
+        assert wire["source"] is None
+
+    # -- empty-struct RPCs default to {} ------------------------------------
+
+    def test_empty_struct_requests(self):
+        assert HunkGetStagedFilesReq().to_wire() == {}
+        assert HunkGetFileSummariesReq().to_wire() == {}
+        assert HunkGetAllHunksReq().to_wire() == {}
+        assert HunkGetAllFileContentsReq().to_wire() == {}
+        assert HunkGetSessionSummaryReq().to_wire() == {}
+

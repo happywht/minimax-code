@@ -6029,3 +6029,119 @@ cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
 ### Commit
 
 `feat(platform): R75 worktree lifecycle RPC layer (fuse grok xai-grok-workspace-types rpc/ worktree.rs 406 lines -> 502-line module: 11 workspace.worktree_*/create_worktree/remove_worktree/apply_worktree methods + 3 enums[WorktreeType/WorktreeCopyMode/ApplyMode lowercase + #[default]] + ~16 wire types, first consumer of R74 dependency root[FileConflict reuses ChangeType Field(alias="type"), ApplyWorktreeResponse embeds list[GitFileChange]], lands 5 serde patterns new to layer: internally tagged enum union #[serde(tag="status")] via Annotated[Union, Field(discriminator="status")] + Literal status variant[CreateWorktreeResponse creating/exists + ApplyWorktreeResponse success/conflicts, layer-first tagged union vs R70 untagged + R74 manual rewrap] + transparent newtype WorktreeCreateSyncReq via subclass[wire byte-identical to inner, no inner key] + non-transparent {inner:...} wrapper CreateWorktreeFromWorktreeSyncReq[explicit transparent counterpart] + custom default_copy_mode enum default[enum analogue of R73 default_true bool] + recurring mixed skip matrix, 30 new TestWorktree tests 225 passed zero-regression 2309 total)`
+
+## R76 — hunks.rs -> hunks.py（diff hunk wire 层，10 RPC + 3 enum + 18 struct，5 个 serde 新模式）
+
+锚点:R76-1 7453e40
+
+### 本轮目标
+
+正向迁移 grok `xai-grok-workspace-types::rpc::hunks`（413 行 Rust）到 `agent/minimax_code/workspace_types/rpc/hunks.py`，落地 10 个 `workspace.hunk_*` / `workspace.get_all_hunks` / `workspace.get_session_summary` RPC + 3 枚举 + ~18 wire 类型，闭合 rpc/ 命名空间第 9 个文件（仅剩 fs.rs 留 R77）。本轮的核心挑战不在结构数量，而在 5 个对本层全新的 serde 模式的精确 pydantic 复刻——其中两个是 pydantic 无原生对应的 Rust serde 特性（`#[serde(other)]` 前向容错标记枚举 + 手写 `Deserialize` 前向容错字符串枚举），必须用自定义 schema 重新建模，且要解决一个 pydantic 版本兼容性坑。
+
+### 融合结论
+
+hunks.rs 是 diff hunk 追踪的 **wire 形状层**，刻意不导入 R39 `xai-hunk-tracker` 的 diff 计算原语——grok 在 lean crate 里镜像这些类型（源码 L111-114 注释），避免把 `gix` 重依赖拉进 workspace-types。我们忠实保留这个职责分离：R39 拥有 diff **计算**，R76 拥有 diff **wire 形状**。hunks.rs 与 R74 git.rs 无类型依赖（仅 `use super::WorkspaceRpc;` + chrono + serde），所以本轮是纯叶节点，不消费 R74 依赖根（区别于 R75 worktree 消费 ChangeType/GitFileChange）。10 个方法里两个**故意**省略 `hunk_` 前缀（`workspace.get_all_hunks` / `workspace.get_session_summary`），通过 `METHOD` ClassVar 逐字复刻，不"修正"成一致命名——这是 grok 客户端与服务端的既有契约。
+
+### 交付
+
+**hunks.rs -> hunks.py serde 模式映射**
+
+| grok 项 | Rust serde | pydantic 映射 | 关键点 |
+|---|---|---|---|
+| `HunkActionKind` | `rename_all="lowercase"` **无** `#[default]` | StrEnum ACCEPT/REJECT | 请求专用,无 default()(区别 R75 三枚举) |
+| `HunkSourceWire` | `tag="type"` + `rename_all="camelCase"` + `#[serde(other)]` | 平铺 WireModel `type:str` + `prompt_index:int\|None` + wrap serializer pop None | 前向容错:未知 type 逐字往返 |
+| `FileContentStatusWire` | 手写 `Deserialize`(L225-239) | StrEnum 7 成员 + `__get_pydantic_core_schema__` after-validator | 未知串 -> UNKNOWN;default() MISSING |
+| `IsoUtc` (`DateTime<Utc>`) | chrono RFC3339 `Z` 后缀 | `Annotated[datetime, PlainSerializer(_dt_to_wire)]` | `+00:00` 重写为 `Z`,微秒 rstrip("0") |
+| `HunkWire.path` 等 | `PathBuf` | `str` / `list[str]` | 层内首个 PathBuf wire 字段 |
+| `HunkLineInfoWire`/`HunkWire`/`SessionStatsWire`/`TurnSummaryWire`/`SessionSummaryWire`/`FileContentEntryWire` | `rename_all="camelCase"` | `model_config = _CAMEL` | 词法排序往返用键索引断言 |
+| `FileContentViewWire` | status 必发 + byte_len/content `Option::is_none` | wrap serializer pop byteLen/content | 混合 skip 矩阵 |
+| `old_text`/`patch` | `Option<String>` **无** skip | `str \| None = None`,保 null | null 保留(无 skip_serializing_if) |
+| `BulkHunkActionResponse.affected` | `Vec<String>` 无 skip + derive Default | `affected: list[str] = []` | 空串发 `"affected":[]` |
+| `FilteredHunksResponse` | `Vec<HunkWire>` + `usize` 无 skip + Default | `hunks: list[HunkWire] = []`, `total: int = 0` | 空发 `[]` / `0` |
+| `HunkGetFilteredHunksReq` | 两 Option `#[serde(default)]` 无 skip | `path/source: str \| None = None`,保 null | None 发 null |
+| 5 empty Req | 空 struct derive Default | WireModel 无字段,`to_wire()=={}` | Default 镜像 |
+| 10 Req | 10 `impl WorkspaceRpc` | `METHOD`/`Response` ClassVar | list response 用 `ClassVar = list[X]` |
+
+**文件**:新增 `agent/minimax_code/workspace_types/rpc/hunks.py`(454 行,18 类型 + 3 枚举);改 `rpc/__init__.py`(barrel 导入 25 符号 + `__all__` hunks 段 + docstring R76 段);改 `tests/test_rpc.py`(追加 TestHunks 类 ~25 测试 + datetime import + barrel import 块)。
+
+### 映射决策树 + 坑
+
+**决策树 —— hunks.rs serde 模式 -> pydantic 映射**
+
+```
+hunks.rs 项
+├─ enum lowercase 无 #[default](HunkActionKind)
+│  └─ StrEnum,无 default() 类方法(请求专用)
+├─ 内部标记枚举 + #[serde(other)](HunkSourceWire)
+│  └─ 平铺 WireModel:type:str + prompt_index:int|None
+│     + wrap serializer(prompt_index None 时 pop)
+│     [pydantic 联合无 #[serde(other)] catch-all -> 平铺模型兜底]
+├─ 手写 Deserialize 字符串枚举(FileContentStatusWire)
+│  └─ StrEnum + __get_pydantic_core_schema__
+│     after-validator over str_schema:未知值 -> UNKNOWN
+├─ DateTime<Utc> RFC3339 Z 后缀
+│  └─ Annotated[datetime, PlainSerializer(_dt_to_wire)]
+├─ PathBuf / Vec<PathBuf>
+│  └─ str / list[str]
+├─ camelCase 嵌套 struct
+│  └─ model_config = _CAMEL;往返用键索引(词序 vs 字段序)
+├─ Option<String> 无 skip_serializing_if
+│  └─ str | None = None,null 保留
+├─ status 必发 + 其他 Option::is_none(FileContentViewWire)
+│  └─ wrap serializer pop 指定 camelCase 键
+└─ derive Default 的 Response 容器(Bulk/Filtered)
+   └─ 字段赋默认值([]/0)使 default() 可用
+```
+
+**坑 1 — `#[serde(other)]` 前向容错标记枚举(层内首例 + pydantic 无原生对应)**
+`HunkSourceWire` 用 `#[serde(tag="type", rename_all="camelCase")]` + `#[serde(other)] Unknown` 兜底。关键语义:`rename_all` 重命名变体**名**(`AgentEdit`->`agentEdit`)但**不**重命名 struct-variant **字段**(`prompt_index` 保 snake_case)。pydantic 判别联合(`Annotated[Union, Field(discriminator)]`)**无** `#[serde(other)]` catch-all 分支——未知标签直接 decode 失败。解法:建模为**平铺 WireModel**(`type: str` + `prompt_index: int | None`),任何未知 type 字符串都 decode 成功并逐字往返(`HunkSourceWire(type="futureSource").to_wire()["type"]=="futureSource"`)。这比 grok 的 `Unknown->"unknown"` 有损映射更**无损**(保留原 type 值),且 `prompt_index` 用 wrap serializer 在 None 时省略。`prompt_index` 嵌套保 snake_case 是测试断言陷阱(见坑 3)。
+
+**坑 2 — 手写 Deserialize 字符串枚举 + pydantic API 版本坑(FileContentStatusWire)**
+`FileContentStatusWire` 是普通 camelCase 字符串枚举,grok **手写** `Deserialize`(L225-239):未知状态串 decode 成 `Unknown` 而非整个结构响应失败。serde 的 `#[serde(other)]` **不允许**用在普通字符串枚举上(只允许内部/相邻标记枚举),故需手写 impl。pydantic 解法:StrEnum 7 成员 + 自定义 `__get_pydantic_core_schema__`。**初版用 `core_schema.no_info_plain_validator_function(..., json_schema=core_schema.str_schema())`**——直接 `TypeError: ... got an unexpected keyword argument 'json_schema'`。当前 pydantic 版本的 `no_info_plain_validator_function` **不接受** `json_schema` 参数。修正为 **after-validator over str_schema**:`core_schema.no_info_after_validator_function(_coerce, core_schema.str_schema(), serialization=...)`——`str_schema` 作基础 schema 提供 JSON "string" 类型 + 验证输入是字符串,`_coerce` after-validator 把字符串映射到枚举成员(`cls(value)` 失败 -> `cls.UNKNOWN`)。这是版本稳定的双全方案(前向容错 decode + 真实 JSON schema)。与 R71 `HookEventNameWire`(str-subclass 用 `no_info_after_validator_function(cls, str_schema())` 逐字保留未知值)对比——本轮是带显式 UNKNOWN 成员的封闭枚举。`TypeAdapter(FileContentStatusWire).validate_python("bogus") is FileContentStatusWire.UNKNOWN`(必须用 TypeAdapter 触发自定义 schema,直接 `FileContentStatusWire("bogus")` 走 StrEnum 构造会抛 ValueError)。
+
+**坑 3 — `prompt_index` 嵌套保 snake_case(测试断言陷阱)**
+`HunkSourceWire` 嵌套在 `HunkWire`(用 `_CAMEL`)里时,`prompt_index` 字段在 wire 上**保持 snake_case**(不是 `promptIndex`)。原因:`HunkSourceWire` 自己的 `model_config` 是 `ConfigDict(populate_by_name=True)` **无** `alias_generator`,字段无别名;外层 `HunkWire` 的 `by_alias=True` 不传染内层模型的字段别名(每模型用各自配置)。这**忠实复刻** grok 的 `rename_all` 语义(只重命名变体名,不重命名变体字段,源码 L111-114 注释)。初版测试误断言 `wire["source"]["promptIndex"]` -> KeyError;修正为 `wire["source"]["prompt_index"]` 并加注释引用源码行号。`type` 字段同理无别名保原样。
+
+**坑 4 — DateTime<Utc> Z 后缀 + 微秒精度**
+`HunkWire.created_at` 是 `chrono::DateTime<Utc>`,serde 发 RFC3339 带 `Z` 后缀(`2026-06-23T00:00:00Z`)。pydantic 默认 datetime 序列化用 `+00:00`。`IsoUtc = Annotated[datetime, PlainSerializer(_dt_to_wire, return_type=str)]`,`_dt_to_wire` 先 `astimezone(timezone.utc)`,微秒态用 `strftime("%Y-%m-%dT%H:%M:%S.%f").rstrip("0").rstrip(".")`(去尾零 + 去孤立点),整秒态用无微秒格式,统一加 `"Z"`。`test_hunk_wire_microsecond_created_at` 断言 `500000us -> "2026-06-23T12:30:45.5Z"`(尾零剥离)。
+
+**坑 5 — camelCase 词法排序往返 vs serde 字段序(键索引断言)**
+`WireModel.to_wire()` = `sort_mappings(model_dump(by_alias=True))`,递归 BTreeMap 词法排序键。grok serde 按字段声明序输出,两者**不一致**。故 camelCase 嵌套 struct(`HunkWire`/`SessionStatsWire`/`TurnSummaryWire` 等)往返断言用**键索引访问**(`wire["createdAt"]`/`wire["acceptedHunks"]`)而非整字典全等。这与 R75 worktree 同策略,是 WireModel 契约的固有约束。
+
+### 验证
+
+三重验证(全绿 + 1 预存 flaky 无关):
+
+```bash
+# 1. ruff lint(R76 三文件)
+cd "/d/工作/城建院/mm code/agent" && uv run ruff check minimax_code/workspace_types/rpc/hunks.py minimax_code/workspace_types/rpc/__init__.py tests/test_rpc.py
+# -> All checks passed!(全目录 ruff --fix 修 325 处 import 排序,但 R76 三文件零残留)
+
+# 2. R76 专项测试
+cd "/d/工作/城建院/mm code/agent" && uv run pytest tests/test_rpc.py -q
+# -> 253 passed(R75 的 225 + R76 新增 TestHunks ~25 + barrel 扩展,含修 1 处 promptIndex 断言)
+
+# 3. 全量回归
+cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
+# -> 2336 passed, 10 skipped, 1 failed in 117.85s
+#    唯一失败 = test_reliability::test_open_to_half_open_after_cooldown
+#    (R17 熔断器时间敏感 cooldown 窗口 flaky, BreakerOpen retry after 0.0s, 与 R76 hunks 完全无关, 轮次独立不碰)
+```
+
+**wire 保真交叉验证**:对照 grok `hunks.rs` 源码逐行确认——TestHunks ~25 测试覆盖:10 method 常量(含 2 个无 `hunk_` 前缀的 `get_all_hunks`/`get_session_summary`)、Response ClassVar 形状(list response `list[str]`/`list[FileSummary]`/`list[HunkWire]`/`list[FileContentEntryWire]` + typed response HunkActionResponse/BulkHunkActionResponse/FilteredHunksResponse/SessionSummaryWire)、HunkActionKind 小写无 default + from_str(accept/reject OK + bogus 抛 ValueError)+ `hasattr(HunkActionKind,"default") is False`、HunkSourceWire 前向容错(type 逐字 + prompt_index None 省略 + 未知 type 不抛)、FileContentStatusWire 7 known 值 + default() MISSING + TypeAdapter 已知/未知 decode(unknown->UNKNOWN)+ 序列化 dump 成员值、HunkWire 往返(path str + createdAt Z 后缀 + oldText/patch null 保留 + lineInfo/source 嵌套 + prompt_index 保 snake_case)、微秒 createdAt(`.5Z`)、FileContentViewWire 混合 skip(status 必发 + byteLen/content None 省略 + missing baseline 无字段)、FileContentEntryWire 往返(baseline/current 嵌套 + isAgentFile/staged)、SessionStatsWire/TurnSummaryWire camelCase(Vec<PathBuf>->list[str])、BulkHunkActionResponse/FilteredHunksResponse default([]/0)、FileSummary snake_case、HunkSingleActionReq 嵌套 snake_case、HunkGetFilteredHunksReq 两 Option null 保留、5 empty Req `to_wire()=={}`。5 个新 serde 模式 + 2 个测试断言修正(promptIndex->prompt_index + FileContentStatusWire TypeAdapter)全部锁定。
+
+### YAGNI 边界
+
+本轮明确不做:
+
+- ❌ **rpc/ 剩余 1 文件(fs.rs 754 行)迁移** —— 留 R77(本轮最后一次迭代)。
+- ❌ **导入 R39 xai-hunk-tracker 原语** —— 刻意镜像而非导入,保留 grok 的 lean crate/gix 分离(R39 计算层,R76 wire 层)。
+- ❌ **实际 hunk handler 实现** —— 本轮仅 wire 类型契约,真正的 diff 应用/accept/reject 运行时能力在 shell 层。
+- ❌ **接入 IPC handler 或远程 workspace transport** —— 类型契约层先行,wire DTO 消费端在后续。
+- ❌ **FileContentStatusWire 新状态变体扩展** —— 忠实复刻 grok 的 7 成员(missing/binary/tooLarge/lfsPointer/symlink/full/unknown),不预判新状态。
+- ❌ **修正 `workspace.get_all_hunks`/`get_session_summary` 命名一致性** —— 逐字保留无 `hunk_` 前缀,这是 grok 客户端/服务端既有契约。
+- ❌ **前端 `web/src/types/` 镜像** —— 纯后端 RPC 类型契约,无 wire 事件广播到前端。
+
+### Commit
+
+`feat(platform): R76 diff hunk wire layer (fuse grok xai-grok-workspace-types rpc/ hunks.rs 413 lines -> 454-line module: 10 workspace.hunk_*/get_all_hunks/get_session_summary methods[2 deliberately drop hunk_ prefix verbatim] + 3 enums[HunkActionKind lowercase no-Default request-only + HunkSourceWire tagged-enum #[serde(other)] flat-model fallback + FileContentStatusWire hand-written Deserialize StrEnum with __get_pydantic_core_schema__ after-validator unknown->UNKNOWN] + ~18 wire types[HunkWire/HunkLineInfoWire/FileContentViewWire/FileContentEntryWire/SessionStatsWire/TurnSummaryWire/SessionSummaryWire camelCase + BulkHunkActionResponse/FileSummary/FilteredHunksResponse snake_case], pure leaf no R74 dependency[only WorkspaceRpc+chrono+serde, vs R75 consumes ChangeType/GitFileChange], deliberately mirrors not imports R39 diff primitives[lean crate gix separation preserved], lands 5 serde patterns new to layer: #[serde(other)] forward-tolerant tagged enum via flat type:str model[lossless verbatim round-trip vs grok Unknown->unknown lossy] + hand-written Deserialize forward-tolerant string enum via StrEnum __get_pydantic_core_schema__ after-validator over str_schema[VERSION PITFALL: no_info_plain_validator_function has no json_schema kwarg in this pydantic release, after-validator+str_schema is version-stable dual: forward-tolerant decode + real JSON schema] + DateTime<Utc> RFC3339 Z suffix via PlainSerializer[+00:00 rewrite, microsecond rstrip0] + PathBuf->str natural mapping[layer-first PathBuf wire fields] + camelCase lexical-sort round trips asserted by key index, ~25 new TestHunks tests 253 passed 1 pre-existing flaky[test_reliability cooldown window, unrelated] 2336 total)`
