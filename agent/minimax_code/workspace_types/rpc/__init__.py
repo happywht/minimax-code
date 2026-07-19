@@ -16,8 +16,11 @@ RPCs with nested responses) and :mod:`deploy` (Err side — the 15-code
 content search + four ``workspace.fuzzy_*`` file searches) that lands four
 serde patterns new to the layer (camelCase ``rename_all``, untagged
 ``TargetClientId`` enum, custom-default ``respect_gitignore``, primitive /
-``Value`` responses). The remaining 7 RPC files (fs / git / hooks / hunks /
-skills / workspace / worktree) land in R71+.
+``Value`` responses). R71 adds :mod:`hooks` — the ``workspace.hook_registry``
+method landing four more serde patterns new to the layer
+(``#[serde(skip)]`` field elision, a forward-tolerant ``str``-subclass enum
+that serves as a JSON map key, and an empty-parameter request). The remaining
+6 RPC files (fs / git / hunks / skills / workspace / worktree) land in R72+.
 """
 
 from __future__ import annotations
@@ -38,6 +41,12 @@ from minimax_code.workspace_types.rpc.code_nav import (
 )
 from minimax_code.workspace_types.rpc.deploy import DeployError
 from minimax_code.workspace_types.rpc.envelope import TURN_ACTIVE, RpcEnvelope, RpcError
+from minimax_code.workspace_types.rpc.hooks import (
+    HookEventNameWire,
+    HookRegistryReq,
+    HookRegistryWire,
+    HookSpecWire,
+)
 from minimax_code.workspace_types.rpc.search import (
     ClientId,
     ContentMatch,
@@ -93,6 +102,11 @@ __all__ = [
     "CodeIndexStatusResponse",
     # deploy (R69, Err side)
     "DeployError",
+    # hooks (R71, forward-tolerant str-subclass enum + serde(skip) + map key)
+    "HookEventNameWire",
+    "HookRegistryReq",
+    "HookRegistryWire",
+    "HookSpecWire",
     # search (R70, mixed camelCase/snake_case + untagged TargetClientId)
     "ClientId",
     "TargetClientId",

@@ -5493,3 +5493,105 @@ cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
 ### Commit
 
 `feat(platform): R70 workspace RPC search mixed-namespace layer (fuse grok xai-grok-workspace-types rpc/ search.rs 226 lines → 1 module: 5 RPCs workspace.ripgrep[→ContentSearchData] + fuzzy_open[→str]/fuzzy_change[→bool]/fuzzy_close[→bool]/fuzzy_search[→Any], lands 4+1 serde patterns new to layer: camelCase rename_all=ConfigDict(to_camel) + untagged TargetClientId=RootModel[ClientId|None]+is_none() + custom-default respect_gitignore=True + primitive/Value Response=str/bool/Any + nested skip_serializing_if via plain @model_serializer non-wrap, mixed snake_case-outer/camelCase-inner namespace + PurePosixPath name derivation + Field default_factory, 25 new tests zero-regression)`
+
+## R71 — 远程 workspace RPC hooks 前向容忍枚举层(融合 grok xai-grok-workspace-types rpc/ hooks.rs)
+
+锚点:R71-1 9629f9b
+
+### 本轮目标
+
+迁移 `hooks.rs`(230L)= **1 个文件** → 1 个新模块,攻克 **4 个新 serde 模式** + 1 个本轮决定性架构问题:
+
+- **前向容忍枚举(本轮核心)**:`HookEventNameWire` 是 grok 手写 `Serialize`/`Deserialize` 的枚举,15 已知变体(`SessionStart`→`session_start` … `PostCompact`→`post_compact`)+ `Unknown(String)` 全捕获,用于部署倾斜容忍(新 server 事件解码不失败,不同 unknown 事件保持不同 map key)。
+- **`#[serde(skip)]` 字段省略**:`matcher`(编译的正则,永不在线)从 `HookSpecWire` 完全省略——不是 `skip_serializing_if`,是**从不序列化/反序列化**。
+- **枚举作为 JSON map key**:`HookRegistryWire` 携带 `HashMap<HookEventNameWire, Vec<HookSpecWire>>`,枚举序列化为 plain string → 原生 JSON object key。
+- **空参数请求 struct**:`HookRegistryReq` 无字段(`METHOD="workspace.hook_registry"`,`Response=HookRegistryWire`)。
+
+**决定性架构问题**:`Unknown(String)` 是**开放词汇表**(`Enum` 无法表达携带动态字符串的变体)→ `HookEventNameWire` 必须是 **str 子类**;str 子类在 pydantic v2 字段类型 + dict key 中工作需要 `__get_pydantic_core_schema__`。这与 R69 `DeployError`(封闭词汇表 15 码,用 plain `Enum`)形成鲜明对比——**开放 vs 封闭决定枚举形状**。
+
+rpc/ 剩余 6 文件(fs 754 / git 1077 / hunks 413 / skills 275 / workspace 271 / worktree 406 = ~3096 行)留 R72+。
+
+### 融合结论
+
+R69 用 `DeployError` 证明封闭词汇表枚举(`Enum` + `value=wire_code`);**R71 用 `HookEventNameWire` 证明开放词汇表枚举(str 子类 + pydantic core schema)同样可被 `WireModel` 基类承载**,且能原生作为 JSON map key:
+
+- **开放词汇表枚举形状**:grok `enum HookEventNameWire { SessionStart, …, Unknown(String) }` 的 `Unknown` 携带动态字符串——Python `enum.Enum` 无法表达(枚举变体值必须是编译期常量)。str 子类则天然表达:任何 str 实例都是合法 `HookEventNameWire`(`Unknown` 情况就是任意其他字符串)。
+- **str 子类 + pydantic v2**:pydantic v2 默认不识别 str 子类作为字段类型(报 `PydanticSchemaGenerationError`)。`__get_pydantic_core_schema__` 返回 `no_info_after_validator_function(cls, str_schema())`——告诉 pydantic 验证为 str 后强制转换为子类;序列化下沉到 `str_schema` → plain string。无需 `arbitrary_types_allowed`。
+- **原生 JSON map key**:str 子类序列化为 plain string,`dict[HookEventNameWire, list[HookSpecWire]]` 在 `model_dump(mode="json")` 后键自然是 string——**无需自定义 key 序列化器**(`Enum` 作 dict key 通常需要)。
+- **15 已知变体作类常量**:grok 的 `as_str` match(15 臂)→ class-body 后用 `_KNOWN_HOOK_EVENTS` dict + `setattr` 循环附加(`SESSION_START="session_start"` 等),清理 `del _attr, _wire`。
+
+### 交付
+
+1 源文件 + barrel 扩展 + 测试扩展,230 行 Rust → 约 150 行 Python + 14 个新增专项测试:
+
+| 文件 | Rust 源 | 行数 | Python 实现 |
+|------|---------|------|------------|
+| `rpc/hooks.py` | `rpc/hooks.rs` | 230 | `HookEventNameWire`(str 子类 + `__get_pydantic_core_schema__` + `as_str()` + 15 class-post 常量)+ `HookSpecWire`(snake_case,matcher `#[serde(skip)]` 省略,`extra_env` 必填 HashMap)+ `HookRegistryWire`(`dict[HookEventNameWire, list[HookSpecWire]]` + Field default_factory)+ `HookRegistryReq`(空参数 + METHOD + Response ClassVar) |
+| `rpc/__init__.py` | mod.rs barrel | — | 重导出 hooks 4 符号(barrel + __all__ 同步 + docstring 更新) |
+| `tests/test_rpc.py` | — | — | +14 测试:`TestHooks`(method 常量/response 类型/str 子类 + as_str/15 已知常量/15 变体往返/Unknown 开放词汇/matcher 省略/snake_case keys/event 验证为子类/枚举作 map key/server json 往返/空默认值 + default/空参数请求/envelope Ok 往返) |
+
+测试增长:rpc 专项 R70 的 95 → R71 的 109(+14);全量 R70 的 2179 → R71 的 2193(+14,零回归,完美对账)。
+
+### 映射决策树 + 坑
+
+**决策树**:
+- `enum HookEventNameWire { …15…, Unknown(String) }`(手写 Serialize/Deserialize)→ `class HookEventNameWire(str)` + `__get_pydantic_core_schema__`(返回 `no_info_after_validator_function(cls, str_schema())`)+ 15 已知变体 class-body 后 setattr。Unknown 情况 = 任意 str 实例,无需 catch-all 常量。
+- grok `as_str(&self) -> &str`(15 臂 match,Unknown 返回内部 String)→ `def as_str(self) -> str: return str.__str__(self)`(str.__str__ 避免子类覆盖,值就是 wire string)。
+- `#[serde(skip)] matcher: Option<Regex>`(HookSpecWire)→ 字段**完全不声明**(非 skip_serializing_if——从不序列化/反序列化)。
+- `HashMap<HookEventNameWire, Vec<HookSpecWire>>`(HookRegistryWire)→ `dict[HookEventNameWire, list[HookSpecWire]]`,str 子类原生作 JSON key。
+- 空参数 `struct HookRegistryReq` → 无字段 WireModel 子类;`#[derive(Default)]` → 基类 `default()` 即 `cls()`。
+- `extra_env: HashMap<String, String>`(无 `#[serde(default)]`)→ 必填 `extra_env: dict[str, str]`(无默认)。
+
+**坑 1 — PydanticSchemaGenerationError,str 子类不被识别(本轮最大坑,决定性架构决策)**
+初版 `HookEventNameWire(str)` 直接用于 `event: HookEventNameWire` 字段和 `dict[HookEventNameWire, …]`,冒烟测试报 `Unable to generate pydantic-core schema for <class 'HookEventNameWire'>. Set arbitrary_types_allowed=True or implement __get_pydantic_core_schema__`。**两个选项**:(a) 模型设 `arbitrary_types_allowed=True`(全局放宽,丢失 str 验证);(b) 在 HookEventNameWire 上实现 `__get_pydantic_core_schema__`。**选 (b)**(更精确):返回 `core_schema.no_info_after_validator_function(cls, core_schema.str_schema())`——pydantic 验证为 str,然后 after-validator 强制转换为子类;序列化下沉到 str_schema → plain string。这同时让字段值类型 + dict key 类型都工作。冒烟测试 7 机制全绿。`# noqa: ANN001, ANN206`(handler 参数 + 返回类型由 pydantic 签名约定固定)。
+
+**坑 2 — 开放词汇表(Unknown)决定枚举形状(Enum 不可用)**
+设计阶段首想用 `Enum`(对标 R69 DeployError)。但 grok 的 `Unknown(String)` 携带动态字符串——`enum.Enum` 变体值必须是编译期常量,无法表达"任意未识别 server 字符串"。**修复**:str 子类——任何 str 实例即合法 HookEventNameWire(Unknown 情况就是任意其他字符串),且天然作 dict key。**对比**:R69 DeployError 是**封闭**词汇表(15 码穷举)→ plain Enum + value=wire_code;R71 HookEventNameWire 是**开放**词汇表(15 已知 + ∞ unknown)→ str 子类。开放 vs 封闭是决定枚举形状的关键判据。
+
+**坑 3 — class-body 内不能引用自身实例作常量**
+15 已知变体想作类常量(`SESSION_START = HookEventNameWire("session_start")`),但类 body 执行时 `HookEventNameWire` 尚未定义完毕,无法在 body 内构造自身实例。**修复**:类 body 后用 `_KNOWN_HOOK_EVENTS` dict + `for _attr, _wire in …: setattr(HookEventNameWire, _attr, HookEventNameWire(_wire))` 循环附加,再 `del _attr, _wire` 清理命名空间(对标 R69 DeployError.ALL = tuple(cls) 的 class-post 模式)。
+
+**坑 4 — 枚举作 JSON map key 通常需自定义序列化器,但 str 子类不需要**
+grok 的 `HashMap<HookEventNameWire, _>` 在 serde 中枚举作 map key 需 `key = "string"` 或手写。Python 侧 `dict[HookEventNameWire, list[…]]` 在 `model_dump(mode="json")` 时——str 子类的值就是 string,键自然序列化为 JSON object key,**无需自定义 key serializer**。这是 str 子类形状的额外红利(Enum 作 dict key 通常需要 `@field_serializer` 处理)。
+
+**坑 5 — `as_str()` 必须用 `str.__str__` 避免子类覆盖**
+初版 `def as_str(self): return str(self)` 似乎等价,但若子类(或未来子类)覆盖 `__str__`,`str(self)` 会调用覆盖版,破坏 wire 契约。**修复**:`return str.__str__(self)`——绕过任何子类覆盖,直接返回底层 str 值。
+
+**坑 6 — 必填字段跟在可选字段后(dataclass 禁忌,pydantic v2 允许)**
+HookSpecWire 字段顺序:必填 name → 必填 event → 必填 handler_type → **可选** configured_matcher(=None)→ **必填** enabled → … dataclass 禁忌必填跟在可选后(报 "non-default argument follows default argument")。**验证**:pydantic v2 BaseModel **无此限制**(字段顺序由声明顺序决定,默认值不影响构造签名排序)——`HookSpecWire(name=…, event=…, handler_type=…, enabled=…, timeout_ms=…, source_dir=…, extra_env=…)` 直接工作,可选 configured_matcher 在中间。grok 原顺序保留。
+
+### 验证
+
+三重验证全绿:
+
+```bash
+# 1. ruff lint(E/F/W/I/B/UP,行长 100)
+cd "/d/工作/城建院/mm code/agent" && uv run ruff check minimax_code/workspace_types/rpc/ tests/test_rpc.py --fix
+# → All checks passed!
+
+# 2. R71 专项测试
+cd "/d/工作/城建院/mm code/agent" && uv run pytest tests/test_rpc.py -q
+# → 109 passed in 0.35s(R70 的 95 + R71 新增 14,精确对账)
+
+# 3. 全量回归(零回归)
+cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
+# → 2193 passed, 10 skipped in 104.83s
+#    (R70 的 2179 + R71 新增 14,完美对账,零回归)
+```
+
+**wire 保真交叉验证**:对照 grok `hooks.rs` 源码逐行确认——`HookEventNameWire` 手写 Serialize/Deserialize 的 15 已知变体 + `Unknown(String)` + `as_str()` 方法、`HookSpecWire` 的 `#[serde(skip)] matcher` + snake_case 字段 + `extra_env` 必填 HashMap + `command`/`source_dir` 作 PathBuf→str、`HookRegistryWire` 的 `HashMap<HookEventNameWire, Vec<HookSpecWire>>` + derive Default、`HookRegistryReq` 空参数 + METHOD + Response。4 个 grok 测试(method_constant / hook_event_name_wire_snake_case_round_trip / hook_event_name_wire_unknown_round_trips_losslessly / hook_registry_wire_round_trips_server_json)全部在 TestHooks 中复刻并扩展(15 变体 round trip 覆盖全部而非抽样)。`test_hook_event_name_snake_case_round_trip_all_variants`(15 变体 validate+dump)+ `test_hook_registry_wire_round_trips_server_json`(含 known + unknown 事件的完整往返)+ `test_envelope_ok_wraps_hook_registry_wire`(envelope Ok 往返)闭合了"开放词汇枚举 ↔ map key 序列化 ↔ envelope"完整链路。
+
+### YAGNI 边界
+
+本轮明确不做:
+
+- ❌ **rpc/ 剩余 6 文件(~3096 行)迁移** —— fs/git/hunks/skills/workspace/worktree 留 R72+(本轮只迁 hooks 这一个开放词汇表枚举文件)。
+- ❌ **实际 hook 执行引擎** —— 本轮仅 wire 类型契约,真正的 hook 匹配(matcher 编译)+ 执行(命令/URL 回调)是运行时能力,不在类型层。
+- ❌ **matcher 正则重编译** —— HookSpecWire 省略了 matcher 字段(永不在线),消费端(客户端)从 configured_matcher 重新编译——这是消费端职责,不在 wire 契约。
+- ❌ **接入 IPC handler 或远程 workspace transport** —— 类型契约层先行,wire DTO 的消费端在 shell 层。
+- ❌ **前端 `web/src/types/` 镜像** —— 纯后端 RPC 类型契约,无 wire 事件广播到前端。
+- ❌ **HookEventNameWire 与 hooks-plugins-types crate 的 HookEvent 去重** —— 各 crate 各自定义,去重在跨 crate 集成阶段处理。
+
+### Commit
+
+`feat(platform): R71 workspace RPC hooks forward-tolerant enum layer (fuse grok xai-grok-workspace-types rpc/ hooks.rs 230 lines → 1 module: workspace.hook_registry RPC → HookRegistryWire{dict[HookEventNameWire, list[HookSpecWire]]}, lands 4 serde patterns new to layer: #[serde(skip)] matcher field elision + forward-tolerant str-subclass HookEventNameWire[15 known + Unknown open-vocabulary via __get_pydantic_core_schema__ no_info_after_validator_function(cls, str_schema)] + enum as native JSON map key[str-subclass serializes to plain string] + empty-parameter HookRegistryReq, open-vs-closed vocabulary enum shape decision[str-subclass vs R69 plain Enum] + class-post setattr 15 constants + as_str via str.__str__, 14 new tests zero-regression)`

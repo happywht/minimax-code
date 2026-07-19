@@ -45,6 +45,10 @@ from minimax_code.workspace_types.rpc import (
     FuzzyCloseReq,
     FuzzyOpenReq,
     FuzzyStatusReq,
+    HookEventNameWire,
+    HookRegistryReq,
+    HookRegistryWire,
+    HookSpecWire,
     RewindToReq,
     RpcEnvelope,
     RpcError,
@@ -783,3 +787,249 @@ class TestSearch:
         assert ok.total_matches == 2
         assert ok.files[0].matches[0].match_end == 3
         assert ok.files[0].matches[1].match_start is None
+
+
+# -- hooks (R71) ----------------------------------------------------------
+
+
+class TestHooks:
+    def test_method_constant(self) -> None:
+        assert HookRegistryReq.METHOD == "workspace.hook_registry"
+
+    def test_response_type(self) -> None:
+        assert HookRegistryReq.Response is HookRegistryWire
+
+    # -- HookEventNameWire (forward-tolerant str-subclass enum) -------------
+
+    def test_hook_event_name_is_str_subclass(self) -> None:
+        # str subclass: any instance IS a str, so equality and ordering work
+        # without a custom serializer — this is what lets it serve as a JSON
+        # map key (as_str avoids any subclass __str__ override).
+        ev = HookEventNameWire.PRE_TOOL_USE
+        assert isinstance(ev, str)
+        assert isinstance(ev, HookEventNameWire)
+        assert ev == "pre_tool_use"
+        assert ev.as_str() == "pre_tool_use"
+
+    def test_hook_event_name_known_constants(self) -> None:
+        # The 15 known variants attached after the class body via setattr.
+        assert HookEventNameWire.SESSION_START == "session_start"
+        assert HookEventNameWire.SESSION_END == "session_end"
+        assert HookEventNameWire.STOP == "stop"
+        assert HookEventNameWire.STOP_FAILURE == "stop_failure"
+        assert HookEventNameWire.PRE_TOOL_USE == "pre_tool_use"
+        assert HookEventNameWire.POST_TOOL_USE == "post_tool_use"
+        assert HookEventNameWire.POST_TOOL_USE_FAILURE == "post_tool_use_failure"
+        assert HookEventNameWire.PERMISSION_DENIED == "permission_denied"
+        assert HookEventNameWire.USER_PROMPT_SUBMIT == "user_prompt_submit"
+        assert HookEventNameWire.NOTIFICATION == "notification"
+        assert HookEventNameWire.SUBAGENT_START == "subagent_start"
+        assert HookEventNameWire.SUBAGENT_STOP == "subagent_stop"
+        assert HookEventNameWire.SUBAGENT_END == "subagent_end"
+        assert HookEventNameWire.PRE_COMPACT == "pre_compact"
+        assert HookEventNameWire.POST_COMPACT == "post_compact"
+
+    def test_hook_event_name_snake_case_round_trip_all_variants(self) -> None:
+        # Mirrors grok's `hook_event_name_wire_snake_case_round_trip`: all 15
+        # known events round-trip as the snake_case wire string through a
+        # HookSpecWire.event field — a plain server string validates into the
+        # subclass, and serialises back to the plain wire string (the
+        # __get_pydantic_core_schema__ path on both sides).
+        variants = [
+            ("SESSION_START", "session_start"),
+            ("SESSION_END", "session_end"),
+            ("STOP", "stop"),
+            ("STOP_FAILURE", "stop_failure"),
+            ("PRE_TOOL_USE", "pre_tool_use"),
+            ("POST_TOOL_USE", "post_tool_use"),
+            ("POST_TOOL_USE_FAILURE", "post_tool_use_failure"),
+            ("PERMISSION_DENIED", "permission_denied"),
+            ("USER_PROMPT_SUBMIT", "user_prompt_submit"),
+            ("NOTIFICATION", "notification"),
+            ("SUBAGENT_START", "subagent_start"),
+            ("SUBAGENT_STOP", "subagent_stop"),
+            ("SUBAGENT_END", "subagent_end"),
+            ("PRE_COMPACT", "pre_compact"),
+            ("POST_COMPACT", "post_compact"),
+        ]
+        for attr, wire_str in variants:
+            const = getattr(HookEventNameWire, attr)
+            assert isinstance(const, HookEventNameWire)
+            assert const.as_str() == wire_str
+            # Validate a plain server string → coerced subclass instance.
+            spec = HookSpecWire.model_validate(
+                {
+                    "name": "h",
+                    "event": wire_str,
+                    "handler_type": "command",
+                    "enabled": True,
+                    "timeout_ms": 1,
+                    "source_dir": "/r",
+                    "extra_env": {},
+                }
+            )
+            assert isinstance(spec.event, HookEventNameWire)
+            assert spec.event == wire_str
+            # Serialise → plain snake_case wire string.
+            assert spec.to_wire()["event"] == wire_str
+
+    def test_hook_event_name_unknown_is_any_string(self) -> None:
+        # Mirrors grok's `hook_event_name_wire_unknown_round_trips_losslessly`:
+        # the Unknown variant is an open vocabulary — any server string is a
+        # legal instance (decode never fails), and distinct unknowns stay
+        # distinct (so they don't collapse into one map key).
+        ev = HookEventNameWire("some_future_event_v2")
+        assert isinstance(ev, HookEventNameWire)
+        assert ev.as_str() == "some_future_event_v2"
+        assert ev != HookEventNameWire.PRE_TOOL_USE
+        assert ev != HookEventNameWire("other_future_event_v3")
+
+    # -- HookSpecWire (#[serde(skip)] matcher + snake_case) ------------------
+
+    def test_hook_spec_wire_omits_matcher(self) -> None:
+        # #[serde(skip)] matcher — the compiled regex is never on the wire; the
+        # Python model simply doesn't declare the field (not skip_serializing_if
+        # — it is never serialised or deserialised).
+        spec = HookSpecWire(
+            name="lint",
+            event=HookEventNameWire.POST_TOOL_USE,
+            handler_type="command",
+            enabled=True,
+            timeout_ms=5000,
+            source_dir="/repo",
+            extra_env={"RUST_LOG": "debug"},
+        )
+        wire = spec.to_wire()
+        assert "matcher" not in wire
+        assert wire["event"] == "post_tool_use"
+        assert wire["extra_env"] == {"RUST_LOG": "debug"}
+
+    def test_hook_spec_wire_snake_case_keys(self) -> None:
+        # No rename_all in the source → snake_case field names verbatim on the
+        # wire; Option fields appear with their value (including None).
+        spec = HookSpecWire(
+            name="fmt",
+            event=HookEventNameWire.PRE_TOOL_USE,
+            handler_type="command",
+            configured_matcher="Edit",
+            enabled=True,
+            command="/usr/bin/fmt",
+            timeout_ms=1000,
+            source_dir="/r",
+            extra_env={},
+        )
+        wire = spec.to_wire()
+        assert wire == {
+            "command": "/usr/bin/fmt",
+            "command_raw": None,
+            "configured_matcher": "Edit",
+            "enabled": True,
+            "event": "pre_tool_use",
+            "extra_env": {},
+            "handler_type": "command",
+            "name": "fmt",
+            "source_dir": "/r",
+            "timeout_ms": 1000,
+            "url": None,
+            "url_raw": None,
+        }
+
+    def test_hook_spec_wire_event_validates_as_subclass(self) -> None:
+        # A plain server string for `event` validates and is coerced into the
+        # HookEventNameWire subclass via the core-schema hook (no
+        # arbitrary_types_allowed needed on the model).
+        spec = HookSpecWire.model_validate(
+            {
+                "name": "h",
+                "event": "pre_tool_use",
+                "handler_type": "command",
+                "enabled": True,
+                "timeout_ms": 100,
+                "source_dir": "/r",
+                "extra_env": {},
+            }
+        )
+        assert isinstance(spec.event, HookEventNameWire)
+        assert spec.event == "pre_tool_use"
+
+    # -- HookRegistryWire (enum as JSON map key) ----------------------------
+
+    def test_hook_registry_wire_event_as_map_key(self) -> None:
+        # The HookEventNameWire enum (a str subclass) serialises natively as a
+        # JSON object key — no custom key serializer needed.
+        spec = HookSpecWire(
+            name="h",
+            event=HookEventNameWire.PRE_TOOL_USE,
+            handler_type="command",
+            enabled=True,
+            timeout_ms=100,
+            source_dir="/r",
+            extra_env={},
+        )
+        wire = HookRegistryWire(hooks={HookEventNameWire.PRE_TOOL_USE: [spec]}).to_wire()
+        assert "pre_tool_use" in wire["hooks"]
+        assert wire["hooks"]["pre_tool_use"][0]["event"] == "pre_tool_use"
+
+    def test_hook_registry_wire_round_trips_server_json(self) -> None:
+        # Mirrors grok's `hook_registry_wire_round_trips_server_json`: a
+        # realistic server payload carrying both a known event (with a full
+        # HookSpecWire) and an unknown event (empty list) round-trips
+        # losslessly. dict == ignores key order, so sort_mappings' alphabetical
+        # reorder of the spec's fields still matches the input dict.
+        server_json = {
+            "hooks": {
+                "pre_tool_use": [
+                    {
+                        "name": "lint",
+                        "event": "pre_tool_use",
+                        "handler_type": "command",
+                        "configured_matcher": "Edit",
+                        "enabled": True,
+                        "command": "/bin/lint",
+                        "command_raw": None,
+                        "url": None,
+                        "url_raw": None,
+                        "timeout_ms": 3000,
+                        "source_dir": "/repo",
+                        "extra_env": {"LOG": "1"},
+                    }
+                ],
+                "some_future_event_v2": [],
+            }
+        }
+        rec = HookRegistryWire.model_validate(server_json)
+        assert rec.to_wire() == server_json
+
+    def test_hook_registry_wire_empty_default(self) -> None:
+        # `#[derive(Default)]` → empty hooks map (Field(default_factory=dict)).
+        assert HookRegistryWire().to_wire() == {"hooks": {}}
+        assert HookRegistryWire.default().to_wire() == {"hooks": {}}
+        assert HookRegistryWire.model_validate({"hooks": {}}).to_wire() == {"hooks": {}}
+
+    def test_hook_registry_req_empty_and_default(self) -> None:
+        # Empty-parameter request struct (no fields); `#[derive(Default)]` →
+        # default() succeeds and to_wire is the empty object.
+        assert HookRegistryReq().to_wire() == {}
+        assert HookRegistryReq.default().to_wire() == {}
+
+    # -- envelope consumption ------------------------------------------------
+
+    def test_envelope_ok_wraps_hook_registry_wire(self) -> None:
+        # Full Ok-side consumption: a hook_registry response rides the envelope
+        # and round-trips back, the enum map key preserved as a plain string.
+        spec = HookSpecWire(
+            name="h",
+            event=HookEventNameWire.POST_COMPACT,
+            handler_type="command",
+            enabled=True,
+            timeout_ms=50,
+            source_dir="/r",
+            extra_env={},
+        )
+        data = HookRegistryWire(hooks={HookEventNameWire.POST_COMPACT: [spec]})
+        wire = RpcEnvelope.ok(data).to_wire()
+        rec = RpcEnvelope.from_wire(wire, HookRegistryWire)
+        ok, err = rec.into_result()
+        assert err is None
+        assert isinstance(ok, HookRegistryWire)
+        assert "post_compact" in ok.hooks
