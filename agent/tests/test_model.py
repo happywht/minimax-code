@@ -36,7 +36,6 @@ from minimax_code.storage.dao.model_prefs import (
 from minimax_code.storage.dao.providers import ProviderDAO
 from minimax_code.storage.db import AsyncDatabase, Database, make_temp_database_path
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -194,10 +193,10 @@ def _make_client_with_model_handlers(
     before the first ``model.*`` call.
     """
     client = IPCClient()
-    setattr(client.server, "_model_prefs_dao", prefs_dao)
-    setattr(client.server, "_model_prefs_dao_lock", asyncio.Lock())
-    setattr(client.server, "_provider_dao_for_model", ProviderDAO(prefs_dao._db))
-    setattr(client.server, "_provider_dao_for_model_lock", asyncio.Lock())
+    client.server._model_prefs_dao = prefs_dao
+    client.server._model_prefs_dao_lock = asyncio.Lock()
+    client.server._provider_dao_for_model = ProviderDAO(prefs_dao._db)
+    client.server._provider_dao_for_model_lock = asyncio.Lock()
     return client
 
 
@@ -293,6 +292,68 @@ class TestModelIPC:
         # The error object is a dict; check the code.
         assert isinstance(err, dict)
         assert err.get("code") == -32602
+
+    # --- R58: reasoning-effort meta enrichment (first consumer of R53 readers) ---
+    #
+    # R53's meta readers were orphans (defined, never consumed). R58 wires the
+    # first consumer into ``model.list``: a model that declares reasoning-effort
+    # meta (``reasoningEffort`` / ``reasoningEfforts`` / ``supportsReasoningEffort``
+    # — grok's per-model catalog vocabulary) surfaces normalised snake_case fields
+    # the frontend can render an effort selector from. A model that declares none
+    # is unchanged (zero regression — no new keys), so every existing MiniMax
+    # model passes through byte-identically.
+
+    @pytest.mark.asyncio
+    async def test_list_enriches_reasoning_effort_meta(
+        self, prefs_dao: ModelPrefsDAO
+    ) -> None:
+        """A model declaring reasoningEffort meta surfaces normalised fields."""
+        prov_dao = ProviderDAO(prefs_dao._db)
+        await prov_dao.create(
+            name="xAI",
+            protocol="anthropic",
+            base_url="https://api.x.ai",
+            models=[
+                {
+                    "id": "grok-1",
+                    "name": "Grok-1",
+                    "supportsReasoningEffort": True,
+                    "reasoningEffort": "high",
+                    "reasoningEfforts": ["low", "medium", "high"],
+                }
+            ],
+        )
+        client = _make_client_with_model_handlers(prefs_dao)
+        result = await client.request("model.list", {})
+        grok = next(m for m in result["models"] if m["id"] == "grok-1")
+        assert grok["supports_reasoning_effort"] is True
+        assert grok["reasoning_effort_default"] == "high"
+        assert [o["value"] for o in grok["reasoning_effort_options"]] == [
+            "low",
+            "medium",
+            "high",
+        ]
+        # The provider annotations from list_models survive alongside the
+        # R58 derived fields.
+        assert grok["provider_id"].startswith("provider-")
+        assert grok["protocol"] == "anthropic"
+
+    @pytest.mark.asyncio
+    async def test_list_without_reasoning_meta_is_zero_regression(
+        self, prefs_dao: ModelPrefsDAO
+    ) -> None:
+        """A model with no reasoning-effort meta gets no new keys (zero regression).
+
+        The built-in MiniMax models declare no reasoning-effort meta, so they
+        must pass through ``model.list`` unchanged — the pre-R58 shape is
+        identical, proving the enrichment is strictly opt-in.
+        """
+        client = _make_client_with_model_handlers(prefs_dao)
+        result = await client.request("model.list", {})
+        m3 = next(m for m in result["models"] if m["id"] == "MiniMax-M3")
+        assert "supports_reasoning_effort" not in m3
+        assert "reasoning_effort_default" not in m3
+        assert "reasoning_effort_options" not in m3
 
 
 # ---------------------------------------------------------------------------

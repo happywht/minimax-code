@@ -36,6 +36,7 @@ import logging
 import os
 from typing import Any
 
+from ..agent.reasoning import enrich_model_reasoning_meta
 from ..models import default_model_ids
 from .handler_utils import HandlerError, check_params
 from .protocol import (
@@ -222,6 +223,11 @@ def register_model_handlers(
             try:
                 prov_dao = await _ensure_provider_dao()
                 models = await prov_dao.list_models()
+                # R58: enrich each model with normalised reasoning-effort
+                # fields (the first consumer of the R53 meta readers). A
+                # model that declares no reasoning-effort meta passes through
+                # unchanged (zero regression — no new keys added).
+                models = [enrich_model_reasoning_meta(m) for m in models]
             except HandlerError:
                 pass  # DB not ready yet — return empty list.
             except Exception:

@@ -366,3 +366,57 @@ def reasoning_efforts_meta_value(
     JSON-native dicts (``value`` is the lowercase wire token).
     """
     return [opt.model_dump(mode="json") for opt in opts]
+
+
+def enrich_model_reasoning_meta(model: Mapping[str, Any]) -> dict[str, Any]:
+    """Attach normalised reasoning-effort fields to a model dict (R58).
+
+    The first consumer of the R53 meta readers (:func:`supports_reasoning_
+    effort_meta` / :func:`parse_reasoning_effort_meta` /
+    :func:`parse_reasoning_efforts_meta`): reads a model catalog entry's raw
+    ``reasoningEffort`` / ``reasoningEfforts`` / ``supportsReasoningEffort``
+    meta (grok's per-model reasoning vocabulary, ``xai-grok-sampling-types``
+    consumed at the catalog seam) and attaches normalised, frontend-ready
+    fields so the ``model.list`` IPC response can drive an effort selector
+    without every caller re-parsing the meta.
+
+    The model dict itself is the meta container (flat fields, not a nested
+    ``meta`` sub-object) — matching how :meth:`ProviderDAO.list_models`
+    flattens each provider's stored model JSON. Attachments are added **only
+    when the corresponding meta is present and parseable**, so a model that
+    declares no reasoning-effort meta is returned with no new keys (zero
+    regression — byte-identical keys to the pre-R58 dict, just a shallow
+    copy).
+
+    Attachments (all snake_case, matching the existing ``model.list``
+    response fields like ``provider_id`` / ``protocol``):
+
+    * ``supports_reasoning_effort``: ``True`` — only when
+      :func:`supports_reasoning_effort_meta` reads a truthy
+      ``supportsReasoningEffort``.
+    * ``reasoning_effort_default``: the canonical wire token
+      (:func:`reasoning_effort_meta_value`, e.g. ``"medium"``) — only when
+      :func:`parse_reasoning_effort_meta` resolves a known tier.
+    * ``reasoning_effort_options``: the selectable menu
+      (:func:`reasoning_efforts_meta_value`, a list of ``{id, label, value,
+      …}`` dicts) — only when :func:`parse_reasoning_efforts_meta` yields a
+      non-empty list.
+
+    Returns a *copy* of ``model`` with these fields merged in (never mutates
+    the input). Mirrors grok's catalog-read flow: the raw meta stays in the
+    model dict (source of truth); the normalised fields are a derived view
+    for presentation. An empty / unparseable meta adds nothing — the
+    caller's existing keys pass through untouched.
+    """
+    enriched = dict(model)
+    if supports_reasoning_effort_meta(model):
+        enriched["supports_reasoning_effort"] = True
+    default_effort = parse_reasoning_effort_meta(model)
+    if default_effort is not None:
+        enriched["reasoning_effort_default"] = reasoning_effort_meta_value(
+            default_effort
+        )
+    options = parse_reasoning_efforts_meta(model)
+    if options is not None:
+        enriched["reasoning_effort_options"] = reasoning_efforts_meta_value(options)
+    return enriched

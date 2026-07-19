@@ -389,3 +389,154 @@ def test_reasoning_efforts_meta_value_emits_json_native_list():
             "default": False,
         },
     ]
+
+
+# --- enrich_model_reasoning_meta (R58 first consumer of the R53 readers) ----
+#
+# R53's meta readers were defined in isolation (grep confirmed zero external
+# consumers). R58 wires in the first real one: :func:`enrich_model_reasoning_meta`
+# reads a model catalog entry's raw ``reasoningEffort`` / ``reasoningEfforts`` /
+# ``supportsReasoningEffort`` meta and attaches normalised snake_case fields so
+# the ``model.list`` IPC response can drive an effort selector. The contract
+# these tests pin is *zero regression*: a model that declares no reasoning-effort
+# meta gets no new keys (just a shallow copy), and each attachment appears only
+# when its reader resolves something usable.
+
+
+def test_enrich_empty_model_adds_nothing():
+    """An empty dict yields an empty dict — no attachments (zero regression)."""
+    assert R.enrich_model_reasoning_meta({}) == {}
+
+
+def test_enrich_model_without_meta_is_byte_identical():
+    """A model dict with no reasoning-effort meta passes through unchanged.
+
+    The model's existing keys are preserved verbatim and no new keys are added
+    — the pre-R58 ``model.list`` shape is identical for every model that does
+    not opt into reasoning-effort meta.
+    """
+    model = {"id": "MiniMax-M3", "name": "MiniMax-M3", "provider_id": "p1"}
+    assert R.enrich_model_reasoning_meta(model) == {
+        "id": "MiniMax-M3",
+        "name": "MiniMax-M3",
+        "provider_id": "p1",
+    }
+
+
+def test_enrich_does_not_mutate_input():
+    """The input dict is never mutated — the function returns a fresh copy."""
+    model = {"reasoningEffort": "high", "reasoningEfforts": ["low", "high"]}
+    _ = R.enrich_model_reasoning_meta(model)
+    # Original dict still carries only the raw meta — no derived keys leaked in.
+    assert model == {"reasoningEffort": "high", "reasoningEfforts": ["low", "high"]}
+
+
+def test_enrich_supports_flag_true_only():
+    """``supportsReasoningEffort: True`` attaches ``supports_reasoning_effort``.
+
+    A ``False`` value is dropped (the reader returns ``False``) — only an
+    explicit opt-in surfaces the flag, matching grok's ``.as_bool()`` semantics.
+    """
+    out_true = R.enrich_model_reasoning_meta({"supportsReasoningEffort": True})
+    assert out_true.get("supports_reasoning_effort") is True
+    out_false = R.enrich_model_reasoning_meta({"supportsReasoningEffort": False})
+    assert "supports_reasoning_effort" not in out_false
+
+
+def test_enrich_default_effort_canonical_and_max_alias():
+    """``reasoningEffort`` resolves to the canonical wire token via the reader.
+
+    The ``"max"`` CLI alias of ``xhigh`` is honoured (the reader parses via
+    :func:`parse_effort_token`), so the derived default is ``"xhigh"`` — not
+    ``"max"`` (the emit-seam concern is a separate layer; the catalog stores the
+    canonical tier).
+    """
+    assert R.enrich_model_reasoning_meta({"reasoningEffort": "high"})[
+        "reasoning_effort_default"
+    ] == "high"
+    assert R.enrich_model_reasoning_meta({"reasoningEffort": "max"})[
+        "reasoning_effort_default"
+    ] == "xhigh"
+
+
+def test_enrich_default_effort_unknown_is_omitted():
+    """An unknown / non-string ``reasoningEffort`` adds no default (reader → None).
+
+    Forward-compat: a tier a newer server introduces does not corrupt the
+    derived field — it is simply absent, same as if undeclared.
+    """
+    assert "reasoning_effort_default" not in R.enrich_model_reasoning_meta(
+        {"reasoningEffort": "turbo"}
+    )
+    assert "reasoning_effort_default" not in R.enrich_model_reasoning_meta(
+        {"reasoningEffort": 5}
+    )
+
+
+def test_enrich_options_menu_attaches_normalised_list():
+    """``reasoningEfforts`` attaches a normalised ``reasoning_effort_options`` list.
+
+    Bare canonical strings and full tables both resolve to the
+    ``{value, id, label, description, default}`` shape (parity with
+    :func:`reasoning_efforts_meta_value`). Invalid entries are skipped.
+    """
+    out = R.enrich_model_reasoning_meta(
+        {"reasoningEfforts": ["low", {"value": "high"}, {"value": "turbo"}, "max"]}
+    )
+    assert out["reasoning_effort_options"] == [
+        {
+            "value": "low",
+            "id": "low",
+            "label": "Low",
+            "description": None,
+            "default": False,
+        },
+        {
+            "value": "high",
+            "id": "high",
+            "label": "High",
+            "description": None,
+            "default": False,
+        },
+        {
+            "value": "xhigh",
+            "id": "xhigh",
+            "label": "Xhigh",
+            "description": None,
+            "default": False,
+        },
+    ]
+
+
+def test_enrich_empty_or_all_invalid_options_omits_menu():
+    """An empty array (or all-invalid) adds no options key (reader → None).
+
+    "Absent" and "present-but-unusable" collapse to the same fallback.
+    """
+    assert "reasoning_effort_options" not in R.enrich_model_reasoning_meta(
+        {"reasoningEfforts": []}
+    )
+    assert "reasoning_effort_options" not in R.enrich_model_reasoning_meta(
+        {"reasoningEfforts": ["turbo"]}
+    )
+
+
+def test_enrich_full_meta_attaches_all_three_fields():
+    """All three meta keys present → all three derived fields attached together."""
+    out = R.enrich_model_reasoning_meta(
+        {
+            "id": "grok-1",
+            "supportsReasoningEffort": True,
+            "reasoningEffort": "high",
+            "reasoningEfforts": ["low", "medium", "high"],
+        }
+    )
+    assert out["supports_reasoning_effort"] is True
+    assert out["reasoning_effort_default"] == "high"
+    assert [o["value"] for o in out["reasoning_effort_options"]] == [
+        "low",
+        "medium",
+        "high",
+    ]
+    # The model's own keys are preserved alongside the derived fields.
+    assert out["id"] == "grok-1"

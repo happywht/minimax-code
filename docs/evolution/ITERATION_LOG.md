@@ -4230,3 +4230,70 @@ R56 发射了 OpenAI wire，但 Anthropic transport 仍只 coerce + 记录（R54
 ### Commit
 
 `feat(platform): R57 Anthropic transport reasoning_effort wire emission (fuse grok xai-grok-sampling-types)`
+
+## R58 — reasoning_effort 元数据读取器的首个真实消费者（融合 grok xai-grok-sampling-types catalog-read 流，model.list 驱动前端 effort 选择器）
+
+> 锚定 R57（`04e6157`）。R53-R57 闭合了 reasoning_effort 从 `AgentConfig` 到双协议 wire 的**写入管道**（类型层 → 下游 coerce/record → 上游 config→core→client → OpenAI wire → Anthropic wire）。但 R53 还埋了**另一组孤儿**：五个模型元数据读取器（`supports_reasoning_effort_meta` / `parse_reasoning_effort_meta` / `parse_reasoning_efforts_meta` / `reasoning_effort_meta_value` / `reasoning_efforts_meta_value`）—— 定义后被单元测试覆盖，但**从未被生产代码调用**。**本轮把第一个消费者接上**：`enrich_model_reasoning_meta` 纯函数把模型目录条目的原始 `reasoningEffort` / `reasoningEfforts` / `supportsReasoningEffort` 元数据（grok 的 per-model catalog 词汇表，`xai-grok-sampling-types` 在 catalog seam 消费）读取为规范化的 snake_case 字段，注入 `model.list` IPC 响应，让前端无需每个调用者重解析 meta 即可渲染一个 effort 选择器。至此 reasoning_effort 的**读取半边**（catalog → IPC 呈现）与写入半边（config → wire）对称起步。
+
+### 本轮目标
+
+R53 的元数据读取器定义了**如何从模型字典里安全地读出 reasoning_effort 元数据**（absent / wrong-type / unknown-variant 三种坏值都坍缩到单一 fallback 路径），但只活在单元测试里。本轮给它们接上第一个真实消费者：`model.list` 响应里的每个模型条目，凡声明了 reasoning_effort 元数据的，都附带规范化字段（`supports_reasoning_effort` / `reasoning_effort_default` / `reasoning_effort_options`），供前端渲染 effort 选择器。**核心设计决策**：(1) **模型字典即元数据容器**——flat 字段，非 nested `meta` sub-object（匹配 `ProviderDAO.list_models()` 如何扁平化每个 provider 的存储 model JSON）；(2) **零回归**——附件**仅在对应 meta 存在且可解析时**添加，未声明 reasoning_effort 元数据的模型不获得任何新 key（浅拷贝，与 pre-R58 dict 的 keys 字节相同）；(3) **snake_case 命名**——匹配现有 `model.list` 响应字段（`provider_id` / `protocol` 约定）；(4) **catalog 存规范层级**——catalog `reasoningEffort: "max"` → reader 解析为 XHIGH → 增强的默认值是规范化的 `"xhigh"`（emit seam 在 wire 上的 `to_messages_api` 映射是独立的层，由 R53/R57 持有）。
+
+### 融合结论
+
+- ✅ **保留**：`enrich_model_reasoning_meta` 纯函数 —— 在 `reasoning_efforts_meta_value` 之后（reasoning.py 末尾）。读取模型字典的原始 `reasoningEffort` / `reasoningEfforts` / `supportsReasoningEffort` 元数据，附件 `supports_reasoning_effort`（True，仅当 `supports_reasoning_effort_meta` 读到 truthy）/ `reasoning_effort_default`（规范 wire token，仅当 `parse_reasoning_effort_meta` 解析到已知层级）/ `reasoning_effort_options`（菜单列表，仅当 `parse_reasoning_efforts_meta` 产出非空列表）。返回输入的**浅拷贝**（从不原地修改）。
+- ✅ **保留**：`handle_model_list` 集成 —— 在 `prov_dao.list_models()` 之后、`try:` 块内，用列表推导 `[enrich_model_reasoning_meta(m) for m in models]` 增强每个模型。注释说明「R53 元数据读取器的首个消费者；未声明元数据的模型零回归（无新 key）」。
+- ✅ **保留**：`handlers_model.py` 导入 —— `from ..agent.reasoning import enrich_model_reasoning_meta`（第 39 行）。
+- ✅ **保留**：9 个 enrich 纯函数测试（test_reasoning.py 末尾）—— 空模型 / 无 meta 透传 / 不修改输入 / 仅 supports 标志 / 默认 effort 规范+max 别名 / 未知忽略 / 选项菜单规范化 / 空/无效忽略 / 完整 meta（三字段全附）。
+- ✅ **保留**：2 个 handler 集成测试（test_model.py TestModelIPC）—— `test_list_enriches_reasoning_effort_meta`（用 `ProviderDAO.create(name="xAI", protocol="anthropic", base_url="https://api.x.ai", models=[{...grok-1 with reasoningEffort meta}])` 种入，断言 `model.list` 返回的 grok-1 条目带 `supports_reasoning_effort=True` / `reasoning_effort_default="high"` / `reasoning_effort_options` 值 == ["low","medium","high"]）+ `test_list_without_reasoning_meta_is_zero_regression`（断言 MiniMax-M3 不获取三新 key）。
+- ✅ **保留（环境修复，非本轮引入债务）**：`ruff check --fix tests/test_model.py` 自动修复 5 个**预先存在** lint（I001 import 块未排序 + 4× B010 `setattr` 常量属性）。详见坑 2。
+- ❌ **放弃**：**不同步前端 `web/src/types/ipc.ts` 模型类型** —— 加可选 `supports_reasoning_effort` / `reasoning_effort_default` / `reasoning_effort_options` 字段需 IPC 契约同步（types + docs + mock backend），留 R59。
+- ❌ **放弃**：**不同步 `docs/ipc-contract.md`** —— 同上，留独立轮次。
+- ❌ **放弃**：**不迁移 sampling-types crate 其余类型**（ChatCompletionRequest/SamplingConfig/ToolChoice/Role/Usage）—— 继续聚焦 ReasoningEffort。
+
+### 交付
+
+- `agent/minimax_code/agent/reasoning.py`（改，1 处）— 在 `reasoning_efforts_meta_value` 之后、文件末尾加 `enrich_model_reasoning_meta(model: Mapping[str, Any]) -> dict[str, Any]`。docstring 明确：首个消费者、模型字典即 meta 容器（flat 字段）、附件仅在 meta 存在且可解析时添加（零回归）、snake_case 命名匹配 `provider_id`/`protocol`、返回浅拷贝（不原地修改）。
+- `agent/minimax_code/ipc/handlers_model.py`（改，2 处）— (1) 第 39 行导入 `from ..agent.reasoning import enrich_model_reasoning_meta`；(2) `handle_model_list` 在 `models = await prov_dao.list_models()` 之后、try 块内加 `models = [enrich_model_reasoning_meta(m) for m in models]`（含 R53 元数据读取器首个消费者注释）。
+- `agent/tests/test_reasoning.py`（改，1 处）— 在 `test_reasoning_efforts_meta_value_emits_json_native_list` 之后、文件末尾追加 9 个 enrich 纯函数测试。
+- `agent/tests/test_model.py`（改，2 处）— (1) `ruff --fix` 自动修 5 个预先存在 lint（I001 import 排序 + 4× B010 setattr→赋值，运行时等价，项目用 ruff 不用 mypy）；(2) TestModelIPC 在 `test_error_code_is_invalid_params` 之后加 2 个 R58 handler 集成测试（enrich + zero-regression），含 R53 元数据读取器首个消费者的锚点注释。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+### 映射决策树（本轮 catalog-read 首个消费者 + 模型字典即元数据容器 + 零回归附件策略 + max 别名分层）
+
+本轮是 R53 元数据读取器组的**第一个真实消费者**。决策树无新增枚举 —— 复用 R53 的五个读取器。**新增的是 catalog-read 消费模式**：模型字典本身即 meta 容器（flat 字段），读取器直接吃 `Mapping[str, Any]`，附件策略是「仅当存在且可解析」。
+
+**R53 孤立读取器 → R58 消费者矩阵**：
+
+| R53 读取器（孤立，单元测试覆盖） | R58 消费点（首个生产调用） | 附件字段 |
+|---|---|---|
+| `supports_reasoning_effort_meta(model)` | `if supports_reasoning_effort_meta(model):` | `supports_reasoning_effort: True` |
+| `parse_reasoning_effort_meta(model)` | `default_effort = parse_reasoning_effort_meta(model); if default_effort is not None:` | `reasoning_effort_default: reasoning_effort_meta_value(...)` |
+| `parse_reasoning_efforts_meta(model)` | `options = parse_reasoning_efforts_meta(model); if options is not None:` | `reasoning_effort_options: reasoning_efforts_meta_value(...)` |
+| `reasoning_effort_meta_value(effort)` | 序列化 default 为 wire token | 内联于上 |
+| `reasoning_efforts_meta_value(opts)` | 序列化 options 菜单为 JSON-native dict 列表 | 内联于上 |
+
+**坑 1（自发现，已预判修复）**：**模型字典即元数据容器（flat 字段，非 nested meta sub-object）**。第一直觉可能是把元数据读成 `model["meta"]["reasoningEffort"]`（nested），但 `ProviderDAO.list_models()` 把每个 provider 的存储 model JSON 直接 `dict(m)` 扁平化 + 注入 `provider_id`/`provider_name`/`provider`/`protocol`。所以 `reasoningEffort`/`reasoningEfforts`/`supportsReasoningEffort` 直接在 model dict 顶层。`enrich_model_reasoning_meta` 的签名 `model: Mapping[str, Any]` 直接读顶层 key，匹配 grok 的 catalog-read flow（raw meta 留在 model dict 作 source of truth，规范化字段是 derived view）。**预判正确**：`test_list_enriches_reasoning_effort_meta` 用 `ProviderDAO.create(models=[{...flat reasoningEffort keys}])` 种入，`model.list` 直接读到顶层 key。
+
+**坑 2（自发现，预先存在 lint）**：**test_model.py 的 5 个预先存在 lint 被 R58 编辑暴露**。R58 在 TestModelIPC 加了 2 个集成测试，ruff 重新扫描整个 test_model.py 暴露了 R58 之前就存在的 5 个 lint：I001（import 块未排序/未格式化，第 18 行）+ 4× B010（`setattr(client.server, "_model_prefs_dao", prefs_dao)` 等常量属性 setattr，第 197-200 行的 `_make_client_with_model_handlers`）。**全部 `[*]` 可自动修复**：`ruff check --fix` 把 I001 的 import 块重排（加空行分组：future / stdlib / third-party / first-party），把 B010 的 `setattr(server, "_xxx", val)` 改为 `server._xxx = val`（运行时等价——项目用 ruff 不用 mypy，无类型检查会因 IPCServer 无该属性而报错）。**风险评估**：原作者用 setattr 是为绕过 mypy/IDE 的属性存在性检查；既然项目无 mypy，赋值等价。`IPCServer` 若有 `__slots__` 会炸——但 setattr 在 `__slots__` 下同样炸（Python 不区分），所以赋值不引入新风险。**验证**：`ruff --fix` 后 `All checks passed!`，`pytest tests/test_model.py` 全过（setattr→赋值未破坏 DAO 注入）。按轮次独立性，**仅修正在编辑的文件（test_model.py）的 lint**，不触碰其他文件的预先存在 lint。
+
+**坑 3（自发现，已预判修复）**：**catalog `max` 别名 → 增强默认值是规范化 `"xhigh"`，非 wire token `"max"`**。catalog 里 `reasoningEffort: "max"` 是 grok 的 CLI/UX 别名（`parse_effort_token` 把 `"max"` 解析为 `XHIGH`）。`enrich_model_reasoning_meta` 读到它后，`reasoning_effort_meta_value(XHIGH)` = `XHIGH.as_str()` = `"xhigh"`（规范 wire token），**不是** `"max"`。这是**有意的分层**：catalog 存规范层级（source of truth），emit seam（`to_messages_api` 把 XHIGH→`"max"` on Anthropic wire，`to_openai_effort_token` 把 XHIGH→`"high"` on OpenAI wire）是独立的、由 R53/R56/R57 持有的层。catalog 层不该预判 wire 合约。**测试覆盖**：`test_enrich_default_effort_normalizes_max_alias` 断言 `reasoningEffort: "max"` → `reasoning_effort_default == "xhigh"`。
+
+### 验证
+
+- `ruff check` R58 改动的 4 文件（reasoning.py + handlers_model.py + test_reasoning.py + test_model.py）→ 初次报 test_model.py 5 个预先存在 lint（I001 + 4× B010），`ruff --fix` 后 → **All checks passed!**（R58 新增代码零 ruff 错误 + 编辑文件的预存 lint 一并修复）。
+- `pytest tests/test_reasoning.py tests/test_model.py -q` → **65 passed**（含 R58 新增 11 测试：9 enrich 纯函数 + 2 handler 集成）。
+- 完整套件 `pytest` → **1771 passed, 10 skipped, 0 failed**（R57 1760 → R58 1771，**+11 精确**为 R58 新增；**0 failed** 零回归铁证）。
+
+### YAGNI 边界
+
+- ❌ **不同步前端 `web/src/types/ipc.ts` 模型类型** —— 加可选 `supports_reasoning_effort` / `reasoning_effort_default` / `reasoning_effort_options` 需 IPC 契约三同步（types + docs + mock backend），留 R59（前端能渲染 effort 选择器的下一步）。
+- ❌ **不同步 `docs/ipc-contract.md`** —— 同上，留独立轮次。
+- ❌ **不透传 mock backend** —— `web/src/ipc/client.ts` 的 `mockHandle` 暂不需新增字段（后端 enrich 是附加可选字段，mock 不带也合法）；待 R59 前端类型同步时一并处理。
+- ❌ **不让 reasoning_effort 流入 done chunk 元数据** —— 那是 write 路径的观察点，与 R58 的 read/catalog 半边正交，留独立轮次。
+- ❌ **不迁移 sampling-types crate 其余类型**（ChatCompletionRequest/SamplingConfig/ToolChoice/Role/Usage）—— 继续聚焦 ReasoningEffort。
+- ❌ **不给 enrich 加原地修改选项** —— 永远返回浅拷贝（纯函数，调用者输入不变）；原地修改是过早优化，违背纯函数契约。
+
+### Commit
+
+`feat(platform): R58 reasoning_effort meta readers first consumer (fuse grok xai-grok-sampling-types)`
