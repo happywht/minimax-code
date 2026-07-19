@@ -8881,3 +8881,66 @@ union-typed 字段的 wire 契约通过**委托**完成，不内联展开联合�
 ### Commit
 
 `feat(platform): R105 migrate frames.rs tools_changed domain`
+## R106 — 迁移 xai-tool-protocol lib.rs（crate 根 barrel 对账收官，17/17 文件里程碑 + frames.rs 66/66 完成）
+
+锚点:R105-1 d97eefb
+
+### 本轮目标
+
+xai-tool-protocol crate 的最后一个源文件 `lib.rs`（crate 根）迁移收官。lib.rs 不是新类型定义文件，而是 crate 级聚合层：4 个部分 — (1) crate 文档注释（1-7 行）；(2) `#![forbid(unsafe_code)]`（9 行）；(3) 16 个 mod 声明（9 pub mod + 7 私有 mod，11-26 行）；(4) 113 个 `pub use` 符号 re-export（28-73 行）。本轮目标：将这 4 部分对齐到 Python barrel `__init__.py`，验证 barrel `__all__` 完整覆盖 lib.rs 的 113 个 pub use 符号，达成 crate 17/17 文件迁移完成里程碑，并宣告 frames.rs 66/66 类型完成。
+
+### 融合结论
+
+lib.rs 的 4 部分对齐状态：
+
+1. **crate 文档注释（1-7 行）**：已在 R82 逐字迁移到 barrel doc comment 第 3-8 行（"Fusion of grok-build's xai-tool-protocol crate — the wire DTOs..."），无需再迁移。
+2. **`#![forbid(unsafe_code)]`（9 行）**：Rust crate 级禁令，保证整个 crate 无 `unsafe` 块（无未定义行为）。Python 无 `unsafe` 关键字，但这个不变量的语义对等物是「严格类型层」——本轮在 barrel doc comment 记录：typed dataclasses + `from_wire` 拒绝未知 tag（无 catch-all 超过 `Custom`）+ `IdError`-raising newtypes 共同承载「每个值都由类型化构造器负责」的不变量。
+3. **16 mod 声明（11-26 行）**：9 pub mod（envelope/error_codes/error_wire/frames/methods/notification_wire/output_wire/session_event/turn_hook）+ 7 私有 mod（capabilities/connection/handshake/hook/ids/registration/registry_error）。Python 无需显式 mod 声明——每个 `.py` 文件天然是模块，可见性由 barrel `__all__` 控制（私有 mod 的类型通过 barrel re-export 暴露，符合 Python「文件即模块、`__all__` 控制导出」惯例）。
+4. **113 pub use 符号（28-73 行）**：需对账验证 barrel `__all__` 是否完整覆盖。
+
+### 交付
+
+`agent/minimax_code/tool_protocol/__init__.py` barrel doc comment 末尾（209 行 `"""` 之前）追加 R106 收官段（17 行）：
+
+- **crate 完成里程碑**：17/17 源文件迁移完成（R82-R105 的 16 个类型模块 + 本 barrel 镜像 lib.rs），frames.rs 完整覆盖（66/66 pub struct/enum 类型）。
+- **`#![forbid(unsafe_code)]` 的 Python 语义对等**：无关键字等价物，但其不变量（无未定义行为、每个值由类型化构造器负责）由严格层承载（typed dataclasses + `from_wire` 拒绝未知 tag 无 catch-all 超过 `Custom` + `IdError`-raising newtypes）。
+- **对账结论**：barrel `__all__`（162 符号）与 lib.rs 113 pub use 对齐 — **0 missing**，~46 extra 扁平化子模块变体（ToolErrorWire 的 15 错误臂、ToolOutputWire 的 block 变体、JsonRpcId 变体、lib.rs 保留模块私有的 frames 类型如 RegisterToolParams）——故意的 Python 便利设计，让消费方可直接 `from minimax_code.tool_protocol import Cancelled` 而无需遍历模块路径。
+
+### 映射决策树 + 坑
+
+**lib.rs → Python barrel 映射决策树：**
+
+```
+lib.rs 部分                         Python 对等                          状态
+─────────────────────────────────────────────────────────────────────────────────
+(1) crate 文档注释 (1-7)       →  barrel doc comment (3-8)            R82 已迁移
+(2) #![forbid(unsafe_code)] (9) →  barrel doc comment R106 段语义说明   R106 追加
+(3) 16 mod 声明 (11-26)         →  Python .py 文件结构天然承载          无需迁移
+(4) 113 pub use (28-73)         →  barrel __all__ (162, 含 113 + 49)   R106 对账 0 missing
+```
+
+**坑 1：对账脚本正则只匹配花括号 pub use，漏掉 3 个单符号 pub use。**
+lib.rs 有 3 个无花括号的单符号 re-export：`pub use error_wire::ToolErrorWire;`（39）、`pub use hook::HookEvent;`（58）、`pub use registry_error::RegistryError;`（72）。正则 `pub use \w+::\{([^}]+)\}` 只匹配 `{...}` 形式，漏掉这 3 个，导致 ToolErrorWire/HookEvent/RegistryError 误判为 EXTRA（lib.rs 实际有）。修复：单符号 pub use 单独用 `pub use \w+::(\w+);` 统计后合并。
+
+**坑 2：对账脚本正则在第一个 `]` 截断 barrel __all__。**
+v1 正则 `re.search(r'__all__\s*=\s*\[(.*?)\]', text, re.DOTALL)` 非贪婪 `.*?` 在第一个 `]` 停止。但 barrel `__all__` 中间注释含 `]` 字符（如 `# (frames lib.rs keeps module-private]`），导致 407-633 行被截断，14 个符号遗漏，虚假报告 MISSING。修复 v2：用行切片 `barrel_lines[403:634]` 取整个 `__all__` 块，绕开正则截断。教训：当目标块可能含字面量 `]`（注释、字符串）时，绝不要对多行括号内容用非贪婪 `.*?`。
+
+**坑 3：barrel 比 lib.rs 多 ~46 个符号是真实 EXTRA（非误报），但是 Python 扁平化设计，不需修正。**
+剔除坑 1 的 3 个误报后，真实 EXTRA ≈ 46 个：error_wire 的 17 错误变体、output_wire 的 block 变体、envelope 的 JsonRpcId 变体、lib.rs 未 re-export 的 frames 类型（RegisterToolParams/BindToolSessionParams 等）、helper 函数（from_tool_error_wire/numeric_for/string_for）。这是 Python barrel 比 Rust crate 根更扁平的有意设计（消费方便利），符合既有 barrel 约定。删除会破坏消费方（测试文件 `from minimax_code.tool_protocol import Cancelled, Internal, TextBlock` 等），且超出「对账 lib.rs」范围 → 保留不动，仅在 doc comment 记录为既定设计差异。
+
+### 验证
+
+- `cd agent && uv run ruff check minimax_code/tool_protocol/__init__.py` → **All checks passed!**（doc comment 追加不引入 lint）
+- `uv run python -c "import minimax_code.tool_protocol as tp; print(len(tp.__all__))"` → **162**（`__all__` 未变，doc comment 追加不影响导出）
+- 对账 v2 最终结果：lib.rs pub use = 113 符号；barrel `__all__` = 162；**MISSING = 0**（barrel 完全覆盖 lib.rs）；真实 EXTRA = ~46（剔除 3 个单符号误报）
+
+### YAGNI 边界
+
+- **不硬编码 113 符号清单做防回归测试**：grok-build 是冻结参考源，lib.rs 未来不会变；硬编码符号清单脆弱（若未来确实调整 barrel 会误报），对账作为一次性迁移验证已足够。对账结论已固化进 barrel doc comment R106 段。
+- **不移除 46 EXTRA 符号**：破坏消费方（测试 + 未来 tool-server runtime），且 Python barrel 扁平化是既有约定（R82-R105 持续遵循）。记录为既定设计差异。
+- **不迁移 lib.rs 的 16 mod 声明为 Python 显式可见性控制**：Python「文件即模块、`__all__` 控制导出」天然承载，显式映射是过度设计。
+- **R105 YAGNI 笔误订正（R105 已提交不可改）**：R105 日志 YAGNI 部分写「推迟 ToolServerLifecycleStatus 到 R106」，但该类型实际在 R98 已迁移（frames.py 1405 行）。R105 已提交无法修改；R106 在此事实订正——R106 真实目标是 lib.rs 对账，不涉及 ToolServerLifecycleStatus。
+
+### Commit
+
+`feat(platform): R106 close xai-tool-protocol crate (17/17 files, barrel reconciled with lib.rs 0-missing)`

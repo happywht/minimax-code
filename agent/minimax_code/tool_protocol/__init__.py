@@ -206,6 +206,22 @@ function); the barrel does **not** re-export them, mirroring the Rust
 ``check_custom_kind`` / ``known_notification_kinds`` helpers but not the
 conversions. Callers reach the wire converters via the submodules
 (``tool_protocol.error_wire.from_wire`` etc.).
+
+R106 closes the crate: 17/17 source files migrated (16 type modules across
+R82-R105 + this barrel mirroring ``lib.rs``), and ``frames.rs`` is fully
+covered (66/66 ``pub struct``/``enum`` types). The Rust crate's
+``#![forbid(unsafe_code)]`` has no Python keyword equivalent, but its
+invariant — *no undefined behaviour, every value accounted for by a typed
+constructor* — is carried by the strict layer: typed dataclasses, explicit
+``from_wire`` dispatchers that reject unknown tags (no catch-all arm beyond
+``Custom``), and ``IdError``-raising identifier newtypes. Reconciling this
+barrel's ``__all__`` against ``lib.rs``'s 113 ``pub use`` symbols yields
+**0 missing** (the barrel covers every crate-root re-export) and ~46 extra
+flattened sub-module variants (``ToolErrorWire``'s 15 error arms,
+``ToolOutputWire``'s block variants, ``JsonRpcId`` variants, plus frames
+``lib.rs`` keeps module-private like ``RegisterToolParams``) — a deliberate
+Python convenience so consumers can import ``Cancelled`` / ``TextBlock`` /
+``Internal`` directly without traversing the module path.
 """
 
 from __future__ import annotations
