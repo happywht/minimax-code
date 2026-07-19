@@ -3559,3 +3559,59 @@ MCP-over-ACP 常量是 dataclass 未用 pydantic 序列化面）；**纯值相�
 ### Commit
 
 `feat(platform): R44 type-safe path wrappers (fuse grok xai-grok-paths)`
+
+## R45 — 默认模型 ID 词汇表（融合 grok `xai-grok-models`）
+
+> 锚定 R44（`33aafda`）。
+
+### 本轮目标
+
+从 grok 的 `xai-grok-models`（71 行 lib.rs + `default_models.json`）引入**数据驱动的默认模型 ID 词汇表**：内嵌 JSON 文档（`include_str!` 编译时嵌入）→ `DefaultModels`/`DefaultModelEntry` serde 反序列化 → `LazyLock` 单例 + `default ∈ models` 不变量 assert → 4 个场景化默认访问函数（`default` + `web_search`/`image_description`/`session_summary`，后三者 `unwrap_or(&default)` 回退）。
+
+**阶段 E 平台化/发布主题**——与 R42 `version` / R43 `env_presets` / R44 `paths` 对称的"平台基础词汇表层"。产品价值：MiniMax Code 的 `handlers_model` 当前硬编码 `CANDIDATE_MODELS`/`MODEL_META` 向后兼容常量，缺数据驱动的默认模型清单层。本模块把"默认模型 + 场景化分流（搜索用旗舰 / 摘要用快速档）+ default∈models 不变量"做成单一内嵌文档，为 `model.get_current` 回退链奠基。本轮是该词汇表；`handlers_model` 接线优先级链是后续轮。
+
+### 融合结论
+
+**✅ 保持（映射到 Python）**：
+- `DEFAULT_MODELS_JSON`（`include_str!("../default_models.json")`，编译时嵌入二进制）→ `DEFAULT_MODELS_JSON` 模块级三引号字符串常量。Python 无编译时文件嵌入；源码级常量是最忠实的运行时等价（编辑常量 + 重启 ≈ 编辑 JSON + 重编译）。MiniMax 本地化模型 ID（grok `grok-build`/`grok-4.20-multi-agent` → MiniMax `MiniMax-M3`/`MiniMax-M3-fast`/`MiniMax-Code`）；场景化分流：`web_search`/`image_description` 用旗舰 `MiniMax-M3`（合成需强模型），`session_summary` 用 `MiniMax-M3-fast`（摘要轻量，快速档够用且省成本）。
+- `DefaultModels`（`#[derive(serde::Deserialize)]`，`default: String` + 3 `Option<String>` + `models: Vec<DefaultModelEntry>`）→ `DefaultModels` pydantic v2 `BaseModel`（**分支 a，序列化层**，同 R40 `QueueEntryMeta`）。serde 默认忽略多余字段 → pydantic v2 默认 `extra="ignore"`：JSON 的 `name`/`description`/`context_window`/`temperature`/`top_p` 元数据在文档中携带但此处不建模，忠实 grok struct 只读 `model`。
+- `DefaultModelEntry`（`#[derive(serde::Deserialize)]`，单 `model: String`）→ `DefaultModelEntry` pydantic v2 `BaseModel`（多余字段忽略，镜像 grok struct）。
+- `static DEFAULTS: LazyLock<DefaultModels>`（`serde_json::from_str` 一次 + `assert!(default ∈ models)` + 线程安全）→ `_load_defaults()` `@lru_cache(maxsize=1)` 包装（单次初始化，GIL 下线程安全，忠实 `LazyLock` 语义）。`assert!` panic → `assert` 语句（`AssertionError`，developer error，忠实 grok panic）。
+- 4 访问函数（`default_model` + 3 场景 `Option::unwrap_or(&default)`）→ 同名模块级函数；`unwrap_or(&default)` → `or d.default`。
+- grok `serde`/`serde_json` crate → `json`（stdlib）+ `pydantic`（已有 agent 依赖）。
+
+**❌ 放弃（YAGNI）**：
+- `serde`/`serde_json` crate 依赖 → 仅 `json` + `pydantic`（零新增非标准库依赖）。
+- 解析优先级链（grok doc 注释：CLI 标志 > ENV > config.toml > 远程设置 > 这些默认值）→ grok 此 crate **不实现**（在 `agent::config`），本模块是默认值叶子；优先级接线是后续轮。
+- grok `api_backend`/`supported_in_api` 字段（xAI responses API 专用）→ MiniMax 用 chat completions，无对应。
+- 接线 `handlers_model` 优先级链（`model.get_current` 回退 `default_model()`）→ 本轮是词汇表层，消费端接线是后续轮。
+- 模型展示元数据建模（`name`/`context_window` 等进 pydantic 字段）→ grok struct 只读 `model` ID，忠实；MiniMax 元数据已在 `handlers_model.MODEL_META`（单一职责，不重复）。
+- `importlib.resources` 外部 JSON 文件分发 → Python 无编译时嵌入保证，模块级常量是最忠实 `include_str!` 等价（避免打包复杂度 + 文件漂移）。
+
+### 交付
+
+- `agent/minimax_code/models.py`（新，186 行）— `DEFAULT_MODELS_JSON` 模块级三引号常量（MiniMax 三模型 + 场景化分流）+ `DefaultModelEntry`（pydantic，单 `model`）+ `DefaultModels`（pydantic，`default` + 3 `Optional` + `models`）+ `_load_defaults()`（`@lru_cache(maxsize=1)` + `assert default ∈ models` 不变量）+ 4 模块级访问函数（`default_model`/`default_web_search_model`/`default_image_description_model`/`default_session_summary_model`，后 3 `or default` 回退），`__all__` 7 符号。依赖：`json` + `functools`（stdlib）+ `pydantic`。
+- `agent/tests/test_models.py`（新，160 行，12 测试）— grok 契约镜像（baked JSON 合法 / 本地化三模型集 / `default_model` 返回 default / 3 场景读 JSON 值 / 场景回退 default via `monkeypatch` + `cache_clear` / `default∈models` 不变量成立 / `default∉models` 触发 `AssertionError` via `monkeypatch` + `cache_clear`）+ Python 映射锁定（pydantic 缺 `default`/`models` 字段 → `ValidationError` / `DefaultModelEntry` 忽略多余字段 `extra='ignore'` `not hasattr` / 3 `Optional` 默认 `None` / `lru_cache` 单例 `is` 同一实例）。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+映射决策树**第十次重申**（payload 决定映射）：本轮 `DefaultModels`/`DefaultModelEntry`（serde Deserialize，JSON 反序列化层）→ pydantic v2 `BaseModel`（**分支 a，序列化层**——阶段 E 首次走分支 a；R40 `QueueEntryMeta` wire 类型也走分支 a）。**一条规则、四个分支，payload 决定走哪条**：(a) 序列化层 → pydantic v2 BaseModel（**本轮**）；(b) 纯值相等无序列化 → frozen+slots dataclass；(c) 纯单元 enum → `@unique Enum`；(d) 混合 enum → 全部 frozen dataclass + PEP 604 联合。**本轮新增两点**：(1) Rust `include_str!`（编译时文件嵌入二进制）→ Python 模块级字符串常量（Python 无编译时；源码嵌入是最忠实运行时等价，避免 `importlib.resources` 打包复杂度）；(2) Rust `LazyLock`（线程安全单次初始化）→ Python `@lru_cache(maxsize=1)`（GIL 下线程安全 + 惰性单次，忠实 LazyLock 语义）。
+
+**坑（自发现，已修复）**：ruff `I001` 报 `test_models.py` 导入块未排序，`--fix` 自动修复 1（isort 标准化第三方组 `pytest`/`pydantic` 与 first-party `minimax_code` 间的空行）。修复后 `All checks passed!`。无运行时错误——重点 pytest 12 测试一次通过。
+
+### 验证
+
+- `ruff check` → **All checks passed!**（`--fix` 修 I001 后；`models.py` 本就干净）。
+- 重点 `pytest tests/test_models.py -v` → **12 passed in 0.14s**（一次通过）。
+- 完整套件 `pytest` → **1688 passed, 10 skipped in 103.85s**（R44 1676 → R45 1688，**+12 精确**，零回归）。
+
+### YAGNI 边界
+
+- ❌ **不接线 `handlers_model` 优先级链**——本轮是默认值叶子；让 `model.get_current` 回退 `default_model()` / `default_session_summary_model()` 是后续轮。
+- ❌ **不建模模型展示元数据**（`name`/`context_window`/`temperature`/`top_p`）——grok struct 只读 `model` ID，忠实；MiniMax 元数据已在 `handlers_model.MODEL_META`，单一职责不重复。
+- ❌ **不迁移 grok `api_backend`/`supported_in_api`**——xAI responses API 专用，MiniMax chat completions 无对应。
+- ❌ **不做 `importlib.resources` 外部 JSON 文件**——Python 无编译时嵌入保证；模块级字符串常量是最忠实 `include_str!` 等价（避免打包复杂度 + 文件/常量漂移）。
+- ❌ **不实现解析优先级链**（CLI > ENV > config.toml > remote > defaults）——grok 此 crate 不实现（在 `agent::config`），本模块是默认值叶子。
+
+### Commit
+
+`feat(platform): R45 default model vocabulary (fuse grok xai-grok-models)`
