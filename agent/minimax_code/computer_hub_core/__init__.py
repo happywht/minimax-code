@@ -56,13 +56,19 @@ The crate's ``lib.rs`` re-exports six modules. The dependency order is:
    :class:`CompoundResolver`; holds the resolver by a strong Python
    reference — the ``Arc<T>`` counterpart to R118's ``Weak`` ->
    :func:`weakref.ref` mapping) + :data:`LOCAL_INVOKE_SCOPE`.
-6. ``remote`` (later) — ``RemoteTransport`` / ``RemoteToolProxy`` /
-   ``ConnectionClient`` + the wire decode helpers
-   (``decode_call_result`` / ``error_from_envelope`` /
-   ``is_workspace_unavailable`` / ``output_to_value`` /
-   ``progress_from_frame`` / ``tool_error_from_wire``).
+6. ``remote`` (R120+, layer 4 landed) — ``RemoteTransport`` /
+   ``RemoteToolProxy`` / ``ConnectionClient`` + the wire decode helpers.
+   R120 lands the three pure layer-4 seams
+   (:func:`decode_call_result` / :func:`output_to_value` /
+   :func:`progress_from_frame`); ``error_from_envelope`` /
+   ``is_workspace_unavailable`` / ``tool_error_from_wire`` and layers 1-3
+   (the ``ConnectionClient`` trait, the ``RemoteToolProxy`` /
+   ``RemoteTransport`` impls, the ``dispatch_via_connection`` +
+   ``RequestStream`` async stream) land in later rounds.
 
-R119 lands leaves 1-5; this barrel will grow one module per round.
+R120 lands the layer-4 decode/encode seams of leaf 6; the connection
+machinery (layers 1-3) and the remaining layer-4 seams land one module
+per round.
 """
 
 from minimax_code.computer_hub_core.inner import (
@@ -80,6 +86,11 @@ from minimax_code.computer_hub_core.registry import (
     ToolSessionBindOutcome,
     ToolSessionUnbindOutcome,
     next_registration_seq,
+)
+from minimax_code.computer_hub_core.remote import (
+    decode_call_result,
+    output_to_value,
+    progress_from_frame,
 )
 from minimax_code.computer_hub_core.resolver import (
     CompoundResolver,
@@ -110,5 +121,8 @@ __all__ = [
     "ToolSessionUnbindOutcome",
     "Transport",
     "TransportKind",
+    "decode_call_result",
     "next_registration_seq",
+    "output_to_value",
+    "progress_from_frame",
 ]

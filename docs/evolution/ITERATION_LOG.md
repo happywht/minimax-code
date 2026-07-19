@@ -9924,3 +9924,58 @@ feat(platform): R118 migrate xai-computer-hub-core inner.rs (InnerDispatchForRes
 ### Commit
 
 feat(platform): R119 migrate xai-computer-hub-core local.rs (LocalTransport + LOCAL_INVOKE_SCOPE, crate leaf 5, first concrete Transport impl, Arc<CompoundResolver> -> strong Python ref counterpart to R118 Weak->weakref.ref, sync kind + mapping-1 authorize/call, consumes R82/R107-R118, 5-leaf regression 127 passed)
+
+
+## R120 — 迁移 xai-computer-hub-core remote.rs layer 4 wire helpers（crate 第 6 叶 part 1）
+
+锚点:R119-1 b658911
+
+### 本轮目标
+
+开启 computer_hub_core 第 6 叶（remote）—— 6 叶 crate 的最后一片、最重的一片（remote.rs 541 行 4 层）。本轮按"纯函数优先"拆分，落地**第 4 层 wire decode/encode 纯函数**：3 个 pub fn（`progress_from_frame` / `output_to_value` / `decode_call_result`）+ 3 个私有 helper（`_map_block` / `_decode_tool_call_result` / `_decode_chat_completion_output`）。layer 1-3（`ConnectionClient` trait / `RemoteToolProxy`+`RemoteTransport` / `dispatch_via_connection`+`RequestStream`）+ 剩余 layer 4（`terminal_from_response` / `error_from_envelope` / `is_workspace_unavailable` / `tool_error_from_wire`）推迟到 R121+。
+
+### 融合结论
+
+remote.rs 4 层中，layer 4 的 3 个纯函数**无 trait object、无连接状态、无 async stream**，相互独立（`decode_call_result` 只依赖 `output_to_value` + `_map_block`；`progress_from_frame` 独立），且是 layer 2-3 调用的底层接缝（`RequestStream` 轮询 progress frame 走 `progress_from_frame`，终态响应走 `terminal_from_response` 再包 `decode_call_result`）。先落地它们 = 后续轮次在已测试的接缝上组装连接机制，同时隔离验证每一条 wire→runtime 类型边界。这复用了 frames.py 的域拆分模式（一个大文件按依赖序分多轮啃）。`terminal_from_response` 推迟到 R121 是为了规避循环依赖：它同时调用 `decode_call_result`（R120）和 `error_from_envelope`（R121），等 R121 的 `error_from_envelope` 到位再闭合，留下 R120 的 3 个互不循环 pub fn。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_core/remote.py`（315 行）：3 pub fn + 3 私有 helper + 7 部分模块文档字符串（为什么 remote 落最后 / 4 层拆分 / 为什么 layer 4 先落 / 6 条映射决策 / 纯函数形态 / 消费链）。
+- `agent/tests/test_computer_hub_core_remote.py`（28 用例）：sync 断言（3 fn 全 sync）+ 三态 `output_to_value`（Text/Json/Mcp + 空 blocks + 全 3 block 变体 + alien TypeError）+ cco 降级（well-formed / absent / non-object / empty dict / monkeypatch 强制 from_dict 抛错）+ `response_decoding` 失败臂（missing output / unknown kind / output not dict / alien value）+ bare-body 直通（无 tool_call_id / 非 dict body）+ ToolError.custom details 契约钉死。
+- `agent/minimax_code/computer_hub_core/__init__.py` barrel：+3 符号（`decode_call_result` / `output_to_value` / `progress_from_frame`，字母序插入），docstring leaf 6 从 "(later)" 更新为 "(R120+, layer 4 landed)" 并列明剩余推迟项。
+
+### 映射决策树+坑
+
+1. **serde_json::Value -> Any**：JSON 值是 str/int/float/bool/None/list/dict 联合，Python 用 `Any`。`output_to_value` 三态：Text -> 裸 str（Rust `Value::String(s)`）、Json -> 原样转发（Rust 透传）、Mcp -> `{"blocks": [...]}`（Rust `json!` 宏）。
+2. **Rust match enum -> isinstance 分发 + 尾部 raise TypeError**：`ToolOutputWire = Text|Json|Mcp`、`McpBlock = TextBlock|ImageBlock|ResourceBlock` 都是闭 union，尾部 `raise TypeError` 对应 Rust 编译期穷尽性（对闭 union 成员不可达，仅防御性）。
+3. **serde_json::from_value::<ToolCallResult> -> 严格手动解码**：`ToolCallResult` 只有 `to_wire` 无 `from_wire`（crate 从不反向解码）。`_decode_tool_call_result` strict-extract 必填 `tool_call_id` + `output`，`output` 走 `output_wire.from_wire`（未知 kind 抛 `ValueError`）；`KeyError`/`ValueError`/`TypeError` -> `ToolError.custom("response_decoding", str(e))`，镜像 Rust `.map_err(|e| ToolError::custom("response_decoding", e.to_string()))`。
+4. **cco and_then .ok() -> _decode_chat_completion_output 降级 None**：非 dict -> None（serde 无法把非 map 解码进 struct）；`from_dict` 抛错 -> `except Exception: return None`。**BLE 不在 ruff select 列表**，`except Exception` 安全无需 noqa。
+5. **map_block McpBlock -> ContentBlock 一对一**：Image 补默认 4 字段（`media_id`/`filename`/`path`=None, `metadata`={}}，镜像 Rust `media_id: None, filename: None, path: None, metadata: Default::default()`。
+6. **Mcp{blocks} 重序列化无 fallback**：`[b.to_dict() for b in runtime_blocks]`，YAGNI 掉 Rust 的 `unwrap_or(Value::Null)` —— `to_dict` 对 `_map_block` 产出的 3 变体不可失败。
+7. **循环依赖规避**：`terminal_from_response`（私有）调用 `decode_call_result`（R120）+ `error_from_envelope`（R121）-> 推迟到 R121 闭合循环，留下 R120 的 3 个互不循环 pub fn。
+8. **output_from_wire 子模块限定导入**：barrel 未重新导出转换器（只导出类型名），必须 `from minimax_code.tool_protocol.output_wire import from_wire as output_from_wire`（别名避免与未来命名冲突）。其余 11 个类型从 `tool_protocol` 顶层、5 个从 `tool_runtime` 顶层导入。
+9. **坑（首轮测试断言写错）**：passthrough 路径下整个 body dict 原样成为 `TypedToolOutput.value`（不是 body 的子字段）。首轮 `assert result.value == "x"` 失败（实际 value 是整个 `{"output": {...}}` dict）。修正为 `isinstance + tool_id` 断言 —— 这反而印证了 Rust `value.get("tool_call_id").is_none()` 直通路径的正确性：无 tool_call_id 的 body 整体当 raw output 喂 `from_value`，绝不走严格解码臂。
+10. **坑（F401）**：test 首轮导入了 `ContentBlock` 但全程没用到（只检查 `output_to_value` 返回的 dict 内容，不构造 ContentBlock）-> 删除。ruff 单文件先验证再改 barrel 的两步法避免了 barrel 连锁失败。
+
+### 验证
+
+- ruff check（remote.py + test 单文件）：首轮 1 错（F401 ContentBlock 未用），修复后 **All checks passed!**
+- pytest remote 单文件：首轮 1 失败（passthrough 断言写错），修正后 **28 passed in 0.26s**。
+- ruff check 全 computer_hub_core 包（含 barrel 扩展）：**All checks passed!**
+- pytest 6 叶全量回归（transport + registry + resolver + inner + local + remote）：**155 passed in 0.66s**。对账：R119 五叶 127 + R120 新增 28 = 155 ✓。
+- cco 降级关键测试 `test_decode_call_result_cco_unparseable_degrades_to_none`（monkeypatch 强制 `from_dict` 抛 `ValueError`）通过 -> 确认降级为 None。
+- `response_decoding` 失败臂 4 测试（missing output / unknown kind / output not dict / alien `object()`）全部返回 `ToolError` 且 `details == {"code": "response_decoding"}`，`decode_call_result` 从不抛异常。
+- `test_decode_call_result_missing_tool_call_id_is_passthrough_not_error` 通过 -> 钉死"有 output 字段但无 tool_call_id 也走 passthrough，不触发严格臂"的边界。
+
+### YAGNI 边界
+
+- **未实现 layer 1-3**：`ConnectionClient` trait（->abc.ABC）/ `RemoteToolProxy`+`RemoteTransport`（ToolHandle/Transport impl）/ `dispatch_via_connection`+`RequestStream`（Rust Stream -> Python async，最复杂层）全部推迟 R121+，本轮不预埋任何连接机制。
+- **未实现剩余 layer 4**：`terminal_from_response` / `error_from_envelope` / `is_workspace_unavailable` / `tool_error_from_wire`（14 变体大匹配）推迟 R121 —— 与 `error_from_envelope` 同轮落地，闭合 `terminal_from_response` 的内部循环。
+- **ToolCallResult 的 follow_ups/reminders 不严格校验**：remote 路径它们恒为空且 `decode_call_result` 不消费，仅 `value.get` 默认空。偏离 Rust serde 全字段严格，但严格校验无实际收益（YAGNI），已在 docstring 说明。
+- **output_to_value/_map_block 尾部 TypeError 不做运行时兜底**：闭 union 不可达，仅防御性 raise，不引入运行时 fallback。
+- **未抽象通用 Result<T,E> 工具**：`decode_call_result` 直接返回 `TypedToolOutput | ToolError` 联合，不引入 Result 泛型（Python 无原生 Result，联合类型已足够表达 Rust 的 `Result<T,E>`）。
+- **eq=False 无新增 dataclass**：本轮全是纯函数，无新值类型，不涉及 Debug-only derive 约定（连续 5 个 crate 类型 eq=False 的链条在 R119 LocalTransport 处暂止）。
+
+### Commit
+
+feat(platform): R120 migrate xai-computer-hub-core remote.rs Layer 4 wire helpers (progress_from_frame + output_to_value + decode_call_result + private _map_block/_decode_tool_call_result/_decode_chat_completion_output, crate leaf 6 part 1, pure-function decode/encode seams for remote dispatch, consumes R65/R82-R106 protocol + R107-R114 runtime, 6-leaf regression 155 passed)
