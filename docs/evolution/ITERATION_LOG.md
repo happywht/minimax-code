@@ -9413,3 +9413,102 @@ append-only 且无损的**——当增量会截断多字节 UTF-8 序列或超�
 ### Commit
 
 `feat(platform): R111 migrate xai-tool-runtime streaming.rs (PartialResultPayload + stream_chunk UTF-8-safe delta streaming)`
+
+## R112 — 迁移 xai-tool-runtime search.rs（后端无关工具搜索接口：ToolSearchResult/SearchSnapshot/ServerSummary + ToolSearchIndex Protocol + ToolIndex Arc 包装器）
+
+锚点:R111-1 c839b3b
+
+### 本轮目标
+
+落地 `xai-tool-runtime` crate 第 6 个叶子模块 `search.rs`（83 行，纯类型
+定义，无 `#[test]`）。这是一个**后端无关的工具搜索接口层**：让 harness
+按 query 查询工具（BM25 / OpenSearch / in-memory linear / …）而不依赖任何
+具体后端实现，索引藏在 `ToolIndex`（薄共享包装器）背后，同一快照可被多个
+调用点查询。是 tool_runtime barrel 的标准库叶子，不触碰任何其他
+tool_runtime 模块。
+
+### 融合结论
+
+search.rs 是 5 符号的纯定义层（3 个 `#[derive(Debug, Clone, PartialEq)]`
+struct + 1 个 `Send + Sync` trait + 1 个 `pub Arc<dyn>` newtype），无算法
+复杂度、无跨模块依赖。映射路径笔直：
+
+| Rust 源 | Python 目标 | 依据 |
+|---------|-------------|------|
+| `#[derive(Debug, Clone, PartialEq)] struct` | `@dataclass` | dataclass 自动派生 `__eq__`/`__repr__`，对应 Rust 派生的 `PartialEq`/`Debug`；`Clone` 由 deepcopy 语义等价 |
+| `serde_json::Value` | `Any` | 任意 JSON 值原样透传（`input_schema` 字段），无需 schema 校验 |
+| `Option<String>` | `str \| None` | UP045：用 `X \| None` 而非 `Optional[X]` |
+| `Send + Sync` trait `ToolSearchIndex` | `@runtime_checkable Protocol` | GIL 使 `Send`/`Sync` 无意义；Protocol 给结构化鸭子类型 seam |
+| `ToolIndex(pub Arc<dyn>)` + 自定义 `Debug`（不展开 dyn） | `@dataclass(eq=False)` + `__repr__ -> "ToolIndex(...)"` | `Arc` 共享所有权 → Python 对象引用计数已等价；自定义 Debug 不透明；`eq=False` 禁止 `__eq__` 派生，回退身份比较，对应 Rust 不 derive `PartialEq` |
+
+### 交付
+
+- `agent/minimax_code/tool_runtime/search.py`（~150 行）：5 符号导出 —
+  `ToolSearchResult`（单条搜索命中，含 `score`/`input_schema`）、
+  `SearchSnapshot`（查询快照 + `total_hidden_tools`/`is_ready` 元数据）、
+  `ServerSummary`（MCP server 摘要 + `tool_count()` 方法）、
+  `ToolSearchIndex`（`@runtime_checkable` Protocol，2 方法）、
+  `ToolIndex`（`Arc<dyn>` 包装器，`eq=False` + 不透明 `__repr__`）。
+- `agent/tests/test_tool_runtime_search.py`（13 个测试）：search.rs 无
+  `#[test]`，故为 Python 风格语义等价测试。覆盖：3 个 struct 的
+  构造/字段访问/`Clone`(deepcopy)/`PartialEq`(field-wise)/`Debug`(非空 repr)/
+  `Option<String>` None 往返；`ServerSummary.tool_count` 与 `len` 一致；
+  `ToolSearchIndex` Protocol 接受完整后端、拒绝缺方法后端、方法可调用；
+  `ToolIndex` 包装 + 不透明 repr + `eq=False` 身份比较。
+- `agent/minimax_code/tool_runtime/__init__.py`（+5 符号 → barrel 41 总）：
+  docstring 加 R112 第六叶子段落；新增 `search` import 块；`__all__` 按字母
+  序 3 处插入（`SearchSnapshot`/`ServerSummary` 在 `PartialResultPayload`
+  后；`ToolIndex` 在 `ToolFamily` 后；`ToolSearchIndex`/`ToolSearchResult`
+  在 `ToolProgress` 后、`ToolStream` 前）。
+
+### 映射决策树+坑
+
+1. **`@runtime_checkable` Protocol 检查方法存在性，而非签名**：
+   `isinstance(backend, ToolSearchIndex)` 仅验证两个方法名是否存在于对象上，
+   不检查参数/返回类型。测试 `_MissingMethodIndex`（缺
+   `list_server_summaries`）正确被拒绝；但一个签名错误但同名方法的后端
+   仍会通过 `isinstance`。这是 `runtime_checkable` 的已知限制，与 Rust
+   trait 的编译期完整签名检查不同 —— 在 seam 处靠测试覆盖语义。
+2. **`dataclass(eq=False)` 禁止 `__eq__` 生成，回退 `object` 身份比较**：
+   `ToolIndex` 在 Rust 不 derive `PartialEq`，故两个包装同一后端的对象
+   `==` 永远为 `False`（仅 `is` 身份相等）。`eq=False` 精确复现：测试
+   `test_tool_index_has_no_partialeq_identity_only` 验证 `a != b`（同后端
+   不同包装）但 `a == a`。
+3. **`Arc<dyn Trait>` 的自定义 `Debug` 不展开 dyn**：Rust
+   `f.debug_struct("ToolIndex").finish()` 故意不渲染内部 dyn trait（无
+   `Debug` bound）。Python `__repr__` 返回固定 `"ToolIndex(...)"`，测试
+   断言 `"FakeIndex"` 不出现在 repr 中，确认不透明性。
+4. **`Send + Sync` 在 Python 无等价物**：Rust trait bound 让索引可藏于
+   `Arc<dyn>` 跨任务共享；Python GIL 下所有对象天然可跨协程共享，故
+   `ToolSearchIndex` 是普通 Protocol，不引入 `abc.ABC` 的强制注册
+   （`runtime_checkable` 的结构化匹配更贴合 Rust 的 duck trait）。
+
+### 验证
+
+- `uv run pytest tests/test_tool_runtime*.py -q`（6 文件全回归）→ **205 passed**
+  （含新增 search 13 个 + R111 streaming 29 个 + 既有 tool/render/context/error）。
+- `uv run pytest -q`（全套）→ **3577 passed, 10 skipped**（111.53s）。
+- `uv run ruff check minimax_code/tool_runtime/__init__.py minimax_code/tool_runtime/search.py`
+  → **All checks passed!**（UP045 `str | None`、`Any` 导入、`Protocol`/
+  `runtime_checkable` 导入全部合规）。
+- import smoke：`len(tool_runtime.__all__) == 41`，5 个 search 符号全部
+  可从 barrel 顶层解析（`search ok: True`）。
+
+### YAGNI 边界
+
+- **不实现任何具体搜索后端**（BM25/OpenSearch/in-memory linear）：本轮
+  只迁移**接口契约层**（Protocol + 数据类型 + 包装器），具体后端由后续
+  消费方迭代落地。search.rs 源本身就是纯接口，无后端实现可迁。
+- **不迁移 `Send + Sync` 的显式线程安全标记**：GIL 下无等价物，Protocol
+  天然跨协程可共享，引入额外 `threading.Lock` 或 `asyncio` 标记是过度设计。
+- **不为 `ToolIndex` 引入 `__eq__`/`__hash__`**：Rust 源不 derive
+  `PartialEq`/`Hash`，`eq=False` 精确映射；若消费方需要值比较，应比较其
+  `.index` 字段而非包装器本身。
+- **不把 `ToolSearchResult` 做成 pydantic 模型**：dataclass 的自动
+  `__eq__`/`__repr__` 已对应 Rust 派生的 `PartialEq`/`Debug`，pydantic 的
+  额外校验对纯数据载体是冗余依赖面（与 R111 `PartialResultPayload` 的严格
+  decode 不同 —— 那是 wire 契约需要 `deny_unknown_fields`，这里是内存数据）。
+
+### Commit
+
+`feat(platform): R112 migrate xai-tool-runtime search.rs (ToolSearchResult/SearchSnapshot/ServerSummary + ToolSearchIndex Protocol + ToolIndex Arc wrapper)`

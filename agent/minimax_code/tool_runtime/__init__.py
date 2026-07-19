@@ -32,6 +32,11 @@ streaming contract — :class:`PartialResultPayload` with
 delta slicing + ``DEFAULT_MAX_DELTA_BYTES``), a leaf that consumes
 :class:`StreamingSpec` (tool_protocol) and ``ToolProgress`` (tool) one-way
 with no cycle.
+R112 lands the sixth leaf: :mod:`search` (the backend-agnostic tool
+search interface — :class:`ToolSearchResult` / :class:`SearchSnapshot` /
+:class:`ServerSummary` dataclasses + :class:`ToolSearchIndex`
+``runtime_checkable`` Protocol + :class:`ToolIndex` the ``Arc<dyn>``
+wrapper), a stdlib-only leaf that touches no other tool_runtime module.
 Subsequent rounds migrate the remaining modules; the barrel's ``__all__``
 grows as each lands.
 
@@ -68,6 +73,13 @@ from minimax_code.tool_runtime.render import (
     extract_content_blocks,
     extractor_for,
 )
+from minimax_code.tool_runtime.search import (
+    SearchSnapshot,
+    ServerSummary,
+    ToolIndex,
+    ToolSearchIndex,
+    ToolSearchResult,
+)
 from minimax_code.tool_runtime.streaming import (
     DEFAULT_MAX_DELTA_BYTES,
     PartialResultPayload,
@@ -100,6 +112,8 @@ __all__ = [
     "ListToolsContext",
     "ModelOutputExtractor",
     "PartialResultPayload",
+    "SearchSnapshot",
+    "ServerSummary",
     "SessionContext",
     "Tool",
     "ToolCallContext",
@@ -110,8 +124,11 @@ __all__ = [
     "ToolError",
     "ToolErrorKind",
     "ToolFamily",
+    "ToolIndex",
     "ToolOutput",
     "ToolProgress",
+    "ToolSearchIndex",
+    "ToolSearchResult",
     "ToolStream",
     "ToolStreamError",
     "ToolStreamItem",
