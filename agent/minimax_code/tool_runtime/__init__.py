@@ -37,6 +37,13 @@ search interface — :class:`ToolSearchResult` / :class:`SearchSnapshot` /
 :class:`ServerSummary` dataclasses + :class:`ToolSearchIndex`
 ``runtime_checkable`` Protocol + :class:`ToolIndex` the ``Arc<dyn>``
 wrapper), a stdlib-only leaf that touches no other tool_runtime module.
+R113 lands the seventh leaf: :mod:`dispatch` (the object-safe tool
+dispatch interface — :class:`ToolDispatch` :class:`abc.ABC` with abstract
+:meth:`~ToolDispatch.call` streaming surface + concrete-default
+:meth:`~ToolDispatch.call_terminal` stream drain), a consumer of
+:mod:`context` (R108) + :mod:`error` (R107) + the :mod:`tool` streaming
+primitives (R109), and the unblocker for the ``xai-computer-hub-core``
+crate.
 Subsequent rounds migrate the remaining modules; the barrel's ``__all__``
 grows as each lands.
 
@@ -62,6 +69,7 @@ from minimax_code.tool_runtime.context import (
     WorkspaceBindMetadata,
     WorkspaceViewerContext,
 )
+from minimax_code.tool_runtime.dispatch import ToolDispatch
 from minimax_code.tool_runtime.error import ToolError, ToolErrorKind
 from minimax_code.tool_runtime.render import (
     ModelOutputExtractor,
@@ -120,6 +128,7 @@ __all__ = [
     "ToolChatCompletion",
     "ToolChatCompletionResponse",
     "ToolCodeExecutionResult",
+    "ToolDispatch",
     "ToolDyn",
     "ToolError",
     "ToolErrorKind",

@@ -9512,3 +9512,52 @@ struct + 1 个 `Send + Sync` trait + 1 个 `pub Arc<dyn>` newtype），无算法
 ### Commit
 
 `feat(platform): R112 migrate xai-tool-runtime search.rs (ToolSearchResult/SearchSnapshot/ServerSummary + ToolSearchIndex Protocol + ToolIndex Arc wrapper)`
+
+## R113 — 迁移 xai-tool-runtime dispatch.rs（对象安全工具分发接口：ToolDispatch abc.ABC + call 流式面 + call_terminal drain 默认实现）
+
+锚点:R112-1 b07c6d6
+
+### 本轮目标
+
+把 `grok-build/crates/common/xai-tool-runtime/src/dispatch.rs` 这片叶子迁到 Python。该文件只声明一个 object-safe trait `ToolDispatch`：一个抽象方法 `call`（把 `ToolId` + args 解析成一条流式输出）加一个默认方法 `call_terminal`（drain 流，只返回 Terminal 负载）。它是 `xai-computer-hub-core` crate 的关键 unblocker —— 后者 `inner.rs` 消费 `xai_tool_runtime::ToolDispatch` 驱动每次工具调用路径。R107–R112 已经把 error / context / tool / render / streaming / search 六片叶子铺完，dispatch 是第七片叶子，消费 R107 error + R108 context + R109 tool 三片叶子的产物。本轮目标：faithful 翻译 trait 形态（抽象 + 默认实现），Python 语义等价测试覆盖 Rust 默认 drain 的四个分支，barrel `__init__.py` 暴露 `ToolDispatch`，全套验证绿。
+
+### 融合结论
+
+Rust 的 `#[async_trait] pub trait ToolDispatch: Send + Sync` 形态（一个 abstract method + 一个 default method body）与 Python 的 `abc.ABC`（`@abc.abstractmethod` + 具体 method body）一一对应，故用 `abc.ABC` 而非 `typing.Protocol`。这是与 R109（Tool/ToolDyn/ToolFamily）+ R112（ToolSearchIndex）选 Protocol 的关键分野：那几个是结构化鸭子类型 seam（无默认 body 要共享），dispatch 是 nominal 抽象接口（有 abstract `call` 强制子类实现 + 有共享默认 `call_terminal` body），ABC 正好承载这两者。`Send + Sync` 对象安全边界（让 trait 能活在 `Arc<dyn ToolDispatch>` 后面跨 task 共享）在 GIL 下没有等价物 —— Python 对象本来就是按引用共享的，dispatcher 实例的别名共享与 Rust 的 `Arc` 共享等价。`ToolError` 不是 `Exception` 子类（R107），所以 `call_terminal` 返回 `TypedToolOutput | ToolError` 联合类型 by value（调用方 `isinstance(result, ToolError)` 判别），而不是 raise，匹配 Rust `Result<TypedToolOutput, ToolError>`。`call` 是 `async def` **返回** `AsyncIterator`（不是 async generator），匹配 Rust `async fn call() -> ToolStream`（`.await` 拿 stream，再 `.next().await` 拉 item）；`call_terminal` 用 `stream = await self.call(...)` + `async for item in stream`。
+
+### 交付
+
+- `agent/minimax_code/tool_runtime/dispatch.py`（新，~190 行）：`class ToolDispatch(abc.ABC)`，`@abc.abstractmethod async def call(...) -> AsyncIterator[ToolStreamItem[TypedToolOutput]]` + `async def call_terminal(...) -> TypedToolOutput | ToolError`。默认 drain：`stream = await self.call(tool_id, args, ctx)` → `async for item in stream: if item.is_terminal(): return item.terminal` → 无 Terminal 则 `return ToolError.custom("stream_no_terminal", "dispatch stream ended without a terminal item")`。完整 docstring 含三段 rationale（"Why dispatch lands seventh" / "trait ToolDispatch -> abc.ABC" / "Result<T, E> by value, not raised"）+ Rust 默认 body 原文镜像。
+- `agent/tests/test_tool_runtime_dispatch.py`（新，~210 行）：9 个语义等价测试。4 个 async generator stream factory（`_terminal_success` / `_terminal_error`（用 `ToolError.execution(tool_id, "boom")`）/ `_progress_then_terminal`（2 Progress + Terminal）/ `_no_terminal`（仅 Progress））；`_FakeDispatch(ToolDispatch)` 记录 `self.seen` 三元组列表。9 测试覆盖：ABC 不可实例化 / 只实现 `call_terminal` 仍抽象 / 实现 `call` 即具体 / Terminal 成功返回 / Terminal error 原样传播（断言 `result.kind is ToolErrorKind.EXECUTION` 且 `"terminal" not in result.detail`）/ Progress 帧被跳过 / 无 Terminal 返回 `stream_no_terminal`（断言 `result.kind is ToolErrorKind.CUSTOM`、`result.details == {"code": "stream_no_terminal"}`、`"terminal" in result.detail`）/ 参数线程化（`d.seen == [(tid, args, ctx)]`）/ 默认 body 可被子类覆盖。
+- `agent/minimax_code/tool_runtime/__init__.py`（编辑，41→42 符号）：docstring 追加第七叶子段落；import 块插入 `from minimax_code.tool_runtime.dispatch import ToolDispatch`；`__all__` 插入 `"ToolDispatch",`（字典序在 `"ToolCodeExecutionResult",` 后、`"ToolDyn",` 前）。
+
+### 映射决策树+坑
+
+- `trait ToolDispatch`（abstract `call` + default `call_terminal`）→ `abc.ABC`。决策树：trait 有 abstract method? 是。trait 有 default method body? 是 → `abc.ABC`（承载 abstractmethod + 具体 method）。若全是 default / 结构化鸭子类型（如 R112 `ToolSearchIndex`）→ `typing.Protocol`。R109 Tool/ToolDyn/ToolFamily 无默认 body、是结构化 seam → Protocol；R113 dispatch 有默认 body + 强制 abstract → ABC。
+- `async fn call() -> ToolStream<TypedToolOutput>`（Rust：await 拿 stream，`.next().await` 拉 item）→ `async def call(...) -> AsyncIterator[ToolStreamItem[TypedToolOutput]]`。`call` 是普通 `async def` **返回** async iterator，**不是** async generator（不用 `yield`）。坑：若写成 async generator，`await self.call(...)` 会拿到 coroutine 而非 iterator，drain 逻辑崩。实现端 `return self._factory(...)`（factory 本身是 async generator function，调用它得到 async iterator）。
+- `Send + Sync` object-safety（`Arc<dyn ToolDispatch>`）→ 无 Python 等价物。GIL 下 Python 对象按引用共享，dispatcher 实例别名共享 = Rust `Arc` 共享。docstring 明示这一点，避免读者去找 `Arc` 包装器（R112 的 `ToolIndex` Arc 包装器是 search 特有，dispatch 不需要）。
+- `Result<TypedToolOutput, ToolError>` → `TypedToolOutput | ToolError` by value。坑：`ToolError` 非 `Exception` 子类（R107），故 `call_terminal` 联合返回而非 raise。`is_error()` 是 `ToolStreamItem` 上 Terminal 负载是 `ToolError` 的判别，与这里 `isinstance(result, ToolError)` 对齐。
+- Terminal 负载字段名是 `terminal`（不是 `value` / `payload`）—— R109 `ToolStreamItem` 的 dataclass 字段。坑：第一版可能写成 `item.value`，实际是 `item.terminal`。
+- 默认 drain 不重写 Terminal error：测试 `test_call_terminal_propagates_terminal_error_verbatim` 明确断言 `"terminal" not in result.detail`（即原 EXECUTION error 原样穿透，不被改写成 `stream_no_terminal`）。`stream_no_terminal` 只在流**耗尽仍无 Terminal** 时触发。
+- `ToolError.custom(code, detail)` 把 code 藏在 `details["code"]` —— 测试断言 `result.details == {"code": "stream_no_terminal"}`，而 `result.detail`（单数）是描述字符串含 "terminal"。坑：`detail`（单数，str）vs `details`（复数，dict）别混。
+- `pytest-asyncio` 自动模式，但 async 测试仍标 `@pytest.mark.asyncio`（与 R109/R111/R112 风格一致）。
+
+### 验证
+
+- tool_runtime 7 文件单测：214 passed（R112 的 205 + R113 新增 9），0 failed。
+- 全套 pytest：3586 passed, 10 skipped, 0 failed（无回归）。
+- ruff `E/F/W/I/B/UP`（line 100，py311）：3 文件（dispatch.py / __init__.py / test_tool_runtime_dispatch.py）All checks passed，无附带损害。
+- barrel 烟雾测试：`len(__all__) == 42`、`ToolDispatch` in `__all__`、`isinstance(ToolDispatch, type) and issubclass(ToolDispatch, abc.ABC)`、`hasattr(ToolDispatch, 'call_terminal')`、`getattr(ToolDispatch, 'call').__isabstractmethod__ is True` —— 全绿。
+
+### YAGNI 边界
+
+- **不**迁移 `notification.rs`（~600 行，下一片叶子，本轮范围外）。
+- **不**在本轮为 dispatch 写具体实现（如基于 ToolRegistry 的 dispatcher）—— trait 本身只是接口，具体实现留给消费方（xai-computer-hub-core 迁移时）。
+- **不**加 `Arc<dyn ToolDispatch>` 包装器类 —— Python GIL 下对象按引用共享，无 `Arc` 等价物需求（R112 的 `ToolIndex` 是 search 特有包装，dispatch 不需要）。
+- **不**把 `call` 改成 async generator（`yield`）—— 保持 `async def` 返回 `AsyncIterator`，faithful 匹配 Rust `async fn call() -> ToolStream` 形态。
+- **不**为 `Send + Sync` 加 marker —— 无 Python 等价物。
+- **不**在本轮触碰 lib.rs 等价物（barrel 已在 R107 起逐步扩展，lib.rs 的 re-export 收官留到最后一片叶子之后）。
+
+### Commit
+
+`feat(platform): R113 migrate xai-tool-runtime dispatch.rs (ToolDispatch object-safe trait + call streaming + call_terminal drain default impl)`
