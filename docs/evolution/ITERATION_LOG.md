@@ -9632,3 +9632,56 @@ Rust 的 `#[async_trait] pub trait ToolDispatch: Send + Sync` 形态（一个 ab
 ### Commit
 
 `feat(platform): R114 migrate xai-tool-runtime notification.rs (19 payload structs + TaskKind StrEnum + TaskSnapshot + ToolNotification tag=type union + ToolNotificationHandle mpsc->asyncio.Queue)`
+
+## R115 — 迁移 xai-computer-hub-core transport.rs（Principal 身份值 + Transport 对象安全 trait + TransportKind 重导出，crate 首块叶子，新 computer_hub_core 包骨架，消费 R82 protocol + R107-R114 runtime）
+
+锚点:R114-1 583ae35
+
+### 本轮目标
+
+开启 grok-build `xai-computer-hub-core` crate 的迁移 —— 这是继 `xai-tool-runtime`（R107-R114 全 8 叶子落地）之后的下一个 crate，也是 tool_runtime 的 `InnerDispatchForResolver` 在 R113 docstring 里点名的"unblocker"下游。本轮挑 `transport.rs` 作为首块叶子：它是 crate 的地基（所有其他叶子的签名都 thread 一个 `Transport`），依赖全部就绪（protocol 侧 R82 ids + R87 TransportKind，runtime 侧 R107 ToolError + R108 ToolCallContext + R109 ToolStream），无新依赖阻塞。同时新建 Python 包 `minimax_code/computer_hub_core/`（crate 名映射：`xai-computer-hub-core` -> `computer_hub_core`），作为后续 5 个叶子（registry/resolver/inner/local/remote）的容器。
+
+### 融合结论
+
+`transport.rs` 是 117 行、3 个公开符号的小叶子（`Principal` 身份结构体 + `Transport` 对象安全 trait + `TransportKind` 重导出），是理想的 crate 开篇。核心映射决策全部复用已建立的 R107-R114 模式，无需引入新约定：对象安全 trait -> `abc.ABC`（复用 R113 `ToolDispatch` 模式），`Result<T, E>` 按值返回（复用 R107 不 raise 模式），move-and-return builder -> self-mutate-and-return。这验证了 R107-R114 这套"运行时类型契约"迁移模式在跨 crate 边界时依然成立 —— 同一套映射规则可平滑复用到 hub 层。crate 分包决策：把 `xai-computer-hub-core` 作为独立 Python 包（而非塞进 tool_runtime），忠实 Rust workspace 的 crate 边界（runtime 是稳定的执行契约，hub 是会演进的路由契约），让 router 能在不 churn runtime 契约的前提下演进。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_core/__init__.py`（新 crate 的 lib.rs 等价物 barrel，导出 3 符号，文档字符串说明 crate 定位 + 6 叶子落地顺序）。
+- `agent/minimax_code/computer_hub_core/transport.py`（`Principal` dataclass + `Transport` abc.ABC + `TransportKind` 重导出，~200 行含详尽 docstring）。
+- `agent/tests/test_computer_hub_core_transport.py`（21 测试：Principal 构造/链式 builder/查询/字段级相等 + Transport abc.ABC 抽象形状 4 测 + authorize by-value 双路径 + kind + call 参数线程 + TransportKind re-export 同对象）。
+
+### 映射决策树 + 坑
+
+1. **对象安全 `trait Transport: Send + Sync + Debug` -> `abc.ABC`**（复用 R113 `ToolDispatch` 模式）：3 个 `@abstractmethod`（`kind` 同步 / `authorize` async / `call` async，全部无默认 body 即抽象）。**关键区分**：这里是 nominal ABC（显式子类化），刻意区别于 R109 `Tool`/`ToolDyn`/`ToolFamily` 与 R112 `ToolSearchIndex` 的 `typing.Protocol` 结构化契约（duck-typed seam）。判定依据 —— Rust 端 `Transport` 是 `Arc<dyn Transport>` 动态分发的对象安全 trait（nominal），而 `Tool`/`ToolSearchIndex` 是泛型约束（structural）。
+2. **`#[async_trait]` async 方法 -> Python `async def`**（`authorize`/`call`），`kind` 保持同步（Rust 是 `fn kind` 非 `async fn`）。
+3. **`Result<Principal, ToolError>` -> `Principal | ToolError` 按值返回**（复用 R107 不 raise 模式）：`ToolError` 不继承 `Exception`，是返回值不是抛出，调用方 `isinstance(result, ToolError)` 判别。
+4. **`Send + Sync + Debug` supertraits -> 无 Python 等价**：GIL 下对象引用天然共享（对应 `Send + Sync` 对象安全）；`Debug` 是软约定（实现者 SHOULD 提供 `__repr__`，ABC 不强制，Python 无 trait-bounds 机制）。
+5. **`Principal` `#[derive(Debug, Clone, PartialEq, Eq)]` -> `@dataclass`**（默认 `eq=True`）：id-newtype 字段（`UserId`/`SessionId` 是 R82 `_OpaqueId(str)` 子类，str-backed 值相等），字段级 `__eq__` 行为对齐 Rust derived `PartialEq`/`Eq`。
+6. **Rust `with_*(mut self, ...) -> Self` move-and-return builder -> Python self-mutate-and-return-self**：忠实 Rust move 语义，调用点链式读法完全一致（`Principal::new(u).with_session(s).with_scope(sc)`）。
+7. **`Principal::new(user_id)` 工厂 -> `@classmethod new`**：dataclass 后 3 字段（`session_ids`/`scopes`/`audiences`）用 `field(default_factory=list)` 默认空，故 `Principal(user_id)` 直接可构造，等价 Rust `new`；保留 `new` classmethod 忠实 Rust API 表面。
+8. **`pub use xai_tool_protocol::TransportKind` -> `from minimax_code.tool_protocol import TransportKind` + `__all__` 重导出**：单一规范枚举，wire 与 dispatch 共享一个 `TransportKind`（crate doc 强调这点）。
+9. **Wire 标量映射**（既定规则）：`Vec<String>`->`list[str]`，`Vec<SessionId>`->`list[SessionId]`，`impl Into<String>`->`str`，`serde_json::Value`->`Any`。
+10. **坑 1（自我纠正）—— 测试 import 别名 vs 裸名冲突**：初始给 hub 的 TransportKind 起别名 `as HubTransportKind`，但测试代码各处用裸名 `TransportKind` -> ruff F821 + 运行时 NameError（3 测试失败）。修复：从 hub 导入裸名 `TransportKind`（供各处使用），protocol 那边保留 `as ProtoTransportKind` 专做 re-export 同对象对比。
+11. **坑 2（自我纠正）—— TransportKind 成员名大小写假设错误**：假设成员是 `LOCAL`/`REMOTE`（全大写，StrEnum 惯例），实际是 PascalCase `Local = "local"` / `Remote = "remote"`（R87 `#[serde(rename_all="snake_case")]` 只改 wire 值不改成员名）-> `AttributeError: ... Did you mean: 'Local'?`。Grep `registration.py:120` 确认实际成员后统一修复（transport.py docstring 一处 + 测试 `replace_all` 两个 pattern）。
+12. **坑 3 —— isort I001**：带 `as` 别名的 import 触发 isort 排序规则，`ruff --fix --select I001` 自动把 `from tool_protocol import` 拆成两个块（裸名一块 + 别名一块），功能等价。安全例外（纯导入重排序）。
+
+### 验证
+
+- **ruff**（3 文件：`transport.py` + `__init__.py` + `test_computer_hub_core_transport.py`）：`All checks passed!`（isort I001 `--fix` 修复 1 个，安全例外，精确限定测试文件）。
+- **pytest transport 单文件**：21 passed in 0.31s。
+- **完整套件回归**：3638 passed, 10 skipped in 127.15s。**对账核验**：R114 3617 passed + R115 21 新测试 = 3638 ✓，零回归、零附带损害。
+- **R114 提交在 HEAD 确认**：`583ae35`（4 文件，与 R114 记录一致）。
+
+### YAGNI 边界
+
+- 只迁 `transport.rs`（lib.rs 6 模块的第 1 个），`registry`/`resolver`/`inner`/`local`/`remote` 5 模块留给后续回合（按依赖拓扑：transport -> registry -> resolver -> inner/local/remote）。
+- `Transport.call` 返回类型标注用 `ToolStream`（不带泛型下标 `TypedToolOutput`）—— Python 运行时不特化泛型，`from __future__ import annotations` 下完整标注 `ToolStream[TypedToolOutput]` 会触发运行时 `get_type_hints` NameError，docstring 注明对应 Rust `ToolStream<TypedToolOutput>` 即可。
+- 不实现具体 `LocalTransport`/`RemoteTransport`（那是 `local.rs`/`remote.rs` 叶子的职责，后续回合）。
+- `Principal` 不加 Rust 没有的方法（仅 `new` + 3 个 `with_*` builder + 2 个查询 `has_scope`/`authorizes_session`）。
+- barrel `__init__.py` 只导出 3 符号（`Principal`/`Transport`/`TransportKind`），后续回合随叶子落地逐个增长。
+- `TransportKind` 只重导出不复制（`is` 同对象断言保证 wire/dispatch 单一来源）。
+
+### Commit
+
+`feat(platform): R115 migrate xai-computer-hub-core transport.rs (Principal struct + Transport object-safe trait + TransportKind re-export, crate first leaf, new computer_hub_core package, consumes R82 protocol + R107-R114 runtime)`
