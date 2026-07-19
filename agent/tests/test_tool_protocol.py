@@ -78,6 +78,7 @@ from minimax_code.tool_protocol import (
     JsonRpcVersion,
     JsonRpcVersionError,
     KnownVariantCollision,
+    LastSeq,
     LogsDonateParams,
     Mcp,
     Method,
@@ -108,8 +109,11 @@ from minimax_code.tool_protocol import (
     ServerUnbindAck,
     ServerUnbindOutcome,
     ServerUnbindParams,
+    SessionCloseParams,
     SessionId,
     SessionMismatch,
+    SessionOpenParams,
+    SessionOpenResult,
     Shadowed,
     StreamingSpec,
     SubscribeAck,
@@ -183,6 +187,7 @@ from minimax_code.tool_protocol.error_wire import from_wire as error_from_wire
 from minimax_code.tool_protocol.frames import (
     bind_tool_session_ack_from_wire,
     bind_tool_session_params_from_wire,
+    last_seq_from_wire,
     logs_donate_params_from_wire,
     metrics_donate_params_from_wire,
     notification_filter_from_wire,
@@ -197,6 +202,9 @@ from minimax_code.tool_protocol.frames import (
     server_unbind_params_from_wire,
     servers_list_params_from_wire,
     servers_list_result_from_wire,
+    session_close_params_from_wire,
+    session_open_params_from_wire,
+    session_open_result_from_wire,
     subscribe_ack_from_wire,
     subscribe_notifications_params_from_wire,
     system_notify_params_from_wire,
@@ -6019,6 +6027,163 @@ class TestToolSystemNotificationsBarrelR100:
             assert hasattr(pkg, name), f"barrel missing {name}"
 
     def test_notification_symbols_in_all(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in self._types:
+            assert name in pkg.__all__, f"{name} not in barrel __all__"
+
+    def test_frames_submodule_exposes_from_wire(self):
+        import minimax_code.tool_protocol.frames as mod
+
+        for name in self._converters:
+            assert hasattr(mod, name), f"frames submodule missing {name}"
+
+    def test_barrel_does_not_re_export_from_wire(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in self._converters:
+            assert not hasattr(pkg, name), f"barrel should not export {name}"
+
+
+
+class TestLastSeq:
+    """R101 — ``LastSeq`` reconnect cursor (ConnectionId + FrameSeq)."""
+
+    def test_wire_shape(self) -> None:
+        last = LastSeq(connection_id=ConnectionId("conn-7"), seq=FrameSeq.new(42))
+        assert last.to_wire() == {"connection_id": "conn-7", "seq": 42}
+
+    def test_round_trip(self) -> None:
+        original = LastSeq(ConnectionId("conn-7"), FrameSeq.new(42))
+        assert last_seq_from_wire(original.to_wire()) == original
+
+    def test_seq_emitted_as_bare_int(self) -> None:
+        # FrameSeq is a transparent u64 newtype — bare integer on the wire,
+        # not wrapped in an object.
+        wire = LastSeq(ConnectionId("c"), FrameSeq.new(9)).to_wire()
+        assert isinstance(wire["seq"], int)
+        assert not isinstance(wire["seq"], bool)
+
+    def test_connection_id_emitted_as_bare_str(self) -> None:
+        # ConnectionId is a transparent str newtype — bare string on the wire.
+        wire = LastSeq(ConnectionId("conn-1"), FrameSeq.new(0)).to_wire()
+        assert wire["connection_id"] == "conn-1"
+
+    def test_from_wire_lifts_newtypes(self) -> None:
+        lifted = last_seq_from_wire({"connection_id": "conn-9", "seq": 7})
+        assert isinstance(lifted.connection_id, ConnectionId)
+        assert isinstance(lifted.seq, FrameSeq)
+        assert int(lifted.seq) == 7
+
+    def test_from_wire_rejects_negative_seq(self) -> None:
+        # FrameSeq.from_wire rejects negatives (u64 on the wire).
+        with pytest.raises(ValueError):
+            last_seq_from_wire({"connection_id": "conn-9", "seq": -1})
+
+
+class TestSessionOpenParams:
+    """R101 — ``SessionOpenParams`` (default-no-skip resume + Option-skip last_seq)."""
+
+    def test_resume_always_rides_wire(self) -> None:
+        # resume is default-no-skip: emitted even when False.
+        assert SessionOpenParams(resume=False).to_wire() == {"resume": False}
+
+    def test_resume_true_with_last_seq(self) -> None:
+        params = SessionOpenParams(
+            resume=True,
+            last_seq=LastSeq(ConnectionId("c1"), FrameSeq.new(100)),
+        )
+        assert params.to_wire() == {
+            "resume": True,
+            "last_seq": {"connection_id": "c1", "seq": 100},
+        }
+
+    def test_last_seq_absent_when_none(self) -> None:
+        wire = SessionOpenParams(resume=False, last_seq=None).to_wire()
+        assert "last_seq" not in wire
+
+    def test_round_trip_fresh(self) -> None:
+        original = SessionOpenParams(resume=False)
+        assert session_open_params_from_wire(original.to_wire()) == original
+
+    def test_round_trip_resume(self) -> None:
+        original = SessionOpenParams(
+            resume=True,
+            last_seq=LastSeq(ConnectionId("c2"), FrameSeq.new(5)),
+        )
+        assert session_open_params_from_wire(original.to_wire()) == original
+
+    def test_from_wire_tolerates_missing_resume(self) -> None:
+        # default-no-skip on the wire, but a missing key reads as False.
+        params = session_open_params_from_wire({})
+        assert params.resume is False
+        assert params.last_seq is None
+
+
+class TestSessionCloseParams:
+    """R101 — ``SessionCloseParams`` (Option-skip reason)."""
+
+    def test_reason_absent_when_none(self) -> None:
+        assert SessionCloseParams(reason=None).to_wire() == {}
+
+    def test_reason_present_when_set(self) -> None:
+        assert SessionCloseParams(reason="done").to_wire() == {"reason": "done"}
+
+    def test_round_trip_none(self) -> None:
+        original = SessionCloseParams(reason=None)
+        assert session_close_params_from_wire(original.to_wire()) == original
+
+    def test_round_trip_reason(self) -> None:
+        original = SessionCloseParams(reason="transport_closed")
+        assert session_close_params_from_wire(original.to_wire()) == original
+
+    def test_from_wire_tolerates_missing_reason(self) -> None:
+        assert session_close_params_from_wire({}).reason is None
+
+
+class TestSessionOpenResult:
+    """R101 — ``SessionOpenResult`` (empty struct)."""
+
+    def test_to_wire_empty(self) -> None:
+        assert SessionOpenResult().to_wire() == {}
+
+    def test_round_trip(self) -> None:
+        original = SessionOpenResult()
+        assert session_open_result_from_wire(original.to_wire()) == original
+
+    def test_from_wire_ignores_data(self) -> None:
+        # Empty struct — extra keys are ignored.
+        result = session_open_result_from_wire({"unexpected": "ignored"})
+        assert result.to_wire() == {}
+
+    def test_default_equality(self) -> None:
+        # Mirrors Rust's #[derive(Default)] + Eq.
+        assert SessionOpenResult() == SessionOpenResult()
+
+
+class TestSessionLifecycleBarrelR101:
+    """R101 barrel contract — 4 types travel the barrel; from_wire stays out."""
+
+    _types = [
+        "LastSeq",
+        "SessionCloseParams",
+        "SessionOpenParams",
+        "SessionOpenResult",
+    ]
+    _converters = [
+        "last_seq_from_wire",
+        "session_close_params_from_wire",
+        "session_open_params_from_wire",
+        "session_open_result_from_wire",
+    ]
+
+    def test_frames_module_exposes_structs(self) -> None:
+        import minimax_code.tool_protocol.frames as mod
+
+        for name in self._types:
+            assert hasattr(mod, name), f"frames submodule missing {name}"
+
+    def test_session_symbols_in_all(self):
         import minimax_code.tool_protocol as pkg
 
         for name in self._types:

@@ -8543,3 +8543,56 @@ wire 类型是契约层，先于行为层落地 —— 与 R82-R99 的全部 fra
 ### Commit
 
 `feat(platform): R100 migrate tool/system notification wire domain`
+
+
+## R101 — session-lifecycle open/close primitives 子域（frames.rs 第 11 域，消费 R82 ConnectionId/FrameSeq）
+
+锚点:R100-1 d201517
+
+### 本轮目标
+
+继续 frames.rs 13 个功能域的第 11 个迁移。从剩余 deferred 域中选取 **session lifecycle** 域的**开/闭原语子域**（frames.rs 438-463）：`SessionOpenParams` / `LastSeq` / `SessionCloseParams` / `SessionOpenResult` —— 连接 (re)attach 与 tear down 一个会话所需的最小原语对。刻意只取该域的叶子切片，把更重的 `SessionBindServer`/`AttachServer`/`Serve` 流（同域上半段，依赖 `AttachRoute`/`SessionBindResult` 等）留给 R102+，保持每轮单一 serde 形态焦点 + 跨域消费边界的可验证粒度。本轮同时首次在 frames.py 内**同时消费 R82 的两个非字符串 newtype**：`ConnectionId`（str newtype）与 `FrameSeq`（transparent u64 newtype）—— 验证它们的 wire 惯例在嵌套 DTO（`LastSeq`）中正确组合传递。
+
+### 融合结论
+
+- **领域边界**：frames.rs 的 session-lifecycle 域横跨 438-545（开/闭原语 + bind/attach + serve）。本轮只迁移 438-463 的 4 符号叶子，是"开/闭原语子域"。bind/attach/serve 子域（含 `AttachRoute` 枚举、`SessionBindResult`、`ServeParams`/`ServeResult` 等）继续 deferred，因它们要么引入新 serde 形态（serve 的复杂 result），要么有跨子域 enum 依赖，留待独立轮次。
+- **R82 消费边界**：`LastSeq.connection_id: ConnectionId`（R82 str newtype，wire 上裸字符串）+ `LastSeq.seq: FrameSeq`（R82 transparent u64 newtype，wire 上裸整数）。这是 frames.py 首次在**同一 DTO 的字段对**里同时消费 str-newtype 与 transparent-int-newtype，验证两种 wire 惯例（直接放值 vs `.to_wire()` 调用）的正确组合。
+- **serde 形态**：本轮复用三个已建立形态，无 crate-first 新形态：
+  1. `SessionOpenParams.resume: bool` — `#[serde(default)]` 无 `skip_serializing_if`（default-no-skip，与 R98 `ToolServerStatusPayload` 的 default-no-skip bool 一致）：始终上 wire，读时容忍缺失键。
+  2. `SessionOpenParams.last_seq` / `SessionCloseParams.reason` — `#[serde(default, skip_serializing_if = "Option::is_none")]`（Option-skip，R92 起的标配）。
+  3. `SessionOpenResult` — 空 `#[derive(Default)]` struct（与 R99 `ServersListParams` 的空-struct 模式一致）。
+
+### 交付
+
+- `agent/minimax_code/tool_protocol/frames.py`：
+  - ids 导入行扩展为 6 符号多行括号形式（+`ConnectionId`/`FrameSeq`）。
+  - `__all__` structs 区追加 R101 组（4 类型）+ converters 区追加 R101 组（4 转换器）。
+  - 文件末尾追加 4 dataclass + 4 模块级 `from_wire` 函数（`LastSeq` / `SessionOpenParams` / `SessionCloseParams` / `SessionOpenResult` + 对应转换器）。
+- `agent/minimax_code/tool_protocol/__init__.py`：barrel 导入块 +4 类型（`LastSeq` 按 isort 落在 `BindToolSessionParams`/`LogsDonateParams` 间；`SessionCloseParams`/`SessionOpenParams`/`SessionOpenResult` 落在 `ServerUnbindParams`/`SubscribeAck` 间）；`__all__` +4 类型。
+- `agent/tests/test_tool_protocol.py`：barrel 类型导入 +4（`LastSeq`@`KnownVariantCollision`/`LogsDonateParams` 间；`SessionCloseParams`@`ServerUnbindParams`/`SessionId` 间；`SessionOpenParams`+`SessionOpenResult`@`SessionMismatch`/`Shadowed` 间 —— 因测试导入块含 `SessionId`/`SessionMismatch` 落在 Session 三兄弟中间，须分散插入）；`from_wire` 导入 +4（`last_seq_from_wire`@`bind_tool_session_params_from_wire`/`logs_donate_params_from_wire` 间；session 三转换器@`servers_list_result_from_wire`/`subscribe_ack_from_wire` 间）；+5 R101 测试类（25 测试）。
+
+### 映射决策树 + 坑
+
+1. **FrameSeq wire 惯例 ≠ str newtype**：str newtype（`ConnectionId`）`to_wire` 直接放字符串值；但 `FrameSeq` 是 transparent u64 newtype（非 str 子类），必须 `self.seq.to_wire()`（→ 裸 int）发射、`FrameSeq.from_wire(data["seq"])`（从 int 构造，拒绝 bool/负数）接收。`LastSeq.to_wire` 混用两者：`"connection_id": self.connection_id`（直接）+ `"seq": self.seq.to_wire()`（调用）。
+2. **测试 isort 分散插入**：barrel 导入块不含 `SessionId`/`SessionMismatch`（那些来自 ids，barrel 不从 frames 导入），所以 barrel 的 Session 三兄弟连续插入；但测试导入块是单一 `from minimax_code.tool_protocol import (...)`（含 frames + ids 全部公共类型），`SessionId`/`SessionMismatch` 落在 `SessionCloseParams`(s-e-s-s-c) 与 `SessionOpenParams`(s-e-s-s-o) 之间（第 7 字符 c < i < m < o），故测试须 3 处分散插入而非 1 处连续。
+3. **空 struct 的 `from_wire` 签名**：`session_open_result_from_wire(data: dict[str, object])` 忽略 `data`（空 struct 无字段）。ARG001（unused arg）不在 ruff select（E/F/W/I/B/UP）中，故无需 `# noqa`。
+4. **default-no-skip bool 的 from_wire 容忍**：`resume=bool(data.get("resume", False))` —— 虽然上游 wire 总是发射 `resume`，但 `from_wire` 仍用 `.get(k, False)` 容忍缺失键，对齐 Rust `#[serde(default)]` 语义。
+5. **F401 预防（延续 R99/R100 SOP）**：11 处 Edit（frames ids 导入 + 2 处 `__all__` + barrel 导入 2 处 + barrel `__all__` 1 处 + 测试类型 3 处 + 测试 from_wire 2 处）+ 2 temp Write（frames struct 追加 / 测试类追加）全部在**同一条消息**完成，然后才 `ruff check`（非 `--fix`）。所有导入均被消费者引用，无 F401 风险。
+6. **追加空行控制**：frames.py 末尾是 `)\n`（无尾随空行），temp 开头 1 空行 → `printf '\n'` 补 1 行达 2 空行分隔（E302）；tests temp 开头 2 空行，cat 直连恰好 2 空行。一次 ruff 通过、零 E302/E303/E305。
+
+### 验证
+
+- `uv run ruff check tests/test_tool_protocol.py minimax_code/tool_protocol/frames.py minimax_code/tool_protocol/__init__.py` → **All checks passed!**（精确范围，无附带损害）。
+- `uv run pytest tests/test_tool_protocol.py -q` → **836 passed**（R100 的 811 + R101 新增 25：6+6+5+4+4）。
+- `uv run pytest -q` → **3294 passed, 10 skipped**（R100 的 3269 + 25；1 warning 为既有 fastapi/httpx deprecation，与本轮无关）。
+
+### YAGNI 边界
+
+- **不迁移** bind/attach/serve 子域（`SessionBindServerParams`/`Result` + `SessionUnbindServerParams`、`SessionAttachServerParams`/`Result` + `AttachRoute` 枚举、`ServeParams`/`ServeResult`/`SessionBindParams`/`SessionBindResult`/`SessionUnbindParams`）—— 留 R102+。
+- **不迁移** hooks 域（`HookFrame`/`HookReplyFrame`）与 service→harness pushes（`ToolsChanged`）—— 继续 deferred。
+- `LastSeq` 不暴露 Rust 的 `Default`（它无 `#[derive(Default)]`，两字段皆必需）；Python 数据类也不加默认值，对齐"必需字段"语义。
+- `SessionOpenResult` 不额外暴露 `Default` 工厂方法（Rust `#[derive(Default)]` 在 Python 端由无参 `SessionOpenResult()` 自然覆盖，无需额外 classmethod）。
+
+### Commit
+
+`feat(platform): R101 migrate frames.rs session-lifecycle open/close primitives`

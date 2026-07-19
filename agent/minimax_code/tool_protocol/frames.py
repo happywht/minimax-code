@@ -147,7 +147,14 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from minimax_code.tool_protocol.connection import ToolDefinitionMode
-from minimax_code.tool_protocol.ids import ServerId, SessionId, ToolCallId, ToolId
+from minimax_code.tool_protocol.ids import (
+    ConnectionId,
+    FrameSeq,
+    ServerId,
+    SessionId,
+    ToolCallId,
+    ToolId,
+)
 from minimax_code.tool_protocol.methods import Method
 from minimax_code.tool_protocol.notification_wire import (
     Custom,
@@ -230,6 +237,13 @@ __all__ = [
     # payload + custom/known factory methods)
     "SystemNotifyParams",
     "ToolNotificationFrame",
+    # session lifecycle open/close primitives (R101 — consumes R82
+    # ConnectionId/FrameSeq via LastSeq; default-no-skip resume bool +
+    # Option-skip last_seq/reason + empty-struct open result)
+    "LastSeq",
+    "SessionCloseParams",
+    "SessionOpenParams",
+    "SessionOpenResult",
     # wire converters
     "tool_call_params_from_wire",
     "tool_call_result_from_wire",
@@ -275,6 +289,11 @@ __all__ = [
     # tool/system notifications (R100)
     "system_notify_params_from_wire",
     "tool_notification_frame_from_wire",
+    # session lifecycle open/close primitives (R101)
+    "last_seq_from_wire",
+    "session_close_params_from_wire",
+    "session_open_params_from_wire",
+    "session_open_result_from_wire",
 ]
 
 
@@ -2060,3 +2079,134 @@ def system_notify_params_from_wire(data: dict[str, object]) -> SystemNotifyParam
         echo_to_subscribers=bool(data.get("echo_to_subscribers", False)),
         request_id=str(request_id_raw) if request_id_raw is not None else None,
     )
+
+
+
+# ── Session lifecycle open/close primitives (R101) ────────────────────────
+#
+# Fusion of grok-build's ``xai-tool-protocol::frames`` session-lifecycle
+# open/close primitives (frames.rs 438-463): ``SessionOpenParams`` /
+# ``LastSeq`` / ``SessionCloseParams`` / ``SessionOpenResult``. This is the
+# leaf of the larger session-lifecycle domain — the open/close primitives a
+# connection uses to (re)attach and tear down a session, deliberately kept
+# separate from the heavier bind/attach/serve flows (R102+ candidates).
+#
+# Wire-shape notes:
+# * ``SessionOpenParams.resume`` is ``#[serde(default)]`` with **no**
+#   ``skip_serializing_if`` — a default-no-skip field that always rides the
+#   wire (even when ``false``), but a missing key is tolerated on read.
+# * ``SessionOpenParams.last_seq`` and ``SessionCloseParams.reason`` are
+#   ``Option``-skip fields (absent from the wire when ``None``).
+# * ``LastSeq`` carries an R82 :class:`ConnectionId` (str newtype, emitted as
+#   a bare string) and an R82 :class:`FrameSeq` (transparent u64, emitted as
+#   a bare integer); both lift through their respective ``from_wire``.
+# * ``SessionOpenResult`` is an empty ``#[derive(Default)]`` struct —
+#   ``to_wire`` returns ``{}`` and ``from_wire`` ignores its argument.
+
+
+@dataclass
+class LastSeq:
+    """Reconnect cursor (``frames::LastSeq``).
+
+    The ``(connection_id, seq)`` pair a client replays to resume a session
+    mid-stream. Both fields are required (no ``#[serde(default)]`` upstream).
+    """
+
+    connection_id: ConnectionId
+    seq: FrameSeq
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "connection_id": self.connection_id,
+            "seq": self.seq.to_wire(),
+        }
+
+
+def last_seq_from_wire(data: dict[str, object]) -> LastSeq:
+    """Reconstruct :class:`LastSeq`.
+
+    ``connection_id`` lifts through :class:`ConnectionId` (str newtype);
+    ``seq`` lifts through :meth:`FrameSeq.from_wire` (bare ``u64``).
+    """
+    return LastSeq(
+        connection_id=ConnectionId(str(data["connection_id"])),
+        seq=FrameSeq.from_wire(data["seq"]),
+    )
+
+
+@dataclass
+class SessionOpenParams:
+    """``session.open`` params (``frames::SessionOpenParams``).
+
+    ``resume`` (default-no-skip ``bool``) always rides the wire; ``last_seq``
+    (``Option``-skip) is present only when reconnecting.
+    """
+
+    resume: bool = False
+    last_seq: LastSeq | None = None
+
+    def to_wire(self) -> dict[str, object]:
+        wire: dict[str, object] = {"resume": self.resume}
+        if self.last_seq is not None:
+            wire["last_seq"] = self.last_seq.to_wire()
+        return wire
+
+
+def session_open_params_from_wire(data: dict[str, object]) -> SessionOpenParams:
+    """Reconstruct :class:`SessionOpenParams`.
+
+    ``resume`` is a default-no-skip field (tolerates a missing key); ``last_seq``
+    is an ``Option``-skip field lifted through :func:`last_seq_from_wire`.
+    """
+    last_seq_raw = data.get("last_seq")
+    return SessionOpenParams(
+        resume=bool(data.get("resume", False)),
+        last_seq=(
+            last_seq_from_wire(last_seq_raw)  # type: ignore[arg-type]
+            if last_seq_raw is not None
+            else None
+        ),
+    )
+
+
+@dataclass
+class SessionCloseParams:
+    """``session.close`` params (``frames::SessionCloseParams``).
+
+    ``reason`` is an ``Option``-skip field — absent from the wire when ``None``.
+    """
+
+    reason: str | None = None
+
+    def to_wire(self) -> dict[str, object]:
+        wire: dict[str, object] = {}
+        if self.reason is not None:
+            wire["reason"] = self.reason
+        return wire
+
+
+def session_close_params_from_wire(data: dict[str, object]) -> SessionCloseParams:
+    """Reconstruct :class:`SessionCloseParams`.
+
+    ``reason`` is an ``Option``-skip field lifting to ``str | None``.
+    """
+    reason_raw = data.get("reason")
+    return SessionCloseParams(
+        reason=str(reason_raw) if reason_raw is not None else None,
+    )
+
+
+@dataclass
+class SessionOpenResult:
+    """``session.open`` result (``frames::SessionOpenResult``).
+
+    Empty ``#[derive(Default)]`` struct — carries no fields on the wire.
+    """
+
+    def to_wire(self) -> dict[str, object]:
+        return {}
+
+
+def session_open_result_from_wire(data: dict[str, object]) -> SessionOpenResult:
+    """Reconstruct :class:`SessionOpenResult` (empty struct — ``data`` ignored)."""
+    return SessionOpenResult()

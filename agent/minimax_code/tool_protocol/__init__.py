@@ -274,6 +274,7 @@ from minimax_code.tool_protocol.frames import (
     MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES,
     BindToolSessionAck,
     BindToolSessionParams,
+    LastSeq,
     LogsDonateParams,
     MetricsDonateParams,
     NotificationFilter,
@@ -290,6 +291,9 @@ from minimax_code.tool_protocol.frames import (
     ServerUnbindAck,
     ServerUnbindOutcome,
     ServerUnbindParams,
+    SessionCloseParams,
+    SessionOpenParams,
+    SessionOpenResult,
     SubscribeAck,
     SubscribeNotificationsParams,
     SubscribeOutcome,
@@ -577,4 +581,12 @@ __all__ = [
     "MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES",
     "SystemNotifyParams",
     "ToolNotificationFrame",
+    # R101 — session lifecycle open/close primitives (consumes R82
+    # ConnectionId/FrameSeq via LastSeq; default-no-skip resume bool +
+    # Option-skip last_seq/reason + empty-struct open result). All 4 symbols
+    # travel the barrel; from_wire converters stay submodule-qualified.
+    "LastSeq",
+    "SessionCloseParams",
+    "SessionOpenParams",
+    "SessionOpenResult",
 ]
