@@ -82,10 +82,27 @@ class ReasoningEffort(StrEnum):
         return self.value
 
     def to_messages_api(self) -> str | None:
-        """Anthropic Messages API ``output_config.effort``; ``None`` if unsupported.
+        """Anthropic Messages API ``output_config.effort`` token; ``None`` if unsupported.
 
-        ``None`` / ``Minimal`` are omitted (returned as ``None``); ``Xhigh``
-        maps to ``"max"`` (grok ``to_messages_api``).
+        The Anthropic counterpart of :meth:`to_openai_effort_token` (the OpenAI
+        emit seam, R56). The two differ because the wire contracts differ — the
+        Anthropic ``OutputConfigParam.effort`` Literal is
+        ``low`` / ``medium`` / ``high`` / ``xhigh`` / ``max`` (SDK-confirmed),
+        so it accepts ``xhigh`` and ``max`` directly and has no ``minimal`` /
+        ``none`` tier:
+
+        * ``None`` variant → ``None`` (not injected) — same as
+          :meth:`to_openai_effort_token`; the field has no ``none`` tier, so the
+          endpoint falls back to its default.
+        * ``Minimal`` → ``None`` — *dropped*, unlike
+          :meth:`to_openai_effort_token` (where ``Minimal`` → ``"minimal"``):
+          Anthropic's effort Literal has no ``minimal`` value, so it cannot be
+          emitted and is omitted rather than erroring.
+        * ``Xhigh`` → ``"max"`` — *kept at the max tier*, unlike
+          :meth:`to_openai_effort_token` (where ``Xhigh`` → ``"high"``):
+          Anthropic accepts both ``xhigh`` and ``max``; grok's ``to_messages_api``
+          picks ``"max"`` as the XHIGH wire token (the highest tier).
+        * ``Low`` / ``Medium`` / ``High`` → their own value (pass-through).
         """
         if self is ReasoningEffort.NONE or self is ReasoningEffort.MINIMAL:
             return None

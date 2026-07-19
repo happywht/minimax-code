@@ -401,10 +401,14 @@ class AnthropicTransport(LLMTransport):
     def last_reasoning_effort(self) -> ReasoningEffort | None:
         """Reasoning effort normalised from the most recent ``stream_chat`` call.
 
-        R54 pipe-through: the value is coerced and recorded for the wire layer
-        to read once the Anthropic-compatible effort contract (``thinking``
-        budget vs an ``output_config.effort`` field) is settled — until then
-        nothing is emitted, so a ``None`` effort leaves the request unchanged.
+        R54 records the coerced value; R57 emits it on the wire via the
+        Anthropic ``output_config.effort`` field (the emit seam
+        :meth:`ReasoningEffort.to_messages_api` drops ``none``/``minimal`` and
+        surfaces ``xhigh`` as ``"max"`` — Anthropic's
+        ``OutputConfigParam.effort`` Literal is ``low``/``medium``/``high``/
+        ``xhigh``/``max``). A ``None`` effort (the AgentConfig default) emits
+        nothing (``NOT_GIVEN``), so the request body stays byte-identical to
+        the pre-R54 path.
         """
         return self._last_reasoning_effort
 
@@ -420,12 +424,14 @@ class AnthropicTransport(LLMTransport):
         reasoning_effort: ReasoningEffort | str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self._thinking_count = 0
-        # R54 pipe-through: coerce the runtime effort value once, up-front, so
-        # the wire layer can read ``self._last_reasoning_effort`` when the
-        # Anthropic effort contract settles. Nothing is emitted yet — the
-        # ``client.messages.stream(...)`` kwargs below stay byte-identical to the
-        # pre-R54 call regardless of this value (TODO: emit via ``thinking``
-        # budget or ``output_config.effort`` once the endpoint confirms which).
+        # R54 coerce + R57 emit: normalise the runtime effort once, up-front,
+        # then read it back below to emit the Anthropic ``output_config.effort``
+        # token. The emit seam (``to_messages_api``) drops ``none``/``minimal``
+        # and surfaces ``xhigh`` as ``"max"`` — Anthropic's effort Literal
+        # accepts ``max`` (so XHIGH is *not* degraded, unlike the OpenAI seam)
+        # and has no ``minimal`` tier (so MINIMAL is dropped, unlike OpenAI).
+        # A ``None`` effort (the AgentConfig default) yields ``NOT_GIVEN``
+        # below, so ``output_config`` stays byte-identical to the pre-R57 path.
         self._last_reasoning_effort = coerce_effort(reasoning_effort)
 
         # R18: circuit-breaker pre-check. Fail-open — a missing / disabled /
@@ -439,6 +445,21 @@ class AnthropicTransport(LLMTransport):
         a_tools = _convert_tools(tools)
 
         client = self._ensure_client()
+
+        # R57: emit the reasoning-effort token on the wire via the Anthropic
+        # ``output_config.effort`` field (the emit seam ``to_messages_api``
+        # drops ``none``/``minimal`` and surfaces ``xhigh`` as ``"max"`` —
+        # Anthropic's ``OutputConfigParam.effort`` Literal is
+        # ``low``/``medium``/``high``/``xhigh``/``max``, so it accepts ``max``
+        # (unlike the OpenAI seam, which degrades ``xhigh`` → ``high``) and has
+        # no ``minimal`` tier (unlike OpenAI, which keeps it)). A ``None`` effort
+        # (the AgentConfig default) yields ``NOT_GIVEN`` here, so the request
+        # body stays byte-identical to the pre-R57 path.
+        _effort_token = (
+            self._last_reasoning_effort.to_messages_api()
+            if self._last_reasoning_effort is not None
+            else None
+        )
 
         try:
             async with client.messages.stream(
@@ -456,6 +477,11 @@ class AnthropicTransport(LLMTransport):
                     else anthropic.NOT_GIVEN
                 ),
                 max_tokens=max_tokens or 4096,
+                output_config=(
+                    {"effort": _effort_token}
+                    if _effort_token is not None
+                    else anthropic.NOT_GIVEN
+                ),
             ) as stream:
                 async for chunk in _anthropic_stream_to_chunks(stream):
                     if chunk.usage and isinstance(

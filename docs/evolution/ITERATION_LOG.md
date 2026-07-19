@@ -4167,3 +4167,66 @@ R55 闭合上游后，reasoning_effort 已从 `AgentConfig` 流到 transport 的
 ### Commit
 
 `feat(platform): R56 OpenAI transport reasoning_effort wire emission (fuse grok xai-grok-sampling-types)`
+
+## R57 — reasoning_effort 双 emit seam 的 Anthropic 半边闭合（融合 grok xai-grok-sampling-types Anthropic 发送接口，双 seam 对称闭环）
+
+> 锚定 R56（`57db9c2`）。R53 定义了 Anthropic 发送接口 `to_messages_api()` 但**从未调用**（搁置待「Anthropic wire 合约落定」）；R56 为 OpenAI 闭合了首个真实 wire 发射（`to_openai_effort_token()`），双 emit seam 的 OpenAI 半边落地。**本轮闭合 Anthropic 半边**：`anthropic_transport.stream_chat` 通过官方 `output_config.effort` 参数（SDK 0.105.2 一级参数，非 `extra_body` hack）有条件注入 effort token。至此 R53（类型层）+ R54（下游 coerce/record）+ R55（上游 config→core→client）+ R56（OpenAI wire）+ R57（Anthropic wire）= reasoning_effort 从 `AgentConfig` 到双协议 wire 的完整双向闭环，**双 emit seam 对称闭环**：两 seam 的语义分歧（MINIMAL：Anthropic 丢弃 vs OpenAI 保留；XHIGH：Anthropic→"max" vs OpenAI→"high"）各自是其 wire 合约的最优保真。
+
+### 本轮目标
+
+R56 发射了 OpenAI wire，但 Anthropic transport 仍只 coerce + 记录（R54 TODO 锚点持有）。本轮在**零行为回归**前提下闭合 Anthropic wire 发射：选官方 `output_config.effort` 参数（`inspect.signature(messages.stream)` 实证为一级参数 + `OutputConfigParam.effort` Literal 是 `low/medium/high/xhigh/max`，与 `to_messages_api()` 输出完美对齐）而非 `extra_body` hack。**核心设计决策**：双 emit seam 的语义分歧是**有意的** —— Anthropic 接受 `xhigh`+`max`（XHIGH→"max" 保留最高层级），OpenAI 最高是 `high`（XHIGH→"high" 降级）；Anthropic 无 `minimal` 层级（MINIMAL→None 丢弃），OpenAI 接受 `minimal`（MINIMAL→"minimal" 保留）。**零回归保证链**：默认 `AgentConfig.reasoning_effort=None` → `coerce_effort(None)=None` → `_effort_token` 由 `is not None` 保护为 None → `output_config=anthropic.NOT_GIVEN` → 字节级与 R56 前请求一致。
+
+### 融合结论
+
+- ✅ **保留**：`anthropic_transport.stream_chat` 的 `output_config` 注入 —— 在 `_ensure_client()` 之后、`try:` 之前计算 `_effort_token`（`self._last_reasoning_effort.to_messages_api()` if `is not None` else None），在 `client.messages.stream(...)` 参数列表注入 `output_config=({"effort": _effort_token} if token is not None else anthropic.NOT_GIVEN)`。注释说明 emit seam 丢弃 none/minimal、XHIGH→"max"，None effort（默认）→ NOT_GIVEN 字节不变。
+- ✅ **保留**：`last_reasoning_effort` property docstring 更新 —— 移除 R54 的「Nothing is emitted yet」/TODO，改为「R54 记录强制转换后的值；R57 通过 Anthropic `output_config.effort` 字段在 wire 上发送它」。
+- ✅ **保留**：R54 TODO 注释升级为「R54 coerce + R57 emit」注释（与 R56 OpenAI transport 对称）。
+- ✅ **保留**：`to_messages_api()` docstring 增强 —— 加 SDK 实证（`OutputConfigParam.effort` Literal = low/medium/high/xhigh/max）+ 与 `to_openai_effort_token` 的对称文档（逐条列出双 seam 的三处语义分歧点）。函数体不变（R53 已正确实现）。
+- ✅ **保留**：5 个新测试 —— test_reasoning_wiring.py 的「Anthropic transport wire emission (R57)」段落：`_AnthropicFakeStream`（async context manager + async iterator，模拟 `messages.stream` 返回的 ACM）+ `_AnthropicKwargsCapturingClient` fake（嵌套 `_Messages.stream(**kwargs)` 捕获 kwargs）+ `anthropic_transport` fixture（monkeypatch breaker fail-open）+ 5 测试（默认 NOT_GIVEN / HIGH→"high" / XHIGH→"max" 关键分歧 / MINIMAL→NOT_GIVEN 关键分歧 / NONE 变体→NOT_GIVEN）。
+- ✅ **保留（环境修复，非代码）**：`uv sync --extra dev` 把 pytest/pytest-asyncio/ruff 装入 venv —— 修复 R1-R56 一直潜伏的双环境债务（详见坑 1）。
+- ❌ **放弃**：**不通过 IPC 暴露 reasoning_effort** —— 前端按会话设置 effort 需 IPC 契约三同步（docs + types + protocol），留独立轮次。
+- ❌ **放弃**：**不迁移 sampling-types crate 其余类型**（ChatCompletionRequest/SamplingConfig/ToolChoice/Role/Usage）—— 继续聚焦 ReasoningEffort。
+- ❌ **放弃**：**不给 R57 代码做 SDK 版本兼容**（检测 output_config 是否在签名再 fallback 到 extra_body）—— 生产/开发环境用 venv 0.105.2（支持 output_config），版本兼容会掩盖环境债务且违背「用官方参数」设计。
+
+### 交付
+
+- `agent/minimax_code/agent/reasoning.py`（改，1 处）— `to_messages_api()` docstring 增强（加 SDK 实证 + 双 seam 对称文档），函数体不变。
+- `agent/minimax_code/agent/transports/anthropic_transport.py`（改，3 处）— (1) `last_reasoning_effort` property docstring（移除 TODO，声明 R57 wire 发射）；(2) R54 TODO 注释升级为「R54 coerce + R57 emit」；(3) `try:` 前注入 `_effort_token` 计算 + `messages.stream(...)` 参数列表加 `output_config`（NOT_GIVEN / `{"effort": token}` 三元）。
+- `agent/tests/test_reasoning_wiring.py`（改，导入块 + 末尾追加）— (1) 导入块加 `import anthropic` + `AnthropicTransport`；(2) 文件末尾追加「Anthropic transport wire emission (R57)」段落（fake stream ACM + kwargs 捕获 client + fixture + 5 测试）。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+### 映射决策树（本轮 Anthropic wire 发射 + 双 emit seam 对称闭环 + 双环境债务破案）
+
+本轮是 R53-R56 管道的**第二出口闭合**（Anthropic wire 发射），双 emit seam 对称闭环。**双 emit seam 完整分歧矩阵**（R56 表 + R57 列实测）：
+
+| 变体 | `to_messages_api`（Anthropic，R53/R57 发射） | `to_openai_effort_token`（OpenAI，R56 发射） | 分歧原因 |
+|---|---|---|---|
+| `NONE` | `None` → NOT_GIVEN | `None`（省略） | 一致 —— 两端都无 none 层级 |
+| `MINIMAL` | `None` → NOT_GIVEN（**丢弃**） | `"minimal"`（保留） | Anthropic 无 minimal 层级；OpenAI 接受 |
+| `LOW`/`MEDIUM`/`HIGH` | 原值 → `{"effort": 原值}` | 原值 | 一致 —— pass-through |
+| `XHIGH` | `"max"` → `{"effort": "max"}`（**保留最高**） | `"high"`（降级） | Anthropic 有 max 层级；OpenAI 最高是 high |
+
+**坑 1（本轮最大破案，预先存在债务被 R57 暴露并修复）**：**`uv run pytest` 双环境陷阱**。R57 代码 + ruff 全过 + 目标套件 62 passed，但完整套件 3 个 `test_agent_core` 测试失败，报 `TypeError: AsyncMessages.stream() got an unexpected keyword argument 'output_config'`。**三轮排查的矛盾**：(a) 裸 `uv run python -c` 调 `inspect.signature(AsyncMessages.stream)` → 版本 **0.105.2** @ `.venv\...`，参数**包含 `output_config`**；(b) 完全模拟测试环境（MockTransport + max_retries + async with + output_config dict/NOT_GIVEN）→ 全部 ENTERED ok；(c) 但 pytest 同一 venv 同一测试报 unexpected kwarg。**破案探针**：写临时 `test_probe_anthropic.py` 在 pytest 下 `import anthropic; inspect.signature(...)` → 版本 **0.75.0** @ `C:\Users\...\Programs\Python\Python312\Lib\site-packages\anthropic\`（**系统 Python！**），参数**无 output_config**。**根因**：`pytest` 声明在 `[project.optional-dependencies] dev`，但 CLAUDE.md 前置环境只写 `uv sync`（无 `--extra dev`）→ **venv 从未安装 pytest** → `uv run pytest` fallback 到**系统全局 Python**（装了 pytest + 旧 anthropic 0.75.0）。**R1-R56 一直在系统 Python 跑测试**，因不碰 output_config 所以一直绿；R57 第一次需要 0.105.2 的参数就炸。**修复**：`uv sync --extra dev` 装 pytest 9.0.3 + pytest-asyncio 1.4.0 + ruff 0.15.15 到 venv → `uv run pytest` 用 venv python（0.105.2）→ **1760 全绿**。**双铁证**：(1) 插件列表从 12 个（`langsmith`/`logfire`/`seleniumbase` 等系统插件）→ 2 个（`anyio`/`asyncio` 纯净 venv）；(2) `uv.lock` **未变**（dev deps 早已锁定，只是没 sync 到 venv）—— 环境修复纯粹是 venv 本地装包，零代码/零 lock 污染。
+
+**坑 2（自发现，已预判修复）**：**Anthropic fake stream 是 async context manager 而非 awaitable**。OpenAI 的 `chat.completions.create(**kwargs)` 返回 awaitable（R56 `_KwargsCapturingClient._Completions.create` 是 async def）；但 Anthropic 的 `client.messages.stream(...)` 返回 **async context manager**（`async with ... as stream:`），且 stream 本身是 async iterator。R57 的 `_AnthropicFakeStream` 必须同时实现 `__aenter__`/`__aexit__`（ACM 协议）+ `__aiter__`/`__anext__`（迭代协议），`_AnthropicKwargsCapturingClient._Messages.stream` 是**同步方法**返回 fake stream（kwargs 在调用时捕获，不等 `__aenter__`）。**结果**：5 个端到端测试一次通过，ACM 协议预判正确。
+
+**预存债务（R57 已修复）**：R39 `test_hunks_types.py::test_hunk_value_equality` 的 created_at 微秒漂移 flake —— 在系统 Python 环境（R56）偶发失败，**venv 环境（R57）稳定通过**（1760 passed, 0 failed）。推测系统 Python 的 datetime 精度/调度行为与 venv 不同，venv 环境更稳定。此债务随双环境修复一并消解，无需单独处理。
+
+### 验证
+
+- `ruff check` R57 改动的 3 文件（reasoning.py + anthropic_transport.py + test_reasoning_wiring.py）→ **All checks passed!**
+- `pytest tests/test_probe_anthropic.py tests/test_reasoning_wiring.py + 3 个原失败 test_agent_core` → **28 passed**（探针确认 venv 0.105.2 + R57 新增 5 + 原 3 失败现在全过；探针即删）。
+- 完整套件 `pytest` → **1760 passed, 10 skipped, 0 failed**（R56 1754+1flake → R57 1760，**+5 精确**为 R57 新增；**0 failed** —— R39 flake 在 venv 环境稳定通过，双环境修复的额外红利）。
+
+### YAGNI 边界
+
+- ❌ **不通过 IPC 暴露 reasoning_effort** —— 前端按会话设置 effort 需 IPC 契约三同步（docs + types + protocol），留独立轮次（R58 候选）。
+- ❌ **不迁移 sampling-types crate 其余类型**（ChatCompletionRequest/SamplingConfig/ToolChoice/Role/Usage）—— 继续聚焦 ReasoningEffort。
+- ❌ **不给 R57 做 SDK 版本兼容**（output_config 签名检测 + extra_body fallback）—— 生产/开发用 venv 0.105.2，兼容会掩盖刚修复的环境债务。
+- ❌ **不在 R57 单独修 R39 hunk flake** —— 随双环境修复已自然消解（venv 下稳定通过），无需单独 commit。
+- ❌ **不合并双 emit seam 为单函数** —— `to_messages_api` 与 `to_openai_effort_token` 的语义分歧（MINIMAL/XHIGH）是各自 wire 合约的最优保真（与 R56 一致）。
+- ❌ **不更新 CLAUDE.md 的 `uv sync` → `uv sync --extra dev`** —— 文档变更留独立提交（避免与 R57 代码 commit 混淆；当前 ITERATION_LOG 已充分记录此坑）。
+
+### Commit
+
+`feat(platform): R57 Anthropic transport reasoning_effort wire emission (fuse grok xai-grok-sampling-types)`

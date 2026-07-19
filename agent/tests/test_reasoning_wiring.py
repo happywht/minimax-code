@@ -21,12 +21,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import anthropic
 import pytest
 
 from minimax_code.agent import reasoning as R
 from minimax_code.agent.core import AgentConfig, AgentCore
 from minimax_code.agent.llm import MiniMaxClient
 from minimax_code.agent.tools import ToolRegistry
+from minimax_code.agent.transports.anthropic_transport import AnthropicTransport
 from minimax_code.agent.transports.mock_transport import MockTransport
 from minimax_code.agent.transports.openai_transport import OpenAITransport
 
@@ -301,3 +303,142 @@ async def test_openai_transport_none_variant_emits_nothing(openai_transport):
     transport, fake = openai_transport
     _ = [c async for c in transport.stream_chat(_MSGS, model="m", reasoning_effort="none")]
     assert "reasoning_effort" not in fake.captured_kwargs
+
+
+# ---------------------------------------------------------------------------
+# Anthropic transport wire emission (R57)
+# ---------------------------------------------------------------------------
+#
+# The Anthropic mirror of the R56 OpenAI block above. R57 emits reasoning_effort
+# on the wire via the Anthropic-native ``output_config.effort`` field (the emit
+# seam :meth:`ReasoningEffort.to_messages_api`), using a fake SDK client that
+# captures the kwargs passed to ``client.messages.stream``. The crucial point
+# these tests pin is *not* parity with OpenAI but the deliberate divergence of
+# the two seams — Anthropic's ``OutputConfigParam.effort`` Literal is
+# ``low``/``medium``/``high``/``xhigh``/``max`` (SDK-confirmed), so:
+#
+# * XHIGH surfaces as ``"max"`` (kept — Anthropic accepts ``max``), whereas the
+#   OpenAI seam degrades XHIGH → ``"high"``.
+# * MINIMAL is dropped (``NOT_GIVEN``), whereas the OpenAI seam keeps it as
+#   ``"minimal"``.
+#
+# The default (None) leaves ``output_config`` at ``NOT_GIVEN`` — zero regression
+# vs the pre-R57 request body.
+
+
+class _AnthropicFakeStream:
+    """An async context manager + async iterator that yields nothing (R57).
+
+    ``client.messages.stream(...)`` returns an *async context manager* whose
+    ``__aenter__`` yields the stream itself (which is then iterated). These
+    tests inspect the captured call kwargs, not the streamed events, so the
+    stream body is empty.
+    """
+
+    async def __aenter__(self) -> _AnthropicFakeStream:
+        return self
+
+    async def __aexit__(self, *_: Any) -> bool:
+        return False
+
+    def __aiter__(self) -> _AnthropicFakeStream:
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+
+class _AnthropicKwargsCapturingClient:
+    """Minimal fake ``anthropic.AsyncAnthropic`` that records stream kwargs (R57).
+
+    Mirrors :class:`_KwargsCapturingClient` (OpenAI, R56) but specialised for
+    the Anthropic ``messages.stream`` path: ``stream(**kwargs)`` returns an async
+    context manager (not an awaitable), so the fake captures kwargs at call time
+    and returns an empty :class:`_AnthropicFakeStream`.
+    """
+
+    def __init__(self) -> None:
+        self.captured_kwargs: dict[str, Any] | None = None
+        outer = self
+
+        class _Messages:
+            def stream(self, **kwargs: Any) -> _AnthropicFakeStream:
+                outer.captured_kwargs = dict(kwargs)
+                return _AnthropicFakeStream()
+
+        self.messages = _Messages()
+
+    async def close(self) -> None:
+        return None
+
+
+@pytest.fixture
+def anthropic_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[AnthropicTransport, _AnthropicKwargsCapturingClient]:
+    """An ``AnthropicTransport`` wired to a kwargs-capturing fake (breaker disabled).
+
+    Returns ``(transport, fake)`` so a test can drive the stream then assert on
+    ``fake.captured_kwargs`` — the exact kwargs that reached
+    ``client.messages.stream``. The breaker registry is monkeypatched to ``None``
+    (fail-open) so the circuit-breaker pre-check is a no-op (same shape as the
+    R56 OpenAI fixture).
+    """
+    import minimax_code.app as app
+
+    monkeypatch.setattr(app, "ensure_breaker_registry", lambda: None)
+    fake = _AnthropicKwargsCapturingClient()
+    transport = AnthropicTransport(api_key="k", base_url="http://x", client=fake)
+    return transport, fake
+
+
+async def test_anthropic_transport_default_emits_no_output_config(anthropic_transport):
+    """Zero regression: no effort ⇒ ``output_config`` is ``NOT_GIVEN``.
+
+    The AgentConfig default (None) flows coerce → None → emit-seam None, so the
+    request body is byte-identical to the pre-R57 path (no ``output_config``
+    injected).
+    """
+    transport, fake = anthropic_transport
+    _ = [c async for c in transport.stream_chat(_MSGS, model="m")]
+    assert fake.captured_kwargs is not None
+    assert fake.captured_kwargs["output_config"] is anthropic.NOT_GIVEN
+
+
+async def test_anthropic_transport_high_emits_high_effort(anthropic_transport):
+    """HIGH → ``output_config == {"effort": "high"}`` (pass-through)."""
+    transport, fake = anthropic_transport
+    _ = [c async for c in transport.stream_chat(_MSGS, model="m", reasoning_effort="high")]
+    assert fake.captured_kwargs["output_config"] == {"effort": "high"}
+
+
+async def test_anthropic_transport_xhigh_emits_max_unlike_openai(anthropic_transport):
+    """XHIGH (via the ``"max"`` alias) → ``"max"`` (kept; Anthropic accepts ``max``).
+
+    This is the key divergence from the OpenAI seam (R56), where XHIGH degrades
+    to ``"high"``: Anthropic's ``OutputConfigParam.effort`` Literal includes
+    ``max`` (and ``xhigh``), so the deepest requested tier survives intact.
+    """
+    transport, fake = anthropic_transport
+    _ = [c async for c in transport.stream_chat(_MSGS, model="m", reasoning_effort="max")]
+    assert fake.captured_kwargs["output_config"] == {"effort": "max"}
+
+
+async def test_anthropic_transport_minimal_omitted_unlike_openai(anthropic_transport):
+    """MINIMAL → ``NOT_GIVEN`` (dropped; Anthropic has no ``minimal`` tier).
+
+    The other key divergence from the OpenAI seam (R56), where MINIMAL is kept
+    as ``"minimal"``: Anthropic's ``OutputConfigParam.effort`` Literal has no
+    ``minimal`` value, so the emit seam returns ``None`` and the field is
+    omitted rather than erroring.
+    """
+    transport, fake = anthropic_transport
+    _ = [c async for c in transport.stream_chat(_MSGS, model="m", reasoning_effort="minimal")]
+    assert fake.captured_kwargs["output_config"] is anthropic.NOT_GIVEN
+
+
+async def test_anthropic_transport_none_variant_emits_nothing(anthropic_transport):
+    """The NONE variant → ``NOT_GIVEN`` (Anthropic has no ``none`` tier)."""
+    transport, fake = anthropic_transport
+    _ = [c async for c in transport.stream_chat(_MSGS, model="m", reasoning_effort="none")]
+    assert fake.captured_kwargs["output_config"] is anthropic.NOT_GIVEN
