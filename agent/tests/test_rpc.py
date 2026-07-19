@@ -17,6 +17,8 @@ from pydantic import TypeAdapter
 from minimax_code.workspace_types._wire import sort_mappings
 from minimax_code.workspace_types.rpc import (
     TURN_ACTIVE,
+    # git (R74)
+    UNTRACKED_CONTENT_THRESHOLD,
     WORKSPACE_CLIENT_EXT_NOTIFICATIONS_TOOL_ID,
     WORKSPACE_EVENTS_TOOL_ID,
     WORKSPACE_RPC_TOOL_ID,
@@ -24,6 +26,9 @@ from minimax_code.workspace_types.rpc import (
     AgentConfigFile,
     BackgroundTaskSummaryWire,
     BeginPromptReq,
+    BinaryFileInfoData,
+    ChangeType,
+    CheckoutCommitResponse,
     ClientId,
     CodeFindDefinitionsReq,
     CodeFindReferencesReq,
@@ -34,6 +39,9 @@ from minimax_code.workspace_types.rpc import (
     CodeIndexStatusResponse,
     CodeNavLocation,
     CodeNavResponse,
+    CommitData,
+    CommitResult,
+    CommitWithPatchData,
     ConfigureMcpReq,
     ConflictType,
     ContentMatch,
@@ -41,6 +49,9 @@ from minimax_code.workspace_types.rpc import (
     ContentSearchData,
     ContentSearchRequest,
     DeployError,
+    DetectVcsKindReq,
+    DiffStatsSummary,
+    DiscardScope,
     DiscoverAgentsMdReq,
     DiscoverPluginsReq,
     DiscoverSkillsReq,
@@ -52,10 +63,40 @@ from minimax_code.workspace_types.rpc import (
     FuzzyCloseReq,
     FuzzyOpenReq,
     FuzzyStatusReq,
+    GitBranchesReq,
+    GitBranchInfoReq,
+    GitBranchListData,
+    GitCheckoutCommitReq,
+    GitCheckoutReq,
+    GitCollectChangesReq,
+    GitCollectChangesResponse,
+    GitCommitReq,
+    GitCurrentCommitReq,
+    GitDiffReq,
+    GitDiffsData,
+    GitDiscardReq,
+    GitError,
+    GitFileChange,
+    GitFilesReq,
+    GitInfoData,
+    GitInfoReq,
+    GitMetadataReq,
+    GitReadFilesData,
+    GitResolveRootReq,
+    GitStageContentReq,
+    GitStageReq,
+    GitStashReq,
+    GitStatusData,
+    GitStatusExtReq,
+    GitStatusExtResponse,
+    GitStatusFormat,
+    GitStatusReq,
+    GitUnstageReq,
     HookEventNameWire,
     HookRegistryReq,
     HookRegistryWire,
     HookSpecWire,
+    IdentityData,
     InstallPluginReq,
     ListBackgroundTasksReq,
     ListBackgroundTasksResponse,
@@ -65,16 +106,20 @@ from minimax_code.workspace_types.rpc import (
     LoadPermissionsReq,
     LoadProjectConfigReq,
     RefreshPluginsReq,
+    RepoInfo,
     ResolveFileReferencesReq,
     RewindToReq,
     RpcEnvelope,
     RpcError,
     SkillInfo,
     SkillScope,
+    StageData,
     TargetClientId,
     TodoSummaryWire,
     ToolDefinitionsReq,
+    UncommittedChangesData,
     UpdateToolConfigReq,
+    VcsKind,
     WorkspaceInfo,
     WorkspaceInfoReq,
     WorkspaceRpc,
@@ -1512,3 +1557,368 @@ class TestSkills:
         ok, err = rec.into_result()
         assert err is None
         assert ok == plugins
+
+
+class TestGit:
+    """R74: workspace.git_* / detect_vcs_kind + 4 enums + ~22 wire types.
+
+    Pins the serde shape of grok's ``xai-grok-workspace-types::rpc::git`` —
+    the 20 RPC method constants, the mixed skip matrix, the ``rename="type"``
+    key override, ``Vec::is_empty`` elision, and the hand-written legacy-flat
+    Deserialize on :class:`GitStatusExtResponse`.
+    """
+
+    # -- method constants (grok method_constant × 20) -----------------------
+
+    def test_method_constants(self):
+        assert GitStatusReq.METHOD == "workspace.git_status"
+        assert GitStatusExtReq.METHOD == "workspace.git_status_ext"
+        assert GitFilesReq.METHOD == "workspace.git_files"
+        assert GitDiffReq.METHOD == "workspace.git_diff"
+        assert GitStageReq.METHOD == "workspace.git_stage"
+        assert GitStageContentReq.METHOD == "workspace.git_stage_content"
+        assert GitUnstageReq.METHOD == "workspace.git_unstage"
+        assert GitDiscardReq.METHOD == "workspace.git_discard"
+        assert GitCommitReq.METHOD == "workspace.git_commit"
+        assert GitCheckoutReq.METHOD == "workspace.git_checkout"
+        assert GitStashReq.METHOD == "workspace.git_stash"
+        assert GitInfoReq.METHOD == "workspace.git_info"
+        assert GitBranchesReq.METHOD == "workspace.git_branches"
+        assert GitResolveRootReq.METHOD == "workspace.git_resolve_root"
+        assert GitCurrentCommitReq.METHOD == "workspace.git_current_commit"
+        assert DetectVcsKindReq.METHOD == "workspace.detect_vcs_kind"
+        assert GitCheckoutCommitReq.METHOD == "workspace.git_checkout_commit"
+        assert GitBranchInfoReq.METHOD == "workspace.git_branch_info"
+        assert GitMetadataReq.METHOD == "workspace.git_metadata"
+        assert GitCollectChangesReq.METHOD == "workspace.git_collect_changes"
+
+    # -- Response ClassVar shapes (Value / () / Option / enum / struct) ------
+
+    def test_value_responses_are_any(self):
+        # serde_json::Value → Any (no type parameter).
+        assert GitStatusReq.Response is Any
+        assert GitMetadataReq.Response is Any
+
+    def test_unit_responses_are_none_type(self):
+        # () → type(None).
+        assert GitStageContentReq.Response is type(None)
+        assert GitUnstageReq.Response is type(None)
+        assert GitDiscardReq.Response is type(None)
+        assert GitCheckoutReq.Response is type(None)
+        assert GitStashReq.Response is type(None)
+
+    def test_option_pathbuf_and_string_responses_are_str_or_none(self):
+        # Option<PathBuf> / Option<String> → str | None.
+        assert GitResolveRootReq.Response == str | None
+        assert GitCurrentCommitReq.Response == str | None
+
+    def test_option_git_info_data_response(self):
+        # Option<GitInfoData> → GitInfoData | None.
+        assert GitBranchInfoReq.Response == GitInfoData | None
+
+    def test_enum_response_is_vcs_kind(self):
+        assert DetectVcsKindReq.Response is VcsKind
+
+    def test_struct_responses_are_typed(self):
+        assert GitStatusExtReq.Response is GitStatusExtResponse
+        assert GitFilesReq.Response is GitReadFilesData
+        assert GitDiffReq.Response is GitDiffsData
+        assert GitStageReq.Response is StageData
+        assert GitCommitReq.Response is CommitResult
+        assert GitInfoReq.Response is GitInfoData
+        assert GitBranchesReq.Response is GitBranchListData
+        assert GitCheckoutCommitReq.Response is CheckoutCommitResponse
+        assert GitCollectChangesReq.Response is GitCollectChangesResponse
+
+    # -- enums (4) ----------------------------------------------------------
+
+    def test_vcs_kind_camel_case_wire_values(self):
+        assert VcsKind.GIT == "git"
+        assert VcsKind.JUJUTSU_COLOCATED == "jujutsuColocated"
+        assert VcsKind.NONE == "none"
+        # Predicates mirror grok's is_jj / is_repo.
+        assert VcsKind.JUJUTSU_COLOCATED.is_jj() is True
+        assert VcsKind.GIT.is_jj() is False
+        assert VcsKind.GIT.is_repo() is True
+        assert VcsKind.NONE.is_repo() is False
+
+    def test_change_type_lowercase_wire_values(self):
+        # No #[default] in grok → no default() method.
+        assert ChangeType.CREATE == "create"
+        assert ChangeType.EDIT == "edit"
+        assert ChangeType.DELETE == "delete"
+        assert ChangeType.RENAME == "rename"
+        assert ChangeType.COPY == "copy"
+        assert ChangeType.TYPECHANGE == "typechange"
+        assert ChangeType.UNTRACKED == "untracked"
+        assert not hasattr(ChangeType, "default")
+
+    def test_git_status_format_lowercase_with_default(self):
+        assert GitStatusFormat.STRUCTURED == "structured"
+        assert GitStatusFormat.PROMPT == "prompt"
+
+    def test_discard_scope_lowercase_with_both_default(self):
+        assert DiscardScope.WORKING == "working"
+        assert DiscardScope.STAGED == "staged"
+        assert DiscardScope.BOTH == "both"
+
+    # -- GitFileChange rename="type" override (grok git_file_change_serializes_type_key)
+
+    def test_git_file_change_serializes_type_key(self):
+        # #[serde(rename = "type")] → wire key is literally "type", not the
+        # "changeType" the camelCase generator would produce.
+        ch = GitFileChange(path="a.txt", change_type=ChangeType.EDIT, additions=1, deletions=2)
+        wire = ch.to_wire()
+        assert "type" in wire
+        assert wire["type"] == "edit"
+        assert "changeType" not in wire
+        assert "change_type" not in wire
+        # Required + Option-skip mix: path/additions/deletions present; the
+        # 7 Option fields (old_path, staged, patch, ...) omitted when None.
+        assert wire["path"] == "a.txt"
+        assert wire["additions"] == 1
+        assert wire["deletions"] == 2
+        for absent in ("oldPath", "staged", "patch", "patchBytes", "patchLines",
+                       "oldText", "newText"):
+            assert absent not in wire
+
+    def test_git_file_change_accepts_type_alias_on_construct(self):
+        # populate_by_name=True: validates under either the snake name or the
+        # "type" wire alias.
+        ch = GitFileChange.model_validate(
+            {"path": "b.txt", "type": "create", "additions": 0, "deletions": 0}
+        )
+        assert ch.change_type is ChangeType.CREATE
+        assert ch.to_wire()["type"] == "create"
+
+    # -- GitStatusExtResponse constructors + legacy-flat Deserialize --------
+
+    def test_git_status_ext_response_constructors(self):
+        data = GitStatusData(root="/r", branch="main")
+        structured = GitStatusExtResponse.structured(data)
+        assert structured.format is GitStatusFormat.STRUCTURED
+        assert structured.data is data
+        assert structured.prompt is None
+        prompt = GitStatusExtResponse.with_prompt("M file")
+        assert prompt.format is GitStatusFormat.PROMPT
+        assert prompt.prompt == "M file"
+        assert prompt.data is None
+        default = GitStatusExtResponse.default()
+        assert default.format is GitStatusFormat.STRUCTURED
+        assert default.data is None
+        assert default.prompt is None
+
+    def test_git_status_ext_response_structured_roundtrip(self):
+        data = GitStatusData(root="/r", branch="main", staged=[])
+        wire = GitStatusExtResponse.structured(data).to_wire()
+        # format always emitted; data present; prompt omitted (None).
+        assert wire["format"] == "structured"
+        assert "data" in wire
+        assert "prompt" not in wire
+        rec = GitStatusExtResponse.model_validate(wire)
+        assert rec.format is GitStatusFormat.STRUCTURED
+        assert isinstance(rec.data, GitStatusData)
+        assert rec.data.root == "/r"
+
+    def test_git_status_ext_response_prompt_roundtrip(self):
+        wire = GitStatusExtResponse.with_prompt("ahead 2").to_wire()
+        assert wire == {"format": "prompt", "prompt": "ahead 2"}
+        rec = GitStatusExtResponse.model_validate(wire)
+        assert rec.format is GitStatusFormat.PROMPT
+        assert rec.prompt == "ahead 2"
+        assert rec.data is None
+
+    def test_git_status_ext_response_default_emits_only_format(self):
+        wire = GitStatusExtResponse.default().to_wire()
+        assert wire == {"format": "structured"}
+
+    def test_git_status_ext_response_new_envelope(self):
+        # A payload already carrying an envelope key passes through the
+        # before-validator unwrapped.
+        raw = {"format": "prompt", "prompt": "clean"}
+        rec = GitStatusExtResponse.model_validate(raw)
+        assert rec.format is GitStatusFormat.PROMPT
+
+    def test_git_status_ext_response_legacy_flat_is_rewrapped(self):
+        # Version skew: a legacy flat GitStatusData (no format/data/prompt
+        # keys) is wrapped as {format: structured, data: <payload>}.
+        legacy = {"root": "/r", "branch": "main", "staged": [], "unstaged": []}
+        rec = GitStatusExtResponse.model_validate(legacy)
+        assert rec.format is GitStatusFormat.STRUCTURED
+        assert isinstance(rec.data, GitStatusData)
+        assert rec.data.root == "/r"
+        assert rec.data.branch == "main"
+        assert rec.prompt is None
+
+    def test_git_status_ext_response_empty_mapping_not_miswrapped(self):
+        # An empty mapping (cls()) is not falsely treated as a legacy flat
+        # payload — the `and data` guard short-circuits the rewrap.
+        rec = GitStatusExtResponse()
+        assert rec.format is GitStatusFormat.STRUCTURED
+        assert rec.data is None
+        assert rec.to_wire() == {"format": "structured"}
+
+    # -- Vec::is_empty elision (CommitWithPatchData / UncommittedChangesData)
+
+    def test_commit_with_patch_data_omits_empty_binary_files(self):
+        # binary_files: Vec with #[serde(default, skip_serializing_if =
+        # "Vec::is_empty")] → omitted when empty (NEW non-Option elision).
+        stats = DiffStatsSummary(files_changed=1, insertions=2, deletions=3)
+        ident = IdentityData(time_seconds=0, offset_minutes=0)
+        c = CommitWithPatchData(
+            id="abc", parents=[], author=ident, committer=ident, stats=stats,
+        )
+        wire = c.to_wire()
+        assert "binaryFiles" not in wire
+        # Non-empty → emitted.
+        c2 = c.model_copy(update={"binary_files": [
+            BinaryFileInfoData(path="x.bin", status="added", size_bytes=10,
+                               blob_included=False, truncated=False),
+        ]})
+        assert "binaryFiles" in c2.to_wire()
+
+    def test_uncommitted_changes_data_omits_empty_binary_files(self):
+        stats = DiffStatsSummary(files_changed=0, insertions=0, deletions=0)
+        u = UncommittedChangesData(staged_stats=stats, unstaged_stats=stats)
+        wire = u.to_wire()
+        assert "stagedBinaryFiles" not in wire
+        assert "unstagedBinaryFiles" not in wire
+
+    # -- GitInfoData mixed skip matrix --------------------------------------
+
+    def test_git_info_data_current_branch_null_kept(self):
+        # current_branch has NO skip_serializing_if → None stays as wire null.
+        # default_branch / vcs_kind DO skip → omitted when None.
+        info = GitInfoData(root="/r", remotes=["origin"])
+        wire = info.to_wire()
+        assert wire["currentBranch"] is None  # null preserved
+        assert "defaultBranch" not in wire  # None omitted
+        assert "vcsKind" not in wire  # None omitted
+        assert wire["root"] == "/r"
+        assert wire["remotes"] == ["origin"]
+
+    def test_git_info_data_default_branch_and_vcs_kind_emitted_when_set(self):
+        info = GitInfoData(root="/r", remotes=[], current_branch="main",
+                           default_branch="main", vcs_kind=VcsKind.GIT)
+        wire = info.to_wire()
+        assert wire["currentBranch"] == "main"
+        assert wire["defaultBranch"] == "main"
+        assert wire["vcsKind"] == "git"
+
+    # -- RepoInfo is_detached (non-Option bool always emitted) ---------------
+
+    def test_repo_info_is_detached_false_is_emitted(self):
+        # #[serde(default)] bool with no skip → False is emitted as false
+        # (False is not None, so it survives _omit_none).
+        info = RepoInfo(root="/r")
+        wire = info.to_wire()
+        assert wire["isDetached"] is False
+        assert wire["root"] == "/r"
+        # All 8 Option fields omitted when None.
+        for absent in ("gitDir", "head", "branch", "upstream", "upstreamHead",
+                       "remoteUrl", "ahead", "behind"):
+            assert absent not in wire
+
+    # -- GitError keeps null path (Option without skip) ---------------------
+
+    def test_git_error_keeps_null_path(self):
+        err = GitError(code="notfound", message="nope")
+        assert err.to_wire() == {"path": None, "code": "notfound", "message": "nope"}
+
+    # -- GitStatusExtReq manual Default (camelCase + default_true bools) ----
+
+    def test_git_status_ext_req_default_roundtrip(self):
+        req = GitStatusExtReq.default()
+        # Manual Default: the two default_true bools are True (not False as a
+        # derived Default would set them).
+        assert req.include_untracked is True
+        assert req.ignore_submodules is True
+        assert req.include_stats is False
+        assert req.include_patches is False
+        assert req.format is GitStatusFormat.STRUCTURED
+        wire = req.to_wire()
+        # camelCase wire keys (gitRoot, includeUntracked, ...).
+        assert wire["includeUntracked"] is True
+        assert wire["ignoreSubmodules"] is True
+        assert wire["format"] == "structured"
+
+    def test_git_status_req_value_response(self):
+        assert GitStatusReq().to_wire() == {}
+
+    # -- GitCollectChangesReq defaults (default_true + default_max_file_bytes)
+
+    def test_git_collect_changes_req_defaults(self):
+        req = GitCollectChangesReq(repo_path="/r")
+        assert req.include_commits is True
+        assert req.include_uncommitted is True
+        assert req.base_ref is None
+        assert req.max_file_bytes == 0
+        assert req.force_include_paths == []
+        wire = req.to_wire()
+        # snake_case (no rename_all): repo_path stays snake.
+        assert wire["repo_path"] == "/r"
+        assert wire["include_commits"] is True
+        assert wire["max_file_bytes"] == 0
+
+    # -- GitDiffReq from_ alias="from" --------------------------------------
+
+    def test_git_diff_req_from_alias(self):
+        req = GitDiffReq(paths=["a.txt"])
+        assert req.from_ == "HEAD"  # default_head
+        assert req.to == "working"  # default_working
+        wire = req.to_wire()
+        # "from" is a Python keyword → field is from_, wire key is "from".
+        assert wire["from"] == "HEAD"
+        assert wire["to"] == "working"
+
+    # -- GitCheckoutCommitResponse / CommitResult keep null (Option no skip)
+
+    def test_checkout_commit_response_keeps_null_error(self):
+        resp = CheckoutCommitResponse(checked_out=True, stashed=False, fetched=False)
+        assert resp.to_wire() == {
+            "checked_out": True, "stashed": False, "fetched": False, "error": None,
+        }
+
+    def test_commit_result_keeps_null_warning(self):
+        result = CommitResult(data=CommitData())
+        wire = result.to_wire()
+        assert wire["warning"] is None
+        # Nested CommitData fires its _CamelOmitNone serializer at depth.
+        assert "commitHash" not in wire["data"]
+
+    # -- UNTRACKED_CONTENT_THRESHOLD constant -------------------------------
+
+    def test_untracked_content_threshold(self):
+        assert UNTRACKED_CONTENT_THRESHOLD == 1024 * 1024
+
+    # -- envelope round-trip with Option-shaped responses -------------------
+
+    def test_envelope_ok_path_response_some(self):
+        wire = RpcEnvelope.ok("/repo/root").to_wire()
+        rec = RpcEnvelope.from_wire(wire, GitResolveRootReq.Response)
+        ok, err = rec.into_result()
+        assert err is None
+        assert ok == "/repo/root"
+
+    def test_envelope_ok_path_response_none(self):
+        wire = RpcEnvelope.ok(None).to_wire()
+        rec = RpcEnvelope.from_wire(wire, GitResolveRootReq.Response)
+        ok, err = rec.into_result()
+        assert err is None
+        assert ok is None
+
+    def test_envelope_ok_vcs_kind_response(self):
+        wire = RpcEnvelope.ok("git").to_wire()
+        rec = RpcEnvelope.from_wire(wire, DetectVcsKindReq.Response)
+        ok, err = rec.into_result()
+        assert err is None
+        assert ok is VcsKind.GIT
+
+    def test_envelope_ok_git_info_data_or_none(self):
+        info = GitInfoData(root="/r", remotes=["origin"], current_branch="main")
+        wire = RpcEnvelope.ok(info).to_wire()
+        rec = RpcEnvelope.from_wire(wire, GitBranchInfoReq.Response)
+        ok, err = rec.into_result()
+        assert err is None
+        assert isinstance(ok, GitInfoData)
+        assert ok.root == "/r"

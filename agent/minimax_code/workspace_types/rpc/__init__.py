@@ -31,8 +31,18 @@ plus the :class:`SkillScope` forward-tolerant enum and the 26-field
 to the layer (a ``default = "default_true"`` bool field, bulk
 ``Option::is_none`` elision via a wrap ``model_serializer`` that drops every
 ``None``-valued key, and bare-list ``Response = Vec<Value>`` / ``Vec<SkillInfo>``
-surfaced as ``list[Any]`` / ``list[SkillInfo]``). The remaining 4 RPC files
-(fs / git / hunks / worktree) land in R74+.
+surfaced as ``list[Any]`` / ``list[SkillInfo]``). R74 adds :mod:`git` — the
+20-method git namespace (``workspace.git_*`` + ``workspace.detect_vcs_kind``),
+the dependency root of the remaining crate types (:class:`ChangeType` /
+:class:`GitFileChange` are reused by R75+ worktree / hunks). It lands five more
+serde patterns new to the layer (a per-field ``rename = "type"`` key override
+on top of camelCase ``rename_all``, a non-``Option`` empty-collection elision
+via ``skip_serializing_if = "Vec::is_empty"``, a mixed skip matrix where some
+``Option`` fields keep ``null`` while others are omitted, a hand-written
+``Deserialize`` that rewraps legacy flat payloads for version skew, and
+``Option``-shaped ``Response`` types like ``str | None`` /
+``GitInfoData | None``). The remaining 3 RPC files (fs / hunks / worktree)
+land in R75+.
 """
 
 from __future__ import annotations
@@ -53,6 +63,56 @@ from minimax_code.workspace_types.rpc.code_nav import (
 )
 from minimax_code.workspace_types.rpc.deploy import DeployError
 from minimax_code.workspace_types.rpc.envelope import TURN_ACTIVE, RpcEnvelope, RpcError
+from minimax_code.workspace_types.rpc.git import (
+    UNTRACKED_CONTENT_THRESHOLD,
+    BinaryFileInfoData,
+    ChangeType,
+    CheckoutCommitResponse,
+    CommitData,
+    CommitResult,
+    CommitWithPatchData,
+    DetectVcsKindReq,
+    DiffStatsSummary,
+    DiscardScope,
+    GitBranchEntry,
+    GitBranchesReq,
+    GitBranchInfoReq,
+    GitBranchListData,
+    GitCheckoutCommitReq,
+    GitCheckoutReq,
+    GitCollectChangesReq,
+    GitCollectChangesResponse,
+    GitCommitReq,
+    GitCurrentCommitReq,
+    GitDiffReq,
+    GitDiffsData,
+    GitDiscardReq,
+    GitError,
+    GitFileChange,
+    GitFilesReq,
+    GitInfoData,
+    GitInfoReq,
+    GitMetadataReq,
+    GitReadFile,
+    GitReadFilesData,
+    GitResolveRootReq,
+    GitStageContentReq,
+    GitStageReq,
+    GitStashReq,
+    GitStatusData,
+    GitStatusExtReq,
+    GitStatusExtResponse,
+    GitStatusFormat,
+    GitStatusReq,
+    GitUnstageReq,
+    IdentityData,
+    PublicBaseData,
+    RepoInfo,
+    StageData,
+    UncommittedChangesData,
+    UntrackedFileData,
+    VcsKind,
+)
 from minimax_code.workspace_types.rpc.hooks import (
     HookEventNameWire,
     HookRegistryReq,
@@ -161,6 +221,55 @@ __all__ = [
     "SkillInfo",
     "DiscoverSkillsReq",
     "DiscoverPluginsReq",
+    # git (R74, rename="type" override + Vec::is_empty elision + mixed skip matrix + legacy Deserialize + Option Response)
+    "VcsKind",
+    "ChangeType",
+    "GitStatusFormat",
+    "DiscardScope",
+    "CommitData",
+    "CommitResult",
+    "CheckoutCommitResponse",
+    "StageData",
+    "GitFileChange",
+    "GitStatusData",
+    "GitStatusExtResponse",
+    "GitError",
+    "GitReadFile",
+    "GitReadFilesData",
+    "GitDiffsData",
+    "GitInfoData",
+    "GitBranchEntry",
+    "GitBranchListData",
+    "RepoInfo",
+    "DiffStatsSummary",
+    "PublicBaseData",
+    "CommitWithPatchData",
+    "IdentityData",
+    "BinaryFileInfoData",
+    "UncommittedChangesData",
+    "UntrackedFileData",
+    "GitCollectChangesResponse",
+    "UNTRACKED_CONTENT_THRESHOLD",
+    "GitStatusReq",
+    "GitStatusExtReq",
+    "GitFilesReq",
+    "GitDiffReq",
+    "GitStageReq",
+    "GitStageContentReq",
+    "GitUnstageReq",
+    "GitDiscardReq",
+    "GitCommitReq",
+    "GitCheckoutReq",
+    "GitStashReq",
+    "GitInfoReq",
+    "GitBranchesReq",
+    "GitResolveRootReq",
+    "GitCurrentCommitReq",
+    "DetectVcsKindReq",
+    "GitCheckoutCommitReq",
+    "GitBranchInfoReq",
+    "GitMetadataReq",
+    "GitCollectChangesReq",
     # workspace (R72, skip_serializing_if=String::is_empty + bulk Response=Value + typed shape)
     "WorkspaceInfo",
     "BackgroundTaskSummaryWire",

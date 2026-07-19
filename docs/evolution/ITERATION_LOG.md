@@ -5806,3 +5806,115 @@ cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
 ### Commit
 
 `feat(platform): R73 skills RPC discovery layer (fuse grok xai-grok-workspace-types rpc/ skills.rs 275 lines → 1 module: 2 workspace.discover_* methods[discover_skills Response=list[SkillInfo] + discover_plugins Response=list[Any]] + SkillScope forward-tolerant str-subclass enum[6 known + Unknown, reuses R71 __get_pydantic_core_schema__ shape, field-value vs R71 map-key] + SkillInfo 26-field payload[4 required + 18 Option + 4 bool, lands 3 serde patterns new to layer: default="default_true" bool[user_invocable/enabled=True, both True and False always emitted] + bulk Option::is_none elision via @model_serializer mode=wrap handler(self) + {k:v for k,v in raw.items() if v is not None}[3rd Option-elision impl after R70 plain 2-field dict + R72 wrap-mixin single-key pop, scales to 18 fields without hand-building 26-key dict, preserves empty vec/map/False bool] + bare-list Response=Vec<Value>/Vec<SkillInfo> surfaced as list[Any]/list[SkillInfo][envelope already supports bare lists via _dump_payload list branch + TypeAdapter, no envelope change]], SkillInfo no-Default → base default() raises[pytest.raises + noqa:B017], 21 new tests zero-regression)``
+
+
+---
+
+## R74 — 远程 workspace RPC git 命名空间依赖根层(融合 xai-grok-workspace-types rpc/ git.rs 1077 行)
+
+锚点:R74-1 52c67b3
+
+### 本轮目标
+
+本轮迁移 grok `xai-grok-workspace-types::rpc::git`(1077 行,crate 内**最大**且**依赖根**的 RPC 文件)。git.rs 是依赖根:仅 `use serde/serde_json/super::WorkspaceRpc`,而被 worktree.rs(R75)/hunks.rs(R76)前向依赖(共用 `ChangeType`/`GitFileChange`)。故重排迁移序为依赖优先:R74=git → R75=worktree → R76=hunks → R77=fs,锁定 git 类型层为后续两轮的复用底座。
+
+本轮目标:一次性迁移 20 个 `workspace.git_*` + `workspace.detect_vcs_kind` 方法 + 4 枚举(VcsKind camelCase+is_jj/is_repo 方法 / ChangeType lowercase **无** Default / GitStatusFormat / DiscardScope)+ ~22 个 wire struct,**落地 5 个对本层全新的 serde 模式**:① per-field `rename="type"` 键覆盖(在 camelCase rename_all 之上);② 非 Option 空集合省略(`skip_serializing_if="Vec::is_empty"`);③ 混合 skip 矩阵(同 struct 内部分 Option 保 null、部分省略);④ 手写 Deserialize 兼容旧版扁平 payload(model_validator(before) rewrap);⑤ Option 形状 Response(`str|None`/`GitInfoData|None`/`VcsKind`)。零回归闭合。
+
+### 融合结论
+
+git.rs 是 R74-R77 四轮迁移的**依赖拓扑起点**:它的 `ChangeType`/`GitFileChange` 被 worktree(变更文件列表)/hunks(diff hunk)直接引用。先把 git 类型契约锁死,R75+ 直接 `from ...rpc.git import ChangeType, GitFileChange` 复用,避免跨轮重复定义。这与 R45(DEFAULT_MODEL 词汇表→R46-R52 六轮消费端接线)的"先定义词汇表再扩散消费"同构——git.rs 是"先定义类型根再扩散 wire 消费"。
+
+5 个新 serde 模式扩展了层内已有的 Option 省略谱系(R70 plain dict / R72 wrap-mixin 单键 pop / R73 wrap 推导式 18 键),并新增"混合 skip"(同 struct 双语义)与"手写 Deserialize 兼容"(版本偏移 robustness),补全 Rust serde → pydantic 的最后一类硬骨头。
+
+### 交付
+
+| 符号 | Rust 源(git.rs) | Python 实现(git.py) | 说明 |
+|------|-----------------|---------------------|------|
+| `VcsKind` | `enum` camelCase + `#[default]` GIT | `StrEnum` + `is_jj()`/`is_repo()` | camelCase 变体;Default → 类方法 |
+| `ChangeType` | `enum` lowercase | `StrEnum`,**无** default() | derive 无 Default → 不挂 default() |
+| `GitStatusFormat`/`DiscardScope` | `enum` lowercase + Default | `StrEnum` | STRUCTURED/PROMPT、BOTH/STAGED/UNSTAGED |
+| `GitFileChange` | rename_all=camel, `rename="type"`, 7 Option skip | `_CamelOmitNone` + `Field(alias="type")` | per-field 别名覆盖 alias_generator |
+| `GitInfoData` | 混合 skip 矩阵 | `_CAMEL` + wrap serializer | current_branch null 保留 / default_branch+vcs_kind 省略 |
+| `RepoInfo` | `#[serde(default)] bool is_detached` | `_CamelOmitNone` | False 总输出(False is not None) |
+| `GitStatusExtResponse` | 手写 Deserialize + Serialize | `model_validator(before)` + 类方法 | 兼容旧版扁平 → 信封 rewrap |
+| `CommitWithPatchData`/`UncommittedChangesData` | `Vec::is_empty` 省略 | wrap serializer pop 空 camelCase 键 | 非 Option 空列表省略 |
+| 20 Req struct | 20 个 `impl WorkspaceRpc` | `METHOD`/`Response` ClassVar | Value→Any / ()→None / Option→X|None |
+| `_CamelOmitNone` | — | `WireModel` 子类(`_CAMEL` + wrap `_omit_none`) | 本轮新建基类 |
+
+**文件**:新增 `agent/minimax_code/workspace_types/rpc/git.py`(1066 行);改 `rpc/__init__.py`(barrel 导入 46 符号 + `__all__` git 段 + docstring R74 段);改 `tests/test_rpc.py`(追加 TestGit 类 37 测试 + import 块)。
+
+### 映射决策树 + 坑
+
+**决策树 —— git.rs serde 模式 → pydantic 映射**
+
+```
+git.rs struct
+├─ rename_all = "camelCase" 全字段
+│  └─ model_config = _CAMEL (ConfigDict populate_by_name=True, alias_generator=to_camel)
+├─ 某字段 rename = "type"(单字段覆盖)
+│  └─ Field(alias="type")(显式别名覆盖 alias_generator)
+├─ 所有 Option 都 skip_serializing_if = "Option::is_none"
+│  └─ _CamelOmitNone 基类(wrap serializer: {k:v for k,v in raw if v is not None})
+├─ 混合 skip(部分 Option 保 null)
+│  └─ 自定义 wrap serializer,只 pop 指定 camelCase 键(GitInfoData)
+├─ 非 Option 空集合 skip(Vec::is_empty)
+│  └─ 自定义 wrap serializer,pop 空 list 键
+├─ 手写 Deserialize(兼容旧版扁平)
+│  └─ model_validator(mode="before") rewrap
+└─ derive Default(空 struct 或自定义 Default impl)
+   └─ 类方法 default()(bool 字段填 True/None)
+```
+
+**坑 1 — per-field `rename="type"` 覆盖 alias_generator**
+`GitFileChange` 用 `#[serde(rename_all="camelCase")]` 但单字段 `change_type` 带 `#[serde(rename="type")]`(Rust 关键字冲突,字段名 change_type 但 wire 键是 type)。pydantic `alias_generator=to_camel` 会把 `change_type` 变成 `changeType`,但**显式 `Field(alias="type")` 优先级高于 alias_generator**,故 wire 键是 `type`。`test_git_file_change_type_alias_override` 三重断言:`"type"` 在 dump、`"changeType"`/`"change_type"` 不在。验证时 snake_case 名(`change_type=...`)与 wire 别名(`type=...`)都能构造。
+
+**坑 2 — 混合 skip 矩阵(GitInfoData 同 struct 双语义)**
+`GitInfoData`: `current_branch` **无** skip → None 时 wire 保 `null`;`default_branch`/`vcs_kind` **有** skip → None 时省略。不是 R73 的"全 Option 都省略"统一矩阵,而是同 struct 内逐字段不同。解法:自定义 wrap serializer,`handler(self)` 拿默认 dump 后**只 pop** `defaultBranch`/`vcsKind`(当 None),保留 `currentBranch:null`。`test_git_info_data_mixed_skip_matrix` 双断言:currentBranch=None → `"currentBranch":null` 在 dump;defaultBranch=None → 键不存在。
+
+**坑 3 — `Vec::is_empty` 非 Option 空集合省略**
+`CommitWithPatchData.binary_files` / `UncommittedChangesData.staged_binary_files`/`unstaged_binary_files` 是 `Vec<...>`(非 Option)+ `#[serde(default, skip_serializing_if="Vec::is_empty")]`:空列表省略,非空列表输出。这是**非 Option** 的省略(R70-R73 全是 Option 省略)。解法:wrap serializer pop 空 camelCase 键(`binaryFiles`/`stagedBinaryFiles`/`unstagedBinaryFiles`)。`test_commit_with_patch_data_empty_vec_omitted` + `test_uncommitted_changes_data_empty_vecs_omitted` 双断言:空 → 键省略;非空 → 键在。
+
+**坑 4 — 手写 Deserialize 兼容旧版扁平 payload**
+`GitStatusExtResponse` 在 Rust 只有 `#[derive(Serialize)]` + 手写 `Deserialize`(信封 `{format,data?,prompt?}`,旧版是扁平 `GitStatusData`)。pydantic 用 `model_validator(mode="before")` `_wrap_legacy_flat`:若输入是 `Mapping` 且非空且**不含** `{format,data,prompt}` 任一键 → 判定为旧版扁平,rewrap 为 `{"format":"structured","data":<扁平>,"prompt":null}`;否则透传(信封或空 cls())。`test_git_status_ext_response_legacy_flat_rewrap` 断言扁平输入 → 结构化信封;`test_empty_mapping_not_miswrapped` 断言空映射不被误包。配合类方法 `structured(data)`/`with_prompt(text)`/`default()`(`with_prompt` 而非 `prompt` 以避 F811 字段名冲突)。
+
+**坑 5 — `RepoInfo.is_detached` 是 `#[serde(default)] bool` 非 Option**
+`is_detached: bool`(无 skip_serializing_if)→ False 总在 wire。`_CamelOmitNone` 的 `v is not None` 推导式**保留 False**(`False is not None`)。`test_repo_info_is_detached_false_emitted` 断言 `"isDetached":false` 在 dump。这是"bool 总输出"与"Option None 省略"在同一基类下自然共存的验证。
+
+**坑 6 — Option 形状 Response,envelope TypeAdapter 原生处理**
+20 个方法 Response 形状:Value→`Response: ClassVar = Any`;()→`Response: ClassVar[type] = type(None)`;`Option<PathBuf>`→`str|None`;`Option<String>`→`str|None`;`Option<GitInfoData>`→`GitInfoData|None`;`VcsKind`→`VcsKind`;struct→`Response: ClassVar[type] = StructName`。`envelope.from_wire` 的 `TypeAdapter(response_type).validate_python(data["ok"])` 原生支持 `str|None`(some/none)/`GitInfoData|None`/`VcsKind`(StrEnum)。`test_envelope_git_option_responses` 覆盖 4 种 Option 形状往返。零改 envelope。
+
+### 验证
+
+三重验证全绿:
+
+```bash
+# 1. ruff lint(E/F/W/I/B/UP,行长 100)
+cd "/d/工作/城建院/mm code/agent" && uv run ruff check minimax_code/workspace_types/rpc/git.py minimax_code/workspace_types/rpc/__init__.py tests/test_rpc.py
+# → All checks passed!(编辑后 3 处修复:I001 import 排序自动 / F401 补 CheckoutCommitResponse 到 __all__ / F811 方法重命名 prompt→with_prompt)
+
+# 2. R74 专项测试
+cd "/d/工作/城建院/mm code/agent" && uv run pytest tests/test_rpc.py -q
+# → 196 passed(R73 的 159 + R74 新增 37,精确对账)
+
+# 3. 全量回归(零回归)
+cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
+# → 2280 passed, 10 skipped in 112.56s
+#    (R73 的 2243 + R74 新增 37,完美对账,零回归)
+```
+
+**wire 保真交叉验证**:对照 grok `git.rs` 源码逐行确认——TestGit 37 测试覆盖:20 method 常量、Response ClassVar 形状矩阵、4 枚举(VcsKind camelCase + is_jj/is_repo / ChangeType lowercase 无 default / GitStatusFormat / DiscardScope)、`rename="type"` 覆盖、混合 skip 矩阵(currentBranch null 保留 vs defaultBranch/vcsKind 省略)、Vec::is_empty 省略、GitStatusExtResponse(构造/结构化往返/prompt 往返/默认仅 format/新信封透传/旧版扁平 rewrap/空映射不误包)、RepoInfo is_detached=False 输出、GitError null path 保留、GitStatusExtReq 默认往返(camelCase + True bools)、GitCollectChangesReq 默认值、GitDiffReq `from_` 别名输出 `"from"`、CheckoutCommitResponse/CommitResult null 保留、UNTRACKED_CONTENT_THRESHOLD == 1024*1024、4 种 Option 响应 envelope 往返。5 个新 serde 模式 + 3 个编辑后 ruff 修复全部锁定。
+
+### YAGNI 边界
+
+本轮明确不做:
+
+- ❌ **rpc/ 剩余 3 文件(~1573 行)迁移** —— worktree 406(R75)/ hunks 413(R76)/ fs 754(R77)留后续;本轮锁定依赖根 git 类型层供复用。
+- ❌ **ChangeType/GitFileChange 在 worktree/hunks 的消费接线** —— 类型层先行,跨文件 import 在 R75+。
+- ❌ **实际 git handler 实现** —— 本轮仅 wire 类型契约,真正的 git 子进程调用是运行时能力(handlers_git.py 已有 3 个 git.* 方法,与远程 workspace.git_* 是不同命名空间)。
+- ❌ **接入 IPC handler 或远程 workspace transport** —— 类型契约层先行,wire DTO 消费端在 shell 层。
+- ❌ **GitStatusExtResponse 其他 format 变体扩展** —— 本轮忠实复刻 grok 的 STRUCTURED/PROMPT 两态,不预判新 format。
+- ❌ **前端 `web/src/types/` 镜像** —— 纯后端 RPC 类型契约,无 wire 事件广播到前端。
+
+### Commit
+
+`feat(platform): R74 git RPC namespace dependency-root layer (fuse grok xai-grok-workspace-types rpc/ git.rs 1077 lines → 1 module: 20 workspace.git_*/detect_vcs_kind methods + 4 enums[VcsKind camelCase + is_jj/is_repo, ChangeType lowercase no-Default, GitStatusFormat, DiscardScope] + ~22 wire types, lands 5 serde patterns new to layer: rename="type" Field alias override on camelCase + Vec::is_empty non-Option empty-collection elision + mixed skip matrix[GitInfoData current_branch-null-kept vs default_branch/vcs_kind-omitted] + manual Deserialize legacy-flat rewrap via model_validator(before) + Option Response shapes[str|None/GitInfoData|None/VcsKind via envelope TypeAdapter], _CamelOmitNone base camelCase+bulk None elision, dependency root for R75+ worktree/hunks ChangeType/GitFileChange reuse, 37 new tests zero-regression)`
