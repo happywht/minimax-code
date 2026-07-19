@@ -1,4 +1,4 @@
-"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 + R90 + R91 + R92 + R93 + R94 — registration frames landed).
+"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 + R90 + R91 + R92 + R93 + R94 — registration frames landed + R95 — per-tool session binding landed).
 
 Fusion of grok-build's ``xai-tool-protocol`` crate — the wire DTOs for
 the computer-hub tool-server protocol: identifier newtypes, registration
@@ -125,11 +125,19 @@ to mix unit + struct variants):
   :class:`ToolServerRegistration` / :class:`ToolId` / :class:`ServerId`) and
   delegate ``to_wire`` / ``from_wire`` to the embedded DTO; no crate-first
   serde shape).
+* **R95 (this round)** — :mod:`frames`
+  (per-tool session binding domain: :class:`BindToolSessionParams` /
+  :class:`UnbindToolSessionParams` / :class:`BindToolSessionAck` /
+  :class:`UnbindToolSessionAck` plus the two strict snake_case outcome enums
+  :class:`ToolSessionBindOutcome` / :class:`ToolSessionUnbindOutcome`; the
+  crate's first ack-wraps-strict-enum shape — params carry two bare id
+  newtypes and the result wraps a single outcome enum whose ``from_wire``
+  rejects unknown values, mirroring R86 :class:`HookKind`).
 * *deferred* — :mod:`frames`
-  (remainder: 10 of 14 domains — tool/system notifications, per-tool session
-  binding, server discovery+binding, list & search, session lifecycle,
-  simplified lifecycle, subscriptions, hooks, service→harness pushes,
-  tool-server status lifecycle).
+  (remainder: 9 of 14 domains — tool/system notifications, server
+  discovery+binding, list & search, session lifecycle, simplified lifecycle,
+  subscriptions, hooks, service→harness pushes, tool-server status
+  lifecycle).
 
 ``from_wire`` / ``to_wire`` live on each module (instance method or module
 function); the barrel does **not** re-export them, mirroring the Rust
@@ -202,6 +210,8 @@ from minimax_code.tool_protocol.frames import (
     MAX_LOG_RECORDS_PER_DONATION,
     MAX_METRICS_PER_DONATION,
     MAX_SPANS_PER_DONATION,
+    BindToolSessionAck,
+    BindToolSessionParams,
     LogsDonateParams,
     MetricsDonateParams,
     PingFrame,
@@ -211,7 +221,11 @@ from minimax_code.tool_protocol.frames import (
     ToolCallParams,
     ToolCallProgressFrame,
     ToolCallResult,
+    ToolSessionBindOutcome,
+    ToolSessionUnbindOutcome,
     TracesDonateParams,
+    UnbindToolSessionAck,
+    UnbindToolSessionParams,
     UnregisterServerParams,
     UnregisterToolParams,
 )
@@ -414,4 +428,12 @@ __all__ = [
     "RegisterServerParams",
     "UnregisterToolParams",
     "UnregisterServerParams",
+    # R95 — per-tool session binding (ack-wraps-strict-enum). All 22 frames
+    # symbols travel the barrel; from_wire converters stay submodule-qualified.
+    "BindToolSessionAck",
+    "BindToolSessionParams",
+    "ToolSessionBindOutcome",
+    "ToolSessionUnbindOutcome",
+    "UnbindToolSessionAck",
+    "UnbindToolSessionParams",
 ]

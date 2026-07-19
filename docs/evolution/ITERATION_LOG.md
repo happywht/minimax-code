@@ -7851,3 +7851,117 @@ Serialize, Deserialize)]` 无 `#[serde(...)]` 属性——纯透明包装，Pyth
 ### Commit
 
 `feat(platform): R94 migrate frames.rs registration domain (RegisterToolParams/RegisterServerParams/UnregisterToolParams/UnregisterServerParams, params-as-DTO-wrapper consolidation)`
+
+## R95 — frames.rs per-tool session binding 域（BindToolSessionParams/UnbindToolSessionParams/BindToolSessionAck/UnbindToolSessionAck + 严格 snake_case outcome 枚举，ack-wraps-strict-enum 形态）
+
+锚点:R95-1 04ffaaf
+
+### 本轮目标
+
+继续 frames.rs 域式迁移（R92 开域 + R93 心跳 + R94 注册后的第 4 个域）。本轮选 **per-tool
+session binding 域**（frames.rs 220-310 行）：6 个符号——2 个双字段 params（`BindToolSessionParams`
+/ `UnbindToolSessionParams`，各持 `tool_id: ToolId` + `session_id: SessionId` 两个裸 newtype）、
+2 个严格 snake_case StrEnum（`ToolSessionBindOutcome`: Bound/AlreadyBound/UnknownTool/
+SessionNotBound；`ToolSessionUnbindOutcome`: Unbound/NotBound/UnknownTool）、2 个 ack 结构体
+（`BindToolSessionAck` / `UnbindToolSessionAck` 各包装单个 outcome 枚举）。选该域的决策依据：
+
+1. **形态价值** —— 引入 frames.rs 首个 **ack-wraps-strict-enum** 形态：result 结构体不嵌套
+   DTO 也不裸字符串，而是包装一个严格（无 catch-all）outcome 枚举，其 `from_wire` 拒绝未知值。
+   与 R94 params-as-DTO-wrapper（params 侧）形成对照，闭合 params↔result 两侧的形态谱。
+2. **严格枚举回归** —— 两个 outcome 枚举采用 `#[serde(rename_all = "snake_case")]` 但无
+   `#[serde(other)]`（严格，未知值报错），镜像 R86 `HookKind` / `ToolScope`，与 R90
+   `ToolCallOutcome` / `SessionPhase`（容错，未知 → UNKNOWN）形成严格↔容错对照。
+3. **裸 newtype 复用** —— params 的 `tool_id` / `session_id` 是 R82 str-newtype，直接
+   `str()` lift，镜像 R92 `ToolCallParams.tool_id` + R94 `UnregisterToolParams.tool_id`。
+
+### 融合结论
+
+grok-build `xai-tool-protocol::frames` per-tool session binding 域（220-310 行）6 个符号前向
+迁移到 Python `tool_protocol/frames.py`。Rust 侧两个 outcome 枚举 `#[derive(Serialize,
+Deserialize)]` + `#[serde(rename_all = "snake_case")]`，**无** `#[serde(other)]`（严格）；
+4 个结构体 derive 透明包装，无 serde 属性。Python 侧对应：
+
+- `ToolSessionBindOutcome`（4 变体）+ `ToolSessionUnbindOutcome`（3 变体）→ 严格 StrEnum，
+  member value = wire 字符串，`to_wire` 返回 `self.value`，`from_wire` 用
+  `_value2member_map_.get(data)`，None 时 raise `ValueError`（无 catch-all）。
+- `BindToolSessionParams { tool_id: ToolId, session_id: SessionId }` → `to_wire` 返回
+  `{"tool_id": ..., "session_id": ...}`（两裸 newtype 透传为 str）；`from_wire` 用
+  `ToolId(str(...))` / `SessionId(str(...))` 双 lift。
+- `UnbindToolSessionParams` → 同型（bind/unbind params 同构）。
+- `BindToolSessionAck { outcome: ToolSessionBindOutcome }` → `to_wire` 返回
+  `{"outcome": str(self.outcome)}`；`from_wire` 调 `ToolSessionBindOutcome.from_wire(str(...))`
+  （严格传播：未知 outcome 在 ack 层 raise）。
+- `UnbindToolSessionAck` → 同型。
+
+引入 crate-first serde 形态：**ack-wraps-strict-enum**（result 包装严格枚举，未知值传播
+raise）。严格 StrEnum 形态复用 R86 `HookKind` / `ToolScope` 模式。
+
+### 交付
+
+- `agent/minimax_code/tool_protocol/frames.py`：+2 严格 StrEnum（`ToolSessionBindOutcome` /
+  `ToolSessionUnbindOutcome`，各带 `to_wire` + `from_wire`）+ 2 双字段 dataclass
+  （`BindToolSessionParams` / `UnbindToolSessionParams`）+ 2 ack dataclass（`BindToolSessionAck`
+  / `UnbindToolSessionAck`）+ 4 `from_wire` 函数（`bind_tool_session_params_from_wire` /
+  `unbind_tool_session_params_from_wire` / `bind_tool_session_ack_from_wire` /
+  `unbind_tool_session_ack_from_wire`），约 130 行。+1 import（`SessionId` 加入既有 ids
+  import，`ToolId` 已在）+ 6 `__all__` 条目 + docstring 首行追加 R95 + R95 entry 段 +
+  deferred 描述更新（per-tool session binding 移出 deferred，10→9 域）。
+- `agent/minimax_code/tool_protocol/__init__.py`（barrel）：+6 符号导入（`BindToolSessionAck`
+  / `BindToolSessionParams` 在 BehaviorVersionUnsupported/Cancelled 间；
+  `ToolSessionBindOutcome` / `ToolSessionUnbindOutcome` 在 ToolServerRegistration/
+  TracesDonateParams 间；`UnbindToolSessionAck` / `UnbindToolSessionParams` 在 TransportKind/
+  UnregisterServerParams 间，类名 case-sensitive 字母序）+ 6 `__all__` 条目（注释更新 "22
+  frames symbols"）+ docstring 首行追加 R95 + R95 entry 段 + deferred 描述更新（"9 of 14
+  domains"）。
+- `agent/tests/test_tool_protocol.py`：+6 barrel 导入（同 barrel 字母序锚点）+ 4 frames 子模块
+  `from_wire` 导入（`bind_*` 块首 / `unbind_*` 在 traces_donate 与 unregister 间，字母序）+
+  7 测试类（`TestToolSessionBindOutcome` / `TestToolSessionUnbindOutcome` /
+  `TestBindToolSessionParams` / `TestUnbindToolSessionParams` / `TestBindToolSessionAck` /
+  `TestUnbindToolSessionAck` / `TestPerToolSessionBindingBarrelR95`），共 25 个新测试。
+
+### 映射决策树 + 坑
+
+1. **严格 StrEnum `from_wire`** → `ToolSessionBindOutcome.from_wire` 用
+   `cls._value2member_map_.get(data)`，None 时 `raise ValueError(f"unknown ... wire value:
+   {data!r}")`，成功返回 `member  # type: ignore[return-value]`。**无** catch-all（与 R90
+   `ToolCallOutcome.from_wire` 的 `try: cls(value); except ValueError: return cls.UNKNOWN`
+   容错模式对比）。镜像 R86 `HookKind.from_wire` / `ToolScope.from_wire` 的严格同构。
+2. **bare-newtype-as-str × 2** → `BindToolSessionParams` 双字段都是 str-newtype，`to_wire`
+   返回 `{"tool_id": self.tool_id, "session_id": self.session_id}`（newtype 透传为 str，
+   无 `str()` 包裹因 newtype 本身就是 str 子类）；`from_wire` 用 `ToolId(str(...))` /
+   `SessionId(str(...))` 显式 lift。镜像 R92 `ToolCallParams.tool_id` 单字段形态，本轮是双字段。
+3. **ack-wraps-strict-enum** → `BindToolSessionAck.to_wire` 返回 `{"outcome":
+   str(self.outcome)}`（用 `str()` 而非 `.to_wire()`——两者等价因 `to_wire` 返回 `self.value`，
+   但 `str()` 显式表达 "序列化为字符串" 语义，与 R90 `TurnEnded.to_wire` 的 `"outcome":
+   str(self.outcome)` 一致）；`from_wire` 调 `ToolSessionBindOutcome.from_wire(str(...))`，
+   严格性传播：未知 outcome 在 ack 层 raise（ack 不吞错）。
+4. **坑（自我纠正）** → frames from_wire 导入块注释跨行长 docstring 换行，编辑时 old_string
+   需匹配实际换行（`no crate-first\n serde shape).` 跨两行）。**教训**：编辑跨行长 docstring
+   时先 Read 确认实际换行，避免行折叠假设；barrel 导入用 case-sensitive 字母序（B-e < B-i <
+   C，ToolScope < ToolSession < ToolServer，因大写 ASCII 序：'c' < 'e' < 'r' < 's'）。
+
+### 验证
+
+- `uv run ruff check tests/test_tool_protocol.py minimax_code/tool_protocol/frames.py
+  minimax_code/tool_protocol/__init__.py` → **All checks passed!**
+- `uv run pytest tests/test_tool_protocol.py -q` → **653 passed**（R94 基准 628 + R95 新增 25：
+  21 个枚举/params/ack 断言分布在 6 个域测试类 + 4 个 barrel 契约在
+  `TestPerToolSessionBindingBarrelR95`）。
+- `uv run pytest -q`（全量回归）→ **3111 passed, 10 skipped**（R94 基准 3086 + R95 新增
+  25），**零回归**，1 warning（fastapi/httpx 无关警告）。
+
+### YAGNI 边界
+
+- 只迁 per-tool session binding 域 6 个符号；其余 9 个 frames.rs 域（工具/系统通知、server
+  discovery+binding、list & search、session lifecycle、simplified lifecycle、subscriptions、
+  hooks、service→harness pushes、tool-server status lifecycle）留 R96+。
+- 不接 bind/unbind 的传输层 / 调度层（wire 类型层职责；运行时如何路由 per-tool session
+  绑定请求、如何维护 tool→session 映射是调度层决策，后续轮）。
+- 不加 ack 的 envelope 包装——envelope 层 R84 已闭合，ack 如何装进 JSON-RPC 信封属于调度
+  层决策，wire 类型层不预判。
+- 严格枚举不加 catch-all（YAGNI：per-tool binding outcome 是闭环协议版本内的固定枚举，
+  不需要前向兼容未知值；若未来协议版本新增 outcome，应在版本协商时升级枚举而非运行时吞错）。
+
+### Commit
+
+`feat(platform): R95 migrate frames.rs per-tool session binding domain (BindToolSessionParams/UnbindToolSessionParams/BindToolSessionAck/UnbindToolSessionAck + strict snake_case outcome enums, ack-wraps-strict-enum shape)`

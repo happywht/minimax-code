@@ -50,6 +50,8 @@ from minimax_code.tool_protocol import (
     WORKSPACE_UNAVAILABLE_MESSAGE,
     WORKSPACE_UNAVAILABLE_SUBCODE,
     BehaviorVersionUnsupported,
+    BindToolSessionAck,
+    BindToolSessionParams,
     Cancelled,
     ConnectionId,
     ConnectionKind,
@@ -115,9 +117,13 @@ from minimax_code.tool_protocol import (
     ToolRegistration,
     ToolScope,
     ToolServerRegistration,
+    ToolSessionBindOutcome,
+    ToolSessionUnbindOutcome,
     TracesDonateParams,
     TransportClosed,
     TransportKind,
+    UnbindToolSessionAck,
+    UnbindToolSessionParams,
     UnregisterServerParams,
     UnregisterToolParams,
     UnsupportedProtocolVersion,
@@ -137,12 +143,15 @@ from minimax_code.tool_protocol import (
 from minimax_code.tool_protocol.envelope import jsonrpc_id_from_wire
 from minimax_code.tool_protocol.error_wire import from_wire as error_from_wire
 
-# R92 + R93 + R94 — frames (tool call params/result/progress + telemetry
-# donation + heartbeat + registration). The structs/consts travel the barrel
-# (Rust lib.rs ``pub use frames::{...}`` is the crate's largest re-export);
-# the from_wire converters stay submodule-qualified (the barrel never
-# re-exports wire converters, mirroring the Rust ``pub use`` set).
+# R92 + R93 + R94 + R95 — frames (tool call params/result/progress + telemetry
+# donation + heartbeat + registration + per-tool session binding). The
+# structs/consts/enums travel the barrel (Rust lib.rs ``pub use frames::{...}``
+# is the crate's largest re-export); the from_wire converters stay
+# submodule-qualified (the barrel never re-exports wire converters, mirroring
+# the Rust ``pub use`` set).
 from minimax_code.tool_protocol.frames import (
+    bind_tool_session_ack_from_wire,
+    bind_tool_session_params_from_wire,
     logs_donate_params_from_wire,
     metrics_donate_params_from_wire,
     ping_frame_from_wire,
@@ -153,6 +162,8 @@ from minimax_code.tool_protocol.frames import (
     tool_call_progress_frame_from_wire,
     tool_call_result_from_wire,
     traces_donate_params_from_wire,
+    unbind_tool_session_ack_from_wire,
+    unbind_tool_session_params_from_wire,
     unregister_server_params_from_wire,
     unregister_tool_params_from_wire,
 )
@@ -4336,5 +4347,203 @@ class TestRegistrationParamsBarrelR94:
             "register_server_params_from_wire",
             "unregister_tool_params_from_wire",
             "unregister_server_params_from_wire",
+        ):
+            assert not hasattr(pkg, name), f"barrel should not export {name}"
+
+
+class TestToolSessionBindOutcome:
+    """Strict snake_case StrEnum (no #[serde(other)] catch-all, like R86 HookKind)."""
+
+    def test_to_wire_is_snake_case_value(self):
+        assert ToolSessionBindOutcome.Bound.to_wire() == "bound"
+        assert ToolSessionBindOutcome.AlreadyBound.to_wire() == "already_bound"
+        assert ToolSessionBindOutcome.UnknownTool.to_wire() == "unknown_tool"
+        assert ToolSessionBindOutcome.SessionNotBound.to_wire() == "session_not_bound"
+
+    def test_str_is_wire_value(self):
+        assert str(ToolSessionBindOutcome.Bound) == "bound"
+
+    def test_from_wire_known(self):
+        assert ToolSessionBindOutcome.from_wire("bound") is ToolSessionBindOutcome.Bound
+        assert (
+            ToolSessionBindOutcome.from_wire("already_bound")
+            is ToolSessionBindOutcome.AlreadyBound
+        )
+        assert (
+            ToolSessionBindOutcome.from_wire("unknown_tool")
+            is ToolSessionBindOutcome.UnknownTool
+        )
+        assert (
+            ToolSessionBindOutcome.from_wire("session_not_bound")
+            is ToolSessionBindOutcome.SessionNotBound
+        )
+
+    def test_from_wire_unknown_raises(self):
+        """No #[serde(other)] arm — unknown values raise (strict)."""
+        with pytest.raises(ValueError):
+            ToolSessionBindOutcome.from_wire("conflict")
+
+
+class TestToolSessionUnbindOutcome:
+    """Strict snake_case StrEnum (no #[serde(other)] catch-all)."""
+
+    def test_to_wire_is_snake_case_value(self):
+        assert ToolSessionUnbindOutcome.Unbound.to_wire() == "unbound"
+        assert ToolSessionUnbindOutcome.NotBound.to_wire() == "not_bound"
+        assert ToolSessionUnbindOutcome.UnknownTool.to_wire() == "unknown_tool"
+
+    def test_from_wire_known(self):
+        assert (
+            ToolSessionUnbindOutcome.from_wire("unbound") is ToolSessionUnbindOutcome.Unbound
+        )
+        assert (
+            ToolSessionUnbindOutcome.from_wire("not_bound") is ToolSessionUnbindOutcome.NotBound
+        )
+        assert (
+            ToolSessionUnbindOutcome.from_wire("unknown_tool")
+            is ToolSessionUnbindOutcome.UnknownTool
+        )
+
+    def test_from_wire_unknown_raises(self):
+        with pytest.raises(ValueError):
+            ToolSessionUnbindOutcome.from_wire("definitely_not_a_real_outcome")
+
+
+class TestBindToolSessionParams:
+    """Two bare id newtypes (newtype-as-str x 2)."""
+
+    def test_to_wire_has_both_keys(self):
+        p = BindToolSessionParams(tool_id=ToolId("ns:bash"), session_id=SessionId("s1"))
+        assert p.to_wire() == {"tool_id": "ns:bash", "session_id": "s1"}
+
+    def test_from_wire_lifts_both_newtypes(self):
+        p = bind_tool_session_params_from_wire(
+            {"tool_id": "ns:bash", "session_id": "s1"}
+        )
+        assert p.tool_id == "ns:bash"
+        assert p.session_id == "s1"
+
+    def test_round_trip(self):
+        original = BindToolSessionParams(
+            tool_id=ToolId("ns:bash"), session_id=SessionId("s1")
+        )
+        assert bind_tool_session_params_from_wire(original.to_wire()) == original
+
+
+class TestUnbindToolSessionParams:
+    """Two bare id newtypes (mirror of bind)."""
+
+    def test_to_wire_has_both_keys(self):
+        p = UnbindToolSessionParams(
+            tool_id=ToolId("ns:bash"), session_id=SessionId("s1")
+        )
+        assert p.to_wire() == {"tool_id": "ns:bash", "session_id": "s1"}
+
+    def test_from_wire_lifts_both_newtypes(self):
+        p = unbind_tool_session_params_from_wire(
+            {"tool_id": "ns:bash", "session_id": "s1"}
+        )
+        assert p.tool_id == "ns:bash"
+        assert p.session_id == "s1"
+
+    def test_round_trip(self):
+        original = UnbindToolSessionParams(
+            tool_id=ToolId("ns:bash"), session_id=SessionId("s1")
+        )
+        assert unbind_tool_session_params_from_wire(original.to_wire()) == original
+
+
+class TestBindToolSessionAck:
+    """Ack wraps a single strict outcome enum (ack-wraps-strict-enum)."""
+
+    def test_to_wire_emits_outcome_string(self):
+        ack = BindToolSessionAck(outcome=ToolSessionBindOutcome.Bound)
+        assert ack.to_wire() == {"outcome": "bound"}
+
+    def test_from_wire_lifts_strict_outcome(self):
+        ack = bind_tool_session_ack_from_wire({"outcome": "already_bound"})
+        assert ack.outcome is ToolSessionBindOutcome.AlreadyBound
+
+    def test_from_wire_unknown_outcome_raises(self):
+        """The wrapped enum is strict — unknown outcomes propagate the raise."""
+        with pytest.raises(ValueError):
+            bind_tool_session_ack_from_wire({"outcome": "conflict"})
+
+    def test_round_trip(self):
+        for outcome in ToolSessionBindOutcome:
+            original = BindToolSessionAck(outcome=outcome)
+            assert bind_tool_session_ack_from_wire(original.to_wire()) == original
+
+
+class TestUnbindToolSessionAck:
+    """Ack wraps a single strict outcome enum."""
+
+    def test_to_wire_emits_outcome_string(self):
+        ack = UnbindToolSessionAck(outcome=ToolSessionUnbindOutcome.Unbound)
+        assert ack.to_wire() == {"outcome": "unbound"}
+
+    def test_from_wire_lifts_strict_outcome(self):
+        ack = unbind_tool_session_ack_from_wire({"outcome": "not_bound"})
+        assert ack.outcome is ToolSessionUnbindOutcome.NotBound
+
+    def test_from_wire_unknown_outcome_raises(self):
+        with pytest.raises(ValueError):
+            unbind_tool_session_ack_from_wire({"outcome": "definitely_bogus"})
+
+    def test_round_trip(self):
+        for outcome in ToolSessionUnbindOutcome:
+            original = UnbindToolSessionAck(outcome=outcome)
+            assert unbind_tool_session_ack_from_wire(original.to_wire()) == original
+
+
+class TestPerToolSessionBindingBarrelR95:
+    """Per-tool session binding symbols travel the barrel; from_wire stay submodule-qualified."""
+
+    def test_barrel_exports_binding_symbols(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "BindToolSessionParams",
+            "UnbindToolSessionParams",
+            "BindToolSessionAck",
+            "UnbindToolSessionAck",
+            "ToolSessionBindOutcome",
+            "ToolSessionUnbindOutcome",
+        ):
+            assert hasattr(pkg, name), f"barrel missing binding symbol {name}"
+
+    def test_binding_symbols_in_all(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "BindToolSessionParams",
+            "UnbindToolSessionParams",
+            "BindToolSessionAck",
+            "UnbindToolSessionAck",
+            "ToolSessionBindOutcome",
+            "ToolSessionUnbindOutcome",
+        ):
+            assert name in pkg.__all__, f"{name} not in barrel __all__"
+
+    def test_frames_submodule_exposes_from_wire(self):
+        import minimax_code.tool_protocol.frames as mod
+
+        for name in (
+            "bind_tool_session_params_from_wire",
+            "unbind_tool_session_params_from_wire",
+            "bind_tool_session_ack_from_wire",
+            "unbind_tool_session_ack_from_wire",
+        ):
+            assert hasattr(mod, name), f"frames submodule missing {name}"
+
+    def test_barrel_does_not_re_export_from_wire(self):
+        """from_wire converters stay submodule-qualified, mirroring the crate."""
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "bind_tool_session_params_from_wire",
+            "unbind_tool_session_params_from_wire",
+            "bind_tool_session_ack_from_wire",
+            "unbind_tool_session_ack_from_wire",
         ):
             assert not hasattr(pkg, name), f"barrel should not export {name}"

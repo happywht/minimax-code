@@ -1,4 +1,4 @@
-"""Tool-server frame protocol — per-method params/result payloads (R92 + R93 + R94).
+"""Tool-server frame protocol — per-method params/result payloads (R92 + R93 + R94 + R95).
 
 Fusion of grok-build's ``xai-tool-protocol::frames`` — the per-method
 ``params`` and ``result`` payload structs that ride inside a
@@ -20,8 +20,21 @@ frames** (:class:`RegisterToolParams` / :class:`RegisterServerParams` /
 :class:`UnregisterToolParams` / :class:`UnregisterServerParams`) — a
 consolidation round exercising the "params-as-DTO-wrapper" pattern: params
 structs thin-wrap existing R82/R87 wire DTOs and delegate ``to_wire`` /
-``from_wire`` to the embedded DTO. No crate-first serde shape lands here;
-the remaining 10 domains are deferred to R95+.
+``from_wire`` to the embedded DTO. No crate-first serde shape lands here.
+R95 lands the **per-tool session binding** family
+(:class:`BindToolSessionParams` / :class:`UnbindToolSessionParams` /
+:class:`BindToolSessionAck` / :class:`UnbindToolSessionAck` plus the two
+strict snake_case outcome enums :class:`ToolSessionBindOutcome` /
+:class:`ToolSessionUnbindOutcome`) — the first ack-wraps-strict-enum shape
+in the crate: a params struct carries two bare id newtypes
+(:class:`~minimax_code.tool_protocol.ids.ToolId` /
+:class:`~minimax_code.tool_protocol.ids.SessionId`) and a result struct
+wraps a single outcome enum whose ``from_wire`` rejects unknown values
+(mirroring R86 :class:`~minimax_code.tool_protocol.capabilities.HookKind`
+strict StrEnum — the strict counterpart to R90's tolerant
+:class:`~minimax_code.tool_protocol.session_event.ToolCallOutcome`). No
+crate-first serde shape lands here; the remaining 9 domains are deferred
+to R96+.
 
 ``session_id`` belongs in the JSON-RPC envelope field — always. These
 params structs do NOT carry a ``session_id``; the hub reads it from
@@ -81,8 +94,9 @@ table; R92 is the first ``int`` constant family.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 
-from minimax_code.tool_protocol.ids import ServerId, ToolCallId, ToolId
+from minimax_code.tool_protocol.ids import ServerId, SessionId, ToolCallId, ToolId
 from minimax_code.tool_protocol.methods import Method
 from minimax_code.tool_protocol.output_wire import ToolOutputWire
 from minimax_code.tool_protocol.output_wire import from_wire as tool_output_wire_from_wire
@@ -109,6 +123,13 @@ __all__ = [
     "RegisterServerParams",
     "UnregisterToolParams",
     "UnregisterServerParams",
+    # per-tool session binding (R95 — ack-wraps-strict-enum)
+    "BindToolSessionAck",
+    "BindToolSessionParams",
+    "ToolSessionBindOutcome",
+    "ToolSessionUnbindOutcome",
+    "UnbindToolSessionAck",
+    "UnbindToolSessionParams",
     # wire converters
     "tool_call_params_from_wire",
     "tool_call_result_from_wire",
@@ -122,6 +143,10 @@ __all__ = [
     "register_server_params_from_wire",
     "unregister_tool_params_from_wire",
     "unregister_server_params_from_wire",
+    "bind_tool_session_params_from_wire",
+    "unbind_tool_session_params_from_wire",
+    "bind_tool_session_ack_from_wire",
+    "unbind_tool_session_ack_from_wire",
 ]
 
 
@@ -577,3 +602,182 @@ def unregister_server_params_from_wire(data: dict[str, object]) -> UnregisterSer
     :attr:`server_id` lifts as :class:`ServerId` (str newtype).
     """
     return UnregisterServerParams(server_id=ServerId(str(data["server_id"])))
+
+
+# ── Per-tool session binding (R95 — ack-wraps-strict-enum) ─────────────────
+#
+# ``bind_tool_session`` / ``unbind_tool_session`` mutate a registered tool's
+# per-tool session set (the reverse-index from a tool to the sessions it is
+# bound to on a given connection). This is the first ack-wraps-strict-enum
+# shape in the crate:
+#
+# * The **params** structs (:class:`BindToolSessionParams` /
+#   :class:`UnbindToolSessionParams`) carry two bare id newtypes
+#   (:class:`ToolId` + :class:`SessionId`) — both serialise as strings
+#   directly (the same newtype-as-str shape as
+#   :attr:`ToolCallParams.tool_id` in R92).
+# * The **result** structs (:class:`BindToolSessionAck` /
+#   :class:`UnbindToolSessionAck`) wrap a single outcome enum whose
+#   ``from_wire`` rejects unknown values — the strict counterpart to R90's
+#   ``#[serde(other)]``-tolerant :class:`ToolCallOutcome` /
+#   :class:`SessionPhase`, mirroring R86 :class:`HookKind` / :class:`ToolScope`.
+#   Unknown outcomes raise :class:`ValueError` rather than silently mapping
+#   to a catch-all (the registry's ``Conflict`` variant is lifted to a
+#   top-level ``ServerError::ToolBindingConflict`` wire error, NOT mirrored
+#   here — see the source comment in ``frames.rs``).
+#
+# Neither field matches the envelope-level ``session_id``; both are subjects
+# of the bind / unbind operation.
+
+
+class ToolSessionBindOutcome(StrEnum):
+    """Outcome reported by :class:`BindToolSessionAck`.
+
+    ``#[serde(rename_all = "snake_case")]`` with no ``#[serde(other)]``:
+    member values are the snake_case wire strings; an unknown wire string
+    fails :meth:`from_wire`. The registry's ``Conflict`` variant is NOT
+    mirrored here — the router lifts it to a top-level wire error instead.
+    """
+
+    Bound = "bound"
+    AlreadyBound = "already_bound"
+    UnknownTool = "unknown_tool"
+    SessionNotBound = "session_not_bound"
+
+    def to_wire(self) -> str:
+        """The snake_case wire string (``#[serde(rename_all)]``)."""
+        return self.value
+
+    @classmethod
+    def from_wire(cls, data: str) -> ToolSessionBindOutcome:
+        """Reconstruct from a wire string; reject unknown values.
+
+        Mirrors serde with no ``#[serde(other)]`` arm: an unknown string
+        raises :class:`ValueError` rather than being silently swallowed.
+        """
+        member = cls._value2member_map_.get(data)
+        if member is None:
+            raise ValueError(f"unknown ToolSessionBindOutcome wire value: {data!r}")
+        return member  # type: ignore[return-value]
+
+
+class ToolSessionUnbindOutcome(StrEnum):
+    """Outcome reported by :class:`UnbindToolSessionAck`.
+
+    ``#[serde(rename_all = "snake_case")]`` with no ``#[serde(other)]``.
+    """
+
+    Unbound = "unbound"
+    NotBound = "not_bound"
+    UnknownTool = "unknown_tool"
+
+    def to_wire(self) -> str:
+        """The snake_case wire string."""
+        return self.value
+
+    @classmethod
+    def from_wire(cls, data: str) -> ToolSessionUnbindOutcome:
+        """Reconstruct from a wire string; reject unknown values."""
+        member = cls._value2member_map_.get(data)
+        if member is None:
+            raise ValueError(f"unknown ToolSessionUnbindOutcome wire value: {data!r}")
+        return member  # type: ignore[return-value]
+
+
+@dataclass
+class BindToolSessionParams:
+    """``bind_tool_session`` params — add ``session_id`` to a tool's session set.
+
+    Both fields are SUBJECTS of the operation: :attr:`tool_id` names the tool
+    whose session set is being mutated, :attr:`session_id` names the session
+    being added (which must already be in the connection's bound-session
+    set). Neither matches the envelope-level ``session_id`` (the calling-frame
+    routing scope, typically omitted on connection-control frames). Both are
+    bare id newtypes serialised as strings directly.
+    """
+
+    tool_id: ToolId
+    session_id: SessionId
+
+    def to_wire(self) -> dict[str, object]:
+        return {"tool_id": self.tool_id, "session_id": self.session_id}
+
+
+@dataclass
+class UnbindToolSessionParams:
+    """``unbind_tool_session`` params — drop ``session_id`` from a tool's set.
+
+    Same envelope-vs-payload distinction as :class:`BindToolSessionParams`.
+    """
+
+    tool_id: ToolId
+    session_id: SessionId
+
+    def to_wire(self) -> dict[str, object]:
+        return {"tool_id": self.tool_id, "session_id": self.session_id}
+
+
+@dataclass
+class BindToolSessionAck:
+    """Reply to :class:`BindToolSessionParams`.
+
+    Wraps a single :class:`ToolSessionBindOutcome`; :meth:`to_wire` emits the
+    outcome's snake_case wire string under the ``outcome`` key.
+    """
+
+    outcome: ToolSessionBindOutcome
+
+    def to_wire(self) -> dict[str, object]:
+        return {"outcome": str(self.outcome)}
+
+
+@dataclass
+class UnbindToolSessionAck:
+    """Reply to :class:`UnbindToolSessionParams`.
+
+    Wraps a single :class:`ToolSessionUnbindOutcome`.
+    """
+
+    outcome: ToolSessionUnbindOutcome
+
+    def to_wire(self) -> dict[str, object]:
+        return {"outcome": str(self.outcome)}
+
+
+def bind_tool_session_params_from_wire(data: dict[str, object]) -> BindToolSessionParams:
+    """Reconstruct :class:`BindToolSessionParams`.
+
+    Both id fields lift as bare newtypes (:class:`ToolId` / :class:`SessionId`).
+    """
+    return BindToolSessionParams(
+        tool_id=ToolId(str(data["tool_id"])),
+        session_id=SessionId(str(data["session_id"])),
+    )
+
+
+def unbind_tool_session_params_from_wire(data: dict[str, object]) -> UnbindToolSessionParams:
+    """Reconstruct :class:`UnbindToolSessionParams`.
+
+    Both id fields lift as bare newtypes.
+    """
+    return UnbindToolSessionParams(
+        tool_id=ToolId(str(data["tool_id"])),
+        session_id=SessionId(str(data["session_id"])),
+    )
+
+
+def bind_tool_session_ack_from_wire(data: dict[str, object]) -> BindToolSessionAck:
+    """Reconstruct :class:`BindToolSessionAck`.
+
+    :attr:`outcome` lifts via :meth:`ToolSessionBindOutcome.from_wire` (strict
+    — unknown values raise).
+    """
+    return BindToolSessionAck(outcome=ToolSessionBindOutcome.from_wire(str(data["outcome"])))
+
+
+def unbind_tool_session_ack_from_wire(data: dict[str, object]) -> UnbindToolSessionAck:
+    """Reconstruct :class:`UnbindToolSessionAck`.
+
+    :attr:`outcome` lifts via :meth:`ToolSessionUnbindOutcome.from_wire` (strict).
+    """
+    return UnbindToolSessionAck(outcome=ToolSessionUnbindOutcome.from_wire(str(data["outcome"])))
