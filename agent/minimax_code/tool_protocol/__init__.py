@@ -1,4 +1,4 @@
-"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 + R90 + R91 + R92 + R93 + R94 — registration frames landed + R95 — per-tool session binding landed + R96 — list & search landed).
+"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 + R90 + R91 + R92 + R93 + R94 — registration frames landed + R95 — per-tool session binding landed + R96 — list & search landed + R97 — subscriptions landed).
 
 Fusion of grok-build's ``xai-tool-protocol`` crate — the wire DTOs for
 the computer-hub tool-server protocol: identifier newtypes, registration
@@ -145,10 +145,19 @@ to mix unit + struct variants):
   :attr:`ToolSearchResult.input_schema`; and the family carries
   ``session_id`` as payload, overriding the R92 family-scoped "no session_id
   on params" rule).
+* **R97 (this round)** — :mod:`frames`
+  (subscriptions domain: :class:`SubscribeNotificationsParams` /
+  :class:`NotificationFilter` / :class:`SubscribeOutcome` /
+  :class:`SubscribeAck` / :class:`UnsubscribeNotificationsParams` /
+  :class:`UnsubscribeOutcome` / :class:`UnsubscribeAck`; two strict
+  snake_case outcome enums mirroring R95, the crate's first
+  all-``Optional`` + ``#[serde(default)]``-on-every-field filter DTO
+  (:class:`NotificationFilter`), and two acks wrapping outcome +
+  ``subscription_id``).
 * *deferred* — :mod:`frames`
-  (remainder: 8 of 14 domains — tool/system notifications, server
-  discovery+binding, session lifecycle, simplified lifecycle, subscriptions,
-  hooks, service→harness pushes, tool-server status lifecycle).
+  (remainder: 7 of 14 domains — tool/system notifications, server
+  discovery+binding, session lifecycle, simplified lifecycle, hooks,
+  service→harness pushes, tool-server status lifecycle).
 
 ``from_wire`` / ``to_wire`` live on each module (instance method or module
 function); the barrel does **not** re-export them, mirroring the Rust
@@ -225,10 +234,14 @@ from minimax_code.tool_protocol.frames import (
     BindToolSessionParams,
     LogsDonateParams,
     MetricsDonateParams,
+    NotificationFilter,
     PingFrame,
     PongFrame,
     RegisterServerParams,
     RegisterToolParams,
+    SubscribeAck,
+    SubscribeNotificationsParams,
+    SubscribeOutcome,
     ToolCallParams,
     ToolCallProgressFrame,
     ToolCallResult,
@@ -244,6 +257,9 @@ from minimax_code.tool_protocol.frames import (
     UnbindToolSessionParams,
     UnregisterServerParams,
     UnregisterToolParams,
+    UnsubscribeAck,
+    UnsubscribeNotificationsParams,
+    UnsubscribeOutcome,
 )
 from minimax_code.tool_protocol.handshake import (
     PROTOCOL_VERSION,
@@ -460,4 +476,14 @@ __all__ = [
     "ToolsSearchParams",
     "ToolSearchResult",
     "ToolsSearchResultBody",
+    # R97 — subscriptions (all-Optional filter DTO + strict outcome enums).
+    # All 34 frames symbols travel the barrel; from_wire converters stay
+    # submodule-qualified, mirroring the crate.
+    "NotificationFilter",
+    "SubscribeAck",
+    "SubscribeNotificationsParams",
+    "SubscribeOutcome",
+    "UnsubscribeAck",
+    "UnsubscribeNotificationsParams",
+    "UnsubscribeOutcome",
 ]

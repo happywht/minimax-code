@@ -81,6 +81,7 @@ from minimax_code.tool_protocol import (
     Mcp,
     Method,
     MetricsDonateParams,
+    NotificationFilter,
     NotificationSchemas,
     PayloadTooLarge,
     PermissionDenied,
@@ -101,6 +102,9 @@ from minimax_code.tool_protocol import (
     SessionMismatch,
     Shadowed,
     StreamingSpec,
+    SubscribeAck,
+    SubscribeNotificationsParams,
+    SubscribeOutcome,
     TerminalError,
     Text,
     TextBlock,
@@ -131,6 +135,9 @@ from minimax_code.tool_protocol import (
     UnbindToolSessionParams,
     UnregisterServerParams,
     UnregisterToolParams,
+    UnsubscribeAck,
+    UnsubscribeNotificationsParams,
+    UnsubscribeOutcome,
     UnsupportedProtocolVersion,
     Updated,
     UserId,
@@ -159,10 +166,13 @@ from minimax_code.tool_protocol.frames import (
     bind_tool_session_params_from_wire,
     logs_donate_params_from_wire,
     metrics_donate_params_from_wire,
+    notification_filter_from_wire,
     ping_frame_from_wire,
     pong_frame_from_wire,
     register_server_params_from_wire,
     register_tool_params_from_wire,
+    subscribe_ack_from_wire,
+    subscribe_notifications_params_from_wire,
     tool_call_params_from_wire,
     tool_call_progress_frame_from_wire,
     tool_call_result_from_wire,
@@ -176,6 +186,8 @@ from minimax_code.tool_protocol.frames import (
     unbind_tool_session_params_from_wire,
     unregister_server_params_from_wire,
     unregister_tool_params_from_wire,
+    unsubscribe_ack_from_wire,
+    unsubscribe_notifications_params_from_wire,
 )
 
 # R89 — hook variants are imported from the submodule (not the barrel): the
@@ -4807,5 +4819,291 @@ class TestListAndSearchBarrelR96:
             "tools_search_params_from_wire",
             "tool_search_result_from_wire",
             "tools_search_result_body_from_wire",
+        ):
+            assert not hasattr(pkg, name), f"barrel should not export {name}"
+
+
+class TestSubscribeOutcome:
+    """``SubscribeOutcome`` — strict snake_case StrEnum (mirrors R95 bind outcome)."""
+
+    def test_member_values_are_snake_case(self):
+        assert SubscribeOutcome.Subscribed == "subscribed"
+        assert SubscribeOutcome.AlreadySubscribed == "already_subscribed"
+        assert SubscribeOutcome.NotAuthorized == "not_authorized"
+
+    def test_to_wire_returns_value(self):
+        assert SubscribeOutcome.Subscribed.to_wire() == "subscribed"
+        assert SubscribeOutcome.AlreadySubscribed.to_wire() == "already_subscribed"
+        assert SubscribeOutcome.NotAuthorized.to_wire() == "not_authorized"
+
+    def test_from_wire_accepts_known(self):
+        assert SubscribeOutcome.from_wire("subscribed") is SubscribeOutcome.Subscribed
+        assert (
+            SubscribeOutcome.from_wire("already_subscribed")
+            is SubscribeOutcome.AlreadySubscribed
+        )
+        assert (
+            SubscribeOutcome.from_wire("not_authorized")
+            is SubscribeOutcome.NotAuthorized
+        )
+
+    def test_from_wire_rejects_unknown(self):
+        with pytest.raises(ValueError):
+            SubscribeOutcome.from_wire("pending")
+
+
+class TestUnsubscribeOutcome:
+    """``UnsubscribeOutcome`` — strict snake_case StrEnum; ``Evicted`` is server-push."""
+
+    def test_member_values_are_snake_case(self):
+        assert UnsubscribeOutcome.Unsubscribed == "unsubscribed"
+        assert UnsubscribeOutcome.NotSubscribed == "not_subscribed"
+        assert UnsubscribeOutcome.Evicted == "evicted"
+
+    def test_to_wire_returns_value(self):
+        assert UnsubscribeOutcome.Unsubscribed.to_wire() == "unsubscribed"
+        assert UnsubscribeOutcome.NotSubscribed.to_wire() == "not_subscribed"
+        assert UnsubscribeOutcome.Evicted.to_wire() == "evicted"
+
+    def test_from_wire_accepts_known(self):
+        assert (
+            UnsubscribeOutcome.from_wire("unsubscribed")
+            is UnsubscribeOutcome.Unsubscribed
+        )
+        assert (
+            UnsubscribeOutcome.from_wire("not_subscribed")
+            is UnsubscribeOutcome.NotSubscribed
+        )
+        assert UnsubscribeOutcome.from_wire("evicted") is UnsubscribeOutcome.Evicted
+
+    def test_from_wire_rejects_unknown(self):
+        with pytest.raises(ValueError):
+            UnsubscribeOutcome.from_wire("gone")
+
+
+class TestNotificationFilter:
+    """``NotificationFilter`` — all-Optional, serde-default-on-every-field DTO."""
+
+    def test_empty_instance_to_wire_omits_all(self):
+        assert NotificationFilter().to_wire() == {}
+
+    def test_tool_id_only(self):
+        wire = NotificationFilter(tool_id=ToolId("fs:read")).to_wire()
+        assert wire == {"tool_id": "fs:read"}
+
+    def test_kinds_only(self):
+        wire = NotificationFilter(kinds=["progress", "result"]).to_wire()
+        assert wire == {"kinds": ["progress", "result"]}
+
+    def test_both_fields(self):
+        wire = NotificationFilter(
+            tool_id=ToolId("fs:read"), kinds=["progress"]
+        ).to_wire()
+        assert wire == {"tool_id": "fs:read", "kinds": ["progress"]}
+
+    def test_empty_kinds_whitelist_is_distinct_from_none(self):
+        """``Some([])`` = accept-none, ``None`` = accept-all — distinct on the wire."""
+        assert NotificationFilter(kinds=[]).to_wire() == {"kinds": []}
+        assert NotificationFilter().to_wire() == {}
+
+    def test_from_wire_missing_keys_default_none(self):
+        flt = notification_filter_from_wire({})
+        assert flt.tool_id is None
+        assert flt.kinds is None
+
+    def test_from_wire_present(self):
+        flt = notification_filter_from_wire(
+            {"tool_id": "fs:read", "kinds": ["progress", "result"]}
+        )
+        assert flt.tool_id == ToolId("fs:read")
+        assert flt.kinds == ["progress", "result"]
+
+    def test_round_trip(self):
+        original = NotificationFilter(tool_id=ToolId("fs:read"), kinds=["progress"])
+        assert notification_filter_from_wire(original.to_wire()) == original
+
+
+class TestSubscribeNotificationsParams:
+    """``SubscribeNotificationsParams`` — session_id payload + optional filter."""
+
+    def test_to_wire_without_filter(self):
+        params = SubscribeNotificationsParams(session_id=SessionId("s1"))
+        assert params.to_wire() == {"session_id": "s1"}
+
+    def test_to_wire_with_filter(self):
+        params = SubscribeNotificationsParams(
+            session_id=SessionId("s1"),
+            filter=NotificationFilter(tool_id=ToolId("fs:read")),
+        )
+        assert params.to_wire() == {
+            "session_id": "s1",
+            "filter": {"tool_id": "fs:read"},
+        }
+
+    def test_from_wire_without_filter(self):
+        params = subscribe_notifications_params_from_wire({"session_id": "s1"})
+        assert params.session_id == SessionId("s1")
+        assert params.filter is None
+
+    def test_from_wire_with_filter(self):
+        params = subscribe_notifications_params_from_wire(
+            {"session_id": "s1", "filter": {"kinds": ["progress"]}}
+        )
+        assert params.session_id == SessionId("s1")
+        assert params.filter is not None
+        assert params.filter.kinds == ["progress"]
+
+    def test_round_trip_without_filter(self):
+        original = SubscribeNotificationsParams(session_id=SessionId("s1"))
+        assert subscribe_notifications_params_from_wire(original.to_wire()) == original
+
+    def test_round_trip_with_filter(self):
+        original = SubscribeNotificationsParams(
+            session_id=SessionId("s1"),
+            filter=NotificationFilter(tool_id=ToolId("fs:read"), kinds=["progress"]),
+        )
+        assert subscribe_notifications_params_from_wire(original.to_wire()) == original
+
+
+class TestSubscribeAck:
+    """``SubscribeAck`` — outcome (strict) + subscription_id."""
+
+    def test_to_wire(self):
+        ack = SubscribeAck(
+            outcome=SubscribeOutcome.Subscribed, subscription_id="default"
+        )
+        assert ack.to_wire() == {"outcome": "subscribed", "subscription_id": "default"}
+
+    def test_from_wire(self):
+        ack = subscribe_ack_from_wire(
+            {"outcome": "already_subscribed", "subscription_id": "default"}
+        )
+        assert ack.outcome is SubscribeOutcome.AlreadySubscribed
+        assert ack.subscription_id == "default"
+
+    def test_round_trip(self):
+        original = SubscribeAck(
+            outcome=SubscribeOutcome.NotAuthorized, subscription_id="cx-9"
+        )
+        assert subscribe_ack_from_wire(original.to_wire()) == original
+
+    def test_from_wire_rejects_unknown_outcome(self):
+        with pytest.raises(ValueError):
+            subscribe_ack_from_wire({"outcome": "pending", "subscription_id": "default"})
+
+
+class TestUnsubscribeNotificationsParams:
+    """``UnsubscribeNotificationsParams`` — session_id + subscription_id."""
+
+    def test_to_wire(self):
+        params = UnsubscribeNotificationsParams(
+            session_id=SessionId("s1"), subscription_id="default"
+        )
+        assert params.to_wire() == {
+            "session_id": "s1",
+            "subscription_id": "default",
+        }
+
+    def test_from_wire(self):
+        params = unsubscribe_notifications_params_from_wire(
+            {"session_id": "s1", "subscription_id": "default"}
+        )
+        assert params.session_id == SessionId("s1")
+        assert params.subscription_id == "default"
+
+    def test_round_trip(self):
+        original = UnsubscribeNotificationsParams(
+            session_id=SessionId("s1"), subscription_id="cx-9"
+        )
+        assert (
+            unsubscribe_notifications_params_from_wire(original.to_wire()) == original
+        )
+
+
+class TestUnsubscribeAck:
+    """``UnsubscribeAck`` — outcome (strict) + subscription_id."""
+
+    def test_to_wire(self):
+        ack = UnsubscribeAck(
+            outcome=UnsubscribeOutcome.Unsubscribed, subscription_id="default"
+        )
+        assert ack.to_wire() == {
+            "outcome": "unsubscribed",
+            "subscription_id": "default",
+        }
+
+    def test_from_wire(self):
+        ack = unsubscribe_ack_from_wire(
+            {"outcome": "evicted", "subscription_id": "default"}
+        )
+        assert ack.outcome is UnsubscribeOutcome.Evicted
+        assert ack.subscription_id == "default"
+
+    def test_round_trip(self):
+        original = UnsubscribeAck(
+            outcome=UnsubscribeOutcome.NotSubscribed, subscription_id="cx-9"
+        )
+        assert unsubscribe_ack_from_wire(original.to_wire()) == original
+
+    def test_from_wire_rejects_unknown_outcome(self):
+        with pytest.raises(ValueError):
+            unsubscribe_ack_from_wire(
+                {"outcome": "gone", "subscription_id": "default"}
+            )
+
+
+class TestSubscriptionsBarrelR97:
+    """Subscriptions symbols travel the barrel; from_wire stay submodule-qualified."""
+
+    def test_barrel_exports_subscription_symbols(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "NotificationFilter",
+            "SubscribeNotificationsParams",
+            "SubscribeOutcome",
+            "SubscribeAck",
+            "UnsubscribeNotificationsParams",
+            "UnsubscribeOutcome",
+            "UnsubscribeAck",
+        ):
+            assert hasattr(pkg, name), f"barrel missing subscription symbol {name}"
+
+    def test_subscription_symbols_in_all(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "NotificationFilter",
+            "SubscribeNotificationsParams",
+            "SubscribeOutcome",
+            "SubscribeAck",
+            "UnsubscribeNotificationsParams",
+            "UnsubscribeOutcome",
+            "UnsubscribeAck",
+        ):
+            assert name in pkg.__all__, f"{name} not in barrel __all__"
+
+    def test_frames_submodule_exposes_from_wire(self):
+        import minimax_code.tool_protocol.frames as mod
+
+        for name in (
+            "notification_filter_from_wire",
+            "subscribe_notifications_params_from_wire",
+            "subscribe_ack_from_wire",
+            "unsubscribe_notifications_params_from_wire",
+            "unsubscribe_ack_from_wire",
+        ):
+            assert hasattr(mod, name), f"frames submodule missing {name}"
+
+    def test_barrel_does_not_re_export_from_wire(self):
+        """from_wire converters stay submodule-qualified, mirroring the crate."""
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "notification_filter_from_wire",
+            "subscribe_notifications_params_from_wire",
+            "subscribe_ack_from_wire",
+            "unsubscribe_notifications_params_from_wire",
+            "unsubscribe_ack_from_wire",
         ):
             assert not hasattr(pkg, name), f"barrel should not export {name}"

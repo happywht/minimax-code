@@ -8096,3 +8096,147 @@ model），并复用 R92 已建立的 opaque `serde_json::Value` 透传，把 fr
 ### Commit
 
 `feat(platform): R96 migrate frames.rs list and search domain (ToolsListParams/ToolsListResult/ToolsSearchParams/ToolSearchResult/ToolsSearchResultBody, list-of-bare-pydantic-model shape + opaque Value passthrough)`
+
+## R97 — 迁移 frames.rs subscriptions 域（all-Optional 过滤 DTO 首形态 + 严格 snake_case outcome 枚举复用 + ack-wraps-enum 带 handle 扩展）
+
+锚点:R97-1 5ab4faa
+
+### 本轮目标
+
+继续 xai-tool-protocol frames.rs（1549 行 / 86 符号 / 14 域，最大模块）的逐域前向迁移。R92 tool-call+
+donation，R93 心跳，R94 registration，R95 per-tool session binding，R96 list & search。本轮从 8 个
+deferred 域中选 **subscriptions 域**（`frames.rs` 612-698）落地 7 个符号：
+`SubscribeNotificationsParams` / `NotificationFilter` / `SubscribeOutcome` / `SubscribeAck` /
+`UnsubscribeNotificationsParams` / `UnsubscribeOutcome` / `UnsubscribeAck`，外加 5 个 `from_wire`
+转换器。该域在 deferred 列表中**形式最丰富**且**复用密度最高**——2 个严格 snake_case 枚举（逐字复用
+R95 模式）+ crate 首个 all-`Optional` + `#[serde(default)]`-on-every-field 过滤 DTO（1 个轻量新形态）
++ 2 个 ack（复用 R95 ack-wraps-enum，本轮扩展为 outcome + subscription_id 双字段），把 frames.rs 的
+迁移从 "列表聚合 + 透传聚合"（R96）推进到 "全可选过滤 + 订阅句柄" 语义层。
+
+### 融合结论
+
+`grok-build/crates/common/xai-tool-protocol/src/frames.rs` 的 subscriptions 域与当前项目深度融合：
+- `SubscribeOutcome` / `UnsubscribeOutcome` 是 `#[serde(rename_all = "snake_case")]` 无 `#[serde(other)]`
+  的严格枚举——**逐字**复用 R95 `ToolSessionBindOutcome` 已确立的 Python 模式（`StrEnum` 成员值即 wire
+  字符串；`to_wire` 返回 `self.value`；`from_wire` 用 `cls._value2member_map_.get(data)` + 未知
+  `raise ValueError` + `# type: ignore[return-value]`），严格性（拒绝未知 wire 值）在 ack 的
+  `from_wire` 中通过 `X.from_wire(str(data["outcome"]))` 传播。
+- `NotificationFilter` 是 crate 首个 **all-`Optional` + `#[serde(default, skip_serializing_if =
+  "Option::is_none")]`-on-every-field** DTO：dataclass 两个字段（`tool_id` / `kinds`）全有 `None` 默认
+  值；`to_wire` 用 `if self.x is not None: wire["x"] = ...` 省略 None 臂；`from_wire` 用 `data.get("x")`
+  缺失默认 None。`NotificationFilter()` 是合法的 accept-everything 实例。
+- `SubscribeAck` / `UnsubscribeAck` 复用 R95 ack-wraps-strict-enum 模式，但本轮 ack dataclass 在
+  `outcome: StrictEnum` 之外**额外**携带 `subscription_id: str`（R95 ack 是 bare outcome）；`to_wire`
+  返回 `{"outcome": str(self.outcome), "subscription_id": ...}`，严格性通过嵌套 `from_wire` 传播。
+- `SubscribeNotificationsParams` / `UnsubscribeNotificationsParams` 携带 `session_id` 作真实 payload
+  字段，与 Rust 源一致——**复用** R96 在 list/search 域确立的 nuance（覆盖 frames.py docstring 的
+  "params do NOT carry session_id" family-scoped 规则，该规则是 `tool.call` 系列特有）。
+- `UnsubscribeOutcome::Evicted` 是服务端 push 的慢消费者驱逐标记（非客户端请求结果），本轮作为枚举
+  变体落地，其作为 push 帧的载体建模留 hooks/service→harness 域（YAGNI 边界显式记录）。
+- 7 符号全部走 barrel（34 frames symbols，镜像 Rust `lib.rs` 最大 re-export 集），`from_wire` 转换器
+  保持子模块限定（barrel 不 re-export，与 crate 其余部分一致）。
+
+### 交付
+
+- `agent/minimax_code/tool_protocol/frames.py`：
+  - R96 块末尾（`tools_search_result_body_from_wire` 之后）追加 2 个 `StrEnum`（`SubscribeOutcome`
+    3 变体 Subscribed/AlreadySubscribed/NotAuthorized；`UnsubscribeOutcome` 3 变体
+    Unsubscribed/NotSubscribed/Evicted，均含 `to_wire`/`from_wire` 严格模式）+ `NotificationFilter`
+    dataclass（tool_id + kinds，全 None 默认）+ 4 个 dataclass（`SubscribeNotificationsParams`
+    session_id + filter；`SubscribeAck` outcome + subscription_id；`UnsubscribeNotificationsParams`
+    session_id + subscription_id；`UnsubscribeAck` outcome + subscription_id）+ 5 个 `from_wire` 函数
+    （1047-1243 行）。
+  - docstring 首行 `(R92 + R93 + R94 + R95 + R96)` → `(... + R97)`；R96 段末扩展 R97 entry + deferred
+    8→7 域。
+  - `__all__` structs 区新增 7 符号 + from_wire 区新增 5 转换器（R97 块）。
+- `agent/minimax_code/tool_protocol/__init__.py`（barrel）：
+  - frames 导入块新增 7 符号，case-sensitive 字母序锚点（`NotificationFilter` 在 `MetricsDonateParams`
+    后、`PingFrame` 前——N 在 M/P 间；`SubscribeAck`/`SubscribeNotificationsParams`/`SubscribeOutcome`
+    在 `RegisterToolParams` 后、`ToolCallParams` 前；`UnsubscribeAck`/
+    `UnsubscribeNotificationsParams`/`UnsubscribeOutcome` 在 `UnregisterToolParams` 后、闭合括号前）。
+  - `__all__` 新增 7 条（注释更新 "34 frames symbols"）+ R97 块注释。
+  - docstring 首行追加 `+ R97` + R97 entry 段 + deferred 8→7（删除 "subscriptions"）。
+- `agent/tests/test_tool_protocol.py`：
+  - barrel 导入块：7 符号（同 barrel 字母序锚点）。
+  - frames `from_wire` 导入块：5 转换器（`notification_filter_from_wire` 在
+    `metrics_donate_params_from_wire` 后、`ping_frame_from_wire` 前；`subscribe_ack_from_wire`/
+    `subscribe_notifications_params_from_wire` 在 `register_tool_params_from_wire` 后；
+    `unsubscribe_ack_from_wire`/`unsubscribe_notifications_params_from_wire` 在
+    `unregister_tool_params_from_wire` 后）。
+  - 新增 8 测试类（`TestSubscribeOutcome` / `TestUnsubscribeOutcome` / `TestNotificationFilter` /
+    `TestSubscribeNotificationsParams` / `TestSubscribeAck` / `TestUnsubscribeNotificationsParams` /
+    `TestUnsubscribeAck` / `TestSubscriptionsBarrelR97`），共 37 个新测试，覆盖 to_wire / from_wire /
+    round_trip / 严格枚举拒绝未知 / kinds 三态语义（None vs [] vs whitelist）/ filter 嵌套可选 /
+    barrel 四契约。
+
+### 映射决策树 + 坑
+
+1. **严格 snake_case StrEnum 复用（R95 形态）** → `SubscribeOutcome` / `UnsubscribeOutcome` 镜像
+   R95 `ToolSessionBindOutcome`：成员值即 snake_case wire 字符串，`to_wire` 返回 `self.value`，
+   `from_wire` 用 `cls._value2member_map_.get(data)` + `None` 时 `raise ValueError(f"unknown X wire
+   value: {data!r}")` + 成功 `return member  # type: ignore[return-value]`，**无 catch-all**，未知 wire
+   值硬失败。**零新形态**。
+2. **all-Optional + default-every-field DTO（首形态）** → `NotificationFilter` 两字段全 `None` 默认值
+   （忠实镜像 Rust `#[serde(default, skip_serializing_if = "Option::is_none")]` 逐字段标注）。`to_wire`
+   起空 dict + 条件追加；`from_wire` 用 `data.get("x")` 缺失默认 None。**kinds 三态语义**是关键 nuance：
+   `None` = accept-all（字段不上线），`[]` = accept-none（空白名单，字段上线为空数组），`[...]` =
+   whitelist。测试 `test_empty_kinds_whitelist_is_distinct_from_none` 显式区分 `NotificationFilter(kinds=[])
+   .to_wire() == {"kinds": []}` 与 `NotificationFilter().to_wire() == {}`，防止二者被错误合并。
+3. **ack-wraps-strict-enum + String handle（R95 形态 + 本轮扩展）** → `SubscribeAck` /
+   `UnsubscribeAck` dataclass 含 `outcome: StrictEnum` + `subscription_id: str`（R95 ack 是 bare
+   outcome，本轮加 handle）。`to_wire` 返回 `{"outcome": str(self.outcome), "subscription_id":
+   self.subscription_id}`；`from_wire` 调 `X.from_wire(str(data["outcome"]))` 让严格性（拒绝未知
+   outcome）从枚举传播到 ack——测试 `test_from_wire_rejects_unknown_outcome` 验证 `ValueError` 穿透。
+4. **session_id-as-payload nuance（R96 形态）** → `SubscribeNotificationsParams` /
+   `UnsubscribeNotificationsParams` 携带 `session_id`，**复用** R96 在 list/search 域确立的 nuance（覆盖
+   R92 docstring 的 "params do NOT carry session_id" family-scoped 规则——经核该规则是 `tool.call` 系列
+   特有，session_id 走 envelope；subscriptions 域的 per-session 订阅语义需要 session_id 作真实 payload）。
+5. **Option<DTO> 嵌套（R87/R95 形态）** → `SubscribeNotificationsParams.filter` 是
+   `NotificationFilter | None`，`from_wire` 用 `filter_raw = data.get("filter"); ...
+   if filter_raw is not None else None`，`to_wire` 用 `if self.filter is not None: wire["filter"] =
+   self.filter.to_wire()`。**零新形态**。
+6. **isort case-sensitive（坑）** → barrel 导入块 7 符号锚点：`NotificationFilter`(`NotificF`) 在
+   `NotificationSchemas`(`NotificS`) 前（索引 7 `F`(70) < `S`(83)），故夹在 `MetricsDonateParams`(M) 与
+   `NotificationSchemas` 间；`SubscribeAck`/`SubscribeNotificationsParams`/`SubscribeOutcome`
+   （`SubA`<`SubN`<`SubO`）夹在 `RegisterToolParams`(R) 与 `ToolCallParams`(T) 间（S 在 R/T 间）；
+   `UnsubscribeAck`/`UnsubscribeNotificationsParams`/`UnsubscribeOutcome`（`Uns`）在 `UnregisterToolParams`
+   （`Unr`）后——索引 2 `s`(115) > `r`(114)，故 `Uns` > `Unr`，排在 Unregister 系列之后。ruff isort
+   `order-by-type` 默认开（组内 case-sensitive ASCII，大写在小写前）。
+7. **ToolId 格式验证器坑** → 测试用 `ToolId("fs:read")`（冒号 namespace 形式），**非**
+   `ToolId("fs.read")`。R82 `ids.py` 的 `_validate_tool_id` 拒绝含点号的标识符（首次 pytest 跑 6 个
+   `NotificationFilter`/`SubscribeNotificationsParams` 测试因 `ToolId("fs.read")` 抛
+   `InvalidFormatIdError` 失败）。已核现有测试合法值（`"ns:name"` / `"a:b"` / `"t1"`），统一替换为冒号
+   形式。
+
+### 验证
+
+- `uv run ruff check tests/test_tool_protocol.py minimax_code/tool_protocol/frames.py
+  minimax_code/tool_protocol/__init__.py` → **All checks passed!**
+- `uv run pytest tests/test_tool_protocol.py -q` → **713 passed**（R96 基准 676 + R97 新增 37：
+  33 个 to_wire/from_wire/round_trip/严格拒绝/kinds 三态/filter 嵌套断言分布在 7 个域测试类 + 4 个
+  barrel 契约在 `TestSubscriptionsBarrelR97`）。
+- `uv run pytest -q`（全量回归）→ **3171 passed, 10 skipped**（R96 基准 3134 + R97 新增 37），
+  **零回归**，1 warning（fastapi/httpx 无关警告），101.99s。
+
+### YAGNI 边界
+
+- 只迁 subscriptions 域 7 个符号；其余 7 个 frames.rs 域（工具/系统通知、server discovery+binding、
+  session lifecycle、simplified lifecycle、hooks、service→harness pushes、tool-server status lifecycle）
+  留 R98+。其中 server discovery+binding 仍被 `ToolServerLifecycleStatus`（839 行处跨域依赖）阻塞，
+  待 tool-server status lifecycle 域先迁移解除。
+- 不接 subscriptions 的传输层 / 调度层（wire 类型层职责；运行时如何维护订阅注册表、如何把 notification
+  路由到 subscriber、如何处理慢消费者驱逐是调度层决策，后续轮）。
+- `NotificationFilter.kinds` 不做白名单值校验（YAGNI：wire 层透传字符串列表，kind 合法性由 notification
+  产生端 / `notification_wire` 模块的 `KNOWN_NOTIFICATION_KINDS` 校验，wire 层不预判；若 kind 不合法，
+  应在订阅匹配时由调度层报错，而非 wire 层吞掉）。
+- `UnsubscribeOutcome::Evicted` 本轮仅作为 `UnsubscribeAck` 的 outcome 变体落地；其作为**服务端主动
+  push 的驱逐帧**的载体建模（慢消费者被踢时服务端单方面发出的 ack-like 帧）留 hooks / service→harness
+  pushes 域——本轮不臆造其帧信封。
+- 不加订阅的 TTL / 心跳 / 重连字段（Rust 源 subscriptions 域无此类字段——订阅生命周期由 connection
+  生命周期 + 显式 unsubscribe 驱动，忠实迁移，不臆造 keepalive 协议）。
+- `subscription_id` 不建模为 newtype（Rust 源是 `String` 而非 `SubscriptionId` newtype，与 `session_id`
+  是 `SessionId` newtype 形成对照——本轮忠实保留这一不对称，不为对称性而臆造 newtype）。
+
+### Commit
+
+`feat(platform): R97 migrate frames.rs subscriptions domain (SubscribeNotificationsParams/NotificationFilter/SubscribeOutcome/SubscribeAck/UnsubscribeNotificationsParams/UnsubscribeOutcome/UnsubscribeAck, all-Optional filter DTO + strict snake_case outcome enums)`

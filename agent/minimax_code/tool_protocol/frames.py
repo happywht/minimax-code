@@ -1,4 +1,4 @@
-"""Tool-server frame protocol — per-method params/result payloads (R92 + R93 + R94 + R95 + R96).
+"""Tool-server frame protocol — per-method params/result payloads (R92 + R93 + R94 + R95 + R96 + R97).
 
 Fusion of grok-build's ``xai-tool-protocol::frames`` — the per-method
 ``params`` and ``result`` payload structs that ride inside a
@@ -46,7 +46,18 @@ had hand-controlled wrappers; here the element has none). The family also
 carries the R92 opaque-``serde_json::Value`` passthrough on
 :attr:`ToolSearchResult.input_schema` and is the first params family to
 carry ``session_id`` as payload (overriding the R92 family-scoped "no
-session_id on params" rule). The remaining 8 domains are deferred to R97+.
+session_id on params" rule). R97 lands the **subscriptions** family
+(:class:`SubscribeNotificationsParams` / :class:`NotificationFilter` /
+:class:`SubscribeOutcome` / :class:`SubscribeAck` /
+:class:`UnsubscribeNotificationsParams` / :class:`UnsubscribeOutcome` /
+:class:`UnsubscribeAck`) — two strict snake_case outcome enums (mirroring
+R95's bind/unbind outcomes), the crate's first
+**all-``Optional`` + ``#[serde(default)]``-on-every-field** filter DTO
+(:class:`NotificationFilter`, a Python dataclass with all-``None`` defaults
+where ``#[serde(default)]`` ⇒ missing keys become ``None`` rather than
+raising), and two acks wrapping outcome + ``subscription_id`` (R95
+ack-wraps-strict-enum shape, this round with an extra ``String`` handle).
+The remaining 7 domains are deferred to R98+.
 
 ``session_id`` belongs in the JSON-RPC envelope field — always. These
 params structs do NOT carry a ``session_id``; the hub reads it from
@@ -150,6 +161,14 @@ __all__ = [
     "ToolsListResult",
     "ToolsSearchParams",
     "ToolsSearchResultBody",
+    # subscriptions (R97 — all-Optional filter DTO + strict outcome enums)
+    "NotificationFilter",
+    "SubscribeAck",
+    "SubscribeNotificationsParams",
+    "SubscribeOutcome",
+    "UnsubscribeAck",
+    "UnsubscribeNotificationsParams",
+    "UnsubscribeOutcome",
     # wire converters
     "tool_call_params_from_wire",
     "tool_call_result_from_wire",
@@ -172,6 +191,12 @@ __all__ = [
     "tools_search_params_from_wire",
     "tool_search_result_from_wire",
     "tools_search_result_body_from_wire",
+    # subscriptions (R97)
+    "notification_filter_from_wire",
+    "subscribe_ack_from_wire",
+    "subscribe_notifications_params_from_wire",
+    "unsubscribe_ack_from_wire",
+    "unsubscribe_notifications_params_from_wire",
 ]
 
 
@@ -1004,4 +1029,214 @@ def tools_search_result_body_from_wire(data: dict[str, object]) -> ToolsSearchRe
         ],
         total_hidden_tools=int(data["total_hidden_tools"]),  # type: ignore[arg-type]
         is_ready=bool(data["is_ready"]),
+    )
+
+
+# ── R97: subscriptions (subscribe / unsubscribe notifications) ──────────
+#
+# frames.rs 612-691: the notification-subscription family —
+# SubscribeNotificationsParams / NotificationFilter / SubscribeOutcome /
+# SubscribeAck / UnsubscribeNotificationsParams / UnsubscribeOutcome /
+# UnsubscribeAck. Two strict snake_case enums (no #[serde(other)] — unknown
+# wire values raise), a fully-optional filter DTO (the crate's first
+# #[serde(default)]-on-every-field struct → Python dataclass with all-None
+# defaults), and two acks wrapping outcome + subscription_id (R95
+# ack-wraps-strict-enum shape, this round with an extra String handle).
+
+
+class SubscribeOutcome(StrEnum):
+    """Outcome reported by :class:`SubscribeAck`.
+
+    ``#[serde(rename_all = "snake_case")]`` with no ``#[serde(other)]``:
+    member values are the snake_case wire strings; an unknown wire string
+    fails :meth:`from_wire`. Mirrors R95 :class:`ToolSessionBindOutcome`.
+    """
+
+    Subscribed = "subscribed"
+    AlreadySubscribed = "already_subscribed"
+    NotAuthorized = "not_authorized"
+
+    def to_wire(self) -> str:
+        """The snake_case wire string (``#[serde(rename_all)]``)."""
+        return self.value
+
+    @classmethod
+    def from_wire(cls, data: str) -> SubscribeOutcome:
+        """Reconstruct from a wire string; reject unknown values.
+
+        Mirrors serde with no ``#[serde(other)]`` arm: an unknown string
+        raises :class:`ValueError` rather than being silently swallowed.
+        """
+        member = cls._value2member_map_.get(data)
+        if member is None:
+            raise ValueError(f"unknown SubscribeOutcome wire value: {data!r}")
+        return member  # type: ignore[return-value]
+
+
+class UnsubscribeOutcome(StrEnum):
+    """Outcome reported by :class:`UnsubscribeAck`.
+
+    ``#[serde(rename_all = "snake_case")]`` with no ``#[serde(other)]``.
+    :attr:`Evicted` is server-pushed (slow-consumer eviction), not a client
+    request outcome — clients reading it on a connection that did not
+    initiate an unsubscribe treat the subscription as gone.
+    """
+
+    Unsubscribed = "unsubscribed"
+    NotSubscribed = "not_subscribed"
+    Evicted = "evicted"
+
+    def to_wire(self) -> str:
+        """The snake_case wire string."""
+        return self.value
+
+    @classmethod
+    def from_wire(cls, data: str) -> UnsubscribeOutcome:
+        """Reconstruct from a wire string; reject unknown values."""
+        member = cls._value2member_map_.get(data)
+        if member is None:
+            raise ValueError(f"unknown UnsubscribeOutcome wire value: {data!r}")
+        return member  # type: ignore[return-value]
+
+
+@dataclass
+class NotificationFilter:
+    """Client-side filter on a notification subscription.
+
+    ``#[serde(default, skip_serializing_if = "Option::is_none")]`` on both
+    fields → :meth:`to_wire` omits ``None`` arms; ``NotificationFilter()`` is
+    a valid all-``None`` instance (accept-everything). :attr:`kinds` is
+    ``None`` = accept all kinds, ``Some(vec![])`` = accept none (empty
+    whitelist), ``Some([...])`` = whitelist.
+    """
+
+    tool_id: ToolId | None = None
+    kinds: list[str] | None = None
+
+    def to_wire(self) -> dict[str, object]:
+        wire: dict[str, object] = {}
+        if self.tool_id is not None:
+            wire["tool_id"] = self.tool_id
+        if self.kinds is not None:
+            wire["kinds"] = self.kinds
+        return wire
+
+
+@dataclass
+class SubscribeNotificationsParams:
+    """``subscribe_notifications`` params — register a notification subscriber.
+
+    :attr:`session_id` is payload (the session whose notifications to
+    receive), overriding the R92 family-scoped "no session_id on params"
+    rule — same nuance as R96 list/search. :attr:`filter` is optional
+    (``#[serde(default, skip_serializing_if)]``): ``None`` = accept all.
+    """
+
+    session_id: SessionId
+    filter: NotificationFilter | None = None
+
+    def to_wire(self) -> dict[str, object]:
+        wire: dict[str, object] = {"session_id": self.session_id}
+        if self.filter is not None:
+            wire["filter"] = self.filter.to_wire()
+        return wire
+
+
+@dataclass
+class SubscribeAck:
+    """Reply to :class:`SubscribeNotificationsParams`.
+
+    :attr:`subscription_id` is the harness-facing handle threaded through
+    subsequent :class:`UnsubscribeNotificationsParams`; the service reuses a
+    single ``"default"`` value per ``(connection, session)`` pair.
+    """
+
+    outcome: SubscribeOutcome
+    subscription_id: str
+
+    def to_wire(self) -> dict[str, object]:
+        return {"outcome": str(self.outcome), "subscription_id": self.subscription_id}
+
+
+@dataclass
+class UnsubscribeNotificationsParams:
+    """``unsubscribe_notifications`` params — drop a notification subscriber."""
+
+    session_id: SessionId
+    subscription_id: str
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "subscription_id": self.subscription_id,
+        }
+
+
+@dataclass
+class UnsubscribeAck:
+    """Reply to :class:`UnsubscribeNotificationsParams` (and the
+    service-pushed slow-consumer-eviction frame via :attr:`Evicted`)."""
+
+    outcome: UnsubscribeOutcome
+    subscription_id: str
+
+    def to_wire(self) -> dict[str, object]:
+        return {"outcome": str(self.outcome), "subscription_id": self.subscription_id}
+
+
+def notification_filter_from_wire(data: dict[str, object]) -> NotificationFilter:
+    """Reconstruct :class:`NotificationFilter` (both arms optional).
+
+    ``#[serde(default)]`` → missing keys default to ``None`` rather than
+    raising; :attr:`tool_id` lifts via :class:`ToolId`, :attr:`kinds` lifts
+    element-wise via ``str``.
+    """
+    tool_id_raw = data.get("tool_id")
+    kinds_raw = data.get("kinds")
+    return NotificationFilter(
+        tool_id=ToolId(str(tool_id_raw)) if tool_id_raw is not None else None,
+        kinds=[str(k) for k in kinds_raw] if kinds_raw is not None else None,  # type: ignore[union-attr]
+    )
+
+
+def subscribe_notifications_params_from_wire(
+    data: dict[str, object],
+) -> SubscribeNotificationsParams:
+    """Reconstruct :class:`SubscribeNotificationsParams`.
+
+    :attr:`filter` is optional — ``None`` when the key is absent
+    (``#[serde(default)]``); present-but-null is treated as absent too.
+    """
+    filter_raw = data.get("filter")
+    return SubscribeNotificationsParams(
+        session_id=SessionId(str(data["session_id"])),
+        filter=notification_filter_from_wire(filter_raw)  # type: ignore[arg-type]
+        if filter_raw is not None
+        else None,
+    )
+
+
+def subscribe_ack_from_wire(data: dict[str, object]) -> SubscribeAck:
+    """Reconstruct :class:`SubscribeAck`; outcome is strict (rejects unknown)."""
+    return SubscribeAck(
+        outcome=SubscribeOutcome.from_wire(str(data["outcome"])),
+        subscription_id=str(data["subscription_id"]),
+    )
+
+
+def unsubscribe_notifications_params_from_wire(
+    data: dict[str, object],
+) -> UnsubscribeNotificationsParams:
+    """Reconstruct :class:`UnsubscribeNotificationsParams`."""
+    return UnsubscribeNotificationsParams(
+        session_id=SessionId(str(data["session_id"])),
+        subscription_id=str(data["subscription_id"]),
+    )
+
+
+def unsubscribe_ack_from_wire(data: dict[str, object]) -> UnsubscribeAck:
+    """Reconstruct :class:`UnsubscribeAck`; outcome is strict (rejects unknown)."""
+    return UnsubscribeAck(
+        outcome=UnsubscribeOutcome.from_wire(str(data["outcome"])),
+        subscription_id=str(data["subscription_id"]),
     )
