@@ -7441,3 +7441,166 @@ uv run pytest -q
 ### Commit
 
 `feat(platform): R90 migrate session_event.rs + turn_hook leaf (serde(other) forward-compat + serde(default) field + strict↔tolerant turning point)`
+
+
+## R91 — 迁移 turn_hook.rs 核心余量（serde default=fn + tag=phase + deny_unknown_fields，3 个 crate-first serde 形态）
+
+锚点:R91-1 cef3d42
+
+### 本轮目标
+
+R90 只落了 `turn_hook.rs` 的最小叶子（`TurnHookOutcome` + `TURN_HOOK_KIND`），因为
+`session_event::TurnEnded` 硬依赖 `TurnHookOutcome`。但 `turn_hook.rs` 是 turn 级 hook
+协议的核心模块，剩余 **9 个符号 + 2 helper fn + 4 const** 构成完整的 request/reply
+协议闭环（`BeforeTurnPayload` / `AfterTurnPayload` / `TurnHookRequest` / `HookReply` /
+`HookInjection` / `InjectionRole` / `TurnControl` / `AfterTurnAckPayload` /
+`AfterTurnAckStatus`）。R91 补全这些核心符号，**闭合整个 turn_hook 模块**，并落地 **3 个
+crate 首次出现的 serde 子形态**（`#[serde(default = "fn")]` / `#[serde(tag = "phase")]` /
+`#[serde(deny_unknown_fields)]`）。
+
+### 融合结论
+
+`turn_hook.rs` 余量**完整迁移**到 `turn_hook.py`（从 R90 的 77 行扩展到 ~530 行）。9 符号 +
+2 helper + 4 const 全部落地。严格↔容错转折点在 turn_hook 模块内**保持一致**：所有
+turn_hook 枚举（`TurnHookOutcome`/`InjectionRole`/`TurnControl`/`AfterTurnAckStatus`）+
+`TurnHookRequest` 本身都是**严格**的（无 `#[serde(other)]`，未知值 `raise ValueError`），
+延续 R90 转折点；`session_event` 保持容错（`#[serde(other)]`）。3 个 crate 首次 serde 形态
+按 Rust 语义精确映射到 Python dataclass + from_wire 模式。
+
+### 交付
+
+- `agent/minimax_code/tool_protocol/turn_hook.py`（~530 行，从 R90 的 77 行扩展）：
+  落地 9 符号 + 2 helper fn + 4 const。ruff **All checks passed!**（一次通过，无需 --fix）。
+- `agent/tests/test_tool_protocol.py`：R91 导入块扩展（24 个 turn_hook 符号，isort
+  order-by-type 排序：CONST → Classes → functions）+ **13 个 R91 测试类**（54 个测试方法）。
+  覆盖常量+双层 kind/phase、BeforeTurnPayload（round-trip + 4 serde default）、
+  AfterTurnPayload（round-trip + skip_serializing_if + opaque context + strict outcome）、
+  InjectionRole、TurnControl、AfterTurnAckStatus、HookInjection（deny_unknown_fields）、
+  AfterTurnAckPayload、HookReply（Default{} + round-trip + deny + 嵌套）、TurnHookRequest
+  （Before/After arm round-trip + 未知 phase raise + phase≠kind）、deny_unknown_fields 专门
+  对比、crate-first serde 形态对比、包表面 R91（barrel 仍不导出 turn_hook）。
+- 验证：ruff All checks passed; `test_tool_protocol.py` **559 passed**（R90 基准 505 +
+  R91 新增 54）；完全回归 **3017 passed, 10 skipped**（R90 基准 2963 + R91 新增 54）。
+
+### 映射决策树+坑
+
+**映射 1 —— `#[serde(default = "fn")]`（crate 首次）→ dataclass 字段默认值 = 常量 + 私有
+helper fn 保留语义来源**。Rust 的 `default = "default_session_relationship"`（指向命名函数）
+在 Python 用 `field(default=DEFAULT_SESSION_RELATIONSHIP)`（字段默认值 = 常量），同时保留
+私有 `_default_session_relationship()` / `_default_schema_version()` 两个 helper fn —— 它们
+返回同名常量，纯粹是为了**镜像 Rust 源码的 default-fn 语义来源**（让"默认值来自一个具名函数"
+这个事实在 Python 侧也可追溯，而非凭空一个魔法字符串）。`BeforeTurnPayload` 的
+`session_relationship` / `schema_version` 是 crate 首次落地此形态的字段。测试用
+`test_session_relationship_default_fn` / `test_schema_version_default_fn` 钉死：wire 省略 →
+`"primary"` / `"1.0"`，且 helper fn 返回同值。
+
+**映射 2 —— `#[serde(tag = "phase", rename_all = "snake_case")]`（第 6 个 tag-key 名）→
+wrapper dataclass（各持 payload 引用）+ to_wire 展开 payload 加 phase 标签**。前 5 个
+tag-key：`code`(R83) / `kind`(R83) / `shape`(R83) / `type`(R89) / `event_type`(R90)。R91
+加 `phase`（第 6）。Rust 的 `TurnHookRequest` 是内部标签枚举（`Before`/`After` tuple variant
+包裹 payload），payload 字段在 wire 上**扁平化到顶层**与 `phase` 并列。Python 映射为两个
+wrapper dataclass（`TurnHookRequestBefore` / `TurnHookRequestAfter`，各持 `payload` 引用），
+`to_wire` 展开内部 payload 到顶层 + 加 `phase` 标签（`"before"`/`"after"`），避免字段重复；
+`turn_hook_request_from_wire` 读 `phase` 调度到对应 wrapper。`TurnHookRequest` 是
+`TurnHookRequestBefore | TurnHookRequestAfter` 别名。测试用
+`test_before_arm_round_trip` / `test_after_arm_round_trip` 钉死：wire 无嵌套 `payload` key，
+phase 值正确。
+
+**坑 1 —— 双层 kind/phase 易混淆（R91 签名级陷阱）**：`BEFORE_TURN_KIND="before_turn"` /
+`AFTER_TURN_KIND="after_turn"` 是**外层** `HookEvent::Custom { kind, payload }` 的 kind 值
+（harness→tool 事件流的 kind）；而 `TurnHookRequest::Before`/`After` 的**内层** `phase` 标签
+是 `"before"`/`"after"`（**无** `_turn` 后缀，`rename_all = "snake_case"`）。两者**绝不能
+混淆**。测试 `test_outer_kind_differs_from_inner_phase` 专门钉死：
+`BEFORE_TURN_KIND != "before"`、`AFTER_TURN_KIND != "after"`。to_wire 里加 phase 标签时
+注释 `# NOT BEFORE_TURN_KIND ("before_turn")` 防呆。
+
+**映射 3 —— `#[serde(deny_unknown_fields)]`（crate 首次）→ from_wire 检查多余键 frozenset →
+raise ValueError**。Rust 的 `deny_unknown_fields`（拒绝未知字段）在 Python 用 from_wire 模块
+函数检查 `set(data) - _KNOWN_FIELDS`，多余则 `raise ValueError`。`HookInjection`（role+content）
+和 `HookReply`（injections+control+after_turn_ack）是 crate 首次落地此形态的结构。其余结构
+（`BeforeTurnPayload`/`AfterTurnPayload`/`AfterTurnAckPayload`）容忍未知键（默认行为）。
+测试用 `TestDenyUnknownFieldsContrastR91`（4 个测试）专门对比：HookInjection/HookReply 拒绝
+多余键 vs BeforeTurnPayload/AfterTurnPayload 容忍。
+
+**映射 4 —— 严格枚举 from_wire（`cls(value)` 重抛）**：4 个 turn_hook 枚举
+（`InjectionRole`/`TurnControl`/`AfterTurnAckStatus`/`TurnHookOutcome`(R90)）全部严格 ——
+`from_wire` 直接 `return cls(value)`，未知值由 StrEnum 内置 `ValueError` 抛出，无 try/except。
+这与 R90 `ToolCallOutcome`/`SessionPhase`（容错，`try/except → UNKNOWN`）**根本不同**，延续
+R90 严格↔容错转折点。`AfterTurnAckStatus` 是唯一**没有** `#[non_exhaustive]` 的 turn_hook
+枚举（变体集封闭：Enqueued/Failed/Skipped）。测试每个枚举都有 `test_strict_unknown_raises`。
+
+**映射 5 —— `skip_serializing_if = "Option::is_none"` → to_wire 中 `if x is not None`**。
+`AfterTurnPayload.cancellation_category` / `.cancellation_context`、`AfterTurnAckPayload.error_message`、
+`HookReply.after_turn_ack` 都是 `Option` + skip。Python 映射为 `X | None`，to_wire 用
+`if x is not None: out["k"] = x`。`HookReply` 的 Default（`{}`）→ no-op：`injections=[]`、
+`control=TurnControl.AUTO`（Default）、`after_turn_ack=None`（省略）。测试
+`test_default_is_noop` / `test_default_to_wire`（`{"injections": [], "control": "auto"}`）钉死。
+
+**坑 2 —— `cancellation_context` 是 `serde_json::Value`（opaque）→ `object | None`**。Rust 的
+`serde_json::Value` 是任意 JSON 值，Python 映射为 `object | None`（opaque 透传，**不**
+stringify）。from_wire 直接 `data.get("cancellation_context")`（已是 dict/list/primitive），
+to_wire 直接放进 out。测试 `test_cancellation_context_opaque_round_trip` 钉死：嵌套
+`{"nested": [1, 2, {"x": True}]}` 原样往返。
+
+**坑 3 —— turn_hook barrel 规则（`pub mod` 无 `pub use` → 不进 barrel）**。Rust `lib.rs`
+的 `pub mod turn_hook;` 没有 `pub use`，所以 turn_hook 符号**不在 barrel 重导出集**。所有
+turn_hook 符号通过 `from minimax_code.tool_protocol.turn_hook import ...` 直接子模块导入。
+R91 扩展了 turn_hook 符号集，但 barrel `__init__.py` **无需改动**（turn_hook 整个模块都不
+进 barrel，R90 已正确）。`session_event.py` 通过 `from minimax_code.tool_protocol.turn_hook
+import TurnHookOutcome` 导入 R90 依赖，R91 扩展不影响此导入。测试
+`TestPackageSurfaceR91.test_barrel_still_excludes_turn_hook_symbols`（11 个符号全部不在 barrel）
++ `test_submodule_exposes_r91_core`（17 个符号全部在子模块）钉死。
+
+**坑 4 —— `type: ignore[arg-type]`（ack_raw: object 传给期望 dict 的 from_wire）**。
+`hook_reply_from_wire` 读 `data.get("after_turn_ack")`（类型 `object | None`），传给期望
+`dict[str, object]` 的 `after_turn_ack_payload_from_wire`。mypy 会报 arg-type。用
+`# type: ignore[arg-type]` 显式抑制（wire 层已知结构，运行时 from_wire 内部会做 `str()`/
+`int()` 强转）。这是 wire DTO 层的常见妥协（参考 R90 `_turn_ended_from_wire` 的 outcome 透传）。
+
+### 验证
+
+```
+cd agent
+# 精确作用域 ruff（绝不附带损害 93 个预先存在的 M 文件）
+uv run ruff check --fix tests/test_tool_protocol.py
+# → All checks passed!
+
+# turn_hook.py 在 R91 实现阶段已单独通过（一次过，无需 --fix）
+uv run ruff check minimax_code/tool_protocol/turn_hook.py
+# → All checks passed!
+
+uv run pytest tests/test_tool_protocol.py -q
+# → 559 passed in 0.69s   (R90 基准 505 + R91 新增 54)
+
+uv run pytest -q
+# → 3017 passed, 10 skipped, 1 warning in 103.43s
+#    (R90 基准 2963 + R91 新增 54 = 3017，数据自洽)
+#    (唯一 warning: fastapi/httpx StarletteDeprecationWarning，预先存在，与 R91 无关)
+```
+
+### YAGNI 边界
+
+- **不迁移 `frames.rs`（1549 行）** —— crate 里最大的模块（tool-server frame 协议，
+  `SessionEvent` 的消费者层），留待后续回合单独落地。turn_hook 闭合后，frames 是
+  `xai-tool-protocol` crate 剩余的唯一大块。
+- **不实现 `Display`/`__str__`** —— Rust 的 turn_hook 类型在 crate 中**无** `Display` impl；
+  它们只是 wire DTO。枚举值序列化用 `str(member)`（StrEnum 自带），payload 用 `to_wire()`
+  dict。语义格式化由消费方（frame 层，后续回合）自行处理。YAGNI。
+- **不做变体共同基类 / Protocol** —— `TurnHookRequestBefore`/`After` 各自独立 wrapper
+  dataclass，联合别名 + `turn_hook_request_from_wire` 分发器已足够；引入 `Protocol` 会
+  过度设计，违背 KISS。
+- **`TurnHookRequest` 不用 `Enum`** —— Rust 的 `TurnHookRequest` 是内部标签枚举（tuple
+  variant 包裹 payload），Python 无需用 `Enum`（Enum 难以携带异构 payload）。两个 wrapper
+  dataclass + 别名联合是更直接的映射。
+- **`_default_session_relationship`/`_default_schema_version` 保持私有** —— 它们纯粹是
+  Rust default-fn 的语义镜像，外部不应调用；字段默认值 = 常量已足够。加 `_` 前缀标记私有。
+- **turn_hook 不进 barrel** —— 镜像 Rust `pub mod turn_hook;`（无 `pub use`）；所有 turn_hook
+  符号仅子模块限定的访问。即便无 barrel 冲突也排除，纯粹遵循 Rust 重导出集（R90 已建立此规则，
+  R91 扩展符号集不变）。
+- **`AfterTurnAckStatus` 不加 `#[non_exhaustive]` 语义** —— 镜像 Rust 源码（唯一无
+  non_exhaustive 的 turn_hook 枚举，变体集封闭）。Python 侧无需特殊标记，严格 from_wire
+  已封闭。
+
+### Commit
+
+`feat(platform): R91 migrate turn_hook.rs core (serde default=fn + tag=phase + deny_unknown_fields)`

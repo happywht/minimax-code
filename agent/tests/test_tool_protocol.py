@@ -176,6 +176,9 @@ from minimax_code.tool_protocol.registry_error import (
 # stay in-submodule (only the union + two nested enums travel the barrel),
 # mirroring R88/R89. turn_hook is `pub mod` with no `pub use` in lib.rs, so
 # its symbols (TurnHookOutcome / TURN_HOOK_KIND) are module-qualified only.
+# R91 — extends the turn_hook import to the full module surface (payloads,
+# request union, reply/ack types, deny_unknown_fields structs, and the
+# from_wire converters) — still module-qualified, still outside the barrel.
 from minimax_code.tool_protocol.session_event import (
     PhaseChanged,
     SessionPhase,
@@ -188,8 +191,29 @@ from minimax_code.tool_protocol.session_event import (
     session_event_from_wire,
 )
 from minimax_code.tool_protocol.turn_hook import (
+    AFTER_TURN_KIND,
+    BEFORE_TURN_KIND,
+    DEFAULT_SCHEMA_VERSION,
+    DEFAULT_SESSION_RELATIONSHIP,
     TURN_HOOK_KIND,
+    AfterTurnAckPayload,
+    AfterTurnAckStatus,
+    AfterTurnPayload,
+    BeforeTurnPayload,
+    HookInjection,
+    HookReply,
+    InjectionRole,
+    TurnControl,
     TurnHookOutcome,
+    TurnHookRequest,
+    TurnHookRequestAfter,
+    TurnHookRequestBefore,
+    after_turn_ack_payload_from_wire,
+    after_turn_payload_from_wire,
+    before_turn_payload_from_wire,
+    hook_injection_from_wire,
+    hook_reply_from_wire,
+    turn_hook_request_from_wire,
 )
 from minimax_code.tool_types import ToolDescription
 
@@ -3132,3 +3156,562 @@ class TestPackageSurfaceR90:
 
         assert hasattr(mod, "TurnHookOutcome")
         assert hasattr(mod, "TURN_HOOK_KIND")
+
+
+# ---------------------------------------------------------------------------
+# R91 — turn_hook full core: payloads, request union, reply/ack, and the
+# crate's first `#[serde(default = "fn")]`, `#[serde(tag = "phase")]`, and
+# `#[serde(deny_unknown_fields)]` shapes.
+# ---------------------------------------------------------------------------
+
+
+class TestTurnHookConstantsR91:
+    """The four R91 constants + the two serde-default-fn helpers. Critically,
+    the OUTER ``HookEvent::Custom`` kind strings (``before_turn`` /
+    ``after_turn``) must not collide with the INNER ``TurnHookRequest`` phase
+    tag values (``before`` / ``after``)."""
+
+    def test_outer_kind_constants(self):
+        assert BEFORE_TURN_KIND == "before_turn"
+        assert AFTER_TURN_KIND == "after_turn"
+        assert TURN_HOOK_KIND == "turn_hook"
+
+    def test_serde_default_constants(self):
+        assert DEFAULT_SESSION_RELATIONSHIP == "primary"
+        assert DEFAULT_SCHEMA_VERSION == "1.0"
+
+    def test_outer_kind_differs_from_inner_phase(self):
+        # BEFORE_TURN_KIND is the outer HookEvent::Custom kind ("before_turn");
+        # the inner phase tag is "before" — the two must never be conflated.
+        assert BEFORE_TURN_KIND != "before"
+        assert AFTER_TURN_KIND != "after"
+
+    def test_default_fn_helpers_return_constants(self):
+        from minimax_code.tool_protocol.turn_hook import (
+            _default_schema_version,
+            _default_session_relationship,
+        )
+
+        assert _default_session_relationship() == DEFAULT_SESSION_RELATIONSHIP
+        assert _default_schema_version() == DEFAULT_SCHEMA_VERSION
+
+
+class TestBeforeTurnPayloadR91:
+    """``BeforeTurnPayload`` — 6 fields, four serde defaults. The crate's first
+    ``#[serde(default = "fn")]`` lands on ``session_relationship`` /
+    ``schema_version`` (named-function default, not the type's zero value)."""
+
+    def test_full_round_trip(self):
+        payload = BeforeTurnPayload(
+            turn_number=42,
+            model_id="grok-3",
+            yolo_mode=True,
+            conversation_message_count=9,
+            session_relationship="subagent",
+            schema_version="1.0",
+        )
+        wire = payload.to_wire()
+        assert wire == {
+            "turn_number": 42,
+            "model_id": "grok-3",
+            "yolo_mode": True,
+            "conversation_message_count": 9,
+            "session_relationship": "subagent",
+            "schema_version": "1.0",
+        }
+        assert before_turn_payload_from_wire(wire) == payload
+
+    def test_yolo_mode_default_false(self):
+        # #[serde(default)] — wire-omitted → False
+        payload = before_turn_payload_from_wire({"turn_number": 1, "model_id": "grok-3"})
+        assert payload.yolo_mode is False
+
+    def test_conversation_message_count_default_zero(self):
+        payload = before_turn_payload_from_wire({"turn_number": 1, "model_id": "grok-3"})
+        assert payload.conversation_message_count == 0
+
+    def test_session_relationship_default_fn(self):
+        # #[serde(default = "default_session_relationship")] → "primary"
+        payload = before_turn_payload_from_wire({"turn_number": 1, "model_id": "grok-3"})
+        assert payload.session_relationship == DEFAULT_SESSION_RELATIONSHIP
+        assert payload.session_relationship == "primary"
+
+    def test_schema_version_default_fn(self):
+        # #[serde(default = "default_schema_version")] → "1.0"
+        payload = before_turn_payload_from_wire({"turn_number": 1, "model_id": "grok-3"})
+        assert payload.schema_version == DEFAULT_SCHEMA_VERSION
+        assert payload.schema_version == "1.0"
+
+    def test_minimal_wire_round_trip_re_emits_defaults(self):
+        wire = {"turn_number": 1, "model_id": "grok-3"}
+        payload = before_turn_payload_from_wire(wire)
+        # to_wire re-emits ALL fields (defaults are deserialise-only)
+        assert payload.to_wire() == {
+            "turn_number": 1,
+            "model_id": "grok-3",
+            "yolo_mode": False,
+            "conversation_message_count": 0,
+            "session_relationship": "primary",
+            "schema_version": "1.0",
+        }
+
+    def test_tolerates_unknown_fields(self):
+        # No deny_unknown_fields — unknown keys are ignored.
+        payload = before_turn_payload_from_wire(
+            {"turn_number": 1, "model_id": "grok-3", "future_field": "x"}
+        )
+        assert payload.turn_number == 1
+
+
+class TestAfterTurnPayloadR91:
+    """``AfterTurnPayload`` — 8 fields; ``outcome`` is strict
+    ``TurnHookOutcome``; two cancellation ``Option``s are
+    ``skip_serializing_if``; ``cancellation_context`` is opaque."""
+
+    def test_completed_round_trip_skips_none_cancellation(self):
+        payload = AfterTurnPayload(
+            turn_number=42,
+            outcome=TurnHookOutcome.COMPLETED,
+            duration_ms=1500,
+            tool_call_count=3,
+            model_id="grok-3",
+            written_repo_paths=["outputs/result.md"],
+        )
+        wire = payload.to_wire()
+        assert wire == {
+            "turn_number": 42,
+            "outcome": "completed",
+            "duration_ms": 1500,
+            "tool_call_count": 3,
+            "model_id": "grok-3",
+            "written_repo_paths": ["outputs/result.md"],
+        }
+        assert after_turn_payload_from_wire(wire) == payload
+
+    def test_written_repo_paths_default_empty(self):
+        # #[serde(default)]
+        payload = after_turn_payload_from_wire(
+            {
+                "turn_number": 1,
+                "outcome": "completed",
+                "duration_ms": 10,
+                "tool_call_count": 0,
+                "model_id": "grok-3",
+            }
+        )
+        assert payload.written_repo_paths == []
+
+    def test_cancellation_fields_emitted_when_present(self):
+        payload = AfterTurnPayload(
+            turn_number=2,
+            outcome=TurnHookOutcome.CANCELLED,
+            duration_ms=5000,
+            tool_call_count=7,
+            model_id="grok-3",
+            cancellation_category="doom_loop_repetition",
+            cancellation_context={"reason": "max_turns_reached", "limit": 50},
+        )
+        wire = payload.to_wire()
+        assert wire["cancellation_category"] == "doom_loop_repetition"
+        assert wire["cancellation_context"] == {"reason": "max_turns_reached", "limit": 50}
+
+    def test_cancellation_context_opaque_round_trip(self):
+        payload = after_turn_payload_from_wire(
+            {
+                "turn_number": 3,
+                "outcome": "error",
+                "duration_ms": 0,
+                "tool_call_count": 1,
+                "model_id": "grok-3",
+                "cancellation_context": {"nested": [1, 2, {"x": True}]},
+            }
+        )
+        # opaque — passed through verbatim, not stringified
+        assert payload.cancellation_context == {"nested": [1, 2, {"x": True}]}
+
+    def test_outcome_strict_unknown_raises(self):
+        with pytest.raises(ValueError):
+            after_turn_payload_from_wire(
+                {
+                    "turn_number": 1,
+                    "outcome": "timeout",  # strict TurnHookOutcome
+                    "duration_ms": 0,
+                    "tool_call_count": 0,
+                    "model_id": "grok-3",
+                }
+            )
+
+
+class TestInjectionRoleR91:
+    """``InjectionRole`` — snake_case Copy string-enum, strict."""
+
+    def test_wire_values(self):
+        assert InjectionRole.SYSTEM == "system"
+        assert InjectionRole.DEVELOPER == "developer"
+        assert InjectionRole.USER == "user"
+
+    def test_from_wire_round_trip(self):
+        for member in InjectionRole:
+            assert InjectionRole.from_wire(str(member)) is member
+
+    def test_strict_unknown_raises(self):
+        with pytest.raises(ValueError):
+            InjectionRole.from_wire("assistant")
+
+
+class TestTurnControlR91:
+    """``TurnControl`` — snake_case Copy + Default; AUTO is the default."""
+
+    def test_wire_values(self):
+        assert TurnControl.AUTO == "auto"
+        assert TurnControl.FORCE_CONTINUE == "force_continue"
+        assert TurnControl.FORCE_STOP == "force_stop"
+
+    def test_auto_is_default(self):
+        # mirrors #[derive(Default)] with #[default] on Auto
+        reply = HookReply()
+        assert reply.control is TurnControl.AUTO
+
+    def test_from_wire_round_trip(self):
+        for member in TurnControl:
+            assert TurnControl.from_wire(str(member)) is member
+
+    def test_strict_unknown_raises(self):
+        with pytest.raises(ValueError):
+            TurnControl.from_wire("pause")
+
+
+class TestAfterTurnAckStatusR91:
+    """``AfterTurnAckStatus`` — snake_case Copy; NOTE: no #[non_exhaustive]."""
+
+    def test_wire_values(self):
+        assert AfterTurnAckStatus.ENQUEUED == "enqueued"
+        assert AfterTurnAckStatus.FAILED == "failed"
+        assert AfterTurnAckStatus.SKIPPED == "skipped"
+
+    def test_from_wire_round_trip(self):
+        for member in AfterTurnAckStatus:
+            assert AfterTurnAckStatus.from_wire(str(member)) is member
+
+    def test_strict_unknown_raises(self):
+        with pytest.raises(ValueError):
+            AfterTurnAckStatus.from_wire("pending")
+
+
+class TestHookInjectionR91:
+    """``HookInjection`` — deny_unknown_fields (crate's first)."""
+
+    def test_round_trip(self):
+        inj = HookInjection(role=InjectionRole.SYSTEM, content="hello")
+        wire = inj.to_wire()
+        assert wire == {"role": "system", "content": "hello"}
+        assert hook_injection_from_wire(wire) == inj
+
+    def test_deny_unknown_fields(self):
+        # #[serde(deny_unknown_fields)] — extra key raises
+        with pytest.raises(ValueError):
+            hook_injection_from_wire({"role": "user", "content": "x", "extra": True})
+
+    def test_role_nested_enum(self):
+        inj = hook_injection_from_wire({"role": "developer", "content": "y"})
+        assert inj.role is InjectionRole.DEVELOPER
+
+
+class TestAfterTurnAckPayloadR91:
+    """``AfterTurnAckPayload`` — ``error_message`` skip_serializing_if None,
+    ``artifact_count`` #[serde(default)] → 0."""
+
+    def test_round_trip_without_error_message(self):
+        ack = AfterTurnAckPayload(
+            turn_number=5, status=AfterTurnAckStatus.ENQUEUED, artifact_count=2
+        )
+        wire = ack.to_wire()
+        assert wire == {
+            "turn_number": 5,
+            "status": "enqueued",
+            "artifact_count": 2,
+        }
+        # error_message omitted (skip_serializing_if)
+        assert "error_message" not in wire
+
+    def test_error_message_emitted_when_present(self):
+        ack = AfterTurnAckPayload(
+            turn_number=5,
+            status=AfterTurnAckStatus.FAILED,
+            error_message="disk full",
+        )
+        assert ack.to_wire()["error_message"] == "disk full"
+
+    def test_artifact_count_default_zero(self):
+        ack = after_turn_ack_payload_from_wire(
+            {"turn_number": 1, "status": "skipped", "error_message": "no queue"}
+        )
+        assert ack.artifact_count == 0  # #[serde(default)]
+        assert ack.status is AfterTurnAckStatus.SKIPPED
+
+    def test_status_strict(self):
+        with pytest.raises(ValueError):
+            after_turn_ack_payload_from_wire({"turn_number": 1, "status": "unknown_status"})
+
+
+class TestHookReplyR91:
+    """``HookReply`` — deny_unknown_fields + Default ({} → no-op)."""
+
+    def test_default_is_noop(self):
+        # #[derive(Default)] — empty injections, AUTO control, None ack
+        reply = HookReply()
+        assert reply.injections == []
+        assert reply.control is TurnControl.AUTO
+        assert reply.after_turn_ack is None
+        # default {} round-trips
+        assert hook_reply_from_wire({}) == reply
+
+    def test_default_to_wire(self):
+        # default reply serialises both default fields (not skip_serializing_if)
+        assert HookReply().to_wire() == {"injections": [], "control": "auto"}
+
+    def test_full_round_trip(self):
+        reply = HookReply(
+            injections=[HookInjection(role=InjectionRole.USER, content="go")],
+            control=TurnControl.FORCE_STOP,
+            after_turn_ack=AfterTurnAckPayload(
+                turn_number=7, status=AfterTurnAckStatus.ENQUEUED, artifact_count=1
+            ),
+        )
+        wire = reply.to_wire()
+        assert wire == {
+            "injections": [{"role": "user", "content": "go"}],
+            "control": "force_stop",
+            "after_turn_ack": {
+                "turn_number": 7,
+                "status": "enqueued",
+                "artifact_count": 1,
+            },
+        }
+        assert hook_reply_from_wire(wire) == reply
+
+    def test_deny_unknown_fields(self):
+        with pytest.raises(ValueError):
+            hook_reply_from_wire({"injections": [], "control": "auto", "rogue": 1})
+
+    def test_after_turn_ack_none_omitted(self):
+        reply = HookReply()
+        assert "after_turn_ack" not in reply.to_wire()
+
+
+class TestTurnHookRequestR91:
+    """``TurnHookRequest`` — ``#[serde(tag = "phase", rename_all =
+    "snake_case")]`` (the 6th tag-key); Before/After tuple variants wrapping
+    the payloads; payload fields flatten to the top level alongside ``phase``."""
+
+    def test_before_arm_round_trip(self):
+        req = TurnHookRequestBefore(
+            payload=BeforeTurnPayload(turn_number=1, model_id="grok-3", yolo_mode=True)
+        )
+        wire = req.to_wire()
+        assert wire["phase"] == "before"  # NOT "before_turn"
+        assert wire["turn_number"] == 1
+        assert wire["model_id"] == "grok-3"
+        assert wire["yolo_mode"] is True
+        # payload fields flatten to top level — no nested "payload" key
+        assert "payload" not in wire
+        rebuilt = turn_hook_request_from_wire(wire)
+        assert isinstance(rebuilt, TurnHookRequestBefore)
+        assert rebuilt.payload.turn_number == 1
+        assert rebuilt.payload.yolo_mode is True
+
+    def test_after_arm_round_trip(self):
+        req = TurnHookRequestAfter(
+            payload=AfterTurnPayload(
+                turn_number=2,
+                outcome=TurnHookOutcome.COMPLETED,
+                duration_ms=100,
+                tool_call_count=1,
+                model_id="grok-3",
+            )
+        )
+        wire = req.to_wire()
+        assert wire["phase"] == "after"  # NOT "after_turn"
+        assert wire["outcome"] == "completed"
+        rebuilt = turn_hook_request_from_wire(wire)
+        assert isinstance(rebuilt, TurnHookRequestAfter)
+        assert rebuilt.payload.outcome is TurnHookOutcome.COMPLETED
+
+    def test_union_type_alias_covers_both_arms(self):
+        # TurnHookRequest = TurnHookRequestBefore | TurnHookRequestAfter
+        before: TurnHookRequest = TurnHookRequestBefore(
+            payload=BeforeTurnPayload(turn_number=0, model_id="m")
+        )
+        after: TurnHookRequest = TurnHookRequestAfter(
+            payload=AfterTurnPayload(
+                turn_number=0,
+                outcome=TurnHookOutcome.ERROR,
+                duration_ms=0,
+                tool_call_count=0,
+                model_id="m",
+            )
+        )
+        assert isinstance(before, TurnHookRequestBefore)
+        assert isinstance(after, TurnHookRequestAfter)
+
+    def test_unknown_phase_strict_raises(self):
+        # #[non_exhaustive] + no #[serde(other)] — unknown phase raises
+        with pytest.raises(ValueError):
+            turn_hook_request_from_wire(
+                {"phase": "during", "turn_number": 1, "model_id": "m"}
+            )
+
+    def test_before_payload_defaults_apply_via_request(self):
+        # phase=before with minimal payload fields → serde defaults fill in
+        req = turn_hook_request_from_wire(
+            {"phase": "before", "turn_number": 9, "model_id": "grok-3"}
+        )
+        assert isinstance(req, TurnHookRequestBefore)
+        assert req.payload.session_relationship == DEFAULT_SESSION_RELATIONSHIP
+        assert req.payload.schema_version == DEFAULT_SCHEMA_VERSION
+
+
+class TestDenyUnknownFieldsContrastR91:
+    """``#[serde(deny_unknown_fields)]`` is the crate's strictest struct
+    deserialise mode — only HookInjection / HookReply carry it. Contrast
+    with BeforeTurnPayload / AfterTurnPayload which tolerate unknown keys."""
+
+    def test_hook_injection_rejects_extra(self):
+        with pytest.raises(ValueError):
+            hook_injection_from_wire({"role": "user", "content": "x", "z": 1})
+
+    def test_hook_reply_rejects_extra(self):
+        with pytest.raises(ValueError):
+            hook_reply_from_wire({"injections": [], "z": 1})
+
+    def test_before_turn_payload_tolerates_extra(self):
+        # No deny_unknown_fields — should NOT raise
+        payload = before_turn_payload_from_wire(
+            {"turn_number": 1, "model_id": "m", "future": True}
+        )
+        assert payload.turn_number == 1
+
+    def test_after_turn_payload_tolerates_extra(self):
+        payload = after_turn_payload_from_wire(
+            {
+                "turn_number": 1,
+                "outcome": "completed",
+                "duration_ms": 0,
+                "tool_call_count": 0,
+                "model_id": "m",
+                "future": True,
+            }
+        )
+        assert payload.turn_number == 1
+
+
+class TestCrateFirstSerdeShapesR91:
+    """R91 lands three crate-first serde shapes:
+    ``#[serde(default = "fn")]``, ``#[serde(tag = "phase")]``, and
+    ``#[serde(deny_unknown_fields)]``."""
+
+    def test_serde_default_fn_not_type_zero(self):
+        # default = "fn" means session_relationship defaults to "primary"
+        # (a named constant), NOT to the String zero value ("").
+        payload = before_turn_payload_from_wire({"turn_number": 1, "model_id": "m"})
+        assert payload.session_relationship == "primary"
+        assert payload.schema_version == "1.0"
+
+    def test_phase_is_sixth_tag_key(self):
+        # Prior tag keys: code (R83) / kind (R83) / shape (R83) / type (R89) /
+        # event_type (R90). R91 adds "phase" — the 6th.
+        wire = TurnHookRequestBefore(
+            payload=BeforeTurnPayload(turn_number=0, model_id="m")
+        ).to_wire()
+        assert "phase" in wire
+
+    def test_deny_unknown_fields_strictest_mode(self):
+        # The only struct types that reject unknown fields are HookInjection
+        # and HookReply; every other struct tolerates them.
+        with pytest.raises(ValueError):
+            hook_injection_from_wire({"role": "user", "content": "x", "e": 0})
+
+
+class TestPackageSurfaceR91:
+    """``turn_hook`` stays ``pub mod`` with no ``pub use`` — none of its
+    symbols (R90 leaf OR R91 core) travel the barrel. All accessible via
+    the submodule."""
+
+    def test_barrel_still_excludes_turn_hook_symbols(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "TurnHookRequest",
+            "BeforeTurnPayload",
+            "AfterTurnPayload",
+            "HookInjection",
+            "HookReply",
+            "InjectionRole",
+            "TurnControl",
+            "AfterTurnAckPayload",
+            "AfterTurnAckStatus",
+            "BEFORE_TURN_KIND",
+            "AFTER_TURN_KIND",
+        ):
+            assert not hasattr(pkg, name), f"barrel should not re-export {name}"
+
+    def test_submodule_exposes_r91_core(self):
+        import minimax_code.tool_protocol.turn_hook as mod
+
+        for name in (
+            "TurnHookRequest",
+            "TurnHookRequestBefore",
+            "TurnHookRequestAfter",
+            "BeforeTurnPayload",
+            "AfterTurnPayload",
+            "HookInjection",
+            "HookReply",
+            "AfterTurnAckPayload",
+            "AfterTurnAckStatus",
+            "InjectionRole",
+            "TurnControl",
+            "BEFORE_TURN_KIND",
+            "AFTER_TURN_KIND",
+            "DEFAULT_SESSION_RELATIONSHIP",
+            "DEFAULT_SCHEMA_VERSION",
+            "turn_hook_request_from_wire",
+            "hook_reply_from_wire",
+        ):
+            assert hasattr(mod, name), f"submodule missing {name}"
+
+    def test_session_event_still_imports_turn_hook_outcome(self):
+        # R90 dependency (session_event → turn_hook.TurnHookOutcome) unchanged.
+        from minimax_code.tool_protocol.session_event import TurnEnded
+
+        ev = TurnEnded(
+            turn_number=1,
+            outcome=TurnHookOutcome.COMPLETED,
+            duration_ms=0,
+            tool_call_count=0,
+            model_id="m",
+        )
+        assert ev.to_wire()["outcome"] == "completed"
+
+    def test_all_r91_public_names_in_all(self):
+        import minimax_code.tool_protocol.turn_hook as mod
+
+        for name in (
+            "TURN_HOOK_KIND",
+            "BEFORE_TURN_KIND",
+            "AFTER_TURN_KIND",
+            "DEFAULT_SESSION_RELATIONSHIP",
+            "DEFAULT_SCHEMA_VERSION",
+            "TurnHookOutcome",
+            "InjectionRole",
+            "TurnControl",
+            "AfterTurnAckStatus",
+            "BeforeTurnPayload",
+            "AfterTurnPayload",
+            "HookInjection",
+            "HookReply",
+            "AfterTurnAckPayload",
+            "TurnHookRequest",
+            "TurnHookRequestBefore",
+            "TurnHookRequestAfter",
+        ):
+            assert name in mod.__all__, f"{name} not in turn_hook.__all__"
