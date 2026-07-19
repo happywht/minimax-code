@@ -116,9 +116,14 @@ from minimax_code.tool_protocol import (
     ToolNotFound,
     ToolRegistration,
     ToolScope,
+    ToolSearchResult,
     ToolServerRegistration,
     ToolSessionBindOutcome,
     ToolSessionUnbindOutcome,
+    ToolsListParams,
+    ToolsListResult,
+    ToolsSearchParams,
+    ToolsSearchResultBody,
     TracesDonateParams,
     TransportClosed,
     TransportKind,
@@ -161,6 +166,11 @@ from minimax_code.tool_protocol.frames import (
     tool_call_params_from_wire,
     tool_call_progress_frame_from_wire,
     tool_call_result_from_wire,
+    tool_search_result_from_wire,
+    tools_list_params_from_wire,
+    tools_list_result_from_wire,
+    tools_search_params_from_wire,
+    tools_search_result_body_from_wire,
     traces_donate_params_from_wire,
     unbind_tool_session_ack_from_wire,
     unbind_tool_session_params_from_wire,
@@ -4545,5 +4555,257 @@ class TestPerToolSessionBindingBarrelR95:
             "unbind_tool_session_params_from_wire",
             "bind_tool_session_ack_from_wire",
             "unbind_tool_session_ack_from_wire",
+        ):
+            assert not hasattr(pkg, name), f"barrel should not export {name}"
+
+
+class TestToolsListParams:
+    """``tools.list`` params — session_id payload + embedded ToolDefinitionMode."""
+
+    def test_to_wire_full_mode(self):
+        params = ToolsListParams(session_id=SessionId("s-1"), mode=ToolDefinitionMode.full())
+        assert params.to_wire() == {
+            "session_id": "s-1",
+            "mode": {"mode": "full"},
+        }
+
+    def test_to_wire_concise_mode(self):
+        params = ToolsListParams(
+            session_id=SessionId("s-1"),
+            mode=ToolDefinitionMode.concise(ToolId("search"), ToolId("call")),
+        )
+        wire = params.to_wire()
+        assert wire["session_id"] == "s-1"
+        assert wire["mode"]["mode"] == "concise"
+
+    def test_from_wire_lifts_session_and_mode(self):
+        params = tools_list_params_from_wire(
+            {"session_id": "s-1", "mode": {"mode": "full"}}
+        )
+        assert params.session_id == SessionId("s-1")
+        assert params.mode == ToolDefinitionMode.full()
+
+    def test_round_trip(self):
+        original = ToolsListParams(
+            session_id=SessionId("s-9"),
+            mode=ToolDefinitionMode.concise(ToolId("a"), ToolId("b")),
+        )
+        assert tools_list_params_from_wire(original.to_wire()) == original
+
+
+class TestToolsListResult:
+    """``tools.list`` result — the crate's first list-of-bare-pydantic-model."""
+
+    def test_to_wire_dumps_each_description(self):
+        result = ToolsListResult(
+            tools=[
+                ToolDescription(name="bash", description="d"),
+                ToolDescription(name="ls", description="list"),
+            ]
+        )
+        wire = result.to_wire()
+        assert [t["name"] for t in wire["tools"]] == ["bash", "ls"]
+
+    def test_to_wire_excludes_none_fields(self):
+        result = ToolsListResult(tools=[ToolDescription(name="bash", description="d")])
+        wire = result.to_wire()
+        # namespace / title / kind / arguments_schema are None → excluded.
+        assert wire["tools"][0] == {"name": "bash", "description": "d"}
+
+    def test_from_wire_validates_each_model(self):
+        result = tools_list_result_from_wire(
+            {"tools": [{"name": "bash", "description": "d"}]}
+        )
+        assert len(result.tools) == 1
+        assert result.tools[0].name == "bash"
+
+    def test_round_trip_preserves_descriptions(self):
+        original = ToolsListResult(
+            tools=[
+                ToolDescription(name="a", description="x").with_namespace("ns"),
+                ToolDescription(name="b", description="y"),
+            ]
+        )
+        rebuilt = tools_list_result_from_wire(original.to_wire())
+        assert [t.name for t in rebuilt.tools] == ["a", "b"]
+        assert rebuilt.tools[0].namespace == "ns"
+
+    def test_empty_list_round_trip(self):
+        original = ToolsListResult(tools=[])
+        assert tools_list_result_from_wire(original.to_wire()) == original
+
+
+class TestToolsSearchParams:
+    """``tools.search`` params — session_id + query + usize limit."""
+
+    def test_to_wire(self):
+        params = ToolsSearchParams(session_id=SessionId("s-1"), query="shell", limit=10)
+        assert params.to_wire() == {
+            "session_id": "s-1",
+            "query": "shell",
+            "limit": 10,
+        }
+
+    def test_from_wire(self):
+        params = tools_search_params_from_wire(
+            {"session_id": "s-1", "query": "shell", "limit": 10}
+        )
+        assert params.session_id == SessionId("s-1")
+        assert params.query == "shell"
+        assert params.limit == 10
+        assert isinstance(params.limit, int)
+
+    def test_round_trip(self):
+        original = ToolsSearchParams(session_id=SessionId("s-9"), query="x", limit=5)
+        assert tools_search_params_from_wire(original.to_wire()) == original
+
+
+class TestToolSearchResult:
+    """One search match — opaque input_schema passthrough + f32 score."""
+
+    def _make(self) -> ToolSearchResult:
+        return ToolSearchResult(
+            tool_name="bash",
+            server_name="srv-1",
+            description="Run a shell",
+            score=0.875,
+            parameters=["cmd", "cwd"],
+            input_schema={"type": "object", "properties": {}},
+        )
+
+    def test_to_wire_round_trips_opaque_schema(self):
+        wire = self._make().to_wire()
+        assert wire["input_schema"] == {"type": "object", "properties": {}}
+        assert wire["score"] == 0.875
+        assert wire["parameters"] == ["cmd", "cwd"]
+
+    def test_from_wire_lifts_opaque_schema_verbatim(self):
+        rebuilt = tool_search_result_from_wire(self._make().to_wire())
+        assert rebuilt.input_schema == {"type": "object", "properties": {}}
+        assert rebuilt.score == 0.875
+        assert isinstance(rebuilt.score, float)
+
+    def test_input_schema_accepts_non_dict_json(self):
+        """Opaque Value accepts any JSON — arrays pass verbatim (not just dicts)."""
+        result = ToolSearchResult(
+            tool_name="t",
+            server_name="srv",
+            description="d",
+            score=1.0,
+            parameters=[],
+            input_schema=["a", "b"],
+        )
+        rebuilt = tool_search_result_from_wire(result.to_wire())
+        assert rebuilt.input_schema == ["a", "b"]
+
+    def test_round_trip(self):
+        original = self._make()
+        assert tool_search_result_from_wire(original.to_wire()) == original
+
+
+class TestToolsSearchResultBody:
+    """``tools.search_result`` body — list of ToolSearchResult + counters."""
+
+    def _result(self) -> ToolSearchResult:
+        return ToolSearchResult(
+            tool_name="t",
+            server_name="srv",
+            description="d",
+            score=0.5,
+            parameters=[],
+            input_schema={},
+        )
+
+    def test_to_wire(self):
+        body = ToolsSearchResultBody(
+            results=[self._result()],
+            total_hidden_tools=3,
+            is_ready=True,
+        )
+        wire = body.to_wire()
+        assert len(wire["results"]) == 1
+        assert wire["total_hidden_tools"] == 3
+        assert wire["is_ready"] is True
+
+    def test_from_wire(self):
+        body = tools_search_result_body_from_wire(
+            {
+                "results": [self._result().to_wire()],
+                "total_hidden_tools": 3,
+                "is_ready": True,
+            }
+        )
+        assert len(body.results) == 1
+        assert body.results[0].tool_name == "t"
+        assert body.total_hidden_tools == 3
+        assert body.is_ready is True
+
+    def test_round_trip(self):
+        original = ToolsSearchResultBody(
+            results=[
+                ToolSearchResult(
+                    tool_name="a",
+                    server_name="srv",
+                    description="d",
+                    score=0.9,
+                    parameters=["p"],
+                    input_schema={"x": 1},
+                )
+            ],
+            total_hidden_tools=0,
+            is_ready=False,
+        )
+        assert tools_search_result_body_from_wire(original.to_wire()) == original
+
+
+class TestListAndSearchBarrelR96:
+    """List & search symbols travel the barrel; from_wire stay submodule-qualified."""
+
+    def test_barrel_exports_list_search_symbols(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "ToolsListParams",
+            "ToolsListResult",
+            "ToolsSearchParams",
+            "ToolSearchResult",
+            "ToolsSearchResultBody",
+        ):
+            assert hasattr(pkg, name), f"barrel missing list/search symbol {name}"
+
+    def test_list_search_symbols_in_all(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "ToolsListParams",
+            "ToolsListResult",
+            "ToolsSearchParams",
+            "ToolSearchResult",
+            "ToolsSearchResultBody",
+        ):
+            assert name in pkg.__all__, f"{name} not in barrel __all__"
+
+    def test_frames_submodule_exposes_from_wire(self):
+        import minimax_code.tool_protocol.frames as mod
+
+        for name in (
+            "tools_list_params_from_wire",
+            "tools_list_result_from_wire",
+            "tools_search_params_from_wire",
+            "tool_search_result_from_wire",
+            "tools_search_result_body_from_wire",
+        ):
+            assert hasattr(mod, name), f"frames submodule missing {name}"
+
+    def test_barrel_does_not_re_export_from_wire(self):
+        """from_wire converters stay submodule-qualified, mirroring the crate."""
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "tools_list_params_from_wire",
+            "tools_list_result_from_wire",
+            "tools_search_params_from_wire",
+            "tool_search_result_from_wire",
+            "tools_search_result_body_from_wire",
         ):
             assert not hasattr(pkg, name), f"barrel should not export {name}"

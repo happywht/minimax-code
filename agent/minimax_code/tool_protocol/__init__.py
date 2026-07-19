@@ -1,4 +1,4 @@
-"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 + R90 + R91 + R92 + R93 + R94 — registration frames landed + R95 — per-tool session binding landed).
+"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 + R90 + R91 + R92 + R93 + R94 — registration frames landed + R95 — per-tool session binding landed + R96 — list & search landed).
 
 Fusion of grok-build's ``xai-tool-protocol`` crate — the wire DTOs for
 the computer-hub tool-server protocol: identifier newtypes, registration
@@ -133,11 +133,22 @@ to mix unit + struct variants):
   crate's first ack-wraps-strict-enum shape — params carry two bare id
   newtypes and the result wraps a single outcome enum whose ``from_wire``
   rejects unknown values, mirroring R86 :class:`HookKind`).
+* **R96 (this round)** — :mod:`frames`
+  (list & search domain: :class:`ToolsListParams` / :class:`ToolsListResult`
+  / :class:`ToolsSearchParams` / :class:`ToolSearchResult` /
+  :class:`ToolsSearchResultBody`; the crate's first
+  **list-of-bare-pydantic-model** — :attr:`ToolsListResult.tools` is a
+  ``Vec<ToolDescription>` lifting the codegen crate's pydantic
+  :class:`~minimax_code.tool_types.ToolDescription` via ``model_validate`` /
+  ``model_dump(exclude_none=True)`` with no per-element ``from_wire``; the
+  R92 opaque-``serde_json::Value`` passthrough recurs on
+  :attr:`ToolSearchResult.input_schema`; and the family carries
+  ``session_id`` as payload, overriding the R92 family-scoped "no session_id
+  on params" rule).
 * *deferred* — :mod:`frames`
-  (remainder: 9 of 14 domains — tool/system notifications, server
-  discovery+binding, list & search, session lifecycle, simplified lifecycle,
-  subscriptions, hooks, service→harness pushes, tool-server status
-  lifecycle).
+  (remainder: 8 of 14 domains — tool/system notifications, server
+  discovery+binding, session lifecycle, simplified lifecycle, subscriptions,
+  hooks, service→harness pushes, tool-server status lifecycle).
 
 ``from_wire`` / ``to_wire`` live on each module (instance method or module
 function); the barrel does **not** re-export them, mirroring the Rust
@@ -221,8 +232,13 @@ from minimax_code.tool_protocol.frames import (
     ToolCallParams,
     ToolCallProgressFrame,
     ToolCallResult,
+    ToolSearchResult,
     ToolSessionBindOutcome,
     ToolSessionUnbindOutcome,
+    ToolsListParams,
+    ToolsListResult,
+    ToolsSearchParams,
+    ToolsSearchResultBody,
     TracesDonateParams,
     UnbindToolSessionAck,
     UnbindToolSessionParams,
@@ -436,4 +452,12 @@ __all__ = [
     "ToolSessionUnbindOutcome",
     "UnbindToolSessionAck",
     "UnbindToolSessionParams",
+    # R96 — list & search (list-of-bare-pydantic-model + opaque Value
+    # passthrough). All 27 frames symbols travel the barrel; from_wire
+    # converters stay submodule-qualified, mirroring the crate.
+    "ToolsListParams",
+    "ToolsListResult",
+    "ToolsSearchParams",
+    "ToolSearchResult",
+    "ToolsSearchResultBody",
 ]

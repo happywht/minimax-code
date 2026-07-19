@@ -7965,3 +7965,134 @@ raise）。严格 StrEnum 形态复用 R86 `HookKind` / `ToolScope` 模式。
 ### Commit
 
 `feat(platform): R95 migrate frames.rs per-tool session binding domain (BindToolSessionParams/UnbindToolSessionParams/BindToolSessionAck/UnbindToolSessionAck + strict snake_case outcome enums, ack-wraps-strict-enum shape)`
+
+
+## R96 — 迁移 frames.rs list & search 域（list-of-bare-pydantic-model 形态首落地 + opaque Value 透传复用）
+
+锚点:R96-1 b7e03a7
+
+### 本轮目标
+
+继续 xai-tool-protocol frames.rs（1549 行 / 86 符号 / 14 域，最大模块）的逐域前向迁移。R92 已
+开 tool-call+donation 域，R93 心跳，R94 registration，R95 per-tool session binding。本轮从 9 个
+deferred 域中选 **list & search 域**（`frames.rs` 396-433）落地 5 个符号：
+`ToolsListParams` / `ToolsListResult` / `ToolsSearchParams` / `ToolSearchResult` /
+`ToolsSearchResultBody`，外加 5 个 `from_wire` 转换器。该域是 deferred 列表中**依赖风险最低**且
+**形式价值最高**的一档——它首次在 frames 层引入 `Vec<ToolDescription>`（list-of-bare-pydantic-
+model），并复用 R92 已建立的 opaque `serde_json::Value` 透传，把 frames.rs 的迁移从 "单 DTO 包装"
+推进到 "列表聚合 + 透传聚合"。
+
+### 融合结论
+
+`grok-build/crates/common/xai-tool-protocol/src/frames.rs` 的 list & search 域与当前项目深度融合：
+- `ToolsListResult.tools: Vec<ToolDescription>` 直接 lift 代码生成 crate（R65
+  `tool_types/types.py`）的 pydantic `ToolDescription`——这是 frames 层**首次**让元素是 "裸
+  pydantic model"（无 per-element `from_wire` 包装器），与 R87 `Vec<ToolDescriptionWithSchema>`
+  的 "手控包装器元素" 形态形成对照。
+- `ToolSearchResult.input_schema` 是 `serde_json::Value`，Python 侧用 `object` 透传——**逐字**
+  复用 R92 `ToolCallProgressFrame` 已确立的 "opaque Value 接受任意 JSON、不转换不校验" 契约。
+- `session_id` 作为 payload 字段出现在 `ToolsListParams` / `ToolsSearchParams`，与 Rust 源忠实一致；
+  这**覆盖**了 frames.py 模块 docstring 中 "params structs do NOT carry a session_id" 的
+  family-scoped 规则——经核该规则是 `tool.call` 系列特有（session_id 走 envelope），而非模块作用
+  域，本轮在映射决策树中显式记录这一 nuance。
+- 5 符号全部走 barrel（镜像 Rust `lib.rs` 的 `pub use frames::{...}` 最大 re-export 集），`from_wire`
+  转换器保持子模块限定（barrel 不 re-export，与 crate 其余部分一致）。
+
+### 交付
+
+- `agent/minimax_code/tool_protocol/frames.py`：
+  - 导入块新增 2 行：`from minimax_code.tool_protocol.connection import ToolDefinitionMode`（ids 之前）
+    + `from minimax_code.tool_types import ToolDescription`（所有 tool_protocol 导入之后）。
+  - `__all__` 新增 5 符号（`ToolsListParams` / `ToolsListResult` / `ToolsSearchParams` /
+    `ToolSearchResult` / `ToolsSearchResultBody`）+ 5 转换器名。
+  - R95 块末尾追加 5 个 `@dataclass`（`ToolsListParams` session_id+mode；`ToolsListResult`
+    tools: list[ToolDescription]；`ToolsSearchParams` session_id+query+limit；`ToolSearchResult`
+    7 字段含 input_schema: object；`ToolsSearchResultBody` results+total_hidden_tools+is_ready）+
+    5 个 `from_wire` 函数。
+  - docstring 首行 `(R92 + R93 + R94 + R95)` → `(... + R96)`；R95 段末扩展 R96 entry + deferred
+    9→8 域。
+- `agent/minimax_code/tool_protocol/__init__.py`（barrel）：
+  - frames 导入块新增 5 符号，case-sensitive 字母序锚点（`ToolSearchResult` 在 `ToolScope` 后；
+    4 个 `Tools*` 在 `ToolSessionUnbindOutcome` 后、`TracesDonateParams` 前——大写 `S` < 小写 `s`
+    在索引 4）。
+  - `__all__` 新增 5 条（注释更新 "27 frames symbols"）+ R96 块注释。
+  - docstring 首行追加 `+ R96` + R96 entry 段 + deferred 9→8（删除 "list & search"）。
+- `agent/tests/test_tool_protocol.py`：
+  - barrel 导入块：`ToolSearchResult`（ToolScope 后）+ 4 个 `Tools*`（ToolSessionUnbindOutcome 后）。
+  - frames `from_wire` 导入块：5 转换器（`tool_search_result_from_wire` 在 `tool_call_result_from_wire`
+    后；4 个 `tools_*` 在 `traces_donate_params_from_wire` 前，字母序 `tool_*` < `tools_*` < `traces_*`）。
+  - 新增 6 测试类（`TestToolsListParams` / `TestToolsListResult` / `TestToolsSearchParams` /
+    `TestToolSearchResult` / `TestToolsSearchResultBody` / `TestListAndSearchBarrelR96`），共 23 个新
+    测试，覆盖 to_wire / from_wire / round_trip / opaque 透传 / barrel 四契约。
+
+### 映射决策树 + 坑
+
+1. **list-of-bare-pydantic-model（首形态）** → `ToolsListResult.tools: list[ToolDescription]`，
+   元素是裸 pydantic（无 `from_wire` 类方法）。`to_wire` 用
+   `[t.model_dump(exclude_none=True) for t in self.tools]`（`exclude_none` 忠实镜像 Rust
+   `#[serde(skip_serializing_if = "Option::is_none")]`——None 字段如 namespace/title 不上线）；
+   `from_wire` 用
+   ```python
+   tools=[
+       ToolDescription.model_validate(t)  # type: ignore[arg-type]
+       for t in data["tools"]  # type: ignore[union-attr]
+   ],
+   ```
+   即 R87 `registration.py:391-394` 确立的 **双类型忽略列表迭代**（元素转换 `arg-type` + 迭代器
+   `union-attr`）。与 R87 `Vec<ToolDescriptionWithSchema>` 的 "手控包装器 `ToolDescriptionWithSchema.
+   from_wire(t)`" 形态对照——本轮是 "裸 model_validate"，更轻。
+2. **opaque Value 透传复用（R92 形态）** → `ToolSearchResult.input_schema: object`，`to_wire` 直接
+   `{"input_schema": self.input_schema, ...}`（逐字放回），`from_wire` 用 `input_schema=data
+   ["input_schema"]`（逐字取出，无 `dict()` 包裹、无校验）。忠实镜像 Rust `serde_json::Value`——
+   接受任意 JSON（dict / list / scalar），测试 `test_input_schema_accepts_non_dict_json` 显式验证
+   `["a", "b"]` 数组透传。复用 R92 `ToolCallProgressFrame` 同一模式，**零新形态**。
+3. **session_id-as-payload nuance** → `ToolsListParams` / `ToolsSearchParams` 携带 `session_id` 字段，
+   与 Rust 源一致。这**看似**违反 frames.py 模块 docstring 的 "params structs do NOT carry a
+   session_id" 规则，但经核该规则是 `tool.call` 系列特有（`ToolCallParams` 等——其 session_id 走
+   envelope 而非 payload），**非**模块作用域。list/search 域的工具发现语义需要 session-scoped 视图，
+   故 session_id 是真实 payload。本轮在 R95 docstring 的 R96 entry 中显式记录此 nuance，避免后续
+   维护者误判。
+4. **f32 score → float + int limit** → `ToolSearchResult.score: float`，`from_wire` 用
+   `float(data["score"])  # type: ignore[arg-type]`（强制 float，`isinstance` 断言在测试中锁
+   Python 类型）；`ToolsSearchParams.limit: int` 同理 `int(data["limit"])`。镜像 Rust `f32` /
+   `usize` 的显式数值 lift。
+5. **isort case-sensitive（坑）** → barrel 导入块 4 个 `Tools*` 必须在 `TracesDonateParams` **前**：
+   索引 4 处 `Tools`（大写 `S`，ASCII 83）< `Traces`（小写 `s`，ASCII 115），大写在小写前。
+   `ToolSearchResult`（`ToolSea`）在 `ToolScope`（`ToolSc`）后：索引 6 `ea`(101,97) vs `Sc`(83,99)，
+   首字符 `e`(101) > `S`(83)，故 `ToolSea` > `ToolSc`，`ToolSearchResult` 排在 `ToolScope` 后。
+   ruff isort `order-by-type` 默认开（CONSTANTS → Classes → functions，组内 case-sensitive）。
+6. **mode 嵌入 DTO（R82 形态）** → `ToolsListParams.mode: ToolDefinitionMode`，`to_wire` 调
+   `self.mode.to_wire()`，`from_wire` 调 `ToolDefinitionMode.from_wire(data["mode"])  # type:
+   ignore[arg-type]`。复用 R82 connection 模块已落地的手控内部标记类（`full()` 单元变量 /
+   `concise(ToolId, ToolId)` 结构体变量），**零新形态**。
+
+### 验证
+
+- `uv run ruff check tests/test_tool_protocol.py minimax_code/tool_protocol/frames.py
+  minimax_code/tool_protocol/__init__.py` → **All checks passed!**
+- `uv run pytest tests/test_tool_protocol.py -q` → **676 passed**（R95 基准 653 + R96 新增 23：
+  19 个 to_wire/from_wire/round_trip/opaque 断言分布在 5 个域测试类 + 4 个 barrel 契约在
+  `TestListAndSearchBarrelR96`）。
+- `uv run pytest -q`（全量回归）→ **3134 passed, 10 skipped**（R95 基准 3111 + R96 新增 23），
+  **零回归**，1 warning（fastapi/httpx 无关警告），103.63s。
+
+### YAGNI 边界
+
+- 只迁 list & search 域 5 个符号；其余 8 个 frames.rs 域（工具/系统通知、server discovery+binding、
+  session lifecycle、simplified lifecycle、subscriptions、hooks、service→harness pushes、tool-server
+  status lifecycle）留 R97+。其中 server discovery+binding 被 `ToolServerLifecycleStatus`（839 行
+  处跨域依赖）阻塞，待 tool-server status lifecycle 域先迁移解除。
+- 不接 list/search 的传输层 / 调度层（wire 类型层职责；运行时如何路由 tools.list / tools.search
+  请求、如何维护 per-session 工具视图是调度层决策，后续轮）。
+- opaque `input_schema` 不做 schema 校验（YAGNI：透传契约的核心就是 "原样进原样出"，校验是消费端
+  ToolDescription 的职责，wire 层不预判；若上游 schema 不合法，应在 model_validate 时由 pydantic
+  报错，而非 wire 层吞掉）。
+- 不加 result 的分页 / 排序字段（Rust 源无分页，list 是全量返回；search 的 `limit` 是查询参数而非
+  分页游标——忠实迁移，不臆造分页协议）。
+- `ToolDescription` 不在 frames 层加 `from_wire`/`to_wire`（它是 codegen crate 的 pydantic model，
+  pydantic 自带 model_validate/model_dump 就是它的 "wire 转换"；frames 层只调用，不重新定义——
+  避免 DRY 违规）。
+
+### Commit
+
+`feat(platform): R96 migrate frames.rs list and search domain (ToolsListParams/ToolsListResult/ToolsSearchParams/ToolSearchResult/ToolsSearchResultBody, list-of-bare-pydantic-model shape + opaque Value passthrough)`

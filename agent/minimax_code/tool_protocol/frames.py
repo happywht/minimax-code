@@ -1,4 +1,4 @@
-"""Tool-server frame protocol — per-method params/result payloads (R92 + R93 + R94 + R95).
+"""Tool-server frame protocol — per-method params/result payloads (R92 + R93 + R94 + R95 + R96).
 
 Fusion of grok-build's ``xai-tool-protocol::frames`` — the per-method
 ``params`` and ``result`` payload structs that ride inside a
@@ -33,8 +33,20 @@ wraps a single outcome enum whose ``from_wire`` rejects unknown values
 (mirroring R86 :class:`~minimax_code.tool_protocol.capabilities.HookKind`
 strict StrEnum — the strict counterpart to R90's tolerant
 :class:`~minimax_code.tool_protocol.session_event.ToolCallOutcome`). No
-crate-first serde shape lands here; the remaining 9 domains are deferred
-to R96+.
+crate-first serde shape lands here. R96 lands the **list & search** family
+(:class:`ToolsListParams` / :class:`ToolsListResult` /
+:class:`ToolsSearchParams` / :class:`ToolSearchResult` /
+:class:`ToolsSearchResultBody`) — the crate's first
+**list-of-bare-pydantic-model**: :attr:`ToolsListResult.tools` is a
+``Vec<ToolDescription>`` whose elements are the codegen crate's pydantic
+:class:`~minimax_code.tool_types.ToolDescription` (R65), lifted via
+``model_validate`` / ``model_dump(exclude_none=True)`` rather than a
+per-element ``from_wire`` classmethod (R87's ``Vec<ToolDescriptionWithSchema>``
+had hand-controlled wrappers; here the element has none). The family also
+carries the R92 opaque-``serde_json::Value`` passthrough on
+:attr:`ToolSearchResult.input_schema` and is the first params family to
+carry ``session_id`` as payload (overriding the R92 family-scoped "no
+session_id on params" rule). The remaining 8 domains are deferred to R97+.
 
 ``session_id`` belongs in the JSON-RPC envelope field — always. These
 params structs do NOT carry a ``session_id``; the hub reads it from
@@ -96,11 +108,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from minimax_code.tool_protocol.connection import ToolDefinitionMode
 from minimax_code.tool_protocol.ids import ServerId, SessionId, ToolCallId, ToolId
 from minimax_code.tool_protocol.methods import Method
 from minimax_code.tool_protocol.output_wire import ToolOutputWire
 from minimax_code.tool_protocol.output_wire import from_wire as tool_output_wire_from_wire
 from minimax_code.tool_protocol.registration import ToolRegistration, ToolServerRegistration
+from minimax_code.tool_types import ToolDescription
 
 __all__ = [
     # consts (first numeric usize family)
@@ -130,6 +144,12 @@ __all__ = [
     "ToolSessionUnbindOutcome",
     "UnbindToolSessionAck",
     "UnbindToolSessionParams",
+    # list & search (R96 — list-of-bare-pydantic-model + opaque Value passthrough)
+    "ToolSearchResult",
+    "ToolsListParams",
+    "ToolsListResult",
+    "ToolsSearchParams",
+    "ToolsSearchResultBody",
     # wire converters
     "tool_call_params_from_wire",
     "tool_call_result_from_wire",
@@ -147,6 +167,11 @@ __all__ = [
     "unbind_tool_session_params_from_wire",
     "bind_tool_session_ack_from_wire",
     "unbind_tool_session_ack_from_wire",
+    "tools_list_params_from_wire",
+    "tools_list_result_from_wire",
+    "tools_search_params_from_wire",
+    "tool_search_result_from_wire",
+    "tools_search_result_body_from_wire",
 ]
 
 
@@ -781,3 +806,202 @@ def unbind_tool_session_ack_from_wire(data: dict[str, object]) -> UnbindToolSess
     :attr:`outcome` lifts via :meth:`ToolSessionUnbindOutcome.from_wire` (strict).
     """
     return UnbindToolSessionAck(outcome=ToolSessionUnbindOutcome.from_wire(str(data["outcome"])))
+
+
+# ── List & search (R96) ───────────────────────────────────────────────────
+
+
+@dataclass
+class ToolsListParams:
+    """``tools.list`` params (harness → hub).
+
+    Unlike the tool-call params family (R92), this struct **does** carry a
+    ``session_id`` — for the list/search family it is payload data identifying
+    which session's bound tool set to enumerate, not envelope routing. The
+    R92 module docstring's "params structs do NOT carry a session_id" rule is
+    family-scoped to ``tool.call`` (whose ``session_id`` lives on the envelope),
+    not module-scoped; the list/search family overrides it. :attr:`mode` is the
+    internally-tagged
+    :class:`~minimax_code.tool_protocol.connection.ToolDefinitionMode`
+    (R82 hand-controlled class; ``to_wire`` returns a dict).
+    """
+
+    session_id: SessionId
+    mode: ToolDefinitionMode
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "mode": self.mode.to_wire(),
+        }
+
+
+@dataclass
+class ToolsListResult:
+    """``tools.list`` result body — the crate's first **list-of-bare-pydantic-model**.
+
+    :attr:`tools` is a ``Vec<ToolDescription>`` whose elements are the codegen
+    crate's pydantic :class:`~minimax_code.tool_types.ToolDescription` (R65),
+    lifted directly via :meth:`ToolDescription.model_validate` /
+    :meth:`ToolDescription.model_dump(exclude_none=True)`. R87's
+    :attr:`ToolServerRegistration.tools` was a ``Vec<ToolDescriptionWithSchema>``
+    — every element had its own ``from_wire`` / ``to_wire`` classmethod; here
+    the element type has **no** hand-controlled converters and round-trips
+    through pydantic's own validators, so the list comprehension calls
+    ``model_validate`` / ``model_dump`` directly rather than delegating to a
+    per-element ``from_wire``.
+    """
+
+    tools: list[ToolDescription]
+
+    def to_wire(self) -> dict[str, object]:
+        return {"tools": [t.model_dump(exclude_none=True) for t in self.tools]}
+
+
+@dataclass
+class ToolsSearchParams:
+    """``tools.search`` params (harness → hub).
+
+    Carries ``session_id`` as payload (same family rule as
+    :class:`ToolsListParams`). :attr:`limit` is the Rust ``usize`` → Python ``int``.
+    """
+
+    session_id: SessionId
+    query: str
+    limit: int
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "query": self.query,
+            "limit": self.limit,
+        }
+
+
+@dataclass
+class ToolSearchResult:
+    """One match in a ``tools.search_result`` body.
+
+    Wire-local definition (the Rust comment notes this keeps the protocol crate
+    free of the codegen crate's transitive deps — distinct from
+    :class:`ToolsListResult.tools` which embeds the codegen
+    :class:`~minimax_code.tool_types.ToolDescription` directly).
+    :attr:`input_schema` is an opaque ``serde_json::Value`` → Python ``object``
+    round-tripped verbatim (the R92 opaque-``Value`` passthrough shape — no
+    conversion, no validation). :attr:`score` is the Rust ``f32`` → Python ``float``.
+    """
+
+    tool_name: str
+    server_name: str
+    description: str
+    score: float
+    parameters: list[str]
+    #: Opaque JSON value (the tool's input schema). Round-tripped verbatim.
+    input_schema: object
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "tool_name": self.tool_name,
+            "server_name": self.server_name,
+            "description": self.description,
+            "score": self.score,
+            "parameters": self.parameters,
+            "input_schema": self.input_schema,
+        }
+
+
+@dataclass
+class ToolsSearchResultBody:
+    """``tools.search_result`` body.
+
+    :attr:`results` is a ``Vec<ToolSearchResult>`` — a hand-controlled DTO with
+    its own ``from_wire`` / ``to_wire`` (unlike
+    :class:`ToolsListResult.tools`'s bare-pydantic list, each element here
+    delegates to :func:`tool_search_result_from_wire`). :attr:`total_hidden_tools`
+    is ``usize`` → ``int``; :attr:`is_ready` is ``bool`` (always serialised,
+    mirroring R86's bool-always-serialises rule).
+    """
+
+    results: list[ToolSearchResult]
+    total_hidden_tools: int
+    is_ready: bool
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "results": [r.to_wire() for r in self.results],
+            "total_hidden_tools": self.total_hidden_tools,
+            "is_ready": self.is_ready,
+        }
+
+
+def tools_list_params_from_wire(data: dict[str, object]) -> ToolsListParams:
+    """Reconstruct :class:`ToolsListParams`.
+
+    :attr:`session_id` lifts as a bare newtype; :attr:`mode` lifts via
+    :meth:`ToolDefinitionMode.from_wire` (R82 hand-controlled class — the wire
+    value is the internally-tagged dict).
+    """
+    return ToolsListParams(
+        session_id=SessionId(str(data["session_id"])),
+        mode=ToolDefinitionMode.from_wire(data["mode"]),  # type: ignore[arg-type]
+    )
+
+
+def tools_list_result_from_wire(data: dict[str, object]) -> ToolsListResult:
+    """Reconstruct :class:`ToolsListResult`.
+
+    :attr:`tools` lifts as a list of bare pydantic models via
+    :meth:`ToolDescription.model_validate` (R65 — the element type has no
+    ``from_wire`` classmethod; this is the list counterpart of R87's
+    single-element ``ToolDescription.model_validate`` embed).
+    """
+    return ToolsListResult(
+        tools=[
+            ToolDescription.model_validate(t)  # type: ignore[arg-type]
+            for t in data["tools"]  # type: ignore[union-attr]
+        ],
+    )
+
+
+def tools_search_params_from_wire(data: dict[str, object]) -> ToolsSearchParams:
+    """Reconstruct :class:`ToolsSearchParams`.
+
+    :attr:`session_id` lifts as a bare newtype; :attr:`limit` is ``usize`` → ``int``.
+    """
+    return ToolsSearchParams(
+        session_id=SessionId(str(data["session_id"])),
+        query=str(data["query"]),
+        limit=int(data["limit"]),  # type: ignore[arg-type]
+    )
+
+
+def tool_search_result_from_wire(data: dict[str, object]) -> ToolSearchResult:
+    """Reconstruct :class:`ToolSearchResult`.
+
+    :attr:`input_schema` is the opaque ``Value`` passthrough (verbatim).
+    :attr:`score` is ``f32`` → ``float``; :attr:`parameters` is ``Vec<String>``.
+    """
+    return ToolSearchResult(
+        tool_name=str(data["tool_name"]),
+        server_name=str(data["server_name"]),
+        description=str(data["description"]),
+        score=float(data["score"]),  # type: ignore[arg-type]
+        parameters=[str(p) for p in data["parameters"]],  # type: ignore[union-attr]
+        input_schema=data["input_schema"],
+    )
+
+
+def tools_search_result_body_from_wire(data: dict[str, object]) -> ToolsSearchResultBody:
+    """Reconstruct :class:`ToolsSearchResultBody`.
+
+    :attr:`results` lifts via :func:`tool_search_result_from_wire`;
+    :attr:`total_hidden_tools` is ``usize`` → ``int``; :attr:`is_ready` is ``bool``.
+    """
+    return ToolsSearchResultBody(
+        results=[
+            tool_search_result_from_wire(r)  # type: ignore[arg-type]
+            for r in data["results"]  # type: ignore[union-attr]
+        ],
+        total_hidden_tools=int(data["total_hidden_tools"]),  # type: ignore[arg-type]
+        is_ready=bool(data["is_ready"]),
+    )
