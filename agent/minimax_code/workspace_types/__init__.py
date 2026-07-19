@@ -38,6 +38,15 @@ R79 adds the request **discriminators** that ride inside the envelope
 share one serde shape (adjacent-tagged), so they reuse the R67
 :class:`AdjacentTagged` base exactly as :class:`WorkspaceError` does.
 
+R80 adds the **event stream** a client subscribes to
+(:class:`WorkspaceEvent` + :class:`WorkspaceTopic` +
+:class:`WorkspaceTopicSet` + :class:`EventLag`) — the third of the
+four top-level dispatch modules. The event union and lag signal reuse
+the R67 :class:`AdjacentTagged` base; :class:`WorkspaceTopic` is a
+plain snake_case :class:`enum.StrEnum`; :class:`WorkspaceTopicSet` is
+the layer's first transparent-*non-string* newtype (a ``u32`` bitmask
+that serialises to a bare integer).
+
 Mirrors the Rust ``lib.rs`` ``pub use`` re-exports.
 """
 
@@ -47,6 +56,12 @@ from minimax_code.workspace_types._tagged import AdjacentTagged
 from minimax_code.workspace_types._wire import WireModel, sort_mappings
 from minimax_code.workspace_types.chunk_kind import ChunkKind
 from minimax_code.workspace_types.errors import IoKind, WorkspaceError
+from minimax_code.workspace_types.events import (
+    EventLag,
+    WorkspaceEvent,
+    WorkspaceTopic,
+    WorkspaceTopicSet,
+)
 from minimax_code.workspace_types.identity import HunkId, SessionId, ToolCallId
 from minimax_code.workspace_types.metadata import (
     META_CLIENT_ID,
@@ -140,6 +155,11 @@ __all__ = [
     "WorkspaceOpsRequest",
     "SessionLifecycleRequest",
     "WorkspaceRequest",
+    # event stream (R80 — crate top-level dispatch surface)
+    "EventLag",
+    "WorkspaceEvent",
+    "WorkspaceTopic",
+    "WorkspaceTopicSet",
     # chunk discriminator
     "ChunkKind",
     # error layer

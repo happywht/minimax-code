@@ -6444,3 +6444,99 @@ grok 相邻标记 newtype 变体的 serde `content` 槽持有 inner 值，serde 
 ### Commit
 
 `feat(platform): R79 requests.rs -> requests.py（WorkspaceRequest 外部信封 crate 顶层调度层第 2 模块 4 相邻标记枚举共享 AdjacentTagged 基类）[新增 requests.py 312 行: _payload(obj) 3 行辅助 hasattr to_wire 统一 4 类 newtype 负载(相邻标记嵌套枚举 HunkAction + WireModel struct 委托 to_wire / 透明 str-newtype SessionId + 原始 str|list|int 直通) + ToolCallArgs(WireModel) 4 字段 #[serde(default)] input_json + ToolRequest(AdjacentTagged) 2 变体 call|definitions + WorkspaceOpsRequest(AdjacentTagged) 18 变体(9 unit null data + 4 struct-newtype 委托 + act_on_hunk 嵌套 HunkAction + memory_write|install_plugin 裸 str + resolve_file_refs 裸 list + memory_search 手建 dict u32 强制) + SessionLifecycleRequest(AdjacentTagged) 8 变体(fork 委托 AgentSessionConfig + destroy|apply_worktree|get_rewind_points SessionId 裸 str + begin_prompt|end_prompt|rewind 手建 dict u64 强制 + list unit) + WorkspaceRequest(AdjacentTagged) 3 变体 tool|ops|session newtype over 子枚举; barrel __init__.py 导出 5 符号 + docstring R79 段; 5 测试类 19 测试(18 ops 变体穷举 + 8 session 变体穷举 + 3 outer 嵌套 + from_wire 拒绝 events); KEY 决策 1: 4 枚举共享 R67 AdjacentTagged 基类与 WorkspaceError 同构零新 serde 模式; KEY 坑 1: 单文件 vs 子目录选单文件匹配 R78 request.py 避免 4 文件循环 import; KEY 坑 2: _payload 统一异构 newtype 负载是 R79 核心创新 hasattr to_wire 分界; KEY 坑 3: AgentSessionConfig 无参构造失败 agent_id 必填 -> .default() 工厂; KEY 坑 4: list 工厂遮蔽内置 ruff 规则集无 flake8-builtins A003 不触发; 验证 ruff 3 文件 clean + pytest test_workspace_types.py 89 passed + 全回归 2395 passed 10 skipped 1 warning 零回归, 锚点 R79-1 a3c8675]`
+
+
+## R80 — events.rs -> events.py（订阅事件流，crate 顶层调度层第 3 模块，3 种 serde 模式落地透明 u32 位掩码 newtype）
+
+锚点:R80-1 20d8bbf
+
+### 本轮目标
+
+迁移 grok `xai-grok-workspace-types::events` 子目录（`mod.rs` / `lag.rs` / `workspace.rs` 3 文件）→ 单文件 `events.py`，落地 crate 顶层调度层的**第 3 个模块**（R78 信封 → R79 请求鉴别器 → R80 订阅事件流 → R81 响应分块）。交付 4 个类型：相邻标记事件联合 `WorkspaceEvent`（12 变体）+ 单变体 lag 信号 `EventLag` + 普通 snake_case 枚举 `WorkspaceTopic`（7 变体）+ 透明 u32 位掩码 newtype `WorkspaceTopicSet`。本轮落地 **3 种 serde 模式**——其中 2 种复用既定配方（相邻标记 + StrEnum），1 种是本层**首个透明非字符串 newtype**（`WorkspaceTopicSet` 序列化为裸 int 位掩码）。
+
+### 融合结论
+
+本轮的工程价值在 **serde 模式谱系的补全** + **crate 设计意图的忠实还原**：
+
+1. **3 种 serde 模式同台**：grok `events/` 一个子目录就用了 3 种 serde 派生——`WorkspaceEvent`/`EventLag` 是相邻标记（`#[serde(tag,content,rename_all)]`，复用 R67 `AdjacentTagged`）；`WorkspaceTopic` 是普通 `#[serde(rename_all="snake_case")]` 外部标记枚举（序列化为裸 `"fs"` 字符串，复用 `enum.StrEnum`）；`WorkspaceTopicSet` 是 `#[serde(transparent)]` over `u32`（序列化为裸整数位掩码，**新模式**）。三种模式覆盖了 Rust enum 序列化的主要派生形态，Python 侧分别用 3 种既有原语承接，仅 WorkspaceTopicSet 需直接 to_wire/from_wire（无新基类）。
+
+2. **透明非字符串 newtype = 新 serde 形态**：R67 已有透明**字符串** newtype（`SessionId` 经 pydantic core schema 序列化为裸 str）。`WorkspaceTopicSet` 是透明**非字符串** newtype（u32 → 裸 int），且携带方法（empty/all/with_topic/contains）+ 从不是 `WireModel` 字段，故不能复用 `SessionId` 的 core-schema 路径——直接实现 `to_wire() -> int` / `from_wire(data: int)`。这补全了"透明 newtype"的两种形态（str / int），为后续可能的透明数值 newtype（如 `u64` token 计数）立了先例。
+
+3. **无 SessionEvent 设计的忠实还原**：grok `events/mod.rs` docstring 明确——EventBus 只携带 `WorkspaceEvent`（工作区**观察到的外部状态**）；sampler 引起的状态（prompt 边界、工具调用生命周期、plan-mode、subagent、compaction）**不经 EventBus**，而是经 chunk 流（R81）。Python 侧如实记录这条设计边界，不为对称性臆造 `SessionEvent`——这是"迁移而非重构"纪律的体现。
+
+### 交付
+
+- **`agent/minimax_code/workspace_types/events.py`（428 行，新建）**：
+  - 模块 docstring 记录 3 种 serde 模式 + 无 SessionEvent 设计 + `with`→`with_topic` 重命名 + `_dt_to_wire` 第 3 使用者。
+  - `_payload(obj)` 辅助（复制自 R79，3 行）：`hasattr(obj, "to_wire")` 路由 AdjacentTagged/WireModel 委托，StrEnum/裸标量直通。
+  - `WorkspaceTopic(StrEnum)`：7 变体（Fs/Vcs/Discovery/Servers/Index/Config/Tools = `"fs"`/`"vcs"`/`"discovery"`/`"servers"`/`"index"`/`"config"`/`"tools"`）。
+  - `_TOPIC_INDEX` 字典（7 topic → 稳定 bit 0-6）+ `_ALL_TOPIC_BITS = (1<<7)-1 = 127`。
+  - `WorkspaceTopicSet`：`__slots__=("bits",)`，`__init__(bits=0)` u32 掩码钳制（`int(bits) & 0xFFFFFFFF`），`to_wire() -> int` 裸整数，`from_wire(cls, data)` 拒绝 bool/非 int，`empty()`/`all()` 工厂，`with_topic(topic)` 原位 `|=` 返回 self，`contains(topic)`/`is_empty()`，`__eq__`/`__hash__`/`__repr__`。
+  - `WorkspaceEvent(AdjacentTagged)`：12 变体 `_VARIANTS`（fs_changed/git_head_changed/git_lock_held/skills_changed/plugins_changed/hooks_changed/mcp_server_state_changed/lsp_server_state_changed/codebase_index_updated/project_config_changed/permission_policy_changed/tools_changed），12 工厂 classmethod，`topic() -> WorkspaceTopic` match 语句分类。
+  - `EventLag(AdjacentTagged)`：单变体 `_VARIANTS=("lagged",)`，`lagged(cls, n)` u64 强制，`__str__` 镜像 `thiserror #[error("lagged by {0} events")]`。
+- **`agent/minimax_code/workspace_types/__init__.py`（barrel 更新）**：docstring 加 R80 段落（3 种 serde 模式 + 透明非字符串 newtype）；import 块加 4 符号（isort 字母序，errors 后 identity 前）；`__all__` 加 `# event stream (R80 ...)` 块。
+- **`agent/tests/test_workspace_types.py`（+32 测试）**：4 个新测试类——`TestEventLag`（4：lagged wire 形状 + u64 bool 强制 + `__str__` thiserror Display + from_wire 往返）、`TestWorkspaceTopic`（3：7 snake_case wire 值 + 7 变体计数 + 裸字符串 JSON）、`TestWorkspaceTopicSet`（10：empty/all 覆盖全 topic + with_topic 位掩码构建 + contains + 透明 wire 裸 int 非 dict + from_wire 往返 + 拒绝 bool + 拒绝非 int + eq/hash + u32 钳制负数/溢出）、`TestWorkspaceEvent`（15：每变体 wire 形状含 fs_changed `_payload` 委托 + git_head 分支/detached + git_lock `_EPOCH` Z 后缀 + skills/plugins/hooks 嵌套 WireModel 列表 + mcp/lsp 别名 ServerStatus + codebase u64 + 2 unit 变体 None + tools_changed + **12 变体穷举 from_wire 往返** + **topic 映射穷举**）。
+
+### 映射决策树 + 坑
+
+```
+events.rs（grok events/ 子目录 3 文件）
+├─ mod.rs（EventBus 设计意图：只携带 WorkspaceEvent，无 SessionEvent）
+├─ workspace.rs
+│  ├─ WorkspaceEvent 12 变体（相邻标记）
+│  │  └─ WorkspaceEvent(AdjacentTagged) 12 _VARIANTS
+│  │     ├─ struct 变体（fs_changed/git_head_changed/skills_changed/...）
+│  │     │  └─ 手建 dict + _payload 委托（StrEnum 字段直通 / WireModel 列表元素委托）
+│  │     ├─ DateTime<Utc> 字段（git_lock_held.until）
+│  │     │  └─ _dt_to_wire(until) RFC3339 Z 后缀（R78 导入，第 3 使用者）
+│  │     ├─ u64 字段（codebase_index_updated.files_indexed）-> int() 防御强制
+│  │     ├─ unit 变体（project_config_changed/permission_policy_changed）-> cls(kind, None)
+│  │     └─ topic() -> WorkspaceTopic（match 语句分类，每变体→1 topic）
+│  ├─ WorkspaceTopic 7 变体（普通 rename_all snake_case，非相邻标记）
+│  │  └─ WorkspaceTopic(StrEnum) 裸字符串 "fs"/"vcs"/...（JSON 安全）
+│  └─ WorkspaceTopicSet（transparent over u32，新模式）
+│     └─ 直接 to_wire()->int / from_wire(data:int)
+│        ├─ bits 位掩码（_TOPIC_INDEX 稳定 bit 0-6）
+│        ├─ empty()/all()/with_topic()/contains()/is_empty()
+│        ├─ u32 钳制 int(bits) & 0xFFFFFFFF
+│        └─ from_wire 拒绝 bool（int 子类）+ 非 int
+└─ lag.rs EventLag（单变体 lagged(u64)，相邻标记）
+   └─ EventLag(AdjacentTagged) _VARIANTS=("lagged",)
+      ├─ lagged(n) int(n) u64 强制
+      └─ __str__ "lagged by {n} events"（镜像 thiserror Display）
+```
+
+**坑 1 —— 透明非字符串 newtype 是新 serde 模式（WorkspaceTopicSet）**
+
+`WorkspaceTopicSet` 是 `#[serde(transparent)]` over `bits: u32`，序列化为裸整数（无字段名包装）。这与 R67 的透明**字符串** newtype（`SessionId`，经 pydantic core schema 序列化为裸 str）形态不同：(1) 它是非字符串（u32→int）；(2) 它携带方法（empty/all/with_topic/contains），不是纯 newtype；(3) 它从不是 `WireModel` 字段（wire 形状是裸 int，非排序 dict），故不能走 WireModel/SessionId 的 core-schema 路径。决策：直接在类上实现 `to_wire() -> int` / `from_wire(cls, data: int)`，不继承 WireModel，不用 `__get_pydantic_core_schema__`。`from_wire` 显式拒绝 bool（`isinstance(data, bool)`）——因为 bool 是 int 子类，Rust u32 反序列化器拒绝 bool，Python 侧必须显式排除。u32 范围在 `__init__` 用 `int(bits) & 0xFFFFFFFF` 钳制（负数 → 补码，>u32 → 截断），镜像 Rust u32 wrap 语义。这补全了透明 newtype 的两种形态，为后续透明数值 newtype 立先例。
+
+**坑 2 —— `with` 关键字冲突（Rust `with` → Python `with_topic`）**
+
+grok `WorkspaceTopicSet::with(mut self, topic) -> Self` builder 方法名 `with` 是 Python 关键字（`with` 语句），不能作为方法名（语法错误）。重命名为 `with_topic`，docstring 显式记录重命名理由。语义保留：grok `mut self`（move + 原位修改）→ Python 原位 `self.bits |= ...` 返回 `self`（与 R78 `with_metadata`/`with_deadline` 同一模式）。
+
+**坑 3 —— `WorkspaceTopic` 是普通枚举非相邻标记（serde 形态辨识）**
+
+grok `WorkspaceTopic` 用 `#[serde(rename_all = "snake_case")]` **但无** `#[serde(tag, content)]`——它是**外部标记/普通枚举**，序列化为裸 `"fs"` 字符串，而非相邻标记的 `{"type":"fs","data":...}`。辨识关键：相邻标记需要 `tag`+`content` 两个属性；只有 `rename_all` 是普通枚举的 snake_case 值重命名。Python 侧用 `enum.StrEnum`（成员即 str 子类，JSON 安全，`==` 比较与裸字符串一致）承接，不走 AdjacentTagged。这个辨识是 R80 的核心 serde 判断——若误判为相邻标记会生成错误的 wire 形状。
+
+**坑 4 —— `_dt_to_wire` 第 3 使用者（rpc/hunks, request, events）**
+
+`GitLockHeld.until: DateTime<Utc>` 需 RFC3339 Z 后缀序列化。`_dt_to_wire` 已存在两份（`rpc/hunks.py` R76 + `request.py` R78），events 是第 3 使用者。决策：从 `request.py` 导入（`from minimax_code.workspace_types.request import _dt_to_wire`）而非第 3 次复制——3 个使用者的去重收益已超过"模块自包含"的偏好。提升到 `_wire.py` 仍延迟（YAGNI，待第 4 使用者或专门轮）。`_payload` 辅助则相反——复制（3 行）不导入，保持与 R78 `_dt_to_wire` 复制先例的模块自包含一致性；两者的不同选择反映了"辅助越短越倾向复制，跨模块依赖越重越倾向导入"的实用判断。
+
+### 验证
+
+- **ruff**：3 文件全 clean（`events.py` / `__init__.py` / `test_workspace_types.py`）。`All checks passed!`
+- **pytest `tests/test_workspace_types.py`**：**121 passed**（R80 新增 4 类 32 测试 + 既有 89）。覆盖 12 事件变体穷举 + topic 映射穷举 + WorkspaceTopicSet 透明 wire/bool 拒绝/u32 钳制 + EventLag thiserror Display。
+- **全回归**：`2427 passed, 10 skipped, 1 warning`（1 warning 是 fastapi starlette TestClient 弃用，与 R80 无关）。R79 是 2395，R80 +32 测试 → 2427，**零回归**。
+
+### YAGNI 边界
+
+- **未迁 `chunks`**：本轮只迁 `events/`（crate 顶层调度层 4 模块的第 3 个）。`chunks/`（mod/ops/session/tool 4 文件，29 变体 ChunkKind 的 RPC 响应分块）留给 R81——4 模块的最后一个。
+- **不臆造 SessionEvent**：grok `events/mod.rs` 明确 EventBus 只携带 WorkspaceEvent；sampler 状态经 chunk 流（R81）。Python 侧如实记录，不为对称性新增 `SessionEvent`。
+- **`_dt_to_wire` 不提升到 `_wire`**：3 使用者（rpc/hunks, request, events）已去重到 request.py 导入，但提升到公共 `_wire.py` 仍延迟——需专门的迁移轮处理 3 处导入点更新 + 测试，避免本轮范围蔓延（YAGNI，待第 4 使用者触发）。
+- **`_payload` 复制不导入**：3 行辅助，复制保持 events.py 模块自包含（与 R78 复制 `_dt_to_wire` 先例一致）。`_dt_to_wire` 选导入是因为它有跨模块稳定契约（datetime→RFC3339），`_payload` 是内部归一化原语无外部契约。
+- **WorkspaceTopicSet 不实现 `__or__`/`__and__`/`__iter__`**：grok 只暴露 empty/all/with/contains/is_empty 5 个方法。Python 集合协议（`|`/`&`/迭代）是过度设计——订阅位掩码的典型用法是 `Set.empty().with_topic(t)` 构建 + `contains(t)` 查询，不需要集合代数。YAGNI。
+- **不实现实际 EventBus 订阅运行时**：`events.py` 只迁 wire 契约（4 类型的序列化形状 + topic 分类），不实现事件总线/订阅/背压逻辑（runtime transport 层关注点，留给后续消费轮）。
+
+### Commit
+
+`feat(platform): R80 events.rs -> events.py（订阅事件流 crate 顶层调度层第 3 模块 3 种 serde 模式落地透明 u32 位掩码 newtype）[新增 events.py 428 行: _payload(obj) 3 行辅助复制自 R79 + WorkspaceTopic(StrEnum) 7 变体 fs|vcs|discovery|servers|index|config|tools 普通非相邻标记 + _TOPIC_INDEX 稳定 bit 0-6 + _ALL_TOPIC_BITS 127 + WorkspaceTopicSet 透明 u32 位掩码 newtype(新模式 to_wire()->int 裸整数 from_wire 拒绝 bool|非 int u32 钳制 int&0xFFFFFFFF empty|all|with_topic|contains|is_empty __slots__ eq|hash|repr) + WorkspaceEvent(AdjacentTagged) 12 变体(fs_changed|git_head_changed|git_lock_held|skills_changed|plugins_changed|hooks_changed|mcp_server_state_changed|lsp_server_state_changed|codebase_index_updated|project_config_changed|permission_policy_changed|tools_changed) 12 工厂 + topic() match 分类 + EventLag(AdjacentTagged) 单变体 lagged(u64) __str__ thiserror Display; _dt_to_wire 从 request.py 导入第 3 使用者; barrel 导出 4 符号 + docstring R80 段; 4 测试类 32 测试(12 事件变体穷举 + topic 映射穷举 + WorkspaceTopicSet 透明 wire bool 拒绝 u32 钳制 + EventLag Display); KEY 决策 1: 3 种 serde 模式同台(相邻标记复用 + StrEnum 复用 + 透明非字符串 newtype 新模式); KEY 决策 2: 无 SessionEvent 设计忠实还原 EventBus 只携带 WorkspaceEvent; KEY 坑 1: 透明非字符串 newtype 是新 serde 形态直接 to_wire|from_wire 不继承 WireModel bool 显式排除; KEY 坑 2: with 关键字冲突 -> with_topic 重命名; KEY 坑 3: WorkspaceTopic 普通枚举非相邻标记 rename_all 无 tag|content; KEY 坑 4: _dt_to_wire 第 3 使用者选导入 _payload 选复制; 验证 ruff 3 文件 clean + pytest test_workspace_types.py 121 passed + 全回归 2427 passed 10 skipped 1 warning 零回归, 锚点 R80-1 20d8bbf]`

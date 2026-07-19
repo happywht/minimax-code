@@ -35,6 +35,7 @@ from minimax_code.workspace_types import (
     CapabilityMode,
     ChunkKind,
     ContentMatch,
+    EventLag,
     FileReference,
     FsEventKind,
     FuzzyMatch,
@@ -86,8 +87,11 @@ from minimax_code.workspace_types import (
     UserQuestionOption,
     VcsKind,
     WorkspaceError,
+    WorkspaceEvent,
     WorkspaceOpsRequest,
     WorkspaceRequest,
+    WorkspaceTopic,
+    WorkspaceTopicSet,
 )
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
@@ -896,6 +900,268 @@ class TestSessionLifecycleRequest:
             wire = s.to_wire()
             back = SessionLifecycleRequest.from_wire(wire)
             assert back.to_wire() == wire
+
+
+# ------------------------------------------------------------------------- R80
+
+
+class TestEventLag:
+    """EventLag single-variant adjacent-tagged enum (R80)."""
+
+    def test_lagged_wire_shape(self):
+        # Adjacent-tagged newtype variant: {"type": "lagged", "data": <u64>}.
+        assert EventLag.lagged(3).to_wire() == {"type": "lagged", "data": 3}
+
+    def test_u64_coercion(self):
+        # u64 field — bool is widened to int defensively.
+        assert EventLag.lagged(True).to_wire()["data"] == 1
+
+    def test_str_display_mirrors_thiserror(self):
+        # thiserror #[error("lagged by {0} events")] -> __str__.
+        assert str(EventLag.lagged(3)) == "lagged by 3 events"
+
+    def test_round_trip_via_from_wire(self):
+        lag = EventLag.lagged(7)
+        wire = lag.to_wire()
+        back = EventLag.from_wire(wire)
+        assert back.to_wire() == wire
+        assert str(back) == "lagged by 7 events"
+
+
+class TestWorkspaceTopic:
+    """WorkspaceTopic plain snake_case StrEnum (R80, 7 variants)."""
+
+    def test_snake_case_wire_values(self):
+        # Plain #[serde(rename_all = "snake_case")] — bare snake_case string,
+        # NOT adjacent-tagged {type, data}.
+        assert WorkspaceTopic.Fs == "fs"
+        assert WorkspaceTopic.Vcs == "vcs"
+        assert WorkspaceTopic.Discovery == "discovery"
+        assert WorkspaceTopic.Servers == "servers"
+        assert WorkspaceTopic.Index == "index"
+        assert WorkspaceTopic.Config == "config"
+        assert WorkspaceTopic.Tools == "tools"
+
+    def test_seven_variants(self):
+        assert len(list(WorkspaceTopic)) == 7
+
+    def test_serialises_as_bare_string(self):
+        # Externally-tagged enum: the wire form is the bare value string.
+        assert json.dumps(WorkspaceTopic.Fs.value) == '"fs"'
+
+
+class TestWorkspaceTopicSet:
+    """WorkspaceTopicSet transparent u32 bitmask newtype (R80)."""
+
+    def test_empty(self):
+        s = WorkspaceTopicSet.empty()
+        assert s.bits == 0
+        assert s.is_empty()
+        assert s.to_wire() == 0
+
+    def test_all_covers_every_topic(self):
+        s = WorkspaceTopicSet.all()
+        assert s.bits == 0b1111111  # 7 topics -> bits 0..6
+        assert not s.is_empty()
+        for topic in WorkspaceTopic:
+            assert s.contains(topic)
+        assert s.to_wire() == 127
+
+    def test_with_topic_builds_bitmask(self):
+        s = WorkspaceTopicSet.empty().with_topic(WorkspaceTopic.Fs)
+        assert s.bits == 0b1  # Fs -> index 0
+        s = s.with_topic(WorkspaceTopic.Tools)  # Tools -> index 6
+        assert s.bits == 0b1000001
+
+    def test_contains_membership(self):
+        s = (
+            WorkspaceTopicSet.empty()
+            .with_topic(WorkspaceTopic.Vcs)
+            .with_topic(WorkspaceTopic.Index)
+        )
+        assert s.contains(WorkspaceTopic.Vcs)
+        assert s.contains(WorkspaceTopic.Index)
+        assert not s.contains(WorkspaceTopic.Fs)
+
+    def test_transparent_wire_returns_bare_int(self):
+        # #[serde(transparent)] over u32 -> bare integer, no field wrapper.
+        wire = WorkspaceTopicSet(bits=5).to_wire()
+        assert wire == 5
+        assert isinstance(wire, int)
+        assert not isinstance(wire, dict)
+
+    def test_from_wire_round_trip(self):
+        s = WorkspaceTopicSet.all()
+        assert WorkspaceTopicSet.from_wire(s.to_wire()) == s
+
+    def test_from_wire_rejects_bool(self):
+        # bool is an int subclass; a u32 deserialiser must reject it.
+        with pytest.raises(ValueError):
+            WorkspaceTopicSet.from_wire(True)
+
+    def test_from_wire_rejects_non_int(self):
+        with pytest.raises(ValueError):
+            WorkspaceTopicSet.from_wire("5")
+        with pytest.raises(ValueError):
+            WorkspaceTopicSet.from_wire([1, 2])
+
+    def test_eq_and_hash(self):
+        a = WorkspaceTopicSet.empty().with_topic(WorkspaceTopic.Fs)
+        b = WorkspaceTopicSet(bits=1)
+        assert a == b
+        assert hash(a) == hash(b)
+        assert a != WorkspaceTopicSet.empty()
+
+    def test_u32_mask_clamps(self):
+        # Negative and >u32 literals are masked into the u32 range.
+        assert WorkspaceTopicSet(bits=-1).bits == 0xFFFFFFFF
+        assert WorkspaceTopicSet(bits=0x1_0000_0000).bits == 0  # wraps to 0
+
+
+class TestWorkspaceEvent:
+    """WorkspaceEvent adjacent-tagged enum (R80, 12 variants)."""
+
+    def test_fs_changed_struct_variant(self):
+        ev = WorkspaceEvent.fs_changed("/a/b", FsEventKind.Modified)
+        assert ev.to_wire() == {
+            "type": "fs_changed",
+            "data": {"path": "/a/b", "kind": "modified"},
+        }
+
+    def test_git_head_changed_with_branch(self):
+        ev = WorkspaceEvent.git_head_changed("abc123", "main", VcsKind.Git)
+        assert ev.to_wire() == {
+            "type": "git_head_changed",
+            "data": {"commit": "abc123", "branch": "main", "vcs": "git"},
+        }
+
+    def test_git_head_changed_detached_head(self):
+        # branch: Option<String> -> None when detached.
+        ev = WorkspaceEvent.git_head_changed("abc123", None, VcsKind.Jj)
+        assert ev.to_wire() == {
+            "type": "git_head_changed",
+            "data": {"commit": "abc123", "branch": None, "vcs": "jj"},
+        }
+
+    def test_git_lock_held_datetime_z_suffix(self):
+        # until: DateTime<Utc> -> RFC 3339 with Z suffix (reuses R78 _dt_to_wire).
+        ev = WorkspaceEvent.git_lock_held(_EPOCH)
+        assert ev.to_wire() == {
+            "type": "git_lock_held",
+            "data": {"until": "1970-01-01T00:00:00Z"},
+        }
+
+    def test_skills_changed_nested_wiremodel_list(self):
+        # added: Vec<SkillInfo> -> each element delegates via to_wire.
+        skill = SkillInfo(id="review", display_name="Code Review")
+        ev = WorkspaceEvent.skills_changed([skill], ["old"])
+        assert ev.to_wire() == {
+            "type": "skills_changed",
+            "data": {"added": [skill.to_wire()], "removed": ["old"]},
+        }
+
+    def test_plugins_changed(self):
+        plugin = PluginInfo(id="p1")
+        ev = WorkspaceEvent.plugins_changed([plugin], True)
+        assert ev.to_wire() == {
+            "type": "plugins_changed",
+            "data": {"plugins": [plugin.to_wire()], "project_trusted": True},
+        }
+
+    def test_hooks_changed(self):
+        hook = HookInfo(id="h1")
+        ev = WorkspaceEvent.hooks_changed([hook], False)
+        assert ev.to_wire() == {
+            "type": "hooks_changed",
+            "data": {"hooks": [hook.to_wire()], "project_trusted": False},
+        }
+
+    def test_mcp_server_state_changed(self):
+        # McpServerStatus is a ServerStatus alias.
+        ev = WorkspaceEvent.mcp_server_state_changed("ctx7", McpServerStatus.Running)
+        assert ev.to_wire() == {
+            "type": "mcp_server_state_changed",
+            "data": {"server": "ctx7", "status": "running"},
+        }
+
+    def test_lsp_server_state_changed(self):
+        # LspServerStatus is a ServerStatus alias.
+        ev = WorkspaceEvent.lsp_server_state_changed("rust-analyzer", LspServerStatus.Starting)
+        assert ev.to_wire() == {
+            "type": "lsp_server_state_changed",
+            "data": {"server": "rust-analyzer", "status": "starting"},
+        }
+
+    def test_codebase_index_updated_u64(self):
+        ev = WorkspaceEvent.codebase_index_updated(42)
+        assert ev.to_wire() == {
+            "type": "codebase_index_updated",
+            "data": {"files_indexed": 42},
+        }
+        # u64 coercion: bool -> int
+        assert WorkspaceEvent.codebase_index_updated(True).to_wire()["data"]["files_indexed"] == 1
+
+    def test_project_config_changed_unit_variant(self):
+        assert WorkspaceEvent.project_config_changed().to_wire() == {
+            "type": "project_config_changed",
+            "data": None,
+        }
+
+    def test_permission_policy_changed_unit_variant(self):
+        assert WorkspaceEvent.permission_policy_changed().to_wire() == {
+            "type": "permission_policy_changed",
+            "data": None,
+        }
+
+    def test_tools_changed(self):
+        ev = WorkspaceEvent.tools_changed("sess-1")
+        assert ev.to_wire() == {
+            "type": "tools_changed",
+            "data": {"session_id": "sess-1"},
+        }
+
+    def test_all_12_variants_round_trip_via_from_wire(self):
+        samples = [
+            WorkspaceEvent.fs_changed("/x", FsEventKind.Created),
+            WorkspaceEvent.git_head_changed("c", "main", VcsKind.Git),
+            WorkspaceEvent.git_lock_held(_EPOCH),
+            WorkspaceEvent.skills_changed([SkillInfo.default()], ["x"]),
+            WorkspaceEvent.plugins_changed([PluginInfo.default()], True),
+            WorkspaceEvent.hooks_changed([HookInfo.default()], False),
+            WorkspaceEvent.mcp_server_state_changed("m", McpServerStatus.Running),
+            WorkspaceEvent.lsp_server_state_changed("l", LspServerStatus.Starting),
+            WorkspaceEvent.codebase_index_updated(0),
+            WorkspaceEvent.project_config_changed(),
+            WorkspaceEvent.permission_policy_changed(),
+            WorkspaceEvent.tools_changed("s"),
+        ]
+        assert len(samples) == 12
+        kinds = {s.to_wire()["type"] for s in samples}
+        assert len(kinds) == 12  # all 12 wire tags distinct
+        for s in samples:
+            wire = s.to_wire()
+            back = WorkspaceEvent.from_wire(wire)
+            assert back.to_wire() == wire
+
+    def test_topic_mapping_covers_all_variants(self):
+        assert WorkspaceEvent.fs_changed("/x", FsEventKind.Modified).topic() == WorkspaceTopic.Fs
+        assert WorkspaceEvent.git_head_changed("c", None, VcsKind.Git).topic() == WorkspaceTopic.Vcs
+        assert WorkspaceEvent.git_lock_held(_EPOCH).topic() == WorkspaceTopic.Vcs
+        assert WorkspaceEvent.skills_changed([], []).topic() == WorkspaceTopic.Discovery
+        assert WorkspaceEvent.plugins_changed([], True).topic() == WorkspaceTopic.Discovery
+        assert WorkspaceEvent.hooks_changed([], False).topic() == WorkspaceTopic.Discovery
+        assert (
+            WorkspaceEvent.mcp_server_state_changed("m", McpServerStatus.Running).topic()
+            == WorkspaceTopic.Servers
+        )
+        assert (
+            WorkspaceEvent.lsp_server_state_changed("l", LspServerStatus.Running).topic()
+            == WorkspaceTopic.Servers
+        )
+        assert WorkspaceEvent.codebase_index_updated(0).topic() == WorkspaceTopic.Index
+        assert WorkspaceEvent.project_config_changed().topic() == WorkspaceTopic.Config
+        assert WorkspaceEvent.permission_policy_changed().topic() == WorkspaceTopic.Config
+        assert WorkspaceEvent.tools_changed("s").topic() == WorkspaceTopic.Tools
 
 
 class TestWorkspaceRequest:
