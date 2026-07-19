@@ -60,6 +60,7 @@ class FakeLLM:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: Any = None,
         temperature: float | None = None,
+        reasoning_effort: Any = None,  # R55: mirror MiniMaxClient.stream_chat kwarg
     ) -> AsyncIterator[StreamChunk]:
         self.call_count += 1
         self.messages.append(list(messages))
@@ -83,6 +84,7 @@ class StallingLLM:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: Any = None,
         temperature: float | None = None,
+        reasoning_effort: Any = None,  # R55: mirror MiniMaxClient.stream_chat kwarg
     ) -> AsyncIterator[StreamChunk]:
         yield StreamChunk(delta="partial answer")
         await asyncio.sleep(1)

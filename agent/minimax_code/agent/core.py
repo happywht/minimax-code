@@ -40,7 +40,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..hooks import HookManager
 from ..lifecycle import (
@@ -72,6 +72,13 @@ from .reliability import (
 )
 from .tools import ToolRegistry, ToolResult, get_default_registry
 from .types import LLMStreamTimeout
+
+if TYPE_CHECKING:
+    # Annotation-only import — R55 wires ``AgentConfig.reasoning_effort`` and
+    # the ``_stream_turn`` call site through this type. The runtime coercion
+    # lives in the transport via ``coerce_effort`` (R54); the field is a
+    # passive carrier until then (default ``None`` ⇒ zero wire change).
+    from .reasoning import ReasoningEffort
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +206,17 @@ class AgentConfig:
     """Tunable knobs for a single :class:`AgentCore` instance."""
 
     model: str = default_model()  # R50: was "MiniMax-M3" literal, now from vocabulary
+    # R55: reasoning-effort control axis (the companion to ``model`` — together
+    # they are the two configuration axes of an LLM call: ``model`` picks *who*
+    # answers, ``reasoning_effort`` picks *how deeply* it thinks). Accepted in
+    # the same permissive form as the client/transport surface
+    # (:class:`~minimax_code.agent.reasoning.ReasoningEffort` | wire-token
+    # ``str`` | ``None``); the runtime coercion lives in the transport via
+    # :func:`~minimax_code.agent.reasoning.coerce_effort` (R54). ``None`` (the
+    # default) is pipe-through-only — nothing is emitted on the wire until the
+    # per-protocol effort contract settles, so every existing call stays
+    # byte-identical to the pre-R55 behaviour.
+    reasoning_effort: ReasoningEffort | str | None = None
     max_iterations: int = 12
     # Per-tool dispatch timeout (seconds). The tool itself can
     # also enforce its own (shorter) limit; this is the ceiling.
@@ -767,6 +785,13 @@ class AgentCore:
             tools=tools_payload or None,
             tool_choice="auto" if tools_payload else None,
             temperature=self.config.temperature,
+            # R55: thread the configured reasoning-effort axis (the companion
+            # to ``model``) into the call. The transport coerces it via
+            # ``coerce_effort`` (R54) and records it on
+            # ``client.last_reasoning_effort`` but emits nothing on the wire
+            # yet, so ``None`` (the AgentConfig default) leaves the request
+            # byte-identical to the pre-R55 path.
+            reasoning_effort=self.config.reasoning_effort,
         ).__aiter__()
         while True:
             try:

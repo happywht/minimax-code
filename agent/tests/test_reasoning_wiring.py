@@ -19,7 +19,9 @@ these tests prove it is *wired in*.
 from __future__ import annotations
 
 from minimax_code.agent import reasoning as R
+from minimax_code.agent.core import AgentConfig, AgentCore
 from minimax_code.agent.llm import MiniMaxClient
+from minimax_code.agent.tools import ToolRegistry
 from minimax_code.agent.transports.mock_transport import MockTransport
 
 _MSGS = [{"role": "user", "content": "ping"}]
@@ -121,3 +123,67 @@ async def test_client_chat_path_default_is_none():
     client = MiniMaxClient(mock=True)
     _ = await client.chat(_MSGS, model="m")
     assert client.last_reasoning_effort is None
+
+
+# ---------------------------------------------------------------------------
+# Upstream half: AgentConfig.reasoning_effort → AgentCore → MiniMaxClient (R55)
+# ---------------------------------------------------------------------------
+#
+# R54 closed the downstream half (client → transport: coerce + record). R55
+# closes the upstream half (config → core → client call site) so the two
+# configuration axes of an LLM call — ``model`` (R50) picks *who* answers,
+# ``reasoning_effort`` picks *how deeply* it thinks — both flow from a single
+# :class:`AgentConfig` into the stream. Together R53 + R54 + R55 make the full
+# end-to-end reasoning-effort pipe (still pipe-through-only — no wire emission
+# until the per-protocol effort contract settles).
+
+_PING = [{"role": "user", "content": "ping"}]
+
+
+async def test_core_streams_config_effort_to_client():
+    """A bare string in ``AgentConfig.reasoning_effort`` reaches the client coerced."""
+    client = MiniMaxClient(mock=True)
+    core = AgentCore(
+        llm=client,
+        registry=ToolRegistry(),
+        config=AgentConfig(reasoning_effort="high"),
+    )
+    await core._stream_turn(_PING)
+    assert client.last_reasoning_effort is R.ReasoningEffort.HIGH
+
+
+async def test_core_default_config_effort_is_none():
+    """No ``reasoning_effort`` on the config ⇒ client sees ``None`` (zero regression).
+
+    The AgentConfig default is ``None``, which the transport records as ``None``
+    and emits nothing on the wire — every existing turn stays byte-identical to
+    the pre-R55 path.
+    """
+    client = MiniMaxClient(mock=True)
+    core = AgentCore(llm=client, registry=ToolRegistry(), config=AgentConfig())
+    await core._stream_turn(_PING)
+    assert client.last_reasoning_effort is None
+
+
+async def test_core_streams_typed_enum_effort_unchanged():
+    """A typed enum on the config passes through the core seam unmodified."""
+    client = MiniMaxClient(mock=True)
+    core = AgentCore(
+        llm=client,
+        registry=ToolRegistry(),
+        config=AgentConfig(reasoning_effort=R.ReasoningEffort.LOW),
+    )
+    await core._stream_turn(_PING)
+    assert client.last_reasoning_effort is R.ReasoningEffort.LOW
+
+
+async def test_core_max_alias_resolves_to_xhigh():
+    """The ``"max"`` CLI alias on the config resolves to ``Xhigh`` end-to-end."""
+    client = MiniMaxClient(mock=True)
+    core = AgentCore(
+        llm=client,
+        registry=ToolRegistry(),
+        config=AgentConfig(reasoning_effort="max"),
+    )
+    await core._stream_turn(_PING)
+    assert client.last_reasoning_effort is R.ReasoningEffort.XHIGH

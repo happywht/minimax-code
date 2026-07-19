@@ -4050,3 +4050,58 @@ R53 类型层已就位但无消费者（YAGNI：提前接线 = 在无消费者�
 ### Commit
 
 `feat(platform): R54 reasoning_effort pipe-through (fuse grok xai-grok-sampling-types)`
+
+---
+
+## R55 — reasoning_effort 上游接线（融合 grok xai-grok-sampling-types 配置端，双轴汇合）
+
+> 锚定 R54（`44a7212`）。R54 铺设了 reasoning_effort 的**下游半段**（client → transport：coerce + 记录 + 观察属性）。**本轮是 R54 的上游半段** —— 把 reasoning_effort 从单一配置源 `AgentConfig` 流经 `AgentCore._stream_turn` 接到 `self.llm.stream_chat()` 调用点。至此 R53（类型层）+ R54（下游 client→transport）+ R55（上游 config→core→client）= **完整端到端 reasoning_effort 管道**，仍是 pipe-through-only（不注入 wire，待 R56+ 三方契约确认）。**双轴汇合**：`AgentConfig.model`（R50，谁回答）+ `AgentConfig.reasoning_effort`（R55，思考多深）现在在同一个 dataclass 相邻并列，从配置到调用点全程对称流动 —— 一次 LLM 调用的两个配置轴首次在 AgentConfig 层统一表达，镜像 grok sampling-types 里 model + reasoning_effort 在 ChatCompletionRequest 里的并列关系。
+
+### 本轮目标
+
+R54 下游半段已就位（client.stream_chat 接受 reasoning_effort），但**没有配置入口**（YAGNI：管道有出口无入口 = 半截管）。本轮在**零行为回归**前提下闭合上游：AgentConfig 新增 `reasoning_effort` 字段（默认 None），AgentCore._stream_turn 在 stream_chat 调用点透传 `self.config.reasoning_effort`。**核心设计决策**：与 R54 完全对称的 pipe-through 边界 —— 字段是被动载体，默认 None = 零线路字节变更 = 所有现有回合字节级一致。**双轴设计**：reasoning_effort 字段紧邻 R50 的 model 字段（同一 AgentConfig，同一调用点），形成「谁回答 + 思考多深」的配置双轴。
+
+### 融合结论
+
+- ✅ **保留**：`AgentConfig.reasoning_effort: ReasoningEffort | str | None = None` —— 新增配置字段，紧邻 `model` 字段之后。接受 R54 client/transport 同样的宽松输入面（typed enum | wire-token str | None），运行时规范化由 transport 的 coerce_effort（R54）负责。默认 None = pipe-through-only，无 wire 发射。docstring 明确双轴定位（model = who answers，reasoning_effort = how deeply）+ R54 coerce 依赖 + 零回归保证。
+- ✅ **保留**：`AgentCore._stream_turn` 的 `self.llm.stream_chat(...)` 调用点加 `reasoning_effort=self.config.reasoning_effort` kwarg（紧邻 temperature 之后）。透传配置到 client，transport（R54）coerce + 记录但不发射。默认 None 路径与 R55 前字节一致。
+- ✅ **保留**：core.py TYPE_CHECKING 导入 `ReasoningEffort`（仅注解，运行时零开销）—— core.py 有 `from __future__ import annotations`（类型注解字符串化），镜像 llm.py（R54）/ transports/__init__.py（R54）的 TYPE_CHECKING 模式。
+- ✅ **保留**：5 个测试 FakeLLM 的 stream_chat 签名对齐 `reasoning_effort: Any = None` —— AgentCore 多态调用点新增 kwarg 后，任何**显式参数列表**的测试替身会 TypeError。grep agent/tests 后定位 5 个类别 A FakeLLM（显式参数，需对齐）vs 6 个类别 B（`**kwargs`/`**_`，自动吸收）。5 个对齐是 R55 的**直接必要成本**（非「修预存债务」），因这些 FakeLLM 是 MiniMaxClient 的测试替身，偏离完整签名。
+- ❌ **放弃**：**不注入任何 wire 信号** —— R55 仅闭合上游配置流入，wire 注入仍由 R54 的 transport 层 TODO 锚点持有，待 R56+ 三方契约确认。默认 None = 零线路字节 = 零回归。
+- ❌ **放弃**：**不通过 IPC 暴露 reasoning_effort**（agent.send_message / agent.* handlers）—— 前端按会话设置 effort 留后续轮次（需 IPC 契约变更三同步：docs/ipc-contract.md + web/src/types/ipc.ts + protocol.py）。本轮聚焦 AgentCore 内部管道闭合。
+- ❌ **放弃**：**不给 AgentConfig.reasoning_effort 加构造期非 None 默认** —— 仅 None 默认；构造期默认 = 隐式全局策略，应由显式配置/IPC 提供。
+
+### 交付
+
+- `agent/minimax_code/agent/core.py`（改，4 处）— (1) `from typing import Any` → `from typing import TYPE_CHECKING, Any`；(2) `from .types import LLMStreamTimeout` 后加 `if TYPE_CHECKING: from .reasoning import ReasoningEffort`（仅注解导入，docstring 说明 R55 wiring + R54 coerce 依赖 + 零回归）；(3) AgentConfig `model` 字段后、`max_iterations` 前加 `reasoning_effort: ReasoningEffort | str | None = None`（docstring 双轴定位 + R54 coerce + 默认 None 字节不变）；(4) `_stream_turn` 的 stream_chat 调用点 temperature 后加 `reasoning_effort=self.config.reasoning_effort`（注释 R54 coerce + None 字节不变）。
+- `agent/tests/test_reasoning_wiring.py`（改，2 处）— (1) 导入块加 `AgentConfig, AgentCore`（from core）+ `ToolRegistry`（from tools），按字母序插入；(2) 文件末尾追加「Upstream half: AgentConfig.reasoning_effort → AgentCore → MiniMaxClient (R55)」段落 + 4 个端到端测试：bare string "high"→HIGH / 默认 None 零回归 / typed LOW 透传 / "max"→XHIGH 别名端到端。用真实 `MiniMaxClient(mock=True)` + 直接 `await core._stream_turn(_PING)`（最轻量验证 config→core→client 接缝）。
+- `agent/tests/test_chat.py`（改，1 处）— FakeLLM.stream_chat 签名 temperature 后加 `reasoning_effort: Any = None`（# R55 注释）。
+- `agent/tests/test_agent_core.py`（改，2 处，replace_all）— 2 个 FakeLLM stream_chat 签名同上对齐。
+- `agent/tests/test_thinking_count.py`（改，2 处，replace_all）— 2 个 stream_chat 签名（_RecordingLLM + _Fake）同上对齐。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+### 映射决策树（本轮上游半段接线 + FakeLLM 兼容性预判）
+
+本轮是 R54 下游半段的**上游对称**（双阶段管道的下半截）。决策树无新增枚举/联合 —— 复用 R53 ReasoningEffort + R54 coerce_effort。**接线模式对称**：R54 在 client→transport 接缝加 kwarg，R55 在 config→core→client 接缝加同 kwarg，两端用同一份 coerce_effort 规范化（单一规范化点 = DRY）。**双轴并列**：AgentConfig.reasoning_effort 紧邻 model 字段，_stream_turn 调用点 reasoning_effort 紧邻 model/temperature，认知对称。**TYPE_CHECKING 对称**：core.py / llm.py / transports/__init__.py 三处都用 TYPE_CHECKING 导入 ReasoningEffort（均因 `from __future__ import annotations`，类型字符串化，运行时零开销）。
+
+**坑（自发现，已预判修复）**：**FakeLLM TypeError 预判** —— 在 _stream_turn 调用点加 `reasoning_effort=...` kwarg **之前**，先 grep 了 agent/tests 所有 `def stream_chat`，识别两类替身：类别 A（显式参数列表：test_chat/test_agent_core/test_thinking_count 共 5 处）会因未知 kwarg TypeError；类别 B（`**kwargs`/`**_`：6 处）自动吸收。结论：5 个类别 A 对齐是 R55 的**直接必要成本**（这些 FakeLLM 是 MiniMaxClient 替身，签名偏离真实 stream_chat 完整面）。用 `reasoning_effort: Any = None`（匹配既有 `tool_choice: Any = None` 风格，无需额外导入，ruff 对测试 `Any` 宽容）。orchestrator/subagent.py 不定义 stream_chat（用真实 MiniMaxClient，不受影响）。**结果**：5 处对齐后，受影响测试子集 88 passed，全套件零回归 —— 预判正确，无运行时意外。
+
+**预存债务（非本轮引入，按轮次独立性保留）**：test_chat.py 报 I001（import 块）+ F401（unused `uuid`/`AgentConfig`）+ B010（6 处 setattr）；test_thinking_count.py 报 I001（import 块）。这些**全部是 R55 前预存债务**（R55 仅加 `reasoning_effort: Any = None` 一行，未触及 import 块或 setattr），R54 提交（44a7212）时即存在。R55 改动本身 ruff 干净（无新错误）。按 CLAUDE.md「轮次独立性：不修复不相关预存 lint」原则保留 —— 扩大改动修这些会模糊 R55 的「上游接线」清晰边界，违背 YAGNI。
+
+### 验证
+
+- `ruff check` R55 改动的 5 文件（core.py + 4 测试）→ **R55 新增代码零 ruff 错误**（5 文件 check 报的 10 错全部是 test_chat/test_thinking_count 的预存 I001/F401/B010，非 R55 引入；core.py / test_reasoning_wiring.py / test_agent_core.py 干净）。
+- `pytest tests/test_reasoning_wiring.py tests/test_reasoning.py tests/test_agent_core.py tests/test_thinking_count.py tests/test_chat.py -q` → **88 passed in 19.08s**（含 R55 新增 4 端到端测试 + R54 既有 10 wiring + 全部 FakeLLM 对齐后零 TypeError）。
+- 完整套件 `pytest` → **1747 passed, 10 skipped in 106.05s**（R54 1743 → R55 1747，**+4 精确**，零回归，10 skip 与 R54 一致）。
+
+### YAGNI 边界
+
+- ❌ **不注入 wire 信号** —— R55 仅闭合上游配置流入；wire 注入仍由 R54 transport 层 TODO 持有，待 R56+ 三方契约确认（OpenAI 拒绝 none/xhigh/max；Anthropic thinking budget；MiniMax/智谱未知）。默认 None = 零线路字节 = 零回归。
+- ❌ **不通过 IPC 暴露 reasoning_effort** —— 前端按会话设置 effort 需 IPC 契约三同步（docs + types + protocol），留独立轮次。本轮聚焦 AgentCore 内部管道闭合。
+- ❌ **不加 AgentConfig.reasoning_effort 构造期非 None 默认** —— 仅 None；构造期默认 = 隐式全局策略，应由显式配置/IPC 提供。
+- ❌ **不迁移 sampling-types crate 其余类型** —— 继续 R53/R54 聚焦策略，本轮只闭合 ReasoningEffort 的上游管道。
+- ❌ **不修复 test_chat/test_thinking_count 的预存 ruff 债务**（I001/F401/B010）—— 非本轮引入，按轮次独立性保留，避免模糊 R55 边界。
+
+### Commit
+
+`feat(platform): R55 reasoning_effort upstream wiring (fuse grok xai-grok-sampling-types)`

@@ -69,6 +69,7 @@ class _RecordingLLM:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: Any = None,
         temperature: float | None = None,
+        reasoning_effort: Any = None,  # R55: mirror MiniMaxClient.stream_chat kwarg
     ) -> AsyncIterator[StreamChunk]:
         # Match the real client's bookkeeping — reset on entry and
         # commit on the final usage chunk.
