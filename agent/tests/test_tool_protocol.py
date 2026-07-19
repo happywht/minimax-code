@@ -171,6 +171,26 @@ from minimax_code.tool_protocol.registry_error import (
 from minimax_code.tool_protocol.registry_error import (
     SessionMismatch as RegistrySessionMismatch,
 )
+
+# R90 — session_event + turn_hook leaf. session_event variant dataclasses
+# stay in-submodule (only the union + two nested enums travel the barrel),
+# mirroring R88/R89. turn_hook is `pub mod` with no `pub use` in lib.rs, so
+# its symbols (TurnHookOutcome / TURN_HOOK_KIND) are module-qualified only.
+from minimax_code.tool_protocol.session_event import (
+    PhaseChanged,
+    SessionPhase,
+    ToolCallCompleted,
+    ToolCallOutcome,
+    ToolCallStarted,
+    TurnEnded,
+    TurnStarted,
+    Unknown,
+    session_event_from_wire,
+)
+from minimax_code.tool_protocol.turn_hook import (
+    TURN_HOOK_KIND,
+    TurnHookOutcome,
+)
 from minimax_code.tool_types import ToolDescription
 
 # -----------------------------------------------------------------------
@@ -2751,3 +2771,364 @@ class TestPackageSurfaceR89:
             "hook_event_from_wire",
         ):
             assert hasattr(hook_mod, name), f"submodule missing {name}"
+
+
+# ===========================================================================
+# R90 — session_event (SessionEvent / SessionPhase / ToolCallOutcome) +
+# turn_hook leaf (TurnHookOutcome + TURN_HOOK_KIND).
+# ===========================================================================
+
+
+class TestTurnHookOutcomeR90:
+    """``TurnHookOutcome`` (turn_hook leaf) — strict, no ``#[serde(other)]``.
+
+    The strict counterpart to the tolerant ``ToolCallOutcome`` / ``SessionPhase``
+    (both R90, both with an ``Unknown`` catch-all). Unknown wire values raise
+    (mirrors ``from_value::<TurnHookOutcome>("timeout").is_err()``).
+    """
+
+    def test_member_values_are_snake_case(self):
+        assert TurnHookOutcome.COMPLETED == "completed"
+        assert TurnHookOutcome.CANCELLED == "cancelled"
+        assert TurnHookOutcome.ERROR == "error"
+
+    def test_str_is_bare_value(self):
+        # #[serde(rename_all = "snake_case")] with no tag → bare strings.
+        assert str(TurnHookOutcome.COMPLETED) == "completed"
+        assert str(TurnHookOutcome.CANCELLED) == "cancelled"
+        assert str(TurnHookOutcome.ERROR) == "error"
+
+    def test_members_are_str_instances(self):
+        for member in TurnHookOutcome:
+            assert isinstance(member, str)
+
+    def test_from_wire_round_trip(self):
+        for member in TurnHookOutcome:
+            assert TurnHookOutcome.from_wire(str(member)) is member
+
+    def test_from_wire_rejects_unknown_strictly(self):
+        # No #[serde(other)] arm — strict rejection (the crate's own test).
+        with pytest.raises(ValueError):
+            TurnHookOutcome.from_wire("timeout")
+        with pytest.raises(ValueError):
+            TurnHookOutcome.from_wire("completed ")  # trailing space
+        with pytest.raises(ValueError):
+            TurnHookOutcome.from_wire("COMPLETED")  # case-sensitive
+
+    def test_turn_hook_kind_constant(self):
+        assert TURN_HOOK_KIND == "turn_hook"
+
+
+class TestSessionEventWireTags:
+    """``SessionEvent`` internal tag is ``event_type`` (the 5th tag key) with
+    ``rename_all = "snake_case"``."""
+
+    def test_turn_started_tag(self):
+        assert TurnStarted(1, "m", True).to_wire()["event_type"] == "turn_started"
+
+    def test_turn_ended_tag(self):
+        ev = TurnEnded(1, TurnHookOutcome.COMPLETED, 100, 0, "m")
+        assert ev.to_wire()["event_type"] == "turn_ended"
+
+    def test_tool_call_started_tag(self):
+        wire = ToolCallStarted("call-1", "shell", 1).to_wire()
+        assert wire["event_type"] == "tool_call_started"
+
+    def test_tool_call_completed_tag(self):
+        ev = ToolCallCompleted("call-1", "shell", 50, ToolCallOutcome.SUCCESS)
+        assert ev.to_wire()["event_type"] == "tool_call_completed"
+
+    def test_phase_changed_tag(self):
+        wire = PhaseChanged(SessionPhase.IDLE).to_wire()
+        assert wire["event_type"] == "phase_changed"
+
+    def test_unknown_tag(self):
+        assert Unknown().to_wire() == {"event_type": "unknown"}
+
+    def test_tags_are_snake_case_not_pascal(self):
+        # Contrast with R89 hook (PascalCase tags, no rename_all).
+        assert TurnStarted(1, "m").to_wire()["event_type"] != "TurnStarted"
+
+
+class TestSessionEventToWire:
+    def test_turn_started_full_payload_with_yolo(self):
+        wire = TurnStarted(3, "grok-4", True).to_wire()
+        assert wire == {
+            "event_type": "turn_started",
+            "turn_number": 3,
+            "model_id": "grok-4",
+            "yolo_mode": True,
+        }
+
+    def test_turn_started_yolo_false_still_emitted(self):
+        # #[serde(default)] is deserialise-only — serialise always emits the field.
+        wire = TurnStarted(3, "grok-4", False).to_wire()
+        assert wire["yolo_mode"] is False
+
+    def test_turn_ended_embeds_outcome_as_string(self):
+        # Nested enum field serialises as its snake_case value.
+        wire = TurnEnded(2, TurnHookOutcome.ERROR, 250, 1, "m").to_wire()
+        assert wire["outcome"] == "error"
+        assert wire["duration_ms"] == 250
+        assert wire["tool_call_count"] == 1
+
+    def test_tool_call_completed_embeds_outcome_as_string(self):
+        wire = ToolCallCompleted("c1", "shell", 50, ToolCallOutcome.SUCCESS).to_wire()
+        assert wire["outcome"] == "success"
+
+    def test_phase_changed_embeds_phase_as_string(self):
+        wire = PhaseChanged(SessionPhase.TOOL_EXECUTION).to_wire()
+        assert wire["phase"] == "tool_execution"
+
+    def test_tool_call_started_keys_are_exhaustive(self):
+        # No skip_serializing_if in this round — every field emits.
+        wire = ToolCallStarted("c1", "shell", 1).to_wire()
+        assert set(wire.keys()) == {"event_type", "tool_call_id", "tool_name", "turn_number"}
+
+
+class TestSessionEventFromWire:
+    def test_turn_started_round_trip(self):
+        ev = TurnStarted(5, "grok-4", True)
+        assert session_event_from_wire(ev.to_wire()) == ev
+
+    def test_turn_started_yolo_mode_defaults_false(self):
+        # #[serde(default)] — wire omits yolo_mode → False.
+        data = {"event_type": "turn_started", "turn_number": 1, "model_id": "m"}
+        ev = session_event_from_wire(data)
+        assert isinstance(ev, TurnStarted)
+        assert ev.yolo_mode is False
+
+    def test_turn_started_yolo_mode_explicit_false(self):
+        data = {
+            "event_type": "turn_started",
+            "turn_number": 1,
+            "model_id": "m",
+            "yolo_mode": False,
+        }
+        assert session_event_from_wire(data).yolo_mode is False
+
+    def test_turn_ended_round_trip_all_outcomes(self):
+        for outcome in TurnHookOutcome:
+            ev = TurnEnded(1, outcome, 100, 2, "m")
+            assert session_event_from_wire(ev.to_wire()) == ev
+
+    def test_turn_ended_unknown_outcome_raises(self):
+        # TurnHookOutcome is strict (no other arm) — nested strict reject.
+        data = {
+            "event_type": "turn_ended",
+            "turn_number": 1,
+            "outcome": "timeout",
+            "duration_ms": 100,
+            "tool_call_count": 0,
+            "model_id": "m",
+        }
+        with pytest.raises(ValueError):
+            session_event_from_wire(data)
+
+    def test_tool_call_started_round_trip(self):
+        ev = ToolCallStarted("c1", "shell", 1)
+        assert session_event_from_wire(ev.to_wire()) == ev
+
+    def test_tool_call_completed_round_trip_all_outcomes(self):
+        for outcome in ToolCallOutcome:
+            ev = ToolCallCompleted("c1", "shell", 50, outcome)
+            assert session_event_from_wire(ev.to_wire()) == ev
+
+    def test_tool_call_completed_unknown_outcome_tolerant(self):
+        # ToolCallOutcome has #[serde(other)] → unknown → UNKNOWN.
+        data = {
+            "event_type": "tool_call_completed",
+            "tool_call_id": "c1",
+            "tool_name": "shell",
+            "duration_ms": 50,
+            "outcome": "rate_limited",
+        }
+        ev = session_event_from_wire(data)
+        assert isinstance(ev, ToolCallCompleted)
+        assert ev.outcome is ToolCallOutcome.UNKNOWN
+
+    def test_phase_changed_round_trip_all_phases(self):
+        for phase in SessionPhase:
+            ev = PhaseChanged(phase)
+            assert session_event_from_wire(ev.to_wire()) == ev
+
+    def test_phase_changed_unknown_phase_tolerant(self):
+        data = {"event_type": "phase_changed", "phase": "compacting"}
+        ev = session_event_from_wire(data)
+        assert isinstance(ev, PhaseChanged)
+        assert ev.phase is SessionPhase.UNKNOWN
+
+    def test_turn_number_zero_boundary(self):
+        data = {"event_type": "turn_started", "turn_number": 0, "model_id": "m"}
+        assert session_event_from_wire(data).turn_number == 0
+
+    def test_duration_ms_zero_boundary(self):
+        ev = session_event_from_wire(
+            {
+                "event_type": "turn_ended",
+                "turn_number": 0,
+                "outcome": "completed",
+                "duration_ms": 0,
+                "tool_call_count": 0,
+                "model_id": "m",
+            }
+        )
+        assert ev.duration_ms == 0
+        assert ev.tool_call_count == 0
+
+    def test_extra_fields_ignored_on_known_variant(self):
+        # serde ignores unknown fields on a struct variant by default.
+        data = {
+            "event_type": "tool_call_started",
+            "tool_call_id": "c1",
+            "tool_name": "shell",
+            "turn_number": 1,
+            "extra": "ignored",
+        }
+        ev = session_event_from_wire(data)
+        assert isinstance(ev, ToolCallStarted)
+        assert ev.tool_call_id == "c1"
+
+
+class TestSessionEventOtherArm:
+    """``#[serde(other)]`` forward-compat catch-all — the crate's first."""
+
+    def test_unknown_event_type_becomes_unknown(self):
+        for unknown_tag in ("compaction_started", "context_truncated", "session_resumed"):
+            ev = session_event_from_wire({"event_type": unknown_tag})
+            assert isinstance(ev, Unknown), f"{unknown_tag} should fall through to Unknown"
+
+    def test_literal_unknown_tag_round_trips(self):
+        ev = session_event_from_wire({"event_type": "unknown"})
+        assert isinstance(ev, Unknown)
+
+    def test_unknown_to_wire_is_minimal(self):
+        assert Unknown().to_wire() == {"event_type": "unknown"}
+
+    def test_unknown_round_trip(self):
+        rebuilt = session_event_from_wire(Unknown().to_wire())
+        assert isinstance(rebuilt, Unknown)
+
+
+class TestToolCallOutcomeEnum:
+    def test_member_values_are_snake_case(self):
+        assert ToolCallOutcome.SUCCESS == "success"
+        assert ToolCallOutcome.ERROR == "error"
+        assert ToolCallOutcome.CANCELLED == "cancelled"
+        assert ToolCallOutcome.UNKNOWN == "unknown"
+
+    def test_from_wire_known_values(self):
+        assert ToolCallOutcome.from_wire("success") is ToolCallOutcome.SUCCESS
+        assert ToolCallOutcome.from_wire("error") is ToolCallOutcome.ERROR
+        assert ToolCallOutcome.from_wire("cancelled") is ToolCallOutcome.CANCELLED
+
+    def test_from_wire_unknown_tolerant(self):
+        assert ToolCallOutcome.from_wire("rate_limited") is ToolCallOutcome.UNKNOWN
+        assert ToolCallOutcome.from_wire("") is ToolCallOutcome.UNKNOWN
+
+    def test_from_wire_never_raises(self):
+        ToolCallOutcome.from_wire("literally-anything")
+
+
+class TestSessionPhaseEnum:
+    def test_member_values_are_snake_case(self):
+        assert SessionPhase.IDLE == "idle"
+        assert SessionPhase.SAMPLING == "sampling"
+        assert SessionPhase.TOOL_EXECUTION == "tool_execution"
+        assert SessionPhase.PERMISSION_PROMPT == "permission_prompt"
+        assert SessionPhase.UNKNOWN == "unknown"
+
+    def test_from_wire_known_values(self):
+        assert SessionPhase.from_wire("idle") is SessionPhase.IDLE
+        assert SessionPhase.from_wire("sampling") is SessionPhase.SAMPLING
+        assert SessionPhase.from_wire("tool_execution") is SessionPhase.TOOL_EXECUTION
+        assert SessionPhase.from_wire("permission_prompt") is SessionPhase.PERMISSION_PROMPT
+
+    def test_from_wire_unknown_tolerant(self):
+        assert SessionPhase.from_wire("compacting") is SessionPhase.UNKNOWN
+
+
+class TestStrictVsTolerantContrast:
+    """R90 is the crate's strict↔tolerant turning point: two near-identical
+    outcome enums with opposite unknown-value behaviour, landed the same round."""
+
+    def test_turn_hook_outcome_strict(self):
+        with pytest.raises(ValueError):
+            TurnHookOutcome.from_wire("timeout")
+
+    def test_tool_call_outcome_tolerant(self):
+        assert ToolCallOutcome.from_wire("timeout") is ToolCallOutcome.UNKNOWN
+
+    def test_session_phase_tolerant(self):
+        assert SessionPhase.from_wire("timeout") is SessionPhase.UNKNOWN
+
+    def test_same_input_opposite_behaviour(self):
+        with pytest.raises(ValueError):
+            TurnHookOutcome.from_wire("future_value")
+        assert ToolCallOutcome.from_wire("future_value") is ToolCallOutcome.UNKNOWN
+        assert SessionPhase.from_wire("future_value") is SessionPhase.UNKNOWN
+
+
+class TestPackageSurfaceR90:
+    """The barrel re-exports the ``SessionEvent`` union + the two nested enums
+    (mirroring Rust lib.rs ``pub use session_event::{...}``); variant dataclasses
+    stay in-submodule. ``turn_hook`` is ``pub mod`` with no ``pub use``, so its
+    symbols (``TurnHookOutcome`` / ``TURN_HOOK_KIND``) stay out of the barrel."""
+
+    def test_barrel_exposes_session_event_union(self):
+        import minimax_code.tool_protocol as pkg
+
+        assert hasattr(pkg, "SessionEvent")
+
+    def test_barrel_exposes_nested_enums(self):
+        import minimax_code.tool_protocol as pkg
+
+        assert hasattr(pkg, "ToolCallOutcome")
+        assert hasattr(pkg, "SessionPhase")
+
+    def test_barrel_does_not_export_variant_dataclasses(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "TurnStarted",
+            "TurnEnded",
+            "ToolCallStarted",
+            "ToolCallCompleted",
+            "PhaseChanged",
+            "Unknown",
+        ):
+            assert not hasattr(pkg, name), f"barrel should not re-export {name}"
+
+    def test_barrel_does_not_export_turn_hook_symbols(self):
+        import minimax_code.tool_protocol as pkg
+
+        assert not hasattr(pkg, "TurnHookOutcome")
+        assert not hasattr(pkg, "TURN_HOOK_KIND")
+
+    def test_barrel_does_not_export_session_event_from_wire(self):
+        import minimax_code.tool_protocol as pkg
+
+        assert not hasattr(pkg, "session_event_from_wire")
+
+    def test_session_event_variants_accessible_via_submodule(self):
+        import minimax_code.tool_protocol.session_event as mod
+
+        for name in (
+            "TurnStarted",
+            "TurnEnded",
+            "ToolCallStarted",
+            "ToolCallCompleted",
+            "PhaseChanged",
+            "Unknown",
+            "SessionEvent",
+            "ToolCallOutcome",
+            "SessionPhase",
+            "session_event_from_wire",
+        ):
+            assert hasattr(mod, name), f"submodule missing {name}"
+
+    def test_turn_hook_leaf_accessible_via_submodule(self):
+        import minimax_code.tool_protocol.turn_hook as mod
+
+        assert hasattr(mod, "TurnHookOutcome")
+        assert hasattr(mod, "TURN_HOOK_KIND")

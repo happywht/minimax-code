@@ -1,4 +1,4 @@
-"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 — hook landed).
+"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 + R90 — session-event landed).
 
 Fusion of grok-build's ``xai-tool-protocol`` crate — the wire DTOs for
 the computer-hub tool-server protocol: identifier newtypes, registration
@@ -76,16 +76,28 @@ to mix unit + struct variants):
   named-field variants, and the crate's first per-variant rename override —
   :class:`AlreadyRegistered` serialises as ``"tool_already_registered"``
   rather than the ``rename_all`` default ``"already_registered"``).
-* **R89 (this round)** — :mod:`hook`
+* **R89** — :mod:`hook`
   (:class:`HookEvent`, the harness→tool hook-event payload: internally-tagged
   on ``type`` with **no** ``rename_all`` (the crate's first PascalCase-tagged
   internally-tagged enum — ``"Cancel"`` / ``"SessionEnded"`` / ``"Custom"``),
   four unit variants plus one struct variant (:class:`Custom`, the crate's
   first internally-tagged enum to mix unit + struct arms), and the
   forward-compatible escape hatch for unknown hook kinds via ``Custom.kind``).
+* **R90 (this round)** — :mod:`session_event`
+  (:class:`SessionEvent`, the session-lifecycle-event union:
+  internally-tagged on ``event_type`` with ``rename_all = "snake_case"``,
+  five struct variants plus one unit :class:`Unknown` catch-all — the
+  crate's first ``#[serde(other)]`` forward-compat arm — and the crate's
+  first field-level ``#[serde(default)]`` on :attr:`TurnStarted.yolo_mode`;
+  plus :class:`ToolCallOutcome` / :class:`SessionPhase`, the first two
+  ``#[serde(other)]``-tolerant string-enums) and :mod:`turn_hook`
+  (minimal leaf :class:`TurnHookOutcome` + :data:`TURN_HOOK_KIND` — the
+  strict no-catch-all counterpart to the tolerant
+  :class:`ToolCallOutcome` / :class:`SessionPhase`, landed as a dependency
+  of :class:`TurnEnded`; the rest of the 700-line module is deferred).
 * *deferred* — :mod:`frames`
-  (tool-server frame protocol, 1549 lines), :mod:`session_event`,
-  :mod:`turn_hook`.
+  (tool-server frame protocol, 1549 lines), :mod:`turn_hook`
+  (remainder after R90's minimal leaf).
 
 ``from_wire`` / ``to_wire`` live on each module (instance method or module
 function); the barrel does **not** re-export them, mirroring the Rust
@@ -209,6 +221,11 @@ from minimax_code.tool_protocol.registration import (
 from minimax_code.tool_protocol.registry_error import (
     RegistryError,
 )
+from minimax_code.tool_protocol.session_event import (
+    SessionEvent,
+    SessionPhase,
+    ToolCallOutcome,
+)
 
 __all__ = [
     # ids (R82)
@@ -316,4 +333,11 @@ __all__ = [
     # avoid clobbering error_wire.SessionMismatch (R83) at the barrel level,
     # mirroring Rust lib.rs `pub use registry_error::RegistryError`.
     "RegistryError",
+    # session_event (R90) — union + nested enums; variants stay in-submodule
+    # to mirror Rust lib.rs `pub use session_event::{SessionEvent, SessionPhase, ToolCallOutcome}`.
+    # turn_hook is `pub mod` with no `pub use`, so TurnHookOutcome / TURN_HOOK_KIND
+    # stay out of the barrel (module-qualified access only).
+    "SessionEvent",
+    "SessionPhase",
+    "ToolCallOutcome",
 ]

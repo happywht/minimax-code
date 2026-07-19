@@ -7289,3 +7289,155 @@ uv run pytest -q
 ### Commit
 
 `feat(platform): R89 migrate hook.rs (HookEvent enum — PascalCase tags + unit/struct mix)`
+## R90 — 迁移 session_event.rs + turn_hook.rs 叶子（SessionEvent 联合 + ToolCallOutcome/SessionPhase 容错枚举 + TurnHookOutcome 严格叶，crate 首个 #[serde(other)] 前向兼容 + 首个 #[serde(default)] 字段级默认 + 严格↔容错转折点）
+
+锚点:R90-1 f877069
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-tool-protocol/src/session_event.rs`（405 行）→
+`agent/minimax_code/tool_protocol/session_event.py`，并先落地其依赖叶子
+`grok-build/crates/common/xai-tool-protocol/src/turn_hook.rs` 的最小切片 →
+`agent/minimax_code/tool_protocol/turn_hook.py`。`session_event.rs` 第 9 行 `use
+crate::turn_hook::TurnHookOutcome;` 把 `TurnHookOutcome` 拉成硬依赖，所以 turn_hook
+必须**先于** session_event 落地（哪怕只是最小叶子）。
+
+`SessionEvent` 是会话生命周期事件联合：回合开始/结束（`TurnStarted`/`TurnEnded`）、
+工具调用开始/完成（`ToolCallStarted`/`ToolCallCompleted`）、阶段切换（`PhaseChanged`）。
+它作为 `Custom` 通知（`kind = "session_event"`）搭载在 `ToolNotificationFrame` 里
+（frame 层在后续回合落地）。`ToolCallOutcome`/`SessionPhase` 是两个容错字符串枚举
+（带 `Unknown` catch-all），`TurnHookOutcome` 是严格字符串枚举（无 catch-all，未知抛错）。
+
+### 融合结论
+
+R90 一回合落地 **5 个 crate 级 serde 首创** + **crate 的严格↔容错转折点**：
+
+1. **`#[serde(other)]` 前向兼容 catch-all —— crate 首次**。三个站点同回合落地：
+   `SessionEvent::Unknown`（单元臂，未知 `event_type` 落到这里）、`ToolCallOutcome::UNKNOWN`、
+   `SessionPhase::UNKNOWN`（两个字符串枚举的 `other` 臂）。旧消费者遇到新协议值反序列化成
+   `Unknown` 而非失败，消费者**必须**静默忽略 `Unknown`。这是 crate 前向兼容能力的首次
+   引入，与 R85-R89 全程的严格拒绝约定形成对称补充。
+2. **`#[serde(default)]` 字段级默认 —— crate 首次**。`TurnStarted.yolo_mode` 在 wire 省略
+   时默认 `False`。（序列化始终发射该字段；`default` 仅影响反序列化。）
+3. **`event_type` 标签键 —— 第 5 个标签键名**。此前：`code`（R83/R88）、`kind`（R83/R86）、
+   `shape`（R83）、`type`（R89）。`event_type` 是 crate 第 5 个内部标签键名，至此
+   `xai-tool-protocol` 的 5 个标签键全部覆盖。
+4. **嵌套枚举字段 —— 首个枚举字段嵌套在另一枚举的结构变体里**。`TurnEnded.outcome` 是
+   `TurnHookOutcome`、`ToolCallCompleted.outcome` 是 `ToolCallOutcome`、`PhaseChanged.phase`
+   是 `SessionPhase` —— R83-R89 的枚举变体字段都是基础类型/嵌套结构，从未嵌套过另一个
+   serde 枚举。
+5. **结构主导混合 + 单元 catch-all —— R89 unit+struct 混合的逆向**。5 个结构变体 + 1 个
+   单元 `Unknown`（catch-all），正好是 R89 的 4 单元 + 1 结构（`Custom`）的反向形态。
+
+**严格↔容错转折点**：同回合落地的两个几乎相同的结果枚举行为**完全相反** ——
+`TurnHookOutcome`（turn_hook 模块）**严格**，无 `#[serde(other)]`，未知值抛 `ValueError`
+（镜像 crate 自测 `from_value::<TurnHookOutcome>("timeout").is_err()`）；`ToolCallOutcome`/
+`SessionPhase`（session_event 模块）**容错**，带 `Unknown` catch-all，未知值返回 `UNKNOWN`。
+这标志着 crate 从"全程严格拒绝"转向"按语义选择性容错"。
+
+### 交付
+
+- **`agent/minimax_code/tool_protocol/turn_hook.py`**（77 行，新建）—— `turn_hook.rs`
+  的最小叶子（全模块 700 行，`pub mod turn_hook` 无 `pub use`，符号不经 barrel）。仅落地
+  `session_event` 依赖的 `TurnHookOutcome`（3 成员 StrEnum + `from_wire` 严格抛错）+
+  `TURN_HOOK_KIND` 常量（`"turn_hook"`）。`TurnHookRequest`/`BeforeTurnPayload`/
+  `AfterTurnPayload`/`InjectionRole`/... 全部延后。
+- **`agent/minimax_code/tool_protocol/session_event.py`**（342 行，新建）—— 6 个 dataclass
+  变体（`TurnStarted`/`TurnEnded`/`ToolCallStarted`/`ToolCallCompleted`/`PhaseChanged`/`Unknown`）+
+  每变体 `to_wire` + `SessionEvent` 联合别名（UP007 `A | B | ...`）+ 两个容错 StrEnum
+  （`ToolCallOutcome`/`SessionPhase`，带 `UNKNOWN` catch-all）+ 5 个私有 `_xxx_from_wire`
+  构造器 + `_EVENT_TYPE_HANDLERS` 分发表 + 模块级 `session_event_from_wire` 分发器
+  （handler 为 None 时返回 `Unknown()` —— `#[serde(other)]` catch-all）。
+- **`agent/minimax_code/tool_protocol/__init__.py`**（barrel，5 处编辑）—— 标题/摘要段更新
+  到 R90；新增 R90 条目说明 5 个 serde 首创；延迟列表减去 `session_event`（仅剩
+  `frames, turn_hook 余量`）；导入块在 `registry_error` 与 `tool_types`（测试侧）之间插入
+  `from .session_event import (SessionEvent, SessionPhase, ToolCallOutcome)`；
+  `__all__` 在 `RegistryError` 组后加三个名字（带注释说明 turn_hook 是 `pub mod` 无
+  `pub use` 故 `TurnHookOutcome`/`TURN_HOOK_KIND` 留在 barrel 之外）。
+- **`agent/tests/test_tool_protocol.py`**（+54 测试 / 9 类）——
+  `TestTurnHookOutcomeR90`（6：成员值/snake_case/str 实例/严格 from_wire 往返/拒绝未知 3 路/
+  `TURN_HOOK_KIND` 常量）、`TestSessionEventWireTags`（7：6 变体 `event_type` 标签断言 +
+  snake_case 非 Pascal 反向钉死）、`TestSessionEventToWire`（6：`yolo_mode` True/False 都发射/
+  嵌套枚举字段序列化为字符串/键穷尽）、`TestSessionEventFromWire`（13：5 变体往返 +
+  `yolo_mode` 默认 False/显式 False/`TurnEnded` 全 outcome 往返/未知 outcome 抛错/
+  `ToolCallCompleted` 未知 outcome→UNKNOWN/`PhaseChanged` 未知 phase→UNKNOWN/零值边界/
+  多余字段忽略）、`TestSessionEventOtherArm`（4：3 个未知 event_type→Unknown + 字面
+  `"unknown"` 往返 + Unknown 最小 wire）、`TestToolCallOutcomeEnum`（4）、
+  `TestSessionPhaseEnum`（3）、`TestStrictVsTolerantContrast`（4：严格抛 vs 容错降级，
+  同输入对置）、`TestPackageSurfaceR90`（7：barrel 暴露联合 + 2 枚举、不暴露 6 变体/
+  turn_hook 符号/from_wire、子模块全符号可达）。
+
+### 映射决策树 + 坑
+
+**坑 1 —— turn_hook 依赖预计算（写 session_event 之前先切最小叶子）**：在写 `session_event.py`
+**之前**就读了 Rust `session_event.rs` 第 9 行 `use crate::turn_hook::TurnHookOutcome;`，
+确认 `TurnHookOutcome` 是硬依赖。决策：先落地仅含 `TurnHookOutcome` + `TURN_HOOK_KIND` 的
+最小 `turn_hook.py`（700 行模块的其余部分延后），镜像 Rust 的模块结构
+（`turn_hook::TurnHookOutcome` 是独立模块路径）。`session_event.py` 通过
+`from minimax_code.tool_protocol.turn_hook import TurnHookOutcome` 子模块路径导入（绕过 barrel）。
+
+**坑 2 —— turn_hook barrel 排除（`pub mod` 无 `pub use`）**：读了 Rust `lib.rs`
+`pub mod turn_hook;`（第 26 行，**无** `pub use`）→ 决定 turn_hook 符号**不**进 barrel，
+精确镜像 Rust。`session_event.py` 用子模块限定的导入；测试用
+`test_barrel_does_not_export_turn_hook_symbols` 钉死（barrel 不得有 `TurnHookOutcome`/
+`TURN_HOOK_KIND`）。这是 R89 的 "Custom 冲突才排除" 决策树的变体 —— 这里无冲突，但仍排除，
+纯粹因为 Rust 不 re-export。
+
+**坑 3 —— 严格 vs 容错枚举实现（StrEnum + `from_wire` 双形态）**：`cls(value)` 在未知值时
+天然抛 `ValueError`。容错枚举（`ToolCallOutcome`/`SessionPhase`）的 `from_wire` 用
+`try: cls(value) except ValueError: return cls.UNKNOWN`；严格枚举（`TurnHookOutcome`）的
+`from_wire` 直接 `return cls(value)` 重新抛。复用 Enum 内置行为，零样板。测试用
+`TestStrictVsTolerantContrast.test_same_input_opposite_behaviour` 钉死：同输入
+`"future_value"`，严格抛、容错降级。
+
+**坑 4 —— `#[serde(other)]` 调度器（返回 `Unknown()` 而非抛）**：`session_event_from_wire`
+在 `_EVENT_TYPE_HANDLERS.get(tag)` 为 None 时返回 `Unknown()` 而非抛 `ValueError` ——
+与 R85-R89 全程的严格拒绝调度器（`hook_event_from_wire`/`registry_error_from_wire` 抛
+`ValueError`）**根本不同**。字典里有意省略字面 `"unknown"` 键，让它也落入 `Unknown()` 后备。
+测试用 `test_unknown_event_type_becomes_unknown`（3 个未知 tag）+
+`test_literal_unknown_tag_round_trips` 钉死。
+
+**坑 5 —— I001 import 排序（ruff --fix 精确作用域）**：追加 R90 测试后 ruff 报 I001
+（2 个导入块未排序）。仅对 `tests/test_tool_protocol.py` 跑 `ruff check --fix`（精确路径，
+绝不附带损害 93 个预先存在的 `M` 文件）→ 修复 2 个。重验测试文件 505 passed，import
+重排未破坏逻辑。
+
+### 验证
+
+```
+cd agent
+uv run ruff check minimax_code/tool_protocol/turn_hook.py \
+                   minimax_code/tool_protocol/session_event.py \
+                   minimax_code/tool_protocol/__init__.py \
+                   tests/test_tool_protocol.py
+# → All checks passed!
+
+uv run pytest tests/test_tool_protocol.py -q
+# → 505 passed in 0.75s   (R89 基准 451 + R90 新增 54)
+
+uv run pytest -q
+# → 2963 passed, 10 skipped, 1 warning in 104.76s
+#    (R89 基准 2909 + R90 新增 54 = 2963，数据自洽)
+#    (唯一 warning: fastapi/httpx StarletteDeprecationWarning，预先存在，与 R90 无关)
+```
+
+### YAGNI 边界
+
+- **不迁移 `turn_hook.rs` 剩余 ~650 行** —— `TurnHookRequest`/`BeforeTurnPayload`/
+  `AfterTurnPayload`/`InjectionRole`/... 全部延后；本轮只落地 `session_event` 硬依赖的
+  `TurnHookOutcome` + `TURN_HOOK_KIND` 最小叶子。镜像 Rust 模块结构，余量按依赖顺序后续回合。
+- **不迁移 `frames.rs`（1549 行）** —— crate 里最大的模块，留待后续回合单独落地。
+- **不实现 `Display`/`__str__`** —— Rust `SessionEvent`/`ToolCallOutcome`/`SessionPhase`/
+  `TurnHookOutcome` 在 crate 中**无** `Display` impl；它们只是 wire DTO。枚举值序列化
+  用 `str(member)`（StrEnum 自带），事件语义由消费方（frame 层，后续回合）自行格式化。YAGNI。
+- **不做变体共同基类 / Protocol** —— 5 结构 + 1 单元各自独立 dataclass，联合别名 + 分发器
+  已足够；引入 `Protocol` 会过度设计，违背 KISS。
+- **`Unknown` 不保留原始 `event_type`** —— 镜像 Rust `SessionEvent::Unknown`（不存原始值）；
+  消费者需在反序列化**前**检查原始 JSON 才能记录未知类型。docstring 已明确此契约。
+- **turn_hook 不进 barrel** —— 镜像 Rust `pub mod turn_hook;`（无 `pub use`）；turn_hook
+  符号（`TurnHookOutcome`/`TURN_HOOK_KIND`）仅子模块限定的访问。即便无 barrel 冲突也排除，
+  纯粹遵循 Rust 重导出集。
+
+### Commit
+
+`feat(platform): R90 migrate session_event.rs + turn_hook leaf (serde(other) forward-compat + serde(default) field + strict↔tolerant turning point)`
