@@ -20,6 +20,7 @@ from minimax_code.workspace_types.rpc import (
     WORKSPACE_RPC_TOOL_ID,
     WORKSPACE_TOOL_NOTIFICATIONS_TOOL_ID,
     AgentConfigFile,
+    BackgroundTaskSummaryWire,
     BeginPromptReq,
     ClientId,
     CodeFindDefinitionsReq,
@@ -31,6 +32,7 @@ from minimax_code.workspace_types.rpc import (
     CodeIndexStatusResponse,
     CodeNavLocation,
     CodeNavResponse,
+    ConfigureMcpReq,
     ConflictType,
     ContentMatch,
     ContentMatchFile,
@@ -38,6 +40,7 @@ from minimax_code.workspace_types.rpc import (
     ContentSearchRequest,
     DeployError,
     DiscoverAgentsMdReq,
+    DropSessionReq,
     EndPromptReq,
     FileRewindConflict,
     FileRewindResponse,
@@ -49,10 +52,25 @@ from minimax_code.workspace_types.rpc import (
     HookRegistryReq,
     HookRegistryWire,
     HookSpecWire,
+    InstallPluginReq,
+    ListBackgroundTasksReq,
+    ListBackgroundTasksResponse,
+    ListTodosReq,
+    ListTodosResponse,
+    LoadEnvrcReq,
+    LoadPermissionsReq,
+    LoadProjectConfigReq,
+    RefreshPluginsReq,
+    ResolveFileReferencesReq,
     RewindToReq,
     RpcEnvelope,
     RpcError,
     TargetClientId,
+    TodoSummaryWire,
+    ToolDefinitionsReq,
+    UpdateToolConfigReq,
+    WorkspaceInfo,
+    WorkspaceInfoReq,
     WorkspaceRpc,
 )
 
@@ -1033,3 +1051,238 @@ class TestHooks:
         assert err is None
         assert isinstance(ok, HookRegistryWire)
         assert "post_compact" in ok.hooks
+
+
+class TestWorkspace:
+    # -- method constants + response types ----------------------------------
+
+    def test_method_constants(self) -> None:
+        # Mirrors grok's `method_constant` (11) plus the two list_* methods
+        # grok didn't assert (defined after the #[cfg(test)] block).
+        assert WorkspaceInfoReq.METHOD == "workspace.info"
+        assert LoadProjectConfigReq.METHOD == "workspace.load_project_config"
+        assert LoadPermissionsReq.METHOD == "workspace.load_permissions"
+        assert LoadEnvrcReq.METHOD == "workspace.load_envrc"
+        assert ToolDefinitionsReq.METHOD == "workspace.tool_definitions"
+        assert ResolveFileReferencesReq.METHOD == "workspace.resolve_file_references"
+        assert UpdateToolConfigReq.METHOD == "workspace.update_tool_config"
+        assert DropSessionReq.METHOD == "workspace.drop_session"
+        assert ConfigureMcpReq.METHOD == "workspace.configure_mcp"
+        assert InstallPluginReq.METHOD == "workspace.install_plugin"
+        assert RefreshPluginsReq.METHOD == "workspace.refresh_plugins"
+        assert ListBackgroundTasksReq.METHOD == "workspace.list_background_tasks"
+        assert ListTodosReq.METHOD == "workspace.list_todos"
+
+    def test_value_response_methods_use_any(self) -> None:
+        # 11 methods carry serde_json::Value responses → Response: ClassVar = Any
+        # (server-defined shapes this crate deliberately does not type).
+        for cls in (
+            WorkspaceInfoReq,
+            LoadProjectConfigReq,
+            LoadPermissionsReq,
+            LoadEnvrcReq,
+            ToolDefinitionsReq,
+            ResolveFileReferencesReq,
+            UpdateToolConfigReq,
+            DropSessionReq,
+            ConfigureMcpReq,
+            InstallPluginReq,
+            RefreshPluginsReq,
+        ):
+            assert cls.Response is Any
+
+    def test_typed_response_methods(self) -> None:
+        # Only the two list responses are typed (their own wire structs).
+        assert ListBackgroundTasksReq.Response is ListBackgroundTasksResponse
+        assert ListTodosReq.Response is ListTodosResponse
+
+    # -- WorkspaceInfo (typed shape alongside a raw Value response) ----------
+
+    def test_workspace_info_deserializes_server_shape(self) -> None:
+        # Mirrors grok's `workspace_info_deserializes_server_shape`.
+        raw = {"os": "linux", "shell": "bash", "cwd": "/workspace"}
+        info = WorkspaceInfo.model_validate(raw)
+        assert info.os == "linux"
+        assert info.shell == "bash"
+        assert info.cwd == "/workspace"
+
+    def test_workspace_info_ignores_unknown_fields(self) -> None:
+        # Mirrors grok's `workspace_info_ignores_unknown_fields` — pydantic's
+        # default ignores unknown keys, mirroring serde's forward tolerance.
+        raw = {"os": "linux", "shell": "zsh", "cwd": "/workspace", "future_field": 42}
+        info = WorkspaceInfo.model_validate(raw)
+        assert info.shell == "zsh"
+
+    def test_workspace_info_no_default(self) -> None:
+        # Does NOT derive Default in the source (three required fields) —
+        # default() must be overridden or fail; here it raises on missing args.
+        with pytest.raises(Exception):  # noqa: B017
+            WorkspaceInfo.default()
+
+    # -- empty-parameter requests (Response = Value / Any) -------------------
+
+    def test_empty_param_requests_default(self) -> None:
+        # 6 empty-parameter requests: default() → empty object (#[derive(Default)]).
+        for cls in (
+            WorkspaceInfoReq,
+            LoadProjectConfigReq,
+            LoadPermissionsReq,
+            LoadEnvrcReq,
+            InstallPluginReq,
+            RefreshPluginsReq,
+        ):
+            assert cls().to_wire() == {}
+            assert cls.default().to_wire() == {}
+
+    # -- requests carrying parameters (Response = Value / Any) ---------------
+
+    def test_tool_definitions_req_carries_session_id(self) -> None:
+        wire = ToolDefinitionsReq(session_id="s1").to_wire()
+        assert wire == {"session_id": "s1"}
+
+    def test_tool_definitions_req_default(self) -> None:
+        # #[derive(Default)]: required session_id: String → "".
+        assert ToolDefinitionsReq.default().to_wire() == {"session_id": ""}
+
+    def test_resolve_file_references_req_carries_refs(self) -> None:
+        wire = ResolveFileReferencesReq(refs=["@a.md", "@b.py"]).to_wire()
+        assert wire == {"refs": ["@a.md", "@b.py"]}
+
+    def test_resolve_file_references_req_default(self) -> None:
+        # #[derive(Default)]: required refs: Vec<String> → [].
+        assert ResolveFileReferencesReq.default().to_wire() == {"refs": []}
+
+    def test_configure_mcp_req_carries_mcp_servers(self) -> None:
+        # mcp_servers is raw serde_json::Value (the ACP McpServer list) → Any.
+        servers = [{"name": "fs", "transport": "stdio"}]
+        wire = ConfigureMcpReq(mcp_servers=servers).to_wire()
+        assert wire == {"mcp_servers": servers}
+
+    # -- caller_session_id elision (skip_serializing_if = "String::is_empty")
+
+    def test_update_tool_config_req_omits_empty_caller(self) -> None:
+        # The deprecated caller_session_id defaults to "" → omitted on the wire
+        # (a typed client never sends a self-attested "").
+        req = UpdateToolConfigReq(session_id="s1", new_config={"max_tokens": 4096})
+        wire = req.to_wire()
+        assert "caller_session_id" not in wire
+        assert wire["session_id"] == "s1"
+        assert wire["new_config"] == {"max_tokens": 4096}
+
+    def test_update_tool_config_req_keeps_nonempty_caller(self) -> None:
+        # A non-empty caller_session_id is preserved (legacy self-attested path).
+        req = UpdateToolConfigReq(caller_session_id="caller-1", session_id="s1", new_config=None)
+        wire = req.to_wire()
+        assert wire["caller_session_id"] == "caller-1"
+        # new_config = Value::Null (None) is still emitted (not an empty string).
+        assert wire["new_config"] is None
+
+    def test_update_tool_config_req_default(self) -> None:
+        # #[derive(Default)]: caller_session_id → "" (omitted), session_id → "",
+        # new_config → Value::Null (None).
+        assert UpdateToolConfigReq.default().to_wire() == {"new_config": None, "session_id": ""}
+
+    def test_drop_session_req_omits_empty_caller(self) -> None:
+        req = DropSessionReq(session_id="s1")
+        wire = req.to_wire()
+        assert "caller_session_id" not in wire
+        assert wire == {"session_id": "s1"}
+
+    def test_drop_session_req_keeps_nonempty_caller(self) -> None:
+        req = DropSessionReq(caller_session_id="c1", session_id="s1")
+        assert req.to_wire() == {"caller_session_id": "c1", "session_id": "s1"}
+
+    def test_drop_session_req_default(self) -> None:
+        assert DropSessionReq.default().to_wire() == {"session_id": ""}
+
+    # -- BackgroundTaskSummaryWire (#[serde(skip_serializing_if = Option::is_none)])
+
+    def test_background_task_summary_omits_none_tool_name(self) -> None:
+        wire = BackgroundTaskSummaryWire(task_id="t1", command="npm run build").to_wire()
+        assert wire == {"command": "npm run build", "task_id": "t1"}
+
+    def test_background_task_summary_keeps_tool_name(self) -> None:
+        wire = BackgroundTaskSummaryWire(
+            task_id="t1", command="rg foo", tool_name="ripgrep"
+        ).to_wire()
+        assert wire == {"command": "rg foo", "task_id": "t1", "tool_name": "ripgrep"}
+
+    def test_background_task_summary_default(self) -> None:
+        # #[derive(Default)]: task_id → "", command → "", tool_name → None.
+        wire = BackgroundTaskSummaryWire.default().to_wire()
+        assert wire == {"command": "", "task_id": ""}
+
+    # -- list responses + list requests default ------------------------------
+
+    def test_list_background_tasks_response_default(self) -> None:
+        # #[derive(Default)]: tasks → [].
+        assert ListBackgroundTasksResponse().to_wire() == {"tasks": []}
+        assert ListBackgroundTasksResponse.default().to_wire() == {"tasks": []}
+
+    def test_list_background_tasks_req_default(self) -> None:
+        # #[derive(Default)]: required session_id: String → "".
+        assert ListBackgroundTasksReq.default().to_wire() == {"session_id": ""}
+
+    def test_todo_summary_wire_fields(self) -> None:
+        wire = TodoSummaryWire(id="t1", content="do thing", status="in_progress").to_wire()
+        assert wire == {"content": "do thing", "id": "t1", "status": "in_progress"}
+
+    def test_list_todos_response_default(self) -> None:
+        assert ListTodosResponse().to_wire() == {"todos": []}
+        assert ListTodosResponse.default().to_wire() == {"todos": []}
+
+    def test_list_todos_req_default(self) -> None:
+        assert ListTodosReq.default().to_wire() == {"session_id": ""}
+
+    # -- nested round-trip ---------------------------------------------------
+
+    def test_list_background_tasks_response_round_trip(self) -> None:
+        # tool_name omitted on t1, present on t2; nested dicts key-sorted by
+        # sort_mappings (dict == ignores key order, but the literal is sorted).
+        resp = ListBackgroundTasksResponse(
+            tasks=[
+                BackgroundTaskSummaryWire(task_id="t1", command="npm run build"),
+                BackgroundTaskSummaryWire(task_id="t2", command="rg foo", tool_name="ripgrep"),
+            ]
+        )
+        wire = resp.to_wire()
+        assert wire == {
+            "tasks": [
+                {"command": "npm run build", "task_id": "t1"},
+                {"command": "rg foo", "task_id": "t2", "tool_name": "ripgrep"},
+            ]
+        }
+        rec = ListBackgroundTasksResponse.model_validate(wire)
+        assert rec.to_wire() == wire
+
+    def test_list_todos_response_round_trip(self) -> None:
+        resp = ListTodosResponse(
+            todos=[
+                TodoSummaryWire(id="1", content="a", status="pending"),
+                TodoSummaryWire(id="2", content="b", status="completed"),
+            ]
+        )
+        wire = resp.to_wire()
+        assert wire == {
+            "todos": [
+                {"content": "a", "id": "1", "status": "pending"},
+                {"content": "b", "id": "2", "status": "completed"},
+            ]
+        }
+        assert ListTodosResponse.model_validate(wire).to_wire() == wire
+
+    # -- envelope consumption ------------------------------------------------
+
+    def test_envelope_ok_wraps_list_background_tasks(self) -> None:
+        # Full Ok-side consumption: a list_background_tasks response rides the
+        # envelope and round-trips, the nested tool_name preserved.
+        data = ListBackgroundTasksResponse(
+            tasks=[BackgroundTaskSummaryWire(task_id="t1", command="ls", tool_name="terminal")]
+        )
+        wire = RpcEnvelope.ok(data).to_wire()
+        rec = RpcEnvelope.from_wire(wire, ListBackgroundTasksResponse)
+        ok, err = rec.into_result()
+        assert err is None
+        assert isinstance(ok, ListBackgroundTasksResponse)
+        assert ok.tasks[0].task_id == "t1"
+        assert ok.tasks[0].tool_name == "terminal"

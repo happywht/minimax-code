@@ -19,8 +19,14 @@ serde patterns new to the layer (camelCase ``rename_all``, untagged
 ``Value`` responses). R71 adds :mod:`hooks` — the ``workspace.hook_registry``
 method landing four more serde patterns new to the layer
 (``#[serde(skip)]`` field elision, a forward-tolerant ``str``-subclass enum
-that serves as a JSON map key, and an empty-parameter request). The remaining
-6 RPC files (fs / git / hunks / skills / workspace / worktree) land in R72+.
+that serves as a JSON map key, and an empty-parameter request). R72 adds
+:mod:`workspace` — 14 environment / config / session-admin RPCs landing
+three more serde patterns new to the layer (``skip_serializing_if =
+"String::is_empty"`` non-optional elision via a wrap ``model_serializer``
+mixin, bulk ``Response = serde_json::Value`` surfaced as ``Any``, and a
+typed shape (:class:`WorkspaceInfo`) carried alongside a raw ``Value``
+response). The remaining 5 RPC files (fs / git / hunks / skills / worktree)
+land in R73+.
 """
 
 from __future__ import annotations
@@ -66,6 +72,26 @@ from minimax_code.workspace_types.rpc.session import (
     FileRewindConflict,
     FileRewindResponse,
     RewindToReq,
+)
+from minimax_code.workspace_types.rpc.workspace import (
+    BackgroundTaskSummaryWire,
+    ConfigureMcpReq,
+    DropSessionReq,
+    InstallPluginReq,
+    ListBackgroundTasksReq,
+    ListBackgroundTasksResponse,
+    ListTodosReq,
+    ListTodosResponse,
+    LoadEnvrcReq,
+    LoadPermissionsReq,
+    LoadProjectConfigReq,
+    RefreshPluginsReq,
+    ResolveFileReferencesReq,
+    TodoSummaryWire,
+    ToolDefinitionsReq,
+    UpdateToolConfigReq,
+    WorkspaceInfo,
+    WorkspaceInfoReq,
 )
 
 __all__ = [
@@ -118,6 +144,25 @@ __all__ = [
     "FuzzyChangeReq",
     "FuzzyCloseReq",
     "FuzzyStatusReq",
+    # workspace (R72, skip_serializing_if=String::is_empty + bulk Response=Value + typed shape)
+    "WorkspaceInfo",
+    "BackgroundTaskSummaryWire",
+    "ListBackgroundTasksResponse",
+    "TodoSummaryWire",
+    "ListTodosResponse",
+    "WorkspaceInfoReq",
+    "LoadProjectConfigReq",
+    "LoadPermissionsReq",
+    "LoadEnvrcReq",
+    "ToolDefinitionsReq",
+    "ResolveFileReferencesReq",
+    "UpdateToolConfigReq",
+    "DropSessionReq",
+    "ConfigureMcpReq",
+    "InstallPluginReq",
+    "RefreshPluginsReq",
+    "ListBackgroundTasksReq",
+    "ListTodosReq",
 ]
 
 #: Tool ID for the ``WorkspaceRpcHandler`` (workspace method dispatch).

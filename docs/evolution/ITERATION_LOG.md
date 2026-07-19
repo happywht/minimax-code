@@ -5595,3 +5595,108 @@ cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
 ### Commit
 
 `feat(platform): R71 workspace RPC hooks forward-tolerant enum layer (fuse grok xai-grok-workspace-types rpc/ hooks.rs 230 lines → 1 module: workspace.hook_registry RPC → HookRegistryWire{dict[HookEventNameWire, list[HookSpecWire]]}, lands 4 serde patterns new to layer: #[serde(skip)] matcher field elision + forward-tolerant str-subclass HookEventNameWire[15 known + Unknown open-vocabulary via __get_pydantic_core_schema__ no_info_after_validator_function(cls, str_schema)] + enum as native JSON map key[str-subclass serializes to plain string] + empty-parameter HookRegistryReq, open-vs-closed vocabulary enum shape decision[str-subclass vs R69 plain Enum] + class-post setattr 15 constants + as_str via str.__str__, 14 new tests zero-regression)`
+
+
+## R72 — 远程 workspace RPC workspace 元数据/配置/admin 层(融合 grok xai-grok-workspace-types rpc/ workspace.rs)
+
+锚点:R72-1 3bcc850
+
+### 本轮目标
+
+迁移 `workspace.rs`(271L)= **1 个文件** → 1 个新模块,14 个 `workspace.*` 方法 + 4 辅助/响应结构体 + 1 typed shape,攻克 **3 个新 serde 模式** + 本轮决定性架构问题:
+
+- **`skip_serializing_if = "String::is_empty"`(本轮核心)**:`UpdateToolConfigReq.caller_session_id` 与 `DropSessionReq.caller_session_id` 两个 *deprecated 自证字段*——空串 = 缺省,序列化时省略。区别于 R71 `#[serde(skip)]`(字段彻底不存在)和 R70 `Option::is_none`(None 省略):**这里是必填 str 在等于空串时省略**。
+- **批量 `Response = serde_json::Value`**:14 方法中 11 个响应是任意 JSON(服务端定义形状,本 crate 不类型化)→ 统一 `Response: ClassVar = Any`。
+- **typed shape 与 raw Value 响应并存**:`WorkspaceInfo{os,shell,cwd}` 是 `workspace.info` raw `Value` 的 typed shape,但 `WorkspaceInfoReq.Response` 仍是 `Any`(传输层保留原始契约);客户端按需 `model_validate`。
+
+**决定性架构问题**:两个 Req(`UpdateToolConfigReq`/`DropSessionReq`)共享 deprecated `caller_session_id` 字段 + 相同省略语义 → 抽 **`_OmitsEmptyCallerSessionId` mixin**(`caller_session_id: str = ""` + `@model_serializer(mode="wrap")` 删空串键),子类继承 mixin 添加各自字段。wrap 模式 `handler(self)` 返回默认 dump,再 `pop` 空 caller——避免递归(plain 模式调 `self.model_dump()` 会无限递归)。
+
+rpc/ 剩余 5 文件(fs 754 / git 1077 / hunks 413 / skills 275 / worktree 406 = ~2925 行)留 R73+。
+
+### 融合结论
+
+R70 用 `model_serializer`(plain)省略 None(match_start/match_end);**R72 用 `model_serializer(mode="wrap")` mixin 省略空串 str 字段**,且跨两个 Req 复用:
+
+- **非可选 str 的空值省略**:grok `#[serde(default, skip_serializing_if = "String::is_empty")]`——字段是 `String`(非 Option),默认 "",序列化时若为 "" 则省略键。Python 侧 `caller_session_id: str = ""`(有默认) + wrap serializer 在 dump 后 `if raw.get("caller_session_id") == "": raw.pop(...)`。
+- **wrap vs plain model_serializer**:R70 `ContentMatch` 用 plain 模式(手工逐字段建 dict,因 camelCase 键)。R72 mixin 用 **wrap 模式**——`handler(self)` 拿到默认 dump(含子类所有字段,JSON 安全),仅删一个键。优势:子类(`UpdateToolConfigReq` 带 `new_config: Any`、`DropSessionReq` 带 `session_id`)无需各自重写序列化,mixin 自动覆盖全部子类字段。关键坑:wrap 内**不可调 `self.model_dump()`**(递归),必须用 handler。
+- **mixin 继承 + 子类字段**:`_OmitsEmptyCallerSessionId(WireModel)` 定义 `caller_session_id` 字段 + wrap serializer;`UpdateToolConfigReq(_OmitsEmptyCallerSessionId)` / `DropSessionReq(_OmitsEmptyCallerSessionId)` 各加自己的字段。pydantic v2 合并父+子字段,model_serializer 随继承链生效。
+- **`Response: ClassVar = Any` 批量化**:11 个方法的 `type Response = serde_json::Value` → `Response: ClassVar = Any`(`typing.Any`)。R70 已为单例 `FuzzyStatusReq` 建立 `Response: ClassVar = Any` 先例,R72 批量复制。
+- **纯辅助 typed shape**:`WorkspaceInfo` 不挂任何 Req.Response(它对应的方法 `WorkspaceInfoReq.Response = Any`),是独立 `WireModel`,客户端可选 `model_validate`。grok 源码注释明确"Response stays the raw Value to preserve the contract; WorkspaceInfo is the typed shape of that value"。
+
+### 交付
+
+1 源文件 + barrel 扩展 + 测试扩展,271 行 Rust → 约 295 行 Python + 29 个新增专项测试:
+
+| 文件 | Rust 源 | 行数 | Python 实现 |
+|------|---------|------|------------|
+| `rpc/workspace.py` | `rpc/workspace.rs` | 271 | `WorkspaceInfo`(typed shape,3 必填,无 Default)+ `BackgroundTaskSummaryWire`(tool_name `skip_serializing_if=Option::is_none` 省略,plain model_serializer)+ `ListBackgroundTasksResponse`/`ListTodosResponse`(tasks/todos list)+ `TodoSummaryWire`(id/content/status)+ `_OmitsEmptyCallerSessionId` mixin(wrap serializer 删空 caller)+ 14 Req(6 空参数 + 5 带参 Response=Any + 2 继承 mixin + 2 list typed Response) |
+| `rpc/__init__.py` | mod.rs barrel | — | 重导出 workspace 18 符号(barrel + __all__ 同步 + docstring 更新) |
+| `tests/test_rpc.py` | — | — | +29 测试:`TestWorkspace`(13 method 常量/11 Value→Any/2 typed Response/WorkspaceInfo 3 测试/6 空参数 default/带参 Req/caller 省略 3×2/default/tool_name 省略/list default+round-trip/envelope Ok 往返) |
+
+测试增长:rpc 专项 R71 的 109 → R72 的 138(+29);全量 R71 的 2193 → R72 的 2222(+29,零回归,完美对账)。
+
+### 映射决策树 + 坑
+
+**决策树**:
+- 6 个空参数 struct(`WorkspaceInfoReq`/`LoadProjectConfigReq`/`LoadPermissionsReq`/`LoadEnvrcReq`/`InstallPluginReq`/`RefreshPluginsReq`)→ 无字段 WireModel;`#[derive(Default)]` → 基类 `default()` = `cls()`,`to_wire()` = `{}`。
+- `type Response = serde_json::Value`(11 个)→ `Response: ClassVar = Any`(`typing.Any`)。
+- `type Response = ListBackgroundTasksResponse`/`ListTodosResponse`(2 个 typed)→ `Response: ClassVar[type] = ListXxxResponse`。
+- `WorkspaceInfo{os,shell,cwd}`(derive PartialEq,Eq,**无 Default**)→ 独立 WireModel,3 必填,无 default() override(基类 cls() 会失败,符合"不 derive Default")。
+- `BackgroundTaskSummaryWire.tool_name`(`#[serde(default, skip_serializing_if = "Option::is_none")]`)→ plain `model_serializer` 手工建 dict(None 时省略 tool_name),对标 R70 ContentMatch。
+- `caller_session_id: String`(`#[serde(default, skip_serializing_if = "String::is_empty")]`,2 个 Req 共享)→ `_OmitsEmptyCallerSessionId` mixin:`caller_session_id: str = ""` + wrap model_serializer 删空键。
+- `new_config`/`mcp_servers: serde_json::Value`(`#[derive(Default)]` → Value::Null)→ `Any` 字段 + override `default()` 返回 `cls(new_config=None)`(None = JSON null = Value::Null)。
+- 必填 String 字段 + `#[derive(Default)]`(`session_id`/`refs`/`task_id`/`command`/`id`/`content`/`status`)→ override `default()` 返回 `cls(field=""/[])`(对标 R70 FuzzyStatusReq.search_id→"")。
+
+**坑 1 — wrap model_serializer 内不可调 self.model_dump()(递归,本轮决定性)**
+mixin 首版 `@model_serializer(mode="wrap")` 内用 `raw = self.model_dump(mode="json")` 拿 dump 再删空键——但 `model_dump()` 触发 model_serializer 自身(它定义了 dump 行为),**无限递归 + RecursionError**。**修复**:wrap 模式必须用 `handler(self)`——pydantic 注入的 handler callable,返回默认序列化结果(子类全部字段已 JSON 安全),不触发自定义 serializer。这是 wrap vs plain 的核心区别:plain 手工建(无 handler),wrap 包裹默认(handler)。
+
+**坑 2 — mixin 字段被子类继承,model_serializer 随继承链生效**
+担心 `_OmitsEmptyCallerSessionId` 的 wrap serializer 在子类 `UpdateToolConfigReq`/`DropSessionReq` 中不生效。**验证**:pydantic v2 类构建时合并父+子 model_fields,model_serializer 作为 schema 钩子随继承传递——`handler(self)` 返回的 dump 含子类字段(`session_id`/`new_config`),删空 caller 后正确。两个子类各自仅声明独有字段 + METHOD + Response + default() override,序列化逻辑全部继承 mixin。
+
+**坑 3 — skip_serializing_if="String::is_empty" vs Option::is_none vs #[serde(skip)] 三种省略辨析**
+本轮第 5 种(累计)省略模式,易混:(a) R71 `#[serde(skip)] matcher`——字段**彻底不存在**(Python 不声明);(b) R70 `skip_serializing_if="Option::is_none"`(match_start/tool_name)——**Option 字段**,None 省略(plain model_serializer 建 dict 时 if not None);(c) R72 `skip_serializing_if="String::is_empty"`(caller_session_id)——**非 Option 的 String 字段**,默认 "",等于 "" 省略(wrap serializer handler dump 后 pop)。三者字段类型 + 触发条件 + 实现机制全不同。
+
+**坑 4 — Response: ClassVar = Any 的 Any 是单例,可 is 比较**
+11 个 `Response: ClassVar = Any`。测试 `assert cls.Response is Any`——担心 `Any` 不是单例。**验证**:`typing.Any` 在运行时返回同一对象(Python 3.11+ 单例),`Response: ClassVar = Any` 存储即 Any 本身,`is` 比较为 True。无需用 `==` 或字符串比对。
+
+**坑 5 — WorkspaceInfo 不 derive Default,基类 default() 必然失败**
+grok 的 `WorkspaceInfo` derive `Debug, Clone, PartialEq, Eq, Serialize, Deserialize`(**无 Default**)。若基类 `default()` 返回 `cls()` 会因 3 必填字段报 ValidationError。测试 `test_workspace_info_no_default` 用 `pytest.raises(Exception)` 断言 `WorkspaceInfo.default()` 失败(`# noqa: B017`,因 ruff B017 禁止 `pytest.raises(Exception)`,用显式 noqa)——反向验证"不 derive Default"契约。
+
+**坑 6 — Any 字段(None = Value::Null)在 to_wire 中保留**
+`UpdateToolConfigReq.new_config`/`ConfigureMcpReq.mcp_servers` 是 `serde_json::Value`,`#[derive(Default)]` → Value::Null → JSON null。Python `Any` 字段为 None 时 `model_dump(mode="json")` 返回 None(JSON 安全),to_wire 输出 `"new_config": null`。wrap serializer 不删 None(只删空 caller),`test_update_tool_config_req_default` 断言 `{"new_config": None, "session_id": ""}`。
+
+### 验证
+
+三重验证全绿:
+
+```bash
+# 1. ruff lint(E/F/W/I/B/UP,行长 100)
+cd "/d/工作/城建院/mm code/agent" && uv run ruff check minimax_code/workspace_types/rpc/ tests/test_rpc.py
+# → All checks passed!
+
+# 2. R72 专项测试
+cd "/d/工作/城建院/mm code/agent" && uv run pytest tests/test_rpc.py -q
+# → 138 passed in 0.46s(R71 的 109 + R72 新增 29,精确对账)
+
+# 3. 全量回归(零回归)
+cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
+# → 2222 passed, 10 skipped in 112.13s
+#    (R71 的 2193 + R72 新增 29,完美对账,零回归)
+```
+
+**wire 保真交叉验证**:对照 grok `workspace.rs` 源码逐行确认——3 个 grok 测试(`workspace_info_deserializes_server_shape`/`workspace_info_ignores_unknown_fields`/`method_constant` 11 个方法)全部在 TestWorkspace 中复刻并扩展(method 常量补全至 13 含 list_*、WorkspaceInfo 加 no_default 反向断言)。`test_update_tool_config_req_omits_empty_caller`/`test_drop_session_req_omits_empty_caller`(空 caller 省略)+ `test_update_tool_config_req_keeps_nonempty_caller`/`test_drop_session_req_keeps_nonempty_caller`(非空保留)闭合 caller 省略双路径;`test_list_background_tasks_response_round_trip`(tool_name 嵌套省略)+ `test_envelope_ok_wraps_list_background_tasks`(envelope Ok 往返 typed Response)闭合"空串省略 ↔ Option 省略 ↔ envelope typed Response"完整链路。
+
+### YAGNI 边界
+
+本轮明确不做:
+
+- ❌ **rpc/ 剩余 5 文件(~2925 行)迁移** —— fs/git/hunks/skills/worktree 留 R73+(本轮只迁 workspace 这一个元数据/配置文件)。
+- ❌ **实际 workspace handler 实现** —— 本轮仅 wire 类型契约,真正的 workspace.info/load_project_config/tool_definitions 执行是运行时能力,不在类型层。
+- ❌ **接入 IPC handler 或远程 workspace transport** —— 类型契约层先行,wire DTO 的消费端在 shell 层。
+- ❌ **前端 `web/src/types/` 镜像** —— 纯后端 RPC 类型契约,无 wire 事件广播到前端。
+- ❌ **caller_session_id 鉴权语义实现** —— 字段标 deprecated(自证不再可信,server 从 envelope 推导 caller),本轮仅忠实迁移省略语义,鉴权是 server 端职责。
+- ❌ **UpdateToolConfigReq 的 TURN_ACTIVE 重试逻辑** —— grok 注释提到该方法在 session 有 active turn 时被 TURN_ACTIVE wire code 拒绝(可重试),但重试调度是客户端运行时能力,wire 层只携带 TURN_ACTIVE 常量(R69 已定义)。
+
+### Commit
+
+`feat(platform): R72 workspace RPC metadata/admin layer (fuse grok xai-grok-workspace-types rpc/ workspace.rs 271 lines → 1 module: 14 workspace.* methods[6 empty-param + 5 param Response=Value + 2 typed Response] + WorkspaceInfo typed shape[alongside raw Value response] + BackgroundTaskSummaryWire/TodoSummaryWire[skip_serializing_if=Option::is_none plain model_serializer] + ListBackgroundTasks/ListTodos responses, lands 3 serde patterns new to layer: skip_serializing_if=String::is_empty non-optional str elision via _OmitsEmptyCallerSessionId mixin[@model_serializer mode=wrap handler(self) pops empty caller, shared by UpdateToolConfigReq+DropSessionReq, avoids self.model_dump recursion] + bulk Response=serde_json::Value→Any[11 methods] + typed WorkspaceInfo shape alongside raw Value response, 3 skip-elision variants distinguished[#[serde(skip)] vs Option::is_none vs String::is_empty], 29 new tests zero-regression)`
