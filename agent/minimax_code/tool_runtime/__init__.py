@@ -52,6 +52,16 @@ from minimax_code.tool_runtime.context import (
     WorkspaceViewerContext,
 )
 from minimax_code.tool_runtime.error import ToolError, ToolErrorKind
+from minimax_code.tool_runtime.render import (
+    ModelOutputExtractor,
+    ToolChatCompletion,
+    ToolChatCompletionResponse,
+    ToolCodeExecutionResult,
+    ToolOutput,
+    ToolStreamError,
+    extract_content_blocks,
+    extractor_for,
+)
 from minimax_code.tool_runtime.tool import (
     ArcTool,
     ArcToolFamily,
@@ -76,15 +86,21 @@ __all__ = [
     "ContentBlock",
     "Cwd",
     "ListToolsContext",
+    "ModelOutputExtractor",
     "SessionContext",
     "Tool",
     "ToolCallContext",
+    "ToolChatCompletion",
+    "ToolChatCompletionResponse",
+    "ToolCodeExecutionResult",
     "ToolDyn",
     "ToolError",
     "ToolErrorKind",
     "ToolFamily",
+    "ToolOutput",
     "ToolProgress",
     "ToolStream",
+    "ToolStreamError",
     "ToolStreamItem",
     "ToolVariant",
     "TraceContext",
@@ -92,6 +108,8 @@ __all__ = [
     "TypedToolOutput",
     "WorkspaceBindMetadata",
     "WorkspaceViewerContext",
+    "extract_content_blocks",
+    "extractor_for",
     "terminal_only",
     "with_progress",
 ]

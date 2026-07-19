@@ -9151,3 +9151,139 @@ R108 后 tool_runtime 包导出 12 符号，覆盖 crate 8 模块中的 2 个（
 ### Commit
 
 `feat(platform): R109 migrate xai-tool-runtime tool.rs (Tool/ToolDyn traits + streaming primitives + TypedToolOutput)`
+## R110 — 迁移 xai-tool-runtime render.rs（tool↔render 循环对闭合，5 策略模型输出提取器）
+
+锚点:R109-1 fe160ae
+
+### 本轮目标
+
+落地 `xai-tool-runtime` 的第 4 块叶子 `render.rs`（731 行）。这是 R109
+`tool.rs` 的对偶模块——两者在 Rust crate 内互相引用（`tool.rs` 导入 `render`
+的类型，`render.rs` 导入 `tool::ContentBlock`），构成循环对。本轮的目标是：
+
+1. 迁移 `render.rs` 的 8 个公共符号（`ToolOutput` Protocol +
+   `extract_content_blocks` 5 策略提取器 + 4 个 chat-completion/error
+   dataclass + `ModelOutputExtractor` 类型别名 + `extractor_for` 工厂）。
+2. **闭合 tool↔render 循环依赖**：R109 的 `tool.py` 已把所有 `render`
+   引用推迟到 `TYPE_CHECKING` + `from_value` 内的函数局部懒加载；本轮
+   `render.py` 在模块级别**单向**导入 `ContentBlock`（`render -> tool`）。
+   R110 落地后，`from_value` 的懒加载解析到**真实** `extract_content_blocks`，
+   不再需要 R109 测试里的 fake `sys.modules` 注入——这是本轮的决定性架构贡献。
+3. 扩展 `tool_runtime/__init__.py` barrel 导出 render 符号（33 个符号）。
+4. 全套回归零失败。
+
+### 融合结论
+
+`render.rs` 的核心是 `extract_content_blocks(&Value) -> Vec<ContentBlock>`——
+一个 5 策略顺序匹配算法，把任意 `serde_json::Value` 转换成 MCP 兼容的
+`ContentBlock` 列表。Rust 用 `Value` 枚举 + `match`；Python 用 `isinstance`
+dispatch（`dict`/`list`/scalar），等价但更动态。融合的关键映射：
+
+- `trait ToolOutput`（带两个默认方法体）-> Python `Protocol`（无默认方法体）+
+  文档化的"约定"：实现类返回 `[]` 表示"用自动提取"，返回 `None` 表示"无
+  completion card"。`TypedToolOutput`（R109）通过**字段**满足 Protocol——
+  它的 `model_output` / `chat_completion_output` 字段就是 trait 方法的实现
+  （字段是可读属性），结构化满足无需声明。
+- Rust blanket impls（`impl ToolOutput for Value/String/Box<T>`）-> Python
+  YAGNI：动态类型 + 结构化 Protocol 使 blanket 注册变得不必要——任何暴露
+  两个方法的对象都满足契约。
+- `#[serde(flatten)] extra: Map` -> `extra: dict[str, Any]`，`to_dict` 用
+  `out.update(self.extra)`，`from_dict` 收集未知键。
+- `#[serde(default)]` 字段 -> dataclass 字段默认值（`sender: str = ""`）。
+- `extractor_for<T>()` 泛型 -> 显式 `output_type: type` 参数（Python 动态类型）。
+
+`extract_content_blocks` 的 5 策略（首匹配胜出）：
+1. value 本身是 `ContentBlock`（`{"type":"text",...}`）-> `[block]`
+2. 数组含 >=1 个 `ContentBlock` -> 每元素转 block 或 text
+3. 对象带 `"content": [...]`（MCP `CallToolResult`）-> `structuredContent`
+   作为 JSON text + content 数组
+4. 混合对象 -> block 形态字段提取，其余作为 JSON text
+5. 其他 -> `ContentBlock.Text`（stringify）
+
+特殊：`ToolRunResult` 形态（`prompt_text` + `output` + `effective_tool_name`）
+在策略 3 之前识别，模型看到 `prompt_text` 原文，绝不 JSON dump。
+
+### 交付
+
+- `agent/minimax_code/tool_runtime/render.py`（新增，~470 行）：8 个公共符号
+  + 6 个内部 helper（`_CONTENT_BLOCK_TYPES`, `_looks_like_content_block`,
+  `_try_parse_block`, `_stringify`, `_value_to_block`, `_classify_field`）。
+- `agent/minimax_code/tool_runtime/__init__.py`（扩展）：barrel 从 25 符号
+  扩展到 33 符号（+8 render 符号）。
+- `agent/tests/test_tool_runtime_render.py`（新增，~470 行）：45 个测试。
+- `docs/evolution/ITERATION_LOG.md`（追加）：本条目。
+
+### 映射决策树+坑
+
+1. **serde_json 紧凑格式坑（决定性）**：`serde_json::Value::to_string()` 是
+   紧凑无空格的（`{"value":42}`, `[1,2,3]`），而 Python `json.dumps` 默认
+   有空格（`{"value": 42}`）。`_stringify` 必须用
+   `json.dumps(value, separators=(",", ":"))` 复现 serde_json wire shape。
+   策略 3 的 `structuredContent`、策略 4 的 remainder、策略 5 的 fallback
+   都 emit 这些 stringify 值作为 `ContentBlock.Text`，所以空格敏感。测试
+   `test_extract_object_with_block_array_field_extracts_blocks` 第一版断言
+   写错（误以为 remainder 只含 `{"source":"db"}`，实际含整个
+   `{"metadata":{"source":"db"}}`——metadata 字段的 value 非 block 形态，
+   整体进 remainder），修正后全绿——这反过来验证了 compact 格式 + remainder
+   语义都正确。
+
+2. **`_classify_field` 简化（KISS）**：Rust `enum FieldShape { Block, Blocks,
+   Other }` 三变体。`Block(block)` 和 `Blocks(vec)` 都把 blocks 贡献给调用方
+   的 `extracted` 列表，所以它们坍缩成单个 `list[ContentBlock]` 返回
+   （`[block]` vs `blocks`）；`Other` 是 `None`。返回 `list | None` 比三变体
+   枚举更简洁，调用方 `if classified is None: remainder else: extracted.extend`。
+
+3. **循环依赖闭合验证**：R110 后，`tool.py` 的 runtime 路径从不导入
+   `render`（只有 `TYPE_CHECKING` + `from_value` 内函数局部懒加载）；
+   `render.py` 在模块级别单向导入 `tool.ContentBlock`。运行时依赖边是
+   单向的（`render -> tool`）。import smoke 确认无 top-level cycle，且
+   `from_value` 现在解析到真实 render（测试
+   `test_typed_tool_output_from_value_uses_real_render_*` 无 fake 注入通过）。
+
+4. **数组策略严格性**：`_classify_field` 对数组要求**每个**元素都是
+   block 形态（`all(_looks_like_content_block(v) for v in value)`），
+   避免歧义数据（如 `"scores": [0.9, 0.8]`）被误提取。混合数组归入
+   `None`（Other），进 remainder。这匹配 Rust 的保守行为。
+
+5. **`except (ValueError, TypeError, KeyError)` 精确捕获**：`_try_parse_block`
+   用精确捕获而非 `except Exception`（虽然 BLE 不在 ruff select，`except
+   Exception` 也安全）。精确捕获更体现工程师严谨，覆盖 `ContentBlock.from_dict`
+   可能抛的 `ValueError`（unknown type）+ 防御性 `TypeError`/`KeyError`。
+
+6. **`code_execution_result` 嵌套反序列化**：`ToolChatCompletion.from_dict`
+   对 `code_execution_result` 字段需递归 `ToolCodeExecutionResult.from_dict`；
+   `to_dict` 需 `.to_dict()`。Option 缺失 -> None。
+
+### 验证
+
+- `uv run ruff check minimax_code/tool_runtime/render.py
+  minimax_code/tool_runtime/__init__.py tests/test_tool_runtime_render.py`
+  -> **All checks passed!**
+- `uv run pytest tests/test_tool_runtime_render.py -q` -> **45 passed in 0.29s**
+- `uv run pytest tests/test_tool_runtime.py tests/test_tool_runtime_context.py
+  tests/test_tool_runtime_tool.py tests/test_tool_runtime_render.py -q` ->
+  **163 passed**（R107+R108+R109+R110 tool_runtime 全套，零回归）
+- barrel import smoke：33 符号全可解析 + render 8 公共符号 + 无 top-level
+  import cycle。
+- `uv run pytest tests/ --ignore=tests/e2e -x` -> **3535 passed, 10 skipped,
+  0 failed in 127.35s**（全套回归，零失败）
+
+### YAGNI 边界
+
+- **不迁移 blanket impls**：`impl ToolOutput for Value/String/Box<T>` 及
+  几个 `xai_tool_types` struct 的 blanket impl 在 Python 动态类型 +
+  结构化 Protocol 下无意义，YAGNI 砍掉。
+- **不实现 `FieldShape` 三变体枚举**：坍缩为 `list | None` 返回（见映射
+  决策 2）。
+- **不实现 `Arc<dyn Fn>` 的显式引用计数**：Python 对象天然引用共享，
+  `ModelOutputExtractor = Callable[..., list | None]` 已足够。
+- **不迁移 render.rs 的 `#[test]` 逐字断言**：移植了全部 5 策略 +
+  ToolOutput 默认 + 多模态的语义等价测试，但用 Python 风格组织（一组
+  `_AutoExtractOutput`/`_PassThroughOutput`/`_MalformedOutput` fake 类驱动
+  extractor_for 测试），而非逐字 Rust 断言移植。
+- **`ToolOutput` Protocol 不带默认方法体**：Python Protocol 无此能力；
+  默认语义改为文档化约定（实现类返回 `[]`/`None`）。
+
+### Commit
+
+`feat(platform): R110 migrate xai-tool-runtime render.rs (ToolOutput + extract_content_blocks 5-strategy + chat completion types)`
