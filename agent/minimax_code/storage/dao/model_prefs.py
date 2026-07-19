@@ -15,8 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...models import default_model
 from ._base import now_iso, row_to_dict
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -30,8 +30,13 @@ _PK = 1
 #: Default model that the migration seeds and the DAO falls back to
 #: if the row is somehow missing (it never should be — the migration
 #: inserts it idempotently — but the fallback keeps the IPC layer
-#: honest if the table is ever truncated by hand).
-DEFAULT_MODEL = "MiniMax-M3"
+#: honest if the table is ever truncated by hand). Sourced from the
+#: data-driven registry (:func:`minimax_code.models.default_model`, the
+#: fusion of grok's ``xai-grok-models`` from R45) so the storage seed
+#: fallback, the DAO None-fallback, and the IPC layer all share a single
+#: baked-in document — edit ``DEFAULT_MODELS_JSON`` to change the global
+#: default (R46 wiring; the migration SQL seed is a one-shot snapshot).
+DEFAULT_MODEL = default_model()
 
 
 # ---------------------------------------------------------------------------

@@ -3615,3 +3615,49 @@ MCP-over-ACP 常量是 dataclass 未用 pydantic 序列化面）；**纯值相�
 ### Commit
 
 `feat(platform): R45 default model vocabulary (fuse grok xai-grok-models)`
+
+---
+
+## R46 — storage DEFAULT_MODEL 单一来源接线（融合 grok xai-grok-models 消费端）
+
+> 锚定 R45（`51b0bab`）。
+
+### 本轮目标
+
+R45 交付了默认值**词汇表**（`models.py`：`DEFAULT_MODELS_JSON` 文档 + `default_model()` / 3 场景访问器 + `default ∈ models` 不变量），但词汇表本身没有消费端 —— 项目里仍散落着 **2 处硬编码 `DEFAULT_MODEL = "MiniMax-M3"`**（`storage/dao/model_prefs.py:34` + `agent/llm.py:32`）以及 7+ 处散落 `"MiniMax-M3"` 字面量 fallback。本轮是 R45 之后的**第一轮接线（wiring round）**：把 `model_prefs.py` 的 `DEFAULT_MODEL` 从硬编码字面量改为 `default_model()` 求值，让 storage 种子 fallback、DAO None-fallback、IPC 层三者共享 R45 那份单一 baked-in 文档（DRY），并加一条不变量测试**锁死**这个接线 —— 任何回退到硬编码字面量的回归都会立即破坏测试。这是 R45 词汇表的**第一个真实消费端**，平台化「单一事实来源」的关键一步，也为 R47+（`llm.py:32`、`CANDIDATE_MODELS` 推导）扫清模式。
+
+### 融合结论
+
+- ✅ **保留**：`DEFAULT_MODEL = default_model()` 单一来源接线（`storage/dao/model_prefs.py`）。这是真正的 DRY 修复 —— 让 storage 层从 R45 词汇表取默认值，而非自己再硬编码一遍。
+- ✅ **保留**：`test_default_model_is_storage_single_source` 不变量测试 —— 锁死接线，防回归。
+- ❌ **放弃（自发现，关键转向）**：原始 R46 计划是把 `handle_model_get_current` 接线成 `model is None → default_model()` fallback。**读 `model_prefs.py:59-79` 后发现 `ModelPrefsDAO.get_current()` 永远不会返回 None**（行 69-70 缺行即回退 `DEFAULT_MODEL`，行 77 空值亦回退 `DEFAULT_MODEL`）—— 因此 IPC 层 None fallback 是**死代码**，接线它毫无意义。转向 storage 层 `DEFAULT_MODEL` 单一来源，这才是真问题（两个独立硬编码，违反 DRY）。
+
+### 交付
+
+- `agent/minimax_code/storage/dao/model_prefs.py`（改，159→164 行）— (1) 新增导入 `from ...models import default_model`（ruff `--fix` 后排序在 `from ._base import now_iso, row_to_dict` 之前——多点相对导入 `...models` 优先于单点 `._base`，I001 合规）；(2) `DEFAULT_MODEL = "MiniMax-M3"` → `DEFAULT_MODEL = default_model()`，更新注释说明来源是 R45 词汇表、修改 `DEFAULT_MODELS_JSON` 即可改全局默认、migration SQL 种子是一次性快照。**值不变**（`default_model() == "MiniMax-M3"`）。
+- `agent/tests/test_models.py`（改，160→177 行，12→13 测试）— 新增 `test_default_model_is_storage_single_source`：`from minimax_code.storage.dao.model_prefs import DEFAULT_MODEL as storage_default; assert storage_default == M.default_model()`。锁定接线，任何回退硬编码字面量即破坏此测试。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+### 映射决策树（本轮无新映射 —— 消费端接线轮，非词汇表层）
+
+本轮不引入新枚举/类型，仅让 storage 消费 R45 的 `default_model()` 函数（已在 R45 走过分支 a：序列化层 → pydantic）。**接线轮的本质**：R45 词汇表层是「低风险新增模块」，R46 接线轮是「修改现有消费端使词汇表生效」—— 后者是平台化关键（无词汇表的词汇表是死代码），但带回归风险，需完整 pytest 把关。本轮证明接线零回归（1689 = 1688+1 精确），为 R47+ 接线（`llm.py:32`、`CANDIDATE_MODELS`）建立**安全接线模式**：(1) 先读消费端确认目标非死代码；(2) 值保持不变（`== DEFAULT_MODEL` 断言自动跟随）；(3) 加不变量测试锁死；(4) 重点 + 完整双 pytest。
+
+**坑（自发现，已修复）**：(1) **死代码陷阱** —— 原始计划（`get_current` None fallback）在读消费端源码后被判定为死代码并放弃；这是「先读后写」原则的价值，避免了接线一段永远不会执行的代码。(2) ruff `I001` 报 `model_prefs.py` 导入块未排序（新增 `from ...models import default_model` 后），`--fix` 自动修复 1（多点相对 `...models` 排在单点 `._base` 之前）。修复后 `All checks passed!`。无运行时错误。
+
+### 验证
+
+- `ruff check` → **All checks passed!**（`--fix` 修 I001 后）。
+- 重点 `pytest tests/test_model.py tests/test_models.py tests/test_handlers_providers.py -v` → **31 passed in 2.77s**（16+13+2，零中断——`test_model.py` 全部 `== DEFAULT_MODEL` 值断言自动跟随，因为 `default_model() == "MiniMax-M3"` 值未变）。
+- 完整套件 `pytest` → **1689 passed, 10 skipped in 102.68s**（R45 1688 → R46 1689，**+1 精确**，零回归）。
+
+### YAGNI 边界
+
+- ❌ **不接线 `agent/llm.py:32` `DEFAULT_MODEL = "MiniMax-M3"`** —— 第二个硬编码，但那是 agent 核心层（LLM client 默认模型），影响面大，留 R47 单独接线 + 完整回归。
+- ❌ **不迁移 7+ 散落 `"MiniMax-M3"` 字面量 fallback** —— 散落在 handlers/agent 各处，逐轮消化（每轮 1-2 处），本轮只接 storage 这一处（最高频、最关键）。
+- ❌ **不推导 `CANDIDATE_MODELS` / `MODEL_META` 从词汇表** —— `handlers_model.py` 硬编码候选集 + 元数据，是独立的接线面（且涉及 backward-compat with `ProviderDAO`），留后续轮。
+- ❌ **不改 migration SQL 种子**（`002_model_prefs` 里的 `'MiniMax-M3'`）—— 一次性快照，已部署的 DB 不会重跑迁移；与 `DEFAULT_MODEL` 的 drift 可接受（migration 是 one-shot，`DEFAULT_MODEL` 是运行时回退，语义不同）。
+- ❌ **不接线 `handle_model_get_current` None fallback** —— 死代码（`get_current` 永不返回 None），见融合结论 ❌。
+
+### Commit
+
+`feat(platform): R46 wire default_model to storage DEFAULT_MODEL (fuse grok xai-grok-models)`

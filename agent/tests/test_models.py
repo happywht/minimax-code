@@ -156,3 +156,22 @@ def test_load_defaults_is_cached_singleton():
     first = M._load_defaults()
     second = M._load_defaults()
     assert first is second
+
+
+# --- single-source wiring (R46) --------------------------------------------
+
+
+def test_default_model_is_storage_single_source():
+    """R46 wiring: storage's ``DEFAULT_MODEL`` derives from this registry.
+
+    ``storage.dao.model_prefs.DEFAULT_MODEL`` is no longer a hard-coded
+    literal — it is :func:`default_model` evaluated at import time, so the
+    storage seed fallback, the DAO None-fallback, and this registry share
+    one baked-in document (edit ``DEFAULT_MODELS_JSON`` to change the global
+    default). This pins the wiring: a registry default change propagates to
+    storage automatically, and a regression to a hard-coded literal breaks
+    this test.
+    """
+    from minimax_code.storage.dao.model_prefs import DEFAULT_MODEL as storage_default
+
+    assert storage_default == M.default_model()
