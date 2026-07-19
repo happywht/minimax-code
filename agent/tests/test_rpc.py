@@ -17,6 +17,10 @@ from pydantic import TypeAdapter, ValidationError
 
 from minimax_code.workspace_types._wire import sort_mappings
 from minimax_code.workspace_types.rpc import (
+    # fs (R77)
+    CLIENT_FS_LIST_METHOD,
+    CLIENT_FS_READ_FILE_METHOD,
+    CLIENT_FS_STAT_METHOD,
     TURN_ACTIVE,
     # git (R74)
     UNTRACKED_CONTENT_THRESHOLD,
@@ -38,6 +42,13 @@ from minimax_code.workspace_types.rpc import (
     BulkHunkActionResponse,
     ChangeType,
     CheckoutCommitResponse,
+    ClientFsListNode,
+    ClientFsListReq,
+    ClientFsListRes,
+    ClientFsReadFileReq,
+    ClientFsReadFileRes,
+    ClientFsStatReq,
+    ClientFsStatRes,
     ClientId,
     CodeFindDefinitionsReq,
     CodeFindReferencesReq,
@@ -83,10 +94,26 @@ from minimax_code.workspace_types.rpc import (
     FileRewindResponse,
     FileSummary,
     FilteredHunksResponse,
+    FsContentType,
+    FsDeleteFileReq,
+    FsExistsData,
+    FsExistsReq,
+    FsListData,
+    FsListNode,
+    FsListReq,
+    FsNodeType,
+    FsReadEncoding,
+    FsReadFileData,
+    FsReadFileReq,
+    FsWriteFileReq,
     FuzzyChangeReq,
     FuzzyCloseReq,
     FuzzyOpenReq,
     FuzzyStatusReq,
+    GetFileEntry,
+    GetFileResult,
+    GetFilesReq,
+    GetFilesRes,
     GitBranchesReq,
     GitBranchInfoReq,
     GitBranchListData,
@@ -146,6 +173,10 @@ from minimax_code.workspace_types.rpc import (
     LoadPermissionsReq,
     LoadProjectConfigReq,
     PrepareWorktreeFromWorktreeResponse,
+    PutFileEntry,
+    PutFileResult,
+    PutFilesReq,
+    PutFilesRes,
     RefreshPluginsReq,
     RemoveWorktreeRequest,
     RemoveWorktreeResponse,
@@ -2553,4 +2584,304 @@ class TestHunks:
         assert HunkGetAllHunksReq().to_wire() == {}
         assert HunkGetAllFileContentsReq().to_wire() == {}
         assert HunkGetSessionSummaryReq().to_wire() == {}
+
+
+class TestFs:
+    """R77: workspace file I/O — put_files/get_files + fs_* + client_fs_*.
+
+    Pins the serde shape of grok's ``xai-grok-workspace-types::rpc::fs``
+    — the 10 RPC method constants, the generic ``skip_serializing_if =
+    "Option::is_none"`` base (first generic None-elision base in the layer,
+    supplanting R74/R75/R76's per-class pop lists), ``rename = "type"`` on a
+    ``String`` (the ``str`` analogue of R74/R75's enum override), the
+    ``Response = ()`` unit type, Req-snake / Res-camelCase asymmetry, and
+    ``u64`` / ``i64`` / ``usize`` / ``u32`` → ``int`` (``mtime_ms`` epoch
+    millis distinct from ``modified_at`` RFC 3339). Round-trip assertions use
+    key-indexed access (:meth:`WireModel.to_wire` lexically sorts keys).
+    """
+
+    # -- method constants (grok method_constants × 10) -----------------------
+
+    def test_method_constants(self):
+        assert PutFilesReq.METHOD == "workspace.put_files"
+        assert GetFilesReq.METHOD == "workspace.get_files"
+        assert FsListReq.METHOD == "workspace.fs_list"
+        assert FsExistsReq.METHOD == "workspace.fs_exists"
+        assert FsReadFileReq.METHOD == "workspace.fs_read_file"
+        assert FsWriteFileReq.METHOD == "workspace.fs_write_file"
+        assert FsDeleteFileReq.METHOD == "workspace.fs_delete_file"
+
+    def test_client_fs_method_constants(self):
+        # grok exposes these as standalone CLIENT_FS_*_METHOD consts (source L322-327).
+        assert CLIENT_FS_LIST_METHOD == "workspace.client_fs_list"
+        assert CLIENT_FS_STAT_METHOD == "workspace.client_fs_stat"
+        assert CLIENT_FS_READ_FILE_METHOD == "workspace.client_fs_read_file"
+        assert ClientFsListReq.METHOD == CLIENT_FS_LIST_METHOD
+        assert ClientFsStatReq.METHOD == CLIENT_FS_STAT_METHOD
+        assert ClientFsReadFileReq.METHOD == CLIENT_FS_READ_FILE_METHOD
+
+    # -- Response ClassVar shapes -------------------------------------------
+
+    def test_typed_responses(self):
+        assert PutFilesReq.Response is PutFilesRes
+        assert GetFilesReq.Response is GetFilesRes
+        assert FsListReq.Response is FsListData
+        assert FsExistsReq.Response is FsExistsData
+        assert FsReadFileReq.Response is FsReadFileData
+        assert ClientFsListReq.Response is ClientFsListRes
+        assert ClientFsStatReq.Response is ClientFsStatRes
+        assert ClientFsReadFileReq.Response is ClientFsReadFileRes
+
+    def test_unit_responses(self):
+        # grok ``type Response = ()`` → type(None). Server acks with no payload.
+        assert FsWriteFileReq.Response is type(None)
+        assert FsDeleteFileReq.Response is type(None)
+
+    # -- enums (lowercase rename_all) ---------------------------------------
+
+    def test_fs_node_type_lowercase_no_default(self):
+        assert FsNodeType.DIRECTORY == "directory"
+        assert FsNodeType.FILE == "file"
+        assert not hasattr(FsNodeType, "default")  # no #[default]
+
+    def test_fs_read_encoding_default_utf8(self):
+        assert FsReadEncoding.UTF8 == "utf8"
+        assert FsReadEncoding.BASE64 == "base64"
+        assert FsReadEncoding.default() is FsReadEncoding.UTF8
+
+    def test_fs_content_type_lowercase_no_default(self):
+        assert FsContentType.TEXT == "text"
+        assert FsContentType.BINARY == "binary"
+        assert not hasattr(FsContentType, "default")
+
+    # -- service-level put/get (snake_case) ---------------------------------
+
+    def test_put_file_entry_defaults(self):
+        wire = PutFileEntry(path="a.txt", content="hi").to_wire()
+        assert wire["create_dirs"] is True  # default_true
+        assert wire["append"] is False  # #[serde(default)] → False
+
+    def test_put_file_result_drops_none(self):
+        # _DropNoneWire pops error/hash when None (inherited wrap serializer).
+        wire = PutFileResult(path="a.txt", ok=True).to_wire()
+        assert wire == {"path": "a.txt", "ok": True}
+        full = PutFileResult(path="a.txt", ok=True, error="boom", hash="abc").to_wire()
+        assert full["error"] == "boom"
+        assert full["hash"] == "abc"
+
+    def test_get_file_entry_drops_none(self):
+        wire = GetFileEntry(path="a.txt").to_wire()
+        assert wire == {"path": "a.txt"}
+        full = GetFileEntry(path="a.txt", if_none_match="v1", offset=0, length=10).to_wire()
+        assert full["if_none_match"] == "v1"
+        assert full["offset"] == 0
+        assert full["length"] == 10
+
+    def test_get_file_result_matched_always_emitted(self):
+        # matched is a non-Option bool with #[serde(default)] → always emitted.
+        wire = GetFileResult(path="a.txt", exists=True).to_wire()
+        assert wire == {"path": "a.txt", "exists": True, "matched": False}
+
+    # -- fs_* requests (snake_case, cwd emits null) -------------------------
+
+    def test_fs_list_req_defaults_apply(self):
+        # grok fs_list_req_defaults_apply.
+        wire = FsListReq(path=".").to_wire()
+        assert wire["cwd"] is None  # #[serde(default)] → null kept (not DropNone)
+        assert wire["depth"] == 1  # default_depth
+        assert wire["limit"] == 1000  # default_limit
+        assert wire["offset"] == 0
+        assert wire["include_hidden"] is True  # default_true
+        assert wire["follow_symlinks"] is True
+        assert wire["respect_git_ignore"] is True
+        assert wire["include_globs"] == []
+        assert wire["exclude_globs"] == []
+
+    def test_fs_read_file_req_defaults_are_legacy_full_read(self):
+        # grok fs_read_file_req_defaults_are_legacy_full_read.
+        wire = FsReadFileReq(path="a.txt").to_wire()
+        assert wire["cwd"] is None
+        assert wire["offset"] is None  # None → null (no skip)
+        assert wire["length"] is None
+        assert wire["max_bytes"] == 1_048_576  # default_max_bytes
+        assert wire["encoding"] == "utf8"  # FsReadEncoding::default()
+
+    def test_fs_write_file_req_defaults(self):
+        wire = FsWriteFileReq(path="a.txt", content="hi").to_wire()
+        assert wire["cwd"] is None
+        assert wire["create_dirs"] is True
+
+    def test_fs_exists_req_cwd_null(self):
+        wire = FsExistsReq(path=".").to_wire()
+        assert wire == {"path": ".", "cwd": None}
+
+    def test_fs_delete_file_req_shape(self):
+        wire = FsDeleteFileReq(path="a.txt").to_wire()
+        assert wire == {"path": "a.txt", "cwd": None}
+
+    # -- fs_* responses (FsListData snake; FsListNode/FsExistsData/FsReadFileData camel) --
+
+    def test_fs_list_node_renames_type_key(self):
+        # grok fs_list_node_renames_type_key. node_type is String rename="type".
+        node = FsListNode(
+            name="a", path="/a", node_type="file", is_symlink=None, size=1, modified_at=None
+        )
+        wire = node.to_wire()
+        assert wire["type"] == "file"  # rename="type" on a String
+        assert wire["size"] == 1
+        assert "isSymlink" not in wire  # None dropped (camelCase key)
+        assert "modifiedAt" not in wire
+
+    def test_fs_list_node_false_kept_none_dropped(self):
+        node = FsListNode(
+            name="d",
+            path="/d",
+            node_type="directory",
+            is_symlink=False,
+            size=None,
+            modified_at="2026-01-01T00:00:00Z",
+        )
+        wire = node.to_wire()
+        assert wire["isSymlink"] is False  # False kept (not None)
+        assert "size" not in wire  # None dropped
+        assert wire["modifiedAt"] == "2026-01-01T00:00:00Z"
+
+    def test_fs_list_data_snake_case_envelope(self):
+        # Outer envelope is snake_case despite camelCase FsListNode children.
+        data = FsListData(
+            nodes=[FsListNode(name="a", path="/a", node_type="file")], truncated=False
+        )
+        wire = data.to_wire()
+        assert "nodes" in wire  # snake_case key
+        assert "truncated" in wire  # snake_case key
+        assert wire["nodes"][0]["type"] == "file"
+
+    def test_fs_exists_data_camel_case(self):
+        assert FsExistsData(exists=False).to_wire() == {"exists": False}
+
+    def test_fs_read_file_data_renames_type_key(self):
+        # content_type is String rename="type"; content_base64/line_count dropped when None.
+        wire = FsReadFileData(content="hi", size=2, content_type="text").to_wire()
+        assert wire["type"] == "text"
+        assert wire["size"] == 2
+        assert "contentBase64" not in wire
+        assert "lineCount" not in wire
+
+    # -- client_fs_* (camelCase both sides) ---------------------------------
+
+    def test_client_fs_list_req_defaults(self):
+        # grok client_fs_wire_stability_snapshot (minimal decode). camelCase wire.
+        wire = ClientFsListReq(path="docs").to_wire()
+        assert wire["depth"] == 1  # default_client_depth
+        assert wire["includeHidden"] is True
+        assert wire["limit"] == 1000  # default_client_limit
+        assert wire["offset"] == 0
+        assert wire["followSymlinks"] is True
+        assert wire["respectGitIgnore"] is True
+        assert wire["includeGlobs"] == []
+        assert wire["excludeGlobs"] == []
+
+    def test_client_fs_list_req_fully_populated_round_trip(self):
+        req = ClientFsListReq(
+            path="docs",
+            depth=2,
+            include_hidden=False,
+            limit=100,
+            offset=200,
+            follow_symlinks=False,
+            respect_git_ignore=False,
+            include_globs=["*.md"],
+            exclude_globs=[".git"],
+        )
+        wire = req.to_wire()
+        assert wire["includeGlobs"] == ["*.md"]
+        assert wire["excludeGlobs"] == [".git"]
+        back = ClientFsListReq.model_validate(wire)
+        assert back.depth == 2
+        assert back.include_hidden is False
+        assert back.offset == 200
+        assert back.include_globs == ["*.md"]
+
+    def test_client_fs_list_node_enum_type(self):
+        # node_type is the FsNodeType enum with rename="type" (cf. FsListNode's String).
+        node = ClientFsListNode(
+            name="a.txt",
+            path="docs/a.txt",
+            node_type=FsNodeType.FILE,
+            is_symlink=True,
+            size=11,
+            mtime_ms=1_700_000_000_000,
+        )
+        wire = node.to_wire()
+        assert wire["type"] == "file"  # enum value via rename="type"
+        assert wire["mtimeMs"] == 1_700_000_000_000
+        assert wire["isSymlink"] is True
+
+    def test_client_fs_list_res_nested(self):
+        res = ClientFsListRes(
+            nodes=[
+                ClientFsListNode(
+                    name="a.txt",
+                    path="docs/a.txt",
+                    node_type=FsNodeType.FILE,
+                    mtime_ms=1_700_000_000_000,
+                )
+            ],
+            truncated=True,
+        )
+        wire = res.to_wire()
+        assert wire["nodes"][0]["mtimeMs"] == 1_700_000_000_000
+        assert wire["truncated"] is True
+
+    def test_client_fs_stat_req_minimal(self):
+        assert ClientFsStatReq(path="a.txt").to_wire() == {"path": "a.txt"}
+
+    def test_client_fs_stat_res_missing(self):
+        # grok client_fs_wire_stability_snapshot (missing). All Options dropped.
+        wire = ClientFsStatRes(exists=False).to_wire()
+        assert wire == {"exists": False}
+
+    def test_client_fs_stat_res_full(self):
+        res = ClientFsStatRes(
+            exists=True,
+            node_type=FsNodeType.FILE,
+            size=5,
+            mtime_ms=1_700_000_000_000,
+            hash="abc",
+        )
+        wire = res.to_wire()
+        assert wire["nodeType"] == "file"  # ClientFsStatRes.node_type has NO rename="type"
+        assert wire["size"] == 5
+        assert wire["mtimeMs"] == 1_700_000_000_000
+        assert wire["hash"] == "abc"
+
+    def test_client_fs_read_file_req_defaults(self):
+        wire = ClientFsReadFileReq(path="a.bin").to_wire()
+        assert wire["offset"] is None  # None → null (no skip)
+        assert wire["length"] is None
+        assert wire["maxBytes"] == 1_048_576  # camelCase wire
+        assert wire["encoding"] == "utf8"
+
+    def test_client_fs_read_file_res_base64_binary(self):
+        # grok client_fs_wire_stability_snapshot (binary read). content dropped when None.
+        res = ClientFsReadFileRes(
+            content=None,
+            content_base64="aGVsbG8=",
+            size=5,
+            hash="abc123",
+            content_type=FsContentType.BINARY,
+        )
+        wire = res.to_wire()
+        assert wire["type"] == "binary"
+        assert wire["contentBase64"] == "aGVsbG8="
+        assert wire["size"] == 5
+        assert wire["hash"] == "abc123"
+        assert "content" not in wire
+
+    def test_client_fs_read_file_res_text(self):
+        res = ClientFsReadFileRes(content="hi", size=2, hash="abc", content_type=FsContentType.TEXT)
+        wire = res.to_wire()
+        assert wire["type"] == "text"
+        assert wire["content"] == "hi"
+        assert "contentBase64" not in wire
 

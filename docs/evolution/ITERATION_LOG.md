@@ -6145,3 +6145,121 @@ cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
 ### Commit
 
 `feat(platform): R76 diff hunk wire layer (fuse grok xai-grok-workspace-types rpc/ hunks.rs 413 lines -> 454-line module: 10 workspace.hunk_*/get_all_hunks/get_session_summary methods[2 deliberately drop hunk_ prefix verbatim] + 3 enums[HunkActionKind lowercase no-Default request-only + HunkSourceWire tagged-enum #[serde(other)] flat-model fallback + FileContentStatusWire hand-written Deserialize StrEnum with __get_pydantic_core_schema__ after-validator unknown->UNKNOWN] + ~18 wire types[HunkWire/HunkLineInfoWire/FileContentViewWire/FileContentEntryWire/SessionStatsWire/TurnSummaryWire/SessionSummaryWire camelCase + BulkHunkActionResponse/FileSummary/FilteredHunksResponse snake_case], pure leaf no R74 dependency[only WorkspaceRpc+chrono+serde, vs R75 consumes ChangeType/GitFileChange], deliberately mirrors not imports R39 diff primitives[lean crate gix separation preserved], lands 5 serde patterns new to layer: #[serde(other)] forward-tolerant tagged enum via flat type:str model[lossless verbatim round-trip vs grok Unknown->unknown lossy] + hand-written Deserialize forward-tolerant string enum via StrEnum __get_pydantic_core_schema__ after-validator over str_schema[VERSION PITFALL: no_info_plain_validator_function has no json_schema kwarg in this pydantic release, after-validator+str_schema is version-stable dual: forward-tolerant decode + real JSON schema] + DateTime<Utc> RFC3339 Z suffix via PlainSerializer[+00:00 rewrite, microsecond rstrip0] + PathBuf->str natural mapping[layer-first PathBuf wire fields] + camelCase lexical-sort round trips asserted by key index, ~25 new TestHunks tests 253 passed 1 pre-existing flaky[test_reliability cooldown window, unrelated] 2336 total)`
+
+## R77 — fs.rs -> fs.py（文件 I/O wire 层，10 RPC + 5 enum + ~24 struct，5 个 serde 新模式，rpc/ 命名空间全部闭合）
+
+锚点:R77-1 961933e
+
+### 本轮目标
+
+正向迁移 grok `xai-grok-workspace-types::rpc::fs`（754 行 Rust）到 `agent/minimax_code/workspace_types/rpc/fs.py`，落地 10 个 `workspace.put_files` / `get_files` / `workspace.fs_*` / `workspace.client_fs_*` RPC + 5 枚举 + ~24 wire 类型，**闭合 rpc/ 命名空间全部 10 个文件**（envelope/session/agents_md/code_nav/deploy/search/hooks/workspace/skills/git/worktree/hunks/fs，R68-R77 十轮完成整个 `rpc/` 目录）。本轮核心创新不在结构数量，而在一个真正的 DRY 抽象——`_DropNoneWire` 泛型基类（层内首个泛型 None 省略基类，取代 R74/R75/R76 每类手写 pop 列表的重复模式）——以及三个 serde 不对称的精确复刻（`rename="type"` 作用在 String 而非 enum / Req-snake vs Res-camelCase 同族不对称 / `Response = ()` 单元类型）。
+
+### 融合结论
+
+fs.rs 是文件 I/O 的 **wire 表面层**，分三族方法：(1) service-level `put_files`/`get_files`（snake_case 两端，扁平 entries 数组）；(2) `fs_*` 扩展操作（**Req snake / Res camelCase 不对称**——请求无 `rename_all`，响应用 `_CAMEL`）；(3) `client_fs_*` 只读客户端操作（camelCase 两端）。本轮的抽象贡献是 `_DropNoneWire`：一个继承 `WireModel` 的基类，挂 `@model_serializer(mode="wrap")`，dump 后用 dict comprehension 弹出**所有** None 值键。8 个 Response/Data 子类继承它，冒烟测试验证基类 serializer 透传到每个子类。这取代了 R74 `_CamelOmitNone`（camelCase + 硬编码键列表）、R75/R76 逐类 `for key in (...)` pop 的重复——**真正的 DRY**：只要 struct 的每个 Option 字段都带 `skip_serializing_if`，就继承基类即可，零手写。关键的 serde 不对称：`ClientFsStatRes.node_type` **无** `rename="type"`（wire key `nodeType`），而 `ClientFsListNode.node_type` / `ClientFsReadFileRes.content_type` **有**（wire key `type`）——grok 源 fs.rs L466-481 确认，忠实复刻不"修正"成一致。`Response = ()`（Rust 单元类型）复刻为 `Response: ClassVar = type(None)`，是本层首个真正无负载的响应。
+
+### 交付
+
+**fs.rs -> fs.py serde 模式映射**
+
+| grok 项 | Rust serde | pydantic 映射 | 关键点 |
+|---|---|---|---|
+| `_DropNoneWire` (基类) | 多 struct 共有 `skip_serializing_if="Option::is_none"` 全字段 | `class _DropNoneWire(WireModel)` + `@model_serializer(mode="wrap")` dict-comp pop 全 None 键 | 层内首个泛型 None 省略基类;8 子类继承,取代 R74/R75/R76 逐类 pop |
+| `FsListNode.node_type` | `rename="type"` on **String** | `node_type: str = Field(alias="type")` | 覆盖 `_CAMEL` 的 `to_camel`->`nodeType`,wire key `type` |
+| `FsReadFileData.content_type` | 同上 | `content_type: str = Field(alias="type")` | String 非枚举的 rename="type" |
+| `ClientFsListNode.node_type` | `rename="type"` on enum | `node_type: FsNodeType = Field(alias="type")` | wire key `type` |
+| `ClientFsReadFileRes.content_type` | `rename="type"` on enum | `content_type: FsContentType = Field(alias="type")` | wire key `type` |
+| `ClientFsStatRes.node_type` | **无** rename,仅 `skip_serializing_if` | `node_type: FsNodeType \| None = None` | wire key **`nodeType`**(不对称!源 L466-481 确认) |
+| `FsWriteFileReq`/`FsDeleteFileReq` | `Response = ()` 单元 | `Response: ClassVar = type(None)` | 层内首个无负载响应 |
+| `FsListReq` 等 service/fs request | `#[serde(default)]` **无** skip | 普通 `WireModel`,None 发 null | Request Option 必发 null,不能用 `_DropNoneWire` |
+| fs_* Response / Data | `skip_serializing_if="Option::is_none"` | 继承 `_DropNoneWire` | None 省略 |
+| fs_* Request | 无 `rename_all` | 普通 WireModel(snake) | Req-snake / Res-camel 不对称 |
+| client_fs_* 两端 | `rename_all="camelCase"` | `model_config = _CAMEL` 两端 | camelCase 两端对称 |
+| `mtime_ms` (`i64`) | epoch 毫秒 | `int` | 区别 `modified_at` RFC3339 串 |
+| `u64`/`usize`/`u32` | — | `int` | 全映射 int |
+| 6 default fn | `default="fn"` | `_default_true/_default_depth/_default_limit/_default_max_bytes/_default_client_depth/_default_client_limit` | 镜像 grok 默认函数 |
+
+**文件**:新增 `agent/minimax_code/workspace_types/rpc/fs.py`（631 行,5 枚举 + 24 类型 + `_DropNoneWire` 基类 + 6 默认函数）;改 `rpc/__init__.py`（barrel 导入 32 符号 + `__all__` fs 段 30 符号 + docstring R77 段）;改 `tests/test_rpc.py`（追加 TestFs 类 ~25 测试 + barrel import 块 30 符号）。
+
+### 映射决策树 + 坑
+
+**决策树 —— fs.rs serde 模式 -> pydantic 映射**
+
+```
+fs.rs 项
+├─ struct 全字段 skip_serializing_if="Option::is_none"(Response/Data)
+│  └─ 继承 _DropNoneWire 基类[wrap serializer dict-comp pop 全 None]
+│     [DRY:取代 R74/R75/R76 逐类 pop 列表]
+├─ rename="type" on String(FsListNode.node_type/FsReadFileData.content_type)
+│  └─ Field(alias="type") 覆盖 _CAMEL to_camel
+├─ rename="type" on enum(ClientFsListNode/ClientFsReadFileRes)
+│  └─ Field(alias="type")
+├─ 无 rename 的 node_type(ClientFsStatRes)
+│  └─ 普通 _CAMEL -> wire key nodeType[不对称!]
+├─ Request Option 仅 #[serde(default)] 无 skip
+│  └─ 普通 WireModel,None 发 null(不能用 _DropNoneWire)
+├─ Response = () 单元
+│  └─ Response: ClassVar = type(None)
+├─ fs_* Req(无 rename_all) vs Res(camelCase)
+│  └─ 不对称:Req 普通 WireModel / Res _CAMEL
+├─ client_fs_* 两端 rename_all="camelCase"
+│  └─ _CAMEL 两端
+├─ i64/u64/usize/u32
+│  └─ int[mtime_ms epoch 毫秒 vs modified_at RFC3339 串]
+└─ default 函数
+   └─ _default_* 模块函数,Field(default_factory=...)
+```
+
+**坑 1 — `_DropNoneWire` 泛型 None 省略基类（层内首个真 DRY 抽象）**
+R74 的 `_CamelOmitNone` 是 camelCase + 硬编码键 pop；R75/R76 每个混合 skip struct 手写 `for key in ("byteLen","content")` pop 列表——重复且易漏键。本轮 fs.rs 有 8 个 Response/Data struct，**每个字段都带** `skip_serializing_if="Option::is_none"`（纯 Option struct），这正好是泛型抽象的甜区：`class _DropNoneWire(WireModel)` 挂 `@model_serializer(mode="wrap") def _drop_none(self, handler): raw = handler(self); return {k: v for k, v in raw.items() if v is not None}`。8 子类继承，零手写 pop。冒烟测试 `test_drop_none_wire_inherited_by_subclasses` 遍历 8 子类验证 None 字段全部省略。**适用边界**:仅当 struct 的**每个** Option 字段都 skip 时才正确——若混入必发字段或 null 保留字段（如 Request Option），则不能用基类,必须普通 WireModel（见坑 4）。
+
+**坑 2 — `rename="type"` 作用在 String 而非 enum（覆盖 `_CAMEL` 的 `to_camel`）**
+`FsListNode.node_type` 在 grok 是 `node_type: String` + `#[serde(rename="type")]`（非枚举！区别 R74 `ChangeType` 枚举、R75 `FileConflict.change_type` 枚举）。在 `_CAMEL`（`alias_generator=to_camel`）下，`node_type` 默认别名是 `nodeType`。要用 `Field(alias="type")` **显式覆盖** `to_camel` 生成器——pydantic 的显式 `Field(alias=...)` 优先于 `alias_generator`。`FsReadFileData.content_type` 同理。这是层内首次 `rename="type"` 作用在原始 `String` 上。
+
+**坑 3 — `ClientFsStatRes.node_type` **无** `rename="type"`（serde 不对称,测试断言陷阱）**
+最隐蔽的坑。`ClientFsListNode.node_type`（源 fs.rs L423）和 `ClientFsReadFileRes.content_type`（L535）都有 `#[serde(rename="type")]` -> wire key `type`。但 `ClientFsStatRes.node_type`（源 L466-481）**只有** `skip_serializing_if="Option::is_none"`，**无** rename -> 在 `rename_all="camelCase"` 下 wire key 是 **`nodeType`**。初版 TestFs 三个测试断言用错 key:`test_client_fs_stat_res_full` 误断言 `wire["type"]=="file"`,实际是 `wire["nodeType"]=="file"`;`test_client_fs_list_req_defaults`/`test_client_fs_read_file_req_defaults` 用 snake_case key 访问 camelCase wire(`include_hidden`->`includeHidden`/`max_bytes`->`maxBytes` 等)。**实现 fs.py 正确**（忠实复刻 grok 不对称），测试断言错。修正:camelCase 键 + `ClientFsStatRes` 用 `nodeType` 并注释引用源行号。单词字段（path/depth/limit/offset/size/hash/content/exists/encoding）camelCase 与 snake 相同,无误。
+
+**坑 4 — Req-snake / Res-camelCase 不对称 + Request Option 必发 null**
+fs_* 请求（`FsListReq.cwd`/`FsReadFileReq.offset` 等）仅 `#[serde(default)]` **无** `skip_serializing_if` -> None 发 `null`。这意味着**不能用** `_DropNoneWire`（否则 None 被省略,破坏 wire 契约）。这些 Req 用普通 `WireModel` 无 `model_config`,保 snake_case + None 发 null。响应则用 `_CAMEL` + 继承 `_DropNoneWire`。同族 Req/Res 的不对称（snake/camel + null/skip）是本轮最易出错的迁移点。service-level `put_files`/`get_files` 两端 snake;client_fs_* 两端 camel。
+
+**坑 5 — `Response = ()` 单元 + Response 先行定义顺序 + u64/i64→int**
+`FsWriteFileReq`/`FsDeleteFileReq` 的 `Response = ()` 复刻为 `Response: ClassVar = type(None)`（层内首个真正无负载响应;R76 empty Req 的 Response 是 list/typed）。Python ClassVar 在类体求值时立即解析,故 Response 类型必须在引用它的 Req 类型**之前**定义（`FsWriteFileReq.Response = type(None)` 无前置依赖,安全;但 `FsListReq.Response = FsListData` 要求 `FsListData` 先定义）。`mtime_ms` 是 `i64` epoch 毫秒（`int`）,`modified_at` 是 RFC3339 串（`str`）——不可混淆。
+
+### 验证
+
+三重验证(全绿,连 R17 flaky 本次都通过):
+
+```bash
+# 1. ruff lint(R77 三文件,精确 --fix 仅 R77 两文件避免附带损坏)
+cd "/d/工作/城建院/mm code/agent" && uv run ruff check --fix minimax_code/workspace_types/rpc/__init__.py tests/test_rpc.py
+# -> Found 2 errors (2 fixed, 0 remaining)[I001 import 排序,__init__ 与 test_rpc 追加的 fs 块归位]
+cd "/d/工作/城建院/mm code/agent" && uv run ruff check minimax_code/workspace_types/rpc/fs.py minimax_code/workspace_types/rpc/__init__.py tests/test_rpc.py
+# -> All checks passed!
+
+# 2. R77 专项测试
+cd "/d/工作/城建院/mm code/agent" && uv run pytest tests/test_rpc.py -q
+# -> 284 passed(R76 的 253 + R77 新增 TestFs ~31,含修 3 处 camelCase/type 断言)
+
+# 3. 全量回归
+cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
+# -> 2368 passed, 10 skipped, 1 warning in 114.01s
+#    零失败(连 R17 test_reliability cooldown flaky 本次都稳过)
+```
+
+**wire 保真交叉验证**:对照 grok `fs.rs` 源码逐行确认——TestFs ~31 测试覆盖:10 method 常量(service/fs_*/client_fs_* 三族)、`_DropNoneWire` 8 子类继承验证（None 全省略）、Response ClassVar 形状（`type(None)` 单元 + list[PutFileResult]/list[GetFileEntry]/FsListData/FsExistsData/FsReadFileData + ClientFsListRes/StatRes/ReadFileRes）、`rename="type"` on String（FsListNode.node_type/FsReadFileData.content_type wire key `type`）+ on enum（ClientFsListNode/ClientFsReadFileRes wire key `type`）、**ClientFsStatRes 无 rename**（wire key `nodeType`,不对称源 L466-481）、Req-snake/Res-camel 不对称（FsListReq snake None-null vs FsListData camelCase None-skip）、client_fs_* 两端 camelCase（includeHidden/followSymlinks/respectGitIgnore/includeGlobs/excludeGlobs/maxBytes camelCase 键 + depth/limit/offset 单词）、6 默认函数（default_true/default_depth=1/default_limit=1000/default_max_bytes=1048576/default_client_depth=1/default_client_limit=1000）、mtime_ms int epoch 毫秒、PutFileEntry/GetFileEntry 扁平 entries、FsReadEncoding 枚举（utf8 默认）、FsExistsData（exists bool + node_type/size/mtime_ms None 省略）。3 个测试断言修正（camelCase 键 + ClientFsStatRes nodeType）全部锁定。**rpc/ 命名空间 10 文件全部闭合**。
+
+### YAGNI 边界
+
+本轮明确不做:
+
+- ❌ **rpc/ 命名空间已全部闭合（10/10 文件）** —— R68-R77 十轮完成整个 `rpc/` 目录迁移,本轮是最后一次迭代。
+- ❌ **实际文件 I/O handler 实现** —— 本轮仅 wire 类型契约,真正的 put_files/get_files/fs_*/client_fs_* 运行时能力在 shell 层。
+- ❌ **接入 IPC handler 或远程 workspace transport** —— 类型契约层先行,wire DTO 消费端在后续。
+- ❌ **`_DropNoneWire` 推广回填 R74/R75/R76** —— 轮次独立,不碰既有迭代;新基类供后续新 struct 使用。
+- ❌ **修正 `ClientFsStatRes.node_type` 命名一致性** —— 逐字保留无 rename（wire `nodeType`）,这是 grok 客户端/服务端既有契约,源 fs.rs L466-481 确认。
+- ❌ **前端 `web/src/types/` 镜像** —— 纯后端 RPC 类型契约,无 wire 事件广播到前端。
+- ❌ **`xai-grok-workspace-types` crate 其余模块（非 rpc/）** —— rpc/ 是本轮融合范围的闭合边界。
+
+### Commit
+
+`feat(platform): R77 file I/O wire layer closes rpc/ namespace (fuse grok xai-grok-workspace-types rpc/ fs.rs 754 lines -> 631-line module: 10 methods[workspace.put_files/get_files service-level snake + 5 workspace.fs_* extension[Req-snake/Res-camelCase asymmetry] + 3 workspace.client_fs_* read-only client[camelCase both sides]] + 5 enums[FsNodeType/FsContentType/FsReadEncoding + ...] + ~24 wire types, lands 5 serde patterns new to layer: generic _DropNoneWire base class[@model_serializer wrap dict-comp pops ALL None keys, first generic None-elision base supplants R74 _CamelOmitNone + R75/R76 per-class pop lists, 8 Response/Data subclasses inherit verified by smoke] + rename="type" on String not enum[Field(alias=type) overrides _CAMEL to_camel nodeType, FsListNode.node_type + FsReadFileData.content_type] + Req-snake/Res-camelCase asymmetry[fs_* request no rename_all None-emits-null vs fs_* response _CAMEL + _DropNoneWire, client_fs_* camelCase both sides] + Response=() unit type via type(None)[FsWriteFileReq/FsDeleteFileReq, layer-first no-payload response] + u64/i64/usize/u32 all -> int[mtime_ms epoch millis vs modified_at RFC3339 string], KEY PITFALL: ClientFsStatRes.node_type has NO rename="type"[wire key nodeType] vs ClientFsListNode.node_type/ClientFsReadFileRes.content_type DO[wire key type], grok source fs.rs L466-481 confirms asymmetry faithfully mirrored, ~31 new TestFs tests 284 passed test_rpc 2368 total zero-regression R17 flaky passing this run, rpc/ namespace 10/10 files closed R68-R77)`

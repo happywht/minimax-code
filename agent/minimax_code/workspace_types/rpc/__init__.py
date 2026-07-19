@@ -62,8 +62,19 @@ internally tagged enum with a ``#[serde(other)]`` fallback modelled as a flat
 custom ``__get_pydantic_core_schema__`` routing unknowns to an ``UNKNOWN``
 member, a ``DateTime<Utc>`` RFC 3339 ``Z`` suffix restored via a
 ``PlainSerializer``, ``PathBuf`` → ``str`` natural mapping, and camelCase nested
-struct lexical-sort round trips asserted by key index). The remaining 1 RPC
-file (fs) lands in R77.
+struct lexical-sort round trips asserted by key index). R77 adds :mod:`fs` — the
+file I/O surface (10 methods: service-level ``workspace.put_files`` /
+``workspace.get_files``, five ``workspace.fs_*`` extension ops, three
+``workspace.client_fs_*`` read-only client ops), closing the ``rpc/`` namespace
+(all 10 files now migrated). It lands five more serde patterns new to the layer
+(a generic ``skip_serializing_if = "Option::is_none"`` base class
+:class:`~minimax_code.workspace_types.rpc.fs._DropNoneWire` whose wrap serializer
+pops every ``None`` wire key — the first generic None-elision base, supplanting
+R74/R75/R76's per-class pop lists; ``rename = "type"`` on a ``String`` rather
+than an enum; the ``Response = ()`` unit type reproduced as ``type(None)``;
+Req-snake / Res-camelCase asymmetry within the ``fs_*`` family; and
+``u64``/``i64``/``usize``/``u32`` all mapping to ``int``, with ``mtime_ms``
+epoch millis distinct from ``modified_at`` RFC 3339).
 """
 
 from __future__ import annotations
@@ -84,6 +95,38 @@ from minimax_code.workspace_types.rpc.code_nav import (
 )
 from minimax_code.workspace_types.rpc.deploy import DeployError
 from minimax_code.workspace_types.rpc.envelope import TURN_ACTIVE, RpcEnvelope, RpcError
+from minimax_code.workspace_types.rpc.fs import (
+    CLIENT_FS_LIST_METHOD,
+    CLIENT_FS_READ_FILE_METHOD,
+    CLIENT_FS_STAT_METHOD,
+    ClientFsListNode,
+    ClientFsListReq,
+    ClientFsListRes,
+    ClientFsReadFileReq,
+    ClientFsReadFileRes,
+    ClientFsStatReq,
+    ClientFsStatRes,
+    FsContentType,
+    FsDeleteFileReq,
+    FsExistsData,
+    FsExistsReq,
+    FsListData,
+    FsListNode,
+    FsListReq,
+    FsNodeType,
+    FsReadEncoding,
+    FsReadFileData,
+    FsReadFileReq,
+    FsWriteFileReq,
+    GetFileEntry,
+    GetFileResult,
+    GetFilesReq,
+    GetFilesRes,
+    PutFileEntry,
+    PutFileResult,
+    PutFilesReq,
+    PutFilesRes,
+)
 from minimax_code.workspace_types.rpc.git import (
     UNTRACKED_CONTENT_THRESHOLD,
     BinaryFileInfoData,
@@ -422,6 +465,37 @@ __all__ = [
     "HunkGetAllHunksReq",
     "HunkGetAllFileContentsReq",
     "HunkGetSessionSummaryReq",
+    # fs (R77, generic skip_if_none base + rename="type" on String + Response=() + Req-snake/Res-camel + int for u64/i64)
+    "FsNodeType",
+    "FsReadEncoding",
+    "FsContentType",
+    "CLIENT_FS_LIST_METHOD",
+    "CLIENT_FS_STAT_METHOD",
+    "CLIENT_FS_READ_FILE_METHOD",
+    "PutFileEntry",
+    "PutFilesReq",
+    "PutFileResult",
+    "PutFilesRes",
+    "GetFileEntry",
+    "GetFilesReq",
+    "GetFileResult",
+    "GetFilesRes",
+    "FsListNode",
+    "FsListData",
+    "FsExistsData",
+    "FsReadFileData",
+    "FsListReq",
+    "FsExistsReq",
+    "FsReadFileReq",
+    "FsWriteFileReq",
+    "FsDeleteFileReq",
+    "ClientFsListReq",
+    "ClientFsListNode",
+    "ClientFsListRes",
+    "ClientFsStatReq",
+    "ClientFsStatRes",
+    "ClientFsReadFileReq",
+    "ClientFsReadFileRes",
 ]
 
 #: Tool ID for the ``WorkspaceRpcHandler`` (workspace method dispatch).
