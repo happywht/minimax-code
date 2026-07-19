@@ -1,4 +1,4 @@
-"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 + R90 — session-event landed).
+"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 + R90 + R91 + R92 — frames opening slice landed).
 
 Fusion of grok-build's ``xai-tool-protocol`` crate — the wire DTOs for
 the computer-hub tool-server protocol: identifier newtypes, registration
@@ -94,10 +94,27 @@ to mix unit + struct variants):
   (minimal leaf :class:`TurnHookOutcome` + :data:`TURN_HOOK_KIND` — the
   strict no-catch-all counterpart to the tolerant
   :class:`ToolCallOutcome` / :class:`SessionPhase`, landed as a dependency
-  of :class:`TurnEnded`; the rest of the 700-line module is deferred).
+  of :class:`TurnEnded`; the rest of the 700-line module was deferred).
+* **R91** — :mod:`turn_hook`
+  (remainder after R90's minimal leaf: :class:`TurnHookRequest`,
+  :class:`BeforeTurnPayload`, :class:`AfterTurnPayload`, :class:`InjectionRole`
+  — the harness→tool turn-hook payload trio plus the injection-role enum R90's
+  :class:`TurnHookOutcome` leaf depended on; closes the 700-line module).
+* **R92 (this round)** — :mod:`frames`
+  (opening slice of the crate's largest module — 1549 lines / 86 symbols / 14
+  domains: the tool-call params/result/progress family —
+  :class:`ToolCallParams`, :class:`ToolCallResult`,
+  :class:`ToolCallProgressFrame`, :class:`TracesDonateParams`,
+  :class:`LogsDonateParams`, :class:`MetricsDonateParams` — plus the first
+  numeric ``usize`` constant family :data:`MAX_SPANS_PER_DONATION` etc.; a
+  consolidation round exercising four serde sub-shapes in flat params/result
+  context with no crate-first shape; all 10 symbols travel the barrel).
 * *deferred* — :mod:`frames`
-  (tool-server frame protocol, 1549 lines), :mod:`turn_hook`
-  (remainder after R90's minimal leaf).
+  (remainder: 12 of 14 domains — tool/system notifications, registration,
+  per-tool session binding, server discovery+binding, list & search, session
+  lifecycle, simplified lifecycle, subscriptions, hooks, service→harness
+  pushes, tool-server status lifecycle, heartbeat; plus the crate's first
+  non-derive custom ``impl Serialize`` on PingFrame/PongFrame).
 
 ``from_wire`` / ``to_wire`` live on each module (instance method or module
 function); the barrel does **not** re-export them, mirroring the Rust
@@ -164,6 +181,18 @@ from minimax_code.tool_protocol.error_wire import (
     ToolNotFound,
     TransportClosed,
     UnsupportedProtocolVersion,
+)
+from minimax_code.tool_protocol.frames import (
+    MAX_DONATION_BYTES,
+    MAX_LOG_RECORDS_PER_DONATION,
+    MAX_METRICS_PER_DONATION,
+    MAX_SPANS_PER_DONATION,
+    LogsDonateParams,
+    MetricsDonateParams,
+    ToolCallParams,
+    ToolCallProgressFrame,
+    ToolCallResult,
+    TracesDonateParams,
 )
 from minimax_code.tool_protocol.handshake import (
     PROTOCOL_VERSION,
@@ -340,4 +369,18 @@ __all__ = [
     "SessionEvent",
     "SessionPhase",
     "ToolCallOutcome",
+    # frames (R92) — tool call params/result/progress + telemetry donation.
+    # All 10 symbols travel the barrel (Rust lib.rs `pub use frames::{...}` is
+    # the crate's largest re-export); from_wire converters stay submodule-
+    # qualified, mirroring the rest of the crate.
+    "MAX_DONATION_BYTES",
+    "MAX_LOG_RECORDS_PER_DONATION",
+    "MAX_METRICS_PER_DONATION",
+    "MAX_SPANS_PER_DONATION",
+    "ToolCallParams",
+    "ToolCallResult",
+    "ToolCallProgressFrame",
+    "TracesDonateParams",
+    "LogsDonateParams",
+    "MetricsDonateParams",
 ]

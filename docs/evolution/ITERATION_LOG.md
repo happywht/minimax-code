@@ -7604,3 +7604,68 @@ uv run pytest -q
 ### Commit
 
 `feat(platform): R91 migrate turn_hook.rs core (serde default=fn + tag=phase + deny_unknown_fields)`
+
+
+## R92 — frames.rs 开放切片（tool call params/result/progress + telemetry donation）
+
+锚点:R92-1 579dca9
+
+### 本轮目标
+
+迁移 grok-build `xai-tool-protocol::frames` 的**开放切片**。`frames.rs` 是 crate 中最大的模块（1549 行，86 个顶层 pub 符号，14 个功能域），不可能一轮吞下。本轮锁定**域 1（工具调用三件套：params / result / progress）+ 域 2（遥测捐赠：traces / logs / metrics）**，即源文件第 21-125 行 —— 自包含、无前向依赖（仅依赖已落地的 `ToolOutputWire` R83 / `ToolCallId`/`ToolId` R82）。其余 12 域 + PingFrame/PongFrame 的 crate 首个非 derive 自定义 `impl Serialize` 留给 R93+。
+
+R92 的特殊定位是**整合轮次**：不引入任何 crate-first 的 serde 新形态，而是在全新的「扁平 params/result 结构体」语境里把此前分散引入的四个 serde 子形态各练一遍 —— 巩固而非扩张。
+
+### 融合结论
+
+Rust 的 `frames.rs` 在 Python 侧落地为 `agent/minimax_code/tool_protocol/frames.py`（~370 行）。融合保持 crate 一贯的 wire-类型纯净层定位：无 I/O、无 env、不依赖 agent 其余部分。14 域的 params/result 结构体在 Rust 里全部骑在 `JsonRpcRequest`/`JsonRpcResponse`/`JsonRpcNotification` 信封内部，因此 `session_id` 一律由信封字段承载，params 结构体本身**不带 session_id**（`MetricsDonateParams` 尤其如此 —— 指标是进程聚合的，连信封 session_id 都不需要）。
+
+四个 serde 子形态在扁平结构体语境的落地确认：
+
+1. **`#[serde(default, skip_serializing_if = "Option::is_none")]`** —— `ToolCallParams` 四个 Option 臂（`deadline_ms`/`behavior_version`/`cwd`/`trace_context`）+ `ToolCallProgressFrame.dropped_count` + `ToolCallResult.chat_completion_output`。Python 侧 `to_wire` 用 `if x is not None: out[k] = x` 守卫，`from_wire` 用私有 `_opt_int`/`_opt_str` 提升器。
+2. **`#[serde(default, skip_serializing_if = "Vec::is_empty")]`** —— `ToolCallResult.follow_ups`/`reminders`。R86 在 `capabilities` 上引入 Vec/HashMap 空跳过，R92 是该形态在 params/result 结构体里的**首次**落地。Python `to_wire` 用 `if self.follow_ups:` 守卫，`from_wire` 用 `list(data.get("follow_ups", []))` 默认空。
+3. **不透明 `serde_json::Value` 字段** —— `ToolCallParams.arguments`、`ToolCallProgressFrame.body`、`ToolCallResult.follow_ups`/`reminders`（`Vec<Value>`）、`ToolCallResult.chat_completion_output`（`Option<Value>`）。crate 刻意以不透明 `Value` 携带这些字段（非类型化 frame），使其不必依赖 `xai-tool-runtime`；采样侧解码器再重建类型化 frame。Python 映射为 `object`/`list[object]`/`object | None`，**逐字往返 —— 不转换、不校验**（测试 `test_arguments_opaque_verbatim_round_trip` 断言原始对象身份保持 `is weird`）。
+4. **params 结构体嵌入 wire 枚举** —— `ToolCallResult.output` 是 `ToolOutputWire`（R83 的 adjacent-tagged 枚举）。`to_wire` 调 `self.output.to_wire()`，`from_wire` 调模块级 `tool_output_wire_from_wire`（为避免与 `frames` 自己的 from_wire 命名冲突，导入时别名 `from_wire as tool_output_wire_from_wire`）。镜像 R90 的 enum-in-enum（`TurnEnded.outcome`）。
+
+### 交付
+
+| 文件 | 变更 | 内容 |
+|------|------|------|
+| `agent/minimax_code/tool_protocol/frames.py` | 新增 ~370 行 | 4 常量 + 6 结构体 + 6 from_wire + 2 私有提升器（`_opt_int`/`_opt_str`） |
+| `agent/minimax_code/tool_protocol/__init__.py` | 编辑 | barrel 加 `frames` 导入块（10 符号）+ `__all__` 加 10 条目 + 文档字符串加 R91/R92 条目并更新 deferred |
+| `agent/tests/test_tool_protocol.py` | 编辑 | 加 `import dataclasses` + barrel 导入加 10 符号 + frames from_wire 子模块导入块 + 7 个 R92 测试类（~30 测试方法） |
+
+**4 个常量（首个数值 `usize` 常量族）**：`MAX_SPANS_PER_DONATION=512`、`MAX_DONATION_BYTES=1024*1024`（保留表达式，非折叠为 1048576，文档清晰性）、`MAX_LOG_RECORDS_PER_DONATION=512`、`MAX_METRICS_PER_DONATION=512`。此前模块常量都是字符串值（`PROTOCOL_VERSION`、`WORKSPACE_UNAVAILABLE_*`、`UNKNOWN_METHOD_MSG_PREFIX`）或 `ERROR_CODES` 映射表；R92 是首个 `int` 常量族。
+
+**6 个结构体**：`ToolCallParams`（3 必填 + 4 Option 跳过臂 + 不透明 arguments）、`ToolCallResult`（2 必填 + Vec 空跳过×2 + Option 跳过×1 + 嵌套 wire 枚举）、`ToolCallProgressFrame`（3 必填 + Option 跳过 + 不透明 body）、`TracesDonateParams`/`LogsDonateParams`/`MetricsDonateParams`（三者同形：单字段 `otlp_request: str`，`to_wire` → `{"otlp_request": ...}`）。
+
+### 映射决策树+坑
+
+1. **桶决策（frames 进 barrel）**：Rust `lib.rs` 的 `pub use frames::{...}` 是 crate 中**最大的重导出**（约 60 个符号）。因此全部 10 个 R92 符号都必须进入 Python barrel `__init__.py` —— 这与 `turn_hook`（`pub mod` 无 `pub use`，符号保持模块限定）相反。测试 `TestFramesBarrelR92` 三方法断言所有 10 符号同时存在于 `pkg` 属性、`pkg.__all__`、`frames` 子模块。
+2. **from_wire 不进 barrel**：即便 `frames` 的类型进 barrel，6 个 from_wire 转换器仍保持子模块限定（`from minimax_code.tool_protocol.frames import tool_call_params_from_wire`）—— 这是全 crate 的一致约定，镜像 Rust `lib.rs` 的 `pub use` 集合从不重导出 wire 转换器。
+3. **from_wire 命名冲突**：`output_wire.from_wire` 名字泛化，在 `frames.py` 内导入时别名 `from_wire as tool_output_wire_from_wire`，避免与本模块自己的 6 个 `*_from_wire` 概念混淆。
+4. **不透明 Value 不做 `str()` 强转**：`from_wire` 对 `arguments`/`body`/`chat_completion_output`/`follow_ups`/`reminders` 全部**逐字透传**（`arguments=data["arguments"]`），不做任何 `str()`/`dict()` 转换 —— 这些是已经反序列化好的 Python 对象，强转会破坏结构。只有确定类型的字段（`tool_call_id` 等 id newtype、`otlp_request` 字符串）才 `str()`。
+5. **`type: ignore[arg-type]` 传输妥协**：`tool_call_result_from_wire` 里 `tool_output_wire_from_wire(data["output"])` 的入参类型声明为 `dict[str, object]`，但 `data["output"]` 是 `object`（因为 `data: dict[str, object]`），mypy 会报 arg-type 不匹配。这里运行时一定是 dict（wire 协议保证），故加 `# type: ignore[arg-type]` 局部静默，与 R83/R90 处理嵌套 wire 枚举的同一手法一致。
+6. **E303 防御（连续空行）**：测试类追加用 Edit 工具（锚点 = 文件最后一行 + new_string 精确控制 2 空行分隔），而非 `cat >>` 带前导换行的临时文件 —— 避免文件尾出现 3+ 连续空行触发 ruff E303。与前几轮同一模式。
+7. **F821 遗漏修复**：测试里用 `dataclasses.fields(cls)` 检查捐赠结构体字段集，首次 ruff 报 `dataclasses` 未导入。补 `import dataclasses`（按 isort 字母序置于 `import json` 之前）后 ruff All checks passed。
+8. **`MAX_DONATION_BYTES` 保留表达式**：`1024 * 1024` 不折叠为 `1048576`，文档上清晰表达「1 MiB」语义（hub 整批拒绝超大捐赠批，捐赠方在编码前分块）。测试 `test_max_donation_bytes_expression_const` 同时断言 `== 1024 * 1024` 和 `== 1048576`。
+
+### 验证
+
+- `uv run ruff check minimax_code/tool_protocol/frames.py` —— All checks passed（首次）。
+- `uv run ruff check --fix tests/test_tool_protocol.py` —— 1 fixed（isort 自动排序新导入）+ 1 remaining（F821 dataclasses，手动修复后 All checks passed）。
+- `uv run ruff check minimax_code/tool_protocol/__init__.py minimax_code/tool_protocol/frames.py` —— All checks passed。
+- `uv run pytest tests/test_tool_protocol.py -q` —— **589 passed**（R91 基准 559，R92 净增 30，7 个测试类全覆盖：常量族 / ToolCallParams / ToolCallResult / ToolCallProgressFrame / 捐赠三件套 / serde 四子形态整合 / 桶导出）。
+- `uv run pytest -q` 完整回归 —— **3047 passed, 10 skipped**（R91 基准 3017 passed，净增 30，零回归；模块增量与完整增量一致）。唯一 warning 是预存在的 fastapi/testclient httpx 弃用警告，非 R92 引入。
+
+### YAGNI 边界
+
+- **只做域 1 + 域 2**：`frames.rs` 14 域本轮只落 2 域。其余 12 域（工具通知 / 系统通知 / 注册 / 每工具 session 绑定 / 服务器发现+绑定 / 列表与搜索 / 会话生命周期 / 简化生命周期 / 订阅 / 钩子 / 服务→harness 推送 / 工具服务器状态生命周期 / 心跳）全部 defer。
+- **PingFrame/PongFrame 自定义 Serialize 不本轮做**：crate 首个非 derive 序列化（手写 `impl Serialize` 注入 `"method"` 字段）是独特形态，留给 R93 单独专注，不与开放切片混在一起。
+- **捐赠结构体不做 OTLP 解码**：`otlp_request` 是 base64 protobuf 字符串，wire 层只透传不解码（解码在采样侧 / OTLP collector）。`MAX_*` 常量在本轮只是声明 + 文档，**未接线到实际的捐赠拒绝逻辑**（那是 hub 运行时的事，wire 类型层 YAGNI）。
+- **不接线消费端**：本轮是纯 wire 类型层，不接 `hello_ack.capabilities` / `registration` / `tool.call` handler 等消费端。消费端接线等到对应运行时迭代。
+- **不引入新 serde 形态**：R92 是整合轮，刻意不引入 crate-first 新形态，专注把已有四子形态在扁平结构体语境练熟。
+
+### Commit
+
+`feat(platform): R92 migrate frames.rs opening slice (tool call params/result + telemetry donation, 4 consts + 6 structs)`

@@ -32,6 +32,7 @@ and the two ``error_codes`` helpers R83 unblocks:
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import pytest
@@ -39,6 +40,10 @@ import pytest
 from minimax_code.tool_protocol import (
     ERROR_CODES,
     KNOWN_NOTIFICATION_KINDS,
+    MAX_DONATION_BYTES,
+    MAX_LOG_RECORDS_PER_DONATION,
+    MAX_METRICS_PER_DONATION,
+    MAX_SPANS_PER_DONATION,
     PROTOCOL_VERSION,
     UNKNOWN_METHOD_MSG_PREFIX,
     WORKSPACE_UNAVAILABLE_JSONRPC_CODE,
@@ -70,8 +75,10 @@ from minimax_code.tool_protocol import (
     JsonRpcVersion,
     JsonRpcVersionError,
     KnownVariantCollision,
+    LogsDonateParams,
     Mcp,
     Method,
+    MetricsDonateParams,
     NotificationSchemas,
     PayloadTooLarge,
     PermissionDenied,
@@ -93,6 +100,9 @@ from minimax_code.tool_protocol import (
     TextBlock,
     Timeout,
     ToolCallId,
+    ToolCallParams,
+    ToolCallProgressFrame,
+    ToolCallResult,
     ToolCapabilities,
     ToolDefinitionMode,
     ToolDescriptionWithSchema,
@@ -101,6 +111,7 @@ from minimax_code.tool_protocol import (
     ToolRegistration,
     ToolScope,
     ToolServerRegistration,
+    TracesDonateParams,
     TransportClosed,
     TransportKind,
     UnsupportedProtocolVersion,
@@ -119,6 +130,20 @@ from minimax_code.tool_protocol import (
 )
 from minimax_code.tool_protocol.envelope import jsonrpc_id_from_wire
 from minimax_code.tool_protocol.error_wire import from_wire as error_from_wire
+
+# R92 — frames opening slice (tool call params/result/progress + telemetry
+# donation). The 6 structs + 4 consts travel the barrel (Rust lib.rs
+# ``pub use frames::{...}`` is the crate's largest re-export); the from_wire
+# converters stay submodule-qualified (the barrel never re-exports wire
+# converters, mirroring the Rust ``pub use`` set).
+from minimax_code.tool_protocol.frames import (
+    logs_donate_params_from_wire,
+    metrics_donate_params_from_wire,
+    tool_call_params_from_wire,
+    tool_call_progress_frame_from_wire,
+    tool_call_result_from_wire,
+    traces_donate_params_from_wire,
+)
 
 # R89 — hook variants are imported from the submodule (not the barrel): the
 # barrel only re-exports the ``HookEvent`` union, both to mirror Rust lib.rs
@@ -3715,3 +3740,309 @@ class TestPackageSurfaceR91:
             "TurnHookRequestAfter",
         ):
             assert name in mod.__all__, f"{name} not in turn_hook.__all__"
+
+
+# ===== R92 — frames.rs opening slice (tool call + telemetry donation) =====
+
+
+class TestFramesConstantsR92:
+    """First numeric ``usize`` constant family — 4 donation caps."""
+
+    def test_max_spans_per_donation(self):
+        assert MAX_SPANS_PER_DONATION == 512
+
+    def test_max_donation_bytes_expression_const(self):
+        # Kept as the 1024 * 1024 expression; equals 1 MiB exactly.
+        assert MAX_DONATION_BYTES == 1024 * 1024
+        assert MAX_DONATION_BYTES == 1048576
+
+    def test_log_and_metric_record_caps(self):
+        assert MAX_LOG_RECORDS_PER_DONATION == 512
+        assert MAX_METRICS_PER_DONATION == 512
+
+    def test_donation_consts_are_int(self):
+        # First numeric consts — all ``int`` (unlike PROTOCOL_VERSION which is str).
+        for c in (
+            MAX_SPANS_PER_DONATION,
+            MAX_DONATION_BYTES,
+            MAX_LOG_RECORDS_PER_DONATION,
+            MAX_METRICS_PER_DONATION,
+        ):
+            assert isinstance(c, int)
+
+
+class TestToolCallParamsR92:
+    """``ToolCallParams`` — 4 ``Option`` skip arms + opaque ``arguments``."""
+
+    def test_minimal_to_wire_omits_all_option_fields(self):
+        p = ToolCallParams(tool_call_id="tc_1", tool_id="t_1", arguments={"x": 1})
+        wire = p.to_wire()
+        assert wire == {"tool_call_id": "tc_1", "tool_id": "t_1", "arguments": {"x": 1}}
+        for absent in ("deadline_ms", "behavior_version", "cwd", "trace_context"):
+            assert absent not in wire
+
+    def test_full_to_wire_includes_all_option_fields(self):
+        p = ToolCallParams(
+            tool_call_id="tc_1",
+            tool_id="t_1",
+            arguments=None,
+            deadline_ms=5000,
+            behavior_version="v1",
+            cwd="/tmp",
+            trace_context="00-trace",
+        )
+        assert p.to_wire() == {
+            "tool_call_id": "tc_1",
+            "tool_id": "t_1",
+            "arguments": None,
+            "deadline_ms": 5000,
+            "behavior_version": "v1",
+            "cwd": "/tmp",
+            "trace_context": "00-trace",
+        }
+
+    def test_from_wire_minimal_lifts_none(self):
+        p = tool_call_params_from_wire(
+            {"tool_call_id": "tc_1", "tool_id": "t_1", "arguments": {"x": 1}}
+        )
+        assert p.deadline_ms is None
+        assert p.behavior_version is None
+        assert p.cwd is None
+        assert p.trace_context is None
+        assert p.arguments == {"x": 1}
+
+    def test_from_wire_full(self):
+        p = tool_call_params_from_wire(
+            {
+                "tool_call_id": "tc_1",
+                "tool_id": "t_1",
+                "arguments": "raw",
+                "deadline_ms": 9000,
+                "behavior_version": "v2",
+                "cwd": "/home",
+                "trace_context": "tc",
+            }
+        )
+        assert p.deadline_ms == 9000
+        assert p.behavior_version == "v2"
+        assert p.cwd == "/home"
+        assert p.trace_context == "tc"
+
+    def test_arguments_opaque_verbatim_round_trip(self):
+        # Opaque Value round-trips ANY JSON shape untouched.
+        for args in ({"a": [1, 2]}, [1, "two", None], "plain", 42, True, None):
+            p = ToolCallParams(tool_call_id="tc", tool_id="t", arguments=args)
+            back = tool_call_params_from_wire(p.to_wire())
+            assert back.arguments == args
+
+    def test_round_trip_preserves_option_fields(self):
+        p = ToolCallParams(
+            tool_call_id="tc", tool_id="t", arguments={}, deadline_ms=7, cwd="/x"
+        )
+        back = tool_call_params_from_wire(p.to_wire())
+        assert back.deadline_ms == 7
+        assert back.cwd == "/x"
+        assert back.behavior_version is None
+        assert back.trace_context is None
+
+
+class TestToolCallResultR92:
+    """``Vec::is_empty`` skip (x2) + ``Option::is_none`` skip + nested wire enum."""
+
+    def test_minimal_to_wire_omits_empty_vecs_and_none(self):
+        r = ToolCallResult(tool_call_id="tc", output=Text(text="hi"))
+        wire = r.to_wire()
+        assert wire == {
+            "tool_call_id": "tc",
+            "output": {"kind": "text", "value": "hi"},
+        }
+        for absent in ("follow_ups", "reminders", "chat_completion_output"):
+            assert absent not in wire
+
+    def test_to_wire_with_non_empty_vecs(self):
+        r = ToolCallResult(
+            tool_call_id="tc",
+            output=Text(text="hi"),
+            follow_ups=[{"q": 1}],
+            reminders=[{"r": 2}],
+            chat_completion_output={"k": "v"},
+        )
+        wire = r.to_wire()
+        assert wire["follow_ups"] == [{"q": 1}]
+        assert wire["reminders"] == [{"r": 2}]
+        assert wire["chat_completion_output"] == {"k": "v"}
+
+    def test_from_wire_defaults_empty_vecs(self):
+        r = tool_call_result_from_wire(
+            {"tool_call_id": "tc", "output": {"kind": "text", "value": "hi"}}
+        )
+        assert r.follow_ups == []
+        assert r.reminders == []
+        assert r.chat_completion_output is None
+
+    def test_from_wire_reconstructs_nested_wire_enum(self):
+        r = tool_call_result_from_wire(
+            {"tool_call_id": "tc", "output": {"kind": "json", "value": {"n": 1}}}
+        )
+        assert isinstance(r.output, Json)
+        assert r.output.json == {"n": 1}
+
+    def test_round_trip_with_vecs_and_output(self):
+        r = ToolCallResult(
+            tool_call_id="tc",
+            output=Text(text="hi"),
+            follow_ups=[1, 2],
+            reminders=[{"k": "v"}],
+            chat_completion_output=None,
+        )
+        back = tool_call_result_from_wire(r.to_wire())
+        assert back.tool_call_id == "tc"
+        assert isinstance(back.output, Text)
+        assert back.output.text == "hi"
+        assert back.follow_ups == [1, 2]
+        assert back.reminders == [{"k": "v"}]
+        assert back.chat_completion_output is None
+
+
+class TestToolCallProgressFrameR92:
+    """Opaque ``body`` + ``Option`` skip on ``dropped_count``."""
+
+    def test_minimal_to_wire_omits_dropped_count(self):
+        f = ToolCallProgressFrame(tool_call_id="tc", kind="log_chunk", body={"i": 0})
+        assert f.to_wire() == {
+            "tool_call_id": "tc",
+            "kind": "log_chunk",
+            "body": {"i": 0},
+        }
+
+    def test_to_wire_with_dropped_count(self):
+        f = ToolCallProgressFrame(
+            tool_call_id="tc", kind="chunk", body="data", dropped_count=3
+        )
+        assert f.to_wire()["dropped_count"] == 3
+
+    def test_from_wire_minimal(self):
+        f = tool_call_progress_frame_from_wire(
+            {"tool_call_id": "tc", "kind": "log_chunk", "body": {"i": 0}}
+        )
+        assert f.dropped_count is None
+        assert f.body == {"i": 0}
+
+    def test_body_opaque_verbatim_round_trip(self):
+        for body in ({"a": 1}, [1, 2], "s", 5, False):
+            f = ToolCallProgressFrame(tool_call_id="tc", kind="k", body=body)
+            back = tool_call_progress_frame_from_wire(f.to_wire())
+            assert back.body == body
+
+
+class TestDonationParamsR92:
+    """Traces / Logs / Metrics donation — same single-field ``otlp_request`` shape."""
+
+    def test_traces_donate_round_trip(self):
+        p = TracesDonateParams(otlp_request="base64-trace")
+        assert p.to_wire() == {"otlp_request": "base64-trace"}
+        back = traces_donate_params_from_wire(p.to_wire())
+        assert back.otlp_request == "base64-trace"
+
+    def test_logs_donate_round_trip(self):
+        p = LogsDonateParams(otlp_request="base64-log")
+        assert p.to_wire() == {"otlp_request": "base64-log"}
+        assert logs_donate_params_from_wire(p.to_wire()).otlp_request == "base64-log"
+
+    def test_metrics_donate_round_trip(self):
+        p = MetricsDonateParams(otlp_request="base64-metric")
+        assert p.to_wire() == {"otlp_request": "base64-metric"}
+        assert (
+            metrics_donate_params_from_wire(p.to_wire()).otlp_request == "base64-metric"
+        )
+
+    def test_donation_params_shape_uniformity(self):
+        # All three share the exact same single-field shape (otlp_request: str).
+        for cls in (TracesDonateParams, LogsDonateParams, MetricsDonateParams):
+            fields = {f.name for f in dataclasses.fields(cls)}
+            assert fields == {"otlp_request"}
+            assert cls(otlp_request="x").to_wire() == {"otlp_request": "x"}
+
+
+class TestFramesSerdeShapesR92:
+    """Consolidation round — exercises four serde sub-shapes in flat params."""
+
+    def test_vec_is_empty_skip_variant(self):
+        # R86 introduced Vec::is_empty; R92 is its first landing in a params struct.
+        empty = ToolCallResult(tool_call_id="tc", output=Text(text="x"))
+        assert "follow_ups" not in empty.to_wire()
+        nonempty = ToolCallResult(
+            tool_call_id="tc", output=Text(text="x"), follow_ups=[{}]
+        )
+        assert "follow_ups" in nonempty.to_wire()
+
+    def test_option_is_none_skip_variant(self):
+        minimal = ToolCallParams(tool_call_id="tc", tool_id="t", arguments={})
+        assert "deadline_ms" not in minimal.to_wire()
+        full = ToolCallParams(
+            tool_call_id="tc", tool_id="t", arguments={}, deadline_ms=1
+        )
+        assert "deadline_ms" in full.to_wire()
+
+    def test_opaque_value_not_converted(self):
+        # arguments / body / chat_completion_output pass through untouched.
+        weird = {"nested": {"list": [1, None, True]}, "num": 3.14}
+        p = ToolCallParams(tool_call_id="tc", tool_id="t", arguments=weird)
+        assert p.to_wire()["arguments"] is weird  # same object, no conversion
+
+    def test_nested_wire_enum_field(self):
+        # ToolCallResult.output is a ToolOutputWire instance, not a dict.
+        r = ToolCallResult(tool_call_id="tc", output=Mcp(blocks=[]))
+        wire = r.to_wire()
+        assert wire["output"] == {"kind": "mcp", "value": {"blocks": []}}
+
+
+class TestFramesBarrelR92:
+    """``frames`` is ``pub use frames::{...}`` — all 10 R92 symbols travel barrel."""
+
+    def test_barrel_exports_frames_symbols(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "MAX_SPANS_PER_DONATION",
+            "MAX_DONATION_BYTES",
+            "MAX_LOG_RECORDS_PER_DONATION",
+            "MAX_METRICS_PER_DONATION",
+            "ToolCallParams",
+            "ToolCallResult",
+            "ToolCallProgressFrame",
+            "TracesDonateParams",
+            "LogsDonateParams",
+            "MetricsDonateParams",
+        ):
+            assert hasattr(pkg, name), f"barrel missing frames symbol {name}"
+
+    def test_all_frames_names_in_all(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "MAX_SPANS_PER_DONATION",
+            "MAX_DONATION_BYTES",
+            "MAX_LOG_RECORDS_PER_DONATION",
+            "MAX_METRICS_PER_DONATION",
+            "ToolCallParams",
+            "ToolCallResult",
+            "ToolCallProgressFrame",
+            "TracesDonateParams",
+            "LogsDonateParams",
+            "MetricsDonateParams",
+        ):
+            assert name in pkg.__all__, f"{name} not in barrel __all__"
+
+    def test_frames_submodule_exposes_from_wire(self):
+        import minimax_code.tool_protocol.frames as mod
+
+        for name in (
+            "tool_call_params_from_wire",
+            "tool_call_result_from_wire",
+            "tool_call_progress_frame_from_wire",
+            "traces_donate_params_from_wire",
+            "logs_donate_params_from_wire",
+            "metrics_donate_params_from_wire",
+        ):
+            assert hasattr(mod, name), f"frames submodule missing {name}"
