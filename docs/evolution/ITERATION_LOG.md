@@ -3244,3 +3244,98 @@ or 0)]` 的损坏切片），在交付测试前自捕并单次 Edit 修复为正
 ### Commit
 
 `feat(platform): R39 hunk diff compute primitives + types (fuse grok xai-hunk-tracker)`
+
+---
+
+## R40 — prompt 队列 wire 类型契约（融合 grok `xai-prompt-queue`）（阶段 D 收官）
+
+锚定 R39 提交 `29f3fd3`。
+
+### 本轮目标
+
+从 grok 的 `xai-prompt-queue` 引入 **prompt 队列的 wire 类型契约**——
+`QueueEntryMeta`（actor 内部 frozen 值类型）+ `QueueEntryWire` / `QueueChanged`
+（JSON-RPC 广播载荷，pydantic v2 BaseModel）。这是 **R 系列首次将 wire-types crate
+映射到 pydantic**（此前 frozen-dataclass 移植均针对非序列化值类型）——映射决策树的新
+分支应用：**(de)serialization 面 → pydantic；纯值相等 → frozen dataclass**。host-agnostic
+纯数据契约，依赖仅 serde（→ 项目既有 pydantic v2 栈，零新依赖）。**不引入 session actor**
+（tokio）和 **shell/pager 消费端**——那是接线轮。
+
+### 融合结论
+
+✅ **`QueueEntryMeta`（无 Serialize）→ frozen=True, slots=True dataclass**：grok
+`Clone + Debug + PartialEq + Eq`（无 `Serialize` / `Deserialize`）——actor 内部状态，从不上线。
+6 字段 `id/version/owner/last_editor/kind/text`；`version: u64` 无默认（必填），
+`owner/last_editor: Option<String>`。这是 R32 起所有非序列化值类型的同一映射。
+
+✅ **`QueueEntryWire` + `QueueChanged`（Serialize+Deserialize+camelCase）→ pydantic v2 BaseModel**：
+决策树的**新分支**——之前 frozen-dataclass 移植（R32 `VoiceEvent` / R35 R37 R38 单元枚举 /
+R39 `HunkSource`）全是非序列化值类型；本轮是**首个 wire-types crate**，承载
+(de)serialization 契约，故映射 pydantic（项目既有 IPC 数据模型栈）。pydantic 一一对应
+serde 行为：
+
+  - `#[serde(rename_all = "camelCase")]` → `alias_generator=to_camel` + `populate_by_name=True`
+    （Python 字段 snake_case，wire 用 `lastEditor` / `runningPromptId` / `sessionId` 别名）。
+  - `#[serde(default)]` → pydantic 字段默认值（`version=0` / `kind=""` / `text=""` /
+    `position=0` / `entries=[]`）。
+  - `#[serde(default, skip_serializing_if = "Option::is_none")]` → `Optional` 字段默认 `None`
+    + 序列化 `exclude_none=True`（`to_wire_json()` 封装
+    `model_dump_json(by_alias=True, exclude_none=True)`）。
+  - 未知 JSON 字段忽略（`extra="ignore"`，pydantic 默认）。
+  - `frozen=True` → wire 值不可变（grok 编辑 = 构造新实例，非原地突变）。
+
+✅ **`QueueChanged::default()`（Rust `#[derive(Default)]`）→ `default()` 类方法**：程序构造
+`session_id=""`（空会话 / 无条目 / 无运行）。**关键非冲突**：`default()` 程序构造
+`session_id=""`，而反序列化仍**要求** `sessionId` 存在（字段无默认）——前者是构造器，后者
+是解析要求，两者不矛盾，精确镜像 grok（serde "required" 字段 vs `Default` derive）。
+
+❌ **session actor（tokio mpsc）**——Rust async 平台栈；接线轮选 asyncio actor。
+
+❌ **shell/pager 消费端**——grok 把这两个 wire 消费者放在 host 平台栈；接线轮接前端队列面板
++ agent 对话循环。
+
+❌ **meta→wire 投影辅助**——grok 把 `QueueEntryMeta` → `QueueEntryWire` 转换放在 actor 内；
+本轮只移植纯类型契约，不添加新函数（严格 YAGNI，保持忠实）。
+
+### 交付
+
+- `agent/minimax_code/prompt_queue/types.py`（新）— `QueueEntryMeta`（frozen dataclass，
+  6 字段）+ `QueueEntryWire` / `QueueChanged`（pydantic v2 BaseModel，camelCase alias +
+  默认值 + `to_wire_json()` exclude_none + `QueueChanged.default()` 类方法），`__all__` 3 符号。
+- `agent/minimax_code/prompt_queue/__init__.py`（新）— 重导出 3 符号，docstring 声明范围
+  （actor / 消费者是接线轮关注点）。
+- `agent/tests/test_prompt_queue.py`（新）— 13 测试：grok 6 镜像（round-trip / golden wire
+  JSON / requires session_id / sparse defaults / extra fields ignored / derives default）
+  + Python 特有（wire None 排除 / snake_case 构造 / 必填 id 校验 / camelCase 别名解析 /
+  Meta 值相等 / frozen / 可哈希）。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+映射决策树**第六次重申**（payload 决定映射）：**(de)serialization 面（Serialize+Deserialize+
+serde 属性）→ pydantic v2 BaseModel**（本轮新分支，首次用于真实 IPC wire 契约；R34
+MCP-over-ACP 常量是 dataclass 未用 pydantic 序列化面）；**纯值相等无序列化
+（Clone+PartialEq+Eq）→ frozen=True, slots=True dataclass**；**纯单元枚举 → `Enum`**；
+**混合枚举 → 全 frozen dataclass 联合**。一条规则、四个分支，payload 决定走哪条。
+
+### 验证
+
+- `ruff check --fix` → All checks passed!（0 自动修复，I001 排序已干净）。
+- `ruff check` → **All checks passed!**
+- `pytest tests/test_prompt_queue.py -q` → **13 passed in 0.11s**（grok 6 镜像 + 7 Python 特有）。
+- 完整套件 `pytest` → **1615 passed in 108.00s**（R39 1602 → R40 1615，**+13 精确**，零回归）。
+
+### YAGNI 边界
+
+- ❌ **不接 session actor**——grok `QueueActor` over tokio mpsc 是 Rust async 平台栈；选 asyncio
+  actor（`asyncio.Queue` + 任务）还是同步队列是接线轮决策，本轮类型契约被任一实现不变消费。
+- ❌ **不接 shell/pager 消费端**——grok 把广播消费者放在 host 平台栈；接线轮接前端队列面板
+  + agent 对话循环的 prompt 排空逻辑。
+- ❌ **不加 meta→wire 投影函数**——grok 把 `QueueEntryMeta` → `QueueEntryWire` 转换放在 actor
+  内（含 position=index 投影逻辑）；本轮只移植纯类型，接线轮在 actor 边界做投影。
+- ❌ **不为 wire 模型加可变性**——`frozen=True` 镜像 grok 值语义；编辑（version bump）=
+  `model_copy(update={...})` 构造新实例，非原地突变。
+- ❌ **不接 `x.ai/queue/changed` 通知广播**——这是 transport 层订阅模型，接线轮在 WS server
+  接 fan-out 路由（`session_id` 驱动）。
+
+### Commit
+
+`feat(platform): R40 prompt queue wire types (fuse grok xai-prompt-queue)`
