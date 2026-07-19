@@ -9017,3 +9017,61 @@ error.py 与测试文件都导入 10 个 wire 变体带 `as ...Wire` 别名。is
 ### Commit
 
 `feat(platform): R107 migrate xai-tool-runtime error.rs (ToolErrorKind + ToolError + wire bridge, tool_runtime package bootstrap)`
+
+## R108 — 迁移 xai-tool-runtime context.rs（TypedExtensions + 2 composite contexts + 5 newtype 扩展标记 + 2 wire struct，tool_runtime 包第 2 块叶子）
+
+锚点:R107-1 5d1a294
+
+### 本轮目标
+
+R107 落下 error 叶子后，继续推进 xai-tool-runtime 的依赖图。本轮锁定第二个叶子 **context.rs**（crate 顶部 `pub use context::*` 导出 10 个符号）：TypedExtensions（开放类型扩展存储）、ToolCallContext / ListToolsContext（每调用 / 每轮复合上下文）、Cwd / BehaviorVersion / TraceContext / SessionContext / Cancellation（5 个 per-concept newtype 扩展标记）、WorkspaceViewerContext / WorkspaceBindMetadata（per-user 特性开关 + `session.bind` 线上元数据）。context 是 tool.rs（`Tool::call` 取 `ToolCallContext`、`should_list` 取 `ListToolsContext`）和 dispatch.rs（`ToolDispatch::call` 串 `ToolCallContext`）的上游，必须在两者之前落下。验证完毕后 git commit。
+
+### 融合结论
+
+context.rs 仅依赖 `xai_tool_protocol::ToolCallId` + std，无 crate 内依赖 —— 与 error 同属叶子层，依赖图顺序 error(R107) -> context(R108) -> tool -> render / streaming / search -> notification -> dispatch 成立。R23 融合的是该 crate 的**并发模型**（两阶段 `_prepare_tool_call` / `_execute_tool_call` 调度 + per-file asyncio.Lock + asyncio.gather 保序），**不是**类型契约 —— 所以 context.rs 的 10 个类型对 Python 侧是全新的，不与 R23 重复。本轮把 TypeId-downcast 的 TypedExtensions、tokio CancellationToken 的协作面、serde 的 ok_or_default / skip_serializing_if 三套 Rust 语义一次性翻译成 Python 等价：TypeId -> `type` 对象退化、CancellationToken -> `asyncio.Event` 最小包装、ok_or_default -> 逐字段 try / fall-back、skip_serializing_if -> `to_dict` 的 None / 空 / False 省略策略。
+
+### 交付
+
+| 文件 | 类型 | 行数 | 内容 |
+|------|------|------|------|
+| `agent/minimax_code/tool_runtime/context.py` | 新增 | 472 | 10 符号：TypedExtensions（dict[type, Any] 存储 + 9 方法 + 3 dunder）、ToolCallContext（call_id + extensions，`default()` 用 uuid4 回退 new_v7）、ListToolsContext、Cwd / BehaviorVersion / TraceContext / SessionContext（4 dataclass newtype）、Cancellation（asyncio.Event 包装，is_cancelled / cancel / cancelled-await）、WorkspaceViewerContext（to_dict / from_dict）、WorkspaceBindMetadata（9 字段 to_dict / from_dict + ok_or_default + skip 策略） |
+| `agent/minimax_code/tool_runtime/__init__.py` | 修改 | 61 | barrel 扩展：import + `__all__` 从 2 符号增长到 12（+10 context 符号），docstring 标注 R108 落下第二叶 |
+| `agent/tests/test_tool_runtime_context.py` | 新增 | 368 | 34 测试：TypedExtensions 10（含 TypeId 精度：子类不可被基类型取回）、ToolCallContext 4、ListToolsContext 2、4 newtype、Cancellation 5（含 asyncio 事件循环 await + sibling 共享 token 传播）、WorkspaceViewerContext 3、WorkspaceBindMetadata 6（5 个 Rust bind_metadata_tests 逐字移植 + legacy 无 viewer_ctx） |
+
+R108 后 tool_runtime 包导出 12 符号，覆盖 crate 8 模块中的 2 个（error + context）。
+
+### 映射决策树+坑
+
+1. **TypeId -> `type` 对象**：Rust `HashMap<TypeId, Arc<dyn Any>>` 按 `TypeId::of::<T>()` 键化。Python 每个类有唯一 identity，`type(value)` 即天然的 TypeId —— 直接以 `type` 对象为 dict 键，值就是对象本身（动态类型无需 downcast）。泛型 `insert::<T>(value)` / `get::<T>()` 退化为 `insert(value)`（键 = `type(value)`）/ `get(key_type)`（调用方显式传类型）。**精度坑**：因键是*精确*类型，存 Sub 实例**不能**用 Base 类型取回（测试 `test_base_type_does_not_retrieve_subclass_instance` 锁定此语义，对应 Rust TypeId 精度）。
+
+2. **`insert_arc` == `insert`**：Rust `insert_arc<T>(Arc<T>)` 接收调用方已持有的 Arc（避免再 wrap 一层），但仍按 `TypeId::of::<T>()` 键化。Python 无 Arc（对象本身就是引用共享），所以 insert_arc 与 insert 实现完全相同。**保留为独立方法**以维持 crate API surface 一一对应（下游迁移模块按 crate API 调用）。
+
+3. **`ToolCallId::new_v7()` 推迟 -> uuid4 回退**：Rust `ToolCallContext::default()` 调 `ToolCallId::new_v7()`。但 Python stdlib `uuid` 无 v7 生成器（R82 `ids.py` 明确 new_v7 deferred，待 uuid6 评估一起做）。决策：`ToolCallContext.default()` 用 `ToolCallId(str(uuid.uuid4()))` —— 表面契约是"新鲜唯一 call id"，v7 只是实现细节，uuid4 满足唯一性。提供独立 `default()` classmethod 而非 dataclass 默认值（ToolCallId 需要 uuid 生成，不能做字段默认）。
+
+4. **`Cancellation(CancellationToken)` -> `asyncio.Event` 最小包装**：tokio CancellationToken 的**协作面**（is_cancelled / cancel / await cancelled）映射到 asyncio.Event（set = 已取消）。**结构化并发面**（child_token / guard / CancelLedger）**不迁移** —— R23 已融合 dispatcher 的两阶段并行调度 + per-file 锁，Python 的硬取消是 `task.cancel()` 而非 token 树，本叶只载工具实际 await 的协作面。两个 Cancellation dataclass 共享同一 asyncio.Event 时互相可见 cancel()（sibling 取消，对应 Rust `CancellationToken::clone`）—— 测试 `test_cancellation_shared_token_propagates_to_siblings` 锁定。
+
+5. **`WorkspaceBindMetadata.tools: Vec<ToolConfigEntry>` -> `list[Any]`**：该字段依赖**未迁移的** `xai_grok_tools_api::ToolConfigEntry`。决策：元素类型暂用 `list[Any]`（YAGNI），线上形状（wire shape）才是契约，元素 struct 不是。待 grok-tools-api 迁移后强类型化。
+
+6. **`ok_or_default` -> 逐字段 try / fall-back**：Rust 辅助函数先反序列化成 serde_json::Value，再 `from_value(...).unwrap_or_default()` —— 某字段畸形时落回该字段默认，**保留兄弟字段**。Python `from_dict` 内联 4 个闭包（`_opt_str` / `_opt_bool` / `_tools` / `_viewer_ctx` / `_rpc_only`）逐字段 isinstance 检查 + 类型不符落默认。**坑**：`tools = "not-a-list"` -> `_tools()` 返回 `[]`，但 `preset` / `capability_mode` 仍正常读取（测试 `test_malformed_field_falls_back_to_default_keeping_siblings` 逐字移植）。
+
+7. **`skip_serializing_if` -> `to_dict` 省略策略**：Rust 三种 hint —— None 字段省略、`tools` Vec 空时省略、`rpc_only` 仅在 true 时序列化（`skip_serializing_if = "Not::not"`，为 false 时省略以保持线上向后兼容）。Python `to_dict` 用 `if self.X is not None` / `if self.tools` / `if self.rpc_only` 复刻。默认实例序列化为 `{}`（测试 `test_serialize_omits_empty_fields`）。
+
+8. **`except Exception` 安全**：`_viewer_ctx` 的 try / except 包裹 `WorkspaceViewerContext.from_dict` 以实现 ok_or_default 的 viewer_ctx 畸形落 None。项目 ruff `select = ["E", "F", "W", "I", "B", "UP"]` **不含 BLE**（flake8-blind-except），故 `except Exception:` 不触发 BLE001，无需 `# noqa`。
+
+### 验证
+
+- `uv run ruff check context.py __init__.py test_tool_runtime_context.py` -> **All checks passed!**（零警告，无需 --fix，isort 一次过）
+- `uv run pytest tests/test_tool_runtime_context.py tests/test_tool_runtime.py` -> **81 passed in 0.39s**（R108 新增 34 测试 + R107 回归 47 测试全过，barrel 扩展不破坏 error 模块）
+- 关键测试锁定：TypeId 精度（子类不可基类型取回）、Cancellation asyncio await + sibling 传播、WorkspaceBindMetadata 5 个 Rust bind_metadata_tests 逐字移植（empty-omits / populated-round-trip / rpc_only-wire-compat / system_notifications-wire-compat / malformed-falls-back）+ legacy 无 viewer_ctx 解析
+
+### YAGNI 边界
+
+- **CancellationToken 结构化并发面**（child_token / guard / CancelLedger）不迁移：R23 已融合 dispatcher 并发模型，Python 硬取消用 task.cancel()，本叶只载工具 await 的协作面。
+- **`ToolCallId` v7 生成**：Python stdlib 无 v7，用 uuid4 满足唯一性契约；v7 待 uuid6 评估（R82 已记录）。
+- **WorkspaceBindMetadata.tools 元素强类型**：依赖未迁移的 grok-tools-api，暂 `list[Any]`；wire shape 是契约，元素 struct 待迁移后强类型化。
+- **TypedExtensions 泛型 `get<T>()` 精确返回类型**：Python 动态类型下退化为 `Any | None`，调用方自行断言；PEP 695 泛型方法需 Python 3.12+（项目 3.11+），YAGNI 不引入 TypeVar 复杂性。
+- **WorkspaceViewerContext PascalCase serde 形态**：Rust `#[derive(Serialize, Deserialize)]` 的 externally-tagged 形态在 Python 用 `to_dict` / `from_dict` 平铺键复刻（snake_case 字段名），不引入 pydantic 模型（保持与 error.py 的 dataclass 风格一致）。
+
+### Commit
+
+`feat(platform): R108 migrate xai-tool-runtime context.rs (TypedExtensions + contexts + bind metadata)`

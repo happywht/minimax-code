@@ -11,11 +11,14 @@ The crate's ``lib.rs`` re-exports eight modules — ``context``, ``dispatch``,
 ``tool`` — plus a handful of protocol re-exports
 (``StreamingSpec`` / ``ToolCallId`` / ``ToolCapabilities`` / ``ToolId`` /
 ``ToolScope``). R107 lands the foundational leaf: :mod:`error`
-(:class:`ToolError` + :class:`ToolErrorKind`). This is first because every
-other module's signatures reference :class:`ToolError` — ``ToolStream``
-yields ``Result<TypedToolOutput, ToolError>``, ``ToolDispatch::call``
-returns it, ``terminal_only`` constructs it. Subsequent rounds migrate the
-remaining modules; the barrel's ``__all__`` grows as each lands.
+(:class:`ToolError` + :class:`ToolErrorKind`), first because every other
+module's signatures reference :class:`ToolError`. R108 lands the second
+leaf: :mod:`context` (:class:`TypedExtensions` + the per-call / per-turn
+contexts + the newtype concept markers + the ``session.bind`` wire
+metadata), second because :mod:`tool` and :mod:`dispatch` thread a
+:class:`ToolCallContext` through their signatures. Subsequent rounds
+migrate the remaining modules; the barrel's ``__all__`` grows as each
+lands.
 
 R23 fused this crate's *concurrency model* (the structured-concurrency /
 cancellation primitives the agent core uses) but **not** its *type
@@ -27,9 +30,31 @@ equivalents. R107 onward fills that gap; it is also the unblocker for the
 TypedToolOutput, terminal_only}``).
 """
 
+from minimax_code.tool_runtime.context import (
+    BehaviorVersion,
+    Cancellation,
+    Cwd,
+    ListToolsContext,
+    SessionContext,
+    ToolCallContext,
+    TraceContext,
+    TypedExtensions,
+    WorkspaceBindMetadata,
+    WorkspaceViewerContext,
+)
 from minimax_code.tool_runtime.error import ToolError, ToolErrorKind
 
 __all__ = [
+    "BehaviorVersion",
+    "Cancellation",
+    "Cwd",
+    "ListToolsContext",
+    "SessionContext",
+    "ToolCallContext",
     "ToolError",
     "ToolErrorKind",
+    "TraceContext",
+    "TypedExtensions",
+    "WorkspaceBindMetadata",
+    "WorkspaceViewerContext",
 ]
