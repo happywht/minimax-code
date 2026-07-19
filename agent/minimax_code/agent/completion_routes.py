@@ -28,8 +28,8 @@ _MAX_BODY_BYTES = 2 * 1024 * 1024  # 2 MiB — generous for code
 
 
 def register_completion_routes(
-    app: "fastapi.FastAPI",  # noqa: F821
-    server: "IPCServer",
+    app: fastapi.FastAPI,  # noqa: F821
+    server: IPCServer,
 ) -> None:
     """Register ``POST /complete`` on the FastAPI app."""
 
@@ -92,7 +92,7 @@ def register_completion_routes(
         })
 
 
-async def _build_llm_client(server: "IPCServer") -> MiniMaxClient:
+async def _build_llm_client(server: IPCServer) -> MiniMaxClient:
     """Construct a MiniMaxClient from the server's stored preferences.
 
     Reuses the same logic as ``builtins.handle_agent_send_message``:
@@ -100,9 +100,10 @@ async def _build_llm_client(server: "IPCServer") -> MiniMaxClient:
     Falls back to default (mock mode) when no config is available.
     """
     try:
+        from ..app import get_db
+        from ..models import default_model  # R51: lazy, single source for default model
         from ..storage.dao.model_prefs import ModelPrefsDAO
         from ..storage.dao.providers import ProviderDAO
-        from ..app import get_db
 
         db = get_db()
         if db is not None:
@@ -118,7 +119,7 @@ async def _build_llm_client(server: "IPCServer") -> MiniMaxClient:
                     protocol=provider.get("protocol", "anthropic"),
                     api_key=provider.get("api_key", ""),
                     base_url=provider.get("base_url"),
-                    model=model_name or "MiniMax-M3",
+                    model=model_name or default_model(),  # R51: was "MiniMax-M3" literal
                 )
             if model_name:
                 return MiniMaxClient(model=model_name)

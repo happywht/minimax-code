@@ -323,3 +323,59 @@ def test_agent_config_model_default_from_vocabulary():
     assert model_field.default == M.default_model()
     # And a default-constructed AgentConfig reflects it.
     assert AgentConfig().model == M.default_model()
+
+
+# --- completion route fallback (R51) ----------------------------------------
+
+
+async def test_build_llm_client_model_fallback_from_vocabulary(monkeypatch):
+    """R51 wiring: completion route's ``_build_llm_client`` model fallback uses registry.
+
+    ``_build_llm_client``'s ``model_name or "MiniMax-M3"`` fallback (the
+    provider branch) was a hard-coded literal; it is now
+    ``model_name or default_model()`` (lazy import — the function already
+    lazy-imports ``get_db`` / the DAOs to avoid the app↔routes cold-start
+    cycle), so the inline-completion route and the default-model registry
+    share one baked-in document. Monkeypatches the DAO/provider chain +
+    ``MiniMaxClient`` to capture the resolved model without a real DB.
+    """
+    from minimax_code import app as app_mod
+    from minimax_code.agent import completion_routes as routes
+    from minimax_code.storage.dao import model_prefs, providers
+
+    captured: dict[str, list[dict[str, object]]] = {"clients": []}
+    pref_model: dict[str, object] = {"model": None}  # mutable so we can flip it
+
+    class _FakeMiniMaxClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured["clients"].append(kwargs)
+
+    class _FakePrefsDAO:
+        def __init__(self, db: object) -> None:
+            pass
+
+        async def get(self) -> dict[str, object] | None:
+            m = pref_model["model"]
+            return None if m is None else {"model": m}
+
+    class _FakeProviderDAO:
+        def __init__(self, db: object) -> None:
+            pass
+
+        async def get_active(self) -> dict[str, str]:
+            return {"protocol": "anthropic", "api_key": "k", "base_url": "u"}
+
+    monkeypatch.setattr(routes, "MiniMaxClient", _FakeMiniMaxClient)
+    monkeypatch.setattr(app_mod, "get_db", lambda: object())  # non-None db
+    monkeypatch.setattr(model_prefs, "ModelPrefsDAO", _FakePrefsDAO)
+    monkeypatch.setattr(providers, "ProviderDAO", _FakeProviderDAO)
+
+    # Branch 1: model_name=None → provider branch falls back to default_model().
+    pref_model["model"] = None
+    await routes._build_llm_client(server=None)
+    assert captured["clients"][0]["model"] == M.default_model()
+
+    # Branch 2: model_name="explicit" → passthrough (the ``or`` honours truthy).
+    pref_model["model"] = "explicit-model"
+    await routes._build_llm_client(server=None)
+    assert captured["clients"][1]["model"] == "explicit-model"

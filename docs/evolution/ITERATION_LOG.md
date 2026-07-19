@@ -3848,3 +3848,50 @@ R46/R47/R48/R49 五处消费端已接 R45 词汇表，剩**核心层最高风险
 ### Commit
 
 `feat(platform): R50 wire AgentConfig.model to model vocabulary (fuse grok xai-grok-models)`
+
+---
+
+## R51 — completion_routes 路由层 fallback 迁移至 R45 词汇表（融合 grok xai-grok-models 消费端）
+
+> 锚定 R50（`5dd7629`）。
+
+### 本轮目标
+
+R50 闭环了核心层（`AgentConfig.model`）。本轮转向债务地图剩余 2 处之一 —— `agent/completion_routes.py:121` 的 `_build_llm_client` provider 分支 `model=model_name or "MiniMax-M3"`（路由层 fallback）。这是 inline code completion 路由（`POST /complete`，绕过 IPCServer 直调 MiniMaxClient 追求最低延迟）的模型 fallback。本轮迁移为 `model_name or default_model()`，值保持 `"MiniMax-M3"`。预研关键事实：`_build_llm_client` 已用**函数内懒加载导入**（`from ..app import get_db` / `ModelPrefsDAO` / `ProviderDAO`），其中 `from ..app import get_db` 触发 app.py 导入链（app.py 反导入 completion_routes），形成 cold-start 循环 —— 故 `default_model` 必须**同函数内懒加载**（跟随既有 cold-start-cycle-avoidance 模式，非顶层导入），与 R49 runtime 的懒加载策略同构（循环风险模块 → 函数内导入）。
+
+### 融合结论
+
+- ✅ **保留**：`_build_llm_client` 函数内懒加载 `from ..models import default_model`（在既有 3 个懒加载导入块中，ruff 重排后 `app → models → storage` 字母序）—— 跟随既有 cold-start-cycle-avoidance 模式。
+- ✅ **保留**：`model=model_name or "MiniMax-M3"` → `model=model_name or default_model()` + 行内注释。**值不变**。
+- ✅ **保留**：1 个不变量测试（monkeypatch DAO/provider 链 + MiniMaxClient，捕获 fallback + passthrough 双分支，锁死 `or` 语义）。
+- ❌ **放弃**：无（本轮是 R50 YAGNI 边界明确点名的 completion_routes 迁移）。
+
+### 交付
+
+- `agent/minimax_code/agent/completion_routes.py`（改）— (1) `_build_llm_client` 函数内加 `from ..models import default_model` 懒加载（与 `get_db`/`ModelPrefsDAO`/`ProviderDAO` 同块）；(2) 122 行 `model=model_name or "MiniMax-M3"` → `model=model_name or default_model()`。**值不变**。ruff `--fix` 顺手清理 4 处 lint：1× I001（函数内导入块重排 app→models→storage）+ 3× UP037 预存冗余引号（31/32/95 行 `"fastapi.FastAPI"`/`"IPCServer"` —— `from __future__ import annotations` 下引号多余，去引号行为保持：注解 PEP 563 字符串化，运行时不求值）。
+- `agent/tests/test_models.py`（改，326→~380 行，20→21 测试）— 新增 `test_build_llm_client_model_fallback_from_vocabulary`：monkeypatch `routes.MiniMaxClient`（捕获 kwargs）+ `app_mod.get_db`（返回非 None）+ `model_prefs.ModelPrefsDAO`（可控 `get()` 返回）+ `providers.ProviderDAO`（`get_active()` 返回 provider dict），驱动 provider 分支：Branch 1 `model_name=None` → `default_model()` / Branch 2 `model_name="explicit-model"` → passthrough。锁死 `or` 双语义。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+### 映射决策树（本轮纯消费端接线，无新类型/枚举）
+
+本轮不引入新枚举/类型，是 R45 词汇表的**第六处消费端接线**（R46 storage / R47 llm / R48 CANDIDATE_MODELS / R49 resolution+runtime / R50 AgentConfig / R51 completion_routes）。决策树四分支本轮无新增。**接线模式复用**：completion_routes 的 `_build_llm_client` 已声明 cold-start 循环（`from ..app import get_db` 触发 app 反导 routes），故 `default_model` 用**函数内懒加载**（与 R49 runtime `_build_agent_core` 同模式：循环风险模块 → 函数内导入）。两种导入策略（顶层 vs 函数内）的选择依据始终是**消费模块的循环风险**，非任意 —— 本轮再次验证该决策树。
+
+**坑（自发现，已修复）**：ruff 报 4 错（全在 completion_routes.py）—— 1× I001 我的导入块未排序（函数内连续导入块，ruff **确实检查**，R49 先例已验证）+ 3× UP037 预存引号。按 R48/R49 既定模式 + CLAUDE.md「修复正在编辑文件的 ruff 错误」授权，`--fix` 一次清理全部 4 个（行为保持），重检 `All checks passed!`。无运行时错误——重点 pytest 35 测试一次通过。
+
+### 验证
+
+- `ruff check completion_routes.py` → **All checks passed!**（`--fix` 修 I001 + UP037×3 后；test_models.py 首次干净）。
+- 重点 `pytest tests/test_models.py tests/test_completion.py -q` → **35 passed in 2.76s**（test_models 21 含 R51 新增 + test_completion 14，completion 路由全消费路径零破坏）。
+- `pytest tests/test_models.py -q` → **21 passed**（R50 的 20 + R51 的 1 新测试全过）。
+- 完整套件 `pytest` → **1697 passed, 10 skipped in 108.72s**（R50 1696 → R51 1697，**+1 精确**，零回归）。
+
+### YAGNI 边界
+
+- ❌ **不迁移剩余 1 处散落 fallback** —— `app.py:404`（启动层两处：`pref.get("model_id", "MiniMax-M3")` + `else "MiniMax-M3"`），留 R52 最后一轮消化。
+- ❌ **不推导 `MODEL_META` 从词汇表** —— 仍硬编码（`handlers_model.py:69`），需先决定 MiniMax 展示层策略（grok 无 context_window/name 结构化建模）。
+- ❌ **不扩展 `DefaultModelEntry` 建模展示元数据** —— grok serde entry 只读 `model`（R45 对等契约）。
+- ❌ **不改 migration SQL 种子**（`005_providers.py:44`）—— 已部署快照，不重跑。
+
+### Commit
+
+`feat(platform): R51 migrate completion_routes model fallback to vocabulary (fuse grok xai-grok-models)`
