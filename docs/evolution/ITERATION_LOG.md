@@ -3502,3 +3502,60 @@ MCP-over-ACP 常量是 dataclass 未用 pydantic 序列化面）；**纯值相�
 ### Commit
 
 `feat(platform): R43 backend env presets + EnvVarGuard (fuse grok xai-grok-env)`
+
+## R44 — 类型安全路径包装器 + 词法规范化（融合 grok `xai-grok-paths`）
+
+> 锚定 R43（`1b47006`）。
+
+### 本轮目标
+
+从 grok 的 `xai-grok-paths`（575 行 lib.rs）引入**类型安全路径包装词汇表**：`AbsPathBuf` / `RelPathBuf` 构造即验证 newtype（绝对 vs 相对）+ `normalize_lexically` 零 FS 词法 `.`/`..` 解析器 + `contains_path` 工作区逃逸防护 + `ToAbsPath` trait 六实现统一分发。
+
+**阶段 E 平台化/发布主题**——与 R42 `version` / R43 `env_presets` 对称的"平台基础词汇表层"。产品价值：MiniMax Code 的文件工具（`file_ops` / `edit` / `search`）当前接受裸 `file_path: str`，无类型级绝对性保证，也无 `..` 路径逃逸防护。`AbsPathBuf` 让"构造即绝对"成为可执行不变量，`contains_path` 是工作区围栏 / 路径逃逸检查——agent 文件工具可拒绝 LLM 生成路径经 `..` 逃逸项目根，即使词法归一化后。本轮是该词汇表；文件工具入口接线是后续轮。
+
+### 融合结论
+
+**✅ 保持（映射到 Python）**：
+- `camino::Utf8PathBuf`（UTF-8 保证路径）→ `pathlib.Path`（Python `str` / `Path` 原生 Unicode，故 grok `NotUtf8` 变体无 Python 对应，删除）。
+- `AbsPathBuf`（newtype，`Clone+Debug+Eq+PartialEq+Ord+PartialOrd+Hash`，**无** `Serialize`，lib.rs:84 仅 derive 值 trait）→ `AbsPathBuf` frozen+slots dataclass 包 `Path`（第二分支，同 R40 `QueueEntryMeta` / R42 `Version` / R43 `BuildEndpoints`）。grok `Ord` / `PartialOrd` 推迟（无调用方需有序路径，YAGNI）；`__eq__` / `__hash__` 覆盖 `Eq` / `Hash`。
+- `RelPathBuf`（newtype，同值 trait **外加** `Serialize` / `Deserialize` + `#[serde(try_from="String", into="String")]`）→ `RelPathBuf` 同 frozen+slots dataclass 形状。serde 面保持为 `from_str`（`try_from`）+ `__str__` / `into_string`（`into`）：Python 字符串即 JSON wire 面，故不引入 pydantic model（pydantic 序列化为 dict，会偏离 grok 裸字符串往返；Config 路径字段的 pydantic 集成是后续轮）。
+- `AbsPathError` / `RelPathError`（`thiserror::Error` enum，`NotAbsolute` / `NotRelative` + 不可达 `NotUtf8`）→ `ValueError` 子类带 `input` 字段（Python 折叠不可能的 `NotUtf8` 变体）。
+- `ToAbsPath` trait（六实现：`AbsPathBuf` / `&AbsPathBuf` / `&Path` / `&PathBuf` / `&str` / `String`）→ `to_abs_path` 单自由函数 `isinstance` 分发（abs 输入忽略 `root`；rel 输入 join `root`）。
+- `to_relative_path` / `from_relative_path`（自由函数）→ 同名模块级函数；`strip_prefix` + `unwrap_or_else` → `relative_to` + `except ValueError` 回退。
+- `normalize_lexically`（自由函数；`Component` 遍历无 FS）→ `normalize_lexically` 手写 `PurePath.parts` 遍历，镜像 grok component 语义（`.` 丢；`..` pop normal / root anchor clamp / 否则 push）。
+- 测试矩阵（unix/windows `cfg` 分离 + contains_path 逃逸 + 词法归一化 + serde 往返）→ `skipif` 平台分离 + 同名测试镜像。
+
+**❌ 放弃（YAGNI）**：
+- `camino` / `serde` / `thiserror` crate 依赖 → 零非标准库依赖（仅 `os` / `re` / `dataclasses` / `pathlib`）。
+- grok `NotUtf8` 变体 → Python `str` / `Path` 原生 Unicode，UTF-8 不变量无需强制。
+- grok `Ord` / `PartialOrd`（路径字典序）→ 无调用方需有序路径。
+- `RelPathBuf` 的 pydantic model wire 面 → 当前无 Config 路径字段消费它，裸 `str` 往返忠实 grok。
+- 接线文件工具入口（`file_ops` / `edit` / `search`）→ 本轮是词汇表层，消费端接线是后续轮。
+
+### 交付
+
+- `agent/minimax_code/paths.py`（新，~370 行）— `AbsPathError` / `RelPathError`（`ValueError` 子类 + `input` 字段）+ `normalize_lexically`（零 FS `PurePath.parts` 遍历，clamp-at-root 语义，`_is_root_anchor` 区分 `/` / `C:\\` vs `C:`）+ `to_relative_path` / `from_relative_path` + `AbsPathBuf` frozen+slots dataclass（`new` 验证绝对 + `as_path` / `as_str` / `to_path_buf` / `into_string` / `join` / `is_dir` / `contains_path` + `__str__` / `__fspath__`）+ `RelPathBuf` 同形状 + `from_str` / `from_absolute` / `to_absolute` + `to_abs_path` isinstance 分发（六实现→一函数），`__all__` 8 符号。零非标准库依赖。
+- `agent/tests/test_paths.py`（新，~245 行，27 测试，17 在 win32 跑 + 10 posix `skipif`）— grok 测试矩阵镜像：AbsPathBuf new / 相对失败 / as_str+to_path_buf+fspath / join 保持绝对 / 值相等+frozen / contains_path windows / contains_path posix（逃逸 + 往回归一化）/ stored root 不归一化；normalize 词法 dot 段 posix / windows 前缀 / empty→`.`；RelPathBuf new / 绝对失败 / from_absolute posix / 不在 root 下 posix / to_absolute 跨平台 / conversions+serde 往返 / serde 绝对失败 / 值相等+frozen；to_relative_path under / not under / exact root（`.`）/ from_relative 相对 / 已绝对；to_abs_path 分发 / str 绝对忽略 root；errors 携带 `input` 字段。
+- `docs/evolution/ITERATION_LOG.md`（改）— 本条目。
+
+映射决策树**第九次重申**（payload 决定映射）：本轮 `AbsPathBuf`（纯值相等无序列化）→ frozen+slots dataclass（第二分支）；`AbsPathError` / `RelPathError` thiserror enum → `ValueError` 子类 + `input` 字段（保留变体 payload）。**一条规则、四个分支，payload 决定走哪条**：(a) 序列化层 → pydantic v2 BaseModel；(b) 纯值相等无序列化 → frozen+slots dataclass（**本轮 AbsPathBuf**）；(c) 纯单元 enum → `@unique Enum`；(d) 混合 enum → 全部 frozen dataclass + PEP 604 联合。
+
+**坑（自发现，已修复）**：`pathlib` 在 Windows 上**规范化分隔符**——`str(Path("src/main.rs"))` 返回 `"src\\main.rs"`（`/` → `\\`），而 grok `camino` **逐字保留输入字节**（`/`）。首次重点 pytest 27 测试 **2 FAILED**（`test_rel_path_buf_new_valid` / `test_rel_path_buf_conversions_and_serde_roundtrip` 断言 `== "src/main.rs"`）。这是真实的平台忠实差异，非 bug。修复：测试改用 `Path("src/main.rs")` 相等比较（`rel.as_path() == Path(...)`）+ `expected = str(Path("src/main.rs"))` 预期值，注释说明 pathlib vs camino 忠实差异 + serde 字节保真 YAGNI（当前无 Config 路径字段消费裸分隔符）。修复后 **17 passed, 10 skipped**。
+
+### 验证
+
+- `ruff check` → **All checks passed!**（导入顺序 / 行长 100 正确）。
+- 重点 `pytest tests/test_paths.py -q` → **17 passed, 10 skipped in 0.09s**（修复 pathlib 分隔符后；10 skip 是 posix 测试在 win32 正确跳过）。
+- 完整套件 `pytest -q` → **1676 passed, 10 skipped in 104.11s**（R43 1659 → R44 1676，**+17 精确**，零回归）。
+
+### YAGNI 边界
+
+- ❌ **不接线文件工具入口**（`file_ops` / `edit` / `search`）——本轮是词汇表层；让文件工具入口接受 `AbsPathBuf` + `contains_path` 逃逸防护是后续轮。
+- ❌ **不迁移 grok `Ord` / `PartialOrd`**——无调用方需有序路径；`__eq__` / `__hash__` 覆盖 `Eq` / `Hash` 足够。
+- ❌ **不引入 pydantic wire 面给 `RelPathBuf`**——grok serde 是裸 `String` 往返，Python `str` 即等价；pydantic 序列化为 dict 会偏离，且当前无 Config 路径字段消费。
+- ❌ **不做 serde 分隔符字节保真**——pathlib 规范化平台分隔符（`/` → `\\` on win32）是 Python 原生忠实；grok camino 逐字保真是 Rust 字节忠实，两者各异，测试用 `Path` 相等 + `str(Path(...))` 适配。
+- ❌ **不强制 UTF-8（grok `NotUtf8` 变体）**——Python `str` / `Path` 原生 Unicode，UTF-8 不变量无需运行时强制。
+
+### Commit
+
+`feat(platform): R44 type-safe path wrappers (fuse grok xai-grok-paths)`
