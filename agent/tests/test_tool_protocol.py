@@ -75,6 +75,8 @@ from minimax_code.tool_protocol import (
     NotificationSchemas,
     PayloadTooLarge,
     PermissionDenied,
+    Registered,
+    Rejected,
     RenderLimited,
     RequestId,
     ReservedPrefixIdError,
@@ -84,6 +86,7 @@ from minimax_code.tool_protocol import (
     ServerId,
     SessionId,
     SessionMismatch,
+    Shadowed,
     StreamingSpec,
     TerminalError,
     Text,
@@ -92,11 +95,16 @@ from minimax_code.tool_protocol import (
     ToolCallId,
     ToolCapabilities,
     ToolDefinitionMode,
+    ToolDescriptionWithSchema,
     ToolId,
     ToolNotFound,
+    ToolRegistration,
     ToolScope,
+    ToolServerRegistration,
     TransportClosed,
+    TransportKind,
     UnsupportedProtocolVersion,
+    Updated,
     UserId,
     WireCustomNotification,
     WorkspaceGonePhase,
@@ -127,6 +135,10 @@ from minimax_code.tool_protocol.output_wire import (
 from minimax_code.tool_protocol.output_wire import (
     mcp_block_from_wire,
 )
+from minimax_code.tool_protocol.registration import (
+    registration_outcome_from_wire,
+)
+from minimax_code.tool_types import ToolDescription
 
 # -----------------------------------------------------------------------
 # Opaque string id newtypes.
@@ -1927,3 +1939,340 @@ class TestPackageSurfaceR86:
         import minimax_code.tool_protocol as pkg
 
         assert not hasattr(pkg, "capabilities_from_wire")
+
+
+# -----------------------------------------------------------------------
+# R87 — registration payloads (TransportKind + the three structs +
+# RegistrationOutcome + registration_outcome_from_wire).
+# -----------------------------------------------------------------------
+
+
+class TestTransportKind:
+    """``TransportKind`` — snake_case StrEnum, no ``#[serde(other)]``."""
+
+    def test_member_values_are_wire_strings(self):
+        assert TransportKind.Local.value == "local"
+        assert TransportKind.Remote.value == "remote"
+
+    def test_to_wire_returns_member_value(self):
+        assert TransportKind.Local.to_wire() == "local"
+        assert TransportKind.Remote.to_wire() == "remote"
+
+    def test_from_wire_accepts_known(self):
+        assert TransportKind.from_wire("local") is TransportKind.Local
+        assert TransportKind.from_wire("remote") is TransportKind.Remote
+
+    def test_from_wire_rejects_unknown(self):
+        with pytest.raises(ValueError):
+            TransportKind.from_wire("cloud")
+
+
+class TestToolDescriptionWithSchema:
+    """``ToolDescriptionWithSchema`` — pydantic bridge + ``derive_tool_id``."""
+
+    def test_derive_tool_id_bare_name(self):
+        w = ToolDescriptionWithSchema(
+            description=ToolDescription(name="bash", description="d")
+        )
+        assert w.derive_tool_id() == ToolId("bash")
+
+    def test_derive_tool_id_namespaced(self):
+        w = ToolDescriptionWithSchema(
+            description=ToolDescription(
+                name="bash", namespace="shell", description="d"
+            )
+        )
+        assert w.derive_tool_id() == ToolId("shell:bash")
+
+    def test_to_wire_description_uses_model_dump_exclude_none(self):
+        # Only name/description are non-optional on ToolDescription; the
+        # four Option fields (namespace/title/arguments_schema/kind) omit
+        # when None, matching Rust's per-Option skip rule. The three
+        # optional wrappers on ToolDescriptionWithSchema omit too.
+        w = ToolDescriptionWithSchema(
+            description=ToolDescription(name="bash", description="Run a shell")
+        )
+        d = w.to_wire()
+        assert d == {"description": {"name": "bash", "description": "Run a shell"}}
+        assert "input_schema" not in d
+        assert "capabilities" not in d
+        assert "notification_schemas" not in d
+
+    def test_to_wire_namespaced_description_survives(self):
+        w = ToolDescriptionWithSchema(
+            description=ToolDescription(
+                name="bash", namespace="shell", description="d"
+            )
+        )
+        assert w.to_wire()["description"] == {
+            "name": "bash",
+            "namespace": "shell",
+            "description": "d",
+        }
+
+    def test_round_trip_with_optional_wrappers(self):
+        orig = ToolDescriptionWithSchema(
+            description=ToolDescription(name="bash", description="d"),
+            input_schema={"type": "object"},
+            capabilities=ToolCapabilities(supports_cancel=True),
+        )
+        back = ToolDescriptionWithSchema.from_wire(orig.to_wire())
+        assert back.description.name == "bash"
+        assert back.input_schema == {"type": "object"}
+        assert back.capabilities is not None
+        assert back.capabilities.supports_cancel is True
+
+
+class TestToolRegistration:
+    """``ToolRegistration`` — 11 fields, 3-state ``sessions``, manual key order."""
+
+    def _baseline(self) -> ToolRegistration:
+        return ToolRegistration(
+            tool_id=ToolId("bash"),
+            user_id=UserId("u1"),
+            description=ToolDescription(name="bash", description="d"),
+            transport_kind=TransportKind.Local,
+        )
+
+    def test_derive_tool_id_matches_payload(self):
+        reg = self._baseline()
+        assert reg.derive_tool_id() == reg.tool_id
+
+    def test_sessions_none_is_omitted(self):
+        # None (field omitted) = "no change" — must NOT appear on the wire.
+        assert "sessions" not in self._baseline().to_wire()
+
+    def test_sessions_empty_list_serialises(self):
+        # Explicit [] = "unbind every session" — must appear as an empty
+        # array (the whole point of the 3-state shape).
+        from dataclasses import replace
+
+        assert replace(self._baseline(), sessions=[]).to_wire()["sessions"] == []
+
+    def test_sessions_populated_serialises(self):
+        from dataclasses import replace
+
+        w = replace(
+            self._baseline(), sessions=[SessionId("s1"), SessionId("s2")]
+        ).to_wire()
+        assert w["sessions"] == ["s1", "s2"]
+
+    def test_required_fields_present_and_ordered(self):
+        w = self._baseline().to_wire()
+        keys = list(w.keys())
+        # tool_id leads the manual key order; transport_kind rides after
+        # description (Python dataclass reorders required-first, but wire
+        # order is hand-controlled to match Rust).
+        assert keys[0] == "tool_id"
+        assert "user_id" in w
+        assert "description" in w
+        assert "transport_kind" in w
+        assert keys.index("description") < keys.index("transport_kind")
+
+    def test_optional_fields_omit_when_none(self):
+        w = self._baseline().to_wire()
+        for opt in (
+            "server_id",
+            "input_schema",
+            "capabilities",
+            "notification_schemas",
+            "if_match_generation",
+            "metadata",
+        ):
+            assert opt not in w
+
+    def test_round_trip_full(self):
+        from dataclasses import replace
+
+        reg = replace(
+            self._baseline(),
+            sessions=[SessionId("s1")],
+            server_id=ServerId("srv1"),
+            if_match_generation=3,
+            transport_kind=TransportKind.Remote,
+        )
+        back = ToolRegistration.from_wire(reg.to_wire())
+        assert back.tool_id == ToolId("bash")
+        assert back.user_id == UserId("u1")
+        assert back.sessions == [SessionId("s1")]
+        assert back.server_id == ServerId("srv1")
+        assert back.if_match_generation == 3
+        assert back.transport_kind is TransportKind.Remote
+
+
+class TestToolServerRegistration:
+    """``ToolServerRegistration`` — ``String::is_empty`` skip, ``Vec`` always rides."""
+
+    def _baseline(self) -> ToolServerRegistration:
+        return ToolServerRegistration(
+            server_id=ServerId("srv1"),
+            user_id=UserId("u1"),
+            tools=[
+                ToolDescriptionWithSchema(
+                    description=ToolDescription(name="bash", description="d")
+                )
+            ],
+        )
+
+    def test_empty_description_is_omitted(self):
+        # skip_serializing_if = "String::is_empty" — the sixth serde
+        # sub-shape (bare String, not Option<String>, that still skips).
+        assert "description" not in self._baseline().to_wire()
+
+    def test_nonempty_description_rides(self):
+        from dataclasses import replace
+
+        assert (
+            replace(self._baseline(), description="My server").to_wire()["description"]
+            == "My server"
+        )
+
+    def test_empty_tools_still_serialise(self):
+        # Vec carries no skip — an empty batch still emits "tools": [].
+        from dataclasses import replace
+
+        assert replace(self._baseline(), tools=[]).to_wire()["tools"] == []
+
+    def test_empty_hooks_omitted(self):
+        assert "hooks" not in self._baseline().to_wire()
+
+    def test_round_trip(self):
+        from dataclasses import replace
+
+        srv = replace(
+            self._baseline(),
+            description="My server",
+            hooks=[HookKind.OnSessionOpen],
+            sessions=[SessionId("s1")],
+        )
+        back = ToolServerRegistration.from_wire(srv.to_wire())
+        assert back.server_id == ServerId("srv1")
+        assert back.description == "My server"
+        assert back.hooks == [HookKind.OnSessionOpen]
+        assert back.sessions == [SessionId("s1")]
+        assert len(back.tools) == 1
+        assert back.tools[0].description.name == "bash"
+
+
+class TestRegistrationOutcome:
+    """``RegistrationOutcome`` — internally-tagged enum (4 struct variants)."""
+
+    def test_registered_to_wire_stamps_tag(self):
+        r = Registered(tool_id=ToolId("ns:bash"), generation=7)
+        assert r.to_wire() == {
+            "outcome": "registered",
+            "tool_id": "ns:bash",
+            "generation": 7,
+        }
+
+    def test_updated_to_wire_stamps_tag(self):
+        u = Updated(tool_id=ToolId("ns:bash"), generation=9)
+        assert u.to_wire() == {
+            "outcome": "updated",
+            "tool_id": "ns:bash",
+            "generation": 9,
+        }
+
+    def test_shadowed_to_wire_stamps_tag(self):
+        s = Shadowed(tool_id=ToolId("ns:bash"), reason="leader elected")
+        assert s.to_wire() == {
+            "outcome": "shadowed",
+            "tool_id": "ns:bash",
+            "reason": "leader elected",
+        }
+
+    def test_rejected_to_wire_stamps_tag(self):
+        r = Rejected(
+            tool_id=ToolId("ns:bash"),
+            code="namespace_taken",
+            message="another server owns it",
+        )
+        assert r.to_wire() == {
+            "outcome": "rejected",
+            "tool_id": "ns:bash",
+            "code": "namespace_taken",
+            "message": "another server owns it",
+        }
+
+    def test_from_wire_dispatches_registered(self):
+        back = registration_outcome_from_wire(
+            {"outcome": "registered", "tool_id": "ns:bash", "generation": 7}
+        )
+        assert isinstance(back, Registered)
+        assert back.tool_id == ToolId("ns:bash")
+        assert back.generation == 7
+
+    def test_from_wire_dispatches_updated(self):
+        back = registration_outcome_from_wire(
+            {"outcome": "updated", "tool_id": "x", "generation": 2}
+        )
+        assert isinstance(back, Updated)
+        assert back.generation == 2
+
+    def test_from_wire_dispatches_shadowed(self):
+        back = registration_outcome_from_wire(
+            {"outcome": "shadowed", "tool_id": "x", "reason": "r"}
+        )
+        assert isinstance(back, Shadowed)
+        assert back.reason == "r"
+
+    def test_from_wire_dispatches_rejected(self):
+        back = registration_outcome_from_wire(
+            {"outcome": "rejected", "tool_id": "x", "code": "c", "message": "m"}
+        )
+        assert isinstance(back, Rejected)
+        assert back.code == "c"
+        assert back.message == "m"
+
+    def test_from_wire_rejects_unknown_tag(self):
+        with pytest.raises(ValueError):
+            registration_outcome_from_wire({"outcome": "nope", "tool_id": "x"})
+
+
+class TestPackageSurfaceR87:
+    """The R87 barrel re-exports the nine registration symbols."""
+
+    def test_barrel_exposes_registration_symbols(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in (
+            "TransportKind",
+            "ToolDescriptionWithSchema",
+            "ToolRegistration",
+            "ToolServerRegistration",
+            "RegistrationOutcome",
+            "Registered",
+            "Updated",
+            "Shadowed",
+            "Rejected",
+        ):
+            assert hasattr(pkg, name), f"barrel missing {name}"
+
+    def test_transportkind_is_strenum(self):
+        from enum import StrEnum
+
+        import minimax_code.tool_protocol as pkg
+
+        assert issubclass(pkg.TransportKind, StrEnum)
+
+    def test_registration_outcome_union_has_four_variants(self):
+        from typing import get_args
+
+        import minimax_code.tool_protocol as pkg
+
+        args = get_args(pkg.RegistrationOutcome)
+        assert len(args) == 4
+        assert set(args) == {
+            pkg.Registered,
+            pkg.Updated,
+            pkg.Shadowed,
+            pkg.Rejected,
+        }
+
+    def test_barrel_does_not_export_from_wire(self):
+        # registration_outcome_from_wire lives at module scope only — the
+        # barrel mirrors Rust lib.rs pub use of the type names, not the
+        # union dispatch helper (same discipline as jsonrpc_id_from_wire).
+        import minimax_code.tool_protocol as pkg
+
+        assert not hasattr(pkg, "registration_outcome_from_wire")

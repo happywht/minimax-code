@@ -1,4 +1,4 @@
-"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 — capabilities landed).
+"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 — registration landed).
 
 Fusion of grok-build's ``xai-tool-protocol`` crate — the wire DTOs for
 the computer-hub tool-server protocol: identifier newtypes, registration
@@ -12,9 +12,11 @@ dependency on the rest of the agent. The crate is large (6613 lines, 16
 modules); R82 lands the dependency-free **foundation layer**, R83 lands
 the three wire enums + the two ``error_codes`` helpers they unblock, R84
 lands the JSON-RPC 2.0 envelope, R85 lands the method catalog (the
-direct consumer of the envelope's ``method`` field), and R86 lands the
+direct consumer of the envelope's ``method`` field), R86 lands the
 per-tool capabilities bitset (the type of ``hello_ack.capabilities`` and
-a dependency of ``registration``):
+a dependency of ``registration``), and R87 lands the registration
+payloads (the first wire DTO to embed a pydantic model and the home of
+two new serde sub-shapes):
 
 * **R82** — :mod:`ids` (8 identifier newtypes + :class:`IdError`),
   :mod:`connection` (``ConnectionKind`` + ``ToolDefinitionMode``),
@@ -45,7 +47,7 @@ a dependency of ``registration``):
   / :data:`Method.ALL` and the fleet-compat-pinned
   :data:`UNKNOWN_METHOD_MSG_PREFIX`; the direct consumer of
   :mod:`envelope`'s ``method`` field).
-* **R86 (this round)** — :mod:`capabilities` (the per-tool
+* **R86** — :mod:`capabilities` (the per-tool
   wire-traveling capability bitset a tool advertises:
   :class:`ToolCapabilities` (9-field conservative-default struct, the
   type of ``hello_ack.capabilities``), :class:`StreamingSpec`,
@@ -53,7 +55,17 @@ a dependency of ``registration``):
   :class:`HookKind` / :class:`ToolScope`; the two ``bool`` fields always
   serialise even when ``False`` while the ``Option`` / ``Vec`` / ``HashMap``
   arms omit when ``None`` / empty — a fifth serde sub-shape landing here).
-* *deferred* — :mod:`registration`, :mod:`frames`
+* **R87 (this round)** — :mod:`registration` (the tool-server
+  registration payloads: :class:`ToolDescriptionWithSchema`,
+  :class:`ToolRegistration`, :class:`ToolServerRegistration`,
+  :class:`TransportKind`, and the four :data:`RegistrationOutcome`
+  variants; the crate's first wire DTO to embed a pydantic model
+  (:class:`~minimax_code.tool_types.ToolDescription`) inside the
+  hand-controlled ``to_wire`` layer, and the landing spot for two new
+  serde sub-shapes — the three-state ``Option<Vec<SessionId>>`` session
+  set and the ``skip_serializing_if = "String::is_empty"`` bare-string
+  skip on :attr:`ToolServerRegistration.description`).
+* *deferred* — :mod:`frames`
   (tool-server frame protocol, 1549 lines), :mod:`session_event`,
   :mod:`turn_hook`, :mod:`hook`, :mod:`registry_error`.
 
@@ -164,6 +176,17 @@ from minimax_code.tool_protocol.output_wire import (
     TextBlock,
     ToolOutputWire,
 )
+from minimax_code.tool_protocol.registration import (
+    Registered,
+    RegistrationOutcome,
+    Rejected,
+    Shadowed,
+    ToolDescriptionWithSchema,
+    ToolRegistration,
+    ToolServerRegistration,
+    TransportKind,
+    Updated,
+)
 
 __all__ = [
     # ids (R82)
@@ -253,4 +276,14 @@ __all__ = [
     "KNOWN_NOTIFICATION_KINDS",
     "known_notification_kinds",
     "check_custom_kind",
+    # registration (R87)
+    "TransportKind",
+    "ToolDescriptionWithSchema",
+    "ToolRegistration",
+    "ToolServerRegistration",
+    "RegistrationOutcome",
+    "Registered",
+    "Updated",
+    "Shadowed",
+    "Rejected",
 ]

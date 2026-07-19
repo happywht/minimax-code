@@ -6973,3 +6973,59 @@ feat(platform): R85 迁移 xai-tool-protocol methods.rs（JSON-RPC 方法目录 
 ### Commit
 
 `feat(platform): R86 迁移 xai-tool-protocol capabilities.rs（per-tool 能力位集 ToolCapabilities/StreamingSpec/HookKind/ToolScope/NotificationSchemas，handshake hello_ack.capabilities 类型 + registration 依赖，bool 总在/Option·Vec·HashMap 省略 serde 保真，362+2820 测试通过）`
+
+
+
+## R87 — registration.rs（工具服务器注册载荷，crate 首个 pydantic↔wire 桥 + 三态 sessions + String::is_empty skip）
+
+锚点:R87-1 a4e237e
+
+### 本轮目标
+
+迁移 grok `xai-tool-protocol/src/registration.rs`（164 行，lib.rs `pub use` 导出 9 符号——`TransportKind` + 3 结构体 + `RegistrationOutcome` 联合别名 + 4 结果变体类）到 Python `tool_protocol/registration.py`。该模块是工具服务器向 computer-hub 注册自身（或单个工具）的 wire 载荷 + hub 报回的 per-tool 结果。消费 R82 ids（ToolId/SessionId/UserId/ServerId）、R86 capabilities（ToolCapabilities/NotificationSchemas/HookKind）、R65 tool_types（ToolDescription pydantic 模型）。**crate 首个在手控 `to_wire` dict 层内嵌 pydantic 模型的 wire DTO**，并落地两个新 serde 子形态（三态 `Option<Vec<SessionId>>` + 裸 `String` 的 `String::is_empty` skip）。
+
+### 融合结论
+
+9 符号全部迁移，serde 保真逐字段对照 registration.rs：
+
+- `TransportKind` → `StrEnum` 2 变体（`local`/`remote`），`to_wire`/`from_wire`，未知 raise `ValueError`（无 `#[serde(other)]`，同 R86 HookKind/ToolScope 严格拒绝）。
+- `ToolDescriptionWithSchema` → `@dataclass` 4 字段（`description: ToolDescription` 必需 + `input_schema`/`capabilities`/`notification_schemas` 三 Option 省）。`derive_tool_id()`：有命名空间 → `"{ns}:{name}"`，否则裸 `name`，经 `ToolId(...)` 构造（IdError 从构造函数传播，匹配 Rust `Result<ToolId, IdError>`）。`description` 序列化用 `_description_to_wire()` = `desc.model_dump(exclude_none=True)`——**crate 首个 pydantic↔wire 桥**：`xai_tool_types::ToolDescription` 每个非必需字段有 `skip_serializing_if = "Option::is_none"` + 丢弃的 `extra` 有 `#[serde(skip)]`，`exclude_none=True` 精确复现；往返用 `ToolDescription.model_validate(data["description"])`。
+- `ToolRegistration` → `@dataclass` 11 字段（`tool_id`/`user_id`/`description`/`transport_kind` 必需 + `sessions`/`server_id`/`input_schema`/`capabilities`/`notification_schemas`/`if_match_generation`/`metadata` 七 Option）。**三态 `sessions: list[SessionId] | None`**：`None`=字段省略="无变化"（重新注册时保留既有绑定），`Some([])`=显式空数组="解绑所有会话"，`Some([...])`="替换为这些 id"。`to_wire` 用 `is not None`（显式 `[]` 序列化为空数组）；`from_wire` 用 `"sessions" in data`（缺失键→保持 None）。同样有 `derive_tool_id()`。手控 key 序（tool_id 先、transport_kind 后于 description，匹配 Rust 字段序；Python dataclass 强制非默认字段在前，但 wire 序手控）。
+- `ToolServerRegistration` → `@dataclass` 9 字段（`server_id`/`user_id`/`tools` 必需 + `sessions`/`title`/`description`/`hooks`/`if_match_generation`/`metadata`）。`tools`（`Vec`）总序列化（即使空，无 skip）。`description: str = ""`——**第六种 serde 子形态**：裸 `String`（非 `Option<String>`）但有 `#[serde(default, skip_serializing_if = "String::is_empty")]`，空串省略、非空骑。`to_wire` 用 `if self.description:`；`hooks` 空 Vec 省略（`if self.hooks:`）。`sessions` 同 ToolRegistration 三态。
+- `RegistrationOutcome` = `Registered | Updated | Shadowed | Rejected` 联合别名（内部标签 `#[serde(tag = "outcome", rename_all = "snake_case")]` 四结构体变体，同 R83 ToolErrorWire 的 `code` 标签 + R82 ToolDefinitionMode 的 `mode` 标签形态）。每变体 `@dataclass` + 自带 `to_wire`（stamps `"outcome": "<variant>"` 标签）。模块级 `registration_outcome_from_wire` 经 `_OUTCOME_VARIANTS` 字典按 `outcome` 标签调度（联合别名不能像具体类那样挂 classmethod，镜像 R84 `jsonrpc_id_from_wire`）。`Registered`/`Updated` 带 `generation`；`Shadowed` 带 `reason`；`Rejected` 带 `code`+`message`。
+
+### 交付
+
+- `agent/minimax_code/tool_protocol/registration.py`（540 行，9 符号 + 严格 serde 保真 + pydantic 桥 + 三态 sessions + String::is_empty skip + 内部标签联合调度）
+- `agent/minimax_code/tool_protocol/__init__.py`（barrel：+registration import 块（isort 置于 output_wire 后）+ `__all__` `# registration (R87)` 组（9 名）+ docstring R87 要点 + deferred 列表删 `registration`）
+- `agent/tests/test_tool_protocol.py`（+34 测试方法：`TestTransportKind` 4 / `TestToolDescriptionWithSchema` 5 / `TestToolRegistration` 7 / `TestToolServerRegistration` 5 / `TestRegistrationOutcome` 9 / `TestPackageSurfaceR87` 4）
+- `docs/evolution/ITERATION_LOG.md`（本条目）
+
+### 映射决策树 + 坑
+
+1. **pydantic↔wire 桥（crate 首例）**：`ToolDescription` 是 pydantic BaseModel（R65 迁移的 `xai_tool_types`），其余 protocol 层全用手控 `to_wire` dict。桥接：出向 `model_dump(exclude_none=True)`（精确匹配 Rust 每 Option 字段 `skip_serializing_if` + `extra` 的 `#[serde(skip)]`），入向 `model_validate(data["description"])`。提取 `_description_to_wire()` 辅助函数保每处 serde 保真一致。**坑**：必须 `exclude_none=True`，否则 None 字段会序列化成 `"namespace": null`，wire 形态与 Rust（省略键）不一致。
+2. **三态 `Option<Vec<SessionId>>`（第一个新子形态）**：`None`/`Some([])`/`Some([...])` 三态语义。Python 用 `list[SessionId] | None` + `is not None` 判断（**关键**：不能 `if self.sessions`，否则空 `[]` 被当 falsy 省略——必须 `is not None`）。`from_wire` 用 `"sessions" in data` 区分缺失键（None）与显式 `[]`。`test_sessions_none_is_omitted` + `test_sessions_empty_list_serialises` + `test_sessions_populated_serialises` 三测试钉死三态。
+3. **`skip_serializing_if = "String::is_empty"` 裸 String（第二个新子形态，crate 第六种）**：`ToolServerRegistration.description: str = ""`，非 `str | None`。`to_wire` 用 `if self.description:`（空串 falsy 省略）。这是 crate 第六种 serde 子形态（前五种：bool 总在 R86、Option 省、Vec 空 R86、HashMap 空 R86、transparent-newtype R82 ids）。`test_empty_description_is_omitted` + `test_nonempty_description_rides` 钉死。
+4. **内部标签联合的 from_wire 调度**：`RegistrationOutcome` 是 `Registered | Updated | Shadowed | Rejected` 联合别名。Python 联合不能像具体 dataclass 那样挂 `from_wire` classmethod（联合本身无类体）。决策：模块级 `registration_outcome_from_wire` + `_OUTCOME_VARIANTS` 字典（wire 标签 → 变体类）调度，镜像 R84 `jsonrpc_id_from_wire`（`JsonRpcId` 联合的首例）。`test_from_wire_rejects_unknown_tag` 钉死未知标签 `ValueError`。
+5. **`derive_tool_id` 返回类型**：Rust `Result<ToolId, IdError>`；Python 直接返回 `ToolId`，让 `IdError` 从 `ToolId(...)` 构造函数传播（R82 已建立的 newtype 模式）。两个类（`ToolDescriptionWithSchema` + `ToolRegistration`）都有 `derive_tool_id()`（同逻辑，因 Rust 两个结构体各自 impl 此方法）。
+6. **dataclass 字段序约束**：Python 强制非默认字段在默认字段前。Rust 字段序（`ToolRegistration`：tool_id, sessions, user_id, ...）与 Python dataclass 不兼容（sessions 有默认但排在 user_id 无默认前）。决策：Python 重排必需字段在前（tool_id/user_id/description/transport_kind），`to_wire` 手控 key 序匹配 Rust。JSON key 序语义无关，但手控保 wire 形态一致。
+7. **坑（测试漏导入）**：barrel 导入块按字母序插入 R87 的 9 符号时分多次 ASCII 锚点 Edit。**踩坑**：第一次误判 `TransportClosed`/`UserId` 相邻（实际中间隔 `UnsupportedProtocolVersion`），Edit 失败。修正后重跑 ruff 发现 `Updated` + `ToolServerRegistration` 两个符号漏插入（按字母序 U 在 UnsupportedProtocolVersion/UserId 之间、ToolServerRegistration 在 ToolScope/TransportClosed 之间）——F821 暴露。补两次 Edit 修复。另外 `RegistrationOutcome` 在测试里只用 `pkg.RegistrationOutcome`（属性访问），barrel 直接导入未引用 → F401，移除该导入（测试通过 `import ... as pkg` 访问）。**教训**：批量按字母序插入多个符号时，先 grep 确认每个相邻锚点真实存在，避免基于记忆的相邻假设。
+8. **IdError F401 清理**：registration.py docstring 引用 `:class:`~minimax_code.tool_protocol.ids.IdError``，但代码不直接用 `IdError`（它从 `ToolId(...)` 构造函数传播）。初版加 `_ = IdError` hack 抑制 F401；清理为删除导入（docstring 用完整路径，不需 import）。更干净。
+
+### 验证
+
+- `uv run ruff check minimax_code/tool_protocol tests/test_tool_protocol.py` → **All checks passed!**（零 E/F/W/I/B/UP；修复 2 个漏导入 F821 + 1 个未用 F401 后 CLEAN）
+- `uv run pytest tests/test_tool_protocol.py -q` → **396 passed**（362 R86 基线 + 34 R87 = 396）
+- `uv run pytest -q`（全量回归）→ **2854 passed, 10 skipped, 1 warning**（2820 R86 + 34 R87 = 2854，零失败零附带损害；warning 是无关的 fastapi/httpx deprecation）
+
+### YAGNI 边界
+
+- **未迁移** registration.rs 的 hub 端业务逻辑（注册路由、generation 单调递增、shadow 优先级仲裁）——不在协议 crate 范围，协议层只定义 wire DTO + 结果枚举。
+- `RegistrationOutcome` 联合别名不挂 `from_wire` classmethod（联合无类体）——模块级 `registration_outcome_from_wire` 是 Rust enum `#[serde]` 的 Python 等价，不额外加工厂方法。
+- `_description_to_wire()` 仅封装 `model_dump(exclude_none=True)`——看似一行，但语义重（crate 首个 pydantic 桥的 serde 契约），独立函数保每处调用一致 + 可单测。
+- `ToolRegistration.derive_tool_id` 与 `ToolDescriptionWithSchema.derive_tool_id` 逻辑重复——但 Rust 两者都有此方法（结构体各自 impl），Python 保留两份匹配 Rust，不强行抽公共函数（DRY 让位于 wire 保真映射的 1:1 可追溯）。
+- **crate 延迟模块**（lib.rs 声明）：`frames`(1549 行，工具服务器帧协议), `session_event`(404), `turn_hook`(700), `hook`(22), `registry_error`(47)。R88+ 按依赖序迁移（registry_error 最小 47 行可能先）。
+
+### Commit
+
+`feat(platform): R87 迁移 xai-tool-protocol registration.rs（工具服务器注册载荷 TransportKind/ToolDescriptionWithSchema/ToolRegistration/ToolServerRegistration/RegistrationOutcome 4 变体，crate 首个 pydantic↔wire 桥 + 三态 Option<Vec<SessionId>> sessions + 裸 String String::is_empty skip 第六种 serde 子形态 + 内部标签联合 registration_outcome_from_wire 调度，396+2854 测试通过）`
