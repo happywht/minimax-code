@@ -8785,3 +8785,55 @@ SessionOpenResult 后）+ ``__all__`` R103 新组 +5。
 ### Commit
 
 `feat(platform): R103 migrate frames.rs simplified lifecycle serve domain`
+
+
+## R104 — 迁移 frames.rs hooks 域（HookFrame + HookReplyFrame，首个 union-typed event 字段消费 R89 HookEvent）
+
+锚点:R103-1 221e57e
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-tool-protocol/src/frames.rs` 第 700-814 行的 hooks 域：`HookFrame`（harness→tool-server 推送，6 字段：`session_id` + `event` 必需，`tool_id` / `call_id` / `hook_id` / `trace_context` 四个 Option skip）+ `HookReplyFrame`（tool-server→harness 回执，3 字段全必需：`session_id` / `hook_id` / `result`）。核心挑战：`HookFrame.event` 是 `HookEvent` 变体联合（R89），这是 frames.py 自 R92 起首个 union-typed 字段——之前所有 frames.py 字段都是标量 / StrEnum / 嵌套 struct，从不是 variant union。
+
+### 融合结论
+
+union-typed 字段的 wire 契约通过**委托**完成，不内联展开联合：
+
+- `to_wire`：`"event": self.event.to_wire()`——把联合的序列化责任委托给变体自身的 `to_wire`（`Cancel.to_wire()` / `Custom.to_wire()` 等，R89 已实现）。frames.py 不需要知道联合有几个变体。
+- `from_wire`：`hook_event_from_wire(data["event"])`——委托给 R89 的模块级分发器（按 `"type"` tag 派发到 5 变体）。frames.py 的 `hook_frame_from_wire` 只负责拆出 `event` 子 dict 交给分发器。
+
+这与 R88 `RegistryError` / R87 `RegistrationOutcome` 的"模块级 `*_from_wire` 分发器 + 类型别名联合"模式完全对称——联合类型无法承载 classmethod，所以 to_wire 散落到每个变体，from_wire 收敛到模块级函数。R104 是该模式首次在 **frames.py 字段层**被消费（之前只在枚举模块自身内部）。
+
+`HookReplyFrame.result` 是 `serde_json::Value` → Python `object`（opaque JSON，按原样往返），复用 R93 PingFrame/PongFrame 已建立的"自定义 Serialize/Deserialize 不触碰内部值"惯例。
+
+### 交付
+
+| 文件 | 变更 |
+|------|------|
+| `agent/minimax_code/tool_protocol/frames.py` | +2 dataclass（HookFrame 6 字段 + HookReplyFrame 3 字段）+2 `*_from_wire` 转换器；+hook 子模块导入块（HookEvent / hook_event_from_wire）+__all__ 4 项 |
+| `agent/minimax_code/tool_protocol/__init__.py` | barrel +2 类型 re-export（HookFrame / HookReplyFrame）；from_wire 转换器按惯例不 re-export |
+| `agent/tests/test_tool_protocol.py` | +14 测试（3 类）：TestHookFrame（7）/ TestHookReplyFrame（4）/ TestHookDomainBarrelR104（3） |
+
+### 映射决策树 + 坑
+
+1. **关键坑 — barrel `Custom` 不是 hook 的 `Custom`**：初版测试用 `Custom(kind=..., payload=...)` 构造 hook event，报 `TypeError: Custom.__init__() got an unexpected keyword argument 'kind'`。根因：barrel 的 `Custom`（line 254）是 **error_wire.Custom（R83）**，不是 hook.py 的 Custom。barrel 只 `pub use hook::HookEvent`（line 346），**不 re-export 各变体**——既镜像 Rust lib.rs，又避免与 error_wire.Custom 同名冲撞。R89 已建立 SOP：hook.py 的 Custom 在 test 里用别名 **`HookCustom`**（line 272 `Custom as HookCustom`）。修复：R104 测试里 3 处 `Custom(...)` / `isinstance(..., Custom)` → `HookCustom`。
+2. **dataclass 字段顺序 ≠ Rust 源顺序**：Rust `HookFrame` 字段顺序是 session_id / event / tool_id / call_id / hook_id / trace_context（event 在第 2），但 Python dataclass 要求**非默认字段在默认字段前**，event（无默认）必须在 4 个 Option（默认 None）之前——好在 session_id 也是非默认，所以 session_id / event 在前，4 Option 在后。wire dict 顺序不受影响（to_wire 手动构造 dict，先写 session_id + event）。
+3. **union event 字段的类型窄化**：`hook_event_from_wire(data["event"])` 中 `data` 是 `dict[str, object]`，`data["event"]` 静态类型是 `object`，但运行时是 dict——需要 `# type: ignore[arg-type]`（与 R89 hook.py 内部分发器的窄化场景一致）。
+4. **from_wire 不 re-export 测试断言方向**：初版断言 `tp.hook_event_from_wire is hook_event_from_wire` 错误（barrel 没有该属性）。修正为**反向断言**——验证 hook 变体（Cancel）+ dispatcher 都**不在** barrel，与 wire 转换器惯例一致。
+5. **isort 插入点**：类型导入块 'h' 边界清晰（HelloAckMsg/HelloMsg/HookKind），HookFrame 插在 HelloMsg 与 HookKind 之间、HookReplyFrame 插在 HookKind 之后；from_wire 块无 'h' 函数，hook_frame/hook_reply 插在 bind_tool_session_params_from_wire 与 last_seq_from_wire 之间。手动排序一次过 ruff（0 I001）。
+
+### 验证
+
+- `uv run ruff check tests/test_tool_protocol.py minimax_code/tool_protocol/frames.py minimax_code/tool_protocol/__init__.py` → **All checks passed!**（0 error，手动 isort 一次过）
+- `uv run pytest tests/test_tool_protocol.py -q` → **903 passed**（889 + 14 新，3 类全绿）
+- `uv run pytest -q`（完整套件）→ **3361 passed, 10 skipped, 0 failed** in 110.01s（预先存在的 flaky `test_reliability.py::test_open_to_half_open_after_cooldown` 本次负载下时机良好，通过；R104 不触及可靠性栈）
+
+### YAGNI 边界
+
+- **不迁 HookFrame 的 6 个 Rust 构造函数方法**（`cancel` / `pause` / `resume` / `session_ended` / `custom` / `custom_request` / `with_trace_context`）：这些是 ergonomic helper（构造常用变体 + 链式 trace_context），非 wire 契约。frames.py dataclass 自 R92 起只保留 to_wire/from_wire，无工厂方法——保持 wire 层职责单一。调用方直接 `HookFrame(session_id=..., event=Cancel())` 即可。
+- **不迁 `ToolsChanged`**（frames.rs 820-828，4 字段 session_id + added/removed/updated Vec<ToolId> 带空 skip）：这是独立的 service→harness 推送域（运行中工具集变更通知），语义与 hooks（harness↔tool-server 双向控制）不同。推迟到 R105 作为独立域迁移。
+- **HookReplyFrame.result 不做类型收窄**：Rust 是 `serde_json::Value`，Python 用 `object` 透传，不引入 `JsonValue` 联合类型——wire 层只需往返保真，类型收窄是消费层（未来的 hook handler）的职责。
+
+### Commit
+
+`feat(platform): R104 migrate frames.rs hooks domain`

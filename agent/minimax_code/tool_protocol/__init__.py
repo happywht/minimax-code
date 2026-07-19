@@ -275,6 +275,8 @@ from minimax_code.tool_protocol.frames import (
     AttachRoute,
     BindToolSessionAck,
     BindToolSessionParams,
+    HookFrame,
+    HookReplyFrame,
     LastSeq,
     LogsDonateParams,
     MetricsDonateParams,
@@ -619,4 +621,9 @@ __all__ = [
     "SessionBindParams",
     "SessionBindResult",
     "SessionUnbindParams",
+    # R104 — hooks (consumes R89 HookEvent union via event.to_wire() +
+    # hook_event_from_wire(); first frames.py field typed as a variant union).
+    # 2 types travel the barrel; from_wire converters stay submodule-qualified.
+    "HookFrame",
+    "HookReplyFrame",
 ]

@@ -63,7 +63,9 @@ from minimax_code.tool_protocol import (
     FrameSeq,
     HelloAckMsg,
     HelloMsg,
+    HookFrame,
     HookKind,
+    HookReplyFrame,
     IdError,
     ImageBlock,
     Internal,
@@ -198,6 +200,8 @@ from minimax_code.tool_protocol.error_wire import from_wire as error_from_wire
 from minimax_code.tool_protocol.frames import (
     bind_tool_session_ack_from_wire,
     bind_tool_session_params_from_wire,
+    hook_frame_from_wire,
+    hook_reply_frame_from_wire,
     last_seq_from_wire,
     logs_donate_params_from_wire,
     metrics_donate_params_from_wire,
@@ -6627,3 +6631,205 @@ class TestServeLifecycleBarrelR103:
 
         for name in self._converters:
             assert not hasattr(pkg, name), f"barrel should not export {name}"
+
+
+# ===========================================================================
+# Hooks domain (R104) — HookFrame + HookReplyFrame
+#
+# First frames.py field typed as a HookEvent variant union: to_wire delegates
+# to self.event.to_wire(), from_wire dispatches via hook_event_from_wire().
+# Four Option-skip arms (tool_id / call_id / hook_id / trace_context) drop
+# from the wire when None; HookReplyFrame is all-required, result round-trips
+# as an opaque JSON value.
+# ===========================================================================
+
+
+class TestHookFrame:
+    """HookFrame.to_wire / hook_frame_from_wire round-trips."""
+
+    def test_minimal_unit_variant_round_trip(self) -> None:
+        """Required session_id + event (Cancel) only — the four Option arms
+        are None and therefore absent from the wire."""
+        frame = HookFrame(session_id=SessionId("s1"), event=Cancel())
+        wire = frame.to_wire()
+        assert wire == {
+            "session_id": "s1",
+            "event": {"type": "Cancel"},
+        }
+        for absent in ("tool_id", "call_id", "hook_id", "trace_context"):
+            assert absent not in wire
+
+        back = hook_frame_from_wire(dict(wire))
+        assert back.session_id == SessionId("s1")
+        assert isinstance(back.event, Cancel)
+        assert back.tool_id is None
+        assert back.call_id is None
+        assert back.hook_id is None
+        assert back.trace_context is None
+
+    def test_custom_variant_event_round_trip(self) -> None:
+        """Custom variant carries kind + payload through the nested event."""
+        frame = HookFrame(
+            session_id=SessionId("s2"),
+            event=HookCustom(kind="on_save", payload={"path": "/tmp/x"}),
+        )
+        wire = frame.to_wire()
+        assert wire["event"] == {
+            "type": "Custom",
+            "kind": "on_save",
+            "payload": {"path": "/tmp/x"},
+        }
+        back = hook_frame_from_wire(dict(wire))
+        assert isinstance(back.event, HookCustom)
+        assert back.event.kind == "on_save"
+        assert back.event.payload == {"path": "/tmp/x"}
+
+    def test_all_option_arms_present(self) -> None:
+        """All four Option arms set — each appears in the wire and survives."""
+        frame = HookFrame(
+            session_id=SessionId("s3"),
+            event=Pause(),
+            tool_id=ToolId("fs:read"),
+            call_id=ToolCallId("call-1"),
+            hook_id="hook-1",
+            trace_context="trace-1",
+        )
+        wire = frame.to_wire()
+        assert wire == {
+            "session_id": "s3",
+            "event": {"type": "Pause"},
+            "tool_id": "fs:read",
+            "call_id": "call-1",
+            "hook_id": "hook-1",
+            "trace_context": "trace-1",
+        }
+        back = hook_frame_from_wire(dict(wire))
+        assert back.tool_id == ToolId("fs:read")
+        assert back.call_id == ToolCallId("call-1")
+        assert back.hook_id == "hook-1"
+        assert back.trace_context == "trace-1"
+
+    def test_partial_option_arms(self) -> None:
+        """Only some Option arms set — the rest stay absent from the wire."""
+        frame = HookFrame(
+            session_id=SessionId("s4"),
+            event=Resume(),
+            tool_id=ToolId("fs:write"),
+            hook_id="hook-2",
+        )
+        wire = frame.to_wire()
+        assert "tool_id" in wire and "hook_id" in wire
+        assert "call_id" not in wire and "trace_context" not in wire
+        back = hook_frame_from_wire(dict(wire))
+        assert back.tool_id == ToolId("fs:write")
+        assert back.call_id is None
+        assert back.hook_id == "hook-2"
+        assert back.trace_context is None
+
+    def test_all_five_event_variants_dispatch(self) -> None:
+        """Every HookEvent variant survives the to_wire -> from_wire trip
+        when nested inside a frame."""
+        cases = [
+            Cancel(),
+            Pause(),
+            Resume(),
+            SessionEnded(),
+            HookCustom(kind="custom_kind", payload=[1, 2, 3]),
+        ]
+        for ev in cases:
+            frame = HookFrame(session_id=SessionId("sx"), event=ev)
+            back = hook_frame_from_wire(dict(frame.to_wire()))
+            assert type(back.event) is type(ev)
+
+    def test_from_wire_missing_session_id_raises(self) -> None:
+        """session_id is required — its absence surfaces as KeyError."""
+        with pytest.raises(KeyError):
+            hook_frame_from_wire({"event": {"type": "Cancel"}})
+
+    def test_from_wire_missing_event_raises(self) -> None:
+        """event is required."""
+        with pytest.raises(KeyError):
+            hook_frame_from_wire({"session_id": "s1"})
+
+
+class TestHookReplyFrame:
+    """HookReplyFrame — three required fields, result is opaque JSON."""
+
+    def test_round_trip_basic(self) -> None:
+        reply = HookReplyFrame(
+            session_id=SessionId("s1"),
+            hook_id="hook-1",
+            result={"decision": "proceed", "code": 0},
+        )
+        wire = reply.to_wire()
+        assert wire == {
+            "session_id": "s1",
+            "hook_id": "hook-1",
+            "result": {"decision": "proceed", "code": 0},
+        }
+        back = hook_reply_frame_from_wire(dict(wire))
+        assert back.session_id == SessionId("s1")
+        assert back.hook_id == "hook-1"
+        assert back.result == {"decision": "proceed", "code": 0}
+
+    def test_result_round_trips_arbitrary_json(self) -> None:
+        """result mirrors serde_json::Value — any JSON shape travels verbatim."""
+        for payload in (
+            "just a string",
+            42,
+            3.14,
+            True,
+            None,
+            [1, "two", False],
+            {"nested": {"deep": [1, 2]}},
+        ):
+            reply = HookReplyFrame(
+                session_id=SessionId("s1"), hook_id="h", result=payload
+            )
+            back = hook_reply_frame_from_wire(dict(reply.to_wire()))
+            assert back.result == payload
+
+    def test_from_wire_missing_hook_id_raises(self) -> None:
+        with pytest.raises(KeyError):
+            hook_reply_frame_from_wire({"session_id": "s1", "result": {}})
+
+    def test_from_wire_missing_result_raises(self) -> None:
+        with pytest.raises(KeyError):
+            hook_reply_frame_from_wire({"session_id": "s1", "hook_id": "h"})
+
+
+class TestHookDomainBarrelR104:
+    """R104 barrel contract — HookFrame/HookReplyFrame travel the barrel;
+    from_wire converters stay submodule-qualified (never re-exported)."""
+
+    def test_types_re_exported(self) -> None:
+        import minimax_code.tool_protocol as tp
+
+        assert "HookFrame" in tp.__all__
+        assert "HookReplyFrame" in tp.__all__
+        assert tp.HookFrame is HookFrame
+        assert tp.HookReplyFrame is HookReplyFrame
+
+    def test_from_wire_not_re_exported(self) -> None:
+        """Wire converters live only on the frames submodule — the barrel
+        never re-exports them, mirroring every prior frame domain."""
+        import minimax_code.tool_protocol as tp
+
+        assert "hook_frame_from_wire" not in tp.__all__
+        assert "hook_reply_frame_from_wire" not in tp.__all__
+        assert not hasattr(tp, "hook_frame_from_wire")
+        assert not hasattr(tp, "hook_reply_frame_from_wire")
+
+    def test_hook_event_dependency_re_exported(self) -> None:
+        """HookFrame consumes the R89 HookEvent union, which the barrel
+        re-exports for direct construction. The hook variants (Cancel /
+        Custom / ...) and the from_wire dispatcher stay submodule-qualified
+        — the barrel mirrors Rust ``pub use hook::HookEvent`` only, both to
+        avoid clobbering error_wire.Custom (R83) and to honour the
+        frames-wire convention that converters never travel the barrel."""
+        import minimax_code.tool_protocol as tp
+
+        assert tp.HookEvent is HookEvent
+        # Variants + dispatcher are NOT barrel-re-exported.
+        assert not hasattr(tp, "Cancel")
+        assert not hasattr(tp, "hook_event_from_wire")

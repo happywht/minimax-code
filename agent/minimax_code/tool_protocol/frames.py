@@ -147,6 +147,10 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from minimax_code.tool_protocol.connection import ToolDefinitionMode
+from minimax_code.tool_protocol.hook import (
+    HookEvent,
+    hook_event_from_wire,
+)
 from minimax_code.tool_protocol.ids import (
     ConnectionId,
     FrameSeq,
@@ -266,6 +270,11 @@ __all__ = [
     "SessionBindParams",
     "SessionBindResult",
     "SessionUnbindParams",
+    # hooks (R104 — consumes R89 HookEvent union via event.to_wire() +
+    # hook_event_from_wire(); first frames.py field typed as a variant union.
+    # Four Option-skip arms + required session_id/event; all-required reply)
+    "HookFrame",
+    "HookReplyFrame",
     # wire converters
     "tool_call_params_from_wire",
     "tool_call_result_from_wire",
@@ -330,6 +339,9 @@ __all__ = [
     "session_bind_params_from_wire",
     "session_bind_result_from_wire",
     "session_unbind_params_from_wire",
+    # hooks (R104)
+    "hook_frame_from_wire",
+    "hook_reply_frame_from_wire",
 ]
 
 
@@ -2721,3 +2733,109 @@ class SessionUnbindParams:
 def session_unbind_params_from_wire(data: dict[str, object]) -> SessionUnbindParams:
     """Reconstruct :class:`SessionUnbindParams` (empty; ignores ``data``)."""
     return SessionUnbindParams()
+
+
+# ── Hooks (harness ↔ tool-server, both directions) ────────────────────────
+
+
+@dataclass
+class HookFrame:
+    """``hook`` frame body (R104), routed in both directions through the hub.
+
+    harness → tool-server for forward hooks (e.g. ``Cancel``, ``SessionEnded``);
+    tool-server → harness for reverse request/response hooks (e.g. permission
+    requests). :attr:`event` is the R89
+    :data:`~minimax_code.tool_protocol.hook.HookEvent` union — the first
+    frames.py field typed as a variant union, lifted via ``event.to_wire()``
+    / :func:`~minimax_code.tool_protocol.hook.hook_event_from_wire`.
+
+    Field order differs from the Rust source: ``event`` is required (no
+    ``#[serde(default)]``) so it must precede the four ``Option``-with-default
+    arms in this dataclass (Python forbids a non-default field after a
+    defaulted one). Wire order is dict-key order and is unaffected.
+    """
+
+    session_id: SessionId
+    event: HookEvent
+    #: Call-scoped target. Omit for session-wide (broadcast) hooks; required
+    #: for call-scoped hooks like ``Cancel``.
+    #: ``#[serde(default, skip_serializing_if = "Option::is_none")]``.
+    tool_id: ToolId | None = None
+    #: Call-scoped target id. Required for ``Cancel``; optional otherwise.
+    #: ``#[serde(default, skip_serializing_if = "Option::is_none")]``.
+    call_id: ToolCallId | None = None
+    #: Correlation id for a request/response hook. The requester mints it and
+    #: the responder echoes it in :class:`HookReplyFrame`. ``None`` for
+    #: fire-and-forget hooks (``Cancel``, ``SessionEnded``).
+    #: ``#[serde(default, skip_serializing_if = "Option::is_none")]``.
+    hook_id: str | None = None
+    #: W3C ``traceparent`` (mirrors :attr:`ToolCallParams.trace_context`).
+    #: ``#[serde(default, skip_serializing_if = "Option::is_none")]``.
+    trace_context: str | None = None
+
+    def to_wire(self) -> dict[str, object]:
+        wire: dict[str, object] = {
+            "session_id": self.session_id,
+            "event": self.event.to_wire(),
+        }
+        if self.tool_id is not None:
+            wire["tool_id"] = self.tool_id
+        if self.call_id is not None:
+            wire["call_id"] = self.call_id
+        if self.hook_id is not None:
+            wire["hook_id"] = self.hook_id
+        if self.trace_context is not None:
+            wire["trace_context"] = self.trace_context
+        return wire
+
+
+def hook_frame_from_wire(data: dict[str, object]) -> HookFrame:
+    """Reconstruct :class:`HookFrame`.
+
+    :attr:`session_id` / :attr:`event` are required (no ``#[serde(default)]``);
+    the four ``Option`` arms default to ``None`` when the wire omits them.
+    :attr:`event` dispatches via
+    :func:`~minimax_code.tool_protocol.hook.hook_event_from_wire`.
+    """
+    return HookFrame(
+        session_id=SessionId(str(data["session_id"])),
+        event=hook_event_from_wire(data["event"]),  # type: ignore[arg-type]
+        tool_id=ToolId(str(data["tool_id"])) if "tool_id" in data else None,
+        call_id=ToolCallId(str(data["call_id"])) if "call_id" in data else None,
+        hook_id=str(data["hook_id"]) if "hook_id" in data else None,
+        trace_context=str(data["trace_context"]) if "trace_context" in data else None,
+    )
+
+
+@dataclass
+class HookReplyFrame:
+    """``hook_reply`` frame body (R104): reply to a request/response
+    :class:`HookFrame`, correlated by :attr:`hook_id`.
+
+    All three fields are required (no ``#[serde(default)]``, no
+    ``skip_serializing_if``); :attr:`result` is an opaque JSON value
+    (``serde_json::Value``), round-tripped verbatim (mirrors
+    :attr:`ToolCallParams.arguments`).
+    """
+
+    session_id: SessionId
+    #: Echoed from the originating :attr:`HookFrame.hook_id`.
+    hook_id: str
+    #: Opaque JSON value (``serde_json::Value``).
+    result: object
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "hook_id": self.hook_id,
+            "result": self.result,
+        }
+
+
+def hook_reply_frame_from_wire(data: dict[str, object]) -> HookReplyFrame:
+    """Reconstruct :class:`HookReplyFrame` (all fields required)."""
+    return HookReplyFrame(
+        session_id=SessionId(str(data["session_id"])),
+        hook_id=str(data["hook_id"]),
+        result=data["result"],
+    )
