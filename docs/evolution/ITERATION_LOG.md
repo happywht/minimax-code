@@ -9685,3 +9685,63 @@ Rust 的 `#[async_trait] pub trait ToolDispatch: Send + Sync` 形态（一个 ab
 ### Commit
 
 `feat(platform): R115 migrate xai-computer-hub-core transport.rs (Principal struct + Transport object-safe trait + TransportKind re-export, crate first leaf, new computer_hub_core package, consumes R82 protocol + R107-R114 runtime)`
+
+## R116 — 迁移 xai-computer-hub-core registry.rs（ToolRegistry object-safe trait + 4 outcome/report 值类型 + ServerRecord + HLC，crate 第 2 块叶子）
+
+锚点:R115-1 73b58f3
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-computer-hub-core/src/registry.rs`（306 行 Rust）。这是 xai-computer-hub-core crate 的**第二块叶子**（R115 落地 transport.rs 第 1 块）。本块交付：
+- `ToolRegistry` object-safe trait -> `abc.ABC`（8 async mutating + 7 sync view + 1 concrete `get_server_id`）
+- `ToolSessionBindOutcome` / `ToolSessionUnbindOutcome` 进程内判别式枚举
+- `ConnectionCleanupReport` / `SessionCleanupReport` Default 数据类
+- `ServerRecord` eq=False 数据类（无 PartialEq derive）
+- `next_registration_seq` 混合逻辑时钟（HLC）
+- 同时**纠正 R115 docstring 中 "ToolRegistry 将保持 Protocol" 的预判错误**
+
+### 融合结论
+
+registry.rs 是 xai-computer-hub-core 的路由状态机核心。它定义了 router 解析工具时的 object-safe 抽象 —— 两个实现平面（in-memory 静态注册 + connection-keyed 远程注册）都实现同一个 `Arc<dyn ToolRegistry>`，由 `CompoundResolver`（后续 round）组合。**关键洞察**：registry.rs 与 resolver.rs 存在真正的双向循环依赖（registry.find_tool 返回 `Option<ResolvedTool>`，resolver 持有 `Arc<dyn ToolRegistry>`），这与 R109 tool<->render 循环同构 —— 用 `TYPE_CHECKING` + `from __future__ import annotations` 破除，与 R109 完全一致。
+
+**R115 预判纠正**：R115 transport.py docstring（line 33-35）预测 ToolRegistry "将保持为 Protocol，因为它们是 duck-typed seams"。**基于 registry.rs 源码这是错误的** —— ToolRegistry 是 `#[async_trait] pub trait ToolRegistry: Send + Sync + Debug`，resolver.rs:216 持有 `Arc<dyn ToolRegistry>`，是 object-safe 动态分发，与 Transport (R115) / ToolDispatch (R113) 同族。R116 registry.py module docstring 专门有一个 "R115 docstring correction" 章节记录此纠正。structural-Protocol 家族（Tool/ToolDyn/ToolFamily R109, ToolSearchIndex R112）保持 Protocol 不变。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_core/registry.py`（481 行）：完整模块，含 R115 纠正章节 docstring
+- `agent/minimax_code/computer_hub_core/__init__.py`（扩展 barrel，leaf 2 标注 R116，重导出 7 个 registry 符号）
+- `agent/tests/test_computer_hub_core_registry.py`（35 个测试）
+
+### 映射决策树+坑
+
+| Rust 构造 | Python 落地 | 决策依据 |
+|---|---|---|
+| `#[async_trait] pub trait ToolRegistry: Send + Sync + Debug` | `class ToolRegistry(abc.ABC)` | object-safe（`Arc<dyn ToolRegistry>` 确认），纠正 R115 Protocol 预判 |
+| 8 async mutating 方法 | `@abc.abstractmethod async def` x8 | split sync/async trait 接口，registry.rs 源码确认 |
+| 7 sync view 方法 | `@abc.abstractmethod def` x7 | 同上 |
+| `fn get_server_id`（默认主体委托 `get_server_record`） | 具体 `def get_server_id`（非 abstractmethod） | R113 模式（abstract trait + 1 concrete provided method） |
+| `enum ToolSessionBindOutcome`（4 变体） | `enum.Enum + auto()` x4 | 进程内判别式（从不序列化）-> 非 StrEnum |
+| `enum ToolSessionUnbindOutcome`（3 变体） | `enum.Enum + auto()` x3 | 同上 |
+| `#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]` report | `@dataclass` + `int = 0` 默认值 | Default 特性 + 字段 eq |
+| `#[derive(Debug, Clone)]` ServerRecord（无 PartialEq） | `@dataclass(eq=False)` | serde_json::Value/chrono 非 Eq |
+| `static REGISTRATION_CLOCK: AtomicU64` CAS loop | 模块级 `_registration_clock: int = 0` + `threading.Lock` + `max(candidate, prev+1)` | HLC 严格单调 + epoch-seeded |
+| registry<->resolver 双向循环 | `if TYPE_CHECKING: from ...resolver import ResolvedTool` + future annotations | 镜像 R109 tool<->render 循环破除 |
+
+**坑**：
+1. **进程内 vs wire 枚举分野**：`ToolSessionBindOutcome`（进程内 4 变体，含 `Conflict` registry-internal）vs `xai_tool_protocol::ToolSessionBindOutcome`（wire 子集，含 `SessionNotBound` router-injected）。进程内用普通 Enum，从不序列化 -> 非 StrEnum。`Conflict` 由 router 提升为顶级 `ServerError::ToolBindingConflict` (-32600)。
+2. **HLC epoch-seeded 测试鲁棒性**：Rust 原始测试用 `stamp >> 10 >= now_ms` 比较墙钟，但在 prev+1 fallback 路径下（前一次 burst 推高了 clock）会 flaky。Python 测试改用"高位解码为近年 datetime"（2024-2035）断言，对 fallback 路径鲁棒。
+
+### 验证
+
+- `uv run ruff check registry.py __init__.py test_computer_hub_core_registry.py`：All checks passed（4 自动修复：I001 import 排序 x2 + UP017 datetime.UTC x2，全部 scoped 到 R116 文件，零连带）
+- `uv run pytest tests/test_computer_hub_core_registry.py`：**35 passed in 0.36s**
+- 完整套件回归：**3673 passed, 10 skipped in 111.75s**（零回归）
+
+### YAGNI 边界
+
+- **不落地具体 registry 实现**（Rust docstring 明确：具体 in-memory 实现需要并发故事 —— sharded maps / actor，属于 registry 的 collision matrix + generation handling 之外）。本模块只交付 trait + outcome/report 值类型 + HLC；具体存储平面后续 round 落地。测试用 per-test mock 实现验证 trait 形状，与 Rust crate 做法一致。
+- **不消费 ResolvedTool 运行时**：find_tool 返回 `ResolvedTool | None` 的注解是 deferred string（`from __future__ import annotations`），不触发运行时导入，循环保持破除状态。
+
+### Commit
+
+feat(platform): R116 migrate xai-computer-hub-core registry.rs (ToolRegistry abc.ABC + 4 outcome/report value types + ServerRecord + next_registration_seq HLC, crate leaf 2, consumes R65/R82-R106/R112, corrects R115 Protocol prediction)

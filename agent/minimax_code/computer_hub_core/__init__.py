@@ -5,9 +5,9 @@ between the tool *runtime* (:mod:`minimax_code.tool_runtime`, the
 execution contract) and the *router* (the agent-orchestration layer that
 decides which tool runs where): it owns the object-safe
 :class:`Transport` abstraction (local vs remote dispatch), the
-:class:`Principal` identity value, the ``ToolRegistry`` session-binding
-state machine, the ``CompoundResolver`` tool-resolution strategy, and the
-``RemoteToolProxy`` connection-forwarding layer.
+:class:`Principal` identity value, the :class:`ToolRegistry`
+session-binding state machine, the ``CompoundResolver`` tool-resolution
+strategy, and the ``RemoteToolProxy`` connection-forwarding layer.
 
 Why a separate package
 ----------------------
@@ -30,8 +30,11 @@ The crate's ``lib.rs`` re-exports six modules. The dependency order is:
 1. ``transport`` (R115) — :class:`Principal` + :class:`Transport` ABC +
    :class:`TransportKind` re-export. Foundation: every other leaf threads
    a :class:`Transport` in its signatures.
-2. ``registry`` (later) — ``ToolRegistry`` session bind/unbind state
-   machine + ``ConnectionCleanupReport`` / ``SessionCleanupReport``.
+2. ``registry`` (R116) — :class:`ToolRegistry` ABC (object-safe trait;
+   8 async mutating + 7 sync view + 1 concrete ``get_server_id``) +
+   :class:`ToolSessionBindOutcome` / :class:`ToolSessionUnbindOutcome` +
+   :class:`ConnectionCleanupReport` / :class:`SessionCleanupReport` +
+   :class:`ServerRecord` + :func:`next_registration_seq` HLC.
 3. ``resolver`` (later) — ``CompoundResolver`` / ``ErasedTool`` /
    ``ResolvedTool`` / ``ToolHandle``.
 4. ``inner`` (later) — ``InnerDispatchForResolver`` (the dispatch adapter
@@ -43,13 +46,33 @@ The crate's ``lib.rs`` re-exports six modules. The dependency order is:
    ``is_workspace_unavailable`` / ``output_to_value`` /
    ``progress_from_frame`` / ``tool_error_from_wire``).
 
-R115 lands leaf 1 only; this barrel will grow one module per round.
+R116 lands leaves 1-2; this barrel will grow one module per round.
 """
 
+from minimax_code.computer_hub_core.registry import (
+    ConnectionCleanupReport,
+    ServerRecord,
+    SessionCleanupReport,
+    ToolRegistry,
+    ToolSessionBindOutcome,
+    ToolSessionUnbindOutcome,
+    next_registration_seq,
+)
 from minimax_code.computer_hub_core.transport import (
     Principal,
     Transport,
     TransportKind,
 )
 
-__all__ = ["Principal", "Transport", "TransportKind"]
+__all__ = [
+    "ConnectionCleanupReport",
+    "Principal",
+    "SessionCleanupReport",
+    "ServerRecord",
+    "ToolRegistry",
+    "ToolSessionBindOutcome",
+    "ToolSessionUnbindOutcome",
+    "Transport",
+    "TransportKind",
+    "next_registration_seq",
+]
