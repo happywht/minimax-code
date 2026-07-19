@@ -9075,3 +9075,79 @@ R108 后 tool_runtime 包导出 12 符号，覆盖 crate 8 模块中的 2 个（
 ### Commit
 
 `feat(platform): R108 migrate xai-tool-runtime context.rs (TypedExtensions + contexts + bind metadata)`
+
+## R109 — migrate xai-tool-runtime tool.rs (Tool/ToolDyn traits + streaming primitives + TypedToolOutput)
+
+锚点:R108-1 76c0d2e
+
+### 本轮目标
+
+迁移 `grok-build` 的 `xai-tool-runtime::tool`（`crates/xai-tool-runtime/src/tool.rs`）—— 这是该 crate 的**第三个叶子模块**，也是迄今结构最复杂的一个。它同时承载两层语义：
+
+1. **契约层**（tool 作者编码的接口）：`trait Tool`（typed）+ `trait ToolDyn`（type-erased，dispatcher 持有）+ `trait ToolFamily`（多变体工具族）+ `enum ToolVariant`。
+2. **运行时原语层**（dispatcher 驱动的流式构件）：`ToolStream<T>` / `ToolStreamItem<T>` / `ToolProgress` / `ContentBlock` / `terminal_only` / `with_progress` / `TypedToolOutput` / `default_capabilities`。
+
+本轮目标是把这 13 个公共符号完整落到 `agent/minimax_code/tool_runtime/tool.py`，**不引入任何模块级循环导入**，并配套 37 个测试锁定 serde 往返、异步生成器行为与 Protocol 符号可导入性。
+
+### 融合结论
+
+`tool.rs` 与 `render.rs` 在 Rust crate 内**互相引用**（tool 导入 render 的 `ToolChatCompletionResponse` / `ToolOutput`；render 导入 tool 的 `ContentBlock`）。Rust 容忍 crate 内循环，**Python 不容忍顶层模块循环导入**。融合决策：**把这对循环拆成两轮**——
+
+- **R109（本轮）**：`tool.py` 在**运行时绝不导入 render**。所有 render 类型引用走 `if TYPE_CHECKING:` 块 + `from __future__ import annotations`（PEP 563 把注解变成字符串，永不求值）。唯一的运行时接触点是 `TypedToolOutput.from_value` 调用 `extract_content_blocks`，用**函数局部延迟导入**，仅在 `from_value` 实际执行时解析（且 render 在 R110 落地后才解析得到）。
+- **R110（下一轮）**：`render.py` 在**模块级单向导入** `tool.ContentBlock`。运行时依赖边变成单向（render -> tool），**无环**。
+
+这套两轮拆分是本轮的决定性架构贡献——在不牺牲类型安全的前提下，把 Rust 的 crate 内循环映射成 Python 的无环依赖图，且本轮可独立验证（测试通过 `sys.modules` 注入 fake render 证明延迟导入 seam 正确）。
+
+### 交付
+
+| 文件 | 类型 | 行数 | 内容 |
+|------|------|------|------|
+| `agent/minimax_code/tool_runtime/tool.py` | 新增源模块 | 728 | 13 个公共符号（3 Protocol + 6 dataclass + 2 async generator + 1 helper + 1 TypeAlias 对） |
+| `agent/tests/test_tool_runtime_tool.py` | 新增测试 | 491 | 37 个测试（ContentBlock 8 + ToolProgress 6 + ToolStreamItem 4 + terminal_only/with_progress 5 + TypedToolOutput 5 + ToolVariant 3 + default_capabilities 2 + Protocol/alias 4） |
+| `agent/minimax_code/tool_runtime/__init__.py` | 扩展 barrel | 98 | `__all__` 从 12 个符号扩到 25 个；新增 R109 docstring 段落解释 tool/render 两轮拆分 |
+| `docs/evolution/ITERATION_LOG.md` | 追加 | — | 本条目 |
+
+**迁移的 13 个符号**（`__all__` 顺序）：
+`ArcTool`、`ArcToolFamily`、`ContentBlock`、`Tool`、`ToolDyn`、`ToolFamily`、`ToolProgress`、`ToolStream`、`ToolStreamItem`、`ToolVariant`、`TypedToolOutput`、`terminal_only`、`with_progress`。
+
+### 映射决策树+坑
+
+1. **`ToolStream<T>` -> `TypeAlias = AsyncIterator[ToolStreamItem[T]]`**：Rust `Pin<Box<dyn Stream<Item = ToolStreamItem<T>> + Send>>` 的 Python 等价是 async iterator。`T = TypeVar("T")` 模块级声明，`ToolStream` 用下标保留终端项的成功类型。**坑**：测试 `test_tool_stream_alias_importable` 一开始用 `assert isinstance(ToolStream, type) or ToolStream is AsyncIterator` 失败 —— `ToolStream` 是 `types.GenericAlias`（`AsyncIterator[...]` 的下标结果），两者都不是。**修复**：改用 `from typing import get_origin; assert get_origin(ToolStream) is AsyncIterator`（GenericAlias 的 origin 是底层 abc）。
+
+2. **`ToolStreamItem<T>` -> `@dataclass class ToolStreamItem(Generic[T])`**：Rust `enum { Progress(ToolProgress), Terminal(Result<T, ToolError>) }` externally-tagged 枚举 -> 一个带 `kind` 判别符的通用 dataclass + `Progress`/`Terminal` 类方法构造函数。`Terminal` 项的 `terminal` 字段持 `T | ToolError`；`is_error()` 通过 `isinstance(self.terminal, ToolError)` 区分 `Err` 与 `Ok`。**坑（自我造成的严重 hack，编写时发现并立即移除）**：一度写出 `class ToolStreamItem(Generic := None)` 占位 + `del` + 重新导入 `Generic` 的丑陋 hack，严重违反 KISS。**修复**：把 `Generic` 加进顶部 `from typing import`，删整个占位块，只留干净的 `@dataclass class ToolStreamItem(Generic[T]):`。Grep 确认所有 hack 模式已清除。
+
+3. **`ToolProgress` / `ContentBlock`（serde tag="kind"/"type"）-> 单 dataclass + 判别符 + 类方法构造 + to_dict/from_dict**：Rust `#[serde(tag = "kind", rename_all = "snake_case")]` internally-tagged 枚举 -> 一个带判别符字段的 dataclass + `Text`/`Content`/`Custom`（resp. `Text`/`Image`/`Resource`）类方法构造函数 + 往返方法。`ContentBlock.Image` 解码时同时接受 `mime_type` 与 `mimeType` 别名（Rust `#[serde(alias = "mimeType")]`），用 `data.get("mime_type") or data.get("mimeType")` 双读。未知 type/kind 在 to_dict 与 from_dict 双向均 `raise ValueError`。
+
+4. **`terminal_only<T>(result)` / `with_progress<T,P,F>(progress, terminal)` -> async generator**：Rust 返回 `ToolStream<T>` 的构造函数 -> Python `async def` + `yield`。`terminal_only` yield 单个 `Terminal(result)`；`with_progress` 先 yield `Progress`，再 `await terminal`，再 yield `Terminal(result)`。**关键测试**：`test_with_progress_awaits_terminal_between_items` 用 `order` 列表副作用证明顺序是 `["progress", "awaited", "terminal"]`（即 awaitable 在两个 yield 之间解析），锁定 Rust `with_progress` 的 progress-first 语义。
+
+5. **`TypedToolOutput`（field 即 trait 实现）-> dataclass**：Rust struct + `impl ToolOutput for TypedToolOutput`（`model_output()` / `chat_completion_output()` 方法体返回字段值）。Python 映射：**字段即 trait 实现** —— `model_output` / `chat_completion_output` 字段本身就是可读属性，无需单独的 accessor 方法（docstring 显式说明"field IS the trait impl"）。`from_value(tool_id, value)` 用**函数局部延迟导入** `from minimax_code.tool_runtime.render import extract_content_blocks` 推导 `model_output`；`with_chat_completion_output(cco)` 是 builder，设字段后返回 self（cco 传 None 即清空）。**坑（ruff F401）**：最初 `TYPE_CHECKING` 块同时导入 `ToolOutput` 和 `ToolChatCompletionResponse`，但 `ToolOutput` 从未在注解中出现（只在 docstring 提及）-> F401 unused import。**修复**：从 `TYPE_CHECKING` 导入移除 `ToolOutput`，只留 `ToolChatCompletionResponse`；ToolOutput 的角色在 TypedToolOutput docstring 中说明（字段即 trait 实现）。
+
+6. **`trait Tool` -> `Protocol`（无 `@runtime_checkable`）**：Rust trait 有两个关联类型（`type Args` / `type Output`）和 7 个方法（4 个带默认体）。Python `Protocol` 无关联类型也无默认体：关联类型降为文档概念（Args/Output 都 surface 为 `Any`，dispatcher 才知道具体类型）；默认体行为（`capabilities` -> `default()`；`has_dynamic_description` -> `False`；`should_list` -> `True`；`execute` 委托 `run`）逐方法 docstring 文档化。`:func:default_capabilities` helper 给 tool 作者提供 Rust 默认，无需重复字段列表。blanket `impl<T: Tool> ToolDyn for T` 的 output->TypedToolOutput 这一步在本轮用 `from_value` 实现；完整 async stream-mapping（驱动 `Tool::execute` 并逐项 re-tag）留给 `dispatch` 模块（YAGNI，直到有 caller 驱动）。
+
+7. **`trait ToolDyn` / `trait ToolFamily` -> `Protocol`**：同 Tool，方法体用 `...`，docstring 文档化 Rust 语义。`ToolFamily` 的 4 方法（id/get_tool/variants/default_variant_name）全部保留。
+
+8. **`enum ToolVariant { Default, Variant(String) }` -> dataclass + 类方法**：`kind` 判别符（"default"/"variant"）+ `name` 字段（Variant 持名，Default 为 None）+ `Default()`/`Variant(name)` 构造 + `is_default()`。`@dataclass` 自带的 `__eq__` 复刻 Rust `derive(PartialEq)`（测试 `test_tool_variant_default_equals_default` 逐字验证相等性语义）。
+
+9. **`ArcTool = Arc<dyn ToolDyn>` / `ArcToolFamily = Arc<dyn ToolFamily>` -> `TypeAlias = Protocol`**：Python 对象天然引用共享（无 Arc），Protocol 是结构类型，别名即协议类型本身（`ArcTool is ToolDyn`，测试 `test_trait_protocols_and_aliases_are_importable` 断言）。
+
+10. **Test fake_render 上下文管理器**：render.py 尚不存在（R110），测试用 `sys.modules` 注入伪 `minimax_code.tool_runtime.render` 模块（导出 `extract_content_blocks`），finally 块恢复或清除原条目，**确保注入不跨测试泄漏**。这证明 `from_value` 的延迟导入 seam 在 R110 真实 render 落地前就可独立验证。
+
+### 验证
+
+- `uv run ruff check tool.py __init__.py test_tool_runtime_tool.py` -> **All checks passed!**（零警告；F401 修复后无需 --fix；isort 一次过；`BLE` 不在 select 中故 `except Exception` 无需 noqa —— 本轮 tool.py 实际无 try/except，但延续 R108 的安全基线）
+- `uv run pytest tests/test_tool_runtime_tool.py` -> **37 passed in 0.33s**
+- 回归 `uv run pytest tests/test_tool_runtime.py tests/test_tool_runtime_context.py` -> **81 passed**（R107 47 + R108 34 全过，barrel 扩展不破坏 error/context 模块）
+- 关键测试锁定：ContentBlock 三变体往返 + mimeType 别名双读 + 可选字段省略 + 未知 type 双向 raise；ToolProgress 三变体 + Content 嵌套 blocks + Custom payload 透明；ToolStreamItem Progress/Terminal + is_terminal/is_error（Ok vs Err via isinstance ToolError）；terminal_only/with_progress 异步生成器行为 + ordering（progress-awaited-terminal 副作用证明）+ 错误路径；TypedToolOutput 直接构造 + via fake_render from_value + with_chat_completion_output builder + None 清空；ToolVariant Default/Variant + 相等性；default_capabilities 全 off + 每次新实例；3 Protocol + 2 alias 可导入；ToolStream 别名 `get_origin` 验证；ToolStreamItem Generic 可下标
+
+### YAGNI 边界
+
+- **blanket `impl<T: Tool> ToolDyn for T` 的 async stream-mapping** 不迁移：完整实现是"驱动 `Tool::execute`，逐 `ToolStreamItem` re-tag，Ok 项 `TypedToolOutput.from_value`，Err 项透传 `ToolError`"。这是 dispatcher 的职责，留给 `dispatch` 模块（YAGNI，直到有 caller 驱动）。本轮只迁移 output->TypedToolOutput 这一步（`from_value`）。
+- **关联类型 `Args` / `Output` 的精确类型**：Python 动态类型下退化为 `Any`，调用方/ dispatcher 自行断言。PEP 695 泛型方法需 Python 3.12+（项目 3.11+），YAGNI 不引入 TypeVar 复杂性（与 R108 TypedExtensions.get 同决策）。
+- **`Tool::run` 的 `not_implemented` 默认体**：Protocol 方法无默认体，本轮用 docstring 文档化"返回 Err(ToolError::not_implemented)"的 Rust 默认语义，不引入 NotImplementedError 占位（避免误导 caller 以为有真实实现；Protocol 本身不实例化）。
+- **`ToolFamily` 的 dispatcher 集成**（按 inbound call 解析 variant name + fetch tool）：留给 dispatch 模块。本轮只迁移契约形状。
+- **`ToolCapabilities::default()` helper 的 `default()` 类方法**：R86 的 `ToolCapabilities` dataclass 所有字段均有默认值，`ToolCapabilities()` 即 `default()`，无需额外类方法（与 R108 记录一致）。
+- **render 模块的 `ToolOutput` trait**：本轮不迁移 render（R110 才落地）。`TypedToolOutput` 的两个字段在类型层面引用 `ToolChatCompletionResponse`（TYPE_CHECKING 字符串注解），运行时无 render 依赖。
+
+### Commit
+
+`feat(platform): R109 migrate xai-tool-runtime tool.rs (Tool/ToolDyn traits + streaming primitives + TypedToolOutput)`
