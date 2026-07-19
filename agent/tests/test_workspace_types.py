@@ -57,6 +57,7 @@ from minimax_code.workspace_types import (
     McpServerStatus,
     MemoryChunk,
     Metadata,
+    OpsChunk,
     PermissionDecision,
     PermissionPolicy,
     PermissionRequest,
@@ -71,16 +72,19 @@ from minimax_code.workspace_types import (
     RipgrepArgs,
     RipgrepStats,
     ServerStatus,
+    SessionChunk,
     SessionId,
     SessionLifecycleRequest,
     SkillInfo,
     ToolCallArgs,
     ToolCallId,
     ToolCallResult,
+    ToolChunk,
     ToolDef,
     ToolOutputChunk,
     ToolProgress,
     ToolRequest,
+    ToolResponse,
     ToolServerConfig,
     UserAnswer,
     UserQuestion,
@@ -1200,3 +1204,330 @@ class TestWorkspaceRequest:
         # "events" is the subscription type, not a WorkspaceRequest variant.
         with pytest.raises(ValueError):
             WorkspaceRequest.from_wire({"type": "events", "data": None})
+
+
+# --------------------------------------------------------------------- R81 chunks
+
+
+class TestOpsChunk:
+    """OpsChunk adjacent-tagged enum (R81, 17 variants)."""
+
+    def test_vcs_newtype_payloads_delegate_to_wire(self):
+        status = GitStatus(branch="main", staged=["a.py"], clean=False)
+        assert OpsChunk.git_status(status).to_wire() == {
+            "type": "git_status",
+            "data": status.to_wire(),
+        }
+        diff = GitDiff(patch="@@")
+        assert OpsChunk.git_diff(diff).to_wire() == {"type": "git_diff", "data": diff.to_wire()}
+        info = GitBranchInfo(current="main", local=["main", "dev"], upstream="origin/main")
+        assert OpsChunk.git_branch_info(info).to_wire() == {
+            "type": "git_branch_info",
+            "data": info.to_wire(),
+        }
+
+    def test_git_metadata_none_option_emits_json_null(self):
+        # Option<GitMetadata> — _payload(None) -> None -> data slot is null.
+        assert OpsChunk.git_metadata(None).to_wire() == {"type": "git_metadata", "data": None}
+        md = GitMetadata(origin_url="u", root="/r", default_branch="main")
+        assert OpsChunk.git_metadata(md).to_wire() == {"type": "git_metadata", "data": md.to_wire()}
+
+    def test_vec_newtype_variants_carry_list(self):
+        hunk = Hunk(id=HunkId("h1"), path="a.rs", added=3, removed=1, start_line=10, summary="fix")
+        assert OpsChunk.hunks([hunk]).to_wire() == {"type": "hunks", "data": [hunk.to_wire()]}
+        rf = ResolvedFile(reference="@x", path="/x", resolved=True, preview="p", error=None)
+        assert OpsChunk.resolved_files([rf]).to_wire() == {
+            "type": "resolved_files",
+            "data": [rf.to_wire()],
+        }
+        mc = MemoryChunk(id="m1", content="b", source="/s", score=0.5)
+        assert OpsChunk.memory_chunks([mc]).to_wire() == {"type": "memory_chunks", "data": [mc.to_wire()]}
+        # empty-list payloads still render the wire list (not null).
+        assert OpsChunk.skills([SkillInfo.default()]).to_wire()["data"] == [
+            SkillInfo.default().to_wire()
+        ]
+        assert OpsChunk.plugins([]).to_wire() == {"type": "plugins", "data": []}
+        assert OpsChunk.plugin(PluginInfo.default()).to_wire()["type"] == "plugin"
+
+    def test_singleton_and_unit_payloads(self):
+        pc = ProjectConfig(values={"b": "2", "a": "1"}, trusted=True)
+        assert OpsChunk.project_config(pc).to_wire() == {"type": "project_config", "data": pc.to_wire()}
+        pol = PermissionPolicy(allow=["x"], deny=["y"], ask=["z"])
+        assert OpsChunk.permissions(pol).to_wire() == {"type": "permissions", "data": pol.to_wire()}
+        # unit variant
+        assert OpsChunk.ack().to_wire() == {"type": "ack", "data": None}
+
+    def test_envrc_sorts_keys_btreemap(self):
+        # BTreeMap<String, String>: keys sorted for wire determinism
+        # regardless of insertion order (same rationale as Metadata).
+        chunk = OpsChunk.envrc({"m": "3", "Z": "1", "a": "2"})
+        assert chunk.to_wire() == {"type": "envrc", "data": {"Z": "1", "a": "2", "m": "3"}}
+
+    def test_streaming_newtype_variants(self):
+        fm = FuzzyMatch(path="src/main.rs", score=-12, matched_indices=[0, 1])
+        assert OpsChunk.fuzzy_match(fm).to_wire() == {"type": "fuzzy_match", "data": fm.to_wire()}
+        cm = ContentMatch(path="a.rs", line_number=4, line="fn main", spans=[MatchSpan(start=0, end=2)])
+        assert OpsChunk.ripgrep_hit(cm).to_wire() == {"type": "ripgrep_hit", "data": cm.to_wire()}
+        rs = RipgrepStats(files_matched=3, lines_matched=9, truncated=False)
+        assert OpsChunk.ripgrep_done(rs).to_wire() == {"type": "ripgrep_done", "data": rs.to_wire()}
+
+    def test_kind_map_is_exhaustive_over_variants(self):
+        assert set(OpsChunk._VARIANTS) == set(OpsChunk._KIND_MAP)
+        assert len(OpsChunk._KIND_MAP) == 17
+
+    def test_chunk_kind_returns_typed_discriminator(self):
+        assert OpsChunk.ack().chunk_kind() is ChunkKind.Ack
+        status = GitStatus(branch="main", staged=["a.py"], clean=False)
+        assert OpsChunk.git_status(status).chunk_kind() is ChunkKind.GitStatus
+        assert OpsChunk.git_metadata(None).chunk_kind() is ChunkKind.GitMetadata
+
+    def test_all_17_variants_round_trip_via_from_wire(self):
+        samples = [
+            OpsChunk.git_status(GitStatus(branch="main", staged=["a.py"], clean=False)),
+            OpsChunk.git_diff(GitDiff(patch="@@")),
+            OpsChunk.git_branch_info(GitBranchInfo(current="main")),
+            OpsChunk.git_metadata(GitMetadata(origin_url="u", root="/r", default_branch="main")),
+            OpsChunk.git_metadata(None),
+            OpsChunk.hunks(
+                [Hunk(id=HunkId("h1"), path="a.rs", added=3, removed=1, start_line=10, summary="fix")]
+            ),
+            OpsChunk.skills([SkillInfo.default()]),
+            OpsChunk.plugins([PluginInfo.default()]),
+            OpsChunk.project_config(ProjectConfig(values={"b": "2"}, trusted=True)),
+            OpsChunk.permissions(PermissionPolicy(allow=["x"], deny=["y"], ask=["z"])),
+            OpsChunk.envrc({"k": "v"}),
+            OpsChunk.resolved_files(
+                [ResolvedFile(reference="@x", path="/x", resolved=True, preview="p", error=None)]
+            ),
+            OpsChunk.memory_chunks([MemoryChunk(id="m1")]),
+            OpsChunk.plugin(PluginInfo.default()),
+            OpsChunk.ack(),
+            OpsChunk.fuzzy_match(FuzzyMatch(path="x", score=0, matched_indices=[])),
+            OpsChunk.ripgrep_hit(ContentMatch(path="x", line_number=1, line="l", spans=[])),
+            OpsChunk.ripgrep_done(RipgrepStats(files_matched=3, lines_matched=9, truncated=False)),
+        ]
+        assert len(samples) == 18  # 17 variants + the git_metadata(None) Option duplicate
+        assert len({s.to_wire()["type"] for s in samples}) == 17  # 17 distinct wire tags
+        for s in samples:
+            wire = s.to_wire()
+            back = OpsChunk.from_wire(wire)
+            assert back.to_wire() == wire
+
+
+class TestSessionChunk:
+    """SessionChunk adjacent-tagged enum (R81, 5 variants)."""
+
+    def test_session_id_newtype_passes_str_subclass_through(self):
+        # SessionId has no to_wire — _payload passes the str subclass through;
+        # the dict comparison holds via str-subclass equality.
+        chunk = SessionChunk.session_id(SessionId("s-1"))
+        assert chunk.to_wire() == {"type": "session_id", "data": "s-1"}
+
+    def test_session_info_newtype(self):
+        info = AgentSessionInfo(id=SessionId("s1"))
+        assert SessionChunk.session_info(info).to_wire() == {
+            "type": "session_info",
+            "data": info.to_wire(),
+        }
+
+    def test_rewind_result_newtype(self):
+        rr = RewindResult(session=SessionId("s1"), head_prompt_index=5, prompts_dropped=2)
+        assert SessionChunk.rewind_result(rr).to_wire() == {
+            "type": "rewind_result",
+            "data": rr.to_wire(),
+        }
+
+    def test_rewind_points_vec(self):
+        rp = RewindPoint(prompt_index=3, at=_EPOCH, summary="before refactor")
+        assert SessionChunk.rewind_points([rp]).to_wire() == {
+            "type": "rewind_points",
+            "data": [rp.to_wire()],
+        }
+
+    def test_ack_unit_variant(self):
+        assert SessionChunk.ack().to_wire() == {"type": "ack", "data": None}
+
+    def test_kind_map_is_exhaustive(self):
+        assert set(SessionChunk._VARIANTS) == set(SessionChunk._KIND_MAP)
+        assert len(SessionChunk._KIND_MAP) == 5
+
+    def test_ack_maps_to_session_ack_not_ack(self):
+        # The trap: tag "ack" in SessionChunk maps to ChunkKind.SessionAck
+        # (value "session_ack"), NOT ChunkKind.Ack (value "ack" — that is
+        # OpsChunk::Ack's discriminator). Both chunk enums expose an Ack arm
+        # but they map to distinct ChunkKind variants; hence the explicit
+        # _KIND_MAP rather than ChunkKind(self.kind).
+        assert SessionChunk.ack().chunk_kind() is ChunkKind.SessionAck
+        assert OpsChunk.ack().chunk_kind() is ChunkKind.Ack
+        assert ChunkKind.Ack != ChunkKind.SessionAck
+        assert ChunkKind.Ack.value == "ack"
+        assert ChunkKind.SessionAck.value == "session_ack"
+
+    def test_chunk_kind_for_every_variant(self):
+        assert SessionChunk.session_id(SessionId("s")).chunk_kind() is ChunkKind.SessionId
+        assert (
+            SessionChunk.session_info(AgentSessionInfo(id=SessionId("s"))).chunk_kind()
+            is ChunkKind.SessionInfo
+        )
+        assert (
+            SessionChunk.rewind_result(RewindResult(session=SessionId("s"))).chunk_kind()
+            is ChunkKind.RewindResult
+        )
+        assert SessionChunk.rewind_points([]).chunk_kind() is ChunkKind.RewindPoints
+
+    def test_all_5_variants_round_trip(self):
+        samples = [
+            SessionChunk.session_id(SessionId("s-1")),
+            SessionChunk.session_info(AgentSessionInfo(id=SessionId("s1"))),
+            SessionChunk.rewind_result(
+                RewindResult(session=SessionId("s1"), head_prompt_index=5, prompts_dropped=2)
+            ),
+            SessionChunk.rewind_points([RewindPoint(prompt_index=3, at=_EPOCH, summary="x")]),
+            SessionChunk.ack(),
+        ]
+        assert len(samples) == 5
+        assert len({s.to_wire()["type"] for s in samples}) == 5
+        for s in samples:
+            wire = s.to_wire()
+            back = SessionChunk.from_wire(wire)
+            assert back.to_wire() == wire
+
+
+class TestToolChunk:
+    """ToolChunk adjacent-tagged enum (R81, 7 variants)."""
+
+    def test_stream_body_newtype_variants(self):
+        out = ToolOutputChunk(call_id=ToolCallId("c1"))
+        assert ToolChunk.output(out).to_wire() == {"type": "output", "data": out.to_wire()}
+        prog = ToolProgress.started(ToolCallId("c1"))
+        assert ToolChunk.progress(prog).to_wire() == {"type": "progress", "data": prog.to_wire()}
+        res = ToolCallResult(call_id=ToolCallId("c1"), exit_code=2, summary="done")
+        assert ToolChunk.final(res).to_wire() == {"type": "final", "data": res.to_wire()}
+
+    def test_definitions_vec_newtype(self):
+        d = ToolDef(name="read_file", requires_permission=True)
+        assert ToolChunk.definitions([d]).to_wire() == {"type": "definitions", "data": [d.to_wire()]}
+
+    def test_need_permission_struct_carries_req_id(self):
+        # struct variant: {req_id, request} — bidi handshake correlation id.
+        req = PermissionRequest(tool_name="rm", summary="x", input_json="{}", destructive=True)
+        chunk = ToolChunk.need_permission("req-1", req)
+        assert chunk.to_wire() == {
+            "type": "need_permission",
+            "data": {"req_id": "req-1", "request": req.to_wire()},
+        }
+
+    def test_need_user_answer_struct(self):
+        q = UserQuestion(question="q?", options=[UserQuestionOption(label="L")], multi_select=True)
+        chunk = ToolChunk.need_user_answer("req-2", [q])
+        assert chunk.to_wire() == {
+            "type": "need_user_answer",
+            "data": {"req_id": "req-2", "questions": [q.to_wire()]},
+        }
+
+    def test_need_plan_mode_change_struct(self):
+        tr = PlanModeTransition.enter("draft")
+        chunk = ToolChunk.need_plan_mode_change("req-3", tr)
+        assert chunk.to_wire() == {
+            "type": "need_plan_mode_change",
+            "data": {"req_id": "req-3", "transition": tr.to_wire()},
+        }
+
+    def test_kind_map_is_exhaustive(self):
+        assert set(ToolChunk._VARIANTS) == set(ToolChunk._KIND_MAP)
+        assert len(ToolChunk._KIND_MAP) == 7
+
+    def test_chunk_kind_for_every_variant(self):
+        assert (
+            ToolChunk.output(ToolOutputChunk(call_id=ToolCallId("c"))).chunk_kind()
+            is ChunkKind.ToolOutput
+        )
+        assert (
+            ToolChunk.progress(ToolProgress.started(ToolCallId("c"))).chunk_kind()
+            is ChunkKind.ToolProgress
+        )
+        assert (
+            ToolChunk.final(ToolCallResult(call_id=ToolCallId("c"))).chunk_kind()
+            is ChunkKind.ToolFinal
+        )
+        assert ToolChunk.definitions([]).chunk_kind() is ChunkKind.ToolDefinitions
+        assert (
+            ToolChunk.need_permission("r", PermissionRequest()).chunk_kind()
+            is ChunkKind.NeedPermission
+        )
+        assert (
+            ToolChunk.need_user_answer("r", []).chunk_kind() is ChunkKind.NeedUserAnswer
+        )
+        assert (
+            ToolChunk.need_plan_mode_change("r", PlanModeTransition.enter()).chunk_kind()
+            is ChunkKind.NeedPlanModeChange
+        )
+
+    def test_all_7_variants_round_trip(self):
+        samples = [
+            ToolChunk.output(ToolOutputChunk(call_id=ToolCallId("c1"))),
+            ToolChunk.progress(ToolProgress.started(ToolCallId("c1"))),
+            ToolChunk.final(ToolCallResult(call_id=ToolCallId("c1"), exit_code=0, summary="ok")),
+            ToolChunk.definitions([ToolDef(name="read_file")]),
+            ToolChunk.need_permission("req-1", PermissionRequest(tool_name="rm")),
+            ToolChunk.need_user_answer(
+                "req-2",
+                [UserQuestion(question="q?", options=[UserQuestionOption(label="L")], multi_select=True)],
+            ),
+            ToolChunk.need_plan_mode_change("req-3", PlanModeTransition.enter("draft")),
+        ]
+        assert len(samples) == 7
+        assert len({s.to_wire()["type"] for s in samples}) == 7
+        for s in samples:
+            wire = s.to_wire()
+            back = ToolChunk.from_wire(wire)
+            assert back.to_wire() == wire
+
+
+class TestToolResponse:
+    """ToolResponse adjacent-tagged enum (R81, 3 variants) — bidi reply direction."""
+
+    def test_permission_struct_echoes_req_id(self):
+        dec = PermissionDecision.allow_once()
+        chunk = ToolResponse.permission("req-1", dec)
+        assert chunk.to_wire() == {
+            "type": "permission",
+            "data": {"req_id": "req-1", "decision": dec.to_wire()},
+        }
+
+    def test_user_answer_struct(self):
+        ans = UserAnswer.selected("L")
+        chunk = ToolResponse.user_answer("req-2", [ans])
+        assert chunk.to_wire() == {
+            "type": "user_answer",
+            "data": {"req_id": "req-2", "answers": [ans.to_wire()]},
+        }
+
+    def test_plan_mode_change_struct(self):
+        dec = PlanModeDecision.approve()
+        chunk = ToolResponse.plan_mode_change("req-3", dec)
+        assert chunk.to_wire() == {
+            "type": "plan_mode_change",
+            "data": {"req_id": "req-3", "decision": dec.to_wire()},
+        }
+
+    def test_no_chunk_kind_accessor(self):
+        # grok does not give ToolResponse a kind() method — it is the
+        # response direction, not a chunk that can be mismatched against a
+        # stream contract. So it has neither _KIND_MAP nor chunk_kind.
+        resp = ToolResponse.permission("r", PermissionDecision.allow_once())
+        assert not hasattr(resp, "chunk_kind")
+        assert not hasattr(ToolResponse, "_KIND_MAP")
+
+    def test_all_3_variants_round_trip(self):
+        samples = [
+            ToolResponse.permission("req-1", PermissionDecision.allow_once()),
+            ToolResponse.user_answer("req-2", [UserAnswer.selected("L")]),
+            ToolResponse.plan_mode_change("req-3", PlanModeDecision.approve()),
+        ]
+        assert len(samples) == 3
+        assert len({s.to_wire()["type"] for s in samples}) == 3
+        for s in samples:
+            wire = s.to_wire()
+            back = ToolResponse.from_wire(wire)
+            assert back.to_wire() == wire

@@ -47,6 +47,15 @@ plain snake_case :class:`enum.StrEnum`; :class:`WorkspaceTopicSet` is
 the layer's first transparent-*non-string* newtype (a ``u32`` bitmask
 that serialises to a bare integer).
 
+R81 adds the **response chunks** that flow back from every workspace
+RPC (:class:`ToolChunk` + :class:`OpsChunk` + :class:`SessionChunk` +
+the paired :class:`ToolResponse`) — the fourth and last of the
+top-level dispatch modules. All four reuse the R67
+:class:`AdjacentTagged` base; the three chunk enums each expose a
+:meth:`~OpsChunk.chunk_kind` accessor (renamed from grok's ``kind()``
+to avoid clashing with :class:`AdjacentTagged`'s ``.kind`` property)
+returning the typed :class:`ChunkKind` discriminator.
+
 Mirrors the Rust ``lib.rs`` ``pub use`` re-exports.
 """
 
@@ -55,6 +64,12 @@ from __future__ import annotations
 from minimax_code.workspace_types._tagged import AdjacentTagged
 from minimax_code.workspace_types._wire import WireModel, sort_mappings
 from minimax_code.workspace_types.chunk_kind import ChunkKind
+from minimax_code.workspace_types.chunks import (
+    OpsChunk,
+    SessionChunk,
+    ToolChunk,
+    ToolResponse,
+)
 from minimax_code.workspace_types.errors import IoKind, WorkspaceError
 from minimax_code.workspace_types.events import (
     EventLag,
@@ -160,6 +175,11 @@ __all__ = [
     "WorkspaceEvent",
     "WorkspaceTopic",
     "WorkspaceTopicSet",
+    # response chunks (R81 — crate top-level dispatch surface)
+    "OpsChunk",
+    "SessionChunk",
+    "ToolChunk",
+    "ToolResponse",
     # chunk discriminator
     "ChunkKind",
     # error layer

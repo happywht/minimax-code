@@ -6540,3 +6540,98 @@ grok `WorkspaceTopic` 用 `#[serde(rename_all = "snake_case")]` **但无** `#[se
 ### Commit
 
 `feat(platform): R80 events.rs -> events.py（订阅事件流 crate 顶层调度层第 3 模块 3 种 serde 模式落地透明 u32 位掩码 newtype）[新增 events.py 428 行: _payload(obj) 3 行辅助复制自 R79 + WorkspaceTopic(StrEnum) 7 变体 fs|vcs|discovery|servers|index|config|tools 普通非相邻标记 + _TOPIC_INDEX 稳定 bit 0-6 + _ALL_TOPIC_BITS 127 + WorkspaceTopicSet 透明 u32 位掩码 newtype(新模式 to_wire()->int 裸整数 from_wire 拒绝 bool|非 int u32 钳制 int&0xFFFFFFFF empty|all|with_topic|contains|is_empty __slots__ eq|hash|repr) + WorkspaceEvent(AdjacentTagged) 12 变体(fs_changed|git_head_changed|git_lock_held|skills_changed|plugins_changed|hooks_changed|mcp_server_state_changed|lsp_server_state_changed|codebase_index_updated|project_config_changed|permission_policy_changed|tools_changed) 12 工厂 + topic() match 分类 + EventLag(AdjacentTagged) 单变体 lagged(u64) __str__ thiserror Display; _dt_to_wire 从 request.py 导入第 3 使用者; barrel 导出 4 符号 + docstring R80 段; 4 测试类 32 测试(12 事件变体穷举 + topic 映射穷举 + WorkspaceTopicSet 透明 wire bool 拒绝 u32 钳制 + EventLag Display); KEY 决策 1: 3 种 serde 模式同台(相邻标记复用 + StrEnum 复用 + 透明非字符串 newtype 新模式); KEY 决策 2: 无 SessionEvent 设计忠实还原 EventBus 只携带 WorkspaceEvent; KEY 坑 1: 透明非字符串 newtype 是新 serde 形态直接 to_wire|from_wire 不继承 WireModel bool 显式排除; KEY 坑 2: with 关键字冲突 -> with_topic 重命名; KEY 坑 3: WorkspaceTopic 普通枚举非相邻标记 rename_all 无 tag|content; KEY 坑 4: _dt_to_wire 第 3 使用者选导入 _payload 选复制; 验证 ruff 3 文件 clean + pytest test_workspace_types.py 121 passed + 全回归 2427 passed 10 skipped 1 warning 零回归, 锚点 R80-1 20d8bbf]`
+
+
+## R81 — chunks.rs → chunks.py（响应分块 crate 顶层调度层第 4 模块收官 4 相邻标记枚举 3 种变体形态 + chunk_kind 重命名 + SessionAck 歧义陷阱）
+
+锚点:R81-1 9f055c8
+
+### 本轮目标
+
+迁移 grok-build `xai-grok-workspace-types::chunks/`（mod/ops/session/tool 4 文件）→ 单文件 `chunks.py`，落地 crate 顶层调度层 4 模块的第 4 个（最后一个）：`request`（R78）→ `requests`（R79）→ `events`（R80）→ `chunks`（R81）。这是 workspace-types 顶层 wire 契约的收官轮——前 3 轮已落地请求信封、请求鉴别器、订阅事件流；R81 落地**响应分块**：每个 workspace RPC 返回的响应流（工具输出/进度/终态、ops 查询结果、session 生命周期结果、以及 Need* 双向握手请求 + ToolResponse 回复）。本轮后，crate 的 4 个顶层调度模块全部闭合，grok-build workspace-types crate 的核心 wire 层迁移视为完工，可转向其他 crate。
+
+### 融合结论
+
+**高度进化：4 相邻标记枚举同台 + 3 种变体形态 + 双向握手契约完整还原。** grok 的 `chunks/` 子目录 4 文件在 Python 侧塌缩为单文件 4 类，全部复用 R67 `AdjacentTagged` 基类（与 R79 4 请求枚举、R80 事件联合同构）。本轮的工程密度体现在：(1) **3 种变体形态**（newtype/struct/unit）混编于同一枚举，`_payload` 辅助统一 newtype 委托；(2) **`chunk_kind()` 重命名**——grok 给每个 chunk 枚举 `kind() -> ChunkKind` 方法，但 `AdjacentTagged.kind` 已是属性（wire tag 字符串如 "ack"），命名冲突 → 重命名 + `_KIND_MAP` ClassVar 字典显式映射；(3) **SessionAck 歧义陷阱**——两个 chunk 枚举（OpsChunk/SessionChunk）都有 `Ack` arm 但 wire tag 都是 "ack"，映射到**不同** ChunkKind 变体（`Ack`="ack" vs `SessionAck`="session_ack"），不能用 `ChunkKind(self.kind)` 反查，必须 `_KIND_MAP` 显式穷举；(4) **双向握手**——ToolChunk 的 3 个 Need* 变体（need_permission/need_user_answer/need_plan_mode_change）是 struct variant 带 `req_id` correlation id，ToolResponse 的 3 个回复变体 echo req_id 闭合握手，ToolResponse 作为响应方向**不参与** ProtocolMismatch 错误 → 无 `chunk_kind()`/`_KIND_MAP`。可通用性：这 4 个枚举是 workspace RPC 响应的唯一 wire 表面，任何接入 grok 协议的客户端/服务端都消费它们；3 种变体形态 + `_payload` 模式是 R79 已建立的相邻标记配方在第 4 类场景的再次验证，配方稳定性得到证明。
+
+### 交付
+
+- **新增 `agent/minimax_code/workspace_types/chunks.py`（526 行）**：
+  - imports：`from __future__ import annotations`、`from typing import Any, ClassVar`、`AdjacentTagged` from `_tagged`、`ChunkKind` from `chunk_kind`、`SessionId` from `identity`、26 types from `types`
+  - `__all__ = ["OpsChunk", "SessionChunk", "ToolChunk", "ToolResponse"]`
+  - `_payload(obj: Any) -> Any` 3 行辅助（复制自 R79/R80）：`if hasattr(obj, "to_wire"): return obj.to_wire(); return obj`
+  - **`OpsChunk(AdjacentTagged)`** 17 变体：`_VARIANTS` 17 元组（git_status, git_diff, git_branch_info, git_metadata, hunks, skills, plugins, project_config, permissions, envrc, resolved_files, memory_chunks, plugin, ack, fuzzy_match, ripgrep_hit, ripgrep_done），`_KIND_MAP` 17 条目（ack→ChunkKind.Ack），17 工厂（newtype 委托 / struct 单例 / Vec list / unit None / Option None / BTreeMap 排序），`chunk_kind()` 方法
+  - **`SessionChunk(AdjacentTagged)`** 5 变体：`_VARIANTS`（session_id, session_info, rewind_result, rewind_points, ack），`_KIND_MAP` 5 条目（ack→ChunkKind.SessionAck 带 NOTE 注释），5 工厂，`chunk_kind()`
+  - **`ToolChunk(AdjacentTagged)`** 7 变体：`_VARIANTS`（output, progress, final, definitions, need_permission, need_user_answer, need_plan_mode_change），`_KIND_MAP` 7 条目，7 工厂（4 newtype + 3 struct Need*），`chunk_kind()`
+  - **`ToolResponse(AdjacentTagged)`** 3 变体：`_VARIANTS`（permission, user_answer, plan_mode_change），3 struct-variant 工厂（均带 req_id + typed payload），**无 `_KIND_MAP`/`chunk_kind`**
+- **更新 barrel `__init__.py`**：docstring 加 R81 段（chunk_kind 重命名说明）、import 4 符号、`__all__` 加 R81 块
+- **新增 R81 测试（test_workspace_types.py，4 类 31 测试方法）**：
+  - `TestOpsChunk`：vcs/git_metadata Option/Vec/singleton+unit/envrc BTreeMap 排序/streaming newtype 等形状 + `_KIND_MAP` 穷举性 + `chunk_kind()` 映射 + 17 变体 round-trip
+  - `TestSessionChunk`：5 变体形状 + `_KIND_MAP` 穷举性 + **SessionAck 陷阱**（ack→SessionAck 非 Ack，ChunkKind.Ack != SessionAck）+ 5 变体 round-trip
+  - `TestToolChunk`：7 变体形状（4 newtype + 3 Need* struct 带 req_id）+ `_KIND_MAP` 穷举性 + 7 变体 round-trip
+  - `TestToolResponse`：3 struct 变体（echo req_id）+ **无 chunk_kind 验证**（`hasattr(resp, 'chunk_kind') is False` + `not hasattr(ToolResponse, '_KIND_MAP')`）+ 3 变体 round-trip
+  - imports 块 4 处字母序精确插入：OpsChunk/SessionChunk/ToolChunk/ToolResponse
+
+### 映射决策树+坑
+
+```
+grok xai-grok-workspace-types::chunks/
+├─ ops.rs OpsChunk（17 变体，VCS/hunks/search/discovery/config/memory/marketplace 响应分块）
+│  └─ OpsChunk(AdjacentTagged) _VARIANTS=17
+│     ├─ newtype 委托: git_status(GitStatus)/git_diff(GitDiff)/git_branch_info(GitBranchInfo)/hunks(Vec<Hunk>)/skills(Vec<SkillInfo>)/plugins(Vec<PluginInfo>)/plugin(PluginInfo)/project_config(ProjectConfig)/permissions(PermissionPolicy)/resolved_files(Vec<ResolvedFile>)/memory_chunks(Vec<MemoryChunk>)/fuzzy_match(FuzzyMatch)/ripgrep_hit(ContentMatch)/ripgrep_done(RipgrepStats)
+│     ├─ Option<T>: git_metadata(GitMetadata | None) _payload(None)->None data slot null
+│     ├─ BTreeMap: envrc(dict[str,str]) {k: str(env[k]) for k in sorted(env)} 键排序
+│     ├─ unit: ack() cls("ack", None)
+│     ├─ _KIND_MAP 17 条目 ack->ChunkKind.Ack
+│     └─ chunk_kind() -> ChunkKind = self._KIND_MAP[self.kind]
+├─ session.rs SessionChunk（5 变体）
+│  └─ SessionChunk(AdjacentTagged) _VARIANTS=5
+│     ├─ newtype: session_id(SessionId)/session_info(AgentSessionInfo)/rewind_result(RewindResult)/rewind_points(Vec<RewindPoint>)
+│     ├─ unit: ack() cls("ack", None)
+│     ├─ _KIND_MAP 5 条目 ack->ChunkKind.SessionAck 【陷阱】
+│     └─ chunk_kind()
+├─ tool.rs ToolChunk（7 变体，工具输出/进度/终态 + Need* 握手请求）
+│  └─ ToolChunk(AdjacentTagged) _VARIANTS=7
+│     ├─ newtype: output(ToolOutputChunk)/progress(ToolProgress)/final(ToolCallResult)/definitions(Vec<ToolDef>)
+│     ├─ struct Need*: need_permission(req_id, PermissionRequest)/need_user_answer(req_id, Vec<UserQuestion>)/need_plan_mode_change(req_id, PlanModeTransition) {req_id, <field>}
+│     ├─ _KIND_MAP 7 条目
+│     └─ chunk_kind()
+└─ tool.rs ToolResponse（3 变体，Need* 的回复方向 echo req_id）
+   └─ ToolResponse(AdjacentTagged) _VARIANTS=3
+      ├─ struct: permission(req_id, PermissionDecision)/user_answer(req_id, Vec<UserAnswer>)/plan_mode_change(req_id, PlanModeDecision) {req_id, decision|answers}
+      └─ 【无 _KIND_MAP 无 chunk_kind】响应方向不参与 ProtocolMismatch
+```
+
+**坑 1 —— `chunk_kind()` 重命名（grok `kind()` vs AdjacentTagged.kind 属性冲突）**
+
+grok 给每个 chunk 枚举一个 `kind() -> ChunkKind` 方法返回类型化鉴别器。但 R67 的 `AdjacentTagged` 基类已定义 `.kind` 为**属性**（存 wire tag 字符串如 "ack"/"git_status"）。方法名 `kind` 与属性 `kind` 冲突——Python 中方法会遮蔽属性，且语义完全不同（属性是 wire tag str，方法是 ChunkKind 枚举）。决策：重命名为 `chunk_kind()`，用 `_KIND_MAP: ClassVar[dict[str, ChunkKind]]` 字典做 tag→ChunkKind 映射，`def chunk_kind(self) -> ChunkKind: return self._KIND_MAP[self.kind]`。这避免了 `kind` 双关（属性 vs 方法），且 `_KIND_MAP` 是显式映射表而非 `ChunkKind(self.kind)` 反查（见坑 2）。barrel docstring 显式记录重命名理由。
+
+**坑 2 —— SessionAck 歧义陷阱（两 chunk 枚举 Ack arm 映射不同 ChunkKind）**
+
+OpsChunk 和 SessionChunk 都有 `Ack` 变体，wire tag 都是 `"ack"`，但映射到**不同** ChunkKind 成员：`OpsChunk.ack()` → `ChunkKind.Ack`（value `"ack"`），`SessionChunk.ack()` → `ChunkKind.SessionAck`（value `"session_ack"`）。若用 `ChunkKind(self.kind)` 反查（即 `ChunkKind("ack")`），两个枚举的 ack 都会返回 `ChunkKind.Ack`——SessionChunk 侧错误。ChunkKind 是 StrEnum，`ChunkKind("ack")` 只能匹配 value="ack" 的成员。决策：每个 chunk 枚举维护**显式** `_KIND_MAP` 字典，穷举每个 tag 对应的 ChunkKind 成员，SessionChunk 的 `"ack"` 显式映射到 `ChunkKind.SessionAck`（带 NOTE 注释）。测试 `test_ack_maps_to_session_ack_not_ack` 专门覆盖此陷阱：`SessionChunk.ack().chunk_kind() is ChunkKind.SessionAck` 且 `ChunkKind.Ack != ChunkKind.SessionAck` 且 `ChunkKind.Ack.value == "ack"` / `SessionAck.value == "session_ack"`。这是本轮最隐蔽的 bug 源——若不显式映射，SessionChunk.Ack 的 chunk_kind 会静默返回错误的 OpsAck 变体。
+
+**坑 3 —— ToolResponse 无 chunk_kind（响应方向不参与 ProtocolMismatch）**
+
+grok 不给 `ToolResponse` 实现 `kind() -> ChunkKind`——它是响应方向（ToolChunk Need* 请求的回复），不是会与流契约不匹配的 chunk，因此不参与 `ProtocolMismatch` 错误（该错误用 ChunkKind 鉴别不期望的 chunk 类型）。决策：ToolResponse 只有 3 个 struct-variant 工厂（permission/user_answer/plan_mode_change，均 echo req_id），**无** `_KIND_MAP`、**无** `chunk_kind()` 方法。测试 `test_no_chunk_kind_accessor` 验证：`not hasattr(ToolResponse.permission(...), 'chunk_kind')` 且 `not hasattr(ToolResponse, '_KIND_MAP')`。这忠实还原了 grok 的非对称设计——3 个 chunk 枚举有 kind，1 个 response 枚举没有 kind，反映请求/响应方向在协议错误处理中的不同角色。
+
+**坑 4 —— 3 种变体形态混编 + `_payload` 统一委托**
+
+同一个枚举内混合 3 种 serde 变体形态：(1) **newtype** `cls("tag", _payload(arg))`——单值包装，`_payload` 委托 WireModel/AdjacentTagged 的 `to_wire`，原始 str/list/int/透明 newtype 直通；(2) **struct** `cls("tag", {"req_id": str(req_id), "field": _payload(val)})`——手建内层 dict（grok 内联字段，无具名 struct 类型可委托）；(3) **unit** `cls("tag", None)`——data slot 为 null。`_payload(obj)` 统一 newtype/struct 嵌套值的委托逻辑（3 行：`if hasattr(obj, "to_wire"): return obj.to_wire(); return obj`），是 R79/R80 已建立配方的第 3 次复制（保持模块自包含，与 R78 `_dt_to_wire` 复制先例一致）。Vec<T> newtype：`[_payload(x) for x in items]` 逐元素委托。Option<T>：`_payload(None)` → None → data slot 为 JSON null。Envrc BTreeMap：`{k: str(env[k]) for k in sorted(env)}` 键排序保证 wire 字节确定性（与 Metadata 同理）。3 种形态 + 4 种容器（单值/Vec/Option/BTreeMap）的组合是本轮变体形态密度的来源，但全部由 `_payload` + 手建 dict 两种机制覆盖，无新 serde 模式。
+
+### 验证
+
+- **ruff**：3 文件全 clean（`chunks.py` / `__init__.py` / `test_workspace_types.py`）。`All checks passed!`
+- **pytest `tests/test_workspace_types.py`**：**152 passed**（R81 新增 4 类 31 测试 + 既有 121）。覆盖：OpsChunk 17 变体穷举（newtype/Option None/Vec/struct/unit/envrc 排序/streaming）+ `_KIND_MAP` 穷举性 + `chunk_kind()` 映射；SessionChunk 5 变体 + **SessionAck 陷阱**断言；ToolChunk 7 变体（4 newtype + 3 Need* struct req_id）+ 穷举；ToolResponse 3 struct 变体 + **无 chunk_kind 验证**；4 枚举全变体 round-trip via `from_wire`。
+- **全回归**：`2458 passed, 10 skipped, 1 warning`（R80 是 2427，本轮 +31 测试 → 2458，**零回归**）。1 warning 是 fastapi starlette TestClient 弃用，与 R81 无关。
+
+### YAGNI 边界
+
+- **4 顶层模块收官，workspace-types crate 核心 wire 层完工**：R78-R81 落地 crate 全部 4 个顶层调度模块（request/requests/events/chunks）。grok workspace-types 的 leaf types（R67）+ rpc/（R68-R77）+ 顶层调度（R78-R81）三部分已全部迁移。后续可转向 grok-build 其他 crate（如 workspace 运行时 transport、secrets、fsnotify 等的非 wire 部分）。
+- **`_payload` 不提升到 `_wire`**：3 行辅助，第 4 次复制（R79 requests + R80 events + R81 chunks + R78 request 的 `_dt_to_wire` 是另一条线）。保持模块自包含，与既有先例一致。提升到公共 `_wire.py` 需专门的迁移轮处理多模块导入点 + 测试，避免本轮范围蔓延（YAGNI，待统一清理轮）。
+- **ToolResponse 不加 chunk_kind**：忠实还原 grok 非对称设计。即使为"一致性"给 ToolResponse 加 `_KIND_MAP` 也是过度设计——它从不在 ProtocolMismatch 错误路径中被查询，加它只会引入死代码 + 维护负担（3 变体映射到哪个 ChunkKind？grok 根本没定义这层映射）。
+- **`_KIND_MAP` 显式穷举不反查**：即使 SessionChunk 只在 ack 上有歧义，仍对全部 chunk 枚举用显式 `_KIND_MAP` 字典而非混合策略（部分反查 + 歧义手写）——一致性 > 微优化，且显式表可审计（一眼看出每个 tag → ChunkKind 映射）。
+- **不实现实际 chunk 流运行时**：`chunks.py` 只迁 wire 契约（4 枚举的序列化形状 + chunk_kind 分类），不实现 chunk 流的发送/接收/背压/ProtocolMismatch 错误逻辑（runtime transport 层关注点，留给后续消费轮）。Need* 握手的 req_id correlation 也只记录契约，不实现匹配逻辑。
+
+### Commit
+
+`feat(platform): R81 chunks.rs -> chunks.py（响应分块 crate 顶层调度层第 4 模块收官 4 相邻标记枚举 3 变体形态 chunk_kind 重命名 SessionAck 陷阱）[新增 chunks.py 526 行: _payload(obj) 3 行辅助复制自 R79/R80 + OpsChunk(AdjacentTagged) 17 变体(git_status|git_diff|git_branch_info|git_metadata|git_metadata(None)|hunks|skills|plugins|project_config|permissions|envrc|resolved_files|memory_chunks|plugin|ack|fuzzy_match|ripgrep_hit|ripgrep_done) 17 工厂(newtype 委托 + Option None + Vec list + struct 单例 + BTreeMap envrc 键排序 + unit ack None) + _KIND_MAP 17 条目 + chunk_kind() + SessionChunk(AdjacentTagged) 5 变体(session_id|session_info|rewind_result|rewind_points|ack) 5 工厂 + _KIND_MAP 5 条目(ack->SessionAck 陷阱) + chunk_kind() + ToolChunk(AdjacentTagged) 7 变体(output|progress|final|definitions 4 newtype + need_permission|need_user_answer|need_plan_mode_change 3 struct Need* req_id 握手) 7 工厂 + _KIND_MAP 7 条目 + chunk_kind() + ToolResponse(AdjacentTagged) 3 变体(permission|user_answer|plan_mode_change struct echo req_id 无 _KIND_MAP 无 chunk_kind); barrel 导出 4 符号 + docstring R81 段(chunk_kind 重命名说明); 4 测试类 31 测试(OpsChunk 17 变体穷举 + SessionChunk SessionAck 陷阱断言 + ToolChunk 7 变体含 Need* req_id + ToolResponse 无 chunk_kind 验证 + 4 枚举全变体 from_wire round-trip); KEY 决策 1: 4 相邻标记枚举同台复用 R67 AdjacentTagged 与 R79/R80 同构零新 serde 模式; KEY 决策 2: 3 种变体形态(newtype|struct|unit)混编 _payload 统一委托; KEY 坑 1: chunk_kind 重命名 grok kind() 方法 vs AdjacentTagged.kind 属性冲突 -> _KIND_MAP 字典; KEY 坑 2: SessionAck 歧义两 chunk 枚举 Ack arm wire tag 都 ack 映射不同 ChunkKind(Ack=ack vs SessionAck=session_ack) 不能 ChunkKind(self.kind) 反查必须显式穷举; KEY 坑 3: ToolResponse 无 chunk_kind 响应方向不参与 ProtocolMismatch; KEY 坑 4: 3 变体形态 + 4 容器(单值|Vec|Option|BTreeMap)由 _payload + 手建 dict 两种机制覆盖; 验证 ruff 3 文件 clean + pytest test_workspace_types.py 152 passed + 全回归 2458 passed 10 skipped 1 warning 零回归, 锚点 R81-1 9f055c8]`
