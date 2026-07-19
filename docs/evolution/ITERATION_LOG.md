@@ -5295,3 +5295,97 @@ cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
 ### Commit
 
 `feat(platform): R68 remote workspace RPC foundation wire contract layer (fuse grok xai-grok-workspace-types rpc/ root, mod.rs 49 + envelope.rs 112 + session.rs 89 + agents_md.rs 59 = 309 lines → 4 modules: rpc/__init__ WorkspaceRpc Protocol + 4 tool IDs + envelope RpcEnvelope[T] externally-tagged Generic + RpcError + TURN_ACTIVE + session 3 prompt RPCs + ConflictType StrEnum + FileRewindResponse + agents_md discovery RPC + AgentConfigFile forward-compat, externally-tagged vs adjacent-tagged distinction + Protocol non-method-member issubclass ban + Generic[T] runtime type-erasure from_wire response_type param, 48 tests zero-regression)`
+
+---
+
+## R69 — 远程 workspace RPC envelope 双侧消费层(融合 grok xai-grok-workspace-types rpc/ code_nav + deploy)
+
+锚点:R69-1 566324f
+
+### 本轮目标
+
+迁移 `code_nav.rs`(125L)+ `deploy.rs`(100L)= **225 行 Rust** → 2 个新模块,作为 R68 envelope 的**首批业务消费者**,双侧对称:
+
+- **Ok 侧 — code_nav**:5 个 `workspace.code_*` RPC(goto_definition / goto_references / find_definitions / find_references / index_status)+ 4 个响应 struct(CodeNavResponse[Vec locations] / CodeIndexStatusResponse[Option 字段] / CodeNavLocation[skip_serializing_if] / CodeIndexStats)。
+- **Err 侧 — deploy**:`DeployError` 15 码词汇表(URL_CONFLICT…FAILED_PRECONDITION),`wire_code()`/`from_wire_code()` 双向转换 + `ALL` 穷举常量,是 `RpcError.code` 开放字符串的闭合子词汇表。
+
+R68 定义了 envelope 骨架(Ok/Err 两臂 + WorkspaceRpc 协议)和 2 个简单 RPC;**R69 把 envelope 的成功/错误两个消费模式用真实业务类型完整展示**。rpc/ 剩余 8 文件(fs 754 / git 1077 / hooks 230 / hunks 413 / search 226 / skills 275 / workspace 271 / worktree 406 = ~3230 行)留 R70+。
+
+### 融合结论
+
+R68 是 envelope 的**生产者**(定义 Ok/Err wire 形状);R69 是 envelope 的**首批消费者**,双侧互补证明 envelope 设计的正确性:
+
+- **Ok 臂承载结构化业务响应**:code_nav 的 5 RPC 各自绑定 `Response: ClassVar[type]`(CodeNavResponse × 4 导航方法 + CodeIndexStatusResponse × 1 状态探测),展示 envelope Ok 侧的三种 payload 形状(嵌套 struct / Vec / Option 字段 struct)。
+- **Err 臂承载错误码 + message**:deploy 的 15 码是 `RpcError.code` 这个**开放字符串字段**的**闭合子词汇表**——不是所有 Err 都是 deploy 错误(还有 hub_error / session_not_found / turn_active 等),但 deploy 域内是穷举闭合的。`wire_code()`/`from_wire_code()` 让闭合词汇表与开放 code 字段双向桥接。
+
+code_nav(成功响应)+ deploy(错误码)共同回答了"envelope 两臂分别承载什么"——这是 R68 留下的开放问题,本轮用真实业务类型闭合。
+
+### 交付
+
+2 源文件 + barrel 扩展 + 测试扩展,225 行 Rust → 约 235 行 Python + 22 个新增专项测试:
+
+| 文件 | Rust 源 | 行数 | Python 实现 |
+|------|---------|------|------------|
+| `rpc/code_nav.py` | `rpc/code_nav.rs` | 125 | 5 Req(METHOD + Response ClassVar)+ `CodeNavLocation`(symbol `skip_serializing_if` → 覆盖 `to_wire` 用 `exclude_none`)+ `CodeNavResponse`(locations Vec)+ `CodeIndexStats` + `CodeIndexStatusResponse`(active 必填 + file_count/stats Optional) |
+| `rpc/deploy.py` | `rpc/deploy.rs` | 100 | `DeployError` Enum(**15 变体,value 即 wire code,非 StrEnum**)+ `wire_code()`(= self.value)+ `from_wire_code()`(cls(code) try/except → None)+ `ALL`(类后赋值 tuple) |
+| `rpc/__init__.py` | mod.rs barrel | — | 重导出 code_nav 9 符号 + DeployError(barrel + __all__ 同步) |
+| `tests/test_rpc.py` | — | — | +22 测试:`TestCodeNav`(13,method 常量/response 类型/wire/skip_serializing_if/envelope Ok 集成)+ `TestDeployError`(9,wire_code/from_wire_code 往返/ALL 穷举/拒绝未知码/非 StrEnum/envelope Err 集成) |
+
+测试增长:R68 的 48 → R69 的 70(+22),全量 R68 的 2132 → R69 的 2154(+22,零回归)。
+
+### 映射决策树 + 坑
+
+**决策树**:
+- `#[serde(skip_serializing_if = "Option::is_none")]`(CodeNavLocation.symbol)→ 覆盖 `to_wire()` 用 `exclude_none=True`(R67 已确立的 `UserQuestionOption.preview` 先例,文档化在 `_wire.py:13-15`)。WireModel 基类 `to_wire` 默认输出所有字段含 null;有 skip 的 struct 覆盖。
+- `DeployError` enum → **普通 `Enum`** 而非 `StrEnum`:成员名(`UrlConflict`)与 wire code(`deploy_url_conflict`)是 grok `wire_code()` 的**显式 match 映射**,非名字推导。故 value 直接存 wire code,`wire_code()` = `self.value`,`from_wire_code()` = `cls(code)` + try/except `ValueError` → `None`。
+- `Option<PathBuf>`(code_nav 的 root)→ `str | None`(wire 上 serde 把 PathBuf 序列化为路径字符串,Python 用 `str` 承载,不用 `pathlib.Path`——wire 是 JSON 字符串)。`#[serde(default)]` → 默认 `None`。
+- `usize`(line/col/file_count/files/definitions/references)→ `int`。
+- `DeployError::ALL`(Rust `pub const ALL: [DeployError; 15]`)→ **类后赋值** `DeployError.ALL = tuple(DeployError)`(Enum 类体内不能 `tuple(cls)`,需类体闭合后;模块级语句合法)。
+
+**坑 1 — `skip_serializing_if` 与 `exclude_none` 的等价边界**
+CodeNavLocation.symbol 的 `#[serde(skip_serializing_if = "Option::is_none")]` 要求 None 时 wire 不输出 symbol key。pydantic 基类 `to_wire()` 默认输出 `"symbol": null`。覆盖用 `exclude_none=True`——但这会排除**所有** None 字段。CodeNavLocation 只有 symbol 是 Optional(path/line 必填),所以 `exclude_none` 与逐字段 skip 等价,安全。**前提**:覆盖前确认模型内所有 Optional 字段都想要 skip 行为(R67 的 `_wire.py` 文档已约束:只有这种 struct 才覆盖)。
+
+**坑 2 — `DeployError` 误用 `StrEnum`(UP042 边界)**
+ruff UP042 规则要求 `(str, Enum)` 混入用 `StrEnum`。初版可能想让 `DeployError` 继承 `StrEnum`。但:(a) `DeployError(Enum)` 是纯 Enum(value 是 str),**不**继承 str,**不触发** UP042;(b) 语义上成员名 `URL_CONFLICT` ≠ wire code `deploy_url_conflict`(显式映射,非名字推导),`StrEnum` 要求 name-value 可推导,不适用;(c) `StrEnum` 成员 `isinstance(kind, str)` 为 True,会误导(部署错误码不是字符串,是枚举值)。**修复**:保持普通 `Enum`,value 存 wire code,`isinstance(kind, str)` 为 False(测试 `test_is_plain_enum_not_strenum` 锁定)。
+
+**坑 3 — `DeployError.ALL` 类体内定义失败**
+初版想在 Enum 类体内写 `ALL = tuple(cls)`。但:(a) 类体求值时 `cls`(DeployError)尚未闭合,`tuple(cls)` 无法迭代未完成的 Enum;(b) 即使能跑,`ALL = (...)` 在 Enum 类体内会被**误当成员定义**。**修复**:类体闭合后模块级 `DeployError.ALL = tuple(DeployError)`(普通属性赋值,合法,类型用 `# type: ignore[attr-defined]` 标注)。
+
+**坑 4 — import 排序:`CodeIndexStats` vs `CodeIndexStatusReq`**
+手写 import 顺序误把 `CodeIndexStatusReq` 排在 `CodeIndexStats` 前。ruff isort 按字母序:`CodeIndexS-t-a-t-s` < `CodeIndexS-t-a-t-u-s-Req`(第 5 字符 's' < 'u'),故 `CodeIndexStats` 在前。**修复**:`ruff check --fix` 自动修正(test_rpc.py + __init__.py 两处)。教训:import 排序交给 ruff,手写易错。
+
+### 验证
+
+三重验证全绿:
+
+```bash
+# 1. ruff lint(E/F/W/I/B/UP,行长 100)
+cd "/d/工作/城建院/mm code/agent" && uv run ruff check minimax_code/workspace_types/rpc/ tests/test_rpc.py
+# → All checks passed!(`--fix` 修复 2 处 I001 import 排序后干净)
+
+# 2. R69 专项测试
+cd "/d/工作/城建院/mm code/agent" && uv run pytest tests/test_rpc.py -q
+# → 70 passed in 0.40s(R68 的 48 + R69 新增 22,精确对账)
+
+# 3. 全量回归(零回归)
+cd "/d/工作/城建院/mm code/agent" && uv run pytest -q
+# → 2154 passed, 10 skipped in 111.99s
+#    (R68 的 2132 + R69 新增 22,完美对账,零回归)
+```
+
+**wire 保真交叉验证**:Grep grok 源码(code_nav.rs `#[serde(skip_serializing_if = "Option::is_none")]` on symbol、deploy.rs `wire_code()` 显式 match + `from_wire_code` `Option<Self>` + `ALL: [DeployError; 15]`)逐行确认 Python 实现语义一致。`test_envelope_ok_wraps_code_nav_response` + `test_envelope_err_carries_deploy_code` 两个集成测试闭合了"业务类型 ↔ envelope"的完整往返。
+
+### YAGNI 边界
+
+本轮明确不做:
+
+- ❌ **rpc/ 剩余 8 文件(~3230 行)迁移** —— fs/git/hooks/hunks/search/skills/workspace/worktree,各有请求/响应 struct 群,留 R70+(本轮只迁 code_nav + deploy 这两个 envelope 双侧最小消费示例)。
+- ❌ **code_nav 实际 LSP 索引/goto 引擎实现** —— 本轮仅 wire 类型契约,真正的代码索引引擎是运行时能力,不在类型层。
+- ❌ **deploy 实际部署流程(构建/上传/发布)** —— 本轮仅错误码词汇表,部署编排是运行时能力。
+- ❌ **接入 IPC handler 或远程 workspace transport** —— 类型契约层先行,wire DTO 的消费端(远程 workspace client)在 shell 层。
+- ❌ **前端 `web/src/types/` 镜像** —— 纯后端 RPC 类型契约,无 wire 事件广播到前端。
+- ❌ **`DeployError` 与其他 RpcError code 词汇表统一注册表** —— 各域错误码词汇表(session/hub/turn_active 等)独立迁移,本轮不做跨域注册表。
+
+### Commit
+
+`feat(platform): R69 workspace RPC envelope dual-side consumer layer (fuse grok xai-grok-workspace-types rpc/ code_nav + deploy, code_nav.rs 125 + deploy.rs 100 = 225 lines → 2 modules: code_nav 5 code_* RPCs Ok-side + CodeNavResponse/CodeIndexStatusResponse + CodeNavLocation skip_serializing_if exclude_none override + CodeIndexStats + deploy DeployError 15-code Err-side vocabulary plain Enum value=wire_code + wire_code/from_wire_code + ALL class-post-assign, skip_serializing_if exclude_none equivalence boundary + DeployError non-StrEnum explicit name↔code mapping + ALL class-body tuple(cls) ban, 22 new tests zero-regression)`

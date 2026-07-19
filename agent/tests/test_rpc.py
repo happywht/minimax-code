@@ -19,7 +19,17 @@ from minimax_code.workspace_types.rpc import (
     WORKSPACE_TOOL_NOTIFICATIONS_TOOL_ID,
     AgentConfigFile,
     BeginPromptReq,
+    CodeFindDefinitionsReq,
+    CodeFindReferencesReq,
+    CodeGotoDefinitionReq,
+    CodeGotoReferencesReq,
+    CodeIndexStats,
+    CodeIndexStatusReq,
+    CodeIndexStatusResponse,
+    CodeNavLocation,
+    CodeNavResponse,
     ConflictType,
+    DeployError,
     DiscoverAgentsMdReq,
     EndPromptReq,
     FileRewindConflict,
@@ -383,3 +393,150 @@ class TestAgentsMd:
         }
         f = AgentConfigFile.model_validate(raw)
         assert f.file_name == "Claude.md"
+
+
+# -- code_nav RPCs (R69, Ok side of the envelope) ------------------------
+
+
+class TestCodeNav:
+    def test_method_constants(self) -> None:
+        assert CodeGotoDefinitionReq.METHOD == "workspace.code_goto_definition"
+        assert CodeGotoReferencesReq.METHOD == "workspace.code_goto_references"
+        assert CodeFindDefinitionsReq.METHOD == "workspace.code_find_definitions"
+        assert CodeFindReferencesReq.METHOD == "workspace.code_find_references"
+        assert CodeIndexStatusReq.METHOD == "workspace.code_index_status"
+
+    def test_nav_response_types(self) -> None:
+        # The four navigation methods share CodeNavResponse; index status is distinct.
+        for req in (CodeGotoDefinitionReq, CodeGotoReferencesReq,
+                    CodeFindDefinitionsReq, CodeFindReferencesReq):
+            assert req.Response is CodeNavResponse
+        assert CodeIndexStatusReq.Response is CodeIndexStatusResponse
+
+    def test_goto_definition_to_wire(self) -> None:
+        # `root` is #[serde(default)] Option<PathBuf> → defaults to None on the wire.
+        wire = CodeGotoDefinitionReq(file="src/lib.rs", line=10, col=3).to_wire()
+        assert wire == {"col": 3, "file": "src/lib.rs", "line": 10, "root": None}
+
+    def test_goto_definition_to_wire_with_root(self) -> None:
+        wire = CodeGotoDefinitionReq(root="/repo", file="a.rs", line=1, col=1).to_wire()
+        assert wire["root"] == "/repo"
+
+    def test_goto_references_include_definition_defaults_false(self) -> None:
+        wire = CodeGotoReferencesReq(file="a.rs", line=1, col=1).to_wire()
+        assert wire["include_definition"] is False
+
+    def test_find_definitions_context_file_optional(self) -> None:
+        wire = CodeFindDefinitionsReq(symbol="Foo").to_wire()
+        assert wire["context_file"] is None
+        assert wire["symbol"] == "Foo"
+
+    def test_nav_location_omits_symbol_when_none(self) -> None:
+        # `#[serde(skip_serializing_if = "Option::is_none")]` — the `symbol`
+        # key is absent when None (not emitted as null).
+        wire = CodeNavLocation(path="src/lib.rs", line=5).to_wire()
+        assert wire == {"line": 5, "path": "src/lib.rs"}
+        assert "symbol" not in wire
+
+    def test_nav_location_includes_symbol_when_set(self) -> None:
+        wire = CodeNavLocation(path="src/lib.rs", line=5, symbol="foo").to_wire()
+        assert wire == {"line": 5, "path": "src/lib.rs", "symbol": "foo"}
+
+    def test_code_nav_response_with_locations(self) -> None:
+        resp = CodeNavResponse(
+            locations=[
+                CodeNavLocation(path="a.rs", line=1),
+                CodeNavLocation(path="b.rs", line=2, symbol="bar"),
+            ]
+        )
+        recovered = CodeNavResponse.model_validate(resp.to_wire())
+        assert len(recovered.locations) == 2
+        assert recovered.locations[0].symbol is None
+        assert recovered.locations[1].symbol == "bar"
+
+    def test_index_status_response_optional_defaults_none(self) -> None:
+        c = CodeIndexStatusResponse.model_validate({"active": True})
+        assert c.active is True
+        assert c.file_count is None
+        assert c.stats is None
+
+    def test_index_status_response_with_stats(self) -> None:
+        wire = CodeIndexStatusResponse(
+            active=True, file_count=42,
+            stats=CodeIndexStats(files=42, definitions=100, references=500),
+        ).to_wire()
+        assert wire["stats"] == {"definitions": 100, "files": 42, "references": 500}
+
+    def test_index_status_req_has_default(self) -> None:
+        # `#[derive(Default)]` on the root-only request — default() succeeds.
+        assert CodeIndexStatusReq.default().to_wire() == {"root": None}
+
+    def test_index_stats_required(self) -> None:
+        with pytest.raises(Exception):  # noqa: B017 — any validation error
+            CodeIndexStats.model_validate({"files": 1})
+
+    def test_envelope_ok_wraps_code_nav_response(self) -> None:
+        # Full Ok-side consumption: a code_nav response rides the envelope.
+        resp = CodeNavResponse(locations=[CodeNavLocation(path="a.rs", line=1)])
+        wire = RpcEnvelope.ok(resp).to_wire()
+        assert "ok" in wire
+        recovered = RpcEnvelope.from_wire(wire, CodeNavResponse)
+        ok, err = recovered.into_result()
+        assert err is None
+        assert isinstance(ok, CodeNavResponse)
+        assert ok.locations[0].path == "a.rs"
+
+
+# -- deploy error vocabulary (R69, Err side of the envelope) --------------
+
+
+class TestDeployError:
+    def test_wire_code_is_value(self) -> None:
+        # wire_code() returns the enum value (the wire discriminant).
+        assert DeployError.URL_CONFLICT.wire_code() == "deploy_url_conflict"
+        assert DeployError.NOT_FOUND.wire_code() == DeployError.NOT_FOUND.value
+
+    def test_some_wire_codes(self) -> None:
+        # Spot-check the explicit member-name → wire-code mapping.
+        assert DeployError.PERMISSION_DENIED.value == "deploy_permission_denied"
+        assert DeployError.DEPLOYMENT_NOT_IN_BUILDING_STATE.value == "deploy_not_in_building_state"
+        assert DeployError.UNSUPPORTED_PROJECT_TYPE.value == "deploy_unsupported_project_type"
+        assert DeployError.FAILED_PRECONDITION.value == "deploy_failed_precondition"
+
+    def test_from_wire_code_round_trip(self) -> None:
+        # Mirrors the source `deploy_error_kind_wire_code_round_trips` test.
+        for kind in DeployError.ALL:
+            assert DeployError.from_wire_code(kind.wire_code()) is kind
+
+    def test_from_wire_code_unknown_returns_none(self) -> None:
+        # An unrelated RpcError.code is not a deploy error code.
+        assert DeployError.from_wire_code("hub_error") is None
+
+    def test_from_wire_code_empty_returns_none(self) -> None:
+        assert DeployError.from_wire_code("") is None
+
+    def test_all_has_fifteen_kinds(self) -> None:
+        assert len(DeployError.ALL) == 15
+        # ALL is exhaustive — every member appears exactly once.
+        assert set(DeployError.ALL) == set(DeployError)
+
+    def test_is_plain_enum_not_strenum(self) -> None:
+        # The member name and wire code are an explicit mapping, not
+        # name-derived, so DeployError is a plain Enum whose value is the
+        # wire code — NOT a StrEnum (a StrEnum member is a str subclass).
+        kind = DeployError.URL_CONFLICT
+        assert type(kind) is DeployError
+        assert not isinstance(kind, str)
+        assert kind.value == "deploy_url_conflict"
+
+    def test_envelope_err_carries_deploy_code(self) -> None:
+        # Full Err-side consumption chain: DeployError.wire_code() feeds the
+        # envelope's err arm, round-trips through RpcError, and parses back.
+        code = DeployError.PERMISSION_DENIED.wire_code()
+        env = RpcEnvelope.err_parts(code, "not allowed")
+        wire = env.to_wire()
+        assert wire == {"err": {"code": "deploy_permission_denied", "message": "not allowed"}}
+        recovered = RpcEnvelope.from_wire(wire, type(None))
+        _, err = recovered.into_result()
+        assert err is not None
+        assert DeployError.from_wire_code(err.code) is DeployError.PERMISSION_DENIED
