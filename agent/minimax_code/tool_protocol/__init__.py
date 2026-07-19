@@ -272,6 +272,7 @@ from minimax_code.tool_protocol.frames import (
     MAX_METRICS_PER_DONATION,
     MAX_SPANS_PER_DONATION,
     MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES,
+    AttachRoute,
     BindToolSessionAck,
     BindToolSessionParams,
     LastSeq,
@@ -291,9 +292,14 @@ from minimax_code.tool_protocol.frames import (
     ServerUnbindAck,
     ServerUnbindOutcome,
     ServerUnbindParams,
+    SessionAttachServerParams,
+    SessionAttachServerResult,
+    SessionBindServerParams,
+    SessionBindServerResult,
     SessionCloseParams,
     SessionOpenParams,
     SessionOpenResult,
+    SessionUnbindServerParams,
     SubscribeAck,
     SubscribeNotificationsParams,
     SubscribeOutcome,
@@ -589,4 +595,14 @@ __all__ = [
     "SessionCloseParams",
     "SessionOpenParams",
     "SessionOpenResult",
+    # R102 — session bind/attach server (frames.py's first #[serde(other)]
+    # tolerant StrEnum AttachRoute; consumes R82 ServerId + R65 ToolDescription
+    # via Vec-is_empty-skip bare-pydantic tool lists; all-Default DTOs). All 6
+    # symbols travel the barrel; from_wire converters stay submodule-qualified.
+    "AttachRoute",
+    "SessionAttachServerParams",
+    "SessionAttachServerResult",
+    "SessionBindServerParams",
+    "SessionBindServerResult",
+    "SessionUnbindServerParams",
 ]

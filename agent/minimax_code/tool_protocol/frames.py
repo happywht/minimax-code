@@ -244,6 +244,15 @@ __all__ = [
     "SessionCloseParams",
     "SessionOpenParams",
     "SessionOpenResult",
+    # session bind/attach server (R102 — frames.py's first #[serde(other)]
+    # tolerant StrEnum AttachRoute; consumes R82 ServerId + R65 ToolDescription
+    # via Vec-is_empty-skip bare-pydantic tool lists; all-Default DTOs)
+    "AttachRoute",
+    "SessionAttachServerParams",
+    "SessionAttachServerResult",
+    "SessionBindServerParams",
+    "SessionBindServerResult",
+    "SessionUnbindServerParams",
     # wire converters
     "tool_call_params_from_wire",
     "tool_call_result_from_wire",
@@ -294,6 +303,14 @@ __all__ = [
     "session_close_params_from_wire",
     "session_open_params_from_wire",
     "session_open_result_from_wire",
+    # session bind/attach server (R102). AttachRoute.from_wire is a tolerant
+    # classmethod on the enum (#[serde(other)] -> UNKNOWN), NOT a module-level
+    # converter — mirrors the 8 prior frames.py StrEnums (R95 ... R101).
+    "session_attach_server_params_from_wire",
+    "session_attach_server_result_from_wire",
+    "session_bind_server_params_from_wire",
+    "session_bind_server_result_from_wire",
+    "session_unbind_server_params_from_wire",
 ]
 
 
@@ -2210,3 +2227,271 @@ class SessionOpenResult:
 def session_open_result_from_wire(data: dict[str, object]) -> SessionOpenResult:
     """Reconstruct :class:`SessionOpenResult` (empty struct — ``data`` ignored)."""
     return SessionOpenResult()
+
+
+# ── Session bind/attach server (R102) ─────────────────────────────────────
+#
+# Fusion of grok-build's ``xai-tool-protocol::frames`` session bind/attach
+# server sub-domain (frames.rs 465-544): ``AttachRoute`` /
+# ``SessionBindServerParams`` / ``SessionBindServerResult`` /
+# ``SessionUnbindServerParams`` / ``SessionAttachServerParams`` /
+# ``SessionAttachServerResult``. This is the upper half of the
+# session-lifecycle domain — harness→hub requests to bind/unbind/attach a
+# tool server to the envelope session, plus the attach-discovery route enum.
+# The simplified-lifecycle serve sub-domain (ServeParams/ServeResult/
+# SessionBindParams, frames.rs 546+) remains deferred — it depends on
+# ``crate::ToolDescriptionWithSchema`` which has no Python mirror yet.
+#
+# Wire-shape notes:
+# * ``AttachRoute`` is the crate's first ``#[serde(other)]`` forward-tolerant
+#   StrEnum INSIDE frames.py: ``rename_all = "snake_case"`` + a ``#[serde(other)]``
+#   ``Unknown`` catch-all that absorbs route values a newer peer may add, so
+#   the typed parse never fails across independently-deployed hub/SDK
+#   versions. Mirrors R90 ``session_event.ToolCallOutcome``'s tolerant
+#   ``try/except -> UNKNOWN`` pattern. The eight prior frames.py StrEnums
+#   (R95 ``ToolSessionBindOutcome`` ... R101 ``ServerUnbindOutcome``) were all
+#   strict (unknown values raised).
+# * ``SessionBindServerParams.metadata`` is the R92 opaque
+#   ``serde_json::Value`` passthrough (``object``, round-tripped verbatim).
+# * ``SessionBindServerResult.tools`` / ``SessionAttachServerResult.tools``
+#   are ``Vec<ToolDescription>`` with ``#[serde(default,
+#   skip_serializing_if = "Vec::is_empty")]`` — the list-of-bare-pydantic-model
+#   shape (R96 ``ToolsListResult.tools``), lifted via ``model_validate`` /
+#   ``model_dump(exclude_none=True)``; default-empty and wire-omitted when
+#   empty.
+# * ``SessionBindServerResult`` / ``SessionAttachServerParams`` /
+#   ``SessionAttachServerResult`` are ``#[derive(Default)]`` (all-Optional +
+#   default-empty-list).
+
+
+class AttachRoute(StrEnum):
+    """Where a ``session_attach_server`` found the session's tool-server.
+
+    ``#[serde(rename_all = "snake_case")]``, ``#[derive(Copy, Eq)]``. The
+    :data:`UNKNOWN` variant is the ``#[serde(other)]`` forward-compat
+    catch-all for routes added in newer protocol versions — the typed parse
+    never fails across independently-deployed hub/SDK versions.
+
+    This is the first ``#[serde(other)]`` tolerant StrEnum inside frames.py;
+    the eight prior frames.py StrEnums (R95 ``ToolSessionBindOutcome`` …
+    R101 ``ServerUnbindOutcome``) were all strict (unknown values raised).
+    Mirrors R90 :class:`~minimax_code.tool_protocol.session_event.ToolCallOutcome`'s
+    tolerant ``try/except -> UNKNOWN`` pattern.
+    """
+
+    LOCAL = "local"
+    REMOTE = "remote"
+    #: ``#[serde(other)]`` forward-compat catch-all.
+    UNKNOWN = "unknown"
+
+    def to_wire(self) -> str:
+        """The snake_case wire string (``#[serde(rename_all)]``)."""
+        return self.value
+
+    @classmethod
+    def from_wire(cls, value: str) -> AttachRoute:
+        """Reconstruct from its wire string.
+
+        Unknown values → :data:`UNKNOWN` (the ``#[serde(other)]`` forward-compat
+        catch-all); never raises. Mirrors R90
+        :class:`~minimax_code.tool_protocol.session_event.ToolCallOutcome`.
+        """
+        try:
+            return cls(value)
+        except ValueError:
+            return cls.UNKNOWN
+
+
+@dataclass
+class SessionBindServerParams:
+    """``session_bind_server`` params (harness → hub).
+
+    Bind a tool server's tools to the current session. :attr:`server_id` is a
+    required R82 :class:`ServerId` (str newtype, emitted bare).
+    :attr:`cwd` is the working directory the tool server should root the
+    session at (absent → server default CWD). :attr:`metadata` is the R92
+    opaque ``serde_json::Value`` passthrough (sandbox_id, agent config, …) —
+    the hub does not interpret it.
+    """
+
+    server_id: ServerId
+    #: ``#[serde(default, skip_serializing_if = "Option::is_none")]``.
+    cwd: str | None = None
+    #: Opaque JSON value, round-tripped verbatim (R92 passthrough).
+    metadata: object = None
+
+    def to_wire(self) -> dict[str, object]:
+        wire: dict[str, object] = {"server_id": self.server_id}
+        if self.cwd is not None:
+            wire["cwd"] = self.cwd
+        if self.metadata is not None:
+            wire["metadata"] = self.metadata
+        return wire
+
+
+def session_bind_server_params_from_wire(data: dict[str, object]) -> SessionBindServerParams:
+    """Reconstruct :class:`SessionBindServerParams`.
+
+    :attr:`server_id` lifts as :class:`ServerId` (str newtype); :attr:`cwd`
+    and the opaque :attr:`metadata` lift to ``None`` when wire-omitted.
+    """
+    cwd_raw = data.get("cwd")
+    metadata_raw = data.get("metadata")
+    return SessionBindServerParams(
+        server_id=ServerId(str(data["server_id"])),
+        cwd=str(cwd_raw) if cwd_raw is not None else None,
+        metadata=metadata_raw,
+    )
+
+
+@dataclass
+class SessionBindServerResult:
+    """Reply to :class:`SessionBindServerParams`.
+
+    ``#[derive(Default)]``. :attr:`tools` is a ``Vec<ToolDescription>`` with
+    ``#[serde(default, skip_serializing_if = "Vec::is_empty")]`` — the
+    list-of-bare-pydantic-model shape (R96), lifted via
+    ``model_validate`` / ``model_dump(exclude_none=True)``. The three remaining
+    fields are ``Option``-skip. :attr:`unserved_tool_ids` /
+    :attr:`resolve_error` forward :class:`SessionBindResult`'s closed-resolution
+    diagnostics verbatim.
+    """
+
+    tools: list[ToolDescription] = field(default_factory=list)
+    binary_version: str | None = None
+    unserved_tool_ids: list[str] = field(default_factory=list)
+    resolve_error: str | None = None
+
+    def to_wire(self) -> dict[str, object]:
+        wire: dict[str, object] = {}
+        if self.tools:
+            wire["tools"] = [t.model_dump(exclude_none=True) for t in self.tools]
+        if self.binary_version is not None:
+            wire["binary_version"] = self.binary_version
+        if self.unserved_tool_ids:
+            wire["unserved_tool_ids"] = self.unserved_tool_ids
+        if self.resolve_error is not None:
+            wire["resolve_error"] = self.resolve_error
+        return wire
+
+
+def session_bind_server_result_from_wire(data: dict[str, object]) -> SessionBindServerResult:
+    """Reconstruct :class:`SessionBindServerResult`.
+
+    :attr:`tools` lifts as a list of bare pydantic models (default-empty when
+    wire-omitted); the two ``Option``-skip strings lift to ``None``;
+    :attr:`unserved_tool_ids` defaults to empty when omitted.
+    """
+    binary_raw = data.get("binary_version")
+    resolve_raw = data.get("resolve_error")
+    return SessionBindServerResult(
+        tools=[
+            ToolDescription.model_validate(t)  # type: ignore[arg-type]
+            for t in data.get("tools", [])  # type: ignore[union-attr]
+        ],
+        binary_version=str(binary_raw) if binary_raw is not None else None,
+        unserved_tool_ids=list(data.get("unserved_tool_ids", [])),
+        resolve_error=str(resolve_raw) if resolve_raw is not None else None,
+    )
+
+
+@dataclass
+class SessionUnbindServerParams:
+    """``session_unbind_server`` params (harness → hub).
+
+    Unbind a tool server from the current session. :attr:`server_id` is a
+    required R82 :class:`ServerId`.
+    """
+
+    server_id: ServerId
+
+    def to_wire(self) -> dict[str, object]:
+        return {"server_id": self.server_id}
+
+
+def session_unbind_server_params_from_wire(data: dict[str, object]) -> SessionUnbindServerParams:
+    """Reconstruct :class:`SessionUnbindServerParams` (:attr:`server_id` bare newtype)."""
+    return SessionUnbindServerParams(server_id=ServerId(str(data["server_id"])))
+
+
+@dataclass
+class SessionAttachServerParams:
+    """``session_attach_server`` params (harness → hub).
+
+    Attach this harness connection to an EXISTING session as an observer.
+    Hub-local: never forwarded to the tool server, never creates a workspace
+    session, never mutates toolsets/handlers. ``#[derive(Default)]`` — both
+    fields ``Option``-skip. :attr:`server_id` is an optional expected server
+    (diagnostics + directory cross-check); the authoritative key is the
+    envelope ``session_id``. :attr:`caller` is a free-form caller label for
+    metrics/logs.
+    """
+
+    server_id: ServerId | None = None
+    caller: str | None = None
+
+    def to_wire(self) -> dict[str, object]:
+        wire: dict[str, object] = {}
+        if self.server_id is not None:
+            wire["server_id"] = self.server_id
+        if self.caller is not None:
+            wire["caller"] = self.caller
+        return wire
+
+
+def session_attach_server_params_from_wire(data: dict[str, object]) -> SessionAttachServerParams:
+    """Reconstruct :class:`SessionAttachServerParams`.
+
+    Both fields lift to ``None`` when wire-omitted; :attr:`server_id` is a
+    nullable :class:`ServerId` str newtype.
+    """
+    server_raw = data.get("server_id")
+    caller_raw = data.get("caller")
+    return SessionAttachServerParams(
+        server_id=ServerId(str(server_raw)) if server_raw is not None else None,
+        caller=str(caller_raw) if caller_raw is not None else None,
+    )
+
+
+@dataclass
+class SessionAttachServerResult:
+    """Reply to :class:`SessionAttachServerParams`.
+
+    ``#[derive(Default)]``. :attr:`tools` is the same
+    ``Vec<ToolDescription>`` list-of-bare-pydantic-model shape as
+    :class:`SessionBindServerResult.tools` (R96, default-empty +
+    wire-omitted-when-empty). :attr:`route` is an ``Option``-skip
+    :class:`AttachRoute` (the first tolerant ``#[serde(other)]`` enum in
+    frames.py) describing where the session's tool-server was found.
+    """
+
+    tools: list[ToolDescription] = field(default_factory=list)
+    route: AttachRoute | None = None
+
+    def to_wire(self) -> dict[str, object]:
+        wire: dict[str, object] = {}
+        if self.tools:
+            wire["tools"] = [t.model_dump(exclude_none=True) for t in self.tools]
+        if self.route is not None:
+            wire["route"] = self.route.to_wire()
+        return wire
+
+
+def session_attach_server_result_from_wire(data: dict[str, object]) -> SessionAttachServerResult:
+    """Reconstruct :class:`SessionAttachServerResult`.
+
+    :attr:`tools` lifts as a list of bare pydantic models (default-empty when
+    omitted); :attr:`route` lifts via :meth:`AttachRoute.from_wire` (tolerant
+    — unknown values fall back to :data:`AttachRoute.UNKNOWN`).
+    """
+    return SessionAttachServerResult(
+        tools=[
+            ToolDescription.model_validate(t)  # type: ignore[arg-type]
+            for t in data.get("tools", [])  # type: ignore[union-attr]
+        ],
+        route=(
+            AttachRoute.from_wire(str(data["route"]))  # type: ignore[arg-type]
+            if data.get("route") is not None
+            else None
+        ),
+    )

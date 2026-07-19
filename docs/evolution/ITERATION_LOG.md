@@ -8596,3 +8596,61 @@ wire 类型是契约层，先于行为层落地 —— 与 R82-R99 的全部 fra
 ### Commit
 
 `feat(platform): R101 migrate frames.rs session-lifecycle open/close primitives`
+
+
+## R102 — frames.rs session bind/attach server 子域（6 符号，crate 首个 frames.py 内 `#[serde(other)]` catch-all StrEnum `AttachRoute`）
+
+锚点:R101-1 eae7ba0
+
+### 本轮目标
+
+继续消化 frames.rs deferred 域队列。本轮锁定 **session bind/attach server 子域**（`frames.rs:465-544`，6 符号）—— harness↔hub 会话绑定/解绑/观察协议，是 session 生命周期模块的第 3 块拼图（R101 open/close primitives 之后）。这一域引入 crate 内首个 frames.py `#[serde(other)]` 前向兼容 catch-all 字符串枚举 `AttachRoute`，是 R90 `session_event::ToolCallOutcome`/`SessionPhase` 容错模式在 frames.py 的首次复刻。
+
+### 融合结论
+
+grok-build 的 session bind/attach 协议是"harness 把一个 tool server 绑定到当前会话（`session_bind_server`）/ 解绑（`session_unbind_server`）/ 以观察者身份附加到已存在会话（`session_attach_server`）"三段式。`AttachRoute` 是该域唯一的容错点：`Local`（本 hub 实例的活连接）/ `Remote`（跨实例发布路由）/ `Unknown`（`#[serde(other)]` 吞掉新版对端新增的路由值，让 hub/SDK 独立部署时类型解析永不失败）。
+
+Python 融合层的关键设计决策：**frames.py 内的 StrEnum 一律用 classmethod `from_wire`，而不是模块级 `*_from_wire` 函数**。这与 frames.py 既有的 8 个严格 StrEnum 完全一致（它们用 `cls._value2member_map_.get(data)`）——区别仅在于 `AttachRoute` 多一层 `try/except → UNKNOWN` 容错（镜像 R90 `ToolCallOutcome`）。dataclass 才获得模块级 `x_from_wire(data)` 函数。本轮误把 `attach_route_from_wire` 当模块级函数加进了 `__all__` converters 区、测试 `from_wire` 导入块、barrel 测试 `_converters` 列表，ruff 立刻用 F822（`__all__` 引用未定义名）+ F401（导入未使用）双报错拦截，证明这套 classmethod vs 模块函数的分工规则已被工具链固化为契约。
+
+### 交付
+
+**frames.py**（`agent/minimax_code/tool_protocol/frames.py`）：
+- `AttachRoute(StrEnum)` —— 3 变体 `LOCAL`/`REMOTE`/`UNKNOWN`，`#[serde(other)]` catch-all。`to_wire() -> str`（bare string，`self.value`）+ classmethod `from_wire(cls, value) -> AttachRoute`（`try: cls(value) except ValueError: cls.UNKNOWN`，永不 raise）。
+- `SessionBindServerParams` —— `server_id: ServerId`（必需）+ `cwd: str | None` + `metadata: object`（不透明透传）。
+- `SessionBindServerResult` —— `tools: list[ToolDescription]` + `binary_version: str | None` + `unserved_tool_ids: list[str]` + `resolve_error: str | None`。
+- `SessionUnbindServerParams` —— `server_id: ServerId`（必需）。
+- `SessionAttachServerParams` —— `server_id: ServerId | None` + `caller: str | None`。
+- `SessionAttachServerResult` —— `tools: list[ToolDescription]` + `route: AttachRoute | None`。
+- 5 个模块级 `*_from_wire` 函数（`session_bind_server_params_from_wire` / `session_bind_server_result_from_wire` / `session_unbind_server_params_from_wire` / `session_attach_server_params_from_wire` / `session_attach_server_result_from_wire`）；`session_attach_server_result_from_wire` 通过 `AttachRoute.from_wire(...)` 提升 `route`。
+- `__all__`：类型区插入 6 符号（`AttachRoute` + 5 DTO），converters 区插入 5 个会话转换器（**不含** `attach_route_from_wire`）。
+
+**barrel `__init__.py`**：frames 导入块 3 处分散插入（`AttachRoute`、4 个 Session Attach/Bind 符号、`SessionUnbindServerParams`）+ `__all__` R102 组 6 符号。
+
+**测试 `tests/test_tool_protocol.py`**：7 个测试类（`TestAttachRoute` / `TestSessionBindServerParams` / `TestSessionBindServerResult` / `TestSessionUnbindServerParams` / `TestSessionAttachServerParams` / `TestSessionAttachServerResult` / `TestSessionBindAttachServerBarrelR102`）+ 类型导入 3 处分散插入 + `from_wire` 导入块 5 个会话转换器（**不含** `attach_route_from_wire`）+ barrel 测试 `_types`(6) / `_converters`(5) 列表。
+
+### 映射决策树 + 坑
+
+1. **StrEnum 用 classmethod，dataclass 用模块函数（核心坑）**：frames.py 8 个既有 StrEnum 全部在类上挂 `from_wire(cls, ...)` classmethod（Grep 确认第 821/844/1183/1209/1396/1431/1832/1886 行，`cls._value2member_map_.get(data)`），**无一**有模块级 `*_from_wire`。`AttachRoute` 遵同规，多一层 `try/except` 容错。本轮一度误建模块级 `attach_route_from_wire` 并塞进 `__all__` converters、测试导入、barrel `_converters` 三处 → ruff F822（frames.py:307 未定义名）+ F401（test:194 导入未用）双拦截。修复 = 删 3 处引用（同一批次，F401 SOP），`TestAttachRoute` 改用 `AttachRoute.from_wire(...)` 调用。**教训**：dataclass 从 `x_from_wire(data)` 起；StrEnum 从 `X.from_wire(value)` 起，二者分工已被 ruff 固化。
+2. **`AttachRoute.to_wire` = bare string**：`#[serde(rename_all="snake_case")]` 无 tag，单元变体序列化为裸字符串 `"local"`/`"remote"`/`"unknown"`，`to_wire` 直接 `self.value`，不包 dict。`SessionAttachServerResult.to_wire` 发射 `"route": str(self.route)`（`StrEnum` 的 `str()` 返回 value）。
+3. **Vec-is_empty + 裸 pydantic 组合（R92⊕R96）**：`tools: list[ToolDescription]` 用 `field(default_factory=list)` + `to_wire` `if self.tools: out["tools"] = [t.model_dump(exclude_none=True) for t in self.tools]`（R96 裸 pydantic `model_dump`）+ `from_wire` `[ToolDescription.model_validate(t) for t in data.get("tools", [])]`（R92 Vec-skip `data.get(k, [])`）。`unserved_tool_ids: list[str]` 同模式但裸标量 `list(data.get("unserved_tool_ids", []))`。
+4. **Option-skip 三连**：`cwd`/`binary_version`/`resolve_error`/`server_id`(attach)/`caller` 全部 `X | None = None` + `to_wire` `if x is not None: wire[k] = x` + `from_wire` `data.get(k)`。`route: AttachRoute | None` 同理，但提升时走 `AttachRoute.from_wire(str(data["route"]))`。
+5. **不透明 `serde_json::Value` 透传**：`metadata: object = None`，类型用 `object`（而非 `dict`），`to_wire` 直接 `"metadata": self.metadata`，`from_wire` 直接 `data.get("metadata")` —— 镜像 frames.py 第 1746 行既有透传惯例（hub 不解释，原样转发给 tool server）。
+6. **`ServerId` str newtype 提升**：`from_wire` 用 `ServerId(str(data["server_id"]))`（str newtype `_OpaqueId` 子类，直接放字符串值）。与 `ConnectionId`/`ServerId` 全栈惯例一致。
+7. **追加空行控制**：frames.py 末尾 `)\n`，temp 开头 `\n\n`（2 空行）→ cat 后恰 2 空行 E302 分隔；tests temp 开头 2 空行直连。一次 ruff 通过、零 E302/E303。
+
+### 验证
+
+- `uv run ruff check tests/test_tool_protocol.py minimax_code/tool_protocol/frames.py minimax_code/tool_protocol/__init__.py` → **All checks passed!**（精确范围，无附带损害；3 处 `attach_route_from_wire` 误引用删除后通过）。
+- `uv run pytest tests/test_tool_protocol.py -q` → **868 passed**（R101 的 844 + R102 新增 24：AttachRoute 7 + 5 DTO 各 ~3 + barrel 2）。
+- `uv run pytest -q` → **3326 passed, 10 skipped**（R101 的 3294 + 24 ≈ 3318→3326，含本轮微调；1 warning 为既有 fastapi/httpx deprecation，与本轮无关）。
+
+### YAGNI 边界
+
+- **不迁移** simplified lifecycle serve 子域（`ServeParams`/`ServeResult`/`SessionBindParams`/`SessionBindResult`/`SessionUnbindParams`，`frames.rs:546+`）—— 依赖尚未迁移的 `crate::ToolDescriptionWithSchema`（带 JSON schema 的工具描述），留 R103+。
+- **不迁移** hooks 域（`HookFrame`/`HookReplyFrame`）与 service→harness pushes（`ToolsChanged`）—— 继续 deferred。
+- `AttachRoute` 不暴露 `ALL`/`UNKNOWN_*` 常量（R85 methods.rs 才有 `ALL`；frames.py 的枚举无此惯例，R90 `ToolCallOutcome`/`SessionPhase` 也未加）。
+- `SessionBindServerResult`/`SessionAttachServerResult` 的 `#[derive(Default)]` 在 Python 端由全字段默认值自然覆盖（`tools`/`unserved_tool_ids` 用 `field(default_factory=list)`，其余 `None`），无需额外 classmethod 工厂。
+
+### Commit
+
+`feat(platform): R102 migrate frames.rs session bind/attach server domain`

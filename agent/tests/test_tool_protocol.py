@@ -50,6 +50,7 @@ from minimax_code.tool_protocol import (
     WORKSPACE_UNAVAILABLE_JSONRPC_CODE,
     WORKSPACE_UNAVAILABLE_MESSAGE,
     WORKSPACE_UNAVAILABLE_SUBCODE,
+    AttachRoute,
     BehaviorVersionUnsupported,
     BindToolSessionAck,
     BindToolSessionParams,
@@ -109,11 +110,16 @@ from minimax_code.tool_protocol import (
     ServerUnbindAck,
     ServerUnbindOutcome,
     ServerUnbindParams,
+    SessionAttachServerParams,
+    SessionAttachServerResult,
+    SessionBindServerParams,
+    SessionBindServerResult,
     SessionCloseParams,
     SessionId,
     SessionMismatch,
     SessionOpenParams,
     SessionOpenResult,
+    SessionUnbindServerParams,
     Shadowed,
     StreamingSpec,
     SubscribeAck,
@@ -202,9 +208,14 @@ from minimax_code.tool_protocol.frames import (
     server_unbind_params_from_wire,
     servers_list_params_from_wire,
     servers_list_result_from_wire,
+    session_attach_server_params_from_wire,
+    session_attach_server_result_from_wire,
+    session_bind_server_params_from_wire,
+    session_bind_server_result_from_wire,
     session_close_params_from_wire,
     session_open_params_from_wire,
     session_open_result_from_wire,
+    session_unbind_server_params_from_wire,
     subscribe_ack_from_wire,
     subscribe_notifications_params_from_wire,
     system_notify_params_from_wire,
@@ -6196,6 +6207,244 @@ class TestSessionLifecycleBarrelR101:
             assert hasattr(mod, name), f"frames submodule missing {name}"
 
     def test_barrel_does_not_re_export_from_wire(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in self._converters:
+            assert not hasattr(pkg, name), f"barrel should not export {name}"
+
+
+class TestAttachRoute:
+    """R102 — frames.py's first #[serde(other)] tolerant StrEnum.
+
+    Unknown wire values fall back to UNKNOWN instead of raising (mirrors R90
+    ToolCallOutcome). The eight prior frames.py StrEnums were strict.
+    """
+
+    def test_known_variants_round_trip(self) -> None:
+        for route in (AttachRoute.LOCAL, AttachRoute.REMOTE, AttachRoute.UNKNOWN):
+            assert AttachRoute.from_wire(route.to_wire()) == route
+
+    def test_wire_strings_are_snake_case(self) -> None:
+        assert AttachRoute.LOCAL.to_wire() == "local"
+        assert AttachRoute.REMOTE.to_wire() == "remote"
+        assert AttachRoute.UNKNOWN.to_wire() == "unknown"
+
+    def test_from_wire_unknown_value_falls_back_to_unknown(self) -> None:
+        # #[serde(other)] forward-compat catch-all — never raises.
+        assert AttachRoute.from_wire("cloud") == AttachRoute.UNKNOWN
+        assert AttachRoute.from_wire("anything-new") == AttachRoute.UNKNOWN
+
+    def test_from_wire_matches_on_value_not_member_name(self) -> None:
+        # cls(value) matches on the .value ("local"), not the member name.
+        assert AttachRoute.from_wire("local") == AttachRoute.LOCAL
+        # Member-name strings are NOT accepted (only the snake_case .value).
+        assert AttachRoute.from_wire("LOCAL") == AttachRoute.UNKNOWN
+
+    def test_copy_and_equality_semantics(self) -> None:
+        # #[derive(Copy, Eq)] — variants compare equal to themselves; StrEnum
+        # also compares equal to its bare value.
+        assert AttachRoute.LOCAL == AttachRoute.LOCAL
+        assert AttachRoute.LOCAL != AttachRoute.REMOTE
+        assert AttachRoute.LOCAL == "local"
+
+
+class TestSessionBindServerParams:
+    """R102 — session_bind_server params (server_id required; cwd/metadata Option-skip)."""
+
+    def test_required_server_id_emitted_bare(self) -> None:
+        p = SessionBindServerParams(server_id=ServerId("srv-1"))
+        assert p.to_wire() == {"server_id": "srv-1"}
+
+    def test_option_skip_fields_omitted_when_none(self) -> None:
+        p = SessionBindServerParams(server_id=ServerId("srv-1"))
+        w = p.to_wire()
+        assert "cwd" not in w
+        assert "metadata" not in w
+
+    def test_cwd_and_opaque_metadata_round_trip(self) -> None:
+        meta = {"sandbox_id": "sbx-9", "rank": 3}
+        p = SessionBindServerParams(
+            server_id=ServerId("srv-1"), cwd="/repo", metadata=meta
+        )
+        assert p.to_wire() == {
+            "server_id": "srv-1",
+            "cwd": "/repo",
+            "metadata": meta,
+        }
+
+    def test_from_wire_lifts_server_id_and_optionals(self) -> None:
+        meta = {"k": "v"}
+        p = session_bind_server_params_from_wire(
+            {"server_id": "srv-2", "cwd": "/path", "metadata": meta}
+        )
+        assert p.server_id == ServerId("srv-2")
+        assert p.cwd == "/path"
+        assert p.metadata == meta
+
+    def test_from_wire_missing_optionals_lift_to_none(self) -> None:
+        p = session_bind_server_params_from_wire({"server_id": "srv-3"})
+        assert p.server_id == ServerId("srv-3")
+        assert p.cwd is None
+        assert p.metadata is None
+
+
+class TestSessionBindServerResult:
+    """R102 — Vec-is_empty-skip tools + Option-skip strings + unserved Vec-skip."""
+
+    def test_default_empty_result_serialises_to_empty_dict(self) -> None:
+        # #[derive(Default)] — all-Optional + default-empty-list -> {}.
+        assert SessionBindServerResult().to_wire() == {}
+
+    def test_empty_tools_list_is_wire_omitted(self) -> None:
+        # Vec::is_empty skip — explicit empty list still omitted.
+        assert SessionBindServerResult(tools=[]).to_wire() == {}
+
+    def test_tools_round_trip_as_bare_pydantic_list(self) -> None:
+        td = ToolDescription(name="fs.read", description="read")
+        r = SessionBindServerResult(tools=[td])
+        assert r.to_wire()["tools"] == [td.model_dump(exclude_none=True)]
+
+    def test_option_skip_strings_round_trip(self) -> None:
+        r = SessionBindServerResult(binary_version="1.2.3", resolve_error="boom")
+        assert r.to_wire() == {
+            "binary_version": "1.2.3",
+            "resolve_error": "boom",
+        }
+
+    def test_unserved_tool_ids_vec_skip_when_empty(self) -> None:
+        assert "unserved_tool_ids" not in SessionBindServerResult(
+            unserved_tool_ids=[]
+        ).to_wire()
+        r = SessionBindServerResult(unserved_tool_ids=["bad-1", "bad-2"])
+        assert r.to_wire()["unserved_tool_ids"] == ["bad-1", "bad-2"]
+
+    def test_from_wire_default_empty_when_omitted(self) -> None:
+        r = session_bind_server_result_from_wire({})
+        assert r.tools == []
+        assert r.binary_version is None
+        assert r.unserved_tool_ids == []
+        assert r.resolve_error is None
+
+    def test_from_wire_lifts_tools_and_strings(self) -> None:
+        td = ToolDescription(name="fs.read", description="read")
+        r = session_bind_server_result_from_wire(
+            {
+                "tools": [td.model_dump(exclude_none=True)],
+                "binary_version": "9.9",
+                "unserved_tool_ids": ["x"],
+                "resolve_error": "err",
+            }
+        )
+        assert len(r.tools) == 1
+        assert r.tools[0].name == "fs.read"
+        assert r.binary_version == "9.9"
+        assert r.unserved_tool_ids == ["x"]
+        assert r.resolve_error == "err"
+
+
+class TestSessionUnbindServerParams:
+    """R102 — session_unbind_server params (server_id required, bare newtype)."""
+
+    def test_server_id_emitted_bare(self) -> None:
+        p = SessionUnbindServerParams(server_id=ServerId("srv-1"))
+        assert p.to_wire() == {"server_id": "srv-1"}
+
+    def test_round_trip(self) -> None:
+        p = SessionUnbindServerParams(server_id=ServerId("srv-1"))
+        back = session_unbind_server_params_from_wire(p.to_wire())
+        assert back.server_id == ServerId("srv-1")
+
+
+class TestSessionAttachServerParams:
+    """R102 — session_attach_server params (all-Option-skip, #[derive(Default)])."""
+
+    def test_default_empty_serialises_to_empty_dict(self) -> None:
+        assert SessionAttachServerParams().to_wire() == {}
+
+    def test_option_skip_fields_round_trip(self) -> None:
+        p = SessionAttachServerParams(server_id=ServerId("srv-1"), caller="watcher")
+        assert p.to_wire() == {"server_id": "srv-1", "caller": "watcher"}
+
+    def test_from_wire_missing_lifts_to_none(self) -> None:
+        p = session_attach_server_params_from_wire({})
+        assert p.server_id is None
+        assert p.caller is None
+
+    def test_from_wire_nullable_server_id_lifts(self) -> None:
+        p = session_attach_server_params_from_wire(
+            {"server_id": "srv-2", "caller": "metrics"}
+        )
+        assert p.server_id == ServerId("srv-2")
+        assert p.caller == "metrics"
+
+
+class TestSessionAttachServerResult:
+    """R102 — Vec-is_empty-skip tools + Option-skip AttachRoute (tolerant)."""
+
+    def test_default_empty_serialises_to_empty_dict(self) -> None:
+        assert SessionAttachServerResult().to_wire() == {}
+
+    def test_empty_tools_omitted_and_route_option_skip(self) -> None:
+        r = SessionAttachServerResult(tools=[], route=AttachRoute.LOCAL)
+        assert r.to_wire() == {"route": "local"}
+
+    def test_tools_and_route_round_trip(self) -> None:
+        td = ToolDescription(name="fs.read", description="read")
+        r = SessionAttachServerResult(tools=[td], route=AttachRoute.REMOTE)
+        w = r.to_wire()
+        assert w["tools"] == [td.model_dump(exclude_none=True)]
+        assert w["route"] == "remote"
+
+    def test_from_wire_default_empty_when_omitted(self) -> None:
+        r = session_attach_server_result_from_wire({})
+        assert r.tools == []
+        assert r.route is None
+
+    def test_from_wire_route_tolerant_unknown_falls_back(self) -> None:
+        # #[serde(other)] — unknown route -> AttachRoute.UNKNOWN, never raises.
+        r = session_attach_server_result_from_wire({"route": "quantum"})
+        assert r.route == AttachRoute.UNKNOWN
+
+
+class TestSessionBindAttachServerBarrelR102:
+    """R102 barrel contract — 6 types travel the barrel; 6 from_wire stay
+    submodule-qualified (mirrors R101 TestSessionLifecycleBarrelR101)."""
+
+    _types = [
+        "AttachRoute",
+        "SessionAttachServerParams",
+        "SessionAttachServerResult",
+        "SessionBindServerParams",
+        "SessionBindServerResult",
+        "SessionUnbindServerParams",
+    ]
+    _converters = [
+        "session_attach_server_params_from_wire",
+        "session_attach_server_result_from_wire",
+        "session_bind_server_params_from_wire",
+        "session_bind_server_result_from_wire",
+        "session_unbind_server_params_from_wire",
+    ]
+
+    def test_frames_module_exposes_structs(self) -> None:
+        import minimax_code.tool_protocol.frames as mod
+
+        for name in self._types:
+            assert hasattr(mod, name), f"frames submodule missing {name}"
+
+    def test_session_symbols_in_all(self) -> None:
+        import minimax_code.tool_protocol as pkg
+
+        for name in self._types:
+            assert name in pkg.__all__, f"{name} not in barrel __all__"
+
+    def test_frames_submodule_exposes_from_wire(self) -> None:
+        import minimax_code.tool_protocol.frames as mod
+
+        for name in self._converters:
+            assert hasattr(mod, name), f"frames submodule missing {name}"
+
+    def test_barrel_does_not_re_export_from_wire(self) -> None:
         import minimax_code.tool_protocol as pkg
 
         for name in self._converters:
