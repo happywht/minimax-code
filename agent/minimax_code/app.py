@@ -331,6 +331,49 @@ def set_subagent_llm(llm: Any) -> None:
     _SUBAGENT_LLM = llm
 
 
+# R62: process-wide reasoning-effort override singleton.
+#
+# The persisted effort (``model_prefs.reasoning_effort``, written by the
+# ``model.set_reasoning_effort`` IPC handler) is loaded once at boot by
+# :func:`_rebuild_subagent_llm` and cached here so *both* agent
+# construction sites — the main agent (:mod:`builtins`) and the sub-agent
+# runtime (:func:`_set_subagent_llm` → :class:`SubAgentRuntime`) — read a
+# single source without each reopening the DB. ``None`` means "no override;
+# use the model's own default effort" (the pre-R62 behaviour).
+#
+# The main-agent path is async (it can ``await`` the DAO directly); the
+# sub-agent ``build`` path is *synchronous* and cannot await, so it reads
+# this singleton instead — that asymmetry is the whole reason the singleton
+# exists rather than each site reading the DAO inline.
+_REASONING_EFFORT_OVERRIDE: str | None = None
+
+
+def get_reasoning_effort_override() -> str | None:
+    """Return the process-wide reasoning-effort override, or ``None``.
+
+    Loaded from ``model_prefs`` by :func:`_rebuild_subagent_llm` (called
+    at boot and after every ``model.set_reasoning_effort`` /
+    ``model.set_current`` mutation via :func:`rebuild_subagent_llm`).
+    The main-agent and sub-agent construction sites read this to thread
+    the override into their :class:`AgentConfig` so the effort actually
+    reaches the LLM call (R55 wired config → ``stream_chat``).
+    """
+    return _REASONING_EFFORT_OVERRIDE
+
+
+def _set_reasoning_effort_override(effort: str | None) -> None:
+    """Internal setter used by :func:`_rebuild_subagent_llm`.
+
+    Public mutation happens only via ``model.set_reasoning_effort`` →
+    :func:`rebuild_subagent_llm` → :func:`_rebuild_subagent_llm` → here
+    (there is no separate IPC for the in-memory cache; the DB write in
+    the handler is the source of truth, and this cache is a derived
+    view refreshed on every rebuild).
+    """
+    global _REASONING_EFFORT_OVERRIDE
+    _REASONING_EFFORT_OVERRIDE = effort
+
+
 def _set_subagent_llm(llm: Any) -> None:
     """Internal setter used by :func:`_maybe_open_db`.
 
@@ -345,7 +388,20 @@ def _set_subagent_llm(llm: Any) -> None:
     try:
         from .orchestrator.subagent import SubAgentRuntime, set_subagent_runtime
 
-        set_subagent_runtime(SubAgentRuntime(llm=llm))
+        # R62: thread the persisted reasoning-effort override into the
+        # sub-agent runtime so every built sub-agent inherits it. The
+        # singleton is loaded by ``_rebuild_subagent_llm`` (which runs
+        # *before* this setter in both the boot path
+        # ``_set_subagent_llm(await _rebuild_subagent_llm(db))`` and the
+        # rebuild path ``rebuild_subagent_llm``), so it is already current
+        # when we read it here — no DB call needed in this synchronous
+        # setter (which is the whole point: ``SubAgentRuntime.build`` is
+        # sync and cannot await the DAO itself).
+        set_subagent_runtime(
+            SubAgentRuntime(
+                llm=llm, reasoning_effort=_REASONING_EFFORT_OVERRIDE
+            )
+        )
     except Exception:  # pragma: no cover — defensive
         logger.debug("could not set subagent runtime; continuing")
 
@@ -404,6 +460,18 @@ async def _rebuild_subagent_llm(db: Any) -> Any:
         pref = await prefs_dao.get_current()
         model_id = pref.get("model_id", default_model()) if isinstance(pref, dict) else default_model()  # R52: was "MiniMax-M3" literal
         provider_id = pref.get("provider_id", "builtin-minimax") if isinstance(pref, dict) else "builtin-minimax"
+        # R62: cache the persisted reasoning-effort override into the
+        # process-wide singleton *before* returning, so the sub-agent
+        # runtime (built next by ``_set_subagent_llm`` from this client)
+        # and the main agent (``builtins.py``) both read the freshly-loaded
+        # value. Done here — in the async loader — because the synchronous
+        # ``_set_subagent_llm`` cannot await the DAO. Placed before the
+        # provider lookup so a missing provider (the early-return path
+        # below) still refreshes the cache from whatever ``get_current``
+        # returned, keeping the singleton coherent with the DB even when
+        # the client build itself falls back to defaults.
+        effort = pref.get("reasoning_effort") if isinstance(pref, dict) else None
+        _set_reasoning_effort_override(effort)
 
         prov_dao = ProviderDAO(db)
         provider = await prov_dao.get(provider_id)

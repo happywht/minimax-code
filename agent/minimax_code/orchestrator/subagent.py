@@ -139,7 +139,12 @@ class SubAgentRuntime:
     #: data.
     STUB_PREFIX = "stub: agent"
 
-    def __init__(self, *, llm: MiniMaxClient | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        llm: MiniMaxClient | None = None,
+        reasoning_effort: str | None = None,
+    ) -> None:
         # ``llm`` is the process-wide :class:`MiniMaxClient`. When
         # ``None`` (the default), :meth:`invoke` returns the
         # deterministic stub envelope so the IPC layer can still
@@ -150,6 +155,31 @@ class SubAgentRuntime:
         # the ``stub`` flag is set to ``False`` and ``text`` is
         # the model's actual answer.
         self._llm = llm
+        # R62: the persisted reasoning-effort override (loaded from
+        # ``model_prefs`` by ``_rebuild_subagent_llm`` into the
+        # process-wide ``_REASONING_EFFORT_OVERRIDE`` singleton, then
+        # threaded into the runtime at construction). Threaded into every
+        # sub-agent's :class:`AgentConfig` at :meth:`build` time so
+        # ``model.set_reasoning_effort`` actually reaches the LLM call —
+        # mirrors the main-agent injection in ``builtins.py``. ``None``
+        # means "no override; use the model's own default effort" (the
+        # pre-R62 behaviour), so a runtime with no stored override behaves
+        # byte-identically to before.
+        self._reasoning_effort = reasoning_effort
+
+    def set_reasoning_effort(self, effort: str | None) -> None:
+        """Update the runtime reasoning-effort override in place.
+
+        Called after ``model.set_reasoning_effort`` (via
+        ``rebuild_subagent_llm`` → ``_set_subagent_llm``, which rebuilds
+        the whole runtime with the fresh singleton value) so the next
+        :meth:`build` picks up the new effort. The LLM client itself is
+        effort-agnostic — effort is a per-call parameter on
+        ``stream_chat`` (R54/R55 wired config → client), not a client
+        constructor field — so a hot-swap here does not require
+        reconnecting the underlying ``httpx`` pool.
+        """
+        self._reasoning_effort = effort
 
     # -- construction ------------------------------------------------------
 
@@ -206,10 +236,17 @@ class SubAgentRuntime:
             # ALL mode: inherit the parent's full surface unchanged.
             effective_registry = base_registry
 
+        # R62: thread the persisted reasoning-effort override into the
+        # sub-agent's AgentConfig so it reaches ``stream_chat`` (R55 wired
+        # config → client → transport). ``self._reasoning_effort`` defaults
+        # to ``None`` (no override — the model's own default effort),
+        # preserving the pre-R62 behaviour when no override is stored or
+        # when the runtime was built before any preference was loaded.
         core_config = AgentConfig(
             model=spec.model,
             system_prompt_extra=config.system_prompt or None,
             max_iterations=config.max_iterations,
+            reasoning_effort=self._reasoning_effort,
         )
         core = AgentCore(
             llm=self._llm, registry=effective_registry, config=core_config

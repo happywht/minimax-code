@@ -508,11 +508,30 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     except Exception:
         logger.debug("telemetry engine unavailable; running without telemetry")
 
+    # R62: read the persisted reasoning-effort override so the main agent's
+    # AgentConfig threads it into every LLM call (R55 wired config →
+    # ``stream_chat`` → transport → wire). The override lives in the
+    # process-wide singleton loaded by ``_rebuild_subagent_llm`` at boot
+    # (and refreshed after every ``model.set_reasoning_effort`` /
+    # ``model.set_current`` via ``rebuild_subagent_llm``). Symmetric to the
+    # sub-agent path, which reads the same singleton in
+    # ``SubAgentRuntime.build``. None-safe and fail-open: a missing override
+    # (or a fresh boot before prefs loaded) leaves ``reasoning_effort=None``
+    # → the model's own default effort (the pre-R62 behaviour).
+    main_reasoning_effort: str | None = None
+    try:
+        from ..app import get_reasoning_effort_override
+
+        main_reasoning_effort = get_reasoning_effort_override()
+    except Exception:
+        logger.debug("reasoning effort override unavailable; using model default")
+
     core = AgentCore(
         llm=llm,
         config=AgentConfig(
             system_prompt_extra=await _build_system_prompt_extra(),
             stall_timeout=stall_timeout,
+            reasoning_effort=main_reasoning_effort,
         ),
         history_provider=_history,
         persist_message=_persist,

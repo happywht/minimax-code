@@ -357,11 +357,13 @@ def register_model_handlers(
                     # alias) — readers need no re-parse later.
                     effort = canonical.as_str()
             await dao_obj.set_reasoning_effort(effort)
-            # Rebuild so a later round's runtime effect picks up the new
-            # effort on the next turn. No-op today: ``_rebuild_subagent_llm``
-            # does not yet forward reasoning_effort to the LLM call — kept
-            # here to prime that wiring and keep the client fresh, mirroring
-            # ``set_current``'s rebuild.
+            # R62: rebuild so the next turn's LLM call picks up the new
+            # effort. ``_rebuild_subagent_llm`` now forwards
+            # reasoning_effort into the process-wide singleton, which both
+            # the main agent (``builtins.py``) and the sub-agent runtime
+            # (``SubAgentRuntime.build``) thread into their AgentConfig —
+            # closing the loop opened by R61's storage layer. Mirrors
+            # ``set_current``'s rebuild (refreshes the client + singleton).
             try:
                 from ..app import rebuild_subagent_llm
                 await rebuild_subagent_llm()

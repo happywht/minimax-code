@@ -4505,3 +4505,81 @@ R60 把 UI badge 做成纯展示后，「切换 effort」就成了 reasoning_eff
 ### Commit
 
 `feat(platform): R61 reasoning_effort set IPC backend storage layer (fuse grok xai-grok-sampling-types)`
+
+---
+
+## R62 — reasoning_effort 后端运行时接线（rebuild 转发存储值 → AgentConfig）
+
+**锚定**：`555e5bd` (R61)　|　**状态**：✅ 闭合回路　|　**测试**：12 新增 / 1794 全过
+
+### 本轮目标
+
+闭合 R61 打开的回路。R61 把 `reasoning_effort` 持久化进 `model_prefs` 表（迁移 014 + DAO 写 + `model.set_reasoning_effort` handler），但 R61 的 YAGNI 边界明示**「只写不读运行时」**——存进去的值没有任何构造点读回来。grep 铁证：R61 之前 `AgentConfig.reasoning_effort`（R55 已定义并接好 config→core→client→transport）永远是 `None`，前端切换 effort 后**下一次 LLM 调用根本不生效**。
+
+R62 让存储的 effort 真正流入 LLM 调用：引入进程级单例 `_REASONING_EFFORT_OVERRIDE`，由 `_rebuild_subagent_llm`（异步，唯一能 `await` DAO 的写点）从 `model_prefs` 读取并写入单例，再由两个同步构造点读单例注入各自 `AgentConfig`——子 agent `SubAgentRuntime.build` + 主 agent `builtins.py:AgentCore(config=AgentConfig(...))`。下游 R55（config→core→client）早已就绪，R62 只补**上游来源**这一段。
+
+### 融合结论
+
+✅ **回路闭合**。grok `xai-grok-sampling-types` 的「采样配置驱动 LLM 调用」理念在 MiniMax Code 端到端落地：
+
+```
+前端切换 → R61 存储(model_prefs) → R62 单例转发 → R55 config→core→client
+        → R54 stream_chat(reasoning_effort=) → R56/R57 wire emit
+```
+
+12 个新测试（5 组：单例缓存 / rebuild 写单例 / SubAgentRuntime 注入 / 时序不变式 / 端到端）全过；全量回归 **1794 passed, 10 skipped, 0 failed**——零回归。effort 默认 `None` = pre-R62 行为，未存 override 时字节级不变。
+
+### 交付
+
+| 文件 | 改动 |
+|------|------|
+| `orchestrator/subagent.py` | `__init__` 加 `reasoning_effort: str \| None = None` 构造参数 + `set_reasoning_effort(effort)` setter（热替换，无需重建 client）；`build()` 的 `AgentConfig(...)` 注入 `reasoning_effort=self._reasoning_effort` |
+| `app.py` | 新增 `_REASONING_EFFORT_OVERRIDE` 进程级单例 + `get_reasoning_effort_override()` getter（公开）+ `_set_reasoning_effort_override(effort)` 内部 setter；`_set_subagent_llm(client)` 构造 `SubAgentRuntime(llm=client, reasoning_effort=<singleton>)` 并 `set_subagent_runtime(...)`；`_rebuild_subagent_llm(db)` 在提取 model_id/provider_id 后、provider 查找前 `effort = pref.get("reasoning_effort")` → `_set_reasoning_effort_override(effort)` |
+| `ipc/builtins.py` | 主 agent 构造点读单例：`main_reasoning_effort = get_reasoning_effort_override()`（lazy import 规避循环依赖，`except Exception` 兜底 None）→ `AgentConfig(reasoning_effort=main_reasoning_effort, ...)` |
+| `ipc/handlers_model.py` | 更新 R61 的「today no-op」注释为「R62 loop closed」（`set_reasoning_effort` 末尾的 `rebuild_subagent_llm()` 调用现在真生效） |
+| `tests/test_reasoning_runtime.py` | 12 测试 / 5 组（新增） |
+
+### 映射决策树 + 坑
+
+**决策树（数据流）**：
+
+```
+model_prefs.reasoning_effort (R61 存)
+  └─> ModelPrefsDAO.get_current()["reasoning_effort"]
+        └─> _rebuild_subagent_llm(db) [异步·唯一写点]
+              └─> _set_reasoning_effort_override(effort)  ──> _REASONING_EFFORT_OVERRIDE 单例
+                    ├─> _set_subagent_llm(client) [同步·读] ─> SubAgentRuntime(reasoning_effort=...)
+                    │     └─> SubAgentRuntime.build() ─> AgentConfig.reasoning_effort ─> R55 core→client
+                    └─> builtins.py 主 agent [同步·读] ─> AgentConfig.reasoning_effort ─> R55 core→client
+                                                                                              └─> R54 stream_chat ─> R56/R57 wire
+```
+
+**坑 1（架构铁律，决定单例存在）**：**`SubAgentRuntime.build` 是同步方法，不能 `await` DAO**。第一直觉可能是「build 时直接 `await dao.get_current()` 读 effort」——但 build 不可能是 async（调用方 `handlers_agents.py` 全链路同步持 handle）。这就是进程级单例存在的根本理由：**异步 `_rebuild_subagent_llm` 写，同步 `build`/`_set_subagent_llm` 读**，把异步读取的值「冻结」进同步可见的 global。预判正确：单例是最小改动 + 零回归（None 兜底）+ 无循环依赖（getter 函数内 lazy import）的解。
+
+**坑 2（自发现，已预判修复）**：**effort 提取必须放在 provider 查找之前**。`_rebuild_subagent_llm` 在 provider 为 None（临时库无 provider 行）时**提前 return 默认 client**。如果把 effort 提取放 provider 查找后，provider 缺失会让 effort 永远不写单例——**缓存与 DB 失配**，用户设了 effort 但 provider 没配时单例停留在旧值。**预判正确**：提取紧贴 `pref = dao.get_current()` 之后、`secrets.get_provider_key()` 之前，保证无论走哪条 return 路径，单例都已刷新。测试 `test_rebuild_effort_set_even_when_provider_missing` 专门钉这条不变式。
+
+**坑 3（架构事实，决定单例不入 client）**：**`MiniMaxClient` 没有 `reasoning_effort` 构造参数**。effort 是 `stream_chat(reasoning_effort=...)` 的**调用级参数**（R54 定义），不是 client 状态——同一 client 在不同 turn 可能用不同 effort（如果未来支持 per-turn override）。所以单例不能塞进 client，必须存独立 global，由 config 层（AgentConfig）消费。这也解释了 `set_reasoning_effort` setter 为何「热替换无需重建 client」——client 是 effort-agnostic 的，换 effort 不动 httpx 连接池。
+
+**坑 4（时序铁律，无需同步原语）**：**启动 `_set_subagent_llm(await _rebuild_subagent_llm(db))` 的 Python 求值顺序保证正确**。`await _rebuild_subagent_llm(db)` 作为参数表达式**先求值**（写单例），求值完成后才调用 `_set_subagent_llm(client)`（读单例）。`rebuild_subagent_llm()` public 路径（`handlers_model.py` 切换后调）同样按此两步顺序。asyncio 单线程，无并发写竞争，**不需要锁**。测试 `test_end_to_end_stored_effort_reaches_subagent_config` 真实跑这条启动链路验证时序。
+
+**坑 5（自发现，已预判修复）**：**lazy import 打破循环依赖**。`builtins.py` 顶层 `from ..app import ...` 会循环（`app.py` → `register_app_handlers` → `builtins.py`）。**预判正确**：getter 调用点内 `from ..app import get_reasoning_effort_override`，运行时才解析，环被切断。外层 `try/except Exception` 兜底（极端情况下 app 模块不可导入时退回 None = pre-R62 行为，不阻塞主 agent 启动）。
+
+### 验证
+
+- `cd agent && uv run pytest tests/test_reasoning_runtime.py -v` → **12 passed**（5 组全覆盖：单例缓存 3 + rebuild 写单例 3 + SubAgentRuntime 注入 3 + 时序不变式 2 + 端到端 1）。
+- `cd agent && uv run pytest` → **1794 passed, 10 skipped**（零回归；新增 12 测试 + 原有 1782 全绿）。
+- `cd agent && uv run ruff check minimax_code/app.py minimax_code/ipc/builtins.py minimax_code/ipc/handlers_model.py minimax_code/orchestrator/subagent.py tests/test_reasoning_runtime.py` → **All checks passed!**（R62 新增/编辑代码零 ruff 错误；E/F/W/I/B/UP 规则集全过；行长度 100）。
+- **零回归机制**：`reasoning_effort` 默认 `None` → `AgentConfig(reasoning_effort=None)` → `_stream_turn`（R55）原样透传 None → `stream_chat(reasoning_effort=None)` → transport 层 None 即「不附加 effort 字段」（R56/R57 已处理）= pre-R62 行为。未迁移的库首次启动自动跑 014，effort 列 NULL，单例 None，全链路无感知。
+
+### YAGNI 边界
+
+- ❌ **不做前端 typedIPC / store / 切换器 UI** —— `types/ipc.ts` 的 `model.set_reasoning_effort` 方法签名 + `mockHandle` 覆盖 + `modelStore` effort 状态 + 把 R60 的纯展示 badge 升级为可点切换器。后端回路已闭合（R62），前端是独立的读取半边升级，留 R63。
+- ❌ **不修复预先存在的前端债务** —— `client-pending-mode.test.ts` JsonRpcId null + `message-list.test.tsx` findByText 超时（R59 stash 验证铁证），与 R62 无关，留独立轮次。
+- ❌ **不做模型 `supports_reasoning_effort` 运行时降级** —— 不在 wire emit 时检测「当前模型是否支持 effort」并降级为忽略。effort 是**全局用户偏好**（R61 docstring 明示模型无关），传输层（R56/R57）已按 provider 协议决定是否附加字段；模型不支持时由 provider 端忽略或报错，不在 R62 这层加检测——保持运行时接线的单一职责（转发存储值）。
+- ❌ **单例不做线程安全加锁** —— asyncio 单线程事件循环，`_rebuild_subagent_llm` 是唯一写点且 `await` 期间无并发写；同步读点不会读到半写状态。加锁是过度设计（YAGNI）。
+- ❌ **不做 per-turn / per-request effort override** —— 单例是进程级全局偏好，所有 turn 共享。未来若要 per-request effort（如 sub-agent 各自不同），需扩展为 request-scoped context，但当前需求是全局偏好，YAGNI。
+- ❌ **不把 effort 流入 done chunk / tool_result 元数据** —— 观察点（write path observability）与 R62 的运行时接线（read path 生效）正交，留独立轮次。
+
+### Commit
+
+`feat(platform): R62 reasoning_effort backend runtime wiring singleton (fuse grok xai-grok-sampling-types)`
