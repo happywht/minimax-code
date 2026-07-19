@@ -121,7 +121,14 @@ from minimax_code.tool_protocol import (
     ToolRegistration,
     ToolScope,
     ToolSearchResult,
+    ToolServerConnectionStatus,
+    ToolServerDisconnectReason,
+    ToolServerEvictParams,
+    ToolServerGetStatusParams,
+    ToolServerGetStatusResult,
+    ToolServerLifecycleStatus,
     ToolServerRegistration,
+    ToolServerStatusPayload,
     ToolSessionBindOutcome,
     ToolSessionUnbindOutcome,
     ToolsListParams,
@@ -177,6 +184,11 @@ from minimax_code.tool_protocol.frames import (
     tool_call_progress_frame_from_wire,
     tool_call_result_from_wire,
     tool_search_result_from_wire,
+    tool_server_connection_status_from_wire,
+    tool_server_evict_params_from_wire,
+    tool_server_get_status_params_from_wire,
+    tool_server_get_status_result_from_wire,
+    tool_server_status_payload_from_wire,
     tools_list_params_from_wire,
     tools_list_result_from_wire,
     tools_search_params_from_wire,
@@ -5106,4 +5118,367 @@ class TestSubscriptionsBarrelR97:
             "unsubscribe_notifications_params_from_wire",
             "unsubscribe_ack_from_wire",
         ):
+            assert not hasattr(pkg, name), f"barrel should not export {name}"
+
+
+
+class TestToolServerLifecycleStatus:
+    """``ToolServerLifecycleStatus`` — strict snake_case StrEnum + ``#[default]`` on Ready."""
+
+    def test_member_values_are_snake_case(self):
+        assert ToolServerLifecycleStatus.Starting == "starting"
+        assert ToolServerLifecycleStatus.Ready == "ready"
+        assert ToolServerLifecycleStatus.Busy == "busy"
+        assert ToolServerLifecycleStatus.Draining == "draining"
+        assert ToolServerLifecycleStatus.ShuttingDown == "shutting_down"
+        assert ToolServerLifecycleStatus.Disconnected == "disconnected"
+
+    def test_to_wire_returns_value(self):
+        assert ToolServerLifecycleStatus.Busy.to_wire() == "busy"
+        assert ToolServerLifecycleStatus.ShuttingDown.to_wire() == "shutting_down"
+
+    def test_from_wire_accepts_known(self):
+        assert (
+            ToolServerLifecycleStatus.from_wire("ready")
+            is ToolServerLifecycleStatus.Ready
+        )
+        assert (
+            ToolServerLifecycleStatus.from_wire("draining")
+            is ToolServerLifecycleStatus.Draining
+        )
+
+    def test_from_wire_rejects_unknown(self):
+        with pytest.raises(ValueError):
+            ToolServerLifecycleStatus.from_wire("paused")
+
+    def test_default_classmethod_returns_ready(self):
+        """``#[derive(Default)]`` + ``#[default]`` on Ready, mirrored via ``default()``."""
+        assert ToolServerLifecycleStatus.default() is ToolServerLifecycleStatus.Ready
+
+
+class TestToolServerDisconnectReason:
+    """``ToolServerDisconnectReason`` — strict snake_case StrEnum, no default arm."""
+
+    def test_member_values_are_snake_case(self):
+        assert ToolServerDisconnectReason.NormalClose == "normal_close"
+        assert ToolServerDisconnectReason.IdleTimeout == "idle_timeout"
+        assert ToolServerDisconnectReason.ForceEvicted == "force_evicted"
+        assert ToolServerDisconnectReason.ConnectionLost == "connection_lost"
+
+    def test_to_wire_returns_value(self):
+        assert ToolServerDisconnectReason.IdleTimeout.to_wire() == "idle_timeout"
+        assert ToolServerDisconnectReason.ForceEvicted.to_wire() == "force_evicted"
+
+    def test_from_wire_accepts_known(self):
+        assert (
+            ToolServerDisconnectReason.from_wire("normal_close")
+            is ToolServerDisconnectReason.NormalClose
+        )
+        assert (
+            ToolServerDisconnectReason.from_wire("connection_lost")
+            is ToolServerDisconnectReason.ConnectionLost
+        )
+
+    def test_from_wire_rejects_unknown(self):
+        with pytest.raises(ValueError):
+            ToolServerDisconnectReason.from_wire("kicked")
+
+
+class TestToolServerStatusPayload:
+    """``ToolServerStatusPayload`` — 20-field four-mode dataclass (crate's serde-densest)."""
+
+    def _bare(self, **overrides):
+        """Minimal payload with only the 7 required fields (rest at dataclass defaults)."""
+        base = dict(
+            status=ToolServerLifecycleStatus.Ready,
+            active_tool_calls=0,
+            background_tasks=0,
+            pending_tool_calls=0,
+            last_tool_call_started_ms=0,
+            last_tool_call_completed_ms=0,
+            uptime_ms=0,
+        )
+        base.update(overrides)
+        return ToolServerStatusPayload(**base)
+
+    def test_default_no_skip_fields_present_at_falsy_defaults(self):
+        """default-no-skip fields are ALWAYS on wire, even at 0/False (forward-compat)."""
+        wire = self._bare().to_wire()
+        for key in (
+            "upload_queue_pending",
+            "upload_queue_pending_bytes",
+            "upload_queue_inflight",
+            "upload_queue_circuit_breaker_tripped",
+            "artifact_producers_inflight",
+            "turn_active",
+            "idle_ignores_background",
+        ):
+            assert key in wire, f"default-no-skip {key} must serialize even at falsy default"
+        assert wire["upload_queue_pending"] == 0
+        assert wire["upload_queue_circuit_breaker_tripped"] is False
+
+    def test_option_and_vec_skip_fields_omitted_at_defaults(self):
+        wire = self._bare().to_wire()
+        assert "session_id" not in wire
+        assert "connection_id" not in wire
+        assert "idle_since_ms" not in wire
+        assert "drain_started_ms" not in wire
+        assert "active_tool_names" not in wire
+        assert "background_task_ids" not in wire
+
+    def test_option_skip_fields_present_when_set(self):
+        wire = self._bare(
+            session_id=SessionId("s2"),
+            connection_id="cx-1",
+            idle_since_ms=500,
+            drain_started_ms=600,
+        ).to_wire()
+        assert wire["session_id"] == "s2"
+        assert wire["connection_id"] == "cx-1"
+        assert wire["idle_since_ms"] == 500
+        assert wire["drain_started_ms"] == 600
+
+    def test_vec_skip_fields_present_when_non_empty(self):
+        wire = self._bare(
+            active_tool_names=["fs:read", "fs:write"],
+            background_task_ids=["bg-1"],
+        ).to_wire()
+        assert wire["active_tool_names"] == ["fs:read", "fs:write"]
+        assert wire["background_task_ids"] == ["bg-1"]
+
+    def test_required_field_status_serialises_as_snake_case_string(self):
+        wire = self._bare(status=ToolServerLifecycleStatus.Busy).to_wire()
+        assert wire["status"] == "busy"
+
+    def test_from_wire_missing_required_raises_keyerror(self):
+        """Required fields use ``data[...]``; missing ⇒ KeyError (serde fail-on-missing)."""
+        with pytest.raises(KeyError):
+            tool_server_status_payload_from_wire({})
+
+    def test_from_wire_defaults_fill_missing_optional_vec_defaultnoskip(self):
+        payload = tool_server_status_payload_from_wire(
+            {
+                "status": "ready",
+                "active_tool_calls": 1,
+                "background_tasks": 2,
+                "pending_tool_calls": 3,
+                "last_tool_call_started_ms": 10,
+                "last_tool_call_completed_ms": 20,
+                "uptime_ms": 30,
+            }
+        )
+        assert payload.status is ToolServerLifecycleStatus.Ready
+        assert payload.session_id is None
+        assert payload.connection_id is None
+        assert payload.active_tool_names == []
+        assert payload.background_task_ids == []
+        assert payload.upload_queue_pending == 0
+        assert payload.turn_active is False
+
+    def test_full_round_trip(self):
+        original = ToolServerStatusPayload(
+            status=ToolServerLifecycleStatus.Busy,
+            active_tool_calls=3,
+            background_tasks=1,
+            pending_tool_calls=2,
+            last_tool_call_started_ms=1000,
+            last_tool_call_completed_ms=2000,
+            uptime_ms=5000,
+            session_id=SessionId("s1"),
+            connection_id="cx-9",
+            active_tool_names=["fs:read", "fs:write"],
+            background_task_ids=["bg-1"],
+            upload_queue_pending=4,
+            upload_queue_pending_bytes=2048,
+            upload_queue_inflight=1,
+            upload_queue_circuit_breaker_tripped=True,
+            artifact_producers_inflight=2,
+            turn_active=True,
+            idle_ignores_background=True,
+        )
+        assert tool_server_status_payload_from_wire(original.to_wire()) == original
+
+    def test_terminal_classmethod_zeroes_everything_but_status(self):
+        payload = ToolServerStatusPayload.terminal(
+            ToolServerLifecycleStatus.Disconnected
+        )
+        assert payload.status is ToolServerLifecycleStatus.Disconnected
+        assert payload.active_tool_calls == 0
+        assert payload.uptime_ms == 0
+        assert payload.upload_queue_pending == 0
+        assert payload.turn_active is False
+
+
+class TestToolServerEvictParams:
+    """``ToolServerEvictParams`` — all three fields required (session_id + reason + grace)."""
+
+    def test_to_wire(self):
+        params = ToolServerEvictParams(
+            session_id=SessionId("s1"), reason="idle", grace_period_ms=5000
+        )
+        assert params.to_wire() == {
+            "session_id": "s1",
+            "reason": "idle",
+            "grace_period_ms": 5000,
+        }
+
+    def test_from_wire(self):
+        params = tool_server_evict_params_from_wire(
+            {"session_id": "s1", "reason": "force", "grace_period_ms": 0}
+        )
+        assert params.session_id == SessionId("s1")
+        assert params.reason == "force"
+        assert params.grace_period_ms == 0
+
+    def test_round_trip(self):
+        original = ToolServerEvictParams(
+            session_id=SessionId("s1"), reason="drain", grace_period_ms=250
+        )
+        assert tool_server_evict_params_from_wire(original.to_wire()) == original
+
+    def test_from_wire_missing_required_raises_keyerror(self):
+        with pytest.raises(KeyError):
+            tool_server_evict_params_from_wire({"session_id": "s1"})
+
+
+class TestToolServerGetStatusParams:
+    """``ToolServerGetStatusParams`` — single-field session scope."""
+
+    def test_to_wire(self):
+        assert ToolServerGetStatusParams(session_id=SessionId("s1")).to_wire() == {
+            "session_id": "s1"
+        }
+
+    def test_round_trip(self):
+        original = ToolServerGetStatusParams(session_id=SessionId("s7"))
+        assert tool_server_get_status_params_from_wire(original.to_wire()) == original
+
+
+class TestToolServerConnectionStatus:
+    """``ToolServerConnectionStatus`` — embeds :class:`ToolServerStatusPayload` (nested DTO)."""
+
+    def test_to_wire_nests_payload(self):
+        status = ToolServerStatusPayload(
+            status=ToolServerLifecycleStatus.Busy,
+            active_tool_calls=2,
+            background_tasks=0,
+            pending_tool_calls=1,
+            last_tool_call_started_ms=10,
+            last_tool_call_completed_ms=20,
+            uptime_ms=100,
+        )
+        conn = ToolServerConnectionStatus(connection_id="cx-1", status=status)
+        assert conn.to_wire() == {
+            "connection_id": "cx-1",
+            "status": status.to_wire(),
+        }
+
+    def test_round_trip_lifts_nested_payload(self):
+        status = ToolServerStatusPayload(
+            status=ToolServerLifecycleStatus.Draining,
+            active_tool_calls=1,
+            background_tasks=0,
+            pending_tool_calls=0,
+            last_tool_call_started_ms=5,
+            last_tool_call_completed_ms=6,
+            uptime_ms=7,
+            connection_id="cx-2",
+        )
+        original = ToolServerConnectionStatus(connection_id="cx-2", status=status)
+        lifted = tool_server_connection_status_from_wire(original.to_wire())
+        assert lifted == original
+        assert lifted.status.status is ToolServerLifecycleStatus.Draining
+
+    def test_from_wire_rejects_bad_lifecycle_via_nested_payload(self):
+        with pytest.raises(ValueError):
+            tool_server_connection_status_from_wire(
+                {
+                    "connection_id": "cx-3",
+                    "status": {
+                        "status": "paused",
+                        "active_tool_calls": 0,
+                        "background_tasks": 0,
+                        "pending_tool_calls": 0,
+                        "last_tool_call_started_ms": 0,
+                        "last_tool_call_completed_ms": 0,
+                        "uptime_ms": 0,
+                    },
+                }
+            )
+
+
+class TestToolServerGetStatusResult:
+    """``ToolServerGetStatusResult`` — list-of-DTO (Vec<ToolServerConnectionStatus>)."""
+
+    def _conn(self, cid):
+        return ToolServerConnectionStatus(
+            connection_id=cid,
+            status=ToolServerStatusPayload(
+                status=ToolServerLifecycleStatus.Ready,
+                active_tool_calls=0,
+                background_tasks=0,
+                pending_tool_calls=0,
+                last_tool_call_started_ms=0,
+                last_tool_call_completed_ms=0,
+                uptime_ms=0,
+            ),
+        )
+
+    def test_to_wire_empty_list(self):
+        assert ToolServerGetStatusResult(tool_servers=[]).to_wire() == {
+            "tool_servers": []
+        }
+
+    def test_round_trip_multiple_entries(self):
+        original = ToolServerGetStatusResult(
+            tool_servers=[self._conn("cx-1"), self._conn("cx-2")]
+        )
+        lifted = tool_server_get_status_result_from_wire(original.to_wire())
+        assert lifted == original
+        assert len(lifted.tool_servers) == 2
+        assert lifted.tool_servers[0].connection_id == "cx-1"
+
+
+class TestToolServerStatusLifecycleBarrelR98:
+    """Tool-server status lifecycle symbols travel the barrel; from_wire stay submodule-qualified."""
+
+    _types = (
+        "ToolServerLifecycleStatus",
+        "ToolServerDisconnectReason",
+        "ToolServerStatusPayload",
+        "ToolServerEvictParams",
+        "ToolServerGetStatusParams",
+        "ToolServerConnectionStatus",
+        "ToolServerGetStatusResult",
+    )
+    _converters = (
+        "tool_server_status_payload_from_wire",
+        "tool_server_evict_params_from_wire",
+        "tool_server_get_status_params_from_wire",
+        "tool_server_connection_status_from_wire",
+        "tool_server_get_status_result_from_wire",
+    )
+
+    def test_barrel_exports_tool_server_symbols(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in self._types:
+            assert hasattr(pkg, name), f"barrel missing {name}"
+
+    def test_tool_server_symbols_in_all(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in self._types:
+            assert name in pkg.__all__, f"{name} not in barrel __all__"
+
+    def test_frames_submodule_exposes_from_wire(self):
+        import minimax_code.tool_protocol.frames as mod
+
+        for name in self._converters:
+            assert hasattr(mod, name), f"frames submodule missing {name}"
+
+    def test_barrel_does_not_re_export_from_wire(self):
+        import minimax_code.tool_protocol as pkg
+
+        for name in self._converters:
             assert not hasattr(pkg, name), f"barrel should not export {name}"

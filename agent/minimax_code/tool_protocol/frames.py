@@ -1,4 +1,4 @@
-"""Tool-server frame protocol — per-method params/result payloads (R92 + R93 + R94 + R95 + R96 + R97).
+"""Tool-server frame protocol — per-method params/result payloads (R92 + R93 + R94 + R95 + R96 + R97 + R98).
 
 Fusion of grok-build's ``xai-tool-protocol::frames`` — the per-method
 ``params`` and ``result`` payload structs that ride inside a
@@ -57,7 +57,19 @@ R95's bind/unbind outcomes), the crate's first
 where ``#[serde(default)]`` ⇒ missing keys become ``None`` rather than
 raising), and two acks wrapping outcome + ``subscription_id`` (R95
 ack-wraps-strict-enum shape, this round with an extra ``String`` handle).
-The remaining 7 domains are deferred to R98+.
+R98 lands the **tool-server status lifecycle** family
+(:class:`ToolServerLifecycleStatus` / :class:`ToolServerDisconnectReason` /
+:class:`ToolServerStatusPayload` / :class:`ToolServerEvictParams` /
+:class:`ToolServerGetStatusParams` / :class:`ToolServerConnectionStatus` /
+:class:`ToolServerGetStatusResult`) — two strict snake_case enums (the first,
+:class:`ToolServerLifecycleStatus`, also carries a ``#[default]`` member
+``Ready`` mirrored via the :meth:`default` classmethod), and the crate's most
+serde-dense single struct :class:`ToolServerStatusPayload` (20 fields
+exercising four field modes in one dataclass: required / Option-skip /
+Vec-skip / default-no-skip). This domain lands the cross-domain
+:class:`ToolServerLifecycleStatus` referenced by the still-deferred
+"server discovery + binding" domain, unblocking it for a future round.
+The remaining 6 domains are deferred to R99+.
 
 ``session_id`` belongs in the JSON-RPC envelope field — always. These
 params structs do NOT carry a ``session_id``; the hub reads it from
@@ -169,6 +181,15 @@ __all__ = [
     "UnsubscribeAck",
     "UnsubscribeNotificationsParams",
     "UnsubscribeOutcome",
+    # tool-server status lifecycle (R98 — strict lifecycle/disconnect enums
+    # + 20-field four-mode status payload, unblocks server discovery)
+    "ToolServerConnectionStatus",
+    "ToolServerDisconnectReason",
+    "ToolServerEvictParams",
+    "ToolServerGetStatusParams",
+    "ToolServerGetStatusResult",
+    "ToolServerLifecycleStatus",
+    "ToolServerStatusPayload",
     # wire converters
     "tool_call_params_from_wire",
     "tool_call_result_from_wire",
@@ -197,6 +218,12 @@ __all__ = [
     "subscribe_notifications_params_from_wire",
     "unsubscribe_ack_from_wire",
     "unsubscribe_notifications_params_from_wire",
+    # tool-server status lifecycle (R98)
+    "tool_server_connection_status_from_wire",
+    "tool_server_evict_params_from_wire",
+    "tool_server_get_status_params_from_wire",
+    "tool_server_get_status_result_from_wire",
+    "tool_server_status_payload_from_wire",
 ]
 
 
@@ -1239,4 +1266,348 @@ def unsubscribe_ack_from_wire(data: dict[str, object]) -> UnsubscribeAck:
     return UnsubscribeAck(
         outcome=UnsubscribeOutcome.from_wire(str(data["outcome"])),
         subscription_id=str(data["subscription_id"]),
+    )
+
+
+# ── Tool server status lifecycle (R98) ───────────────────────────────────
+#
+# The ``tool_server.status`` / ``tool_server.get_status`` / ``tool_server.evict``
+# family — the hub↔tool-server health/telemetry channel. This domain unblocks
+# the deferred "server discovery + binding" domain by landing the
+# cross-domain :class:`ToolServerLifecycleStatus` enum it references.
+
+
+class ToolServerLifecycleStatus(StrEnum):
+    """Lifecycle status of a tool-server connection.
+
+    ``#[serde(rename_all = "snake_case")]`` with no ``#[serde(other)]`` AND a
+    ``#[default]`` on :attr:`Ready` (the crate's first strict enum to also
+    carry a default member — mirroring Rust's ``#[derive(Default)]`` via the
+    :meth:`default` classmethod). Transitions:
+    ``starting → ready → busy ↔ ready → draining → shutting_down``;
+    :attr:`Disconnected` is hub-only (set during disconnect cleanup, never
+    sent by the tool server itself).
+    """
+
+    Starting = "starting"
+    Ready = "ready"  # #[default]
+    Busy = "busy"
+    Draining = "draining"
+    ShuttingDown = "shutting_down"
+    Disconnected = "disconnected"
+
+    def to_wire(self) -> str:
+        """The snake_case wire string (``#[serde(rename_all)]``)."""
+        return self.value
+
+    @classmethod
+    def from_wire(cls, data: str) -> ToolServerLifecycleStatus:
+        """Reconstruct from a wire string; reject unknown values.
+
+        No ``#[serde(other)]`` arm: an unknown string raises
+        :class:`ValueError` rather than being silently swallowed.
+        """
+        member = cls._value2member_map_.get(data)
+        if member is None:
+            raise ValueError(f"unknown ToolServerLifecycleStatus wire value: {data!r}")
+        return member  # type: ignore[return-value]
+
+    @classmethod
+    def default(cls) -> ToolServerLifecycleStatus:
+        """The ``#[default]`` member (:attr:`Ready`).
+
+        Mirrors Rust's ``#[derive(Default)]`` on the enum —
+        ``ToolServerLifecycleStatus::default() == Ready``.
+        """
+        return cls.Ready
+
+
+class ToolServerDisconnectReason(StrEnum):
+    """Why a tool-server connection was dropped (carried in the hub's
+    ``tool_server.status_changed`` disconnect notification).
+
+    ``#[serde(rename_all = "snake_case")]`` with no ``#[serde(other)]`` and no
+    ``#[default]`` — strict round-trip, unknown values fail :meth:`from_wire`.
+    """
+
+    NormalClose = "normal_close"
+    IdleTimeout = "idle_timeout"
+    ForceEvicted = "force_evicted"
+    ConnectionLost = "connection_lost"
+
+    def to_wire(self) -> str:
+        """The snake_case wire string."""
+        return self.value
+
+    @classmethod
+    def from_wire(cls, data: str) -> ToolServerDisconnectReason:
+        """Reconstruct from a wire string; reject unknown values."""
+        member = cls._value2member_map_.get(data)
+        if member is None:
+            raise ValueError(f"unknown ToolServerDisconnectReason wire value: {data!r}")
+        return member  # type: ignore[return-value]
+
+
+@dataclass
+class ToolServerStatusPayload:
+    """``tool_server.status`` payload — the hub↔tool-server health snapshot.
+
+    The crate's most serde-dense single struct: **20 fields exercising four
+    distinct field modes in one dataclass**. Field order is reshuffled from
+    the Rust source because Python dataclasses require all no-default fields
+    ahead of defaulted ones (wire shape is unaffected — ``to_wire`` controls
+    key presence, not field declaration order):
+
+    * **required (7)** — no ``#[serde(...)]`` attr: ``status``,
+      ``active_tool_calls``, ``background_tasks``, ``pending_tool_calls``,
+      ``last_tool_call_started_ms``, ``last_tool_call_completed_ms``,
+      ``uptime_ms``. Always serialised; missing on the wire ⇒ ``from_wire``
+      raises ``KeyError`` (Rust would fail deserialisation).
+    * **Option-skip (4)** — ``#[serde(default, skip_serializing_if =
+      "Option::is_none")]``: ``session_id``, ``connection_id``,
+      ``idle_since_ms``, ``drain_started_ms``. Omitted when ``None``; a
+      missing key deserialises to ``None``.
+    * **Vec-skip (2)** — ``#[serde(default, skip_serializing_if =
+      "Vec::is_empty")]``: ``active_tool_names``, ``background_task_ids``.
+      Omitted when empty; a missing key deserialises to ``[]``.
+    * **default-no-skip (7)** — ``#[serde(default)]`` with NO skip:
+      ``upload_queue_pending``, ``upload_queue_pending_bytes``,
+      ``upload_queue_inflight``, ``upload_queue_circuit_breaker_tripped``,
+      ``artifact_producers_inflight``, ``turn_active``,
+      ``idle_ignores_background``. **Always serialised even at the falsy
+      default** (0 / ``False``); a missing key deserialises to the default.
+      These are newer forward-compat fields whose presence is guaranteed so
+      consumers can read them unconditionally.
+
+    :attr:`connection_id` is a raw :class:`str`, NOT a typed
+    :class:`~minimax_code.tool_protocol.ids.ConnectionId`: a malformed id
+    degrades leniently on the consumer (re-parsed, logged, ignored) instead
+    of failing deserialisation of the whole status frame. :attr:`session_id`
+    scopes counters to that session; ``None`` is the aggregate across all
+    sessions. :attr:`idle_since_ms` is ``None`` while busy.
+    """
+
+    # required (7)
+    status: ToolServerLifecycleStatus
+    active_tool_calls: int
+    background_tasks: int
+    pending_tool_calls: int
+    last_tool_call_started_ms: int
+    last_tool_call_completed_ms: int
+    uptime_ms: int
+    # Option-skip (4)
+    session_id: SessionId | None = None
+    connection_id: str | None = None
+    idle_since_ms: int | None = None
+    drain_started_ms: int | None = None
+    # Vec-skip (2)
+    active_tool_names: list[str] = field(default_factory=list)
+    background_task_ids: list[str] = field(default_factory=list)
+    # default-no-skip (7) — always on wire, even at 0/False
+    upload_queue_pending: int = 0
+    upload_queue_pending_bytes: int = 0
+    upload_queue_inflight: int = 0
+    upload_queue_circuit_breaker_tripped: bool = False
+    artifact_producers_inflight: int = 0
+    turn_active: bool = False
+    idle_ignores_background: bool = False
+
+    @classmethod
+    def terminal(cls, status: ToolServerLifecycleStatus) -> ToolServerStatusPayload:
+        """Zeroed-out payload for terminal states (Disconnected, Starting).
+
+        Mirrors ``ToolServerStatusPayload::terminal(status)`` —
+        ``Self { status, ..Default::default() }``. The 6 required int counters
+        are zeroed explicitly (Rust's ``u64::default() == 0``); Option-skip /
+        Vec-skip / default-no-skip fields fall back to their dataclass defaults
+        (``None`` / ``[]`` / ``0`` / ``False``). NB: the counters stay
+        *required on the wire* (``from_wire`` still uses ``data[...]``); only
+        ``terminal()`` shortcuts to a zeroed instance.
+        """
+        return cls(
+            status=status,
+            active_tool_calls=0,
+            background_tasks=0,
+            pending_tool_calls=0,
+            last_tool_call_started_ms=0,
+            last_tool_call_completed_ms=0,
+            uptime_ms=0,
+        )
+
+    def to_wire(self) -> dict[str, object]:
+        out: dict[str, object] = {
+            # required (7) — always on wire
+            "status": str(self.status),
+            "active_tool_calls": self.active_tool_calls,
+            "background_tasks": self.background_tasks,
+            "pending_tool_calls": self.pending_tool_calls,
+            "last_tool_call_started_ms": self.last_tool_call_started_ms,
+            "last_tool_call_completed_ms": self.last_tool_call_completed_ms,
+            "uptime_ms": self.uptime_ms,
+            # default-no-skip (7) — always on wire, even at 0/False
+            "upload_queue_pending": self.upload_queue_pending,
+            "upload_queue_pending_bytes": self.upload_queue_pending_bytes,
+            "upload_queue_inflight": self.upload_queue_inflight,
+            "upload_queue_circuit_breaker_tripped": self.upload_queue_circuit_breaker_tripped,
+            "artifact_producers_inflight": self.artifact_producers_inflight,
+            "turn_active": self.turn_active,
+            "idle_ignores_background": self.idle_ignores_background,
+        }
+        # Option-skip (4) — omit when None
+        if self.session_id is not None:
+            out["session_id"] = self.session_id
+        if self.connection_id is not None:
+            out["connection_id"] = self.connection_id
+        if self.idle_since_ms is not None:
+            out["idle_since_ms"] = self.idle_since_ms
+        if self.drain_started_ms is not None:
+            out["drain_started_ms"] = self.drain_started_ms
+        # Vec-skip (2) — omit when empty
+        if self.active_tool_names:
+            out["active_tool_names"] = self.active_tool_names
+        if self.background_task_ids:
+            out["background_task_ids"] = self.background_task_ids
+        return out
+
+
+@dataclass
+class ToolServerEvictParams:
+    """``tool_server.evict`` params — the hub requests graceful shutdown.
+
+    :attr:`grace_period_ms` is the deadline before the hub force-closes the
+    connection; :attr:`reason` is a free-form diagnostic string.
+    """
+
+    session_id: SessionId
+    reason: str
+    grace_period_ms: int
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "reason": self.reason,
+            "grace_period_ms": self.grace_period_ms,
+        }
+
+
+@dataclass
+class ToolServerGetStatusParams:
+    """``tool_server.get_status`` params — scope the query to one session."""
+
+    session_id: SessionId
+
+    def to_wire(self) -> dict[str, object]:
+        return {"session_id": self.session_id}
+
+
+@dataclass
+class ToolServerConnectionStatus:
+    """One entry in :class:`ToolServerGetStatusResult`.
+
+    :attr:`connection_id` is a raw :class:`str` (same lenient-string rationale
+    as :attr:`ToolServerStatusPayload.connection_id`); :attr:`status` is the
+    embedded health payload.
+    """
+
+    connection_id: str
+    status: ToolServerStatusPayload
+
+    def to_wire(self) -> dict[str, object]:
+        return {"connection_id": self.connection_id, "status": self.status.to_wire()}
+
+
+@dataclass
+class ToolServerGetStatusResult:
+    """Reply to :class:`ToolServerGetStatusParams` — list-of-DTO.
+
+    :attr:`tool_servers` is a ``Vec<ToolServerConnectionStatus>`` lifted
+    element-wise via :func:`tool_server_connection_status_from_wire` (R96's
+    list-of-bare-pydantic-model shape, here applied to hand-controlled
+    dataclass elements rather than codegen pydantic models).
+    """
+
+    tool_servers: list[ToolServerConnectionStatus]
+
+    def to_wire(self) -> dict[str, object]:
+        return {"tool_servers": [ts.to_wire() for ts in self.tool_servers]}
+
+
+def tool_server_status_payload_from_wire(
+    data: dict[str, object],
+) -> ToolServerStatusPayload:
+    """Reconstruct :class:`ToolServerStatusPayload` (four field modes).
+
+    Required fields use ``data[...]`` (missing ⇒ ``KeyError``, mirroring
+    serde's fail-on-missing for un-attributed fields); Option-skip / Vec-skip
+    / default-no-skip fields use ``data.get(...)`` with the appropriate
+    default. :attr:`status` lifts via :meth:`ToolServerLifecycleStatus.from_wire`
+    (strict — rejects unknown wire values).
+    """
+    session_id_raw = data.get("session_id")
+    connection_id_raw = data.get("connection_id")
+    idle_raw = data.get("idle_since_ms")
+    drain_raw = data.get("drain_started_ms")
+    return ToolServerStatusPayload(
+        status=ToolServerLifecycleStatus.from_wire(str(data["status"])),
+        active_tool_calls=int(data["active_tool_calls"]),  # type: ignore[arg-type]
+        background_tasks=int(data["background_tasks"]),  # type: ignore[arg-type]
+        pending_tool_calls=int(data["pending_tool_calls"]),  # type: ignore[arg-type]
+        last_tool_call_started_ms=int(data["last_tool_call_started_ms"]),  # type: ignore[arg-type]
+        last_tool_call_completed_ms=int(data["last_tool_call_completed_ms"]),  # type: ignore[arg-type]
+        uptime_ms=int(data["uptime_ms"]),  # type: ignore[arg-type]
+        session_id=SessionId(str(session_id_raw)) if session_id_raw is not None else None,
+        connection_id=str(connection_id_raw) if connection_id_raw is not None else None,
+        active_tool_names=[str(n) for n in data.get("active_tool_names", [])],  # type: ignore[union-attr]
+        background_task_ids=[str(n) for n in data.get("background_task_ids", [])],  # type: ignore[union-attr]
+        idle_since_ms=int(idle_raw) if idle_raw is not None else None,  # type: ignore[arg-type]
+        upload_queue_pending=int(data.get("upload_queue_pending", 0)),  # type: ignore[arg-type]
+        upload_queue_pending_bytes=int(data.get("upload_queue_pending_bytes", 0)),  # type: ignore[arg-type]
+        upload_queue_inflight=int(data.get("upload_queue_inflight", 0)),  # type: ignore[arg-type]
+        upload_queue_circuit_breaker_tripped=bool(
+            data.get("upload_queue_circuit_breaker_tripped", False)
+        ),
+        artifact_producers_inflight=int(data.get("artifact_producers_inflight", 0)),  # type: ignore[arg-type]
+        drain_started_ms=int(drain_raw) if drain_raw is not None else None,  # type: ignore[arg-type]
+        turn_active=bool(data.get("turn_active", False)),
+        idle_ignores_background=bool(data.get("idle_ignores_background", False)),
+    )
+
+
+def tool_server_evict_params_from_wire(
+    data: dict[str, object],
+) -> ToolServerEvictParams:
+    """Reconstruct :class:`ToolServerEvictParams` (all three fields required)."""
+    return ToolServerEvictParams(
+        session_id=SessionId(str(data["session_id"])),
+        reason=str(data["reason"]),
+        grace_period_ms=int(data["grace_period_ms"]),  # type: ignore[arg-type]
+    )
+
+
+def tool_server_get_status_params_from_wire(
+    data: dict[str, object],
+) -> ToolServerGetStatusParams:
+    """Reconstruct :class:`ToolServerGetStatusParams`."""
+    return ToolServerGetStatusParams(session_id=SessionId(str(data["session_id"])))
+
+
+def tool_server_connection_status_from_wire(
+    data: dict[str, object],
+) -> ToolServerConnectionStatus:
+    """Reconstruct :class:`ToolServerConnectionStatus` (embeds the payload DTO)."""
+    return ToolServerConnectionStatus(
+        connection_id=str(data["connection_id"]),
+        status=tool_server_status_payload_from_wire(data["status"]),  # type: ignore[arg-type]
+    )
+
+
+def tool_server_get_status_result_from_wire(
+    data: dict[str, object],
+) -> ToolServerGetStatusResult:
+    """Reconstruct :class:`ToolServerGetStatusResult` (list-of-DTO)."""
+    return ToolServerGetStatusResult(
+        tool_servers=[
+            tool_server_connection_status_from_wire(ts)  # type: ignore[arg-type]
+            for ts in data["tool_servers"]  # type: ignore[union-attr]
+        ]
     )

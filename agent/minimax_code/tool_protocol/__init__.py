@@ -1,4 +1,4 @@
-"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 + R90 + R91 + R92 + R93 + R94 — registration frames landed + R95 — per-tool session binding landed + R96 — list & search landed + R97 — subscriptions landed).
+"""xAI Computer Hub wire-protocol types (R82 + R83 + R84 + R85 + R86 + R87 + R88 + R89 + R90 + R91 + R92 + R93 + R94 — registration frames landed + R95 — per-tool session binding landed + R96 — list & search landed + R97 — subscriptions landed + R98 — tool-server status lifecycle landed).
 
 Fusion of grok-build's ``xai-tool-protocol`` crate — the wire DTOs for
 the computer-hub tool-server protocol: identifier newtypes, registration
@@ -154,10 +154,22 @@ to mix unit + struct variants):
   all-``Optional`` + ``#[serde(default)]``-on-every-field filter DTO
   (:class:`NotificationFilter`), and two acks wrapping outcome +
   ``subscription_id``).
+* **R98 (this round)** — :mod:`frames`
+  (tool-server status lifecycle domain: :class:`ToolServerLifecycleStatus` /
+  :class:`ToolServerDisconnectReason` / :class:`ToolServerStatusPayload` /
+  :class:`ToolServerEvictParams` / :class:`ToolServerGetStatusParams` /
+  :class:`ToolServerConnectionStatus` / :class:`ToolServerGetStatusResult`;
+  two strict snake_case enums — :class:`ToolServerLifecycleStatus` is the
+  crate's first strict enum to also carry a ``#[default]`` member (``Ready``,
+  mirrored via the :meth:`default` classmethod) — and the crate's most
+  serde-dense single struct :class:`ToolServerStatusPayload` (20 fields
+  exercising four field modes: required / Option-skip / Vec-skip /
+  default-no-skip). Lands the cross-domain lifecycle status referenced by
+  the still-deferred "server discovery + binding" domain).
 * *deferred* — :mod:`frames`
-  (remainder: 7 of 14 domains — tool/system notifications, server
+  (remainder: 6 of 14 domains — tool/system notifications, server
   discovery+binding, session lifecycle, simplified lifecycle, hooks,
-  service→harness pushes, tool-server status lifecycle).
+  service→harness pushes).
 
 ``from_wire`` / ``to_wire`` live on each module (instance method or module
 function); the barrel does **not** re-export them, mirroring the Rust
@@ -246,6 +258,13 @@ from minimax_code.tool_protocol.frames import (
     ToolCallProgressFrame,
     ToolCallResult,
     ToolSearchResult,
+    ToolServerConnectionStatus,
+    ToolServerDisconnectReason,
+    ToolServerEvictParams,
+    ToolServerGetStatusParams,
+    ToolServerGetStatusResult,
+    ToolServerLifecycleStatus,
+    ToolServerStatusPayload,
     ToolSessionBindOutcome,
     ToolSessionUnbindOutcome,
     ToolsListParams,
@@ -486,4 +505,15 @@ __all__ = [
     "UnsubscribeAck",
     "UnsubscribeNotificationsParams",
     "UnsubscribeOutcome",
+    # R98 — tool-server status lifecycle (strict lifecycle/disconnect enums
+    # + 20-field four-mode status payload, unblocks server discovery). All
+    # 41 frames symbols travel the barrel; from_wire converters stay
+    # submodule-qualified, mirroring the crate.
+    "ToolServerConnectionStatus",
+    "ToolServerDisconnectReason",
+    "ToolServerEvictParams",
+    "ToolServerGetStatusParams",
+    "ToolServerGetStatusResult",
+    "ToolServerLifecycleStatus",
+    "ToolServerStatusPayload",
 ]

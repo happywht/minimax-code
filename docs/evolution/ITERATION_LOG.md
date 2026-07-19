@@ -8240,3 +8240,121 @@ R95 模式）+ crate 首个 all-`Optional` + `#[serde(default)]`-on-every-field 
 ### Commit
 
 `feat(platform): R97 migrate frames.rs subscriptions domain (SubscribeNotificationsParams/NotificationFilter/SubscribeOutcome/SubscribeAck/UnsubscribeNotificationsParams/UnsubscribeOutcome/UnsubscribeAck, all-Optional filter DTO + strict snake_case outcome enums)`
+
+
+
+## R98 — frames.rs tool-server status lifecycle 域（7 符号，解除 server discovery 阻塞）
+
+锚点:R98-1 068a780
+
+### 本轮目标
+
+继续 frames.rs deferred 域的逐轮消化（R97 后剩 7 个域）。本轮选 **tool-server status lifecycle**
+域（frames.rs 830-957 行）——选它有两个原因：
+
+1. **形态最丰富**：一个域同时含两个严格 snake_case 枚举（其中 `ToolServerLifecycleStatus` 是 crate
+   首个**带 `#[default]` 成员的严格枚举**）、crate **serde 密度最高的单一结构体**（20 字段，单 dataclass
+   内同时演示四种字段模式）、嵌套 DTO、list-of-DTO——一轮把 R95/R96/R87 三种已落地的复合形态再压一层。
+2. **解除跨域阻塞**：server discovery+binding 域仍被 `ToolServerLifecycleStatus`（839 行跨域引用）阻塞
+   （R97 末尾已标注）。本轮把它落地，server discovery 域在后续轮解除阻塞。
+
+本轮只迁 wire 类型层，不接调度层（hub 如何维护连接状态机、如何驱动 starting→ready→busy↔ready→
+draining→shutting_down 迁移、如何处理 disconnect 清理是调度层决策）。
+
+### 融合结论
+
+7 个符号全部前向迁移到 `frames.py`，零 Rust 工具链依赖：
+
+- `ToolServerLifecycleStatus`（StrEnum，6 成员，带 `default()` classmethod 镜像 `#[derive(Default)]`+`#[default]` on Ready）
+- `ToolServerDisconnectReason`（StrEnum，4 成员，严格无 default 无 other）
+- `ToolServerStatusPayload`（dataclass，20 字段四模式）
+- `ToolServerEvictParams`（dataclass，3 字段全 required）
+- `ToolServerGetStatusParams`（dataclass，单字段 session scope）
+- `ToolServerConnectionStatus`（dataclass，嵌套 ToolServerStatusPayload）
+- `ToolServerGetStatusResult`（dataclass，list-of-DTO）
+
+barrel `__init__.py` 重导出 7 个类型（不导 5 个 `from_wire`，保持 crate 的 `pub use` 对称）。
+`from_wire` 转换器留 `frames` 子模块限定。测试覆盖四模式序列化语义 + default/terminal classmethod +
+嵌套/list-of-DTO round_trip + strict 枚举拒绝未知值 + barrel 契约。
+
+### 交付
+
+- `agent/minimax_code/tool_protocol/frames.py`：+2 StrEnum +5 dataclass +5 模块级 `from_wire`
+  （1280-1601 行）；docstring 首行 +R98；`__all__` structs 区 +7、converters 区 +5；docstring R98
+  entry + deferred 7→6。
+- `agent/minimax_code/tool_protocol/__init__.py`（barrel）：frames 导入块 +7（字母序，ToolServer*
+  锚在 ToolSearchResult 与 ToolSessionBindOutcome 之间——"ToolSe"(r) 排在 "ToolSe"(a/arch) 与
+  "ToolSe"(s/session) 之间）；`__all__` +7；docstring 首行 +R98、R98 entry、deferred 7→6、
+  "34 frames symbols"→"41 frames symbols"。
+- `agent/tests/test_tool_protocol.py`：barrel 导入块 +7、frames `from_wire` 导入块 +5、+8 测试类
+  （TestToolServerLifecycleStatus/TestToolServerDisconnectReason/TestToolServerStatusPayload/
+   TestToolServerEvictParams/TestToolServerGetStatusParams/TestToolServerConnectionStatus/
+   TestToolServerGetStatusResult/TestToolServerStatusLifecycleBarrelR98）。
+
+### 映射决策树+坑
+
+**字段模式四分（ToolServerStatusPayload 20 字段）**——按 Rust serde 属性逐字段分类后映射：
+
+| 模式 | Rust serde | Python 字段 | to_wire | from_wire | 数量 |
+|------|-----------|-------------|---------|-----------|------|
+| required | 无属性 | 无默认 | 总是序列化 | `data[k]`（missing⇒KeyError） | 7 |
+| Option-skip | `default, skip_serializing_if=Option::is_none` | `X \| None = None` | `if x is not None` | `data.get(k)` | 4 |
+| Vec-skip | `default, skip_serializing_if=Vec::is_empty` | `list = field(default_factory=list)` | `if x`（非空） | `data.get(k, [])` | 2 |
+| default-no-skip | `default`（无 skip） | `int = 0` / `bool = False` | **总是序列化即使 falsy** | `data.get(k, default)` | 7 |
+
+关键区分：default-no-skip 与 Vec/Option-skip 的差别在 **falsy 时是否仍上 wire**——default-no-skip
+即使 0/False 也序列化（前向兼容字段，消费者可无条件读取），这是单测 `test_default_no_skip_fields_present_at_falsy_defaults`
+专门钉死的语义。
+
+**字段声明顺序重排**：Python dataclass 要求无默认值字段（7 required）在默认值字段（Option/Vec/
+default-no-skip）之前，打破 Rust 源文件顺序；但 wire 形态不受影响——`to_wire` 显式控制键的存在与
+顺序，不依赖声明顺序。
+
+**`#[default]` 成员新形态**：`ToolServerLifecycleStatus` 除严格 `from_wire`（无 other 臂，未知值
+raise ValueError）外，多一个 `default()` classmethod 返回 `cls.Ready`，镜像 Rust 的
+`#[derive(Default)]`+`#[default]` 注解。这是 crate 首个"严格枚举 + 默认成员"复合形态。
+
+**⚠️ 坑：`terminal()` classmethod 首次实现漏掉 required 字段（测试抓到）**
+初版 `terminal()` 写 `return cls(status=status)`，但 6 个 required int 计数器字段无默认值，dataclass
+`__init__` 缺参 raise TypeError。根因：Rust 的 `Self { status, ..Default::default() }` 依赖
+`#[derive(Default)]` 让 `u64` 默认 0；Python 侧这 6 字段声明为 required 以表达 "wire-required" 语义，
+两者冲突。**修复**：`terminal()` 显式归零 6 个 int（等价 `u64::default()==0`），其余字段走 dataclass
+默认；`from_wire` 仍用 `data[k]` 保留 wire-required 语义。测试 `test_terminal_classmethod_zeroes_
+everything_but_status` 钉死此行为——这是单测价值的又一次兑现（745 passed 中抓到 1 真实 bug，修复后 746）。
+
+**connection_id 用裸 str 而非 ConnectionId newtype**：忠实 Rust 的宽松降级注释（畸形 id 在消费者侧
+重新解析/记录/忽略，不让整个状态帧反序列化失败）。`session_id` 仍是 `SessionId` newtype（强类型），
+两者形成不对称——忠实保留，不为对称臆造。
+
+**enum `from_wire` 是 classmethod 不入转换器区**：`ToolServerLifecycleStatus.from_wire` /
+`ToolServerDisconnectReason.from_wire` 是 classmethod（类上），不在 `__all__` 转换器区；只有 5 个
+模块级 `from_wire`（payload/evict/get_status_params/connection_status/get_status_result）进转换器区。
+
+### 验证
+
+- `uv run ruff check tests/test_tool_protocol.py minimax_code/tool_protocol/frames.py
+  minimax_code/tool_protocol/__init__.py` → All checks passed!
+- `uv run pytest tests/test_tool_protocol.py -q` → **746 passed**（含修复后的 terminal 测试）。
+- `uv run pytest -q`（全 agent 套件）→ **3204 passed, 10 skipped**（105s），零回归。
+- HEAD 确认：父提交 `068a780`（R97）。
+
+### YAGNI 边界
+
+- 只迁 tool-server status lifecycle 域 7 个符号；其余 6 个 frames.rs 域（工具/系统通知、server
+  discovery+binding（现已解除 `ToolServerLifecycleStatus` 阻塞，待后续轮）、session lifecycle、
+  simplified lifecycle、hooks、service→harness pushes）留 R99+。
+- 不接状态机的运行时驱动（starting→ready→busy↔ready→draining→shutting_down 的迁移触发条件、
+  disconnect 清理把状态置 Disconnected 的调度逻辑是 hub 调度层决策，wire 层只给词汇表）。
+- `upload_queue_*` / `artifact_producers_inflight` / `turn_active` / `idle_ignores_background` 这批
+  default-no-skip 前向兼容字段：本轮只忠实迁移其 wire 形态（falsy 也上 wire），不建模其语义
+  （upload 队列的背压/熔断、artifact producer 的并发限制、turn 与 idle 的交互是运行时决策）。
+- `ToolServerEvictParams.grace_period_ms` 不建模超时强制执行（wire 层只传数值；hub 到期后是否
+  force-close 连接是调度层决策）。
+- `ToolServerGetStatusResult.tool_servers` 不分页/不排序（Rust 源是 `Vec`，本轮忠实透传 list；
+  状态查询结果是否需分页是调度层/规模决策，wire 层不预判）。
+- 不加 status 的历史/时间序列字段（Rust 源是单帧快照，非时序；若需趋势分析应在消费者侧聚合多帧，
+  wire 层不臆造 history 字段）。
+
+### Commit
+
+`feat(platform): R98 migrate frames.rs tool-server status lifecycle domain (ToolServerLifecycleStatus/ToolServerDisconnectReason/ToolServerStatusPayload/ToolServerEvictParams/ToolServerGetStatusParams/ToolServerConnectionStatus/ToolServerGetStatusResult, 20-field four-mode status payload + strict lifecycle enum with #[default] member)`
