@@ -14011,3 +14011,73 @@ isort（无新 import）均通过。BLE 不在 select —— `except Exception` 
 test_harness_actor.py + ITERATION_LOG.md），10 文件排除列表 + 预存 M 文件全不触碰。
 msg: `feat(platform): R170 harness construction entries (local_only_with +
 local_with_pending_bind + local_with_lazy_bind + has_pending_bind)`。
+## R171 — harness.rs leaf 7: await_bound + try_bound (DeferredBind dispatch consumers)
+
+锚点:R171-1 3b8f77f
+
+### 本轮目标
+
+移植 `grok-build/.../harness.rs:820-846` 的 **ToolHarness::await_bound + try_bound**（bind 分发消费层双子方法），harness.rs 叶节点 7。这是 R169（`spawn_pending_bind` + `LazyBind::start` 行为层）+ R170（`local_only_with` / `local_with_pending_bind` / `local_with_lazy_bind` 三构造入口 + `has_pending_bind` 探针）之后的**自然消费层**，闭合"构造 → 消费"链路：
+
+- `await_bound`（826-832 async）：`match pending_bind` → `Eager` 分支 `pending.clone().await`（Shared<BindFuture>，await 得 ToolHarness）/ `Lazy` 分支 `lazy.start().await`（首次调用才 spawn，R169 LazyBind.start）/ `None` 分支 `Ok(self.clone())`（无 bind 返回自身克隆，统一分发）。
+- `try_bound`（841-846 非阻塞）：`now_or_never` 探针（非 peek，polls once）。`pending_bind.as_ref()?` → None 返回 None；Eager `pending.clone().now_or_never()`；Lazy `lazy.started.get()?.clone().now_or_never()`（started 未启动 → None，**不 kick off bind**）。
+
+### 融合结论
+
+`await_bound` + `try_bound` 是 ToolHarness 的 **bind 消费双子 API**，对称设计：
+
+- **await_bound**：阻塞消费 —— lazy 首次 spawn（kick off + wait），eager 等已 spawn 的结果，none 返回自身。
+- **try_bound**：非阻塞探测 —— peek 不 disturb，lazy 未启动不 spawn，in flight 返回 None。
+
+两者消费 R170 构造的 `pending_bind`（EagerBind / LazyBind 联合），分发到 R169 的 `spawn_pending_bind` 结果 / `LazyBind.start`。**Python 映射核心简化**：
+
+- Rust `Result<ToolHarness, Arc<str>>` → Pythonic `ToolHarness`（Err→raise；asyncio.Future 的 `set_exception` 即 Err，`await` 自动 raise）。
+- Rust `now_or_never` → `asyncio.Future.done()`（asyncio future 是 task 驱动，driver 跑完即 done，无需主动 poll）。
+- Rust `Option<Result<ToolHarness, Arc<str>>>` 三态（None=未就绪/无 bind、Some(Ok)、Some(Err)）→ Pythonic `ToolHarness | None` 两态，`Some(Err)` → `None`（Err 不丢失，`await_bound` re-raise 暴露）。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/harness.py`：ToolHarness 类追加 `await_bound`（async）+ `try_bound`（sync）2 方法，位于 `has_pending_bind` 之后。+~90 行。
+- `agent/tests/test_harness_actor.py`：追加 8 测试（R171 段）。
+  - await_bound 4：none 返回 self / eager resolve target / lazy 首次 spawn+resolve / eager 传播 bind error。
+  - try_bound 4：no-pending None / eager await 后 resolved / lazy unstarted None 且不 spawn / lazy started await 后 resolved。
+- 总计 **37 测试**（R168 14 + R169 6 + R170 9 + R171 8），**0 warning**。
+
+### 映射决策树 + 坑
+
+1. **await_bound async + Err→raise**：Rust `async fn await_bound(&self) -> Result<ToolHarness, Arc<str>>`。Python `async def await_bound(self) -> ToolHarness`。Eager 分支 `await pending_bind.pending`（PendingBind=asyncio.Future，set_result 是 ToolHarness，set_exception 是 Err → await 自动 raise，Pythonic 异常即错误）；Lazy 分支 `await pending_bind.start()`（R169 LazyBind.start 返回 PendingBind，OnceLock 首次 spawn）；None 分支 `return self`（Python 引用共享 = Rust Arc::clone）。
+2. **isinstance dispatch 替代 Rust match**：`DeferredBind = EagerBind | LazyBind`。`if pending_bind is None: return self; if isinstance(pending_bind, EagerBind): return await pending_bind.pending; return await pending_bind.start()  # LazyBind`。pyright 在 None-return 后窄化为 EagerBind|LazyBind，isinstance EagerBind 后 else 自动窄化 LazyBind（exhaustive union narrowing），类型安全无需 cast。
+3. **try_bound 非阻塞 + now_or_never→done()**：Rust `try_bound(&self) -> Option<Result<ToolHarness, Arc<str>>>` 用 `now_or_never`。Python `def try_bound(self) -> ToolHarness | None`：Eager `fut = pending.pending`；Lazy `if pending_bind.started is None: return None; fut = pending_bind.started`（**lazy 未启动不 kick off**，忠实 Rust `lazy.started.get()?`）；`if not fut.done(): return None`（in flight）；`if fut.exception() is not None: return None`（Err→None）；`return fut.result()`。
+4. **三态→两态压扁**：Rust `Option<Result<ToolHarness, Arc<str>>>` 三态压成 `ToolHarness | None` 两态，`Some(Err)` → `None`。docstring 明示"bind failure yields None here; the error surfaces via await_bound"。Err 不丢失（await_bound re-raise 暴露）。
+5. **fut.exception() 必须先 done() 守卫**：asyncio.Future.exception() 在未 done 时 raise InvalidStateError。代码先 `if not fut.done(): return None` 守卫，再 `fut.exception()` 安全。工程师严谨防 InvalidStateError。
+6. **try_bound lazy 不启动**：Rust 注释强调 lazy bind 的 try_bound `started.get()?` 不调 start（不 spawn）。Python `if pending_bind.started is None: return None` 忠实 —— 探针不 kick off bind。测试 `test_try_bound_lazy_unstarted_returns_none_and_does_not_start` 断言 `started is None`（未启动）+ `fut is bind_coro`（bind future 未被 take，原样持有）。
+7. **测试 coroutine close 消 warning**：lazy bind 存 coroutine 不 spawn 的测试（`test_try_bound_lazy_unstarted...`），用 `bind_coro = _bind(); try: ... finally: bind_coro.close()` 消 "coroutine was never awaited" warning（同 R170 lazy 测试模式）。
+8. **try_bound sync def 但测试 async**：try_bound 本身 sync（非阻塞），但测试需 await bind 完成后验证 resolved，故用 `async def`（pytest-asyncio auto mode）。`test_try_bound_no_pending_returns_none` 纯 sync（无 bind 完成）保持 sync def。
+9. **Edit 缩进坑**：首次 Edit test 用 4 空格缩进的矩阵测试断言作 old_string 失败（实际在 try 块内是 8 空格缩进）。改用文件真实末尾锚点（`assert lazy.has_pending_bind() is True \n finally: lazy_bind_coro.close()...`，8 空格）重新 Edit 成功。**先读后写、对齐真实内容**。
+
+### 验证
+
+```bash
+cd "/d/工作/城建院/mm code/agent"
+uv run ruff check minimax_code/computer_hub_sdk/harness.py tests/test_harness_actor.py
+# => All checks passed!
+uv run pytest tests/test_harness_actor.py -q
+# => 37 passed in 0.32s  (0 warning)
+```
+
+37 = R168（14：bind 类型层 + ToolHarnessInner + actor handle）+ R169（6：spawn_pending_bind + LazyBind.start 行为层）+ R170（9：三构造入口 + has_pending_bind）+ R171（8：await_bound + try_bound 消费层）。R171 8 测试覆盖 await_bound 全 4 分支 + try_bound 全 4 状态矩阵。
+
+### YAGNI 边界
+
+本轮只移植 `await_bound` + `try_bound`（820-846 bind 消费层）。推迟：
+
+- **纯访问器** `session()`（854-857）/ `local_registry()`（859-861）/ `model_output()`（867-873）—— 琐碎委托，后续小叶。
+- **connection()（850）/ require_connection()（875）/ list_servers()（888+）** —— 依赖 `borrow` live（ConnectionBorrow→HubConnection），延后。
+- **ToolHarnessInner impl 方法**（650-707：`fail_inflight_calls_on_disconnect` + `refresh_remote_tools`）—— 依赖 connection live 链 + demux，延后。
+- **build()（459-542）** —— 大 async，依赖 pool/auth/connection 全 live，延后。
+- **ToolHarness impl 方法**（725-1775 除构造/await_bound/try_bound）—— `dispatch_remote` / `execute` 等依赖 connection live，延后。
+- **ObservedToolStream + RemoteCallStream/dispatch_remote**（1776+）+ **Drop**（1846）+ **server.rs**（2649）+ **lib.rs**（71 barrel）。
+
+### Commit
+
+feat(platform): R171 ToolHarness await_bound + try_bound (DeferredBind dispatch consumers)

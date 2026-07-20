@@ -647,3 +647,60 @@ class ToolHarness:
         .is_some()``.
         """
         return self._inner.pending_bind is not None
+
+    async def await_bound(self) -> ToolHarness:
+        """Await the deferred server bind, returning the server-connected
+        harness (Rust ``await_bound``).
+
+        For a lazy bind (:meth:`local_with_lazy_bind`) this is what actually
+        starts it -- the first call spawns the bind via :meth:`LazyBind.start`.
+        With no pending bind, returns ``self`` so callers dispatch through the
+        result uniformly. A bind failure surfaces as the awaited future
+        raising (Rust ``Err(Arc<str>)`` -> Python exception).
+
+        Rust ``match &self.inner.pending_bind`` -> ``isinstance`` dispatch:
+        ``Eager`` -> ``await pending.pending`` (the Shared future);
+        ``Lazy`` -> ``await lazy.start()`` (spawn-on-first-call); ``None`` ->
+        ``self`` (Python reference sharing is Rust ``Clone``).
+        """
+        pending_bind = self._inner.pending_bind
+        if pending_bind is None:
+            return self
+        if isinstance(pending_bind, EagerBind):
+            return await pending_bind.pending
+        return await pending_bind.start()  # LazyBind
+
+    def try_bound(self) -> ToolHarness | None:
+        """Non-blocking probe of the deferred bind (Rust ``try_bound``).
+
+        ``None`` while the bind is in flight (or there is no pending bind);
+        the resolved :class:`ToolHarness` once complete. A bind failure also
+        yields ``None`` here -- the error surfaces via :meth:`await_bound`.
+
+        For a lazy bind this does NOT start the bind: returns ``None`` until a
+        prior :meth:`await_bound` has spawned it, then probes that handle.
+        Mirrors Rust ``now_or_never`` (not ``peek``) -- the bind runs in a
+        spawned task, so the future only observes completion once the driver
+        task has resolved it; :meth:`asyncio.Future.done` is the Python
+        equivalent of "polled to completion".
+
+        Rust ``Option<Result<ToolHarness, Arc<str>>>`` collapses to
+        ``ToolHarness | None``: the ``Some(Err)`` branch maps to ``None`` (the
+        error is not lost -- :meth:`await_bound` re-raises it).
+        """
+        pending_bind = self._inner.pending_bind
+        if pending_bind is None:
+            return None
+        if isinstance(pending_bind, EagerBind):
+            fut = pending_bind.pending
+        else:  # LazyBind (None case returned above)
+            # Not started -> None. The probe deliberately does NOT kick off
+            # the bind (Rust ``lazy.started.get()?``).
+            if pending_bind.started is None:
+                return None
+            fut = pending_bind.started
+        if not fut.done():
+            return None  # in flight
+        if fut.exception() is not None:
+            return None  # bind failed -> Err surfaces via await_bound
+        return fut.result()

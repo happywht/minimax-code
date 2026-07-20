@@ -431,3 +431,115 @@ async def test_has_pending_bind_three_state_matrix():
         assert lazy.has_pending_bind() is True
     finally:
         lazy_bind_coro.close()  # avoid "coroutine was never awaited" warning
+
+
+# ===========================================================================
+# await_bound + try_bound -- bind dispatch consumers (lines 820-846) -- R171.
+# ===========================================================================
+async def test_await_bound_no_pending_returns_self():
+    """await_bound on a local-only harness returns self (uniform dispatch)."""
+    harness = ToolHarness.local_only_with(
+        LocalRegistry(), SessionId("s"), _Marker()  # type: ignore[arg-type]
+    )
+    resolved = await harness.await_bound()
+    assert resolved is harness
+
+
+async def test_await_bound_eager_resolves_to_bind_target():
+    """await_bound on an eager harness resolves to the bind's target."""
+    target = ToolHarness(_make_inner("eager-target"))
+
+    async def _bind() -> ToolHarness:
+        return target
+
+    harness = ToolHarness.local_with_pending_bind(
+        LocalRegistry(), SessionId("s"), _Marker(), _bind()  # type: ignore[arg-type]
+    )
+    resolved = await harness.await_bound()
+    assert resolved is target
+
+
+async def test_await_bound_lazy_starts_and_resolves():
+    """await_bound on a lazy harness spawns the bind on first call + resolves."""
+    target = ToolHarness(_make_inner("lazy-target"))
+
+    async def _bind() -> ToolHarness:
+        return target
+
+    harness = ToolHarness.local_with_lazy_bind(
+        LocalRegistry(), SessionId("s"), _Marker(), _bind()  # type: ignore[arg-type]
+    )
+    lazy = harness.inner.pending_bind
+    assert isinstance(lazy, LazyBind)
+    assert lazy.started is None  # not spawned yet
+    resolved = await harness.await_bound()
+    assert resolved is target
+    assert lazy.started is not None  # spawn happened on first await
+
+
+async def test_await_bound_eager_propagates_bind_error():
+    """await_bound surfaces a bind failure as the future raising."""
+    async def _bind() -> ToolHarness:
+        raise RuntimeError("auth rejected")
+
+    harness = ToolHarness.local_with_pending_bind(
+        LocalRegistry(), SessionId("s"), _Marker(), _bind()  # type: ignore[arg-type]
+    )
+    with pytest.raises(RuntimeError, match="auth rejected"):
+        await harness.await_bound()
+
+
+def test_try_bound_no_pending_returns_none():
+    """try_bound on a local-only harness returns None."""
+    harness = ToolHarness.local_only_with(
+        LocalRegistry(), SessionId("s"), _Marker()  # type: ignore[arg-type]
+    )
+    assert harness.try_bound() is None
+
+
+async def test_try_bound_eager_resolves_after_await():
+    """try_bound is None while the eager bind is in flight, resolves after await."""
+    target = ToolHarness(_make_inner("try-eager"))
+
+    async def _bind() -> ToolHarness:
+        return target
+
+    harness = ToolHarness.local_with_pending_bind(
+        LocalRegistry(), SessionId("s"), _Marker(), _bind()  # type: ignore[arg-type]
+    )
+    await harness.await_bound()  # definitely complete now
+    assert harness.try_bound() is target
+
+
+def test_try_bound_lazy_unstarted_returns_none_and_does_not_start():
+    """try_bound on an unstarted lazy bind returns None and does NOT spawn it."""
+    async def _bind() -> ToolHarness:
+        return ToolHarness(_make_inner("try-lazy-unstarted"))
+
+    bind_coro = _bind()
+    try:
+        harness = ToolHarness.local_with_lazy_bind(
+            LocalRegistry(), SessionId("s"), _Marker(), bind_coro  # type: ignore[arg-type]
+        )
+        assert harness.try_bound() is None
+        lazy = harness.inner.pending_bind
+        assert isinstance(lazy, LazyBind)
+        assert lazy.started is None  # probe did NOT start the bind
+        assert lazy.fut is bind_coro  # bind future still owned, untouched
+    finally:
+        bind_coro.close()
+
+
+async def test_try_bound_lazy_started_resolves_after_await():
+    """try_bound on a lazy bind resolves once await_bound has spawned it."""
+    target = ToolHarness(_make_inner("try-lazy-started"))
+
+    async def _bind() -> ToolHarness:
+        return target
+
+    harness = ToolHarness.local_with_lazy_bind(
+        LocalRegistry(), SessionId("s"), _Marker(), _bind()  # type: ignore[arg-type]
+    )
+    assert harness.try_bound() is None  # not started
+    await harness.await_bound()  # spawns + resolves
+    assert harness.try_bound() is target
