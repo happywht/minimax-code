@@ -12095,3 +12095,73 @@ OIDC token 刷新 AuthProvider：`current()` 检查过期（`now + 60s >= expire
 ### Commit
 
 feat(platform): R145 migrate oidc_provider.rs -> oidc_provider.py (SDK leaf 13, OIDC token-refresh AuthProvider)
+
+
+## R146 — metric_donate.rs -> metric_donate.py（SDK 第 14 叶，Prometheus->OTLP 指标转换 + 捐赠策略）
+
+锚点:R146-1 7b16eff
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-computer-hub-sdk/src/metric_donate.rs`（396 行）-> `agent/minimax_code/computer_hub_sdk/metric_donate.py`，对称 R137 trace_donate 的 YAGNI 边界模式。项目无 `prometheus_client`/`opentelemetry-proto`/`prost` 三依赖，框架粘合半部（进程全局 ACTIVE_METRIC_EXPORTER + prometheus::gather + tokio interval reporter + ToolServer assembly + protobuf encode）声明越界；只迁移 transport-agnostic 纯策略半部（中性 Prom-shape/OTLP-shape dataclasses + convert_families 核心转换 + export_metrics 捐赠循环 + MetricDonationPump drain 栅栏）。
+
+### 融合结论
+
+metric_donate 是 donate_pump（R136）的指标侧客户端。MetricDonationReporter 定期快照进程 Prometheus 注册表，转 OTLP（Counter->Sum 单调累积 / Gauge->Gauge / Histogram->Histogram 累积桶差分 + 标签保留），经共享泵捐赠。因采集整个注册表，零 per-metric wiring；指标是进程聚合，reporter 无需绑定 session。
+
+与 R137 trace_donate 同构：都消费 R136 donate_pump 的 PumpMsg/drain_via/now_unix_nanos/string_kv，都有各自的 export 循环（metric/trace 各持一份），都把 encode 声明为 caller closure（无 protobuf 依赖）。差异仅在转换函数（metric 是 Prom->OTLP，trace 是 fastrace->OTLP）。
+
+### 交付
+
+新增 `agent/minimax_code/computer_hub_sdk/metric_donate.py`（469 行）：
+- Prom-shape 中性 dataclasses：`PromMetricType`(5 变体 Enum) / `PromLabel` / `PromBucket`(累积) / `PromHistogram` / `PromMetric`(value: float|PromHistogram union) / `PromMetricFamily`
+- OTLP-shape 中性 dataclasses：`OtlpNumberPoint` / `OtlpHistogramPoint` / `OtlpSum` / `OtlpGauge` / `OtlpHistogram` / `OtlpMetric`（`OtlpKeyValue` 复用 R136）
+- `AGGREGATION_TEMPORALITY_CUMULATIVE = 2`
+- `convert_families`：COUNTER->Sum(is_monotonic, cumulative) / GAUGE->Gauge / HISTOGRAM->Histogram(cumulative) / SUMMARY|UNTYPED->skip；`now` 共享保证 batch 时间戳一致
+- `_histogram_point`：核心累积桶差分算法（`max(0, cumulative - prev)` saturating_sub + 隐式 `+Inf` 桶 = total - last_cumulative）
+- `_number_point` / `_labels_to_kv`：转换辅助
+- `export_metrics(metrics, encode_chunk, enqueue, max_per_batch=MAX_METRICS_PER_DONATION) -> int`：chunk->encode(None=oversized drop)->enqueue(False=queue full drop)，返回入队计数
+- `MetricDonationPump(tx).drain()`：drain_via 栅栏薄包装
+
+新增 `agent/tests/test_metric_donate.py`（7 测试）：
+- test_convert_families_counter_gauge_histogram_with_labels：Counter inc 5 + label reason=zdr / Gauge 7 / Histogram observe 0.25,0.75,5.0 buckets[0.5,1.0] -> count 3 sum 6.0 bounds[0.5,1.0] bucket_counts[1,1,1]
+- test_summary_and_untyped_families_are_skipped：空 -> 空 + SUMMARY/UNTYPED skip
+- test_export_metrics_chunks_at_max_per_donation：MAX+1 -> [512,1] 两 payload
+- test_export_metrics_drops_oversized_continues_rest：中间 chunk None drop，其余入队 sent=2
+- test_export_metrics_drops_on_full_queue：enqueue False drop，sent=1
+- test_export_metrics_empty_batch_enqueues_nothing：空 -> 0
+- test_metric_donation_pump_drain_forwards_to_shared_pump：put _PayloadMsg -> drain -> donate 被调 -> _CLOSE 收尾
+
+### 映射决策树 + 坑
+
+- DRY vs 忠实性：`chunk_donation_batches` 从 R137 复用（泛型 + max_per_batch 可传 MAX_METRICS_PER_DONATION）；`try_enqueue` 不重新导出（caller 直接用 R137）。`export_metrics` 本地实现而非复用 export_spans——忠实 Rust metric/trace 两份独立 export 循环 + 类型清晰（OtlpMetric vs span）+ 测试自洽。这是刻意的同构重复（Rust 原文两份，Python 保留两份）。
+- PromMetric.value 用 `float | PromHistogram` union 而非 3 可选字段：family.field_type 是分派依据（同 Rust match field_type），union + 按类型解释比 oneof 三字段更简洁；docstring 声明契约（counter/gauge->float, histogram->PromHistogram）。
+- 坑 1（ruff F821 遮羞布）：测试首版用 `OtlpMetric` 未 import，错误加 `# noqa: F821` 压制（运行时会 NameError）。修复：import OtlpMetric + 移除 3 处 noqa。工程师严谨——noqa 不是遮羞布，先修根因。
+- 坑 2（测试类型不一致）：`oversized = {1}`（int set）vs metric name 是 str，`"1" in {1}` 永远 False，encode 从不返回 None。实现正确，测试 bug。修复 `oversized = {"1"}`。
+- 直方图累积桶差分：Prom buckets 是累积 `le` 计数，OTLP 要 per-bucket + 隐式 +Inf 桶。算法 `bucket_counts[i] = max(0, cumulative[i] - cumulative[i-1])`，最后 `bucket_counts.append(max(0, total - cumulative[last]))`。saturating_sub -> max(0,..) 防御性防下溢（注册表短暂报告更小累积时）。
+
+### 验证
+
+- `uv run ruff check minimax_code/computer_hub_sdk/metric_donate.py tests/test_metric_donate.py` -> All checks passed!
+- `uv run pytest tests/test_metric_donate.py -v` -> 7 passed in 0.27s
+- 锚点链：R145(7b16eff) -> R146
+
+### YAGNI 边界
+
+MIGRATED（纯策略 + 中性数据类型，零框架依赖）：
+- Prom-shape / OTLP-shape 中性 dataclasses
+- AGGREGATION_TEMPORALITY_CUMULATIVE
+- convert_families + _histogram_point（累积桶差分核心算法）+ _number_point + _labels_to_kv
+- export_metrics（encode_chunk 闭包注入，同构 R137 export_spans）
+- MetricDonationPump.drain（drain_via 栅栏）
+
+NOT MIGRATED（框架粘合，无 Python 等价物，后叶处理）：
+- ACTIVE_METRIC_EXPORTER 进程全局（ArcSwapOption）——需真实 registry + pump tx
+- gather_and_send / clear_active_exporter 模块级——prometheus::gather 全局采集
+- MetricDonationReporter::run（tokio interval + CancellationToken 定期 gatherer）——依赖全局 exporter
+- ToolServer::metric_donation_reporter assembly point——server.rs（2649 行）后叶
+- ExportMetricsServiceRequest protobuf encode + base64——encode_chunk 闭包是 caller concern（同 R137 trace_donate / R136 donate_pump OTLP wire helpers）
+
+### Commit
+
+feat(platform): R146 migrate metric_donate.rs -> metric_donate.py (SDK leaf 14, Prometheus->OTLP metric conversion + donation policy)
