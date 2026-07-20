@@ -65,7 +65,7 @@ import threading
 import weakref
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Generic, TypeVar
+from typing import Generic, Protocol, TypeVar
 from urllib.parse import urlparse
 
 from minimax_code.computer_hub_sdk.auth import AuthProvider
@@ -953,3 +953,125 @@ def drain_reconnect_signals(reconnect_rx: _SinkRx[None]) -> None:
             buffer.get_nowait()
         except asyncio.QueueEmpty:
             return
+
+
+# ===========================================================================
+# Spawn-pipeline writer task (R157, SDK leaf 18h -- connection.rs 1047-1078).
+#
+# The writer half of the split connection actor. Generic over the sink so it
+# can be unit-tested with an in-memory sink without a live socket (Rust notes
+# on ``run_writer``, line 1045). The biased ``tokio::select!`` (stop > ctl >
+# ping-if-live > outbound-if-live) is mirrored with ``asyncio.wait`` +
+# FIRST_COMPLETED and a declared-order priority check; on a send failure the
+# detail lands in the shared ``WriteErrorSlot`` so the reader can classify the
+# outage as a write-side fault on reconnect.
+# ===========================================================================
+class WriterSink(Protocol):
+    """Outbound transport abstraction the writer task drains onto.
+
+    Mirrors the ``futures::Sink<Message>`` bound on Rust ``run_writer``
+    (connection.rs 1055): two narrow async methods -- text frames and keepalive
+    pings -- so the writer task stays generic over the transport and can be
+    unit-tested with an in-memory sink. Distinct from
+    :class:`~minimax_code.computer_hub_sdk.handshake.HandshakeSink`, which
+    swaps the keepalive ping for the handshake pong.
+    """
+
+    async def send_text(self, text: str) -> None:
+        """Send a text frame; raise on a dead socket so the writer records it."""
+        ...
+
+    async def send_ping(self) -> None:
+        """Send a keepalive ping; raise on a dead socket so the writer records it."""
+        ...
+
+
+async def run_writer(
+    sink: WriterSink,
+    outbound_rx: _SinkRx[str],
+    writer_ctl_rx: _SinkRx[WriterControl[WriterSink]],
+    writer_stop_rx: _SinkRx[None],
+    ping_period: float,
+    write_error: WriteErrorSlot,
+) -> None:
+    """Drain outbound text frames + keepalive pings onto ``sink``.
+
+    Forward-port of Rust ``run_writer`` (connection.rs 1047-1078): the writer
+    half of the split connection actor. The biased ``tokio::select!``
+    (stop > ctl > ping-if-live > outbound-if-live) is mirrored with
+    ``asyncio.wait(FIRST_COMPLETED)`` plus a declared-order priority check --
+    stop always wins, then control, then (when ``live``) the keepalive ping,
+    then the outbound frame. On a send failure the detail is recorded in
+    ``write_error`` (the reader probes it on reconnect to classify the outage
+    as a write-side fault) and ``live`` flips false until the reader sends
+    ``Resume(fresh_sink)``.
+
+    tokio -> asyncio adaptation: Rust ``tokio::select!`` re-polls the same
+    bound futures each iteration and drops the non-selected ones; Python has
+    no biased multi-await, so each iteration rebuilds the awaitables as tasks,
+    ``asyncio.wait`` returns on the first completion, the pending tasks are
+    cancelled + reaped, and the completed ones are dispatched in declaration
+    order. ``tokio::time::interval`` (whose first tick fires immediately and
+    is consumed up front so the loop's first real tick lands one ``ping_period``
+    later) maps to ``asyncio.sleep(ping_period)`` directly -- the first sleep
+    already waits a full period.
+    """
+    live = True
+    while True:
+        stop_task = asyncio.ensure_future(writer_stop_rx.recv())
+        ctl_task = asyncio.ensure_future(writer_ctl_rx.recv())
+        if live:
+            ping_task: asyncio.Future[None] | None = asyncio.ensure_future(
+                asyncio.sleep(ping_period)
+            )
+            out_task: asyncio.Future[str | None] | None = asyncio.ensure_future(
+                outbound_rx.recv()
+            )
+            done, pending = await asyncio.wait(
+                (stop_task, ctl_task, ping_task, out_task),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        else:
+            ping_task = None
+            out_task = None
+            done, pending = await asyncio.wait(
+                (stop_task, ctl_task),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        for task in pending:
+            task.cancel()
+        if pending:
+            # Reap cancelled tasks so a return path never strands orphans that
+            # asyncio would warn about at loop shutdown.
+            await asyncio.gather(*pending, return_exceptions=True)
+        # Biased priority: stop > ctl > ping > outbound (Rust select! order).
+        if stop_task in done:
+            return
+        if ctl_task in done:
+            ctl = ctl_task.result()
+            if ctl is None:
+                return
+            if isinstance(ctl, Pause):
+                live = False
+            elif isinstance(ctl, Resume):
+                sink = ctl.sink
+                live = True
+                write_error.take()
+            continue
+        if live and ping_task is not None and ping_task in done:
+            try:
+                await sink.send_ping()
+            except Exception as exc:
+                write_error.set(f"ping send failed: {exc}")
+                live = False
+            continue
+        if live and out_task is not None and out_task in done:
+            text = out_task.result()
+            if text is None:
+                return
+            try:
+                await sink.send_text(text)
+            except Exception as exc:
+                write_error.set(f"frame send failed: {exc}")
+                live = False
+            continue

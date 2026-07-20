@@ -58,6 +58,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -87,6 +88,7 @@ from minimax_code.computer_hub_sdk.connection import (
     host_is_loopback,
     now_unix_millis,
     route_or_pong,
+    run_writer,
 )
 from minimax_code.computer_hub_sdk.connection_types import (
     CloseFrame,
@@ -98,6 +100,7 @@ from minimax_code.computer_hub_sdk.connection_types import (
     ReadError,
     TimedOut,
     WriteError,
+    WriteErrorSlot,
 )
 from minimax_code.computer_hub_sdk.demux import Demux, mpsc_channel
 from minimax_code.computer_hub_sdk.error import (
@@ -1156,3 +1159,169 @@ def test_drain_reconnect_signals_empty_noop() -> None:
     assert rx._channel.buffer.qsize() == 0
     tx.try_send(None)
     assert rx._channel.buffer.qsize() == 1
+
+
+# ===========================================================================
+# Spawn-pipeline writer task tests (R157, SDK leaf 18h -- connection.rs
+# 1714-1940). Mirrors the Rust ``run_writer`` in-memory-sink tests: the
+# writer task is generic over the sink, so a recording sink stands in for the
+# live WebSocket with no socket on the wire.
+# ===========================================================================
+_TEST_PING_NEVER = 3600.0
+
+
+class _RecordingSink:
+    """In-memory sink: records text frames, counts pings, fails on demand.
+
+    Mirrors Rust ``RecordingSink`` (connection.rs 1632-1697) -- an
+    ``UnboundedSink<Message>`` for the writer task to drain onto, with a
+    ``fail`` flag that makes the next ``send_*`` raise so a send-error path
+    can be exercised without a real transport. ``WriterSink`` (Protocol)
+    provides exactly the two methods this class implements.
+    """
+
+    __slots__ = ("recorded", "pings", "fail")
+
+    def __init__(self) -> None:
+        self.recorded: list[str] = []
+        self.pings: int = 0
+        self.fail: bool = False
+
+    async def send_text(self, text: str) -> None:
+        if self.fail:
+            raise OSError("sink dead")
+        self.recorded.append(text)
+
+    async def send_ping(self) -> None:
+        if self.fail:
+            raise OSError("sink dead")
+        self.pings += 1
+
+
+async def _wait_until(predicate: Callable[[], bool], label: str) -> None:
+    """Poll ``predicate`` every 5ms until it is true or 2s elapse.
+
+    Mirrors Rust ``wait_until`` (connection.rs 1704-1712): the writer task
+    runs concurrently, so the test side polls an observable (recorded frames,
+    ping count, error slot) until the expected state materialises rather than
+    sleeping a fixed duration.
+    """
+    for _ in range(400):
+        if predicate():
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError(f"timed out waiting for: {label}")
+
+
+def _idle_write_error_slot() -> WriteErrorSlot:
+    """Fresh error slot (Rust ``idle_write_error_slot``, connection.rs 1699)."""
+    return WriteErrorSlot()
+
+
+async def test_writer_drains_outbound_while_live() -> None:
+    # A live writer drains queued text frames in arrival order.
+    sink = _RecordingSink()
+    out_tx, out_rx = mpsc_channel(8)
+    ctl_tx, ctl_rx = mpsc_channel(8)
+    stop_tx, stop_rx = mpsc_channel(8)
+    writer = asyncio.ensure_future(
+        run_writer(sink, out_rx, ctl_rx, stop_rx, _TEST_PING_NEVER, _idle_write_error_slot())
+    )
+    try:
+        out_tx.try_send("a")
+        out_tx.try_send("b")
+        await _wait_until(lambda: len(sink.recorded) == 2, "two frames drained")
+        assert sink.recorded == ["a", "b"]
+        assert sink.pings == 0
+    finally:
+        stop_tx.try_send(None)
+        await asyncio.wait_for(writer, timeout=2.0)
+
+
+async def test_writer_exits_on_stop_signal() -> None:
+    # A stop signal returns the writer cleanly.
+    sink = _RecordingSink()
+    _, out_rx = mpsc_channel(8)
+    _, ctl_rx = mpsc_channel(8)
+    stop_tx, stop_rx = mpsc_channel(8)
+    writer = asyncio.ensure_future(
+        run_writer(sink, out_rx, ctl_rx, stop_rx, _TEST_PING_NEVER, _idle_write_error_slot())
+    )
+    stop_tx.try_send(None)
+    await asyncio.wait_for(writer, timeout=2.0)
+
+
+async def test_writer_exits_when_outbound_channel_closes() -> None:
+    # Dropping the last outbound sender (Rust ``drop(out_tx)``) is mirrored by
+    # an explicit channel close: recv() returns None on an empty closed
+    # channel, which the writer treats as a clean exit.
+    sink = _RecordingSink()
+    out_tx, out_rx = mpsc_channel(8)
+    _, ctl_rx = mpsc_channel(8)
+    _, stop_rx = mpsc_channel(8)
+    writer = asyncio.ensure_future(
+        run_writer(sink, out_rx, ctl_rx, stop_rx, _TEST_PING_NEVER, _idle_write_error_slot())
+    )
+    out_tx.close()
+    await asyncio.wait_for(writer, timeout=2.0)
+
+
+async def test_writer_send_error_pauses_until_resume_without_multi_frame_loss() -> None:
+    # A send failure pauses the writer; queued frames are held until a fresh
+    # sink is supplied via Resume, so a transient transport outage does not
+    # drop multi-frame bursts. The single failing frame itself is lost (it was
+    # already pulled off the channel when the send raised); the burst queued
+    # behind it is preserved and flushed in order on Resume.
+    sink = _RecordingSink()
+    out_tx, out_rx = mpsc_channel(64)
+    ctl_tx, ctl_rx = mpsc_channel(8)
+    stop_tx, stop_rx = mpsc_channel(8)
+    slot = _idle_write_error_slot()
+    writer = asyncio.ensure_future(
+        run_writer(sink, out_rx, ctl_rx, stop_rx, _TEST_PING_NEVER, slot)
+    )
+    try:
+        out_tx.try_send("ok")
+        await _wait_until(lambda: len(sink.recorded) == 1, "first frame drained")
+        assert sink.recorded == ["ok"]
+        # Flip the sink to failing and queue a burst; none of it lands on the
+        # dead sink.
+        sink.fail = True
+        out_tx.try_send("lost")
+        out_tx.try_send("kept1")
+        out_tx.try_send("kept2")
+        await _wait_until(lambda: slot.get() is not None, "write error recorded")
+        assert "sink dead" in (slot.get() or "")
+        await asyncio.sleep(0.05)
+        assert sink.recorded == ["ok"]
+        # Resume on a fresh sink; the post-failure frames flush in order.
+        fresh = _RecordingSink()
+        ctl_tx.try_send(Resume(fresh))
+        await _wait_until(lambda: len(fresh.recorded) == 2, "two frames recovered")
+        assert fresh.recorded == ["kept1", "kept2"]
+    finally:
+        stop_tx.try_send(None)
+        await asyncio.wait_for(writer, timeout=2.0)
+
+
+async def test_writer_resume_discards_stale_write_error() -> None:
+    # Resume clears a stale write error so the reader does not attribute an
+    # outage that was already recovered by the sink swap.
+    sink = _RecordingSink()
+    _, out_rx = mpsc_channel(8)
+    ctl_tx, ctl_rx = mpsc_channel(8)
+    stop_tx, stop_rx = mpsc_channel(8)
+    slot = _idle_write_error_slot()
+    writer = asyncio.ensure_future(
+        run_writer(sink, out_rx, ctl_rx, stop_rx, _TEST_PING_NEVER, slot)
+    )
+    try:
+        ctl_tx.try_send(Pause())
+        await asyncio.sleep(0.02)
+        slot.set("stale")
+        assert slot.get() == "stale"
+        ctl_tx.try_send(Resume(_RecordingSink()))
+        await _wait_until(lambda: slot.get() is None, "stale error cleared on resume")
+    finally:
+        stop_tx.try_send(None)
+        await asyncio.wait_for(writer, timeout=2.0)
