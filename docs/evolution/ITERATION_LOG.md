@@ -13535,3 +13535,74 @@ Python 移植精确复刻：
 ### Commit
 
 `feat(platform): R164 port reconnect_and_replay reconnect orchestration (SDK leaf 19c, connection.rs finale)` — 精确 `git add` 3 文件（connection.py + test_connection.py + ITERATION_LOG.md），141 测试通过。connection.rs 最后一个顶级函数收官，网络半段三剑客（open_socket → run_handshake → reconnect_and_replay）闭合。
+
+## R165 — harness.rs 类型层叶子（SDK 新模块首叶，harness.rs leaf 1，常量+别名+CancelOnDrop+SessionBindReport）
+
+锚点:R165-1 b03ff4f
+
+### 本轮目标
+
+SDK 新模块 `harness.rs` 首叶（leaf 1）——类型层。前向移植 `grok-build/crates/common/xai-computer-hub-sdk/src/harness.rs:60-100 + 544-554` 的**依赖无关词汇层**：2 个 well-known-kind 常量（`PERMISSION_REQUEST_KIND`/`PROGRESS_BUFFER`）、3 个 callback 类型别名（`TraceContextProvider`/`HookRequestHandler`/`ModelOutputExtractor`）、`CancelOnDrop` opt-in flag newtype、`SessionBindReport` typed bind-contract report。R164 收官了 `connection.rs` 的全部顶级函数，但 SDK crate 仍有 `harness.rs`(2940) + `server.rs`(2649) 两个巨型业务文件 + `lib.rs`(71) barrel 未迁移。本轮按 R150 对 `connection.rs` 的拆分模式，从 `harness.rs` 的纯数据地基起步——无 async/actor 依赖，干净移植为新文件 `harness_types.py`。延续 leaf 哲学（小步、可测、闭合依赖链）。
+
+### 融合结论
+
+`harness.rs` 是 SDK crate 的**核心聚合层**——`ToolHarness` 是服务端 `Harness` 连接的 SDK 侧对偶：通过 `ToolHarnessBuilder` 构建，用 `Tool` 实现种子进程内 `LocalRegistry`（local-first dispatch），`ToolHarness::call` 优先查本地注册表命中则进程内执行，未命中则走共享 `HubConnection` 的远程 `tool.call` JSON-RPC。它依赖 R150-R164 全套 connection 层 + R139 auth + R143 pool + R138 connection_borrow——所有底层已就绪，harness 是**纯消费端**聚合。
+
+R165 提取的词汇层是整个 actor 的无依赖地基：
+- **常量**：`PERMISSION_REQUEST_KIND="permission_request"`（server→harness 权限请求的 well-known `HookEvent::Custom` kind，`turn_hook::TURN_HOOK_KIND` 的兄弟）、`PROGRESS_BUFFER=64`（每调用 progress channel 容量，吸收短暂消费停顿不阻塞 connection actor 入站分发循环）。
+- **callback 别名**：`TraceContextProvider`（`() -> Option<String>`，宿主提供的 W3C traceparent 源）、`HookRequestHandler`（`HookFrame -> ()`，server→harness 反向 hook 请求 sink，crate-private）、`ModelOutputExtractor`（`&Value -> Option<Vec<ContentBlock>>`，每工具客户端 model 输出提取器）。
+- **newtype**：`CancelOnDrop(pub bool)` —— opt-in per-call flag（`ToolCallContext` extension），`true` 时远程调用的 `ToolStream` 在 drop 时发一个 best-effort call-scoped cancel hook。
+- **dataclass**：`SessionBindReport` —— `session.bind` 响应的 typed bind-contract 报告（binary_version/unserved_tool_ids/resolve_error）。
+
+### 交付
+
+**`agent/minimax_code/computer_hub_sdk/harness_types.py`**（新文件，类比 R150 connection_types.py）：
+- import：`from collections.abc import Callable` + `from dataclasses import dataclass, field` + `from typing import Any`（stdlib 三件套，isort c<d<t）+ `from minimax_code.tool_protocol.frames import HookFrame` + `from minimax_code.tool_runtime.tool import ContentBlock`（first-party，tool_protocol<tool_runtime）+ `from __future__ import annotations`（首行）
+- `__all__`：7 符号（2 常量 + 3 别名 + CancelOnDrop + SessionBindReport）
+- `PERMISSION_REQUEST_KIND = "permission_request"` + `PROGRESS_BUFFER = 64`
+- 3 callback 别名：`TraceContextProvider = Callable[[], str | None]` / `HookRequestHandler = Callable[[HookFrame], None]` / `ModelOutputExtractor = Callable[[Any], list[ContentBlock] | None]`
+- `@dataclass(frozen=True) class CancelOnDrop: value: bool`
+- `@dataclass class SessionBindReport: binary_version: str | None = None` / `unserved_tool_ids: list[str] = field(default_factory=list)` / `resolve_error: str | None = None`
+- 完整模块 docstring 记录 Rust 行号 + 5 条 Rust→Python 类型映射 + extractor_for<T> YAGNI 边界
+
+**`agent/tests/test_harness.py`**（新文件，+9 测试）：
+- 常量 2 测试：permission_request_kind_well_known_value / progress_buffer_is_64
+- CancelOnDrop 3 测试：positional_construct_and_value_access / is_frozen（FrozenInstanceError）/ equality_and_hash（frozen→hashable+value-equal，镜像 Copy）
+- SessionBindReport 3 测试：defaults_match_rust_default / default_list_is_per_instance（default_factory 隔离）/ explicit_construction
+- callback 别名 1 测试：assignable_to_callable_shape（用 `_stub_trace_provider` def 满足 `() -> str | None` 形状，避免 E731 lambda 赋值）
+
+### 映射决策树 + 坑
+
+1. **`Arc<dyn Fn>` → `Callable`**：Rust 3 个 callback 都是 `Arc<dyn Fn(...) + Send + Sync>`——Python 用 `Callable[...]`（GIL 去除 Send+Sync 约束，Arc 引用计数由 Python GC 接管）。`serde_json::Value` → `Any`（提取器运行时探测 dict 形状）。
+
+2. **tuple struct → frozen dataclass**：`pub struct CancelOnDrop(pub bool)` + `#[derive(Clone, Copy, Debug)]` → `@dataclass(frozen=True)` 单 `value: bool` 字段。bool 不可变 + frozen 镜像 Clone+Copy 语义（hashable + value-equal）。保持 Rust 位置构造 `CancelOnDrop(True)`——dataclass 既支持位置也支持关键字。
+
+3. **`Default` derive → field defaults**：`SessionBindReport` 的 `#[derive(Default)]` → 字段默认值。`binary_version: Option<String>` → `str | None = None`；`unserved_tool_ids: Vec<String>` → `list[str] = field(default_factory=list)`（**必须** `default_factory`，类属性别名会跨实例共享——test_default_list_is_per_instance 专门守这个坑）；`resolve_error: Option<String>` → `str | None = None`。
+
+4. **`extractor_for<T>()` YAGNI**：Rust 泛型函数 `T: ToolOutput + DeserializeOwned + 'static`，返回闭包把 `Value` 反序列化成 T 再 `output.model_output().to_vec()`。Python 无静态泛型 + 无 serde DeserializeOwned 等价。该函数唯一消费者是 `LocalRegistry::register_with_model_output`（未迁移），随该消费者落地而非作为死代码提前移植。
+
+5. **HookFrame 导入路径核对**：grep 确认 `class HookFrame` 在 `tool_protocol/frames.py`（**非** hook.py——R104 迁移 HookFrame+HookReplyFrame 到 frames.py hooks 域）。harness.rs 第 67 行用 `xai_tool_protocol::HookFrame`（protocol 根 re-export），Python 实际定义在 frames.py。
+
+6. **运行时导入无循环**：HookFrame（frames.py）+ ContentBlock（tool.py）用**运行时导入**（非 TYPE_CHECKING）——protocol/runtime 是底层，不反向依赖 sdk 的 harness_types，无循环。这与 connection_types.py 运行时导入 PrincipalKey/ConnectionId 同模式（TYPE_CHECKING 仅留给可能反向依赖的 Demux/RequestId）。
+
+7. **isort 顺序精确**：stdlib 三件套 `collections.abc < dataclasses < typing`（c<d<t）；first-party `tool_protocol.frames < tool_runtime.tool`（p<r）。首轮 ruff check 全绿，零 --fix。
+
+8. **E731 规避**：callback 别名测试若用 `provider = lambda: "traceparent"` 会触发 E731（禁止 `name = lambda` 赋值，E 在 select 中）。改用模块级 `def _stub_trace_provider() -> str | None` 满足 `() -> str | None` 形状，ruff 通过。
+
+### 验证
+
+- `uv run ruff check harness_types.py test_harness.py` -> **All checks passed!**（零 --fix，isort 判断精确）
+- `uv run pytest tests/test_harness.py -q` -> **9 passed in 0.28s**（2 常量 + 3 CancelOnDrop + 3 SessionBindReport + 1 callback 别名，零失败，无循环导入）
+
+### YAGNI 边界
+
+- **`extractor_for<T>()`（91-100）不在 R165**：泛型 + serde DeserializeOwned，Python 无等价。随 `LocalRegistry::register_with_model_output` 消费端落地（后续 leaf）。
+- **actor 层不在 R165**：`LocalRegistry`/`LocalRegistryInner`(119-289)、`DynToolAdapter`(289-323)、`ToolHarnessBuilder`(324-542)、`ToolHarness`/`ToolHarnessInner`(564-1663)——async/actor + 依赖 ToolHandle/Tool/HubConnection/ConnectionBorrow/TypedExtensions，多 leaf 拆分（类比 connection.rs 的 R151-R164）。
+- **async bind 状态机不在 R165**：`BindFuture`(570)/`PendingBind`(574)（Rust `BoxFuture`/`Shared`）、`spawn_pending_bind`(579)、`LazyBind`(599)/`DeferredBind`(622)——async bind 状态机，依赖 tokio spawn，随 ToolHarness 构造路径落地。
+- **stream 观察层 + helpers 不在 R165**：`ObservedToolStream`/`EmissionState`(1748+) + inbound-hook/permission/notification helpers(1664+)——随 `ToolHarness::call` 分发路径落地。
+- **`server.rs`(2649) 整体不在 R165**：SDK crate 另一巨型文件（服务端 hub server 侧），harness.rs 收官后单独开多 leaf 迁移。
+- **`lib.rs`(71) barrel 不在 R165**：crate 根 barrel 对账（R106 模式）必须在 harness.rs + server.rs 全部迁移后做。
+
+### Commit
+
+`feat(platform): R165 port harness.rs type-aliases + pure-data leaves (SDK harness.rs leaf 1)` — 精确 `git add` 3 文件（harness_types.py + test_harness.py + ITERATION_LOG.md），9 测试通过。harness.rs 新模块首叶起步，纯数据词汇层闭合。
