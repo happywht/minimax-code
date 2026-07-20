@@ -46,13 +46,14 @@ branch of ``origin_client_info_from_meta`` (which deserializes that enum) is
 YAGNI: when ``clientIdentifier`` is absent the function returns ``None``. The
 four ``ClientType``-bearing symbols are not migrated.
 
-``OriginClientInfo`` source-of-truth flip
------------------------------------------
+``OriginClientInfo`` source-of-truth (R195 landed)
+--------------------------------------------------
 
 In grok this type is owned by ``xai-grok-sampler`` and re-exported from
-``xai-grok-http``. The sampler crate is not yet migrated, so this module is the
-platform's source of truth; when the sampler lands it will import from here
-(dependency direction inverted, recorded so the sampler round honours it).
+``xai-grok-http``. R195 landed the sampler crate's ``config`` leaf, so this
+module now imports the faithful source from
+:mod:`minimax_code.sampler.config` and re-exports it; the R193 local definition
+is retired (the dependency direction is inverted as committed).
 """
 
 from __future__ import annotations
@@ -64,6 +65,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from minimax_code.sampler.config import OriginClientInfo
 from minimax_code.version import VERSION
 
 # Env-var + identity renames (grok -> MiniMax Code; see module docstring).
@@ -75,18 +77,9 @@ _CLIENT_MODE_HEADLESS = "headless"
 _CLIENT_MODE_INTERACTIVE = "interactive"
 
 
-@dataclass(frozen=True, slots=True)
-class OriginClientInfo:
-    """Originating-client identity for a User-Agent (grok ``OriginClientInfo``).
-
-    ``product`` is the client's product name; ``version`` is its version string
-    when known. See the module docstring's source-of-truth note: in grok this
-    type is owned by the sampler crate and re-exported here; the platform
-    defines it in this module until the sampler lands.
-    """
-
-    product: str
-    version: str | None = None
+# ``OriginClientInfo`` is imported + re-exported from
+# :mod:`minimax_code.sampler.config` (R195 source-of-truth flip; the R193 local
+# definition is retired). Kept in ``__all__`` for backward compatibility.
 
 
 @dataclass(frozen=True, slots=True)

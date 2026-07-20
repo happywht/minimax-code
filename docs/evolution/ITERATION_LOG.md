@@ -15688,3 +15688,110 @@ xai-grok-announcements/lib.rs (443 行)
 
 - 3 文件：2 新 A（grok_announcements.py + test）+ 1 修改 M（ITERATION_LOG）。
 - 精确 `git add`，无排除文件污染暂存区。
+## R195 — 迁移 xai-grok-sampler crate config.rs 纯类型子集（OriginClientInfo 闭合 R193 + AuthScheme）
+
+锚点:R195-1 7d5922b
+
+### 本轮目标
+
+落地 grok ``xai-grok-sampler`` crate 的首轮——建立 ``agent/minimax_code/sampler/`` 包骨架，
+迁移 ``src/config.rs`` 六符号中的**纯类型子集**（无外部依赖的 2 个），并**闭合 R193 在
+grok_http.py docstring 里写下的 ``OriginClientInfo`` 源头条目承诺**（"the sampler crate is not
+yet migrated, so this module is the platform's source of truth; when the sampler lands it will
+import from here -- dependency direction inverted"）。R195 就是那个 landing：grok_http 从
+sampler.config 导入 OriginClientInfo，本地定义退休，依赖方向反转落地。
+
+### 融合结论
+
+sampler crate 是 grok 的 actor-based 推理采样层（HTTP 流式 + 重试，5335 行/14 文件），
+核心（client.rs 2745 + retry.rs 856 + actor/ + stream/）与平台的 ``agent/llm.py`` +
+resilience 栈（熔断 R17-R21 / retry_middleware R188）**重度重叠**——actor 主体是 YAGNI/多轮。
+但 ``config.rs`` 顶层的纯类型（OriginClientInfo 2 字段、AuthScheme 2 变体 enum）无外部依赖、
+无 reqwest 耦合、无跨 crate 依赖链，是干净的迁移叶子，且 OriginClientInfo 正是 R193 承诺的
+反转目标。本轮迁移这 2 个，把 sampler 包骨架立起来，为后续 config.rs 余量 / retry.rs /
+actor 的多轮迁移铺路。
+
+### 交付
+
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| ``agent/minimax_code/sampler/__init__.py`` | 27 | 包桶，re-export AuthScheme + DEFAULT_AUTH_SCHEME + OriginClientInfo，记录 crate 12 模块的叶序迁移地图 |
+| ``agent/minimax_code/sampler/config.py`` | 91 | config.rs 纯类型子集：AuthScheme StrEnum（snake_case serde 标签）+ DEFAULT_AUTH_SCHEME 常量（grok #[default] Bearer）+ OriginClientInfo frozen+slots dataclass；docstring 含 6 符号迁移地图 + YAGNI 台账 |
+| ``agent/minimax_code/grok_http.py`` | -12 | **R193 承诺闭合**：删除本地 OriginClientInfo class，改为 ``from minimax_code.sampler.config import OriginClientInfo``（re-export 保留在 __all__，向后兼容 test_grok_http）；docstring source-of-truth 段改为 "R195 landed" |
+| ``agent/tests/test_sampler_config.py`` | 119 | 13 测试：barrel 表面×2 + AuthScheme serde 标签/StrEnum/2 变体/default×4 + OriginClientInfo shape/frozen/hashable/slots×4 + **R193 反转断言×2**（grok_http.OriginClientInfo is sampler.OriginClientInfo + 仍在 __all__） |
+
+新增 3 符号（AuthScheme / DEFAULT_AUTH_SCHEME / OriginClientInfo），OriginClientInfo 从 grok_http
+本地定义（R193）迁移为 sampler.config 忠实源——**单一来源，零重复**。
+
+### 映射决策树 + 坑
+
+```
+config.rs 6 符号 -> 迁移判定：
++- OriginClientInfo (2 字段: product + version: Option<String>)
+|   纯类型，无依赖 -> 迁移 (frozen+slots dataclass)
+|   * 闭合 R193：grok_http 从此导入，本地定义退休
+|   * 值语义一致性：两处都必须 frozen+slots（test_origin_client_info_is_frozen 通过）
+|
++- AuthScheme (enum, 2 变体, #[serde(rename_all="snake_case")], #[default] Bearer)
+|   纯 enum，无依赖 -> 迁移 (StrEnum: BEARER="bearer", X_API_KEY="x_api_key")
+|   + DEFAULT_AUTH_SCHEME 常量文档化 grok #[default] Bearer
+|   平台无重复（grep 确认）-> 是 SamplerConfig.auth_scheme 的未来类型
+|
++- RetryPolicy (2 int: max_retries + rate_limit_retry_threshold)
+|   YAGNI: 平台已 2 处 RetryPolicy！
+|     +- agent/minimax_code/agent/reliability/retry.py:90
+|     \- agent/minimax_code/resilience/retry_policy.py:29
+|   迁移 = 第 3 个重复 -> 违反 DRY。sampler 版仅服务 retry.rs reqwest 循环（平台 R17-R21+R188 已覆盖）
+|
++- DEFAULT_MAX_RETRIES=15 / RATE_LIMIT_RETRY_THRESHOLD=2 (retry.rs 常量)
+|   YAGNI: 仅服务 RetryPolicy::default + retry.rs 循环（grep 确认平台无匹配）
+|
++- SamplerConfig (24 字段)
+|   延后: 跨 crate 依赖链
+|     +- attribution::SharedAttributionCallback (未迁移)
+|     +- retry::{DEFAULT_MAX_RETRIES, RATE_LIMIT_RETRY_THRESHOLD} (retry.rs 未迁移)
+|     +- sampling_types::{CompactionAtTokens, CompactionsRemaining, DoomLoopRecoveryPolicy}
+|     \- reqwest::header::HeaderMap (HeaderInjector)
+|
+\- BearerResolver/HeaderInjector trait + Shared* aliases (Arc<dyn Trait> over reqwest HeaderMap)
+    YAGNI: reqwest 耦合，无 httpx 等价（bearer 来自 secrets R15，OTel traceparent 来自 R131）
+```
+
+坑（R195 解决的）：
+
+1. **RetryPolicy 双重冲突**（grep 发现 reliability/retry.py:90 + resilience/retry_policy.py:29）
+   -> 严守 YAGNI，不迁移 sampler 版（否则 3 重定义违反 DRY）。
+2. **依赖反转的向后兼容**：grok_http 删除本地 OriginClientInfo 后，test_grok_http.py 的
+   ``from minimax_code.grok_http import OriginClientInfo`` 不能破 -> re-export 保留在 __all__，
+   test_origin_client_info_is_frozen_and_hashable + barrel 测试零改动通过。
+3. **frozen+slots dataclass 设置未知属性**：frozen ``__setattr__`` 先拦截，在 slots 描述符上抛
+   ``TypeError``（super 绑定边缘行为）而非 ``AttributeError`` -> 验证 slots 用 ``__slots__``
+   tuple 断言，不依赖 setattr 异常类型（那是 frozen 的领地，已由 is_frozen 测试覆盖）。
+
+### 验证
+
+- ``ruff check minimax_code/sampler/ minimax_code/grok_http.py tests/test_sampler_config.py``
+  -> **All checks passed!**（sampler/ 新包 + grok_http 修改 + 新测试全绿）
+- ``pytest tests/test_sampler_config.py tests/test_grok_http.py -q``
+  -> **31 passed**（13 新 sampler + 18 grok_http，含 R193 反转断言 + 向后兼容 re-export）
+- 全量回归 ``pytest -q``
+  -> **4737 passed, 10 skipped, 0 failed**（102.97s；比 R194 的 4724 多 13 = 新 sampler 测试，零回归）
+
+### YAGNI 边界
+
+- **RetryPolicy**：平台 reliability/retry.py + resilience/retry_policy.py 已 2 份，sampler 版是
+  第 3 个重复，YAGNI（服务 retry.rs reqwest 循环，平台 R17-R21+R188 覆盖）。
+- **DEFAULT_MAX_RETRIES=15 / RATE_LIMIT_RETRY_THRESHOLD=2**：仅服务 RetryPolicy/reqwest，YAGNI。
+- **SamplerConfig（24 字段）**：跨 crate 依赖链（attribution/retry/sampling-types 子类型/reqwest），
+  延后到依赖落地。
+- **BearerResolver/HeaderInjector trait + Shared\* aliases**：``Arc<dyn Trait>`` over reqwest
+  HeaderMap，无 httpx 等价（bearer R15 / OTel R131），YAGNI。
+- **crate actor 核心**（client.rs 2745 + retry.rs 856 + actor/ + stream/）：与 llm.py + resilience
+  栈重叠，YAGNI/多轮。
+- **ts_rs / OTel-SDK 式 derive**：sampler crate 无此类 derive（纯 Rust struct/enum），本轮无对应 YAGNI。
+
+### Commit
+
+```
+feat(platform): R195 migrate xai-grok-sampler config.rs pure types (closes R193)
+```
