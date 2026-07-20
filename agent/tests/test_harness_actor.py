@@ -40,8 +40,10 @@ from minimax_code.computer_hub_sdk.harness import (
     ToolHarnessInner,
     spawn_pending_bind,
 )
+from minimax_code.computer_hub_sdk.harness_types import SessionBindReport
 from minimax_code.tool_protocol.capabilities import ToolCapabilities
 from minimax_code.tool_protocol.ids import SessionId, ToolId
+from minimax_code.tool_runtime.context import ListToolsContext
 from minimax_code.tool_runtime.tool import ContentBlock, default_capabilities
 from minimax_code.tool_types.types import ToolDescription
 
@@ -683,3 +685,141 @@ def test_connection_delegates_to_require_connection():
     conn = _Marker()
     harness = _harness_with_borrow(conn)  # type: ignore[arg-type]
     assert harness.connection() is harness._require_connection()
+
+
+# ===========================================================================
+# remote tools + bind report snapshot accessors (lines 1138-1187) -- R174.
+# ===========================================================================
+def _registry_with(*tools: _FakeTool) -> LocalRegistry:
+    """Build a LocalRegistry pre-loaded with ``tools`` in order (R174 helper).
+
+    Mirrors the registry seeding used by ``ToolHarnessBuilder::local_tool``
+    chains; returns a fresh registry so each test owns its state.
+    """
+    registry = LocalRegistry()
+    for tool in tools:
+        registry.register(tool)
+    return registry
+
+
+def _remote_desc(name: str) -> ToolDescription:
+    """A bare remote ToolDescription (R174 helper).
+
+    Remote tools are cached as descriptions, not ``Tool`` impls, so this
+    builds the description directly rather than going through ``_FakeTool``.
+    """
+    return ToolDescription.new(name, "remote")
+
+
+def test_list_local_tools_returns_registered_descriptions_in_order():
+    """list_local_tools delegates to LocalRegistry.list_tools (insertion order)."""
+    reg = _registry_with(_FakeTool("ns:alpha"), _FakeTool("ns:beta"))
+    harness = ToolHarness.local_only_with(reg, SessionId("s"), _Marker())  # type: ignore[arg-type]
+    names = [d.name for d in harness.list_local_tools(ListToolsContext())]
+    assert names == ["ns:alpha", "ns:beta"]
+
+
+def test_list_local_tools_empty_when_no_tools():
+    """An empty local registry yields an empty description list."""
+    harness = ToolHarness.local_only_with(
+        LocalRegistry(), SessionId("s"), _Marker()  # type: ignore[arg-type]
+    )
+    assert harness.list_local_tools(ListToolsContext()) == []
+
+
+def test_list_remote_tools_empty_by_default():
+    """Before any bind/seed, the remote cache is empty."""
+    harness = ToolHarness(_make_inner())
+    assert harness.list_remote_tools() == []
+
+
+def test_list_remote_tools_returns_seeded_clone():
+    """list_remote_tools returns the seeded descriptions (Rust iter().cloned().collect())."""
+    harness = ToolHarness(_make_inner())
+    harness.seed_remote_tools_for_tests(
+        [_remote_desc("ns:r1"), _remote_desc("ns:r2")]
+    )
+    names = [d.name for d in harness.list_remote_tools()]
+    assert names == ["ns:r1", "ns:r2"]
+
+
+def test_list_remote_tools_clone_is_independent_of_cache():
+    """Mutating the returned list does not leak into the harness cache
+    (Rust per-element clone -> Python list shallow copy)."""
+    harness = ToolHarness(_make_inner())
+    harness.seed_remote_tools_for_tests([_remote_desc("ns:r1")])
+    out = harness.list_remote_tools()
+    out.clear()
+    assert [d.name for d in harness.list_remote_tools()] == ["ns:r1"]
+
+
+def test_seed_remote_tools_does_not_alias_caller_list():
+    """seed stores a copy; mutating the caller's list is invisible afterwards
+    (Rust Arc::new(tools) ownership transfer -> Python list(tools))."""
+    harness = ToolHarness(_make_inner())
+    seeded = [_remote_desc("ns:r1")]
+    harness.seed_remote_tools_for_tests(seeded)
+    seeded.clear()
+    assert [d.name for d in harness.list_remote_tools()] == ["ns:r1"]
+
+
+def test_list_tools_concatenates_local_then_remote():
+    """list_tools = local ++ remote, local first (Rust ordering)."""
+    reg = _registry_with(_FakeTool("ns:local"))
+    harness = ToolHarness.local_only_with(reg, SessionId("s"), _Marker())  # type: ignore[arg-type]
+    harness.seed_remote_tools_for_tests([_remote_desc("ns:remote")])
+    names = [d.name for d in harness.list_tools(ListToolsContext())]
+    assert names == ["ns:local", "ns:remote"]
+
+
+def test_list_tools_local_only_when_no_remote():
+    """With no remote cache, list_tools mirrors list_local_tools."""
+    reg = _registry_with(_FakeTool("ns:alpha"))
+    harness = ToolHarness.local_only_with(reg, SessionId("s"), _Marker())  # type: ignore[arg-type]
+    names = [d.name for d in harness.list_tools(ListToolsContext())]
+    assert names == ["ns:alpha"]
+
+
+def test_has_remote_tool_false_when_empty():
+    """has_remote_tool is False before any remote discovery."""
+    harness = ToolHarness(_make_inner())
+    assert harness.has_remote_tool("ns:any") is False
+
+
+def test_has_remote_tool_true_when_present():
+    """has_remote_tool finds a seeded remote tool by name."""
+    harness = ToolHarness(_make_inner())
+    harness.seed_remote_tools_for_tests([_remote_desc("ns:r1")])
+    assert harness.has_remote_tool("ns:r1") is True
+
+
+def test_has_remote_tool_false_for_missing_name():
+    """has_remote_tool is False for a name not in the cache."""
+    harness = ToolHarness(_make_inner())
+    harness.seed_remote_tools_for_tests([_remote_desc("ns:r1")])
+    assert harness.has_remote_tool("ns:other") is False
+
+
+def test_remote_tools_snapshot_clone_independent_of_cache():
+    """remote_tools_snapshot returns an independent copy (Rust load_full Arc
+    clone -> Python list shallow copy; no Arc in the port)."""
+    harness = ToolHarness(_make_inner())
+    harness.seed_remote_tools_for_tests([_remote_desc("ns:r1")])
+    snap = harness.remote_tools_snapshot()
+    snap.clear()
+    assert [d.name for d in harness.remote_tools_snapshot()] == ["ns:r1"]
+
+
+def test_last_bind_report_none_by_default():
+    """Before the first successful bind, last_bind_report is None."""
+    harness = ToolHarness(_make_inner())
+    assert harness.last_bind_report() is None
+
+
+def test_last_bind_report_returns_seeded_report():
+    """seed_bind_report_for_tests stores the report; last_bind_report returns it
+    (Rust store(Some(Arc)) -> Python field assignment; live reference)."""
+    harness = ToolHarness(_make_inner())
+    report = SessionBindReport()
+    harness.seed_bind_report_for_tests(report)
+    assert harness.last_bind_report() is report

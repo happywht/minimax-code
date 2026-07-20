@@ -14184,3 +14184,52 @@ harness.rs 的 `connection()` + `require_connection()` 是 SDK 边界的错误�
 
 ### Commit
 `feat(platform): R173 ToolHarness connection + require_connection (local-only InvalidConfig error path)` (after 79d4d27)
+
+## R174 — ToolHarness list_tools + remote_tools + bind_report snapshot accessors (harness.rs leaf 10)
+
+锚点:R174-1 223dcee
+
+### 本轮目标
+
+harness.rs leaf 10 — 移植 `ToolHarness` 的 8 个纯逻辑快照访问器 + 2 个测试专用 seed helper（harness.rs:1138-1187）：`list_tools` / `has_remote_tool` / `seed_remote_tools_for_tests` / `list_local_tools` / `list_remote_tools` / `remote_tools_snapshot` / `last_bind_report` / `seed_bind_report_for_tests`。这是 harness.rs 中位于 connection 错误路径层（R173）之后、live connection async 方法组（888-1136，全部依赖 `try_alloc_request_id` + `call_request`，未移植）之前的唯一可移植叶子层。
+
+### 融合结论
+
+grok-build `xai-computer-hub-sdk` harness.rs 的快照访问器层前向移植到 MiniMax Code Python 架构。这 8 个方法全部是纯逻辑读/写，零 live connection 依赖，是 harness actor 对外暴露 "当前已知工具集 + 最近绑定报告" 的只读视图层。融合点是 R168 已确立的 ArcSwap→普通字段映射（`ArcSwap<Vec<ToolDescription>>` → `list[ToolDescription]` 字段，`ArcSwapOption<SessionBindReport>` → `SessionBindReport | None` 字段）的消费端闭合 —— R168 定义字段，R172 定义只读访问器先例（session/local_registry 返回 live 引用），R174 定义快照拷贝语义。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/harness.py`（+98 行）：在 R173 `_require_connection`（原 782 行）后追加 `# -- remote tools + bind report snapshot accessors (lines 1138-1187) -- R174 --` 段，8 个方法。无新 import（SessionBindReport / ListToolsContext / ToolDescription 已在 R165/R168/R108 导入）。
+- `agent/tests/test_harness_actor.py`（+140 行）：2 个新 import（`harness_types.SessionBindReport`、`tool_runtime.context.ListToolsContext`，isort 顺序：harness_types 紧随 harness 块，context 在 tool_runtime.tool 前）+ 2 个 helper（`_registry_with(*tools)`、`_remote_desc(name)`）+ 14 个测试。
+
+### 映射决策树+坑
+
+1. **`list_tools(ctx)` → `list_local_tools(ctx) ++ list_remote_tools()`**：Rust `let mut tools = self.list_local_tools(ctx); tools.extend(self.list_remote_tools()); tools`。Python 直接 `tools = self.list_local_tools(ctx); tools.extend(self.list_remote_tools()); return tools`。顺序契约：local 先，remote 后。
+2. **`has_remote_tool(name)` → `any(t.name == name for t in self._inner.remote_tools)`**：Rust `self.inner.remote_tools.load().iter().any(...)`。`.load()` 在 R168 映射下退化为字段访问。生成器 `any()` 无 B023 风险（无 lambda 捕获循环变量）。
+3. **`seed_remote_tools_for_tests(tools)` → `self._inner.remote_tools = list(tools)`**：Rust `#[doc(hidden)]` + `.store(Arc::new(tools))`。R168 映射：`store` → 字段赋值。关键：用 `list(tools)` 浅拷贝而非直接赋值，忠实镜像 Rust 的 ownership transfer（调用方原始 list 与 harness 内部缓存解耦）。测试 `test_seed_remote_tools_does_not_alias_caller_list` 专门验证此点。
+4. **`list_local_tools(ctx)` → `self._inner.local_registry.list_tools(ctx)`**：纯委托。LocalRegistry.list_tools（harness.py:263）返回插入顺序 descriptions，过滤 should_list。
+5. **`list_remote_tools()` → `list(self._inner.remote_tools)`**：Rust `.load().iter().cloned().collect()`。`.load()` → 字段访问；`.cloned().collect()` → `list(...)` 浅拷贝。Rust 中每个 ToolDescription 被 clone 进新 Vec；Python 中 list 浅拷贝（ToolDescription 是 pydantic model，视为 value-typed）。测试 `test_list_remote_tools_clone_is_independent_of_cache` 验证返回 list 的修改不泄漏回缓存。
+6. **`remote_tools_snapshot()` → `list(self._inner.remote_tools)`**：Rust `.load_full()` 返回 `Arc<Vec>`（仅 clone Arc，不 clone Vec，调用方共享快照）。**Rust 语义差异诚实记录**：Python 无 Arc，退化为 `list(...)` 浅拷贝。docstring 明确说明此降级。测试 `test_remote_tools_snapshot_clone_independent_of_cache` 验证独立性。
+7. **`last_bind_report()` → `self._inner.last_bind_report`**：Rust `.load_full()` 返回 `Option<Arc<SessionBindReport>>`（Arc 共享不可变）。Python 返回 live reference（SessionBindReport 是非 frozen dataclass，可变）。**诚实记录**：harness 视为 write-once per bind（只通过 seed/session_bind 整体替换，从不原地修改），所以返回引用在实践中等价于 Rust Arc 共享快照。
+8. **`seed_bind_report_for_tests(report)` → `self._inner.last_bind_report = report`**：Rust `#[doc(hidden)]` + `.store(Some(Arc::new(report)))`。R168 映射：直接赋值。
+
+### 验证
+
+- `uv run ruff check harness.py test_harness_actor.py` → **All checks passed!**（0 errors；isort 顺序正确：harness_types 紧随 harness import 块，ListToolsContext 在 tool_runtime.tool 前；无 E731/B023/B008 违规）
+- `uv run pytest tests/test_harness_actor.py -q` → **65 passed in 0.35s**（R173 的 51 + R174 的 14 = 65，0 warning，0 failure）
+- diff stat：harness.py +98 / test +140 = +238 行
+- 一次通过，无返工
+
+### YAGNI 边界
+
+- **harness.rs 888-1136 的 async 方法组**（list_servers / session_open / session_bind / session_attach / session_unbind / session_close）全部依赖 live connection 链（`try_alloc_request_id` + `call_request` — HubConnection 方法，R150-R164 仅移植了连接层骨架，未移植 RPC 调用层），YAGNI 推迟。
+- **`call()` (1214-1279)** async — 依赖 local_registry.find（已移植）+ dispatch_remote（未移植 live）+ ObservedToolStream（未移植）+ emit_session_event，整体依赖 live 链，YAGNI 推迟。
+- **`emit_session_event()` (1293+)** async — borrow None 早返回是纯逻辑，但 Some 分支依赖 connection，整体推迟。
+- **`ToolHarnessInner` impl 方法 (650-707: fail_inflight_calls_on_disconnect + refresh_remote_tools)** — 依赖 connection live 链，YAGNI 延后。
+- **`build()` (459-542)** — 依赖 pool/auth/ConnectionBorrow acquire live，延后。
+- **ObservedToolStream + RemoteCallStream/dispatch_remote (1776+) + Drop (1846) + server.rs (2649) + lib.rs (71 barrel)** — 全部后续叶子。
+- **R168 ArcSwap→字段映射的忠实度降级**（clone vs Arc 共享）已在 list_remote_tools / remote_tools_snapshot / last_bind_report 的 docstring 中诚实记录，是 Python 无 Arc 的固有代价，非缺陷。
+
+### Commit
+
+`feat(platform): R174 ToolHarness list_tools + remote_tools + bind_report snapshot accessors`（3 文件：harness.py + test_harness_actor.py + ITERATION_LOG.md）

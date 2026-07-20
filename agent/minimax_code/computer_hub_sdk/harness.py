@@ -780,3 +780,101 @@ class ToolHarness:
                 "operation requires a server connection (local-only harness)"
             )
         return borrow.connection
+
+    # -- remote tools + bind report snapshot accessors (lines 1138-1187) -- R174 --
+
+    def list_tools(self, ctx: ListToolsContext) -> list[ToolDescription]:
+        """All tool descriptions: local registry plus cached remote tools (Rust ``list_tools``).
+
+        Concatenates :meth:`list_local_tools` and :meth:`list_remote_tools`
+        in that order; local tools come first. Mirrors
+        ``let mut tools = self.list_local_tools(ctx); tools.extend(
+        self.list_remote_tools()); tools``.
+        """
+        tools = self.list_local_tools(ctx)
+        tools.extend(self.list_remote_tools())
+        return tools
+
+    def has_remote_tool(self, name: str) -> bool:
+        """Whether ``name`` is a known remote tool (Rust ``has_remote_tool``).
+
+        Scans the cached ``session_bind`` / ``tools.list`` snapshot by
+        :attr:`ToolDescription.name`. Empty before the first bind/discovery
+        and after unbind; always ``False`` for local-only harnesses. Remote
+        tools are not mirrored into the local registry. Mirrors
+        ``self.inner.remote_tools.load().iter().any(|t| t.name == name)``.
+        """
+        return any(t.name == name for t in self._inner.remote_tools)
+
+    def seed_remote_tools_for_tests(self, tools: list[ToolDescription]) -> None:
+        """Seed the remote-tools cache without a server round-trip (Rust ``seed_remote_tools_for_tests``).
+
+        Rust ``#[doc(hidden)]`` test-only helper; stores
+        ``self.inner.remote_tools.store(Arc::new(tools))``. R168 ports the
+        ``ArcSwap<Vec<ToolDescription>>`` as a plain ``list`` field, so the
+        port assigns a shallow copy of ``tools`` to mirror the Rust
+        ownership transfer into the ``Arc`` (callers keep their original).
+        """
+        self._inner.remote_tools = list(tools)
+
+    def list_local_tools(self, ctx: ListToolsContext) -> list[ToolDescription]:
+        """Tool descriptions from the local registry only (Rust ``list_local_tools``).
+
+        Delegates to :meth:`LocalRegistry.list_tools`, which filters by
+        ``should_list`` and preserves insertion order. Mirrors
+        ``self.inner.local_registry.list_tools(ctx)``.
+        """
+        return self._inner.local_registry.list_tools(ctx)
+
+    def list_remote_tools(self) -> list[ToolDescription]:
+        """Cached tool descriptions advertised by remote tool servers (Rust ``list_remote_tools``).
+
+        Returns a **clone** of the cached snapshot. Rust reads
+        ``self.inner.remote_tools.load().iter().cloned().collect()`` --
+        ``ArcSwap::load`` yields ``&Arc<Vec<ToolDescription>>``, then each
+        ``ToolDescription`` is cloned into a fresh ``Vec``. R168 ports the
+        ``ArcSwap`` as a plain ``list`` field, so the port is
+        ``list(self._inner.remote_tools)`` -- a shallow copy mirroring the
+        Rust per-element clone (``ToolDescription`` is a pydantic model
+        treated as value-typed here).
+        """
+        return list(self._inner.remote_tools)
+
+    def remote_tools_snapshot(self) -> list[ToolDescription]:
+        """Shared snapshot of the cached remote tool descriptions (Rust ``remote_tools_snapshot``).
+
+        Rust returns ``self.inner.remote_tools.load_full()`` -- an
+        ``Arc<Vec<ToolDescription>>`` that clones only the backing ``Arc``,
+        not the ``Vec``, so callers share the snapshot by reference. Python
+        has no ``Arc``; R168 ports the ``ArcSwap`` as a plain ``list``
+        field, so the port returns ``list(self._inner.remote_tools)`` -- a
+        shallow copy. The snapshot is point-in-time and is not updated by
+        later ``session_bind`` / ``session_unbind``.
+        """
+        return list(self._inner.remote_tools)
+
+    def last_bind_report(self) -> SessionBindReport | None:
+        """The bind-contract report from the most recent successful ``session.bind``, if any (Rust ``last_bind_report``).
+
+        Returns ``None`` before the first successful bind. Rust returns
+        ``self.inner.last_bind_report.load_full()`` --
+        ``Option<Arc<SessionBindReport>>`` (``Arc`` sharing, immutable).
+        R168 ports the ``ArcSwapOption`` as a plain
+        ``SessionBindReport | None`` field, so the port returns the **live
+        reference**: :class:`SessionBindReport` is a non-frozen dataclass,
+        but the harness only ever replaces it wholesale (via
+        :meth:`seed_bind_report_for_tests` / ``session_bind``) and never
+        mutates it in place, so returning the reference is in practice
+        equivalent to the Rust ``Arc`` shared snapshot.
+        """
+        return self._inner.last_bind_report
+
+    def seed_bind_report_for_tests(self, report: SessionBindReport) -> None:
+        """Seed the bind report (Rust ``seed_bind_report_for_tests``).
+
+        Rust ``#[doc(hidden)]`` test-only helper; stores
+        ``self.inner.last_bind_report.store(Some(Arc::new(report)))``. R168
+        ports the ``ArcSwapOption`` as a plain ``SessionBindReport | None``
+        field, so the port is a direct assignment.
+        """
+        self._inner.last_bind_report = report
