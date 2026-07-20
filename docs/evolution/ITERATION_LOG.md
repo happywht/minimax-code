@@ -10078,3 +10078,107 @@ RemoteToolProxy + RemoteTransport / dispatch_via_connection + RequestStream）�
 ### Commit
 
 feat(platform): R121 migrate remote.rs layer-4 error-decode group (tool_error_from_wire 14-variant + error_from_envelope wire/fallback + is_workspace_unavailable + private _terminal_from_response; closes layer 4 at 7 seams; +28 tests -> 65 total, 6-leaf 192 passed)
+
+## R122 — remote.rs layer-1 ConnectionClient trait -> abc.ABC
+
+锚点:R122-1 bc6f86d
+
+### 本轮目标
+
+开启 computer-hub-core remote.rs 多轮迁移的 **layer 1**：把
+`grok-build/crates/common/xai-computer-hub-core/src/remote.rs:40-73` 的
+`ConnectionClient` trait（连接端点的 object-safe 契约）迁移为 `abc.ABC`。
+这是 leaf 6 四层迁移计划的**首层** —— layer 4 已由 R120+R121 完整落地
+（`bc6f86d` 闭合 7 个 wire decode/encode seam），现在自底向上铺 layer 1
+的连接契约，为 layer 2（RemoteToolProxy + RemoteTransport）和 layer 3
+（dispatch_via_connection + RequestStream，Rust Stream -> Python async）
+打地基。
+
+### 融合结论
+
+Rust `#[async_trait] pub trait ConnectionClient: Send + Sync + std::fmt::Debug`
+在 Python 侧落地为 `class ConnectionClient(abc.ABC)`，三个 `async fn` ->
+三个 `@abc.abstractmethod async def`。trait bound 全部丢弃（GIL 使
+Send/Sync 空；Debug = 默认 repr）。`BoxStream<'static, ToolCallProgressFrame>`
+-> `AsyncIterator[ToolCallProgressFrame]`。`Result<T, ToolError>` ->
+`T | ToolError`。crate ABC 风格（R115 `transport.py` 的
+`class Transport(abc.ABC)`）保持一致：`import abc` + `class X(abc.ABC)`
++ `@abc.abstractmethod`（而非 `from abc import ABC, abstractmethod`）。
+
+### 映射决策树+坑
+
+1. **trait bound `Send + Sync + Debug` -> 全部丢弃。** GIL 使 Python
+   对象跨线程语义空（一切皆 GIL 保护）；`Debug` 是默认 `__repr__`。
+   ABC 只强制 3 个方法签名。
+2. **`#[async_trait]` -> `async def` + `@abc.abstractmethod`。** 三个
+   方法全是 coroutine function（`inspect.iscoroutinefunction` 验证）。
+3. **`BoxStream<'static, T>` -> `AsyncIterator[T]`，选映射 A。** 两种
+   候选：(A) `async def -> AsyncIterator`（外层协程 await 后返回迭代器）；
+   (B) 同步 `def -> AsyncIterator`。选 A —— 忠实 Rust 的
+   `async fn -> BoxStream` 两层结构；layer 3 `dispatch_via_connection`
+   将以 `stream = await client.subscribe_progress(id)` + `async for` 消费。
+4. **`Result<T, ToolError>` -> `T | ToolError`。** `request` 返回
+   `JsonRpcResponse | ToolError`；`notify` 返回 `None | ToolError`。
+   方法级错误（含 `ResponseError` 的响应）**不是** `ToolError`，而是成功的
+   `JsonRpcResponse`，由 R121 的 `_terminal_from_response` 解码 —— 与
+   R121 layer-4 闭环对接。
+5. **`subscribe_progress` 模拟模式：** 外层 `async def` 返回内层
+   `async def _gen(): yield` 生成器对象（外层无 `yield` -> 普通 coroutine，
+   可 `return _gen()`）；调用者 `stream = await conn.subscribe_progress(id)`
+   然后 `async for`。
+
+**坑 —— isort 排序（I001 自动纠正，安全例外）：** CONSTANT_CASE 排在
+PascalCase 前，PascalCase 排在 lowercase 前；`_terminal_from_response`
+（lowercase 下划线前缀）排在 PascalCase 之后（raw ASCII: `'C'`=67 <
+`'_'`=95 < `'d'`=100）。`ruff check --fix` 自动纠正 I001，作用域限定在
+本轮 3 文件，零 lint 干扰。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_core/remote.py`：
+  - 顶部 `import abc` + `from collections.abc import AsyncIterator`。
+  - tool_protocol 导入块加 `JsonRpcNotification`、`JsonRpcRequest`（在
+    `JsonRpcError`/`JsonRpcResponse` 之间）、`ToolCallId`（在
+    `ToolCallProgressFrame` 之前）。
+  - `__all__` 顶部加 `"ConnectionClient"`；`ConnectionClient` ABC 插在
+    `__all__` 之后（3 个 `@abc.abstractmethod` async seam：`request` /
+    `subscribe_progress` / `notify`，带完整文档字符串记录 bound 丢弃 +
+    BoxStream 映射）。
+  - 模块文档字符串标题更新为 "R120/R121 layer 4, R122 layer 1"；四层列表
+    layer-1 项标记 R122。
+- `agent/minimax_code/computer_hub_core/__init__.py`：
+  - barrel re-export `ConnectionClient`（remote 导入块首位 +
+    `__all__` 在 `ConnectionCleanupReport` 之后）。
+  - leaf-6 文档字符串加 R122 段落（记录 Send+Sync+Debug bound 丢弃 +
+    BoxStream->AsyncIterator）。
+- `agent/tests/test_computer_hub_core_remote.py`：
+  - `from collections.abc import AsyncIterator`；tool_protocol 导入加
+    `JsonRpcNotification` / `JsonRpcRequest` / `ToolCallId`。
+  - R122 测试套件 **20 个**：`_RecordingConnection` concrete mock（记录每次
+    调用 + 程序员投喂结果 + subscribe_progress 服务注册帧列表）+ ABC 结构
+    （`issubclass(abc.ABC)` / `__abstractmethods__ == {3}` / 直接实例化
+    `TypeError` / 缺一缺二仍抽象 / concrete 可实例化）+ coroutine function
+    全检 + 返回类型注解契约（`T|ToolError` / `AsyncIterator[Frame]` 源串形
+    态）+ request 成功/失败/记录 + subscribe_progress 协程解析为 async
+    iterator / 帧顺序 / 空流终止 / 记录 + notify 成功/失败/记录。
+
+### 验证
+
+- `ruff check`（3 文件精确作用域）：**All checks passed**。
+- `pytest test_computer_hub_core_remote.py`：**85 passed**（R120/R121 共
+  65 + R122 新增 20）。
+- `pytest` 6 叶子全回归（transport/registry/resolver/inner/local/remote）：
+  **212 passed**（R121 时 192 + R122 新增 20，0.66s）。
+
+### YAGNI 边界
+
+- **不**实现具体 `ConnectionClient` 子类（layer 2 `RemoteToolProxy` +
+  `RemoteTransport` 留 R123+）。
+- **不**实现 `dispatch_via_connection` + `RequestStream`（layer 3 Rust
+  `Stream` -> Python async，最复杂层，留 R124+）。
+- **不**消费 `ConnectionClient`（暂无调用方；契约先落地，下游逐层接入）。
+- **不**迁移 remote.rs 余量（layer 2-3 逐模块逐回合，保持每回合单一焦点）。
+
+### Commit
+
+feat(platform): R122 migrate remote.rs layer-1 ConnectionClient trait -> abc.ABC (3 abstractmethod async seams: request -> JsonRpcResponse|ToolError, subscribe_progress -> AsyncIterator[ToolCallProgressFrame], notify -> None|ToolError; drops Send+Sync+Debug bounds; BoxStream->AsyncIterator; barrel re-export; +20 tests -> 85 total, 6-leaf 212 passed)

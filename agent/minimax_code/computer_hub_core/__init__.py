@@ -56,7 +56,7 @@ The crate's ``lib.rs`` re-exports six modules. The dependency order is:
    :class:`CompoundResolver`; holds the resolver by a strong Python
    reference — the ``Arc<T>`` counterpart to R118's ``Weak`` ->
    :func:`weakref.ref` mapping) + :data:`LOCAL_INVOKE_SCOPE`.
-6. ``remote`` (R120+R121, layer 4 complete) — ``RemoteTransport`` /
+6. ``remote`` (R120+R121 layer 4, R122 layer 1) — ``RemoteTransport`` /
    ``RemoteToolProxy`` / ``ConnectionClient`` + the wire decode helpers.
    R120 lands the three pure success-path layer-4 seams
    (:func:`decode_call_result` / :func:`output_to_value` /
@@ -64,13 +64,18 @@ The crate's ``lib.rs`` re-exports six modules. The dependency order is:
    R121 completes the layer-4 error-decode group
    (:func:`tool_error_from_wire` / :func:`error_from_envelope` /
    :func:`is_workspace_unavailable` + the private
-   :func:`_terminal_from_response`). Layers 1-3 (the
-   ``ConnectionClient`` trait, the ``RemoteToolProxy`` /
-   ``RemoteTransport`` impls, the ``dispatch_via_connection`` +
-   ``RequestStream`` async stream) land in later rounds.
+   :func:`_terminal_from_response`); R122 opens layer 1
+   (:class:`ConnectionClient` — the object-safe connection contract:
+   ``request`` / ``subscribe_progress`` / ``notify``; drops the Rust
+   ``Send + Sync + Debug`` bounds and maps ``BoxStream`` to
+   :class:`~collections.abc.AsyncIterator`). Layers 2-3 (the
+   ``RemoteToolProxy`` / ``RemoteTransport`` impls, the
+   ``dispatch_via_connection`` + ``RequestStream`` async stream) land in
+   later rounds.
 
-R120+R121 land the full layer-4 decode/encode surface of leaf 6; the
-connection machinery (layers 1-3) lands one module per round.
+R120+R121 land the full layer-4 decode/encode surface of leaf 6; R122
+lands the layer-1 connection contract; the remaining connection
+machinery (layers 2-3) lands one module per round.
 """
 
 from minimax_code.computer_hub_core.inner import (
@@ -90,6 +95,7 @@ from minimax_code.computer_hub_core.registry import (
     next_registration_seq,
 )
 from minimax_code.computer_hub_core.remote import (
+    ConnectionClient,
     decode_call_result,
     error_from_envelope,
     is_workspace_unavailable,
@@ -112,6 +118,7 @@ from minimax_code.computer_hub_core.transport import (
 __all__ = [
     "CompoundResolver",
     "ConnectionCleanupReport",
+    "ConnectionClient",
     "ErasedTool",
     "InnerDispatchForResolver",
     "LOCAL_INVOKE_SCOPE",

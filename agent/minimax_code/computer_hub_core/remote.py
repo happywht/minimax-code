@@ -1,11 +1,13 @@
-"""Remote-dispatch wire decode/encode helpers (R120/R121, layer 4).
+"""Remote-dispatch wire decode/encode helpers + connection contract
+(R120/R121 layer 4, R122 layer 1).
 
 Fusion of grok-build's ``xai-computer-hub-core/src/remote.rs`` — the
 crate's sixth and final leaf, the connection-forwarding transport. The
 Rust module is 541 lines spanning four conceptual layers; R120 opens
-**layer 4** (the wire decode/encode pure functions) and R121 completes
-the error-decode group; layers 1-3 defer to later rounds (see "Why
-layer 4 lands first" below).
+**layer 4** (the wire decode/encode pure functions), R121 completes the
+error-decode group, and R122 opens **layer 1** (the
+:class:`ConnectionClient` contract); layers 2-3 defer to later rounds
+(see "Why layer 4 lands first" below).
 
 Why remote lands sixth
 ----------------------
@@ -25,9 +27,11 @@ into :class:`~minimax_code.tool_runtime.TypedToolOutput` /
 The four layers of remote.rs
 ---------------------------
 
-1. ``ConnectionClient`` trait (later) — the object-safe connection
+1. ``ConnectionClient`` trait (R122) — the object-safe connection
    abstraction (``request`` / ``subscribe_progress`` / ``notify``). Maps
-   to an :class:`abc.ABC` later.
+   to an :class:`abc.ABC`; the Python landing drops the
+   ``Send + Sync + Debug`` bounds (GIL-vacuous / default ``__repr__``)
+   and maps ``BoxStream`` to :class:`~collections.abc.AsyncIterator`.
 2. ``RemoteToolProxy`` + ``RemoteTransport`` (later) — the
    :class:`~minimax_code.computer_hub_core.ToolHandle` /
    :class:`~minimax_code.computer_hub_core.Transport` impls that drive
@@ -137,6 +141,8 @@ R107-R114 (tool_runtime types: ``ContentBlock`` / ``ToolProgress`` /
 
 from __future__ import annotations
 
+import abc
+from collections.abc import AsyncIterator
 from typing import Any
 
 from minimax_code.tool_protocol import (
@@ -150,6 +156,8 @@ from minimax_code.tool_protocol import (
     InvalidArguments,
     Json,
     JsonRpcError,
+    JsonRpcNotification,
+    JsonRpcRequest,
     JsonRpcResponse,
     Mcp,
     McpBlock,
@@ -164,6 +172,7 @@ from minimax_code.tool_protocol import (
     Text,
     TextBlock,
     Timeout,
+    ToolCallId,
     ToolCallProgressFrame,
     ToolCallResult,
     ToolErrorWire,
@@ -185,6 +194,7 @@ from minimax_code.tool_runtime import (
 )
 
 __all__ = [
+    "ConnectionClient",
     "decode_call_result",
     "error_from_envelope",
     "is_workspace_unavailable",
@@ -192,6 +202,119 @@ __all__ = [
     "progress_from_frame",
     "tool_error_from_wire",
 ]
+
+
+# -----------------------------------------------------------------------
+# ConnectionClient — object-safe connection contract (layer 1).
+# -----------------------------------------------------------------------
+
+
+class ConnectionClient(abc.ABC):
+    """Object-safe contract for a connected remote endpoint (layer 1).
+
+    Fusion of grok-build's ``ConnectionClient`` trait. Concrete
+    implementations supply the wire transport — the Rust SDK uses
+    ``tokio_tungstenite``; tests use channel-backed mocks. The crate stays
+    free of any runtime/transport dependency so callers can pick their own.
+
+    The trait is the thin contract a downstream WebSocket SDK (or an
+    in-test channel-backed mock) implements; the four layer-4 decode
+    helpers landed in R120/R121 sit *above* it — they re-encode what a
+    :class:`JsonRpcResponse` carries into runtime types — while layers 2-3
+    (``RemoteToolProxy`` / ``RemoteTransport`` / ``dispatch_via_connection``
+    + ``RequestStream``) will sit *below* it, driving a connection through
+    this contract. R122 lands the contract itself; the layers that consume
+    it follow in later rounds.
+
+    Mapping decisions (Rust trait -> Python ABC)
+    --------------------------------------------
+
+    - **``Send + Sync + std::fmt::Debug`` bounds -> dropped.** The Rust
+      trait is ``object-safe`` and carries the three standard bounds:
+      ``Send`` + ``Sync`` (so the trait object can cross an ``await`` and
+      live behind an ``Arc<dyn ConnectionClient>``) plus ``Debug``. The
+      Python landing drops ``Send``/``Sync`` — Python's GIL makes every
+      object shareable across the single interpreted thread, so the bounds
+      are vacuous — and treats ``Debug`` as the default ``__repr__`` every
+      object already has. The ABC therefore enforces nothing but the three
+      async method signatures.
+
+    - **``#[async_trait]`` -> ``async def`` abstract methods.** Each Rust
+      method is an ``async fn``; each Python method is an ``async def``
+      decorated with :func:`abc.abstractmethod`. All three are coroutine
+      functions (a clean test point — see ``test_*_is_coroutine_function``).
+
+    - **``BoxStream<'static, ToolCallProgressFrame>`` ->
+      :class:`~collections.abc.AsyncIterator`.** Rust's
+      ``subscribe_progress`` is an ``async fn`` whose future resolves to a
+      boxed stream; the Python landing keeps the same two-layer shape —
+      ``subscribe_progress`` is an ``async def`` whose coroutine, when
+      awaited, yields an :class:`~collections.abc.AsyncIterator`. Callers
+      write ``stream = await client.subscribe_progress(id)`` then
+      ``async for frame in stream`` — a faithful collapse of Rust's
+      "async fn -> Stream" into Python's native async-iteration protocol,
+      and the exact shape layer 3's ``dispatch_via_connection`` will
+      consume when it interleaves progress frames with the terminal
+      response.
+
+    - **``Result<T, ToolError>`` -> ``T | ToolError``.** ``request``
+      returns ``JsonRpcResponse | ToolError``; ``notify`` returns
+      ``None | ToolError``. A method-level error outcome (the response
+      envelope carries a :class:`ResponseError`) is NOT a
+      :class:`ToolError` here — it is a successful
+      :class:`JsonRpcResponse` wrapping the error, decoded later by
+      :func:`_terminal_from_response`. Only transport-level failures
+      (write failed, connection closed before the response arrived)
+      surface as a :class:`ToolError`.
+
+    Implementations are expected to (mirroring the Rust trait doc):
+
+    - correlate request/response pairs by :class:`JsonRpcId`;
+    - deliver progress notifications matching ``tool_call_id`` to whichever
+      subscriber registered for them;
+    - surface transport-level disconnects as a :class:`ToolError`
+      (network_error).
+    """
+
+    @abc.abstractmethod
+    async def request(self, request: JsonRpcRequest) -> JsonRpcResponse | ToolError:
+        """Send a JSON-RPC request and await the matching response.
+
+        Errors signal a transport-level failure (write failed, connection
+        closed before the response arrived); a successful return carries
+        the response envelope verbatim, including method-level error
+        outcomes — those surface as a :class:`JsonRpcResponse` wrapping a
+        :class:`ResponseError`, NOT as a :class:`ToolError`. The
+        R121 :func:`_terminal_from_response` decode handles that envelope
+        distinction downstream.
+        """
+
+    @abc.abstractmethod
+    async def subscribe_progress(
+        self, tool_call_id: ToolCallId
+    ) -> AsyncIterator[ToolCallProgressFrame]:
+        """Subscribe to progress notifications for ``tool_call_id``.
+
+        Awaits to an :class:`~collections.abc.AsyncIterator` that yields
+        :class:`ToolCallProgressFrame` items. The iterator closes when the
+        call's terminal frame arrives, when the connection drops, or when
+        the caller stops iterating. Subscribers MUST be registered before
+        the corresponding request is sent — otherwise progress frames that
+        arrive before subscription is complete are lost.
+
+        Mirrors Rust's ``async fn subscribe_progress -> BoxStream``:
+        awaiting this coroutine resolves to the stream, exactly as Rust's
+        future resolves to the boxed stream.
+        """
+
+    @abc.abstractmethod
+    async def notify(self, notification: JsonRpcNotification) -> None | ToolError:
+        """Send a one-way notification (no response expected).
+
+        Useful for hook frames such as cancel. ``None`` signals the
+        notification was written; a :class:`ToolError` signals a
+        transport-level failure.
+        """
 
 
 # -----------------------------------------------------------------------

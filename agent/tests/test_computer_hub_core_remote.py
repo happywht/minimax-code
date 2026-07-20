@@ -37,11 +37,14 @@ distinguish the Python landing:
 
 from __future__ import annotations
 
+import abc
 import inspect
+from collections.abc import AsyncIterator
 
 import pytest
 
 from minimax_code.computer_hub_core.remote import (
+    ConnectionClient,
     _terminal_from_response,
     decode_call_result,
     error_from_envelope,
@@ -61,6 +64,8 @@ from minimax_code.tool_protocol import (
     InvalidArguments,
     Json,
     JsonRpcError,
+    JsonRpcNotification,
+    JsonRpcRequest,
     JsonRpcResponse,
     JsonRpcVersion,
     Mcp,
@@ -76,6 +81,7 @@ from minimax_code.tool_protocol import (
     Text,
     TextBlock,
     Timeout,
+    ToolCallId,
     ToolCallProgressFrame,
     ToolId,
     ToolNotFound,
@@ -711,3 +717,287 @@ def test_terminal_from_response_result_arm_malformed_surfaces_tool_error():
     result = _terminal_from_response(_tid(), resp)
     assert isinstance(result, ToolError)
     assert result.details == {"code": "response_decoding"}
+
+
+# ===========================================================================
+# R122 — ConnectionClient ABC (layer 1).
+#
+# The object-safe connection contract: three async methods (request /
+# subscribe_progress / notify). These tests pin the trait-shape invariants
+# the layers below (RemoteToolProxy / dispatch_via_connection, later
+# rounds) will rely on:
+#
+# - subclass of :class:`abc.ABC` with exactly three abstract methods;
+# - direct / partial instantiation is refused;
+# - all three methods are coroutine functions (the ``#[async_trait]`` ->
+#   ``async def`` mapping);
+# - the ``Result<T, ToolError>`` arms annotate as ``T | ToolError`` and
+#   ``BoxStream`` annotates as :class:`AsyncIterator`;
+# - a concrete recording implementation drives each method end-to-end.
+# ===========================================================================
+
+
+def _req(method: str = "tool_call_request", rid: str = "req-1") -> JsonRpcRequest:
+    """Build a minimal :class:`JsonRpcRequest` for behaviour tests."""
+    return JsonRpcRequest(
+        jsonrpc=JsonRpcVersion(),
+        id=rid,
+        method=method,
+        params={"tool_call_id": "c", "args": {}},
+    )
+
+
+def _notif(method: str = "cancel") -> JsonRpcNotification:
+    """Build a minimal :class:`JsonRpcNotification` for behaviour tests."""
+    return JsonRpcNotification(
+        jsonrpc=JsonRpcVersion(),
+        method=method,
+        params={"tool_call_id": "c"},
+    )
+
+
+def _tcid(s: str = "call-1") -> ToolCallId:
+    return ToolCallId(s)
+
+
+def _frame(
+    tcid: ToolCallId | None = None,
+    kind: str = "chunk",
+    body: object | None = None,
+) -> ToolCallProgressFrame:
+    return ToolCallProgressFrame(
+        tool_call_id=tcid or _tcid(),
+        kind=kind,
+        body=body if body is not None else {"n": 1},
+    )
+
+
+class _RecordingConnection(ConnectionClient):
+    """Minimal concrete :class:`ConnectionClient` for behaviour tests.
+
+    Records every call and returns programmer-fed outcomes.
+    :meth:`subscribe_progress` serves a registered list of frames as an
+    async iterator (the Rust ``BoxStream`` -> Python ``AsyncIterator``
+    mapping): awaiting the coroutine resolves to the iterator, exactly as
+    Rust's ``async fn -> BoxStream`` future resolves to the stream.
+    """
+
+    def __init__(self) -> None:
+        self.requests: list[JsonRpcRequest] = []
+        self.notifies: list[JsonRpcNotification] = []
+        self.subscribed: list[ToolCallId] = []
+        self.next_response: JsonRpcResponse | ToolError = JsonRpcResponse(
+            jsonrpc=JsonRpcVersion(),
+            id="resp-1",
+            outcome=ResponseResult(
+                value={"tool_call_id": "c", "output": {"kind": "text", "value": "hi"}}
+            ),
+        )
+        self.next_notify_outcome: None | ToolError = None
+        self.frames: dict[ToolCallId, list[ToolCallProgressFrame]] = {}
+
+    async def request(self, request: JsonRpcRequest) -> JsonRpcResponse | ToolError:
+        self.requests.append(request)
+        return self.next_response
+
+    async def subscribe_progress(
+        self, tool_call_id: ToolCallId
+    ) -> AsyncIterator[ToolCallProgressFrame]:
+        self.subscribed.append(tool_call_id)
+        frames = list(self.frames.get(tool_call_id, []))
+
+        async def _gen():  # noqa: ANN202 - test helper inner generator
+            for f in frames:
+                yield f
+
+        return _gen()
+
+    async def notify(self, notification: JsonRpcNotification) -> None | ToolError:
+        self.notifies.append(notification)
+        return self.next_notify_outcome
+
+
+# ---------------------------------------------------------------------------
+# ABC shape / abstractness.
+# ---------------------------------------------------------------------------
+
+
+def test_connection_client_is_abc_subclass():
+    assert issubclass(ConnectionClient, abc.ABC)
+
+
+def test_three_abstract_methods_named():
+    assert ConnectionClient.__abstractmethods__ == frozenset(
+        {"request", "subscribe_progress", "notify"}
+    )
+
+
+def test_cannot_instantiate_abc_directly():
+    with pytest.raises(TypeError):
+        ConnectionClient()
+
+
+def test_partial_impl_missing_one_still_abstract():
+    class _Two(ConnectionClient):
+        async def request(self, request):  # noqa: ANN001
+            ...
+
+        async def subscribe_progress(self, tool_call_id):  # noqa: ANN001
+            ...
+
+    assert _Two.__abstractmethods__ == frozenset({"notify"})
+    with pytest.raises(TypeError):
+        _Two()
+
+
+def test_partial_impl_missing_two_still_abstract():
+    class _One(ConnectionClient):
+        async def notify(self, notification):  # noqa: ANN001
+            ...
+
+    assert _One.__abstractmethods__ == frozenset({"request", "subscribe_progress"})
+    with pytest.raises(TypeError):
+        _One()
+
+
+def test_concrete_impl_instantiable_no_abstractmethods():
+    assert _RecordingConnection.__abstractmethods__ == set()
+    conn = _RecordingConnection()
+    assert isinstance(conn, ConnectionClient)
+
+
+# ---------------------------------------------------------------------------
+# #[async_trait] -> async def: all three are coroutine functions.
+# ---------------------------------------------------------------------------
+
+
+def test_all_three_methods_are_coroutine_functions():
+    assert inspect.iscoroutinefunction(ConnectionClient.request)
+    assert inspect.iscoroutinefunction(ConnectionClient.subscribe_progress)
+    assert inspect.iscoroutinefunction(ConnectionClient.notify)
+
+
+# ---------------------------------------------------------------------------
+# Return annotations — Result<T, ToolError> -> T | ToolError; BoxStream ->
+# AsyncIterator[ToolCallProgressFrame]. (Source-string form under
+# ``from __future__ import annotations``.)
+# ---------------------------------------------------------------------------
+
+
+def test_request_return_annotation_union_response_or_error():
+    ann = ConnectionClient.request.__annotations__["return"]
+    assert "JsonRpcResponse" in ann
+    assert "ToolError" in ann
+
+
+def test_notify_return_annotation_union_none_or_error():
+    ann = ConnectionClient.notify.__annotations__["return"]
+    assert "None" in ann
+    assert "ToolError" in ann
+
+
+def test_subscribe_progress_return_annotation_async_iterator_of_frame():
+    ann = ConnectionClient.subscribe_progress.__annotations__["return"]
+    assert "AsyncIterator" in ann
+    assert "ToolCallProgressFrame" in ann
+
+
+# ---------------------------------------------------------------------------
+# request — JsonRpcRequest -> JsonRpcResponse | ToolError.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_request_success_returns_response():
+    conn = _RecordingConnection()
+    result = await conn.request(_req())
+    assert isinstance(result, JsonRpcResponse)
+
+
+@pytest.mark.asyncio
+async def test_request_failure_returns_tool_error():
+    conn = _RecordingConnection()
+    conn.next_response = ToolError.custom("network_error", "connection reset")
+    result = await conn.request(_req())
+    assert isinstance(result, ToolError)
+
+
+@pytest.mark.asyncio
+async def test_request_records_arg_verbatim():
+    conn = _RecordingConnection()
+    req = _req(method="tool_call_request", rid="abc-7")
+    await conn.request(req)
+    assert conn.requests == [req]
+
+
+# ---------------------------------------------------------------------------
+# subscribe_progress — ToolCallId -> AsyncIterator[ToolCallProgressFrame].
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_subscribe_progress_coroutine_resolves_to_async_iterator():
+    # Rust contract: ``async fn -> BoxStream``. The call returns a coroutine;
+    # awaiting it resolves to the stream (an async-iterable object).
+    conn = _RecordingConnection()
+    coro = conn.subscribe_progress(_tcid())
+    assert inspect.iscoroutine(coro)
+    stream = await coro
+    assert hasattr(stream, "__aiter__")
+
+
+@pytest.mark.asyncio
+async def test_subscribe_progress_yields_registered_frames_in_order():
+    conn = _RecordingConnection()
+    tcid = _tcid("call-9")
+    conn.frames[tcid] = [
+        _frame(tcid, "chunk", {"n": 1}),
+        _frame(tcid, "log", {"line": "x"}),
+    ]
+    stream = await conn.subscribe_progress(tcid)
+    collected = [f async for f in stream]
+    assert [f.kind for f in collected] == ["chunk", "log"]
+    assert all(f.tool_call_id == tcid for f in collected)
+
+
+@pytest.mark.asyncio
+async def test_subscribe_progress_empty_stream_terminates():
+    conn = _RecordingConnection()
+    stream = await conn.subscribe_progress(_tcid("no-frames"))
+    assert [f async for f in stream] == []
+
+
+@pytest.mark.asyncio
+async def test_subscribe_progress_records_arg():
+    conn = _RecordingConnection()
+    tcid = _tcid("call-rec")
+    await conn.subscribe_progress(tcid)
+    assert conn.subscribed == [tcid]
+
+
+# ---------------------------------------------------------------------------
+# notify — JsonRpcNotification -> None | ToolError.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_notify_success_returns_none():
+    conn = _RecordingConnection()
+    result = await conn.notify(_notif())
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_notify_failure_returns_tool_error():
+    conn = _RecordingConnection()
+    conn.next_notify_outcome = ToolError.custom("network_error", "write failed")
+    result = await conn.notify(_notif())
+    assert isinstance(result, ToolError)
+
+
+@pytest.mark.asyncio
+async def test_notify_records_arg_verbatim():
+    conn = _RecordingConnection()
+    n = _notif(method="cancel")
+    await conn.notify(n)
+    assert conn.notifies == [n]
