@@ -14463,3 +14463,52 @@ YAGNI 下保持延后，直到某个 MiniMax transport 需要它们。``SESSION_
 ### Commit
 
 ``feat(platform): R177 server.rs build_error_response 失败调用错误信封 (13 tests)``
+
+## R178 — lib.rs barrel-reconciliation（SDK crate 收尾里程碑）
+锚点:R178-1 eabb82b
+
+### 本轮目标
+对齐 ``computer_hub_sdk/__init__.py`` 与 grok-build ``xai-computer-hub-sdk/src/lib.rs`` 的 13 行 ``pub use`` re-export 契约。SDK crate 的 19 个模块已在 R133-R177 全部迁移；R178 是 ``__init__.py`` docstring 承诺的"最终 barrel 对账轮次"。三件事：(1) 侦察每个 ``lib.rs`` ``pub use`` 对应的 Python 符号是否已迁移；(2) 扩展 ``__init__.py`` re-export 只含已迁移的纯逻辑符号，YAGNI 延迟的实时 actor / trait-object 符号明确标注边界；(3) 更新 ledger 反映 R133-R177 完整迁移 + 更新 docstring 说明 barrel 保真度。
+
+### 融合结论
+``lib.rs`` 的 13 行 ``pub use`` 共声明约 36 个公共符号。侦察后归类：
+- **41 个符号**有已迁移的纯逻辑/类型契约 Python 等价（含 error 13 兄弟变体 + ``is_workspace_unavailable`` 跨 crate），全部 re-export 到包根。
+- **9 个符号** YAGNI 延迟（详见 YAGNI 边界段）：``SharedAuthProvider``（``Arc<dyn>`` trait alias 折叠）/ ``extractor_for``（phantom generic）/ ``HubDonatingReporter``（fastrace SDK）/ server 6 实时 actor 符号。
+- **1 个命名分歧**：Rust ``DonatingLogLayer`` = Python ``LogDonationLayer``（leaf 为与 ``LogDonationPump``/``LogDonationSender`` 兄弟对齐选了 ``LogDonation-`` 前缀），barrel 遵循 Python 命名而非回退别名。
+- **1 个模块组织差异**：Rust 把 ``ConnKey``/``ReconnectEvent`` 与 ``HubConnection`` 同放 ``connection.rs``；Python 拆为 ``connection``（actor）+ ``connection_types``（类型契约），barrel 从两处聚合。
+
+R178 = SDK crate 收官。``tool_protocol``(R82-R106) / ``tool_runtime``(R107-R114) / ``tool_types``(R65) / ``computer_hub_core``(R115-R126) / ``tracing``(R127-R132) / ``computer_hub_sdk``(R133-R178) 六个 crate 全部迁移完成。
+
+### 交付
+- ``agent/minimax_code/computer_hub_sdk/__init__.py``：barrel 从 14 符号扩展到 41 符号；docstring 新增 "Barrel reconciliation (R178)" 段（re-export 矩阵 + YAGNI 边界 + metrics cfg gate 说明）；leaf order 收尾句改为反映 R134-R177 已完成 + R178 是收官；ledger 更新到 R178。
+- ``agent/tests/test_init_barrel.py``（新）：19 个测试。``EXPECTED_BARREL`` 集合精确断言 ``__all__`` == 41 符号；13 组身份检查（每组代表符号 ``is`` 子模块来源，强保真度）；YAGNI 符号双重缺席（不在 ``__all__`` 且不绑定包根）。
+- 验证：ruff All checks passed；pytest ``test_init_barrel.py`` 19 passed（0.51s）；回归 ``test_init_barrel`` + ``test_server`` + ``test_harness_actor`` + ``test_connection`` 284 passed（3.57s）零回归。
+
+### 映射决策树 + 坑
+1. ``lib.rs pub use auth::SharedAuthProvider`` -> grep 无定义 -> 定性为 Rust ``Arc<dyn AuthProvider + Send + Sync>`` trait-object alias，Python 无 ``Arc``/``dyn``/``Send``/``Sync`` 词汇 -> 折叠（消费者持 ``AuthProvider`` 直接），与 ``server.py`` ``ReconnectSettledCallback`` 同一折叠哲学。
+2. ``lib.rs pub use connection::{ConnKey, ReconnectEvent}`` -> grep 显示 ``ConnKey``/``ReconnectEvent`` 在 ``connection_types.py``（513/521 行）+ ``pool.py`` 也有 ``ConnKey`` -> 选 ``connection_types`` 为规范源（纯类型契约，与 actor 解耦），``lib.rs`` 的 ``connection::`` 前缀在 Python 跨 ``connection`` + ``connection_types`` 两模块聚合。
+3. ``lib.rs pub use log_donate::DonatingLogLayer`` -> grep ``DonatingLogLayer`` 无 class 定义，但 ``log_donate.py`` docstring 明确 "Mirrors DonatingLogLayer" 指 ``LogDonationLayer`` -> 命名分歧，re-export ``LogDonationLayer`` 并在 docstring 记录映射。
+4. ``lib.rs pub use harness::extractor_for`` -> grep 仅 docstring 提及（``harness.py:45`` / ``harness_types.py:38`` 均标注 YAGNI）-> phantom generic，Python 无等价。
+5. ``lib.rs pub use trace_donate::HubDonatingReporter`` -> grep 仅 docstring 提及（``trace_donate.py:37``）-> fastrace ``Reporter`` impl，Python 无 SDK。
+6. ``lib.rs pub use server::{6 actor 符号}`` -> ``server.py`` docstring 已声明 YAGNI（live ``ToolServer`` 绑定 xAI socket），R175-R177 只迁移 ``SystemNotifyAck`` + 4 helper -> barrel 只 re-export ``SystemNotifyAck``。
+7. 循环导入防御：grep ``"from minimax_code.computer_hub_sdk import "``（barrel-level，非子模块）-> No matches found -> 扩展 barrel 零循环风险。``test_init_barrel`` 的 13 组 import 链验证此结论。
+8. isort order-by-type：``log_donate`` 组 Class（``LogDonationLayer``/``LogDonationPump``/``LogDonationSender`` 字母序）在前、function（``flush_log_layer``）在后；``oidc`` 组 ``OidcAuthProvider`` < ``OidcAuthProviderBuilder``（前缀短在前）< ``OnRefreshCallback``（i<n）< ``RefreshEvent``（O<R）。
+9. 符号计数陷阱：初稿 docstring 写 "40 symbols"，复核 error(13)+auth(4)+connection(3)+harness(6)+telemetry(6)+obs/notif(2)+oidc(4)+pool/server(2)+cross-crate(1) = 41 -> Edit 修正为 41，测试 ``test_barrel_count_is_41`` 锁定。
+
+### 验证
+- ``ruff check __init__.py test_init_barrel.py`` -> All checks passed!
+- ``pytest test_init_barrel.py -v`` -> 19 passed（barrel 表面集合相等 / 无重复 / 计数 41 / 每符号可解析非 None / 13 组身份检查 / YAGNI 双重缺席）。
+- 回归 ``pytest test_init_barrel + test_server + test_harness_actor + test_connection`` -> 284 passed，零回归。
+- 循环导入：barrel 测试 import 全部 15 个 SDK 子模块成功，证明 import 链完整无环。
+
+### YAGNI 边界
+barrel 不 re-export 的 9 个 ``lib.rs`` ``pub use`` 符号（``__init__.py`` docstring "Barrel reconciliation (R178) > YAGNI boundary" 详述）：
+- ``auth::SharedAuthProvider`` — ``Arc<dyn AuthProvider + Send + Sync>`` trait alias，Python 折叠为直接持 ``AuthProvider``。
+- ``harness::extractor_for`` — generic fn over phantom T，Python 无 phantom generic（``harness_types.py`` docstring 已声明）。
+- ``trace_donate::HubDonatingReporter`` — ``fastrace::collector::Reporter`` impl，Python 无 fastrace SDK（``trace_donate.py`` docstring 已声明）。
+- ``server::{ResolvedSessionHandlers, SessionHandlerResolver, ToolServer, ToolServerBuilder, ToolServerHandler, WeakToolServer}`` — live ``ToolServer`` actor 绑定 xAI ``HubConnection`` socket，MiniMax 无消费者（``server.py`` docstring 已声明；R175-R177 只迁移纯逻辑 preamble）。
+``test_init_barrel.py`` 的 ``YAGNI_ABSENT`` 集合 + ``test_yagni_symbols_absent_from_all`` / ``test_yagni_symbols_not_bound_on_package`` 双重锁定这 9 个符号既不在 ``__all__`` 也不绑定包根。
+metrics cfg gate：``lib.rs`` ``#[cfg(feature = "metrics")]`` 在 Python 无等价（无 cargo feature），``MetricDonationPump`` 无条件可用。
+
+### Commit
+feat(platform): R178 lib.rs barrel-reconciliation SDK crate 收官 (41 symbols, 19 tests)
