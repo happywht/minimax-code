@@ -13669,3 +13669,69 @@ R165 提取的词汇层是整个 actor 的无依赖地基：
 ### Commit
 
 `feat(platform): R166 port harness.rs LocalRegistry + DynToolAdapter (SDK harness.rs leaf 2, in-process tool registry)` — 精确 `git add` 3 文件（harness.py + test_local_registry.py + ITERATION_LOG.md），17 测试通过。harness.rs 叶节点 2 闭合，参与者层第一块（进程内注册表 + dyn 适配器）就绪，为 ToolHarnessBuilder actor 蓄能。
+
+## R167 — harness.rs 叶节点 3：ToolHarnessBuilder setter 层（参与者层第二块，纯配置累积器）
+
+锚点:R167-1 54071ba
+
+### 本轮目标
+
+移植 `grok-build/crates/common/xai-computer-hub-sdk/src/harness.rs:324-458` 的 **ToolHarnessBuilder struct + 15 个非-build fluent setter 方法**（纯配置累积层）：`#[derive(Default)]` 的 13 字段配置结构 + `pool`/`url`/`auth`/`auth_provider`/`session`/`local_tool`/`local_registry`/`default_extensions`/`trace_context_provider`/`on_reconnect`/`sampler`/`alpha_test_key`/`allow_insecure_ws`/`resume`/`last_seq` 共 15 个 `mut self -> Self` 链式 setter。这是 harness.rs 第 3 叶，紧跟 R166（LocalRegistry/DynToolAdapter）的参与者层切分节奏。`build()`（459-542）是巨型 async 方法（解析 pool entry + refcount-bind session + open server session + 组装 ToolHarnessInner），依赖 `arc_swap`/`parking_lot`/`ConnectionBorrow`/`HubConnection` 活状态，延后随 `ToolHarness`/`ToolHarnessInner` actor 主体一起落地。
+
+### 融合结论
+
+R165 闭合了 harness.rs 类型层（常量 + 别名 + CancelOnDrop + SessionBindReport），R166 闭合了参与者层第一块（LocalRegistry 进程内注册表 + DynToolAdapter）。本轮闭合**参与者层第二块——builder setter 层**：`ToolHarnessBuilder` 是 `ToolHarness` actor 的唯一构造入口，13 个配置字段 + 15 个 fluent setter 纯累积（存参返 self），无任何副作用。`local_tool` 委托 R166 的 `LocalRegistry.register` 累积 typed Tool，`local_registry` 整表替换，`auth`/`auth_provider` 共用同一 `_auth` 槽（AuthCredential 结构子类型 AuthProvider）。`build()` 重 actor 依赖（ToolHarnessInner 的 `arc_swap::ArcSwap` remote_tools + `parking_lot::Mutex` discovery_handle + pending_bind + hook_request_handler + ConnectionBorrow::acquire + JsonRpcRequest/SessionOpen + metrics::harness_connect）全部延后，setter 层独立可测。这对标 connection.rs 的 R150（connection_types 类型层）→ R151（connection actor 第一块）切分：类型/数据结构先行，actor 编排后跟。
+
+### 交付
+
+- **新文件 `agent/minimax_code/computer_hub_sdk/harness_builder.py`**（236 行）：
+  - `ToolHarnessBuilder` 类：`__init__`（13 字段复刻 Rust Default：`_pool`/`_url`/`_auth`/`_session`/`_local_registry=LocalRegistry()`/`_default_extensions`/`_trace_context_provider`/`_on_reconnect`/`_sampler`/`_alpha_test_key`/`_allow_insecure_ws=False`/`_resume=False`/`_last_seq`）+ `__repr__`（不泄露 auth，只 url/session/sampler/local_tools 计数）+ 15 fluent setter（每个 `def x(self, v) -> Self: self._x = v; return self`）。
+  - `local_tool(tool: Tool)` 委托 `self._local_registry.register(tool)`；`auth(cred)`/`auth_provider(provider)` 共喂 `_auth` 槽；`url(url: str)` 存字符串。
+  - `__all__ = ["ToolHarnessBuilder"]`。
+- **新文件 `agent/tests/test_harness_builder.py`**（21 测试）：2 个 stub（`_Marker` 哨兵 + `_FakeTool` typed Tool）+ 2 个 callback stand-in（`_reconnect_cb`/`_trace_provider`，def 非 lambda 规避 E731）+ defaults 2 测试（13 字段复刻 Default + local_registry 默认空/每实例独立）+ 连接/认证 6 测试（pool/url/auth/auth_provider/auth_provider 替换 auth/session）+ 进程内工具 3 测试（local_tool 注册进默认注册表/local_tool 累积/local_registry 整表替换）+ 分发/追踪/回调 3 测试（default_extensions/trace_context_provider/on_reconnect）+ 传输/采样旋钮 5 测试（sampler/alpha_test_key/allow_insecure_ws/resume/last_seq）+ fluent 链 + repr 2 测试。
+
+### 映射决策树 + 坑
+
+1. **`#[derive(Default)] pub struct ToolHarnessBuilder` → 普通 `__init__` 复刻 Default**：13 字段逐一对齐——`Option<T>` → `None`，`bool` → `False`，非 Option 的 `local_registry: LocalRegistry` → 新鲜 `LocalRegistry()`（对标 `LocalRegistry::default()`）。字段名前导下划线（私有存储，公开面只有 fluent API，对标 Rust 私有字段 + 公开 setter）。
+
+2. **`pub fn x(mut self, v: T) -> Self` fluent → `def x(self, v) -> Self: self._x = v; return self`**：`mut self`（move + 重赋值）在 Python 是普通属性赋值；返回 self 保留链。`Self` 从 `typing` 导入（py311 OK，对标 R165 `from __future__ import annotations` + `Self` 注解）。
+
+3. **`Arc<HubConnectionPool>` / `Arc<dyn AuthProvider>` / `Arc<ReconnectCallback>` → 原始值**：Python 引用语义共享，Arc 包装隐含；不需要显式 `Arc::new`。builder 只存储引用，共享语义在 build 时由 actor 内部 refcount（R135 RefCountedSet）接管。
+
+4. **`auth(cred: AuthCredential)` 直接存 AuthCredential**：`AuthCredential`（R139）结构子类型 `AuthProvider`（Protocol），折叠 Rust `Arc::new(cred) as Arc<dyn AuthProvider>` upcast——Python 无需包装器，`auth`/`auth_provider` 共用 `_auth: AuthProvider | None` 槽，后写覆盖先写（测试 `auth_provider_replaces_auth` 覆盖）。
+
+5. **`url: Option<Url>` → `url: str | None`**：builder 只存 URL 字符串，解析/校验延后到 build 时（对标 Rust 调用点先 `Url::parse` 再 `.url(url)`）。Python 的 URL 解析随 build() actor 落地。
+
+6. **`local_tool<T: Tool + Debug + 'static>` → `local_tool(tool: Tool)`**：Python 无静态泛型，`Debug + 'static` 无运行时角色。body 委托 `self._local_registry.register(tool)`（R166），typed Tool 经 ErasedTool 擦除累积进默认注册表。多次调用累加（测试 `local_tool_is_additive` 覆盖 2 工具）。
+
+7. **`trace_context_provider<F: Fn() -> Option<String>>` / `on_reconnect<F: Fn(ReconnectEvent)>` → 类型别名参数**：用 R165 `TraceContextProvider`（`() -> str | None`）+ R150 `ReconnectCallback`（`(ReconnectEvent) -> None`）类型别名。Python 无闭包 trait bound，callable 即可。
+
+8. **`alpha_test_key(impl Into<String>)` / `sampler(impl Into<String>)` → 普通 `str`**：Python 无 `Into`，调用方直接传 str。
+
+9. **【关键坑】ReconnectEvent 未使用导入（F401）**：第一版 `from ...connection_types import (ReconnectCallback, ReconnectEvent)` 多行导入，但 `ReconnectEvent` 只在模块 docstring 文字提到（"ReconnectEvent" 是字符串，ruff 不算使用），不在任何类型注解中。ruff F401 报错。修正：拆成单行 `from ...connection_types import ReconnectCallback`。`ReconnectCallback` 在 `on_reconnect(self, cb: ReconnectCallback)` 注解中使用，保留。**教训：跨 crate 类型如果只在 docstring 提及而非注解/运行时使用，不要 import——`from __future__ import annotations` 让注解成字符串但仍算"使用"，docstring 文字不算。**
+
+10. **`__repr__` 不泄露 auth**：对标 Rust Debug 不暴露敏感字段。只输出 `ToolHarnessBuilder(url=..., session=..., sampler=..., local_tools=N)`，`_auth`/`_alpha_test_key`/`_allow_insecure_ws` 等敏感/内部字段不出现。测试 `repr_carries_url_session_sampler_and_tool_count` 验证 4 个公开字段 + 不含 auth。
+
+11. **local_registry 非 Option 字段每实例独立**：Rust `local_registry: LocalRegistry`（非 Option，Default = `LocalRegistry::default()`）每个 builder 实例独立。Python `__init__` 内 `self._local_registry = LocalRegistry()` 每次 new 都新建，测试 `local_registry_default_is_empty_and_per_instance` 验证两 builder 不共享同一注册表（`is not` 断言）。**不能用类级默认值（`_local_registry = LocalRegistry()` 作类属性）——那是共享陷阱，必须在 `__init__` 内构造。**
+
+12. **测试 `_Marker` 哨兵策略**：只存储的 setter（pool/auth/default_extensions/last_seq 等）不需要真实 Protocol 实现——Python 不在运行时强制 Protocol 形状，存储契约才是关键。用通用 `_Marker` 哨兵类喂入，断言 `builder._x is marker`。`local_tool` 需要 typed Tool 形状（id() 被 LocalRegistry.register 调用），用 `_FakeTool`（复用 R166 模式）。callback setter（on_reconnect/trace_context_provider）用 `def` stand-in（非 lambda，规避 E731）。
+
+13. **B023/B008/E731 全不触发**：无 lambda 捕获循环变量；无默认参数函数调用；callback stand-in 全用 `def`。BLE 不在 select → 无 `except` 也无需 noqa。
+
+### 验证
+
+- `uv run ruff check harness_builder.py test_harness_builder.py` -> **All checks passed!**（第一版 ReconnectEvent F401，删除后零 --fix 通过；isort 顺序正确：computer_hub_sdk 内 auth < connection_types < harness < harness_types < pool，再 tool_protocol < tool_runtime）
+- `uv run pytest tests/test_harness_builder.py -q` -> **21 passed in 0.37s**（defaults 2 + 连接/认证 6 + 进程内工具 3 + 分发/追踪/回调 3 + 传输旋钮 5 + fluent/repr 2 = 21，零失败，无循环导入）
+
+### YAGNI 边界
+
+- **`build(self) -> Result<ToolHarness, ClientError>` 不在 R167**：459-542 巨型 async，依赖 `ToolHarnessInner`（`arc_swap::ArcSwap` remote_tools + `parking_lot::Mutex` discovery_handle + pending_bind + hook_request_handler）+ `ConnectionBorrow::acquire` + `JsonRpcRequest`/`SessionOpen` + `metrics::harness_connect`，全是重 actor 依赖。随 `ToolHarness`/`ToolHarnessInner` actor 主体（564-1663）一起落地。
+- **ToolHarness/ToolHarnessInner actor（564-1663）不在 R167**：`call` 分发、入站钩子循环、权限请求、通知，依赖 builder + stream 观察层。
+- **async bind 状态机（568-625）不在 R167**：`BindFuture`(570)/`PendingBind`(574)/`spawn_pending_bind`(579)/`LazyBind`(599)/`DeferredBind`(622)，依赖 tokio spawn，随 ToolHarness 构造路径落地。
+- **stream 观察层 + helpers（1664+）不在 R167**：`ObservedToolStream`/`EmissionState`(1748+) + inbound-hook/permission/notification helpers，随 `ToolHarness::call` 分发路径落地。
+- **`server.rs`(2649) 整体不在 R167**：SDK crate 另一巨型文件（服务端 hub server 侧），harness.rs 收官后单独开多 leaf 迁移。
+- **`lib.rs`(71) barrel 不在 R167**：crate 根 barrel 对账必须在 harness.rs + server.rs 全部迁移后做。
+
+### Commit
+
+`feat(platform): R167 port harness.rs ToolHarnessBuilder setter layer (SDK harness.rs leaf 3, fluent config accumulator; build() deferred to ToolHarness actor leaf)` — 精确 `git add` 3 文件（harness_builder.py + test_harness_builder.py + ITERATION_LOG.md），21 测试通过。harness.rs 叶节点 3 闭合，参与者层第二块（builder setter 配置累积器）就绪，为 ToolHarness actor + build() 编排蓄能。
