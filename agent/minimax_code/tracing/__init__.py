@@ -45,11 +45,22 @@ The crate's ``lib.rs`` re-exports six modules. The dependency order is:
    pieces move with the ``http_client`` / ``grpc_client`` leaves). This
    leaf is the foundation the later leaves consume — every span-bearing
    leaf needs a :class:`SpanContext`.
+4. ``tokio`` (R130) — :func:`minimax_code.tracing.tokio.spawn_traced`, the
+   trace-aware asyncio task spawner. Mirrors ``tokio::spawn`` +
+   ``future.instrument(Span::current())`` as a thin wrapper over
+   :func:`asyncio.create_task`: asyncio copies the current contextvars
+   context (carrying R129's :class:`SpanContext`) into the new task for
+   free, so the propagation the Rust version bolts on explicitly is already
+   present. Unlike ``timer`` / ``dispatch`` / ``fastrace``, the Rust
+   ``lib.rs`` declares ``pub mod tokio`` but does **not** ``pub use
+   tokio::*`` — callers reach it as ``xai_tracing::tokio::spawn_traced``.
+   This landing matches that: ``spawn_traced`` is **not** re-exported from
+   the package barrel, only importable as
+   ``minimax_code.tracing.tokio.spawn_traced``.
 
 Later rounds land the remaining leaves (``http_client`` — trace-injecting
-httpx middleware; ``grpc_client`` — gRPC trace middleware; ``tokio`` —
-asyncio task trace-context propagation; plus the test-only ``testing``
-helpers).
+httpx middleware; ``grpc_client`` — gRPC trace middleware; plus the
+test-only ``testing`` helpers).
 """
 
 from minimax_code.tracing.dispatch import dispatcher_active

@@ -10971,3 +10971,65 @@ fastrace.rs 是重度集成模块（fastrace + opentelemetry_otlp + fastrace_ton
 ### Commit
 
 feat(platform): R129 migrate xai-tracing fastrace.rs pure-logic subset (crate leaf 3, W3C SpanContext)
+
+
+## R130 — xai-tracing/tokio.rs -> tracing/tokio.py（crate 第 4 叶，spawn_traced 原语，asyncio contextvars 传播）
+
+锚点:R130-1 f80ed0a
+
+### 本轮目标
+
+迁移 xai-tracing crate 第 4 个叶子 tokio.rs。R129 建立了 SpanContext 抽象（contextvars 持有当前上下文），tokio.rs 的 spawn_traced 现在可以自包含落地——它表达的正是"当前 trace context 传播到 spawned task"契约。
+
+tokio.rs 全文 22 行，单一函数 `spawn_traced<F>(future: F) -> JoinHandle<F::Output> = tokio::spawn(future.instrument(Span::current()))`。文档注释强调"spawned task 关联当前 span，要新 span 用 tracing::Instrument 手动"。
+
+### 融合结论
+
+核心降级：Rust 需要 `future.instrument(Span::current())` 显式把当前 span 绑定到 future（tokio task 默认不携带 task-local span）；Python `asyncio.create_task` 自动复制 contextvars context（`contextvars.copy_context`）到新 task，而 R129 的 SpanContext 恰好存在 `contextvars.ContextVar` 里——所以 Rust 显式 instrument 的传播，Python 免费提供。
+
+因此 `spawn_traced` 退化为 `asyncio.create_task` 的薄包装。wrapper 存在价值：（1）迁移忠实度，与 Rust crate 的 1:1 符号对应；（2）调用点文档化"这个 spawn 必须携带 trace context"意图；（3）未来扩展点（若引入显式 span 抽象，此处接入 instrument 逻辑）。
+
+barrel 决策：Rust lib.rs 有 `pub mod tokio` 但不 `pub use tokio::*`（调用者用 `xai_tracing::tokio::spawn_traced`，符号不经 crate 根 re-export）。Python 保持 1:1：`minimax_code.tracing.tokio` 模块公开可访问，但 `__init__.py` 不 re-export `spawn_traced`。
+
+捕获时机保真：Rust `Span::current()` 在 spawn_traced 调用时读取（caller 当前 span），绑定到 future；caller 后续 span 变化不波及 spawned task。Python `asyncio.create_task` 在调用时快照 contextvars context，等价——调用后进入的新 context 不出现在 task 里。R129 套件已对裸 `create_task` 钉死此行为；R130 套件经 `spawn_traced` 再次断言以证明包装不扰动捕获时机。
+
+### 交付
+
+新增：
+- `agent/minimax_code/tracing/tokio.py`（~95 行）：`spawn_traced(coro: Coroutine[object, object, _T]) -> asyncio.Task[_T]`，`asyncio.create_task` 薄包装 + 详尽 docstring（why-so-thin / 捕获时机 / 非 new-span 三段降级记录）
+- `agent/tests/test_tracing_tokio.py`（7 测试全过）：返回 Task 类型 / 传播 current SpanContext / 无 context 传播 None / 调用时捕获语义 / 返回值 / 可取消 / 并发独立性
+
+修改：
+- `agent/minimax_code/tracing/__init__.py`：barrel docstring 加 leaf 4 tokio 段落（记录 `pub mod tokio` 无 `pub use` 的 barrel 决策 + asyncio 免费传播降级），从 later-rounds 列表移除 tokio。导入与 `__all__` 不变（`spawn_traced` 不 re-export）
+
+### 映射决策树 + 坑
+
+1. spawn_traced 主体：`tokio::spawn(future.instrument(Span::current()))` -> `asyncio.create_task(coro)`。决策：asyncio 内建 contextvars 传播等价 instrument，无需显式步骤。
+2. 返回类型 `JoinHandle<F::Output>` -> `asyncio.Task[_T]`。决策：TypeVar `_T` 绑定 coroutine 返回类型，调用点推断 `Task[<coro 返回>]`。
+3. 签名约束 `F: Future + Send + 'static` -> `Coroutine[object, object, _T]`。决策：Python 无 Send/'static 约束对应物（GIL 单线程），`object` 占位 yield/send 类型对齐 typeshed create_task 签名风格。
+4. barrel re-export：lib.rs `pub mod tokio` 无 `pub use tokio::*` -> `__init__.py` 不 import spawn_traced。决策：1:1 忠实度，调用者用 `minimax_code.tracing.tokio.spawn_traced`。
+5. 非 new-span 契约：Rust 文档"要新 span 手动 instrument" -> Python docstring 记录"caller 在 coroutine 内 enter 新 span"。决策：迁移注释契约，不实现新 span 工厂（YAGNI）。
+
+坑（自纠）：
+- 初稿测试引入 `contextlib_suppress` + `contextlib_suppress_decorator` 双层 helper shim 来避免模块级 `import contextlib`——过度设计，违反 KISS。重写为模块级 `import contextlib` + `contextlib.suppress(asyncio.CancelledError)` 一行。同时首个测试的防御性 cancel teardown 对立即完成的 `noop()` 是死代码，移除。
+- 测试隔离复用 R129 的 `clean_span_context` fixture 模式（`_current_span_context.set(None)` + token reset），本地定义而非跨文件 import，保持迭代独立性。
+- 跨工具路径坑：Write 工具的 `/tmp` 与 git bash 的 `/tmp` 不是同一位置，`cat /tmp/x` 找不到 Write 写的文件。改用项目内明确路径 `docs/evolution/.r130_tmp.md`。
+
+### 验证
+
+- `ruff check minimax_code/tracing/ tests/test_tracing_tokio.py` -> All checks passed!
+- `pytest tests/test_tracing_tokio.py` -> 7 passed in 0.07s（返回类型 / 传播 / None / 捕获时机 / 返回值 / 取消 / 并发独立）
+- 全量回归 -> 3965 passed, 10 skipped, 1 warning in 105.81s（R129 基线 3958 + R130 新增 7 = 3965，零回归；1 warning 为预存 fastapi/httpx 弃用，与 R130 无关）
+
+### YAGNI 边界
+
+本轮落地：`spawn_traced` 单函数 + asyncio.create_task 传播契约证明。
+推迟（后续回合）：
+- http_client.rs（155 行）：trace-injecting httpx 中间件，消费 `current_trace_id`（R129）+ `dispatcher_active`（R128）。下一个自然叶子。
+- grpc_client.rs（388 行）：gRPC trace 中间件，重度，最后落地。
+- testing.rs（仅测试 helper，优先级低，`parse_traceparent` 已在 R129 消费）。
+不落地：新 span 工厂（Rust 用 `tracing::Instrument` 显式建新 span；Python 端 caller 在 coroutine 内 enter 新 SpanContext 即可，无需 spawn_traced 内建）。
+
+### Commit
+
+feat(platform): R130 migrate xai-tracing tokio.rs (crate leaf 4, spawn_traced, asyncio contextvars propagation)
