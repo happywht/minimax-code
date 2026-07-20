@@ -45,9 +45,17 @@ is:
    consumers, and the trait boundary keeps the bridge testable with
    in-memory mocks.
 
-   Subsequent leaves (``bridge`` actor -> ``metrics`` stub) will land over
-   R181+ in dependency order; the barrel-reconciliation round that mirrors
-   ``lib.rs``'s ``pub use`` surface lands once every leaf is in.
+3. ``bridge`` (R181+) -- the bridge actor: discovers tools from an
+   :class:`McpTransport` and registers them with a hub ``ToolServer``. R181
+   lands the configuration value object (:class:`McpBridgeConfig`); the actor
+   (``connect`` / ``handlers`` / ``server_info`` / ``tool_count`` /
+   ``shutdown`` + ``Drop``), ``McpToolHandler``, ``McpBridgeHandle``, and
+   ``translate_mcp_result`` land over R182+ in dependency order (config ->
+   handler + translate -> actor -> handle).
+
+   Subsequent leaves (``metrics`` stub) will land over R182+; the
+   barrel-reconciliation round that mirrors ``lib.rs``'s ``pub use`` surface
+   lands once every leaf is in.
 
 Modelling note
 --------------
@@ -63,6 +71,7 @@ uses for its complex adjacent/untagged tagging; the MCP content enum is
 plain internally-tagged, which pydantic discriminates natively.
 """
 
+from minimax_code.mcp_adapter.bridge import McpBridgeConfig
 from minimax_code.mcp_adapter.transport import McpTransport
 from minimax_code.mcp_adapter.types import (
     McpCallResult,
@@ -80,6 +89,10 @@ from minimax_code.mcp_adapter.types import (
 )
 
 __all__ = [
+    # bridge.rs barrel (R181) -- McpBridge* + McpToolHandler (4 lib.rs pub use
+    # symbols). R181 lands McpBridgeConfig; the actor + handle + handler land
+    # over R182+ in dependency order.
+    "McpBridgeConfig",
     # transport.rs barrel (R180) -- the McpTransport async trait.
     "McpTransport",
     # types.rs barrel (R179) -- 5 lib.rs pub use symbols + their variants.
@@ -100,5 +113,7 @@ __all__ = [
 ]
 
 #: Crate completion ledger -- updated as each leaf lands.
-#: Landed: types (R179), transport (R180). Bridge actor, metrics stub, and
-#: the final barrel-reconciliation round are deferred to R181+.
+#: Landed: types (R179), transport (R180), bridge McpBridgeConfig (R181).
+#: Remaining bridge symbols (McpBridge actor, McpBridgeHandle, McpToolHandler,
+#: translate_mcp_result), the metrics stub, and the final
+#: barrel-reconciliation round are deferred to R182+.

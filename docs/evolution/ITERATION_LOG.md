@@ -14757,3 +14757,57 @@ trait 迁移惯例（Protocol 是 R116 误判后纠正的先例）。
 ### Commit
 
 feat(platform): R180 xai-computer-hub-mcp-adapter transport.rs McpTransport async trait 第 2 叶 (abc.ABC, 12 tests)
+## R181 — xai-computer-hub-mcp-adapter bridge.rs McpBridgeConfig 类型层首叶
+
+锚点:R181-1 f8eace9
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-computer-hub-mcp-adapter/src/bridge.rs`（~330 行非测试）的类型层首叶——`McpBridgeConfig`（纯配置值对象，Rust `#[derive(Debug, Clone)] pub struct McpBridgeConfig { session_id: SessionId, namespace: Option<String> }` -> Python `@dataclass(frozen=True)`，2 字段）。建立 `agent/minimax_code/mcp_adapter/bridge.py` 模块骨架（仅 `McpBridgeConfig`），消费 R82 `SessionId`。零前向引用：`McpBridgeConfig` 不引用 crate 内任何未落地符号，是 bridge 依赖图的最纯叶子（`McpBridgeHandle` 持有 `McpBridge`、`McpBridge` 持有 `Vec<McpToolHandler>`、`McpToolHandler` 实现 `ToolServerHandler` trait）。本轮交付：建 `bridge.py`（`McpBridgeConfig` frozen dataclass）+ 扩 `__init__.py` barrel（import + `__all__` + docstring leaf order + ledger 4 处）+ 6 个契约测试 + ruff/pytest/回归 + 日志 + 精确 commit。
+
+### 融合结论
+
+**bridge.rs 结构（已侦察，781 行，~330 非测试）：** 4 个 `pub` 符号（`McpBridge` / `McpBridgeConfig` / `McpBridgeHandle` / `McpToolHandler`）+ `translate_mcp_result` 自由函数。依赖序：
+- `McpBridgeConfig`（L20-27，纯配置，零依赖）-> 本轮 R181。
+- `McpToolHandler`（L197-210，持有 `ToolId` + `McpToolDefinition` + `Arc<dyn McpTransport>` + `Option<String>`）+ `impl ToolServerHandler`（L212-263）+ `translate_mcp_result`（L275-328）-> R182+。
+- `McpBridge` actor（L49-74 struct + L76-177 impl：connect/handlers/server_info/tool_count/shutdown）+ `impl Drop`（L179-191，best-effort close）-> R183+。
+- `McpBridgeHandle`（L29-47，connect 结果信封 `bridge + server_info`，其 Debug impl 调 `self.bridge.tool_count()`）-> R184+。
+
+**为何 R181 只迁 config：** bridge.rs 781 行无法单轮迁移（含 async connect 编排 + Drop 生命周期 + trait impl），须按依赖图分叶。`McpBridgeConfig` 是唯一零前向引用的叶子（仅消费 R82 `SessionId`），且是后续所有叶子的构造前提（`McpBridge::connect(config)` 入参），故首迁。
+
+**Rust->Python 映射：** `#[derive(Debug, Clone)]` -> `@dataclass(frozen=True)`（frozen 提供 immutability + hashable + 值语义，贴近 Rust config 值对象的不可变契约；`Clone` 通过重建实现，`Debug` 是 dataclass 自动 `__repr__`）；`pub session_id: SessionId` -> `session_id: SessionId`（消费 R82）；`pub namespace: Option<String>` -> `namespace: str | None`（无 `#[serde(default)]`，构造时传，故 Python 亦无默认值，必填）。
+
+### 交付
+
+| 文件 | 状态 | 说明 |
+|------|------|------|
+| `agent/minimax_code/mcp_adapter/bridge.py` | 新建（83 行） | 模块骨架 + `McpBridgeConfig` frozen dataclass（2 字段）+ 完整 leaf order docstring |
+| `agent/minimax_code/mcp_adapter/__init__.py` | 编辑（+13 行） | barrel 4 处：bridge import（isort bridge<transport<types）+ `__all__` McpBridgeConfig 组 + docstring leaf order 第 3 项 + ledger 更新 |
+| `agent/tests/test_mcp_adapter_bridge.py` | 新建（103 行） | 6 个契约测试：frozen dataclass / 赋值拒绝 / 字段顺序 Rust 声明序 / Option str\|None / 无默认值必填 / 值相等+hash+repr |
+| `docs/evolution/ITERATION_LOG.md` | 追加 | R181 条目 |
+
+### 映射决策树+坑
+
+**决策 1 — `frozen=True` 而非普通 `@dataclass`：** Rust `#[derive(Clone)]` 对值对象意味着"复制即构造新实例"，Python 等价是 frozen dataclass（不可变 + hashable + 通过重建复制）。非 frozen dataclass 允许字段突变，违背 config 值对象语义（config 一旦构造、被 actor 持有引用后不应突变）。frozen 还免费提供 `__hash__`（Rust `#[derive(Hash)]` 未显式 derive，但 config 可作 dict key 是合理增强，测试已钉）。
+
+**决策 2 — `namespace` 无默认值（必填）：** Rust 源无 `#[serde(default)]` 且字段非 `Option`，构造点（`lib.rs` 测试 L25-28）显式传 `Some("...")`。Python 等价：`namespace: str | None` 无默认值，调用方显式传 `None` 表示无命名空间。测试 `test_config_requires_both_fields_no_defaults` 钉此契约。
+
+**坑 1 — ruff I001 import 块尾空行：** 测试文件 import 块后紧跟 `# ---` 注释分隔符（非顶层 def/class 定义），ruff isort `lines-after-imports=-1`（auto）判定只需 1 空行（2 空行规则 E303 仅适用于顶层函数/类定义前）。R180 transport 测试 import 后直接 `class`，故 2 空行通过；R181 bridge 测试 import 后是注释，须 1 空行。`ruff check --diff` 确认仅此 1 处，`--fix` 限定单文件安全修复（零外溢）。
+
+**坑 2 — `FrozenInstanceError` 导入路径：** 从 `dataclasses` 导入（Python 3.11+ 标准位置）。frozen dataclass 字段赋值 raise 此异常（`AttributeError` 子类），`pytest.raises(FrozenInstanceError)` 精确捕获。
+
+### 验证
+
+- **ruff：** `uv run ruff check minimax_code/mcp_adapter/bridge.py minimax_code/mcp_adapter/__init__.py tests/test_mcp_adapter_bridge.py` -> `All checks passed!`（3 文件零违规，零 `--fix` 噪声外溢）。
+- **pytest：** `uv run pytest tests/test_mcp_adapter_bridge.py tests/test_mcp_adapter_transport.py tests/test_mcp_adapter_types.py tests/test_init_barrel.py -v` -> **57 passed in 0.47s**（6 R181 新 + 12 R180 + 19 R179 + 20 R178 barrel 零回归）。
+- **回归边界：** R180 McpTransport async trait（12 测试）、R179 types wire 契约（19 测试）、R178 SDK barrel 对账（test_barrel_count_is_41 等 20 测试）全绿，R181 新增符号 `McpBridgeConfig` 已入 mcp_adapter barrel `__all__`。
+
+### YAGNI 边界
+
+- **`ToolServerHandler` trait 未迁移：** Rust `McpToolHandler` 实现 `xai_computer_hub_sdk::ToolServerHandler`（L212-263），该 trait 绑定 live `ToolServer` actor（xAI `HubConnection` socket 消费侧）。MiniMax 无此消费者（R178 barrel 已声明 YAGNI），故 R182+ 迁 `McpToolHandler` 时将作为**具体类**暴露 trait 的 4 个方法（`tool_id`/`description`/`input_schema`/`handle_call`），而非 `abc.ABC` 子类——协议契约文档化、不强类型约束（镜像 server.py preamble 叶子 R175-R177 的鸭子类型策略）。
+- **`Drop` impl 延后：** Rust `impl Drop for McpBridge`（L179-191）通过 `tokio::spawn` best-effort 调 `transport.close()`。Python 等价是 `__del__` 或 `async with` 上下文管理器，须等 `McpBridge` actor 落地（R183+）后随 actor 一同迁移。
+- **`metrics` 模块延后：** `lib.rs` 声明 `pub(crate) mod metrics`（crate 内私有，无 `pub use`），是 bridge 调用侧的计数器收集点。crate 内私有 + 无外部消费者，延后至 bridge actor 全部落地后评估是否需要（可能整体 YAGNI）。
+
+### Commit
+
+`feat(platform): R181 xai-computer-hub-mcp-adapter bridge.rs McpBridgeConfig type-layer first leaf (frozen dataclass, 6 tests)`
