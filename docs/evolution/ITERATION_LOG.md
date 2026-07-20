@@ -10182,3 +10182,211 @@ PascalCase 前，PascalCase 排在 lowercase 前；`_terminal_from_response`
 ### Commit
 
 feat(platform): R122 migrate remote.rs layer-1 ConnectionClient trait -> abc.ABC (3 abstractmethod async seams: request -> JsonRpcResponse|ToolError, subscribe_progress -> AsyncIterator[ToolCallProgressFrame], notify -> None|ToolError; drops Send+Sync+Debug bounds; BoxStream->AsyncIterator; barrel re-export; +20 tests -> 85 total, 6-leaf 212 passed)
+
+## R123 — migrate remote.rs layer-3 RequestStream Stream impl -> _request_stream async generator
+
+锚点:R123-1 827f37e
+
+### 本轮目标
+
+迁移 computer-hub-core remote.rs 第 3 层（**最复杂层**）—— Rust
+`struct RequestStream` + `impl Stream for RequestStream`（`poll_next`
+两路 select 状态机）-> Python `async def _request_stream` async
+generator。源参考 `grok-build/crates/common/xai-computer-hub-core/src/remote.rs:271-327`。
+
+R122（`827f37e`）落地 layer 1 的 `ConnectionClient` 契约后，remote.rs 的
+4 层依赖链只剩 layer 2-3：本轮聚焦 **layer 3 的核心** —— 把 Rust 的
+poll-based 推拉状态机翻译成 Python 的协作式 async generator。layer 3 的
+组装层 `dispatch_via_connection`（把 `ConnectionClient.request` +
+`subscribe_progress` 喂给 `_request_stream`）留 R124；layer 2
+（`RemoteToolProxy` + `RemoteTransport`）留 R125+。
+
+核心难点：Rust 的 `Stream::poll_next` 是一个**每 tick 重新进入**的状态机，
+手动 `select!` 两路 future（response + progress），由 executor 驱动；
+Python 的 async generator 是 **pull-based**（`async for` 驱动
+`__anext__`），需要在每个 cycle 用 `asyncio.wait(FIRST_COMPLETED)` 重建
+两路多路复用。5 个不变性（request 优先级 / progress 回填 / done 短路 /
+丢弃终结点后的进度 / progress-closed 非流关闭）必须在 Python 协作式模型下
+逐一对齐。
+
+### 融合结论
+
+Rust `impl Stream for RequestStream`（`poll_next`：先 poll `self.request`，
+再 poll `self.progress`，`select` 两路）-> Python `async def _request_stream(
+tool_id: ToolId, progress: AsyncIterator[ToolCallProgressFrame], request:
+Awaitable[JsonRpcResponse | ToolError]) -> AsyncIterator[ToolStreamItem[
+TypedToolOutput]]`。
+
+两个私有不导出符号（**不**入 `__all__`，测试直接访问，组装层 R124 内部消费）：
+
+- `_terminal_item(tool_id, result) -> ToolStreamItem[TypedToolOutput]`：
+  `JsonRpcResponse -> _terminal_from_response(tool_id, resp)`（R121 落地）；
+  `ToolError -> 透传`。镜像 Rust `RequestStream` 在 response ready 时调用
+  `terminal_from_response`、在 error ready 时直接返回 error 的二分。
+- `_request_stream(...)`：async generator，主循环每 cycle `ensure_future`
+  一次 `progress.__anext__()`（镜像 Rust 每 poll 重新 `poll_next`），
+  `asyncio.wait({req_task, prog_task}, FIRST_COMPLETED)` 两路多路复用，
+  `req_task in done` 优先短路（request 优先级），`StopAsyncIteration` ->
+  `progress_done` 标志 -> 下一周期直接 `await req_task`（progress-closed
+  非流关闭）。
+
+`ToolStreamItem`（R109 `tool.py:351`）的判别联合：`Progress(progress)` /
+`Terminal(result)` 类方法构造，`kind` 字段判别。`finally` 块统一取消
+`(req_task, prog_task)` 并 `await` 检索所有异常 —— 镜像 Rust drop 时丢弃
+`BoxStream` + abort `ResponseFuture`。
+
+### 映射决策树+坑
+
+1. **`Stream::poll_next` 状态机 -> async generator。** Rust poll-based
+   推拉（executor 驱动，每 tick `Poll::Ready(Some/None)` 或 `Pending`）；
+   Python pull-based（`async for` 驱动 `__anext__`）。每个 `yield` = 一次
+   `Poll::Ready(Some(item))`；generator `return` = `Poll::Ready(None)`；
+   cycle 末尾隐式 `await asyncio.wait` = `Poll::Pending`。
+2. **两路 `select!` -> `asyncio.wait(FIRST_COMPLETED)`。** Rust 用
+   `tokio::select!` 或手动 `Pin<&mut Future>.poll`；Python 把两路 awaitable
+   用 `asyncio.ensure_future` 包成 Task/Future，`await asyncio.wait({...},
+   FIRST_COMPLETED)` 返回 `done` 集合，逐个检查。
+3. **request 优先级（不变性 1+2）。** Rust 先 poll `self.request` 再 poll
+   `self.progress`；Python 每周期**先**检查 `req_task in done`（短路返回
+   终结点），**再**处理 prog_task 的帧。已就绪的 request 永远抢在 progress
+   前面。
+4. **progress 回填（不变性 3）。** request 仍 Pending 时，已就绪的 progress
+   帧**必须** `yield`（不能丢弃）。`asyncio.wait` 同时唤醒两路时，request
+   优先级分支只看 request，但若 request 未就绪、prog 就绪 -> `yield Progress`。
+5. **progress-closed 非流关闭（不变性 5）。** progress 先 `Ready(None)`
+   （Python `StopAsyncIteration`）而 request 仍 Pending -> Rust 返回
+   `Pending`（等 request）；Python：捕获 `StopAsyncIteration` -> 设
+   `progress_done=True` -> `continue` -> 下一周期 `if progress_done:
+   result = await req_task` 直达终结点（避免每周期空转 `asyncio.wait`）。
+6. **每周期重新 `ensure_future(progress.__anext__())`（不变性外的实现细节）。**
+   async iterator 的 `__anext__` 返回一次性协程，**不能**复用同一个
+   coroutine 对象跨 cycle（第二次 await 同一协程是 RuntimeError）-> 每周期
+   新建 Task。镜像 Rust 每 poll 调用 `progress.poll_next(cx)`（Pin 的
+   `poll_next` 是可重入的，每次构造新 context）。
+
+**坑 1 —— `asyncio.ensure_future` 限制（TypeError）。** `ensure_future`
+仅包装 coroutine 和 `Future`；裸 `__await__` 可等待对象（自定义
+`Awaitable` 类）会 `TypeError: An asyncio.Future, a coroutine or an
+awaitable is required`。**修复：** 测试用 `asyncio.get_running_loop().
+create_future()`（`Future`）作为 request，不用自定义 Awaitable 类。
+顺带：`asyncio.Future.cancel()` 是同步的（`cancel()` 后立即
+`cancelled() == True`），而 `Task.cancel()` 是异步的（需 await 才生效）——
+`test_aclose_mid_stream_cancels_pending_request` 用 Future 才能断言即时取消。
+
+**坑 2 —— 测试计时抖动（核心）。** 最初用 `_resolve_after(fut, value,
+cycles=5)` 后台任务模拟延迟 response：`for _ in range(cycles):
+await asyncio.sleep(0)` 后 `fut.set_result(value)`。但事件循环调度存在
+抖动 —— `cycles=5` 解析过快，在 progress frame2 之前就 set_result，
+触发 request 优先级分支，`test_progress_frames_backfill` 期望
+`['progress','progress','terminal']` 实际得到 `['progress','terminal']`
+（96/97）。**修复：** 4 个排序敏感测试（backfill / frame-then-close /
+request-error / exactly-one-terminal）改用**手动 `__anext__` 驱动** +
+**同步 `fut.set_result()`**：先 `await asyncio.sleep(0)` 让 prog 帧进入
+done，手动 `fut.set_result(resp)`，再驱动 generator 的 `__anext__` ——
+获得确定性排序，零调度依赖。仅结果与竞态无关的测试（空进度 ->
+总是 `[terminal]`）保留 `_resolve_after(cycles=3)`。
+
+**坑 3 —— "Task exception was never retrieved" 警告（asyncio 警告）。**
+97/97 通过但出现 2 条警告：`Task-53`/`Task-59` coro=`_ScriptedProgress.
+__anext__` exception=`StopAsyncIteration`。根因：request 优先级分支
+`return` 时，**并发的 `prog_task`**（已 ready，带 `StopAsyncIteration`）
+未被检索 -> asyncio 认为异常丢失。**修复：** `finally` 块统一取消循环
+`for task in (req_task, prog_task): if not task.done(): task.cancel();
+try: await task except (asyncio.CancelledError, Exception): pass` ——
+检索所有异常（包括 request 优先级路径遗留的 prog_task、消费者 `aclose`
+中断时在飞的 req_task）。镜像 Rust drop `RequestStream` 时丢弃 `BoxStream`
++ abort `ResponseFuture`。
+
+**坑 4 —— `asyncio.CancelledError` 继承 `BaseException`（Python 3.8+）。**
+`except Exception` **不**捕获 `CancelledError`，必须 `except
+(asyncio.CancelledError, Exception)`。`BLE` 不在 ruff select 里，所以
+`except Exception` 本身无需 noqa，但语义上必须显式加 CancelledError 才能
+真正检索取消异常。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_core/remote.py`：
+  - 顶部 `from collections.abc import AsyncIterator, Awaitable`（`Awaitable`
+    用于 `request` 参数类型 —— request 是裸 awaitable，不是协程）。
+  - tool_runtime 导入块加 `ToolStreamItem`（消费 R109 判别联合的
+    `Progress`/`Terminal` 构造器）。
+  - 新增 `_terminal_item(tool_id, result) -> ToolStreamItem[TypedToolOutput]`
+    私有辅助：`isinstance(result, JsonRpcResponse) ->
+    _terminal_from_response(tool_id, result)`；否则（`ToolError`）透传
+    `return result`。
+  - 新增 `_request_stream(tool_id, progress, request) ->
+    AsyncIterator[ToolStreamItem[TypedToolOutput]]` async generator：
+    `req_task = ensure_future(request)`（一次性，循环外）+
+    `prog_task`（每周期 `ensure_future(progress.__anext__())`）+
+    `progress_done` 标志 + `try/while True/finally` 三段式。
+    完整文档字符串记录 5 个不变性 + Rust `Stream`/`poll_next` 映射 +
+    `finally` 取消语义。
+  - `finally` 统一取消循环（坑 3 修复）。
+  - 模块文档字符串 layer-3 项标记 R123。
+- `agent/minimax_code/computer_hub_core/__init__.py`：
+  - leaf-6 文档字符串 **3 处**更新：header `R123 layer 3 stream`；
+    Layers 2-3 描述段（R123 落地 `_request_stream` async generator +
+    Rust `impl Stream for RequestStream` poll_next 翻译说明）；总结段
+    （R123 layer 3 + layer 2/dispatch_via_connection 余量留后续）。
+- `agent/tests/test_computer_hub_core_remote.py`：
+  - 导入 `_request_stream, _terminal_item, _terminal_from_response`
+    （私有，测试直接访问）+ `ToolStreamItem`；加 `import inspect`。
+  - R123 辅助：`_ScriptedProgress`（async iterator，`__anext__` 带
+    `await asyncio.sleep(0)` 让出调度，耗尽抛 `StopAsyncIteration`）；
+    `_ok_resp`（构造 `JsonRpcResponse`）；`_resolve_after`（后台任务，
+    cycles 后 `set_result`）；`_collect`（async comprehension 收集）。
+  - R123 测试 **12 个**：
+    1. `test_terminal_item_is_sync`（不是 coroutine）；
+    2. `test_terminal_item_decodes_jsonrpc_response_via_terminal_from_response`
+       （JsonRpcResponse -> R121 解码）；
+    3. `test_terminal_item_passes_tool_error_through_unchanged`（ToolError
+       透传）；
+    4. `test_request_stream_is_async_generator_function`
+       （`inspect.isasyncgenfunction`）；
+    5. `test_request_stream_call_returns_async_generator_object`
+       （调用返回 `async_generator` 对象）；
+    6. `test_immediate_terminal_drops_all_progress`（request 立即就绪 ->
+       单终结点，丢弃所有 progress）；
+    7. `test_progress_frames_backfill_while_request_pending`（手动驱动，
+       `['progress','progress','terminal']`）；
+    8. `test_empty_progress_keeps_awaiting_then_emits_terminal`
+       （`_resolve_after` cycles=3，空进度 -> `[terminal]`）；
+    9. `test_frame_then_close_then_late_response`（手动 + `_resolve_after`
+       cycles=2，progress 先出帧后关闭，response 迟到 -> 终结点）；
+    10. `test_request_error_surfaces_as_error_terminal`（手动，request
+        抛 ToolError -> error terminal）；
+    11. `test_exactly_one_terminal_then_stopasynciteration`（手动，恰好
+        一个 terminal 后 generator 耗尽）；
+    12. `test_aclose_mid_stream_cancels_pending_request`（Future.cancel
+        即时取消断言）。
+
+### 验证
+
+- `ruff check`（3 文件精确作用域 `remote.py` + 测试 + `__init__.py`）：
+  **All checks passed**。
+- `pytest test_computer_hub_core_remote.py`：**97 passed**（R122 时 85 +
+  R123 新增 12，0.38s）。
+- `pytest` 6 叶子全回归（transport/registry/resolver/inner/local/remote）：
+  **224 passed**（R122 时 212 + R123 新增 12，0.79s）。
+- asyncio 警告回归：`pytest -W
+  error::pytest.PytestUnraisableExceptionWarning`（把未检索异常升级为
+  错误）：**97 passed 零警告** —— 坑 3 的 `finally` 统一取消循环验证
+  通过。
+
+### YAGNI 边界
+
+- **不**实现 `dispatch_via_connection`（layer 3 的组装层：把
+  `ConnectionClient.request` + `subscribe_progress` 喂给 `_request_stream`
+  并装配 `ToolId`/`ctx`，留 R124）。本轮只落地 generator 核心。
+- **不**实现 layer 2（`RemoteToolProxy` + `RemoteTransport`，消费
+  `dispatch_via_connection`，留 R125+）。
+- **不**把 `_request_stream` / `_terminal_item` 加入 `__all__`（私有；
+  测试直接访问，组装层 R124 内部消费 —— barrel 重新导出会泄漏实现细节）。
+- **不**消费 `_request_stream`（暂无调用方；核心 generator 先落地，组装层
+  R124 才接入 `ConnectionClient`）。
+- **不**迁移 remote.rs 余量（layer 2 + `dispatch_via_connection` 组装逐
+  回合，保持每回合单一焦点）。
+
+### Commit
+
+feat(platform): R123 migrate remote.rs layer-3 RequestStream Stream impl -> _request_stream async generator (asyncio.wait FIRST_COMPLETED 2-arm mux: request priority + progress backfill + progress_done short-circuit; _terminal_item helper: JsonRpcResponse->_terminal_from_response | ToolError passthrough; finally unified cancel loop silences "Task exception was never retrieved"; +12 tests -> 97 total, 6-leaf 224 passed, zero asyncio warnings)

@@ -1,13 +1,14 @@
 """Remote-dispatch wire decode/encode helpers + connection contract
-(R120/R121 layer 4, R122 layer 1).
+(R120/R121 layer 4, R122 layer 1, R123 layer 3).
 
 Fusion of grok-build's ``xai-computer-hub-core/src/remote.rs`` — the
 crate's sixth and final leaf, the connection-forwarding transport. The
 Rust module is 541 lines spanning four conceptual layers; R120 opens
 **layer 4** (the wire decode/encode pure functions), R121 completes the
-error-decode group, and R122 opens **layer 1** (the
-:class:`ConnectionClient` contract); layers 2-3 defer to later rounds
-(see "Why layer 4 lands first" below).
+error-decode group, R122 opens **layer 1** (the
+:class:`ConnectionClient` contract), and R123 opens **layer 3** (the
+:func:`_request_stream` async generator core); layer 2 defers to a
+later round (see "Why layer 4 lands first" below).
 
 Why remote lands sixth
 ----------------------
@@ -36,9 +37,15 @@ The four layers of remote.rs
    :class:`~minimax_code.computer_hub_core.ToolHandle` /
    :class:`~minimax_code.computer_hub_core.Transport` impls that drive
    the connection.
-3. ``dispatch_via_connection`` + ``RequestStream`` (later) — the Rust
-   ``Stream`` impl that interleaves progress frames with the terminal
-   response; the most complex layer (``Stream`` trait -> Python async).
+3. ``dispatch_via_connection`` + ``RequestStream`` (R123 partial) — the
+   Rust ``Stream`` impl that interleaves progress frames with the
+   terminal response; the most complex layer (``Stream`` trait ->
+   Python async). R123 lands the :func:`_request_stream` async
+   generator core (the ``impl Stream for RequestStream`` poll state
+   machine — request-priority short-circuit, progress backfill, single
+   terminal, post-terminal progress drop); the
+   ``dispatch_via_connection`` assembly + the ``RemoteToolProxy`` /
+   ``RemoteTransport`` consumers (layer 2) land later.
 4. **Wire decode/encode pure functions (R120 + R121)** — the stateless
    seams that turn wire types into runtime types. R120 lands the
    success-path seams (:func:`progress_from_frame`,
@@ -142,7 +149,8 @@ R107-R114 (tool_runtime types: ``ContentBlock`` / ``ToolProgress`` /
 from __future__ import annotations
 
 import abc
-from collections.abc import AsyncIterator
+import asyncio
+from collections.abc import AsyncIterator, Awaitable
 from typing import Any
 
 from minimax_code.tool_protocol import (
@@ -190,6 +198,7 @@ from minimax_code.tool_runtime import (
     ToolError,
     ToolErrorKind,
     ToolProgress,
+    ToolStreamItem,
     TypedToolOutput,
 )
 
@@ -666,3 +675,179 @@ def _terminal_from_response(
     # Unreachable for a valid ResponseOutcome (ResponseResult | ResponseError);
     # the closed-union TypeError mirrors R120's ``_map_block`` unreachable arm.
     raise TypeError(f"unknown response outcome: {type(outcome).__name__}")
+
+
+# -----------------------------------------------------------------------
+# _terminal_item + _request_stream — Rust ``impl Stream for RequestStream``
+# (R123 layer 3 core). Private; the layer-2 assembly
+# (``dispatch_via_connection`` + ``RemoteToolProxy`` / ``RemoteTransport``)
+# lands later and will be the sole caller.
+# -----------------------------------------------------------------------
+
+
+def _terminal_item(
+    tool_id: ToolId, result: JsonRpcResponse | ToolError
+) -> TypedToolOutput | ToolError:
+    """Build the single terminal item from a resolved response (Rust poll arm).
+
+    Mirrors Rust's ``match result { Ok(resp) =>
+    terminal_from_response(tool_id, resp), Err(err) => Err(err) }`` — the
+    terminal-construction arm of ``impl Stream for RequestStream``. The
+    ``Result<JsonRpcResponse, ToolError>`` discriminant maps to an
+    :func:`isinstance` check: a :class:`JsonRpcResponse` is decoded via
+    R121's :func:`_terminal_from_response`, a :class:`ToolError` passes
+    through unchanged (Rust's ``Err(err) => Err(err)`` identity arm).
+
+    Private (Rust ``terminal_from_response`` is private and this wrapper is
+    the stream-internal call site only); the leading underscore follows
+    R120/R121's ``_map_block`` / ``_terminal_from_response`` convention.
+    """
+    if isinstance(result, JsonRpcResponse):
+        return _terminal_from_response(tool_id, result)
+    return result
+
+
+async def _request_stream(
+    tool_id: ToolId,
+    progress: AsyncIterator[ToolCallProgressFrame],
+    request: Awaitable[JsonRpcResponse | ToolError],
+) -> AsyncIterator[ToolStreamItem[TypedToolOutput]]:
+    """Interleave progress frames with the terminal response (R123 layer 3).
+
+    Faithful migration of grok-build's ``impl Stream for RequestStream``
+    (``xai-computer-hub-core/src/remote.rs``). The Rust hand-written
+    ``poll_next`` state machine is re-expressed as an async generator whose
+    body preserves the four poll-time invariants:
+
+    1. **Request priority.** Each cycle polls the response first; the
+       moment it resolves the generator emits the single
+       :class:`ToolStreamItem.Terminal` and returns (``done = true`` ->
+       the next ``__anext__`` raises ``StopAsyncIteration``). Rust polls
+       ``self.request`` before ``self.progress``; the Python landing
+       mirrors that by checking ``req_task`` resolution ahead of any
+       progress frame in every :func:`asyncio.wait` cycle.
+    2. **Progress backfill.** While the response is pending, available
+       progress frames are lifted to :class:`ToolStreamItem.Progress`
+       via R120's :func:`progress_from_frame` and yielded one at a time
+       (Rust yields a single ``Some(Progress(...))`` per poll).
+    3. **Exactly one terminal.** Once the terminal is emitted the
+       generator returns; any progress frames that arrived alongside or
+       after the response are dropped (Rust sets ``done`` and never
+       re-polls progress after a terminal — the router invariant
+       "``Progress* Terminal``" holds because of this drop).
+    4. **Progress-closed is not stream-closed.** A closed progress stream
+       (``StopAsyncIteration``) does NOT end the generator — the response
+       future is still registered, so the generator keeps awaiting it
+       (Rust's ``Poll::Ready(None) | Poll::Pending => Poll::Pending`` for
+       the progress arm).
+
+    Concurrency model
+    -----------------
+
+    Rust threads the response as a ``BoxFuture`` and the progress as a
+    ``BoxStream`` and polls both by hand each ``poll_next``. Python has no
+    poll trait; the equivalent is racing the two awaitables with
+    :func:`asyncio.wait` using ``return_when=asyncio.FIRST_COMPLETED`` so
+    that whichever resolves first (response OR a progress frame) advances
+    the generator, while preserving request priority when both resolve in
+    the same cycle. The response is wrapped once via
+    :func:`asyncio.ensure_future` and reused across cycles; a fresh
+    ``progress.__anext__()`` coroutine is wrapped per cycle (an async
+    iterator's ``__anext__`` is single-shot, mirroring Rust's per-poll
+    ``progress.poll_next``). A ``progress_done`` flag collapses to a direct
+    ``await req_task`` once the progress stream closes, so the closed
+    progress arm never pays the :func:`asyncio.wait` overhead again.
+
+    Cancellation
+    ------------
+
+    Rust drops the future/stream on ``RequestStream`` drop; Python's
+    generator ``aclose`` / task cancellation runs the ``finally`` block,
+    which cancels any still-pending ``req_task`` and awaits its
+    suppression — so cancelling a consumer mid-stream does not leak the
+    in-flight response future.
+
+    Parameters
+    ----------
+    tool_id:
+        Consumed exactly once when the terminal is built (Rust
+        ``self.tool_id.take()``). Passed by value; the generator does not
+        retain it after the terminal yields.
+    progress:
+        The wire progress stream (R122's
+        ``ConnectionClient.subscribe_progress`` result). Lifted frame by
+        frame via :func:`progress_from_frame`.
+    request:
+        The eventual JSON-RPC response (R122's ``ConnectionClient.request``
+        result). Resolves to ``JsonRpcResponse | ToolError``; the success
+        arm is decoded via :func:`_terminal_from_response`, the error arm
+        passes through.
+
+    Yields
+    ------
+    ToolStreamItem[TypedToolOutput]
+        Zero or more ``Progress`` items followed by exactly one ``Terminal``
+        item, then the generator exhausts.
+
+    Notes
+    -----
+    Private (Rust ``struct RequestStream`` is private and ``impl Stream``
+    is consumed only by the layer-2 assembly). The leading underscore
+    follows the module's decode-helper convention; it is NOT re-exported
+    by the package barrel and is exercised directly by the test suite.
+    """
+    req_task = asyncio.ensure_future(request)
+    prog_task: asyncio.Future | None = None
+    progress_done = False
+    try:
+        while True:
+            if progress_done:
+                # Progress stream closed; only the response remains. Rust:
+                # the progress arm returns Pending while the request future
+                # is still registered for wake-up. Await it directly.
+                result = await req_task
+                yield ToolStreamItem.Terminal(_terminal_item(tool_id, result))
+                return
+
+            # Race the response against the next progress frame. A fresh
+            # __anext__ coroutine per cycle mirrors Rust's per-poll
+            # progress.poll_next (single-shot async-iterator semantics).
+            prog_task = asyncio.ensure_future(progress.__anext__())
+            done, _pending = await asyncio.wait(
+                {req_task, prog_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            # Request priority: if the response resolved (alone OR alongside
+            # a frame), short-circuit with the single terminal and drop any
+            # concurrent/late progress. Mirrors Rust polling request first.
+            if req_task in done:
+                result = req_task.result()
+                yield ToolStreamItem.Terminal(_terminal_item(tool_id, result))
+                return
+
+            # Response still pending; consume the progress frame (the only
+            # other completion in this cycle). StopAsyncIteration closes
+            # the progress stream without ending the generator.
+            try:
+                frame = prog_task.result()
+            except StopAsyncIteration:
+                progress_done = True
+                continue
+            yield ToolStreamItem.Progress(progress_from_frame(frame))
+    finally:
+        # Cancel any still-running task and await it so asyncio does not
+        # warn "Task exception was never retrieved": on the terminal path
+        # the concurrent progress task may have just closed
+        # (StopAsyncIteration), and an abandoned consumer (aclose) must
+        # not leak the in-flight request. Mirrors Rust dropping the
+        # BoxStream + aborting the ResponseFuture on drop.
+        for task in (req_task, prog_task):
+            if task is None:
+                continue
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass

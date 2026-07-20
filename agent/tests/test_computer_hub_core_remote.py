@@ -38,6 +38,7 @@ distinguish the Python landing:
 from __future__ import annotations
 
 import abc
+import asyncio
 import inspect
 from collections.abc import AsyncIterator
 
@@ -45,7 +46,9 @@ import pytest
 
 from minimax_code.computer_hub_core.remote import (
     ConnectionClient,
+    _request_stream,
     _terminal_from_response,
+    _terminal_item,
     decode_call_result,
     error_from_envelope,
     is_workspace_unavailable,
@@ -92,6 +95,7 @@ from minimax_code.tool_runtime import (
     ToolChatCompletionResponse,
     ToolError,
     ToolErrorKind,
+    ToolStreamItem,
     TypedToolOutput,
 )
 
@@ -1001,3 +1005,268 @@ async def test_notify_records_arg_verbatim():
     n = _notif(method="cancel")
     await conn.notify(n)
     assert conn.notifies == [n]
+
+
+# ===========================================================================
+# R123 — layer 3: _request_stream (impl Stream for RequestStream) +
+# _terminal_item (the terminal-construction poll arm). The private async
+# generator interleaves wire progress frames with the terminal JSON-RPC
+# response, preserving the four poll-time invariants of Rust's hand-written
+# poll_next: request priority, progress backfill, exactly one terminal, and
+# progress-closed-is-not-stream-closed.
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# R123 fixtures — scripted progress + future-backed request.
+# ---------------------------------------------------------------------------
+
+
+class _ScriptedProgress:
+    """Async iterator yielding a scripted frame list, then closing.
+
+    Each frame-yielding ``__anext__`` awaits one ``asyncio.sleep(0)`` so a
+    concurrently-resolving request future can win the ``asyncio.wait`` race
+    inside :func:`_request_stream`. The closing ``__anext__`` (past the
+    scripted list) raises ``StopAsyncIteration`` WITHOUT sleeping — the
+    Rust ``BoxStream`` close maps to an immediate async-iterator close.
+    """
+
+    def __init__(self, frames: list[ToolCallProgressFrame] | None = None) -> None:
+        self._frames = list(frames or [])
+        self._i = 0
+
+    def __aiter__(self) -> _ScriptedProgress:
+        return self
+
+    async def __anext__(self) -> ToolCallProgressFrame:
+        if self._i >= len(self._frames):
+            raise StopAsyncIteration
+        await asyncio.sleep(0)
+        frame = self._frames[self._i]
+        self._i += 1
+        return frame
+
+
+def _ok_resp(rid: str = "resp-1") -> JsonRpcResponse:
+    """A success :class:`JsonRpcResponse` carrying a text-output body."""
+    return JsonRpcResponse(
+        jsonrpc=JsonRpcVersion(),
+        id=rid,
+        outcome=ResponseResult(
+            value={"tool_call_id": "c", "output": {"kind": "text", "value": "hi"}}
+        ),
+    )
+
+
+async def _resolve_after(fut: asyncio.Future, value: object, cycles: int) -> None:
+    """Resolve ``fut`` with ``value`` after ``cycles`` event-loop ticks.
+
+    Background-scheduled via :func:`asyncio.ensure_future` so the request
+    future resolves mid-stream (after scripted progress frames have landed),
+    letting the tests exercise the progress-backfill -> terminal ordering
+    without hand-driving each ``__anext__``.
+    """
+    for _ in range(cycles):
+        await asyncio.sleep(0)
+    if not fut.done():
+        fut.set_result(value)
+
+
+async def _collect(gen: AsyncIterator[ToolStreamItem]) -> list[ToolStreamItem]:
+    """Drain an async generator into a list (test readability helper)."""
+    return [item async for item in gen]
+
+
+# ---------------------------------------------------------------------------
+# _terminal_item — Result<JsonRpcResponse, ToolError> dispatch (poll arm).
+# ---------------------------------------------------------------------------
+
+
+def test_terminal_item_is_sync():
+    assert not inspect.iscoroutinefunction(_terminal_item)
+
+
+def test_terminal_item_decodes_jsonrpc_response_via_terminal_from_response():
+    # The Ok arm: isinstance(JsonRpcResponse) -> _terminal_from_response.
+    tid = _tid()
+    result = _terminal_item(tid, _ok_resp())
+    assert isinstance(result, TypedToolOutput)
+    assert not isinstance(result, ToolError)
+
+
+def test_terminal_item_passes_tool_error_through_unchanged():
+    # The Err arm: ``Err(err) => Err(err)`` identity passthrough.
+    tid = _tid()
+    err = ToolError.custom("boom", "oops")
+    result = _terminal_item(tid, err)
+    assert result is err
+
+
+# ---------------------------------------------------------------------------
+# _request_stream — async-generator shape.
+# ---------------------------------------------------------------------------
+
+
+def test_request_stream_is_async_generator_function():
+    # Rust ``impl Stream`` -> Python ``async def`` generator function.
+    assert inspect.isasyncgenfunction(_request_stream)
+
+
+@pytest.mark.asyncio
+async def test_request_stream_call_returns_async_generator_object():
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result(_ok_resp())
+    gen = _request_stream(_tid(), _ScriptedProgress([]), fut)
+    assert inspect.isasyncgen(gen)
+    await gen.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Invariant 1 — request priority: a ready response short-circuits and drops
+# any concurrent/late progress (Rust polls request before progress).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_immediate_terminal_drops_all_progress():
+    # Response preset to resolved; two scripted frames must never surface.
+    tid = _tid()
+    progress = _ScriptedProgress(
+        [_frame(kind="chunk", body={"n": 1}), _frame(kind="chunk", body={"n": 2})]
+    )
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result(_ok_resp())
+    items = await _collect(_request_stream(tid, progress, fut))
+    assert [item.kind for item in items] == ["terminal"]
+    assert isinstance(items[0].terminal, TypedToolOutput)
+
+
+# ---------------------------------------------------------------------------
+# Invariant 2 — progress backfill: while the response is pending, frames are
+# lifted (one per cycle) to Progress items via progress_from_frame.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_progress_frames_backfill_while_request_pending():
+    # Hand-stepped __anext__ so the request future STAYS pending across both
+    # frame cycles — no event-loop scheduling jitter can let the request win
+    # early. Decouples the progress-backfill ordering from timing.
+    tid = _tid()
+    progress = _ScriptedProgress(
+        [_frame(kind="chunk", body={"n": 1}), _frame(kind="log", body={"line": "x"})]
+    )
+    fut = asyncio.get_running_loop().create_future()  # stays pending
+    gen = _request_stream(tid, progress, fut)
+    # Cycle 1 + 2: progress frames win (request still pending).
+    item1 = await gen.__anext__()
+    assert item1.kind == "progress"
+    assert item1.progress is not None
+    item2 = await gen.__anext__()
+    assert item2.kind == "progress"
+    assert item2.progress is not None
+    # Now resolve the request -> terminal (request priority).
+    fut.set_result(_ok_resp())
+    item3 = await gen.__anext__()
+    assert item3.kind == "terminal"
+    assert isinstance(item3.terminal, TypedToolOutput)
+    with pytest.raises(StopAsyncIteration):
+        await gen.__anext__()
+
+
+# ---------------------------------------------------------------------------
+# Invariant 4 — progress-closed is NOT stream-closed: a closed progress
+# stream keeps the generator awaiting the still-pending response (Rust's
+# Ready(None)|Pending => Pending arm).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_empty_progress_keeps_awaiting_then_emits_terminal():
+    tid = _tid()
+    progress = _ScriptedProgress([])  # closes on first __anext__
+    fut = asyncio.get_running_loop().create_future()
+    asyncio.ensure_future(_resolve_after(fut, _ok_resp(), cycles=3))
+    items = await _collect(_request_stream(tid, progress, fut))
+    assert [item.kind for item in items] == ["terminal"]
+    assert isinstance(items[0].terminal, TypedToolOutput)
+
+
+@pytest.mark.asyncio
+async def test_frame_then_close_then_late_response():
+    # Hand-stepped: frame 1 via __anext__ (request pending), then anext 2
+    # closes progress -> progress_done -> await fut (BLOCKS until the
+    # background resolver releases it).
+    tid = _tid()
+    progress = _ScriptedProgress([_frame(kind="chunk", body={"n": 1})])
+    fut = asyncio.get_running_loop().create_future()
+    gen = _request_stream(tid, progress, fut)
+    item1 = await gen.__anext__()
+    assert item1.kind == "progress"
+    asyncio.ensure_future(_resolve_after(fut, _ok_resp(), cycles=2))
+    item2 = await gen.__anext__()
+    assert item2.kind == "terminal"
+    assert isinstance(item2.terminal, TypedToolOutput)
+
+
+# ---------------------------------------------------------------------------
+# Request error arm — a ToolError response surfaces as an error Terminal
+# (_terminal_item's Err passthrough).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_request_error_surfaces_as_error_terminal():
+    # Hand-stepped: progress frame first, then resolve the request to a
+    # ToolError -> error terminal via _terminal_item's Err passthrough.
+    tid = _tid()
+    progress = _ScriptedProgress([_frame()])
+    err = ToolError.custom("network_error", "connection reset")
+    fut = asyncio.get_running_loop().create_future()
+    gen = _request_stream(tid, progress, fut)
+    item1 = await gen.__anext__()
+    assert item1.kind == "progress"
+    fut.set_result(err)
+    item2 = await gen.__anext__()
+    assert item2.kind == "terminal"
+    assert item2.is_error()
+    assert item2.terminal is err
+
+
+# ---------------------------------------------------------------------------
+# Invariant 3 — exactly one terminal: after the Terminal the generator
+# exhausts (StopAsyncIteration), never emitting a second terminal.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_exactly_one_terminal_then_stopasynciteration():
+    # Hand-stepped: progress, then resolve -> terminal, then the generator
+    # must exhaust (done flag short-circuit) rather than emit a 2nd terminal.
+    tid = _tid()
+    progress = _ScriptedProgress([_frame()])
+    fut = asyncio.get_running_loop().create_future()
+    gen = _request_stream(tid, progress, fut)
+    assert (await gen.__anext__()).kind == "progress"
+    fut.set_result(_ok_resp())
+    assert (await gen.__anext__()).kind == "terminal"
+    with pytest.raises(StopAsyncIteration):
+        await gen.__anext__()
+
+
+# ---------------------------------------------------------------------------
+# Cancellation — aclose mid-stream cancels the still-pending request future
+# (the finally block), so an abandoned consumer does not leak the request.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_aclose_mid_stream_cancels_pending_request():
+    tid = _tid()
+    progress = _ScriptedProgress([_frame(), _frame()])
+    fut = asyncio.get_running_loop().create_future()  # never resolved
+    gen = _request_stream(tid, progress, fut)
+    assert (await gen.__anext__()).kind == "progress"
+    await gen.aclose()
+    assert fut.cancelled()
