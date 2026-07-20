@@ -12543,3 +12543,64 @@ feat(platform): R149 demux.rs -> demux.py (SDK leaf 17, inbound frame demuxer)
 - YAGNI: route_loop/serve (connection.rs leaf); mpsc generic subscription
   (runtime type-erasure unnecessary); InboundFrame enum (flattened to
   is_request: bool).
+
+## R150 — connection.rs 类型层 58-347 -> connection_types.py（SDK leaf 18a）
+
+锚点:R150-1 59a4d15
+
+### 本轮目标
+
+前向移植 grok-build xai-computer-hub-sdk/src/connection.rs (2694 行) 的常量+类型层 (58-347) -> agent/minimax_code/computer_hub_sdk/connection_types.py + agent/tests/test_connection_types.py。范围: 9 常量 (OUTBOUND_BUFFER / RECONNECT_BACKOFF_MS / RECONNECT_ATTEMPT_MIN_BUDGET / DEFAULT_WS_PING_INTERVAL / SERVE_ATTEMPT_TIMEOUT / SERVE_MAX_ATTEMPTS / CLOCK_PROBE_INTERVAL / CLOCK_JUMP_ACCUM_MIN_MS / CLOCK_JUMP_REPORT_MIN_MS) + 5 resolve 函数 (reconnect_attempt_budget / default_reconnect_backoff / resolve_reconnect_backoff / resolve_ws_ping_interval / resolve_ws_liveness_deadline) + HealthState/HealthSnapshot/ConnHealth(+impl) + WriteErrorSlot + DisconnectCause(+impl 6 变体) + OutageInfo + DeadlineCallError(+From<ClientError> 2 变体) + WaiterGuard(RAII -> contextmanager) + ConnectionTuning + ConnKey + ReconnectEvent + 3 callback 别名 (ReconnectCallback/DisconnectCallback/ConnectCallback)。锚点 R150-1 59a4d15。父 R149 59a4d15。后续 R151+ 分批移植 HubConnection impl / WriterControl 状态机 / 1310 行测试套件。
+
+### 融合结论
+
+connection.rs 全 2694 行无法一轮移植: actor 半 (HubConnection/HubConnectionInner 360+ 行 + ConnectedExit/WriterControl<S> 状态机 961-1382 + #[cfg(test)] 1310 行) 依赖 tokio mpsc/sink/WebSocket framing/reconnect 驱动状态, 非 R150 单轮可消化。R150 切分为 18a 类型层 (纯数据 + 线程安全健康追踪器, 无网络/actor 依赖, 端口干净) + 后续 18b+ (HubConnection impl / WriterControl 状态机 / 测试套件分批)。类型层是后续所有叶子的地基: PrincipalKey(R139 hashable) + ClientError/NetworkError(R133) + Demux.take_response_waiter(R149) + RequestId/ConnectionId(R106/R82) 全部就绪, 本轮零阻塞端口。ConnHealth 时钟跳变检测器 (wall-vs-mono excess 累积, 跨 VM 暂停/GC 停顿/主机睡眠探测) 是本轮核心算法贡献, 用 threading.Lock 镜像 parking_lot::Mutex 不跨 async 边界。
+
+### 交付
+
+| 文件 | 行数 | 内容 |
+|------|------|------|
+| agent/minimax_code/computer_hub_sdk/connection_types.py | 519 | 9 常量 + 5 resolve + HealthState/Snapshot/ConnHealth(5 方法) + WriteErrorSlot + DisconnectCause 基类+6 frozen 子类 + OutageInfo + DeadlineCallError 基类+2 frozen 子类 + waiter_guard contextmanager + ConnectionTuning + ConnKey + ReconnectEvent + 3 callback 别名 |
+| agent/tests/test_connection_types.py | ~330 | 27 测试: 常量表 + resolve 5 函数各臂 + ConnHealth 6 场景 (含 _FakeTime monkeypatch 隔离) + WriteErrorSlot + DisconnectCause 6 变体 + OutageInfo + DeadlineCallError 2 变体 + waiter_guard 正常/异常 + ConnectionTuning + ConnKey eq/hash/frozen + ReconnectEvent |
+| docs/evolution/ITERATION_LOG.md | +本条 | R150 日志 |
+
+### 映射决策树 + 坑
+
+映射决策:
+- Duration -> float 秒; &[u64] / Arc<[Duration]> 共享 backoff -> tuple[float, ...] (不可变, 无需 refcount)
+- tokio::time::Instant (单调) -> time.monotonic(); std::time::SystemTime (墙钟) -> time.time()
+- parking_lot::Mutex -> threading.Lock (ConnHealth 被 reader 任务 + liveness probe 双触, sync lock 镜像 Rust Mutex 不跨 async 边界)
+- Arc<Mutex<Option<String>>> write-error slot -> WriteErrorSlot 类 (threading.Lock, get/set/clear)
+- enum DisconnectCause (6 带数据变体) -> DisconnectCause 基类 (label/close_code/detail 默认 None) + 6 frozen dataclass 子类 (CloseFrame(code)/Eof/ReadError(detail_str)/WriteError(detail_str)/Forced/LivenessDeadline, isinstance + label 双分发)
+- enum DeadlineCallError (2 变体) -> 基类 + TimedOut(timeout) / OtherError(error) frozen 子类 + to_client_error(); TimedOut -> NetworkError(f"request timed out after {timeout}s") (Rust {timeout:?}="30s" 无 Python Duration Debug, 消息携秒数)
+- struct WaiterGuard<'a> + impl Drop -> contextlib.contextmanager waiter_guard(demux, request_id) (finally 调 demux.take_response_waiter, 正常+异常退出都排空)
+- Box<dyn Fn + Send + Sync + 'static> 回调 -> Callable 类型别名 (Python 无 Send/Sync 约束)
+- ConnectionTuning -> dataclass (3 Optional 字段默认 None, resolve 函数把 None 或零 clamp 到内置默认, 复现历史硬编码行为)
+- ConnKey -> frozen dataclass (url + PrincipalKey; frozen=True 基于 (url, fingerprint) 自动 __hash__/__eq__, pool dedup dict key 安全)
+- ReconnectEvent -> dataclass (connection_id + sessions_replayed + attempt)
+- ConnHealth 时钟跳变: _roll 计算 (mono_ms, wall_ms) 增量, excess = wall_ms - mono_ms (饱和, wall<mono -> 0), excess >= CLOCK_JUMP_ACCUM_MIN_MS(100) 累加到 clock_jump_accum_ms, 重置 mono_ref/wall_ref; snapshot 仅在 total >= CLOCK_JUMP_REPORT_MIN_MS(2000) 时返回 clock_jump_ms 否则 0
+
+坑:
+1. OtherError import 来源错误 (本轮坑 1): 初版从 error.py import OtherError, 但 OtherError 是 connection_types 的 DeadlineCallError 子类 (不在 error.py)。pytest ImportError: cannot import name 'OtherError'。修复: 移到 connection_types import 块 (字母序 OtherError < OutageInfo), error import 只留 NetworkError。
+2. ruff I001 import 排序 (本轮坑 2): --fix 自动重排, case-insensitive 排序使 ConnectionTuning/ConnHealth/ConnKey 按 "conne"/"connh"/"connk" 顺序 (e<h<k)。
+3. ConnHealth 累积测试设计 bug (本轮坑 3, 最关键): _FakeTime 返回固定值, 第一次 refresh_clock() 后 refs 已滚到 fake 值 (base+0.1, base+3.0), 第二次 roll 时 deltas = (0,0), excess=0, 累积器不增长。27 测试中唯一失败, 误判为实现 bug —— 实际实现完全正确 (固定时钟下第二次 roll 理应零增量, refs 已匹配)。修复: 第二次 roll 前推进 fake clock 到新窗口 (base+0.2, base+6.0), 让 deltas 再次 = 2900ms, 累积器 2900 -> 5800。教训: 固定 fake clock 测试累积逻辑时, 必须每次 roll 推进时钟以模拟真实流逝。
+
+### 验证
+
+- ruff check (connection_types.py + test_connection_types.py): All checks passed! (0 error)
+- pytest tests/test_connection_types.py: 27 passed in 0.27s
+- 覆盖矩阵: 9 常量值 + resolve 5 函数全臂 (floor/fallback/empty/clamp zero/clamp negative/2.5x ping/verbatim override) + ConnHealth 6 场景 (fresh no-jump / wall-excess jump / below-accum-threshold no-jump / record_inbound roll+stamp / 跨 roll 累积 / reset clear) + WriteErrorSlot get/set/overwrite/clear + DisconnectCause 6 变体 label/close_code/detail + payload-less 默认 None + frozen + isinstance 分发 + OutageInfo 含/不含 prev_connection_id + DeadlineCallError TimedOut->NetworkError(含 timeout 串) / OtherError verbatim / isinstance + waiter_guard 正常退出排空 + 异常退出排空 + ConnectionTuning 默认全 None + ConnKey eq/hash/by-url+principal/dict-key/frozen + ReconnectEvent 构造
+
+### YAGNI 边界
+
+- HubConnection / HubConnectionInner (360+ 行) -> R151 (连接 actor 主 impl, 含 connect/serve/disconnect 驱动)
+- ConnectedExit / WriterControl<S> 状态机 (961-1382 行) -> R152/153 (writer 任务状态机, 含 ping/liveness/outbound 排空)
+- 1310 行 #[cfg(test)] 测试套件 -> R154+ (actor 测试, 依赖 tokio mpsc/sink mock, 需 _Sink/_SinkRx 包装器)
+- WriteErrorSlot 定义在此但 wiring (writer 任务 set, reconnect 时 get 分类为 WriteError cause) 在 R151+ actor 叶子
+- 3 callback 别名 (ReconnectCallback/DisconnectCallback/ConnectCallback) 类型化但 dispatch 点 (reconnect 成功/断连/首次连接时调用) 在 actor
+- DisconnectCause / DeadlineCallError 的消费端 (writer 任务分类、deadline_call 超时路径) 在 actor
+- server.rs (2649) / harness.rs (2940) / lib.rs barrel -> connection.rs 全部叶子完成后
+
+### Commit
+
+feat(platform): R150 connection.rs type layer -> connection_types.py (SDK leaf 18a)
