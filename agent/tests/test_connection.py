@@ -1325,3 +1325,101 @@ async def test_writer_resume_discards_stale_write_error() -> None:
     finally:
         stop_tx.try_send(None)
         await asyncio.wait_for(writer, timeout=2.0)
+
+
+# ===========================================================================
+# Spawn-pipeline writer task ping/buffer/control-close tests (R158, SDK leaf
+# 18h test completion -- connection.rs 1744-1845 + 1982-2000). Closes the
+# run_writer coverage deferred from R157: the keepalive ping cadence, the ping
+# re-arm after Resume, Pause buffering + Resume flush, and the control-channel
+# close exit path. No production change -- run_writer landed in R157.
+# ===========================================================================
+async def test_writer_honors_custom_ping_interval() -> None:
+    # A small ping_period fires send_ping on that cadence -- the writer's
+    # keepalive arm is wired to asyncio.sleep(ping_period) per loop.
+    sink = _RecordingSink()
+    _, out_rx = mpsc_channel(4)
+    _, ctl_rx = mpsc_channel(2)
+    stop_tx, stop_rx = mpsc_channel(1)
+    writer = asyncio.ensure_future(
+        run_writer(sink, out_rx, ctl_rx, stop_rx, 0.02, _idle_write_error_slot())
+    )
+    try:
+        await _wait_until(
+            lambda: sink.pings >= 3,
+            "three keepalive pings at the configured cadence",
+        )
+        assert sink.pings >= 3
+    finally:
+        stop_tx.try_send(None)
+        await asyncio.wait_for(writer, timeout=2.0)
+
+
+async def test_writer_re_arms_custom_ping_interval_after_resume() -> None:
+    # After Pause + Resume(fresh), the keepalive cadence restarts on the fresh
+    # sink -- the ping arm is rebuilt each loop, so Resume naturally re-arms it
+    # without any special-case logic in run_writer.
+    dead = _RecordingSink()
+    _, out_rx = mpsc_channel(4)
+    ctl_tx, ctl_rx = mpsc_channel(2)
+    stop_tx, stop_rx = mpsc_channel(1)
+    writer = asyncio.ensure_future(
+        run_writer(dead, out_rx, ctl_rx, stop_rx, 0.02, _idle_write_error_slot())
+    )
+    try:
+        ctl_tx.try_send(Pause())
+        fresh = _RecordingSink()
+        ctl_tx.try_send(Resume(fresh))
+        await _wait_until(
+            lambda: fresh.pings >= 3,
+            "keepalive pings resume on the configured cadence after Resume",
+        )
+        assert fresh.pings >= 3
+    finally:
+        stop_tx.try_send(None)
+        await asyncio.wait_for(writer, timeout=2.0)
+
+
+async def test_writer_buffers_during_pause_and_flushes_on_resume() -> None:
+    # While paused the writer holds queued frames (live=False skips the
+    # outbound arm); on Resume they flush to the fresh sink, in order, and
+    # nothing ever lands on the dead sink.
+    dead = _RecordingSink()
+    out_tx, out_rx = mpsc_channel(16)
+    ctl_tx, ctl_rx = mpsc_channel(2)
+    stop_tx, stop_rx = mpsc_channel(1)
+    writer = asyncio.ensure_future(
+        run_writer(dead, out_rx, ctl_rx, stop_rx, _TEST_PING_NEVER, _idle_write_error_slot())
+    )
+    try:
+        ctl_tx.try_send(Pause())
+        await asyncio.sleep(0.02)  # let the writer process Pause
+        for frame in ("g1", "g2", "g3"):
+            out_tx.try_send(frame)
+        await asyncio.sleep(0.05)  # give the writer a chance to (wrongly) drain
+        assert dead.recorded == [], "paused writer must not drain onto the dead sink"
+        fresh = _RecordingSink()
+        ctl_tx.try_send(Resume(fresh))
+        await _wait_until(
+            lambda: len(fresh.recorded) == 3, "buffered frames flush after resume"
+        )
+        assert fresh.recorded == ["g1", "g2", "g3"]
+        assert dead.recorded == [], "no frame must ever reach the dead sink"
+    finally:
+        stop_tx.try_send(None)
+        await asyncio.wait_for(writer, timeout=2.0)
+
+
+async def test_writer_exits_when_control_channel_closes() -> None:
+    # Dropping the last control sender (Rust ``drop(ctl_tx)``) is mirrored by
+    # an explicit channel close: recv() returns None on an empty closed
+    # channel, which the writer treats as a clean exit.
+    sink = _RecordingSink()
+    _, out_rx = mpsc_channel(4)
+    ctl_tx, ctl_rx = mpsc_channel(2)
+    _, stop_rx = mpsc_channel(1)
+    writer = asyncio.ensure_future(
+        run_writer(sink, out_rx, ctl_rx, stop_rx, _TEST_PING_NEVER, _idle_write_error_slot())
+    )
+    ctl_tx.close()
+    await asyncio.wait_for(writer, timeout=2.0)

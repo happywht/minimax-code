@@ -12949,3 +12949,54 @@ SDK crate 第 18 叶（18h）是 spawn 管线从纯逻辑层跨入 asyncio task 
 ### Commit
 
 `feat(platform): R157 connection.rs run_writer asyncio task -> connection.py (SDK leaf 18h)`
+
+
+## R158 — Spawn-pipeline writer task: ping cadence / Resume re-arm / Pause buffer / ctl-close exit (SDK leaf 18h test completion)
+
+锚点:R158-1 730ff55
+
+### 本轮目标
+
+SDK crate 第 18 叶 18h 切片的测试收尾：补全 `run_writer`（R157 移植）剩余 4 个测试，覆盖 Rust `connection.rs` 1744-1845 + 1982-2000 的全部 writer 测试范式。本轮为纯测试切片——`run_writer` 生产代码在 R157 已完整移植，R158 不动一行生产代码，只补测试覆盖，把 spawn 管线首个 asyncio task 的行为锁死。
+
+### 融合结论
+
+四个测试覆盖 run_writer 的四个剩余行为维度，全部依赖 R157 已就位的基础设施（`_RecordingSink` / `_wait_until` / `_TEST_PING_NEVER` / `_idle_write_error_slot` / `Pause` / `Resume` / `mpsc_channel` / `run_writer`），无新符号、无新导入、无生产改动。
+
+1. **keepalive ping 周期**（`test_writer_honors_custom_ping_interval`）：ping_period=20ms，`_wait_until(lambda: sink.pings >= 3)`。Python 的 `asyncio.sleep(ping_period)` 首次等满 period，与 Rust `tokio::time::interval` 循环外消费初始 tick 后循环内首 tick 等 period 语义一致（R157 已论证）。
+2. **Resume 后 ping 重建**（`test_writer_re_arms_custom_ping_interval_after_resume`）：dead sink（非 fail，命名误导——它只是个普通 `_RecordingSink()`）+ Pause + Resume(fresh)，验证 fresh.pings>=3。run_writer 每轮重建 ping_task，Resume 后 `live=True` 自然重建 keepalive arm，无需特殊逻辑。
+3. **Pause 期间缓冲 + Resume flush**（`test_writer_buffers_during_pause_and_flushes_on_resume`）：dead sink + Pause + 入 g1/g2/g3 + 断言 dead.recorded 空（live=False 分支不创建 out_task，不 drain）+ Resume(fresh) + 断言 fresh.recorded==["g1","g2","g3"]（FIFO flush）+ 断言 dead.recorded 仍空。
+4. **ctl 通道关闭退出**（`test_writer_exits_when_control_channel_closes`）：`ctl_tx.close()`（Rust `drop(ctl_tx)` 的 Python 等价）→ `ctl_rx.recv()` 在空+closed 时返回 None → run_writer `if ctl is None: return`。
+
+### 交付
+
+- `agent/tests/test_connection.py`：追加 R158 测试块（4 个 writer 测试），位于 R157 测试块末尾。无 import 改动、无生产代码改动。
+- 验证：`uv run ruff check tests/test_connection.py` → All checks passed；`uv run pytest tests/test_connection.py -q` → 78 passed（R157 的 74 + R158 的 4，数量精确吻合）。
+
+### 映射决策树 + 坑
+
+| Rust 范式 | Python 移植决策 | 坑/理由 |
+|---|---|---|
+| `drop(ctl_tx)` → recv None | `ctl_tx.close()` 显式关闭 | Python `_Sink` 无 `__del__`，GC sender 不自动关闭 channel（`_Channel.closed` 只在 `close()` 设 True）；丢弃 sender 不等价 Rust `drop(sender)`。exits_when_control_channel_closes 必须显式 `ctl_tx.close()` |
+| `tokio::time::interval` 20ms tick | `asyncio.sleep(0.02)` | R157 已论证：Python sleep 首次等满 period，与 Rust 循环外消费初始 tick 后循环内等 period 语义一致，无需循环外初始 tick |
+| dead sink（Rust 命名）| `_RecordingSink()`（fail=False）| 命名误导：dead 只是"即将被 Resume 替换的旧 sink"，非 fail。测试只验证 fresh sink 行为，dead 是否 ping 不影响断言 |
+| Pause 期间不 drain outbound | `live=False` 分支不创建 out_task | R157 run_writer 设计：`if live:` 才 `ensure_future(ping_task)` + `ensure_future(out_task)`；live=False 只 `wait(stop, ctl)`。故 Pause 期间 outbound 入队的帧滞留 buffer，Resume 后 FIFO flush |
+| 丢弃 out_tx（outbound 无生产者）| `_, out_rx = mpsc_channel(4)` | Python 丢弃 sender 不关闭 channel（无 `__del__`），`out_rx.recv()` 在 buffer 空时永远 await——honors_custom_ping_interval 正好需要 writer 持续 ping 不被 outbound None 退出 |
+| `Arc<Mutex<Vec>>` 记录帧 | `_RecordingSink.recorded: list[str]` | 单线程 asyncio 无需 Arc/Mutex，属性直接访问（R157 已论证）|
+
+### 验证
+
+- `uv run ruff check tests/test_connection.py` → All checks passed!（0 error）
+- `uv run pytest tests/test_connection.py -q` → 78 passed in 1.22s（R157 的 74 + R158 的 4，数量精确吻合，无回归）
+
+### YAGNI 边界
+
+- 本轮**不动 run_writer 生产代码**（R157 已完整移植 Rust 1047-1078）。4 个测试是行为验证，非回归修复。
+- 不引入新 Protocol/helper（WriterSink / _RecordingSink / _wait_until / _TEST_PING_NEVER / _idle_write_error_slot 全部 R157 就位）。
+- 不补 run_reader_actor（下一叶 R159+，编排层：loop 调用 run_reader_phase -> ConnectedExit 分发 + reconnect 循环调用 backoff_for + drain_reconnect_signals）。
+- 不碰 1310 行 `#[cfg(test)]` 块的 reader/server 部分（远期）。
+- 不动 connection.py 生产代码（R156 末尾的 helper 组 + R157 的 run_writer 已就位）。
+
+### Commit
+
+feat(platform): R158 writer task ping cadence + resume re-arm + pause buffer + ctl-close exit tests (78 passed)
