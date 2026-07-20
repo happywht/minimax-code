@@ -14811,3 +14811,63 @@ feat(platform): R180 xai-computer-hub-mcp-adapter transport.rs McpTransport asyn
 ### Commit
 
 `feat(platform): R181 xai-computer-hub-mcp-adapter bridge.rs McpBridgeConfig type-layer first leaf (frozen dataclass, 6 tests)`
+
+## R182 — xai-computer-hub-mcp-adapter bridge.rs translate_mcp_result 纯映射自由函数
+
+锚点:R182-1 15da776
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-computer-hub-mcp-adapter/src/bridge.rs` L275-328 `translate_mcp_result`（`McpCallResult` -> `ToolOutputWire` 纯映射自由函数）+ `_translate_mcp_block` 私有 helper（`McpContent` -> `McpBlock` 三分支 `isinstance` 分派）。Rust 源是模块私有（`fn` 无 `pub`，不在 `lib.rs` `pub use`），故 Python 落地为 `bridge.py` 模块级函数：`bridge.py` 自身 `__all__` 含（便于测试 + 同模块 `McpToolHandler` 消费），但 `mcp_adapter/__init__.py` barrel **不**导出（与 Rust `lib.rs` 可见性一致）。4 分支逻辑（Rust 求值序）：空 `content` -> `Text("")`（不管 `is_error`）/ `is_error` -> 拼接文本块 join `"\n"`（非文本块丢弃 + 全非文本时 `warn!`）/ 单文本块（len==1 且首块 Text）-> `Text` / 多块或非文本 -> `Mcp{blocks}` 1:1 映射。消费 R179 `McpContent`/`McpCallResult` + R83 `ToolOutputWire`/`McpBlock`，零前向引用。本轮：扩展 `bridge.py`（translate + helper + imports + docstring leaf order 更新 + `__all__`）+ 扩展 `test_mcp_adapter_bridge.py` 9 个契约测试 + ruff/pytest/回归 + 日志 + 精确 commit。
+
+### 融合结论
+
+**translate_mcp_result 是 bridge.rs 依赖图的最纯叶子**（无状态、无 async、无 trait 绑定、无前向引用）。它是两条路径的共享依赖：`McpBridge::connect` 编排路径与 `McpToolHandler::handle_call` 转发路径——两者都把 `McpTransport::call_tool` 返回的 `McpCallResult` 翻译为 hub 的 `ToolOutputWire`。故在 `McpToolHandler` struct（R183+）之前首迁，解除 handler impl 的最后一条纯依赖。
+
+**4 分支逻辑（Rust 求值序，精确对齐 bridge.rs L275-328）：**
+1. `content.is_empty()` -> `Text(String::new())`——短路最先，不管 `is_error`（副作用型 MCP 工具无 content）。
+2. `is_error` -> `filter_map` 出所有 `Text` 块 join `"\n"`；若结果为空（全非文本块）触发 `warn!(content_count = ..., "...")` 并丢弃。
+3. `len == 1 && first.is_text()` -> `Text(text.clone())`——common case（工具返回单文本块压平为 flat text）。
+4. 否则 -> `Mcp { blocks }`，4 个 match arm 内联在 `.map` 闭包里（Text/Image/Resource 三变体 1:1 映射）。
+
+**Rust->Python 映射决策：** Rust 第 4 分支在 `.map` 闭包内联 `match c { ... }`；Python `isinstance` 三分支在列表推导内可读性差，故抽 `_translate_mcp_block(content) -> McpBlock` 私有 helper（DRY + 单一职责，三分支映射 1:1，行为零变化）。`warn!` 结构化字段 `content_count` -> `logging.warning("...content_count=%d", len(...))`（`%-`格式化规避 G004 + 允许 logger 延迟格式化）。`isinstance` 分派末尾 `raise TypeError`（sealed union 防御，运行时不可达，满足类型检查器）。
+
+**依赖图确认（全落地）：** `McpCallResult.content: list[McpContent]` + `.is_error: bool` [R179] -> `translate_mcp_result` -> `ToolOutputWire = Text | Json | Mcp` + `McpBlock = TextBlock | ImageBlock | ResourceBlock` [R83]。变体字段名侦察确认：`McpTextContent.text` / `McpImageContent.{mime_type,data}` / `McpResourceContent.{uri,mime_type,text}`。
+
+### 交付
+
+| 文件 | 状态 | 说明 |
+|------|------|------|
+| `agent/minimax_code/mcp_adapter/bridge.py` | 扩展（83->199 行） | `translate_mcp_result` 纯函数（4 分支）+ `_translate_mcp_block` 私有 helper（三分支 isinstance 分派）+ imports 扩展（types 5 符号 + output_wire 7 符号 + logging）+ `__all__` 加 `translate_mcp_result` + docstring leaf order 更新（第 2 项标注 R182 落地 + Rust 内联 match -> helper 的适配说明 + warn! -> logging.warning 说明）|
+| `agent/tests/test_mcp_adapter_bridge.py` | 扩展（103->289 行） | R181 保留 6 测试 + R182 新增 9 测试：空 content（2：基本 + 忽略 is_error）/ is_error（3：拼接 + 丢弃非文本 + 全非文本 warn+空）/ 单文本块（1）/ 多块或非文本（3：双文本块 + 单非文本块 + 三变体混合 1:1 映射）|
+| `docs/evolution/ITERATION_LOG.md` | 追加 | R182 条目 |
+
+### 映射决策树+坑
+
+**决策 1 — `_translate_mcp_block` helper 抽取：** Rust 第 4 分支在 `.map(|c| match c { ... })` 闭包内联 match，Rust 闭包 + match 表达式天然可读。Python 等价的列表推导 `[match c ... for c in content]` 无 match 表达式（3.10 才有，且 pydantic discriminated union 用 isinstance 更自然），而 `[f(c) for c in content]` + helper `f` 内 `isinstance` 三分支是 Pythonic 写法（DRY + 单一职责）。helper 加 `_` 前缀表私有，不进 `__all__`，测试通过 `translate_mcp_result` 间接覆盖（4 分支测试已穷尽三分支映射）。
+
+**决策 2 — `translate_mcp_result` 不进 barrel：** Rust `fn translate_mcp_result` 无 `pub`（模块私有），`lib.rs` 的 `pub use bridge::{McpBridge, McpBridgeConfig, McpBridgeHandle, McpToolHandler}` 4 符号不含它。Python 忠实反映：`bridge.py` `__all__` 含（标记为 bridge 模块公开面，供同模块 `McpToolHandler` + 测试导入），但 `mcp_adapter/__init__.py` barrel 不 re-export（与 Rust crate 对外可见性一致）。测试通过 `from minimax_code.mcp_adapter.bridge import translate_mcp_result` 直接导入，绕过 barrel。`test_barrel_count_is_41` 仍绿（barrel 未动）。
+
+**决策 3 — `warn!` -> `logging.warning` + `%-`格式化：** Rust `tracing::warn!(content_count = result.content.len(), "...")` 是结构化字段。Python 等价：`logging.getLogger(__name__).warning("...content_count=%d", len(...))`。选 `%-`格式化而非 f-string：ruff G004 禁止 logging f-string；且 `%-`格式化让 logger 在 WARNING 级别未启用时不格式化（性能 + 惯用法）。单结构化字段用 placeholder 而非 `extra=`（简化，单字段不值得 extra dict 开销）。
+
+**决策 4 — isinstance 末尾 `raise TypeError`：** `McpContent` 是 sealed 3 变体 union（pydantic `Field(discriminator="type")`），运行时只可能是 `McpTextContent`/`McpImageContent`/`McpResourceContent`。三分支后加 `raise TypeError(f"unknown McpContent variant: ...")` 是防御性（不可达 + 满足类型检查器穷尽性 + 未来加变体时 fail-fast）。f-string 在 raise 消息（非 logging）无 G004 问题。
+
+**坑 1 — `caplog` vs `pytest.warns`：** `logging.warning` 不触发 `pytest.warns`（后者捕 `warnings.warn`，即 Python `warnings` 模块，非 `logging`）。R182 第 3 个 error 测试 `test_translate_error_all_non_text_logs_warning_and_returns_empty` 用 `caplog: pytest.LogCaptureFixture` fixture + `caplog.at_level(logging.WARNING, logger="minimax_code.mcp_adapter.bridge")` 精确捕获 bridge logger 的 WARNING 记录，断言 `"non-text blocks" in r.message`。
+
+### 验证
+
+- **ruff：** `uv run ruff check minimax_code/mcp_adapter/bridge.py tests/test_mcp_adapter_bridge.py` -> `All checks passed!`（2 文件零违规，零 `--fix` 噪声外溢，imports isort 一次通过）。
+- **pytest：** `uv run pytest tests/test_mcp_adapter_bridge.py tests/test_mcp_adapter_transport.py tests/test_mcp_adapter_types.py tests/test_init_barrel.py -v` -> **66 passed in 0.63s**（R181 基线 57 + R182 新增 9 = 66；bridge 15[6 R181 + 9 R182] + transport 11 + types 19 + barrel 19，零回归）。
+- **barrel 不变性：** `test_barrel_count_is_41 PASSED`——`translate_mcp_result` 故意不进 barrel（决策 2），barrel 仍 41 符号，与 Rust `lib.rs` `pub use` 一致。
+- **回归边界：** R181 McpBridgeConfig（6 测试）、R180 McpTransport async trait（11 测试）、R179 types wire 契约（19 测试）、R178 SDK barrel 对账（19 测试）全绿。
+
+### YAGNI 边界
+
+- **`McpToolHandler` 延后（R183+）：** `translate_mcp_result` 是 `McpToolHandler::handle_call` 的纯依赖，本轮先迁解除阻塞。handler struct（持 `ToolId` + `McpToolDefinition` + `Arc<dyn McpTransport>` + `Option<String>`）+ `impl ToolServerHandler`（4 方法）下一轮迁。
+- **`ToolServerHandler` trait 不迁移：** Rust `McpToolHandler` 实现 `xai_computer_hub_sdk::ToolServerHandler`（绑定 live `ToolServer` actor / xAI `HubConnection` socket）。MiniMax 无此消费者（R178 barrel YAGNI），R183+ handler 将作为**具体类**暴露 trait 的 4 个方法（`tool_id`/`description`/`input_schema`/`handle_call`），非 `abc.ABC` 子类（协议契约文档化，镜像 server.py preamble 叶子 R175-R177 鸭子类型）。
+- **`McpBridge` actor / `McpBridgeHandle` / `Drop` 延后（R184+）：** actor 的 `connect` 编排、`handlers`/`server_info`/`tool_count`/`shutdown` 访问器、`impl Drop`（best-effort `transport.close()`）须等 handler 落地后随依赖序迁移。
+- **`metrics` 模块延后：** `lib.rs` `pub(crate) mod metrics`（crate 内私有，bridge 调用侧计数器收集点），无外部消费者，延后至 bridge actor 全落地后评估（可能整体 YAGNI）。
+
+### Commit
+
+`feat(platform): R182 xai-computer-hub-mcp-adapter bridge.rs translate_mcp_result pure mapper (McpCallResult -> ToolOutputWire, 9 tests)`
