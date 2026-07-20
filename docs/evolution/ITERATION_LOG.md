@@ -15932,3 +15932,140 @@ xai-grok-update 4 文件 -> 迁移判定：
 ```
 feat(platform): R196 migrate xai-grok-update pure logic (closes R42 update-check gap)
 ```
+## R197 — 迁移 xai-sqlite-journal crate 纯逻辑子集（JournalMode 决策内核 + NFS 分类器）
+
+锚点:R197-1 c3cf1ce
+
+### 本轮目标
+
+迁移 ``xai-sqlite-journal``（779 行 / 1 个 ``lib.rs``，crate 单轮）的**纯逻辑核心**到
+``agent/minimax_code/sqlite_journal.py``。该 crate 解决一个具体的生产 bug：WAL 模式的
+mmap ``-shm`` 在网络文件系统（NFS/SMB/FUSE/…）上 SIGBUS（网络 fs 缺一致的共享内存 + 可靠
+POSIX 锁），修复策略是——网络挂载切 TRUNCATE 回滚日志 + **每 host 一个 DB sibling**
+（``worktrees.db`` → ``worktrees.h-<host>.db``），这样没有对端 host（含修复前的旧二进制，
+它可能把共享 DB 翻回 WAL）会共享同一个文件。本轮迁移**决策内核 + env kill-switch 解析器 +
+per-host 路径推导 + 3 个平台文件系统分类器**；rusqlite PRAGMA 连接层（``open`` /
+``open_readonly`` / ``apply``）+ ``statfs``/``GetDriveTypeW`` 实探 + libc ``gethostname`` 记为
+I/O YAGNI。
+
+### 融合结论
+
+``xai-sqlite-journal`` 是 grok 的文件系统感知 SQLite journal-mode 选择器。**关键洞察：crate
+自身已把纯逻辑从 I/O 外壳分离出来**——grok 注释自标 ``mode_from_env`` "pure for testability"、
+``is_network_fs_magic`` "Pure"、``is_windows_unc`` "Pure for testability"，是经典的
+"纯分类器 + I/O 探测器"分层。平台的 SQLite 层（``storage/db.py``，``aiosqlite``）当前跑在
+platformdirs 解析的本地路径上、从不设 ``journal_mode``，因此 rusqlite PRAGMA 连接层与平台无
+直接对应——**纯决策内核**是干净的迁移叶子，且未来 storage 落地 WAL/TRUNCATE 时直接消费
+``for_db_path_inner`` + 3 个分类器即可。本轮迁移 **12 个公开符号**（1 StrEnum + 1 frozen+slots
+dataclass + 7 纯函数/方法 + 2 常量/集合 + 1 frozenset 常量；外加 ``effective_db_path`` 方法 +
+``_EnvOverrideKind``/``_MAC_NETWORK_FS_NAMES`` 私有助手），**零外部依赖全 stdlib**
+（``dataclasses`` / ``datetime`` / ``enum`` / ``pathlib``）——迄今最纯的叶子。
+
+### 交付
+
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| ``agent/minimax_code/sqlite_journal.py`` | ~323 | ``lib.rs`` 纯逻辑核心子集：``BUSY_TIMEOUT``（timedelta 5s）+ ``JournalMode`` StrEnum（WAL/TRUNCATE，``as_str`` + ``effective_db_path`` 方法）+ ``_EnvOverrideKind`` 私有 Enum + ``EnvOverride`` frozen+slots dataclass（unset/invalid/of_mode 工厂）+ ``mode_from_env``（``GROK_SQLITE_JOURNAL_MODE`` 解析：wal/truncate 不区分大小写；空=UNSET；拼写错误=INVALID）+ ``for_db_path_inner``（``for_db_path`` 纯 core：env 覆盖优先，否则 ``is_network`` 判定）+ ``NETWORK_FS_MAGICS`` frozenset（15 个网络 fs magic）+ ``is_network_fs_magic``（low-32 比较）+ ``MNT_LOCAL`` 常量 + ``_MAC_NETWORK_FS_NAMES`` frozenset（7 个 macOS fstype）+ ``is_network_fs_name`` + ``is_network_fs_mac`` + ``is_windows_unc`` + ``host_discriminator``（hostname 清洗，参数注入）；``__all__`` = 12 符号；docstring 含完整 YAGNI 台账 + 产品融合注记（storage 消费路径） |
+| ``agent/tests/test_sqlite_journal.py`` | ~290 | 35 个 ``def test``（parametrize 展开为 98 用例）：``BUSY_TIMEOUT`` + ``JournalMode`` 2 变体/``as_str``/``str`` 一致 + ``mode_from_env`` 12 矩阵（UNSET/MODE/INVALID）+ ``EnvOverride`` 工厂形态 + frozen 守卫 + ``for_db_path_inner`` 10 矩阵（env 覆盖/unset 检测/invalid 穿透）+ 15 网络 magic 分类 + 7 本地 magic 分类 + sign-extended CIFS 守卫 + magic 计数 + ``MNT_LOCAL`` 值 + 9 网络 fstype + 5 本地 fstype + 5 ``is_network_fs_mac`` 矩阵 + 7 Windows UNC + 9 ``host_discriminator`` 矩阵 + None + 首尾 dash 剥离 + 8 ``effective_db_path``（WAL 不变/TRUNCATE 插扩展名前/idempotent/bare 追加/dotfile 追加/多点保留/无 host 不变/相对路径） |
+
+新增 12 公开符号（+3 私有助手），**零修改既有文件**（迭代独立性）。**单一决策来源**
+（``for_db_path_inner`` + 3 分类器），rusqlite/statfs/hostname 的 I/O 外壳延后到 storage 落地轮。
+
+### 映射决策树 + 坑
+
+```
+xai-sqlite-journal 1 文件 (lib.rs 779 行) -> 迁移判定：
++- BUSY_TIMEOUT (Duration::from_millis(5000)) 纯常量 -> 迁移 (timedelta(seconds=5))
++- JournalMode enum (Wal/Truncate) + as_str 纯 -> 迁移 (StrEnum WAL="WAL"/TRUNCATE="TRUNCATE")
+|   +- effective_db_path 纯路径推导 (hostname 参数注入) -> 迁移 (PurePath)
+|   |   * 内部调 host_discriminator() -> 纯清洗迁移，hostname 作参数
+|   \- for_db_path 混合 (env 解析纯 + is_network_fs I/O + tracing 日志)
+|       +- 纯 core -> for_db_path_inner(env_value, is_network) 迁移
+|       \- is_network_fs(path) 实探 + tracing warn 日志 -> public wrapper YAGNI
++- EnvOverride enum {Unset,Invalid,Mode(JournalMode)} + mode_from_env 纯 -> 迁移
+|   * tag enum 单变体携数据 -> EnvOverride frozen+slots dataclass + _EnvOverrideKind Enum + 3 工厂
++- host_discriminator 纯清洗 (lowercase alphanum, 其他->-, 24 cap, strip -) -> 迁移 (hostname 参数)
+|   \- hostname_raw I/O (libc::gethostname Unix / COMPUTERNAME Windows) -> YAGNI
++- is_network_fs_magic 纯 (15 magic + low-32 比较) -> 迁移 (NETWORK_FS_MAGICS frozenset)
++- MNT_LOCAL (0x00001000) 纯常量 -> 迁移
++- is_network_fs_mac 纯 (f_flags MNT_LOCAL 缺 + fstype allowlist) -> 迁移
++- is_network_fs_name 纯 (7 fstype 名大小写无关) -> 迁移 (_MAC_NETWORK_FS_NAMES frozenset)
++- is_windows_unc 纯 (\\ 前缀 + ?\UNC\ verbatim + .\ device 排除) -> 迁移
++- open / open_readonly (rusqlite Connection::open + busy_timeout + apply)
+|   -> YAGNI: 平台用 aiosqlite，storage/db.py 拥有自己的连接层
++- apply (pragma_update journal_mode/locking_mode/query_only) -> YAGNI: PRAGMA 应用层
+\- imp 模块 (Linux/macOS libc::statfs + Windows GetDriveTypeW/GetVolumePathNameW)
+    -> YAGNI: 实探 I/O；纯分类器(magic/mac/name/unc)已落地，probe 延后到 storage 落地轮
+```
+
+坑（R197 解决的）：
+
+1. **EnvOverride 的 tag enum 携带值** —— Rust ``enum EnvOverride { Unset, Invalid, Mode(JournalMode) }``
+   单变体携带数据，Python Enum 不能直接表达 -> frozen+slots dataclass ``EnvOverride(kind, mode=None)``
+   + 私有 ``_EnvOverrideKind`` Enum（UNSET/INVALID/MODE）+ 3 classmethod 工厂（unset/invalid/of_mode）。
+   for_db_path_inner 用 ``override.kind is _EnvOverrideKind.MODE and override.mode is not None`` 判定
+   （defensive None check；MODE 不变量保证 mode 非 None）。测试通过 ``.kind.name`` 字符串断言，
+   不 import 私有 ``_EnvOverrideKind``。
+2. **effective_db_path 的纯化** —— grok 内部调 ``host_discriminator()``（无参，内部 ``hostname_raw()``
+   I/O）。迁移把 hostname 作为参数注入，保持纯测试性（``host_discriminator(hostname: str | None)``
+   + ``effective_db_path(self, db_path, hostname)``）；hostname 获取（``socket.gethostname`` /
+   ``platform.node``）的 I/O 半段是调用方职责，YAGNI。``hostname=None`` 时回落共享路径（仍是
+   TRUNCATE，绝不为 WAL）。
+3. **effective_db_path 的 rsplit_once 语义** —— "worktrees.db" → 在扩展名前插入
+   （"worktrees.h-x.db"）；".hidden"（点文件，stem 空）→ 追加（".hidden.h-x"）；"state"（无扩展）
+   → 追加（"state.h-x"）。用 ``name.rsplit(".", 1)``，``len(parts) == 2 and parts[0] != ""`` 判
+   stem 非空，等价 grok ``rsplit_once('.')`` + ``!stem.is_empty()`` 守卫；幂等检查
+   ``name.endswith(tag) or f"{tag}." in name`` 覆盖 ``worktrees.h-x.db``（含 ``.h-x.``）和
+   ``state.h-x``（endswith）两种已解析形态。
+4. **is_network_fs_magic 的 low-32 比较** —— ``f_type`` 是有符号 word，宽度随架构变，32-bit 内核
+   符号扩展高位 magic（CIFS ``0xFF534D42`` → ``0xFFFFFFFFFF534D42``）。
+   ``(f_type & 0xFFFFFFFF) in NETWORK_FS_MAGICS``。``test_sign_extended_magic_still_matches``
+   用 ``0xFFFFFFFFFF534D42`` 守护该语义。
+5. **is_windows_unc 的 verbatim 前缀三分** —— ``\\server\share`` 是 UNC（网络）；
+   ``\\?\UNC\server\share`` 是 verbatim-UNC（网络）；``\\?\C:\`` 是 verbatim-local（非网络）；
+   ``\\.\pipe\`` 是 device（非网络）。``strip_prefix("\\\\")`` → rest；若 rest 以 ``?\`` 开头取
+   verbatim = rest[2:]，判 ``verbatim[:4].lower() == "unc\\"``；否则 ``not rest.startswith(".\\")``。
+   短于 4 的 verbatim 自然 False（grok ``get(..4).is_some_and`` 同义）。
+6. **host_discriminator 的 isalnum 语义** —— grok ``is_ascii_alphanumeric`` 限 ASCII。
+   Python ``c.isascii() and c.isalnum()``（isalnum 对 ASCII 等价字母+数字，isascii 拦非 ASCII
+   如 ``é`` → ``-``）。truncate(24) 按 char（清洗后全 ASCII，byte==char）；``strip("-")`` 等价
+   grok ``trim_matches('-')``；空 → None。
+7. **mode_from_env 空串=UNSET 非 INVALID** —— ``None``/``""`` → UNSET（刻意留空，非拼写错误）；
+   ``"wal "``（trailing whitespace）/``"delete"`` → INVALID。grok ``eq_ignore_ascii_case`` 不 trim，
+   所以 trailing whitespace 是 typo。``.lower()`` 比较等价 ASCII 大小写无关。
+
+### 验证
+
+- ``ruff check minimax_code/sqlite_journal.py tests/test_sqlite_journal.py``
+  -> **All checks passed!**（新模块 + 新测试全绿，isort E/F/W/B/UP 全过；零外部依赖）
+- ``pytest tests/test_sqlite_journal.py -q``
+  -> **98 passed in 0.20s**（35 def / parametrize 展开 98 用例，覆盖 15 网络 magic + 7 本地 magic
+  + sign-extended + 9 fstype + 5 mac 矩阵 + 7 UNC + 9 host_discriminator + 8 effective_db_path）
+- 全量回归 ``pytest -q``
+  -> **4934 passed, 10 skipped, 0 failed**（101.64s；R196 基准 4836 + R197 98 = 4934，零回归；
+  1 warning 是预存 fastapi/httpx starlette deprecation，与 R197 无关）
+
+### YAGNI 边界
+
+- **rusqlite PRAGMA 连接层**（``JournalMode::open`` / ``open_readonly`` / ``apply``）：
+  ``Connection::open`` + ``busy_timeout(PRAGMA)`` + ``pragma_update`` 的 ``journal_mode`` /
+  ``locking_mode`` / ``query_only``。平台用 ``aiosqlite``，``storage/db.py`` 拥有自己的连接层；
+  纯决策已落地，PRAGMA 应用延后到 storage 消费 WAL/TRUNCATE 轮。
+- **活文件系统探测**（``is_network_fs(path)``）：``imp::is_network_fs`` per-platform（Linux/macOS
+  ``libc::statfs``，Windows ``GetDriveTypeW`` / ``GetVolumePathNameW``）。它调用的纯分类器
+  （``is_network_fs_magic`` / ``is_network_fs_mac`` / ``is_windows_unc``）已落地；实际
+  ``statfs``/``GetDriveTypeW`` 探测是 I/O——storage 落地时多轮迁移（或用 ``os.statvfs``
+  + platform-specific）。
+- **hostname 获取**（``hostname_raw``）：Unix ``libc::gethostname``、Windows ``COMPUTERNAME`` env。
+  Python 有 ``socket.gethostname`` / ``platform.node``；纯清洗 ``host_discriminator`` 已落地并接受
+  hostname 作参数。
+- **``for_db_path`` public 包装**：调 ``is_network_fs``（I/O）+ ``tracing`` 日志；其纯 core
+  （``for_db_path_inner``）已落地。
+- **``tracing`` 日志**（invalid env 警告 / mode 决策日志）：路由到 ``xai_grok_telemetry`` Chrome-trace
+  span；平台 tracing crate（R127-R132）拥有启动仪表，纯 core 省略日志。
+
+### Commit
+
+```
+feat(platform): R197 migrate xai-grok-sqlite-journal pure logic (JournalMode decision core)
+```
