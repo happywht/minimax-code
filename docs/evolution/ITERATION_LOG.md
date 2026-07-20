@@ -9979,3 +9979,102 @@ remote.rs 4 层中，layer 4 的 3 个纯函数**无 trait object、无连接状
 ### Commit
 
 feat(platform): R120 migrate xai-computer-hub-core remote.rs Layer 4 wire helpers (progress_from_frame + output_to_value + decode_call_result + private _map_block/_decode_tool_call_result/_decode_chat_completion_output, crate leaf 6 part 1, pure-function decode/encode seams for remote dispatch, consumes R65/R82-R106 protocol + R107-R114 runtime, 6-leaf regression 155 passed)
+
+## R121 — migrate remote.rs layer-4 error-decode group (tool_error_from_wire / error_from_envelope / is_workspace_unavailable / _terminal_from_response)
+
+锚点:R121-1 bdbfaf7
+
+### 本轮目标
+
+完成 xai-computer-hub-core/src/remote.rs 的 layer-4 错误解码组迁移，闭合 R120
+开启的 layer-4 全部 7 个纯函数接缝（3 成功路径 + 4 错误解码）。这是 remote 叶子
+（第 6 叶）layer 4 的收官，为后续 layers 1-3（ConnectionClient trait /
+RemoteToolProxy + RemoteTransport / dispatch_via_connection + RequestStream）的
+连接机制铺好已测试的 decode 表面。
+
+### 融合结论
+
+4 个函数落地，忠实映射 Rust remote.rs 的错误解码路径：
+
+- ``tool_error_from_wire(wire)``: 14 变体 isinstance 分派
+  (InvalidArguments/ToolNotFound/PermissionDenied/Timeout/Cancelled/Execution/
+  BehaviorVersionUnsupported/RenderLimited/TerminalError/Custom/SessionMismatch/
+  TransportClosed/UnsupportedProtocolVersion/PayloadTooLarge/Internal)，逐一映射到
+  ToolErrorKind + with_details 重建 details。
+- ``error_from_envelope(err)``: wire 路径 (err.data 是 dict -> error_wire_from_wire
+  -> tool_error_from_wire) vs 回退路径 (custom(f"jsonrpc_{err.code}") + 可选
+  with_details(data))。
+- ``is_workspace_unavailable(err)``: CUSTOM kind + details 是 dict + details["code"]
+  是 str + == WORKSPACE_UNAVAILABLE_SUBCODE 四重判断。
+- ``_terminal_from_response(tool_id, resp)`` (私有): 对 resp.outcome 的闭 union 分派
+  -- ResponseResult 臂委托 decode_call_result，ResponseError 臂委托
+  error_from_envelope，unreachable TypeError 兜底 (闭 union，镜像 _map_block)。
+
+### 交付
+
+- agent/minimax_code/computer_hub_core/remote.py: +4 函数 (~120 行) + 文档字符串
+  3 处更新 (标题 R120/R121 layer 4、layer 4 描述列两组、"Why layer 4 lands first"
+  更新引用 _terminal_from_response / error_from_envelope)。
+- agent/minimax_code/computer_hub_core/__init__.py: barrel import 扩展 6 函数
+  (+ error_from_envelope/is_workspace_unavailable/tool_error_from_wire) + __all__
+  3 项 + 文档字符串 leaf 6 更新为 "remote (R120+R121, layer 4 complete)"。
+- agent/tests/test_computer_hub_core_remote.py: +28 测试 (4 组:
+  tool_error_from_wire 14 变体 + error_from_envelope wire/fallback 5 +
+  is_workspace_unavailable 正负 6 + _terminal_from_response Result/Error/malformed 4)
+  + 文档字符串 + import 块扩展 (JsonRpcVersion/RequestId/ResponseError/ResponseResult
+  等新符号)。
+- 验证: ruff All checks passed (含 isort order-by-type 重排
+  WORKSPACE_UNAVAILABLE_SUBCODE 到顶部)；pytest 65 passed (R120 37 + R121 28)；
+  6-leaf 回归 192 passed；barrel 重导出 4 符号可访问。
+
+### 映射决策树 + 坑
+
+1. with_details 替换语义 (最大坑): ToolError.with_details(details) 是赋值替换
+   (self.details = details)，不是合并。所以 Rust 内部变体的 details 必须重新安装
+   "code" 键：
+   - Internal 变体带 request_id: custom("internal_error", detail) 先设
+     details={"code": "internal_error"}，with_details({"code": "internal_error",
+     "request_id": ...}) 替换为同时含 code+request_id (不能只传 {"request_id":...}，
+     否则 code 丢失)。
+   - Custom 变体带 details: custom(subcode) 设 {"code": subcode}，
+     with_details(wire.details) 替换为 wire.details (code 丢失，符合 Rust 行为)。
+   - Custom 变体无 details: custom 的 {"code": subcode} 存活。
+   测试分别 pin 了这三个分支 (with/without details + Internal 的 request_id 重装)。
+2. F401 -> 显式 isinstance: 初版 _terminal_from_response 用 else 兜底委托
+   error_from_envelope，导致 ResponseError 导入未用 (F401)。改为显式
+   isinstance(outcome, ResponseError) + unreachable TypeError 兜底 -- 既消 F401，
+   又忠实于 Rust 闭 union match (镜像 R120 _map_block 的 unreachable TypeError 模式)。
+3. Rust Debug {supported:?} -> Python repr {supported!r}: UnsupportedProtocolVersion
+   的 detail 用 {wire.supported!r} (repr)，镜像 Rust 的 {supported:?} Debug 格式
+   (Python repr 单引号 vs Rust Debug 双引号，但语义一致: 可读列表表示)。测试用
+   "supported versions: " + repr([...]) 鲁棒断言。
+4. Internal detail=None 回退: wire.detail if wire.detail is not None else
+   "internal router error" 镜像 Rust 的 Option::unwrap_or_else (仅 None 触发回退，
+   空字符串不触发) -- 严格 None 检查，非真值检查。
+5. 私有函数下划线前缀: Rust 私有 fn terminal_from_response -> Python
+   _terminal_from_response，匹配 R120 的 _map_block/_decode_tool_call_result/
+   _decode_chat_completion_output 约定。测试直接导入私有符号 (Python 无强制封装，
+   下划线是约定)。
+6. error_from_envelope 双臂: data 是 dict -> try error_wire_from_wire (wire 臂，
+   捕获 KeyError/ValueError/TypeError)；非 dict 或解码失败 -> 回退
+   custom(f"jsonrpc_{code}")。None data -> 回退不 with_details (custom 的 {"code"}
+   存活)；非 None data -> with_details(data) 替换。5 个测试覆盖全部 5 个分支。
+
+### YAGNI 边界
+
+- 不迁移 layers 1-3: ConnectionClient trait / RemoteToolProxy+RemoteTransport /
+  dispatch_via_connection+RequestStream 推迟到 R122-R124 (layer 4 全绿后再组装
+  连接机制)。
+- 不测 _terminal_from_response 的 alien outcome -> TypeError: outcome 是闭 union
+  (ResponseResult | ResponseError)，TypeError 是 defensive unreachable arm；R120 的
+  _map_block alien 测试是对称先例，但 _terminal 的 outcome 来自 JsonRpcResponse 构造，
+  实践中不会出现 alien 值，跳过该边界测试 (YAGNI)。
+- 不导出私有 _terminal_from_response 到 barrel: 私有符号仅在模块内使用 (layer 3 的
+  dispatch_via_connection 会调)，barrel 只导出 3 个公开符号。
+- 不引入 newtype 包装 err.code: error_from_envelope 回退用 f"jsonrpc_{err.code}"
+  (code 是 int/str 都行，f-string 自动转)，不引入 JsonRpcErrorCode 类型层 (YAGNI，
+  err.code 的类型契约由 envelope.py 保证)。
+
+### Commit
+
+feat(platform): R121 migrate remote.rs layer-4 error-decode group (tool_error_from_wire 14-variant + error_from_envelope wire/fallback + is_workspace_unavailable + private _terminal_from_response; closes layer 4 at 7 seams; +28 tests -> 65 total, 6-leaf 192 passed)

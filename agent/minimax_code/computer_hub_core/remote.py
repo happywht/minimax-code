@@ -1,10 +1,11 @@
-"""Remote-dispatch wire decode/encode helpers (R120, layer 4).
+"""Remote-dispatch wire decode/encode helpers (R120/R121, layer 4).
 
 Fusion of grok-build's ``xai-computer-hub-core/src/remote.rs`` — the
 crate's sixth and final leaf, the connection-forwarding transport. The
-Rust module is 541 lines spanning four conceptual layers; R120 lands
-**layer 4** (the wire decode/encode pure functions) and defers layers
-1-3 to later rounds (see "Why layer 4 lands first" below).
+Rust module is 541 lines spanning four conceptual layers; R120 opens
+**layer 4** (the wire decode/encode pure functions) and R121 completes
+the error-decode group; layers 1-3 defer to later rounds (see "Why
+layer 4 lands first" below).
 
 Why remote lands sixth
 ----------------------
@@ -34,13 +35,15 @@ The four layers of remote.rs
 3. ``dispatch_via_connection`` + ``RequestStream`` (later) — the Rust
    ``Stream`` impl that interleaves progress frames with the terminal
    response; the most complex layer (``Stream`` trait -> Python async).
-4. **Wire decode/encode pure functions (R120)** — the stateless seams
-   that turn wire types into runtime types: :func:`progress_from_frame`,
+4. **Wire decode/encode pure functions (R120 + R121)** — the stateless
+   seams that turn wire types into runtime types. R120 lands the
+   success-path seams (:func:`progress_from_frame`,
    :func:`output_to_value`, :func:`decode_call_result`, plus the private
-   :func:`_map_block`. Two further layer-4 seams
-   (:func:`terminal_from_response`, :func:`error_from_envelope`,
-   :func:`is_workspace_unavailable`, :func:`tool_error_from_wire`) land
-   in a later round alongside the layers that call them.
+   :func:`_map_block`); R121 completes the error-decode group
+   (:func:`tool_error_from_wire`, :func:`error_from_envelope`,
+   :func:`is_workspace_unavailable`, plus the private
+   :func:`_terminal_from_response` that closes the loop over
+   :func:`decode_call_result` + :func:`error_from_envelope`).
 
 Why layer 4 lands first
 -----------------------
@@ -51,8 +54,8 @@ on ``output_to_value`` + ``_map_block``; ``progress_from_frame`` is
 standalone). They are also the layer layers 2-3 call into:
 ``dispatch_via_connection``'s ``RequestStream`` polls progress frames
 through :func:`progress_from_frame` and the terminal response through
-``terminal_from_response`` (itself a thin match wrapping
-:func:`decode_call_result` and the later :func:`error_from_envelope`).
+:func:`_terminal_from_response` (R121; a thin dispatch wrapping
+:func:`decode_call_result` and :func:`error_from_envelope`).
 Landing them first means later rounds assemble the connection machinery
 on top of already-tested seams, and it exercises every wire-to-runtime
 type boundary in isolation.
@@ -137,28 +140,58 @@ from __future__ import annotations
 from typing import Any
 
 from minimax_code.tool_protocol import (
+    WORKSPACE_UNAVAILABLE_SUBCODE,
+    BehaviorVersionUnsupported,
+    Cancelled,
+    Custom,
+    Execution,
     ImageBlock,
+    Internal,
+    InvalidArguments,
     Json,
+    JsonRpcError,
+    JsonRpcResponse,
     Mcp,
     McpBlock,
+    PayloadTooLarge,
+    PermissionDenied,
+    RenderLimited,
     ResourceBlock,
+    ResponseError,
+    ResponseResult,
+    SessionMismatch,
+    TerminalError,
     Text,
     TextBlock,
+    Timeout,
     ToolCallProgressFrame,
     ToolCallResult,
+    ToolErrorWire,
     ToolId,
+    ToolNotFound,
     ToolOutputWire,
+    TransportClosed,
+    UnsupportedProtocolVersion,
 )
+from minimax_code.tool_protocol.error_wire import from_wire as error_wire_from_wire
 from minimax_code.tool_protocol.output_wire import from_wire as output_from_wire
 from minimax_code.tool_runtime import (
     ContentBlock,
     ToolChatCompletionResponse,
     ToolError,
+    ToolErrorKind,
     ToolProgress,
     TypedToolOutput,
 )
 
-__all__ = ["progress_from_frame", "output_to_value", "decode_call_result"]
+__all__ = [
+    "decode_call_result",
+    "error_from_envelope",
+    "is_workspace_unavailable",
+    "output_to_value",
+    "progress_from_frame",
+    "tool_error_from_wire",
+]
 
 
 # -----------------------------------------------------------------------
@@ -312,3 +345,201 @@ def _decode_chat_completion_output(
         return ToolChatCompletionResponse.from_dict(cco_raw)
     except Exception:
         return None
+
+
+# -----------------------------------------------------------------------
+# tool_error_from_wire — ToolErrorWire (14 variants) -> ToolError.
+# -----------------------------------------------------------------------
+
+
+def tool_error_from_wire(wire: ToolErrorWire) -> ToolError:
+    """Map a wire :class:`ToolErrorWire` back into a runtime :class:`ToolError`.
+
+    Rust ``tool_error_from_wire``. The runtime error variants are the
+    source-of-truth taxonomy; the wire form is a lossy projection onto stable
+    codes for serialisation, so a few wire variants land on
+    :meth:`ToolError.custom` keyed by their wire code rather than a dedicated
+    runtime variant (``SessionMismatch`` / ``TransportClosed`` /
+    ``UnsupportedProtocolVersion`` / ``PayloadTooLarge`` / ``Internal``).
+
+    The 14-arm ``isinstance`` dispatch mirrors Rust's ``match wire { ... }``;
+    the union is closed so the trailing ``raise TypeError`` is unreachable
+    for a valid wire value (covered by the union-narrowing guarantee).
+    """
+    # InvalidArguments{message, details?} -> invalid_arguments + optional details.
+    if isinstance(wire, InvalidArguments):
+        e = ToolError.invalid_arguments(wire.message)
+        return e.with_details(wire.details) if wire.details is not None else e
+    # ToolNotFound{tool_id} -> not_found(tool_id, "tool not found: {tool_id}").
+    if isinstance(wire, ToolNotFound):
+        return ToolError.not_found(wire.tool_id, f"tool not found: {wire.tool_id}")
+    # PermissionDenied{reason} -> permission_denied(reason).
+    if isinstance(wire, PermissionDenied):
+        return ToolError.permission_denied(wire.reason)
+    # Timeout{tool_id, elapsed_ms} -> new(TIMEOUT, "timed out after {ms}ms")
+    #   + details {"tool_id", "elapsed_ms"}.
+    if isinstance(wire, Timeout):
+        return ToolError.new(
+            ToolErrorKind.TIMEOUT, f"timed out after {wire.elapsed_ms}ms"
+        ).with_details({"tool_id": str(wire.tool_id), "elapsed_ms": wire.elapsed_ms})
+    # Cancelled{tool_id} -> cancelled(tool_id, "cancelled").
+    if isinstance(wire, Cancelled):
+        return ToolError.cancelled(wire.tool_id, "cancelled")
+    # Execution{tool_id, message} -> execution(tool_id, message).
+    if isinstance(wire, Execution):
+        return ToolError.execution(wire.tool_id, wire.message)
+    # BehaviorVersionUnsupported{tool_id, requested} ->
+    #   new(BEHAVIOR_VERSION_UNSUPPORTED, "behavior version {requested} not
+    #   supported") + details {"tool_id", "requested"}.
+    if isinstance(wire, BehaviorVersionUnsupported):
+        return ToolError.new(
+            ToolErrorKind.BEHAVIOR_VERSION_UNSUPPORTED,
+            f"behavior version {wire.requested} not supported",
+        ).with_details({"tool_id": str(wire.tool_id), "requested": wire.requested})
+    # RenderLimited{tool_id, card_id?, reason} -> new(RENDER_LIMITED, reason)
+    #   + details {"tool_id", "card_id"} (card_id None -> null in JSON, as
+    #   Rust's json! macro emits Value::Null for Option::None).
+    if isinstance(wire, RenderLimited):
+        return ToolError.new(ToolErrorKind.RENDER_LIMITED, wire.reason).with_details(
+            {"tool_id": str(wire.tool_id), "card_id": wire.card_id}
+        )
+    # TerminalError{tool_id, message} -> terminal_error(tool_id, message).
+    if isinstance(wire, TerminalError):
+        return ToolError.terminal_error(wire.tool_id, wire.message)
+    # Custom{subcode, message, details?} -> custom(subcode, message) + opt details.
+    if isinstance(wire, Custom):
+        e = ToolError.custom(wire.subcode, wire.message)
+        return e.with_details(wire.details) if wire.details is not None else e
+    # SessionMismatch (unit) -> custom("session_mismatch", "session mismatch").
+    if isinstance(wire, SessionMismatch):
+        return ToolError.custom("session_mismatch", "session mismatch")
+    # TransportClosed{tool_id} -> network_error("transport closed for {tool_id}").
+    if isinstance(wire, TransportClosed):
+        return ToolError.network_error(f"transport closed for {wire.tool_id}")
+    # UnsupportedProtocolVersion{supported} -> custom("unsupported_protocol_version",
+    #   "supported versions: {supported:?}") (Rust Vec<String> Debug format
+    #   mirrors Python list repr).
+    if isinstance(wire, UnsupportedProtocolVersion):
+        return ToolError.custom(
+            "unsupported_protocol_version", f"supported versions: {wire.supported!r}"
+        )
+    # PayloadTooLarge{bytes, limit} -> custom("payload_too_large",
+    #   "payload {bytes} bytes exceeds limit {limit}").
+    if isinstance(wire, PayloadTooLarge):
+        return ToolError.custom(
+            "payload_too_large",
+            f"payload {wire.bytes} bytes exceeds limit {wire.limit}",
+        )
+    # Internal{request_id?, detail?} -> custom("internal_error", detail or
+    #   fallback) + optional details {"code": "internal_error", "request_id"}.
+    #   with_details replaces custom's {"code": ...} so the new details
+    #   re-carries "code" (mirrors Rust's explicit re-install).
+    if isinstance(wire, Internal):
+        detail = wire.detail if wire.detail is not None else "internal router error"
+        e = ToolError.custom("internal_error", detail)
+        if wire.request_id is not None:
+            return e.with_details(
+                {"code": "internal_error", "request_id": str(wire.request_id)}
+            )
+        return e
+    # Unreachable: ToolErrorWire is a closed union of the 14 variants above.
+    raise TypeError(f"unknown ToolErrorWire variant: {type(wire).__name__}")
+
+
+# -----------------------------------------------------------------------
+# error_from_envelope — JsonRpcError -> ToolError (wire path vs fallback).
+# -----------------------------------------------------------------------
+
+
+def error_from_envelope(err: JsonRpcError) -> ToolError:
+    """Decode a JSON-RPC error envelope into a :class:`ToolError`.
+
+    Rust ``error_from_envelope``. The envelope's ``data`` field is expected to
+    carry a serialised :class:`ToolErrorWire` when available; falls back to a
+    :meth:`ToolError.custom` keyed by ``jsonrpc_{code}`` (the numeric envelope
+    code) when the data shape is unknown or absent.
+
+    Rust's ``if let Ok(wire) = serde_json::from_value::<ToolErrorWire>(data)``
+    succeeds only for an object carrying a known ``code`` tag; a non-object
+    data or an unknown code both fall through. Python mirrors it: a non-dict
+    data skips the wire arm, and :func:`error_wire_from_wire` raising on an
+    unknown code (``ValueError``) or a missing ``code`` key (``KeyError``) is
+    swallowed into the fallback. The fallback's ``with_details(data)``
+    replaces the ``{"code": "jsonrpc_{code}"}`` object :meth:`ToolError.custom`
+    installed with the original data verbatim — mirroring Rust's
+    ``e = e.with_details(data)`` reassignment.
+    """
+    data = err.data
+    if isinstance(data, dict):
+        try:
+            wire = error_wire_from_wire(data)
+        except (KeyError, ValueError, TypeError):
+            wire = None
+        if wire is not None:
+            return tool_error_from_wire(wire)
+    # Fallback: custom keyed by the numeric envelope code; the original data
+    # (if any) replaces the {"code": ...} details ToolError.custom installed.
+    e = ToolError.custom(f"jsonrpc_{err.code}", err.message)
+    if data is not None:
+        return e.with_details(data)
+    return e
+
+
+# -----------------------------------------------------------------------
+# is_workspace_unavailable — recognise the hub's workspace-gone error.
+# -----------------------------------------------------------------------
+
+
+def is_workspace_unavailable(err: ToolError) -> bool:
+    """Recognise the hub's ``workspace_unavailable`` error.
+
+    Rust ``is_workspace_unavailable``. Keys on ``details["code"]`` — the field
+    that survives :meth:`ToolError.custom` + :meth:`with_details` — not the
+    numeric envelope code or the wire ``Custom.subcode``. A
+    non-:attr:`ToolErrorKind.CUSTOM` kind, a non-dict ``details``, or a
+    non-string ``code`` all return ``False``; only a ``Custom`` error whose
+    ``details["code"]`` is exactly :data:`WORKSPACE_UNAVAILABLE_SUBCODE`
+    matches.
+    """
+    if err.kind != ToolErrorKind.CUSTOM:
+        return False
+    details = err.details
+    if not isinstance(details, dict):
+        return False
+    code = details.get("code")
+    return isinstance(code, str) and code == WORKSPACE_UNAVAILABLE_SUBCODE
+
+
+# -----------------------------------------------------------------------
+# _terminal_from_response — JsonRpcResponse -> TypedToolOutput | ToolError.
+# (Rust private ``terminal_from_response``; closes the R120/R121 loop.)
+# -----------------------------------------------------------------------
+
+
+def _terminal_from_response(
+    tool_id: ToolId, resp: JsonRpcResponse
+) -> TypedToolOutput | ToolError:
+    """Decode a response envelope into the terminal ``TypedToolOutput | ToolError``.
+
+    Rust private ``terminal_from_response``. A thin two-arm dispatch over
+    :attr:`JsonRpcResponse.outcome`: the success arm reuses R120's
+    :func:`decode_call_result`, the error arm decodes via
+    :func:`error_from_envelope`. This is the seam layer 3's
+    ``dispatch_via_connection`` / ``RequestStream`` will call to turn the
+    terminal JSON-RPC frame into the runtime's typed terminal — landing it now
+    (alongside :func:`error_from_envelope`) closes the internal loop so later
+    rounds assemble the connection machinery on a complete decode surface.
+
+    Private (Rust ``fn terminal_from_response`` has no ``pub``); the leading
+    underscore follows R120's ``_map_block`` / ``_decode_*`` convention for
+    module-private decode helpers.
+    """
+    outcome = resp.outcome
+    if isinstance(outcome, ResponseResult):
+        return decode_call_result(tool_id, outcome.value)
+    if isinstance(outcome, ResponseError):
+        # Decode the JSON-RPC error envelope into a ToolError.
+        return error_from_envelope(outcome.error)
+    # Unreachable for a valid ResponseOutcome (ResponseResult | ResponseError);
+    # the closed-union TypeError mirrors R120's ``_map_block`` unreachable arm.
+    raise TypeError(f"unknown response outcome: {type(outcome).__name__}")

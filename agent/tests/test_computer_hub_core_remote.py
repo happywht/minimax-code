@@ -1,4 +1,4 @@
-"""Tests for the R120 computer_hub_core remote module (layer 4).
+"""Tests for the R120/R121 computer_hub_core remote module (layer 4).
 
 Covers the migration of ``xai-computer-hub-core/src/remote.rs`` layer 4 —
 the wire decode/encode pure functions that turn already-deserialised wire
@@ -14,10 +14,11 @@ types into runtime types:
 
 Layers 1-3 (``ConnectionClient`` trait / ``RemoteToolProxy`` +
 ``RemoteTransport`` / ``dispatch_via_connection`` + ``RequestStream``)
-and the remaining layer-4 seams (``terminal_from_response`` /
-``error_from_envelope`` / ``is_workspace_unavailable`` /
-``tool_error_from_wire``) land in later rounds; these tests exercise the
-four landed seams in isolation.
+land in later rounds; R121 completed the layer-4 error-decode group
+(``tool_error_from_wire`` / ``error_from_envelope`` /
+``is_workspace_unavailable`` + the private ``_terminal_from_response``),
+so these tests now exercise all eight layer-4 seams (R120's three
+success-path + R121's four error-decode) in isolation.
 
 The tests mirror Rust's behaviour plus the mapping decisions that
 distinguish the Python landing:
@@ -41,23 +42,50 @@ import inspect
 import pytest
 
 from minimax_code.computer_hub_core.remote import (
+    _terminal_from_response,
     decode_call_result,
+    error_from_envelope,
+    is_workspace_unavailable,
     output_to_value,
     progress_from_frame,
+    tool_error_from_wire,
 )
 from minimax_code.tool_protocol import (
+    WORKSPACE_UNAVAILABLE_SUBCODE,
+    BehaviorVersionUnsupported,
+    Cancelled,
+    Custom,
+    Execution,
     ImageBlock,
+    Internal,
+    InvalidArguments,
     Json,
+    JsonRpcError,
+    JsonRpcResponse,
+    JsonRpcVersion,
     Mcp,
+    PayloadTooLarge,
+    PermissionDenied,
+    RenderLimited,
+    RequestId,
     ResourceBlock,
+    ResponseError,
+    ResponseResult,
+    SessionMismatch,
+    TerminalError,
     Text,
     TextBlock,
+    Timeout,
     ToolCallProgressFrame,
     ToolId,
+    ToolNotFound,
+    TransportClosed,
+    UnsupportedProtocolVersion,
 )
 from minimax_code.tool_runtime import (
     ToolChatCompletionResponse,
     ToolError,
+    ToolErrorKind,
     TypedToolOutput,
 )
 
@@ -381,3 +409,305 @@ def test_tool_error_custom_details_shape_used_by_response_decoding():
     err = ToolError.custom("response_decoding", "boom")
     assert err.details == {"code": "response_decoding"}
     assert err.detail == "boom"
+
+
+# ===========================================================================
+# R121 — tool_error_from_wire (14-variant ToolErrorWire -> ToolError).
+# ===========================================================================
+
+
+def test_tool_error_from_wire_is_sync():
+    assert not inspect.iscoroutinefunction(tool_error_from_wire)
+
+
+def test_tool_error_from_wire_invalid_arguments_with_details():
+    wire = InvalidArguments(message="missing q", details={"field": "q"})
+    err = tool_error_from_wire(wire)
+    assert isinstance(err, ToolError)
+    assert err.kind == ToolErrorKind.INVALID_ARGUMENTS
+    assert err.detail == "missing q"
+    # with_details replaces; invalid_arguments installs no details, so the
+    # wire's details land verbatim.
+    assert err.details == {"field": "q"}
+
+
+def test_tool_error_from_wire_invalid_arguments_without_details():
+    err = tool_error_from_wire(InvalidArguments(message="bad"))
+    assert err.kind == ToolErrorKind.INVALID_ARGUMENTS
+    # No wire details -> the error keeps whatever invalid_arguments installed.
+    assert err.details is None
+
+
+def test_tool_error_from_wire_tool_not_found():
+    err = tool_error_from_wire(ToolNotFound(tool_id=_tid()))
+    assert err.kind == ToolErrorKind.NOT_FOUND
+    assert err.detail == f"tool not found: {_tid()}"
+    assert err.details == {"tool_id": str(_tid())}
+
+
+def test_tool_error_from_wire_permission_denied():
+    err = tool_error_from_wire(PermissionDenied(reason="not allowed"))
+    assert err.kind == ToolErrorKind.PERMISSION_DENIED
+    assert err.detail == "not allowed"
+
+
+def test_tool_error_from_wire_timeout_carries_elapsed_ms_in_details():
+    err = tool_error_from_wire(Timeout(tool_id=_tid(), elapsed_ms=1500))
+    assert err.kind == ToolErrorKind.TIMEOUT
+    assert err.detail == "timed out after 1500ms"
+    assert err.details == {"tool_id": str(_tid()), "elapsed_ms": 1500}
+
+
+def test_tool_error_from_wire_cancelled():
+    err = tool_error_from_wire(Cancelled(tool_id=_tid()))
+    assert err.kind == ToolErrorKind.CANCELLED
+    assert err.detail == "cancelled"
+    assert err.details == {"tool_id": str(_tid())}
+
+
+def test_tool_error_from_wire_execution():
+    err = tool_error_from_wire(Execution(tool_id=_tid(), message="boom"))
+    assert err.kind == ToolErrorKind.EXECUTION
+    assert err.detail == "boom"
+    assert err.details == {"tool_id": str(_tid())}
+
+
+def test_tool_error_from_wire_behavior_version_unsupported():
+    err = tool_error_from_wire(
+        BehaviorVersionUnsupported(tool_id=_tid(), requested="2.0")
+    )
+    assert err.kind == ToolErrorKind.BEHAVIOR_VERSION_UNSUPPORTED
+    assert err.detail == "behavior version 2.0 not supported"
+    assert err.details == {"tool_id": str(_tid()), "requested": "2.0"}
+
+
+def test_tool_error_from_wire_render_limited_with_card_id():
+    err = tool_error_from_wire(
+        RenderLimited(tool_id=_tid(), reason="too big", card_id="card-7")
+    )
+    assert err.kind == ToolErrorKind.RENDER_LIMITED
+    assert err.detail == "too big"
+    assert err.details == {"tool_id": str(_tid()), "card_id": "card-7"}
+
+
+def test_tool_error_from_wire_render_limited_null_card_id():
+    # card_id defaults to None -> null in details (Rust json!(...) emits
+    # Value::Null for Option::None).
+    err = tool_error_from_wire(RenderLimited(tool_id=_tid(), reason="too big"))
+    assert err.details == {"tool_id": str(_tid()), "card_id": None}
+
+
+def test_tool_error_from_wire_terminal_error():
+    err = tool_error_from_wire(TerminalError(tool_id=_tid(), message="fatal"))
+    assert err.kind == ToolErrorKind.TERMINAL_ERROR
+    assert err.detail == "fatal"
+    assert err.details == {"tool_id": str(_tid())}
+
+
+def test_tool_error_from_wire_custom_with_details():
+    err = tool_error_from_wire(
+        Custom(subcode="my_code", message="oops", details={"x": 1})
+    )
+    assert err.kind == ToolErrorKind.CUSTOM
+    assert err.detail == "oops"
+    # with_details replaces custom's {"code": "my_code"} with the wire details.
+    assert err.details == {"x": 1}
+
+
+def test_tool_error_from_wire_custom_without_details_keeps_code():
+    err = tool_error_from_wire(Custom(subcode="my_code", message="oops"))
+    assert err.kind == ToolErrorKind.CUSTOM
+    # No wire details -> custom's {"code": "my_code"} survives.
+    assert err.details == {"code": "my_code"}
+
+
+def test_tool_error_from_wire_session_mismatch():
+    err = tool_error_from_wire(SessionMismatch())
+    assert err.kind == ToolErrorKind.CUSTOM
+    assert err.detail == "session mismatch"
+    assert err.details == {"code": "session_mismatch"}
+
+
+def test_tool_error_from_wire_transport_closed():
+    err = tool_error_from_wire(TransportClosed(tool_id=_tid()))
+    assert err.kind == ToolErrorKind.NETWORK_ERROR
+    assert err.detail == f"transport closed for {_tid()}"
+
+
+def test_tool_error_from_wire_unsupported_protocol_version():
+    err = tool_error_from_wire(UnsupportedProtocolVersion(supported=["1.0", "2.0"]))
+    assert err.kind == ToolErrorKind.CUSTOM
+    # Rust Debug {supported:?} -> Python repr {supported!r}.
+    assert err.detail == "supported versions: " + repr(["1.0", "2.0"])
+    assert err.details == {"code": "unsupported_protocol_version"}
+
+
+def test_tool_error_from_wire_payload_too_large():
+    err = tool_error_from_wire(PayloadTooLarge(bytes=9999, limit=4096))
+    assert err.kind == ToolErrorKind.CUSTOM
+    assert err.detail == "payload 9999 bytes exceeds limit 4096"
+    assert err.details == {"code": "payload_too_large"}
+
+
+def test_tool_error_from_wire_internal_with_request_id_reinstalls_code():
+    err = tool_error_from_wire(
+        Internal(request_id=RequestId("req-9"), detail="kaboom")
+    )
+    assert err.kind == ToolErrorKind.CUSTOM
+    assert err.detail == "kaboom"
+    # with_details replaces custom's {"code": "internal_error"} so the new
+    # details must re-carry "code" alongside request_id (Rust's explicit
+    # re-install).
+    assert err.details == {"code": "internal_error", "request_id": "req-9"}
+
+
+def test_tool_error_from_wire_internal_without_request_id_keeps_code():
+    err = tool_error_from_wire(Internal(detail="kaboom"))
+    assert err.detail == "kaboom"
+    # No request_id -> custom's {"code": "internal_error"} survives.
+    assert err.details == {"code": "internal_error"}
+
+
+def test_tool_error_from_wire_internal_fallback_detail_when_none():
+    # detail=None -> Rust Option::unwrap_or_else -> "internal router error".
+    err = tool_error_from_wire(Internal())
+    assert err.detail == "internal router error"
+    assert err.details == {"code": "internal_error"}
+
+
+# ===========================================================================
+# R121 — error_from_envelope (JsonRpcError -> ToolError).
+# ===========================================================================
+
+
+def test_error_from_envelope_is_sync():
+    assert not inspect.iscoroutinefunction(error_from_envelope)
+
+
+def test_error_from_envelope_wire_arm_decodes_known_tool_error():
+    # data carries a serialised ToolErrorWire -> wire arm -> tool_error_from_wire.
+    wire_dict = InvalidArguments(message="bad args").to_wire()
+    err = error_from_envelope(JsonRpcError(code=-32000, message="x", data=wire_dict))
+    assert err.kind == ToolErrorKind.INVALID_ARGUMENTS
+    assert err.detail == "bad args"
+
+
+def test_error_from_envelope_non_dict_data_falls_back():
+    # data is a string (serde cannot deserialise a non-map into the wire
+    # struct) -> fallback custom("jsonrpc_{code}") + with_details(data).
+    err = error_from_envelope(JsonRpcError(code=-32001, message="nope", data="oops"))
+    assert err.kind == ToolErrorKind.CUSTOM
+    assert err.detail == "nope"
+    assert err.details == "oops"  # with_details replaces {"code": ...} with data
+
+
+def test_error_from_envelope_none_data_falls_back_without_replace():
+    # data=None -> fallback, no with_details -> custom's {"code"} survives.
+    err = error_from_envelope(JsonRpcError(code=-32002, message="absent"))
+    assert err.kind == ToolErrorKind.CUSTOM
+    assert err.detail == "absent"
+    assert err.details == {"code": "jsonrpc_-32002"}
+
+
+def test_error_from_envelope_dict_unknown_code_falls_back():
+    # data is a dict but the code tag is unknown -> wire decode raises ->
+    # fallback, with_details(data) replaces {"code": ...}.
+    err = error_from_envelope(
+        JsonRpcError(code=-32003, message="m", data={"code": "not_a_real_code"})
+    )
+    assert err.kind == ToolErrorKind.CUSTOM
+    assert err.detail == "m"
+    assert err.details == {"code": "not_a_real_code"}
+
+
+def test_error_from_envelope_fallback_embeds_numeric_code_in_subcode():
+    err = error_from_envelope(JsonRpcError(code=42, message="m"))
+    assert err.detail == "m"
+    assert err.details == {"code": "jsonrpc_42"}
+
+
+# ===========================================================================
+# R121 — is_workspace_unavailable.
+# ===========================================================================
+
+
+def test_is_workspace_unavailable_is_sync():
+    assert not inspect.iscoroutinefunction(is_workspace_unavailable)
+
+
+def test_is_workspace_unavailable_true_for_custom_with_subcode():
+    err = ToolError.custom(WORKSPACE_UNAVAILABLE_SUBCODE, "workspace gone")
+    assert is_workspace_unavailable(err) is True
+
+
+def test_is_workspace_unavailable_false_for_non_custom_kind():
+    err = ToolError.invalid_arguments("x")
+    assert is_workspace_unavailable(err) is False
+
+
+def test_is_workspace_unavailable_false_for_details_not_dict():
+    err = ToolError.custom("x", "y")
+    err.details = "not a dict"
+    assert is_workspace_unavailable(err) is False
+
+
+def test_is_workspace_unavailable_false_for_code_mismatch():
+    err = ToolError.custom("some_other_code", "y")
+    assert is_workspace_unavailable(err) is False
+
+
+def test_is_workspace_unavailable_false_for_non_string_code():
+    err = ToolError.custom("x", "y")
+    err.details = {"code": 123}
+    assert is_workspace_unavailable(err) is False
+
+
+# ===========================================================================
+# R121 — _terminal_from_response (JsonRpcResponse -> TypedToolOutput | ToolError).
+# ===========================================================================
+
+
+def test_terminal_from_response_is_sync():
+    assert not inspect.iscoroutinefunction(_terminal_from_response)
+
+
+def test_terminal_from_response_result_arm_delegates_to_decode_call_result():
+    body = {"tool_call_id": "call-1", "output": {"kind": "text", "value": "hi"}}
+    resp = JsonRpcResponse(
+        jsonrpc=JsonRpcVersion(),
+        id="resp-1",
+        outcome=ResponseResult(value=body),
+    )
+    result = _terminal_from_response(_tid(), resp)
+    assert isinstance(result, TypedToolOutput)
+    assert result.tool_id == _tid()
+    assert result.value == "hi"
+
+
+def test_terminal_from_response_error_arm_delegates_to_error_from_envelope():
+    wire_dict = InvalidArguments(message="bad").to_wire()
+    resp = JsonRpcResponse(
+        jsonrpc=JsonRpcVersion(),
+        id="resp-2",
+        outcome=ResponseError(
+            error=JsonRpcError(code=-32000, message="x", data=wire_dict)
+        ),
+    )
+    result = _terminal_from_response(_tid(), resp)
+    assert isinstance(result, ToolError)
+    assert result.kind == ToolErrorKind.INVALID_ARGUMENTS
+
+
+def test_terminal_from_response_result_arm_malformed_surfaces_tool_error():
+    # A malformed body in the Result arm surfaces as the ToolError that
+    # decode_call_result returns (response_decoding); _terminal_from_response
+    # does NOT swallow it.
+    body = {"tool_call_id": "x"}  # missing output
+    resp = JsonRpcResponse(
+        jsonrpc=JsonRpcVersion(),
+        id="resp-3",
+        outcome=ResponseResult(value=body),
+    )
+    result = _terminal_from_response(_tid(), resp)
+    assert isinstance(result, ToolError)
+    assert result.details == {"code": "response_decoding"}
