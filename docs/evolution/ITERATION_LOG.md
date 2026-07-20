@@ -15258,3 +15258,62 @@ AuthRetryMiddleware 包装一个 AuthCredentialProvider：每次出站请求印 
 ### Commit
 
 feat(platform): R188 xai-grok-auth retry_middleware leaf (AuthRetryMiddleware client-agnostic retry orchestrator via send-callback seam, barrel 4->5 symbols, crate round 2 of 3, 11 tests)
+
+## R189 — xai-grok-auth crate 收官（lib.rs barrel-reconciliation，里程碑）
+
+锚点:R189-1 c4f58ea
+
+### 本轮目标
+
+xai-grok-auth crate **收官轮**（第 3/3 轮）：lib.rs barrel-reconciliation。对账 grok-build `crates/codegen/xai-grok-auth/src/lib.rs` 的完整公开表面与平台 `grok_auth/__init__.py` barrel，确认 3 mod 声明 + 5 pub use 符号全部对齐，crate 完整闭合。
+
+前两轮：R187 trait 契约层（visibility + auth_provider，4 符号）+ R188 retry_middleware 叶子（+1 符号）。本轮无新迁移代码，是对账 + 完成态文档 + 完成门测试。
+
+### 融合结论
+
+**crate 完整闭合，零符号遗漏：**
+- lib.rs `pub mod` 声明 3 个（auth_provider / retry_middleware / visibility）-> 平台 3 个子模块全部存在（visibility.py / auth_provider.py / retry_middleware.py）。
+- lib.rs `pub use` 符号 5 个（auth_provider 3 + visibility 1 + retry_middleware 1）-> 平台 `__all__` 恰好 5 符号，集合精确相等。
+- Rust `#[cfg(feature = "middleware")]` feature-gate -> 平台 always-on（无 Python feature-flag 机制；R188 send-callback 设计避免绑 httpx transport，无成本始终暴露）。
+
+这是 R106（xai-tool-protocol 17/17）、R178（computer-hub-sdk）、R186（mcp-adapter 17 符号）之后的**第 4 个 crate 收官里程碑**，模式一致：对账 -> 完成态 docstring -> 完成门测试。
+
+### 交付
+
+| 文件 | 状态 | 内容 |
+|------|------|------|
+| `agent/minimax_code/grok_auth/__init__.py` | 改 | docstring 更新为 crate complete 态（leaf order 全 landed、barrel surface 5 符号、feature parity 说明）；crate completion ledger 从 pending 改为 COMPLETE |
+| `agent/tests/test_grok_auth_barrel.py` | 新增 | 9 对账测试：3 mod 存在性 + 2 __all__（集合 + count）+ 3 re-export identity + 1 feature parity（always-on） |
+
+### 映射决策树 + 坑
+
+**决策 1：Rust feature-gate `#[cfg(feature = "middleware")]` -> 平台 always-on，文档化为有意的 feature parity 偏离。**
+- Rust crate 通过 cargo feature 控制 retry_middleware 是否编译（避免无中间件消费者时引入 reqwest-middleware/http 依赖）。平台无 Python feature-flag 等价物，且 R188 的 send-callback 设计使 retry_middleware 不引入额外重依赖（仅用已有的 httpx），故 always-on 暴露。
+- docstring "Barrel surface" + "Leaf order" 第 3 项 + crate completion ledger 三处显式记录此偏离及理由（未来读者不会误以为是遗漏）。
+
+**决策 2：对账测试用 set 相等 + identity（is）而非逐符号断言。**
+- `set(barrel.__all__) == _EXPECTED_BARREL`：一次断言覆盖"无遗漏 + 无多余 + 无拼写错误"三种回归。比逐符号 `in` 断言更强（后者检不出多余符号）。
+- `AuthCredentialProvider is auth_provider.AuthCredentialProvider`：验证 barrel 是 re-export（同一对象），不是 re-definition（副本）。若未来有人误把 barrel 改成重新定义，identity 断言会捕获。
+
+**坑 1：crate 收官轮无新迁移代码，但仍需实质交付。**
+- 收官轮的价值在对账 + 完成门（防回归）+ 完成态文档。test_grok_auth_barrel.py 的 9 测试是"crate 冻结表面"的护栏：任何后续编辑若误删符号或挪动模块，这 9 测试立即失败。这比 docstring 注释更强（可执行契约）。
+
+**坑 2：feature parity 测试不构造实例。**
+- test_auth_retry_middleware_always_on 只验证符号可从 barrel 顶层访问 + 在 __all__，不构造 AuthRetryMiddleware 实例（那需要 AuthCredentialProvider + HttpAuth，属行为测试范畴，R188 已覆盖）。对账测试保持纯结构验证，职责单一。
+
+### 验证
+
+- `uv run ruff check minimax_code/grok_auth/ tests/test_grok_auth.py tests/test_grok_auth_retry.py tests/test_grok_auth_barrel.py` -> **All checks passed!**
+- `uv run pytest tests/test_grok_auth_barrel.py tests/test_grok_auth_retry.py tests/test_grok_auth.py -q` -> **35 passed**（R187 15 + R188 11 + R189 9，crate 全测试通过）。
+- 全套回归 `uv run pytest --tb=short -q` -> **4648 passed, 10 skipped**（对比 R188 的 4639，+9 = R189 对账测试；零回归，唯一 warning 预存 StarletteDeprecationWarning）。
+
+### YAGNI 边界
+
+1. **不引入 Python feature-flag 机制模拟 cargo feature。** 平台无 build system 级 feature-flag 惯例（不像 cargo 的 `[features]`），且 retry_middleware always-on 无成本（不引重依赖）。模拟 feature-gate 会增加机制复杂度无收益，YAGNI。
+2. **对账测试不覆盖子模块内部符号完整性。** test_grok_auth_barrel.py 验证 barrel 表面（lib.rs pub use），不验证 auth_provider.py 内部所有类/方法（那是 R187 行为测试的职责）。对账层只管"crate 公开契约"，内部实现由各叶子测试守护，职责分层。
+3. **不为 crate 收官加单独的 CHANGELOG/发布说明。** ITERATION_LOG R189 条目已是 crate 收官记录；项目 CHANGELOG 按版本聚合，不在单轮加（与 R106/R178/R186 收官一致）。
+4. **不迁移 Rust 的 `#[cfg(test)] mod tests`（mockito e2e 测试）。** Rust retry_middleware.rs 的 4 个 mockito 测试已在 R188 用平台 _RecordingSend 假回调整合覆盖（语义等价，无 HTTP mock 服务器）。收官轮不重复迁移。
+
+### Commit
+
+feat(platform): R189 xai-grok-auth crate complete (lib.rs barrel-reconciliation, 3/3 mods + 5/5 pub-use symbols mirrored, always-on feature parity, 9 reconciliation tests, crate milestone)
