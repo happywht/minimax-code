@@ -41,9 +41,14 @@ def test_barrel_exposes_slash_commands_submodule() -> None:
     assert "slash_commands" in tools_api.__all__
 
 
-def test_barrel_all_is_just_the_submodule() -> None:
-    """R190 barrel exposes only slash_commands (config_validation lands R191)."""
-    assert set(tools_api.__all__) == {"slash_commands"}
+def test_barrel_all_exposes_landed_submodules() -> None:
+    """Barrel exposes every landed tools_api submodule.
+
+    slash_commands landed R190; config_validation landed R191. lib.rs
+    barrel-reconciliation (R192) closes the crate by adding the free
+    ``default_client_name`` at the root.
+    """
+    assert set(tools_api.__all__) == {"config_validation", "slash_commands"}
 
 
 def test_slash_commands_all_surface_is_sixteen_symbols() -> None:

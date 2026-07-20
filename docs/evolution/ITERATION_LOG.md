@@ -15365,3 +15365,97 @@ feat(platform): R189 xai-grok-auth crate complete (lib.rs barrel-reconciliation,
 ### Commit
 
 `feat(platform): R190 xai-grok-tools-api package skeleton + slash_commands leaf (17 symbols migrated, pb YAGNI architecture decision, Rust backslash line-continuation -> Python adjacent literals, 14 tests, 3-file crate pace)`
+## R191 — xai-grok-tools-api crate 第 2/3 轮: config_validation 叶子
+
+锚点:R191-1 fe0ede0
+
+### 本轮目标
+
+迁移 `grok-build/crates/codegen/xai-grok-tools-api/src/config_validation.rs` (257 行) — crate 第 2 个叶子。这是工具配置保存期的校验层:把 `params_json` 解析 / `name_override` 格式 / 未知 tool_id 三条规则从 Rust 搬到 Python,使后端保存校验与(未来的)tools server finalize/bind 校验共享同一份逻辑,不漂移。
+
+延续 R190 (fe0ede0) 建立的 3 轮 crate 节奏:R190 包骨架 + slash_commands 叶子 → **R191 config_validation 叶子** → R192 lib.rs 桶收口(crate 完成里程碑)。
+
+### 融合结论
+
+**核心 Rust→Python 翻译决策(4 条):**
+
+1. **`Result<T, ToolConfigEntryError>` → 抛异常。** Rust 把错误建模为 `thiserror::Error`(`impl std::error::Error`),Python 侧让 `ToolConfigEntryError` 继承 `Exception`,失败时 raise — 匹配类型角色。Rust 测试用 `.unwrap()`/`.unwrap_err()`,Python 用 `pytest.raises`。成功返回值 `T`(`dict` 或 `None` for `Ok(None)`/`Ok(())`)。
+
+2. **`ToolConfigEntryErrorKind` 枚举 → frozen dataclass 子类家族。** Rust 三变体枚举(`ParamsJsonParse{error,raw}` / `ParamsJsonNotObject{value}` / `NameOverrideInvalid{name,error}`),Python 映射为 3 个 `@dataclass(frozen=True)` 子类共享一个标记基类。判别用 `isinstance`(对应 Rust `match`)。`serde_json::Value` → `typing.Any`(任意 JSON 解码值);非对象变体原样保存解码值供错误渲染。
+
+3. **`ToolId::new(name): Result` → `ToolId(name)` 抛 `IdError`。** R82 已迁移的 `ToolId` 构造函数是 `ToolId(value)`(通过 `__new__`),不是 `new()`;失败抛 `IdError`(EmptyIdError / InvalidFormatIdError 子类)。所以 `validate_name_override` 用 `try: ToolId(name) except IdError as exc:` 捕获基类,`str(exc)` 作为错误消息字段。
+
+4. **`crate::ToolConfigEntry` (pb 类型) → 鸭子类型 `.id`。** ToolConfigEntry 是 crate `pub mod pb` 下的 protobuf 类型(pb YAGNI,不迁移)。`first_unknown_tool_id` 只读 `entry.id`,所以定义 `Protocol _ToolConfigEntryLike`(仅 `.id: str`),接受任何带字符串 `.id` 属性的对象 — 规则无需拉入 pb 线路类型即可运行。
+
+### 交付
+
+- **`agent/minimax_code/tools_api/config_validation.py`** (新, 237 行)
+  - `ToolConfigEntryErrorKind` 标记基类 + 3 个 frozen dataclass 变体子类。
+  - `ToolConfigEntryError(Exception)`:`index` / `tool_id` / `kind` 字段 + `field_path()`(`tools[{i}].params_json` 或 `.name_override`)+ `_render()`/`__str__`(对应 Rust `Display`)+ `__repr__` + `__eq__`(结构相等)。
+  - `parse_params_json(index, tool_id, params_json) -> dict | None`:`json.loads`,`JSONDecodeError` → ParamsJsonParse;非 dict → ParamsJsonNotObject。
+  - `validate_name_override(index, tool_id, name_override) -> None`:`ToolId(name)` 捕获 IdError → NameOverrideInvalid。
+  - `first_unknown_tool_id(entries, allowed_ids) -> (index, id) | None`:鸭子类型 `.id`,纯逻辑。
+  - `__all__` = 8 符号。
+
+- **`agent/minimax_code/tools_api/__init__.py`** (修改):桶暴露 `config_validation` 子模块(`__all__ = ["config_validation", "slash_commands"]`)。忠实 Rust 的 `pub mod`(不在根重导出内部符号)。
+
+- **`agent/tests/test_tools_api_config_validation.py`** (新, 177 行, 13 测试):
+  - 2 结构(桶暴露 + `__all__` 8 符号)+ 5 Rust 内联 parse_params_json + 2 Rust 内联 validate_name_override + 3 Rust 内联 first_unknown_tool_id + 1 Display 格式 + 1 结构相等。
+  - `_Entry` frozen dataclass 作为 ToolConfigEntry 鸭子替身。
+
+- **`agent/tests/test_tools_api_slash_commands.py`** (修改):`test_barrel_all_is_just_the_submodule` → `test_barrel_all_exposes_landed_submodules`,断言 `__all__ == {"config_validation", "slash_commands"}`(随 crate 进化,锁定 R190 单子模块状态已过时)。
+
+### 映射决策树 + 坑
+
+```
+config_validation.rs (257 行)
+├─ ToolConfigEntryErrorKind (enum, 3 变体)
+│   └─ frozen dataclass 子类家族 (isinstance 判别 = Rust match)
+│      ├─ ParamsJsonParse{error, raw}       # 含空字符串(Some("")被拒)
+│      ├─ ParamsJsonNotObject{value: Any}   # serde_json::Value -> Any
+│      └─ NameOverrideInvalid{name, error}
+├─ ToolConfigEntryError (struct + Display + Error)
+│   ├─ Exception 子类 (Error trait -> raise)
+│   ├─ field_path(): match kind -> "tools[i].params_json" / ".name_override"
+│   ├─ __str__: 3 Display 格式串 ({name:?} -> {kind.name!r})
+│   └─ __eq__: 结构相等 (index, tool_id, kind)
+├─ parse_params_json(Option<&str>) -> Result<Option<Map>, Err>
+│   ├─ None -> None (Ok(None))
+│   ├─ json.loads 捕获 JSONDecodeError -> ParamsJsonParse(str(exc), raw)
+│   ├─ dict -> 返回 (Ok(Some(object)))
+│   └─ 其他 -> ParamsJsonNotObject(value)
+├─ validate_name_override(Option<&str>) -> Result<(), Err>
+│   ├─ None -> None (Ok(()))
+│   ├─ ToolId(name) 捕获 IdError -> NameOverrideInvalid(name, str(exc))  ★
+│   └─ OK -> None
+└─ first_unknown_tool_id(&[ToolConfigEntry], &HashSet) -> Option<(usize, &str)>
+    ├─ Protocol _ToolConfigEntryLike (pb 类型 YAGNI, 只读 .id)
+    └─ enumerate, 首个 id 不在 allowed -> (index, id)
+
+★ 关键坑: R82 ToolId 构造是 ToolId(value) 非 new(); 失败抛 IdError (非返回 Result)。
+   except IdError 捕获基类涵盖 EmptyIdError + InvalidFormatIdError 两个子类。
+```
+
+**坑速查:**
+- `__init__` 调 `_render()` → `field_path()`,字段已先赋值,幂等安全。
+- frozen dataclass 含 `list`/`dict` 字段(ParamsJsonNotObject.value):`__hash__` 运行时会失败但代码不 hash kind,eq 比较正常。
+- `from exc` 链:parse(JSONDecodeError)/ validate(IdError)都 `raise ... from err` 保留因果链。
+
+### 验证
+
+- `uv run ruff check minimax_code/tools_api/ tests/test_tools_api_config_validation.py tests/test_tools_api_slash_commands.py` → **All checks passed!**
+- `uv run pytest tests/test_tools_api_config_validation.py tests/test_tools_api_slash_commands.py -q` → **28 passed** (14 新 + 14 slash 含已更新桶断言)。
+- 全量回归 `uv run pytest -q` → **4676 passed, 10 skipped, 0 failed** (R190=4662 → +14 = 4676,账目对齐;103.64s)。
+
+### YAGNI 边界
+
+- **`pub mod pb` 整块(~60 protobuf 线路类型)** 仍 YAGNI(无 .proto/protoc 流水线,无 gRPC tools server 消费者)。`ToolConfigEntry` 作为 pb 类型不迁移,`first_unknown_tool_id` 用 Protocol 鸭子类型规避依赖。账本已在 R190 + 本叶子 docstring 记录。遵循 R132 grpc_client/OTel SDK 模式。
+- **`lib.rs` 桶收口(R192)**:`default_client_name()`(冒号分割取第 2 段)+ `ToolCategory::as_str()` 决策(pb 附加,遵循 pb YAGNI)+ 最终账本。下一轮。
+- **未迁移 `thiserror` 宏展开**:Python 手写 `__str__`/`__eq__`/`__repr__` 等价 Rust derive(Debug/Clone/PartialEq/Eq)+ Display 手写 impl。
+
+### Commit
+
+`feat(platform): R191 tools_api config_validation leaf (ToolConfigEntryError + parse/validate/first_unknown)`
+
+- 5 文件:2 新 A(config_validation.py + test)+ 2 修改 M(__init__ 桶 + slash 测试断言)+ 1 修改 M(ITERATION_LOG)。
+- 精确 `git add`,无排除文件污染暂存区。

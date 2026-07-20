@@ -45,9 +45,9 @@ in ``lib.rs``, not a re-export).
 
 from __future__ import annotations
 
-from minimax_code.tools_api import slash_commands
+from minimax_code.tools_api import config_validation, slash_commands
 
-__all__ = ["slash_commands"]
+__all__ = ["config_validation", "slash_commands"]
 
 #: pb YAGNI ledger (R190 architecture decision)
 #: ---------------------------------------------
