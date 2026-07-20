@@ -11775,3 +11775,84 @@ feat(platform): R138 migrate xai-computer-hub-sdk connection_borrow.rs -> comput
 ### Commit
 
 feat(platform): R140 migrate xai-computer-hub-sdk observability.rs -> computer_hub_sdk/observability.py
+
+## R141 — migrate xai-computer-hub-sdk cancel.rs -> computer_hub_sdk/cancel.py
+
+锚点:R141-1 b6938f4
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-computer-hub-sdk/src/cancel.rs`（301 行，`pub(crate) struct CancelRegistry` per-session 严格取消注册表）-> `agent/minimax_code/computer_hub_sdk/cancel.py`。这是 SDK crate 第 9 片叶子（继 R133 error / R134 handshake / R135 refcount / R136 donate_pump / R137 trace_donate / R138 connection_borrow / R139 auth / R140 observability 之后）。**完整迁移（无 YAGNI 拆半）—— 纯数据结构叶子**，CancellationToken->asyncio.Event 映射 R138 已建立。8 个 Rust 测试全前向移植。`register` 的 double-check `closed` 逻辑保留（语义保真 + 防御）。`MAX_PENDING_TOMBSTONES=8192` 常量保留。
+
+### 融合结论
+
+`CancelRegistry` 是一个 per-session 的严格取消注册表：把每个在飞的 `tool_call_id` 映射到它的取消 `asyncio.Event`，让 `Cancel` hook（或会话 teardown）能硬取消运行中的调用。一个小的 `pending` tombstone set 覆盖 `Cancel` 在 dispatcher 注册 token **之前**到达的竞态（与 pre-spawn registration 对称的窗口）：该 id 被 tombstone，dispatcher 在注册时取消它。
+
+**这是一个近全量前向移植** —— 没有 YAGNI 拆半的余地，因为 Rust 的每个并发原语都有干净的 Python 等价物：
+- `DashMap<ToolCallId, CancellationToken>` -> `dict`（asyncio 单线程，临界区无 `await`，dict 提供与 Rust shard lock 相同的 observe-consistency）
+- `DashSet<ToolCallId>` -> `set`
+- `AtomicBool`（`closed`）-> `bool`（GIL 保护，`cancel_all` 中 set-once 后由 `register` 观察）
+- `tokio_util::sync::CancellationToken` -> `asyncio.Event`（R138 `connection_borrow` 已建立：`token.cancel()` -> `Event.set`；`token.is_cancelled()` -> `Event.is_set`；`cancelled().await` 半边在 dispatcher 的 `execute_call` task 中，**不在这里**）
+
+这与 MiniMax Code 的 asyncio 架构深度融合：每会话一个 registry，与会话 loop 生命周期绑定，与 inbox 和 per-session admission semaphore 并列。复用 `tool_protocol/ids.py:145` 的 `ToolCallId`（`_OpaqueId(str)` 子类），与 R139 auth 的 `PrincipalKey`、R138 `connection_borrow` 的 `SessionId` 同源。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/cancel.py`（177 行）：`MAX_PENDING_TOMBSTONES = 8192` 常量 + `class CancelRegistry` 带有 7 方法：
+  - `__init__`：`_map: dict[ToolCallId, asyncio.Event] = {}` + `_pending: set[ToolCallId] = set()` + `_closed: bool = False`
+  - `register(call_id, token) -> bool`：双重检查 `closed` 防御（前置检查 + 后置 re-check），tombstone 消费 pre-cancel
+  - `cancel(call_id) -> bool`：live hit 命中返回 True，否则 tombstone（达 `MAX_PENDING_TOMBSTONES` 上限时 evict 一个 stale straggler）
+  - `deregister(call_id) -> None`：幂等清理
+  - `is_closed() -> bool`：teardown 状态访问器
+  - `cancel_all() -> int`：drain 前置 `closed=True`，迭代 `_map.values()` 调 `.set()` 计数，clear `_map` + clear `_pending`，返回取消数（幂等）
+  - `live_count() -> int` / `pending_count() -> int`：测试访问器
+  - 导入 `import asyncio` + `from minimax_code.tool_protocol.ids import ToolCallId`；`__all__ = ["CancelRegistry", "MAX_PENDING_TOMBSTONES"]`
+- `agent/tests/test_cancel.py`（171 行）：8 测试 1:1 对齐 Rust 145-301 行的精确断言。`_cid(i)` 返回 `ToolCallId(f"call-{i}")`（固定字符串，确定性）；`_token()` 返回 `asyncio.Event()`；用 `event.is_set()` 代替 `token.is_cancelled()`。
+
+### 映射决策树 + 坑
+
+1. **`register` double-check `closed` 保留**：Rust 在 insert 后 re-check `closed` 修复 teardown race。Python asyncio 单线程无法在同步 register body 内交错一个 `cancel_all`，但保留这个检查是**语义保真** + **前向兼容防御**（万一 registry 跨线程边界）。成本仅一次 `bool` 读。这是本轮唯一的 YAGNI 边界注记（见 YAGNI 部分）。
+2. **tombstone evict 策略**：Rust 用 `self.pending.iter().next().map(|e| e.key().clone())` 收集 key 再 remove（shard lock 语义）。Python set 非分片，用单次 `next(iter(self._pending), None)` + `discard`。稳态下 `pending` 在每次 insert 前 evict 一个，最终稳态 `pending_count() == MAX`（8192）—— test 8 验证 `<= MAX` 通过。
+3. **`cancel_all` 前置 `closed=True`**：必须在 drain **前**设置 closed，这样并发的 `register` 要么观察到 close（自取消），要么 entry 被 drain —— 永不 both-miss。这是 Rust 的核心不变量，1:1 保留。
+4. **`cancel_all` 清空 `_pending`**：teardown 关闭 registry，没有未来 register 会消费 tombstone，留着会让 stale straggler set 活到（已结束的）会话末尾。Rust 同样 `self.pending.clear()`。
+5. **`_cid(i)` 用固定字符串而非 UUID v7**：Rust 测试用 `ToolCallId::new_v7()`。Python 用 `f"call-{i}"` —— 确定性测试，匹配现有 `tool_protocol` 测试风格（`test_computer_hub_core_remote.py:781` 用 `ToolCallId("...")` 固定字符串）。索引保证 id 在每个测试内唯一。
+6. **`token.set()` 返回 None**：`asyncio.Event.set` 无返回值，与 Rust `token.cancel()` 一致。无坑。
+7. **test 4 `cancel_all_drains` 用 5 个唯一 id**：Rust `(0..5).map(|_| cid())` 每次 new UUID。Python 用 `[ToolCallId(f"call-{i}") for i in range(5)]` 确保唯一。
+8. **test 8 bounded 8448 次循环**：`range(MAX_PENDING_TOMBSTONES + 256)` = 8448 个唯一 id。稳态 evict 后 `pending_count()` 卡在上限。性能优秀（0.30s 全套 8 测试含此循环）。
+
+### 验证
+
+```
+$ cd agent && uv run ruff check minimax_code/computer_hub_sdk/cancel.py tests/test_cancel.py
+All checks passed!
+
+$ cd agent && uv run pytest tests/test_cancel.py -v
+collected 8 items
+tests/test_cancel.py::test_cancel_live_token_fires_and_removes_entry PASSED [ 12%]
+tests/test_cancel.py::test_cancel_before_registration_tombstones_then_register_pre_cancels PASSED [ 25%]
+tests/test_cancel.py::test_cancel_deregister_clears_live_entry_without_cancel PASSED [ 37%]
+tests/test_cancel.py::test_cancel_all_drains_and_cancels_every_live_token PASSED [ 50%]
+tests/test_cancel.py::test_register_after_cancel_all_starts_cancelled PASSED [ 62%]
+tests/test_cancel.py::test_register_without_tombstone_does_not_cancel PASSED [ 75%]
+tests/test_cancel.py::test_cancel_all_clears_pending_tombstones PASSED   [ 87%]
+tests/test_cancel.py::test_pending_tombstones_stay_bounded_under_spurious_cancels PASSED [100%]
+============================== 8 passed in 0.30s ==============================
+```
+
+ruff 零手动修复、零自动修复。pytest 8/8 通过，含 8448 次 cancel 循环的 bounded 测试。排除文件保持 `??` 未跟踪，安全契约保持。
+
+### YAGNI 边界
+
+**近全量迁移，唯一 YAGNI 注记：**
+
+`register` 的 double-check `closed`（insert 后的 re-check）在 Python 单线程 asyncio 下**不会触发**（无法在同步 body 内交错 `cancel_all`）。保留它的理由：
+- **语义保真**：与 Rust teardown-race fix 1:1 对齐，文档可追溯
+- **前向兼容防御**：万一 registry 未来跨线程边界（例如 thread-pool executor dispatcher），这个检查立刻生效
+- **成本极低**：一次 `bool` 读
+
+**不迁移的部分（消费方，不在本叶子）：**
+- `CancellationToken::cancelled().await`（await 取消）半边 —— CancelRegistry 只设 fence（`Event.set`），不 await。等待逻辑在调用方的 `execute_call` task（`await Event.wait`），属于 harness/connection 叶子，不在 cancel 叶子。
+
+### Commit
+
+（提交后补哈希）
