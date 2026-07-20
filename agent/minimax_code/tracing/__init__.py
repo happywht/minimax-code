@@ -28,14 +28,22 @@ The crate's ``lib.rs`` re-exports six modules. The dependency order is:
    tokio dependency — pure ``Instant`` + ``Uuid`` + ``log`` — so it is
    the natural first leaf and the entry point for the crate's Python
    landing.
+2. ``dispatch`` (R128) — :func:`dispatcher_active`, the subscriber
+   presence gate: ``True`` when the root logger has a real handler wired
+   (a consumer will receive records). Like ``timer`` it has no fastrace
+   / opentelemetry / tokio dependency — pure ``tracing::dispatcher`` in
+   Rust, ``logging.getLogger().handlers`` in Python — so it lands as the
+   second self-contained primitive. The request-span factories landing
+   later (``http_client`` / ``grpc_client``) call it before building a
+   span, so an unconfigured process pays no trace-construction cost.
 
-Later rounds land the remaining leaves (``dispatch`` — subscriber
-presence; ``fastrace`` — W3C traceparent context; ``http_client`` —
-trace-injecting httpx middleware; ``grpc_client`` — gRPC trace
-middleware; ``tokio`` — asyncio task trace-context propagation; plus the
-test-only ``testing`` helpers).
+Later rounds land the remaining leaves (``fastrace`` — W3C traceparent
+context; ``http_client`` — trace-injecting httpx middleware;
+``grpc_client`` — gRPC trace middleware; ``tokio`` — asyncio task
+trace-context propagation; plus the test-only ``testing`` helpers).
 """
 
+from minimax_code.tracing.dispatch import dispatcher_active
 from minimax_code.tracing.timer import Timer
 
-__all__ = ["Timer"]
+__all__ = ["Timer", "dispatcher_active"]

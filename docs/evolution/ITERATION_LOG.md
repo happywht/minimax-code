@@ -10873,3 +10873,51 @@ FAILED + 幂等 + stop 交互（4）、monotonic 时钟映射（3）、context m
 ```
 feat(platform): R127 migrate xai-tracing timer.rs (crate leaf 1, operation timer)
 ```
+
+
+## R128 — 迁移 xai-tracing/dispatch.rs（crate 第 2 叶，subscriber 检测原语，dispatcher_active gate）
+
+锚点:R128-1 bcf9b57
+
+### 本轮目标
+
+开启 xai-tracing crate 的第 2 叶：把 grok-build/crates/common/xai-tracing/src/dispatch.rs（45 行，1 个公开函数 `dispatcher_active()` + 20 行 docstring + 2 个测试）前向迁移到 agent/minimax_code/tracing/dispatch.py。dispatch.rs 是 lib.rs 的私有 `mod dispatch` + `pub use dispatch::*`，仅依赖 `tracing::subscriber::NoSubscriber` 与 `tracing::dispatcher::get_default`——和 R127 的 timer 一样是**无 fastrace/opentelemetry/tokio 重依赖的纯逻辑叶子**，所以是 timer 之后下一个自包含原语。它的落地为后续 http_client/grpc_client 的 request-span 工厂提供"无消费者则跳过 span 构造"的守卫依赖。
+
+### 融合结论
+
+dispatcher_active() 在 Python 端映射为"检测 root logger 是否有真实 handler（非 NullHandler）"。Rust 检测的是 tracing dispatcher 非 NoSubscriber（thread-scoped 或全局 subscriber）；Python logging 没有 tracing 那套 subscriber 模型，最忠实的"有消费者"信号就是 root logger 上挂了真实 handler。NullHandler 是 logging "我用 logging 但不配置输出" 的惯用法，正是 Rust NoSubscriber 哨兵的对等物——两者都从 "active" 判定中排除。两个语义降级诚实记录在 docstring：(1) 作用域——Rust 可 thread-scoped（with_default）+ 全局，Python logging 无 thread-scoped handler 概念，只有全局 root handlers，所以 Rust 的"scoped 内 active、scoped 外 inactive"测试无直接 Python 对应；(2) 动机——Rust 的 gate 主要为压制 log spam（tracing 的 log 兼容特性会把无 subscriber 的 span 降级成 log 记录），Python logging 无此特性（无 handler 的记录直接丢弃），所以 Python 端的存活动机是另一半：在无消费者时跳过 trace 构造开销（trace-id minting、W3C traceparent 格式化、属性收集）。边界声明：dispatcher_active() 只检测 logging root handlers，不检测 TelemetryEngine（那是独立的结构化事件总线，不是 span/record 消费者，混入会模糊 tracing<->logging 的 1:1 映射）。
+
+### 交付
+
+- agent/minimax_code/tracing/dispatch.py（新增）：1 个公开函数 `dispatcher_active() -> bool`，5 节模块 docstring（landing 基本原理 / tracing::dispatcher->root handlers 映射 / 两个语义降级 / MiniMax Code 接线说明）。函数体 3 行：`logging.getLogger()` 取 root + `any(not isinstance(h, logging.NullHandler) for h in root.handlers)`。
+- agent/tests/test_tracing_dispatch.py（新增）：8 个测试，`fake_root` fixture（patch `logging.getLogger` 返回探针 logger，并暴露 `_clear()` helper）。覆盖：无 handler->False / 仅 NullHandler->False / StreamHandler->True / Null+Stream 混合->True / NOTSET level+handler->True（level 无关）/ DEBUG level 无 handler->False / 动态 add->True->remove->False / 子 logger handler 不影响（直接构造 `logging.Logger` 绕过 patch）。
+- agent/minimax_code/tracing/__init__.py（修改）：barrel 加 `dispatcher_active` 导出 + `__all__`，leaf order 注释第 2 叶 dispatch landed，later rounds 列表移除 dispatch。
+- docs/evolution/ITERATION_LOG.md（追加）：本 R128 条目。
+
+### 映射决策树 + 坑
+
+1. `tracing::dispatcher::get_default(|d| !d.is::<NoSubscriber>())` -> `any(not isinstance(h, logging.NullHandler) for h in logging.getLogger().handlers)`。Rust 检测 dispatcher 非 NoSubscriber；Python 检测 root handlers 含非 NullHandler。NoSubscriber<->NullHandler 1:1 对应（都是"占位但不消费"）。
+2. **作用域降级**：Rust dispatcher 可 thread-scoped（`with_default`/`set_default`）+ 全局；Python logging 无 thread-scoped handler 概念，handlers 挂在 logger 对象上（进程全局）。所以 dispatcher_active 只回答全局问题。Rust 的 `with_default(registry(), ...)` 测试无直接 Python 对应——最近似的"临时换 root handler 列表的 context manager"留给调用点，不在本函数编码。docstring 记录。
+3. **动机降级**：Rust gate 主为压制 log spam（tracing log 兼容特性降级无 subscriber 的 span 为 log 记录，淹没 log-only 进程）；Python logging 无此特性（无 handler 的记录默认丢弃）。Python 存活动机是另一半：无消费者时跳过 trace 构造开销。docstring 记录。
+4. **坑 1（测试隔离）**：第一版用 fixture 清空真实 root logger 的 handlers——失败。根因：pytest 的 logging 插件会在真实 root logger 上安装自己的 `LogCaptureHandler`（继承 StreamHandler，非 NullHandler），清空不可靠。第二版 patch `logging.getLogger` 返回探针 logger——仍失败。根因：pytest 的 logging 插件**通过被 patch 的 getLogger**（它调用 `logging.getLogger()` 抓"root"）给探针加了 `LogCaptureHandler`，所以探针.handlers 非空->True。修复：fixture 暴露 `_clear()` helper，每个测试体开头显式 `_clear()` 移除 pytest 插件加的 handler（pytest 不会在测试体两次断言之间再加）。
+5. **坑 2（子 logger 测试）**：第三版 `logging.getLogger(".__dispatch_probe_child__")` 想取子 logger——但 patch 的 lambda 忽略参数总返回探针，所以"子 logger"就是探针本身，给它加 handler 让探针 active。修复：用 `logging.Logger(name)` 直接构造子 logger，绕过被 patch 的 getLogger，探针保持空->False。这更准确地表达了"dispatcher_active 只读 getLogger() 返回的 logger，不遍历 logger tree"的语义。
+6. **诊断方法**：pytest 失败时不猜，先用 `uv run python -c "..."` 脚本（with `patch.object`）复现——脚本里 empty->False / NullHandler->False / StreamHandler->True 全对，证明 dispatch.py 逻辑正确，问题在 pytest 环境隔离。这把"逻辑 bug"和"测试隔离 bug"分离开，避免改错地方。
+
+### 验证
+
+- ruff（scope 限定 dispatch.py + test_tracing_dispatch.py + 全 tracing 包）：All checks passed。
+- pytest test_tracing_dispatch.py：8 passed。
+- pytest 全量回归：3923 passed, 10 skipped, 1 warning（R127 基线 3915 + R128 新增 8 = 3923，零回归）。
+- 诊断脚本：empty/NullHandler/StreamHandler 三态返回正确，确认逻辑无误。
+
+### YAGNI 边界
+
+- **不**引入 OpenTelemetry / fastrace Python 等价物：Rust dispatch 检测的是 tracing subscriber，Python 端用标准 logging handler 表达，不拉 OTel 依赖（那是 fastrace/http_client 叶子的事，后续回合决定）。
+- **不**检测 TelemetryEngine：它是独立的结构化事件总线，不是 span/record 消费者，混入会破坏 1:1 映射。docstring 明确边界。
+- **不**编码 thread-scoped handler 语义：Python logging 无此概念，强行模拟（如 contextvars 持有"临时 handler 列表"）是过度设计，留给真正需要的调用点。
+- **不**缓存结果：dispatcher_active 每次调用重读 root.handlers，wiring/removing handler 立即生效。Rust 也是每次 `get_default` 调用，无缓存，1:1。
+- **不**改 dispatch.py 为可注入 logger（如 `dispatcher_active(logger=None)`）：破坏 1:1 函数签名映射，且测试用 patch getLogger 已足够隔离。
+
+### Commit
+
+feat(platform): R128 migrate xai-tracing dispatch.rs (crate leaf 2, subscriber gate)
