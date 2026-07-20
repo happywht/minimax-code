@@ -12755,3 +12755,49 @@ SDK crate 第 18 叶（18d）闭合 serve 重连驱动。R150（18a）类型地�
 ### Commit
 
 `feat(platform): R153 connection.rs serve method -> connection.py (SDK leaf 18d)`
+
+## R154 — connection.rs 稳态控制层 -> connection.py (SDK leaf 18e)
+
+锚点:R154-1 35dd819
+
+### 本轮目标
+
+前向移植 grok-build `xai-computer-hub-sdk/src/connection.rs` 第 961-1036 行的 4 个纯逻辑稳态控制符号到 `agent/minimax_code/computer_hub_sdk/connection.py`：ConnectedExit enum（Stop/SocketClosed(DisconnectCause)/TerminalClose(int)，reader 稳态循环退出三分类）/ now_unix_millis()（Unix 毫秒时间戳原语，datetime.now(UTC)，UP017）/ exit_for_close_code(code: int | None) -> ConnectedExit（close code -> exit 决策树，4100-4199 terminal 范围）/ WriterControl[S] generic enum（Pause/Resume(S)，writer 流量控制信号）。4 符号全部纯逻辑，零 socket/URL/demux 依赖，可独立单测 -- 是 spawn 管线（run_writer/run_reader_actor, R155+）的纯逻辑地基。复用 R150 DisconnectCause frozen-dataclass-继承 模式（ConnectedExit）+ R135 RefCountedSet Generic 模式（WriterControl[S]）。锚点 `R154-1 35dd819`（父 R153 35dd819）。验证：ruff 0 + pytest（test_connection 加 7 个 R154 测试 = 49 passed）+ 精确 commit。
+
+### 融合结论
+
+SDK crate 第 18 叶（18e）闭合 spawn 管线的纯逻辑前置支撑。R153 serve 闭环了"重连驱动请求"语义（3 次有界重试 + force_reconnect），但 serve 只是连接对象的方法层；真正的"连接稳态循环"（reader 持续读帧 -> 分类退出 -> 通知 writer 暂停/恢复 -> 重连）由 spawn 管线（run_reader_actor/run_writer）承担，那两个 task 需要 4 个纯逻辑符号先就位：ConnectedExit 分类 reader 退出（Stop=终止 / SocketClosed=重连 / TerminalClose=永不重连）、exit_for_close_code 把 WS close code 翻译成 ConnectedExit（4100-4199 终态带，其余重连）、WriterControl<S> 是 reader -> writer 的流量控制信号（Pause=socket 死停 drain / Resume(sink)=重连成功装新 sink 恢复 drain）、now_unix_millis 给这些信号打时间戳。这 4 个零网络依赖，可纯逻辑单测，符合"每个叶子零 socket 依赖、可独立单测"的移植纪律。R153 YAGNI 预判 spawn 管线 -> R154，但读原文 852-1051 后发现 spawn 管线（run_handshake 934-959 太薄仅 send_hello 包装；run_writer/run_reader_actor/open_socket 依赖 socket+URL+handshake），故 R154 改做纯逻辑支撑层，spawn 管线整体 -> R155+。ConnectedExit/WriterControl 是 Rust 私有（非 pub）模块内符号，Python 侧不加入 connection.py __all__（保持窄导出），与 R153 ServeResult 同惯例。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/connection.py`：4 符号追加（__del__ 之后，718-818），ConnectedExit（Stop/SocketClosed/TerminalClose frozen dataclass 家族，__slots__=() 基类 + isinstance 分发，照 R150 DisconnectCause 模式）+ now_unix_millis（datetime.now(UTC).timestamp()*1000，UP017）+ exit_for_close_code（4100<=code<=4199 -> TerminalClose，否则 SocketClosed(CloseFrame(code))）+ WriterControl[S]（Generic[S] 基类 + Pause/Resume frozen dataclass 子类，照 R135 RefCountedSet Generic 模式）；imports 扩展（from datetime import UTC, datetime + from typing import Generic, TypeVar + connection_types 加 CloseFrame/DisconnectCause）。
+- `agent/tests/test_connection.py`：7 个 R154 测试（ConnectedExit 3 变体 isinstance 分发 + cause/code payload 存活 / ConnectedExit frozen / exit_for_close_code terminal 边界 4100-4199-4099-4200 / exit_for_close_code None+1000 重连路由 / now_unix_millis 单调非负 / WriterControl Pause/Resume 泛型构造 isinstance / WriterControl Resume frozen），imports 扩展（dataclasses + connection 9 符号 + connection_types CloseFrame）。
+
+### 映射决策树 + 坑
+
+- ConnectedExit 三变体忠实 Rust `enum ConnectedExit { Stop, SocketClosed(DisconnectCause), TerminalClose(u16) }`：Stop 无字段（payload-less frozen dataclass，照 R150 Eof/Forced 模式，dataclass 允许空类体 + 方法覆盖）/ SocketClosed(cause: DisconnectCause) / TerminalClose(code: int)。Python 等价 Rust match = isinstance 分发。
+- now_unix_millis：Rust `SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)` -> Python `int(datetime.now(UTC).timestamp() * 1000)` + `max(0, ...)` clamp（unwrap_or(0) 等价，时钟早于 epoch 不可能但保底）。UP017 合规（datetime.now(UTC) 非 datetime.now(timezone.utc)）。
+- exit_for_close_code：Rust `(4100..4200).contains(&code)` 是 Range 不含 4200 = [4100, 4199] -> Python `4100 <= code <= 4199`（不是 <= 4200，4200 不在 terminal 带）。None 或非 terminal -> SocketClosed(CloseFrame(code))，重连驱动运行。
+- WriterControl[S]：Rust `enum WriterControl<S> { Pause, Resume(S) }` -> Python Generic[S] 基类 + Pause/Resume(WriterControl[S]) frozen dataclass 子类。S 是 sink 类型（Rust WebSocket split-sink，Python 不透明写句柄）。PEP 484 模式：`S = TypeVar("S")` 模块级 + `class Pause(WriterControl[S])` 子类复用父 TypeVar（`class Linked(Box[T])` 标准模式），mypy 接受，运行时 dataclass 无字段/单字段正常。
+- 坑 1（isort DisconnectCallback vs DisconnectCause 顺序，本轮验证闭环关键发现）：connection_types import 块加 DisconnectCause 时，凭直觉判断 "cause < callback（cause 第 5 字符 a < callback 第 5 字符 b）" 错误放入 DisconnectCause 在 DisconnectCallback 之前 -> ruff I001。实际 case-insensitive 逐字符比较：`disconnectca-l-lback` vs `disconnectca-u-se`，前 12 字符 "disconnectca" 相同，第 13 字符 'l' < 'u'，故 `disconnectcallback < disconnectcause`。修复：交换两行，DisconnectCallback 在前。教训：isort case-insensitive 比较必须逐字符走完全程，不能凭"单词片段"直觉（callback vs cause 第 3 字符 l < u 才是关键，非第 5 字符）。
+- 坑 2（ConnectedExit/WriterControl 不加入 __all__）：Rust 原文这 4 个符号都是模块私有（enum/fn 无 pub），Python 侧 connection.py __all__ 仅 3 主类（ConnectionConfig/HubConnectionInner/HubConnection），R153 ServeResult/DeadlineCallError 等也未加入。R154 4 符号保持模块内（test 直接 import，Python 测试不依赖 __all__），与 Rust 私有性 + connection.py 窄导出惯例一致。
+
+### 验证
+
+- `uv run ruff check minimax_code/computer_hub_sdk/connection.py tests/test_connection.py` -> **All checks passed!**（0 错误，修复 I001 DisconnectCallback/DisconnectCause 顺序）。
+- `uv run pytest tests/test_connection.py tests/test_connection_types.py -q` -> **76 passed in 0.99s**（test_connection 49 含新增 7 R154 测试 + test_connection_types 27）。
+- 覆盖矩阵：ConnectedExit Stop/SocketClosed/TerminalClose isinstance 三臂分发 + SocketClosed.cause 是 CloseFrame(1000) payload 存活 + TerminalClose.code==4100 payload 存活 / ConnectedExit frozen（TerminalClose.code 赋值 -> FrozenInstanceError + SocketClosed.cause 赋值 -> FrozenInstanceError）/ exit_for_close_code 边界 4100+4199+4150 -> TerminalClose（code 存活）+ 4099+4200 -> SocketClosed / exit_for_close_code None -> SocketClosed(CloseFrame(None)).close_code() is None + 1000 -> SocketClosed(CloseFrame(1000)).close_code()==1000（重连路由）/ now_unix_millis > 1.7e12（2023 epoch-ms 地板）+ 两次连续读非递减 / WriterControl Pause() 无参构造 isinstance(Pause)+WriterControl + Resume(sink="...") sink payload 存活 + Pause/Resume 互斥（not isinstance(pause, Resume)）/ WriterControl Resume.sink 赋值 -> FrozenInstanceError。
+
+### YAGNI 边界
+
+- spawn 管线（run_writer 1047 / run_reader_actor 1088 / open_socket 877 / run_handshake 934，依赖 socket+URL+handshake 状态机）-> R155（asyncio task 模型 + 消费 R154 ConnectedExit/WriterControl + R134 handshake.rs）。
+- WriterControl<S> 状态机消费侧（run_writer select outbound_rx/writer_control_rx，Pause 停 drain / Resume 装新 sink）-> R155（随 run_writer 一起，依赖 spawn 管线 task 模型）。
+- host_is_loopback（861-869，URL loopback 判定）-> R155+（随 open_socket URL+WebSocket 层）。
+- route_or_pong/classify_stream_end（run_reader_actor 内部，依赖 demux + inner.writer_error）-> R155（随 run_reader_actor）。
+- 1310 行 #[cfg(test)] 块 -> R156+（网络叶子全部闭合后随原文测试对齐）。
+- connect() 入口（消费 ConnectionConfig -> resolve tuning -> 分配通道 -> 构造 Inner -> spawn 管线）-> R155+（spawn 闭合后）。
+- pool.rs 的 connect() 消费路径 -> server.rs/harness.rs/lib.rs barrel（connection.rs 全部叶子完成后）。
+
+### Commit
+
+`feat(platform): R154 connection.rs steady-state control layer -> connection.py (SDK leaf 18e)`

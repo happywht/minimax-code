@@ -56,6 +56,7 @@ Rust test -> Python test mapping
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -63,15 +64,25 @@ import pytest
 
 from minimax_code.computer_hub_sdk.auth import PrincipalKey
 from minimax_code.computer_hub_sdk.connection import (
+    ConnectedExit,
     ConnectionConfig,
     HubConnection,
     HubConnectionInner,
+    Pause,
+    Resume,
+    SocketClosed,
+    Stop,
+    TerminalClose,
+    WriterControl,
     _AtomicCounter,
     _ConnectionIdSlot,
     _EarlyNotifSlot,
     _HelloCaps,
+    exit_for_close_code,
+    now_unix_millis,
 )
 from minimax_code.computer_hub_sdk.connection_types import (
+    CloseFrame,
     ConnectionTuning,
     ConnHealth,
     ConnKey,
@@ -834,3 +845,92 @@ async def test_serve_retries_then_succeeds_after_one_timeout(
     # First attempt timed out (1 replay), second succeeded -> no reconnect.
     assert len(calls) == 1
     assert _buffer_size(ctx.reconnect_rx) == 0
+
+
+# ===========================================================================
+# Steady-state control layer (R154, connection.rs 961-1036).
+# ===========================================================================
+# ConnectedExit / exit_for_close_code classify how the reader's steady-state
+# loop terminates; WriterControl<S> is the writer flow-control signal across a
+# reconnect; now_unix_millis stamps wall-clock instants. Pure-logic support for
+# the spawn pipeline (run_reader_actor / run_writer, R155+); no socket here.
+def test_connected_exit_variants_classify_via_isinstance() -> None:
+    # The three Rust-enum variants are an open family discriminable via
+    # isinstance (the Rust ``match`` equivalent).
+    exits: list[ConnectedExit] = [
+        Stop(),
+        SocketClosed(CloseFrame(1000)),
+        TerminalClose(4100),
+    ]
+    assert isinstance(exits[0], Stop)
+    assert isinstance(exits[1], SocketClosed)
+    assert isinstance(exits[2], TerminalClose)
+    # The cause payload survives on the SocketClosed arm.
+    assert isinstance(exits[1].cause, CloseFrame)
+    assert exits[1].cause.close_code() == 1000
+    # The terminal code survives on the TerminalClose arm.
+    assert exits[2].code == 4100
+
+
+def test_connected_exit_variants_are_frozen() -> None:
+    tc = TerminalClose(4100)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        tc.code = 4101  # type: ignore[misc]
+    sc = SocketClosed(CloseFrame(1000))
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        sc.cause = CloseFrame(1001)  # type: ignore[misc]
+
+
+def test_exit_for_close_code_terminal_band_is_terminal_close() -> None:
+    # Boundaries: 4100 and 4199 are terminal; 4099 and 4200 are not.
+    assert isinstance(exit_for_close_code(4100), TerminalClose)
+    assert isinstance(exit_for_close_code(4199), TerminalClose)
+    mid = exit_for_close_code(4150)
+    assert isinstance(mid, TerminalClose)
+    assert mid.code == 4150
+    # Just outside the band -> SocketClosed (reconnect driver runs).
+    assert isinstance(exit_for_close_code(4200), SocketClosed)
+    assert isinstance(exit_for_close_code(4099), SocketClosed)
+
+
+def test_exit_for_close_code_none_and_normal_route_to_reconnect() -> None:
+    # None (close without a code) -> SocketClosed(CloseFrame(None)) -> reconnect.
+    none_exit = exit_for_close_code(None)
+    assert isinstance(none_exit, SocketClosed)
+    assert none_exit.cause.close_code() is None
+    # A normal 1000 close -> SocketClosed(CloseFrame(1000)) -> reconnect.
+    normal = exit_for_close_code(1000)
+    assert isinstance(normal, SocketClosed)
+    assert normal.cause.close_code() == 1000
+
+
+def test_now_unix_millis_is_monotonic_non_negative() -> None:
+    first = now_unix_millis()
+    second = now_unix_millis()
+    # Wall clock ms since epoch: a 2026+ timestamp is well into the trillions.
+    assert first > 1_700_000_000_000  # ~2023 epoch-ms floor.
+    # Two successive reads are non-decreasing (wall clock can stall, not jump
+    # backwards within a single tight loop under normal conditions).
+    assert second >= first
+
+
+def test_writer_control_variants_classify_via_isinstance() -> None:
+    # Pause: payload-less signal (socket dead, stop draining).
+    pause: WriterControl[str] = Pause()
+    assert isinstance(pause, Pause)
+    assert isinstance(pause, WriterControl)
+    # Resume: carries the fresh sink (reconnected, resume draining).
+    resume: WriterControl[str] = Resume(sink="ws-split-sink")
+    assert isinstance(resume, Resume)
+    assert isinstance(resume, WriterControl)
+    # The sink payload survives on the Resume arm and is opaque to the base.
+    assert resume.sink == "ws-split-sink"
+    # Pause and Resume are distinct arms.
+    assert not isinstance(pause, Resume)
+    assert not isinstance(resume, Pause)
+
+
+def test_writer_control_resume_is_frozen() -> None:
+    resume = Resume(sink="sink-1")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        resume.sink = "sink-2"  # type: ignore[misc]

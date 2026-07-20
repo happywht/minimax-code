@@ -64,17 +64,21 @@ import logging
 import threading
 import weakref
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Generic, TypeVar
 
 from minimax_code.computer_hub_sdk.auth import AuthProvider
 from minimax_code.computer_hub_sdk.connection_types import (
     SERVE_ATTEMPT_TIMEOUT,
     SERVE_MAX_ATTEMPTS,
+    CloseFrame,
     ConnectCallback,
     ConnectionTuning,
     ConnHealth,
     ConnKey,
     DeadlineCallError,
     DisconnectCallback,
+    DisconnectCause,
     OtherError,
     ReconnectCallback,
     TimedOut,
@@ -715,3 +719,100 @@ class HubConnection:
             self._inner.stop_tx.try_send(None)
         except Exception:
             pass
+
+
+# ===========================================================================
+# Steady-state control layer (R154, SDK leaf 18e -- connection.rs 961-1036).
+# ===========================================================================
+# ``ConnectedExit`` / ``exit_for_close_code`` classify how the reader's steady-
+# state loop terminates; ``WriterControl<S>`` is the signal the reader sends the
+# writer to pause/resume outbound draining across a reconnect; ``now_unix_millis``
+# stamps wall-clock instants for those signals. The spawn pipeline that consumes
+# them (``run_reader_actor`` / ``run_writer``, connection.rs 1047+) lands in a
+# later leaf (R155+); these four are pure-logic support -- no socket / URL / demux
+# dependency -- so they port as data + a classify function and unit-test alone.
+class ConnectedExit:
+    """Tag base for the reader steady-state loop's three exit classes.
+
+    Rust models this as ``enum ConnectedExit { Stop, SocketClosed(DisconnectCause),
+    TerminalClose(u16) }``; Python mirrors it as an open family of frozen
+    dataclasses dispatched via ``isinstance`` (the Rust ``match`` equivalent).
+    """
+
+    __slots__ = ()
+
+
+@dataclass(frozen=True)
+class Stop(ConnectedExit):
+    """Actor terminates (shutdown requested by the handle)."""
+
+
+@dataclass(frozen=True)
+class SocketClosed(ConnectedExit):
+    """Actor enters the reconnect driver (carries the disconnect cause)."""
+
+    cause: DisconnectCause
+
+
+@dataclass(frozen=True)
+class TerminalClose(ConnectedExit):
+    """Terminal close (4100-4199): do not reconnect, surface the code."""
+
+    code: int
+
+
+def now_unix_millis() -> int:
+    """Current wall-clock ms since the Unix epoch (Rust ``now_unix_millis``).
+
+    ``SystemTime::now().duration_since(UNIX_EPOCH)`` -> ``datetime.now(UTC)``;
+    the ``unwrap_or(0)`` (clock before epoch, impossible in practice) becomes a
+    ``max(0, ...)`` clamp. Returns a non-negative int (Python ``int`` is
+    unbounded, but the value fits u64 for the next several hundred years).
+    """
+    delta_ms = int(datetime.now(UTC).timestamp() * 1000)
+    return delta_ms if delta_ms >= 0 else 0
+
+
+def exit_for_close_code(code: int | None) -> ConnectedExit:
+    """Classify a WS close code into a steady-state exit (Rust ``exit_for_close_code``).
+
+    Codes in the terminal band 4100-4199 -> :class:`TerminalClose` (the reader
+    must NOT reconnect; the server signalled a permanent condition). Anything
+    else -- ``None`` (a close without a code), or a normal/transport close code
+    -- -> :class:`SocketClosed` carrying a :class:`CloseFrame` with the original
+    code, so the reconnect driver runs.
+    """
+    if code is not None and 4100 <= code <= 4199:
+        return TerminalClose(code)
+    return SocketClosed(CloseFrame(code))
+
+
+# ``S`` is the sink type the writer drains into (a WebSocket split-sink in Rust,
+# an opaque write handle here). Bound only at the ``Resume(sink)`` construction
+# site; the variants dispatch via ``isinstance`` like the other sum-type bases.
+S = TypeVar("S")
+
+
+class WriterControl(Generic[S]):
+    """Tag base for the two writer flow-control signals.
+
+    Rust models this as ``enum WriterControl<S> { Pause, Resume(S) }``; Python
+    mirrors it as an open generic family of frozen dataclasses dispatched via
+    ``isinstance``. The reader task sends these to the writer task across a
+    reconnect: ``Pause`` when the socket dies (stop draining outbound),
+    ``Resume(sink)`` once a fresh socket is installed (resume draining).
+    """
+
+    __slots__ = ()
+
+
+@dataclass(frozen=True)
+class Pause(WriterControl[S]):
+    """Socket is dead; the writer must stop draining ``outbound_rx``."""
+
+
+@dataclass(frozen=True)
+class Resume(WriterControl[S]):
+    """Reconnected; install ``sink`` and resume draining ``outbound_rx``."""
+
+    sink: S
