@@ -12326,3 +12326,117 @@ server.rs/harness.rs 等后期叶子的事，R147 只交付目录 + facade。
 ### Commit
 
 `feat(platform): R147 migrate metrics.rs -> metrics.py (SDK leaf 15, feature-gated telemetry facade -> runtime-injected recorder, 36-point metric catalog)`
+
+
+
+## R148 — 迁移 log_donate.rs -> log_donate.py（SDK leaf 16，tracing 日志捐赠 Layer -> 策略层 + 字段白名单脱敏 + OTLP LogRecord 组装）
+
+锚点:R148-1 7fdb4f8
+
+### 本轮目标
+
+迁移 grok-build 的 `xai-computer-hub-sdk/src/log_donate.rs`（592 行，SDK crate 第 16 叶，接 R133 error / R134 handshake / R135 refcount / R136 donate_pump / R137 trace_donate / R138 connection_borrow / R139 auth / R140 observability / R141 cancel / R142 admission / R143 pool / R144 notification / R145 oidc_provider / R146 metric_donate / R147 metrics 之后）。
+
+Rust 原件是一个 `tracing_subscriber::Layer`，把**精选切片**的 tracing 事件经 WebSocket 传输（`logs.donate`）转发到已连接的服务器。三重组过滤器收窄切片：(1) 仅 `TELEMETRY_TARGET = "workspace::telemetry"` 目标；(2) 仅 `>= INFO` 级别（tracing 序 `ERROR < WARN < INFO < DEBUG < TRACE`，即 `level <= INFO`）；(3) 仅 16 字段白名单（脱敏 `error`/`reason`/`object_path`/`gcs_path` 等可能携带密钥或用户路径的自由字段）。`AllowlistVisitor`（`tracing::field::Visit`）遍历每个事件：`message` -> OTLP Body，白名单字段 -> 类型化 OTLP KeyValue（str/i64/u64/bool/f64 分臂），其余丢弃。记录缓冲在 `LogBatch`，按计数（32）或年龄（2s）flush；`PumpLogExporter` 以 `MAX_LOG_RECORDS_PER_DONATION` 分块，丢弃超 `MAX_DONATION_BYTES` 的载荷，base64 编码，`try_send` 到共享泵。`DonatingLogLayer` 启动时**惰性安装**，连接后通过 swap 进 `LogDonationSender` 激活；进程级 `ACTIVE_LOG_LAYER` 让 `flush_log_layer()` 无需引用即可驱动 teardown flush。
+
+本轮把**纯策略逻辑**（目标/级别/字段过滤 + OTLP LogRecord 组装 + 计数/年龄批处理 + 分块/超大丢弃/入队捐赠）完整前向移植，对称 R146 `export_metrics` + 复用 R136 `drain_via`/`string_value`/`string_kv`；Rust 生态胶水（tracing/fastrace/prost/arc_swap）声明 YAGNI 出界。镜像 Rust 7 测试中的 5 个（跳过 2 个 fastrace），加 7 个 Python 特有测试。
+
+### 融合结论
+
+log_donate.rs 的价值不在 tracing 框架绑定，而在事件与线路之间的**纯策略**——目标/级别/字段三重过滤、OTLP LogRecord 组装、计数/年龄批处理、分块+超大丢弃+入队捐赠——这部分完全传输无关，是平台型工具的可复用资产。MiniMax Code 无 tracing/fastrace/prost 生态，但策略层可纯净落地：
+
+- **过滤三要素** -> `TELEMETRY_TARGET` 常量 + `at_least_info()` 谓词（基于 `_LEVEL_ORDER` 字典） + `ALLOWED_FIELDS` frozenset（16 字段，O(1) 成员判定，无可变别名）。
+- **AllowlistVisitor 臂分派** -> `_to_kv()` 的 `isinstance` 阶梯：bool -> `boolValue`（必须在 int 前，因 bool 是 int 子类）/ int -> `intValue` / float -> `doubleValue` / str -> `string_kv`（复用 R136 单源字符串构造）/ fallback -> `str(value)`（record_debug 臂）。
+- **OTLP LogRecord 组装** -> `extract_record()` 把 message 转为 Body string，白名单字段转为类型化属性，非白名单/"message" 跳过，trace_id/span_id 始终 `b""`（无 fastrace 本地父——Rust 对分离生产者任务的常见情形）。
+- **捐赠导出** -> `export_logs()` 对称 R146 `export_metrics`：以 `max_per_batch` 分块，encode 返回 None = 超大丢弃并继续下一块，enqueue 返回 False = 队列满丢弃并继续，返回成功入队计数。空批次不调用任何回调。
+- **计数/年龄批缓冲** -> `LogBatch.push()` 首条记录盖 `oldest`（`time.monotonic`），计数 `>= LOG_BATCH_FLUSH_RECORDS` 或年龄 `>= LOG_BATCH_MAX_AGE_SECS` 时返回并清空缓冲；`flush()` 强制 teardown 排空。
+- **激活句柄 + Layer 生命周期** -> `LogDonationSender(encode, enqueue).export(records)` 调 `export_logs`；`LogDonationLayer` 惰性（无 sender）/`activate(sender)`/`on_event(target,level,message,fields)`/`flush()`。惰性 + 非目标 + 低于 INFO 在任何分配前短路。
+- **进程级惰性安装 + 无引用 teardown flush** -> 模块级 `_ACTIVE_LAYER`（asyncio 单线程，普通变量替代 `ArcSwapOption` 原子交换）+ `new_inert_layer()`（设全局）+ `flush_log_layer()`（无引用可达）+ `_reset_active_layer()`（测试接缝）。
+- **shutdown fence** -> `LogDonationPump(tx).drain()` 转发到 R136 `drain_via(tx)`。
+
+关键洞察：R136 `donate_pump.py` 的 `OtlpAnyValue.value: dict[str, str]` 仅 string 臂，但 R136 docstring 明确预留 "leaves room for intValue/boolValue to land with the client that needs them"——R148 就是那个 client。R148 在本地 `_to_kv` 内联构造异构 AnyValue dict（`{"intValue":n}`/`{"boolValue":b}`/`{"doubleValue":f}`），不修改 R136（保持迭代独立性）；ruff 不检查类型标注，runtime dict 可存异构值。
+
+### 交付
+
+**新增文件：**
+- `agent/minimax_code/computer_hub_sdk/log_donate.py`（R148 核心交付，模块级 docstring 含完整 YAGNI 边界 + 迁移/非迁移清单 + Python 适配说明，对标 R147 文档密度）：
+  - 常量：`TELEMETRY_TARGET`、`ALLOWED_FIELDS`（16 frozenset）、`LOG_BATCH_FLUSH_RECORDS=32`、`LOG_BATCH_MAX_AGE_SECS=2.0`
+  - `LogLevel`（StrEnum，5 级 + `_LEVEL_ORDER` 排序字典）
+  - `severity()` / `at_least_info()` / `_is_allowed()`
+  - `_to_kv()`（类型化臂分派，bool 先于 int）
+  - `OtlpLogRecord`（dataclass，OTLP LogRecord 线镜像）
+  - `extract_record()`
+  - `export_logs()`（对称 R146 export_metrics）
+  - `LogBatch`（`__slots__`，push/flush）
+  - `LogDonationSender`（`__slots__`，encode/enqueue 闭包包装）
+  - `LogDonationLayer`（`__slots__`，inert/activate/on_event/flush）
+  - `_ACTIVE_LAYER` 模块级 + `new_inert_layer()` / `flush_log_layer()` / `_reset_active_layer()`
+  - `LogDonationPump`（`__slots__`，drain -> drain_via）
+- `agent/tests/test_log_donate.py`（14 测试，镜像 Rust 1/2/5/6/7 + 7 Python 特有）：
+  - `test_severity_maps_each_level`（Rust 1）
+  - `test_at_least_info_threshold` + `test_on_event_drops_off_target_and_below_info`（Rust 2，filter 谓词 + 目标/级别短路）
+  - `test_extract_record_redacts_and_types`（Rust 5，layer_redacts）
+  - `test_field_type_dispatch`（_to_kv 臂分派，bool 先于 int）
+  - `test_inert_layer_drops_all_events`（Rust 6，inert_drops）
+  - `test_export_logs_chunks_at_max_per_donation`（Rust 7，chunks）
+  - `test_export_logs_drops_oversized_continues_rest` / `test_export_logs_drops_on_full_queue` / `test_export_logs_empty_batch_enqueues_nothing`（export_logs 三臂）
+  - `test_log_batch_flushes_on_count` / `test_log_batch_flushes_on_age`（批触发）
+  - `test_log_donation_pump_drain_forwards_to_shared_pump`（R136 集成）
+  - `test_allowed_fields_catalog_is_stable`（16 字段目录锁定）
+
+### 映射决策树 + 坑
+
+**迁移判定（逐符号）：**
+- `TELEMETRY_TARGET` 常量 -> 迁移（常量）。
+- `ALLOWED_FIELDS` 16 字段 -> 迁移为 frozenset（O(1) 成员判定，无可变别名）。
+- `LOG_BATCH_FLUSH_RECORDS=32` / `LOG_BATCH_MAX_AGE=Duration::from_secs(2)` -> 迁移为 `LOG_BATCH_FLUSH_RECORDS=32` / `LOG_BATCH_MAX_AGE_SECS=2.0`。
+- `severity(level)` -> 迁移（纯函数，ERROR->17/WARN->13/INFO->9/DEBUG->5/TRACE->1）。
+- `at_least_info(level)`（`*level <= Level::INFO`）-> 迁移为 `_LEVEL_ORDER[level] <= _LEVEL_ORDER[LogLevel.INFO]`。
+- `current_ids()`/`encode_ids()`（fastrace）-> **不迁移**（Python 无 fastrace；trace_id/span_id 始终 `b""`）。
+- `AllowlistVisitor`（`tracing::field::Visit`）-> **trait 不迁移**；arm 逻辑迁移为 `extract_record()` + `_to_kv()`。
+- `build_log_record()` -> 迁移为 `extract_record()`（visitor walk + record 组装合一）。
+- `PumpLogExporter::export()` -> 迁移为 `export_logs()`（对称 R146）。
+- `LogDonationSender` / `LogBatch` / `LogLayerShared` -> 迁移为 `LogDonationSender` / `LogBatch` / `LogDonationLayer`。
+- `ACTIVE_LOG_LAYER: LazyLock<ArcSwapOption<..>>` -> 模块级 `_ACTIVE_LAYER` 变量（asyncio 单线程）。
+- `DonatingLogLayer::new_inert/activate/on_event` -> 迁移。
+- `flush_log_layer()` -> 迁移。
+- `LogDonationPump::drain()` -> 迁移（转发 R136 drain_via）。
+- `ToolServer::log_donation_layer()`（server.rs 后期叶子）-> **不迁移**（YAGNI，server.rs 未到）。
+- Rust 测试 3/4（encode_ids/current_ids，fastrace）-> **跳过**。
+
+**坑速查：**
+1. **OtlpAnyValue 类型扩展**：R136 `OtlpAnyValue.value: dict[str, str]` 仅 string 臂。R148 需 intValue/boolValue/doubleValue。解法：R148 在本地 `_to_kv` 内联构造异构 dict，不修改 R136（迭代独立性）。runtime dict 可存异构值，ruff 不检查类型标注。
+2. **bool 先于 int**：Python `bool` 是 `int` 子类。`_to_kv` 的 isinstance 阶梯必须 bool 在 int 前，否则 `True` 会被当 int 发 `intValue: 1`。这是 R148 相对 Rust 的关键差异点（Rust 用独立 `record_bool`/`record_i64` 方法，无此问题）。
+3. **`__slots__` 让测试 monkey-patch 失败**：首版测试用 `layer._sender.export = spy_export` 观察 export 调用，但 `LogDonationSender.__slots__ = ("_encode", "_enqueue")` 让 `export` 方法只读（未在 slots 中，无法赋值实例属性）。解法：去掉 monkey-patch，改用 encode/enqueue 闭包记录调用 + 发 `LOG_BATCH_FLUSH_RECORDS` 条 on-target INFO 触发真实 flush，验证 chunk 大小。`__slots__` 设计本身正确（内存效率 + 防止属性拼写错误），测试方法错了。
+4. **`_to_kv().value` 是 OtlpAnyValue 不是裸 dict**：首版断言 `_to_kv(...).value == {"boolValue": True}` 失败，因为 `.value` 是 `OtlpKeyValue.value`（OtlpAnyValue），需再加一层 `.value` 取裸 dict。统一修为 `.value.value == {...}`。
+5. **I001 导入排序**：测试从 log_donate 导入 17 个名称，ruff isort 要求 order-by-type（常量大写 -> 类 PascalCase -> 私有 _underscore -> 小写函数）。`ruff check --fix` 自动修复，0 剩余错误。
+6. **`Instant::now()`/`t.elapsed()` -> `time.monotonic()`**：批年龄用单调钟（不受墙钟调整影响），是忠实的区间度量。
+7. **trace_id/span_id 始终空**：Python 无 fastrace 本地父。这是 Rust 对分离生产者任务的常见情形（detach），非降级。
+
+### 验证
+
+- `uv run ruff check minimax_code/computer_hub_sdk/log_donate.py tests/test_log_donate.py` -> **All checks passed!**（E/F/W/I/B/UP 全过；BLE 不在 select，except Exception 安全；UP017 不涉及 datetime）。
+- `uv run pytest tests/test_log_donate.py -q` -> **14 passed in 0.27s**（14/14 全过）。
+- 常量位置确认：`MAX_LOG_RECORDS_PER_DONATION` / `MAX_DONATION_BYTES` 经 `tool_protocol/__init__.py` barrel 导出，导入成功。
+- R136 复用确认：`OtlpAnyValue`/`OtlpKeyValue`/`drain_via`/`now_unix_nanos`/`string_kv`/`string_value` 全部从 `donate_pump` 导入成功。
+- 对称性确认：`export_logs` 签名 `(records, encode, enqueue, max_per_batch=MAX_LOG_RECORDS_PER_DONATION) -> int` 与 R146 `export_metrics(metrics, encode, enqueue, max_per_batch=MAX_METRICS_PER_DONATION) -> int` 完全对称。
+
+### YAGNI 边界
+
+**不迁移（框架胶水，无 Python 等价）：**
+- `tracing_subscriber::Layer` / `tracing::field::Visit` trait —— Python 无 tracing 订阅者。事件遍历 visitor 被 `extract_record()` 显式接收事件各部分取代；Layer 生命周期是带 `on_event` 的普通类。
+- `fastrace::collector::SpanContext` / `current_ids()` / `encode_ids()` —— 本地父 trace/span id 源。Python 无 fastrace；trace_id/span_id 始终 `b""`。
+- `prost::Message::encode_to_vec` / `ExportLogsServiceRequest` protobuf 构建 + base64 —— 线序列化。Python 无 prost；`export_logs` 接收可注入 `encode` 回调（调用方拥有 OTLP 信封构建 + base64），对称 R146。
+- `arc_swap::ArcSwapOption` 进程级 -> 模块级 `_ACTIVE_LAYER` 变量（单线程 asyncio，无并发交换压力）。
+- `ToolServer::log_donation_layer` —— 连接后泵生成 + sender 接线。server.rs 是后续 SDK 叶；R148 落地接线将驱动的策略。
+
+**降级声明（非降级，Rust 常见情形）：**
+- trace_id/span_id 始终 `b""` —— Rust 对分离生产者任务（无本地父）的常见情形，非 Python 降级。
+
+### Commit
+
+feat(platform): R148 migrate log_donate.rs -> log_donate.py (SDK leaf 16, tracing log donation layer -> logging-agnostic policy layer, allowlist field redaction + OTLP LogRecord assembly)
+
+- agent/minimax_code/computer_hub_sdk/log_donate.py
+- agent/tests/test_log_donate.py
+- docs/evolution/ITERATION_LOG.md
