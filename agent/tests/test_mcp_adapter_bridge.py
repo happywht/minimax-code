@@ -52,6 +52,30 @@ These tests pin the synchronous surface of ``bridge.rs``'s
    description defaults to an empty string.
 4. **input_schema accessor** -- passes the definition's schema through by
    identity (``None`` when the definition carries none).
+
+R184 -- ``McpToolHandler.handle_call`` (async forward + metrics orchestration)
+-----------------------------------------------------------------------------
+
+These tests pin the async surface of ``bridge.rs``'s ``McpToolHandler``
+``async fn handle_call`` -- the hub tool-call -> MCP ``tools/call`` forward
+path with duration/error metric orchestration:
+
+1. **Ok arm** -- :func:`translate_mcp_result` + ``to_wire`` +
+   :meth:`TypedToolOutput.from_value` round-trip; the terminal item carries a
+   :class:`TypedToolOutput` whose ``value`` is the wire dict (single text /
+   empty content / multi-block).
+2. **Err arm** -- a :class:`McpTransportError` raised by ``call_tool``
+   becomes a plain :meth:`ToolError.execution` (``kind == EXECUTION``,
+   ``details == {"tool_id": ...}``, **no** ``.source``).
+3. **Serde failure** -- a serialisation error (``translate_mcp_result`` or
+   ``from_value`` raising) becomes :meth:`ToolError.execution` **with** the
+   causal exception attached via ``.with_source``.
+4. **Forwarded args** -- ``call_tool`` receives the definition's tool name
+   and the caller's ``args`` verbatim.
+5. **Metrics orchestration** -- ``mcp_call_duration_observe`` is called on
+   every path (Rust observes the duration before the result ``match``);
+   ``mcp_error`` is called once on the Err arm and once on the serde-failure
+   arm (never on a clean Ok arm).
 """
 
 from __future__ import annotations
@@ -65,11 +89,14 @@ import pytest
 from minimax_code.mcp_adapter import (
     McpBridgeConfig,
     McpCallResult,
+    McpError,
     McpImageContent,
     McpResourceContent,
     McpServerInfo,
     McpTextContent,
     McpToolDefinition,
+    McpTransportError,
+    metrics,
 )
 from minimax_code.mcp_adapter.bridge import McpToolHandler, translate_mcp_result
 from minimax_code.mcp_adapter.transport import McpTransport
@@ -81,6 +108,9 @@ from minimax_code.tool_protocol.output_wire import (
     Text,
     TextBlock,
 )
+from minimax_code.tool_runtime.context import ToolCallContext
+from minimax_code.tool_runtime.error import ToolError, ToolErrorKind
+from minimax_code.tool_runtime.tool import TypedToolOutput
 from minimax_code.tool_types import ToolDescription
 
 # ---------------------------------------------------------------------------
@@ -314,11 +344,27 @@ def test_translate_mixed_blocks_map_each_variant_one_to_one() -> None:
 
 
 class _StubMcpTransport(McpTransport):
-    """Minimal concrete :class:`McpTransport` for handler accessor tests.
+    """Controllable concrete :class:`McpTransport` for handler tests.
 
     R183's three accessors never touch the transport; R184's ``handle_call``
-    will exercise ``call_tool`` (and will need a richer stub then).
+    exercises ``call_tool``. The stub records every ``(name, arguments)``
+    pair in :attr:`call_args` and either returns a preloaded
+    :attr:`call_result` or raises a preloaded :attr:`call_error` -- whichever
+    the test configured. With neither set, ``call_tool`` raises
+    :class:`NotImplementedError` (the original R183 behaviour, so the accessor
+    tests that never call it are unaffected).
     """
+
+    def __init__(
+        self,
+        *,
+        call_result: McpCallResult | None = None,
+        call_error: McpError | None = None,
+    ) -> None:
+        self.call_result = call_result
+        self.call_error = call_error
+        #: Every ``(name, arguments)`` pair ``call_tool`` received, in order.
+        self.call_args: list[tuple[str, Any]] = []
 
     async def initialize(self) -> McpServerInfo:
         raise NotImplementedError
@@ -327,6 +373,11 @@ class _StubMcpTransport(McpTransport):
         raise NotImplementedError
 
     async def call_tool(self, name: str, arguments: Any) -> McpCallResult:
+        self.call_args.append((name, arguments))
+        if self.call_error is not None:
+            raise self.call_error
+        if self.call_result is not None:
+            return self.call_result
         raise NotImplementedError
 
     async def close(self) -> None:
@@ -340,10 +391,14 @@ def _make_handler(
     input_schema: Any = None,
     namespace: str | None = None,
     tool_id: str = "mcp:search",
+    transport: McpTransport | None = None,
 ) -> McpToolHandler:
     """Build a handler backed by :class:`_StubMcpTransport`.
 
-    Keyword-only so each accessor test states only the fields it cares about.
+    Keyword-only so each accessor/handle_call test states only the fields it
+    cares about. ``transport`` defaults to a bare :class:`_StubMcpTransport`
+    (R183 accessor tests never call it); R184 handle_call tests pass one
+    configured with a ``call_result`` or ``call_error``.
     """
     return McpToolHandler(
         tool_id=ToolId(tool_id),
@@ -352,7 +407,7 @@ def _make_handler(
             description=description,
             input_schema=input_schema,
         ),
-        transport=_StubMcpTransport(),
+        transport=transport if transport is not None else _StubMcpTransport(),
         namespace=namespace,
     )
 
@@ -452,3 +507,266 @@ def test_handler_input_schema_is_none_when_definition_has_none() -> None:
     """``Option::None`` input schema -> ``None`` (no schema advertised)."""
     handler = _make_handler(input_schema=None)
     assert handler.input_schema() is None
+
+
+# ---------------------------------------------------------------------------
+# McpToolHandler -- handle_call helpers (R184)
+# ---------------------------------------------------------------------------
+
+
+class _CallRecorder:
+    """Callable metric spy: records every invocation for count/arg assertions.
+
+    A drop-in replacement for the no-op metric stubs in
+    :mod:`minimax_code.mcp_adapter.metrics`: it is callable, so it can be
+    ``monkeypatch.setattr``-ed over ``metrics.mcp_call_duration_observe`` /
+    ``metrics.mcp_error``; it records each call's args/kwargs so a test can
+    assert call count and the shape of the observed value.
+    """
+
+    def __init__(self) -> None:
+        #: Every call as ``(args, kwargs)``.
+        self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    def __call__(self, *args: Any, **kwargs: Any) -> None:
+        self.calls.append((args, kwargs))
+
+    @property
+    def call_count(self) -> int:
+        return len(self.calls)
+
+
+async def _drain_terminal(handler: McpToolHandler, args: Any) -> Any:
+    """Run ``handle_call`` to completion; return the single Terminal payload.
+
+    Mirrors the dispatcher's consumption contract: ``await handle_call(...)``
+    yields the async generator, then ``async for`` drains its one ``Terminal``
+    item. Returns ``item.terminal`` -- a :class:`TypedToolOutput` on success or
+    a :class:`ToolError` on failure.
+    """
+    stream = await handler.handle_call(ToolCallContext.default(), args)
+    items = [item async for item in stream]
+    assert len(items) == 1
+    assert items[0].kind == "terminal"
+    return items[0].terminal
+
+
+# ---------------------------------------------------------------------------
+# McpToolHandler -- handle_call Ok arm (R184)
+# ---------------------------------------------------------------------------
+
+
+async def test_handle_call_success_single_text_returns_typed_output() -> None:
+    """Ok arm: single text block -> TypedToolOutput carrying the wire dict.
+
+    Mirrors the Rust Ok arm: ``translate_mcp_result`` -> ``Text``,
+    ``serde_json::to_value`` -> ``{"kind": "text", "value": "hello"}``,
+    ``TypedToolOutput::from_value`` wraps it. The terminal item is not an
+    error and carries the wire dict verbatim in ``value``.
+    """
+    transport = _StubMcpTransport(
+        call_result=McpCallResult(content=[McpTextContent(text="hello")]),
+    )
+    handler = _make_handler(transport=transport)
+    terminal = await _drain_terminal(handler, {"q": "rust"})
+    assert isinstance(terminal, TypedToolOutput)
+    assert terminal.tool_id == ToolId("mcp:search")
+    assert terminal.value == {"kind": "text", "value": "hello"}
+
+
+async def test_handle_call_success_empty_content_value_is_empty_text() -> None:
+    """Ok arm: empty content -> ``Text("")`` wire dict (side-effect-only tool).
+
+    ``translate_mcp_result`` short-circuits empty content to ``Text("")``
+    before the ``is_error`` check, so ``value`` is the empty-text wire dict.
+    """
+    transport = _StubMcpTransport(call_result=McpCallResult(content=[]))
+    handler = _make_handler(transport=transport)
+    terminal = await _drain_terminal(handler, {})
+    assert isinstance(terminal, TypedToolOutput)
+    assert terminal.value == {"kind": "text", "value": ""}
+
+
+async def test_handle_call_success_multi_block_value_is_mcp_wire() -> None:
+    """Ok arm: multi-block -> ``Mcp`` wire dict with the mapped blocks.
+
+    ``translate_mcp_result`` routes multi-block content to ``Mcp``; ``to_wire``
+    emits ``{"kind": "mcp", "value": {"blocks": [...]}}`` (the adjacent tag
+    wraps the struct, so ``blocks`` sits one level deeper than ``kind``).
+    """
+    transport = _StubMcpTransport(
+        call_result=McpCallResult(
+            content=[McpTextContent(text="t1"), McpTextContent(text="t2")],
+        ),
+    )
+    handler = _make_handler(transport=transport)
+    terminal = await _drain_terminal(handler, {})
+    assert isinstance(terminal, TypedToolOutput)
+    assert terminal.value == {
+        "kind": "mcp",
+        "value": {
+            "blocks": [
+                {"type": "text", "text": "t1"},
+                {"type": "text", "text": "t2"},
+            ],
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# McpToolHandler -- handle_call Err arm (R184)
+# ---------------------------------------------------------------------------
+
+
+async def test_handle_call_mcp_error_becomes_execution_error_without_source() -> None:
+    """Err arm: McpTransportError -> plain ToolError.execution (no source).
+
+    Mirrors the Rust Err arm: the duration is observed, ``mcp_error`` is
+    bumped once, and the error becomes ``ToolError::execution`` with the
+    exception's ``Display`` form as the detail. The Err arm does NOT attach a
+    source (only the Ok-arm serde failure does).
+    """
+    transport = _StubMcpTransport(call_error=McpTransportError("boom"))
+    handler = _make_handler(transport=transport)
+    terminal = await _drain_terminal(handler, {})
+    assert isinstance(terminal, ToolError)
+    assert terminal.kind is ToolErrorKind.EXECUTION
+    assert terminal.detail == "transport error: boom"
+    assert terminal.details == {"tool_id": "mcp:search"}
+    assert terminal.source is None
+
+
+# ---------------------------------------------------------------------------
+# McpToolHandler -- handle_call serde-failure sub-path (R184)
+# ---------------------------------------------------------------------------
+
+
+async def test_handle_call_serde_failure_attaches_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ok-arm serde failure -> ToolError.execution WITH the cause attached.
+
+    Mirrors the Rust Ok arm's ``serde_json::to_value`` Err path: the duration
+    was already observed (Ok arm), ``mcp_error`` is bumped once, and the error
+    carries the causal exception in ``.source`` via ``.with_source`` (the Err
+    arm does not, the serde-failure sub-path does).
+    """
+    transport = _StubMcpTransport(
+        call_result=McpCallResult(content=[McpTextContent(text="ok")]),
+    )
+    handler = _make_handler(transport=transport)
+
+    def _boom(_result: McpCallResult) -> Any:
+        raise RuntimeError("serde exploded")
+
+    monkeypatch.setattr(
+        "minimax_code.mcp_adapter.bridge.translate_mcp_result",
+        _boom,
+    )
+    terminal = await _drain_terminal(handler, {})
+    assert isinstance(terminal, ToolError)
+    assert terminal.kind is ToolErrorKind.EXECUTION
+    assert terminal.details == {"tool_id": "mcp:search"}
+    assert isinstance(terminal.source, RuntimeError)
+    assert str(terminal.source) == "serde exploded"
+
+
+# ---------------------------------------------------------------------------
+# McpToolHandler -- handle_call forwarded args (R184)
+# ---------------------------------------------------------------------------
+
+
+async def test_handle_call_forwards_name_and_arguments_to_transport() -> None:
+    """The definition's name + caller's args reach ``call_tool`` verbatim.
+
+    Mirrors ``self.definition.name.clone()`` + the model's ``args`` flowing
+    into ``transport.call_tool``. The stub records every pair; the single call
+    must carry the definition name (not the tool_id) and the args dict.
+    """
+    transport = _StubMcpTransport(
+        call_result=McpCallResult(content=[McpTextContent(text="ok")]),
+    )
+    handler = _make_handler(name="custom_tool", transport=transport)
+    await _drain_terminal(handler, {"q": "rust", "limit": 10})
+    assert transport.call_args == [
+        ("custom_tool", {"q": "rust", "limit": 10}),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# McpToolHandler -- handle_call metrics orchestration (R184)
+# ---------------------------------------------------------------------------
+
+
+async def test_handle_call_observes_duration_on_success_and_skips_error_metric(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ok arm: duration observed once; ``mcp_error`` NOT called.
+
+    Rust observes the duration before the result ``match`` (so both arms see
+    exactly one observation); a clean Ok arm with no serde failure never bumps
+    ``mcp_error``.
+    """
+    duration = _CallRecorder()
+    error = _CallRecorder()
+    monkeypatch.setattr(metrics, "mcp_call_duration_observe", duration)
+    monkeypatch.setattr(metrics, "mcp_error", error)
+    transport = _StubMcpTransport(
+        call_result=McpCallResult(content=[McpTextContent(text="ok")]),
+    )
+    handler = _make_handler(transport=transport)
+    await _drain_terminal(handler, {})
+    assert duration.call_count == 1
+    secs = duration.calls[0][0][0]
+    assert isinstance(secs, float)
+    assert secs >= 0.0
+    assert error.call_count == 0
+
+
+async def test_handle_call_observes_duration_and_error_on_mcp_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Err arm: duration observed once AND ``mcp_error`` bumped once.
+
+    The duration is observed before the match (so the Err arm sees it too);
+    the Err arm then bumps ``mcp_error`` exactly once for the transport
+    failure.
+    """
+    duration = _CallRecorder()
+    error = _CallRecorder()
+    monkeypatch.setattr(metrics, "mcp_call_duration_observe", duration)
+    monkeypatch.setattr(metrics, "mcp_error", error)
+    transport = _StubMcpTransport(call_error=McpTransportError("boom"))
+    handler = _make_handler(transport=transport)
+    await _drain_terminal(handler, {})
+    assert duration.call_count == 1
+    assert error.call_count == 1
+
+
+async def test_handle_call_observes_error_metric_on_serde_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ok-arm serde failure: duration observed once AND ``mcp_error`` bumped once.
+
+    The duration was observed on the Ok arm (before the serialisation try); the
+    serde-failure sub-path bumps ``mcp_error`` exactly once.
+    """
+    duration = _CallRecorder()
+    error = _CallRecorder()
+    monkeypatch.setattr(metrics, "mcp_call_duration_observe", duration)
+    monkeypatch.setattr(metrics, "mcp_error", error)
+
+    def _boom(_result: McpCallResult) -> Any:
+        raise RuntimeError("serde exploded")
+
+    monkeypatch.setattr(
+        "minimax_code.mcp_adapter.bridge.translate_mcp_result",
+        _boom,
+    )
+    transport = _StubMcpTransport(
+        call_result=McpCallResult(content=[McpTextContent(text="ok")]),
+    )
+    handler = _make_handler(transport=transport)
+    await _drain_terminal(handler, {})
+    assert duration.call_count == 1
+    assert error.call_count == 1

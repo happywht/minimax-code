@@ -30,11 +30,13 @@ order:
    :data:`~minimax_code.tool_protocol.output_wire.McpBlock`; no forward
    references -- it is the shared dependency of ``McpToolHandler.handle_call``
    and the bridge ``connect`` path, so it lands before the handler (R183+).
-3. ``McpToolHandler`` (R183, landed) -- the hub-facing handler for one MCP
-   tool. R183 lands the struct + the custom ``Debug`` + three synchronous
-   accessors (``tool_id`` / ``description`` / ``input_schema``);
-   ``handle_call`` lands in R184 (it consumes :func:`translate_mcp_result`
-   plus the ``TypedToolOutput`` / ``ToolError`` / metrics orchestration).
+3. ``McpToolHandler`` (R183 + R184, landed) -- the hub-facing handler for
+   one MCP tool. R183 lands the struct + the custom ``Debug`` + three
+   synchronous accessors (``tool_id`` / ``description`` / ``input_schema``);
+   R184 lands ``handle_call`` (it consumes :func:`translate_mcp_result`
+   plus the :class:`~minimax_code.tool_runtime.tool.TypedToolOutput` /
+   :class:`~minimax_code.tool_runtime.error.ToolError` / metrics
+   orchestration).
 4. ``McpBridge`` actor (R184+) -- ``connect`` / ``handlers`` / ``server_info``
    / ``tool_count`` / ``shutdown`` + the best-effort ``Drop`` close.
 5. ``McpBridgeHandle`` (R185+) -- the ``connect`` result envelope
@@ -81,13 +83,16 @@ Python-specific adaptations (no behavior change)
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 
+from minimax_code.mcp_adapter import metrics
 from minimax_code.mcp_adapter.transport import McpTransport
 from minimax_code.mcp_adapter.types import (
     McpCallResult,
     McpContent,
+    McpError,
     McpImageContent,
     McpResourceContent,
     McpTextContent,
@@ -103,6 +108,9 @@ from minimax_code.tool_protocol.output_wire import (
     TextBlock,
     ToolOutputWire,
 )
+from minimax_code.tool_runtime.context import ToolCallContext
+from minimax_code.tool_runtime.error import ToolError
+from minimax_code.tool_runtime.tool import ToolStream, TypedToolOutput, terminal_only
 from minimax_code.tool_types import ToolDescription
 
 __all__ = ["McpBridgeConfig", "McpToolHandler", "translate_mcp_result"]
@@ -209,11 +217,13 @@ class McpToolHandler:
 
     Translates hub ``tool_call_request`` frames into MCP ``tools/call``
     invocations and maps the result back to
-    :class:`~minimax_code.tool_protocol.output_wire.ToolOutputWire`. R183 lands
-    the struct + the custom ``Debug`` + three synchronous accessors;
-    ``handle_call`` lands in R184 (it consumes :func:`translate_mcp_result`
-    plus the :class:`~minimax_code.tool_runtime.tool.TypedToolOutput` /
-    ``ToolError`` / metrics orchestration).
+    :class:`~minimax_code.tool_protocol.output_wire.ToolOutputWire`. R183
+    lands the struct + the custom ``Debug`` + three synchronous accessors;
+    R184 lands :meth:`handle_call` (it consumes
+    :func:`translate_mcp_result` plus the
+    :class:`~minimax_code.tool_runtime.tool.TypedToolOutput` /
+    :class:`~minimax_code.tool_runtime.error.ToolError` / metrics
+    orchestration).
 
     A concrete class, not an :class:`abc.ABC` subclass: in Rust
     ``McpToolHandler`` implements ``xai_computer_hub_sdk::ToolServerHandler``,
@@ -229,7 +239,7 @@ class McpToolHandler:
     * ``fn description`` -> :meth:`description` (``ToolDescription::new`` +
       ``with_namespace`` when a namespace is configured).
     * ``fn input_schema`` -> :meth:`input_schema`.
-    * ``async fn handle_call`` -> deferred to R184.
+    * ``async fn handle_call`` -> :meth:`handle_call` (R184).
     """
 
     def __init__(
@@ -282,3 +292,86 @@ class McpToolHandler:
         definition carries no schema.
         """
         return self._definition.input_schema
+
+    async def handle_call(
+        self,
+        _ctx: ToolCallContext,
+        args: Any,
+    ) -> ToolStream[TypedToolOutput]:
+        """Translate a hub tool call into an MCP ``tools/call`` (R184).
+
+        Mirrors ``bridge.rs``'s ``async fn handle_call``: time the transport
+        call, observe the duration metric (unconditionally -- Rust observes
+        the duration before the result ``match``, so both the Ok and Err
+        arms see exactly one observation), then map the result onto a
+        terminal stream item.
+
+        * **Ok arm** -- :func:`translate_mcp_result` maps the MCP result to a
+          :class:`~minimax_code.tool_protocol.output_wire.ToolOutputWire`,
+          :meth:`to_wire <minimax_code.tool_protocol.output_wire.Text.to_wire>`
+          serialises it (the Python equivalent of ``serde_json::to_value``:
+          ``ToolOutputWire`` is a hand-rolled adjacent-tagged ``@dataclass``
+          whose ``to_wire`` emits ``{"kind": ..., "value": ...}``, *not* a
+          pydantic model, so it has no ``model_dump``), and
+          :meth:`TypedToolOutput.from_value` wraps it for the dispatcher. A
+          serialisation failure (Rust ``serde_json::to_value`` ``Err``) bumps
+          ``mcp_error`` and surfaces a :class:`ToolError` with the causal
+          exception attached via
+          :meth:`~minimax_code.tool_runtime.error.ToolError.with_source`.
+        * **Err arm** -- an :class:`~minimax_code.mcp_adapter.types.McpError`
+          raised by
+          :meth:`~minimax_code.mcp_adapter.transport.McpTransport.call_tool`
+          bumps ``mcp_error`` and becomes a plain
+          :meth:`~minimax_code.tool_runtime.error.ToolError.execution` (no
+          ``.with_source`` -- the Rust Err arm does not attach one).
+
+        The ``_ctx`` parameter mirrors Rust's unused ``_ctx: ToolCallContext``:
+        the handler does not consult per-call context (the tool id is fixed at
+        construction), so it is accepted and discarded.
+
+        Args:
+            _ctx: Per-call context (unused; mirrors Rust ``_ctx``).
+            args: The JSON arguments the model produced for this tool's input
+                schema.
+
+        Returns:
+            A single-item terminal stream carrying either the typed output
+            (success) or a :class:`ToolError` (failure). Implemented as an
+            ``async def`` that ``return``s the async generator
+            :func:`terminal_only` builds -- ``await handle_call(...)`` yields
+            the generator, then ``async for`` drains its one ``Terminal`` item
+            (the Python equivalent of Rust's ``async fn -> ToolStream``: the
+            async fn body runs to completion on ``await``, returning the
+            stream; the stream itself is then async-iterated).
+        """
+        start = time.monotonic()
+        tool_id = self._tool_id
+        try:
+            call_result = await self._transport.call_tool(
+                self._definition.name,
+                args,
+            )
+        except McpError as mcp_err:
+            # Err arm: Rust observes the duration before the match, then
+            # bumps mcp_error once for the transport failure. The Err arm
+            # does NOT attach a source (only the Ok-arm serde failure does).
+            metrics.mcp_call_duration_observe(time.monotonic() - start)
+            metrics.mcp_error()
+            return terminal_only(ToolError.execution(tool_id, str(mcp_err)))
+        # Ok arm (reached only when call_tool did not raise -- the except arm
+        # returns). Observe the duration (Rust observes before the match),
+        # then translate -> to_wire -> from_value. A serialisation failure
+        # (Rust serde_json::to_value Err) bumps mcp_error and surfaces a
+        # ToolError with the causal exception attached.
+        metrics.mcp_call_duration_observe(time.monotonic() - start)
+        try:
+            output = translate_mcp_result(call_result)
+            value = output.to_wire()
+            terminal: TypedToolOutput | ToolError = TypedToolOutput.from_value(
+                tool_id,
+                value,
+            )
+        except Exception as exc:
+            metrics.mcp_error()
+            terminal = ToolError.execution(tool_id, str(exc)).with_source(exc)
+        return terminal_only(terminal)

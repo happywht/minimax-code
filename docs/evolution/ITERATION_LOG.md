@@ -14932,3 +14932,70 @@ feat(platform): R180 xai-computer-hub-mcp-adapter transport.rs McpTransport asyn
 ### Commit
 
 `feat(platform): R183 xai-computer-hub-mcp-adapter bridge.rs McpToolHandler struct + Debug + 3 accessors (tool_id/description/input_schema, 7 tests)`
+
+
+## R184 — xai-computer-hub-mcp-adapter bridge.rs McpToolHandler handle_call + metrics stub
+
+锚点:R184-1 8ea5228
+
+### 本轮目标
+
+迁 `bridge.rs` `impl ToolServerHandler for McpToolHandler` 的最后 1 个方法 `async fn handle_call`(L233-262) + 评估并落地 crate 私有 `pub(crate) mod metrics`(metrics.rs)。R183 已迁 struct + Debug + 3 同步访问器（`tool_id`/`description`/`input_schema`），`handle_call` 因跨 4 个依赖面（`TypedToolOutput`(R109) + `ToolError`(R107) + `terminal_only` + crate 私有 `metrics`）被 deliberate 延后。本轮闭合 handler 的 trait 契约（4/4 方法全就绪），为 R185+ `McpBridge` actor 扫清最后前置依赖。
+
+### 融合结论
+
+**为何 handle_call + metrics 一轮迁：** Rust `handle_call`(L233-262) 编排链：`Instant::now()` 计时 -> `self.transport.call_tool(name, args)` -> `metrics::mcp_call_duration_observe(elapsed)`（无条件，match 前）-> `translate_mcp_result` -> `serde_json::to_value` -> `TypedToolOutput::from_value`；Err 臂（`call_tool` 抛 `McpError`）-> `metrics::mcp_call_duration_observe` + `metrics::mcp_error` + `ToolError::execution`（无 `.source()`）；Ok 臂 serde 失败 -> `metrics::mcp_error` + `ToolError::execution(...).with_source(exc)`。metrics stub 是 handle_call 的硬依赖（crate 私有 `pub(crate) mod metrics`，尚未迁移），二者必须同轮——否则 handle_call 无法编译/测试。故 metrics.rs（3 个 `cfg(not(feature="metrics"))` no-op 函数）作为独立叶子首迁，handle_call 紧随消费。
+
+**metrics.rs 落地决策（YAGNI 正例）：** Rust crate 双 `cfg` 模式：`#[cfg(feature="metrics")]` 真 Prometheus observer（`prometheus-client` histogram）vs `#[cfg(not(feature="metrics"))]` **默认** 3 个 no-op 空体函数。MiniMax 无 MCP adapter 的 Prometheus scrape 消费者（平台可观测性走 `minimax_code.tracing` / `computer_hub_sdk.ObservabilityBridge`，非 Prometheus endpoint），故默认 no-op 子集是 YAGNI-correct 移植。3 个 helper（`mcp_call_duration_observe`/`mcp_error`/`mcp_tools_bridged_set`）落地为模块级空体函数——它们是 bridge 记录的**调用点**，非数据汇。落地全部 3 个（即便 `mcp_tools_bridged_set` 要到 R185+ actor `connect` 才被调用），保持 metrics.rs 单叶完整性（3 函数 stub 跨两轮分裂会无依赖理由地割裂叶子）。
+
+**独立模块 vs bridge.py 内联：** Rust 把 helper 放 `metrics.rs`，经 `crate::metrics::...` 访问。Python 镜像：helper 放独立 `metrics.py`，bridge 经 `from minimax_code.mcp_adapter import metrics` + `metrics.mcp_error()` 访问——调用点读起来与 Rust 源一致，且未来真 observer 替换是单文件编辑（不动 bridge 调用点）。这也使 `monkeypatch.setattr(metrics, "mcp_error", spy)` 测试注入精准命中 bridge 引用的同一模块对象。
+
+**Rust `Result` -> Python `raise` 重构：** Rust `transport.call_tool` 返回 `Result<McpCallResult, McpError>`，handle_call 用 `let result = ...; match result { Ok(r) => ..., Err(e) => ... }`。Python `McpTransport.call_tool`(R180) 改为 `async def` 直接返回 `McpCallResult`、失败 `raise McpError`——故 match 重构为 `try/except McpError`。关键：duration 观测在 Rust 里位于 `match` **之前**（`metrics::mcp_call_duration_observe(elapsed)` 在 match 表达式外），Python 等价是 Ok 路径（try 成功后的正常流）观测一次 + Err 臂（except 内）观测一次——逻辑等价（每条路径恰好 1 次观测）。
+
+**`serde_json::to_value` Python 等价 = `output.to_wire()`：** Rust `serde_json::to_value(output)` 把 `ToolOutputWire` 序列化为 `serde_json::Value`。Python `ToolOutputWire`(R83) 是手写相邻标签 `@dataclass`（非 pydantic，无 `model_dump`），其 `to_wire()` 方法返回 `{"kind": ..., "value": ...}` dict——即 serde 等价。`Text("hello").to_wire()` = `{"kind":"text","value":"hello"}`，`Mcp(blocks).to_wire()` = `{"kind":"mcp","value":{"blocks":[...]}}`。
+
+**`TypedToolOutput.from_value` 成功路径无需 fake render：** `from_value`(tool.py L493) 内部 `extract_content_blocks(value)` 填充 `model_output`。`extract_content_blocks`(render.py L437) 有 5 级策略兜底（strategy 5 = "Anything else -> stringified text"），**绝不抛异常**。故 Ok 臂 `from_value` 一定成功返回 `TypedToolOutput`，测试无需注入 fake render 模块——terminal.value 原样保留 wire dict，断言不依赖 model_output 内容。
+
+### 交付
+
+| 文件 | 状态 | 说明 |
+|------|------|------|
+| `agent/minimax_code/mcp_adapter/metrics.py` | 新增（86 行） | crate 私有 metrics stub 独立叶子：3 个 `cfg(not(feature="metrics"))` no-op 函数（`mcp_call_duration_observe`/`mcp_error`/`mcp_tools_bridged_set`）+ `__all__` + 模块 docstring（双 cfg 模式说明 + YAGNI 决策 + 独立模块理由 + 为何 3 函数同轮）|
+| `agent/minimax_code/mcp_adapter/bridge.py` | 扩展（imports + handle_call 方法） | imports 加 `time` + `from minimax_code.mcp_adapter import metrics` + `McpError`(types) + `ToolCallContext`(context) + `ToolError`(error) + `ToolStream`/`TypedToolOutput`/`terminal_only`(tool) + McpToolHandler 类 docstring 标 R184 landed + 追加 `async def handle_call` 方法（计时 + try/except McpError -> ToolError.execution 无 source；Ok 臂 duration 观测 + translate/to_wire/from_value，serde 失败 -> ToolError.execution.with_source）|
+| `agent/minimax_code/mcp_adapter/__init__.py` | 编辑（ledger +1 行） | barrel ledger 更新：landed 加 `bridge McpToolHandler.handle_call + metrics stub (R184)`，remaining 收窄到 `McpBridge actor + McpBridgeHandle + barrel-reconciliation`。metrics 不进 `__all__`（Rust `pub mod metrics` 非 `pub use`，但 `from minimax_code.mcp_adapter import metrics` 子模块访问可用）|
+| `agent/tests/test_mcp_adapter_bridge.py` | 扩展（+9 测试 + 2 helper） | docstring 加 R184 段落（5 不变量）+ imports 扩展（`McpError`/`McpTransportError`/`metrics` + `ToolCallContext`/`ToolError`/`ToolErrorKind` + `TypedToolOutput`）+ `_StubMcpTransport` 升级（`call_result`/`call_error` 关键字参数 + `call_args` 记录 + 分支 `call_tool`）+ `_make_handler` 加 `transport` 关键字参数 + `_CallRecorder`（metric spy）+ `_drain_terminal`（async 消费助手）+ 9 个 R184 测试（Ok 单文本/空内容/多块 + Err McpError 无 source + serde 失败带 source + 参数透传 + 3 指标编排）|
+| `docs/evolution/ITERATION_LOG.md` | 追加 | R184 条目 |
+
+### 映射决策树+坑
+
+**决策 1 — metrics 落地为独立 no-op 模块（YAGNI 正例）：** Rust crate 私有 `pub(crate) mod metrics` 双 cfg 模式。MiniMax 无 Prometheus 消费者 -> 默认 no-op 子集。3 函数全落地（含 R185+ 才消费的 `mcp_tools_bridged_set`），保单叶完整。独立 `metrics.py` 而非 bridge.py 内联——镜像 Rust `crate::metrics::...` 路径，且 `monkeypatch.setattr(metrics, ...)` 测试注入精准。
+
+**决策 2 — `Result` -> `try/except` 重构（duration 观测位置）：** Rust `call_tool` 返回 `Result`，duration 观测在 `match` 之前（两条臂共享）。Python `call_tool` 改 `raise`，重构为 try/except。duration 观测拆两处：Ok 路径（try 成功后）+ except 臂内各一次，逻辑等价（每路径 1 次）。关键测试 `test_handle_call_observes_duration_*` 验证 3 条路径（Ok/Err/serde）各观测恰好 1 次 duration。
+
+**决策 3 — `mcp_error` 仅 Err + serde 两路径（非 Ok 干净路径）：** Rust `metrics::mcp_error()` 仅在 Err 臂 + Ok 臂 serde 失败时 bump。Ok 干净路径（translate + to_wire + from_value 全成功）**不** bump。测试 `test_handle_call_observes_duration_on_success_and_skips_error_metric` 显式断言 Ok 路径 `error.call_count == 0`——防止误把 mcp_error 当无条件 bump。
+
+**决策 4 — Err 臂无 `.source()`、serde 失败有 `.source()`（Rust 对齐）：** Rust Err 臂 `ToolError::execution(tool_id, format!("{e}"))` 不带 source；Ok 臂 serde 失败 `ToolError::execution(...).with_source(exc)`（或等价的 cause 链）。Python 镜像：except McpError 臂 `ToolError.execution(tool_id, str(mcp_err))`（无 with_source）；except Exception 臂 `ToolError.execution(tool_id, str(exc)).with_source(exc)`。测试分别断言 `source is None`（Err）vs `isinstance(source, RuntimeError)`（serde）。
+
+**坑 1 — `from_value` Ok 路径假风险（防误判为 serde 失败）：** `TypedToolOutput.from_value` 内部调 `extract_content_blocks(value)`。若该函数对 `{"kind":"text","value":"hello"}` 抛异常，handle_call 的 `except Exception` 会捕获，terminal 变 `ToolError`（而非预期的 `TypedToolOutput`），Ok 测试误判失败。读 render.py L437-463 确认：`extract_content_blocks` 有 5 级策略 + strategy 5 "Anything else -> stringified text" 兜底，**绝不抛异常**。故 Ok 路径 `from_value` 必成功，测试断言 `terminal.value == {"kind":"text","value":"hello"}` 成立（value 原样保留，model_output 内容不影响断言）。这是写 Ok 测试前必须验证的关键事实——基于 render.py 源码确认而非猜测。
+
+**坑 2 — metrics monkeypatch 必须打模块对象属性（非函数引用）：** bridge.py `from minimax_code.mcp_adapter import metrics` 后调 `metrics.mcp_error()`。Python 模块属性是运行时查找（非导入时绑定），故 `monkeypatch.setattr(metrics, "mcp_error", spy)` 修改模块对象属性 -> bridge.py 运行时查找到 spy。测试文件同样 `from minimax_code.mcp_adapter import (... metrics)` 引用同一模块对象。若误用 `monkeypatch.setattr("minimax_code.mcp_adapter.metrics.mcp_error", spy)` 字符串形式也可，但对象属性形式更直观且与 bridge 导入方式对称。
+
+**坑 3 — `_StubMcpTransport` 向后兼容（不破坏 R183 测试）：** R183 的 3 访问器测试用裸 `_StubMcpTransport()`（不调 call_tool）。R184 升级 stub：`__init__` 加 `call_result`/`call_error` 关键字参数（默认 None）+ `call_args` 记录 + `call_tool` 分支（raise call_error / return call_result / raise NotImplementedError 兜底）。None 默认值 + NotImplementedError 兜底确保 R183 裸构造测试不受影响（它们从不调 call_tool）。`_make_handler` 加 `transport` 关键字参数（默认 None -> 裸 stub），R183 测试不传 transport 时行为不变。
+
+### 验证
+
+- **ruff：** `uv run ruff check tests/test_mcp_adapter_bridge.py minimax_code/mcp_adapter/` -> `All checks passed!`（测试文件 + metrics.py + bridge.py + __init__.py + transport.py + types.py 全绿，零 `--fix` 噪声外溢）。
+- **pytest：** `uv run pytest tests/test_mcp_adapter_bridge.py -q` -> **32 passed in 0.42s**（R181 6 + R182 9 + R183 7 + R184 9 + R184 helper = 32，零回归，含 4 个 async handle_call 消费测试全绿）。
+- **R184 新测试 9 个全绿：** Ok 臂 3（`test_handle_call_success_single_text_returns_typed_output` value==`{"kind":"text","value":"hello"}` + `test_handle_call_success_empty_content_value_is_empty_text` + `test_handle_call_success_multi_block_value_is_mcp_wire` blocks 一层深）+ Err 臂 1（`test_handle_call_mcp_error_becomes_execution_error_without_source` source is None）+ serde 失败 1（`test_handle_call_serde_failure_attaches_source` source is RuntimeError）+ 参数透传 1（`test_handle_call_forwards_name_and_arguments_to_transport` call_args==[(name,args)]）+ 指标编排 3（Ok duration x1 error x0 + Err duration x1 error x1 + serde duration x1 error x1）。
+- **关键不变量验证：** `_drain_terminal` 助手断言 `len(items)==1` + `items[0].kind=="terminal"`，证明 handle_call 返回单 terminal 流（terminal_only 契约）；3 个指标测试用 `_CallRecorder` spy 精确断言 duration/error 调用次数，证 duration 每路径 1 次 + mcp_error 仅 Err/serde 两路径。
+
+### YAGNI 边界
+
+- **metrics 真 observer（Prometheus）整体 YAGNI：** Rust `#[cfg(feature="metrics")]` 真 histogram 未迁。MiniMax 无 MCP adapter 的 Prometheus scrape 消费者（可观测性走 tracing/ObservabilityBridge）。未来若接入 Prometheus，`metrics.py` 单文件替换为真 observer 即可（不动 bridge 调用点）。`mcp_tools_bridged_set`(R185+ actor 消费) 已落地 stub，actor 迁移时直接调用。
+- **`McpBridge` actor 延后 R185+：** `connect`/`handlers`/`server_info`/`tool_count`/`shutdown` + `impl Drop`（best-effort `transport.close()` 经 `tokio::spawn`）。Python 等价是 async `connect` classmethod + `__del__`/`async with`。R184 handle_call 落地后，handler 4/4 方法全就绪，actor 可直接消费 handler 列表。actor 还消费 `metrics.mcp_tools_bridged_set`（已落地）。
+- **`McpBridgeHandle` 延后 R186+：** `connect` 结果信封（`bridge` + `server_info`），其 `Debug` impl 调 `self.bridge.tool_count()`——依赖 actor 的 `tool_count()`，故必须在 `McpBridge` 之后。
+- **barrel-reconciliation 延后 R187（crate 收官）：** 待 actor + handle 全落地后，对账 `lib.rs` 的 `pub use` 表面（McpBridge/McpBridgeConfig/McpBridgeHandle/McpToolHandler 4 符号），统一 mcp_adapter barrel + 建 barrel count 测试。
+
+### Commit
+
+`feat(platform): R184 xai-computer-hub-mcp-adapter bridge.rs McpToolHandler handle_call + metrics stub (async forward + duration/error orchestration, 9 tests)`
