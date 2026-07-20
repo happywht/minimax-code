@@ -11033,3 +11033,86 @@ barrel 决策：Rust lib.rs 有 `pub mod tokio` 但不 `pub use tokio::*`（调�
 ### Commit
 
 feat(platform): R130 migrate xai-tracing tokio.rs (crate leaf 4, spawn_traced, asyncio contextvars propagation)
+
+## R131 — xai-tracing/http_client.rs -> tracing/http_client.py（crate 第 5 叶，出站请求 traceparent 注入，消费 R128 + R129）
+
+锚点:R131-1 fbc3d5a
+
+### 本轮目标
+
+迁移 xai-tracing crate 第 5 个叶子 http_client.rs。它是 R129 current_trace_id + R128 dispatcher_active 的直接消费者——两个依赖都已就绪，http_client.rs 现在可以自包含落地。
+
+http_client.rs 全文 155 行，两个公开面：（1）attach_trace_to_http_request 纯 header 注入原语（OTel global propagator 把当前 span context 写成 traceparent header）；（2）TracingMiddleware reqwest 中间件（dispatcher_active 门控 + 建 http_request child span + 注入 + record response status）+ 3 个 traced_client* 工厂（reqwest ClientWithMiddleware 包装）。
+
+### 融合结论
+
+核心拆分：Rust http_client 表达两个职责——"把 trace context 放到线上"（header 注入）+ "为出站请求建观测 span"（child span 生命周期）。本轮落地注入半，推迟 span 生命周期半。
+
+注入半降级：Rust attach 用 OTel global text-map propagator（可能携带 tracestate/baggage）；Python 只有 W3C traceparent 通道（R129），注入 traceparent-only。attach 本身无条件（门控在中间件层，镜像 Rust 在 TracingMiddleware::handle 而非 attach 内门控）。
+
+中间件半降级：Rust TracingMiddleware 建 http_request child span（新 span_id，继承 parent trace_id）并注入该 span 的 context；Python R129 SpanContext 扁平无 span 树，无法建 child span，traceparent_request_hook 注入的是 current SpanContext（同 trace_id，span_id 是 current 而非新 client span）。dispatcher_active 门控保留（无消费者不注入，镜像 Rust "no consumer -> no span, no log spam"）。
+
+traced_client* 工厂推迟：reqwest ClientWithMiddleware -> httpx.AsyncClient 工厂。MiniMax Code 的 httpx client 在 llm.py，adopt tracing 是消费端决策，非本 crate 职责（YAGNI）。
+
+barrel 决策：Rust lib.rs 选择性 re-export http_client::{TracedHttpClient, attach_trace_to_http_request, traced_client, traced_client_from_builder, traced_client_new}——attach 在 crate 根，但 TracingMiddleware struct 本身不 re-export（用户用 factories 返回的 TracedHttpClient 类型）。Python 匹配：re-export attach_trace_to_http_request（对应 Rust free-function re-export）+ traceparent_request_hook（对应 factory 使用面，httpx event_hooks 接线点）。
+
+### 交付
+
+新增：
+- `agent/minimax_code/tracing/http_client.py`（~140 行）：attach_trace_to_http_request(headers: MutableMapping[str, str]) -> bool（纯注入，读 current_trace_id 写 traceparent，无条件，None 时返回 False 不变）+ traceparent_request_hook(request: httpx.Request) -> None（httpx event_hooks['request'] 集成，dispatcher_active 门控 + 委托 attach）+ 详尽 docstring（注入半 vs span 生命周期半拆分 / OTel propagator->traceparent-only 降级 / child span->current SpanContext 降级 / YAGNI 推迟 factories）
+- `agent/tests/test_tracing_http_client.py`（8 测试全过）：attach 无 context False / 写入 traceparent / 值匹配 current_trace_id / dispatcher 无关（无条件）；hook 注入（active+context）/ inactive 跳过 / 无 context 跳过 / httpx event_hooks 端到端（MockTransport 捕获注入 header）
+
+修改：
+- `agent/minimax_code/tracing/__init__.py`：barrel docstring 加 leaf 5 http_client 段落（记录 Rust 选择性 re-export + 注入半/spans 半拆分 + factory YAGNI 推迟）；import + __all__ 加 attach_trace_to_http_request + traceparent_request_hook；从 later-rounds 列表移除 http_client（剩 grpc_client + testing）
+
+### 映射决策树 + 坑
+
+1. attach 主体：OTel global propagator + Span::current().context() + HeaderInjector -> current_trace_id() + headers["traceparent"] = tp。决策：Python 无 OTel propagator，直接读 R129 current_trace_id（已是 W3C traceparent 字符串）写入。降级 traceparent-only 记录。
+2. attach 返回类型：Rust 无返回（&mut HeaderMap 原地修改）-> Python 返回 bool（是否注入）。决策：Rust 隐式（注入与否看 Span::current()），Python 显式 bool 让调用点可观测注入结果，测试断言更直接。
+3. attach 参数类型：Rust &mut HeaderMap -> Python MutableMapping[str, str]。决策：duck typing，兼容 dict + httpx.Headers（都支持 __setitem__）。runtime 无类型检查负担。
+4. TracingMiddleware 中间件：reqwest Middleware::handle -> httpx event_hooks['request'] 函数。决策：httpx 无中间件链，event hook 是对应接线点。traceparent_request_hook(request) 形状匹配 event_hooks 签名。
+5. dispatcher_active 门控：Rust 在 TracingMiddleware::handle 内门控（dispatcher_active ? info_span : Span::none()）-> Python 在 traceparent_request_hook 入口门控。决策：保留"无消费者不注入"语义。注意 attach 本身不门控（镜像 Rust attach 无门控），门控在 hook 层。
+6. child span 生命周期：Rust info_span("http_request", otel.kind=client, ...) + record http.response.status_code -> 不落地。决策：需 span 树抽象（R129 扁平 SpanContext 无 parent/child），本轮只落地注入半，span 生命周期推迟到引入 span 树后。
+7. traced_client/traced_client_new/traced_client_from_builder：reqwest ClientWithMiddleware 工厂 -> 不落地。决策：YAGNI，MiniMax Code httpx client 在 llm.py，adopt tracing 是消费端决策。
+8. wiremock 测试 -> httpx.MockTransport。决策：MockTransport handler 捕获 request（含 event hook 注入的 header），等价 wiremock 验证线上 traceparent。test_hook_wires_into_httpx_event_hooks 用真实 httpx.Client + event_hooks + MockTransport 端到端证明接线。
+
+坑：
+- 无重大自纠。attach 的 MutableMapping[str, str] 类型与 httpx.Headers 的静态兼容性——httpx.Headers 运行时支持 __setitem__（duck typing 工作），静态类型检查可能警告但项目用 ruff 不用 mypy，无负担。
+
+### 验证
+
+- `ruff check minimax_code/tracing/http_client.py tests/test_tracing_http_client.py` -> All checks passed!
+- `ruff check minimax_code/tracing/` -> All checks passed!（barrel __init__ 改动 clean）
+- `pytest tests/test_tracing_http_client.py -v` -> 8 passed in 0.17s（attach 4 测试 + hook 4 测试）
+- 全量回归 -> 3973 passed, 10 skipped, 1 warning in 106.13s（R130 基线 3965 + R131 新增 8 = 3973，零回归；1 warning 为预存 fastapi/httpx 弃用，与 R131 无关）
+
+### YAGNI 边界
+
+本轮落地：attach_trace_to_http_request 纯注入原语 + traceparent_request_hook httpx 集成点（dispatcher_active 门控）。闭合"出站请求注入 traceparent"核心契约。
+推迟（后续回合）：
+- grpc_client.rs（388 行）：gRPC trace 中间件，重度，最后落地。
+- testing.rs（仅测试 helper，优先级低，parse_traceparent 已在 R129 消费）。
+不落地：
+- traced_client/traced_client_new/traced_client_from_builder 工厂：reqwest ClientWithMiddleware -> httpx.AsyncClient 工厂。MiniMax Code httpx client 在 llm.py，adopt tracing 是消费端决策，非本 crate 职责。
+- http_request child-span 生命周期（建 span + record http.response.status_code）：需 span 树抽象（R129 扁平 SpanContext），本轮只落地注入半。
+
+### Commit
+
+feat(platform): R131 migrate xai-tracing http_client.rs (crate leaf 5, outbound traceparent injection)
+
+- tracing/http_client.py: attach_trace_to_http_request(headers)->bool (pure
+  injection, reads R129 current_trace_id, writes W3C traceparent, unconditional)
+  + traceparent_request_hook(request) (httpx event_hooks['request'] handler,
+  R128 dispatcher_active gate + delegate to attach)
+- Downgrade: Rust TracingMiddleware opens http_request child span (new span_id,
+  inherited trace_id) + OTel propagator (tracestate/baggage); Python R129
+  SpanContext is flat (no span tree) + W3C traceparent-only channel, so hook
+  injects current SpanContext, traceparent-only
+- tests/test_tracing_http_client.py: 8 tests, attach (no-context False / write /
+  value-match / dispatcher-unconditional) + hook (inject / inactive-skip /
+  no-context-skip / httpx event_hooks end-to-end via MockTransport)
+- tracing/__init__.py: barrel docstring leaf 5, re-export attach +
+  traceparent_request_hook (matching Rust lib.rs selective re-export of
+  attach_trace_to_http_request + factory use-surface; TracingMiddleware struct
+  itself not re-exported in Rust, factories deferred in Python as YAGNI)
+- regression: 3973 passed (R130 3965 + 8 new), zero regression

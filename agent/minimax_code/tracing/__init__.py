@@ -57,10 +57,29 @@ The crate's ``lib.rs`` re-exports six modules. The dependency order is:
    This landing matches that: ``spawn_traced`` is **not** re-exported from
    the package barrel, only importable as
    ``minimax_code.tracing.tokio.spawn_traced``.
+5. ``http_client`` (R131) — :func:`attach_trace_to_http_request` and
+   :func:`traceparent_request_hook`, outbound-request traceparent injection
+   over httpx. Mirrors the Rust ``TracingMiddleware``: a pure injection
+   primitive (read the current :class:`SpanContext` (R129), write its W3C
+   traceparent into a header mapping) plus an httpx
+   ``event_hooks['request']`` handler gated on :func:`dispatcher_active`
+   (R128). Only the wire-injection half lands — the Rust ``http_request``
+   child-span lifecycle (new span_id, inherited trace_id,
+   ``http.response.status_code`` record) needs the span-tree abstraction
+   R129 defers, so the hook injects the *current* SpanContext rather than a
+   freshly minted client span. The Rust ``lib.rs`` selectively re-exports
+   from ``http_client`` (``attach_trace_to_http_request`` + the
+   ``traced_client`` factories + the ``TracedHttpClient`` type, but **not**
+   the ``TracingMiddleware`` struct itself); this landing re-exports
+   :func:`attach_trace_to_http_request` (matching the Rust free-function
+   re-export) and :func:`traceparent_request_hook` (the Python analogue of
+   the factory use-surface — the httpx wiring point). The ``traced_client``
+   / ``traced_client_new`` / ``traced_client_from_builder`` factories are
+   deferred: MiniMax Code's httpx clients live in ``llm.py`` and adopting
+   tracing there is a consumer-side decision, not this crate's job.
 
-Later rounds land the remaining leaves (``http_client`` — trace-injecting
-httpx middleware; ``grpc_client`` — gRPC trace middleware; plus the
-test-only ``testing`` helpers).
+Later rounds land the remaining leaves (``grpc_client`` — gRPC trace
+middleware; plus the test-only ``testing`` helpers).
 """
 
 from minimax_code.tracing.dispatch import dispatcher_active
@@ -70,13 +89,19 @@ from minimax_code.tracing.fastrace import (
     enter_span_with_traceparent,
     local_or_random_span_ctx,
 )
+from minimax_code.tracing.http_client import (
+    attach_trace_to_http_request,
+    traceparent_request_hook,
+)
 from minimax_code.tracing.timer import Timer
 
 __all__ = [
     "SpanContext",
     "Timer",
+    "attach_trace_to_http_request",
     "current_trace_id",
     "dispatcher_active",
     "enter_span_with_traceparent",
     "local_or_random_span_ctx",
+    "traceparent_request_hook",
 ]
