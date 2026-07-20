@@ -13190,3 +13190,180 @@ deadline_task]`），仅在收到 stream Ok 帧时 rearm（cancel 旧 + 新建�
 ### Commit
 
 `feat(platform): R160 port run_reader_phase (SDK leaf 18j)` —— 见 git log。
+
+## R161 — run_reader_actor 读循环编排层（SDK leaf 18k）
+
+锚点:R161-1 fce145d
+
+### 本轮目标
+
+前向移植 grok-build `xai-computer-hub-sdk/src/connection.rs` 第 1088-1242 行的
+`run_reader_actor` —— reader actor 的纯编排层。这是 SDK crate 第 18 片叶子的第 11
+子叶（18k），紧接 R160 的 `run_reader_phase`（稳态读循环，18j）。actor 是双循环
+外壳：外层 `'actor` 循环反复调用 `run_reader_phase` 并对它的 `ConnectedExit` 三路
+分发（Stop / TerminalClose / SocketClosed），SocketClosed 分支进入内层 `'reconnect`
+退避+重连循环；actor 退出时无论路径都跑一遍 finally 清理（drain waiters / drain
+progress / stop writer / close channels / await writer handle / set shutdown）。
+
+本轮的核心工程约束：actor 的全部编排（exit 分发、outage 记账、biased backoff/reconnect
+select、writer Pause/Resume 握手、fatal-vs-transient 重试状态机、无条件清理）必须
+在**无真实 WebSocket** 的前提下完整单测。解法是把真实重连（开新 socket + replay
+sessions）抽成 `ReconnectFn` Protocol，actor 接受一个可注入的 `reconnect_fn`，
+真实 `reconnect_and_replay` 推迟到 R162+ 网络层。这样整个 actor 的退出分发与重连
+生命周期都能用脚本化的 `_ScriptedReconnect` + 最小 fake writer 单测，零 live transport。
+
+### 融合结论
+
+Rust tokio select! -> Python asyncio 偏置选择（R160 已建立的模式）：`ensure_future`
+包装每个分支 -> `asyncio.wait(FIRST_COMPLETED)` -> 按声明顺序检查 `done`（声明顺序即
+优先级）-> 取消 + 收集 pending（`return_exceptions=True`）。本轮在两个新位置复用该模式：
+内层重连循环的「stop > backoff-sleep」与「stop > reconnect attempt（budget-bounded）」。
+
+关键差异 / Python 化改造：
+
+1. **ReconnectFn Protocol**：Rust 用 `async fn` 函数指针（`reconnect_fn: impl Fn...
+   + Send + 'static`），Python 用 `typing.Protocol` + `__call__` 异步方法。actor 把
+   `reconnect_fn(inner, url, attempt, outage, backoff_total)` 包进
+   `asyncio.wait_for(..., timeout=attempt_budget)`，与 Rust `tokio::time::timeout`
+   对称。`attempt_budget = reconnect_attempt_budget(liveness_deadline) = max(deadline,
+   30.0)`（R150 已迁），但测试超时路径用 `_ScriptedReconnect` **主动 raise
+   TimeoutError()**，不真等 30s 预算。
+2. **三路 ConnectedExit 分发**（外层循环）：
+   - `Stop` -> 中断（直接进 finally 清理，不重连）。
+   - `TerminalClose(code)` -> info 日志 + `fire_on_disconnect` + drain waiters 为
+     `Closed("connection closed by peer")` + drain progress + 中断（无重连）。
+   - `SocketClosed(cause)` -> 收集 outage 中断信息（`detected_at`、health 快照、
+     `prev_connection_id`、组装 `OutageInfo`）+ warn 日志 + `fire_on_disconnect` +
+     `WriterControl::Pause`（失败即中断）+ drain waiters 为 `NetworkError` +
+     drain progress + 进内层重连循环。
+3. **内层重连循环**：`attempt += 1` -> `backoff_for(attempt, schedule)` -> biased
+   select stop>sleep（stop 命中则 `stop_actor=True` 中断）-> `backoff_total += backoff`
+   -> `reconnect_start = monotonic` -> `attempt_budget` -> biased select
+   stop>reconnect（stop 命中则中断）-> 分类 `reconnect_task.exception()`：
+   - `None`（成功）-> reconnect_succeeded 指标 + 时长 observe + `health.reset()` +
+     `writer_error.take()` + `drain_reconnect_signals` + `Resume(new_sink)`（失败 ->
+     `stop_actor=True` 中断）+ reconnect_writer_resume 指标 + 中断（回稳态 reader）。
+   - `HandshakeAuthFailed` -> reconnect_failed("handshake_auth") + drain waiters 为
+     `AuthError` + drain progress + `_forget_pool_entry` + `stop_actor=True` 中断
+     （fatal：池驱逐 + 不重试）。
+   - 其他 / `TimeoutError` -> reconnect_failed("transport") + warn + continue（瞬态：
+     下一轮退避后重试）。
+4. **finally 无条件清理**（actor 退出，无论路径）：drain waiters 为
+   `NetworkError("connection actor exited")` + drain progress + `writer_stop_tx.
+   try_send(None)`（抑制 `_MpscClosed`/`QueueFull`）+ `writer_ctl_tx.close()` +
+   `stop_rx.close_channel()` + `try: await writer_handle except Exception: warn` +
+   `inner.shutdown.set()`。
+5. **池驱逐接线**：`_forget_pool_entry(inner)` 通过 `inner.on_fatal`（weakref.ref |
+   None）解引用 -> pool -> `pool.forget_if(inner.key, predicate)`。R139 pool 已提供
+   `forget_if`；本叶只是接线 fatal 路径。`_FakePool` 测试辅助无 `__slots__` 故可
+   weakref。
+
+### 交付
+
+`agent/minimax_code/computer_hub_sdk/connection.py`：
+
+- `ReconnectFn` Protocol（line ~1367）：`__call__(inner, url, attempt, outage,
+  backoff_total) -> Coroutine[tuple[Sink, AsyncIterator[WsInbound]], ...]`。
+- `_send_writer_ctl(tx, ctl) -> bool`（line ~1393）：发一个 `WriterControl`，关通道
+  返回 False（对应 Rust `tx.send(...).is_err()`）；用于 Pause/Resume 握手失败检测。
+- `_forget_pool_entry(inner)`（line ~1409）：weakref 解引用 -> `pool.forget_if`；
+  on_fatal 未挂或池已回收则 no-op（对应 Rust `if let Some(on_fatal) ...`）。
+- `run_reader_actor(inner, stream, stop_rx, reconnect_rx, writer_ctl_tx,
+  writer_stop_tx, writer_handle, url, liveness_deadline, reconnect_fn)`（line ~1426
+  -1610）：双循环编排主体，含 outage 记账、biased backoff/reconnect、三态重连分类、
+  finally 无条件清理。
+- `_send_writer_ctl` 内联于 Pause/Resume 两处（SocketClosed 暂停、重连成功恢复）。
+
+`agent/tests/test_connection.py`：
+
+- 导入：`AsyncIterator, Callable`（collections.abc）、`OutageInfo`、`run_reader_actor`、
+  `HandshakeAuthFailed`（error）、`_Sink, mpsc_channel`（demux，已存在但补 Actor 用）。
+- 4 个辅助：`_ScriptedReconnect`（脚本化重连结果/异常队列 + calls 记录）、
+  `_spawn_writer`（fake writer 任务，记录收到的 control + 响应 stop）、`_FakePool`
+  （记录 forget_if 调用）、`_wait_until`（复用 R157 预存版，不重复定义）。
+- 9 个 `test_actor_*`：
+  1. `test_actor_stop_exits_and_runs_cleanup` —— Stop 退出走清理，waiters=
+     NetworkError、shutdown.set。
+  2. `test_actor_terminal_close_drains_as_closed_and_skips_reconnect` ——
+     TerminalClose 不重连，drain 为 Closed。
+  3. `test_actor_socket_closed_pauses_reconnects_resumes` —— SocketClosed ->
+     Pause -> 重连成功 -> Resume -> 回稳态。
+  4. `test_actor_handshake_auth_failure_evicts_pool_and_stops` ——
+     HandshakeAuthFailed 触发池驱逐 + drain AuthError + stop_actor。
+  5. `test_actor_transport_error_retries_then_succeeds` —— 瞬态错误重试到成功。
+  6. `test_actor_reconnect_timeout_treated_as_transport_error` ——
+     TimeoutError 归类瞬态，继续重试。
+  7. `test_actor_stop_during_backoff_preempts_reconnect` —— backoff 睡眠期间
+     stop 抢占（reconnect_fn 未被调用）。
+  8. `test_actor_stop_during_reconnect_attempt_preempts` —— 重连 attempt 期间
+     stop 抢占。
+  9. `test_actor_writer_pause_channel_closed_breaks_actor` —— Pause 发送时
+     ctl 通道已关，actor 中断走清理。
+
+### 映射决策树 + 坑
+
+1. **B023 + B008 双约束（本轮最深的坑）**：两处 `drain_waiters_with(factory)` 的
+   factory lambda 需要把当轮循环变量（`exit_`/`exc`）的属性织进错误消息。直接闭包
+   `lambda: NetworkError(f"...{exit_.cause.label()}")` 触发 **B023**（函数体捕获循环
+   变量）。默认参数绑定 `lambda cause=exit_.cause.label():` 满足 B023，但默认参数里
+   是**函数调用** `exit_.cause.label()`，触发 **B008**（argument defaults 不允许函数
+   调用）。最终解：先把循环变量的属性快照成普通局部 `cause_label = exit_.cause.label()`，
+   再 `lambda cl=cause_label: NetworkError(...)` —— 默认参数引用普通局部（非函数调用）
+   满足 B008，函数体只用参数 `cl` 满足 B023。第二处（HandshakeAuthFailed）`exc.status`
+   是**属性访问**非函数调用，`lambda status=exc.status:` 本就不触发 B008，只需保证
+   默认参数绑定即可。drain_waiters_with 是同步调用 factory（demux.py 495），故默认参数
+   在定义时绑定 = 同步调用时的值，语义零改变。
+2. **`_wait_until` 重名覆盖回归（本轮第二深的坑）**：R157 已定义
+   `_wait_until(predicate, label: str)`（固定 2s 超时，label 仅用于报错），R161 初稿
+   又定义了同名 `_wait_until(predicate, timeout: float = 1.0)`，后定义覆盖前者，
+   导致 R157 的 `test_writer_drains_outbound_while_live` 调用
+   `_wait_until(pred, "two frames drained")` 把字符串塞进 `timeout: float` ->
+   `TypeError: unsupported operand + float and str`。修复：删除 R161 重复定义，9 个
+   actor 测试复用 R157 预存版；唯一一处单参数调用
+   `_wait_until(lambda: ...Pause...)` 补 label `"writer paused"`。删除后 `import time`
+   变孤儿（F401），ruff --fix 清理。教训：新增测试辅助前先 grep 同名符号，复用 > 重复。
+3. biased select! 声明顺序即优先级：内层循环两处 select 都把 `stop_rx.recv()` 包成
+   task 放第一个，`asyncio.wait` 后先查 `if stop_task in done`，保证 stop 在 backoff
+   睡眠 / 重连 attempt 期间能抢占（对应 Rust `select! { stop_rx => ..., sleep => ... }`）。
+4. `reconnect_task.exception()` 三态分类：`None` -> 成功路径（take 新 sink/stream）；
+   `isinstance(exc, HandshakeAuthFailed)` -> fatal（池驱逐 + stop_actor）；else（含
+   `TimeoutError`、`NetworkError`、其他）-> 瞬态（warn + continue 重试）。对应 Rust
+   `match reconnect_fn.await { Ok(_) => ..., Err(HandshakeAuthFailed) => ..., Err(_) => ... }`。
+5. `attempt_budget` 不阻塞测试：`reconnect_attempt_budget(liveness_deadline) = max(
+   liveness_deadline, 30.0)`，测试若靠 budget 超时会等 30s。改用 `_ScriptedReconnect`
+   在第 N 个 outcome 主动 raise `TimeoutError()`，瞬间走瞬态重试分支。
+6. `writer_stop_tx.try_send(None)` 在 finally 容错：通道可能已关（writer 已退）或满，
+   捕获 `_MpscClosed, asyncio.QueueFull` 对应 Rust `let _ =`。`writer_ctl_tx.close()`
+   与 `stop_rx.close_channel()` 是同步方法（demux.py 已验证）。
+7. `await writer_handle` 包 try/except Exception：writer 可能已自行退出并带异常，
+   finally 只 warn 不抛（对应 Rust `let _ = handle.await`）。`BLE` 不在 ruff select，
+   裸 `except Exception` 安全无需 noqa。
+8. isort：`OutageInfo` 落在 connection_types 导入块的 `OtherError`/`ReadError` 之间
+  （e<f<l<o<r 顺序：OtherError < OutageInfo < ReadError）；`run_reader_actor` 落在
+  connection 导入 `run_reader_phase` 前（r 字母 `run_reader_actor < run_reader_phase <
+  run_writer`，actor < phase 字母序 a<p）。
+
+### 验证
+
+- `uv run ruff check minimax_code/computer_hub_sdk/connection.py
+  tests/test_connection.py` -> All checks passed!（B023/B008 双修 + I001 isort 自动
+  修 + F401 time 孤儿清理后全绿）。
+- `uv run pytest tests/test_connection.py -q` -> **104 passed in 3.32s**
+  （含新增 9 个 test_actor_* + R157 全部 writer 测试 + R159 interval + R160 reader_phase，
+  _wait_until 重名回归修复后零失败）。
+
+### YAGNI 边界
+
+- `reconnect_and_replay` / `open_socket` / `run_handshake`（Rust 767-1087、1243+）：
+  真实网络层 —— 开新 WebSocket、跑 handshake 状态机、replay 已绑定 sessions。是
+  `ReconnectFn` 的真实实现，留 R162+ 网络 leaf。本叶 actor 只通过 Protocol 消费它。
+- `connect()` / `serve()` 入口（Rust 1340+）：spawn reader+writer actor 的顶层入口，
+  组装 `HubConnection` handle。依赖网络层，留 R162+ 之后。
+- `server.rs` / `harness.rs` / `lib.rs` barrel：SDK crate 其余文件 + 根 barrel 对账，
+  在 connection.rs 全部子叶（18a-18n）完成后收官。
+- 真实 WS 库（websockets/aiohttp）的 tungstenite 等价：Message 解码、Close code 解析、
+  Ping/Pong 自动应答，全部在网络层 leaf，本叶只消费已解码的 `WsInbound` 标签。
+
+### Commit
+
+`feat(platform): R161 port run_reader_actor (SDK leaf 18k)` —— 见 git log。

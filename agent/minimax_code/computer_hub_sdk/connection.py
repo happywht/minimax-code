@@ -67,7 +67,7 @@ import weakref
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Generic, Protocol, TypeVar
+from typing import Any, Generic, Protocol, TypeVar
 from urllib.parse import urlparse
 
 from minimax_code.computer_hub_sdk.auth import AuthProvider
@@ -87,21 +87,32 @@ from minimax_code.computer_hub_sdk.connection_types import (
     Forced,
     LivenessDeadline,
     OtherError,
+    OutageInfo,
     ReadError,
     ReconnectCallback,
     TimedOut,
     WriteError,
     WriteErrorSlot,
+    reconnect_attempt_budget,
     waiter_guard,
 )
 from minimax_code.computer_hub_sdk.demux import Demux, _MpscClosed, _Sink, _SinkRx
 from minimax_code.computer_hub_sdk.error import (
+    AuthError,
     BackpressureError,
     ClientError,
+    Closed,
+    HandshakeAuthFailed,
     NetworkError,
     SerdeError,
 )
-from minimax_code.computer_hub_sdk.metrics import serve_replay_timeout
+from minimax_code.computer_hub_sdk.metrics import (
+    reconnect_duration_observe,
+    reconnect_failed,
+    reconnect_succeeded,
+    reconnect_writer_resume,
+    serve_replay_timeout,
+)
 from minimax_code.computer_hub_sdk.refcount import RefCountedSet
 from minimax_code.tool_protocol.connection import ConnectionKind
 from minimax_code.tool_protocol.envelope import (
@@ -1351,3 +1362,254 @@ async def run_reader_phase(
         if not deadline_task.done():
             deadline_task.cancel()
             await asyncio.gather(deadline_task, return_exceptions=True)
+
+
+class ReconnectFn(Protocol):
+    """Reconnect + session-replay strategy, dependency-injected into the actor.
+
+    The real ``reconnect_and_replay`` (open a fresh socket, re-run the
+    handshake, replay parked sessions) is a network-bound leaf (R162+); the
+    actor takes this :class:`Protocol` so its entire orchestration -- the exit
+    dispatch, the outage bookkeeping, the biased backoff / reconnect select,
+    the writer Pause/Resume handshake, and the fatal-vs-transient retry state
+    machine -- is unit-testable with a scripted ``reconnect_fn`` and no live
+    transport, mirroring :func:`run_reader_phase`'s "generic over the inbound
+    stream" technique. ``Ok`` yields ``(sink, stream)``; any
+    :class:`HandshakeAuthFailed` is fatal (pool eviction), every other error
+    is transient (retry after backoff).
+    """
+
+    async def __call__(
+        self,
+        inner: HubConnectionInner,
+        url: str,
+        attempt: int,
+        outage: OutageInfo,
+        backoff_total: float,
+    ) -> tuple[Any, AsyncIterator[WsInbound]]:
+        ...
+
+
+async def _send_writer_ctl(
+    writer_ctl_tx: _Sink[WriterControl[Any]], ctl: WriterControl[Any]
+) -> bool:
+    """Send a ``WriterControl`` signal; return False if the writer channel closed.
+
+    Mirrors Rust ``writer_ctl_tx.send(ctl).await.is_err()``: :meth:`_Sink.send`
+    is async and raises :class:`_MpscClosed` when the writer task has dropped
+    its receiver (writer gone). ``True`` on a clean hand-off.
+    """
+    try:
+        await writer_ctl_tx.send(ctl)
+    except _MpscClosed:
+        return False
+    return True
+
+
+def _forget_pool_entry(inner: HubConnectionInner) -> None:
+    """Evict this connection from the pool on a fatal (auth) failure.
+
+    Mirrors Rust ``forget_pool_entry(&inner)``: the inner carries an
+    ``on_fatal`` weakref to its pool; resolve it and remove the entry whose
+    actor identity matches this inner (Rust ``Arc::as_ptr as usize`` ->
+    :func:`id`).
+    """
+    if inner.on_fatal is None:
+        return
+    pool = inner.on_fatal()
+    if pool is None:
+        return
+    own_id = id(inner)
+    pool.forget_if(inner.key, lambda conn: conn.actor_id() == own_id)
+
+
+async def run_reader_actor(
+    inner: HubConnectionInner,
+    stream: AsyncIterator[WsInbound],
+    stop_rx: _SinkRx[None],
+    reconnect_rx: _SinkRx[None],
+    writer_ctl_tx: _Sink[WriterControl[Any]],
+    writer_stop_tx: _Sink[None],
+    writer_handle: asyncio.Task[Any],
+    url: str,
+    liveness_deadline: float,
+    reconnect_fn: ReconnectFn,
+) -> None:
+    """Reader actor orchestration loop (Rust ``run_reader_actor``, 1088-1242).
+
+    Consumes :func:`run_reader_phase`'s :class:`ConnectedExit` and drives the
+    reconnect lifecycle. Three exit branches, audited in declaration order:
+
+    * :class:`Stop` -> break to cleanup (no reconnect, no disconnect drain).
+    * :class:`TerminalClose` -> log + :func:`fire_on_disconnect` + drain waiters
+      as :class:`Closed` + drain progress, then break (the peer closed
+      permanently; reconnecting would loop).
+    * :class:`SocketClosed` -> build an :class:`OutageInfo` snapshot from the
+      health tracker + detection latency, log + :func:`fire_on_disconnect` +
+      ``WriterControl.Pause`` (break on a closed channel) + drain waiters as
+      :class:`NetworkError` + drain progress, then enter the inner reconnect
+      loop.
+
+    The inner reconnect loop biases stop over backoff-sleep and over the
+    reconnect attempt (Rust ``tokio::select!`` declaration order), so a stop
+    signal preempts an in-flight reconnect. Each attempt is bounded by
+    :func:`reconnect_attempt_budget`. Outcomes: ``Ok((sink, stream))`` ->
+    metrics + health reset + writer-error take + :func:`drain_reconnect_signals`
+    + ``WriterControl.Resume`` (break on closed) + resume metric + break back
+    to the steady-state reader; :class:`HandshakeAuthFailed` -> metric +
+    drain-as-:class:`AuthError` + :func:`_forget_pool_entry` + fatal stop;
+    anything else (transport error, ``TimeoutError`` from the per-attempt
+    budget) -> metric + warn + retry.
+
+    Cleanup (unconditional on any actor exit) drains waiters as
+    :class:`NetworkError`, drains progress, signals the writer to stop, closes
+    the writer-control + stop channels, awaits the writer task (warn on error),
+    and sets the shutdown event so :meth:`HubConnection.await_shutdown` resolves.
+
+    tokio -> asyncio: Rust labeled ``break 'actor`` / ``break 'reconnect`` ->
+    a ``stop_actor`` flag re-checked at each loop break site; Rust
+    ``mpsc::Sender::send(..).await.is_err()`` -> :func:`_send_writer_ctl`; Rust
+    ``timeout(budget, reconnect(..))`` -> :func:`asyncio.wait_for` with
+    ``TimeoutError`` flowing into the transient-retry branch.
+    """
+    attempt = 0
+    connected_at = time.monotonic()
+    backoff_total = 0.0
+    stop_actor = False
+    try:
+        while True:  # 'actor
+            exit_ = await run_reader_phase(
+                inner, stream, stop_rx, reconnect_rx, liveness_deadline
+            )
+            if isinstance(exit_, Stop):
+                break
+            if isinstance(exit_, TerminalClose):
+                _LOGGER.info(
+                    "connection closed by peer (terminal close code %s)", exit_.code
+                )
+                fire_on_disconnect(inner)
+                inner.demux.drain_waiters_with(
+                    lambda: Closed("connection closed by peer")
+                )
+                inner.demux.drain_progress()
+                break
+            # SocketClosed(cause): transient outage -> attempt reconnect.
+            detected_at = time.monotonic()
+            health = inner.health.snapshot()
+            outage = OutageInfo(
+                cause=exit_.cause,
+                prev_connection_id=inner.connection_id.get(),
+                prev_connection_duration_ms=max(
+                    0, int((detected_at - connected_at) * 1000)
+                ),
+                last_inbound_mono=health.last_inbound_mono,
+                detect_ms=max(
+                    0, int((detected_at - health.last_inbound_mono) * 1000)
+                ),
+                since_last_probe_monotonic_ms=health.since_last_probe_monotonic_ms,
+                since_last_probe_wall_ms=health.since_last_probe_wall_ms,
+                clock_jump_ms=health.clock_jump_ms,
+            )
+            _LOGGER.warning(
+                "connection lost (%s); pausing writer and reconnecting to %s",
+                exit_.cause.label(),
+                url,
+            )
+            fire_on_disconnect(inner)
+            if not await _send_writer_ctl(writer_ctl_tx, Pause()):
+                break
+            # Snapshot the loop variable's label into a plain local first, then
+            # bind via a default arg: drain_waiters_with invokes the factory
+            # synchronously, but B023 cannot see that, so we freeze via a
+            # default; the default is a plain local (not a call), satisfying B008.
+            cause_label = exit_.cause.label()
+            inner.demux.drain_waiters_with(
+                lambda cl=cause_label: NetworkError(f"connection lost: {cl}")
+            )
+            inner.demux.drain_progress()
+
+            while True:  # 'reconnect
+                attempt += 1
+                backoff = backoff_for(attempt, inner.reconnect_backoff)
+                # Biased stop > backoff-sleep (Rust select! declaration order).
+                stop_task = asyncio.ensure_future(stop_rx.recv())
+                sleep_task = asyncio.ensure_future(asyncio.sleep(backoff))
+                done, pending = await asyncio.wait(
+                    (stop_task, sleep_task),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                if stop_task in done:
+                    stop_actor = True
+                    break
+                backoff_total += backoff
+                reconnect_start = time.monotonic()
+                attempt_budget = reconnect_attempt_budget(liveness_deadline)
+                # Biased stop > reconnect attempt (budget-bounded).
+                reconnect_task = asyncio.ensure_future(
+                    asyncio.wait_for(
+                        reconnect_fn(inner, url, attempt, outage, backoff_total),
+                        timeout=attempt_budget,
+                    )
+                )
+                stop_task = asyncio.ensure_future(stop_rx.recv())
+                done, pending = await asyncio.wait(
+                    (stop_task, reconnect_task),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                if stop_task in done:
+                    stop_actor = True
+                    break
+                exc = reconnect_task.exception()
+                if exc is None:
+                    new_sink, stream = reconnect_task.result()
+                    reconnect_succeeded()
+                    reconnect_duration_observe(time.monotonic() - reconnect_start)
+                    inner.health.reset()
+                    inner.writer_error.take()
+                    drain_reconnect_signals(reconnect_rx)
+                    if not await _send_writer_ctl(writer_ctl_tx, Resume(new_sink)):
+                        stop_actor = True
+                        break
+                    reconnect_writer_resume()
+                    break  # break 'reconnect -> re-enter steady-state reader
+                if isinstance(exc, HandshakeAuthFailed):
+                    reconnect_failed("handshake_auth")
+                    # Default-arg bind (see the SocketClosed drain site above).
+                    inner.demux.drain_waiters_with(
+                        lambda status=exc.status: AuthError(f"handshake rejected: status {status}")
+                    )
+                    inner.demux.drain_progress()
+                    _forget_pool_entry(inner)
+                    stop_actor = True
+                    break
+                reconnect_failed("transport")
+                _LOGGER.warning(
+                    "reconnect attempt %d to %s failed: %r", attempt, url, exc
+                )
+                # Continue 'reconnect -> retry after the next backoff.
+            if stop_actor:
+                break
+    finally:
+        inner.demux.drain_waiters_with(
+            lambda: NetworkError("connection actor exited")
+        )
+        inner.demux.drain_progress()
+        try:
+            writer_stop_tx.try_send(None)
+        except (_MpscClosed, asyncio.QueueFull):
+            pass
+        writer_ctl_tx.close()
+        stop_rx.close_channel()
+        try:
+            await writer_handle
+        except Exception:
+            _LOGGER.warning("writer task exited with an error during teardown")
+        inner.shutdown.set()

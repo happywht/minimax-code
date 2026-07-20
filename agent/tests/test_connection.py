@@ -58,9 +58,10 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
-from collections.abc import Callable
+import weakref
+from collections.abc import AsyncIterator, Callable
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -98,6 +99,7 @@ from minimax_code.computer_hub_sdk.connection import (
     host_is_loopback,
     now_unix_millis,
     route_or_pong,
+    run_reader_actor,
     run_reader_phase,
     run_writer,
 )
@@ -110,15 +112,17 @@ from minimax_code.computer_hub_sdk.connection_types import (
     Forced,
     LivenessDeadline,
     OtherError,
+    OutageInfo,
     ReadError,
     TimedOut,
     WriteError,
     WriteErrorSlot,
 )
-from minimax_code.computer_hub_sdk.demux import Demux, mpsc_channel
+from minimax_code.computer_hub_sdk.demux import Demux, _Sink, mpsc_channel
 from minimax_code.computer_hub_sdk.error import (
     BackpressureError,
     ClientError,
+    HandshakeAuthFailed,
     NetworkError,
     SerdeError,
 )
@@ -1737,3 +1741,314 @@ async def test_reader_declares_liveness_deadline_when_stream_stuck() -> None:
     exit_val = await asyncio.wait_for(reader, timeout=2.0)
     assert isinstance(exit_val, SocketClosed)
     assert isinstance(exit_val.cause, LivenessDeadline)
+
+
+# ===========================================================================
+# run_reader_actor (R161, SDK leaf 18k -- connection.rs 1088-1242). The actor
+# is pure orchestration: it consumes run_reader_phase's ConnectedExit and drives
+# the reconnect lifecycle. The real reconnect (open a fresh socket + replay
+# sessions) is a network-bound leaf (R162+), so the actor takes a ReconnectFn
+# Protocol -- its entire exit dispatch, outage bookkeeping, biased
+# backoff/reconnect select, writer Pause/Resume handshake, and the
+# fatal-vs-transient retry state machine are unit-testable with a scripted
+# reconnect_fn + a minimal fake writer, no live transport.
+# ===========================================================================
+class _ScriptedReconnect:
+    """ReconnectFn stand-in: replays a scripted list of outcomes per call.
+
+    Each entry is either a ``(sink, stream)`` tuple (a successful reconnect
+    yielding a fresh sink + inbound stream) or a ``BaseException`` to raise (a
+    failed attempt -- ``HandshakeAuthFailed`` is fatal, every other error
+    including ``TimeoutError`` is transient). Records every call so a test can
+    assert url / attempt-index / cumulative-backoff bookkeeping.
+    """
+
+    def __init__(self, outcomes: list[Any]) -> None:
+        self._outcomes = list(outcomes)
+        self.calls: list[tuple[str, int, float]] = []
+
+    async def __call__(
+        self,
+        inner: HubConnectionInner,
+        url: str,
+        attempt: int,
+        outage: OutageInfo,
+        backoff_total: float,
+    ) -> tuple[Any, AsyncIterator[WsInbound]]:
+        self.calls.append((url, attempt, backoff_total))
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome  # type: ignore[return-value]
+
+
+def _spawn_writer() -> tuple[_Sink[Any], _Sink[None], asyncio.Task[None], list[Any]]:
+    """Spawn a minimal fake writer recording Pause/Resume, exiting on stop.
+
+    Isolates ``run_reader_actor`` from the real ``run_writer`` (which needs a
+    live WriterSink handle). Mirrors the writer's biased ``stop > ctl`` select
+    so the actor's Pause/Resume handshake and the teardown ``writer_stop_tx`` /
+    ``await writer_handle`` are exercised without a socket. ``controls`` is the
+    observable list of received WriterControl signals.
+    """
+    ctl_tx, ctl_rx = mpsc_channel(8)
+    stop_tx, stop_rx = mpsc_channel(8)
+    controls: list[Any] = []
+
+    async def fake_writer() -> None:
+        while True:
+            stop_task = asyncio.ensure_future(stop_rx.recv())
+            ctl_task = asyncio.ensure_future(ctl_rx.recv())
+            done, pending = await asyncio.wait(
+                (stop_task, ctl_task),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if stop_task in done:
+                return
+            if ctl_task in done:
+                ctl = ctl_task.result()
+                if ctl is None:  # writer_ctl_tx.close() during teardown.
+                    return
+                controls.append(ctl)
+
+    return ctl_tx, stop_tx, asyncio.ensure_future(fake_writer()), controls
+
+
+class _FakePool:
+    """Connection-pool stand-in recording forget_if invocations.
+
+    Defined without ``__slots__`` so it is weakref-able -- the actor's
+    ``on_fatal`` slot holds a ``weakref.ref`` to the pool (the pool <-> connection
+    edge is not an ownership cycle).
+    """
+
+    def __init__(self) -> None:
+        self.forget_calls: list[tuple[ConnKey, Callable[[Any], bool]]] = []
+
+    def forget_if(self, key: ConnKey, predicate: Callable[[Any], bool]) -> bool:
+        self.forget_calls.append((key, predicate))
+        return True
+
+
+async def test_actor_stop_exits_and_runs_cleanup() -> None:
+    # The Stop exit (handle-requested shutdown) breaks to cleanup without
+    # reconnecting; the finally block stops the writer, drains waiters as
+    # NetworkError, and sets the shutdown event.
+    h = _make_inner()
+    stream = _StuckStream()
+    ctl_tx, wstop_tx, writer_task, _ = _spawn_writer()
+    reconnect_fn = _ScriptedReconnect([])
+    actor = asyncio.ensure_future(
+        run_reader_actor(
+            h.inner, stream, h.stop_rx, h.reconnect_rx,
+            ctl_tx, wstop_tx, writer_task,
+            "ws://hub", _TEST_READER_DEADLINE, reconnect_fn,
+        )
+    )
+    h.stop_tx.try_send(None)
+    await asyncio.wait_for(actor, timeout=2.0)
+    assert reconnect_fn.calls == []  # Stop exit never reconnects.
+    assert writer_task.done()
+    assert h.inner.shutdown.is_set()
+
+
+async def test_actor_terminal_close_drains_as_closed_and_skips_reconnect() -> None:
+    # A terminal close code (4100-4199) drains waiters as Closed and exits
+    # WITHOUT reconnecting (the peer signalled a permanent condition).
+    h = _make_inner()
+    stream = _ScriptedStream([WsFrameReceived(WsClose(4101))])
+    ctl_tx, wstop_tx, writer_task, _ = _spawn_writer()
+    reconnect_fn = _ScriptedReconnect([])
+    actor = asyncio.ensure_future(
+        run_reader_actor(
+            h.inner, stream, h.stop_rx, h.reconnect_rx,
+            ctl_tx, wstop_tx, writer_task,
+            "ws://hub", _TEST_READER_DEADLINE, reconnect_fn,
+        )
+    )
+    await asyncio.wait_for(actor, timeout=2.0)
+    assert reconnect_fn.calls == []  # terminal close never reconnects.
+    assert h.inner.shutdown.is_set()
+
+
+async def test_actor_socket_closed_pauses_reconnects_resumes() -> None:
+    # SocketClosed -> Pause the writer -> reconnect -> Resume(fresh sink) ->
+    # re-enter the reader on the new stream. The second phase returns
+    # TerminalClose so the actor exits without further reconnect.
+    new_sink = object()
+    new_stream = _ScriptedStream([WsFrameReceived(WsClose(4101))])
+    reconnect_fn = _ScriptedReconnect([(new_sink, new_stream)])
+    h = _make_inner()
+    h.inner.reconnect_backoff = (0.01, 0.01)
+    stream = _ScriptedStream([WsReadError("boom")])  # 1st phase: SocketClosed.
+    ctl_tx, wstop_tx, writer_task, controls = _spawn_writer()
+    actor = asyncio.ensure_future(
+        run_reader_actor(
+            h.inner, stream, h.stop_rx, h.reconnect_rx,
+            ctl_tx, wstop_tx, writer_task,
+            "ws://hub", _TEST_READER_DEADLINE, reconnect_fn,
+        )
+    )
+    await asyncio.wait_for(actor, timeout=2.0)
+    assert reconnect_fn.calls == [("ws://hub", 1, 0.01)]
+    assert any(isinstance(c, Pause) for c in controls)
+    assert any(isinstance(c, Resume) and c.sink is new_sink for c in controls)
+    assert h.inner.shutdown.is_set()
+
+
+async def test_actor_handshake_auth_failure_evicts_pool_and_stops() -> None:
+    # A HandshakeAuthFailed outcome is fatal: drain as AuthError, evict this
+    # connection from the pool via on_fatal, and stop (no retry).
+    pool = _FakePool()
+    h = _make_inner()
+    h.inner.reconnect_backoff = (0.01, 0.01)
+    h.inner.on_fatal = weakref.ref(pool)
+    stream = _ScriptedStream([WsReadError("boom")])  # SocketClosed -> reconnect.
+    reconnect_fn = _ScriptedReconnect([HandshakeAuthFailed(401)])
+    ctl_tx, wstop_tx, writer_task, _ = _spawn_writer()
+    actor = asyncio.ensure_future(
+        run_reader_actor(
+            h.inner, stream, h.stop_rx, h.reconnect_rx,
+            ctl_tx, wstop_tx, writer_task,
+            "ws://hub", _TEST_READER_DEADLINE, reconnect_fn,
+        )
+    )
+    await asyncio.wait_for(actor, timeout=2.0)
+    assert reconnect_fn.calls == [("ws://hub", 1, 0.01)]
+    assert len(pool.forget_calls) == 1
+    key, _predicate = pool.forget_calls[0]
+    assert key == h.inner.key
+    assert h.inner.shutdown.is_set()
+
+
+async def test_actor_transport_error_retries_then_succeeds() -> None:
+    # A non-auth error (NetworkError) is transient: retry after backoff. The
+    # second attempt succeeds -> Resume -> reader resumes on the new stream.
+    new_sink = object()
+    new_stream = _ScriptedStream([WsFrameReceived(WsClose(4101))])
+    reconnect_fn = _ScriptedReconnect([NetworkError("transport down"), (new_sink, new_stream)])
+    h = _make_inner()
+    h.inner.reconnect_backoff = (0.01, 0.01)
+    stream = _ScriptedStream([WsReadError("boom")])
+    ctl_tx, wstop_tx, writer_task, controls = _spawn_writer()
+    actor = asyncio.ensure_future(
+        run_reader_actor(
+            h.inner, stream, h.stop_rx, h.reconnect_rx,
+            ctl_tx, wstop_tx, writer_task,
+            "ws://hub", _TEST_READER_DEADLINE, reconnect_fn,
+        )
+    )
+    await asyncio.wait_for(actor, timeout=3.0)
+    assert [a for _url, a, _bt in reconnect_fn.calls] == [1, 2]
+    assert any(isinstance(c, Resume) and c.sink is new_sink for c in controls)
+
+
+async def test_actor_reconnect_timeout_treated_as_transport_error() -> None:
+    # A TimeoutError raised by the reconnect attempt is transient: it is NOT
+    # fatal (not a HandshakeAuthFailed), so the loop retries. The fn raises
+    # TimeoutError directly rather than hanging, so the test does not wait the
+    # 30s per-attempt min budget (reconnect_attempt_budget floors at 30s).
+    new_sink = object()
+    new_stream = _ScriptedStream([WsFrameReceived(WsClose(4101))])
+    reconnect_fn = _ScriptedReconnect([TimeoutError(), (new_sink, new_stream)])
+    h = _make_inner()
+    h.inner.reconnect_backoff = (0.01, 0.01)
+    stream = _ScriptedStream([WsReadError("boom")])
+    ctl_tx, wstop_tx, writer_task, controls = _spawn_writer()
+    actor = asyncio.ensure_future(
+        run_reader_actor(
+            h.inner, stream, h.stop_rx, h.reconnect_rx,
+            ctl_tx, wstop_tx, writer_task,
+            "ws://hub", _TEST_READER_DEADLINE, reconnect_fn,
+        )
+    )
+    await asyncio.wait_for(actor, timeout=3.0)
+    assert [a for _url, a, _bt in reconnect_fn.calls] == [1, 2]
+    assert any(isinstance(c, Resume) and c.sink is new_sink for c in controls)
+
+
+async def test_actor_stop_during_backoff_preempts_reconnect() -> None:
+    # A stop signal during the inter-attempt backoff sleep preempts the
+    # reconnect loop (biased stop > backoff-sleep) -- reconnect_fn is never
+    # called. A long backoff widens the preemption window.
+    h = _make_inner()
+    h.inner.reconnect_backoff = (0.5, 0.5)
+    stream = _ScriptedStream([WsReadError("boom")])  # SocketClosed -> backoff.
+    reconnect_fn = _ScriptedReconnect([])  # must NOT be called.
+    ctl_tx, wstop_tx, writer_task, controls = _spawn_writer()
+    actor = asyncio.ensure_future(
+        run_reader_actor(
+            h.inner, stream, h.stop_rx, h.reconnect_rx,
+            ctl_tx, wstop_tx, writer_task,
+            "ws://hub", _TEST_READER_DEADLINE, reconnect_fn,
+        )
+    )
+    # Wait until the Pause handshake lands -> the actor has entered the
+    # reconnect loop's backoff sleep.
+    await _wait_until(
+        lambda: any(isinstance(c, Pause) for c in controls), "writer paused"
+    )
+    h.stop_tx.try_send(None)
+    await asyncio.wait_for(actor, timeout=2.0)
+    assert reconnect_fn.calls == []  # pre-empted before the reconnect attempt.
+    assert h.inner.shutdown.is_set()
+
+
+async def test_actor_stop_during_reconnect_attempt_preempts() -> None:
+    # A stop signal during an in-flight reconnect attempt preempts it (biased
+    # stop > reconnect attempt) even though the 30s min attempt budget has not
+    # elapsed. The hanging reconnect_fn is cancelled via the biased select.
+    h = _make_inner()
+    h.inner.reconnect_backoff = (0.01, 0.01)
+    stream = _ScriptedStream([WsReadError("boom")])
+    entered = asyncio.Event()
+
+    async def hang_reconnect(
+        inner: HubConnectionInner,
+        url: str,
+        attempt: int,
+        outage: OutageInfo,
+        backoff_total: float,
+    ) -> tuple[Any, AsyncIterator[WsInbound]]:
+        entered.set()
+        await asyncio.sleep(3600)  # stop preempts well before the 30s budget.
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    ctl_tx, wstop_tx, writer_task, _ = _spawn_writer()
+    actor = asyncio.ensure_future(
+        run_reader_actor(
+            h.inner, stream, h.stop_rx, h.reconnect_rx,
+            ctl_tx, wstop_tx, writer_task,
+            "ws://hub", _TEST_READER_DEADLINE, hang_reconnect,
+        )
+    )
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
+    h.stop_tx.try_send(None)
+    await asyncio.wait_for(actor, timeout=2.0)
+    assert h.inner.shutdown.is_set()
+
+
+async def test_actor_writer_pause_channel_closed_breaks_actor() -> None:
+    # If the writer-control channel is closed when the actor tries to send the
+    # SocketClosed Pause, _send_writer_ctl returns False and the actor breaks
+    # to cleanup without entering the reconnect loop.
+    h = _make_inner()
+    stream = _ScriptedStream([WsReadError("boom")])  # SocketClosed -> Pause.
+    ctl_tx, wstop_tx, writer_task, _ = _spawn_writer()
+    reconnect_fn = _ScriptedReconnect([])  # must NOT be called.
+    ctl_tx.close()  # pre-close -> the Pause send fails -> break.
+    actor = asyncio.ensure_future(
+        run_reader_actor(
+            h.inner, stream, h.stop_rx, h.reconnect_rx,
+            ctl_tx, wstop_tx, writer_task,
+            "ws://hub", _TEST_READER_DEADLINE, reconnect_fn,
+        )
+    )
+    await asyncio.wait_for(actor, timeout=2.0)
+    assert reconnect_fn.calls == []
+    assert h.inner.shutdown.is_set()
+    assert writer_task.done()
