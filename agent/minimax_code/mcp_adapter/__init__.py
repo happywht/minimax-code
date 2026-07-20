@@ -71,7 +71,12 @@ uses for its complex adjacent/untagged tagging; the MCP content enum is
 plain internally-tagged, which pydantic discriminates natively.
 """
 
-from minimax_code.mcp_adapter.bridge import McpBridgeConfig, McpToolHandler
+from minimax_code.mcp_adapter.bridge import (
+    McpBridge,
+    McpBridgeConfig,
+    McpBridgeHandle,
+    McpToolHandler,
+)
 from minimax_code.mcp_adapter.transport import McpTransport
 from minimax_code.mcp_adapter.types import (
     McpCallResult,
@@ -91,8 +96,10 @@ from minimax_code.mcp_adapter.types import (
 __all__ = [
     # bridge.rs barrel (R181) -- McpBridge* + McpToolHandler (4 lib.rs pub use
     # symbols). R181 lands McpBridgeConfig; R183 lands McpToolHandler; the
-    # actor + handle land over R185+ in dependency order.
+    # actor + handle land in R185.
+    "McpBridge",
     "McpBridgeConfig",
+    "McpBridgeHandle",
     "McpToolHandler",
     # transport.rs barrel (R180) -- the McpTransport async trait.
     "McpTransport",
@@ -116,6 +123,6 @@ __all__ = [
 #: Crate completion ledger -- updated as each leaf lands.
 #: Landed: types (R179), transport (R180), bridge McpBridgeConfig (R181),
 #: bridge translate_mcp_result (R182), bridge McpToolHandler struct + 3
-#: accessors (R183), bridge McpToolHandler.handle_call + metrics stub (R184).
-#: Remaining: the McpBridge actor + McpBridgeHandle, and the final
-#: barrel-reconciliation round.
+#: accessors (R183), bridge McpToolHandler.handle_call + metrics stub (R184),
+#: bridge McpBridge actor + McpBridgeHandle (R185).
+#: Remaining: the final barrel-reconciliation round (R186).

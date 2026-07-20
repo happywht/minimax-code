@@ -14999,3 +14999,70 @@ feat(platform): R180 xai-computer-hub-mcp-adapter transport.rs McpTransport asyn
 ### Commit
 
 `feat(platform): R184 xai-computer-hub-mcp-adapter bridge.rs McpToolHandler handle_call + metrics stub (async forward + duration/error orchestration, 9 tests)`
+
+## R185 — xai-computer-hub-mcp-adapter bridge.rs McpBridge actor + McpBridgeHandle
+
+锚点:R185-1 1206609
+
+### 本轮目标
+
+迁 `bridge.rs` 的 `McpBridge` actor(L388) + `McpBridgeHandle`(L604)——crate 的核心发现叶子。actor 含 `connect` 三阶段编排(L441, initialize -> list_tools -> filter_map -> handlers)、3 个同步访问器(`handlers`/`server_info`/`tool_count`, L555/565/569)、`async shutdown`(L573)、`__del__`(L588, Rust `Drop` 镜像);`McpBridgeHandle` 是 `connect` 结果信 envelope(`bridge` + `server_info`)。R184 已闭合 `McpToolHandler` trait 契约(4/4)+ 落地 metrics stub(`mcp_tools_bridged_set` 待 actor 消费)。本轮消费 metrics stub + handler 列表,使 MCP 发现循环完整可用——为 R186 barrel-reconciliation(crate 收官)扫清最后一片实质叶子。
+
+### 融合结论
+
+**为何 actor + handle 一轮迁:** Rust `McpBridgeHandle` 的 `Debug` impl 调 `self.bridge.tool_count()`——硬依赖 actor 的 `tool_count()` 访问器,故 handle 必须在 actor 之后;但二者同属 `connect` 的结果链(connect 返回 handle,handle 持有 bridge),独立切分叶子无依赖理由(actor 5 方法 + Drop 是主体,handle 12 行信 + Debug 是尾巴)。一轮迁保 `connect` 调用链完整可测,避免半残状态。
+
+**Rust 所有权 -> Python 引用语义:** `Arc<dyn McpTransport>` -> 直接 transport 引用(Python GC 提供共享所有权;handler 列表各持自己的 transport 引用供前向 call 路径)。`Vec<Arc<McpToolHandler>>` -> `list[McpToolHandler]`。`Result<T, McpError>` -> `raise McpError`——connect 编排在每条失败路径 re-raise **原始** transport error(保因果链,不包装成 `RuntimeError`);shutdown 传播 close 失败。
+
+**connect 三阶段编排(每条失败路径恰好 1 次 mcp_error + re-raise 原始 McpError):**
+- 阶段 1 initialize(L492):`try: server_info = await transport.initialize() except McpError: metrics.mcp_error(); raise`——server 不可达,无可关闭之物。
+- 阶段 2 list_tools(L509):`try: tools = await transport.list_tools() except McpError:` 尽力 `try: await transport.close() except McpError as close_err: logger.warning(...)`(close 失败 warning 不掩盖原始 list_tools error);`metrics.mcp_error(); raise`。
+- 阶段 3 filter_map(L531):`for definition in tools: try: tool_id = ToolId(definition.name) except IdError as err: logger.warning(...); continue; handlers.append(McpToolHandler(tool_id=tool_id, definition=definition, transport=transport, namespace=config.namespace))`。
+- 尾部:`metrics.mcp_tools_bridged_set(len(handlers))`;`bridge = cls(transport, handlers, server_info)`;`return McpBridgeHandle(bridge=bridge, server_info=server_info)`。
+
+**`mcp_tools_bridged_set` 消费(R184 提前落地正为此):** connect 成功尾部调 `metrics.mcp_tools_bridged_set(len(handlers))` 记 survivor count(Rust gauge);`shutdown` 首行 `metrics.mcp_tools_bridged_set(0)` 在 `await self._transport.close()` **之前**(保 Rust statement 顺序——即使 close 失败,gauge 已 reset,反映该 bridge 不再服务工具)。`__del__` 仅 reset gauge(Rust Drop 同步首行同此语义)。
+
+**`Drop` -> `__del__` YAGNI 边界:** Rust `Drop for McpBridge` 同步首行 clear gauge,然后 `tokio::spawn` best-effort `transport.close()`(若 runtime 可用)。Python `__del__` 仅 `metrics.mcp_tools_bridged_set(0)`——`__del__` 在 GC 时运行,event loop 可能已关闭或不存在,`await close` 不可靠。确定性 teardown 必须显式 `shutdown()`。这是文档化 YAGNI 边界(非 bug)。
+
+**`McpBridgeHandle` 为何 `@dataclass(repr=False)` + 手写 `__repr__`:** Rust `Debug` 读 `bridge.tool_count()`(非全 actor),故抑制 dataclass auto repr,手写 `__repr__`(L624)镜像 Rust fields(`server_info` name + `tool_count` + `finish_non_exhaustive` 的 `...`)。两字段(`bridge` + `server_info`)是 plain value(非 config),故 dataclass mutable + 非 frozen(对比 `McpBridgeConfig` 的 `frozen=True` value-object 语义)。这也解释 leaf 顺序:handle 必须在 actor 之后(Debug impl 依赖 `tool_count()` 访问器)。
+
+### 交付
+
+| 文件 | 状态 | 说明 |
+|------|------|------|
+| `agent/minimax_code/mcp_adapter/bridge.py` | 扩展(McpBridge actor + McpBridgeHandle) | `class McpBridge`(L388, 具体类非 ABC) + `__init__`(L415, 3 私有字段 `_transport`/`_handlers`/`_server_info`) + `__repr__`(L427) + `@classmethod async def connect`(L441, 三阶段编排 + 返回 McpBridgeHandle) + 3 访问器 `handlers`/`server_info`/`tool_count`(L555/565/569) + `async def shutdown`(L573, gauge reset 先于 close) + `__del__`(L588, 仅 gauge reset 无 async close);`@dataclass(repr=False) class McpBridgeHandle`(L604, bridge + server_info 字段 + 手写 `__repr__` L624) |
+| `agent/minimax_code/mcp_adapter/__init__.py` | 编辑(imports 多行 + ledger +1) | L74 单行 import 拆分为 4 符号多行括号(ruff I001 合规,符号按 isort order-by-type 排序);`__all__` 已含 `McpBridge`/`McpBridgeHandle`(之前会话);ledger 加 R185 landed 行,remaining 收窄到 `barrel-reconciliation` |
+| `agent/tests/test_mcp_adapter_bridge.py` | 扩展(+11 测试 + 1 helper) | imports 多行(L101);docstring 加 R185 段落(9 不变量);`_StubMcpTransport` 升级(`server_info`/`initialize_error`/`tools`/`list_tools_error`/`close_error` 关键字参数 + `close_calls` 计数 + 分支 initialize/list_tools/close,向后兼容裸构造);`_make_bridge_config` helper(命名空间默认 `"mcp"`);11 个 R185 测试(connect 成功/initialize 失败/list_tools 失败/双重失败/无效名过滤/gauge survivor 含 GC 防御/命名空间流/accessors/shutdown/`__del__`/repr) |
+| `docs/evolution/ITERATION_LOG.md` | 追加 | R185 条目 |
+
+### 映射决策树+坑
+
+**决策 1 — `Result` -> `raise` + mcp_error 恰好 1 次/失败路径(保因果链):** Rust connect 返回 `Result<McpBridgeHandle, McpError>`,每条 Err 臂 `metrics::mcp_error()` 后 `return Err(e)`(e 是原始 transport error)。Python 改 `raise McpError`,每条 `except McpError:` 臂 `metrics.mcp_error()` 后 `raise`(裸 raise 重抛当前异常,保因果链)——非 `raise RuntimeError("...")` 包装。测试 `test_connect_initialize_failure_*` / `test_connect_list_tools_failure_*` 分别断言 `error.call_count == 1` + 异常类型是原 stub 设的 McpError 子类。
+
+**决策 2 — list_tools 失败先 close 再 raise(close 失败不掩盖原始 error):** Rust 阶段 2 Err 臂先 `await transport.close()`(尽力),close 自身失败走 `warn!` 但不替换原始 list_tools Err。Python 镜像 `try: await transport.close() except McpError as close_err: logger.warning(...)`(吞 close error 仅 log);外层 `metrics.mcp_error(); raise`(原始 list_tools McpError)。关键测试 `test_connect_list_tools_failure_with_close_failure_does_not_mask_original_error`:同时设 `list_tools_error` + `close_error`(两个不同 McpError 实例),断言 `pytest.raises` 捕获的是 list_tools_error(用 `excinfo.value is list_tools_error` 同一性断言)——证明 close error 未掩盖原始错误。
+
+**决策 3 — filter_map 的 `ToolId` 验证 + skip(`IdError` 分支):** Rust `definitions.filter_map(|d| match ToolId::new(&d.name) { Ok(id) => Some(handler), Err(_) => { warn; None } })`。Python `for definition in tools: try: tool_id = ToolId(definition.name) except IdError as err: logger.warning(...); continue`。`ToolId("bad name")`(带空格)-> `InvalidFormatIdError`(`IdError` 子类);`""` -> `EmptyIdError`。survivors 构造 handler 共享**同一** transport(前向 call 路径)。测试 `test_connect_skips_tool_with_invalid_name_and_bridges_valid_ones`:混合 `[valid, invalid, valid]` 列表,断言 `tool_count() == 2` + survivors 的 tool_id 正确。
+
+**决策 4 — gauge 位置:connect 尾部 set survivor count、shutdown 首 reset 到 0、`__del__` 仅 reset:** Rust connect 尾部 `metrics::mcp_tools_bridged_set(handlers.len())`;shutdown 首行 `metrics::mcp_tools_bridged_set(0)` 在 `await close` 之前(保 statement 顺序);`Drop` 同步首行同 reset gauge + spawn async close(后者 Python YAGNI)。测试 `test_shutdown_clears_gauge_and_closes_transport`:gauge spy 验证首调用是 `set(0)` 且 `close_calls == 1`;`test_del_clears_bridged_gauge_without_async_close`:仅断言 gauge `set(0)` 调用 + `close_calls == 0`(证明 `__del__` 无 async close)。
+
+**坑 1 — CPython 引用计数 GC 触发 `__del__` 导致 gauge 计数翻倍:** `test_connect_sets_bridged_gauge_to_survivor_count` 若丢弃 `connect()` 返回值(`await McpBridge.connect(...)` 无赋值),CPython refcount GC 立即回收 bridge,在断言读 `gauge.call_count` **之前**触发 `__del__` -> `mcp_tools_bridged_set(0)`(第 2 次调用)-> `assert 2 == 1` 失败。修复:`handle = await McpBridge.connect(...)` 保留引用 + `_ = handle` 防御性保活,docstring 显式解释 GC 陷阱。这是**测试设计问题非实现 bug**——`__del__` 的 gauge reset 行为正确(Rust Drop 同步首行同为此语义),只是测试必须保活被测对象直到断言完成。11 个测试中其余 10 个天然保活(成功路径保留 handle / 失败路径无 bridge 构建 / accessors 测试取 `.bridge` 字段保活 bridge)。
+
+**坑 2 — repr 断言用 `startswith`/`contains` 而非全等:** `McpBridge.__repr__` 含 `finish_non_exhaustive` 的 `...` 尾,完整串 = `McpBridge(server='acme', tool_count=2, ...)`。测试用 `startswith("McpBridge(server='acme'")` + `assert "tool_count=2" in repr_str`——避免 brittle 全等(server name 引号格式 + tool_count 位置 + 省略号尾任一变动即误判)。`McpBridgeHandle.__repr__` 同理(`startswith("McpBridgeHandle(server_info='acme'")` + `contains("tool_count=2")`)。这匹配 R183 `McpToolHandler.__repr__` 测试的既有断言风格。
+
+### 验证
+
+- **ruff:** `uv run ruff check tests/test_mcp_adapter_bridge.py minimax_code/mcp_adapter/` -> `All checks passed!`(测试文件 + bridge.py + __init__.py + metrics.py + transport.py + types.py 全绿,零 `--fix` 噪声外溢)。
+- **pytest:** `uv run pytest tests/test_mcp_adapter_bridge.py -q` -> **43 passed in 0.47s**(R181 6 + R182 9 + R183 7 + R184 9 + R184 helper + R185 11 = 43,零回归)。
+- **R185 新测试 11 个全绿:** connect 成功 1(`test_connect_success_returns_handle_with_handlers_and_server_info` handle.bridge/handlers/server_info/tool_count + McpBridgeHandle 字段)+ initialize 失败 1(`test_connect_initialize_failure_bumps_error_and_reraises_without_close` error.call_count==1 + close_calls==0)+ list_tools 失败 1(`test_connect_list_tools_failure_attempts_close_bumps_error_and_reraises` close_calls==1 + error.call_count==1)+ 双重失败 1(`test_connect_list_tools_failure_with_close_failure_does_not_mask_original_error` excinfo.value is list_tools_error 同一性)+ 无效名过滤 1(`test_connect_skips_tool_with_invalid_name_and_bridges_valid_ones` tool_count==2 survivor id 正确)+ gauge survivor 1(`test_connect_sets_bridged_gauge_to_survivor_count` GC 防御 call_count==1 + calls[0][0]==(2,))+ 命名空间流 1(`test_connect_applies_config_namespace_to_each_handler` handler.namespace==config.namespace)+ accessors 1(`test_bridge_accessors_handlers_server_info_tool_count` handlers is 内部列表 + server_info + tool_count==len)+ shutdown 1(`test_shutdown_clears_gauge_and_closes_transport` gauge 首 set(0) + close_calls==1)+ __del__ 1(`test_del_clears_bridged_gauge_without_async_close` gauge set(0) + close_calls==0)+ repr 1(`test_bridge_repr_and_handle_repr_show_server_and_tool_count` McpBridge + McpBridgeHandle 两断言)。
+- **关键不变量验证:** 双重失败测试用 `excinfo.value is list_tools_error` 同一性断言(非 isinstance)证明 close error 未掩盖;GC 防御测试保留 handle 引用 + 断言 `call_count == 1` 证明 gauge 恰好 1 次(无 `__del__` 翻倍);shutdown 顺序测试证明 gauge reset 先于 close。
+
+### YAGNI 边界
+
+- **`__del__` best-effort async close 整体 YAGNI:** Rust `Drop` spawn `transport.close()` 若 tokio runtime 可用。Python `__del__` 仅 reset gauge——`__del__` 在 GC 时运行,event loop 可能已关闭/不存在,`await close` 不可靠。确定性 teardown 必须 `shutdown()`。未来若需 GC 时关闭,需借用 loop(`asyncio.get_event_loop().create_task`),但 loop 生命周期不保证,故当前 YAGNI-correct(文档化于 `__del__` docstring)。
+- **metrics 真 observer(Prometheus)仍 YAGNI(同 R184 边界):** `mcp_tools_bridged_set` 当前 no-op stub,connect/shutdown/`__del__` 的调用点已就位。未来 Prometheus 接入时 `metrics.py` 单文件替换为真 observer,不动 bridge 调用点。
+- **`McpBridgeConfig.session_id` 当前未被 actor 消费:** config 带 `session_id` 为未来 hub-binding(Rust 同字段),actor 当前仅用 `namespace`。YAGNI——字段保留(对齐 Rust struct 形状)但 actor 不读,未来 hub-binding 叶子落地时消费。`connect` docstring 已标注此字段 "currently unused by the actor"。
+- **barrel-reconciliation 延后 R186(crate 收官):** 待 actor + handle 全落地(本轮完成),对账 `lib.rs` `pub use` 表面(`McpBridge`/`McpBridgeConfig`/`McpBridgeHandle`/`McpToolHandler` 4 符号)+ 建 barrel count 测试(断言 `__all__` 含 4 符号且 import 不破)。`__all__` 已含 4 符号(之前会话 + 本轮 imports 多行化),R186 验证完整性 + crate 闭合 ledger("crate complete")。
+
+### Commit
+
+`feat(platform): R185 xai-computer-hub-mcp-adapter bridge.rs McpBridge actor + McpBridgeHandle (connect orchestration + 3 accessors + shutdown/Drop, 11 tests)`

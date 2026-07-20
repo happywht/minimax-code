@@ -76,6 +76,30 @@ path with duration/error metric orchestration:
    every path (Rust observes the duration before the result ``match``);
    ``mcp_error`` is called once on the Err arm and once on the serde-failure
    arm (never on a clean Ok arm).
+
+R185 -- ``McpBridge`` actor + ``McpBridgeHandle`` (connect orchestration)
+-----------------------------------------------------------------------
+
+These tests pin ``bridge.rs``'s ``McpBridge`` actor and its ``connect`` result
+envelope ``McpBridgeHandle``:
+
+1. **connect success** -- ``initialize`` + ``list_tools`` + ``filter_map``;
+   the returned handle carries the server info and a handler per survivor tool.
+2. **initialize failure** -- ``mcp_error`` bumped once, the causal
+   :class:`McpError` re-raised, ``close`` NOT called (nothing to close).
+3. **list_tools failure** -- best-effort ``close`` attempted once, ``mcp_error``
+   bumped once, the causal :class:`McpError` re-raised.
+4. **list_tools failure + close failure** -- the close failure is logged but
+   does not mask the original list_tools error.
+5. **invalid-name filter** -- a tool whose name fails ``ToolId`` validation is
+   skipped (``filter_map`` None arm); valid survivors are still bridged.
+6. **bridged gauge** -- ``mcp_tools_bridged_set`` records the survivor count
+   after discovery; ``shutdown``/``__del__`` reset it to 0.
+7. **namespace flow** -- ``config.namespace`` flows into each handler's
+   ``description`` accessor.
+8. **accessors** -- ``handlers`` / ``server_info`` / ``tool_count``.
+9. **Debug reprs** -- ``McpBridge`` and ``McpBridgeHandle`` surface only the
+   server name and tool count (``finish_non_exhaustive``).
 """
 
 from __future__ import annotations
@@ -98,7 +122,12 @@ from minimax_code.mcp_adapter import (
     McpTransportError,
     metrics,
 )
-from minimax_code.mcp_adapter.bridge import McpToolHandler, translate_mcp_result
+from minimax_code.mcp_adapter.bridge import (
+    McpBridge,
+    McpBridgeHandle,
+    McpToolHandler,
+    translate_mcp_result,
+)
 from minimax_code.mcp_adapter.transport import McpTransport
 from minimax_code.tool_protocol.ids import SessionId, ToolId
 from minimax_code.tool_protocol.output_wire import (
@@ -344,15 +373,24 @@ def test_translate_mixed_blocks_map_each_variant_one_to_one() -> None:
 
 
 class _StubMcpTransport(McpTransport):
-    """Controllable concrete :class:`McpTransport` for handler tests.
+    """Controllable concrete :class:`McpTransport` for handler + bridge tests.
 
     R183's three accessors never touch the transport; R184's ``handle_call``
-    exercises ``call_tool``. The stub records every ``(name, arguments)``
-    pair in :attr:`call_args` and either returns a preloaded
-    :attr:`call_result` or raises a preloaded :attr:`call_error` -- whichever
-    the test configured. With neither set, ``call_tool`` raises
-    :class:`NotImplementedError` (the original R183 behaviour, so the accessor
-    tests that never call it are unaffected).
+    exercises ``call_tool``; R185's ``McpBridge.connect`` drives
+    ``initialize`` / ``list_tools`` / ``close``. The stub:
+
+    * records every ``(name, arguments)`` pair in :attr:`call_args`;
+    * ``call_tool`` returns a preloaded :attr:`call_result` or raises a
+      preloaded :attr:`call_error` (``NotImplementedError`` with neither);
+    * ``initialize`` returns :attr:`server_info` or raises
+      :attr:`initialize_error` (``NotImplementedError`` with neither);
+    * ``list_tools`` returns :attr:`tools` or raises :attr:`list_tools_error`
+      (``NotImplementedError`` with neither);
+    * ``close`` raises :attr:`close_error` if set, otherwise returns ``None``,
+      and always increments :attr:`close_calls`.
+
+    The defaults keep the R183/R184 call sites (a bare
+    ``_StubMcpTransport()``) unchanged.
     """
 
     def __init__(
@@ -360,16 +398,36 @@ class _StubMcpTransport(McpTransport):
         *,
         call_result: McpCallResult | None = None,
         call_error: McpError | None = None,
+        server_info: McpServerInfo | None = None,
+        initialize_error: McpError | None = None,
+        tools: list[McpToolDefinition] | None = None,
+        list_tools_error: McpError | None = None,
+        close_error: McpError | None = None,
     ) -> None:
         self.call_result = call_result
         self.call_error = call_error
+        self.server_info = server_info
+        self.initialize_error = initialize_error
+        self.tools = tools
+        self.list_tools_error = list_tools_error
+        self.close_error = close_error
         #: Every ``(name, arguments)`` pair ``call_tool`` received, in order.
         self.call_args: list[tuple[str, Any]] = []
+        #: Number of times ``close`` was called (R185 connect/shutdown paths).
+        self.close_calls: int = 0
 
     async def initialize(self) -> McpServerInfo:
+        if self.initialize_error is not None:
+            raise self.initialize_error
+        if self.server_info is not None:
+            return self.server_info
         raise NotImplementedError
 
     async def list_tools(self) -> list[McpToolDefinition]:
+        if self.list_tools_error is not None:
+            raise self.list_tools_error
+        if self.tools is not None:
+            return self.tools
         raise NotImplementedError
 
     async def call_tool(self, name: str, arguments: Any) -> McpCallResult:
@@ -381,6 +439,9 @@ class _StubMcpTransport(McpTransport):
         raise NotImplementedError
 
     async def close(self) -> None:
+        self.close_calls += 1
+        if self.close_error is not None:
+            raise self.close_error
         return None
 
 
@@ -770,3 +831,194 @@ async def test_handle_call_observes_error_metric_on_serde_failure(
     await _drain_terminal(handler, {})
     assert duration.call_count == 1
     assert error.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# R185 -- McpBridge actor + McpBridgeHandle (connect orchestration)
+# ---------------------------------------------------------------------------
+
+
+def _make_bridge_config(*, namespace: str | None = None) -> McpBridgeConfig:
+    """Build a :class:`McpBridgeConfig` for connect-path tests."""
+    return McpBridgeConfig(session_id=SessionId("s-1"), namespace=namespace)
+
+
+async def test_connect_success_returns_handle_with_handlers_and_server_info() -> None:
+    """connect: initialize + list_tools + filter_map -> handle envelope."""
+    info = McpServerInfo(name="acme", version="1.0")
+    tools = [
+        McpToolDefinition(name="mcp:fetch", description="fetch"),
+        McpToolDefinition(name="mcp:search", description="search"),
+    ]
+    transport = _StubMcpTransport(server_info=info, tools=tools)
+    handle = await McpBridge.connect(transport, _make_bridge_config())
+    assert isinstance(handle, McpBridgeHandle)
+    assert handle.server_info is info
+    assert handle.bridge.tool_count() == 2
+    assert [h.tool_id() for h in handle.bridge.handlers()] == [
+        ToolId("mcp:fetch"),
+        ToolId("mcp:search"),
+    ]
+
+
+async def test_connect_initialize_failure_bumps_error_and_reraises_without_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """initialize Err: bump ``mcp_error`` once, re-raise, no close (nothing to close)."""
+    error = _CallRecorder()
+    monkeypatch.setattr(metrics, "mcp_error", error)
+    transport = _StubMcpTransport(initialize_error=McpTransportError("init boom"))
+    with pytest.raises(McpError):
+        await McpBridge.connect(transport, _make_bridge_config())
+    assert error.call_count == 1
+    assert transport.close_calls == 0
+
+
+async def test_connect_list_tools_failure_attempts_close_bumps_error_and_reraises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """list_tools Err: best-effort close once, bump ``mcp_error`` once, re-raise."""
+    error = _CallRecorder()
+    monkeypatch.setattr(metrics, "mcp_error", error)
+    transport = _StubMcpTransport(
+        server_info=McpServerInfo(name="acme", version="1.0"),
+        list_tools_error=McpTransportError("list boom"),
+    )
+    with pytest.raises(McpError):
+        await McpBridge.connect(transport, _make_bridge_config())
+    assert error.call_count == 1
+    assert transport.close_calls == 1
+
+
+async def test_connect_list_tools_failure_with_close_failure_does_not_mask_original_error() -> None:
+    """list_tools Err + close Err: close logged, the original list_tools error re-raised."""
+    transport = _StubMcpTransport(
+        server_info=McpServerInfo(name="acme", version="1.0"),
+        list_tools_error=McpTransportError("list boom"),
+        close_error=McpTransportError("close boom"),
+    )
+    with pytest.raises(McpError, match="list boom"):
+        await McpBridge.connect(transport, _make_bridge_config())
+    assert transport.close_calls == 1
+
+
+async def test_connect_skips_tool_with_invalid_name_and_bridges_valid_ones() -> None:
+    """filter_map None arm: invalid-name tool skipped, valid survivors bridged."""
+    tools = [
+        McpToolDefinition(name="mcp:fetch", description="fetch"),
+        McpToolDefinition(name="bad name", description="invalid"),
+    ]
+    transport = _StubMcpTransport(
+        server_info=McpServerInfo(name="acme", version="1.0"),
+        tools=tools,
+    )
+    handle = await McpBridge.connect(transport, _make_bridge_config())
+    assert handle.bridge.tool_count() == 1
+    assert handle.bridge.handlers()[0].tool_id() == ToolId("mcp:fetch")
+
+
+async def test_connect_sets_bridged_gauge_to_survivor_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``mcp_tools_bridged_set`` called once with the survivor count.
+
+    The returned handle is kept alive for the assertion: CPython's refcount GC
+    would otherwise reclaim the bridge the instant ``connect``'s result is
+    dropped, firing ``__del__`` (which resets the gauge to 0) before the
+    assertion reads ``call_count``.
+    """
+    gauge = _CallRecorder()
+    monkeypatch.setattr(metrics, "mcp_tools_bridged_set", gauge)
+    tools = [
+        McpToolDefinition(name="mcp:fetch", description="fetch"),
+        McpToolDefinition(name="mcp:search", description="search"),
+    ]
+    transport = _StubMcpTransport(
+        server_info=McpServerInfo(name="acme", version="1.0"),
+        tools=tools,
+    )
+    handle = await McpBridge.connect(transport, _make_bridge_config())
+    assert gauge.call_count == 1
+    assert gauge.calls[0][0] == (2,)
+    _ = handle  # keep the bridge alive past the assertion (defuses __del__).
+
+
+async def test_connect_applies_config_namespace_to_each_handler() -> None:
+    """``config.namespace`` flows into each handler's ``description`` accessor."""
+    tools = [McpToolDefinition(name="mcp:fetch", description="fetch")]
+    transport = _StubMcpTransport(
+        server_info=McpServerInfo(name="acme", version="1.0"),
+        tools=tools,
+    )
+    handle = await McpBridge.connect(transport, _make_bridge_config(namespace="brave"))
+    assert handle.bridge.handlers()[0].description().namespace == "brave"
+
+
+async def test_bridge_accessors_handlers_server_info_tool_count() -> None:
+    """``handlers`` / ``server_info`` / ``tool_count`` return the constructed state."""
+    info = McpServerInfo(name="acme", version="1.0")
+    tools = [McpToolDefinition(name="mcp:fetch", description="fetch")]
+    transport = _StubMcpTransport(server_info=info, tools=tools)
+    bridge = (await McpBridge.connect(transport, _make_bridge_config())).bridge
+    assert bridge.server_info() is info
+    assert bridge.tool_count() == 1
+    handlers = bridge.handlers()
+    assert len(handlers) == 1
+    assert isinstance(handlers[0], McpToolHandler)
+
+
+async def test_shutdown_clears_gauge_and_closes_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """shutdown: gauge reset to 0 before ``transport.close()`` is awaited."""
+    gauge = _CallRecorder()
+    monkeypatch.setattr(metrics, "mcp_tools_bridged_set", gauge)
+    transport = _StubMcpTransport(
+        server_info=McpServerInfo(name="acme", version="1.0"),
+        tools=[McpToolDefinition(name="mcp:fetch", description="fetch")],
+    )
+    handle = await McpBridge.connect(transport, _make_bridge_config())
+    gauge.calls.clear()
+    await handle.bridge.shutdown()
+    assert transport.close_calls == 1
+    assert gauge.calls == [((0,), {})]
+
+
+async def test_del_clears_bridged_gauge_without_async_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """__del__ (Drop): gauge reset to 0; no async ``close`` attempted at GC time."""
+    gauge = _CallRecorder()
+    monkeypatch.setattr(metrics, "mcp_tools_bridged_set", gauge)
+    transport = _StubMcpTransport(
+        server_info=McpServerInfo(name="acme", version="1.0"),
+        tools=[McpToolDefinition(name="mcp:fetch", description="fetch")],
+    )
+    bridge = (await McpBridge.connect(transport, _make_bridge_config())).bridge
+    gauge.calls.clear()
+    bridge.__del__()
+    assert gauge.calls == [((0,), {})]
+    assert transport.close_calls == 0
+
+
+async def test_bridge_repr_and_handle_repr_show_server_and_tool_count() -> None:
+    """Debug reprs: server name + ``tool_count``, ``finish_non_exhaustive`` elides the rest."""
+    transport = _StubMcpTransport(
+        server_info=McpServerInfo(name="acme", version="1.0"),
+        tools=[
+            McpToolDefinition(name="mcp:fetch", description="fetch"),
+            McpToolDefinition(name="mcp:search", description="search"),
+        ],
+    )
+    handle = await McpBridge.connect(transport, _make_bridge_config())
+    bridge_text = repr(handle.bridge)
+    assert bridge_text.startswith("McpBridge(server=")
+    assert "'acme'" in bridge_text
+    assert "tool_count=2" in bridge_text
+    assert bridge_text.endswith(", ...)")
+    handle_text = repr(handle)
+    assert handle_text.startswith("McpBridgeHandle(server_info=")
+    assert "'acme'" in handle_text
+    assert "tool_count=2" in handle_text
+    assert handle_text.endswith(", ...)")
+
