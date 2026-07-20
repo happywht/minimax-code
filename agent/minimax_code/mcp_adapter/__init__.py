@@ -53,9 +53,11 @@ is:
    ``translate_mcp_result`` land over R182+ in dependency order (config ->
    handler + translate -> actor -> handle).
 
-   Subsequent leaves (``metrics`` stub) will land over R182+; the
-   barrel-reconciliation round that mirrors ``lib.rs``'s ``pub use`` surface
-   lands once every leaf is in.
+   The ``metrics`` stub landed in R184 (crate-private, ``pub(crate)`` -- it
+   records call/error/tool-count telemetry for the bridge's internals but
+   never enters the barrel); the barrel-reconciliation round (R186) mirrors
+   ``lib.rs``'s ``pub use`` surface now that every leaf is in. See
+   "Barrel reconciliation (R186)" below.
 
 Modelling note
 --------------
@@ -120,9 +122,36 @@ __all__ = [
     "McpDecodeError",
 ]
 
+#: Barrel reconciliation (R186)
+#: ---------------------------
+#:
+#: Mirrors grok-build ``xai-computer-hub-mcp-adapter/src/lib.rs``'s three
+#: ``pub use`` lines (the crate's public surface) at the package root. The
+#: barrel is the union of two deliberate halves:
+#:
+#: * **10 ``lib.rs`` ``pub use`` symbols** (the core crate contract) --
+#:   ``bridge`` (4: McpBridge / McpBridgeConfig / McpBridgeHandle /
+#:   McpToolHandler), ``transport`` (1: McpTransport), ``types`` (5:
+#:   McpCallResult / McpContent / McpError / McpServerInfo /
+#:   McpToolDefinition). Pinned by identity checks in
+#:   ``tests/test_mcp_adapter_barrel.py``.
+#: * **7 Python ergonomics extras** beyond the Rust ``pub use`` -- 3
+#:   ``McpContent`` union variants (McpTextContent / McpImageContent /
+#:   McpResourceContent) + 4 ``McpError`` subclasses (McpTransportError /
+#:   McpProtocolError / McpTimeoutError / McpDecodeError). Rust exposes these
+#:   only via ``pub mod types`` (module-path access); Python re-exports them
+#:   flat as construct / raise targets (R179 decision: pydantic union
+#:   variants and exception hierarchies are top-level citizens in Python's
+#:   flat namespace).
+#:
+#: ``metrics`` (Rust ``pub(crate) mod metrics``) is the deliberate YAGNI
+#: boundary: reachable as the ``mcp_adapter.metrics`` submodule for
+#: crate-internal callers (mirroring ``crate::metrics::...``) but absent from
+#: ``__all__``, so the public surface matches the Rust ``pub use`` contract.
+#:
 #: Crate completion ledger -- updated as each leaf lands.
 #: Landed: types (R179), transport (R180), bridge McpBridgeConfig (R181),
 #: bridge translate_mcp_result (R182), bridge McpToolHandler struct + 3
 #: accessors (R183), bridge McpToolHandler.handle_call + metrics stub (R184),
-#: bridge McpBridge actor + McpBridgeHandle (R185).
-#: Remaining: the final barrel-reconciliation round (R186).
+#: bridge McpBridge actor + McpBridgeHandle (R185), barrel-reconciliation
+#: (R186) -- crate complete.

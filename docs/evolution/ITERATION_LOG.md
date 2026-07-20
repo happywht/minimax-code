@@ -15066,3 +15066,57 @@ feat(platform): R180 xai-computer-hub-mcp-adapter transport.rs McpTransport asyn
 ### Commit
 
 `feat(platform): R185 xai-computer-hub-mcp-adapter bridge.rs McpBridge actor + McpBridgeHandle (connect orchestration + 3 accessors + shutdown/Drop, 11 tests)`
+## R186 — xai-computer-hub-mcp-adapter lib.rs barrel-reconciliation（crate 收官）
+
+锚点:R186-1 94b2e3f
+
+### 本轮目标
+
+对账 `mcp_adapter/__init__.py` 与 grok-build `xai-computer-hub-mcp-adapter/src/lib.rs` 的 `pub use` 表面——mcp-adapter crate（grok-build 第 7 个、也是最后一个待迁 crate）的收官轮。lib.rs 三行 `pub use`（bridge 4 `McpBridge`/`McpBridgeConfig`/`McpBridgeHandle`/`McpToolHandler` + transport 1 `McpTransport` + types 5 `McpCallResult`/`McpContent`/`McpError`/`McpServerInfo`/`McpToolDefinition` = 10 符号）必须在 Python barrel 完整对账。建 `test_mcp_adapter_barrel.py` 三层测试（Coverage 精确集 + Fidelity 身份 + YAGNI metrics `pub(crate)` 边界）。更新 `__init__.py` docstring 加 "Barrel reconciliation (R186)" 段 + ledger 标注 "crate complete"。R179-R185 已落地 types/transport/bridge 全部叶子 + metrics stub，本轮是纯对账 + 锁定轮（无新功能迁移，无新符号）——闭合 crate 公共表面契约。
+
+### 融合结论
+
+**方案 B（尊重 R179 既定 ergonomics 扩展）而非方案 A（强制 R178 风格精确匹配）：** 侦察发现 Rust `lib.rs` `pub use` = 10 符号，而 Python `__all__` = 17 符号（多 7 个 ergonomics 扩展：3 `McpContent` variants `McpTextContent`/`McpImageContent`/`McpResourceContent` + 4 `McpError` subclasses `McpTransportError`/`McpProtocolError`/`McpTimeoutError`/`McpDecodeError`）。这 7 个 extras 是 R179 既定决策——Python flat namespace 习惯：pydantic union variants + exception hierarchy 在顶层导出，用户期望 `from package import SpecificError` 而非 `from package.types import SpecificError`。若强制方案 A（移除 7 extras 严格对齐 R178 SDK），会破坏 R179-R185 既定 API + 降低 Python ergonomics（用户需写更长的子模块路径）。方案 B 尊重扩展，测试锁定 `__all__` == 17（`EXPECTED_PUB_USE` 10 ⊆ + `EXPECTED_ERGONOMICS` 7 ⊆，两者 `isdisjoint` 不相交，并集 = 17 精确集），身份检查全覆盖 17 符号 `is` 子模块来源，metrics YAGNI 双重缺席。
+
+**与 R178 SDK barrel 的差异（同模式不同表面）：** R178 SDK `__all__` 精确等于 `lib.rs` `pub use`（41 符号全 `pub use`，因为 SDK 的 `error.rs` 把 `AuthError` 等 variants 全部 `pub use` 顶层）。mcp-adapter 的 Rust `lib.rs` 只 `pub use` 5 个 types 顶层类型（variants 经 `pub mod types` 模块路径访问，`types::McpTextContent`）。Python 端 R179 选择把 variants 也 flat 导出——这是 Python 对 Rust 的 ergonomics 改进，文档化在 `__init__.py` barrel 段 + 测试 `EXPECTED_ERGONOMICS` 集合注释（"Rust exposes via pub mod types; Python re-exports flat as construct/raise targets"）。R186 不是推翻 R179，而是把 R179 的决策从隐式约定提升为显式契约（测试锁定 + docstring 记录）。
+
+**metrics `pub(crate)` 的 Python 语义对齐：** Rust `pub(crate) mod metrics` = crate 内经 `crate::metrics::...` 可达，crate 外不可见。Python 等价：metrics 子模块（`mcp_adapter.metrics`）对 `from package import *` 不可见（不在 `__all__`），但 `from minimax_code.mcp_adapter import metrics` 或 `mcp.metrics` 可达（crate 内 = 包内）。测试双重断言：`metrics not in __all__`（barrel 不含）+ metrics 子模块可达 + 含 3 helper（crate 内路径可用，对齐 `crate::metrics::...`）。
+
+### 交付
+
+| 文件 | 状态 | 说明 |
+|------|------|------|
+| `agent/tests/test_mcp_adapter_barrel.py` | 新增（12 测试） | 三层结构：Coverage 6（`set(__all__)==EXPECTED_BARREL` 精确集 + 无重复 + count==17 卫士 + pub_use 子集==10 + ergonomics 子集==7 + isdisjoint + 全 getattr 可解析）+ Fidelity 4（bridge 4 符号 `is` + transport 1 `is` + types 5 `is` + ergonomics 7 `is`，全 17 符号身份锁定）+ YAGNI 2（`metrics not in __all__` + metrics 子模块可达 + `__all__`==3 helper）；`EXPECTED_PUB_USE`（10）+ `EXPECTED_ERGONOMICS`（7）+ `EXPECTED_BARREL`（17）三集合注释对齐 lib.rs 三行 pub use |
+| `agent/minimax_code/mcp_adapter/__init__.py` | 编辑（docstring + ledger） | leaf order 段结尾句改完成态（"metrics stub landed in R184 (pub(crate)) ... barrel-reconciliation round (R186) mirrors lib.rs pub use surface now that every leaf is in"）；`__all__` 之后插入 "Barrel reconciliation (R186)" `#:` 注释段（27 行，记录 10 pub use + 7 ergonomics + metrics YAGNI 边界，对齐 crate 公共表面契约）；ledger 加 R186 landed + "crate complete"，移除 "Remaining" |
+| `docs/evolution/ITERATION_LOG.md` | 追加 | R186 条目 |
+
+### 映射决策树+坑
+
+**决策 1 — 三层测试结构（Coverage + Fidelity + YAGNI，模板取自 R178 `test_init_barrel.py`）：** Coverage 层断言 `set(__all__) == EXPECTED_BARREL`（精确集，任何 drift——丢符号/加符号/重命名——都 surface）；Fidelity 层断言每个 barrel 符号 `is` 其叶子子模块来源（身份，防 shadow/重绑定）；YAGNI 层断言 metrics `pub(crate)` 双重缺席。三层互补：count/getattr 只证明"有东西绑定"，`is` 证明"是同一个源"，YAGNI 证明"不该暴露的没暴露"。
+
+**决策 2 — 身份检查 `is` 是 load-bearing（非 isinstance/getattr）：** `mcp.McpBridge is bridge.McpBridge` 比 `isinstance`/`hasattr` 严格——它证明 barrel 通过同一 import 绑定到 `bridge.py` 的原始对象，不是 shadow copy 或重定义。测试 docstring 明确："a getattr/count test only proves something is bound; the is check proves the barrel honours the same single source the leaf established"。R178 先例用 `sdk.X is submodule.X`，R186 完全沿用。
+
+**决策 3 — metrics `pub(crate)` 的 Python 语义：双重缺席（不在 __all__）但子模块可达：** Rust `pub(crate) mod metrics` 的精确 Python 等价不是"完全私有"（Python 无 crate 边界），而是"不在 barrel 公共表面，但包内路径可达"。测试 `test_yagni_metrics_absent_from_all` 断言 `metrics not in __all__`（barrel 不含）；`test_yagni_metrics_submodule_reachable_but_not_exported` 断言子模块可达 + `__all__`==3 helper（crate 内 `crate::metrics::...` 路径可用）。两测试共同表达 pub(crate) 语义。
+
+**坑 1 — metrics 子模块 `hasattr(mcp, "metrics")` 总为 True，不能照搬 R178 的 `not hasattr` 断言：** R178 SDK 的 YAGNI 符号（`SharedAuthProvider` 等类型）是 Rust `pub use` 了但 Python 选择不 re-export 的类型——Python 可以完全不绑定（`not hasattr(sdk, name)` 成立）。但 mcp-adapter 的 metrics 是**子模块文件**（`metrics.py`），Python 包机制下 `bridge.py` 的 `from minimax_code.mcp_adapter import metrics` 触发加载后，`mcp.metrics` 总是可达（无法阻止 `hasattr` 为 True，除非删文件）。所以 R186 的 metrics YAGNI 测试**不**断言 `not hasattr(mcp, "metrics")`（会假阴性失败），改为断言 `metrics not in __all__`（barrel 公共表面不含）+ 子模块可达（对齐 pub(crate) crate 内可达语义）。这是 R178 模式在"YAGNI 对象是子模块"场景的正确适配。
+
+**坑 2 — ergonomics 扩展必须 disjoint 检查（防分类错误膨胀并集）：** `EXPECTED_PUB_USE`（10）与 `EXPECTED_ERGONOMICS`（7）若误重叠（某符号同时进两集合），`|` 并集会 < 17，`test_barrel_count_is_17` 假阳性通过但 `test_ergonomics_subset_is_7` 的 `isdisjoint` 断言会捕获。`test_ergonomics_subset_is_7` 显式 `assert EXPECTED_PUB_USE.isdisjoint(EXPECTED_ERGONOMICS)`——分类一致性卫士。
+
+### 验证
+
+- **ruff:** `uv run ruff check minimax_code/mcp_adapter/__init__.py tests/test_mcp_adapter_barrel.py` -> `All checks passed!`（barrel 测试 + __init__.py 全绿，零 `--fix` 噪声外溢）。
+- **pytest barrel:** `uv run pytest tests/test_mcp_adapter_barrel.py -q` -> **12 passed in 0.33s**（Coverage 6 + Fidelity 4 + YAGNI 2）。
+- **pytest 全套回归:** `uv run pytest tests/test_mcp_adapter_types.py tests/test_mcp_adapter_transport.py tests/test_mcp_adapter_bridge.py tests/test_mcp_adapter_barrel.py -q` -> **86 passed in 0.55s**（R179 types + R180 transport + R181-R185 bridge 43 + R186 barrel 12 = 86，零回归）。
+- **关键不变量验证：** `test_barrel_matches_expected_surface_exactly` 断言 `set(__all__) == EXPECTED_BARREL`（17 符号精确集，任何 drift surface）；17 个身份检查（4 bridge + 1 transport + 5 types pub use + 7 types ergonomics）全 `is` 子模块来源；`isdisjoint` 证明 pub use 核心与 ergonomics 扩展无分类重叠；metrics 双重测试证明 `pub(crate)` 语义（不进 barrel 但 crate 内可达）。
+
+### YAGNI 边界
+
+- **metrics 真 observer（Prometheus）仍 YAGNI（同 R184/R185 边界）：** Rust `#[cfg(feature="metrics")]` 真 histogram 未迁。MiniMax 无 MCP adapter 的 Prometheus scrape 消费者（可观测性走 tracing/ObservabilityBridge）。未来若接入 Prometheus，`metrics.py` 单文件替换为真 observer，不动 bridge 调用点。barrel 不暴露 metrics 子模块名（`pub(crate)` 边界），但子模块内部 `__all__`==3 helper 已声明（R184），便于未来消费者发现 stub 表面。
+- **下游 stdio / HTTP+SSE 具体 `McpTransport` impl 仍 YAGNI：** `McpTransport` async trait（R180）已就位，具体 stdio / HTTP+SSE transport 由下游消费者实现（grok-build 同样不在 adapter crate 内提供具体 transport）。bridge 测试用 `_StubMcpTransport` 内存 mock 验证 trait 契约。
+- **hub `ToolServerBuilder` 集成仍 YAGNI：** bridge 产出 `list[McpToolHandler]`（R183 handler + R185 actor），注册到 hub `ToolServer` 是下游消费者职责（类似 R168 `ToolHarnessBuilder`）。barrel 不暴露 hub 集成 API（adapter 的职责止于产出 handlers）。
+- **`McpBridgeConfig.session_id` 仍未被 actor 消费（同 R185 边界）：** config 带 `session_id` 为未来 hub-binding（Rust 同字段），actor 当前仅用 `namespace`。YAGNI——字段保留（对齐 Rust struct 形状）但 actor 不读。
+- **crate 收官后的下一片叶子：** mcp-adapter 是 grok-build 第 7 个 crate 的收官（types R179 / transport R180 / bridge R181-R185 / barrel R186）。grok-build 工作空间剩余 crate（若有）将在后续轮从 `grok-build/crates/` 目录侦察选定；mcp-adapter barrel 的闭合为平台 MCP 发现能力提供完整 Python 公共表面。
+
+### Commit
+
+`feat(platform): R186 xai-computer-hub-mcp-adapter lib.rs barrel-reconciliation (crate final: 10 pub use + 7 ergonomics = 17-symbol barrel, 12 tests)`
