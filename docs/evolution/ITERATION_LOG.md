@@ -15459,3 +15459,78 @@ config_validation.rs (257 行)
 
 - 5 文件:2 新 A(config_validation.py + test)+ 2 修改 M(__init__ 桶 + slash 测试断言)+ 1 修改 M(ITERATION_LOG)。
 - 精确 `git add`,无排除文件污染暂存区。
+## R192 — xai-grok-tools-api crate 收官: lib.rs 桶收口 (default_client_name + pb YAGNI 账本终结)
+
+锚点:R192-1 61b81a1
+
+### 本轮目标
+
+迁移 `grok-build/crates/codegen/xai-grok-tools-api/src/lib.rs` 的非 pb 部分,闭合 crate(R190-R192 三轮节奏的最后一轮)。lib.rs 含三块:`pub mod pb`(protobuf 生成块)+ `pub use pb::{...}`(60 符号根重导出)+ `impl ToolCategory { as_str }`(pb 附加方法)+ `default_client_name`(**唯一**非 pb 自由函数)。本轮把 `default_client_name` 落到桶根,终结 pb YAGNI 账本,标记 crate COMPLETE。
+
+### 融合结论
+
+**lib.rs 三块的迁移决策:**
+
+1. **`default_client_name(id)` → 桶根自由函数。** lib.rs 唯一非 pb 导出,逻辑为 `id.split(':').nth(1).unwrap_or(id)`(冒号分割取第 2 段,无冒号返回原值)。Python:`segments = id.split(":"); return segments[1] if len(segments) >= 2 else id`。放 `tools_api/__init__.py` 桶根(Rust 自由函数在 lib.rs 根,非 re-export)。
+
+2. **`pub mod pb` + `pub use pb::{...}` 60 符号 → 整块 YAGNI。** 无 .proto/protoc 流水线,无 gRPC tools server 消费者(平台用 JSON-RPC + httpx)。遵循 R132 grpc_client/OTel SDK 模式。
+
+3. **`impl ToolCategory { as_str }` → 随 pb YAGNI。** `as_str` 是 pb 生成的 `ToolCategory` enum 上的 inherent impl。ToolCategory 是 `pub use pb::ToolCategory`(pb 类型),不迁移 → as_str 无类型可附,随之 YAGNI。pb 回归时(未来 gRPC 工具面落地)随类型重新生成,不手移植。**纠正 R190/R191 预判**:此前 docstring 写"ToolCategory 决策(pb 附加,遵循 pb YAGNI)",本轮确认决策 = 不迁移(inherent impl 跟随 pb 类型),账本终结。
+
+**桶表面演进:** `__all__` 从 R190 `["slash_commands"]` → R191 `["config_validation", "slash_commands"]` → R192 `["config_validation", "default_client_name", "slash_commands"]`。default_client_name 是字符串函数名(非子模块),与两个子模块并列在桶根。
+
+### 交付
+
+- **`agent/minimax_code/tools_api/__init__.py`** (修改):
+  - 桶根新增 `default_client_name(id: str) -> str` 自由函数 + 完整 docstring(记录 Rust `split(':').nth(1).unwrap_or(id)` 等价映射 + 单一来源真值角色)。
+  - `__all__` 扩展为 3 符号(字母序)。
+  - docstring 终结:标题 `R190-R192, complete -- crate milestone`;leaf order 第 3 项标记 `landed`;pb YAGNI 段补充 `ToolCategory::as_str` 跟随 pb 的决策;ledger comment 标记 `Crate COMPLETE`。
+
+- **`agent/tests/test_tools_api_default_client_name.py`** (新, 3 测试):
+  - 2 结构(桶根可调用 + `is` 同一性 + `__all__` 含;返回 str)+ 1 Rust 内联 `pins_first_colon_derivation`(4 断言:`GrokBuild:grep`→`grep`、`ns:a:b`→`a`、`bare`→`bare`、`""`→`""`)。
+
+- **`agent/tests/test_tools_api_slash_commands.py`** (修改):桶断言 `test_barrel_all_exposes_landed_submodules` → `test_barrel_all_exposes_landed_submodules_and_root_fn`,锁定 3 符号全集(随 crate 完成进化,R191 的 2 子模块断言已过时)。
+
+### 映射决策树 + 坑
+
+```
+lib.rs (140 行)
+├─ pub mod pb { include!(...) }                    # YAGNI (无 protoc 流水线)
+├─ pub mod config_validation / slash_commands      # R190/R191 已迁移
+├─ pub use pb::{ 60 symbols incl. ToolCategory }  # YAGNI (pb 根重导出)
+├─ pub fn default_client_name(id) -> &str          # ★ 迁移到桶根
+│   ├─ id.split(':').nth(1).unwrap_or(id)
+│   └─ Python: segments = id.split(":"); segments[1] if len>=2 else id
+│      ★ 坑: 不能用 split(":", 1) -- ns:a:b 会返回 "a:b" 而非 "a"
+│         Rust split(':') 分割所有冒号, nth(1) 取第 2 段
+└─ impl ToolCategory { as_str() }                  # YAGNI (pb inherent impl)
+    └─ 7 变体 -> 字符串, 但 ToolCategory 是 pb 类型, as_str 跟随 pb
+
+★ crate 完成里程碑: 3 文件 lib.rs/slash_commands.rs/config_validation.rs 全覆盖
+  - pb 整块 YAGNI (~60 wire 类型 + ToolCategory::as_str)
+  - 非 pb 部分 100% 迁移 (default_client_name + slash_commands + config_validation)
+```
+
+**坑速查:**
+- **`split(":", 1)` vs `split(":")`**:`split(":", 1)` 只分割第一个冒号,`"ns:a:b"` → `["ns", "a:b"]`,取 [1] 得 `"a:b"`(错)。Rust `split(':')` 无 max,分割所有冒号,`nth(1)` 取第 2 段 = `"a"`(对)。Python 必须 `split(":")`(无 max)再取 [1]。
+- ruff I001 对 `import X as Y` + `from X import Z` 同包两行的空行分隔有要求,`--fix` 自动补(无害)。
+
+### 验证
+
+- `uv run ruff check minimax_code/tools_api/ tests/test_tools_api_default_client_name.py tests/test_tools_api_config_validation.py tests/test_tools_api_slash_commands.py` → **All checks passed!**
+- `uv run pytest tests/test_tools_api_default_client_name.py tests/test_tools_api_config_validation.py tests/test_tools_api_slash_commands.py -q` → **31 passed** (3 + 13 + 15)。
+- 全量回归 `uv run pytest -q` → **4679 passed, 10 skipped, 0 failed** (R191=4676 → +3 = 4679;103.42s)。
+
+### YAGNI 边界
+
+- **`pub mod pb`(~60 protobuf 线路类型)**:整块 YAGNI,账本已在 R190/R191/R192 三轮 docstring + ledger comment 记录。含 `ToolCategory` + 其 `as_str` inherent impl(pb 生成类型 + 附加方法,不可分离)。
+- **crate COMPLETE**:xai-grok-tools-api 3 文件全覆盖。非 pb 部分(default_client_name + slash_commands + config_validation)100% 迁移,pb 部分 100% YAGNI 文档化。
+- **下一个 crate**:grok-build codegen 工作区剩余 crates 待评估。已迁移 10 个平台模块(auth, computer_hub_core, computer_hub_sdk, grok_auth, mcp, mcp_adapter, tool_protocol, tool_runtime, tool_types, tools_api)。
+
+### Commit
+
+`feat(platform): R192 tools_api lib.rs barrel-reconciliation (default_client_name + crate milestone)`
+
+- 4 文件:1 新 A(test_default_client_name)+ 2 修改 M(__init__ 桶根 + docstring 终结 + slash 桶断言)+ 1 修改 M(ITERATION_LOG)。
+- 精确 `git add`,无排除文件污染暂存区。
+- xai-grok-tools-api crate 收官里程碑(R190-R192)。
