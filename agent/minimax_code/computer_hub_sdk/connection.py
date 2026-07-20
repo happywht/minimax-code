@@ -66,6 +66,7 @@ import weakref
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Generic, TypeVar
+from urllib.parse import urlparse
 
 from minimax_code.computer_hub_sdk.auth import AuthProvider
 from minimax_code.computer_hub_sdk.connection_types import (
@@ -79,9 +80,12 @@ from minimax_code.computer_hub_sdk.connection_types import (
     DeadlineCallError,
     DisconnectCallback,
     DisconnectCause,
+    Eof,
     OtherError,
+    ReadError,
     ReconnectCallback,
     TimedOut,
+    WriteError,
     WriteErrorSlot,
     waiter_guard,
 )
@@ -102,7 +106,12 @@ from minimax_code.tool_protocol.envelope import (
     JsonRpcVersion,
     ResponseResult,
 )
-from minimax_code.tool_protocol.frames import ServeParams, ServeResult, serve_result_from_wire
+from minimax_code.tool_protocol.frames import (
+    PongFrame,
+    ServeParams,
+    ServeResult,
+    serve_result_from_wire,
+)
 from minimax_code.tool_protocol.ids import ConnectionId, RequestId, ServerId, SessionId
 from minimax_code.tool_protocol.methods import Method
 
@@ -816,3 +825,82 @@ class Resume(WriterControl[S]):
     """Reconnected; install ``sink`` and resume draining ``outbound_rx``."""
 
     sink: S
+
+
+# ===========================================================================
+# Spawn-pipeline pure-logic helpers (R155, SDK leaf 18f -- connection.rs
+# 861-869 + 980-994 + 1015-1022 + 1080-1084).
+#
+# These four functions are the zero-socket / zero-task slice the spawn pipeline
+# (``run_writer`` / ``run_reader_actor``, later leaves) factors out so the
+# inbound-frame router, the stream-end classifier, and the disconnect callback
+# can be unit-tested without a live transport. They take a ``HubConnectionInner``
+# and touch only its shared state (``demux`` / ``writer_error`` /
+# ``on_disconnect``); the asyncio tasks that drive them land in R156+.
+# ===========================================================================
+def host_is_loopback(url: str) -> bool:
+    """True when ``url``'s host is one of the canonical loopback names.
+
+    Mirrors Rust ``host_is_loopback`` (861-869): ``Ipv4Addr::LOCALHOST``
+    (127.0.0.1), ``Ipv6Addr::LOCALHOST`` (::1), or a case-insensitive
+    ``localhost`` domain all count; anything else (including a host-less URL
+    or a parse failure) is False.
+    """
+    host = urlparse(url).hostname
+    if host is None:
+        return False
+    return host in ("127.0.0.1", "::1", "localhost")
+
+
+def route_or_pong(inner: HubConnectionInner, text: str) -> str | None:
+    """Decode an inbound text frame (Rust ``route_or_pong``, 980-994).
+
+    A ``ping`` method is answered inline with a fresh ``pong`` (its JSON wire
+    form, to be written straight back out the socket); any other decodable
+    JSON object is handed to ``inner.demux.route`` and returns ``None``. A
+    non-dict JSON value (list / string / number / null) is dropped -- Python's
+    ``Demux.route`` is dict-only (``frame.get(...)``), so the non-dict arm maps
+    to Rust's terminal ``Unrouted`` outcome. An unparseable frame logs a
+    warning and is discarded.
+    """
+    try:
+        value = json.loads(text)
+    except (json.JSONDecodeError, TypeError) as exc:
+        _LOGGER.warning("discarding unparseable inbound text frame: %s", exc)
+        return None
+    if not isinstance(value, dict):
+        return None
+    if value.get("method") == Method.Ping.as_wire_str():
+        return json.dumps(PongFrame(ts_ms=now_unix_millis()).to_wire())
+    inner.demux.route(value)
+    return None
+
+
+def classify_stream_end(
+    inner: HubConnectionInner, read_error: str | None
+) -> DisconnectCause:
+    """Classify the cause of an inbound stream ending (Rust 1015-1022).
+
+    Probes :meth:`WriteErrorSlot.take` first: a write-side failure observed by
+    the writer task is attributed over the reader's own EOF / read error (the
+    slot is drained under lock so it fires at most once per reconnect). With no
+    write error, a reader-side ``read_error`` detail becomes a
+    :class:`ReadError`; otherwise the stream ended cleanly (:class:`Eof`).
+    """
+    detail = inner.writer_error.take()
+    if detail is not None:
+        return WriteError(detail_str=detail)
+    if read_error is not None:
+        return ReadError(detail_str=read_error)
+    return Eof()
+
+
+def fire_on_disconnect(inner: HubConnectionInner) -> None:
+    """Best-effort fire of the optional disconnect callback (Rust 1080-1084).
+
+    The callback is an ``Option<DisconnectCallback>``; ``None`` is a no-op (the
+    reader task calls this unconditionally on the way out, whether or not a
+    callback was registered).
+    """
+    if inner.on_disconnect is not None:
+        inner.on_disconnect()

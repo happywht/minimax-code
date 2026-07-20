@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -78,16 +79,23 @@ from minimax_code.computer_hub_sdk.connection import (
     _ConnectionIdSlot,
     _EarlyNotifSlot,
     _HelloCaps,
+    classify_stream_end,
     exit_for_close_code,
+    fire_on_disconnect,
+    host_is_loopback,
     now_unix_millis,
+    route_or_pong,
 )
 from minimax_code.computer_hub_sdk.connection_types import (
     CloseFrame,
     ConnectionTuning,
     ConnHealth,
     ConnKey,
+    Eof,
     OtherError,
+    ReadError,
     TimedOut,
+    WriteError,
 )
 from minimax_code.computer_hub_sdk.demux import Demux, mpsc_channel
 from minimax_code.computer_hub_sdk.error import (
@@ -107,6 +115,7 @@ from minimax_code.tool_protocol.envelope import (
 )
 from minimax_code.tool_protocol.frames import ServeParams
 from minimax_code.tool_protocol.ids import ConnectionId, RequestId, ServerId, SessionId, ToolId
+from minimax_code.tool_protocol.methods import Method
 
 if TYPE_CHECKING:
     from minimax_code.computer_hub_sdk.connection_types import ReconnectEvent
@@ -934,3 +943,142 @@ def test_writer_control_resume_is_frozen() -> None:
     resume = Resume(sink="sink-1")
     with pytest.raises(dataclasses.FrozenInstanceError):
         resume.sink = "sink-2"  # type: ignore[misc]
+
+
+# ===========================================================================
+# Spawn-pipeline pure-logic helpers (R155, SDK leaf 18f -- connection.rs
+# 861-869 + 980-994 + 1015-1022 + 1080-1084).
+#
+# These exercise the four zero-socket helpers the spawn pipeline factors out
+# (host_is_loopback / route_or_pong / classify_stream_end / fire_on_disconnect)
+# without a live transport. ``route_or_pong`` needs a demux with a ``route``
+# method, so a local recorder stands in -- the shared ``_RecordingDemux`` only
+# exposes the response-waiter register/take surface the call-request tests
+# need, and widening it would cross an iteration boundary.
+# ===========================================================================
+class _RouteRecorder:
+    """Demux stand-in exposing only ``route`` (R155 route_or_pong tests).
+
+    Records every routed frame so a test can assert the demux was reached (and
+    with what payload) without depending on the full :class:`Demux` surface.
+    """
+
+    def __init__(self) -> None:
+        self.routed: list[dict[str, object]] = []
+
+    def route(self, frame: dict[str, object]) -> None:
+        self.routed.append(frame)
+
+
+def test_host_is_loopback_canonical_names_true() -> None:
+    # urlparse lower-cases ``.hostname``, so the case-insensitive ``localhost``
+    # match holds for any-cased input (mirrors Rust ``eq_ignore_ascii_case``).
+    assert host_is_loopback("ws://127.0.0.1:8765") is True
+    assert host_is_loopback("ws://[::1]:8765") is True
+    assert host_is_loopback("ws://localhost:8765") is True
+    assert host_is_loopback("ws://LOCALHOST:8765") is True
+
+
+def test_host_is_loopback_other_hosts_false() -> None:
+    assert host_is_loopback("ws://hub:8765") is False
+    assert host_is_loopback("ws://example.com") is False
+    assert host_is_loopback("ws://192.168.1.1:8765") is False
+
+
+def test_host_is_loopback_hostless_or_unparseable_false() -> None:
+    # No scheme -> urlparse sees a bare path, ``.hostname`` is None.
+    assert host_is_loopback("not a url") is False
+    assert host_is_loopback("") is False
+
+
+def test_route_or_pong_ping_answers_with_pong_wire() -> None:
+    demux = _RouteRecorder()
+    inner = _make_inner(demux=demux).inner
+    text = json.dumps({"method": Method.Ping.as_wire_str()})
+    out = route_or_pong(inner, text)
+    assert out is not None
+    decoded = json.loads(out)
+    assert decoded["method"] == Method.Pong.as_wire_str()
+    assert isinstance(decoded["ts_ms"], int)
+    # A ping is answered inline; the demux is never reached.
+    assert demux.routed == []
+
+
+def test_route_or_pong_other_method_routes_and_returns_none() -> None:
+    demux = _RouteRecorder()
+    inner = _make_inner(demux=demux).inner
+    frame = {"method": "some_notification", "params": {"x": 1}}
+    out = route_or_pong(inner, json.dumps(frame))
+    assert out is None
+    assert demux.routed == [frame]
+
+
+def test_route_or_pong_non_dict_json_dropped_not_routed() -> None:
+    demux = _RouteRecorder()
+    inner = _make_inner(demux=demux).inner
+    # A bare JSON array / string / number / null maps to Rust's terminal
+    # ``Unrouted`` (Python Demux.route is dict-only, so non-dict is dropped).
+    assert route_or_pong(inner, json.dumps([1, 2, 3])) is None
+    assert route_or_pong(inner, json.dumps("plain string")) is None
+    assert route_or_pong(inner, json.dumps(42)) is None
+    assert route_or_pong(inner, "null") is None
+    assert demux.routed == []
+
+
+def test_route_or_pong_unparseable_text_discarded_not_routed() -> None:
+    demux = _RouteRecorder()
+    inner = _make_inner(demux=demux).inner
+    assert route_or_pong(inner, "{not valid json") is None
+    assert demux.routed == []
+
+
+def test_classify_stream_end_write_error_takes_priority() -> None:
+    inner = _make_inner().inner
+    inner.writer_error.set("writer boom")
+    cause = classify_stream_end(inner, read_error="reader boom")
+    assert isinstance(cause, WriteError)
+    assert cause.detail() == "writer boom"
+
+
+def test_classify_stream_end_read_error_when_no_write_error() -> None:
+    inner = _make_inner().inner
+    cause = classify_stream_end(inner, read_error="reader boom")
+    assert isinstance(cause, ReadError)
+    assert cause.detail() == "reader boom"
+
+
+def test_classify_stream_end_clean_eof_when_neither_error() -> None:
+    inner = _make_inner().inner
+    cause = classify_stream_end(inner, read_error=None)
+    assert isinstance(cause, Eof)
+    assert cause.detail() is None
+
+
+def test_classify_stream_end_take_drains_slot_once() -> None:
+    inner = _make_inner().inner
+    inner.writer_error.set("first")
+    first = classify_stream_end(inner, read_error=None)
+    assert isinstance(first, WriteError)
+    assert first.detail() == "first"
+    # take() drained the slot under lock -> a fresh classification falls
+    # through to Eof (the write-side failure fires at most once per reconnect).
+    second = classify_stream_end(inner, read_error=None)
+    assert isinstance(second, Eof)
+
+
+def test_fire_on_disconnect_invokes_registered_callback() -> None:
+    calls: list[str] = []
+
+    def cb() -> None:
+        calls.append("disconnected")
+
+    inner = _make_inner().inner
+    inner.on_disconnect = cb
+    fire_on_disconnect(inner)
+    assert calls == ["disconnected"]
+
+
+def test_fire_on_disconnect_none_callback_is_noop() -> None:
+    inner = _make_inner().inner  # on_disconnect defaults to None
+    # Must not raise -- the reader task calls this unconditionally on exit.
+    fire_on_disconnect(inner)

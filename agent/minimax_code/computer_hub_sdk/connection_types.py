@@ -312,6 +312,20 @@ class WriteErrorSlot:
         with self._lock:
             self._value = None
 
+    def take(self) -> str | None:
+        """Atomically remove and return the current value (Rust ``Mutex<Option>::take``).
+
+        Returns the previous value and clears the slot under the same lock --
+        the close-classifier
+        (:func:`~minimax_code.computer_hub_sdk.connection.classify_stream_end`)
+        probes this exactly once on reconnect so a write-side failure observed
+        by the writer task is attributed over the reader's EOF / read error.
+        """
+        with self._lock:
+            value = self._value
+            self._value = None
+            return value
+
 
 # ===========================================================================
 # Disconnect classification (lines 168-211).

@@ -12801,3 +12801,53 @@ SDK crate 第 18 叶（18e）闭合 spawn 管线的纯逻辑前置支撑。R153 
 ### Commit
 
 `feat(platform): R154 connection.rs steady-state control layer -> connection.py (SDK leaf 18e)`
+## R155 — connection.rs spawn 管线纯逻辑 helper 组 -> connection.py (SDK leaf 18f)
+
+锚点:R155-1 3613a58
+
+### 本轮目标
+
+前向移植 grok-build `xai-computer-hub-sdk/src/connection.rs` 第 861-869 + 980-994 + 1015-1022 + 1080-1084 行的 4 个纯逻辑 helper 到 `agent/minimax_code/computer_hub_sdk/connection.py`：host_is_loopback(url: str) -> bool（URL 主机环回判定，127.0.0.1 / ::1 / localhost 三 canonical）/ route_or_pong(inner, text: str) -> str | None（入站文本帧解码分发：ping 回 pong JSON，其余可解析 dict 喂 inner.demux.route，非 dict 丢弃，不可解析 warn+丢弃）/ classify_stream_end(inner, read_error: str | None) -> DisconnectCause（流结束分类：先 take WriteErrorSlot 优先归因写侧失败，再 read_error -> ReadError，否则 Eof）/ fire_on_disconnect(inner) -> None（可选断连回调尽力触发，None 静默）。连带扩展 connection_types.py 的 WriteErrorSlot.take()（Rust Mutex<Option>::take，原子取值+清空，classify_stream_end 忠实移植所需）。4 helper 全部零 socket/URL-handshake/demux-task 依赖，仅触碰 inner 的既有共享状态（demux / writer_error / on_disconnect），可独立单测 -- 是 spawn 管线（run_writer/run_reader_actor, R156+）从自身主体剥出的纯逻辑切片。复用 R150 DisconnectCause frozen-dataclass 家族（classify_stream_end 返回 Eof/ReadError/WriteError）+ R154 now_unix_millis 原语（route_or_pong 打 pong 时间戳）。锚点 `R155-1 3613a58`（父 R154 3613a58）。验证：ruff 0 + pytest（test_connection 加 13 个 R155 测试 = 62 passed）+ 精确 commit。
+
+### 融合结论
+
+SDK crate 第 18 叶（18f）剥离 spawn 管线的纯逻辑前置 helper。R154 闭合了 spawn 管线的纯逻辑稳态地基（ConnectedExit/now_unix_millis/exit_for_close_code/WriterControl<S>），但 spawn 管线（run_writer 1047 / run_reader_actor 1088 / open_socket 877）是 asyncio task + 真实 socket + URL + handshake 状态机 -- 整体移植依赖过深、无法隔离单测。但读原文 980-994 + 1015-1022 + 1080-1084 后发现，run_reader_actor 的主体逻辑可再剥一层零依赖切片：route_or_pong 把"解码入站文本帧 + ping 应答 + 路由其余到 demux"这个无 socket 纯函数提出来（入参仅 inner + text 字符串）、classify_stream_end 把"流结束归因决策树"提出来（入参仅 inner + read_error）、fire_on_disconnect 把"可选回调触发"提出来（入参仅 inner），这 3 个函数原本嵌在 run_reader_actor 的 task 循环里，但本质是 inner 共享状态上的纯逻辑；host_is_loopback（861-869）同理是 open_socket 的 URL 判定纯函数。4 helper 合在一起构成 spawn 管线落地前最后一组可隔离单测的纯逻辑切片，符合"每个叶子零 socket 依赖、可独立单测"的移植纪律。R154 YAGNI 预判 spawn 管线 -> R155，但 spawn 管线整体仍是 R156+（asyncio task 模型 + 真实 transport），R155 仅剥其纯逻辑 helper 层。4 helper 都是 Rust 模块内（host_is_loopback 是 pub(crate)，其余私有），Python 侧不加入 connection.py __all__（保持窄导出），与 R153 ServeResult/R154 ConnectedExit 同惯例。WriteErrorSlot.take() 是 classify_stream_end 忠实移植的关键依赖（Rust 1018 `self.inner.writer_error.lock().take()` 是 Mutex<Option>::take 语义，原 WriteErrorSlot 仅有 get/set/clear），故本轮一并补齐 -- 这不是无关补全，而是 classify_stream_end 必须的契约（take 与 get/clear 行为不可互换：take 是原子取+清，classifier 在重连时恰好探测一次）。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/connection_types.py`：WriteErrorSlot.take() 追加（在 clear() 之后，315-327），`with self._lock: value = self._value; self._value = None; return value`（原子取前值 + 同锁清空，照 Rust Mutex<Option>::take）；__all__ 不变（WriteErrorSlot 已在）。
+- `agent/minimax_code/computer_hub_sdk/connection.py`：imports 扩展 3 处（`from urllib.parse import urlparse` 加在 typing import 后；frames import 因超 100 字符拆多行括号格式 PongFrame/ServeParams/ServeResult/serve_result_from_wire；connection_types import 块加 Eof/ReadError/WriteError，isort 逐字符序 DisconnectCause/Eof/OtherError/ReadError/ReconnectCallback/TimedOut/WriteError/WriteErrorSlot）；4 helper 追加（Resume 类之后，文件末尾），host_is_loopback（urlparse(url).hostname in ("127.0.0.1","::1","localhost")，None 主机 -> False）+ route_or_pong（json.loads -> dict 判定 -> ping 应答 pong JSON / else demux.route / 非 dict 返回 None / JSONDecodeError warn+None）+ classify_stream_end（writer_error.take() 优先 WriteError / read_error -> ReadError / 否则 Eof）+ fire_on_disconnect（inner.on_disconnect 非空则调用）；__all__ 不变。
+- `agent/tests/test_connection.py`：imports 扩展 5 处（`import json`；connection import 块加 classify_stream_end/fire_on_disconnect/host_is_loopback/route_or_pong，function 组按字母序在 _HelloCaps 后；connection_types import 块加 Eof/ReadError/WriteError；新增 `from minimax_code.tool_protocol.methods import Method`；frames import 仅 ServeParams，PongFrame 移除未用）；本地 `_RouteRecorder` mock 类（仅记录 route 调用到 self.routed 列表，避免动共享 `_RecordingDemux`）；13 个 R155 测试（host_is_loopback x3：环回真/其他主机假/无主机或不可解析假；route_or_pong x4：ping 应答 pong JSON+demux 未触达/其他方法路由+返回 None/非 dict JSON 丢弃不路由/不可解析文本丢弃不路由；classify_stream_end x4：write 优先/read error/clean eof/take 幂等清空后二次归 Eof；fire_on_disconnect x2：注册回调被调用/None 回调静默 noop）。
+
+### 映射决策树 + 坑
+
+- host_is_loopback：Rust `match url.host() { Some(Ipv4Addr::LOCALHOST) | Some(Ipv6Addr::LOCALHOST) | Some(Domain(d)) if d.eq_ignore_ascii_case("localhost") => true, _ => false }`（861-869）-> Python `urlparse(url).hostname in ("127.0.0.1", "::1", "localhost")`。关键：urlparse 的 `.hostname` 属性自动转小写（"LOCALHOST" -> "localhost"，"Localhost" -> "localhost"），故大写/混合大小写 localhost 也命中集合，等价 Rust `eq_ignore_ascii_case`，无需手动 `.lower()`；IPv6 `[::1]` 去括号返回 "::1"；无 scheme 的 URL（hostname is None）-> False，对等 Rust `_` 兜底 false。
+- route_or_pong：Rust `serde_json::from_str::<Value>(text)` 接受任何合法 JSON Value（980-994），method==Ping -> 序列化 fresh PongFrame 返回，否则 demux.route(value)，Err -> log warn。-> Python `json.loads(text)` 同样接受任何 JSON，但关键差异：Python `Demux.route` 仅限 dict（内部 `frame.get("method")` / `frame.get("id")`），Rust demux.route 接受任何 Value（内部 Value::get）。故 Python 侧加 `isinstance(value, dict)` 防护，非 dict（list/str/int/float/None）-> 返回 None，对等 Rust 最终的 Unrouted（非 ping 非可路由）；JSONDecodeError/TypeError -> `_LOGGER.warning(...)` + None。ping 判定 `value.get("method") == Method.Ping.as_wire_str()`，应答 `json.dumps(PongFrame(ts_ms=now_unix_millis()).to_wire())`（复用 R154 now_unix_millis + R153 PongFrame.to_wire）。
+- classify_stream_end：Rust `let write_err = self.inner.writer_error.lock().take(); match (write_err, read_error) { (Some(detail), _) => WriteError(detail), (None, Some(err)) => ReadError(err), (None, None) => Eof }`（1015-1022）-> Python `detail = inner.writer_error.take()`（WriteErrorSlot.take 原子取+清）/ detail is not None -> WriteError(detail_str=detail) / read_error is not None -> ReadError(detail_str=read_error) / else Eof()。优先级：write 侧失败 > reader 侧 EOF/read error（写侧失败是连接死亡的根本因，reader 的 EOF 只是症状，归因到写侧让重连分类更准）。
+- fire_on_disconnect：Rust `if let Some(cb) = &self.inner.on_disconnect { cb(); }`（1080-1084）-> Python `if inner.on_disconnect is not None: inner.on_disconnect()`。reader task 在退出路径上无条件调用（无论是否注册回调），None 静默。
+- 坑 1（WriteErrorSlot 缺 take()，R154 遗留发现）：R150 WriteErrorSlot 当时只补 get/set/clear（彼时 writer task 未落地，take 无消费方），R155 classify_stream_end 忠实移植需要 Mutex<Option>::take（原子取+清，不是 get + clear 两步 -- 两步在并发下有 TOCTOU 窗口）。本轮在 connection_types.py 补 take()（315-327）。这不是无关补全，是 classify_stream_end 契约的一部分（take 幂等：二次调用返回 None，保证重连归因恰好一次）。
+- 坑 2（route_or_pong 非 dict 处理，类型安全关键）：Python Demux.route 是 dict-only（`frame.get(...)`），Rust serde_json::Value 接受任何 JSON。若不防护直接 `inner.demux.route(value)`，非 dict（如 `[1,2,3]`）会 AttributeError。故 `isinstance(value, dict)` 防护，非 dict -> None（对等 Rust 最终 Unrouted，即非 ping 也非可路由 JSON Value）。测试 `test_route_or_pong_non_dict_json_dropped_not_routed` 覆盖数组/字符串/数字/null 四种非 dict。
+- 坑 3（ruff F401 PongFrame 未用）：test_connection.py 初版 import PongFrame 期望直接用类构造比对，但实际测试用 `json.loads(pong_wire)["method"] == "pong"` 比对 method 字段（更贴近 wire 语义，不依赖 PongFrame 类），PongFrame 未直接使用 -> F401。修复：frames import 仅留 ServeParams。
+- 坑 4（ruff I001 frames import 超 100 字符）：connection.py frames import `from minimax_code.tool_protocol.frames import PongFrame, ServeParams, ServeResult, serve_result_from_wire` 103 字符超 100 -> isort 要求拆多行括号格式。修复：拆 4 行（每成员一行）。
+- 坑 5（isort connection_types 导入块逐字符序）：加 Eof/ReadError/WriteError 时，逐字符 case-insensitive 比较：`disconnectcause` < `eof`（d<e）< `othererror`（e<o）< `readerror`（o<r）< `reconnectcallback`（前缀 "reconnect" 相同，第 10 字符 'c' < 'e'... 实际 reconnectcallback vs readerror：第 3 字符 'a' < 'c'，readerror 在前）< `timedout`（r<t）< `writeerror`（t<w）< `writeerrorslot`（writeerror 是 writeerrorslot 前缀，短的在前）。最终序：DisconnectCause, Eof, OtherError, ReadError, ReconnectCallback, TimedOut, WriteError, WriteErrorSlot。
+- 坑 6（_RecordingDemux 无 route 方法，迭代独立性）：共享 mock `_RecordingDemux` 仅有 register/take_response_waiter（R153 serve 测试所需），无 route。route_or_pong 测试需要记录 demux.route 调用。若给共享 `_RecordingDemux` 加 route 会跨迭代边界修改（影响 R153 等 serve 测试的 mock 契约），故 R155 引入本地 `_RouteRecorder`（仅记录 route 到 self.routed），保持迭代独立性。测试用 `demux = _RouteRecorder()` 局部变量 + `inner.demux = demux`，断言 `demux.routed`（不用 `inner.demux.routed` 避免 attr-defined 噪音）。
+- 坑 7（_make_inner 不转发 on_disconnect）：`_make_inner(**overrides)` 用显式 kwargs 构造 HubConnectionInner，剩余 overrides 被丢弃（不 `**overrides` 转发）。fire_on_disconnect 测试需注册回调，故用 `inner = _make_inner().inner` 后手动 `inner.on_disconnect = cb`（不通过 overrides）。
+
+### 验证
+
+- `uv run ruff check minimax_code/computer_hub_sdk/connection.py minimax_code/computer_hub_sdk/connection_types.py tests/test_connection.py` -> **All checks passed!**（0 错误，修复 I001 frames import 拆多行 + F401 PongFrame 未用移除）。
+- `uv run pytest tests/test_connection.py -q` -> **62 passed in 0.87s**（原 49 含 R154 7 个 + R155 新增 13 个 = 62）。
+- 覆盖矩阵：host_is_loopback（127.0.0.1/::1/localhost/LOCALHOST 真 + hub.example.com/192.168.1.1 假 + "not a url"/"" 假）/ route_or_pong（ping -> json.loads(method=="pong") 且 ts_ms 非零 + _RouteRecorder.routed 空 / {"method":"foo"} -> routed 非空 + 返回 None / [1,2,3]+"str"+42+null -> routed 空 + 返回 None / "not json{" -> routed 空 + 返回 None）/ classify_stream_end（writer_error.set("write fail") + take -> WriteError.detail()=="write fail" + 无 read_error 路径 / 无 write error + read_error="conn reset" -> ReadError.detail()=="conn reset" / 两者皆无 -> Eof / writer_error.set 后 take 归 WriteError，二次 classify_stream_end 无 read_error -> take 返回 None -> Eof 幂等清空）/ fire_on_disconnect（inner.on_disconnect=cb 后调用 -> cb.invoked True / inner.on_disconnect=None 默认 -> 不抛 noop）。
+
+### YAGNI 边界
+
+- spawn 管线 task（run_writer 1047 asyncio 消耗 WriterControl<S> + outbound_rx + writer_error.set；run_reader_actor 1088 asyncio 消耗 ConnectedExit + route_or_pong + classify_stream_end + fire_on_disconnect + open_socket/run_handshake）-> R156+（asyncio task 模型 + 真实 socket/URL/handshake 状态机，依赖 R134 handshake.rs + open_socket WebSocket 层）。
+- WriterControl<S> 状态机消费侧（run_writer select outbound_rx/writer_control_rx，Pause 停 drain / Resume 装新 sink）-> R156（随 run_writer）。
+- host_is_loopback 消费侧（open_socket URL 判定 + loopback skip TLS/特殊路径）-> R156（随 open_socket）。
+- 1310 行 #[cfg(test)] 块 -> R157+（spawn 管线全部闭合后随原文测试对齐）。
+- connect() 入口（消费 ConnectionConfig -> resolve tuning -> 分配通道 -> 构造 Inner -> spawn 管线）-> R157+（spawn 闭合后）。
+- pool.rs 的 connect() 消费路径 -> server.rs/harness.rs/lib.rs barrel（connection.rs 全部叶子完成后）。
+
+### Commit
+
+`feat(platform): R155 connection.rs spawn-pipeline pure-logic helpers -> connection.py (SDK leaf 18f)`
