@@ -12033,3 +12033,65 @@ cd agent && uv run pytest tests/test_notification.py -v
 ### Commit
 
 feat(platform): R144 migrate xai-computer-hub-sdk notification.rs -> computer_hub_sdk/notification.py (server notification classifier, 12th leaf)
+
+## R145 — 迁移 xai-computer-hub-sdk oidc_provider.rs（crate 第 13 叶）
+锚点:R145-1 5b32bd5
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-computer-hub-sdk/src/oidc_provider.rs`（336 行，SDK crate 第 13 叶，R144 notification 之后）→ `agent/minimax_code/computer_hub_sdk/oidc_provider.py`。
+
+OIDC token 刷新 AuthProvider：`current()` 检查过期（`now + 60s >= expires_at`）→ OIDC discovery + `refresh_token` 刷新 → 返回 Bearer；刷新失败 warn + 用 stale token（永不抛出 current）。
+
+完整交付：`OidcAuthProvider`（6 方法 current/identity/principal_key/_is_expired/_try_refresh/_do_refresh + __repr__）+ `OidcAuthProviderBuilder`（new + 5 链式 + build）+ `RefreshEvent` + `OnRefreshCallback` + `_TokenState` + `REFRESH_MARGIN`。
+
+### 融合结论
+
+第 13 叶落地，SDK crate 13 叶已迁（error/handshake/refcount/donate_pump/trace_donate/connection_borrow/auth/observability/cancel/admission/pool/notification/oidc_provider）。OIDC 提供商是认证栈的第二个具体 `AuthProvider` 实现——R139 auth 是契约层（BearerCredential/AuthIdentity/PrincipalKey），R145 是首个会主动刷新凭据的实现，与 R143 pool 通过 `principal_key()` 共享 dedup 键语义。
+
+这是连接生命周期上游的关键一环：R143 pool 用 `(url, principal_key)` dedup 连接；R145 让 principal_key 随 token 旋转——忠实复刻 Rust trait 默认行为，pool fragment trade-off 在 docstring 显式声明（不静默"修复"）。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/oidc_provider.py`（367 行）：`OidcAuthProvider` + `OidcAuthProviderBuilder` + `RefreshEvent` + `OnRefreshCallback` + `_TokenState` + `REFRESH_MARGIN` + 模块级 `_new_http_client()` 测试 seam。
+- `agent/tests/test_oidc_provider.py`（131 行）：6 测试 1:1 对应 Rust `#[test]`。
+
+### 映射决策树 + 坑
+
+**结构映射：**
+- `Mutex<TokenState>` → **无锁**。asyncio 单线程 + `current()` 同步 = 读-检查-刷新-写序列无抢占；GIL 保证单属性读写原子。Rust Mutex 是 `Send + Sync` 多线程防御，Python 并发模型不需要。docstring 显式声明。
+- `tokio block_in_place`（同步桥到异步 `do_refresh`）→ **同步 `httpx.Client`**。Python 无 blocking pool，刷新同步内联，忠实 `block_in_place` 阻塞语义（`current()` 可能阻塞网络 I/O，调用方应在非热路径调用）。
+- `reqwest::Client` → `httpx.Client`（项目已有依赖）；`error_for_status()` → `raise_for_status()`；`.form(&params)` → `data=params`；`.json()` → `.json()`。
+- `chrono::DateTime<Utc>` / `Utc::now()` / `Duration` → 时区感知 `datetime` / `datetime.now(UTC)` / `timedelta`（**UP017：`from datetime import UTC` 而非 `timezone.utc`**，本轮新发现规则）。
+- `tracing::warn!` / `info!` → `logging.warning` / `logging.info`。
+- `Arc<dyn Fn(&RefreshEvent) + Send + Sync>` → `Callable[[RefreshEvent], None]`。
+- `trim_end_matches('/')` → `str.rstrip('/')`。
+- 手动 `Debug`（issuer + client_id only，`finish_non_exhaustive`，token 永不泄露）→ `__repr__`。
+
+**契约映射（关键）：**
+- Rust `impl AuthProvider for OidcAuthProvider` 只实现 `current` + `identity`；`principal_key` 用 trait 默认 `self.current().principal_key()`。Python Protocol 无默认体 → `principal_key()` 显式写 `self.current().principal_key()` 逐字复刻 trait 默认。**trade-off：token 旋转会改变 pool dedup 键（pool fragment）——忠实 Rust 行为，docstring 声明不静默修复。**
+- `current()` 永不抛出：刷新失败 → `except Exception`（BLE 不在 select，安全）→ warn → 返回 stale bearer。
+- OIDC discovery GET `{issuer}/.well-known/openid-configuration` → `{token_endpoint}`；POST 表单 `grant_type=refresh_token` / `refresh_token` / `client_id` / 可选 `principal_type` + `principal_id` → `{access_token, refresh_token?, expires_in?}`；`expires_at = now + expires_in`（缺失则 None）。
+
+**测试可靠性（关键坑）：**
+- Rust `#[cfg(test)]` reach 真实 `https://localhost:1` 触发刷新失败路径 → CI 网络依赖不稳定。Python **模块级 `_new_http_client() -> httpx.Client` 工厂**（生产返回 `httpx.Client()`），`_do_refresh` 调用裸名解析模块全局 → 测试 `monkeypatch.setattr(oidc_mod, "_new_http_client", lambda: _UnreachableClient())` 注入 always-raise client。保留 Rust builder 签名（忠实），声明为 YAGNI 偏差（测试 seam，Rust 无）。
+
+### 验证
+
+- `uv run ruff check oidc_provider.py test_oidc_provider.py` → **All checks passed!**（初次 4 错：UP017 x3 `timezone.utc` → `UTC` + F401 测试 `OidcAuthProvider` 未用；手动精确 Edit 修复，非 `--fix`，规避 UP017 import 方式歧义）。
+- `uv run pytest tests/test_oidc_provider.py -v` → **6 passed in 0.32s**（6 测试 1:1 对应 Rust `#[test]`：current_not_expired / current_no_expiry / current_stale_on_refresh_fail / identity_principal_fields / identity_none_without_user_id / repr_no_leak）。
+- 无 import 回路（仅依赖 R139 auth + httpx + datetime）。
+
+### YAGNI 边界
+
+**MIGRATED（整叶，自包含 AuthProvider impl）：**
+- `RefreshEvent` + `OnRefreshCallback` + `_TokenState` + `REFRESH_MARGIN`。
+- `OidcAuthProvider`：`current` / `identity` / `principal_key`（trait 默认复刻）/ `_is_expired` / `_try_refresh` / `_do_refresh` + 无泄露 `__repr__`。
+- `OidcAuthProviderBuilder`：4 必填 str + 5 链式 + `build`。
+- `_new_http_client` 测试 seam（Rust 无，声明偏差）。
+
+**NOT MIGRATED：** 无。纯 AuthProvider impl，依赖 R139 auth 符号 + httpx，无框架胶水（不像 R142 admission metrics stubs 或 R143 pool opener registrar）。
+
+### Commit
+
+feat(platform): R145 migrate oidc_provider.rs -> oidc_provider.py (SDK leaf 13, OIDC token-refresh AuthProvider)
