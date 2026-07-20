@@ -6,9 +6,9 @@ Covers the two migrated pure types (:class:`OriginClientInfo` +
 the *same object* as ``sampler.config.OriginClientInfo`` (the dependency
 direction is inverted, not duplicated). The deferred/YAGNI symbols
 (``SamplerConfig`` / ``RetryPolicy`` / 2 traits) are documented in
-``config.py``; the constants ``DEFAULT_MAX_RETRIES`` / ``RATE_LIMIT_RETRY_
-THRESHOLD`` are not migrated (they serve only ``RetryPolicy`` + ``retry.rs``'s
-reqwest loop).
+``config.py``. The constants ``DEFAULT_MAX_RETRIES`` / ``RATE_LIMIT_RETRY_
+THRESHOLD`` migrated in R198 (:mod:`minimax_code.sampler.retry`); the package
+barrel (tested below) now re-exports both the ``config`` and ``retry`` leaves.
 """
 
 from __future__ import annotations
@@ -27,10 +27,28 @@ from minimax_code.sampler import config as sampler_config
 # ---------------------------------------------------------------------------
 
 
-def test_package_barrel_exposes_three_symbols() -> None:
-    """2 types + 1 default constant = 3 re-exported symbols (faithful-source flip)."""
-    assert len(sampler.__all__) == 3
-    assert set(sampler.__all__) == {"AuthScheme", "DEFAULT_AUTH_SCHEME", "OriginClientInfo"}
+def test_package_barrel_exposes_config_plus_retry_symbols() -> None:
+    """R195 config (3: 2 types + 1 default) + R198 retry (10: 5 constants + 5
+    functions) = 13 re-exported symbols. The config trio stays; R198 adds the
+    backoff/max-retries leaf alongside it."""
+    assert len(sampler.__all__) == 13
+    assert set(sampler.__all__) == {
+        # config (R195): 2 types + 1 default constant
+        "AuthScheme",
+        "DEFAULT_AUTH_SCHEME",
+        "OriginClientInfo",
+        # retry (R198): 5 constants + 5 functions
+        "BACKOFF_BASE_MS",
+        "BACKOFF_CAP_MS",
+        "DEFAULT_MAX_RETRIES",
+        "DOOM_LOOP_BOUND_MS",
+        "RATE_LIMIT_RETRY_THRESHOLD",
+        "backoff_base_ms",
+        "doom_loop_backoff",
+        "resolve_max_retries",
+        "resolve_max_retries_with_env",
+        "retry_backoff_with_jitter",
+    }
 
 
 def test_module_barrel_exposes_three_symbols() -> None:

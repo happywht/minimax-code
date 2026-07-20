@@ -16069,3 +16069,146 @@ xai-sqlite-journal 1 文件 (lib.rs 779 行) -> 迁移判定：
 ```
 feat(platform): R197 migrate xai-grok-sqlite-journal pure logic (JournalMode decision core)
 ```
+
+## R198 — 迁移 xai-grok-sampler retry.rs 纯逻辑子集（backoff 决策内核）
+
+锚点:R198-1 176dd17
+
+### 本轮目标
+
+迁移 ``xai-grok-sampler`` 的 ``retry.rs``（856 行，Grok 自标 ``//! Pure logic only: no
+I/O, no notifications, no logging side-effects.``）的**纯数值核心**到
+``agent/minimax_code/sampler/retry.py``。该模块管三个关注点：(1) 从 env/model/default
+解析每次调用的重试预算，(2) 退避调度（普通重试指数 +±20 % 抖动，doom-loop 近瞬时），
+(3) 把 ``SamplingError`` 分类为重试决策。本轮迁移 (1)+(2) 的纯函数；决策层 (3)
+（``RetryDecision`` + ``classify_error`` + ``format_sampling_error`` + ``clone_error``）
+深度依赖未迁移的 ``SamplingError``（来自 ``xai_grok_sampling_types``），延后到该 crate
+落地轮。全模块抖动熵（grok 进程级 ``AtomicU64`` + ``DefaultHasher`` + 线程 id）作为
+``jitter_unit`` 参数注入，保持纯测试性（镜像 R197 的 hostname 注入决策）。
+
+### 融合结论
+
+``retry.rs`` 是 actor 采样/推理层（``xai-grok-sampler``，HTTP 流式 + 重试，无 shell 耦合）
+的重试策略叶子。**关键洞察：crate 自身已把纯数值从 I/O/全局可变状态分离**——退避算术
+（``backoff_base_ms`` / ``retry_backoff_with_jitter`` / ``doom_loop_backoff``）+ 预算解析
+（``resolve_max_retries`` env 优先级）是确定性纯函数；actor（M4，未迁移）包裹真实重试循环。
+**平台已有两套重试策略**（``reliability.retry`` + ``resilience.retry_policy``），各自用自己
+的调度——本轮**不替换它们**，而是把 grok 的精确退避算术暴露为纯、无副作用库：(a) 未来任何想
+匹配 grok 重试节奏的消费者可直接调用，(b) 决策层迁移轮有已落地且测试过的数值地基。本轮迁移
+**10 个公开符号**（5 常量 + 5 函数），**零外部依赖全 stdlib**（``os`` / ``datetime``）——
+延续 R197 的"最纯叶子"特性。
+
+### 交付
+
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| ``agent/minimax_code/sampler/retry.py`` | ~196 | ``retry.rs`` 纯逻辑核心子集：``DEFAULT_MAX_RETRIES``(15) + ``RATE_LIMIT_RETRY_THRESHOLD``(2) + ``BACKOFF_BASE_MS``(2000) + ``BACKOFF_CAP_MS``(30_000) + ``DOOM_LOOP_BOUND_MS``(250) 5 常量 + ``resolve_max_retries_with_env``（纯 core：env 覆盖（非负 int 解析，u32 语义拒绝负数/非数字）→ model → default）+ ``resolve_max_retries``（``GROK_MAX_RETRIES`` env 薄封装）+ ``backoff_base_ms``（``BASE << saturating_sub(rc,1)`` clamp cap，``shift>=4`` 提前返回避免大整数）+ ``retry_backoff_with_jitter``（``jitter_unit∈[0,1]`` 参数注入，结果 ∈ [base-base/5, base+base/5]）+ ``doom_loop_backoff``（``round(unit*250)`` ∈ [0,250]ms）；``__all__`` = 10 符号；docstring 含完整 YAGNI 台账（SamplingError 决策层 + RetryPolicy + 全局抖动熵）+ 产品融合注记（不替换既有 retry policy） |
+| ``agent/tests/test_sampler_retry.py`` | ~208 | 47 个 ``def test``（parametrize 展开为 47 用例）：3 常量 + ``resolve_max_retries_with_env`` 10 矩阵（env 胜/非数字穿透/负数 u32 拒绝/无 env→model→default）+ ``resolve_max_retries`` 5 env 封装（monkeypatch setenv/delenv）+ ``backoff_base_ms`` 9 矩阵（rc=0,1,2,3,4,5,6,10,100 cap）+ ``retry_backoff_with_jitter`` 9 端点（rc=1∈[1600,2400]/rc=2∈[3200,4800]/rc=10∈[24000,36000]）+ 5 范围不变式（全 unit 扫描 ⊂ [base-range,base+range]）+ ``doom_loop_backoff`` 1+5 端点（unit=0.5→125ms/bound 守卫） |
+| ``agent/minimax_code/sampler/__init__.py`` | +14 | barrel 扩展：叶子顺序 docstring 增 #2 retry（R198）；``from minimax_code.sampler.retry import (...)`` 10 符号；``__all__`` 从 3（R195 config）扩至 13（config 3 + retry 10，字母序） |
+| ``agent/tests/test_sampler_config.py`` | ~+18 | barrel 回归修复：``test_package_barrel_exposes_three_symbols`` 重命名为 ``test_package_barrel_exposes_config_plus_retry_symbols``，断言 ``len(__all__)==13`` + 精确 13 符号集合（3 config + 5 常量 + 5 函数）；module docstring 更新（``DEFAULT_MAX_RETRIES`` / ``RATE_LIMIT_RETRY_THRESHOLD`` 现已 R198 迁移）；config 模块级 ``__all__`` 仍 3（未触，pass） |
+
+新增 10 公开符号（retry.py）+ barrel 扩展（__init__.py）+ barrel 回归修复（test_sampler_config.py，
+本轮引入、同文件阻塞验证、必须修）。**单一数值地基**（5 常量 + 4 函数），SamplingError 决策层
++ RetryPolicy + 全局抖动熵 I/O/状态外壳延后。
+
+### 映射决策树 + 坑
+
+```
+xai-grok-sampler retry.rs (856 行, Grok 自标 "Pure logic only") -> 迁移判定：
++- DEFAULT_MAX_RETRIES=15 纯常量 -> 迁移 (int)
++- RATE_LIMIT_RETRY_THRESHOLD=2 纯常量 -> 迁移 (int)
++- BACKOFF_BASE_MS=2000 / BACKOFF_CAP_MS=30000 (隐式, base_ms clamp) 纯常量 -> 迁移 (命名常量)
++- DOOM_LOOP_BOUND_MS=250 (隐式, hash%251) 纯常量 -> 迁移 (命名常量)
++- resolve_max_retries_with_env 纯 (env str -> u32 -> model -> default) -> 迁移
+|   * env int 解析失败/负数 -> 拒绝 (u32 语义), 穿透到 model
++- resolve_max_retries (std::env::var 包装) -> 迁移 (os.environ.get 薄封装, 纯 core 在上)
++- backoff_base_ms 纯 (2000 << saturating_sub(rc,1), clamp 30000) -> 迁移
++- retry_backoff_with_jitter 纯数值 (jitter_unit 参数注入) -> 迁移
+|   * 全局 JITTER_SEQ: AtomicU64 (fetch_add) + thread id + DefaultHasher -> 参数化 jitter_unit
+|   \- 返回 Duration -> timedelta
++- doom_loop_backoff 纯数值 (jitter_unit 参数注入, hash%251) -> 迁移
+|   * 全局 JITTER_SEQ + retry_count + DefaultHasher -> 参数化 jitter_unit
+|   \- 返回 Duration -> timedelta
++- RetryDecision enum (Retry/RetryWithBackoff/.../Fatal, 携 SamplingError)
+|   -> YAGNI: 深度依赖 SamplingError (xai_grok_sampling_types 未迁移)
++- classify_error (5xx/conn retryable, 429 rate-limited<=2, 413 strip-image-once,
+|   400/401/403/404/408/422 fatal, x-should-retry:false override)
+|   -> YAGNI: 依赖 SamplingError + reqwest::StatusCode + header
++- format_sampling_error (12 变体 Display) -> YAGNI: 依赖 SamplingError
++- clone_error (Http->EventStreamError fallback, Serialization preserved)
+|   -> YAGNI: 依赖 SamplingError + EventStreamError
+\- RetryPolicy struct (max_retries + 配置) -> YAGNI: 平台已有 reliability.retry +
+    resilience.retry_policy 两套, 第三份副本不携带 (纯算术已落地供消费)
+```
+
+坑（R198 解决的）：
+
+1. **抖动熵的纯化** —— grok ``retry_backoff_with_jitter`` / ``doom_loop_backoff`` 内部从进程级
+   ``static JITTER_SEQ: AtomicU64``（``fetch_add`` 每次调用）+ 线程 id / retry count 经
+   ``DefaultHasher`` 混合取熵。该全局可变状态使函数非纯。迁移把熵作为 ``jitter_unit: float ∈
+   [0.0, 1.0]`` 参数注入（调用方供应熵，actor M4 未迁移），镜像 R197 ``sqlite_journal`` 把
+   hostname 作参数而非内部 ``hostname_raw()`` I/O 的决策。grok 的 ``hash % (2*jitter_range)`` /
+   ``hash % 251`` 等价于 ``round(unit * (2*range))`` / ``round(unit * 250)``——端点 unit=0.0 取
+   下界、unit=1.0 取上界、unit=0.5 取中点，测试矩阵精确覆盖。
+2. **backoff_base_ms 的巨大 shift 提前返回** —— grok ``BACKOFF_BASE_MS.checked_shl(shift)`` 在
+   shift 足够大时返回 ``None``→ clamp cap。Python ``int`` 任意精度不会溢出，但 rc=100 会算出
+   ``2000 << 99``（约 633 位的整数），浪费。迁移在 ``shift >= 4``（``2000<<4=32000>30000``）提前
+   返回 ``BACKOFF_CAP_MS``，等价 grok ``checked_shl→None→cap`` 路径而不计算巨大中间值。
+   ``test_backoff_base_ms_matrix`` 的 rc=100→30000 守护该语义。
+3. **resolve_max_retries 的 u32 语义** —— grok ``env_override.parse::<u32>()``；u32 不接受负数。
+   迁移 ``int(env_override)`` 后检查 ``parsed >= 0``：负数（``"-1"``）和非数字（``"abc"``/``""``）
+   一样穿透到 model。``test_resolve_max_retries_with_env_matrix`` 的 ``("-1", 4, 4)`` /
+   ``("-1", None, DEFAULT)`` 守护；``("0", 5, 0)`` 确认显式零合法（禁用重试）。
+4. **jitter 范围不变式** —— ``jitter_range = base // 5``（base/5 的 ±20 %）；
+   ``jitter = round(unit * (2*jitter_range))``；结果 ``= base - jitter_range + jitter`` ∈
+   ``[base - jitter_range, base + jitter_range]``。``test_retry_backoff_range_invariant`` 在
+   rc∈{1,2,3,5,10} × unit∈{0,.25,.5,.75,1} 全扫描断言 ``lower <= delay <= upper``，独立于
+   backoff_base_ms 的具体值（用 ``backoff_base_ms(rc)`` 反推 bound），未来若调常量无需改测试。
+5. **sampler 包 barrel 的 R195 契约更新** —— R195 的 ``test_package_barrel_exposes_three_symbols``
+   断言 ``len(sampler.__all__) == 3``。R198 扩 barrel 至 13（config 3 + retry 10）破坏该断言
+   （全量回归首次跑 4979 passed + 2 failed，其中 1 个是我引入的 barrel 回归）。按迭代独立性
+   （同文件 + 阻塞验证），重命名为 ``test_package_barrel_exposes_config_plus_retry_symbols``，
+   断言 ``len == 13`` + 精确 13 符号集合；module docstring 同步（常量现已迁移）。config 模块级
+   ``__all__``（仍 3，未触）的 ``test_module_barrel_exposes_three_symbols`` 保持 pass。
+
+### 验证
+
+- ``ruff check minimax_code/sampler/retry.py minimax_code/sampler/__init__.py
+  tests/test_sampler_retry.py tests/test_sampler_config.py``
+  -> **All checks passed!**（4 文件全绿，isort E/F/W/B/UP 全过；零外部依赖）
+- ``pytest tests/test_sampler_retry.py tests/test_sampler_config.py -q``
+  -> **60 passed in 0.17s**（47 retry + 13 config，覆盖 10 resolve 矩阵 + 9 backoff_base 矩阵
+  + 9 jitter 端点 + 5 范围不变式 + doom_loop 端点/bound + barrel 13 符号）
+- 全量回归 ``pytest -q``
+  -> **4980 passed, 10 skipped, 1 failed**（102.79s）。R197 基准 4934 + R198 新增 47 retry =
+  4981；1 failed = ``test_connection.py::test_interval_keeps_global_timeline_across_loops``
+  **预存 flaky**（connection timeline，与 sampler 完全无关；单独 ``pytest
+  tests/test_connection.py::test_interval_keeps_global_timeline_across_loops`` 1 passed in
+  0.63s）。按迭代独立性，不修。
+
+### YAGNI 边界
+
+- **SamplingError 决策层**（``RetryDecision`` + ``classify_error`` + ``format_sampling_error`` +
+  ``clone_error``）：``RetryDecision`` 6 变体（``Retry`` / ``RetryWithBackoff`` /
+  ``RetryWithImageStrip`` / ``RetryWithClientRebuild`` / ``EmitToSession`` / ``Fatal``，多个携带
+  ``SamplingError``）；``classify_error`` 是 HTTP 状态码→决策矩阵（5xx/连接错误可重试、429 限流
+  达阈值 fatal、413/图像错误剥图重试一次、4xx + Auth/InvalidConfiguration/... fatal、
+  ``x-should-retry: false`` 覆盖为 fatal）；``format_sampling_error`` 12 变体 Display；
+  ``clone_error``（``SamplingError`` 无 ``Clone``，Http 回落 ``EventStreamError``，Serialization
+  保留）。全部依赖 ``SamplingError``（``xai_grok_sampling_types`` 未迁移），落地轮一并迁移。
+- **RetryPolicy struct**：YAGNI，平台已有 ``reliability.retry`` + ``resilience.retry_policy`` 两
+  套重试策略（见 ``config.py`` 台账）；grok 第三份副本不携带。纯退避算术已落地供任何想匹配 grok
+  节奏的消费者调用。
+- **全局抖动熵**（``static JITTER_SEQ: AtomicU64`` + ``DefaultHasher`` + 线程 id / retry count）：
+  进程级可变状态是调用方（actor M4，未迁移）职责。纯函数接受 ``jitter_unit`` 参数；Python 等价
+  （``itertools.count`` + ``hashlib`` + ``threading.get_ident``）若 actor 落地时按需注入。
+- **actor 重试循环**（M4）：``retry.rs`` 是数值地基；真实 HTTP 重试循环（reqwest + 超时 +
+  ``tokio::time::sleep``）在 actor 层，未迁移——平台 LLM client（``agent/llm.py``）+ reliability
+  栈拥有自己的传输重试。
+- **``RetryDecision`` 的 wire 序列化**：决策层迁移时若有 IPC 透出需求再补 ``StrEnum`` 映射。
+
+### Commit
+
+```
+feat(platform): R198 migrate xai-grok-sampler retry pure logic (backoff decision core)
+```
