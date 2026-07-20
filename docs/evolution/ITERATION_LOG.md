@@ -13367,3 +13367,56 @@ Rust tokio select! -> Python asyncio 偏置选择（R160 已建立的模式）�
 ### Commit
 
 `feat(platform): R161 port run_reader_actor (SDK leaf 18k)` —— 见 git log。
+## R162 — open_socket + WebSocketDial + _resolve_role_query 网络原语首叶（SDK leaf 19a，复用 R155 host_is_loopback）
+
+锚点:R162-1 91202b1
+
+### 本轮目标
+
+SDK leaf 19a — 网络原语首叶。前向移植 grok-build `xai-computer-hub-sdk/src/connection.rs:877-931`（`open_socket`）+ `899-913`（`_resolve_role_query`）。`host_is_loopback`（861-869）已在 R155（leaf 18f）落地，本轮复用，不重复迁移。本轮完整移植纯逻辑部分，网络职责（真正的 `connect_async` WS 客户端拨号）通过新引入的 `WebSocketDial` Protocol 注入——与 R161 的 `ReconnectFn`、R160 的 `AsyncIterator[WsInbound]` 一脉相承的"编排/逻辑可测、网络原语推迟"leaf 哲学。
+
+### 融合结论
+
+`open_socket` 是 socket-opening orchestrator：明文安全门 -> 角色查询归一化 -> 头注入（bearer + traceparent）-> 依赖注入拨号器。四条决策路径全部可在无真实 WS 客户端下单元测试（scripted `_RecordingDial`）。拨号器异常契约复用 R133 `ClientError.from_handshake_error`：探测 `getattr(err, "status", None)`，401/403 -> `HandshakeAuthFailed`（不可重试），其余 -> `NetworkError`（瞬态可重试）。traceparent 注入复用 R131 `attach_trace_to_http_request`（原地写 W3C traceparent 到 mutable header mapping）。bearer 头复用 R139 `BearerCredential.upgrade_headers`（小写 canonical `authorization`）。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/connection.py`：
+  - 新增 `WebSocketDial` Protocol（`async (url, headers) -> Any`，传输注入缝隙）
+  - 新增 `_resolve_role_query(url, kind)` 纯逻辑 helper（角色查询归一化/校验）
+  - 新增 `open_socket(url, credential, kind, alpha_test_key, allow_insecure_ws, dial)` orchestrator
+  - 复用 R155 `host_is_loopback`（line 861-872），未重复迁移
+  - 导入块清理：移除未用的 `import ipaddress` + `parse_qs`，最终 `parse_qsl, urlencode, urlparse, urlunparse`
+- `agent/tests/test_connection.py`：新增 19 个测试
+  - `_RecordingDial` 伪造拨号器（记录 url+headers，可配置返回哨兵/抛 `.status` 异常）
+  - `_HttpReject(Exception)` 辅助类（携带 `.status` 属性，401/403 分支）
+  - `_resolve_role_query` 5 态：追加/保留匹配/冲突 raise/保留其他参数+片段/空 role= 观察
+  - `open_socket` 14 路径：明文拒绝/环回豁免/allow_insecure_ws 警告/wss 非明文/角色注入/角色保留/角色冲突/bearer 头/traceparent spy/401/403/传输错误/alpha_test_key 忽略/结果透传
+
+### 映射决策树 + 坑
+
+- **F811 host_is_loopback 重定义**：首次追加时遗漏 R155（leaf 18f）已在 line 861-872 迁移 `host_is_loopback`。ruff F811 捕获重复定义。修复：删除重复追加，R162 仅迁移 `WebSocketDial + _resolve_role_query + open_socket`，复用 R155 更简洁的字符串元组匹配 `host in ("127.0.0.1", "::1", "localhost")`（语义等同 Rust `Ipv4Addr::LOCALHOST`/`Ipv6Addr::LOCALHOST` 单地址匹配，DRY 胜利，无需 `ipaddress` 导入）。
+- **parse_qsl keep_blank_values 陷阱（本轮最关键坑）**：首个 pytest 实现跑红——`test_resolve_role_query_empty_role_observed_and_conflicts` DID NOT RAISE。根因：Python `parse_qsl` 默认 `keep_blank_values=False`，会把 `role=`（空值）丢弃，行为与 `parse_qs` 一致；而 Rust `url::Url::query_pairs()` 保留空值。注释自称"观察空 role=" 但实现没做到，自我打脸。修复：`parse_qsl(parsed.query, keep_blank_values=True)`，注释同步显式说明 Python 默认会丢弃。这是单元测试捕获的真实语义偏差，非测试错误——证明了"空 role= 测试守护 parse_qsl-over-parse_qs 决策"的前置设计价值。
+- **`_resolve_role_query` 用 `parse_qsl` 而非 `parse_qs`**：`parse_qs` 丢弃空值，但 Rust `query_pairs().find()` 找到它们。`next((v for k, v in parse_qsl(...) if k == "role"), None)` 保留精确 Rust 语义，且必须配 `keep_blank_values=True`。
+- **`alpha_test_key: str | None` 接受但未用**：对齐 Rust `let _ = alpha_test_key;`，API 对等但无行为。测试用两次调用（仅 key 不同）断言 dial 调用相同来守护此 no-op 契约。
+- **`ConnectionKind(StrEnum)` 值即角色查询值**：`kind.value` 直接用于角色参数（`Harness -> "harness"`，`ToolServer -> "tool_server"`），从 `tool_protocol.connection` 导入。
+- **`_FakeAuth`（AuthProvider 替身）无 `upgrade_headers`**：open_socket 测试用 `AuthCredential.bearer(...)`（有 `upgrade_headers`），非 `_FakeAuth`。
+- **monkeypatch spy traceparent**：`test_open_socket_attaches_traceparent_to_header_bundle` 通过 `monkeypatch.setattr("...connection.attach_trace_to_http_request", fake_attach)` 验证 open_socket 在 dialer 收到的同一 mutable header mapping 上调用 attach（R131 契约：原地写 traceparent），不依赖活跃 span context。
+- **跨工具 /tmp 路径缺陷**：ITERATION_LOG 临时文件用项目内路径 `docs/evolution/.r162_log.md` + `.r162_msg.txt`，避免 heredoc 代码块在 bash 失败。
+
+### 验证
+
+- `uv run ruff check --fix tests/test_connection.py`：3 errors fixed（导入 isort 排序），0 remaining。
+- `uv run ruff check connection.py tests/test_connection.py`：All checks passed!
+- `uv run pytest tests/test_connection.py -x -q`：**123 passed in 3.31s**（19 新增 + 104 原有，全绿，无回归）。首个实现 bug（keep_blank_values）由 empty_role 测试捕获并修复后全通。
+
+### YAGNI 边界
+
+- **真正的 WS 客户端拨号器推迟**：`WebSocketDial` 是 Protocol 缝隙，`websockets`/`aiohttp` 客户端依赖未引入（pyproject.toml 注释 "FastAPI ships its own WebSocket support... no extra websockets package" 那是服务端 WS；客户端拨号器是未来消费者叶子）。本轮只迁移编排逻辑，不绑定具体 WS 库。
+- **`host_is_loopback` 不重复测试**：R155（line 995-1014）已覆盖规范名/其他主机/无主机 3 测试，本轮复用不重测（DRY）。
+- **HeadersCredential 不在 open_socket 测试**：BearerCredential 已覆盖 `upgrade_headers` 注入路径；HeadersCredential 在 R139 已测。YAGNI——不重复。
+- **`run_handshake` / `reconnect_and_replay` / `connect()` / `serve()` 入口点**：R163+ 网络层叶子，本轮不动。
+
+### Commit
+
+（提交后回填）

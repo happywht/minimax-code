@@ -65,7 +65,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from minimax_code.computer_hub_sdk.auth import PrincipalKey
+from minimax_code.computer_hub_sdk.auth import AuthCredential, PrincipalKey
 from minimax_code.computer_hub_sdk.connection import (
     ConnectedExit,
     ConnectionConfig,
@@ -91,6 +91,7 @@ from minimax_code.computer_hub_sdk.connection import (
     _EarlyNotifSlot,
     _HelloCaps,
     _Interval,
+    _resolve_role_query,
     backoff_for,
     classify_stream_end,
     drain_reconnect_signals,
@@ -98,6 +99,7 @@ from minimax_code.computer_hub_sdk.connection import (
     fire_on_disconnect,
     host_is_loopback,
     now_unix_millis,
+    open_socket,
     route_or_pong,
     run_reader_actor,
     run_reader_phase,
@@ -123,6 +125,8 @@ from minimax_code.computer_hub_sdk.error import (
     BackpressureError,
     ClientError,
     HandshakeAuthFailed,
+    InsecureScheme,
+    InvalidConfig,
     NetworkError,
     SerdeError,
 )
@@ -2052,3 +2056,333 @@ async def test_actor_writer_pause_channel_closed_breaks_actor() -> None:
     assert reconnect_fn.calls == []
     assert h.inner.shutdown.is_set()
     assert writer_task.done()
+
+
+# ===========================================================================
+# open_socket + _resolve_role_query network primitives (R162, SDK leaf 19a).
+# ===========================================================================
+# Forward-port of connection.rs:877-931. ``open_socket`` is the socket-opening
+# orchestrator: plaintext-safety gate -> role-query normalisation -> header
+# injection -> dependency-injected dialer. The raw ``connect_async`` is injected
+# via :class:`WebSocketDial` (a Protocol), so the whole leaf is unit-tested
+# without a live transport -- a scripted ``_RecordingDial`` records the
+# (url, headers) the orchestrator built and returns a sentinel stream, or
+# raises an HTTP-reject-shaped exception to exercise the error classifier.
+# ``host_is_loopback`` (861-869) is reused from R155 and already tested there
+# (lines 995-1014); these tests exercise the orchestrator that builds on it.
+class _RecordingDial:
+    """Scripted ``WebSocketDial`` stand-in (R162).
+
+    Records every ``(url, headers)`` pair the orchestrator dialled with and
+    returns ``result`` (a sentinel stream). If ``exc`` is set it is raised
+    instead, shaped like an HTTP-reject so
+    :meth:`ClientError.from_handshake_error` can classify it (a ``status``
+    attribute of 401/403 -> ``HandshakeAuthFailed``; otherwise ``NetworkError``).
+    """
+
+    def __init__(self, *, result: Any = None, exc: BaseException | None = None) -> None:
+        self.result = result if result is not None else SimpleNamespace(name="ws-stream")
+        self.exc = exc
+        self.calls: list[tuple[str, list[tuple[str, str]]]] = []
+
+    async def __call__(self, url: str, headers: list[tuple[str, str]]) -> Any:
+        self.calls.append((url, list(headers)))
+        if self.exc is not None:
+            raise self.exc
+        return self.result
+
+
+class _HttpReject(Exception):
+    """Exception carrying an HTTP status (the ``.status`` dialer contract)."""
+
+    def __init__(self, status: int, message: str = "") -> None:
+        super().__init__(message)
+        self.status = status
+
+
+# -- _resolve_role_query (connection.rs:899-913) ----------------------------
+def test_resolve_role_query_appends_role_when_absent() -> None:
+    # No role query -> role=<kind.value> appended; host / port / path preserved.
+    out = _resolve_role_query("ws://hub:8080/path", ConnectionKind.Harness)
+    assert out == "ws://hub:8080/path?role=harness"
+
+
+def test_resolve_role_query_preserves_matching_role() -> None:
+    # A pre-existing role that agrees with kind is left untouched (idempotent).
+    out = _resolve_role_query("ws://hub?role=tool_server", ConnectionKind.ToolServer)
+    assert out == "ws://hub?role=tool_server"
+
+
+def test_resolve_role_query_conflict_raises_invalid_config() -> None:
+    # A pre-existing role that disagrees with kind is a hard config error --
+    # a harness URL cannot be opened as a tool-server and vice versa.
+    with pytest.raises(InvalidConfig):
+        _resolve_role_query("ws://hub?role=harness", ConnectionKind.ToolServer)
+
+
+def test_resolve_role_query_preserves_other_params_and_fragment() -> None:
+    # Other query pairs (order kept) and the fragment survive the append.
+    out = _resolve_role_query("ws://hub:8080/p?a=1&b=2#frag", ConnectionKind.Harness)
+    assert out == "ws://hub:8080/p?a=1&b=2&role=harness#frag"
+
+
+def test_resolve_role_query_empty_role_observed_and_conflicts() -> None:
+    # ``role=`` (empty value) is observed verbatim -- the parse_qsl (NOT
+    # parse_qs) gate: parse_qs would drop the blank value and silently append a
+    # fresh role, masking a misconfigured URL. The empty string disagrees with
+    # kind.value, so it must raise.
+    with pytest.raises(InvalidConfig):
+        _resolve_role_query("ws://hub?role=", ConnectionKind.Harness)
+
+
+# -- open_socket plaintext-safety gate (connection.rs:877-889) --------------
+async def test_open_socket_plaintext_remote_refused() -> None:
+    # ws:// to a non-loopback host without allow_insecure_ws -> InsecureScheme
+    # (the bearer would cross the network in cleartext). Dial is never called.
+    dial = _RecordingDial()
+    with pytest.raises(InsecureScheme) as exc_info:
+        await open_socket(
+            "ws://hub.example.com",
+            AuthCredential.bearer("tok"),
+            ConnectionKind.Harness,
+            None,
+            False,
+            dial,
+        )
+    assert exc_info.value.url == "ws://hub.example.com"
+    assert dial.calls == []
+
+
+async def test_open_socket_plaintext_loopback_exempt() -> None:
+    # ws:// to loopback (127.0.0.1) is the dev / local-proxy exception: no
+    # InsecureScheme, the dialer runs and its stream is returned verbatim.
+    dial = _RecordingDial()
+    ws = await open_socket(
+        "ws://127.0.0.1:8080",
+        AuthCredential.bearer("tok"),
+        ConnectionKind.Harness,
+        None,
+        False,
+        dial,
+    )
+    assert ws is dial.result
+    assert len(dial.calls) == 1
+
+
+async def test_open_socket_plaintext_remote_allow_insecure_warns_then_dials() -> None:
+    # With allow_insecure_ws=true the plaintext gate is downgraded to a warning
+    # and the dialer runs against the remote host.
+    dial = _RecordingDial()
+    ws = await open_socket(
+        "ws://hub.example.com",
+        AuthCredential.bearer("tok"),
+        ConnectionKind.Harness,
+        None,
+        True,
+        dial,
+    )
+    assert ws is dial.result
+    assert len(dial.calls) == 1
+
+
+async def test_open_socket_wss_remote_is_not_plaintext() -> None:
+    # wss:// (TLS) is never plaintext, regardless of host -- the gate is a
+    # no-op and the dialer runs without allow_insecure_ws.
+    dial = _RecordingDial()
+    await open_socket(
+        "wss://hub.example.com",
+        AuthCredential.bearer("tok"),
+        ConnectionKind.Harness,
+        None,
+        False,
+        dial,
+    )
+    assert len(dial.calls) == 1
+
+
+# -- open_socket role-query + header injection (connection.rs:899-924) ------
+async def test_open_socket_injects_role_query_for_harness() -> None:
+    # The dialer receives the role-normalised URL (role=harness appended).
+    dial = _RecordingDial()
+    await open_socket(
+        "wss://hub",
+        AuthCredential.bearer("tok"),
+        ConnectionKind.Harness,
+        None,
+        False,
+        dial,
+    )
+    assert dial.calls[0][0] == "wss://hub?role=harness"
+
+
+async def test_open_socket_preserves_matching_role_query() -> None:
+    # A pre-existing matching role is preserved verbatim (no double append).
+    dial = _RecordingDial()
+    await open_socket(
+        "wss://hub?role=tool_server",
+        AuthCredential.bearer("tok"),
+        ConnectionKind.ToolServer,
+        None,
+        False,
+        dial,
+    )
+    assert dial.calls[0][0] == "wss://hub?role=tool_server"
+
+
+async def test_open_socket_conflicting_role_query_raises() -> None:
+    # Role mismatch surfaces before the dialer is reached; dial never called.
+    dial = _RecordingDial()
+    with pytest.raises(InvalidConfig):
+        await open_socket(
+            "wss://hub?role=harness",
+            AuthCredential.bearer("tok"),
+            ConnectionKind.ToolServer,
+            None,
+            False,
+            dial,
+        )
+    assert dial.calls == []
+
+
+async def test_open_socket_injects_bearer_upgrade_header() -> None:
+    # BearerCredential.upgrade_headers -> ("authorization", "Bearer <tok>")
+    # reaches the dialer's header bundle.
+    dial = _RecordingDial()
+    await open_socket(
+        "wss://hub",
+        AuthCredential.bearer("secret-token"),
+        ConnectionKind.Harness,
+        None,
+        False,
+        dial,
+    )
+    headers = dict(dial.calls[0][1])
+    assert headers["authorization"] == "Bearer secret-token"
+
+
+async def test_open_socket_attaches_traceparent_to_header_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # attach_trace_to_http_request (R131) is called on the SAME mutable header
+    # mapping the dialer later receives, so an active traceparent rides the
+    # upgrade. Spy on the bound name in the connection module to verify the
+    # handoff without depending on a live span context.
+    seen: dict[str, object] = {}
+
+    def fake_attach(headers: dict[str, str]) -> bool:
+        seen["called"] = True
+        seen["is_dict"] = isinstance(headers, dict)
+        # R131 contract: writes the W3C traceparent into the mapping it got.
+        headers["traceparent"] = "00-..-..-01"
+        return True
+
+    monkeypatch.setattr(
+        "minimax_code.computer_hub_sdk.connection.attach_trace_to_http_request",
+        fake_attach,
+    )
+    dial = _RecordingDial()
+    await open_socket(
+        "wss://hub",
+        AuthCredential.bearer("tok"),
+        ConnectionKind.Harness,
+        None,
+        False,
+        dial,
+    )
+    assert seen.get("called") is True
+    assert seen.get("is_dict") is True
+    # The traceparent the spy wrote into the shared mapping reaches the dialer.
+    headers = dict(dial.calls[0][1])
+    assert headers["traceparent"] == "00-..-..-01"
+
+
+# -- open_socket dialer error classification (connection.rs:925-931) --------
+async def test_open_socket_dial_401_raises_handshake_auth_failed() -> None:
+    # A 401 on the HTTP upgrade is non-retryable: replaying the same credential
+    # is rejected identically, so it surfaces as HandshakeAuthFailed(status=401)
+    # rather than a transient NetworkError.
+    dial = _RecordingDial(exc=_HttpReject(401, "unauthorized"))
+    with pytest.raises(HandshakeAuthFailed) as exc_info:
+        await open_socket(
+            "wss://hub",
+            AuthCredential.bearer("tok"),
+            ConnectionKind.Harness,
+            None,
+            False,
+            dial,
+        )
+    assert exc_info.value.status == 401
+
+
+async def test_open_socket_dial_403_raises_handshake_auth_failed() -> None:
+    # 403 forbidden is the other auth-reject status -> HandshakeAuthFailed.
+    dial = _RecordingDial(exc=_HttpReject(403, "forbidden"))
+    with pytest.raises(HandshakeAuthFailed) as exc_info:
+        await open_socket(
+            "wss://hub",
+            AuthCredential.bearer("tok"),
+            ConnectionKind.Harness,
+            None,
+            False,
+            dial,
+        )
+    assert exc_info.value.status == 403
+
+
+async def test_open_socket_dial_transport_error_raises_network_error() -> None:
+    # Any non-auth dialer failure (connection refused, TLS error, ...) carries
+    # no ``status`` attribute, so from_handshake_error collapses it to a
+    # transient NetworkError (retryable on the next reconnect attempt).
+    dial = _RecordingDial(exc=ConnectionError("refused"))
+    with pytest.raises(NetworkError):
+        await open_socket(
+            "wss://hub",
+            AuthCredential.bearer("tok"),
+            ConnectionKind.Harness,
+            None,
+            False,
+            dial,
+        )
+
+
+# -- open_socket API-parity no-ops (connection.rs:923) ----------------------
+async def test_open_socket_alpha_test_key_accepted_but_ignored() -> None:
+    # alpha_test_key is accepted for API parity with the Rust signature but
+    # unused (Rust: ``let _ = alpha_test_key;``) -- it must not affect the dial
+    # URL, headers, or flow. Two calls differing only in the key produce
+    # identical dial invocations.
+    dial_a = _RecordingDial()
+    dial_b = _RecordingDial()
+    await open_socket(
+        "wss://hub",
+        AuthCredential.bearer("tok"),
+        ConnectionKind.Harness,
+        "alpha-key-xyz",
+        False,
+        dial_a,
+    )
+    await open_socket(
+        "wss://hub",
+        AuthCredential.bearer("tok"),
+        ConnectionKind.Harness,
+        None,
+        False,
+        dial_b,
+    )
+    assert dial_a.calls == dial_b.calls
+
+
+async def test_open_socket_returns_dialer_stream_verbatim() -> None:
+    # The dialer's return value (library-dependent stream object) is returned
+    # as-is -- open_socket does not wrap / inspect it. Same identity.
+    sentinel = SimpleNamespace(name="raw-ws")
+    dial = _RecordingDial(result=sentinel)
+    ws = await open_socket(
+        "wss://hub",
+        AuthCredential.bearer("tok"),
+        ConnectionKind.Harness,
+        None,
+        False,
+        dial,
+    )
+    assert ws is sentinel

@@ -68,9 +68,9 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Generic, Protocol, TypeVar
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from minimax_code.computer_hub_sdk.auth import AuthProvider
+from minimax_code.computer_hub_sdk.auth import AuthCredential, AuthProvider
 from minimax_code.computer_hub_sdk.connection_types import (
     CLOCK_PROBE_INTERVAL,
     SERVE_ATTEMPT_TIMEOUT,
@@ -103,6 +103,8 @@ from minimax_code.computer_hub_sdk.error import (
     ClientError,
     Closed,
     HandshakeAuthFailed,
+    InsecureScheme,
+    InvalidConfig,
     NetworkError,
     SerdeError,
 )
@@ -130,6 +132,7 @@ from minimax_code.tool_protocol.frames import (
 )
 from minimax_code.tool_protocol.ids import ConnectionId, RequestId, ServerId, SessionId
 from minimax_code.tool_protocol.methods import Method
+from minimax_code.tracing.http_client import attach_trace_to_http_request
 
 __all__ = [
     "ConnectionConfig",
@@ -1613,3 +1616,147 @@ async def run_reader_actor(
         except Exception:
             _LOGGER.warning("writer task exited with an error during teardown")
         inner.shutdown.set()
+
+
+# ===========================================================================
+# Network primitives (R162, SDK leaf 19a).
+# ===========================================================================
+# Forward-port of connection.rs:877-931 (``open_socket``). ``host_is_loopback``
+# (861-869) was already landed in R155 (leaf 18f) and is reused as-is here --
+# this leaf is the socket-opening orchestrator that builds on it. Every connect
+# / reconnect opens a fresh socket via :func:`open_socket`, then runs the
+# handshake (``run_handshake``, R163+) on top. The raw ``connect_async`` call is
+# dependency-injected via the :class:`WebSocketDial` Protocol so this leaf ships
+# with zero live-transport dependency -- the same "generic over the network,
+# unit-test the orchestration" technique R160/R161 used for the reader actor
+# (``AsyncIterator[WsInbound]``) and the reconnect strategy (``ReconnectFn``). A
+# real dialer (a ``websockets`` / ``aiohttp`` adapter) is a future consumer-leaf
+# concern; ``pyproject.toml`` intentionally ships no WS client library.
+# ``_resolve_role_query`` (connection.rs:899-913) is the third pure-logic helper
+# this leaf introduces -- it normalises / validates the ``role`` query parameter
+# before the dialer is called.
+
+
+class WebSocketDial(Protocol):
+    """Raw WebSocket client connect, dependency-injected (R162).
+
+    Mirrors ``tokio_tungstenite::connect_async``: given the (role-normalised,
+    auth + traceparent-headed) URL and header bundle, open a fresh ``ws://`` /
+    ``wss://`` socket and return the library's stream object. A real adapter
+    wires ``websockets.connect`` / ``aiohttp``; tests wire a scripted fake. The
+    dialer signals an HTTP-level auth rejection by raising an exception
+    carrying a ``status`` attribute (401/403) so
+    :meth:`ClientError.from_handshake_error` classifies it as
+    :class:`HandshakeAuthFailed` before it collapses to a transport
+    :class:`NetworkError`; any other exception is a transient transport failure.
+    The return type is ``Any`` (library-dependent), matching the
+    ``ReconnectFn`` / ``WsInbound`` stream-typing convention.
+    """
+
+    async def __call__(self, url: str, headers: list[tuple[str, str]]) -> Any:
+        ...
+
+
+def _resolve_role_query(url: str, kind: ConnectionKind) -> str:
+    """Return ``url`` with the ``role`` query parameter set to ``kind``'s wire value.
+
+    Mirrors connection.rs:899-913. If the URL already carries ``role``, it must
+    agree with ``kind`` (else :class:`InvalidConfig` -- a harness URL cannot be
+    opened as a tool-server and vice versa); otherwise ``role=<kind.value>`` is
+    appended. Other query parameters (and the fragment) are preserved. The
+    ``role`` value is the :class:`ConnectionKind` StrEnum's string value
+    (``Harness`` -> ``"harness"``, ``ToolServer`` -> ``"tool_server"``).
+    ``parse_qsl`` (not ``parse_qs``) with ``keep_blank_values=True`` is used so
+    an empty ``role=`` is observed verbatim, matching Rust's
+    ``url::query_pairs`` which yields blank values. Python's default
+    ``keep_blank_values=False`` would drop ``role=`` exactly like ``parse_qs``,
+    silently masking a misconfigured URL as a fresh append.
+    """
+    expected_role = kind.value
+    parsed = urlparse(url)
+    pairs = list(parse_qsl(parsed.query, keep_blank_values=True))
+    existing = next((v for k, v in pairs if k == "role"), None)
+    if existing is not None and existing != expected_role:
+        raise InvalidConfig(
+            f"URL query parameter role={existing} conflicts with "
+            f"ConnectionKind.{kind.name} (expected role={expected_role})"
+        )
+    if existing == expected_role:
+        return url
+    # Append role=<expected>, preserving any pre-existing query pairs (order kept).
+    pairs.append(("role", expected_role))
+    new_query = urlencode(pairs)
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            new_query,
+            parsed.fragment,
+        )
+    )
+
+
+async def open_socket(
+    url: str,
+    credential: AuthCredential,
+    kind: ConnectionKind,
+    alpha_test_key: str | None,
+    allow_insecure_ws: bool,
+    dial: WebSocketDial,
+) -> Any:
+    """Open a fresh ``ws://`` / ``wss://`` socket (no handshake yet).
+
+    Mirrors ``open_socket`` (connection.rs:877). Three pure-logic gates run
+    before any network call:
+
+    1. **Plaintext-safety gate** -- sending the credential over ``ws://`` to a
+       non-loopback host would cross the network in cleartext, so it is refused
+       unless ``allow_insecure_ws`` explicitly opts in. Loopback
+       (``127.0.0.1`` / ``::1`` / ``localhost``) is the development /
+       local-proxy exception (checked via :func:`host_is_loopback`).
+    2. **Role query normalisation** -- the ``role`` query parameter is set to
+       ``kind``'s wire value (or validated if already present) via
+       :func:`_resolve_role_query`.
+    3. **Header injection** -- the credential's upgrade headers
+       (:meth:`AuthCredential.upgrade_headers`) plus the active W3C traceparent
+       (:func:`attach_trace_to_http_request`, R131) are merged into one bundle.
+
+    Then the dialer is invoked. A 401/403 on the HTTP upgrade is raised as
+    :class:`HandshakeAuthFailed` (non-retryable -- replaying the same credential
+    is rejected identically); any other dialer failure is raised as a transport
+    :class:`NetworkError`.
+
+    ``alpha_test_key`` is accepted for API parity with the Rust signature but
+    intentionally unused (Rust: ``let _ = alpha_test_key;``) -- alpha-test
+    routing is server-side.
+    """
+    scheme = urlparse(url).scheme
+    is_plaintext_remote = scheme != "wss" and not host_is_loopback(url)
+    if is_plaintext_remote and not allow_insecure_ws:
+        raise InsecureScheme(url)
+    if is_plaintext_remote:
+        _LOGGER.warning(
+            "opening server connection over plaintext ws:// "
+            "(allow_insecure_ws=true); bearer crosses the network in cleartext (host=%s)",
+            urlparse(url).hostname or "",
+        )
+
+    connect_url = _resolve_role_query(url, kind)
+
+    # Credential upgrade headers + active traceparent, merged in one mutable
+    # mapping (attach_trace_to_http_request writes into it), then materialised
+    # to the (name, value) pair list the dialer contract takes.
+    headers: dict[str, str] = {}
+    for name, value in credential.upgrade_headers():
+        headers[name] = value
+    attach_trace_to_http_request(headers)
+
+    _ = alpha_test_key  # API parity; unused (alpha-test routing is server-side).
+
+    try:
+        ws = await dial(connect_url, list(headers.items()))
+    except Exception as exc:
+        raise ClientError.from_handshake_error(exc) from exc
+    return ws
