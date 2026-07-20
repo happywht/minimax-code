@@ -14632,3 +14632,128 @@ pydantic 原生 ``Field(discriminator="type")`` + ``populate_by_name`` 是教科
 ### Commit
 
 feat(platform): R179 xai-computer-hub-mcp-adapter types.rs MCP wire 类型契约层首叶 (pydantic v2, 19 tests)
+
+## R180 — xai-computer-hub-mcp-adapter transport.rs McpTransport async trait 第 2 叶
+锚点:R180-1 2c52ca4
+
+### 本轮目标
+
+迁移 grok-build ``xai-computer-hub-mcp-adapter/src/transport.rs``（39 行）——
+``mcp_adapter`` crate 的第 2 叶，``McpTransport`` async trait。``transport.rs`` 定义
+bridge 驱动一个 MCP server 连接所需的 4 个生命周期协程（``initialize`` /
+``list_tools`` / ``call_tool`` / ``close``）。本轮消费 R179 已落地的 types 词汇，建立
+trait 边界，让未来的 ``McpBridge`` actor（R181+）可用内存 mock 测试，而具体传输实现
+（stdio / HTTP+SSE）留给下游消费者；不碰 bridge / metrics。
+
+### 融合结论
+
+``transport.rs`` 是 crate 依赖链 ``types``(R179) → ``transport``(R180) → ``bridge`` →
+``metrics`` 的第 2 环：它消费 R179 的 5 个 wire 类型（``McpServerInfo`` /
+``McpToolDefinition`` / ``McpCallResult`` / ``McpError`` 及其 4 子类）作为方法返回与
+raise 目标，本身只声明抽象边界（纯 trait，无具体实现）。这与 Rust ``transport.rs``
+的设计意图一致——trait 把 wire 协议抽象掉，使 bridge 与具体 JSON-RPC 帧层（stdio pipe
+/ SSE stream）解耦。
+
+Python 等价选择 ``abc.ABC`` + ``@abstractmethod async def`` 而非
+``typing.Protocol``：Rust ``#[async_trait] pub trait McpTransport: Send + Sync`` 是
+显式 object-safe trait（bridge 会持有 ``Box<dyn McpTransport>``），``abc.ABC`` 的显式
+``TypeError`` 实例化拒绝 + ``__abstractmethods__`` 集合语义更贴近 ``dyn`` 的运行时分派
+模型，且 R115 transport.rs / R122 ``ConnectionClient`` 已确立 ``abc.ABC`` 为本仓库
+trait 迁移惯例（Protocol 是 R116 误判后纠正的先例）。
+
+### 交付
+
+* ``agent/minimax_code/mcp_adapter/transport.py``（新，39 行 Rust → 103 行 Python）：
+  - ``McpTransport`` ``abc.ABC``，4 个 ``@abstractmethod async def``：
+    ``initialize() -> McpServerInfo`` / ``list_tools() -> list[McpToolDefinition]`` /
+    ``call_tool(name: str, arguments: Any) -> McpCallResult`` / ``close() -> None``。
+  - docstring 含 trait 映射说明（``#[async_trait]`` → ``abc.ABC`` /
+    ``Send+Sync`` 省略 / ``Result<T,McpError>`` → raise / ``&str`` → ``str`` /
+    ``Value`` → ``Any``）+ 每方法的 ``Raises:`` 段（全限定
+    ``minimax_code.mcp_adapter.types.McpError`` rst 引用，不需 import）。
+* ``agent/minimax_code/mcp_adapter/__init__.py``（编辑，4 处）：
+  - import 块新增 ``from minimax_code.mcp_adapter.transport import McpTransport``，
+    isort 排在 types import 前（第一方同级模块，``import X`` 在 ``from X import Y``
+    前的同区域规则下，``McpTransport`` 单符号 transport 行先于 types 多符号块）。
+  - ``__all__`` 新增 ``"McpTransport"`` 作为第一组（``transport.rs`` barrel 注释
+    R180），types barrel 组在其后。
+  - docstring leaf order 第 2 项 ``transport`` (R180) 落地，后续叶更新为
+    ``bridge`` actor -> ``metrics`` stub "R181+"。
+  - ledger 更新：``Landed: types (R179), transport (R180).``。
+* ``agent/tests/test_mcp_adapter_transport.py``（新，12 测试，3 类不变量）：
+  - **抽象边界**（4）：``inspect.isabstract`` + ``__abstractmethods__ == {4 方法}`` 集合
+    / 直接实例化 ``TypeError`` / 缺 1 方法的 partial 子类被拒 / full 子类
+    ``__abstractmethods__ == frozenset()`` 且 ``isinstance`` 成立。
+  - **协程契约**（1）：4 方法均 ``inspect.iscoroutinefunction``（``async_trait`` → 必须
+    ``await``）。
+  - **返回/抛出契约**（7）：``initialize`` → ``McpServerInfo`` / ``list_tools`` →
+    ``list[McpToolDefinition]`` / ``call_tool`` → ``McpCallResult``（且接受任意 JSON
+    arguments：dict/list/str）/ ``close`` → ``None`` 且幂等（两次调用计数==2）/ 失败
+    ``raise McpError`` 基类 + ``McpTransportError`` 子类 / 任意子类（``McpTimeoutError``）
+    经 ``except McpError`` 基类捕获。
+  - mock 辅助：``_InMemoryTransport``（full impl，``fail`` 开关 + close 计数）/ 
+    ``_PartialTransport``（缺 close → 抽象）/ 嵌套 ``_TimeoutTransport``（抛
+    ``McpTimeoutError``）。
+
+### 映射决策树 + 坑
+
+1. ``#[async_trait] pub trait McpTransport: Send + Sync`` → ``class McpTransport(ABC)`` +
+   4 ``@abstractmethod async def``。``async def`` 原生返回协程 = ``async_trait`` 宏
+   desugar 出的 ``Pin<Box<dyn Future + Send>>`` 的 Python 等价，无需表达 boxed 返回类型。
+2. ``Send + Sync`` supertrait bound → 省略。asyncio 单线程 GIL，无 Rust 式线程安全词汇
+   可表达；一个 transport 由单一 event loop 拥有并驱动。
+3. Rust ``Result<T, McpError>`` 返回类型 → 成功类型 ``T`` 作返回注解；失败 ``raise`` 一个
+   ``McpError`` 子类（Python 惯例——错误经 ``raise`` 传播，非 ``Result`` 信封）。R179 落地
+   的 4 个 ``McpError`` 子类是 raise 目标。测试
+   ``test_failure_propagates_as_mcp_error_base`` +
+   ``test_each_failure_variant_is_catchable_via_base`` 双锁此契约。
+4. ``&self`` → ``self``；``&str`` name → ``str``；``serde_json::Value`` arguments →
+   ``Any``（与 ``mcp_adapter.types`` 一致）。测试
+   ``test_call_tool_accepts_arbitrary_json_arguments`` 喂 dict/list/str 断言全接受。
+5. ``close() -> Result<(), McpError>`` 的 Rust ``Ok(())`` 幂等契约 → Python ``close``
+   docstring 显式声明"必须幂等——成功 close 后的第二次调用必须成功无错"。测试
+   ``test_close_returns_none_and_is_idempotent`` 两次调用 + ``close_call_count == 2`` 锁定。
+6. **F401 坑（已修）**：初稿 import 块含 ``McpError``，但 ``McpError`` 仅在 docstring 文本
+   提及（``:class:~minimax_code.mcp_adapter.types.McpError`` 全限定 rst 引用），非返回
+   注解（错误是 raise 而非返回）→ 代码层面未使用 → ruff ``F401``。修复：从 import 块移除
+   ``McpError``（保留 ``McpCallResult`` / ``McpServerInfo`` / ``McpToolDefinition``，三者
+   均用于返回注解）。docstring 的全限定 rst 引用无需 import，运行时无影响。
+7. **docstring ``Raises:`` 段用全限定路径**：每方法的 ``Raises:`` 写
+   ``minimax_code.mcp_adapter.types.McpError`` 而非 ``:class:~...``，因 sphinx 跨模块引用
+   的 ``~`` 简写在纯文本 docstring 里无意义；全限定路径在 IDE 悬浮提示里可直接跳转，
+   且不构成 ruff 的"使用"判定（避免重新触发 F401）。
+8. **测试 mock 不引入新依赖**：``_InMemoryTransport`` 用 R179 的 pydantic 模型构造返回值
+   （``McpServerInfo(name=...)`` / ``McpToolDefinition(name=...)`` / ``McpCallResult()``），
+   零 mock 框架，纯 async 方法覆盖。
+9. **ASCII 安全提交信息**：``feat(platform): R180 ...`` 用连字符而非 Unicode 箭头，规避
+   Windows 终端编码坑。
+
+### 验证
+
+* ``uv run ruff check minimax_code/mcp_adapter/transport.py
+  minimax_code/mcp_adapter/__init__.py tests/test_mcp_adapter_transport.py`` →
+  ``All checks passed!``（F401 手修后洁净，零 ``--fix`` 噪声外溢）。
+* ``uv run pytest tests/test_mcp_adapter_transport.py -v``（隐含于回归）→ **12 passed**。
+* 回归 ``uv run pytest tests/test_mcp_adapter_transport.py tests/test_mcp_adapter_types.py
+  tests/test_init_barrel.py -v`` → **50 passed**（0.49s）；R179 的 19 + R178 barrel 的 19
+  零回归（trait 抽象层不碰 wire 类型或 SDK crate barrel 表面）。
+* ``abc`` 边界运行时验证：``McpTransport()`` 直接实例化抛 ``TypeError``，
+  ``_PartialTransport``（缺 close）抛 ``TypeError``，``_InMemoryTransport`` 实例化成功——
+  ``dyn McpTransport`` 的 Python ``isinstance`` 分派模型确认。
+
+### YAGNI 边界
+
+``lib.rs`` 声明的其余 2 模块与最终 barrel-reconciliation 轮次延后 R181+：
+- ``bridge.rs`` ``McpBridge`` / ``McpBridgeConfig`` / ``McpBridgeHandle`` /
+  ``McpToolHandler`` —— 连接 MCP server、发现工具、产出注册到 hub
+  ``ToolServerBuilder`` 的 handler 的 actor，下一候选叶。
+- ``metrics.rs``（``pub(crate)``）—— crate 内部 metrics 桩。
+- 最终 barrel-reconciliation 轮：对齐 ``lib.rs`` 的 ``pub use`` re-export 表面（5
+  ``pub use`` 符号：``McpBridge`` / ``McpBridgeConfig`` / ``McpBridgeHandle`` /
+  ``McpToolHandler`` / ``McpTransport`` + types 5 符号），在每叶落地后进行。
+- 具体传输实现（stdio / HTTP+SSE ``McpTransport`` impl）—— 由下游消费者提供，本 crate
+  只声明 trait 边界（镜像 Rust：crate 内无 ``impl McpTransport``，仅 ``dyn`` 持有）。
+
+### Commit
+
+feat(platform): R180 xai-computer-hub-mcp-adapter transport.rs McpTransport async trait 第 2 叶 (abc.ABC, 12 tests)

@@ -38,10 +38,16 @@ is:
    with in-memory mocks. Landing them first pins the adapter's wire
    vocabulary before the transport trait or the bridge actor consume it.
 
-   Subsequent leaves (``transport`` trait -> ``bridge`` actor -> ``metrics``
-   stub) will land over R180+ in dependency order; the barrel-reconciliation
-   round that mirrors ``lib.rs``'s ``pub use`` surface lands once every leaf
-   is in.
+2. ``transport`` (R180) -- :class:`McpTransport` async trait: the four
+   lifecycle coroutines (``initialize`` / ``list_tools`` / ``call_tool`` /
+   ``close``) a bridge drives. An ``abc.ABC`` with ``async abstractmethod``
+   definitions; concrete stdio / HTTP+SSE transports live in downstream
+   consumers, and the trait boundary keeps the bridge testable with
+   in-memory mocks.
+
+   Subsequent leaves (``bridge`` actor -> ``metrics`` stub) will land over
+   R181+ in dependency order; the barrel-reconciliation round that mirrors
+   ``lib.rs``'s ``pub use`` surface lands once every leaf is in.
 
 Modelling note
 --------------
@@ -57,6 +63,7 @@ uses for its complex adjacent/untagged tagging; the MCP content enum is
 plain internally-tagged, which pydantic discriminates natively.
 """
 
+from minimax_code.mcp_adapter.transport import McpTransport
 from minimax_code.mcp_adapter.types import (
     McpCallResult,
     McpContent,
@@ -73,6 +80,8 @@ from minimax_code.mcp_adapter.types import (
 )
 
 __all__ = [
+    # transport.rs barrel (R180) -- the McpTransport async trait.
+    "McpTransport",
     # types.rs barrel (R179) -- 5 lib.rs pub use symbols + their variants.
     "McpServerInfo",
     "McpToolDefinition",
@@ -91,5 +100,5 @@ __all__ = [
 ]
 
 #: Crate completion ledger -- updated as each leaf lands.
-#: Landed: types (R179). Transport trait, bridge actor, metrics stub, and the
-#: final barrel-reconciliation round are deferred to R180+.
+#: Landed: types (R179), transport (R180). Bridge actor, metrics stub, and
+#: the final barrel-reconciliation round are deferred to R181+.
