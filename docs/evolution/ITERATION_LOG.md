@@ -12604,3 +12604,55 @@ connection.rs 全 2694 行无法一轮移植: actor 半 (HubConnection/HubConnec
 ### Commit
 
 feat(platform): R150 connection.rs type layer -> connection_types.py (SDK leaf 18a)
+
+## R151 — connection.rs HubConnection actor 结构层 + 纯逻辑访问器 -> connection.py (SDK leaf 18b)
+
+锚点:R151-1 e6b93e3
+
+### 本轮目标
+
+前向移植 grok-build `xai-computer-hub-sdk/src/connection.rs` 第 348-857 行的 **actor 结构层 + 纯逻辑访问器** 到 `agent/minimax_code/computer_hub_sdk/connection.py`：`ConnectionConfig`（连接消费契约）+ `HubConnectionInner`（24 字段共享态）+ `HubConnection`（句柄）+ 4 个线程安全 slot 原语（`_ConnectionIdSlot` / `_HelloCaps` / `_AtomicCounter` / `_EarlyNotifSlot`）+ 全部 15 个 `&self` 等价的纯逻辑访问器方法。新建 `agent/tests/test_connection.py`。锚点 `R151-1 e6b93e3`（父 R150 e6b93e3）。
+
+### 融合结论
+
+SDK crate 第 18 叶（18b）闭合。R150（18a）提供类型地基（常量/健康/断连分类/回调别名/ConnKey），R151 在其上立起 actor 的 **骨架 + 读侧** —— 句柄 + 共享态 + 配置消费契约 + 内部可变性原语 + 纯逻辑查询/信号化方法。网络半段（`connect` / `call_request` / `call_request_with_deadline` / `send_outbound` / `serve`）+ spawn 管线（`run_writer` / `run_reader_actor` / `open_socket` / `run_handshake`）+ `WriterControl<S>` 状态机（961-1382）留给 R152+。本叶闭合后，SDK 的连接对象可在 **无 socket 的纯逻辑上下文** 中构造、共享、查询、信号化 —— 为后续网络叶子提供可独立单测的 actor 内核，符合"每个叶子零网络依赖、可独立验证"的移植纪律。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/connection.py`（约 515 行）：模块文档（tokio→asyncio 映射表）+ 4 slot 原语类 + `ConnectionConfig` dataclass（14 字段）+ `HubConnectionInner`（24 `__slots__`，关键字段必填 + 运行时态延迟构造）+ `HubConnection`（15 访问器 + `__repr__` + `__del__`）。
+- `agent/tests/test_connection.py`（约 440 行，24 测试）：模块文档（Rust 测试→Python 测试映射表）+ `_FakeAuth`（AuthProvider 替身）+ `_make_inner(**overrides)` helper（真实 `_Sink` 通道装配）。
+
+### 映射决策树 + 坑
+
+- `Arc<HubConnectionInner>` → 单实例 + Python 引用计数（无显式 Arc）。句柄/reader/writer/liveness probe 共享同一引用，内部可变性原语改 `threading.Lock` 守卫 slot。Inner 用 24 个 `__slots__` 锁定字段集（防止拼写错误字段静默生效）。
+- `mpsc::Sender<()>` stop/reconnect + `mpsc::Sender<String>` outbound → `_Sink`（R149）。`try_send` 抛 `_MpscClosed`（接收端 gone）或 `asyncio.QueueFull`（满）。Rust `let _ =` 丢弃语义 → `try/except (_MpscClosed, asyncio.QueueFull): pass`（`force_reconnect` / `request_shutdown`）。`try_send_outbound` 则把 QueueFull 翻译成 `BackpressureError`、`_MpscClosed` 翻译成 `NetworkError`。
+- `Arc<Mutex<Option<ConnectionId>>>` → `_ConnectionIdSlot`（`threading.Lock` + `Optional`）。**关键 API 一致性决策**：Rust `connection_id()` 是 `async`（因为 `tokio::Mutex`）；Python 的 `threading.Lock` 在 GIL 下读取不需要 `await`，所以方法保持 **同步** —— 文档显式标注 parity，避免无谓的 `await` 污染所有调用方。
+- `parking_lot::RwLock<Vec<String>>` hello caps → `_HelloCaps`（`threading.Lock` + `list`）。`supports()` 三态语义：空表 → `None`（与 pre-capabilities-field 服务器不可区分）；非空命中 → `True`；非空未命中 → `False`。
+- `std::sync::atomic::AtomicU64` next_request_id → `_AtomicCounter`（`fetch_add` 返回 **前值**，存前值 + n）。
+- `tokio_util::sync::CancellationToken` shutdown → `asyncio.Event`（R138 映射）：`cancel()` → `set`；`cancelled().await` → `await Event.wait`。Event 持久语义：在 actor 已退出后到达的 wait 立即解析。
+- `parking_lot::Mutex<Option<broadcast::Receiver<Value>>>` early_notif_rx → `_EarlyNotifSlot`（`threading.Lock` + `Optional[asyncio.Queue]`）。`take()` 一次性 drain（actor 在 hello 时消费一次，保住 pre-hello firehose 通知不丢）。
+- `Arc<dyn AuthProvider>` credential → `AuthProvider` Protocol（R139）。`Weak<HubConnectionPool>` on_fatal → `weakref.ref`（pool↔connection 边非所有权环）。`impl Drop` → `__del__`（best-effort `try_send`；Python 终结非确定性，`request_shutdown` 是规范路径）。
+- **坑 1（字段区别）**：`on_connect` 仅在 `ConnectionConfig`（Rust 389），**不在** `HubConnectionInner`（连接流程触发一次、从不存储）。Inner 的 `reconnect_backoff` 是解析后的 `tuple[float,...]`，Config 用 `tuning.reconnect_backoff`（None 表默认）—— connect（R152+）会 resolve 后填入 Inner。
+- **坑 2（try_ 前缀语义）**：Rust `try_alloc_request_id()` 返回 `Result`（为未来不变量预留），但 `f"c{value}"` 当前不可能为空 → Python 返回 `RequestId`（非 Result），**保留 `try_` 前缀** 维持 API 对齐，文档注明 parity。
+- **坑 3（ruff --fix 残留）**：`ruff --fix` 删 `HubConnectionPool`（F401）后留下空 `if TYPE_CHECKING: pass` 壳 + 未使用的 `from typing import TYPE_CHECKING` → 手动清理两处（工程师卫生）。
+- **坑 4（None-payload 歧义）**：stop/reconnect 通道 `try_send(None)` 使 `try_recv` 无法区分"空"与"收到 None" → 测试改用 `_SinkRx._channel.buffer.qsize()` 断言入队次数（SLF001 不在 ruff select，访问私有成员安全）。
+- **坑 5（asyncio.Event 构造）**：Python 3.10+ `asyncio.Event()` 构造不绑定 loop（直到 `wait()`），`HubConnectionInner` 可在无运行 loop 时构造；`await_shutdown` 测试在 async test 里有 loop，`Event.wait()` 解析正常。
+- **坑 6（lambda 赋值 E731）**：`test_connection_config_full` 的回调用模块级 `_noop_reconnect` / `_noop` def 函数，避免 `on_reconnect = lambda e: None` 触发 E731。
+
+### 验证
+
+- `uv run ruff check minimax_code/computer_hub_sdk/connection.py tests/test_connection.py` → **All checks passed**（0 错误）。
+- `uv run pytest tests/test_connection.py -q` → **24 passed in 0.33s**。
+- 覆盖矩阵：`ConnectionConfig` 默认值 + 全填 / `HubConnectionInner` 默认运行时态延迟构造 + 可选覆盖（health/counter/allow_insecure）/ 4 slot 单测（`_AtomicCounter.fetch_add` 返回前值 / `_HelloCaps.replace-snapshot-contains-clear` / `_ConnectionIdSlot.set-get-clear` 生命周期 / `_EarlyNotifSlot.take-set-get`）/ 15 访问器（key/kind/demux/repr、actor_id==id(inner) 且跨调用稳定、connection_id None→set、supports 空→None/命中→True/未命中→False、take_early_notifications 一次性 drain、force_reconnect 入队 + closed 静默、request_shutdown 入队、await_shutdown Event.set 后解析、track/untrack refcount 多借/去重计数、try_send_outbound ok/满→BackpressureError/闭→NetworkError、try_alloc_request_id c0/c1/c2 单调、`__del__` 入队 stop）。
+
+### YAGNI 边界
+
+- 网络半段（`connect` / `call_request` / `call_request_with_deadline` / `send_outbound` / `serve`，lines 677-810）→ R152+（需要 WebSocket transport + tokio select 翻译）。
+- spawn 管线（`run_writer` / `run_reader_actor` / `open_socket` / `run_handshake`，lines 813-857）→ R152+（需要 asyncio task 模型 + 握手状态机消费 R134 handshake.rs）。
+- `WriterControl<S>` 状态机（lines 961-1382）→ R152+（writer 半部流量控制，最复杂子模块）。
+- 1310 行 `#[cfg(test)]` 块 → R152+（网络叶子闭合后随原文测试对齐）。
+- `pool.rs` 的 `connect()` 消费 `ConnectionConfig` 路径 → R143 已建 pool，但连接构造（从 Config 解析 tuning + 分配通道 + 构造 Inner）在 R152+。
+
+### Commit
+
+`feat(platform): R151 connection.rs HubConnection actor structure + accessors -> connection.py (SDK leaf 18b)`
