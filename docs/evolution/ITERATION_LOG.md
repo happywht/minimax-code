@@ -10765,3 +10765,111 @@ R123+R124 layer-3、R125+R126 layer-2 全部落地，crate 6 个 leaf 的最后�
 ### Commit
 
 feat(platform): R126 migrate remote.rs layer-2 RemoteTransport (Transport impl)
+
+## R127 — 迁移 xai-tracing/timer.rs（crate 第 1 叶，operation timer 原语，开启 xai-tracing）
+
+锚点:R127-1 e5c4758
+
+### 本轮目标
+
+R126 关闭了 ``xai-computer-hub-core`` 的 leaf-6 远程叶，整个 hub-core crate
+六叶全部落地。本轮跳出 hub-core，开启下一个 crate：``xai-tracing``（grok-build
+的横切可观测性 crate，839 行/8 文件）。``xai-computer-hub-sdk`` 依赖它，所以它
+是 sdk 的前置 —— leaf-first + 依赖拓扑双重决定本轮从 ``xai-tracing`` 起步。
+
+本轮完整目标：迁移 ``xai-tracing/src/timer.rs`` -> 新建
+``agent/minimax_code/tracing/timer.py``，作为 ``xai-tracing`` crate 的第 1 叶
+（operation timer 原语层）。交付 ``Timer`` 类（START/FINISHED/FAILED 边界日志 +
+uuid4 关联 + 幂等 stop/force_stop + RAII 终结）+ 新包骨架 barrel + 测试套件。
+
+### 融合结论
+
+``xai-tracing`` 是横切可观测性 crate，4 个抽象域：操作计时（timer）、subscriber
+检测（dispatch）、W3C traceparent 传播（fastrace）、HTTP/gRPC client 注入
+（http_client/grpc_client）。``timer.rs``（62 行）是其中最小、唯一不依赖
+fastrace/opentelemetry/tokio 的叶子 —— 纯 ``Instant`` + ``Uuid`` + ``log`` crate。
+所以它是 crate 的自然第 1 叶：自包含原语，Python 映射（``time.monotonic`` +
+``uuid.uuid4`` + ``logging``）不需要后续叶子的重 observability 栈。
+
+融合点明确：MiniMax Code 已有标准 ``logging``（``logging_setup.py``），Timer 直接
+接线到 ``logging.getLogger(__name__)``，与 Rust 的 ``log`` crate 对偶。Timer 不依赖
+TelemetryEngine（那是事件总线，R20），保持纯文本日志层，忠实 Rust（timer.rs 只用
+``log``，不用 fastrace）。
+
+### 交付
+
+- ``agent/minimax_code/tracing/__init__.py``（新包 barrel，标记 crate 开启，第 1 叶 timer）
+- ``agent/minimax_code/tracing/timer.py``（``Timer`` 类，~210 行含 docstring）
+- ``agent/tests/test_tracing_timer.py``（26 个测试）
+
+测试覆盖：构造 + START 边界（4）、stop FINISHED + 泛型透传 + 幂等（5）、force_stop
+FAILED + 幂等 + stop 交互（4）、monotonic 时钟映射（3）、context manager Drop 对等（5）、
+``__del__`` best-effort 安全网（3）、Rust 日志格式 parity（3）。
+
+### 映射决策树+坑
+
+- ``tokio::time::Instant::now()`` / ``elapsed()`` -> ``time.monotonic()``。
+  关键决策：用 ``monotonic``（单调，免疫系统时钟回调），**不是** ``time.time``
+  （墙上时钟，可倒退）。Rust ``Instant`` 是单调的，Python 对等物是 ``monotonic``。
+  坑：若误用 ``time.time``，操作员回拨系统时钟时计时会变负 —— 测试
+  ``test_constructor_and_stop_both_call_monotonic`` 显式断言映射目标。
+- ``Instant::elapsed().as_secs_f32()``（Rust f32）-> ``time.monotonic() - start``
+  （Python f64）。精度差异 f32->f64 不影响（日志格式都用 ``%.3f`` 三位小数一致）。
+  测试 ``test_runtime_formats_to_three_decimals`` 断言恰好三位小数。
+- ``uuid::Uuid::new_v4()`` -> ``uuid.uuid4()``（1:1）。测试
+  ``test_constructor_generates_a_uuid4_id`` 断言 ``version == 4`` +
+  ``test_two_timers_have_distinct_ids`` 断言唯一性。
+- ``log::info!`` / ``log::error!`` -> ``logging.getLogger(__name__).info()`` /
+  ``.error()``。用 ``%`` 参数化延迟格式化（logging 最佳实践），格式串镜像 Rust：
+  ``[{id}] START: {msg}`` / ``[{id}] FINISHED in {sec:.3}s: {msg}`` /
+  ``[{id}] FAILED after {sec:.3}s: {msg}``。注意 Rust ``force_stop`` 用 ``"FAILED after"``
+  （不是 ``"FINISHED in"``），``stop`` 用 ``"FINISHED in"`` —— 两个措辞忠实保留。
+- **Rust ``Drop``（确定性 RAII）-> Python 双出口**：这是本轮最大语义决策。Rust
+  ``Drop`` 在作用域结束确定触发 ``force_stop``。Python 无确定性析构：``__del__``
+  在 GC 时运行（时机不定，可能被抑制，解释器关闭时 ``logging`` 可能已拆卸）。
+  决策：提供 ``__enter__``/``__exit__``（确定性，首选，``__exit__`` 镜像 Drop ——
+  未显式 stop 则 ``force_stop``）+ ``__del__``（best-effort 安全网，``try``/``except``
+  包裹防拆卸异常）。**这是有意语义降级**，在 docstring + 日志诚实记录。
+  测试覆盖：``__exit__`` 正常退出 force_stop（5a）、块内已 stop 不重复（5b）、
+  块内异常 force_stop（5c）、不吞异常（5d）、``__del__`` 未停止 force_stop（6a）、
+  ``__del__`` stop 后静默（6b）、``__del__`` logging 拆卸不抛（6c）。
+- ``stop<T>(result: T) -> T``（Rust 泛型透传）-> ``def stop(self, result: T) -> T``
+  + 模块级 ``T = TypeVar("T")``。项目 py311，不能用 PEP 695 ``def stop[T]``（py312+）。
+  测试 ``test_stop_passes_through_at_static_type_for_callers`` 断言值原样返回可继续运算。
+- Rust 私有字段（``start``/``id``/``message``/``stopped``）-> Python ``_`` 前缀私有
+  （``_start``/``_id``/``_message``/``_stopped``）+ ``__slots__`` 固定字段集（匹配
+  Rust struct 固定字段 + 性能）。测试用 ``# noqa: SLF001`` 访问私有字段断言状态。
+- ``__exit__`` 类型注解：``exc_type: type[BaseException] | None`` 等，``TracebackType``
+  放 ``TYPE_CHECKING`` 块（避免运行时导入 ``types`` 的循环/开销）。
+
+坑（编码期）：
+- 初版测试文件有 typo ``seqs_token`` -> ``secs_token``（``test_runtime_formats_to_three_decimals``）
+  + 多余 ``cast`` 导入 hack，编码后立即 Edit 修复。
+- ruff I001：``from typing import TYPE_CHECKING`` + ``from typing import TypeVar``
+  未合并 -> ``ruff check --fix``（scoped 到 timer.py，按先例安全）合并为
+  ``from typing import TYPE_CHECKING, TypeVar`` + ``TracebackType`` 移入 TYPE_CHECKING 块。
+
+### 验证
+
+- ``ruff check``（3 R127 文件 scoped）：All checks passed（isort I001 --fix 后）。
+- ``pytest tests/test_tracing_timer.py``：26 passed in 0.14s。
+- 全量回归 ``pytest``：3915 passed, 10 skipped in 112.96s（零失败零回归；新 tracing
+  包纯 stdlib 依赖，不导入任何 minimax_code 模块，不可能破坏现有测试）。
+
+### YAGNI 边界
+
+- 不引 fastrace/opentelemetry 重栈（那是 fastrace.rs/http_client.rs 的后续叶子）。
+- 不做 grpc_client（388 行，tonic gRPC trace；MiniMax Code 用 HTTP 不用 gRPC，
+  后续叶子可能大幅简化或定位为 stub）。
+- Timer 保持同步纯逻辑（不引入 asyncio；Rust timer.rs 是同步的）。
+- 不接 TelemetryEngine（Timer 是文本日志层，Rust 用 ``log`` crate 不是事件总线；
+  保持职责单一）。
+- ``__enter__``/``__exit__`` 加但克制：``__exit__`` 镜像 Rust Drop（未 stop 则
+  force_stop），不引入"成功完成自动 stop"的 Python 惯用法偏离（那会破坏 Rust 语义
+  —— 显式 stop 才是 FINISHED，否则都是 FAILED）。
+
+### Commit
+
+```
+feat(platform): R127 migrate xai-tracing timer.rs (crate leaf 1, operation timer)
+```
