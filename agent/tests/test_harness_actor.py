@@ -335,3 +335,99 @@ def test_lazy_bind_start_after_take_panics():
     lazy = LazyBind(fut=None)  # fut consumed elsewhere
     with pytest.raises(AssertionError, match="taken more than once"):
         lazy.start()
+
+
+# ===========================================================================
+# ToolHarness construction entries + has_pending_bind (lines 725-818) -- R170.
+# ===========================================================================
+def test_local_only_with_builds_local_harness_no_bind():
+    """local_only_with: borrow=None, pending_bind=None, identity fields stored."""
+    reg = LocalRegistry()
+    sess = SessionId("s-lo")
+    ext = _Marker()
+    harness = ToolHarness.local_only_with(reg, sess, ext)  # type: ignore[arg-type]
+    assert harness.inner.session == sess
+    assert harness.inner.local_registry is reg
+    assert harness.inner.default_extensions is ext
+    assert harness.inner.borrow is None
+    assert harness.inner.pending_bind is None
+    assert harness.has_pending_bind() is False
+
+
+def test_local_only_with_repr_carries_local_tool_count():
+    """A tool registered before construction shows up in the repr."""
+    reg = LocalRegistry()
+    reg.register(_FakeTool("ns:alpha"))
+    harness = ToolHarness.local_only_with(reg, SessionId("s-repr"), _Marker())  # type: ignore[arg-type]
+    assert "local_tool_count=1" in repr(harness)
+
+
+def test_local_only_with_instances_have_independent_inner():
+    """Two local_only_with harnesses do not share inner state."""
+    a = ToolHarness.local_only_with(LocalRegistry(), SessionId("a"), _Marker())  # type: ignore[arg-type]
+    b = ToolHarness.local_only_with(LocalRegistry(), SessionId("b"), _Marker())  # type: ignore[arg-type]
+    assert a.inner is not b.inner
+    assert a.inner.local_registry is not b.inner.local_registry
+
+
+async def test_local_with_pending_bind_stores_eager_and_spawns():
+    """local_with_pending_bind wraps bind via spawn_pending_bind (Eager variant);
+    the bind is already running, so awaiting resolves to the target harness."""
+    target = ToolHarness(_make_inner("eager-target"))
+
+    async def _bind() -> ToolHarness:
+        return target
+
+    reg = LocalRegistry()
+    harness = ToolHarness.local_with_pending_bind(
+        reg, SessionId("s-eager"), _Marker(), _bind()  # type: ignore[arg-type]
+    )
+    assert harness.has_pending_bind() is True
+    pending_bind = harness.inner.pending_bind
+    assert isinstance(pending_bind, EagerBind)
+    assert isinstance(pending_bind.pending, asyncio.Future)
+    # The eager bind is spawned at construction; awaiting resolves to target.
+    resolved = await pending_bind.pending
+    assert resolved is target
+
+
+def test_local_with_lazy_bind_stores_lazy_unstarted():
+    """local_with_lazy_bind stores a LazyBind with fut set + started=None; the
+    bind is NOT spawned at construction (no running loop required)."""
+    async def _bind() -> ToolHarness:
+        return ToolHarness(_make_inner("lazy-target"))
+
+    bind_coro = _bind()
+    try:
+        reg = LocalRegistry()
+        harness = ToolHarness.local_with_lazy_bind(
+            reg, SessionId("s-lazy"), _Marker(), bind_coro  # type: ignore[arg-type]
+        )
+        assert harness.has_pending_bind() is True
+        pending_bind = harness.inner.pending_bind
+        assert isinstance(pending_bind, LazyBind)
+        assert pending_bind.fut is bind_coro  # stored verbatim, unspawned
+        assert pending_bind.started is None  # not spawned yet
+    finally:
+        bind_coro.close()  # avoid "coroutine was never awaited" warning
+
+
+async def test_has_pending_bind_three_state_matrix():
+    """has_pending_bind: local_only_with=False, eager=True, lazy=True."""
+    async def _bind() -> ToolHarness:
+        return ToolHarness(_make_inner("matrix"))
+
+    local = ToolHarness.local_only_with(LocalRegistry(), SessionId("s1"), _Marker())  # type: ignore[arg-type]
+    eager = ToolHarness.local_with_pending_bind(
+        LocalRegistry(), SessionId("s2"), _Marker(), _bind()  # type: ignore[arg-type]
+    )
+    lazy_bind_coro = _bind()
+    try:
+        lazy = ToolHarness.local_with_lazy_bind(
+            LocalRegistry(), SessionId("s3"), _Marker(), lazy_bind_coro  # type: ignore[arg-type]
+        )
+        assert local.has_pending_bind() is False
+        assert eager.has_pending_bind() is True
+        assert lazy.has_pending_bind() is True
+    finally:
+        lazy_bind_coro.close()  # avoid "coroutine was never awaited" warning

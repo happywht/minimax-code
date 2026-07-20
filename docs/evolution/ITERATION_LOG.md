@@ -13889,3 +13889,125 @@ cd agent && uv run pytest tests/test_harness_actor.py -q
 ```
 feat(platform): R169 harness bind state-machine behaviour (spawn_pending_bind + LazyBind::start)
 ```
+
+
+## R170 — harness.rs 叶节点 6：ToolHarness 构造入口 + has_pending_bind 探针
+
+锚点:R170-1 3b75322
+
+### 本轮目标
+
+移植 `grok-build/.../harness.rs:725-818` 的 **ToolHarness impl 开头**：三个本地
+构造入口 `local_only_with` / `local_with_pending_bind` / `local_with_lazy_bind`
++ `has_pending_bind` 探针。这是 R168（ToolHarness+ToolHarnessInner 数据层）+
+R169（bind 状态机行为层 spawn_pending_bind / LazyBind::start）之后的**自然组合层**：
+把数据层 + 行为层组装成三个对外构造入口，闭合"构造 → pending_bind 状态"链路。
+
+harness.rs 叶节点 6。纯状态构造，**不碰 live connection** —— 真正依赖
+`ConnectionBorrow → HubConnection → Demux` 全链路的两个 ToolHarnessInner 方法
+（`fail_inflight_calls_on_disconnect` 656 / `refresh_remote_tools` 678）落入
+YAGNI 延后清单。
+
+### 融合结论
+
+三个构造入口 + 1 探针 = ToolHarness 的**本地半边完整构造面**。R168 给了骨架，
+R169 给了 bind 行为，R170 把它们组装成用户可调的 API：
+
+- `local_only_with(registry, session, ext)` → 纯本地 harness，`pending_bind=None`。
+- `local_with_pending_bind(registry, session, ext, bind)` → eager，spawn_pending_bind
+  后存 `EagerBind`，连接与 sampling 赛跑。
+- `local_with_lazy_bind(registry, session, ext, bind)` → lazy，存 `LazyBind(fut=bind)`
+  不 spawn，首次 `await_bound` 才启动（sandbox provisioning 延后）。
+- `has_pending_bind()` → `pending_bind is not None` 三态探针。
+
+类型自洽：构造层只把 `spawn_pending_bind(bind)` 结果存进 `pending_bind`，**不解包
+Result**，故 R169 的 `BindFuture = Awaitable[ToolHarness]`（Rust `Result<ToolHarness,
+Arc<str>>` 的 Pythonic 简化，Err→raise）争议不影响 R170。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/harness.py`：ToolHarness 类内 `__repr__`
+  后追加 4 方法（`local_only_with` / `local_with_pending_bind` /
+  `local_with_lazy_bind` 三个 `@classmethod` + `has_pending_bind`），+~130 行。
+- `agent/tests/test_harness_actor.py`：末尾追加 R170 测试组 6 个（local_only_with
+  字段+repr+独立性 / eager 存 EagerBind 且已 spawn / lazy 存 LazyBind 未 spawn /
+  has_pending_bind 三态矩阵），+~95 行。
+
+### 映射决策树 + 坑
+
+1. **associated function → @classmethod**：Rust `pub fn local_only_with(...) ->
+   Self` 是无 `self` 的关联函数（`Self::local_only_with`），Python 用 `@classmethod`
+   返回 `cls(inner)`，忠实映射且支持子类化。
+2. **Rust 显式 10 字段构造 vs Python dataclass 默认**：Rust 三个构造函数都显式列出
+   `borrow: None` / `remote_tools: ArcSwap::from_pointee(Vec::new())` / ... 全 10
+   字段（因 ToolHarnessInner 无 `#[derive(Default)]`）。Python 的 ToolHarnessInner
+   dataclass 除 `session` + `default_extensions` + `local_registry` 外全有默认值，
+   默认值恰好等价 Rust 的 fresh 初始化，故只传 3 个身份字段 + `pending_bind`（按变体）。
+3. **local_with_pending_bind → spawn_pending_bind + EagerBind**：`pending =
+   spawn_pending_bind(bind)` → `pending_bind=EagerBind(pending=pending)`。bind 在构造
+   时即 spawn（eager），连接与 sampling 赛跑。
+4. **local_with_lazy_bind → LazyBind(fut=bind) 不 spawn**：`lazy = LazyBind(fut=bind)`
+   （started 默认 None），`pending_bind=lazy`。Rust `.boxed()` 装箱成 BindFuture →
+   Python 直接存 coroutine（无装箱概念）。首次 `await_bound`（后续叶子）才调
+   `LazyBind.start`（R169）spawn。
+5. **LazyBind 直接满足 DeferredBind 联合**：`DeferredBind = EagerBind | LazyBind`，
+   `pending_bind=lazy` 直接传 LazyBind 实例，无需包装（isinstance dispatch 替代 Rust
+   `match`）。
+6. **has_pending_bind → `self._inner.pending_bind is not None`**：Rust
+   `self.inner.pending_bind.is_some()`。三态：local_only_with=False / eager=True /
+   lazy=True。
+7. **BindFuture Result→raise 简化沿用 R169**：Rust `bind: F where F:
+   Future<Output=Result<ToolHarness, Arc<str>>>`。R169 已定 `BindFuture =
+   Awaitable[ToolHarness]`（Err→raise）。构造层不解包 Result，类型自洽，争议不波及。
+8. **坑：matrix 测试 lazy 的 _bind() coroutine 未 await → RuntimeWarning**：
+   `test_has_pending_bind_three_state_matrix` 里 lazy 用 `_bind()` 创建 coroutine 存进
+   LazyBind.fut 但未 spawn，测试结束触发 "coroutine was never awaited" warning。修复：
+   提取 `lazy_bind_coro = _bind()` + `try/finally: lazy_bind_coro.close()`（同
+   `test_local_with_lazy_bind_stores_lazy_unstarted` 的处理）。首次验证 29 passed +
+   1 warning → 修复后 29 passed 0 warning。
+9. **坑：local_with_pending_bind 在 sync 测试会 RuntimeError**：它内部调
+   `spawn_pending_bind` → `asyncio.get_running_loop()`，sync 测试无 running loop。故
+   `test_local_with_pending_bind_stores_eager_and_spawns` 和
+   `test_has_pending_bind_three_state_matrix` 用 `async def`（pytest-asyncio auto mode）。
+   lazy/local_only_with 测试保持 sync（不碰 loop）。
+
+### 验证
+
+```
+cd agent && uv run ruff check minimax_code/computer_hub_sdk/harness.py tests/test_harness_actor.py
+=> All checks passed!
+
+cd agent && uv run pytest tests/test_harness_actor.py -q
+=> 29 passed in 0.33s   (R169 23 + R170 6, 0 warning)
+```
+
+ruff select = ["E","F","W","I","B","UP"] / ignore = ["E501"] / line 100 / py311：
+UP037（注解去内层引号）、B008（默认参数无函数调用）、E731（无 lambda 赋值）、
+isort（无新 import）均通过。BLE 不在 select —— `except Exception` 无需 noqa（本叶
+未引入新 except）。
+
+### YAGNI 边界
+
+本轮**不移植**（依赖 live connection 全链路或后续叶子）：
+
+- `ToolHarnessInner::fail_inflight_calls_on_disconnect`（650-676）：消费
+  `borrow.connection().demux().fail_calls_for_session(...)`，需 ConnectionBorrow →
+  HubConnection → Demux 全链路（R149 demux 已移植但 ConnectionBorrow.connection()
+  访问器链未在 harness 内接线）。
+- `ToolHarnessInner::refresh_remote_tools`（678-705）：消费
+  `borrow.connection().try_alloc_request_id()` + `call_request()`，同样依赖
+  HubConnection live 调用层。
+- `build()`（459-542）：巨型 async，spawn_pending_bind 的主 caller，依赖 live
+  HubConnection / ConnectionBorrow / SessionBindReport。
+- `ToolHarness::await_bound` / `try_bound`：LazyBind.start 的 caller，DeferredBind
+  分发的消费层（Eager 立即 / Lazy 首次远程调用）。
+- `ToolHarness` impl 方法（725-1775 除 4 构造/探针外）：call 分发 / 入站钩子 / 权限 /
+  通知 / ObservedToolStream / RemoteCallStream / dispatch_remote（1776+）/ Drop（1846）。
+- server.rs（2649 全部）+ lib.rs（71 barrel 最后）。
+
+### Commit
+
+父 `3b75322`（R169）→ R170。精确 `git add` 3 文件（harness.py +
+test_harness_actor.py + ITERATION_LOG.md），10 文件排除列表 + 预存 M 文件全不触碰。
+msg: `feat(platform): R170 harness construction entries (local_only_with +
+local_with_pending_bind + local_with_lazy_bind + has_pending_bind)`。

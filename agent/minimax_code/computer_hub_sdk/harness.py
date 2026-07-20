@@ -544,3 +544,106 @@ class ToolHarness:
             f"ToolHarness(session={self._inner.session!r}, "
             f"local_tool_count={len(self._inner.local_registry)}, ...)"
         )
+
+    # -- construction entries + pending-bind probe (lines 725-818) -- R170 --
+
+    @classmethod
+    def local_only_with(
+        cls,
+        registry: LocalRegistry,
+        session: SessionId,
+        default_extensions: TypedExtensions,
+    ) -> ToolHarness:
+        """Construct a local-only harness with no server connection (Rust
+        ``local_only_with``).
+
+        Tools resolve exclusively from ``registry``; remote dispatch returns
+        ``ToolError::NotFound``. ``default_extensions`` are merged into every
+        ``ToolCallContext`` before dispatch (host injects shared agent state
+        through it). There is no deferred bind, so :meth:`has_pending_bind`
+        is ``False``.
+
+        Rust builds the full ``ToolHarnessInner`` literal with every
+        concurrency primitive freshly initialised; in Python the dataclass
+        defaults already reproduce those (``borrow=None``, empty
+        ``remote_tools``, ``pending_bind=None``, ...), so only the three
+        identity-bearing fields are set explicitly.
+        """
+        inner = ToolHarnessInner(
+            session=session,
+            default_extensions=default_extensions,
+            local_registry=registry,
+        )
+        return cls(inner)
+
+    @classmethod
+    def local_with_pending_bind(
+        cls,
+        registry: LocalRegistry,
+        session: SessionId,
+        default_extensions: TypedExtensions,
+        bind: BindFuture,
+    ) -> ToolHarness:
+        """Construct a local-only harness whose server bind is spawned eagerly
+        in the background (Rust ``local_with_pending_bind``).
+
+        The connection races with sampling instead of blocking it: local
+        tools dispatch immediately, remote work awaits the bind. ``bind`` is
+        wrapped via :func:`spawn_pending_bind` and stored as an
+        :class:`EagerBind` -- :meth:`has_pending_bind` is ``True`` from
+        construction.
+
+        Rust takes ``bind: F where F: Future<Output = Result<ToolHarness,
+        Arc<str>>>``; the Python port uses :data:`BindFuture`
+        (``Awaitable[ToolHarness]``, ``Err(Arc<str>)`` -> raise), already
+        established by :func:`spawn_pending_bind`'s driver.
+        """
+        pending = spawn_pending_bind(bind)
+        inner = ToolHarnessInner(
+            session=session,
+            default_extensions=default_extensions,
+            local_registry=registry,
+            pending_bind=EagerBind(pending=pending),
+        )
+        return cls(inner)
+
+    @classmethod
+    def local_with_lazy_bind(
+        cls,
+        registry: LocalRegistry,
+        session: SessionId,
+        default_extensions: TypedExtensions,
+        bind: BindFuture,
+    ) -> ToolHarness:
+        """Construct a local-only harness whose bind is stored unspawned until
+        the first ``await_bound`` (Rust ``local_with_lazy_bind``).
+
+        Unlike :meth:`local_with_pending_bind`, the server connection -- and
+        the sandbox provisioning it triggers -- only begins on the first
+        remote tool dispatch. Local tools dispatch immediately and never
+        start the bind. :meth:`has_pending_bind` is ``True`` (a deferred
+        bind is recorded) but the bind has not been spawned yet.
+
+        Rust builds ``LazyBind { fut: Mutex::new(Some(bind.boxed())),
+        started: OnceLock::new() }``; Python stores the bind coroutine
+        directly (no ``.boxed()`` boxing) in :class:`LazyBind` with
+        ``started=None``.
+        """
+        lazy = LazyBind(fut=bind)
+        inner = ToolHarnessInner(
+            session=session,
+            default_extensions=default_extensions,
+            local_registry=registry,
+            pending_bind=lazy,
+        )
+        return cls(inner)
+
+    def has_pending_bind(self) -> bool:
+        """Whether a deferred server bind is recorded (Rust ``has_pending_bind``).
+
+        ``True`` for :meth:`local_with_pending_bind` /
+        :meth:`local_with_lazy_bind`; ``False`` for :meth:`local_only_with`
+        and the plain ``__init__``. Mirrors ``self.inner.pending_bind
+        .is_some()``.
+        """
+        return self._inner.pending_bind is not None
