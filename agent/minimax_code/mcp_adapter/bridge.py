@@ -30,9 +30,11 @@ order:
    :data:`~minimax_code.tool_protocol.output_wire.McpBlock`; no forward
    references -- it is the shared dependency of ``McpToolHandler.handle_call``
    and the bridge ``connect`` path, so it lands before the handler (R183+).
-3. ``McpToolHandler`` (R183+) -- the hub-facing handler for one MCP tool and
-   its ``impl ToolServerHandler`` (lands as a concrete class; see the trait
-   note below).
+3. ``McpToolHandler`` (R183, landed) -- the hub-facing handler for one MCP
+   tool. R183 lands the struct + the custom ``Debug`` + three synchronous
+   accessors (``tool_id`` / ``description`` / ``input_schema``);
+   ``handle_call`` lands in R184 (it consumes :func:`translate_mcp_result`
+   plus the ``TypedToolOutput`` / ``ToolError`` / metrics orchestration).
 4. ``McpBridge`` actor (R184+) -- ``connect`` / ``handlers`` / ``server_info``
    / ``tool_count`` / ``shutdown`` + the best-effort ``Drop`` close.
 5. ``McpBridgeHandle`` (R185+) -- the ``connect`` result envelope
@@ -80,15 +82,18 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
+from minimax_code.mcp_adapter.transport import McpTransport
 from minimax_code.mcp_adapter.types import (
     McpCallResult,
     McpContent,
     McpImageContent,
     McpResourceContent,
     McpTextContent,
+    McpToolDefinition,
 )
-from minimax_code.tool_protocol.ids import SessionId
+from minimax_code.tool_protocol.ids import SessionId, ToolId
 from minimax_code.tool_protocol.output_wire import (
     ImageBlock,
     Mcp,
@@ -98,8 +103,9 @@ from minimax_code.tool_protocol.output_wire import (
     TextBlock,
     ToolOutputWire,
 )
+from minimax_code.tool_types import ToolDescription
 
-__all__ = ["McpBridgeConfig", "translate_mcp_result"]
+__all__ = ["McpBridgeConfig", "McpToolHandler", "translate_mcp_result"]
 
 #: Module logger for the ``warn!`` parity site in :func:`translate_mcp_result`.
 logger = logging.getLogger(__name__)
@@ -196,3 +202,83 @@ def _translate_mcp_block(content: McpContent) -> McpBlock:
     # ``type``), so this is unreachable in practice -- defensive for type
     # checkers and any future variant addition.
     raise TypeError(f"unknown McpContent variant: {type(content).__name__}")
+
+
+class McpToolHandler:
+    """Hub-facing handler for a single MCP tool (``bridge.rs`` McpToolHandler).
+
+    Translates hub ``tool_call_request`` frames into MCP ``tools/call``
+    invocations and maps the result back to
+    :class:`~minimax_code.tool_protocol.output_wire.ToolOutputWire`. R183 lands
+    the struct + the custom ``Debug`` + three synchronous accessors;
+    ``handle_call`` lands in R184 (it consumes :func:`translate_mcp_result`
+    plus the :class:`~minimax_code.tool_runtime.tool.TypedToolOutput` /
+    ``ToolError`` / metrics orchestration).
+
+    A concrete class, not an :class:`abc.ABC` subclass: in Rust
+    ``McpToolHandler`` implements ``xai_computer_hub_sdk::ToolServerHandler``,
+    but that trait is YAGNI in the Python port (R178 ledger: the live
+    ``ToolServer`` actor binds the xAI ``HubConnection`` socket, which MiniMax
+    has no consumer for). The handler exposes the trait's four methods with
+    the protocol contract documented, not type-enforced -- mirroring the
+    ``server.py`` preamble leaves (R175-R177).
+
+    Mirrors ``bridge.rs``'s ``impl ToolServerHandler for McpToolHandler``:
+
+    * ``fn tool_id`` -> :meth:`tool_id`.
+    * ``fn description`` -> :meth:`description` (``ToolDescription::new`` +
+      ``with_namespace`` when a namespace is configured).
+    * ``fn input_schema`` -> :meth:`input_schema`.
+    * ``async fn handle_call`` -> deferred to R184.
+    """
+
+    def __init__(
+        self,
+        tool_id: ToolId,
+        definition: McpToolDefinition,
+        transport: McpTransport,
+        namespace: str | None,
+    ) -> None:
+        # Rust fields are private (impl-internal access only); mirrored as a
+        # single-underscore private convention here.
+        self._tool_id = tool_id
+        self._definition = definition
+        self._transport = transport
+        self._namespace = namespace
+
+    def __repr__(self) -> str:
+        """Rust ``Debug``: ``field("tool_id") + finish_non_exhaustive``.
+
+        Only ``tool_id`` surfaces; ``transport`` / ``definition`` / ``namespace``
+        are omitted -- the hub does not need them for diagnostics and the
+        transport may not be ``Debug``-friendly.
+        """
+        return f"McpToolHandler(tool_id={self._tool_id!r}, ...)"
+
+    def tool_id(self) -> ToolId:
+        """Return the handler's tool id (``self.tool_id.clone()``)."""
+        return self._tool_id
+
+    def description(self) -> ToolDescription:
+        """Build the hub-facing :class:`ToolDescription`.
+
+        Mirrors the Rust ``description``: ``ToolDescription::new`` with the
+        definition's name and description (``unwrap_or_default`` -> empty
+        string when the definition carries none), then ``with_namespace`` when
+        a namespace is configured.
+        """
+        desc = ToolDescription.new(
+            name=self._definition.name,
+            description=self._definition.description or "",
+        )
+        if self._namespace is not None:
+            return desc.with_namespace(self._namespace)
+        return desc
+
+    def input_schema(self) -> Any:
+        """Return the tool's JSON input schema (``Option<Value>`` -> ``Any``).
+
+        Mirrors ``self.definition.input_schema.clone()`` -- ``None`` when the
+        definition carries no schema.
+        """
+        return self._definition.input_schema

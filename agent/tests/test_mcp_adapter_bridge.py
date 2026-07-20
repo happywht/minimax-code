@@ -1,4 +1,4 @@
-"""Contract tests for ``mcp_adapter.bridge`` (R181 + R182).
+"""Contract tests for ``mcp_adapter.bridge`` (R181 + R182 + R183).
 
 R181 ports grok-build's ``xai-computer-hub-mcp-adapter/src/bridge.rs`` type
 layer's first leaf -- the :class:`McpBridgeConfig` value object. R182 ports
@@ -35,12 +35,30 @@ in Rust evaluation order:
 3. **Single text block** -> :class:`Text` carrying that block's text.
 4. **Multi-block or any non-text block** -> :class:`Mcp` with content blocks
    mapped 1:1 to wire :data:`McpBlock` variants.
+
+R183 -- ``McpToolHandler`` struct + Debug + accessors
+-----------------------------------------------------
+
+These tests pin the synchronous surface of ``bridge.rs``'s
+``McpToolHandler`` (R183 lands the struct + ``Debug`` + ``tool_id`` /
+``description`` / ``input_schema``; ``handle_call`` is deferred to R184):
+
+1. **Debug repr** -- only ``tool_id`` surfaces; the other three fields are
+   omitted (Rust ``finish_non_exhaustive``).
+2. **tool_id accessor** -- returns the exact ``ToolId`` passed at
+   construction.
+3. **description accessor** -- ``ToolDescription::new`` +
+   ``with_namespace`` when a namespace is configured; a missing definition
+   description defaults to an empty string.
+4. **input_schema accessor** -- passes the definition's schema through by
+   identity (``None`` when the definition carries none).
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import FrozenInstanceError, fields, is_dataclass
+from typing import Any
 
 import pytest
 
@@ -49,10 +67,13 @@ from minimax_code.mcp_adapter import (
     McpCallResult,
     McpImageContent,
     McpResourceContent,
+    McpServerInfo,
     McpTextContent,
+    McpToolDefinition,
 )
-from minimax_code.mcp_adapter.bridge import translate_mcp_result
-from minimax_code.tool_protocol.ids import SessionId
+from minimax_code.mcp_adapter.bridge import McpToolHandler, translate_mcp_result
+from minimax_code.mcp_adapter.transport import McpTransport
+from minimax_code.tool_protocol.ids import SessionId, ToolId
 from minimax_code.tool_protocol.output_wire import (
     ImageBlock,
     Mcp,
@@ -60,6 +81,7 @@ from minimax_code.tool_protocol.output_wire import (
     Text,
     TextBlock,
 )
+from minimax_code.tool_types import ToolDescription
 
 # ---------------------------------------------------------------------------
 # Frozen value object (R181)
@@ -284,3 +306,149 @@ def test_translate_mixed_blocks_map_each_variant_one_to_one() -> None:
     assert b2.uri == "file://x"
     assert b2.mime_type == "text/plain"
     assert b2.text == "res"
+
+
+# ---------------------------------------------------------------------------
+# McpToolHandler -- struct + Debug (R183)
+# ---------------------------------------------------------------------------
+
+
+class _StubMcpTransport(McpTransport):
+    """Minimal concrete :class:`McpTransport` for handler accessor tests.
+
+    R183's three accessors never touch the transport; R184's ``handle_call``
+    will exercise ``call_tool`` (and will need a richer stub then).
+    """
+
+    async def initialize(self) -> McpServerInfo:
+        raise NotImplementedError
+
+    async def list_tools(self) -> list[McpToolDefinition]:
+        raise NotImplementedError
+
+    async def call_tool(self, name: str, arguments: Any) -> McpCallResult:
+        raise NotImplementedError
+
+    async def close(self) -> None:
+        return None
+
+
+def _make_handler(
+    *,
+    name: str = "search",
+    description: str | None = "Search the web",
+    input_schema: Any = None,
+    namespace: str | None = None,
+    tool_id: str = "mcp:search",
+) -> McpToolHandler:
+    """Build a handler backed by :class:`_StubMcpTransport`.
+
+    Keyword-only so each accessor test states only the fields it cares about.
+    """
+    return McpToolHandler(
+        tool_id=ToolId(tool_id),
+        definition=McpToolDefinition(
+            name=name,
+            description=description,
+            input_schema=input_schema,
+        ),
+        transport=_StubMcpTransport(),
+        namespace=namespace,
+    )
+
+
+def test_handler_repr_shows_only_tool_id_and_omits_other_fields() -> None:
+    """Rust ``Debug``: ``field("tool_id") + finish_non_exhaustive``.
+
+    Only ``tool_id`` surfaces in the repr; ``namespace`` / ``description`` /
+    the input schema never leak -- the hub does not need them for diagnostics
+    and the transport may not be ``Debug``-friendly.
+    """
+    handler = _make_handler(
+        namespace="alpha-ns",
+        description="zzz-secret-desc",
+        input_schema={"q": {"type": "string"}},
+    )
+    text = repr(handler)
+    assert text.startswith("McpToolHandler(tool_id=")
+    assert text.endswith(", ...)")
+    assert "mcp:search" in text
+    # finish_non_exhaustive: the other three fields are omitted entirely.
+    assert "alpha-ns" not in text
+    assert "zzz-secret-desc" not in text
+
+
+# ---------------------------------------------------------------------------
+# McpToolHandler -- tool_id accessor (R183)
+# ---------------------------------------------------------------------------
+
+
+def test_handler_tool_id_returns_the_constructed_id() -> None:
+    """``fn tool_id(&self) -> ToolId { self.tool_id.clone() }``.
+
+    ToolId is an opaque ``str`` newtype; ``clone`` is identity in Python, so
+    the accessor returns the exact object passed at construction.
+    """
+    tid = ToolId("mcp:fetch")
+    handler = McpToolHandler(
+        tool_id=tid,
+        definition=McpToolDefinition(name="fetch", description=None),
+        transport=_StubMcpTransport(),
+        namespace=None,
+    )
+    assert handler.tool_id() is tid
+
+
+# ---------------------------------------------------------------------------
+# McpToolHandler -- description accessor (R183)
+# ---------------------------------------------------------------------------
+
+
+def test_handler_description_without_namespace() -> None:
+    """``ToolDescription::new`` + no namespace -> ``namespace`` stays ``None``."""
+    handler = _make_handler(namespace=None)
+    desc = handler.description()
+    assert isinstance(desc, ToolDescription)
+    assert desc.name == "search"
+    assert desc.description == "Search the web"
+    assert desc.namespace is None
+
+
+def test_handler_description_with_namespace_applies_prefix() -> None:
+    """``match namespace { Some(ns) => desc.with_namespace(ns), ... }``."""
+    handler = _make_handler(namespace="brave")
+    desc = handler.description()
+    assert desc.namespace == "brave"
+
+
+def test_handler_description_defaults_missing_definition_description() -> None:
+    """``description.unwrap_or_default()`` -> empty string, not ``None``."""
+    handler = _make_handler(description=None)
+    desc = handler.description()
+    assert desc.description == ""
+
+
+# ---------------------------------------------------------------------------
+# McpToolHandler -- input_schema accessor (R183)
+# ---------------------------------------------------------------------------
+
+
+def test_handler_input_schema_passes_through_definition_schema() -> None:
+    """``fn input_schema(&self) -> Option<Value> { ... .clone() }``.
+
+    The schema is returned by identity: the Rust ``.clone()`` is a deep
+    ``Arc`` bump that has no Python equivalent at this type boundary, so the
+    accessor hands back the exact object the definition holds.
+    """
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {"q": {"type": "string"}},
+    }
+    handler = _make_handler(input_schema=schema)
+    assert handler.input_schema() is schema
+
+
+def test_handler_input_schema_is_none_when_definition_has_none() -> None:
+    """``Option::None`` input schema -> ``None`` (no schema advertised)."""
+    handler = _make_handler(input_schema=None)
+    assert handler.input_schema() is None

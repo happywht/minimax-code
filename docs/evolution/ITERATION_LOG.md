@@ -14871,3 +14871,64 @@ feat(platform): R180 xai-computer-hub-mcp-adapter transport.rs McpTransport asyn
 ### Commit
 
 `feat(platform): R182 xai-computer-hub-mcp-adapter bridge.rs translate_mcp_result pure mapper (McpCallResult -> ToolOutputWire, 9 tests)`
+## R183 — xai-computer-hub-mcp-adapter bridge.rs McpToolHandler struct + Debug + 3 accessors
+
+锚点:R183-1 6edafc4
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-computer-hub-mcp-adapter/src/bridge.rs` L197-231 `McpToolHandler` 的 struct + 自定义 `Debug` impl + 3 个同步访问器（`tool_id` / `description` / `input_schema`）。这是 `lib.rs` 4 个 `pub use` 符号之一（`McpBridge` / `McpBridgeConfig` / `McpBridgeHandle` / `McpToolHandler`），R181 落 config、R183 落 handler struct 本体。`handle_call`（L233-262，async + metrics 编排）延后 R184——它依赖 `translate_mcp_result`(R182 已落地) + `TypedToolOutput.from_value`(R109) + `ToolError.execution`(R107) + `terminal_only` + `metrics::mcp_call_duration_observe`/`mcp_error`，是另一层编排，单列一轮。本轮 struct + Debug + 3 访问器都是纯同步、零前向引用（消费 R82 `ToolId` + R65 `ToolDescription` + R179 `McpToolDefinition` + R180 `McpTransport` 全部已落地），是 handler 依赖图的最纯叶子。落地为**具体普通类**（非 `abc.ABC`，`ToolServerHandler` trait YAGNI，详见融合结论）。本轮：扩展 `bridge.py`（imports + `__all__` + docstring leaf order 第 3 项标记 landed + 追加 `McpToolHandler` 类）+ 扩展 `mcp_adapter/__init__.py` barrel（import + `__all__` + ledger）+ 扩展 `test_mcp_adapter_bridge.py`（imports + docstring R183 段落 + `_StubMcpTransport` + `_make_handler` 助手 + 7 个契约测试）+ ruff/pytest/回归 + 日志 + 精确 commit。
+
+### 融合结论
+
+**McpToolHandler 在 bridge.rs 依赖图的位置：** 它是 hub 侧的"一工具一 handler"适配器——`McpBridge::connect` 编排路径为每个发现的 MCP 工具构造一个 `McpToolHandler`，注册到 hub `ToolServerBuilder`；hub 收到 `tool_call_request` 时调 `handle_call` 转发到 `McpTransport::call_tool`，结果经 `translate_mcp_result`(R182) 映射回 `ToolOutputWire`。struct 持有 4 字段（`tool_id: ToolId` / `definition: McpToolDefinition` / `transport: Arc<dyn McpTransport>` / `namespace: Option<String>`），3 访问器是 trait `ToolServerHandler` 的同步方法（`handle_call` 是唯一的 async 方法）。
+
+**为何 R183 只迁 struct + Debug + 3 访问器、不迁 handle_call：** Rust `impl ToolServerHandler for McpToolHandler`(L212-263) 的 4 方法里，前 3 个是纯同步透传/构造（`tool_id` = clone、`description` = `ToolDescription::new` + 可选 `with_namespace`、`input_schema` = clone），零外部依赖、零 async。`handle_call`(L233-262) 则编排：`Instant::now()` 计时 -> `transport.call_tool` -> `metrics::mcp_call_duration_observe` -> `translate_mcp_result` -> `serde_json::to_value` -> `TypedToolOutput::from_value` / 失败走 `metrics::mcp_error` + `ToolError::execution`。依赖 `TypedToolOutput`(R109) + `ToolError`(R107) + `terminal_only` + `metrics`（crate 私有 `pub(crate) mod metrics`，尚未迁移）——跨 4 个未完全就绪的依赖面。按"零前向引用优先"的分叶原则，struct + Debug + 3 访问器作为独立叶子首迁，`handle_call` 连同 metrics stub 评估一起留 R184。
+
+**Rust->Python 映射核心决策：** Rust `pub struct McpToolHandler { tool_id, definition, transport: Arc<dyn McpTransport>, namespace }` -> Python 具体普通类（**非 `@dataclass`、非 `abc.ABC`**）。理由：(1) handler 持有 `transport` 引用——它是**身份对象**(identity object)而非**值对象**(value object)，两个 handler 即便字段全等也是不同的 hub 注册项（不同的 `ToolId` 命名空间实例），`@dataclass` 的 `__eq__`/`__hash__` 值语义不适用且会误导；(2) Rust 字段全部私有（无 `pub`），impl 内部访问——Python 用 `_` 前缀私有约定镜像（`self._tool_id` 等），不暴露 public 属性；(3) `Arc<dyn McpTransport>` 的共享所有权 + 动态分发 -> Python 直接持有 `McpTransport` 实例引用（asyncio 单线程 + GIL，无 `Arc` 计数需求，鸭子类型分发）。
+
+**Debug impl 映射（finish_non_exhaustive）：** Rust `impl Debug for McpToolHandler { f.debug_struct("McpToolHandler").field("tool_id", &self.tool_id).finish_non_exhaustive() }` -> Python 自定义 `__repr__` 返回 `f"McpToolHandler(tool_id={self._tool_id!r}, ...)"`。`finish_non_exhaustive` 在 Rust 里输出 `McpToolHandler { tool_id: .., .. }`（仅 `tool_id`，其余字段以 `..` 省略）——Python 等价用 `...` 省略号表"还有更多字段但不展示"。语义对齐：hub 诊断只需 `tool_id` 定位工具，`transport` 可能不可 Debug（trait object）、`definition`/`namespace` 是实现细节不该泄漏到日志。
+
+**3 访问器映射：** `fn tool_id(&self) -> ToolId { self.tool_id.clone() }` -> `def tool_id(self) -> ToolId: return self._tool_id`（`ToolId` 是 `_OpaqueId(str)` newtype，Python `clone` = 身份返回，`is` 断言成立）；`fn description(&self) -> ToolDescription` -> `ToolDescription.new(name=def.name, description=def.description or "")` + `if namespace is not None: return desc.with_namespace(namespace)`（`unwrap_or_default()` -> `or ""` 空串兜底；`match namespace { Some(ns) => with_namespace, None => desc }` -> `if is not None` 分支）；`fn input_schema(&self) -> Option<Value> { self.definition.input_schema.clone() }` -> `def input_schema(self) -> Any: return self._definition.input_schema`（`McpToolDefinition.input_schema: Any` 已是 `None` 默认，透传即 `Option<Value>` 语义）。
+
+**ToolServerHandler trait YAGNI（R178 分类账延续）：** Rust `McpToolHandler` impl `xai_computer_hub_sdk::ToolServerHandler` trait。该 trait 绑定 live `ToolServer` actor（xAI `HubConnection` socket 消费侧），MiniMax 无此消费者（R178 barrel 已将 `ToolServer`/`ToolServerBuilder`/`ToolServerHandler` 等 9 个 live-actor 符号列入 `YAGNI_ABSENT`）。故 Python handler 落地为**具体类**，暴露 trait 的 4 方法（`tool_id`/`description`/`input_schema`/`handle_call`），协议契约文档化（docstring 详述 Rust impl 对应关系），**不**继承 `abc.ABC` 强类型约束——镜像 `server.py` preamble 叶子 R175-R177 的鸭子类型策略。
+
+### 交付
+
+| 文件 | 状态 | 说明 |
+|------|------|------|
+| `agent/minimax_code/mcp_adapter/bridge.py` | 扩展（199->285 行） | imports 扩展（加 `McpTransport` + `McpToolDefinition` + `ToolId` + `ToolDescription` + `Any`）+ `__all__` 加 `McpToolHandler` + docstring leaf order 第 3 项标记 R183 landed（struct+Debug+3 访问器，handle_call 注明 R184）+ 追加 `McpToolHandler` 类（`__init__` 4 私有字段 + `__repr__` finish_non_exhaustive + `tool_id`/`description`/`input_schema` 3 方法）|
+| `agent/minimax_code/mcp_adapter/__init__.py` | 编辑（+4 行） | barrel 3 处：import 行加 `McpToolHandler` + `__all__` bridge 组加 `McpToolHandler`（注释更新 R183 lands）+ ledger 更新（landed 加 `bridge McpToolHandler struct + 3 accessors (R183)`，remaining 收窄到 `handle_call(R184)` + actor + handle + metrics + barrel-reconciliation）|
+| `agent/tests/test_mcp_adapter_bridge.py` | 扩展（289->438 行） | docstring 加 R183 段落（4 不变量）+ imports 扩展（`Any` + `McpServerInfo`/`McpToolDefinition` + `McpToolHandler` + `McpTransport` + `ToolId` + `ToolDescription`）+ `_StubMcpTransport`（4 abstractmethod NotImplementedError 存根）+ `_make_handler`（仅关键字参数助手）+ 7 个 R183 测试（repr 省略 + tool_id 身份 + description 无/有 namespace/默认空串 + input_schema 透传/None）|
+| `docs/evolution/ITERATION_LOG.md` | 追加 | R183 条目 |
+
+### 映射决策树+坑
+
+**决策 1 — 具体普通类，非 `@dataclass`、非 `abc.ABC`：** Rust struct 持有 `Arc<dyn McpTransport>` 共享引用，handler 是 hub 注册表里的身份对象（按 `ToolId` 索引），不是值对象。`@dataclass` 会生成 `__eq__`（字段全等即相等）+ `__hash__`（frozen 才有），这对身份对象是错误语义——两个 `tool_id="mcp:search"` 的 handler 即便字段全等也是不同注册项。故手写 `__init__` + 私有 `_` 字段，不继承 `@dataclass`。同时不继承 `abc.ABC`（`ToolServerHandler` trait YAGNI，强类型约束无消费者）。这是"身份对象 vs 值对象"的关键判别——R181 的 `McpBridgeConfig` 是值对象（frozen dataclass 正确），R183 的 `McpToolHandler` 是身份对象（普通类正确），两类不可混用。
+
+**决策 2 — 私有 `_` 前缀字段镜像 Rust 私有：** Rust 4 字段全部无 `pub`（`tool_id`/`definition`/`transport`/`namespace`），仅 impl 内部访问。Python 用 `_tool_id`/`_definition`/`_transport`/`_namespace` 单下划线前缀表"实现私有"。访问器方法（`tool_id()` 等）是 trait 契约的公开面——名字与字段同名但加 `()` 调用，对齐 Rust `fn tool_id(&self)` 方法名与字段名同形（Rust 里 `self.tool_id` 字段 vs `self.tool_id()` 不冲突，因为字段无 `()`；Python 里 `self._tool_id` 字段 vs `self.tool_id()` 方法通过 `_` 前缀消歧）。
+
+**决策 3 — `__repr__` 用 `...` 省略号表 finish_non_exhaustive：** Rust `finish_non_exhaustive()` 输出 `McpToolHandler { tool_id: ToolId("mcp:search"), .. }`。Python f-string `f"McpToolHandler(tool_id={self._tool_id!r}, ...)"`——用 `(...)` 表 dict-style repr + `...` 表"还有字段省略"。`!r` 对 `ToolId`（`_OpaqueId(str)` 子类）调用其 `__repr__`（str 的 repr 带引号）。测试用 substring 断言（`startswith("McpToolHandler(tool_id=")` + `endswith(", ...)")` + `"mcp:search" in text` + `"alpha-ns" not in text` + `"zzz-secret-desc" not in text`），不依赖 `ToolId` 精确 repr 格式——稳健且不与 R82 的 repr 实现耦合。
+
+**坑 1 — barrel 认知纠偏（防误判）：** R183 加 `McpToolHandler` 到 `mcp_adapter/__init__.py` barrel 时，需确认这不触发 `test_init_barrel.py::test_barrel_count_is_41` 失败。Grep 确认 `test_init_barrel.py` 是 **`computer_hub_sdk.__init__` 的 barrel 测试**（41 SDK 符号，`EXPECTED_BARREL` 集合不含任何 `Mcp*` 符号），与 `mcp_adapter` barrel **完全隔离**——两个 `__init__.py` 是不同包的 barrel。R183 不碰 SDK barrel，`test_barrel_count_is_41` 应仍绿（pytest 实测 73 passed 含此测试全绿，证实判断）。`mcp_adapter` barrel 现 15 项（R179 14 项 + R183 `McpToolHandler`），无专门 count 测试（R179-R183 都没建 mcp_adapter barrel count 测试，留待最终 barrel-reconciliation 轮统一对账）。
+
+**坑 2 — `_StubMcpTransport` 测试助手的最小化设计：** R183 的 3 访问器**不触碰 transport**（`tool_id`/`description`/`input_schema` 都不调 `self._transport` 的任何方法），故 stub 只需"能被构造"——4 个 `abstractmethod` 实现为 `raise NotImplementedError`（`close` 为 `return None`，因为 Rust `Ok(())` 契约要求 idempotent 成功，stub 也遵循）。R184 `handle_call` 真正调用 `call_tool` 时，需把 stub 的 `call_tool` 升级为可控返回（如返回预设 `McpCallResult` 或 raise `McpError`）——届时扩展 stub，不在 R183 提前实现（YAGNI）。
+
+### 验证
+
+- **ruff：** `uv run ruff check minimax_code/mcp_adapter/bridge.py minimax_code/mcp_adapter/__init__.py tests/test_mcp_adapter_bridge.py` -> `All checks passed!`（3 文件零违规，零 `--fix` 噪声外溢，docstring R183 段落追加后仍绿）。
+- **pytest：** `uv run pytest tests/test_mcp_adapter_bridge.py tests/test_mcp_adapter_transport.py tests/test_mcp_adapter_types.py tests/test_init_barrel.py -q` -> **73 passed in 0.49s**（R181 6 + R182 9 + R183 7 = 22 bridge 测试 + 12 transport + 19 types + 20 SDK barrel，零回归）。
+- **R183 新测试 7 个全绿：** `test_handler_repr_shows_only_tool_id_and_omits_other_fields`（finish_non_exhaustive 省略）+ `test_handler_tool_id_returns_the_constructed_id`（`is` 身份）+ `test_handler_description_without_namespace` + `test_handler_description_with_namespace_applies_prefix` + `test_handler_description_defaults_missing_definition_description`（`unwrap_or_default` -> 空串）+ `test_handler_input_schema_passes_through_definition_schema`（`is` 透传）+ `test_handler_input_schema_is_none_when_definition_has_none`。
+- **barrel 隔离回归：** `test_init_barrel.py` 20 测试全绿（`test_barrel_count_is_41` 确认 SDK barrel 41 符号不变，R183 加 mcp_adapter barrel 符号未误碰 SDK barrel）。
+
+### YAGNI 边界
+
+- **`handle_call` 延后 R184：** 依赖 `translate_mcp_result`(R182 已落地) + `TypedToolOutput.from_value`(R109) + `ToolError.execution`(R107) + `terminal_only` + `metrics::mcp_call_duration_observe`/`mcp_error`（crate 私有 `pub(crate) mod metrics`，尚未迁移）。R184 一并迁 `handle_call` + 评估 metrics stub（可能整体 YAGNI，因 MiniMax 无 Prometheus 导出消费者）。
+- **`ToolServerHandler` trait YAGNI：** 绑定 live `ToolServer` actor（xAI `HubConnection` socket 消费侧），MiniMax 无消费者（R178 `YAGNI_ABSENT` 9 符号之一）。handler 落地为具体类暴露 trait 4 方法，协议契约 docstring 文档化、不强类型约束。
+- **`McpBridge` actor 延后 R185+：** `connect`/`handlers`/`server_info`/`tool_count`/`shutdown` + `impl Drop`（best-effort `transport.close()` 经 `tokio::spawn`）。Python 等价是 async `connect` classmethod + `__del__`/`async with` 上下文管理器，须等 handler 全落地（R184 handle_call 后）再迁。
+- **`McpBridgeHandle` 延后 R186+：** `connect` 结果信封（`bridge` + `server_info`），其 `Debug` impl 调 `self.bridge.tool_count()`——依赖 actor 的 `tool_count()` 方法，故必须在 `McpBridge` 之后。
+- **metrics stub 评估延后：** crate 私有 + 无外部消费者，R184 handle_call 迁移时一并评估是否需要（可能整体 YAGNI）。
+
+### Commit
+
+`feat(platform): R183 xai-computer-hub-mcp-adapter bridge.rs McpToolHandler struct + Debug + 3 accessors (tool_id/description/input_schema, 7 tests)`
