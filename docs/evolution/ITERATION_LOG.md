@@ -15317,3 +15317,51 @@ xai-grok-auth crate **收官轮**（第 3/3 轮）：lib.rs barrel-reconciliatio
 ### Commit
 
 feat(platform): R189 xai-grok-auth crate complete (lib.rs barrel-reconciliation, 3/3 mods + 5/5 pub-use symbols mirrored, always-on feature parity, 9 reconciliation tests, crate milestone)
+## R190 — xai-grok-tools-api 包骨架 + slash_commands 叶子(首轮)+ pb YAGNI 架构决策
+
+锚点:R190-1 bcfe5c0
+
+### 本轮目标
+
+启动第 5 个 crate 迁移 — `xai-grok-tools-api`(613 行 / 3 文件)。本轮交付**包骨架 + 最自包含叶子 slash_commands + 一锤定音的 pb YAGNI 架构决策**,为后续 R191 config_validation、R192 lib.rs barrel-reconciliation 铺路。本轮刻意只迁 1/3 文件,因为整个 crate 的体量结构(pb protobuf 占大头)需要先做架构裁决再动手,不能闷头硬抄。
+
+### 融合结论
+
+`grok-build/crates/codegen/xai-grok-tools-api` 在 Rust 侧是 **tools 库 + gRPC server 共享的 API 契约 crate**:protobuf wire 类型 + 配置校验 + 规范斜杠命令措辞。平台侧没有 gRPC tools server(走 JSON-RPC + httpx),也没有 protobuf 编译流水线(无 .proto + protoc + build.rs),所以 crate 的主体 `pub mod pb`(~60 个 tonic/build.rs 生成的 gRPC wire 类型)**整体 YAGNI**。真正有平台价值的是两个叶子:slash_commands(规范命令措辞,前端展开器共享)和 config_validation(工具配置校验,被 MCP 适配层复用)。
+
+平台对应包 `minimax_code/tools_api/`,3 轮节奏与 grok_auth(R187-R189)、mcp_adapter(R179-R186)同构:**首叶落地 → 配置叶子 → barrel 收口**。这是已验证 4 次的最优 crate 迁移节奏,不发明新流程。
+
+### 交付
+
+3 文件,约 226 行新增:
+
+1. **`agent/minimax_code/tools_api/__init__.py`** — 包 barrel。暴露 `slash_commands` 子模块(Rust 侧 `pub mod slash_commands` 是普通模块声明,不在根重新导出内部符号,平台镜像此语义)。包 docstring 完整记录 pb YAGNI 决策 + 3 文件迁移路线 + barrel surface 边界。模块级 `#:` 注释账本固化 crate 状态(IN PROGRESS R190-R192)。
+2. **`agent/minimax_code/tools_api/slash_commands.py`** — 迁移 `slash_commands.rs` 全部 **17 符号**:8 公开常量(SCHEDULER_CREATE_TOOL_NAME / IMAGE_GEN_TOOL_NAME / IMAGINE_COMMAND_NAME / IMAGE_TO_VIDEO_TOOL_NAME / IMAGINE_VIDEO_COMMAND_NAME / UPDATE_GOAL_TOOL_NAME / GOAL_COMMAND_NAME / GOAL_RESERVED_SUBCOMMANDS)+ 1 私有 skill 常量(`_IMAGINE_VIDEO_SKILL`,Rust `IMAGINE_VIDEO_SKILL`)+ 8 模板函数(loop_usage_message / loop_schedule_instruction / imagine_usage_message / imagine_instruction / imagine_video_usage_message / imagine_video_instruction / goal_usage_message / goal_instruction)。**零外部依赖**,纯字符串 + f-string,crate 最自包含叶子。
+3. **`agent/tests/test_tools_api_slash_commands.py`** — 14 测试:6 结构测试(barrel 暴露 + __all__ 表面 + 16 符号集 + 常量值钉死 + 保留子命令顺序)+ 5 Rust 内联测试语义还原(prompt verbatim / contract tokens / 无 host-side 默认间隔 / goal 契约 token / usage message 无默认声明)+ 3 平台增强测试(返回类型 + ## Input 末尾钉 args + Prompt 末行)。
+
+### 映射决策树 + 坑
+
+1. **`\` 行续语义无 1:1 Python 语法** — Rust 的反斜杠行续(尾随 `\` 消耗换行 + 剥离下一行全部前导空白,把多行源码连成一行逻辑行)在 Python 普通字符串里没有等价物。**解法**:每个多行指令用 `()` 分组内**相邻字符串字面量**重建,显式 `\n` / `\n\n` 分隔。关键洞察:相邻字面量编译期拼接**不引入额外空白**,与 Rust 行续的"连成一行"语义完全一致;每个续接字面量末尾保留一个空格,复现 Rust 在上一行末词与下一行首词之间保留的那个单空格(行间空白被剥离,但反斜杠前那一行的尾随空格保留)。docstring 专节固化此规则,测试用 `text.contains(...)` 语义(与 Rust 内联测试同级)而非逐字节精确比对。
+2. **`pub mod pb` 不可迁移** — tonic/build.rs 生成的 ~60 个 protobuf wire 类型(AgentCompletionRequirement / ExecuteToolRequest / ErrorCode / ToolCategory / ...),平台无 .proto/protoc 流水线,无 gRPC tools server 消费者。**遵循 R132 grpc_client/OTel SDK YAGNI 模式**:明确记录为有据可查的分歧,而非疏漏。若未来真有 gRPC tools 面,从权威 .proto 重新生成 pb,而非手工移植。barrel 账本 + 包 docstring 双重固化。
+3. **含字面双引号的字符串引号选择** — goal_instruction 里 Rust `\"summary\"` / `\"reason\"` / `\"status note\"` 是转义双引号。Python 移植时这些字面量改用**单引号包裹**(如 `'Call update_goal(completed: true, message: "summary") ONLY when the '`),避免 `\"` 转义噪声,ruff quote 规则(未配 Q 系列)不强制一致性,format 也不会把含双引号的字符串改成双引号包裹(那会引入转义)。
+4. **barrel 暴露子模块而非内部符号** — Rust `slash_commands` / `config_validation` 是 `pub mod`(以 `crate::slash_commands::foo()` 访问),不在 lib.rs 根重新导出内部符号。平台 barrel 忠实镜像:只暴露子模块(`__all__ = ["slash_commands"]`),不把 16 个内部符号提到包根。`default_client_name`(R192 落地)是 lib.rs 的自由函数而非 re-export,届时提到包根。
+5. **GOAL_RESERVED_SUBCOMMANDS 类型选择** — Rust `&[&str]` 切片 → Python `tuple`(不可变 + 有序,测试钉死 `("status", "pause", "resume", "clear", "edit")` 顺序,匹配 shell /goal 语法)。
+
+### 验证
+
+- `uv run ruff check minimax_code/tools_api/ tests/test_tools_api_slash_commands.py` → **All checks passed!**
+- `uv run pytest tests/test_tools_api_slash_commands.py -q` → **14 passed in 0.10s**
+- 全量回归 `uv run pytest --tb=short -q` → **4662 passed, 10 skipped, 1 warning in 102.38s**(零失败,零破坏)
+- Rust 内联测试 5 个语义全部还原(prompt verbatim / video workflow token / loop contract token + 无 10m 默认 / goal contract token + 无 system-reminder / usage message 无默认声明)
+
+### YAGNI 边界
+
+- **pb protobuf 模块不迁** — 无流水线、无消费者,记录在案(决策 #2)。
+- **config_validation 推迟到 R191** — 它消费 pb 的 `ToolConfigEntry`(但只读 `.id` 字段,可鸭子类型绕过)和 R82 已迁的 `tool_protocol.ToolId`,本轮不碰。
+- **lib.rs barrel-reconciliation 推迟到 R192** — `default_client_name` + `ToolCategory::as_str()`(pb 附着,随 pb YAGNI)+ 最终账本。
+- **未引入任何新 IPC handler / store / 前端改动** — 纯库代码迁移,不影响运行时面。
+- **未触碰 10 个排除文件 + 90+ 个预存 M 文件** — 精确 `git add` 仅 3 个新文件。
+
+### Commit
+
+`feat(platform): R190 xai-grok-tools-api package skeleton + slash_commands leaf (17 symbols migrated, pb YAGNI architecture decision, Rust backslash line-continuation -> Python adjacent literals, 14 tests, 3-file crate pace)`
