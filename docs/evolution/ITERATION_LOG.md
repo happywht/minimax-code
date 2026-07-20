@@ -13420,3 +13420,55 @@ SDK leaf 19a — 网络原语首叶。前向移植 grok-build `xai-computer-hub-
 ### Commit
 
 （提交后回填）
+
+## R163 — run_handshake handshake 编排桥梁（SDK leaf 19b，复用 R134 send_hello + 分裂 Sink/Stream Protocol）
+
+锚点:R163-1 94e34c8
+
+### 本轮目标
+
+SDK leaf 19b — handshake 编排桥梁。前向移植 `grok-build/crates/common/xai-computer-hub-sdk/src/connection.rs:934-959 run_handshake`。这是 `open_socket`(R162) 与 `reconnect_and_replay`(R164) 之间的薄编排层：接收已分裂的 `sink`/`stream`，驱动 `send_hello`(R134) 完成 hello/hello_ack 交换，返回 `(sink, stream, ack)` 三元组供稳态消费。复用 R134 的 `HandshakeSink`/`HandshakeStream` 分裂 Protocol 模型 + `send_hello` 的完整 `ClientError` 子类错误分类（`SerdeError`/`NetworkError`/`ProtocolError`/`Closed` 直接透传）。本轮完整移植纯编排逻辑；真实 `ws.split()`（Python WS 客户端无原生 split）是 R164 `reconnect_and_replay` 的注入缝隙——延续 leaf 哲学（小步、可测、闭合编排链）。
+
+### 融合结论
+
+Rust `run_handshake`（934-959）是一个 26 行的 thin orchestrator：转发 `(sink, stream, kind, server_id, server_description, server_metadata)` 给 `send_hello`，将其返回的 `HelloAckMsg` 重新打包成 `(sink, stream, ack)` 三元组返回。Rust 用 `&mut sink` / `&mut stream`（可变借用），返回时是 re-borrowed 的同一对象。Python 移植精确复刻这一语义：sink/stream 是引用，`send_hello` 通过 `HandshakeSink`/`HandshakeStream` Protocol 驱动它们（`send_text`/`send_pong` + `async for frames`）但不替换对象，所以返回的 sink/stream 与传入的同一（`is` 同一性）。
+
+`handshake.py` 模块 docstring（R134）明确预告："the concrete WS adapter that bridges a `websockets`/`anyio` frame onto these protocols lands with `connection.rs` (a later leaf)"——R163 正是这个预告的落地：`run_handshake` 是连接 `open_socket`（原始 socket）与稳态读写循环（`run_writer`/`run_reader_actor`）的 handshake 编排接缝。
+
+### 交付
+
+**`agent/minimax_code/computer_hub_sdk/connection.py`**（追加 `run_handshake`，+2 处 import）：
+- 新增 import：`from minimax_code.computer_hub_sdk.handshake import HandshakeSink, HandshakeStream, send_hello` + `from minimax_code.tool_protocol.handshake import HelloAckMsg`（按 ruff isort：`computer_hub_sdk.handshake` 在 error<它<metrics；`tool_protocol.handshake` 在 frames<它<ids）
+- `async def run_handshake(sink, stream, kind, server_id=None, description=None, metadata=None) -> tuple[HandshakeSink, HandshakeStream, HelloAckMsg]`：单行委托 `ack = await send_hello(sink, stream, kind, server_id, description, metadata)` + `return sink, stream, ack`。完整 docstring 记录 Rust 行号、分裂 Protocol 语义、ClientError 子类透传契约。
+
+**`agent/tests/test_connection.py`**（+8 测试，3 处 import 扩展）：
+- import 扩展：error +`Closed`/`ProtocolError`；`tool_protocol.handshake` +`HelloAckMsg`；connection +`run_handshake`（按字母序插在 `route_or_pong`/`run_reader_actor` 之间）
+- `_RecordingHandshake` spy 类：替换模块级 `send_hello`，捕获 6 参数 + 返回可配置 ack 或抛可配置异常
+- `_hello_ack_wire()` helper：合规 hello_ack wire dict
+- 8 测试：threads_sink_stream_kind（位置参数转发）/ defaults_optional_fields_to_none / threads_optional_fields（server_id/description/metadata）/ returns_sink_stream_ack_triple（`is` 同一性 + ack 透传）/ propagates_protocol_error / propagates_closed / propagates_network_error / propagates_serde_error
+
+### 映射决策树 + 坑
+
+1. **thin orchestrator 语义**：Rust `run_handshake` 不做任何错误捕获/重分类——`send_hello(...).await?` 的 `?` 直接传播 `ClientError`。Python 移植同样无 try/except：`ack = await send_hello(...)` 自然传播所有 `ClientError` 子类。测试 4 个 propagates_* 用例验证 ProtocolError/Closed/NetworkError/SerdeError 全部原样透传。
+
+2. **分裂 Protocol vs Rust SplitSink/SplitStream**：Rust 用 `tokio_tungstenite::WebSocketStream::split()` 产生 `SplitSink<WsStream, Message>` + `SplitStream<WsStream>`。Python 的 websockets 库连接对象无原生 split。R134 已用 `HandshakeSink`(send_text/send_pong) + `HandshakeStream`(aiter HandshakeFrame) 两个 Protocol 建模这个分裂——`run_handshake` 接收已分裂的 sink/stream，不需要自己做 split。真实 `ws.split()` 是 R164 `reconnect_and_replay` 的注入缝隙（消费 R162 `open_socket` 返回的原始 ws）。
+
+3. **测试策略——monkeypatch spy 而非 fake sink/stream**：R163 测试用 `monkeypatch.setattr("minimax_code.computer_hub_sdk.connection.send_hello", spy)` 替换模块级 `send_hello` 引用，而非复制 R134 的 `_FakeSink`/`_FakeStream`。原因：`run_handshake` 的契约是"转发参数 + 重组三元组 + 透传错误"，它从不直接操作 sink/stream（只转发）。用 spy 精确测编排契约，避免重复测试 `send_hello` 的 5-arm frame 覆盖（已在 `test_computer_hub_sdk_handshake.py` 详尽覆盖）。sink/stream 用 `object()` 哨兵，断言 `is` 同一性。
+
+4. **monkeypatch 字符串形式**：`monkeypatch.setattr("minimax_code.computer_hub_sdk.connection.send_hello", spy)` 用点分字符串路径，无需 `import connection as connection_mod` 模块对象——保持 test_connection.py 现有 import 风格（全 `from` 形式）不变。
+
+5. **isort 顺序精确**：ruff `order-by-type=true` 下，`run_handshake` 作为小写 function 与 `backoff_for`/`route_or_pong`/`run_reader_*` 同组，字母序 `route_or_pong < run_handshake < run_reader_actor`（r-o < r-u；run-h < run-r）。首轮 ruff check 即全绿，零 --fix。
+
+### 验证
+
+- `uv run ruff check connection.py test_connection.py` -> **All checks passed!**（零 --fix，isort 判断精确）
+- `uv run pytest tests/test_connection.py -q` -> **131 passed in 3.45s**（R162 的 123 + R163 的 8 新测试，零回归）
+
+### YAGNI 边界
+
+- **真实 `ws.split()` 不在 R163**：Python WS 客户端（websockets/aiohttp）连接对象无 Rust `WebSocketStream::split()` 的原生等价。`run_handshake` 接收已分裂的 sink/stream，split 的具体实现（适配 `websockets` 帧到 `HandshakeSink`/`HandshakeStream` Protocol）是 R164 `reconnect_and_replay` 的注入缝隙。R163 只闭合"handshake 编排"这一可独立测试的叶子。
+- **`reconnect_and_replay`(1301-1370) 不在 R163**：它是 connection.rs 最后一个未迁移的顶级函数（70 行核心重连编排：open_socket -> split -> run_handshake -> session replay -> metrics -> on_reconnect），依赖 R163 run_handshake + bound_sessions + connection_id lock + hello_capabilities + ReconnectEvent。留给 R164。
+
+### Commit
+
+`feat(platform): R163 port run_handshake handshake orchestrator bridge (SDK leaf 19b)` — 精确 `git add` 3 文件（connection.py + test_connection.py + ITERATION_LOG.md），131 测试通过。

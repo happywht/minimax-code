@@ -108,6 +108,11 @@ from minimax_code.computer_hub_sdk.error import (
     NetworkError,
     SerdeError,
 )
+from minimax_code.computer_hub_sdk.handshake import (
+    HandshakeSink,
+    HandshakeStream,
+    send_hello,
+)
 from minimax_code.computer_hub_sdk.metrics import (
     reconnect_duration_observe,
     reconnect_failed,
@@ -130,6 +135,7 @@ from minimax_code.tool_protocol.frames import (
     ServeResult,
     serve_result_from_wire,
 )
+from minimax_code.tool_protocol.handshake import HelloAckMsg
 from minimax_code.tool_protocol.ids import ConnectionId, RequestId, ServerId, SessionId
 from minimax_code.tool_protocol.methods import Method
 from minimax_code.tracing.http_client import attach_trace_to_http_request
@@ -1760,3 +1766,40 @@ async def open_socket(
     except Exception as exc:
         raise ClientError.from_handshake_error(exc) from exc
     return ws
+
+
+async def run_handshake(
+    sink: HandshakeSink,
+    stream: HandshakeStream,
+    kind: ConnectionKind,
+    server_id: ServerId | None = None,
+    description: str | None = None,
+    metadata: Any = None,
+) -> tuple[HandshakeSink, HandshakeStream, HelloAckMsg]:
+    """Drive the hello / hello_ack exchange; hand back ``(sink, stream, ack)`` (R163).
+
+    Mirrors ``run_handshake`` (connection.rs:934). A thin orchestrator that
+    delegates the actual frame exchange to :func:`send_hello` (R134) and
+    repackages its ack into a ``(sink, stream, ack)`` triple for the
+    steady-state caller (:func:`reconnect_and_replay`, a later leaf). Rust
+    takes ``&mut sink`` / ``&mut stream`` and returns them re-borrowed; in
+    Python the same objects flow through unchanged (send_hello drives them
+    via the :class:`HandshakeSink` / :class:`HandshakeStream` protocols
+    without replacing them), so the returned pair is identical to the inputs.
+
+    Every failure mode is a :class:`ClientError` subclass surfaced verbatim
+    from :func:`send_hello`: :class:`SerdeError` (hello serialize),
+    :class:`NetworkError` (send / pong / pre-ack EOF), :class:`Closed`
+    (server Close frame), :class:`ProtocolError` (binary frame / malformed
+    ack / version mismatch). Nothing is caught or reclassified here -- the
+    orchestrator's contract is purely "thread the args through, thread the
+    ack back, propagate the error".
+
+    ``kind`` should be
+    :class:`~minimax_code.tool_protocol.connection.ConnectionKind.ToolServer`
+    for tool-server builds today; ``server_id`` / ``description`` /
+    ``metadata`` are threaded into the hello frame so the hub can identify
+    the server without a separate ``register_server`` call.
+    """
+    ack = await send_hello(sink, stream, kind, server_id, description, metadata)
+    return sink, stream, ack

@@ -101,6 +101,7 @@ from minimax_code.computer_hub_sdk.connection import (
     now_unix_millis,
     open_socket,
     route_or_pong,
+    run_handshake,
     run_reader_actor,
     run_reader_phase,
     run_writer,
@@ -124,10 +125,12 @@ from minimax_code.computer_hub_sdk.demux import Demux, _Sink, mpsc_channel
 from minimax_code.computer_hub_sdk.error import (
     BackpressureError,
     ClientError,
+    Closed,
     HandshakeAuthFailed,
     InsecureScheme,
     InvalidConfig,
     NetworkError,
+    ProtocolError,
     SerdeError,
 )
 from minimax_code.computer_hub_sdk.refcount import RefCountedSet
@@ -140,6 +143,7 @@ from minimax_code.tool_protocol.envelope import (
     JsonRpcVersion,
 )
 from minimax_code.tool_protocol.frames import ServeParams
+from minimax_code.tool_protocol.handshake import HelloAckMsg
 from minimax_code.tool_protocol.ids import ConnectionId, RequestId, ServerId, SessionId, ToolId
 from minimax_code.tool_protocol.methods import Method
 
@@ -2386,3 +2390,159 @@ async def test_open_socket_returns_dialer_stream_verbatim() -> None:
         dial,
     )
     assert ws is sentinel
+
+
+# ---------------------------------------------------------------------------
+# run_handshake -- handshake orchestrator bridge (R163, SDK leaf 19b).
+# ---------------------------------------------------------------------------
+class _RecordingHandshake:
+    """Spy capturing run_handshake's send_hello delegation (R163).
+
+    Replaces the module-level ``send_hello`` reference so the orchestrator's
+    contract is tested in isolation: every arg threaded through verbatim, the
+    ack repackaged into a ``(sink, stream, ack)`` triple, and any ClientError
+    subclass propagated untouched. The sink/stream are opaque sentinels
+    (run_handshake never inspects them -- it only forwards them), so this
+    suite does NOT re-exercise send_hello's own frame arms (already covered
+    exhaustively in test_computer_hub_sdk_handshake.py); it asserts only the
+    thin orchestrator's pass-through semantics.
+    """
+
+    def __init__(
+        self, *, ack: HelloAckMsg | None = None, exc: BaseException | None = None
+    ) -> None:
+        self.captured: dict[str, Any] = {}
+        self._ack = ack
+        self._exc = exc
+
+    async def __call__(
+        self,
+        sink: Any,
+        stream: Any,
+        kind: ConnectionKind,
+        server_id: ServerId | None = None,
+        description: str | None = None,
+        metadata: Any = None,
+    ) -> HelloAckMsg:
+        self.captured = {
+            "sink": sink,
+            "stream": stream,
+            "kind": kind,
+            "server_id": server_id,
+            "description": description,
+            "metadata": metadata,
+        }
+        if self._exc is not None:
+            raise self._exc
+        assert self._ack is not None  # pacify type checker; set in __init__.
+        return self._ack
+
+
+def _hello_ack_wire() -> dict[str, Any]:
+    """A well-formed hello_ack wire dict (PROTOCOL_VERSION supported)."""
+    return {
+        "connection_id": "conn-1",
+        "user_id": "user-7",
+        "computer_hub_version": "hub-0.1.0",
+        "supported_protocol_versions": ["1.0.0"],
+    }
+
+
+async def test_run_handshake_threads_sink_stream_kind_to_send_hello(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The three positional args (sink, stream, kind) are forwarded verbatim;
+    # run_handshake never inspects them, only threads them through.
+    spy = _RecordingHandshake(ack=HelloAckMsg.from_wire(_hello_ack_wire()))
+    monkeypatch.setattr("minimax_code.computer_hub_sdk.connection.send_hello", spy)
+    sink = object()
+    stream = object()
+    await run_handshake(sink, stream, ConnectionKind.ToolServer)
+    assert spy.captured["sink"] is sink
+    assert spy.captured["stream"] is stream
+    assert spy.captured["kind"] is ConnectionKind.ToolServer
+
+
+async def test_run_handshake_defaults_optional_fields_to_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spy = _RecordingHandshake(ack=HelloAckMsg.from_wire(_hello_ack_wire()))
+    monkeypatch.setattr("minimax_code.computer_hub_sdk.connection.send_hello", spy)
+    await run_handshake(object(), object(), ConnectionKind.Harness)
+    assert spy.captured["server_id"] is None
+    assert spy.captured["description"] is None
+    assert spy.captured["metadata"] is None
+
+
+async def test_run_handshake_threads_optional_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spy = _RecordingHandshake(ack=HelloAckMsg.from_wire(_hello_ack_wire()))
+    monkeypatch.setattr("minimax_code.computer_hub_sdk.connection.send_hello", spy)
+    metadata = {"runner": "gha"}
+    await run_handshake(
+        object(),
+        object(),
+        ConnectionKind.ToolServer,
+        "srv-9",  # type: ignore[arg-type]
+        "ci-runner",
+        metadata,
+    )
+    assert spy.captured["server_id"] == "srv-9"
+    assert spy.captured["description"] == "ci-runner"
+    assert spy.captured["metadata"] is metadata
+
+
+async def test_run_handshake_returns_sink_stream_ack_triple(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The orchestrator repackages send_hello's ack into a (sink, stream, ack)
+    # triple; the sink/stream are the SAME objects passed in (mirrors Rust
+    # returning the re-borrowed &mut pair), and the ack is send_hello's return.
+    ack = HelloAckMsg.from_wire(_hello_ack_wire())
+    spy = _RecordingHandshake(ack=ack)
+    monkeypatch.setattr("minimax_code.computer_hub_sdk.connection.send_hello", spy)
+    sink = object()
+    stream = object()
+    result_sink, result_stream, result_ack = await run_handshake(
+        sink, stream, ConnectionKind.ToolServer
+    )
+    assert result_sink is sink
+    assert result_stream is stream
+    assert result_ack is ack
+
+
+async def test_run_handshake_propagates_protocol_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spy = _RecordingHandshake(exc=ProtocolError("version mismatch"))
+    monkeypatch.setattr("minimax_code.computer_hub_sdk.connection.send_hello", spy)
+    with pytest.raises(ProtocolError, match="version mismatch"):
+        await run_handshake(object(), object(), ConnectionKind.ToolServer)
+
+
+async def test_run_handshake_propagates_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spy = _RecordingHandshake(exc=Closed("server closed during handshake"))
+    monkeypatch.setattr("minimax_code.computer_hub_sdk.connection.send_hello", spy)
+    with pytest.raises(Closed, match="server closed"):
+        await run_handshake(object(), object(), ConnectionKind.ToolServer)
+
+
+async def test_run_handshake_propagates_network_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spy = _RecordingHandshake(exc=NetworkError("hello send failed"))
+    monkeypatch.setattr("minimax_code.computer_hub_sdk.connection.send_hello", spy)
+    with pytest.raises(NetworkError, match="hello send"):
+        await run_handshake(object(), object(), ConnectionKind.ToolServer)
+
+
+async def test_run_handshake_propagates_serde_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spy = _RecordingHandshake(exc=SerdeError("hello serialize failed"))
+    monkeypatch.setattr("minimax_code.computer_hub_sdk.connection.send_hello", spy)
+    with pytest.raises(SerdeError, match="serialize"):
+        await run_handshake(object(), object(), ConnectionKind.ToolServer)
