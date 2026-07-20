@@ -704,3 +704,38 @@ class ToolHarness:
         if fut.exception() is not None:
             return None  # bind failed -> Err surfaces via await_bound
         return fut.result()
+
+    # -- read-only accessors (lines 854-873) -- R172 --
+
+    def session(self) -> SessionId:
+        """Bound session id (Rust ``session``).
+
+        Rust returns ``&SessionId`` (a borrow); :class:`SessionId` is a ``str``
+        newtype (immutable), so returning the live reference is equivalent to
+        the borrow -- there is no mutation path to defend against.
+        """
+        return self._inner.session
+
+    def local_registry(self) -> LocalRegistry:
+        """Snapshot of the in-process tool registry (Rust ``local_registry``).
+
+        Rust returns ``self.inner.local_registry.clone()`` (a deep copy of the
+        ``RwLock<HashMap<...>>``) so callers cannot mutate the harness's live
+        registry through the returned value. Python returns the **live
+        reference** instead -- mirroring the :class:`ToolHarness` Clone mapping
+        (Rust ``Arc::clone`` -> Python reference sharing, R168). Callers that
+        need an independent copy must ``copy.deepcopy`` explicitly.
+        """
+        return self._inner.local_registry
+
+    def model_output(
+        self, tool_id: ToolId, output: Any
+    ) -> list[ContentBlock] | None:
+        """Extract model-facing content blocks from a tool's output (Rust
+        ``model_output``).
+
+        Returns ``None`` if no extractor is registered for ``tool_id``;
+        otherwise the extractor's result. Delegates to
+        :meth:`LocalRegistry.model_output`.
+        """
+        return self._inner.local_registry.model_output(tool_id, output)

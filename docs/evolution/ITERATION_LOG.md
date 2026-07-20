@@ -14081,3 +14081,67 @@ uv run pytest tests/test_harness_actor.py -q
 ### Commit
 
 feat(platform): R171 ToolHarness await_bound + try_bound (DeferredBind dispatch consumers)
+## R172 — harness.rs leaf 8: session + local_registry + model_output read-only accessors
+
+锚点:R172-1 33552ed
+
+### 本轮目标
+
+移植 `grok-build/.../harness.rs:854-873` 的三个**只读访问器**（harness.rs leaf 8）：`session()` / `local_registry()` / `model_output()`。零依赖小叶 —— 消费 R170 `local_only_with` 构造的 `inner` 状态 + R166 `LocalRegistry.model_output`。这是 ToolHarness 的**状态读取面**，与 R170 构造层、R171 消费层对称的第三面（读取层）：
+
+- `session()`（854-857）：`&self.inner.session` —— 返回绑定会话 id。
+- `local_registry()`（859-861）：`self.inner.local_registry.clone()` —— 返回进程内工具注册表快照。
+- `model_output(tool_id, output)`（867-873）：`self.inner.local_registry.model_output(tool_id, output)` —— 纯委托提取模型可见内容块。
+
+### 融合结论
+
+三个只读访问器是 ToolHarness 的状态读取面。**Python 映射核心**：Rust `&` 借用 / `.clone()` 值语义 → Python **引用返回**（与 R168 Clone 先例一致）：
+
+- `session()`：SessionId 是 str newtype（不可变），引用等价借用，无 mutation 路径需防御。
+- `local_registry()`：Rust `RwLock<HashMap>` 深拷贝（值语义防御，调用方修改不影响内部）→ Python 返回 live reference（R168 Clone 先例：Rust `Arc::clone` → Python ref sharing）。LocalRegistry 无 clone 方法，Python 惯例访问器返回引用，docstring 明示"需独立副本 → copy.deepcopy"。
+- `model_output()`：逐字委托，签名与 R166 `LocalRegistry.model_output` 一致。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/harness.py`：ToolHarness 追加 `session` + `local_registry` + `model_output` 3 方法，`try_bound` 之后。+~40 行。
+- `agent/tests/test_harness_actor.py`：import 加 `ContentBlock` + 追加 7 测试（R172 段）。
+  - session ×2：`==` 值 + `is` 引用。
+  - local_registry ×2：`is` 引用（R168 Clone 先例）+ 注册工具可见性。
+  - model_output ×3：extractor hit + 无 extractor None + 不存在 tool None。
+- 总计 **44 测试**（R168 14 + R169 6 + R170 9 + R171 8 + R172 7），**0 warning**。
+
+### 映射决策树 + 坑
+
+1. **session() 返回引用**：Rust `&self.inner.session`（借用）。Python `return self._inner.session`。SessionId 是 str newtype 不可变，引用等价借用，无 mutation 路径需防御。docstring 注明。
+2. **local_registry() clone→ref**：Rust `self.inner.local_registry.clone()`（RwLock<HashMap> 深拷贝，值语义防御）。Python `return self._inner.local_registry`（live reference）。决策依据 R168 Clone 先例（Rust `Arc::clone` → Python ref sharing）。LocalRegistry 无 clone/__copy__/__deepcopy__ 方法，加一个扩大范围；Python 惯例访问器返回引用，调用方约定不 mutate。docstring 明示"need independent copy → copy.deepcopy"。
+3. **model_output() 纯委托**：Rust `self.inner.local_registry.model_output(tool_id, output)`。Python 逐字转发，签名一致（`tool_id: ToolId, output: Any -> list[ContentBlock] | None`）。R166 LocalRegistry.model_output 已实现（extractor 注册表查找）。
+4. **ContentBlock import 复用**：ToolHarness.model_output 返回 `list[ContentBlock] | None`，ContentBlock 已在 harness.py import（LocalRegistry.model_output 用）。test 加 `ContentBlock` import（`_extract_as_text` 注解）。
+5. **test 加 ContentBlock isort**：`from minimax_code.tool_runtime.tool import ContentBlock, default_capabilities`，C<d 字母序，isort order-by-type=true 满足。
+6. **_extract_as_text 用 def 非 lambda**：E731 禁止 `name = lambda`，用 `def`（同 test_local_registry `_stub_extractor` 模式）。
+7. **测试覆盖矩阵**：session ×2（`==` 值 + `is` 引用）/ local_registry ×2（`is` 引用 + 注册工具可见性 `contains`+`len`）/ model_output ×3（extractor hit + 无 extractor None + 不存在 tool None）。
+
+### 验证
+
+```bash
+cd "/d/工作/城建院/mm code/agent"
+uv run ruff check minimax_code/computer_hub_sdk/harness.py tests/test_harness_actor.py
+# => All checks passed!
+uv run pytest tests/test_harness_actor.py -q
+# => 44 passed in 0.35s  (0 warning)
+```
+
+44 = R168（14：bind 类型层 + ToolHarnessInner + actor handle）+ R169（6：spawn_pending_bind + LazyBind.start 行为层）+ R170（9：三构造入口 + has_pending_bind）+ R171（8：await_bound + try_bound 消费层）+ R172（7：session + local_registry + model_output 读取层）。
+
+### YAGNI 边界
+
+本轮只移植 854-873 三访问器。推迟：
+
+- **connection()（850）/ require_connection()（875）/ list_servers()（888+）** —— 依赖 `borrow` live（ConnectionBorrow→HubConnection→`b.connection()`），`require_connection` 返回 `Result<&Arc<HubConnection>, ClientError>`（local-only 返回 InvalidConfig 错误），延后。
+- **ToolHarnessInner impl 方法**（650-707：`fail_inflight_calls_on_disconnect` + `refresh_remote_tools`）—— 依赖 connection live 链 + demux，延后。
+- **build()（459-542）** —— 大 async，依赖 pool/auth/connection 全 live，延后。
+- **ToolHarness impl 方法**（725-1775 除构造/await_bound/try_bound/三访问器）—— `dispatch_remote` / `execute` 等依赖 connection live，延后。
+- **ObservedToolStream + RemoteCallStream/dispatch_remote**（1776+）+ **Drop**（1846）+ **server.rs**（2649）+ **lib.rs**（71 barrel）。
+
+### Commit
+
+feat(platform): R172 ToolHarness session + local_registry + model_output read-only accessors

@@ -40,7 +40,7 @@ from minimax_code.computer_hub_sdk.harness import (
 )
 from minimax_code.tool_protocol.capabilities import ToolCapabilities
 from minimax_code.tool_protocol.ids import SessionId, ToolId
-from minimax_code.tool_runtime.tool import default_capabilities
+from minimax_code.tool_runtime.tool import ContentBlock, default_capabilities
 from minimax_code.tool_types.types import ToolDescription
 
 
@@ -543,3 +543,74 @@ async def test_try_bound_lazy_started_resolves_after_await():
     assert harness.try_bound() is None  # not started
     await harness.await_bound()  # spawns + resolves
     assert harness.try_bound() is target
+
+
+# ===========================================================================
+# session + local_registry + model_output -- read-only accessors (lines
+# 854-873) -- R172.
+# ===========================================================================
+def _extract_as_text(output: Any) -> list[ContentBlock] | None:
+    """Extractor stub echoing output as a single text block."""
+    return [{"type": "text", "text": str(output)}]  # type: ignore[list-item]
+
+
+def test_session_returns_inner_session():
+    """session() returns the bound session id (== inner.session)."""
+    sess = SessionId("s-access")
+    harness = ToolHarness.local_only_with(
+        LocalRegistry(), sess, _Marker()  # type: ignore[arg-type]
+    )
+    assert harness.session() == sess
+
+
+def test_session_returns_live_reference():
+    """session() returns the live inner.session reference (str newtype immutable)."""
+    harness = ToolHarness.local_only_with(
+        LocalRegistry(), SessionId("s-ref"), _Marker()  # type: ignore[arg-type]
+    )
+    assert harness.session() is harness.inner.session
+
+
+def test_local_registry_returns_live_reference():
+    """local_registry() returns the live inner registry reference (Rust clone
+    -> Python ref sharing, R168 Clone mapping)."""
+    reg = LocalRegistry()
+    harness = ToolHarness.local_only_with(reg, SessionId("s"), _Marker())  # type: ignore[arg-type]
+    assert harness.local_registry() is reg
+    assert harness.local_registry() is harness.inner.local_registry
+
+
+def test_local_registry_accessor_sees_registered_tools():
+    """Tools registered before construction are visible through local_registry()."""
+    reg = LocalRegistry()
+    reg.register(_FakeTool("ns:alpha"))
+    harness = ToolHarness.local_only_with(reg, SessionId("s"), _Marker())  # type: ignore[arg-type]
+    view = harness.local_registry()
+    assert view.contains(ToolId("ns:alpha"))
+    assert len(view) == 1
+
+
+def test_model_output_delegates_to_local_registry_extractor():
+    """model_output delegates to LocalRegistry.model_output (extractor hit)."""
+    reg = LocalRegistry()
+    reg.register(_FakeTool("ns:alpha"))
+    reg.register_extractor(ToolId("ns:alpha"), _extract_as_text)
+    harness = ToolHarness.local_only_with(reg, SessionId("s"), _Marker())  # type: ignore[arg-type]
+    assert harness.model_output(ToolId("ns:alpha"), 42) == [
+        {"type": "text", "text": "42"}
+    ]
+
+
+def test_model_output_no_extractor_returns_none():
+    """model_output returns None when no extractor is registered."""
+    reg = LocalRegistry()
+    reg.register(_FakeTool("ns:alpha"))
+    harness = ToolHarness.local_only_with(reg, SessionId("s"), _Marker())  # type: ignore[arg-type]
+    assert harness.model_output(ToolId("ns:alpha"), 42) is None
+
+
+def test_model_output_missing_tool_returns_none():
+    """model_output returns None for a tool id with no registration at all."""
+    reg = LocalRegistry()
+    harness = ToolHarness.local_only_with(reg, SessionId("s"), _Marker())  # type: ignore[arg-type]
+    assert harness.model_output(ToolId("ns:absent"), 42) is None
