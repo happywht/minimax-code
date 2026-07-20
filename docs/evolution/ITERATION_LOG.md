@@ -15194,3 +15194,67 @@ crate 选定：`xai-grok-auth` 是 codegen 目录下规模适中（411 行）且
 ### Commit
 
 feat(platform): R187 xai-grok-auth trait contract layer (visibility HttpAuth + auth_provider CredentialSnapshot/AuthCredentialProvider/StaticAuthCredentialProvider, crate round 1 of 3, 15 tests)
+
+## R188 — xai-grok-auth retry_middleware 叶子（客户端无关重试编排器，crate 第 2 轮）
+
+锚点:R188-1 141c6f8
+
+### 本轮目标
+
+迁移 grok-build `crates/codegen/xai-grok-auth/src/retry_middleware.rs`（272 行，其中 ~80 行实现 + ~190 行 mockito e2e 测试），xai-grok-auth crate 的**第 3 个也是最后一个叶子**，Rust 中 feature-gated `middleware`。这是 crate 第 2 轮（共 3 轮）：第 1 轮 R187 落地 trait 契约层（visibility + auth_provider），本轮落地中间件叶子，R189 收官 lib.rs barrel 对账。
+
+AuthRetryMiddleware 包装一个 AuthCredentialProvider：每次出站请求印 `Authorization: Bearer` header，遇 401 触发最多 `max_retries` 次 refresh-and-retry（每次用 refresh 后的新 token 重新印 header 并重发）。
+
+### 融合结论
+
+**reqwest-middleware 的 `Middleware` trait 在 httpx 无 1:1 等价物**，平台方案选定"客户端无关重试编排器"：
+- httpx `event_hooks` 在 request/response 触发但无法触发重发（response-hook 返回值被忽略）-> 401 重试路径无法表达。
+- httpx `AsyncBaseTransport` 子类会把重试逻辑绑死到一个 client 的 transport 管线 -> 对 feature-gated 叶子过重。
+
+平台方案：暴露 `async def execute(request, send)` 方法，`send` 是调用方注入的分发回调（等价 reqwest-middleware 的 `Next`）。httpx 调用方接 `await middleware.execute(request, client.send)`。忠实依赖倒置哲学 —— middleware 依赖 trait + send 接缝，不绑具体客户端（与 R187 HttpAuth TYPE_CHECKING 纪律一致）。
+
+### 交付
+
+| 文件 | 状态 | 内容 |
+|------|------|------|
+| `agent/minimax_code/grok_auth/retry_middleware.py` | 新增 | `AuthRetryMiddleware`（`__init__` + `_apply_auth_header` staticmethod + `execute` async 编排），运行时 `import httpx`（具体编排层） |
+| `agent/minimax_code/grok_auth/__init__.py` | 改 | barrel 扩容：4->5 符号（加入 `AuthRetryMiddleware`），`__all__` 转纯字母序 |
+| `agent/tests/test_grok_auth_retry.py` | 新增 | 11 测试：9 个 retry 状态机分支 + 2 个结构（barrel 暴露 + isinstance trait 契约） |
+
+### 映射决策树 + 坑
+
+**决策 1：Middleware trait -> 客户端无关 execute(request, send) 编排器。**
+- Rust `impl Middleware::handle(req, extensions, next)`，`next.run(req)` 分发到下一层。httpx 无中间件 trait（见融合结论）。平台用 `send: Callable[[Request], Awaitable[Response]]` 参数注入分发（`next` 的等价）。middleware 不绑 httpx AsyncClient/transport，任何能发 `httpx.Request` 并回 `httpx.Response` 的 callable 都可接入。
+- 与 R187 visibility.py 的 HttpAuth TYPE_CHECKING 守卫形成对照：HttpAuth 是抽象 trait 层（鸭子类型，无运行时 httpx 依赖）；retry_middleware 是具体 httpx 编排层（操作 httpx.Request/Response），故 `import httpx` 运行时导入（非 TYPE_CHECKING）。两层职责不同，依赖策略不同。
+
+**决策 2：Rust `req.try_clone()` 消除 -- httpx request 可重用。**
+- reqwest 消费 request body 才需 try_clone 保留重试副本；httpx 的 `AsyncClient.send` 读 `request.content`（bytes）不消费，request 可重发。平台直接重用同一 request 对象，循环内 re-stamp Authorization header（覆盖旧值）。比 Rust 简洁。
+- 约束（docstring 记录）：调用方须传非流式 body 的 request，重试路径才生效 -- 等价 Rust `try_clone` 返回 None（流式 body）时放弃重试。
+
+**决策 3：Rust break 条件逐条映射，顺序保持。**
+- Rust 循环 4 个 break：(a) refresh 返回 False；(b) snapshot.token None；(c) backup.try_clone None（流式，平台 N/A）；(d) 循环耗尽。平台映射 (a)(b)(d)，(c) 因 httpx 可重用而消除。顺序严格保持：先 refresh 再读 token（确保读到 refresh 后的新 token）。
+- `StatusCode::UNAUTHORIZED` -> 字面量 401（`_UNAUTHORIZED` 模块常量，避免魔法数字）。
+- `tracing::warn!` header 构建失败分支移除：Python `f"Bearer {token}"` 恒为合法 str，httpx 接受任意 str header 值，该分支不可达。
+
+**坑 1：_ScriptedProvider.snapshot 每次 pop token 模拟 refresh 后 token 变化。**
+- 测试假 provider 的 snapshot 不是返回固定 token，而是从脚本列表 pop 下一个 -- 模拟"refresh 后 token 改变"。tokens 列表 = [initial, fresh1, fresh2, ...]，首次 snapshot pop initial，每次 retry 各 pop 一个 fresh。max_retries 边界测试（test_execute_max_retries_bounds_attempts）需 4 token（initial + 3 retry）+ 3 refresh_result，精确对齐 Rust test_max_retries_bounds_attempts（4 次请求 + 3 refresh）。
+
+**坑 2：_RecordingSend 记录每次调用的 authorization header。**
+- 假 send 记录 `request.headers.get("authorization")` 到 calls 列表，按脚本状态码序列返回。这样可断言"重试时 header 从 stale 变 fresh"（calls == ["Bearer stale", "Bearer fresh"]），等价 Rust mockito 的 match_header 断言，但无需 HTTP mock 服务器（更轻量、更快、无端口）。
+
+### 验证
+
+- `uv run ruff check minimax_code/grok_auth/ tests/test_grok_auth.py tests/test_grok_auth_retry.py` -> **All checks passed!**
+- `uv run pytest tests/test_grok_auth_retry.py tests/test_grok_auth.py -q` -> **26 passed**（R188 的 11 + R187 的 15，barrel 扩容未破坏 R187）。
+- 全套回归 `uv run pytest --tb=short -q` -> **4639 passed, 10 skipped**（对比 R187 的 4628，+11 = R188 新增；零回归，唯一 warning 是预存 StarletteDeprecationWarning）。
+
+### YAGNI 边界
+
+1. **Rust 的 reqwest-middleware ClientBuilder.with(...).build() 管线不迁移。** 平台用 send 回调注入，调用方自行组装（`await mw.execute(req, client.send)`），不需要 ClientWithMiddleware 等价物。中间件链组合（多 middleware 串联）当前无消费场景，YAGNI。
+2. **httpx AsyncBaseTransport 子类不提供。** 那会把重试绑死到 transport 层且需处理 httpx 内部 transport 链细节，超出 feature-gated 叶子范围。send 回调等价物已覆盖所有 reqwest-middleware 的 `next.run` 语义。
+3. **apply_auth_header 的 HeaderValue 构建失败分支不迁移。** Rust 用 tracing::warn 记录 `HeaderValue::from_str` 失败（非 ASCII token 等）。Python f-string 恒合法，httpx 接受任意 str，该分支不可达，移除（避免死代码）。
+4. **tracing 日志不迁移。** Rust middleware 内无 tracing 日志（仅 apply_auth_header 的 warn，已随决策 3 移除）。平台不引入额外日志（保持纯净，调用方可通过 send 回调侧观察）。
+
+### Commit
+
+feat(platform): R188 xai-grok-auth retry_middleware leaf (AuthRetryMiddleware client-agnostic retry orchestrator via send-callback seam, barrel 4->5 symbols, crate round 2 of 3, 11 tests)

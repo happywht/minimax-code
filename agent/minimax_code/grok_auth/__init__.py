@@ -68,15 +68,15 @@ from minimax_code.grok_auth.auth_provider import (
     CredentialSnapshot,
     StaticAuthCredentialProvider,
 )
+from minimax_code.grok_auth.retry_middleware import AuthRetryMiddleware
 from minimax_code.grok_auth.visibility import HttpAuth
 
 __all__ = [
-    # auth_provider.rs barrel (R187) -- 3 lib.rs pub use symbols.
     "AuthCredentialProvider",
+    "AuthRetryMiddleware",
     "CredentialSnapshot",
-    "StaticAuthCredentialProvider",
-    # visibility.rs barrel (R187) -- the HttpAuth seam (1 lib.rs pub use symbol).
     "HttpAuth",
+    "StaticAuthCredentialProvider",
 ]
 
 #: Barrel reconciliation note (R187)
