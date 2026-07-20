@@ -10635,3 +10635,133 @@ connection)` 三元组，`execute` 委托给 R124 的 `dispatch_via_connection`�
 ### Commit
 
 feat(platform): R125 migrate remote.rs layer-2 RemoteToolProxy (ToolHandle impl)
+
+
+## R126 — 迁移 remote.rs layer-2 RemoteTransport（Transport impl，leaf-6 收官）
+
+锚点:R126-1 1c2f463
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-computer-hub-core/src/remote.rs` 的
+`RemoteTransport`（Rust 145-203），layer-2 的**第 2 个** object-safe impl ——
+这次实现 R115 `Transport` trait（R125 的 `RemoteToolProxy` 实现 R117
+`ToolHandle`）。本轮**闭合 leaf-6 remote**：R120+R121 layer-4、R122 layer-1、
+R123+R124 layer-3、R125+R126 layer-2 全部落地，crate 6 个 leaf 的最后一个完整收官。
+
+具体目标：
+1. `RemoteTransport` 类（消费 R122 `ConnectionClient` + 实现 R115 `Transport`），
+   手写 `__init__`（字段/方法命名空间冲突，同 R125 模式）。
+2. 测试套件 R126 组（形状/构造/冲突不变式/访问器/kind/authorize 无 scope 对偶/
+   call 委托/identity/repr）。
+3. leaf-6 barrel docstring 标注 `R125+R126 layer 2`，声明 leaf-6 关闭。
+
+### 融合结论
+
+- **定位**：`RemoteTransport` 是**远程转发**的 `Transport` impl —— 与 R119
+  `LocalTransport`（本地进程内分发）构成对偶。它对绑定的 `(user_id, session_id)`
+  做一次性授权（构造时绑定），随后每次 `call` 把 `tool_id` 经
+  `dispatch_via_connection` 转发到绑定的 connection。无网络重连、无凭证校验循环
+  —— 凭证在 connection 层（R122）握手时验证，transport 只持有已授权的身份。
+- **【坑·设计冲突，与 R125 同源】字段/方法命名空间冲突**：Rust
+  `RemoteTransport` 的字段名（`session_id` / `user_id`）与固有方法名
+  （`fn session_id()` / `fn user_id()`）冲突。Python `@dataclass` 会让方法被
+  实例属性遮蔽。**修复**：手写 `__init__`，存为下划线前缀私有字段
+  （`_connection` / `_session_id` / `_user_id`）—— 镜像 R125 `RemoteToolProxy`
+  / R117 `ErasedTool` 先例。**对比 R119 `LocalTransport`**：它用
+  `@dataclass(eq=False)` 安全，只因它**没有**与字段同名的 accessor 方法；
+  `RemoteTransport` 有 accessor → 必须手写 `__init__`。
+- **`#[derive(Debug)]` 仅 Debug，无 Clone** —— 与 R119 `LocalTransport`（仅
+  Debug）相同，与 R125 `RemoteToolProxy`（Debug+Clone）不同。→ 不合成
+  `__copy__` / `__deepcopy__`，不定义 `__eq__`（identity 相等），手写 `__repr__`。
+- **`Arc<dyn ConnectionClient>` → 强 Python 引用**（与 R122/R119/R125 一致）。
+- **`kind() -> TransportKind.Remote` 同步**（与 `LocalTransport` 的 `.Local`
+  对偶）。
+- **`authorize()` 返回 `Principal.new(user_id).with_session(session_id)` 且**无
+  scope** —— 与 `LocalTransport` 的 `.with_scope(LOCAL_INVOKE_SCOPE)` 刻意对偶。
+  远程授权是 connection 层凭证驱动，principal 此处不带本地 invoke scope。返回
+  `Principal`（Ok 路径，按值非抛出，注解 `Principal | ToolError`）。
+- **`call(tool_id, args, ctx)` 委托 `dispatch_via_connection(connection, tool_id,
+  session_id, args, ctx)`** —— 与 R125 `RemoteToolProxy.execute` 相同的委托模式，
+  用绑定的 `session_id`（非 ctx 派生的 session）。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_core/remote.py`：`RemoteTransport` 类（文件
+  末尾，`RemoteToolProxy` 的 `__repr__` 之后），手写 `__init__`（3 参数，存为
+  `_connection` / `_session_id` / `_user_id`）+ 5 方法（`session_id` / `user_id`
+  / `kind` / `authorize` / `call`）+ `__repr__`。消费 R115 `Transport` / `Principal`、
+  R82 `TransportKind` / `UserId` / `SessionId` / `ToolId`、R108 `ToolCallContext`、
+  R124 `dispatch_via_connection`、R122 `ConnectionClient`。import 块加 4 符号
+  （`Transport` / `Principal`←transport；`TransportKind` / `UserId`←tool_protocol）。
+- `agent/tests/test_computer_hub_core_remote.py`：**18 个 R126 测试**（形状 2 +
+  构造/冲突不变式 2 + `session_id` 1 + `user_id` 1 + kind 2 + authorize 4
+  （含无 scope 对偶 + Ok 路径非 ToolError）+ call 3（含委托 spy + 绑定 session
+  优先）+ identity/copy 2 + repr 1），含 `_user_id` / `_make_transport` 2 个新
+  fixture，复用 R125 `_RecordingConnection` / `_tid` / `_session_id`。顶部 import
+  加 4 符号（`RemoteTransport`←remote；`Principal` / `Transport`←transport；
+  `TransportKind` / `UserId`←tool_protocol）。
+- `agent/minimax_code/computer_hub_core/__init__.py`：leaf-6 docstring 两处更新，
+  版本标注加 `R125+R126 layer 2`，结尾段声明 R126 已落地 `RemoteTransport`、
+  leaf-6 remote 完全关闭。
+
+### 映射决策树+坑
+
+1. **【坑·设计冲突，实现前已从 R125 预判】字段/方法命名空间冲突**：Rust
+   `RemoteTransport` 字段 `session_id` / `user_id` 与固有方法 `fn session_id()` /
+   `fn user_id()` 冲突。Python `@dataclass` 遮蔽方法。**修复**：手写 `__init__`，
+   下划线前缀私有字段，镜像 R125 `RemoteToolProxy` / R117 `ErasedTool`。**刻意不用**
+   R119 `LocalTransport` 的 `@dataclass(eq=False)` —— 那安全只因 `LocalTransport`
+   无同名 accessor。在 `RemoteTransport` docstring 记录映射原理（手写 `__init__`
+   动因、仅 Debug 无 Clone、`Arc`→强引用、无 scope 授权对偶、call 委托）。
+2. **仅 Debug 无 Clone（与 R125 区分）**：R125 `RemoteToolProxy` 派生 Debug+Clone
+   → identity 相等 + 无 `__copy__`。R126 `RemoteTransport` 仅 Debug（同 R119
+   `LocalTransport`）→ identity 相等 + 无 `__copy__` + 无 `__eq__`。测试
+   `test_transport_no_eq_no_copy_inherits_object_identity` 显式断言三者 absent。
+3. **`authorize` 无 scope 对偶**：`LocalTransport.authorize()` 链式
+   `.with_scope(LOCAL_INVOKE_SCOPE)`；`RemoteTransport.authorize()` **不**链
+   scope。测试 `test_transport_authorize_grants_no_scope_local_dual` 断言
+   `scopes == []` + `not has_scope("tool.invoke")`，刻意记录这对偶。
+4. **`call` 委托测试策略**：与 R125 `execute` 委托测试同模式 —— 函数内
+   `import minimax_code.computer_hub_core.remote as remote_mod` +
+   `monkeypatch.setattr(remote_mod, "dispatch_via_connection", _spy)`，断言参数顺序
+   `(connection, tool_id, session_id, args, ctx)` + 流透传 + 绑定 session 优先于
+   ctx 派生。
+5. **循环导入安全**：`remote.py` 现导入 `transport.Transport` / `Principal`；
+   桶顺序 transport→…→remote 确保 transport 先入 `sys.modules`。`transport.py`
+   不反向导入 remote。
+6. **`RemoteTransport` 不加入 `__all__`**：与 R125 `RemoteToolProxy` 一致
+   （layer-2 impl 不上 barrel，消费者从 remote 子模块直接导入）。leaf-6 barrel
+   仅暴露 layer-1 `ConnectionClient` + layer-4 decode 函数 +（R119）`LocalTransport`。
+   `LocalTransport` 上 barrel 是因 local.py 整 leaf 就是它；remote.py 是 4-layer
+   复合，layer-2 是实现细节。
+
+### 验证
+
+- `ruff check`（精确作用域 `remote.py` + 测试 + `__init__.py`）：
+  **All checks passed**。
+- `pytest tests/test_computer_hub_core_remote.py`：**145 passed**（R125 时
+  127 + R126 新增 18，0.57s，0 回归）。
+- `pytest` 6 叶子全回归（transport/registry/resolver/inner/local/remote）：
+  **272 passed**（R125 时 254 + R126 新增 18，0.85s）。
+- import 冒烟：`issubclass(RemoteTransport, Transport) is True` +
+  `__abstractmethods__ == frozenset()`（具体类可实例化）。
+
+### YAGNI 边界
+
+- **不**把 `RemoteTransport` / `RemoteToolProxy` 加入 barrel `__all__`（layer-2
+  impl 是 remote 子模块内部细节；R125 已为此立约，R126 沿用）。
+- **不**合成 `__copy__` / `__deepcopy__` / `__eq__`（Rust 仅 Debug derive；
+  identity 相等）。
+- **不**在 `authorize` 链 scope（刻意与 `LocalTransport` 对偶；远程授权凭证在
+  connection 层）。
+- **不**修改 R115 `Transport` / R119 `LocalTransport` / R124
+  `dispatch_via_connection` / R122 `ConnectionClient` / R125 `RemoteToolProxy`
+  的任何既有行为（纯新增子类，零侵入）。
+- **不**引入新的 IPC 契约变更（`RemoteTransport` 是 computer_hub_core 内部
+  `pub(crate)`，不经 IPC 暴露）。
+- **leaf-6 remote 现已完全关闭**；下一个 crate/leaf 待定（R127 起评估）。
+
+### Commit
+
+feat(platform): R126 migrate remote.rs layer-2 RemoteTransport (Transport impl)

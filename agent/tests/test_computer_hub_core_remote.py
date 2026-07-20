@@ -48,6 +48,7 @@ import pytest
 from minimax_code.computer_hub_core.remote import (
     ConnectionClient,
     RemoteToolProxy,
+    RemoteTransport,
     _request_stream,
     _terminal_from_response,
     _terminal_item,
@@ -60,6 +61,7 @@ from minimax_code.computer_hub_core.remote import (
     tool_error_from_wire,
 )
 from minimax_code.computer_hub_core.resolver import ToolHandle
+from minimax_code.computer_hub_core.transport import Principal, Transport
 from minimax_code.tool_protocol import (
     WORKSPACE_UNAVAILABLE_SUBCODE,
     BehaviorVersionUnsupported,
@@ -98,7 +100,9 @@ from minimax_code.tool_protocol import (
     ToolId,
     ToolNotFound,
     TransportClosed,
+    TransportKind,
     UnsupportedProtocolVersion,
+    UserId,
 )
 from minimax_code.tool_runtime import (
     BehaviorVersion,
@@ -1883,3 +1887,264 @@ def test_repr_mentions_class_name_and_ids():
     assert "RemoteToolProxy" in r
     assert repr(_tid()) in r
     assert repr(_session_id()) in r
+
+
+# ===========================================================================
+# RemoteTransport (R126) — the second layer-2 impl, the Transport that
+# forwards a tool-call over a ConnectionClient. Sibling of RemoteToolProxy
+# (R125, the ToolHandle impl); this is the Transport impl. Closes leaf-6.
+#
+# Rust #[derive(Debug)] pub struct RemoteTransport { connection, session_id,
+# user_id } with inherent accessors session_id()/user_id() that COLLIDE with
+# field names -> Python hand-written __init__ with underscore-prefixed private
+# fields (same pattern as R125 RemoteToolProxy / R117 ErasedTool). Debug-only
+# derive, no Clone, no PartialEq -> identity equality + no copy. Arc<dyn
+# ConnectionClient> -> strong Python reference. authorize grants NO scope
+# (the deliberate dual of LocalTransport's with_scope(LOCAL_INVOKE_SCOPE)).
+# call delegates to dispatch_via_connection with the bound session.
+# ===========================================================================
+
+
+def _user_id() -> UserId:
+    return UserId("user-3")
+
+
+def _make_transport(
+    *,
+    connection: ConnectionClient | None = None,
+    session_id: SessionId | None = None,
+    user_id: UserId | None = None,
+) -> RemoteTransport:
+    """Build a transport with sane defaults; any field can be overridden.
+
+    Mirrors Rust's ``RemoteTransport::new(connection, session_id, user_id)``
+    three-field constructor. Positional order at the call site is
+    connection -> session_id -> user_id, exactly as in Rust.
+    """
+    return RemoteTransport(
+        connection or _RecordingConnection(),
+        session_id or _session_id(),
+        user_id or _user_id(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Transport subclass + concrete class.
+# ---------------------------------------------------------------------------
+
+
+def test_transport_is_transport_subclass():
+    t = _make_transport()
+    assert isinstance(t, Transport)
+    assert isinstance(t, RemoteTransport)
+
+
+def test_transport_concrete_class_all_abstract_methods_implemented():
+    # Transport's three abstract methods (kind/authorize/call) are all
+    # implemented -> RemoteTransport is concrete and instantiable.
+    assert RemoteTransport.__abstractmethods__ == frozenset()
+
+
+# ---------------------------------------------------------------------------
+# Constructor: three positional args mirror Rust's new(c, s, u); the
+# field/method namespace collision forces hand-written __init__.
+# ---------------------------------------------------------------------------
+
+
+def test_transport_constructor_three_positional_mirrors_rust_new():
+    conn = _RecordingConnection()
+    sid = SessionId("session-pos")
+    uid = UserId("user-pos")
+    # Positional order is connection -> session_id -> user_id, same as Rust's
+    # RemoteTransport::new(connection, session_id, user_id).
+    t = RemoteTransport(conn, sid, uid)
+    assert t.session_id() == sid
+    assert t.user_id() == uid
+
+
+def test_transport_no_instance_attribute_shadows_accessors():
+    # The hand-written __init__ stores underscore-prefixed private fields
+    # (_connection/_session_id/_user_id). The bare names that Rust would have
+    # used as fields are NOT instance attributes -- they are the accessor
+    # methods. So 'connection'/'session_id'/'user_id' are absent from __dict__.
+    t = _make_transport()
+    assert "connection" not in t.__dict__
+    assert "session_id" not in t.__dict__
+    assert "user_id" not in t.__dict__
+    # ...and the underscore-prefixed privates ARE present.
+    assert "_connection" in t.__dict__
+    assert "_session_id" in t.__dict__
+    assert "_user_id" in t.__dict__
+
+
+# ---------------------------------------------------------------------------
+# Accessors: session_id() / user_id() return the bound ids by value.
+# ---------------------------------------------------------------------------
+
+
+def test_transport_session_id_accessor_returns_bound():
+    sid = SessionId("session-acc")
+    t = _make_transport(session_id=sid)
+    assert t.session_id() == sid
+
+
+def test_transport_user_id_accessor_returns_bound():
+    uid = UserId("user-acc")
+    t = _make_transport(user_id=uid)
+    assert t.user_id() == uid
+
+
+# ---------------------------------------------------------------------------
+# kind(): sync, returns TransportKind.Remote.
+# ---------------------------------------------------------------------------
+
+
+def test_transport_kind_is_remote():
+    t = _make_transport()
+    assert t.kind() is TransportKind.Remote
+
+
+def test_transport_kind_is_sync():
+    # kind() returns a discriminant, no I/O -- sync like Rust's `fn kind`.
+    assert not inspect.iscoroutinefunction(RemoteTransport.kind)
+
+
+# ---------------------------------------------------------------------------
+# authorize(): coroutine, returns a Principal carrying the bound user + the
+# bound session, with NO scope (the deliberate dual of LocalTransport's
+# with_scope(LOCAL_INVOKE_SCOPE)).
+# ---------------------------------------------------------------------------
+
+
+def test_transport_authorize_is_coroutine():
+    assert inspect.iscoroutinefunction(RemoteTransport.authorize)
+
+
+@pytest.mark.asyncio
+async def test_transport_authorize_returns_principal_with_user_and_session():
+    sid = SessionId("session-auth")
+    uid = UserId("user-auth")
+    t = _make_transport(session_id=sid, user_id=uid)
+    principal = await t.authorize()
+    assert isinstance(principal, Principal)
+    assert principal.user_id == uid
+    assert principal.authorizes_session(sid)
+
+
+@pytest.mark.asyncio
+async def test_transport_authorize_grants_no_scope_local_dual():
+    # Remote transport grants NO scope -- the deliberate counterpart to
+    # LocalTransport.authorize(), which chains .with_scope(LOCAL_INVOKE_SCOPE).
+    # Remote authorisation is credential-driven at the connection layer; the
+    # principal carries no local-invoke scope here.
+    t = _make_transport()
+    principal = await t.authorize()
+    assert principal.scopes == []
+    assert not principal.has_scope("tool.invoke")
+
+
+@pytest.mark.asyncio
+async def test_transport_authorize_never_returns_tool_error_on_ok_path():
+    # The Ok arm: authorize returns a Principal, not a ToolError.
+    t = _make_transport()
+    result = await t.authorize()
+    assert not isinstance(result, ToolError)
+
+
+# ---------------------------------------------------------------------------
+# call(): coroutine, delegates to dispatch_via_connection with the bound
+# session (NOT any session derivable from ctx).
+# ---------------------------------------------------------------------------
+
+
+def test_transport_call_is_coroutine():
+    assert inspect.iscoroutinefunction(RemoteTransport.call)
+
+
+@pytest.mark.asyncio
+async def test_transport_call_delegates_dispatch_via_connection(monkeypatch):
+    # Spy on the layer-3 assembler: capture the threaded arguments and return
+    # a sentinel stream verbatim. The transport must NOT drive the stream.
+    import minimax_code.computer_hub_core.remote as remote_mod
+
+    calls: list = []
+    sentinel = object()
+
+    async def _spy(connection, tool_id, session_id, arguments, ctx):  # noqa: ANN001
+        calls.append((connection, tool_id, session_id, arguments, ctx))
+        return sentinel
+
+    monkeypatch.setattr(remote_mod, "dispatch_via_connection", _spy)
+
+    conn = _RecordingConnection()
+    t = _make_transport(connection=conn)
+    ctx = object()
+    args = {"q": 1}
+    result = await t.call(_tid(), args, ctx)
+
+    assert result is sentinel  # stream forwarded verbatim
+    assert len(calls) == 1
+    captured = calls[0]
+    # Argument order mirrors Rust's call body:
+    #   dispatch_via_connection(self.connection, tool_id,
+    #                           self.session_id, args, ctx)
+    assert captured[0] is conn
+    assert captured[1] == _tid()
+    assert captured[2] == _session_id()
+    assert captured[3] is args
+    assert captured[4] is ctx
+
+
+@pytest.mark.asyncio
+async def test_transport_call_threads_bound_session_not_ctx_derivable(monkeypatch):
+    # call forwards self._session_id (bound at construction), not any session
+    # derivable from ctx. A spy confirms the bound session wins.
+    import minimax_code.computer_hub_core.remote as remote_mod
+
+    seen_sessions: list = []
+
+    async def _spy(connection, tool_id, session_id, arguments, ctx):  # noqa: ANN001
+        seen_sessions.append(session_id)
+        return object()
+
+    monkeypatch.setattr(remote_mod, "dispatch_via_connection", _spy)
+
+    bound = SessionId("session-bound")
+    t = _make_transport(session_id=bound)
+    await t.call(_tid(), {}, object())
+    assert seen_sessions == [bound]
+
+
+# ---------------------------------------------------------------------------
+# eq=False (Rust Debug-only derive, no PartialEq/Clone) -> identity-only
+# equality, no copy.
+# ---------------------------------------------------------------------------
+
+
+def test_transport_identity_equality_only():
+    t1 = _make_transport()
+    assert t1 == t1  # self-equality holds
+    t2 = _make_transport()  # equal-looking fields, different identity
+    assert t1 != t2
+
+
+def test_transport_no_eq_no_copy_inherits_object_identity():
+    # No __eq__ / __copy__ / __deepcopy__ on RemoteTransport -> identity
+    # semantics only (the Debug-only derive effect; Rust has no Clone here,
+    # unlike R125 RemoteToolProxy which derived Debug+Clone).
+    assert "__eq__" not in RemoteTransport.__dict__
+    assert "__copy__" not in RemoteTransport.__dict__
+    assert "__deepcopy__" not in RemoteTransport.__dict__
+
+
+# ---------------------------------------------------------------------------
+# __repr__.
+# ---------------------------------------------------------------------------
+
+
+def test_transport_repr_mentions_class_name_and_ids():
+    t = _make_transport()
+    r = repr(t)
+    assert "RemoteTransport" in r
+    assert repr(_session_id()) in r
+    assert repr(_user_id()) in r

@@ -155,6 +155,7 @@ from collections.abc import AsyncIterator, Awaitable
 from typing import Any
 
 from minimax_code.computer_hub_core.resolver import ToolHandle
+from minimax_code.computer_hub_core.transport import Principal, Transport
 from minimax_code.tool_protocol import (
     WORKSPACE_UNAVAILABLE_SUBCODE,
     BehaviorVersionUnsupported,
@@ -196,7 +197,9 @@ from minimax_code.tool_protocol import (
     ToolNotFound,
     ToolOutputWire,
     TransportClosed,
+    TransportKind,
     UnsupportedProtocolVersion,
+    UserId,
 )
 from minimax_code.tool_protocol.error_wire import from_wire as error_wire_from_wire
 from minimax_code.tool_protocol.output_wire import from_wire as output_from_wire
@@ -1201,4 +1204,176 @@ class RemoteToolProxy(ToolHandle):
         return (
             f"RemoteToolProxy(tool_id={self._tool_id!r}, "
             f"session_id={self._session_id!r})"
+        )
+
+
+# -----------------------------------------------------------------------
+# RemoteTransport — layer-2 (R126). The Transport impl that forwards a
+# tool-call request over a ConnectionClient, bound to a single
+# (user_id, session_id) at construction. Closes leaf 6: with R120-R125
+# this is the last layer-2 impl, and remote.rs is fully landed.
+# -----------------------------------------------------------------------
+
+
+class RemoteTransport(Transport):
+    """A :class:`Transport` that forwards calls over a :class:`ConnectionClient` (R126).
+
+    Fusion of grok-build's ``RemoteTransport``
+    (``xai-computer-hub-core/src/remote.rs``). The transport is bound to a
+    single ``(user_id, session_id)`` at construction; calls do not require a
+    pre-built :class:`RemoteToolProxy` — the transport builds the request
+    frame from the ``tool_id`` it is asked to dispatch. The remote sibling
+    of :class:`LocalTransport` (R119): both realise :class:`Transport`, but
+    where a local transport resolves ``tool_id`` against an in-process
+    resolver, a remote transport forwards the call over a connection and
+    lets layer-3 + layer-4 decode the wire response.
+
+    Construct with the connection and the bound identity, mirroring Rust's
+    ``RemoteTransport::new``::
+
+        transport = RemoteTransport(connection, session_id, user_id)
+
+    Why hand-written ``__init__`` (not ``@dataclass``)
+    --------------------------------------------------
+
+    Same field/method namespace clash as :class:`RemoteToolProxy` (R125):
+    Rust's struct fields ``session_id`` / ``user_id`` are read through
+    inherent methods of the same names (``fn session_id`` / ``fn user_id``).
+    Rust keeps fields and methods in separate namespaces, so the overlap is
+    harmless; a Python ``@dataclass`` cannot — the generated ``__init__``
+    would assign ``self.session_id = session_id`` and shadow the
+    :meth:`session_id` method (same for ``user_id``), leaving the accessors
+    uncallable. Contrast with R119's :class:`LocalTransport`, which keeps
+    its fields behind a ``@dataclass(eq=False)`` precisely because it has
+    NO same-named accessors. The faithful landing for
+    :class:`RemoteTransport` therefore mirrors R125's
+    :class:`RemoteToolProxy` (and R117's :class:`ErasedTool`): a plain
+    ``__init__`` stores the fields under underscore-prefixed private
+    attributes (``self._connection`` etc., matching Rust's private struct
+    fields — all lowercase, no ``pub``), and the accessors read them back.
+    No ``__eq__`` is defined, so identity equality holds (the ``eq=False``
+    effect, matching Rust's ``Debug``-only derive); a hand-written
+    ``__repr__`` mirrors :class:`RemoteToolProxy`.
+
+    Debug-only derive (no Clone, unlike RemoteToolProxy)
+    -----------------------------------------------------
+
+    Rust derives ``Debug`` only (NOT ``Clone``, unlike R125's
+    :class:`RemoteToolProxy` which derives ``Debug + Clone``). A remote
+    transport is shared by reference — callers ``Arc::clone`` the transport
+    handle, they do not value-clone the transport itself — so the missing
+    ``Clone`` is intentional, and a Python landing that merely holds the
+    transport by reference needs no ``__copy__``. Matches R119's
+    :class:`LocalTransport`, also ``Debug``-only.
+
+    ``Arc<dyn ConnectionClient>`` -> strong Python reference
+    --------------------------------------------------------
+
+    Like R125, the Rust struct holds the connection by
+    ``Arc<dyn ConnectionClient>`` — strong, shared ownership. The Python
+    landing holds it by a plain strong reference; Python's reference
+    semantics make the ``Arc`` a no-op.
+
+    Authorise-without-scope: the deliberate LocalTransport counterpart
+    -----------------------------------------------------------------
+
+    :meth:`authorize` builds ``Principal.new(user_id).with_session(session_id)``
+    with NO ``with_scope`` call. This is the deliberate counterpart to
+    :class:`LocalTransport`'s ``.with_scope(LOCAL_INVOKE_SCOPE)``: a local
+    transport grants the in-process ``tool.invoke`` convention because it
+    resolves against an in-process resolver that trusts the OS user; a
+    remote transport's authority is whatever the bound credential already
+    validated upstream, so the transport adds no scope of its own. Both
+    always take Rust's ``Ok`` arm (no credential to validate here either),
+    so the ``Principal | ToolError`` return narrows to ``Principal`` in
+    practice.
+
+    ``call`` delegates to layer-3 :func:`dispatch_via_connection` with the
+    bound ``session_id`` (NOT any session derivable from ``ctx``), exactly
+    like :class:`RemoteToolProxy.execute` — the transport owns its session
+    for the lifetime of the forwarded call.
+    """
+
+    def __init__(
+        self,
+        connection: ConnectionClient,
+        session_id: SessionId,
+        user_id: UserId,
+    ) -> None:
+        # Stored under underscore-prefixed attributes because Rust's
+        # private fields (session_id / user_id) share their names with the
+        # accessors below — a @dataclass would shadow the methods. Mirrors
+        # R125 RemoteToolProxy's hand-written __init__.
+        self._connection = connection
+        self._session_id = session_id
+        self._user_id = user_id
+
+    def session_id(self) -> SessionId:
+        """Bound session identifier (Rust ``fn session_id(&self) -> &SessionId``).
+
+        The session this transport was bound to at construction — every
+        :meth:`call` forwards under it.
+        """
+        return self._session_id
+
+    def user_id(self) -> UserId:
+        """Bound user identifier (Rust ``fn user_id(&self) -> &UserId``).
+
+        The user this transport was bound to at construction —
+        :meth:`authorize` builds the principal from it.
+        """
+        return self._user_id
+
+    def kind(self) -> TransportKind:
+        """Whether the transport is local (in-process) or remote (forwarded).
+
+        Remote transports are always :attr:`TransportKind.Remote` (Rust
+        ``TransportKind::Remote``) — a sync discriminant, no I/O. The
+        deliberate counterpart to :class:`LocalTransport`'s
+        :attr:`TransportKind.Local`.
+        """
+        return TransportKind.Remote
+
+    async def authorize(self) -> Principal | ToolError:
+        """One-time authorisation handshake (Rust ``async fn authorize``).
+
+        Returns a :class:`Principal` populated with the bound user and the
+        bound session, with NO scope — the deliberate counterpart to
+        :class:`LocalTransport`'s ``.with_scope(LOCAL_INVOKE_SCOPE)``. The
+        remote path here never fails (the credential was validated when the
+        transport was constructed; this method only re-states the bound
+        identity), so it always takes Rust's ``Ok`` arm — the
+        ``Principal | ToolError`` return type narrows to ``Principal`` in
+        practice, but the annotation keeps the R115 :meth:`Transport.authorize`
+        contract faithful.
+        """
+        return Principal.new(self._user_id).with_session(self._session_id)
+
+    async def call(
+        self,
+        tool_id: ToolId,
+        args: Any,
+        ctx: ToolCallContext,
+    ) -> ToolStream:
+        """Forward ``tool_id`` over the bound connection (Rust ``async fn call``).
+
+        Delegates to layer-3
+        :func:`~minimax_code.computer_hub_core.remote.dispatch_via_connection`,
+        threading ``(self._connection, tool_id, self._session_id, args,
+        ctx)`` in Rust's argument order — the bound ``session_id`` (NOT any
+        session derivable from ``ctx``). The returned stream is the
+        forwarded call's ``ToolStream`` verbatim.
+        """
+        return await dispatch_via_connection(
+            self._connection,
+            tool_id,
+            self._session_id,
+            args,
+            ctx,
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"RemoteTransport(session_id={self._session_id!r}, "
+            f"user_id={self._user_id!r})"
         )
