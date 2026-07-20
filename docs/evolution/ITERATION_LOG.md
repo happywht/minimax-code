@@ -13606,3 +13606,66 @@ R165 提取的词汇层是整个 actor 的无依赖地基：
 ### Commit
 
 `feat(platform): R165 port harness.rs type-aliases + pure-data leaves (SDK harness.rs leaf 1)` — 精确 `git add` 3 文件（harness_types.py + test_harness.py + ITERATION_LOG.md），9 测试通过。harness.rs 新模块首叶起步，纯数据词汇层闭合。
+
+## R166 — harness.rs 叶节点 2：LocalRegistry + DynToolAdapter（参与者层第一块）
+
+锚点:R166-1 e04bd55
+
+### 本轮目标
+
+移植 `grok-build/crates/common/xai-computer-hub-sdk/src/harness.rs:102-320` 的 **LocalRegistry + LocalRegistryInner + DynToolAdapter**（R165 类型层之后的参与者层第一块）：进程内工具注册表（`ToolHarness` 拥有的 ToolId→ToolHandle 映射 + 模型输出提取器表）+ `Arc<dyn ToolDyn>`→`ToolHandle` 薄适配器。这是 harness.rs 第 2 叶，对标 connection.rs 的 R151（connection_types 之后的 connection 第一块）切分节奏。
+
+### 融合结论
+
+`harness.rs` 是 SDK crate 的第二大文件（2940 行），R165 已闭合类型层（60-100 + 544-554）。本轮闭合**参与者层第一块**——`LocalRegistry`（102-283，进程内注册表）+ `DynToolAdapter`（285-320，ToolDyn→ToolHandle 适配器）。这两块是 `ToolHarnessBuilder`/`ToolHarness` actor 的种子数据结构：builder 接收的 typed Tool / dyn ToolDyn 全部经由 LocalRegistry 注册并擦除存储，`ToolHarness::call` 用它短路 wire 分发直接调本地 handle。`register_alias`（MCP 前缀回退）+ `register_extractor`/`model_output`（模型输出提取）是注册表的语义核心，本轮一并闭合。actor 主体（builder + ToolHarness + async bind 状态机 + stream 观察层）依赖 ToolHandle/HubConnection/TypedExtensions 等重依赖，仍延后（YAGNI）。
+
+### 交付
+
+- **新文件 `agent/minimax_code/computer_hub_sdk/harness.py`**（282 行）：
+  - `LocalRegistry` 类（11 方法）：`__init__`（两个 dict）+ `register`/`register_arc`/`register_dyn`/`register_alias`/`register_extractor` + `find`/`contains`/`unregister`/`__len__`/`is_empty` + `model_output` + `list_tools`。
+  - `DynToolAdapter(ToolHandle)` 类：`__init__(inner: ToolDyn)` + `__repr__` + `id`/`description`/`capabilities`/`should_list`/`execute` 委托（capabilities/should_list 用 getattr 默认回退）。
+  - `__all__ = ["DynToolAdapter", "LocalRegistry"]`。
+- **新文件 `agent/tests/test_local_registry.py`**（17 测试）：4 个 stub（`_FakeTool`/`_FakeToolDyn`/`_FullToolDyn` + `_stub_extractor`）+ LocalRegistry 13 测试（register displaced / register_arc / find / contains+unregister / len+is_empty / alias 拷贝 / alias 缺失 / extractor+model_output / model_output 无 extractor / list_tools 过滤保序 / register_dyn）+ DynToolAdapter 5 测试（id+description 委托 / capabilities 默认 / capabilities 委托 / should_list 默认 / should_list 委托）+ repr。
+
+### 映射决策树 + 坑
+
+1. **RwLock<IndexMap<ToolId, Arc<dyn ToolHandle>>> → dict[ToolId, ToolHandle]**：Python dict 3.7+ 保留插入顺序，`list_tools` 返回注册序（对标 Rust IndexMap）。RwLock 去除——asyncio 单线程 + GIL 下 dict 操作原子，Rust 锁只防跨线程 hot-add/remove，Python 无等价场景。
+
+2. **DashMap<ToolId, ModelOutputExtractor> → dict[ToolId, ModelOutputExtractor]**：同单线程推理，去除 DashMap 并发原语。
+
+3. **Arc<LocalRegistryInner> + #[derive(Clone, Default)] on LocalRegistry → 普通类持两 dict**：Python 引用语义共享，Arc 隐含；Clone 是默认引用复制；Default 是无参 `__init__`。LocalRegistryInner 折叠到 LocalRegistry 实例属性。
+
+4. **register<T: Tool + Debug + 'static> / register_arc<T> → register(tool) / register_arc(tool)**：Python 无静态泛型，T:'static 无运行时角色（所有 Python 对象都 'static），Debug 无运行时角色。`Arc::new(t)` 折叠——`ErasedTool.from_arc(tool)` 直接存引用。`register` 委托 `register_arc` 保持调用点保真。
+
+5. **register_dyn(Arc<dyn ToolDyn>) → register_dyn(tool: ToolDyn)**：包装进 DynToolAdapter，displaced 语义同 register_arc。
+
+6. **【关键陷阱】register/register_arc 输入是 typed Tool，内部 ErasedTool 擦除存储**：第一版测试 stub 错误地构造 `_FakeHandle(ToolHandle)` 直接喂 `register_arc` 并断言 `find() is handle`——但 Rust `register<T>` 把 typed Tool 经 `ErasedTool::from_arc` 擦除成 `Arc<dyn ToolHandle>`，`find` 返回 ErasedTool 而非原 handle。3 测试因此失败（displaced/find/alias 的 `is` 断言）。修正：删除 `_FakeHandle` stub，全用 `_FakeTool`（typed Tool），断言改为 ErasedTool 身份（`displaced is first_handle`，dict 复制引用成立）+ `isinstance(found, ErasedTool)`/`isinstance(found, ToolHandle)`。**Rust LocalRegistry 根本没有"直接塞 ToolHandle"的 API**——这是关键语义，stub 设计必须匹配。
+
+7. **register_alias 复制 handle + extractor（dict 引用复制）**：`find(target)` 得 ErasedTool，复制到 alias slot（dict 赋值是引用复制），所以 `find(alias) is find(target)` 成立（同一 ErasedTool 对象）。extractor 同样复制。返回 True/False 表示 target 是否存在。
+
+8. **DynToolAdapter.capabilities/should_list 用 getattr 默认回退**：Rust `ToolDyn` trait（tool.rs:306-356）有 5 方法（id/description/capabilities[default body]/execute/should_list[default body]），但 Python `ToolDyn` Protocol（tool.py:646-678）R109 只声明 3 个（id/description/execute）。用 `getattr(self._inner, "capabilities", None)` + callable 检查，缺失则回退 Rust trait 默认 body 语义（`default_capabilities()` / `True`）。这是 Protocol 简化与 Rust trait 默认 body 之间的桥接，getattr+callable 双分支测试覆盖（`_FakeToolDyn` 无 → 默认；`_FullToolDyn` 有 → 委托）。
+
+9. **DynToolAdapter.execute 无 await**：`ToolDyn.execute` 是普通方法返回 AsyncIterator（非 coroutine），`async def execute` 直接 `return self._inner.execute(ctx, args)`，对标 Rust `self.0.execute(ctx, args).await` 中 .await 解开 ToolDyn async-fn 成 stream 的语义。
+
+10. **B023 不触发**：DynToolAdapter 无 lambda 捕获循环变量；list_tools 用列表推导 `for handle in self._entries.values()` 无闭包陷阱。BLE 不在 select → `except Exception`（repr 的 id() 兜底）无需 noqa。
+
+11. **E731 规避**：`_stub_extractor` 用 `def` 而非 `name = lambda`（E731 在 E 中，禁止 lambda 赋值）。
+
+### 验证
+
+- `uv run ruff check harness.py test_local_registry.py` -> **All checks passed!**（零 --fix，isort 顺序正确：computer_hub_core < computer_hub_sdk < tool_protocol < tool_runtime < tool_types）
+- `uv run pytest tests/test_local_registry.py -q` -> **17 passed in 0.32s**（第一版 16 测试 3 失败因 stub 设计错，修正后 17 测试全过：13 LocalRegistry + 5 DynToolAdapter - 1 register 合并 + repr，零失败，无循环导入）
+
+### YAGNI 边界
+
+- **`register_with_model_output<T>` + `extractor_for<T>()` 不在 R166**：泛型 + serde DeserializeOwned，Python 无等价。`register_extractor`（已提取的 callback 路径）已移植，使 `register_alias`/`model_output` 可用；泛型工厂随消费端落地。
+- **ToolHarnessBuilder（324-542）不在 R166**：依赖 LocalRegistry（本轮已就绪）+ HubConnection/ConnectionBorrow/TypedExtensions + async bind 状态机，多 leaf 拆分。
+- **ToolHarness/ToolHarnessInner（564-1663）不在 R166**：actor 主体（call 分发、入站钩子循环、权限请求、通知），依赖 builder + stream 观察层。
+- **async bind 状态机（568-625）不在 R166**：`BindFuture`(570)/`PendingBind`(574)/`spawn_pending_bind`(579)/`LazyBind`(599)/`DeferredBind`(622)，依赖 tokio spawn，随 ToolHarness 构造路径落地。
+- **stream 观察层 + helpers（1664+）不在 R166**：`ObservedToolStream`/`EmissionState`(1748+) + inbound-hook/permission/notification helpers，随 `ToolHarness::call` 分发路径落地。
+- **`server.rs`(2649) 整体不在 R166**：SDK crate 另一巨型文件（服务端 hub server 侧），harness.rs 收官后单独开多 leaf 迁移。
+- **`lib.rs`(71) barrel 不在 R166**：crate 根 barrel 对账必须在 harness.rs + server.rs 全部迁移后做。
+
+### Commit
+
+`feat(platform): R166 port harness.rs LocalRegistry + DynToolAdapter (SDK harness.rs leaf 2, in-process tool registry)` — 精确 `git add` 3 文件（harness.py + test_local_registry.py + ITERATION_LOG.md），17 测试通过。harness.rs 叶节点 2 闭合，参与者层第一块（进程内注册表 + dyn 适配器）就绪，为 ToolHarnessBuilder actor 蓄能。
