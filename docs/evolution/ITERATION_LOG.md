@@ -11421,3 +11421,89 @@ cd agent && uv run pytest tests/test_refcount.py -q
 ### Commit
 
 feat(platform): R135 xai-computer-hub-sdk refcount.rs -> RefCountedSet (crate leaf 3)
+
+## R136 — xai-computer-hub-sdk donate_pump.rs -> computer_hub_sdk/donate_pump.py（共享遥测捐赠泵：bounded 重试缓冲 + in-order drain barrier，crate 第 4 叶）
+
+锚点:R136-1 7d89ed6
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-computer-hub-sdk/src/donate_pump.rs`（206 行）-> `agent/minimax_code/computer_hub_sdk/donate_pump.py`。这是 xai-computer-hub-sdk crate 的第 4 块叶子（继 R133 error / R134 handshake / R135 refcount 之后），是 trace/log/metric 三个遥测捐赠客户端（后续 leaf）共享的传输基础设施。
+
+源文件三大块：
+1. OTLP 编码辅助（18-57 行）：`now_unix_nanos` + `string_value` + `string_kv` + `make_resource`，依赖 `opentelemetry_proto` protobuf 类型；
+2. Pump 核心（59-117 行）：`PumpMsg` enum + `drain_via` + `run_pump` + `attempt_sends`，依赖 `tokio::sync::{mpsc, oneshot}` 通道原语；
+3. 测试（119-206 行）：2 个 `#[tokio::test]`（跨重连重试 + 缓冲区丢弃最老）。
+
+本轮目标：完整迁移三块 + asyncio 原语映射论证 + 1:1 测试镜像 + 模块可见性对齐（`pub(crate) mod donate_pump` 私有，barrel 不扩展）。
+
+### 融合结论
+
+donate_pump 是 SDK 内部的**遥测可靠性泵**——它把 trace/log/metric 三路捐赠流量收敛到一个有界重试缓冲 + in-order drain barrier 的后台任务。这与 MiniMax Code 的可靠性栈（R17-R20 熔断器、R23 并发调度）共享同一设计哲学：**correctness 不依赖 telemetry，但 telemetry 要尽力送达**。donate_pump 的"失败保留 + 溢出丢弃最老 + barrier 保序"三段式，正是遥测版的"熔断-重试-backpressure"。
+
+融合点：
+- **OTLP wire 镜像**：MiniMax Code 无 `opentelemetry_proto` 依赖，用纯 Python dataclass（`OtlpAnyValue`/`OtlpKeyValue`/`OtlpResource`）镜像 protobuf wire 形状，为 log_donate/metric_donate 后续 leaf 铺路。延续 R82-R106 tool_protocol 的"wire 类型契约层用纯 dataclass 而非 codegen"先例。
+- **asyncio 通道映射**：`mpsc::channel(N)` -> `asyncio.Queue(maxsize=N)`，`oneshot` -> `asyncio.Future`，`tokio::spawn` -> `create_task`。三原语都是 1:1 忠实映射，asyncio 单线程协作式让 `deque` retry 缓冲无需锁（与 R135 `DashMap->dict` 同一并发等价性论证：同步方法无 await = 原子）。
+- **stdlib logging**：Rust `tracing::debug!` -> Python `logging.getLogger(__name__).debug(...)`。不绑定 tracing 框架（R127-R132 xai-tracing 是另一回事），用最标准的 stdlib logging。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/donate_pump.py`（新增，约 260 行）：
+  - 常量 `PENDING_FLUSHES=8` / `RETRY_CAP=8`；
+  - OTLP wire 镜像 `OtlpAnyValue` / `OtlpKeyValue` / `OtlpResource` dataclass；
+  - 纯辅助 `now_unix_nanos()`（`time.time_ns()`）/ `string_value` / `string_kv` / `make_resource`；
+  - Pump 核心 `_PayloadMsg` / `_BarrierMsg` / `_Close` dataclass + `_CLOSE` 单例 sentinel + `PumpMsg` union + `Donate` type alias；
+  - 驱动 `drain_via(tx)` / `run_pump(rx, donate)` / `_attempt_sends(retry, donate)`；
+- `agent/tests/test_donate_pump.py`（新增，约 139 行）：6 测试 = 4 OTLP helper 单元 + 2 pump 1:1 asyncio 镜像。
+
+### 映射决策树+坑
+
+**OTLP 辅助映射（决策：纯 Python dataclass 镜像，非 codegen）：**
+- Rust 用 `opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue}` —— protobuf oneof。MiniMax Code 无此依赖。
+- 决策：定义 `OtlpAnyValue(value: dict[str,str])` 镜像 `{"stringValue": s}` wire 形状。只实现 string arm（SDK 当今只捐赠字符串属性），`intValue`/`bytesValue` 等留给真正需要的 client 落地（YAGNI）。
+- `now_unix_nanos()`：Rust `SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(0)` -> Python `time.time_ns()`（wall clock，int 纳秒）。Rust 的 `unwrap_or(0)` 防时钟早于 epoch，Python 不可能，省略 fallback。
+
+**Pump 核心 asyncio 映射（关键论证）：**
+- `mpsc::channel(PENDING_FLUSHES)` -> `asyncio.Queue(maxsize=8)`：bounded send 阻塞语义 1:1（`tx.send().await` <-> `await queue.put()`）。
+- `oneshot::channel` -> `asyncio.Future`：`drain_via` 创建 fresh future，put `_BarrierMsg(ack)`，`await ack`。pump 在 drain attempt 后 `ack.set_result(None)`。
+- `tokio::spawn` -> `asyncio.create_task`：caller 持有 task handle。
+- **并发等价（核心）**：Rust pump 独占 `retry: VecDeque`，tokio 多线程需 ownership 保证安全。asyncio 单线程 + pump 的 `retry` 操作全在 `await` 之间（无 await 点的同步段）-> 原子，`deque` 无需锁。这与 R135 `DashMap->dict` 完全同构：asyncio 下"同步方法 = 原子段"。
+
+**channel-close 语义（关键差异）：**
+- Rust `run_pump` 循环 `while let Some(msg) = rx.recv().await`，所有 sender dropped 时 `recv()` 返回 `None`，循环干净退出（测试 `drop(tx); pump.await` 依赖此）。
+- `asyncio.Queue` **无"all-producers-gone"信号**。决策：引入 `_CLOSE` 单例 sentinel，producer `put(_CLOSE)` 表达"队列关闭"，pump `isinstance(msg, _Close)` 时 `return`。Rust caller drops sender 句柄 <-> Python caller put sentinel —— 两者都表达"无更多 payload，drain 并退出"。
+- `drain_via` 的 Rust `is_ok()` 守卫（receiver-gone 时 send 是 no-op）无轻量 asyncio 等价；实际无 caller 在 pump 退出后 drain，YAGNI 不处理。
+
+**饱和/溢出：**
+- `RETRY_CAP=8` FIFO 丢弃最老：`len(retry)==RETRY_CAP` 时 `popleft()` 再 `append`。
+- 失败 `appendleft` + `break`：保持 in-order 消费者看不到成功 send 后的 gap。
+
+**坑（本轮真实踩到）：**
+- `_CLOSE` 单例遗漏：首版只定义了 `@dataclass class _Close` 但忘记实例化 `_CLOSE = _Close()` 单例，测试 `from ... import _CLOSE` 报 `ImportError: cannot import name '_CLOSE'`。pytest collection 阶段直接挂。修复：在 class 后加 `_CLOSE: _Close = _Close()` 单例 + 注释说明 Rust 无等价值（`recv()=None` 是 asyncio 的"channel closed"表达）。这是本轮唯一一次 pytest 红->绿往返。
+- ruff F401 + I001：test 文件首版 import 了 `OtlpKeyValue` 但未用，且 import 块未排序。`uv run ruff check --fix tests/test_donate_pump.py`（精确路径，不碰其他文件）一次修复。
+
+### 验证
+
+- `uv run ruff check minimax_code/computer_hub_sdk/donate_pump.py tests/test_donate_pump.py` -> **All checks passed!**
+- `uv run pytest tests/test_donate_pump.py -v` -> **6 passed in 0.36s**：
+  - `test_now_unix_nanos_is_nonneg_and_nondecreasing` PASSED
+  - `test_string_value_emits_stringvalue_tag` PASSED
+  - `test_string_kv_pairs_key_and_value` PASSED
+  - `test_make_resource_carries_service_name_only` PASSED
+  - `test_pump_retries_failed_payloads_across_reconnect` PASSED（1:1 镜像 Rust tokio test 1）
+  - `test_pump_retry_buffer_drops_oldest_beyond_cap` PASSED（1:1 镜像 Rust tokio test 2）
+
+两个 pump 测试忠实复刻 Rust 契约：链路断时 barrier ack 但不发 + 恢复后 in-order 发送全部；缓冲区超 RETRY_CAP 丢弃最老。
+
+### YAGNI 边界
+
+1. **不引入 `opentelemetry_proto` 依赖** —— 纯 Python dataclass 镜像 wire 形状足够；proto codegen 是 over-engineering。
+2. **不实现 trace_donate / log_donate / metric_donate** —— 它们是后续独立 leaf（消费本泵），本轮只迁移共享基础设施。
+3. **不绑定 tracing 框架** —— `tracing::debug!` -> stdlib `logging`，最简映射；R127-R132 xai-tracing 是另一个 crate 的事。
+4. **`OtlpAnyValue` 只实现 string arm** —— `intValue`/`bytesValue`/`doubleValue` 等留给真正捐赠非字符串属性的 client 落地。
+5. **`drain_via` 不处理 pump 已退出场景** —— Rust 的 `is_ok()` 守卫无轻量 asyncio 等价，实际无 caller 这么做，YAGNI。
+6. **barrel 不扩展** —— `lib.rs` `pub(crate) mod donate_pump` 私有，`__init__.py` 不 re-export（匹配 R130/R134/R135 先例）。
+
+### Commit
+
+feat(platform): R136 migrate xai-computer-hub-sdk donate_pump.rs -> computer_hub_sdk/donate_pump.py
