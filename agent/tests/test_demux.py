@@ -83,10 +83,12 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from minimax_code.computer_hub_sdk.demux import (
     Demux,
-    InboundFrame,
     RouteOutcome,
+    _MpscClosed,
     mpsc_channel,
 )
 from minimax_code.computer_hub_sdk.error import NetworkError
@@ -325,7 +327,6 @@ async def test_progress_route_pushes_to_progress_waiter() -> None:
     # (16) A tool_call_progress notification routes by params.tool_call_id to
     # the call's progress stream; the decoded ToolCallProgressFrame carries
     # tool_call_id / kind / body verbatim.
-    from minimax_code.tool_protocol.frames import ToolCallProgressFrame
 
     demux = Demux.new()
     call_id = ToolCallId("call-1")
@@ -362,7 +363,6 @@ def test_progress_with_no_waiter_returns_unknown_progress() -> None:
 
 async def test_dropped_progress_receiver_returns_progress_dropped() -> None:
     # (18) A dropped progress receiver -> ProgressDropped + the waiter pruned.
-    from minimax_code.tool_protocol.frames import ToolCallProgressFrame
 
     demux = Demux.new()
     call_id = ToolCallId("call-1")
@@ -381,7 +381,6 @@ async def test_dropped_progress_receiver_returns_progress_dropped() -> None:
 
 def test_unregister_progress_waiter_returns_sender_when_present() -> None:
     # (19) unregister_progress_waiter returns the sender once, None thereafter.
-    from minimax_code.tool_protocol.frames import ToolCallProgressFrame
 
     demux = Demux.new()
     call_id = ToolCallId("call-1")
@@ -394,7 +393,6 @@ def test_unregister_progress_waiter_returns_sender_when_present() -> None:
 async def test_try_register_progress_waiter_rejects_collision_and_preserves_existing() -> None:
     # (20) A second registration for the same tool_call_id is rejected; the
     # existing channel is untouched (a later progress frame still routes to it).
-    from minimax_code.tool_protocol.frames import ToolCallProgressFrame
 
     demux = Demux.new()
     call_id = ToolCallId("call-1")
@@ -424,7 +422,6 @@ async def test_try_register_progress_waiter_rejects_collision_and_preserves_exis
 
 def test_full_progress_channel_returns_progress_full_without_blocking() -> None:
     # (21) A second progress frame into a capacity-1 channel -> ProgressFull.
-    from minimax_code.tool_protocol.frames import ToolCallProgressFrame
 
     demux = Demux.new()
     call_id = ToolCallId("call-1")
@@ -440,7 +437,6 @@ def test_full_progress_channel_returns_progress_full_without_blocking() -> None:
 async def test_drain_progress_removes_all_waiters_and_drops_senders() -> None:
     # (22) drain_progress drops every parked sender; each channel closes so the
     # receiver's recv returns None once drained.
-    from minimax_code.tool_protocol.frames import ToolCallProgressFrame
 
     demux = Demux.new()
     call_a, call_b = ToolCallId("a"), ToolCallId("b")
@@ -454,3 +450,45 @@ async def test_drain_progress_removes_all_waiters_and_drops_senders() -> None:
     # Senders dropped (closed) -> receivers recv None.
     assert await rxa.recv() is None
     assert await rxb.recv() is None
+
+
+# ===========================================================================
+# _Sink.send -- async blocking send (Rust mpsc::Sender::send, R152).
+# ===========================================================================
+async def test_sink_send_awaits_capacity_then_delivers() -> None:
+    # Full channel: ``send`` parks until a slot frees, then lands the value.
+    tx, rx = mpsc_channel(1)
+    tx.try_send("first")  # fill the single slot.
+    assert rx._channel.buffer.qsize() == 1
+
+    delivered: list[str] = []
+
+    async def _deliver() -> None:
+        await tx.send("second")  # parks until a slot frees.
+        delivered.append("sent")
+
+    task = asyncio.create_task(_deliver())
+    # Still full: the send is parked, not delivered.
+    await asyncio.sleep(0)
+    assert delivered == []
+    assert rx._channel.buffer.qsize() == 1
+    # Free a slot -> the parked send lands.
+    rx.try_recv()
+    await task
+    assert delivered == ["sent"]
+    assert rx._channel.buffer.qsize() == 1
+
+
+async def test_sink_send_closed_channel_raises_mpsc_closed() -> None:
+    tx, _rx = mpsc_channel(1)
+    _rx.close_channel()
+    with pytest.raises(_MpscClosed):
+        await tx.send("never")
+
+
+async def test_sink_send_round_trips_with_recv() -> None:
+    tx, rx = mpsc_channel(2)
+    await tx.send("a")
+    await tx.send("b")
+    assert await rx.recv() == "a"
+    assert await rx.recv() == "b"

@@ -184,6 +184,26 @@ class _Sink(Generic[T]):
         # put_nowait raises asyncio.QueueFull when at capacity.
         self._channel.buffer.put_nowait(value)
 
+    async def send(self, value: T) -> None:
+        """Blocking send: await a free slot (Rust ``mpsc::Sender::send``, R152).
+
+        The connection's outbound backpressure path needs the async ``send`` that
+        Rust's ``tokio::sync::mpsc::Sender::send`` provides: when the bounded
+        buffer is full, ``send`` parks until a slot frees rather than rejecting
+        like :meth:`try_send`. Mirrors the Rust contract -- a close observed
+        before the await raises :class:`_MpscClosed` (receiver gone).
+
+        Edge case: ``asyncio.Queue.put`` does not observe the cooperative
+        ``closed`` flag mid-await, so a close arriving *during* the wait still
+        lets the value land in the buffer (lost on the receiver side). The
+        outbound caller catches the closed case up front via :meth:`try_send`
+        and only falls through to ``send`` on :class:`asyncio.QueueFull`, so the
+        already-full buffer is the sole mid-send state.
+        """
+        if self._channel.closed:
+            raise _MpscClosed()
+        await self._channel.buffer.put(value)
+
     def close(self) -> None:
         """Mark the channel closed (Rust drop-all-senders equivalent, R149).
 

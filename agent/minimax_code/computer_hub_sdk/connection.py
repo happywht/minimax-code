@@ -1,17 +1,19 @@
-"""Connection actor structural layer (R151, SDK leaf 18b).
+"""Connection actor structural + network-request layer (R151-R152, SDK leaf 18b-18c).
 
 Forward-port of grok-build ``xai-computer-hub-sdk/src/connection.rs`` lines
-348-857: the :class:`ConnectionConfig` consumed by ``connect``, the
+348-766: the :class:`ConnectionConfig` consumed by ``connect``, the
 :class:`HubConnectionInner` shared-state block, the :class:`HubConnection`
-handle, AND the pure-logic accessor methods (``key`` / ``kind`` / ``actor_id``
+handle, the pure-logic accessor methods (``key`` / ``kind`` / ``actor_id``
 / ``connection_id`` / ``supports`` / ``demux`` / ``take_early_notifications``
 / ``force_reconnect`` / ``await_shutdown`` / ``request_shutdown`` /
 ``track_session`` / ``untrack_session`` / ``try_send_outbound`` /
-``try_alloc_request_id`` / ``bound_session_count``). The actor's network-bound
-methods (``connect`` / ``call_request`` / ``call_request_with_deadline`` /
-``send_outbound`` / ``serve``), the ``run_writer`` / ``run_reader_actor`` /
-``open_socket`` / ``run_handshake`` spawn pipeline, and the ``WriterControl<S>``
-state machine (lines 961-1382) are later leaves (R152+).
+``try_alloc_request_id`` / ``bound_session_count``), AND the network-bound
+request path (``call_request`` / ``call_request_with_timeout`` /
+``call_request_with_deadline`` / ``send_outbound``, lines 671-766). The actor's
+socket lifecycle (``connect`` / ``serve``), the ``run_writer`` /
+``run_reader_actor`` / ``open_socket`` / ``run_handshake`` spawn pipeline, and
+the ``WriterControl<S>`` state machine (lines 806-1382) are later leaves
+(R153+).
 
 tokio -> asyncio / Rust -> Python adaptations (no behavior change):
 
@@ -57,6 +59,7 @@ mock :class:`_Sink` / :class:`Demux` / :class:`RefCountedSet` and wrap it in a
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import weakref
 from dataclasses import dataclass, field
@@ -67,14 +70,24 @@ from minimax_code.computer_hub_sdk.connection_types import (
     ConnectionTuning,
     ConnHealth,
     ConnKey,
+    DeadlineCallError,
     DisconnectCallback,
+    OtherError,
     ReconnectCallback,
+    TimedOut,
     WriteErrorSlot,
+    waiter_guard,
 )
 from minimax_code.computer_hub_sdk.demux import Demux, _MpscClosed, _Sink
-from minimax_code.computer_hub_sdk.error import BackpressureError, NetworkError
+from minimax_code.computer_hub_sdk.error import (
+    BackpressureError,
+    ClientError,
+    NetworkError,
+    SerdeError,
+)
 from minimax_code.computer_hub_sdk.refcount import RefCountedSet
 from minimax_code.tool_protocol.connection import ConnectionKind
+from minimax_code.tool_protocol.envelope import JsonRpcRequest, JsonRpcResponse
 from minimax_code.tool_protocol.ids import ConnectionId, RequestId, ServerId, SessionId
 
 __all__ = [
@@ -82,6 +95,12 @@ __all__ = [
     "HubConnectionInner",
     "HubConnection",
 ]
+
+
+# Bounded backpressure wait before the outbound mpsc is declared full (Rust
+# ``Duration::from_millis(250)`` on the ``send`` fallback, line 754). Exposed as
+# a named constant so tests can shorten it instead of sleeping 250ms per case.
+_OUTBOUND_BACKOFF_WAIT_S = 0.25
 
 
 # ===========================================================================
@@ -466,6 +485,116 @@ class HubConnection:
     def untrack_session(self, session_id: SessionId) -> None:
         """Decrement the refcount on ``session_id`` (removes tracking at zero)."""
         self._inner.bound_sessions.decrement(session_id)
+
+    # -----------------------------------------------------------------
+    # Network-bound request path (Rust async methods, lines 671-766, R152).
+    # -----------------------------------------------------------------
+    async def call_request(
+        self,
+        request_id: RequestId,
+        request: JsonRpcRequest,
+    ) -> JsonRpcResponse:
+        """Send a request and await its correlated response (Rust lines 671-682).
+
+        Serialises ``request`` to compact JSON, parks a response waiter on the
+        demux keyed by ``request_id``, sends the frame, then awaits the
+        one-shot future the demux fulfils when the matching response (or a
+        connection-level failure) arrives. The :func:`waiter_guard` scope guard
+        drains the parked waiter on any exit path so a late response cannot
+        resolve a future the caller already abandoned.
+        """
+        try:
+            text = json.dumps(request.to_wire(), separators=(",", ":"))
+        except (TypeError, ValueError) as exc:
+            raise SerdeError(str(exc)) from exc
+        fut: asyncio.Future[JsonRpcResponse] = asyncio.Future()
+        self._inner.demux.register_response_waiter(request_id, fut)
+        with waiter_guard(self._inner.demux, request_id):
+            await self.send_outbound(text)
+            return await fut
+
+    async def call_request_with_timeout(
+        self,
+        request_id: RequestId,
+        request: JsonRpcRequest,
+        timeout: float,
+    ) -> JsonRpcResponse:
+        """Deadline-bounded ``call_request`` surfacing :class:`ClientError` (684-691).
+
+        Delegates to :meth:`_call_request_with_deadline` and flattens the
+        two-variant :class:`DeadlineCallError` into a :class:`ClientError` via
+        :meth:`DeadlineCallError.to_client_error` (Rust
+        ``impl From<DeadlineCallError> for ClientError``).
+        """
+        outcome = await self._call_request_with_deadline(request_id, request, timeout)
+        if isinstance(outcome, DeadlineCallError):
+            # The deadline error is a value (Rust enum), not an exception: only
+            # the converted ClientError is raised (impl From<DeadlineCallError>).
+            raise outcome.to_client_error() from None
+        return outcome
+
+    async def _call_request_with_deadline(
+        self,
+        request_id: RequestId,
+        request: JsonRpcRequest,
+        timeout: float,
+    ) -> JsonRpcResponse | DeadlineCallError:
+        """Deadline-bounded request core returning :class:`DeadlineCallError` (693-746).
+
+        Mirrors the Rust ``match tokio::time::timeout(timeout, rx).await`` whose
+        three arms are values of the ``DeadlineCallError`` enum (not exceptions):
+        a successful response resolves the future; ``asyncio.wait_for`` raising
+        the builtin :class:`TimeoutError` on elapse maps to :class:`TimedOut`; a
+        connection-level failure the demux surfaces via ``fut.set_exception``
+        (or a send-side failure) is wrapped as :class:`OtherError` (Rust
+        ``Ok(Ok(result)) => result.map_err(DeadlineCallError::Other)``). The
+        caller (:meth:`call_request_with_timeout`) flattens the value into a
+        :class:`ClientError`; this method itself never raises the dataclass.
+        """
+        try:
+            text = json.dumps(request.to_wire(), separators=(",", ":"))
+        except (TypeError, ValueError) as exc:
+            return OtherError(error=SerdeError(str(exc)))
+        fut: asyncio.Future[JsonRpcResponse] = asyncio.Future()
+        self._inner.demux.register_response_waiter(request_id, fut)
+        with waiter_guard(self._inner.demux, request_id):
+            try:
+                await self.send_outbound(text)
+            except ClientError as exc:
+                return OtherError(error=exc)
+            try:
+                return await asyncio.wait_for(fut, timeout=timeout)
+            except TimeoutError:
+                return TimedOut(timeout=timeout)
+            except ClientError as exc:
+                return OtherError(error=exc)
+
+    async def send_outbound(self, text: str) -> None:
+        """Enqueue an outbound frame with a bounded backpressure wait (748-766).
+
+        Fast path: :meth:`_Sink.try_send` succeeds when the buffer has room. On
+        full, awaits a free slot for up to :data:`_OUTBOUND_BACKOFF_WAIT_S`
+        (Rust ``tokio::time::timeout(250ms, send)``); a still-full channel after
+        the wait is :class:`BackpressureError`, a closed channel (either the
+        try_send or the send arm) is :class:`NetworkError`.
+        """
+        try:
+            self._inner.outbound_tx.try_send(text)
+            return
+        except asyncio.QueueFull:
+            # Fall through to the bounded async wait.
+            pass
+        except _MpscClosed as exc:
+            raise NetworkError("outbound channel closed") from exc
+        try:
+            await asyncio.wait_for(
+                self._inner.outbound_tx.send(text),
+                timeout=_OUTBOUND_BACKOFF_WAIT_S,
+            )
+        except TimeoutError as exc:
+            raise BackpressureError("outbound mpsc full beyond bounded wait") from exc
+        except _MpscClosed as exc:
+            raise NetworkError("outbound channel closed") from exc
 
     def try_send_outbound(self, text: str) -> None:
         """Non-blocking outbound enqueue for synchronous drop paths.

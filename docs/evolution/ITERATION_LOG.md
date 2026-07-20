@@ -12656,3 +12656,53 @@ SDK crate 第 18 叶（18b）闭合。R150（18a）提供类型地基（常量/�
 ### Commit
 
 `feat(platform): R151 connection.rs HubConnection actor structure + accessors -> connection.py (SDK leaf 18b)`
+
+## R152 — connection.rs network-outbound path -> connection.py (SDK leaf 18c)
+
+锚点:R152-1 855ef54
+
+### 本轮目标
+
+前向移植 grok-build `xai-computer-hub-sdk/src/connection.rs` 第 671-766 行的 **网络半段出站路径** 到 `agent/minimax_code/computer_hub_sdk/connection.py`：4 个网络方法 —— `send_outbound(text)` async（出站 mpsc 投递 + try_send 快路径 + bounded backoff 慢路径）/ `call_request(request_id, request)` async（序列化 + 注册 waiter + 投递 + 等待响应，无超时）/ `call_request_with_timeout(...)` async public（deadline 包装 + 错误转换）/ `_call_request_with_deadline(...)` async private（`Result<JsonRpcResponse, DeadlineCallError>` 返回值语义）。同步扩展 `demux.py` 的 `_Sink.send` async（mpsc async-Sender 等价，await 容量）。锚点 `R152-1 855ef54`（父 R151 855ef54）。**验证：** ruff 0 + pytest（test_demux 加 3 个 `_Sink.send` 单测 + test_connection 加 12 个网络方法测试 = 61 passed）+ 精确 commit。
+
+### 融合结论
+
+SDK crate 第 18 叶（18c）闭合网络出站半段。R150（18a）提供类型地基（`DeadlineCallError` / `TimedOut` / `OtherError` / `waiter_guard`），R151（18b）立起 actor 骨架（`HubConnection` 句柄 + `HubConnectionInner` 共享态 + 纯逻辑访问器），R152 在其上接通 **出站流量 + 请求/响应配对** —— 这是连接对象第一次真正"说话"的路径：序列化 JSON-RPC 请求、注册 oneshot waiter、通过 bounded mpsc 投递到 writer 半部、用 `asyncio.Future` 等待 demux 路由回来的响应。`serve`（806-851）/ spawn 管线（`run_writer`/`run_reader_actor`/`open_socket`/`run_handshake`, 813-857）/ `WriterControl<S>` 状态机（961-1382）留给 R153+。本叶闭合后，SDK 连接的请求侧可在 **fake demux + fake sink 的纯逻辑上下文** 中完整跑通 send→register→await→fulfill 链路，为后续真实 writer actor 提供可独立验证的出站内核，符合"每个叶子零 socket 依赖、可独立单测"的移植纪律。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/connection.py`：4 个网络方法 + `_OUTBOUND_BACKOFF_WAIT_S = 0.25` 常量 + 导入块扩展（`json`、`waiter_guard`/`DeadlineCallError`/`OtherError`/`TimedOut`、`BackpressureError`/`ClientError`/`NetworkError`/`SerdeError`、`_MpscClosed`、`JsonRpcRequest`/`JsonRpcResponse`）。
+- `agent/minimax_code/computer_hub_sdk/demux.py`：`_Sink.send(value)` async 方法（try_send 后、close 前），`await self._channel.buffer.put(value)`。
+- `agent/tests/test_connection.py`：docstring 标题更新 `(R151-R152)`，新增 NETWORK-OUTBOUND 测试主体（12 个网络方法测试 + `_RecordingDemux` fake + fulfiller pattern）。
+- `agent/tests/test_demux.py`：新增 3 个 `_Sink.send` 单测（awaits-capacity / closed-raises-mpsc-closed / round-trips-with-recv）。
+
+### 映射决策树 + 坑
+
+- `oneshot::channel() -> (Sender, Receiver)` → `asyncio.Future`：`register_response_waiter(request_id, fut)` 注入 demux，`rx.await` → `await fut`。error outcome（demux 在 disconnect 时）由 demux 经 `fut.set_exception(ClientError)` 投递。
+- `tokio::time::timeout(t, rx.await)` → `asyncio.wait_for(fut, timeout=t)`；超时 → 内置 `TimeoutError`（UP041，非 `asyncio.TimeoutError` 旧别名）。
+- `mpsc::Sender::send`（async，等容量）→ `_Sink.send`（用 `asyncio.Queue.put`，背压时阻塞至有空位）；`try_send`（同步，满即拒）→ `_Sink.try_send`（满抛 `asyncio.QueueFull`）。
+- `serde_json::to_string(&req)` → `json.dumps(req.to_wire(), separators=(",", ":"))`（紧凑，匹配 Rust 默认无空白）；序列化失败 → `SerdeError`。
+- `let _ = outbound_tx.send(...)` 的 `let _ =` 容错 → 显式 `try/except (_MpscClosed, asyncio.QueueFull): pass`（仅 `force_reconnect`/`request_shutdown` 这种 best-effort 路径；`send_outbound` 不容错，要把错误传给调用方）。
+- 坑 1（DeadlineCallError 是值不是异常，本轮最关键）：`DeadlineCallError`(connection_types.py:428) 是普通类 `__slots__ = ()`，`TimedOut`/`OtherError` 是 `@dataclass(frozen=True)` 子类，**都不继承 Exception**。初版 `_call_request_with_deadline` 用 `raise TimedOut(...)` / `raise OtherError(...)` → 运行时 `TypeError: Expected a BaseException type`。根因：忠实 Rust `Result<JsonRpcResponse, DeadlineCallError>` 语义 —— 它是 **返回值**（Rust enum），不是异常。修复：`_call_request_with_deadline` 返回类型改 `JsonRpcResponse | DeadlineCallError`，所有 `raise TimedOut/OtherError` → `return TimedOut/OtherError`；`call_request_with_timeout` 用 `isinstance(outcome, DeadlineCallError)` 检查并 `raise outcome.to_client_error() from None`（`from None` 因 outcome 非异常，`raise X from Y` 要求 Y 是 BaseException 或 None）。只有最终 `ClientError`（`to_client_error()` 的产物）被 raise。
+- 坑 2（JsonRpcId 是 Union 别名不是类）：`envelope.py:150` 的 `JsonRpcId = JsonRpcIdString | JsonRpcIdNumber` 是 untagged-union 别名，`from_request_id` 是 `JsonRpcIdString` 的 classmethod（:174）。初版测试用 `JsonRpcId.from_request_id(...)` → `AttributeError: 'types.UnionType' object has no attribute 'from_request_id'`。修复：test_connection.py import `JsonRpcId` → `JsonRpcIdString`，`replace_all` 两处调用。
+- 坑 3（asyncio 协作式同步模型）：`call_request` 同步 `register_response_waiter` → `send_outbound` 若 `try_send` 成功则无 await 让出 → `await fut` 让出。测试用 fulfiller pattern：`asyncio.create_task(fulfiller())` 在 call_request 之前调度，fulfiller 内部 `await asyncio.sleep(0.01)` 等 call_request 阻塞在 fut 上后 `set_result`/`set_exception`。所有测试断言 `rid not in demux.waiters`（waiter_guard 已排空）。
+- 坑 4（ruff --fix 精确范围）：对 R152 接触的 4 文件精确范围跑 `uv run ruff check --fix`，自动修 10 个 I001/F401（connection.py 导入排序 + test_connection.py 移除未用 ClientError + test_demux.py 移除模块级未用 `_Sink`/`InboundFrame` + 6 处函数内未用 `ToolCallProgressFrame`，R149 遗留因 ruff 退出码 1 阻塞验证门控）。符合"修复已编辑文件中的 ruff 错误可以"约束。
+
+### 验证
+
+- `uv run ruff check minimax_code/computer_hub_sdk/connection.py minimax_code/computer_hub_sdk/demux.py tests/test_connection.py tests/test_demux.py` → **All checks passed!**（0 错误）。
+- `uv run pytest tests/test_connection.py tests/test_demux.py -q` → **61 passed in 0.90s**（test_connection 53 + test_demux 8，含 R152 新增 12 网络 + 3 sink.send）。
+- 覆盖矩阵：`send_outbound` ok/满→BackpressureError（bounded wait 超时）/闭→NetworkError / `call_request` 紧凑 JSON 序列化入站（`json.loads` 验证 + `", " not in` + `": " not in`）/ register waiter → fulfiller set_result 正常返回 / fulfiller set_exception 传播 ClientError / serde 失败 → SerdeError / `_call_request_with_deadline` 超时返回 TimedOut（`isinstance` + `timeout == 0.02` + waiter 排空）/ send 失败返回 OtherError（包装 NetworkError）/ 正常返回 JsonRpcResponse / `call_request_with_timeout` TimedOut → raise NetworkError / `_Sink.send` awaits-capacity-then-delivers / closed-raises-mpsc-closed / round-trips-with-recv。
+
+### YAGNI 边界
+
+- `serve`（lines 806-851，serve-loop 重连驱动）→ R153（需要 WebSocket transport + tokio select! 翻译 + `ConnHealth` 时钟探针集成）。
+- spawn 管线（`run_writer`/`run_reader_actor`/`open_socket`/`run_handshake`，lines 813-857）→ R153+（需要 asyncio task 模型 + 握手状态机消费 R134 handshake.rs）。
+- `WriterControl<S>` 状态机（lines 961-1382，writer 半部流量控制 + ping/liveness/outbound 排空 + ConnectedExit）→ R154（writer 半部，最复杂子模块）。
+- 1310 行 `#[cfg(test)]` 块 → R155+（网络叶子全部闭合后随原文测试对齐，依赖 tokio mpsc/sink mock 已就位）。
+- `connect()` 入口（消费 `ConnectionConfig` → resolve tuning → 分配通道 → 构造 Inner → spawn 管线）→ R153（serve + spawn 闭合后）。
+- `pool.rs` 的 `connect()` 消费路径 → server.rs/harness.rs/lib.rs barrel（connection.rs 全部叶子完成后）。
+
+### Commit
+
+`feat(platform): R152 connection.rs network-outbound path -> connection.py (SDK leaf 18c)`

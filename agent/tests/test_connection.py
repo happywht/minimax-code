@@ -1,15 +1,19 @@
-"""Tests for ``minimax_code.computer_hub_sdk.connection`` (R151).
+"""Tests for ``minimax_code.computer_hub_sdk.connection`` (R151-R152).
 
-Mirrors the ACTOR-STRUCTURE half of grok-build's
-``xai-computer-hub-sdk/src/connection.rs`` lines 348-857 -- the SDK crate's
-18th leaf (18b: the ``HubConnection`` handle + ``HubConnectionInner`` shared
-state + ``ConnectionConfig`` + the pure-logic accessors). The network-bound
-methods (``connect`` / ``call_request`` / ``call_request_with_deadline`` /
-``send_outbound`` / ``serve``), the ``run_writer`` / ``run_reader_actor`` /
-``open_socket`` / ``run_handshake`` spawn pipeline, and the ``WriterControl<S>``
-state machine (lines 961-1382) are later leaves (R152+); this leaf defines the
-type + accessors but not the wire I/O, so tests build an inner directly with
-real :class:`_Sink` channels and exercise the accessors without a socket.
+Mirrors the ACTOR-STRUCTURE (R151) + NETWORK-OUTBOUND (R152) halves of
+grok-build's ``xai-computer-hub-sdk/src/connection.rs`` lines 348-766 -- the
+SDK crate's 18th leaf (18b: the ``HubConnection`` handle +
+``HubConnectionInner`` shared state + ``ConnectionConfig`` + the pure-logic
+accessors; 18c: the four network-outbound methods ``send_outbound`` /
+``call_request`` / ``call_request_with_timeout`` / ``call_request_with_deadline``
+-- lines 671-766). The remaining network-bound surface (``connect`` /
+``serve``), the ``run_writer`` / ``run_reader_actor`` / ``open_socket`` /
+``run_handshake`` spawn pipeline, and the ``WriterControl<S>`` state machine
+(lines 806-1382) are later leaves (R153+); this leaf defines the type +
+accessors + outbound path but not the socket / framing layer, so tests build
+an inner directly with real :class:`_Sink` channels and exercise the accessors
+without a socket (R152 fulfils the oneshot response-waiter via a recording
+demux stand-in, matching Rust's ``oneshot::channel`` with an ``asyncio.Future``).
 
 Rust test -> Python test mapping
 --------------------------------
@@ -32,6 +36,17 @@ Rust test -> Python test mapping
   at-zero).
 * Rust ``try_send_outbound`` (771) -> the ok / full->``BackpressureError`` /
   closed->``NetworkError`` tests.
+* Rust ``send_outbound`` (748-766, ``try_send`` ok / ``Full`` -> bounded
+  ``timeout(250ms, send)`` / ``Closed`` -> ``NetworkError``) -> the R152
+  ok / full-recovers / full-times-out->``BackpressureError`` / closed tests.
+* Rust ``call_request`` (671-682, serde + ``oneshot`` + ``WaiterGuard`` +
+  outbound + ``rx.await``) -> the R152 returns / propagates-client-error /
+  drains-waiter-on-send-failure tests.
+* Rust ``call_request_with_deadline`` (693-746, ``timeout(t, rx)`` match ->
+  ``TimedOut`` / ``OtherError``) -> the R152 success / times-out /
+  wraps-send-failure tests.
+* Rust ``call_request_with_timeout`` (684-691, ``DeadlineCallError`` ->
+  ``ClientError``) -> the R152 wraps test.
 * Rust ``try_alloc_request_id`` (789, ``fetch_add`` + ``RequestId::new``) ->
   the ``c0`` / ``c1`` / ``c2`` monotonic test.
 * Rust ``impl Drop for HubConnection`` (853) -> the ``__del__`` stop-signal
@@ -60,11 +75,19 @@ from minimax_code.computer_hub_sdk.connection_types import (
     ConnectionTuning,
     ConnHealth,
     ConnKey,
+    OtherError,
+    TimedOut,
 )
 from minimax_code.computer_hub_sdk.demux import Demux, mpsc_channel
 from minimax_code.computer_hub_sdk.error import BackpressureError, NetworkError
 from minimax_code.computer_hub_sdk.refcount import RefCountedSet
 from minimax_code.tool_protocol.connection import ConnectionKind
+from minimax_code.tool_protocol.envelope import (
+    JsonRpcIdString,
+    JsonRpcRequest,
+    JsonRpcResponse,
+    JsonRpcVersion,
+)
 from minimax_code.tool_protocol.ids import ConnectionId, RequestId, ServerId, SessionId
 
 if TYPE_CHECKING:
@@ -111,6 +134,7 @@ def _make_inner(**overrides: object) -> SimpleNamespace:
     hello_caps = overrides.pop("hello_caps", None)
     early = overrides.pop("early_notif_rx", None)
     allow_insecure = overrides.pop("allow_insecure_ws", False)
+    demux_override = overrides.pop("demux", None)
 
     outbound_tx, outbound_rx = mpsc_channel(capacity)
     stop_tx, stop_rx = mpsc_channel(8)
@@ -122,7 +146,7 @@ def _make_inner(**overrides: object) -> SimpleNamespace:
         credential=_FakeAuth(),
         reconnect_backoff=(1.0, 2.0),
         outbound_tx=outbound_tx,
-        demux=Demux(),
+        demux=demux_override if demux_override is not None else Demux(),
         bound_sessions=RefCountedSet(),
         stop_tx=stop_tx,
         reconnect_tx=reconnect_tx,
@@ -438,3 +462,217 @@ def test_try_alloc_request_id_monotonic_c_prefix() -> None:
     assert conn.try_alloc_request_id() == RequestId("c0")
     assert conn.try_alloc_request_id() == RequestId("c1")
     assert conn.try_alloc_request_id() == RequestId("c2")
+
+
+# ===========================================================================
+# Network-outbound methods (R152, lines 671-766).
+# ===========================================================================
+class _RecordingDemux:
+    """Minimal Demux stand-in exposing response-waiter register/take.
+
+    ``call_request`` / ``call_request_with_deadline`` touch the demux only via
+    ``register_response_waiter`` + ``take_response_waiter`` (the latter through
+    :func:`waiter_guard`), so a real :class:`Demux` is unnecessary: this fake
+    parks the future in a dict the test fulfils (``set_result`` /
+    ``set_exception``) on its own schedule, exercising every await arm of the
+    Rust ``rx.await`` / ``timeout(t, rx)`` translation.
+    """
+
+    def __init__(self) -> None:
+        self.waiters: dict[str, asyncio.Future] = {}
+
+    def register_response_waiter(self, request_id: str, waiter: asyncio.Future) -> None:
+        self.waiters[request_id] = waiter
+
+    def take_response_waiter(self, request_id: str) -> asyncio.Future | None:
+        return self.waiters.pop(request_id, None)
+
+
+def _make_request(request_id: RequestId) -> JsonRpcRequest[dict[str, object]]:
+    """Minimal JSON-RPC request with the given id (avoids E731 lambda)."""
+    return JsonRpcRequest(
+        jsonrpc=JsonRpcVersion(),
+        id=JsonRpcIdString.from_request_id(request_id),
+        method="ping",
+        params={},
+    )
+
+
+def _make_ok_response(request_id: RequestId) -> JsonRpcResponse[dict[str, object]]:
+    """Minimal success response with the given id."""
+    return JsonRpcResponse.ok(
+        JsonRpcIdString.from_request_id(request_id),
+        result={"ok": True},
+    )
+
+
+# --- send_outbound (lines 748-766) -----------------------------------------
+async def test_send_outbound_ok() -> None:
+    ctx = _make_inner(outbound_capacity=4)
+    conn = HubConnection(ctx.inner)
+    await conn.send_outbound("frame-1")
+    assert _buffer_size(ctx.outbound_rx) == 1
+
+
+async def test_send_outbound_full_recovers_after_bounded_wait() -> None:
+    ctx = _make_inner(outbound_capacity=1)
+    conn = HubConnection(ctx.inner)
+    # Fill the single slot; the next send_outbound must await capacity.
+    conn.try_send_outbound("first")
+    assert _buffer_size(ctx.outbound_rx) == 1
+
+    async def drain() -> None:
+        await asyncio.sleep(0.01)  # let send_outbound park on the full buffer
+        await ctx.outbound_rx.recv()
+
+    asyncio.create_task(drain())
+    await conn.send_outbound("second")  # recovers once `drain` frees a slot.
+    assert _buffer_size(ctx.outbound_rx) == 1
+
+
+async def test_send_outbound_full_times_out_raises_backpressure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import minimax_code.computer_hub_sdk.connection as conn_mod
+
+    monkeypatch.setattr(conn_mod, "_OUTBOUND_BACKOFF_WAIT_S", 0.02)
+    ctx = _make_inner(outbound_capacity=1)
+    conn = HubConnection(ctx.inner)
+    conn.try_send_outbound("first")  # fill the single slot.
+    with pytest.raises(BackpressureError):
+        await conn.send_outbound("second")  # no drainer -> bounded wait elapses.
+
+
+async def test_send_outbound_closed_raises_network() -> None:
+    ctx = _make_inner()
+    conn = HubConnection(ctx.inner)
+    ctx.outbound_rx.close_channel()
+    with pytest.raises(NetworkError):
+        await conn.send_outbound("frame")
+
+
+# --- call_request (lines 671-682) ------------------------------------------
+async def test_call_request_returns_response_and_drains_waiter() -> None:
+    demux = _RecordingDemux()
+    ctx = _make_inner(demux=demux)
+    conn = HubConnection(ctx.inner)
+    rid = RequestId("c0")
+    expected = _make_ok_response(rid)
+
+    async def fulfiller() -> None:
+        await asyncio.sleep(0.01)
+        demux.waiters[rid].set_result(expected)
+
+    asyncio.create_task(fulfiller())
+    resp = await conn.call_request(rid, _make_request(rid))
+    assert resp == expected
+    # waiter_guard took the waiter on scope exit -> no leak.
+    assert rid not in demux.waiters
+
+
+async def test_call_request_propagates_client_error_from_waiter() -> None:
+    demux = _RecordingDemux()
+    ctx = _make_inner(demux=demux)
+    conn = HubConnection(ctx.inner)
+    rid = RequestId("c0")
+
+    async def fulfiller() -> None:
+        await asyncio.sleep(0.01)
+        demux.waiters[rid].set_exception(NetworkError("server gone"))
+
+    asyncio.create_task(fulfiller())
+    with pytest.raises(NetworkError, match="server gone"):
+        await conn.call_request(rid, _make_request(rid))
+    assert rid not in demux.waiters
+
+
+async def test_call_request_drains_waiter_on_send_failure() -> None:
+    demux = _RecordingDemux()
+    ctx = _make_inner(demux=demux)
+    conn = HubConnection(ctx.inner)
+    rid = RequestId("c0")
+    ctx.outbound_rx.close_channel()  # send_outbound will raise NetworkError.
+    with pytest.raises(NetworkError):
+        await conn.call_request(rid, _make_request(rid))
+    # waiter registered then drained by waiter_guard despite the send failure.
+    assert rid not in demux.waiters
+
+
+# --- call_request_with_deadline (lines 693-746) ----------------------------
+async def test_call_request_with_deadline_success() -> None:
+    demux = _RecordingDemux()
+    ctx = _make_inner(demux=demux)
+    conn = HubConnection(ctx.inner)
+    rid = RequestId("c0")
+    expected = _make_ok_response(rid)
+
+    async def fulfiller() -> None:
+        await asyncio.sleep(0.01)
+        demux.waiters[rid].set_result(expected)
+
+    asyncio.create_task(fulfiller())
+    resp = await conn._call_request_with_deadline(rid, _make_request(rid), timeout=1.0)
+    assert resp == expected
+    assert rid not in demux.waiters
+
+
+async def test_call_request_with_deadline_times_out() -> None:
+    demux = _RecordingDemux()
+    ctx = _make_inner(demux=demux)
+    conn = HubConnection(ctx.inner)
+    rid = RequestId("c0")
+    # No fulfiller: the deadline elapses before the future resolves. The
+    # outcome is a TimedOut value (Rust enum), not a raised exception.
+    outcome = await conn._call_request_with_deadline(rid, _make_request(rid), timeout=0.02)
+    assert isinstance(outcome, TimedOut)
+    assert outcome.timeout == 0.02
+    assert rid not in demux.waiters
+
+
+async def test_call_request_with_deadline_wraps_send_failure_as_other() -> None:
+    demux = _RecordingDemux()
+    ctx = _make_inner(demux=demux)
+    conn = HubConnection(ctx.inner)
+    rid = RequestId("c0")
+    ctx.outbound_rx.close_channel()  # send_outbound raises NetworkError.
+    outcome = await conn._call_request_with_deadline(rid, _make_request(rid), timeout=1.0)
+    assert isinstance(outcome, OtherError)
+    assert isinstance(outcome.error, NetworkError)
+    assert rid not in demux.waiters
+
+
+# --- call_request_with_timeout (lines 684-691) -----------------------------
+async def test_call_request_with_timeout_wraps_timed_out_as_client_error() -> None:
+    demux = _RecordingDemux()
+    ctx = _make_inner(demux=demux)
+    conn = HubConnection(ctx.inner)
+    rid = RequestId("c0")
+    # No fulfiller -> TimedOut -> to_client_error -> NetworkError.
+    with pytest.raises(NetworkError):
+        await conn.call_request_with_timeout(rid, _make_request(rid), timeout=0.02)
+    assert rid not in demux.waiters
+
+
+async def test_call_request_serializes_compact_json_to_outbound() -> None:
+    import json as _json
+
+    demux = _RecordingDemux()
+    ctx = _make_inner(demux=demux)
+    conn = HubConnection(ctx.inner)
+    rid = RequestId("c0")
+
+    async def fulfiller() -> None:
+        await asyncio.sleep(0.01)
+        demux.waiters[rid].set_result(_make_ok_response(rid))
+
+    asyncio.create_task(fulfiller())
+    await conn.call_request(rid, _make_request(rid))
+    frame = await ctx.outbound_rx.recv()
+    decoded = _json.loads(frame)
+    assert decoded["jsonrpc"] == "2.0"
+    assert decoded["id"] == "c0"
+    assert decoded["method"] == "ping"
+    assert decoded["params"] == {}
+    # Compact separators: no whitespace after ',' or ':'.
+    assert ", " not in frame
+    assert ": " not in frame
