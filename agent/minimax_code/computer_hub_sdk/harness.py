@@ -96,6 +96,7 @@ from typing import Any, TypeAlias
 
 from minimax_code.computer_hub_core.resolver import ErasedTool, ToolHandle
 from minimax_code.computer_hub_sdk.connection_borrow import ConnectionBorrow
+from minimax_code.computer_hub_sdk.error import InvalidConfig
 from minimax_code.computer_hub_sdk.harness_types import (
     HookRequestHandler,
     ModelOutputExtractor,
@@ -739,3 +740,43 @@ class ToolHarness:
         :meth:`LocalRegistry.model_output`.
         """
         return self._inner.local_registry.model_output(tool_id, output)
+
+    # -- underlying connection (lines 848-885) -- R173 --
+
+    def connection(self) -> Any:
+        """Underlying pooled connection (Rust ``connection``).
+
+        Delegates to :meth:`_require_connection`; raises
+        :class:`InvalidConfig` for a local-only harness (no server
+        connection). Useful for tests that need to assert pool dedup.
+
+        Rust returns ``Result<&Arc<HubConnection>, ClientError>``. Python
+        surfaces the ``Err`` as a raised :class:`InvalidConfig` (a
+        ``ClientError`` subclass); the ``Ok`` value is ``borrow.connection``
+        -- a live ``HubConnection`` once ``connection.rs`` lands, ``Any``
+        until then. The Rust ``&Arc`` borrow collapses to returning the
+        shared Python reference.
+        """
+        return self._require_connection()
+
+    def _require_connection(self) -> Any:
+        """Resolve the underlying connection or raise (Rust ``require_connection``).
+
+        Returns ``borrow.connection`` when a server connection is bound;
+        raises :class:`InvalidConfig` for a local-only harness. Mirrors
+        ``self.inner.borrow.as_ref().map(|b| b.connection()).ok_or_else(||
+        ClientError::InvalidConfig("operation requires a server connection
+        (local-only harness)"))``. The Rust ``fn require_connection`` is
+        crate-private; the leading underscore mirrors that visibility.
+
+        Rust ``b.connection()`` is a method call returning
+        ``&Arc<HubConnection>``; R138 ports ``ConnectionBorrow.connection``
+        as a **field** (``Any`` until ``connection.rs`` lands), so the
+        Python port is a field access, not a call.
+        """
+        borrow = self._inner.borrow
+        if borrow is None:
+            raise InvalidConfig(
+                "operation requires a server connection (local-only harness)"
+            )
+        return borrow.connection

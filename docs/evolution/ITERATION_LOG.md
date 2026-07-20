@@ -14145,3 +14145,42 @@ uv run pytest tests/test_harness_actor.py -q
 ### Commit
 
 feat(platform): R172 ToolHarness session + local_registry + model_output read-only accessors
+
+
+## R173 — ToolHarness connection + require_connection（错误路径分发层，harness.rs leaf 9）
+
+锚点:R173-1 79d4d27
+
+### 本轮目标
+移植 harness.rs:848-885。`connection()` pub 方法委托 `require_connection()` 私有方法；require_connection 实现 borrow None -> raise ClientError::InvalidConfig 错误路径 + Some -> borrow.connection 字段访问。list_servers() 依赖 connection.call_request live，YAGNI 延后。harness.rs leaf 9。
+
+### 融合结论
+harness.rs 的 `connection()` + `require_connection()` 是 SDK 边界的错误路径分发层：local-only harness（borrow=None）访问底层连接时返回 ClientError::InvalidConfig。None 分支是纯逻辑（构造固定错误信息），Some 分支委托 borrow.connection（R138 已移植为字段）。完整移植连接访问的错误契约，为后续依赖 require_connection 的 list_servers / session_open 等方法（live connection 链）铺路。
+
+### 交付
+- `agent/minimax_code/computer_hub_sdk/harness.py`：+1 import（InvalidConfig）+2 方法（connection / _require_connection），+~45 行
+- `agent/tests/test_harness_actor.py`：+2 import（ConnectionBorrow + ClientError/InvalidConfig）+1 helper（_harness_with_borrow）+7 测试，+~75 行
+
+### 映射决策树 + 坑
+1. **Result -> raise 映射**：Rust `Result<&Arc<HubConnection>, ClientError>` -> Python raise InvalidConfig on Err / return Any on Ok。R133 文档确立 SDK 惯例是异常层级（exception hierarchy），From impls 在调用点 raise Subclass。Err -> raise 是忠实映射。
+2. **私有可见性**：Rust `fn require_connection`（无 pub，crate-private）-> Python `_require_connection`（下划线前缀镜像私有）。docstring 明示 "The Rust fn require_connection is crate-private; the leading underscore mirrors that visibility"。
+3. **borrow.connection 字段 vs 方法**：Rust `b.connection()` 是方法调用；R138 移植 ConnectionBorrow 时把 connection 作为**字段**（`connection: Any`）而非方法（R138 文档："the connection property returns object until connection.rs lands"）。Python 映射 = `borrow.connection` 字段访问，非 `borrow.connection()` 调用。**关键坑**：若误写 `borrow.connection()` 会 TypeError（_Marker 无 __call__）。docstring 双重强调 "field access, not a call"。
+4. **InvalidConfig 格式串逐字**：Rust `ClientError::InvalidConfig("operation requires a server connection (local-only harness)")` -> `InvalidConfig("operation requires a server connection (local-only harness)")`。R133 InvalidConfig.__init__ 加前缀 "invalid configuration: "，所以 `str(error)` = "invalid configuration: operation requires a server connection (local-only harness)"。测试 test_connection_error_message_is_verbatim 断言完整串。
+5. **ClientError import 避免 F401**：harness.py 实现仅用 InvalidConfig（raise），ClientError 仅在 docstring 文字提及。只 import InvalidConfig 避免 ruff F401 未使用 import。test 文件 import ClientError（pytest.raises(ClientError) 实际使用）+ InvalidConfig。
+6. **&Arc<HubConnection> 借用 -> Any**：HubConnection 未移植（connection.rs 待来叶），返回类型注解 `Any`。Rust `&Arc` 借用 -> Python 引用共享（同 R168 Clone 先例）。
+7. **connection() 委托 _require_connection**：Rust `pub fn connection(&self) -> Result<...> { self.require_connection() }` 逐字委托。Python `def connection(self) -> Any: return self._require_connection()`。测试 test_connection_delegates_to_require_connection 断言同对象输出。
+8. **_harness_with_borrow helper**：测试需构造 borrow != None 的 harness。无构造入口设 borrow（local_only_with 等都 borrow=None）。helper 用 _make_inner() 然后 `inner.borrow = ConnectionBorrow.from_connection(conn)`（dataclass 可变 + R138 from_connection classmethod）。
+9. **isort 顺序**：computer_hub_sdk.connection_borrow (c) < computer_hub_sdk.error (e) < computer_hub_sdk.harness (h) < harness_types (h) < tool_protocol (t) < tool_runtime (t) < tool_types (t)。harness.py 加 error import 在 connection_borrow 后 harness_types 前；test 同理在 harness 前。
+
+### 验证
+- ruff check harness.py + error.py + test_harness_actor.py：**All checks passed!**
+- pytest test_harness_actor.py：**51 passed in 0.43s**（R172 44 + R173 7 = 51），0 warning
+
+### YAGNI 边界
+- **list_servers() (888-909)**：async，依赖 `connection.try_alloc_request_id()` + `connection.call_request()`（HubConnection 方法，未移植）。延后至 connection.rs live 后。
+- **session_open() (916+) 及后续 async 方法**：同样依赖 require_connection 的 Ok 值的 live HubConnection 方法。延后。
+- **ToolHarnessInner impl 方法 (650-707)**：fail_inflight_calls_on_disconnect + refresh_remote_tools，依赖 connection live 链。延后。
+- **build() (459-542)**：依赖 pool / auth / ConnectionBorrow acquire live。延后。
+
+### Commit
+`feat(platform): R173 ToolHarness connection + require_connection (local-only InvalidConfig error path)` (after 79d4d27)

@@ -27,6 +27,8 @@ from typing import Any, get_origin
 
 import pytest
 
+from minimax_code.computer_hub_sdk.connection_borrow import ConnectionBorrow
+from minimax_code.computer_hub_sdk.error import ClientError, InvalidConfig
 from minimax_code.computer_hub_sdk.harness import (
     BindFuture,
     DeferredBind,
@@ -614,3 +616,70 @@ def test_model_output_missing_tool_returns_none():
     reg = LocalRegistry()
     harness = ToolHarness.local_only_with(reg, SessionId("s"), _Marker())  # type: ignore[arg-type]
     assert harness.model_output(ToolId("ns:absent"), 42) is None
+
+
+# ===========================================================================
+# connection / require_connection (lines 848-885) -- R173.
+# ===========================================================================
+def _harness_with_borrow(connection: Any) -> ToolHarness:
+    """Build a harness whose inner.borrow wraps ``connection`` (R173)."""
+    inner = _make_inner("s-conn")
+    inner.borrow = ConnectionBorrow.from_connection(connection)
+    return ToolHarness(inner)
+
+
+def test_connection_local_only_raises_invalid_config():
+    """connection() raises InvalidConfig when borrow is None (local-only)."""
+    harness = ToolHarness.local_only_with(
+        LocalRegistry(), SessionId("s-local"), _Marker()  # type: ignore[arg-type]
+    )
+    with pytest.raises(InvalidConfig):
+        harness.connection()
+
+
+def test_connection_error_message_is_verbatim():
+    """The error message matches the Rust ClientError::InvalidConfig literal."""
+    harness = ToolHarness.local_only_with(
+        LocalRegistry(), SessionId("s-local"), _Marker()  # type: ignore[arg-type]
+    )
+    with pytest.raises(InvalidConfig) as exc_info:
+        harness.connection()
+    assert str(exc_info.value) == (
+        "invalid configuration: operation requires a server connection "
+        "(local-only harness)"
+    )
+
+
+def test_connection_returns_borrow_connection_field():
+    """connection() returns borrow.connection (field access, not a call)."""
+    conn = _Marker()
+    harness = _harness_with_borrow(conn)  # type: ignore[arg-type]
+    assert harness.connection() is conn
+
+
+def test_require_connection_local_only_raises_invalid_config():
+    """_require_connection raises InvalidConfig when borrow is None."""
+    harness = ToolHarness(_make_inner())
+    with pytest.raises(InvalidConfig):
+        harness._require_connection()
+
+
+def test_require_connection_returns_borrow_connection_field():
+    """_require_connection returns borrow.connection when bound."""
+    conn = _Marker()
+    harness = _harness_with_borrow(conn)  # type: ignore[arg-type]
+    assert harness._require_connection() is conn
+
+
+def test_require_connection_error_is_client_error_subclass():
+    """InvalidConfig is a ClientError (consumers catch the base)."""
+    harness = ToolHarness(_make_inner())
+    with pytest.raises(ClientError):
+        harness._require_connection()
+
+
+def test_connection_delegates_to_require_connection():
+    """connection() forwards to _require_connection (same object out)."""
+    conn = _Marker()
+    harness = _harness_with_borrow(conn)  # type: ignore[arg-type]
+    assert harness.connection() is harness._require_connection()
