@@ -11971,3 +11971,65 @@ cd agent && uv run pytest tests/test_pool.py -q
 ### Commit
 
 feat(platform): R143 migrate xai-computer-hub-sdk pool.rs -> computer_hub_sdk/pool.py (process-wide conn pool, 11th leaf)
+
+## R144 — 前向移植 xai-computer-hub-sdk notification.rs（crate 第 12 叶，服务器通知分类解析器）
+
+锚点:R144-1 9ad521b
+
+### 本轮目标
+
+把 `grok-build/crates/common/xai-computer-hub-sdk/src/notification.rs`（362 行）整叶前向移植为 `agent/minimax_code/computer_hub_sdk/notification.py`，作为 SDK crate 的第 12 个叶子（R133 error / R134 handshake / R135 refcount / R136 donate_pump / R137 trace_donate / R138 connection_borrow / R139 auth / R140 observability / R141 cancel / R142 admission / R143 pool 之后）。
+
+本轮要交付的核心是一条 `parse(value: dict) -> HubNotification | None` 分类器，按 `method` 字段把原始 JSON-RPC 通知分发到三条路径 + 一个 Unknown 兜底：
+
+1. **`"tools_changed"`**：从 `params` 反序列化 `ToolsChanged`（`session_id` 藏在 params 内部，不从信封取）；失败降级 Unknown。
+2. **`"tool.notification"`**：从 `params` 反序列化 `ToolNotificationFrame`（帧本身不带 session_id）**并且**从信封提升 `session_id`；两者都成功才继续。特殊情况：当 `frame.tool_id == "__tool_server_status"` 且通知是 `Custom` 且 `kind == "status_changed"` 时，从 custom payload 反序列化 `ToolServerStatusPayload` —— 成功则提前返回 `HubToolServerStatusChanged`，失败则 warn + 落入通用 `HubToolNotification`。帧或信封 session_id 缺失/非法 → 降级 Unknown。
+3. **任何其它 `method`**：`HubUnknown`，原样保留 `method` + `params`（前向兼容，调用方永不丢事件）。
+4. **缺失 `method`**：返回 `None`（它根本不是通知）。
+
+所有依赖符号（`SessionId`/`ToolId`、`ToolsChanged`/`ToolNotificationFrame`/`ToolServerStatusPayload` + 3 个 `*_from_wire` 模块函数、`Custom` 结构体 + `WireCustomNotification`、`ToolServerLifecycleStatus`）均在 R82-R106 落地，故本轮是**纯解析器叶子**，无框架胶水可存根（与 R142 admission 的 metrics 存根 / R143 pool 的 opener 注册口不同）。
+
+### 融合结论
+
+notification.rs 是 SDK crate 的"通知入口分类器"——它把服务端推来的原始 JSON 值转成强类型枚举，是上游 inbox 派发循环（demux.rs / connection.rs，后续叶子）的消费前置。其全部价值（method 分发 / 反序列化容错 / `__tool_server_status` sentinel 提升）是**纯解析逻辑**，与传输层无关，与 MiniMax Code 的 asyncio 模型天然契合。本轮把它从 Rust 的 `serde_json::Value` + `enum` + `match` + `tracing::warn!` 栈前向移植到 Python 的 `dict[str, Any]` + 4 个 frozen dataclass + `isinstance` + `logging.warning` 栈，**语义不变**：
+
+- **Rust `enum HubNotification { 4 variants }`** → 4 个 `@dataclass(frozen=True)`（`HubToolsChanged` / `HubToolNotification` / `HubToolServerStatusChanged` / `HubUnknown`）+ Union 别名 `HubNotification`。`Hub` 前缀避免与变体引用的 tool_protocol `ToolsChanged`/`ToolNotificationFrame` 碰撞。调用方用 `isinstance` 分发（Rust `match` 的等价物）。
+- **Rust `HubNotification::parse` 关联函数** → 模块级 `parse`（Python 无关联函数语法，同 R135/R141 模式）。
+- **Rust `serde_json::from_value::<T>(v)`** → R82-R106 模块级 `*_from_wire(v)` helper，包裹在 `try/except (KeyError, ValueError, TypeError)`；失败降级 Unknown，永不抛出。
+- **降级语义对齐**：Rust 对 `tools_changed`/`tool.notification` 的坏 params 降级到 Unknown（而非 None），确保调用方永不丢事件——Python 同步此语义，这是本轮最重要的容错契约。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/notification.py`（约 276 行）：4 个字符串常量 + 4 个 frozen dataclass + Union 别名 `HubNotification` + `_envelope_session_id`（`SessionId::new(s).ok()` 提升）+ `parse`（method 分发 + 3 路径 + Unknown 兜底）+ `__all__`。
+- `agent/tests/test_notification.py`（约 283 行，11 测试全绿）：1:1 对应 Rust 10 个 `#[test]` + 1 个 Union 别名守卫测试。覆盖 tools_changed（3 delta 列）/ tools_changed 带 updated / tool.notification 通用 / tool.notification 缺 session_id 降级 Unknown / 未知 method / 缺 method 返回 None / tools_changed 坏 params 降级 Unknown / tool_server_status 提升（assert `ToolServerLifecycleStatus.Busy` + `active_tool_calls==2`）/ 非 status tool_id 保持通用 / tool.notification 坏 params 降级 Unknown / parse 返回类型满足 Union 别名。
+
+### 映射决策树 + 坑
+
+1. **Rust newtype-variant 访问路径差异**（本轮核心形态坑）：Rust `WireToolNotification::Custom(WireCustomNotification)` 是 newtype 变体，`match` 绑定 `c` 直接就是 `WireCustomNotification`，故 `c.kind`/`c.payload` 直达。但 R83 的 Python 版本是结构体 `Custom(notification: WireCustomNotification)`（为对齐相邻标签 serde 形态），故访问路径多一跳 `.notification`：`frame.notification.notification.kind` / `.payload`（Custom → notification → WireCustomNotification → kind/payload）。在 `notification.py` 内联注释 + docstring 双重记录此跳，避免后续维护者误删。
+2. **`HubUnknown.params` 类型选 `Any` 而非 `dict[str, Any]`**（本轮类型决策）：Rust 用 `serde_json::Value`（任意 JSON）原样保留非对象 params。若用 `dict[str, Any]` 会丢失数组/原始值形态。选 `Any` 忠实保留 Rust 语义（`value.get("params").cloned().unwrap_or(Value::Object(default))`——present-and-non-object 原样，absent 变 `{}`）。
+3. **F401 规避**（本轮 lint 预判）：`ToolsChanged` 类未被直接引用（只用了 `tools_changed_from_wire` 函数），若导入会触发 F401。主动从导入列表移除 `ToolsChanged`，保留 `ToolNotificationFrame`/`ToolServerStatusPayload`（出现在 frozen dataclass 字段注解中）。**提前规避，零 lint 错误**。
+4. **`SessionId::new(s).ok()` 的 Python 等价**：`SessionId` 是 str newtype，构造对 str 不抛异常。`_envelope_session_id` 用 `isinstance(raw, str)` 守卫拒绝非 str 信封值 + `try/except Exception` 兜底（BLE 不在 ruff select 列表，bare `except Exception` 安全），忠实复刻 `.ok()` 的 None 臂。
+5. **`Vec<ToolId>` → `tuple[ToolId, ...]`**：frozen dataclass 需不可变序列；`tools_changed_from_wire` 返回 list，`parse` 用 `tuple(...)` 转换。
+6. **Rust `tracing::warn!` → `logging.warning`**：3 处 warn（tools_changed 坏 params / tool.notification 坏 params / 缺 session_id）+ 1 处 status payload 坏（warn + 落入通用 ToolNotification，**非** Unknown——帧本身解析成功）。此"status 提升失败落入 ToolNotification 而非 Unknown"的细微语义在 docstring + 内联注释明确。
+
+### 验证
+
+```
+cd agent && uv run ruff check minimax_code/computer_hub_sdk/notification.py tests/test_notification.py
+-> All checks passed!（I001 import 排序经 --fix 限定单文件修复）
+
+cd agent && uv run pytest tests/test_notification.py -v
+-> 11 passed in 0.29s
+```
+
+排除文件契约复核：`agent/.tmp_manual/` / `agent/minimax_code/agent/self_evolution/` / `agent/news_2026-06-10.json` / `agent/news_today.json` / `agent/progress/` / `agent/projects/` / `agent/reminder.py` / `agent/schedule_reminder.bat` / `agent/schedule_reminder.sh` / `grok-build/` 等 10 项保持 `??`（未跟踪），未进暂存区。HEAD 仍为 `9ad521b`（R143），R144 锚点父级正确。
+
+### YAGNI 边界
+
+**MIGRATED**（纯解析逻辑，全部依赖已在 R82-R106 落地）：4 字符串常量（method 判别 + tool_server_status sentinel + status_changed kind）/ 4 frozen dataclass + Union 别名 / `_envelope_session_id` 提升 / `parse` 分类器。
+
+**NOT MIGRATED**（无）—— 本叶是纯解析器，无框架胶水可存根（与 R142 admission 的 metrics 存根 / R143 pool 的 opener 注册口 / `_DEFAULT_OPENER` 槽不同）。`parse` 的调用方（demux.rs 通知派发循环 / connection.rs session inbox）是后续叶子，本叶只产出类型 + 分类函数，不绑定运行时。
+
+### Commit
+
+feat(platform): R144 migrate xai-computer-hub-sdk notification.rs -> computer_hub_sdk/notification.py (server notification classifier, 12th leaf)
