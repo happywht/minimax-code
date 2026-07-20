@@ -12706,3 +12706,52 @@ SDK crate 第 18 叶（18c）闭合网络出站半段。R150（18a）提供类�
 ### Commit
 
 `feat(platform): R152 connection.rs network-outbound path -> connection.py (SDK leaf 18c)`
+
+## R153 — connection.rs serve method -> connection.py (SDK leaf 18d)
+
+锚点:R153-1 7084190
+
+### 本轮目标
+
+前向移植 grok-build `xai-computer-hub-sdk/src/connection.rs` 第 806-851 行的 `serve` 方法到 `agent/minimax_code/computer_hub_sdk/connection.py`：serve 是连接对象的第一个"重连驱动"请求方法 -- 全量工具快照投递 + 3 次有界重试（SERVE_MAX_ATTEMPTS=3, SERVE_ATTEMPT_TIMEOUT=30s）+ outcome 分发 + 全超时 force_reconnect。复用 R152 的 `_call_request_with_deadline` 基础设施。锚点 `R153-1 7084190`（父 R152 7084190）。验证：ruff 0 + pytest（test_connection 加 6 个 serve 测试 = 42 passed）+ 精确 commit。
+
+### 融合结论
+
+SDK crate 第 18 叶（18d）闭合 serve 重连驱动。R150（18a）类型地基（DeadlineCallError/TimedOut/OtherError + SERVE_* 常量），R151（18b）actor 骨架（HubConnection + 访问器 + force_reconnect），R152（18c）出站路径（send_outbound/call_request/_call_request_with_deadline），R153 在其上接通 serve 重连语义 -- 这是连接对象第一次表达"投递一个有界的、可重连的、必须被确认的请求"的能力。serve 与 call_request 的关键区别：call_request 是单次 best-effort（失败即抛），serve 是重连驱动（超时 -> serve_replay_timeout 标记 -> 重试，最多 3 次，全失败 -> force_reconnect 强制重连后抛）。忠实 Rust 的 serve-loop 语义 -- serve 用于连接重建后重放工具快照，必须容忍网络抖动。spawn 管线（run_writer/run_reader_actor/open_socket/run_handshake, 813-857）/ WriterControl<S> 状态机（961-1382）留给 R154+。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/connection.py`：serve 方法（646-706），消费 SERVE_MAX_ATTEMPTS/SERVE_ATTEMPT_TIMEOUT（R150 类型层常量）+ Method.Serve.as_wire_str()（R85）+ serve_result_from_wire（frames.py R92+）+ serve_replay_timeout（metrics.py R147）+ force_reconnect（R151 访问器）；imports 块清理（删除未用的 ResponseError，保留 ResponseResult）。
+- `agent/tests/test_connection.py`：6 个 serve 测试 + 2 辅助（_make_serve_params/_make_serve_ok），imports 扩展（ServeParams/ToolId/JsonRpcError 等；error import 拆多行因单行 101 字符超长；test 侧只导入测试直接引用的符号，serve 内部用的 serve_result_from_wire/Method/serve_replay_timeout 不在 test 顶层导入）。
+
+### 映射决策树 + 坑
+
+- `serve` 的 3 次有界重试 `for _ in range(SERVE_MAX_ATTEMPTS)` 忠实 Rust `for attempt in 0..SERVE_MAX_ATTEMPTS`；每次 attempt 内 try_alloc_request_id + 构造 JsonRpcRequest（method=Method.Serve）+ _call_request_with_deadline。
+- outcome 分发：_call_request_with_deadline 返回 `JsonRpcResponse | DeadlineCallError`（值，非异常，R152 关键决策）。serve 用 `isinstance(outcome, DeadlineCallError)` 区分错误 vs 响应，再 isinstance(TimedOut/ResponseResult) 细分。
+- TimedOut 分支：调用同步 `serve_replay_timeout()`（metrics 计数器，记录重连重放超时）-> 记录 last_err -> `continue` 重试。
+- OtherError 分支：`raise outcome.error` 立即抛（send 失败是确定性错误，不重试）。
+- ResponseResult 分支：`serve_result_from_wire(resp_outcome.value)` 反序列化 -> 成功返回；`KeyError/TypeError/ValueError` -> `SerdeError` 包装（忠实 Rust serde_json::from_value 失败）。
+- ResponseError 分支：`raise ClientError.from_jsonrpc_error(resp_outcome.error)` 立即抛（不重试，服务端拒绝是确定性错误）。
+- 全 3 次超时后：`force_reconnect()`（同步，try_send None 到 reconnect 通道）-> raise last_err（TimedOut.to_client_error() = NetworkError）。
+- 坑 1（F401 ResponseError 未用，本轮验证闭环关键发现）：实现 serve 时在 connection.py imports 块导入了 `ResponseError`，但 serve 用 `isinstance(resp_outcome, ResponseResult)` 分支，else 路径用 `resp_outcome.error` 属性访问（不引用 ResponseError 类型名），故 ResponseError 从未被 isinstance/注解引用 -> ruff F401 at connection.py:99。修复：删除 envelope import 块的 `ResponseError,` 行，仅保留 ResponseResult。教训：Python 分支 narrowing 用 isinstance(单一具体子类) 即可，else 自动推断为另一子类，属性访问不需导入该子类类型名（与 Rust match ResponseResult | ResponseError 双臂需双方在 scope 不同）。
+- 坑 2（fulfiller 轮询 c1 注册）：test_serve_retries_then_succeeds_after_one_timeout 中第二次尝试用 RequestId("c1")，需 `while second not in demux.waiters: await asyncio.sleep(0.005)` 轮询，等 serve 注册第二次 waiter 后再 set_result（RequestId 是 str 子类，hash/eq 继承 str，可作为 dict key 匹配 waiters["c1"]）。
+- 坑 3（monkeypatch SERVE_ATTEMPT_TIMEOUT 加速超时）：默认 30s 太慢，`monkeypatch.setattr(conn_mod, "SERVE_ATTEMPT_TIMEOUT", 0.02)` 让每次尝试 20ms 超时，3 次约 60ms 完成。同时 monkeypatch serve_replay_timeout 避免真实 metrics 副作用 + 计数验证（calls == 3 全超时 / calls == 1 首超时后重试成功）。
+- 坑 4（error import 101 字符超长）：`from minimax_code.computer_hub_sdk.error import BackpressureError, ClientError, NetworkError, SerdeError` = 101 字符 > 100 -> ruff 强制拆括号多行。
+
+### 验证
+
+- `uv run ruff check minimax_code/computer_hub_sdk/connection.py tests/test_connection.py` -> **All checks passed!**（0 错误，修复 F401 ResponseError 未用 at connection.py:99）。
+- `uv run pytest tests/test_connection.py -q` -> **42 passed in 0.73s**（含新增 6 serve 测试）。
+- 覆盖矩阵：serve 成功反序列化（accepted/added/removed 校验 + waiter 排空）/ serve JSON-RPC error 立即抛（match "serve rejected" + reconnect 通道 0）/ serve OtherError 立即抛（close outbound_rx -> NetworkError + reconnect 通道 0）/ serve serde 畸形 payload（accepted 非 int -> SerdeError）/ serve 全超时 force_reconnect（3 次 serve_replay_timeout + reconnect 通道 1 + waiters 排空 -> NetworkError）/ serve 首超时后重试成功（c1 注册轮询 + 1 次超时 + 成功返回 accepted=1/added=[t9] + reconnect 通道 0）。
+
+### YAGNI 边界
+
+- spawn 管线（run_writer/run_reader_actor/open_socket/run_handshake，813-857）-> R154（asyncio task 模型 + 握手状态机消费 R134 handshake.rs）。
+- WriterControl<S> 状态机（961-1382，writer 半部流量控制 + ping/liveness/outbound 排空 + ConnectedExit）-> R155（writer 半部，最复杂子模块）。
+- 1310 行 #[cfg(test)] 块 -> R156+（网络叶子全部闭合后随原文测试对齐，依赖 tokio mpsc/sink mock 已就位）。
+- connect() 入口（消费 ConnectionConfig -> resolve tuning -> 分配通道 -> 构造 Inner -> spawn 管线）-> R154+（spawn 闭合后）。
+- pool.rs 的 connect() 消费路径 -> server.rs/harness.rs/lib.rs barrel（connection.rs 全部叶子完成后）。
+
+### Commit
+
+`feat(platform): R153 connection.rs serve method -> connection.py (SDK leaf 18d)`

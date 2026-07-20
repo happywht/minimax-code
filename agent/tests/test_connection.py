@@ -79,16 +79,23 @@ from minimax_code.computer_hub_sdk.connection_types import (
     TimedOut,
 )
 from minimax_code.computer_hub_sdk.demux import Demux, mpsc_channel
-from minimax_code.computer_hub_sdk.error import BackpressureError, NetworkError
+from minimax_code.computer_hub_sdk.error import (
+    BackpressureError,
+    ClientError,
+    NetworkError,
+    SerdeError,
+)
 from minimax_code.computer_hub_sdk.refcount import RefCountedSet
 from minimax_code.tool_protocol.connection import ConnectionKind
 from minimax_code.tool_protocol.envelope import (
+    JsonRpcError,
     JsonRpcIdString,
     JsonRpcRequest,
     JsonRpcResponse,
     JsonRpcVersion,
 )
-from minimax_code.tool_protocol.ids import ConnectionId, RequestId, ServerId, SessionId
+from minimax_code.tool_protocol.frames import ServeParams
+from minimax_code.tool_protocol.ids import ConnectionId, RequestId, ServerId, SessionId, ToolId
 
 if TYPE_CHECKING:
     from minimax_code.computer_hub_sdk.connection_types import ReconnectEvent
@@ -676,3 +683,154 @@ async def test_call_request_serializes_compact_json_to_outbound() -> None:
     # Compact separators: no whitespace after ',' or ':'.
     assert ", " not in frame
     assert ": " not in frame
+
+
+# ===========================================================================
+# serve (R153, lines 806-851).
+# ===========================================================================
+def _make_serve_params() -> ServeParams:
+    """Minimal ServeParams (empty tool snapshot) for serve() exercises."""
+    return ServeParams(tools=[])
+
+
+def _make_serve_ok(
+    request_id: RequestId, wire: dict[str, object]
+) -> JsonRpcResponse[dict[str, object]]:
+    """Success response carrying a ServeResult wire payload for ``request_id``."""
+    return JsonRpcResponse.ok(
+        JsonRpcIdString.from_request_id(request_id), result=wire
+    )
+
+
+async def test_serve_returns_deserialized_result() -> None:
+    demux = _RecordingDemux()
+    ctx = _make_inner(demux=demux)
+    conn = HubConnection(ctx.inner)
+    rid = RequestId("c0")
+    wire: dict[str, object] = {"accepted": 2, "added": ["t1", "t2"], "removed": []}
+
+    async def fulfiller() -> None:
+        await asyncio.sleep(0.01)
+        demux.waiters[rid].set_result(_make_serve_ok(rid, wire))
+
+    asyncio.create_task(fulfiller())
+    result = await conn.serve(SessionId("s1"), _make_serve_params())
+    assert result.accepted == 2
+    assert result.added == [ToolId("t1"), ToolId("t2")]
+    assert result.removed == []
+    # Single attempt consumed only c0; the waiter slot is drained.
+    assert rid not in demux.waiters
+
+
+async def test_serve_propagates_jsonrpc_error() -> None:
+    demux = _RecordingDemux()
+    ctx = _make_inner(demux=demux)
+    conn = HubConnection(ctx.inner)
+    rid = RequestId("c0")
+
+    async def fulfiller() -> None:
+        await asyncio.sleep(0.01)
+        demux.waiters[rid].set_result(
+            JsonRpcResponse.err(
+                JsonRpcIdString.from_request_id(rid),
+                JsonRpcError(code=-32001, message="serve rejected"),
+            )
+        )
+
+    asyncio.create_task(fulfiller())
+    with pytest.raises(ClientError, match="serve rejected"):
+        await conn.serve(SessionId("s1"), _make_serve_params())
+    # JSON-RPC error aborts at once: no retry budget, no reconnect.
+    assert _buffer_size(ctx.reconnect_rx) == 0
+
+
+async def test_serve_raises_other_error_immediately() -> None:
+    demux = _RecordingDemux()
+    ctx = _make_inner(demux=demux)
+    conn = HubConnection(ctx.inner)
+    # Closed outbound channel: send_outbound raises NetworkError, which
+    # _call_request_with_deadline wraps as OtherError; serve surfaces it
+    # immediately (Rust ``Err(Other(e)) => return Err(e)``) without retry.
+    ctx.outbound_rx.close_channel()
+    with pytest.raises(NetworkError):
+        await conn.serve(SessionId("s1"), _make_serve_params())
+    # Immediate surface: no reconnect signal enqueued.
+    assert _buffer_size(ctx.reconnect_rx) == 0
+
+
+async def test_serve_raises_serde_error_on_malformed_result() -> None:
+    demux = _RecordingDemux()
+    ctx = _make_inner(demux=demux)
+    conn = HubConnection(ctx.inner)
+    rid = RequestId("c0")
+
+    async def fulfiller() -> None:
+        await asyncio.sleep(0.01)
+        demux.waiters[rid].set_result(
+            _make_serve_ok(rid, {"accepted": "not-a-number"})
+        )
+
+    asyncio.create_task(fulfiller())
+    with pytest.raises(SerdeError):
+        await conn.serve(SessionId("s1"), _make_serve_params())
+
+
+async def test_serve_force_reconnects_after_all_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import minimax_code.computer_hub_sdk.connection as conn_mod
+
+    monkeypatch.setattr(conn_mod, "SERVE_ATTEMPT_TIMEOUT", 0.02)
+    calls: list[int] = []
+
+    def _count() -> None:
+        calls.append(1)
+
+    monkeypatch.setattr(conn_mod, "serve_replay_timeout", _count)
+
+    demux = _RecordingDemux()
+    ctx = _make_inner(demux=demux)
+    conn = HubConnection(ctx.inner)
+    # No fulfiller: every bounded attempt elapses its deadline.
+    with pytest.raises(NetworkError):
+        await conn.serve(SessionId("s1"), _make_serve_params())
+    # Each timeout bumps the replay counter; SERVE_MAX_ATTEMPTS == 3.
+    assert len(calls) == 3
+    # All attempts timed out -> exactly one force_reconnect signal.
+    assert _buffer_size(ctx.reconnect_rx) == 1
+    # All three waiter slots (c0/c1/c2) drained by waiter_guard.
+    assert demux.waiters == {}
+
+
+async def test_serve_retries_then_succeeds_after_one_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import minimax_code.computer_hub_sdk.connection as conn_mod
+
+    monkeypatch.setattr(conn_mod, "SERVE_ATTEMPT_TIMEOUT", 0.05)
+    calls: list[int] = []
+
+    def _count() -> None:
+        calls.append(1)
+
+    monkeypatch.setattr(conn_mod, "serve_replay_timeout", _count)
+
+    demux = _RecordingDemux()
+    ctx = _make_inner(demux=demux)
+    conn = HubConnection(ctx.inner)
+    second = RequestId("c1")
+    wire: dict[str, object] = {"accepted": 1, "added": ["t9"], "removed": []}
+
+    async def fulfiller() -> None:
+        # Let c0 time out (never fulfil it); fulfil c1 once registered.
+        while second not in demux.waiters:
+            await asyncio.sleep(0.005)
+        demux.waiters[second].set_result(_make_serve_ok(second, wire))
+
+    asyncio.create_task(fulfiller())
+    result = await conn.serve(SessionId("s1"), _make_serve_params())
+    assert result.accepted == 1
+    assert result.added == [ToolId("t9")]
+    # First attempt timed out (1 replay), second succeeded -> no reconnect.
+    assert len(calls) == 1
+    assert _buffer_size(ctx.reconnect_rx) == 0

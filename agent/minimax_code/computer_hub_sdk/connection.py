@@ -60,12 +60,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import weakref
 from dataclasses import dataclass, field
 
 from minimax_code.computer_hub_sdk.auth import AuthProvider
 from minimax_code.computer_hub_sdk.connection_types import (
+    SERVE_ATTEMPT_TIMEOUT,
+    SERVE_MAX_ATTEMPTS,
     ConnectCallback,
     ConnectionTuning,
     ConnHealth,
@@ -85,16 +88,27 @@ from minimax_code.computer_hub_sdk.error import (
     NetworkError,
     SerdeError,
 )
+from minimax_code.computer_hub_sdk.metrics import serve_replay_timeout
 from minimax_code.computer_hub_sdk.refcount import RefCountedSet
 from minimax_code.tool_protocol.connection import ConnectionKind
-from minimax_code.tool_protocol.envelope import JsonRpcRequest, JsonRpcResponse
+from minimax_code.tool_protocol.envelope import (
+    JsonRpcIdString,
+    JsonRpcRequest,
+    JsonRpcResponse,
+    JsonRpcVersion,
+    ResponseResult,
+)
+from minimax_code.tool_protocol.frames import ServeParams, ServeResult, serve_result_from_wire
 from minimax_code.tool_protocol.ids import ConnectionId, RequestId, ServerId, SessionId
+from minimax_code.tool_protocol.methods import Method
 
 __all__ = [
     "ConnectionConfig",
     "HubConnectionInner",
     "HubConnection",
 ]
+
+_LOGGER = logging.getLogger(__name__)
 
 
 # Bounded backpressure wait before the outbound mpsc is declared full (Rust
@@ -627,6 +641,68 @@ class HubConnection:
         Stable observable for monitoring and tests; not on the hot path.
         """
         return len(self._inner.bound_sessions)
+
+    async def serve(self, session_id: SessionId, params: ServeParams) -> ServeResult:
+        """Send a ``serve`` frame: full tool snapshot for a session (806-851).
+
+        Idempotent — re-sending replaces the tool set for ``session_id``. The
+        hub diffs against the previous snapshot and emits ``tools_changed`` to
+        subscribed harnesses; this method returns the diff the hub applied.
+
+        Retries up to :data:`~minimax_code.computer_hub_sdk.connection_types.SERVE_MAX_ATTEMPTS`
+        times on :class:`TimedOut` (each timeout bumps the
+        ``serve_replay_timeout`` counter, warns, and records the deadline error
+        as ``last_err``). Any other failure surfaces immediately:
+        :class:`OtherError` (a connection-level failure the demux raised) and a
+        JSON-RPC error response both abort at once, and a serde failure on the
+        result payload raises :class:`SerdeError`. When every bounded attempt
+        times out, :meth:`force_reconnect` is called to restart replay and the
+        last timeout error is re-raised — a stuck replay is the one serve
+        failure mode worth a reconnect, since the snapshot is idempotent.
+        """
+        last_err: ClientError | None = None
+        for _ in range(SERVE_MAX_ATTEMPTS):
+            request_id = self.try_alloc_request_id()
+            req = JsonRpcRequest(
+                jsonrpc=JsonRpcVersion(),
+                id=JsonRpcIdString.from_request_id(request_id),
+                method=Method.Serve.as_wire_str(),
+                params=params,
+                session_id=session_id,
+            )
+            outcome = await self._call_request_with_deadline(
+                request_id, req, SERVE_ATTEMPT_TIMEOUT
+            )
+            if isinstance(outcome, DeadlineCallError):
+                if isinstance(outcome, TimedOut):
+                    # Rust: metrics.serve_replay_timeout(); warn; last_err = TimedOut.into().
+                    serve_replay_timeout()
+                    _LOGGER.warning(
+                        "serve attempt timed out; will retry (session=%s timeout=%ss)",
+                        session_id,
+                        outcome.timeout,
+                    )
+                    last_err = outcome.to_client_error()
+                    continue
+                # OtherError: surface immediately (Rust ``Err(Other(e)) => return Err(e)``).
+                raise outcome.error
+            # Ok(resp): dispatch on the response outcome (Result vs Error).
+            resp_outcome = outcome.outcome
+            if isinstance(resp_outcome, ResponseResult):
+                try:
+                    return serve_result_from_wire(resp_outcome.value)
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise SerdeError(str(exc)) from exc
+            raise ClientError.from_jsonrpc_error(resp_outcome.error)
+        # Every bounded attempt timed out: force reconnect to restart replay.
+        _LOGGER.warning(
+            "serve timed out on every bounded attempt; forcing reconnect (session=%s)",
+            session_id,
+        )
+        self.force_reconnect()
+        if last_err is not None:
+            raise last_err
+        raise NetworkError("serve failed after bounded retries")
 
     def __del__(self) -> None:
         """Best-effort stop signal on finalisation (Rust ``impl Drop``).
