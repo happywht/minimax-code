@@ -89,7 +89,7 @@ from minimax_code.computer_hub_sdk.connection_types import (
     WriteErrorSlot,
     waiter_guard,
 )
-from minimax_code.computer_hub_sdk.demux import Demux, _MpscClosed, _Sink
+from minimax_code.computer_hub_sdk.demux import Demux, _MpscClosed, _Sink, _SinkRx
 from minimax_code.computer_hub_sdk.error import (
     BackpressureError,
     ClientError,
@@ -904,3 +904,52 @@ def fire_on_disconnect(inner: HubConnectionInner) -> None:
     """
     if inner.on_disconnect is not None:
         inner.on_disconnect()
+
+
+# ===========================================================================
+# Spawn-pipeline reconnect pure-logic helpers (R156, SDK leaf 18g -- connection.rs
+# 1243-1245 + 1377-1382).
+#
+# The last two zero-socket helpers the spawn pipeline's reconnect loop
+# (``run_reader_actor``, R157+) factors out: the backoff-schedule lookup and
+# the reconnect-signal drain. Both are pure logic (the drain operates on the
+# mpsc buffer synchronously via ``get_nowait`` -- no running loop needed), so
+# the reconnect driver's steady-state arms can be unit-tested without a live
+# transport.
+# ===========================================================================
+def backoff_for(attempt: int, schedule: tuple[float, ...]) -> float:
+    """Look up the backoff for an attempt index (Rust ``backoff_for``, 1377-1382).
+
+    ``idx = (attempt - 1).min(len - 1)``: attempt 1 is the first slot, the last
+    slot is reused for any further attempt (the schedule's tail is the cap), and
+    an empty schedule returns ``0.0`` instead of panicking (a degenerate tuning
+    override collapses to no delay rather than aborting the reconnect loop).
+    ``attempt == 0`` saturates to the first slot (Rust ``u32::saturating_sub``).
+    """
+    if not schedule:
+        return 0.0
+    idx = max(attempt - 1, 0)
+    return schedule[min(idx, len(schedule) - 1)]
+
+
+def drain_reconnect_signals(reconnect_rx: _SinkRx[None]) -> None:
+    """Drain queued reconnect triggers (Rust ``drain_reconnect_signals``, 1243-1245).
+
+    After a successful reconnect (``run_reader_actor`` line 1184) any reconnect
+    signals that piled up during the outage window are discarded so the freshly
+    restored connection is not immediately torn down again.
+
+    Unit-channel caveat: every queued signal is ``None`` (Rust ``mpsc<()>>``),
+    so :meth:`_SinkRx.try_recv` -- which returns ``None`` for both "a queued
+    unit" and "empty" -- cannot distinguish the two. Drain the bounded buffer
+    directly via ``get_nowait`` until :class:`asyncio.QueueEmpty`, mirroring
+    Rust ``while reconnect_rx.try_recv().is_ok() {}``.
+    """
+    # Unit-channel drain: try_recv cannot tell a queued ``None`` from "empty",
+    # so drain the underlying bounded buffer directly.
+    buffer = reconnect_rx._channel.buffer
+    while True:
+        try:
+            buffer.get_nowait()
+        except asyncio.QueueEmpty:
+            return

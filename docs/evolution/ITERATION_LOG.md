@@ -12851,3 +12851,50 @@ SDK crate 第 18 叶（18f）剥离 spawn 管线的纯逻辑前置 helper。R154
 ### Commit
 
 `feat(platform): R155 connection.rs spawn-pipeline pure-logic helpers -> connection.py (SDK leaf 18f)`
+
+## R156 — connection.rs spawn-pipeline reconnect 纯逻辑 helper 收尾组 -> connection.py (SDK leaf 18g)
+
+锚点:R156-1 a7bf5be
+
+### 本轮目标
+
+前向移植 grok-build `xai-computer-hub-sdk/src/connection.rs` 第 1377-1382 + 1243-1245 行的两个纯逻辑 helper 到 `agent/minimax_code/computer_hub_sdk/connection.py`：backoff_for(attempt: int, schedule: tuple[float, ...]) -> float（重连退避查表：idx = (attempt-1).clamp(0, len-1)，attempt 1 -> 首槽，末槽对任何更靠后的 attempt 复用为上限，空 schedule 返 0.0 不 panic）/ drain_reconnect_signals(reconnect_rx: _SinkRx[None]) -> None（清空重连信号队列：成功重连后丢弃 outage 窗口内堆积的 reconnect 信号，防新连接被立刻再次拆毁）。2 helper 全部零 socket/URL/handshake/task 依赖，是 spawn 管线（run_reader_actor reconnect 循环 1156-1226，R157+）从自身主体剥出的最后两个纯逻辑依赖 -- R156 闭合后 spawn 管线的纯逻辑依赖清零，R157+ 移植首个 asyncio task（run_writer）时其 reconnect 路径可直接调用 backoff_for + drain_reconnect_signals。复用 R149 demux.py 的 _SinkRx 类型（drain_reconnect_signals 入参类型注解）+ R149 mpsc_channel（测试构造 unit 通道）。锚点 `R156-1 a7bf5be`（父 R155 a7bf5be）。验证：ruff 0 + pytest（test_connection 加 7 个 R156 测试 = 69 passed）+ 精确 commit。
+
+### 融合结论
+
+SDK crate 第 18 叶（18g）闭合 spawn 管线的纯逻辑 helper 层。R155 已剥 spawn 管线的稳态归因 helper（host_is_loopback/route_or_pong/classify_stream_end/fire_on_disconnect），但 run_reader_actor 的 reconnect 循环（1156-1226）还调用两个零依赖函数：backoff_for（1158，从 schedule 查本次 attempt 的退避时长）+ drain_reconnect_signals（1184，成功重连后清空信号队列）。这 2 个函数原本嵌在 reconnect 循环里，但本质是纯逻辑（backoff_for 是表查，drain_reconnect_signals 是 buffer 清空），无 socket/URL/handshake 依赖，可独立单测。R156 把它们剥出后，spawn 管线主体（run_writer/run_reader_actor/run_reader_phase/open_socket/run_handshake）所有纯逻辑依赖清零，剩余全是有真实 transport 依赖的 asyncio task -- 符合"先剥尽纯逻辑、再啃 asyncio task"的移植纪律（每层零 socket 依赖、可独立单测）。2 helper 都是 Rust 模块内私有（pub(crate) 都不是），Python 侧不加入 connection.py __all__（保持窄导出），与 R155 helper 同惯例。本轮一并把 demux import 加 _SinkRx（drain_reconnect_signals 类型注解所需，原仅 Demux/_MpscClosed/_Sink）-- 这不是无关补全，而是 drain_reconnect_signals 签名的契约（_SinkRx 是 reconnect_rx 的接收侧类型）。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/connection.py`：imports 扩展 1 处（demux import `from minimax_code.computer_hub_sdk.demux import Demux, _MpscClosed, _Sink` -> 加 `_SinkRx`，isort 逐字符序 _Sink < _SinkRx 前缀短在前，行 92 < 100 字符无需拆）；2 helper 追加（fire_on_disconnect 之后，文件末尾），backoff_for（`if not schedule: return 0.0; idx = max(attempt - 1, 0); return schedule[min(idx, len(schedule) - 1)]`）+ drain_reconnect_signals（直接操作 `reconnect_rx._channel.buffer.get_nowait()` + `except asyncio.QueueEmpty: return` 循环，绕过 _SinkRx.try_recv 的 unit 通道 None 歧义）；__all__ 不变。
+- `agent/tests/test_connection.py`：imports 扩展 1 处（connection import 块加 backoff_for/drain_reconnect_signals，function 组字母序：backoff_for 在 _HelloCaps 后、classify_stream_end 前；drain_reconnect_signals 在 classify_stream_end 后、exit_for_close_code 前）；本地 `_DEFAULT_BACKOFF = (0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0)` 模块常量（== RECONNECT_BACKOFF_MS，测试自包含不依赖全局常量）；7 个 R156 测试（backoff_for x5：follows_schedule 1->0.1/2->0.2/7->10.0 + caps_at_last_slot 8->10.0/1000->10.0 + zero_attempt_uses_first_slot 0->0.1 + honors_custom_schedule [0.005,0.015] 1->0.005/2->0.015/99->0.015 + empty_schedule_is_zero_not_panic 1/0/1000->0.0；drain_reconnect_signals x2：clears_queued 5 个 None 入队后 drain -> qsize 0 + 再入 1 个仍落地 + empty_noop 空队 drain 不抛）。
+
+### 映射决策树 + 坑
+
+- backoff_for：Rust `fn backoff_for(attempt: u32, schedule: &[Duration]) -> Duration { let idx = (attempt as usize).saturating_sub(1).min(schedule.len().saturating_sub(1)); schedule.get(idx).copied().unwrap_or(Duration::ZERO) }`（1377-1382）-> Python `if not schedule: return 0.0; idx = max(attempt - 1, 0); return schedule[min(idx, len(schedule) - 1)]`。逐项：`saturating_sub(1)` -> `max(attempt - 1, 0)`（attempt 0 饱和到 idx 0，attempt 是 u32 不会负）；`.min(schedule.len().saturating_sub(1))` -> `min(idx, len(schedule) - 1)`（idx 超尾截到末槽，末槽即上限）；`schedule.get(idx).copied().unwrap_or(Duration::ZERO)` -> 空 schedule 时 `.get(idx)` 返 None -> unwrap_or(ZERO)，故 Python 前置 `if not schedule: return 0.0`（len==0 时 len-1==-1，schedule[-1] 会取末元素语义错误，必须前置短路）。
+- drain_reconnect_signals：Rust `fn drain_reconnect_signals(reconnect_rx: &mut mpsc::Receiver<()>) { while reconnect_rx.try_recv().is_ok() {} }`（1243-1245）-> Python 直接操作 underlying buffer。关键：Rust mpsc::Receiver<()> 的 try_recv 返 Result<(), TryRecvError>，is_ok 区分"取到 () "与"空"，无歧义。但 Python _SinkRx.try_recv() (demux.py 241-245) 是 `if buffer.empty(): return None; return buffer.get_nowait()`，对 unit 通道（元素是 None）有 None 歧义：取到 None 元素与空都返 None，无法区分。若用 `while try_recv() is not None: pass`，队列有 None 元素时 try_recv empty() False -> get_nowait() 取出 None（元素）-> 返 None -> 循环 `is not None` False 退出 -> 只 drain 1 个，剩余丢失。故必须绕过 try_recv，直接 `reconnect_rx._channel.buffer.get_nowait()` + `except asyncio.QueueEmpty: return`（SLF001 不在 ruff select，访问 _channel 安全）。
+- 坑 1（_SinkRx.try_recv unit 通道 None 歧义，R156 核心坑）：见上。这是 unit 通道（元素 () -> None）与 try_recv 用 None 表"空"的语义冲突。Rust 无此问题（Result 枚举显式区分），Python 必须绕过 try_recv 直接操作 buffer.get_nowait + asyncio.QueueEmpty。测试验证 drain 成功也必须用 `rx._channel.buffer.qsize() == 0`（asyncio.Queue.qsize 在 CPython 精确），不能用 try_recv（同样 None 歧义）。
+- 坑 2（isort _SinkRx 插入位置）：当前 `from minimax_code.computer_hub_sdk.demux import Demux, _MpscClosed, _Sink` 通过 ruff（下划线成员排在大写类名 Demux 后，逐字符序：demux < _mpsclosed? 实际是大写组后下划线组：Demux 是 PascalCase Class 组，_MpscClosed/_Sink 是下划线组，组内逐字符 _mpscclosed < _sink）。加 _SinkRx 在末尾：_Sink 是 _SinkRx 前缀，短的在前，故 _Sink, _SinkRx。最终序：Demux, _MpscClosed, _Sink, _SinkRx。
+- 坑 3（isort connection import 块 function 组字母序）：加 backoff_for/drain_reconnect_signals 到 function 组（classify_stream_end/exit_for_close_code/fire_on_disconnect/host_is_loopback/now_unix_millis/route_or_pong）。逐字符：backoff_for(b) < classify_stream_end(c) < drain_reconnect_signals(d) < exit_for_close_code(e) < fire_on_disconnect(f)。故 backoff_for 插 _HelloCaps 后、classify_stream_end 前；drain_reconnect_signals 插 classify_stream_end 后、exit_for_close_code 前。
+- 坑 4（_DEFAULT_BACKOFF 测试常量 vs import RECONNECT_BACKOFF_MS）：test_connection 未 import RECONNECT_BACKOFF_MS（connection_types import 块无）。选硬编码 `(0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0)` 局部常量 + 注释 `== RECONNECT_BACKOFF_MS`，原因：backoff_for 是纯函数测契约（索引映射），不应依赖全局常量；硬编码让读者一眼看出指数序列（1->100ms, 7->10s）；若默认 schedule 变，此测试仍是有效的"索引映射"语义测试。Rust 原测试用 default_reconnect_backoff()（与常量绑定），Python 选自包含（注释标明等价）。
+
+### 验证
+
+- `uv run ruff check minimax_code/computer_hub_sdk/connection.py tests/test_connection.py` -> **All checks passed!**（0 错误，imports 扩展无需拆行）。
+- `uv run pytest tests/test_connection.py -q` -> **69 passed in 0.89s**（原 62 含 R155 13 个 + R156 新增 7 个 = 69）。
+- 覆盖矩阵：backoff_for（follows_schedule 1->0.1/2->0.2/7->10.0 默认指数 + caps_at_last_slot 8->10.0/1000->10.0 末槽复用 + zero_attempt_uses_first_slot 0->0.1 饱和到首槽 + honors_custom_schedule [0.005,0.015] 1->0.005/2->0.015/99->0.015 自定义+末槽 + empty_schedule_is_zero_not_panic 1/0/1000->0.0 空 schedule 不 panic 返 0）/ drain_reconnect_signals（clears_queued mpsc_channel(8) 入 5 个 None -> qsize==5 -> drain -> qsize==0 -> 再 try_send None -> qsize==1 证明通道未损坏 + empty_noop 空队 drain -> qsize==0 不抛 -> try_send None -> qsize==1）。
+
+### YAGNI 边界
+
+- spawn 管线 asyncio task（run_writer 1047 asyncio 消耗 WriterControl<S> + outbound_rx + writer_error.set；run_reader_actor 1088 asyncio 消耗 ConnectedExit + route_or_pong + classify_stream_end + fire_on_disconnect + backoff_for + drain_reconnect_signals + open_socket/run_handshake）-> R157+（asyncio task 模型 + 真实 socket/URL/handshake 状态机，依赖 R134 handshake.rs + open_socket WebSocket 层）。R156 闭合后 spawn 管线所有纯逻辑依赖清零。
+- backoff_for 消费侧（run_reader_actor reconnect 循环 1158，按 attempt 查退避时长）-> R157（随 run_reader_actor）。
+- drain_reconnect_signals 消费侧（run_reader_actor reconnect 循环 1184，成功重连后清空信号队列）-> R157（随 run_reader_actor）。
+- WriterControl<S> 状态机消费侧（run_writer select outbound_rx/writer_control_rx，Pause 停 drain / Resume 装新 sink）-> R157（随 run_writer）。
+- host_is_loopback 消费侧（open_socket URL 判定 + loopback skip TLS/特殊路径）-> R157（随 open_socket）。
+- 1310 行 #[cfg(test)] 块 -> R158+（spawn 管线全部闭合后随原文测试对齐）。
+- connect() 入口（消费 ConnectionConfig -> resolve tuning -> 分配通道 -> 构造 Inner -> spawn 管线）-> R158+（spawn 闭合后）。
+- pool.rs 的 connect() 消费路径 -> server.rs/harness.rs/lib.rs barrel（connection.rs 全部叶子完成后）。
+
+### Commit
+
+`feat(platform): R156 connection.rs spawn-pipeline reconnect pure-logic helpers -> connection.py (SDK leaf 18g)`

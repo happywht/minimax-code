@@ -79,7 +79,9 @@ from minimax_code.computer_hub_sdk.connection import (
     _ConnectionIdSlot,
     _EarlyNotifSlot,
     _HelloCaps,
+    backoff_for,
     classify_stream_end,
+    drain_reconnect_signals,
     exit_for_close_code,
     fire_on_disconnect,
     host_is_loopback,
@@ -1082,3 +1084,75 @@ def test_fire_on_disconnect_none_callback_is_noop() -> None:
     inner = _make_inner().inner  # on_disconnect defaults to None
     # Must not raise -- the reader task calls this unconditionally on exit.
     fire_on_disconnect(inner)
+
+
+# ===========================================================================
+# Spawn-pipeline reconnect pure-logic helpers (R156, SDK leaf 18g -- backoff_for
+# 1377-1382 + drain_reconnect_signals 1243-1245).
+#
+# The reconnect driver (``run_reader_actor``, R157+) factors out two zero-socket
+# helpers: the backoff-schedule lookup and the reconnect-signal drain. Both are
+# pure logic, so they exercise without a live transport. The drain tests build
+# a real ``mpsc_channel`` (unit signals) and inspect the underlying buffer
+# directly, because ``_SinkRx.try_recv`` cannot tell a queued ``None`` signal
+# from "empty".
+# ===========================================================================
+_DEFAULT_BACKOFF = (0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0)  # == RECONNECT_BACKOFF_MS
+
+
+def test_backoff_for_follows_schedule() -> None:
+    # attempt 1 -> first slot (100ms), monotonically through the schedule.
+    assert backoff_for(1, _DEFAULT_BACKOFF) == 0.1
+    assert backoff_for(2, _DEFAULT_BACKOFF) == 0.2
+    assert backoff_for(7, _DEFAULT_BACKOFF) == 10.0
+
+
+def test_backoff_for_caps_at_last_slot() -> None:
+    # Past the schedule's tail the last slot (10s) is reused forever -- the
+    # schedule's final value is the cap.
+    assert backoff_for(8, _DEFAULT_BACKOFF) == 10.0
+    assert backoff_for(1000, _DEFAULT_BACKOFF) == 10.0
+
+
+def test_backoff_for_zero_attempt_uses_first_slot() -> None:
+    # Rust ``u32::saturating_sub(1)`` on attempt 0 -> idx 0 -> first slot.
+    assert backoff_for(0, _DEFAULT_BACKOFF) == 0.1
+
+
+def test_backoff_for_honors_custom_schedule() -> None:
+    custom = (0.005, 0.015)
+    assert backoff_for(1, custom) == 0.005
+    assert backoff_for(2, custom) == 0.015
+    # attempt past the tail -> last custom slot.
+    assert backoff_for(99, custom) == 0.015
+
+
+def test_backoff_for_empty_schedule_is_zero_not_panic() -> None:
+    # A degenerate empty tuning override collapses to no delay rather than
+    # aborting the reconnect loop (Rust ``unwrap_or(Duration::ZERO)``).
+    assert backoff_for(1, ()) == 0.0
+    assert backoff_for(0, ()) == 0.0
+    assert backoff_for(1000, ()) == 0.0
+
+
+def test_drain_reconnect_signals_clears_queued() -> None:
+    tx, rx = mpsc_channel(8)
+    for _ in range(5):
+        tx.try_send(None)
+    assert rx._channel.buffer.qsize() == 5
+    drain_reconnect_signals(rx)
+    # Inspect the underlying buffer directly: every queued signal is ``None``,
+    # so try_recv (None == empty) cannot verify the drain -- qsize can.
+    assert rx._channel.buffer.qsize() == 0
+    # And a fresh signal still lands after the drain.
+    tx.try_send(None)
+    assert rx._channel.buffer.qsize() == 1
+
+
+def test_drain_reconnect_signals_empty_noop() -> None:
+    tx, rx = mpsc_channel(8)
+    # Draining an empty queue is a no-op (loop exits on the first QueueEmpty).
+    drain_reconnect_signals(rx)
+    assert rx._channel.buffer.qsize() == 0
+    tx.try_send(None)
+    assert rx._channel.buffer.qsize() == 1
