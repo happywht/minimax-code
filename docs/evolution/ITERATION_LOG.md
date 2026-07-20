@@ -13084,3 +13084,109 @@ grok `xai-computer-hub-sdk/src/connection.rs:1267` 的 `run_reader_phase` 用
 ### Commit
 
 `feat(platform): R159 port tokio interval -> _Interval (SDK leaf 18i prep)`
+
+
+## R160 — run_reader_phase 稳态读循环（SDK leaf 18j）
+
+锚点:R160-1 28051b5
+
+### 本轮目标
+
+前向移植 grok-build `xai-computer-hub-sdk/src/connection.rs` lines 1259-1299 的
+`run_reader_phase` —— 连接稳态期的入站读循环。这是 reader 半部的纯逻辑可测切片
+（Rust 注释 "in-memory unit tests, mirroring run_writer"），泛型 over inbound stream，
+与 writer 半部（R157/R158）对称。完成后 SDK leaf 18 只剩 `run_reader_actor` 编排层
+（消费本叶的 `ConnectedExit`，驱动 outage/reconnect 循环）。
+
+具体交付：
+1. tungstenite `Message` 6 变体的 Python 标签层（WsMessage 基类 + WsText/WsPing/WsPong/
+   WsBinary/WsClose/WsRaw）—— 解除 reader 对真实 WS 库的耦合，让循环可被 fake stream
+   驱动单测。
+2. `Option<Result<Message, Error>>` 3 态的 WsInbound 层（WsFrameReceived/WsReadError/
+   WsStreamEnd）。
+3. `_next_inbound` 适配器：`anext` + StopAsyncIteration -> WsStreamEnd。
+4. `run_reader_phase`：5 分支 biased select! 循环（stop > reconnect > stream > clock >
+   deadline），返回 `ConnectedExit`。
+5. 12 个单测覆盖 5 个 biased 分支 + 核心 deadline 跨轮 rearm + 全部 WsMessage 变体。
+
+### 融合结论
+
+reader 半部与 writer 半部（R157 run_writer）在 asyncio 移植层完全对称：
+
+| Rust 原语 | writer（R157） | reader（R160） |
+|-----------|----------------|----------------|
+| biased select! 仲裁 | asyncio.wait + in done 声明顺序链 | 同 |
+| task 收割 | cancel + gather(return_exceptions=True) | 同（reap 列表） |
+| 信号 channel recv None 歧义 | — | reconnect_rx recv() 不查 result，in done 即 Forced |
+| 独有持续 task | ping interval（每轮重建） | deadline（跨轮持续，核心差异） |
+
+关键差异：writer 的 ping 是每轮重建的短 task（interval 自然滚动）；reader 的 liveness
+deadline 必须跨轮持续 —— Rust 用 pin! + reset。Python 解法：deadline_task 在 loop 外
+创建一次，每轮 pending cancel 时排除它（`reap = [t for t in pending if t is not
+deadline_task]`），仅在收到 stream Ok 帧时 rearm（cancel 旧 + 新建）。若像 writer 那样
+每轮重建，会被 clock_probe（5s）反复抢占重置，deadline 永不触发 —— 这是本叶最容易踩的
+正确性陷阱，由 `test_reader_deadline_rearmed_each_frame_does_not_trip` 守护。
+
+### 交付
+
+`agent/minimax_code/computer_hub_sdk/connection.py`（+3 处 Edit）：
+- import 区：`from collections.abc import AsyncIterator`；connection_types 导入加
+  `CLOCK_PROBE_INTERVAL` + `Forced` + `LivenessDeadline`。
+- `_Interval` 类之后追加：`WsMessage`/`WsInbound` 标签族（9 个 frozen dataclass）+
+  `_next_inbound` + `run_reader_phase`（含 finally 收割 deadline_task）。
+
+`agent/tests/test_connection.py`（+4 处 Edit）：
+- connection import 加 9 个 Ws* + `run_reader_phase`（isort：Ws* 在 WriterControl 后；
+  run_reader_phase 在 route_or_pong 后、run_writer 前）。
+- connection_types import 加 `Forced`/`LivenessDeadline`（Eof 后、OtherError 前）。
+- 追加 `_ScriptedStream`/`_StuckStream` 两个 async-iterator helper + 12 个测试。
+- 修复 R159 遗留 flaky：`test_interval_subsequent_tick_waits_period` 断言带宽
+  [0.05, 0.08) -> [0.04, 0.10)（Windows ~15.6ms 计时器让 asyncio.sleep(0.05) 早返回
+  ~3ms，50ms period 正踩粒度边界；放宽带宽仍拒绝立即返回这一真正回归）。
+
+### 映射决策树 + 坑
+
+1. biased select! 5 分支（Rust 声明顺序即优先级）：
+   - `stop_rx.recv()` -> `Stop()`
+   - `reconnect_rx.recv()` -> `SocketClosed(Forced())`（不查 recv 结果，closed 也算触发）
+   - `stream.next()` -> 路由帧：WsClose->`exit_for_close_code`；WsText->`route_or_pong`
+     （ping 出 pong，否则 demux.route）；WsPing/WsPong/WsRaw 忽略；WsBinary 警告忽略；
+     非 WsClose 帧 record_inbound + rearm deadline
+   - `clock_probe.tick()` -> `health.refresh_clock()`
+   - `deadline` -> `SocketClosed(LivenessDeadline())`（隐式 else）
+2. WS 层 Ping != JSON-RPC ping：tungstenite Ping/Pong 是 WS 帧由库自动应答，reader
+   忽略；JSON-RPC `method=ping` 是 Text 帧由 `route_or_pong` 出 pong。两者不可混淆。
+3. stream 终结 3 态：WsFrameReceived(WsClose)->exit_for_close_code；WsReadError->
+   `classify_stream_end(inner, detail)`；WsStreamEnd->`classify_stream_end(inner, None)`。
+   `classify_stream_end` 优先消费 writer_error slot（write 失败归因优先于 read EOF）。
+4. pong try_send 容错：`outbound_tx.try_send(pong)` 满/关 -> `(QueueFull, _MpscClosed)`
+   捕获 + warning（对应 Rust .is_err() -> warn），不阻塞读循环。
+5. deadline 跨轮持续（见融合结论核心差异）。
+6. isort 顺序：Ws* 组不区分大小写 WsBinary<WsClose<WsFrameReceived<WsInbound<WsPing<
+   WsPong<WsRaw<WsReadError<WsText（不 import 未直接构造的 WsStreamEnd，避免 ruff F401）；
+   Forced/LivenessDeadline 在 Eof/OtherError 间（e<f<l<o）。
+7. 测试时序稳定性：deadline rearm 测试用 delay=0.3/deadline=0.5（差 0.2s >> 15ms 粒度），
+   no-rearm 回归在第 2 帧（0.6s）前 deadline（0.5s）先 ready 触发 Liveness，正确 rearm
+   每帧推窗使 stream 先 ready 终以 Eof 收场；Windows 下 sub-deadline 时序须留足够裕度。
+
+### 验证
+
+- `uv run ruff check minimax_code/computer_hub_sdk/connection.py tests/test_connection.py`
+  -> All checks passed!
+- `uv run pytest tests/test_connection.py -q` -> 95 passed in 3.03s
+  （含新增 12 个 test_reader_* + 修复的 R159 interval 测试）。
+
+### YAGNI 边界
+
+- `run_reader_actor`（Rust 1088-1242）：reader actor 编排层（run_reader_phase -> match
+  ConnectedExit -> Stop:return / TerminalClose:drain+return / SocketClosed:outage+Pause+
+  backoff 重连循环），依赖 `reconnect_and_replay` 网络层。留 R161+。
+- tungstenite 真实 Message 解码（Text 字节->str、Close code 解析）：本叶只定义标签类型，
+  真实 WS 帧解码在网络层 leaf（open_socket/run_handshake）。当前 `_next_inbound` 直接
+  消费已解码的 WsInbound，与 run_writer 的出站路径对称。
+- WS 层 Ping/Pong 自动应答：tungstenite 自动处理，reader 只忽略；Python WS 库（websockets
+  /aiohttp）同样自动应答，无需手动实现。本叶 WsPing/WsPong 标签仅用于"忽略并继续"语义。
+
+### Commit
+
+`feat(platform): R160 port run_reader_phase (SDK leaf 18j)` —— 见 git log。

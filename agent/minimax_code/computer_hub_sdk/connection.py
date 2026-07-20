@@ -64,6 +64,7 @@ import logging
 import threading
 import time
 import weakref
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Generic, Protocol, TypeVar
@@ -71,6 +72,7 @@ from urllib.parse import urlparse
 
 from minimax_code.computer_hub_sdk.auth import AuthProvider
 from minimax_code.computer_hub_sdk.connection_types import (
+    CLOCK_PROBE_INTERVAL,
     SERVE_ATTEMPT_TIMEOUT,
     SERVE_MAX_ATTEMPTS,
     CloseFrame,
@@ -82,6 +84,8 @@ from minimax_code.computer_hub_sdk.connection_types import (
     DisconnectCallback,
     DisconnectCause,
     Eof,
+    Forced,
+    LivenessDeadline,
     OtherError,
     ReadError,
     ReconnectCallback,
@@ -1124,3 +1128,226 @@ class _Interval:
             return fut
         self._last_tick = target
         return asyncio.ensure_future(asyncio.sleep(target - now))
+
+
+# ===========================================================================
+# Inbound stream sum-types (R160, SDK leaf 18j -- run_reader_phase wire shapes).
+#
+# Rust's reader loop consumes a ``Stream<Item = Result<Message, Error>>`` from
+# tungstenite; ``stream.next()`` yields ``Option<Result<Message, Error>>``
+# (None at stream end). Python has no single crate-agnostic WS stream type, so
+# run_reader_phase is generic over an ``AsyncIterator[WsInbound]`` instead: the
+# three ``WsInbound`` variants map the Option<Result> payload, and the six
+# ``WsMessage`` variants map tungstenite's ``Message`` enum. A transport adapter
+# (R161+) bridges a real websockets / aiohttp stream into this shape; the
+# pure-logic loop and every dispatch arm unit-test against a fake iterator.
+# ===========================================================================
+class WsMessage:
+    """Tag base for the 6 tungstenite ``Message`` variants the reader handles.
+
+    Rust ``Message`` is a single enum (Text / Ping / Pong / Binary / Close /
+    Frame); the reader decodes Text (route), ignores Ping / Pong / Frame
+    (tungstenite auto-acks WS-layer keepalive), warns on Binary, and turns Close
+    into an exit. Python mirrors it as an open family of frozen dataclasses
+    dispatched via ``isinstance``. A WS-layer Ping is distinct from a JSON-RPC
+    ``method=ping`` request, which is answered by :func:`route_or_pong`.
+    """
+
+    __slots__ = ()
+
+
+@dataclass(frozen=True)
+class WsText(WsMessage):
+    """Inbound text frame -- the only variant :func:`route_or_pong` decodes."""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class WsPing(WsMessage):
+    """WS-layer keepalive ping (tungstenite auto-acks; the reader ignores it)."""
+
+
+@dataclass(frozen=True)
+class WsPong(WsMessage):
+    """WS-layer keepalive pong (informational; the reader ignores it)."""
+
+
+@dataclass(frozen=True)
+class WsBinary(WsMessage):
+    """Unexpected binary frame (the protocol is text-only; logged + ignored)."""
+
+
+@dataclass(frozen=True)
+class WsClose(WsMessage):
+    """Server-initiated close frame (carries the optional WS close code)."""
+
+    code: int | None
+
+
+@dataclass(frozen=True)
+class WsRaw(WsMessage):
+    """Raw tungstenite ``Frame`` (extension data; the reader ignores it)."""
+
+
+class WsInbound:
+    """Tag base for the 3 ``Option<Result<Message, Error>>`` outcomes.
+
+    Maps the three ways ``stream.next()`` resolves: a decoded frame
+    (``Some(Ok(msg))``), a transport read error (``Some(Err(e))``), or stream
+    end (``None``). Dispatched via ``isinstance`` in :func:`run_reader_phase`.
+    """
+
+    __slots__ = ()
+
+
+@dataclass(frozen=True)
+class WsFrameReceived(WsInbound):
+    """A decoded inbound frame (Rust ``Some(Ok(Message))``)."""
+
+    message: WsMessage
+
+
+@dataclass(frozen=True)
+class WsReadError(WsInbound):
+    """A transport read error (Rust ``Some(Err(e))``; carries the detail)."""
+
+    detail: str
+
+
+@dataclass(frozen=True)
+class WsStreamEnd(WsInbound):
+    """The stream finished with no further frame (Rust ``None`` / clean EOF)."""
+
+
+async def _next_inbound(stream: AsyncIterator[WsInbound]) -> WsInbound:
+    """Await the next inbound item, mapping stream end to :class:`WsStreamEnd`.
+
+    Rust's ``stream.next()`` returns ``None`` at EOF; an async iterator raises
+    ``StopAsyncIteration`` instead. Wrapping ``anext`` here keeps the biased-
+    select arm a single ``ensure_future`` and lets a fake iterator signal
+    end-of-stream by simply stopping.
+    """
+    try:
+        return await anext(stream)
+    except StopAsyncIteration:
+        return WsStreamEnd()
+
+
+async def run_reader_phase(
+    inner: HubConnectionInner,
+    stream: AsyncIterator[WsInbound],
+    stop_rx: _SinkRx[None],
+    reconnect_rx: _SinkRx[None],
+    liveness_deadline: float,
+) -> ConnectedExit:
+    """Reader steady-state loop (Rust ``run_reader_phase``, connection.rs 1259-1299).
+
+    Generic over the inbound ``stream`` so the loop and every dispatch arm unit-
+    test without a live transport (mirroring :func:`run_writer`). Five biased-
+    select arms, audited in declaration order: ``stop_rx`` (terminal
+    :class:`Stop`) > ``reconnect_rx`` (forced reconnect -> ``SocketClosed(Forced)``)
+    > ``stream`` (route the frame, rearm the liveness deadline, or exit on
+    Close / error / EOF) > ``clock_probe`` (:meth:`ConnHealth.refresh_clock`,
+    the 5s wall-vs-mono probe) > ``deadline`` (no inbound frame in time ->
+    ``SocketClosed(LivenessDeadline)``).
+
+    tokio -> asyncio: Rust pins ``deadline`` outside the ``select!`` and
+    ``reset``s it on each inbound frame; asyncio has no ``pin`` + ``reset``, so
+    the liveness ``deadline_task`` is created once before the loop, kept running
+    across iterations (excluded from the pending-cancel sweep), and cancelled +
+    rebuilt only when an inbound frame arrives. Naively rebuilding it every
+    iteration would let the 5s ``clock_probe`` arm preempt it on every cycle and
+    the deadline would never fire.
+    """
+    clock_probe = _Interval(CLOCK_PROBE_INTERVAL)
+    # Consume the immediate first tick (tokio::time::interval fires once on
+    # construction); the first real probe lands one CLOCK_PROBE_INTERVAL later.
+    await clock_probe.tick()
+    deadline_task: asyncio.Future[None] = asyncio.ensure_future(
+        asyncio.sleep(liveness_deadline)
+    )
+    try:
+        while True:
+            stop_task = asyncio.ensure_future(stop_rx.recv())
+            reconnect_task = asyncio.ensure_future(reconnect_rx.recv())
+            clock_task = asyncio.ensure_future(clock_probe.tick())
+            stream_task = asyncio.ensure_future(_next_inbound(stream))
+            done, pending = await asyncio.wait(
+                (
+                    stop_task,
+                    reconnect_task,
+                    stream_task,
+                    clock_task,
+                    deadline_task,
+                ),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            # Cancel every pending arm except the liveness deadline: Rust pins
+            # it outside the select! and only rearms it on an inbound frame, so
+            # it must keep counting down across iterations.
+            reap = [task for task in pending if task is not deadline_task]
+            for task in reap:
+                task.cancel()
+            if reap:
+                await asyncio.gather(*reap, return_exceptions=True)
+
+            if stop_task in done:
+                return Stop()
+            if reconnect_task in done:
+                _LOGGER.info("forced reconnect requested; dropping current socket")
+                return SocketClosed(Forced())
+            if stream_task in done:
+                inbound = stream_task.result()
+                if isinstance(inbound, WsFrameReceived):
+                    message = inbound.message
+                    if not isinstance(message, WsClose):
+                        inner.health.record_inbound()
+                    # Rearm the liveness deadline (Rust
+                    # ``deadline.as_mut().reset(now + liveness_deadline)``): the
+                    # prior task is either done (it lost the race) or pending-
+                    # kept; cancel + reap it before starting a fresh window.
+                    if not deadline_task.done():
+                        deadline_task.cancel()
+                        await asyncio.gather(deadline_task, return_exceptions=True)
+                    deadline_task = asyncio.ensure_future(
+                        asyncio.sleep(liveness_deadline)
+                    )
+                    if isinstance(message, WsText):
+                        pong = route_or_pong(inner, message.text)
+                        if pong is not None:
+                            try:
+                                inner.outbound_tx.try_send(pong)
+                            except (asyncio.QueueFull, _MpscClosed):
+                                _LOGGER.warning(
+                                    "heartbeat pong dropped: outbound channel "
+                                    "full or closed"
+                                )
+                        continue
+                    if isinstance(message, (WsPing, WsPong, WsRaw)):
+                        continue
+                    if isinstance(message, WsBinary):
+                        _LOGGER.warning("server sent a binary frame; ignoring")
+                        continue
+                    # WsClose: classify the close code and exit.
+                    return exit_for_close_code(message.code)
+                if isinstance(inbound, WsReadError):
+                    return SocketClosed(classify_stream_end(inner, inbound.detail))
+                # WsStreamEnd: clean EOF with no read-error detail.
+                return SocketClosed(classify_stream_end(inner, None))
+            if clock_task in done:
+                inner.health.refresh_clock()
+                continue
+            # deadline_task in done: no inbound frame within the liveness window.
+            _LOGGER.warning(
+                "no inbound frame within the liveness deadline (%ss); "
+                "declaring the socket dead and reconnecting",
+                liveness_deadline,
+            )
+            return SocketClosed(LivenessDeadline())
+    finally:
+        # On any exit, reap the liveness deadline task (it may still be pending
+        # if the loop returned via the stop / reconnect / stream / clock arm).
+        if not deadline_task.done():
+            deadline_task.cancel()
+            await asyncio.gather(deadline_task, return_exceptions=True)

@@ -76,6 +76,15 @@ from minimax_code.computer_hub_sdk.connection import (
     Stop,
     TerminalClose,
     WriterControl,
+    WsBinary,
+    WsClose,
+    WsFrameReceived,
+    WsInbound,
+    WsPing,
+    WsPong,
+    WsRaw,
+    WsReadError,
+    WsText,
     _AtomicCounter,
     _ConnectionIdSlot,
     _EarlyNotifSlot,
@@ -89,6 +98,7 @@ from minimax_code.computer_hub_sdk.connection import (
     host_is_loopback,
     now_unix_millis,
     route_or_pong,
+    run_reader_phase,
     run_writer,
 )
 from minimax_code.computer_hub_sdk.connection_types import (
@@ -97,6 +107,8 @@ from minimax_code.computer_hub_sdk.connection_types import (
     ConnHealth,
     ConnKey,
     Eof,
+    Forced,
+    LivenessDeadline,
     OtherError,
     ReadError,
     TimedOut,
@@ -1449,7 +1461,10 @@ async def test_interval_subsequent_tick_waits_period() -> None:
     t0 = loop.time()
     await interval.tick()
     elapsed = loop.time() - t0
-    assert 0.05 <= elapsed < 0.08
+    # Widen the band: Windows' ~15.6ms timer grain can make asyncio.sleep(0.05)
+    # return ~3ms early. The assertion still rejects an immediate return (the
+    # regression this guards), just not platform scheduling jitter.
+    assert 0.04 <= elapsed < 0.10
 
 
 async def test_interval_keeps_global_timeline_across_loops() -> None:
@@ -1500,3 +1515,225 @@ async def test_interval_aligns_consecutive_ticks_to_grid() -> None:
     gap1 = stamps[2] - stamps[1]
     assert 0.075 <= gap0 < 0.16
     assert 0.075 <= gap1 < 0.16
+
+
+# ===========================================================================
+# run_reader_phase (tokio biased select! reader steady-state loop) tests (R160,
+# SDK leaf 18j -- connection.rs 1259-1299). The loop is generic over the inbound
+# stream, so every biased-select arm is exercised against a fake iterator with
+# no live transport, mirroring run_writer's test granularity.
+# ===========================================================================
+_TEST_READER_DEADLINE = 0.2  # liveness window; > Windows ~15ms timer granularity.
+
+
+class _ScriptedStream:
+    """Async iterator yielding a fixed list then ``StopAsyncIteration``.
+
+    An optional per-frame delay simulates real transport pacing so the liveness
+    deadline's cross-round rearm can be exercised: a delay near (but under) the
+    deadline exposes a failure to rearm -- without rearm the original deadline
+    trips during the paced feed, while a correct rearm starts a fresh window on
+    each frame and the stream ends cleanly.
+    """
+
+    def __init__(self, items: list[WsInbound], delay: float = 0.0) -> None:
+        self._items = list(items)
+        self._i = 0
+        self._delay = delay
+
+    def __aiter__(self) -> _ScriptedStream:
+        return self
+
+    async def __anext__(self) -> WsInbound:
+        if self._i >= len(self._items):
+            raise StopAsyncIteration
+        if self._delay > 0:
+            await asyncio.sleep(self._delay)
+        item = self._items[self._i]
+        self._i += 1
+        return item
+
+
+class _StuckStream:
+    """Async iterator that never yields (a silently dead transport)."""
+
+    def __aiter__(self) -> _StuckStream:
+        return self
+
+    async def __anext__(self) -> WsInbound:
+        # Block until cancelled; the reader's deadline arm fires first and the
+        # pending stream task is reaped (cancelled) on the way out.
+        await asyncio.sleep(3600)
+        raise StopAsyncIteration
+
+
+async def test_reader_text_ping_frame_answers_with_pong_on_outbound() -> None:
+    # A JSON-RPC ``ping`` text frame is answered inline: route_or_pong returns
+    # the pong wire string, which the reader pushes onto outbound_tx. The stream
+    # then ends cleanly -> SocketClosed(Eof).
+    h = _make_inner()
+    text = json.dumps({"method": Method.Ping.as_wire_str()})
+    stream = _ScriptedStream([WsFrameReceived(WsText(text))])
+    reader = asyncio.ensure_future(
+        run_reader_phase(h.inner, stream, h.stop_rx, h.reconnect_rx, _TEST_READER_DEADLINE)
+    )
+    exit_val = await asyncio.wait_for(reader, timeout=2.0)
+    assert isinstance(exit_val, SocketClosed)
+    assert isinstance(exit_val.cause, Eof)
+    pong = await asyncio.wait_for(h.outbound_rx.recv(), timeout=1.0)
+    assert pong is not None
+    decoded = json.loads(pong)
+    assert decoded["method"] == Method.Pong.as_wire_str()
+    assert isinstance(decoded["ts_ms"], int)
+
+
+async def test_reader_text_other_frame_routes_to_demux_no_pong() -> None:
+    # A non-ping JSON object is handed to demux.route and emits no pong.
+    demux = _RouteRecorder()
+    h = _make_inner(demux=demux)
+    text = json.dumps({"jsonrpc": "2.0", "method": "notify", "params": {}})
+    stream = _ScriptedStream([WsFrameReceived(WsText(text))])
+    reader = asyncio.ensure_future(
+        run_reader_phase(h.inner, stream, h.stop_rx, h.reconnect_rx, _TEST_READER_DEADLINE)
+    )
+    exit_val = await asyncio.wait_for(reader, timeout=2.0)
+    assert isinstance(exit_val, SocketClosed)
+    assert isinstance(exit_val.cause, Eof)
+    assert [f["method"] for f in demux.routed] == ["notify"]
+    # No pong was emitted: the outbound channel stayed empty.
+    assert h.outbound_rx.try_recv() is None
+
+
+async def test_reader_returns_stop_when_stop_channel_fires() -> None:
+    # The stop arm is the highest-priority biased-select branch.
+    h = _make_inner()
+    stream = _StuckStream()
+    reader = asyncio.ensure_future(
+        run_reader_phase(h.inner, stream, h.stop_rx, h.reconnect_rx, _TEST_READER_DEADLINE)
+    )
+    h.stop_tx.try_send(None)
+    exit_val = await asyncio.wait_for(reader, timeout=2.0)
+    assert isinstance(exit_val, Stop)
+
+
+async def test_reader_returns_forced_when_reconnect_channel_fires() -> None:
+    # A reconnect signal drops the current socket (Forced): below stop in
+    # priority, above any inbound stream / clock / deadline arm.
+    h = _make_inner()
+    stream = _StuckStream()
+    reader = asyncio.ensure_future(
+        run_reader_phase(h.inner, stream, h.stop_rx, h.reconnect_rx, _TEST_READER_DEADLINE)
+    )
+    h.reconnect_tx.try_send(None)
+    exit_val = await asyncio.wait_for(reader, timeout=2.0)
+    assert isinstance(exit_val, SocketClosed)
+    assert isinstance(exit_val.cause, Forced)
+
+
+async def test_reader_ignores_ws_ping_frame_and_continues_to_next() -> None:
+    # A WS-layer ping is ignored (tungstenite auto-acks); the loop continues to
+    # the next frame, which here ends the stream. Each ignored frame still
+    # rearms the deadline and records inbound health; no JSON-RPC pong is sent.
+    h = _make_inner()
+    stream = _ScriptedStream([WsFrameReceived(WsPing()), WsFrameReceived(WsPing())])
+    reader = asyncio.ensure_future(
+        run_reader_phase(h.inner, stream, h.stop_rx, h.reconnect_rx, _TEST_READER_DEADLINE)
+    )
+    exit_val = await asyncio.wait_for(reader, timeout=2.0)
+    assert isinstance(exit_val, SocketClosed)
+    assert isinstance(exit_val.cause, Eof)
+    assert h.outbound_rx.try_recv() is None
+
+
+async def test_reader_ignores_pong_and_raw_frames() -> None:
+    h = _make_inner()
+    stream = _ScriptedStream([WsFrameReceived(WsPong()), WsFrameReceived(WsRaw())])
+    reader = asyncio.ensure_future(
+        run_reader_phase(h.inner, stream, h.stop_rx, h.reconnect_rx, _TEST_READER_DEADLINE)
+    )
+    exit_val = await asyncio.wait_for(reader, timeout=2.0)
+    assert isinstance(exit_val, SocketClosed)
+    assert isinstance(exit_val.cause, Eof)
+
+
+async def test_reader_logs_and_ignores_binary_frame() -> None:
+    # The protocol is text-only; a binary frame is logged and ignored.
+    h = _make_inner()
+    stream = _ScriptedStream([WsFrameReceived(WsBinary())])
+    reader = asyncio.ensure_future(
+        run_reader_phase(h.inner, stream, h.stop_rx, h.reconnect_rx, _TEST_READER_DEADLINE)
+    )
+    exit_val = await asyncio.wait_for(reader, timeout=2.0)
+    assert isinstance(exit_val, SocketClosed)
+    assert isinstance(exit_val.cause, Eof)
+
+
+async def test_reader_exits_on_server_close_frame() -> None:
+    # A server-initiated close frame is classified via exit_for_close_code.
+    h = _make_inner()
+    stream = _ScriptedStream([WsFrameReceived(WsClose(1000))])
+    reader = asyncio.ensure_future(
+        run_reader_phase(h.inner, stream, h.stop_rx, h.reconnect_rx, _TEST_READER_DEADLINE)
+    )
+    exit_val = await asyncio.wait_for(reader, timeout=2.0)
+    assert exit_val == exit_for_close_code(1000)
+
+
+async def test_reader_exits_on_stream_end_as_eof() -> None:
+    # An empty stream -> WsStreamEnd -> classify_stream_end(inner, None); with
+    # no write error in the slot, the cause is Eof.
+    h = _make_inner()
+    stream = _ScriptedStream([])
+    reader = asyncio.ensure_future(
+        run_reader_phase(h.inner, stream, h.stop_rx, h.reconnect_rx, _TEST_READER_DEADLINE)
+    )
+    exit_val = await asyncio.wait_for(reader, timeout=2.0)
+    assert isinstance(exit_val, SocketClosed)
+    assert isinstance(exit_val.cause, Eof)
+
+
+async def test_reader_exits_on_read_error_as_transport_read_error() -> None:
+    # A transport read error carries its detail into ReadError (the writer_error
+    # slot is empty here, so the read-error detail wins).
+    h = _make_inner()
+    stream = _ScriptedStream([WsReadError("boom")])
+    reader = asyncio.ensure_future(
+        run_reader_phase(h.inner, stream, h.stop_rx, h.reconnect_rx, _TEST_READER_DEADLINE)
+    )
+    exit_val = await asyncio.wait_for(reader, timeout=2.0)
+    assert isinstance(exit_val, SocketClosed)
+    assert isinstance(exit_val.cause, ReadError)
+    assert exit_val.cause.detail_str == "boom"
+
+
+async def test_reader_deadline_rearmed_each_frame_does_not_trip() -> None:
+    # Core correctness (Rust pin! + reset on each inbound frame): a paced feed
+    # whose per-frame delay is under the liveness deadline must NOT trip the
+    # deadline. Each frame rearms the window (cancel old + fresh sleep), so the
+    # deadline never elapses and the stream ends cleanly as Eof. A naive
+    # per-iteration rebuild (or no rearm) would let the original deadline elapse
+    # mid-feed and the loop would wrongly return LivenessDeadline instead.
+    # Delay/deadline picked so the no-rearm regression trips on frame 2 (deadline
+    # 0.5s elapses before the 0.6s second frame) while a correct rearm keeps the
+    # window ahead of every frame; both margins are >> the ~15ms timer grain.
+    h = _make_inner()
+    feed = [WsFrameReceived(WsPing()) for _ in range(3)]
+    stream = _ScriptedStream(feed, delay=0.3)
+    reader = asyncio.ensure_future(
+        run_reader_phase(h.inner, stream, h.stop_rx, h.reconnect_rx, 0.5)
+    )
+    exit_val = await asyncio.wait_for(reader, timeout=3.0)
+    assert isinstance(exit_val, SocketClosed)
+    assert isinstance(exit_val.cause, Eof)  # NOT LivenessDeadline.
+
+
+async def test_reader_declares_liveness_deadline_when_stream_stuck() -> None:
+    # No inbound frame within the liveness window -> SocketClosed(Liveness).
+    h = _make_inner()
+    stream = _StuckStream()
+    reader = asyncio.ensure_future(
+        run_reader_phase(h.inner, stream, h.stop_rx, h.reconnect_rx, _TEST_READER_DEADLINE)
+    )
+    exit_val = await asyncio.wait_for(reader, timeout=2.0)
+    assert isinstance(exit_val, SocketClosed)
+    assert isinstance(exit_val.cause, LivenessDeadline)
