@@ -15795,3 +15795,140 @@ config.rs 6 符号 -> 迁移判定：
 ```
 feat(platform): R195 migrate xai-grok-sampler config.rs pure types (closes R193)
 ```
+## R196 — 迁移 xai-grok-update crate 纯逻辑子集（version.rs + minimum_version.rs，闭合 R42 双缺口）
+
+锚点:R196-1 de10e11
+
+### 本轮目标
+
+落地 grok ``xai-grok-update`` crate 的首轮——迁移 ``version.rs`` +
+``minimum_version.rs`` 的**纯逻辑核心**（semver 比较、渠道推导、版本化二进制名解析、
+最低版本下限决策、版本缓存记录类型）到 ``agent/minimax_code/update_check.py``，
+并**同时闭合 R42 在 ``version.py`` 留下的两个明确 YAGNI 缺口**：
+
+1. **预发布排序缺口**（version.py:88-91 "YAGNI until an update-check requires
+   deciding 0.8.0-alpha < 0.8.0"）—— 本模块的 ``_cmp_key`` 实现 semver.org §11，
+   在"需要比较的模块"里落地，``version.Version`` 保持不动（R42 的叶决策成立）。
+2. **update-check + channel-label wiring 缺口**（version.py:29-33 "update-check +
+   channel-label wiring is a future round"）—— ``derive_channel`` 是 channel-label
+   推导的纯逻辑核心（读缓存稳定指针的 I/O 半段仍 YAGNI）。
+
+### 融合结论
+
+``xai-grok-update`` 是 grok 的自更新层（渠道指针、npm/gh/GCS 探测、最低版本强制、
+磁盘二进制探测），~1100 行 / 4 文件。其 I/O 主体（reqwest 网络探测 + tokio::fs 磁盘
+缓存 + tokio::process npm/gh 子进程 + std::process::exit 强制退出 + GrokBuildEnvironment
+shell 配置加载）**与平台无对应**——平台没有自动更新器，LLM transport（``agent/llm.py``）
+拥有自己的 httpx 客户端，配置加载走 ``config.py`` Pydantic 模型。但 crate 的**纯逻辑
+内核**（semver 比较 + 渠道推导 + 版本化文件名解析 + 下限决策 + 缓存记录形态）零外部
+依赖、零 I/O，是干净的迁移叶子，且 **``_cmp_key`` + ``derive_channel`` 正好闭合 R42 的
+两个承诺**。本轮迁移这 12 个符号（4 函数 + 2 dataclass + 1 enum + 3 决策/工厂方法 +
+2 异常），把 §11 预发布排序 + channel 推导落地到平台。
+
+### 交付
+
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| ``agent/minimax_code/update_check.py`` | ~330 | ``version.rs`` + ``minimum_version.rs`` 纯逻辑子集：``_RELEASE_TIER``/``_PRE_RELEASE_TIER`` 常量 + ``_pre_release_identifier_key`` + ``_cmp_key``（§11 全序键）+ ``semver_max`` + ``derive_channel`` + ``_PLATFORM_OS_TOKENS`` + ``version_from_versioned_binary_name`` + ``_parse_rfc3339`` + ``CachedVersion``（frozen+slots，new/from_mapping/is_fresh/to_mapping）+ ``MinimumDecisionKind`` StrEnum + ``MinimumVersionDecision``（frozen+slots，allow/below_minimum 工厂）+ ``InvalidMinimumVersion`` + ``TargetBelowFloor`` + ``evaluate_minimum_version`` + ``pick_target_version`` + ``check_install_target_inner`` + ``apply_floor_inner``；``__all__`` = 12 符号；docstring 含 R42 双缺口逐字引用 + 完整 YAGNI 台账 |
+| ``agent/tests/test_update_check.py`` | ~620 | 44 个 ``def test``（parametrize 展开为 99 用例）：§11 规范链 8 测试（release>pre-release / canonical pre-release chain via ``pairwise`` / numeric 按数值比较 / numeric<alphanumeric / 短<长前缀相等 / build 元数据不影响序 / mmp 数值比较 / 全序）+ ``semver_max`` 9 矩阵 + 对称性 + 5 无效输入 + ``derive_channel`` 15 矩阵 + ``version_from_versioned_binary_name`` 13 矩阵 + ``evaluate_minimum_version`` 8 矩阵 + payload + 边界 + 2 invalid-floor-raises + 工厂 + frozen + ``pick_target_version`` 6 矩阵 + ``check/apply_floor_inner`` 8 测试 + ``CachedVersion`` TTL 边界 5 + future/unparseable 拒绝 + Z 后缀 + round-trip + legacy + frozen |
+
+新增 12 符号，**零修改 version.py**（迭代独立性）—— 通过 ``Version.parse`` 复用解析（DRY），
+在本模块实现 §11 预发布排序。**单一比较来源，R42 双缺口闭合**。
+
+### 映射决策树 + 坑
+
+```
+xai-grok-update 4 文件 -> 迁移判定：
++- version.rs (纯逻辑核心)
+|   +- _cmp_key / semver_max / derive_channel / version_from_versioned_binary_name
+|   |   纯函数，仅依赖 version.Version.parse -> 迁移
+|   |   * 闭合 R42 缺口 #1：§11 预发布排序（version.py 不动，DRY 复用 parse）
+|   |   * 闭合 R42 缺口 #2：derive_channel 是 channel-label 推导的纯核心
+|   +- CachedVersion (grok GrokVersion: version + stable_version + checked_at)
+|   |   纯数据类型（frozen+slots dataclass + TTL + serde round-trip）-> 迁移
+|   |   * 磁盘 I/O（write_version_cache / cached_stable_version）YAGNI
+|   +- fetch_npm/fetch_gcs/fetch_gh/fetch_latest/get_latest/try_fetch_stable_pointer
+|   |   YAGNI: reqwest + tokio::process::Command (npm/gh)，平台无自动更新器
+|   +- write_version_cache / cached_stable_version / is_version_cache_fresh
+|   |   YAGNI: tokio::fs / std::fs over ~/.grok/version.json
+|   +- channel_name / channel_label (OnceLock over cached stable pointer)
+|   |   YAGNI: 进程级 OnceLock + 磁盘读，纯推导 derive_channel 已落地
+|   \- installed_on_disk_version (symlink read of ~/.grok/bin/grok)
+|       YAGNI: 平台无托管二进制布局
+|
++- minimum_version.rs (纯逻辑核心)
+|   +- MinimumVersionDecision + evaluate_minimum_version + pick_target_version
+|   |   纯决策 -> 迁移（MinimumDecisionKind StrEnum + allow/below_minimum 工厂）
+|   +- check_install_target_inner / apply_floor_inner
+|   |   纯下限应用 -> 迁移
+|   +- InvalidMinimumVersion (unparseable floor) / TargetBelowFloor (target<floor)
+|   |   纯失败模式 -> 迁移（仅这 2 个；MinimumVersionError 多变体枚举 YAGNI）
+|   +- check_install_target / apply_floor (public wrappers)
+|   |   YAGNI: 调用 config::resolve_minimum_version (shell config loader, 未迁移)
+|   \- enforce_minimum_version / enforce_minimum_version_or_exit
+|       YAGNI: I/O + std::process::exit
+|
++- auto_update.rs (UpdateStatus 下载/安装状态机) -> 整文件 YAGNI
+|   \- UpdateConfig 依赖 GrokBuildEnvironment (未迁移)
+|
+\- MinimumVersionError 多变体枚举 (thiserror::Error Display + I/O 失败变体)
+    YAGNI: AutoUpdateDisabled / NoInstaller / UpgradeFailed / NoSatisfyingVersion /
+    NoReleaseFound —— 仅 2 个纯逻辑失败模式迁移为 InvalidMinimumVersion + TargetBelowFloor
+```
+
+坑（R196 解决的）：
+
+1. **R42 双缺口的迭代独立性**：缺口在 ``version.py``，但本轮**不得修改 version.py**
+   （避免引入不稳定测试 / 触发无关回归）-> 通过 ``Version.parse`` 复用解析（DRY），
+   在本模块实现 §11 排序，``version.Version`` 的 leaf 决策（不内置排序）原样保留。
+2. **semver.org §11.4 的"短<长前缀相等"规则**（``alpha < alpha.1``）—— key 元组
+   ``(major, minor, patch, tier, tuple_of_identifier_keys)`` 的逐段比较，Python 元组
+   比较天然实现"前缀相等则短<长"（``() < (key,)`` 为 True），无需特判。
+3. **数值 vs 字母数字标识符的混合比较**（§11.4.3：numeric < alphanumeric）——
+   ``_pre_release_identifier_key`` 返回 ``(0, int, "")``（数值）/ ``(1, 0, text)``
+   （字母数字），第一维 tier 让数值 < 字母数字，第二维同 tier 内类型一致可比较。
+4. **测试自身的 zip(strict=True) 长度不等 bug**：``test_semver_org_canonical_pre_release_chain``
+   原用 ``zip(keys, keys[1:], strict=True)`` 触发 ``ValueError``（``keys[1:]`` 比 ``keys``
+   少 1）—— 改用 ``itertools.pairwise(keys)``（Python 3.10+，语义正是"相邻对"）。
+   *这是测试 bug 不是模块 bug*（``_cmp_key`` 全序正确，其余 98 断言通过）。
+
+### 验证
+
+- ``ruff check minimax_code/update_check.py tests/test_update_check.py``
+  -> **All checks passed!**（新模块 + 新测试全绿，isort/E/F/W/B/UP 全过）
+- ``pytest tests/test_update_check.py -q``
+  -> **99 passed in 0.16s**（44 def / parametrize 展开 99 用例，含 §11 规范链 8 测试）
+- 全量回归 ``pytest -q``
+  -> **4836 passed, 10 skipped, 0 failed**（103.13s；R195 基准 4737 + R196 99 = 4836，零回归；
+  1 个 warning 是预存 fastapi/httpx starlette deprecation，与 R196 无关）
+
+### YAGNI 边界
+
+- **网络探测**（``fetch_npm_version`` / ``fetch_gcs_version`` / ``fetch_gh_release_version``
+  / ``fetch_latest_version`` / ``get_latest_version`` / ``try_fetch_stable_pointer``）：
+  reqwest + ``tokio::process::Command``（npm/gh），平台无自动更新器，LLM transport
+  拥有自己的 httpx 客户端。update 功能落地时多轮迁移。
+- **磁盘缓存 I/O**（``write_version_cache`` / ``cached_stable_version`` / ``is_version_cache_fresh``）：
+  ``tokio::fs`` / ``std::fs`` over ``~/.grok/version.json``。纯记录类型 ``CachedVersion``
+  已落地；文件读写延后到 update-feature 轮。
+- **进程级渠道锁**（``channel_name`` / ``channel_label``）：``OnceLock`` over 缓存稳定指针。
+  纯推导 ``derive_channel`` 已落地；进程缓存 + 磁盘读 YAGNI。
+- **磁盘二进制探测**（``installed_on_disk_version``）：symlink 读 ``~/.grok/bin/grok``，
+  平台无托管二进制布局。
+- **UpdateConfig**：依赖 ``GrokBuildEnvironment``（未迁移）。
+- **UpdateStatus**（``auto_update.rs``）：下载/安装状态机，整文件 YAGNI。
+- **``enforce_minimum_version`` / ``enforce_minimum_version_or_exit``**：I/O +
+  ``std::process::exit``；其消费的纯决策已落地。
+- **MinimumVersionError 多变体枚举**：``thiserror::Error`` ``Display`` + I/O 失败变体
+  （AutoUpdateDisabled / NoInstaller / UpgradeFailed / NoSatisfyingVersion / NoReleaseFound）。
+  仅 2 个纯逻辑失败模式迁移为 ``InvalidMinimumVersion`` + ``TargetBelowFloor``。
+- **``check_install_target`` / ``apply_floor`` public wrappers**：调用
+  ``config::resolve_minimum_version``（shell 配置加载器，未迁移）；纯 inner 已落地。
+- **``get_installer`` / ``run_install_script`` / ``auto_update`` / ``startup_timer!``**：
+  下载/安装/遥测宏，I/O + ``xai_grok_telemetry`` 耦合，YAGNI。
+
+### Commit
+
+```
+feat(platform): R196 migrate xai-grok-update pure logic (closes R42 update-check gap)
+```
