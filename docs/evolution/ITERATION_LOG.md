@@ -11911,3 +11911,63 @@ admission 是 SDK crate 的**背压枢纽**：在 session -> connection -> globa
 ### Commit
 
 feat(platform): R142 migrate xai-computer-hub-sdk admission.rs -> computer_hub_sdk/admission.py
+
+
+## R143 — 前向移植 xai-computer-hub-sdk pool.rs（crate 第 11 叶，进程级连接池）
+
+锚点:R143-1 5ce6d1f
+
+### 本轮目标
+
+前向移植 `grok-build/crates/common/xai-computer-hub-sdk/src/pool.rs`（344 行）→ `agent/minimax_code/computer_hub_sdk/pool.py` + `agent/tests/test_pool.py`。落地进程级 `HubConnectionPool`：按 `(url, principal)` 去重连接、`_Pooled{conn, last_handout, in_use}` 包裹、`OnceCell` 进程单例 + idle reaper 后台任务、`entry().or_insert_with` 竞态解决、ABA-safe `forget_if`、`sweep_idle(in_use==0 + idle≥ttl)` 驱逐。这是连接复用的规范入口——两个相同 `(url, credential)` 的 `ToolServer` 构建复用同一条池化连接；不同凭据开不同 socket。延续 R132/R140/R142 的 YAGNI 边界声明纪律，把"框架胶水"（connection.rs 的具体连接 + metrics.rs 的指标）显式划在迁移边界外，用 Protocol + 注入 opener + no-op 存根保持池逻辑在 connection.rs 落地前即可独立编译、独立测试。
+
+### 融合结论
+
+pool.rs 是 SDK crate 连接生命周期的"调度中枢"，但其核心价值（去重 / 命中刷新 / 竞态解决 / 空闲驱逐 / 后台收割）是**传输无关的账面逻辑**，与 MiniMax Code 的 asyncio 单线程模型天然契合。本轮把它从 Rust 的 `DashMap + Arc + tokio::spawn + OnceCell` 栈前向移植到 Python 的 `dict + 显式借出计数 + asyncio.Task + 模块级 Optional` 栈，**语义不变**：
+
+- **去重键 `ConnKey`** 随池迁移（Rust 在 connection.rs 定义，但它是池身份的核心，且 PrincipalKey 已在 R139 落地为可哈希 frozen dataclass，所以在这里就近定义）。
+- **`HubConnection`** 抽象成 `Protocol`（池唯一触碰的连接方法是 `kind()`，用于 kind 不匹配校验）。
+- **`HubConnection::connect`** 抽象成注入式 `opener` callable（进程单例从模块级 `_DEFAULT_OPENER` 解析，connection.rs 叶落地时由它注册；测试注入 fake opener）。
+- **`Arc::strong_count==1`（unused 判定）** → 显式 `in_use` 借出计数 + `PooledConnection` 句柄（asyncpg `Pool/PooledConnection` 模式，`async with` + `release()`）。这是本轮最关键的 Python 适配——Rust 靠 RAII drop 自动归还槽位，Python 无 drop，故句柄同时是 async context manager 在退出时 release。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/pool.py`（446 行）：2 常量 + `host_is_loopback`（本地复制，connection.rs 辅助）+ `HubConnection` Protocol + `ConnKey`（frozen dataclass）+ `HubConnectionOpener` 类型别名 + `_Pooled`（内部）+ `PooledConnection`（借用句柄，weakref 持池）+ `HubConnectionPool`（`get_or_connect` / `_open` / `_release` / `forget` / `forget_if` / `sweep_idle` / `spawn_idle_reaper`）+ 3 metrics no-op 存根 + `set_default_opener` + `shared`（进程单例 + reaper）。
+- `agent/tests/test_pool.py`（388 行，20 测试全绿）：autouse fixture 重置 `_SHARED`/`_DEFAULT_OPENER` 全局态；`_FakeCredential`（AuthProvider stand-in）+ `_fake_conn`（SimpleNamespace duck-type）；覆盖 host_is_loopback / 开+插 / 命中去重 / 命中刷新 / kind 不匹配 / 竞态输者采用赢家 / 非回环 ws 拒绝 / 回环 ws 放行 / allow_insecure_ws / 无 opener 报错 / sweep 驱逐 / sweep 保留 in_use / sweep 保留近期 / forget / forget_if 两种谓词 / release 递减+幂等 / async-with 退出 release / shared 单例+单次 reaper / reaper 返回可取消 task。
+
+### 映射决策树 + 坑
+
+1. **`HubConnectionOpener` 类型别名触发 F821**（本轮唯一 lint 坑）：`Callable[[ConnKey, ...], ...]` 是**运行时求值的表达式**（不是注解），`from __future__ import annotations` 的延迟求值只覆盖注解、不覆盖别名赋值，故引用的 `ConnKey` 必须在别名之前绑定。修复：把 `ConnKey` 定义移到别名之前（并加注释说明此约束）。
+2. **`async with pool.get_or_connect(...)` 报错**（本轮唯一测试坑）：`get_or_connect` 是协程，必须先 `await` 得到 `PooledConnection` 句柄再 `async with`。修复为两步式 `pc = await pool.get_or_connect(...)` → `async with pc as conn:`。这是 Python async-with 与 async-factory 组合的标准陷阱。
+3. **`Arc::strong_count==1` 的 Python 等价**：试过 `sys.getrefcount`（脆弱，+1 偏差 + GC 时机不定）和 `weakref`（语义不符——Rust 池强引用保活以便复用，weakref 一释放就销毁无法复用）。最终选**显式 `in_use` 借出计数**：pool 强引用保活 + 句柄 release 递减计数，`in_use==0` 即"只有池持有"，语义忠实且可测。
+4. **`DashMap::retain`（迭代中修改）** → Python 先收集 evictable keys 再 `del`（Python 禁止迭代 dict 时修改）。
+5. **`tokio::spawn` + `Arc::downgrade`（reaper 不保活池）** → `asyncio.Task` + `weakref.ref(self)`：任务闭包持弱引用，池被 GC 后任务下次循环发现 `weak() is None` 自动退出；首 tick 跳过（`tokio::time::interval` 首次立即触发，用 `await asyncio.sleep(sweep_interval)` 前置跳过）。
+6. **`tokio::sync::OnceCell`** → 模块级 `Optional`（asyncio 单线程，首用 read+init 原子，无需锁，同 R142 `global_semaphore` 模式）。
+7. **`url::Url`** → `str` + `urllib.parse.urlparse`（scheme 用 `.lower()` 规范化；hostname 为 None 时 `host_is_loopback` fail-closed 返回 False，让调用方落入 `InsecureScheme` 而非误放行）。
+8. **`PooledConnection` 持池引用**：用 `weakref.ref(pool)` 而非强引用，避免泄露的句柄保活测试池（镜像 reaper 的 Weak 关系）。
+
+### 验证
+
+```
+cd agent && uv run ruff check minimax_code/computer_hub_sdk/pool.py tests/test_pool.py
+-> All checks passed!
+
+cd agent && uv run pytest tests/test_pool.py -q
+-> 20 passed in 0.37s
+```
+
+排除文件契约复核：`agent/.tmp_manual/` / `agent/news_today.json` / `agent/progress/` / `agent/projects/` / `grok-build/` 等 10 项保持 `??`（未跟踪），未进暂存区。HEAD 仍为 `5ce6d1f`（R142），R143 锚点父级正确。
+
+### YAGNI 边界
+
+**MIGRATED**（池账面逻辑）：2 常量 / `host_is_loopback`（本地复制）/ `HubConnection` Protocol（`kind()` 契约）/ `ConnKey` / `HubConnectionOpener` 别名 / `_Pooled` / `PooledConnection` 句柄 / `HubConnectionPool`（去重+命中刷新+竞态解决+sweep_idle+forget/forget_if+reaper 骨架）/ `shared` 单例 / `set_default_opener` 注册口。
+
+**NOT MIGRATED**（4 项框架胶水，等后续叶子）：
+1. `HubConnection` 具体类型 + `HubConnection::connect` + `ConnectionConfig`/`ConnectionTuning`/callbacks → connection.rs（2694 行，后续叶子）。池通过 Protocol（`kind()`）+ 注入 opener factory 依赖它们；`_DEFAULT_OPENER` 槽由 connection.rs 叶落地时注册。
+2. `get_or_connect_tuned` 的 tuning/callback 透传 → connection.rs。tuning 绑定在 socket 打开时、池命中时是 no-op，Python 里 opener 拥有 tuning，故单 `get_or_connect` 入口覆盖两种形态。
+3. `host_is_loopback` → connection.rs 辅助。pool 自带 loopback 判定（localhost/127.0.0.1/::1，匹配 InsecureScheme 文档），connection.rs 叶可 re-export 或替换。
+4. `crate::metrics::pool_connections_inc/dec` + `pool_evictions_inc` → metrics.rs（552 行，后续叶子）。3 个 no-op 存根（`_metrics_pool_connections_inc/dec/evictions_inc`），签名与 Rust 一致，metrics 叶替换函数体即可，不动调用点。
+
+### Commit
+
+feat(platform): R143 migrate xai-computer-hub-sdk pool.rs -> computer_hub_sdk/pool.py (process-wide conn pool, 11th leaf)
