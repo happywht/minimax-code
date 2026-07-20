@@ -11335,3 +11335,89 @@ cd agent && uv run pytest tests/test_computer_hub_sdk_handshake.py -q
 ### Commit
 
 feat(platform): R134 xai-computer-hub-sdk handshake.rs -> transport-agnostic driver (crate leaf 2)
+
+
+## R135 — xai-computer-hub-sdk refcount.rs -> RefCountedSet 泛型借用计数器（crate 第 3 叶）
+
+锚点:R135-1 f16adb7
+
+### 本轮目标
+
+落地 `xai-computer-hub-sdk` crate 第 3 叶 `refcount.rs`（123 行）-> `computer_hub_sdk/refcount.py`。`RefCountedSet<K>` 是泛型 refcounted-binding helper，被 connection 的 bound-session set 消费：多个 ToolServer / ToolHarness 实例针对相同 `(url, principal)` 共享单个 HubConnection，每个实例独立请求 session binding；substrate 必须 `register_session` 一次/session（非一次/consumer），`unregister_session` 仅在**最后一个** consumer drop 时。本类跟踪 per-key 借用计数。
+
+**核心挑战**：Rust 用 `dashmap::DashMap`（无锁并发分片 map，卖点：increment/decrement 永不串行化在单个 mutex）。Python 无等价并发 map 原语。
+
+**映射决策**：asyncio 单线程协作式 + 本类**所有方法同步无 await** —— asyncio 仅在 await 点切换 task，故一个 `increment`/`decrement` 从进入到返回不会被其他 task 打断。这等价于 DashMap 的无锁并发语义（在 asyncio 模型下退化为 "无 await = 原子"）。`dict` 是 DashMap 的正确 Python 等价。saturating_add/sub 用显式 cap 保留可观察语义契约（Python int 任意精度无溢出，但 wire 借用计数是 u64）。
+
+### 融合结论
+
+**DashMap -> dict 的并发等价性论证**：这是本轮的关键洞察。Rust 选 DashMap 是因为多线程下 `Mutex<HashMap>` 会让 increment/decrement 串行化成瓶颈。Python asyncio 是单线程协作式，任务切换**仅**发生在 `await` 点。`RefCountedSet` 的所有方法（`increment`/`decrement`/`snapshot_keys`/`is_empty`/`__len__`）都是同步的、无 `await`，所以一旦进入方法体，没有任何 asyncio 调度点能让其他 task 插入。因此 `dict.get`/`dict.__setitem__`/`del` 序列天然原子，等价于 DashMap 的无锁保证。SDK 的 connection 层是 asyncio-only（无 preemptive threading），所以 dict 正确。docstring 完整记录这个论证，防未来误改成 threading 模型时引入竞态。
+
+**saturating 语义契约保留**：Python int 任意精度永不溢出，所以 Rust `saturating_add`/`saturating_sub` 的"防溢出 panic/wrap"动机在 Python 消失。但**可观察语义契约**要保留 —— 计数停在 U64_MAX 而非继续增长，因为：(1) callers 可能依赖单调无 rollover 行为；(2) wire 借用计数是 u64，超过会 wire-level 损坏。映射为 `prev + 1 if prev < U64_MAX else U64_MAX` / `prev - 1 if prev > 0 else 0`，定义 `U64_MAX = 2**64 - 1` 模块常量。
+
+**模块可见性匹配 Rust**：lib.rs 第 42 行 `pub mod refcount`（**非** `pub use`），且 barrel re-export 列表（48-71 行）无 `RefCountedSet`。Python 镜像：`__init__.py` 不扩展（匹配 R130 tokio.py / R134 handshake.py 先例），caller 通过 `minimax_code.computer_hub_sdk.refcount.RefCountedSet` 完整路径访问。
+
+### 交付
+
+**2 个新文件**：
+
+1. `agent/minimax_code/computer_hub_sdk/refcount.py`（~165 行）：
+   - `U64_MAX = 2**64 - 1` 模块常量（u64 ceiling）。
+   - `K = TypeVar("K", bound=Hashable)`（忠实 Rust `K: Eq + Hash`）。
+   - `RefCountedSet(Generic[K])`，`__slots__ = ("_counts",)`，`_counts: dict[K, int]` 内部存储（组合，非继承 dict —— 忠实 Rust 私有字段 `counts: DashMap`，且避免暴露 `.keys()`/`.items()` 破坏封装）。
+   - `increment(key) -> tuple[int, int]`：返回 `(prev, new)`，`0->1` 边缘（`prev==0`）是 protocol `register_session` 必须触发的时机。saturating_add(1) -> `prev + 1 if prev < U64_MAX else U64_MAX`。
+   - `decrement(key) -> int | None`：`None` = key 不存在（幂等 drop），`0` = entry 移除（触发 protocol `unregister_session`），`>0` = 剩余计数。saturating_sub(1) + `remove_if_mut` 的 "==0 则移除" 语义 -> `if new==0: del else: store`。
+   - `snapshot_keys() -> list[K]`：`list(self._counts.keys())`，reconnect-replay 路径专用（每次 disconnect 触发一次，分配可忽略）。
+   - `is_empty() -> bool` + `__len__() -> int`。
+   - `__repr__`：脱敏（只打印 `live_keys=N`，不打印 counts 内容）—— key 是 session id 敏感标识，镜像 R15 出站脱敏先例。
+
+2. `agent/tests/test_refcount.py`（4 测试，1:1 镜像 Rust `#[cfg(test)]` 套件）：
+   - `test_increment_returns_new_count`：(0,1), (1,2), b=(0,1), len=2。
+   - `test_decrement_removes_at_zero`：a×2, decrement→1 not empty, decrement→0 empty。
+   - `test_decrement_unknown_returns_none`：missing→None。
+   - `test_increment_saturates_at_u64_max`：预加载 `_counts["max"]=U64_MAX-1`（直访私有 map，镜像 Rust `set.counts.insert`），increment→(MAX-1, MAX), increment→(MAX, MAX)。
+
+### 映射决策树 + 坑
+
+**逐方法逐行对齐**：
+- `entry.or_insert(0)` + `*entry` 读 prev -> `self._counts.get(key, 0)`。
+- `prev.saturating_add(1)` -> `prev + 1 if prev < U64_MAX else U64_MAX`。
+- `remove_if_mut(key, |_, v| { *v = v.saturating_sub(1); current = Some(*v); *v == 0 })` -> 拆为 `get` + `sub` + `if new==0: del`。关键：Rust 的 `remove_if_mut` 在一条闭包里原子完成 sub+判断+移除（DashMap 分片锁内）；Python 拆成多步但无 await，整体仍原子（见融合结论）。
+- `current` 初始 `None` + key 不存在时 `remove_if_mut` no-op -> `if prev is None: return None`。
+- `snapshot_keys -> Vec<K>` (`.iter().map(kv|kv.key().clone()).collect()`) -> `list(self._counts.keys())`。Rust `K: Clone` 边界 -> Python 不强制 clone（不可变 key 共享引用即正确；可变 key 是 caller 误用，docstring 声明）。
+- `#[derive(Debug)]` -> `__repr__`（脱敏，不打印内容）。
+- `#[derive(Default)]` -> `__init__` 无参即可（不额外加 `default` classmethod，YAGNI —— 当前无 `Default::default()` 消费端）。
+
+**坑 1（`RefCountedSet[str]()` 下标构造）**：测试用 `RefCountedSet[str]()` 显式标注类型参数（镜像 Rust `RefCountedSet::<&'static str>::new()`）。这要求类继承 `Generic[K]` 才支持下标。若写成普通 `class RefCountedSet:` 则 `RefCountedSet[str]()` 运行期 TypeError。所以必须 `class RefCountedSet(Generic[K])`。
+
+**坑 2（`__slots__` + Generic 兼容）**：`__slots__ = ("_counts",)` 与 `Generic[K]` 继承兼容（Generic 的内部 `__parameters__` 等是类级，不占实例 `__dict__`）。验证通过（pytest 4 passed 证实构造正常）。
+
+**坑 3（`bound=Hashable` 的静态收益）**：`TypeVar("K", bound=Hashable)` 让静态检查器拒绝 `RefCountedSet[list]()`（list 不可 hash）。Rust `K: Eq + Hash` 在编译期保证；Python 用 bound 做运行期外的契约。运行期 `dict` 自然拒绝 unhashable key（TypeError），是第二道防线。
+
+**坑 4（测试直访 `_counts` 不触发 ruff）**：`set_._counts["max"] = U64_MAX - 1` 访问约定私有属性。ruff SLF001（private-member-access）**不在** select 列表（E/F/W/I/B/UP），故不报。镜像 Rust 测试 `set.counts.insert`（同模块 `super::*` 直访私有字段）。
+
+### 验证
+
+```
+cd agent && uv run ruff check minimax_code/computer_hub_sdk/refcount.py tests/test_refcount.py
+-> All checks passed!
+
+cd agent && uv run pytest tests/test_refcount.py -q
+-> 4 passed in 0.24s
+```
+
+- 一次通过，零缺陷（连续第 2 轮一次绿 —— R134 handshake 15 测试 + R135 refcount 4 测试均首试通过）。
+- 4 测试 1:1 镜像 Rust 套件，覆盖 increment 边缘检测 / decrement 移除语义 / 幂等 None / saturating cap 四个契约。
+- 测试同步 `def`（refcount 是同步 API），无需 pytest import（pytest 自动发现 `test_` 函数）。
+
+### YAGNI 边界
+
+1. **不继承 dict**：选择组合（内部 `_counts` 字段）而非继承 dict。继承会让 `len()`/迭代免费，但会暴露 `.keys()`/`.items()`/`.__setitem__` 给 caller，破坏 Rust 私有字段封装。Rust `counts: DashMap` 是私有字段；Python 镜像为 `_counts` 约定私有 + 显式 `__len__`。
+2. **不加 `default()` classmethod**：Rust `#[derive(Default)]` 提供 `Default::default()`，但等价于 `new()`。Python `__init__` 无参已满足构造；当前无 `Default::default()` 消费端（connection.rs 叶子未落地），故不加 classmethod，避免死代码。connection.rs 落地时若需要再补。
+3. **不强制 key clone**：Rust `increment`/`snapshot_keys` 要求 `K: Clone`。Python 不可变 key（str/int/tuple）共享引用即正确；可变 key 是 caller 误用，docstring 声明而非运行期强制。
+4. **barrel 不扩展**：lib.rs `pub mod refcount`（不 `pub use`），barrel 无 `RefCountedSet` re-export。Python `__init__.py` 不动，匹配 R130/R134 先例。caller 用完整路径。
+5. **不加锁**：asyncio 单线程 + 同步方法 = 天然原子（见融合结论）。不加 `threading.Lock` —— 那会引入不必要的开销且暗示 threading 安全（本类不是）。若未来 connection 层引入 threading，需重新评估（docstring 警告）。
+
+### Commit
+
+feat(platform): R135 xai-computer-hub-sdk refcount.rs -> RefCountedSet (crate leaf 3)
