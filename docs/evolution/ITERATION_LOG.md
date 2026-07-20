@@ -10921,3 +10921,53 @@ dispatcher_active() 在 Python 端映射为"检测 root logger 是否有真实 h
 ### Commit
 
 feat(platform): R128 migrate xai-tracing dispatch.rs (crate leaf 2, subscriber gate)
+
+
+## R129 — 迁移 xai-tracing/fastrace.rs 纯逻辑子集（crate 第 3 叶，W3C traceparent 上下文原语，建立 SpanContext 抽象）
+
+锚点:R129-1 c8c8acd
+
+### 本轮目标
+
+开启 xai-tracing crate 的第 3 叶：迁移 grok-build/crates/common/xai-tracing/src/fastrace.rs 的**纯逻辑子集**到 agent/minimax_code/tracing/fastrace.py。R127(timer)/R128(dispatch) 是仅有的两个无 span 依赖的纯叶子；剩余的 fastrace/tokio/http_client/grpc_client/testing **全部假设一个 trace context 抽象（SpanContext / Span）**。Python 端要继续迁移，必须先建立这个抽象——这就是 R129 的核心使命。本轮交付 SpanContext 类（W3C traceparent 编解码）+ contextvars current 传播 + enter context manager，为后续 tokio（spawn_traced，消费 contextvars 自动传播）/ http_client（traceparent header 注入，消费 current_trace_id）/ grpc_client（gRPC trace 中间件）提供共同基础。本轮同时消费 testing.rs 的 parse_traceparent 纯字符串解析逻辑（并入 decode_w3c_traceparent）。
+
+### 融合结论
+
+fastrace.rs 是重度集成模块（fastrace + opentelemetry_otlp + fastrace_tonic + reqwest_middleware），但内含一组**不依赖任何后端的纯逻辑符号**：SpanContext 的 W3C traceparent 编解码 + current/random/enter 操作。本轮 1:1 迁移这组符号，把 Rust 的 fastrace SpanContext 映射为 Python SpanContext（trace_id + span_id + trace_flags 三元组）。核心语义降级**诚实记录在 docstring**：Rust fastrace Span 是有生命周期的 span（root/local-parent + name + start/end，维护 span 树），Python 端退化为"当前 SpanContext"（trace context 传播）——不维护 span 树/name 生命周期。这是 YAGNI 正确：MiniMax Code 当前需要 traceparent 在出站请求中传播（http_client 叶子消费），不需要完整分布式追踪 span 树，拉 opentelemetry-sdk 会违反 YAGNI。第二个降级：enter_span_with_traceparent 在 Rust 无效 traceparent 时进入 local parent span（新子 span），Python 端"local parent"即当前 contextvars 的 current，所以"不改变 current + 返回 None"是忠实等价。contextvars 选择（而非 threading.local）：asyncio.create_task 自动复制 contextvars context 到新任务，这正是 tokio spawn_traced 在 Python 端要表达的契约。
+
+### 交付
+
+- agent/minimax_code/tracing/fastrace.py（新增）：SpanContext 类（__slots__ 三元组 + random + encode/decode_w3c_traceparent + __repr__）+ current_trace_id / local_or_random_span_ctx / enter_span_with_traceparent（_TraceparentSpan context manager）。5 节模块 docstring（landing 符号清单 / fastrace::Span->contextvars 降级 / contextvars 而非 thread-local / 推迟到后续回合的 YAGNI 边界）。
+- agent/tests/test_tracing_fastrace.py（新增）：35 个测试，clean_span_context fixture（set(None)+token.reset 强制隔离，防泄漏）。覆盖：encode 格式 + flags 零填充 / encode-decode round-trip / 14 种 malformed traceparent 全 None / 全零 trace_id 拒绝（W3C §3.3.1.1）/ 全零 span_id 拒绝（§3.3.1.2）/ unsampled flags 接受 / random 长度+hex+唯一性+默认 flags / current_trace_id None/有值 / local_or_random 当前/随机 / enter 安装+恢复+嵌套+无效回退+不扰动现有 / asyncio task 传播契约 + reset 不泄漏。
+- agent/minimax_code/tracing/__init__.py（修改）：barrel 加 SpanContext/current_trace_id/local_or_random_span_ctx/enter_span_with_traceparent 导出 + __all__，leaf order 注释第 3 叶 fastrace landed，later rounds 移除 fastrace。
+- docs/evolution/ITERATION_LOG.md（追加）：本 R129 条目。
+
+### 映射决策树 + 坑
+
+1. fastrace::SpanContext(trace_id, span_id, trace_flags) -> Python SpanContext 三元组。trace_id 32 hex + span_id 16 hex + trace_flags int[0,255]。__slots__ 锁定字段。
+2. encode_w3c_traceparent() -> f"{version}-{trace_id}-{span_id}-{trace_flags:02x}"。version 恒 "00"（W3C 唯一定义版本），trace_flags 零填充到 2 hex。
+3. decode_w3c_traceparent(s) -> 正则 ^([0-9a-f]{2})-(32 hex)-(16 hex)-(2 hex)$ 锚定 + 全零 trace_id/span_id 拒绝（W3C §3.3.1.1/2）。消费 testing.rs parse_traceparent 的"split on -"逻辑，补上 testing.rs 省略的格式校验 + 全零校验。返回 None（非 raise），镜像 fastrace 返回类型，让 enter 能优雅回退。
+4. **fastrace::Span 降级**：Rust Span 是生命周期对象（root/local-parent + name + start/end + span 树）；Python 无对应，退化为"contextvars current 的单个 SpanContext"。enter_span_with_traceparent 从"返回 fastrace Span"降级为"返回 context manager"，__enter__ set current + 存 token，__exit__ reset token。docstring 详记。
+5. **enter 无效回退降级**：Rust 无效 traceparent -> Span::enter_with_local_parent(name)（新子 span）；Python 无效 -> decode 返回 None -> __enter__ 不 set token、返回 None、current 不变。等价：Python "local parent" = 当前 current，"不改变 current" 即"留在 local parent"。
+6. **contextvars 选择**：Rust SpanContext::current_local_parent 读 thread-local fastrace collector；Python 用 contextvars.ContextVar。关键理由：asyncio.create_task 自动复制 contextvars context，spawn 的任务继承 current SpanContext——这是 tokio.rs spawn_traced 在 Python 端要表达的契约，asyncio 内建免费提供。用 threading.local 会丢失 asyncio 传播。
+7. **测试隔离坑**：contextvars.ContextVar 跨测试函数泄漏（pytest 顺序运行，同 context）。修复：clean_span_context fixture 用 _current_span_context.set(None) + token.reset，强制测试体期间 current=None，teardown 恢复。用 with 块的测试自动清理（__exit__ reset）。
+8. **ruff F401 坑**：第一版 fastrace.py 在 TYPE_CHECKING 多加了 `from collections.abc import Iterator`（误从测试文件复制），fastrace.py 未用 -> F401。移除，只留 TracebackType。
+
+### 验证
+
+- ruff（scope 限定 fastrace.py + 两测试 + 全 tracing 包）：All checks passed。
+- pytest test_tracing_fastrace.py：35 passed。
+- pytest 全量回归：3958 passed, 10 skipped, 1 warning（R128 基线 3923 + R129 新增 35 = 3958，零回归）。
+
+### YAGNI 边界
+
+- **不**迁移 init_fastrace(endpoint, name, attrs)：OTLP/gRPC reporter 初始化，需 opentelemetry-sdk + OTLP 后端。MiniMax Code 无 OTLP 后端配置，迁移即死代码。推迟到真正接入 OTLP 时。
+- **不**迁移 TraceparentMiddleware（reqwest）：HTTP traceparent 注入中间件，随 http_client 叶子落地（它是 current_trace_id 的消费者）。本轮已提供 current_trace_id，http_client 叶子可直接消费。
+- **不**迁移 FastraceChannel / fastrace_channel（tonic）：gRPC trace 层，随 grpc_client 叶子落地。
+- **不**建 span 树 / span name 生命周期：fastrace::Span 退化为 contextvars current 的 SpanContext。name 参数保留在 enter 签名（parity）但仅存于 _TraceparentSpan 调试，不影响传播。完整分布式追踪 span 树超出现有需求。
+- **不**缓存 current_trace_id 结果：每次调用读 contextvars，与 Rust current_local_parent 每次调用一致。
+- **不**让 SpanContext 默认 __eq__：两同字段 context 不等（分布式追踪语义：相同 wire bytes 仍是不同 span），需比较用 encode_w3c_traceparent。docstring 说明。
+
+### Commit
+
+feat(platform): R129 migrate xai-tracing fastrace.rs pure-logic subset (crate leaf 3, W3C SpanContext)

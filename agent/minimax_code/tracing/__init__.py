@@ -36,14 +36,36 @@ The crate's ``lib.rs`` re-exports six modules. The dependency order is:
    second self-contained primitive. The request-span factories landing
    later (``http_client`` / ``grpc_client``) call it before building a
    span, so an unconfigured process pays no trace-construction cost.
+3. ``fastrace`` (R129) — :class:`SpanContext` and the W3C traceparent
+   codec, plus :func:`current_trace_id` /
+   :func:`local_or_random_span_ctx` / :func:`enter_span_with_traceparent`
+   over a :class:`~contextvars.ContextVar`. Lands the *pure-logic* subset
+   of the Rust ``fastrace`` module: the OTLP reporter, reqwest middleware
+   and tonic channel stay deferred (no OTLP backend configured; those
+   pieces move with the ``http_client`` / ``grpc_client`` leaves). This
+   leaf is the foundation the later leaves consume — every span-bearing
+   leaf needs a :class:`SpanContext`.
 
-Later rounds land the remaining leaves (``fastrace`` — W3C traceparent
-context; ``http_client`` — trace-injecting httpx middleware;
-``grpc_client`` — gRPC trace middleware; ``tokio`` — asyncio task
-trace-context propagation; plus the test-only ``testing`` helpers).
+Later rounds land the remaining leaves (``http_client`` — trace-injecting
+httpx middleware; ``grpc_client`` — gRPC trace middleware; ``tokio`` —
+asyncio task trace-context propagation; plus the test-only ``testing``
+helpers).
 """
 
 from minimax_code.tracing.dispatch import dispatcher_active
+from minimax_code.tracing.fastrace import (
+    SpanContext,
+    current_trace_id,
+    enter_span_with_traceparent,
+    local_or_random_span_ctx,
+)
 from minimax_code.tracing.timer import Timer
 
-__all__ = ["Timer", "dispatcher_active"]
+__all__ = [
+    "SpanContext",
+    "Timer",
+    "current_trace_id",
+    "dispatcher_active",
+    "enter_span_with_traceparent",
+    "local_or_random_span_ctx",
+]
