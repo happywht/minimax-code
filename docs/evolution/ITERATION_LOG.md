@@ -13735,3 +13735,86 @@ R165 闭合了 harness.rs 类型层（常量 + 别名 + CancelOnDrop + SessionBi
 ### Commit
 
 `feat(platform): R167 port harness.rs ToolHarnessBuilder setter layer (SDK harness.rs leaf 3, fluent config accumulator; build() deferred to ToolHarness actor leaf)` — 精确 `git add` 3 文件（harness_builder.py + test_harness_builder.py + ITERATION_LOG.md），21 测试通过。harness.rs 叶节点 3 闭合，参与者层第二块（builder setter 配置累积器）就绪，为 ToolHarness actor + build() 编排蓄能。
+
+## R168 — 移植 harness.rs ToolHarness actor + ToolHarnessInner + bind 状态机类型层（叶节点 4，actor 骨架）
+
+锚点:R168-1 204af5a
+
+### 本轮目标
+
+移植 `grok-build/crates/common/xai-computer-hub-sdk/src/harness.rs:564-625 + 627-648 + 708-723` 的 **ToolHarness actor 句柄结构 + ToolHarnessInner 内部状态结构 + bind 状态机类型层**（harness.rs 叶节点 4，actor 骨架层）。这是继 R165（类型层 harness_types）、R166（LocalRegistry/DynToolAdapter 叶节点 2）、R167（builder 设置器层 harness_builder.py 叶节点 3）之后的第 4 个 harness.rs 叶节点。本轮闭合"actor 数据骨架 + bind 类型层"，让后续 build()/ToolHarness impl 方法有落地靶子。
+
+**YAGNI 推迟**：`spawn_pending_bind` 行为（579-594）+ `LazyBind::start`（604-617）+ `ToolHarnessInner` impl 方法（650-707，含 `fail_inflight_calls_on_disconnect`）+ `build()`（457-545 巨型 async）+ `ToolHarness` impl 方法（725-1775，call 分发/入站钩子/权限/通知）+ `ObservedToolStream`（1776+）+ `RemoteCallStream`/`dispatch_remote`（1891+）+ `Drop`（1846）—— 它们依赖 live `HubConnection`/`ConnectionBorrow` runtime + 入站钩子/权限/通知 dispatch 路径，随那些路径落地。
+
+### 融合结论
+
+harness.rs 的 actor 句柄 + 内部状态结构在 Python/asyncio 中表现为"直接引用持有的数据类集合"。关键融合决策：
+
+1. **`Arc<ToolHarnessInner>` 折叠** → ToolHarness 直接持有 inner 引用（Python 引用即共享 = Arc 语义）。`Clone for ToolHarness`（Arc::clone）折叠为引用拷贝（赋值即克隆）。cooperative `shutdown` 优先，`Drop` 兜底延后。
+2. **bind 状态机闭合"类型层"**：`BindFuture`/`PendingBind` 是 `asyncio.Future["ToolHarness"]` 别名，`LazyBind`/`EagerBind` 是数据类，`DeferredBind = EagerBind | LazyBind` 是 union 别名。运行时行为（spawn/start）随 build()/impl 落地。
+3. **并发原语折叠**：`arc_swap::ArcSwap<Vec<ToolDescription>>` → 普通 `list` 属性（热替换 = 赋值）；`ArcSwapOption<SessionBindReport>` → nullable 属性；`parking_lot::Mutex<Option<JoinHandle>>` → `asyncio.Task | None`；`Arc<parking_lot::Mutex<Option<HookRequestHandler>>>` → nullable 属性。asyncio 单线程，原子快照交换 = 属性赋值，互斥锁守卫 = nullable 槽。
+
+### 交付
+
+- **`agent/minimax_code/computer_hub_sdk/harness.py`**（+4 类 +3 类型别名，329→463 行）：
+  - 扩展 imports：`asyncio`、`dataclass/field`、`TypeAlias`、`ConnectionBorrow`、`HookRequestHandler/SessionBindReport/TraceContextProvider`（harness_types）、`SessionId`（ids）、`TypedExtensions`（context）。
+  - `BindFuture: TypeAlias = asyncio.Future["ToolHarness"]` + `PendingBind: TypeAlias = asyncio.Future["ToolHarness"]`（lines 568-574）。
+  - `@dataclass LazyBind`（fut + started，lines 599-602）+ `@dataclass EagerBind`（pending）+ `DeferredBind: TypeAlias = EagerBind | LazyBind`（enum 622-625）。
+  - `@dataclass ToolHarnessInner`（10 字段：session/default_extensions 必填，local_registry/remote_tools default_factory，其余 None，lines 627-648）。
+  - `class ToolHarness`（__slots__=("_inner",) + inner property + `__repr__` session+local_tool_count+...，lines 564-566 + 708-714 + 716-723）。
+  - docstring 追加 R168 段（Arc/BoxFuture/Shared/LazyBind/DeferredBind/arc_swap/parking_lot 映射详解）+ __all__ 加 "ToolHarness"。
+- **`agent/tests/test_harness_actor.py`**（新文件，17 测试）：bind 别名 get_origin 验证（2）+ LazyBind/EagerBind/DeferredBind 构造（4）+ ToolHarnessInner 必填/默认/per-instance/全字段/热替换（6）+ ToolHarness 存储/引用共享/repr/repr 动态 count/slots（5）。
+
+### 映射决策树 + 坑
+
+1. **`Arc<ToolHarnessInner>` → 直接引用**：Python 引用共享 = Arc。ToolHarness 持 inner 属性（非 Arc 包装）。
+2. **`Clone for ToolHarness`（Arc::clone）→ 引用拷贝**：Rust clone 是 Arc bump（廉价）；Python 赋值共享同一 inner。测试 `test_tool_harness_assignment_shares_inner_reference` 验证 `clone.inner is harness.inner`。
+3. **`BoxFuture<'static, Result<ToolHarness, Arc<str>>>` → `asyncio.Future["ToolHarness"]`**：成功 resolve ToolHarness，失败 `set_exception`（Err(Arc<str>) 字符串化 bind 错误映射到异常）。
+4. **`Shared<BindFuture>` → `asyncio.Future`**（同一别名）：asyncio.Future 缓存 result，多 observer 不重跑 bind，匹配 Rust Shared 多观察者语义。PendingBind 与 BindFuture 同型（Shared collapse）。
+5. **`LazyBind`（Mutex<Option<BindFuture>> + OnceLock<PendingBind>）→ dataclass fut/started**：单线程 Mutex 折叠（take 语义在 start 中 nulling 槽，延后）；OnceLock → nullable 槽（set-once 由 start 保证，延后）。
+6. **`DeferredBind` enum（Eager(PendingBind)/Lazy(LazyBind)）→ `EagerBind | LazyBind` union**：Python 无 tagged enum，union of dataclasses + isinstance dispatch 替代 Rust match。
+7. **`arc_swap::ArcSwap<Vec<ToolDescription>>` → `list` 属性**：热替换 = 赋值。测试 `test_tool_harness_inner_remote_tools_is_hot_swappable` 验证赋值生效。
+8. **`arc_swap::ArcSwapOption<SessionBindReport>` → nullable 属性**：None 或 report。
+9. **`parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>` → `asyncio.Task[Any] | None`**：单线程无锁。
+10. **`Arc<parking_lot::Mutex<Option<HookRequestHandler>>>` → nullable 属性**：Arc 让 inbox loop 单独 clone 槽；Python 引用共享无需 Arc。
+11. **`Debug for ToolHarness` → `__repr__`**：`debug_struct("ToolHarness").field("session").field("local_tool_count").finish_non_exhaustive()` → `f"ToolHarness(session={...!r}, local_tool_count={len(...)}, ...)"`。`...` 对应 finish_non_exhaustive。测试 `test_tool_harness_repr_carries_session_local_tool_count_and_ellipsis` + `test_tool_harness_repr_reflects_local_tool_count`（注册工具后 count 动态更新）。
+12. **【关键坑】asyncio.Future 可下标性**：`BindFuture = asyncio.Future["ToolHarness"]` 要求 asyncio.Future 支持 `__class_getitem__`。asyncio.Future 在 **Python 3.9+ 才变 Generic**（bpo-38969），3.11 项目环境 OK。**验证前绝不假设** —— 用 `uv run python -c "import asyncio, typing; print(typing.get_origin(asyncio.Future['X']))"` 确认输出 `_asyncio.Future`，`get_origin is asyncio.Future == True`，`get_args == ('ToolHarness',)`。如果项目是 3.8 会炸，但 pyproject 定 py311，安全。
+13. **【关键坑】循环引用解析**：`BindFuture → ToolHarness → ToolHarnessInner → DeferredBind → PendingBind = BindFuture` 循环。解法：`from __future__ import annotations`（全注解字符串化，不求值）+ 模块内定义顺序（BindFuture/PendingBind 别名 → EagerBind/LazyBind dataclass → DeferredBind 别名 → ToolHarnessInner dataclass → ToolHarness class）。`asyncio.Future["ToolHarness"]` 在模块级赋值时求值（asyncio.Future.\_\_class_getitem\_\_("ToolHarness") 返回 GenericAlias，不求值字符串 "ToolHarness"），dataclass 字段注解 `fut: BindFuture | None` 在 `from __future__` 下不求值，故无运行时前向引用问题。
+14. **【关键坑】dataclass + 自定义 __repr__ 歧义**：PEP 557 说 dataclass 检测 class body 已定义 __repr__ 则不生成（repr 参数 ignored）。但 ToolHarness 只有 1 字段 + 自定义 repr，用普通 class（非 dataclass）+ `__slots__ = ("_inner",)` 更清晰，对齐 R166 `LocalRegistry`（普通 class）风格，避免 dataclass(repr=False) 歧义。ToolHarnessInner 是纯值对象（10 字段，无自定义行为）→ `@dataclass` 合适。测试 `test_tool_harness_has_slots_no_instance_dict` 验证 `__slots__` 生效（无 `__dict__`）。
+15. **ToolHarness inner 私有属性命名**：用 `_inner` + `@property inner`（对齐 R166 `_entries`/`_extractors` 私有风格）。测试访问 `harness.inner`（property）和 `harness._inner`（直接，注册工具走 `inner.local_registry.register`）。
+16. **Field default_factory 隔离**：`local_registry` 和 `remote_tools` 用 `field(default_factory=...)` 保证每实例独立（避免可变默认值共享 bug）。测试 `test_tool_harness_inner_local_registry_default_is_per_instance` + `test_tool_harness_inner_remote_tools_default_is_new_list_per_instance` 验证 `a.x is not b.x`。
+17. **__all__ 可见性对齐 Rust**：Rust 中 `ToolHarness` 是 `pub struct`，`ToolHarnessInner`/`LazyBind`/`EagerBind`/`DeferredBind`/`BindFuture`/`PendingBind` 是模块内 private（无 pub）。Python `__all__` 只导出 ToolHarness（+ 已有 LocalRegistry/DynToolAdapter），其余测试通过直接 import 访问（Python 不强制 __all__）。
+
+### 验证
+
+```
+cd agent && uv run ruff check minimax_code/computer_hub_sdk/harness.py tests/test_harness_actor.py
+→ All checks passed!
+
+cd agent && uv run pytest tests/test_harness_actor.py -q
+→ 17 passed in 0.27s
+```
+
+- ruff select=["E","F","W","I","B","UP"]，line-length 100，py311：harness.py（含 10 字段 dataclass + TypeAlias + 字符串前向 + __slots__）+ test_harness_actor.py（含 get_origin + _Marker 哨兵 + # type: ignore[arg-type]/[list-item]）全通过。
+- 17 测试覆盖：bind 别名 origin（2）+ bind 数据类构造（4）+ ToolHarnessInner 必填/默认/per-instance/全字段/热替换（6）+ ToolHarness 存储/引用共享/repr 静态/repr 动态/slots（5）。
+- 预判验证：写 BindFuture 别名前用 Bash 验证 asyncio.Future 可下标性（坑 #12），避免导入时 TypeError 炸全部 harness 测试。先读后写，工程师严谨。
+
+### YAGNI 边界
+
+本轮只闭合 actor 数据骨架 + bind 类型层。延后（依赖 live runtime 或下游路径）：
+
+- `spawn_pending_bind`（579-594）：bind future spawn 行为。
+- `LazyBind::start`（604-617）：lazy 启动 + OnceLock set-once。
+- `ToolHarnessInner` impl 方法（650-707）：含 `fail_inflight_calls_on_disconnect`。
+- `build()`（457-545）：巨型 async，resolve pool entry + refcount-bind session + open server session + assemble ToolHarnessInner。
+- `ToolHarness` impl 方法（725-1775）：call 分发 / 入站钩子 / 权限 / 通知。
+- `ObservedToolStream`（1776+）/ `RemoteCallStream`/`dispatch_remote`（1891+）：远端调用流。
+- `Drop`（1846）：协作 shutdown 兜底。
+- `server.rs`（2649 行全部）：HubConnection server 层。
+- `lib.rs`（71 barrel 最后）：crate 入口 re-export。
+
+harness.rs 总 2940 行，本轮后剩余约 2200+ 行运行时行为 + server.rs + lib.rs。
+
+### Commit
+
+feat(platform): R168 port harness.rs ToolHarness + ToolHarnessInner + bind state machine type layer (SDK harness.rs leaf 4, actor skeleton; spawn_pending_bind/LazyBind::start/impl methods/build() deferred)

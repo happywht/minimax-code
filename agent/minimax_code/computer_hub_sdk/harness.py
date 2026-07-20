@@ -1,16 +1,21 @@
-"""Local tool registry + DynTool adapter (R166, SDK module harness.rs leaf 2).
+"""Local tool registry + DynTool adapter + ToolHarness actor (harness.rs port).
 
-Forward-port of grok-build ``xai-computer-hub-sdk/src/harness.rs`` lines
-102-320: the in-process tool registry a ``ToolHarness`` owns
-(``LocalRegistry`` / ``LocalRegistryInner``) and the thin
-``Arc<dyn ToolDyn>`` -> ``ToolHandle`` adapter (``DynToolAdapter``).
+Forward-port of grok-build ``xai-computer-hub-sdk/src/harness.rs`` in leaves:
 
-Tools registered here resolve in-process -- ``ToolHarness::call``
-short-circuits the wire dispatch and invokes the handle directly. The
-``ToolHarnessBuilder`` / ``ToolHarness`` actor itself (lines 324-2940) is
-a later leaf; this module ports only the registry it seeds + the dyn
-adapter ``register_dyn`` relies on, mirroring the R150 ``connection_types``
-+ R151 ``connection`` split.
+* R166 (leaf 2): ``LocalRegistry`` + ``LocalRegistryInner`` (lines 102-283,
+  in-process tool registry a ToolHarness owns) + ``DynToolAdapter``
+  (lines 285-320, ``Arc<dyn ToolDyn>`` -> ``ToolHandle`` adapter).
+* R168 (leaf 4): ``ToolHarness`` actor handle (lines 564-566 + Clone 708-714
+  + Debug 716-723) + bind state-machine type layer (``BindFuture`` /
+  ``PendingBind`` aliases 568-574, ``LazyBind`` 599-602, ``DeferredBind``
+  enum 622-625) + ``ToolHarnessInner`` (lines 627-648, 10-field inner state).
+
+The ``ToolHarnessBuilder`` setter layer is R167 (``harness_builder.py``);
+``build`` (459-542), ``ToolHarness`` impl methods (725-1775),
+``ToolHarnessInner`` impl methods (650-707), ``spawn_pending_bind`` behaviour
+(579-594), ``LazyBind::start`` (604-617) and ``Drop`` (1846) land in later
+leaves -- they depend on the live ``HubConnection`` / ``ConnectionBorrow``
+runtime and the inbound hook/permission/notification dispatch paths.
 
 tokio -> asyncio / Rust -> Python adaptations (no behavior change):
 
@@ -49,17 +54,60 @@ Rust trait default body as fallback (``default_capabilities()`` /
 declares ``id`` / ``description`` / ``execute`` (R109), so a dyn instance
 without those accessors still resolves to the Rust default rather than
 raising ``AttributeError``.
+
+ToolHarness actor (R168):
+
+* ``Arc<ToolHarnessInner>`` -> a direct reference (Python references are
+  shared, so the ``Arc`` + ``Clone`` cheap-clone collapse to assignment).
+  Cooperative ``shutdown`` is preferred; the ``Drop`` fallback lands in a
+  later leaf.
+* ``BoxFuture<'static, Result<ToolHarness, Arc<str>>>`` ->
+  :class:`asyncio.Future` [:class:`ToolHarness`]; the ``Err(Arc<str>)``
+  bind failure maps to ``set_exception`` (the future resolves to a
+  ``ToolHarness`` on success or raises on failure). ``Shared<BindFuture>``
+  collapses to the same :class:`asyncio.Future`: its cached result is
+  observable by multiple awaiters, matching Rust's ``Shared`` multi-
+  observer semantics.
+* ``LazyBind`` (``parking_lot::Mutex<Option<BindFuture>>`` +
+  ``std::sync::OnceLock<PendingBind>``) -> a dataclass with ``fut`` /
+  ``started`` attributes. Single asyncio thread: the ``Mutex`` is dropped
+  and ``OnceLock`` becomes a plain nullable slot (set-once enforced by
+  ``LazyBind::start`` in a later leaf).
+* ``DeferredBind`` enum (``Eager(PendingBind)`` / ``Lazy(LazyBind)``) ->
+  ``EagerBind`` / ``LazyBind`` dataclasses united by the ``DeferredBind``
+  type alias (Python has no Rust-style tagged enums; a union of dataclasses
+  carries the same two-variant shape).
+* ``arc_swap::ArcSwap<Vec<ToolDescription>>`` / ``ArcSwapOption<...>`` ->
+  plain attributes (``list`` / nullable). Single asyncio thread: the atomic
+  snapshot-swap collapses to attribute assignment.
+* ``parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>`` (discovery
+  handle) -> ``asyncio.Task | None`` (single thread, no lock). The
+  ``Arc<parking_lot::Mutex<Option<HookRequestHandler>>>`` -> nullable
+  attribute (the ``Arc`` let the inbox loop clone the slot; Python
+  references share without an explicit ``Arc``).
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import asyncio
+from dataclasses import dataclass, field
+from typing import Any, TypeAlias
 
 from minimax_code.computer_hub_core.resolver import ErasedTool, ToolHandle
-from minimax_code.computer_hub_sdk.harness_types import ModelOutputExtractor
+from minimax_code.computer_hub_sdk.connection_borrow import ConnectionBorrow
+from minimax_code.computer_hub_sdk.harness_types import (
+    HookRequestHandler,
+    ModelOutputExtractor,
+    SessionBindReport,
+    TraceContextProvider,
+)
 from minimax_code.tool_protocol.capabilities import ToolCapabilities
-from minimax_code.tool_protocol.ids import ToolId
-from minimax_code.tool_runtime.context import ListToolsContext, ToolCallContext
+from minimax_code.tool_protocol.ids import SessionId, ToolId
+from minimax_code.tool_runtime.context import (
+    ListToolsContext,
+    ToolCallContext,
+    TypedExtensions,
+)
 from minimax_code.tool_runtime.tool import (
     ContentBlock,
     Tool,
@@ -69,10 +117,7 @@ from minimax_code.tool_runtime.tool import (
 )
 from minimax_code.tool_types.types import ToolDescription
 
-if TYPE_CHECKING:
-    pass
-
-__all__ = ["DynToolAdapter", "LocalRegistry"]
+__all__ = ["DynToolAdapter", "LocalRegistry", "ToolHarness"]
 
 
 # ===========================================================================
@@ -279,3 +324,139 @@ class DynToolAdapter(ToolHandle):
         # so no `await` -- mirror Rust `self.0.execute(ctx, args).await`
         # where the .await unwraps ToolDyn's async-fn into the stream.
         return self._inner.execute(ctx, args)
+
+
+# ===========================================================================
+# Bind state-machine type layer (lines 568-625) -- R168.
+# ===========================================================================
+# An owned, type-erased server-bind future: resolves to the server-connected
+# ToolHarness on success, or raises on bind failure (Rust
+# ``BoxFuture<'static, Result<ToolHarness, Arc<str>>>``; the ``Err(Arc<str>)``
+# stringified bind error maps to ``Future.set_exception``). asyncio.Future
+# caches its result, so multiple awaiters observe the single resolution.
+BindFuture: TypeAlias = asyncio.Future["ToolHarness"]
+
+# Cloneable handle to the deferred server bind; every clone observes the same
+# single bind (Rust ``Shared<BindFuture>``). Collapses to the same Future: its
+# cached result is observable by multiple awaiters without re-running the bind.
+PendingBind: TypeAlias = asyncio.Future["ToolHarness"]
+
+
+@dataclass
+class LazyBind:
+    """A bind future kept unspawned until the first ``await_bound`` (Rust ``LazyBind``).
+
+    The server connection -- and the sandbox provisioning it performs -- is
+    deferred to the first remote tool dispatch. ``fut`` is the owned bind
+    future, taken once when ``start`` spawns it; ``started`` is the shared
+    handle, set once on the first ``start`` call.
+
+    ``parking_lot::Mutex<Option<BindFuture>>`` -> ``fut: BindFuture | None``
+    (single asyncio thread: the ``Mutex`` is dropped; the ``take`` semantics
+    are realised by nulling the slot in ``start``, a later leaf).
+    ``std::sync::OnceLock<PendingBind>`` -> ``started: PendingBind | None``
+    (set-once enforced by ``start``).
+    """
+
+    fut: BindFuture | None
+    started: PendingBind | None = None
+
+
+@dataclass
+class EagerBind:
+    """Eager deferred bind: spawned at construction, races sampling (Rust ``DeferredBind::Eager``)."""
+
+    pending: PendingBind
+
+
+# Deferred server bind (Rust ``enum DeferredBind``): ``Eager`` is spawned at
+# construction; ``Lazy`` spawns on the first ``await_bound``. Python has no
+# tagged enums -- a union of the two dataclasses carries the same shape, and
+# ``isinstance`` dispatch replaces Rust's ``match``.
+DeferredBind: TypeAlias = EagerBind | LazyBind
+
+
+# ===========================================================================
+# ToolHarnessInner -- inner state of a ToolHarness (lines 627-648) -- R168.
+# ===========================================================================
+@dataclass
+class ToolHarnessInner:
+    """Inner state of a :class:`ToolHarness` (Rust ``struct ToolHarnessInner``).
+
+    Held behind ``Arc<ToolHarnessInner>`` in Rust (``ToolHarness.inner``);
+    in Python the :class:`ToolHarness` holds it directly (reference sharing
+    is the ``Arc``). The ``arc_swap`` / ``parking_lot`` concurrency primitives
+    collapse to plain attributes -- the harness runs in a single asyncio
+    thread, so an atomic snapshot-swap is plain attribute assignment and a
+    mutex-guarded slot is a nullable attribute.
+
+    Construction is performed by ``build`` (a later leaf); the dataclass gives
+    the actor skeleton its field layout now so the bind / dispatch paths can
+    be ported against it.
+    """
+
+    # Session id bound on the underlying connection. Required.
+    session: SessionId
+    # Default extensions merged into every ToolCallContext before dispatch.
+    default_extensions: TypedExtensions
+    # In-process tool registry. Non-Option in Rust; empty by default, populated
+    # by the builder / live discovery.
+    local_registry: LocalRegistry = field(default_factory=LocalRegistry)
+    # None for local-only harnesses (no server connection).
+    borrow: ConnectionBorrow | None = None
+    # Host-supplied W3C traceparent source (Rust Option<TraceContextProvider>).
+    trace_context_provider: TraceContextProvider | None = None
+    # Discovered remote tool descriptions. arc_swap::ArcSwap<Vec<ToolDescription>>
+    # -> list (single thread: atomic swap = attribute assignment).
+    remote_tools: list[ToolDescription] = field(default_factory=list)
+    # Most recent session-bind report. arc_swap::ArcSwapOption<SessionBindReport>
+    # -> nullable attribute.
+    last_bind_report: SessionBindReport | None = None
+    # Handle to the background discovery task. parking_lot::Mutex<
+    # Option<tokio::task::JoinHandle<()>>> -> asyncio.Task | None (single
+    # thread, no lock).
+    discovery_handle: asyncio.Task[Any] | None = None
+    # Deferred server bind (prompt-before-bind). Eager races sampling; Lazy
+    # defers provisioning to the first remote tool dispatch.
+    pending_bind: DeferredBind | None = None
+    # Sink for inbound reverse-direction hook requests. Arc<parking_lot::Mutex<
+    # Option<HookRequestHandler>>> -> nullable attribute (the Arc let the inbox
+    # loop clone this slot alone; Python references share without it).
+    hook_request_handler: HookRequestHandler | None = None
+
+
+# ===========================================================================
+# ToolHarness -- actor handle (lines 564-566 + Clone 708-714 + Debug 716-723).
+# ===========================================================================
+class ToolHarness:
+    """Harness attached to a pooled :class:`HubConnection` (Rust ``ToolHarness``).
+
+    Clone-cheap in Rust (``Arc`` bump); in Python assignment shares the
+    inner reference (the ``Arc`` is implicit). Cooperative teardown via
+    ``shutdown`` is preferred; the ``Drop`` impl schedules a best-effort
+    asynchronous cleanup as a fallback when no explicit shutdown ran,
+    firing at most once across all clones -- the ``Drop`` lands in a
+    later leaf.
+
+    Mirrors Rust ``Debug``: surfaces ``session`` + ``local_tool_count`` and
+    is otherwise non-exhaustive (sensitive inner state is not exposed).
+    """
+
+    __slots__ = ("_inner",)
+
+    def __init__(self, inner: ToolHarnessInner) -> None:
+        self._inner = inner
+
+    @property
+    def inner(self) -> ToolHarnessInner:
+        """The underlying :class:`ToolHarnessInner` (shared across clones)."""
+        return self._inner
+
+    def __repr__(self) -> str:
+        # Mirrors Rust Debug: debug_struct("ToolHarness")
+        # .field("session", ..).field("local_tool_count", ..)
+        # .finish_non_exhaustive().
+        return (
+            f"ToolHarness(session={self._inner.session!r}, "
+            f"local_tool_count={len(self._inner.local_registry)}, ...)"
+        )
