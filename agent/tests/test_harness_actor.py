@@ -22,7 +22,10 @@ are exercised with their real constructors; ``BindFuture`` /
 from __future__ import annotations
 
 import asyncio
+import collections.abc
 from typing import Any, get_origin
+
+import pytest
 
 from minimax_code.computer_hub_sdk.harness import (
     BindFuture,
@@ -33,6 +36,7 @@ from minimax_code.computer_hub_sdk.harness import (
     PendingBind,
     ToolHarness,
     ToolHarnessInner,
+    spawn_pending_bind,
 )
 from minimax_code.tool_protocol.capabilities import ToolCapabilities
 from minimax_code.tool_protocol.ids import SessionId, ToolId
@@ -76,9 +80,9 @@ class _FakeTool:
 # ===========================================================================
 # Bind state-machine type layer (lines 568-625).
 # ===========================================================================
-def test_bind_future_alias_origin_is_asyncio_future():
-    """BindFuture aliases asyncio.Future (BoxFuture collapse)."""
-    assert get_origin(BindFuture) is asyncio.Future
+def test_bind_future_alias_origin_is_awaitable():
+    """BindFuture aliases collections.abc.Awaitable (BoxFuture = any future)."""
+    assert get_origin(BindFuture) is collections.abc.Awaitable
 
 
 def test_pending_bind_alias_origin_is_asyncio_future():
@@ -239,3 +243,95 @@ def test_tool_harness_has_slots_no_instance_dict():
     """__slots__ = ('_inner',) -> no per-instance __dict__."""
     harness = ToolHarness(_make_inner())
     assert not hasattr(harness, "__dict__")
+
+
+# ===========================================================================
+# spawn_pending_bind -- behaviour layer (lines 579-594) -- R169.
+# ===========================================================================
+async def test_spawn_pending_bind_resolves_to_bind_result():
+    """Ok branch: bind resolves to a ToolHarness -> pending awaits to it."""
+    target = ToolHarness(_make_inner("bind-ok"))
+
+    async def _bind() -> ToolHarness:
+        return target
+
+    pending = spawn_pending_bind(_bind())
+    assert isinstance(pending, asyncio.Future)
+    resolved = await pending
+    assert resolved is target
+
+
+async def test_spawn_pending_bind_propagates_bind_exception():
+    """Err branch: bind raises -> the same exception surfaces on await
+    (Rust JoinError panic projection -> set_exception)."""
+    async def _bind() -> ToolHarness:
+        raise RuntimeError("auth rejected")
+
+    pending = spawn_pending_bind(_bind())
+    with pytest.raises(RuntimeError, match="auth rejected"):
+        await pending
+
+
+async def test_spawn_pending_bind_is_shared_single_run():
+    """Shared<BindFuture>: two awaiters observe one bind run (cached result)."""
+    target = ToolHarness(_make_inner("shared"))
+    runs = 0
+
+    async def _bind() -> ToolHarness:
+        nonlocal runs
+        runs += 1
+        return target
+
+    pending = spawn_pending_bind(_bind())
+    first = await pending
+    second = await pending  # cached result, no re-run
+    assert first is target
+    assert second is target
+    assert runs == 1  # bind ran exactly once
+
+
+# ===========================================================================
+# LazyBind::start -- behaviour layer (lines 604-617) -- R169.
+# ===========================================================================
+async def test_lazy_bind_start_spawns_and_records_handle():
+    """First start(): take fut, spawn_pending_bind it, store handle in started."""
+    target = ToolHarness(_make_inner("lazy-start"))
+
+    async def _bind() -> ToolHarness:
+        return target
+
+    lazy = LazyBind(fut=_bind())
+    assert lazy.started is None
+    handle = lazy.start()
+    # fut is taken (slot nulled -- Rust Mutex::take).
+    assert lazy.fut is None
+    # started records the spawned handle (Rust OnceLock get_or_init).
+    assert lazy.started is handle
+    assert isinstance(handle, asyncio.Future)
+    resolved = await handle
+    assert resolved is target
+
+
+async def test_lazy_bind_start_is_idempotent_once_lock():
+    """Second start() returns the same handle (OnceLock get_or_init)."""
+    target = ToolHarness(_make_inner("lazy-once"))
+    runs = 0
+
+    async def _bind() -> ToolHarness:
+        nonlocal runs
+        runs += 1
+        return target
+
+    lazy = LazyBind(fut=_bind())
+    first = lazy.start()
+    second = lazy.start()
+    assert first is second  # OnceLock: same handle returned
+    await first
+    assert runs == 1  # bind ran once despite two start() calls
+
+
+def test_lazy_bind_start_after_take_panics():
+    """fut already taken (None) -> assert "taken more than once" (Rust expect)."""
+    lazy = LazyBind(fut=None)  # fut consumed elsewhere
+    with pytest.raises(AssertionError, match="taken more than once"):
+        lazy.start()

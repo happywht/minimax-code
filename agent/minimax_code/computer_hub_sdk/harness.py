@@ -90,6 +90,7 @@ ToolHarness actor (R168):
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from typing import Any, TypeAlias
 
@@ -329,17 +330,72 @@ class DynToolAdapter(ToolHandle):
 # ===========================================================================
 # Bind state-machine type layer (lines 568-625) -- R168.
 # ===========================================================================
-# An owned, type-erased server-bind future: resolves to the server-connected
-# ToolHarness on success, or raises on bind failure (Rust
+# An owned, type-erased server-bind future: any awaitable that resolves to the
+# server-connected ToolHarness on success, or raises on bind failure (Rust
 # ``BoxFuture<'static, Result<ToolHarness, Arc<str>>>``; the ``Err(Arc<str>)``
-# stringified bind error maps to ``Future.set_exception``). asyncio.Future
-# caches its result, so multiple awaiters observe the single resolution.
-BindFuture: TypeAlias = asyncio.Future["ToolHarness"]
+# stringified bind error maps to the awaited future raising). The bind may be
+# a plain coroutine (the common case -- a Rust ``async {}`` block) or an
+# asyncio.Future; ``spawn_pending_bind`` wraps it into a ``PendingBind``.
+BindFuture: TypeAlias = Awaitable["ToolHarness"]
 
 # Cloneable handle to the deferred server bind; every clone observes the same
 # single bind (Rust ``Shared<BindFuture>``). Collapses to the same Future: its
 # cached result is observable by multiple awaiters without re-running the bind.
 PendingBind: TypeAlias = asyncio.Future["ToolHarness"]
+
+
+def spawn_pending_bind(bind: Awaitable[ToolHarness]) -> PendingBind:
+    """Spawn the owned bind future as a cloneable ``PendingBind`` (Rust ``spawn_pending_bind``).
+
+    Mirrors ``harness.rs:579-594``: ``tokio::spawn(bind)`` runs the bind on the
+    runtime; awaiting the ``JoinHandle`` projects a panic (``JoinError``) into
+    ``Err(Arc::<str>::from(format!("server bind task panicked: {join_err}")))``;
+    the result is then ``.boxed().shared()`` so every clone observes the single
+    bind. Used by the ``Eager`` deferred-bind constructor (Rust: raced at
+    build time) and :meth:`LazyBind.start` -- a single spawn path keeps the two
+    from drifting (harness.rs:576-578 comment).
+
+    tokio -> asyncio adaptation (no behavior change):
+
+    * ``tokio::spawn`` -> a driver task on the running loop via
+      :meth:`asyncio.AbstractEventLoop.create_task`. Like its Rust counterpart
+      this is a **sync** fn and must run inside a running loop (callers are
+      ``build`` / :meth:`LazyBind.start`, invoked from async contexts).
+    * ``JoinError`` panic projection -> :meth:`Future.set_exception`. Python has
+      no tokio ``JoinError`` / panic distinction: any exception the bind raises
+      (auth failure, transport error, sandbox provisioning fault) becomes the
+      future's exception, observable by every awaiter. ``CancelledError`` is NOT
+      caught here -- asyncio cancellation is a control-flow signal, not a bind
+      failure; the driver task is cancelled and the caller's ``CancelledError``
+      propagates independently (mirroring how Rust's panic is caught but an
+      explicit ``abort`` is not).
+    * ``Shared<BindFuture>`` -> the returned :class:`asyncio.Future` itself.
+      :class:`asyncio.Future` caches its result, so every clone / a second
+      :meth:`LazyBind.start` call observes the same single resolution without
+      re-running the bind -- matching ``Shared``'s multi-observer semantics.
+    """
+    loop = asyncio.get_running_loop()
+    pending: asyncio.Future[ToolHarness] = loop.create_future()
+
+    async def _drive() -> None:
+        # tokio::spawn(bind).await -> Ok(result) => result,
+        # Err(join_err) => Err(Arc::<str>::from("server bind task panicked: ...")).
+        try:
+            harness = await bind
+        except Exception as exc:
+            # Rust projects JoinError (panic) -> Err(Arc<str>). Python has no
+            # panic concept; any bind exception becomes the future's exception.
+            # CancelledError is asyncio's cancellation signal, not a bind
+            # failure, and is left to propagate (it is BaseException, not
+            # Exception, so this except does not swallow it).
+            if not pending.done():
+                pending.set_exception(exc)
+        else:
+            if not pending.done():
+                pending.set_result(harness)
+
+    loop.create_task(_drive())
+    return pending
 
 
 @dataclass
@@ -360,6 +416,34 @@ class LazyBind:
 
     fut: BindFuture | None
     started: PendingBind | None = None
+
+    def start(self) -> PendingBind:
+        """Spawn the deferred bind exactly once (Rust ``LazyBind::start``).
+
+        Mirrors ``harness.rs:604-617``::
+
+            self.started.get_or_init(|| {
+                let fut = self.fut.lock().take().expect(
+                    "LazyBind future taken more than once",
+                );
+                spawn_pending_bind(fut)
+            }).clone()
+
+        ``OnceLock::get_or_init`` -> ``if self.started is None`` (single asyncio
+        thread: no race, so a plain None-check enforces set-once). ``fut.lock()
+        .take()`` -> ``fut = self.fut`` followed by ``self.fut = None`` (the
+        ``parking_lot::Mutex`` is dropped; the ``take`` semantics are nulling
+        the slot). ``.expect("LazyBind future taken more than once")`` -> an
+        ``assert`` carrying the same message. ``spawn_pending_bind(fut)`` -> the
+        module-level port above. The returned clone is the same ``asyncio.Future``
+        reference -- Python references are shared, so ``Clone`` is identity.
+        """
+        if self.started is None:
+            assert self.fut is not None, "LazyBind future taken more than once"
+            fut = self.fut
+            self.fut = None  # take (consume the owned bind future)
+            self.started = spawn_pending_bind(fut)
+        return self.started
 
 
 @dataclass

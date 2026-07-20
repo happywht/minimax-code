@@ -13818,3 +13818,74 @@ harness.rs 总 2940 行，本轮后剩余约 2200+ 行运行时行为 + server.r
 ### Commit
 
 feat(platform): R168 port harness.rs ToolHarness + ToolHarnessInner + bind state machine type layer (SDK harness.rs leaf 4, actor skeleton; spawn_pending_bind/LazyBind::start/impl methods/build() deferred)
+## R169 — harness.rs leaf 5：bind 状态机行为层（spawn_pending_bind + LazyBind::start）
+
+锚点:R169-1 9f3c136
+
+### 本轮目标
+
+移植 `grok-build/crates/common/xai-computer-hub-sdk/src/harness.rs:579-594 + 604-617` 的 bind 状态机**行为层**（harness.rs 叶节点 5），R168 类型层（BindFuture/PendingBind/LazyBind/EagerBind/DeferredBind/ToolHarnessInner/ToolHarness）的运行时半边：
+
+- `spawn_pending_bind<F>(bind: F) -> PendingBind`（579-594）：把任意 bind future spawn 成可克隆 PendingBind，JoinError panic 投影成 Err，`.boxed().shared()` 让多 clone 共享单次 bind。
+- `LazyBind::start(&self) -> PendingBind`（604-617）：OnceLock set-once + take fut + spawn_pending_bind，首次调用启动 bind，后续返回同一 PendingBind。
+
+### 融合结论
+
+bind 状态机的"行为半边"闭合。spawn_pending_bind 是 Eager 构造函数与 LazyBind::start 共享的单一 spawn 路径（harness.rs:576-578 注释强调"两条 spawn 路径不漂移"），R169 把它落成 asyncio driver task + asyncio.Future 缓存。LazyBind::start 把 Rust 的 OnceLock + Mutex::take 两套并发原语折叠成单线程的 nullable 槽检查 + nulling。
+
+顺带修正 R168 的类型过度简化：R168 把 `BindFuture` 定义为 `asyncio.Future`，但 Rust `BindFuture = BoxFuture` 是**任意 future**（coroutine 或 Future），spawn_pending_bind 入参就是任意 awaitable。R169 把 `BindFuture` 改为 `Awaitable[ToolHarness]`，让 LazyBind.fut 可存原始 coroutine（测试 `LazyBind(fut=_bind())` 类型自洽，无需 `type: ignore`），PendingBind 保持 asyncio.Future（Shared 缓存语义）。
+
+### 交付
+
+**`agent/minimax_code/computer_hub_sdk/harness.py`**（修改）：
+- 新增 `spawn_pending_bind(bind: Awaitable[ToolHarness]) -> PendingBind` 模块函数：`loop.create_task(_drive())` 后台 await bind，`set_result` / `set_exception`（JoinError panic 投影）到新建 `asyncio.Future`，返回该 Future（Shared 多 observer 缓存）。
+- 新增 `LazyBind.start(self) -> PendingBind` 方法：`if self.started is None`（OnceLock）-> `assert self.fut is not None`（expect）-> take fut（`self.fut = None`）-> `spawn_pending_bind(fut)` -> 存 `self.started` -> 返回。
+- 修正 `BindFuture: TypeAlias = Awaitable["ToolHarness"]`（原 `asyncio.Future["ToolHarness"]`）+ 注释更新（BoxFuture = 任意 future，非 asyncio.Future）。
+- imports 增 `from collections.abc import Awaitable`（UP035 正确来源）。
+
+**`agent/tests/test_harness_actor.py`**（修改）：
+- 新增 6 测试：`test_spawn_pending_bind_resolves_to_bind_result`（Ok 路径 resolve ToolHarness）、`test_spawn_pending_bind_propagates_bind_exception`（Err 路径 raise 透传）、`test_spawn_pending_bind_is_shared_single_run`（Shared 多 observer，bind 仅跑 1 次）、`test_lazy_bind_start_spawns_and_records_handle`（首次 start take fut + 设 started + spawn）、`test_lazy_bind_start_is_idempotent_once_lock`（二次 start 返回同一 handle，bind 跑 1 次）、`test_lazy_bind_start_after_take_panics`（fut=None -> AssertionError "taken more than once"）。
+- imports 增 `import collections.abc` + `import pytest` + `spawn_pending_bind`。
+- `test_bind_future_alias_origin_is_asyncio_future` -> `test_bind_future_alias_origin_is_awaitable`（验证 `get_origin(BindFuture) is collections.abc.Awaitable`，跟随 BindFuture 类型修正）。
+
+### 映射决策树 + 坑
+
+1. **tokio::spawn(bind)** -> `loop.create_task(_drive())`。spawn_pending_bind 是**同步 fn**（对齐 Rust `fn spawn_pending_bind`），内部 `asyncio.get_running_loop()` 取 loop——caller（build / LazyBind.start）须在 async 上下文。
+2. **JoinError panic 投影 `Err(Arc::<str>::from("server bind task panicked: ..."))`** -> `pending.set_exception(exc)`。Python 无 panic 概念，所有 bind 异常（auth/transport/sandbox）-> set_exception，对 awaiter 透传。
+3. **CancelledError 不 catch**——driver `except Exception`（非 BaseException），asyncio CancelledError 是 BaseException，自动 propagate 出 driver task（对齐 Rust：panic 被 catch 投影成 Err，但显式 abort 不被 catch）。BLE 不在 ruff `select`，`except Exception` 无需 noqa。
+4. **`.boxed().shared()`** -> 返回的 `asyncio.Future` 本身。asyncio.Future 缓存 result，多 awaiter 共享单次 resolution，等价 Shared 多 observer。`test_spawn_pending_bind_is_shared_single_run` 验证 `runs == 1`。
+5. **OnceLock::get_or_init** -> `if self.started is None`。asyncio 单线程无竞态，None 检查即 set-once。
+6. **`fut.lock().take()`** -> `fut = self.fut; self.fut = None`。parking_lot::Mutex 折叠（单线程无锁），take 语义 = nulling 槽。
+7. **`.expect("LazyBind future taken more than once")`** -> `assert self.fut is not None, "LazyBind future taken more than once"`（同消息）。
+8. **`.clone()`** -> 返回 `self.started` 引用。Python 引用共享 = Rust Clone。
+9. **driver `if not pending.done()` 守卫**——set_result/set_exception 前检查，防御 pending 被 caller 外部 cancel 后 driver 仍尝试 resolve（避免 InvalidStateError）。
+10. **坑：UP037**——`from __future__ import annotations` 下，**注解**内层引号冗余（`Awaitable["ToolHarness"]` -> `Awaitable[ToolHarness]`），ruff 报 UP037；但 **TypeAlias 赋值** `BindFuture = Awaitable["ToolHarness"]` 的引号**保留**（赋值右边运行时求值，"ToolHarness" 是真前向引用，ruff 不报）。区分注解 vs 赋值是关键。
+11. **修正：R168 BindFuture=asyncio.Future 过度简化**——Rust BindFuture=BoxFuture（任意 future），spawn_pending_bind 入参任意 awaitable（coroutine 常见）。R169 改 BindFuture=Awaitable，LazyBind.fut 可存 coroutine。同步改 test_bind_future_alias（asyncio.Future origin -> collections.abc.Awaitable origin）。这是 R169 修正自己 R168 引入的类型，非预存代码。
+12. **pytest-asyncio auto mode**——spawn_pending_bind/LazyBind.start 同步 fn 在 `async def` 测试内调用，running loop 可用，`get_running_loop()` 正常。`test_lazy_bind_start_after_take_panics` 用 sync def（assert 在 get_running_loop 前 raise，无需 loop）。
+
+### 验证
+
+```
+cd agent && uv run ruff check minimax_code/computer_hub_sdk/harness.py tests/test_harness_actor.py
+# All checks passed!
+cd agent && uv run pytest tests/test_harness_actor.py -q
+# 23 passed in 0.34s
+```
+
+23 测试 = R168 的 17（含 1 个 alias rename：`test_bind_future_alias_origin_is_asyncio_future` -> `..._is_awaitable`）+ R169 新增 6。
+
+### YAGNI 边界
+
+- **`build()`（459-542 巨型 async）** 延后——spawn_pending_bind 的主 caller，依赖 live `HubConnection` / `ConnectionBorrow` 运行时 + session.open + sandbox provisioning。
+- **`ToolHarness::await_bound`** 延后——LazyBind::start 的 caller（DeferredBind 分发：Eager 立即 / Lazy 首次远程调用）。
+- **Eager 构造函数** 延后——spawn_pending_bind 的另一 caller（build-time raced 采样）。
+- **`ToolHarnessInner` impl 方法（650-707）** 延后——含 `fail_inflight_calls_on_disconnect`（消费 ConnectionBorrow.connection().demux()）。
+- **`ToolHarness` impl 方法（725-1775）** 延后——call 分发 / 入站钩子 / 权限 / 通知（消费 live session + local_registry + remote_tools）。
+- **`ObservedToolStream` / `RemoteCallStream` / `dispatch_remote`（1776+）** 延后——远程调用流式响应。
+- **`Drop`（1846）** 延后——at-most-once 异步清理 fallback。
+
+### Commit
+
+```
+feat(platform): R169 harness bind state-machine behaviour (spawn_pending_bind + LazyBind::start)
+```
