@@ -12440,3 +12440,106 @@ feat(platform): R148 migrate log_donate.rs -> log_donate.py (SDK leaf 16, tracin
 - agent/minimax_code/computer_hub_sdk/log_donate.py
 - agent/tests/test_log_donate.py
 - docs/evolution/ITERATION_LOG.md
+
+## R149 — demux.rs → demux.py（SDK crate leaf 17，入站帧解复用器，973 行）
+
+锚点:R149-1 85efe0d
+
+### 本轮目标
+
+将 grok-build `xai-computer-hub-sdk/src/demux.rs`（973 行，SDK crate 第 17 片叶子）完整移植到 `agent/minimax_code/computer_hub_sdk/demux.py`，并交付镜像 22 个 Rust `#[tokio::test]` 的 `tests/test_demux.py`。本轮锁定入站帧解复用的四桶分类 + 非阻塞路由契约，闭合 SDK 入站侧的核心 correlation 引擎（response/session/progress/notification 四类帧的精确分发）。
+
+| # | 交付物 | 路径 | 规模 |
+|---|--------|------|------|
+| 1 | demux.py 主模块（解复用器） | `agent/minimax_code/computer_hub_sdk/demux.py` | ~530 行 |
+| 2 | test_demux.py（22 测试镜像） | `agent/tests/test_demux.py` | 22 tests |
+| 3 | 迭代日志（本条） | `docs/evolution/ITERATION_LOG.md` | — |
+
+### 融合结论
+
+demux.rs 是 SDK 入站侧的"中央邮局"：每一条从 server 收到的 wire 帧必须按其语义路由到恰好一个目的地，且路由本身绝不阻塞（receiver 满了就返回 `InboxFull`/`ProgressFull` 并合成 -32016 拒绝，receiver 掉了就返回 `*Dropped` 并 prune binding）。这与 MiniMax Code 现有的 tool_protocol wire 类型层（R82-R106）+ error/metrics/admission facade（R133/R147/R142）形成完美闭环：
+
+- **消费 R142 admission.overloaded_response**：inbox 满时合成的拒绝帧直接复用 admission 层的 -32016 `tool_busy` 构造器，单一来源。
+- **消费 R147 metrics 5 个点**：`demux_inbox_depth_set`（gauge）/ `inbox_full_request_rejected` / `inbox_full_reject_send_failed` / `inbox_full_notification_dropped` / `progress_frame_forwarded`，可观测性闭环。
+- **消费 R133 error**：`fail_calls_for_session` 用 `ClientError`（NetworkError 的父类）解除 in-flight call waiter，`_fulfill` 的 `isinstance(result, BaseException)` → `set_exception` 正确分支。
+- **消费 tool_protocol.envelope/frames/ids**：`JsonRpcResponse.from_wire` 解码响应、`tool_call_progress_frame_from_wire` 解码进度帧、`RequestId`/`SessionId`/`ToolCallId` 作为 map key。
+
+融合后，SDK 入站侧具备了完整的"帧 → 目的地"分发能力，为后续 connection.rs（reader loop 喂帧）/ server.rs（装配 demux）叶子解除阻塞。
+
+### 交付
+
+**demux.py 结构（~530 行，ruff + import 全绿）：**
+
+- 模块 docstring（融合说明 + YAGNI 边界 + Python-specific adaptations）
+- 私有原语：`_MpscClosed` 异常、`_Channel(Generic[T])`（asyncio.Queue + closed 标志）、`_Sink`（try_send/close）、`_SinkRx`（close_channel/async recv/try_recv）、`mpsc_channel(capacity)` 工厂
+- `InboundFrame`（is_request: bool + value）— Rust `InboundFrame::Request/Notification` 的扁平化
+- `RouteOutcome` Enum（11 变体：Response/Session/Progress/UnknownSession/UnknownProgress/Notification/Unrouted/InboxFull/SessionDropped/ProgressFull/ProgressDropped）
+- `_NotificationBroadcast`（订阅者 list + send 广播，QueueFull 静默丢弃）
+- `_fulfill(fut, result) -> bool`（oneshot 等价：done→False；BaseException→set_exception；else→set_result）
+- `Demux` 类（`__slots__` 6 字段）：`new()`/`with_outbound()` 工厂、session inbox 注册/注销、response/call waiter 注册/获取、`fail_calls_for_session`/`drain_waiters_with`、progress waiter 注册/注销/collision 拒绝/`drain_progress`、同步 `route(frame) -> RouteOutcome` 主分类器
+
+**test_demux.py（22 测试，0.28s 全绿）：** 1:1 镜像 Rust 22 个 `#[tokio::test]`，分 4 组：response correlation（1-4）/ session routing（5-8）/ unrouted + inbox-full（9-15）/ progress correlation（16-22）。
+
+### 映射决策树+坑
+
+**tokio → asyncio 映射（最终决策，写入模块 docstring）：**
+
+| Rust 原语 | Python 等价 | 关键语义 |
+|-----------|-------------|----------|
+| `mpsc::Sender::try_send` → `TrySendError::Full/Closed` | `_Sink.try_send` → `_MpscClosed`（closed）/ `asyncio.QueueFull`（满） | 共享 `_Channel`（Queue + closed bool） |
+| `mpsc::Receiver` | `_SinkRx`（`recv()` closed 且空→None） | Rust `drop(rx)` = `close_channel()` |
+| `oneshot::Sender` + `send` | `asyncio.Future` + `_fulfill` | `set_exception` 用 BaseException 分支 |
+| `dashmap::DashMap` | 普通 `dict` | GIL 保护，无需并发 map |
+| `broadcast::Sender<Value>`（cap 64） | `_NotificationBroadcast`（list[Queue]） | QueueFull 静默丢弃（laggy） |
+
+**坑 1：route() 必须是同步函数。** Rust `route` 是 `&self` 同步方法（无 await）。Python 版用 `put_nowait`（非 `await put`）写 inbox，否则 test 10（InboxFull 非阻塞）和 test 21（ProgressFull 非阻塞）无法保证"返回 InboxFull 时不阻塞"。
+
+**坑 2：drain_progress 无参数全清 + sender.close()。** Rust `drain_progress` 清空整个 progress map（所有 tool_call_id），每个 pop 的 sender 调 `close()`（设 closed=True），让 receiver 的 `recv()` 返回 None（test 22 验证 rxa/rxb 均 recv None）。
+
+**坑 3：_echo_id 返回 JsonRpcId 联合。** 合法 id（str/int）走 `jsonrpc_id_from_wire` → JsonRpcIdString/JsonRpcIdNumber；malformed（dict/list/null/bool）走 `JsonRpcIdString.new_string(json.dumps(raw, separators=(",",":")))` 回退为紧凑 JSON 文本（test 13 验证 `{"nested":1}` echo）。
+
+**坑 4：JsonRpcResponse.from_wire 强制 `jsonrpc: "2.0"` 键。** 所有 response test frame 必须带 `jsonrpc`，否则 from_wire 抛错。但 `result XOR error` 语义用 `is not None`（test 9 `result: {}` 的空 dict 也算 result 存在）。
+
+**坑 5：mpsc_channel 不支持泛型订阅语法。** 首版 test 用了 `mpsc_channel[Type](N)`（Rust `mpsc::channel::<T>` 风格），但 Python 普通函数不可订阅 → `TypeError: 'function' object is not subscriptable`。YAGNI 修正：运行时类型参数无意义，改为 `mpsc_channel(N)`，类型由赋值上下文推断。15 个失败测试一次性修复。
+
+**坑 6：fail_calls_for_session 只清 call_sessions map。** Rust 区分 `response_waiters`（turn hook 等）和 `call_response_waiters`（tool.call）。`fail_calls_for_session` 只 fail 后者；test 2 验证 turn hook waiter（register_response_waiter）仍 parked，而 call waiters 被 fail。
+
+### 验证
+
+```
+ruff check demux.py test_demux.py → All checks passed!
+pytest test_demux.py -v → 22 passed in 0.28s
+import smoke → IMPORT OK + 11 RouteOutcome values
+```
+
+外部依赖签名全部验证闭合：admission.overloaded_response（R142 -32016 tool_busy）/ error.ClientError/NetworkError/SerdeError（R133）/ metrics 5 点（R147）/ tool_protocol.envelope+frames+ids（R82-R106）。
+
+### YAGNI 边界
+
+- **不移植 `route_loop` / `serve` 长任务**：demux.rs 的 reader loop（从 connection 读帧 → route）依赖 connection.rs（下一叶子）的 reader。本轮只移植 `route(frame)` 的纯分类逻辑，loop 在 connection.rs 叶子闭合。
+- **不移植 `broadcast` 的容量溢出计数**：Rust `broadcast` 有 `len()` lag 检测；Python `_NotificationBroadcast` 用 QueueFull 静默丢弃（与 Rust `Receiver::recv` 丢旧消息语义对称），不维护精确 lag 计数（metrics 的 `notif_lagged_recovered` 已在 R147 facade 注册，实际触发点在 connection loop）。
+- **mpsc 不支持泛型订阅**：Python 运行时无 `Type` 擦除需求，`mpsc_channel(N)` 足够；强加 `__getitem__` 工厂是过度设计。
+- **不实现 `InboundFrame` 的 enum**：Rust 用 `Request`/`Notification` 两变体 enum；Python 扁平化为 `is_request: bool`（语义等价，test 5/7 验证）。
+
+### Commit
+
+feat(platform): R149 demux.rs -> demux.py (SDK leaf 17, inbound frame demuxer)
+
+- Port xai-computer-hub-sdk/src/demux.rs (973 lines) -> demux.py (~530 lines):
+  inbound frame demultiplexer with 4-bucket classification (response/session/
+  progress/notification) + non-blocking routing contract.
+- 11-variant RouteOutcome enum (Response/Session/Progress/UnknownSession/
+  UnknownProgress/Notification/Unrouted/InboxFull/SessionDropped/ProgressFull/
+  ProgressDropped).
+- tokio -> asyncio mapping: mpsc Sender/Rx -> _Sink/_SinkRx (shared _Channel
+  with asyncio.Queue + closed flag); oneshot -> asyncio.Future + _fulfill;
+  dashmap -> dict; broadcast(64) -> _NotificationBroadcast.
+- Consume R142 admission.overloaded_response (-32016 tool_busy synthesis on
+  inbox-full), R147 metrics (5 demux points), R133 error (ClientError fail
+  resolution), R82-R106 tool_protocol wire types.
+- Add test_demux.py: 22 tests mirroring Rust #[tokio::test] suite 1:1
+  (response correlation / session routing / unrouted + inbox-full / progress
+  correlation). 22 passed in 0.28s.
+- YAGNI: route_loop/serve (connection.rs leaf); mpsc generic subscription
+  (runtime type-erasure unnecessary); InboundFrame enum (flattened to
+  is_request: bool).
