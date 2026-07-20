@@ -14279,3 +14279,84 @@ server.rs 主体推迟（全依赖 live HubConnection socket）：`SESSION_INBOX
 ### Commit
 
 feat(platform): R175 ToolServer server.py preamble pure-logic types (SystemNotifyAck + json_serialized_len + system_notify_ack_from_outcome)
+
+
+## R176 — server.rs 第 2 页：嵌入式纯转换函数前向移植（parse_tool_call_id + progress_to_frame）  锚点:R176-1 ca30254
+
+### 本轮目标
+
+延续 R175（server.rs 前言纯逻辑层）的叶子切分策略，本轮攻取 server.rs **第 2 页**——两个
+**深层嵌入**在文件中段、但本质纯函数的转换器：
+
+- `parse_tool_call_id` (server.rs 1865) —— 从原始 `tool_call_request` 帧中提取
+  `params.tool_call_id`，dispatcher 在 spawn handler 前用它注册 cancellation token。
+- `progress_to_frame` (server.rs 2249) —— 把 `ToolProgress` 整形为有线
+  `ToolCallProgressFrame`，三臂 match on `kind` 判别器。
+
+两个函数都是纯转换、无 IO、无 actor 状态，独立单测覆盖——完美的前向移植叶子。
+目标：扩展 `computer_hub_sdk/server.py` + 配套 20 个单测，ruff 全绿，回归 0 破坏。
+
+### 融合结论
+
+server.rs 的纯逻辑层继续推进。本轮的关键融合点是**依赖消歧**——`ToolCallId` 和
+`ToolProgress` 在 workspace 里各有两处候选定义，必须读 server.rs 的 `use` 语句（32-41 行）
+确认真正的来源：`xai_tool_protocol::ToolCallId` + `xai_tool_runtime::ToolProgress` →
+Python 侧落在 `tool_protocol/ids.py` 和 `tool_runtime/tool.py`，而非 workspace_types 别名层。
+
+Python `ToolProgress` 是**扁平 dataclass + `kind` 字符串判别器**（不是 Rust 的 3 变体
+internally-tagged enum），所以 Rust 的 `match` 自然退化成 `if/elif` 链；Content arm 的
+`Vec<ContentBlock>` 序列化走 `ContentBlock.to_dict()`（serde `to_value` 的 Python 对应）。
+
+### 交付
+
+| 文件 | 变更 |
+|------|------|
+| `agent/minimax_code/computer_hub_sdk/server.py` | +`logging` +3 第一方导入（`ToolCallProgressFrame`/`IdError`+`ToolCallId`/`ToolProgress`）+`_log` 模块 logger +`parse_tool_call_id` +`progress_to_frame` +docstring 更新（标题 R175→R175-R176、symbol list 插入 2 条、YAGNI 边界补 `build_error_response` 延后说明） |
+| `agent/tests/test_server.py` | +`logging` 导入 +`parse_tool_call_id`/`progress_to_frame` 导入 +4 依赖类型导入（`ToolCallProgressFrame`/`IdError`/`ToolCallId`/`ContentBlock`+`ToolProgress`） +20 新测试（9 parse + 11 progress） |
+
+### 映射决策树 + 坑
+
+1. **依赖消歧（双候选位）**：`ToolCallId` 同时存在于
+   `workspace_types/identity.py:66` 与 `tool_protocol/ids.py:199`；`ToolProgress` 同时存在于
+   `workspace_types/types/tools.py:82` 与 `tool_runtime/tool.py:270`。读 server.rs 导入链
+   `use xai_tool_protocol::{..., ToolCallId, ...}` + `use xai_tool_runtime::{..., ToolProgress, ...}`
+   锁定后者。
+2. **parse_tool_call_id 保真**：Rust `value.pointer("/params/tool_call_id").cloned()
+   .and_then(|v| serde_json::from_value(v).ok())` 有两路失败——
+   (a) JSON-pointer 遍历遇非 object / 缺键 → None；(b) `from_value::<ToolCallId>` 类型不匹配
+   （非 str 节点）或 `ToolCallId::new` 验证失败（空串，因为 `_OpaqueId.__new__` 调
+   `_ensure_non_empty`）→ `.ok()` 平铺为 None。Python 复现：逐键遍历 + `isinstance(str)`
+   守卫 + `try/except IdError` 双兜底。
+3. **progress_to_frame 变体映射**：Python `ToolProgress.kind` 是自由 str → 三臂 `if/elif`；
+   `Text` → `kind="text"`, `body={"text": text}`；`Content` → `body=[b.to_dict() for b in
+   (blocks or [])]`（`blocks` 是 Optional，None 强制为空数组而非 Null）；`Custom` →
+   `kind=subkind`, `body=payload`（透传引用）。`dropped_count` 恒为 None（demux inbox 后填）。
+4. **Content 序列化失败路径**：Rust `serde_json::to_value(blocks)
+   .unwrap_or_else(|err| { warn!(...); Value::default() })` → Python `try/except Exception`
+   + `_log.warning(...)` + `body = None`（`Value::default()` == `Value::Null`）。实测用
+   `monkeypatch.setattr(ContentBlock, "to_dict", boom)` 触发 + `caplog` 捕获 warning。
+5. **未知 kind 分支**：Rust 穷尽性在封闭 enum 上保证；Python `kind` 是自由 str，所以
+   三判别器外的值是程序员错误 → 显式 `raise ValueError` 而非发畸形帧。
+6. **caplog 传播**：server logger 名 `minimax_code.computer_hub_sdk.server`，propagation 默认
+   True，`caplog.at_level(WARNING)` 在 root 捕获，断言 `"failed to serialize" in rec.message`。
+
+### 验证
+
+- `ruff check tests/test_server.py` → **All checks passed!**
+- `pytest tests/test_server.py -q` → **46 passed**（26 R175 + 20 R176），0.26s
+- 回归 `pytest tests/test_server.py tests/test_harness_actor.py -q` → **111 passed**, 0.44s, 0 破坏
+
+### YAGNI 边界
+
+- `build_error_response` (server.rs 2276) 是纯函数，但依赖更深的 `ToolErrorWire` +
+  `error_codes::from_tool_error_wire` 链 → 延后到 error-wire 轮，不提前拉依赖。
+- 实时 actor 主体（`ToolServer` / `ToolServerBuilder` / `ToolServerInner` / per-session inbox
+  dispatcher / `handle_notification` / `execute_call` / `run_session_loop` / `send_overloaded`）
+  绑定 live xAI `HubConnection` socket 协议；MiniMax 无此消费者 → YAGNI 延后。
+- `SESSION_INBOX_BUFFER` 常量 + `SessionHandlerMap` / `SessionHandlerResolver` 别名随 actor 主体
+  旅行，不提前落此层。
+- `lib.rs` (71 行 barrel) 作为 SDK crate 收官在下一叶子轮。
+
+### Commit
+
+`feat(platform): R176 port server.rs embedded pure converters (parse_tool_call_id + progress_to_frame)`

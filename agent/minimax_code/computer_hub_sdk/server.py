@@ -1,15 +1,21 @@
-"""ToolServer runtime preamble — pure-logic type + helper layer (R175).
+"""ToolServer runtime — pure-logic type, helper, and conversion layer (R175-R176).
 
-Fusion of grok-build's ``xai-computer-hub-sdk/src/server.rs`` preamble
-(roughly lines 56-99). This is the first leaf of the ``server.rs`` port:
-the small pure-logic / type-contract surface that sits ahead of the live
-``HubConnection`` actor (``ToolServer`` / ``ToolServerBuilder`` /
-``ToolServerInner`` / the per-session inbox dispatcher), which lands in
-later leaves once a MiniMax-side consumer for the xAI socket protocol
-exists.
+Fusion of grok-build's ``xai-computer-hub-sdk/src/server.rs``. Two leaf
+rounds port the pure-logic surface that sits ahead of the live
+``HubConnection`` actor:
 
-R175 ports exactly the symbols that are pure and independently unit-tested
-in the source:
+* R175 — the type-contract preamble (``server.rs`` 56-99): the reconnect
+  callback alias, the ``system.notify`` ack enum, and the two pure helpers
+  that feed it.
+* R176 — two pure conversion helpers embedded deeper in the file
+  (``server.rs`` 1865 + 2249): the ``tool_call_request`` id extractor and
+  the ``ToolProgress`` -> ``ToolCallProgressFrame`` wire shaper.
+
+The live actor itself (``ToolServer`` / ``ToolServerBuilder`` /
+``ToolServerInner`` / the per-session inbox dispatcher) lands in later
+leaves once a MiniMax-side consumer for the xAI socket protocol exists.
+
+The ported symbols, all pure and independently unit-tested in the source:
 
 * :data:`ReconnectSettledCallback` — ``Box<dyn Fn() + Send + Sync + 'static>``
   collapsed to the bare call shape ``() -> None`` (Python has no
@@ -21,6 +27,11 @@ in the source:
   without materialising the string (Rust counts bytes via a no-op
   ``std::io::Write`` sink; Python serialises to a compact string and
   measures the UTF-8 byte length — see the fidelity note on the function).
+* :func:`parse_tool_call_id` — extract ``params.tool_call_id`` from a raw
+  ``tool_call_request`` frame (Rust JSON-pointer walk + ``from_value .ok()``).
+* :func:`progress_to_frame` — shape a :class:`ToolProgress` into a wire
+  :class:`ToolCallProgressFrame` (three-arm ``match`` on the ``kind``
+  discriminator; ``dropped_count`` always ``None`` here).
 * :func:`system_notify_ack_from_outcome` — pure match mapping
   :data:`~minimax_code.tool_protocol.envelope.ResponseOutcome` to
   :class:`SystemNotifyAck`, lifting a bare ``-32601 method_not_found``
@@ -36,26 +47,39 @@ to the live xAI ``HubConnection`` socket protocol; MiniMax carries no such
 consumer, so those leaves stay deferred under YAGNI until a MiniMax
 transport needs them. The ``SESSION_INBOX_BUFFER`` constant and
 ``SessionHandlerMap`` / ``SessionHandlerResolver`` type aliases belong to
-that actor and travel with it, not with this preamble.
+that actor and travel with it, not with this layer. ``build_error_response``
+(``server.rs`` 2276) is pure but depends on the deeper
+``ToolErrorWire`` + ``error_codes::from_tool_error_wire`` chain, so it
+lands with that error-wire round rather than here.
 """
 
 from __future__ import annotations
 
 import enum
 import json
+import logging
 from collections.abc import Callable
 from typing import Any
 
 from minimax_code.computer_hub_sdk.error import ClientError, SerdeError
 from minimax_code.tool_protocol.envelope import ResponseError, ResponseOutcome, ResponseResult
 from minimax_code.tool_protocol.error_codes import string_for
+from minimax_code.tool_protocol.frames import ToolCallProgressFrame
+from minimax_code.tool_protocol.ids import IdError, ToolCallId
+from minimax_code.tool_runtime.tool import ToolProgress
 
 __all__ = [
     "ReconnectSettledCallback",
     "SystemNotifyAck",
     "json_serialized_len",
+    "parse_tool_call_id",
+    "progress_to_frame",
     "system_notify_ack_from_outcome",
 ]
+
+#: Module logger for the defensive ``warn!``-equivalent fallbacks (R176
+#: ``progress_to_frame`` content-serialisation path mirrors Rust's ``warn!``).
+_log = logging.getLogger(__name__)
 
 
 #: Fired after reconnect ``serve`` replay completes (async settle) (R175).
@@ -173,3 +197,106 @@ def system_notify_ack_from_outcome(outcome: ResponseOutcome[Any]) -> SystemNotif
     # than returning a silent default for a variant a well-typed caller cannot
     # produce — this limb is unreachable in practice.
     raise TypeError(f"unexpected ResponseOutcome variant: {type(outcome).__name__}")
+
+
+def parse_tool_call_id(value: Any) -> ToolCallId | None:
+    """Extract ``params.tool_call_id`` from a raw ``tool_call_request`` frame (R176).
+
+    Mirrors ``parse_tool_call_id(value: &Value) -> Option<ToolCallId>``: the
+    dispatcher uses it to register a cancellation token under the call id
+    *before* spawning the handler. The Rust body walks the JSON pointer
+    ``/params/tool_call_id``, clones the node, then runs
+    ``serde_json::from_value::<ToolCallId>`` (a ``#[serde(transparent)]``
+    String newtype whose ``new`` validates) and flattens any failure to
+    ``None`` via ``.ok()``.
+
+    Fidelity note
+    -------------
+    ``serde_json::Value::pointer`` returns ``None`` when any path segment is
+    missing or an interior node is not an object; Python reproduces that by
+    walking the path one key at a time and bailing on a non-dict node or a
+    missing key. ``serde_json::from_value::<ToolCallId>(v)`` fails when ``v``
+    is not a JSON string (a type mismatch) or when the inner ``new`` rejects
+    the value (an empty string, since :class:`ToolCallId` is a plain
+    non-empty opaque id); both failure modes collapse to ``None`` via
+    ``.ok()``, which Python reproduces with an ``isinstance(str)`` guard plus
+    a ``try`` / ``except IdError`` around the validating constructor.
+    """
+    node: Any = value
+    for key in ("params", "tool_call_id"):
+        if not isinstance(node, dict) or key not in node:
+            return None
+        node = node[key]
+    if not isinstance(node, str):
+        # ``serde_json::from_value::<ToolCallId>`` rejects a non-string node
+        # (type mismatch); ``.ok()`` flattens that to ``None``.
+        return None
+    try:
+        return ToolCallId(node)
+    except IdError:
+        # ``ToolCallId::new`` rejects an empty (or otherwise malformed) id;
+        # ``serde_json::from_value`` surfaces that as an error, ``.ok()``
+        # flattens it to ``None``.
+        return None
+
+
+def progress_to_frame(
+    progress: ToolProgress,
+    tool_call_id: ToolCallId,
+) -> ToolCallProgressFrame:
+    """Convert a :class:`ToolProgress` into a wire :class:`ToolCallProgressFrame` (R176).
+
+    Mirrors ``progress_to_frame(progress: ToolProgress, tool_call_id: ToolCallId)
+    -> ToolCallProgressFrame``. The Rust ``match`` has three arms over the
+    ``ToolProgress`` enum, reproduced here as branches on the Python
+    dataclass's ``kind`` discriminator (the Python port flattens the Rust
+    internally-tagged enum into one dataclass with a ``kind`` field plus
+    ``Text`` / ``Content`` / ``Custom`` classmethod constructors):
+
+    * ``Text { text }`` — ``kind = "text"``, ``body = {"text": text}``
+      (the ``serde_json::json!`` macro).
+    * ``Content { blocks }`` — ``kind = "content"``, ``body =
+      serde_json::to_value(blocks)`` with a ``warn!`` +
+      ``Value::default()`` (``= Null``) fallback on a serialisation failure.
+    * ``Custom { subkind, payload }`` — ``kind = subkind`` (the snake_case
+      discriminator the runtime dispatches on), ``body = payload`` (an
+      opaque :class:`serde_json::Value` carried verbatim).
+
+    The frame's ``dropped_count`` is always ``None`` here — the demux inbox
+    fills it in later when prior frames for this ``tool_call_id`` are
+    dropped under rate pressure.
+
+    Fidelity note
+    -------------
+    ``serde_json::to_value(blocks)`` for the ``Content`` arm serialises the
+    ``Vec<ContentBlock>`` into a JSON array; the Python port drives
+    :meth:`ContentBlock.to_dict` over the list. The ``warn!`` +
+    ``Value::default()`` fallback maps to :func:`logging.warning` + ``None``
+    (``Value::Null``); in practice :meth:`to_dict` does not raise, so the
+    branch is defensive — it exists to mirror Rust's exhaustiveness rather
+    than to handle a reachable failure.
+    """
+    if progress.kind == "text":
+        kind = "text"
+        body: Any = {"text": progress.text}
+    elif progress.kind == "content":
+        kind = "content"
+        try:
+            body = [block.to_dict() for block in (progress.blocks or [])]
+        except Exception as exc:  # serde_json::to_value failure -> Value::default() (Null)
+            _log.warning("failed to serialize Content blocks for progress frame: %s", exc)
+            body = None
+    elif progress.kind == "custom":
+        kind = progress.subkind
+        body = progress.payload
+    else:
+        # Rust exhaustiveness is over a closed enum; the Python ``kind`` field
+        # is a free ``str``, so a value outside the three known discriminators
+        # is a programmer error — surface it rather than emit a malformed frame.
+        raise ValueError(f"unknown ToolProgress kind: {progress.kind!r}")
+    return ToolCallProgressFrame(
+        tool_call_id=tool_call_id,
+        kind=kind,
+        body=body,
+        dropped_count=None,
+    )

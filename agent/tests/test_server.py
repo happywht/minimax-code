@@ -21,6 +21,7 @@ is bound to the live xAI socket protocol and is out of scope here.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 
 import pytest
@@ -30,9 +31,14 @@ from minimax_code.computer_hub_sdk.server import (
     ReconnectSettledCallback,
     SystemNotifyAck,
     json_serialized_len,
+    parse_tool_call_id,
+    progress_to_frame,
     system_notify_ack_from_outcome,
 )
 from minimax_code.tool_protocol.envelope import JsonRpcError, ResponseError, ResponseResult
+from minimax_code.tool_protocol.frames import ToolCallProgressFrame
+from minimax_code.tool_protocol.ids import IdError, ToolCallId
+from minimax_code.tool_runtime.tool import ContentBlock, ToolProgress
 
 
 # ===========================================================================
@@ -229,3 +235,175 @@ def test_ack_from_outcome_network_error_code_is_classified():
     err = JsonRpcError(code=-32004, message="connection lost")
     with pytest.raises(NetworkError):
         system_notify_ack_from_outcome(ResponseError(err))
+
+
+# ===========================================================================
+# parse_tool_call_id — JSON-pointer walk + serde from_value .ok() (R176).
+# ===========================================================================
+def test_parse_tool_call_id_normal_path():
+    """params.tool_call_id present as a non-empty string -> ToolCallId."""
+    result = parse_tool_call_id({"params": {"tool_call_id": "call_abc"}})
+    assert result == "call_abc"
+    assert isinstance(result, ToolCallId)
+
+
+def test_parse_tool_call_id_missing_params_returns_none():
+    """No params node -> pointer walk bails -> None."""
+    assert parse_tool_call_id({}) is None
+    assert parse_tool_call_id({"method": "tools/call"}) is None
+
+
+def test_parse_tool_call_id_missing_tool_call_id_returns_none():
+    """params present but tool_call_id absent -> None."""
+    assert parse_tool_call_id({"params": {}}) is None
+    assert parse_tool_call_id({"params": {"other": 1}}) is None
+
+
+def test_parse_tool_call_id_non_string_value_returns_none():
+    """A non-string tool_call_id (type mismatch) -> serde from_value fails -> None."""
+    assert parse_tool_call_id({"params": {"tool_call_id": 42}}) is None
+    assert parse_tool_call_id({"params": {"tool_call_id": True}}) is None
+    assert parse_tool_call_id({"params": {"tool_call_id": None}}) is None
+    assert parse_tool_call_id({"params": {"tool_call_id": [1]}}) is None
+
+
+def test_parse_tool_call_id_empty_string_returns_none():
+    """An empty string is rejected by ToolCallId::new; .ok() flattens to None."""
+    result = parse_tool_call_id({"params": {"tool_call_id": ""}})
+    assert result is None
+    # And the validating constructor itself raises IdError for the empty case,
+    # confirming the .ok() flattening reproduces serde's failure mode.
+    with pytest.raises(IdError):
+        ToolCallId("")
+
+
+def test_parse_tool_call_id_value_not_dict_returns_none():
+    """The top-level value not being an object -> pointer walk fails -> None."""
+    assert parse_tool_call_id("not a dict") is None
+    assert parse_tool_call_id(42) is None
+    assert parse_tool_call_id(None) is None
+    assert parse_tool_call_id([1, 2, 3]) is None
+
+
+def test_parse_tool_call_id_params_not_dict_returns_none():
+    """params present but not an object (e.g. a list) -> walk can't descend -> None."""
+    assert parse_tool_call_id({"params": [1, 2]}) is None
+    assert parse_tool_call_id({"params": "str"}) is None
+
+
+def test_parse_tool_call_id_does_not_mutate_input():
+    """The pointer walk reads only; the caller's frame is untouched."""
+    value = {"params": {"tool_call_id": "call_xyz"}}
+    parse_tool_call_id(value)
+    assert value == {"params": {"tool_call_id": "call_xyz"}}
+
+
+def test_parse_tool_call_id_roundtrips_through_str_equality():
+    """The extracted id is a str subclass; str(id) reconstructs the lookup."""
+    original = {"params": {"tool_call_id": "call_12345"}}
+    extracted = parse_tool_call_id(original)
+    assert extracted is not None
+    assert {"params": {"tool_call_id": str(extracted)}} == original
+
+
+# ===========================================================================
+# progress_to_frame — ToolProgress -> ToolCallProgressFrame (R176, 3 arms).
+# ===========================================================================
+def test_progress_to_frame_text_variant():
+    """Text arm: kind="text", body={"text": text}, dropped_count=None."""
+    frame = progress_to_frame(ToolProgress.Text("hello"), ToolCallId("c1"))
+    assert isinstance(frame, ToolCallProgressFrame)
+    assert frame.kind == "text"
+    assert frame.body == {"text": "hello"}
+    assert frame.dropped_count is None
+
+
+def test_progress_to_frame_content_variant_drives_to_dict():
+    """Content arm serialises blocks via ContentBlock.to_dict (serde to_value)."""
+    block = ContentBlock.Text("a")
+    frame = progress_to_frame(ToolProgress.Content([block]), ToolCallId("c1"))
+    assert frame.kind == "content"
+    assert frame.body == [block.to_dict()]
+
+
+def test_progress_to_frame_content_multiple_blocks_preserve_order():
+    """Block order is preserved across the to_value serialisation."""
+    b1 = ContentBlock.Text("first")
+    b2 = ContentBlock.Text("second")
+    frame = progress_to_frame(ToolProgress.Content([b1, b2]), ToolCallId("c1"))
+    assert frame.body == [b1.to_dict(), b2.to_dict()]
+
+
+def test_progress_to_frame_content_empty_blocks_is_empty_array():
+    """An empty block list serialises to an empty JSON array."""
+    frame = progress_to_frame(ToolProgress.Content([]), ToolCallId("c1"))
+    assert frame.body == []
+
+
+def test_progress_to_frame_content_none_blocks_treated_as_empty():
+    """blocks is Optional; a None payload coerces to an empty array (not Null)."""
+    progress = ToolProgress(kind="content")  # blocks defaults to None
+    frame = progress_to_frame(progress, ToolCallId("c1"))
+    assert frame.body == []
+
+
+def test_progress_to_frame_custom_variant_carries_subkind_and_payload():
+    """Custom arm: kind=subkind, body=payload."""
+    frame = progress_to_frame(
+        ToolProgress.Custom("bash_output_chunk", {"stdout": "ok"}),
+        ToolCallId("c1"),
+    )
+    assert frame.kind == "bash_output_chunk"
+    assert frame.body == {"stdout": "ok"}
+
+
+def test_progress_to_frame_custom_payload_carried_verbatim():
+    """Custom.payload is an opaque serde_json::Value; carried by reference."""
+    payload = {"nested": [1, 2, {"k": None}]}
+    frame = progress_to_frame(ToolProgress.Custom("sub", payload), ToolCallId("c1"))
+    assert frame.body is payload
+
+
+def test_progress_to_frame_preserves_tool_call_id():
+    """The id passes through unchanged (str equality + instance type)."""
+    cid = ToolCallId("call_xyz")
+    for progress in (
+        ToolProgress.Text("x"),
+        ToolProgress.Content([ContentBlock.Text("x")]),
+        ToolProgress.Custom("sub", {}),
+    ):
+        frame = progress_to_frame(progress, cid)
+        assert frame.tool_call_id == cid
+        assert isinstance(frame.tool_call_id, ToolCallId)
+
+
+def test_progress_to_frame_dropped_count_always_none():
+    """The demux inbox sets dropped_count later; here it is always None."""
+    for progress in (
+        ToolProgress.Text("x"),
+        ToolProgress.Content([]),
+        ToolProgress.Custom("sub", None),
+    ):
+        assert progress_to_frame(progress, ToolCallId("c1")).dropped_count is None
+
+
+def test_progress_to_frame_unknown_kind_raises_value_error():
+    """Python kind is a free str; an unknown discriminator is a programmer error."""
+    progress = ToolProgress(kind="bogus")
+    with pytest.raises(ValueError, match="unknown ToolProgress kind"):
+        progress_to_frame(progress, ToolCallId("c1"))
+
+
+def test_progress_to_frame_content_serialization_failure_falls_back_to_null(monkeypatch, caplog):
+    """A to_dict failure (serde to_value err) -> Value::default() (Null) + warn."""
+    block = ContentBlock.Text("a")
+
+    def boom(self):
+        raise RuntimeError("serialize boom")
+
+    monkeypatch.setattr(ContentBlock, "to_dict", boom)
+    with caplog.at_level(logging.WARNING):
+        frame = progress_to_frame(ToolProgress.Content([block]), ToolCallId("c1"))
+    assert frame.kind == "content"
+    assert frame.body is None  # Value::default() == Value::Null
+    assert any("failed to serialize" in rec.message for rec in caplog.records)
