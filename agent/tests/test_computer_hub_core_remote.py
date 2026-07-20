@@ -41,6 +41,7 @@ import abc
 import asyncio
 import inspect
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 
@@ -50,6 +51,7 @@ from minimax_code.computer_hub_core.remote import (
     _terminal_from_response,
     _terminal_item,
     decode_call_result,
+    dispatch_via_connection,
     error_from_envelope,
     is_workspace_unavailable,
     output_to_value,
@@ -67,11 +69,13 @@ from minimax_code.tool_protocol import (
     InvalidArguments,
     Json,
     JsonRpcError,
+    JsonRpcIdString,
     JsonRpcNotification,
     JsonRpcRequest,
     JsonRpcResponse,
     JsonRpcVersion,
     Mcp,
+    Method,
     PayloadTooLarge,
     PermissionDenied,
     RenderLimited,
@@ -79,12 +83,14 @@ from minimax_code.tool_protocol import (
     ResourceBlock,
     ResponseError,
     ResponseResult,
+    SessionId,
     SessionMismatch,
     TerminalError,
     Text,
     TextBlock,
     Timeout,
     ToolCallId,
+    ToolCallParams,
     ToolCallProgressFrame,
     ToolId,
     ToolNotFound,
@@ -92,6 +98,9 @@ from minimax_code.tool_protocol import (
     UnsupportedProtocolVersion,
 )
 from minimax_code.tool_runtime import (
+    BehaviorVersion,
+    Cwd,
+    ToolCallContext,
     ToolChatCompletionResponse,
     ToolError,
     ToolErrorKind,
@@ -1270,3 +1279,336 @@ async def test_aclose_mid_stream_cancels_pending_request():
     assert (await gen.__anext__()).kind == "progress"
     await gen.aclose()
     assert fut.cancelled()
+
+
+# ===========================================================================
+# R124 — layer 3: dispatch_via_connection assembler. The pub(crate) fn lifts
+# a runtime (tool_id, arguments, ctx) triple into a tool_call_request
+# JSON-RPC envelope, forwards it over a ConnectionClient, and hands back the
+# interleaved progress/response stream _request_stream drives. The six-step
+# assembly (ctx extraction -> subscribe-before-send -> ToolCallParams ->
+# JsonRpcRequest -> request-not-awaited -> _request_stream assemble) mirrors
+# Rust's six statements; the Python landing is an async def (not a sync fn)
+# because _request_stream takes a resolved progress iterator, so the
+# subscribe future must materialise at assembly time.
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# R124 fixtures — call id / session / ctx / scripted-connection builders.
+# ---------------------------------------------------------------------------
+
+
+def _call_id() -> ToolCallId:
+    return ToolCallId("call-9")
+
+
+def _session_id() -> SessionId:
+    return SessionId("session-7")
+
+
+def _ctx(
+    call_id: ToolCallId | None = None,
+    *,
+    cwd: Path | None = None,
+    behavior: str | None = None,
+) -> ToolCallContext:
+    """Build a ToolCallContext, optionally installing Cwd/BehaviorVersion.
+
+    Mirrors how a layer-2 caller threads the per-call context: the call_id
+    becomes both the params' tool_call_id and the subscribe key, and the
+    typed extensions project into the params wire fields.
+    """
+    ctx = ToolCallContext.new(call_id or _call_id())
+    if cwd is not None:
+        ctx.insert(Cwd(cwd))
+    if behavior is not None:
+        ctx.insert(BehaviorVersion(behavior))
+    return ctx
+
+
+class _ScriptedConn(_RecordingConnection):
+    """Connection whose progress is scripted and whose response is future-driven.
+
+    subscribe_progress returns a :class:`_ScriptedProgress` (one sleep per
+    frame) and request awaits a caller-driven future, so an end-to-end
+    dispatch_via_connection reproduces R123's progress-backfill-then-terminal
+    ordering: the scripted progress drains frame by frame while the response
+    future is resolved in the background a few cycles later.
+    """
+
+    def __init__(self, frames, resp_future):
+        super().__init__()
+        self._frames = list(frames)
+        self._resp_future = resp_future
+
+    async def subscribe_progress(self, tool_call_id):
+        self.subscribed.append(tool_call_id)
+        return _ScriptedProgress(self._frames)
+
+    async def request(self, request):
+        self.requests.append(request)
+        return await self._resp_future
+
+
+# ---------------------------------------------------------------------------
+# Shape — async def returning an async iterator (Rust sync fn -> BoxStream).
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_via_connection_is_coroutine_function():
+    # Python landing is `async def` (not a sync fn like Rust) because the
+    # subscribe future must resolve at assembly time before _request_stream
+    # takes the resolved progress iterator.
+    assert inspect.iscoroutinefunction(dispatch_via_connection)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_via_connection_returns_async_iterator():
+    conn = _RecordingConnection()
+    gen = await dispatch_via_connection(
+        conn, _tid(), _session_id(), {"q": 1}, _ctx()
+    )
+    assert hasattr(gen, "__aiter__")
+    # Drive the stream to its terminal: dispatch_via_connection creates the
+    # request coroutine at assembly time (Rust lazy-future semantics — the
+    # body only runs when _request_stream is polled), so consuming the gen
+    # both proves the iterator is real AND avoids a never-awaited coroutine.
+    await _collect(gen)
+
+
+# ---------------------------------------------------------------------------
+# Step 1 — ctx extension extraction (Cwd/BehaviorVersion -> params wire
+# fields; wire-omitted when the extension is absent).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_step1_cwd_and_behavior_version_projected_into_params():
+    conn = _RecordingConnection()
+    cwd = Path("/tmp/work")
+    gen = await dispatch_via_connection(
+        conn,
+        _tid(),
+        _session_id(),
+        {"q": 1},
+        _ctx(cwd=cwd, behavior="2026-07"),
+    )
+    await _collect(gen)  # drive to terminal -> request body executes
+    assert len(conn.requests) == 1
+    params = conn.requests[0].params
+    # Cwd projects as str(path); BehaviorVersion as the version string.
+    assert params["cwd"] == str(cwd)
+    assert params["behavior_version"] == "2026-07"
+    # deadline_ms / trace_context are None on the forwarding path -> wire-omitted.
+    assert "deadline_ms" not in params
+    assert "trace_context" not in params
+
+
+@pytest.mark.asyncio
+async def test_step1_extensions_absent_wire_omitted():
+    # ctx with no Cwd/BehaviorVersion -> both fields None -> wire-omitted
+    # (ToolCallParams.to_wire skips None deadline/behavior/cwd/trace).
+    conn = _RecordingConnection()
+    gen = await dispatch_via_connection(
+        conn, _tid(), _session_id(), {"q": 1}, _ctx()
+    )
+    await _collect(gen)  # drive to terminal -> request body executes
+    params = conn.requests[0].params
+    assert "cwd" not in params
+    assert "behavior_version" not in params
+
+
+@pytest.mark.asyncio
+async def test_step1_call_id_threads_into_params_and_subscribe_key():
+    # ctx.call_id is BOTH the params' tool_call_id AND the subscribe key
+    # (Rust uses the same id for the wire field and subscribe_progress).
+    conn = _RecordingConnection()
+    cid = _call_id()
+    gen = await dispatch_via_connection(
+        conn, _tid(), _session_id(), {"q": 1}, _ctx(call_id=cid)
+    )
+    await _collect(gen)  # drive to terminal -> request body executes
+    assert conn.requests[0].params["tool_call_id"] == cid
+    assert conn.subscribed == [cid]
+
+
+# ---------------------------------------------------------------------------
+# Step 2 — subscribe_progress BEFORE request (R122 contract: subscribers
+# must register before the request is sent or early progress frames lost).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_step2_subscribes_before_sending_request():
+    order: list[str] = []
+
+    class _OrderConn(_RecordingConnection):
+        async def subscribe_progress(self, tool_call_id):
+            order.append("subscribe")
+            return await super().subscribe_progress(tool_call_id)
+
+        async def request(self, request):
+            order.append("request")
+            return await super().request(request)
+
+    conn = _OrderConn()
+    gen = await dispatch_via_connection(
+        conn, _tid(), _session_id(), {"q": 1}, _ctx()
+    )
+    await _collect(gen)  # drive to terminal -> request body executes
+    assert order == ["subscribe", "request"]
+
+
+# ---------------------------------------------------------------------------
+# Steps 3/4 — ToolCallParams + JsonRpcRequest construction.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_step34_request_envelope_shape():
+    conn = _RecordingConnection()
+    sid = _session_id()
+    tid = _tid()
+    args = {"q": "hello", "n": 2}
+    gen = await dispatch_via_connection(conn, tid, sid, args, _ctx())
+    await _collect(gen)  # drive to terminal -> request body executes
+    req = conn.requests[0]
+    assert isinstance(req, JsonRpcRequest)
+    # method is the tool_call_request wire string (Method.ToolCallRequest).
+    assert req.method == Method.ToolCallRequest.as_wire_str()
+    assert req.method == "tool_call_request"
+    # session_id threads through; jsonrpc is the 2.0 unit; id is a string id.
+    assert req.session_id == sid
+    assert isinstance(req.jsonrpc, JsonRpcVersion)
+    assert isinstance(req.id, JsonRpcIdString)
+    # params carry tool_id + arguments verbatim.
+    assert req.params["tool_id"] == tid
+    assert req.params["arguments"] == args
+
+
+@pytest.mark.asyncio
+async def test_step34_request_id_is_fresh_per_call():
+    # Each dispatch mints a fresh uuid4 correlation id (Rust new_uuid_v7;
+    # Python uuid4 — surface contract is "fresh unique id").
+    conn = _RecordingConnection()
+    g1 = await dispatch_via_connection(conn, _tid(), _session_id(), {}, _ctx())
+    await _collect(g1)  # drive to terminal -> request body executes
+    g2 = await dispatch_via_connection(conn, _tid(), _session_id(), {}, _ctx())
+    await _collect(g2)  # drive to terminal -> request body executes
+    assert conn.requests[0].id.value != conn.requests[1].id.value
+
+
+# ---------------------------------------------------------------------------
+# Step 4 error arm — a params-encode failure short-circuits to a single
+# error Terminal (Rust serde_json::to_value map_err). subscribe already
+# registered (step 2 precedes step 4); the request is never sent.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_step4_params_encode_failure_short_circuits_to_error_terminal(
+    monkeypatch,
+):
+    def _boom(self):
+        raise RuntimeError("encode broke")
+
+    monkeypatch.setattr(ToolCallParams, "to_wire", _boom)
+    conn = _RecordingConnection()
+    cid = _call_id()
+    gen = await dispatch_via_connection(
+        conn, _tid(), _session_id(), {"q": 1}, _ctx(call_id=cid)
+    )
+    items = await _collect(gen)
+    # Single error terminal; the encode failure is wrapped as a CUSTOM
+    # ToolError carrying code "request_encoding".
+    assert len(items) == 1
+    assert items[0].kind == "terminal"
+    assert items[0].is_error()
+    terminal = items[0].terminal
+    assert isinstance(terminal, ToolError)
+    assert terminal.kind == ToolErrorKind.CUSTOM
+    assert terminal.details == {"code": "request_encoding"}
+    assert "encode broke" in str(terminal.detail)
+    # subscribe ran BEFORE the encode (step 2 < step 4); request never sent.
+    assert conn.subscribed == [cid]
+    assert conn.requests == []
+
+
+# ---------------------------------------------------------------------------
+# Step 6 — assembly: the returned stream IS _request_stream's interleaved
+# progress/response output, driven end-to-end through dispatch_via_connection.
+# Three terminal paths: success (immediate response), error passthrough, and
+# progress-backfill-then-terminal (scripted ordering).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_step6_immediate_success_response_yields_single_terminal():
+    # _RecordingConnection.request resolves immediately -> request priority
+    # (R123 invariant 1): the response wins the first wait cycle and any
+    # concurrent progress is dropped, so the stream is a single terminal.
+    conn = _RecordingConnection()
+    conn.next_response = _ok_resp()
+    gen = await dispatch_via_connection(
+        conn, _tid(), _session_id(), {"q": 1}, _ctx()
+    )
+    items = await _collect(gen)
+    assert [it.kind for it in items] == ["terminal"]
+    assert isinstance(items[-1].terminal, TypedToolOutput)
+
+
+@pytest.mark.asyncio
+async def test_step6_error_response_passthrough_yields_error_terminal():
+    # A ToolError response surfaces as an error Terminal via _terminal_item's
+    # Err passthrough, end-to-end through dispatch_via_connection.
+    conn = _RecordingConnection()
+    err = ToolError.custom("network_error", "connection reset")
+    conn.next_response = err
+    gen = await dispatch_via_connection(
+        conn, _tid(), _session_id(), {"q": 1}, _ctx()
+    )
+    items = await _collect(gen)
+    assert [it.kind for it in items] == ["terminal"]
+    assert items[-1].is_error()
+    assert items[-1].terminal is err
+
+
+@pytest.mark.asyncio
+async def test_step6_progress_backfilled_before_terminal():
+    # Hand-stepped driving (no background _resolve_after) gives a deterministic
+    # Progress* -> Terminal ordering that does NOT depend on sleep(0) race
+    # timing between the scripted frames and a future-backed response. The two
+    # frames are drained first while the response is still pending; the
+    # response is then resolved, and the next pull yields the single terminal.
+    # A background-resolve with a fixed cycle count is flaky here: under
+    # asyncio's ready-queue interleaving the response can win before the second
+    # frame is lifted (a still-legal Progress* Terminal shape, but not the one
+    # this test means to assert).
+    cid = _call_id()
+    frames = [
+        ToolCallProgressFrame(tool_call_id=cid, kind="chunk", body={"n": 1}),
+        ToolCallProgressFrame(tool_call_id=cid, kind="chunk", body={"n": 2}),
+    ]
+    fut = asyncio.get_running_loop().create_future()
+    conn = _ScriptedConn(frames, fut)
+    gen = await dispatch_via_connection(
+        conn, _tid(), _session_id(), {"q": 1}, _ctx(call_id=cid)
+    )
+    # Step 1: drain the two scripted progress frames; the response future is
+    # still pending, so each pull lifts one frame via progress_from_frame.
+    item1 = await gen.__anext__()
+    assert item1.kind == "progress"
+    item2 = await gen.__anext__()
+    assert item2.kind == "progress"
+    # Step 2: resolve the response. The next pull races the (now-exhausted)
+    # progress against the resolved request; request priority (R123 invariant 1)
+    # hands the win to the response -> a single terminal, concurrent progress
+    # discarded.
+    fut.set_result(_ok_resp())
+    item3 = await gen.__anext__()
+    assert item3.kind == "terminal"
+    assert isinstance(item3.terminal, TypedToolOutput)
+    # The stream is exhausted after the terminal (R123 invariant 3: exactly one).
+    with pytest.raises(StopAsyncIteration):
+        await gen.__anext__()

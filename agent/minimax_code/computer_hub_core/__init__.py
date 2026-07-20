@@ -56,7 +56,7 @@ The crate's ``lib.rs`` re-exports six modules. The dependency order is:
    :class:`CompoundResolver`; holds the resolver by a strong Python
    reference — the ``Arc<T>`` counterpart to R118's ``Weak`` ->
    :func:`weakref.ref` mapping) + :data:`LOCAL_INVOKE_SCOPE`.
-6. ``remote`` (R120+R121 layer 4, R122 layer 1, R123 layer 3 stream) — ``RemoteTransport`` /
+6. ``remote`` (R120+R121 layer 4, R122 layer 1, R123+R124 layer 3) — ``RemoteTransport`` /
    ``RemoteToolProxy`` / ``ConnectionClient`` + the wire decode helpers.
    R120 lands the three pure success-path layer-4 seams
    (:func:`decode_call_result` / :func:`output_to_value` /
@@ -72,15 +72,23 @@ The crate's ``lib.rs`` re-exports six modules. The dependency order is:
    :func:`_request_stream` async generator (the per-cycle progress /
    request multiplex that drives a forwarded tool-call stream — the
    Python translation of Rust's ``impl Stream for RequestStream``
-   ``poll_next`` state machine). Layers 2-3's remainder (the
-   ``RemoteToolProxy`` / ``RemoteTransport`` impls and the
-   ``dispatch_via_connection`` assembler) land in later rounds.
+   ``poll_next`` state machine); R124 lands layer 3's
+   :func:`~minimax_code.computer_hub_core.remote.dispatch_via_connection`
+   assembler (the layer-2 entry that resolves cwd / behavior_version /
+   call_id off the :class:`~minimax_code.tool_runtime.ToolCallContext`,
+   builds the :class:`~minimax_code.tool_protocol.ToolCallParams` +
+   :class:`~minimax_code.tool_protocol.JsonRpcRequest` envelope, and
+   wires the resolved progress stream + the request coroutine into
+   :func:`_request_stream`). Layer 2's remainder (the
+   ``RemoteToolProxy`` / ``RemoteTransport`` impls) lands in later rounds.
 
 R120+R121 land the full layer-4 decode/encode surface of leaf 6; R122
-lands the layer-1 connection contract; R123 lands layer 3's
-:func:`_request_stream` async generator; the remaining connection
-machinery (layer 2 + the ``dispatch_via_connection`` assembler) lands
-one module per round.
+lands the layer-1 connection contract; R123+R124 land layer 3's stream
+machinery (the :func:`_request_stream` async generator + the
+:func:`~minimax_code.computer_hub_core.remote.dispatch_via_connection`
+assembler); the remaining connection machinery (layer 2 — the
+``RemoteToolProxy`` / ``RemoteTransport`` impls) lands one module per
+round.
 """
 
 from minimax_code.computer_hub_core.inner import (

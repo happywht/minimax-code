@@ -150,6 +150,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import uuid
 from collections.abc import AsyncIterator, Awaitable
 from typing import Any
 
@@ -164,23 +165,28 @@ from minimax_code.tool_protocol import (
     InvalidArguments,
     Json,
     JsonRpcError,
+    JsonRpcIdString,
     JsonRpcNotification,
     JsonRpcRequest,
     JsonRpcResponse,
+    JsonRpcVersion,
     Mcp,
     McpBlock,
+    Method,
     PayloadTooLarge,
     PermissionDenied,
     RenderLimited,
     ResourceBlock,
     ResponseError,
     ResponseResult,
+    SessionId,
     SessionMismatch,
     TerminalError,
     Text,
     TextBlock,
     Timeout,
     ToolCallId,
+    ToolCallParams,
     ToolCallProgressFrame,
     ToolCallResult,
     ToolErrorWire,
@@ -193,13 +199,17 @@ from minimax_code.tool_protocol import (
 from minimax_code.tool_protocol.error_wire import from_wire as error_wire_from_wire
 from minimax_code.tool_protocol.output_wire import from_wire as output_from_wire
 from minimax_code.tool_runtime import (
+    BehaviorVersion,
     ContentBlock,
+    Cwd,
+    ToolCallContext,
     ToolChatCompletionResponse,
     ToolError,
     ToolErrorKind,
     ToolProgress,
     ToolStreamItem,
     TypedToolOutput,
+    terminal_only,
 )
 
 __all__ = [
@@ -851,3 +861,159 @@ async def _request_stream(
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
+
+
+# -----------------------------------------------------------------------
+# dispatch_via_connection — layer-3 assembler (R124).
+# -----------------------------------------------------------------------
+
+
+async def dispatch_via_connection(
+    connection: ConnectionClient,
+    tool_id: ToolId,
+    session_id: SessionId,
+    arguments: object,
+    ctx: ToolCallContext,
+) -> AsyncIterator[ToolStreamItem[TypedToolOutput]]:
+    """Forward a tool call over ``connection`` and drive its stream (R124).
+
+    Faithful migration of grok-build's ``dispatch_via_connection``
+    (``xai-computer-hub-core/src/remote.rs``). The function is the
+    layer-3 assembler a layer-2 ``RemoteToolProxy`` calls: it lifts a
+    runtime ``(tool_id, arguments, ctx)`` triple into a
+    ``tool_call_request`` JSON-RPC envelope, forwards it over a
+    :class:`ConnectionClient`, and hands back the interleaved
+    progress/response stream R123's :func:`_request_stream` drives.
+
+    The six-step assembly mirrors Rust's six statements verbatim:
+
+    1. **ctx extension extraction.** ``Cwd`` / ``BehaviorVersion`` are
+       read off the typed-extension store (``ctx.get(Cwd)`` /
+       ``ctx.get(BehaviorVersion)``) and projected into the params wire
+       fields — ``None`` when absent (Rust
+       ``ctx.extensions().get::<Cwd>().map(|c| ...)``).
+       ``ctx.call_id`` becomes both the params' ``tool_call_id`` and the
+       subscription key.
+    2. **subscribe_progress BEFORE send.** The progress subscription
+       MUST be registered before the request is sent, or progress frames
+       arriving before the subscription resolves are lost (R122
+       contract). Rust stores the subscribe future in the stream and
+       polls it; the Python landing materialises the stream up front
+       (``await connection.subscribe_progress(call_id)``) because
+       :func:`_request_stream` takes a resolved
+       :class:`~collections.abc.AsyncIterator`, not an awaitable — the
+       async-generator body needs a live iterator, so this ``await`` is
+       the Python-faithful place to resolve Rust's deferred
+       ``subscribe_progress`` future.
+    3. **construct ToolCallParams.** ``deadline_ms`` and ``trace_context``
+       are ``None`` (the harness->service path sets no per-call deadline
+       and has no inbound trace context to forward).
+    4. **construct JsonRpcRequest.** Params are pre-serialised to their
+       wire dict (``params.to_wire()``) exactly as Rust runs
+       ``serde_json::to_value(&params)``; an encode failure (the opaque
+       ``arguments`` cannot be serialised) short-circuits to a single
+       ``Terminal`` carrying ``ToolError.custom("request_encoding", ...)``
+       so the caller still observes a well-formed ``Progress* Terminal``
+       stream rather than a panic. The request id is a fresh UUID4
+       string (Rust ``JsonRpcId::new_uuid_v7()``; Python has no v7
+       generator, so :class:`JsonRpcIdString` carries a ``uuid4`` — the
+       surface contract is "fresh unique correlation id", matching the
+       R82 / R108 v7 deferral).
+    5. **request future NOT awaited.** ``connection.request(req)`` returns
+       a coroutine that :func:`_request_stream` will
+       :func:`asyncio.ensure_future` and race against the progress
+       stream — handing the bare awaitable in mirrors Rust's
+       ``Box::pin(async move { connection.request(r).await })`` (a
+       bound-method call already captures ``connection``, so no extra
+       closure is needed).
+    6. **assemble the stream.** :func:`_request_stream` interleaves the
+       progress frames with the eventual response and yields the single
+       terminal; the returned async generator IS the forwarded call's
+       ``ToolStream``.
+
+    Why an ``async def`` (not a sync ``def`` like Rust)
+    ---------------------------------------------------
+
+    Rust's ``dispatch_via_connection`` is a sync ``fn`` returning a
+    ``BoxStream`` — it stores the subscribe future inside the stream and
+    lets ``poll_next`` drive it. Python has no poll trait, and R123's
+    :func:`_request_stream` takes a *resolved* progress iterator; so the
+    subscribe future must be resolved at assembly time, which makes the
+    assembler an ``async def``. The coroutine still resolves immediately
+    to the stream (no I/O beyond the subscribe handshake), and the
+    returned value is the same ``AsyncIterator[ToolStreamItem[...]]`` a
+    sync assembler would return — so a layer-2 caller writes
+    ``stream = await dispatch_via_connection(...)`` then ``async for``.
+
+    Private (Rust ``fn dispatch_via_connection`` is ``pub(crate)`` — only
+    the layer-2 ``RemoteToolProxy`` consumes it). The leading underscore
+    convention is NOT applied: Rust names it without one and the
+    layer-2 consumer (R125) will import it by its bare name; it is NOT
+    re-exported by the package barrel, matching the private ``RequestStream``
+    struct it assembles.
+
+    Parameters
+    ----------
+    connection:
+        The :class:`ConnectionClient` over which the request is forwarded
+        and progress subscribed.
+    tool_id:
+        The resolved tool's id (params' ``tool_id``).
+    session_id:
+        The hub session the call belongs to (request envelope's
+        ``session_id``).
+    arguments:
+        Opaque tool-input arguments, round-tripped verbatim into params.
+    ctx:
+        The per-call runtime context (``call_id`` + typed extensions).
+
+    Returns
+    -------
+    AsyncIterator[ToolStreamItem[TypedToolOutput]]
+        The interleaved progress/terminal stream (R123
+        :func:`_request_stream`), or — on params-encode failure — a
+        single-terminal stream (R109 :func:`terminal_only`).
+    """
+    # 1. ctx extension extraction (Cwd/BehaviorVersion -> params wire fields).
+    cwd_ext = ctx.get(Cwd)
+    cwd = str(cwd_ext.path) if cwd_ext is not None else None
+    bv_ext = ctx.get(BehaviorVersion)
+    behavior_version = bv_ext.version if bv_ext is not None else None
+    call_id = ctx.call_id
+
+    # 2. subscribe_progress BEFORE send (R122 contract: subscribers must
+    #    register before the request is sent or early progress frames are
+    #    lost). Resolved here so _request_stream receives a live iterator.
+    progress = await connection.subscribe_progress(call_id)
+
+    # 3. construct ToolCallParams (deadline_ms/trace_context are None on
+    #    the harness->service forwarding path).
+    params = ToolCallParams(
+        tool_call_id=call_id,
+        tool_id=tool_id,
+        arguments=arguments,
+        deadline_ms=None,
+        behavior_version=behavior_version,
+        cwd=cwd,
+        trace_context=None,
+    )
+
+    # 4. construct JsonRpcRequest; a params-encode failure short-circuits
+    #    to a single-terminal stream (Rust serde_json::to_value map_err).
+    try:
+        params_value = params.to_wire()
+    except Exception as exc:  # mirror serde_json::to_value encode error
+        return terminal_only(ToolError.custom("request_encoding", str(exc)))
+    request = JsonRpcRequest(
+        jsonrpc=JsonRpcVersion(),
+        id=JsonRpcIdString(value=str(uuid.uuid4())),
+        method=Method.ToolCallRequest.as_wire_str(),
+        params=params_value,
+        session_id=session_id,
+    )
+
+    # 5. request coroutine NOT awaited — _request_stream drives it.
+    request_fut = connection.request(request)
+
+    # 6. assemble the interleaved progress/response stream.
+    return _request_stream(tool_id, progress, request_fut)

@@ -10390,3 +10390,108 @@ try: await task except (asyncio.CancelledError, Exception): pass` ——
 ### Commit
 
 feat(platform): R123 migrate remote.rs layer-3 RequestStream Stream impl -> _request_stream async generator (asyncio.wait FIRST_COMPLETED 2-arm mux: request priority + progress backfill + progress_done short-circuit; _terminal_item helper: JsonRpcResponse->_terminal_from_response | ToolError passthrough; finally unified cancel loop silences "Task exception was never retrieved"; +12 tests -> 97 total, 6-leaf 224 passed, zero asyncio warnings)
+
+## R124 — remote.rs layer-3 dispatch_via_connection 组装层
+
+锚点:R124-1 4a4efeb
+
+### 本轮目标
+
+落地 remote.rs 的 layer-3 组装层 `dispatch_via_connection` —— 连接 R122
+`ConnectionClient` 契约与 R123 `_request_stream` 状态机的"六步组装器"。这是
+leaf 6（remote）layer 3 的最后一块拼图：把一个运行时
+`(tool_id, arguments, ctx)` 三元组提升为 `tool_call_request` JSON-RPC 信封，
+经 `ConnectionClient` 转发，并把交错的进度/响应流交回给 `_request_stream`
+驱动。完成后 layer 3（stream 机器 + 组装器）闭合，仅剩 layer 2
+（`RemoteToolProxy` / `RemoteTransport` impls）留给后续轮次。
+
+### 融合结论
+
+`dispatch_via_connection` 是 grok-build remote.rs 的 layer-3 入口函数（Rust
+`pub(crate) fn`，同步签名返回 `BoxStream`）。本轮把它的六步组装逐句迁移到
+Python，关键映射决策：
+
+- **`async def`（非 Rust 的 `sync fn`）**：R123 的 `_request_stream` 接收
+  *已解析* 的进度迭代器（`AsyncIterator`，非 `Awaitable`），
+  `subscribe_progress` 必须在组装时 `await` 解析，这让组装器本身成为
+  `async def`。协程立即解析到流（subscribe 握手之外无 I/O），返回值与 sync
+  组装器返回的 `AsyncIterator[ToolStreamItem[...]]` 同形 —— layer-2 调用方
+  写 `stream = await dispatch_via_connection(...)` 后 `async for`。
+- **第 5 步 request 协程不 await**：`request_fut = connection.request(request)`
+  返回协程但 **不 await**，交给 `_request_stream` 的 `asyncio.ensure_future`
+  驱动。这是 Rust 惰性 future 语义（`Box::pin(async move {
+  connection.request(r).await })`）的 Python 翻译：Python 协程体仅在驱动时
+  执行（见坑 1）。
+- **params 编码失败短路**：`params.to_wire()` 失败短路到单 terminal 流
+  （`terminal_only(ToolError.custom("request_encoding", ...))`），保证调用者
+  始终观测到良形的 `Progress* Terminal` 流（Rust `serde_json::to_value`
+  map_err 对齐）。
+- **request id 用 uuid4**：Rust `JsonRpcId::new_uuid_v7()`；Python 无 v7
+  生成器，延续 R82/R108 的 v7 deferral，表面契约仍是"新鲜唯一关联 id"。
+- **不加下划线前缀**：Rust `pub(crate) fn dispatch_via_connection` 无前缀，
+  R125 layer-2 消费者按裸名导入；但不在 `__all__`（与它组装的私有
+  `RequestStream` 同级私有）。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_core/remote.py`：
+  `dispatch_via_connection` async 组装器（871-1019），六步组装 + 编码失败
+  `terminal_only` 短路。消费 R108 `Cwd`/`BehaviorVersion`/`ToolCallContext`、
+  R82 `JsonRpcRequest`/`JsonRpcIdString`/`Method`/`JsonRpcVersion`、R92
+  `ToolCallParams`、R109 `terminal_only`/`ToolStreamItem`、R122
+  `ConnectionClient`、R123 `_request_stream`。
+- `agent/tests/test_computer_hub_core_remote.py`：12 个 R124 测试（形状 2 +
+  step1 ctx 投影 3 + step2 subscribe-before-send 1 + step3/4 信封形状 2 +
+  step4 编码错误 1 + step6 端到端 3），含 `_call_id` / `_session_id` /
+  `_ctx` / `_ScriptedConn` 4 个新 fixture。
+- `agent/minimax_code/computer_hub_core/__init__.py`：leaf-6 docstring 三处
+  更新，注明 R124 已落地 `dispatch_via_connection`，layer 3 闭合。
+
+### 映射决策树+坑
+
+1. **【坑·最大】Python 协程 vs Rust 惰性 future**：第 5 步
+   `request_fut = connection.request(request)` 创建协程但不 await。协程体仅
+   在 `_request_stream` 驱动它时（`asyncio.ensure_future` + `await`）执行。
+   前 6 个测试用 `await gen.aclose()` 不驱动 gen -> 请求体从不执行 ->
+   `conn.requests` 空 -> `IndexError` +
+   `RuntimeWarning: coroutine '_RecordingConnection.request' was never
+   awaited`。**修复**：所有 `aclose` 改为 `_collect(gen)`（驱动到 terminal，
+   让请求体执行）。这是正确的 Rust->Python 适配：调用方必须消费 stream，
+   正如 Rust 必须轮询 future。
+2. **【坑·时序】step6 后台解析竞争**：`test_step6_progress_backfilled_before
+   _terminal` 原用 `_resolve_after(fut, _ok_resp(), cycles=3)` 后台解析，但
+   cycles=3 + 2 帧 `sleep(0)` 在 asyncio ready-queue 交错下，response 可能在
+   第 2 帧消费前就 win（实际得 `['progress','terminal']`，这也是合法的
+   `Progress* Terminal` 形态，但非本测试意图）。**修复**：改用手动步进驱动
+   + 分阶段 resolve（先 `__anext__` drain 2 帧验证 progress，再
+   `fut.set_result`，再 `__anext__` 取 terminal，再验证 StopAsyncIteration），
+   彻底消除 sleep 时序竞争，确定性验证 `Progress* Terminal` 不变式。
+3. **subscribe-before-send**：`subscribe_progress` 必须在 `request` 发送前
+   解析（R122 契约：订阅者必须在请求发送前注册，否则早期进度帧丢失）。
+4. **`except Exception` 安全**：`params.to_wire()` 的 encode 错误用
+   `except Exception as exc`（ruff select 不含 BLE，无需 noqa）。
+
+### 验证
+
+- `ruff check`（3 文件精确作用域 `remote.py` + 测试 + `__init__.py`）：
+  **All checks passed**。
+- `pytest tests/test_computer_hub_core_remote.py`：**109 passed**（R123 时 97
+  + R124 新增 12，0.59s，0 回归）。
+- `pytest` 6 叶子全回归（transport/registry/resolver/inner/local/remote）：
+  **236 passed**（R123 时 224 + R124 新增 12，1.00s）。
+
+### YAGNI 边界
+
+- **不**实现 layer 2（`RemoteToolProxy` / `RemoteTransport` impls，消费
+  `dispatch_via_connection`，留 R125+）。本轮只落地 layer-3 组装器。
+- **不**把 `dispatch_via_connection` 加入 `__all__`（Rust `pub(crate)`；R125
+  layer-2 消费者按裸名从 `remote` 模块导入，barrel 重新导出会泄漏实现细节）。
+- **不**迁移 request id 的 uuid7（延续 R82/R108 v7 deferral）。
+- **不**修改 R122 `ConnectionClient` / R123 `_request_stream` 的任何既有行为
+  （纯新增组装层，零侵入）。
+- **不**引入新的 IPC 契约变更（`dispatch_via_connection` 是
+  computer_hub_core 内部 `pub(crate)`，不经 IPC 暴露）。
+
+### Commit
+
+feat(platform): R124 migrate remote.rs layer-3 dispatch_via_connection assembler
