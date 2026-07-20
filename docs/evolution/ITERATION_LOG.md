@@ -15120,3 +15120,77 @@ feat(platform): R180 xai-computer-hub-mcp-adapter transport.rs McpTransport asyn
 ### Commit
 
 `feat(platform): R186 xai-computer-hub-mcp-adapter lib.rs barrel-reconciliation (crate final: 10 pub use + 7 ergonomics = 17-symbol barrel, 12 tests)`
+
+## R187 — xai-grok-auth trait 契约层（visibility + auth_provider，crate 首轮开启）
+
+锚点:R187-1 9c5a7ba
+
+### 本轮目标
+
+开启 grok-build `crates/codegen/xai-grok-auth` crate（411 行/4 文件）迁移。这是**应用层认证 provider** crate，核心是**依赖倒置接缝**：在 data-collector（outbound 请求 holder）与 xai-grok-shell（凭据 implementer）之间架设 `HttpAuth` trait 抽象，使 holder 依赖 trait 而非 implementer 的具体类型。
+
+本轮迁移 crate 的 **核心 trait 契约层**（always-on 表面，125 行）：
+- `visibility.rs`（7 行）→ `HttpAuth` abc：单方法 `apply(request, base_url) -> request`，请求级认证头注入接缝。
+- `auth_provider.rs`（118 行）→ `CredentialSnapshot`（6 字段值类型）+ `AuthCredentialProvider`（HttpAuth supertrait，加 snapshot + refresh_after_unauthorized）+ `StaticAuthCredentialProvider`（测试/headless 默认实现）。
+
+二者同轮落地：三者构成一个内聚契约单元（静态 provider 同时 impl trait 与 supertrait，单独迁 visibility 会使 HttpAuth 无参考实现而悬空）。
+
+**与已迁 SDK auth.rs（R139）的层次区分**（正交，非重叠）：
+- SDK auth.rs（R139）= **连接池级**：WebSocket upgrade 时附加的凭据 + principal-key 投影用于 pool dedup（连接生命周期）。
+- grok-auth（R187）= **请求级**：每次出站 HTTP 请求的认证头注入 + per-request refresh（请求生命周期）。
+
+### 融合结论
+
+crate 选定：`xai-grok-auth` 是 codegen 目录下规模适中（411 行）且平台价值高（认证 provider 是多 provider 接入与授权管理的核心）的 crate。三个备选小 crate（auth 411 / tools-api 613 / sqlite-journal 779）中选 auth，因其在已迁移栈中的层次互补价值最高（R139 SDK auth 是连接池级，R187 补齐请求级）。
+
+叶子划分（3 轮收一个 crate，与 mcp-adapter 8 轮、sdk 46 轮的节奏按规模成比例）：
+- R187（本轮）：visibility + auth_provider（always-on trait 契约层，125 行）。
+- R188（下轮）：retry_middleware（feature-gated `middleware`，272 行，reqwest-middleware 重叶子）。
+- R189（收官）：lib.rs barrel 对账。
+
+### 交付
+
+| 文件 | 状态 | 内容 |
+|------|------|------|
+| `agent/minimax_code/grok_auth/visibility.py` | 新增 | `HttpAuth` abc.ABC，apply abstractmethod（reqwest::RequestBuilder -> httpx.Request，TYPE_CHECKING 守卫） |
+| `agent/minimax_code/grok_auth/auth_provider.py` | 新增 | `CredentialSnapshot` dataclass(repr=False) + `AuthCredentialProvider(HttpAuth, ABC)` + `StaticAuthCredentialProvider` |
+| `agent/minimax_code/grok_auth/__init__.py` | 新增 | barrel：4 always-on 符号（auth_provider 3 + visibility 1），middleware 符号延后 |
+| `agent/tests/test_grok_auth.py` | 新增 | 15 测试：抽象性 4 + snapshot 默认/redact 5 + static provider 委派/快照/refresh/默认/repr 6 |
+
+### 映射决策树 + 坑
+
+**决策 1：HttpAuth -> abc.ABC，reqwest::RequestBuilder -> httpx.Request（TYPE_CHECKING 守卫）。**
+- Rust `apply` 接受/返回 `reqwest::RequestBuilder`（builder 链式）。平台用 httpx（非 reqwest），`httpx.Request.headers` 是可变 mapping，apply 原地改 headers 后返回同一对象（模拟 builder 链式）。
+- 关键：trait 层（抽象接缝）不应硬绑具体 HTTP 客户端 —— 用 `TYPE_CHECKING` 导入 httpx，注解 `httpx.Request` 仅类型检查期解析，运行时 apply 接受任何带 `headers` mapping 的对象（鸭子类型）。忠实于 Rust crate 的依赖倒置哲学（holder 不依赖 implementer 类型 -> trait 不依赖具体客户端）。
+
+**决策 2：AuthCredentialProvider supertrait -> Python 多继承 `class AuthCredentialProvider(HttpAuth, ABC)`。**
+- Rust `trait AuthCredentialProvider: HttpAuth + Send + Sync + 'static`（supertrait）。Python `AuthCredentialProvider(HttpAuth, ABC)` —— HttpAuth 已是 ABC，多继承表达 IS-A 关系 + 显式标抽象。issubclass 验证（test_auth_credential_provider_is_a_http_auth）。
+- `async_trait` desugar -> `async def refresh_after_unauthorized`。auto 模式下 async test 无需 `@pytest.mark.asyncio`（验证通过）。
+- 默认 trait 方法（needs_token_auth_header -> True，has_usable_credential -> True）-> ABC 上的具体方法（Python ABC 方法有 body 即继承默认实现，R139 AuthCredential 同模式）。
+
+**决策 3：CredentialSnapshot -> @dataclass(repr=False) + 手写 __repr__ redact token（平台安全增强）。**
+- Rust derive(Clone, Debug, Default)，Debug 直接暴露 token。平台惯例（R139 BearerCredential repr=False / R15 出站脱敏）更严：token redact 为 `<set>`/`<none>`，其他身份字段（user_id 等）保留（非 secret，与 R139 AuthIdentity 一致）。
+- `@dataclass(repr=False)` 保留手写 __repr__（不加 repr=False 则 dataclass 自动生成覆盖手写的）。PrincipalKey（R139）同模式。
+
+**坑 1：dataclass repr 覆盖。**
+- 若 `@dataclass`（默认 repr=True），dataclass 生成的 __repr__ 会覆盖手写的，导致 token 泄露。必须 `@dataclass(repr=False)`。预判并规避（R139 已踩过此坑，复用经验）。
+
+**坑 2：async test 标记。**
+- CLAUDE.md `asyncio_mode = "auto"`，async def test 自动识别为 asyncio 测试，显式 `@pytest.mark.asyncio` 冗余（可能触发 deprecation）。test_static_provider_refresh_always_false 不加标记，验证在 auto 模式正确运行（15 passed 含此 async test）。
+
+### 验证
+
+- `uv run ruff check minimax_code/grok_auth/ tests/test_grok_auth.py` -> **All checks passed!**
+- `uv run pytest tests/test_grok_auth.py -v` -> **15 passed**（含 parametrize 展开 + 1 async test）。
+- 全套回归 `uv run pytest --tb=no -q` -> **4628 passed, 10 skipped**（零回归，新增 15 测试纳入计数）。
+
+### YAGNI 边界
+
+1. **retry_middleware（feature-gated `middleware`）延后 R188。** Rust `#[cfg(feature = "middleware")] pub mod retry_middleware`，依赖 reqwest-middleware（reqwest 的中间件层）。平台用 httpx 无直接等价（httpx 有 event_hooks / transport 层）。该叶子是 crate 的"可选增强"，非 always-on 契约，延后到平台 HTTP middleware 方案明确后单独一轮。barrel 当前 4 符号（不含 AuthRetryMiddleware），R188 落地后升至 5。
+2. **httpx.Request 运行时硬依赖。** trait 层仅 TYPE_CHECKING 注解，运行时鸭子类型 —— 不引入 `import httpx` 运行时依赖（trait 可被任何带 headers 的对象消费）。具体 implementer（ShellAuthCredentialProvider）才绑 httpx。
+3. **CredentialSnapshot redact 范围。** 只 redact token（bearer secret），user_id/team_id 等身份字段保留（非凭据，OTel user.id 归因需要可见，R139 AuthIdentity 同惯例）。
+4. **StaticAuthCredentialProvider 无 inner/bearer property。** 字段 `_inner`/`_bearer` 私有，测试通过行为验证（apply 委派、snapshot.token=bearer），不暴露 accessor（YAGNI，Rust 字段亦 private）。
+
+### Commit
+
+feat(platform): R187 xai-grok-auth trait contract layer (visibility HttpAuth + auth_provider CredentialSnapshot/AuthCredentialProvider/StaticAuthCredentialProvider, crate round 1 of 3, 15 tests)
