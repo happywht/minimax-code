@@ -80,6 +80,7 @@ from minimax_code.computer_hub_sdk.connection import (
     _ConnectionIdSlot,
     _EarlyNotifSlot,
     _HelloCaps,
+    _Interval,
     backoff_for,
     classify_stream_end,
     drain_reconnect_signals,
@@ -1423,3 +1424,79 @@ async def test_writer_exits_when_control_channel_closes() -> None:
     )
     ctl_tx.close()
     await asyncio.wait_for(writer, timeout=2.0)
+
+
+# ===========================================================================
+# _Interval (tokio::time::interval port) tests (R159, SDK leaf 18i prep --
+# run_reader_phase clock-probe timing infrastructure). _Interval exists
+# because Python's asyncio.sleep is a one-shot future: recreating it every
+# loop iteration resets the timeline and a clock_probe co-scheduled with a
+# busy inbound stream would never fire.
+# ===========================================================================
+async def test_interval_first_tick_is_immediate() -> None:
+    # Mirrors tokio::time::interval's first tick().await resolving at once.
+    interval = _Interval(0.05)
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    await interval.tick()
+    assert loop.time() - t0 < 0.01
+
+
+async def test_interval_subsequent_tick_waits_period() -> None:
+    interval = _Interval(0.05)
+    loop = asyncio.get_running_loop()
+    await interval.tick()  # immediate first tick
+    t0 = loop.time()
+    await interval.tick()
+    elapsed = loop.time() - t0
+    assert 0.05 <= elapsed < 0.08
+
+
+async def test_interval_keeps_global_timeline_across_loops() -> None:
+    # The raison d'etre of _Interval: a body taking time between ticks must
+    # NOT push the next tick out by that body time. Grid-aligned ticks keep
+    # the gap ~= period even with a body; a naive per-iteration
+    # asyncio.sleep(period) would add body on top (gap ~= period + body).
+    period = 0.04
+    body = 0.03
+    interval = _Interval(period)
+    loop = asyncio.get_running_loop()
+    await interval.tick()  # immediate first tick
+    stamps = [loop.time()]
+    for _ in range(3):
+        await asyncio.sleep(body)
+        await interval.tick()
+        stamps.append(loop.time())
+    gaps = [stamps[i + 1] - stamps[i] for i in range(len(stamps) - 1)]
+    for gap in gaps:
+        assert period * 0.8 <= gap < period + body * 0.5
+
+
+async def test_interval_missed_tick_resets_to_now() -> None:
+    # Delay semantics: if the loop is busy past the boundary, the next tick
+    # resolves immediately and last_tick snaps to now (no Burst catch-up).
+    interval = _Interval(0.05)
+    loop = asyncio.get_running_loop()
+    await interval.tick()
+    await asyncio.sleep(0.2)  # miss ~4 boundaries
+    t0 = loop.time()
+    await interval.tick()
+    elapsed = loop.time() - t0
+    assert elapsed < 0.01  # immediate (missed -> reset, not another period wait)
+
+
+async def test_interval_aligns_consecutive_ticks_to_grid() -> None:
+    # Back-to-back ticks land ~period apart on the global grid. The period is
+    # kept >= 100 ms so the Windows ~15 ms timer granularity does not wash the
+    # alignment signal out (the production probe runs at CLOCK_PROBE_INTERVAL).
+    interval = _Interval(0.1)
+    loop = asyncio.get_running_loop()
+    await interval.tick()
+    stamps = [loop.time()]
+    for _ in range(2):
+        await interval.tick()
+        stamps.append(loop.time())
+    gap0 = stamps[1] - stamps[0]
+    gap1 = stamps[2] - stamps[1]
+    assert 0.075 <= gap0 < 0.16
+    assert 0.075 <= gap1 < 0.16

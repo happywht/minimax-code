@@ -13000,3 +13000,87 @@ SDK crate 第 18 叶 18h 切片的测试收尾：补全 `run_writer`（R157 移�
 ### Commit
 
 feat(platform): R158 writer task ping cadence + resume re-arm + pause buffer + ctl-close exit tests (78 passed)
+
+
+## R159 — tokio::time::interval -> `_Interval` (SDK leaf 18i prep, run_reader_phase clock-probe timing)
+
+锚点:R159-1 581849b
+
+### 本轮目标
+
+为 `run_reader_phase`（R160 目标，Rust `connection.rs:1259-1299` 纯逻辑可测切片）的 clock
+probe（5s 周期调 `health.refresh_clock()`）铺设 Python 计时基础设施。核心难点：Rust
+`tokio::time::interval(period)` 是一个跨 loop 轮次保持全局单调时间线的周期探针；Python
+`asyncio.sleep` 是一次性 future，每轮 loop 重建会重置时间线——在 stream 繁忙（帧间隔 < 5s）
+时，`asyncio.sleep(5)` 探针被 `stream.next()` 反复抢占后重新计时，永远到不了边界，探针失效。
+本轮交付独立的 `_Interval` helper + 单元测试，解除 R160 的计时原语阻塞。
+
+### 融合结论
+
+grok `xai-computer-hub-sdk/src/connection.rs:1267` 的 `run_reader_phase` 用
+`tokio::time::interval(CLOCK_PROBE_INTERVAL)` 构造一个 5 分支 biased `select!` 中的
+`clock_probe.tick()` 分支——它的语义不是"每隔 5s 唤醒一次"（那是 `asyncio.sleep` 的语义），
+而是"在一条从首次 tick 起算的全局单调网格上，下一个落在 5s 整数倍的边界点"。两者在 stream
+空闲时等价，在 stream 繁忙时分叉：`asyncio.sleep` 每次循环重新从 0 计 5s（被抢占就前功尽弃），
+`interval` 记住上次 tick 的 `Instant`、对齐到 `last_tick + period` 网格（被抢占后下次仍落在
+全局网格上）。`_Interval` 用 `time.monotonic()`（对应 `tokio::time::Instant`）记住
+`_last_tick`，在 Python 侧复刻这条全局单调网格。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/connection.py`：
+  - import 区新增 `import time`（isort 顺序 `threading` < `time` < `weakref`；`_Interval` 引入
+    `time.monotonic()` 新依赖，此前 connection.py 仅用 `datetime` 墙钟，无 `time`）。
+  - 文件尾部新增 `_Interval` 类：`__slots__ = ("_period", "_last_tick")`，单一方法
+    `tick() -> asyncio.Future`。首次调用 `_last_tick=None` 时设为 `now` 并返回已完成 future
+    （对应 `tokio::time::interval` 首个 tick 立即返）；后续调用计算 `target = _last_tick + _period`，
+    `now >= target` 时立即返并 `_last_tick = now`（错过边界），否则返回
+    `asyncio.sleep(target - now)` 的 task 并 `_last_tick = target`（对齐网格）。
+- `agent/tests/test_connection.py`：
+  - import 区新增 `_Interval`（isort 位置 `_HelloCaps` 后、`backoff_for` 前）。
+  - 新增 5 个 module-level 测试：`test_interval_first_tick_is_immediate`、
+    `test_interval_subsequent_tick_waits_period`、
+    `test_interval_keeps_global_timeline_across_loops`（body=0.03 模拟忙循环，验证跨 loop 全局
+    网格不被重置）、`test_interval_missed_tick_resets_to_now`（错过边界 Delay 语义）、
+    `test_interval_aligns_consecutive_ticks_to_grid`（连续无 body tick 对齐网格）。
+
+### 映射决策树 + 坑
+
+- `tokio::time::interval(period)` 首个 tick 立即返 -> `_Interval.tick()` 首次分支返回已完成
+  future（不 sleep）。
+- `tokio::time::MissedTickBehavior::Delay`（interval 默认，非 `Burst`/`MarkPrev`）-> Python
+  错过边界分支 `_last_tick = now`（重置基准到当下，不追赶 Burst 连发）。`refresh_clock` 幂等，
+  补偿性连发既无价值又饿死 inbound 分支，Delay 是唯一正确语义。
+- `tokio::time::Instant`（单调时钟）-> `time.monotonic()`。**不**用 `time.time()`/`datetime`
+  墙钟——系统时间回拨（NTP、VM 暂停恢复）会破坏网格单调性。
+- **坑 1（ruff F821）**：connection.py 此前无 `import time`（`now_unix_millis` 用 `datetime`
+  墙钟），`_Interval.tick` 引入 `time.monotonic()` 后必须显式加 `import time`。isort 顺序：
+  `import threading` / `import time` / `import weakref`（`th` < `ti` < `we`）。
+- **坑 2（Windows 计时器精度）**：`test_interval_aligns_consecutive_ticks_to_grid` 初版用
+  period=0.03s，Windows 默认计时器精度 ~15.6ms，`asyncio.sleep(0.025)` 早返回一个 tick 让
+  gap1=0.015（period 的一半）——这是**平台精度问题，非 `_Interval` 逻辑缺陷**。修复：period
+  提到 0.1s + 容差 `[0.075, 0.16)`，让 Windows 15ms 抖动不冲淡对齐信号；生产用途 period=
+  `CLOCK_PROBE_INTERVAL`=5.0s，5 秒周期下 15ms 精度是 0.3% 相对误差，完全够用。
+- 测试缩进：`_Interval` 测试为 module-level `async def`（4 空格缩进），非 class 内方法。
+
+### 验证
+
+- `uv run ruff check minimax_code/computer_hub_sdk/connection.py tests/test_connection.py`
+  -> All checks passed!
+- `uv run pytest tests/test_connection.py -q` -> **83 passed**（R158 的 78 + R159 的 5 `_Interval`
+  测试），1.92s。
+
+### YAGNI 边界
+
+- `_Interval` 仅实现 `tick()`——`run_reader_phase` 的唯一调用点。不移植 tokio `interval` 的
+  `at()` / `period()` / `poll_tick()` 等未用 API。
+- `MissedTickBehavior` 不暴露为枚举参数：run_reader_phase 只用 `Delay`（tokio 默认），硬编码
+  Delay 语义，不为"未来可能切 Burst"预留参数（YAGNI）。
+- `_Interval` 不引入 `asyncio.Lock`：实例无共享可变状态跨协程（`_last_tick` 仅被单一 reader
+  task 顺序读写），单线程 asyncio 下无需锁。
+- 本轮**不**实现 `run_reader_phase` 本身（5 分支 biased select!）——那是 R160 的交付；本轮只
+  解除其计时原语阻塞。
+
+### Commit
+
+`feat(platform): R159 port tokio interval -> _Interval (SDK leaf 18i prep)`

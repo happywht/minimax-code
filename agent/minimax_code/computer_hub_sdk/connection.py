@@ -62,6 +62,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 import weakref
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -1075,3 +1076,51 @@ async def run_writer(
                 write_error.set(f"frame send failed: {exc}")
                 live = False
             continue
+
+
+# ===========================================================================
+# tokio::time::interval port (R159, SDK leaf 18i prep -- run_reader_phase
+# clock-probe timing infrastructure). Python's asyncio.sleep is a one-shot
+# future; recreating it every loop iteration resets the timeline, so a
+# clock_probe arm co-scheduled with a busy inbound stream would never fire.
+# _Interval remembers the last tick's monotonic instant and returns a future
+# that resolves at the next period boundary, preserving the global timeline
+# across loop iterations. Delay semantics: a missed tick (the loop was busy
+# past the boundary) resolves immediately and snaps last_tick to now rather
+# than Burst-catching-up -- refresh_clock is idempotent, so back-to-back
+# compensating ticks add no value and would starve the inbound arm.
+# ===========================================================================
+class _Interval:
+    """tokio::time::interval port for run_reader_phase's clock probe.
+
+    Mirrors ``tokio::time::interval(period)`` + ``tick().await``: the first
+    tick resolves immediately; subsequent ticks align to the
+    ``last_tick + period`` grid. A missed tick (the loop ran past the boundary)
+    resolves immediately and resets ``last_tick`` to now (Delay, not Burst) --
+    :meth:`ConnHealth.refresh_clock` is idempotent so compensating bursts add
+    no value and would starve the inbound stream arm.
+    """
+
+    __slots__ = ("_period", "_last_tick")
+
+    def __init__(self, period: float) -> None:
+        self._period = period
+        self._last_tick: float | None = None
+
+    def tick(self) -> asyncio.Future:
+        """Return a future resolving at the next period boundary."""
+        now = time.monotonic()
+        loop = asyncio.get_running_loop()
+        if self._last_tick is None:
+            self._last_tick = now
+            fut = loop.create_future()
+            fut.set_result(None)
+            return fut
+        target = self._last_tick + self._period
+        if now >= target:
+            self._last_tick = now
+            fut = loop.create_future()
+            fut.set_result(None)
+            return fut
+        self._last_tick = target
+        return asyncio.ensure_future(asyncio.sleep(target - now))
