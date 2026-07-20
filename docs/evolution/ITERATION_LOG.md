@@ -14512,3 +14512,123 @@ metrics cfg gate：``lib.rs`` ``#[cfg(feature = "metrics")]`` 在 Python 无等�
 
 ### Commit
 feat(platform): R178 lib.rs barrel-reconciliation SDK crate 收官 (41 symbols, 19 tests)
+
+## R179 — xai-computer-hub-mcp-adapter types.rs MCP wire 类型契约层首叶（新 crate 开篇）
+锚点:R179-1 a1998fd
+
+### 本轮目标
+
+迁移 grok-build ``xai-computer-hub-mcp-adapter/src/types.rs``（108 行）—— 5 文件小
+crate 的第 1 叶，MCP wire 类型契约层，同时建立 ``mcp_adapter`` 包骨架。``types.rs``
+承载 MCP（Model Context Protocol）JSON-RPC 的标准 wire 类型：server metadata
+（``initialize``）、tool definitions（``tools/list``）、call results（``tools/call``）、
+content-block 内部标记枚举、error union。先落地 wire 词汇，让 transport trait 与
+bridge actor 在 R180+ 消费稳定的契约；本轮不碰 transport/bridge/metrics。
+
+### 融合结论
+
+``mcp_adapter`` crate 桥接外部 MCP server 到 computer-hub 工具路由基础设施。
+``lib.rs`` 声明 4 模块（``bridge`` / ``metrics`` / ``transport`` / ``types``），依赖
+顺序 contract-before-runtime：``types``(R179) → ``transport`` trait → ``bridge``
+actor → ``metrics`` stub。``types.rs`` 是这条链的词汇奠基——它把 MCP spec 的
+JSON-RPC 形态固化为纯契约，与任何 transport 实现解耦，使 bridge 可用内存 mock 测试
+（镜像 Rust docstring）。
+
+wire 建模风格二选一：(a) ``notification.py`` 的 ``@dataclass(frozen=True)`` + 手写
+``*_from_wire``（tool_protocol 复杂 adjacent/untagged tagging 的选择）；(b)
+``config_types`` 的 pydantic v2 ``BaseModel`` + ``Field(alias=...)`` +
+``populate_by_name=True``（序列化层）。本轮选 (b)，因为 ``types.rs`` 是 MCP **标准
+wire**（serde 双向 JSON 往返 + camelCase rename + 内部标记枚举 ``tag="type"``），
+pydantic 原生 ``Field(discriminator="type")`` + ``populate_by_name`` 是教科书匹配，
+免去手写往返 helper。
+
+### 交付
+
+* ``agent/minimax_code/mcp_adapter/__init__.py``（新）：包骨架。docstring 含 crate
+  定位 + 架构图（MCP Server ↔ McpTransport ↔ McpBridge ↔ ToolServerBuilder）+
+  依赖映射（消费 tool_protocol R82-R106 / tool_runtime R107-R114 / tool_types R65 /
+  computer_hub_sdk R133-R178）+ leaf order（types→transport→bridge→metrics）+ 建模
+  说明（为何选 pydantic 而非 dataclass+from_wire）。部分桶导入 12 符号 + ``__all__``
+  + ledger（types R179 landed；transport/bridge/metrics/barrel-reconciliation 延后
+  R180+）。
+* ``agent/minimax_code/mcp_adapter/types.py``（新，108 行 Rust → 239 行 Python）：
+  - ``McpServerInfo``（name/version/capabilities:``Any``=None，``#[serde(default)]``）。
+  - ``McpToolDefinition``（name/description:``str|None``/input_schema:``Any`` alias
+    ``inputSchema``，``rename_all="camelCase"``）。
+  - ``McpTextContent`` / ``McpImageContent`` / ``McpResourceContent`` 三个变体，
+    各带 ``type: Literal[...]`` 判别字段；Image/Resource 的 ``mime_type`` alias
+    ``mimeType``。
+  - ``McpContent`` = ``Annotated[McpTextContent | McpImageContent | McpResourceContent,
+    Field(discriminator="type")]``（Rust ``#[serde(tag="type")] enum`` 等价）。
+  - ``McpCallResult``（content:``list[McpContent]``=default_factory / is_error:``bool``
+    alias ``isError``）。
+  - ``McpError`` 基类 + 4 子类（``McpTransportError`` / ``McpProtocolError`` /
+    ``McpTimeoutError`` / ``McpDecodeError``），每子类 ``__init__`` 格式化 Rust
+    ``#[error(...)]`` 模板到 ``args[0]``。
+* ``agent/tests/test_mcp_adapter_types.py``（新，19 测试，4 类不变量）：camelCase
+  往返 / ``#[serde(default)]`` 默认值 / discriminated union 按 ``type`` 路由 + 未知
+  tag 拒绝 / error union 格式化 + ``isinstance`` 基类 + ``except McpError`` 全捕获。
+
+### 映射决策树 + 坑
+
+1. ``#[serde(rename_all = "camelCase")]`` → pydantic ``Field(alias="inputSchema" /
+   "isError" / "mimeType")`` + ``ConfigDict(populate_by_name=True)`` —— 双向接受
+   camelCase wire 名与 snake_case Python 属性；``model_dump(by_alias=True)`` /
+   ``model_dump_json(by_alias=True)`` 发回 camelCase（测试往返断言）。
+2. ``#[serde(default)]`` → pydantic 默认值（``capabilities: Any = None`` /
+   ``description: str | None = None`` / ``content = Field(default_factory=list)`` /
+   ``is_error = Field(default=False, alias="isError")``）。``serde_json::Value`` 缺省
+   ``Value::Null`` → Python ``None``，测试 ``test_server_info_defaults_*`` 锁定。
+3. ``serde_json::Value``（任意 JSON）→ ``Any``（pydantic v2 宽松验证，忠实于 Value 的
+   any-type 接受）。测试 ``test_server_info_preserves_arbitrary_capabilities_json``
+   喂嵌套 dict 断言原样保留。
+4. ``enum McpContent`` ``#[serde(tag = "type", rename_all = "camelCase")]`` →
+   ``Annotated[McpTextContent | McpImageContent | McpResourceContent,
+   Field(discriminator="type")]``，每变体带 ``type: Literal["text"|"image"|"resource"]``
+   判别字段。pydantic 原生内部标记联合 = serde ``tag="type"`` 的直接等价。测试
+   ``test_call_result_routes_content_variants_by_type_tag`` 用 ``isinstance`` 断言三变体
+   各自路由正确。
+5. 前向兼容：未知 ``type`` tag（如 ``"audio"``）必须 raise 而非静默丢弃 —— 测试
+   ``test_unknown_content_type_tag_is_rejected`` 用 ``pytest.raises(ValidationError)``
+   锁定（pydantic discriminator 原生拒绝非 Literal 值）。
+6. ``enum McpError``（``thiserror::Error``）→ ``McpError``(base ``Exception``) + 4
+   子类。每子类 ``__init__`` 把 Rust ``#[error("transport error: {0}")]`` 模板格式化
+   到 ``args[0]``，使 ``str(err)`` 匹配 Rust ``Display``。``isinstance`` 替代 Rust
+   ``match``，``except McpError`` 捕获全部（Rust 枚举判别等价）。
+7. ``i64`` 错误码 → Python ``int``（无界，i64 超集）。
+8. **UP007 坑（已修）**：初稿写 ``Annotated[Union[A,B,C], Field(...)]`` 触发 UP007
+   （``from __future__ import annotations`` 下要求 ``X | Y``）—— 改 ``A | B | C`` +
+   从 ``typing`` 移除 ``Union``。pydantic v2 接受 ``types.UnionType`` 作 Annotated
+   第一参数 + discriminator。
+9. **I001 坑（ruff 自动修复）**：test 文件导入块初稿多行括号格式不符 isort 规范 ——
+   ``ruff check --fix``（限定单文件）规范化括号内逐行展开，零噪声外溢。
+10. **McpTimeoutError 命名避坑**：不命名 ``McpTimeout``，因 UP041 偏好内置
+    ``TimeoutError`` 作通用超时；加 ``Error`` 后缀既避免遮蔽内置又保留 MCP 特化语义。
+11. **ASCII 安全提交信息**：``feat(platform): R179 ...`` 用连字符而非 Unicode 箭头，
+    规避 Windows 终端编码坑。
+
+### 验证
+
+* ``uv run ruff check minimax_code/mcp_adapter/types.py
+  minimax_code/mcp_adapter/__init__.py tests/test_mcp_adapter_types.py`` →
+  ``All checks passed!``（UP007 手修 + I001 自动修复后洁净）。
+* ``uv run pytest tests/test_mcp_adapter_types.py -v`` → **19 passed**（0.23s）。
+* 回归 ``uv run pytest tests/test_mcp_adapter_types.py tests/test_init_barrel.py -v``
+  → **38 passed**（0.52s）；R178 barrel 19 测试零回归（新 crate 开篇不碰 SDK crate）。
+
+### YAGNI 边界
+
+``lib.rs`` 声明的其余 3 模块与最终 barrel-reconciliation 轮次延后 R180+：
+- ``transport.rs`` ``McpTransport`` trait —— wire 抽象层（stdio/SSE/HTTP+SSE 具体传输
+  由下游消费者提供），下一候选叶。
+- ``bridge.rs`` ``McpBridge`` / ``McpBridgeConfig`` / ``McpBridgeHandle`` /
+  ``McpToolHandler`` —— 连接 MCP server、发现工具、产出注册到 hub
+  ``ToolServerBuilder`` 的 handler 的 actor。
+- ``metrics.rs``（``pub(crate)``）—— crate 内部 metrics 桩。
+- 最终 barrel-reconciliation 轮：对齐 ``lib.rs`` 的 ``pub use`` re-export 表面（5
+  ``pub use`` 符号：``McpBridge`` / ``McpBridgeConfig`` / ``McpBridgeHandle`` /
+  ``McpToolHandler`` / ``McpTransport`` + types 5 符号），在每叶落地后进行。
+
+### Commit
+
+feat(platform): R179 xai-computer-hub-mcp-adapter types.rs MCP wire 类型契约层首叶 (pydantic v2, 19 tests)
