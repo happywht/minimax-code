@@ -11856,3 +11856,58 @@ ruff 零手动修复、零自动修复。pytest 8/8 通过，含 8448 次 cancel
 ### Commit
 
 （提交后补哈希）
+
+## R142 — 迁移 xai-computer-hub-sdk admission.rs -> computer_hub_sdk/admission.py
+
+锚点:R142-1 6c8e3c5
+
+### 本轮目标
+
+迁移 `xai-computer-hub-sdk/src/admission.rs`（333 行）-> `computer_hub_sdk/admission.py`。SDK crate 第 10 个叶子（继 R133 error / R134 handshake / R135 refcount / R136 donate_pump / R137 trace_donate / R138 connection_borrow / R139 auth / R140 observability / R141 cancel 之后）。中等复杂度叶子（非纯数据结构）—— 三层信号量准入控制 + bounded-wait 背压 + YAGNI 边界拆分。
+
+**MIGRATED**：5 个默认常量（TOOL_BUSY_CODE/MESSAGE + 3 个 max_inflight + wait_timeout）+ SCOPES/ENV + `Overloaded` 枚举（Timeout/Shutdown）+ `resolve_global_cap` 纯函数（fall-back-never-panic）+ `overloaded_response`（消费 R84 envelope wire 类型，`-32016` "tool_busy" 单一来源）+ `_ClosableSemaphore`（close + deadline acquire，因为 asyncio.Semaphore 无 close 语义，需轻量包装以保真 Shutdown 路径 + 测试 6）+ `AdmitGuard`（持有 3 permit + 显式 release() 逆序）+ `Admission`（new/ensure_session/remove_session/admit 三层共享 deadline）+ `_acquire_until` helper + `global_semaphore` 进程单例（env 覆盖）。
+
+**NOT MIGRATED**：`crate::metrics::tool_call_inflight_inc/dec` + `admission_wait_observe` -> 3 个 no-op stubs（metrics.rs 552 行未迁移，R140 已建立此 YAGNI 模式，签名保留以便 metrics 叶子替换 body 而不动 call site）。
+
+### 融合结论
+
+admission 是 SDK crate 的**背压枢纽**：在 session -> connection -> global 三层 scope 上固定获取顺序（most-local-first 无死锁），单一共享 deadline 跨越三次获取使总准入延迟有界于 `wait_timeout` 而非 `3 x wait_timeout`。中等压力下 `admit` 等待；极高压力下 deadline 到期，调用方发射共享 overloaded JSON-RPC 错误（`-32016` "tool_busy"）而非静默丢弃。
+
+与 MiniMax Code 的融合点：`overloaded_response` 的 `-32016` 与 `xai-tool-protocol error_codes.rs`（R82 迁移）的 `ERROR_CODES` 元组第 72 行 `(-32016, "tool_busy")` 单一对齐；wire 形态由 R84 envelope `JsonRpcResponse.err` 构造，确保 admission-timeout 路径（`server::execute_call`）与 demux inbox-full 路径（`demux::route_session`）共用同一来源、永不漂移。`global_semaphore` 进程单例与 Helm `env:` 覆盖对齐运维侧可调。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/admission.py`（416 行）：5 常量 + SCOPES + 3 metrics stubs + `_ClosableSemaphore`（close/acquire/release）+ `overloaded_response` + `resolve_global_cap` + `_GLOBAL_SEM` 单例 + `global_semaphore` + `Overloaded` StrEnum + `AdmitGuard`（release 逆序）+ `_acquire_until`（共享 deadline）+ `Admission`（ensure_session/remove_session/admit + straggler 私有 fallback + 失败 rollback）。
+- `agent/tests/test_admission.py`（172 行）：7 个测试 1:1 移植自 Rust。`_sid`/`_test_admission` 助手（50ms 真实超时替代 start_paused）。覆盖：resolve_global_cap 8 断言（含 "  7" 前导空格 -> 1024 严格解析）+ overloaded_response wire shape（-32016/tool_busy/retryable/session_id/id/no-result）+ session 饱和 Timeout + connection 跨 session 绑定 Timeout + 容量内重复成功 + closed semaphore -> Shutdown + straggler 私有 fallback 不泄漏 tracked entry。
+
+### 映射决策树+坑
+
+1. **asyncio.Semaphore 无 close()** -> 自实现 `_ClosableSemaphore`（约 50 行）：while 循环重检查（release 唤醒重检查 value；close 唤醒重检查 closed 返回 False）。close 设置 `_closed=True` + 唤醒所有 waiter（`set_result(None)` 仅信号"recheck"，waiter 重新循环检查 closed 返回 False）。release 递增 value + 唤醒一个 waiter。close 后 release no-op（Rust 语义）。单线程 asyncio 无需内部锁，唯一 await 点是 per-waiter future。
+2. **resolve_global_cap 严格解析坑**：Rust `usize::from_str` 严格（无前导/尾随空格、无符号）。Python `int()` 容忍 `"  7"`（返回 7）和 `"+7"`。测试 1 断言 `resolve_global_cap("  7", 1024) == 1024`（前导空格 -> 解析失败 -> default）。解法：`raw.isdigit() + raw.isascii()` 双重门控，精确复现 Rust 严格语义（且拒绝 Unicode 数字）。"0" -> isdigit True 但 n<=0 -> default；"-5"/"abc"/"" -> isdigit False -> default；"2048"/"1" -> 通过。
+3. **OwnedSemaphorePermit RAII drop -> 显式 release()**：Python 无 drop，`AdmitGuard.release()` 幂等，逆序释放 global -> conn -> session（稀缺 local permit 最后释放）。调用方在 finally 块释放。
+4. **admit 失败 rollback**：Rust 用 `?` 传播错误，已获取的 permit 在错误路径 drop 自动释放。Python 必须手动 rollback —— conn 获取失败时 `session_sem.release()`；global 获取失败时 `session_sem.release() + conn_sem.release()`。
+5. **start_paused 时间冻结 -> 真实短超时**：Rust `#[tokio::test(start_paused = true)]` 冻结虚拟时间在 150ms deadline；Python 无法冻结事件循环，测试用真实 50ms `wait_timeout`（`asyncio.wait_for`）。饱和/超时语义相同，只是 wall-clock 而非 virtual。
+6. **共享 deadline**：`time.monotonic()` 计算 deadline = start + wait_timeout，三次 `_acquire_until` 共用同一 deadline，总延迟有界于 wait_timeout 而非 3x。`_acquire_until` 返回 `Overloaded | None`（None=成功）。
+7. **straggler fallback**：admit 时若 session 不在 `_session_sems`（unbind 后的迟到调用），用私有 `_ClosableSemaphore(session_max)` fallback，不创建 tracked entry（避免泄漏）。测试 7 验证 `session not in admission._session_sems`。
+8. **global_semaphore 进程单例**：Rust `OnceLock<Arc<Semaphore>>` -> Python 模块级 `_GLOBAL_SEM: Optional`（asyncio 单线程，首次 read+init 原子，无需锁）。首次调用的 default_cap + 当时的 env var 固定进程级容量。
+9. **UP041 ruff autofix**：`except asyncio.TimeoutError` -> `except TimeoutError`（Python 3.11+ asyncio.TimeoutError 是 TimeoutError 别名，ruff UP041 偏好 builtin）。asyncio.wait_for 超时抛 TimeoutError，捕获正确。
+10. **I001 import 排序**：test 文件 `_ClosableSemaphore` 带下划线前缀触发 isort 重排，ruff --fix 自动处理。
+
+### 验证
+
+- `uv run ruff check admission.py test_admission.py`：初次 2 错误（UP041 + I001），`--fix` 后 **All checks passed!**（2 autofix，0 remaining）。
+- `uv run pytest tests/test_admission.py -v`：**7 passed in 0.37s**（含 2 个真实 50ms 超时测试 + 1 个 closed sem Shutdown + 1 个 straggler fallback，总耗时 < 0.5s）。
+- 排除文件契约：10 个排除文件保持 `??`（admission.py/test_admission.py 是本轮新增，精确 git add 仅 3 文件）。
+
+### YAGNI 边界
+
+**NOT MIGRATED（3 项 no-op stubs，签名保留）**：
+- `_metrics_tool_call_inflight_inc(scope)` / `_metrics_tool_call_inflight_dec(scope)` / `_metrics_admission_wait_observe(elapsed_seconds)` -> 全部 `return None`。对应 Rust `crate::metrics::tool_call_inflight_inc/dec` + `admission_wait_observe`（inflight gauge + admission-wait 直方图），定义在 metrics.rs（552 行，后续叶子）。R140 已为 `session_event` 建立此模式：metrics 叶子落地时替换 body 而不动 `Admission.admit` / `AdmitGuard.release` 的 call site。
+
+**MIGRATED 语义保真项（无行为变更）**：
+- `_ClosableSemaphore.register` 的 Rust 双重检查 closed（R141 模式）在此不适用（admission 的 closed 是 sem 级，acquire while 循环已天然重检查）。
+- `Overloaded` 用 StrEnum（R140/R141 已建立），支持 == 比较 + 直接匹配 Rust `unwrap_err() == Overloaded::Timeout`。
+
+### Commit
+
+feat(platform): R142 migrate xai-computer-hub-sdk admission.rs -> computer_hub_sdk/admission.py
