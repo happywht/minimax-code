@@ -14360,3 +14360,106 @@ internally-tagged enum），所以 Rust 的 `match` 自然退化成 `if/elif` �
 ### Commit
 
 `feat(platform): R176 port server.rs embedded pure converters (parse_tool_call_id + progress_to_frame)`
+
+## R177 — server.rs build_error_response 失败调用错误信封（解除 R176 YAGNI 延后）
+
+锚点:R177-1 368da9d
+
+### 本轮目标
+
+迁移 ``server.rs`` 第三页纯叶子 ``build_error_response``（``server.rs`` 2276-2289）。
+R176 的 ITERATION_LOG 曾保守声明此函数 "延迟到 error-wire 轮次"，理由是
+其依赖（``from_tool_error_wire`` + ``ToolError.to_wire``）尚未落地。本轮侦察
+确认这两块地基**早已就位**——``from_tool_error_wire`` 在 R83 回填
+（``error_codes.py:140``），``From<ToolError> for ToolErrorWire`` 桥接已实现为
+``ToolError.to_wire()``（R107 的 ``error.py:429``）。本轮目标：解除 YAGNI 延后，
+补齐 ``server.rs`` 三个纯叶子中的最后一个，让失败调用的完整 ``ToolError`` 以
+可解码的 ``ToolErrorWire`` 形态留在 ``error.data``（而非塌缩成裸 ``-32603`` 字符串）。
+
+### 融合结论
+
+``build_error_response`` 是一个**单一纯函数**，无外部依赖、无 actor 状态、无
+asyncio——完美的 ``server.rs`` 纯叶子迁移对象。它把 ``ToolError``（runtime 契约）
+投影成 ``JsonRpcResponse``（wire 信封）的错误分支，链路四步：
+
+``err.to_string()`` → ``str(err)``（== ``detail``，模型可见消息）；
+``ToolErrorWire::from(err)`` → ``err.to_wire()``（R107 桥接）；
+``error_codes::from_tool_error_wire(&wire)`` → ``from_tool_error_wire(wire)``（R83 回填）；
+``serde_json::to_value(&wire).ok()`` → ``wire.to_wire()`` 包在 try/except 里。
+
+这是 ``tool_runtime``（错误来源）→ ``tool_protocol``（wire 形态 + 数字码）→
+``computer_hub_sdk``（信封组装）三模块的**闭环消费点**——前 70 轮的类型层
+投资在此处兑现为一条 14 行的 Python 函数。
+
+### 交付
+
+* ``agent/minimax_code/computer_hub_sdk/server.py``：
+  - 新增 ``build_error_response(id_, session_id, err) -> JsonRpcResponse``（321-369）。
+  - 导入块补 ``JsonRpcResponse``（ruff 数据驱动捕获的遗漏——F821 未定义名称）。
+  - ``__all__`` 按 b<j 字母位插入 ``build_error_response``。
+  - 模块 docstring 标题升级 ``R175`` → ``R175-R177``，新增第三个叶子节点描述块，
+    符号列表补 ``build_error_response`` 条目，YAGNI 边界段落清理过时延迟说明。
+* ``agent/tests/test_server.py``：
+  - 新增 13 个 ``build_error_response`` 保真度测试（覆盖 8 个 kind 映射 + id/session
+    透传 + message==detail 非 wire Display + outcome error arm + round-trip + jsonrpc 版本）。
+  - 文件 docstring 标题升级 ``R175`` → ``R175-R177``，补 ``parse_tool_call_id`` /
+    ``progress_to_frame`` / ``build_error_response`` 三条目。
+  - 导入块扩展：server 加 ``build_error_response``，envelope 加 ``JsonRpcIdString``
+    / ``JsonRpcResponse``，ids 加 ``SessionId`` / ``ToolId``，新增
+    ``error_wire.from_wire`` + ``tool_runtime.error.ToolError``。
+
+### 映射决策树 + 坑
+
+* **数字码记忆陷阱（关键修正）**：上一轮总结里记 ``custom → -32003`` 是**错的**。
+  本轮读 ``error_codes.py`` 的 ``_VARIANT_CODE_TO_NUMERIC`` 字典确认：
+  ``custom`` 实为 **-32603**（与 ``internal_error`` fold 一致）。
+  ``cancelled`` / ``execution`` / ``custom`` 三者全部 fold 到 -32603。
+  测试断言必须用 -32603 而非 -32003——不靠记忆、读源码确认是工程师严谨的铁律。
+* **数字码全表（数据驱动确认）**：invalid_arguments→-32602, not_found→-32011,
+  permission_denied→-32003, timeout→-32001, cancelled→-32603, execution→-32603,
+  terminal_error→-32024, custom→-32603。
+* **elapsed_ms=0 保留（to_wire 关键语义）**：``_ToolErrorWireBase.to_wire()``
+  循环里 ``if v is None: continue``——**只跳 None，0 是合法值必须保留**。
+  ``TimeoutWire.elapsed_ms`` 默认 0，若误用 ``if not v`` 会把 0 误删。
+  测试断言 ``{"code":"timeout","tool_id":"tool-9","elapsed_ms":0}`` 精确捕获此语义。
+* **ToolId 是 transparent str newtype**：``to_wire()`` 直接 ``getattr`` 返回
+  ``ToolId`` 实例（str 子类），dict ``==`` 比较中等同于裸字符串
+  （``{"tool_id": ToolId("x")} == {"tool_id": "x"}`` 为 True），无需 str() 转换。
+* **静默 flatten（与 R176 不对称）**：Rust ``serde_json::to_value(&wire).ok()``
+  在 ``build_error_response`` 里**无 ``warn!``**，与 R176 ``progress_to_frame``
+  content 分支（有 ``warn!``）不同。Python 端口用裸 ``except Exception: data = None``
+  无 ``_log.warning``——保真度优先于对称性。
+* **message = detail 非 wire Display**：``err.to_string()`` 映射到
+  ``ToolError.__str__`` == ``detail``（模型可见的工具作者消息），**不是** wire
+  变体的 Display string（如 ``ToolNotFound.__str__`` = ``"tool not found: tool-7"``）。
+  测试 ``test_build_error_response_message_is_detail_not_wire_display`` 显式断言
+  ``message != str(err.to_wire())``。
+* **ruff F821 数据驱动捕获**：第一次写导入块漏了 ``JsonRpcResponse``（只加
+  ``JsonRpcError``/``JsonRpcId``），ruff 立刻报 ``F821`` undefined name。
+  第二次 ``ToolErrorKind`` 导入未用，ruff 报 ``F401``。两次都是 ruff 抓真 bug——
+  lint 不是仪式，是第二双眼睛。
+* **ASCII 安全提交信息**：``feat(platform): R177 ...`` 使用连字符 / ``->`` / ``+``
+  而非 Unicode 箭头，规避 Windows 终端编码坑。
+
+### 验证
+
+* ``uv run ruff check minimax_code/computer_hub_sdk/server.py tests/test_server.py``
+  → ``All checks passed!``（含 F811/F401 两次自纠后洁净）。
+* ``uv run pytest tests/test_server.py -q`` → **59 passed**（R176 的 46 + R177 的 13）。
+* 回归 ``uv run pytest tests/test_harness_actor.py -q`` → **65 passed**
+  （R177 不碰 harness_actor，零破坏）。
+
+### YAGNI 边界
+
+``server.rs`` 的纯叶子三连（R175 类型前导 + R176 两个转换 helper + R177 错误
+信封）已全部闭合。剩余的 ``server.rs`` 主体（``ToolServer`` actor、
+``ToolServerBuilder``、``ToolServerInner``、per-session inbox 调度器、
+``handle_notification`` / ``execute_call`` / ``run_session_loop`` / ``send_overloaded``）
+绑定实时 xAI ``HubConnection`` socket 协议；MiniMax 无此类消费者，这些叶子在
+YAGNI 下保持延后，直到某个 MiniMax transport 需要它们。``SESSION_INBOX_BUFFER``
+常量与 ``SessionHandlerMap`` / ``SessionHandlerResolver`` 类型别名属于该 actor，
+随它迁移，不随本层。``lib.rs``（71 行 barrel）作为 SDK crate 收尾是下一个候选叶。
+
+### Commit
+
+``feat(platform): R177 server.rs build_error_response 失败调用错误信封 (13 tests)``

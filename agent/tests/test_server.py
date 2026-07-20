@@ -1,4 +1,4 @@
-"""Tests for ``computer_hub_sdk.server`` preamble (R175, server.rs leaf 1).
+"""Tests for ``computer_hub_sdk.server`` pure-logic leaves (R175-R177).
 
 Covers the pure-logic / type-contract surface of the ``server.rs`` port
 that sits ahead of the live ``ToolServer`` actor:
@@ -13,6 +13,15 @@ that sits ahead of the live ``ToolServer`` actor:
   success arm, the bare ``-32601 method_not_found`` (no ``data``) lift to
   ``ForwardingUnsupported``, the load-bearing ``data`` guard, and the
   fall-through to :meth:`ClientError.from_jsonrpc_error`.
+* :func:`parse_tool_call_id` — the JSON-pointer walk + ``serde from_value
+  .ok()`` flattening of missing / non-string / empty id into ``None``.
+* :func:`progress_to_frame` — the three-arm ``ToolProgress`` -> wire frame
+  shaper (text / content / custom), plus the serialisation-failure warn
+  fallback.
+* :func:`build_error_response` — the failed-call error envelope: the full
+  :class:`ToolError` is preserved as a decodable ``ToolErrorWire`` in
+  ``error.data`` plus the matching numeric code, with the ``detail`` string
+  (not the wire Display string) as the model-facing message.
 
 The actor body (``ToolServer`` / ``ToolServerBuilder`` / inbox dispatcher)
 is bound to the live xAI socket protocol and is out of scope here.
@@ -30,14 +39,23 @@ from minimax_code.computer_hub_sdk.error import AuthError, ClientError, SerdeErr
 from minimax_code.computer_hub_sdk.server import (
     ReconnectSettledCallback,
     SystemNotifyAck,
+    build_error_response,
     json_serialized_len,
     parse_tool_call_id,
     progress_to_frame,
     system_notify_ack_from_outcome,
 )
-from minimax_code.tool_protocol.envelope import JsonRpcError, ResponseError, ResponseResult
+from minimax_code.tool_protocol.envelope import (
+    JsonRpcError,
+    JsonRpcIdString,
+    JsonRpcResponse,
+    ResponseError,
+    ResponseResult,
+)
+from minimax_code.tool_protocol.error_wire import from_wire
 from minimax_code.tool_protocol.frames import ToolCallProgressFrame
-from minimax_code.tool_protocol.ids import IdError, ToolCallId
+from minimax_code.tool_protocol.ids import IdError, SessionId, ToolCallId, ToolId
+from minimax_code.tool_runtime.error import ToolError
 from minimax_code.tool_runtime.tool import ContentBlock, ToolProgress
 
 
@@ -407,3 +425,148 @@ def test_progress_to_frame_content_serialization_failure_falls_back_to_null(monk
     assert frame.kind == "content"
     assert frame.body is None  # Value::default() == Value::Null
     assert any("failed to serialize" in rec.message for rec in caplog.records)
+
+
+# ===========================================================================
+# build_error_response — ToolError -> JsonRpcResponse error envelope (R177).
+#
+# Mirrors ``build_error_response(id, session_id, err) -> JsonRpcResponse``: the
+# full ToolError rides in ``error.data`` as a decodable ToolErrorWire (via
+# ToolError.to_wire -> ToolErrorWire.to_wire), the numeric code comes from
+# from_tool_error_wire(wire), and the message is ``err.to_string()`` == detail.
+# ===========================================================================
+def test_build_error_response_invalid_arguments_maps_to_invalid_params():
+    """INVALID_ARGUMENTS -> InvalidArgumentsWire (tag invalid_params) -> -32602."""
+    err = ToolError.invalid_arguments("bad args")
+    resp = build_error_response(JsonRpcIdString.new_string("r1"), SessionId("s1"), err)
+    assert isinstance(resp, JsonRpcResponse)
+    assert resp.outcome.error.code == -32602
+    assert resp.outcome.error.message == "bad args"
+    assert resp.outcome.error.data == {"code": "invalid_params", "message": "bad args"}
+
+
+def test_build_error_response_not_found_maps_to_tool_not_found():
+    """NOT_FOUND -> ToolNotFoundWire (tag tool_not_found) -> -32011."""
+    err = ToolError.not_found(ToolId("tool-7"), "no such tool")
+    resp = build_error_response(JsonRpcIdString.new_string("r1"), SessionId("s1"), err)
+    assert resp.outcome.error.code == -32011
+    assert resp.outcome.error.data == {"code": "tool_not_found", "tool_id": "tool-7"}
+
+
+def test_build_error_response_permission_denied_maps_to_forbidden():
+    """PERMISSION_DENIED -> PermissionDeniedWire (tag forbidden) -> -32003."""
+    err = ToolError.permission_denied("missing scope")
+    resp = build_error_response(JsonRpcIdString.new_string("r1"), SessionId("s1"), err)
+    assert resp.outcome.error.code == -32003
+    assert resp.outcome.error.data == {"code": "forbidden", "reason": "missing scope"}
+
+
+def test_build_error_response_timeout_maps_to_timeout():
+    """TIMEOUT -> TimeoutWire (tag timeout) -> -32001; elapsed_ms defaults to 0."""
+    err = ToolError.timeout(ToolId("tool-9"), "ran out of time")
+    resp = build_error_response(JsonRpcIdString.new_string("r1"), SessionId("s1"), err)
+    assert resp.outcome.error.code == -32001
+    assert resp.outcome.error.data == {
+        "code": "timeout",
+        "tool_id": "tool-9",
+        "elapsed_ms": 0,
+    }
+
+
+def test_build_error_response_cancelled_folds_to_internal_error_numeric():
+    """CANCELLED -> CancelledWire, whose numeric folds onto -32603 (internal_error).
+
+    The numeric folds: cancelled / execution / internal / custom all share
+    -32603; the string ``code`` discriminator is the stable identifier, not
+    the numeric (hence the decoder reads ``data['code']``)."""
+    err = ToolError.cancelled(ToolId("tool-3"), "user cancelled")
+    resp = build_error_response(JsonRpcIdString.new_string("r1"), SessionId("s1"), err)
+    assert resp.outcome.error.code == -32603
+    assert resp.outcome.error.data == {"code": "cancelled", "tool_id": "tool-3"}
+
+
+def test_build_error_response_execution_folds_to_internal_error_numeric():
+    """EXECUTION -> ExecutionWire; numeric folds onto -32603."""
+    err = ToolError.execution(ToolId("tool-4"), "boom")
+    resp = build_error_response(JsonRpcIdString.new_string("r1"), SessionId("s1"), err)
+    assert resp.outcome.error.code == -32603
+    assert resp.outcome.error.data == {
+        "code": "execution",
+        "tool_id": "tool-4",
+        "message": "boom",
+    }
+
+
+def test_build_error_response_terminal_error_maps_to_terminal_error():
+    """TERMINAL_ERROR -> TerminalErrorWire (tag terminal_error) -> -32024."""
+    err = ToolError.terminal_error(ToolId("tool-5"), "subprocess died")
+    resp = build_error_response(JsonRpcIdString.new_string("r1"), SessionId("s1"), err)
+    assert resp.outcome.error.code == -32024
+    assert resp.outcome.error.data == {
+        "code": "terminal_error",
+        "tool_id": "tool-5",
+        "message": "subprocess died",
+    }
+
+
+def test_build_error_response_custom_folds_and_carries_subcode():
+    """CUSTOM -> CustomWire (tag custom); numeric folds onto -32603; subcode rides."""
+    err = ToolError.custom("my_code", "special failure")
+    resp = build_error_response(JsonRpcIdString.new_string("r1"), SessionId("s1"), err)
+    assert resp.outcome.error.code == -32603
+    assert resp.outcome.error.data == {
+        "code": "custom",
+        "subcode": "my_code",
+        "message": "special failure",
+        "details": {"code": "my_code"},
+    }
+
+
+def test_build_error_response_passes_through_id_and_session():
+    """id and session_id flow through to the envelope verbatim."""
+    id_ = JsonRpcIdString.new_string("req-xyz")
+    session_id = SessionId("sess-42")
+    err = ToolError.invalid_arguments("x")
+    resp = build_error_response(id_, session_id, err)
+    assert resp.id is id_
+    assert resp.session_id == session_id
+
+
+def test_build_error_response_message_is_detail_not_wire_display():
+    """``err.to_string()`` maps to ``ToolError.__str__`` == detail, NOT the wire
+    Display string (which would be ``'tool not found: tool-7'`` for
+    ToolNotFound). The model-facing message is the tool author's detail."""
+    err = ToolError.not_found(ToolId("tool-7"), "my custom detail text")
+    resp = build_error_response(JsonRpcIdString.new_string("r1"), SessionId("s1"), err)
+    assert resp.outcome.error.message == "my custom detail text"
+    # And it is NOT the wire variant's __str__ Display form.
+    assert resp.outcome.error.message != str(err.to_wire())
+
+
+def test_build_error_response_outcome_is_error_arm():
+    """The outcome is ``ResponseOutcome::Error`` (not Result); the error is a JsonRpcError."""
+    err = ToolError.execution(ToolId("t"), "x")
+    resp = build_error_response(JsonRpcIdString.new_string("r1"), SessionId("s1"), err)
+    assert isinstance(resp.outcome, ResponseError)
+    assert isinstance(resp.outcome.error, JsonRpcError)
+
+
+def test_build_error_response_data_round_trips_through_from_wire():
+    """``error.data`` is a decodable ToolErrorWire: from_wire recovers the
+    variant, proving the harness can switch on ``data['code']`` rather than
+    collapse to a bare -32603 string."""
+    err = ToolError.timeout(ToolId("tool-rt"), "timed out")
+    resp = build_error_response(JsonRpcIdString.new_string("r1"), SessionId("s1"), err)
+    decoded = from_wire(resp.outcome.error.data)
+    assert decoded.code == "timeout"
+    assert decoded.tool_id == ToolId("tool-rt")
+    assert decoded.elapsed_ms == 0
+
+
+def test_build_error_response_jsonrpc_version_pinned_to_2_0():
+    """The err() classmethod pins jsonrpc to JsonRpcVersion() (literal '2.0')."""
+    from minimax_code.tool_protocol.envelope import JsonRpcVersion
+
+    err = ToolError.invalid_arguments("x")
+    resp = build_error_response(JsonRpcIdString.new_string("r1"), SessionId("s1"), err)
+    assert resp.jsonrpc == JsonRpcVersion()

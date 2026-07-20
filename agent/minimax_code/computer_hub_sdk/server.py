@@ -1,6 +1,6 @@
-"""ToolServer runtime — pure-logic type, helper, and conversion layer (R175-R176).
+"""ToolServer runtime — pure-logic type, helper, and conversion layer (R175-R177).
 
-Fusion of grok-build's ``xai-computer-hub-sdk/src/server.rs``. Two leaf
+Fusion of grok-build's ``xai-computer-hub-sdk/src/server.rs``. Three leaf
 rounds port the pure-logic surface that sits ahead of the live
 ``HubConnection`` actor:
 
@@ -10,6 +10,11 @@ rounds port the pure-logic surface that sits ahead of the live
 * R176 — two pure conversion helpers embedded deeper in the file
   (``server.rs`` 1865 + 2249): the ``tool_call_request`` id extractor and
   the ``ToolProgress`` -> ``ToolCallProgressFrame`` wire shaper.
+* R177 — the failed-call error response builder (``server.rs`` 2276):
+  preserves the full :class:`ToolError` as a decodable ``ToolErrorWire`` in
+  ``error.data`` plus the matching numeric code (unblocks once R83's
+  ``from_tool_error_wire`` backfill and R107's ``ToolError.to_wire`` bridge
+  both land).
 
 The live actor itself (``ToolServer`` / ``ToolServerBuilder`` /
 ``ToolServerInner`` / the per-session inbox dispatcher) lands in later
@@ -32,6 +37,11 @@ The ported symbols, all pure and independently unit-tested in the source:
 * :func:`progress_to_frame` — shape a :class:`ToolProgress` into a wire
   :class:`ToolCallProgressFrame` (three-arm ``match`` on the ``kind``
   discriminator; ``dropped_count`` always ``None`` here).
+* :func:`build_error_response` — assemble a :class:`JsonRpcResponse` error
+  envelope for a failed tool call, preserving the full :class:`ToolError`
+  as a decodable :class:`ToolErrorWire` in ``error.data`` (Rust
+  ``ToolErrorWire::from`` + ``from_tool_error_wire`` +
+  ``serde_json::to_value().ok()``).
 * :func:`system_notify_ack_from_outcome` — pure match mapping
   :data:`~minimax_code.tool_protocol.envelope.ResponseOutcome` to
   :class:`SystemNotifyAck`, lifting a bare ``-32601 method_not_found``
@@ -47,10 +57,7 @@ to the live xAI ``HubConnection`` socket protocol; MiniMax carries no such
 consumer, so those leaves stay deferred under YAGNI until a MiniMax
 transport needs them. The ``SESSION_INBOX_BUFFER`` constant and
 ``SessionHandlerMap`` / ``SessionHandlerResolver`` type aliases belong to
-that actor and travel with it, not with this layer. ``build_error_response``
-(``server.rs`` 2276) is pure but depends on the deeper
-``ToolErrorWire`` + ``error_codes::from_tool_error_wire`` chain, so it
-lands with that error-wire round rather than here.
+that actor and travel with it, not with this layer.
 """
 
 from __future__ import annotations
@@ -62,15 +69,24 @@ from collections.abc import Callable
 from typing import Any
 
 from minimax_code.computer_hub_sdk.error import ClientError, SerdeError
-from minimax_code.tool_protocol.envelope import ResponseError, ResponseOutcome, ResponseResult
-from minimax_code.tool_protocol.error_codes import string_for
+from minimax_code.tool_protocol.envelope import (
+    JsonRpcError,
+    JsonRpcId,
+    JsonRpcResponse,
+    ResponseError,
+    ResponseOutcome,
+    ResponseResult,
+)
+from minimax_code.tool_protocol.error_codes import from_tool_error_wire, string_for
 from minimax_code.tool_protocol.frames import ToolCallProgressFrame
-from minimax_code.tool_protocol.ids import IdError, ToolCallId
+from minimax_code.tool_protocol.ids import IdError, SessionId, ToolCallId
+from minimax_code.tool_runtime.error import ToolError
 from minimax_code.tool_runtime.tool import ToolProgress
 
 __all__ = [
     "ReconnectSettledCallback",
     "SystemNotifyAck",
+    "build_error_response",
     "json_serialized_len",
     "parse_tool_call_id",
     "progress_to_frame",
@@ -300,3 +316,54 @@ def progress_to_frame(
         body=body,
         dropped_count=None,
     )
+
+
+def build_error_response(
+    id_: JsonRpcId,
+    session_id: SessionId,
+    err: ToolError,
+) -> JsonRpcResponse:
+    """Build the error response for a failed tool call (R177).
+
+    Mirrors ``build_error_response(id: JsonRpcId, session_id: SessionId,
+    err: ToolError) -> JsonRpcResponse``: the full :class:`ToolError` is
+    preserved as a decodable :class:`ToolErrorWire` in ``error.data`` (plus
+    the matching numeric code) so the harness recovers kind + detail +
+    structured details instead of collapsing everything to a bare ``-32603``
+    string.
+
+    Fidelity note
+    -------------
+    * ``err.to_string()`` -> :meth:`ToolError.__str__` (the ``detail`` field,
+      the model-facing message).
+    * ``ToolErrorWire::from(err)`` -> :meth:`ToolError.to_wire` (the R107
+      bridge that is the Python equivalent of the crate's
+      ``impl From<ToolError> for ToolErrorWire``).
+    * ``error_codes::from_tool_error_wire(&wire)`` ->
+      :func:`from_tool_error_wire` (the R83 backfill that dispatches on the
+      wire ``code`` tag to the numeric envelope code).
+    * ``serde_json::to_value(&wire).ok()`` -> :meth:`ToolErrorWire.to_wire`
+      inside a ``try`` / ``except`` that flattens any serialisation failure
+      to ``None``. Unlike the ``progress_to_frame`` content arm (R176), Rust
+      has **no** ``warn!`` on this path — the ``.ok()`` is silent — so the
+      Python port stays silent too (no log). In practice
+      :meth:`ToolErrorWire.to_wire` does not raise (it is a deterministic
+      dict construction), so the branch is defensive exhaustiveness rather
+      than a reachable failure.
+    * The response is assembled via :meth:`JsonRpcResponse.err`, which pins
+      ``jsonrpc`` to :class:`JsonRpcVersion` and wraps the error in the
+      ``ResponseOutcome::Error`` arm — matching the Rust struct literal
+      field-for-field.
+    """
+    message = str(err)
+    wire = err.to_wire()
+    try:
+        data: Any = wire.to_wire()
+    except Exception:  # serde_json::to_value(&wire).ok() — silent flatten
+        data = None
+    error = JsonRpcError(
+        code=from_tool_error_wire(wire),
+        message=message,
+        data=data,
+    )
+    return JsonRpcResponse.err(id_, error, session_id=session_id)
