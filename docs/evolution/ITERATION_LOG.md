@@ -15587,3 +15587,104 @@ xai-grok-http 是 grok 的**出站 HTTP 传输身份层**，做两件平台已�
 ### Commit
 
 feat(platform): R193 grok_http leaf (OriginClientInfo + UA render + client-mode latch, fuse xai-grok-http lib.rs pure-logic subset, 15 symbols, reqwest/ClientType/startup_timer YAGNI, product-identity rename grok-shell -> minimax-code, 18 tests, single-file single-round crate)
+## R194 — xai-grok-announcements 纯逻辑叶子（RemoteAnnouncement + 隐藏态持久化 + 过期过滤 + 启动覆盖，融合 xai-grok-announcements lib.rs）
+
+锚点:R194-1 212c9ca
+
+### 本轮目标
+
+迁移 grok-build `crates/codegen/xai-grok-announcements/src/lib.rs`（443 行单文件 crate，纯 chrono+serde 依赖）→ 平台单文件模块 `agent/minimax_code/grok_announcements.py`。该 crate 为 `xai-grok-shell` + `xai-grok-pager` 共享的 banner-notification 逻辑：远程公告的容错 wire 类型、隐藏态持久化、过期过滤、启动覆盖钩子。本轮迁移全部 5 个切片；记录 1 个 YAGNI。这是继 R42（version）、R15（secrets）、R193（grok_http）之后的又一个单文件单轮 crate。
+
+5 切片（本轮交付）：(1) wire 类型 RemoteAnnouncement + AnnouncementCta + AnnouncementsRefreshed（frozen+slots dataclass + 容错 from_mapping，镜像 serde `#[serde(default)]`）；(2) 隐藏态纯逻辑 announcement_hide_key（保留 `\x1f` 单元分隔符回退）+ parse/serialize/prune_hidden_announcement_ids；(3) 隐藏态异步 I/O read/write_hidden_announcement_ids（tokio::fs → asyncio.to_thread + platformdirs）；(4) 过期过滤 visible/filter_expired/filter_expired_at/is_expired_at（注入时钟，chrono → datetime）；(5) 启动解析 resolve_startup（产品身份 env rename）。
+
+YAGNI 账本（本轮声明）：`ts_rs::TS` feature 导出（`#[cfg_attr(feature="ts", derive(ts_rs::TS))]` + `#[cfg(test, feature="ts")] mod bindings_export` + `export_all_bindings` 测试 — TS 绑定代码生成，平台在 `web/src/types` 手写 TS 类型）。
+
+### 融合结论
+
+xai-grok-announcements 是 grok 的**远程公告横幅层**，做两件平台已有归属或更优实现的事：(1) 公告 wire 类型契约（R66 config_types 已内联一份容错的 RemoteAnnouncement 副本）；(2) 隐藏态 JSON 持久化（平台 storage.db.default_data_dir 已有 platformdirs + MINIMAX_CODE_DATA_DIR override 的标准路径）。因此持久化路径对齐 storage，wire 类型保持本地忠实源（此轮不翻转 R66 的依赖方向）。
+
+**跨 crate 真理来源笔记（对称于 R193 的 OriginClientInfo）**：config_types.types 的 RemoteAnnouncement（R66）是容错内联副本（pydantic `extra="allow"`，`cta: Any`），注释 "originates in the `xai_grok_announcements` crate; inlined here."。本轮 grok_announcements.py 是 crate 的忠实源（frozen dataclass + 结构化 AnnouncementCta cta，精确 9 字段）。**此轮不翻转依赖方向**（翻转会扰乱 R66 自己的测试表面）；未来的轮次可通过从此导入来统一。docstring 记录此对称决策。
+
+**产品身份融合**：公告持久化路径与 env 覆盖是面向用户机器的本地身份声明，平台应声明 minimax-code 而非 grok。本轮做两处 rename（对齐 R42 的 GROK_TEST_VERSION → MINIMAX_CODE_TEST_VERSION + R193 的 GROK_CLIENT_NAME → MINIMAX_CODE_CLIENT_NAME 惯例）：env `GROK_ANNOUNCEMENTS_OVERRIDE` → `MINIMAX_CODE_ANNOUNCEMENTS_OVERRIDE`；磁盘路径 `~/.grok/announcements.json`（grok_home）→ platformdirs.user_data_dir("MiniMaxCode") / "announcements.json"（路径解析适配，非 env rename — grok_home 不是 env var）。
+
+### 交付
+
+- `agent/minimax_code/grok_announcements.py`（496 行，14 符号 __all__）：模块 docstring 记录 5 切片 + ts_rs::TS YAGNI + 产品融合 rename + 与 config_types 的跨 crate 真理来源笔记。3 wire 类型（AnnouncementCta/RemoteAnnouncement/AnnouncementsRefreshed）+ 9 纯函数（announcement_hide_key/parse/serialize/prune + visible/filter_expired/filter_expired_at/is_expired_at + resolve_startup）+ 2 异步 I/O（read/write_hidden_announcement_ids）。frozen+slots dataclass 三件套 + 容错 from_mapping 类方法（每字段类型经 _opt_str/_opt_bool 检查，错误类型 → None）。
+- `agent/tests/test_grok_announcements.py`（352 行，27 测试）：迁移 Rust lib.rs 内联测试 9 个用例（filter_expired_removes_past + filter_expired_at_honors_injected_clock + resolve_startup env override/invalid JSON/non-list/unset + cta 解析 + hidden_ids round-trip/compact-sorted + 旧 bool shape 丢弃 + 非字符串过滤 + prune + hide_key 优先/回退/分隔符消歧 + visible 过滤），外加平台结构覆盖（barrel 14 符号 + env rename + 分隔符是 \x1f + 边界/缺失/不可解析 + cta 容错 + AnnouncementsRefreshed gen/items/default/reject + frozen+hashable 值语义 + 异步 I/O round-trip + 父目录创建）。
+
+### 映射决策树 + 坑
+
+```
+xai-grok-announcements/lib.rs (443 行)
+├─ RemoteAnnouncement + AnnouncementCta + AnnouncementsRefreshed  # 迁移 (frozen+slots dataclass)
+│   ├─ serde #[serde(default)] -> from_mapping 容错类方法
+│   │   ★ 每字段类型检查 (_opt_str/_opt_bool): 错误类型 -> None 而非整体失败
+│   │   ★ 比 grok 更容错 (grok serde 错误类型整体失败), wire 始终正确类型时一致
+│   ├─ AnnouncementsRefreshed r#gen -> gen (Python 无保留字 escape)
+│   │   ★ 坑: bool gen 必须拒绝 (Python True 是 int 子类, grok u64 会拒绝)
+│   │      用 not isinstance(raw_gen, int) or isinstance(raw_gen, bool)
+│   └─ BTreeSet -> set + serialize 时 sorted() 恢复确定顺序
+│
+├─ announcement_hide_key (纯)                                     # 迁移
+│   ├─ id 非空 strip 优先; 否则 f"content:{title}\x1f{message}"
+│   ★ 坑: \x1f (U+001F) 单元分隔符 load-bearing -- 消歧 title/message 切分
+│      使不同切分不碰撞, 且真实 id 不会合理匹配
+│
+├─ parse/serialize/prune_hidden_announcement_ids (纯)             # 迁移
+│   ├─ parse: json.loads (JSONDecodeError -> set()), 非 dict -> set()
+│   │   非 list hidden_ids -> set(), 仅字符串项; 旧 {"hidden":bool} -> set()
+│   ├─ serialize: json.dumps({"hidden_ids": sorted(ids)}, separators=(",",":"))
+│   │   ★ 紧凑 + sorted 保证磁盘文件跨写入稳定
+│   └─ prune: live = {hide_key(a)}; ids.intersection_update(live); 返回是否缩小
+│
+├─ read/write_hidden_announcement_ids (异步 I/O)                  # 迁移 (tokio::fs -> asyncio.to_thread)
+│   ★ 坑: 平台不用 aiofiles (无额外依赖); 文件极小, 启动时读写一次
+│      asyncio.to_thread 包装同步 pathlib + json, 保留 async 签名
+│   ★ 路径参数化 (path: Path | None = None, 默认惰性 _default_announcements_state_path)
+│      比 grok 无路径签名更可测
+│   ★ _default_announcements_state_path 本地实现 (未从 storage 导入)
+│      保持叶子模块 storage 独立; 5 行重复已文档化
+│      对齐 storage.db.default_data_dir: 同 MINIMAX_CODE_DATA_DIR override + platformdirs
+│
+├─ visible/filter_expired/filter_expired_at/is_expired_at (纯)    # 迁移 (注入时钟)
+│   ├─ chrono DateTime<Utc> -> datetime (timezone-aware)
+│   ├─ DateTime::parse_from_rfc3339 -> datetime.fromisoformat (py3.11+ 接受 Z)
+│   ├─ _parse_rfc3339: ValueError -> None; naive -> 规范化为 UTC
+│   ★ 坑: naive datetime 与 aware now 比较会 TypeError, 必须规范化为 UTC
+│   └─ is_expired_at: 严格 dt <= now (过期瞬间已过期)
+│
+├─ resolve_startup (纯, env 覆盖)                                 # 迁移 (产品 rename)
+│   ★ GROK_ANNOUNCEMENTS_OVERRIDE -> MINIMAX_CODE_ANNOUNCEMENTS_OVERRIDE
+│   ├─ 非法 JSON -> log warning + 回退 remote
+│   └─ 非 list -> log warning + 回退 remote
+│
+└─ ts_rs::TS feature 导出 (#[cfg(test, feature="ts")] export_all_bindings)  # YAGNI
+    └─ 无 ts_rs codegen 流水线, web/src/types 手写 TS 类型
+```
+
+**坑速查：**
+- **bool vs int（Python True/False 是 int 子类）**：`_opt_bool` 用 `isinstance(v, bool)`（wire `1` 衰减为 None，匹配 grok Option<bool> 拒绝）；`AnnouncementsRefreshed.from_mapping` 用 `not isinstance(raw_gen, int) or isinstance(raw_gen, bool)` 拒绝 bool gen（匹配 grok u64 反序列化）。
+- **时钟感知比较**：`_parse_rfc3339` 将 naive datetimes 规范化为 UTC，以便与 aware `now` 比较；不可解析的返回 None → "never expires"。
+- **磁盘确定性**：grok 用 BTreeSet（排序）；平台用 set，但 serialize 用 `sorted(ids)` 恢复确定顺序，避免文件跨写入抖动。
+- **异步 vs 同步 I/O**：grok 的读/写是异步的（tokio::fs）。平台决策：通过 `asyncio.to_thread` 进行同步 pathlib + json（保留异步签名，无 aiofiles 依赖，文件很小）；参数化路径以便于测试注入。
+- **平台持久化路径**：grok 的 `announcements_state_path()` 依赖 `xai_grok_tools::util::grok_home::grok_home()`（返回 ~/.grok）；xai-grok-tools 是 111238 行未迁移巨型 crate。`storage.db.default_data_dir()` 是正确的 grok_home 等价物。决策：在本地实现 `_default_announcements_state_path()`（未从存储导入）保持叶子模块存储独立；记录 5 行代码重复。
+
+### 验证
+
+- `uv run ruff check minimax_code/grok_announcements.py tests/test_grok_announcements.py` → All checks passed!
+- `uv run pytest tests/test_grok_announcements.py -q` → 27 passed in 0.16s
+- 全量回归 `uv run pytest -q` → **4724 passed, 10 skipped, 1 warning（预存的 fastapi/httpx 弃用，不相关），0 failed**（上轮 4697 → 本轮 4724，+27 新测试，零回归，112.17s）
+- 精确暂存：`git diff --cached --name-only` = 恰好 3 文件（grok_announcements.py + test_grok_announcements.py + ITERATION_LOG.md）
+
+### YAGNI 边界
+
+- **`ts_rs::TS` feature 导出**：`#[cfg_attr(feature="ts", derive(ts_rs::TS))]` + 各字段 `#[ts(...)]` 属性 + `#[cfg(test, feature="ts")] mod bindings_export` 块（通过 `export_all_bindings` 测试 + `generate.sh` 驱动 TS 绑定代码生成）。平台无 ts_rs codegen 流水线（web/src/types 手写 TS 类型），故 TS derive、ts 属性、export_all_bindings 测试全 YAGNI（镜像 R132 OTel-SDK / R190 pb / R193 模式）。
+- **跨 crate 依赖方向（此轮不翻转）**：R66 config_types.types 已内联容错的 RemoteAnnouncement 副本。本轮是忠实源（frozen dataclass + 结构化 AnnouncementCta），但不翻转 R66 依赖（翻转会扰乱 R66 测试表面）。未来轮次可通过从此导入统一。docstring 记录对称于 R193 OriginClientInfo 的真理来源笔记。
+- **已迁移 crate 计数（第 11 个平台模块）**：xai-grok-announcements 加入 auth、computer_hub_core、computer_hub_sdk、grok_auth、grok_http、mcp、mcp_adapter、tool_protocol、tool_runtime、tool_types、tools_api 序列。grok-build codegen 工作区剩余 crates 待评估。
+
+### Commit
+
+`feat(platform): R194 grok_announcements leaf (RemoteAnnouncement + AnnouncementCta + AnnouncementsRefreshed + hide-key/parse/serialize/prune + visible/filter_expired/is_expired_at + resolve_startup, fuse xai-grok-announcements lib.rs single-file crate, 14 symbols, ts_rs::TS YAGNI, product-identity rename GROK_ANNOUNCEMENTS_OVERRIDE -> MINIMAX_CODE_ANNOUNCEMENTS_OVERRIDE, platformdirs persistence aligned with storage.default_data_dir, asyncio.to_thread async I/O, 27 tests, single-round crate)`
+
+- 3 文件：2 新 A（grok_announcements.py + test）+ 1 修改 M（ITERATION_LOG）。
+- 精确 `git add`，无排除文件污染暂存区。
