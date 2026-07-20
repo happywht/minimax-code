@@ -11507,3 +11507,83 @@ donate_pump 是 SDK 内部的**遥测可靠性泵**——它把 trace/log/metric
 ### Commit
 
 feat(platform): R136 migrate xai-computer-hub-sdk donate_pump.rs -> computer_hub_sdk/donate_pump.py
+
+## R137 — xai-computer-hub-sdk trace_donate.rs -> computer_hub_sdk/trace_donate.py（trace 捐赠客户端：chunk 分批策略 + drain fence，crate 第 5 叶，分层迁移 + R132 式 YAGNI 边界）
+
+锚点:R137-1 1b51a39
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-computer-hub-sdk/src/trace_donate.rs`（206 行）-> `agent/minimax_code/computer_hub_sdk/trace_donate.py`。这是 xai-computer-hub-sdk crate 第 5 叶（继 R133 error / R134 handshake / R135 refcount / R136 donate_pump），是共享捐赠泵（R136）的 trace 侧客户端。
+
+源文件**两半**：
+- **纯策略半**（可迁移）：`PumpSpanExporter::export` 的分批循环（split_off MAX_SPANS_PER_DONATION + encode + 超 MAX_DONATION_BYTES 丢弃 + try_send 满丢弃）+ `TraceDonationPump::drain`（转发 drain_via）；
+- **框架胶水半**（无 Python 等价）：`HubDonatingReporter`（fastrace Reporter）+ `PumpSpanExporter`（OTel SpanExporter trait）+ `ExportTraceServiceRequest` protobuf 编码 + `group_spans_by_resource_and_scope` + `ToolServer::trace_donation_reporter` 组装（依赖未迁移的 server.rs 2649 行）。
+
+本轮目标：**分层迁移** —— 纯策略半迁成 4 个 transport-agnostic 组件，框架胶水半走 R132 式 YAGNI 边界声明（无 fastrace runtime / 无 opentelemetry-sdk/proto / prost 依赖）。
+
+### 融合结论
+
+trace_donate 是 SDK 把 fastrace span 流导向连接服务器的桥。它的**核心价值是分批 + 丢弃策略**，而非 OTel/fastrace 框架集成。这个策略与 MiniMax Code 的可靠性哲学完全同构：**遥测尽力送达，但永不阻塞 correctness**（R17-R20 熔断器、R136 捐赠泵同源）。
+
+融合点：
+- **策略与框架解耦**：把 `export` 循环的"chunk -> encode -> oversized 丢弃 -> enqueue"四段抽成 `export_spans(spans, encode_chunk, enqueue)` 纯函数，`encode_chunk` 是调用方注入的闭包（返回 base64 payload 或 None）。这样策略不绑定 OTel/prost，未来任何遥测客户端（log/metric）都能复用同一策略骨架。延续 R82-R106 tool_protocol + R136 donate_pump 的"wire 编码与传输策略分离"先例。
+- **常量单一来源**：`MAX_SPANS_PER_DONATION`（512）+ `MAX_DONATION_BYTES`（1 MiB）已在 R92 迁移到 `tool_protocol/frames.py` 并从 barrel 导出。trace_donate 直接 `from minimax_code.tool_protocol import MAX_SPANS_PER_DONATION` 消费，零重复（R45 单一词汇表哲学）。
+- **mpsc try_send -> asyncio put_nowait + QueueFull**：`try_enqueue` 镜像 Rust 非阻塞入队语义，满则丢弃（不阻塞 collector 线程）。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/trace_donate.py`（新增，约 155 行）：
+  - `chunk_donation_batches(items, max_per_batch=MAX_SPANS_PER_DONATION)` —— 切片生成器；
+  - `try_enqueue(tx, payload)` —— 非阻塞入队，QueueFull 返回 False；
+  - `export_spans(spans, encode_chunk, enqueue, max_per_batch=...)` —— 导出循环，返回入队计数；
+  - `TraceDonationPump` dataclass —— drain fence，`drain()` 转发 `drain_via(tx)`；
+  - 模块文档字符串含完整 R132 式 YAGNI 边界声明（迁移 4 项 / 不迁移 4 项）。
+- `agent/tests/test_trace_donate.py`（新增，约 160 行）：11 测试 = 4 chunk + 2 try_enqueue + 4 export_spans + 1 TraceDonationPump.drain 集成（与 R136 run_pump 联动）。
+
+### 映射决策树+坑
+
+**分层决策（核心）：**
+- trace_donate.rs 是迄今最 OTel-coupled 的 SDK leaf。强行全量迁移会引入 `fastrace` + `opentelemetry-sdk` + `opentelemetry-proto` + `prost` 四大 Python 依赖，创造一个 MiniMax Code 永远不调用的"形似神不似"死代码层（MiniMax Code 用 R127-R132 自己的轻量 tracing，不是 fastrace）。
+- 决策：参考 R132 xai-tracing 收官先例（grpc_client 无消费 / testing.rs OTel SDK 无等价 -> 边界声明不迁移），把文件拆成两半。纯策略半（chunk/encode/enqueue/drain）是捐赠客户端真正依赖的、可测的、transport-agnostic 的逻辑；框架胶水半（Reporter/SpanExporter/protobuf/ToolServer 组装）留给未来真正接入 OTel 的叶子或永远声明在外。
+
+**策略抽象（export 循环 -> export_spans 纯函数）：**
+- Rust `PumpSpanExporter::export(batch)`：`remaining` 循环，每次 `split_off(MAX_SPANS_PER_DONATION)` 取一片，`ExportTraceServiceRequest { group_spans_by_resource_and_scope(chunk, resource) }`，`encode_to_vec()`，超 `MAX_DONATION_BYTES` -> `continue`，否则 base64 + `try_send`（满则丢弃）。
+- Python `export_spans(spans, encode_chunk, enqueue)`：`encode_chunk(chunk) -> str | None`（None = oversized drop），`enqueue(payload) -> bool`（False = queue full drop）。策略骨架（chunk + 跳过 oversized + 不 propagate 满队列 + 继续后续 chunk）完整保留，OTel 编码细节外移给闭包。
+- `chunk_donation_batches` 用 `range(0, len, max_per_batch)` 生成器镜像 `split_off` 尾递归。600 -> [512, 88]。
+
+**try_send -> put_nowait：**
+- Rust `mpsc::Sender::try_send` 非阻塞，满返回 `Err`。Python `asyncio.Queue.put_nowait` 满抛 `QueueFull`。`try_enqueue` 捕获 QueueFull 返回 False，语义 1:1。导出器在 collector 线程"必须永不阻塞"的约束因此保留。
+
+**TraceDonationPump：**
+- Rust `TraceDonationPump { tx }` + `drain(&self) -> drain_via(&self.tx).await`。Python `@dataclass TraceDonationPump` + `async def drain(self)` 转发。纯薄包装，drain_via 本身在 R136 已覆盖，这里测一个集成 smoke（spawn run_pump + put payload + drain + 验证 donate 收到）。
+
+**常量来源（关键正例）：**
+- 不在本模块重定义 MAX_SPANS_PER_DONATION / MAX_DONATION_BYTES，而是 `from minimax_code.tool_protocol import MAX_SPANS_PER_DONATION`（R92 单一来源）。MAX_DONATION_BYTES 在本模块逻辑里不直接使用（oversized 判断移入 encode_chunk 闭包），故不 import 它（消费者需要时从 tool_protocol 取）。
+
+**坑（本轮真实踩到）：**
+- ruff I001：test 文件首版两个 first-party import 块（donate_pump + trace_donate）之间缺少空行。`uv run ruff check --fix tests/test_trace_donate.py`（精确路径）一次修复。无 pytest 红->绿 往返（11 测试首跑即全绿）。
+
+### 验证
+
+- `uv run ruff check minimax_code/computer_hub_sdk/trace_donate.py tests/test_trace_donate.py` -> **All checks passed!**（I001 --fix 后）
+- `uv run pytest tests/test_trace_donate.py -v` -> **11 passed in 0.40s**：
+  - `test_chunk_donation_batches_splits_at_cap` / `_empty_yields_nothing` / `_exact_multiple` / `_respects_custom_cap` PASSED
+  - `test_try_enqueue_returns_true_when_space` / `_returns_false_on_full` PASSED
+  - `test_export_spans_drops_oversized_continues_rest` / `_drops_on_full_queue` / `_returns_enqueued_count` / `_empty_batch_enqueues_nothing` PASSED
+  - `test_trace_donation_pump_drain_forwards_to_shared_pump` PASSED（与 R136 run_pump 联动集成）
+
+export_spans 的 4 个测试精确钉住三条丢弃路径：oversized 跳过但后续继续（中段 None 不影响首尾）、队列满丢弃（enqueue 第 2 次起 False）、空 batch 不触发 encode/enqueue。
+
+### YAGNI 边界
+
+1. **不迁移 `HubDonatingReporter`** —— fastrace Reporter 包装 OpenTelemetryReporter。MiniMax Code 无 fastrace runtime（R127-R132 是自研轻量 tracing）。
+2. **不迁移 `PumpSpanExporter` OTel SpanExporter trait** —— 无 opentelemetry-sdk Python 依赖。其 export 循环的**策略**迁移为 export_spans 纯函数，trait 集成不迁。
+3. **不迁移 `ExportTraceServiceRequest` protobuf 编码 + `group_spans_by_resource_and_scope`** —— 无 prost/opentelemetry_proto。编码作为 encode_chunk 闭包由调用方注入（R136 OTLP wire helper 同一边界）。
+4. **不迁移 `ToolServer::trace_donation_reporter` 组装** —— server.rs（2649 行）是后续大 leaf。其 spawn-pump + donate-closure 几何（run_pump over asyncio.Queue + donate 返回 (ok, payload)）在文档里留给那个 leaf，与 R136 pump 测试同构。
+5. **不 re-export MAX_DONATION_BYTES** —— 本模块逻辑不用它（oversized 判断在 encode_chunk 闭包内），消费者从 tool_protocol 单一来源取。
+6. **barrel 不扩展** —— lib.rs `pub(crate) mod trace_donate`（与 donate_pump 同），__init__.py 不 re-export（匹配 R130/R134/R135/R136 先例）。
+
+### Commit
+
+feat(platform): R137 migrate xai-computer-hub-sdk trace_donate.rs -> computer_hub_sdk/trace_donate.py
