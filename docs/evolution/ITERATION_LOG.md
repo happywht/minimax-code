@@ -11587,3 +11587,95 @@ export_spans 的 4 个测试精确钉住三条丢弃路径：oversized 跳过但
 ### Commit
 
 feat(platform): R137 migrate xai-computer-hub-sdk trace_donate.rs -> computer_hub_sdk/trace_donate.py
+
+## R138 — xai-computer-hub-sdk connection_borrow.rs -> computer_hub_sdk/connection_borrow.py（at-most-once teardown 守卫 + shutdown fence，crate 第 6 叶，分层迁移 + R132 式 YAGNI 边界）
+
+锚点:R138-1 e45b95b
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-computer-hub-sdk/src/connection_borrow.rs`（224 行，`pub(crate)`）-> `agent/minimax_code/computer_hub_sdk/connection_borrow.py`。这是 xai-computer-hub-sdk crate 第 6 叶（继 R133 error / R134 handshake / R135 refcount / R136 donate_pump / R137 trace_donate），是 ToolServer + ToolHarness（后续大叶子）共享的连接借用生命周期原语。
+
+源文件**两半**：
+- **纯生命周期半**（可迁移）：`ConnectionBorrow { connection, shutdown, torn_down }` 数据壳 + `begin_teardown` at-most-once CAS 守卫（`compare_exchange(false,true,SeqCst,SeqCst).is_ok()`）+ `shutdown_token` accessor + `connection` accessor + Debug impl；
+- **框架胶水半**（依赖未迁移叶子）：`acquire` 工厂（调 `HubConnectionPool::get_or_connect_tuned` + AuthProvider + HubConnection + 4 callback 类型）。
+
+本轮目标：**分层迁移** —— 纯生命周期半迁成 6 个 transport-agnostic 组件，框架胶水半走 R132 式 YAGNI 边界声明（pool.rs/auth.rs/connection.rs 未迁移）。
+
+### 融合结论
+
+connection_borrow 是 SDK 连接生命周期的"at-most-once 拆除闸门"。它的**核心价值是 teardown 原子性 + shutdown 协调**，而非 pool/auth 框架。这个原语与 MiniMax Code 的可靠性哲学完全同构：**资源释放必须恰好一次**（R135 RefCountedSet 借用计数、R136 donate_pump drain fence、R8-R9 文件系统单一因果流同源）。
+
+融合点：
+- **CancellationToken -> asyncio.Event**：Rust `tokio_util::sync::CancellationToken` 的 `.cancel()` / `.cancelled().await` / `.clone()` 几何映射到 `asyncio.Event` 的 `.set()` / `await .wait()` / 引用共享。Python asyncio 无 CancellationToken 等价，Event 是最接近的单置位 + 可 await 原语（R130 spawn_traced 的 asyncio contextvars 传播同源 asyncio 语义）。
+- **AtomicBool compare_exchange -> threading.Lock CAS**：Rust `AtomicBool::compare_exchange(false,true,SeqCst,SeqCst)` 在 Python 用 `threading.Lock` 包 `if not _torn_down: _torn_down=True; return True`。asyncio 单线程下普通 bool 即够，但 Lock 未来保护多线程 caller（R135 RefCountedSet 用 dict 计数承认 Python 单线程语义，本叶用 Lock 更严格，因 teardown 跨 server/harness 多调用点）。
+- **request_shutdown 组合**：抽 `begin_teardown` + `shutdown.set()` 为 `request_shutdown()`，镜像 server.rs:1731 + harness.rs:1651 的固定调用模式（两处都是 `if borrow.begin_teardown() { borrow.shutdown_token().cancel() }`）。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/connection_borrow.py`（新增，约 155 行）：
+  - `ConnectionBorrow` dataclass：`connection: Any` + `_shutdown: asyncio.Event` + `_torn_down: bool` + `_lock: threading.Lock`；
+  - `from_connection(connection)` classmethod —— 绕过 pool 的构造器（acquire 的 pool-free 半）；
+  - `begin_teardown() -> bool` —— Lock 内 at-most-once CAS；
+  - `is_torn_down` property —— 暴露状态（替代 Debug field）；
+  - `shutdown_token() -> asyncio.Event` —— 返回共享 fence；
+  - `request_shutdown() -> bool` —— begin_teardown + set 组合（server/harness 调用模式）；
+  - `__repr__` —— torn_down 字段（finish_non_exhaustive）。
+- `agent/tests/test_connection_borrow.py`（新增，约 145 行）：9 测试 = 2 at-most-once 逻辑 + 2 并发（asyncio 64 + threading 32）+ 1 from_connection + 3 shutdown_token/request_shutdown + 1 repr。
+
+### 映射决策树+坑
+
+**分层决策（核心）：**
+- connection_borrow.rs 的 `acquire` 工厂深度依赖 pool.rs（344）+ auth.rs（238）+ connection.rs（2694）+ 4 callback 类型，全部未迁移。强行全量迁移会引入 4 个未迁移大叶子的桩代码。
+- 决策：参考 R137 trace_donate 分层先例（策略半迁移，胶水半边界），把文件拆成两半。纯生命周期半（teardown CAS + shutdown fence + accessor + 构造器壳）是 server/harness 叶子真正依赖的、可测的、pool-agnostic 逻辑；`acquire` 工厂留给未来 pool/auth/connection 叶子接线。
+- **from_connection 构造器**是关键抽象：它保留 acquire 的"构造一个 borrow 实例"几何，但绕过 pool 解析。未来 pool 叶子迁移后，acquire 等价于 `resolve pool entry -> from_connection(handle)`。
+
+**消费点确认**（grep 验证）：
+- `begin_teardown` 消费：harness.rs:1645,1860 + server.rs:1625,1709（4 处，全在后续大叶子）；
+- `shutdown_token` 消费：harness.rs:1651 (`.cancel()`) + server.rs:1601,1652,1731 + connection.rs:645 (`.cancelled().await`)；
+- `acquire` 消费：harness.rs:471 + server.rs:503（2 处，依赖 pool）。
+- 确认纯生命周期半的 4 个消费点都是 `begin_teardown` / `shutdown_token`，与 pool 无关 -> 迁移价值独立成立。
+
+**CancellationToken -> asyncio.Event 语义映射：**
+- `CancellationToken::new()` -> `asyncio.Event()`（dataclass field default_factory）；
+- `.cancel()` -> `.set()`；
+- `.cancelled().await` -> `await .wait()`；
+- `.clone()` -> 无操作（Python Event 引用共享，`shutdown_token()` 每次返回同一对象）。
+- 测试 `test_shutdown_token_is_shared_reference` 钉住"两次 shutdown_token() 返回同一 Event"语义。
+
+**compare_exchange -> threading.Lock CAS：**
+- Rust：`self.torn_down.compare_exchange(false, true, SeqCst, SeqCst).is_ok()`（原子 CAS，无锁）。
+- Python：`with self._lock: if self._torn_down: return False; self._torn_down = True; return True`。
+- GIL + asyncio 单线程使普通 bool 足够，但 threading.Lock 保护线程 caller（Rust SeqCst 跨线程语义）。测试 `test_begin_teardown_is_atomic_under_concurrent_threads`（32 线程 + Barrier 同时释放 -> 1 win）验证 Lock 的真并发正确性。
+
+**坑（本轮无）：**
+- ruff 首跑即绿（`All checks passed!`），无 --fix 往返；pytest 首跑 **9 passed in 0.25s**，无红->绿往返。本轮是迄今首个零修复往返的 SDK 叶子迁移（R133-R137 都有至少 1 次 ruff --fix）。
+
+### 验证
+
+- `uv run ruff check minimax_code/computer_hub_sdk/connection_borrow.py tests/test_connection_borrow.py` -> **All checks passed!**（首跑即绿，零 --fix）
+- `uv run pytest tests/test_connection_borrow.py -v` -> **9 passed in 0.25s**：
+  - `test_begin_teardown_returns_true_once_and_false_after` PASSED
+  - `test_is_torn_down_reflects_begin_teardown` PASSED
+  - `test_begin_teardown_is_atomic_under_concurrent_async_callers` PASSED（64 async caller -> 1 win）
+  - `test_begin_teardown_is_atomic_under_concurrent_threads` PASSED（32 thread + Barrier -> 1 win，Lock 真并发验证）
+  - `test_from_connection_exposes_connection_handle` PASSED
+  - `test_shutdown_token_unset_until_request_shutdown_wins` PASSED
+  - `test_request_shutdown_returns_false_after_first_winner` PASSED
+  - `test_shutdown_token_is_shared_reference` PASSED
+  - `test_repr_exposes_torn_down_state` PASSED
+
+并发测试覆盖两条路径：asyncio 单线程（验证 at-most-once 逻辑）+ threading 多线程（验证 Lock 的真并发 CAS 正确性），对应 Rust `#[tokio::test]` + `#[tokio::test(flavor = "multi_thread", worker_threads = 4)]` 双测试。
+
+### YAGNI 边界
+
+1. **不迁移 `acquire` 工厂** —— 依赖 `HubConnectionPool::get_or_connect_tuned`（pool.rs 344）+ `AuthProvider`（auth.rs 238）+ `HubConnection`（connection.rs 2694）+ `ConnectCallback`/`ConnectionTuning`/`DisconnectCallback`/`ReconnectCallback`。全未迁移。其几何（pool entry -> wrap）由 `from_connection` 保留 pool-free 半，pool 叶子接线时补全。
+2. **不迁移 `CancellationToken`** —— tokio_util 无 Python asyncio 等价；`asyncio.Event` 近似（cancel->set, cancelled().await->wait, clone->引用共享）。
+3. **不迁移 typed `connection() -> &Arc<HubConnection>`** —— `connection` 字段类型 `Any`（HubConnection 未迁移）。typed accessor 留给 connection.rs 叶子。
+4. **不迁移 `Debug` impl 的 `finish_non_exhaustive`** —— `__repr__` 只暴露 torn_down（同 non-exhaustive 语义），connection 句柄不 repr。
+5. **不迁移 axum mock server 测试** —— Rust `spawn_borrow_mock_hub` + `acquire_borrow` 只为 exercise acquire；lifecycle 策略 connection-agnostic，用 `object()` 占位句柄即可测，无需 WebSocket 服务器。
+6. **barrel 不扩展** —— lib.rs `pub(crate) mod connection_borrow`（私有 crate 模块），`__init__.py` 不 re-export（匹配 R136/R137 私有 crate 模块先例）。
+
+### Commit
+
+feat(platform): R138 migrate xai-computer-hub-sdk connection_borrow.rs -> computer_hub_sdk/connection_borrow.py
