@@ -47,6 +47,7 @@ import pytest
 
 from minimax_code.computer_hub_core.remote import (
     ConnectionClient,
+    RemoteToolProxy,
     _request_stream,
     _terminal_from_response,
     _terminal_item,
@@ -58,6 +59,7 @@ from minimax_code.computer_hub_core.remote import (
     progress_from_frame,
     tool_error_from_wire,
 )
+from minimax_code.computer_hub_core.resolver import ToolHandle
 from minimax_code.tool_protocol import (
     WORKSPACE_UNAVAILABLE_SUBCODE,
     BehaviorVersionUnsupported,
@@ -92,6 +94,7 @@ from minimax_code.tool_protocol import (
     ToolCallId,
     ToolCallParams,
     ToolCallProgressFrame,
+    ToolCapabilities,
     ToolId,
     ToolNotFound,
     TransportClosed,
@@ -107,6 +110,7 @@ from minimax_code.tool_runtime import (
     ToolStreamItem,
     TypedToolOutput,
 )
+from minimax_code.tool_types import ToolDescription
 
 # ---------------------------------------------------------------------------
 # Fixtures.
@@ -1612,3 +1616,270 @@ async def test_step6_progress_backfilled_before_terminal():
     # The stream is exhausted after the terminal (R123 invariant 3: exactly one).
     with pytest.raises(StopAsyncIteration):
         await gen.__anext__()
+
+
+# ===========================================================================
+# R125 - RemoteToolProxy (layer-2 ToolHandle impl).
+#
+# The proxy is the layer-2 ToolHandle that materialises a single remote tool
+# registration: it carries the registration's static metadata (description /
+# capabilities) + the (tool_id, session_id, connection) triple a forwarded
+# call needs, and its execute delegates the per-call work to layer-3's
+# dispatch_via_connection. These tests cover the trait shape, the
+# field/method-name-clash invariant (hand-written __init__, underscore-prefixed
+# storage), the four static accessors, the should_list default (NOT
+# overridden), the execute -> dispatch_via_connection delegation (args order +
+# stream passthrough), identity equality, and __repr__.
+# ===========================================================================
+
+
+def _caps() -> ToolCapabilities:
+    # All- defaults instance (Rust #[derive(Default)] semantics).
+    return ToolCapabilities()
+
+
+def _desc() -> ToolDescription:
+    return ToolDescription(name="search.web", description="Web search.")
+
+
+def _make_proxy(
+    *,
+    tool_id: ToolId | None = None,
+    session_id: SessionId | None = None,
+    description: ToolDescription | None = None,
+    capabilities: ToolCapabilities | None = None,
+    connection: ConnectionClient | None = None,
+) -> RemoteToolProxy:
+    """Build a proxy with sane defaults; any field can be overridden.
+
+    Mirrors Rust's ``RemoteToolProxy::new(tool_id, session_id, description,
+    capabilities, connection)`` five-field constructor.
+    """
+    return RemoteToolProxy(
+        tool_id or _tid(),
+        session_id or _session_id(),
+        description or _desc(),
+        capabilities or _caps(),
+        connection or _RecordingConnection(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# ToolHandle subclass + concrete class.
+# ---------------------------------------------------------------------------
+
+
+def test_proxy_is_toolhandle_subclass():
+    p = _make_proxy()
+    assert isinstance(p, ToolHandle)
+    assert isinstance(p, RemoteToolProxy)
+
+
+def test_proxy_concrete_class_all_abstract_methods_implemented():
+    # ToolHandle's four abstract methods (id/description/capabilities/execute)
+    # are all implemented -> empty __abstractmethods__ -> concrete + instantiable.
+    assert RemoteToolProxy.__abstractmethods__ == frozenset()
+    assert _make_proxy() is not None
+
+
+# ---------------------------------------------------------------------------
+# Construction + field/method-name-clash invariant.
+# ---------------------------------------------------------------------------
+
+
+def test_proxy_constructor_five_positional_fields_mirrors_rust_new():
+    # RemoteToolProxy::new(tool_id, session_id, description, capabilities,
+    # connection) - five positional args, same order as Rust.
+    conn = _RecordingConnection()
+    p = RemoteToolProxy(_tid(), _session_id(), _desc(), _caps(), conn)
+    assert p.id() == _tid()
+    assert p.session_id() == _session_id()
+    assert p.capabilities() is not None
+    assert p.description(object()) is not None
+
+
+def test_proxy_no_instance_attribute_shadows_accessors():
+    # The field/method name clash (Rust session_id/description/capabilities
+    # fields vs same-named trait methods) is resolved by underscore-prefixed
+    # private storage - NO public instance attribute named session_id /
+    # description / capabilities / id / tool_id exists to shadow the methods.
+    p = _make_proxy()
+    for clash in ("session_id", "description", "capabilities", "id", "tool_id"):
+        assert clash not in p.__dict__
+    # The accessors remain bound methods (callable), not overwritten values.
+    assert callable(p.session_id)
+    assert callable(p.description)
+    assert callable(p.capabilities)
+    assert callable(p.id)
+
+
+# ---------------------------------------------------------------------------
+# session_id accessor.
+# ---------------------------------------------------------------------------
+
+
+def test_session_id_accessor_returns_bound_session():
+    p = _make_proxy()
+    assert p.session_id() == _session_id()
+
+
+def test_session_id_accessor_distinct_per_proxy():
+    other = SessionId("session-other")
+    p = _make_proxy(session_id=other)
+    assert p.session_id() == other
+    assert p.session_id() != _session_id()
+
+
+# ---------------------------------------------------------------------------
+# id accessor.
+# ---------------------------------------------------------------------------
+
+
+def test_id_accessor_returns_tool_id():
+    p = _make_proxy()
+    assert p.id() == _tid()
+
+
+# ---------------------------------------------------------------------------
+# description accessor - static, ignores ctx.
+# ---------------------------------------------------------------------------
+
+
+def test_description_returns_static_description():
+    desc = _desc()
+    p = _make_proxy(description=desc)
+    assert p.description(object()) is desc  # same object, returned by reference
+
+
+def test_description_ignores_ctx():
+    # The remote path has no per-list adaptation: two different ctx sentinels
+    # yield the SAME static description (ctx is never read).
+    desc = _desc()
+    p = _make_proxy(description=desc)
+    assert p.description(object()) is p.description(object()) is desc
+
+
+# ---------------------------------------------------------------------------
+# capabilities accessor - static.
+# ---------------------------------------------------------------------------
+
+
+def test_capabilities_returns_static_capabilities():
+    caps = _caps()
+    p = _make_proxy(capabilities=caps)
+    assert p.capabilities() is caps  # same object, returned by reference
+
+
+# ---------------------------------------------------------------------------
+# should_list - NOT overridden, inherits ToolHandle default (True).
+# ---------------------------------------------------------------------------
+
+
+def test_should_list_inherits_default_true():
+    p = _make_proxy()
+    assert p.should_list(object()) is True
+
+
+def test_should_list_not_overridden_on_proxy():
+    # Rust's impl leaves should_list to the ToolHandle default body; the
+    # Python landing does NOT define it on RemoteToolProxy (contrast with
+    # ErasedTool, which DOES override should_list to delegate to its inner).
+    assert "should_list" not in RemoteToolProxy.__dict__
+
+
+# ---------------------------------------------------------------------------
+# execute - async, delegates to dispatch_via_connection (args order + stream
+# passthrough).
+# ---------------------------------------------------------------------------
+
+
+def test_execute_is_coroutine_function():
+    # Mapping 1: execute is an `async def -> ToolStream` (await-resolved),
+    # NOT an async generator.
+    p = _make_proxy()
+    assert inspect.iscoroutinefunction(p.execute)
+
+
+@pytest.mark.asyncio
+async def test_execute_delegates_dispatch_via_connection(monkeypatch):
+    # Spy on the layer-3 assembler: capture the threaded arguments and return
+    # a sentinel stream verbatim. The proxy must NOT drive the stream itself.
+    import minimax_code.computer_hub_core.remote as remote_mod
+
+    calls: list = []
+    sentinel = object()
+
+    async def _spy(connection, tool_id, session_id, arguments, ctx):  # noqa: ANN001
+        calls.append((connection, tool_id, session_id, arguments, ctx))
+        return sentinel
+
+    monkeypatch.setattr(remote_mod, "dispatch_via_connection", _spy)
+
+    conn = _RecordingConnection()
+    proxy = RemoteToolProxy(_tid(), _session_id(), _desc(), _caps(), conn)
+    ctx = object()
+    args = {"q": 1}
+    result = await proxy.execute(ctx, args)
+
+    assert result is sentinel  # stream forwarded verbatim, no wrapping
+    assert len(calls) == 1
+    captured = calls[0]
+    # Argument order mirrors Rust's execute body:
+    #   dispatch_via_connection(self.connection, self.tool_id,
+    #                           self.session_id, args, ctx)
+    assert captured[0] is conn
+    assert captured[1] == _tid()
+    assert captured[2] == _session_id()
+    assert captured[3] is args
+    assert captured[4] is ctx
+
+
+@pytest.mark.asyncio
+async def test_execute_threads_bound_session_not_ctx_derivable(monkeypatch):
+    # execute forwards self._session_id (bound at construction), not any
+    # session derivable from ctx. A spy confirms the bound session wins.
+    import minimax_code.computer_hub_core.remote as remote_mod
+
+    seen_sessions: list = []
+
+    async def _spy(connection, tool_id, session_id, arguments, ctx):  # noqa: ANN001
+        seen_sessions.append(session_id)
+        return object()
+
+    monkeypatch.setattr(remote_mod, "dispatch_via_connection", _spy)
+
+    bound = SessionId("session-bound")
+    proxy = _make_proxy(session_id=bound)
+    await proxy.execute(object(), {})
+    assert seen_sessions == [bound]
+
+
+# ---------------------------------------------------------------------------
+# eq=False (Rust Debug+Clone derive, no PartialEq) -> identity-only equality.
+# ---------------------------------------------------------------------------
+
+
+def test_identity_equality_only():
+    p1 = _make_proxy()
+    assert p1 == p1  # self-equality holds
+    p2 = _make_proxy()  # equal-looking fields, different identity
+    assert p1 != p2
+
+
+def test_no_eq_defined_inherits_object_identity():
+    # No __eq__ on RemoteToolProxy -> falls back to object's identity __eq__
+    # (the eq=False effect, matching Rust's Debug-only derive + Clone aliasing).
+    assert "__eq__" not in RemoteToolProxy.__dict__
+
+
+# ---------------------------------------------------------------------------
+# __repr__.
+# ---------------------------------------------------------------------------
+
+
+def test_repr_mentions_class_name_and_ids():
+    p = _make_proxy()
+    r = repr(p)
+    assert "RemoteToolProxy" in r
+    assert repr(_tid()) in r
+    assert repr(_session_id()) in r

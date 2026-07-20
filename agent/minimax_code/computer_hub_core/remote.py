@@ -154,6 +154,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable
 from typing import Any
 
+from minimax_code.computer_hub_core.resolver import ToolHandle
 from minimax_code.tool_protocol import (
     WORKSPACE_UNAVAILABLE_SUBCODE,
     BehaviorVersionUnsupported,
@@ -189,6 +190,7 @@ from minimax_code.tool_protocol import (
     ToolCallParams,
     ToolCallProgressFrame,
     ToolCallResult,
+    ToolCapabilities,
     ToolErrorWire,
     ToolId,
     ToolNotFound,
@@ -202,15 +204,18 @@ from minimax_code.tool_runtime import (
     BehaviorVersion,
     ContentBlock,
     Cwd,
+    ListToolsContext,
     ToolCallContext,
     ToolChatCompletionResponse,
     ToolError,
     ToolErrorKind,
     ToolProgress,
+    ToolStream,
     ToolStreamItem,
     TypedToolOutput,
     terminal_only,
 )
+from minimax_code.tool_types import ToolDescription
 
 __all__ = [
     "ConnectionClient",
@@ -1017,3 +1022,183 @@ async def dispatch_via_connection(
 
     # 6. assemble the interleaved progress/response stream.
     return _request_stream(tool_id, progress, request_fut)
+
+
+# -----------------------------------------------------------------------
+# RemoteToolProxy — layer-2 (R125). The ToolHandle impl that drives a
+# forwarded tool-call stream over a ConnectionClient.
+# -----------------------------------------------------------------------
+
+
+class RemoteToolProxy(ToolHandle):
+    """A resolved remote tool, driven over a :class:`ConnectionClient` (R125).
+
+    Fusion of grok-build's ``RemoteToolProxy``
+    (``xai-computer-hub-core/src/remote.rs``). The proxy is the layer-2
+    :class:`~minimax_code.computer_hub_core.ToolHandle` impl that
+    materialises a single remote tool registration into the object the hub
+    dispatches against: it carries the registration's static metadata
+    (``description`` / ``capabilities``) and the
+    ``(tool_id, session_id, connection)`` triple a forwarded call needs,
+    and its :meth:`execute` delegates the per-call work to layer-3's
+    :func:`dispatch_via_connection`.
+
+    The sibling of the in-process :class:`ErasedTool` adapter (the
+    ``impl<T: Tool> ToolHandle`` for a *local* typed tool): both realise
+    :class:`ToolHandle`, but where :class:`ErasedTool` drives a local
+    tool's stream and re-encodes each terminal into a
+    :class:`~minimax_code.tool_runtime.TypedToolOutput`, the proxy forwards
+    the call over a connection and lets layer-3 + layer-4 decode the wire
+    response back into the same typed shapes. A resolver that falls back
+    to a remote registration hands back a proxy exactly where a local path
+    would hand back an :class:`ErasedTool`.
+
+    Construct with the five registration fields, mirroring Rust's
+    ``RemoteToolProxy::new``::
+
+        proxy = RemoteToolProxy(tool_id, session_id, description,
+                                capabilities, connection)
+
+    Why hand-written ``__init__`` (not ``@dataclass``)
+    --------------------------------------------------
+
+    The crate convention for trait-object-bearing value types is
+    :func:`dataclasses.dataclass` with ``eq=False`` (R116 ``ServerRecord``
+    / R117 ``ResolvedTool`` & ``CompoundResolver`` / R119
+    ``LocalTransport``). :class:`RemoteToolProxy` is the one exception in
+    this family: it MUST hold the registration metadata behind accessors
+    of the same names — Rust's struct fields ``session_id`` /
+    ``description`` / ``capabilities`` are read through trait/impl methods
+    of the same names (``fn session_id`` / ``fn description`` /
+    ``fn capabilities``). Rust keeps fields and methods in separate
+    namespaces, so the overlap is harmless; a Python ``@dataclass``
+    cannot — the generated ``__init__`` would assign
+    ``self.session_id = session_id`` and shadow the :meth:`session_id`
+    method (same for ``description`` / ``capabilities``), leaving every
+    accessor uncallable. The faithful landing therefore mirrors R117's
+    :class:`ErasedTool` — the other :class:`ToolHandle` subclass in the
+    crate, which also hand-writes its ``__init__`` (there for ``from_arc``
+    / ``new`` constructor fidelity, here for the field/method name clash):
+    a plain ``__init__`` stores the fields under underscore-prefixed
+    private attributes (``self._tool_id`` etc., matching Rust's private
+    struct fields — they are all lowercase, no ``pub``), and the
+    accessors read them back. No ``__eq__`` is defined, so identity
+    equality holds (the ``eq=False`` effect, matching Rust's ``Debug``-only
+    derive); a hand-written ``__repr__`` mirrors :class:`ErasedTool`.
+
+    Debug + Clone derive -> shared-by-reference (not field copy)
+    ------------------------------------------------------------
+
+    Rust derives ``Debug`` AND ``Clone`` (unlike R119's
+    :class:`~minimax_code.computer_hub_core.LocalTransport`, which derives
+    ``Debug`` only). The ``Clone`` is shallow: every field is ``Clone``
+    (``ToolId`` / ``SessionId`` are cheap-clone newtypes,
+    ``ToolDescription`` / ``ToolCapabilities`` are value types, and
+    ``Arc<dyn ConnectionClient>`` clones by bumping the refcount), so a
+    cloned proxy is an *alias* over the same connection and the same
+    registration — its identity (``tool_id`` + ``session_id`` +
+    ``connection``) is shared, not copied. Python's reference semantics
+    already give that sharing for free: a second reference to the same
+    proxy IS the "clone". There is no faithful Python counterpart to
+    cloning a ``dyn ConnectionClient`` trait object (the concrete
+    connection hides behind the trait, so ``copy.copy`` cannot reach it),
+    so the landing treats Rust's ``Clone`` as "shared by reference" —
+    which is what Python does natively — rather than synthesising a
+    ``__copy__``. The proxy is therefore shared, not duplicated, exactly
+    as Rust's ``Arc`` refcount intends.
+
+    ``Arc<dyn ConnectionClient>`` -> strong Python reference
+    --------------------------------------------------------
+
+    The Rust struct holds the connection by ``Arc<dyn ConnectionClient>``
+    — strong, shared ownership. Like R119's ``Arc<CompoundResolver>``
+    mapping, the Python landing holds the connection by a plain strong
+    reference: the proxy shares the connection's lifetime with whoever
+    registered it (the transport / registry), and Python's reference
+    semantics make the ``Arc`` a no-op.
+
+    ``should_list`` is NOT overridden: Rust's impl leaves it to the
+    ``ToolHandle`` default body (``true``), so a proxy lists exactly when
+    the default says so. (Contrast with :class:`ErasedTool`, which DOES
+    override ``should_list`` to delegate to its inner tool — a remote
+    registration's listing visibility is fixed at registration time, not
+    decided per-call by the connection.)
+    """
+
+    def __init__(
+        self,
+        tool_id: ToolId,
+        session_id: SessionId,
+        description: ToolDescription,
+        capabilities: ToolCapabilities,
+        connection: ConnectionClient,
+    ) -> None:
+        # Stored under underscore-prefixed attributes because Rust's
+        # private fields (session_id / description / capabilities) share
+        # their names with the accessors below — a @dataclass would shadow
+        # the methods. Mirrors R117 ErasedTool's hand-written __init__.
+        self._tool_id = tool_id
+        self._session_id = session_id
+        self._description = description
+        self._capabilities = capabilities
+        self._connection = connection
+
+    def session_id(self) -> SessionId:
+        """Bound session identifier (Rust ``fn session_id(&self) -> &SessionId``).
+
+        The session this proxy's registration was bound to at construction
+        — every :meth:`execute` forwards under it.
+        """
+        return self._session_id
+
+    def id(self) -> ToolId:
+        """Stable tool identity (Rust ``fn id(&self) -> ToolId``).
+
+        Returns the registration's ``tool_id`` verbatim — the hub resolves
+        a tool by this id and hands back the proxy, so the id round-trips
+        unchanged.
+        """
+        return self._tool_id
+
+    def description(self, ctx: ListToolsContext) -> ToolDescription:
+        """Tool description as it should appear in ``session`` (Rust sync ``fn``).
+
+        Returns the registration's static ``description`` verbatim, ignoring
+        ``ctx`` — the remote path has no per-list adaptation (the
+        description was fixed at registration time).
+        """
+        return self._description
+
+    def capabilities(self) -> ToolCapabilities:
+        """Static capability flags (Rust sync ``fn capabilities``).
+
+        Returns the registration's static ``capabilities`` verbatim.
+        """
+        return self._capabilities
+
+    async def execute(
+        self, ctx: ToolCallContext, args: Any
+    ) -> ToolStream:
+        """Forward the call over the bound connection (Rust ``async fn execute``).
+
+        Delegates to layer-3
+        :func:`~minimax_code.computer_hub_core.remote.dispatch_via_connection`,
+        threading ``(self._connection, self._tool_id, self._session_id,
+        args, ctx)`` in Rust's argument order. The returned stream is the
+        forwarded call's ``ToolStream`` verbatim (progress frames + the
+        single terminal) — this layer does no decoding of its own; layer 3
+        + layer 4 do that work before items reach the caller.
+        """
+        return await dispatch_via_connection(
+            self._connection,
+            self._tool_id,
+            self._session_id,
+            args,
+            ctx,
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"RemoteToolProxy(tool_id={self._tool_id!r}, "
+            f"session_id={self._session_id!r})"
+        )

@@ -10495,3 +10495,143 @@ Python，关键映射决策：
 ### Commit
 
 feat(platform): R124 migrate remote.rs layer-3 dispatch_via_connection assembler
+
+
+## R125 — 迁移 remote.rs layer-2 RemoteToolProxy（ToolHandle impl）
+
+锚点:R125-1 5e6d844
+
+### 本轮目标
+
+迁移 remote.rs layer-2 的 `RemoteToolProxy` —— **首个 layer-2 ToolHandle
+impl**。它是 R117 `ToolHandle` ABC 的第 2 个具体子类（第 1 个是 `ErasedTool`），
+把一次远程工具注册物化成 hub 派发的对象：携带注册的静态元数据
+（`description` / `capabilities`）+ 转发调用所需的 `(tool_id, session_id,
+connection)` 三元组，`execute` 委托给 R124 的 `dispatch_via_connection`。
+本轮目标：
+
+1. `remote.py` 追加 `RemoteToolProxy` 类（实现 `ToolHandle` 四抽象方法 +
+   `session_id` 访问器 + `__repr__`）；
+2. 解决字段/方法命名空间冲突（Rust 允许同名字段+方法，Python `@dataclass`
+   不允许）—— 镜像 R117 `ErasedTool` 手写 `__init__`；
+3. 测试套件追加 R125 组（18 测试：形状 / 构造 / 冲突不变式 / 4 访问器 /
+   `should_list` 默认 / `execute` 委托 / identity / repr）；
+4. 验证 pytest + 6-leaf 回归 + ruff；
+5. 更新 leaf-6 桶文档 + ITERATION_LOG R125 + 精确 commit。
+
+### 融合结论
+
+`RemoteToolProxy` 是 remote.rs layer-2 的首个 `ToolHandle` impl（Rust
+`impl ToolHandle for RemoteToolProxy`，82-138 行）。它是 `ErasedTool` 的
+**远程对偶**：两者都实现 `ToolHandle`，但 `ErasedTool` 驱动本地 typed tool
+的流并把每个 terminal 重编码成 `TypedToolOutput`，而 proxy 经 connection
+转发调用，让 layer-3 + layer-4 把 wire 响应解码回同样的 typed 形状。关键
+映射决策：
+
+- **手写 `__init__`（非 `@dataclass`）**：Rust 结构体的私有字段
+  `session_id` / `description` / `capabilities` 与同名的 trait/impl 方法
+  （`fn session_id` / `fn description` / `fn capabilities`）共享名字。Rust
+  字段和方法在不同命名空间，重叠无害；Python `@dataclass` 不行 —— 生成的
+  `__init__` 会 `self.session_id = session_id` 遮蔽 `session_id()` 方法
+  （`description` / `capabilities` 同理），让所有访问器不可调用。忠实落地
+  因此镜像 R117 `ErasedTool`（crate 里另一个手写 `__init__` 的 `ToolHandle`
+  子类）：plain `__init__` 把字段存到下划线前缀的私有属性（`self._tool_id`
+  等，匹配 Rust 私有结构体字段 —— 全小写、无 `pub`），访问器读回。
+- **`Debug + Clone` derive → 共享引用（非字段拷贝）**：Rust 派生 `Debug`
+  AND `Clone`（不像 R119 `LocalTransport` 只派生 `Debug`）。`Clone` 是浅的：
+  每个字段都 `Clone`（`ToolId` / `SessionId` 是 cheap-clone newtype，
+  `ToolDescription` / `ToolCapabilities` 是值类型，`Arc<dyn ConnectionClient>`
+  靠 bump refcount clone），所以克隆的 proxy 是同一 connection、同一注册的
+  **别名** —— 其身份（`tool_id` + `session_id` + `connection`）是共享的，非
+  拷贝。Python 引用语义原生提供这种共享：同一 proxy 的第二个引用就是
+  "clone"。没有克隆 `dyn ConnectionClient` trait 对象的忠实 Python 方式
+  （具体 connection 藏在 trait 后，`copy.copy` 够不到），所以落地把 Rust
+  `Clone` 当作"共享引用" —— 这正是 Python 原生做的 —— 而非合成 `__copy__`。
+- **`Arc<dyn ConnectionClient>` → 强 Python 引用**：与 R119
+  `Arc<CompoundResolver>` 映射一致，Python 落地用普通强引用持有 connection。
+- **`should_list` 不重写**：Rust impl 把它留给 `ToolHandle` 默认体（`true`），
+  所以 proxy 恰好在默认说时列出。（对比 `ErasedTool`，它**确实**重写
+  `should_list` 委托给 inner tool —— 远程注册的列出可见性在注册时固定，非
+  每调用由 connection 决定。）
+- **不定义 `__eq__`**：identity 相等（`eq=False` 效果，匹配 Rust `Debug`-only
+  derive）；手写 `__repr__` 镜像 `ErasedTool`。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_core/remote.py`：`RemoteToolProxy` 类
+  （1033-1204），手写 `__init__`（5 参数，存为 `_tool_id` / `_session_id` /
+  `_description` / `_capabilities` / `_connection`）+ 6 方法
+  （`session_id` / `id` / `description` / `capabilities` / `execute` /
+  `__repr__`）。消费 R117 `ToolHandle`、R82 `ToolId` / `SessionId`、R86
+  `ToolCapabilities`、R65 `ToolDescription`、R108 `ListToolsContext` /
+  `ToolCallContext` / `ToolStream`、R124 `dispatch_via_connection`、R122
+  `ConnectionClient`。import 块（157-218）加 5 符号（`ToolHandle` /
+  `ToolCapabilities` / `ListToolsContext` / `ToolStream` / `ToolDescription`）。
+- `agent/tests/test_computer_hub_core_remote.py`：**18 个 R125 测试**（形状 2 +
+  构造/冲突不变式 2 + `session_id` 2 + `id` 1 + `description` 2 +
+  `capabilities` 1 + `should_list` 2 + `execute` 3 + identity 2 + repr 1），
+  含 `_caps` / `_desc` / `_make_proxy` 3 个新 fixture，复用 R124
+  `_RecordingConnection` / `_tid` / `_session_id`。顶部 import 加 4 符号
+  （`RemoteToolProxy` / `ToolHandle` / `ToolCapabilities` / `ToolDescription`）。
+- `agent/minimax_code/computer_hub_core/__init__.py`：leaf-6 docstring 两处
+  更新，版本标注加 `R125 layer 2`，结尾段注明 R125 已落地
+  `RemoteToolProxy`、`RemoteTransport` 留 R126。
+
+### 映射决策树+坑
+
+1. **【坑·设计冲突，实现前发现】字段/方法命名空间冲突**：Rust
+   `RemoteToolProxy` 的字段名（`session_id` / `description` /
+   `capabilities`）与 trait 方法名冲突。Python `@dataclass` 会让方法失效
+   （实例属性遮蔽类方法）。**修复**：读 `ErasedTool`（resolver.py:355）为
+   先例 —— 它手写 `__init__` + `__repr__`。`RemoteToolProxy` 沿用，用下划线
+   前缀私有字段。不定义 `__eq__` → identity 相等。在 `RemoteToolProxy`
+   docstring 记录原理（5 节：定位、为何手写 `__init__`、`Debug+Clone`→共享
+   引用、`Arc`→强引用、`should_list` 未重写）。
+2. **未用 import 风险**：一度为 `RemoteToolProxy` 加
+   `from dataclasses import dataclass` 意在用 `@dataclass`。改用手写
+   `__init__` 后该 import 会触发 F401。**修复**：撤销该 import 编辑。
+3. **`execute` 委托测试策略**：`execute` 调用 `dispatch_via_connection`
+   （R124 已测）。本轮不重测 `dispatch_via_connection`，只验证委托：
+   `monkeypatch` spy 替换 `remote_mod.dispatch_via_connection`，断言参数顺序
+   `(connection, tool_id, session_id, args, ctx)` + 返回流透传。`execute`
+   方法体通过 `LOAD_GLOBAL` 查找模块级 `dispatch_via_connection`，
+   monkeypatch 替换模块属性生效。
+4. **import 路径与 resolver.py 完全对齐**：`ToolCapabilities`←tool_protocol，
+   `ListToolsContext` / `ToolStream`←tool_runtime，`ToolDescription`←tool_types，
+   `ToolHandle`←resolver。ruff `--fix` 处理 isort 排序（I001 fix 安全，精确到
+   测试文件）。
+5. **循环导入安全**：`remote.py` 导入 `resolver.ToolHandle`；桶顺序
+   （local→resolver 在 remote 之前）意味着 remote 导入时 resolver 已在
+   `sys.modules`。`resolver.py` 不反向导入 remote。
+6. **`RemoteToolProxy` 不加入 `__all__`**：Rust `pub(crate)`；与它组装的私有
+   `RequestStream` / `dispatch_via_connection` 同级私有。测试按裸名从 remote
+   模块导入（Python 不强制 `__all__` 用于显式 import）。
+
+### 验证
+
+- `ruff check`（精确作用域 `remote.py` + 测试 + `__init__.py`）：
+  **All checks passed**。
+- `pytest tests/test_computer_hub_core_remote.py`：**127 passed**（R124 时
+  109 + R125 新增 18，0.97s，0 回归）。
+- `pytest` 6 叶子全回归（transport/registry/resolver/inner/local/remote）：
+  **254 passed**（R124 时 236 + R125 新增 18，0.97s）。
+
+### YAGNI 边界
+
+- **不**实现 `RemoteTransport`（layer-2 的第 2 个 impl，消费
+  `ConnectionClient` + 实现 R115 `Transport`，留 R126）。本轮只落地
+  `RemoteToolProxy`。
+- **不**把 `RemoteToolProxy` 加入 `__all__` / barrel 重新导出（Rust
+  `pub(crate)`；泄漏实现细节）。
+- **不**合成 `__copy__` / `__deepcopy__`（Rust `Clone` 当作"共享引用"，Python
+  原生引用语义已提供）。
+- **不**重写 `should_list`（Rust 留给默认 `true`；与 `ErasedTool` 的重写形成
+  刻意的对偶）。
+- **不**修改 R117 `ToolHandle` / R124 `dispatch_via_connection` / R122
+  `ConnectionClient` 的任何既有行为（纯新增子类，零侵入）。
+- **不**引入新的 IPC 契约变更（`RemoteToolProxy` 是 computer_hub_core 内部
+  `pub(crate)`，不经 IPC 暴露）。
+
+### Commit
+
+feat(platform): R125 migrate remote.rs layer-2 RemoteToolProxy (ToolHandle impl)
