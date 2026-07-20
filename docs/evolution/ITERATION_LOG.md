@@ -13472,3 +13472,66 @@ Rust `run_handshake`（934-959）是一个 26 行的 thin orchestrator：转发 
 ### Commit
 
 `feat(platform): R163 port run_handshake handshake orchestrator bridge (SDK leaf 19b)` — 精确 `git add` 3 文件（connection.py + test_connection.py + ITERATION_LOG.md），131 测试通过。
+
+## R164 — reconnect_and_replay 重连编排收官（SDK leaf 19c，connection.rs 最后一个顶级函数）
+
+锚点:R164-1 5a393ee
+
+### 本轮目标
+
+SDK leaf 19c — 重连编排收官。前向移植 `grok-build/crates/common/xai-computer-hub-sdk/src/connection.rs:1301-1370 reconnect_and_replay`。这是 `connection.rs` **最后一个未迁移的顶级函数**——网络半段三剑客（`open_socket` R162 → `run_handshake` R163 → `reconnect_and_replay` R164）的终点，也是整个 `connection.rs`（约 1370 行 + 1310 行测试块）顶级函数层的收尾里程碑。它编排一次完整的重连尝试：fresh cred → `open_socket`(R162) → `split_ws`(注入) → `run_handshake`(R163) → Harness-only 会话重放 → 重连指标 → 共享状态交接（connection_id + hello_capabilities + on_reconnect）→ 返回 `(sink, stream)` 供稳态消费。复用 R162 的 `WebSocketDial`/`WebSocketSplit` 依赖注入模型 + R150 的 `_ConnectionIdSlot`/`_HelloCaps` 同步 slot + R163 的 `run_handshake` 编排层。本轮闭合 leaf 哲学的最后一块拼图（小步、可测、闭合编排链）。
+
+### 融合结论
+
+Rust `reconnect_and_replay`（1301-1370）是 70 行的端到端重连编排器：调用方拥有重试/退避循环，本函数恰好执行一次尝试。它的核心是 **best-effort 会话重放**——仅 Harness 角色，遍历 `inner.bound_sessions` 的每个 sid，构造 `session_open` 请求（`resume=false`），`serde_json::to_string` + `sink.send` + `timeout(5s, stream.next)` 三步全部用 `let _ =` 吞掉失败。语义：重放是尽力而为，一个死会话不能中止整个重连。
+
+Python 移植精确复刻：
+- **`ws.split()` 缝隙**：Rust `tokio_tungstenite::WebSocketStream::split()` 无 Python stdlib 等价，通过 `split_ws: WebSocketSplit` 参数依赖注入——对称于 R162 的 `dial: WebSocketDial` 注入。真实 `websockets`/`aiohttp` → HandshakeSink/HandshakeStream 适配器是未来真实 WS 接线的缝隙；测试注入脚本化 fake。
+- **async 锁 → sync slot**：Rust `inner.connection_id.lock().await`（async mutex）→ `_ConnectionIdSlot.set`（sync）；`inner.hello_capabilities.write()`（async RwLock write）→ `_HelloCaps.replace`（sync）。两个 slot 都是 `threading.Lock` 守卫 + GIL 下触碰，热重连路径无 await——延续 R150 health/write-error-slot 约定。
+- **UUID v7 → uuid4**：Rust `JsonRpcId::new_uuid_v7()` 无 Python stdlib 生成器，复用项目全仓 fallback（`remote.py`/`context.py`）`JsonRpcIdString(value=str(uuid.uuid4()))`，verbatim 采用（见 `tool_protocol.envelope` 的 deferred 注释）。
+- **best-effort 三连吞**：`serde_json::to_string`/`SinkExt::send`/`tokio::time::timeout(StreamExt::next)` + `let _ =` → `json.dumps`/`sink.send_text`/`asyncio.wait_for(stream.__anext__(), 5)` + `except Exception: pass`。序列化失败跳过发送，发送/接收失败吞掉；`StopAsyncIteration`（流结束）与 `TimeoutError`（5s 预算）同样被吞——入站回复要么被丢弃（demux 拥有真实分发）。
+- **指标双发 + 14 字段日志**：`reconnect_cause(cause.label())` + `reconnect_gap_observe(silent_gap)` 两个 metrics + 一条 14 字段 `_LOGGER.info`（含 `silent_gap_ms = time.monotonic() - outage.last_inbound_mono`）。
+
+### 交付
+
+**`agent/minimax_code/computer_hub_sdk/connection.py`**（新增 `reconnect_and_replay`，+3 处 import）：
+- 新增 import：`time`（stdlib，插在 json 之后）、`uuid`（stdlib，time 之后）、`from minimax_code.tool_protocol.envelope import JsonRpcIdString, JsonRpcRequest, JsonRpcVersion, Method, SessionOpenParams`（按 isort：frames < envelope < handshake < ids）
+- `async def reconnect_and_replay(inner, url, attempt, outage, backoff_total, dial, split_ws) -> tuple[HandshakeSink, HandshakeStream]`（1836-1967，全 positional-or-keyword 参数，无 `*` 分隔）：(1) `fresh_cred = inner.credential.current()` (2) `open_socket(url, fresh_cred, inner.kind, inner.alpha_test_key, inner.allow_insecure_ws, dial)` (3) `split_ws(ws)` (4) `run_handshake(sink, stream, inner.kind, inner.server_id, inner.server_description, inner.server_metadata)` (5) Harness-only 重放循环 (6) `silent_gap_ms` + 14 字段 `_LOGGER.info` (7) `reconnect_cause` + `reconnect_gap_observe` (8) `inner.connection_id.set(ack.connection_id)` (9) `inner.hello_capabilities.replace(list(ack.capabilities or []))` (10) `on_reconnect` None 守卫 + `ReconnectEvent(connection_id, sessions_replayed, attempt)` 分发 (11) `return sink, stream`。完整 docstring 记录 Rust 行号、6 条 tokio→asyncio 适配、best-effort 语义、UUID fallback。
+
+**`agent/tests/test_connection.py`**（+10 测试，3 处 import 扩展，8 个 helper）：
+- import 扩展：`time`（dataclasses/json 之间）、`reconnect_and_replay`（connection 导入，字母序 `open_socket < reconnect_and_replay < route_or_pong`）
+- 模块级哨兵（B008-safe，object 非调用）：`_CRED_SENTINEL`/`_DIAL_SENTINEL`/`_WS_SENTINEL`
+- 8 个 helper：`_CrededAuth`（current→哨兵）、`_OpenSocketSpy`（记录 6 参数 + 返回 ws）、`_SplitSpy`（记录 ws + 返回 sink/stream 对）、`_ReplaySink`（`__init__(*, send_exc=None)` + `send_text` 记录到 `.sent`）、`_ReplayStream`（`__init__(*, exc=None)` + `__aiter__`/`__anext__` 引发 exc 或 StopAsyncIteration）、`_ReconnectRecorder`（`__call__` 追加到 `.events`）、`_replay_ack_wire(*, connection_id="conn-7", capabilities=None)`、`_replay_outage(*, cause=None)`、`_replay_inner(*, kind, sessions=(), on_reconnect=None, credential=None, server_id=None, ...)`（直接构建 `HubConnectionInner`）、`_drive_replay(monkeypatch, inner, *, ack, sink, stream, ws=_WS_SENTINEL, attempt=3)`（monkeypatch `open_socket`+`send_hello`，注入 `_SplitSpy`，返回 `SimpleNamespace(sink, stream, open_spy, split_spy, handshake_spy)`）
+- 10 测试：(1) threads_fresh_credential_and_open_socket_args (2) splits_ws_and_threads_pair_to_handshake (3) tool_server_skips_session_replay (4) harness_replays_each_bound_session (5) session_open_request_is_well_formed（jsonrpc=="2.0", method=="session_open", session_id=="s1", params=={"resume":False}, isinstance(payload["id"], str)——验证 JsonRpcIdString untagged 裸 str 序列化）(6) swallows_send_failure_during_replay (7) swallows_recv_timeout_during_replay（`TimeoutError()`，UP041 后）(8) updates_connection_id_and_capabilities（`connection_id.get()==ConnectionId("conn-42")`, `hello_capabilities.snapshot()==["streaming","telemetry"]`）(9) dispatches_on_reconnect_event (10) skips_callback_when_on_reconnect_none
+
+### 映射决策树 + 坑
+
+1. **类名遮蔽坑 #1（`_RecordingSink` → `_ReplaySink`）**：首次 pytest 报 `AttributeError: '_RecordingSink' object has no attribute 'recorded'`——writer-suit 原有 `class _RecordingSink`（1200 行，`.recorded`/`.pings`/`.fail`/`send_text`/`send_ping`）被我的 R164 `class _RecordingSink`（2635 行，`.sent`）**遮蔽**（Python"最后定义获胜"，同模块两个 `class` 后者覆盖前者）。修复：行范围 Python 脚本，仅从 R164 块标记 `# reconnect_and_replay -- reconnect orchestration finale` 起重命名 `_RecordingSink`→`_ReplaySink`——writer-suit 未触碰。**教训：在既有大测试文件追加新 helper 时，必须 grep 确认类名在文件内唯一，否则遮蔽既有 suite。**
+
+2. **类名遮蔽坑 #2（`_ScriptedStream` → `_ReplayStream`）**：第二次 pytest 报 `TypeError: _ScriptedStream.__init__() takes 1 positional argument but 2 were given`——17 个 reader/actor-suit 测试失败（如 2050 行 `_ScriptedStream([WsReadError("boom")])`）。同根因：我的 R164 `class _ScriptedStream`（`__init__(*, exc=None)` 仅关键字）遮蔽 reader-suit `_ScriptedStream`（位置参数列表构造器）。同一行范围脚本重命名 `_ScriptedStream`→`_ReplayStream`。**两个坑同源：测试文件已达 3000+ 行，helper 类名碰撞风险随规模上升。**
+
+3. **UP041 坑（`asyncio.TimeoutError()` → `TimeoutError()`）**：ruff UP041 规则要求用内置 `TimeoutError` 而非 `asyncio.TimeoutError`（3.11+ 后者是前者的别名，语义相同）。`_ReplayStream(exc=TimeoutError())` 触发重放循环的 `except Exception: pass`——`issubclass(TimeoutError, Exception)==True` 验证吞掉正常。**注意：BLE 不在 select 中，`except Exception` 无需 noqa。**
+
+4. **`JsonRpcIdString.to_wire()` 返回裸 str**：envelope.py:155-165 注释"Untagged: serialises as the bare string, no discriminator"——wire dict 中 `payload["id"]` 是 `str` 类型。测试 5 的 `isinstance(payload["id"], str)` 断言据此设计（非 dict、非 int）。
+
+5. **best-effort 重放验证策略**：测试 6（send 失败吞）用 `_ReplaySink(send_exc=RuntimeError())` 驱动 `sink.send_text` 抛错，断言重放循环不传播（后续 session 仍尝试 + 最终返回正常）。测试 7（recv 超时吞）用 `_ReplayStream(exc=TimeoutError())` 驱动 `stream.__anext__` 抛超时，断言 `asyncio.wait_for` 的 `TimeoutError` 被 `except Exception: pass` 吞掉。两者都验证 `issubclass(StopAsyncIteration, Exception)==True` 和 `issubclass(TimeoutError, Exception)==True`——`except Exception` 正确覆盖所有流结束/超时形态。
+
+6. **`_drive_replay` 抽象**：10 个测试共享同一个驱动器（monkeypatch `connection.open_socket` + `connection.send_hello`、注入 `_SplitSpy`、调用 `reconnect_and_replay`）。`send_hello` 被 monkeypatch 是因为 `run_handshake`（R163）内部调用模块级 `send_hello`——R163 已验证 `run_handshake` 透传契约，R164 不重复测 handshake 内部，只 monkeypatch 它的入口。`_SplitSpy` 记录传入的 ws（断言 `open_socket` 返回值原样喂给 `split_ws`）。
+
+7. **isort 顺序精确**：`time` 在 dataclasses/json 之间（stdlib 字母序 json<time<uuid）；`reconnect_and_replay` 在 `open_socket`/`route_or_pong` 之间（`open_socket < reconnect_and_replay < route_or_pong`：o<r；reconnect 中 e 在 r 前）。uuid 在 time 之后（t<u）。首轮 ruff check 即全绿。
+
+### 验证
+
+- `uv run ruff check connection.py test_connection.py` -> **All checks passed!**（UP041 修复后零 --fix；isort 判断精确）
+- `uv run pytest tests/test_connection.py -q` -> **141 passed in 3.55s**（R163 的 131 + R164 的 10 新测试，零回归）
+- 遮蔽 bug 复现→修复链：141 通过前的两次失败（`_RecordingSink` AttributeError + `_ScriptedStream` TypeError）均由行范围重命名脚本解决，writer/reader/handshake/open_socket 回归套件全绿。
+
+### YAGNI 边界
+
+- **真实 WS adapter（`websockets`/`aiohttp` → HandshakeSink/HandshakeStream）不在 R164**：`split_ws: WebSocketSplit` 是依赖注入缝隙，对称于 R162 的 `dial: WebSocketDial`。真实适配器需要绑具体 WS 客户端库的帧到 Protocol，属于"真实网络接线"范畴，超出 connection.rs 纯逻辑移植边界。测试用脚本化 fake 覆盖编排契约。
+- **重试/退避循环（`run_reconnect_loop`，Rust 1310 行外的 spawn 调用方）不在 R164**：`reconnect_and_replay` 的契约是"恰好一次尝试"，调用方拥有 backoff。Rust 的 `RECONNECT_BACKOFF_MS` 表 + `reconnect_attempt_budget` 已在 R150 类型层落地；驱动循环（spawn-pipeline 的 reconnect 臂，R156 已迁移部分纯逻辑 helper）是更高层的编排，留给后续 leaf。
+- **`session_open` 的 `resume=true` + `last_seq` 恢复路径不在 R164**：Rust 当前硬编码 `resume=false`（注释"replay from scratch"），Python 逐字移植。真正的会话恢复（基于 demux 的 last_seq 续传）需要 demux + 序列号状态机的完整接线，超出本轮范围。
+
+### Commit
+
+`feat(platform): R164 port reconnect_and_replay reconnect orchestration (SDK leaf 19c, connection.rs finale)` — 精确 `git add` 3 文件（connection.py + test_connection.py + ITERATION_LOG.md），141 测试通过。connection.rs 最后一个顶级函数收官，网络半段三剑客（open_socket → run_handshake → reconnect_and_replay）闭合。

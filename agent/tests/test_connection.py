@@ -58,6 +58,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import time
 import weakref
 from collections.abc import AsyncIterator, Callable
 from types import SimpleNamespace
@@ -100,6 +101,7 @@ from minimax_code.computer_hub_sdk.connection import (
     host_is_loopback,
     now_unix_millis,
     open_socket,
+    reconnect_and_replay,
     route_or_pong,
     run_handshake,
     run_reader_actor,
@@ -2546,3 +2548,424 @@ async def test_run_handshake_propagates_serde_error(
     monkeypatch.setattr("minimax_code.computer_hub_sdk.connection.send_hello", spy)
     with pytest.raises(SerdeError, match="serialize"):
         await run_handshake(object(), object(), ConnectionKind.ToolServer)
+
+
+# ---------------------------------------------------------------------------
+# reconnect_and_replay -- reconnect orchestration finale (R164, SDK leaf 19c).
+# ---------------------------------------------------------------------------
+_CRED_SENTINEL: Any = object()  # yielded by _CrededAuth.current().
+_DIAL_SENTINEL: Any = object()  # opaque WebSocketDial threaded into open_socket.
+_WS_SENTINEL: Any = object()  # opaque raw ws returned by the open_socket spy.
+
+
+class _CrededAuth:
+    """AuthProvider stand-in whose ``current()`` yields a sentinel (R164).
+
+    Asserts that reconnect_and_replay reads the FRESH credential
+    (``inner.credential.current()``) right before opening the socket, rather
+    than reusing a stale one captured earlier.
+    """
+
+    def current(self) -> Any:
+        return _CRED_SENTINEL
+
+    def principal_key(self) -> PrincipalKey:
+        return PrincipalKey(fingerprint="fp-1")
+
+    def identity(self) -> None:
+        return None
+
+
+class _OpenSocketSpy:
+    """Spy capturing reconnect_and_replay's open_socket delegation (R164).
+
+    Replaces the module-level ``open_socket`` reference so the orchestrator's
+    socket-opening contract is tested in isolation: every arg threaded through
+    verbatim and a ws sentinel returned. The plaintext/loopback/header gates
+    (already covered by the R162 open_socket suite) are not re-exercised here.
+    """
+
+    def __init__(
+        self, *, ws: Any = _WS_SENTINEL, exc: BaseException | None = None
+    ) -> None:
+        self._ws = ws
+        self._exc = exc
+        self.captured: dict[str, Any] = {}
+
+    async def __call__(
+        self,
+        url: str,
+        credential: Any,
+        kind: ConnectionKind,
+        alpha_test_key: str | None,
+        allow_insecure_ws: bool,
+        dial: Any,
+    ) -> Any:
+        self.captured = {
+            "url": url,
+            "credential": credential,
+            "kind": kind,
+            "alpha_test_key": alpha_test_key,
+            "allow_insecure_ws": allow_insecure_ws,
+            "dial": dial,
+        }
+        if self._exc is not None:
+            raise self._exc
+        return self._ws
+
+
+class _SplitSpy:
+    """Spy capturing reconnect_and_replay's split_ws delegation (R164).
+
+    The real ``ws.split()`` (tokio_tungstenite) has no Python-WS analog, so the
+    sink/stream split is dependency-injected; this spy records the raw ws handed
+    to the splitter and returns the test's pre-built sink/stream pair.
+    """
+
+    def __init__(self, sink: Any, stream: Any) -> None:
+        self._sink = sink
+        self._stream = stream
+        self.captured_ws: Any = None
+
+    def __call__(self, ws: Any) -> tuple[Any, Any]:
+        self.captured_ws = ws
+        return self._sink, self._stream
+
+
+class _ReplaySink:
+    """Fake HandshakeSink recording ``send_text`` invocations (R164).
+
+    Only ``send_text`` is exercised by the session-replay loop (the handshake
+    itself is short-circuited by the ``_RecordingHandshake`` spy); the optional
+    ``send_exc`` models a transport write failure that the best-effort replay
+    must swallow without aborting the reconnect.
+    """
+
+    def __init__(self, *, send_exc: BaseException | None = None) -> None:
+        self.sent: list[str] = []
+        self._send_exc = send_exc
+
+    async def send_text(self, text: str) -> None:
+        if self._send_exc is not None:
+            raise self._send_exc
+        self.sent.append(text)
+
+
+class _ReplayStream:
+    """Fake HandshakeStream: one scripted exception then end (R164).
+
+    ``asyncio.wait_for(stream.__anext__(), 5)`` runs once per replayed session;
+    the reply is discarded, so the stream only needs to raise a scripted error
+    (swallowed) and then stop. A real ``asyncio.TimeoutError`` models the 5s
+    budget elapsing without paying the wall-clock cost (the exception fires
+    immediately from ``__anext__``, so ``wait_for`` propagates at once). Both
+    ``StopAsyncIteration`` and ``asyncio.TimeoutError`` are ``Exception``
+    subclasses, so the orchestrator's ``except Exception`` arm catches either.
+    """
+
+    def __init__(self, *, exc: BaseException | None = None) -> None:
+        self._exc = exc
+
+    def __aiter__(self) -> _ReplayStream:
+        return self
+
+    async def __anext__(self) -> Any:
+        if self._exc is not None:
+            raise self._exc
+        raise StopAsyncIteration
+
+
+class _ReconnectRecorder:
+    """Captures on_reconnect callback invocations (R164, avoids E731 lambda)."""
+
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    def __call__(self, event: Any) -> None:
+        self.events.append(event)
+
+
+def _replay_ack_wire(
+    *, connection_id: str = "conn-7", capabilities: list[str] | None = None
+) -> dict[str, Any]:
+    """A hello_ack wire dict for the reconnect suite (R164).
+
+    Unlike the shared ``_hello_ack_wire`` (R163, capability-free), this helper
+    optionally carries ``capabilities`` so the cap-replace branch can be
+    exercised with a non-empty list.
+    """
+    wire: dict[str, Any] = {
+        "connection_id": connection_id,
+        "user_id": "user-7",
+        "computer_hub_version": "hub-0.1.0",
+        "supported_protocol_versions": ["1.0.0"],
+    }
+    if capabilities is not None:
+        wire["capabilities"] = capabilities
+    return wire
+
+
+def _replay_outage(*, cause: Any | None = None) -> OutageInfo:
+    """A minimal OutageInfo for reconnect_and_replay (R164).
+
+    Only ``cause`` (for the metric label) and ``last_inbound_mono`` (for the
+    silent-gap sample) are read by the orchestrator; the remaining fields ride
+    along verbatim into the info log line and are not asserted on.
+    """
+    return OutageInfo(
+        cause=cause if cause is not None else Eof(),
+        prev_connection_id=None,
+        prev_connection_duration_ms=1_000,
+        last_inbound_mono=time.monotonic() - 1.0,
+        detect_ms=42,
+        since_last_probe_monotonic_ms=5,
+        since_last_probe_wall_ms=6,
+        clock_jump_ms=0,
+    )
+
+
+def _replay_inner(
+    *,
+    kind: ConnectionKind,
+    sessions: tuple[str, ...] = (),
+    on_reconnect: Callable[[Any], None] | None = None,
+    credential: Any | None = None,
+    server_id: ServerId | None = None,
+    server_description: str | None = None,
+    server_metadata: Any = None,
+) -> HubConnectionInner:
+    """Build a HubConnectionInner wired to fresh channels (R164).
+
+    ``_make_inner`` hard-codes kind/credential/bound_sessions for the writer /
+    reader suites; reconnect_and_replay needs Harness kind, populated sessions,
+    a sentinel credential, and an on_reconnect callback, so this dedicated
+    builder constructs the inner directly with mock channels.
+    """
+    outbound_tx, _ = mpsc_channel(8)
+    stop_tx, _ = mpsc_channel(8)
+    reconnect_tx, _ = mpsc_channel(8)
+    bound: RefCountedSet = RefCountedSet()
+    for sid in sessions:
+        bound.increment(SessionId(sid))
+    return HubConnectionInner(
+        key=ConnKey("ws://hub", PrincipalKey(fingerprint="fp-1")),
+        kind=kind,
+        credential=credential if credential is not None else _FakeAuth(),
+        reconnect_backoff=(1.0, 2.0),
+        outbound_tx=outbound_tx,
+        demux=Demux(),
+        bound_sessions=bound,
+        stop_tx=stop_tx,
+        reconnect_tx=reconnect_tx,
+        on_reconnect=on_reconnect,
+        server_id=server_id,
+        server_description=server_description,
+        server_metadata=server_metadata,
+    )
+
+
+async def _drive_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    inner: HubConnectionInner,
+    *,
+    ack: HelloAckMsg,
+    sink: Any,
+    stream: Any,
+    ws: Any = _WS_SENTINEL,
+    attempt: int = 3,
+) -> SimpleNamespace:
+    """Wire the open_socket + send_hello spies and run reconnect_and_replay (R164).
+
+    Returns a namespace carrying the returned ``(sink, stream)`` pair plus every
+    spy (open_socket, split_ws, handshake) so a test can assert on the exact
+    arg threading without re-wiring the monkeypatch boilerplate each time.
+    """
+    open_spy = _OpenSocketSpy(ws=ws)
+    handshake_spy = _RecordingHandshake(ack=ack)
+    split_spy = _SplitSpy(sink=sink, stream=stream)
+    monkeypatch.setattr("minimax_code.computer_hub_sdk.connection.open_socket", open_spy)
+    monkeypatch.setattr("minimax_code.computer_hub_sdk.connection.send_hello", handshake_spy)
+    sink_out, stream_out = await reconnect_and_replay(
+        inner,
+        "wss://hub/agent",
+        attempt,
+        _replay_outage(),
+        2.0,
+        dial=_DIAL_SENTINEL,
+        split_ws=split_spy,
+    )
+    return SimpleNamespace(
+        sink=sink_out,
+        stream=stream_out,
+        open_spy=open_spy,
+        split_spy=split_spy,
+        handshake_spy=handshake_spy,
+    )
+
+
+async def test_reconnect_and_replay_threads_fresh_credential_and_open_socket_args(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The fresh credential, url, kind, and the injected dial are all threaded
+    # into open_socket verbatim; alpha_test_key/allow_insecure_ws default off.
+    ack = HelloAckMsg.from_wire(_replay_ack_wire())
+    inner = _replay_inner(
+        kind=ConnectionKind.ToolServer,
+        credential=_CrededAuth(),
+        server_id=ServerId("srv-1"),
+        server_description="ci",
+        server_metadata={"k": "v"},
+    )
+    res = await _drive_replay(
+        monkeypatch, inner, ack=ack, sink=_ReplaySink(), stream=_ReplayStream()
+    )
+    cap = res.open_spy.captured
+    assert cap["url"] == "wss://hub/agent"
+    assert cap["credential"] is _CRED_SENTINEL
+    assert cap["kind"] is ConnectionKind.ToolServer
+    assert cap["alpha_test_key"] is None
+    assert cap["allow_insecure_ws"] is False
+    assert cap["dial"] is _DIAL_SENTINEL
+
+
+async def test_reconnect_and_replay_splits_ws_and_threads_pair_to_handshake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The raw ws goes to split_ws; the resulting (sink, stream) pair + kind flow
+    # into run_handshake untouched.
+    ws = object()
+    ack = HelloAckMsg.from_wire(_replay_ack_wire())
+    inner = _replay_inner(kind=ConnectionKind.Harness)
+    sink = _ReplaySink()
+    stream = _ReplayStream()
+    res = await _drive_replay(monkeypatch, inner, ack=ack, sink=sink, stream=stream, ws=ws)
+    assert res.split_spy.captured_ws is ws
+    hcap = res.handshake_spy.captured
+    assert hcap["sink"] is sink
+    assert hcap["stream"] is stream
+    assert hcap["kind"] is ConnectionKind.Harness
+
+
+async def test_reconnect_and_replay_tool_server_skips_session_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only the harness role replays sessions; a tool server with bound sessions
+    # sends nothing on reconnect.
+    ack = HelloAckMsg.from_wire(_replay_ack_wire())
+    inner = _replay_inner(kind=ConnectionKind.ToolServer, sessions=("s1", "s2"))
+    sink = _ReplaySink()
+    await _drive_replay(monkeypatch, inner, ack=ack, sink=sink, stream=_ReplayStream())
+    assert sink.sent == []
+
+
+async def test_reconnect_and_replay_harness_replays_each_bound_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Every still-bound session gets one session_open frame; the stream reply is
+    # discarded (StopAsyncIteration swallowed) so neither session blocks.
+    ack = HelloAckMsg.from_wire(_replay_ack_wire())
+    inner = _replay_inner(kind=ConnectionKind.Harness, sessions=("s1", "s2"))
+    sink = _ReplaySink()
+    await _drive_replay(monkeypatch, inner, ack=ack, sink=sink, stream=_ReplayStream())
+    assert len(sink.sent) == 2
+    sids = {json.loads(msg)["session_id"] for msg in sink.sent}
+    assert sids == {"s1", "s2"}
+
+
+async def test_reconnect_and_replay_session_open_request_is_well_formed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The replay frame is a JSON-RPC 2.0 session_open request: fresh uuid id,
+    # the bound session_id, and resume=False with no last_seq (fresh open).
+    ack = HelloAckMsg.from_wire(_replay_ack_wire())
+    inner = _replay_inner(kind=ConnectionKind.Harness, sessions=("s1",))
+    sink = _ReplaySink()
+    await _drive_replay(monkeypatch, inner, ack=ack, sink=sink, stream=_ReplayStream())
+    payload = json.loads(sink.sent[0])
+    assert payload["jsonrpc"] == "2.0"
+    assert payload["method"] == "session_open"
+    assert payload["session_id"] == "s1"
+    assert payload["params"] == {"resume": False}
+    assert isinstance(payload["id"], str)
+
+
+async def test_reconnect_and_replay_swallows_send_failure_during_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A transport write failure on one session_open must not abort the reconnect
+    # (best-effort replay); the (sink, stream) pair is still returned.
+    ack = HelloAckMsg.from_wire(_replay_ack_wire())
+    inner = _replay_inner(kind=ConnectionKind.Harness, sessions=("s1",))
+    sink = _ReplaySink(send_exc=RuntimeError("write broken"))
+    res = await _drive_replay(
+        monkeypatch, inner, ack=ack, sink=sink, stream=_ReplayStream()
+    )
+    assert res.sink is sink
+
+
+async def test_reconnect_and_replay_swallows_recv_timeout_during_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The 5s recv budget elapsing (asyncio.TimeoutError) on the discarded reply
+    # is swallowed per session; multiple sessions each pay the cost independently.
+    ack = HelloAckMsg.from_wire(_replay_ack_wire())
+    inner = _replay_inner(kind=ConnectionKind.Harness, sessions=("s1", "s2"))
+    sink = _ReplaySink()
+    stream = _ReplayStream(exc=TimeoutError())
+    res = await _drive_replay(monkeypatch, inner, ack=ack, sink=sink, stream=stream)
+    assert res.stream is stream
+
+
+async def test_reconnect_and_replay_updates_connection_id_and_capabilities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The fresh ack's connection_id replaces the slot and its capabilities
+    # replace the hello caps (a None caps list collapses to empty).
+    ack = HelloAckMsg.from_wire(
+        _replay_ack_wire(connection_id="conn-42", capabilities=["streaming", "telemetry"])
+    )
+    inner = _replay_inner(kind=ConnectionKind.ToolServer)
+    await _drive_replay(
+        monkeypatch, inner, ack=ack, sink=_ReplaySink(), stream=_ReplayStream()
+    )
+    assert inner.connection_id.get() == ConnectionId("conn-42")
+    assert inner.hello_capabilities.snapshot() == ["streaming", "telemetry"]
+
+
+async def test_reconnect_and_replay_dispatches_on_reconnect_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # On a successful reconnect the on_reconnect callback fires once with the
+    # fresh connection id, the session count, and the attempt number.
+    ack = HelloAckMsg.from_wire(_replay_ack_wire(connection_id="conn-9"))
+    recorder = _ReconnectRecorder()
+    inner = _replay_inner(
+        kind=ConnectionKind.Harness,
+        sessions=("s1", "s2"),
+        on_reconnect=recorder,
+    )
+    sink = _ReplaySink()
+    res = await _drive_replay(
+        monkeypatch, inner, ack=ack, sink=sink, stream=_ReplayStream(), attempt=5
+    )
+    assert len(recorder.events) == 1
+    event = recorder.events[0]
+    assert event.connection_id == ConnectionId("conn-9")
+    assert event.sessions_replayed == 2
+    assert event.attempt == 5
+    # The returned pair is the split -> handshake passthrough (same objects).
+    assert res.sink is sink
+
+
+async def test_reconnect_and_replay_skips_callback_when_on_reconnect_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With no on_reconnect callback wired, the dispatch branch is skipped
+    # entirely (the `if inner.on_reconnect is not None` guard holds).
+    ack = HelloAckMsg.from_wire(_replay_ack_wire())
+    inner = _replay_inner(kind=ConnectionKind.ToolServer)  # on_reconnect=None.
+    res = await _drive_replay(
+        monkeypatch, inner, ack=ack, sink=_ReplaySink(), stream=_ReplayStream()
+    )
+    assert res.sink is not None
+    assert res.stream is not None

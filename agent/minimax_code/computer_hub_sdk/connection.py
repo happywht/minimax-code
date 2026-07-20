@@ -63,6 +63,7 @@ import json
 import logging
 import threading
 import time
+import uuid
 import weakref
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -90,6 +91,7 @@ from minimax_code.computer_hub_sdk.connection_types import (
     OutageInfo,
     ReadError,
     ReconnectCallback,
+    ReconnectEvent,
     TimedOut,
     WriteError,
     WriteErrorSlot,
@@ -114,8 +116,10 @@ from minimax_code.computer_hub_sdk.handshake import (
     send_hello,
 )
 from minimax_code.computer_hub_sdk.metrics import (
+    reconnect_cause,
     reconnect_duration_observe,
     reconnect_failed,
+    reconnect_gap_observe,
     reconnect_succeeded,
     reconnect_writer_resume,
     serve_replay_timeout,
@@ -133,6 +137,7 @@ from minimax_code.tool_protocol.frames import (
     PongFrame,
     ServeParams,
     ServeResult,
+    SessionOpenParams,
     serve_result_from_wire,
 )
 from minimax_code.tool_protocol.handshake import HelloAckMsg
@@ -1663,6 +1668,29 @@ class WebSocketDial(Protocol):
         ...
 
 
+class WebSocketSplit(Protocol):
+    """Split a raw WS connection into ``(sink, stream)``, dependency-injected (R164).
+
+    Mirrors ``tokio_tungstenite::WebSocketStream::split``: a Rust WS stream
+    splits in-place into a dedicated ``SplitSink`` (write half) and
+    ``SplitStream`` (read half) with no copy. Python WS clients
+    (``websockets`` / ``aiohttp``) expose a single bidirectional object with no
+    native split, so the ``ws -> (HandshakeSink, HandshakeStream)`` adapter is
+    injected here, paralleling :class:`WebSocketDial` (R162). A real adapter
+    wraps the library object in two thin protocol-satisfying facades; tests
+    wire a scripted fake that returns a recording sink + canned stream.
+
+    The call is synchronous (``ws.split()`` performs no I/O -- it only
+    repartitions the stream's internal state), so the Protocol's ``__call__``
+    is not ``async``. This closes the injection gap the :mod:`handshake`
+    module docstring flagged ("the concrete WS adapter lands with
+    connection.rs").
+    """
+
+    def __call__(self, ws: Any) -> tuple[HandshakeSink, HandshakeStream]:
+        ...
+
+
 def _resolve_role_query(url: str, kind: ConnectionKind) -> str:
     """Return ``url`` with the ``role`` query parameter set to ``kind``'s wire value.
 
@@ -1803,3 +1831,137 @@ async def run_handshake(
     """
     ack = await send_hello(sink, stream, kind, server_id, description, metadata)
     return sink, stream, ack
+
+
+async def reconnect_and_replay(
+    inner: HubConnectionInner,
+    url: str,
+    attempt: int,
+    outage: OutageInfo,
+    backoff_total: float,
+    dial: WebSocketDial,
+    split_ws: WebSocketSplit,
+) -> tuple[HandshakeSink, HandshakeStream]:
+    """Reconnect once and replay every still-bound session (SDK leaf 19c, R164).
+
+    Mirrors ``reconnect_and_replay`` (connection.rs:1301-1370) -- the final
+    top-level function of ``connection.rs``. It orchestrates one full reconnect
+    attempt end-to-end: a fresh socket (R162 :func:`open_socket`), the hello /
+    hello_ack handshake (R163 :func:`run_handshake`), a best-effort replay of
+    every still-bound session's ``session_open`` (harness role only), the
+    post-reconnect metrics, and the shared-state hand-off (connection id +
+    hello capabilities + on_reconnect callback). The caller owns the retry /
+    backoff loop; this function is exactly one attempt.
+
+    tokio -> asyncio / Rust -> Python adaptations (no behavior change):
+
+    * ``ws.split()`` (``tokio_tungstenite::WebSocketStream::split``) has no
+      Python stdlib equivalent -- a raw WS client connection is a single
+      bidirectional object, not a ``(sink, stream)`` pair. The split is
+      dependency-injected via ``split_ws`` (a :class:`WebSocketSplit`),
+      mirroring the ``dial`` (:class:`WebSocketDial`) injection of R162. A real
+      adapter wires ``websockets`` / ``aiohttp`` -> HandshakeSink/HandshakeStream;
+      tests wire a scripted fake.
+    * ``inner.connection_id.lock().await`` (async mutex) -> the sync
+      :meth:`_ConnectionIdSlot.set`; ``inner.hello_capabilities.write()``
+      (async RwLock write) -> the sync :meth:`_HelloCaps.replace`. Both slots
+      are ``threading.Lock``-guarded and touched under the GIL, so the Rust
+      async-lock mirrors become sync calls (no await on the hot reconnect
+      path), matching the R150 health / write-error-slot convention.
+    * ``JsonRpcId::new_uuid_v7()`` has no Python stdlib generator; the
+      project-wide fallback (``remote.py`` / ``context.py``) is
+      ``JsonRpcIdString(value=str(uuid.uuid4()))``, adopted verbatim here (see
+      the deferred note in :mod:`tool_protocol.envelope`).
+    * ``outage.last_inbound.elapsed()`` (tokio monotonic ``Instant``) ->
+      ``time.monotonic() - outage.last_inbound_mono``.
+    * ``serde_json::to_string`` / ``SinkExt::send`` /
+      ``tokio::time::timeout(StreamExt::next)`` with ``let _ =`` are mapped to
+      ``json.dumps`` / ``sink.send_text`` /
+      ``asyncio.wait_for(stream.__anext__(), 5)`` with ``except Exception:
+      pass`` -- the replay is best-effort: a serialize failure skips the send,
+      a send/recv failure is swallowed so one dead session cannot abort the
+      whole reconnect. ``StopAsyncIteration`` (stream ended) and
+      ``asyncio.TimeoutError`` (5s budget) are likewise swallowed -- the
+      inbound reply is discarded either way (the demux owns real dispatch).
+    """
+    fresh_cred = inner.credential.current()
+    ws = await open_socket(
+        url,
+        fresh_cred,
+        inner.kind,
+        inner.alpha_test_key,
+        inner.allow_insecure_ws,
+        dial,
+    )
+    sink, stream = split_ws(ws)
+    sink, stream, ack = await run_handshake(
+        sink,
+        stream,
+        inner.kind,
+        inner.server_id,
+        inner.server_description,
+        inner.server_metadata,
+    )
+
+    sessions = inner.bound_sessions.snapshot_keys()
+    if inner.kind == ConnectionKind.Harness:
+        for sid in sessions:
+            req = JsonRpcRequest(
+                jsonrpc=JsonRpcVersion(),
+                id=JsonRpcIdString(value=str(uuid.uuid4())),
+                method=Method.SessionOpen.value,
+                params=SessionOpenParams(resume=False, last_seq=None),
+                session_id=sid,
+            )
+            try:
+                text = json.dumps(req.to_wire())
+            except (TypeError, ValueError):
+                continue
+            try:
+                await sink.send_text(text)
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(stream.__anext__(), timeout=5.0)
+            except Exception:
+                pass
+
+    sessions_replayed = len(sessions)
+    silent_gap_ms = int((time.monotonic() - outage.last_inbound_mono) * 1000)
+    _LOGGER.info(
+        "server reconnect succeeded; attempt=%s sessions_replayed=%s cause=%s "
+        "close_code=%r error_detail=%r prev_connection_id=%r connection_id=%r "
+        "prev_connection_duration_ms=%s silent_gap_ms=%s detect_ms=%s "
+        "backoff_total_ms=%s since_last_probe_monotonic_ms=%s "
+        "since_last_probe_wall_ms=%s clock_jump_ms=%s",
+        attempt,
+        sessions_replayed,
+        outage.cause.label(),
+        outage.cause.close_code(),
+        outage.cause.detail(),
+        outage.prev_connection_id,
+        ack.connection_id,
+        outage.prev_connection_duration_ms,
+        silent_gap_ms,
+        outage.detect_ms,
+        int(backoff_total * 1000),
+        outage.since_last_probe_monotonic_ms,
+        outage.since_last_probe_wall_ms,
+        outage.clock_jump_ms,
+    )
+    reconnect_cause(outage.cause.label())
+    reconnect_gap_observe(silent_gap_ms / 1000.0)
+
+    inner.connection_id.set(ack.connection_id)
+    inner.hello_capabilities.replace(list(ack.capabilities or []))
+
+    if inner.on_reconnect is not None:
+        inner.on_reconnect(
+            ReconnectEvent(
+                connection_id=ack.connection_id,
+                sessions_replayed=sessions_replayed,
+                attempt=attempt,
+            )
+        )
+
+    return sink, stream
