@@ -12165,3 +12165,164 @@ NOT MIGRATED（框架粘合，无 Python 等价物，后叶处理）：
 ### Commit
 
 feat(platform): R146 migrate metric_donate.rs -> metric_donate.py (SDK leaf 14, Prometheus->OTLP metric conversion + donation policy)
+
+
+## R147 — 迁移 metrics.rs (552) -> metrics.py（SDK 第 15 叶，feature-gated Prometheus facade -> 运行时可注入 recorder）
+
+锚点:R147-1 3de3ad8
+
+### 本轮目标
+
+将 grok-build 的 `xai-computer-hub-sdk/src/metrics.rs`（552 行，feature-gated
+Prometheus facade，36 个 `pub(crate) use inner::*` 埋点函数）前向移植为
+`agent/minimax_code/computer_hub_sdk/metrics.py`。这是 computer_hub_sdk crate 的
+第 15 个叶子（继 R133 error / R134 handshake / R135 refcount / R136 donate_pump /
+R137 trace_donate / R138 connection_borrow / R139 auth / R140 observability /
+R141 cancel / R142 admission / R143 pool / R144 notification / R145 oidc_provider /
+R146 metric_donate 之后）。
+
+metrics.rs 的本质是 **facade + 指标目录**：Rust 用编译时 `#[cfg(feature="metrics")]`
+把同一批 36 个函数切换成「真实 Prometheus 采集」或「空函数体（默认，零依赖）」，
+`pub(crate) use inner::*` 让调用点 `crate::metrics::reconnect_succeeded()` 对
+feature 开关透明。Python 没有 cargo feature gate、也没有 `prometheus_client`
+依赖（R146 在 pyproject.toml 确认），但 facade 的**价值**是 36 个埋点命名 +
+标签 arity 的**目录契约**，以及默认零开销的 no-op 语义。本轮目标 = 既保留目录、
+又保留 facade 语义，且零新增依赖。
+
+### 融合结论
+
+**编译时 feature gate → 运行时 recorder 注入**：metrics.rs 的双 cfg 分支在
+Python 合并为单 facade + 一个**模块级可注入 recorder 单例**。默认 recorder 是
+`NoopRecorder`（= Rust `not(feature="metrics")` 等价——所有 36 个函数体为 no-op，
+零 prometheus_client 依赖、零开销）；`set_recorder()` 注入真实 sink
+（= Rust `feature="metrics")` 等价）。这是 Rust 编译时开关的 Python 运行时等价物，
+对调用点完全透明（`metrics.reconnect_succeeded()` 签名不变），且未来绑定
+`prometheus_client`（或 R146 的 OTLP donation pump）的 recorder 可一次性点亮全部
+36 个埋点，无需改任何调用点。
+
+这是继 R146（metric_donate 的 Prom/OTLP-shape 中性数据类）之后，SDK 遥测链路的
+**第二根支柱**：R146 解决「数据如何转换/分块/上报」，R147 解决「埋点在哪里、
+叫什么、带什么标签」。两者通过 `set_recorder(PrometheusRecorder(...))` 在未来
+叶子接线（prometheus_client 真实注册时）。
+
+### 交付
+
+| 文件 | 行数 | 内容 |
+|------|------|------|
+| `agent/minimax_code/computer_hub_sdk/metrics.py` | 497 | facade 主体：模块级 recorder seam + 36 typed wrapper |
+| `agent/tests/test_metrics.py` | 227 | 10 个测试：no-op 锁定 + spy 路由 + 注入可逆 |
+
+metrics.py 结构：
+- `MetricsRecorder` Protocol（5 方法：`inc`/`inc_by`/`dec`/`set_gauge`/`observe`）——
+  覆盖 36 个埋点用到的全部 Prometheus 操作类型，Protocol 而非具体 prometheus 类，
+  故零依赖。
+- `NoopRecorder`（默认，`__slots__=()`，5 方法全 `...` no-op）。
+- `InMemoryRecorder`（测试/诊断用，记录 `(op,name,value,labels)` 事件列表）。
+- 模块级 `_RECORDER` 单例 + `get/set/reset_recorder`（注入 API；`set` 返回前一个
+  recorder 以便测试 finally 恢复——Rust `cfg(feature)` 的运行时等价）。
+- **36 个 typed wrapper**，每个 1:1 对应一个 Rust 函数，docstring 内嵌全限定
+  Prometheus 指标名 + 标签名 + 操作类型（= 指标目录契约）。按子系统分组：
+  Pool/connection(4) + Reconnect(8) + Call(4) + Harness/session(6) +
+  Hooks/progress/cancel/admission(8) + Inbox/notification(5) + Heartbeat(1) = 36。
+  其中 `harness_connect(status, sampler)` 是唯一 `pub`（Rust `pub use
+  inner::harness_connect`），其余 35 个是 `pub(crate)`。
+
+### 映射决策树 + 坑
+
+1. **`#[cfg(feature="metrics")]` 双分支 → 单 facade + 可注入 recorder**：Rust 的
+   两个 `inner` 模块（真实 vs no-op）合并为 Python 一个 facade。默认 recorder =
+   NoopRecorder（not(feature) 等价）；注入真实 recorder = feature 等价。**不**用
+   Python 的任何条件编译机制（无 sys.flags / 无环境变量开关），纯运行时注入——
+   这是 Rust feature-gate 最忠实的 Python 翻译（feature 的本质就是「是否启用真实
+   实现」，运行时注入精确表达「默认禁用、可选启用」）。
+
+2. **`LazyLock<IntCounter>` × 30 → 一个 `_RECORDER` 单例**：Rust 为每个指标定义一个
+   `LazyLock` 静态（约 30 个），首次访问时 `register_*!` 宏注册。Python 无等价的
+   lazy-static 注册表；合并为**一个**模块级 `_RECORDER` 单例，recorder 自己拥有
+   registry（NoopRecorder 无 registry；未来的 PrometheusRecorder 在首次 inc/observe
+   时 lazily 注册）。30 个 LazyLock → 1 个单例，复杂度大幅下降且语义等价。
+
+3. **`IntCounter.inc()` / `IntGauge.set(n)` / `Histogram.observe(secs)` → recorder
+   方法**：Prometheus 三种操作（counter inc/inc_by、gauge inc/dec/set、histogram
+   observe）映射到 recorder 的 5 个方法（`inc`/`inc_by`/`dec`/`set_gauge`/`observe`）。
+   gauge 的 inc/dec 复用 counter 的 `inc`/`dec`（操作语义相同：+1/-1），`set` 单列
+   `set_gauge`。
+
+4. **`IntCounterVec.with_label_values(&[reason]).inc()` → recorder.inc(name, (reason,))**：
+   标签值作为 tuple 传递（与 Rust `&[...]` slice 平行）。标签**名**（如 `"reason"`、
+   `"cause"`、`"event_type"`、`"status"`、`"sampler"`、`"op"`、`"hook_type"`、
+   `"scope"`）存放在 wrapper 的 docstring 中（recorder 拥有真实 registry 时自行绑定）。
+   facade 只传值、不传名——这与 Rust `with_label_values(&[values...])` 的位置语义
+   一致（Rust 也是按位置传值，名字在宏注册时固定）。
+
+5. **`pub(crate) use inner::*` re-export → `__all__`**：Rust 的 36 个 `pub(crate)`
+   + 1 个 `pub`（harness_connect）在 Python 合并为 `__all__` 列表（42 项：6 个 seam
+   符号 + 36 个 wrapper）。Python 无可见性受限 re-export；harness_connect 的 `pub`
+   特殊性通过 docstring 标注（"Public so callers outside the SDK..."），而非语言
+   机制——因为 Python 的模块级函数默认就是 `pub`，无需特殊处理。
+
+6. **坑：NoopRecorder 方法体用 `...` 而非 `pass`**：`...`（Ellipsis）作为方法体是
+   Python 合法的「intentionally empty」（stub 风格，PEP 8 / typing），明确表达
+   no-op 语义；`pass` 也可，但 `...` 更能呼应 Protocol 的 stub 体风格，且 ruff 无
+   规则反对。已验证 ruff `All checks passed`。
+
+7. **坑：测试用 fixture 恢复 recorder，避免全局状态泄漏**：`@pytest.fixture` 里
+   `set_recorder(installed)` 注入 spy，`yield` 后 `set_recorder(previous)` 恢复。
+   `set_recorder` 返回前一个 recorder 正是为这个 finally 模式设计（R147 自带的
+   契约）。`test_default_recorder_is_noop` 不用 fixture，开头显式 `reset_recorder()`
+   确保从干净状态断言默认 = NoopRecorder，测试顺序无关。
+
+### 验证
+
+```
+cd agent && uv run ruff check minimax_code/computer_hub_sdk/metrics.py tests/test_metrics.py
+→ All checks passed!
+
+cd agent && uv run pytest tests/test_metrics.py -q
+→ .......... [100%]
+→ 10 passed in 0.22s
+```
+
+10 个测试覆盖：
+- `test_default_recorder_is_noop_and_all_36_wrappers_run`：默认 NoopRecorder 下全部
+  36 个 wrapper 无异常运行（锁 36 签名 + Rust not(feature) 等价）。
+- `test_counter_inc_routes_to_fully_qualified_name`：spy 验证无标签 counter inc
+  路由到正确指标名（reconnects_total / pool_evictions_total / no_handler_total）。
+- `test_labeled_counter_records_label_values`：标签 counter 值正确传递
+  （reconnect_failed("handshake_auth") / harness_connect("fallback","shell") /
+  tool_call_inflight_inc("chat")）。
+- `test_histogram_observe_routes_value`：histogram 样本值路由（含 2 标签 session_op）。
+- `test_gauge_set_routes_value`：gauge set（demux_inbox_depth_set(7)）。
+- `test_tool_call_inflight_inc_dec_pair`：gauge inc+dec 配对（hub_tool_call_inflight）。
+- `test_pool_connections_inc_inc_dec_pair`：gauge inc+inc+dec（pool_connections）。
+- `test_inc_by_routes_amount`：counter inc_by 量正确（early_notif_buffered(5)/(3)）。
+- `test_set_recorder_returns_previous_and_restores`：set 返回前一个 + 恢复可逆。
+- `test_reset_recorder_restores_noop_default`：reset 恢复 NoopRecorder 默认。
+
+### YAGNI 边界
+
+**MIGRATED（facade + 目录契约）：** `MetricsRecorder` Protocol（5 方法）+
+`NoopRecorder`（默认 no-op）+ `InMemoryRecorder`（测试）+ `get/set/reset_recorder`
+注入 API + 36 typed wrapper（1:1 对应 Rust 36 函数，全限定指标名 + 标签 arity +
+操作类型全部保留在 docstring = 指标目录）。
+
+**NOT MIGRATED（框架胶水，无 Python 等价物）：**
+- `register_int_counter!` / `register_int_gauge!` / `register_histogram!` /
+  `register_*_vec!` 宏注册——需 `prometheus_client` + 进程 registry。recorder 注入
+  取代：绑定 recorder 自有 registry。
+- `exponential_buckets(0.01, 2.0, 14)` / `exp_buckets(0.0001,2.0,14)` 等直方图桶
+  布局——真实 recorder 提供；facade 不带桶配置（YAGNI：无真实采集时桶布局无意义）。
+- `LazyLock<IntCounter>` × 30 静态单例——Python 无 lazy-static registry；一个
+  `_RECORDER` 单例是最近形状。
+- `#[cfg(feature="metrics")]` 编译时开关——运行时 recorder 注入取代。
+
+**未来接线点（不在本轮）：** 当某个叶子引入 `prometheus_client` 依赖时，实现一个
+`PrometheusRecorder`（`__slots__` registry + lazily 注册 + label 名绑定），通过
+`set_recorder(PrometheusRecorder())` 一次性点亮全部 36 个埋点。或与 R146 的 OTLP
+donation pump 对接：`PrometheusRecorder` 把 `prometheus_client` 的 gather() 喂给
+`metric_donate.convert_families` + `export_metrics`。这些是 connection.rs/demux.rs/
+server.rs/harness.rs 等后期叶子的事，R147 只交付目录 + facade。
+
+### Commit
+
+`feat(platform): R147 migrate metrics.rs -> metrics.py (SDK leaf 15, feature-gated telemetry facade -> runtime-injected recorder, 36-point metric catalog)`
