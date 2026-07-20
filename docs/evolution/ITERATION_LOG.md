@@ -11178,3 +11178,77 @@ feat(platform): R132 xai-tracing crate completion (6 leaves: 5 migrated + 2 YAGN
   tokio R130/http_client R131) + 2 YAGNI; downstream xai-computer-hub-sdk
   landing consumes R127-R131
 - verification: ruff tracing clean; tracing suite 84 passed (5 leaves)
+
+
+## R133 — xai-computer-hub-sdk error.rs -> ClientError 类型契约根（crate 第 1 叶）
+
+锚点:R133-1 a9eac01
+
+### 本轮目标
+
+启动 `xai-computer-hub-sdk` crate 的 Python 前向迁移。该 crate 是 computer-hub 协议的客户端面：拥有连接池、透明重连/replay、harness 侧工具调度面、以及 tool 作者嵌入的 tool-server 运行时。它是 5 个已落地 crate 的下游（`tool_protocol` R82-R106、`tool_runtime` R107-R114、`tool_types` R65、`computer_hub_core` R115-R126、`tracing` R127-R132），是 SDK 运行时叶子（pool/connection/harness/server）接线前的最后一层契约。
+
+**本轮具体目标**：落地 crate 第 1 个叶子 `error.rs`（346 行）-> `computer_hub_sdk/error.py`。`error.rs` 是 SDK barrel 第一个重导出的类型契约根（`lib.rs` line 50 `pub use error::ClientError`），所有运行时叶子（connection/harness/server）通过 `?` 传播 `ClientError`，**必须先落地它，钉死 SDK 错误词汇表，任何运行时代码才能发出它。** 同步落地 barrel `__init__.py`（重导出 ClientError + 13 子类 + lib.rs line 71 的 `is_workspace_unavailable`）+ 9 测试套件。
+
+### 融合结论
+
+**Crate 边界定位**：Rust workspace 将 `xai-computer-hub-sdk` 与 `xai-computer-hub-core` 分开 —— `core` 持有传输无关契约（Principal/Transport/ToolRegistry/RemoteToolProxy/RemoteTransport），`sdk` 增加使用这些契约的客户端运行时（连接池、WebSocket 生命周期、透明重连、harness + tool-server 调度循环）。Python 镜像该拆分：`computer_hub_core`（R115-R126）是契约层，`computer_hub_sdk`（本轮起）是运行时层。
+
+**两层错误洞察（关键）**：SDK 的 `ClientError`（本包）与 `core` 的 `error_from_envelope(JsonRpcError) -> ToolError`（remote.py line 604）是**两个不同的错误层**：`ClientError` 是边界分类法（消费者 switch 于此），`ToolError` 是运行时分类（harness re-provision 循环以此为键）。`is_workspace_unavailable(err: ToolError) -> bool` 作用于 `ToolError`，在 hub_core 和 SDK barrel 中均重导出（lib.rs line 71）。本叶子仅落地 `ClientError` 层；`is_workspace_unavailable` 通过 barrel 从 hub_core 转出（匹配 lib.rs line 71）。
+
+**13 变体枚举 + 方法的 1:1 映射**：Rust `ClientError` 是 `#[derive(thiserror::Error)]` 枚举，通过 `?` 传播，带 6 个 `From` impl。Python 的地道等价物是**异常层级结构**：`ClientError(Exception)` 基类 + 每个变体一个子类。6 个 `From` impl 折叠为调用点的 `raise Subclass(str(src)) from src`（SDK 的 WebSocket/serde/url 消费者落在后续叶子的 `connection.rs`/`harness.rs`；本模块是类型契约，不是胶水）。变体命名与 Rust 枚举臂 1:1（`NetworkError`/`HandshakeAuthFailed`/`InsecureScheme`...），唯一重命名 `Serde` -> `SerdeError`（裸 `Serde` 类名读起来像序列化库而非异常）。
+
+### 交付
+
+**3 个新文件**：
+
+1. `agent/minimax_code/computer_hub_sdk/error.py`（~320 行）—— ClientError 异常层级：
+   - 模块常量：`_AUTH_CODES = frozenset({-32002, -32003})`、`_NETWORK_CODE = -32004`、`_PROTOCOL_RANGE = (-32600, -32500)`。
+   - `_try_decode_wire(data) -> ToolErrorWire | None`：封装 `tool_error_wire_from_wire(data)`，捕获 `ValueError`（未知 code）/`KeyError`（缺失 code）-> `None`。
+   - `ClientError(Exception)` 基类：`_has_collapsed_jsonrpc_subcode`/`is_server_not_found`/`is_tool_unavailable` + 3 个 classmethod 工厂（`from_jsonrpc_error`/`from_wire`/`from_handshake_error`）。
+   - 13 个子类，每个 `__init__` 逐字复现 `#[error]` 格式串（`str(error)` 匹配 Rust Display）。`Wire` 持 `wire: ToolErrorWire`，`HandshakeAuthFailed` 持 `status: int`，`InsecureScheme` 持 `url: str`，`CallIdInUse` 持 `call_id: str`。
+
+2. `agent/minimax_code/computer_hub_sdk/__init__.py`（barrel 起步）—— 重导出 `is_workspace_unavailable`（来自 `computer_hub_core`，匹配 lib.rs line 71）+ `ClientError` + 13 子类。Docstring 含 crate 总览 + 叶子顺序框架（error = 第 1 叶）+ 双错误层说明。
+
+3. `agent/tests/test_computer_hub_sdk_error.py`（9 测试 + 2 辅助）—— 镜像 error.rs 的 9 个 `#[test]`：
+   - `_FakeHttpUpgradeError`（带 `.status` 属性，替代 `tungstenite::Error::Http`）。
+   - `_workspace_gone_envelope()` 辅助：`JsonRpcError(code=-32005, message="workspace server gone", data=workspace_unavailable_wire(Disconnect, RouteMissing).to_wire())`。
+   - 9 测试：handshake 401/403、handshake 非 auth 状态（500/502/429）、from_jsonrpc_error 保留 workspace subcode+details、is_server_not_found 识别裸 -32601、is_tool_unavailable 识别裸 -32013、is_server_not_found 拒绝其他错误、bind 识别器互斥、SDK 重导出识别器匹配解码错误、SDK 重导出识别器拒绝无关 Custom。
+
+### 映射决策树 + 坑
+
+**Display 字符串保真**：每个子类 `__init__` 调 `super().__init__(f"...")` 逐字复现 `#[error("...")]` 格式串。`#[error(transparent)]` 的 `Wire` 臂委托给内部 `ToolErrorWire` Display（`str(wire)`，Custom 渲染为 `"custom: <subcode> — <message>"`，em-dash U+2014）。
+
+**from_jsonrpc_error 映射**：若 `data` 存在 + 解码为 `ToolErrorWire` -> `from_wire`；否则 code 匹配：`-32002|-32003` -> `AuthError`、`-32004` -> `NetworkError`、`-32600..=-32500` -> `ProtocolError`、否则 -> `Wire(Custom{subcode: f"jsonrpc_{code}", message, details:None})`。
+
+**from_wire 映射**：`PermissionDenied{reason}` -> `AuthError(reason)`、`TransportClosed{tool_id}` -> `NetworkError(f"transport closed for {tool_id}")`、`UnsupportedProtocolVersion{supported}` -> `ProtocolError(f"unsupported protocol; supported: {supported!r}")`、否则 -> `Wire(other)`。
+
+**from_handshake_error 映射（无 tungstenite）**：探测异常的 `.status` 属性（未来 WS adapter 将设置的契约），`401/403` -> `HandshakeAuthFailed(status)`，否则 -> `NetworkError(str(err))`。Rust 原版从类型化 `tungstenite::Error::Http` 变体提取 status；Python 的 WS 传输层落在后续叶子的 `connection.rs`，故此版本探测 `.status` 并回退到兜底 `NetworkError`。
+
+**坑 1（枚举成员名大小写）**：`WorkspaceGoneReason`/`WorkspaceGonePhase` 是 PascalCase 成员名（`Disconnect`/`RouteMissing`，值才是 `"disconnect"`/`"route_missing"`），不是 SCREAMING_CASE。首版测试误用 `DISCONNECT`/`ROUTE_MISSING` -> `AttributeError`。修正为 `Disconnect`/`RouteMissing`。
+
+**坑 2（ruff I001 import 别名排序）**：`from minimax_code.tool_protocol.error_wire import (Custom, PermissionDenied, ..., from_wire as tool_error_wire_from_wire)` 单块因别名 `from_wire as` 触发 I001。ruff `--fix` 将其拆为两块：一块导入具名符号，一块独立 `from ... error_wire import (from_wire as tool_error_wire_from_wire)`，符合 isort 对别名的规范。
+
+### 验证
+
+```
+cd agent && uv run ruff check minimax_code/computer_hub_sdk/
+-> All checks passed!
+
+cd agent && uv run pytest tests/test_computer_hub_sdk_error.py -q
+-> 12 passed in 0.33s   (9 基础测试 + parametrize 扩展)
+```
+
+- ruff I001 修复后清洁（scope-only `--fix minimax_code/computer_hub_sdk/error.py`，零附带损害）。
+- 枚举成员名修正后 9 测试全绿 + 3 原失败测试（经 `_workspace_gone_envelope` helper）转绿。
+- `__init__.py` barrel 导入链验证：`from minimax_code.computer_hub_sdk import is_workspace_unavailable, ClientError` 在 `test_sdk_reexported_recognizer_*` 两个测试中实际执行通过。
+
+### YAGNI 边界
+
+1. **6 个 Rust `From` impl 未迁移为 Python 等价物**：`From<tungstenite::Error>`、`From<serde_json::Error>`、`From<url::ParseError>`、`From<ToolErrorWire>`、`From<JsonRpcError>`、`From<http::StatusCode>`。Python 没有类型级 `From` trait；这些是消费端胶水，落在后续运行时叶子（`connection.rs` WS adapter、`harness.rs` JSON 处理）的调用点，用 `raise Subclass(str(src)) from src` 表达。本模块是类型契约，不是胶水。
+2. **`http_upgrade_error(status)` 测试辅助（tungstenite builder）未迁移**：Rust 用它构造 `tungstenite::Error::Http(Response)` 来 exercise `from_handshake_error` 的 status 提取。Python 无 tungstenite；以 `_FakeHttpUpgradeError(Exception)` 带 `.status` 属性替代（SDK 探测 `.status` 的契约在未来 WS adapter 落地时设置）。
+3. **`ClientError` 不是 dataclass/pydantic**：异常携带的 `status`/`url`/`call_id` 字段以普通实例属性 + 类注解表达（`status: int`），不引入 dataclass 装饰器开销。Display 字符串在 `__init__` 内构造（`super().__init(fmt)`），匹配 Rust `#[error]` 语义。
+
+### Commit
+
+feat(platform): R133 xai-computer-hub-sdk error.rs -> ClientError taxonomy (crate leaf 1)
