@@ -11252,3 +11252,86 @@ cd agent && uv run pytest tests/test_computer_hub_sdk_error.py -q
 ### Commit
 
 feat(platform): R133 xai-computer-hub-sdk error.rs -> ClientError taxonomy (crate leaf 1)
+
+
+## R134 — xai-computer-hub-sdk handshake.rs -> transport-agnostic handshake driver（crate 第 2 叶）
+
+锚点:R134-1 d3a2aff
+
+### 本轮目标
+
+落地 `xai-computer-hub-sdk` crate 第 2 叶 `handshake.rs`（93 行）-> `computer_hub_sdk/handshake.py`。`send_hello` 是 WebSocket 升级后的首个交换：客户端发 `HelloMsg`，hub 回 `HelloAckMsg`，SDK 在任一失败处抛出类型化 `ClientError`。把 driver 拆到独立模块让后续的 connection 状态机（更晚的叶子）保持可读：发帧、解析 ack、抛类型化错误。
+
+**核心挑战**：`send_hello` 是泛型 async fn（`Si: SinkExt<Message>` / `St: StreamExt<Item = Result<Message, tungstenite::Error>>`），深度依赖 WebSocket 帧层（`tungstenite::Message` 的 6 变体 Text/Binary/Ping/Pong/Close/Frame）。MiniMax Code **无 WebSocket 客户端依赖**（仅 FastAPI 服务端）。
+
+**映射策略**：transport-agnostic 抽象 —— 落地 `HandshakeSink`/`HandshakeStream` typing.Protocol + `HandshakeFrame` 联合类型（5 帧变体，省略 tungstenite 的 raw `Frame` 实现细节）+ `build_hello`/`validate_hello_ack` 纯函数 + `send_hello` driver。driver 可被 in-memory fake 测试（无需网络），`connection.rs` 叶子后续接线具体 WS adapter 时直接委托 `send_hello`。
+
+### 融合结论
+
+**Transport 抽象镜像 Rust 泛型**：Rust `send_hello<Si, St>` 用 trait bound 让同一 driver 跑在任何分帧传输上。Python 镜像为两个 `typing.Protocol`（`HandshakeSink`/`HandshakeStream`），键控一个传输无关的 `HandshakeFrame` 总和类型 —— 即 driver 实际检视的 5 个 `tungstenite::Message` 臂（Text/Binary/Ping/Pong/Close）。
+
+**为何现在落地抽象而非推迟整个 driver**：这与 R123（RequestStream Stream 状态机 -> async generator）、R130（spawn_traced）的先例一致 —— 先落地抽象 + 可测试原语，后续 connection.rs 叶子接线具体 WS adapter。现在落地的 driver 让那个 adapter 原样委托 `send_hello`，并让 driver 可用 in-memory fake sink/stream 在无网络下完整 exercise。
+
+**模块可见性匹配 Rust**：lib.rs 是 `pub mod handshake`（line 33）**不** `pub use handshake::*`。Python 镜像：barrel `__init__.py` 不扩展（匹配 R130 tokio.py 先例），caller 通过 `minimax_code.computer_hub_sdk.handshake.send_hello` 完整路径访问。`PROTOCOL_VERSION` 重导出镜像 Rust 模块自身的 `pub use xai_tool_protocol::PROTOCOL_VERSION`，让符号经 SDK 命名空间可达。
+
+### 交付
+
+**2 个新文件**：
+
+1. `agent/minimax_code/computer_hub_sdk/handshake.py`（~230 行）：
+   - `HandshakeFrame` 联合 = `TextFrame | BinaryFrame | PingFrame | PongFrame | CloseFrame`（5 个 `@dataclass` 变体，逐字镜像 driver 检视的 `tungstenite::Message` 臂）。
+   - `HandshakeSink`(Protocol)：`send_text(text)` + `send_pong(payload)`。
+   - `HandshakeStream`(Protocol)：`__aiter__` 返回 `AsyncIterator[HandshakeFrame]`。
+   - `build_hello(kind, server_id, description, metadata) -> HelloMsg`：提升 `HelloMsg{protocol_version: PROTOCOL_VERSION, ...}` 字面量，防 caller 偏离钉死版本。
+   - `validate_hello_ack(ack) -> HelloAckMsg`：镜像 `supported_protocol_versions.iter().any(|v| v == PROTOCOL_VERSION)` 闸门，版本不匹配抛 `ProtocolError`，返回 ack 供链式。
+   - `async def send_hello(sink, stream, kind, server_id, description, metadata) -> HelloAckMsg`：driver 主体。hello 序列化失败 -> `SerdeError`；hello 发送失败 -> `NetworkError`；Text 帧解析失败 -> `ProtocolError`；版本不匹配 -> `ProtocolError`；Ping -> 回 Pong（失败 -> `NetworkError`）；Close -> `Closed(reason)`；Pong -> 跳过；Binary -> `ProtocolError`；流空 -> `NetworkError("server closed before hello_ack")`。
+
+2. `agent/tests/test_computer_hub_sdk_handshake.py`（15 测试 + 2 in-memory fake）：
+   - `_FakeSink`（`fail_text`/`fail_pong` 标志触发 driver 的 `map_err(NetworkError)` 路径）。
+   - `_FakeStream`（固定帧列表，耗尽 `StopAsyncIteration`）。
+   - `_ack_wire(supported)` 辅助构造合法 hello_ack dict。
+   - 5 纯函数测试（build_hello 钉版本/线程可选字段、validate_hello_ack 通过/抛错）。
+   - 10 driver 分支测试（happy/version-mismatch/malformed-json/malformed-shape/ping-pong/pong-fail/skip-pong/close/binary/empty-stream/text-send-fail）。
+
+### 映射决策树 + 坑
+
+**Display/异常映射逐行对齐**：
+- `serde_json::to_string(&hello)?`（`From<serde_json::Error>` -> SerdeError）-> `json.dumps(hello.to_wire())` 捕获 `(TypeError, ValueError)` -> `SerdeError`。
+- `sink.send().map_err(|e| NetworkError("hello send failed: {e}"))` -> `await sink.send_text(text)` 捕获 `Exception` -> `NetworkError`。
+- `serde_json::from_str(text).map_err(ProtocolError("malformed hello_ack: {e}"))` -> `HelloAckMsg.from_wire(json.loads(text))` 捕获 `(ValueError, KeyError, TypeError)` -> `ProtocolError`。
+- 版本不匹配 `ProtocolError("server does not support {PROTOCOL_VERSION}; supported: {:?}")` -> `validate_hello_ack` 用 `!r` 复现 `{:?}` Debug 格式。
+- `sink.send(Pong).map_err(NetworkError("pong send failed: {e}"))` -> `send_pong` 捕获 -> `NetworkError`。
+- `Close(frame) -> Closed("server closed during handshake: {reason}")` ✓。
+- `Binary -> ProtocolError("server sent binary frame during handshake")` ✓。
+- 流结束 `NetworkError("server closed before hello_ack")` ✓。
+
+**坑 1（raw Frame 臂省略）**：Rust `Message::Frame(_)` 臂在 driver 里 `continue`，是 tungstenite codec 的底层 raw 帧实现细节 —— codec 会把片段聚合成高层变体，实际不会到达 driver 的 match。Python WS 库（websockets/anyio）不暴露 raw-frame 变体，故省略。YAGNI 边界声明于模块 docstring。
+
+**坑 2（stream 不捕获 WS 错误）**：Rust `stream.next().await?` 的 `?` 用 `From<tungstenite::Error>` -> NetworkError。但 Python `HandshakeStream` Protocol 只 yield 已分类的 `HandshakeFrame`（传输层解码失败由具体 adapter 在到达 driver 前分类），driver 只见帧臂或 `StopAsyncIteration`。故 driver 不捕获 stream 异常 —— 契约文档化于 `HandshakeStream` docstring。这避免 driver 耦合具体 WS 库的异常类型。
+
+**坑 3（CancelledError 安全）**：Python 3.8+ `asyncio.CancelledError` 继承 `BaseException`，`except Exception` 不误捕。driver 的 sink 错误捕获用 `except Exception`，CancelledError 自然传播，符合 async 取消语义。
+
+### 验证
+
+```
+cd agent && uv run ruff check minimax_code/computer_hub_sdk/handshake.py tests/test_computer_hub_sdk_handshake.py
+-> All checks passed!
+
+cd agent && uv run pytest tests/test_computer_hub_sdk_handshake.py -q
+-> 15 passed in 0.29s
+```
+
+- 一次通过，零缺陷（相比 R133 的 2 个机械缺陷，本轮纯新逻辑无枚举成员名/import 排序陷阱）。
+- 5 纯函数测试 + 10 driver 分支测试全覆盖 `tungstenite::Message` 的 5 个检视臂 + 流结束 + 2 个发送失败路径。
+- in-memory fake `_FakeSink`/`_FakeStream` 结构化满足 `HandshakeSink`/`HandshakeStream` Protocol（鸭子类型，无需 runtime_checkable）。
+
+### YAGNI 边界
+
+1. **`tungstenite::Message::Frame` raw 帧臂省略**：codec 实现细节，Python WS 库不暴露。driver docstring 声明。
+2. **stream 层 WS 错误分类推迟到 connection.rs**：`HandshakeStream` 只 yield 已分类帧或 `StopAsyncIteration`。传输层解码失败（WS 协议错误、连接断开等）由具体 adapter 在到达 driver 前分类成 `HandshakeFrame` 或抛 `NetworkError`。driver 不耦合具体 WS 库异常类型。
+3. **`runtime_checkable` 不加**：`HandshakeSink`/`HandshakeStream` 是结构化子类型 Protocol，测试用 fake 类自然满足结构。无需 `isinstance` 运行期检查（消费端 connection.rs 是静态委托，不是运行期类型闸门）。
+4. **barrel 不扩展**：lib.rs `pub mod handshake`（不 `pub use`），Python 镜像 —— `__init__.py` 不重导出 handshake 符号，匹配 R130 tokio.py 先例。caller 用完整路径 `minimax_code.computer_hub_sdk.handshake.send_hello`。
+
+### Commit
+
+feat(platform): R134 xai-computer-hub-sdk handshake.rs -> transport-agnostic driver (crate leaf 2)
