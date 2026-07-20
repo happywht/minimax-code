@@ -11726,3 +11726,52 @@ feat(platform): R138 migrate xai-computer-hub-sdk connection_borrow.rs -> comput
 ### Commit
 
 `feat(platform): R139 migrate xai-computer-hub-sdk auth.rs -> computer_hub_sdk/auth.py`
+
+## R140 — 迁移 xai-computer-hub-sdk observability.rs -> computer_hub_sdk/observability.py
+
+锚点:R140-1 2c75bd5
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-computer-hub-sdk/src/observability.rs`（275 行，`pub struct ObservabilityBridge` facade）-> `agent/minimax_code/computer_hub_sdk/observability.py`。这是 SDK crate 的第 8 个叶子（R133 error / R134 handshake / R135 refcount / R136 donate_pump / R137 trace_donate / R138 connection_borrow / R139 auth 之后）。ObservabilityBridge 是一个薄 facade：计算 event_type -> 派发 metrics 计数 -> 委托 harness 做 frame 构造 + wire 发送。采用 R132 式拆半策略。
+
+### 融合结论
+
+成功前向移植为纯 Python asyncio facade。核心洞察：observability.rs 的 `match event { ... }` 6 变体 -> snake_case event_type 映射，与 R90 `session_event.py` 每个 variant 的 `to_wire()` 输出的 `event_type` 字段完全一致 -> **复用 `event.to_wire().get("event_type", "unknown")` 而非重新推导 isinstance 链**（DRY：新 variant 只要 to_wire 输出 event_type 就自动适配，"unknown" 兜底防御）。框架胶水半（ToolHarness.emit_session_event + crate::metrics::session_event）声明为 YAGNI 边界：harness 用 `Any | None` 鸭子类型 `await harness.emit_session_event(event)`；metrics 用 `_metrics_session_event` no-op stub（签名预置，metrics.rs 叶子替换 body 不动 emit 调用点）。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/observability.py`（115 行）：模块级纯函数 `_event_type`（to_wire 复用 + unknown 兜底）+ `_metrics_session_event`（YAGNI stub）+ `ObservabilityBridge` 类（`__init__(harness: Any|None, session_id)` / `session_id()` / `has_harness()` / `async emit(event)`）
+- `agent/tests/test_observability.py`（~210 行，9 测试函数 / 14 用例）：`_event_type` 提取/兜底/6 变体参数化 + has_harness false/true + session_id 访问器 + emit 无 harness noop + emit 委托+原样传递 + emit 全 9 变体 smoke
+- 复用 R90 `SessionEvent` union（6 variant）+ `SessionId`（`SessionId(str)` 构造）+ `TurnHookOutcome`/`ToolCallOutcome`/`SessionPhase` enum
+
+### 映射决策树+坑
+
+1. `pub struct ObservabilityBridge { harness: Option<Arc<ToolHarness>>, session_id: SessionId }` -> `class ObservabilityBridge` `__init__(harness: Any|None, session_id: SessionId)`（Arc 无 Python 等价物；ToolHarness 未迁移用 Any）
+2. `ObservabilityBridge::new(h, s)` -> `ObservabilityBridge(h, s)`（Rust 关联函数 -> Python __init__，不加冗余 classmethod，YAGNI）
+3. `session_id() -> &SessionId` -> `session_id() -> SessionId`（Python 引用语义，无 &）
+4. `has_harness() -> bool` -> `has_harness()` 返回 `self._harness is not None`
+5. **`match event { TurnStarted => "turn_started", ... }` -> `_event_type(event) = str(event.to_wire().get("event_type", "unknown"))`**（DRY 关键决策：复用 R90 to_wire 而非 isinstance 链；6 变体映射在 test_event_type_maps_all_six_real_variants 参数化验证）
+6. `crate::metrics::session_event(event_type)` -> `_metrics_session_event(event_type)` no-op stub（签名预置 YAGNI 边界）
+7. `harness.emit_session_event(event).await` -> `await self._harness.emit_session_event(event)`（鸭子类型，harness.rs 2940 行叶子落地后换类型注解不动调用点）
+8. Rust 测试用真实 `ToolHarness::local_only_with` -> Python 用 `SimpleNamespace(emit_session_event=_record)` mock（harness 未迁移）
+9. **坑：SessionId 构造** —— 确认 `SessionId("session-obs-1")`（`_OpaqueId(str)` 子类直接 str 构造，对标 Rust `SessionId::new("...").expect("valid")`），通过 grep 现有测试 `test_computer_hub_core_inner.py:61` 验证
+10. **坑：参数化测试 type hint** —— `event: object` + `# type: ignore[arg-type]`（pytest parametrize 注入 union variant，ruff 宽容）
+
+### 验证
+
+- `uv run ruff check observability.py test_observability.py` -> `All checks passed!`（零人工修复，零 auto-fix）
+- `uv run pytest tests/test_observability.py -v` -> `14 passed in 0.26s`（9 函数 / 14 用例，含 6 参数化变体映射 + 9 事件 smoke 全 outcome 覆盖）
+- 验证范围：`_event_type` 提取逻辑（mock + 真实 6 变体）+ unknown 兜底 + has_harness 双态 + session_id 访问器 + emit 无 harness noop + emit 委托原样传递 + emit 全 9 变体不 panic
+
+### YAGNI 边界
+
+- **不迁移 `ToolHarness`**（harness.rs 2940 行，后续叶子）：bridge 持 `harness: Any|None`，emit 鸭子类型 `await harness.emit_session_event(event)`；类型化访问器 + frame 构造器随 harness 叶子落地。Rust 测试用真实 local_only_with harness，Python 用 SimpleNamespace mock 等价覆盖委托语义。
+- **不迁移 `crate::metrics`**（metrics.rs 552 行，后续叶子）：`_metrics_session_event` no-op stub，签名 `(event_type: str) -> None` 预置，metrics 叶子替换 body 不动 emit 调用点。
+- **不迁移序列化正确性测试**（Rust 4 个 `event.to_wire()` round-trip 测试）：属 R90 session_event 范畴，R140 间接通过 `_event_type` 消费 to_wire 已覆盖。
+- **不加 `new` classmethod**：Rust `ObservabilityBridge::new` 是标准构造，Python `__init__` 等价，不引入冗余 API（对标 R138 `from_connection` 是因 Rust 那里是非 new 关联函数；R140 是 new 本身）。
+- **不在 emit 加 try/except**：fire-and-forget 的异常吞没由 harness 内部 send path 负责（对标 Rust），bridge 不 catch，保持调用栈透明。
+
+### Commit
+
+feat(platform): R140 migrate xai-computer-hub-sdk observability.rs -> computer_hub_sdk/observability.py
