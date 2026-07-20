@@ -11116,3 +11116,65 @@ feat(platform): R131 migrate xai-tracing http_client.rs (crate leaf 5, outbound 
   attach_trace_to_http_request + factory use-surface; TracingMiddleware struct
   itself not re-exported in Rust, factories deferred in Python as YAGNI)
 - regression: 3973 passed (R130 3965 + 8 new), zero regression
+
+## R132 — xai-tracing crate 收官（6 叶子 5 迁移 + 2 YAGNI 边界声明）
+
+锚点:R132-1 ea47e62
+
+### 本轮目标
+
+xai-tracing crate 收官回合。前 5 叶子已迁移（timer R127 / dispatch R128 / fastrace R129 / tokio R130 / http_client R131），剩 2 叶子（grpc_client.rs 388 行 / testing.rs 65 行）评估为 YAGNI，本轮正式声明 crate 完成边界 + 记录 YAGNI 决策树。
+
+### 融合结论
+
+grpc_client.rs YAGNI：MiniMax Code transport 是 HTTP + WebSocket（/rpc + /ws），无 gRPC surface。grpc_client.rs 重度依赖 tonic + tower + tower_http + tracing_opentelemetry（TraceLayer + InjectTraceContextService middleware 栈），无 Python 等价消费者。其纯逻辑核心 attach_trace_to_grpc_request_mut(metadata) 注入 W3C traceparent 到 gRPC metadata——已被 R131 attach_trace_to_http_request(MutableMapping[str, str]) 覆盖：gRPC metadata 是 mapping-shaped，任何未来 gRPC 采用者可直接复用 R131 通用 attach，无需 gRPC-specific 副本。
+
+testing.rs YAGNI：OtelTestEnv 安装 in-memory OTel tracer provider + subscriber guard；otel_span_id_hex / otel_trace_id_hex 从 OTel SpanContext 读 ID。Python landing 用扁平 SpanContext（R129，contextvars 持有），无 OTel SDK，这些 helper 无 Python 等价。parse_traceparent（3 行 str.split('-')）已在 R129 suite 本地定义消费，保持每轮测试自包含（迭代独立性）。
+
+crate 消费总结：xai-computer-hub-sdk 依赖 xai-tracing，SDK landing 将直接消费 R127-R131。
+
+### 交付
+
+修改：
+- `agent/minimax_code/tracing/__init__.py`：barrel docstring later-rounds 段落重写为 "Crate completion" 段落——6 叶子状态表（5 迁移 + 2 YAGNI）+ grpc_client YAGNI 论证（无 gRPC surface + R131 通用 attach 覆盖 metadata 注入）+ testing.rs YAGNI 论证（OTel SDK helper 无 Python 等价 + parse_traceparent 本地定义）+ crate 消费总结（xai-computer-hub-sdk 下游）
+
+### 映射决策树 + 坑
+
+1. grpc_client.rs 迁移 vs YAGNI：决策 YAGNI。论证：(a) MiniMax Code 无 gRPC（HTTP+WebSocket）；(b) tonic/tower/tower_http middleware 栈无 Python 消费者；(c) 纯逻辑核心 metadata 注入已被 R131 通用 MutableMapping attach 覆盖。
+2. testing.rs 迁移 vs YAGNI：决策 YAGNI。论证：(a) OtelTestEnv/otel_span_id_hex/otel_trace_id_hex 依赖 OTel SDK，Python 无；(b) parse_traceparent 3 行已本地定义，抽共享破坏迭代独立性。
+3. 收官形式：决策 barrel docstring "Crate completion" 段落（非代码迁移）。论证：R106 xai-tool-protocol lib.rs 收官先例——收官回合是边界声明 + 对账，docstring-heavy 合理。
+
+坑：无。纯 docstring 收官，无代码逻辑变化，无自纠。
+
+### 验证
+
+- `ruff check minimax_code/tracing/` -> All checks passed!（docstring 改动不影响 lint）
+- tracing 测试套件（timer + dispatch + fastrace + tokio + http_client）-> 84 passed in 0.29s（import 链无破坏，5 叶子测试全绿）
+- 纯 docstring 回合，不跑全量回归（无代码逻辑变化）
+
+### YAGNI 边界
+
+本轮落地：xai-tracing crate 完成边界声明（barrel docstring Crate completion 段落）。
+不落地（YAGNI）：
+- grpc_client.rs（388 行）：MiniMax Code 无 gRPC，纯逻辑核心已被 R131 通用 attach 覆盖。
+- testing.rs（65 行）：OTel SDK 测试 helper，Python 无 OTel 等价；parse_traceparent 已本地定义。
+crate 状态：6 叶子 5 迁移 + 2 YAGNI，实质完成。下游 xai-computer-hub-sdk landing 将消费 R127-R131。
+
+### Commit
+
+feat(platform): R132 xai-tracing crate completion (6 leaves: 5 migrated + 2 YAGNI)
+
+- tracing/__init__.py: barrel docstring later-rounds rewritten as "Crate
+  completion" section
+- grpc_client.rs YAGNI: MiniMax Code has no gRPC surface (HTTP+WebSocket
+  transport); tonic/tower/tower_http middleware stack has no Python consumer;
+  pure-logic metadata injection already covered by R131 generic
+  attach_trace_to_http_request(MutableMapping[str, str])
+- testing.rs YAGNI: OTel SDK test helpers (OtelTestEnv/otel_span_id_hex/
+  otel_trace_id_hex) depend on OTel SpanContext, Python uses flat SpanContext
+  over contextvars (R129) with no OTel SDK; parse_traceparent (3-line split)
+  consumed locally in R129 suite for iteration independence
+- crate status: 5 migrated (timer R127/dispatch R128/fastrace R129/
+  tokio R130/http_client R131) + 2 YAGNI; downstream xai-computer-hub-sdk
+  landing consumes R127-R131
+- verification: ruff tracing clean; tracing suite 84 passed (5 leaves)

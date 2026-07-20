@@ -78,8 +78,34 @@ The crate's ``lib.rs`` re-exports six modules. The dependency order is:
    deferred: MiniMax Code's httpx clients live in ``llm.py`` and adopting
    tracing there is a consumer-side decision, not this crate's job.
 
-Later rounds land the remaining leaves (``grpc_client`` — gRPC trace
-middleware; plus the test-only ``testing`` helpers).
+Crate completion
+----------------
+
+Six leaves total: five migrated (``timer`` R127, ``dispatch`` R128,
+``fastrace`` R129, ``tokio`` R130, ``http_client`` R131) and two deferred
+as YAGNI:
+
+* ``grpc_client.rs`` — gRPC trace middleware (tonic + tower + tower_http +
+  tracing_opentelemetry). MiniMax Code has no gRPC surface (its transport is
+  HTTP + WebSocket), so the tonic ``TraceLayer`` /
+  ``InjectTraceContextService`` stack has no Python consumer. The module's
+  pure-logic core — ``attach_trace_to_grpc_request_mut(metadata)``
+  injecting the W3C traceparent into gRPC metadata — is already covered by
+  R131's :func:`attach_trace_to_http_request`, which takes any
+  ``MutableMapping[str, str]`` (gRPC metadata is mapping-shaped); callers
+  that ever adopt gRPC can reuse it directly rather than needing a
+  gRPC-specific copy.
+* ``testing.rs`` — OpenTelemetry SDK test helpers (``OtelTestEnv`` installs
+  an in-memory OTel tracer provider + subscriber guard;
+  ``otel_span_id_hex`` / ``otel_trace_id_hex`` read IDs off an OTel
+  ``SpanContext``). Python's landing uses a flat :class:`SpanContext` over
+  :mod:`contextvars` (R129) with no OTel SDK, so these helpers have no
+  Python equivalent. ``parse_traceparent`` — a three-line
+  ``str.split('-')`` — is consumed in-process by the R129 suite where it is
+  needed, defined locally to keep each round's tests self-contained.
+
+The crate's downstream consumer is ``xai-computer-hub-sdk`` (which depends
+on ``xai-tracing``); the SDK landing will consume R127-R131 directly.
 """
 
 from minimax_code.tracing.dispatch import dispatcher_active
