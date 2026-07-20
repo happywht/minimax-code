@@ -14233,3 +14233,49 @@ grok-build `xai-computer-hub-sdk` harness.rs 的快照访问器层前向移植�
 ### Commit
 
 `feat(platform): R174 ToolHarness list_tools + remote_tools + bind_report snapshot accessors`（3 文件：harness.py + test_harness_actor.py + ITERATION_LOG.md）
+
+## R175 — server.rs leaf 1 前置纯逻辑工具层（SystemNotifyAck + json_serialized_len + system_notify_ack_from_outcome）
+
+锚点:R175-1 721f80f
+
+### 本轮目标
+
+harness.rs 纯逻辑叶子在 R174 处耗尽——剩余方法（call/build/emit_session_event/send_notification/fail_inflight/refresh_remote_tools/ObservedToolStream/Drop/dispatch_remote）全部依赖 live socket RPC（HubConnection try_alloc_request_id/call_request/dispatch_remote/send_fire_and_forget/demux），而 MiniMax 架构使用 JSON-RPC over HTTP/WS，并不消耗 xAI 的 HubConnection socket 协议。SDK crate 清单（Glob）仅剩 server.rs（2649 行）+ lib.rs（71 行 barrel）两个非测试源文件。本轮开启 server.rs 移植，锁定第 1 页 = 前置纯逻辑/类型契约工具层（server.rs 56-99），4 个独立单测覆盖的纯符号，位于任何 live 连接代码之前。
+
+### 融合结论
+
+server.rs 主体（ToolServer/ToolServerBuilder/ToolServerInner/per-session inbox dispatcher/handle_notification/execute_call/run_session_loop/send_overloaded）全部依赖 xAI HubConnection socket 协议，MiniMax 架构无消费端 → YAGNI 推迟。前置层 4 符号是纯逻辑 + pub 契约，依赖（ResponseOutcome/error_codes.string_for/ClientError.from_jsonrpc_error/SerdeError）全部已在 R84(envelope)/R82(error_codes)/R133(error) 移植就绪 → 干净移植，无桩代码。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/server.py`（新文件，~165 行）：4 符号
+  - `ReconnectSettledCallback = Callable[[], None]`（Rust `Box<dyn Fn() + Send + Sync + 'static>` 降级为 bare call shape，Python 无 trait-object/生命周期词汇）
+  - `SystemNotifyAck` `enum.Enum`（2 变体 Accepted/ForwardingUnsupported，复刻 `#[derive(Debug, Clone, Copy, PartialEq, Eq)]`）
+  - `json_serialized_len(value) -> int`（serde 无分配字节计数 → Python 紧凑 UTF-8 字节计数）
+  - `system_notify_ack_from_outcome(outcome) -> SystemNotifyAck`（3 Rust match 臂纯映射）
+- `agent/tests/test_server.py`（新文件，26 测试）：枚举 shape（4）/ 类型别名（2）/ json_serialized_len 边界（13，含 NaN/Inf/-Inf/set → SerdeError + ClientError 子类断言）/ system_notify_ack 三臂（7，含 data 守卫 + AuthError/NetworkError/ProtocolError 分类 + message 透传）
+- `docs/evolution/ITERATION_LOG.md`（追加本 R175 条目）
+
+### 映射决策树 + 坑
+
+- serde_json::to_writer 无分配字节计数 → Python `len(json.dumps(...).encode('utf-8'))`（中间字符串是不可避免忠实度代价，字节计数本身精确匹配）
+- 关键 3 旋钮复刻 serde_json 默认：`separators=(',',':')`（无空格，serde 默认紧凑）+ `ensure_ascii=False`（非 ASCII 原样 UTF-8 字节，非 `\uXXXX` 转义）+ `allow_nan=False`（NaN/Infinity 报错，复刻 serde 拒绝非标准 JSON）
+- `ClientError::Serde(String)` → `SerdeError`（error.py:22-24 已文档化此唯一 rename，"a bare Serde class name reads as the serialisation library"）
+- `system_notify_ack_from_outcome` 用 `isinstance(ResponseResult)` / `isinstance(ResponseError)` 双分支 + 防御 `TypeError` 复刻 Rust total match；`data.is_none()` 守卫是 load-bearing（带 data 的 -32601 必须走正常 taxonomy，不能吞为 ForwardingUnsupported）
+- 坑1：ruff UP035 — `Callable` 须从 `collections.abc` 导入（非 `typing`），server.py + test_server.py 两处
+- 坑2：ruff F401 — 初版仅 `isinstance(ResponseResult)` 单分支导致 `ResponseError` 导入未引用；重构为双 isinstance 分支 + 防御 TypeError 分支消除，且更忠实 Rust total match
+- 坑3：测试断言 `json.dumps({"k":"é"})` 默认 = 15 字节（非 14，漏数 ':' 后默认空格 + 默认 ensure_ascii=True 把 é 转义为 6 字符 escape）；修正后注释改为不依赖反斜杠序列的表述
+
+### 验证
+
+- `ruff check server.py + test_server.py`：All checks passed
+- `pytest test_server.py`：26 passed in 0.26s
+- 回归 `pytest test_server.py + test_harness_actor.py`：**91 passed in 0.38s**（R175 26 + R174 65，零破坏）
+
+### YAGNI 边界
+
+server.rs 主体推迟（全依赖 live HubConnection socket）：`SESSION_INBOX_BUFFER=64` 常量 + `SessionHandlerMap`/`SessionHandlerResolver` 类型别名（属 ToolServer actor 字段类型，随 actor 叶子走）+ `ResolvedSessionHandlers` struct + `full()` 构造器 + `ToolServerHandler` trait + `ToolServerBuilder`（15 setters，类 R167 builder 模式）+ `ToolServer`/`ToolServerInner` actor + `DonationPumps` + `run_session_loop`/`handle_notification`/`execute_call`/`progress_to_frame`/`build_error_response`/`send_error`/`send_overloaded`/`flush_donations_inner`/`teardown_sessions`/`push_disconnect_status`。纯函数候选 R176+：`parse_tool_call_id`（Value→ToolCallId，2265）+ `progress_to_frame`（ToolProgress→ToolCallProgressFrame，2249）。`lib.rs`（71 行 barrel）作为 SDK crate 收官最后叶子。
+
+### Commit
+
+feat(platform): R175 ToolServer server.py preamble pure-logic types (SystemNotifyAck + json_serialized_len + system_notify_ack_from_outcome)
