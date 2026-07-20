@@ -15534,3 +15534,56 @@ lib.rs (140 行)
 - 4 文件:1 新 A(test_default_client_name)+ 2 修改 M(__init__ 桶根 + docstring 终结 + slash 桶断言)+ 1 修改 M(ITERATION_LOG)。
 - 精确 `git add`,无排除文件污染暂存区。
 - xai-grok-tools-api crate 收官里程碑(R190-R192)。
+
+## R193 — xai-grok-http 纯逻辑叶子（OriginClientInfo + UA 渲染 + client mode，融合 xai-grok-http lib.rs）
+
+锚点:R193-1 321beef
+
+### 本轮目标
+
+迁移 grok-build `crates/codegen/xai-grok-http/src/lib.rs`（636 行单文件 crate）的**纯逻辑子集** → 平台单文件模块 `agent/minimax_code/grok_http.py`。xai-grok-http 的四块职责中只迁移两块零依赖切片（UA 渲染 + client-mode 锁存器），其余 reqwest 专有项与 ClientType 专有项全部 YAGNI，形成清晰边界。这是继 R42（version）、R15（secrets）之后的又一个单文件单轮 crate。
+
+可迁移纯逻辑（本轮交付）：OriginClientInfo（源头反转，sampler 未迁移故本地定义）+ PlatformInfo（os/arch 归一化）+ UserAgent.render（3 分支折叠）+ agent_version（消费 R42 version.VERSION）+ origin_client_info_from_env/from_meta/merge + process_client_identifier + process/session/user_agent_string + CLIENT_MODE_HEADER + set_process_client_mode_headless/process_client_mode（单向锁存器）+ TransportFailureKind 标签枚举。
+
+YAGNI 账本（本轮声明）：reqwest 客户端构建器（shared_client/shared_upload_client/fresh_http1_client/shared_blocking_client）+ with_auth_retry（reqwest_middleware）+ send_with_retry_escaping_pool（reqwest 连接池逃逸泛型）+ error_cause_chain（Rust source() 链）+ TransportFailure::classify（reqwest::Error 谓词）+ startup_timer! 宏（tracing span）+ 4 个 ClientType 相关符号（origin_client_info_from_client_type/client_type_from_origin/set_client_name/CLIENT_TYPE，依赖未迁移的 workspace permission 枚举）+ from_meta 的 clientType fallback 路径。
+
+### 融合结论
+
+xai-grok-http 是 grok 的**出站 HTTP 传输身份层**，做两件平台已有归属的事：(1) UA 字符串渲染（平台 LLM client 用 httpx，UA 需要平台身份）；(2) reqwest 客户端 + 重试逃逸循环（平台 R17-R21 已有断路器 + 重试栈，R188 已有 retry_middleware，R127-R132 已有 tracing）。因此 reqwest 全家桶是纯 YAGNI，而 UA 渲染 + client-mode 锁存器是平台缺失的纯逻辑叶子，值得迁移。
+
+**源头反转决策**：Rust 的 OriginClientInfo 由 xai-grok-sampler crate 拥有、xai-grok-http `pub use` 重导出。平台 sampler crate 尚未迁移，本轮在 grok_http 本地定义 OriginClientInfo 作为**平台事实来源**，并在 docstring 记录"未来 sampler 迁移时从此导入（依赖方向反转）"，避免届时重复定义。
+
+**产品身份融合**：UA 是出站请求对上游 API 的身份声明，平台应声明 minimax-code 而非 grok-shell。本轮做三处 rename（对齐 R42 的 GROK_TEST_VERSION → MINIMAX_CODE_TEST_VERSION 惯例）：env `GROK_CLIENT_NAME/VERSION` → `MINIMAX_CODE_CLIENT_NAME/VERSION`；默认标识 + agent_product `grok-shell` → `minimax-code`；header `x-grok-client-mode` → `x-minimax-code-client-mode`。
+
+### 交付
+
+- `agent/minimax_code/grok_http.py`（342 行，15 符号 __all__）：模块 docstring 记录四块职责 + reqwest/ClientType/startup_timer YAGNI 账本 + 产品融合 rename + OriginClientInfo 源头反转说明。dataclass(frozen=True, slots=True) 三件套（OriginClientInfo/PlatformInfo/UserAgent）+ StrEnum TransportFailureKind + 11 个函数 + 1 个 const。
+- `agent/tests/test_grok_http.py`（~230 行，18 测试）：迁移 Rust lib.rs 内联测试的 4 个纯逻辑用例（from_meta identifier / from_meta clientType YAGNI / merge / session_ua / render 折叠），外加平台结构覆盖（barrel 15 符号、header rename、TransportFailureKind 标签、env rename、process identifier 默认、PlatformInfo.current 归一化、frozen+hashable 值语义）。所有 UA 断言走 `minimax-code` 融合身份，drift 即被抓。
+
+### 映射决策树 + 坑
+
+1. **PlatformInfo.current() 平台归一化**：Rust `std::env::consts::OS/ARCH` 返回小写（macos/windows/linux；aarch64/x86_64），Python `platform.system()` 返回 Title-case（Darwin/Windows/Linux）、`platform.machine()` 返回混合（arm64/AMD64/aarch64）。用两张静态映射表 `_OS_MAP`（Darwin→macos 等）+ `_ARCH_MAP`（arm64→aarch64、AMD64→x86_64 等）恢复 grok 归一化标签，unknown 值 `.lower()` 兜底。
+2. **client_mode OnceLock → Python 模块级单次锁存器**：Rust `static CLIENT_MODE: OnceLock<&str>` + `set_process_client_mode_headless()`（set 已设时返回 Err，`let _ =` 忽略）。Python 用模块级 `_client_mode: str | None = None` + setter 内 `if _client_mode is None` 守卫，保持"set once"语义。process_client_mode() 返回值或默认 "interactive"。
+3. **from_meta clientType fallback YAGNI 后果**：Rust 在 clientIdentifier 缺失时回退反序列化 clientType（ClientType enum 的 user_agent_label）。平台 ClientType 未迁移，故缺失 clientIdentifier 时直接返回 None（即使 clientType 存在）。测试 `test_origin_client_info_from_meta_client_type_fallback_is_yagni` 显式锁定这条 YAGNI 后果。
+4. **UserAgent.render 折叠判定**：origin.product==agent_product 且 origin.version==agent_version 时折叠为单 token（`minimax-code/0.8.0 (os; arch)`），否则带版本（`origin/version agent/version (...)`）或无版本（`origin agent/version (...)`）。三分支严格 1:1 对应 Rust。
+5. **slots=True + 默认值**：OriginClientInfo 有 `version: str | None = None` 默认值，与 `@dataclass(frozen=True, slots=True)` 在 py311 兼容（平台 3.11+）。
+
+### 验证
+
+- `uv run ruff check minimax_code/grok_http.py tests/test_grok_http.py` → All checks passed!
+- `uv run pytest tests/test_grok_http.py -q` → 18 passed in 0.18s
+- 全量回归 `uv run pytest -q` → **4697 passed, 10 skipped**（上轮 4679 → 本轮 4697，+18 新测试，零回归，101s）
+- 精确暂存：`git diff --cached --name-only` = 恰好 3 文件（grok_http.py + test_grok_http.py + ITERATION_LOG.md）
+
+### YAGNI 边界
+
+- **reqwest 客户端构建器（shared_client/shared_upload_client/fresh_http1_client/shared_blocking_client）**：平台 LLM 传输用 httpx.AsyncClient（agent/llm.py），reqwest 的 HTTP/2-keepalive / pool-idle / http1-only builder knobs 无 httpx 1:1 映射。
+- **with_auth_retry + send_with_retry_escaping_pool**：reqwest_middleware + 连接池逃逸循环；平台 R17-R21 断路器 + R188 retry_middleware 已拥有重试 + 池驱逐策略。
+- **TransportFailure::classify**：消费 reqwest::Error 的 is_connect/is_timeout/is_request/is_body 谓词，无 httpx 层等价。TransportFailureKind 标签枚举迁移（供未来 retry 栈分类用），classify 方法不迁移。
+- **error_cause_chain**：Rust `std::error::Error::source()` 链；Python 异常用 `__cause__`，httpx 异常已带 cause，无需独立遍历器。
+- **startup_timer! 宏**：路由到 xai_grok_telemetry Chrome-trace span；平台 tracing crate（R127-R132）拥有启动仪表。
+- **4 个 ClientType 符号**：依赖 xai_grok_workspace::permission::ClientType（shell 侧 grok 客户端类型枚举），workspace crate 未迁移 + 平台无 grok 客户端类型分类学。from_meta 的 clientType fallback 路径同步 YAGNI。
+
+### Commit
+
+feat(platform): R193 grok_http leaf (OriginClientInfo + UA render + client-mode latch, fuse xai-grok-http lib.rs pure-logic subset, 15 symbols, reqwest/ClientType/startup_timer YAGNI, product-identity rename grok-shell -> minimax-code, 18 tests, single-file single-round crate)
