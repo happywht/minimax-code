@@ -11679,3 +11679,50 @@ connection_borrow 是 SDK 连接生命周期的"at-most-once 拆除闸门"。它
 ### Commit
 
 feat(platform): R138 migrate xai-computer-hub-sdk connection_borrow.rs -> computer_hub_sdk/connection_borrow.py
+
+## R139 — xai-computer-hub-sdk auth.rs（crate 第 7 叶，认证凭据 + pool dedup principal key）
+
+锚点:R139-1 e257560
+
+### 本轮目标
+
+迁移 `grok-build/crates/common/xai-computer-hub-sdk/src/auth.rs`（238 行，`pub mod auth`，公开 barrel 叶子）→ `agent/minimax_code/computer_hub_sdk/auth.py`。这是迄今最 self-contained 的 SDK 叶子：`AuthCredential`（Bearer/Headers）+ `PrincipalKey` + `AuthIdentity` + `AuthProvider` 全是纯数据 + protocol 类型，无 tokio/pool/connection 依赖。唯一 Rust 框架类型 `http::HeaderName` 用 RFC 7230 token 正则替代。**核心安全契约：Bearer/PrincipalKey 的 `__repr__` 绝不暴露 secret**（镜像 Rust `Debug` `finish_non_exhaustive`）。
+
+### 融合结论
+
+`auth.rs` 是 SDK crate 第 7 叶，承接 R138 connection_borrow（pool-dedup 半的凭据侧）。整文件几乎全可迁移，是迄今 leaf 中迁移率最高的一个。`AuthCredential` enum → ABC + 2 frozen dataclass 子类；`AuthProvider` trait → `runtime_checkable Protocol`；`http::HeaderName` 校验 → RFC 7230 token 正则 `_HEADER_TOKEN_RE`。R139 是**公开 barrel 叶子**（lib.rs `pub use auth::{AuthCredential, AuthIdentity, AuthProvider, PrincipalKey, SharedAuthProvider}`），不像 R136/R137/R138 的 `pub(crate)`。复用 R133 `InvalidConfig(ClientError)` 处理非法 header 名。
+
+### 交付
+
+- `agent/minimax_code/computer_hub_sdk/auth.py`（~239 行）：`PrincipalKey`（frozen dataclass, repr=False + 自定义 `__repr__` redacted, eq/hash by fingerprint）、`AuthIdentity`（frozen dataclass, user_id + principal_type?/principal_id?）、`AuthCredential`（ABC, abstract `kind`/`principal_key`/`upgrade_headers`/`__repr__` + 默认 `current()`/`identity()` 满足 AuthProvider + classmethod `bearer()`/`headers()`）、`BearerCredential`（frozen dataclass, repr=False, token + Authorization 头）、`HeadersCredential`（frozen dataclass, repr=False, 构造时排序 + 小写化 + RFC 7230 校验）、`AuthProvider`（runtime_checkable Protocol）。`_HEADER_TOKEN_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")`。
+- `agent/tests/test_auth.py`（~152 行，17 测试）：对标 Rust 2 测试（`invalid_header_name_rejected_at_construction` 用 `"authorization\nx-injected"` + `valid_headers_accepted`）+ 15 扩展（bearer 构造/upgrade_headers/principal_key 指纹、**3 个 repr 不泄密安全测试**、headers order-independent 指纹、PrincipalKey eq/hash/set 去重、AuthIdentity 默认值、AuthCredential 满足 AuthProvider Protocol via isinstance + current/identity/principal_key）。
+
+### 映射决策树+坑
+
+1. **`AuthCredential` Rust enum → Python ABC + 2 frozen dataclass 子类**（而非 `enum.Enum`）：Rust enum 变体 `Bearer { token }`/`Headers { headers }` 携带异构数据 + 各自方法（`principal_key`/`upgrade_headers` 返回值依赖变体）。Python `enum` 不适合（变体方法 + 异构字段 + 子类化），ABC + dataclass 子类更贴切：ABC 定义 `kind`/`principal_key`/`upgrade_headers`/`__repr__` abstract，子类实现。classmethod `bearer()`/`headers()` 镜像 Rust associated function，返回具体子类实例。
+2. **`AuthProvider` trait → `runtime_checkable Protocol`**（非 ABC）：Rust trait 有 default impl（`principal_key` = `current().principal_key()`，`identity` = None）。Python Protocol 无 default body，但 `AuthCredential` ABC 的 `current()`/`identity()` 具体方法让 `BearerCredential`/`HeadersCredential` 结构性满足 `AuthProvider`（`isinstance(cred, AuthProvider)` 为 True）。Protocol 文档说明 default 语义 + 旋转密钥 provider 必须覆盖 `principal_key`。
+3. **`http::HeaderName` → RFC 7230 token 正则**：`_HEADER_TOKEN_RE = ^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$`（RFC 7230 tchar）。非法名（含 newline 注入）在构造时 raise `InvalidConfig(f"invalid header name {name!r}")`，而非升级时静默丢弃。复用 R133 `InvalidConfig`（`str(InvalidConfig("x"))` = `"invalid configuration: x"`）。Rust `{err}`（HeaderName parse error）在 Python 无等价（正则不匹配无 error 对象），message 简化为 name only。
+4. **`BTreeMap` 稳定指纹 → 构造时 `.sort()`**：Rust `Headers` 变体的 `headers: BTreeMap<String,String>` 天然按 key 排序，保证 `principal_key` 指纹 order-independent。Python 用 `list[tuple[str,str]]` + 构造时 `.sort()`，`principal_key` 拼接 `name=value\n`，镜像 BTreeMap 遍历。
+5. **坑：frozen dataclass 默认 repr 暴露 secret** —— `@dataclass(frozen=True)` 自动生成 `__repr__` 会原样输出 `token`/`fingerprint` 字段，**违反安全契约**。解决方案：`BearerCredential`/`HeadersCredential`/`PrincipalKey` 全部 `repr=False` + 手写 `__repr__`（Bearer→`AuthCredential::Bearer(<redacted>)`，Headers→`AuthCredential::Headers(header_count=N)`，PrincipalKey→`PrincipalKey(<redacted>)`）。`AuthCredential` ABC 声明 `__repr__` 为 abstract 强制子类实现。`AuthIdentity` 无 secret（身份非密钥），保留默认 repr（对齐 Rust `derive(Debug)`）。
+6. **坑：ruff F401 删未使用 import** —— test_auth.py 原 import `BearerCredential`/`HeadersCredential`，但所有测试用 `AuthCredential.bearer()`/`headers()` classmethod 构造，从不直接引用子类名。ruff --fix 正确删除（YAGNI）。验证后测试 17/17 绿，确认 classmethod 路径覆盖全部行为。
+7. **坑：UP031 百分号格式化** —— `"got: %s" % exc_info.value` 改 f-string `f"got: {exc_info.value}"`（UP031 在选择列表，强制）。
+8. **`SharedAuthProvider = Arc<dyn AuthProvider>` 不迁移**（YAGNI 边界）：Python 引用语义即共享，`Arc` 无等价；消费者直接用 `AuthProvider` protocol 类型，无需独立别名。
+
+### 验证
+
+- `uv run ruff check minimax_code/computer_hub_sdk/auth.py tests/test_auth.py` → `All checks passed!`（ruff --fix 修了 2 个：I001 import 排序 + F401 删未使用子类 import；手动修 1 个 UP031 百分号→f-string）。
+- `uv run pytest tests/test_auth.py -v` → `17 passed in 0.27s`（首跑即 17 绿，UP031 修复后再跑仍 17 绿）。
+- 安全契约三大测试全绿：`test_bearer_repr_does_not_leak_token` / `test_headers_repr_does_not_leak_values` / `test_principal_key_repr_does_not_leak_fingerprint`。
+- `test_auth_credential_satisfies_auth_provider_protocol` 确认 `isinstance(AuthCredential.bearer(t), AuthProvider)` 为 True（runtime_checkable Protocol 结构子类型）。
+
+### YAGNI 边界
+
+- **不迁移 `SharedAuthProvider = Arc<dyn AuthProvider>`**：Python 引用语义即共享所有权，无 `Arc` 等价；消费者用 `AuthProvider` protocol 类型注解即可，独立别名是 Rust 所有权系统的产物。
+- **不迁移 `http::HeaderName` 强类型**：用 `str` + RFC 7230 正则校验足够；HeaderName 的 `Display`/`AsBytes`/`TryFrom` 等能力本 crate 无消费点（auth.rs 仅用 `from_bytes` 校验 + 作为 header name 字符串）。
+- **不迁移 `AuthProvider` trait 的 default impl 方法体**：Protocol 不携带实现，default 语义通过 `AuthCredential` ABC 的具体方法 `current()`/`identity()` 提供，文档说明旋转密钥 provider 须覆盖 `principal_key`。
+- **不迁移 `principal_type`/`principal_id` 的 OAuth 解析逻辑**：`AuthIdentity` 仅作数据载体（frozen dataclass），OAuth 字段的解析/校验在将来 OIDC provider 叶子（`oidc_provider.rs`）落地。
+- **`PrincipalKey.fingerprint` 含 secret 是 by design**（pool dedup 按 secret 区分凭据），不算泄密面 —— 泄密面仅在 `__repr__`，已 redacted。
+
+### Commit
+
+`feat(platform): R139 migrate xai-computer-hub-sdk auth.rs -> computer_hub_sdk/auth.py`
