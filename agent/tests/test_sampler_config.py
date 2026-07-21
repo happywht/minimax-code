@@ -14,7 +14,9 @@ backoff + R199 decision layer) + ``types`` (R199 SamplingError) + ``doom_loop``
 + delta-body cluster) + ``content_blocks`` (R202 ContentBlock union + 3 deps)
 + ``request_params`` (R203 request-side enums + leaf structs) + ``message_bodies``
 (R204 body-shaped leaves: SystemTextBlock struct + SystemParam/MessageContent
-untagged unions + StreamDelta 4-variant tagged union) leaves.
+untagged unions + StreamDelta 4-variant tagged union) + ``message_envelopes`` (R205
+mega-containers: Message + MessagesResponse + MessagesRequest + MessageStreamEvent
+8-variant wrapper, closing the wire-type layer) leaves.
 """
 
 from __future__ import annotations
@@ -48,7 +50,9 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     3-variant) + 3 flat structs (OutputConfig / ToolParam / Metadata)) + R204
     message_bodies (12: SystemTextBlock leaf struct + SystemParam union base + 2
     variants + MessageContent union base + 2 variants + StreamDelta union base +
-    4 variants) = 102
+    4 variants) + R205 message_envelopes (12: Message + MessagesResponse +
+    MessagesRequest leaf structs + MessageStreamEvent union base + 8 variants)
+    = 114
     re-exported symbols. The config trio stays; R198 adds the backoff/max-retries
     leaf; R199 adds the decision layer (consuming the migrated SamplingError) and
     the SamplingError type leaf itself; R200 adds the doom-loop wire contract +
@@ -61,8 +65,13 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     -- strict tagged-union parse, no catch-all); R204 adds the 4 body-shaped
     middle-layer leaves (SystemTextBlock struct + SystemParam/MessageContent
     untagged string-vs-blocks unions + StreamDelta 4-variant tagged union --
-    strict tagged-union parse, no catch-all, consuming the R202 ContentBlock)."""
-    assert len(sampler.__all__) == 102
+    strict tagged-union parse, no catch-all, consuming the R202 ContentBlock);
+    R205 adds the 4 mega-containers that close the ``messages.rs`` wire-type layer
+    (Message leaf struct + MessagesResponse leaf struct + MessagesRequest
+    ``#[derive(Default)]`` container + MessageStreamEvent 8-variant tagged union
+    -- strict, no catch-all, aggregating every R201-R204 leaf into the full
+    request / response / streaming shapes)."""
+    assert len(sampler.__all__) == 114
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -183,6 +192,20 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "TextMessageContent",
         "TextSystemParam",
         "ThinkingDelta",
+        # message_envelopes (R205): Message + MessagesResponse + MessagesRequest
+        # leaf structs + MessageStreamEvent union base + 8 variants
+        "ContentBlockDeltaEvent",
+        "ContentBlockStartEvent",
+        "ContentBlockStopEvent",
+        "Message",
+        "MessageDeltaEvent",
+        "MessageStartEvent",
+        "MessageStopEvent",
+        "MessageStreamEvent",
+        "MessagesRequest",
+        "MessagesResponse",
+        "PingEvent",
+        "StreamErrorEvent",
     }
 
 

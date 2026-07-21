@@ -16540,3 +16540,51 @@ feat(platform): R203 migrate messages.rs request-side enums + leaf structs to sa
 `feat(platform): R204 migrate messages.rs middle body-shaped leaves to sampler.message_bodies`
 
 精确 git add 仅 R204 5 文件（message_bodies.py / __init__.py / test_message_bodies.py / test_sampler_config.py / ITERATION_LOG.md），不含 10 个排除文件 + 90+ 无关 M 文件。
+## R205 — sampler messages.rs mega 容器层 (message_envelopes.py: Message + MessagesResponse + MessagesRequest + MessageStreamEvent 8变体 wrapper, xai-grok-sampling-types 第 7 叶, 闭合 wire-type 层)
+
+锚点:R205-1 e82856a
+
+### 本轮目标
+
+继续 xai-grok-sampling-types crate 纯逻辑叶子迁移，闭合 messages.rs wire-type 层。R204 切完 messages.rs "中间 body 叶子层"（SystemTextBlock struct + SystemParam/MessageContent untagged 联合 + StreamDelta 4变体 tagged 联合, 12 符号）。R205 收口 messages.rs 最外层 4 个 mega 容器——把 R201-R204 所有叶子聚合进完整的 request / response / streaming wire shape：Message(单轮 role+content) + MessagesResponse(非流式回复) + MessagesRequest(#[derive(Default)] 请求体, 11 个 Option 旋钮) + MessageStreamEvent(8变体 SSE 事件 wrapper)。本轮目标：4 容器族 / 12 符号闭环，纯逻辑(零 I/O)，混合 serde 形态(plain struct + Default derive + 严格 8变体 tagged union 无 catch-all + Vec→tuple + rename 字段规避 builtin)。本轮收尾后 messages.rs 文件每个 pub 类型都有 Python 归宿。
+
+### 融合结论
+
+策略 A 选定（最直接延续 R204）：迁移 messages.rs 4 个最外层 mega 容器。依赖闭包分析：4 容器族全部消费已迁叶子——Message(消费 R203 MessageRole + R204 MessageContent) + MessagesResponse(消费 R202 ContentBlock + R201 StopReason/MessagesUsage) + MessagesRequest(消费 Message + R203 ThinkingConfig/ToolChoiceParam/ToolParam/OutputConfig/Metadata + R204 SystemParam) + MessageStreamEvent(消费 MessagesResponse + R201 MessageDeltaBody/MessageDeltaUsage/StreamError + R202 ContentBlock + R204 StreamDelta)。零外部新依赖。新建独立子模块 message_envelopes.py（单一职责，与 R202/R203/R204 新模块模式一致）。命名冲突规避：8 个 MessageStreamEvent 子类带 Event 后缀（MessageStartEvent 包装 MessagesResponse，区别于 MessagesResponse 本身；StreamErrorEvent 包装 R201 StreamError payload，区别于该 payload），不与 barrel 中已存在符号冲突。
+
+### 交付
+
+- 新模块 `agent/minimax_code/sampler/message_envelopes.py`（420 行）：4 容器族 12 符号——Message(frozen+slots struct, role=MessageRole.USER 默认 + content=MessageContent 默认, try/except ValueError role fallback USER 前向兼容) + MessagesResponse(frozen+slots struct, id/type_="message"/role="assistant"/content=() tuple/model=""/stop_reason=None/usage=MessagesUsage 零默认, wire type 重命名 type_ 规避 builtin) + MessagesRequest(frozen+slots struct, model/messages=()/max_tokens=0 + 11 个 Option 旋钮, default() classmethod 镜像 #[derive(Default)], from_payload 仅 wire 存在时解析嵌套类型) + MessageStreamEvent(tagged union 基类 8 路分发, 严格无 catch-all 未知 type raise ValueError) + 8 子类(MessageStartEvent/MessageDeltaEvent/MessageStopEvent 字段无/ContentBlockStartEvent/ContentBlockDeltaEvent/ContentBlockStopEvent/PingEvent 字段无/StreamErrorEvent)。
+- 新测试 `agent/tests/test_message_envelopes.py`（499 行）：37 用例（module barrel 12 符号 + Message 构造 4 + MessagesResponse 5 含 unknown stop_reason catch-all + MessagesRequest 5 含 default/from_payload/嵌套旋钮/标量旋钮 + MessageStreamEvent 8 变体分发 + 2 严格 raise + 1 tolerant 嵌套 fallback + 值语义 frozen 3 容器参数化 + frozen 6 字段变体参数化 + 2 字段无变体 slot-closure + share-base + tuple-carrying hashable）。
+- barrel 扩展 `agent/minimax_code/sampler/__init__.py`：102 -> 114 符号（+12 R205，ASCII 严格排序；docstring landed 段加 message_envelopes + Leaf order 第 9 条）。
+- barrel 守卫 `agent/tests/test_sampler_config.py`：断言 102 -> 114 + set 加 12 R205 符号（按 message_envelopes 注释分组）+ docstring 更新。
+
+### 映射决策树 + 坑
+
+1. serde 形态全覆盖（4 容器映射 4 种 serde 形态）：plain struct(无 Default) -> Message/MessagesResponse(frozen+slots struct + tolerant from_payload)；#[derive(Default)] -> MessagesRequest(default() classmethod 镜像 + from_payload 仅 wire 存在时解析嵌套类型, Option 缺省/null 留 None 镜像 serde Option)；#[serde(tag="type", rename_all="snake_case")] enum -> MessageStreamEvent(frozen+slots 基类 + 8 子类, from_payload 读 type 分发, 严格无 catch-all, 未知/缺 type raise ValueError, 对照 R201 StopReason catch-all); #[serde(rename="type")] r#type -> MessagesResponse.type_ 字段(规避 Python builtin)。
+2. Vec<T> -> tuple[...]：MessagesResponse.content: tuple[ContentBlock, ...] / MessagesRequest.messages: tuple[Message, ...] / tools: tuple[ToolParam, ...] | None / stop_sequences: tuple[str, ...] | None（frozen 可哈希，对照 R202/R204 同模式）。
+3. Option<T> + skip_serializing_if -> T | None = None：MessagesRequest 11 个旋钮（system/tools/tool_choice/temperature/top_p/top_k/stream/stop_sequences/thinking/output_config/metadata），from_payload 仅 wire 存在时解析嵌套类型，缺省/null 留 None。system 是 untagged union 故任何非 null 值都解析（含 str/list）；tools/stop_sequences 仅 list 时 tuple 化；其余 dict-shaped 旋钮解析嵌套 from_payload，标量旋钮 verbatim 透传。
+4. tagged union 严格性：MessageStreamEvent 8 wire tag (message_start/message_delta/message_stop/content_block_start/content_block_delta/content_block_stop/ping/error) 严格分发，未知 type + 缺 type 均 raise ValueError（无 catch-all）。但已知 type 缺/坏嵌套 payload 容忍（message_start 无 message -> 空 MessagesResponse；content_block_delta 无 delta -> tagged-union tolerant fallback {"type":"text_delta","text":""}，绝不崩流）。
+5. 前向兼容 catch-all：Message.role 对未知 role 字符串 try/except ValueError fallback USER（未来 role 永不失败 parse，对照 R201 StopReason catch-all 同姿态）；MessagesResponse.stop_reason 经 parse_stop_reason catch-all（未知 stop reason -> UnknownStopReason，永不失败终态 parse）。
+6. 命名冲突规避（R205 关键）：8 个 MessageStreamEvent 子类带 Event 后缀——MessageStartEvent 包装 MessagesResponse（区别于 MessagesResponse 本身），StreamErrorEvent 包装 R201 StreamError payload（区别于该 payload），ContentBlockStartEvent/DeltaEvent/StopEvent（区别于 R202 ContentBlock 变体）。docstring + 测试锁定该决策。
+7. 非法 list 项 skip：MessagesResponse.content / MessagesRequest.messages 用 `if isinstance(item, dict)` 过滤非 dict 项（不崩，容忍 wire 噪音，对照 R204 同策略）。
+8. 坑（本轮自纠 2 处，工程洞察）：frozen=True + slots=True + 继承的数据类语义——给不在 __slots__ 中的属性名赋值走 slots 描述符查找路径触发 TypeError（非 FrozenInstanceError），仅给 __slots__ 中真实字段赋值才触发 FrozenInstanceError。初版用 `obj._test_mutation = "rewritten"`（不存在属性名）失败 11 个测试（TypeError 而非预期 FrozenInstanceError）。修复：采用 R204 已验证范式——`field_name = next(iter(type(obj).__slots__)); setattr(obj, field_name, "rewritten")`（field_name 是变量，B010 不触发；真实字段赋值正确触发 FrozenInstanceError）。无字段变体（MessageStopEvent/PingEvent）用各自 `not hasattr(ev, "__dict__")` slot-closure 断言覆盖（slots+frozen 关闭属性命名空间，无字段变体无真实字段可 target）。验证阶段自纠，零回归外溢。同时 I001 import 块未排序（__init__.py + test_message_envelopes.py 2 文件），ruff --fix 安全重排（零逻辑改动）。
+9. barrel `__all__` 排序：102 -> 114，ASCII 严格逐字符排序（大写 A-Z 先，`_` 在大小写之间，小写 a-z 后；同类内字母序）。
+
+### 验证
+
+- `ruff check`（4 文件: message_envelopes.py / __init__.py / test_message_envelopes.py / test_sampler_config.py）：All checks passed!（E/F/W/I/B/UP，长 100，py311；I001 经 ruff --fix 自动修复）。
+- 定向 `pytest tests/test_message_envelopes.py tests/test_sampler_config.py tests/test_message_bodies.py` -> **87 passed**（35 message_envelopes + 12 sampler_config + 40 message_bodies）。
+- **全量回归 pytest：5351 passed + 10 skipped, 1 warning (预存 fastapi deprecation), 123.46s, 零 failed**。5351 = 5314（R204 基线 passed）+ 37（R205 新增 test_message_envelopes.py 19 函数 / 37 case）。**零真实回归**（1 warning 是预存 fastapi deprecation，非 R205 引入；按迭代独立性原则不修复预存 lint）。
+
+### YAGNI 边界
+
+- YAGNI：full serde `Serialize`/`Deserialize` round-trip——`from_payload` 覆盖平台所需的解析方向（request/response/stream 三向），不发序列化方向（平台用 dict 组装请求，不经 dataclass 序列化）。
+- YAGNI：mega 容器的 I/O 外壳（HTTP 客户端 / SSE 流解码器）——属运行时 actor 层，非 wire-type 类型层，后轮融合 sampler actor 时再接。
+- 收尾里程碑：messages.rs wire-type 层闭合——每个 pub 类型（R201 stop-reason/usage/delta-body + R202 ContentBlock + R203 request enums/叶子 + R204 body 叶子 + R205 mega 容器）均有 Python 归宿。crate 内剩余：types.rs (1521 行) + conversation.rs (9481 行 巨型) + serde_helpers.rs (9 行 过小)，后轮按叶子优先级继续。
+
+### Commit
+
+`feat(platform): R205 migrate messages.rs mega containers to sampler.message_envelopes`
+
+精确 git add 仅 R205 5 文件（message_envelopes.py / __init__.py / test_message_envelopes.py / test_sampler_config.py / ITERATION_LOG.md），不含 10 个排除文件 + 90+ 无关 M 文件。

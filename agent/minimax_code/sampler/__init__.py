@@ -9,7 +9,10 @@ pure-type subset) + ``content_blocks`` (R202, ``xai-grok-sampling-types``
 parsers) + ``message_bodies`` (R204, ``xai-grok-sampling-types``
 ``messages.rs`` body-shaped leaves: SystemTextBlock struct +
 SystemParam/MessageContent untagged unions + StreamDelta 4-variant tagged
-union) + ``messages`` (R201, ``xai-grok-sampling-types`` ``messages.rs``
+union) + ``message_envelopes`` (R205, ``xai-grok-sampling-types``
+``messages.rs`` mega-containers: Message + MessagesResponse + MessagesRequest
++ MessageStreamEvent 8-variant wrapper, closing the wire-type layer) +
+``messages`` (R201, ``xai-grok-sampling-types`` ``messages.rs``
 stop-reason + usage + delta-body cluster) + ``request_params`` (R203,
 ``xai-grok-sampling-types`` ``messages.rs`` request-side enums + leaf structs)
 + ``retry`` (R198 backoff subset + R199 decision layer) + ``types`` (R199,
@@ -50,8 +53,9 @@ Leaf order (crate ``lib.rs`` re-exports, in migration order):
    :func:`stop_reason_to_wire` faithful round-trip) + :class:`MessagesUsage` /
    :class:`MessageDeltaUsage` token counters + :class:`StopDetails` /
    :class:`MessageDeltaBody` terminal body + :class:`StreamError`. The request
-   types (``MessagesRequest`` + the full ``MessageStreamEvent`` wrapper) land
-   in later rounds -- they consume the R202 :class:`ContentBlock` union.
+   types (``MessagesRequest`` + the full ``MessageStreamEvent`` wrapper) landed
+   in R205 (:mod:`message_envelopes`) -- they consume the R202
+   :class:`ContentBlock` union.
 6. ``content_blocks`` (R202) -- the :class:`ContentBlock` 5-variant tagged
    union (Text/Image/ToolUse/ToolResult/Thinking) shared by request + response
    + tool-result bodies, plus its 3 direct dependencies: :class:`CacheControl`
@@ -80,7 +84,18 @@ Leaf order (crate ``lib.rs`` re-exports, in migration order):
    deltas). No-I/O; strict tagged-union parse (unknown ``type`` raises);
    untagged unions match on JSON shape. The mega-containers
    (``MessagesRequest`` + ``Message`` + ``MessagesResponse`` +
-   ``MessageStreamEvent``) consume these leaves but land in later rounds.
+   ``MessageStreamEvent``) consume these leaves and landed in R205
+   (:mod:`message_envelopes`).
+9. ``message_envelopes`` (R205) -- the 4 outermost wire containers from
+   ``xai-grok-sampling-types`` ``messages.rs`` that aggregate every R201-R204
+   leaf into the full request / response / streaming shapes: :class:`Message`
+   (a single turn, role + content) + :class:`MessagesResponse` (the
+   non-streaming reply) + :class:`MessagesRequest` (the
+   ``#[derive(Default)]`` request body, 11 optional knobs) + the
+   :class:`MessageStreamEvent` 8-variant tagged union (message_start /
+   message_delta / message_stop / content_block_start / content_block_delta /
+   content_block_stop / ping / error -- strict, no catch-all). This round
+   closes the ``messages.rs`` wire-type layer.
 """
 
 from minimax_code.sampler.config import (
@@ -135,6 +150,20 @@ from minimax_code.sampler.message_bodies import (
     TextMessageContent,
     TextSystemParam,
     ThinkingDelta,
+)
+from minimax_code.sampler.message_envelopes import (
+    ContentBlockDeltaEvent,
+    ContentBlockStartEvent,
+    ContentBlockStopEvent,
+    Message,
+    MessageDeltaEvent,
+    MessagesRequest,
+    MessagesResponse,
+    MessageStartEvent,
+    MessageStopEvent,
+    MessageStreamEvent,
+    PingEvent,
+    StreamErrorEvent,
 )
 from minimax_code.sampler.messages import (
     EndTurn,
@@ -216,6 +245,9 @@ __all__ = [
     "CacheControl",
     "CheckEvent",
     "ContentBlock",
+    "ContentBlockDeltaEvent",
+    "ContentBlockStartEvent",
+    "ContentBlockStopEvent",
     "DEFAULT_AUTH_SCHEME",
     "DEFAULT_MAX_RETRIES",
     "DOOM_LOOP_BOUND_MS",
@@ -238,10 +270,17 @@ __all__ = [
     "JsonSchemaOutputFormat",
     "LowLogprob",
     "MaxTokens",
+    "Message",
     "MessageContent",
     "MessageDeltaBody",
+    "MessageDeltaEvent",
     "MessageDeltaUsage",
     "MessageRole",
+    "MessageStartEvent",
+    "MessageStopEvent",
+    "MessageStreamEvent",
+    "MessagesRequest",
+    "MessagesResponse",
     "MessagesUsage",
     "Metadata",
     "ModelContextWindowExceeded",
@@ -251,6 +290,7 @@ __all__ = [
     "OutputConfig",
     "OutputFormat",
     "PauseTurn",
+    "PingEvent",
     "RATE_LIMIT_RETRY_THRESHOLD",
     "Refusal",
     "ResponseField",
@@ -270,6 +310,7 @@ __all__ = [
     "StopSequence",
     "StreamDelta",
     "StreamError",
+    "StreamErrorEvent",
     "SystemParam",
     "SystemTextBlock",
     "THINKING_CHANNEL",
