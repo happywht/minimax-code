@@ -17100,3 +17100,38 @@ ruff clean（R215 两文件零 I001/E/F/W/B/UP）+ 定向 pytest `test_chat_comp
 
 ### Commit
 `feat(platform): R215 migrate types.rs ChatCompletion response cluster (5 symbols)`。types.rs 累计 53→58 符号；下轮策略 A 续扫 types.rs 1030-1521 剩余区段定位下一个零依赖独立叶子。
+
+## R216 — types.rs SamplingConfig 迁移（1 符号，解除双 grok dep 阻塞）
+
+锚点:R216-1 f1e7947
+
+### 本轮目标
+继续 xai-grok-sampling-types types.rs 叶子迁移（策略 B 命中）。R216 选 types.rs 1032-1055 的 `SamplingConfig`——策略 A 续扫 types.rs 1030-1521 确认除 `SamplingConfig` 外无零依赖叶子（`CreateResponseWrapper`/`MessagesRequestWrapper` 被 `crate::rs::CreateResponse` + `crate::messages::MessagesRequest` + `Box<dyn TraceContext>` 硬阻塞；`ChatCompletionRequest` 三阻塞仍在；`CompactionsRemaining` 已迁；`#[cfg(test)]` 跳过）。R214 已落地 `ApiBackend` 为本叶消费者铺路，R216 正式迁移，解除两个 grok deps（`indexmap::IndexMap` + `NonZeroU64`）。
+
+### 融合结论
+`SamplingConfig` 是 sampling-client 配置容器（持非密钥旋钮——API key 留在 client，非此模块）。它是 types.rs **唯一**同时消费 R214 `ApiBackend`（其 `#[serde(default)] api_backend` 字段）+ R206 `ReasoningEffort`（其可选 `reasoning_effort` 字段）的叶子——R214 + R206 是跑道，R216 是起飞。依赖闭包：零外部（两阻塞 dep 映射到 Python 内建：`IndexMap<String,String>` → `tuple[tuple[str,str], ...]` 保插入序+可哈希+frozen+slots 一致；`NonZeroU64` → `int` 带 `>0` 运行时不变式镜像 serde `NonZeroU64` 在 0 的 deserialize 失败）。
+
+### 交付
+- 新建 `agent/minimax_code/sampler/sampling_config.py`（212 行，1 `@dataclass(frozen=True, slots=True)` struct + 3 模块私有 helper：`_optional_int`/`_optional_float`/`_ordered_string_pairs`）
+- 扩展 `sampler/__init__.py` barrel 172→173（1 导入块插入 retry < sampling_config < search_parameters 之间 + 1 处 `__all__` S 区 ASCII 序插入 SUPPORTS < SamplingConfig < SamplingError，C < E）
+- 同步 `tests/test_sampler_config.py` 守卫（docstring 追加 R216 描述句 + `len == 172`→`== 173` + 符号集合追加 1 符号带注释头）
+- 新建 `tests/test_sampling_config.py`（5 测试类，~30 测试：barrel identity + 严格必选语态 10 + 7 可选字段容忍 11 + extra_headers keystone 5 + frozen/slots/hashable 语义 3）
+
+### 映射决策树 + 坑
+1. **语态分配**：`base_url`/`model`（必选 str）+ `context_window`（必选正 int）STRICT（无默认值，缺失/类型错→`ValueError`，镜像 grok 无 `#[serde(default)]` 的 missing-required-field 失败 + `NonZeroU64` 在 0 失败）；`api_backend`/`max_completion_tokens`/`temperature`/`top_p`/`extra_headers`/`reasoning_effort`/`stream_tool_calls` TOLERANT（可选，带回退）。
+2. **NonZeroU64 映射（keystone #1）**：`context_window` → `int` + `>0` 不变式（缺失/非 int/bool/`≤0`→`ValueError`；**bool 显式排除**因 bool 是 int 子类但 grok u64 拒绝 JSON `true`）。
+3. **IndexMap 映射（keystone #2）**：`extra_headers` → `tuple[tuple[str,str], ...] = ()`（dict→`tuple(d.items())` 保插入序，非 str 项跳过，malformed header 不崩解析；missing/null/non-object→`()` 镜像 `#[serde(default)]`；tuple 而非 dict 保 frozen+slots 一致 + 整个 config 可哈希——这是 tuple-of-pairs 映射的红利）。
+4. **api_backend null 容忍**：missing/显式 None→`DEFAULT_API_BACKEND`（平台容差——grok serde 在 null 会失败因字段非 `Option`）；present 值严格过 `ApiBackend.from_payload`（未知→`ValueError`）。
+5. **reasoning_effort 模式**：镜像 R215 `finish_reason`——`ReasoningEffort.from_payload(raw) if isinstance(raw, str) else None`（字符串但未知→raise 镜像 serde enum 失败；非 str/None/缺失→None）。
+6. **bool 子类陷阱（贯穿三处）**：`_optional_int`/`_optional_float`/`context_window` 均显式排除 bool（`isinstance(x, bool)` 先判）。
+7. **frozen+slots 测试范式（沿用 R215）**：`next(iter(type(cfg).__slots__))` 取变量 field name 规避 B010；hashable 断言 `hash(a)==hash(b)` 验证 tuple-of-pairs 红利。
+8. **坑（ruff I001 沿用 R215 解法）**：测试用模块别名 `import minimax_code.sampler.sampling_config as _sc` + 属性访问 `_sc.SamplingConfig`，彻底消除符号别名，ruff 一次 clean（不复蹈 R215 五别名拆分陷阱）。
+
+### 验证
+ruff clean（R216 四文件零 I001/E/F/W/B/UP）+ 定向 pytest `test_sampling_config.py + test_sampler_config.py` **43 passed** + 全量回归 **5786 passed + 10 skipped + 1 预存 flaky**（`test_connection.py::test_interval_keeps_global_timeline_across_loops`——时间轴抖动 gap 0.031s < 期望 0.032s，重跑 `1 passed in 0.56s` 通过；与 R216 sampler 模块零交集，迭代独立性不修复；R215 基准 5757 + R216 新增 30 = 5787 总对账，零真实回归，124.22s）。1 warning 为预存 fastapi/httpx 弃用（无关）。
+
+### YAGNI 边界
+`ChatCompletionRequest` 仍延后（3 硬阻塞：`ToolDefinition` 未迁 + `crate::rs::ResponseFormat` + `Box<dyn TraceContext>`）；`CreateResponseWrapper`/`MessagesRequestWrapper` 延后（`crate::rs::CreateResponse` + `crate::messages::MessagesRequest` + `Box<dyn TraceContext>`）；`TraceContext` trait 延后（tracing crate）；重复 `ReasoningEffort`（to/from_responses_api 与 crate::rs 耦合）延后。types.rs 1030-1521 区段策略 A 续扫已确认无更多零依赖叶子——下轮转策略 D（conversation.rs 叶子层探索）或策略 E（其他未迁移 crate）。完整 serde Serialize/Deserialize 往返——`from_payload` 覆盖平台所需解析方向；secret api_key 留在 client（平台 secrets.py + OS keyring 拥有它）。
+
+### Commit
+`feat(platform): R216 migrate types.rs SamplingConfig (1 symbol, resolves indexmap + NonZeroU64 deps)`。types.rs 累计 58→59 符号；barrel 172→173。下轮策略 A types.rs 已无零依赖叶子，转策略 D conversation.rs 叶子层探索（9481 行巨型，寻独立小 struct/fn）或策略 E 其他未迁移 crate 零依赖叶子。

@@ -141,8 +141,16 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     streaming-delta interior; consumes the R206 Role/FinishReason/
     ToolCallFunction atomics + the R207 ChatUsage + the R208 ChatChunkChoice
     + the R211 empty_string_as_none hook; zero dependency, lifts the R208
-    ChatCompletionChunk deferral)."""
-    assert len(sampler.__all__) == 172
+    ChatCompletionChunk deferral) + sampling_config (R216, 1: SamplingConfig
+    -- the types.rs sampling-client configuration container holding the
+    non-secret knobs a sampling client needs (base_url / model /
+    context_window required + 7 optional fields); the single types.rs leaf
+    that consumes BOTH the R214 ApiBackend (its #[serde(default)]
+    api_backend field) AND the R206 ReasoningEffort (its optional
+    reasoning_effort field); resolves the two grok deps that previously
+    blocked it (indexmap::IndexMap -> tuple-of-pairs + NonZeroU64 ->
+    positive int); zero dependency)."""
+    assert len(sampler.__all__) == 173
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -376,6 +384,13 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "ChatCompletionResponse",
         "ChatResponseMessage",
         "ToolCallResponse",
+        # sampling_config (R216): SamplingConfig -- the types.rs sampling-client
+        # configuration container (non-secret knobs), consuming the R214
+        # ApiBackend (#[serde(default)] api_backend field) + the R206
+        # ReasoningEffort (optional reasoning_effort field); IndexMap->
+        # tuple-of-pairs + NonZeroU64->positive int (the two deps that
+        # previously blocked this leaf)
+        "SamplingConfig",
     }
 
 

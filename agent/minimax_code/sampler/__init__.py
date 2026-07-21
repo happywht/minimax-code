@@ -375,6 +375,7 @@ from minimax_code.sampler.retry import (
     resolve_max_retries_with_env,
     retry_backoff_with_jitter,
 )
+from minimax_code.sampler.sampling_config import SamplingConfig
 from minimax_code.sampler.search_parameters import (
     SearchParameters,
     SearchSource,
@@ -500,6 +501,7 @@ __all__ = [
     "SAMPLE_CHECK_EVENT_DATA_CUMULATIVE",
     "SERIALIZATION_DISPLAY_PREFIX",
     "SUPPORTS_REASONING_EFFORT_META_KEY",
+    "SamplingConfig",
     "SamplingError",
     "SearchParameters",
     "SearchSource",
