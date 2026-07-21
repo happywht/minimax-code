@@ -22,6 +22,12 @@ Migrated leaves:
   ``split(|c| !is_alphanumeric() && c != '_')`` -> ``\\w+``). Shares the word
   split primitive with ``mmr.tokenize`` but consumes it as an ordered keyword
   list, not a de-duplicated set.
+- R239 (2026-07-22): ``text_utils.py`` -- :func:`has_markdown_headers` +
+  :func:`is_no_reply` response-classification predicates (structured-output
+  guard + NO_REPLY convention). 2 exported symbols. Mirrors ``text_utils.rs``
+  zero-dependency pure-logic subset. Independent of the mmr/query_expansion
+  word-split primitive -- a fully self-contained classifier pair, no sibling
+  coupling.
 
 Deferred (runtime layer -- YAGNI until a Python memory backend exists):
 ``MemoryIndex`` + sqlite-vec hybrid scoring (``search.rs``), ``MemoryStorage``
@@ -30,17 +36,20 @@ Deferred (runtime layer -- YAGNI until a Python memory backend exists):
 ``MemoryIndexConfig``), file watcher (``watcher.rs``), dream consolidation
 (``dream.rs``), archive (``archive.rs``). These depend on rusqlite / sqlite-vec
 / git2 / notify / reqwest -- heavy runtime stacks with no current Python
-consumer; only their pure-logic leaves (mmr, query_expansion; text_utils still
-pending) migrate.
+consumer; only their pure-logic leaves (mmr, query_expansion, text_utils)
+migrate.
 """
 
 from __future__ import annotations
 
 from minimax_code.memory.mmr import SearchResult, mmr_rerank
 from minimax_code.memory.query_expansion import extract_keywords
+from minimax_code.memory.text_utils import has_markdown_headers, is_no_reply
 
 __all__ = [
     "SearchResult",
     "extract_keywords",
+    "has_markdown_headers",
+    "is_no_reply",
     "mmr_rerank",
 ]
