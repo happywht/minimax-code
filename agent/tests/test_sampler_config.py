@@ -117,8 +117,20 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     chat_truncate_for_prompt -- the types.rs free-function leaf, counting how
     many leading chat messages to keep so the slice closes after the (target
     + 1)-th user prompt; pure algorithm over an in-memory Sequence, zero
-    dependency, consuming the R206 Role + R210 ChatRequestMessage)."""
-    assert len(sampler.__all__) == 154
+    dependency, consuming the R206 Role + R210 ChatRequestMessage) +
+    reasoning_effort_meta (R213, 11: 3 wire constants + ReasoningEffortOption
+    menu-entry struct + parse_canonical_effort_token canonical wire parser
+    (accepting the "max" CLI/UX alias of Xhigh, mirroring grok FromStr NOT the
+    strict serde Deserialize the Full-table value field uses) +
+    supports_reasoning_effort_meta + parse_reasoning_effort_meta +
+    reasoning_effort_meta_value singular readers+writer +
+    parse_reasoning_effort_options + parse_reasoning_efforts_meta +
+    reasoning_efforts_meta_value plural reader+writer -- the types.rs
+    reasoning-effort meta read/write subsystem with the untagged
+    Bare-string-vs-Full-table option shape + skip-invalid forward-compat,
+    consuming the R206 ReasoningEffort; pure value-level over dict/list, zero
+    dependency)."""
+    assert len(sampler.__all__) == 165
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -322,6 +334,20 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         # free-function leaf, counting how many leading chat messages to keep
         # so the slice closes after the (target + 1)-th user prompt
         "chat_truncate_for_prompt",
+        # reasoning_effort_meta (R213): 3 wire constants + ReasoningEffortOption
+        # + canonical-effort parser + singular readers/writer + plural
+        # readers/writer -- the types.rs reasoning-effort meta subsystem
+        "REASONING_EFFORT_META_KEY",
+        "REASONING_EFFORTS_META_KEY",
+        "SUPPORTS_REASONING_EFFORT_META_KEY",
+        "ReasoningEffortOption",
+        "parse_canonical_effort_token",
+        "parse_reasoning_effort_meta",
+        "parse_reasoning_effort_options",
+        "parse_reasoning_efforts_meta",
+        "reasoning_effort_meta_value",
+        "reasoning_efforts_meta_value",
+        "supports_reasoning_effort_meta",
     }
 
 

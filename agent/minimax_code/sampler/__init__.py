@@ -28,6 +28,14 @@ value-level normalizer ``""`` -> ``None``, zero dependency) +
 messages to keep so the slice closes after the ``(target + 1)``-th user
 prompt, consuming the R206 ``Role`` + R210 ``ChatRequestMessage``; a pure
 algorithm over an in-memory sequence, zero dependency) +
+``reasoning_effort_meta`` (R213, the ``types.rs`` reasoning-effort meta
+read/write subsystem: 3 wire constants + the canonical-effort token parser
+(accepting the ``"max"`` CLI/UX alias of ``Xhigh``) + the
+``supportsReasoningEffort`` / ``reasoningEffort`` singular readers + the
+``reasoningEfforts`` per-model menu reader/writer with the untagged
+Bare-string-vs-Full-table option shape + skip-invalid forward-compat,
+consuming the R206 ``ReasoningEffort``; a pure value-level subsystem over
+``dict`` / ``list``, zero dependency) +
 ``config`` (R195,
 pure-type subset) + ``content_blocks`` (R202, ``xai-grok-sampling-types``
 ``messages.rs`` ContentBlock 5-variant union + 3 deps) + ``doom_loop`` (R200,
@@ -138,6 +146,23 @@ Leaf order (crate ``lib.rs`` re-exports, in migration order):
    :class:`ChatCompletionRequest` container proved blocked on three
    un-landed deps (``ToolDefinition`` + ``crate::rs::ResponseFormat`` +
    ``Box<dyn TraceContext>``).
+12. ``reasoning_effort_meta`` (R213) -- the ``types.rs`` reasoning-effort
+   meta read/write subsystem: 3 wire constants
+   (:data:`REASONING_EFFORT_META_KEY` +
+   :data:`SUPPORTS_REASONING_EFFORT_META_KEY` +
+   :data:`REASONING_EFFORTS_META_KEY`) + the canonical-effort token parser
+   :func:`parse_canonical_effort_token` (accepting the ``"max"`` CLI/UX alias
+   of ``Xhigh`` -- mirrors grok ``FromStr``, NOT the strict serde
+   ``Deserialize`` that the Full-table ``value`` field uses) + the singular
+   readers :func:`supports_reasoning_effort_meta` /
+   :func:`parse_reasoning_effort_meta` + the writer
+   :func:`reasoning_effort_meta_value` + the :class:`ReasoningEffortOption`
+   menu-entry struct + the plural reader/writer
+   :func:`parse_reasoning_effort_options` /
+   :func:`parse_reasoning_efforts_meta` /
+   :func:`reasoning_efforts_meta_value` (untagged Bare-string-vs-Full-table
+   option shape, skip-invalid + warn). Pure value-level subsystem over
+   ``dict`` / ``list``; consumes the R206 :class:`ReasoningEffort`.
 """
 
 from minimax_code.sampler.chat_completion_leaves import (
@@ -265,6 +290,19 @@ from minimax_code.sampler.messages import (
     UnknownStopReason,
     parse_stop_reason,
     stop_reason_to_wire,
+)
+from minimax_code.sampler.reasoning_effort_meta import (
+    REASONING_EFFORT_META_KEY,
+    REASONING_EFFORTS_META_KEY,
+    SUPPORTS_REASONING_EFFORT_META_KEY,
+    ReasoningEffortOption,
+    parse_canonical_effort_token,
+    parse_reasoning_effort_meta,
+    parse_reasoning_effort_options,
+    parse_reasoning_efforts_meta,
+    reasoning_effort_meta_value,
+    reasoning_efforts_meta_value,
+    supports_reasoning_effort_meta,
 )
 from minimax_code.sampler.request_params import (
     AdaptiveThinkingConfig,
@@ -407,7 +445,10 @@ __all__ = [
     "PresetToolChoice",
     "PromptTokensDetails",
     "RATE_LIMIT_RETRY_THRESHOLD",
+    "REASONING_EFFORT_META_KEY",
+    "REASONING_EFFORTS_META_KEY",
     "ReasoningEffort",
+    "ReasoningEffortOption",
     "Refusal",
     "ResponseField",
     "ResponseModelMetadata",
@@ -420,6 +461,7 @@ __all__ = [
     "SAMPLE_CHECK_EVENT_DATA",
     "SAMPLE_CHECK_EVENT_DATA_CUMULATIVE",
     "SERIALIZATION_DISPLAY_PREFIX",
+    "SUPPORTS_REASONING_EFFORT_META_KEY",
     "SamplingError",
     "SearchParameters",
     "SearchSource",
@@ -472,10 +514,17 @@ __all__ = [
     "format_sampling_error",
     "is_check_event",
     "is_context_length_error",
+    "parse_canonical_effort_token",
+    "parse_reasoning_effort_meta",
+    "parse_reasoning_effort_options",
+    "parse_reasoning_efforts_meta",
     "parse_stop_reason",
     "peek_doom_loop",
+    "reasoning_effort_meta_value",
+    "reasoning_efforts_meta_value",
     "resolve_max_retries",
     "resolve_max_retries_with_env",
     "retry_backoff_with_jitter",
     "stop_reason_to_wire",
+    "supports_reasoning_effort_meta",
 ]
