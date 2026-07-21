@@ -13,18 +13,22 @@ built on ``faulthandler`` + ``sys.excepthook`` + ``threading.excepthook`` +
 terminal-restore (``terminal.rs``) is out of scope (the agent is a Web SPA
 backend with no TUI).
 
-Currently landed (R225, the type-contract + vocabulary + archive foundation):
+Currently landed:
 
-* ``types`` -- grok ``lib.rs`` value types (``CrashReport`` /
+* ``types`` (R225) -- grok ``lib.rs`` value types (``CrashReport`` /
   ``CrashHandlerConfig``) + ``symbolicate.rs`` ``ResolvedFrame`` + the
   ``MAX_HISTORY`` constant. Pure data, no I/O.
-* ``signals`` -- grok ``symbolicate.rs`` ``signal_name`` / ``si_code_name``
-  POSIX signal vocabulary.
-* ``archive`` -- grok ``lib.rs`` ``archive_report`` report persistence +
-  ``history/`` retention pruning.
+* ``signals`` (R225) -- grok ``symbolicate.rs`` ``signal_name`` /
+  ``si_code_name`` POSIX signal vocabulary.
+* ``archive`` (R225) -- grok ``lib.rs`` ``archive_report`` report persistence
+  + ``history/`` retention pruning.
+* ``format`` (R226) -- grok ``format.rs`` ``CrashBlob`` + GCRX binary format,
+  rebuilt as JSON (``from_payload`` / ``as_payload``); the binary layout
+  constants (``HEADER_SIZE`` / ``MAX_FILE_SIZE`` / ``VERSION_STRING_LEN``)
+  and ``writer`` module are dropped (allocation-safe capture makes a custom
+  binary format unnecessary).
 
-YAGNI / deferred (later rounds): ``format.rs`` ``CrashBlob`` + GCRX binary
-format (rebuilt as JSON), ``symbolicate.rs`` ``resolve_frames`` /
+YAGNI / deferred (later rounds): ``symbolicate.rs`` ``resolve_frames`` /
 ``format_report`` (Python ``traceback`` equivalent), ``handler.rs`` signal
 installation (Python ``faulthandler`` + ``excepthook`` equivalent),
 ``lib.rs`` ``check_previous_crash`` orchestration, ``install`` /
@@ -35,6 +39,7 @@ installation (Python ``faulthandler`` + ``excepthook`` equivalent),
 from __future__ import annotations
 
 from minimax_code.crash.archive import archive_report, prune_history
+from minimax_code.crash.format import MAGIC, MAX_FRAMES, VERSION, CrashBlob
 from minimax_code.crash.signals import si_code_name, signal_name
 from minimax_code.crash.types import (
     MAX_HISTORY,
@@ -44,7 +49,11 @@ from minimax_code.crash.types import (
 )
 
 __all__ = [
+    "MAGIC",
+    "MAX_FRAMES",
     "MAX_HISTORY",
+    "VERSION",
+    "CrashBlob",
     "CrashHandlerConfig",
     "CrashReport",
     "ResolvedFrame",

@@ -17466,3 +17466,38 @@ format.rs CrashBlob + GCRX 二进制格式（重构为 JSON，后续轮次）/ s
 
 ### Commit
 `feat(platform): R225 fuse xai-crash-handler crash package skeleton (types+signals+archive)`。路径 B 首轮（sampling-types 精修 → 功能模块实体建设）；起点模块 crash/ 崩溃恢复（grok xai-crash-handler 1592 行 5 files）；concept-for-concept 融合（Rust FFI sigaction/SEH + GCRX 二进制 blob → Python faulthandler+excepthook+JSON，terminal.rs YAGNI）；3 个零依赖纯逻辑叶子（types: MAX_HISTORY+ResolvedFrame+CrashReport+CrashHandlerConfig frozen+slots / signals: signal_name+si_code_name POSIX 词汇 / archive: archive_report best-effort Path|None + prune_history DRY helper）+ barrel 8 符号；解锁 roadmap v0.9.0 "可恢复"验收地基；后续 format/symbolicate/handler/check_previous_crash/IPC/前端 prompt。
+
+## R226 — fuse xai-crash-handler format.rs (CrashBlob + GCRX→JSON serialization leaf)
+
+锚点:R226-1 e3fb9e1
+
+### 本轮目标
+迁移 grok format.rs CrashBlob + GCRX 二进制格式 → 重构为 JSON (crash/format.py)。R225 已完成 crash 包骨架首叶 (types/signals/archive + barrel)，R226 继续 format 叶子。扩展 crash/__init__ barrel，写 test_crash_format.py。锚点链: … → R224(a1e4ece) → R225(e3fb9e1) → R226。
+
+### 融合结论
+concept-for-concept（路径 B 第 2 轮，承接 R225 范式）：grok GCRX 二进制 blob 格式 (magic `b"GCRX"` + VERSION=1 + MAX_FRAMES=64 + 固定小端 header + 帧数组) 存在的根因是 POSIX 信号处理器 async-signal-unsafe（不能分配内存）→ 必须用预分配静态 buffer + `libc::write`。Python 的 `faulthandler` 分配安全（专用 handler 非 bare sigaction trampoline）→ 重构为 JSON 持久化（`CrashBlob.from_payload` / `as_payload` 替代 grok `CrashBlob::parse` / `writer` 模块）。保留语义常量 (MAGIC/VERSION/MAX_FRAMES) + CrashBlob 数据结构 + JSON 往返契约；丢弃二进制布局常量 (HEADER_SIZE/MAX_FILE_SIZE/VERSION_STRING_LEN，JSON 变长无等价) + writer 模块 unsafe FFI 字节写入（faulthandler 是捕获机制，无 Python 等价）。
+
+### 交付
+- agent/minimax_code/crash/format.py (~199 行)：`MAGIC:str="GCRX"` + `VERSION:int=1` + `MAX_FRAMES:int=64` + `_is_int(value:object)->bool` (bool 排除辅助) + `CrashBlob` (frozen+slots dataclass, signal/si_code/si_addr/pid/timestamp:int + frames:tuple[int,...] + app_version:str, `from_payload` classmethod refuse-and-return-None + `as_payload` JSON 往返) + 详尽 docstring (grok 来源 + Migrated this round + YAGNI dropped binary-only + Purification decisions + Product-fusion note) + `__all__` 4 符号 order-by-type。
+- agent/tests/test_crash_format.py (~211 行, 25 测试, 5 类)：`TestConstants` (3 常量值) + `TestCrashBlobConstruction` (5 round-trip/empty_frames/frozen B010 规避/slots object.__setattr__/equality) + `TestAsPayload` (3 stamps magic+version/emits frames as list/round-trips) + `TestFromPayload` (13 全失败分支: valid/non-dict/bad magic/wrong version/missing magic/missing field/non-int field/bool field/non-string app_version/non-list frames/non-int frame/over max/at max boundary) + `TestJsonRoundTrip` (1 json.dumps/loads)。辅助 `_sample_blob()` (SIGSEGV 11/SEGV_MAPERR 1/0x7F8A12340000/pid 42/ts 1712678587/3 frames/v0.8.0) + `_sample_payload()` 对齐。
+- agent/minimax_code/crash/__init__.py (barrel 8→12 符号)：docstring 加 format (R226) 条目 + YAGNI 移除 format.rs（已落地，仅剩 symbolicate/handler/check_previous_crash/install/IPC/前端 prompt）+ import CrashBlob+MAGIC+MAX_FRAMES+VERSION + `__all__` 扩展 order-by-type (常量 MAGIC<MAX_FRAMES<MAX_HISTORY<VERSION → 类 CrashBlob<CrashHandlerConfig<CrashReport<ResolvedFrame → 函数 archive_report<prune_history<si_code_name<signal_name)。
+
+### 映射决策树 + 坑
+1. **concept-for-concept 融合（路径 B 第 2 轮，承接 R225 范式）**：GCRX 二进制布局的 async-signal-unsafe 根因在 Python 不存在 → faulthandler 分配安全 → JSON 序列化。CrashBlob 数据结构（语义）原样保留，序列化层（机制）从二进制重写为 JSON。这正是 concept-for-concept 而非 line-for-line。
+2. **范围决策（format.rs 214 行拆分）**：MAGIC/VERSION/MAX_FRAMES 语义常量保留；VERSION_STRING_LEN(32)/HEADER_SIZE/MAX_FILE_SIZE 二进制布局常量 YAGNI（JSON 变长）；writer 模块 unsafe FFI 字节写入 (write_header/write_frame) 无 Python 等价 → as_payload 替代；CrashBlob::parse 字节→结构体 little-endian 解码 → from_payload dict→dataclass。
+3. **_is_int 辅助函数（bool 排除）**：`isinstance(True, int) is True` in Python，但崩溃 signal/pid/frame 永不 bool → 排除 bool 保持 parsed blob honest + 镜像 grok 独立 u8/u32/u64 解码器。帧逐元素 `_is_int` 校验镜像 grok per-frame u64 解码。
+4. **payload 类型 object（非 Any）**：`payload:object` 接受 None/str/int/list/dict 无需调用方 type:ignore；更 Pythonic、少一个 import。
+5. **.get() 统一缺失字段处理**：magic/version/各字段全用 `.get()`，缺失返回 None → 后续 isinstance 校验拒绝，无需单独 KeyError 检查（少一层控制流）。
+6. **refuse-and-return-None 契约（镜像 grok）**：grok CrashBlob::parse 校验 length/magic/version/n_frames 结构错误返回 None；Python from_payload 加 isinstance 运行时校验（Python 无编译期类型），任何类型错误返回 None。bool 显式排除、MAX_FRAMES 边界拒绝（>MAX_FRAMES 返回 None，==MAX_FRAMES 接受，边界测试覆盖）。
+7. **# type: ignore[arg-type] 行内注释**：from_payload 里 signal 等变量是 object 类型传给 int 参数，mypy 抱怨 → 行内注释（ruff 不检查 type:ignore，RUF 规则未启用，无害）。
+8. **frozen+slots 范式（沿用 R225 sampler/types.py 黄金模板）**：frozen 测试用 `next(iter(type(obj).__slots__))` 取变量 field name 规避 B010；slots 测试用 `object.__setattr__` 绕过 frozen `__setattr__` 验证 slots 守卫（frozen 先抛 FrozenInstanceError，绕过它确认 slots 也守卫）。
+9. **barrel 扩展 order-by-type 验证**：常量 (MAGIC<MAX_FRAMES<MAX_HISTORY<VERSION) → 类 (CrashBlob<CrashHandlerConfig<CrashReport<ResolvedFrame) → 函数 (archive_report<prune_history<si_code_name<signal_name)，绝对 import `from minimax_code.crash.X import`（非相对 import，沿用项目范式避免 ruff I001 回归）。
+
+### 验证
+ruff check（format.py + test_crash_format.py）✅ All checks passed!（含 isort order-by-type，初版一次通过）+ 定向 pytest test_crash_format.py **25 passed**（0.04s）+ barrel 扩展后 ruff check crash/__init__.py clean + crash 全测试 (4 文件: types+signals+archive+format) **73 passed**（25 format + 48 R225）+ 全量回归 **6201 passed + 10 skipped**（R225 基准 6176 + R226 新增 25 = 6201，数学精确吻合，零真实回归，147.20s）。10 skipped 与 R225 基准一致。
+
+### YAGNI 边界
+symbolicate.rs resolve_frames + format_report（Python traceback 等价，后续）/ handler.rs 信号安装（faulthandler + sys.excepthook + threading.excepthook + asyncio exception handler 等价，后续）/ lib.rs check_previous_crash 编排（消费 format + archive，后续）/ install + install_terminal_restore_only 入口（后续）/ terminal.rs TUI 恢复（YAGNI，agent 是 Web SPA 后端无 TUI）/ app 启动接线 / crash.* IPC 命名空间 / 前端 session-recovery prompt（后续轮次）。下轮路径 B 续 crash（symbolicate resolve_frames / handler faulthandler 安装 / check_previous_crash 编排）或转向下一功能模块（sandbox/memory/codegraph）。
+
+### Commit
+`feat(platform): R226 fuse xai-crash-handler format.rs (CrashBlob + GCRX→JSON serialization leaf)`。路径 B 第 2 轮（crash 模块续 format 叶子）；迁移 format.rs GCRX 二进制格式 → JSON 重构；concept-for-concept 融合（Rust FFI 字节写入 + 二进制布局 → Python faulthandler+JSON，async-signal-unsafe 根因在 Python 不存在）；3 语义常量 (MAGIC+VERSION+MAX_FRAMES) + CrashBlob frozen+slots dataclass + _is_int bool 排除 + from_payload refuse-and-return-None + as_payload JSON 往返；barrel 8→12 符号；25 测试覆盖全失败分支；解锁 check_previous_crash 编排消费层；后续 symbolicate/handler/check_previous_crash/IPC/前端 prompt。
