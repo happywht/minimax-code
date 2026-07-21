@@ -215,6 +215,13 @@ from minimax_code.sampler.chat_completion_mid import (
     ToolCallRequest,
     ToolChoice,
 )
+from minimax_code.sampler.chat_completion_response import (
+    ChatChoice,
+    ChatCompletionChunk,
+    ChatCompletionResponse,
+    ChatResponseMessage,
+    ToolCallResponse,
+)
 from minimax_code.sampler.chat_completion_streaming import (
     ChatChunkChoice,
     ChatChunkDelta,
@@ -400,12 +407,16 @@ __all__ = [
     "BlocksToolResultContent",
     "CacheControl",
     "ChatBlocksContent",
+    "ChatChoice",
     "ChatChunkChoice",
     "ChatChunkDelta",
+    "ChatCompletionChunk",
+    "ChatCompletionResponse",
     "ChatContentBlock",
     "ChatImageUrlBlock",
     "ChatMessageContent",
     "ChatRequestMessage",
+    "ChatResponseMessage",
     "ChatTextBlock",
     "ChatTextContent",
     "ChatUsage",
@@ -520,6 +531,7 @@ __all__ = [
     "ToolCallFunction",
     "ToolCallFunctionDelta",
     "ToolCallRequest",
+    "ToolCallResponse",
     "ToolChoice",
     "ToolChoiceFunction",
     "ToolChoiceParam",

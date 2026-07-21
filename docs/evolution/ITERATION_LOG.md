@@ -17065,3 +17065,38 @@ serde `deserialize_with` 钩子在反序列化时对 wire `Value` 运行（编�
 `feat(platform): R214 migrate types.rs ApiBackend enum (2 symbols)`
 
 锚点链：… → R211(7e546ec) → R212(3e8eef9) → R213(50e2de1) → **R214（本轮）**。barrel 165→167；全量 5695 passed + 10 skipped（+31 新增），零真实回归。本轮核心锁定一个 grok→Python 映射决策：`ApiBackend` 零依赖叶子纠正（R206 docstring 误判 "depend on crate::rs"——实际仅消费者 `SamplingConfig` 携 indexmap+NonZeroU64 阻塞），keystone 为 `supports_native_schema` 决策非对称性（Messages→False，结构化输出走 StructuredOutput tool；Chat Completions + Responses→True），由 30 测试覆盖。策略 A 续行采样层类型 crate 叶子迁移，命中 types.rs 1010-1030 独立叶子（2 符号）闭环。
+
+## R215 — types.rs ChatCompletion 响应外壳簇迁移（5 符号，解除 R208 deferral）
+
+锚点:R215-1 4651268
+
+### 本轮目标
+继续 xai-grok-sampling-types types.rs 叶子迁移（策略 A 续行）。R215 选 types.rs 459-587 的 ChatCompletion 响应/流式分片**外壳簇**（5 符号：`ToolCallResponse` + `ChatResponseMessage` + `ChatChoice` + `ChatCompletionResponse` + `ChatCompletionChunk`）——这是 R208 显式延后的集群（`ChatCompletionChunk` 依赖 `empty_string_as_none`，当时未落地；R211 已落地该辅助函数，解除阻塞）。
+
+### 融合结论
+5 个外壳结构体闭合 ChatCompletion **响应侧**类型契约（R208 已闭合流式 *interior* delta；R215 闭合 *exterior* envelope）。依赖闭包：零外部（仅消费 R206 原子叶 `Role`/`FinishReason`/`ToolCallFunction` + R207 `ChatUsage` + R208 `ChatChunkChoice` + R211 `empty_string_as_none`）。命名保留 grok 原名（无 Anthropic Messages API peer——R201 `MessageDeltaBody` 是 Anthropic 流式扁平 struct，R205 `MessagesResponse` 是 Anthropic 非流式回复，结构不同）。`ChatCompletionChunk.system_fingerprint` 是 R211 辅助函数的**首个消费端**，正式解除 R208 deferral，串起 R206→R208→R211→R215 的依赖链闭环。
+
+### 交付
+- 新建 `agent/minimax_code/sampler/chat_completion_response.py`（417 行，5 `@dataclass(frozen=True, slots=True)` struct + 1 模块私有 `_optional_string_tuple` helper）
+- 扩展 `sampler/__init__.py` barrel 167→172（1 导入块插入 + 3 处 `__all__` 字母序插入：ChatChoice / ChatCompletionChunk+Response / ChatResponseMessage / ToolCallResponse）
+- 同步 `tests/test_sampler_config.py` 守卫（docstring 追加 R215 块 + `len == 167`→`== 172` + 符号集合追加 5 符号）
+- 新建 `tests/test_chat_completion_response.py`（8 测试类，~62 测试含 parametrize 展开）
+
+### 映射决策树 + 坑
+1. **语态二分**：`ToolCallResponse` 容忍（非 dict→全空实例，镜像 R207 `ToolCallRequest`——单个坏 tool call 不应中断响应解析）；`ChatResponseMessage`/`ChatChoice`/`ChatCompletionResponse`/`ChatCompletionChunk` 严格（非 dict→`ValueError`，必需字段无默认值，镜像 R210 `ChatRequestMessage`）。
+2. **ChatResponseMessage.role: Role 严格**：`Role.from_payload` 缺失/非字符串/未知→`ValueError`，对应 grok `pub role: Role` 无 `#[serde(default)]` 的 missing-required-field 失败语义。
+3. **ChatChoice.index 默认 0 + message 必需**：`message` 必需（`ChatResponseMessage.from_payload(None)` 因缺 role 自然 raise），非显式 raise——错误信号从内层 role 字段冒泡。
+4. **wire type→kind 字段**：`ToolCallResponse.kind` 读 wire `type` 键，自由字符串（非 `ToolType` 枚举，响应原样回显服务器判别式，镜像 R208 `ToolCallDelta.kind`）。
+5. **_optional_string_tuple helper（DRY）**：`Option<Vec<String>>` → `tuple[str, ...] | None`（list→tuple 过滤非 str；missing/null/non-list→None；**empty list→`()` 非 None**——`Option::is_none` 仅门控 None 不门控空）。
+6. **keystone：`ChatCompletionChunk.system_fingerprint = empty_string_as_none(payload.get("system_fingerprint"))`**——R211 辅助函数首个消费端，空串→None 语义（部分上游服务用 `""` 表"缺席"）。
+7. **坑（ruff I001）**：5 个 `as` 符号别名（`ChatChoice as _DirectChatChoice` ...）+ `order-by-type` 产生**错误的拆分建议**（ruff 想把一个合并块拆成 5 个重复 `from ... import (X,)` 块）。解法：改用**模块别名** `import minimax_code.sampler.chat_completion_response as _ccr`，barrel identity 测试用属性访问 `_ccr.ChatChoice`，彻底消除符号别名，ruff 一次 clean。
+8. **frozen+slots 测试范式**：`next(iter(type(obj).__slots__))` 取变量 field name 规避 B010（setattr 常量属性 rule）。
+
+### 验证
+ruff clean（R215 两文件零 I001/E/F/W/B/UP）+ 定向 pytest `test_chat_completion_response.py + test_sampler_config.py` 75 passed + 全量回归 **5757 passed + 10 skipped**（R214 基准 5695 + R215 新增 62，零真实回归，124.93s）。1 warning 为预存 fastapi/httpx 弃用（无关）。
+
+### YAGNI 边界
+`ChatCompletionRequest` 仍延后（3 硬阻塞：`ToolDefinition` 未迁 + `crate::rs::ResponseFormat` + `Box<dyn TraceContext>`）；`SamplingConfig` 延后（indexmap::IndexMap + NonZeroU64，R214 `ApiBackend` 已落地为消费者铺路）；`TraceContext` trait 延后（tracing crate）；重复 `ReasoningEffort`（to/from_responses_api 与 crate::rs 耦合）延后。完整 serde Serialize/Deserialize 往返——`from_payload` 覆盖平台所需解析方向。
+
+### Commit
+`feat(platform): R215 migrate types.rs ChatCompletion response cluster (5 symbols)`。types.rs 累计 53→58 符号；下轮策略 A 续扫 types.rs 1030-1521 剩余区段定位下一个零依赖独立叶子。

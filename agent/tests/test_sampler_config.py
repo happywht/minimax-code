@@ -133,8 +133,16 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     wire-string enum (ChatCompletions / Responses / Anthropic Messages) +
     DEFAULT_API_BACKEND constant -- the types.rs API-backend selector leaf,
     the #[serde(default)] api_backend field of the later SamplingConfig; zero
-    dependency, correcting the earlier "depends on crate::rs" deferral)."""
-    assert len(sampler.__all__) == 167
+    dependency, correcting the earlier "depends on crate::rs" deferral) +
+    chat_completion_response (R215, 5: ToolCallResponse +
+    ChatResponseMessage + ChatChoice + ChatCompletionResponse +
+    ChatCompletionChunk -- the types.rs ChatCompletion response +
+    streaming-chunk exterior envelopes, the non-streaming peer of the R208
+    streaming-delta interior; consumes the R206 Role/FinishReason/
+    ToolCallFunction atomics + the R207 ChatUsage + the R208 ChatChunkChoice
+    + the R211 empty_string_as_none hook; zero dependency, lifts the R208
+    ChatCompletionChunk deferral)."""
+    assert len(sampler.__all__) == 172
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -357,6 +365,17 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         # DEFAULT_API_BACKEND constant -- the types.rs API-backend selector
         "ApiBackend",
         "DEFAULT_API_BACKEND",
+        # chat_completion_response (R215): ToolCallResponse +
+        # ChatResponseMessage + ChatChoice + ChatCompletionResponse +
+        # ChatCompletionChunk -- the types.rs ChatCompletion response +
+        # streaming-chunk exterior envelopes (non-streaming peer of the R208
+        # streaming-delta interior; consumes R206 atomics + R207 ChatUsage +
+        # R208 ChatChunkChoice + R211 empty_string_as_none)
+        "ChatChoice",
+        "ChatCompletionChunk",
+        "ChatCompletionResponse",
+        "ChatResponseMessage",
+        "ToolCallResponse",
     }
 
 
