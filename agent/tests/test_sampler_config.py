@@ -129,8 +129,12 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     reasoning-effort meta read/write subsystem with the untagged
     Bare-string-vs-Full-table option shape + skip-invalid forward-compat,
     consuming the R206 ReasoningEffort; pure value-level over dict/list, zero
-    dependency)."""
-    assert len(sampler.__all__) == 165
+    dependency) + api_backend (R214, 2: ApiBackend 3-variant snake_case
+    wire-string enum (ChatCompletions / Responses / Anthropic Messages) +
+    DEFAULT_API_BACKEND constant -- the types.rs API-backend selector leaf,
+    the #[serde(default)] api_backend field of the later SamplingConfig; zero
+    dependency, correcting the earlier "depends on crate::rs" deferral)."""
+    assert len(sampler.__all__) == 167
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -348,6 +352,11 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "reasoning_effort_meta_value",
         "reasoning_efforts_meta_value",
         "supports_reasoning_effort_meta",
+        # api_backend (R214): ApiBackend 3-variant snake_case wire-string
+        # enum (ChatCompletions / Responses / Anthropic Messages) +
+        # DEFAULT_API_BACKEND constant -- the types.rs API-backend selector
+        "ApiBackend",
+        "DEFAULT_API_BACKEND",
     }
 
 

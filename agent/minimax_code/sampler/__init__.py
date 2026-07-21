@@ -36,6 +36,16 @@ read/write subsystem: 3 wire constants + the canonical-effort token parser
 Bare-string-vs-Full-table option shape + skip-invalid forward-compat,
 consuming the R206 ``ReasoningEffort``; a pure value-level subsystem over
 ``dict`` / ``list``, zero dependency) +
+``api_backend`` (R214, the ``types.rs`` API-backend selector leaf: the
+3-variant ``snake_case`` wire-string :class:`ApiBackend` enum
+(ChatCompletions / Responses / Anthropic Messages) + the
+:meth:`supports_native_schema` decision method (the Messages API does not
+enforce a response JSON schema natively, so structured output there routes
+through the StructuredOutput tool) + the :data:`DEFAULT_API_BACKEND`
+constant, the ``#[serde(default)]`` ``api_backend`` field of the later
+:class:`SamplingConfig`; zero dependency, correcting the earlier "depends
+on crate::rs" deferral -- ``ApiBackend`` itself has no ``crate::rs`` /
+``indexmap`` / ``NonZeroU64`` dep, only :class:`SamplingConfig` does) +
 ``config`` (R195,
 pure-type subset) + ``content_blocks`` (R202, ``xai-grok-sampling-types``
 ``messages.rs`` ContentBlock 5-variant union + 3 deps) + ``doom_loop`` (R200,
@@ -163,8 +173,23 @@ Leaf order (crate ``lib.rs`` re-exports, in migration order):
    :func:`reasoning_efforts_meta_value` (untagged Bare-string-vs-Full-table
    option shape, skip-invalid + warn). Pure value-level subsystem over
    ``dict`` / ``list``; consumes the R206 :class:`ReasoningEffort`.
+13. ``api_backend`` (R214) -- :class:`ApiBackend` (the 3-variant
+   ``snake_case`` wire-string API-backend selector: Chat Completions /
+   Responses / Anthropic Messages) + the :meth:`supports_native_schema`
+   decision method (Messages -> ``False`` -- a schema there blocks tool
+   use, so structured output routes through the StructuredOutput tool) +
+   the :data:`DEFAULT_API_BACKEND` constant (``#[default]
+   ChatCompletions``). The ``#[serde(default)]`` ``api_backend`` field of
+   :class:`SamplingConfig` (lands later). Zero-dependency leaf, correcting
+   the earlier "depends on crate::rs" deferral (``ApiBackend`` itself has
+   no ``crate::rs`` / ``indexmap`` / ``NonZeroU64`` dep; only
+   :class:`SamplingConfig` does).
 """
 
+from minimax_code.sampler.api_backend import (
+    DEFAULT_API_BACKEND,
+    ApiBackend,
+)
 from minimax_code.sampler.chat_completion_leaves import (
     DEFAULT_REASONING_EFFORT,
     CompletionTokensDetails,
@@ -364,6 +389,7 @@ from minimax_code.sampler.types import (
 __all__ = [
     "AdaptiveThinkingConfig",
     "AnyToolChoiceParam",
+    "ApiBackend",
     "AuthScheme",
     "AutoToolChoiceParam",
     "BACKOFF_BASE_MS",
@@ -395,6 +421,7 @@ __all__ = [
     "ContentBlockDeltaEvent",
     "ContentBlockStartEvent",
     "ContentBlockStopEvent",
+    "DEFAULT_API_BACKEND",
     "DEFAULT_AUTH_SCHEME",
     "DEFAULT_MAX_RETRIES",
     "DEFAULT_REASONING_EFFORT",

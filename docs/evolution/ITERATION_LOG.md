@@ -16964,3 +16964,104 @@ serde `deserialize_with` 钩子在反序列化时对 wire `Value` 运行（编�
 `feat(platform): R212 migrate types.rs chat_truncate_for_prompt (1 symbol)`
 
 锚点链：… → R209(bd328a5) → R210(058b74f) → R211(7e546ec) → **R212（本轮）**。barrel 153→154；全量 5616 passed + 10 skipped（+13 新增），零真实回归。本轮核心锁定两个 grok→Python 映射决策：(1) `&[T]` 借用 → `Sequence` + `usize` → `int`（溢出 hazard 消失，无 wrap 风险）；(2) `matches!(msg.role, Role::User)` → `msg.role == Role.USER`（StrEnum 身份比较忠实映射，因 `Role` 严格解析无 catch-all）。策略 A（ChatCompletionRequest）3 硬阻塞降级策略 B（纯算法叶子）闭环。
+
+## R213 — reasoning_effort_meta.py: reasoning-effort meta 子系统（types.rs 765-1008，11 符号读写子系统）
+
+锚点:R213-1 3e8eef9
+
+### 本轮目标
+
+继续 `xai-grok-sampling-types` crate 的下一个纯逻辑叶子迁移。R212 完成 `chat_truncate_for_prompt` 后，types.rs 累计已迁 40 符号（头部五块 + serde_helpers + chat_truncate）。本轮目标：切 types.rs 765-1008 下一块可独立闭合的内聚子系统。
+
+### 融合结论
+
+策略 A（`ChatCompletionRequest`）3 硬阻塞仍在（R212 已确认：`ToolDefinition` + `crate::rs::ResponseFormat` + `Box<dyn TraceContext>`），本轮命中 types.rs 765-1008 的 **reasoning-effort meta 读写子系统** —— 一个内聚子系统（3 wire 常量 + canonical token parser + 单数 reader/writer + `ReasoningEffortOption` menu 结构 + 复数 reader/writer + skip-invalid 前向兼容），零外部依赖（仅消费 R206 `ReasoningEffort` + `dict`/`list`）。这是 R58「模型 reasoning effort meta 透出」消费端的纯逻辑契约层，落地后解除 R58 的 inline 解析依赖。
+
+### 交付
+
+- `agent/minimax_code/sampler/reasoning_effort_meta.py`（新模块，11 公开符号 + 5 私有 helper：`_LOGGER` + `_CANONICAL_TOKENS` + `_humanize_effort_id` + `_optional_str_field` + `_parse_option`）。
+- `agent/minimax_code/sampler/__init__.py`（barrel 扩展 154→165）：import 块（在 messages 块后、request_params 块前）+ `__all__` 6 处 ASCII 序插入 + docstring 开头描述块 + Leaf order 第 12 条。
+- `agent/tests/test_reasoning_effort_meta.py`（新测试，49 用例）：module+package barrel + 3 wire 常量 + canonical token（6 变体 + max 别名 + 大小写不敏感 + 未知 None）+ capability bool（5 路径）+ 单数 reader（6 路径含非 string/未知 warn→None）+ 单数 writer + `ReasoningEffortOption`（frozen + slots + to_payload 5 字段 + None→null）+ options 解析（Bare/Full/不对称性/skip-invalid 全覆盖 + 混合数组）+ 复数 reader（6 路径含 absent/not-array/empty/all-skipped 归一 None）+ 复数 writer + round-trip。
+- `agent/tests/test_sampler_config.py`（barrel 守卫 154→165）：docstring + assert + set 末尾 R213 块（11 符号）。
+
+### 映射决策树+坑
+
+- **keystone：双解析路径不对称性** —— grok `FromStr`（含 `"max"`→`Xhigh` CLI/UX 别名）vs serde `Deserialize`（严格，无 `max`）。Bare 字符串路由 `_CANONICAL_TOKENS`（含 max 别名，`parse_canonical_effort_token`）；Full dict 的 `value` 字段路由严格 serde Deserialize（复用 R206 `ReasoningEffort.from_payload`，无 max，`_parse_option` 捕获 `ValueError`/`TypeError` skip）。两条路径的 `max` 接受度不同是忠实映射，非 bug——`max` 是 `FromStr`-only concession，非 wire 变体。
+- `serde_json::Map<String, Value>` → `Mapping[str, Any]`；`Option<&Map>` → `Mapping | None`。
+- `tracing::warn!` → `logging.getLogger(__name__).warning`（非阻塞诊断；skip-invalid 是行为，log 是可观测性）。
+- `Vec<ReasoningEffortOption>` → `tuple`（项目惯例）。
+- `#[serde(untagged)] Bare | Full` → 形态匹配（`isinstance(str)` 先 Bare，否则 `isinstance(Mapping)` Full，否则 skip+warn）。
+- `description: None` 序列化为 `"description": null`（serde 对 `Option` 无 `skip_serializing_if` 的默认，忠实保留，非 omit）。
+- `(!options.is_empty()).then_some(options)` → `options if options else None`（「absent」与「present-but-unusable」归一同一 fallback 路径）。
+- 命名：3 常量 + 7 自由函数保留 grok 名逐字（自由函数无 Anthropic Messages API peer 冲突）；私有 `_humanize_effort_id` 镜像 grok 私有 `humanize_effort_id`（首字母大写，空串→空串）。
+- **barrel 字母序**：import 块 `reasoning_effort_meta` 在 `messages` 之后（'e'<'r' 不对，实际按模块名 `messages` < `reasoning_effort_meta` < `request_params`，'m'<'r'<'r'，`reasoning` < `request` 因 'rea'<'req' 即 'a'<'q'）；`__all__` 大写区 3 常量 `REASONING_EFFORT_META_KEY`/`REASONING_EFFORTS_META_KEY`/`SUPPORTS_REASONING_EFFORT_META_KEY`（'REASONING_EFFORT'<'REASONING_EFFORTS' 因短串前缀优先）。
+
+### 验证
+
+- `ruff check`（4 个变更文件）：All checks passed。
+- 定向 `pytest tests/test_reasoning_effort_meta.py tests/test_sampler_config.py -q`：**62 passed**（49 新 + 13 barrel 守卫）。
+- 全量 `pytest`：**5664 passed + 10 skipped + 1 failed**（125.55s）。失败的 `test_connection.py::test_interval_keeps_global_timeline_across_loops` 与 sampler 模块零依赖关联（断言 `0.04*0.8 <= 0.031` 定时精度抖动），单独重跑 `1 passed`——预存 flaky，非本轮引入的真实回归。5664 + 1 flaky = 5665 = 5616 基准 + 49 新增，完全吻合，零真实回归。
+
+### YAGNI 边界
+
+- **`to_responses_api` / `from_responses_api`**：依赖未落地的 `crate::rs::ReasoningEffort` peer，延后。
+- **`as_str` / `Display`**：R206 `ReasoningEffort` 是 `enum.StrEnum`，`str(effort)` 已忠实覆盖两者，无 Python peer。
+- **`to_messages_api`**：Anthropic Messages API `output_config.effort` 字符串 + `Xhigh→"max"` wire remap，是 enum 方法（非 meta 子系统成员），随 Messages-API serializer（消费 enum 的序列化层）落地。
+- full serde `Serialize`/`Deserialize` round-trip：本轮 `ReasoningEffortOption.to_payload` 仅覆盖 `Serialize` 方向（消费端 write）；`Deserialize` 方向已由 `parse_reasoning_effort_options` + `from_payload` 覆盖（消费端 read），无独立 round-trip 表面需求。
+
+### Commit
+
+`feat(platform): R213 migrate types.rs reasoning_effort meta subsystem (11 symbols)`
+
+锚点链：… → R210(058b74f) → R211(7e546ec) → R212(3e8eef9) → **R213（本轮）**。barrel 154→165；全量 5664 passed + 10 skipped（+49 新增）+ 1 预存 flaky 重跑通过，零真实回归。本轮核心锁定一个 grok→Python 映射决策：grok `FromStr`（含 `"max"` 别名）vs serde `Deserialize`（严格无 `max`）的双解析路径不对称性 → Bare 路由 `_CANONICAL_TOKENS` + Full dict `value` 路由 `ReasoningEffort.from_payload`，keystone 不变量由 49 测试覆盖。策略 A（ChatCompletionRequest）3 硬阻塞绕行，命中 types.rs 765-1008 内聚子系统（11 符号）闭环。
+
+## R214 — api_backend.py: ApiBackend 3-variant wire-string 枚举（types.rs 1010-1030，2 符号）
+
+锚点:R214-1 50e2de1
+
+### 本轮目标
+
+继续 xai-grok-sampling-types crate 叶子迁移。R213 闭合 reasoning_effort meta 子系统后，扫描 types.rs 剩余区段定位下一个零依赖独立叶子。R214 选定 `ApiBackend` 枚举（types.rs 1010-1030）——3-variant snake_case wire-string 枚举 + `supports_native_schema` 决策方法，2 公开符号，零外部依赖。
+
+### 融合结论
+
+**依赖纠正（关键）**：R206 docstring 曾将 `ApiBackend` / `SamplingConfig` 一起标记为 "depend on `crate::rs`" 延后。本轮重读源码（types.rs 1005-1064）纠正该误判——`ApiBackend`（1010-1030）本身**完全零依赖**（无 `crate::rs` / `xai-grok-tools` / `crate::serde_helpers` / `indexmap` / `NonZeroU64`），只有其消费者 `SamplingConfig`（1032-1055）携带 `indexmap::IndexMap` + `NonZeroU64` 阻塞。R214 迁移独立叶子，消费者 `SamplingConfig` 后续落地。
+
+**Keystone——`supports_native_schema` 决策非对称性**：Messages API 不在工具调用旁原生强制 response JSON schema（schema 会阻断 tool use），故 Messages 后端的结构化输出走 StructuredOutput tool；Chat Completions + Responses 原生支持。这一非对称是枚举存在的唯一行为理由——它门控采样客户端的结构化输出分发。
+
+### 交付
+
+- 新建 `agent/minimax_code/sampler/api_backend.py`（2 公开符号）：
+  - `ApiBackend(StrEnum)`：3 变体 `CHAT_COMPLETIONS="chat_completions"` / `RESPONSES="responses"` / `MESSAGES="messages"`，`from_payload` 严格解析 classmethod，`supports_native_schema` 决策方法。
+  - `DEFAULT_API_BACKEND = ApiBackend.CHAT_COMPLETIONS`（mirror grok `#[default]`）。
+- 扩展 `agent/minimax_code/sampler/__init__.py` barrel（165→167）：import 块 + `__all__` 2 处 + docstring 概述 + leaf order（5 处 Edit）。
+- 同步 `agent/tests/test_sampler_config.py` barrel 守卫：断言 165→167 + set 追加 2 符号 + docstring 加 R214 条目。
+- 新建 `agent/tests/test_api_backend.py`：6 测试类 30 测试（barrel 身份 + wire 值 + 严格 from_payload + DEFAULT + supports_native_schema 真值表 + 身份/相等性）。
+
+### 映射决策树 + 坑
+
+- `#[serde(rename_all="snake_case")] enum` → `enum.StrEnum`（R206 确立模式）：`ChatCompletions`→`"chat_completions"`、`Responses`→`"responses"`、`Messages`→`"messages"`。
+- `#[default] ChatCompletions` → `DEFAULT_API_BACKEND` 常量。
+- `impl ApiBackend { fn supports_native_schema(&self) -> bool }` → 实例方法；`matches!(self, Self::ChatCompletions | Self::Responses)` → `self in (ApiBackend.CHAT_COMPLETIONS, ApiBackend.RESPONSES)`（StrEnum 成员 `==` 等价身份比较）。
+- 严格解析（无 `#[serde(other)]` catch-all）→ `from_payload` 拒绝未知 wire 字符串（`ValueError`）+ 拒绝非字符串（`ValueError`），外层 `raise ... from exc` 链接内层 StrEnum lookup 失败。
+- **模块独立性决策**：`ApiBackend.from_payload` 内联严格解析，不跨模块依赖 `chat_completion_leaves.py` 的私有 `_parse_strict_enum` helper——保持封装，为后续 `SamplingConfig` 迁移铺路（新模块 `api_backend.py` 而非塞进 `chat_completion_leaves`）。
+- **坑（已避）**：`from __future__ import annotations` 必需——class body 内 `from_payload` 注解 `-> ApiBackend` 引用自身类名，无 future import 会 NameError（项目规范）。
+- **坑（已避）**：barrel leaf order 续行是 3 空格缩进（非 2 空格），首次 Edit 用 2 空格失败，重读确认后修正。
+
+### 验证
+
+- `ruff check`：4 文件 clean（test_api_backend.py 首跑 I001 import 未排序，`--fix` 单文件修复合并同模块 import）。
+- 定向 `pytest tests/test_api_backend.py tests/test_sampler_config.py tests/test_reasoning_effort_meta.py`：92 passed。
+- 全量回归：**5695 passed + 10 skipped**（122.30s，exit 0），R213 基准 5664 → +31 新增，零真实回归。
+
+### YAGNI 边界
+
+- 完整 serde `Serialize`/`Deserialize` round-trip：`from_payload` 覆盖 parse 方向，`str()` 覆盖 serialize 方向（StrEnum value 即 wire string），无独立 round-trip 表面需求。
+- `as_str` / `Display`：StrEnum 的 `str()` 已忠实地等价（`str(ApiBackend.MESSAGES)` → `"messages"`）。
+- `SamplingConfig` 消费者（`api_backend` 字段 `#[serde(default)]`）：携带 `indexmap::IndexMap` + `NonZeroU64` 阻塞，延后；在此之前 `DEFAULT_API_BACKEND` 代理其默认值。
+
+### Commit
+
+`feat(platform): R214 migrate types.rs ApiBackend enum (2 symbols)`
+
+锚点链：… → R211(7e546ec) → R212(3e8eef9) → R213(50e2de1) → **R214（本轮）**。barrel 165→167；全量 5695 passed + 10 skipped（+31 新增），零真实回归。本轮核心锁定一个 grok→Python 映射决策：`ApiBackend` 零依赖叶子纠正（R206 docstring 误判 "depend on crate::rs"——实际仅消费者 `SamplingConfig` 携 indexmap+NonZeroU64 阻塞），keystone 为 `supports_native_schema` 决策非对称性（Messages→False，结构化输出走 StructuredOutput tool；Chat Completions + Responses→True），由 30 测试覆盖。策略 A 续行采样层类型 crate 叶子迁移，命中 types.rs 1010-1030 独立叶子（2 符号）闭环。
