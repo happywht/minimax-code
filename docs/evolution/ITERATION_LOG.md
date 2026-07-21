@@ -16212,3 +16212,56 @@ xai-grok-sampler retry.rs (856 行, Grok 自标 "Pure logic only") -> 迁移判�
 ```
 feat(platform): R198 migrate xai-grok-sampler retry pure logic (backoff decision core)
 ```
+
+## R199 — SamplingError 类型叶子迁移 + retry 决策层回填（融合 xai-grok-sampling-types error.rs + xai-grok-sampler retry.rs 决策层）
+
+锚点:R199-1 78760a2
+
+### 本轮目标
+
+解除 R198 retry.rs 决策层（`RetryDecision` + `classify_error` + `format_sampling_error` + `clone_error`）对未迁移 `SamplingError` 的依赖阻塞。优先策略 A：确认 `xai-grok-sampling-types` crate 是纯类型 crate（`lib.rs` 明确声明 "no HTTP clients, no file system access"），迁移 `error.rs` 的 `SamplingError` 判别联合到 `sampler/types.py`，同时回填 `retry.py` 决策层，闭合 R198 遗留 YAGNI。
+
+### 融合结论
+
+`xai-grok-sampling-types` 是 grok 采样层的 API 无关类型 crate，`error.rs` 是其 no-I/O 错误叶子。`SamplingError` 是 12 变体判别联合，其中 2 个 I/O 外壳变体 `Http(reqwest::Error)` / `Serialization(serde_json::Error)` 需纯化为携带渲染后的 `str` message。迁移后：`types.py` 落地判别联合（基类 + 11 子类 frozen+slots dataclass）+ 纯判定矩阵 + `Serialization` round-trip helpers；`retry.py` 回填 6 变体 `RetryDecision` + 10 守卫 `classify_error` + 12 变体 `format_sampling_error` + `clone_error`（纯化简化，无需 grok 的 `Http->EventStreamError` 降级）。sampler barrel 13→29。决策层与平台既有两套 retry policy（`reliability.retry` + `resilience.retry_policy`）共存——本模块暴露 grok 精确退避算术 + 决策矩阵为纯库，供任何想匹配 grok 退避节奏的消费者使用，不替换既有策略。
+
+### 交付
+
+- `agent/minimax_code/sampler/types.py`（新建）：`EmptyReason` StrEnum（2 wire 值）+ `ResponseModelMetadata`（3 Option 字段）+ `EmptyResponseContext`（10 字段 + `finish_reason_str`）+ `SERIALIZATION_DISPLAY_PREFIX` 常量 + `is_context_length_error` 自由函数（5 模式大小写不敏感）+ `SamplingError` 基类（`is_auth_error`/`is_rate_limited`/`is_payload_too_large`/`is_encrypted_content_error`/`is_image_processing_error`/`is_context_length_error`/`is_retryable`/`retry_after`/`should_retry_header` 纯判定矩阵）+ 11 子类变体（`Auth`/`InvalidConfiguration`/`Http`/`Serialization`/`Api`/`EventStreamError`/`StreamError`/`IdleTimeout`/`EmptyResponse`/`MaxTokensTruncation`/`DoomLoopDetected`）+ `Serialization` 的 `__str__`/`serialization_message`/`serialization_from_rendered`。`__all__` 17 符号。
+- `agent/minimax_code/sampler/retry.py`（重写，R198 部分逐字保留 + R199 追加）：`RetryDecision` 基类 + 6 子类（`Retry`/`RetryWithBackoff`/`RetryWithImageStrip`/`RetryWithClientRebuild`/`EmitToSession`/`Fatal`）+ `_backoff_or_retry_after` 私有助手（Retry-After 头优先于指数退避，DRY）+ `classify_error`（10 守卫矩阵，`jitter_unit` 注入熵）+ `_api_status_hint` + `format_sampling_error`（12 变体遥测友好渲染）+ `clone_error`（11 变体纯化简化）。`__all__` 5→20。
+- `agent/minimax_code/sampler/__init__.py`（barrel 扩展 13→29）：+R199 retry decision（7 类）+ retry fn（3）+ types（6 符号），docstring 增补叶子 #3 types。
+- `agent/tests/test_sampler_types.py`（新建）：~60 测试，覆盖 module barrel（17 符号）/ EmptyReason wire 值 / ResponseModelMetadata 默认 / EmptyResponseContext finish_reason_str / is_context_length_error 5 模式 + 大小写不敏感 / 11 变体构造 + frozen 值语义 / 判断矩阵（is_auth_error 排除 403、is_retryable 状态集 {429,500,502,503,504,520}、is_context_length_error 委托 Api/StreamError）/ Serialization __str__ + serialization_message + serialization_from_rendered 往返。
+- `agent/tests/test_sampler_retry.py`（追加 R199 决策层测试）：+RetryDecision 6 变体构造 + frozen / classify_error 10 守卫矩阵（含 413+should_retry=False 仍 strip 的负载顺序锁定）/ format_sampling_error 12 变体 fragment + 状态提示 / clone_error 10 变体类型+字段回归 + Api 全字段保留 + Serialization 契约回归。
+- `agent/tests/test_sampler_config.py`：barrel 断言 13→29 + 测试函数重命名为 `test_package_barrel_exposes_config_retry_types_symbols` + 顶部 docstring 三叶说明。
+
+### 映射决策树 + 坑
+
+- **策略 A 成立**：`xai_grok_sampling_types/lib.rs` 明文 "no HTTP clients, no file system access"，确认纯类型 crate，`error.rs` 可单轮整叶迁移。
+- **I/O 纯化**：`reqwest::Error` → `Http(message: str)`；`serde_json::Error` → `Serialization(message: str)`。判定矩阵 `is_retryable` 的 `Http` 臂在纯化版恒返回 `True`——grok 主路径 timeout/connect/request/body 全 retryable，仅 `is_status && !(server_error || 429)` 返回 `false`，而纯化变体无 status 可检，故交给调用方（YAGNI 记录）。
+- **Python 表示**：判别联合用基类（`@dataclass(frozen=True, slots=True)`）+ 11 子类，判定方法用 `isinstance` 矩阵，mirror grok 中心 `match self` impl 块。
+- **字段名/方法名冲突规避**：grok `Api` 既有 `model_metadata` 字段又有 `model_metadata()` 访问器方法——Python 无法实现字段与同名方法遮蔽。决定：**省略 `model_metadata()` 访问器**（字段直接暴露），仅保留 `retry_after()`（字段 `retry_after_secs`）/ `should_retry_header()`（字段 `should_retry`），名称不冲突。`classify_error`/`format_sampling_error` 不消费该访问器。
+- **clone_error 纯化简化**：grok `Http`/`Serialization` 臂因 `reqwest::Error`/`serde_json::Error` 非 `Clone` 而降级（Http→EventStreamError）；纯化版两者携带 `str` 可直接 `type(err)(message=err.message)` clone，**降级不再需要**，更忠实于原变体类型。
+- **classify_error jitter 注入**：增加 `jitter_unit: float = 0.5` 参数（注入全局熵），同时供 `retry_backoff_with_jitter` 和 `doom_loop_backoff`（单次 `classify_error` 互斥触发其一，故单一参数即可），mirror R197 hostname 注入 / R198 jitter_unit 注入决策。
+- **Serialization `__str__` 契约**：返回 `f"{SERIALIZATION_DISPLAY_PREFIX}{self.message}"`，使 `serialization_from_rendered(str(s)) == s` 往返精确（`removeprefix` 剥离前缀）；`serialization_from_rendered` 对无前缀输入是 no-op（无双重剥离风险）。
+- **防护顺序负载（load-bearing guard order）**：grok `classify_error` 的 image-strip 守卫（413/image-processing）在 `x-should-retry: false` 守卫**之前**——strip 改变 payload，故原始请求的 "don't retry" 不适用于 stripped 请求。已加 `test_classify_should_retry_false_checked_after_image_strip`（413 + should_retry=False → 仍 RetryWithImageStrip）锁定此顺序，防回归。
+- **I001 import 排序坑**：`RATE_LIMIT_RETRY_THRESHOLD`（全大写 const）在 test 文件首版被误排在 `Fatal`（class）之后；`ruff --fix` 修正为 const 组——isort `order-by-type=true` 强制 const→class→fn 分组（非纯 ASCII 字典序）。`__init__.py` 同结构因首版即按 const→class→fn 正确分组而未触发。
+- **format EmptyResponse 可空字段渲染**：`ctx.completion_tokens` 可空，grok 用 `unwrap_or(0)`；Python f-string 内联 `ctx.completion_tokens if ctx.completion_tokens is not None else 0`。
+
+### 验证
+
+- **ruff**（`select = ["E","F","W","I","B","UP"]`, `ignore = ["E501"]`, 长度 100, py311）：`minimax_code/sampler/` + 3 测试文件 → **All checks passed!**（首次 I001 经 `--fix` 修正）。
+- **定向 pytest**（`test_sampler_types.py` + `test_sampler_retry.py` + `test_sampler_config.py`）：**189 passed** in 0.39s。
+- **全量回归**：**5109 passed, 10 skipped, 1 deselected**（预存 `test_connection.py::test_interval_keeps_global_timeline_across_loops` flaky）in 102.00s。R198 基准 4981 → 5109，**净增 128 测试，零回归**。
+
+### YAGNI 边界
+
+- **reqwest::Error 内省**：grok `is_likely_body_rejected`（`Http` 变体检 `is_request`/`is_body`/`is_timeout`/`is_connect`）与 `is_retryable_reqwest`（`is_retryable` 的 `Http` 臂）。纯化 `Http` 仅存 `str` message，这些判定为调用方职责——`Http` 臂 `is_retryable` 恒 `True`。
+- **JSON 错误格式解析**：grok `try_parse_error`/`parse_error_bytes`/`try_parse_stream_error`（从响应字节解析 OpenAI/flat 错误信封）。纯 JSON 工作但耦合 HTTP 响应管道（非 retry 决策层），延后随 HTTP 叶迁移。
+- **tracing 副作用**：grok `From<serde_json::Error>` debug 日志、`try_parse_stream_error` warn 日志；纯化核心无日志（调用方记日志）。
+- **From 转换**：grok `From<reqwest::Error>`/`From<serde_json::Error>` 从原始 I/O 错误对象构造变体；无原始对象时调用方直接构造。
+- **RetryPolicy struct**：YAGNI——平台已有 `reliability.retry` + `resilience.retry_policy` 两套 retry policy，grok 第三套不引入；仅迁移纯退避算术 + 决策矩阵。
+- **全局 jitter 熵**：grok 进程级 `AtomicU64`（`fetch_add`）+ 线程 id / retry count 经 `DefaultHasher` 哈希。该全局可变状态为调用方职责——`retry_backoff_with_jitter`/`doom_loop_backoff` 接受 `jitter_unit ∈ [0.0, 1.0]`，`classify_error` 透传到触发的退避臂。mirror R197 sqlite_journal 主机名注入决策。
+
+### Commit
+
+`feat(platform): R199 migrate SamplingError types leaf + backfill retry decision layer`（仅 sampler/ 2 新 + 1 改、tests 1 新 + 2 改、ITERATION_LOG.md；精确 `git add`，不含 10 个排除文件、90+ 无关 M 文件、ruff --fix 噪音）。

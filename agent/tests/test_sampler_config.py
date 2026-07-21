@@ -8,7 +8,8 @@ direction is inverted, not duplicated). The deferred/YAGNI symbols
 (``SamplerConfig`` / ``RetryPolicy`` / 2 traits) are documented in
 ``config.py``. The constants ``DEFAULT_MAX_RETRIES`` / ``RATE_LIMIT_RETRY_
 THRESHOLD`` migrated in R198 (:mod:`minimax_code.sampler.retry`); the package
-barrel (tested below) now re-exports both the ``config`` and ``retry`` leaves.
+barrel (tested below) re-exports the ``config`` (R195) + ``retry`` (R198
+backoff + R199 decision layer) + ``types`` (R199 SamplingError) leaves.
 """
 
 from __future__ import annotations
@@ -27,11 +28,14 @@ from minimax_code.sampler import config as sampler_config
 # ---------------------------------------------------------------------------
 
 
-def test_package_barrel_exposes_config_plus_retry_symbols() -> None:
+def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     """R195 config (3: 2 types + 1 default) + R198 retry (10: 5 constants + 5
-    functions) = 13 re-exported symbols. The config trio stays; R198 adds the
-    backoff/max-retries leaf alongside it."""
-    assert len(sampler.__all__) == 13
+    functions) + R199 retry decision layer (10: 7 decision classes + 3 functions)
+    + R199 types (6: 1 constant + 4 types + 1 free function) = 29 re-exported
+    symbols. The config trio stays; R198 adds the backoff/max-retries leaf;
+    R199 adds the decision layer (consuming the migrated SamplingError) and the
+    SamplingError type leaf itself."""
+    assert len(sampler.__all__) == 29
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -48,6 +52,24 @@ def test_package_barrel_exposes_config_plus_retry_symbols() -> None:
         "resolve_max_retries",
         "resolve_max_retries_with_env",
         "retry_backoff_with_jitter",
+        # retry (R199 decision layer): 7 decision classes + 3 functions
+        "EmitToSession",
+        "Fatal",
+        "Retry",
+        "RetryDecision",
+        "RetryWithBackoff",
+        "RetryWithClientRebuild",
+        "RetryWithImageStrip",
+        "classify_error",
+        "clone_error",
+        "format_sampling_error",
+        # types (R199): 1 constant + 4 types + 1 free function
+        "EmptyReason",
+        "EmptyResponseContext",
+        "ResponseModelMetadata",
+        "SERIALIZATION_DISPLAY_PREFIX",
+        "SamplingError",
+        "is_context_length_error",
     }
 
 
