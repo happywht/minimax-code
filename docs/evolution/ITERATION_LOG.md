@@ -17613,3 +17613,42 @@ extract_pc_and_fp（ucontext_t 寄存器读取）+ walk_frame_pointers（裸指�
 
 ### Commit
 `feat(platform): R229 fuse xai-crash-handler handler.rs install leaf (handler.py)`。路径 B 第 5 轮（crash 模块续信号安装叶子）；迁移 handler.rs install + write_crash_blob；concept-for-concept 融合 + 诚实分层（fatal 信号 faulthandler C 层 dump traceback无法构造 CrashBlob + Python 异常 excepthook 构造 CrashBlob，CPython SIGSEGV 时解释器损坏的核心约束）；信号占位 _PYTHON_EXCEPTION_SIGNAL=0（signal_name(0) 诚实降级）；_STATE 模块全局镜像 static mut；best-effort write_text 吞 OSError；barrel 17->18 符号；25 测试覆盖 install 成功/失败 + _persist_crash 写入/未 install/I/O 失败 + excepthook Exception/SystemExit/KeyboardInterrupt + 读写循环闭合端到端；ruff I001 order-by-type 坑 + threading.ExceptHookArgs structseq 坑（SimpleNamespace 规避）+ 进程级副作用隔离 fixture（monkeypatch faulthandler.enable + 保存恢复 _STATE/excepthook）三坑修复；闭合崩溃恢复写入半段（与 R228 recovery.py 读取端配对，完整读写循环 install->_persist_crash->check_previous_crash->CrashReport）；全量 6263 passed 零回归；后续 app 启动接线/terminal/crash.* IPC/前端 prompt。
+
+## R230 — crash 收官-启动接线：app-startup wiring install + faulthandler 共存
+
+锚点:R230-1 45e9c74
+
+### 本轮目标
+路径 B crash 模块第 6 轮（候选 A — 崩溃收官-启动接线）。R225-R229 已交付完整的崩溃恢复读写循环叶子层（types/signals/archive/format/symbolicate/recovery/handler），但 ``install`` 从未在真实启动序列被调用过 —— 叶子链是"悬空的"，从未接入进程启动路径。本轮闭合这个缺口：在 ``minimax_code/__main__.cli_entry`` 早期调用 ``crash.install(CrashHandlerConfig(...))``，启动时 ``check_previous_crash`` 并 ``logger.warning`` 暴露上一会话的 ``CrashReport``，让崩溃恢复回路在真实启动序列里真正激活。本轮是接线轮（少量代码 + 启动序列集成测试），非新叶子迁移。
+
+### 融合结论
+核心架构发现：R12 的 ``runtime/crash_detect.py``（标记文件协议 ``.minimax_code_running`` + ``atexit`` + ``install_faulthandler`` 写 ``last_fault.trace`` 文件接收器）与 R225-R229 的 ``crash/`` 包（CrashBlob 协议 + ``crash.install`` 调 ``faulthandler.enable()`` 默认 stderr 输出）**并行运行时存在 faulthandler 进程单例冲突** —— faulthandler 是进程级单例，后调用者覆盖前者的接收器配置。
+
+诚实分层后的**共存设计**：
+* excepthook 不冲突：R12 从不替换 ``sys.excepthook`` / ``threading.excepthook``，crash 包替换它们 → 各自独占。
+* 标记不冲突：crash 包从不触碰 ``.minimax_code_running`` 标记 → 各自独占。
+* **唯一重叠 — faulthandler 接收器**：``crash.install`` 内部调 ``faulthandler.enable()``（默认 stderr），会重置 R12 早先 ``install_faulthandler`` 设置的 ``last_fault.trace`` 文件接收器 + ``all_threads=True``。**解决：``crash.install`` 后立即重跑 R12 的 ``install_faulthandler`` 恢复文件接收器**（顺序：``crash.install`` 先 → ``install_faulthandler`` 后，让 R12 接收器获胜）。
+
+两协议互补：R12 标记检测"是否崩溃"（orphan-run 恢复触发器），crash 包 CrashBlob 捕获"崩溃细节"（signal + addr + version + backtrace）。concept-for-concept 融合 grok ``sigaction`` + ``write_crash_blob`` → Python ``faulthandler.enable()`` + ``_persist_crash()``，并在接线层补回 faulthandler 单例协调。可测试函数封装：接线逻辑提取为 ``_wire_xai_crash_handler(app_version) -> CrashReport | None``，避免 subprocess 测 ``cli_entry``。``crash_dir = default_data_dir() / "crashes"`` 子目录隔离，避免 CrashBlob 文件与 R12 的 marker/trace 文件混淆。整体 fail-open（try/except + ``logger.debug``，与 R12 一致，崩溃子系统问题不阻塞启动）。
+
+### 交付
+* ``agent/minimax_code/__main__.py`` —— 新增 ``_wire_xai_crash_handler(app_version) -> CrashReport | None``（install CrashBlob 层 → 重跑 R12 ``install_faulthandler`` 恢复文件接收器 → ``check_previous_crash`` 暴露 ``CrashReport`` + ``logger.warning``，整体 fail-open ``logger.debug``）；``cli_entry`` R12 块之后调用 ``_wire_xai_crash_handler(__version__)``。模块顶层注解 ``CrashReport | None`` 用 ``TYPE_CHECKING`` 块解决 ruff F821（未定义名）+ UP037（注解去引号）双重约束（``from __future__ import annotations`` 已让注解延迟求值，运行时零开销）。
+* ``agent/tests/test_crash_wiring.py``（新建）—— 6 测试 + autouse ``_isolate_crash_wiring`` fixture：monkeypatch ``crash_handler.faulthandler.enable``（lambda None，避免真实 handler install）+ patch ``crash_detect.install_faulthandler`` 为 recording stub（避免泄漏打开的文件句柄 + 不重复测 R12）+ setenv ``MINIMAX_CODE_DATA_DIR`` 沙箱 + 保存恢复 ``_STATE`` / ``sys.excepthook`` / ``threading.excepthook`` / ``_FAULT_SINK``。测试聚焦组合契约（install → re-arm faulthandler → recover → log → fail-open），不重复测叶子。``_seed_last_crash`` helper 通过 R229 install + ``_persist_crash`` 写合法 ``last-crash.json``，保持 writer/reader 格式锁步。
+* 6 测试：(1) 无上次崩溃返回 None + 创建 crash_dir；(2) 恢复 CrashReport + ``logger.warning``（signal=10 → ``SIGBUS (Bus error)``，addr=0xDEADBEEF）；(3) re-arm R12 faulthandler 顺序（``install_fh_calls == [data_dir]``，验证 ``install`` 后紧跟一次 ``install_faulthandler(crash_dir.parent)``）；(4) install 异常 fail-open + ``logger.debug``；(5) ``check_previous_crash`` 异常 fail-open + ``logger.debug``；(6) ``app_version`` 注入 config（``captured[0].app_version == "0.9.0-rc1"`` + ``crash_dir`` 正确）。
+
+### 映射决策树+坑
+* **坑 1 — ruff UP037 + F821 双重错误**：注解 ``-> "CrashReport | None"``（带引号的前向引用）。UP037 要求移除类型注解中的引号（因 ``from __future__ import annotations`` 已让所有注解延迟求值），但去引号后触发 F821（未定义名称 ``CrashReport``，模块顶层无此名）。**修复**：3 个 Edit 并行 —— (a) ``from typing import Any`` → ``from typing import TYPE_CHECKING, Any``；(b) 插入 ``if TYPE_CHECKING: from .crash import CrashReport`` 块（仅类型检查时导入，运行时零开销）；(c) 注解去引号。ruff 干净。
+* **坑 2 — faulthandler 进程单例冲突**（核心架构发现，见融合结论）：``crash.install`` 的 ``faulthandler.enable()`` 会重置 R12 的文件接收器。**修复**：接线函数内 ``install(...)`` 后紧跟 ``install_faulthandler(crash_dir.parent)``，顺序保证 R12 接收器获胜。测试 (3) 显式断言此顺序契约。
+* **坑 3 — 测试副作用泄漏**：``install`` 写模块全局 ``_STATE`` + 替换进程级 ``sys.excepthook`` / ``threading.excepthook``；``install_faulthandler`` 打开 ``last_fault.trace`` 文件句柄 + 设 ``_FAULT_SINK``。autouse fixture 三重隔离：stub ``faulthandler.enable`` + recording stub ``install_faulthandler``（不打开真实文件）+ 保存恢复全部模块/进程状态。R230 测试不重复测 R12/R229 叶子，只测它们组合后的接线契约。
+* **坑 4 — 测试函数封装必要性**：直接 subprocess 测 ``cli_entry`` 会拉起 asyncio + uvicorn + 真实 handler registry，过重且非确定性。提取 ``_wire_xai_crash_handler`` 为模块级纯函数，单元测试可注入 mock + ``tmp_path`` 沙箱直接断言组合行为，避免端到端启动开销。
+
+### 验证
+* ruff：``All checks passed``（``agent/minimax_code/__main__.py`` + ``agent/tests/test_crash_wiring.py``）。
+* 定向 pytest ``tests/test_crash_wiring.py``：6/6 passed。
+* 全量回归 ``tests/``：6268 passed + 10 skipped + **1 failed**（``tests/test_connection.py::test_interval_keeps_global_timeline_across_loops``，断言 ``period * 0.8 (0.032) <= gap (0.031)`` 差 1ms）。**重跑该单测立即通过（0.73s）** → 证实是预存时序 flaky 测试（R162 ``connection.py`` 区域，asyncio 调度边界敏感），非 R230 引入。**数学对账**：6263（R229 基准）+ 6（R230 新增）= 6269 = 6268 passed + 1 failed ✓ —— R230 的 6 个全绿，失败的是预存测试。**按"迭代独立性"原则不修复**：``test_connection.py`` 与 R230 零交集（R230 只动 ``__main__.py`` + ``test_crash_wiring.py``，从不碰 ``connection.py``），诚实记录此决策而非静默修复。
+
+### YAGNI 边界
+``crash.*`` IPC 命名空间（``crash.previous_report`` / ``crash.history`` / ``crash.dismiss`` handler + 前端 TypedIPC/mockHandle + ``ipc-contract.md`` + ``ipc.ts``）—— 完整横切轮，下轮候选 B / 前端 session-recovery prompt（消费 ``CrashReport`` 弹出恢复提示）—— 需前端 store + 组件，下轮候选 / asyncio loop ``set_exception_handler`` —— 专用 async-exception hook，当前同步捕获契约已闭合，async 异常路径未来轮次 / ``__main__`` 启动序列 subprocess 集成测试 —— ``_wire_xai_crash_handler`` 单元测试已覆盖组合契约，subprocess 端到端启动测试过重且非确定性，YAGNI / 暴露 ``CrashReport`` 给 ``init_runtime`` / mobile push / 前端 —— 当前仅 ``logger.warning`` 日志暴露，结构化传递给上层消费者待 IPC 层落地。下轮：crash 收官 IPC 命名空间（``crash.*`` handler + 前端 recovery prompt）或转向下一功能模块（sandbox/memory/codegraph）。
+
+### Commit
+`feat(platform): R230 crash app-startup wiring (install + faulthandler coexistence with R12)`。路径 B crash 模块第 6 轮（收官-启动接线）；在 ``__main__.cli_entry`` 早期调 ``crash.install(CrashHandlerConfig(...))`` + ``check_previous_crash`` 暴露 ``CrashReport`` + ``logger.warning``；核心架构发现 faulthandler 进程单例冲突（R12 ``install_faulthandler`` 文件接收器 vs crash 包 ``faulthandler.enable`` stderr 默认），共存设计 = ``crash.install`` 后紧跟重跑 ``install_faulthandler`` 让 R12 接收器获胜；excepthook/标记各自独占不冲突；接线逻辑提取 ``_wire_xai_crash_handler`` 可测试函数（避免 subprocess 测 ``cli_entry``）；TYPE_CHECKING 块解 ruff F821+UP037 双重约束；``crash_dir = default_data_dir()/"crashes"`` 子目录隔离；fail-open（``logger.debug``，与 R12 一致）；6 测试 + autouse 三重隔离 fixture 覆盖 install/re-arm/recover/log/fail-open 组合契约；迭代独立性：预存 flaky ``test_interval_keeps_global_timeline_across_loops``（R162 ``connection.py`` 区域，与 R230 零交集）按原则不修复，重跑立即通过证实非引入；闭合崩溃恢复回路在真实启动序列的接入（R225-R229 叶子链从悬空变为激活）；全量 6268 passed + 10 skipped + 1 pre-existing flaky 零真实回归；后续 crash.* IPC/前端 prompt/async exception hook 或转向 sandbox/memory/codegraph。

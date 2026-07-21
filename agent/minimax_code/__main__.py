@@ -19,12 +19,15 @@ import argparse
 import asyncio
 import os
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .app import register_app_handlers
 from .config import Config
 from .ipc.server import IPCServer
 from .logging_setup import configure_logging
+
+if TYPE_CHECKING:
+    from .crash import CrashReport
 
 # Default port for the HTTP + WebSocket transport. Overridable
 # via ``--http-port`` or ``MINIMAX_CODE_HTTP_PORT``. The host
@@ -160,6 +163,75 @@ async def amain(config: Config, mode: str, port: int, host: str) -> int:
     return 0
 
 
+def _wire_xai_crash_handler(app_version: str) -> CrashReport | None:
+    """Install the xai-crash-handler CrashBlob layer + recover the previous
+    session's structured crash report (R230, app-startup wiring).
+
+    Complementary to R12's marker-file protocol in :func:`cli_entry`:
+
+    * R12 (``runtime.crash_detect``) owns the *marker* lifecycle -- did the
+      previous run exit cleanly? -- plus the fatal-signal
+      ``last_fault.trace`` file sink, and feeds orphan-run recovery.
+    * This layer (``crash`` package, R225-R229) owns the *CrashBlob* capture:
+      :data:`sys.excepthook` / :data:`threading.excepthook` persist an
+      uncaught Python exception as ``crashes/last-crash.json``, and on the
+      next boot :func:`~minimax_code.crash.check_previous_crash` reads it
+      back into a structured :class:`~minimax_code.crash.CrashReport`
+      (signal name + faulting address + app version + backtrace).
+
+    Faulthandler coordination is the one real overlap: ``crash.install``
+    re-enables faulthandler with the stderr default (R225-R229's
+    fatal-signal safety net), which would reset R12's ``last_fault.trace``
+    file sink + ``all_threads=True``. R12's ``install_faulthandler`` is
+    re-run immediately after so the file sink wins -- R12 keeps its
+    traceback destination, this layer keeps its excepthook replacements.
+    The two subsystems do not otherwise touch (R12 never replaces
+    ``sys.excepthook``; this layer never touches the marker file), so they
+    coexist as the honest "did it crash?" (R12 marker) + "what crashed?"
+    (CrashBlob) pair.
+
+    Fail-open like R12: any install / recovery failure is swallowed and
+    logged at debug level so a crash-subsystem issue never blocks boot.
+
+    :param app_version: version stamped into each persisted crash record.
+    :return: the previous session's :class:`~minimax_code.crash.CrashReport`
+        if one was recovered, else ``None``.
+    """
+    import logging
+    from pathlib import Path
+
+    from .crash import CrashHandlerConfig, check_previous_crash, install
+    from .runtime.crash_detect import install_faulthandler
+    from .storage.db import default_data_dir
+
+    logger = logging.getLogger(__name__)
+    crash_dir = Path(default_data_dir()) / "crashes"
+    try:
+        install(CrashHandlerConfig(app_version=app_version, crash_dir=crash_dir))
+        # Restore R12's last_fault.trace file sink: crash.install above
+        # called faulthandler.enable() (stderr default), resetting R12's
+        # file sink + all_threads=True. Re-run install_faulthandler LAST so
+        # R12's configuration wins; the excepthook replacements above are
+        # independent of faulthandler and stay armed.
+        install_faulthandler(crash_dir.parent)
+        previous = check_previous_crash(crash_dir)
+        if previous is not None:
+            logger.warning(
+                "previous session crash recovered: signal=%s addr=%#x "
+                "version=%s report=%s",
+                previous.signal_name,
+                previous.faulting_address,
+                previous.app_version,
+                previous.report_path,
+            )
+        return previous
+    except Exception:
+        logger.debug(
+            "xai-crash-handler wiring failed (fail-open)", exc_info=True
+        )
+        return None
+
+
 def cli_entry() -> None:
     """Synchronous entry point registered as a console_script."""
     args = parse_args()
@@ -197,6 +269,17 @@ def cli_entry() -> None:
         logging.getLogger(__name__).debug(
             "crash-detection install failed (fail-open)", exc_info=True
         )
+
+    # R230 — xai-crash-handler CrashBlob layer (write + read half).
+    # Complementary to R12 above: installs sys.excepthook /
+    # threading.excepthook replacements that persist an uncaught Python
+    # exception as crashes/last-crash.json, and reads back the previous
+    # session's structured CrashReport. _wire_xai_crash_handler re-runs
+    # R12's install_faulthandler so the faulthandler file sink survives
+    # crash.install's stderr-default re-enable.
+    from . import __version__
+
+    _wire_xai_crash_handler(__version__)
 
     if args.mode == "http":
         port = (
