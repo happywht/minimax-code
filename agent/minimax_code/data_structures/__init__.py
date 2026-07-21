@@ -33,6 +33,18 @@ The ``DefaultEdgeLabel`` tagged union + the three module-private helpers
 (``_increment_or_init_entry`` / ``_decrement_or_remove_entry`` /
 ``_find_parent``) stay module-level (not barrel-public), mirroring grok's
 non-re-exported ``enum`` + module-private ``fn`` items. Barrel count stays 5.
+
+Fifth leaf (R245): ``algo`` -- the traversal layer of the vendored
+``graphlib_rust`` 0.0.2 crate's ``algo`` submodule: pre-/post-order DFS
+(``dfs``) navigating via ``successors`` (directed) or ``neighbors``
+(undirected), plus the ``preorder`` / ``postorder`` thin wrappers. This is the
+third and final layer of the graphlib stack (vocabulary R242 -> Graph
+R243/R244 -> algo R245) and closes the complete graphlib surface, unblocking
+the downstream ``dagre_rust`` layout stack. ``algo`` lives in its own module
+(``algo.py``), importable as ``minimax_code.data_structures.algo`` -- grok
+declares ``pub mod algo`` but does NOT ``pub use`` its symbols at the crate
+root (only ``graph.rs`` symbols earn top-level re-export), so its symbols stay
+out of the barrel ``__all__``. Barrel count stays 5.
 """
 
 from __future__ import annotations
