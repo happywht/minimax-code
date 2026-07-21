@@ -167,8 +167,21 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     (3 typed variants + UNKNOWN unit catch-all, how the user fatally
     interrupted the preceding turn); unit #[serde(other)] catch-all (no
     data, unlike R201 StopReason's Unknown(String)) -> StrEnum UNKNOWN
-    member whose from_payload never raises; strategy D continuation)."""
-    assert len(sampler.__all__) == 180
+    member whose from_payload never raises; strategy D continuation).
+    + conversation_usage (R219, 4: the conversation.rs third slice -- the
+    deferred "response stop + usage" cluster landing now that grok Usage is
+    migrated (R207 ChatUsage): ConversationStopReason (renamed from grok
+    StopReason to dodge the R201 messages.StopReason barrel collision -- the
+    strict snake_case 4-variant StrEnum, NO #[serde(other)] catch-all so
+    from_payload raises on unknown wire, parity with FinishReason; contrast
+    R218 UNKNOWN catch-all) + TokenUsage (the flat 5x u32 conversation-side
+    counter, frozen+slots, distinct from ChatUsage the wire shape) +
+    from_finish_reason (impl From<FinishReason>: ToolCalls+FunctionCall
+    collapse to ToolCalls) + from_usage (impl From<Usage>: cached from
+    prompt_tokens_details, reasoning from completion_tokens_details, both
+    default 0 when breakdown absent); strategy D continuation, clearing the
+    two R217 blockers -- barrel rename precedent + ChatUsage landed)."""
+    assert len(sampler.__all__) == 184
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -431,6 +444,15 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         # UNKNOWN member, from_payload never raises
         "PriorTurnInterrupt",
         "SyntheticReason",
+        # conversation_usage (R219): the conversation.rs third slice -- the
+        # "response stop + usage" cluster (ConversationStopReason renamed
+        # from grok StopReason to dodge the R201 barrel collision, strict
+        # StrEnum no catch-all + TokenUsage flat 5x u32 counter + 2 From
+        # conversion impls), clearing the two R217 deferral blockers
+        "ConversationStopReason",
+        "TokenUsage",
+        "from_finish_reason",
+        "from_usage",
     }
 
 

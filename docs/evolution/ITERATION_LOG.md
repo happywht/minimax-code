@@ -17206,3 +17206,38 @@ ruff check（4 文件：`conversation_enums.py` + `__init__.py` + `test_conversa
 
 ### Commit
 `feat(platform): R218 migrate conversation.rs synthetic-reason + interrupt enums (2 symbols, StrEnum catch-all)`。conversation.rs 第 2 切片（2 符号，双 `#[serde(other)]` unit catch-all wire 枚举）；barrel 178→180；sampler 模块 StrEnum catch-all 范式落地（R102 `AttachRoute` 先例延续）。
+
+## R219 — conversation.rs 第 3 切片：ConversationStopReason + TokenUsage + 2 From 转换 impl（response stop + usage 集群，桶面重命名 + 严格 StrEnum 范式）
+
+锚点:R219-1 2e1693a
+
+### 本轮目标
+继续策略 D 续扫 `xai-grok-sampling-types/conversation.rs`（9481 行）叶子层。R218 迁移第 2 切片（2 个 `#[serde(other)]` unit catch-all 枚举），并在 YAGNI 边界延后了"response stop + usage"集群（双阻塞：① conversation.rs `StopReason` 与已迁 R201 `messages.StopReason` 桶面命名冲突；② `From<Usage> for TokenUsage` 需 grok `Usage` 类型，R207 才落地为 `ChatUsage`）。两个阻塞现已解除（`Usage`→`ChatUsage` R207 落地、`FinishReason` R206 落地），R219 落地该集群——conversation.rs 第 3 切片 4 符号：`StopReason`（严格 4 变体 snake_case 枚举，重命名为 `ConversationStopReason`）+ `TokenUsage`（5×u32 扁平 token 计量）+ `from_finish_reason`（`impl From<FinishReason>`）+ `from_usage`（`impl From<Usage>`）。
+
+### 融合结论
+该集群是"响应终止 + 计量"轴——conversation 层观察一个 LLM 响应如何终止（stop/length/tool_calls/content_filter）及其 token 用量。两个核心设计决策：(1) **桶面重命名**：grok `StopReason` 重命名为 `ConversationStopReason`（避开 R201 `messages.StopReason` 冲突——后者是 frozen+slots `Unknown(String)` 联合体，结构迥异；镜像 R207 `Usage`→`ChatUsage` 重命名先例，`Conversation` 前缀标记 conversation 层作用域）；(2) **严格 StrEnum 范式（无 `#[serde(other)]`）**：grok `StopReason` 是严格 4 变体枚举无 catch-all → 未知 wire string 抛 `ValueError`（与 `FinishReason`/`Role` 同范式，复用 `_parse_strict_enum`），**对照** R218 的 UNKNOWN catch-all（永不 raise）。`TokenUsage` 是 conversation 层的扁平投影——`ChatUsage` 是 wire 形状（含嵌套 `*_details` breakdown + xAI `cost_in_usd_ticks` 扩展），`TokenUsage` 消费层只需 5 个 salient 计数（两个嵌套 breakdown 各坍缩为单字段 `cached_tokens`/`reasoning_tokens`，cost 扩展丢弃）。新增 `conversation_usage.py`（兄弟于 R217 `conversation_leaves.py` + R218 `conversation_enums.py`），barrel 180→184。
+
+### 交付
+- 新建 `agent/minimax_code/sampler/conversation_usage.py`（232 行）：`ConversationStopReason`（StrEnum，4 变体 + `from_payload` 严格 + `as_str`）+ `TokenUsage`（frozen+slots dataclass，5×int 默认 0 + `default` + `from_payload` 容错）+ `from_finish_reason`（穷举 if 链，`ToolCalls`/`FunctionCall` 坍缩 `TOOL_CALLS`）+ `from_usage`（details 提取 + None→0 守卫）。
+- 扩展 `agent/minimax_code/sampler/__init__.py` barrel：导入块（isort 字母序 `conversation_leaves` < `conversation_usage` < `doom_loop`，'l'(108)<'u'(117)）+ `__all__` 4 个 ASCII 排序插入（`ConversationStopReason` 在 `ContentBlockStopEvent` 后；`TokenUsage` 在 `ThinkingDisplay` 后；`from_finish_reason`/`from_usage` 在 `format_sampling_error` 后），180→184。
+- 同步 `agent/tests/test_sampler_config.py` barrel 守卫：计数 180→184 + docstring R219 追加 + 符号集合 +4。
+- 新建 `agent/tests/test_conversation_usage.py`（9 测试类，36 测试）：barrel 标识检查 + `ConversationStopReason` wire 值/as_str/严格 from_payload（已知→变体、未知→ValueError、非字符串→ValueError、穷举回环）+ `from_finish_reason` 5 变体穷举（含 `ToolCalls`+`FunctionCall` 坍缩）+ `TokenUsage` 默认值/结构相等/slots 集/frozen 不可变/容错 from_payload（dict/非 dict/缺字段/空 dict/cached 可选）+ `from_usage`（双 details 投影/bare 计数直通/details 缺省→0/单边 details/零值传播/cost 扩展丢弃/类型守卫）。
+
+### 映射决策树 + 坑
+1. **桶面命名冲突 → 重命名**：grok `StopReason` ↔ R201 `messages.StopReason`（后者是 frozen+slots `Unknown(String)` 联合体，结构迥异）。解法：`ConversationStopReason`（`Conversation` 前缀标记作用域），镜像 R207 `Usage`→`ChatUsage` 先例。不做别名（保持单源）。
+2. **严格 StrEnum vs catch-all 范式分流**：grok `StopReason` 无 `#[serde(other)]` → `_parse_strict_enum`（未知/非字符串抛 `ValueError`，parity `FinishReason`/`Role`）。**对照** R218 `SyntheticReason`/`PriorTurnInterrupt` 的 `#[serde(other)] Unknown` unit → StrEnum UNKNOWN catch-all（永不 raise）。范式选择取决于 grok 是否声明 `#[serde(other)]`，非主观决定。
+3. **`from_finish_reason` 穷尽性 if 链**：5 变体 `FinishReason` 前 3 个（STOP/LENGTH/CONTENT_FILTER）显式匹配，`ToolCalls`+`FunctionCall` fall through 到 `TOOL_CALLS`（function-call 终止在 conversation 层观察为 tool-call stop）。穷举测试 `for fr in FinishReason` 全量校验。
+4. **`TokenUsage` 容错 `from_payload` 同 `ChatUsage` 范式**：非 dict → `cls()`，`payload.get(key, 0)`。grok 仅 `cached_prompt_tokens` 标 `#[serde(default)]`，平台层均匀扩展容错（所有字段可选，wire 边界容忍度高于 serde 硬类型）。
+5. **`from_usage` details 缺省守卫**：`prompt_tokens_details is not None` 守卫 `.cached_tokens`，缺省→0（镜像 grok `map_or(0, ..)`）。cost 扩展 `cost_in_usd_ticks` 无 `TokenUsage` slot → 投影丢弃（测试 `not hasattr(result, "cost_in_usd_ticks")` 锁定）。
+6. **isort 字母序坑**：`conversation_usage`('u') 在 `conversation_leaves`('l') 之后、`doom_loop`('d') 之前。导入块位置精确插在两块之间。
+7. **`__all__` ASCII 排序**：`ConversationStopReason`(C-o-n-v) 在 `ContentBlockStopEvent`(C-o-n-t) 后（'v'>'t'）；`TokenUsage`(T-o) 在 `ThinkingDisplay`(T-h) 后（'o'>'h'）；`from_finish_reason`/`from_usage`(f-r) 在 `format_sampling_error`(f-o-r) 后（'r'>'o'）。
+8. **frozen 语义测试**：`setattr(usage, field, 999)` 触发 `FrozenInstanceError`（AttributeError 子类），用 `next(iter(type(usage).__slots__))` 取变量 field name（避免硬编码 + 规避 B010 setattr 常量属性规则），`pytest.raises(AttributeError)` 捕获。
+
+### 验证
+ruff check（4 文件：`conversation_usage.py` + `__init__.py` + `test_conversation_usage.py` + `test_sampler_config.py`）✅ All checks passed!（含 isort order-by-type，证明导入顺序与 `__all__` 排序正确）+ 定向 pytest `test_conversation_usage.py + test_sampler_config.py` **49 passed**（36 新测试 + 13 守卫）+ 全量回归 **5867 passed + 10 skipped + 1 failed**（R218 基准 5832 + R219 新增 36 = 5868；5867 passed + 1 flaky failed = 5868，数学精确吻合，零真实回归，124.91s）。1 failed 为预存 `test_hunks_types.py::test_hunk_value_equality`——时间型 flaky（两次 `datetime.now()` 漂移 1ms 导致 `==` 失败，R76 hunks 模块，与 R219 零关系），单独重跑确认 **1 passed**，遵循迭代独立性不修复。
+
+### YAGNI 边界
+`TokenUsage::record_on_span(&tracing::Span)`（conversation.rs ~658）将 5 计数记录为 Rust `tracing::Span` 结构化字段——Python 无 `tracing::Span` 等价物（平台可观测层是 R11+ `TelemetryEngine`，非 per-call span 移植）；5 计数已作为 dataclass 普通属性可达，未来消费者会在平台自身可观测面上构建 span 式记录，而非移植 Rust `tracing`。声明 YAGNI 不迁移。下轮策略 D 续扫 conversation.rs 叶子层（候选：`ConversationToolChoice` 联合体含混合 `Function(String)` 数据携带变体、`UserItem`/`AssistantItem` 消费层拉入未迁 `ContentPart` 联合 + body，或其他 conversation.rs 独立小叶子）或策略 E 其他未迁移 crate 零依赖叶子。
+
+### Commit
+`feat(platform): R219 migrate conversation.rs response stop + usage cluster (ConversationStopReason + TokenUsage + 2 From impls, barrel rename)`。conversation.rs 第 3 切片（4 符号，"response stop + usage"集群落地，解除 R217/R218 双延后）；barrel 180→184；严格 StrEnum 范式 + 桶面重命名（`StopReason`→`ConversationStopReason`，镜像 R207 `Usage`→`ChatUsage`）。

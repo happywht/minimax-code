@@ -269,6 +269,12 @@ from minimax_code.sampler.conversation_leaves import (
     reported_cost_ticks,
     truncate_bytes,
 )
+from minimax_code.sampler.conversation_usage import (
+    ConversationStopReason,
+    TokenUsage,
+    from_finish_reason,
+    from_usage,
+)
 from minimax_code.sampler.doom_loop import (
     DOOM_LOOP_CHECK_EVENT_TYPE,
     DOOM_LOOP_CHECK_HEADER,
@@ -444,6 +450,7 @@ __all__ = [
     "ContentBlockDeltaEvent",
     "ContentBlockStartEvent",
     "ContentBlockStopEvent",
+    "ConversationStopReason",
     "DEFAULT_API_BACKEND",
     "DEFAULT_AUTH_SCHEME",
     "DEFAULT_MAX_RETRIES",
@@ -544,6 +551,7 @@ __all__ = [
     "ThinkingConfig",
     "ThinkingDelta",
     "ThinkingDisplay",
+    "TokenUsage",
     "ToolCallDelta",
     "ToolCallFunction",
     "ToolCallFunctionDelta",
@@ -569,6 +577,8 @@ __all__ = [
     "doom_loop_backoff",
     "empty_string_as_none",
     "format_sampling_error",
+    "from_finish_reason",
+    "from_usage",
     "is_check_event",
     "is_context_length_error",
     "parse_canonical_effort_token",
