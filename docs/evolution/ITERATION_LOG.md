@@ -17428,3 +17428,41 @@ ConversationItem tagged union 消费层（携带这 4 个消息项作为变体�
 
 ### Commit
 `feat(platform): R224 migrate conversation.rs Message Items 4 plain structs (SystemItem/UserItem/AssistantItem/ToolResultItem)`。conversation.rs 第 8 切片（4 符号 plain struct + 6 私有 helper——第二个 plain struct 切片 + 首个组合多叶子类型的 struct）；barrel 197→201；R222 strict-required + tolerant-optional 纪律首次对抗组合叶子字段类型；UserItem content 双层语义（serde 严格 vs derive Default programmatic——选 programmatic 优先）；AssistantItem model_fingerprint alias system_fingerprint + empty_string_as_none hook；reasoning_effort 严格（vs UserItem catch-all enum）；无桶面冲突 → 无 Conversation 前缀（裸名镜像 grok）；4 struct 解锁 ConversationItem tagged union 消费层依赖闭包。
+
+## R225 — crash 包骨架首叶：xai-crash-handler 类型契约 + POSIX 信号词汇 + 归档保留（路径 B 首轮，crash/ 模块 3 个零依赖纯逻辑叶子 + barrel）
+锚点:R225-1 a1e4ece
+
+### 本轮目标
+路径 B 首轮（从 R199-R224 的 sampling-types 类型契约精修，转向终端用户可感知的功能模块实体建设）。起点模块 = crash/ 崩溃恢复（grok xai-crash-handler crate, 1592 行, 5 files, 解锁 roadmap v0.9.0 验收"可恢复"项）。1592 行不可能一轮迁完——R225 聚焦 3 个零依赖纯逻辑叶子（types + signals + archive）+ barrel 骨架，后续轮次做 format（GCRX→JSON）/ symbolicate（resolve_frames+format_report）/ handler（信号安装 faulthandler+excepthook）/ 编排（check_previous_crash + install）+ IPC 接线 + 前端恢复 prompt。
+
+### 融合结论
+R225 核心设计决策是 **concept-for-concept 融合而非 line-for-line 移植**——grok 的 xai-crash-handler 是 Rust FFI 信号处理器（Unix sigaction 捕获 SIGBUS/SIGSEGV + Windows SetUnhandledExceptionFilter + 自定义 GCRX 二进制 blob 格式，因为信号处理器不能分配内存）。Python 场景根本不同：faulthandler 分配安全 → 用 JSON 持久化（grok 的 GCRX 二进制格式 + CrashBlob 整个 format.rs 重构为 JSON）；信号安装用 faulthandler + sys.excepthook + threading.excepthook + asyncio exception handlers（grok 的 sigaction/SEH handler.rs 整层重写）；terminal.rs 的 TUI 终端恢复 YAGNI（agent 是 Web SPA 后端，无 TUI）。三个 R225 特定行为：1) types.py 三态 frozen+slots dataclass——ResolvedFrame(ip 必填 + 3 Option→T|None) / CrashReport(7 字段全必填，backtrace 是 tuple[ResolvedFrame,...]) / CrashHandlerConfig(app_version + crash_dir) + MAX_HISTORY=5 常量；2) signals.py POSIX 词汇表——signal_name(4=SIGILL/7|10=SIGBUS/11=SIGSEGV) + si_code_name(BUS_ADRALN/ADRERR/OBJERR + SEGV_MAPERR/ACCERR，非 BUS 信号走 SEGV 表，镜像 grok else 分支)；3) archive.py best-effort 归档——archive_report(创建 history/ + 写 crash-{ts}.txt + 裁剪) 返回 Path|None（grok let _ = 吞咽 → Python 返回值小提升，best-effort 契约不变）+ prune_history DRY helper（从 grok 内联裁剪循环提取，独立可测）。战略价值：crash 包骨架已立，3 个零依赖纯逻辑叶子为后续 handler/install/check_previous_crash 编排提供类型 + 词汇 + 持久化地基。
+
+### 交付
+- 新建 agent/minimax_code/crash/types.py（约 110 行）：MAX_HISTORY=5 + ResolvedFrame（frozen+slots, ip:int 必填, symbol_name/filename/lineno 三 Option→str|None/None）+ CrashReport（frozen+slots, 7 字段全必填: signal_name/si_code/faulting_address/timestamp/app_version/backtrace:tuple[ResolvedFrame,...]/report_path:Path）+ CrashHandlerConfig（frozen+slots, app_version:str + crash_dir:Path）+ __all__ order-by-type。详尽模块 docstring（grok 来源 + Migrated this round + Purification decisions + Product-fusion note）。
+- 新建 agent/minimax_code/crash/signals.py（约 75 行）：4 私有常量（_SIGILL=4/_SIGBUS_LINUX=7/_SIGBUS_MACOS=10/_SIGSEGV=11）+ signal_name(sig:int)→str（SIGILL/SIGBUS/SIGSEGV → 人类可读标签，未知 → "Unknown signal"）+ si_code_name(sig,code)→str（BUS_ADRALN/ADRERR/OBJERR + SEGV_MAPERR/ACCERR，非 BUS 走 SEGV 表，未知 → "unknown"）+ __all__。
+- 新建 agent/minimax_code/crash/archive.py（约 110 行）：archive_report(crash_dir,report_text,timestamp)→Path|None（mkdir history/ + 写 crash-{ts}.txt + prune + best-effort OSError 吞咽）+ prune_history(history_dir)→None（glob *.txt + sort + 删除超出 MAX_HISTORY 的最旧，all OSError 吞咽）+ from minimax_code.crash.types import MAX_HISTORY + __all__。
+- 新建 agent/minimax_code/crash/__init__.py barrel（约 56 行）：包 docstring（concept-for-concept 融合说明 + 当前落地 + YAGNI 延后清单）+ 绝对 import 3 子模块 + __all__ 8 符号 order-by-type（MAX_HISTORY/CrashHandlerConfig/CrashReport/ResolvedFrame/archive_report/prune_history/si_code_name/signal_name）。
+- 新建 agent/tests/test_crash_types.py（约 140 行）：MAX_HISTORY 值 + ResolvedFrame（defaults + full + frozen B010 规避 + slots object.__setattr__）+ CrashReport（construction + empty tuple + frozen + equality）+ CrashHandlerConfig（construction + frozen + equality）。
+- 新建 agent/tests/test_crash_signals.py（约 62 行）：signal_name 参数化（4 已知 + 11 未知）+ si_code_name 参数化（7 已知 + BUS 未知 + SEGV 未知 + 非 BUS 走 SEGV 表）。
+- 新建 agent/tests/test_crash_archive.py（约 114 行）：archive_report（往返 + 创建 history/ + unicode round-trip + 不可创建目录返回 None）+ prune_history（at-max + below-max + 超出裁剪最旧 + 仅 .txt 计数）+ archive_report 保留策略（重复调用保留 MAX_HISTORY + 相同 timestamp 覆盖）。
+
+### 映射决策树 + 坑
+1. **concept-for-concept 融合（路径 B 首轮范式）**：grok Rust FFI 不可移植（sigaction/SEH 信号安装、GCRX 二进制 blob 分配安全格式）→ Python faulthandler+excepthook+JSON。R225 落地的是与 FFI 无关的纯逻辑叶子（types/signals/archive），FFI 层（handler.rs）后续轮次用 Python 等价物重写。
+2. **范围决策（1592 行拆分）**：xai-crash-handler 5 文件——lib.rs(178 check_previous_crash 编排 + archive_report + 类型) / symbolicate.rs(143 ResolvedFrame + signal_name + si_code_name) / format.rs(214 CrashBlob GCRX 二进制) / handler.rs(FFI 信号安装) / terminal.rs(TUI 恢复)。R225 取 3 个零依赖纯逻辑叶子（types from lib+symbolicate / signals from symbolicate / archive from lib）+ barrel；format/symbolicate 余量/handler/check_previous_crash/install 延后。
+3. **MAX_HISTORY=5 单一来源**：types.py 定义，archive.py import 消费（DRY），测试 import 同源。grok const，Python 模块级常量。
+4. **best-effort 错误吞咽（grok let _ = → Python Path|None）**：grok archive_report 返回 () 吞咽所有 I/O 结果；Python 返回 Path|None 小提升（成功返回路径便于断言，失败 None），best-effort 契约不变（忽略返回值的调用方行为同 grok）。prune_history 内部 OSError 全吞咽，单个 stale 文件删除失败不影响其余。
+5. **prune_history DRY helper（从内联循环提取）**：grok archive_report 内联 read_dir+.txt 过滤+sort+oldest-slice+remove 循环；提取为独立函数使保留策略可独立测试。文件名嵌单调 timestamp → 字典序=时间序 → 最旧 slice = 字典序首 slice（镜像 grok files.sort()）。
+6. **signal_name/si_code_name POSIX 词汇表**：SIGBUS 双值（Linux=7, macOS=10）→ 同标签；si_code_name 非 BUS 信号走 SEGV 表（镜像 grok else 分支，因为 SEGV 是最常见的 segfault）。
+7. **frozen+slots 范式（沿用 sampler/types.py 黄金模板）**：所有 dataclass frozen=True+slots=True；Option→T|None=None；Vec→tuple[T,...]；slots 测试用 object.__setattr__ 绕过 frozen __setattr__ 验证 slots 守卫；frozen 测试用 next(iter(type(obj).__slots__)) 取变量属性名规避 B010。
+8. **barrel 绝对 import**：from minimax_code.crash.X import（非相对 import），沿用项目范式避免 ruff I001 回归。__all__ 8 符号 order-by-type（常量→类→函数，组内字母序）。
+9. **F401 pytest 未使用（本轮修复）**：test_crash_archive.py 初版 import pytest 但全用 tmp_path fixture（无 raises/mark）→ ruff F401 → 移除，定向 pytest 48 passed 重跑确认。
+
+### 验证
+ruff check（7 文件：crash/types.py + crash/signals.py + crash/archive.py + crash/__init__.py + test_crash_types.py + test_crash_signals.py + test_crash_archive.py）✅ All checks passed!（含 isort order-by-type，初版 F401 pytest 未使用 → 移除修复后 clean）+ 定向 pytest test_crash_types.py + test_crash_signals.py + test_crash_archive.py **48 passed**（0.29s）+ 全量回归 **6176 passed + 10 skipped**（R224 基准 6128 passed + 10 skipped + R225 新增 48 = 6176，数学精确吻合，零真实回归，143.94s）。10 skipped 与 R224 基准一致。
+
+### YAGNI 边界
+format.rs CrashBlob + GCRX 二进制格式（重构为 JSON，后续轮次）/ symbolicate.rs resolve_frames + format_report（Python traceback 等价，后续）/ handler.rs 信号安装（faulthandler + sys.excepthook + threading.excepthook + asyncio exception handler 等价，后续）/ lib.rs check_previous_crash 编排（消费 format + archive，后续）/ install + install_terminal_restore_only 入口（后续）/ terminal.rs TUI 恢复（YAGNI，agent 是 Web SPA 后端无 TUI）/ app 启动接线 / crash.* IPC 命名空间 / 前端 session-recovery prompt（后续轮次）。下轮路径 B 续 crash（format JSON 重构 / handler faulthandler 安装 / check_previous_crash 编排）或转向下一功能模块（sandbox/memory/codegraph）。
+
+### Commit
+`feat(platform): R225 fuse xai-crash-handler crash package skeleton (types+signals+archive)`。路径 B 首轮（sampling-types 精修 → 功能模块实体建设）；起点模块 crash/ 崩溃恢复（grok xai-crash-handler 1592 行 5 files）；concept-for-concept 融合（Rust FFI sigaction/SEH + GCRX 二进制 blob → Python faulthandler+excepthook+JSON，terminal.rs YAGNI）；3 个零依赖纯逻辑叶子（types: MAX_HISTORY+ResolvedFrame+CrashReport+CrashHandlerConfig frozen+slots / signals: signal_name+si_code_name POSIX 词汇 / archive: archive_report best-effort Path|None + prune_history DRY helper）+ barrel 8 符号；解锁 roadmap v0.9.0 "可恢复"验收地基；后续 format/symbolicate/handler/check_previous_crash/IPC/前端 prompt。
