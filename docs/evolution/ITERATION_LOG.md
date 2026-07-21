@@ -16265,3 +16265,51 @@ feat(platform): R198 migrate xai-grok-sampler retry pure logic (backoff decision
 ### Commit
 
 `feat(platform): R199 migrate SamplingError types leaf + backfill retry decision layer`（仅 sampler/ 2 新 + 1 改、tests 1 新 + 2 改、ITERATION_LOG.md；精确 `git add`，不含 10 个排除文件、90+ 无关 M 文件、ruff --fix 噪音）。
+
+## R200 — doom-loop 线路契约 + 容错解析器叶子迁移（融合 xai-grok-sampling-types doom_loop.rs）
+
+锚点:R200-1 3d64f37
+
+### 本轮目标
+
+继续 `xai-grok-sampling-types` crate 叶子迁移（R199 已迁移 `error.rs`）。优先策略 A：glob 确认 `doom_loop.rs`（528 行，"server-side doom-loop check wire contract + tolerant parsers"）是纯类型叶子——头部明文 best-effort 设计（格式错误载荷 → Unknown/empty，从不报错），唯一外部依赖 `serde_json::Value` → `json.loads`/`dict.get` 纯映射，无 I/O 外壳。整叶迁移到 `sampler/doom_loop.py`，闭合 R199 `DoomLoopDetected` 变体的上游触发标签解析缺口。
+
+### 融合结论
+
+`doom_loop.rs` 是 grok 采样层"服务器端 doom-loop 检查"线路契约的单一来源：当客户端通过 `x-grok-doom-loop-check` 请求头启用时，API 在两处报告检测到的生成循环——非标准中途 SSE 事件（`response.doom_loop_check`，携带累积触发集）+ 终端响应对象的 `doom_loop_check` 字段。触发器是不透明标签，文法 `tail_repetition:{threshold}@{channel}` 或 `low_logprob@{channel}`，存在性即检测信号。迁移后：`doom_loop.py` 落地 5 线路常量 + 2 字节精确 fixture + 3 变体 `DoomLoopSignalKind` 判别联合 + `DoomLoopSignal`（从不失败的 parse + tightest 最低阈值偏好）+ `DoomLoopRecoveryPolicy`（ClassVar 范围/默认 + clamp + is_confident 三元合取 + tolerant from_payload）+ 3 变体 `DoomLoopPeek` 判别联合 + 2 容错自由函数。sampler barrel 29→46。解析出的 `raw` 标签喂给 R199 `SamplingError.DoomLoopDetected` 变体，闭合"检测→分类→恢复决策"链路的数据入口。
+
+### 交付
+
+- `agent/minimax_code/sampler/doom_loop.py`（新建）：5 线路常量/fixture（`DOOM_LOOP_CHECK_HEADER`/`DOOM_LOOP_CHECK_EVENT_TYPE`/`THINKING_CHANNEL`/`SAMPLE_CHECK_EVENT_DATA`/`SAMPLE_CHECK_EVENT_DATA_CUMULATIVE`）+ `_U32_MAX` 内部常量 + `DoomLoopSignalKind` 基类（frozen+slots）+ 3 子类（`TailRepetition(threshold:int)`/`LowLogprob()`/`Unknown(kind:str)`）+ `DoomLoopSignal`（kind/channel/raw + 从不失败 `parse` classmethod + `tightest` staticmethod 最低阈值 tail_repetition 偏好/回退首个/None）+ `DoomLoopRecoveryPolicy`（`max_threshold:int=8`/`max_retries:int=2` + 4 `ClassVar`（MAX_THRESHOLD_RANGE=(2,64)/MAX_RETRIES_RANGE=(0,5)/DEFAULT_MAX_THRESHOLD=8/DEFAULT_MAX_RETRIES=2）+ `clamp_max_threshold`/`clamp_max_retries` staticmethod + `is_confident`（TailRepetition AND thinking 通道 AND threshold<=max 三元合取）+ `confident_triggers` + tolerant `from_payload` classmethod）+ `DoomLoopPeek` 基类 + 3 子类（`CheckEvent(signals:tuple)`/`ResponseField(signals:tuple)`/`NoDoomLoop()`）+ `_parse_triggers` 私有函数（跳过非字符串条目）+ `peek_doom_loop`（容错，子串预检 + 从不报错）+ `is_check_event`（SSE event 名/载荷 type 标签双路 + 子串预检防 JSON 解析税）。`__all__` 17 符号。
+- `agent/minimax_code/sampler/__init__.py`（barrel 扩展 29→46）：+R200 doom_loop 全 17 符号（5 常量/fixture + 10 类 + 2 自由函数），docstring 增补叶子 #2 doom_loop。判别联合子类必须对使用者可见（isinstance 匹配 + 构造），故导出全部 17 而非仅 lib.rs re-export 子集。
+- `agent/tests/test_doom_loop.py`（新建）：62 测试，覆盖 module barrel（17 符号）/ 5 线路常量 + 字节精确 fixture / `parse` 3 臂（tail_repetition/low_logprob/unknown）+ 文法失配 Unknown 降级 + 负阈值 Unknown（mirror `str::parse::<u32>` 拒绝）+ 缺通道 + 空标签 + raw 往返幂等 / signal frozen + 3 变体共享基类 / policy 默认/frozen/clamp_max_threshold/clamp_max_retries 参数化 / from_payload 缺/部分/额外 / is_confident 6-case 参数化合取 / confident_triggers / tightest（最低/mixed/无 tail 回退/empty）/ peek 变体构造+共享基类+frozen / peek 2 字节精确 fixture / peek mixed triggers / peek CheckEvent 6 格式错误吞掉参数化 / peek 跳过非字符串 / peek 终端 ResponseField / peek NoDoomLoop 4 普通/无关情况参数化 / is_check_event（命名/载荷类型/引用 delta/不可解析/无子串）。
+- `agent/tests/test_sampler_config.py`（barrel 守卫同步 29→46）：模块 docstring + 测试函数 docstring + `assert len == 46` + 符号集合 +17 doom_loop 符号。这是 R200 barrel 扩展引入的回归（守卫硬编码 29），同文件 + 阻塞验证，合法修复。
+
+### 映射决策树 + 坑
+
+- **策略 A 成立**：`doom_loop.rs` 头部明文 "best-effort by design, malformed payloads yield Unknown/empty, never an error"，确认无 I/O 外壳；唯一外部依赖 `serde_json::Value` 纯映射到 `json.loads`/`dict.get`，可单轮整叶迁移。
+- **`u32` 纯化**：grok `str::parse::<u32>()` 拒绝负数/溢出 → Python `int()` + `[0, 0xFFFFFFFF]` 范围守卫，越界降级 `Unknown`（mirror R199 Serialization 纯化理念：保留文法契约，拒绝非法值）。
+- **Rust 枚举 `None` 变体命名冲突**：`DoomLoopPeek::None` 不能在 Python 命名为 `None`（关键字）→ 命名 `NoDoomLoop`（语义等价，避免遮蔽内置）。
+- **ClassVar + frozen+slots dataclass**：`DoomLoopRecoveryPolicy` 的范围/默认常量用 `ClassVar[tuple[int,int]]`/`ClassVar[int]` 声明为类属性（否则带注解的赋值会被 dataclass 当字段）。已验证与 `slots=True` 兼容。
+- **barrel 计数决策变更**：原计划导出 lib.rs re-export 子集（8 符号，29→37），实现时改为导出全部 17 doom_loop 符号（29→46）——Python 判别联合子类（`TailRepetition`/`CheckEvent` 等）必须对使用者可见以支持 `isinstance` 匹配 + 构造，仅导出基类不足以消费。
+- **barrel 守卫回归修复**：R195/R198/R199 的 `test_package_barrel_exposes_config_retry_types_symbols` 硬编码 `== 29`，R200 扩展到 46 直接 break 该守卫。这是"我引入的回归 + 同文件 + 阻塞验证"合法修复场景：同步更新断言数 + 符号集合 + docstring，不绕过守卫。
+- **F401 修复理念**：`test_doom_loop.py` 首版 `DoomLoopSignalKind` 导入未用（F401）。相比自动删除导入（丢失测试价值），增加 `test_signal_kind_variants_share_base` 语义测试（验证 3 变体均 isinstance 基类）——满足 lint 同时增加测试覆盖。
+- **第 180 行遗留短路代码**：首版误写 `max_threshold: int = DEFAULT_MAX_THRESHOLD if False else 8  # noqa: E800`（刻意短路技巧 + 无效 `# noqa: E800` 残留，E800 不在 select）。自我审查发现，Edit 修正为干净 `max_threshold: int = 8` + 解释性注释。
+- **容错解析顺序**：`peek_doom_loop` 子串预检（`"doom_loop_check" not in data`）在 JSON 解析前 short-circuit，普通流量零 JSON 税；`is_check_event` 同模式（event 名优先，子串预检防误吞引用 event-type 字符串的合法 delta）。
+
+### 验证
+
+- **ruff**（`select = ["E","F","W","I","B","UP"]`, `ignore = ["E501"]`, 长度 100, py311）：`minimax_code/sampler/` + `test_doom_loop.py` + `test_sampler_config.py` → **All checks passed!**（首次 F401 经增加语义测试消耗导入修正）。
+- **定向 pytest**（`test_doom_loop.py` + `test_sampler_config.py`）：**75 passed** in 0.22s。
+- **全量回归**：首轮 **5171 passed, 10 skipped** + 1 failed（barrel 守卫，R200 引入，已修）；修复 barrel 后第二轮 **5171 passed, 10 skipped** + 1 failed（预存 `test_connection.py::test_interval_keeps_global_timeline_across_loops` flaky，R199 日志已记录为预存 flaky）。该 connection flaky 单独重跑 3 次全 passed（0.6s），非 R200 引入（connection.py 是 R150-R164 的，R200 未碰）。**R199 基准 5109 → 5171，净增 62 测试，零真实回归**。
+
+### YAGNI 边界
+
+- **serde Serialize/Deserialize derives**：grok 全类型 derive serde 往返；Python 无 serde derive，`parse(raw)` 往返 + `__eq__` 已覆盖线路契约（raw 是稳定身份）。
+- **DoLoopCheck 配置结构**：grok `DoLoopCheckConfig`（enabled 标志 + 阈值/重试）——平台恢复策略由调用方组合 `DoomLoopRecoveryPolicy`，不引入独立 config 结构（absence IS off，无需 enabled 标志同步）。
+- **tracing 副作用**：grok 容错解析器的 debug/warn 日志；纯化核心无日志（调用方记日志），mirror R199。
+- **SSE 事件解析器集成**：`peek_doom_loop`/`is_check_event` 是纯分类原语；实际 SSE 帧拦截 + 类型化事件解码器前拦截由 transport 层（未来 HTTP streaming 叶）接线，本叶仅暴露纯逻辑。
+
+### Commit
+
+`feat(platform): R200 migrate doom-loop wire contract + tolerant parsers leaf`（仅 sampler/doom_loop.py 新 + sampler/__init__.py 改、tests/test_doom_loop.py 新 + test_sampler_config.py 改、ITERATION_LOG.md；精确 `git add`，不含 10 个排除文件、90+ 无关 M 文件、预存 connection flaky）。

@@ -9,7 +9,8 @@ direction is inverted, not duplicated). The deferred/YAGNI symbols
 ``config.py``. The constants ``DEFAULT_MAX_RETRIES`` / ``RATE_LIMIT_RETRY_
 THRESHOLD`` migrated in R198 (:mod:`minimax_code.sampler.retry`); the package
 barrel (tested below) re-exports the ``config`` (R195) + ``retry`` (R198
-backoff + R199 decision layer) + ``types`` (R199 SamplingError) leaves.
+backoff + R199 decision layer) + ``types`` (R199 SamplingError) + ``doom_loop``
+(R200 wire contract + tolerant parsers) leaves.
 """
 
 from __future__ import annotations
@@ -34,8 +35,10 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     + R199 types (6: 1 constant + 4 types + 1 free function) = 29 re-exported
     symbols. The config trio stays; R198 adds the backoff/max-retries leaf;
     R199 adds the decision layer (consuming the migrated SamplingError) and the
-    SamplingError type leaf itself."""
-    assert len(sampler.__all__) == 29
+    SamplingError type leaf itself; R200 adds the doom-loop wire contract +
+    tolerant parsers (whose parsed ``raw`` labels feed the R199 DoomLoopDetected
+    variant)."""
+    assert len(sampler.__all__) == 46
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -70,6 +73,24 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "SERIALIZATION_DISPLAY_PREFIX",
         "SamplingError",
         "is_context_length_error",
+        # doom_loop (R200): 5 constants/fixtures + 10 classes + 2 free functions
+        "DOOM_LOOP_CHECK_EVENT_TYPE",
+        "DOOM_LOOP_CHECK_HEADER",
+        "SAMPLE_CHECK_EVENT_DATA",
+        "SAMPLE_CHECK_EVENT_DATA_CUMULATIVE",
+        "THINKING_CHANNEL",
+        "CheckEvent",
+        "DoomLoopPeek",
+        "DoomLoopRecoveryPolicy",
+        "DoomLoopSignal",
+        "DoomLoopSignalKind",
+        "LowLogprob",
+        "NoDoomLoop",
+        "ResponseField",
+        "TailRepetition",
+        "Unknown",
+        "is_check_event",
+        "peek_doom_loop",
     }
 
 
