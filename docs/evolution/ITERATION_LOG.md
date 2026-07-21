@@ -17311,3 +17311,42 @@ ruff check（4 文件：`conversation_content_part.py` + `__init__.py` + `test_c
 
 ### Commit
 `feat(platform): R221 migrate conversation.rs ContentPart internally-tagged union (4th serde shape, <Type>Part mirrors R202 <Type>Block)`。conversation.rs 第 5 切片（3 符号，internally-tagged struct-variant 联合体——sampler 包第 4 种 serde 形态继 R84 untagged/R89 internally-tagged/R220 externally-tagged）；barrel 189→192；<Type>Part 命名对称 R202 <Type>Block（无桶面冲突 → 无 Conversation 前缀）。
+
+## R222 — conversation.rs 第 6 切片：ToolCall + ToolSpec（首个 plain struct + strict-required 解析纪律）
+锚点:R222-1 62ed287
+
+### 本轮目标
+继续策略 D 续扫 `conversation.rs`（9481 行）叶子层，自主 glob + 读源定位下一组零依赖独立叶子。R221 落地 ContentPart（第 5 切片，internally-tagged struct-variant 联合体）后，第 6 切片自然落在 "Tool Definitions and Calls" 区块（~453、~464）：`ToolCall` + `ToolSpec`——一对 plain flat struct，是 conversation.rs 首个 **plain struct** 形态（前 5 切片全是 enum 或 free fn）。零外部依赖（字段为 `Arc<str>`/`String`/`serde_json::Value`），纯逻辑边界，可直接迁移。barrel 192→194。
+
+### 融合结论
+R222 的核心设计决策是 **strict-required vs tolerant 解析范式区分**——这是 sampler 包首次为一个 flat struct 选择 strict 范式：
+- R206 的 flat struct（`ImageUrl`/`ToolCallFunction`/`PromptTokensDetails`）解析 ChatCompletion **响应**，平台永不失败响应 → tolerant from_payload（缺字段→默认值）。
+- R222 的 `ToolCall`/`ToolSpec` 是 **conversation 持久化** struct——双向 wire（Serialize + Deserialize）+ JSONL session 文件落盘。grok 字段无 `#[serde(default)]`，缺失必需字段 = serde 失败（损坏 session 记录）→ strict-required：缺/类型错的必需字段 → ValueError；可选 description → None；extra keys 容忍（serde 默认忽略未知 struct 字段）。
+- 这同 R221 ContentPart / R220 ConversationToolChoice 的严格无 catch-all 哲学，应用到 flat struct。
+
+战略价值：`ToolCall` 解锁 `AssistantItem` 消费层（其 `tool_calls: Vec<ToolCall>` 字段依赖闭包因本轮落地而变浅），为后续切片铺路。`ToolSpec` 是 conversation 层新符号（无 wire-layer 对等物）。
+
+### 交付
+- 新建 `agent/minimax_code/sampler/conversation_tool_defs.py`（217 行）：`ToolCall`（frozen+slots，`id: str` + `name: str` + `arguments: str`）+ `ToolSpec`（frozen+slots，`name: str` + `parameters: Any` + `description: str | None = None`）。strict-required + tolerant-optional 双向 `from_payload`/`as_payload` (de)serializer 对。
+- 扩展 `agent/minimax_code/sampler/__init__.py` barrel：导入块（isort 字母序 `conversation_tool_defs` 在 `conversation_tool_choice` 后、`conversation_usage` 前）+ `__all__` 2 个 ASCII 排序插入（`ToolCall` 在 `TokenUsage`/`ToolCallDelta` 之间；`ToolSpec` 在 `ToolResultContent`/`ToolType` 之间），192→194。
+- 同步 `agent/tests/test_sampler_config.py` barrel 守卫：计数 192→194 + docstring R222 追加（首个 conversation.rs plain struct 里程碑 + strict-required 纪律）+ 符号集合 +2。
+- 新建 `agent/tests/test_tool_defs.py`（431 行，9 测试类，55 测试）：barrel 标识检查 + `ToolCall.as_payload`（id/name/arguments 三键 + 任意 arguments 串保留 + 任意 id/name）+ `ToolCall.from_payload` strict（dict→struct + extra keys 容忍 + 非 dict/缺 id/缺 name/缺 arguments/非字符串 id/name/arguments/空 dict 全抛）+ 双向 round-trip（变体/wire + extra keys 坍缩）+ `ToolSpec.as_payload`（含 description 三键 + omit None + 任意 JSON parameters 保留）+ `ToolSpec.from_payload` strict-required + tolerant-optional（含 description dict→spec + 缺 description→None + null description→None + parameters null preserved + parameters 任意 JSON + extra keys 容忍 + 非 dict/缺 name/非字符串 name/缺 parameters/非字符串 description/空 dict 全抛）+ 双向 round-trip（含 description + 无 description + null description 坍缩 + extra keys 坍缩）+ 值语义（结构相等 + ToolCall vs ToolSpec 跨类型不等）+ slots/frozen 不可变（slots 集合 + 无 __dict__ + 字段值 round-trip + 默认 description None + 变量 attr name frozen 断言）。
+
+### 映射决策树 + 坑
+1. **首个 conversation.rs plain struct + 首个 strict-required flat struct**：前 5 切片是 enum/free-fn（R217 enum+2fn, R218 catch-all enums, R219 enum+struct, R220 externally-tagged enum, R221 internally-tagged union）。R222 是首个 plain flat struct——flat struct 形态本身不新（R206 ChatCompletion 已有），里程碑是首个 conversation.rs struct + 首个 strict-required 解析纪律（区分响应解析 tolerant vs 持久化 strict）。
+2. **strict-required + tolerant-optional 范式**：`ToolCall` 三字段全必需（无 `#[serde(default)]`）→ 缺/类型错 → ValueError；`ToolSpec` 的 `name`/`parameters` 必需、`description`（`#[serde(default)]`）→ None。对照 R206 tolerant（缺字段→默认）—— 范式由消费语义（持久化 vs 响应）决定。
+3. **`parameters` key 存在性语义**：grok `serde_json::Value` 接受 null（key 存在值 null 合法），但 key 缺失 = serde 失败。from_payload 用 `"parameters" not in raw` 检查 key 存在性（`raw.get` 无法区分 key 缺失 vs 值 None），key 存在则接受任意值（含 None）。测试覆盖 `parameters_null_preserved` + `parameters_any_json_value`。
+4. **ToolSpec 字段顺序**：grok 是 `name`/`description`/`parameters`，Python dataclass 规则强制带默认值的 `description` 最后 → `name`/`parameters`/`description`。docstring 明确说明，keyword 构造不受影响。
+5. **无桶面冲突 → 无前缀**：`ToolCall`/`ToolSpec` 在 barrel 表面无冲突（wire 层有 `ToolCallFunction`/`ToolCallRequest`/`ToolCallResponse`/`ToolCallDelta`/`ToolCallFunctionDelta`，名字不同）→ 裸名镜像 grok 模块本地名，无需 Conversation 前缀（同 R221 ContentPart 决策；对照 R219/R220 必须 Conversation 前缀）。
+6. **isort 字母序坑**：`conversation_tool_defs`（子模块名 `tool_defs`）在 `conversation_tool_choice`（`tool_choice`）后、`conversation_usage`（`usage`）前（字母序 `tool_choice` < `tool_defs` < `usage`）。
+7. **`__all__` ASCII 排序精确插入**：`ToolCall`(T-o-o-l-C) 在 `TokenUsage`(T-o-k) 后（'l'>'k' 第 3 字母）、`ToolCallDelta`(T-o-o-l-C-a-l-l-D) 前（"ToolCall"<"ToolCallDelta" 短前缀优先）；`ToolSpec`(T-o-o-l-S) 在 `ToolResultContent`(T-o-o-l-R) 后（'S'>'R'）、`ToolType`(T-o-o-l-T) 前（'S'<'T'）。
+8. **B010 规避**：frozen setattr 测试用变量 `attr = "name"`/`attr = "parameters"` 而非字面量属性名（规避 ruff B010 setattr 常量属性规则），镜像 R219/R220/R221 变量 field name 模式。
+
+### 验证
+ruff check（4 文件：`conversation_tool_defs.py` + `__init__.py` + `test_tool_defs.py` + `test_sampler_config.py`）✅ All checks passed!（含 isort order-by-type，证明导入顺序与 `__all__` 排序正确）+ 定向 pytest `test_tool_defs.py + test_sampler_config.py` **68 passed**（55 新测试 + 13 守卫）+ 全量回归 **5982 passed + 10 skipped**（R221 基准 5927 passed + 10 skipped + R222 新增 55 = 5982，数学精确吻合，零真实回归，125.25s）。10 skipped 与 R221 基准一致。
+
+### YAGNI 边界
+`impl From<ToolDefinition> for ToolSpec`（~500）依赖 `ToolDefinition`（`crate::rs` re-export of `xai-grok-tools` 家族 `ToolDefinition`/`FunctionTool`，未迁移）→ 推迟到该家族迁移时落地。`#[derive(Clone)]` 无 Python 对等物（frozen+slots 天然不可变 + 结构相等）。`Arc<str>`/`String` → Python `str`（不可变，无 Arc 等价物，语义透明）。`UserItem`/`AssistantItem` 消费层（携带 `Vec<ContentPart>` body + `tool_calls: Vec<ToolCall>`）本轮仍未迁移——依赖闭包因 ContentPart(R221)+ToolCall(R222) 落地而持续变浅，但 struct 本身可能含 `Role`/timestamp/其他字段，留待后续多轮切片。下轮策略 D 续扫 conversation.rs 叶子层（候选：`SystemItem`/`ToolResultItem`/`HostedTool` 其他独立叶子，或 `UserItem`/`AssistantItem` 消费层首切片）或策略 E 其他未迁移 crate 零依赖叶子。
+
+### Commit
+`feat(platform): R222 migrate conversation.rs ToolCall+ToolSpec tool-definitions leaves`。conversation.rs 第 6 切片（2 符号，plain flat struct——conversation.rs 首个 plain struct + sampler 包首个 strict-required flat struct）；barrel 192→194；strict-required（持久化）vs tolerant（响应）范式区分对照 R206；无桶面冲突 → 无 Conversation 前缀（裸名镜像 grok）；`ToolCall` 解锁 `AssistantItem` 消费层依赖闭包。

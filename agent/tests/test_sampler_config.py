@@ -200,8 +200,22 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     wire shape); zero dependency, unblocks the UserItem/AssistantItem
     conversation consumer layer; no barrel collision -> no Conversation prefix
     (part vs block suffix keeps it distinct from the R202 ContentBlock family),
-    <Type>Part variant naming mirrors the R202 <Type>Block precedent)."""
-    assert len(sampler.__all__) == 192
+    <Type>Part variant naming mirrors the R202 <Type>Block precedent).
+    + conversation_tool_defs (R222, 2: the conversation.rs ToolCall + ToolSpec
+    flat struct pair from the "Tool Definitions and Calls" block -- the first
+    **plain struct** shape in the conversation.rs migration (the prior five
+    slices were all enums or free functions); the plain flat struct itself is
+    serde's most common shape (already in the R206 ChatCompletion family), so
+    R222 is not a new serde shape at the package level -- the milestone is the
+    first conversation.rs struct and the first leaf here to carry the
+    strict-required parse discipline (no #[serde(default)] on the required
+    ToolCall id/name/arguments and ToolSpec name/parameters fields -> ValueError
+    on missing or wrong-typed; the ToolSpec description Option<String> -> None
+    default + skip_serializing_if None; extra keys tolerated); ToolCall unblocks
+    the AssistantItem consumer layer; no barrel collision -> no Conversation
+    prefix (distinct from the R206 ToolCallFunction wire-layer peer which
+    carries no id))."""
+    assert len(sampler.__all__) == 194
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -492,6 +506,17 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "ContentPart",
         "ImagePart",
         "TextPart",
+        # conversation_tool_defs (R222): the conversation.rs tool call + spec
+        # flat struct pair -- the first plain struct shape in the
+        # conversation.rs migration (the prior five slices were all enums or
+        # free functions); strict-required + tolerant-optional parse (no
+        # #[serde(default)] on required fields -> ValueError on
+        # missing/wrong-typed; ToolSpec description Option -> None default);
+        # ToolCall unblocks the AssistantItem consumer layer; no barrel
+        # collision -> no Conversation prefix (distinct from the R206
+        # ToolCallFunction wire-layer peer which carries no id)
+        "ToolCall",
+        "ToolSpec",
     }
 
 

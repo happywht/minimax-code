@@ -281,6 +281,10 @@ from minimax_code.sampler.conversation_tool_choice import (
     ConversationRequired,
     ConversationToolChoice,
 )
+from minimax_code.sampler.conversation_tool_defs import (
+    ToolCall,
+    ToolSpec,
+)
 from minimax_code.sampler.conversation_usage import (
     ConversationStopReason,
     TokenUsage,
@@ -572,6 +576,7 @@ __all__ = [
     "ThinkingDelta",
     "ThinkingDisplay",
     "TokenUsage",
+    "ToolCall",
     "ToolCallDelta",
     "ToolCallFunction",
     "ToolCallFunctionDelta",
@@ -583,6 +588,7 @@ __all__ = [
     "ToolParam",
     "ToolResultBlock",
     "ToolResultContent",
+    "ToolSpec",
     "ToolType",
     "ToolUse",
     "ToolUseBlock",
