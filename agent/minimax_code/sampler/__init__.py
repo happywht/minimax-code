@@ -2,7 +2,11 @@
 
 Fuses grok's ``xai-grok-sampler`` crate (actor-based sampling/inference layer:
 HTTP streaming + retry, no shell coupling). The crate ships 12 modules; this
-package is being filled leaf-by-leaf. Currently landed: ``config`` (R195,
+package is being filled leaf-by-leaf. Currently landed: ``chat_completion_leaves`` (R206, the first
+``xai-grok-sampling-types`` ``types.rs`` slice: Role / ToolType / FinishReason /
+ReasoningEffort wire-string enums + ImageUrl / ToolChoiceFunction /
+ToolCallFunction / PromptTokensDetails / CompletionTokensDetails flat leaf
+structs + the DEFAULT_REASONING_EFFORT constant) + ``config`` (R195,
 pure-type subset) + ``content_blocks`` (R202, ``xai-grok-sampling-types``
 ``messages.rs`` ContentBlock 5-variant union + 3 deps) + ``doom_loop`` (R200,
 ``xai-grok-sampling-types`` ``doom_loop.rs`` wire contract + tolerant
@@ -98,6 +102,18 @@ Leaf order (crate ``lib.rs`` re-exports, in migration order):
    closes the ``messages.rs`` wire-type layer.
 """
 
+from minimax_code.sampler.chat_completion_leaves import (
+    DEFAULT_REASONING_EFFORT,
+    CompletionTokensDetails,
+    FinishReason,
+    ImageUrl,
+    PromptTokensDetails,
+    ReasoningEffort,
+    Role,
+    ToolCallFunction,
+    ToolChoiceFunction,
+    ToolType,
+)
 from minimax_code.sampler.config import (
     DEFAULT_AUTH_SCHEME,
     AuthScheme,
@@ -244,12 +260,14 @@ __all__ = [
     "BlocksToolResultContent",
     "CacheControl",
     "CheckEvent",
+    "CompletionTokensDetails",
     "ContentBlock",
     "ContentBlockDeltaEvent",
     "ContentBlockStartEvent",
     "ContentBlockStopEvent",
     "DEFAULT_AUTH_SCHEME",
     "DEFAULT_MAX_RETRIES",
+    "DEFAULT_REASONING_EFFORT",
     "DOOM_LOOP_BOUND_MS",
     "DOOM_LOOP_CHECK_EVENT_TYPE",
     "DOOM_LOOP_CHECK_HEADER",
@@ -264,8 +282,10 @@ __all__ = [
     "EnabledThinkingConfig",
     "EndTurn",
     "Fatal",
+    "FinishReason",
     "ImageBlock",
     "ImageSource",
+    "ImageUrl",
     "InputJsonDelta",
     "JsonSchemaOutputFormat",
     "LowLogprob",
@@ -291,7 +311,9 @@ __all__ = [
     "OutputFormat",
     "PauseTurn",
     "PingEvent",
+    "PromptTokensDetails",
     "RATE_LIMIT_RETRY_THRESHOLD",
+    "ReasoningEffort",
     "Refusal",
     "ResponseField",
     "ResponseModelMetadata",
@@ -300,6 +322,7 @@ __all__ = [
     "RetryWithBackoff",
     "RetryWithClientRebuild",
     "RetryWithImageStrip",
+    "Role",
     "SAMPLE_CHECK_EVENT_DATA",
     "SAMPLE_CHECK_EVENT_DATA_CUMULATIVE",
     "SERIALIZATION_DISPLAY_PREFIX",
@@ -324,10 +347,13 @@ __all__ = [
     "ThinkingConfig",
     "ThinkingDelta",
     "ThinkingDisplay",
+    "ToolCallFunction",
+    "ToolChoiceFunction",
     "ToolChoiceParam",
     "ToolParam",
     "ToolResultBlock",
     "ToolResultContent",
+    "ToolType",
     "ToolUse",
     "ToolUseBlock",
     "Unknown",

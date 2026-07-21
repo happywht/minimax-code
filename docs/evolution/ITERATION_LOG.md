@@ -16588,3 +16588,53 @@ feat(platform): R203 migrate messages.rs request-side enums + leaf structs to sa
 `feat(platform): R205 migrate messages.rs mega containers to sampler.message_envelopes`
 
 精确 git add 仅 R205 5 文件（message_envelopes.py / __init__.py / test_message_envelopes.py / test_sampler_config.py / ITERATION_LOG.md），不含 10 个排除文件 + 90+ 无关 M 文件。
+## R206 — 采样层 types.rs 首叶：ChatCompletion 原子叶子簇（xai-grok-sampling-types/types.rs）
+
+锚点:R206-1 4ad528e
+
+### 本轮目标
+
+承接 R205（commit 4ad528e，messages.rs wire-type 层全文件闭合），继续 xai-grok-sampling-types crate 的下一个纯逻辑叶子。本轮切入 **types.rs（1521 行）头部**，取一组**零外部依赖、可独立单轮闭合**的原子叶子子集，避开命名冲突与重依赖容器，扩展 sampler barrel（114→124）并写对应测试。优先策略 A（types.rs 头部纯类型/枚举叶子优先）；策略 B（serde_helpers.rs 9 行体量过小）与策略 C（conversation.rs 9481 行巨型）均延后。
+
+### 融合结论
+
+R206 迁移 types.rs 的 **"ChatCompletion 原子叶子簇"**：9 个零依赖纯叶子 + 1 个 default 常量 = **10 符号**，落地新模块 `chat_completion_leaves.py`。这些是 OpenAI 兼容 ChatCompletion 类型族（ChatCompletionRequest / Response / Chunk 容器）的构建块；那些更重的容器 + TraceContext trait + list-carrying 中间层（ChatRequestMessage / MessageContent / ChatContentBlock / Usage / SearchParameters）+ 压缩枚举 + reasoning-effort meta helpers + ApiBackend / SamplingConfig 等**相互依赖 / 依赖 xai-grok-tools re-exports / 依赖 crate::rs / crate::serde_helpers**，非零依赖叶子，留待后续轮。模块 dependency closure = 零外部（无 crate::rs / xai-grok-tools / serde_helpers），9 类型全部自包含——一个干净的首切片。
+
+### 交付
+
+- **`agent/minimax_code/sampler/chat_completion_leaves.py`**（366 行，10 符号）：
+  - 4 个 `StrEnum`（严格 parse，无 catch-all，忠实 grok 无 `#[serde(other)]`）：`Role`（lowercase，System/User/Assistant/Tool）、`ToolType`（lowercase，Function 单变体）、`FinishReason`（snake_case，Stop/Length/ToolCalls/ContentFilter/FunctionCall）、`ReasoningEffort`（lowercase，None/Minimal/Low/Medium/High/Xhigh；grok `None`→`NONE` 避关键字；`#[default] Medium`→`DEFAULT_REASONING_EFFORT`）。
+  - 1 个常量 `DEFAULT_REASONING_EFFORT = ReasoningEffort.MEDIUM`。
+  - 5 个 `@dataclass(frozen=True, slots=True)` leaf struct：`ImageUrl`（url）、`ToolChoiceFunction`（name）、`ToolCallFunction`（name + arguments，含 `from_json` classmethod 镜像 `serde_json::Value::to_string`）、`PromptTokensDetails`（cached_tokens/audio_tokens，`#[derive(Default)]`→`default()`）、`CompletionTokensDetails`（reasoning/audio/accepted_prediction/rejected_prediction tokens，`#[derive(Default)]`→`default()`）。每个带 tolerant `from_payload`（dict.get + 默认值；非 dict 返回 `cls()`）。
+  - DRY helper `_parse_strict_enum(cls, raw, label)`（TypeVar `_E` bound StrEnum）：4 个枚举的 `from_payload` 共用，避免 4 次重复 try/except。
+- **`agent/tests/test_chat_completion_leaves.py`**（367 行，33 测试）：模块 barrel 守卫 + 各枚举变体值/unknown raise/non-string raise/from_payload + 各 struct default/from_payload/frozen+slots（变量 field name 规避 B010）/hashable + `DEFAULT_REASONING_EFFORT is MEDIUM` + `Role is not MessageRole` 区分断言 + `ToolCallFunction.from_json` dict→JSON string / str→quoted / number→bare / list→bare。
+- **`agent/minimax_code/sampler/__init__.py`**（barrel 114→124）：docstring landed 段 + Leaf order 第 10 条 + import 块（chat_completion_leaves 在 config **之前**，isort 字母序 c-h < c-o）+ __all__ 10 符号（9 处精确插入，全局 ASCII 字母序）。
+- **`agent/tests/test_sampler_config.py`**：assert 114→124 + docstring 数字行 + R206 尾段描述 + set 字面量加 10 符号分组。
+
+### 映射决策树 + 坑
+
+1. **serde 形态映射**：`#[serde(rename_all="lowercase")] enum` / `#[serde(rename_all="snake_case")] enum` → `StrEnum`（wire 值 = grok rename_all 结果）；plain struct → frozen+slots + tolerant from_payload；`#[derive(Default)] struct` → frozen+slots + `default()` classmethod + from_payload；`ToolCallFunction::from_json(name, value: &Value)` → `from_json` classmethod（`json.dumps(value)` 镜像 `value.to_string()`）。
+2. **严格 parse（无 catch-all）**：grok 的 Role/ToolType/FinishReason/ReasoningEffort 均**无 `#[serde(other)]`**，故 unknown wire string → ValueError、非字符串 → ValueError（忠实 serde 枚举失败语义）。与 R201 `StopReason` catch-all 形成对照——后者必须永不失败 terminal stream。DRY helper `_parse_strict_enum` 统一 4 枚举的 from_payload，避免重复。
+3. **命名冲突规避**：types.rs `Role`（4 ChatCompletion 变体）≠ R203 `MessageRole`（2 Anthropic 变体）——barrel 无 `Role`，且测试断言 `Role is not MessageRole` + `not hasattr(MessageRole, "TOOL"/"SYSTEM")`。types.rs `MessageContent`（untagged）≠ R204 `MessageContent`——故 R206 **不迁** types.rs 的 MessageContent/ChatContentBlock，留给后续轮改名处理。types.rs `Usage` ≠ R201 `MessagesUsage`——本轮未迁 Usage。这把"零命名冲突、可独立闭合"的子集锁定在 9 叶 + 1 常量。
+4. **frozen+slots 测试范式 + B010 规避**：`@dataclass(frozen=True, slots=True)` 仅给 `__slots__` 真实字段赋值才触发 `FrozenInstanceError`。用变量 field name `field_name = next(iter(type(obj).__slots__)); setattr(obj, field_name, "rewritten")` 规避 B010（`setattr(obj, "常量属性", ...)` 会被 B010 拦截）。
+5. **isort 关键修正**：`chat_completion_leaves`（c-h-a-t）**严格排在 `config`（c-o-n）之前**（'h'(104) < 'o'(111)）。import 块插在 config **之前**（非之后！），否则 ruff I001 失败。__all__ 内 10 符号按全局 ASCII 字母序插入 9 处（ToolCallFunction + ToolChoiceFunction 一次插俩，因 'a' < 'h' < 'P'）。
+
+### 验证
+
+- `uv run ruff check minimax_code/sampler/ tests/test_chat_completion_leaves.py tests/test_sampler_config.py` → **All checks passed!**
+- 定向 pytest（test_chat_completion_leaves + test_sampler_config）→ **46 passed in 0.37s**。
+- 全量回归 → **5384 passed, 10 skipped**（R205 基准 5351 + R206 新增 33 = 5384，**零真实回归**；10 skipped 与 R205 一致；1 warning 为预存 fastapi/httpx 弃用，与 R206 无关）。
+
+### YAGNI 边界
+
+- **types.rs 剩余重依赖容器延后**：ChatCompletionRequest / ChatCompletionResponse / ChatCompletionChunk + 其内部形状 + TraceContext trait + list-carrying 中间层（ChatRequestMessage / MessageContent / ChatContentBlock / Usage / SearchParameters / SearchSource）+ 压缩枚举 + reasoning-effort meta helpers（to_responses_api / parse_canonical_effort_token / supports_reasoning_effort_meta 等 + ReasoningEffortOption + 3 consts）+ ApiBackend / SamplingConfig / CreateResponseWrapper / MessagesRequestWrapper——这些**相互依赖 / 依赖 xai-grok-tools re-exports（ToolDefinition / FunctionTool）/ 依赖 crate::rs / crate::serde_helpers**，非零依赖叶子，后续多轮分块。
+- **serde_helpers.rs（9 行）**：体量过小，与 types.rs 后续轮合并或单独快速闭合。
+- **conversation.rs（9481 行巨型）**：多轮分块，风险高，延后。
+- **完整 serde round-trip**：from_payload 覆盖 parse 方向（平台所需），Serialize 方向 YAGNI。
+- **ReasoningEffort None/Minimal 序列化省略**（Anthropic Messages API 行为）：parse 方向 YAGNI。
+
+### Commit
+
+`feat(platform): R206 migrate types.rs ChatCompletion atomic leaves`
+
+锚点链：… → R203(4d0cf98) → R204(e82856a) → R205(4ad528e) → **R206（本轮）**。barrel 114→124；全量 5384 passed + 10 skipped，零真实回归。

@@ -52,7 +52,11 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     variants + MessageContent union base + 2 variants + StreamDelta union base +
     4 variants) + R205 message_envelopes (12: Message + MessagesResponse +
     MessagesRequest leaf structs + MessageStreamEvent union base + 8 variants)
-    = 114
+    + chat_completion_leaves (R206, 10: Role / ToolType / FinishReason /
+    ReasoningEffort wire-string enums + DEFAULT_REASONING_EFFORT + ImageUrl /
+    ToolChoiceFunction / ToolCallFunction / PromptTokensDetails /
+    CompletionTokensDetails flat leaf structs -- the first types.rs slice)
+    = 124
     re-exported symbols. The config trio stays; R198 adds the backoff/max-retries
     leaf; R199 adds the decision layer (consuming the migrated SamplingError) and
     the SamplingError type leaf itself; R200 adds the doom-loop wire contract +
@@ -70,8 +74,11 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     (Message leaf struct + MessagesResponse leaf struct + MessagesRequest
     ``#[derive(Default)]`` container + MessageStreamEvent 8-variant tagged union
     -- strict, no catch-all, aggregating every R201-R204 leaf into the full
-    request / response / streaming shapes)."""
-    assert len(sampler.__all__) == 114
+    request / response / streaming shapes); R206 adds the first
+    ``types.rs`` slice -- 9 zero-dependency atomic ChatCompletion leaves + the
+    DEFAULT_REASONING_EFFORT constant (4 wire-string enums + 5 flat leaf
+    structs, strict enum parse -- no catch-all)."""
+    assert len(sampler.__all__) == 124
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -206,6 +213,20 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "MessagesResponse",
         "PingEvent",
         "StreamErrorEvent",
+        # chat_completion_leaves (R206): Role / ToolType / FinishReason /
+        # ReasoningEffort wire-string enums + DEFAULT_REASONING_EFFORT +
+        # ImageUrl / ToolChoiceFunction / ToolCallFunction /
+        # PromptTokensDetails / CompletionTokensDetails flat leaf structs
+        "CompletionTokensDetails",
+        "DEFAULT_REASONING_EFFORT",
+        "FinishReason",
+        "ImageUrl",
+        "PromptTokensDetails",
+        "ReasoningEffort",
+        "Role",
+        "ToolCallFunction",
+        "ToolChoiceFunction",
+        "ToolType",
     }
 
 
