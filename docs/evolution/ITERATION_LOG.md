@@ -17389,3 +17389,42 @@ ruff check（4 文件：`conversation_hosted_tools.py` + `__init__.py` + `test_h
 
 ### Commit
 `feat(platform): R223 migrate conversation.rs HostedTool backend-hosted-tool in-program union`。conversation.rs 第 7 切片（3 符号，in-program 联合体 + wire_name 方法——sampler 包首个 in-program 联合体携带方法）；barrel 194→197；闭合 "Tool Definitions and Calls" 区块（R222 client-side ToolCall+ToolSpec + R223 backend-side HostedTool）；R217 in-program-union 形态 + R221 基类 isinstance 分派方法交汇；无桶面冲突 → 无 Conversation 前缀（裸名镜像 grok）；HostedTool 解锁 ConversationRequest hosted_tools 消费层依赖闭包。
+
+## R224 — conversation.rs 第 8 切片：Message Items 4 plain structs（SystemItem+UserItem+AssistantItem+ToolResultItem，第二个 plain struct 切片 + 首个组合多叶子类型的 struct）
+锚点:R224-1 9724e4c
+
+### 本轮目标
+继续策略 D 续扫 conversation.rs（9481 行）叶子层。R223 落地 HostedTool（第 7 切片，backend-side hosted-tool 联合体，闭合 "Tool Definitions and Calls" 区块）后，第 8 切片落在 "Message Items" 区块——ConversationItem tagged union 的 4 个成员 struct：SystemItem（content）+ UserItem（content + 2 enum + prompt_index，#[derive(Default)]）+ AssistantItem（content + tool_calls + model_id + model_fingerprint[alias+hook] + reasoning_effort）+ ToolResultItem（tool_call_id + content + images）。4 个纯 #[derive(Serialize, Deserialize)] struct（无 #[serde(tag)]，flat wire object），R222 strict-required + tolerant-optional 纪律在此回合首次对抗**组合多叶子字段类型**（ContentPart/ToolCall/SyntheticReason/PriorTurnInterrupt/ReasoningEffort + empty_string_as_none）。barrel 197→201。
+
+### 融合结论
+R224 核心设计决策是 **组合多叶子的 plain struct** 范式落地——sampler 包第二个 plain struct 切片（R222 首个），首个组合多叶子类型的 struct：4 个消息项 struct 的字段引用 5 个已落地叶子（R221 ContentPart、R222 ToolCall、R218 SyntheticReason/PriorTurnInterrupt、R206 ReasoningEffort + R211 empty_string_as_none），strict-required + tolerant-optional 纪律首次对抗组合叶子字段类型。三个 R224 特定行为：1) UserItem content 双层语义（serde 严格无 default vs derive Default programmatic content=vec![] 合法）——选 programmatic 优先（dataclass content 默认 ()，from_payload 容忍缺失/null → ()）；2) AssistantItem model_fingerprint alias system_fingerprint + empty_string_as_none hook（主键优先，alias 仅主键缺失触发，再 hook ""→None）；3) reasoning_effort 严格（vs UserItem catch-all enum，无 catch-all → 未知/非字符串 ValueError）。战略价值：4 消息项是 ConversationItem tagged union 成员（消费层依赖），本轮使 ConversationItem 依赖闭包变浅。barrel 197→201。
+
+### 交付
+- 新建 agent/minimax_code/sampler/conversation_message_items.py（433 行）：4 个 frozen+slots 数据类（SystemItem/UserItem/AssistantItem/ToolResultItem）+ 6 个模块级私有 helper（_parse_content_part_list / _parse_tool_call_list / _parse_optional_enum / _parse_optional_int / _parse_optional_str / _parse_fingerprint），每 struct 手写 from_payload（严格必填 + 容忍可选）+ as_payload（skip_if_none / skip_if_empty）。
+- 扩展 agent/minimax_code/sampler/__init__.py barrel：导入块（isort 字母序 conversation_message_items 在 conversation_hosted_tools 后、conversation_request_message 前）+ __all__ 4 个 order-by-type 插入（AssistantItem 在 ApiBackend 后、AuthScheme 前；SystemItem 在 SyntheticReason 后、SystemParam 前；ToolResultItem 在 ToolResultContent 后、ToolSpec 前；UserItem 在 UserCancelled 后、WebSearch 前），197→201。
+- 同步 agent/tests/test_sampler_config.py barrel 守卫：计数 197→201 + docstring R224 追加（第二个 plain struct 切片 + 首个组合多叶子类型的 struct 里程碑 + UserItem content 双层语义 + AssistantItem model_fingerprint alias+hook）+ 符号集合 +4。
+- 新建 agent/tests/test_message_items.py（约 670 行，19 测试类，116 测试）：barrel 标识检查 + SystemItem（as_payload + from_payload 严格 + round-trip）+ UserItem（defaults + as_payload + from_payload 容忍 content + 容忍 enum/int + round-trip + 缺失 content collapse）+ AssistantItem（as_payload + from_payload 严格 content + tool_calls/model_id 容忍 + reasoning_effort 严格 + round-trip）+ ModelFingerprint 专项（alias + empty_string_as_none 矩阵 11 测试）+ ToolResultItem（as_payload + from_payload 严格 id/content + images 容忍 + round-trip）+ 值语义（4 struct 结构相等 + 跨类型不等）+ slots/frozen 不可变（4 slots 集合 + 无 __dict__ + 变量属性名 setattr frozen 规避 B010）。
+
+### 映射决策树 + 坑
+1. **第二个 plain struct 切片 + 首个组合多叶子**：R222 首个 plain struct（ToolCall+ToolSpec，2 符号）；R224 第二个（4 符号），首个组合多叶子（字段引用 5 已落地叶子）。
+2. **strict-required + tolerant-optional 纪律（逐字段）**：无 #[serde(default)] 字段缺失/类型错 → ValueError；带 #[serde(default)] 字段缺失 → 默认值。SystemItem content / AssistantItem content / ToolResultItem tool_call_id+content 严格；UserItem content/三 option、AssistantItem tool_calls/model_id/reasoning_effort(null)、ToolResultItem images 容忍。
+3. **UserItem content 双层语义（方案 B，programmatic 优先）**：serde 严格（无 default）vs derive Default（programmatic content=vec![] 合法）冲突。选 B：dataclass content 默认 ()，from_payload 容忍缺失/null → ()。round-trip：{} → UserItem() → {"content": []}（缺失 content collapse 空 list，canonical）。
+4. **model_fingerprint alias + empty_string_as_none（_parse_fingerprint）**：主键 model_fingerprint 优先 → alias system_fingerprint fallback → None，再 empty_string_as_none（""→None）。主键存在（即使 ""）用主键（alias 仅主键缺失触发）：{"model_fingerprint": "", "system_fingerprint": "fp"} → None（主键 "" 经 hook → None，alias 不触发）。非字符串主键/alias → ValueError。
+5. **reasoning_effort 严格 vs catch-all enum**：ReasoningEffort.from_payload（未知/非字符串 → ValueError，strict），与 _parse_optional_enum（SyntheticReason/PriorTurnInterrupt catch-all 永不 raise）对比。UserItem 两 enum 容忍（任意值 → UNKNOWN），AssistantItem reasoning_effort 严格。
+6. **prompt_index bool 拒绝**：_parse_optional_int 显式拒绝 bool（bool 是 int 子类但非合法 usize wire 值）：True/False → ValueError。
+7. **_parse_optional_enum label 清理（YAGNI 本轮修复）**：catch-all enum 从不 raise，_parse_optional_enum 的 label 参数未使用 → 去掉 label，签名精确反映行为（(raw, enum_cls) 2 参数）。
+8. **6 私有 helper（DRY）**：_parse_content_part_list / _parse_tool_call_list（None→()，list→tuple，非list→ValueError）/ _parse_optional_enum（None→None，否则 catch-all）/ _parse_optional_int（None→None，拒绝 bool，非int→ValueError）/ _parse_optional_str（None→None，非str→ValueError）/ _parse_fingerprint（alias+hook）。减少 from_payload 重复。
+9. **无桶面冲突 → 无前缀**：4 struct 在 barrel 表面无冲突（Message 前缀的 wire 层 MessageDelta/MessageBody 等名字不同）→ 裸名镜像 grok，无需 Conversation 前缀（同 R217/R221/R222/R223）。
+10. **isort 字母序坑**：conversation_message_items（message_items）在 conversation_hosted_tools（hosted_tools）后（hosted_tools < message_items）、conversation_request_message（request_message）前（message_items < request_message）。
+11. **__all__ order-by-type 排序**：4 插入点——AssistantItem(A) 在 ApiBackend(A) 后（'p'<'s'）、AuthScheme(A) 前；SystemItem(S) 在 SyntheticReason(S) 后、SystemParam(S) 前；ToolResultItem(T) 在 ToolResultContent(T) 后、ToolSpec(T) 前；UserItem(U) 在 UserCancelled(U) 后、WebSearch(W) 前。逐字符 ASCII 验证 4 点全过。
+12. **B010 规避**：4 struct frozen setattr 测试用变量属性名（attr = "content" / "prompt_index" / "model_fingerprint" / "content"）。
+13. **F401 ContentPart 未使用（本轮修复）**：测试初版 barrel import 块导入 ContentPart 但只用 TextPart（经 from_payload 间接消费 ContentPart 抽象，无需直接引用）→ ruff F401 → 移除 ContentPart 导入，定向 pytest 重跑 129 passed 确认。
+
+### 验证
+ruff check（4 文件：conversation_message_items.py + __init__.py + test_message_items.py + test_sampler_config.py）✅ All checks passed!（含 isort order-by-type，初版 F401 ContentPart 未使用 → 移除修复后 clean）+ 定向 pytest test_message_items.py + test_sampler_config.py **129 passed**（116 新测试 + 13 守卫）+ 全量回归 **6128 passed + 10 skipped**（R223 基准 6012 passed + 10 skipped + R224 新增 116 = 6128，数学精确吻合，零真实回归，126.21s）。10 skipped 与 R223 基准一致。
+
+### YAGNI 边界
+ConversationItem tagged union 消费层（携带这 4 个消息项作为变体成员 + tag 字段——ConversationItem 本身可能在 wire 层用 #[serde(tag = "role")] 或类似，需下轮切片评估 serde 形态）。4 struct 的 #[derive(Clone)] 无 Python 对等物（frozen+slots 天然不可变 + 结构相等）。UserItem 的 #[derive(Default)] 在 Python 通过 dataclass 默认值实现（content=()）。下轮策略 D 续扫 conversation.rs（候选：ConversationItem tagged union 消费层首切片——依赖闭包因本轮 4 struct 落地而变浅，或 conversation.rs 其他独立叶子）或策略 E 其他未迁移 crate 零依赖叶子。
+
+### Commit
+`feat(platform): R224 migrate conversation.rs Message Items 4 plain structs (SystemItem/UserItem/AssistantItem/ToolResultItem)`。conversation.rs 第 8 切片（4 符号 plain struct + 6 私有 helper——第二个 plain struct 切片 + 首个组合多叶子类型的 struct）；barrel 197→201；R222 strict-required + tolerant-optional 纪律首次对抗组合叶子字段类型；UserItem content 双层语义（serde 严格 vs derive Default programmatic——选 programmatic 优先）；AssistantItem model_fingerprint alias system_fingerprint + empty_string_as_none hook；reasoning_effort 严格（vs UserItem catch-all enum）；无桶面冲突 → 无 Conversation 前缀（裸名镜像 grok）；4 struct 解锁 ConversationItem tagged union 消费层依赖闭包。

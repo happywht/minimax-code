@@ -225,7 +225,7 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     Option<Vec<String>> -> tuple[str,...]|None; XSearch field-less;
     HostedTool unblocks the ConversationRequest hosted_tools consumer
     layer; no barrel collision -> no Conversation prefix)."""
-    assert len(sampler.__all__) == 197
+    assert len(sampler.__all__) == 201
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -541,6 +541,21 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "HostedTool",
         "WebSearch",
         "XSearch",
+        # conversation_message_items (R224): the conversation.rs "Message
+        # Items" block -- 4 plain structs (SystemItem + UserItem +
+        # AssistantItem + ToolResultItem), the second plain-struct slice +
+        # the first to compose multiple already-migrated sampler leaves
+        # (ContentPart/ToolCall/SyntheticReason/PriorTurnInterrupt/
+        # ReasoningEffort + empty_string_as_none); strict-required +
+        # tolerant-optional parse per the R222 discipline; UserItem content
+        # defaults to () honoring #[derive(Default)]; AssistantItem
+        # model_fingerprint resolves the system_fingerprint alias +
+        # empty_string_as_none hook; unblocks the ConversationItem
+        # tagged-union consumer; no barrel collision -> no Conversation prefix
+        "AssistantItem",
+        "SystemItem",
+        "ToolResultItem",
+        "UserItem",
     }
 
 

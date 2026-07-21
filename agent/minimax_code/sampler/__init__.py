@@ -279,6 +279,12 @@ from minimax_code.sampler.conversation_leaves import (
     reported_cost_ticks,
     truncate_bytes,
 )
+from minimax_code.sampler.conversation_message_items import (
+    AssistantItem,
+    SystemItem,
+    ToolResultItem,
+    UserItem,
+)
 from minimax_code.sampler.conversation_tool_choice import (
     ConversationAuto,
     ConversationFunction,
@@ -436,6 +442,7 @@ __all__ = [
     "AdaptiveThinkingConfig",
     "AnyToolChoiceParam",
     "ApiBackend",
+    "AssistantItem",
     "AuthScheme",
     "AutoToolChoiceParam",
     "BACKOFF_BASE_MS",
@@ -567,6 +574,7 @@ __all__ = [
     "StreamError",
     "StreamErrorEvent",
     "SyntheticReason",
+    "SystemItem",
     "SystemParam",
     "SystemTextBlock",
     "THINKING_CHANNEL",
@@ -594,6 +602,7 @@ __all__ = [
     "ToolParam",
     "ToolResultBlock",
     "ToolResultContent",
+    "ToolResultItem",
     "ToolSpec",
     "ToolType",
     "ToolUse",
@@ -602,6 +611,7 @@ __all__ = [
     "UnknownStopReason",
     "UrlImageSource",
     "UserCancelled",
+    "UserItem",
     "WebSearch",
     "XSearch",
     "backoff_base_ms",
