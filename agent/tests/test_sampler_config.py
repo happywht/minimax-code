@@ -180,8 +180,17 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     collapse to ToolCalls) + from_usage (impl From<Usage>: cached from
     prompt_tokens_details, reasoning from completion_tokens_details, both
     default 0 when breakdown absent); strategy D continuation, clearing the
-    two R217 blockers -- barrel rename precedent + ChatUsage landed)."""
-    assert len(sampler.__all__) == 184
+    two R217 blockers -- barrel rename precedent + ChatUsage landed).
+    + conversation_tool_choice (R220, 5: the conversation.rs
+    ConversationToolChoice tagged union -- the sampler package's first
+    externally-tagged mixed enum, the third serde shape after R84 untagged
+    JsonRpcId + R89 internally-tagged HookEvent; #[serde(rename_all=
+    "snake_case")] external tagging -> the 3 unit variants serialize as bare
+    snake_case strings ("auto"/"none"/"required"), the Function(String)
+    newtype variant as {"function": name}; the Conversation prefix on all 4
+    variants dodges the wire-layer ToolChoice family barrel collision
+    (FunctionToolChoice et al.), mirroring the ConversationStopReason rename)."""
+    assert len(sampler.__all__) == 189
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -453,6 +462,17 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "TokenUsage",
         "from_finish_reason",
         "from_usage",
+        # conversation_tool_choice (R220): the conversation.rs tool-choice
+        # tagged union -- the first externally-tagged mixed enum in the
+        # sampler package (3 unit variants as bare snake_case strings +
+        # Function(String) newtype variant as {"function": name}); the
+        # Conversation prefix on all 4 variants dodges the wire-layer
+        # ToolChoice family barrel collision (FunctionToolChoice et al.)
+        "ConversationAuto",
+        "ConversationFunction",
+        "ConversationNone",
+        "ConversationRequired",
+        "ConversationToolChoice",
     }
 
 

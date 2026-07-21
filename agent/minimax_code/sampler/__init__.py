@@ -269,6 +269,13 @@ from minimax_code.sampler.conversation_leaves import (
     reported_cost_ticks,
     truncate_bytes,
 )
+from minimax_code.sampler.conversation_tool_choice import (
+    ConversationAuto,
+    ConversationFunction,
+    ConversationNone,
+    ConversationRequired,
+    ConversationToolChoice,
+)
 from minimax_code.sampler.conversation_usage import (
     ConversationStopReason,
     TokenUsage,
@@ -450,7 +457,12 @@ __all__ = [
     "ContentBlockDeltaEvent",
     "ContentBlockStartEvent",
     "ContentBlockStopEvent",
+    "ConversationAuto",
+    "ConversationFunction",
+    "ConversationNone",
+    "ConversationRequired",
     "ConversationStopReason",
+    "ConversationToolChoice",
     "DEFAULT_API_BACKEND",
     "DEFAULT_AUTH_SCHEME",
     "DEFAULT_MAX_RETRIES",

@@ -17241,3 +17241,38 @@ ruff check（4 文件：`conversation_usage.py` + `__init__.py` + `test_conversa
 
 ### Commit
 `feat(platform): R219 migrate conversation.rs response stop + usage cluster (ConversationStopReason + TokenUsage + 2 From impls, barrel rename)`。conversation.rs 第 3 切片（4 符号，"response stop + usage"集群落地，解除 R217/R218 双延后）；barrel 180→184；严格 StrEnum 范式 + 桶面重命名（`StopReason`→`ConversationStopReason`，镜像 R207 `Usage`→`ChatUsage`）。
+
+## R220 — conversation.rs 第 4 切片：ConversationToolChoice externally-tagged 混合枚举（OpenAI tool_choice wire 形状, 第 3 种 serde 形态, Conversation 前缀避 wire-layer ToolChoice family 冲突）
+
+锚点:R220-1 afd6b30
+
+### 本轮目标
+继续策略 D 续扫 `xai-grok-sampling-types/conversation.rs`（9481 行）叶子层。R219 落地"response stop + usage"集群（4 符号，桶面重命名 + 严格 StrEnum 范式）。R219 的 YAGNI 边界明确延后了 `ConversationToolChoice`——含混合 `Function(String)` 数据携带变体，需 R217 frozen+slots 联合体范式（非 StrEnum），单独聚焦一轮。R220 落地该联合体——conversation.rs 第 4 切片 5 符号：`ConversationToolChoice` 联合体基 + 4 变体（3 field-less `Auto`/`None`/`Required` + 1 data-carrying `Function(String)`）。这是 sampler 包的第 3 种 serde 表示形态（继 R84 untagged `JsonRpcId`、R89 internally-tagged `HookEvent` 之后）。
+
+### 融合结论
+该联合体是"工具选择控制"轴——conversation 层如何指示模型选择工具（auto/none/required/specific function）。两个核心设计决策：(1) **externally-tagged serde 形态**：grok `#[serde(rename_all="snake_case")]` + serde 默认 external tagging 意味着 field-less 变体序列化为裸 snake_case 字符串，newtype 变体 `Function(String)` 序列化为单键对象 `{"function": name}`——这是标准 OpenAI `tool_choice` wire 形状，hoisted 到 conversation 层（API-agnostic 内部表示）。(2) **Conversation 前缀避冲突**：types.rs wire-layer `ToolChoice` family 已占 `ToolChoice`/`ToolChoiceFunction`/`FunctionToolChoice`/`AutoToolChoiceParam`/`AnyToolChoiceParam`/`NamedToolChoiceParam`/`PresetToolChoice`/`ToolChoiceParam` 8 个桶面名——所有变体统一 `Conversation` 前缀（`ConversationAuto`/`ConversationFunction`/`ConversationNone`/`ConversationRequired`），完全避开桶面冲突 + 标记 conversation 层作用域（镜像 R207 `Usage`→`ChatUsage`、R219 `StopReason`→`ConversationStopReason` 重命名先例）。新增 `conversation_tool_choice.py`（兄弟于 R217/R218/R219 的 conversation_* 子模块），barrel 184→189。
+
+### 交付
+- 新建 `agent/minimax_code/sampler/conversation_tool_choice.py`（156 行）：`ConversationToolChoice`（frozen+slots 联合体基 + 手写 `from_payload`/`as_payload` externally-tagged (de)serializer 对）+ 4 变体子类（`ConversationAuto`/`ConversationNone`/`ConversationRequired` field-less + `ConversationFunction` 携 `name: str`）。
+- 扩展 `agent/minimax_code/sampler/__init__.py` barrel：导入块（isort 字母序 `conversation_tool_choice` 在 `conversation_leaves` 后、`conversation_usage` 前，'t'(116) 在 'l'(108) 后、'u'(117) 前）+ `__all__` 5 个 ASCII 排序插入（`ConversationAuto`/`ConversationFunction`/`ConversationNone`/`ConversationRequired` 在 `ConversationStopReason` 前，`ConversationToolChoice` 在后），184→189。
+- 同步 `agent/tests/test_sampler_config.py` barrel 守卫：计数 184→189 + docstring R220 追加 + 符号集合 +5。
+- 新建 `agent/tests/test_conversation_tool_choice.py`（6 测试类，26 测试）：barrel 标识检查 + `as_payload` externally-tagged 序列化（3 裸字符串 + 1 单键对象 + 任意 name 保留）+ `from_payload` externally-tagged 解析（裸字符串→unit 变体、function 对象→Function 变体、未知 str/非 str/畸形 dict/非 str function 值全抛 ValueError）+ 双向 round-trip + 值语义（结构相等 + isinstance 联合体基）+ slots/frozen 不可变（含 unit 变体 fieldless + Function 单 name slot + 无 __dict__）。
+
+### 映射决策树 + 坑
+1. **externally-tagged serde 形态（第 3 种）**：继 R84 untagged（`#[serde(untagged)]`，wire 无 tag）/R89 internally-tagged（`#[serde(tag="type")]`，tag 内嵌）后，R220 是 externally-tagged（serde 默认，无 `#[serde(tag=..)]`/`#[serde(untagged)]`）。单元变体 → 裸字符串；newtype 变体（单字段 tuple）→ `{variant_name: value}`。手写双向 (de)serializer，非 dataclass asdict/自动 serde。
+2. **桶面命名冲突 → 统一 Conversation 前缀**：types.rs wire-layer `ToolChoice` family（8 名）+ 尤其 `FunctionToolChoice` 直接冲突 → 所有变体统一 `Conversation` 前缀（镜像 R219 `ConversationStopReason`）。不做别名（单源）。
+3. **严格 from_payload（无 catch-all）**：grok 无 `#[serde(other)]` → 未知 tag/畸形对象/非字符串 function 名全抛 `ValueError`，parity R219 严格 StrEnum + R84/R89 联合体；对照 R218 UNKNOWN catch-all（永不 raise）。
+4. **frozen+slots 无字段子类 setattr 边缘行为（R220 新发现）**：field-less frozen+slots 子类（如 `ConversationAuto`）setattr 触发 `TypeError`（dataclass 生成的 `__setattr__` 走 super() 路径抛 `super(type, obj): obj must be an instance or subtype`），而非有字段子类（如 `ConversationFunction`）的 `FrozenInstanceError`（AttributeError 子类）。两者都阻止赋值（不可变语义正确），仅异常类型不同。测试用 `pytest.raises((AttributeError, TypeError))` 双断言。
+5. **as_payload isinstance 顺序**：`ConversationFunction` 必须最先检查（它是 `ConversationToolChoice` 子类，isinstance 链从具体到通用）——后置会被更前的 unit 变体短路（实际 unit 变体非 Function 父类，但顺序保持防御性 + 可读性）。
+6. **isort 字母序坑**：`conversation_tool_choice`('t') 在 `conversation_leaves`('l') 之后、`conversation_usage`('u') 之前。导入块精确插在两块之间。
+7. **`__all__` ASCII 排序**：`ConversationAuto`(C-o-n-v-e-A) < `ConversationFunction`(C-o-n-v-e-F) < `ConversationNone`(C-o-n-v-e-N) < `ConversationRequired`(C-o-n-v-e-R) < `ConversationStopReason`(C-o-n-v-e-S) < `ConversationToolChoice`(C-o-n-v-e-T)——前 4 个共享 `Conversation` + 第 5 字母 A/F/N/R 在 `StopReason` 的 S 前，`ToolChoice` 的 T 在 `StopReason` 的 S 后。
+8. **B010 规避**：frozen setattr 测试用变量 `attr = "name"` 而非字面量属性名（规避 ruff B010 setattr 常量属性规则），镜像 R219 `next(iter(type(usage).__slots__))` 变量 field name 模式。
+
+### 验证
+ruff check（4 文件：`conversation_tool_choice.py` + `__init__.py` + `test_conversation_tool_choice.py` + `test_sampler_config.py`）✅ All checks passed!（含 isort order-by-type，证明导入顺序与 `__all__` 排序正确）+ 定向 pytest `test_conversation_tool_choice.py + test_sampler_config.py` **39 passed**（26 新测试 + 13 守卫）+ 全量回归 **5893 passed + 10 skipped + 1 failed**（R219 基准 5867 + R220 新增 26 = 5893，数学精确吻合，零真实回归，122.17s）。1 failed 为预存 `test_connection.py::test_interval_keeps_global_timeline_across_loops`——asyncio 时序 flaky（断言 `period * 0.8 <= gap` 即 `0.04*0.8=0.032 <= 0.031` 为假，全量负载下 asyncio.sleep 调度抖动导致 gap 略低于阈值，R160-R164 SDK connection.rs 迁移，与 R220 零关系），单独重跑确认 **1 passed**，遵循迭代独立性不修复。
+
+### YAGNI 边界
+`ConversationToolChoice` 的 `#[derive(Clone)]` 无 Python 对等物（frozen+slots dataclass 天然不可变 + 结构相等，clone 是 Rust move 语义优化）。`Function(String)` 的 newtype 仅携带函数名，无附加字段（OpenAI tool_choice 标准形状）。不迁移任何 wire-layer 互转（conversation `ConversationToolChoice` ↔ types.rs `ToolChoice` family 的跨层投影）——两个 family 是独立 API surface（ChatCompletions wire vs conversation 内部），消费者按需桥接，平台层不预设。下轮策略 D 续扫 conversation.rs 叶子层（候选：`UserItem`/`AssistantItem` 消费层拉入未迁 `ContentPart` 联合 + body——依赖闭包较深，可能需多轮切片；或其他 conversation.rs 独立小叶子）或策略 E 其他未迁移 crate 零依赖叶子。
+
+### Commit
+`feat(platform): R220 migrate conversation.rs ConversationToolChoice externally-tagged mixed enum`。conversation.rs 第 4 切片（5 符号，externally-tagged 混合枚举——sampler 包第 3 种 serde 形态继 R84 untagged/R89 internally-tagged）；barrel 184→189；Conversation 前缀避 wire-layer ToolChoice family 桶面冲突（镜像 R207/R219 重命名先例）。
