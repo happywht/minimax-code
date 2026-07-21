@@ -10,7 +10,8 @@ direction is inverted, not duplicated). The deferred/YAGNI symbols
 THRESHOLD`` migrated in R198 (:mod:`minimax_code.sampler.retry`); the package
 barrel (tested below) re-exports the ``config`` (R195) + ``retry`` (R198
 backoff + R199 decision layer) + ``types`` (R199 SamplingError) + ``doom_loop``
-(R200 wire contract + tolerant parsers) leaves.
+(R200 wire contract + tolerant parsers) + ``messages`` (R201 stop-reason + usage
++ delta-body cluster) leaves.
 """
 
 from __future__ import annotations
@@ -32,13 +33,17 @@ from minimax_code.sampler import config as sampler_config
 def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     """R195 config (3: 2 types + 1 default) + R198 retry (10: 5 constants + 5
     functions) + R199 retry decision layer (10: 7 decision classes + 3 functions)
-    + R199 types (6: 1 constant + 4 types + 1 free function) = 29 re-exported
-    symbols. The config trio stays; R198 adds the backoff/max-retries leaf;
-    R199 adds the decision layer (consuming the migrated SamplingError) and the
-    SamplingError type leaf itself; R200 adds the doom-loop wire contract +
-    tolerant parsers (whose parsed ``raw`` labels feed the R199 DoomLoopDetected
-    variant)."""
-    assert len(sampler.__all__) == 46
+    + R199 types (6: 1 constant + 4 types + 1 free function) + R200 doom_loop
+    (17: 5 constants/fixtures + 10 classes + 2 free functions) + R201 messages
+    (16: StopReason union base + 8 variants + MessagesUsage + MessageDeltaUsage
+    + StopDetails + MessageDeltaBody + StreamError + parse_stop_reason +
+    stop_reason_to_wire) = 62 re-exported symbols. The config trio stays; R198
+    adds the backoff/max-retries leaf; R199 adds the decision layer (consuming
+    the migrated SamplingError) and the SamplingError type leaf itself; R200
+    adds the doom-loop wire contract + tolerant parsers (whose parsed ``raw``
+    labels feed the R199 DoomLoopDetected variant); R201 adds the Messages API
+    stop-reason + usage + delta-body cluster."""
+    assert len(sampler.__all__) == 62
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -91,6 +96,24 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "Unknown",
         "is_check_event",
         "peek_doom_loop",
+        # messages (R201): StopReason union base + 8 variants + 2 usage types +
+        # StopDetails + MessageDeltaBody + StreamError + 2 free functions
+        "EndTurn",
+        "MaxTokens",
+        "MessageDeltaBody",
+        "MessageDeltaUsage",
+        "MessagesUsage",
+        "ModelContextWindowExceeded",
+        "PauseTurn",
+        "Refusal",
+        "StopDetails",
+        "StopReason",
+        "StopSequence",
+        "StreamError",
+        "ToolUse",
+        "UnknownStopReason",
+        "parse_stop_reason",
+        "stop_reason_to_wire",
     }
 
 

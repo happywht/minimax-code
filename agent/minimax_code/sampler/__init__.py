@@ -4,10 +4,11 @@ Fuses grok's ``xai-grok-sampler`` crate (actor-based sampling/inference layer:
 HTTP streaming + retry, no shell coupling). The crate ships 12 modules; this
 package is being filled leaf-by-leaf. Currently landed: ``config`` (R195,
 pure-type subset) + ``doom_loop`` (R200, ``xai-grok-sampling-types``
-``doom_loop.rs`` wire contract + tolerant parsers) + ``retry`` (R198 backoff
-subset + R199 decision layer) + ``types`` (R199, ``xai-grok-sampling-types``
-``error.rs``). See each leaf module's docstring for its migration map + YAGNI
-ledger.
+``doom_loop.rs`` wire contract + tolerant parsers) + ``messages`` (R201,
+``xai-grok-sampling-types`` ``messages.rs`` stop-reason + usage + delta-body
+cluster) + ``retry`` (R198 backoff subset + R199 decision layer) + ``types``
+(R199, ``xai-grok-sampling-types`` ``error.rs``). See each leaf module's
+docstring for its migration map + YAGNI ledger.
 
 Leaf order (crate ``lib.rs`` re-exports, in migration order):
 
@@ -36,6 +37,16 @@ Leaf order (crate ``lib.rs`` re-exports, in migration order):
    :class:`EmptyResponseContext` + :class:`ResponseModelMetadata` + the
    :data:`SERIALIZATION_DISPLAY_PREFIX` constant + :func:`is_context_length_error`
    free function, from ``xai-grok-sampling-types`` ``error.rs`` (no-I/O leaf).
+5. ``messages`` (R201) -- Anthropic Messages API (``/v1/messages``) stop-reason
+   + usage + delta-body cluster, from ``xai-grok-sampling-types``
+   ``messages.rs`` (no-I/O leaf). The tolerant :class:`StopReason` snake_case
+   enum + :class:`UnknownStopReason` catch-all (+:func:`parse_stop_reason` /
+   :func:`stop_reason_to_wire` faithful round-trip) + :class:`MessagesUsage` /
+   :class:`MessageDeltaUsage` token counters + :class:`StopDetails` /
+   :class:`MessageDeltaBody` terminal body + :class:`StreamError`. The request
+   types (``MessagesRequest`` + ``ContentBlock`` union + the full
+   ``MessageStreamEvent`` wrapper) land in later rounds -- they pull in the
+   larger ``ContentBlock`` discriminated union.
 """
 
 from minimax_code.sampler.config import (
@@ -61,6 +72,24 @@ from minimax_code.sampler.doom_loop import (
     Unknown,
     is_check_event,
     peek_doom_loop,
+)
+from minimax_code.sampler.messages import (
+    EndTurn,
+    MaxTokens,
+    MessageDeltaBody,
+    MessageDeltaUsage,
+    MessagesUsage,
+    ModelContextWindowExceeded,
+    PauseTurn,
+    Refusal,
+    StopDetails,
+    StopReason,
+    StopSequence,
+    StreamError,
+    ToolUse,
+    UnknownStopReason,
+    parse_stop_reason,
+    stop_reason_to_wire,
 )
 from minimax_code.sampler.retry import (
     BACKOFF_BASE_MS,
@@ -110,11 +139,19 @@ __all__ = [
     "EmitToSession",
     "EmptyReason",
     "EmptyResponseContext",
+    "EndTurn",
     "Fatal",
     "LowLogprob",
+    "MaxTokens",
+    "MessageDeltaBody",
+    "MessageDeltaUsage",
+    "MessagesUsage",
+    "ModelContextWindowExceeded",
     "NoDoomLoop",
     "OriginClientInfo",
+    "PauseTurn",
     "RATE_LIMIT_RETRY_THRESHOLD",
+    "Refusal",
     "ResponseField",
     "ResponseModelMetadata",
     "Retry",
@@ -126,9 +163,15 @@ __all__ = [
     "SAMPLE_CHECK_EVENT_DATA_CUMULATIVE",
     "SERIALIZATION_DISPLAY_PREFIX",
     "SamplingError",
+    "StopDetails",
+    "StopReason",
+    "StopSequence",
+    "StreamError",
     "THINKING_CHANNEL",
     "TailRepetition",
+    "ToolUse",
     "Unknown",
+    "UnknownStopReason",
     "backoff_base_ms",
     "classify_error",
     "clone_error",
@@ -136,8 +179,10 @@ __all__ = [
     "format_sampling_error",
     "is_check_event",
     "is_context_length_error",
+    "parse_stop_reason",
     "peek_doom_loop",
     "resolve_max_retries",
     "resolve_max_retries_with_env",
     "retry_backoff_with_jitter",
+    "stop_reason_to_wire",
 ]

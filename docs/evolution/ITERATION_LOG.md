@@ -16313,3 +16313,67 @@ feat(platform): R198 migrate xai-grok-sampler retry pure logic (backoff decision
 ### Commit
 
 `feat(platform): R200 migrate doom-loop wire contract + tolerant parsers leaf`（仅 sampler/doom_loop.py 新 + sampler/__init__.py 改、tests/test_doom_loop.py 新 + test_sampler_config.py 改、ITERATION_LOG.md；精确 `git add`，不含 10 个排除文件、90+ 无关 M 文件、预存 connection flaky）。
+## R201 — sampler messages.rs stop-reason + usage + delta-body cluster (xai-grok-sampling-types 第 3 叶)
+
+锚点:R201-1 7ec62c0
+
+### 本轮目标
+
+继续 `xai-grok-sampling-types` crate 的纯逻辑叶子迁移（R199 `error.rs` / R200 `doom_loop.rs` 已迁，barrel 29→46）。R201 自主 glob `src/*.rs`，读各文件头部 + 结构，选下一个纯类型/枚举叶子，迁移整叶到 `agent/minimax_code/sampler/<leaf>.py`，扩展 barrel + barrel 守卫，写对应测试。锚点链 … → R200(7ec62c0) → R201。验证基准：R200 后全量回归 5171 passed + 10 skipped，零真实回归。
+
+### 融合结论
+
+候选叶子体检（glob `grok-build/crates/codegen/xai-grok-sampling-types/src/*.rs`）：
+
+| 文件 | 行数 | 纯逻辑? | 取舍 |
+|---|---|---|---|
+| `conversation.rs` | 9481 | 是但巨型 | 多轮 mega-leaf，本轮跳过 |
+| `types.rs` | 1521 | 是但大 | 多轮，本轮跳过 |
+| `messages.rs` | 421 | 是 | **本轮目标**（Anthropic Messages API 线类型，无 I/O） |
+| `serde_helpers.rs` | 9 | 是 | 太薄（单个 `empty_string_as_none`），YAGNI |
+| `lib.rs` | 28 | barrel | crate 收官轮做 |
+
+`messages.rs` 选定。但它 26 类型且依赖拓扑集中——所有顶层容器（`MessagesRequest`/`MessagesResponse`/`MessageStreamEvent`）都依赖 `ContentBlock`（5-variant 判别联合）。完全迁移 ≈ 68 符号，单轮失控。R201 务实切片：迁移**自包含的 stop-reason + usage + delta-body 容错集群**（16 符号）——零依赖 `ContentBlock`，且正是 catch-all 绝不失败流的核心（grok 测试重点）。Request 段 + `ContentBlock` 联合 + 完整 `MessageStreamEvent` wrapper 留给 R202+。规模 ≈ R200（16 vs 17 符号）。
+
+### 交付
+
+新增 `agent/minimax_code/sampler/messages.py`（16 符号）：
+
+- `StopReason` 判别联合基类（frozen+slots）+ 8 子类：`EndTurn`/`MaxTokens`/`ToolUse`/`StopSequence`/`Refusal`/`PauseTurn`/`ModelContextWindowExceeded`（7 已知，空 frozen+slots）+ `UnknownStopReason(value: str)`（catch-all，保真线串）。
+- `parse_stop_reason(raw) -> StopReason`：`_KNOWN_STOP_REASONS` 字典查（7 条目，无 Unknown）→ 命中 `cls()`，未命中 `UnknownStopReason(raw)`（镜像 serde「先 tagged 后 untagged」序，Unknown 故意 LAST）。
+- `stop_reason_to_wire(reason) -> str`：忠实逆映射；`UnknownStopReason` 回吐 `reason.value`，否则 `_STOP_REASON_TO_WIRE[type(reason)]`（dict 推导反向表）。
+- `MessagesUsage`（`input_tokens`/`output_tokens` 必填 + 2 cache 计数器默认 0）+ `MessageDeltaUsage`（仅 `output_tokens` 必填，余 `Option<u32>` 默认 None）+ `StopDetails`（全可选，容忍未知键）+ `MessageDeltaBody`（`stop_reason` 经 catch-all 解析仅当 str，`stop_details` 仅当 dict）+ `StreamError`（缺字段默认空串，绝不崩流）——均带 `from_payload` 类方法。
+
+测试 `agent/tests/test_messages.py`（35 用例）：镜像 grok 4 测试（stop_reason catch-all 往返 + refusal `message_delta` + refusal `stop_details` 未来键容忍 + `output_format`）+ Python 值语义（frozen/slots/hashable/equality）+ 容错 `from_payload` 矩阵。
+
+barrel 扩展：`sampler/__init__.py` 46→62（docstring 加 R201 叶子条目 + import 块 + `__all__` ASCII 重排）。barrel 守卫 `test_sampler_config.py` 同步 46→62 + 16 符号集合 + docstring。
+
+### 映射决策树 + 坑
+
+1. `#[serde(rename_all="snake_case")] enum` + `#[serde(untagged)] Unknown(String)` catch-all → 判别联合（基类 + 8 子类）；`_KNOWN_STOP_REASONS` 不含 Unknown，`parse_stop_reason` 兜底 `UnknownStopReason(raw)`，**严格镜像 serde 试 tagged 先、untagged 后的顺序**（Unknown 留 LAST）。
+2. `#[serde(default)] u32` → `int = 0`；`Option<u32> #[serde(default)]` → `int | None = None`（grok 关键区分：非流式 cache 计数器缺省 0，流式 delta 的可选计数器缺省 None）。
+3. `#[serde(rename="type")] r#type` → `type_` 字段（线键 `"type"`），避免遮蔽 Python 内置。
+4. **命名冲突规避**：Rust 同文件有 `TextBlock`（SystemParam 用）vs `ContentBlock::Text` 变体 vs `ToolResultContent` untagged。R201 切片不触 `ContentBlock`，零冲突；`StopReason` 子类 `ToolUse` 不与任何东西冲突（`ContentBlock::ToolUse` 推迟）。
+5. **测试坑（本轮 2 处自纠）**：(a) `test_stop_reason_is_frozen` 初版用无字段 `Refusal()` 测 `.value` 赋值——frozen+slots+继承下走属性创建路径触发 `TypeError` 而非 `FrozenInstanceError`；改为测真实字段 `UnknownStopReason.value`。(b) `test_sampler_config` barrel 守卫——首轮只改了模块 docstring，漏了函数体 `assert == 46` + 符号集合，第二轮定向 pytest 才暴露。两坑均在验证阶段自纠，零回归外溢。
+
+### 验证
+
+- `ruff check`（4 文件）→ All checks passed（E/F/W/I/B/UP，长 100，py311）。
+- 定向 `pytest tests/test_messages.py tests/test_sampler_config.py` → **48 passed**（test_messages 35 新增 + test_sampler_config 13 barrel 守卫）。
+- **全量回归：5207 passed + 10 skipped（103.53s）**——R200 基线 5171 + R201 净增 36，零真实回归。预存 flaky `test_interval_keeps_global_timeline_across_loops` 本轮自然通过（在 5207 内，未单独跳过）。
+
+### YAGNI 边界
+
+- `messages.rs` Request 段（`MessagesRequest`/`OutputConfig`/`Message`/`ContentBlock` 联合/`ToolParam`/`ThinkingConfig` 等 17 类型）+ 完整 `MessageStreamEvent` wrapper（8 变体）→ R202+ 多轮（依赖 `ContentBlock` 5-variant 判别联合，独立 mega-leaf）。
+- `serde_helpers.rs` `empty_string_as_none` → YAGNI（Python 无 serde derive，已在各 `from_payload` 内联 `payload.get(...)` 容忍缺键）。
+- 完整 serde `Serialize`/`Deserialize` 往返 → YAGNI；`stop_reason_to_wire` 仅覆盖 grok 测试断言的 catch-all 保真线串回吐，其余类型 shape + 容错 `from_payload` only。
+
+### Commit
+
+`feat(platform): R201 migrate messages.rs stop-reason + usage + delta-body cluster`
+
+- `agent/minimax_code/sampler/messages.py`（新，16 符号）
+- `agent/minimax_code/sampler/__init__.py`（barrel 46→62）
+- `agent/tests/test_messages.py`（新，35 用例）
+- `agent/tests/test_sampler_config.py`（barrel 守卫 46→62 + 符号集合）
+- `docs/evolution/ITERATION_LOG.md`（本条目）
