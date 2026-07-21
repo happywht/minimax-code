@@ -149,8 +149,17 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     api_backend field) AND the R206 ReasoningEffort (its optional
     reasoning_effort field); resolves the two grok deps that previously
     blocked it (indexmap::IndexMap -> tuple-of-pairs + NonZeroU64 ->
-    positive int); zero dependency)."""
-    assert len(sampler.__all__) == 173
+    positive int); zero dependency). + conversation_leaves (R217, 5: the
+    conversation.rs first slice -- reported_cost_ticks (Option<i64>::filter
+    >0 cost-ticks normalizer: present positive int -> itself, None/0/
+    negative/bool -> None) + truncate_bytes (UTF-8 char-boundary byte
+    truncator: encode[:n].decode errors=ignore mirrors the
+    is_char_boundary walk-back) + DanglingToolCallReason tagged union
+    (no serde, pure in-program enum: UserCancelled field-less +
+    HarnessHalted carrying class_; grok `class` renamed -- Python hard
+    keyword, not a Rust one); strategy D pivot after types.rs 1030-1521
+    exhaustion, zero dependency)."""
+    assert len(sampler.__all__) == 178
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -391,6 +400,19 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         # tuple-of-pairs + NonZeroU64->positive int (the two deps that
         # previously blocked this leaf)
         "SamplingConfig",
+        # conversation_leaves (R217): the conversation.rs first slice -- 3
+        # zero-dependency pure leaves opening the 9481-line mega-module:
+        # reported_cost_ticks (Option<i64>::filter >0 cost-ticks normalizer) +
+        # truncate_bytes (UTF-8 char-boundary byte truncator) +
+        # DanglingToolCallReason tagged union (#[derive(Debug,Clone,Copy)]
+        # only, no serde -- pure in-program enum; UserCancelled field-less +
+        # HarnessHalted carrying class_ taxonomy tag, grok `class` renamed --
+        # Python hard keyword); strategy D pivot after types.rs exhaustion
+        "DanglingToolCallReason",
+        "HarnessHalted",
+        "UserCancelled",
+        "reported_cost_ticks",
+        "truncate_bytes",
     }
 
 

@@ -17135,3 +17135,40 @@ ruff clean（R216 四文件零 I001/E/F/W/B/UP）+ 定向 pytest `test_sampling_
 
 ### Commit
 `feat(platform): R216 migrate types.rs SamplingConfig (1 symbol, resolves indexmap + NonZeroU64 deps)`。types.rs 累计 58→59 符号；barrel 172→173。下轮策略 A types.rs 已无零依赖叶子，转策略 D conversation.rs 叶子层探索（9481 行巨型，寻独立小 struct/fn）或策略 E 其他未迁移 crate 零依赖叶子。
+
+## R217 — conversation.rs 首切片迁移（5 符号，开启 9481 行 mega-module）
+
+锚点:R217-1 accae98
+
+### 本轮目标
+继续 xai-grok-sampling-types 迁移（策略 D 命中）。R217 选 conversation.rs（9481 行 API-agnostic conversation-representation mega-module）的三个零依赖纯叶子——策略 A types.rs 1030-1521 续扫在 R216 确认已耗尽（`ChatCompletionRequest`/`CreateResponseWrapper`/`MessagesRequestWrapper`/`TraceContext` 均带未迁硬阻塞：`ToolDefinition` + `crate::rs::ResponseFormat` + `crate::messages::MessagesRequest` + `Box<dyn TraceContext>` YAGNI）。R217 转策略 D，扫 conversation.rs 叶子层定位依赖闭包为空的符号，落地首切片，开启巨型模块迁移。
+
+### 融合结论
+三个纯叶子均为依赖闭包零外部（仅 builtins）：
+1. `reported_cost_ticks`（conversation.rs ~732）：`Option<i64>::filter(|&t| t>0)` 成本滴答归一化器——REST 层为"未上报成本"回填 0，负滴从无效，二者皆坍缩为 None（"未上报"非"免费"）。每个摄取路径存 `cost_usd_ticks` 前必经此（消费 struct 后续轮落）。
+2. `truncate_bytes`（conversation.rs ~1624）：UTF-8 字符边界安全字节截断器——`s.len()<=max_bytes` 原样返回；否则 `max_bytes` 字节前缀走回最后一个字符边界（`errors="ignore"` ≡ `is_char_boundary` walk-back，丢弃切裂的多字节尾字符）。
+3. `DanglingToolCallReason`（conversation.rs ~2753）：纯程序内枚举（`#[derive(Debug,Clone,Copy)]` 无 serde，不跨网络，无 `from_payload`）——"为何此 tool call 被悬空"的标记联合，是后续 `repair_dangling_tool_calls` 的 `reason` 参数。`UserCancelled`（无字段默认回退）+ `HarnessHalted`（带 `class_` 分类标签）。
+
+### 交付
+- 新建 `agent/minimax_code/sampler/conversation_leaves.py`（157 行，2 纯函数 + 3 `@dataclass(frozen=True, slots=True)` 类：`DanglingToolCallReason` 联合基 + `UserCancelled`/`HarnessHalted` 变体）
+- 扩展 `sampler/__init__.py` barrel 173→178（1 导入块插入 content_blocks < conversation_leaves < doom_loop 之间 + 5 处 `__all__` ASCII 序插入）
+- 同步 `tests/test_sampler_config.py` 守卫（docstring 追加 R217 描述句 + `len == 173`→`== 178` + 符号集合追加 5 符号带注释头）
+- 新建 `tests/test_conversation_leaves.py`（4 测试类，~26 测试：barrel identity 1 + reported_cost_ticks 6 + truncate_bytes 9 + DanglingToolCallReason 联合 9）
+
+### 映射决策树 + 坑
+1. **`class` 硬关键字映射（keystone）**：grok `HarnessHalted.class`（`&'static str`）→ Python `class_`。`class` 是 Python 硬关键字但**非** Rust 关键字，故 grok 自由用之；PEP 8 尾下划线规避是标准解法，docstring 记录。
+2. **`#[derive]` 无 serde = 纯程序内类型**：`DanglingToolCallReason` 仅 derive `Debug,Clone,Copy` 无 `Serialize`/`Deserialize` → 永不跨网络 → 无 `from_payload`，纯内存内标记联合（沿用 R201 `StopReason` 的 frozen+slots 联合范式：基类 `__slots__=()` 空，变体 `__slots__` 仅含自身字段）。
+3. **bool 作为 int 子类陷阱（贯穿两函数）**：`reported_cost_ticks`（grok `i64` 拒绝 JSON `true`）+ `truncate_bytes`（grok `usize` 不纳 bool）均显式 `isinstance(x, bool)` 先判排除。
+4. **UTF-8 字符边界截断等价物**：grok `while !s.is_char_boundary(end) { end -= 1 }` ≡ Python `encoded[:max_bytes].decode("utf-8", errors="ignore")`（split 的多字节尾字符被丢弃）。
+5. **`Option<i64>::filter` Python 等价物**：`raw if (raw is not None and raw > 0) else None`（结合 bool 排除：`isinstance(raw, bool) or not isinstance(raw, int)` 前置守卫）。
+6. **B010 规避（沿用 R215/R216）**：`next(iter(type(h).__slots__))` 取变量 field name，非常量属性名。
+7. **坑（field-less frozen+slots setattr 怪癖）**：初版 `test_user_cancelled_mutation_raises` 在 field-less 变体上 `setattr(u, "anything", ...)` 触发 CPython dataclass 实现怪癖 `TypeError: super(type,obj): obj must be an instance...`（非干净 `FrozenInstanceError`），且 B010 报常量属性。解法：**删除该测试**——field-less 变体的 frozen 语义已被 `test_hashable`（frozen 才生成 `__hash__`）+ `test_user_cancelled_is_fieldless`（slots==()）+ `test_frozen_mutation_raises`（HarnessHalted 有字段正常触发 FrozenInstanceError）充分覆盖，YAGNI 不测 CPython 实现怪癖。
+
+### 验证
+ruff clean（R217 四文件零 I001/E/F/W/B/UP，B010 在删除怪癖测试后消除）+ 定向 pytest `test_conversation_leaves.py + test_sampler_config.py` **38 passed** + 全量回归 **5812 passed + 10 skipped**（R216 基准 5786 + R217 新增 26，零真实回归，124.65s）。1 warning 为预存 fastapi/httpx 弃用（无关）。
+
+### YAGNI 边界
+`StopReason`（conversation.rs ~606）延后——与已迁 R201 `messages.StopReason`（Anthropic Messages API，结构不同）桶面命名冲突，且其 `From<FinishReason>` impl + `TokenUsage` 兄弟构成"response stop + usage"集群，待 `Usage` 迁移后一并落地（避免在集群落地前引入 `ConversationStopReason` 别名的桶复杂化）。`repair_dangling_tool_calls`（消费 `Vec<ConversationItem>`，依赖未迁 `ConversationItem` 联合）延后。完整 serde Serialize/Deserialize 往返——`DanglingToolCallReason` 本就无 serde（grok 自身不 derive），其余两函数是纯值级原语无 I/O。
+
+### Commit
+`feat(platform): R217 migrate conversation.rs first slice (5 symbols, opens mega-module)`。conversation.rs 迁移开启（首切片 5 符号）；types.rs 累计 59 符号（R206-R216）；barrel 173→178。下轮策略 D 续扫 conversation.rs 叶子层（9481 行，定位下一组零依赖独立 struct/fn，候选：`StopReason`+`TokenUsage` 集群待 Usage 迁移、或 conversation.rs 其他独立小叶子）或策略 E 其他未迁移 crate 零依赖叶子。

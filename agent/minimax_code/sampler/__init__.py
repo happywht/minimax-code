@@ -258,6 +258,13 @@ from minimax_code.sampler.content_blocks import (
     ToolUseBlock,
     UrlImageSource,
 )
+from minimax_code.sampler.conversation_leaves import (
+    DanglingToolCallReason,
+    HarnessHalted,
+    UserCancelled,
+    reported_cost_ticks,
+    truncate_bytes,
+)
 from minimax_code.sampler.doom_loop import (
     DOOM_LOOP_CHECK_EVENT_TYPE,
     DOOM_LOOP_CHECK_HEADER,
@@ -440,6 +447,7 @@ __all__ = [
     "DOOM_LOOP_BOUND_MS",
     "DOOM_LOOP_CHECK_EVENT_TYPE",
     "DOOM_LOOP_CHECK_HEADER",
+    "DanglingToolCallReason",
     "DisabledThinkingConfig",
     "DoomLoopPeek",
     "DoomLoopRecoveryPolicy",
@@ -453,6 +461,7 @@ __all__ = [
     "Fatal",
     "FinishReason",
     "FunctionToolChoice",
+    "HarnessHalted",
     "ImageBlock",
     "ImageSource",
     "ImageUrl",
@@ -546,6 +555,7 @@ __all__ = [
     "Unknown",
     "UnknownStopReason",
     "UrlImageSource",
+    "UserCancelled",
     "backoff_base_ms",
     "chat_truncate_for_prompt",
     "classify_error",
@@ -563,9 +573,11 @@ __all__ = [
     "peek_doom_loop",
     "reasoning_effort_meta_value",
     "reasoning_efforts_meta_value",
+    "reported_cost_ticks",
     "resolve_max_retries",
     "resolve_max_retries_with_env",
     "retry_backoff_with_jitter",
     "stop_reason_to_wire",
     "supports_reasoning_effort_meta",
+    "truncate_bytes",
 ]
