@@ -41,13 +41,18 @@ Currently landed:
   raw record -> returns the structured ``CrashReport``. Consumes the format /
   symbolicate / archive / signals leaves (R225-R227); the read half of crash
   recovery, closing the loop the writer-side ``handler`` leaf will open.
+* ``handler`` (R229) -- grok ``handler.rs`` signal-installation leaf (the
+  write half of crash recovery): creates ``crash_dir``, enables
+  ``faulthandler`` for fatal-signal traceback capture, and replaces
+  ``sys.excepthook`` + ``threading.excepthook`` with this module's exception-
+  persisting variants; the hooks build a ``CrashBlob`` and write it as
+  ``last-crash.json`` (the R228 reader's input). Closes the write/read loop
+  that ``recovery`` opens.
 
 YAGNI / deferred (later rounds): ``backtrace::resolve`` native symbolication
 (``resolve_frames`` lands as a best-effort all-``None`` placeholder; real
 DWARF / symbol-table lookup needs a native backend and is superseded by the
-``faulthandler`` Python-traceback path in the ``handler`` leaf),
-``handler.rs`` signal installation (Python ``faulthandler`` + ``excepthook``
-equivalent), ``install`` /
+``faulthandler`` Python-traceback path in ``handler``),
 ``install_terminal_restore_only`` entry points, and the app-startup wiring +
 ``crash.*`` IPC namespace + frontend session-recovery prompt.
 """
@@ -56,6 +61,7 @@ from __future__ import annotations
 
 from minimax_code.crash.archive import archive_report, prune_history
 from minimax_code.crash.format import MAGIC, MAX_FRAMES, VERSION, CrashBlob
+from minimax_code.crash.handler import install
 from minimax_code.crash.recovery import (
     LAST_CRASH_FILE,
     LAST_CRASH_REPORT_FILE,
@@ -84,6 +90,7 @@ __all__ = [
     "archive_report",
     "check_previous_crash",
     "format_report",
+    "install",
     "prune_history",
     "resolve_frames",
     "si_code_name",

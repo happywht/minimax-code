@@ -17575,3 +17575,41 @@ grok 二进制 std::fs::read + CrashBlob::parse 字节级解码器被 JSON 路�
 
 ### Commit
 `feat(platform): R228 fuse xai-crash-handler lib.rs check_previous_crash orchestration leaf (recovery.py)`。路径 B 第 4 轮（crash 模块续编排叶子）；迁移 lib.rs check_previous_crash；concept-for-concept 融合（二进制 last-crash.bin → JSON last-crash.json，三层失败链塌缩 None 镜像 grok ?，best-effort write/archive/unlink 镜像 let _ =，report_path 无条件返回）；命名 recovery.py 避免与未来 handler.py 冲突；常量提取 LAST_CRASH_FILE/LAST_CRASH_REPORT_FILE；barrel 14→17 符号；18 测试覆盖 missing/valid/malformed 三路径 + 副作用（report 写入/history 归档/blob 删除/signal_name 复用）+ 解析失败不删文件；命名冲突坑 test_crash_orchestration.py 避让 R12 test_crash_recovery.py；闭合崩溃恢复读取半段（R224-R227 四叶消费闭环）；后续 handler/install/terminal/IPC/前端 prompt。
+
+## R229 — fuse xai-crash-handler handler.rs install leaf (handler.py)
+
+锚点:R229-1 0cd937e
+
+### 本轮目标
+路径 B crash 模块第 5 轮：迁移 grok xai-crash-handler handler.rs 信号安装叶子（崩溃恢复"写入半段"，与 R228 recovery.py 读取端配对，闭合完整崩溃恢复读写循环）。grok handler.rs 在启动早期 install：创建 crash_dir + 打开 fd O_TRUNC + 存 APP_VERSION + save_termios + setup_alt_stack + register_crash_signals（sigaction SIGBUS/SIGSEGV with SA_SIGINFO|SA_ONSTACK|SA_RESETHAND），崩溃时 write_crash_blob 从 si_code/si_addr/pid/timestamp + frame pointer chain 构造 GCRX blob 经 libc::write 写入 last-crash.bin。Python 等价：faulthandler 启用（fatal 信号 SIGSEGV/SIGBUS/FPE/ABRT/ILL dump 预格式化 traceback）+ sys.excepthook（未捕获主线程 Python 异常）+ threading.excepthook（工作线程异常），异常时构造 CrashBlob + as_payload 写入 last-crash.json（消费 R226 format + 配对 R228 LAST_CRASH_FILE）。
+
+### 融合结论
+concept-for-concept 融合 + 诚实分层（核心架构决策）。CPython 在 SIGSEGV 时解释器已损坏，不能执行任意 Python 代码构造 CrashBlob（faulthandler 用 C 代码绕过解释器 dump traceback），因此 CrashBlob 持久化仅面向可恢复的 Python 异常（excepthook 系列），faulthandler 作为 fatal 信号 safety net（写 traceback 到 stderr）。这是诚实分层，非功能缺失。grok sigaction → Python faulthandler.enable（C 层）+ excepthook（Python 层）；grok static mut CRASH_FD/APP_VERSION → Python _STATE: _HandlerState | None；grok libc::write 二进制 blob → Python json.dumps + write_text（Python 捕获 allocation-safe，无 async-signal-safe 约束）；grok let _ = 吞 I/O → Python try/except OSError: pass（crash_file 路径仍返回）；信号占位 _PYTHON_EXCEPTION_SIGNAL=0（Python 异常无 POSIX 信号，signal_name(0) → "Unknown signal" 诚实降级，不污染 R225 signals.py 词汇表）。
+
+### 交付
+- agent/minimax_code/crash/handler.py（新建，~287 行）：install(config: CrashHandlerConfig) -> bool + _persist_crash(signal, si_code=0, si_addr=0, frames=()) -> Path | None + _python_excepthook + _threading_excepthook + _HandlerState dataclass + _STATE 全局 + _PYTHON_EXCEPTION_SIGNAL=0；详尽 docstring（grok 来源 handler.rs install + write_crash_blob + Migrated + Purification[faulthandler 替代 sigaction + json.dumps 替代 libc::write + 模块级 _STATE 替代 static mut + 诚实分层 fatal 信号 vs Python 异常] + YAGNI[extract_pc_and_fp + walk_frame_pointers + alt stack + termios + Windows SEH + terminal.rs + asyncio handler 延后] + Product-fusion[闭合写入半段，与 R228 配对]）。
+- agent/minimax_code/crash/__init__.py（barrel 扩展 17→18）：加 install；import 在 format 和 recovery 之间（字母序 archive<format<handler<recovery<signals<symbolicate<types）；docstring landed 段加 handler (R229) 条目 + YAGNI 段移除 handler.rs signal installation（已落地）。
+- agent/tests/test_crash_handler.py（新建，25 测试，4 类）：TestInstall（7）+ TestPersistCrash（9）+ TestExcepthooks（5）+ TestReadWriteLoop（4，闭合 install->_persist_crash->check_previous_crash->CrashReport 端到端）。
+
+### 映射决策树+坑
+1. `handler::install(crash_dir, grok_version) -> bool` → `install(config: CrashHandlerConfig) -> bool`（消费 R225 入参类型，mkdir parents+exist_ok，OSError 返回 False 镜像 create_dir_all 失败）。
+2. `static mut CRASH_FD: i32` + `static mut APP_VERSION` → `_STATE: _HandlerState | None`（单模块级 optional，grok CRASH_FD=-1 哨兵 → None）。
+3. `register_crash_signals(handler)` sigaction SIGBUS/SIGSEGV → `faulthandler.enable()`（C 层统一 fatal 信号，跨平台，CPython 解释器损坏时仍能 dump）+ `sys.excepthook = _python_excepthook` + `threading.excepthook = _threading_excepthook`（Python 层可恢复异常）。
+4. `write_crash_blob(sig, info, ctx)` libc::write 二进制 GCRX → `_persist_crash(signal, si_code, si_addr, frames)` + `json.dumps(blob.as_payload())` + `write_text`（消费 R226 format，配对 R228 LAST_CRASH_FILE）。
+5. `let _ = std::fs::write(...)` → `try: crash_file.write_text(...) except OSError: pass`（best-effort，crash_file 路径无条件返回）。
+6. `CRASH_FD < 0` 提前返回 → `if state is None: return None`（未 install 时 _persist_crash 返回 None）。
+7. 信号占位 `_PYTHON_EXCEPTION_SIGNAL = 0`：Python 异常无 POSIX 信号，signal_name(0) → "Unknown signal"（R225 诚实降级，不污染词汇表）。
+8. excepthook SystemExit/KeyboardInterrupt 透传：issubclass(exc_type, (SystemExit, KeyboardInterrupt)) return（控制流非崩溃）。
+9. **ruff I001 order-by-type 坑**：初版 test import `from minimax_code.crash.format import CrashBlob, MAGIC, VERSION` 违反 order-by-type（常量应在前）→ 改 `MAGIC, VERSION, CrashBlob`（常量->类），一次修复。
+10. **threading.ExceptHookArgs structseq 构造坑**：初版用 `threading.ExceptHookArgs(exc_type=..., exc_value=..., exc_traceback=..., thread=...)` 关键字构造 → `TypeError: structseq() takes at most 2 keyword arguments (4 given)`（CPython structseq 限制）→ 改 `SimpleNamespace(exc_type=...)`（鸭子类型，_threading_excepthook 只读 exc_type，完全满足，绕开构造细节）。
+11. **进程级副作用隔离坑**：install 修改全局 _STATE + sys.excepthook + threading.excepthook + faulthandler.enable（进程级）→ autouse fixture monkeypatch.setattr(crash_handler.faulthandler, "enable", lambda) + 保存/恢复 _STATE/sys.excepthook/threading.excepthook（yield 后恢复，防泄漏到兄弟测试）。
+12. **write_text 失败测试坑**：_persist_crash write_text 在 try/except OSError 内，需 mock 触发 → `patch.object(Path, "write_text", side_effect=OSError("disk full"))`（with 作用域限定，验证不抛异常 + 路径仍返回 + 文件不存在）。
+
+### 验证
+ruff check（handler.py + __init__.py + test_crash_handler.py）✅ All checks passed!（修复 I001 order-by-type + structseq 两坑后）+ 定向 pytest test_crash_handler.py + test_crash_orchestration.py **43 passed**（25 R229 + 18 R228，0.60s）+ 全量回归 **6263 passed + 10 skipped**（146.52s，一次通过）= 6238（R228 基准）+ 25（R229 新增），数学精确吻合，零真实回归。10 skipped 与 R228 基准一致。
+
+### YAGNI 边界
+extract_pc_and_fp（ucontext_t 寄存器读取）+ walk_frame_pointers（裸指针遍历栈，async-signal-unsafe）—— grok async-signal-safe 栈遍历，faulthandler 是捕获机制无需手动遍历 / setup_alt_stack（sigaltstack）+ save_termios（termios 保存）+ 整个 terminal.rs 模块 —— grok TUI terminal-restore escape 序列，MiniMax Code agent 是 Web SPA backend 无 TUI / Windows SetUnhandledExceptionFilter + EXCEPTION_* code 映射 —— faulthandler 跨平台统一 fatal-fault 捕获，平台拆分不移植 / install_terminal_restore_only + enable/disable_terminal_escape_restore —— TUI 生命周期 hook，out of scope / asyncio loop set_exception_handler —— 未来轮次安装专用 async-exception hook（agent 接线 install 进启动后），本轮聚焦同步捕获契约 / app 启动接线（__main__ install 调用）/ crash.* IPC 命名空间 / 前端 session-recovery prompt（后续轮次）。下轮路径 B crash 收官（app 启动接线 install 调用 + crash.* IPC handler + 前端 recovery prompt）或转向下一功能模块（sandbox/memory/codegraph）。
+
+### Commit
+`feat(platform): R229 fuse xai-crash-handler handler.rs install leaf (handler.py)`。路径 B 第 5 轮（crash 模块续信号安装叶子）；迁移 handler.rs install + write_crash_blob；concept-for-concept 融合 + 诚实分层（fatal 信号 faulthandler C 层 dump traceback无法构造 CrashBlob + Python 异常 excepthook 构造 CrashBlob，CPython SIGSEGV 时解释器损坏的核心约束）；信号占位 _PYTHON_EXCEPTION_SIGNAL=0（signal_name(0) 诚实降级）；_STATE 模块全局镜像 static mut；best-effort write_text 吞 OSError；barrel 17->18 符号；25 测试覆盖 install 成功/失败 + _persist_crash 写入/未 install/I/O 失败 + excepthook Exception/SystemExit/KeyboardInterrupt + 读写循环闭合端到端；ruff I001 order-by-type 坑 + threading.ExceptHookArgs structseq 坑（SimpleNamespace 规避）+ 进程级副作用隔离 fixture（monkeypatch faulthandler.enable + 保存恢复 _STATE/excepthook）三坑修复；闭合崩溃恢复写入半段（与 R228 recovery.py 读取端配对，完整读写循环 install->_persist_crash->check_previous_crash->CrashReport）；全量 6263 passed 零回归；后续 app 启动接线/terminal/crash.* IPC/前端 prompt。
