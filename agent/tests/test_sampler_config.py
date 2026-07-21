@@ -225,7 +225,7 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     Option<Vec<String>> -> tuple[str,...]|None; XSearch field-less;
     HostedTool unblocks the ConversationRequest hosted_tools consumer
     layer; no barrel collision -> no Conversation prefix)."""
-    assert len(sampler.__all__) == 205
+    assert len(sampler.__all__) == 207
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -571,6 +571,17 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "SENT_BEARER_PREFIX_LEN",
         "SamplingConsumer",
         "SharedAttributionCallback",
+        # metrics (R234): compute_percentiles pure algorithm (p50/p99/max/
+        # mean/sum from a caller-sorted slice) + InferenceLatencyStats
+        # dataclass (9 fields) + from_timestamps classmethod (Instant ->
+        # float, round to ms) + to_log_fields dict (record_on_span Python
+        # equivalent, decoupled from tracing::Span) -- the xai-grok-sampler
+        # src/metrics.rs whole-leaf migration (pure algorithm leaf, zero
+        # external crate dependency, only std::time::Instant + serde);
+        # clears the events.rs deferred-dependency blocker
+        # (metrics::InferenceLatencyStats)
+        "InferenceLatencyStats",
+        "compute_percentiles",
     }
 
 

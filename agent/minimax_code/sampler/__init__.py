@@ -373,6 +373,10 @@ from minimax_code.sampler.messages import (
     parse_stop_reason,
     stop_reason_to_wire,
 )
+from minimax_code.sampler.metrics import (
+    InferenceLatencyStats,
+    compute_percentiles,
+)
 from minimax_code.sampler.reasoning_effort_meta import (
     REASONING_EFFORT_META_KEY,
     REASONING_EFFORTS_META_KEY,
@@ -519,6 +523,7 @@ __all__ = [
     "ImagePart",
     "ImageSource",
     "ImageUrl",
+    "InferenceLatencyStats",
     "InputJsonDelta",
     "JsonSchemaOutputFormat",
     "LowLogprob",
@@ -628,6 +633,7 @@ __all__ = [
     "chat_truncate_for_prompt",
     "classify_error",
     "clone_error",
+    "compute_percentiles",
     "doom_loop_backoff",
     "empty_string_as_none",
     "format_sampling_error",
