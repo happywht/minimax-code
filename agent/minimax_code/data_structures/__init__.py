@@ -11,16 +11,29 @@ the vendored ``ordered_hashmap`` 0.0.3 crate (upstream ``r3alst/ordered-hashmap`
 Apache-2.0). It is the strict zero-dependency base (``[dependencies]`` empty
 in the vendored ``Cargo.toml``) of ``graphlib_rust`` (single path dep) and
 ``dagre_rust`` (two path deps) -- the next leaves on this migration chain.
+
+Second leaf (R242): ``graphlib`` -- the edge-encoding vocabulary layer of the
+vendored ``graphlib_rust`` 0.0.2 crate (upstream ``r3alst/graphlib-rust``,
+Apache-2.0). Carries the ``Edge`` / ``GraphOption`` value objects and the
+edge-id encoding helpers that ``Graph`` (next leaf, R243) builds on; the crate
+is pure logic (only path dep is the migrated ``ordered_hashmap``, no
+``unsafe``, no I/O).
 """
 
 from __future__ import annotations
 
+from minimax_code.data_structures.graphlib import (
+    Edge,
+    GraphOption,
+)
 from minimax_code.data_structures.ordered_hashmap import (
     Entry,
     OrderedHashMap,
 )
 
 __all__ = [
+    "Edge",
     "Entry",
+    "GraphOption",
     "OrderedHashMap",
 ]

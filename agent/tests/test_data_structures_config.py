@@ -1,7 +1,7 @@
-"""Barrel surface regression baseline for ``minimax_code.data_structures`` (R241).
+"""Barrel surface regression baseline for ``minimax_code.data_structures`` (R241+).
 
 Locks the public symbol set re-exported by ``minimax_code.data_structures``
-so a future leaf migration (R242+) must update both the count assertion and
+so a future leaf migration (R243+) must update both the count assertion and
 the set baseline, or append a new group -- preventing silent barrel drift (a
 symbol renamed in a leaf but not in the barrel would silently disappear from
 the public API).
@@ -10,6 +10,12 @@ Baseline (R241): 2 symbols = 2 classes (``Entry`` + ``OrderedHashMap`` from
 ``ordered_hashmap.py``). Both ``Entry`` and ``OrderedHashMap`` are
 barrel-public; the module has no module-private helpers (every grok method
 maps to a public method on one of the two classes).
+
+Baseline (R242): +2 symbols = ``Edge`` + ``GraphOption`` (frozen value objects
+from ``graphlib.py``); the 3 sentinel constants and the 3 edge-id encoding
+helpers are module-level in ``graphlib.py`` and intentionally NOT
+barrel-public (they mirror grok's module-private ``fn`` / non-re-exported
+``pub const``).
 """
 
 from __future__ import annotations
@@ -17,17 +23,20 @@ from __future__ import annotations
 import minimax_code.data_structures as data_structures
 
 
-def test_package_barrel_exposes_two_symbols() -> None:
-    """R241 -- 2 symbols (2 classes).
+def test_package_barrel_exposes_four_symbols() -> None:
+    """R242 -- 4 symbols (2 from R241 + 2 from R242).
 
     Future leaves must update count + set, or append a new migration-round
     group below.
     """
-    assert len(data_structures.__all__) == 2
+    assert len(data_structures.__all__) == 4
     assert set(data_structures.__all__) == {
         # R241 (ordered_hashmap.py): insertion-ordered hash map + entry.
         "Entry",
         "OrderedHashMap",
+        # R242 (graphlib.py): graphlib edge-encoding value objects.
+        "Edge",
+        "GraphOption",
     }
 
 
