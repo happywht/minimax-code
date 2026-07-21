@@ -225,7 +225,7 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     Option<Vec<String>> -> tuple[str,...]|None; XSearch field-less;
     HostedTool unblocks the ConversationRequest hosted_tools consumer
     layer; no barrel collision -> no Conversation prefix)."""
-    assert len(sampler.__all__) == 201
+    assert len(sampler.__all__) == 205
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -556,6 +556,21 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "SystemItem",
         "ToolResultItem",
         "UserItem",
+        # attribution (R233): SamplingConsumer 6-variant endpoint StrEnum
+        # (member value == endpoint identifier) + as_endpoint method +
+        # SENT_BEARER_PREFIX_LEN cross-crate invariant constant (mirrors
+        # xai_grok_shell token_suffix = 12) + Auth401AttributionCallback
+        # abc.ABC trait (record_401 abstractmethod, scrub-at-boundary
+        # invariant: bearer truncated to 12-char prefix before crossing the
+        # trait boundary) + SharedAttributionCallback TypeAlias -- the
+        # xai-grok-sampler src/attribution.rs whole-leaf migration (zero
+        # external crate dependency, only std::sync::Arc); clears the
+        # SamplerConfig deferred-dependency ledger entry
+        # (attribution::SharedAttributionCallback unmigrated)
+        "Auth401AttributionCallback",
+        "SENT_BEARER_PREFIX_LEN",
+        "SamplingConsumer",
+        "SharedAttributionCallback",
     }
 
 

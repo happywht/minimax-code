@@ -190,6 +190,12 @@ from minimax_code.sampler.api_backend import (
     DEFAULT_API_BACKEND,
     ApiBackend,
 )
+from minimax_code.sampler.attribution import (
+    SENT_BEARER_PREFIX_LEN,
+    Auth401AttributionCallback,
+    SamplingConsumer,
+    SharedAttributionCallback,
+)
 from minimax_code.sampler.chat_completion_leaves import (
     DEFAULT_REASONING_EFFORT,
     CompletionTokensDetails,
@@ -443,6 +449,7 @@ __all__ = [
     "AnyToolChoiceParam",
     "ApiBackend",
     "AssistantItem",
+    "Auth401AttributionCallback",
     "AuthScheme",
     "AutoToolChoiceParam",
     "BACKOFF_BASE_MS",
@@ -556,9 +563,11 @@ __all__ = [
     "Role",
     "SAMPLE_CHECK_EVENT_DATA",
     "SAMPLE_CHECK_EVENT_DATA_CUMULATIVE",
+    "SENT_BEARER_PREFIX_LEN",
     "SERIALIZATION_DISPLAY_PREFIX",
     "SUPPORTS_REASONING_EFFORT_META_KEY",
     "SamplingConfig",
+    "SamplingConsumer",
     "SamplingError",
     "SearchParameters",
     "SearchSource",
@@ -566,6 +575,7 @@ __all__ = [
     "SearchSourceRss",
     "SearchSourceWeb",
     "SearchSourceX",
+    "SharedAttributionCallback",
     "SignatureDelta",
     "StopDetails",
     "StopReason",

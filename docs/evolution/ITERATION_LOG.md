@@ -17727,3 +17727,38 @@ ESLint 0 错误（7 文件：store + 组件 + 2 测试 + ``App.tsx`` + 2 barrel�
 
 ### Commit
 ``feat(platform): R232 frontend crash recovery prompt + store (close crash module UI surface)``。路径 B 第 8 轮（候选 A 前端恢复提示）；新建 ``crashRecoveryStore``（Zustand）+ ``CrashRecoveryPrompt``（React 组件 + 内联历史模态框）+ 2 测试文件（18 测试），改 2 barrel + ``App.tsx``（6 处接线：import/selector/Promise.all/deps/JSX）；消费 R231 ``crash.*`` IPC（``crashPreviousReport`` / ``crashHistory`` / ``crashDismiss``）；前端 store action 全走失败放通（``toast.error`` + 默认值），镜像 R231 handler 的"无崩溃是稳态"合约；``vi.hoisted`` stub IPC+toast+store selector 规避 TDZ；preview ``<pre>`` 加 testid 断言 ``textContent`` 规避截断正则脆弱；内联历史模态框（YAGNI 不拆独立文件）；闭合崩溃模块"写半边(R225-R230)+启动接线(R230)+IPC(R231)+终端 UI(本轮)"完整产品闭环——崩溃信号从捕获到用户感知恢复提示全链路打通；ESLint 0 + 定向 vitest 18/18 + 全量 477 passed（2 flaky ``message-list`` 预存非本轮回归）+ Python 6283 基准不变，零真实回归；后续候选 B（history 面板深化）或转向 sandbox/memory/codegraph 新模块。
+
+## R233 — sampler 深化第 1 轮：迁移 attribution.rs 纯逻辑叶子（解除 SamplerConfig deferred 依赖记账项）
+
+锚点:R233-1 92cfb43
+
+### 本轮目标
+深化策略第 1 轮。候选 D 新 crate 迁移路线（剩余全是 Actor/runtime/TUI/OS/加密/外部协议重型架构 crate）被系统性证伪后，转向深化已迁移 ``xai-grok-sampler``（R195-R224 已迁移 config/retry/types/messages/chat_completion/conversation 等叶子）的剩余纯逻辑叶子。本轮选定 ``attribution.rs``：零 crate 外部依赖（仅 ``std::sync::Arc``）的完美纯逻辑叶子 + 解除 ``config.py:27-28`` 记载的 ``SamplerConfig`` deferred 依赖记账项（``attribution::SharedAttributionCallback (unmigrated)``）。迁移整叶 + 扩展 barrel + 写测试 + 同步 barrel-count 回归断言。
+
+### 融合结论
+grok 的 ``xai-grok-sampler`` 是 actor-based 采样/推理层（HTTP 流式 + 重试），``attribution.rs`` 是其中"401 归因回调"叶子——当 sampler 在任一采样端点收到 401 时，回调 ``record_401(consumer, sent_bearer_prefix)`` 让外部观测层归因。核心架构价值在 ``scrub-at-the-boundary`` 不变量：sampler 在 bearer 跨 trait 边界前截断为 12 字符前缀（``SENT_BEARER_PREFIX_LEN`` 镜像 ``xai_grok_shell::auth::token_suffix``），即使回调实现直接 log 也只泄漏前缀。MiniMax Code 平台已迁移 sampler 的 config/retry/types 等叶子（R195-R224），但 ``SamplerConfig`` 的 deferred 依赖记账项一直标注 ``attribution::SharedAttributionCallback (unmigrated)``——本轮迁移解除该债务。Python 范式：``StrEnum``（6 端点变体，value=endpoint 字符串）+ ``abc.ABC``（trait->抽象类，``@abstractmethod record_401``）+ ``TypeAlias``（``Arc<dyn Trait>``->裸别名，Python 对象天然共享引用无 Arc 等价）。
+
+### 交付
+新建 1 文件 + 改 2 文件：
+- ``agent/minimax_code/sampler/attribution.py``（新建）— 4 公共符号完整迁移：``SamplingConsumer``（``StrEnum``，6 变体 ``CHAT_COMPLETIONS_STREAM``/``CHAT_COMPLETIONS``/``RESPONSES_STREAM``/``RESPONSES``/``MESSAGES_STREAM``/``MESSAGES``，value=endpoint 字符串）+ ``as_endpoint()`` 方法（保留为显式方法即便当前 value=endpoint，未来概念可分叉 shield 调用点）+ ``SENT_BEARER_PREFIX_LEN: int = 12``（跨 crate 不变量常量，docstring 详述镜像 ``token_suffix``）+ ``Auth401AttributionCallback``（``abc.ABC`` + ``@abstractmethod record_401``，docstring 记录 scrub-at-boundary 不变量 + 丢弃 Debug bound 的解释）+ ``SharedAttributionCallback: TypeAlias``（= trait 本身）。英文模块 docstring 详述 6 符号 Rust->Python 映射 + 解除 config.py deferred 依赖记账说明 + scope 限定（仅 sampler endpoints，不含 image/video/web-search/embedding）。
+- ``agent/minimax_code/sampler/__init__.py``（改）— barrel 扩展：import 块（api_backend 后插入 attribution import，order-by-type 常量 ``SENT_BEARER_PREFIX_LEN`` 在类前）+ ``__all__`` 4 处插入（``Auth401AttributionCallback`` 在 AssistantItem/AuthScheme 间、``SENT_BEARER_PREFIX_LEN`` 在 SAMPLE_CHECK_..._CUMULATIVE/SERIALIZATION_... 间、``SamplingConsumer`` 在 SamplingConfig/SamplingError 间、``SharedAttributionCallback`` 在 SearchSourceX/SignatureDelta 间），201->205。
+- ``agent/tests/test_sampler_attribution.py``（新建）— 18 测试：barrel surface（module 4 符号 + package re-export 身份）+ SamplingConsumer（6 变体完备性 + value=endpoint + str=wire + ``as_endpoint`` 6 parametrize round-trip）+ ``SENT_BEARER_PREFIX_LEN``（=12 + int 类型 + 正数）+ Auth401AttributionCallback（abc.ABC + record_401 abstractmethod + 缺实现子类不可实例化 + 具体子类接收 consumer+prefix）+ SharedAttributionCallback（is trait + 具体子类 isinstance 成立）。
+- ``agent/tests/test_sampler_config.py``（改）— barrel 回归修复：count ``201->205`` + set 末尾追加 R233 分组（4 符号 + 多行注释解释迁移内容）。
+
+### 映射决策树+坑
+- ``as_endpoint()`` 保留为显式方法（设计决策）—— 当前 value=endpoint 字符串，但仍保留方法（未来 endpoint 标识符可能与 serde 值分叉，shield 所有调用点），不直接用 ``str(consumer)`` 调用。
+- ``SENT_BEARER_PREFIX_LEN`` import 顺序（order-by-type=true 陷阱）—— ruff isort 在 ``from X import (a, b)`` 内按类型分组（常量->类->函数），常量 ``SENT_BEARER_PREFIX_LEN`` 必须在类 ``Auth401AttributionCallback`` 之前，非纯字母序（参考 ``api_backend`` 块 ``DEFAULT_API_BACKEND`` 在 ``ApiBackend`` 前）。
+- ``__all__`` 纯字母序 vs import 块 order-by-type —— ``__all__`` 字符串列表 ruff 不重排，按纯 ASCII 字母序（大写在前）：``Auth401AttributionCallback`` < ``SENT_BEARER_PREFIX_LEN`` < ``SamplingConsumer`` < ``SharedAttributionCallback``（参考 ``config.py`` ``__all__`` ``AuthScheme`` < ``DEFAULT_AUTH_SCHEME`` 纯字母序）。
+- **关键坑：test_sampler_config.py set 不是全局字母序！** 初次假设 set 镜像 ``__init__.py`` ``__all__`` 全局字母序，按相邻符号（``ApiBackend``/``AssistantItem``/``AuthScheme`` 三连）构造 4 个 Edit old_string 全部 "String not found" 失败。读源发现：set 是**按迁移轮次分组（``# comment`` 分隔）+ 组内字母序**，``ApiBackend``(R214 块)/``AssistantItem``(R224 块)/``AuthScheme``(R195 块) 分散在不同分组根本不相邻。修正：attribution 是 R233 新轮次，应在 set 末尾（R224 ``UserItem`` 后、``}`` 前）新建 R233 分组追加 4 符号，而非插入既有分组。
+- ``SharedAttributionCallback`` 用 ``TypeAlias`` 而非 runtime wrapper —— Python 对象赋值不拷贝（天然共享引用），无 ``Arc`` 等价，别名只记录语义意图（"廉价可克隆共享回调"）。
+- Debug bound 丢弃的解释 —— Rust ``Debug`` bound 是结构性要求（``SamplerConfig`` derive ``Debug`` + 携带 ``Option<Arc<dyn ...>>`` 字段需 trait 为 ``Debug``），Python 对象默认 ``repr``-able，无需类比（docstring 记录保真）。
+- ``Send + Sync`` bound 丢弃 —— Python 无线程亲和性，纯对象 bound 无意义。
+
+### 验证
+ruff 4 文件全绿（``attribution.py`` + ``__init__.py`` + 2 测试）``All checks passed!``。定向 pytest 31/31 全绿（``test_sampler_attribution`` 18 + ``test_sampler_config`` 13，含关键的 ``test_package_barrel_exposes_config_retry_types_symbols`` barrel 205 对账，0.21s）。全量 pytest **6301 passed + 10 skipped + 0 failed**（146.10s）—— R232 基线 6283 + 18 新测试 = 6301，零真实回归。
+
+### YAGNI 边界
+``record_401`` 的实际调用点接线（sampler 在 401 响应路径调 ``Auth401AttributionCallback.record_401``）—— 当前只迁移类型契约层，无 401 响应处理路径消费（sampler 的 HTTP 客户端 actor 未迁移，依赖 ``SamplingClient`` 重型架构），YAGNI 直到 sampler HTTP 客户端层落地 / ``SamplerConfig`` 携带 ``Option<SharedAttributionCallback>`` 字段接线 —— config.py deferred 记账项已解除但字段未实际添加（``HeaderMap``/``retry`` 子类型等剩余 deferred 依赖未清零，``SamplerConfig`` 完整迁移是独立大轮） / bearer 前缀实际截断逻辑 —— ``SENT_BEARER_PREFIX_LEN`` 常量已迁移但消费它的截断代码随 ``SamplingClient`` 未迁移，YAGNI 直到客户端层 / 剩余 ``xai-grok-sampler`` 叶子（``events.rs`` 依赖未迁移 ``metrics::InferenceLatencyStats``、``commands.rs`` 是 Actor 协议依赖 ``tokio::sync::oneshot``）—— 重型架构依赖，非纯逻辑叶子，暂不迁移。下轮：继续深化 sampler 剩余纯逻辑叶子（若 events.rs/commands.rs 之外的零依赖叶子）或转向下一功能模块（sandbox/memory/codegraph）开启新模块迁移。
+
+### Commit
+``feat(platform): R233 migrate sampler attribution.rs leaf (clear SamplerConfig deferred ledger)``。深化策略第 1 轮（候选 D 新 crate 证伪后转向深化已迁移 xai-grok-sampler）；迁移 ``attribution.rs`` 纯逻辑叶子（零 crate 外部依赖，仅 ``std::sync::Arc``）-> ``sampler/attribution.py`` 4 公共符号（``SamplingConsumer`` StrEnum 6 端点变体 + ``as_endpoint`` 方法 + ``SENT_BEARER_PREFIX_LEN=12`` 跨 crate 不变量常量 + ``Auth401AttributionCallback`` abc.ABC trait record_401 abstractmethod + ``SharedAttributionCallback`` TypeAlias）；解除 ``config.py:27-28`` ``SamplerConfig`` deferred 依赖记账项（``attribution::SharedAttributionCallback unmigrated``）；barrel 201->205（import 块 + 4 ``__all__`` 插入点，order-by-type 常量在类前）；18 新测试 + ``test_sampler_config.py`` barrel 回归修复（count 201->205 + set 末尾 R233 分组）；关键坑：test_sampler_config.py set 按轮次分组非全局字母序（初次 4 Edit 假设相邻符号失败 -> 读源修正末尾追加 R233 分组）；ruff 4 文件全绿 + 定向 pytest 31/31 + 全量 6301 passed + 10 skipped + 0 failed（R232 基线 6283 + 18），零真实回归；后续继续深化 sampler 剩余叶子或转向 sandbox/memory/codegraph 新模块。
