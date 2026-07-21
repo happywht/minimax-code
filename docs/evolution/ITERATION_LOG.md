@@ -16441,3 +16441,53 @@ barrel 扩展：`sampler/__init__.py` 62→75（docstring 加 R202 叶子条目 
 - `agent/tests/test_content_blocks.py`（新，32 用例）
 - `agent/tests/test_sampler_config.py`（barrel 守卫 62→75 + 符号集合）
 - `docs/evolution/ITERATION_LOG.md`（本条目）
+
+## R203 — sampler messages.rs request-side enums + leaf structs (xai-grok-sampling-types 第 5 叶)
+
+锚点:R203-1 16e121c
+
+### 本轮目标
+
+继续 xai-grok-sampling-types crate 的纯逻辑叶子迁移。R202 闭合了 messages.rs 的 ContentBlock 5-variant 联合（响应/请求共用的 body 构件）。R203 切入 messages.rs 的 Request 段——迁移 MessagesRequest 容器的直接依赖中"无 ContentBlock 递归"的纯枚举 + 叶子 struct 第一块，为后续 MessagesRequest 容器本体（mega-leaf，多轮）铺路。本轮目标：8 类型族 / 15 符号闭环，纯逻辑（serde_json::Value -> dict，零 I/O），严格 tagged-union 解析（未知 type raise ValueError，无 catch-all）。
+
+### 融合结论
+
+策略 A 选定（最直接延续 R202）：迁移 messages.rs Request 段纯枚举/叶子第一块。依赖闭包分析：8 类型族自洽闭环——MessageRole(纯 lowercase 枚举) + ThinkingDisplay(纯 snake_case 枚举) + ThinkingConfig(tagged 3 变体，依赖 ThinkingDisplay) + OutputFormat(tagged 1 变体) + OutputConfig(struct，依赖 OutputFormat) + ToolChoiceParam(tagged 3 变体) + ToolParam(叶子 struct) + Metadata(叶子 struct)。无 ContentBlock 递归依赖（ContentBlock 已 R202 迁）。与 messages.py(R201 StopReason 联合) + content_blocks.py(R202 含 TextBlock 变体) 零命名冲突，故新建独立子模块 request_params.py（单一职责，避免 messages.py 膨胀，与 R202 新模块模式一致）。
+
+### 交付
+
+- 新模块 `agent/minimax_code/sampler/request_params.py`（299 行）：8 类型族 15 符号——2 StrEnum (MessageRole lowercase / ThinkingDisplay snake_case) + 3 tagged 联合基类 (ThinkingConfig 3 变体 / OutputFormat 1 变体 / ToolChoiceParam 3 变体) + 6 联合变体 + 3 flat struct (OutputConfig / ToolParam / Metadata)。每类型 from_payload classmethod 严格分发。
+- 新测试 `agent/tests/test_request_params.py`（333 行）：约 37 用例（module barrel 15 符号 + 枚举值 + 联合分发 + 未知 type raises + frozen 参数化 8 变体 + share-base 3 联合 + str-enum hashable）。
+- barrel 扩展 `agent/minimax_code/sampler/__init__.py`：75 -> 90 符号（+15 R203，ASCII 严格排序；docstring landed 段加 request_params + Leaf order 第 7 条）。
+- barrel 守卫 `agent/tests/test_sampler_config.py`：断言 75 -> 90 + set 加 15 R203 符号（按 request_params 注释分组）+ docstring 更新。
+
+### 映射决策树 + 坑
+
+1. serde rename_all 区分：lowercase -> StrEnum (MessageRole: USER="user")；snake_case -> StrEnum (ThinkingDisplay: OMITTED="omitted")。两者都是 StrEnum 但 wire 命名规则不同，docstring 标注区分。
+2. tagged 联合（tag="type", rename_all="snake_case"）：frozen+slots 联合基类 + from_payload classmethod 读 "type" key 分发。**请求侧严格——无 catch-all，未知 type raise ValueError**（对照 R201 StopReason catch-all，因 StopReason 绝不能让终端流失败）。
+3. 单元变体（Disabled / Auto / Any）-> 无字段 frozen+slots 子类（对照 R201 EndTurn/MaxTokens 形态）。
+4. serde_json::Value -> Any（OutputFormat.schema / ToolParam.input_schema）。
+5. 命名：serde `Tool { name }` 变体 -> NamedToolChoiceParam（语义化，避免 ToolToolChoiceParam 拗口，wire type="tool"）。
+6. ToolParam 字段顺序重排：description 因 optional 置末（wire 按名匹配，非位置）。
+7. 坑：ThinkingConfig.adaptive 的 display 是 Option<ThinkingDisplay>（严格 snake_case 枚举），未知值 raise（不静默 None）；但 OutputConfig.format 非 dict 时静默 None（容忍）——两种容忍策略按语义分别选择。
+8. 坑：EnabledThinkingConfig.budget_tokens 缺失时默认 0（容忍，平台不在畸形 thinking config 上失败请求构建）。
+9. barrel __all__ 排序：77 大写 + 13 小写 = 90，ASCII 严格逐字符排序（大写 A-Z 先，小写 a-z 后；同类内字母序）。
+
+### 验证
+
+- ruff check（4 文件: request_params.py / __init__.py / test_request_params.py / test_sampler_config.py）：All checks passed!
+- 定向 pytest（test_request_params.py + test_sampler_config.py）：51 passed（~37 + 14 守卫）。
+- 全量回归 pytest：**5276 passed + 10 skipped + 1 failed**，121.84s。5276 = 5239（R202 基准）+ 37（R203 新增），精确匹配。**零真实回归**。
+- 1 failed 复跑铁证：tests/test_connection.py::test_interval_keeps_global_timeline_across_loops，复跑 3 次 = 1 passed + 2 failed -> 确认 Windows asyncio.sleep 时序抖动 flaky（gap 31ms vs 阈值 32ms，差 1ms）。**与 R203 零关联**（R203 改 sampler 纯枚举/叶子，失败在 connection 层时序测试）。按迭代独立性原则不修复预存 flaky。
+
+### YAGNI 边界
+
+- 延后：messages.rs Request 段剩余容器（MessagesRequest + Message + MessageContent + SystemParam + 独立 TextBlock struct）——这些携带 list-of-ContentBlock 递归，是 mega-leaf 多轮迁移，消费 R202 ContentBlock 联合。
+- 延后：messages.rs Response/stream 段（MessagesResponse + MessageStreamEvent wrapper + StreamDelta）——消费 R202 ContentBlock + R201 StopReason/Usage，单独层后轮。
+- YAGNI：full serde Serialize/Deserialize round-trip——from_payload 覆盖平台所需的解析方向。
+
+### Commit
+
+feat(platform): R203 migrate messages.rs request-side enums + leaf structs to sampler.request_params
+
+精确 git add 仅 R203 5 文件（request_params.py / __init__.py / test_request_params.py / test_sampler_config.py / ITERATION_LOG.md），不含 10 个排除文件 + 90+ 无关 M 文件。

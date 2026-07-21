@@ -7,10 +7,11 @@ pure-type subset) + ``content_blocks`` (R202, ``xai-grok-sampling-types``
 ``messages.rs`` ContentBlock 5-variant union + 3 deps) + ``doom_loop`` (R200,
 ``xai-grok-sampling-types`` ``doom_loop.rs`` wire contract + tolerant
 parsers) + ``messages`` (R201, ``xai-grok-sampling-types`` ``messages.rs``
-stop-reason + usage + delta-body cluster) + ``retry`` (R198 backoff subset +
-R199 decision layer) + ``types`` (R199, ``xai-grok-sampling-types``
-``error.rs``). See each leaf module's docstring for its migration map + YAGNI
-ledger.
+stop-reason + usage + delta-body cluster) + ``request_params`` (R203,
+``xai-grok-sampling-types`` ``messages.rs`` request-side enums + leaf structs)
++ ``retry`` (R198 backoff subset + R199 decision layer) + ``types`` (R199,
+``xai-grok-sampling-types`` ``error.rs``). See each leaf module's docstring for
+its migration map + YAGNI ledger.
 
 Leaf order (crate ``lib.rs`` re-exports, in migration order):
 
@@ -57,6 +58,16 @@ Leaf order (crate ``lib.rs`` re-exports, in migration order):
    parse (unknown ``type`` raises, no catch-all -- unlike the R201 StopReason
    catch-all). The 5 ``ContentBlock`` variants carry a ``Block`` suffix to
    avoid colliding with the R201 ``StopReason::ToolUse`` variant.
+7. ``request_params`` (R203) -- the request-side enums + simple leaf structs
+   from ``xai-grok-sampling-types`` ``messages.rs``: the :class:`MessageRole`
+   lowercase enum + :class:`ThinkingDisplay` snake_case enum + the
+   :class:`ThinkingConfig` / :class:`OutputFormat` / :class:`ToolChoiceParam`
+   tagged unions + the :class:`OutputConfig` / :class:`ToolParam` /
+   :class:`Metadata` flat structs. No-I/O (``serde_json::Value`` -> ``dict``);
+   strict tagged-union parse (unknown ``type`` raises). The list-carrying
+   request containers (``MessagesRequest`` + ``Message`` + ``MessageContent``
+   + ``SystemParam`` + the standalone ``TextBlock`` struct) land later --
+   they consume the R202 :class:`ContentBlock` union.
 """
 
 from minimax_code.sampler.config import (
@@ -116,6 +127,23 @@ from minimax_code.sampler.messages import (
     parse_stop_reason,
     stop_reason_to_wire,
 )
+from minimax_code.sampler.request_params import (
+    AdaptiveThinkingConfig,
+    AnyToolChoiceParam,
+    AutoToolChoiceParam,
+    DisabledThinkingConfig,
+    EnabledThinkingConfig,
+    JsonSchemaOutputFormat,
+    MessageRole,
+    Metadata,
+    NamedToolChoiceParam,
+    OutputConfig,
+    OutputFormat,
+    ThinkingConfig,
+    ThinkingDisplay,
+    ToolChoiceParam,
+    ToolParam,
+)
 from minimax_code.sampler.retry import (
     BACKOFF_BASE_MS,
     BACKOFF_CAP_MS,
@@ -148,7 +176,10 @@ from minimax_code.sampler.types import (
 )
 
 __all__ = [
+    "AdaptiveThinkingConfig",
+    "AnyToolChoiceParam",
     "AuthScheme",
+    "AutoToolChoiceParam",
     "BACKOFF_BASE_MS",
     "BACKOFF_CAP_MS",
     "Base64ImageSource",
@@ -161,6 +192,7 @@ __all__ = [
     "DOOM_LOOP_BOUND_MS",
     "DOOM_LOOP_CHECK_EVENT_TYPE",
     "DOOM_LOOP_CHECK_HEADER",
+    "DisabledThinkingConfig",
     "DoomLoopPeek",
     "DoomLoopRecoveryPolicy",
     "DoomLoopSignal",
@@ -168,18 +200,25 @@ __all__ = [
     "EmitToSession",
     "EmptyReason",
     "EmptyResponseContext",
+    "EnabledThinkingConfig",
     "EndTurn",
     "Fatal",
     "ImageBlock",
     "ImageSource",
+    "JsonSchemaOutputFormat",
     "LowLogprob",
     "MaxTokens",
     "MessageDeltaBody",
     "MessageDeltaUsage",
+    "MessageRole",
     "MessagesUsage",
+    "Metadata",
     "ModelContextWindowExceeded",
+    "NamedToolChoiceParam",
     "NoDoomLoop",
     "OriginClientInfo",
+    "OutputConfig",
+    "OutputFormat",
     "PauseTurn",
     "RATE_LIMIT_RETRY_THRESHOLD",
     "Refusal",
@@ -203,6 +242,10 @@ __all__ = [
     "TextBlock",
     "TextToolResultContent",
     "ThinkingBlock",
+    "ThinkingConfig",
+    "ThinkingDisplay",
+    "ToolChoiceParam",
+    "ToolParam",
     "ToolResultBlock",
     "ToolResultContent",
     "ToolUse",

@@ -12,7 +12,7 @@ barrel (tested below) re-exports the ``config`` (R195) + ``retry`` (R198
 backoff + R199 decision layer) + ``types`` (R199 SamplingError) + ``doom_loop``
 (R200 wire contract + tolerant parsers) + ``messages`` (R201 stop-reason + usage
 + delta-body cluster) + ``content_blocks`` (R202 ContentBlock union + 3 deps)
-leaves.
++ ``request_params`` (R203 request-side enums + leaf structs) leaves.
 """
 
 from __future__ import annotations
@@ -40,16 +40,21 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     + StopDetails + MessageDeltaBody + StreamError + parse_stop_reason +
     stop_reason_to_wire) + R202 content_blocks (13: ContentBlock union base + 5
     variants + CacheControl + ImageSource union base + 2 variants +
-    ToolResultContent union base + 2 variants) = 75 re-exported symbols. The
-    config trio stays; R198 adds the backoff/max-retries leaf; R199 adds the
-    decision layer (consuming the migrated SamplingError) and the SamplingError
-    type leaf itself; R200 adds the doom-loop wire contract + tolerant parsers
-    (whose parsed ``raw`` labels feed the R199 DoomLoopDetected variant); R201
-    adds the Messages API stop-reason + usage + delta-body cluster; R202 adds the
-    ContentBlock 5-variant tagged union + its 3 direct dependencies (CacheControl
-    leaf + ImageSource 2-variant union + ToolResultContent untagged recursive
-    union)."""
-    assert len(sampler.__all__) == 75
+    ToolResultContent union base + 2 variants) + R203 request_params (15:
+    MessageRole lowercase enum + ThinkingDisplay snake_case enum + 3 tagged
+    unions (ThinkingConfig 3-variant / OutputFormat 1-variant / ToolChoiceParam
+    3-variant) + 3 flat structs (OutputConfig / ToolParam / Metadata)) = 90
+    re-exported symbols. The config trio stays; R198 adds the backoff/max-retries
+    leaf; R199 adds the decision layer (consuming the migrated SamplingError) and
+    the SamplingError type leaf itself; R200 adds the doom-loop wire contract +
+    tolerant parsers (whose parsed ``raw`` labels feed the R199 DoomLoopDetected
+    variant); R201 adds the Messages API stop-reason + usage + delta-body cluster;
+    R202 adds the ContentBlock 5-variant tagged union + its 3 direct dependencies
+    (CacheControl leaf + ImageSource 2-variant union + ToolResultContent untagged
+    recursive union); R203 adds the request-side enums + leaf structs (the
+    MessagesRequest container's direct deps that carry no ContentBlock recursion
+    -- strict tagged-union parse, no catch-all)."""
+    assert len(sampler.__all__) == 90
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -136,6 +141,25 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "ToolResultContent",
         "ToolUseBlock",
         "UrlImageSource",
+        # request_params (R203): MessageRole lowercase enum + ThinkingDisplay
+        # snake_case enum + 3 tagged unions (ThinkingConfig 3-variant +
+        # OutputFormat 1-variant + ToolChoiceParam 3-variant) + 3 flat structs
+        # (OutputConfig + ToolParam + Metadata)
+        "AdaptiveThinkingConfig",
+        "AnyToolChoiceParam",
+        "AutoToolChoiceParam",
+        "DisabledThinkingConfig",
+        "EnabledThinkingConfig",
+        "JsonSchemaOutputFormat",
+        "MessageRole",
+        "Metadata",
+        "NamedToolChoiceParam",
+        "OutputConfig",
+        "OutputFormat",
+        "ThinkingConfig",
+        "ThinkingDisplay",
+        "ToolChoiceParam",
+        "ToolParam",
     }
 
 
