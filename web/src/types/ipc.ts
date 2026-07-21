@@ -868,6 +868,38 @@ export interface GitLogResult {
   entries: GitLogEntry[];
 }
 
+/* ─────────────────────── Crash recovery (R225-R230 consumption surface) ─────────────────────── */
+
+/** Return shape of `crash.previous_report`. */
+export interface CrashPreviousReportResult {
+  /** `false` when there is no previous-crash report (no crash, or dismissed). */
+  available: boolean;
+  /** The human-readable rendered report; `null` when `available` is `false`. */
+  report_text: string | null;
+}
+
+/** A single archived report returned by `crash.history`. */
+export interface CrashHistoryEntry {
+  /** Filename under `crashes/history/`, e.g. `crash-1719000000.txt`. */
+  filename: string;
+  /** Epoch-seconds parsed from the filename. */
+  timestamp: number;
+  /** The human-readable rendered report. */
+  report_text: string;
+}
+
+/** Return shape of `crash.history`. */
+export interface CrashHistoryResult {
+  /** Newest-first (lexical filename order == chronological order). */
+  entries: CrashHistoryEntry[];
+}
+
+/** Return shape of `crash.dismiss`. */
+export interface CrashDismissResult {
+  /** `true` when the previous-crash report was removed; `false` if absent or locked. */
+  dismissed: boolean;
+}
+
 /* ─────────────────────── Sub-agent progress (§2 of v0.3.0 design) ─────────────────────── */
 
 /** Lifecycle status of a single sub-agent run. */

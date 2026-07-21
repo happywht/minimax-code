@@ -30,6 +30,10 @@ import {
   type AgentInfo,
   type AgentTeam,
   type AuditStats,
+  type CrashDismissResult,
+  type CrashHistoryEntry,
+  type CrashHistoryResult,
+  type CrashPreviousReportResult,
   type CreateProviderResult,
   type CreateSessionResult,
   type DeleteProviderResult,
@@ -1261,6 +1265,11 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     gitStatus: () => client.request<GitStatusResult>("git.status", {}),
     gitDiff: (opts) => client.request<GitDiffResult>("git.diff", opts ?? {}),
     gitLog: (opts) => client.request<GitLogResult>("git.log", opts ?? {}),
+    // ── Crash recovery (R231) — read persisted crash-report files written at boot ──
+    crashPreviousReport: () =>
+      client.request<CrashPreviousReportResult>("crash.previous_report", {}),
+    crashHistory: () => client.request<CrashHistoryResult>("crash.history", {}),
+    crashDismiss: () => client.request<CrashDismissResult>("crash.dismiss", {}),
     patchPreview: (opts) => client.request<PatchPreviewResult>("patch.preview", opts ?? {}),
     patchApplyHunk: (opts) => client.request<PatchHunkOperationResult>("patch.apply_hunk", opts),
     patchRevertHunk: (opts) => client.request<PatchHunkOperationResult>("patch.revert_hunk", opts),
@@ -2233,6 +2242,15 @@ function mockHandle(
 
     case "git.log": {
       return { entries: [] } satisfies GitLogResult;
+    }
+    case "crash.previous_report": {
+      return { available: false, report_text: null } satisfies CrashPreviousReportResult;
+    }
+    case "crash.history": {
+      return { entries: [] } satisfies CrashHistoryResult;
+    }
+    case "crash.dismiss": {
+      return { dismissed: false } satisfies CrashDismissResult;
     }
 
     // ── provider.* mock ──────────────────────────────────────────────

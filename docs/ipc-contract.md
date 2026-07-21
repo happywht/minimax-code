@@ -684,6 +684,34 @@ Caveat: the data dir must NOT live on a network filesystem —
 SQLite-over-NFS plus the marker's temp+rename can corrupt both. Local
 disk only.
 
+### `crash.*` — previous-crash report consumption surface (R231)
+
+Read-only access to the persisted crash-report files written by the
+R225-R230 recovery layer (the write half: `crash.install` arms the
+CrashBlob capture at boot; `check_previous_crash` renders the previous
+session's crash into `crashes/last-crash-report.txt` and archives it
+under `crashes/history/crash-<timestamp>.txt`). This namespace is the
+terminal product surface that closes the loop — the frontend recovery
+prompt reads these files to tell the user "your last session crashed"
+without re-running the one-shot `check_previous_crash` (which consumes
+and deletes `last-crash.json`).
+
+All three methods are **stateless and fail-open**: a missing crash dir,
+an unreadable report, or a half-written file collapses to the honest
+"nothing available" shape rather than a JSON-RPC error, so a flaky
+filesystem never breaks the recovery UI. (This differs from `git.*`,
+which surfaces a namespace error on failure — git being unavailable is
+actionable; a missing crash report is the normal steady state.) The
+only `HandlerError` raised is `INVALID_PARAMS` if a caller passes an
+unexpected param shape. `crash_dir` resolves to `<data_dir>/crashes`
+(honouring `MINIMAX_CODE_DATA_DIR`), mirroring the R230 startup wiring.
+
+| Method | Params | Returns | Notes |
+|--------|--------|---------|-------|
+| `crash.previous_report` | `{}` | `{available, report_text}` | `available:false` when `last-crash-report.txt` is absent (no previous crash, or already dismissed). `report_text` is the human-readable rendered report. |
+| `crash.history` | `{}` | `{entries: [{filename, timestamp, report_text}]}` | Lists `history/crash-<epoch>.txt`, newest first. `timestamp` is the epoch-seconds parsed from the filename. Non-`crash-<digits>.txt` files are skipped; the list is capped at 50 entries. |
+| `crash.dismiss` | `{}` | `{dismissed}` | Removes `last-crash-report.txt` so the recovery prompt hides. The `history/` archive is untouched. `dismissed:false` when there was nothing to remove or the file could not be deleted. |
+
 ## 7. Event names
 
 All push events use the prefix `agent.`, `task.`, or `permission.`

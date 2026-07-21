@@ -17652,3 +17652,40 @@ extract_pc_and_fp（ucontext_t 寄存器读取）+ walk_frame_pointers（裸指�
 
 ### Commit
 `feat(platform): R230 crash app-startup wiring (install + faulthandler coexistence with R12)`。路径 B crash 模块第 6 轮（收官-启动接线）；在 ``__main__.cli_entry`` 早期调 ``crash.install(CrashHandlerConfig(...))`` + ``check_previous_crash`` 暴露 ``CrashReport`` + ``logger.warning``；核心架构发现 faulthandler 进程单例冲突（R12 ``install_faulthandler`` 文件接收器 vs crash 包 ``faulthandler.enable`` stderr 默认），共存设计 = ``crash.install`` 后紧跟重跑 ``install_faulthandler`` 让 R12 接收器获胜；excepthook/标记各自独占不冲突；接线逻辑提取 ``_wire_xai_crash_handler`` 可测试函数（避免 subprocess 测 ``cli_entry``）；TYPE_CHECKING 块解 ruff F821+UP037 双重约束；``crash_dir = default_data_dir()/"crashes"`` 子目录隔离；fail-open（``logger.debug``，与 R12 一致）；6 测试 + autouse 三重隔离 fixture 覆盖 install/re-arm/recover/log/fail-open 组合契约；迭代独立性：预存 flaky ``test_interval_keeps_global_timeline_across_loops``（R162 ``connection.py`` 区域，与 R230 零交集）按原则不修复，重跑立即通过证实非引入；闭合崩溃恢复回路在真实启动序列的接入（R225-R229 叶子链从悬空变为激活）；全量 6268 passed + 10 skipped + 1 pre-existing flaky 零真实回归；后续 crash.* IPC/前端 prompt/async exception hook 或转向 sandbox/memory/codegraph。
+
+## R231 — crash 收官-IPC：crash.* 命名空间横切闭合崩溃模块终端消费层
+
+锚点:R231-1 949d475
+
+### 本轮目标
+路径 B crash 模块第 7 轮（候选 A — crash 收官-IPC）。R225-R230 已闭合崩溃恢复的**写半边 + 启动接线**：CrashBlob 捕获（R229 handler）→ 启动时 ``check_previous_crash`` 渲染 ``last-crash-report.txt`` + 归档 ``history/crash-<ts>.txt``（R228 recovery + R225 archive）→ ``cli_entry`` 接线（R230）。但**消费半边缺失**：前端无法读取这些已渲染的崩溃报告，用户看不到"上一次会话崩溃了"。本轮新增 ``crash.*`` IPC 命名空间（``crash.previous_report`` / ``crash.history`` / ``crash.dismiss``），全栈横切（handler + 前端类型 + TypedIPC + mockHandle + 契约文档 + 测试），闭合崩溃模块的终端产品消费面，让"崩溃 → 捕获 → 渲染 → 启动暴露 → 前端消费 → 用户感知"回路完整闭环。
+
+### 融合结论
+核心架构发现：``check_previous_crash`` 是**消费性**（consumptive）函数 —— 它读取 ``last-crash.json`` → 解析 → 渲染 → 写 ``last-crash-report.txt`` → 归档到 ``history/`` → **删除 ``last-crash.json``** → 返回 ``CrashReport``。R230 启动时已调用它一次。如果 IPC handler 再次调用 ``check_previous_crash``：(a) ``last-crash.json`` 已被删除 → 总是返回 ``None``；(b) 若文件某种方式还在 → 会重复归档幽灵报告。**解决：handler 读取持久化的渲染文件**（``last-crash-report.txt`` + ``history/*.txt``），从不调用 ``check_previous_crash`` —— 读取渲染文件是幂等的，可安全调用任意次数。
+
+概念融合维度：crash.* IPC 命名空间是 MiniMax Code 的 SPA 架构产物（grok 的 xai-crash-handler 是 Rust CLI crate，无 JSON-RPC IPC 层，崩溃报告直接打到 stderr / 文件供 CLI 消费）。融合的是**"崩溃报告消费 API"这一产品概念**：把 grok 的"崩溃后向用户展示"语义，适配到 MiniMax Code 的 IPC 契约三同步（handler + ipc.ts 类型 + client.ts TypedIPC/mockHandle）模式。错误契约刻意差异：``git.*`` 失败时 ``reply_error``（git 不可用是用户可操作的），但 ``crash.*`` 采用**失败放通返回静默默认值**（``available:false`` / ``entries:[]`` / ``dismissed:false``）—— 因为"无前一次崩溃"是正常稳态，IO 失败不应触发错误对话框破坏恢复 UI；``INVALID_PARAMS``（参数错误是真实调用方错误）仍走 ``reply_error``。
+
+### 交付
+* ``agent/minimax_code/ipc/handlers_crash.py``（新建）—— ``register_crash_handlers(server)`` 注册 3 个异步 handler。``_crash_dir()`` 延迟导入 ``default_data_dir``（``<data_dir>/crashes``，镜像 R230 接线，遵循 ``MINIMAX_CODE_DATA_DIR`` 覆盖）。``_reject_extra_params`` 统一三方法的 no-params 契约（``None`` / ``{}`` OK，其他 → ``INVALID_PARAMS``）。3 handler：(1) ``previous_report`` 读 ``last-crash-report.txt`` → ``{available, report_text}``（缺失/读取失败 → ``available:false``）；(2) ``history`` 列 ``history/crash-<ts>.txt`` 降序（最新在前）→ ``{entries:[{filename, timestamp, report_text}]}``（正则跳过非 ``crash-<digits>.txt`` 文件 + 上限 50）；(3) ``dismiss`` 解链 ``last-crash-report.txt`` → ``{dismissed}``（保留 ``history/``）。每 handler：``except HandlerError`` → ``reply_error``；``except Exception`` → ``logger.exception`` + 失败放通默认值。模块 docstring 诚实记录"为何不调 ``check_previous_crash``"的消费性陷阱。
+* ``agent/minimax_code/app.py`` —— 3 处 Edit：(a) 导入块字母序插入 ``from .ipc.handlers_crash import register_crash_handlers``（audit < crash < git）；(b) ``register_telemetry_handlers`` 后注册 ``register_crash_handlers(server)`` + 解释性注释（R231 读半边，读 R225-R230 写半边的渲染文件）；(c) ``logger.info`` 总结追加 ``+ 3 crash.*``。
+* ``web/src/types/ipc.ts`` —— 插入 4 个接口（``CrashPreviousReportResult`` / ``CrashHistoryEntry`` / ``CrashHistoryResult`` / ``CrashDismissResult``），``timestamp`` 为 ``number``（非 null，因后端跳过正则不匹配文件）。
+* ``web/src/ipc/client.ts`` —— 3 处 Edit：(a) import 块按字母序（``Crash*`` < ``Create*`` 因 ``cra`` < ``cre``）插入 4 类型；(b) TypedIPC 在 ``gitLog`` 后加 3 方法（``crashPreviousReport`` / ``crashHistory`` / ``crashDismiss``）；(c) mockHandle 在 ``git.log`` case 后加 3 case（满足类型，返回 honest 空默认值）。
+* ``docs/ipc-contract.md`` —— 在 ``runtime.*`` 后、``## 7. Event names`` 前插入 ``### crash.*`` 段（表格 + 失败放通契约 + 消费性陷阱说明）。
+* ``agent/tests/test_handlers_crash.py``（新建）—— 13 测试 + ``crash_env`` fixture（setenv ``MINIMAX_CODE_DATA_DIR`` + ``register_crash_handlers`` 到 ``_FakeServer``）+ ``_call`` async helper。``_FakeServer``/``_FakeCtx`` 轻量记录模式（无真实 IPCServer）。覆盖：previous_report（无文件/有文件/None/{}/extra params 5 路径）、history（空/3 文件降序/非 crash 文件跳过/55→50 上限 4 路径）、dismiss（有文件移除/无文件/保留 history 3 路径）、registration（3 方法注册 1 路径）。
+
+### 映射决策树+坑
+* **坑 1 — ``check_previous_crash`` 消费性陷阱**（核心架构发现，见融合结论）：handler 若直接调 ``check_previous_crash`` 会总返回 ``None``（``last-crash.json`` 已被 R230 启动时消费删除）+ 潜在重复归档。**修复**：handler 读持久化渲染文件（``last-crash-report.txt`` + ``history/*.txt``），幂等且安全。模块 docstring 诚实记录此决策。
+* **坑 2 — raw string 正则双写反斜杠**（本轮引入的真实 bug，当场修复）：初稿 ``_HISTORY_FILE_RE = re.compile(r"^crash-(?P<ts>\d+)\\.txt$")`` —— raw string 内 ``\\.`` 是两个字符（``\`` + ``.``），正则解析为"匹配字面反斜杠后跟任意字符"，导致 ``crash-1000.txt`` **永远匹配失败**（文件名里没有反斜杠）。**修复**：``r"^crash-(?P<ts>\d+)\.txt$"``（raw string 内 ``\.`` 是 ``\`` + ``.``，正则匹配字面点）。**测试证实**：``test_three_entries_descending``（断言 ``[3000,2000,1000]``）+ ``test_capped_at_fifty``（55→50）若正则未修必然返回空 entries 失败，两测试全绿证实修复有效。
+* **坑 3 — 失败放通 vs ``reply_error`` 刻意差异**：``git.*`` 失败 → ``reply_error``（git 不可用用户可操作），但 ``crash.*`` IO 失败 → 静默默认值（"无崩溃"是正常稳态，不应弹错误框破坏恢复 UI）。``HandlerError(INVALID_PARAMS)`` 仍走 ``reply_error``（参数错误是真实调用方 bug）。每 handler 的 ``except Exception`` 走 ``logger.exception`` + 失败放通默认值（``# pragma: no cover``，防御性）。
+* **坑 4 — TS import 字母序**：``Crash*``（``cra``）必须排在 ``Create*``（``cre``）之前（``a`` < ``e``），插在 ``AuditStats`` 与 ``CreateProviderResult`` 之间。
+
+### 验证
+* ruff：``All checks passed``（``handlers_crash.py`` + ``app.py`` + ``test_handlers_crash.py``）。
+* 定向 pytest ``tests/test_handlers_crash.py``：**13/13 passed in 1.40s**。
+* 全量回归 ``tests/``：**6283 passed + 10 skipped + 0 failed in 148.85s**。数学对账：6268（R230 基准）+ 13（R231 新增）= 6281 预期，实际 6283（多 2 = R230 记录的 pre-existing flaky ``test_interval_keeps_global_timeline_across_loops`` 本次亦通过，非 R231 引入，符合迭代独立性）。**零真实回归，零 failed**。
+
+### YAGNI 边界
+前端 session-recovery prompt 组件 + store（消费 ``crash.previous_report`` 弹恢复提示）—— 需 React 组件 + Zustand store + UI 设计，下轮候选 B（依赖本轮 IPC 层落地，现已满足）/ ``check_previous_crash`` 在 IPC handler 直接调用 —— 消费性陷阱，已用"读渲染文件"规避 / ``crash.history`` 分页 / 过滤参数 —— 当前固定 50 条降序，YAGNI 加 ``limit``/``since`` 参数直到前端有分页需求 / 崩溃报告结构化字段（signal/addr/version 分离字段）—— 当前返回整段 ``report_text`` 文本，前端若需结构化展示再拆字段 / async exception hook（asyncio loop ``set_exception_handler``）—— R230 已记录，专用 async-exception 路径未来轮次。下轮：前端 recovery prompt（候选 B，消费本轮 IPC）或转向下一功能模块（sandbox/memory/codegraph）。
+
+### Commit
+`feat(platform): R231 crash.* IPC namespace (close crash module consumption surface)`。路径 B crash 模块第 7 轮（crash 收官-IPC）；新增 ``crash.*`` IPC 命名空间（``crash.previous_report`` / ``crash.history`` / ``crash.dismiss``）—— 全栈横切（``handlers_crash.py`` + ``app.py`` 注册 + 前端 ``ipc.ts`` 类型 + ``client.ts`` TypedIPC/mockHandle + ``ipc-contract.md`` + ``test_handlers_crash.py``）；核心架构发现 ``check_previous_crash`` **消费性陷阱**（读 ``last-crash.json`` 后删除，R230 启动时已消费）→ handler 读持久化渲染文件（``last-crash-report.txt`` + ``history/*.txt``）规避，从不直调 ``check_previous_crash``；失败放通 vs ``reply_error`` 刻意差异（``crash.*`` IO 失败 → 静默默认值，"无崩溃"是正常稳态不破坏恢复 UI；``INVALID_PARAMS`` 仍走 ``reply_error``）；``crash_dir = default_data_dir()/"crashes"`` 镜像 R230；本轮引入 raw string 正则双写反斜杠 bug（``\\.txt``）当场修复为 ``\.txt``，测试（``test_three_entries_descending`` + ``test_capped_at_fifty``）证实修复有效；13 测试 + ``crash_env`` fixture + ``_FakeServer``/``_FakeCtx`` 轻量模式覆盖 previous_report/history/dismiss/registration 全路径；闭合崩溃模块"写半边(R225-R230) + 启动接线(R230) + 终端消费面(本轮)"完整产品闭环；全量 6283 passed + 10 skipped + 0 failed 零真实回归；后续前端 recovery prompt（候选 B）或转向 sandbox/memory/codegraph。
