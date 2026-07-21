@@ -23,6 +23,11 @@ R206 ``Role`` + R207 ``ChatMessageContent`` / ``ToolCallRequest`` atomics) +
 ``Option<String>`` fingerprint fields -- ``types.rs`` ``system_fingerprint`` on
 the ChatCompletion response + ``conversation.rs`` ``model_fingerprint``; a pure
 value-level normalizer ``""`` -> ``None``, zero dependency) +
+``chat_truncate`` (R212, the ``types.rs`` free-function leaf: the
+``chat_truncate_for_prompt`` algorithm that counts how many leading chat
+messages to keep so the slice closes after the ``(target + 1)``-th user
+prompt, consuming the R206 ``Role`` + R210 ``ChatRequestMessage``; a pure
+algorithm over an in-memory sequence, zero dependency) +
 ``config`` (R195,
 pure-type subset) + ``content_blocks`` (R202, ``xai-grok-sampling-types``
 ``messages.rs`` ContentBlock 5-variant union + 3 deps) + ``doom_loop`` (R200,
@@ -123,6 +128,16 @@ Leaf order (crate ``lib.rs`` re-exports, in migration order):
    (``system_fingerprint`` on the ChatCompletion response +
    ``model_fingerprint`` on ``conversation.rs``). Pure value-level normalizer;
    the consumer containers land later.
+11. ``chat_truncate`` (R212) -- :func:`chat_truncate_for_prompt` (the
+   ``types.rs`` free-function leaf): counts how many leading chat messages to
+   keep so the slice closes after the ``(target + 1)``-th user prompt
+   (truncating AT the ``(target + 2)``-th user message -- the triggering user
+   is excluded). Pure algorithm over an in-memory
+   :class:`~collections.abc.Sequence`; consumes the R206 :class:`Role` +
+   R210 :class:`ChatRequestMessage`. Strategy-B fallback after the
+   :class:`ChatCompletionRequest` container proved blocked on three
+   un-landed deps (``ToolDefinition`` + ``crate::rs::ResponseFormat`` +
+   ``Box<dyn TraceContext>``).
 """
 
 from minimax_code.sampler.chat_completion_leaves import (
@@ -157,6 +172,7 @@ from minimax_code.sampler.chat_completion_streaming import (
     ToolCallFunctionDelta,
 )
 from minimax_code.sampler.chat_request_message import ChatRequestMessage
+from minimax_code.sampler.chat_truncate import chat_truncate_for_prompt
 from minimax_code.sampler.compaction_headers import (
     CompactionAtTokens,
     CompactionAtTokensEnabled,
@@ -448,6 +464,7 @@ __all__ = [
     "UnknownStopReason",
     "UrlImageSource",
     "backoff_base_ms",
+    "chat_truncate_for_prompt",
     "classify_error",
     "clone_error",
     "doom_loop_backoff",

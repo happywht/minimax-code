@@ -113,8 +113,12 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     + serde_helpers (R211, 1: empty_string_as_none -- the single deserialize_with
     hook from serde_helpers.rs, normalizing an empty string to None on the two
     Option<String> fingerprint fields; pure value-level normalizer, zero
-    dependency, consuming containers land later)."""
-    assert len(sampler.__all__) == 153
+    dependency, consuming containers land later) + chat_truncate (R212, 1:
+    chat_truncate_for_prompt -- the types.rs free-function leaf, counting how
+    many leading chat messages to keep so the slice closes after the (target
+    + 1)-th user prompt; pure algorithm over an in-memory Sequence, zero
+    dependency, consuming the R206 Role + R210 ChatRequestMessage)."""
+    assert len(sampler.__all__) == 154
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -314,6 +318,10 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         # deserialize_with hook from serde_helpers.rs, normalizing an empty
         # string to None on the two Option<String> fingerprint fields
         "empty_string_as_none",
+        # chat_truncate (R212): chat_truncate_for_prompt -- the types.rs
+        # free-function leaf, counting how many leading chat messages to keep
+        # so the slice closes after the (target + 1)-th user prompt
+        "chat_truncate_for_prompt",
     }
 
 

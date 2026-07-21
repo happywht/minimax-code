@@ -16914,3 +16914,53 @@ serde `deserialize_with` 钩子在反序列化时对 wire `Value` 运行（编�
 `feat(platform): R211 migrate serde_helpers.rs empty_string_as_none (1 symbol)`
 
 锚点链：… → R208(d7491df) → R209(bd328a5) → R210(058b74f) → **R211（本轮）**。barrel 152→153；全量 5603 passed + 10 skipped（+8 新增），零真实回归。本轮核心锁定一个 grok→Python 映射决策：serde `deserialize_with` 钩子 → 纯值级函数 `value or None`（wire `Value` 解码方向对齐 parsed dict 值方向，`Option::<String>::deserialize` + `.filter(|s| !s.is_empty())` 三态归一）。
+
+## R212 — chat_truncate.py: chat_truncate_for_prompt（types.rs 纯算法截断叶子，策略 A 降级策略 B）
+
+锚点:R212-1 7e546ec
+
+### 本轮目标
+
+继续 `xai-grok-sampling-types` crate 的下一个纯逻辑叶子迁移。R211 完成 `serde_helpers.rs` 后，types.rs 累计已迁 39 符号（头部五块 + serde_helpers）。本轮目标：切 types.rs 下一块可独立闭合的子集。
+
+### 融合结论
+
+策略 A（推荐目标 `ChatCompletionRequest`）经逐字段依赖核对**不满足**：3 硬阻塞确认 ——
+1. `tools: Option<Vec<ToolDefinition>>`（`ToolDefinition` 来自 `xai-grok-tools` re-export，types.rs:396，未迁移）；
+2. `response_format: Option<crate::rs::ResponseFormat>`（显式 `crate::rs` 耦合，未迁移）；
+3. `trace: Option<Box<dyn TraceContext>>`（`TraceContext` trait 依赖 `tracing` crate，YAGNI）。
+
+降级策略 B 命中：`types.rs:365-385` 的 `chat_truncate_for_prompt` fn —— 纯算法叶子，对标 R211 `serde_helpers` 的自由函数形态，零外部依赖（仅消费 R206 `Role` + R210 `ChatRequestMessage`）。
+
+### 交付
+
+- `agent/minimax_code/sampler/chat_truncate.py`（新模块，1 符号）：`chat_truncate_for_prompt(chat_history, target_prompt_index) -> int`，忠实复刻 grok 的截断算法（`user_count > target + 1` 时 `keep_count = i` 截断并排除触发 user；否则 `keep_count = i + 1` 承载到末尾）。
+- `agent/minimax_code/sampler/__init__.py`（barrel 扩展 152→154）：import 块 + `__all__` + Currently landed docstring + Leaf order 第 11 条。
+- `agent/tests/test_chat_truncate.py`（新测试，13 用例）：module surface + package re-export + 算法边界（空 history / 无 user / 单 user / target=0 截断 / target=1 保留 / target 超出 / 排除触发 user / leading system 保留 / tool 不计数 / assistant 不计数 / list Sequence 契约），用 R210 真实构造器造消息。
+- `agent/tests/test_sampler_config.py`（barrel 守卫 153→154）：docstring + assert + set 末尾独立块。
+
+### 映射决策树+坑
+
+- `pub fn chat_truncate_for_prompt(&[ChatRequestMessage], usize) -> usize` → `def chat_truncate_for_prompt(Sequence[ChatRequestMessage], int) -> int`：grok `&[T]` 借用 → `collections.abc.Sequence`（只读，`tuple`/`list` 均可）；`usize` → `int`（Python 无溢出，`target + 1` 永不 wrap，Rust 的 usize 溢出是 Rust 特有 hazard）。
+- `matches!(msg.role, Role::User)` → `msg.role == Role.USER`：`Role` 是 `enum.StrEnum`，`Role.USER == "user"`；`ChatRequestMessage.role: Role` 严格解析（无 catch-all），所以身份比较忠实映射 grok 的 `matches!` 宏（两侧都是 `Role.USER` 单例）。
+- `chat_history.iter().enumerate()` → `enumerate()`；`keep_count = i + 1`（含当前）/ `keep_count = i`（排除触发 user）/ `break` 三条语句直译。
+- 命名保留 grok 名 `chat_truncate_for_prompt`（自由函数无 Anthropic Messages API peer 冲突，label 精确文档化截断契约）。
+- **barrel 字母序**：import 块 `chat_truncate` 在 `chat_request_message` 之后（'r'<'t'）、`compaction_headers` 之前（'h'<'o'）；`__all__` 小写区 `chat_truncate_for_prompt` 在 `backoff_base_ms` 之后（'b'<'c'）、`classify_error` 之前（'ch'<'cl'）。
+
+### 验证
+
+- `ruff check`（4 个变更文件）：All checks passed。
+- 定向 `pytest tests/test_chat_truncate.py tests/test_sampler_config.py -v`：26 passed（13 新 + 13 barrel 守卫）。
+- 全量 `pytest`：**5616 passed + 10 skipped**（R211 基准 5603 + R212 新增 13 = 5616，完全吻合），零真实回归。
+
+### YAGNI 边界
+
+- 算法即全部契约：无 serde `Serialize`/`Deserialize` 表面（函数操作已解析的 `ChatRequestMessage` 实例，非 wire `Value`）。
+- 策略 A 的 3 硬阻塞延后：`ToolDefinition`（待 `xai-grok-tools` crate 迁移）、`crate::rs::ResponseFormat`（待 `crate::rs` 模块迁移）、`Box<dyn TraceContext>`（`tracing` crate，永久 YAGNI）。
+- `conversation.rs`（9481 行巨型）整体延后。
+
+### Commit
+
+`feat(platform): R212 migrate types.rs chat_truncate_for_prompt (1 symbol)`
+
+锚点链：… → R209(bd328a5) → R210(058b74f) → R211(7e546ec) → **R212（本轮）**。barrel 153→154；全量 5616 passed + 10 skipped（+13 新增），零真实回归。本轮核心锁定两个 grok→Python 映射决策：(1) `&[T]` 借用 → `Sequence` + `usize` → `int`（溢出 hazard 消失，无 wrap 风险）；(2) `matches!(msg.role, Role::User)` → `msg.role == Role.USER`（StrEnum 身份比较忠实映射，因 `Role` 严格解析无 catch-all）。策略 A（ChatCompletionRequest）3 硬阻塞降级策略 B（纯算法叶子）闭环。
