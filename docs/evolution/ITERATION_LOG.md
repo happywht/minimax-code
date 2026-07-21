@@ -16491,3 +16491,52 @@ barrel 扩展：`sampler/__init__.py` 62→75（docstring 加 R202 叶子条目 
 feat(platform): R203 migrate messages.rs request-side enums + leaf structs to sampler.request_params
 
 精确 git add 仅 R203 5 文件（request_params.py / __init__.py / test_request_params.py / test_sampler_config.py / ITERATION_LOG.md），不含 10 个排除文件 + 90+ 无关 M 文件。
+
+## R204 — sampler messages.rs 中间叶子层 (message_bodies.py: SystemTextBlock + SystemParam/MessageContent untagged 联合 + StreamDelta tagged 联合, xai-grok-sampling-types 第 6 叶)
+
+锚点:R204-1 4d0cf98
+
+### 本轮目标
+
+继续 xai-grok-sampling-types crate 纯逻辑叶子迁移。R203 闭合 messages.rs Request 段纯枚举+叶子第一块（MessageRole + ThinkingDisplay + ThinkingConfig/OutputFormat/ToolChoiceParam tagged 联合 + OutputConfig/ToolParam/Metadata 叶子 struct，15 符号）。R204 切入 messages.rs 的"中间叶子层"——迁移 4 个 body-shaped 叶子：SystemTextBlock（独立 TextBlock struct）+ SystemParam/MessageContent（2 个 untagged string-vs-blocks 联合）+ StreamDelta（4-variant tagged 联合）。这些是 MessagesRequest/Message 容器（mega-leaf）与 Response/stream wrapper 之间的中间依赖层。本轮目标：4 类型族 / 12 符号闭环，纯逻辑（零 I/O），混合 serde 形态（tagged 严格无 catch-all + untagged shape 分发 + rename 字段规避 builtin）。
+
+### 融合结论
+
+策略 A 选定（最直接延续 R203）：迁移 messages.rs 中间 body 叶子层。依赖闭包分析：4 类型族自洽闭环——SystemTextBlock(独立 struct，消费 R202 CacheControl) + SystemParam(untagged 2 变体，消费 SystemTextBlock) + MessageContent(untagged 2 变体，消费 R202 ContentBlock 递归) + StreamDelta(tagged 4 变体，无外部依赖)。零外部新依赖（仅消费 R202 已迁的 CacheControl + ContentBlock）。命名冲突规避：content_blocks.py 已有 TextBlock 变体（ContentBlock::Text），故独立 struct TextBlock 换名 SystemTextBlock（语义化：SystemParam 的 blocks 元素）。新建独立子模块 message_bodies.py（单一职责，避免 messages.py 膨胀，与 R202/R203 新模块模式一致）。
+
+### 交付
+
+- 新模块 `agent/minimax_code/sampler/message_bodies.py`（270 行）：4 类型族 12 符号——SystemTextBlock(frozen+slots struct, type_="text"/text/cache_control + from_payload tolerant) + SystemParam(untagged 联合基类 + TextSystemParam/BlocksSystemParam) + MessageContent(untagged 联合基类 + TextMessageContent/BlocksMessageContent, blocks 递归 R202 ContentBlock) + StreamDelta(tagged 联合基类 + TextDelta/InputJsonDelta/ThinkingDelta/SignatureDelta)。
+- 新测试 `agent/tests/test_message_bodies.py`（361 行）：37 用例（module barrel 12 符号 + SystemTextBlock 构造 5 + SystemParam untagged 分发 6 + MessageContent untagged 分发 5 + StreamDelta tagged 分发 7 + 值语义 9 变体参数化 frozen + 3 联合 share-base + blocks hashable）。
+- barrel 扩展 `agent/minimax_code/sampler/__init__.py`：90 -> 102 符号（+12 R204，ASCII 严格排序；docstring landed 段加 message_bodies + Leaf order 第 8 条）。
+- barrel 守卫 `agent/tests/test_sampler_config.py`：断言 90 -> 102 + set 加 12 R204 符号（按 message_bodies 注释分组）+ docstring 更新。
+
+### 映射决策树 + 坑
+
+1. serde 形态全覆盖（4 类型族映射 3 种 serde 形态）：tagged(tag="type", rename_all="snake_case") -> StreamDelta(frozen+slots 基类 + 子类, from_payload 读 type 分发, 严格无 catch-all, 未知 type raise ValueError, 对照 R201 StopReason catch-all)；untagged -> SystemParam/MessageContent(frozen+slots 基类 + 子类, from_payload 按 JSON shape 分发: str/None->Text 空串容忍, list->Blocks 递归, 其他->raise ValueError, 镜像 serde try-each-variant 顺序)；rename `r#type` -> SystemTextBlock.type_ 字段(规避 Python builtin)。
+2. 命名冲突规避（R204 关键坑）：content_blocks.py 已有 TextBlock 变体（ContentBlock::Text，无显式 type 字段，inline text+cache_control）；messages.rs 独立 struct TextBlock（带显式 type="text" 字段，SystemParam.Blocks 元素）——两者是不同 wire shape。换名 SystemTextBlock（语义化定位：SystemParam 的 system-prompt block），与 content_blocks.TextBlock 区分。docstring + 测试锁定该决策。
+3. untagged 联合 None 容忍：SystemParam/MessageContent 的 from_payload 对 None/缺省容忍为 Text 变体空串（绝不崩流，前向兼容——system 字段 optional），对照 R202 ToolResultContent 同策略。但非法 shape（int/float/dict/bool）raise ValueError（untagged 无 fallback）。
+4. untagged list 非 dict 项 skip：SystemParam/MessageContent 的 list 分支用 `if isinstance(item, dict)` 过滤非 dict 项（不崩，容忍 wire 噪音）。
+5. tagged 严格性：StreamDelta 4 wire tag (text_delta/input_json_delta/thinking_delta/signature_delta) 严格分发，未知 type + 缺 type 均 raise ValueError（无 catch-all）。但已知 type 缺 payload 字段容忍空串（text_delta 缺 text -> ""，绝不崩流）。
+6. blocks 变体用 tuple：BlocksSystemParam.blocks: tuple[SystemTextBlock, ...] / BlocksMessageContent.blocks: tuple[ContentBlock, ...]（frozen 可哈希，对照 R202 BlocksToolResultContent 同模式）。
+7. 坑（本轮自纠 1 处）：test_sampler_config.py barrel 守卫 docstring 多行编辑——Edit 工具对长多行 old_string（跨约 12 行 docstring）匹配脆弱，中间行细微空格差异导致 not found。解决：缩减 old_string 为最短唯一锚点（docstring 结束符 `)."""` + 下一行 assert）。验证阶段自纠，零回归外溢。
+8. barrel `__all__` 排序：90 -> 102，ASCII 严格逐字符排序（大写 A-Z 先，`_` 在大小写之间，小写 a-z 后；同类内字母序）。
+
+### 验证
+
+- `ruff check`（4 文件: message_bodies.py / __init__.py / test_message_bodies.py / test_sampler_config.py）：All checks passed!（E/F/W/I/B/UP，长 100，py311）。
+- 定向 `pytest tests/test_message_bodies.py tests/test_sampler_config.py tests/test_request_params.py tests/test_content_blocks.py` → **120 passed**（37 R204 新增 + 14 barrel 守卫 + 37 R203 + 32 R202）。
+- **全量回归 pytest：5314 passed + 10 skipped, 124.33s, 零 failed**。5314 = 5276（R203 基线 passed）+ 37（R204 新增 test_message_bodies.py 29 函数 / 37 case）+ 1（预存 flaky `test_interval_keeps_global_timeline_across_loops` 本轮自然转绿）。**零真实回归**（R203 基线那 1 failed flaky 本轮 pass，非 R204 引入；按迭代独立性原则不修复预存 flaky）。
+
+### YAGNI 边界
+
+- 延后：messages.rs Request 段 mega 容器（`MessagesRequest` + `Message`）——消费 R204 SystemParam/MessageContent + R202 ContentBlock + R203 枚举/叶子，是 list-carrying 顶层容器，多轮迁移。
+- 延后：messages.rs Response/stream 段（`MessagesResponse` + `MessageStreamEvent` wrapper）——消费 R204 StreamDelta + R201 StopReason/Usage + R202 ContentBlock，单独层后轮。
+- YAGNI：full serde `Serialize`/`Deserialize` round-trip——`from_payload` 覆盖平台所需的解析方向。
+- YAGNI：mega 容器（`MessagesRequest`/`Message`/`MessagesResponse`/`MessageStreamEvent`）的组装层——消费本叶 4 body 类型 + 已迁 ContentBlock/StopReason，但属单独层。
+
+### Commit
+
+`feat(platform): R204 migrate messages.rs middle body-shaped leaves to sampler.message_bodies`
+
+精确 git add 仅 R204 5 文件（message_bodies.py / __init__.py / test_message_bodies.py / test_sampler_config.py / ITERATION_LOG.md），不含 10 个排除文件 + 90+ 无关 M 文件。

@@ -6,7 +6,10 @@ package is being filled leaf-by-leaf. Currently landed: ``config`` (R195,
 pure-type subset) + ``content_blocks`` (R202, ``xai-grok-sampling-types``
 ``messages.rs`` ContentBlock 5-variant union + 3 deps) + ``doom_loop`` (R200,
 ``xai-grok-sampling-types`` ``doom_loop.rs`` wire contract + tolerant
-parsers) + ``messages`` (R201, ``xai-grok-sampling-types`` ``messages.rs``
+parsers) + ``message_bodies`` (R204, ``xai-grok-sampling-types``
+``messages.rs`` body-shaped leaves: SystemTextBlock struct +
+SystemParam/MessageContent untagged unions + StreamDelta 4-variant tagged
+union) + ``messages`` (R201, ``xai-grok-sampling-types`` ``messages.rs``
 stop-reason + usage + delta-body cluster) + ``request_params`` (R203,
 ``xai-grok-sampling-types`` ``messages.rs`` request-side enums + leaf structs)
 + ``retry`` (R198 backoff subset + R199 decision layer) + ``types`` (R199,
@@ -65,9 +68,19 @@ Leaf order (crate ``lib.rs`` re-exports, in migration order):
    tagged unions + the :class:`OutputConfig` / :class:`ToolParam` /
    :class:`Metadata` flat structs. No-I/O (``serde_json::Value`` -> ``dict``);
    strict tagged-union parse (unknown ``type`` raises). The list-carrying
-   request containers (``MessagesRequest`` + ``Message`` + ``MessageContent``
-   + ``SystemParam`` + the standalone ``TextBlock`` struct) land later --
-   they consume the R202 :class:`ContentBlock` union.
+   request containers (``MessagesRequest`` + ``Message``) land later --
+   they consume the R202 :class:`ContentBlock` union + the R204 body leaves.
+8. ``message_bodies`` (R204) -- the 4 "middle-layer" body-shaped leaves from
+   ``xai-grok-sampling-types`` ``messages.rs``: :class:`SystemTextBlock`
+   (the standalone ``TextBlock`` struct, renamed to dodge the R202
+   :class:`ContentBlock::Text` variant collision) + :class:`SystemParam`
+   + :class:`MessageContent` (untagged string-vs-blocks unions, consuming
+   SystemTextBlock / R202 ContentBlock respectively) + :class:`StreamDelta`
+   (4-variant tagged union -- text / input-json / thinking / signature
+   deltas). No-I/O; strict tagged-union parse (unknown ``type`` raises);
+   untagged unions match on JSON shape. The mega-containers
+   (``MessagesRequest`` + ``Message`` + ``MessagesResponse`` +
+   ``MessageStreamEvent``) consume these leaves but land in later rounds.
 """
 
 from minimax_code.sampler.config import (
@@ -108,6 +121,20 @@ from minimax_code.sampler.doom_loop import (
     Unknown,
     is_check_event,
     peek_doom_loop,
+)
+from minimax_code.sampler.message_bodies import (
+    BlocksMessageContent,
+    BlocksSystemParam,
+    InputJsonDelta,
+    MessageContent,
+    SignatureDelta,
+    StreamDelta,
+    SystemParam,
+    SystemTextBlock,
+    TextDelta,
+    TextMessageContent,
+    TextSystemParam,
+    ThinkingDelta,
 )
 from minimax_code.sampler.messages import (
     EndTurn,
@@ -183,6 +210,8 @@ __all__ = [
     "BACKOFF_BASE_MS",
     "BACKOFF_CAP_MS",
     "Base64ImageSource",
+    "BlocksMessageContent",
+    "BlocksSystemParam",
     "BlocksToolResultContent",
     "CacheControl",
     "CheckEvent",
@@ -205,9 +234,11 @@ __all__ = [
     "Fatal",
     "ImageBlock",
     "ImageSource",
+    "InputJsonDelta",
     "JsonSchemaOutputFormat",
     "LowLogprob",
     "MaxTokens",
+    "MessageContent",
     "MessageDeltaBody",
     "MessageDeltaUsage",
     "MessageRole",
@@ -233,16 +264,24 @@ __all__ = [
     "SAMPLE_CHECK_EVENT_DATA_CUMULATIVE",
     "SERIALIZATION_DISPLAY_PREFIX",
     "SamplingError",
+    "SignatureDelta",
     "StopDetails",
     "StopReason",
     "StopSequence",
+    "StreamDelta",
     "StreamError",
+    "SystemParam",
+    "SystemTextBlock",
     "THINKING_CHANNEL",
     "TailRepetition",
     "TextBlock",
+    "TextDelta",
+    "TextMessageContent",
+    "TextSystemParam",
     "TextToolResultContent",
     "ThinkingBlock",
     "ThinkingConfig",
+    "ThinkingDelta",
     "ThinkingDisplay",
     "ToolChoiceParam",
     "ToolParam",
