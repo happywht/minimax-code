@@ -66,6 +66,10 @@ export { useCodeReviewStore, type ReviewComment, type ReviewStats } from "./code
 export { useProviderStore } from "./providerStore";
 export type { ProviderInfo } from "../types/ipc";
 export { useAuditStore, type AuditState } from "./auditStore";
+export {
+  useCrashRecoveryStore,
+  type CrashRecoveryState,
+} from "./crashRecoveryStore";
 export { useWebhookStore, type WebhookState } from "./webhookStore";
 export { usePreviewStore, type PreviewState } from "./previewStore";
 export {

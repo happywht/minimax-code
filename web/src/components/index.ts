@@ -55,3 +55,4 @@ export { ShortcutsOverlay } from "./ShortcutsOverlay";
 export type { ShortcutsOverlayProps } from "./ShortcutsOverlay";
 export { ConnectionBanner } from "./ConnectionBanner";
 export type { ConnectionBannerProps, ConnectionBannerState } from "./ConnectionBanner";
+export { CrashRecoveryPrompt } from "./CrashRecoveryPrompt";

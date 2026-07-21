@@ -17689,3 +17689,41 @@ extract_pc_and_fp（ucontext_t 寄存器读取）+ walk_frame_pointers（裸指�
 
 ### Commit
 `feat(platform): R231 crash.* IPC namespace (close crash module consumption surface)`。路径 B crash 模块第 7 轮（crash 收官-IPC）；新增 ``crash.*`` IPC 命名空间（``crash.previous_report`` / ``crash.history`` / ``crash.dismiss``）—— 全栈横切（``handlers_crash.py`` + ``app.py`` 注册 + 前端 ``ipc.ts`` 类型 + ``client.ts`` TypedIPC/mockHandle + ``ipc-contract.md`` + ``test_handlers_crash.py``）；核心架构发现 ``check_previous_crash`` **消费性陷阱**（读 ``last-crash.json`` 后删除，R230 启动时已消费）→ handler 读持久化渲染文件（``last-crash-report.txt`` + ``history/*.txt``）规避，从不直调 ``check_previous_crash``；失败放通 vs ``reply_error`` 刻意差异（``crash.*`` IO 失败 → 静默默认值，"无崩溃"是正常稳态不破坏恢复 UI；``INVALID_PARAMS`` 仍走 ``reply_error``）；``crash_dir = default_data_dir()/"crashes"`` 镜像 R230；本轮引入 raw string 正则双写反斜杠 bug（``\\.txt``）当场修复为 ``\.txt``，测试（``test_three_entries_descending`` + ``test_capped_at_fifty``）证实修复有效；13 测试 + ``crash_env`` fixture + ``_FakeServer``/``_FakeCtx`` 轻量模式覆盖 previous_report/history/dismiss/registration 全路径；闭合崩溃模块"写半边(R225-R230) + 启动接线(R230) + 终端消费面(本轮)"完整产品闭环；全量 6283 passed + 10 skipped + 0 failed 零真实回归；后续前端 recovery prompt（候选 B）或转向 sandbox/memory/codegraph。
+
+## R232 — 前端 crash recovery prompt 组件 + store（消费 R231 crash.* IPC，闭合崩溃模块终端 UI 面）
+
+锚点:R232-1 049e09a
+
+### 本轮目标
+路径 B 第 8 轮，选定候选 A（前端恢复提示）。R231 已落地 ``crash.*`` IPC 命名空间（``previous_report``/``history``/``dismiss``），但终端用户感知的 UI 面尚未闭合。本轮目标：新建 Zustand store（``crashRecoveryStore``）消费 R231 三个 IPC 方法 + React 组件（``CrashRecoveryPrompt``）渲染恢复卡片 + 内联历史模态框，并在 ``App.tsx`` 引导时拉取 ``previous_report``。闭合崩溃模块"写半边(R225-R230) + 启动接线(R230) + IPC(R231) + 终端 UI(本轮)"完整产品闭环——从崩溃信号捕获到用户感知的恢复提示，全链路打通。
+
+### 融合结论
+grok-build 的 ``xai-crash-handler`` 是后端崩溃信号捕获/序列化/归档内核（R226-R231 已迁移），但其设计停在"持久化渲染文件"层，没有前端消费面。MiniMax Code 作为桌面端产品，必须把崩溃信号转化为用户可感知、可操作的恢复提示。本轮融合点：将 grok 的"崩溃报告作为持久化文本文件"后端契约，对接到 React/Zustand 的"恢复提示作为可交互 UI 卡片"前端范式。关键设计：前端 store action 全部走"失败放通"（``toast.error`` + 保持默认值），镜像 R231 handler 的失败放通合约——"无前序崩溃"是正常稳态，IO 失败不应破坏恢复 UI 或阻塞引导。历史模态框内联在主组件（YAGNI，不拆独立文件）。
+
+### 交付
+新建 4 文件 + 改 3 文件：
+- ``web/src/stores/crashRecoveryStore.ts``（新建）— Zustand store，状态 ``{available, reportText, loading, history, historyOpen}``，action ``{loadPreviousReport, loadHistory, dismiss, openHistory, closeHistory}``。``loadPreviousReport`` 调 ``typedIPC.crashPreviousReport()`` 后 set ``available``+``reportText``；``loadHistory`` 调 ``crashHistory()`` set ``history``；``dismiss`` 调 ``crashDismiss()``，``dismissed:true`` 则清状态，否则 ``toast.error``；``openHistory`` set ``historyOpen`` + 触发 ``loadHistory``。三个 IPC action 全 try/catch + ``toast.error`` 失败放通。
+- ``web/src/components/CrashRecoveryPrompt.tsx``（新建）— 恢复卡片 + 内联历史模态框。``available && reportText !== null`` 时渲染底部固定琥珀色横幅（``role="alertdialog"``），含 ``AlertOctagon`` 图标 + 截断预览（240 字符 + "…"）+ History/Dismiss 两按钮。``historyOpen`` 时渲染全屏模态框（``role="dialog"`` ``aria-modal``）列出 ``history`` 条目或 "No crash history." 占位。稳态（无崩溃）返回 ``null``，健康启动视觉零变化。
+- ``web/src/stores/__tests__/crashRecoveryStore.test.ts``（新建）— 10 测试，``vi.hoisted`` stub IPC + toast，覆盖 ``loadPreviousReport``(3) / ``loadHistory``(2) / ``dismiss``(3) / ``openHistory``+``closeHistory``(2)，含失败放通 + 状态保持断言。
+- ``web/src/components/__tests__/CrashRecoveryPrompt.test.tsx``（新建）— 8 测试，``vi.hoisted`` stub store selector，覆盖稳态 null 渲染 / 卡片渲染 / 截断 / Dismiss / History / 模态框条目 / 空状态 / 关闭。
+- ``web/src/stores/index.ts``（改）— barrel 导出 ``useCrashRecoveryStore`` + ``CrashRecoveryState``。
+- ``web/src/components/index.ts``（改）— barrel 导出 ``CrashRecoveryPrompt``。
+- ``web/src/App.tsx``（改，6 处）— import ``CrashRecoveryPrompt`` + ``useCrashRecoveryStore``；selector ``refreshCrashReport = loadPreviousReport``；``Promise.all`` 加 ``refreshCrashReport()``；deps 数组加 ``refreshCrashReport``；JSX 在 ``PermissionRequestModal`` 后挂载 ``<CrashRecoveryPrompt />``。
+
+### 映射决策树+坑
+- ``vi.mock`` 模块级 const TDZ 陷阱 → 用 ``vi.hoisted(() => ({fn: vi.fn()}))`` 保证 stub 在 ``vi.mock`` factory 执行前初始化（vitest 推荐模式）。``store-toast-errors.test.ts`` 用延迟 wrapper ``((...a) => spy(...a))`` 规避，本轮统一用 ``vi.hoisted`` 更标准。
+- ``vi.mock`` 路径解析 → 测试文件 mock ``../../stores``（从 ``__tests__/``）与组件 import ``../stores``（从 ``components/``）解析到同一绝对路径 ``web/src/stores/index.ts``，``vi.mock`` 拦截生效。
+- 组件 selector stub → ``useCrashRecoveryStore: <T,>(selector): T => selector(storeStub)``，注意 ``.tsx`` 箭头泛型必须 ``<T,>`` trailing comma 避免 JSX 歧义。
+- 测试稳健性 → 给 preview ``<pre>`` 加 ``data-testid="crash-recovery-report-preview"``，断言 ``textContent`` 而非 ``getByText`` 正则（避免截断 "…" U+2026 正则匹配脆弱）。
+- 失败放通镜像 → 三个 store action 的 catch 块 + ``dismiss`` 的 ``dismissed:false`` 分支均 ``toast.error``，镜像 R231 handler 的"无崩溃是稳态，IO 失败不破坏 UI"合约。
+- 内联历史模态框（YAGNI）→ 不拆 ``CrashHistoryModal.tsx`` 独立文件，``historyOpen`` 时在主组件内联渲染，"History" 按钮即可用，不过度设计。
+- 前端契约三同步已满足 → R231 已落地 ``ipc.ts`` 类型 + ``client.ts`` TypedIPC/mockHandle，本轮 store 直接消费，无需再改 IPC 层。
+
+### 验证
+ESLint 0 错误（7 文件：store + 组件 + 2 测试 + ``App.tsx`` + 2 barrel）。定向 vitest 18/18 全绿（store 10 + 组件 8，56s）。全量 vitest 477 passed + 2 flaky（``message-list.test.tsx`` 全量并行时 ``findByText`` 超时，单独重跑 6/6 全绿 3081ms——直接渲染 ``MessageList`` 不走 ``App.tsx``，与本轮零交集，预存 flaky 非本轮回归，按迭代纪律不修）。Python 本轮零改动，6283 passed + 10 skipped 基准不变。零真实回归。
+
+### YAGNI 边界
+``CrashHistoryModal`` 独立文件拆分 —— 当前内联在 ``CrashRecoveryPrompt``，YAGNI 不拆直到历史视图复杂度增长 / ``crash.history`` 分页/过滤 UI —— 前端当前一次性渲染全部条目（后端已 cap 50），YAGNI 加虚拟滚动/筛选直到条目数增长 / 崩溃报告结构化展示（signal/addr/version 分离字段卡片）—— 当前整段 ``report_text`` 文本预览足够，前端若需结构化再拆 / 恢复后自动重放上一会话 —— 超出崩溃提示范围，属会话恢复独立模块 / ``crash.dismiss`` 撤销 —— 一次性删除语义，YAGNI 不加 undo。下轮：候选 B（crash history 面板深化 + dismiss 联动，依赖本轮 store 已满足）或转向下一功能模块（sandbox/memory/codegraph）开启新模块迁移。
+
+### Commit
+``feat(platform): R232 frontend crash recovery prompt + store (close crash module UI surface)``。路径 B 第 8 轮（候选 A 前端恢复提示）；新建 ``crashRecoveryStore``（Zustand）+ ``CrashRecoveryPrompt``（React 组件 + 内联历史模态框）+ 2 测试文件（18 测试），改 2 barrel + ``App.tsx``（6 处接线：import/selector/Promise.all/deps/JSX）；消费 R231 ``crash.*`` IPC（``crashPreviousReport`` / ``crashHistory`` / ``crashDismiss``）；前端 store action 全走失败放通（``toast.error`` + 默认值），镜像 R231 handler 的"无崩溃是稳态"合约；``vi.hoisted`` stub IPC+toast+store selector 规避 TDZ；preview ``<pre>`` 加 testid 断言 ``textContent`` 规避截断正则脆弱；内联历史模态框（YAGNI 不拆独立文件）；闭合崩溃模块"写半边(R225-R230)+启动接线(R230)+IPC(R231)+终端 UI(本轮)"完整产品闭环——崩溃信号从捕获到用户感知恢复提示全链路打通；ESLint 0 + 定向 vitest 18/18 + 全量 477 passed（2 flaky ``message-list`` 预存非本轮回归）+ Python 6283 基准不变，零真实回归；后续候选 B（history 面板深化）或转向 sandbox/memory/codegraph 新模块。

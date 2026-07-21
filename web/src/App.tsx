@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useState, type ReactNode } from
 import {
   ChatPanel,
   ConnectionBanner,
+  CrashRecoveryPrompt,
   ErrorBoundary,
   MessageInput,
   PermissionRequestModal,
@@ -15,6 +16,7 @@ import { ipc, typedIPC } from "./ipc";
 import {
   initNotificationStore,
   useChat,
+  useCrashRecoveryStore,
   useModelStore,
   usePermissionStore,
   useProviderStore,
@@ -65,6 +67,7 @@ export default function App() {
   const refreshSessions = useSessionStore((s) => s.refresh);
   const refreshRules = usePermissionStore((s) => s.refresh);
   const refreshProviders = useProviderStore((s) => s.refresh);
+  const refreshCrashReport = useCrashRecoveryStore((s) => s.loadPreviousReport);
   const [view, setView] = useState<MainView>("chat");
   const [overlayView, setOverlayView] = useState<OverlayView | null>(null);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
@@ -120,6 +123,7 @@ export default function App() {
           refreshModels(),
           refreshRules(),
           refreshProviders(),
+          refreshCrashReport(),
         ]);
         // Initialise notification store WS listeners (v0.7.0)
         initNotificationStore();
@@ -144,7 +148,7 @@ export default function App() {
         toast.error("UI init failed", err instanceof Error ? err.message : String(err));
       }
     })();
-  }, [init, refreshSessions, refreshModels, refreshRules, refreshProviders]);
+  }, [init, refreshSessions, refreshModels, refreshRules, refreshProviders, refreshCrashReport]);
 
   // ── 4.6: Mobile sidebar scroll lock ──
   // Prevent background scrolling when the mobile sidebar overlay is open.
@@ -281,6 +285,7 @@ export default function App() {
           </div>
           <ToastViewport />
           <PermissionRequestModal />
+          <CrashRecoveryPrompt />
           {mobileModalOpen && (
             <Suspense fallback={null}>
               <MobilePairingModal onClose={() => setMobileModalOpen(false)} />
