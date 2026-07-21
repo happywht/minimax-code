@@ -18,12 +18,21 @@ Apache-2.0). Carries the ``Edge`` / ``GraphOption`` value objects and the
 edge-id encoding helpers that ``Graph`` (next leaf, R243) builds on; the crate
 is pure logic (only path dep is the migrated ``ordered_hashmap``, no
 ``unsafe``, no I/O).
+
+Third leaf (R243): ``graphlib`` extended -- the ``Graph`` core struct + its
+node-primitive method subset (construction, flag queries, graph-label
+accessors, default-node-label machinery, node CRUD, compound parent/child
+queries, adjacency queries). The edge-method subset and the node methods that
+depend on them (``remove_node`` / ``filter_nodes``) migrate in R243b; this
+leaf carries only the zero-edge-dependency node surface so every migrated
+method is self-contained and testable. ``Graph`` is the fifth barrel symbol.
 """
 
 from __future__ import annotations
 
 from minimax_code.data_structures.graphlib import (
     Edge,
+    Graph,
     GraphOption,
 )
 from minimax_code.data_structures.ordered_hashmap import (
@@ -34,6 +43,7 @@ from minimax_code.data_structures.ordered_hashmap import (
 __all__ = [
     "Edge",
     "Entry",
+    "Graph",
     "GraphOption",
     "OrderedHashMap",
 ]
