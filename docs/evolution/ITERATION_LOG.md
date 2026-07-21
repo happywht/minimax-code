@@ -16638,3 +16638,75 @@ R206 迁移 types.rs 的 **"ChatCompletion 原子叶子簇"**：9 个零依赖�
 `feat(platform): R206 migrate types.rs ChatCompletion atomic leaves`
 
 锚点链：… → R203(4d0cf98) → R204(e82856a) → R205(4ad528e) → **R206（本轮）**。barrel 114→124；全量 5384 passed + 10 skipped，零真实回归。
+
+## R207 — 采样层 types.rs 第二块：ChatCompletion 工具+内容+用量中层叶子簇
+
+锚点:R207-1 0c12eae
+
+### 本轮目标
+
+继续 `xai-grok-sampling-types` `types.rs` 的纯逻辑叶子迁移。R206 切了 `types.rs` 首块（ChatCompletion 原子叶子簇 10 符号：4 wire-string enums + DEFAULT_REASONING_EFFORT + 5 flat leaf structs）。R207 切 `types.rs` 第二块——把 R206 原子叶子组合成 ChatCompletion request/response 中层 body 形状的 11 个叶子，闭合一个无外部重依赖的子集，并为后续的重容器（`ChatCompletionRequest`/`Response`/`Chunk`）铺好内层依赖。
+
+候选优先级：策略 A（types.rs 下一块纯类型/枚举叶子）胜出——conversation.rs（9481 行巨型）风险高延后、serde_helpers.rs（9 行）体量过小。本轮纯逻辑边界：只消费 R206 已落地的 `ImageUrl`/`ToolType`/`ToolChoiceFunction`/`ToolCallFunction`/`PromptTokensDetails`/`CompletionTokensDetails`，零 `crate::rs`/`crate::serde_helpers`/`xai-grok-tools` 重依赖。
+
+### 融合结论
+
+R207 把 grok 的 OpenAI-compatible ChatCompletion 中层叶子（`types.rs` 第二块，11 符号）迁移为 `agent/minimax_code/sampler/chat_completion_mid.py`，与 R206 原子叶子簇在 `sampler` 平台包内融合。命名上用 `Chat` 前缀隔离 Anthropic Messages API peer（`ChatContentBlock` vs R202 `ContentBlock`、`ChatMessageContent` vs R204 `MessageContent`、`ChatUsage` vs R201 `MessagesUsage`），`ToolChoice`/`ToolCallRequest` 是新名（区别于 R203 `ToolChoiceParam` / R206 `ToolCallFunction`）。
+
+这是平台化进程的一个标志性回合——不只是平移类型，而是在迁移过程中**发现并修复了三个真实的 Python 命名空间 bug**，每一个都体现了 Rust↔Python 语义差异的深度理解。
+
+### 交付
+
+| 文件 | 动作 | 内容 |
+|------|------|------|
+| `agent/minimax_code/sampler/chat_completion_mid.py` | 新建（437 行→修复后 449 行） | 11 符号中层叶子簇 |
+| `agent/minimax_code/sampler/__init__.py` | 扩展 | barrel 124→135（import 块 + `__all__` C/F/P/T 4 块字母序） |
+| `agent/tests/test_chat_completion_mid.py` | 新建 | 11 符号测试 + 4 命名隔离断言 + frozen+slots B010 规避 |
+| `agent/tests/test_sampler_config.py` | 扩展 | barrel 守卫 124→135（docstring + assert + set 11 符号） |
+
+**11 符号结构**：
+- `ChatContentBlock`（2-variant tagged union，`tag="type"`，严格分发 text/image_url，unknown raise / non-dict raise）+ `ChatTextBlock`/`ChatImageUrlBlock`
+- `ChatMessageContent`（untagged union，str/None→Text，list→Blocks）+ `ChatTextContent`/`ChatBlocksContent` + `is_empty()`/`to_blocks()`
+- `ToolChoice`（untagged union，str→Preset，dict→Function）+ `auto()`/`none()`/`required()`/`function()` classmethods + `PresetToolChoice`/`FunctionToolChoice`
+- `ToolCallRequest`（struct，`from_payload` tolerant + `with_function` + `with_id` copy-on-write builder）
+- `ChatUsage`（struct，6 字段，`from_payload` tolerant details）
+
+### 映射决策树+坑
+
+**serde 形态映射**（沿用 R201-R206 范式）：
+- `#[serde(tag="type")] enum`（`ChatContentBlock`）→ frozen+slots union base + subclasses + `from_payload` 严格分发（无 catch-all → unknown raise）
+- `#[serde(untagged)] enum`（`ChatMessageContent`/`ToolChoice`）→ frozen+slots union base + subclasses + `from_payload` 按 JSON shape 匹配（str/list/dict）
+- `#[serde(rename="type")]` → `kind` 字段（持有 `ToolType`）
+- list-carrying `Vec` → `tuple`
+- `Option` → `T | None = None`
+- `#[derive(Default)] struct` → tolerant `from_payload`
+- builder（`ToolCallRequest::with_id`）→ frozen copy-on-write（`frozen=True` 禁原地修改）
+
+**本轮三大坑（全部真实 bug，全部已修）**：
+
+**坑 1 — 注释块语法错误（ruff invalid-syntax，33 errors）**：`chat_completion_mid.py` `ToolCallRequest` section header 下的 3 行注释漏 `#` 前缀，Python 把注释内容当代码解析。修复：补全 3 行 `# ` 前缀。根因：section header 注释块手写时漏前缀。
+
+**坑 2 — `function` 字段/classmethod F811 重定义**：`ToolCallRequest` 的 dataclass 字段 `function`（wire key，应保持忠实）和 classmethod `function`（grok 的 `ToolCallRequest::function` associated function 构造器）同名。Grep grok 源码（`types.rs:445 pub fn function(name, arguments) -> Self`）确认是真实 associated function。**Rust 允许 struct field 和 associated function 同名（不同命名空间）；Python dataclass 不允许 field 和 method 同名（共享类命名空间，classmethod 会覆盖 field descriptor，破坏 `__init__` 参数绑定，ruff F811）。** 修复：classmethod 改名 `with_function`（与 `with_id` builder 前缀对称），docstring 标注 grok 原名 + Python 命名空间冲突原因；同步更新模块 docstring 两处 + 测试文件两处调用 + 测试函数名。决策依据：字段名 `function` 是 wire key 应保持忠实，优先改方法名而非字段名。
+
+**坑 3 — `blocks()` 方法 vs 子类字段 `blocks` 命名冲突（pytest TypeError）**：本轮最关键的坑。grok `impl MessageContent { is_empty(), blocks() }`（`types.rs:215/222`），`MessageContent::Blocks(Vec<...>)` 是 enum variant（payload 无字段名概念），方法在独立命名空间。Python 建模成 `ChatBlocksContent` 子类带 `blocks` slot 字段，基类 `ChatMessageContent` 的 `blocks()` 方法被子类字段的 slot 描述符遮蔽——实例 `content.blocks` 解析为 tuple 而非方法，`content.blocks()` 抛 `TypeError: 'tuple' object is not callable`。定向 pytest 第一轮即捕获（R204 peer `MessageContent` 无此坑——R204 YAGNI 未迁移 `blocks()`/`is_empty()` 方法，故无冲突）。修复：方法改名 `to_blocks()`（Python 惯用转换方法前缀 `to_`，区别于 `dict.keys` 访问器语义），`is_empty()` 无冲突保留；docstring 完整记录改名决策；同步模块 docstring 一处 + 测试函数名两处 + 调用两处。
+
+**三坑共性**：均为 Rust 命名空间分离（field / associated function / enum-variant-payload / method 各自独立）vs Python 共享类命名空间的根本差异。迁移策略统一为：**wire key 字段名保持忠实，方法/构造器改名规避冲突，docstring 标注 grok 原名 + 改名原因**。
+
+### 验证
+
+- ✅ **ruff clean**：`uv run ruff check minimax_code/sampler/chat_completion_mid.py tests/test_chat_completion_mid.py` → `All checks passed!`（第三轮，前三轮分别命中坑 1/2/3）
+- ✅ **定向 pytest**：`tests/test_chat_completion_mid.py tests/test_sampler_config.py tests/test_chat_completion_leaves.py` → **93 passed**
+- ✅ **全量回归**：`uv run pytest -q` → **5431 passed, 10 skipped**（R206 基准 5384 + 47 新增，零真实回归，1 个 fastapi 预存 warning 无关）
+
+### YAGNI 边界
+
+- 重容器（`ChatCompletionRequest`/`ChatCompletionResponse`/`ChatCompletionChunk` + 内层 `ChatRequestMessage`/`ChatChoice`/`ChatResponseMessage`/`ChatChunkChoice`/`ChatChunkDelta`/`ToolCallDelta`/`ToolCallFunctionDelta`/`SearchParameters`/`SearchSource`）延后——依赖 `crate::rs`/`crate::serde_helpers`/`xai-grok-tools` re-exports（`ToolDefinition`/`FunctionTool`）/彼此，非零依赖叶子。
+- `TraceContext` trait（W3C 上下文，R129 `SpanContext` 已覆盖等价语义）延后。
+- 压缩枚举（`CompactionAtTokens`/`CompactionsRemaining`）+ 重复 `ReasoningEffort`（带 `to_responses_api`/`from_responses_api` `crate::rs` 耦合）+ `ApiBackend`/`SamplingConfig` 簇延后——均有 `crate::rs` 重依赖。
+- 全 serde `Serialize`/`Deserialize` round-trip 不迁移——`from_payload` 覆盖平台所需的 parse 方向。
+
+### Commit
+
+`feat(platform): R207 migrate types.rs ChatCompletion mid-layer leaves`
+
+锚点链：… → R204(e82856a) → R205(4ad528e) → R206(0c12eae) → **R207（本轮）**。barrel 124→135；全量 5431 passed + 10 skipped（+47 新增），零真实回归。本轮修复三个真实 Python 命名空间 bug（注释语法 + `function` F811 + `blocks()` 遮蔽）。

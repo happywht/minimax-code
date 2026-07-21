@@ -56,7 +56,12 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     ReasoningEffort wire-string enums + DEFAULT_REASONING_EFFORT + ImageUrl /
     ToolChoiceFunction / ToolCallFunction / PromptTokensDetails /
     CompletionTokensDetails flat leaf structs -- the first types.rs slice)
-    = 124
+    + chat_completion_mid (R207, 11: ChatContentBlock 2-variant tagged union
+    + ChatMessageContent (renamed from grok ``MessageContent``) untagged union
+    + ToolChoice untagged union + ToolCallRequest struct + ChatUsage (renamed
+    from grok ``Usage``) struct -- the second types.rs slice, consuming the
+    R206 atomic leaves)
+    = 135
     re-exported symbols. The config trio stays; R198 adds the backoff/max-retries
     leaf; R199 adds the decision layer (consuming the migrated SamplingError) and
     the SamplingError type leaf itself; R200 adds the doom-loop wire contract +
@@ -77,8 +82,13 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     request / response / streaming shapes); R206 adds the first
     ``types.rs`` slice -- 9 zero-dependency atomic ChatCompletion leaves + the
     DEFAULT_REASONING_EFFORT constant (4 wire-string enums + 5 flat leaf
-    structs, strict enum parse -- no catch-all)."""
-    assert len(sampler.__all__) == 124
+    structs, strict enum parse -- no catch-all); R207 adds the second
+    ``types.rs`` slice -- 11 middle-layer ChatCompletion leaves composing the
+    R206 atomic leaves into request/response body shapes (ChatContentBlock
+    tagged union + ChatMessageContent/ToolChoice untagged unions +
+    ToolCallRequest/ChatUsage structs, renamed ``Chat*`` to dodge the Anthropic
+    Messages API peers -- strict tagged-union parse, no catch-all)."""
+    assert len(sampler.__all__) == 135
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -227,6 +237,22 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "ToolCallFunction",
         "ToolChoiceFunction",
         "ToolType",
+        # chat_completion_mid (R207): ChatContentBlock 2-variant tagged union +
+        # ChatMessageContent (renamed from grok MessageContent) untagged union +
+        # ToolChoice untagged union + ToolCallRequest struct + ChatUsage
+        # (renamed from grok Usage) struct -- 11 middle-layer leaves consuming
+        # the R206 atomic slice
+        "ChatBlocksContent",
+        "ChatContentBlock",
+        "ChatImageUrlBlock",
+        "ChatMessageContent",
+        "ChatTextBlock",
+        "ChatTextContent",
+        "ChatUsage",
+        "FunctionToolChoice",
+        "PresetToolChoice",
+        "ToolCallRequest",
+        "ToolChoice",
     }
 
 

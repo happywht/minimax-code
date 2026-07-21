@@ -6,7 +6,12 @@ package is being filled leaf-by-leaf. Currently landed: ``chat_completion_leaves
 ``xai-grok-sampling-types`` ``types.rs`` slice: Role / ToolType / FinishReason /
 ReasoningEffort wire-string enums + ImageUrl / ToolChoiceFunction /
 ToolCallFunction / PromptTokensDetails / CompletionTokensDetails flat leaf
-structs + the DEFAULT_REASONING_EFFORT constant) + ``config`` (R195,
+structs + the DEFAULT_REASONING_EFFORT constant) + ``chat_completion_mid`` (R207,
+the second ``types.rs`` slice: ChatContentBlock 2-variant tagged union +
+ChatMessageContent (renamed from grok ``MessageContent``) untagged union +
+ToolChoice untagged union + ToolCallRequest struct + ChatUsage (renamed from
+grok ``Usage``) struct, 11 middle-layer leaves consuming the R206 atomic
+slice) + ``config`` (R195,
 pure-type subset) + ``content_blocks`` (R202, ``xai-grok-sampling-types``
 ``messages.rs`` ContentBlock 5-variant union + 3 deps) + ``doom_loop`` (R200,
 ``xai-grok-sampling-types`` ``doom_loop.rs`` wire contract + tolerant
@@ -113,6 +118,19 @@ from minimax_code.sampler.chat_completion_leaves import (
     ToolCallFunction,
     ToolChoiceFunction,
     ToolType,
+)
+from minimax_code.sampler.chat_completion_mid import (
+    ChatBlocksContent,
+    ChatContentBlock,
+    ChatImageUrlBlock,
+    ChatMessageContent,
+    ChatTextBlock,
+    ChatTextContent,
+    ChatUsage,
+    FunctionToolChoice,
+    PresetToolChoice,
+    ToolCallRequest,
+    ToolChoice,
 )
 from minimax_code.sampler.config import (
     DEFAULT_AUTH_SCHEME,
@@ -259,6 +277,13 @@ __all__ = [
     "BlocksSystemParam",
     "BlocksToolResultContent",
     "CacheControl",
+    "ChatBlocksContent",
+    "ChatContentBlock",
+    "ChatImageUrlBlock",
+    "ChatMessageContent",
+    "ChatTextBlock",
+    "ChatTextContent",
+    "ChatUsage",
     "CheckEvent",
     "CompletionTokensDetails",
     "ContentBlock",
@@ -283,6 +308,7 @@ __all__ = [
     "EndTurn",
     "Fatal",
     "FinishReason",
+    "FunctionToolChoice",
     "ImageBlock",
     "ImageSource",
     "ImageUrl",
@@ -311,6 +337,7 @@ __all__ = [
     "OutputFormat",
     "PauseTurn",
     "PingEvent",
+    "PresetToolChoice",
     "PromptTokensDetails",
     "RATE_LIMIT_RETRY_THRESHOLD",
     "ReasoningEffort",
@@ -348,6 +375,8 @@ __all__ = [
     "ThinkingDelta",
     "ThinkingDisplay",
     "ToolCallFunction",
+    "ToolCallRequest",
+    "ToolChoice",
     "ToolChoiceFunction",
     "ToolChoiceParam",
     "ToolParam",
