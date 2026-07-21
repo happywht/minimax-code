@@ -1,4 +1,4 @@
-"""Tests for data_structures.graphlib (R242+R243, vendored ``third_party/graphlib_rust``).
+"""Tests for data_structures.graphlib (R242+R243+R244, vendored ``third_party/graphlib_rust``).
 
 R242 covers the edge-encoding vocabulary layer: the 3 sentinel constants
 (:data:`DEFAULT_EDGE_NAME`, :data:`GRAPH_NODE`, :data:`EDGE_KEY_DELIM`), the
@@ -12,15 +12,16 @@ accessors, the default-node-label tagged union (:class:`NodeLabelValue` /
 :class:`NodeLabelFactory`), node CRUD, compound parent/child queries, and the
 adjacency queries (predecessors / successors / neighbors / is_leaf).
 
-Edge-method coverage (``set_edge`` / ``edge`` / ``remove_edge`` / ``in_edges``
-/ ``out_edges``) and the node methods that depend on them (``remove_node`` /
-``filter_nodes``) migrate in R243b. Until then, non-empty adjacency state
-cannot be created via the public API, so the predecessor/successor/neighbor
-tests that need a populated adjacency table are white-box: they insert
-entries directly into the ``_in`` / ``_out`` / ``_preds`` / ``_sucs`` internal
-tables (clearly commented "set_edge deferred to R243b"). The black-box
-contract (absent node -> ``None``, isolated node -> ``[]``) is covered via
-``set_node``.
+R244 closes the complete Graph CRUD surface: the edge-method subset
+(``set_edge`` / ``edge`` / ``edge_mut`` / ``has_edge`` / ``remove_edge`` /
+``in_edges`` / ``out_edges`` / ``node_edges`` / ``edge_count`` / ``edges`` /
+``set_path``), the default-edge-label tagged union (:class:`EdgeLabelValue` /
+:class:`EdgeLabelFactory``), and the edge-dependent node methods
+(``remove_node`` cascade + ``filter_nodes`` predicate filter with compound
+parent re-threading). With ``set_edge`` available, the predecessor / successor
+/ neighbor / is_leaf tests now exercise a populated adjacency table via the
+public API (R243's white-box ``_in`` / ``_out`` / ``_preds`` / ``_sucs``
+backfill is retired).
 """
 
 from __future__ import annotations
@@ -33,13 +34,18 @@ from minimax_code.data_structures import (
     Edge,
     Graph,
     GraphOption,
+    OrderedHashMap,
 )
 from minimax_code.data_structures.graphlib import (
     DEFAULT_EDGE_NAME,
     EDGE_KEY_DELIM,
     GRAPH_NODE,
+    EdgeLabelFactory,
+    EdgeLabelValue,
     NodeLabelFactory,
     NodeLabelValue,
+    _decrement_or_remove_entry,
+    _increment_or_init_entry,
     edge_args_to_id,
     edge_args_to_obj,
     edge_obj_to_id,
@@ -605,35 +611,21 @@ def test_sinks_all_nodes_when_no_edges() -> None:
     assert g.sinks() == ["a", "b"]
 
 
-def test_sources_excludes_node_with_in_edges_whitebox() -> None:
-    """A node whose _in table is populated is not a source.
-
-    set_edge is deferred to R243b, so the _in entry is inserted directly
-    (white-box) to exercise the non-empty branch.
-    """
+def test_sources_excludes_node_with_in_edges() -> None:
+    """A node with an in-edge is not a source (exercised via set_edge, R244)."""
     g = Graph()
     g.set_node("a", None)
     g.set_node("b", None)
-    # white-box: give "a" an in-edge entry (set_edge deferred to R243b)
-    in_a = g._in.get("a")
-    assert in_a is not None
-    in_a.insert("x|a", Edge(v="x", w="a"))
+    g.set_edge("b", "a", None, None)  # a gains an in-edge -> not a source
     assert g.sources() == ["b"]
 
 
-def test_sinks_excludes_node_with_out_edges_whitebox() -> None:
-    """A node whose _out table is populated is not a sink.
-
-    set_edge is deferred to R243b, so the _out entry is inserted directly
-    (white-box) to exercise the non-empty branch.
-    """
+def test_sinks_excludes_node_with_out_edges() -> None:
+    """A node with an out-edge is not a sink (exercised via set_edge, R244)."""
     g = Graph()
     g.set_node("a", None)
     g.set_node("b", None)
-    # white-box: give "a" an out-edge entry (set_edge deferred to R243b)
-    out_a = g._out.get("a")
-    assert out_a is not None
-    out_a.insert("a|x", Edge(v="a", w="x"))
+    g.set_edge("a", "b", None, None)  # a gains an out-edge -> not a sink
     assert g.sinks() == ["b"]
 
 
@@ -817,50 +809,35 @@ def test_neighbors_isolated_node_returns_empty() -> None:
     assert g.neighbors("a") == []
 
 
-def test_predecessors_whitebox_insertion_order() -> None:
-    """predecessors(v) returns _preds[v] keys in insertion order.
-
-    set_edge is deferred to R243b, so the _preds entry is inserted directly.
-    """
+def test_predecessors_insertion_order() -> None:
+    """predecessors(v) returns the source nodes of v's in-edges in insertion order."""
     g = Graph()
     g.set_node("a", None)
-    preds_a = g._preds.get("a")
-    assert preds_a is not None
-    preds_a.insert("b", 1)
-    preds_a.insert("c", 2)
+    g.set_edge("b", "a", None, None)
+    g.set_edge("c", "a", None, None)
     assert g.predecessors("a") == ["b", "c"]
 
 
-def test_successors_whitebox_insertion_order() -> None:
-    """successors(v) returns _sucs[v] keys in insertion order.
-
-    set_edge is deferred to R243b, so the _sucs entry is inserted directly.
-    """
+def test_successors_insertion_order() -> None:
+    """successors(v) returns the target nodes of v's out-edges in insertion order."""
     g = Graph()
     g.set_node("a", None)
-    sucs_a = g._sucs.get("a")
-    assert sucs_a is not None
-    sucs_a.insert("b", 1)
-    sucs_a.insert("c", 2)
+    g.set_edge("a", "b", None, None)
+    g.set_edge("a", "c", None, None)
     assert g.successors("a") == ["b", "c"]
 
 
-def test_neighbors_whitebox_union_order_preserved() -> None:
-    """neighbors(v) = predecessors + new successors, first-seen order preserved (grok uses unordered HashSet).
+def test_neighbors_union_order_preserved() -> None:
+    """neighbors(v) = predecessors + new successors, first-seen order preserved.
 
-    set_edge is deferred to R243b, so the _preds/_sucs entries are inserted
-    directly. "c" appears in both preds and sucs and is deduplicated.
+    "c" appears in both preds (c->a) and sucs (a->c) and is deduplicated.
     """
     g = Graph()
     g.set_node("a", None)
-    preds_a = g._preds.get("a")
-    assert preds_a is not None
-    preds_a.insert("b", 1)
-    preds_a.insert("c", 2)
-    sucs_a = g._sucs.get("a")
-    assert sucs_a is not None
-    sucs_a.insert("c", 1)  # duplicate of pred "c"
-    sucs_a.insert("d", 2)
+    g.set_edge("b", "a", None, None)
+    g.set_edge("c", "a", None, None)  # c is a predecessor of a
+    g.set_edge("a", "c", None, None)  # c is also a successor of a
+    g.set_edge("a", "d", None, None)
     # neighbors = preds (b, c) + new sucs (d); c deduped
     assert g.neighbors("a") == ["b", "c", "d"]
 
@@ -872,31 +849,23 @@ def test_is_leaf_directed_isolated_node_true() -> None:
     assert g.is_leaf("a") is True
 
 
-def test_is_leaf_directed_with_successors_false_whitebox() -> None:
-    """Directed: a node with a successor is not a leaf.
-
-    set_edge is deferred to R243b, so the _sucs entry is inserted directly.
-    """
+def test_is_leaf_directed_with_successors_false() -> None:
+    """Directed: a node with a successor is not a leaf (exercised via set_edge, R244)."""
     g = Graph()  # directed
     g.set_node("a", None)
-    sucs_a = g._sucs.get("a")
-    assert sucs_a is not None
-    sucs_a.insert("b", 1)
+    g.set_edge("a", "b", None, None)
     assert g.is_leaf("a") is False
 
 
-def test_is_leaf_undirected_uses_neighbors_whitebox() -> None:
+def test_is_leaf_undirected_uses_neighbors() -> None:
     """Undirected: is_leaf checks neighbors (preds OR sucs), not just successors.
 
-    set_edge is deferred to R243b, so the _preds entry is inserted directly.
     A node with only a predecessor is still a non-leaf in undirected mode
     (because neighbors merges preds + sucs).
     """
     g = Graph(GraphOption(directed=False))
     g.set_node("a", None)
-    preds_a = g._preds.get("a")
-    assert preds_a is not None
-    preds_a.insert("b", 1)  # a has a predecessor b
+    g.set_edge("b", "a", None, None)  # a has a predecessor b (undirected: same edge)
     # undirected: neighbors(a) = {b}, so a is NOT a leaf
     assert g.is_leaf("a") is False
 
@@ -905,3 +874,607 @@ def test_is_leaf_absent_node_true() -> None:
     """An absent node is treated as a leaf (matches grok)."""
     g = Graph()
     assert g.is_leaf("missing") is True
+
+
+# === R244: edge-method + remove_node + filter_nodes black-box suite ===========
+# Closes the complete Graph CRUD surface. The R243 white-box mode (filling the
+# internal _in/_out/_preds/_sucs tables directly because set_edge was deferred)
+# is retired -- every adjacency state below is built via the public set_edge API.
+
+
+# --- DefaultEdgeLabel tagged union (mirrors grok ``enum DefaultEdgeLabel``) ----
+
+
+def test_edge_label_value_defaults_to_none() -> None:
+    """EdgeLabelValue() with no argument has ``value=None`` (fall-back signal)."""
+    assert EdgeLabelValue().value is None
+
+
+def test_edge_label_value_carries_value() -> None:
+    """EdgeLabelValue(v) holds the fixed default value."""
+    assert EdgeLabelValue("lbl").value == "lbl"
+
+
+def test_edge_label_value_is_frozen() -> None:
+    """EdgeLabelValue is frozen (value object); mutation raises (FrozenInstanceError)."""
+    variant = EdgeLabelValue("lbl")
+    with pytest.raises(AttributeError):  # FrozenInstanceError subclasses AttributeError
+        variant.value = "other"  # type: ignore[misc]
+
+
+def test_edge_label_value_equality() -> None:
+    """Two EdgeLabelValues with the same value compare equal (dataclass eq)."""
+    assert EdgeLabelValue("x") == EdgeLabelValue("x")
+    assert EdgeLabelValue("x") != EdgeLabelValue("y")
+    assert EdgeLabelValue() == EdgeLabelValue(None)
+
+
+def test_edge_label_factory_holds_callable() -> None:
+    """EdgeLabelFactory stores the per-edge factory callable verbatim."""
+
+    def fn(edge_id: str) -> str:
+        return f"label-{edge_id}"
+
+    variant = EdgeLabelFactory(fn)
+    assert variant.factory is fn
+
+
+def test_edge_label_factory_is_mutable() -> None:
+    """EdgeLabelFactory is NOT frozen (it wraps a behaviour, not a value)."""
+    variant = EdgeLabelFactory(lambda eid: "a")
+    variant.factory = lambda eid: "b"  # type: ignore[method-assign]
+    assert variant.factory("x") == "b"
+
+
+def test_set_default_edge_label_returns_self_for_chaining() -> None:
+    """set_default_edge_label returns ``&mut self`` (grok chaining convention)."""
+    g = Graph()
+    assert g.set_default_edge_label(EdgeLabelValue("v")) is g
+
+
+# --- default_edge_label three-way fallback -----------------------------------
+
+
+def test_default_edge_label_value_variant() -> None:
+    """EdgeLabelValue with a value -> that value."""
+    g = Graph()
+    g.set_default_edge_label(EdgeLabelValue("fixed"))
+    assert g.default_edge_label("a-b") == "fixed"
+
+
+def test_default_edge_label_factory_variant() -> None:
+    """EdgeLabelFactory -> factory(edge_id) when non-None."""
+    g = Graph()
+    g.set_default_edge_label(EdgeLabelFactory(lambda edge_id: f"f-{edge_id}"))
+    assert g.default_edge_label("a-b") == "f-a-b"
+
+
+def test_default_edge_label_value_none_falls_back_to_factory() -> None:
+    """EdgeLabelValue(None) -> edge_default_factory() (grok ``E::default()``)."""
+    g = Graph(GraphOption(), edge_default_factory=lambda: "dft")
+    g.set_default_edge_label(EdgeLabelValue(None))
+    assert g.default_edge_label("a-b") == "dft"
+
+
+def test_default_edge_label_factory_none_falls_back() -> None:
+    """EdgeLabelFactory returning None -> edge_default_factory()."""
+    g = Graph(GraphOption(), edge_default_factory=lambda: "dft")
+    g.set_default_edge_label(EdgeLabelFactory(lambda edge_id: None))
+    assert g.default_edge_label("a-b") == "dft"
+
+
+def test_default_edge_label_no_default_returns_none() -> None:
+    """Default EdgeLabelValue() + default edge_default_factory (lambda: None) -> None."""
+    g = Graph()  # default_edge_label_fn = EdgeLabelValue(); factory = lambda: None
+    assert g.default_edge_label("a-b") is None
+
+
+# --- set_edge ----------------------------------------------------------------
+
+
+def test_set_edge_creates_edge_increments_count() -> None:
+    """Creating a new edge bumps edge_count from 0 to 1."""
+    g = Graph()
+    assert g.edge_count() == 0
+    g.set_edge("a", "b", None, None)
+    assert g.edge_count() == 1
+
+
+def test_set_edge_returns_self_for_chaining() -> None:
+    """set_edge returns ``&mut self`` (grok chaining convention)."""
+    g = Graph()
+    assert g.set_edge("a", "b", None, None) is g
+
+
+def test_set_edge_ensures_endpoints_exist() -> None:
+    """set_edge auto-creates both endpoints via set_node."""
+    g = Graph()
+    g.set_edge("a", "b", None, None)
+    assert g.has_node("a")
+    assert g.has_node("b")
+
+
+def test_set_edge_unit_label_defaults_none() -> None:
+    """For an E=() graph, a created edge stores label None (disambiguate via has_edge)."""
+    g = Graph()
+    g.set_edge("a", "b", None, None)
+    assert g.edge("a", "b", None) is None
+    assert g.has_edge("a", "b", None)
+
+
+def test_set_edge_with_explicit_label() -> None:
+    """An explicit edge_label is stored and readable via edge()."""
+    g = Graph()
+    g.set_edge("a", "b", "lbl", None)
+    assert g.edge("a", "b", None) == "lbl"
+
+
+def test_set_edge_updates_existing_label() -> None:
+    """Re-setting an existing edge with a label updates it (count unchanged)."""
+    g = Graph()
+    g.set_edge("a", "b", "x", None)
+    g.set_edge("a", "b", "y", None)
+    assert g.edge("a", "b", None) == "y"
+    assert g.edge_count() == 1
+
+
+def test_set_edge_keeps_label_when_edge_label_none_on_existing() -> None:
+    """Re-setting an existing edge with edge_label=None leaves the label untouched."""
+    g = Graph()
+    g.set_edge("a", "b", "x", None)
+    g.set_edge("a", "b", None, None)
+    assert g.edge("a", "b", None) == "x"
+    assert g.edge_count() == 1
+
+
+def test_set_edge_named_edge_non_multigraph_raises() -> None:
+    """A named edge on a non-multigraph raises RuntimeError (grok Err)."""
+    g = Graph()  # multigraph=False
+    with pytest.raises(RuntimeError):
+        g.set_edge("a", "b", None, "name")
+
+
+def test_set_edge_named_edge_multigraph_allowed() -> None:
+    """A named edge on a multigraph is allowed (parallel-edge discriminator)."""
+    g = Graph(GraphOption(multigraph=True))
+    g.set_edge("a", "b", "x", "n1")
+    assert g.edge_count() == 1
+    assert g.has_edge("a", "b", "n1")
+
+
+def test_set_edge_idempotent_no_double_count() -> None:
+    """Setting the same edge twice does not double-count."""
+    g = Graph()
+    g.set_edge("a", "b", None, None)
+    g.set_edge("a", "b", None, None)
+    assert g.edge_count() == 1
+
+
+def test_set_edge_with_obj() -> None:
+    """set_edge_with_obj creates the edge (name hardcoded None)."""
+    g = Graph()
+    g.set_edge_with_obj(Edge("a", "b"), "lbl")
+    assert g.edge("a", "b", None) == "lbl"
+    assert g.has_edge("a", "b", None)
+
+
+# --- edge / edge_mut / has_edge family ---------------------------------------
+
+
+def test_edge_absent_returns_none() -> None:
+    """edge() on a missing edge returns None."""
+    g = Graph()
+    assert g.edge("a", "b", None) is None
+
+
+def test_edge_with_obj() -> None:
+    """edge_with_obj reads via the edge-object overload."""
+    g = Graph()
+    g.set_edge("a", "b", "lbl", None)
+    assert g.edge_with_obj(Edge("a", "b")) == "lbl"
+
+
+def test_edge_with_obj_matches_set_edge_none_name() -> None:
+    """Edge(name=None) maps to DEFAULT_EDGE_NAME -- same id as set_edge(...,None)."""
+    g = Graph()
+    g.set_edge("a", "b", "lbl", None)
+    e = Edge("a", "b")  # name defaults to None -> DEFAULT_EDGE_NAME
+    assert g.has_edge_with_obj(e)
+    assert g.edge_with_obj(e) == "lbl"
+
+
+def test_edge_mut_returns_mutable_handle() -> None:
+    """edge_mut returns a live mutable handle; mutating it mutates the stored label."""
+    g = Graph()
+    g.set_edge("a", "b", {"n": 1}, None)
+    handle = g.edge_mut("a", "b", None)
+    assert handle is not None
+    handle["n"] = 2
+    assert g.edge("a", "b", None) == {"n": 2}
+
+
+def test_edge_mut_absent_returns_none() -> None:
+    """edge_mut on a missing edge returns None."""
+    g = Graph()
+    assert g.edge_mut("a", "b", None) is None
+
+
+def test_has_edge_true_false() -> None:
+    """has_edge reports existence regardless of the label value."""
+    g = Graph()
+    assert g.has_edge("a", "b", None) is False
+    g.set_edge("a", "b", None, None)
+    assert g.has_edge("a", "b", None) is True
+
+
+def test_has_edge_with_obj() -> None:
+    """has_edge_with_obj reports existence via the edge-object overload."""
+    g = Graph()
+    e = Edge("a", "b")
+    assert g.has_edge_with_obj(e) is False
+    g.set_edge("a", "b", None, None)
+    assert g.has_edge_with_obj(e) is True
+
+
+# --- remove_edge -------------------------------------------------------------
+
+
+def test_remove_edge_decrements_count_drops_label() -> None:
+    """remove_edge drops the label and decrements the count."""
+    g = Graph()
+    g.set_edge("a", "b", "lbl", None)
+    g.remove_edge("a", "b", None)
+    assert g.edge_count() == 0
+    assert not g.has_edge("a", "b", None)
+    assert g.edge("a", "b", None) is None
+
+
+def test_remove_edge_updates_adjacency() -> None:
+    """remove_edge decrements the predecessor/successor counters to empty."""
+    g = Graph()
+    g.set_edge("a", "b", None, None)
+    g.remove_edge("a", "b", None)
+    # _preds["b"] / _sucs["a"] still exist as empty maps -> [] not None
+    assert g.predecessors("b") == []
+    assert g.successors("a") == []
+
+
+def test_remove_edge_keeps_nodes() -> None:
+    """remove_edge drops only the edge, not its endpoints."""
+    g = Graph()
+    g.set_edge("a", "b", None, None)
+    g.remove_edge("a", "b", None)
+    assert g.has_node("a")
+    assert g.has_node("b")
+
+
+def test_remove_edge_absent_noop() -> None:
+    """remove_edge on a missing edge is a no-op (count unchanged)."""
+    g = Graph()
+    g.set_edge("a", "b", None, None)
+    g.remove_edge("x", "y", None)  # absent
+    assert g.edge_count() == 1
+
+
+def test_remove_edge_with_obj() -> None:
+    """remove_edge_with_obj removes via the edge-object overload."""
+    g = Graph()
+    g.set_edge("a", "b", "lbl", None)
+    g.remove_edge_with_obj(Edge("a", "b"))
+    assert g.edge_count() == 0
+
+
+def test_remove_edge_then_re_add() -> None:
+    """After removal the edge can be re-created (count 0 -> 1)."""
+    g = Graph()
+    g.set_edge("a", "b", None, None)
+    g.remove_edge("a", "b", None)
+    assert g.edge_count() == 0
+    g.set_edge("a", "b", "lbl", None)
+    assert g.edge_count() == 1
+    assert g.edge("a", "b", None) == "lbl"
+
+
+# --- in_edges / out_edges / node_edges ---------------------------------------
+
+
+def test_in_edges_absent_node_returns_none() -> None:
+    """in_edges on an absent node returns None (no adjacency table)."""
+    g = Graph()
+    assert g.in_edges("missing", None) is None
+
+
+def test_in_edges_isolated_returns_empty_list() -> None:
+    """in_edges on a node that exists but has no in-edges returns []."""
+    g = Graph()
+    g.set_node("a", None)
+    assert g.in_edges("a", None) == []
+
+
+def test_in_edges_returns_edge_list() -> None:
+    """in_edges returns the Edge objects pointing at v."""
+    g = Graph()
+    g.set_edge("a", "b", None, None)
+    edges = g.in_edges("b", None)
+    assert edges is not None
+    assert len(edges) == 1
+    assert edges[0].v == "a" and edges[0].w == "b"
+
+
+def test_in_edges_filters_by_u() -> None:
+    """in_edges(v, u) filters to just the edges coming from u."""
+    g = Graph()
+    g.set_edge("a", "b", None, None)
+    g.set_edge("c", "b", None, None)
+    edges = g.in_edges("b", "a")
+    assert edges is not None
+    assert len(edges) == 1
+    assert edges[0].v == "a"
+
+
+def test_in_edges_multiple_preserve_insertion_order() -> None:
+    """in_edges lists edges in insertion order (deterministic)."""
+    g = Graph()
+    g.set_edge("a", "b", None, None)
+    g.set_edge("c", "b", None, None)
+    g.set_edge("d", "b", None, None)
+    edges = g.in_edges("b", None)
+    assert edges is not None
+    assert [e.v for e in edges] == ["a", "c", "d"]
+
+
+def test_out_edges_absent_returns_none() -> None:
+    """out_edges on an absent node returns None."""
+    g = Graph()
+    assert g.out_edges("missing", None) is None
+
+
+def test_out_edges_returns_list_and_filters_by_w() -> None:
+    """out_edges returns v's out-edges; filtered to those pointing at w."""
+    g = Graph()
+    g.set_edge("a", "b", None, None)
+    g.set_edge("a", "c", None, None)
+    all_out = g.out_edges("a", None)
+    assert all_out is not None
+    assert len(all_out) == 2
+    to_b = g.out_edges("a", "b")
+    assert to_b is not None
+    assert len(to_b) == 1
+    assert to_b[0].w == "b"
+
+
+def test_node_edges_merges_in_and_out() -> None:
+    """node_edges merges in-edges and out-edges regardless of direction."""
+    g = Graph()
+    g.set_edge("x", "v", None, None)  # in-edge to v
+    g.set_edge("v", "y", None, None)  # out-edge from v
+    edges = g.node_edges("v", None)
+    assert edges is not None
+    assert len(edges) == 2
+
+
+def test_node_edges_absent_returns_none() -> None:
+    """node_edges on an absent node returns None."""
+    g = Graph()
+    assert g.node_edges("missing", None) is None
+
+
+def test_node_edges_filters_by_w_both_directions() -> None:
+    """node_edges(v, w) returns edges between v and w in either direction."""
+    g = Graph()
+    g.set_edge("v", "w", None, None)  # out-edge v->w
+    g.set_edge("w", "v", None, None)  # in-edge w->v
+    edges = g.node_edges("v", "w")
+    assert edges is not None
+    assert len(edges) == 2  # one in + one out
+
+
+# --- edges / edge_count / set_path -------------------------------------------
+
+
+def test_edges_empty_initially() -> None:
+    """A fresh graph has no edges."""
+    g = Graph()
+    assert g.edges() == []
+
+
+def test_edges_returns_insertion_order() -> None:
+    """edges() lists Edge objects in insertion order."""
+    g = Graph()
+    g.set_edge("a", "b", None, None)
+    g.set_edge("c", "d", None, None)
+    objs = g.edges()
+    assert [(e.v, e.w) for e in objs] == [("a", "b"), ("c", "d")]
+
+
+def test_edge_count_tracks_add_remove() -> None:
+    """edge_count reflects the running total across add/remove."""
+    g = Graph()
+    g.set_edge("a", "b", None, None)
+    g.set_edge("b", "c", None, None)
+    assert g.edge_count() == 2
+    g.remove_edge("a", "b", None)
+    assert g.edge_count() == 1
+
+
+def test_set_path_links_consecutive_pairs() -> None:
+    """set_path([a,b,c,d]) creates a->b, b->c, c->d."""
+    g = Graph()
+    g.set_path(["a", "b", "c", "d"], None)
+    assert g.edge_count() == 3
+    assert g.has_edge("a", "b", None)
+    assert g.has_edge("b", "c", None)
+    assert g.has_edge("c", "d", None)
+
+
+def test_set_path_single_node_no_edges() -> None:
+    """set_path over a single node creates no edges."""
+    g = Graph()
+    g.set_path(["a"], None)
+    assert g.edge_count() == 0
+
+
+# --- remove_node -------------------------------------------------------------
+
+
+def test_remove_node_cascades_incident_edges() -> None:
+    """remove_node drops every incident edge (both in and out)."""
+    g = Graph()
+    g.set_edge("a", "b", None, None)
+    g.set_edge("b", "c", None, None)
+    assert g.edge_count() == 2
+    g.remove_node("b")
+    assert g.edge_count() == 0
+    assert not g.has_node("b")
+    assert g.has_node("a")
+    assert g.has_node("c")
+
+
+def test_remove_node_absent_noop() -> None:
+    """remove_node on an absent node is a no-op."""
+    g = Graph()
+    g.set_node("a", None)
+    g.remove_node("missing")
+    assert g.node_count() == 1
+    assert g.has_node("a")
+
+
+def test_remove_node_compound_reparents_children_to_root() -> None:
+    """In a compound graph, removing a parent re-parents its children onto the root."""
+    g = Graph(GraphOption(compound=True))
+    g.set_node("a", None)
+    g.set_node("b", None)
+    g.set_parent("b", "a")  # b is a child of a
+    g.remove_node("a")
+    assert not g.has_node("a")
+    assert g.has_node("b")
+    assert g.parent("b") is None  # re-parented onto synthetic GRAPH_NODE root
+
+
+# --- filter_nodes ------------------------------------------------------------
+
+
+def test_filter_nodes_keeps_matching() -> None:
+    """filter_nodes keeps only the nodes whose id passes the predicate."""
+    g = Graph()
+    g.set_node("a", None)
+    g.set_node("b", None)
+    filtered = g.filter_nodes(lambda n: n == "a")
+    assert filtered.nodes() == ["a"]
+
+
+def test_filter_nodes_drops_incident_edges() -> None:
+    """Edges incident to a rejected node are dropped."""
+    g = Graph()
+    g.set_edge("a", "b", None, None)
+    filtered = g.filter_nodes(lambda n: n == "a")
+    assert filtered.edge_count() == 0
+    assert not filtered.has_edge("a", "b", None)
+
+
+def test_filter_nodes_preserves_edges_between_survivors() -> None:
+    """An edge between two surviving nodes is kept."""
+    g = Graph()
+    g.set_edge("a", "b", "lbl", None)
+    g.set_node("c", None)
+    filtered = g.filter_nodes(lambda n: n != "c")
+    assert filtered.edge_count() == 1
+    assert filtered.edge("a", "b", None) == "lbl"
+
+
+def test_filter_nodes_preserves_graph_flags() -> None:
+    """filter_nodes copies the directed/multigraph/compound flags onto the result."""
+    g = Graph(GraphOption(directed=False, multigraph=True, compound=True))
+    g.set_node("a", None)
+    filtered = g.filter_nodes(lambda n: True)
+    assert filtered.is_directed() is False
+    assert filtered.is_multigraph() is True
+    assert filtered.is_compound() is True
+
+
+def test_filter_nodes_compound_intermediate_filtered_rethreads_descendant() -> None:
+    """Each node is filtered by its own predicate -- descendants survive a rejected
+    intermediate and re-thread onto the closest surviving ancestor.
+
+    NOTE: the filter_nodes docstring claim that "if a parent is rejected all its
+    children are rejected too" does NOT match the grok implementation (nor this
+    port): the predicate is applied per-node with no recursive descent. Dropping
+    an intermediate node leaves its descendants in the result, re-threaded by
+    :func:`_find_parent`. This test pins the actual (implementation-faithful)
+    behaviour.
+    """
+    g = Graph(GraphOption(compound=True))
+    g.set_node("a", None)
+    g.set_node("b", None)
+    g.set_node("c", None)
+    g.set_parent("b", "a")  # b is a child of a
+    g.set_parent("c", "b")  # c is a child of b
+    # Drop the intermediate "a"; b and c survive.
+    filtered = g.filter_nodes(lambda n: n != "a")
+    assert "a" not in filtered.nodes()
+    assert "b" in filtered.nodes()
+    assert "c" in filtered.nodes()
+    # "a" was filtered out and its own parent is None (root) -> b re-threads to root.
+    assert filtered.parent("b") is None
+    # "b" survived, so c's parent chain is intact -> c's parent stays "b".
+    assert filtered.parent("c") == "b"
+
+
+def test_filter_nodes_compound_rethreads_to_grandparent() -> None:
+    """A leaf whose parent chain crosses a filtered-out intermediate re-threads
+    onto the closest surviving ancestor (the grandparent)."""
+    g = Graph(GraphOption(compound=True))
+    g.set_node("root", None)
+    g.set_node("mid", None)
+    g.set_node("leaf", None)
+    g.set_parent("mid", "root")
+    g.set_parent("leaf", "mid")
+    # Drop "mid"; leaf should re-thread onto grandparent "root".
+    filtered = g.filter_nodes(lambda n: n != "mid")
+    assert filtered.parent("leaf") == "root"
+
+
+# --- module-private edge helpers ---------------------------------------------
+
+
+def test_increment_or_init_entry_initial_one() -> None:
+    """_increment_or_init_entry on a vacant key initialises the count to 1."""
+    m: OrderedHashMap[str, int] = OrderedHashMap()
+    _increment_or_init_entry(m, "x")
+    assert m.get("x") == 1
+    assert list(m.keys()) == ["x"]
+
+
+def test_increment_or_init_entry_in_place_increment() -> None:
+    """_increment_or_init_entry on an occupied key increments in place."""
+    m: OrderedHashMap[str, int] = OrderedHashMap()
+    _increment_or_init_entry(m, "x")
+    _increment_or_init_entry(m, "x")
+    assert m.get("x") == 2
+
+
+def test_increment_preserves_insertion_position() -> None:
+    """Incrementing an existing key keeps its insertion position (grok get_mut)."""
+    m: OrderedHashMap[str, int] = OrderedHashMap()
+    _increment_or_init_entry(m, "a")
+    _increment_or_init_entry(m, "b")
+    _increment_or_init_entry(m, "a")  # bump existing "a"
+    assert list(m.keys()) == ["a", "b"]
+    assert m.get("a") == 2
+
+
+def test_decrement_or_remove_entry_removes_at_zero() -> None:
+    """_decrement_or_remove_entry drops the entry when the count hits zero."""
+    m: OrderedHashMap[str, int] = OrderedHashMap()
+    _increment_or_init_entry(m, "x")
+    _decrement_or_remove_entry(m, "x")
+    assert not m.contains_key("x")
+
+
+def test_decrement_or_remove_entry_in_place_decrement() -> None:
+    """_decrement_or_remove_entry decrements in place above zero."""
+    m: OrderedHashMap[str, int] = OrderedHashMap()
+    _increment_or_init_entry(m, "x")
+    _increment_or_init_entry(m, "x")
+    _decrement_or_remove_entry(m, "x")
+    assert m.get("x") == 1

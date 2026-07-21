@@ -22,10 +22,17 @@ is pure logic (only path dep is the migrated ``ordered_hashmap``, no
 Third leaf (R243): ``graphlib`` extended -- the ``Graph`` core struct + its
 node-primitive method subset (construction, flag queries, graph-label
 accessors, default-node-label machinery, node CRUD, compound parent/child
-queries, adjacency queries). The edge-method subset and the node methods that
-depend on them (``remove_node`` / ``filter_nodes``) migrate in R243b; this
-leaf carries only the zero-edge-dependency node surface so every migrated
-method is self-contained and testable. ``Graph`` is the fifth barrel symbol.
+queries, adjacency queries). ``Graph`` is the fifth barrel symbol.
+
+Fourth leaf (R244): ``graphlib`` extended again -- the ``Graph`` edge-method
+subset (``set_edge`` / ``edge`` / ``remove_edge`` / ``has_edge`` /
+``in_edges`` / ``out_edges`` / ``node_edges`` / ``edge_count`` / ``edges`` /
+``set_path``) + the edge-dependent node methods (``remove_node`` cascade,
+``filter_nodes`` predicate filter). Closes the complete Graph CRUD surface.
+The ``DefaultEdgeLabel`` tagged union + the three module-private helpers
+(``_increment_or_init_entry`` / ``_decrement_or_remove_entry`` /
+``_find_parent``) stay module-level (not barrel-public), mirroring grok's
+non-re-exported ``enum`` + module-private ``fn`` items. Barrel count stays 5.
 """
 
 from __future__ import annotations

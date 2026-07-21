@@ -1,4 +1,4 @@
-"""Graphlib edge-encoding primitives + Graph node primitives (R242+R243).
+"""Graphlib edge-encoding + Graph node/edge primitives (R242+R243+R244).
 
 Mirrors the type vocabulary + edge-id encoding helpers + the ``Graph``
 struct's node-primitive method subset of grok's vendored ``graphlib_rust``
@@ -31,12 +31,24 @@ node primitives.** Building on the R242 vocabulary:
   flag queries + graph-label accessors + default-node-label machinery + node
   CRUD + compound parent/child queries + adjacency queries.
 
-The edge-method subset of :class:`Graph` (``set_edge`` / ``edge`` /
-``remove_edge`` / ``in_edges`` / ``out_edges`` / ...) and the node methods
-that depend on them (``remove_node`` / ``filter_nodes``) migrate in R243b;
-this leaf carries only the zero-edge-dependency node surface so every
-migrated method is self-contained and testable. The graph algorithms
-(``dfs`` / ``preorder`` / ``postorder``) migrate in a later leaf.
+**Fourth leaf of the ``data_structures`` package (R244) -- ``Graph`` edge
+methods + edge-dependent node methods.** Closes the complete Graph CRUD
+surface, building on the R242 vocabulary + R243 node primitives:
+
+- :class:`EdgeLabelValue` / :class:`EdgeLabelFactory` -- the tagged-union
+  default-edge-label variants (mirrors grok ``enum DefaultEdgeLabel``).
+- :meth:`Graph.set_edge` / :meth:`Graph.edge` / :meth:`Graph.edge_mut` /
+  :meth:`Graph.remove_edge` / :meth:`Graph.has_edge` / :meth:`Graph.in_edges`
+  / :meth:`Graph.out_edges` / :meth:`Graph.node_edges` / :meth:`Graph.edge_count`
+  / :meth:`Graph.edges` / :meth:`Graph.set_path` + the edge-dependent node
+  methods :meth:`Graph.remove_node` (cascade edge delete + parent/child detach)
+  and :meth:`Graph.filter_nodes` (predicate filter with parent-chain
+  re-threading). The two OrderedHashMap multiplicity helpers
+  (:func:`_increment_or_init_entry` / :func:`_decrement_or_remove_entry`) and
+  the parent-resolution helper (:func:`_find_parent`) are module-private.
+
+The graph algorithms (``dfs`` / ``preorder`` / ``postorder``) migrate in a
+later leaf.
 
 Edge-id encoding
 ----------------
@@ -200,6 +212,37 @@ class NodeLabelFactory(Generic[N]):
 DefaultNodeLabel = NodeLabelValue[N] | NodeLabelFactory[N]
 
 
+@dataclass(frozen=True, slots=True)
+class EdgeLabelValue(Generic[E]):
+    """Default-edge-label variant: a fixed value (mirrors ``DefaultEdgeLabel::Val``).
+
+    When ``value`` is ``None``, :meth:`Graph.default_edge_label` falls back to
+    the graph's ``edge_default_factory`` (the Python stand-in for grok's
+    ``E::default()``). Frozen + slotted because this is a value object: once
+    set, the default does not mutate. Carries a field so the R236
+    ``frozen+slots+fieldless`` trap does not apply.
+    """
+
+    value: E | None = None
+
+
+@dataclass(slots=True)
+class EdgeLabelFactory(Generic[E]):
+    """Default-edge-label variant: a per-edge factory (mirrors ``DefaultEdgeLabel::Func``).
+
+    The factory is invoked with the canonical edge id each time
+    :meth:`Graph.set_edge` needs a label for an edge that was created without
+    an explicit value. Not frozen: it wraps a callable (a behaviour, not a
+    value), so value-object immutability does not apply.
+    """
+
+    factory: Callable[[str], E | None]
+
+
+#: The tagged union of default-edge-label variants (mirrors ``enum DefaultEdgeLabel``).
+DefaultEdgeLabel = EdgeLabelValue[E] | EdgeLabelFactory[E]
+
+
 class Graph(Generic[GL, N, E]):
     """A directed/undirected, optionally-multigraph, optionally-compound graph.
 
@@ -221,6 +264,8 @@ class Graph(Generic[GL, N, E]):
         "_label",
         "_default_node_label_fn",
         "_node_default_factory",
+        "_default_edge_label_fn",
+        "_edge_default_factory",
         "_nodes",
         "_in",
         "_preds",
@@ -239,6 +284,7 @@ class Graph(Generic[GL, N, E]):
         opts: GraphOption | None = None,
         *,
         node_default_factory: Callable[[], N] | None = None,
+        edge_default_factory: Callable[[], E] | None = None,
     ) -> None:
         """Construct a new graph (mirrors grok ``Graph::new`` + ``Graph::default``).
 
@@ -251,6 +297,11 @@ class Graph(Generic[GL, N, E]):
         and the default-node-label variant is :class:`NodeLabelValue` with
         ``value=None``. Defaults to ``lambda: None`` (the faithful stand-in for
         dagre's typical ``N = ()`` unit type).
+
+        ``edge_default_factory`` is the symmetric stand-in for grok's
+        ``E::default()``: invoked when an edge is created with no explicit label
+        and the default-edge-label variant is :class:`EdgeLabelValue` with
+        ``value=None``. Defaults to ``lambda: None``.
 
         .. note::
 
@@ -268,6 +319,10 @@ class Graph(Generic[GL, N, E]):
         self._default_node_label_fn: DefaultNodeLabel[N] = NodeLabelValue()
         self._node_default_factory: Callable[[], N] = (
             node_default_factory if node_default_factory is not None else (lambda: None)
+        )
+        self._default_edge_label_fn: DefaultEdgeLabel[E] = EdgeLabelValue()
+        self._edge_default_factory: Callable[[], E] = (
+            edge_default_factory if edge_default_factory is not None else (lambda: None)
         )
         self._nodes: OrderedHashMap[str, N] = OrderedHashMap()
         self._in: OrderedHashMap[str, OrderedHashMap[str, Edge]] = OrderedHashMap()
@@ -464,6 +519,61 @@ class Graph(Generic[GL, N, E]):
         """Return ``True`` if node ``v`` exists (mirrors grok)."""
         return v in self._nodes
 
+    def remove_node(self, v: str) -> Graph[GL, N, E]:
+        """Remove node ``v`` and its incident edges (mirrors grok ``remove_node``).
+
+        No-op if ``v`` is absent. In a compound graph, detaches ``v`` from its
+        parent, re-parents each child onto the synthetic ``GRAPH_NODE`` root,
+        and removes ``v`` from the child forest. All in-edges and out-edges are
+        removed via :meth:`remove_edge_with_obj` (decrementing the
+        predecessor/successor counts), then the per-node adjacency tables are
+        dropped. Mirrors grok's average-case O(1) structural work; the per-edge
+        removal is O(degree(v)).
+        """
+        if v not in self._nodes:
+            return self
+
+        self._nodes.remove(v)
+
+        if self._is_compound:
+            self._remove_from_parents_child_list(v)
+            if v in self._parent:
+                self._parent.remove(v)
+            # Re-parent each surviving child onto the synthetic root before
+            # dropping v's child list (children() reads _children, so it must
+            # still be intact here).
+            for child_id in self.children(v):
+                self.set_parent(child_id, None)
+            self._children.remove(v)
+
+        # Cascade-remove every incident edge via the edge removal path so the
+        # predecessor/successor integer counters and adjacency maps stay
+        # consistent. grok snapshots the edge ids first because remove mutates
+        # the very map being iterated.
+        in_edges = self._in.get(v)
+        if in_edges is not None:
+            edge_ids = list(in_edges.keys())
+            for edge_id in edge_ids:
+                edge = self._edge_objs.get(edge_id)
+                if edge is not None:
+                    self.remove_edge_with_obj(edge)
+            self._in.remove(v)
+
+        self._preds.remove(v)
+
+        out_edges = self._out.get(v)
+        if out_edges is not None:
+            edge_ids = list(out_edges.keys())
+            for edge_id in edge_ids:
+                edge = self._edge_objs.get(edge_id)
+                if edge is not None:
+                    self.remove_edge_with_obj(edge)
+            self._out.remove(v)
+
+        self._sucs.remove(v)
+        self._node_count -= 1
+        return self
+
     def set_parent(self, v: str, parent: str | None) -> Graph[GL, N, E]:
         """Set ``parent`` as the parent of ``v``, or detach ``v`` (mirrors grok).
 
@@ -585,3 +695,374 @@ class Graph(Generic[GL, N, E]):
         """
         adjacent = self.successors(v) if self._is_directed else self.neighbors(v)
         return adjacent is None or len(adjacent) == 0
+
+    # === Edge functions ============================================
+
+    def set_default_edge_label(
+        self, new_default: DefaultEdgeLabel[E]
+    ) -> Graph[GL, N, E]:
+        """Set the default edge label (mirrors grok ``set_default_edge_label``).
+
+        ``new_default`` is either an :class:`EdgeLabelValue` (fixed value, or
+        ``None`` to fall back to ``edge_default_factory``) or an
+        :class:`EdgeLabelFactory` (invoked per edge id).
+        """
+        self._default_edge_label_fn = new_default
+        return self
+
+    def default_edge_label(self, edge_id: str) -> E:
+        """Resolve the default label for ``edge_id`` (mirrors grok).
+
+        Three-way fallback mirroring :meth:`default_node_label`:
+
+        - :class:`EdgeLabelFactory` -> invoke ``factory(edge_id)``; if it
+          returns ``None``, fall back to ``edge_default_factory()``.
+        - :class:`EdgeLabelValue` with a value -> that value.
+        - :class:`EdgeLabelValue` with ``value=None`` ->
+          ``edge_default_factory()`` (the Python stand-in for grok
+          ``E::default()``; defaults to ``None`` for dagre's ``E = ()``).
+        """
+        default_fn = self._default_edge_label_fn
+        if isinstance(default_fn, EdgeLabelFactory):
+            label = default_fn.factory(edge_id)
+            if label is not None:
+                return label
+            return self._edge_default_factory()
+        if default_fn.value is not None:
+            return default_fn.value
+        return self._edge_default_factory()
+
+    def edge_count(self) -> int:
+        """Return the number of edges (mirrors grok; O(1))."""
+        return self._edge_count
+
+    def edges(self) -> list[Edge]:
+        """Return all edge objects in insertion order (mirrors grok; O(|E|))."""
+        return list(self._edge_objs.values())
+
+    def set_path(self, vs: list[str], value: E | None) -> None:
+        """Establish edges over consecutive node pairs in ``vs`` (mirrors grok).
+
+        For ``[a, b, c, d]`` sets edges ``a->b``, ``b->c``, ``c->d``, each with
+        ``value`` as the label. grok folds over the list with ``reduce``; the
+        ``zip(vs, vs[1:])`` form is the idiomatic Python equivalent. Returns
+        ``None`` (grok's ``set_path`` returns ``()`` -- the only setter that
+        does not return ``&mut Self``).
+        """
+        for v, w in zip(vs, vs[1:], strict=False):
+            self.set_edge(v, w, value, None)
+
+    def set_edge(
+        self,
+        v: str,
+        w: str,
+        edge_label: E | None,
+        name: str | None,
+    ) -> Graph[GL, N, E]:
+        """Create or update edge ``(v, w[, name])`` (mirrors grok ``set_edge``).
+
+        If the edge already exists and ``edge_label`` is supplied, its label is
+        updated; if not supplied the existing label is left untouched. On first
+        creation, a missing ``edge_label`` resolves to
+        :meth:`default_edge_label`. Both endpoints are ensured to exist via
+        :meth:`set_node` (which also seeds their empty adjacency tables).
+
+        Raises ``RuntimeError`` when ``name`` is supplied on a non-multigraph
+        (grok returns ``Err``): the ``name`` discriminator only distinguishes
+        parallel edges in a multigraph.
+        """
+        e = edge_args_to_id(self._is_directed, v, w, name)
+        if e in self._edge_labels:
+            if edge_label is not None:
+                self._edge_labels.insert(e, edge_label)
+            return self
+
+        if name is not None and not self._is_multigraph:
+            raise RuntimeError("Cannot set a named edge when isMultigraph = false")
+
+        # It didn't exist, so we need to create it. set_node ensures both
+        # endpoints (and their empty adjacency tables) exist.
+        self.set_node(v, None)
+        self.set_node(w, None)
+
+        if edge_label is not None:
+            self._edge_labels.insert(e, edge_label)
+        else:
+            self._edge_labels.insert(e, self.default_edge_label(e))
+
+        edge_obj = edge_args_to_obj(self._is_directed, v, w, name)
+        self._edge_objs.insert(e, edge_obj)
+
+        preds = self._preds.get(w)
+        if preds is not None:
+            _increment_or_init_entry(preds, v)
+        sucs = self._sucs.get(v)
+        if sucs is not None:
+            _increment_or_init_entry(sucs, w)
+
+        in_edges = self._in.get(w)
+        if in_edges is None:
+            in_edges = OrderedHashMap()
+            self._in.insert(w, in_edges)
+        in_edges.insert(e, edge_obj)
+
+        out_edges = self._out.get(v)
+        if out_edges is None:
+            out_edges = OrderedHashMap()
+            self._out.insert(v, out_edges)
+        out_edges.insert(e, edge_obj)
+
+        self._edge_count += 1
+        return self
+
+    def set_edge_with_obj(self, e: Edge, edge_label: E | None) -> Graph[GL, N, E]:
+        """Edge-object overload of :meth:`set_edge` (mirrors grok)."""
+        return self.set_edge(e.v, e.w, edge_label, None)
+
+    def edge(self, v: str, w: str, name: str | None) -> E | None:
+        """Return the label for edge ``(v, w[, name])`` (mirrors grok; O(1)).
+
+        ``None`` means the edge does not exist (grok's ``Option::None``). For a
+        graph whose ``E`` is the unit type, an existing edge's stored label is
+        also ``None`` -- disambiguate existence via :meth:`has_edge`.
+        """
+        e = edge_args_to_id(self._is_directed, v, w, name)
+        return self._edge_labels.get(e)
+
+    def edge_with_obj(self, edge: Edge) -> E | None:
+        """Edge-object overload of :meth:`edge` (mirrors grok; O(1))."""
+        e = edge_obj_to_id(self._is_directed, edge)
+        return self._edge_labels.get(e)
+
+    def edge_mut(self, v: str, w: str, name: str | None) -> E | None:
+        """Return a mutable handle on the label of edge ``(v, w[, name])``.
+
+        Python values are boxed behind references, so mutating the returned
+        object (when mutable) mutates the stored label in place. Mirrors grok
+        ``edge_mut``.
+        """
+        e = edge_args_to_id(self._is_directed, v, w, name)
+        return self._edge_labels.get_mut(e)
+
+    def edge_mut_with_obj(self, edge: Edge) -> E | None:
+        """Edge-object overload of :meth:`edge_mut` (mirrors grok)."""
+        e = edge_obj_to_id(self._is_directed, edge)
+        return self._edge_labels.get_mut(e)
+
+    def has_edge(self, v: str, w: str, name: str | None) -> bool:
+        """Return ``True`` if edge ``(v, w[, name])`` exists (mirrors grok; O(1))."""
+        e = edge_args_to_id(self._is_directed, v, w, name)
+        return e in self._edge_labels
+
+    def has_edge_with_obj(self, edge: Edge) -> bool:
+        """Edge-object overload of :meth:`has_edge` (mirrors grok)."""
+        e = edge_obj_to_id(self._is_directed, edge)
+        return e in self._edge_labels
+
+    def remove_edge(self, v: str, w: str, name: str | None) -> Graph[GL, N, E]:
+        """Remove edge ``(v, w[, name])`` (mirrors grok ``remove_edge``; O(1)).
+
+        No-op if the edge is absent. Decrements the predecessor/successor
+        counts (removing the entry when it reaches zero via
+        :func:`_decrement_or_remove_entry`) and drops the edge object + label +
+        the per-node adjacency entries.
+        """
+        e = edge_args_to_id(self._is_directed, v, w, name)
+        edge = self._edge_objs.get(e)
+        if edge is None:
+            return self
+
+        # Snapshot the canonical endpoints from the stored edge object (for an
+        # undirected graph edge_args_to_id may have swapped v/w during id
+        # construction; the edge object carries the canonical orientation).
+        v_canon = edge.v
+        w_canon = edge.w
+        self._edge_labels.remove(e)
+        self._edge_objs.remove(e)
+
+        preds = self._preds.get(w_canon)
+        if preds is not None:
+            _decrement_or_remove_entry(preds, v_canon)
+        sucs = self._sucs.get(v_canon)
+        if sucs is not None:
+            _decrement_or_remove_entry(sucs, w_canon)
+
+        in_edges = self._in.get(w_canon)
+        if in_edges is not None:
+            in_edges.remove(e)
+
+        out_edges = self._out.get(v_canon)
+        if out_edges is not None:
+            out_edges.remove(e)
+
+        self._edge_count -= 1
+        return self
+
+    def remove_edge_with_obj(self, e_obj: Edge) -> Graph[GL, N, E]:
+        """Edge-object overload of :meth:`remove_edge` (mirrors grok)."""
+        return self.remove_edge(e_obj.v, e_obj.w, None)
+
+    def in_edges(self, v: str, u: str | None) -> list[Edge] | None:
+        """Return edges pointing to ``v`` (mirrors grok; O(|E|)).
+
+        With ``u`` set, filter to just those coming from ``u``. Returns
+        ``None`` if ``v`` is absent (no adjacency table); an empty list if
+        ``v`` exists but has no in-edges. Behaviour is undefined for undirected
+        graphs -- use :meth:`node_edges`.
+        """
+        in_edges = self._in.get(v)
+        if in_edges is None:
+            return None
+        result = list(in_edges.values())
+        if u is None:
+            return result
+        return [edge for edge in result if edge.v == u]
+
+    def out_edges(self, v: str, w: str | None) -> list[Edge] | None:
+        """Return edges pointed at by ``v`` (mirrors grok; O(|E|)).
+
+        With ``w`` set, filter to just those pointing to ``w``. Returns
+        ``None`` if ``v`` is absent; an empty list if ``v`` exists but has no
+        out-edges. Behaviour is undefined for undirected graphs -- use
+        :meth:`node_edges`.
+        """
+        out_edges = self._out.get(v)
+        if out_edges is None:
+            return None
+        result = list(out_edges.values())
+        if w is None:
+            return result
+        return [edge for edge in result if edge.w == w]
+
+    def node_edges(self, v: str, w: str | None) -> list[Edge] | None:
+        """Return all edges to or from ``v`` regardless of direction (mirrors grok).
+
+        With ``w`` set, filter to just those between ``v`` and ``w`` regardless
+        of direction (in-edges from ``w`` plus out-edges to ``w``). Returns
+        ``None`` if ``v`` is absent.
+        """
+        in_result = self.in_edges(v, w)
+        if in_result is None:
+            return None
+        out_result = self.out_edges(v, w)
+        if out_result is not None:
+            in_result = in_result + out_result
+        return in_result
+
+    def filter_nodes(self, filter: Callable[[str], bool]) -> Graph[GL, N, E]:
+        """Return a new graph with nodes filtered by ``filter`` (mirrors grok).
+
+        The predicate is applied to each node independently (no recursive
+        descent): a rejected node's descendants are NOT auto-rejected -- they
+        survive and re-thread. Edges incident to a rejected node are dropped.
+        In a compound graph the parent chain of each surviving node is
+        re-threaded onto its closest surviving ancestor via
+        :func:`_find_parent` (with memoisation in ``parents``).
+        """
+        copy: Graph[GL, N, E] = Graph(
+            GraphOption(
+                directed=self._is_directed,
+                multigraph=self._is_multigraph,
+                compound=self._is_compound,
+            ),
+            node_default_factory=self._node_default_factory,
+            edge_default_factory=self._edge_default_factory,
+        )
+
+        for node_id, value in self._nodes.iter():
+            if filter(node_id):
+                copy.set_node(node_id, value)
+
+        for e_obj in self._edge_objs.values():
+            if e_obj.v in copy._nodes and e_obj.w in copy._nodes:
+                # grok guards with ``if let Some(label) = edge_with_obj``. The
+                # Option outer layer signals edge *existence*, not the E value
+                # (which for a unit-typed E is ``None`` in Python). Use
+                # has_edge_with_obj so the ``None`` label of an E=() graph is
+                # not mistaken for a missing edge.
+                if self.has_edge_with_obj(e_obj):
+                    copy.set_edge_with_obj(e_obj, self.edge_with_obj(e_obj))
+
+        if self._is_compound:
+            parents: OrderedHashMap[str, str] = OrderedHashMap()
+            for node_id in list(copy._nodes.keys()):
+                parent = _find_parent(node_id, parents, copy, self)
+                copy.set_parent(node_id, parent)
+
+        return copy
+
+
+# === Module-private edge helpers (R244) ========================
+# Mirror grok's module-private ``increment_or_init_entry`` /
+# ``decrement_or_remove_entry`` / ``find_parent`` fns -- consumed by
+# :meth:`Graph.set_edge` / :meth:`Graph.remove_edge` / :meth:`Graph.filter_nodes`
+# respectively. Module-private (underscore prefix) and intentionally NOT
+# re-exported via the barrel -- they are vocabulary internal to the Graph
+# edge mechanics, mirroring grok's non-``pub`` item visibility.
+
+
+def _increment_or_init_entry(counter_map: OrderedHashMap[str, int], key: str) -> None:
+    """Increment ``counter_map[key]``, initialising to 1 if absent.
+
+    Mirrors grok ``increment_or_init_entry``: on the occupied branch the count
+    is incremented in place (the key keeps its insertion position, matching
+    grok's ``get_mut`` semantics -- :meth:`OrderedHashMap.insert` overwrites an
+    existing key's value without moving it); on the vacant branch the key is
+    appended with value 1. Used by :meth:`Graph.set_edge` to bump the
+    predecessor/successor multiplicity counters.
+    """
+    if counter_map.contains_key(key):
+        counter_map.insert(key, counter_map.get(key) + 1)
+    else:
+        counter_map.insert(key, 1)
+
+
+def _decrement_or_remove_entry(counter_map: OrderedHashMap[str, int], key: str) -> None:
+    """Decrement ``counter_map[key]``, removing it when the count hits zero.
+
+    Mirrors grok ``decrement_or_remove_entry``. The caller guarantees ``key``
+    is present (so grok's ``get_mut().unwrap()`` is safe): the count is
+    decremented, and when it drops to ``<= 0`` the entry is dropped entirely.
+    Above zero, :meth:`OrderedHashMap.insert` writes the decremented value
+    back in place (position-preserving, matching grok's in-place ``*value -= 1``).
+    Used by :meth:`Graph.remove_edge`.
+    """
+    value = counter_map.get(key)
+    value -= 1
+    if value <= 0:
+        counter_map.remove(key)
+    else:
+        counter_map.insert(key, value)
+
+
+def _find_parent(
+    v: str,
+    parents: OrderedHashMap[str, str],
+    copy: Graph[GL, N, E],
+    graph: Graph[GL, N, E],
+) -> str | None:
+    """Resolve ``v``'s surviving parent in ``copy`` (mirrors grok ``find_parent``).
+
+    Used by :meth:`Graph.filter_nodes` to re-thread the parent chain of each
+    survivor onto its closest surviving ancestor. ``parents`` memoises the
+    resolution so a filtered-out ancestor is walked only once.
+
+    Three branches (faithful to grok graph.rs 948-964):
+
+    - ``v`` has no parent, or its original parent survived in ``copy`` -> the
+      original parent (memorised under ``v`` when present; ``None`` when ``v``
+      has no parent and not memorised).
+    - the original parent was filtered out but its resolution is already
+      memorised in ``parents`` -> the memorised value.
+    - otherwise -> recurse on the original parent.
+    """
+    parent = graph.parent(v)
+    if parent is None or copy.has_node(parent):
+        if parent is not None:
+            parents.insert(v, parent)
+            return parent
+        return None
+    memoized = parents.get(parent)
+    if memoized is not None:
+        return memoized
+    return _find_parent(parent, parents, copy, graph)
