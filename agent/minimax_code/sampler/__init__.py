@@ -270,6 +270,14 @@ from minimax_code.sampler.retry import (
     resolve_max_retries_with_env,
     retry_backoff_with_jitter,
 )
+from minimax_code.sampler.search_parameters import (
+    SearchParameters,
+    SearchSource,
+    SearchSourceNews,
+    SearchSourceRss,
+    SearchSourceWeb,
+    SearchSourceX,
+)
 from minimax_code.sampler.types import (
     SERIALIZATION_DISPLAY_PREFIX,
     EmptyReason,
@@ -376,6 +384,12 @@ __all__ = [
     "SAMPLE_CHECK_EVENT_DATA_CUMULATIVE",
     "SERIALIZATION_DISPLAY_PREFIX",
     "SamplingError",
+    "SearchParameters",
+    "SearchSource",
+    "SearchSourceNews",
+    "SearchSourceRss",
+    "SearchSourceWeb",
+    "SearchSourceX",
     "SignatureDelta",
     "StopDetails",
     "StopReason",

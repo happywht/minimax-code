@@ -96,8 +96,15 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     Enabled/Fixed variants + CompactionsRemaining untagged bool/int union +
     Dynamic/Fixed variants, each with a resolve() decision method -- the third
     types.rs slice, zero-dependency decision primitives, bool-before-int
-    untagged parse guard)."""
-    assert len(sampler.__all__) == 145
+    untagged parse guard)
+    + search_parameters (R209, 6: SearchParameters struct + SearchSource 4-variant
+    tagged union (x/web/news/rss per-variant rename) + 4 SearchSource* variant
+    subclasses -- the realtime-data search knobs, the fourth types.rs slice,
+    zero-dependency pure leaf; SearchSource::X carries the DEPRECATED x_handles
+    field (kept for backward wire-compat), SearchSource::Rss carries the only
+    non-optional links field (Vec<String> -> tuple, missing/non-list -> empty
+    tuple), Option<Vec<String>> -> tuple|None tolerant parse)."""
+    assert len(sampler.__all__) == 151
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -280,6 +287,15 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "CompactionsRemaining",
         "CompactionsRemainingDynamic",
         "CompactionsRemainingFixed",
+        # search_parameters (R209): SearchParameters struct + SearchSource
+        # 4-variant tagged union (x/web/news/rss) + 4 variant subclasses --
+        # the realtime-data search knobs, zero-dependency pure leaf
+        "SearchParameters",
+        "SearchSource",
+        "SearchSourceNews",
+        "SearchSourceRss",
+        "SearchSourceWeb",
+        "SearchSourceX",
     }
 
 

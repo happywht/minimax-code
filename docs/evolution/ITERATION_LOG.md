@@ -16766,3 +16766,55 @@ R207 把 grok 的 OpenAI-compatible ChatCompletion 中层叶子（`types.rs` 第
 `feat(platform): R208 migrate types.rs streaming delta + compaction headers`
 
 锚点链：… → R205(4ad528e) → R206(0c12eae) → R207(ff7793b) → **R208（本轮）**。barrel 135→145；全量 5499 passed + 10 skipped（+68 新增），零真实回归。本轮核心锁定两个 grok→Python 映射坑：`deserialize_null_default` 本地内联（非 serde_helpers）+ bool-before-int untagged guard（`isinstance(True, int)` 子类陷阱）。
+
+## R209 — search_parameters.py: SearchParameters struct + SearchSource 4-variant tagged union
+
+锚点:R209-1 d7491df
+
+### 本轮目标
+
+- 继续 `xai-grok-sampling-types` `types.rs` 第四块叶子迁移：`SearchParameters` struct + `SearchSource` 4 变体 tagged union（6 符号），零外部依赖纯叶子。
+- 选定策略 A（types.rs 下一纯逻辑叶子子集）而非 serde_helpers.rs（9 行备选）——优先推进 types.rs 大块叶子收敛，SearchParameters/SearchSource 是 types.rs 内最后一批可独立闭合的纯叶子。
+
+### 融合结论
+
+- `types.rs` 累计已迁 37 符号：R206 原子 10 + R207 中层 11 + R208 流式 4 + 压缩头 6 + R209 搜索 6 = 37。
+- 与 R207 `ChatContentBlock` 同构：`#[serde(tag="type")]` tagged union + per-variant `#[serde(rename="...")]` wire 标签，严格分发无 catch-all（未知 type → ValueError）。
+- 关键差异：引入 `Option<Vec<String>>` vs `Vec<String>` 双 helper 语义边界——`SearchSourceRss.links` 是 types.rs 内唯一非 Option 字段，触发本轮核心映射决策。
+
+### 交付
+
+- `agent/minimax_code/sampler/search_parameters.py`（新模块，6 符号）：2 个模块私有 list helper（`_parse_optional_string_list` / `_parse_required_string_list`）+ `SearchSource` 联合基类（严格 from_payload 调度器）+ `SearchSourceX`/`Web`/`News`/`Rss` 4 变体子类（容忍构造器）+ `SearchParameters` struct（6 字段全 Option，无 Default 派生）。
+- `agent/minimax_code/sampler/__init__.py` barrel **145→151**（import 块 + `__all__` 各加 6 符号）。
+- `agent/tests/test_search_parameters.py`（新测试套件，**67 测试**含参数化，覆盖 serde 映射全决策树 + Option::None vs Some(vec![]) 区分 + 联合基类 vs 变体构造器行为不对称 + DEPRECATED x_handles 双字段）。
+- `agent/tests/test_sampler_config.py` barrel guard 同步（len 151 + set +6 + docstring R209 块）。
+
+### 映射决策树 + 坑
+
+1. **双 list helper（核心决策）**：`Option<Vec<String>>` → `_parse_optional_string_list`（null/缺失/非 list → None）；`Vec<String>` → `_parse_required_string_list`（null/缺失/非 list → 空元组）。忠实 grok `Option::None` vs `Some(vec![])` 语义区分——`SearchParameters.sources`/`SearchSource*.handles` 缺失 → None；`SearchSourceRss.links` 缺失 → 空元组（`is not None`）。
+2. **无 Default 派生**：grok `SearchParameters` 仅有 `#[derive(Serialize, Deserialize, Clone, Debug)]`（无 Default），故不暴露 `default()` 类方法，仅 `from_payload`（非 dict → 全 None 实例）。对比 R208 流式 struct 有 Default → 有 `default()`。
+3. **联合基类 vs 变体构造器行为不对称（关键坑）**：`SearchSource.from_payload`（调度器）非 dict → `ValueError`（严格分发器，镜像 serde tagged-union parse）；变体子类 `from_payload`（X/Web/News/Rss）非 dict → `cls()` 全默认实例（容忍构造器）。代码 + docstring + 测试三处锁定。
+4. **DEPRECATED x_handles**：`SearchSourceX` 同时保留 `included_x_handles`（新）和 `x_handles`（DEPRECATED），两者均解析，不执行迁移（消费者决定如何 reconcile），忠实 wire shape。
+5. **tagged union 严格分发**：`SearchSource.from_payload` 按 wire `"type"` 分发，未知 type/非字符串 type/缺失 type → `ValueError`（无 catch-all，同 R207 `ChatContentBlock` posture）。
+6. **命名前缀**：变体子类用 `SearchSource` 前缀（`SearchSourceX`/`Web`/`News`/`Rss`）以便 barrel 扁平化无歧义，避免裸 `X`/`Web`/`News`/`Rss` 与未来叶子冲突。
+7. **B010 规避**：frozen+slots 语义测试用 `field_name = next(iter(type(obj).__slots__))` + `setattr`（变量属性名，非字面常量）驱动 `__setattr__` raise。
+8. **ruff I001 修复**：import 块 `order-by-type=true`，类 `Any` 排在函数 `dataclass` 之前（跨 `from x import` 行按类型排序）；`uv run ruff check --fix` 一键修复。
+
+### 验证
+
+- `uv run ruff check`：6 个 R209 文件 All checks passed（I001 import 排序已 fix）。
+- 定向 pytest：`test_search_parameters.py` + `test_sampler_config.py` 共 **67 passed in 0.40s**。
+- 全量回归：**5554 passed + 10 skipped in 127.69s**（R208 基准 5499 → 5554，R209 新增 55 个测试），零真实回归（skipped 持平 10）。
+
+### YAGNI 边界
+
+- 重容器 `ChatCompletionRequest`/`Response`/`Chunk` 依赖 `crate::rs`/`serde_helpers`/`xai-grok-tools`——延后。
+- `ChatRequestMessage`（list-carrying，依赖 Role+ChatMessageContent+ToolCallRequest）——下一轮候选。
+- `TraceContext` trait（依赖 tracing crate）、`ApiBackend`/`SamplingConfig`（依赖 `crate::rs`）、重复 `ReasoningEffort`（带 `to`/`from_responses_api` `crate::rs` 耦合）——延后。
+- 全 serde `Serialize`/`Deserialize` round-trip 不迁移——`from_payload` 覆盖平台所需 parse 方向。
+
+### Commit
+
+`feat(platform): R209 migrate types.rs search parameters + 4-variant source union`
+
+锚点链：… → R206(0c12eae) → R207(ff7793b) → R208(d7491df) → **R209（本轮）**。barrel 145→151；全量 5554 passed + 10 skipped（+55 新增），零真实回归。本轮核心锁定两个 grok→Python 映射决策：`Option<Vec<String>>` vs `Vec<String>` 双 helper（`Option::None` vs `Some(vec![])` 语义区分）+ 联合基类严格调度器（`ValueError`）vs 变体容忍构造器（`cls()`）行为不对称。
