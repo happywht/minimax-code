@@ -16710,3 +16710,59 @@ R207 把 grok 的 OpenAI-compatible ChatCompletion 中层叶子（`types.rs` 第
 `feat(platform): R207 migrate types.rs ChatCompletion mid-layer leaves`
 
 锚点链：… → R204(e82856a) → R205(4ad528e) → R206(0c12eae) → **R207（本轮）**。barrel 124→135；全量 5431 passed + 10 skipped（+47 新增），零真实回归。本轮修复三个真实 Python 命名空间 bug（注释语法 + `function` F811 + `blocks()` 遮蔽）。
+
+## R208 — types.rs 流式 delta 簇 + 压缩头决策内核（chat_completion_streaming.py + compaction_headers.py）
+
+锚点:R208-1 ff7793b
+
+### 本轮目标
+
+继续 `xai-grok-sampling-types` `types.rs` 的纯逻辑叶子迁移。R206 落地头部 10 符号原子簇（chat_completion_leaves.py），R207 落地中层 11 符号簇（chat_completion_mid.py）。R208 切 `types.rs` 第三块——两个主题鲜明、可独立闭合的子集：
+- **流式 delta 簇**（`ChatChunkChoice` / `ChatChunkDelta` / `ToolCallDelta` / `ToolCallFunctionDelta`）：OpenAI ChatCompletion chunk 流式增量叶子，消费 R206 `Role`/`FinishReason` 原子 + 内联 `deserialize_null_default` null 容忍解析器。
+- **压缩头决策簇**（`CompactionAtTokens` + `CompactionsRemaining`，各 Enabled/Fixed 与 Dynamic/Fixed 变体）：零依赖 untagged bool/int newtype 枚举 + `resolve()` 决策方法，驱动 `x-compactions-*` 请求头。
+
+共 10 个新符号，barrel 135→145。
+
+### 融合结论
+
+两个子集各成正交主题：流式 chunk delta 是 ChatCompletion 的「响应增量」层（chunk→choice→delta→tool_call→function 四级嵌套），压缩头是「请求决策」层（bool/int 多态旋钮 + resolve 整数运算）。两者都不引入新外部依赖：流式簇闭合在 R206 Role/FinishReason + 自身；压缩簇闭合在 std bool/int 标量。这种「同一文件、两种正交主题、双模块落地」的切法让每模块的 docstring / migration map 主题清晰，符合 R206(10)/R207(11) 的体量节奏。
+
+### 交付
+
+- `agent/minimax_code/sampler/chat_completion_streaming.py`（4 符号）：`ToolCallFunctionDelta`（Default: name/arguments）+ `ToolCallDelta`（Default: index/id/kind[wire type]/function）+ `ChatChunkDelta`（Default: role/content/reasoning_content/tool_calls/tool_call_id，内联 deserialize_null_default）+ `ChatChunkChoice`（index/delta/finish_reason）。
+- `agent/minimax_code/sampler/compaction_headers.py`（6 符号 = 2 联合基类 + 4 变体）：`CompactionAtTokens` + `CompactionAtTokensEnabled`/`CompactionAtTokensFixed`；`CompactionsRemaining` + `CompactionsRemainingDynamic`/`CompactionsRemainingFixed`，各带 `resolve()` 决策方法。
+- `agent/minimax_code/sampler/__init__.py`：barrel 135→145（import 块 + `__all__` 各插字母序位）。
+- `agent/tests/test_sampler_config.py`：barrel 守卫 `len == 145` + set 补 10 符号。
+- `agent/tests/test_chat_completion_streaming.py`：module barrel + from_payload 严格/容忍 + Vec→tuple + null-tolerant + role/finish_reason 仅字符串解析 + frozen+slots B010 规避 + 四级嵌套递归。
+- `agent/tests/test_compaction_headers.py`：module barrel + bool-before-int dispatch + ValueError 非标量 + resolve 决策矩阵 + frozen+slots 联合基类/子类。
+
+### 映射决策树 + 坑
+
+1. **`deserialize_null_default` 内联（关键决策）**：`types.rs:55` 的 `deserialize_null_default` 是**本地函数**（非 `crate::serde_helpers`），逻辑 `Option::<T>::deserialize(...).map(|opt| opt.unwrap_or_default())`。内联为 Python「null/missing/非 list → 空 tuple」容忍解析器（`ChatChunkDelta.tool_calls`）。不抽公共 helper——grok 本身就是本地内联（DRY 忠实，非去重机会）。
+2. **bool-before-int guard（核心坑）**：`isinstance(True, int)` 为 `True`（bool 是 int 子类）。untagged bool/int 联合（压缩簇）**必须**在 `isinstance(payload, int)` 之前测试 `isinstance(payload, bool)`，否则 `True`/`False` 被错误解析为 `Fixed(1)`/`Fixed(0)`。代码 + docstring + 测试三处锁定。
+3. **`#[serde(rename="type")]` → `kind` 字段**：`ToolCallDelta` 的 wire `type` 键映射到 Python `kind` 字段（避免与 Python `type` 内建歧义），`from_payload` 读 `payload.get("type")`。
+4. **list-carrying Vec→tuple**：`Vec<ToolCallDelta>` → `tuple[ToolCallDelta, ...]`（不可变，frozen 配套），非 dict 项跳过不崩。
+5. **Option 容忍 None**：`Option<Role>`/`Option<FinishReason>` 仅当 wire 值是字符串时走严格 enum `from_payload`，null/非字符串 → None（镜像 `Option::None`）。
+6. **resolve 整数运算忠实**：`CompactionAtTokens.resolve` 用 `context_window * threshold_percent // 100`（u64 无符号整数除法）；`CompactionsRemaining.resolve` 用 `int(not has_compaction_summary)`（`u8::from(!bool)`：True→0, False→1）。
+7. **命名忠实 + 隔离**：`CompactionAtTokens`（单数，at-tokens 携带一个计数）vs `CompactionsRemaining`（复数，remaining 携带剩余压缩次数）——保留 grok 原始单/复数；变体子类用联合名前缀（`CompactionAtTokensEnabled` 等）以便 barrel 扁平化无歧义。无与 R206/R207 符号冲突（`ToolCallDelta`/`ToolCallFunctionDelta` ≠ R207 `ToolCallRequest` ≠ R206 `ToolCallFunction`）。
+8. **B010 规避**：frozen+slots 语义测试用 `field_name = next(iter(type(obj).__slots__))` + `setattr`（变量属性名，非字面常量）驱动 `__setattr__` raise。
+
+### 验证
+
+- `uv run ruff check`：6 个 R208 文件 All checks passed。
+- 定向 pytest：`test_chat_completion_streaming.py` + `test_compaction_headers.py` + `test_sampler_config.py` 共 **82 passed**。
+- 全量回归：**5499 passed + 10 skipped**（R207 基准 5431 → 5499，R208 新增 68 个测试），零真实回归。
+- 唯一失败 `test_connection.py::test_interval_keeps_global_timeline_across_loops` 为无关 flaky（period=0.04s 计时断言，全量负载下抖动差 1ms；单独重跑 2 次均通过），不在 R208 改动范围，不阻塞验证。
+
+### YAGNI 边界
+
+- 重容器 `ChatCompletionRequest`/`Response`/`Chunk` 依赖 `crate::rs`/`serde_helpers`/`xai-grok-tools`——延后。
+- `SearchParameters`/`SearchSource`、`ChatRequestMessage`（list-carrying，依赖 Role+ChatMessageContent+ToolCallRequest）——下一轮候选。
+- `TraceContext` trait（依赖 tracing crate）、`ApiBackend`/`SamplingConfig`（依赖 `crate::rs`）、重复 `ReasoningEffort`（带 `to/from_responses_api` `crate::rs` 耦合）——延后。
+- 全 serde `Serialize`/`Deserialize` round-trip 不迁移——`from_payload` 覆盖平台所需 parse 方向，`resolve` 覆盖决策方向。
+
+### Commit
+
+`feat(platform): R208 migrate types.rs streaming delta + compaction headers`
+
+锚点链：… → R205(4ad528e) → R206(0c12eae) → R207(ff7793b) → **R208（本轮）**。barrel 135→145；全量 5499 passed + 10 skipped（+68 新增），零真实回归。本轮核心锁定两个 grok→Python 映射坑：`deserialize_null_default` 本地内联（非 serde_helpers）+ bool-before-int untagged guard（`isinstance(True, int)` 子类陷阱）。

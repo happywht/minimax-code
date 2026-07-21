@@ -87,8 +87,17 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     R206 atomic leaves into request/response body shapes (ChatContentBlock
     tagged union + ChatMessageContent/ToolChoice untagged unions +
     ToolCallRequest/ChatUsage structs, renamed ``Chat*`` to dodge the Anthropic
-    Messages API peers -- strict tagged-union parse, no catch-all)."""
-    assert len(sampler.__all__) == 135
+    Messages API peers -- strict tagged-union parse, no catch-all)
+    + chat_completion_streaming (R208, 4: ChatChunkChoice + ChatChunkDelta +
+    ToolCallDelta + ToolCallFunctionDelta -- the streaming-chunk delta leaves,
+    consuming the R206 Role/FinishReason atomics + the inlined
+    deserialize_null_default null-tolerant parser, Vec->tuple tool_calls)
+    + compaction_headers (R208, 6: CompactionAtTokens untagged bool/int union +
+    Enabled/Fixed variants + CompactionsRemaining untagged bool/int union +
+    Dynamic/Fixed variants, each with a resolve() decision method -- the third
+    types.rs slice, zero-dependency decision primitives, bool-before-int
+    untagged parse guard)."""
+    assert len(sampler.__all__) == 145
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -253,6 +262,24 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "PresetToolChoice",
         "ToolCallRequest",
         "ToolChoice",
+        # chat_completion_streaming (R208): ChatChunkChoice + ChatChunkDelta +
+        # ToolCallDelta + ToolCallFunctionDelta -- the streaming-chunk delta
+        # leaves, consuming the R206 Role/FinishReason atomics + the inlined
+        # deserialize_null_default null-tolerant parser (Vec->tuple tool_calls)
+        "ChatChunkChoice",
+        "ChatChunkDelta",
+        "ToolCallDelta",
+        "ToolCallFunctionDelta",
+        # compaction_headers (R208): CompactionAtTokens + CompactionsRemaining
+        # untagged bool/int unions (+ Enabled/Fixed + Dynamic/Fixed variants),
+        # each with a resolve() decision method -- zero-dependency decision
+        # primitives, bool-before-int untagged parse guard
+        "CompactionAtTokens",
+        "CompactionAtTokensEnabled",
+        "CompactionAtTokensFixed",
+        "CompactionsRemaining",
+        "CompactionsRemainingDynamic",
+        "CompactionsRemainingFixed",
     }
 
 

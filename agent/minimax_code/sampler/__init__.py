@@ -132,6 +132,20 @@ from minimax_code.sampler.chat_completion_mid import (
     ToolCallRequest,
     ToolChoice,
 )
+from minimax_code.sampler.chat_completion_streaming import (
+    ChatChunkChoice,
+    ChatChunkDelta,
+    ToolCallDelta,
+    ToolCallFunctionDelta,
+)
+from minimax_code.sampler.compaction_headers import (
+    CompactionAtTokens,
+    CompactionAtTokensEnabled,
+    CompactionAtTokensFixed,
+    CompactionsRemaining,
+    CompactionsRemainingDynamic,
+    CompactionsRemainingFixed,
+)
 from minimax_code.sampler.config import (
     DEFAULT_AUTH_SCHEME,
     AuthScheme,
@@ -278,6 +292,8 @@ __all__ = [
     "BlocksToolResultContent",
     "CacheControl",
     "ChatBlocksContent",
+    "ChatChunkChoice",
+    "ChatChunkDelta",
     "ChatContentBlock",
     "ChatImageUrlBlock",
     "ChatMessageContent",
@@ -285,6 +301,12 @@ __all__ = [
     "ChatTextContent",
     "ChatUsage",
     "CheckEvent",
+    "CompactionAtTokens",
+    "CompactionAtTokensEnabled",
+    "CompactionAtTokensFixed",
+    "CompactionsRemaining",
+    "CompactionsRemainingDynamic",
+    "CompactionsRemainingFixed",
     "CompletionTokensDetails",
     "ContentBlock",
     "ContentBlockDeltaEvent",
@@ -374,7 +396,9 @@ __all__ = [
     "ThinkingConfig",
     "ThinkingDelta",
     "ThinkingDisplay",
+    "ToolCallDelta",
     "ToolCallFunction",
+    "ToolCallFunctionDelta",
     "ToolCallRequest",
     "ToolChoice",
     "ToolChoiceFunction",
