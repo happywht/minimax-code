@@ -35,14 +35,19 @@ Currently landed:
   renders the blob + resolved frames into the human-readable report text
   (product-branded ``=== MiniMax Code Crash Report ===`` envelope, signal /
   address / version / backtrace block).
+* ``recovery`` (R228) -- grok ``lib.rs`` ``check_previous_crash`` orchestration
+  leaf: reads ``last-crash.json`` -> parses -> symbolicates -> renders ->
+  writes ``last-crash-report.txt`` -> archives to ``history/`` -> deletes the
+  raw record -> returns the structured ``CrashReport``. Consumes the format /
+  symbolicate / archive / signals leaves (R225-R227); the read half of crash
+  recovery, closing the loop the writer-side ``handler`` leaf will open.
 
 YAGNI / deferred (later rounds): ``backtrace::resolve`` native symbolication
 (``resolve_frames`` lands as a best-effort all-``None`` placeholder; real
 DWARF / symbol-table lookup needs a native backend and is superseded by the
 ``faulthandler`` Python-traceback path in the ``handler`` leaf),
 ``handler.rs`` signal installation (Python ``faulthandler`` + ``excepthook``
-equivalent), ``lib.rs`` ``check_previous_crash`` orchestration (consumes
-format + archive + symbolicate), ``install`` /
+equivalent), ``install`` /
 ``install_terminal_restore_only`` entry points, and the app-startup wiring +
 ``crash.*`` IPC namespace + frontend session-recovery prompt.
 """
@@ -51,6 +56,11 @@ from __future__ import annotations
 
 from minimax_code.crash.archive import archive_report, prune_history
 from minimax_code.crash.format import MAGIC, MAX_FRAMES, VERSION, CrashBlob
+from minimax_code.crash.recovery import (
+    LAST_CRASH_FILE,
+    LAST_CRASH_REPORT_FILE,
+    check_previous_crash,
+)
 from minimax_code.crash.signals import si_code_name, signal_name
 from minimax_code.crash.symbolicate import format_report, resolve_frames
 from minimax_code.crash.types import (
@@ -61,6 +71,8 @@ from minimax_code.crash.types import (
 )
 
 __all__ = [
+    "LAST_CRASH_FILE",
+    "LAST_CRASH_REPORT_FILE",
     "MAGIC",
     "MAX_FRAMES",
     "MAX_HISTORY",
@@ -70,6 +82,7 @@ __all__ = [
     "CrashReport",
     "ResolvedFrame",
     "archive_report",
+    "check_previous_crash",
     "format_report",
     "prune_history",
     "resolve_frames",

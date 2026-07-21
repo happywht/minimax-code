@@ -17537,3 +17537,41 @@ backtrace::resolve native 符号解析（resolve_frames 落地为 best-effort �
 
 ### Commit
 `feat(platform): R227 fuse xai-crash-handler symbolicate.rs (resolve_frames + format_report leaf)`。路径 B 第 3 轮（crash 模块续 symbolicate 叶子）；迁移 symbolicate.rs resolve_frames + format_report；concept-for-concept 融合（backtrace::resolve C 库 DWARF 查找 → Python best-effort 全 None 占位，保留接口契约 + 数据流形状，真实符号解析延后 handler 叶子；format_report 纯逻辑完全可移植）；resolve_frames best-effort 占位镜像 grok stripped-binary fallback + format_report 纯逻辑消费 signal_name/si_code_name + 标题品牌化 MiniMax Code；barrel 12→14 符号；19 测试覆盖 resolve_frames best-effort 行为 + format_report 文本断言（含 grok smoke parity）；解锁 check_previous_crash 编排消费层（format + archive + symbolicate 三叶闭合）；后续 handler/check_previous_crash/install/IPC/前端 prompt。
+
+## R228 — fuse xai-crash-handler lib.rs check_previous_crash orchestration leaf (recovery.py)
+
+锚点:R228-1 0b2f97a
+
+### 本轮目标
+路径 B crash 模块第 4 轮：迁移 grok xai-crash-handler lib.rs check_previous_crash 编排叶子。消费层，串联 R224-R227 四叶（format 反序列化 + symbolicate resolve_frames/format_report + archive archive_report + signals signal_name），形成崩溃恢复功能闭环的"读取半段"。grok 在启动时（install 之前，因 install 以 O_TRUNC 打开 last-crash.bin）检查上次崩溃记录，存在则解析 + 符号化 + 渲染 + 持久化 + 归档 + 删除原始 blob + 返回结构化 CrashReport 供启动 UI 提示"上次会话崩溃了"。
+
+### 融合结论
+concept-for-concept 融合。check_previous_crash 是纯编排逻辑，消费已闭合的四叶，迁移风险低。grok 持久化二进制 last-crash.bin（POSIX 信号处理器 async-signal-unsafe 不能分配内存，故用 libc::write 写原始字节）→ Python last-crash.json（R226 format 已重建为 JSON，因 Python 捕获是 allocation-safe 的 faulthandler，dump 预格式化 traceback）。三层失败链（文件缺失/不可读、JSON 畸形、结构校验失败）全部塌缩为 None，镜像 grok 链式 ? 提前返回。解析失败不删除文件（grok ? 语义，留待重试）；解析成功后的 write/archive/unlink 各自 try/except OSError 镜像 grok let _ = best-effort 契约，report_path 无论 write 成功都返回（grok 在 write 前构造 report_path 并无条件返回）。模块命名 recovery.py（非 handler.py），与未来 handler.py（faulthandler/excepthook 信号安装，R229+）职责分离避免冲突。
+
+### 交付
+- agent/minimax_code/crash/recovery.py（新建，~180 行）：check_previous_crash(crash_dir: Path) -> CrashReport | None + LAST_CRASH_FILE + LAST_CRASH_REPORT_FILE 常量；详尽 docstring（grok 来源 lib.rs + Migrated + Purification decisions + YAGNI + Product-fusion note）。
+- agent/minimax_code/crash/__init__.py（barrel 扩展 14→17）：加 LAST_CRASH_FILE/LAST_CRASH_REPORT_FILE/check_previous_crash；import 在 format 和 signals 之间（字母序 archive<format<recovery<signals<symbolicate<types）；docstring landed 段加 recovery 条目 + YAGNI 段移除 check_previous_crash（已落地）。
+- agent/tests/test_crash_orchestration.py（新建，18 测试，3 类）：TestCheckPreviousCrashMissing（3）+ TestCheckPreviousCrashValid（7）+ TestCheckPreviousCrashMalformed（8）。
+
+### 映射决策树+坑
+1. `crash_dir.join("last-crash.bin")` → `crash_dir / "last-crash.json"`（格式语义跟随：bin→json，R226 决策）。
+2. `std::fs::read(&crash_file).ok()?` + `CrashBlob::parse(&data)?` → `read_text(encoding="utf-8")` + `json.loads(...)` 合并在 `except (OSError, ValueError): return None`（OSError=读失败，ValueError=json.JSONDecodeError 父类）+ `CrashBlob.from_payload(payload)` 返回 None 镜像 ? 短路。
+3. `resolve_frames(&blob)` + `format_report(&blob, &frames)` → resolve_frames(blob) + format_report(blob, frames)（R227 消费）。
+4. `crash_dir.join("last-crash-report.txt")` + `let _ = std::fs::write(...)` → `report_path = crash_dir / LAST_CRASH_REPORT_FILE` + try/except OSError: pass（best-effort），report_path 无条件返回。
+5. `archive_report(crash_dir, &report_text, blob.timestamp)` → archive_report(crash_dir, report_text, blob.timestamp)（R225 公开函数，吞 I/O）。
+6. `let _ = std::fs::remove_file(&crash_file)` → try/except OSError: pass（best-effort，留待重试）。
+7. `symbolicate::signal_name(blob.signal)` → signals.signal_name（R225 import，DRY）。
+8. 常量提取 LAST_CRASH_FILE + LAST_CRASH_REPORT_FILE：grok 内联字符串两次（"last-crash.bin"/"last-crash-report.txt"），Python 提取为模块常量供未来 handler 写入端 + 测试 DRY 复用（purification，docstring 标注）。
+9. **命名冲突坑**：tests/test_crash_recovery.py 已被 R12 占用（测 runtime.crash_detect.check_previous_crash marker 文件协议，完全不同语义）！遵循 crash 包测试惯例 test_crash_<module>.py 但让步命名 → test_crash_orchestration.py（语义精准：编排叶子 + 呼应摘要规划），绝不覆盖 R12 测试（迭代独立性）。
+10. **文件删除顺序坑**：unlink 必须在 from_payload 成功之后（grok ? 短路语义）——坏 JSON / 坏 magic / 坏 version 文件不被删除，留待重试。测试 test_malformed_json_leaves_file_intact + test_bad_magic_leaves_file_intact 覆盖。
+11. 类型注解严谨性：check_previous_crash(crash_dir) 初版漏类型，补 `crash_dir: Path` + `from pathlib import Path`（项目惯例 resolve_frames(blob: CrashBlob) 等都带注解）。
+12. from_payload 接受 object，json.loads 返回 Any → 非 dict 顶层（如 "42"）json.loads 成功返回 int，from_payload isinstance dict 检查返回 None。测试 test_returns_none_for_non_object_json 覆盖。
+
+### 验证
+ruff check（recovery.py + __init__.py + test_crash_orchestration.py）✅ All checks passed!（isort order-by-type，初版一次通过）+ 定向 pytest test_crash_orchestration.py **18 passed**（0.41s，3 类）+ 全量回归 **6238 passed + 10 skipped**（145.33s，一次通过无 timing flake）= 6220（R227 基准）+ 18（R228 新增），数学精确吻合，零真实回归。10 skipped 与 R227 基准一致。
+
+### YAGNI 边界
+grok 二进制 std::fs::read + CrashBlob::parse 字节级解码器被 JSON 路径取代（R226），不移植 / install + install_terminal_restore_only + enable/disable_terminal_escape_restore 入口点（grok lib.rs）是写入端（信号处理器安装），随未来 handler 叶子落地，不放这里 / backtrace::resolve native 符号解析（resolve_frames 占位）/ handler.rs 信号安装 / app 启动接线 / crash.* IPC 命名空间 / 前端 session-recovery prompt（后续轮次）。下轮路径 B 续 crash（handler faulthandler 安装 / install 入口 / terminal escape restore）或转向下一功能模块（sandbox/memory/codegraph）。
+
+### Commit
+`feat(platform): R228 fuse xai-crash-handler lib.rs check_previous_crash orchestration leaf (recovery.py)`。路径 B 第 4 轮（crash 模块续编排叶子）；迁移 lib.rs check_previous_crash；concept-for-concept 融合（二进制 last-crash.bin → JSON last-crash.json，三层失败链塌缩 None 镜像 grok ?，best-effort write/archive/unlink 镜像 let _ =，report_path 无条件返回）；命名 recovery.py 避免与未来 handler.py 冲突；常量提取 LAST_CRASH_FILE/LAST_CRASH_REPORT_FILE；barrel 14→17 符号；18 测试覆盖 missing/valid/malformed 三路径 + 副作用（report 写入/history 归档/blob 删除/signal_name 复用）+ 解析失败不删文件；命名冲突坑 test_crash_orchestration.py 避让 R12 test_crash_recovery.py；闭合崩溃恢复读取半段（R224-R227 四叶消费闭环）；后续 handler/install/terminal/IPC/前端 prompt。
