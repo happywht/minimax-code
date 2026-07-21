@@ -214,8 +214,18 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     default + skip_serializing_if None; extra keys tolerated); ToolCall unblocks
     the AssistantItem consumer layer; no barrel collision -> no Conversation
     prefix (distinct from the R206 ToolCallFunction wire-layer peer which
-    carries no id))."""
-    assert len(sampler.__all__) == 194
+    carries no id)).
+    + conversation_hosted_tools (R223, 3: the conversation.rs HostedTool
+    backend-hosted tool union from the "Tool Definitions and Calls" block
+    -- the in-program (#[derive(Debug,Clone)] only, NO serde) union +
+    wire_name method, the first in-program union in the package to carry a
+    method; R217 DanglingToolCallReason in-program-union shape + the R221
+    ContentPart base-class isinstance-dispatch method pattern; completes
+    the block with the backend-side tool peer; WebSearch allowed_domains
+    Option<Vec<String>> -> tuple[str,...]|None; XSearch field-less;
+    HostedTool unblocks the ConversationRequest hosted_tools consumer
+    layer; no barrel collision -> no Conversation prefix)."""
+    assert len(sampler.__all__) == 197
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -517,6 +527,20 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         # ToolCallFunction wire-layer peer which carries no id)
         "ToolCall",
         "ToolSpec",
+        # conversation_hosted_tools (R223): the conversation.rs HostedTool
+        # backend-hosted tool union from the "Tool Definitions and Calls"
+        # block -- the in-program (#[derive(Debug,Clone)] only, NO serde)
+        # union + wire_name method, the first in-program union in the
+        # package to carry a method; R217 DanglingToolCallReason
+        # in-program-union shape + R221 ContentPart base-class
+        # isinstance-dispatch method; completes the block with the
+        # backend-side tool peer; WebSearch allowed_domains
+        # Option<Vec<String>> -> tuple[str,...]|None; XSearch field-less;
+        # HostedTool unblocks the ConversationRequest hosted_tools
+        # consumer layer; no barrel collision -> no Conversation prefix
+        "HostedTool",
+        "WebSearch",
+        "XSearch",
     }
 
 

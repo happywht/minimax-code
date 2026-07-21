@@ -267,6 +267,11 @@ from minimax_code.sampler.conversation_enums import (
     PriorTurnInterrupt,
     SyntheticReason,
 )
+from minimax_code.sampler.conversation_hosted_tools import (
+    HostedTool,
+    WebSearch,
+    XSearch,
+)
 from minimax_code.sampler.conversation_leaves import (
     DanglingToolCallReason,
     HarnessHalted,
@@ -495,6 +500,7 @@ __all__ = [
     "FinishReason",
     "FunctionToolChoice",
     "HarnessHalted",
+    "HostedTool",
     "ImageBlock",
     "ImagePart",
     "ImageSource",
@@ -596,6 +602,8 @@ __all__ = [
     "UnknownStopReason",
     "UrlImageSource",
     "UserCancelled",
+    "WebSearch",
+    "XSearch",
     "backoff_base_ms",
     "chat_truncate_for_prompt",
     "classify_error",

@@ -17350,3 +17350,42 @@ ruff check（4 文件：`conversation_tool_defs.py` + `__init__.py` + `test_tool
 
 ### Commit
 `feat(platform): R222 migrate conversation.rs ToolCall+ToolSpec tool-definitions leaves`。conversation.rs 第 6 切片（2 符号，plain flat struct——conversation.rs 首个 plain struct + sampler 包首个 strict-required flat struct）；barrel 192→194；strict-required（持久化）vs tolerant（响应）范式区分对照 R206；无桶面冲突 → 无 Conversation 前缀（裸名镜像 grok）；`ToolCall` 解锁 `AssistantItem` 消费层依赖闭包。
+
+## R223 — conversation.rs 第 7 切片：HostedTool in-program 联合体 + wire_name 方法（首个 in-program 联合体携带方法，闭合 "Tool Definitions and Calls" 区块）
+锚点:R223-1 71ea158
+
+### 本轮目标
+继续策略 D 续扫 `conversation.rs`（9481 行）叶子层。R222 落地 ToolCall+ToolSpec（第 6 切片，首个 plain struct + strict-required 纪律，闭合 client-side tool 定义半边）后，第 7 切片自然落在 "Tool Definitions and Calls" 区块的 **backend-side** peer：`HostedTool`（~478）——一个 `#[derive(Debug, Clone)]`（NO serde）的 in-program 枚举 + `wire_name()` 方法。零外部依赖（WebSearch 的 `allowed_domains: Option<Vec<String>>` + XSearch field-less），纯逻辑边界。barrel 194→197。
+
+### 融合结论
+R223 的核心设计决策是 **in-program 联合体携带方法** 的范式落地——sampler 包首个 in-program 联合体携带方法（wire_name），两个已建立模式在此回合交汇：
+- **in-program 联合体形态**：frozen+slots 联合体基类 + field-less / data-carrying 子类变体，无 from_payload/as_payload（不序列化）——R217 DanglingToolCallReason 先例。
+- **基类单点 isinstance 分派方法**：方法住在基类上，按 isinstance 分派而非每变体 override——R221 ContentPart.as_payload 先例。
+- **R223 里程碑**：首个 in-program 联合体携带方法（wire_name 镜像 grok `impl HostedTool { match self }` 单点 match 语义）。
+
+`Option<Vec<String>>` → `tuple[str, ...] | None`（不可变序列，符合 frozen 语义，hashable，保序；同 R209 SearchSource 先例）。默认 None（镜像 Option::None 常见用法）。战略价值：HostedTool 是 backend-side peer（R222 client-side ToolCall+ToolSpec 的对边），**闭合 "Tool Definitions and Calls" 区块**。HostedTool 解锁 `ConversationRequest` 消费层（其 `hosted_tools: Vec<HostedTool>` 字段依赖闭包因本轮落地而变浅）。
+
+### 交付
+- 新建 `agent/minimax_code/sampler/conversation_hosted_tools.py`（148 行）：`HostedTool`（frozen+slots 联合体基类，空体 + `wire_name()` 基类 isinstance 分派方法）+ `WebSearch`（frozen+slots 子类，`allowed_domains: tuple[str, ...] | None = None`）+ `XSearch`（frozen+slots field-less 子类）。无 from_payload/as_payload（in-program）。
+- 扩展 `agent/minimax_code/sampler/__init__.py` barrel：导入块（isort 字母序 `conversation_hosted_tools` 在 `conversation_enums` 后、`conversation_leaves` 前）+ `__all__` 3 个 order-by-type 插入（`HostedTool` 在 `HarnessHalted` 后、`ImageBlock` 前；`WebSearch`/`XSearch` 在 `UserCancelled` 后、`backoff_base_ms` 前），194→197。
+- 同步 `agent/tests/test_sampler_config.py` barrel 守卫：计数 194→197 + docstring R223 追加（首个 in-program 联合体携带方法里程碑 + 闭合 "Tool Definitions and Calls" 区块）+ 符号集合 +3。
+- 新建 `agent/tests/test_hosted_tools.py`（224 行，6 测试类，30 测试）：barrel 标识检查 + wire_name 分派（WebSearch→"web_search" + XSearch→"x_search" + 多态基类方法分派 + bare 基类 → TypeError）+ WebSearch allowed_domains（默认 None + 显式 None + tuple 值保留 + 单域 tuple + 空 tuple + tuple 类型断言）+ XSearch 字段（无参构造 + 无 allowed_domains）+ 值语义（默认/带域相等 + 域差异不等 + None vs tuple 不等 + XSearch 相等 + WebSearch vs XSearch 跨变体不等 + tuple 顺序敏感）+ slots/frozen 不可变（三 slots 集合 + 无 __dict__ + WebSearch setattr frozen + XSearch `__dataclass_params__.frozen` 声明式）+ 子类层级（两变体 isinstance HostedTool + 基类非变体 + 变体互斥）。
+
+### 映射决策树 + 坑
+1. **首个 in-program 联合体携带方法**：R217 DanglingToolCallReason 是首个 in-program 联合体（无方法）；R221 ContentPart.as_payload 是首个基类 isinstance 分派方法（但 ContentPart 是 wire union，带 from_payload/as_payload）。R223 是两者交汇——in-program 联合体 + 方法，里程碑在此。
+2. **wire_name 基类 isinstance 分派**：选项 A（基类 isinstance 分派）vs 选项 B（每变体 override）。选 A：镜像 grok `impl HostedTool { fn wire_name { match self { ... } } }` 单点 match 语义（变体逻辑集中在基类一处，新增变体需改基类 = 显式契约），对称 R221 ContentPart.as_payload 基类分派。前向引用（基类方法体引用 WebSearch/XSearch）通过 `from __future__ import annotations` + 方法体运行时解析解决。
+3. **`Option<Vec<String>>` → `tuple[str, ...] | None`**：frozen 语义要求不可变序列；tuple（非 list）符合 frozen + hashable；保序（Vec 有序）；默认 None（镜像 Option::None 常见用法——大多数 web search 无 allowlist 限制）。同 R209 SearchSource `tuple[str, ...]` 先例。
+4. **无桶面冲突 → 无前缀**：HostedTool/WebSearch/XSearch 在 barrel 表面无冲突（wire 层 ToolCallFunction/ToolSpec/ToolCall 全是 client-side，名字不同）→ 裸名镜像 grok 模块本地名，无需 Conversation 前缀（同 R217/R221/R222 决策）。
+5. **isort 字母序坑**：`conversation_hosted_tools`（子模块名 `hosted_tools`）在 `conversation_enums`（`enums`）后（字母序 `enums` < `hosted_tools`）、`conversation_leaves`（`leaves`）前（`hosted_tools` < `leaves`）。
+6. **`__all__` order-by-type 排序**：barrel `__all__` 是 isort order-by-type（大写类组在前，小写函数组在后），非纯字母序。`HostedTool`(H) 在 `HarnessHalted`(H-a) 后（'o'>'a' 第 2 字母）、`ImageBlock`(I) 前（H<I）；`WebSearch`/`XSearch` 加在大写类组末尾（`UserCancelled` 后，因无 W/X 大写符号）。Grep `^    "[WX]` no match 确认无 W/X 符号。
+7. **B010 规避**：WebSearch frozen setattr 测试用变量 `attr = "allowed_domains"`（规避 B010）。
+8. **field-less frozen+slots 子类 CPython dataclass 边界（测试缺陷修复）**：`test_x_search_is_frozen` 初版用 `setattr(XSearch(), "x", 1)` 探测 frozen，触发 `TypeError: super(type, obj)...`（CPython dataclass 生成的 __setattr__ 对 field-less slots 子类未知属性名的边界 case）而非预期 FrozenInstanceError。修复：XSearch 改用 `__dataclass_params__.frozen is True` 声明式验证（field-less 类型验证 frozen 的标准方式，frozen 由继承 HostedTool 获得）；WebSearch 保留 setattr 运行时验证（有真实 slot，行为可预期）。定向 pytest 重跑 43 passed 修复确认。
+
+### 验证
+ruff check（4 文件：`conversation_hosted_tools.py` + `__init__.py` + `test_hosted_tools.py` + `test_sampler_config.py`）✅ All checks passed!（含 isort order-by-type，证明导入顺序与 `__all__` 排序正确）+ 定向 pytest `test_hosted_tools.py + test_sampler_config.py` **43 passed**（30 新测试 + 13 守卫，含 test_x_search_is_frozen 修复后重跑）+ 全量回归 **6012 passed + 10 skipped**（R222 基准 5982 passed + 10 skipped + R223 新增 30 = 6012，数学精确吻合，零真实回归，120.56s）。10 skipped 与 R222 基准一致。
+
+### YAGNI 边界
+`Serialize`/`Deserialize` round-trip（grok 本身不 derive 它们——wire JSON 由 `ConversationRequest` 序列化器内联发射：WebSearch → `{"type": "web_search", "allowed_domains": [...]}` / XSearch → `{"type": "x_search"}` 原始 JSON 注入发生在 ConversationRequest 处，非此处）。`ConversationRequest` 消费层（携带 `hosted_tools: Vec<HostedTool>` 字段，但 ConversationRequest 本身依赖未迁移的 `ConversationItem` 联合体——留待后续切片）。`#[derive(Clone)]` 无 Python 对等物（frozen+slots 天然不可变 + 结构相等）。下轮策略 D 续扫 conversation.rs 叶子层（候选：`SystemItem`/`ToolResultItem` 其他独立叶子，或 `ConversationRequest`/`UserItem`/`AssistantItem` 消费层首切片——依赖闭包因 HostedTool/ContentPart/ToolCall 落地持续变浅）或策略 E 其他未迁移 crate 零依赖叶子。
+
+### Commit
+`feat(platform): R223 migrate conversation.rs HostedTool backend-hosted-tool in-program union`。conversation.rs 第 7 切片（3 符号，in-program 联合体 + wire_name 方法——sampler 包首个 in-program 联合体携带方法）；barrel 194→197；闭合 "Tool Definitions and Calls" 区块（R222 client-side ToolCall+ToolSpec + R223 backend-side HostedTool）；R217 in-program-union 形态 + R221 基类 isinstance 分派方法交汇；无桶面冲突 → 无 Conversation 前缀（裸名镜像 grok）；HostedTool 解锁 ConversationRequest hosted_tools 消费层依赖闭包。
