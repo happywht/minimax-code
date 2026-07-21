@@ -27,11 +27,22 @@ Currently landed:
   constants (``HEADER_SIZE`` / ``MAX_FILE_SIZE`` / ``VERSION_STRING_LEN``)
   and ``writer`` module are dropped (allocation-safe capture makes a custom
   binary format unnecessary).
+* ``symbolicate`` (R227) -- grok ``symbolicate.rs`` ``resolve_frames`` /
+  ``format_report``. ``resolve_frames`` is a best-effort placeholder (pure
+  Python has no ``backtrace::resolve`` equivalent; every frame mirrors grok's
+  stripped-binary fallback with all-``None`` symbol fields, real native
+  symbolication deferred to the future ``handler`` leaf). ``format_report``
+  renders the blob + resolved frames into the human-readable report text
+  (product-branded ``=== MiniMax Code Crash Report ===`` envelope, signal /
+  address / version / backtrace block).
 
-YAGNI / deferred (later rounds): ``symbolicate.rs`` ``resolve_frames`` /
-``format_report`` (Python ``traceback`` equivalent), ``handler.rs`` signal
-installation (Python ``faulthandler`` + ``excepthook`` equivalent),
-``lib.rs`` ``check_previous_crash`` orchestration, ``install`` /
+YAGNI / deferred (later rounds): ``backtrace::resolve`` native symbolication
+(``resolve_frames`` lands as a best-effort all-``None`` placeholder; real
+DWARF / symbol-table lookup needs a native backend and is superseded by the
+``faulthandler`` Python-traceback path in the ``handler`` leaf),
+``handler.rs`` signal installation (Python ``faulthandler`` + ``excepthook``
+equivalent), ``lib.rs`` ``check_previous_crash`` orchestration (consumes
+format + archive + symbolicate), ``install`` /
 ``install_terminal_restore_only`` entry points, and the app-startup wiring +
 ``crash.*`` IPC namespace + frontend session-recovery prompt.
 """
@@ -41,6 +52,7 @@ from __future__ import annotations
 from minimax_code.crash.archive import archive_report, prune_history
 from minimax_code.crash.format import MAGIC, MAX_FRAMES, VERSION, CrashBlob
 from minimax_code.crash.signals import si_code_name, signal_name
+from minimax_code.crash.symbolicate import format_report, resolve_frames
 from minimax_code.crash.types import (
     MAX_HISTORY,
     CrashHandlerConfig,
@@ -58,7 +70,9 @@ __all__ = [
     "CrashReport",
     "ResolvedFrame",
     "archive_report",
+    "format_report",
     "prune_history",
+    "resolve_frames",
     "si_code_name",
     "signal_name",
 ]

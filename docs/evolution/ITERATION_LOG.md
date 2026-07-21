@@ -17501,3 +17501,39 @@ symbolicate.rs resolve_frames + format_report（Python traceback 等价，后续
 
 ### Commit
 `feat(platform): R226 fuse xai-crash-handler format.rs (CrashBlob + GCRX→JSON serialization leaf)`。路径 B 第 2 轮（crash 模块续 format 叶子）；迁移 format.rs GCRX 二进制格式 → JSON 重构；concept-for-concept 融合（Rust FFI 字节写入 + 二进制布局 → Python faulthandler+JSON，async-signal-unsafe 根因在 Python 不存在）；3 语义常量 (MAGIC+VERSION+MAX_FRAMES) + CrashBlob frozen+slots dataclass + _is_int bool 排除 + from_payload refuse-and-return-None + as_payload JSON 往返；barrel 8→12 符号；25 测试覆盖全失败分支；解锁 check_previous_crash 编排消费层；后续 symbolicate/handler/check_previous_crash/IPC/前端 prompt。
+
+## R227 — 迁移 symbolicate.rs resolve_frames + format_report（融合 grok xai-crash-handler，crash 模块第 3 叶）
+
+锚点:R227-1 4213e4b
+
+### 本轮目标
+迁移 grok `xai-crash-handler/src/symbolicate.rs` 的 `resolve_frames` + `format_report` → `crash/symbolicate.py`（Python traceback 等价）。R226 已完成 format 叶子（commit 4213e4b），R227 继续 symbolicate 余量（R225 已迁 signal_name/si_code_name 到 signals.py）。消费 R225 ResolvedFrame + R226 CrashBlob.frames + signals.py 词汇表。扩展 crash/__init__ barrel，写 test_crash_symbolicate.py。路径 B crash 模块第 3 轮。
+
+### 融合结论
+concept-for-concept 融合。symbolicate.rs 含 2 个公开函数：`resolve_frames(blob: &CrashBlob) -> Vec<ResolvedFrame>`（遍历 blob.frames，每帧调 `backtrace::resolve` C 库 DWARF/symbol-table 查找填充 symbol_name/filename/lineno，无符号时全 None = stripped-binary fallback）；`format_report(blob: &CrashBlob, frames: &[ResolvedFrame]) -> String`（纯逻辑人类可读报告渲染，消费 signal_name/si_code_name 词汇表）。Python 等价决策：(1) `backtrace::resolve` 依赖 C 库（libbacktrace/dladdr + DWARF debug info），纯 Python 标准库无等价（无 DWARF 解析器、无 dladdr），且 Python 崩溃恢复捕获 Python traceback（faulthandler）而非 native IP——不同范式落地于 handler 叶子 → `resolve_frames` 标记 **best-effort 占位叶子**：每帧产 ResolvedFrame(ip=ip, symbol_name=None, filename=None, lineno=None)，**精确镜像 grok stripped-binary fallback 路径**（全 None），保留接口契约（CrashBlob in → resolved frames out）+ 数据流形状，真实 native 符号解析延后 handler 叶子或可选 native-backend 叶子；(2) `format_report` 纯逻辑字符串拼装 → **完全可移植**，消费 CrashBlob + ResolvedFrame 序列 + signal_name/si_code_name；(3) `signal_name`/`si_code_name` R225 已迁 signals.py → import 复用（DRY 单一真相源）。产品融合决策点：grok 标题 `=== Grok Crash Report ===` → 改项目品牌 `=== MiniMax Code Crash Report ===`（产品身份），结构格式（=== ... Crash Report === / === End Report === 信封 + 固定宽 9 字符标签列）保留 grok 范式——这是 check_previous_crash 编排写入 last-crash-report.txt 的人类可读表面，crash.* IPC + 前端 recovery prompt 下次启动透出给用户。
+
+### 交付
+- `agent/minimax_code/crash/symbolicate.py`（~147 行）：详尽模块 docstring（grok 来源 + Migrated + YAGNI backtrace::resolve + Purification decisions + Product-fusion note）+ `resolve_frames(blob: CrashBlob) -> tuple[ResolvedFrame, ...]`（best-effort 占位，全 None fallback）+ `format_report(blob: CrashBlob, frames: Sequence[ResolvedFrame]) -> str`（纯逻辑，标题品牌化 MiniMax Code，消费 signal_name/si_code_name）+ `__all__` order-by-type。
+- `agent/tests/test_crash_symbolicate.py`（~182 行，19 测试，5 类：TestResolveFrames 4 + TestFormatReportHeader 7 + TestFormatReportBacktrace 7 + TestFormatReportSmoke 1）。
+- `agent/minimax_code/crash/__init__.py` barrel 12→14 符号（加 format_report + resolve_frames；import + __all__ + docstring landed/YAGNI 段同步）。
+
+### 映射决策树+坑
+1. Rust `{:#018x}`（0x 前缀 + 补零 16 位 hex = 18 字符）→ Python `f"0x{addr:016x}"`（0x + 16 hex = 18 字符）。si_addr=0x7f8a12340000 → `0x00007f8a12340000`，匹配。
+2. Rust `{:>3}`（右对齐宽 3）→ Python `f"{i:>3}"`。帧行前缀 `  `(2) + `{:>3}`(3) + `: ` → index 0 = `    0: `（4 空格 + 0）。
+3. 固定宽标签列（全 9 字符对齐）：`Signal:  `(2 空格)/`si_code: `(1)/`Address: `(1)/`PID:     `(5)/`Version: `(1)/`Time:    `(4)。精确复制 grok 字面量空格。
+4. `at file:line` 子行：grok `if let (Some(file), Some(line))` 要求**两者皆 Some** → Python `if frame.filename is not None and frame.lineno is not None`（合取，镜像 grok 元组绑定语义）。filename 单独存在不发 at 行（测试覆盖）。
+5. 报告累积：grok `String::with_capacity(4096)` + push_str（每行带 \n）→ Python list[str] 累积 + `"\n".join(lines) + "\n"`（行间 \n + 尾部 \n，输出等价）。
+6. `<unknown>` 默认符号：grok `symbol_name.as_deref().unwrap_or("<unknown>")` → Python `symbol_name if symbol_name is not None else "<unknown>"`。
+7. import 复用：signals.py 的 signal_name/si_code_name R225 已迁，symbolicate.py import 而非重定义（DRY 单一真相源）。
+8. ResolvedFrame 字段名与 grok 一致（ip/symbol_name/filename/lineno）—— R225 已对齐，本轮消费无需适配。
+9. Vec<ResolvedFrame> → tuple[ResolvedFrame, ...]（沿用 R225/R226 Vec→tuple 范式）；&[ResolvedFrame] 切片 → Sequence[ResolvedFrame]（只读遍历，collections.abc）。
+10. 测试空格精确：断言含 `" at "`（空格-at-空格）检测 at 行存在/不存在——报告其他行（<unknown>、地址、标签）不含 " at "，精确无歧义。
+
+### 验证
+ruff check（crash/ 包 + test_crash_symbolicate.py）✅ All checks passed!（含 isort order-by-type，初版一次通过）+ 定向 pytest test_crash_symbolicate.py **19 passed**（0.08s，5 类）+ 全量回归 **6219 passed + 10 skipped + 1 failed**（1 failed = test_connection.py::test_interval_keeps_global_timeline_across_loops，预存 timing flake：gap=0.031 < 0.032 阈值差 0.001s，Windows sleep 精度漂移，与 crash 模块无关；重跑 **1 passed** 确认 flaky）→ 实际 6220 = 6201（R226 基准）+ 19（R227 新增），数学精确吻合，零真实回归，144.31s。10 skipped 与 R226 基准一致。
+
+### YAGNI 边界
+backtrace::resolve native 符号解析（resolve_frames 落地为 best-effort 全 None 占位；真实 DWARF/symbol-table 查找需 native backend，且被 handler 叶子的 faulthandler Python-traceback 路径取代）/ handler.rs 信号安装（faulthandler + sys.excepthook + threading.excepthook + asyncio exception handler 等价，后续）/ lib.rs check_previous_crash 编排（消费 format + archive + symbolicate，后续）/ install + install_terminal_restore_only 入口（后续）/ terminal.rs TUI 恢复（YAGNI，agent 是 Web SPA 后端无 TUI）/ app 启动接线 / crash.* IPC 命名空间 / 前端 session-recovery prompt（后续轮次）。下轮路径 B 续 crash（handler faulthandler 安装 / check_previous_crash 编排 / install 入口）或转向下一功能模块（sandbox/memory/codegraph）。
+
+### Commit
+`feat(platform): R227 fuse xai-crash-handler symbolicate.rs (resolve_frames + format_report leaf)`。路径 B 第 3 轮（crash 模块续 symbolicate 叶子）；迁移 symbolicate.rs resolve_frames + format_report；concept-for-concept 融合（backtrace::resolve C 库 DWARF 查找 → Python best-effort 全 None 占位，保留接口契约 + 数据流形状，真实符号解析延后 handler 叶子；format_report 纯逻辑完全可移植）；resolve_frames best-effort 占位镜像 grok stripped-binary fallback + format_report 纯逻辑消费 signal_name/si_code_name + 标题品牌化 MiniMax Code；barrel 12→14 符号；19 测试覆盖 resolve_frames best-effort 行为 + format_report 文本断言（含 grok smoke parity）；解锁 check_previous_crash 编排消费层（format + archive + symbolicate 三叶闭合）；后续 handler/check_previous_crash/install/IPC/前端 prompt。
