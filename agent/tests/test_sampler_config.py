@@ -189,8 +189,19 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     snake_case strings ("auto"/"none"/"required"), the Function(String)
     newtype variant as {"function": name}; the Conversation prefix on all 4
     variants dodges the wire-layer ToolChoice family barrel collision
-    (FunctionToolChoice et al.), mirroring the ConversationStopReason rename)."""
-    assert len(sampler.__all__) == 189
+    (FunctionToolChoice et al.), mirroring the ConversationStopReason rename).
+    + conversation_content_part (R221, 3: the conversation.rs ContentPart
+    tagged union -- the sampler package's first internally-tagged mixed enum
+    with data-carrying struct variants, the fourth serde shape after R84
+    untagged JsonRpcId + R89 internally-tagged HookEvent + R220
+    externally-tagged ConversationToolChoice; #[serde(tag="type",
+    rename_all="snake_case")] -> Text{text} -> {"type":"text","text":...},
+    Image{url} -> {"type":"image","url":...} (the standard OpenAI content-part
+    wire shape); zero dependency, unblocks the UserItem/AssistantItem
+    conversation consumer layer; no barrel collision -> no Conversation prefix
+    (part vs block suffix keeps it distinct from the R202 ContentBlock family),
+    <Type>Part variant naming mirrors the R202 <Type>Block precedent)."""
+    assert len(sampler.__all__) == 192
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -473,6 +484,14 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "ConversationNone",
         "ConversationRequired",
         "ConversationToolChoice",
+        # conversation_content_part (R221): the conversation.rs content-part
+        # tagged union -- the first internally-tagged mixed enum with
+        # data-carrying struct variants (Text{text}/Image{url} ->
+        # {"type":<tag>,<field>:<value>}); no barrel collision -> no
+        # Conversation prefix, <Type>Part naming mirrors the R202 <Type>Block
+        "ContentPart",
+        "ImagePart",
+        "TextPart",
     }
 
 

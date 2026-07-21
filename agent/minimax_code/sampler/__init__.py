@@ -258,6 +258,11 @@ from minimax_code.sampler.content_blocks import (
     ToolUseBlock,
     UrlImageSource,
 )
+from minimax_code.sampler.conversation_content_part import (
+    ContentPart,
+    ImagePart,
+    TextPart,
+)
 from minimax_code.sampler.conversation_enums import (
     PriorTurnInterrupt,
     SyntheticReason,
@@ -457,6 +462,7 @@ __all__ = [
     "ContentBlockDeltaEvent",
     "ContentBlockStartEvent",
     "ContentBlockStopEvent",
+    "ContentPart",
     "ConversationAuto",
     "ConversationFunction",
     "ConversationNone",
@@ -486,6 +492,7 @@ __all__ = [
     "FunctionToolChoice",
     "HarnessHalted",
     "ImageBlock",
+    "ImagePart",
     "ImageSource",
     "ImageUrl",
     "InputJsonDelta",
@@ -557,6 +564,7 @@ __all__ = [
     "TextBlock",
     "TextDelta",
     "TextMessageContent",
+    "TextPart",
     "TextSystemParam",
     "TextToolResultContent",
     "ThinkingBlock",

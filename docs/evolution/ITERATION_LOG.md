@@ -17276,3 +17276,38 @@ ruff check（4 文件：`conversation_tool_choice.py` + `__init__.py` + `test_co
 
 ### Commit
 `feat(platform): R220 migrate conversation.rs ConversationToolChoice externally-tagged mixed enum`。conversation.rs 第 4 切片（5 符号，externally-tagged 混合枚举——sampler 包第 3 种 serde 形态继 R84 untagged/R89 internally-tagged）；barrel 184→189；Conversation 前缀避 wire-layer ToolChoice family 桶面冲突（镜像 R207/R219 重命名先例）。
+
+## R221 — conversation.rs 第 5 切片：ContentPart internally-tagged 联合体（OpenAI content-part wire 形状, 第 4 种 serde 形态, <Type>Part 命名对称 R202 <Type>Block）
+
+锚点:R221-1 3e69f56
+
+### 本轮目标
+继续策略 D 续扫 `xai-grok-sampling-types/conversation.rs`（9481 行）叶子层。R220 落地第 4 切片（`ConversationToolChoice` externally-tagged 混合枚举，sampler 包第 3 种 serde 形态），并在 YAGNI 边界指出 `UserItem`/`AssistantItem` 消费层依赖闭包较深（拉入未迁 `ContentPart` 联合 + body）。R221 先解除该阻塞链的根——落地 `ContentPart`（conversation.rs ~354）：2 变体 internally-tagged 联合体 `Text{text}` + `Image{url}`，零外部依赖。这是 sampler 包第 4 种 serde 表示形态（继 R84 untagged、R89 internally-tagged、R220 externally-tagged 之后），也是首个"internally-tagged + 数据携带 struct 变体"混合形态。
+
+### 融合结论
+该联合体是"消息体元素"轴——conversation 层一条 user/assistant 消息的 body 由若干 content part 组成（纯文本或图片引用）。三个核心设计决策：(1) **internally-tagged serde 形态（第 4 种）**：grok `#[serde(tag="type", rename_all="snake_case")]` 意味着每个 struct 变体序列化为单个对象，携带 snake_case 变体名作 `"type"` 判别键 + 变体自身字段——`Text` → `{"type":"text","text":...}`、`Image` → `{"type":"image","url":...}`，标准 OpenAI content-part wire 形状（ChatCompletions request `content` 数组的 per-element body），hoisted 到 conversation 层。(2) **<Type>Part 命名对称 R202 <Type>Block**：基含 `Content` 前缀（`ContentPart`），变体含 `Part` 后缀（`TextPart`/`ImagePart`），完全对称 R202 wire-layer `ContentBlock` + `TextBlock`/`ImageBlock` 先例。(3) **无桶面冲突 → 无 Conversation 前缀**：与 R219 `ConversationStopReason`/R220 `ConversationToolChoice` 需 `Conversation` 前缀避冲突的情境不同，`part` vs `block` 后缀已足够区分 conversation 层与 wire-layer family——故基名直接用 `ContentPart`，无前缀。新增 `conversation_content_part.py`（兄弟于 R217-R220 的 conversation_* 子模块），barrel 189→192。
+
+### 交付
+- 新建 `agent/minimax_code/sampler/conversation_content_part.py`（148 行）：`ContentPart`（frozen+slots 联合体基，field-less + 手写 `from_payload`/`as_payload` internally-tagged (de)serializer 对）+ 2 变体子类（`TextPart` 携 `text: str` + `ImagePart` 携 `url: str`）。
+- 扩展 `agent/minimax_code/sampler/__init__.py` barrel：导入块（isort 字母序 `conversation_content_part` 在 `content_blocks` 后、`conversation_enums` 前）+ `__all__` 3 个 ASCII 排序插入（`ContentPart` 在 `ContentBlockStopEvent` 后、`ConversationAuto` 前；`ImagePart` 在 `ImageBlock` 后；`TextPart` 在 `TextMessageContent` 后），189→192。
+- 同步 `agent/tests/test_sampler_config.py` barrel 守卫：计数 189→192 + docstring R221 追加 + 符号集合 +3。
+- 新建 `agent/tests/test_content_part.py`（6 测试类，33 测试）：barrel 标识检查 + `as_payload` internally-tagged 序列化（text/image 双形状 + 任意 content/url 保留 + base64 data URI）+ `from_payload` internally-tagged 严格解析（text/image dict→变体、extra keys 容忍、非 dict/缺 type/非字符串 type/未知 tag/text 缺字段/text 非字符串字段/image 缺字段/image 非字符串字段/空 dict 全抛 ValueError）+ 双向 round-trip（变体/wire + extra keys 坍缩为规范形状）+ 值语义（结构相等 + text≠image 跨变体 + isinstance 联合体基）+ slots/frozen 不可变（基 fieldless + text 单 text slot + image 单 url slot + 无 __dict__ + 变量 attr name frozen 断言）。
+
+### 映射决策树 + 坑
+1. **internally-tagged + 数据携带 struct 变体（第 4 种 serde 形态）**：继 R84 untagged / R89 internally-tagged（unit 变体）/ R220 externally-tagged（unit + newtype 混合）后，R221 是 internally-tagged + struct 变体（每变体携带具名字段）。`#[serde(tag="type", rename_all="snake_case")]` → 每变体序列化为 `{type: <snake_case>, <field>: <value>}`。手写双向 (de)serializer，非自动 serde。
+2. **<Type>Part 命名对称 <Type>Block（无 Conversation 前缀）**：评估选项 A（`ContentPart` + `TextContentPart`/`ImageContentPart`，Content 重复）vs 选项 B（`ContentPart` + `ContentTextPart`/`ContentImagePart`）→ 最终选 `<Type>Part`（基含 Content，变体含 Part 后缀，无 Content），对称 R202（`ContentBlock` + `TextBlock`/`ImageBlock`）。桶面 grep 确认 `TextPart`/`ImagePart` 无冲突 → 无需 Conversation 前缀（对照 R219/R220 必须前缀）。
+3. **严格 from_payload（无 catch-all）+ extra keys 容忍**：grok 无 `#[serde(other)]` → 未知 tag/缺字段/非字符串全抛 `ValueError`，parity R219/R220 严格范式。但 extra keys（如 `cache_control`）容忍——serde 默认忽略 struct 未知字段（前向兼容，wire 可能携带 conversation 层尚未建模的 key）。round-trip 时 extra keys 坍缩为规范形状（`{type, field}`）。
+4. **Arc<str> → str**：grok 两变体字段均为 `Arc<str>`（引用计数字符串）→ Python `str`（不可变，无 Arc 等价物）。Text/Image 字段语义透明，任意字符串（空串、多行、base64 data URI）原样保留。
+5. **as_payload isinstance 顺序**：`TextPart`/`ImagePart` 是 `ContentPart` 子类，isinstance 链从具体变体到通用基；基类 `as_payload` 末尾 `raise TypeError` 防御未知子类（理论不可达，frozen+slots 无运行时 monkey-subclass，但保持严格）。
+6. **isort 字母序坑**：`conversation_content_part` 在 `content_blocks`（第 4 字母 't'）后、`conversation_enums`（子模块名第 13 字母 'c'<'e'）前。导入块精确插在两块之间。
+7. **`__all__` ASCII 排序**：`ContentPart`(C-o-n-t-e-n-t-P) 在 `ContentBlockStopEvent`(C-o-n-t-e-n-t-B) 后（'P'>'B'）、`ConversationAuto`(C-o-n-v) 前（'t'<'v' 第 4 字母）；`ImagePart`(I-m-a-g-e-P) 在 `ImageBlock`(I-m-a-g-e-B) 后（'P'>'B'）；`TextPart`(T-e-x-t-P) 在 `TextMessageContent`(T-e-x-t-M) 后（'P'>'M'）。
+8. **B010 规避**：frozen setattr 测试用变量 `attr = "text"`/`attr = "url"` 而非字面量属性名（规避 ruff B010 setattr 常量属性规则），镜像 R219/R220 变量 field name 模式。
+
+### 验证
+ruff check（4 文件：`conversation_content_part.py` + `__init__.py` + `test_content_part.py` + `test_sampler_config.py`）✅ All checks passed!（含 isort order-by-type，证明导入顺序与 `__all__` 排序正确）+ 定向 pytest `test_content_part.py + test_sampler_config.py` **46 passed**（33 新测试 + 13 守卫）+ 全量回归 **5927 passed + 10 skipped**（R220 全量 5893 passed + 1 flaky failed = 5894 用例；R221 flaky 此次通过 + 新增 33 = 5927，数学精确吻合，零真实回归，131.44s）。R220 的预存 flaky `test_connection.py::test_interval_keeps_global_timeline_across_loops` 本次全量未复现（asyncio 时序抖动偶发，与 R221 零关系）。
+
+### YAGNI 边界
+`ContentPart` 的 `#[derive(Clone)]` 无 Python 对等物（frozen+slots 天然不可变 + 结构相等）。两变体仅携带单 `Arc<str>` 字段，无附加元数据（OpenAI content-part 标准形状）。不迁移 wire-layer 互转（conversation `ContentPart` ↔ messages.rs `ContentBlock` family 的跨层投影）——两个 family 是独立 API surface（OpenAI content-part vs Anthropic content-block），消费者按需桥接，平台层不预设。`UserItem`/`AssistantItem` 消费层（携带 `Vec<ContentPart>` body）本轮仍未迁移——依赖闭包虽因 ContentPart 落地而变浅，但 struct 本身可能含 `Role`/timestamp/其他字段，留待后续切片。下轮策略 D 续扫 conversation.rs 叶子层（候选：`UserItem`/`AssistantItem` 消费层、`ToolCall`/`ToolSpec`/`HostedTool`/`SystemItem` 其他独立叶子，或其他 conversation.rs 独立小叶子）或策略 E 其他未迁移 crate 零依赖叶子。
+
+### Commit
+`feat(platform): R221 migrate conversation.rs ContentPart internally-tagged union (4th serde shape, <Type>Part mirrors R202 <Type>Block)`。conversation.rs 第 5 切片（3 符号，internally-tagged struct-variant 联合体——sampler 包第 4 种 serde 形态继 R84 untagged/R89 internally-tagged/R220 externally-tagged）；barrel 189→192；<Type>Part 命名对称 R202 <Type>Block（无桶面冲突 → 无 Conversation 前缀）。
