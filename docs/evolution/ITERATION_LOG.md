@@ -16818,3 +16818,55 @@ R207 把 grok 的 OpenAI-compatible ChatCompletion 中层叶子（`types.rs` 第
 `feat(platform): R209 migrate types.rs search parameters + 4-variant source union`
 
 锚点链：… → R206(0c12eae) → R207(ff7793b) → R208(d7491df) → **R209（本轮）**。barrel 145→151；全量 5554 passed + 10 skipped（+55 新增），零真实回归。本轮核心锁定两个 grok→Python 映射决策：`Option<Vec<String>>` vs `Vec<String>` 双 helper（`Option::None` vs `Some(vec![])` 语义区分）+ 联合基类严格调度器（`ValueError`）vs 变体容忍构造器（`cls()`）行为不对称。
+
+## R210 — chat_request_message.py: ChatRequestMessage struct（assistant/user/tool message body）
+
+锚点:R210-1 bd328a5
+
+### 本轮目标
+
+- 继续 `xai-grok-sampling-types` `types.rs` 第五块叶子迁移：`ChatRequestMessage`（1 符号）——`ChatCompletionRequest.messages[]` 列表内的 assistant/user/tool message 主体层，list-carrying（`tool_calls: Vec<ToolCallRequest>`）。
+- 选定策略 A（types.rs 下一纯逻辑叶子子集）而非 serde_helpers.rs（9 行备选）——`ChatRequestMessage` 依赖的 `Role`（R206）+ `ChatMessageContent`/`ToolCallRequest`（R207）原子均已落地，可独立闭合，零外部依赖。
+
+### 融合结论
+
+- `types.rs` 累计已迁 38 符号：R206 原子 10 + R207 中层 11 + R208 流式 4 + 压缩头 6 + R209 搜索 6 + R210 message body 1 = 38。
+- 与 R207 `ToolCallRequest` 同构的 frozen+slots dataclass + copy-on-work `with_*` mutator posture（`frozen=True` 不兼容 grok `&mut self`）。
+- 关键差异：首次在单一 struct 内同时出现「必填字段严格解析（role）」+「必填字段容忍解析（content）」+「list-carrying Vec→tuple（tool_calls）」三种策略并存，触发本轮核心映射决策。
+
+### 交付
+
+- `agent/minimax_code/sampler/chat_request_message.py`（新模块，1 符号）：`ChatRequestMessage` frozen+slots dataclass，7 字段（`role`/`content` 必填 + `name`/`tool_calls`/`tool_call_id`/`model_id`/`reasoning_content` 可选）+ `from_payload` 宽容解析器 + 5 grok 构造器（`system`/`user`/`assistant`/`assistant_tool_call`/`tool`）+ 2 只读 helper（`is_system_message`/`text_content`）+ 2 copy-on-work mutator（`with_text_content`/`with_appended_text`）。
+- `agent/minimax_code/sampler/__init__.py` barrel **151→152**（import 块 +1 + `__all__` +1 + docstring R210 块）。
+- `agent/tests/test_chat_request_message.py`（新测试套件，34 函数/约 41 items 含参数化，覆盖 from_payload role 严格 vs content 容忍 + tool_calls Vec→tuple + 5 构造器 + 2 只读 + 2 copy-on-work + frozen/slots/hashable 值语义）。
+- `agent/tests/test_sampler_config.py` barrel guard 同步（len 152 + set +1 + docstring R210 块）。
+
+### 映射决策树 + 坑
+
+1. **role 严格 vs content 容忍（核心决策）**：两者都是 grok 必填字段（无 `#[serde(default)]`），但解析策略不对称——`role` 经 `Role.from_payload` 严格解析（缺失/非字符串/未知 → `ValueError`，镜像 serde missing-required-field 失败）；`content` 经 `ChatMessageContent.from_payload` 容忍解析（缺失/null → 空 `ChatTextContent("")`，前向兼容，同 R207 untagged union posture）。代码 + docstring + 测试三处锁定。
+2. **tool_calls Vec<ToolCallRequest> + `#[serde(default)]` → tuple**：缺失/null/非 list → 空元组（非 `None`，镜像 grok `Vec::new()` 默认）；list 内 dict 项过 `ToolCallRequest.from_payload`，非 dict 项跳过（前向兼容，同 R209 `SearchSourceRss.links` posture 但元素类型是复杂 struct 而非 `String`）。
+3. **非 dict payload → `ValueError`**：dict 是读取必填 `role` 的前提（忠实必填语义，同 R207 union base 严格策略；对比 R209 `SearchParameters` 全 Option struct 容忍非 dict → 全 None 实例）。
+4. **`&mut self` mutator → `with_*` copy-on-work**：grok `set_text_content`/`append_text_content` 是 `&mut self -> ()`，`frozen=True` 禁止原地修改，故重命名为 `with_text_content`/`with_appended_text` 返回新实例（语义等价于 caller rebind 时的 `&mut self`，同 R207 `ToolCallRequest.with_id` builder posture）。
+5. **4 Option 字段 dict.get 直通**：`name`/`tool_call_id`/`model_id`/`reasoning_content` 均为 `Option<String>`，`payload.get(key)` 无运行时类型检查，wire 值原样透传（容忍 null/缺失/任意 shape，同 R209 scalar Option posture）。
+6. **text_content 复用 R207 `to_blocks()`**：`ChatMessageContent` 已有 `to_blocks()` 方法（R207 为规避 `blocks` 槽位命名冲突而设），`text_content` 直接消费它过滤 `ChatTextBlock` 并 `"\n".join`，无需重复 blocks 访问逻辑。
+7. **with_appended_text 三分支**：`content.is_empty()` → delegate `with_text_content`（replace）；`ChatTextContent` → 字符串拼接；`ChatBlocksContent` → 追加新 `ChatTextBlock`；fallback → `with_text_content`。
+8. **命名无冲突**：`ChatRequestMessage` 是新名（R205 `Message` 是 Anthropic Messages API 单轮流信封；`ChatRequest` 前缀标记此为 OpenAI ChatCompletion peer）。方法名 `text_content`/`with_text_content`/`with_appended_text` 不与 7 个槽位字段冲突。
+
+### 验证
+
+- `uv run ruff check`：4 个 R210 文件 All checks passed。
+- 定向 pytest：`test_chat_request_message.py` + `test_sampler_config.py` 共 **54 passed in 0.25s**。
+- 全量回归：**5595 passed + 10 skipped in 103.40s**（R209 基准 5554 → 5595，R210 新增 41 个测试），零真实回归（skipped 持平 10）。
+
+### YAGNI 边界
+
+- 重容器 `ChatCompletionRequest`/`Response`/`Chunk` 依赖 `crate::rs`/`serde_helpers`/`xai-grok-tools`——延后。
+- `serde_helpers.rs`（9 行）——下一轮快速闭合备选。
+- `TraceContext` trait（依赖 tracing crate）、`ApiBackend`/`SamplingConfig`（依赖 `crate::rs`）、重复 `ReasoningEffort`（带 `to`/`from_responses_api` `crate::rs` 耦合）——延后。
+- 全 serde `Serialize`/`Deserialize` round-trip 不迁移——`from_payload` 覆盖平台所需 parse 方向。
+
+### Commit
+
+`feat(platform): R210 migrate types.rs ChatRequestMessage body (1 symbol)`
+
+锚点链：… → R207(ff7793b) → R208(d7491df) → R209(bd328a5) → **R210（本轮）**。barrel 151→152；全量 5595 passed + 10 skipped（+41 新增），零真实回归。本轮核心锁定三个 grok→Python 映射决策：必填字段「role 严格 vs content 容忍」不对称解析策略 + list-carrying `Vec<ToolCallRequest>` + `#[serde(default)]` → tuple（缺失/null/非 list → 空元组）+ `&mut self` mutator → `with_*` copy-on-work（frozen 替代原地修改）。

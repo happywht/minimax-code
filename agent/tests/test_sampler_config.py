@@ -103,8 +103,14 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     zero-dependency pure leaf; SearchSource::X carries the DEPRECATED x_handles
     field (kept for backward wire-compat), SearchSource::Rss carries the only
     non-optional links field (Vec<String> -> tuple, missing/non-list -> empty
-    tuple), Option<Vec<String>> -> tuple|None tolerant parse)."""
-    assert len(sampler.__all__) == 151
+    tuple), Option<Vec<String>> -> tuple|None tolerant parse)
+    + chat_request_message (R210, 1: ChatRequestMessage struct -- role + content
+    + name/tool_calls/tool_call_id/model_id/reasoning_content, the assistant/user/tool
+    message body with 5 constructors + read-only helpers + copy-on-work mutators,
+    consuming the R206 Role + R207 ChatMessageContent/ToolCallRequest atomics -- the
+    fifth types.rs slice, role strictly required vs content tolerant, Vec<ToolCallRequest>
+    -> tuple)."""
+    assert len(sampler.__all__) == 152
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -296,6 +302,10 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "SearchSourceRss",
         "SearchSourceWeb",
         "SearchSourceX",
+        # chat_request_message (R210): ChatRequestMessage struct -- the
+        # assistant/user/tool message body (role + content + name/tool_calls/
+        # tool_call_id/model_id/reasoning_content), the fifth types.rs slice
+        "ChatRequestMessage",
     }
 
 

@@ -11,7 +11,14 @@ the second ``types.rs`` slice: ChatContentBlock 2-variant tagged union +
 ChatMessageContent (renamed from grok ``MessageContent``) untagged union +
 ToolChoice untagged union + ToolCallRequest struct + ChatUsage (renamed from
 grok ``Usage``) struct, 11 middle-layer leaves consuming the R206 atomic
-slice) + ``config`` (R195,
+slice) + ``chat_request_message`` (R210, the fifth ``types.rs`` slice: the
+ChatRequestMessage struct -- ``role`` (required) + ``content`` (required) +
+``name`` / ``tool_calls`` / ``tool_call_id`` / ``model_id`` / ``reasoning_content``
+(all optional), the assistant/user/tool message body carrying 5 grok constructors
++ ``is_system_message`` / ``text_content`` read-only helpers +
+``with_text_content`` / ``with_appended_text`` copy-on-work mutators, consuming the
+R206 ``Role`` + R207 ``ChatMessageContent`` / ``ToolCallRequest`` atomics) +
+``config`` (R195,
 pure-type subset) + ``content_blocks`` (R202, ``xai-grok-sampling-types``
 ``messages.rs`` ContentBlock 5-variant union + 3 deps) + ``doom_loop`` (R200,
 ``xai-grok-sampling-types`` ``doom_loop.rs`` wire contract + tolerant
@@ -138,6 +145,7 @@ from minimax_code.sampler.chat_completion_streaming import (
     ToolCallDelta,
     ToolCallFunctionDelta,
 )
+from minimax_code.sampler.chat_request_message import ChatRequestMessage
 from minimax_code.sampler.compaction_headers import (
     CompactionAtTokens,
     CompactionAtTokensEnabled,
@@ -305,6 +313,7 @@ __all__ = [
     "ChatContentBlock",
     "ChatImageUrlBlock",
     "ChatMessageContent",
+    "ChatRequestMessage",
     "ChatTextBlock",
     "ChatTextContent",
     "ChatUsage",
