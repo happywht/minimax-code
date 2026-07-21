@@ -88,6 +88,7 @@ retry loop pattern-matches it into a
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -96,6 +97,42 @@ from enum import StrEnum
 #: :meth:`Serialization.serialization_from_rendered` so the strip can never
 #: drift from what ``Display`` emits.
 SERIALIZATION_DISPLAY_PREFIX: str = "serialization error: "
+
+
+@dataclass(frozen=True, slots=True)
+class RequestId:
+    """Unique identifier for a sampling request (grok ``RequestId`` newtype).
+
+    Wraps a ``str`` so callers can pass an externally-assigned ID (e.g., a
+    session-assigned UUID) or generate a fresh random one via :meth:`random`.
+    Mirrors grok's ``pub struct RequestId(String)``: a transparent string
+    wrapper that serializes as a bare string (grok derives ``Serialize`` /
+    ``Deserialize`` over the inner ``String``).
+
+    Frozen + slots so the value is immutable and the wrapper carries no per-
+    instance ``__dict__``; ``__hash__`` / ``__eq__`` derive from the single
+    field (frozen-dataclass default), matching grok's ``#[derive(Hash, Eq,
+    PartialEq)]``.
+    """
+
+    value: str
+
+    @classmethod
+    def random(cls) -> RequestId:
+        """Generate a fresh random request ID backed by a UUIDv4 (grok
+        ``RequestId::random``).
+
+        Mirrors ``uuid::Uuid::new_v4().to_string()``: the canonical 36-char
+        hyphenated form (``8-4-4-4-12``)."""
+        return cls(value=str(uuid.uuid4()))
+
+    def as_str(self) -> str:
+        """Borrow the underlying string (grok ``RequestId::as_str``)."""
+        return self.value
+
+    def __str__(self) -> str:
+        """grok ``Display``: the inner string verbatim."""
+        return self.value
 
 
 class EmptyReason(StrEnum):
@@ -370,6 +407,7 @@ __all__ = [
     "IdleTimeout",
     "InvalidConfiguration",
     "MaxTokensTruncation",
+    "RequestId",
     "ResponseModelMetadata",
     "SERIALIZATION_DISPLAY_PREFIX",
     "SamplingError",

@@ -224,8 +224,21 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     the block with the backend-side tool peer; WebSearch allowed_domains
     Option<Vec<String>> -> tuple[str,...]|None; XSearch field-less;
     HostedTool unblocks the ConversationRequest hosted_tools consumer
-    layer; no barrel collision -> no Conversation prefix)."""
-    assert len(sampler.__all__) == 207
+    layer; no barrel collision -> no Conversation prefix)
+    + events (R235, 16: SamplingChannel 2-variant PascalCase StrEnum +
+    SamplingErrorKind 9-variant wire taxonomy StrEnum + as_str lowercase
+    telemetry label + SamplingErrorInfo 9-field wire struct (6 required +
+    3 None-defaulted) + SamplingEvent 10-variant in-program tagged union
+    (#[derive(Debug,Clone)] only, NO serde, isinstance dispatch; renamed
+    EventToolCallDelta to dodge the chat-completion ToolCallDelta barrel
+    collision) + from_sampling_error From<&SamplingError> projection (11
+    variant arm-by-arm) + RequestId newtype added to types.py this round
+    -- the xai-grok-sampler src/events.rs whole-leaf migration; R234 cleared
+    the metrics::InferenceLatencyStats deferred-dependency blocker this leaf
+    carried; Completed.response / BackendToolCallCompleted.result held as
+    opaque Any)
+    = 223."""
+    assert len(sampler.__all__) == 223
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -582,6 +595,40 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         # (metrics::InferenceLatencyStats)
         "InferenceLatencyStats",
         "compute_percentiles",
+        # events (R235): SamplingChannel 2-variant PascalCase StrEnum (Text/
+        # Reasoning wire split) + SamplingErrorKind 9-variant wire taxonomy
+        # StrEnum (PascalCase) + as_str lowercase telemetry label (distinct
+        # from the wire value) + SamplingErrorInfo 9-field wire struct (6
+        # required + 3 None-defaulted #[serde(default, skip_serializing_if)])
+        # + SamplingEvent 10-variant in-program tagged union (#[derive(Debug,
+        # Clone)] only, NO serde, isinstance dispatch; renamed EventToolCall-
+        # Delta to dodge the chat-completion ToolCallDelta barrel collision)
+        # + from_sampling_error (From<&SamplingError> projection, 11 variant
+        # arm-by-arm; message rebuilt from grok #[error(...)] templates at
+        # the consumption site in _render_sampling_error_message) + RequestId
+        # newtype added to types.py this round (value + random UUIDv4 +
+        # as_str + __str__) -- the xai-grok-sampler src/events.rs whole-leaf
+        # migration; R234 cleared the metrics::InferenceLatencyStats
+        # deferred-dependency blocker this leaf carried; two YAGNI holds:
+        # Completed.response opaque Any (Box<ConversationResponse> not
+        # destructured) + BackendToolCallCompleted.result opaque Any
+        # (Option<serde_json::Value>)
+        "BackendToolCallCompleted",
+        "BackendToolCallStarted",
+        "ChannelToken",
+        "Completed",
+        "EventToolCallDelta",
+        "Failed",
+        "FirstToken",
+        "ModelMetadata",
+        "RequestId",
+        "Retrying",
+        "SamplingChannel",
+        "SamplingErrorInfo",
+        "SamplingErrorKind",
+        "SamplingEvent",
+        "StreamStarted",
+        "from_sampling_error",
     }
 
 

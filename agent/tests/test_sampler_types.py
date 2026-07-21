@@ -78,12 +78,13 @@ def _ctx(
 # ---------------------------------------------------------------------------
 
 
-def test_module_barrel_exposes_seventeen_symbols() -> None:
+def test_module_barrel_exposes_eighteen_symbols() -> None:
     """11 SamplingError variants + base + 3 supporting types + 1 StrEnum + 1
-    constant + 1 free function = 17 re-exported symbols."""
+    constant + 1 free function + 1 RequestId newtype (added R235, consumed by
+    the R235 events.rs leaf) = 18 re-exported symbols."""
     import minimax_code.sampler.types as types
 
-    assert len(types.__all__) == 17
+    assert len(types.__all__) == 18
     assert set(types.__all__) == {
         "Api",
         "Auth",
@@ -96,6 +97,7 @@ def test_module_barrel_exposes_seventeen_symbols() -> None:
         "IdleTimeout",
         "InvalidConfiguration",
         "MaxTokensTruncation",
+        "RequestId",
         "ResponseModelMetadata",
         "SERIALIZATION_DISPLAY_PREFIX",
         "SamplingError",
