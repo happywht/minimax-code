@@ -16377,3 +16377,67 @@ barrel 扩展：`sampler/__init__.py` 46→62（docstring 加 R201 叶子条目 
 - `agent/tests/test_messages.py`（新，35 用例）
 - `agent/tests/test_sampler_config.py`（barrel 守卫 46→62 + 符号集合）
 - `docs/evolution/ITERATION_LOG.md`（本条目）
+
+## R202 — sampler messages.rs ContentBlock 联合 + 3 deps (xai-grok-sampling-types 第 4 叶)
+
+锚点:R202-1 8a90951
+
+### 本轮目标
+
+继续 `xai-grok-sampling-types` crate 纯逻辑叶子迁移（R199 `error.rs` / R200 `doom_loop.rs` / R201 `messages.rs` stop-reason+usage+delta-body 已迁，barrel 46→62）。R202 策略 A：迁移 `messages.rs` 的 `ContentBlock` 5-variant 联合第一块——正是 R201 YAGNI 推迟的「更大 `ContentBlock` 判别联合」。自主 glob + 读 `messages.rs` 找 `ContentBlock` 枚举 + 直接依赖叶子，迁移纯类型层，I/O 外壳记 YAGNI。锚点链 … → R201(8a90951) → R202。验证基准：R201 后全量回归 5207 passed + 10 skipped，零真实回归。
+
+### 融合结论
+
+候选体检沿用 R201 表。R202 策略 A 选定：`messages.rs` `ContentBlock` 联合。读源确认 `ContentBlock` 是 `#[serde(tag="type", rename_all="snake_case")] enum`（5 变体 Text/Image/ToolUse/ToolResult/Thinking）——R201 推迟的「所有顶层容器都依赖的判别联合」。完全迁移含 Request/Response/stream wrapper ≈ 50+ 符号，单轮失控。R202 务实切片：迁移 `ContentBlock` 联合本体 + 3 直接依赖（自洽闭环，递归依赖在模块内解决）：
+
+- `CacheControl`（叶子，prompt-cache 注解，`type=ephemeral` 默认）。
+- `ImageSource`（2-variant 标签联合 base64/url）。
+- `ToolResultContent`（untagged 2-variant 联合，递归 `ContentBlock`）。
+
+13 符号，纯类型层（`serde_json::Value` → `dict`），无 I/O。规模介于 R199(13) 与 R201(16) 之间。模块放置：**新建 `content_blocks.py`（隔离命名空间）**，不扩展 `messages.py`——避免 R201 `ToolUse`（StopReason 子类）与 `ContentBlock::ToolUse` 变体的命名冲突。
+
+### 交付
+
+新增 `agent/minimax_code/sampler/content_blocks.py`（13 符号，4 联合层级）：
+
+- `CacheControl` 叶子（`type_="ephemeral"` 默认 + `from_payload` 容忍缺 `type`）。
+- `ImageSource` 标签联合基类 + `Base64ImageSource`/`UrlImageSource`（`from_payload` 分发，未知 `type` → `ValueError`）。
+- `ToolResultContent` untagged 联合基类 + `TextToolResultContent`/`BlocksToolResultContent`（`from_payload` 按 JSON shape 分发：`str`/`None`→Text、`list`→递归 `ContentBlock.from_payload`、非法→`ValueError`）。
+- `ContentBlock` 标签联合基类 + 5 变体 `TextBlock`/`ImageBlock`/`ToolUseBlock`/`ToolResultBlock`/`ThinkingBlock`（`from_payload` 5 变体分发；未知 `type`→`ValueError`；`image.source` 非 dict→`ValueError`；标量字段缺失默认空串/`None`）。
+
+测试 `agent/tests/test_content_blocks.py`（32 用例）：模块 barrel 13 符号 + `CacheControl` 3 + `ImageSource` 3 + `ContentBlock` 5 变体分发 11（text+cc、image base64/url、tool_use input dict、tool_result str/blocks/cc、thinking、未知 type ValueError、image 缺 source ValueError）+ `ToolResultContent` 5（str/None/list/skip-non-dict/非法）+ 值语义（5 变体参数化 frozen + hashable + `ToolUseBlock.input` 默认 None + 命名冲突守卫 `ToolUseBlock` vs `messages.ToolUse` + 5 变体共享基类）。
+
+barrel 扩展：`sampler/__init__.py` 62→75（docstring 加 R202 叶子条目 + Leaf order 第 6 条 + import 块 + `__all__` ASCII 重排）。barrel 守卫 `test_sampler_config.py` 同步 62→75 + 13 符号集合 + docstring。
+
+### 映射决策树 + 坑
+
+1. `#[serde(tag="type", rename_all="snake_case")] enum` → frozen+slots 基类 + 子类；`from_payload` 按 wire `type` 分发。**无 untagged catch-all**（与 R201 `StopReason` 不同）→ 未知 `type` raise `ValueError`，镜像 serde 严格标签联合解析。
+2. `#[serde(untagged)] enum`（`ToolResultContent`）→ `from_payload` 按 JSON shape 分发（`str` vs `list`）；`None` 容忍为空 Text（绝不崩流）。
+3. `#[serde(rename="type")] r#type` → `type_` 字段（避免遮蔽内置）。
+4. `serde_json::Value` → `Any`（`tool_use` `input` 任意 JSON）；`input` 默认 `None`（线必填，构造容错）。
+5. **递归类型前向引用**：`BlocksToolResultContent.blocks: tuple[ContentBlock, ...]` 递归引用 `ContentBlock`（在其后定义）；`from __future__ import annotations` 延迟求值 → OK。`ToolResultContent.from_payload` 对 `list` 递归调 `ContentBlock.from_payload`。
+6. **命名冲突规避**：`ContentBlock` 5 子类统一 `Block` 后缀（`ToolUseBlock` ≠ `messages.ToolUse`；`TextBlock` 是 `ContentBlock::Text` 变体，非 `SystemParam` `TextBlock` struct——后者 request-side 延后）；`ImageSource` 子类 Base64/Url 前缀；`ToolResultContent` 子类 Text/Blocks 前缀。测试 `test_tool_use_block_distinct_from_stop_reason_tool_use` 锁定该决策（`issubclass` 双向 False）。
+7. **serde 严格性平衡**：`ContentBlock` 联合 + `ImageSource` 联合严格（未知→`ValueError`）；但标量字段缺失→空串/`None`（容错，前向兼容未来 shape）；嵌套必需联合（`image.source`）非 dict→`ValueError`。`ToolResultContent` list 中非 dict 项 skip（不崩）。
+8. **测试坑（本轮 1 处自纠）**：`test_content_block_variants_are_frozen` 初版用 `object.__setattr__` 测 frozen——但 `object.__setattr__` 绕过 dataclass 的 `__setattr__`，不触发 `FrozenInstanceError`；改为 `setattr(block, field_name, ...)` 走 frozen 拦截。验证阶段自纠，零回归外溢。
+
+### 验证
+
+- `ruff check`（4 文件）→ All checks passed（E/F/W/I/B/UP，长 100，py311）。
+- 定向 `pytest tests/test_content_blocks.py tests/test_sampler_config.py` → **45 passed**（test_content_blocks 32 新增 + test_sampler_config 13 barrel 守卫）。
+- **全量回归：5239 passed + 10 skipped（124.50s）**——R201 基线 5207 + R202 净增 32（test_content_blocks 28 函数，其中 1 参数化 ×5 = 32 用例），零真实回归。
+
+### YAGNI 边界
+
+- `messages.rs` Request 段（`MessagesRequest`/`Message`/`MessageContent`/`SystemParam`/独立 `TextBlock` struct/`MessageRole`/`ToolParam`/`ToolChoiceParam`/`ThinkingConfig`/`ThinkingDisplay`/`OutputConfig`/`OutputFormat`/`Metadata`）+ Response/stream 段（`MessagesResponse`/完整 `MessageStreamEvent` wrapper/`StreamDelta`）→ R203+ 多轮（消费本叶 `ContentBlock` 联合）。
+- 完整 serde `Serialize`/`Deserialize` 往返 → YAGNI；`from_payload` 仅覆盖解析方向（平台需要）。
+- `ImageSource` 未来变体（file id 等）→ 严格 raise `ValueError`（无 catch-all），未来新增需扩 `from_payload`（前向兼容由标量字段缺省 + 未知 type 显式失败共同保证——失败优于静默吞）。
+
+### Commit
+
+`feat(platform): R202 migrate messages.rs ContentBlock union + 3 deps leaf`
+
+- `agent/minimax_code/sampler/content_blocks.py`（新，13 符号）
+- `agent/minimax_code/sampler/__init__.py`（barrel 62→75 + docstring Leaf order 第 6 条）
+- `agent/tests/test_content_blocks.py`（新，32 用例）
+- `agent/tests/test_sampler_config.py`（barrel 守卫 62→75 + 符号集合）
+- `docs/evolution/ITERATION_LOG.md`（本条目）

@@ -3,12 +3,14 @@
 Fuses grok's ``xai-grok-sampler`` crate (actor-based sampling/inference layer:
 HTTP streaming + retry, no shell coupling). The crate ships 12 modules; this
 package is being filled leaf-by-leaf. Currently landed: ``config`` (R195,
-pure-type subset) + ``doom_loop`` (R200, ``xai-grok-sampling-types``
-``doom_loop.rs`` wire contract + tolerant parsers) + ``messages`` (R201,
-``xai-grok-sampling-types`` ``messages.rs`` stop-reason + usage + delta-body
-cluster) + ``retry`` (R198 backoff subset + R199 decision layer) + ``types``
-(R199, ``xai-grok-sampling-types`` ``error.rs``). See each leaf module's
-docstring for its migration map + YAGNI ledger.
+pure-type subset) + ``content_blocks`` (R202, ``xai-grok-sampling-types``
+``messages.rs`` ContentBlock 5-variant union + 3 deps) + ``doom_loop`` (R200,
+``xai-grok-sampling-types`` ``doom_loop.rs`` wire contract + tolerant
+parsers) + ``messages`` (R201, ``xai-grok-sampling-types`` ``messages.rs``
+stop-reason + usage + delta-body cluster) + ``retry`` (R198 backoff subset +
+R199 decision layer) + ``types`` (R199, ``xai-grok-sampling-types``
+``error.rs``). See each leaf module's docstring for its migration map + YAGNI
+ledger.
 
 Leaf order (crate ``lib.rs`` re-exports, in migration order):
 
@@ -44,15 +46,38 @@ Leaf order (crate ``lib.rs`` re-exports, in migration order):
    :func:`stop_reason_to_wire` faithful round-trip) + :class:`MessagesUsage` /
    :class:`MessageDeltaUsage` token counters + :class:`StopDetails` /
    :class:`MessageDeltaBody` terminal body + :class:`StreamError`. The request
-   types (``MessagesRequest`` + ``ContentBlock`` union + the full
-   ``MessageStreamEvent`` wrapper) land in later rounds -- they pull in the
-   larger ``ContentBlock`` discriminated union.
+   types (``MessagesRequest`` + the full ``MessageStreamEvent`` wrapper) land
+   in later rounds -- they consume the R202 :class:`ContentBlock` union.
+6. ``content_blocks`` (R202) -- the :class:`ContentBlock` 5-variant tagged
+   union (Text/Image/ToolUse/ToolResult/Thinking) shared by request + response
+   + tool-result bodies, plus its 3 direct dependencies: :class:`CacheControl`
+   leaf + :class:`ImageSource` 2-variant tagged union (base64/url) +
+   :class:`ToolResultContent` untagged 2-variant union (string vs recursive
+   blocks). No-I/O (``serde_json::Value`` -> ``dict``); strict tagged-union
+   parse (unknown ``type`` raises, no catch-all -- unlike the R201 StopReason
+   catch-all). The 5 ``ContentBlock`` variants carry a ``Block`` suffix to
+   avoid colliding with the R201 ``StopReason::ToolUse`` variant.
 """
 
 from minimax_code.sampler.config import (
     DEFAULT_AUTH_SCHEME,
     AuthScheme,
     OriginClientInfo,
+)
+from minimax_code.sampler.content_blocks import (
+    Base64ImageSource,
+    BlocksToolResultContent,
+    CacheControl,
+    ContentBlock,
+    ImageBlock,
+    ImageSource,
+    TextBlock,
+    TextToolResultContent,
+    ThinkingBlock,
+    ToolResultBlock,
+    ToolResultContent,
+    ToolUseBlock,
+    UrlImageSource,
 )
 from minimax_code.sampler.doom_loop import (
     DOOM_LOOP_CHECK_EVENT_TYPE,
@@ -126,7 +151,11 @@ __all__ = [
     "AuthScheme",
     "BACKOFF_BASE_MS",
     "BACKOFF_CAP_MS",
+    "Base64ImageSource",
+    "BlocksToolResultContent",
+    "CacheControl",
     "CheckEvent",
+    "ContentBlock",
     "DEFAULT_AUTH_SCHEME",
     "DEFAULT_MAX_RETRIES",
     "DOOM_LOOP_BOUND_MS",
@@ -141,6 +170,8 @@ __all__ = [
     "EmptyResponseContext",
     "EndTurn",
     "Fatal",
+    "ImageBlock",
+    "ImageSource",
     "LowLogprob",
     "MaxTokens",
     "MessageDeltaBody",
@@ -169,9 +200,16 @@ __all__ = [
     "StreamError",
     "THINKING_CHANNEL",
     "TailRepetition",
+    "TextBlock",
+    "TextToolResultContent",
+    "ThinkingBlock",
+    "ToolResultBlock",
+    "ToolResultContent",
     "ToolUse",
+    "ToolUseBlock",
     "Unknown",
     "UnknownStopReason",
+    "UrlImageSource",
     "backoff_base_ms",
     "classify_error",
     "clone_error",

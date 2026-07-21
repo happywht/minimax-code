@@ -11,7 +11,8 @@ THRESHOLD`` migrated in R198 (:mod:`minimax_code.sampler.retry`); the package
 barrel (tested below) re-exports the ``config`` (R195) + ``retry`` (R198
 backoff + R199 decision layer) + ``types`` (R199 SamplingError) + ``doom_loop``
 (R200 wire contract + tolerant parsers) + ``messages`` (R201 stop-reason + usage
-+ delta-body cluster) leaves.
++ delta-body cluster) + ``content_blocks`` (R202 ContentBlock union + 3 deps)
+leaves.
 """
 
 from __future__ import annotations
@@ -37,13 +38,18 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     (17: 5 constants/fixtures + 10 classes + 2 free functions) + R201 messages
     (16: StopReason union base + 8 variants + MessagesUsage + MessageDeltaUsage
     + StopDetails + MessageDeltaBody + StreamError + parse_stop_reason +
-    stop_reason_to_wire) = 62 re-exported symbols. The config trio stays; R198
-    adds the backoff/max-retries leaf; R199 adds the decision layer (consuming
-    the migrated SamplingError) and the SamplingError type leaf itself; R200
-    adds the doom-loop wire contract + tolerant parsers (whose parsed ``raw``
-    labels feed the R199 DoomLoopDetected variant); R201 adds the Messages API
-    stop-reason + usage + delta-body cluster."""
-    assert len(sampler.__all__) == 62
+    stop_reason_to_wire) + R202 content_blocks (13: ContentBlock union base + 5
+    variants + CacheControl + ImageSource union base + 2 variants +
+    ToolResultContent union base + 2 variants) = 75 re-exported symbols. The
+    config trio stays; R198 adds the backoff/max-retries leaf; R199 adds the
+    decision layer (consuming the migrated SamplingError) and the SamplingError
+    type leaf itself; R200 adds the doom-loop wire contract + tolerant parsers
+    (whose parsed ``raw`` labels feed the R199 DoomLoopDetected variant); R201
+    adds the Messages API stop-reason + usage + delta-body cluster; R202 adds the
+    ContentBlock 5-variant tagged union + its 3 direct dependencies (CacheControl
+    leaf + ImageSource 2-variant union + ToolResultContent untagged recursive
+    union)."""
+    assert len(sampler.__all__) == 75
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -114,6 +120,22 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "UnknownStopReason",
         "parse_stop_reason",
         "stop_reason_to_wire",
+        # content_blocks (R202): ContentBlock union base + 5 variants +
+        # CacheControl leaf + ImageSource union base + 2 variants +
+        # ToolResultContent union base + 2 variants
+        "Base64ImageSource",
+        "BlocksToolResultContent",
+        "CacheControl",
+        "ContentBlock",
+        "ImageBlock",
+        "ImageSource",
+        "TextBlock",
+        "TextToolResultContent",
+        "ThinkingBlock",
+        "ToolResultBlock",
+        "ToolResultContent",
+        "ToolUseBlock",
+        "UrlImageSource",
     }
 
 
