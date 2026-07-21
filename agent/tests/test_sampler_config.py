@@ -109,8 +109,12 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     message body with 5 constructors + read-only helpers + copy-on-work mutators,
     consuming the R206 Role + R207 ChatMessageContent/ToolCallRequest atomics -- the
     fifth types.rs slice, role strictly required vs content tolerant, Vec<ToolCallRequest>
-    -> tuple)."""
-    assert len(sampler.__all__) == 152
+    -> tuple)
+    + serde_helpers (R211, 1: empty_string_as_none -- the single deserialize_with
+    hook from serde_helpers.rs, normalizing an empty string to None on the two
+    Option<String> fingerprint fields; pure value-level normalizer, zero
+    dependency, consuming containers land later)."""
+    assert len(sampler.__all__) == 153
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -306,6 +310,10 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         # assistant/user/tool message body (role + content + name/tool_calls/
         # tool_call_id/model_id/reasoning_content), the fifth types.rs slice
         "ChatRequestMessage",
+        # serde_helpers (R211): empty_string_as_none -- the single
+        # deserialize_with hook from serde_helpers.rs, normalizing an empty
+        # string to None on the two Option<String> fingerprint fields
+        "empty_string_as_none",
     }
 
 

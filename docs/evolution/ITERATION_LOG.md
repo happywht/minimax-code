@@ -16870,3 +16870,47 @@ R207 把 grok 的 OpenAI-compatible ChatCompletion 中层叶子（`types.rs` 第
 `feat(platform): R210 migrate types.rs ChatRequestMessage body (1 symbol)`
 
 锚点链：… → R207(ff7793b) → R208(d7491df) → R209(bd328a5) → **R210（本轮）**。barrel 151→152；全量 5595 passed + 10 skipped（+41 新增），零真实回归。本轮核心锁定三个 grok→Python 映射决策：必填字段「role 严格 vs content 容忍」不对称解析策略 + list-carrying `Vec<ToolCallRequest>` + `#[serde(default)]` → tuple（缺失/null/非 list → 空元组）+ `&mut self` mutator → `with_*` copy-on-work（frozen 替代原地修改）。
+
+## R211 — serde_helpers.py: empty_string_as_none（serde deserialize_with 钩子值级归一化）
+
+锚点:R211-1 058b74f
+
+### 本轮目标
+
+继续 `xai-grok-sampling-types` crate 的纯逻辑叶子迁移。types.rs 头部五块（R206-R210，38 符号）已闭合后，本轮锁定 crate 内独立小叶子 **`serde_helpers.rs`**（9 行，零 `crate::rs` 依赖，仅 serde crate）。该叶子是 crate 内唯一的 `deserialize_with` 钩子源，被两个 `Option<String>` 指纹字段消费（`types.rs::system_fingerprint` ChatCompletion 响应 + `conversation.rs::model_fingerprint` 别名 `system_fingerprint`），两个消费者均未迁移——故本轮落地纯值级函数，消费容器延后。策略 A（推荐）落地。
+
+### 融合结论
+
+serde `deserialize_with` 钩子在反序列化时对 wire `Value` 运行（编译期注入 serde 解码管线），Python 平台 `from_payload` 是宽容解析器，故映射为**纯值级函数** `empty_string_as_none(value: str | None) -> str | None`，在消费容器的 `from_payload` 解析阶段对已解析的 dict 值调用。逻辑内核：`Option::<String>::deserialize` + `.filter(|s| !s.is_empty())` —— `Some("")` → `None`、`Some("x")` → `Some("x")`、`None` → `None`。Pythonic `value or None` 对 falsy（`""` + `None`）统一归零到 `None`，truthy 透传——语义等价 grok 的 `filter`。零外部依赖、无 I/O、无 trait 耦合，是 crate 内最干净的叶子之一。
+
+### 交付
+
+- `agent/minimax_code/sampler/serde_helpers.py`（新模块，1 符号）：`empty_string_as_none` 纯函数（`value: str | None -> str | None`，`return value or None`），含详尽 docstring（serde 钩子映射表 + Python 值级等价论证 + 命名保留理由）。
+- `agent/minimax_code/sampler/__init__.py`（barrel 152→153，4 处扩展）：import 块加 `from minimax_code.sampler.serde_helpers import empty_string_as_none`（search_parameters 与 types 之间）+ `__all__` 加 `"empty_string_as_none",`（`doom_loop_backoff`/`format_sampling_error` 之间）+ docstring "Currently landed" 块 + docstring "Leaf order" 条目 10。
+- `agent/tests/test_serde_helpers.py`（新测试套件，6 函数/8 items 含参数化）：模块 barrel 1 符号断言 + 包 barrel re-export 断言 + `Some("")`→`None` + `Some("x")`→`"x"` 透传 + 空白串非空（grok `is_empty()` 查长度非内容）+ `None`→`None` + 参数化 falsy 归零。
+- `agent/tests/test_sampler_config.py`（barrel 守卫 152→153，2 处扩展）：测试函数 docstring 加 serde_helpers (R211, 1: ...) 描述块 + `len(sampler.__all__) == 153` + set 末尾加独立注释块 `"empty_string_as_none",`（按模块分组组织，R210 ChatRequestMessage 块后）。
+- `docs/evolution/ITERATION_LOG.md`（本轮条目）。
+
+### 映射决策树+坑
+
+1. **serde `deserialize_with` 钩子 → Python 纯值级函数**：grok `pub fn empty_string_as_none<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>` 是编译期注入 serde 解码管线的泛型钩子（签名带生命周期 `'de` + `D: Deserializer`）。Python 无 serde 宏系统，平台 `from_payload` 是宽容解析器——映射为 `def empty_string_as_none(value: str | None) -> str | None: return value or None`，在消费容器的 `from_payload` 对已解析 dict 值调用。serde 钩子在 wire `Value` 上运行，Python 对应物在 parsed dict 值上运行——解码方向对齐。
+2. **`Option::<String>::deserialize` + `.filter(|s| !s.is_empty())` → `value or None`**：grok 先反序列化为 `Option<String>`（`Some("x")`/`Some("")`/`None` 三态），再 `.filter(|s| !s.is_empty())` 过滤空串（`Some("")` → `None`，其余透传）。Pythonic `value or None` 对 truthy 返回原值、falsy（`""` + `None`）返回 `None`——三态归一完全等价。注意 `is_empty()` 查长度非内容，故空白串 `" "` 非空、透传（测试 `test_whitespace_only_string_is_not_empty` 锁定）。
+3. **set 组织逻辑（关键坑修复）**：`test_sampler_config.py` 的 set 字面量**非纯字母序**，而是按**模块分组**（每模块一个注释块 + 其符号，组内常量大写在前 + 函数小写在后，组内字母序）。首次 Edit 按字母序插中失败（`doom_loop_backoff`=line 130 与 `format_sampling_error`=line 144 不相邻，中间隔 14 行的 retry 决策层块）。修复：在 set 末尾（R210 ChatRequestMessage 块后、`}` 前）加独立 serde_helpers (R211) 注释块 + `"empty_string_as_none",`，符合模块分组逻辑。
+4. **命名保留 grok verbatim**：`empty_string_as_none` 是自由函数，无 Anthropic Messages API peer 命名冲突，故保留 grok 原名（`empty_string_as_none` 标签精确文档化 wire 契约）。
+
+### 验证
+
+- ruff clean（4 文件：serde_helpers.py + __init__.py + test_serde_helpers.py + test_sampler_config.py）。
+- 定向 pytest：21 passed（test_serde_helpers.py 8 items + test_sampler_config.py 13 items，barrel 守卫 153 + `empty_string_as_none` 三态行为全绿）。
+- 全量回归：5603 passed + 10 skipped（R210 基准 5595 + R211 新增 8 = 5603，10 skipped 持平，零真实回归）。
+
+### YAGNI 边界
+
+- **YAGNI: full serde `Serialize`/`Deserialize` round-trip**：grok crate 的 serde 钩子是解码方向（`deserialize_with`），平台 `from_payload` 仅消费 parse 方向——序列化方向（`to_payload` / `Serialize`）在本轮无消费者，故仅落地值级 normalizer，不实现 round-trip。
+- **两个消费者容器延后**：`types.rs::system_fingerprint`（ChatCompletion 响应，依赖 crate::rs + xai-grok-tools，非零依赖）+ `conversation.rs::model_fingerprint`（9481 行巨型，延后）。本轮仅落地纯叶子，消费者容器落地时在其 `from_payload` 调用 `empty_string_as_none(raw.get("system_fingerprint"))` 即可接线。
+
+### Commit
+
+`feat(platform): R211 migrate serde_helpers.rs empty_string_as_none (1 symbol)`
+
+锚点链：… → R208(d7491df) → R209(bd328a5) → R210(058b74f) → **R211（本轮）**。barrel 152→153；全量 5603 passed + 10 skipped（+8 新增），零真实回归。本轮核心锁定一个 grok→Python 映射决策：serde `deserialize_with` 钩子 → 纯值级函数 `value or None`（wire `Value` 解码方向对齐 parsed dict 值方向，`Option::<String>::deserialize` + `.filter(|s| !s.is_empty())` 三态归一）。

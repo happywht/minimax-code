@@ -18,6 +18,11 @@ ChatRequestMessage struct -- ``role`` (required) + ``content`` (required) +
 + ``is_system_message`` / ``text_content`` read-only helpers +
 ``with_text_content`` / ``with_appended_text`` copy-on-work mutators, consuming the
 R206 ``Role`` + R207 ``ChatMessageContent`` / ``ToolCallRequest`` atomics) +
+``serde_helpers`` (R211, the ``serde_helpers.rs`` leaf: the single
+``deserialize_with`` hook ``empty_string_as_none`` consumed by two
+``Option<String>`` fingerprint fields -- ``types.rs`` ``system_fingerprint`` on
+the ChatCompletion response + ``conversation.rs`` ``model_fingerprint``; a pure
+value-level normalizer ``""`` -> ``None``, zero dependency) +
 ``config`` (R195,
 pure-type subset) + ``content_blocks`` (R202, ``xai-grok-sampling-types``
 ``messages.rs`` ContentBlock 5-variant union + 3 deps) + ``doom_loop`` (R200,
@@ -112,6 +117,12 @@ Leaf order (crate ``lib.rs`` re-exports, in migration order):
    message_delta / message_stop / content_block_start / content_block_delta /
    content_block_stop / ping / error -- strict, no catch-all). This round
    closes the ``messages.rs`` wire-type layer.
+10. ``serde_helpers`` (R211) -- :func:`empty_string_as_none` (the single
+   ``deserialize_with`` hook from ``serde_helpers.rs``): normalizes an empty
+   string to ``None`` on the two ``Option<String>`` fingerprint fields
+   (``system_fingerprint`` on the ChatCompletion response +
+   ``model_fingerprint`` on ``conversation.rs``). Pure value-level normalizer;
+   the consumer containers land later.
 """
 
 from minimax_code.sampler.chat_completion_leaves import (
@@ -286,6 +297,7 @@ from minimax_code.sampler.search_parameters import (
     SearchSourceWeb,
     SearchSourceX,
 )
+from minimax_code.sampler.serde_helpers import empty_string_as_none
 from minimax_code.sampler.types import (
     SERIALIZATION_DISPLAY_PREFIX,
     EmptyReason,
@@ -439,6 +451,7 @@ __all__ = [
     "classify_error",
     "clone_error",
     "doom_loop_backoff",
+    "empty_string_as_none",
     "format_sampling_error",
     "is_check_event",
     "is_context_length_error",
