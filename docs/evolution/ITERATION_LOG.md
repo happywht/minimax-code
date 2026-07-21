@@ -17172,3 +17172,37 @@ ruff clean（R217 四文件零 I001/E/F/W/B/UP，B010 在删除怪癖测试后�
 
 ### Commit
 `feat(platform): R217 migrate conversation.rs first slice (5 symbols, opens mega-module)`。conversation.rs 迁移开启（首切片 5 符号）；types.rs 累计 59 符号（R206-R216）；barrel 173→178。下轮策略 D 续扫 conversation.rs 叶子层（9481 行，定位下一组零依赖独立 struct/fn，候选：`StopReason`+`TokenUsage` 集群待 Usage 迁移、或 conversation.rs 其他独立小叶子）或策略 E 其他未迁移 crate 零依赖叶子。
+
+## R218 — conversation.rs 第 2 切片：SyntheticReason + PriorTurnInterrupt 双 #[serde(other)] unit catch-all wire 枚举（StrEnum UNKNOWN 范式）
+
+锚点:R218-1 9182bd1
+
+### 本轮目标
+继续策略 D 续扫 `xai-grok-sampling-types/conversation.rs`（9481 行 mega-module）叶子层。R217 开启了 conversation.rs 迁移（首切片 5 符号：`reported_cost_ticks` + `truncate_bytes` + `DanglingToolCallReason` 联合）。R218 迁移第 2 切片——conversation.rs 中两个 `#[serde(other)]` catch-all wire 枚举，分类"为什么会话项存在"（用户输入语义轴）：`SyntheticReason`（运行时合成 `UserItem` 的原因，12 typed 变体 + auto-wake 判定）+ `PriorTurnInterrupt`（用户致命中断前一回合的方式，3 typed 变体）。
+
+### 融合结论
+两个枚举携带 `#[serde(other)] Unknown` 前向兼容 catch-all，保证旧客户端读取新版本写入的会话文件时不会反序列化失败（新版添加了旧版未知的原因标签 → 落入 catch-all）。两个 `Unknown` 变体都是 **unit 变体**（无数据，conversation.rs 第 70-185 行确认），不像 R201 `StopReason` 的 `Unknown(String)` 保留原 wire 字符串。因此 R218 采用 **StrEnum + UNKNOWN catch-all** 范式（R102 `AttachRoute` 先例），而非 R217 `DanglingToolCallReason` 的 frozen+slots 联合体范式。新增 sampler 子模块 `conversation_enums.py`（兄弟于 R217 `conversation_leaves.py`），barrel 178→180。
+
+### 交付
+- 新建 `agent/minimax_code/sampler/conversation_enums.py`（166 行）：`SyntheticReason`（StrEnum，12 typed 变体 + UNKNOWN catch-all + `from_payload(raw: object)` + `starts_prompt_turn() -> bool` 纯方法）+ `PriorTurnInterrupt`（StrEnum，3 typed 变体 + UNKNOWN catch-all + `from_payload(raw: object)`）。
+- 扩展 `agent/minimax_code/sampler/__init__.py` barrel：导入块（isort 字母序 `conversation_enums` 在 `conversation_leaves` 前，'e'<'l'）+ `__all__` 2 个 ASCII 排序插入（`PriorTurnInterrupt` P-r-i 在 P-r-e/P-r-o 间；`SyntheticReason` S-y-n 在 S-t-r/S-y-s 间），178→180。
+- 同步 `agent/tests/test_sampler_config.py` barrel 守卫：计数 178→180 + docstring R218 追加 + 符号集合 +2。
+- 新建 `agent/tests/test_conversation_enums.py`（6 测试类，20 测试）：barrel 标识检查（`X is _ce.X`）+ wire 值 + `from_payload`（已知/未知/非字符串 catch-all）+ `starts_prompt_turn` 穷举分类（`for member in SyntheticReason` 全量校验）。
+
+### 映射决策树 + 坑
+1. **`#[serde(other)] Unknown` unit 变体 → StrEnum UNKNOWN 成员**：两个 Unknown 都是无数据 unit 变体 → StrEnum + `UNKNOWN = "unknown"` + `from_payload` try/except（R102 `AttachRoute` 范式）。非 R201 `StopReason` 的 `Unknown(String)` frozen+slots 联合体范式（后者保留原 wire 字符串逐字重发）。
+2. **`from_payload(raw: object)` 非 `from_wire(value: str)`**：sampler 命名约定比 tool_protocol 的 `from_wire` 更宽容（object 参数）。非字符串 → UNKNOWN（平台层容忍度高于 serde 硬类型失败，永不 crash 会话读取）。
+3. **isort 模块路径字母序坑**：`conversation_enums` < `conversation_leaves`（'e'<'l'）→ 导入块必须在 conversation_leaves **之前**。初始误放在其后会触发 ruff I001。
+4. **`__all__` ASCII 区分大小写排序**：大写区内部按字母序。`PriorTurnInterrupt` (P-r-i) 插在 `PresetToolChoice` (P-r-e) 与 `PromptTokensDetails` (P-r-o) 间；`SyntheticReason` (S-y-n) 插在 `StreamErrorEvent` (S-t-r) 与 `SystemParam` (S-y-s) 间。
+5. **`starts_prompt_turn` 穷举 match**：5 个 auto-wake 原因（TaskCompleted/SubagentCompleted/NotificationDrain/GoalClassifierNudge/SchedulerFired）消耗 `prompt_index` slot → True；`GoalSummary` 刻意 False（双重语义：同一原因标记回合延续 turn 和回合内指令，计数它会过度截断常见回合内情况）；UNKNOWN → False。
+6. **`#[derive(Copy)]` 无 Python 对等物**：`PriorTurnInterrupt` 的 Copy derive 是 Rust 大小优化（StrEnum 成员是不可变单例，无行为面）。
+7. **docstring 缩进陷阱**：`test_sampler_config.py` 的 docstring 内容行是 **4 空格缩进**（非 8 空格），Read 输出行号后的 tab 易误判为 8 空格 → 首次 Edit old_string 不匹配，重新精确读取后修正。
+
+### 验证
+ruff check（4 文件：`conversation_enums.py` + `__init__.py` + `test_conversation_enums.py` + `test_sampler_config.py`）✅ All checks passed!（含 isort order-by-type，证明导入顺序正确）+ 定向 pytest `test_conversation_enums.py + test_sampler_config.py` **33 passed** + 全量回归 **5832 passed + 10 skipped**（R217 基准 5812 + R218 新增 20，零真实回归，124.63s）。1 warning 为预存 fastapi/httpx 弃用（无关）。
+
+### YAGNI 边界
+`StopReason`（conversation.rs ~606）延后——与已迁 R201 `messages.StopReason` 桶面命名冲突 + `From<FinishReason>` impl + `TokenUsage` 兄弟构成"response stop + usage"集群，待 `Usage` 迁移后一并落地。`ConversationToolChoice` 延后——含混合 `Function(String)` 数据携带变体，需 R217 frozen+slots 联合体范式（非 StrEnum），单独聚焦一轮。`UserItem` 消费层延后——拉入未迁 `ContentPart` 联合 + `Vec<ContentPart>` body，后续轮落地。Serialize 往返超出 `str`——StrEnum 值即 wire 字符串，grok 从不序列化 `#[serde(other)]` 变体本身，`UNKNOWN = "unknown"` 发射是平台层便利（无 grok 对等物）。下轮策略 D 续扫 conversation.rs 叶子层（9481 行，候选：`StopReason`+`TokenUsage` 集群待 Usage 迁移、`ConversationToolChoice` 联合体、或 conversation.rs 其他独立小叶子）或策略 E 其他未迁移 crate 零依赖叶子。
+
+### Commit
+`feat(platform): R218 migrate conversation.rs synthetic-reason + interrupt enums (2 symbols, StrEnum catch-all)`。conversation.rs 第 2 切片（2 符号，双 `#[serde(other)]` unit catch-all wire 枚举）；barrel 178→180；sampler 模块 StrEnum catch-all 范式落地（R102 `AttachRoute` 先例延续）。

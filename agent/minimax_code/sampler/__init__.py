@@ -258,6 +258,10 @@ from minimax_code.sampler.content_blocks import (
     ToolUseBlock,
     UrlImageSource,
 )
+from minimax_code.sampler.conversation_enums import (
+    PriorTurnInterrupt,
+    SyntheticReason,
+)
 from minimax_code.sampler.conversation_leaves import (
     DanglingToolCallReason,
     HarnessHalted,
@@ -491,6 +495,7 @@ __all__ = [
     "PauseTurn",
     "PingEvent",
     "PresetToolChoice",
+    "PriorTurnInterrupt",
     "PromptTokensDetails",
     "RATE_LIMIT_RETRY_THRESHOLD",
     "REASONING_EFFORT_META_KEY",
@@ -525,6 +530,7 @@ __all__ = [
     "StreamDelta",
     "StreamError",
     "StreamErrorEvent",
+    "SyntheticReason",
     "SystemParam",
     "SystemTextBlock",
     "THINKING_CHANNEL",

@@ -158,8 +158,17 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
     (no serde, pure in-program enum: UserCancelled field-less +
     HarnessHalted carrying class_; grok `class` renamed -- Python hard
     keyword, not a Rust one); strategy D pivot after types.rs 1030-1521
-    exhaustion, zero dependency)."""
-    assert len(sampler.__all__) == 178
+    exhaustion, zero dependency). + conversation_enums (R218, 2: the
+    conversation.rs second slice -- the two #[serde(other)] catch-all wire
+    enums that classify why a conversation item exists: SyntheticReason
+    (12 typed variants + UNKNOWN unit catch-all, why a UserItem was
+    synthesized by the runtime + starts_prompt_turn predicate -- the 5
+    auto-wake reasons consumed a prompt_index slot) + PriorTurnInterrupt
+    (3 typed variants + UNKNOWN unit catch-all, how the user fatally
+    interrupted the preceding turn); unit #[serde(other)] catch-all (no
+    data, unlike R201 StopReason's Unknown(String)) -> StrEnum UNKNOWN
+    member whose from_payload never raises; strategy D continuation)."""
+    assert len(sampler.__all__) == 180
     assert set(sampler.__all__) == {
         # config (R195): 2 types + 1 default constant
         "AuthScheme",
@@ -413,6 +422,15 @@ def test_package_barrel_exposes_config_retry_types_symbols() -> None:
         "UserCancelled",
         "reported_cost_ticks",
         "truncate_bytes",
+        # conversation_enums (R218): the conversation.rs second slice -- the
+        # two #[serde(other)] catch-all wire enums classifying why a
+        # conversation item exists: SyntheticReason (12 typed + UNKNOWN unit
+        # catch-all, why a UserItem was synthesized + starts_prompt_turn) +
+        # PriorTurnInterrupt (3 typed + UNKNOWN unit catch-all, how the user
+        # fatally interrupted the preceding turn); unit catch-all -> StrEnum
+        # UNKNOWN member, from_payload never raises
+        "PriorTurnInterrupt",
+        "SyntheticReason",
     }
 
 
