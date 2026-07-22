@@ -18938,3 +18938,54 @@ add_subgraph_constraints 是 order 子包的第 6 叶（6/9），闭合 Gansner 
 ### Commit
 
 `feat(platform): R264 migrate dagre order sort + sort_subgraph (order 8/9)`。提交 6f0cbf6。12 文件 1052 insertions 5 deletions（4 生产 + 8 测试，其中 4 新文件 sort.py / sort_subgraph.py / test_sort.py / test_sort_subgraph.py）。锚点链: ... -> R262(d982107) -> R263(b913881) -> R264(6f0cbf6)。
+
+## R265 — 迁移 dagre order/mod.rs（order 子包 9/9 收官里程碑）
+
+锚点:R265-1 e8ddf3c
+
+### 本轮目标
+
+迁移 `layout/order/mod.rs` —— 顺序子包的最后一个叶子（order 9/9 收官）。`mod.rs` 是 order sweep 主调度器（编排层）：`order(g)` 调用 R258 `init_order` 初始化 layering → 多轮 sweep（奇数 i → down/IN_EDGES，偶数 i → up/OUT_EDGES，保留最优 layering，循环条件 `last_best < 4`）→ 每轮 sweep 调用 R262 `build_layer_graph` + R264 `sort_subgraph` + 写回 `node.order` + R263 `add_subgraph_constraints` → 最优 layering 写回 `node.order`。迁移到 `agent/minimax_code/dagre/layout/order/mod.py`（Python 无 mod.rs 文件名，用 mod.py 保持模块对应），扩展 barrel（order/__init__.py 8→9 + docstring 段），编写 pytest（含 barrel surface 回归 + order 子包 __all__ 同步 R258-R264 八测试都需同步 8→9 + sweep 端到端 + 白盒），ruff + 定向 pytest + 全量回归 R264 基准 7207（稳定 7172 + 35 R264）+ R265 新增，零真实回归。
+
+### 融合结论
+
+mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（init_order + cross_count + sort_subgraph + add_subgraph_constraints + build_layer_graph + GraphRelationship + util 的 max_rank/build_layer_matrix）。这天然打破了 R264 的 sort↔sort_subgraph 双向循环 —— mod 作为根，顶层导入全部单向，**无函数级延迟导入需求**（与 R264 的核心新坑形成对照）。这是 grok-build 融合 MiniMax Code 的又一个「编排层根」范式（继 rank/mod.rs R257、normalize/mod.rs R250 之后），确认 Python asyncio 架构能干净承载 Rust 的分层模块所有权模型。
+
+### 交付
+
+- `agent/minimax_code/dagre/layout/order/mod.py`（新，240 行）：`order(g)` 主调度器 + `_sweep_layer_graphs` 私有 helper + `_assign_order` 私有 helper。三函数完整实现，顶层导入全部单向（add_subgraph_constraints / build_layer_graph+GraphRelationship / cross_count / init_order / sort_subgraph / util.max_rank+build_layer_matrix / graphlib.GRAPH_NODE+Graph+GraphOption / dagre.GraphConfig+GraphEdge+GraphNode）。`__all__ = ["order"]`。
+- `agent/minimax_code/dagre/layout/order/__init__.py`（M，barrel 8→9）：追加 `mod` reexport + docstring 第九段（Ninth and final order leaf），`__all__` ASCII 序九元素（mod 排在 init_order 与 resolve_conflicts 之间，i<m<r）。
+- `agent/tests/test_dagre_layout_order_mod.py`（新，~328 行）：fixtures + 端到端 sweep（7：init layering 保留 / 单轮 sweep 降交叉数 / 奇偶方向交替 / bias_right 翻转 / 四轮不改进停止 / 最优 layering 写回 / cross_count 单调）+ `_assign_order` 白盒（2：stamp order / 防御性 None 守卫）+ `_sweep_layer_graphs` 白盒（2：单 rank 重排 / 约束图传播）+ barrel surface（8：mod 不进 dagre.__all__ / 不可达顶层 / 子模块导出 / crate barrel 仍 4 / order barrel 9 元素全 is 断言 / 9 模块导入 / reachable via layout.order）。
+- 8 个旧 barrel 测试同步（R258-R264）：
+  - 3 个 pin-specific（init_order / cross_count / build_layer_graph）：仅 `__all__` 8→9。
+  - 5 个 all-import（barycenter / resolve_conflicts / add_subgraph_constraints / sort / sort_subgraph）：`__all__` 8→9 + `mod_mod` 导入 + `is` 断言（F401 陷阱规避）。
+
+### 映射决策树 + 坑
+
+- **cross_count 返回 float（非 int）**：grok `cross_count(...) as f64` 是 Rust usize→f64 强转需要；R259 已返回 float，**无需强转**（port 直接用）。
+- **GRAPH_NODE 常量**：grok `unwrap_or(GRAPH_NODE.to_string())`；Python 从 `minimax_code.data_structures.graphlib` 导入 `GRAPH_NODE`（`"\x00"` sentinel，lib.py 未 reexport）。
+- **第 15 个零语义 clone leaf**：grok clone layering 两次（seed best + 改进时更新 best）；Python list 共享引用 + `build_layer_matrix` 每次全新结构 → port 用 `[list(layer) for layer in layering]`（per-layer 浅拷贝 = `Vec<Vec<String>>` 等价，str id 不可变）。
+- **变量名遮蔽规避**：grok 自由 shadow `max_rank`；Python `max_rank` 是导入函数，port 用 `max_rank_value` 局部变量 + `iteration` 避免遮蔽。
+- **g.node_mut(v).unwrap() panic → 防御性 skip**：grok 缺失节点 panic；port 用 `if node is not None: node.order = i`（R258 `_init_order_dfs` no-missing-label 守卫复用）。
+- **mod 单向导入无循环**：与 R264 sort↔sort_subgraph 双向循环对照；mod 是根编排层，所有叶子单向被消费，**无函数级延迟导入**。
+- **barrel ASCII 序**："mod" 排在 "init_order"（i）与 "resolve_conflicts"（r）之间（i<m<r）。
+- **barrel 测试 F401 陷阱（R264 复用）**：5 个 all-import 文件补 `mod_mod` 导入时同步补 `is` 断言，ruff "All checks passed!"。
+
+### 验证
+
+- ruff：All checks passed!（11 order 文件 clean，F401 陷阱规避成功）。
+- 定向 pytest（9 order 测试文件）：176 passed in 0.68s（R264 基准 158 + R265 新增 18，零回归）。
+- 全量回归：7225 passed, 10 skipped（106s）vs R264 基准 7207（+18 R265，零真实回归）。R264 基准 7207 = 7172 稳定 + 35 R264；R265 = 7225 = 7207 + 18 R265 新增。预存 test_connection 计时 flaky / test_scheduled sqlite closed db / message-list flaky 本次均未触发（10 skipped 为预期，1 warning 为 fastapi/starlette 预存噪音）。
+- CRLF 警告正常（Windows），无害。
+
+### YAGNI 边界
+
+- **position 阶段待迁（R266-R267 候选）**：`layout/position/bk.rs`（Brandes-Köpf 坐标算法）+ `layout/position/mod.rs`（position 编排层），order sweep 在 run_layout line 632 调用后紧接 position。
+- **layout/mod.rs 顶层 run_layout 待迁（R268 收官候选）**：dagre layout 全栈最后一个叶子，依赖 order + position 全部就位后接入消费链。
+- **order() 不外暴**：保持 order 子包内部（`order.mod.order`），不进 dagre crate-root barrel（barrel count 仍为 4，R246 设定）。
+- **_sweep_layer_graphs / _assign_order 私有**：helper 不进 __all__，仅 order() 内部 + 测试白盒导入。
+- **GRAPH_NODE fallback 几乎不触发**：R262 build_layer_graph 总是设 root 为 fresh `_root{id}`，GRAPH_NODE（\x00）fallback 忠实保留但极少命中。
+
+### Commit
+
+`feat(platform): R265 migrate dagre order/mod.rs -> order sub-package 9/9`。提交 e8ddf3c。11 文件 634 insertions（2 生产 mod.py + __init__.py，9 测试，其中 2 新文件 mod.py / test_dagre_layout_order_mod.py）。锚点链: ... -> R263(b913881) -> R264(6f0cbf6) -> R265(e8ddf3c)。
