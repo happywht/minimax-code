@@ -160,9 +160,41 @@ clones. Same barrel policy: ``build_layer_graph`` / ``create_root_node``
 ``minimax_code.dagre.layout.order.build_layer_graph.build_layer_graph``.
 The barrel now re-exports ``build_layer_graph`` alongside ``barycenter``
 + ``cross_count`` + ``init_order`` + ``resolve_conflicts``.
+
+Sixth ``order`` leaf (R263): ``add_subgraph_constraints`` -- the
+compound-hierarchy order-constraint propagation
+(:mod:`~minimax_code.dagre.layout.order.add_subgraph_constraints`).
+``order::mod`` calls :func:`add_subgraph_constraints` once per sweep
+rank, right after R262's :func:`build_layer_graph` builds the layer
+graph: for every node ``v`` in the sorted within-rank sequence ``vs``
+it walks ``v``'s compound ancestor chain via ``g.parent`` and, for each
+ancestor that has already seen a *different* previous descendant this
+sweep, records a ``prev_child -> child`` constraint edge on the shared
+constraint graph ``cg``. The first descendant under each ancestor
+becomes that ancestor's ``prev`` slot; the first parentless node
+becomes ``_root_prev``. The result is the compound hierarchy's
+left-to-right order preserved as explicit ``cg`` edges that R261's
+:func:`resolve_conflicts` honors on the next sweep -- so a sub-graph's
+children keep their relative order across sweeps even as the
+barycenter heuristic re-sequences them. It is the **twelfth
+zero-semantic-clone leaf** (thirteenth borrow-checker framework reuse)
+after R252 / R253 / R254 / R255 / R256 / R257 / R258 / R259 / R260 /
+R261 / R262: every grok ``clone()`` is a borrow-release artefact
+(``g.parent(v).cloned()``, ``prev.get(...).cloned()``) or an
+ownership-transfer artefact (``child.clone()``, ``_parent.clone()``,
+``_root_prev.clone()`` -- ``Option<String>`` rebinds), so the nine
+``clone()`` calls collapse to zero; grok's ``return ()`` early-exit
+from the ``for_each`` closure maps to a ``break`` out of the ``while``.
+Same barrel policy: ``add_subgraph_constraints`` stays out of
+``dagre.__all__``, reachable only as
+``minimax_code.dagre.layout.order.add_subgraph_constraints.add_subgraph_constraints``.
+The barrel now re-exports ``add_subgraph_constraints`` alongside
+``barycenter`` + ``build_layer_graph`` + ``cross_count`` + ``init_order``
++ ``resolve_conflicts``.
 """
 
 from minimax_code.dagre.layout.order import (
+    add_subgraph_constraints,
     barycenter,
     build_layer_graph,
     cross_count,
@@ -171,6 +203,7 @@ from minimax_code.dagre.layout.order import (
 )
 
 __all__ = [
+    "add_subgraph_constraints",
     "barycenter",
     "build_layer_graph",
     "cross_count",

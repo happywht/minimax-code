@@ -297,16 +297,19 @@ def test_order_subpackage_barrel_reexports_both() -> None:
     R254 / R259 -> R258 barrel-sync pattern.
     """
     import minimax_code.dagre.layout.order as order_pkg
+    import minimax_code.dagre.layout.order.add_subgraph_constraints as asc_mod
     import minimax_code.dagre.layout.order.cross_count as cc_mod
     import minimax_code.dagre.layout.order.init_order as init_mod
 
     assert order_pkg.__all__ == [
+        "add_subgraph_constraints",
         "barycenter",
         "build_layer_graph",
         "cross_count",
         "init_order",
         "resolve_conflicts",
     ]
+    assert order_pkg.add_subgraph_constraints is asc_mod
     assert order_pkg.cross_count is cc_mod
     assert order_pkg.init_order is init_mod
 

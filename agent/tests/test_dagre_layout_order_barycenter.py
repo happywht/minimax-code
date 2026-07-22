@@ -219,7 +219,7 @@ def test_dagre_barrel_count_unchanged_at_four() -> None:
     assert len(dagre.__all__) == 4
 
 
-def test_order_subpackage_barrel_reexports_all_five() -> None:
+def test_order_subpackage_barrel_reexports_all_six() -> None:
     """The ``order`` sub-package barrel re-exports all five ``order`` leaves.
 
     Synchronised at R260 (``barycenter`` added), R261
@@ -233,6 +233,7 @@ def test_order_subpackage_barrel_reexports_all_five() -> None:
     R259 -> R258 barrel-sync pattern.
     """
     import minimax_code.dagre.layout.order as order_pkg
+    import minimax_code.dagre.layout.order.add_subgraph_constraints as asc_mod
     import minimax_code.dagre.layout.order.barycenter as bc_mod
     import minimax_code.dagre.layout.order.build_layer_graph as blg_mod
     import minimax_code.dagre.layout.order.cross_count as cc_mod
@@ -240,12 +241,14 @@ def test_order_subpackage_barrel_reexports_all_five() -> None:
     import minimax_code.dagre.layout.order.resolve_conflicts as rc_mod
 
     assert order_pkg.__all__ == [
+        "add_subgraph_constraints",
         "barycenter",
         "build_layer_graph",
         "cross_count",
         "init_order",
         "resolve_conflicts",
     ]
+    assert order_pkg.add_subgraph_constraints is asc_mod
     assert order_pkg.barycenter is bc_mod
     assert order_pkg.build_layer_graph is blg_mod
     assert order_pkg.cross_count is cc_mod
