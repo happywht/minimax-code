@@ -32,4 +32,20 @@ helpers (``unique_id`` / ``add_dummy_node`` / ``add_border_node`` / ``simplify``
 and that ``run_layout`` imports six symbols from directly. Same barrel policy:
 the 15 symbols stay out of ``dagre.__all__``, reachable only as
 ``minimax_code.dagre.layout.util.<symbol>``.
+
+Third layout leaf (R249): ``add_border_segments`` -- the first stage that
+mutates compound-graph *structure* (every prior leaf only read or reshaped
+flat nodes/edges). For each compound node spanning a rank range (``min_rank``
+set), injects a pair of ``_bl`` (border-left) / ``_br`` (border-right) sentinel
+``border`` dummies per rank in ``[min_rank, max_rank + 1)``, chained
+top-to-bottom with weight-1 edges, so the positioner can pad a subgraph's
+rank span. It is the **first consumer of the R246 ``BorderTypeName`` enum**
+(identity-dispatched via ``is``) and reuses the R248 ``add_dummy_node`` helper
+to mint the sentinels; its private ``_add_border_node`` is deliberately
+distinct from ``util.add_border_node`` (the ``_`` prefix keeps both in scope
+collision-free, since grok nests its private helper inside the same file).
+``run_layout`` calls it between ``parent_dummy_chains`` and ``order``
+(``layout/mod.rs`` line 631). Same barrel policy: the stage symbol stays out
+of ``dagre.__all__``, reachable only as
+``minimax_code.dagre.layout.add_border_segments``.
 """
