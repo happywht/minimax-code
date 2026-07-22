@@ -71,4 +71,25 @@ node.edge_label`` share the live reference (``add_dummy_node`` deep-clones
 ``attrs`` before storing, and ``node`` is already an independent deepcopy). Same
 barrel policy: the stage symbols stay out of ``dagre.__all__``, reachable only
 as ``minimax_code.dagre.layout.normalize.run`` / ``.undo``.
+
+Fifth layout leaf (R251): ``acyclic`` -- feedback-arc-set reversal, the
+outermost bracket in ``run_layout``: ``acyclic::run`` at ``layout/mod.rs`` line
+616 is the **first** stage called (before ``nesting_graph`` / ``rank`` /
+``normalize``), and ``acyclic::undo`` at line 644 is the **last** undone (after
+``coordinate_system::undo`` / ``normalize::undo``). DAG-ification must precede
+ranking (a cycle has no valid rank assignment), and the reversal must outlive
+every later coordinate mutation so the final edge directions match the original
+input. ``run`` discovers the feedback arc set via DFS -- a back-edge is one
+whose target (``edge.w``) is on the active DFS stack (it closes a cycle) --
+then for each back-edge captures its label, removes the edge, stamps
+``forward_name`` + ``reversed=True``, and re-creates the edge reversed
+(``w -> v``) under a fresh ``rev{id}`` name minted via the R248 ``unique_id``
+counter. ``undo`` walks every edge and flips each ``reversed`` label back to
+its original direction under the saved ``forward_name``; the reversed edge
+itself is NOT removed (grok only mints the restored forward edge), so undo is
+additive on edges -- a faithful port. The ``greedy`` acyclicer branch is a grok
+TODO (``greedyFAS`` unimplemented) that yields an empty FAS and leaves the
+graph untouched. Same barrel policy: the stage symbols stay out of
+``dagre.__all__``, reachable only as ``minimax_code.dagre.layout.acyclic.run``
+/ ``.undo``.
 """
