@@ -195,4 +195,23 @@ survives). A grok typo is corrected: ``find_min_stack_edge`` ->
 ``_find_min_slack_edge`` (the dagre upstream JS is ``findMinSlackEdge``).
 Same barrel policy: the symbol stays out of ``dagre.__all__``, reachable
 only as ``minimax_code.dagre.layout.rank.feasible_tree.feasible_tree``.
+
+Tenth layout-stage leaf (R258): ``order/init_order`` -- the first leaf
+of the ``order`` sub-package, the second layout stage to mirror grok's
+directory-of-files shape (after ``rank`` R254-R257). ``run_layout`` calls
+``order`` at ``layout/mod.rs`` line 632, the next unmigrated stage after
+the ``rank`` R256/R257 dispatcher closes (line 620) and after
+``add_border_segments`` (line 631, R249); ``order`` decides the
+left-to-right sequence of nodes within each rank to minimize edge
+crossings (Gansner et al., "A Technique for Drawing Directed Graphs",
+section 4). The ``order`` sub-package bundles nine files behind one
+``order::mod`` dispatcher (the largest layout sub-package):
+``init_order`` (this leaf -- the deterministic DFS seed ordering),
+``cross_count`` / ``barycenter`` / ``build_layer_graph`` /
+``sort_subgraph`` / ``sort`` / ``resolve_conflicts`` /
+``add_subgraph_constraints`` / ``mod`` (later leaves). The sub-package
+barrel at :mod:`minimax_code.dagre.layout.order` tracks each file as it
+arrives. Same barrel policy: ``init_order`` stays out of
+``dagre.__all__``, reachable only as
+``minimax_code.dagre.layout.order.init_order.init_order``.
 """
