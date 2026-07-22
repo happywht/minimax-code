@@ -18868,3 +18868,73 @@ add_subgraph_constraints 是 order 子包的第 6 叶（6/9），闭合 Gansner 
 ### Commit
 
 `feat(platform): R263 migrate dagre order/add_subgraph_constraints (12th zero-clone leaf)`。提交 b913881。8 文件 451 insertions 3 deletions。锚点链: ... -> R260(f011cfb) -> R261(01b3301) -> R262(d982107) -> R263(b913881)。
+
+## R264 — dagre order sort.rs + sort_subgraph.rs 双叶成对迁移（order 子包 6/9 → 8/9，dagre layout 第 17+18 叶）
+
+锚点:R264-1 b913881
+
+### 本轮目标
+
+延续 dagre layout 栈迁移（R246 类型地基 → R263 order/add_subgraph_constraints）。order 子包 6/9 开启，3 文件待迁：sort / sort_subgraph / mod。本轮目标：双叶成对迁移 sort.rs + sort_subgraph.rs（order 6/9 → 8/9，dagre layout 第 17 + 18 个叶子）。
+
+🔴 核心难点：sort.rs ↔ sort_subgraph.rs **循环依赖对**。sort.rs 顶层导入 `sort_subgraph::SubgraphResult`；sort_subgraph.rs 调用 `sort::sort`。Rust 编译期单向解析无循环加载问题；Python 运行时双向模块加载会触发 ImportError。R263 已发现此约束并排除单叶候选（候选 B/C）。R264 必须**双叶子同轮成对迁移**，用 Python 运行时特性打破循环（函数体惰性 import）。
+
+迁移解除对 mod.rs 编排层（order 子包最后一个叶子，R265 候选）的阻塞 —— mod.rs 依赖 sort + sort_subgraph，故最后迁。
+
+### 融合结论
+
+- **sort.rs 顶层 sweep 编排 → Python cmp_to_key + partition**：grok `Vec::sort_by(comparator)` → Python `sort(key=cmp_to_key(comparator))`；grok `partition` 二元谓词拆分 → `util.partition` 返回 `PartitionResponse.lhs` / `.rhs` 全新列表。sortable 半（有 barycenter）按 cmp_to_key 排序；unsortable 半（barycenter None）按 entry.i 降序排序后 LIFO pop 交错回填。
+- **sort_subgraph.rs 子图递归排序器 → SubgraphResult mutable dataclass**：复合子节点递归 `sort_subgraph`；border_left_ / border_right_（带下划线 = 当前 rank 标签 str|None）书挡 vs 列表；border 前驱的 order 位置折叠进聚合 barycenter（两单位权重 bump）。
+- **🔴 循环依赖打破策略**：sort.py 顶层正常导入 SubgraphResult（单向消费类型）；sort_subgraph.py 顶层**不**导入 sort，把 `from minimax_code.dagre.layout.order.sort import sort` 放在 `sort_subgraph()` 函数体内（第 120 行，函数体惰性导入，运行时首次调用才解析，打破模块加载期双向 ImportError）。
+- **Barycenter frozen → mutable**：R260 frozen+slots 防御（NaN 忠实 + 值类型语义）；R264 移除 frozen=True（保留 slots=True），因为 `_merge_barycenters` 原地重写 vs/barycenter/weight（mirrors grok `#[derive(Clone)]` mutability + `sort_subgraph.rs _merge_barycenters(target: &mut Barycenter)`）。借用检查器分类第 N 次复用：grok clone 语义 → Python 可变 dataclass。
+- **SubgraphResult 所有权归属**：定义在 sort_subgraph.py（被 sort.py 消费），`@dataclass(slots=True)`，`vs` 用 `field(default_factory=list)`（R236 mutable-default 陷阱规避），barycenter/weight 默认 None。可变，因为 sort_subgraph 在 border 书挡后重写三个字段。
+
+### 交付
+
+4 生产文件 + 8 测试文件，共 12 文件 1052 insertions 5 deletions。
+
+生产（4）：
+- `agent/minimax_code/dagre/layout/order/sort.py`（142 行，新）：`sort(entries, bias_right)` + `_consume_unsortable` + `_compare_with_bias`。顶层导入 R261 ResolvedBaryEntry + sort_subgraph SubgraphResult + util.partition。`__all__ = ["sort"]`。
+- `agent/minimax_code/dagre/layout/order/sort_subgraph.py`（218 行，新）：`sort_subgraph(g, v, cg, bias_right)` + `_expand_subgraphs` + `_merge_barycenters` + `SubgraphResult`。第 120 行函数体惰性导入 sort。`__all__ = ["SubgraphResult", "sort_subgraph"]`（类在 fn 前，ASCII 大写优先）。
+- `agent/minimax_code/dagre/layout/order/barycenter.py`（M）：Barycenter `frozen=True` 移除（slots 保留）。
+- `agent/minimax_code/dagre/layout/order/__init__.py`（M）：barrel `__all__` 6 → 8 ASCII 序（add_subgraph_constraints, barycenter, build_layer_graph, cross_count, init_order, resolve_conflicts, sort, sort_subgraph）+ docstring 段 7。
+
+测试（8）：
+- `agent/tests/test_dagre_layout_order_sort.py`（新）：21 测试，端到端（全 sortable 升序 / bias_right 双向 tie-break / 全 unsortable LIFO / mixed 交错 / 零总权重跳过聚合 / multi-vs 展平 / 空 batch）+ 白盒（_compare_with_bias 升序 + 双向 tie-break + 相等 / _consume_unsortable LIFO + 短路 + 空半 no-op）+ barrel surface。
+- `agent/tests/test_dagre_layout_order_sort_subgraph.py`（新）：17 测试，端到端（三叶无 border / 空 movable / border 书挡 + 前驱 order 折叠 / 递归复合子节点）+ SubgraphResult dataclass 契约（mutable + list factory + 两实例不共享 vs）+ barrel surface。
+- 6 个现有 barrel 测试同步（add_subgraph_constraints / build_layer_graph / resolve_conflicts / barycenter / cross_count / init_order）：`__all__` 6 → 8 + 追加 sort_mod + sort_subgraph_mod 导入 + 各 2 个 `is` 断言。
+
+### 映射决策树 + 坑
+
+- **border 双字段陷阱**：`node.border_left` / `node.border_right` = OrderedHashMap（rank → label，`.get(rank)`）；`node.border_left_` / `node.border_right_`（带下划线）= str | None（当前 rank 标签）。sort_subgraph 读取带下划线版本。R249/R263 已踩，复用。
+- **Barycenter frozen → mutable**：R260 frozen+slots → R264 移除 frozen。复用 R236（frozen+slots+继承+fieldless = TypeError）反向教训：纯值类型用 frozen，需原地变异用 mutable+slots。
+- **g.predecessors 返回 list | None 用 `or []`**：防御 None。
+- **g.children 返回 list 用真值测试**：`if g.children(v)` 而非 `is not None`。
+- **g.node() 防御 None 守卫**：`node = g.node(v); if node is None: ...`。
+- **compare_with_bias 用 cmp_to_key**：Rust `sort_by(comparator)` → Python `sort(key=cmp_to_key(comparator))`。E731 规避（不用 name=lambda）。
+- **consume_unsortable LIFO pop**：unsortable 半降序排序后 `pop()` 从尾部取（最小 i 先），交错回填。
+- **SubgraphResult mutable @dataclass(slots=True)**：vs 用 `field(default_factory=list)`，R236 陷阱规避。
+- **递归 sort_subgraph 模块级**：复合子节点递归调用自身。
+- **🔴 循环 import 双向 ImportError → 函数级延迟 import**：sort.py 顶层导入 SubgraphResult（单向），sort_subgraph.py 把 sort 导入放函数体内。Python 运行时首次调用解析，打破模块加载期双向循环。这是 R264 最关键新坑。
+- **barrel ASCII 8 元素**：`"sort" < "sort_subgraph"`（前缀规则，短串优先），均置于 `"resolve_conflicts"` 之后。
+- **barrel 同步 R264 → R258+R259+R260+R261+R262+R263**：6 个现有测试 `__all__` 6 → 8 + 追加导入 + is 断言。
+- **🔴 barrel 测试 F401 陷阱**：barrel 测试函数导入全部 8 个 order 模块别名时，必须对所有 8 个使用 `is` 断言（不能只断言 sort/sort_subgraph），否则 ruff F401（imported but unused）。R264 首次发现并修复（12 个 F401 错误，补全 8 个 is 断言既消除 F401 又增强 barrel 契约覆盖）。
+
+### 验证
+
+- ruff：All checks passed!（12 文件 clean，F401 修复后）。
+- 定向 pytest（8 order 测试文件）：158 passed in <1s（R264 新 38 + R258/R259/R260/R261/R262/R263 同步后全绿）。
+- 全量回归：7207 passed, 10 skipped（107s）vs R263 基准 7172（+35 R264，零真实回归）。R263 基准 7172 = 7157 稳定 + 15 R263；R264 = 7207 = 7172 + 35 R264 新增。预存 test_connection 计时 flaky 本次未触发（10 skipped 为预期，1 warning 为 fastapi/starlette 预存噪音）。
+- CRLF 警告正常（Windows），无害。
+
+### YAGNI 边界
+
+- **mod.rs 编排层待迁（R265 候选）**：order 子包最后一个叶子，依赖 sort + sort_subgraph（本轮 unblock）。迁完后 order 子包 9/9 闭合。
+- **run_layout 编排层待 mod.rs 后闭合**：order sweep 在 run_layout line 632 调用，待 mod.rs 迁移后接入消费链。
+- **sort / sort_subgraph 经 order 子包 barrel 可达**（order.sort / order.sort_subgraph），但未接入 sweep 编排（待 mod.rs）。
+- **SubgraphResult 不外暴**：保持 order 子包内部，不进 dagre crate-root barrel（barrel count 仍为 4，R246 设定）。
+- **_merge_barycenters 原地变异**：target Barycenter 可变（frozen 移除），函数签名 `target: Barycenter, other: Barycenter` → 原地更新 target，无返回值（mirrors grok `&mut`）。
+
+### Commit
+
+`feat(platform): R264 migrate dagre order sort + sort_subgraph (order 8/9)`。提交 6f0cbf6。12 文件 1052 insertions 5 deletions（4 生产 + 8 测试，其中 4 新文件 sort.py / sort_subgraph.py / test_sort.py / test_sort_subgraph.py）。锚点链: ... -> R262(d982107) -> R263(b913881) -> R264(6f0cbf6)。
