@@ -48,4 +48,27 @@ collision-free, since grok nests its private helper inside the same file).
 (``layout/mod.rs`` line 631). Same barrel policy: the stage symbol stays out
 of ``dagre.__all__``, reachable only as
 ``minimax_code.dagre.layout.add_border_segments``.
+
+Fourth layout leaf (R250): ``normalize`` -- long-edge normalization, the first
+stage with an explicit ``run`` / ``undo`` pair that ``run_layout`` brackets a
+later phase with (``normalize::run`` at ``layout/mod.rs`` line 629 before
+``add_border_segments`` / ``position`` / ``order``, ``normalize::undo`` at line
+638 after). ``run`` breaks every edge whose endpoints span more than one rank
+into a chain of unit-length segments joined by ``_d`` ``edge`` (or ``edge-label``
+at the label rank) dummy nodes -- one per intermediate rank -- and records each
+chain's head on ``GraphConfig.dummy_chains``; ``undo`` walks those heads back,
+collapsing each chain and accumulating the positioned dummy coordinates as
+waypoints (``points``) on the restored original edge. It is the **first
+consumer of the R248 ``add_dummy_node`` helper in a structural-split context**
+(R249 used it for border padding; R250 uses it for edge splitting) and mutates
+the live graph in place. Two grok ``clone()`` calls survive the port with full
+semantic weight -- ``_edge_label = deepcopy(edge_label)`` before
+``remove_edge_with_obj`` (the in-graph label reference is invalidated by
+removal) and ``node = deepcopy(node_)`` in ``undo`` (``remove_node`` invalidates
+the node reference while the loop still reads its ``x`` / ``y``) -- while the
+loop-internal ``attrs.edge_label = _edge_label`` and ``orig_label =
+node.edge_label`` share the live reference (``add_dummy_node`` deep-clones
+``attrs`` before storing, and ``node`` is already an independent deepcopy). Same
+barrel policy: the stage symbols stay out of ``dagre.__all__``, reachable only
+as ``minimax_code.dagre.layout.normalize.run`` / ``.undo``.
 """
