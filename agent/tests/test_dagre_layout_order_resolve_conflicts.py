@@ -482,6 +482,8 @@ def test_order_subpackage_barrel_reexports_all_six() -> None:
     import minimax_code.dagre.layout.order.cross_count as cc_mod
     import minimax_code.dagre.layout.order.init_order as init_mod
     import minimax_code.dagre.layout.order.resolve_conflicts as rc_mod
+    import minimax_code.dagre.layout.order.sort as sort_mod
+    import minimax_code.dagre.layout.order.sort_subgraph as sort_subgraph_mod
 
     assert order_pkg.__all__ == [
         "add_subgraph_constraints",
@@ -490,6 +492,8 @@ def test_order_subpackage_barrel_reexports_all_six() -> None:
         "cross_count",
         "init_order",
         "resolve_conflicts",
+        "sort",
+        "sort_subgraph",
     ]
     assert order_pkg.add_subgraph_constraints is asc_mod
     assert order_pkg.barycenter is bc_mod
@@ -497,6 +501,8 @@ def test_order_subpackage_barrel_reexports_all_six() -> None:
     assert order_pkg.cross_count is cc_mod
     assert order_pkg.init_order is init_mod
     assert order_pkg.resolve_conflicts is rc_mod
+    assert order_pkg.sort is sort_mod
+    assert order_pkg.sort_subgraph is sort_subgraph_mod
 
 
 def test_resolve_conflicts_reachable_via_layout_order() -> None:

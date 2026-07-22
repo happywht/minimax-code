@@ -191,6 +191,48 @@ Same barrel policy: ``add_subgraph_constraints`` stays out of
 The barrel now re-exports ``add_subgraph_constraints`` alongside
 ``barycenter`` + ``build_layer_graph`` + ``cross_count`` + ``init_order``
 + ``resolve_conflicts``.
+
+Seventh and eighth ``order`` leaves (R264): ``sort_subgraph`` +
+``sort`` -- the compound-hierarchy recursive sorter
+(:mod:`~minimax_code.dagre.layout.order.sort_subgraph`) and its
+per-level leaf sorter (:mod:`~minimax_code.dagre.layout.order.sort`).
+``order::mod`` drives the sweep by calling :func:`sort_subgraph` on the
+synthetic ``_root{id}`` node R262 mints; :func:`sort_subgraph` scores
+every movable child by R260 :func:`barycenter`, recurses into compound
+children (merging each child's barycenter via
+:func:`~minimax_code.dagre.layout.order.sort_subgraph._merge_barycenters`),
+feeds the scored entries through R261 :func:`resolve_conflicts` +
+:func:`~minimax_code.dagre.layout.order.sort_subgraph._expand_subgraphs`,
+then delegates the per-level ordering to :func:`sort`. :func:`sort`
+splits the entries into a sortable half (carry a barycenter) and an
+unsortable half (do not), sorts them by ascending barycenter with a
+``bias_right`` tie-break and by descending ``i`` respectively, and
+interleaves them by ``i`` position via
+:func:`~minimax_code.dagre.layout.order.sort._consume_unsortable`. The
+two form a tight mutual recursion (``sort`` returns a
+:class:`~minimax_code.dagre.layout.order.sort_subgraph.SubgraphResult`;
+``sort_subgraph`` calls ``sort``), so they migrate as a pair (R264) --
+``sort_subgraph`` keeps the ``sort`` import out of module scope (a
+top-level binding would deadlock the load cycle) and pulls it lazily at
+call time, while ``sort`` keeps its module-level ``SubgraphResult``
+import (``SubgraphResult`` is defined before any function that uses it).
+R264 also widens R260's ``Barycenter`` from ``frozen`` to mutable
+(grok ``#[derive(Debug, Clone)]`` + ``merge_barycenters`` rewrites the
+target in place via ``&mut Barycenter``). They are the **thirteenth and
+fourteenth zero-semantic-clone leaves** (the seventh and eighth ``order``
+leaves, ``order`` sub-package 7/9 + 8/9) after R252 / R253 / R254 / R255
+/ R256 / R257 / R258 / R259 / R260 / R261 / R262 / R263: every grok
+``clone()`` is a ``String`` borrow, a ``Vec`` ownership-transfer, or a
+``Vec`` borrow-release artefact -- Python's :func:`partition` returns
+fresh independent halves, ``dict.__setitem__`` keeps live references,
+and ``list.extend`` takes live references, so all clones collapse. Same
+barrel policy: ``sort`` / ``sort_subgraph`` / ``SubgraphResult`` stay
+out of ``dagre.__all__``, reachable only as
+``minimax_code.dagre.layout.order.sort.sort`` /
+``minimax_code.dagre.layout.order.sort_subgraph.sort_subgraph``. The
+barrel now re-exports ``sort`` + ``sort_subgraph`` alongside
+``add_subgraph_constraints`` + ``barycenter`` + ``build_layer_graph`` +
+``cross_count`` + ``init_order`` + ``resolve_conflicts``.
 """
 
 from minimax_code.dagre.layout.order import (
@@ -200,6 +242,8 @@ from minimax_code.dagre.layout.order import (
     cross_count,
     init_order,
     resolve_conflicts,
+    sort,
+    sort_subgraph,
 )
 
 __all__ = [
@@ -209,4 +253,6 @@ __all__ = [
     "cross_count",
     "init_order",
     "resolve_conflicts",
+    "sort",
+    "sort_subgraph",
 ]

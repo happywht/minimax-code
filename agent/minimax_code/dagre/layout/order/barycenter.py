@@ -33,7 +33,7 @@ from minimax_code.data_structures.graphlib import Graph
 __all__ = ["Barycenter", "barycenter"]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class Barycenter:
     """Per-node barycenter heuristic result (mirrors grok ``Barycenter``).
 
@@ -43,10 +43,13 @@ class Barycenter:
     A ``NaN`` ``barycenter`` mirrors grok's ``sum / 0.0`` (every in-edge
     had ``weight = None`` -> aggregated to ``0.0``): Rust yields ``NaN``
     where Python would raise ``ZeroDivisionError``, so the port reproduces
-    the ``NaN`` faithfully (see :func:`barycenter`). Frozen + slotted
-    because a barycenter is a pure computed value (never mutated once
-    minted); three fields dodge the R236 ``frozen + slots + fieldless``
-    ``TypeError`` trap.
+    the ``NaN`` faithfully (see :func:`barycenter`). Mutable + slotted:
+    grok's ``Barycenter`` is a plain ``#[derive(Debug, Clone)]`` struct
+    with all-``pub`` fields that ``order::sort_subgraph::_merge_barycenters``
+    (R264) rewrites in place (``target: &mut Barycenter``), so the port
+    keeps the dataclass mutable to match -- the R260 ``frozen`` choice is
+    widened at R264 once the downstream mutator lands. Three fields dodge
+    the R236 ``frozen + slots + fieldless`` ``TypeError`` trap.
     """
 
     v: str
