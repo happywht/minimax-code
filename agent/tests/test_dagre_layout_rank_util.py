@@ -381,17 +381,22 @@ def test_dagre_barrel_count_unchanged_at_four() -> None:
 
 
 def test_rank_subpackage_barrel_reexports_util() -> None:
-    """The ``rank`` sub-package barrel re-exports the ``util`` submodule.
+    """The ``rank`` sub-package barrel re-exports ``util`` alongside ``feasible_tree``.
 
-    Mirrors grok's ``pub mod util`` visibility: ``rank/__init__.py`` exposes
-    ``util`` and nothing else, so ``from minimax_code.dagre.layout.rank
-    import util`` resolves once ``rank::mod`` is wired in a later leaf.
+    Mirrors grok's ``pub mod util`` + ``pub mod feasible_tree`` visibility:
+    ``rank/__init__.py`` exposes ``util`` and ``feasible_tree`` (R255 added the
+    latter alongside the R254 ``util``), so both ``from ...layout.rank import
+    util`` and ``... import feasible_tree`` resolve once ``rank::mod`` is wired
+    in a later leaf. The ``__all__`` is ASCII-sorted (``feasible_tree`` before
+    ``util``).
     """
     import minimax_code.dagre.layout.rank as rank_pkg
+    import minimax_code.dagre.layout.rank.feasible_tree as ft_mod
     import minimax_code.dagre.layout.rank.util as util_mod
 
-    assert rank_pkg.__all__ == ["util"]
+    assert rank_pkg.__all__ == ["feasible_tree", "util"]
     assert rank_pkg.util is util_mod
+    assert rank_pkg.feasible_tree is ft_mod
 
 
 def test_rank_util_reachable_via_layout_rank() -> None:

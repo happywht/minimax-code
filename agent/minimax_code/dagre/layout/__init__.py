@@ -177,4 +177,22 @@ label with ``minlen == None``, and the two asymmetric defaults (0 vs 10)
 are reproduced verbatim. Same barrel policy: the symbols stay out of
 ``dagre.__all__``, reachable only as
 ``minimax_code.dagre.layout.rank.util.longest_path`` / ``.slack``.
+
+Ninth layout leaf (R255): ``rank/feasible_tree`` -- the tight-edge
+spanning tree
+(:func:`~minimax_code.dagre.layout.rank.feasible_tree.feasible_tree`)
+that ``network_simplex`` pivots on and the body of the ``tight-tree``
+ranker strategy (``rank::mod`` dispatches ``tight-tree`` to
+``longest_path`` then ``feasible_tree``). Consumes the R254 ``slack``
+primitive (``feasible_tree.rs`` line 1 ``use
+crate::layout::rank::util::slack`` closed at R254) and is the direct
+upstream of the unmigrated ``network_simplex`` ranker. It is the
+**fourth zero-semantic-clone leaf** after R252 / R253 / R254 (every grok
+``clone()`` is a borrow / ``Copy`` artefact -- ``Option<&String>`` /
+``&str`` / ``&Edge`` releases for storage or return -- and is stripped;
+the stage performs no structural removal, so no ``copy.deepcopy``
+survives). A grok typo is corrected: ``find_min_stack_edge`` ->
+``_find_min_slack_edge`` (the dagre upstream JS is ``findMinSlackEdge``).
+Same barrel policy: the symbol stays out of ``dagre.__all__``, reachable
+only as ``minimax_code.dagre.layout.rank.feasible_tree.feasible_tree``.
 """

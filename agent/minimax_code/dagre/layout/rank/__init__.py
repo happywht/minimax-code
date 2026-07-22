@@ -32,8 +32,20 @@ barrel policy as the sibling layout stages: the symbols stay out of
 barrel re-exports the ``util`` submodule (mirroring grok's ``pub mod
 util`` visibility) so ``from minimax_code.dagre.layout.rank import util``
 works once ``rank::mod`` is wired.
+
+Second ``rank`` leaf (R255): ``feasible_tree`` -- the tight-edge spanning
+tree (:func:`~minimax_code.dagre.layout.rank.feasible_tree.feasible_tree`)
+that ``network_simplex`` pivots on and the body of the ``tight-tree``
+ranker strategy (``rank::mod`` dispatches ``tight-tree`` to
+``longest_path`` then ``feasible_tree``). Consumes the R254 ``slack``
+primitive and is the direct upstream of the unmigrated ``network_simplex``
+ranker. Same barrel policy: ``feasible_tree`` stays out of
+``dagre.__all__``, reachable only as
+``minimax_code.dagre.layout.rank.feasible_tree.feasible_tree``. The barrel
+re-exports the ``feasible_tree`` submodule alongside ``util`` (mirroring
+grok's ``pub mod feasible_tree`` visibility).
 """
 
-from minimax_code.dagre.layout.rank import util
+from minimax_code.dagre.layout.rank import feasible_tree, util
 
-__all__ = ["util"]
+__all__ = ["feasible_tree", "util"]
