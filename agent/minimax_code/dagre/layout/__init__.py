@@ -115,4 +115,38 @@ structural removal -- every grok ``clone()`` is a pure borrow artefact
 is stripped. Same barrel policy: the stage symbol stays out of
 ``dagre.__all__``, reachable only as
 ``minimax_code.dagre.layout.parent_dummy_chains``.
+
+Seventh layout leaf (R253): ``nesting_graph`` -- the compound-graph nesting
+scaffolding erected around the rank computation. ``run_layout`` brackets the
+rank stage with this pair: ``nesting_graph::run`` at ``layout/mod.rs`` line
+617 (the second stage called, right after ``acyclic::run`` at line 616) and
+``nesting_graph::cleanup`` at line 625 (right after ``remove_empty_ranks`` at
+line 624). This is the **first ``run`` / ``cleanup`` pair** (R250 ``normalize``
+and R251 ``acyclic`` both use ``run`` / ``undo``): unlike ``undo`` (which
+reverses a transformation to restore prior state), ``cleanup`` *deletes* the
+scaffolding it erected -- the synthetic ``_root`` node plus every
+``nesting_edge`` edge -- so the graph returns to its pre-rank state minus only
+the rank values ``rank`` wrote in between. ``run`` implements Sander's "Layout
+of Compound Directed Graphs": mints a ``_root`` dummy (R248
+``add_dummy_node``), measures the compound-forest depth of every node
+(``_tree_depths`` + nested ``_tree_depths_dfs``), derives ``node_sep = 2 *
+height + 1`` (``height`` = deepest nesting level minus one), scales every
+edge's ``minlen`` by ``node_sep`` (so real nodes never share a rank with a
+border sentinel), then DFS-walks the forest (``_dfs``) erecting ``_bt``
+(border-top) / ``_bb`` (border-bottom) sentinels bracketing every compound
+node's rank span and stitching them with ``nesting_edge`` edges (a leaf child
+gets a stretched ``minlen = height - depth(parent) + 1`` so it cannot land on
+its parent's border rank; a compound child gets a halved weight because its
+own nesting edges already keep it compact). It is the **producer of the
+compound forest** that R252 ``parent_dummy_chains`` consumes -- the
+``border_top`` / ``border_bottom`` stamps on compound node labels and the
+``set_parent`` calls that attach ``_bt`` / ``_bb`` to their compound owner are
+exactly the compound-forest structure R252 walks to re-parent long-edge
+dummies -- and is the **second zero-semantic-clone leaf** after R252 (every
+grok ``clone()`` is an ownership / immutable-reference artefact -- ``f32`` /
+``usize`` Copy, immutable ``str``, ``Option<String>`` reads -- and is stripped;
+the stage performs no structural removal that invalidates a still-held
+reference, so no ``copy.deepcopy`` survives). Same barrel policy: the stage
+symbols stay out of ``dagre.__all__``, reachable only as
+``minimax_code.dagre.layout.nesting_graph.run`` / ``.cleanup``.
 """
