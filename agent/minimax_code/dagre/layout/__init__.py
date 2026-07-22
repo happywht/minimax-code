@@ -149,4 +149,32 @@ the stage performs no structural removal that invalidates a still-held
 reference, so no ``copy.deepcopy`` survives). Same barrel policy: the stage
 symbols stay out of ``dagre.__all__``, reachable only as
 ``minimax_code.dagre.layout.nesting_graph.run`` / ``.cleanup``.
+
+Eighth layout leaf (R254): ``rank/util`` -- the foundational rank helpers
+(``longest_path`` seed ranker + ``slack`` edge measure) and the **first
+leaf of the ``rank`` sub-package**, the first layout stage that mirrors
+grok's directory-of-files shape rather than a single-file module (grok's
+``rank/`` bundles three independent ranker strategies --
+``network_simplex`` / ``feasible_tree`` / ``longest_path`` -- behind one
+``rank::mod`` dispatcher that reads ``GraphConfig.ranker``).
+``run_layout`` calls ``rank`` at ``layout/mod.rs`` line 620, between
+``nesting_graph::run`` (line 617, R253) and ``nesting_graph::cleanup``
+(line 625, R253) -- ranks are computed on the bordered compound graph
+the nesting scaffolding erects. This leaf ports only ``rank::util`` (the
+self-contained primitives both other strategies consume:
+``feasible_tree.rs`` line 1 ``use crate::layout::rank::util::slack``);
+``rank::network_simplex``, ``rank::feasible_tree``, and the ``rank::mod``
+dispatcher land in later leaves once each is in place. It is the **third
+zero-semantic-clone leaf** after R252 / R253: every grok ``clone()`` is a
+borrow / Copy artefact (``&GraphNode`` / ``&GraphEdge`` releases for
+``&mut g`` reborrow, ``Option<&i32>`` Copy, ``i32`` Copy) and is stripped;
+the stage performs no structural removal, so no ``copy.deepcopy``
+survives. A notable grok quirk preserved: grok's manual
+``GraphEdge::default`` sets ``minlen = Some(1.0)``, so the
+``.unwrap_or(0.0)`` (longest_path) and ``.unwrap_or(10.0)`` (slack)
+fallbacks are dead code on the default path -- they only fire for a real
+label with ``minlen == None``, and the two asymmetric defaults (0 vs 10)
+are reproduced verbatim. Same barrel policy: the symbols stay out of
+``dagre.__all__``, reachable only as
+``minimax_code.dagre.layout.rank.util.longest_path`` / ``.slack``.
 """
