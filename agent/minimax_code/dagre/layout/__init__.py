@@ -256,4 +256,39 @@ survives). A defensive ``NaN`` reproduction covers grok's ``0.0 / 0.0``
 Same barrel policy: ``barycenter`` stays out of ``dagre.__all__``,
 reachable only as
 ``minimax_code.dagre.layout.order.barycenter.barycenter``.
+
+Thirteenth layout-stage leaf (R261): ``order/resolve_conflicts`` -- the
+fourth leaf of the ``order`` sub-package and the Forster constrained
+two-level crossing-reduction conflict resolver. ``order::sort_subgraph``
+(a later leaf) feeds the R260 :func:`barycenter` weights through
+:func:`resolve_conflicts`
+(:mod:`~minimax_code.dagre.layout.order.resolve_conflicts`) together
+with a constraint graph ``cg``: when the barycenters of two constrained
+nodes would violate the constraint direction the two are coalesced into
+a single aggregated entry (barycenter = weighted mean, weight = sum,
+vs = concatenation). The algorithm (Forster, "A Fast and Simple
+Heuristic for Constrained Two-Level Crossing Reduction") builds a
+per-node :class:`ConflictEntry` with Kahn topological-sort bookkeeping
+(``indegree`` / ``ins`` / ``outs`` / ``merged``), seeds a
+``source_set`` with every zero-indegree entry, sweeps in LIFO pop order
+calling :func:`_handle_in` (merge on barycenter violation -- ``u`` into
+``v`` when ``u``'s barycenter is ``None`` or not strictly below ``v``'s)
+and :func:`_handle_out` (decrement indegree, promote on zero), then
+emits the non-merged survivors in pop order. It is the **direct
+upstream** of the unmigrated ``sort`` / ``sort_subgraph`` phase
+(``sort.rs`` line 3 imports ``ResolvedBaryEntry``; ``sort_subgraph.rs``
+line 5 imports both) -- landing it unblocks both later leaves and
+closes the Gansner et al. crossing-minimization loop (init ->
+barycenter -> resolve_conflicts -> sort -> cross_count -> keep best).
+It is the **tenth zero-semantic-clone leaf** after R252 / R253 / R254 /
+R255 / R256 / R257 / R258 / R259 / R260 (every grok ``clone()`` is a
+``String`` borrow or a ``Vec`` ownership-transfer artefact -- ``v``
+immutable ``str`` HashMap key, ``ins`` / ``outs`` iterated without
+consumption, ``vs`` concatenated into a fresh list -- stripped; the
+stage mutates entries in place without structural removal, so no
+``copy.deepcopy`` survives). A defensive ``NaN`` reproduction covers
+grok's ``sum / weight`` when both barycenters are ``None`` (the R260
+``0.0 / 0.0`` widening reused). Same barrel policy: ``resolve_conflicts``
+stays out of ``dagre.__all__``, reachable only as
+``minimax_code.dagre.layout.order.resolve_conflicts.resolve_conflicts``.
 """

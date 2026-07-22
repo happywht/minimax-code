@@ -219,24 +219,33 @@ def test_dagre_barrel_count_unchanged_at_four() -> None:
     assert len(dagre.__all__) == 4
 
 
-def test_order_subpackage_barrel_reexports_all_three() -> None:
-    """The ``order`` sub-package barrel re-exports ``barycenter`` + ``cross_count`` + ``init_order``.
+def test_order_subpackage_barrel_reexports_all_four() -> None:
+    """The ``order`` sub-package barrel re-exports all four ``order`` leaves.
 
-    Synchronised at R260: the barrel now also re-exports ``barycenter``
-    (the third ``order`` leaf, the barycentric heuristic weight), so
-    ``__all__`` grew from ``["cross_count", "init_order"]`` to the
-    ASCII-sorted ``["barycenter", "cross_count", "init_order"]``. Mirrors
-    the R255 -> R254 / R257 -> R254 / R259 -> R258 barrel-sync pattern.
+    Synchronised at R260 (``barycenter`` added) then R261
+    (``resolve_conflicts`` added): the barrel now re-exports all four
+    ``order`` leaves, so ``__all__`` grew ``["cross_count", "init_order"]``
+    -> ``["barycenter", "cross_count", "init_order"]`` -> the ASCII-sorted
+    ``["barycenter", "cross_count", "init_order", "resolve_conflicts"]``.
+    Mirrors the R255 -> R254 / R257 -> R254 / R259 -> R258 barrel-sync
+    pattern.
     """
     import minimax_code.dagre.layout.order as order_pkg
     import minimax_code.dagre.layout.order.barycenter as bc_mod
     import minimax_code.dagre.layout.order.cross_count as cc_mod
     import minimax_code.dagre.layout.order.init_order as init_mod
+    import minimax_code.dagre.layout.order.resolve_conflicts as rc_mod
 
-    assert order_pkg.__all__ == ["barycenter", "cross_count", "init_order"]
+    assert order_pkg.__all__ == [
+        "barycenter",
+        "cross_count",
+        "init_order",
+        "resolve_conflicts",
+    ]
     assert order_pkg.barycenter is bc_mod
     assert order_pkg.cross_count is cc_mod
     assert order_pkg.init_order is init_mod
+    assert order_pkg.resolve_conflicts is rc_mod
 
 
 def test_barycenter_reachable_via_layout_order() -> None:
