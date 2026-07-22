@@ -313,6 +313,7 @@ def test_order_subpackage_barrel_reexports_init_order() -> None:
         "build_layer_graph",
         "cross_count",
         "init_order",
+        "mod",
         "resolve_conflicts",
         "sort",
         "sort_subgraph",

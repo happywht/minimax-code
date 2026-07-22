@@ -233,6 +233,54 @@ out of ``dagre.__all__``, reachable only as
 barrel now re-exports ``sort`` + ``sort_subgraph`` alongside
 ``add_subgraph_constraints`` + ``barycenter`` + ``build_layer_graph`` +
 ``cross_count`` + ``init_order`` + ``resolve_conflicts``.
+
+Ninth and final ``order`` leaf (R265): ``mod`` -- the ``order()``
+dispatcher that closes the crossing-minimization stage
+(:mod:`~minimax_code.dagre.layout.order.mod`). ``run_layout`` calls
+:func:`order` at ``layout/mod.rs`` line 632 -- the single public entry
+point of the whole ``order`` sub-package -- and it orchestrates every
+earlier leaf: it seeds the initial ``layering`` via R258
+:func:`init_order`, stamps it via :func:`_assign_order`, scores it via R259
+:func:`cross_count`, then loops ``while last_best < 4`` sweeping up and
+down the ranks (odd iterations down via :class:`GraphRelationship`'s
+``IN_EDGES`` + even iterations up via ``OUT_EDGES``, the ``bias_right``
+tie-break flipping every two iterations to escape local minima), with
+each sweep re-sequencing every rank via :func:`_sweep_layer_graphs`
+(R262 :func:`build_layer_graph` + R264 :func:`sort_subgraph` + R263
+:func:`add_subgraph_constraints`) and the best-crossing-count
+``layering`` kept; the winning matrix is finally stamped on ``g``. It is
+the **dispatcher every earlier ``order`` leaf feeds into** and the
+**milestone that closes the ``order`` sub-package at 9/9** -- the
+crossing-minimization stage is complete. It depends on all eight prior
+leaves (R258-R264) plus the R248 util primitives
+:func:`~minimax_code.dagre.layout.util.max_rank` +
+:func:`~minimax_code.dagre.layout.util.build_layer_matrix`, so it lands
+only after every stage it calls is in place; the top-level imports are
+strictly one-directional (this dispatcher consumes every leaf; no leaf
+imports it back), so -- unlike the R264 ``sort`` / ``sort_subgraph``
+load cycle -- no deferred import is needed. It is the **fifteenth
+zero-semantic-clone leaf** after R252 / R253 / R254 / R255 / R256 / R257
+/ R258 / R259 / R260 / R261 / R262 / R263 / R264: every grok ``clone()``
+is a ``Vec<Vec<String>>`` ownership-transfer artefact -- grok clones the
+``layering`` matrix twice (once to seed ``best``, once whenever a sweep
+improves the cross count); Rust needs the clone because ``layering`` is
+later moved (rebound) by ``build_layer_matrix``, but Python's ``list`` is
+shared by reference and :func:`build_layer_matrix` returns a fresh
+matrix each call, so the port deep-copies the per-layer lists
+(``[list(layer) for layer in layering]`` -- ``str`` ids are immutable so
+a per-layer shallow copy is the faithful ``Vec<Vec<String>>``
+equivalent). The ``cross_count(...) as f64`` cast is a Rust ``usize`` ->
+``f64`` widening (R259 already returns ``float``); the
+``Graph::new(None)`` constraint-graph construction maps to the R263 /
+R264 ``cg`` fixture pattern; the grok ``assign_order``
+``g.node_mut(v).unwrap()`` panic on a missing node widens to a
+defensive skip (the R258 ``_init_order_dfs`` no-missing-label widening
+reused). Same barrel policy: :func:`order` (the pub fn) /
+``_sweep_layer_graphs`` / ``_assign_order`` (the private helpers) stay
+out of ``dagre.__all__``, reachable only as
+``minimax_code.dagre.layout.order.mod.order``. The barrel now re-exports
+``mod`` alongside the eight sibling leaves, ``__all__`` grown to the
+ASCII-sorted nine.
 """
 
 from minimax_code.dagre.layout.order import (
@@ -241,6 +289,7 @@ from minimax_code.dagre.layout.order import (
     build_layer_graph,
     cross_count,
     init_order,
+    mod,
     resolve_conflicts,
     sort,
     sort_subgraph,
@@ -252,6 +301,7 @@ __all__ = [
     "build_layer_graph",
     "cross_count",
     "init_order",
+    "mod",
     "resolve_conflicts",
     "sort",
     "sort_subgraph",

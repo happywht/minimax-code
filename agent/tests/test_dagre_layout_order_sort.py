@@ -268,6 +268,7 @@ def test_order_subpackage_barrel_reexports_all_eight() -> None:
     import minimax_code.dagre.layout.order.build_layer_graph as blg_mod
     import minimax_code.dagre.layout.order.cross_count as cc_mod
     import minimax_code.dagre.layout.order.init_order as init_mod
+    import minimax_code.dagre.layout.order.mod as mod_mod
     import minimax_code.dagre.layout.order.resolve_conflicts as rc_mod
     import minimax_code.dagre.layout.order.sort as sort_mod
     import minimax_code.dagre.layout.order.sort_subgraph as sort_subgraph_mod
@@ -278,6 +279,7 @@ def test_order_subpackage_barrel_reexports_all_eight() -> None:
         "build_layer_graph",
         "cross_count",
         "init_order",
+        "mod",
         "resolve_conflicts",
         "sort",
         "sort_subgraph",
@@ -287,6 +289,7 @@ def test_order_subpackage_barrel_reexports_all_eight() -> None:
     assert order_pkg.build_layer_graph is blg_mod
     assert order_pkg.cross_count is cc_mod
     assert order_pkg.init_order is init_mod
+    assert order_pkg.mod is mod_mod
     assert order_pkg.resolve_conflicts is rc_mod
     assert order_pkg.sort is sort_mod
     assert order_pkg.sort_subgraph is sort_subgraph_mod
