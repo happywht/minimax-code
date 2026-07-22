@@ -287,11 +287,18 @@ def test_dagre_barrel_count_unchanged_at_four() -> None:
 
 
 def test_order_subpackage_barrel_reexports_init_order() -> None:
-    """The ``order`` sub-package barrel re-exports ``init_order``."""
+    """The ``order`` sub-package barrel re-exports ``init_order``.
+
+    Synchronised at R259: the barrel now also re-exports ``cross_count``
+    (the second ``order`` leaf, the Barth bilinear cross-counting measure),
+    so ``__all__`` grew from ``["init_order"]`` to the ASCII-sorted
+    ``["cross_count", "init_order"]``. Mirrors the R255 -> R254 /
+    R257 -> R254 ``rank`` barrel-sync pattern.
+    """
     import minimax_code.dagre.layout.order as order_pkg
     import minimax_code.dagre.layout.order.init_order as init_mod
 
-    assert order_pkg.__all__ == ["init_order"]
+    assert order_pkg.__all__ == ["cross_count", "init_order"]
     assert order_pkg.init_order is init_mod
 
 

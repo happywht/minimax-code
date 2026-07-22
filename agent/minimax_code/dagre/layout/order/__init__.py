@@ -46,8 +46,30 @@ reachable only as
 re-exports the ``init_order`` submodule (mirroring grok's ``pub mod
 init_order`` visibility); the remaining eight ``order`` files land in
 later leaves, re-exported here as they arrive.
+
+Second ``order`` leaf (R259): ``cross_count`` -- the Barth bilinear
+cross-counting measure
+(:mod:`~minimax_code.dagre.layout.order.cross_count`). ``order::mod``'s
+sweep loop calls :func:`cross_count` after every up/down pass to score
+the candidate ``layering`` against the prior best, so this is the
+**first direct downstream consumer** of the R258 ``init_order`` seed
+ordering: ``init_order`` mints the initial matrix, ``cross_count``
+measures how many edge crossings it has, and the barycenter sweep
+(later leaves) keeps the best-crossing-count ``layering`` across
+iterations. The algorithm (Barth, Mutzel & Yannakakis, "Bilayer Cross
+Counting", JGAA 2004) collects every north -> south edge as a
+``(south_position, weight)`` pair and accumulates them through a
+complete binary tree, turning the naive O(k^2) pairwise comparison
+into O(k log k). It is the **eighth zero-semantic-clone leaf** after
+R252 / R253 / R254 / R255 / R256 / R257 / R258 (every grok ``clone()``
+is a ``String`` / ``usize`` borrow-or-Copy artefact, stripped; the
+stage performs no structural removal, so no ``copy.deepcopy``
+survives). Same barrel policy: the symbol stays out of
+``dagre.__all__``, reachable only as
+``minimax_code.dagre.layout.order.cross_count.cross_count``. The barrel
+now re-exports ``cross_count`` alongside ``init_order``.
 """
 
-from minimax_code.dagre.layout.order import init_order
+from minimax_code.dagre.layout.order import cross_count, init_order
 
-__all__ = ["init_order"]
+__all__ = ["cross_count", "init_order"]
