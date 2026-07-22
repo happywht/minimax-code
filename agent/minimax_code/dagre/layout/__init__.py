@@ -92,4 +92,27 @@ TODO (``greedyFAS`` unimplemented) that yields an empty FAS and leaves the
 graph untouched. Same barrel policy: the stage symbols stay out of
 ``dagre.__all__``, reachable only as ``minimax_code.dagre.layout.acyclic.run``
 / ``.undo``.
+
+Sixth layout leaf (R252): ``parent_dummy_chains`` -- compound-forest parent
+reassignment for long-edge dummies, the only stage in ``run_layout`` with a
+single ``pub fn`` and no ``run`` / ``undo`` pair (the reassignment is permanent,
+not bracketed and undone). ``run_layout`` calls it at ``layout/mod.rs`` line
+630, immediately after ``normalize::run`` (line 629, which produces
+``dummy_chains``) and before ``add_border_segments`` (line 631). For every
+chain head recorded on ``GraphConfig.dummy_chains`` it walks the head-to-tail
+dummy chain, computing each endpoint's compound ancestor path via a post-order
+``[low, lim]`` interval numbering (``_postorder``) and the lowest common
+ancestor (``_find_path``), then re-parents each dummy onto whichever compound
+path node's rank range spans it -- ascending up the ``v -> lca`` arm while the
+path node's ``max_rank`` is below the dummy's rank, then descending the ``lca
+-> w`` arm while the next path node's ``min_rank`` still fits -- so a dummy
+that crosses a subgraph boundary lands inside the subgraph rather than at the
+top level. It is the **first zero-semantic-clone leaf**: unlike R250
+``normalize`` and R251 ``acyclic`` (each keeps two deep copies around an
+invalidating ``remove_edge`` / ``remove_node``), this stage performs no
+structural removal -- every grok ``clone()`` is a pure borrow artefact
+(immutable ``str`` / ``int`` / ``tuple`` / ``Edge`` / ``Option<String>``) and
+is stripped. Same barrel policy: the stage symbol stays out of
+``dagre.__all__``, reachable only as
+``minimax_code.dagre.layout.parent_dummy_chains``.
 """
