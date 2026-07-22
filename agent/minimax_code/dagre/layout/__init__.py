@@ -22,4 +22,14 @@ does NOT re-export the stage symbols (mirroring grok's ``pub mod``-only
 visibility); reach them as ``minimax_code.dagre.layout.coordinate_system.adjust``
 etc., paralleling the R245 ``algo`` decision (public submodule, crate-root-
 private symbols).
+
+Second layout leaf (R248): ``util`` -- the foundational grab-bag of pure
+helpers (``unique_id`` / ``add_dummy_node`` / ``add_border_node`` / ``simplify``
+/ ``simplify_ref`` / ``as_non_compound_graph`` / ``transfer_node_edge_labels``
+/ ``intersect_rect`` / ``build_layer_matrix`` / ``normalize_ranks`` /
+``remove_empty_ranks`` / ``max_rank`` / ``partition`` + the ``Rect`` /
+``PartitionResponse`` structs) that every later ``layout/*`` stage is built on
+and that ``run_layout`` imports six symbols from directly. Same barrel policy:
+the 15 symbols stay out of ``dagre.__all__``, reachable only as
+``minimax_code.dagre.layout.util.<symbol>``.
 """
