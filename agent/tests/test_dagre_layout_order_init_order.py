@@ -290,13 +290,15 @@ def test_order_subpackage_barrel_reexports_init_order() -> None:
     """The ``order`` sub-package barrel re-exports ``init_order``.
 
     Synchronised at R259 (``cross_count`` added), R260 (``barycenter``
-    added), then R261 (``resolve_conflicts`` added): the barrel now
-    re-exports all four ``order`` leaves, so ``__all__`` grew
-    ``["init_order"]`` -> ``["cross_count", "init_order"]`` ->
-    ``["barycenter", "cross_count", "init_order"]`` -> the ASCII-sorted
-    ``["barycenter", "cross_count", "init_order", "resolve_conflicts"]``.
+    added), R261 (``resolve_conflicts`` added), then R262
+    (``build_layer_graph`` added): the barrel now re-exports all five
+    ``order`` leaves, so ``__all__`` grew ``["init_order"]`` ->
+    ``["cross_count", "init_order"]`` -> ``["barycenter", "cross_count",
+    "init_order"]`` -> ``["barycenter", "cross_count", "init_order",
+    "resolve_conflicts"]`` -> the ASCII-sorted ``["barycenter",
+    "build_layer_graph", "cross_count", "init_order", "resolve_conflicts"]``.
     This test pins ``init_order`` (the one it reaches for); the full
-    four-element ``__all__`` is locked here too. Mirrors the
+    five-element ``__all__`` is locked here too. Mirrors the
     R255 -> R254 / R257 -> R254 ``rank`` barrel-sync pattern.
     """
     import minimax_code.dagre.layout.order as order_pkg
@@ -304,6 +306,7 @@ def test_order_subpackage_barrel_reexports_init_order() -> None:
 
     assert order_pkg.__all__ == [
         "barycenter",
+        "build_layer_graph",
         "cross_count",
         "init_order",
         "resolve_conflicts",

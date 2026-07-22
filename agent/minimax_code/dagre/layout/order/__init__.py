@@ -128,13 +128,52 @@ reproduction covers grok's ``sum / weight`` when both barycenters are
 ``minimax_code.dagre.layout.order.resolve_conflicts.resolve_conflicts``.
 The barrel now re-exports ``resolve_conflicts`` alongside ``barycenter``
 + ``cross_count`` + ``init_order``.
+
+Fifth ``order`` leaf (R262): ``build_layer_graph`` -- the per-layer sort
+graph + the :class:`GraphRelationship` enum
+(:mod:`~minimax_code.dagre.layout.order.build_layer_graph`).
+``order::mod`` calls :func:`build_layer_graph` once per sweep direction
+(up then down) per rank before :func:`sort` / :func:`sort_subgraph`
+re-sequence the layer: it projects the movable rank's nodes -- plus
+their preserved compound hierarchy -- into a fresh directed compound
+graph, attaches the incident edges selected by the
+:class:`GraphRelationship` parameter (``IN_EDGES`` for the up sweep,
+``OUT_EDGES`` for the down sweep), and roots every parentless movable
+node under a synthetic ``_root{id}`` node stored in the graph label's
+``root`` attribute. The result is the standalone sub-graph the sweep
+sorts. It is the **direct structural upstream** of the unmigrated
+``sort`` / ``sort_subgraph`` phase: both walk the layer graph's
+compound hierarchy + aggregated edge weights (R260 + R261 feed the
+weights; this leaf builds the graph they run on), and ``sort.rs`` /
+``sort_subgraph.rs`` start the sweep from the layer graph's ``root``
+attribute -- so landing it unblocks both later leaves. It is the
+**eleventh zero-semantic-clone leaf** after R252 / R253 / R254 / R255 /
+R256 / R257 / R258 / R259 / R260 / R261 (every grok ``clone()`` is a
+``String`` borrow or a ``GraphNode`` borrow-release artefact -- ``v``
+immutable ``str`` HashMap-key read; ``node.clone()`` the Rust
+borrow-to-owned transfer ``g.node(v)`` -> ``&GraphNode`` -> ``set_node``
+owns its label -- stripped; the stage builds a fresh graph, so no
+``copy.deepcopy`` survives). The ``border_left`` / ``border_right``
+``OrderedHashMap`` reads are ``.get(rank)`` value reads, not structural
+clones. Same barrel policy: ``build_layer_graph`` / ``create_root_node``
+/ ``GraphRelationship`` stay out of ``dagre.__all__``, reachable only as
+``minimax_code.dagre.layout.order.build_layer_graph.build_layer_graph``.
+The barrel now re-exports ``build_layer_graph`` alongside ``barycenter``
++ ``cross_count`` + ``init_order`` + ``resolve_conflicts``.
 """
 
 from minimax_code.dagre.layout.order import (
     barycenter,
+    build_layer_graph,
     cross_count,
     init_order,
     resolve_conflicts,
 )
 
-__all__ = ["barycenter", "cross_count", "init_order", "resolve_conflicts"]
+__all__ = [
+    "barycenter",
+    "build_layer_graph",
+    "cross_count",
+    "init_order",
+    "resolve_conflicts",
+]
