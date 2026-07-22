@@ -18692,3 +18692,61 @@ order 子包 3/9（init_order + cross_count + barycenter 就位，6 文件待迁
 
 ### Commit
 ``feat(platform): R260 migrate dagre order/barycenter (order 3/9, layout leaf 14, 9th zero-clone leaf, barycenter heuristic weight)``。提交 f011cfb。6 文件 423 insertions 10 deletions。锚点链: ... -> R257(6f5caa0) -> R258(a87d8c1) -> R259(c311601) -> R260(f011cfb)。
+
+## R261 — 迁移 dagre order/resolve_conflicts.rs（Forster 约束两层交叉归约冲突消解器）
+
+锚点:R261-1 f011cfb
+
+### 本轮目标
+
+延续 /goal 驱动的平台型工具产品演进。dagre layout 栈已十三叶就位（R246 类型地基 + R247 coordinate_system + R248 util + R249 add_border_segments + R250 normalize + R251 acyclic + R252 parent_dummy_chains + R253 nesting_graph + R254-R257 rank 子包 4/4 + R258 order/init_order + R259 order/cross_count + R260 order/barycenter）。order 子包 3/9 开启（init_order + cross_count + barycenter 就位），6 文件待迁：resolve_conflicts/build_layer_graph/sort_subgraph/sort/add_subgraph_constraints/mod。
+
+本轮目标：迁移 order/resolve_conflicts.rs（174 行 grok 源 -> order/resolve_conflicts.py）—— Forster 约束两层交叉归约冲突消解器。sort_subgraph（后叶）将 R260 barycenter 权重连同约束图 cg（边 v->w 表示 v 必须先于 w）喂给 resolve_conflicts；当两个受约束节点的重心排序方向违反约束方向时，二者聚合成一个聚合条目（barycenter=加权均值，weight=求和，vs=拼接）。
+
+候选择优：resolve_conflicts.rs（174 行）vs build_layer_graph.rs（117 行）vs sort.rs vs sort_subgraph.rs。选 resolve_conflicts 因：(a) 依赖闭包完全闭合（仅需 R260 Barycenter）；(b) sort + sort_subgraph 的硬上游（unblock 2 后续叶）；(c) 无新类型字段依赖（build_layer_graph 需 GraphNode.border_left_/border_right_ 字段可能未就位）；(d) Forster 算法清晰可测。
+
+### 融合结论
+
+resolve_conflicts 是 order 子包的第 4 叶（4/9），闭合 Gansner et al. 交叉最小化循环的冲突消解环节（init -> barycenter -> resolve_conflicts -> sort -> cross_count -> keep best）。它是 sort.rs（line 3 导入 ResolvedBaryEntry）+ sort_subgraph.rs（line 5 导入 resolve_conflicts + ResolvedBaryEntry）的硬上游，落地后解除两后续叶阻塞。作为 dagre layout 第 14 叶 + 第 10 个零语义 clone 全剥离叶子（第 13 次复用借用检查器分类框架），延续纯逻辑整叶迁移链。NaN 忠实复用（R260 widening 原样复用：grok sum/weight 在双 None 时 = 0.0/0.0_f64 -> NaN，Python 0.0/0.0 抛 ZeroDivisionError，用 float("nan") 复现）。
+
+### 交付
+
+- agent/minimax_code/dagre/layout/order/resolve_conflicts.py（新建 269 行）：模块 docstring（R261 + Forster 算法三阶段 + 第 10 个零语义 clone 叶 + NaN 复现）+ 导入（from __future__ + dataclass + R260 Barycenter + Graph）+ __all__ = ["ResolvedBaryEntry", "resolve_conflicts"]（ASCII，类先）+ ResolvedBaryEntry（mutable @dataclass(slots=True)，vs/i/barycenter/weight）+ ConflictEntry（私有 mutable @dataclass(slots=True)，indegree/ins/outs/vs/i/barycenter/weight/merged）+ resolve_conflicts 主函数 + _handle_in + _handle_out + _merge_entries（NaN guard）。
+- agent/minimax_code/dagre/layout/order/__init__.py（barrel 扩展）：追加 Fourth order leaf (R261) docstring 段 + 多行 import 含 resolve_conflicts + __all__ = ["barycenter", "cross_count", "init_order", "resolve_conflicts"]（ASCII 4 元素）。
+- agent/minimax_code/dagre/layout/__init__.py（docstring 段）：追加 "Thirteenth layout-stage leaf (R261)" 段。
+- agent/tests/test_dagre_layout_order_resolve_conflicts.py（新建 502 行）：resolve_conflicts 端到端 12（empty/single None/single defined/no-constraint reverse/consistent no-merge/conflicting merge/None source merge/both None NaN/weighted merge/three-node chain/foreign endpoints skip/cg immutable）+ _handle_in 白盒 5（merged skip/None u/None v/u>=v/u<v）+ _handle_out 白盒 2（append+decrement/promote on zero）+ _merge_entries 白盒 5（weighted mean/vs source-first/min index/source merged/both None NaN）+ barrel 6（not in dagre.__all__/not reachable/submodule __all__/crate count 4/order 4-element barrel/layout.order reachable）。
+- agent/tests/test_dagre_layout_order_barycenter.py（barrel 同步）：test_order_subpackage_barrel_reexports_all_three -> _all_four，__all__ 4 元素 + rc_mod is 断言。
+- agent/tests/test_dagre_layout_order_cross_count.py（barrel 同步）：__all__ 4 元素，docstring 更新 R261。
+- agent/tests/test_dagre_layout_order_init_order.py（barrel 同步）：__all__ 4 元素，docstring 增长链到 4 元素。
+
+### 映射决策树 + 坑
+
+1. **mutable @dataclass(slots=True) 选择**：ResolvedBaryEntry + ConflictEntry 都是非 frozen。ConflictEntry 全程原地变异（indegree -= 1, ins.append, vs extend, merged=True）；ResolvedBaryEntry 被 sort_subgraph 的 expand_subgraphs 原地变异 vs。故非 frozen（区别于 R260 frozen Barycenter 值类型）。
+2. **NaN 忠实复用（R260 widening 原样）**：grok `target.barycenter = Some(sum / weight)` 在双 None 时 = Some(0.0/0.0_f64) = Some(NaN)；Python 0.0/0.0 抛 ZeroDivisionError。用 `float("nan") if weight == 0.0 else sum_value / weight` 复现。测试用 math.isnan 断言（== NaN 永远 False）。
+3. **vs 拼接顺序 source-first**：grok `source.vs.extend(target.vs)` —— source 在前。Python `vs = list(source.vs); vs.extend(target.vs)`。端到端链式合并验证 vs=["a","b","c"]。
+4. **ins 借用释放 clone 剥离**：grok `for u in entry.ins.clone().into_iter().rev()` —— clone 是借用释放（B 类），Python reversed(mapped[v_idx].ins) 走只读视图，列表迭代不消费，clone 剥离。
+5. **LIFO pop 逆序副作用**：source_set 收集 [0,1,2]，pop 产出 2,1,0，无约束运行结果逆序（c,b,a）。这是 Kahn LIFO 遍历的忠实副产物，sort/sort_subgraph 后续叶依赖此 sweep 序。测试显式断言逆序。
+6. **cg 边端点过滤**：cg.edges() 端点不在 entries（id_to_idx 缺失）的边跳过（v_idx/w_idx is None）。测试 foreign endpoints skip。
+7. **加权均值精确手算**：merge(target=b bary=2 w=3, source=a bary=4 w=1) -> sum=2*3+4*1=10, weight=4, bary=2.5。三节点链 a(5,1)->b(3,1)->c(1,1)：a 合并进 b（b bary=4,w=2,vs=[a,b]），b 再合并进 c（c bary=3,w=3,vs=[a,b,c]）。
+8. **barrel 同步（R261->R258+R259+R260）**：order/__init__.py __all__ 从 3 元素扩到 4 元素，R258/R259/R260 三测试的 order 子包 __all__ 断言同步（延续 R255->R254 / R257->R254 / R259->R258 / R260->R258+R259 模式）。barycenter 测试函数改名 all_three->all_four。
+9. **import 顺序 order-by-type**：from __future__ 单独首行；stdlib(dataclass) -> 第一方(barycenter.Barycenter, graphlib.Graph)；import 块后正好 1 空行。
+10. **_handle_in 合并条件**：u 已 merged 短路；否则 u_bary is None OR v_bary is None OR u_bary >= v_bary 时合并（约束 u->v 被重心排序违反）。u<v 不合并（约束与重心一致）。
+
+### 验证
+
+- ruff check（5 文件）：All checks passed!
+- 定向 pytest（4 order 测试文件）：87 passed（R261 新 30 + barycenter + cross_count + init_order 同步后全绿）。
+- 全量回归：7136 passed, 10 skipped（104.99s）。R260 基准 7106 + R261 新增 30 = 7136 算术吻合，零真实回归。
+- CRLF 警告正常（Windows），无害。
+
+### YAGNI 边界
+
+- ResolvedBaryEntry 非 frozen：因 sort_subgraph 的 expand_subgraphs 原地变异 vs（后叶消费），故 mutable。若后续发现无需变异可改 frozen，但当前保留 grok 语义。
+- ConflictEntry 私有（__all__ 不导出）：仅 resolve_conflicts 内部 + 测试白盒导入。
+- _handle_in/_handle_out/_merge_entries 私有（下划线前缀）：测试白盒导入验证算法分支。
+- 未迁移 build_layer_graph/sort/sort_subgraph/add_subgraph_constraints/mod（5 文件待迁）：order 子包 4/9，下轮候选 sort.rs 或 sort_subgraph.rs（依赖 resolve_conflicts 已就位）。
+- 未接入 run_layout（order::mod 未迁移）：resolve_conflicts 经 order 子包 barrel 可达，但 run_layout 编排层待 mod.rs 迁移后闭合。
+
+### Commit
+
+`feat(platform): R261 migrate dagre order/resolve_conflicts (Forster conflict resolver)`。提交 01b3301。7 文件 896 insertions 23 deletions。锚点链: ... -> R258(a87d8c1) -> R259(c311601) -> R260(f011cfb) -> R261(01b3301)。
