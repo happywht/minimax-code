@@ -394,7 +394,7 @@ def test_rank_subpackage_barrel_reexports_util() -> None:
     import minimax_code.dagre.layout.rank.feasible_tree as ft_mod
     import minimax_code.dagre.layout.rank.util as util_mod
 
-    assert rank_pkg.__all__ == ["feasible_tree", "util"]
+    assert rank_pkg.__all__ == ["feasible_tree", "network_simplex", "util"]
     assert rank_pkg.util is util_mod
     assert rank_pkg.feasible_tree is ft_mod
 

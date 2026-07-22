@@ -44,8 +44,25 @@ ranker. Same barrel policy: ``feasible_tree`` stays out of
 ``minimax_code.dagre.layout.rank.feasible_tree.feasible_tree``. The barrel
 re-exports the ``feasible_tree`` submodule alongside ``util`` (mirroring
 grok's ``pub mod feasible_tree`` visibility).
+
+Third ``rank`` leaf (R256): ``network_simplex`` -- the heavyweight default
+ranker (:func:`~minimax_code.dagre.layout.rank.network_simplex.network_simplex`)
+that ``rank::mod`` dispatches the unmatched / ``"network-simplex"`` arms
+to. Simplifies ``g``, seeds it with R254 ``longest_path``, builds an R255
+``feasible_tree`` tight tree, then pivots negative-cut-value tree edges
+for smaller-slack non-tree edges until no cut value is negative, finally
+copying the optimized ranks back onto ``g``. Consumes R254
+``util.longest_path`` / ``util.slack``, R255 ``feasible_tree``, R248
+``util.simplify``, and R245 ``data_structures.algo.postorder`` -- all
+four upstream deps now closed. Same barrel policy: ``network_simplex``
+stays out of ``dagre.__all__``, reachable only as
+``minimax_code.dagre.layout.rank.network_simplex.network_simplex``. The
+barrel re-exports the ``network_simplex`` submodule alongside
+``feasible_tree`` and ``util`` (mirroring grok's ``pub mod
+network_simplex`` visibility). Only ``rank::mod`` (the dispatcher)
+remains for a later leaf.
 """
 
-from minimax_code.dagre.layout.rank import feasible_tree, util
+from minimax_code.dagre.layout.rank import feasible_tree, network_simplex, util
 
-__all__ = ["feasible_tree", "util"]
+__all__ = ["feasible_tree", "network_simplex", "util"]
