@@ -501,7 +501,7 @@ def test_rank_subpackage_barrel_reexports_network_simplex() -> None:
     import minimax_code.dagre.layout.rank as rank_pkg
     import minimax_code.dagre.layout.rank.network_simplex as ns_mod
 
-    assert rank_pkg.__all__ == ["feasible_tree", "network_simplex", "util"]  # ASCII-sorted
+    assert rank_pkg.__all__ == ["feasible_tree", "mod", "network_simplex", "util"]  # ASCII-sorted
     assert rank_pkg.network_simplex is ns_mod
 
 

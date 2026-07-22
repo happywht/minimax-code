@@ -60,9 +60,31 @@ stays out of ``dagre.__all__``, reachable only as
 barrel re-exports the ``network_simplex`` submodule alongside
 ``feasible_tree`` and ``util`` (mirroring grok's ``pub mod
 network_simplex`` visibility). Only ``rank::mod`` (the dispatcher)
-remains for a later leaf.
+remained for a later leaf (now closed by R257 below).
+
+Fourth ``rank`` leaf (R257): ``mod`` -- the ``rank()`` dispatcher
+(:func:`~minimax_code.dagre.layout.rank.mod.rank`) that closes the
+``rank`` sub-package and is the eleventh layout leaf overall. Reads
+``GraphConfig.ranker`` and routes to one of the three strategies
+R254-R256 put in place: ``None`` -> network_simplex (the default, grok's
+``_ =>`` arm), ``"network-simplex"`` -> network_simplex, ``"tight-tree"``
+-> longest_path + feasible_tree, and ``"longest-path"`` -> longest_path;
+any other ``Some(ranker)`` string is a silent no-op (grok faithful: the
+``Some(ranker)`` arm runs but no ``if`` clause matches). The single grok
+``.clone()`` (a B-class ownership clone lifting ``ranker`` out of the
+``g.graph()`` borrow) is stripped -- Python reads the immutable ``str``
+directly. With ``rank::mod`` landed, the ``rank`` sub-package reaches
+4/4 and the ``rank::mod`` -> ``run_layout`` line 620 ``rank`` call chain
+closes. Same barrel policy: ``rank`` stays out of ``dagre.__all__``
+(consumed only internally by ``run_layout``), reachable as
+``minimax_code.dagre.layout.rank.mod.rank``. The barrel now re-exports
+the ``mod`` submodule alongside ``feasible_tree`` / ``network_simplex``
+/ ``util`` (mirroring grok's four-file ``rank`` directory; the grok
+``mod.rs`` dispatcher is split into ``__init__.py`` (barrel) + ``mod.py``
+(logic) on the Python side, since a single ``__init__.py`` carrying both
+the barrel and the dispatcher would blur the two concerns).
 """
 
-from minimax_code.dagre.layout.rank import feasible_tree, network_simplex, util
+from minimax_code.dagre.layout.rank import feasible_tree, mod, network_simplex, util
 
-__all__ = ["feasible_tree", "network_simplex", "util"]
+__all__ = ["feasible_tree", "mod", "network_simplex", "util"]
