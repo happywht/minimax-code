@@ -18808,3 +18808,63 @@ build_layer_graph 是 order 子包的第 5 叶（5/9），闭合 Gansner et al. 
 ### Commit
 
 `feat(platform): R262 migrate dagre order/build_layer_graph.rs (order leaf 5/9)`。提交 d982107。7 文件 728 insertions 35 deletions。锚点链: ... -> R259(c311601) -> R260(f011cfb) -> R261(01b3301) -> R262(d982107)。
+
+## R263 — 迁移 dagre order/add_subgraph_constraints.rs（compound 子图顺序约束传播叶子，第 12 个零语义 clone 全剥离叶子）
+
+锚点:R263-1 d982107
+
+### 本轮目标
+
+延续 /goal 驱动的平台型工具产品演进。dagre layout 栈已十五叶就位（R246 类型地基 + R247 coordinate_system + R248 util + R249 add_border_segments + R250 normalize + R251 acyclic + R252 parent_dummy_chains + R253 nesting_graph + R254-R257 rank 子包 4/4 + R258 order/init_order + R259 order/cross_count + R260 order/barycenter + R261 order/resolve_conflicts + R262 order/build_layer_graph）。order 子包 5/9 开启（init_order + cross_count + barycenter + resolve_conflicts + build_layer_graph 就位），4 文件待迁：add_subgraph_constraints/sort_subgraph/sort/mod。
+
+本轮目标：迁移 order/add_subgraph_constraints.rs（38 行 grok 源 -> order/add_subgraph_constraints.py，49 行 Python）—— compound 层次结构左到右顺序约束传播器。order sweep 在排序迭代中维护一个约束图 `cg`，本函数把复合父子层次的隐式左到右顺序（同一父下先访问的子 = 左）显式投射成 `cg` 上的 `prev_child -> child` 边。对 `vs` 中每个 `v`，沿 `g.parent` 祖先链向上爬；在每个祖先下，遇到的第一个后代记录为 `prev[ancestor]`（无父祖先记录为 `_root_prev`）；后续遇到的不同后代触发 `cg.set_edge(prev_child, child, None, None)` 并 break 到下一个 `v`。是 R262 build_layer_graph 的语义搭档。
+
+候选择优：add_subgraph_constraints.rs（38 行）vs sort_subgraph.rs vs sort.rs vs mod.rs。关键发现：sort.rs 导入 sort_subgraph::SubgraphResult，sort_subgraph.rs 导入 sort::sort —— 两者构成循环依赖，必须一起迁移，故排除候选 B/C。add_subgraph_constraints 是唯一最小独立叶子（依赖闭包完全闭合：仅用 Graph.parent + set_edge，无外部状态）。选它。
+
+### 融合结论
+
+add_subgraph_constraints 是 order 子包的第 6 叶（6/9），闭合 Gansner et al. 交叉最小化循环的复合约束传播环节。order sweep 不仅最小化边交叉，还尊重 compound 子图内同辈节点的源顺序（一个 cluster 的子节点在结果层中应保持相对次序）。作为 dagre layout 第 16 叶 + 第 12 个零语义 clone 全剥离叶子（第 13 次复用借用检查器分类框架）：grok 的 9 个 `.clone()` 全部是 A 类（`g.parent(v).cloned()` —— `&str` 借用释放为 owned String）或 B 类（`child.clone()` / `_parent.clone()` / `_root_prev.clone()` —— Option<String> 所有权转移），零 C 类语义 clone；Python 传递活动的 `str`，9 个 clone 全部剥离，0 个 copy.deepcopy 存活。两个语义映射关键：grok 闭包内 `return ()` -> Python `break`；触发条件 `_prev_child != child` 抑制自环。
+
+### 交付
+
+- agent/minimax_code/dagre/layout/order/add_subgraph_constraints.py（新建 49 行）：模块 docstring（R263 + compound 约束传播算法 + 第 12 个零语义 clone 叶 + return()->break 转换 + has_edge 3 参数坑）+ 导入（from __future__ + data_structures Graph 类型注解）+ `__all__ = ["add_subgraph_constraints"]`（ASCII 单元素）+ 主函数（prev dict + _root_prev + for v 循环 + while 祖先链 + if _parent 分支 + set_edge + break）。
+- agent/minimax_code/dagre/layout/order/__init__.py（barrel 扩展）：追加 Sixth order leaf (R263) docstring 段 + import add_subgraph_constraints + `__all__ = ["add_subgraph_constraints", "barycenter", "build_layer_graph", "cross_count", "init_order", "resolve_conflicts"]`（ASCII 6 元素，'a'(97) < 'b'(98) 故 add_subgraph_constraints 首位）。
+- agent/tests/test_dagre_layout_order_add_subgraph_constraints.py（新建 323 行）：15 测试 —— 端到端 6（不同中间父触发 X->Y 约束 / 同中间父无约束自环抑制 / 根级 TOP1->TOP2 约束 / 同根无约束 / 空 vs 无操作 / 无父 v 跳过）+ 约束边默认 label 1（weight==1.0 GraphEdge Default）+ 源图只读 1 + break 早退 1（单 v 无兄弟不自触发）+ barrel 6（not in dagre.__all__ / not reachable / submodule __all__ 单元素 / crate count 4 / order 6-element barrel + asc_mod is / layout.order reachable）。
+- agent/tests/test_dagre_layout_order_barycenter.py（barrel 同步）：order 子包 __all__ 5->6 元素 + asc_mod is 断言 + barrel 函数 _all_five -> _all_six 改名。
+- agent/tests/test_dagre_layout_order_build_layer_graph.py（barrel 同步）：order 子包 __all__ 5->6 元素 + asc_mod is + barrel 函数改名。
+- agent/tests/test_dagre_layout_order_cross_count.py（barrel 同步）：order 子包 __all__ 5->6 元素 + asc_mod is。
+- agent/tests/test_dagre_layout_order_init_order.py（barrel 同步）：order 子包 __all__ 5->6 元素 + asc_mod is。
+- agent/tests/test_dagre_layout_order_resolve_conflicts.py（barrel 同步）：order 子包 __all__ 5->6 元素 + asc_mod is + barrel 函数改名。
+
+### 映射决策树 + 坑
+
+1. **grok `return ()` -> Python `break` 转换**：grok 用 `vs.iter().for_each(|v| { ...; if cond { ...; return (); } })`，闭包内 `return ()` 退出闭包（跳过该 v 的剩余祖先链，进入下一个 v）。Python 的 `for v in vs:` + `while child is not None:` 中，`break` 退出 while 循环 -> 进入下一个 v。语义等价。测试 break_exits_after_first_constraint_per_v 守护单 v 不可自触发。
+2. **触发条件 `_prev_child != child`**：当 `_prev_child is not None and _prev_child != child` 时才 set_edge。`!= child` 抑制自环（同一祖先下先记录的后代 == 当前后代时不加边）。测试 same_intermediate_parent_adds_no_constraint 验证 X==X 抑制。
+3. **`_root_prev` 根路径**：`parent(child) is None` 分支（child 是顶层根）用 `_root_prev` 记录上一个无父节点，而非 prev dict。测试 root_level_constraint_between_parentless_roots 验证 TOP1->TOP2。
+4. **Python dict 替 OrderedHashMap**：grok `prev: OrderedHashMap<String, String>` -> Python `prev: dict[str, str]`（Python 3.7+ dict 保序，OrderedHashMap 无额外语义价值）。`prev.get(_parent)` / `prev[_parent] = child` 直接对应。
+5. **has_edge(v, w, name) 3 参数 API**：Graph.has_edge 签名 `(v, w, name)` —— name 是必需位置参数，非可选。非多重图 cg 用 `name=None` 匹配唯一边。测试 different_intermediate_parent_triggers_constraint + root_level_constraint_between_parentless_roots 用 `cg.has_edge("X", "Y", None)`（修复了首轮漏写 name 的 TypeError）。
+6. **GraphEdge 手动 Default weight=1.0**：`cg.set_edge(_prev_child, child, None, None)` 首次创建调用 `default_edge_label` -> `edge_default_factory()` -> `GraphEdge()`，手动 Default impl 给 weight=1.0 / minlen=1.0（非 None）。测试 constraint_edge_carries_default_edge_label 验证 weight==1.0。
+7. **零 clone（第 12 个零语义 clone 叶）**：grok 9 个 clone 全 A/B 类。A 类：`g.parent(v).cloned()` / `g.parent(&child.clone().unwrap()).cloned()` —— `&str` 借用释放为 owned（Python str 是值类型，无需 clone）。B 类：`child.clone()` / `_parent.clone().unwrap()` / `_root_prev.clone()` / `prev.get(...).cloned()` —— Option<String> 所有权转移（Python Optional[str] 直接赋值）。零 C 类语义 clone，全剥离。Python 用 `child: str | None = g.parent(v)` 活动引用。
+8. **barrel ASCII 序 6 元素**：`["add_subgraph_constraints", "barycenter", "build_layer_graph", "cross_count", "init_order", "resolve_conflicts"]`。关键 ASCII：'a'(97) < 'b'(98) 故 add_subgraph_constraints 首位；'a'(97) < 'u'(117) 故 barycenter < build_layer_graph。
+9. **barrel 同步 R263->R258+R259+R260+R261+R262**：order/__init__.py __all__ 从 5 元素扩到 6 元素，R258/R259/R260/R261/R262 五测试的 order 子包 __all__ 断言同步（延续 R259->R258 / R260->R258+R259 / R261->R258+R259+R260 / R262->R258+R259+R260+R261 模式）。3 个测试 barrel 函数 _all_five -> _all_six 改名。
+10. **sort.rs ↔ sort_subgraph.rs 循环依赖排除候选 B/C**：sort.rs 导入 `sort_subgraph::SubgraphResult`，sort_subgraph.rs 导入 `sort::sort` —— 二者循环依赖，无法独立迁移任一，必须成对迁移（下轮候选）。这使 add_subgraph_constraints 成为 R263 唯一最小独立叶子。
+
+### 验证
+
+- ruff check（R263 改动文件）：All checks passed!（全量 35 错误全是预存无关噪音：.tmp_manual / skills/_builtin / handlers_agents F821 / handlers_mobile B904 / test_http_server E402 等，R263 改动文件零出现在错误列表）。
+- 定向 pytest（6 order 测试文件）：124 passed in 0.35s（R263 新 15 + R258/R259/R260/R261/R262 同步后全绿）。
+- 全量回归：7172 passed, 1 failed（test_connection.py::test_interval_keeps_global_timeline_across_loops 计时 flaky —— `0.032 <= 0.031` 失败，gap 比 period×0.8 小 1ms，WebSocket 心跳计时抖动，与 dagre order 零关系，迭代独立性约束下不修复）, 10 skipped（107.10s）。R262 基准 7158（含该 flaky 当时恰 passed）+ R263 新增 15 = 7172 算术吻合（7157 稳定 + 15 R263 = 7172），零真实回归。
+- CRLF 警告正常（Windows），无害。
+
+### YAGNI 边界
+
+- add_subgraph_constraints 原地变异 cg（不返回新图）：order sweep 复用单一 cg 跨 rank，本函数追加约束边到调用方的 cg。
+- 源图 g 只读（仅 g.parent，无 mutation）：测试 g_is_read_only 快照验证节点集 + 父链 + 边集不变。
+- vs 空 / 无父 v 防御：空 vs 不进循环体；无父 v（g.parent(v) is None）跳过 while，cg 不变。
+- 未迁移 sort_subgraph/sort（循环依赖对，必须一起迁）：下轮候选 sort.rs + sort_subgraph.rs 成对迁移（unblock mod.rs 编排层）。
+- 未迁移 mod.rs（order 子包收尾）：order sweep 编排层待 sort/sort_subgraph/mod 三文件迁移后闭合，接入 run_layout。
+- add_subgraph_constraints 经 order 子包 barrel 可达（order.add_subgraph_constraints），但 run_layout 编排层待 mod.rs 迁移后闭合消费。
+
+### Commit
+
+`feat(platform): R263 migrate dagre order/add_subgraph_constraints (12th zero-clone leaf)`。提交 b913881。8 文件 451 insertions 3 deletions。锚点链: ... -> R260(f011cfb) -> R261(01b3301) -> R262(d982107) -> R263(b913881)。
