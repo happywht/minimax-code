@@ -68,8 +68,32 @@ survives). Same barrel policy: the symbol stays out of
 ``dagre.__all__``, reachable only as
 ``minimax_code.dagre.layout.order.cross_count.cross_count``. The barrel
 now re-exports ``cross_count`` alongside ``init_order``.
+
+Third ``order`` leaf (R260): ``barycenter`` -- the barycentric heuristic
+weights (:mod:`~minimax_code.dagre.layout.order.barycenter`).
+``order::mod`` calls :func:`barycenter` once per sweep pass to re-weight
+the movable rank (the up/down sweep passes one rank at a time) before
+:func:`cross_count` re-scores the candidate ``layering``: for each
+movable node it takes the weighted mean of its in-edge source nodes'
+within-rank ``order`` positions, the value ``order::sort_subgraph`` (a
+later leaf) re-sequences the layer by. It is the **iterative partner**
+of the R259 ``cross_count`` measure and the **direct upstream** of the
+unmigrated ``sort`` / ``sort_subgraph`` phase -- together the three
+form the Gansner et al. crossing-minimization loop (init -> barycenter
+-> sort -> cross_count -> keep best). It is the **ninth
+zero-semantic-clone leaf** after R252 / R253 / R254 / R255 / R256 /
+R257 / R258 / R259 (every grok ``clone()`` is a ``String`` /
+``Option<f32>`` / ``Option<i32>`` borrow-or-Copy artefact -- ``v``
+immutable ``str`` read, ``edge.weight`` / ``node_u.order`` ``Copy``
+type reads -- stripped; the stage performs no structural removal, so no
+``copy.deepcopy`` survives). A defensive ``NaN`` reproduction covers
+grok's ``0.0 / 0.0`` (Rust yields ``NaN`` where Python would raise
+``ZeroDivisionError``). Same barrel policy: ``barycenter`` stays out of
+``dagre.__all__``, reachable only as
+``minimax_code.dagre.layout.order.barycenter.barycenter``. The barrel
+now re-exports ``barycenter`` alongside ``cross_count`` + ``init_order``.
 """
 
-from minimax_code.dagre.layout.order import cross_count, init_order
+from minimax_code.dagre.layout.order import barycenter, cross_count, init_order
 
-__all__ = ["cross_count", "init_order"]
+__all__ = ["barycenter", "cross_count", "init_order"]

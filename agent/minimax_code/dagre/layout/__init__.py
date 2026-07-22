@@ -235,4 +235,25 @@ stage performs no structural removal, so no ``copy.deepcopy``
 survives). Same barrel policy: ``cross_count`` stays out of
 ``dagre.__all__``, reachable only as
 ``minimax_code.dagre.layout.order.cross_count.cross_count``.
+
+Twelfth layout-stage leaf (R260): ``order/barycenter`` -- the third leaf
+of the ``order`` sub-package and the iterative partner of the R259
+``cross_count`` measure. ``order::mod``'s sweep loop calls
+:func:`barycenter`
+(:mod:`~minimax_code.dagre.layout.order.barycenter`) once per pass to
+re-weight the movable rank before :func:`cross_count` re-scores the
+candidate ``layering``: for each movable node it takes the weighted
+mean of its in-edge source nodes' within-rank ``order`` positions,
+yielding the value ``order::sort_subgraph`` (a later leaf) re-sequences
+the layer by -- the Gansner et al. crossing-minimization loop (init ->
+barycenter -> sort -> cross_count -> keep best). It is the **ninth
+zero-semantic-clone leaf** after R252 / R253 / R254 / R255 / R256 /
+R257 / R258 / R259 (every grok ``clone()`` is a ``String`` /
+``Option<f32>`` / ``Option<i32>`` borrow-or-Copy artefact, stripped;
+the stage performs no structural removal, so no ``copy.deepcopy``
+survives). A defensive ``NaN`` reproduction covers grok's ``0.0 / 0.0``
+(Rust yields ``NaN`` where Python would raise ``ZeroDivisionError``).
+Same barrel policy: ``barycenter`` stays out of ``dagre.__all__``,
+reachable only as
+``minimax_code.dagre.layout.order.barycenter.barycenter``.
 """

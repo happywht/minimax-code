@@ -282,12 +282,19 @@ def test_dagre_barrel_count_unchanged_at_four() -> None:
 
 
 def test_order_subpackage_barrel_reexports_both() -> None:
-    """The ``order`` sub-package barrel re-exports ``cross_count`` + ``init_order``."""
+    """The ``order`` sub-package barrel re-exports ``cross_count`` + ``init_order``.
+
+    Synchronised at R260: the barrel now also re-exports ``barycenter``
+    (the third ``order`` leaf), so ``__all__`` grew from
+    ``["cross_count", "init_order"]`` to ``["barycenter", "cross_count",
+    "init_order"]`` (ASCII-sorted). Mirrors the R255 -> R254 /
+    R257 -> R254 / R259 -> R258 barrel-sync pattern.
+    """
     import minimax_code.dagre.layout.order as order_pkg
     import minimax_code.dagre.layout.order.cross_count as cc_mod
     import minimax_code.dagre.layout.order.init_order as init_mod
 
-    assert order_pkg.__all__ == ["cross_count", "init_order"]
+    assert order_pkg.__all__ == ["barycenter", "cross_count", "init_order"]
     assert order_pkg.cross_count is cc_mod
     assert order_pkg.init_order is init_mod
 
