@@ -18750,3 +18750,61 @@ resolve_conflicts 是 order 子包的第 4 叶（4/9），闭合 Gansner et al. 
 ### Commit
 
 `feat(platform): R261 migrate dagre order/resolve_conflicts (Forster conflict resolver)`。提交 01b3301。7 文件 896 insertions 23 deletions。锚点链: ... -> R258(a87d8c1) -> R259(c311601) -> R260(f011cfb) -> R261(01b3301)。
+
+## R262 — 迁移 dagre order/build_layer_graph.rs（per-layer 排序图构建器，sort + sort_subgraph 前置结构）
+
+锚点:R262-1 01b3301
+
+### 本轮目标
+
+延续 /goal 驱动的平台型工具产品演进。dagre layout 栈已十四叶就位（R246 类型地基 + R247 coordinate_system + R248 util + R249 add_border_segments + R250 normalize + R251 acyclic + R252 parent_dummy_chains + R253 nesting_graph + R254-R257 rank 子包 4/4 + R258 order/init_order + R259 order/cross_count + R260 order/barycenter + R261 order/resolve_conflicts）。order 子包 4/9 开启（init_order + cross_count + barycenter + resolve_conflicts 就位），5 文件待迁：build_layer_graph/sort_subgraph/sort/add_subgraph_constraints/mod。
+
+本轮目标：迁移 order/build_layer_graph.rs（117 行 grok 源 -> order/build_layer_graph.py，184 行 Python）—— per-layer 排序图构建器。order sweep 把单个 rank 投影成一个新的复合有向图：创建 `_root{id}` 根节点，复制该层级/子图范围内的节点，按 GraphRelationship 参数选择入射边（InEdges/OutEdges）并聚合权重（非多重图），对 min_rank 子图节点用从 `node.border_left[rank]` / `node.border_right[rank]` 提取的 border 哨兵重新盖章。是 sort.rs + sort_subgraph.rs 的直接结构上游。
+
+候选择优：build_layer_graph.rs（117 行）vs add_subgraph_constraints.rs vs sort.rs vs sort_subgraph.rs。选 build_layer_graph 因：(a) sort + sort_subgraph 的直接结构上游（unblock 2 后续叶）；(b) 纯结构构建，无复杂迭代算法；(c) 依赖闭包完全闭合（GraphNode.border_left/border_right 已在 R246 类型层 + R249 add_border_segments 落地）；(d) GraphRelationship 枚举 + create_root_node helper 清晰可测。
+
+### 融合结论
+
+build_layer_graph 是 order 子包的第 5 叶（5/9），闭合 Gansner et al. 交叉最小化循环的结构投影环节。sort_subgraph 在每次 sweep 开始时为每个 rank 调用 build_layer_graph 生成投影图，然后在投影图上跑 barycenter + resolve_conflicts。作为 dagre layout 第 15 叶 + 第 11 个零语义 clone 全剥离叶子（第 12 次复用借用检查器分类框架）：每个 `.clone()` 都是借用释放（A 类，&GraphNode -> owned GraphNode）或 Copy artefact（usize/str），Python 传递 live 节点引用，剥离后 0 个 copy.deepcopy 存活（`result.node(v) is g.node(v)` 成立）。两个 Graph 陷阱破解：set_node 的 KEY 存在性 guard + set_edge 对已存在边的 UPDATE 而非 RuntimeError。
+
+### 交付
+
+- agent/minimax_code/dagre/layout/order/build_layer_graph.py（新建 184 行）：模块 docstring（R262 + per-layer 投影算法 + 第 11 个零语义 clone 叶 + 两陷阱破解）+ 导入（from __future__ + Enum + dagre barrel 三类 + layout.util.unique_id + data_structures Graph/GraphOption）+ `__all__ = ["GraphRelationship", "build_layer_graph", "create_root_node"]`（ASCII，枚举先）+ GraphRelationship Enum（IN_EDGES="in_edges" / OUT_EDGES="out_edges"）+ build_layer_graph 主函数（root 生成 + result 图构造 + graph_mut live label 设置 + 节点遍历投影 + 边权重聚合 + min_rank re-stamp）+ create_root_node helper（`_root{id}` while g.has_node 重试）。
+- agent/minimax_code/dagre/layout/order/__init__.py（barrel 扩展）：追加 Fifth order leaf (R262) docstring 段 + 多行 import 含 build_layer_graph + `__all__ = ["barycenter", "build_layer_graph", "cross_count", "init_order", "resolve_conflicts"]`（ASCII 5 元素）。
+- agent/tests/test_dagre_layout_order_build_layer_graph.py（新建 372 行）：22 测试 —— 端到端 IN_EDGES 6（empty root-only/single node reparent zero-clone/rank selectivity/linear chain edge copy + rank preservation/None edge weight 0.0/multiple movable same rank）+ OUT_EDGES 1（incident selection switch）+ compound 1（parent preservation）+ 聚合 1（parallel edge weight 2.0+3.0=5.0）+ 子图 re-stamp 3（border sentinels/span outside excluded/None border map defensive）+ create_root_node 白盒 2（format _root/absent from source）+ 枚举 1（IN_EDGES/OUT_EDGES 契约）+ 不可变性 1（source snapshot）+ barrel 6（not in dagre.__all__/not reachable/submodule __all__ 3 元素/crate count 4/order 5-element barrel + blg_mod is/layout.order reachable）。
+- agent/tests/test_dagre_layout_order_init_order.py（barrel 同步）：order 子包 __all__ 4->5 元素 + blg_mod is 断言 + docstring 增长链到 5 元素。
+- agent/tests/test_dagre_layout_order_cross_count.py（barrel 同步）：order 子包 __all__ 5 元素 + blg_mod + docstring 增长链。
+- agent/tests/test_dagre_layout_order_barycenter.py（barrel 同步）：order 子包 __all__ 5 元素 + blg_mod is + docstring 增长链到 5 元素。
+- agent/tests/test_dagre_layout_order_resolve_conflicts.py（barrel 同步）：order 子包 __all__ 5 元素 + blg_mod + docstring 增长链。
+
+### 映射决策树 + 坑
+
+1. **set_node KEY 存在性 guard 致命陷阱**：graphlib `set_node(v, value)` 在 KEY 已存在时，若 value is None 则**完全不触碰** label（early return）。`set_edge` 内部对端点 `set_node(b, None)` 因此不覆盖已存在 movable 节点 b 的 label（rank/order 保持）。测试 linear_chain_copies_in_edge_with_weight 验证 b 的 rank==1 保持，自动创建的 a 的 rank is None。
+2. **set_edge 重复边 UPDATE 不报错陷阱**：非多重图 result 上重复 set_edge(u,v) -> `self._edge_labels.insert(e, edge_label)` 直接**覆盖**更新 label，不抛 RuntimeError（RuntimeError 仅在 name≠None + 非多重图时触发，我们始终传 name=None）。故权重聚合分支（`existing.weight + source_weight`）可达。测试 aggregates_parallel_edge_weights 验证 multigraph 两条 a->b（w 2.0/3.0）-> result edge weight 5.0。
+3. **graph_mut() 返回 live label 引用**：`graph_mut()` 返回 `self._label`（read-only `graph()` 也返回同一对象，返回的对象 IS the live label）。故 `result.set_graph(GraphConfig())` 后 `graph_label = result.graph_mut()` + None 防御 + `graph_label.root = root` 直接写 live 对象。
+4. **min_rank 子图节点 re-stamp**：`node.min_rank is not None` 时，构造新 `GraphNode()`，从 `node.border_left.get(rank)` / `node.border_right.get(rank)`（OrderedHashMap.get(key)）提取 border_left_/border_right_，再 `result.set_node(v, graph_node)` 覆盖。测试 subgraph_restamps_border_sentinels 验证 border_left_="bl0"/border_right_="br0" 且新节点 not cluster。
+5. **root 在源图 g 上生成（不在 result）**：`create_root_node(g)` 在源图 g 上 mint `_root{id}`（while g.has_node 重试 unique_id），保证 id 全局唯一。测试 create_root_node_absent_from_source 验证 g.has_node(root) False。result 的 root 通过 `result.set_parent(v, root)` 引用。
+6. **零 clone（第 11 个零语义 clone 叶）**：grok `result.set_node(v, node.clone())` 的 clone 是 A 类借用释放（&GraphNode -> owned GraphNode，Rust 所有权转移），Python `result.set_node(v, node)` 传 live 引用，剥离。测试 single_node_reparented_under_root 用 `result.node("a") is g.node("a")` 断言零 clone。
+7. **barrel ASCII 序 5 元素**：`["barycenter", "build_layer_graph", "cross_count", "init_order", "resolve_conflicts"]`。关键 ASCII 比较：'a'(97) < 'u'(117) 故 "barycenter" < "build_layer_graph"；'b' < 'c' 故 "build_layer_graph" < "cross_count"。
+8. **barrel 同步 R262->R258+R259+R260+R261**：order/__init__.py __all__ 从 4 元素扩到 5 元素，R258/R259/R260/R261 四测试的 order 子包 __all__ 断言同步（延续 R255->R254 / R257->R254 / R259->R258 / R260->R258+R259 / R261->R258+R259+R260 模式）。barycenter/cross_count 测试新增 blg_mod is 断言 + docstring 增长链。
+9. **GraphRelationship 枚举**：IN_EDGES.value="in_edges" / OUT_EDGES.value="out_edges"，grok 的 fieldless enum 用 Python `Enum`（非 StrEnum，value 字符串显式）。relationship 参数驱动入射边选择（IN_EDGES -> in_edges，OUT_EDGES -> out_edges）。
+10. **import 顺序 order-by-type**：`from __future__ import annotations` 单独首行；stdlib(Enum) -> 第一方(dagre barrel GraphConfig/GraphEdge/GraphNode 类组 + layout.util.unique_id 函数 + data_structures Graph/GraphOption 类组)；import 块后正好 1 空行。dagre barrel 循环导入安全（dagre barrel 不导入 layout）。
+
+### 验证
+
+- ruff check（新叶 + barrel + 5 测试文件）：All checks passed!
+- 定向 pytest（5 order 测试文件）：109 passed in 0.35s（R262 新 22 + R258/R259/R260/R261 同步后全绿）。
+- 全量回归：7158 passed, 10 skipped（109.45s）。R261 基准 7136 + R262 新增 22 = 7158 算术吻合，零真实回归。
+- CRLF 警告正常（Windows），无害。
+
+### YAGNI 边界
+
+- build_layer_graph 返回新 Graph（不原地变异 g）：sort_subgraph 后叶在投影图上跑算法，源图 g 保持只读。
+- create_root_node 公开（grok pub fn）：sort_subgraph 后叶可能直接调用，故导出。
+- GraphRelationship 公开枚举：sort_subgraph 后叶消费（决定 in/out edges 投影方向）。
+- 未迁移 sort_subgraph/sort/add_subgraph_constraints/mod（4 文件待迁）：order 子包 5/9，下轮候选 add_subgraph_constraints.rs（build_layer_graph 搭档，向投影图添加子图约束）或 sort_subgraph.rs（依赖 R260 barycenter + R261 resolve_conflicts，均就位）。
+- 未接入 run_layout（order::mod 未迁移）：build_layer_graph 经 order 子包 barrel 可达，但 run_layout 编排层待 mod.rs 迁移后闭合。
+
+### Commit
+
+`feat(platform): R262 migrate dagre order/build_layer_graph.rs (order leaf 5/9)`。提交 d982107。7 文件 728 insertions 35 deletions。锚点链: ... -> R259(c311601) -> R260(f011cfb) -> R261(01b3301) -> R262(d982107)。
