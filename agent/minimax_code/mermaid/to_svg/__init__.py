@@ -53,10 +53,24 @@ Scope of this sub-package
   re-exported through this barrel (the barrel tracks grok's crate-root
   ``pub use`` surface, which omits ``ast``).
 
-What is NOT here yet (later leaves): ``parser.rs`` (the flowchart parser that
-fills the R271 AST), ``layout.rs`` / ``text_wrap.rs`` / ``svg_renderer.rs``
-(the dagre-backed layout bridge, the text measurer, the SVG emitter), the
-``mermaid_port/`` dagre adapters, and the per-diagram renderers.
+Leaves already migrated (R269--R275c): ``theme`` / ``config`` / ``error`` /
+``ast`` / ``parser`` / ``text_wrap`` / ``layout`` / ``svg_renderer`` -- the
+full dagre-backed layout + SVG render stack for flowcharts.
+
+YAGNI -- deliberately NOT migrated: ``mermaid_port/`` (6 files, 1194 lines).
+grok's HERMETIC VENDORING PATCH seals the experimental dagre flowchart "port"
+behind ``is_enabled() -> false`` (lib.rs dispatches through it only when the
+flag is set, which is never). The port mis-routes back-edges on cyclic
+flowcharts (detached arrowheads) -- the exact defect this engine was adopted
+to fix -- and ``compute_layout_ported`` carries ``#[allow(dead_code)]`` with
+Cargo.toml calling it ``unreachable``. Migrating dead-by-design code would
+re-introduce, in Python, a defect the Rust side already paid to seal out.
+
+What is NOT here yet (later rounds): the crate-root ``lib.rs`` dispatch entry
+(``render_mermaid_to_svg`` over the 20 diagram-type renderers) and the 20
+per-diagram renderers themselves (block/c4/class/er/gantt/gitgraph/info/
+journey/kanban/mindmap/packet/pie/quadrant/radar/requirement/sankey/sequence/
+state/timeline/xychart).
 """
 
 from __future__ import annotations

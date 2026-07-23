@@ -20044,3 +20044,63 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R275c migrate svg_renderer edge/path/label emitters + render orchestrator`。feat 提交 77c1226。2 文件 1138 insertions（svg_renderer.py +548 行 R275c 段 L673-1206 / test_mermaid_to_svg_svg_renderer.py +601 行 53 test 函数 53 test case）。docs 提交 ITERATION_LOG.md R275c 条目。锚点链: ... -> R274f(85d027a) -> R275a(5ff48ae feat / 70a6861 docs) -> R275b(374bd32 feat / 10b384a docs) -> R275c(77c1226 feat)。**svg_renderer.rs 全栈收官，方向① 第 7 砖完成，下一砖 mermaid_port/ 端口层**。
+
+## R276 — mermaid_port/ 端口层 YAGNI 非迁移决策（hermetic-sealed dead branch，cyclic back-edge defect，方向① 第 8 砖 YAGNI 裁决轮）
+
+锚点:R276-1 <pending>
+
+### 本轮目标
+
+裁决 mermaid-to-svg crate 的 `mermaid_port/` 端口层（6 文件 1194 行：`mod.rs` 40 + `flow_parser.rs` 6 + `flow_data.rs` 75 + `flow_db.rs` 131 + `cluster_adjust.rs` 373 + `dagre_layout_port.rs` 569）是否迁移。承接 R275c svg_renderer.rs 全栈收官（方向① 第 7 砖完成），本轮原计划迁移 `mermaid_port/` 作为第 8 砖，但经**四重证据核查**，裁定为**死代码，YAGNI 不迁移**。本轮**零 Python 代码叶子**，仅修正 `to_svg/__init__.py` 桶文档（消除双重过时的"待迁移"描述，记录 YAGNI 裁决 + 修正后路线图）。
+
+### 融合结论
+
+**方向① 第 8 砖 YAGNI 裁决轮 —— `mermaid_port/` 端口层不迁移。** `mermaid_port/` 是 mermaid-to-svg crate 的一个**实验性 dagre flowchart 端口层**（独立 flowchart 解析器 `flow_parser` + 独立 dagre 布局桥接 `dagre_layout_port` + `flow_data`/`flow_db`/`cluster_adjust` 数据与簇调整层），grok 的 HERMETIC VENDORING PATCH 把它**无条件禁用**（`is_enabled() -> false`），crate 根 `lib.rs` 的唯一消费分支（L142 `if is_flowchart && mermaid_port::is_enabled()`）永不触发，`compute_layout_ported` 带 `#[allow(dead_code)]` 且 Cargo.toml 称其 `unreachable`。更关键的是，该端口层在**循环流程图上错误路由回边**（arrowhead 与边线脱离，detached arrowheads）——这正是本项目 R246-R268 迁移 dagre 引擎要修复的核心缺陷。迁移死代码会在 Python 端重新引入 Rust 侧已付费封存的缺陷。本轮仅修正 `to_svg/__init__.py` 桶文档（3 段式块：已完成叶子 + YAGNI mermaid_port + 未来路线图），无新 Python 代码叶子，节省 1194 行无效迁移。
+
+### 决策证据（四重证明 + 缺陷机理 + R274f 先例）
+
+**证据 ① HERMETIC VENDORING PATCH 无条件禁用（`mermaid_port/mod.rs` L25-33）。** grok 在 mod.rs 注释（L25-30）逐字声明："the experimental dagre flowchart 'port' is disabled unconditionally. Upstream gated it on the `MERMAID_TO_SVG_USE_PORT` env var; reading the environment makes rendering non-deterministic over untrusted input, and the port mis-routes back-edges on cyclic flowcharts (detached arrowheads) — the exact defect this engine was adopted to fix. The default `layout::compute_layout` path routes cycles correctly." `is_enabled()`（L31-33）**硬编码返回 `false`**，无任何条件分支。上游原本读 `MERMAID_TO_SVG_USE_PORT` 环境变量启用，但读环境变量使渲染在不可信输入上非确定，故 grok 封死。
+
+**证据 ② lib.rs 唯一消费分支永不触发（`lib.rs` L141-148）。** `render_mermaid_to_svg` 主分发器中，`mermaid_port` 的唯一消费者是 L142 的 `if is_flowchart && mermaid_port::is_enabled()`。因 `is_enabled()` 恒 `false`，整个 `if` 块（L143-147 `return mermaid_port::render_mermaid_to_svg_ported(...)`）是**死分支**。流程图（`graph`/`flowchart`）的实际活跃路径是 L150-160：`parser::parse_mermaid` -> `layout::compute_layout_with_config` -> `svg_renderer::render_with_config`（R272 parser + R274 layout + R275 svg_renderer 已迁移的就是这条路径）。`mermaid_port::render_mermaid_to_svg_ported` 编排 `flow_parser -> dagre_layout_port -> svg_renderer` 是一条**平行的、被禁用的备用路径**，与默认路径共用 svg_renderer 但用独立的 parser + 布局桥接。
+
+**证据 ③ Cargo.toml HERMETIC PATCH 文档化（`Cargo.toml` L34-42）。** vendoring 笔记第 3 条逐字记录："HERMETIC PATCH (src/mermaid_port/mod.rs): `is_enabled()` returns `false` unconditionally. ... the port mis-routes cyclic back-edges (detached arrowheads). ... Because the port is unreachable, `mermaid_port::compute_layout_ported` carries an `#[allow(dead_code)]`; the module is kept verbatim (not deleted) so future re-vendor diffs stay minimal." Cargo.toml 明确称 `mermaid_port` **unreachable**，保留逐字只为 re-vendor diff 最小化（grok 的维护策略），**不是因为它是活代码**。
+
+**证据 ④ `#[allow(dead_code)]` 编译器死代码标注（`mermaid_port/mod.rs` L35-40）。** `compute_layout_ported`（L36）带 `#[allow(dead_code)]`（L35），Rust 编译器层面确认无调用方。`render_mermaid_to_svg_ported`（L11-23）虽无 `#[allow(dead_code)]`，但其唯一调用点（lib.rs L143）在死分支内，事实死代码。
+
+**缺陷机理 —— 循环流程图回边脱离（detached arrowheads）。** `mermaid_port` 的 `dagre_layout_port` + `cluster_adjust` 在**循环流程图**（cyclic flowchart，含回边 A->B->A 或 A->B->C->A）上**错误路由回边**：箭头头部（arrowhead）与边线末端脱离，视觉上箭头漂浮在错误位置。这正是本项目 R246-R268 迁移 dagre 引擎（dagre_rust 第三方库）要修复的核心缺陷——dagre 的 `rank/acyclic` 反边打破环 + `order` 层级排序正确处理回边。`mermaid_port` 是一个**有缺陷的平行实现**，迁移它会在 Python 端重新引入 Rust 侧已付费（HERMETIC PATCH）封存的缺陷。mod.rs L30 明确："The default `layout::compute_layout` path routes cycles correctly."
+
+**R274f 先例 —— YAGNI 不迁移零调用代码。** R274f（layout.rs 收官）通过 `grep` 证明 `extract_subgraph_layouts`/`rotate_layout`/`apply_flip`/`no_subgraph_centering` 四个函数**零活跃调用**，裁定 YAGNI 不迁移。`mermaid_port/` 符合相同标准（四重证据证明零活跃调用），且更严重——它是**有缺陷的**死代码（R274f 的四个函数是无害的辅助，mermaid_port 是有 bug 的平行渲染路径）。
+
+### 交付
+
+- `agent/minimax_code/mermaid/to_svg/__init__.py`（docstring 修正，零 `__all__`/import 变更）：
+
+  - **消除双重过时的"What is NOT here yet"段落** —— 旧 docstring 落后实际进度 4 个迭代（声称 `parser`/`layout`/`text_wrap`/`svg_renderer` 待迁移，实际 R272-R275c 已完成），且把 `mermaid_port` 列为"待迁移"而非 YAGNI。替换为 3 段式块：
+    - **已完成叶子（R269-R275c）**：`theme`/`config`/`error`/`ast`/`parser`/`text_wrap`/`layout`/`svg_renderer` —— 全栈 dagre-backed 布局 + SVG 渲染。
+    - **YAGNI 不迁移**：`mermaid_port/`（6 文件 1194 行）—— HERMETIC PATCH `is_enabled()->false` + 循环回边缺陷（detached arrowheads）+ `#[allow(dead_code)]` + Cargo.toml `unreachable`。
+    - **未来路线图**：crate 根 `lib.rs` 分发入口（`render_mermaid_to_svg` over 20 图表类型）+ 20 个 per-diagram 渲染器（block/c4/class/er/gantt/gitgraph/info/journey/kanban/mindmap/packet/pie/quadrant/radar/requirement/sankey/sequence/state/timeline/xychart）。
+
+  - **`__all__` 不变**（15 符号：theme 3 + config 5 + error 7）—— docstring 修订未触碰桶公共面。mermaid 根 `__all__`=17 不变。
+
+- **零新 Python 代码叶子** —— R276 是 YAGNI 决策轮，不产生 `mermaid_port/` Python 移植（6 文件 1194 行节省）。
+
+### 验证
+
+- ruff：`to_svg/__init__.py` **All checks passed**（docstring 修订，line-length 100，select E/F/W/I/B/UP，ignore E501）。
+- import 契约：`import minimax_code.mermaid` -> `__all__`=17（R38 根桶未动）；`import minimax_code.mermaid.to_svg` -> `__all__`=15（theme 3 + config 5 + error 7）。桶公共面零变更。
+- 定向 pytest（test_mermaid_to_svg_text_wrap.py + test_mermaid_to_svg_svg_renderer.py + test_mermaid_to_svg_layout.py）：**372 passed in 0.47s**（docstring 修订零破坏，barrel 契约测试 + root `__all__`=17 守卫全绿）。
+- CRLF 警告正常（Windows `to_svg/__init__.py`），无害。
+
+### YAGNI 边界
+
+- **`mermaid_port/` 端口层不迁移声明（6 文件 1194 行）** —— HERMETIC VENDORING PATCH `is_enabled()->false` 无条件禁用 + lib.rs L142 死分支 + Cargo.toml `unreachable` + `#[allow(dead_code)]` 四重证明死代码。迁移会在 Python 端重新引入循环流程图回边脱离缺陷（detached arrowheads），违背本项目采纳 dagre 引擎的初衷。延续 R274f YAGNI 不迁移零调用代码先例。
+- **lib.rs 默认路径是 Python 端复制目标** —— `parser::parse_mermaid` -> `layout::compute_layout[_with_config]` -> `svg_renderer::render[_with_config]`（R272/R274/R275 已迁移），`mermaid_port` 是平行的、被禁用的、有缺陷的备用路径。
+- **修正后路线图**：
+  - **R277（下一砖）** —— `lib.rs` crate-root barrel：迁移 `render_mermaid_to_svg` 分发入口（first_diagram_type_token + 20 类型分发 + 流程图默认路径）作为 Python 模块。这是 grok 活跃渲染路径的入口。
+  - **R278** —— `xai-grok-mermaid` 主机包装 crate（lib/engine/mmdc/pure/raster/subprocess + tests/pure_engine.rs）。
+  - **R279+** —— 20 个 per-diagram 渲染器（block/c4/class/er/gantt/gitgraph/info/journey/kanban/mindmap/packet/pie/quadrant/radar/requirement/sankey/sequence/state/timeline/xychart）。
+- **方向② xai-codebase-graph（tree-sitter 代码索引）+ 方向③ L2 自进化框架骨架接线** 均未开始（方向① 优先）。
+
+### Commit
+
+`docs(platform): R276 mermaid_port YAGNI non-migration decision (hermetic-sealed dead branch, cyclic back-edge defect)`。docs-only 提交（无 feat，零 Python 代码叶子）。2 文件：`docs/evolution/ITERATION_LOG.md` R276 条目 + `agent/minimax_code/mermaid/to_svg/__init__.py` docstring 修正。锚点链: ... -> R274f(85d027a) -> R275a(5ff48ae feat / 70a6861 docs) -> R275b(374bd32 feat / 10b384a docs) -> R275c(77c1226 feat / 008f307 docs) -> R276(docs YAGNI 裁决)。**`mermaid_port/` 端口层 YAGNI 不迁移（6 文件 1194 行节省，避免循环回边缺陷重现），方向① 第 8 砖裁决为 YAGNI，下一砖 R277 lib.rs crate-root barrel**。
