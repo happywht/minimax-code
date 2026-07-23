@@ -19135,3 +19135,56 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R268 migrate dagre layout/mod.rs -> dagre layout full-stack 100%`。提交 38e14e4。2 文件 1129 insertions（mod.py 新 752 行 + test_dagre_layout_mod.py 新 ~340 行）。锚点链: ... -> R266(b148df6) -> R267(3477693) -> R268(38e14e4)。
+
+## R269 — 迁移 mermaid-to-svg theme.rs（方向① 首片叶子，渲染栈调色板类型层，第 1 片 mermaid-to-svg 叶子）
+
+锚点:R269-1 84f4b33
+
+### 本轮目标
+
+迁移 `mermaid-to-svg/src/theme.rs`（165 行）—— mermaid-to-svg 渲染栈的**首片叶子**，方向①（让 R246-R268 的 dagre 投入运作，mermaid 源码渲染为 SVG）的开局。`theme.rs` 是渲染栈的**调色板类型层**：3 个公共类型 —— `MermaidTheme`（7 解析色 + 5 命名预设工厂 light/dark/base/forest/neutral）、`MermaidThemePreset`（5 变体枚举，`parse` 解析 front-matter wire string + `to_theme` 分发到工厂）、`MermaidThemeVariables`（7 槽可选覆盖袋，`is_empty` / `apply_mermaid_alias` / `apply_to`）。纯数据层，**零非标库依赖**，镜像 dagre R246 `lib.rs` 的「类型层优先」开局范式。迁移到 `agent/minimax_code/mermaid/to_svg/theme.py`（348 行），新建子包 barrel `mermaid/to_svg/__init__.py`（43 行），编写 pytest（27 测试），ruff + 定向 pytest + 全量回归 R268 基准 7276 + R269 新增 27 = 7303（flaky 本次转稳定 +1 → 实测 7304），零真实回归。
+
+### 融合结论
+
+**方向① 渲染栈迁移的开局里程碑。** R269 是 mermaid-to-svg 渲染栈的**首片叶子**，单向被未来的 `config.rs`（R270 候选，front-matter YAML 解析器）消费 —— `MermaidThemePreset.parse` + `MermaidThemeVariables.apply_to` 是 `RenderConfig` 构建管线的两个入口。本轮的核心融合价值是**「两个 crate」的精确区分**：grok-build 有两个 mermaid 相关 crate —— `xai-grok-mermaid` **主机 crate**（R38 已迁为 `mermaid/`：`Rgba` 色彩原语、粗略 light/dark 2 变体 `MermaidTheme`、`RenderParams`、错误分类）vs `mermaid-to-svg` **渲染栈 crate**（本片叶子所属：前端 config、解析调色板、parser/AST、dagre 布局桥接、文本换行测量器、SVG 渲染器）。两者**共存**：主机 crate 选表面（raster surface + engine），渲染栈 crate 是 engine 跑的内容。所以 R269 新建 `mermaid/to_svg/` 子包而非修改 R38 的 `types.py`/`errors.py` —— 表面隔离保护 R38 主机词汇，YAGNI 避免破坏既有消费者。零非标库依赖的纯数据层镜像 dagre R246 `lib.rs` 的「类型层优先」范式，确认 Python asyncio 架构能干净承载 Rust 的「纯值类型 + 枚举 + 选项袋」三件套类型层。这是平台型工具产品演进「方向① 激活 dagre」的第一砖：调色板就位，后续叶子（config → parser → layout bridge → svg renderer）将让 mermaid 源码端到端渲染为 SVG。
+
+### 交付
+
+- `agent/minimax_code/mermaid/to_svg/theme.py`（新，348 行，3 公共符号）：`MermaidTheme`（`@dataclass` 非 frozen，7 `str` 色字段 `background`/`node_fill`/`node_stroke`/`text_color`/`edge_color`/`subgraph_fill`/`subgraph_stroke` + 5 `staticmethod` 工厂 `light`/`dark`/`base`/`forest`/`neutral`/`default`，`base` 别名 `light`，`default` 镜像 grok `impl Default`）。`MermaidThemePreset`（`@unique enum.Enum`，5 变体 `DEFAULT`/`BASE`/`DARK`/`FOREST`/`NEUTRAL`，小写 wire string 为成员值，`parse` 类方法遍历匹配返回 `MermaidThemePreset | None`，`to_theme` 用 `factories: dict[preset, factory]` 分发表返回新鲜实例）。`MermaidThemeVariables`（`@dataclass`，7 `str | None` 槽，`is_empty` = 7 槽 `is_none` 的 AND，`apply_mermaid_alias(key, value)` 查 `_MERMAID_ALIAS_TO_SLOT` 表命中则 `setattr` 返回 `True` 未知返回 `False`，`apply_to(theme)` 遍历 `_VARIABLE_SLOTS` 复制非 None 槽到 theme）。模块级 `_VARIABLE_SLOTS` tuple（7 槽声明序）共享给 `is_empty` + `apply_to` 规避重命名漂移；`_MERMAID_ALIAS_TO_SLOT` dict（12 别名多对一）。`__all__ = ["MermaidTheme", "MermaidThemePreset", "MermaidThemeVariables"]`（ASCII 序 3 符号）。
+- `agent/minimax_code/mermaid/to_svg/__init__.py`（新，43 行）：子包 barrel。`from .theme import` reexport 3 符号，`__all__` 3 符号 ASCII 序。详尽 docstring 解释 (a) to_svg 与 R38 主机 crate 的差异（不同的 crate，共存），(b) 方向① 范围 + 子包叶子路线图（`config.rs` R270 → `ast.rs`/`parser.rs` → `layout.rs`/`text_wrap.rs`/`svg_renderer.rs` → `mermaid_port/` dagre 适配器 → 各图表渲染器）。
+- `agent/tests/test_mermaid_to_svg_theme.py`（新，367 行，27 测试）：`MermaidTheme` 工厂调色板断言（7：light/dark/forest/neutral 精确 hex 比对，`base==light`，`default==light`，两次 `light()` 相等但相异可变实例）+ `MermaidThemePreset`（6：5 wire string 往返，`parse` 已知/未知/空串/大小写敏感，`to_theme` 分发 5 预设，`BASE.to_theme()==light()`，`to_theme` 返回新鲜实例）+ `MermaidThemeVariables`（11：`is_empty` 空/单槽/全槽，`apply_mermaid_alias` 规范 `background` 槽 + 多别名 `primaryColor`/`mainBkg` 同槽 + 全 12 别名逐项 + 未知 key 返回 `False` 不动袋，`apply_to` 仅 set 槽覆盖/空袋不动/全袋覆盖/预设+覆盖管线镜像 grok config 流）+ barrel 契约（3：`to_svg.__all__` 3 符号 + reexport identity，mermaid 根 `__all__==17` 未触碰且 `"to_svg" not in mermaid.__all__`，`mermaid.to_svg` 经子包可达且 `is to_svg`）。
+
+### 映射决策树 + 坑
+
+- **🔴 两个 crate 区分（R269 核心洞察）**：grok-build 有两个 mermaid 相关 crate —— `xai-grok-mermaid` 主机 crate（R38 迁为 `mermaid/`：`Rgba`、粗略 light/dark `MermaidTheme`、`RenderParams`、错误分类）vs `mermaid-to-svg` 渲染栈 crate（R269 目标：前端 config、解析调色板、parser/AST、dagre 布局桥接、文本换行、SVG 渲染器）。两者共存不冲突。所以新建 `mermaid/to_svg/` 子包而非修改 R38 `types.py`/`errors.py` —— 表面隔离保护 R38 主机词汇（YAGNI + 不破坏既有消费者），test 断言 `"to_svg" not in mermaid.__all__` 守卫边界。
+- **🔴 MermaidTheme 可变 @dataclass 非 frozen**：grok `#[derive(Debug, Clone, PartialEq, Eq, Hash)]` + `apply_to(&mut theme)` 原地变异契约 → 普通 `@dataclass`（非 frozen），值相等走生成 `__eq__`，7 `String` → 7 `str` 字段，5 `associated fn light/dark/base/forest/neutral` → 5 `staticmethod` 工厂返回新鲜实例。test `test_light_returns_distinct_mutable_instances` 验证 `a is not b` + 变异不泄漏。
+- **🔴 MermaidThemePreset @unique Enum（R35 策略）**：grok 单元枚举无 `#[default]` → `@unique enum.Enum`（R35：单例值语义），小写 wire string 为成员值（匹配 grok `parse` 的 match arm），`MermaidThemePreset("dark") is DARK` 往返忠实。`parse` 遍历 `for preset in cls` 精确匹配返回 `None`（grok `Option<Self>`），未知/空串/大小写不匹配全返回 `None`（test 守卫）。
+- **🔴 MermaidThemeVariables 7 Option<String> → 7 str | None**：UP007 `X | Y` 注解，`None` = unset/"do not override"。`is_empty` = `all(getattr(self, slot) is None for slot in _VARIABLE_SLOTS)`。
+- **🔴 _VARIABLE_SLOTS tuple 共享**：`is_empty`（7 槽 `is_none` 的 AND）+ `apply_to`（遍历复制非 None）共享同一 7 槽元组，规避槽重命名时两处漂移。声明序忠实 grok 字段序。
+- **🔴 _MERMAID_ALIAS_TO_SLOT 12 别名多对一表**：grok `match key { ... }` 12 arm。`background→background`；`primaryColor`/`mainBkg→node_fill`（多别名同槽，last-write-wins）；`primaryBorderColor`/`nodeBorder→node_stroke`；`primaryTextColor`/`nodeTextColor`/`textColor→text_color`（3 别名同槽）；`lineColor`/`defaultLinkColor→edge_color`；`clusterBkg→subgraph_fill`；`clusterBorder→subgraph_stroke`。未知 key 查 dict 返回 `None` → `apply_mermaid_alias` 返回 `False` 不动袋（test `test_apply_alias_unknown_key_returns_false_and_leaves_bag_untouched`）。
+- **🔴 ruff I001 尾随空行坑（本会话教训，非导入顺序）**：测试文件首轮 ruff I001 "Import block is un-sorted or un-formatted" 报错。误诊为导入顺序 → 手动重排 `import` 在 `from` 之前，仍报错。修复：运行 `ruff check --diff` 显示真正问题是导入块（`from (...)` 多行括号）后有 **2 个空行**，ruff 想要 **1 个**（函数定义前只需 1 空行 + 节注释）。删除多余空行 → 通过。**教训：I001 涵盖排序 + 格式（尾随空行数量），总用 `--diff` 看具体修复而非猜测 ruff 意图。**
+- **base() 别名 light() 调色板恒等**：grok `fn base() -> MermaidTheme { MermaidTheme::light() }`；Python `staticmethod def base(): return MermaidTheme.light()`，`MermaidTheme.base() == MermaidTheme.light()`（test `test_base_factory_aliases_light`）。
+- **to_theme 工厂分发 dict**：grok `match self { ... }`；Python `factories: dict[MermaidThemePreset, type] = {DEFAULT: light, BASE: base, ...}` + `factories[self]()`。5 工厂都是 staticmethod 绑定为类上函数，调用产生新鲜 `MermaidTheme` 实例。
+- **to_svg/__init__.py barrel 小表面 + 路线图 docstring**：仅 reexport 3 符号，docstring 详述方向① 范围 + 子包未来叶子路线图（config.rs R270 / ast/parser / layout/text_wrap/svg_renderer / mermaid_port/ / 渲染器），让下一个迁移窗口有清晰入口。
+- **mermaid 根 barrel 不触碰**：to_svg 是子包，不提升到 mermaid 根表面（根 `__all__` 仍 17，R38 设定），test `test_mermaid_root_barrel_unchanged_by_to_svg_subpackage` 守卫 `len(mermaid.__all__) == 17` + `"to_svg" not in mermaid.__all__`。
+
+### 验证
+
+- ruff：theme.py + `__init__.py` + test，All checks passed!（I001 尾随空行坑经 `ruff check --diff` 定位为导入块后多 1 空行 → 删除修复）。
+- 定向 pytest（test_mermaid_to_svg_theme）：**27 passed**（7 MermaidTheme 工厂调色板 + 6 MermaidThemePreset parse/to_theme + 11 MermaidThemeVariables is_empty/apply_mermaid_alias/apply_to + 3 barrel 契约）。
+- 全量回归：**7304 passed, 10 skipped（120.93s, exit 0）** vs R268 基准 7276 passed（+27 R269 新增；R268 报告为 flaky 的 `test_connection.py::test_interval_keeps_global_timeline_across_loops` 计时抖动本次稳定通过 —— 从 failed 转回 passed，故 exit 0 零 failed，7276 + 1 flaky 复发转稳定 + 27 R269 = 7304）。零真实回归。10 skipped 为预期。
+- CRLF 警告正常（Windows theme.py + `__init__.py` + test），无害。
+
+### YAGNI 边界
+
+- **config.rs 待迁（R270 候选，渲染栈第 2 片叶子）**：front-matter YAML 解析器，消费 `MermaidThemePreset.parse` + `MermaidThemeVariables.apply_mermaid_alias`/`apply_to` 构建 `RenderConfig`。依赖 serde_yaml + theme.rs。是 theme.rs 3 符号的直接消费者。
+- **ast.rs / parser.rs 待迁**：flowchart AST 节点定义 + mermaid 源码解析器。
+- **layout.rs / text_wrap.rs / svg_renderer.rs 待迁**：dagre 布局桥接（消费 R246-R268 dagre 全栈）+ 文本换行测量器 + SVG 元素发射器。
+- **mermaid_port/ 待迁**：dagre 适配器子目录（`dagre_layout_port` + `flow_data`/`flow_db`/`flow_parser`/`cluster_adjust`），把 mermaid AST 桥接到 dagre 图模型。
+- **xai-grok-mermaid 主机包装 + 20 个图表渲染器待迁**：主机 crate 端的 engine dispatch + 各 mermaid 图表类型（flowchart/sequence/class/state...）的渲染入口。
+- **3 符号不外暴到 mermaid 根**：保持 to_svg 子包内部（`mermaid.to_svg.theme.*`），mermaid 根 `__all__` 仍 17（R38 设定，主机 crate 词汇）。to_svg 子包 barrel 保持 3 符号小表面。
+- **调色板十六进制忠实不归一化**：grok 的精确色值（如 `#ECECFF` 大写、`#aaaa33` 小写、`#1e1e1e`）忠实保留大小写，不统一为全大写/全小写（grok 字面 hex 直传渲染器）。
+
+### Commit
+
+`feat(platform): R269 migrate mermaid-to-svg theme.rs render-stack leaf 1 (direction 1)`。提交 84f4b33。3 文件 758 insertions（theme.py 新 348 + `to_svg/__init__.py` 新 43 + test 新 367）。锚点链: ... -> R267(3477693) -> R268(38e14e4) -> R269(84f4b33)。
