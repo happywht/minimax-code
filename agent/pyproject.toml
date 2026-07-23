@@ -26,6 +26,9 @@ dependencies = [
     "openai>=1.30",
     # v0.6.0 live preview — file-system watcher for hot-reload
     "watchfiles>=0.21",
+    # mermaid-to-svg render stack (direction 1): parse mermaid diagram
+    # front-matter (YAML) into RenderConfig + theme overrides.
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]

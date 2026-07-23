@@ -23,21 +23,39 @@ Scope of this sub-package
   ``parse`` / ``to_theme``), :class:`MermaidThemeVariables` (7-slot override
   bag with ``is_empty`` / ``apply_mermaid_alias`` / ``apply_to``). Pure data
   layer; zero non-stdlib dependency. The first render-stack leaf.
+* :mod:`.config` (R270) -- :class:`MermaidFrontmatter` (optional title),
+  :class:`FlowchartConfig` (the ``config.flowchart`` spacing/curve knobs),
+  :class:`RenderConfig` (the typed ``config:`` block, with
+  ``to_mermaid_theme`` / ``font_size_px``), :class:`ParsedMermaidSource` (the
+  body + frontmatter + config triple), :func:`parse_mermaid_frontmatter` (the
+  entry point -- splits ``---...---`` and resolves the config). Consumes the
+  R269 theme symbols; the first render-stack leaf with a non-stdlib
+  dependency (``pyyaml``, mirroring grok's ``serde_yaml``).
 
-What is NOT here yet (later leaves): ``config.rs`` (front-matter YAML parser
-that consumes ``MermaidThemePreset`` / ``MermaidThemeVariables`` to build a
-``RenderConfig``), ``ast.rs`` / ``parser.rs`` (the flowchart AST + parser),
-``layout.rs`` / ``text_wrap.rs`` / ``svg_renderer.rs`` (the dagre-backed
-layout bridge, the text measurer, the SVG emitter), the ``mermaid_port/``
-dagre adapters, and the per-diagram renderers.
+What is NOT here yet (later leaves): ``ast.rs`` / ``parser.rs`` (the flowchart
+AST + parser), ``layout.rs`` / ``text_wrap.rs`` / ``svg_renderer.rs`` (the
+dagre-backed layout bridge, the text measurer, the SVG emitter), the
+``mermaid_port/`` dagre adapters, and the per-diagram renderers.
 """
 
 from __future__ import annotations
 
+from .config import (
+    FlowchartConfig,
+    MermaidFrontmatter,
+    ParsedMermaidSource,
+    RenderConfig,
+    parse_mermaid_frontmatter,
+)
 from .theme import MermaidTheme, MermaidThemePreset, MermaidThemeVariables
 
 __all__ = [
+    "FlowchartConfig",
+    "MermaidFrontmatter",
     "MermaidTheme",
     "MermaidThemePreset",
     "MermaidThemeVariables",
+    "ParsedMermaidSource",
+    "RenderConfig",
+    "parse_mermaid_frontmatter",
 ]

@@ -335,13 +335,15 @@ def test_apply_to_then_preset_pipeline_mirrors_grok_config_flow() -> None:
 # === barrel surface contract ==============================================
 
 
-def test_to_svg_subpackage_barrel_reexports_three_symbols() -> None:
-    """The ``to_svg`` sub-package re-exports the three theme symbols."""
-    assert to_svg.__all__ == [
-        "MermaidTheme",
-        "MermaidThemePreset",
-        "MermaidThemeVariables",
-    ]
+def test_to_svg_subpackage_barrel_includes_theme_symbols() -> None:
+    """The ``to_svg`` barrel includes the three R269 theme symbols.
+
+    R270 extends the barrel to 8 symbols (adds the config layer); this test
+    locks only the theme-symbols subset (not the full barrel list, which is
+    owned by the latest leaf) so R269 stays valid as the barrel grows.
+    """
+    for name in ("MermaidTheme", "MermaidThemePreset", "MermaidThemeVariables"):
+        assert name in to_svg.__all__
     assert to_svg.MermaidTheme is MermaidTheme
     assert to_svg.MermaidThemePreset is MermaidThemePreset
     assert to_svg.MermaidThemeVariables is MermaidThemeVariables
