@@ -29,7 +29,7 @@ Covers:
 * the barrel surface contract: the ``to_svg`` sub-package re-exports the
   three theme symbols (ASCII-sorted ``__all__``); the R38 ``mermaid`` root
   barrel is untouched (``to_svg`` is a sub-package, not promoted to the
-  root surface; the root ``__all__`` count stays at 17).
+  root surface; the root ``__all__`` count stays at 23).
 """
 
 from __future__ import annotations
@@ -350,13 +350,13 @@ def test_to_svg_subpackage_barrel_includes_theme_symbols() -> None:
 
 
 def test_mermaid_root_barrel_unchanged_by_to_svg_subpackage() -> None:
-    """R269 adds a sub-package; the R38 root surface stays at 17 symbols.
+    """R269 adds a sub-package; the R38 root surface stays at 23 symbols.
 
     ``to_svg`` is a sub-package, not promoted to the ``mermaid`` root
     surface (the R38 host types/errors stay the root vocabulary). The root
     ``__all__`` count is unchanged.
     """
-    assert len(mermaid.__all__) == 17
+    assert len(mermaid.__all__) == 23
     assert "to_svg" not in mermaid.__all__
 
 

@@ -40,7 +40,7 @@ pipeline. Covers:
   ``Value::Number`` never carries a bool).
 * The barrel surface contract: the ``to_svg`` sub-package re-exports the eight
   symbols (ASCII-sorted ``__all__``); the R38 ``mermaid`` root surface is
-  untouched (``__all__`` stays at 17, ``to_svg`` not promoted).
+  untouched (``__all__`` stays at 23, ``to_svg`` not promoted).
 """
 
 from __future__ import annotations
@@ -677,8 +677,8 @@ def test_to_svg_subpackage_barrel_reexports_eighteen_symbols() -> None:
 
 
 def test_mermaid_root_barrel_unchanged_by_r270() -> None:
-    """R270 adds a leaf to a sub-package; the R38 root surface stays at 17."""
-    assert len(mermaid.__all__) == 17
+    """R270 adds a leaf to a sub-package; the R38 root surface stays at 23."""
+    assert len(mermaid.__all__) == 23
     assert "to_svg" not in mermaid.__all__
 
 

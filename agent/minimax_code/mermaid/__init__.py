@@ -17,13 +17,20 @@ Scope of this package
   rasterize/timeout/unsupported/panic), one subclass per grok variant.
 * :mod:`.engine` (R38) — :class:`RenderLimits`, the :class:`MermaidEngine`
   protocol, and :func:`render_checked` (size cap + panic isolation).
+* :mod:`.subprocess` (R278) — :func:`run_with_timeout` and the
+  :class:`SubprocessError` taxonomy (Spawn / Timeout / NonZeroExit / Wait).
+  The panic-isolating child runner: spawn a child, optionally feed stdin,
+  wait up to a wall-clock budget, and reap the whole process group on a
+  breach. Backs the optional ``mmdc`` engine (R278d) -- grok ``subprocess.rs``
+  re-exported at the crate root (``lib.rs`` L57).
 
 What is NOT here (wiring round): the layout engine (grok's vendored
 ``mermaid-to-svg`` dagre port) and the SVG rasterizer (``resvg``/``usvg``/
 ``tiny-skia``) are Rust rendering stacks. A future wiring round picks a Python
 renderer (``mmdc`` CLI subprocess or ``mermaid.js`` over a headless browser)
 and implements :class:`MermaidEngine`; the guard logic here wraps any such
-engine unchanged.
+engine unchanged. The ``subprocess`` leaf (R278) lands the child-isolation
+plumbing that very ``mmdc`` engine will consume.
 """
 
 from __future__ import annotations
@@ -37,6 +44,14 @@ from .errors import (
     MermaidRasterizeError,
     MermaidTimeoutError,
     MermaidUnsupportedError,
+)
+from .subprocess import (
+    NonZeroExitSubprocessError,
+    SpawnSubprocessError,
+    SubprocessError,
+    TimeoutSubprocessError,
+    WaitSubprocessError,
+    run_with_timeout,
 )
 from .types import (
     DARK_SURFACE,
@@ -69,4 +84,11 @@ __all__ = [
     "DEFAULT_THEME",
     "RenderParams",
     "RenderedDiagram",
+    # subprocess (R278)
+    "SubprocessError",
+    "SpawnSubprocessError",
+    "TimeoutSubprocessError",
+    "NonZeroExitSubprocessError",
+    "WaitSubprocessError",
+    "run_with_timeout",
 ]

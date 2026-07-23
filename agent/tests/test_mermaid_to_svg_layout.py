@@ -28,7 +28,7 @@ re-exported through the ``to_svg`` barrel. Covers:
   subgraph scan,
 * the 4 stdlib type aliases,
 * the barrel contract: ``layout`` is internal -- reachable by deep path, NOT
-  re-exported through the ``to_svg`` barrel; the ``mermaid`` root stays at 17.
+  re-exported through the ``to_svg`` barrel; the ``mermaid`` root stays at 23.
 """
 
 from __future__ import annotations
@@ -479,8 +479,8 @@ def test_layout_importable_via_deep_path() -> None:
 
 
 def test_mermaid_root_barrel_unchanged_by_layout_leaf() -> None:
-    """R274a adds an internal module; the R38 root surface stays at 17."""
-    assert len(mermaid.__all__) == 17
+    """R274a adds an internal module; the R38 root surface stays at 23."""
+    assert len(mermaid.__all__) == 23
     assert "to_svg" not in mermaid.__all__
 
 
@@ -1636,8 +1636,8 @@ def test_dagre_graph_alias_internal_not_in_module_all() -> None:
 
 
 def test_mermaid_root_barrel_unchanged_by_r274c() -> None:
-    """R274c adds an internal-method cohort; the R38 root surface stays at 17."""
-    assert len(mermaid.__all__) == 17
+    """R274c adds an internal-method cohort; the R38 root surface stays at 23."""
+    assert len(mermaid.__all__) == 23
     assert "to_svg" not in mermaid.__all__
 
 
@@ -2054,8 +2054,8 @@ def test_get_node_colors_partial_style_returns_none_for_missing() -> None:
 
 
 def test_mermaid_root_barrel_unchanged_by_r274d() -> None:
-    """R274d adds another internal-method cohort; the R38 root surface stays 17."""
-    assert len(mermaid.__all__) == 17
+    """R274d adds another internal-method cohort; the R38 root surface stays 23."""
+    assert len(mermaid.__all__) == 23
     assert "to_svg" not in mermaid.__all__
 
 

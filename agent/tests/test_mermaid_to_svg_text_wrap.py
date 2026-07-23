@@ -22,7 +22,7 @@ consume it via ``from .text_wrap import ...``. Covers:
   identifier boundary exists, and CJK wide-char counting (``中`` == 2 units),
 * the barrel contract: ``text_wrap`` is internal -- reachable by deep path,
   NOT re-exported through the ``to_svg`` barrel; the ``mermaid`` root stays
-  at 17.
+  at 23.
 """
 
 from __future__ import annotations
@@ -386,6 +386,6 @@ def test_text_wrap_importable_via_deep_path() -> None:
 
 
 def test_mermaid_root_barrel_unchanged_by_text_wrap_leaf() -> None:
-    """R273 adds an internal module; the R38 root surface stays at 17."""
-    assert len(mermaid.__all__) == 17
+    """R273 adds an internal module; the R38 root surface stays at 23."""
+    assert len(mermaid.__all__) == 23
     assert "to_svg" not in mermaid.__all__

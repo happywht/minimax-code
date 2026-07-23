@@ -19,7 +19,7 @@ leaf 3, paired with ``error.rs``). Pure data layer consumed by the future
 * ``@dataclass`` equality mirrors grok's ``#[derive(PartialEq, Eq)]``,
 * the barrel contract: ``ast`` is an **internal** module (grok ``mod ast;``
   private) -- reachable by deep path, NOT re-exported through the
-  ``to_svg`` barrel; the ``mermaid`` root surface stays at 17.
+  ``to_svg`` barrel; the ``mermaid`` root surface stays at 23.
 """
 
 from __future__ import annotations
@@ -305,6 +305,6 @@ def test_ast_importable_via_deep_path() -> None:
 
 
 def test_mermaid_root_barrel_unchanged_by_ast_leaf() -> None:
-    """R271 grows the ``to_svg`` sub-package; the R38 root surface stays at 17."""
-    assert len(mermaid.__all__) == 17
+    """R271 grows the ``to_svg`` sub-package; the R38 root surface stays at 23."""
+    assert len(mermaid.__all__) == 23
     assert "to_svg" not in mermaid.__all__
