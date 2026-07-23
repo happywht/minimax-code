@@ -1126,3 +1126,534 @@ def test_layout_engine_not_in_module_all() -> None:
 def test_layout_engine_not_in_to_svg_barrel() -> None:
     """``LayoutEngine`` is NOT re-exported through the ``to_svg`` barrel."""
     assert "LayoutEngine" not in to_svg.__all__
+
+
+# === R274c: dagre bridge helpers (14 methods) ==============================
+#
+# Black-box behavior tests for the 14 ``LayoutEngine`` instance methods that
+# wire the collected layout model to the dagre stack (grok layout.rs
+# L465-512 + L811-1447 + L1663-1734). All dagre / data_structures symbols are
+# imported locally so the file's top-level import block is untouched (ruff
+# I001: first-party absolute imports precede relative ones).
+
+
+def _chain_graph() -> FlowchartGraph:
+    """A simple 3-node DAG chain ``A -> B -> C`` (no subgraphs)."""
+    return FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Node(id="A", label="A", shape=NodeShape.Rectangle),
+            Node(id="B", label="B", shape=NodeShape.Rectangle),
+            Node(id="C", label="C", shape=NodeShape.Rectangle),
+            Edge(from_="A", to="B", label=None, style=EdgeStyle.Arrow),
+            Edge(from_="B", to="C", label=None, style=EdgeStyle.Arrow),
+        ],
+    )
+
+
+def _two_node_cycle_graph() -> FlowchartGraph:
+    """A 2-node cycle ``A -> B -> A`` (one back edge)."""
+    return FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Node(id="A", label="A", shape=NodeShape.Rectangle),
+            Node(id="B", label="B", shape=NodeShape.Rectangle),
+            Edge(from_="A", to="B", label=None, style=EdgeStyle.Arrow),
+            Edge(from_="B", to="A", label=None, style=EdgeStyle.Arrow),
+        ],
+    )
+
+
+# --- cohort 1: subgraph ordering ------------------------------------------
+
+
+def test_subgraph_ids_in_mermaid_order_empty_returns_empty_list() -> None:
+    """A graph without subgraphs yields an empty order list."""
+    engine = LayoutEngine(_chain_graph())
+    assert engine.subgraph_ids_in_mermaid_order() == []
+
+
+def test_subgraph_ids_in_mermaid_order_nested_outer_first() -> None:
+    """Post-order DFS reversed -> outermost subgraph declared first.
+
+    grok records each id on the way back up the DFS (``inner`` then ``outer``)
+    then reverses so the declaration order (outer before inner) wins.
+    """
+    graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Subgraph(
+                id="outer",
+                title="O",
+                statements=[
+                    Subgraph(
+                        id="inner",
+                        title="I",
+                        statements=[Node(id="X", label="X", shape=NodeShape.Rectangle)],
+                    ),
+                ],
+            ),
+        ],
+    )
+    engine = LayoutEngine(graph)
+    assert engine.subgraph_ids_in_mermaid_order() == ["outer", "inner"]
+
+
+# --- cohort 2: edge-endpoint collapse -------------------------------------
+
+
+def test_nodes_in_subgraph_by_order_sorts_by_node_order() -> None:
+    """Direct children of a subgraph are returned in declaration order."""
+    graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Subgraph(
+                id="sg",
+                title="S",
+                statements=[
+                    Node(id="B", label="B", shape=NodeShape.Rectangle),
+                    Node(id="A", label="A", shape=NodeShape.Rectangle),
+                    Node(id="C", label="C", shape=NodeShape.Rectangle),
+                ],
+            ),
+        ],
+    )
+    engine = LayoutEngine(graph)
+    assert engine.nodes_in_subgraph_by_order("sg") == ["B", "A", "C"]
+
+
+def test_subgraph_entry_node_id_first_without_sibling_in_edge() -> None:
+    """The entry is the first node with no incoming sibling edge."""
+    graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Subgraph(
+                id="sg",
+                title="S",
+                statements=[
+                    Node(id="A", label="A", shape=NodeShape.Rectangle),
+                    Node(id="B", label="B", shape=NodeShape.Rectangle),
+                    Node(id="C", label="C", shape=NodeShape.Rectangle),
+                    Edge(from_="A", to="B", label=None, style=EdgeStyle.Arrow),
+                    Edge(from_="B", to="C", label=None, style=EdgeStyle.Arrow),
+                ],
+            ),
+        ],
+    )
+    engine = LayoutEngine(graph)
+    assert engine.subgraph_entry_node_id("sg") == "A"
+    assert engine.subgraph_exit_node_id("sg") == "C"
+
+
+def test_subgraph_entry_exit_falls_back_on_internal_cycle() -> None:
+    """A fully cyclic subgraph falls back to the first (entry) / last (exit)."""
+    graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Subgraph(
+                id="sg",
+                title="S",
+                statements=[
+                    Node(id="A", label="A", shape=NodeShape.Rectangle),
+                    Node(id="B", label="B", shape=NodeShape.Rectangle),
+                    Edge(from_="A", to="B", label=None, style=EdgeStyle.Arrow),
+                    Edge(from_="B", to="A", label=None, style=EdgeStyle.Arrow),
+                ],
+            ),
+        ],
+    )
+    engine = LayoutEngine(graph)
+    assert engine.subgraph_entry_node_id("sg") == "A"
+    assert engine.subgraph_exit_node_id("sg") == "B"
+
+
+def test_subgraph_entry_exit_empty_subgraph_returns_none() -> None:
+    """A subgraph with no nodes has no entry / exit node."""
+    graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[Subgraph(id="empty", title="E", statements=[])],
+    )
+    engine = LayoutEngine(graph)
+    assert engine.subgraph_entry_node_id("empty") is None
+    assert engine.subgraph_exit_node_id("empty") is None
+
+
+def test_dagre_edge_endpoint_plain_node_returns_self() -> None:
+    """A plain node id maps to itself regardless of source/target role."""
+    engine = LayoutEngine(_chain_graph())
+    assert engine.dagre_edge_endpoint("A", True) == "A"
+    assert engine.dagre_edge_endpoint("C", False) == "C"
+
+
+def test_dagre_edge_endpoint_subgraph_source_exit_sink_entry() -> None:
+    """A subgraph endpoint collapses to its exit (source) / entry (sink)."""
+    graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Subgraph(
+                id="sg",
+                title="S",
+                statements=[
+                    Node(id="A", label="A", shape=NodeShape.Rectangle),
+                    Node(id="C", label="C", shape=NodeShape.Rectangle),
+                    Edge(from_="A", to="C", label=None, style=EdgeStyle.Arrow),
+                ],
+            ),
+        ],
+    )
+    engine = LayoutEngine(graph)
+    # entry=A (no sibling in-edge), exit=C (no sibling out-edge)
+    assert engine.dagre_edge_endpoint("sg", True) == "C"  # source -> exit
+    assert engine.dagre_edge_endpoint("sg", False) == "A"  # sink -> entry
+
+
+def test_layout_endpoint_node_returns_existing_node() -> None:
+    """A node id present in ``layout_nodes`` returns its clone unchanged."""
+    engine = LayoutEngine(_chain_graph())
+    box = LayoutNode(
+        id="A", x=5.0, y=6.0, width=10.0, height=20.0,
+        shape=NodeShape.Rectangle, label="A", fill_color=None, stroke_color=None,
+    )
+    resolved = engine.layout_endpoint_node({"A": box}, [], "A")
+    assert resolved is box
+
+
+def test_layout_endpoint_node_synthesises_centred_subgraph_box() -> None:
+    """A subgraph id synthesises a centred rectangle (centre = subgraph centre)."""
+    engine = LayoutEngine(_chain_graph())
+    sg = LayoutSubgraph(
+        id="sg", title="Cluster", x=10.0, y=20.0, width=30.0, height=40.0,
+    )
+    resolved = engine.layout_endpoint_node({}, [sg], "sg")
+    assert resolved is not None
+    assert resolved.id == "sg"
+    assert resolved.x == 25.0  # 10 + 30/2
+    assert resolved.y == 40.0  # 20 + 40/2
+    assert resolved.width == 30.0
+    assert resolved.height == 40.0
+    assert resolved.shape == NodeShape.Rectangle
+    assert resolved.label == "Cluster"
+
+
+def test_layout_endpoint_node_unknown_id_returns_none() -> None:
+    """An id that is neither a node nor a known subgraph resolves to ``None``."""
+    engine = LayoutEngine(_chain_graph())
+    assert engine.layout_endpoint_node({}, [], "ghost") is None
+
+
+# --- cohort 3: edge-label sizing ------------------------------------------
+
+
+def test_edge_label_dimensions_empty_returns_none() -> None:
+    """An empty / whitespace-only label yields ``None`` (caller skips the box)."""
+    engine = LayoutEngine(_chain_graph())
+    assert engine.edge_label_dimensions("") is None
+    assert engine.edge_label_dimensions("   ") is None
+
+
+def test_edge_label_dimensions_padded_box_matches_wrapped_measure() -> None:
+    """The box equals the wrapped measure plus ``EDGE_LABEL_PADDING`` on all sides."""
+    engine = LayoutEngine(_chain_graph())
+    label = "a sample edge label"
+    from minimax_code.mermaid.to_svg.text_wrap import (
+        DEFAULT_CHAR_WIDTH,
+        measure_wrapped_lines_with_font_size,
+        scale_char_width,
+        wrap_text_lines,
+    )
+
+    char_width = scale_char_width(DEFAULT_CHAR_WIDTH, engine.options.font_size)
+    lines = wrap_text_lines(label, engine.options.wrapping_width, char_width)
+    text_w, text_h = measure_wrapped_lines_with_font_size(
+        lines, char_width, engine.options.font_size
+    )
+    expected = (
+        text_w + layout_mod.EDGE_LABEL_PADDING * 2.0,
+        text_h + layout_mod.EDGE_LABEL_PADDING * 2.0,
+    )
+    assert engine.edge_label_dimensions(label) == expected
+
+
+def test_edge_label_dimensions_state_diagram_uses_narrower_char_width() -> None:
+    """State diagrams use ``STATE_CHAR_WIDTH`` (6.7 < ``DEFAULT_CHAR_WIDTH`` 8.0).
+
+    The label is kept short enough that it stays on a single wrapped line for
+    *both* char widths -- once the wrap-line count is fixed, the measured box
+    width is strictly proportional to the per-char estimate, so the narrower
+    ``STATE_CHAR_WIDTH`` yields a strictly narrower box. (A long label would
+    confuse the comparison: the narrower estimate can keep it on one line
+    while the wider estimate wraps it, making the "narrower" box wider.)
+    """
+    state_graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[Node(id="s", label="s", shape=NodeShape.StartState)],
+    )
+    state_engine = LayoutEngine(state_graph)
+    flow_engine = LayoutEngine(_chain_graph())
+    label = "ab"
+    state_dim = state_engine.edge_label_dimensions(label)
+    flow_dim = flow_engine.edge_label_dimensions(label)
+    assert state_dim is not None
+    assert flow_dim is not None
+    # both single-line -> narrower per-char estimate -> narrower measured box
+    assert state_dim[0] < flow_dim[0]
+
+
+# --- cohort 4: rank / alignment passes ------------------------------------
+
+
+def test_longest_path_ranks_chain_dag() -> None:
+    """A chain ``A -> B -> C`` ranks ``{A:0, B:1, C:2}``."""
+    engine = LayoutEngine(_chain_graph())
+    assert engine.longest_path_ranks_without_back_edges(set()) == {
+        "A": 0,
+        "B": 1,
+        "C": 2,
+    }
+
+
+def test_longest_path_ranks_all_cycle_returns_zero_dict() -> None:
+    """With every edge treated as a back edge, no rank propagation occurs.
+
+    All nodes initialize to rank 0; ranks only rise via forward edges. When
+    *every* edge is in ``back_edges``, the stripped graph has no forward edge
+    to propagate along, so every node stays at 0. (Marking only ``(B, A)``
+    would leave ``(A, B)`` as a forward edge, ranking ``B`` at 1 -- the
+    natural single-back-edge case covered by ``detect_back_edges``.)
+    """
+    engine = LayoutEngine(_two_node_cycle_graph())
+    ranks = engine.longest_path_ranks_without_back_edges({("A", "B"), ("B", "A")})
+    assert ranks == {"A": 0, "B": 0}
+
+
+def test_snap_state_ranks_projects_y_onto_rank_grid() -> None:
+    """Each node's y is re-projected onto the sorted deduped grid by its rank."""
+    engine = LayoutEngine(_chain_graph())
+    # ranks: A=0, B=1, C=2; y-values deliberately scrambled out of rank order
+    positions: PositionMap = {
+        "A": (0.0, 100.0),
+        "B": (0.0, 10.0),
+        "C": (0.0, 20.0),
+    }
+    engine.snap_state_ranks(positions, set())
+    # grid = sorted deduped y = [10, 20, 100]; rank 0 -> 10, 1 -> 20, 2 -> 100
+    assert positions == {"A": (0.0, 10.0), "B": (0.0, 20.0), "C": (0.0, 100.0)}
+
+
+def test_snap_state_ranks_noop_when_grid_too_short() -> None:
+    """When the deduped grid is too short for the max rank, positions stay put."""
+    engine = LayoutEngine(_chain_graph())
+    positions: PositionMap = {
+        "A": (0.0, 0.0),
+        "B": (0.0, 0.0),
+        "C": (0.0, 100.0),
+    }
+    # grid dedupes to [0, 100] (len 2) but max_rank is 2 -> 2 <= 2 -> no-op
+    engine.snap_state_ranks(positions, set())
+    assert positions == {
+        "A": (0.0, 0.0),
+        "B": (0.0, 0.0),
+        "C": (0.0, 100.0),
+    }
+
+
+def test_align_state_terminal_singletons_snaps_x_to_max_predecessor() -> None:
+    """A lone sink with >=2 lower-rank predecessors snaps x to the max predecessor x."""
+    graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Node(id="A", label="A", shape=NodeShape.Rectangle),
+            Node(id="B", label="B", shape=NodeShape.Rectangle),
+            Node(id="C", label="C", shape=NodeShape.Rectangle),
+            Edge(from_="A", to="C", label=None, style=EdgeStyle.Arrow),
+            Edge(from_="B", to="C", label=None, style=EdgeStyle.Arrow),
+        ],
+    )
+    engine = LayoutEngine(graph)
+    positions: PositionMap = {
+        "A": (0.0, 0.0),
+        "B": (100.0, 0.0),
+        "C": (50.0, 100.0),
+    }
+    engine.align_state_terminal_singletons(positions, set())
+    # C is the lone rank-1 sink with predecessors A, B at rank 0 -> x = max(0, 100)
+    assert positions["C"] == (100.0, 100.0)
+    assert positions["A"] == (0.0, 0.0)
+    assert positions["B"] == (100.0, 0.0)
+
+
+# --- cohort 5: back-edge discovery ----------------------------------------
+
+
+def test_dfs_detect_back_edges_records_in_stack_neighbor() -> None:
+    """An edge to a node still on the recursion stack is a back edge."""
+    engine = LayoutEngine(_two_node_cycle_graph())
+    visited: set[str] = set()
+    in_stack: set[str] = set()
+    back_edges: set[tuple[str, str]] = set()
+    engine.dfs_detect_back_edges("A", visited, in_stack, back_edges)
+    assert back_edges == {("B", "A")}
+    assert visited == {"A", "B"}
+    assert in_stack == set()  # every node discarded as recursion unwinds
+
+
+def test_detect_back_edges_dag_returns_empty_set() -> None:
+    """A DAG has no back edges."""
+    engine = LayoutEngine(_chain_graph())
+    assert engine.detect_back_edges() == set()
+
+
+def test_detect_back_edges_two_node_cycle() -> None:
+    """``A -> B -> A`` yields exactly one back edge ``("B", "A")``."""
+    engine = LayoutEngine(_two_node_cycle_graph())
+    assert engine.detect_back_edges() == {("B", "A")}
+
+
+# --- cohort 5: bridge pair (build / extract) ------------------------------
+
+
+def test_build_dagre_graph_returns_compound_graph_and_edge_map() -> None:
+    """``build_dagre_graph`` yields a dagre ``Graph`` + edge-index map."""
+    from minimax_code.data_structures import Graph
+
+    graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Node(id="A", label="A", shape=NodeShape.Rectangle),
+            Node(id="B", label="B", shape=NodeShape.Rectangle),
+            Edge(from_="A", to="B", label="x", style=EdgeStyle.Arrow),
+        ],
+    )
+    engine = LayoutEngine(graph)
+    g, edge_map = engine.build_dagre_graph("TB", 50.0, 50.0, set())
+    assert isinstance(g, Graph)
+    assert set(g.nodes()) >= {"A", "B"}
+    assert edge_map == {0: ("A", "B")}
+    # a labelled edge carries a measured label box (width/height > 0)
+    edge_obj = g.edge("A", "B", None)
+    assert edge_obj is not None
+    assert edge_obj.width is not None and edge_obj.width > 0.0
+    assert edge_obj.height is not None and edge_obj.height > 0.0
+
+
+def test_build_dagre_graph_drops_back_edges_and_self_loops() -> None:
+    """Back edges and self-loops are absent from both dagre and ``edge_map``."""
+    graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Node(id="A", label="A", shape=NodeShape.Rectangle),
+            Node(id="B", label="B", shape=NodeShape.Rectangle),
+            Edge(from_="A", to="B", label=None, style=EdgeStyle.Arrow),  # idx 0 -- kept
+            Edge(from_="B", to="A", label=None, style=EdgeStyle.Arrow),  # idx 1 -- back edge, dropped
+            Edge(from_="A", to="A", label=None, style=EdgeStyle.Arrow),  # idx 2 -- self-loop, dropped
+        ],
+    )
+    engine = LayoutEngine(graph)
+    g, edge_map = engine.build_dagre_graph("TB", 50.0, 50.0, {("B", "A")})
+    assert edge_map == {0: ("A", "B")}
+    assert g.edge("A", "B", None) is not None
+    assert g.edge("B", "A", None) is None
+
+
+def test_build_dagre_graph_seeds_zero_size_subgraph_node() -> None:
+    """A subgraph seeds a zero-size node with ``SUBGRAPH_PADDING``."""
+    graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Subgraph(
+                id="sg",
+                title="S",
+                statements=[Node(id="A", label="A", shape=NodeShape.Rectangle)],
+            ),
+            Node(id="B", label="B", shape=NodeShape.Rectangle),
+            Edge(from_="A", to="B", label=None, style=EdgeStyle.Arrow),
+        ],
+    )
+    engine = LayoutEngine(graph)
+    g, _ = engine.build_dagre_graph("TB", 50.0, 50.0, set())
+    assert "sg" in g.nodes()
+    sg_node = g.node("sg")
+    assert sg_node is not None
+    assert sg_node.width == 0.0
+    assert sg_node.height == 0.0
+    assert sg_node.padding == layout_mod.SUBGRAPH_PADDING
+
+
+def test_extract_layout_from_dagre_reads_node_positions() -> None:
+    """``extract_layout_from_dagre`` copies each node's dagre ``(x, y)``."""
+    from minimax_code.dagre import GraphNode
+
+    graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Node(id="A", label="A", shape=NodeShape.Rectangle),
+            Node(id="B", label="B", shape=NodeShape.Rectangle),
+            Edge(from_="A", to="B", label=None, style=EdgeStyle.Arrow),
+        ],
+    )
+    engine = LayoutEngine(graph)
+    g, edge_map = engine.build_dagre_graph("TB", 50.0, 50.0, set())
+    # inject dagre-computed coordinates (build seeds width/height, not x/y)
+    g.set_node("A", GraphNode(x=10.0, y=20.0))
+    g.set_node("B", GraphNode(x=10.0, y=70.0))
+    positions, _, _ = engine.extract_layout_from_dagre(g, edge_map)
+    assert positions["A"] == (10.0, 20.0)
+    assert positions["B"] == (10.0, 70.0)
+
+
+def test_extract_layout_from_dagre_extracts_edge_points_and_labels() -> None:
+    """Edge polylines land in ``edge_points``; measured labels in label positions."""
+    from minimax_code.dagre import GraphEdge, GraphEdgePoint
+
+    graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Node(id="A", label="A", shape=NodeShape.Rectangle),
+            Node(id="B", label="B", shape=NodeShape.Rectangle),
+            Edge(from_="A", to="B", label="hi", style=EdgeStyle.Arrow),
+        ],
+    )
+    engine = LayoutEngine(graph)
+    g, edge_map = engine.build_dagre_graph("TB", 50.0, 50.0, set())
+    # inject the geometry the position phase would have filled
+    g.set_edge(
+        "A",
+        "B",
+        GraphEdge(
+            labelpos="c",
+            width=30.0,
+            height=14.0,
+            x=15.0,
+            y=45.0,
+            points=[GraphEdgePoint(x=10.0, y=20.0), GraphEdgePoint(x=10.0, y=70.0)],
+        ),
+        None,
+    )
+    _, edge_points, edge_labels = engine.extract_layout_from_dagre(g, edge_map)
+    assert edge_points[0] == [(10.0, 20.0), (10.0, 70.0)]
+    assert edge_labels[0] == (15.0, 45.0)
+
+
+# --- R274c barrel contract: layout stays internal -------------------------
+
+
+def test_layout_module_all_unchanged_at_four_symbols() -> None:
+    """R274c adds instance methods, not public symbols; ``__all__`` stays at 4."""
+    assert layout_mod.__all__ == [
+        "LayoutEdge",
+        "LayoutNode",
+        "LayoutResult",
+        "LayoutSubgraph",
+    ]
+
+
+def test_dagre_graph_alias_internal_not_in_module_all() -> None:
+    """The ``DagreGraph`` type alias is internal -- not in ``layout.__all__``."""
+    assert "DagreGraph" not in layout_mod.__all__
+    assert hasattr(layout_mod, "DagreGraph")  # reachable by deep path
+
+
+def test_mermaid_root_barrel_unchanged_by_r274c() -> None:
+    """R274c adds an internal-method cohort; the R38 root surface stays at 17."""
+    assert len(mermaid.__all__) == 17
+    assert "to_svg" not in mermaid.__all__

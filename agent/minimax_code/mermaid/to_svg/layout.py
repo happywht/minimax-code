@@ -87,6 +87,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TypeAlias
 
+# R274c: dagre bridge -- the 5th type alias (``DagreGraph``) + the
+# ``build_dagre_graph`` / ``extract_layout_from_dagre`` / snap-rank helpers pull
+# in the now-complete dagre layout stack (R246-R268) + the graphlib ``Graph``
+# core (R241-R245). Mirrors grok's ``use dagre::...`` + ``use graphlib::...``.
+from minimax_code.dagre import GraphConfig, GraphEdge, GraphNode
+from minimax_code.data_structures import Graph, GraphOption
+
 from .ast import (
     Edge,
     EdgeStyle,
@@ -292,16 +299,20 @@ class ClusterAnalysis:
     external_edges: dict[str, bool]
 
 
-# === type aliases (grok ``type``, 4 stdlib) =================================
+# === type aliases (grok ``type``, 5 stdlib) =================================
 #
 # The 5th grok alias ``type DagreGraph = Graph<GraphConfig, GraphNode,
-# GraphEdge>`` is deferred to the dagre-bridge leaf (R274c) -- it is unused
-# before that leaf and pulls in the ``dagre`` package types.
+# GraphEdge>`` lands here (R274c) alongside the dagre-bridge methods that
+# consume it: it is the layout-stage view of the dagre ``Graph`` (R241-R245
+# graphlib core + R246 dagre type foundation). The 4 leaf-only aliases (edge
+# index -> endpoint pair, node id -> center, edge index -> polyline points,
+# edge index -> label center) feed the bridge's extract step.
 
 EdgeMap: TypeAlias = dict[int, tuple[str, str]]
 PositionMap: TypeAlias = dict[str, tuple[float, float]]
 EdgePointMap: TypeAlias = dict[int, list[tuple[float, float]]]
 EdgeLabelPosMap: TypeAlias = dict[int, tuple[float, float]]
+DagreGraph: TypeAlias = Graph[GraphConfig, GraphNode, GraphEdge]
 
 
 # === flowchart layout options ===============================================
@@ -624,6 +635,496 @@ class LayoutEngine:
         # grok's match is exhaustive over the 12 NodeShape variants; reaching
         # here is a programming error (a new variant added without a size rule).
         raise ValueError(f"unhandled NodeShape: {shape!r}")
+
+    # === R274c: dagre bridge helpers (grok L465-512 + L811-1447 + L1663-1734) =
+    #
+    # The 14 helpers below wire the collected layout model to the dagre layout
+    # stack (R246-R268) via the graphlib ``Graph`` core (R241-R245). They split
+    # into 5 cohorts mirroring grok's ``layout.rs``:
+    #
+    # 1. subgraph ordering (``subgraph_ids_in_mermaid_order``) -- a post-order
+    #    DFS over the subgraph forest so outer subgraphs seed before inner.
+    # 2. edge-endpoint collapse (``nodes_in_subgraph_by_order`` /
+    #    ``subgraph_entry_node_id`` / ``subgraph_exit_node_id`` /
+    #    ``dagre_edge_endpoint`` / ``layout_endpoint_node``) -- a subgraph-bound
+    #    edge anchors onto its boundary node for dagre, then re-expands to a
+    #    centred box for rendering.
+    # 3. edge-label sizing (``edge_label_dimensions``).
+    # 4. rank / alignment passes (``longest_path_ranks_without_back_edges`` /
+    #    ``snap_state_ranks`` / ``align_state_terminal_singletons``).
+    # 5. back-edge discovery (``dfs_detect_back_edges`` / ``detect_back_edges``)
+    #    + the bridge pair (``build_dagre_graph`` / ``extract_layout_from_dagre``).
+
+    def subgraph_ids_in_mermaid_order(self) -> list[str]:
+        """Return subgraph ids in mermaid declaration order (grok L465-512).
+
+        Walks the subgraph forest depth-first (post-order) rooted at every
+        parentless subgraph, recording each id on the way back up, then reverses
+        the post-order so the outermost-first declaration order wins. Mirrors
+        grok's ``children_by_parent`` map + ``roots`` list + nested ``dfs``
+        helper (``visited`` guards against forest cycles).
+        """
+        if not self.subgraphs:
+            return []
+
+        children_by_parent: dict[str, list[str]] = {}
+        roots: list[str] = []
+        for sg in self.subgraphs:
+            parent_key = sg.parent_subgraph_id if sg.parent_subgraph_id is not None else ""
+            children_by_parent.setdefault(parent_key, []).append(sg.id)
+            if sg.parent_subgraph_id is None:
+                roots.append(sg.id)
+
+        def dfs(node_id: str, visited: set[str], out: list[str]) -> None:
+            if node_id in visited:
+                return
+            visited.add(node_id)
+            for child in children_by_parent.get(node_id, []):
+                dfs(child, visited, out)
+            out.append(node_id)
+
+        post_order: list[str] = []
+        visited: set[str] = set()
+        for root in roots:
+            dfs(root, visited, post_order)
+        post_order.reverse()
+        return post_order
+
+    def nodes_in_subgraph_by_order(self, subgraph_id: str) -> list[str]:
+        """Return the node ids directly inside ``subgraph_id``, sorted by order.
+
+        Mirrors grok L1301-1315: filter ``node_to_subgraph`` for the direct
+        children of this subgraph, then sort by ``NodeInfo.order`` with a
+        sentinel ``inf`` for any unsighted id (grok ``usize::MAX``) -- ``inf``
+        sorts after every real ``order`` so unsighted nodes land last and stay
+        stable.
+        """
+        node_ids = [
+            node_id
+            for node_id, sg_id in self.node_to_subgraph.items()
+            if sg_id == subgraph_id
+        ]
+        node_ids.sort(
+            key=lambda node_id: self.nodes[node_id].order
+            if node_id in self.nodes
+            else float("inf")
+        )
+        return node_ids
+
+    def subgraph_entry_node_id(self, subgraph_id: str) -> str | None:
+        """Return the entry node id of a subgraph (grok L1264-1280).
+
+        The entry is the first node (in declaration order) with no incoming
+        edge from a sibling inside the subgraph; if every node has such a
+        back-edge (a cycle), fall back to the first node. Mirrors grok's
+        ``find(...).or_else(first)`` chain.
+        """
+        node_ids = self.nodes_in_subgraph_by_order(subgraph_id)
+        if not node_ids:
+            return None
+        node_id_set = set(node_ids)
+        for node_id in node_ids:
+            if not any(
+                edge.from_ in node_id_set and edge.to == node_id for edge in self.edges
+            ):
+                return node_id
+        return node_ids[0]
+
+    def subgraph_exit_node_id(self, subgraph_id: str) -> str | None:
+        """Return the exit node id of a subgraph (grok L1282-1299).
+
+        The exit is the last node (in declaration order) with no outgoing edge
+        to a sibling inside the subgraph; if every node has such a forward-edge
+        (a cycle), fall back to the last node. Mirrors grok's
+        ``rev().find(...).or_else(last)`` chain.
+        """
+        node_ids = self.nodes_in_subgraph_by_order(subgraph_id)
+        if not node_ids:
+            return None
+        node_id_set = set(node_ids)
+        for node_id in reversed(node_ids):
+            if not any(
+                edge.from_ == node_id and edge.to in node_id_set for edge in self.edges
+            ):
+                return node_id
+        return node_ids[-1]
+
+    def dagre_edge_endpoint(self, id: str, is_source: bool) -> str | None:
+        """Map a (possibly subgraph) edge endpoint to a concrete dagre node id.
+
+        Mirrors grok L1252-1262: a plain node id maps to itself; a subgraph id
+        resolves to its exit node when the edge starts there (``is_source``)
+        and its entry node when the edge ends there. This collapses
+        subgraph-bound edges onto the boundary nodes dagre can actually position.
+        """
+        if not self.is_subgraph_id(id):
+            return id
+        if is_source:
+            return self.subgraph_exit_node_id(id)
+        return self.subgraph_entry_node_id(id)
+
+    def layout_endpoint_node(
+        self,
+        layout_nodes: dict[str, LayoutNode],
+        layout_subgraphs: list[LayoutSubgraph],
+        id: str,
+    ) -> LayoutNode | None:
+        """Resolve an edge endpoint id to a positioned layout node (grok L1317-1344).
+
+        A node id present in ``layout_nodes`` returns its clone; a subgraph id
+        synthesises a centred rectangle layout node (centre = subgraph centre,
+        label = title or id) so edges collapsed onto a subgraph boundary still
+        anchor to a renderable box. grok's ``.clone()`` is Rust ownership; the
+        frozen layout-node value is returned by reference in Python.
+        """
+        node = layout_nodes.get(id)
+        if node is not None:
+            return node
+        for subgraph in layout_subgraphs:
+            if subgraph.id == id:
+                return LayoutNode(
+                    id=subgraph.id,
+                    x=subgraph.x + subgraph.width / 2.0,
+                    y=subgraph.y + subgraph.height / 2.0,
+                    width=subgraph.width,
+                    height=subgraph.height,
+                    shape=NodeShape.Rectangle,
+                    label=subgraph.title if subgraph.title is not None else subgraph.id,
+                    fill_color=None,
+                    stroke_color=None,
+                )
+        return None
+
+    def edge_label_dimensions(self, label: str) -> tuple[float, float] | None:
+        """Return the ``(width, height)`` box for an edge label (grok L1429-1447).
+
+        Wraps the label at the flowchart wrapping width (state diagrams use a
+        wider per-char estimate), measures the wrapped block, and pads it on
+        all sides by ``EDGE_LABEL_PADDING``. An empty / whitespace-only label
+        yields ``None`` (grok returns ``None`` so the caller skips the label box).
+        """
+        if not label.strip():
+            return None
+        char_width = scale_char_width(
+            STATE_CHAR_WIDTH if self.is_state_diagram else DEFAULT_CHAR_WIDTH,
+            self.options.font_size,
+        )
+        lines = wrap_text_lines(label, self.options.wrapping_width, char_width)
+        if not lines:
+            return None
+        text_width, text_height = measure_wrapped_lines_with_font_size(
+            lines, char_width, self.options.font_size
+        )
+        return (
+            text_width + EDGE_LABEL_PADDING * 2.0,
+            text_height + EDGE_LABEL_PADDING * 2.0,
+        )
+
+    def longest_path_ranks_without_back_edges(
+        self, back_edges: set[tuple[str, str]]
+    ) -> dict[str, int]:
+        """Rank nodes by longest path through the back-edge-stripped DAG.
+
+        Mirrors grok L1017-1089: a Kahn-style topological sweep (in-degree
+        counter, ``ready`` queue sorted by ``NodeInfo.order``) yields a
+        declaration-stable topo order, then a forward pass assigns each node
+        ``max(rank, parent+1)`` so rank = the longest acyclic path from a
+        source. Back edges are ignored in both passes. Empty on an all-cyclic
+        graph (no source reaches the queue).
+        """
+        indegree: dict[str, int] = {node_id: 0 for node_id in self.nodes}
+        for edge in self.edges:
+            if (edge.from_, edge.to) in back_edges:
+                continue
+            if edge.to in indegree:
+                indegree[edge.to] += 1
+
+        def order_key(node_id: str) -> float:
+            info = self.nodes.get(node_id)
+            return float(info.order) if info is not None else float("inf")
+
+        ready = sorted(
+            (node_id for node_id, count in indegree.items() if count == 0),
+            key=order_key,
+        )
+        topo: list[str] = []
+        while ready:
+            node_id = ready.pop(0)
+            topo.append(node_id)
+            for edge in self.edges:
+                if edge.from_ != node_id:
+                    continue
+                if (edge.from_, edge.to) in back_edges:
+                    continue
+                if edge.to in indegree:
+                    indegree[edge.to] = max(indegree[edge.to] - 1, 0)
+                    if indegree[edge.to] == 0:
+                        ready.append(edge.to)
+            ready.sort(key=order_key)
+
+        ranks: dict[str, int] = {node_id: 0 for node_id in self.nodes}
+        for node_id in topo:
+            base_rank = ranks[node_id]
+            for edge in self.edges:
+                if edge.from_ != node_id:
+                    continue
+                if (edge.from_, edge.to) in back_edges:
+                    continue
+                if edge.to in ranks:
+                    ranks[edge.to] = max(ranks[edge.to], base_rank + 1)
+        return ranks
+
+    def snap_state_ranks(
+        self,
+        positions: PositionMap,
+        back_edges: set[tuple[str, str]],
+    ) -> None:
+        """Snap state-diagram node y to the nearest declared rank grid (grok L933-957).
+
+        Dagre's longest-path ranker for state diagrams can leave terminals off
+        the rank grid; this re-projects each node onto the y of its declared
+        rank (``longest_path_ranks_without_back_edges``). The grid is the sorted,
+        deduped set of distinct y-values (within 0.5px). No-op when the grid is
+        too short for the max rank, or the graph is all-cyclic (empty ranks).
+        The tuple is reassigned whole because Python tuples are immutable
+        (grok mutates ``*y`` in place).
+        """
+        ranks = self.longest_path_ranks_without_back_edges(back_edges)
+        if not ranks:
+            return
+        level_positions = sorted(y for _, y in positions.values())
+        deduped: list[float] = []
+        for y in level_positions:
+            if not deduped or abs(y - deduped[-1]) >= 0.5:
+                deduped.append(y)
+        if not deduped:
+            return
+        max_rank = max(ranks.values()) if ranks else 0
+        if len(deduped) <= max_rank:
+            return
+        for node_id, rank in ranks.items():
+            if node_id in positions:
+                x, _ = positions[node_id]
+                positions[node_id] = (x, deduped[rank])
+
+    def align_state_terminal_singletons(
+        self,
+        positions: PositionMap,
+        back_edges: set[tuple[str, str]],
+    ) -> None:
+        """Align lone terminal singletons to their predecessors' x (grok L959-1015).
+
+        For each rank holding exactly one node that is a sink (no forward
+        out-edge) with >= 2 predecessors at strictly lower ranks, snap the
+        node's x to the largest predecessor x. This keeps state-diagram
+        terminal columns aligned under their fan-in instead of drifting to the
+        dagre-computed median. No-op on an all-cyclic graph (empty ranks).
+        """
+        ranks = self.longest_path_ranks_without_back_edges(back_edges)
+        if not ranks:
+            return
+        nodes_by_rank: dict[int, list[str]] = {}
+        for node_id, rank in ranks.items():
+            nodes_by_rank.setdefault(rank, []).append(node_id)
+        for node_id, rank in ranks.items():
+            if rank <= 0:
+                continue
+            rank_nodes = nodes_by_rank.get(rank)
+            if rank_nodes is None:
+                continue
+            if len(rank_nodes) != 1:
+                continue
+            has_forward_outgoing = any(
+                edge.from_ == node_id and (edge.from_, edge.to) not in back_edges
+                for edge in self.edges
+            )
+            if has_forward_outgoing:
+                continue
+            predecessor_xs: list[float] = [
+                positions[edge.from_][0]
+                for edge in self.edges
+                if edge.to == node_id
+                and (edge.from_, edge.to) not in back_edges
+                and edge.from_ in ranks
+                and ranks[edge.from_] < rank
+                and edge.from_ in positions
+            ]
+            if len(predecessor_xs) < 2:
+                continue
+            predecessor_xs.sort()
+            if node_id in positions:
+                _, y = positions[node_id]
+                positions[node_id] = (predecessor_xs[-1], y)
+
+    def dfs_detect_back_edges(
+        self,
+        node: str,
+        visited: set[str],
+        in_stack: set[str],
+        back_edges: set[tuple[str, str]],
+    ) -> None:
+        """Recursive DFS marking edges to in-stack nodes as back edges.
+
+        Mirrors grok L1709-1734: a standard iterative-stack back-edge
+        discovery -- a neighbor still on the recursion stack is reached via a
+        back edge (``(node, neighbor)``), an unvisited neighbor recurses.
+        ``visited`` makes each node enter the DFS once; ``in_stack`` tracks the
+        active path. ``discard`` matches grok's ``HashSet::remove`` (no-op if
+        absent, never panics).
+        """
+        if node in visited:
+            return
+        visited.add(node)
+        in_stack.add(node)
+        for neighbor in self.adjacency.get(node, []):
+            if neighbor in in_stack:
+                back_edges.add((node, neighbor))
+            elif neighbor not in visited:
+                self.dfs_detect_back_edges(neighbor, visited, in_stack, back_edges)
+        in_stack.discard(node)
+
+    def detect_back_edges(self) -> set[tuple[str, str]]:
+        """Discover all back edges in the collected graph (grok L1663-1706).
+
+        Seeds the DFS from every source (a node with no in-edge;
+        ``reverse_adjacency`` has no entry for it); if there are none but edges
+        exist, seeds from the first edge's source; if there are no sources and
+        no edges but nodes exist, seeds from the lexicographically smallest
+        node id. A second sweep visits any node the seed DFS missed
+        (disconnected components), in sorted order. Each call to
+        :meth:`dfs_detect_back_edges` records ``(from, to)`` back edges.
+        """
+        back_edges: set[tuple[str, str]] = set()
+        visited: set[str] = set()
+        in_stack: set[str] = set()
+
+        start_nodes = [
+            node_id for node_id in self.nodes if node_id not in self.reverse_adjacency
+        ]
+        if not start_nodes and self.edges:
+            start_nodes.append(self.edges[0].from_)
+        elif not start_nodes and self.nodes:
+            start_nodes.append(min(self.nodes))
+
+        for start in start_nodes:
+            self.dfs_detect_back_edges(start, visited, in_stack, back_edges)
+
+        remaining = sorted(node_id for node_id in self.nodes if node_id not in visited)
+        for node_id in remaining:
+            if node_id not in visited:
+                self.dfs_detect_back_edges(node_id, visited, in_stack, back_edges)
+        return back_edges
+
+    def build_dagre_graph(
+        self,
+        rank_dir: str,
+        node_sep: float,
+        rank_sep: float,
+        back_edges: set[tuple[str, str]],
+    ) -> tuple[DagreGraph, EdgeMap]:
+        """Build the dagre :class:`Graph` for layout + the edge-index map (grok L811-903).
+
+        Mirrors grok's bridge step: a compound multigraph (``directed`` /
+        ``multigraph`` / ``compound``) with the flowchart's rankdir / nodesep /
+        ranksep (+ a fixed 20px edgesep, ``MARGIN`` px margins, and the
+        ``longest-path`` ranker for state diagrams). Subgraphs seed zero-size
+        nodes with ``SUBGRAPH_PADDING``; collected nodes (sorted by
+        ``NodeInfo.order`` for declaration-stable seeding) carry their measured
+        ``width`` / ``height``; ``set_parent`` wires the compound nesting.
+
+        Edges collapse subgraph-bound endpoints onto boundary nodes
+        (:meth:`dagre_edge_endpoint`); back edges and self-loops are dropped
+        from dagre -- the dropped indices are also missing from ``edge_map``,
+        so the extract step re-attaches them via the surviving indices.
+        Labelled edges carry a measured label box (``labelpos="c"``).
+        """
+        g: DagreGraph = Graph(
+            GraphOption(directed=True, multigraph=True, compound=True),
+            node_default_factory=GraphNode,
+            edge_default_factory=GraphEdge,
+        )
+        g.set_graph(
+            GraphConfig(
+                rankdir=rank_dir,
+                nodesep=node_sep,
+                ranksep=rank_sep,
+                edgesep=20.0,
+                marginx=MARGIN,
+                marginy=MARGIN,
+                ranker="longest-path" if self.is_state_diagram else None,
+            )
+        )
+
+        for sg_id in self.subgraph_ids_in_mermaid_order():
+            g.set_node(
+                sg_id,
+                GraphNode(width=0.0, height=0.0, padding=SUBGRAPH_PADDING),
+            )
+
+        sorted_nodes = sorted(self.nodes.items(), key=lambda item: item[1].order)
+        for node_id, info in sorted_nodes:
+            g.set_node(node_id, GraphNode(width=info.width, height=info.height))
+
+        for node_id, sg_id in self.node_to_subgraph.items():
+            g.set_parent(node_id, sg_id)
+        for sg in self.subgraphs:
+            if sg.parent_subgraph_id is not None:
+                g.set_parent(sg.id, sg.parent_subgraph_id)
+
+        edge_map: EdgeMap = {}
+        for idx, edge in enumerate(self.edges):
+            if (edge.from_, edge.to) in back_edges:
+                continue
+            dagre_from = self.dagre_edge_endpoint(edge.from_, True)
+            if dagre_from is None:
+                dagre_from = edge.from_
+            dagre_to = self.dagre_edge_endpoint(edge.to, False)
+            if dagre_to is None:
+                dagre_to = edge.to
+            if dagre_from == dagre_to:
+                continue
+            edge_label = GraphEdge(labelpos="c")
+            if edge.label is not None:
+                dimensions = self.edge_label_dimensions(edge.label)
+                if dimensions is not None:
+                    edge_label.width, edge_label.height = dimensions
+            g.set_edge(dagre_from, dagre_to, edge_label, None)
+            edge_map[idx] = (dagre_from, dagre_to)
+
+        return g, edge_map
+
+    def extract_layout_from_dagre(
+        self,
+        g: DagreGraph,
+        edge_map: EdgeMap,
+    ) -> tuple[PositionMap, EdgePointMap, EdgeLabelPosMap]:
+        """Extract positions + edge geometry from a laid-out dagre graph (grok L905-931).
+
+        Reads every node's dagre-computed ``(x, y)`` into ``positions``; for
+        each edge in the index map, copies its control-point polyline into
+        ``edge_points`` and, when the edge carries a measured label box
+        (width/height > 0), records the label centre ``(edge.x, edge.y)``. The
+        triple drives the post-dagre geometry pass that snaps state ranks,
+        aligns terminal singletons, and materialises the render layout.
+        """
+        positions: PositionMap = {}
+        for node_id in g.nodes():
+            node = g.node(node_id)
+            if node is not None:
+                positions[node_id] = (node.x, node.y)
+
+        edge_points: EdgePointMap = {}
+        edge_label_positions: EdgeLabelPosMap = {}
+        for idx, (from_, to) in edge_map.items():
+            edge = g.edge(from_, to, None)
+            if edge is None:
+                continue
+            if edge.points is not None:
+                edge_points[idx] = [(point.x, point.y) for point in edge.points]
+            if (edge.width or 0.0) > 0.0 or (edge.height or 0.0) > 0.0:
+                edge_label_positions[idx] = (edge.x, edge.y)
+
+        return positions, edge_points, edge_label_positions
 
 
 __all__ = [
