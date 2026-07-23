@@ -19300,3 +19300,58 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R271 migrate mermaid-to-svg error.rs + ast.rs (direction (1) leaf 3, type-foundation pair)`。提交 1b7560d。6 文件 829 insertions / 5 deletions（error.py 新 111 + ast.py 新 172 + `to_svg/__init__.py` 改 +37 + test_error 新 179 + test_ast 新 311 + config test 改 +22/-5 barrel 8→15 同步）。锚点链: ... -> R269(84f4b33) -> R270(8415e09) -> R271(1b7560d)。
+
+## R272 — 迁移 mermaid-to-svg parser.rs（方向① 第 4 片叶子，flowchart 文本→AST 解析器，解除渲染栈 P0 阻塞，消费 R271 ast+error）
+
+锚点:R272-1 8d09886
+
+### 本轮目标
+
+迁移 `mermaid-to-svg/src/parser.rs`（659 行）（grok 行数级）—— mermaid-to-svg 渲染栈的**第 4 片叶子**，方向①（让 R246-R268 的 dagre 投入运作，mermaid 源码渲染为 SVG）的关键推进。`parser.rs` 是渲染栈的**解析器主体**：把 mermaid flowchart 文本（`graph TD; A-->B`）解析为 R271 ast 类型（`FlowchartGraph`），消费 R271 ast（产 Node/Edge/Subgraph/StyleStatement）+ R271 error（抛 `ParseError` / `InvalidDirection` / `UnsupportedDiagramType`）。**本轮解除方向① 的 P0 阻塞点**：R269-R271 三片叶子就位后「核心价值（mermaid 源码 → SVG 端到端）尚未打通」—— 缺把文本变成 AST 的 parser；没有 parser，layout/renderer 拿不到 AST 输入，整条渲染栈断在第二环。parser 是 R271 error+ast 的**直接消费者**，也是未来 `layout.rs`（AST→dagre 图模型）的**直接供给者**。迁移到 `agent/minimax_code/mermaid/to_svg/parser.py`（589 行，内部模块，1 公共符号 `parse_mermaid` + 5 模块自由函数 + `Parser` 类 + `_make_node` 静态辅助 + 4 模块常量），**barrel 不变**（parser 内部，grok `mod parser;` 私有，不进 to_svg barrel，不进 mermaid 根），编写 pytest（45 函数 / 64 用例，499 行，12 维度覆盖），ruff + 定向 pytest 186 passed（5 to_svg 文件）+ 全量回归 **7463 passed / 10 skipped**（vs R271 基准 7399 passed，+64 = R272 parser 新测试，零真实回归）。**本轮自查发现并修复 2 个 ruff F401 未使用 import**（`FlowchartGraph` + `Statement` 导入但未用）。
+
+### 融合结论
+
+**方向① 渲染栈迁移的第 4 砖 —— flowchart 解析器就位，文本→AST 端到端打通，P0 阻塞解除。** R272 是 mermaid-to-svg 渲染栈的**第 4 片叶子**（R269 theme 调色板 → R270 config 前端解析 → R271 error+ast 类型基础 → R272 parser 文本解析），单向消费 R271（产 ast 类型 + 抛 error 子类），是 R271 的**直接消费者**，也是未来 `layout.rs`（AST→dagre 图模型）的**直接供给者**。本轮的核心融合价值是 **grok 字节扫描解析器 → Python 字符扫描解析器的零语义克隆**：(1) **字节→字符**（grok `input.as_bytes()` 字节扫描 + `is_alphanumeric()` ASCII → Python 全程字符扫描，`str` 天然 Unicode，`isalnum()` Unicode 安全，语义等价因 mermaid 源码 ASCII 子集），(2) **Rust 模式表 → Python 元组常量表**（`_LABELED_EDGE_PATTERNS` 12 元组 `(prefix, EdgeStyle, label_end_marker)` + `_OPEN_EDGE_PATTERNS` 3 元组 `(opener, ((closer, style), ...))`，最长在前 / 最早关闭符获胜 / 平局最长长度获胜），(3) **关键字冲突 `from`→`from_`**（R271 已在 ast 层处理，parser 构造 `Edge(from_=...)` 消费）。**本轮的关键不变量**（每个都有定向测试守卫）：`parse_edge_chain` 返回顺序（**节点前置 + 边附加**，镜像 grok `node_statements.append(&mut statements)` 第 271-276 行）；`_find_edge_start` 字符扫描深度跟踪（`[({` +1 / `])}` -1 + `"` in_quote 状态，9 模式最长在前 `-.->` 先于 `-.-`）；`_try_parse_node` **10 形状优先级**（Circle `((` → Stadium `([` → Cylinder `[(` → Subroutine `[[` → Hexagon `{{` → Rectangle `[` → RoundedRectangle `(` (非 `))`) → Diamond `{` (非 `}}`) → Asymmetric `>]` (无 id 推导) → 裸字母数字+下划线 (label=None)）；`_make_node` id 派生（id = opener 之前文本，id 空时从 label 字母数字派生 `isalnum()`）；`_parse_subgraph` 嵌套 if-elif-else（括号标题 / 合成 `subGraph{N}` / 单词 id 三分支）；`_parse_style` 死代码非镜像（grok `if parts.is_empty()` 是死代码，Python 不镜像）。这是平台型工具产品演进「方向① 激活 dagre」的**关键第 4 砖**：P0 阻塞点解除，后续叶子（layout bridge → text_wrap → svg renderer）将在 parser 的 AST 输出之上把 mermaid 源码端到端渲染为 SVG。
+
+### 交付
+
+- `agent/minimax_code/mermaid/to_svg/parser.py`（新，589 行，**内部模块**）：1 公共符号 `parse_mermaid(input: str) -> FlowchartGraph`（入口：先 `first_non_empty_non_comment_line` 取首行，若首 token 是已知非 flowchart 类型抛 `UnsupportedDiagramType` 拒绝误解析，否则 `Parser(input).parse()`）+ 5 模块自由函数（`normalize_label` / `decode_html_entities` / `strip_wrapping_quotes` / `first_non_empty_non_comment_line` / `is_known_mermaid_type`）+ `Parser` 类（解析器主体：`parse()` 入口 / `_parse_direction` match-case 5 方向 / `parse_edge_chain` 节点前置返回 / `_find_edge_start` 字符扫描 / `_parse_edge_syntax` 12+3 模式 / `_try_parse_node` 10 形状优先级 / `_parse_subgraph` 3 分支 / `_parse_style` 属性解析）+ `_make_node` 静态辅助（id 派生）+ 4 模块常量（`_LABELED_EDGE_PATTERNS` 12 元组 / `_OPEN_EDGE_PATTERNS` 3 元组 / `_KNOWN_MERMAID_TYPES` 27 冻结集）。`__all__=["parse_mermaid"]`（内部模块，1 符号公共面，镜像 grok 私有 `mod parser;`）。
+- `agent/tests/test_mermaid_to_svg_parser.py`（新，499 行，45 函数 / 64 用例）：**12 维度覆盖** —— (1) graph/flowchart 声明 + 5 方向（TD/TB/BT/LR/RL，大小写不敏感，5 参数化）+ InvalidDirection + UnsupportedDiagramType（6 参数化：sequenceDiagram/classDiagram/stateDiagram/erDiagram/pie/gantt）+ 未知首 token 不拒绝（留 ParseError）+ 前导注释跳过；(2) **10 形状**（Rectangle/RoundedRectangle/Circle/Stadium/Cylinder/Subroutine/Hexagon/Diamond/Asymmetric + 裸字母数字 label=None + 空圆 id 从 label 派生 `HelloWorld`）；(3) **6 未标记边样式**（Arrow/Line/DottedArrow/DottedLine/ThickArrow/ThickLine，6 参数化）+ **6 带标签管道形式**（`-->|yes|` 等，6 参数化带 expected_label）+ **3 开放标签形式**（`-- yes -->` / `== bold ==>` / `-. maybe .->`）；(4) **边链**（3 节点链 A-->B-->C + 带标签中间 + 成形端点 A[Start]-->B[End]）；(5) **子图**（括号标题 / 合成 subGraph0 / 单词 id / 递归嵌套 / 可选 end）；(6) **样式**（带属性 fill/stroke/stroke-width + 不带属性空列表）；(7) **标签规范化**（包裹引号剥离 / 6 HTML 实体 `&amp;` 最后解码防双解码 / `<br>` `<br/>` `<br />` `<BR>` `\n` 变体）；(8) `decode_html_entities` amp-last + `strip_wrapping_quotes` 辅助 + 注释跳过 + `is_known_mermaid_type` + `first_non_empty_non_comment_line`；(9) **桶契约**（`parser.__all__==["parse_mermaid"]` / `parse_mermaid` 不在 `to_svg.__all__` / 深路径 `importlib.import_module` 可导入 / mermaid 根 `__all__==17` 未触碰）。
+- **barrel 未变**（无文件改动）：parser 是内部模块（grok `mod parser;` 私有），不进 to_svg barrel（保持 15 符号），不进 mermaid 根（保持 17 符号）。未来 layout 经深路径 `from .parser import parse_mermaid` 消费。
+
+### 映射决策树 + 坑
+
+- **🔴 字节扫描 → 字符扫描（Unicode 安全）**：grok `input.as_bytes()` 字节扫描 + `is_alphanumeric()`（ASCII），Python 全程字符扫描（`str` 天然 Unicode，`isalnum()` Unicode 安全）。语义等价（mermaid 源码 ASCII 子集），但 Python 版 Unicode 安全。无 grok `as_bytes()` 等价（Python str 已是字符序列）。
+- **🔴 parse_mermaid 入口 → 先类型守卫后解析**：grok `parse_mermaid` 先 `first_non_empty_non_comment_line` 取首行，若首 token（`parts[0]`）是已知非 flowchart 类型（`sequenceDiagram`/`pie`/`gantt` 等 27 种 `_KNOWN_MERMAID_TYPES`）抛 `UnsupportedDiagramType`（**拒绝误解析**非 flowchart 图表为 flowchart），否则 `Parser(input).parse()`。Python 镜像：`first_token != "graph" and first_token != "flowchart" and is_known_mermaid_type(first_token)` → raise。test 6 参数化守卫。
+- **🔴 parse_edge_chain 返回顺序（节点前置 + 边附加）**：grok 第 271-276 行 `node_statements.append(&mut statements)` = **节点列表前置，边附加在后**。Python `return node_statements + statements`。test `test_edge_chain_three_nodes` 守卫（A-->B-->C 产 3 节点 [A,B,C] + 2 边，节点在前）。
+- **🔴 _find_edge_start 字符扫描深度跟踪**：grok 字节扫描跟踪 `[({` 深度（+1）/ `])}` 深度（-1）+ `"` in_quote 状态翻转，9 模式**最长在前**（`-.->` 在 `-.-` 之前匹配，防短前缀贪婪）。Python 字符扫描镜像，9 模式按长度降序排列。
+- **🔴 _parse_edge_syntax 12 标记模式 + 3 开放标签形式**：grok 12 标记模式（`-->|`/`---|`/`-.->|`/`-.-|`/`==>|`/`===|` 带 `|` 结束符 + `-->`/`---`/`-.->`/`-.-`/`==>`/`===` 无结束符）+ 3 开放标签形式（`--`/`==`/`-.` 带候选关闭符 `-->`/`==>`/`.->`，**最早关闭符获胜，平局最长长度获胜**）。`total_len = opener_len + idx + closer_len`（`s.find(label_end, len(pattern))` 索引语义 = grok `after_pattern.find(label_end)`）。Python `_LABELED_EDGE_PATTERNS` 12 元组 `(prefix, EdgeStyle, label_end_marker)` + `_OPEN_EDGE_PATTERNS` 3 元组 `(opener, ((closer, style), ...))` 镜像。
+- **🔴 _try_parse_node 10 形状优先级**：Circle `((` → Stadium `([` → Cylinder `[(` → Subroutine `[[` → Hexagon `{{` → Rectangle `[` → RoundedRectangle `(` (非 `))`) → Diamond `{` (非 `}}`) → Asymmetric `>]` (**无 id 推导**) → 裸字母数字+下划线 (label=None)。Python if-elif 链镜像，**顺序敏感**（`((` 必须在 `(` 前，`[[` 必须在 `[` 前，防短前缀贪婪）。test 10 形状逐一守卫。
+- **🔴 _make_node id 派生**：id = opener 之前的文本；label = opener 与尾部 closer 之间的规范化文本；id 空时从 label 字母数字字符派生（`"".join(c for c in label if c.isalnum())` ≈ grok `is_alphanumeric()`）。test `test_circle_with_empty_id_derives_id_from_label` 守卫（`((Hello World))` → id=`HelloWorld`）。
+- **🔴 _parse_subgraph 嵌套 if-elif-else**：grok 若找到 `[`：以 `]` 结尾 → (id, 括号标题)；否则 → (after_keyword, None)。elif `split_whitespace` 计数 >1 → 合成 `subGraph{N}` + 标题。else → (单词, None)。Python 镜像三分支。test 5 子图场景守卫。
+- **🔴 _parse_style 死代码非镜像（YAGNI）**：grok `if parts.is_empty()` 是死代码（`splitn` 从不返回空 Vec），Python `split(" ", 1)` 同样不返回空 list，故**不镜像该死代码守卫**（YAGNI，避免无意义分支）。属性解析：`removeprefix("style ").strip()` → `split(" ", 1)` → node_id；属性 `split(",")` 然后 `split(":", 1)` → 元组列表。
+- **🔴 内部模块（parser 不进 barrel）**：grok `lib.rs` `mod parser;`（私有，第 18 行）+ `parser::parse_mermaid`（第 150 行内部调用）+ crate 根**无 `pub use parser`**。Python 镜像：parser.py 有自有 `__all__=["parse_mermaid"]`（1 符号内部公共面）但**不通过 to_svg barrel 导出**，深路径 `minimax_code.mermaid.to_svg.parser` 可访问（未来 layout 经 `from .parser import parse_mermaid` 消费）。barrel 保持 15 符号，mermaid 根保持 17 符号。test 桶契约 4 断言守卫。
+- **关键字冲突 `from`→`from_`（R271 ast 层已处理）**：parser 构造 Edge 时 `Edge(from_=from_id, ...)` 消费 R271 重命名，parser 自身不再处理冲突。
+- **`&apos;` 解码为 `'`（不是省略）**：normalize_label 的 6 HTML 实体（`&lt;`/`&gt;`/`&quot;`/`&#39;`/`&apos;`/`&amp;`），`&amp;` **最后解码**防双解码（`&amp;lt;` → `&lt;` 不是 `<`）。test `test_normalize_label_decodes_html_entities` 守卫（`it&#39;s &apos;ok&apos;` → `it's 'ok'`，`&amp;lt;` → `&lt;`）。
+- **本轮自查修复 2 个 ruff F401**：初写 test 导入 `FlowchartGraph` + `Statement`（ast import 块）但代码未直接引用（用 `isinstance(stmt, Node)` + `parser_mod.__all__` 间接覆盖），ruff F401 捕获，删除 2 未用 import 后干净。
+
+### 验证
+
+- ruff：parser.py + test_parser.py，**All checks passed!**（line-length 100，select E/F/W/I/B/UP，ignore E501）。初版 test 有 2 F401（FlowchartGraph + Statement 未用 import），删除后干净。
+- 定向 pytest（5 to_svg 文件：parser + ast + error + config + theme）：**186 passed（0.45s）**（64 parser 新 + 25 ast + 13 error + R270 config + R269 theme + barrel 同步）。零失败。
+- 全量回归：**7463 passed, 10 skipped（106.80s, exit 0）** vs R271 基准 7399 passed / 10 skipped。**+64 = R272 parser 新测试**（45 函数 parametrize 展开为 64 用例）。零真实回归。10 skipped 为预期。
+- CRLF 警告正常（Windows parser.py + test），无害。
+
+### YAGNI 边界
+
+- **layout.rs 待迁（渲染栈第 5 片叶子，R273 候选）**：dagre 布局桥接，消费 R246-R268 dagre 全栈 + R272 parser 产的 `FlowchartGraph` AST → dagre 图模型 → 节点/边坐标。**这是 parser 的直接消费者**，产错误时抛 `DotGenerationError`。R272 解除的 P0 阻塞让此层可启动。
+- **text_wrap.rs / svg_renderer.rs 待迁**：文本换行测量器（节点标签宽度计算）+ SVG 元素发射器（坐标 + 形状 → SVG 元素）。产错误时抛 `RenderError`。
+- **mermaid_port/ + xai-grok-mermaid 主机包装 + 20 图表渲染器待迁**：dagre 适配器子目录（把 mermaid AST 桥接到 dagre 图模型）+ 主机 crate engine dispatch + 各 mermaid 图表类型（flowchart/sequence/class/state...）渲染入口。
+- **parser 不接 ParsedMermaidSource.body（YAGNI）**：parser.`parse_mermaid(input)` 接原始文本，不接 R270 `ParsedMermaidSource`（那是主机层接线职责，未来 xai-grok-mermaid 主机包装把 front-matter 剥离后的 body 喂给 parser）。parser 只关心 body 文本 → AST。
+- **parser 不外暴到 barrel / mermaid 根**：保持 to_svg 子包内部深路径（`mermaid.to_svg.parser.parse_mermaid`），不进 to_svg barrel（grok `mod parser;` 私有），不进 mermaid 根（`__all__` 仍 17）。test 守卫 `parse_mermaid` absent 于 barrel + mermaid 根 `__all__==17`。
+- **GraphDirection wire 缩写在 parser 内烘焙**：与 R271 枚举层「只声明语义方向」互补 —— parser `_parse_direction` 负责 `TD`/`TB`/`BT`/`LR`/`RL` 文本 → `GraphDirection` 变体的映射（match-case，大小写不敏感，未知 → `InvalidDirection`）。缩写映射在 parser 层完成，枚举层保持纯净。
+- **数据类不强转类型 / 不加默认值**：`Parser` 类内部状态（input + position），`parse_mermaid` 入口无默认值，忠实 grok 解析器无 `Default` 语义。
+
+### Commit
+
+`feat(platform): R272 migrate mermaid-to-svg parser.rs (direction (1) leaf 4, flowchart text->AST parser, unblocks render stack)`。feat 提交 8d09886。2 文件 1088 insertions（parser.py 新 589 + test_parser.py 新 499）。docs 提交 ITERATION_LOG.md R272 条目。锚点链: ... -> R270(8415e09) -> R271(1b7560d) -> R272(8d09886)。
