@@ -20184,3 +20184,89 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R277 lib.rs crate-root barrel -> render_mermaid_to_svg dispatch (direction (1) brick 9, dagre stack end-to-end wired)`。feat 提交（4 文件）：`render.py`（新建）+ `to_svg/__init__.py`（桶扩展 15->18）+ `test_mermaid_to_svg_render.py`（新建，49 测试）+ `test_mermaid_to_svg_config.py`（同步 R270 旧断言 fifteen->eighteen）。docs 提交：`docs(platform): R277 iteration log entry`（ITERATION_LOG.md R277 条目）。锚点链: ... -> R275c(77c1226 feat / 008f307 docs) -> R276(b68f794 docs YAGNI) -> R277(feat render dispatch + docs)。**方向① 第 9 砖：crate-root 调度层落地，mermaid 源码 -> SVG 字符串端到端打通（49/49 测试，全量 7883 passed），桶 15->18，下一砖 R278 xai-grok-mermaid 主机包装 crate**。
+
+## R278a — 迁移 xai-grok-mermaid subprocess.rs（方向① 第 10 砖，主机壳层工具层首叶，asyncio spawn/feed/wait/reap 生命周期，零语义克隆）
+
+锚点:R278a-1 <pending>
+
+### 本轮目标
+
+迁移 grok `xai-grok-mermaid/src/subprocess.rs` 作为 Python 模块 `mermaid/subprocess.py`（方向① 第 10 砖）。这是 R38 已部分迁移的主机壳层（`types`/`errors`/`engine`）的**第 4 个文件**，承接 R277 的 crate-root 调度层：R277 打通了"mermaid 源码 -> SVG 字符串"的 dagre 栈，但 `render_mermaid_to_svg` 默认走的是 Python 纯渲染路径；grok 的可选 `mmdc` 引擎（shell 出到 `mmdc` CLI / headless Chromium）需要一个**panic 隔离的子进程运行器** —— spawn 一个短命子进程、可选喂 stdin、等到 wall-clock 预算、违约就 kill+reap 整个进程组。`subprocess.rs` 正是这个运行器（grok `run_with_timeout` L53-L89 + `reap` L155 + `reap_process_group` L168 + `spawn_with_etxtbsy_retry` L101）。本轮交付首个真正落地子进程隔离底座的主机壳层叶子。
+
+### 融合结论
+
+**方向① 第 10 砖 —— `subprocess.rs` 主机壳层工具层首叶，asyncio spawn/feed/wait/reap 生命周期。** `subprocess.py` 实现 6 个公共符号（基类 `SubprocessError` + 4 个变体子类 + `run_with_timeout` 协程），零语义复制 grok 的同步 `std::thread::scope` 模型到 Python asyncio 栈：`asyncio.create_subprocess_exec` + `start_new_session=True`（镜像 grok `xai_tty_utils::detach_std_command` 的 `setsid`，使子进程成为自己的会话/组 leader，pgid == pid）spawn 子进程；并发 task 喂 stdin（镜像 grok scoped-thread writer，防止大 payload 撑满 pipe buffer 死锁 wait）；`asyncio.wait_for` 强制 deadline；违约时 `os.killpg(pid, SIGKILL)` 杀整个进程组（镜像 grok `libc::killpg`，撕裂孙进程如 headless Chromium），Windows 路径 no-op（镜像 grok `reap_process_group` 的 `cfg(not(unix))` 分支，仅直接子进程被 `proc.kill()` 终止）。错误分类法：grok 单一 `SubprocessError` 四变体枚举（Spawn/Timeout/NonZeroExit/Wait）-> Python 基类 + 每变体一子类（复用 R271 `error.py` 的 grok-enum->Python-subclass-tree 适配范式），每子类 `__str__` 逐字复现 grok `#[error("...")]` Display 串。`ETXTBSY`（"Text file busy"，Linux fork->execve 临时竞态）重试上限 `_ETXTBSY_MAX_ATTEMPTS=5` + `_ETXTBSY_BACKOFF_BASE_SECONDS=0.020`（grok L102/L112）。crate 根 `__init__.py` 桶 `__all__` 17 -> 23（grok `lib.rs` L57 crate-root `pub use subprocess::{SubprocessError, run_with_timeout}` —— Python 侧把基类 + 4 子类 + 函数 6 符号全暴露，因 grok 的 enum 路径在 Python 无等价）。
+
+### 决策证据（asyncio 适配五要点 + 错误分类法）
+
+**要点 1 —— `start_new_session=True` == grok `setsid`（进程组隔离底座）。** grok 经 `xai_tty_utils::detach_std_command` 调 `setsid`，使子进程成为自己的会话 leader（pgid == pid），后续 `killpg(pgid)` 才能撕裂孙进程。Python `asyncio.create_subprocess_exec(..., start_new_session=True)` 在 Unix 调 `setsid`、在 Windows 调 `CREATE_NEW_PROCESS_GROUP`，语义对齐。`_reap_process_group` 测试用 `monkeypatch.setattr(sys, "platform", ...)` 同时强制 Unix/Windows 两路径在每台主机跑（非按 OS 门控），断言 Unix 路径调 `killpg(4242, 9)`、Windows 路径不调。
+
+**要点 2 —— 并发 task 喂 stdin == grok scoped-thread writer（防 pipe 死锁）。** grok 在 `std::thread::scope` 内起一个 writer 线程 `sink.write_all(payload)`，防止子进程停止读取时大 payload 撑满 pipe buffer 阻塞 write 从而死锁 wait（subprocess.rs L83 `let _ = sink.write_all(payload)` 忽略 `EPIPE`/reset）。Python 等价：`asyncio.create_task(_feed_stdin(proc.stdin, payload))`，`_feed_stdin` 在 `BrokenPipeError`/`ConnectionResetError`/`ConnectionAbortedError` 时 return（镜像 grok 忽略写错误），`finally` 关闭 pipe 让子进程观测 EOF。测试 `test_large_stdin_payload_round_trips_without_deadlock` 用 256 KiB payload（>任何 OS pipe buffer）echo 到 sink 文件，断言文件大小 == payload 大小 + 往返 < 5s（grok `large_stdin_payload_is_delivered_without_deadlock`）。
+
+**要点 3 —— `asyncio.wait_for` + `_reap` == grok deadline + 双 reap。** grok `wait_with_output` + 超时后 `reap`（killpg + kill + wait）。Python `await asyncio.wait_for(proc.wait(), timeout=timeout)`：`TimeoutError` -> `await _reap(proc)` + raise `TimeoutSubprocessError`；`ProcessLookupError` -> `await _reap(proc)` + raise `WaitSubprocessError`；`finally` 取消 writer_task 并 suppress `CancelledError`。`_reap` 逐字镜像 grok L155-L159：`_reap_process_group(proc)`（组 SIGKILL）-> `proc.kill()`（suppressed `ProcessLookupError`）-> `await proc.wait()`（suppressed）。零退出正常路径末尾仍调 `_reap_process_group(proc)`（grok L132-L139：每个退出路径都 reap 组，确保孙进程被撕裂，直接子进程已被 `proc.wait()` reap）。
+
+**要点 4 —— 错误分类法（grok enum -> Python subclass tree）。** grok `SubprocessError` 单枚举四变体（L22-L36），每变体 `#[error("...")]` Display。Python 表达为基类 `SubprocessError`（`__slots__ = ()`）+ 四子类：`SpawnSubprocessError(cause)`（`"could not spawn child process: {0}"`）/ `TimeoutSubprocessError()`（`"child process timed out"`，无 payload）/ `NonZeroExitSubprocessError(returncode)`（`"child process exited with {0}"`）/ `WaitSubprocessError(cause)`（`"waiting on child process failed: {0}"`）。每子类 `__str__` 逐字复现 grok Display。复用 R271 `error.py` 适配范式（grok `MermaidError` enum -> Python subclass tree）—— 调用方 `except TimeoutSubprocessError` 无需匹配枚举变体。5 个 `__str__`/属性测试逐一断言零偏差。
+
+**要点 5 —— `ETXTBSY` 重试上限 == grok `MAX_ATTEMPTS`。** Linux exec 一个正被另一线程/进程以写模式打开的二进制会失败 `ETXTBSY`（"Text file busy"），临时竞态几毫秒内消散，故重试几次 + 短退避（grok L101-L117）。`_spawn_with_etxtbsy_retry`：`except OSError` 时检查 `exc.errno == errno.ETXTBSY and attempt + 1 < _ETXTBSY_MAX_ATTEMPTS`，递增 attempt + `asyncio.sleep(_ETXTBSY_BACKOFF_BASE_SECONDS * attempt)` 后 continue，否则 `raise`。`_spawn_with_etxtbsy_retry` 被 `run_with_timeout` 包一层 `except OSError -> SpawnSubprocessError`（spawn 阶段任何 OSError 归类为 Spawn 变体）。测试 `test_spawn_retries_etxtbsy_up_to_max_then_propagates` fake `create_subprocess_exec` 持续抛 `OSError(errno.ETXTBSY)` + fake `asyncio.sleep` 零延迟，断言 `len(calls) == _ETXTBSY_MAX_ATTEMPTS` 且最终 raise 的 `errno == ETXTBSY`（grok `MAX_ATTEMPTS`）。
+
+### 交付
+
+- `agent/minimax_code/mermaid/subprocess.py`（新建，322 行）：
+
+  - **`__all__ = ["NonZeroExitSubprocessError", "SpawnSubprocessError", "SubprocessError", "TimeoutSubprocessError", "WaitSubprocessError", "run_with_timeout"]`**（6 符号，ASCII 序，镜像 grok `lib.rs` L57 crate-root re-export 面）。
+  - **模块 docstring** 解释 asyncio 适配（`create_subprocess_exec`/`wait_for`/`killpg`）、错误分类法（grok enum -> Python subclass tree，复用 R271 范式）、Windows no-op 等价（grok `cfg(not(unix))`）。
+  - **常量**：`_ETXTBSY_MAX_ATTEMPTS: int = 5` + `_ETXTBSY_BACKOFF_BASE_SECONDS: float = 0.020`（grok L102/L112）。
+  - **`SubprocessError`（基类，`__slots__ = ()`）** + 4 子类（Spawn/Timeout/NonZeroExit/Wait，每子类 `__slots__` 持对应 payload，`__str__` 逐字复现 grok `#[error(...)]`）。
+  - **`async def _spawn_with_etxtbsy_retry(cmd, *, stdin, stdout, stderr, env)`**：spawn + `ETXTBSY` 重试（grok `spawn_with_etxtbsy_retry` L101）。
+  - **`async def _feed_stdin(stream, payload)`**：写 + drain，`EPIPE`/reset 时 return，`finally` 关闭（grok scoped-thread writer）。
+  - **`def _reap_process_group(proc)`**：`sys.platform == "win32"` 时 return（no-op），否则 `os.killpg(proc.pid, signal.SIGKILL)` suppress `ProcessLookupError`/`PermissionError`（grok L168-L181）。
+  - **`async def _reap(proc)`**：`_reap_process_group` -> `proc.kill()`（suppressed）-> `await proc.wait()`（suppressed）（grok L155-L159）。
+  - **`async def run_with_timeout(cmd, *, stdin_payload=None, timeout, stdout=DEVNULL, stderr=DEVNULL, env=None) -> None`**：spawn（`except OSError -> SpawnSubprocessError`）-> 可选 writer_task -> `await asyncio.wait_for(proc.wait(), timeout)`（`TimeoutError -> _reap + TimeoutSubprocessError`；`ProcessLookupError -> _reap + WaitSubprocessError`；`finally` 取消 writer_task）-> 正常路径末尾 `_reap_process_group` + returncode 检查（`NonZeroExitSubprocessError`）。**Pythonic 收紧**：`stdin = PIPE if stdin_payload is not None else DEVNULL`，使 grok 的 `debug_assert!(stdin == Stdio::piped())`（L73，防"caller 忘了 pipe stdin 导致 payload 丢失"）foot-gun 在 Python 无可能。
+
+- `agent/minimax_code/mermaid/__init__.py`（桶扩展，3 处编辑）：
+
+  - **导入块**：`.subprocess` 导入 6 符号（isort 序：`.engine` < `.errors` < `.subprocess` < `.types`）。
+  - **`__all__` 17 -> 23**：末尾插入 6 个 subprocess 符号（基类 + 4 子类 + 函数，R278 分组标注）。
+  - **docstring "Scope of this package" 段刷新**：新增 `.subprocess` (R278) 描述（`run_with_timeout` + `SubprocessError` 分类法 + panic 隔离子进程运行器 + 支撑可选 `mmdc` 引擎 R278d + grok `lib.rs` L57 crate-root re-export）；"What is NOT here" 段刷新：`subprocess` 叶已落地 `mmdc` 引擎将消费的子进程隔离底座。
+
+- `agent/tests/test_mermaid_subprocess.py`（新建，321 行，19 测试）：
+
+  - **错误分类法 x5**：四变体 `issubclass(SubprocessError)` + 基类 is Exception + 4 `__str__`/属性（Spawn cause / Timeout 无 payload / NonZeroExit returncode=42 / Wait cause）。
+  - **`run_with_timeout` 生命周期 x5**（grok tests L197-L295）：零退出返回 None / 非零退出 raise + returncode=1 / 慢命令 150ms 超时（断言 < 2s 返回，非等满 5s）/ 缺失二进制 raise SpawnError / 256 KiB stdin 往返无死锁（sink 文件大小 == payload，< 5s）。
+  - **`_reap` x1**：spawn 真实子进程（`time.sleep(30)`）后 `_reap`，断言 `returncode` 已设置；Unix 路径 `os.kill(pid, 0)` 抛 `ProcessLookupError`（grok `kill(pid, 0) -> ESRCH` 检查）。
+  - **`_reap_process_group` 平台语义 x4**（monkeypatch 强制双路径跨平台可测）：Unix 路径调 `killpg(4242, 9)` / Windows 路径不调 / Unix 路径吞 `ProcessLookupError`(ESRCH) / Unix 路径吞 `PermissionError`(EPERM)。
+  - **`_spawn_with_etxtbsy_retry` x1**：持续 `ETXTBSY` 重试到 `_ETXTBSY_MAX_ATTEMPTS` 后 raise（grok `MAX_ATTEMPTS`）。
+  - **模块面 + 桶 re-export x2**：`subprocess.__all__` == 6 符号（排序）；桶 re-export 6 符号 + 3 个 `is` 同一性（re-export 非拷贝）+ `len(mermaid.__all__) == 23`。
+  - 所有子进程命令用 `sys.executable`（grok 的 Unix `true`/`false`/`sleep`/`cat` 在 Windows 无等价）；Windows 上 `signal.SIGKILL` 缺失，测试用 `_SIGKILL_VALUE = 9` + monkeypatch 注入。
+
+- **8 个 barrel-guard 测试文件同步**（barrel 范式维护：root barrel 17->23 时同步所有历史 barrel 守卫）：
+
+  - **11 处断言** `assert len(mermaid.__all__) == 17` -> `== 23`：`test_mermaid_to_svg_ast.py`(1) / `config.py`(1) / `error.py`(1) / `layout.py`(3) / `parser.py`(1) / `svg_renderer.py`(2) / `text_wrap.py`(1) / `theme.py`(1)。
+  - **17 处 docstring** 同步：15 处 `stays at 17` -> `stays at 23`（单行）+ 2 处 `stays 17` -> `stays 23`（无 "at"，layout L2056 + svg_renderer L1512）+ 1 处跨行 `the ``mermaid`` root stays\n  at 17.` -> `...at 23.`（text_wrap L23-24 模块 docstring）。
+  - **逐文件 barrel 守卫断言范式**：每个 `test_mermaid_root_barrel_unchanged_by_<leaf>` 测试断言根 barrel 大小不变；当后续叶子合理扩展根 barrel 时，所有历史守卫测试同步更新预期计数（本轮 R278 把根 barrel 从 17 扩到 23，故 R269-R275 全部 11 个守卫测试须从 17 同步到 23）。
+  - **零无关 "17" 受影响**：layout "17 migrated methods" / "17 edge-geometry helpers" / "The 17 R274e helpers"（L2062/L2064/L2533）、text_wrap 数学 "17.6"（L139/L141）均未跟随 `stays at`/`stays`/`len(mermaid.__all__) ==`，故不被任何 needle 匹配。
+
+### 验证
+
+- ruff：`subprocess.py` + `__init__.py` + `test_mermaid_subprocess.py` + 8 个 barrel-guard 测试 **All checks passed**（line-length 100，select E/F/W/I/B/UP，ignore E501）。
+- 定向 pytest（subprocess + 8 barrel-guard）：**577 passed in 1.58s**（subprocess 19 + ast/config/error/layout/parser/svg_renderer/text_wrap/theme 守卫全绿，断言 17->23 同步生效）。
+- 全量回归：**7903 passed, 10 skipped, 0 failed in 110.98s**（零失败；R277 全量 7883 -> R278 全量 7903，+20 测试来自 subprocess 新建 19 + 文件面 1，barrel-guard 同步不增测试数只改断言值）。
+- CRLF 警告正常（Windows 11 文件），无害。
+
+### YAGNI 边界
+
+- **`run_with_timeout` 返回 None 非 stdout bytes** —— grok `run_with_timeout` 签名实际消费 stdout（pager 的渲染子进程把 PNG 写 stdout），但本轮仅迁移"spawn/feed/wait/reap 生命周期"原语，stdout 消费留给 R278d `mmdc.py` 引擎叶子（其 `MermaidEngine::render` 调 `run_with_timeout` 并收集 stdout）。本轮签名 `-> None`（仅返回零退出成功与否），是"生命周期原语"的诚实边界。
+- **`pure.rs`/`mmdc.rs`/`raster.rs` + `tests/pure_engine.rs` 延后下一砖** —— R278 命名空间下剩余 4 文件（pure.rs 284 行 SVG 构造层 / mmdc.rs 257 行 CLI shell-out 引擎 / raster.rs 580 行 resvg/usvg/tiny_skia Rust 栈 YAGNI / tests/pure_engine.rs）分批迁移：R278b `raster.rs` YAGNI 裁决（resvg/usvg/tiny_skia 无 Python 等价，镜像 R276 `mermaid_port/` 死分支范式）；R278c `pure.rs` 纯 SVG 构造层；R278d `mmdc.rs` 全文件迁移（消费 subprocess + MermaidEngine）；R278 tests/pure_engine.rs 测试迁移。
+- **Windows `killpg` no-op 是 grok 原貌** —— grok `reap_process_group` 在 Windows 不实现 Job-Object 组撕裂（L168-L181 `cfg(not(unix))` no-op），仅 `proc.kill()` 终止直接子进程。Python 侧 `sys.platform == "win32"` return，语义对齐；测试用 monkeypatch 强制双路径跨平台可测。
+- **`_spawn_with_etxtbsy_retry` 在 Windows 无意义但仍保留** —— `ETXTBSY` 是 Linux 特有 errno，Windows 不会触发该分支；保留是镜像 grok 行为完整性（grok 同样在所有平台编译该 fn），且 `errno.ETXTBSY` 在 Windows Python 上常量值存在（不抛），无跨平台风险。
+- **修正后路线图**：
+  - **R278b（下一砖）** —— `raster.rs` YAGNI 裁决轮（resvg/usvg/tiny_skia Rust 栅格化栈无 Python 等价，镜像 R276 死分支裁决）。
+  - **R278c** —— `pure.rs` -> `pure.py`（SVG 构造层：build_svg/theme_for/map_engine_error；render() 的 `crate::rasterize` 行 YAGNI）。
+  - **R278d** —— `mmdc.rs` -> `mmdc.py`（全文件迁移，消费 subprocess + MermaidEngine）。
+  - **R278 tests/pure_engine.rs** —— pure 引擎测试迁移。
+  - **R279+** —— 19 个 per-diagram 渲染器（block/c4/class/er/gantt/gitgraph/info/journey/kanban/mindmap/packet/pie/quadrant/radar/requirement/sankey/sequence/state/timeline/xychart）。
+- **方向② xai-codebase-graph（tree-sitter 代码索引）+ 方向③ L2 自进化框架骨架接线** 均未开始（方向① 优先）。
+
+### Commit
+
+`feat(platform): R278a migrate xai-grok-mermaid subprocess.rs -> asyncio plumbing (direction (1) brick 10, host-shell tool layer leaf 1)`。feat 提交（11 文件）：`subprocess.py`（新建）+ `__init__.py`（桶扩展 17->23）+ `test_mermaid_subprocess.py`（新建，19 测试）+ 8 个 barrel-guard 测试同步（ast/config/error/layout/parser/svg_renderer/text_wrap/theme，11 断言 + 18 docstring）。docs 提交：`docs(platform): R278a iteration log entry`（ITERATION_LOG.md R278a 条目）。锚点链: ... -> R276(b68f794 docs YAGNI) -> R277(feat render dispatch + docs) -> R278a(feat subprocess + docs)。**方向① 第 10 砖：主机壳层工具层首叶，asyncio spawn/feed/wait/reap 生命周期落地（19/19 测试，全量 7903 passed），桶 17->23，下一砖 R278b raster.rs YAGNI 裁决**。
