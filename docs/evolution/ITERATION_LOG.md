@@ -19188,3 +19188,58 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R269 migrate mermaid-to-svg theme.rs render-stack leaf 1 (direction 1)`。提交 84f4b33。3 文件 758 insertions（theme.py 新 348 + `to_svg/__init__.py` 新 43 + test 新 367）。锚点链: ... -> R267(3477693) -> R268(38e14e4) -> R269(84f4b33)。
+
+## R270 — 迁移 mermaid-to-svg config.rs（方向① 第 2 片叶子，front-matter YAML 解析器 + RenderConfig，消费 R269 theme）
+
+锚点:R270-1 8415e09
+
+### 本轮目标
+
+迁移 `mermaid-to-svg/src/config.rs`（grok 行数级）—— mermaid-to-svg 渲染栈的**第 2 片叶子**，方向①（让 R246-R268 的 dagre 投入运作，mermaid 源码渲染为 SVG）的推进。`config.rs` 是渲染栈的**前端配置层**：解析 mermaid 源码顶部的 `---\n...\n---` YAML front-matter，产出 `RenderConfig`（typed `config:` 块）+ `MermaidFrontmatter`（可选 title）+ `FlowchartConfig`（`config.flowchart` 间距/曲线旋钮）。**首片非标库依赖叶子** —— grok 用 `serde_yaml`，Python 对应 `pyyaml`（从传递依赖提升为 `pyproject.toml` 显式依赖）。是 R269 theme 3 符号的**直接消费者**：`MermaidThemePreset.parse` + `MermaidThemeVariables.apply_mermaid_alias`/`apply_to` 构成 `RenderConfig.to_mermaid_theme()` 管线。迁移到 `agent/minimax_code/mermaid/to_svg/config.py`（533 行），barrel 扩展 3→8 符号，编写 pytest（35+ 测试，661 行），ruff + 定向 pytest 84 passed + 全量回归 7361 passed/10 skipped（vs R269 基准 7304 + 57 R270 新增），零真实回归。
+
+### 融合结论
+
+**方向① 渲染栈迁移的第 2 砖 —— 前端配置层就位，YAML→typed-config 管线打通。** R270 是 mermaid-to-svg 渲染栈的**第 2 片叶子**，单向消费 R269 theme（`to_mermaid_theme` 管线：preset 默认 DEFAULT → `apply_to` 覆盖），单向被未来的 `parser.rs`/`ast.rs`（R271 候选，flowchart 源码解析）消费 —— `parse_mermaid_frontmatter` 是源码进入渲染栈的**入口点**。本轮的核心融合价值是**「serde_yaml → PyYAML」的语义等价迁移**：grok 用 `serde_yaml::Value` 树做 YAML 解析，Python 用 `yaml.safe_load` 得到 native dict/list/scalar。表面看是 1:1 映射，实则暗藏 **4 个语义陷阱**（详映射决策树），每个陷阱都用显式 Python 逻辑兜底而非依赖隐式行为：(1) bool 序列化大小写（Rust `Display` 小写 vs Python `str(True)` 大写），(2) u32 范围 + 负数 + native bool 拒绝（`isinstance(True, int) is True` 的 Python 暗坑），(3) 三态「空 YAML / null / 解析错误」歧义（裸 `None` 无法区分，用 `_PARSE_FAILED` 哨兵），(4) codepoint vs byte 索引（Python `str` 按 codepoint，grok `&str` 按 byte；ASCII 结构标记 `---`/`\n` 落在相同边界，CJK title 提取字节等价）。这是平台型工具产品演进「方向① 激活 dagre」的第 2 砖：前端配置层就位，后续叶子（ast/parser → layout bridge → svg renderer）将让 mermaid 源码端到端渲染为 SVG。
+
+### 交付
+
+- `agent/minimax_code/mermaid/to_svg/config.py`（新，533 行，5 公共符号 + 2 RenderConfig 方法 + 13 私有辅助 + 2 模块哨兵）：`MermaidFrontmatter`（`@dataclass`，`title: str | None = None`，可选标题）。`FlowchartConfig`（`@dataclass`，9 `str | None` 字段 `curve`/`html_labels`/`node_spacing`/`rank_spacing`/`padding`/`diagram_padding`/`wrapping_width`/`use_max_width`/`default_renderer`，对应 grok `config.flowchart.*` 旋钮，保持 str 不强转类型忠实 grok serde 透明反序列化）。`RenderConfig`（`@dataclass`，8 字段 `theme: MermaidThemePreset | None`/`theme_variables: MermaidThemeVariables`/`layout: str | None`/`look: str | None`/`security_level: str | None`/`font_family: str | None`/`font_size: str | None`/`flowchart: FlowchartConfig`；`to_mermaid_theme() -> MermaidTheme | None`：theme 为 None 且 `variables.is_empty()` 返回 None，否则 preset 默认 DEFAULT 经 `to_theme()` 再 `variables.apply_to()`；`font_size_px() -> float | None`：经 `_parse_font_size` 解析 `"14px"`/`"14"`/`"14.5"` 为 float，非法返回 None）。`ParsedMermaidSource`（`@dataclass`，`body: str = ""` + `frontmatter: MermaidFrontmatter` + `config: RenderConfig`，源码三元组）。`parse_mermaid_frontmatter(source: str) -> ParsedMermaidSource`（入口点：`_frontmatter_bounds` 定位 `---` 围栏 → 无围栏返回 body 整体 + 默认 config → 有围栏经 `_parse_yaml_value` 解析 metadata → `_parse_frontmatter_metadata` 路由 title / `_parse_render_config` 路由 config 块 → `_parse_theme_variables` 经 R269 `apply_mermaid_alias` 别名路由 → `_parse_flowchart_config` 解析 flowchart 子块）。私有辅助：`_parse_yaml_value`（空串→None，解析错误→`_PARSE_FAILED` 哨兵）、`_parse_frontmatter_metadata`、`_parse_render_config`、`_parse_theme_variables`、`_parse_flowchart_config`、`_mapping_value`、`_value_to_string`（bool→小写 "true"/"false"）、`_value_to_bool`、`_value_to_u32`（`0 <= v < _U32_MAX`，拒绝 native bool + 负数字符串）、`_parse_font_size`（`math.isfinite and size > 0.0`）、`_frontmatter_bounds`（跳过前导空白定位开启/关闭 `---`）、`_next_line_end`（codepoint `source.find("\n", start)`）。模块级哨兵 `_PARSE_FAILED: Any = object()` + `_U32_MAX: int = 1 << 32`。`__all__ = ["FlowchartConfig", "MermaidFrontmatter", "ParsedMermaidSource", "RenderConfig", "parse_mermaid_frontmatter"]`（ASCII 序 5 符号）。
+- `agent/minimax_code/mermaid/to_svg/__init__.py`（改，43→62 行）：子包 barrel 扩展 3→8 符号。新增 `from .config import` 5 符号（`FlowchartConfig`/`MermaidFrontmatter`/`ParsedMermaidSource`/`RenderConfig`/`parse_mermaid_frontmatter`），保留 R269 `.theme` 3 符号。`__all__` 扩展为 ASCII 序 8（`FlowchartConfig`/`MermaidFrontmatter`/`MermaidTheme`/`MermaidThemePreset`/`MermaidThemeVariables`/`ParsedMermaidSource`/`RenderConfig`/`parse_mermaid_frontmatter`）。docstring 更新：`config` 从「NOT here yet」移入已实现范围（R270 描述）。
+- `agent/tests/test_mermaid_to_svg_config.py`（新，661 行，35+ 测试）：4 数据类默认值（`MermaidFrontmatter`/`FlowchartConfig` 9 None/`RenderConfig` 默认 + `flowchart` 工厂）+ `to_mermaid_theme`（5：theme None+空变量→None，preset-only→preset 调色板，overrides-only→DEFAULT+覆盖，preset+overrides→forest+mainBkg 覆盖，fresh-instance `a is not b`）+ `font_size_px`（6：`"14px"`/`"14"`/`"14.5"`/零负→None/`"abc"`→None/`"inf"`→None）+ `parse_mermaid_frontmatter`（6：无 front-matter body 整体/空围栏/仅 title/全 config 端到端 CJK title/malformed YAML 回退默认 config）+ CJK codepoint 正确性（多字节 title 提取字节等价）+ 白盒（`_value_to_string` bool 小写/`_value_to_bool`/`_value_to_u32` 范围+负数+native bool 拒绝/`_parse_font_size`/`_parse_yaml_value` 哨兵区分空串 None vs 解析错误 _PARSE_FAILED）+ barrel 表面契约（`to_svg.__all__` 8 符号 + reexport identity，mermaid 根 `__all__==17` 未触碰）。test `test_parse_full_config_end_to_end_wires_r269_pipeline` 验证多行 YAML source（theme forest + flowchart + themeVariables mainBkg）端到端解析，确认 R269 管线集成。
+- `agent/tests/test_mermaid_to_svg_theme.py`（改，1 测试同步）：R269 barrel 测试 `test_to_svg_subpackage_barrel_reexports_three_symbols`（锁定精确 3 符号 `__all__`）→ 改为 `test_to_svg_subpackage_barrel_includes_theme_symbols`（子集检查：3 主题符号在 `__all__` 中，不锁定完整列表）。标准的 leaf-migration barrel 表面同步（先例 #244/#248/#256），非迭代独立性冲突。
+- `agent/pyproject.toml`（改，+3 行）：`"pyyaml>=6.0",` 加入 dependencies（watchfiles 之后），附注释「mermaid-to-svg render stack (direction 1): parse mermaid diagram front-matter (YAML) into RenderConfig + theme overrides.」
+- `agent/uv.lock`（改，+2 行）：`uv lock` 自动重建。minimax-code-agent 依赖数组 + requires-dist 各加 1 行 pyyaml。`git diff -- agent/uv.lock` 确认仅 pyyaml 2 行，无无关更改。
+
+### 映射决策树 + 坑
+
+- **🔴 serde_yaml::Value → PyYAML native（核心映射）**：grok 用 `serde_yaml::Value`（tagged enum Null/Bool/Int/Float/String/Seq/Map）做 YAML 解析 + `Value::get`/`as_str`/`as_u64` 导航；Python 用 `yaml.safe_load` 得 native `dict`/`list`/`str`/`int`/`float`/`bool`/`None`。表面 1:1，但 serde 的强类型守卫（`as_u64` 拒绝 bool/负数/超范围）在 Python 的弱类型里需**显式重建**（见下 4 陷阱）。
+- **🔴 陷阱 1：bool 序列化大小写**：grok `Value::Bool(true).to_string()` → `"true"`（Rust `Display` 小写）；Python `str(True)` → `"True"`（大写）。`_value_to_string` 显式 `if isinstance(v, bool): return "true" if v else "false"`（必须 `isinstance(v, bool)` 在 `isinstance(v, int)` 之前判断，否则 bool 被当 int）。flowchart 的 `html_labels: true` / `useMaxWidth: false` 经此正确产出小写 wire string。
+- **🔴 陷阱 2：u32 范围 + 负数 + native bool 拒绝**：grok `fn as_u32` 经 `u32::try_from` 拒绝负数 + 超出 `0..2^32`；Python `int` 无此守卫。`_value_to_u32(v)`：(a) `isinstance(v, bool)` 先拒绝（Python `isinstance(True, int) is True` 暗坑 —— grok `Number` 从不携带 bool），(b) `isinstance(v, int)` 且 `0 <= v < _U32_MAX`（`_U32_MAX = 1 << 32`），(c) `isinstance(v, str)` 经 `int(s, 10)` 但负数字符串 `"-1"` → `ValueError` → None（镜像 grok `u32::from_str("-1")` 失败），(d) 其他返回 None。test `test_value_to_u32_rejects_*` 逐项守卫。
+- **🔴 陷阱 3：三态「空 / null / 解析错误」歧义 → _PARSE_FAILED 哨兵**：`_parse_yaml_value(text)` 需区分三种：(a) 空串/纯空白 → None（YAML null），(b) `"null"`/`"~"` → None（显式 null），(c) malformed YAML → 解析错误。若 (c) 也返回裸 None，则上层无法区分「合法 null 配置」vs「非法 YAML 回退」。引入模块级哨兵 `_PARSE_FAILED: Any = object()`：解析错误返回 `_PARSE_FAILED`，上层 `_parse_frontmatter_metadata` 检测 `_PARSE_FAILED is not v` 决定回退默认 config。这是 Python 缺乏 Rust `Result<T, E>` 的显式补偿。test `test_parse_yaml_value_sentinel_*` 守卫。
+- **🔴 陷阱 4：codepoint vs byte 索引**：grok 按 **字节** 索引 `&str`（`source[bounds.0..bounds.1]`）；Python `str` 按 **codepoint** 索引。结构标记 `---`、`\n`、`title:` 都是 ASCII（每字节 = 1 codepoint），所以 `_frontmatter_bounds` 的围栏扫描 codepoint 偏移 = grok byte 偏移。但提取的 title 子串若含 CJK（多字节 UTF-8），grok `[byte_start..byte_end]` 切的是字节范围，Python `[cp_start:cp_end]` 切的是 codepoint 范围 —— 两者**字节等价**（CJK 字符的 codepoint 边界落在 UTF-8 字节边界上），提取出的子串内容相同。这是「语义克隆，非字节偏移克隆」：行为等价，实现按各自语言原生索引。test CJK title 往返验证。
+- **🔴 pyyaml 显式依赖提升**：grok `serde_yaml` 是 crate 显式依赖；Python 侧 pyyaml 之前是 httpx/anthropic 的传递依赖（环境 6.0.3 可用）。本轮提升为 `pyproject.toml` 显式依赖 + `uv lock` 重建，消除「传递依赖消失即崩溃」风险。`git diff -- agent/uv.lock` 仅 pyyaml 2 行（依赖数组 + requires-dist），无无关 lock 漂移。
+- **FlowchartConfig 9 字段保持 str | None（不强转类型）**：grok serde 透明反序列化 `config.flowchart.nodeSpacing: 60` 为 serde_yaml Number，Python 侧 `yaml.safe_load` 得 int —— 但 `FlowchartConfig` 字段声明 `str | None` 保留原始类型忠实。这是因为 mermaid front-matter 的 flowchart 旋钮语义是「传给 mermaid.js renderer 的透传值」，过早强转会丢失精度/格式。`_parse_flowchart_config` 经 `_value_to_string` 把 int/bool 统一序列化为 wire string（bool 小写）。
+- **RenderConfig.to_mermaid_theme 三分支管线**：(1) `theme is None and variables.is_empty()` → None（无主题意图），(2) `theme is None` 但有变量 → DEFAULT preset + 变量覆盖（变量需要载体调色板），(3) `theme` 有值 → 该 preset + 变量覆盖。三分支都经 `MermaidThemePreset.to_theme()` 产新鲜实例再 `variables.apply_to()` 覆盖 —— R269 的管线契约在此首次端到端验证。
+- **barrel 扩展 3→8 + R269 测试同步**：R270 barrel 加 5 config 符号 → 8 总。R269 测试 `test_to_svg_subpackage_barrel_reexports_three_symbols`（锁定精确 3）会破坏 → 改为 `test_to_svg_subpackage_barrel_includes_theme_symbols`（子集检查）。这是 leaf-migration barrel-growth 标准契约（测试锁定符号子集而非完整列表，让叶子增长时不破坏先行叶子），先例 #244/#248/#256。
+
+### 验证
+
+- ruff：config.py + `__init__.py` + test + theme test，**All checks passed!**（line-length 100，select E/F/W/I/B/UP，ignore E501）。
+- 定向 pytest（test_mermaid_to_svg_config + test_mermaid_to_svg_theme）：**84 passed（0.29s）**（4 数据类默认 + 5 to_mermaid_theme + 6 font_size_px + 6 parse_mermaid_frontmatter + CJK + 白盒 _value_to_string/_value_to_bool/_value_to_u32/_parse_font_size/_parse_yaml_value + barrel 8 符号 + R269 27 测试）。
+- 全量回归：**7361 passed, 10 skipped（111.10s, exit 0）** vs R269 基准 7304 passed（+57 R270 新增 = 35 config + R269 barrel 测试改名不计净增）。零真实回归。10 skipped 为预期。
+- CRLF 警告正常（Windows config.py + `__init__.py` + 2 test），无害。
+- `git diff -- agent/uv.lock` 确认仅 pyyaml 2 行插入，无 lock 漂移噪音。
+
+### YAGNI 边界
+
+- **ast.rs / parser.rs 待迁（R271 候选，渲染栈第 3 片叶子）**：flowchart AST 节点定义（Node/Edge/Subgraph/Styling）+ mermaid 源码解析器（把 `graph TD; A-->B` 解析为 AST）。消费 `ParsedMermaidSource.body`（R270 产物）。
+- **layout.rs / text_wrap.rs / svg_renderer.rs 待迁**：dagre 布局桥接（消费 R246-R268 dagre 全栈 + ast）+ 文本换行测量器 + SVG 元素发射器。
+- **mermaid_port/ 待迁**：dagre 适配器子目录（`dagre_layout_port` + `flow_data`/`flow_db`/`flow_parser`/`cluster_adjust`），把 mermaid AST 桥接到 dagre 图模型。
+- **xai-grok-mermaid 主机包装 + 20 个图表渲染器待迁**：主机 crate 端的 engine dispatch + 各 mermaid 图表类型（flowchart/sequence/class/state...）的渲染入口。
+- **8 符号不外暴到 mermaid 根**：保持 to_svg 子包内部（`mermaid.to_svg.config.*` + `mermaid.to_svg.theme.*`），mermaid 根 `__all__` 仍 17（R38 设定，主机 crate 词汇）。test 守卫 `len(mermaid.__all__) == 17` + `"to_svg" not in mermaid.__all__`。
+- **FlowchartConfig 9 旋钮不强转类型**：保留 `str | None`（wire string 透传给 mermaid.js），不在 Python 侧做 int/bool 强转（grok serde 透明反序列化的忠实镜像）。
+- **_PARSE_FAILED 哨兵不外暴**：私有模块级哨兵，仅在 config.py 内部 + 白盒测试导入，不进 `__all__`。
+
+### Commit
+
+`feat(platform): R270 migrate mermaid-to-svg config.rs front-matter parser + RenderConfig`。提交 8415e09。6 文件 1233 insertions / 14 deletions（config.py 新 533 + test 新 661 + `to_svg/__init__.py` 改 +32 + theme test 改 +16/-14 barrel 同步 + pyproject.toml 改 +3 + uv.lock 改 +2）。锚点链: ... -> R268(38e14e4) -> R269(84f4b33) -> R270(8415e09)。
