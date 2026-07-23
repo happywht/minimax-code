@@ -19040,3 +19040,52 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R266 migrate dagre position/bk.rs (Brandes-Kopf assignment)`。提交 b148df6。3 文件 1238 insertions（2 生产 bk.py 749 + __init__.py 88，1 测试 test_dagre_layout_position_bk.py 401）。锚点链: ... -> R264(6f0cbf6) -> R265(e8ddf3c) -> R266(b148df6)。
+
+## R267 — 迁移 dagre position/mod.rs（position 编排层收官，position 子包 2/2，第 17 个零语义 clone 叶子）
+
+锚点:R267-1 3477693
+
+### 本轮目标
+
+迁移 `layout/position/mod.rs` —— position 子包的第二个也是最后一个叶子（position 2/2 收官里程碑）。`mod.rs` 是位置阶段的**编排层**：一个 `pub fn position(g)` 公共入口 + 一个私有 `position_y(g)` rank-sep 堆叠 helper。`position(g)` 调用 R248 `util.as_non_compound_graph` 将复合图投影为非复合叶节点视图 → `position_y(ncg)` 按 rank 分层堆叠写入 `y`（每层居中于 `prev_y + max_height/2`，`prev_y` 以 `max_height + ranksep` 前进）→ R266 `position_x(ncg)` 算水平 `x` → 循环 `position_x(ncg).iter()` 的 `(v, x)` 对，把每个叶子的 `x` 与 ncg 上的 `y` 写回原始复合图 `g`。迁移到 `agent/minimax_code/dagre/layout/position/mod.py`（136 行，2 函数），扩展 position 子包 barrel（`position/__init__.py` 1→2，`__all__` `["bk"]` → `["bk","mod"]`，docstring 第二段），编写 pytest（白盒 5 `position_y` + 端到端 2 `position` + barrel surface 6 = 13 测试），同步 R266 barrel 测试 `__all__` 1→2，ruff + 定向 pytest + 全量回归 R266 基准 7246（稳定 7225 + 21 R266）+ R267 新增 13，零真实回归。
+
+### 融合结论
+
+`position/mod.rs` 是 position 子包的**编排层叶子**，单向消费 R266 `bk.position_x`（`position_x` 的唯一调用方）+ R248 `util.as_non_compound_graph` / `build_layer_matrix`。这是 grok-build 融合 MiniMax Code 的又一个「薄编排层 + 算法核心」双文件分层范式的收官（继 R254-R257 rank 4 叶 + R258-R265 order 9 叶 + R266 bk 算法核心之后，position 以 R266 算法 + R267 编排 = 2 叶收官），确认 Python asyncio 架构能干净承载 Rust 的「700 行算法核心 + 50 行编排层」分层 —— 编排层只做投影/调用/写回三件事，纯逻辑零算法负担。`OrderedHashMap.iter()` yield `(key, value)` 对的接口设计在本轮得到验证：它是 grok `HashMap::iter()` 的精确 Python 模拟，使 `position_x(ncg).iter().for_each(|(v,x)| ...)` 直接映射为 `for v, x in position_x(ncg).iter()`，零适配成本。这是平台型工具产品演进的又一个「接口契约对齐」胜利 —— 数据结构层的 OrderedHashMap 设计在 R267 编排层产生复利回报。
+
+### 交付
+
+- `agent/minimax_code/dagre/layout/position/mod.py`（新，136 行，2 函数）：`position(g)` 公共编排器 + `position_y(g)` 私有堆叠 helper。详尽 docstring（76 行）描述 R267 是第 17 个零语义 clone 叶子 + 两个忠实翻译选择（`.unwrap()` panic → `assert` / `ranksep.clone().unwrap()` → `assert rank_sep is not None`）+ 两个编排层集成细节（`OrderedHashMap.iter()` = `HashMap::iter` 模拟 / `height as i32` 截断 → `int(height)` 像素舍入忠实保留）。导入仅 `position_x` + `as_non_compound_graph` + `build_layer_matrix` + 裸 `Graph` 类型（避免 F401，与 R266 bk.py 一致 —— 编排器从不命名标签类型）。`__all__ = ["position"]`（`position_y` 私有不进 `__all__`）。
+- `agent/minimax_code/dagre/layout/position/__init__.py`（M，barrel 1→2）：导入块 `from minimax_code.dagre.layout.position import (bk, mod,)`（多行括号，规避 I001 单行合并，order barrel 惯例）+ `__all__ = ["bk", "mod"]` + docstring 追加第二段（Second and final position leaf R267），描述 position() 编排器 / position 子包 2/2 收官 / 第 17 个零语义 clone 叶子 / OrderedHashMap.iter() HashMap::iter 模拟 / int(height) 像素舍入 / 断言镜像 unwrap 惯例 / barrel 扩展为 ASCII 序两元素。
+- `agent/tests/test_dagre_layout_position_mod.py`（新，~235 行，13 测试）：fixtures（`_make_position_graph` directed non-multigraph non-compound layer graph + `set_graph(GraphConfig(nodesep=50.0, edgesep=20.0))`，ranksep 默认 50.0；`_node(rank,order,width,height)`；`_edge`）+ `position_y` 白盒（5：单层 `y=5.0`；两层堆栈 `5.0/65.0`；`height=10.7` 截断 → `y=5.0` 非 `5.35`；层内取 max `[10,24]`→都在 `12.0`；rank 空隙 rank0→rank2 rank1 空 `c.y=115.0`）+ `position` 端到端（2：单链 `a→b→c` y 堆栈 `5.0/65.0/125.0` + x 相等；二分图 `a→c`/`b→d` x 展开 a/c 对齐 b/d 对齐 间隔≥50 + y 堆栈 5.0/65.0）+ barrel surface（6：position 不进 dagre.__all__ / 不可达顶层 / `mod.__all__ == ["position"]` / dagre barrel 仍 4 / position 子包 `["bk","mod"]` / 经 layout.position 可达）。
+- `agent/tests/test_dagre_layout_position_bk.py`（M，barrel 同步）：`test_position_subpackage_barrel_reexports_bk` 断言 `["bk"]` → `["bk", "mod"]` + docstring 更新（R267 的 mod 加入）。
+
+### 映射决策树 + 坑
+
+- **🔴 OrderedHashMap.iter() = HashMap::iter 模拟**：grok `position_x(&mut ncg).iter().for_each(|(v, x)| { ... })`；Python `for v, x in position_x(ncg).iter()`。R266 `position_x` 返回 `OrderedHashMap`，其 `.iter()` yield `(key, value)` 对（插入序），是 grok `HashMap::iter()` 的精确模拟 —— 零适配成本直接迭代。循环体写 `node.x = x` + `node.y = ncg.node(v).y`（y 从投影读，position_y 已写入）。
+- **🔴 ranksep.clone().unwrap() → assert 非 None**：grok `g.graph().ranksep.clone().unwrap()`；`.clone()` 是 f32 Copy 无操作，`.unwrap()` 是 `None` 恐慌契约。Python `rank_sep = g.graph().ranksep; assert rank_sep is not None  # grok: g.graph().ranksep.clone().unwrap()`。`GraphConfig.ranksep` 默认 50.0（R246）+ `as_non_compound_graph` 深拷贝 config 到 ncg，所以 position_y 运行时必有值；assert 忠实保留 panic-on-None 契约。
+- **🔴 node_mut(v).unwrap() 恐慌 → assert 非 None**：grok `g.node_mut(v).unwrap()` / `ncg.node(v).unwrap()`；Python `node = g.node_mut(v); assert node is not None  # grok: g.node_mut(v).unwrap()`（R248 util.py 惯例）。position_x 的 xs 中每个节点 + layer matrix 每条目每个节点构造时保证存在，assert 是防御性忠实镜像。
+- **🔴 height as i32 截断忠实保留为 int(height)**：grok `layer.iter().map(|v| g.node(v).unwrap().height as i32).max().unwrap_or(0) as f32` —— `as i32` 是像素舍入（截断小数）。Python `max_height = float(max((int(g.node(v).height) for v in layer), default=0))`，`int(height)` 忠实保留截断（非 "修复" 为真正 f32 max）。test_position_y_truncates_fractional_height_to_int 验证：`height=10.7` → `y=5.0` 非 `5.35`。空层 `max(..., default=0)` 忠实 grok `unwrap_or(0)`。
+- **裸 Graph 类型（避免 F401）**：编排器从不命名 `GraphConfig`/`GraphNode`/`GraphEdge` 标签类型，只 `from minimax_code.data_structures import Graph`（裸类型注解），与 R266 bk.py 一致 —— 导入标签类型会是 F401 未用导入。
+- **多行括号导入（避免 I001）**：`from minimax_code.dagre.layout.position import (bk, mod,)`（多行括号），而非 `from ... import bk, mod` 单行 —— 后者可能触发 ruff isort I001 合并/排序。order barrel R265 惯例复用。
+- **🔴 layout/__init__.py 纯 docstring 无导入（R266 复用）**：position 子包通过 Python 子模块导入机制可达（`import ...layout.position` 自动绑定 `layout_pkg.position`），无需编辑 `layout/__init__.py`（YAGNI）。与 rank/order 子包一致。
+- **position_y 私有不进 __all__**：grok `fn position_y` 无 `pub`；Python `__all__ = ["position"]`（仅 position 公共），`position_y` 私有 helper 仅 mod 内部 + 测试白盒导入。
+- **非复合投影 compound=False**：fixture `compound=False` 使 `as_non_compound_graph` 视每个节点为叶子（无 children），全部纳入投影 —— 忠实 post-order 状态。
+
+### 验证
+
+- ruff：All checks passed!（mod.py + __init__.py + 2 测试，F401/I001 陷阱规避成功）。
+- 定向 pytest（test_dagre_layout_position_mod + test_dagre_layout_position_bk）：**34 passed**（13 mod + 21 bk，含同步的 bk barrel 测试，零回归）。
+- 全量回归：**7258 passed, 10 skipped, 1 warning（155.01s）** vs R266 基准 7246（+13 R267，零真实回归）。R266 基准 7246 = 7225 稳定 + 21 R266；R267 = 7258 = 7246 + 13 R267 新增。1 failed = 预存 `test_connection.py::test_interval_keeps_global_timeline_across_loops` 计时 flaky（`assert (0.04 * 0.8) <= 0.030999999959021807`，0.001s 抖动），迭代独立性策略明确豁免 test_connection.py 计时 flaky —— 7258 + 1 flaky = 7259 = R266 基准 7246 + R267 新增 13 = 零实际回归。10 skipped 为预期。
+- CRLF 警告正常（Windows mod.py），无害。
+
+### YAGNI 边界
+
+- **layout/mod.rs 顶层 run_layout 待迁（R268 全栈收官里程碑）**：dagre layout 全栈最后一个叶子，`run_layout` 在 line 633 调用 position 后接，依赖 order + position 全部就位。R268 是用户已授权的三叶全栈收尾（R266 + R267 + R268）的收官里程碑 —— layout/mod.rs 接入消费链后 dagre 布局全栈 100% 收官。
+- **position 不外暴**：保持 position 子包内部（`position.mod.position`），不进 dagre crate-root barrel（barrel count 仍为 4，R246 设定）。
+- **position_y 私有 helper**：不进 __all__，仅 position() 内部 + 测试白盒导入。
+- **int(height) 截断忠实不修复**：grok `as i32` 像素舍入忠实保留，不 "优化" 为真正 f32 max —— 第 17 个零语义 clone 叶子的忠实性承诺。
+
+### Commit
+
+`feat(platform): R267 migrate dagre position/mod.rs -> position sub-package 2/2`。提交 3477693。4 文件 405 insertions + 6 deletions（2 生产 mod.py 新 + __init__.py barrel 扩展，2 测试 test_dagre_layout_position_mod 新 + test_dagre_layout_position_bk barrel 同步）。锚点链: ... -> R265(e8ddf3c) -> R266(b148df6) -> R267(3477693)。
