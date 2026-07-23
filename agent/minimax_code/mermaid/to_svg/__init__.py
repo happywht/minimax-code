@@ -31,10 +31,31 @@ Scope of this sub-package
   entry point -- splits ``---...---`` and resolves the config). Consumes the
   R269 theme symbols; the first render-stack leaf with a non-stdlib
   dependency (``pyyaml``, mirroring grok's ``serde_yaml``).
+* :mod:`.error` (R271) -- the :class:`MermaidError` exception taxonomy: a
+  base class + 6 variant subclasses (:class:`ParseError` /
+  :class:`InvalidDirection` / :class:`InvalidNodeShape` /
+  :class:`DotGenerationError` / :class:`RenderError` /
+  :class:`UnsupportedDiagramType`), each reproducing grok's
+  ``#[error("...")]`` Display string in ``__str__``. Pure stdlib layer; the
+  shared vocabulary for parser/layout/renderer errors. grok re-exports only
+  the enum at the crate root; the barrel surfaces the subclasses too so
+  consumers can ``except ParseError`` without a deep import (Pythonic
+  adaptation -- grok's ``MermaidError::ParseError`` path has no Python
+  equivalent).
+* :mod:`.ast` (R271, internal) -- the flowchart AST that the future
+  ``parser.rs`` leaf produces: :class:`FlowchartGraph` /
+  :class:`GraphDirection` / :class:`Statement` (marker base + :class:`Node`
+  / :class:`Edge` / :class:`Subgraph` / :class:`StyleStatement` subclasses,
+  ``isinstance``-dispatched like grok's ``match``) / :class:`NodeShape` /
+  :class:`EdgeStyle` / recursive :class:`Subgraph`. Pure stdlib. **Internal
+  module** (grok's ``mod ast;`` is private -- consumed by the parser, not
+  re-exported at the crate root): it has its own ``__all__`` but is NOT
+  re-exported through this barrel (the barrel tracks grok's crate-root
+  ``pub use`` surface, which omits ``ast``).
 
-What is NOT here yet (later leaves): ``ast.rs`` / ``parser.rs`` (the flowchart
-AST + parser), ``layout.rs`` / ``text_wrap.rs`` / ``svg_renderer.rs`` (the
-dagre-backed layout bridge, the text measurer, the SVG emitter), the
+What is NOT here yet (later leaves): ``parser.rs`` (the flowchart parser that
+fills the R271 AST), ``layout.rs`` / ``text_wrap.rs`` / ``svg_renderer.rs``
+(the dagre-backed layout bridge, the text measurer, the SVG emitter), the
 ``mermaid_port/`` dagre adapters, and the per-diagram renderers.
 """
 
@@ -47,15 +68,31 @@ from .config import (
     RenderConfig,
     parse_mermaid_frontmatter,
 )
+from .error import (
+    DotGenerationError,
+    InvalidDirection,
+    InvalidNodeShape,
+    MermaidError,
+    ParseError,
+    RenderError,
+    UnsupportedDiagramType,
+)
 from .theme import MermaidTheme, MermaidThemePreset, MermaidThemeVariables
 
 __all__ = [
+    "DotGenerationError",
     "FlowchartConfig",
+    "InvalidDirection",
+    "InvalidNodeShape",
+    "MermaidError",
     "MermaidFrontmatter",
     "MermaidTheme",
     "MermaidThemePreset",
     "MermaidThemeVariables",
+    "ParseError",
     "ParsedMermaidSource",
     "RenderConfig",
+    "RenderError",
+    "UnsupportedDiagramType",
     "parse_mermaid_frontmatter",
 ]

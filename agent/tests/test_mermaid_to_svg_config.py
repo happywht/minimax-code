@@ -623,16 +623,28 @@ def test_parse_yaml_value_malformed_returns_sentinel() -> None:
 # === barrel surface contract ===============================================
 
 
-def test_to_svg_subpackage_barrel_reexports_eight_symbols() -> None:
-    """The ``to_svg`` sub-package re-exports the eight R269+R270 symbols."""
+def test_to_svg_subpackage_barrel_reexports_fifteen_symbols() -> None:
+    """The ``to_svg`` barrel re-exports the 15 R269+R270+R271 symbols.
+
+    R269 seeded the barrel (theme, 3 symbols); R270 grew it (config, 5
+    symbols -> 8); R271 grows it again (error, 7 symbols -> 15). The list is
+    ASCII-sorted; ``ast`` (R271) stays internal and is intentionally absent.
+    """
     assert to_svg.__all__ == [
+        "DotGenerationError",
         "FlowchartConfig",
+        "InvalidDirection",
+        "InvalidNodeShape",
+        "MermaidError",
         "MermaidFrontmatter",
         "MermaidTheme",
         "MermaidThemePreset",
         "MermaidThemeVariables",
+        "ParseError",
         "ParsedMermaidSource",
         "RenderConfig",
+        "RenderError",
+        "UnsupportedDiagramType",
         "parse_mermaid_frontmatter",
     ]
     # R270 additions are reachable through the barrel.
@@ -645,6 +657,12 @@ def test_to_svg_subpackage_barrel_reexports_eight_symbols() -> None:
     assert to_svg.MermaidTheme is MermaidTheme
     assert to_svg.MermaidThemePreset is MermaidThemePreset
     assert to_svg.MermaidThemeVariables is MermaidThemeVariables
+    # R271 error symbols reachable; AST symbols absent (internal module).
+    assert to_svg.MermaidError is not None
+    assert to_svg.ParseError is not None
+    assert to_svg.RenderError is not None
+    assert "FlowchartGraph" not in to_svg.__all__
+    assert "NodeShape" not in to_svg.__all__
 
 
 def test_mermaid_root_barrel_unchanged_by_r270() -> None:
