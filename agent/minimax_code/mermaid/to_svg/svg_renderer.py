@@ -73,12 +73,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from .ast import NodeShape
 from .config import RenderConfig
-from .layout import LayoutSubgraph
+from .layout import LayoutNode, LayoutSubgraph
 from .text_wrap import (
     DEFAULT_CHAR_WIDTH,
     DEFAULT_FONT_SIZE,
+    DEFAULT_LINE_HEIGHT,
     DEFAULT_WRAP_WIDTH,
+    measure_wrapped_lines_with_font_size,
+    scale_char_width,
+    wrap_text_lines,
 )
 from .theme import MermaidTheme
 
@@ -290,4 +295,368 @@ class SvgRenderer:
             f'width="{subgraph.width:.1f}" height="{subgraph.height:.1f}" '
             f'fill="{self.theme.subgraph_fill}" stroke="{self.theme.subgraph_stroke}" '
             'stroke-width="1"/>\\n'
+        )
+
+    def render_subgraph_title(self, subgraph: LayoutSubgraph) -> None:
+        """Emit a subgraph cluster's title text (grok ``render_subgraph_title``).
+
+        Wraps the title to the renderer's ``wrapping_width`` and centers it
+        horizontally over the cluster; its vertical center is offset down by
+        :data:`SUBGRAPH_TITLE_TOP_MARGIN` plus half the wrapped text height. A
+        ``None`` title (or one that wraps to zero lines) emits nothing.
+        """
+        if subgraph.title is None:
+            return
+        char_width = scale_char_width(DEFAULT_CHAR_WIDTH, self.options.font_size)
+        lines = wrap_text_lines(subgraph.title, self.options.wrapping_width, char_width)
+        if not lines:
+            return
+        _, text_height = measure_wrapped_lines_with_font_size(
+            lines, char_width, self.options.font_size
+        )
+        title_x = subgraph.x + subgraph.width / 2.0
+        title_y = subgraph.y + SUBGRAPH_TITLE_TOP_MARGIN + text_height / 2.0
+        self.render_text_lines(
+            title_x,
+            title_y,
+            lines,
+            self.options.font_size,
+            DEFAULT_LINE_HEIGHT,
+            self.theme.text_color,
+        )
+
+    def render_node(self, node: LayoutNode) -> None:
+        """Dispatch a node to its shape-specific emitter (grok ``render_node``).
+
+        Mirrors grok's exhaustive ``match node.shape`` over the 12
+        :class:`NodeShape` variants: Rectangle / RoundedRectangle / Stadium all
+        route to :meth:`render_rectangle` (differing only in ``rx``); each other
+        variant routes to its own emitter.
+        """
+        shape = node.shape
+        if shape is NodeShape.Rectangle:
+            self.render_rectangle(node, 0.0)
+        elif shape is NodeShape.RoundedRectangle:
+            self.render_rectangle(node, 5.0)
+        elif shape is NodeShape.Stadium:
+            self.render_rectangle(node, node.height / 2.0)
+        elif shape is NodeShape.Diamond:
+            self.render_diamond(node)
+        elif shape is NodeShape.Circle:
+            self.render_circle(node)
+        elif shape is NodeShape.StartState:
+            self.render_start_state(node)
+        elif shape is NodeShape.EndState:
+            self.render_end_state(node)
+        elif shape is NodeShape.ForkJoin:
+            self.render_fork_join(node)
+        elif shape is NodeShape.Hexagon:
+            self.render_hexagon(node)
+        elif shape is NodeShape.Cylinder:
+            self.render_cylinder(node)
+        elif shape is NodeShape.Subroutine:
+            self.render_subroutine(node)
+        elif shape is NodeShape.Asymmetric:
+            self.render_asymmetric(node)
+        else:  # pragma: no cover - exhaustive over NodeShape
+            raise ValueError(f"unhandled NodeShape: {shape!r}")
+
+    def render_rectangle(self, node: LayoutNode, rx: float) -> None:
+        """Emit a rectangle node (grok ``render_rectangle``).
+
+        The box is centered on ``(node.x, node.y)`` (top-left at
+        ``x - w/2, y - h/2``); ``rx`` controls corner rounding (0 for
+        Rectangle, 5 for RoundedRectangle, ``h/2`` for Stadium). Fill / stroke
+        fall back to :attr:`theme.node_fill` / :attr:`node_stroke` when the
+        node carries no explicit color.
+        """
+        x = node.x - node.width / 2.0
+        y = node.y - node.height / 2.0
+        fill = node.fill_color if node.fill_color is not None else self.theme.node_fill
+        stroke = (
+            node.stroke_color if node.stroke_color is not None else self.theme.node_stroke
+        )
+        self.output += (
+            f'<rect x="{x:.1f}" y="{y:.1f}" width="{node.width:.1f}" '
+            f'height="{node.height:.1f}" rx="{rx:.1f}" fill="{fill}" '
+            f'stroke="{stroke}" stroke-width="1"/>\n'
+        )
+        self.render_text(node.x, node.y, node.label)
+
+    def render_start_state(self, node: LayoutNode) -> None:
+        """Emit a state-diagram start state: a filled black circle (grok
+        ``render_start_state``).
+
+        Radius is half the smaller box dimension; fill / stroke both take
+        :attr:`theme.edge_color` with a thicker 1.5 stroke.
+        """
+        r = min(node.width, node.height) / 2.0
+        self.output += (
+            f'<circle cx="{node.x:.1f}" cy="{node.y:.1f}" r="{r:.1f}" '
+            f'fill="{self.theme.edge_color}" stroke="{self.theme.edge_color}" '
+            f'stroke-width="1.5"/>\n'
+        )
+
+    def render_end_state(self, node: LayoutNode) -> None:
+        """Emit a state-diagram end state: a double circle (grok
+        ``render_end_state``).
+
+        Outer circle filled with :attr:`theme.node_stroke` and stroked with
+        :attr:`theme.background`; inner circle filled with
+        :attr:`theme.background` and unstroked. The inner radius clamps to
+        ``max(outer-4, outer*0.55)`` then ``min(_, outer-2)`` (grok's
+        ``(outer-4).max(outer*0.55).min(outer-2)``).
+        """
+        outer_r = min(node.width, node.height) / 2.0
+        inner_r = min(max(outer_r - 4.0, outer_r * 0.55), outer_r - 2.0)
+        self.output += (
+            f'<circle cx="{node.x:.1f}" cy="{node.y:.1f}" r="{outer_r:.1f}" '
+            f'fill="{self.theme.node_stroke}" stroke="{self.theme.background}" '
+            f'stroke-width="1"/>\n'
+        )
+        self.output += (
+            f'<circle cx="{node.x:.1f}" cy="{node.y:.1f}" r="{inner_r:.1f}" '
+            f'fill="{self.theme.background}" stroke="none"/>\n'
+        )
+
+    def render_fork_join(self, node: LayoutNode) -> None:
+        """Emit a fork/join bar: a rect with literal ``rx="1"`` (grok
+        ``render_fork_join``). Fill / stroke both take :attr:`theme.edge_color`.
+        """
+        x = node.x - node.width / 2.0
+        y = node.y - node.height / 2.0
+        self.output += (
+            f'<rect x="{x:.1f}" y="{y:.1f}" width="{node.width:.1f}" '
+            f'height="{node.height:.1f}" rx="1" fill="{self.theme.edge_color}" '
+            f'stroke="{self.theme.edge_color}" stroke-width="1"/>\n'
+        )
+
+    def render_diamond(self, node: LayoutNode) -> None:
+        """Emit a diamond decision node: a 4-point polygon (grok
+        ``render_diamond``). Points at top / right / bottom / left of the box.
+        """
+        hw = node.width / 2.0
+        hh = node.height / 2.0
+        fill = node.fill_color if node.fill_color is not None else self.theme.node_fill
+        stroke = (
+            node.stroke_color if node.stroke_color is not None else self.theme.node_stroke
+        )
+        points = (
+            f"{node.x:.1f},{node.y - hh:.1f} "
+            f"{node.x + hw:.1f},{node.y:.1f} "
+            f"{node.x:.1f},{node.y + hh:.1f} "
+            f"{node.x - hw:.1f},{node.y:.1f}"
+        )
+        self.output += (
+            f'<polygon points="{points}" fill="{fill}" stroke="{stroke}" '
+            f'stroke-width="1"/>\n'
+        )
+        self.render_text(node.x, node.y, node.label)
+
+    def render_circle(self, node: LayoutNode) -> None:
+        """Emit a circle node (grok ``render_circle``). Radius is half the
+        smaller box dimension; fill / stroke fall back to the theme defaults."""
+        r = min(node.width, node.height) / 2.0
+        fill = node.fill_color if node.fill_color is not None else self.theme.node_fill
+        stroke = (
+            node.stroke_color if node.stroke_color is not None else self.theme.node_stroke
+        )
+        self.output += (
+            f'<circle cx="{node.x:.1f}" cy="{node.y:.1f}" r="{r:.1f}" '
+            f'fill="{fill}" stroke="{stroke}" stroke-width="1"/>\n'
+        )
+        self.render_text(node.x, node.y, node.label)
+
+    def render_hexagon(self, node: LayoutNode) -> None:
+        """Emit a hexagon node: a 6-point polygon (grok ``render_hexagon``).
+
+        The top / bottom horizontal edges are inset by ``h/3`` from the
+        left/right extremes (grok ``inset = height / 3``).
+        """
+        hw = node.width / 2.0
+        hh = node.height / 2.0
+        inset = node.height / 3.0
+        fill = node.fill_color if node.fill_color is not None else self.theme.node_fill
+        stroke = (
+            node.stroke_color if node.stroke_color is not None else self.theme.node_stroke
+        )
+        points = (
+            f"{node.x - hw + inset:.1f},{node.y - hh:.1f} "
+            f"{node.x + hw - inset:.1f},{node.y - hh:.1f} "
+            f"{node.x + hw:.1f},{node.y:.1f} "
+            f"{node.x + hw - inset:.1f},{node.y + hh:.1f} "
+            f"{node.x - hw + inset:.1f},{node.y + hh:.1f} "
+            f"{node.x - hw:.1f},{node.y:.1f}"
+        )
+        self.output += (
+            f'<polygon points="{points}" fill="{fill}" stroke="{stroke}" '
+            f'stroke-width="1"/>\n'
+        )
+        self.render_text(node.x, node.y, node.label)
+
+    def render_cylinder(self, node: LayoutNode) -> None:
+        """Emit a cylinder (DB) node: a body path + top ellipse cap (grok
+        ``render_cylinder``).
+
+        The body is a closed path of two vertical sides joined by two
+        half-ellipses (the bottom curve and the back of the top cap); a full
+        ``<ellipse>`` is layered on top for the visible cap. The ellipse
+        ``ry`` is ``min(hw/4, hh/2)``. Text centers on the body's vertical
+        midpoint (below the cap).
+        """
+        hw = node.width / 2.0
+        hh = node.height / 2.0
+        ellipse_ry = min(hw / 4.0, hh / 2.0)
+        fill = node.fill_color if node.fill_color is not None else self.theme.node_fill
+        stroke = (
+            node.stroke_color if node.stroke_color is not None else self.theme.node_stroke
+        )
+        x = node.x - hw
+        y = node.y - hh
+        body_top = y + ellipse_ry
+        body_bottom = node.y + hh - ellipse_ry
+        self.output += (
+            f'<path d="M {x:.1f} {body_top:.1f} L {x:.1f} {body_bottom:.1f} '
+            f"A {hw:.1f} {ellipse_ry:.1f} 0 0 0 {node.x + hw:.1f} {body_bottom:.1f} "
+            f"L {node.x + hw:.1f} {body_top:.1f} "
+            f'A {hw:.1f} {ellipse_ry:.1f} 0 0 0 {x:.1f} {body_top:.1f} Z" '
+            f'fill="{fill}" stroke="{stroke}" stroke-width="1"/>\n'
+        )
+        self.output += (
+            f'<ellipse cx="{node.x:.1f}" cy="{body_top:.1f}" rx="{hw:.1f}" '
+            f'ry="{ellipse_ry:.1f}" fill="{fill}" stroke="{stroke}" '
+            f'stroke-width="1"/>\n'
+        )
+        body_center_y = (body_top + body_bottom) / 2.0
+        self.render_text(node.x, body_center_y, node.label)
+
+    def render_subroutine(self, node: LayoutNode) -> None:
+        """Emit a subroutine node: a rect + two vertical ``<line>`` bars (grok
+        ``render_subroutine``). The bars sit ``bar_inset`` (8px) inside the
+        left/right edges.
+        """
+        x = node.x - node.width / 2.0
+        y = node.y - node.height / 2.0
+        bar_inset = 8.0
+        fill = node.fill_color if node.fill_color is not None else self.theme.node_fill
+        stroke = (
+            node.stroke_color if node.stroke_color is not None else self.theme.node_stroke
+        )
+        self.output += (
+            f'<rect x="{x:.1f}" y="{y:.1f}" width="{node.width:.1f}" '
+            f'height="{node.height:.1f}" fill="{fill}" stroke="{stroke}" '
+            f'stroke-width="1"/>\n'
+        )
+        self.output += (
+            f'<line x1="{x + bar_inset:.1f}" y1="{y:.1f}" '
+            f'x2="{x + bar_inset:.1f}" y2="{y + node.height:.1f}" '
+            f'stroke="{stroke}" stroke-width="1"/>\n'
+        )
+        self.output += (
+            f'<line x1="{x + node.width - bar_inset:.1f}" y1="{y:.1f}" '
+            f'x2="{x + node.width - bar_inset:.1f}" y2="{y + node.height:.1f}" '
+            f'stroke="{stroke}" stroke-width="1"/>\n'
+        )
+        self.render_text(node.x, node.y, node.label)
+
+    def render_asymmetric(self, node: LayoutNode) -> None:
+        """Emit an asymmetric ``>text]`` flag node: a 5-point polygon with a
+        V-notch on the left (grok ``render_asymmetric``). Text is nudged right
+        by ``point_offset/4`` (``point_offset == hh``) to balance the notch.
+        """
+        hw = node.width / 2.0
+        hh = node.height / 2.0
+        point_offset = hh
+        fill = node.fill_color if node.fill_color is not None else self.theme.node_fill
+        stroke = (
+            node.stroke_color if node.stroke_color is not None else self.theme.node_stroke
+        )
+        points = (
+            f"{node.x - hw + point_offset:.1f},{node.y - hh:.1f} "
+            f"{node.x + hw:.1f},{node.y - hh:.1f} "
+            f"{node.x + hw:.1f},{node.y + hh:.1f} "
+            f"{node.x - hw + point_offset:.1f},{node.y + hh:.1f} "
+            f"{node.x - hw:.1f},{node.y:.1f}"
+        )
+        self.output += (
+            f'<polygon points="{points}" fill="{fill}" stroke="{stroke}" '
+            f'stroke-width="1"/>\n'
+        )
+        self.render_text(node.x + point_offset / 4.0, node.y, node.label)
+
+    def render_text(self, x: float, y: float, text: str) -> None:
+        """Emit a node label, choosing the state-diagram char width when the
+        renderer is in state mode (grok ``render_text``).
+
+        Wraps ``text`` to ``wrapping_width`` at the resolved character width
+        (:data:`STATE_CHAR_WIDTH` for state diagrams, :data:`DEFAULT_CHAR_WIDTH`
+        otherwise, both scaled by ``font_size``); an empty wrap emits nothing.
+        """
+        char_width = (
+            scale_char_width(STATE_CHAR_WIDTH, self.options.font_size)
+            if self.is_state_diagram
+            else scale_char_width(DEFAULT_CHAR_WIDTH, self.options.font_size)
+        )
+        lines = wrap_text_lines(text, self.options.wrapping_width, char_width)
+        if not lines:
+            return
+        self.render_text_lines(
+            x,
+            y,
+            lines,
+            self.options.font_size,
+            DEFAULT_LINE_HEIGHT,
+            self.theme.text_color,
+        )
+
+    def render_text_lines(
+        self,
+        x: float,
+        y: float,
+        lines: list[list[str]],
+        font_size: float,
+        line_height: float,
+        color: str,
+    ) -> None:
+        """Emit wrapped text as a centered ``<text>`` + per-line ``<tspan>``s
+        (grok ``render_text_lines``).
+
+        With ``dominant-baseline="central"`` the ``y`` anchors the glyph's
+        vertical center, so ``n`` lines distribute evenly around it: the first
+        line sits at ``y - (n-1)/2 * line_height_px``. Each sub-line's words
+        join with a single space (grok ``line.join(" ")``); the font family and
+        each tspan body are XML-escaped.
+        """
+        line_height_px = font_size * line_height
+        start_y = y - (len(lines) - 1.0) * line_height_px / 2.0
+        font_family = self.escape_xml(self.options.font_family)
+        self.output += (
+            f'<text text-anchor="middle" dominant-baseline="central" '
+            f'font-family="{font_family}" font-size="{font_size:.0f}" '
+            f'fill="{color}">\n'
+        )
+        for i, line in enumerate(lines):
+            line_y = start_y + (i * line_height_px)
+            line_text = " ".join(line)
+            self.output += (
+                f'<tspan x="{x:.1f}" y="{line_y:.1f}">'
+                f"{self.escape_xml(line_text)}</tspan>\n"
+            )
+        self.output += "</text>\n"
+
+    @staticmethod
+    def escape_xml(s: str) -> str:
+        """Escape the five XML-significant characters (grok ``escape_xml``).
+
+        ``&`` is escaped first so the entities introduced by later replacements
+        are not themselves re-escaped. Order matches grok exactly:
+        ``&`` -> ``&amp;``, ``<`` -> ``&lt;``, ``>`` -> ``&gt;``,
+        ``"`` -> ``&quot;``, ``'`` -> ``&#39;``.
+        """
+        return (
+            s.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("'", "&#39;")
         )
