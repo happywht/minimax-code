@@ -20104,3 +20104,83 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `docs(platform): R276 mermaid_port YAGNI non-migration decision (hermetic-sealed dead branch, cyclic back-edge defect)`。docs-only 提交（无 feat，零 Python 代码叶子）。2 文件：`docs/evolution/ITERATION_LOG.md` R276 条目 + `agent/minimax_code/mermaid/to_svg/__init__.py` docstring 修正。锚点链: ... -> R274f(85d027a) -> R275a(5ff48ae feat / 70a6861 docs) -> R275b(374bd32 feat / 10b384a docs) -> R275c(77c1226 feat / 008f307 docs) -> R276(docs YAGNI 裁决)。**`mermaid_port/` 端口层 YAGNI 不迁移（6 文件 1194 行节省，避免循环回边缺陷重现），方向① 第 8 砖裁决为 YAGNI，下一砖 R277 lib.rs crate-root barrel**。
+
+## R277 — lib.rs crate-root barrel 迁移：render_mermaid_to_svg 分发入口（方向① 第 9 砖，crate 根调度层落地，dagre 渲染栈端到端打通）
+
+锚点:R277-1 <pending>
+
+### 本轮目标
+
+迁移 grok `mermaid-to-svg/src/lib.rs` 的 crate-root 公共 API 面 —— `render_mermaid_to_svg` + `strip_mermaid_frontmatter` + `is_mermaid_diagram` 三个 `pub fn` 以及私有 helper `first_diagram_type_token` —— 作为 Python 模块 `to_svg/render.py`（方向① 第 9 砖）。这是把 R269-R275c 的渲染栈（front-matter 解析 + 主题解析 + 类型 token + parser/layout/renderer）在单一 `render_mermaid_to_svg` 调用后收口的**调度入口**，镜像 grok `lib.rs` L36-L185。承接 R276 `mermaid_port/` YAGNI 裁决（第 8 砖，零 Python 叶子），本轮交付首个真正打通"mermaid 源码 -> SVG 字符串"端到端的叶子。
+
+### 融合结论
+
+**方向① 第 9 砖 —— `lib.rs` crate-root 调度层落地，dagre 渲染栈端到端打通。** `render.py` 实现 4 个函数 + 2 个 frozenset 常量，零语义复制 grok 的 crate-root 分发模型：解析 front-matter -> 按 `theme` 参数 > front-matter `config.theme` > 默认 light 的优先级解析主题 -> 提取 diagram-type token -> 分发。**25 个 R279+ 独立图表类型的 token**（er/class/mindmap/state x2/pie/gantt/requirement/info/packet/block/radar/sankey/sequence/gitgraph/timeline/journey/kanban/quadrant/xychart/C4 x5）raise `UnsupportedDiagramType`（其专用渲染器尚未迁移）；**流程图默认路径**（`graph`/`flowchart` token）跑已迁移的 dagre 栈（`parse_mermaid` -> `compute_layout_with_config` -> `render_with_config`），其它已知 token 走 `compute_layout` + `render`（镜像 grok L150 无条件 `parse_mermaid`）。端到端测试首次断言"mermaid 源码 -> 含 `<svg` 的字符串"，并通过 node_fill hex（light `#ECECFF` / dark `#2d2d2d`）在 SVG 中的出现精确验证三分支主题优先级。`to_svg` 桶 `__all__` 从 15 -> 18（新增 `is_mermaid_diagram` / `render_mermaid_to_svg` / `strip_mermaid_frontmatter`），mermaid 根 `__all__`=17 不变（to_svg 仍非根提升）。
+
+### 决策证据（dispatch 语义三要点 + 端到端打通）
+
+**要点 1 —— 主题优先级三分支（grok L40-L49）。** `render_mermaid_to_svg` 解析顺序逐字复制 grok：`default_theme = MermaidTheme.default()`；`configured_theme = parsed_source.config.to_mermaid_theme()`；`if theme is not None: resolved = theme`（显式参数赢）`elif configured_theme is not None: resolved = configured_theme`（front-matter `config.theme` 次之）`else: resolved = default_theme`（默认 light 兜底）。测试 `test_render_mermaid_to_svg_explicit_theme_wins` / `_default_theme_when_none` / `_frontmatter_theme_when_no_explicit` / `_explicit_theme_overrides_frontmatter` 四例覆盖全部优先级组合，断言 SVG 含对应 hex（dark `#2d2d2d` = `MermaidTheme.dark().node_fill`，light `#ECECFF` = `MermaidTheme.light().node_fill`）。
+
+**要点 2 —— diagram-type token 分发（grok L51-L162）。** `first_diagram_type_token` 扫描 `input.splitlines()`，每行 `.strip()`，返回首个非空且非 `%%` 注释行的首个空白分隔 token，否则 `None`（镜像 grok L174-L180，私有 `fn` 无 `pub`）。分发：token 在 `_UNSUPPORTED_DIAGRAM_TYPES`（25 元素 frozenset）-> raise `UnsupportedDiagramType(token)`；否则 `is_flowchart = token in {"graph", "flowchart"}`，无条件 `parse_mermaid(body)`（镜像 grok L150，未知 token 穿透到通用 parser），流程图走 `compute_layout_with_config` + `render_with_config`，其它走 `compute_layout` + `render`。25 个参数化测试（`test_render_mermaid_to_svg_unsupported_type_raises[*]`）逐一断言 raise + `diagram_type` 属性 + `str()` 格式（`"Unsupported diagram type: {token}"`，与 error.py L97-99 零偏差）。
+
+**要点 3 —— front-matter 剥离先于解析（grok L36-L38 + L170-L172）。** `strip_mermaid_frontmatter(source)` 委托 `parse_mermaid_frontmatter(source).body`（grok L170-L172）。`render_mermaid_to_svg` 在 dispatch 前先 `parse_mermaid_frontmatter` 取 `body`，确保 `---...---` 围栏不进 flowchart parser（否则 `---` 行破坏解析）。测试 `test_render_mermaid_to_svg_strips_frontmatter_before_parse` 断言带 front-matter（无 theme）的 flowchart 仍正常渲染 SVG。
+
+**端到端打通里程碑。** 本轮是方向① 首个端到端测试：`render_mermaid_to_svg("flowchart TD\n  A --> B")` 返回含 `<svg`/`</svg>` 的字符串，证明 R269（theme）-> R270（config/front-matter）-> R271（error/ast）-> R272（parser）-> R273（text_wrap）-> R274a-f（layout）-> R275a-c（svg_renderer）-> R277（dispatch）整条栈真正接通。R276 YAGNI 裁决封存的 `mermaid_port` 死分支不参与（默认 dagre 路径正确路由循环）。
+
+### 交付
+
+- `agent/minimax_code/mermaid/to_svg/render.py`（新建，189 行）：
+
+  - **`__all__ = ["is_mermaid_diagram", "render_mermaid_to_svg", "strip_mermaid_frontmatter"]`**（3 个 grok crate-root `pub fn`）。
+  - **导入**（ruff isort ASCII 序）：`.config.parse_mermaid_frontmatter` < `.error.UnsupportedDiagramType` < `.layout.{compute_layout, compute_layout_with_config}` < `.parser.parse_mermaid` < `.svg_renderer.{render, render_with_config}` < `.theme.MermaidTheme`。
+  - **`_UNSUPPORTED_DIAGRAM_TYPES` frozenset（25 token）**：erDiagram/classDiagram/mindmap/stateDiagram/stateDiagram-v2/pie/gantt/requirementDiagram/info/packet-beta/block-beta/radar-beta/sankey-beta/sequenceDiagram/gitGraph/timeline/journey/kanban/quadrantChart/xychart-beta/C4Context/C4Container/C4Component/C4Dynamic/C4Deployment。5 个 C4 token 共享 grok 单一 `c4_diagram` 渲染器（lib.rs L130-L139），state token 走 grok 专用 `state_diagram` parser（非通用 flowchart 路径），故均列入此集。
+  - **`_FLOWCHART_TOKENS` frozenset**：`{"graph", "flowchart"}`（grok lib.rs L141 `matches!(..., Some("graph") | Some("flowchart"))`）。
+  - **`first_diagram_type_token(input) -> str | None`**（私有，splitlines 循环）。
+  - **`render_mermaid_to_svg(mermaid_source, theme=None) -> str`**：front-matter 解析 -> 三分支主题 -> body + token -> 不支持 raise -> `is_flowchart` 分支 -> `parse_mermaid` 无条件 -> `compute_layout[_with_config]` + `render[_with_config]`。
+  - **`strip_mermaid_frontmatter(source) -> str`**：`return parse_mermaid_frontmatter(source).body`。
+  - **`is_mermaid_diagram(lang) -> bool`**：`lang.lower() == "mermaid" or lang.lower().startswith("mermaid ")`（拒绝无空格后缀 `mermaidchart`，避免假前缀）。
+
+- `agent/minimax_code/mermaid/to_svg/__init__.py`（桶扩展，3 处编辑）：
+
+  - **导入块**：`.error` 与 `.theme` 之间插入 `from .render import (is_mermaid_diagram, render_mermaid_to_svg, strip_mermaid_frontmatter)`（isort 序：.config < .error < .render < .theme）。
+  - **`__all__` 15 -> 18**：插入 3 个小写符号（ASCII 序：大写在前，`is_mermaid_diagram` < `parse_mermaid_frontmatter` < `render_mermaid_to_svg` < `strip_mermaid_frontmatter`）。
+  - **docstring 2 段刷新**："已迁移的叶子" 改为 `(R269--R275c, R277)：theme / config / error / ast / parser / text_wrap / layout / svg_renderer / render`；路线图段改为"crate-root 渲染调度已在 R277 中落地... 仍待处理 (R279+)：19 个图表渲染器"。
+
+- `agent/tests/test_mermaid_to_svg_render.py`（新建，302 行，49 测试）：
+
+  - **`first_diagram_type_token` x7**：flowchart/graph/pie token + 跳过空行 + 跳过 `%%` 注释 + 空输入 None + 全注释 None。
+  - **`is_mermaid_diagram` x6**：精确小写 + 大小写（Mermaid/MERMAID）+ 空格前缀（`mermaid {1}`）+ 拒绝无空格 `mermaidchart` + 拒绝不相关（python/rust）+ 空串。
+  - **`strip_mermaid_frontmatter` x2**：无 front-matter 原文返回 + 有 YAML front-matter 返回 body。
+  - **`render_mermaid_to_svg` 不支持 raise x25**（参数化）：逐一断言 `UnsupportedDiagramType` + `diagram_type` 属性 + `str()` 格式。
+  - **flowchart 端到端 x2**：`flowchart TD` + `graph LR` 均返回含 `<svg`/`</svg>` 的 str。
+  - **主题优先级 x4**：显式 dark 赢 + 默认 light + front-matter dark（无显式）+ 显式 light 覆盖 front-matter dark。
+  - **front-matter 剥离 x1**：带 front-matter（无 theme）的 flowchart 正常 SVG。
+  - **桶/模块面 x2**：`render.__all__` == 3 符号（排序）；`to_svg.__all__` 含 3 新符号 + len==18 + `is` 同一性（re-export 非拷贝）。
+
+- `agent/tests/test_mermaid_to_svg_config.py`（测试同步，R270 旧断言更新）：
+
+  - **`test_to_svg_subpackage_barrel_reexports_fifteen_symbols` -> `_eighteen_symbols`**：函数名 + docstring 更新（R269 3 -> R270 8 -> R271 15 -> R277 18 的完整增长史），`__all__` 列表加 3 个 R277 符号，末尾加 3 个 `"..." in to_svg.__all__` 字符串断言（对象同一性留给 render 测试，职责清晰、零冗余）。
+  - **零 NameError 风险**：config 测试 import 块未引入 R277 符号，故用 `in __all__` 字符串断言而非 `is` 同一性；render 测试的 `is` 断言已覆盖对象可达性。
+
+### 验证
+
+- ruff：`render.py` + `to_svg/__init__.py` + `test_mermaid_to_svg_render.py` + `test_mermaid_to_svg_config.py` **All checks passed**（line-length 100，select E/F/W/I/B/UP，ignore E501）。
+- 定向 pytest（`test_mermaid_to_svg_render.py`）：**49 passed in 0.23s**（7 token + 6 is_mermaid + 2 strip + 25 不支持参数化 + 2 端到端 + 4 主题优先级 + 1 front-matter 剥离 + 2 桶面）。
+- 双 mermaid 测试联合（config + render）：**106 passed in 0.33s**（config 57 含更新后的 eighteen_symbols 断言 + render 49）。
+- 全量回归：**7883 passed, 10 skipped, 1 failed in 108.56s**。唯一 failed = `test_connection.py::test_interval_keeps_global_timeline_across_loops`（timing/concurrency flaky，独立重跑 PASSED in 0.53s，`--lf` 复跑亦 PASSED，与 mermaid 零关联，迭代独立性原则下不修复）。
+- 端到端打通确认：`render_mermaid_to_svg("flowchart TD\n  A --> B")` 返回含 `<svg` 的 str；dark 主题 SVG 含 `#2d2d2d`，light/default 含 `#ECECFF`（node_fill hex 精确断言）。
+- CRLF 警告正常（Windows 4 文件），无害。
+
+### YAGNI 边界
+
+- **25 token raise 是临时占位，非永久 YAGNI** —— `_UNSUPPORTED_DIAGRAM_TYPES` 的 25 个 token 将在 R279+ 各自的 per-diagram 渲染器叶子落地后从 raise 分支移除（替换为真实渲染调用）。本轮 raise 是"渲染器尚未存在"的诚实报告，避免跑不存在的渲染器。
+- **`mermaid_port/` 死分支延续 R276 YAGNI 封存** —— `render.py` 默认路径走 dagre `compute_layout`（正确路由循环），不触达 `mermaid_port::is_enabled()`（恒 false）。
+- **`first_diagram_type_token` 私有** —— grok `fn` 无 `pub`（L174），Python 侧不入 `__all__`，测试经直接模块 import 触达。
+- **修正后路线图**：
+  - **R278（下一砖）** —— `xai-grok-mermaid` 主机包装 crate（lib/engine/mmdc/pure/raster/subprocess + tests/pure_engine.rs）。这是 R38 已部分迁移的主机壳层的剩余 Rust 文件。
+  - **R279+** —— 19 个 per-diagram 渲染器（block/c4/class/er/gantt/gitgraph/info/journey/kanban/mindmap/packet/pie/quadrant/radar/requirement/sankey/sequence/state/timeline/xychart），每个是独立叶子（如 grok 的 `pie_diagram` / `er_diagram`）。
+- **方向② xai-codebase-graph（tree-sitter 代码索引）+ 方向③ L2 自进化框架骨架接线** 均未开始（方向① 优先）。
+
+### Commit
+
+`feat(platform): R277 lib.rs crate-root barrel -> render_mermaid_to_svg dispatch (direction (1) brick 9, dagre stack end-to-end wired)`。feat 提交（4 文件）：`render.py`（新建）+ `to_svg/__init__.py`（桶扩展 15->18）+ `test_mermaid_to_svg_render.py`（新建，49 测试）+ `test_mermaid_to_svg_config.py`（同步 R270 旧断言 fifteen->eighteen）。docs 提交：`docs(platform): R277 iteration log entry`（ITERATION_LOG.md R277 条目）。锚点链: ... -> R275c(77c1226 feat / 008f307 docs) -> R276(b68f794 docs YAGNI) -> R277(feat render dispatch + docs)。**方向① 第 9 砖：crate-root 调度层落地，mermaid 源码 -> SVG 字符串端到端打通（49/49 测试，全量 7883 passed），桶 15->18，下一砖 R278 xai-grok-mermaid 主机包装 crate**。
