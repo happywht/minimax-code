@@ -19089,3 +19089,49 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R267 migrate dagre position/mod.rs -> position sub-package 2/2`。提交 3477693。4 文件 405 insertions + 6 deletions（2 生产 mod.py 新 + __init__.py barrel 扩展，2 测试 test_dagre_layout_position_mod 新 + test_dagre_layout_position_bk barrel 同步）。锚点链: ... -> R265(e8ddf3c) -> R266(b148df6) -> R267(3477693)。
+
+## R268 — 迁移 dagre layout/mod.rs（dagre 全栈收官 100%，第 21 个叶子，顶层 run_layout 28 步编排器）
+
+锚点:R268-1 38e14e4
+
+### 本轮目标
+
+迁移 `layout/mod.rs`（645 行）—— dagre 布局栈的**顶层编排器**，也是 dagre crate 迁移链（R246 开启）的**第 21 个也是最后一个叶子**，闭合全栈 100% 里程碑。`mod.rs` 三件套：(1) `pub fn layout(g)` 用户入口（`build_layout_graph(g)` → `run_layout(lg)` → `update_input_graph(g, lg)`）；(2) `pub fn run_layout(g)` **28 步流水线**串联整个布局管线（make_space_for_edge_labels → remove_self_edges → acyclic.run → nesting_graph.run → as_non_compound_graph → rank → transfer_node_edge_labels → inject_edge_label_proxies → remove_empty_ranks → nesting_graph.cleanup → normalize_ranks → assign_rank_min_max → remove_edge_label_proxies → normalize.run → parent_dummy_chains → add_border_segments → order → insert_self_edges → coordinate_system.adjust → position → position_self_edges → remove_border_nodes → normalize.undo → fixup_edge_label_coords → coordinate_system.undo → translate_graph → assign_node_intersects → reverse_points_for_reversed_edges → acyclic.undo）；(3) `build_layout_graph` / `update_input_graph` 边界适配器（深拷贝输入 graph label + 每节点 + 每边进出，写入计算坐标 x/y/points/width/height 回输入图）+ 5 个 default-stamper / 流水线辅助 helper。迁移到 `agent/minimax_code/dagre/layout/mod.py`（752 行），编写 pytest（白盒 8 + 端到端 4 layout + barrel surface 5 = 17 测试 + 1 layout fn-not-promoted = 18 测试），ruff + 定向 pytest + 全量回归 R267 基准 7258 + R268 新增 18 = 7276，零真实回归。
+
+### 融合结论
+
+**dagre 布局全栈 100% 收官里程碑。** R246 开启的 dagre crate 迁移链（lib.rs 类型层 → data_structures 依赖 → acyclic/normalize/coordinate_system/nesting_graph 模块 → rank 4 叶 → order 9 叶 → position 2 叶 → layout/mod 顶层编排器）在本轮闭合：21 个叶子全部落地，整条 28 步布局管线在 Python asyncio 架构上端到端跑通（`test_layout_single_chain` / `test_layout_two_layer_bipartite` / `test_layout_self_loop` / `test_layout_empty_graph` 四个端到端测试验证坐标正确输出）。本轮的核心融合价值是**语义 clone 框架（R250）在 build_layout_graph/update_input_graph 边界的最终验证**：grok 的 `copy.deepcopy` 跨边界结构化写回（8 处：input graph label deepcopy + 每节点 deepcopy + 每边 deepcopy 进 layout graph；layout graph 的 x/y/points/width/height deepcopy 回 input graph）是 load-bearing 的——`run_layout` 原地变异 layout-graph 标签，若不深拷贝则变异泄漏回输入图污染调用方。这是平台型工具产品演进的「R250 框架复利」：R250 在单叶子层建立的语义-clone vs borrow-clone 分类，在 R268 全栈编排器层产生最终回报，让 28 步原地变异管线安全隔离。dagre 全栈收官也意味着 MiniMax Code 的 mermaid/dagre 图布局能力链路完整，为后续可能的图可视化功能（mermaid-to-svg 上游能力）铺平地基。
+
+### 交付
+
+- `agent/minimax_code/dagre/layout/mod.py`（新，752 行，4 公共符号 + 19 内部 helper）：`layout(g)` 用户入口三步（build_layout_graph → run_layout → update_input_graph）+ `run_layout(g)` 28 步流水线 + `build_layout_graph(g)` 边界进（建 `GraphOption(directed=True, multigraph=True, compound=True)` 隔离图，deepcopy input graph label + set_graph_label_default_values，遍历节点 deepcopy + set_parent，遍历边 deepcopy + set_edge_label_default_values + set_edge_with_obj）+ `update_input_graph(g, lg)` 边界出（遍历节点写回 x/y，复合节点 +width/height；遍历边写回 deepcopy(points) + x/y；结尾 graph_mut/graph 写回 width/height）+ `set_graph_label_default_values` / `set_edge_label_default_values` / `make_space_for_edge_labels` 等辅助。导入策略：acyclic/normalize/coordinate_system/nesting_graph 模块导入；parent_dummy_chains/add_border_segments/order/position/rank 函数导入；util 9 符号（Rect/add_dummy_node/as_non_compound_graph/build_layer_matrix/intersect_rect/normalize_ranks/remove_empty_ranks/transfer_node_edge_labels）。`__all__ = ["build_layout_graph","layout","run_layout","update_input_graph"]`（ASCII 序 4 符号）。
+- `agent/tests/test_dagre_layout_mod.py`（新，~340 行，18 测试）：fixtures（`_make_input_graph` directed non-multigraph non-compound 输入图 + `set_graph(GraphConfig())`；`_node(width,height)`；`_edge`）+ default-stamper 白盒（4：set_graph_label_default_values 全 None 填充 / 显式值保留；set_edge_label_default_values 全 None 填充 / 显式值保留）+ build_layout_graph 白盒（4：节点边拷贝 / 节点标签 deepcopy 隔离 / graph label deepcopy 隔离 / config 默认值 stamp / edge 默认值 stamp）+ layout 端到端（4：单链 `a→b→c` y 单调递增 + x 相等；二分图 `a→c`/`b→d` x 分开 + y 堆栈同层相等；自环 `a→a` 不崩溃；空图不崩溃）+ barrel surface（5：layout 不进 dagre.__all__ / layout fn 未提升覆盖子包 / `mod.__all__` 4 符号 / dagre barrel 仍 4 / 经 dagre.layout.mod 可达）。
+
+### 映射决策树 + 坑
+
+- **🔴 graph()/graph_mut() non-Option assert（R268 新坑）**：grok 的 `graph()`/`graph_mut()` 返回 `&GL`/`&mut GL`（非 Option，编译期保证存在）；Python graphlib 返回 `GL | None`。所有调用必须 `assert x is not None  # grok: graph()(non-Option)`（build_layout_graph 开头读 input_graph_label、update_input_graph 结尾写回 width/height）。这是 graphlib Optional 返回值与 grok 非 Option 访问器的契约错位，assert 忠实镜像 grok 编译期保证。
+- **🔴 add_dummy_node F821 漏导入（ruff 静态捕获）**：inject_edge_label_proxies 调 `add_dummy_node(graph,"edge-proxy",label,"_ep")`、insert_self_edges 调 `add_dummy_node(graph,"selfedge",_graph_node,"_se")`。导入冒烟能过（Python 延迟 NameError），但 ruff F821 在测试运行前就捕获未定义名称，避免运行时崩溃。修复：util 导入块从 8 符号扩到 9 符号加入 add_dummy_node（ASCII 序，Rect 之后、as_non_compound_graph 之前）。**ruff 静态分析 + 导入冒烟双保险的实战价值**。
+- **🔴 E741 模糊变量名 l→left / r→right**：remove_border_nodes 用 `l`/`r` 读左右 border 节点 x，单字符 `l` 在 E741 黑名单。修复 `l`→`left`、`r`→`right`（保持与 `t`/`b` 上下对称语义；`t`/`b` 不在黑名单无需改；`l_node_id`/`r_node_id` 复合名 E741-safe 保留）。
+- **语义 clone 框架 8 处 deepcopy（R250 终验）**：build_layout_graph 3 处（input graph label deepcopy + 每节点 deepcopy + 每边 deepcopy 进 layout graph）+ update_input_graph 5 处（每节点 x/y 写回、复合节点 +width/height；每边 deepcopy(points) + x/y 写回；结尾 width/height）。这是跨边界 + 结构化写回的语义 clone，与 borrow-checker clone（str/Edge 不可变 + Option<i32>/f32 Copy + 借用规避）区分。test_build_layout_graph_isolates_node_labels / test_build_layout_graph_isolates_graph_label 验证隔离性。
+- **unwrap→assert 惯例（R248 util.py 复用）**：grok panic（`graph().unwrap()` / `node(v).unwrap()`）映射为 `assert x is not None  # grok: ...unwrap()`，忠实保留 panic-on-None 契约。
+- **make_space_for_edge_labels 副作用（测试设计关键）**：ranksep 减半（50→25）、每边 minlen*2（1→2），所以单链 `a→b→c` 实际 rank 为 a=0/b=2/c=4（edge-proxy dummy 插入 rank 1,3）。但 position_y 按 rank stack 仍保证 a.y<b.y<c.y 单调，端到端断言稳健（不锁死具体像素，只验证结构性不变量）。
+- **barrel 4 不变 + layout/__init__.py 纯 docstring**：mod 4 符号不进 dagre crate-root barrel（count 仍 4，R246 设定）；layout 子包通过 Python 子模块导入机制可达，无需编辑 layout/__init__.py（YAGNI，与 rank/order/position 子包一致）。
+- **Graph 无 option 访问器 → 行为断言**：白盒断言 multigraph/compound 不可用（`hasattr(g,'option')=False`），改用行为断言（build_layout_graph 返回图包含所有输入节点/边 + graph label 默认值填充 + 节点 deepcopy 隔离）+ GraphConfig() 默认已填充（ranksep=50/nodesep=50/rankdir=tb 非 None），所以 set_graph_label_default_values 白盒测试用显式 None 触发填充路径。
+
+### 验证
+
+- ruff：All checks passed!（mod.py + test，F821 漏导入 + E741 模糊名双坑静态捕获并修复）。
+- 定向 pytest（test_dagre_layout_mod）：**18 passed**（4 default-stamper 白盒 + 4 build_layout_graph 白盒 + 4 layout 端到端 + 5 barrel surface + 1 layout-fn-not-promoted）。首轮 17/18，1 失败 `test_layout_not_reachable_at_dagre_top_level`（`hasattr(dagre,"layout")`=True，因 layout 是子包非函数），修正为 `test_layout_fn_not_promoted_over_subpackage`（断言 dagre.layout 是 module 非可调用）→ 18/18。
+- 全量回归：**7276 passed, 10 skipped, 1 warning（150.15s）** vs R267 基准 7258（+18 R268，零真实回归）。R267 基准 7258 = R266 基准 7246 + 13 R267；R268 = 7276 = 7258 + 18 R268 新增。1 failed = 预存 `test_connection.py::test_interval_keeps_global_timeline_across_loops` 计时 flaky（`assert 0.063 < 0.055`，0.04s period + 0.03s body 边界，Windows 调度抖动），迭代独立性策略明确豁免 test_connection.py 计时 flaky。10 skipped 为预期。
+- CRLF 警告正常（Windows mod.py + test），无害。
+
+### YAGNI 边界
+
+- **dagre 全栈收官，无遗留叶子**：21/21 叶子全部落地（lib.rs + data_structures + 5 模块 + rank 4 + order 9 + position 2 + layout/mod 1 = 21）。layout/mod.rs 顶层编排器接入后，整条 28 步布局管线端到端可用，dagre crate 迁移链闭合。
+- **layout 不外暴**：保持 layout 子包内部（`layout.mod.layout`），不进 dagre crate-root barrel（barrel count 仍为 4，R246 设定）。dagre 顶层只暴露类型契约（GraphConfig/GraphEdge/GraphEdgePoint/GraphNode），布局编排器经 `minimax_code.dagre.layout.mod.layout` 长路径可达。
+- **run_layout 28 步不拆**：流水线步骤是线性顺序依赖的紧耦合编排，不拆为独立公共 API（YAGNI），仅 layout() 内部消费。
+- **make_space_for_edge_labels 副作用忠实保留**：ranksep 减半 + minlen*2 是 grok 的边标签空间预留机制，忠实翻译不"优化"，端到端测试验证坐标仍满足结构性不变量。
+
+### Commit
+
+`feat(platform): R268 migrate dagre layout/mod.rs -> dagre layout full-stack 100%`。提交 38e14e4。2 文件 1129 insertions（mod.py 新 752 行 + test_dagre_layout_mod.py 新 ~340 行）。锚点链: ... -> R266(b148df6) -> R267(3477693) -> R268(38e14e4)。
