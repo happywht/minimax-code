@@ -18989,3 +18989,54 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R265 migrate dagre order/mod.rs -> order sub-package 9/9`。提交 e8ddf3c。11 文件 634 insertions（2 生产 mod.py + __init__.py，9 测试，其中 2 新文件 mod.py / test_dagre_layout_order_mod.py）。锚点链: ... -> R263(b913881) -> R264(6f0cbf6) -> R265(e8ddf3c)。
+
+## R266 — 迁移 dagre position/bk.rs（Brandes-Köpf 水平坐标分配算法，position 子包首叶，第 16 个零语义 clone 叶子）
+
+锚点:R266-1 b148df6
+
+### 本轮目标
+
+迁移 `layout/position/bk.rs` —— 位置子包的第一个叶子（position 1/2 开启）。`bk.rs` 是 Brandes-Köpf「Fast and Simple Horizontal Coordinate Assignment」四对齐水平坐标分配算法（734 行，14 函数）：检测 type-1 冲突（非 inner-segment 边跨 inner segment，`_find_type_1_conflicts`）+ type-2 冲突（涉及 R249 border dummy，`find_type_2_conflicts`）→ 对四种对齐方向 ul/ur/dl/dr 各做垂直对齐（`vertical_alignment`）+ 水平压缩（`horizontal_compaction` 经 `build_block_graph` block 分隔 DAG + `_iterate` 栈式最长路径 pass）→ 选最窄对齐（`find_smallest_width_alignment`）→ 对齐坐标（`_align_coordinates`）→ 平衡四对齐为单点 x（`balance`）。迁移到 `agent/minimax_code/dagre/layout/position/bk.py`（749 行，22 函数 — grok 嵌套闭包提升为模块级私有 helper），创建 position 子包 barrel（`position/__init__.py`，`__all__=["bk"]`），编写 pytest（白盒 + 端到端 + barrel surface，21 测试），ruff + 定向 pytest + 全量回归 R265 基准 7225（稳定 7207 + 18 R265）+ R266 新增，零真实回归。
+
+### 融合结论
+
+`bk.rs` 是 position 子包的「算法核心叶子」，单向被未来的 `position/mod.rs`（R267 候选编排层）消费 —— `position::mod::position` 是 `position_x` 的唯一调用方。这是 grok-build 融合 MiniMax Code 的又一个「目录式子包」范式（继 rank R254-R257 4 叶 + order R258-R265 9 叶之后，position 计划 2 叶），确认 Python asyncio 架构能干净承载 Rust 的「700 行算法核心 + 薄编排层」双文件分层。grok 嵌套 `fn` 闭包（`vertical_alignment` 的 median-index sweep、`_sep` 的 separator 闭包、`find_smallest_width_alignment` 的 `width_of` 内层）提升为模块级私有 helper（`_predecessors_of` / `_successors_of` / `_sep` / 嵌套 `width_of` 保留嵌套作纯读捕获 `g`），规避 Python 闭包过度捕获 + 保持 `__all__` 干净。
+
+### 交付
+
+- `agent/minimax_code/dagre/layout/position/bk.py`（新，749 行，22 函数）：Brandes-Köpf 四对齐全实现。`__all__` = 9 个 ASCII 排序公共符号（`add_conflict` / `balance` / `build_block_graph` / `find_smallest_width_alignment` / `find_type_2_conflicts` / `has_conflict` / `horizontal_compaction` / `position_x` / `vertical_alignment`）。导入仅 `GraphConfig`（F401 清理后，`GraphEdge`/`GraphNode` 未直接用）。
+- `agent/minimax_code/dagre/layout/position/__init__.py`（新，88 行）：position 子包 barrel。`__all__=["bk"]` + `from minimax_code.dagre.layout.position import bk` + 描述第 16 个零语义 clone 叶子 + 平衡深拷贝例外的冗长 docstring。
+- `agent/tests/test_dagre_layout_position_bk.py`（新，401 行，21 测试）：fixtures（`_make_position_graph` directed non-multigraph non-compound layer graph + `_node`/`_edge`）+ 白盒（`_width` 2 + `add_conflict`/`has_conflict` 2 + `_find_other_inner_segment_node` 3 + `vertical_alignment` 1 + `build_block_graph` 1 + `horizontal_compaction` 1 + `find_smallest_width_alignment` 1 + `balance` 1 = 12）+ 端到端（`position_x` 3：空图早返回 / 单链无水平展开 / 双层 bipartite 水平展开）+ barrel surface（6：position_x 不进 dagre.__all__ / 不可达顶层 / bk 子模块 9 符号 / crate barrel 仍 4 / position 子包 barrel 单 reexport / reachable via layout.position）。
+
+### 映射决策树 + 坑
+
+- **🔴 block_graph = Graph() 无参构造**：grok `DiGraph::new()`；Python `Graph()`（无 opts、无 factory），只用拓扑 + 每边 `f32` 分隔标签，从不读节点标签 → `set_node(v_root, None)` 铸键，`None` 忠实 `Option<String>=None` 默认。
+- **🔴 vertical_alignment 返回元组**：grok 返回 `(HashMap<String,String>, Vec<String>)`；Python 返回 `(OrderedHashMap, list)` = (根映射 root, 对齐键列表 align_keys)。单链 a→b：root={a:a, b:a}, align_keys=[a,b]。
+- **🔴 horizontal_compaction 接收 align_keys list**：grok 传 `keys` 向量；Python 传 `align_keys: list[str]`（不是 map），用 `for v in align_keys` 迭代。
+- **🔴 balance 手动深拷贝 xss→xss_clone**：grok `let mut xss = xss.clone()`；`OrderedHashMap` 无 `clone()` → 手动 `xss_clone = OrderedHashMap()` + 逐 key `insert(k, xs_copy)`（xs 也逐坐标拷贝）。这是第 16 个零语义 clone 叶子的唯一忠实深拷贝例外（balance 重写 ul 对齐同时读其他三对齐算中位数）。
+- **🔴 _sep 用 total 累加器**：grok `.sum()`；Python 用 `total = 0.0; for ...: total += ...` 规避 builtin `sum` 与参数名冲突 + 显式累加。两非 dummy 宽度=10 无 labelpos，nodesep=50 → 分隔符 = 5+25+25+5 = **60.0**。
+- **🔴 position_x r 对齐反转**：grok ul/dl 用 layering 原序，ur/dr 用 reversed layer + xs 取负；Python `adjusted_layering = [list(reversed(layer)) for layer in layering]` + `xs_clone.insert(v, -x)` + 末尾再取负还原。
+- **🔴 0.0 falsy 陷阱**：grok `edge.weight.unwrap_or(0.0)`；Python `g.edge(u, v, name) or 0.0` —— 恰好安全（边缺失返回 None，存在返回 f32；若权重恰好 0.0，`0.0 or 0.0 == 0.0` 仍正确，因为两操作数都是 0.0）。
+- **median index**：`int(mp)` 下取整 / `math.ceil(mp)` 上取整，对应 grok `as usize` / `as usize` + ceil。
+- **border_type 判别**：`border_type = BorderTypeName.LEFT if reverse_sep else BorderTypeName.RIGHT`；`_pass2` 守卫 `if node.border_type != border_type: continue` 跳过外侧 border sentinel。
+- **🔴 layout/__init__.py 纯 docstring 无导入**：position 子包通过 Python 子模块导入机制可达（`import ...layout.position` 自动绑定 `layout_pkg.position`），无需编辑 `layout/__init__.py`（YAGNI）。与 rank/order 子包一致（layout barrel 从不 reexport 子包）。
+- **🔴 bk.py F401 + I001（本会话 ruff --fix 修复）**：初始导入块 `from minimax_code.dagre import GraphConfig, GraphEdge, GraphNode` 中 `GraphEdge`/`GraphNode` 未直接使用（F401）+ 导入未排序（I001）。`ruff check --fix` 删除未用导入（仅留 `GraphConfig`）+ 重排，3 错误全修复。
+
+### 验证
+
+- ruff：bk.py 初始 3 错误（I001 + 2× F401）→ `ruff check --fix` 全修复 → 3 文件（bk.py + __init__.py + test）All checks passed!。
+- 定向 pytest（test_dagre_layout_position_bk）：**21 passed in 0.08s**（白盒 12 + 端到端 3 + barrel surface 6，零回归）。
+- 全量回归：**7246 passed, 10 skipped（148.10s）** vs R265 基准 7225（+21 R266，零真实回归）。R265 基准 7225 = 7207 稳定 + 18 R265；R266 = 7246 = 7225 + 21 R266 新增。预存 test_connection 计时 flaky / test_scheduled sqlite closed db / message-list flaky 本次均未触发（10 skipped 为预期）。
+- CRLF 警告正常（Windows bk.py），无害。
+
+### YAGNI 边界
+
+- **position/mod.rs 待迁（R267 候选）**：`position()` 编排层（`position_x` + `position_y` rank-sep 堆叠），依赖 `util.as_non_compound_graph` + `build_layer_matrix` + `GraphConfig.ranksep` + `GraphNode.height/x/y`，是 `position_x` 的唯一消费者。
+- **layout/mod.rs 顶层 run_layout 待迁（R268 全栈收官候选）**：dagre layout 全栈最后一个叶子，line 633 调用 position 后接，依赖 order + position 全部就位。
+- **position_x 不外暴**：保持 position 子包内部（`position.bk.position_x`），不进 dagre crate-root barrel（barrel count 仍为 4，R246 设定）。
+- **私有 helper 不进 __all__**：`_width` / `_find_type_1_conflicts` / `_predecessors_of` / `_successors_of` / `_sep` / `_pass1` / `_pass2` / `_iterate` / `_align_coordinates` 仅 `position_x` 内部 + 测试白盒导入。
+- **block_graph 无 label 读取**：`set_node(v_root, None)` 的 `None` 忠实保留但从不读取（与 R262 build_layer_graph 的 graph_mut live label 形成对照）。
+
+### Commit
+
+`feat(platform): R266 migrate dagre position/bk.rs (Brandes-Kopf assignment)`。提交 b148df6。3 文件 1238 insertions（2 生产 bk.py 749 + __init__.py 88，1 测试 test_dagre_layout_position_bk.py 401）。锚点链: ... -> R264(6f0cbf6) -> R265(e8ddf3c) -> R266(b148df6)。
