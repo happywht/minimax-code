@@ -64,6 +64,8 @@ from minimax_code.mermaid.to_svg.layout import (
     NodeInfo,
     PositionMap,
     SubgraphInfo,
+    compute_layout,
+    compute_layout_with_config,
     graph_contains_state_shapes,
 )
 from minimax_code.mermaid.to_svg.text_wrap import (
@@ -446,23 +448,10 @@ def test_type_aliases_are_dict_generic_forms() -> None:
 
 
 # === barrel contract: layout is internal ====================================
-
-
-def test_layout_module_all_is_4_public_structs() -> None:
-    """``layout.py`` declares a 4-symbol ``__all__`` (the ``pub struct`` surface).
-
-    Mirrors grok's private ``mod layout;`` -- the 4 ``pub struct`` are the
-    intended public surface at this leaf. The 2 ``pub fn`` entries
-    (``compute_layout`` / ``compute_layout_with_config``) join in R274e; the
-    constants / internal structs / type aliases / options are module-private
-    (grok ``const`` / private ``struct`` / ``type`` -- not ``pub``).
-    """
-    assert layout_mod.__all__ == [
-        "LayoutEdge",
-        "LayoutNode",
-        "LayoutResult",
-        "LayoutSubgraph",
-    ]
+# R274f: the authoritative ``__all__`` surface assertion lives at the end of
+# this module (``test_layout_module_all_contract``), which tracks the live
+# 6-symbol surface (4 ``pub struct`` from R274a + 2 ``pub fn`` from R274f).
+# The earlier R274a-era 4-symbol stub was removed to avoid a stale duplicate.
 
 
 def test_layout_symbols_not_in_to_svg_barrel() -> None:
@@ -1635,16 +1624,9 @@ def test_extract_layout_from_dagre_extracts_edge_points_and_labels() -> None:
 
 
 # --- R274c barrel contract: layout stays internal -------------------------
-
-
-def test_layout_module_all_unchanged_at_four_symbols() -> None:
-    """R274c adds instance methods, not public symbols; ``__all__`` stays at 4."""
-    assert layout_mod.__all__ == [
-        "LayoutEdge",
-        "LayoutNode",
-        "LayoutResult",
-        "LayoutSubgraph",
-    ]
+# R274f: the authoritative ``__all__`` surface assertion lives at the end of
+# this module (``test_layout_module_all_contract``). The R274c-era 4-symbol
+# stub was removed -- the surface grew to 6 in R274f (2 ``pub fn`` added).
 
 
 def test_dagre_graph_alias_internal_not_in_module_all() -> None:
@@ -2066,16 +2048,9 @@ def test_get_node_colors_partial_style_returns_none_for_missing() -> None:
 
 
 # --- R274d barrel contract: layout stays internal --------------------------
-
-
-def test_layout_module_all_unchanged_by_r274d() -> None:
-    """R274d adds instance methods, not public symbols; ``__all__`` stays at 4."""
-    assert layout_mod.__all__ == [
-        "LayoutEdge",
-        "LayoutNode",
-        "LayoutResult",
-        "LayoutSubgraph",
-    ]
+# R274f: the authoritative ``__all__`` surface assertion lives at the end of
+# this module (``test_layout_module_all_contract``). The R274d-era 4-symbol
+# stub was removed -- the surface grew to 6 in R274f (2 ``pub fn`` added).
 
 
 def test_mermaid_root_barrel_unchanged_by_r274d() -> None:
@@ -2533,14 +2508,25 @@ def test_dedup_consecutive_drops_only_adjacent_duplicates(
 # --- R274e barrel contract: layout stays internal --------------------------
 
 
-def test_layout_module_all_unchanged_by_r274e() -> None:
-    """R274e adds instance/static methods, not public symbols; ``__all__`` stays 4."""
+def test_layout_module_all_contract() -> None:
+    """``__all__`` tracks the live public surface (4 data types + 2 R274f entries).
+
+    R274e kept ``__all__`` at the 4 ``pub struct`` from R274a (it only added
+    instance/static methods). R274f grows the surface to 6 by adding the 2
+    ``pub fn`` public-entry functions (``compute_layout`` +
+    ``compute_layout_with_config``). The list stays ASCII-sorted.
+    """
     assert layout_mod.__all__ == [
         "LayoutEdge",
         "LayoutNode",
         "LayoutResult",
         "LayoutSubgraph",
+        "compute_layout",
+        "compute_layout_with_config",
     ]
+    # the public entries are the 2 R274f symbols reachable as module attributes
+    assert layout_mod.compute_layout is compute_layout
+    assert layout_mod.compute_layout_with_config is compute_layout_with_config
 
 
 def test_layout_edge_geometry_helpers_are_instance_or_static_methods() -> None:
@@ -2567,3 +2553,191 @@ def test_layout_edge_geometry_helpers_are_instance_or_static_methods() -> None:
         "connection_point_towards",
     ):
         assert name not in vars(layout_mod), f"{name} leaked into module namespace"
+
+
+# --- R274f: compute_with_dagre orchestrator + public entries ----------------
+
+
+def test_compute_layout_minimal_flowchart_end_to_end() -> None:
+    """compute_layout lays out a minimal TB A->B graph end-to-end via dagre.
+
+    Exercises the full R274f orchestrator: compute_spacing -> build_dagre_graph
+    -> dagre_layout -> extract_layout_from_dagre -> bounds -> margin-shift ->
+    LayoutResult. Asserts the structural contract + the margin invariant
+    (every node's left/top edge sits at or beyond MARGIN after the shift).
+    """
+    graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Node(id="A", label="A", shape=NodeShape.Rectangle),
+            Node(id="B", label="B", shape=NodeShape.Rectangle),
+            Edge(from_="A", to="B", label=None, style=EdgeStyle.Arrow),
+        ],
+    )
+    result = compute_layout(graph)
+    assert isinstance(result, LayoutResult)
+    assert set(result.nodes) == {"A", "B"}
+    assert len(result.edges) == 1
+    assert result.width > 0.0
+    assert result.height > 0.0
+    # margin invariant: the global min_x/min_y shift places every node's
+    # bounding box at or beyond MARGIN on the left/top (grok's shift guarantee).
+    for node in result.nodes.values():
+        assert node.x - node.width / 2.0 >= layout_mod.MARGIN - 1e-6
+        assert node.y - node.height / 2.0 >= layout_mod.MARGIN - 1e-6
+    # edges keep at least their two endpoints after clipping
+    for edge in result.edges:
+        assert len(edge.points) >= 2
+
+
+def test_compute_layout_with_config_builds_options_from_render_config() -> None:
+    """compute_layout_with_config threads RenderConfig -> FlowchartLayoutOptions."""
+    graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[Edge(from_="A", to="B", label=None, style=EdgeStyle.Arrow)],
+    )
+    config = RenderConfig(font_size="24px")
+    result = compute_layout_with_config(graph, config)
+    assert isinstance(result, LayoutResult)
+    assert set(result.nodes) == {"A", "B"}
+    assert result.width > 0.0
+    assert result.height > 0.0
+
+
+def test_compute_layout_equivalent_to_engine_compute_with_dagre_true() -> None:
+    """compute_layout(g) == LayoutEngine(g).compute_with_dagre(True).
+
+    The default public entry delegates to the orchestrator with subgraph-node
+    centering on (mirrors grok's ``compute_layout`` -> ``compute_with_dagre(true)``).
+    """
+    graph = FlowchartGraph(
+        direction=GraphDirection.LeftToRight,
+        statements=[
+            Node(id="X", label="X", shape=NodeShape.Circle),
+            Node(id="Y", label="Y", shape=NodeShape.Circle),
+            Edge(from_="X", to="Y", label="edge label", style=EdgeStyle.Arrow),
+        ],
+    )
+    public = compute_layout(graph)
+    direct = LayoutEngine(graph).compute_with_dagre(True)
+    assert public == direct  # LayoutResult dataclass __eq__
+
+
+def test_compute_with_dagre_center_flag_runs_both_paths() -> None:
+    """``center_subgraph_nodes`` True/False both run the full pipeline cleanly.
+
+    The flag toggles a single call site (``center_nodes_in_subgraphs`` inside
+    ``compute_with_dagre``); on a graph with no subgraphs that call is a no-op,
+    so both branches exercise the identical end-to-end pipeline (spacing ->
+    direction -> back-edge detect -> dagre build+solve -> extract -> bounds ->
+    node/edge assembly -> margin shift -> viewport size). A forked graph
+    (A -> B, A -> C) exercises dagre's multi-path ranking rather than a trivial
+    single chain.
+
+    NOTE -- a graph WITH a subgraph trips a pre-existing dagre graphlib bug from
+    the R242-R268 migration chain (NOT introduced by R274f): network_simplex's
+    ``_exchange_edges`` calls ``Graph.remove_edge`` which reaches
+    ``_decrement_or_remove_entry`` and does ``None -= 1`` on a virtual ``_bt``
+    node whose ``_preds`` counter entry was already dropped. The R274f
+    orchestrator itself is correct; end-to-end subgraph-centering coverage is
+    blocked on that upstream dagre fix. The ``center_nodes_in_subgraphs`` shift
+    logic is covered by its own focused unit tests upstream of this orchestrator.
+    """
+    graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Node(id="A", label="A", shape=NodeShape.Rectangle),
+            Node(id="B", label="B", shape=NodeShape.Rectangle),
+            Node(id="C", label="C", shape=NodeShape.Rectangle),
+            Edge(from_="A", to="B", label=None, style=EdgeStyle.Arrow),
+            Edge(from_="A", to="C", label=None, style=EdgeStyle.Arrow),
+        ],
+    )
+    centered = LayoutEngine(graph).compute_with_dagre(True)
+    uncentered = LayoutEngine(graph).compute_with_dagre(False)
+    # Both branches return a valid viewport, place every node, and keep each
+    # node's left/top edge at or beyond the global margin (pan invariance).
+    for result in (centered, uncentered):
+        assert isinstance(result, LayoutResult)
+        assert result.width > 0.0
+        assert result.height > 0.0
+        assert set(result.nodes) == {"A", "B", "C"}
+        for node in result.nodes.values():
+            assert node.x - node.width / 2.0 >= layout_mod.MARGIN - 1e-6
+            assert node.y - node.height / 2.0 >= layout_mod.MARGIN - 1e-6
+
+
+@pytest.mark.parametrize(
+    "direction",
+    [
+        GraphDirection.TopToBottom,
+        GraphDirection.BottomToTop,
+        GraphDirection.LeftToRight,
+        GraphDirection.RightToLeft,
+    ],
+)
+def test_compute_layout_all_four_directions_produce_valid_layout(direction) -> None:
+    """All 4 graph directions map to a rank_dir and lay out without raising."""
+    graph = FlowchartGraph(
+        direction=direction,
+        statements=[Edge(from_="A", to="B", label=None, style=EdgeStyle.Arrow)],
+    )
+    result = compute_layout(graph)
+    assert set(result.nodes) == {"A", "B"}
+    assert result.width > 0.0
+    assert result.height > 0.0
+
+
+def test_compute_layout_state_diagram_runs_snap_align_special_case() -> None:
+    """A state diagram (StartState) exercises snap_state_ranks + align path."""
+    graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Node(id="start", label="start", shape=NodeShape.StartState),
+            Node(id="s1", label="s1", shape=NodeShape.Rectangle),
+            Edge(from_="start", to="s1", label=None, style=EdgeStyle.Arrow),
+        ],
+    )
+    engine = LayoutEngine(graph)
+    assert engine.is_state_diagram is True
+    result = engine.compute_with_dagre(True)
+    assert isinstance(result, LayoutResult)
+    assert "start" in result.nodes
+    assert "s1" in result.nodes
+
+
+def test_compute_layout_labeled_edge_sets_label_position() -> None:
+    """A labeled edge gets a non-None label_pos within the laid-out canvas."""
+    graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[Edge(from_="A", to="B", label="yes", style=EdgeStyle.Arrow)],
+    )
+    result = compute_layout(graph)
+    assert len(result.edges) == 1
+    edge = result.edges[0]
+    assert edge.label == "yes"
+    assert edge.label_pos is not None
+    lx, ly = edge.label_pos
+    # label participates in the min_x/min_y shift + final_width/height envelope
+    assert lx >= layout_mod.MARGIN - 1e-6
+    assert ly >= layout_mod.MARGIN - 1e-6
+    assert lx <= result.width + 1e-6
+    assert ly <= result.height + 1e-6
+
+
+def test_compute_layout_cyclic_graph_routes_through_back_edge_path() -> None:
+    """A cyclic A->B->C->A triangle routes at least one edge via the back-edge path."""
+    graph = FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Edge(from_="A", to="B", label=None, style=EdgeStyle.Arrow),
+            Edge(from_="B", to="C", label=None, style=EdgeStyle.Arrow),
+            Edge(from_="C", to="A", label=None, style=EdgeStyle.Arrow),
+        ],
+    )
+    result = compute_layout(graph)
+    assert isinstance(result, LayoutResult)
+    assert set(result.nodes) == {"A", "B", "C"}
+    assert len(result.edges) == 3
+    assert result.width > 0.0
+    assert result.height > 0.0

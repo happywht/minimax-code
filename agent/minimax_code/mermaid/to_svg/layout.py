@@ -93,6 +93,7 @@ from typing import TypeAlias
 # in the now-complete dagre layout stack (R246-R268) + the graphlib ``Graph``
 # core (R241-R245). Mirrors grok's ``use dagre::...`` + ``use graphlib::...``.
 from minimax_code.dagre import GraphConfig, GraphEdge, GraphNode
+from minimax_code.dagre.layout.mod import layout as dagre_layout
 from minimax_code.data_structures import Graph, GraphOption
 
 from .ast import (
@@ -2046,6 +2047,215 @@ class LayoutEngine:
         t = 1.0 / denom
         return (node.x + dx * t, node.y + dy * t)
 
+    def compute_with_dagre(self, center_subgraph_nodes: bool) -> LayoutResult:
+        """Solve the flowchart layout end-to-end via the dagre bridge.
+
+        The orchestrator wiring the R274c--e helpers into grok's pipeline:
+        spacing -> direction -> back-edge detection -> dagre graph build + solve
+        -> layout extraction -> state-diagram specials (snap + align) -> subgraph
+        centering -> bounds -> node/edge/subgraph assembly -> global margin shift
+        -> viewport sizing.
+
+        Three Python-specific adaptations (each with a one-line rationale):
+
+        * ``analyze_clusters`` omitted -- grok's ``build_dagre_graph`` takes
+          ``_cluster_analysis`` (leading underscore = Rust unused parameter);
+          cluster routing reads ``self.node_to_subgraph`` / ``self.subgraphs``
+          instead, so the analysis is dead input even in grok. R274c already
+          dropped the parameter (4-arg signature).
+        * Tuple immutability -- grok mutates ``point.0 += x_shift`` in place on
+          ``&mut (f64, f64)``; Python tuples are immutable, so edge-point /
+          label-pos shifts rebuild the container (``edge.points = [...]``,
+          ``edge.label_pos = (...)``).
+        * ``min`` / ``max`` chains -- grok's ``a.min(b).min(c)`` folds into the
+          running ``min(min_x, v)`` / ``max(max_x, v)`` loop form.
+        """
+        node_sep, rank_sep = self.compute_spacing()
+        if self.graph.direction is GraphDirection.TopToBottom:
+            rank_dir = "tb"
+        elif self.graph.direction is GraphDirection.BottomToTop:
+            rank_dir = "bt"
+        elif self.graph.direction is GraphDirection.LeftToRight:
+            rank_dir = "lr"
+        else:
+            rank_dir = "rl"
+
+        back_edges = self.detect_back_edges()
+        dagre_graph, edge_map = self.build_dagre_graph(
+            rank_dir, node_sep, rank_sep, back_edges
+        )
+        dagre_layout(dagre_graph)
+        positions, edge_points, edge_label_positions = self.extract_layout_from_dagre(
+            dagre_graph, edge_map
+        )
+        if self.is_state_diagram:
+            self.snap_state_ranks(positions, back_edges)
+            self.align_state_terminal_singletons(positions, back_edges)
+        is_vertical = self.graph.direction in (
+            GraphDirection.TopToBottom,
+            GraphDirection.BottomToTop,
+        )
+        if center_subgraph_nodes:
+            self.center_nodes_in_subgraphs(positions, is_vertical)
+        width, height = self.compute_bounds(positions)
+        layout_nodes: dict[str, LayoutNode] = {}
+        for node_id, (x, y) in positions.items():
+            info = self.nodes.get(node_id)
+            if info is None:
+                continue
+            fill_color, stroke_color = self.get_node_colors(node_id)
+            layout_nodes[node_id] = LayoutNode(
+                id=node_id,
+                x=x,
+                y=y,
+                width=info.width,
+                height=info.height,
+                shape=info.shape,
+                label=info.label,
+                fill_color=fill_color,
+                stroke_color=stroke_color,
+            )
+        layout_subgraphs = self.compute_subgraph_bounds(layout_nodes, SUBGRAPH_PADDING)
+        layout_edges: list[LayoutEdge] = []
+        for idx, edge in enumerate(self.edges):
+            from_node = self.layout_endpoint_node(layout_nodes, layout_subgraphs, edge.from_)
+            if from_node is None:
+                continue
+            to_node = self.layout_endpoint_node(layout_nodes, layout_subgraphs, edge.to)
+            if to_node is None:
+                continue
+            is_back_edge = self.is_back_edge(from_node, to_node)
+            dagre_points = edge_points.get(idx)
+            if dagre_points is None:
+                dagre_points = self.compute_edge_points_with_obstacles(
+                    from_node, to_node, layout_nodes
+                )
+            if is_back_edge:
+                points = self.compute_back_edge_points(
+                    from_node, to_node, is_vertical, layout_nodes
+                )
+            else:
+                points = self.straighten_if_aligned(
+                    dagre_points, from_node, to_node, is_vertical, layout_nodes
+                )
+            # Cluster-target edges: dagre routes to an interior member node, so
+            # the polyline tail dives inside the cluster rect and the clip then
+            # curls it back to the boundary. Drop the interior points first so
+            # the edge approaches the cluster boundary monotonically from outside.
+            if not is_back_edge:
+                from_is_cluster = self.is_subgraph_id(edge.from_)
+                to_is_cluster = self.is_subgraph_id(edge.to)
+                if from_is_cluster or to_is_cluster:
+                    LayoutEngine.trim_cluster_interior_points(
+                        points,
+                        from_node,
+                        to_node,
+                        from_is_cluster,
+                        to_is_cluster,
+                    )
+            self.clip_edge_to_boundaries(points, from_node, to_node)
+
+            label_pos: tuple[float, float] | None = None
+            if edge.label is not None and edge.label.strip():
+                if is_back_edge:
+                    label_pos = LayoutEngine.edge_label_midpoint(points)
+                else:
+                    midpoint = LayoutEngine.edge_label_midpoint(points)
+                    candidate = edge_label_positions.get(idx)
+                    if candidate is None:
+                        label_pos = midpoint
+                    else:
+                        # Keep the dagre-suggested label only when it sits within
+                        # the edge polyline's bounding box (+/-8px slack); else
+                        # fall back to the midpoint. Empty points -> inf box ->
+                        # candidate rejected (matches grok's INFINITY init).
+                        box_min_x = math.inf
+                        box_max_x = -math.inf
+                        box_min_y = math.inf
+                        box_max_y = -math.inf
+                        for px, py in points:
+                            box_min_x = min(box_min_x, px)
+                            box_max_x = max(box_max_x, px)
+                            box_min_y = min(box_min_y, py)
+                            box_max_y = max(box_max_y, py)
+                        cx, cy = candidate
+                        if (
+                            box_min_x - 8.0 <= cx <= box_max_x + 8.0
+                            and box_min_y - 8.0 <= cy <= box_max_y + 8.0
+                        ):
+                            label_pos = candidate
+                        else:
+                            label_pos = midpoint
+
+            layout_edges.append(
+                LayoutEdge(
+                    from_=edge.from_,
+                    to=edge.to,
+                    label=edge.label,
+                    style=edge.style,
+                    points=points,
+                    label_pos=label_pos,
+                )
+            )
+
+        min_x = math.inf
+        min_y = math.inf
+        for sg in layout_subgraphs:
+            min_x = min(min_x, sg.x)
+            min_y = min(min_y, sg.y)
+        for node in layout_nodes.values():
+            min_x = min(min_x, node.x - node.width / 2.0)
+            min_y = min(min_y, node.y - node.height / 2.0)
+        for edge in layout_edges:
+            label_bounds = self.edge_label_bounds(edge)
+            if label_bounds is not None:
+                label_x, label_y, label_w, label_h = label_bounds
+                min_x = min(min_x, label_x - label_w / 2.0)
+                min_y = min(min_y, label_y - label_h / 2.0)
+        x_shift = MARGIN - min_x if min_x < MARGIN else 0.0
+        y_shift = MARGIN - min_y if min_y < MARGIN else 0.0
+
+        # Global margin shift: grok shadow-rebuilds the three containers via
+        # into_iter().map().collect(); Python mutates the mutable dataclasses
+        # in place (LayoutNode/LayoutSubgraph) and rebuilds the tuple lists
+        # (LayoutEdge.points / label_pos) since tuples are immutable.
+        for node in layout_nodes.values():
+            node.x += x_shift
+            node.y += y_shift
+        for edge in layout_edges:
+            edge.points = [(p[0] + x_shift, p[1] + y_shift) for p in edge.points]
+            if edge.label_pos is not None:
+                edge.label_pos = (
+                    edge.label_pos[0] + x_shift,
+                    edge.label_pos[1] + y_shift,
+                )
+        for sg in layout_subgraphs:
+            sg.x += x_shift
+            sg.y += y_shift
+
+        final_width = width + x_shift
+        final_height = height + y_shift
+        for sg in layout_subgraphs:
+            final_width = max(final_width, sg.x + sg.width + MARGIN)
+            final_height = max(final_height, sg.y + sg.height + MARGIN)
+        for edge in layout_edges:
+            for px, py in edge.points:
+                final_width = max(final_width, px + MARGIN)
+                final_height = max(final_height, py + MARGIN)
+            label_bounds = self.edge_label_bounds(edge)
+            if label_bounds is not None:
+                label_x, label_y, label_w, label_h = label_bounds
+                final_width = max(final_width, label_x + label_w / 2.0 + MARGIN)
+                final_height = max(final_height, label_y + label_h / 2.0 + MARGIN)
+
+        return LayoutResult(
+            nodes=layout_nodes,
+            edges=layout_edges,
+            subgraphs=layout_subgraphs,
+            width=final_width,
+            height=final_height,
+        )
+
 
 def _dedup_consecutive(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
     """Drop consecutive duplicate points (mirrors Rust ``Vec::dedup``).
@@ -2060,9 +2270,36 @@ def _dedup_consecutive(points: list[tuple[float, float]]) -> list[tuple[float, f
     return result
 
 
+def compute_layout(graph: FlowchartGraph) -> LayoutResult:
+    """Solve ``graph`` layout with default options (mirrors grok ``compute_layout``).
+
+    The crate-root public entry consumed by ``svg_renderer`` -- builds the engine
+    with default :class:`FlowchartLayoutOptions` and runs the full dagre pipeline
+    with subgraph node centering enabled.
+    """
+    engine = LayoutEngine(graph)
+    return engine.compute_with_dagre(True)
+
+
+def compute_layout_with_config(
+    graph: FlowchartGraph, config: RenderConfig
+) -> LayoutResult:
+    """Solve ``graph`` layout driven by a :class:`RenderConfig` (grok twin).
+
+    The crate-root public entry consumed when front-matter / render options flow
+    in from the caller -- derives :class:`FlowchartLayoutOptions` from ``config``
+    via :meth:`FlowchartLayoutOptions.from_render_config`, then runs the full
+    dagre pipeline with subgraph node centering enabled.
+    """
+    engine = LayoutEngine(graph, FlowchartLayoutOptions.from_render_config(config))
+    return engine.compute_with_dagre(True)
+
+
 __all__ = [
     "LayoutEdge",
     "LayoutNode",
     "LayoutResult",
     "LayoutSubgraph",
+    "compute_layout",
+    "compute_layout_with_config",
 ]
