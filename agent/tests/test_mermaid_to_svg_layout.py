@@ -2082,3 +2082,488 @@ def test_mermaid_root_barrel_unchanged_by_r274d() -> None:
     """R274d adds another internal-method cohort; the R38 root surface stays 17."""
     assert len(mermaid.__all__) == 17
     assert "to_svg" not in mermaid.__all__
+
+
+# === R274e: edge geometry (grok layout.rs L2602-L3246, 17 migrated methods) ===
+#
+# R274e migrates the 17 edge-geometry helpers (13 ``&self`` instance methods +
+# 4 associated ``fn`` -> ``@staticmethod``) plus the module-level
+# ``_dedup_consecutive`` helper (mirrors Rust ``Vec::dedup``). These exercise
+# the shape-aware connection-point projection, obstacle routing, back-edge
+# U-detours and edge-clip snapping that the public ``compute_with_dagre``
+# body (R274f) will drive.
+
+
+def _graph_with_direction(direction: GraphDirection) -> FlowchartGraph:
+    """Parameterized empty graph (R274e tests cover all 4 directions)."""
+    return FlowchartGraph(direction=direction, statements=[])
+
+
+def _circle_node(
+    node_id: str,
+    x: float = 0.0,
+    y: float = 0.0,
+    width: float = 40.0,
+    height: float = 40.0,
+    label: str | None = None,
+) -> LayoutNode:
+    """Circle-shaped LayoutNode factory (connection-point shape branch)."""
+    return LayoutNode(
+        id=node_id,
+        x=x,
+        y=y,
+        width=width,
+        height=height,
+        shape=NodeShape.Circle,
+        label=label if label is not None else node_id,
+        fill_color=None,
+        stroke_color=None,
+    )
+
+
+def _diamond_node(
+    node_id: str,
+    x: float = 0.0,
+    y: float = 0.0,
+    width: float = 40.0,
+    height: float = 20.0,
+    label: str | None = None,
+) -> LayoutNode:
+    """Diamond-shaped LayoutNode factory (connection-point shape branch)."""
+    return LayoutNode(
+        id=node_id,
+        x=x,
+        y=y,
+        width=width,
+        height=height,
+        shape=NodeShape.Diamond,
+        label=label if label is not None else node_id,
+        fill_color=None,
+        stroke_color=None,
+    )
+
+
+def _layout_edge(
+    from_id: str,
+    to_id: str,
+    points: list[tuple[float, float]] | None = None,
+    label: str | None = None,
+    label_pos: tuple[float, float] | None = None,
+) -> LayoutEdge:
+    """LayoutEdge factory (edge_label_bounds / edge_label_midpoint tests)."""
+    return LayoutEdge(
+        from_=from_id,
+        to=to_id,
+        label=label,
+        style=EdgeStyle.Line,
+        points=points if points is not None else [],
+        label_pos=label_pos,
+    )
+
+
+# --- edge_label_midpoint (associated fn, 5 branch cases) -------------------
+
+
+@pytest.mark.parametrize(
+    "points,expected",
+    [
+        ([], (0.0, 0.0)),  # empty -> origin
+        ([(5.0, 5.0)], (5.0, 5.0)),  # single point -> itself
+        ([(0.0, 0.0), (10.0, 0.0)], (5.0, 0.0)),  # mid of one segment
+        ([(0.0, 0.0), (0.0, 0.0)], (0.0, 0.0)),  # near-zero total -> first
+        ([(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)], (10.0, 0.0)),  # L-shape mid
+    ],
+)
+def test_edge_label_midpoint_branches(
+    points: list[tuple[float, float]], expected: tuple[float, float]
+) -> None:
+    """The 5 grok branches of the static midpoint helper."""
+    assert LayoutEngine.edge_label_midpoint(points) == pytest.approx(expected)
+
+
+# --- edge_label_bounds (instance, 3 cases) ---------------------------------
+
+
+def test_edge_label_bounds_none_label_returns_none() -> None:
+    """An edge without a label -> ``None``."""
+    engine = LayoutEngine(_empty_graph())
+    edge = _layout_edge("a", "b", points=[(0.0, 0.0), (10.0, 0.0)])
+    assert engine.edge_label_bounds(edge) is None
+
+
+def test_edge_label_bounds_uses_explicit_label_pos() -> None:
+    """An explicit ``label_pos`` anchors the box at that point."""
+    engine = LayoutEngine(_empty_graph())
+    edge = _layout_edge("a", "b", points=[(0.0, 0.0), (10.0, 0.0)], label="x", label_pos=(5.0, 5.0))
+    dims = engine.edge_label_dimensions("x")
+    assert dims is not None
+    bounds = engine.edge_label_bounds(edge)
+    assert bounds == (5.0, 5.0, dims[0], dims[1])
+
+
+def test_edge_label_bounds_falls_back_to_midpoint() -> None:
+    """Without ``label_pos`` the box is anchored at the geometric midpoint."""
+    engine = LayoutEngine(_empty_graph())
+    edge = _layout_edge("a", "b", points=[(0.0, 0.0), (10.0, 0.0)], label="x")
+    dims = engine.edge_label_dimensions("x")
+    assert dims is not None
+    mid = LayoutEngine.edge_label_midpoint(edge.points)
+    bounds = engine.edge_label_bounds(edge)
+    assert bounds is not None
+    assert bounds[0:2] == pytest.approx(mid)
+    assert bounds[2:4] == dims
+
+
+# --- is_back_edge (instance, 4 directions x forward/backward) --------------
+
+
+@pytest.mark.parametrize(
+    "direction,from_xy,to_xy,expected",
+    [
+        (GraphDirection.TopToBottom, (0.0, 100.0), (0.0, 0.0), True),  # above -> back
+        (GraphDirection.TopToBottom, (0.0, 0.0), (0.0, 100.0), False),  # below -> forward
+        (GraphDirection.BottomToTop, (0.0, 0.0), (0.0, 100.0), True),  # below -> back
+        (GraphDirection.BottomToTop, (0.0, 100.0), (0.0, 0.0), False),  # above -> forward
+        (GraphDirection.LeftToRight, (100.0, 0.0), (0.0, 0.0), True),  # left -> back
+        (GraphDirection.LeftToRight, (0.0, 0.0), (100.0, 0.0), False),  # right -> forward
+        (GraphDirection.RightToLeft, (0.0, 0.0), (100.0, 0.0), True),  # right -> back
+        (GraphDirection.RightToLeft, (100.0, 0.0), (0.0, 0.0), False),  # left -> forward
+    ],
+)
+def test_is_back_edge_direction_aware(
+    direction: GraphDirection,
+    from_xy: tuple[float, float],
+    to_xy: tuple[float, float],
+    expected: bool,
+) -> None:
+    """``to`` upstream of ``from`` against the flow is a back edge."""
+    engine = LayoutEngine(_graph_with_direction(direction))
+    from_node = _layout_node("a", x=from_xy[0], y=from_xy[1])
+    to_node = _layout_node("b", x=to_xy[0], y=to_xy[1])
+    assert engine.is_back_edge(from_node, to_node) is expected
+
+
+# --- connection_point_towards (instance, outbound, 3 shapes) ---------------
+
+
+@pytest.mark.parametrize(
+    "factory,expected",
+    [
+        (_layout_node, (20.0, 0.0)),  # rectangle -> right border
+        (_circle_node, (20.0, 0.0)),  # circle -> radius point on +x
+        (_diamond_node, (20.0, 0.0)),  # diamond -> right vertex
+    ],
+)
+def test_connection_point_towards_shape_branches(
+    factory, expected: tuple[float, float]
+) -> None:
+    """Target on +x -> each shape projects onto its +x border point."""
+    engine = LayoutEngine(_empty_graph())
+    node = factory("n")
+    assert engine.connection_point_towards(node, 100.0, 0.0) == pytest.approx(expected)
+
+
+# --- connection_point_on_node (instance, inbound, 3 shapes) ----------------
+
+
+@pytest.mark.parametrize(
+    "factory,expected",
+    [
+        (_layout_node, (20.0, 0.0)),  # rectangle -> border towards caller
+        (_circle_node, (20.0, 0.0)),  # circle -> radius point
+        (_diamond_node, (20.0, 0.0)),  # diamond -> vertex
+    ],
+)
+def test_connection_point_on_node_shape_branches(
+    factory, expected: tuple[float, float]
+) -> None:
+    """Caller on +x -> each shape's inbound border point faces +x."""
+    engine = LayoutEngine(_empty_graph())
+    node = factory("n")
+    assert engine.connection_point_on_node(node, 100.0, 0.0) == pytest.approx(expected)
+
+
+# --- line_intersect_rect (associated fn, 4 cases) --------------------------
+
+
+@pytest.mark.parametrize(
+    "p1,p2,rect_min,rect_max,expected",
+    [
+        ((0.0, 5.0), (100.0, 5.0), (40.0, -10.0), (60.0, 10.0), True),  # crosses
+        ((0.0, 5.0), (100.0, 5.0), (40.0, 20.0), (60.0, 30.0), False),  # same side
+        ((50.0, 5.0), (100.0, 5.0), (40.0, -10.0), (60.0, 10.0), True),  # endpoint inside
+        ((0.0, 5.0), (0.0, 5.0), (40.0, -10.0), (60.0, 10.0), False),  # point outside-left
+    ],
+)
+def test_line_intersect_rect_branches(
+    p1, p2, rect_min, rect_max, expected: bool
+) -> None:
+    """Same-side reject, inside-endpoint shortcut, 4-edge sweep, degenerate."""
+    assert (
+        LayoutEngine.line_intersect_rect(p1, p2, rect_min, rect_max) is expected
+    )
+
+
+# --- build_smooth_u_path (associated fn, vertical + horizontal) ------------
+
+
+def test_build_smooth_u_path_vertical_is_9_points_on_rail() -> None:
+    """A vertical U carries 9 points: both endpoints + the side rail at mid."""
+    path = LayoutEngine.build_smooth_u_path((0.0, 100.0), (0.0, 200.0), 60.0, True)
+    assert len(path) == 9
+    assert path[0] == (0.0, 100.0)
+    assert path[8] == (0.0, 200.0)
+    assert path[4] == pytest.approx((60.0, 150.0))  # rail at mid-y
+    assert path[3][0] == 60.0  # rail x before mid
+    assert path[5][0] == 60.0  # rail x after mid
+
+
+def test_build_smooth_u_path_horizontal_is_9_points_on_rail() -> None:
+    """A horizontal U carries 9 points: both endpoints + the below rail at mid."""
+    path = LayoutEngine.build_smooth_u_path((0.0, 0.0), (100.0, 0.0), 40.0, False)
+    assert len(path) == 9
+    assert path[0] == (0.0, 0.0)
+    assert path[8] == (100.0, 0.0)
+    assert path[4] == pytest.approx((50.0, 40.0))  # rail at mid-x
+
+
+# --- compute_back_edge_points_simple (instance, vertical U) ----------------
+
+
+def test_compute_back_edge_points_simple_vertical_detour() -> None:
+    """A vertical back edge detours ``offset`` past the wider endpoint."""
+    engine = LayoutEngine(_graph_with_direction(GraphDirection.TopToBottom))
+    from_node = _layout_node("a", x=0.0, y=0.0)
+    to_node = _layout_node("b", x=0.0, y=100.0)
+    path = engine.compute_back_edge_points_simple(from_node, to_node, True)
+    # side_x = max(x) + max(width)/2 + 60 = 0 + 20 + 60 = 80
+    assert len(path) == 9
+    assert path[0] == pytest.approx((20.0, 0.0))  # from right edge
+    assert path[8] == pytest.approx((20.0, 100.0))  # to right edge
+    assert path[4][0] == 80.0  # detour rail
+
+
+# --- compute_back_edge_points (instance, obstacle-aware vertical) ----------
+
+
+def test_compute_back_edge_points_vertical_chooses_outer_side() -> None:
+    """``from.x >= to.x`` routes the detour on the +x outer side."""
+    engine = LayoutEngine(_graph_with_direction(GraphDirection.TopToBottom))
+    from_node = _layout_node("a", x=0.0, y=100.0)
+    to_node = _layout_node("b", x=0.0, y=0.0)
+    all_nodes = {"a": from_node, "b": to_node}
+    path = engine.compute_back_edge_points(from_node, to_node, True, all_nodes)
+    # max_right + 30 = 20 + 30 = 50 (outer +x side)
+    assert len(path) == 9
+    assert path[0] == pytest.approx((20.0, 100.0))
+    assert path[8] == pytest.approx((20.0, 0.0))
+    assert path[4][0] == 50.0
+
+
+# --- compute_horizontal_edge_with_obstacles (instance) ---------------------
+
+
+def test_compute_horizontal_edge_with_obstacles_no_block_is_straight() -> None:
+    """No blocking obstacle -> 3-point deduped orthogonal route."""
+    engine = LayoutEngine(_graph_with_direction(GraphDirection.LeftToRight))
+    from_node = _layout_node("a", x=0.0, y=0.0)
+    to_node = _layout_node("b", x=100.0, y=0.0)
+    path = engine.compute_horizontal_edge_with_obstacles(from_node, to_node, [])
+    assert path == pytest.approx([(20.0, 0.0), (50.0, 0.0), (80.0, 0.0)])
+
+
+def test_compute_horizontal_edge_with_obstacles_block_routes_around() -> None:
+    """A blocking obstacle routes above/below via two rail corners."""
+    engine = LayoutEngine(_graph_with_direction(GraphDirection.LeftToRight))
+    from_node = _layout_node("a", x=0.0, y=0.0)
+    to_node = _layout_node("b", x=100.0, y=0.0)
+    obstacle = _layout_node("o", x=50.0, y=0.0)
+    path = engine.compute_horizontal_edge_with_obstacles(from_node, to_node, [obstacle])
+    assert len(path) == 4
+    # route_y = obs_bottom + 30 = 10 + 30 = 40 (equidistant -> below)
+    assert path[1] == pytest.approx((20.0, 40.0))
+    assert path[2] == pytest.approx((80.0, 40.0))
+
+
+# --- compute_vertical_edge_with_obstacles (instance, no obstacle) ----------
+
+
+def test_compute_vertical_edge_with_obstacles_no_block_is_straight() -> None:
+    """Vertical router symmetric twin: 3-point deduped route."""
+    engine = LayoutEngine(_graph_with_direction(GraphDirection.TopToBottom))
+    from_node = _layout_node("a", x=0.0, y=0.0)
+    to_node = _layout_node("b", x=0.0, y=100.0)
+    path = engine.compute_vertical_edge_with_obstacles(from_node, to_node, [])
+    assert path == pytest.approx([(0.0, 10.0), (0.0, 50.0), (0.0, 90.0)])
+
+
+# --- edge_crosses_any_node (instance) --------------------------------------
+
+
+def test_edge_crosses_any_node_through_obstacle_is_true() -> None:
+    """A chord crossing an obstacle's margin rect -> True."""
+    engine = LayoutEngine(_empty_graph())
+    from_node = _layout_node("a", x=0.0, y=0.0)
+    to_node = _layout_node("b", x=100.0, y=0.0)
+    obstacle = _layout_node("o", x=50.0, y=0.0, width=20.0, height=20.0)
+    all_nodes = {"a": from_node, "b": to_node, "o": obstacle}
+    assert engine.edge_crosses_any_node([(0.0, 0.0), (100.0, 0.0)], from_node, to_node, all_nodes)
+
+
+def test_edge_crosses_any_node_no_obstacle_is_false() -> None:
+    """No intermediate node -> False; degenerate <2 points also False."""
+    engine = LayoutEngine(_empty_graph())
+    from_node = _layout_node("a", x=0.0, y=0.0)
+    to_node = _layout_node("b", x=100.0, y=0.0)
+    assert engine.edge_crosses_any_node([(0.0, 0.0), (100.0, 0.0)], from_node, to_node, {}) is False
+    assert engine.edge_crosses_any_node([(0.0, 0.0)], from_node, to_node, {}) is False
+
+
+# --- straighten_if_aligned (instance) --------------------------------------
+
+
+def test_straighten_if_aligned_collapses_when_clear() -> None:
+    """Aligned endpoints that clear every node collapse to a 2-point segment."""
+    engine = LayoutEngine(_graph_with_direction(GraphDirection.TopToBottom))
+    from_node = _layout_node("a", x=0.0, y=0.0)
+    to_node = _layout_node("b", x=0.0, y=100.0)
+    dagre = [(0.0, 0.0), (0.0, 50.0), (0.0, 100.0)]
+    out = engine.straighten_if_aligned(dagre, from_node, to_node, True, {})
+    assert out == pytest.approx([(0.0, 0.0), (0.0, 100.0)])
+
+
+def test_straighten_if_aligned_keeps_route_when_not_aligned() -> None:
+    """Misaligned endpoints return the dagre route unchanged."""
+    engine = LayoutEngine(_graph_with_direction(GraphDirection.TopToBottom))
+    from_node = _layout_node("a", x=0.0, y=0.0)
+    to_node = _layout_node("b", x=50.0, y=100.0)
+    dagre = [(0.0, 0.0), (25.0, 50.0), (50.0, 100.0)]
+    out = engine.straighten_if_aligned(dagre, from_node, to_node, True, {})
+    assert out == [(0.0, 0.0), (25.0, 50.0), (50.0, 100.0)]
+
+
+# --- trim_cluster_interior_points (associated fn, in place) ----------------
+
+
+def test_trim_cluster_interior_points_to_cluster_truncates_tail() -> None:
+    """A to-cluster endpoint keeps only through the last outside point + 1."""
+    to_node = _layout_node("t", x=0.0, y=0.0, width=100.0, height=100.0)
+    from_node = _layout_node("f", x=0.0, y=0.0)
+    points = [(100.0, 100.0), (30.0, 30.0), (5.0, 5.0)]
+    LayoutEngine.trim_cluster_interior_points(points, from_node, to_node, False, True)
+    assert points == pytest.approx([(100.0, 100.0), (30.0, 30.0)])
+
+
+def test_trim_cluster_interior_points_from_cluster_drops_head() -> None:
+    """A from-cluster endpoint drops leading interior points (keep 1 transition)."""
+    to_node = _layout_node("t", x=0.0, y=0.0)
+    from_node = _layout_node("f", x=0.0, y=0.0, width=100.0, height=100.0)
+    points = [(5.0, 5.0), (30.0, 30.0), (100.0, 100.0)]
+    LayoutEngine.trim_cluster_interior_points(points, from_node, to_node, True, False)
+    assert points == pytest.approx([(30.0, 30.0), (100.0, 100.0)])
+
+
+# --- clip_edge_end_only / clip_edge_to_boundaries (instance, in place) ------
+
+
+def test_clip_edge_end_only_snaps_last_to_border() -> None:
+    """The final point is re-anchored onto the to-node border (inbound)."""
+    engine = LayoutEngine(_empty_graph())
+    to_node = _layout_node("b", x=100.0, y=0.0)
+    points = [(0.0, 0.0), (100.0, 0.0)]
+    engine.clip_edge_end_only(points, to_node)
+    assert points[1] == pytest.approx((80.0, 0.0))  # to left border
+
+
+def test_clip_edge_to_boundaries_snaps_both_endpoints() -> None:
+    """Both endpoints are re-anchored onto their node borders."""
+    engine = LayoutEngine(_empty_graph())
+    from_node = _layout_node("a", x=0.0, y=0.0)
+    to_node = _layout_node("b", x=100.0, y=50.0)
+    points = [(0.0, 0.0), (100.0, 50.0)]
+    engine.clip_edge_to_boundaries(points, from_node, to_node)
+    # start snapped towards second point; end snapped towards second-last
+    assert points[0] == pytest.approx((20.0, 10.0))
+    assert points[1] == pytest.approx((80.0, 40.0))
+
+
+# --- compute_edge_points_with_obstacles (instance, back vs forward) --------
+
+
+def test_compute_edge_points_with_obstacles_back_edge_uses_simple_detour() -> None:
+    """A back edge routes via the simple U-detour (9 points)."""
+    engine = LayoutEngine(_graph_with_direction(GraphDirection.TopToBottom))
+    from_node = _layout_node("a", x=0.0, y=100.0)
+    to_node = _layout_node("b", x=0.0, y=0.0)
+    all_nodes = {"a": from_node, "b": to_node}
+    path = engine.compute_edge_points_with_obstacles(from_node, to_node, all_nodes)
+    assert len(path) == 9
+    assert path[0] == pytest.approx((20.0, 100.0))
+    assert path[8] == pytest.approx((20.0, 0.0))
+
+
+def test_compute_edge_points_with_obstacles_forward_uses_vertical_router() -> None:
+    """A forward edge routes via the vertical obstacle router."""
+    engine = LayoutEngine(_graph_with_direction(GraphDirection.TopToBottom))
+    from_node = _layout_node("a", x=0.0, y=0.0)
+    to_node = _layout_node("b", x=0.0, y=100.0)
+    path = engine.compute_edge_points_with_obstacles(from_node, to_node, {})
+    assert path == pytest.approx([(0.0, 10.0), (0.0, 50.0), (0.0, 90.0)])
+
+
+# --- _dedup_consecutive (module helper, mirrors Vec::dedup) ----------------
+
+
+@pytest.mark.parametrize(
+    "points,expected",
+    [
+        ([], []),
+        ([(0.0, 0.0)], [(0.0, 0.0)]),
+        ([(0.0, 0.0), (0.0, 0.0), (1.0, 1.0), (1.0, 1.0), (2.0, 2.0)], [(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)]),
+        ([(0.0, 0.0), (1.0, 1.0), (0.0, 0.0)], [(0.0, 0.0), (1.0, 1.0), (0.0, 0.0)]),  # non-consecutive kept
+    ],
+)
+def test_dedup_consecutive_drops_only_adjacent_duplicates(
+    points, expected
+) -> None:
+    """Only *consecutive* duplicates are dropped (mirrors Rust ``Vec::dedup``)."""
+    assert layout_mod._dedup_consecutive(points) == expected
+
+
+# --- R274e barrel contract: layout stays internal --------------------------
+
+
+def test_layout_module_all_unchanged_by_r274e() -> None:
+    """R274e adds instance/static methods, not public symbols; ``__all__`` stays 4."""
+    assert layout_mod.__all__ == [
+        "LayoutEdge",
+        "LayoutNode",
+        "LayoutResult",
+        "LayoutSubgraph",
+    ]
+
+
+def test_layout_edge_geometry_helpers_are_instance_or_static_methods() -> None:
+    """The 17 R274e helpers live on the class, not in the module namespace."""
+    # 4 static methods are reachable as class attributes.
+    assert LayoutEngine.edge_label_midpoint is not None
+    assert LayoutEngine.line_intersect_rect is not None
+    assert LayoutEngine.build_smooth_u_path is not None
+    assert LayoutEngine.trim_cluster_interior_points is not None
+    # None of the 13 instance methods leak into the module namespace.
+    for name in (
+        "edge_label_bounds",
+        "is_back_edge",
+        "compute_edge_points_with_obstacles",
+        "compute_horizontal_edge_with_obstacles",
+        "compute_vertical_edge_with_obstacles",
+        "compute_back_edge_points_simple",
+        "compute_back_edge_points",
+        "straighten_if_aligned",
+        "edge_crosses_any_node",
+        "clip_edge_to_boundaries",
+        "clip_edge_end_only",
+        "connection_point_on_node",
+        "connection_point_towards",
+    ):
+        assert name not in vars(layout_mod), f"{name} leaked into module namespace"

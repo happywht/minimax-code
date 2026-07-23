@@ -99,6 +99,7 @@ from .ast import (
     Edge,
     EdgeStyle,
     FlowchartGraph,
+    GraphDirection,
     Node,
     NodeShape,
     Statement,
@@ -1407,6 +1408,656 @@ class LayoutEngine:
         fill = next((value for key, value in props if key == "fill"), None)
         stroke = next((value for key, value in props if key == "stroke"), None)
         return (fill, stroke)
+
+    # === R274e: edge geometry (grok layout.rs L2602-L3246) ===================
+    #
+    # 17 edge-routing primitives (13 instance + 4 associated/static) consumed
+    # by ``compute_with_dagre`` (R274f). All are internal helpers; none widens
+    # the leaf's public surface (``__all__`` stays at 4 data classes).
+    #
+    # Mapping notes (grok -> Python):
+    # * ``&self`` -> regular method; bare ``fn name(args)`` -> ``@staticmethod``.
+    # * ``&HashMap<String, LayoutNode>`` -> ``dict[str, LayoutNode]``;
+    #   ``&[&LayoutNode]`` -> ``list[LayoutNode]`` (collections.abc not imported;
+    #   callers always pass concrete list/dict -- YAGNI).
+    # * ``&mut Vec<(f64,f64)>`` / ``&mut [(f64,f64)]`` -> ``list[tuple[float,
+    #   float]]`` mutated in place (returns ``None``).
+    # * ``Vec::dedup`` -> module-level ``_dedup_consecutive`` (consecutive
+    #   de-duplication; Python lists have no stdlib equivalent).
+    # * ``(0.0..=1.0).contains(&t)`` -> ``0.0 <= t <= 1.0``.
+
+    def edge_label_bounds(
+        self, edge: LayoutEdge
+    ) -> tuple[float, float, float, float] | None:
+        """Return ``(x, y, width, height)`` of an edge label box, or ``None``.
+
+        Mirrors grok ``edge_label_bounds``. Falls back to the geometric midpoint
+        of the edge points when ``label_pos`` is unset.
+        """
+        label = edge.label
+        if label is None:
+            return None
+        dims = self.edge_label_dimensions(label)
+        if dims is None:
+            return None
+        width, height = dims
+        if edge.label_pos is not None:
+            x, y = edge.label_pos
+        else:
+            x, y = LayoutEngine.edge_label_midpoint(edge.points)
+        return (x, y, width, height)
+
+    @staticmethod
+    def edge_label_midpoint(points: list[tuple[float, float]]) -> tuple[float, float]:
+        """Geometric midpoint of an edge poly-line, weighted by segment length.
+
+        Mirrors grok ``edge_label_midpoint`` (associated function). Fewer than
+        two points collapses to the first point, or ``(0.0, 0.0)`` when empty.
+        A near-zero total length returns the first point; the unreachable tail
+        fallback returns the average of the first and last points.
+        """
+        if len(points) < 2:
+            return points[0] if points else (0.0, 0.0)
+        segment_lengths: list[float] = []
+        total_length = 0.0
+        for i in range(len(points) - 1):
+            dx = points[i + 1][0] - points[i][0]
+            dy = points[i + 1][1] - points[i][1]
+            seg_len = math.sqrt(dx * dx + dy * dy)
+            segment_lengths.append(seg_len)
+            total_length += seg_len
+        if total_length < 0.001:
+            return points[0]
+        target_distance = total_length * 0.5
+        accumulated = 0.0
+        for i, seg_len in enumerate(segment_lengths):
+            if accumulated + seg_len >= target_distance:
+                remaining = target_distance - accumulated
+                t = remaining / seg_len if seg_len > 0.001 else 0.0
+                x = points[i][0] + t * (points[i + 1][0] - points[i][0])
+                y = points[i][1] + t * (points[i + 1][1] - points[i][1])
+                return (x, y)
+            accumulated += seg_len
+        last = len(points) - 1
+        return (
+            (points[0][0] + points[last][0]) / 2.0,
+            (points[0][1] + points[last][1]) / 2.0,
+        )
+
+    def is_back_edge(self, from_node: LayoutNode, to_node: LayoutNode) -> bool:
+        """Whether ``to_node`` lies upstream of ``from_node`` (a back edge).
+
+        Mirrors grok ``is_back_edge``. Direction-aware: vertical layouts flag
+        ``to`` above/below ``from`` against the flow; horizontal layouts flag
+        ``to`` left/right of ``from`` against the flow. The 10px hysteresis
+        avoids classifying a near-aligned edge as backward.
+        """
+        dx = to_node.x - from_node.x
+        dy = to_node.y - from_node.y
+        is_vertical = self.graph.direction in (
+            GraphDirection.TopToBottom,
+            GraphDirection.BottomToTop,
+        )
+        if is_vertical:
+            if self.graph.direction == GraphDirection.TopToBottom:
+                return dy < -10.0
+            if self.graph.direction == GraphDirection.BottomToTop:
+                return dy > 10.0
+            return False
+        if self.graph.direction == GraphDirection.LeftToRight:
+            return dx < -10.0
+        if self.graph.direction == GraphDirection.RightToLeft:
+            return dx > 10.0
+        return False
+
+    def compute_edge_points_with_obstacles(
+        self,
+        from_node: LayoutNode,
+        to_node: LayoutNode,
+        all_nodes: dict[str, LayoutNode],
+    ) -> list[tuple[float, float]]:
+        """Route an edge between two nodes, detouring around obstacles.
+
+        Mirrors grok ``compute_edge_points_with_obstacles``. A back edge takes
+        the simple U-shaped detour; otherwise the orthogonal router runs and
+        every node except the endpoints is treated as a potential obstacle.
+        """
+        dx = to_node.x - from_node.x
+        dy = to_node.y - from_node.y
+        is_vertical = self.graph.direction in (
+            GraphDirection.TopToBottom,
+            GraphDirection.BottomToTop,
+        )
+        if is_vertical:
+            if self.graph.direction == GraphDirection.TopToBottom:
+                back_edge = dy < -10.0
+            elif self.graph.direction == GraphDirection.BottomToTop:
+                back_edge = dy > 10.0
+            else:
+                back_edge = False
+        else:
+            if self.graph.direction == GraphDirection.LeftToRight:
+                back_edge = dx < -10.0
+            elif self.graph.direction == GraphDirection.RightToLeft:
+                back_edge = dx > 10.0
+            else:
+                back_edge = False
+        if back_edge:
+            return self.compute_back_edge_points_simple(from_node, to_node, is_vertical)
+        obstacles = [
+            node
+            for node in all_nodes.values()
+            if node.id != from_node.id and node.id != to_node.id
+        ]
+        if is_vertical:
+            return self.compute_vertical_edge_with_obstacles(from_node, to_node, obstacles)
+        return self.compute_horizontal_edge_with_obstacles(from_node, to_node, obstacles)
+
+    def compute_horizontal_edge_with_obstacles(
+        self,
+        from_node: LayoutNode,
+        to_node: LayoutNode,
+        obstacles: list[LayoutNode],
+    ) -> list[tuple[float, float]]:
+        """Orthogonal router for left/right-flowing edges (with detours).
+
+        Mirrors grok ``compute_horizontal_edge_with_obstacles``. Endpoints leave
+        the left/right node border; an obstacle whose margin-expanded AABB
+        overlaps the band is routed around (above or below, nearer to ``from``).
+        """
+        travel_right = to_node.x > from_node.x
+        from_x = from_node.x + (from_node.width / 2.0) * (1.0 if travel_right else -1.0)
+        to_x = to_node.x + (to_node.width / 2.0) * (-1.0 if travel_right else 1.0)
+        min_x = min(from_x, to_x)
+        max_x = max(from_x, to_x)
+        min_y = min(from_node.y, to_node.y)
+        max_y = max(from_node.y, to_node.y)
+        blocking = None
+        for obs in obstacles:
+            obs_left = obs.x - obs.width / 2.0 - 10.0
+            obs_right = obs.x + obs.width / 2.0 + 10.0
+            obs_top = obs.y - obs.height / 2.0 - 10.0
+            obs_bottom = obs.y + obs.height / 2.0 + 10.0
+            if obs_left < max_x and obs_right > min_x and obs_top < max_y and obs_bottom > min_y:
+                blocking = obs
+                break
+        if blocking is not None:
+            obs_top = blocking.y - blocking.height / 2.0
+            obs_bottom = blocking.y + blocking.height / 2.0
+            route_above = abs(from_node.y - obs_top) < abs(from_node.y - obs_bottom)
+            route_y = obs_top - 30.0 if route_above else obs_bottom + 30.0
+            start = self.connection_point_towards(from_node, from_x, route_y)
+            corner1 = (from_x, route_y)
+            corner2 = (to_x, route_y)
+            end = self.connection_point_towards(to_node, to_x, route_y)
+            return [start, corner1, corner2, end]
+        mid_x = (from_x + to_x) / 2.0
+        mid_y = to_node.y
+        start = self.connection_point_towards(from_node, mid_x, mid_y)
+        end = self.connection_point_towards(to_node, mid_x, mid_y)
+        return _dedup_consecutive([start, (mid_x, mid_y), end])
+
+    def compute_vertical_edge_with_obstacles(
+        self,
+        from_node: LayoutNode,
+        to_node: LayoutNode,
+        obstacles: list[LayoutNode],
+    ) -> list[tuple[float, float]]:
+        """Orthogonal router for top/bottom-flowing edges (with detours).
+
+        Mirrors grok ``compute_vertical_edge_with_obstacles`` -- the vertical
+        symmetric twin of :meth:`compute_horizontal_edge_with_obstacles`.
+        """
+        travel_down = to_node.y > from_node.y
+        from_y = from_node.y + (from_node.height / 2.0) * (1.0 if travel_down else -1.0)
+        to_y = to_node.y + (to_node.height / 2.0) * (-1.0 if travel_down else 1.0)
+        min_x = min(from_node.x, to_node.x)
+        max_x = max(from_node.x, to_node.x)
+        min_y = min(from_y, to_y)
+        max_y = max(from_y, to_y)
+        blocking = None
+        for obs in obstacles:
+            obs_left = obs.x - obs.width / 2.0 - 10.0
+            obs_right = obs.x + obs.width / 2.0 + 10.0
+            obs_top = obs.y - obs.height / 2.0 - 10.0
+            obs_bottom = obs.y + obs.height / 2.0 + 10.0
+            if obs_left < max_x and obs_right > min_x and obs_top < max_y and obs_bottom > min_y:
+                blocking = obs
+                break
+        if blocking is not None:
+            obs_left = blocking.x - blocking.width / 2.0
+            obs_right = blocking.x + blocking.width / 2.0
+            route_left = abs(from_node.x - obs_left) < abs(from_node.x - obs_right)
+            route_x = obs_left - 30.0 if route_left else obs_right + 30.0
+            start = self.connection_point_towards(from_node, route_x, from_y)
+            corner1 = (route_x, from_y)
+            corner2 = (route_x, to_y)
+            end = self.connection_point_towards(to_node, route_x, to_y)
+            return [start, corner1, corner2, end]
+        mid_y = (from_y + to_y) / 2.0
+        mid_x = to_node.x
+        start = self.connection_point_towards(from_node, mid_x, mid_y)
+        end = self.connection_point_towards(to_node, mid_x, mid_y)
+        return _dedup_consecutive([start, (mid_x, mid_y), end])
+
+    def compute_back_edge_points_simple(
+        self, from_node: LayoutNode, to_node: LayoutNode, is_vertical: bool
+    ) -> list[tuple[float, float]]:
+        """U-shaped detour for back edges (simple variant).
+
+        Mirrors grok ``compute_back_edge_points_simple``. The detour sits
+        ``60px`` past the outer edge of the wider/taller endpoint, on the side
+        the flow came from.
+        """
+        offset = 60.0
+        if is_vertical:
+            side_x = (
+                max(from_node.x, to_node.x)
+                + max(from_node.width, to_node.width) / 2.0
+                + offset
+            )
+            start = (from_node.x + from_node.width / 2.0, from_node.y)
+            end = (to_node.x + to_node.width / 2.0, to_node.y)
+            return LayoutEngine.build_smooth_u_path(start, end, side_x, True)
+        below_y = (
+            max(from_node.y, to_node.y)
+            + max(from_node.height, to_node.height) / 2.0
+            + offset
+        )
+        start = (from_node.x, from_node.y + from_node.height / 2.0)
+        end = (to_node.x, to_node.y + to_node.height / 2.0)
+        return LayoutEngine.build_smooth_u_path(start, end, below_y, False)
+
+    def compute_back_edge_points(
+        self,
+        from_node: LayoutNode,
+        to_node: LayoutNode,
+        is_vertical: bool,
+        all_nodes: dict[str, LayoutNode],
+    ) -> list[tuple[float, float]]:
+        """U-shaped detour for back edges (obstacle-aware variant).
+
+        Mirrors grok ``compute_back_edge_points``. Vertical layouts route left
+        or right of the endpoints depending on which side ``from`` sits; the
+        horizontal branch scans every node overlapping the column and picks the
+        nearer of the above/below bands.
+        """
+        margin = 30.0
+        if is_vertical:
+            max_right = max(
+                from_node.x + from_node.width / 2.0,
+                to_node.x + to_node.width / 2.0,
+            )
+            min_left = min(
+                from_node.x - from_node.width / 2.0,
+                to_node.x - to_node.width / 2.0,
+            )
+            center_x = (from_node.x + to_node.x) / 2.0
+            side_x = max_right + margin if from_node.x >= to_node.x else min_left - margin
+            if side_x > center_x:
+                start = (from_node.x + from_node.width / 2.0, from_node.y)
+                end = (to_node.x + to_node.width / 2.0, to_node.y)
+            else:
+                start = (from_node.x - from_node.width / 2.0, from_node.y)
+                end = (to_node.x - to_node.width / 2.0, to_node.y)
+            return LayoutEngine.build_smooth_u_path(start, end, side_x, True)
+        min_x = min(from_node.x, to_node.x)
+        max_x = max(from_node.x, to_node.x)
+        max_bottom = max(
+            from_node.y + from_node.height / 2.0,
+            to_node.y + to_node.height / 2.0,
+        )
+        min_top = min(
+            from_node.y - from_node.height / 2.0,
+            to_node.y - to_node.height / 2.0,
+        )
+        for node in all_nodes.values():
+            node_left = node.x - node.width / 2.0
+            node_right = node.x + node.width / 2.0
+            if node_right >= min_x - margin and node_left <= max_x + margin:
+                max_bottom = max(max_bottom, node.y + node.height / 2.0)
+                min_top = min(min_top, node.y - node.height / 2.0)
+        below_y = max_bottom + margin
+        above_y = min_top - margin
+        center_y = (from_node.y + to_node.y) / 2.0
+        if abs(below_y - center_y) <= abs(above_y - center_y):
+            route_y = below_y
+        else:
+            route_y = above_y
+        if route_y > center_y:
+            start = (from_node.x, from_node.y + from_node.height / 2.0)
+            end = (to_node.x, to_node.y + to_node.height / 2.0)
+        else:
+            start = (from_node.x, from_node.y - from_node.height / 2.0)
+            end = (to_node.x, to_node.y - to_node.height / 2.0)
+        return LayoutEngine.build_smooth_u_path(start, end, route_y, False)
+
+    def straighten_if_aligned(
+        self,
+        dagre_points: list[tuple[float, float]],
+        from_node: LayoutNode,
+        to_node: LayoutNode,
+        is_vertical: bool,
+        all_nodes: dict[str, LayoutNode],
+    ) -> list[tuple[float, float]]:
+        """Collapse a near-aligned dagre route to a straight 2-point segment.
+
+        Mirrors grok ``straighten_if_aligned``. Only applied when the endpoints
+        align within ``15px`` on the cross axis and the straight line clears
+        every other node; otherwise the dagre route is returned unchanged.
+        """
+        tolerance = 15.0
+        are_aligned = (
+            abs(from_node.x - to_node.x) < tolerance
+            if is_vertical
+            else abs(from_node.y - to_node.y) < tolerance
+        )
+        if are_aligned and len(dagre_points) >= 2:
+            start = dagre_points[0] if dagre_points else (from_node.x, from_node.y)
+            end = dagre_points[-1] if dagre_points else (to_node.x, to_node.y)
+            if is_vertical:
+                avg_x = (from_node.x + to_node.x) / 2.0
+                candidate = [(avg_x, start[1]), (avg_x, end[1])]
+            else:
+                avg_y = (from_node.y + to_node.y) / 2.0
+                candidate = [(start[0], avg_y), (end[0], avg_y)]
+            if self.edge_crosses_any_node(candidate, from_node, to_node, all_nodes):
+                return list(dagre_points)
+            return candidate
+        return list(dagre_points)
+
+    def edge_crosses_any_node(
+        self,
+        points: list[tuple[float, float]],
+        from_node: LayoutNode,
+        to_node: LayoutNode,
+        all_nodes: dict[str, LayoutNode],
+    ) -> bool:
+        """Whether the straight line between the first/last point crosses a node.
+
+        Mirrors grok ``edge_crosses_any_node``. The path is approximated by the
+        chord between its endpoints; every node except ``from``/``to`` is tested
+        with a ``5px`` margin expansion.
+        """
+        if len(points) < 2:
+            return False
+        x1, y1 = points[0]
+        x2, y2 = points[len(points) - 1]
+        margin = 5.0
+        for node in all_nodes.values():
+            if node.id == from_node.id or node.id == to_node.id:
+                continue
+            left = node.x - node.width / 2.0 - margin
+            right = node.x + node.width / 2.0 + margin
+            top = node.y - node.height / 2.0 - margin
+            bottom = node.y + node.height / 2.0 + margin
+            if LayoutEngine.line_intersect_rect(
+                (x1, y1), (x2, y2), (left, top), (right, bottom)
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def line_intersect_rect(
+        p1: tuple[float, float],
+        p2: tuple[float, float],
+        rect_min: tuple[float, float],
+        rect_max: tuple[float, float],
+    ) -> bool:
+        """Test whether segment ``p1``-``p2`` intersects an axis-aligned rect.
+
+        Mirrors grok ``line_intersect_rect`` (associated function). Same-side
+        rejection first, then inside-endpoint shortcut, then a 4-edge segment
+        intersection sweep via the cross-product parameterisation.
+        """
+        x1, y1 = p1
+        x2, y2 = p2
+        left, top = rect_min
+        right, bottom = rect_max
+        # Same-side rejection: both endpoints outside the same edge.
+        if (x1 < left and x2 < left) or (x1 > right and x2 > right) or (
+            y1 < top and y2 < top
+        ) or (y1 > bottom and y2 > bottom):
+            return False
+        # Either endpoint inside the rect -> intersection.
+        if left <= x1 <= right and top <= y1 <= bottom:
+            return True
+        if left <= x2 <= right and top <= y2 <= bottom:
+            return True
+        dx = x2 - x1
+        dy = y2 - y1
+        edges = (
+            (left, top, left, bottom),      # left edge
+            (right, top, right, bottom),    # right edge
+            (left, top, right, top),        # top edge
+            (left, bottom, right, bottom),  # bottom edge
+        )
+        for ex1, ey1, ex2, ey2 in edges:
+            edx = ex2 - ex1
+            edy = ey2 - ey1
+            denom = dx * edy - dy * edx
+            if abs(denom) < 1e-10:
+                continue  # parallel
+            t = ((ex1 - x1) * edy - (ey1 - y1) * edx) / denom
+            u = ((ex1 - x1) * dy - (ey1 - y1) * dx) / denom
+            if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0:
+                return True
+        return False
+
+    @staticmethod
+    def build_smooth_u_path(
+        start: tuple[float, float],
+        end: tuple[float, float],
+        route_coord: float,
+        is_vertical: bool,
+    ) -> list[tuple[float, float]]:
+        """Build a 9-point smooth U-shaped detour poly-line.
+
+        Mirrors grok ``build_smooth_u_path`` (associated function). Each leg
+        carries a ``0.3``-fraction cubic-approximation curve (3 control points)
+        onto the routing rail, which the rail segment spans at the mid-point.
+        """
+        if is_vertical:
+            side_x = route_coord
+            total_height = abs(start[1] - end[1])
+            curve_fraction = 0.3
+            curve_height = total_height * curve_fraction
+            mid_y = (start[1] + end[1]) / 2.0
+            top_curve_end_y = start[1] - curve_height
+            bottom_curve_start_y = end[1] + curve_height
+            return [
+                start,
+                (start[0], start[1] - curve_height * 0.33),
+                (side_x, top_curve_end_y + curve_height * 0.33),
+                (side_x, top_curve_end_y),
+                (side_x, mid_y),
+                (side_x, bottom_curve_start_y),
+                (side_x, bottom_curve_start_y - curve_height * 0.33),
+                (end[0], end[1] + curve_height * 0.33),
+                end,
+            ]
+        below_y = route_coord
+        total_width = abs(start[0] - end[0])
+        curve_fraction = 0.3
+        curve_width = total_width * curve_fraction
+        mid_x = (start[0] + end[0]) / 2.0
+        left_curve_end_x = start[0] - curve_width
+        right_curve_start_x = end[0] + curve_width
+        return [
+            start,
+            (start[0] - curve_width * 0.33, start[1]),
+            (left_curve_end_x + curve_width * 0.33, below_y),
+            (left_curve_end_x, below_y),
+            (mid_x, below_y),
+            (right_curve_start_x, below_y),
+            (right_curve_start_x - curve_width * 0.33, below_y),
+            (end[0] + curve_width * 0.33, end[1]),
+            end,
+        ]
+
+    @staticmethod
+    def trim_cluster_interior_points(
+        points: list[tuple[float, float]],
+        from_node: LayoutNode,
+        to_node: LayoutNode,
+        from_is_cluster: bool,
+        to_is_cluster: bool,
+    ) -> None:
+        """Drop route points inside a cluster endpoint's rect (in place).
+
+        Mirrors grok ``trim_cluster_interior_points`` (associated function,
+        ``&mut Vec``). The to-side truncates after the last outside point plus
+        one interior transition; the from-side drops leading interior points
+        keeping one transition before the first outside point. The poly-line is
+        never reduced below two points.
+        """
+
+        def inside(node: LayoutNode, point: tuple[float, float]) -> bool:
+            hw = node.width / 2.0
+            hh = node.height / 2.0
+            px, py = point
+            return (
+                px > node.x - hw and px < node.x + hw and py > node.y - hh and py < node.y + hh
+            )
+
+        if to_is_cluster and len(points) > 2:
+            last_out = None
+            for idx in range(len(points) - 1, -1, -1):
+                if not inside(to_node, points[idx]):
+                    last_out = idx
+                    break
+            if last_out is not None:
+                keep = min(last_out + 2, len(points))
+                del points[keep:]
+
+        if from_is_cluster and len(points) > 2:
+            first_out = None
+            for idx in range(len(points)):
+                if not inside(from_node, points[idx]):
+                    first_out = idx
+                    break
+            if first_out is not None:
+                drop = max(first_out - 1, 0)
+                if drop > 0:
+                    del points[0:drop]
+
+    def clip_edge_to_boundaries(
+        self,
+        points: list[tuple[float, float]],
+        from_node: LayoutNode,
+        to_node: LayoutNode,
+    ) -> None:
+        """Snap an edge's endpoints onto the from/to node borders (in place).
+
+        Mirrors grok ``clip_edge_to_boundaries`` (``&mut [..]``). The start is
+        re-anchored towards the second point; the end is handled by
+        :meth:`clip_edge_end_only`.
+        """
+        if len(points) < 2:
+            return
+        second_point = points[1]
+        new_start = self.connection_point_on_node(from_node, second_point[0], second_point[1])
+        points[0] = new_start
+        self.clip_edge_end_only(points, to_node)
+
+    def clip_edge_end_only(
+        self, points: list[tuple[float, float]], to_node: LayoutNode
+    ) -> None:
+        """Snap only the final edge point onto the ``to_node`` border (in place).
+
+        Mirrors grok ``clip_edge_end_only`` (``&mut [..]``). The end is
+        re-anchored towards the second-to-last point.
+        """
+        if len(points) < 2:
+            return
+        length = len(points)
+        second_last = points[length - 2]
+        new_end = self.connection_point_on_node(to_node, second_last[0], second_last[1])
+        points[length - 1] = new_end
+
+    def connection_point_on_node(
+        self, node: LayoutNode, from_x: float, from_y: float
+    ) -> tuple[float, float]:
+        """Border point of ``node`` closest to the external point (``from``).
+
+        Mirrors grok ``connection_point_on_node``. Shape-aware: circles project
+        along the radius, diamonds project onto the rhombus edge, the default
+        box shape scales the half-extents to the nearer axis. Direction is
+        inbound (towards ``node`` from ``from``).
+        """
+        dx = node.x - from_x
+        dy = node.y - from_y
+        if node.shape in (NodeShape.Circle, NodeShape.StartState, NodeShape.EndState):
+            r = min(node.width, node.height) / 2.0
+            length = math.sqrt(dx * dx + dy * dy)
+            if length == 0.0:
+                return (node.x, node.y - r)
+            return (node.x - r * dx / length, node.y - r * dy / length)
+        if node.shape == NodeShape.Diamond:
+            hw = node.width / 2.0
+            hh = node.height / 2.0
+            denom = abs(dx) / hw + abs(dy) / hh
+            if denom == 0.0:
+                return (node.x, node.y - hh)
+            t = 1.0 / denom
+            return (node.x - dx * t, node.y - dy * t)
+        hw = node.width / 2.0
+        hh = node.height / 2.0
+        denom_x = abs(dx) / hw if hw > 0.0 else 0.0
+        denom_y = abs(dy) / hh if hh > 0.0 else 0.0
+        denom = max(denom_x, denom_y)
+        if denom == 0.0:
+            return (node.x, node.y - hh)
+        t = 1.0 / denom
+        return (node.x - dx * t, node.y - dy * t)
+
+    def connection_point_towards(
+        self, node: LayoutNode, target_x: float, target_y: float
+    ) -> tuple[float, float]:
+        """Border point of ``node`` closest to the external point (``target``).
+
+        Mirrors grok ``connection_point_towards`` -- the outbound twin of
+        :meth:`connection_point_on_node` (direction is away from ``node``
+        towards ``target``).
+        """
+        dx = target_x - node.x
+        dy = target_y - node.y
+        if node.shape in (NodeShape.Circle, NodeShape.StartState, NodeShape.EndState):
+            r = min(node.width, node.height) / 2.0
+            length = math.sqrt(dx * dx + dy * dy)
+            if length == 0.0:
+                return (node.x + r, node.y)
+            return (node.x + r * dx / length, node.y + r * dy / length)
+        if node.shape == NodeShape.Diamond:
+            hw = node.width / 2.0
+            hh = node.height / 2.0
+            denom = abs(dx) / hw + abs(dy) / hh
+            if denom == 0.0:
+                return (node.x + hw, node.y)
+            t = 1.0 / denom
+            return (node.x + dx * t, node.y + dy * t)
+        hw = node.width / 2.0
+        hh = node.height / 2.0
+        denom_x = abs(dx) / hw if hw > 0.0 else 0.0
+        denom_y = abs(dy) / hh if hh > 0.0 else 0.0
+        denom = max(denom_x, denom_y)
+        if denom == 0.0:
+            return (node.x + hw, node.y)
+        t = 1.0 / denom
+        return (node.x + dx * t, node.y + dy * t)
+
+
+def _dedup_consecutive(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Drop consecutive duplicate points (mirrors Rust ``Vec::dedup``).
+
+    Python lists have no stdlib consecutive-de-duplication; this private module
+    helper bridges grok's ``points.dedup()`` calls in the obstacle routers.
+    """
+    result: list[tuple[float, float]] = []
+    for point in points:
+        if not result or result[-1] != point:
+            result.append(point)
+    return result
 
 
 __all__ = [
