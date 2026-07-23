@@ -19355,3 +19355,54 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R272 migrate mermaid-to-svg parser.rs (direction (1) leaf 4, flowchart text->AST parser, unblocks render stack)`。feat 提交 8d09886。2 文件 1088 insertions（parser.py 新 589 + test_parser.py 新 499）。docs 提交 ITERATION_LOG.md R272 条目。锚点链: ... -> R270(8415e09) -> R271(1b7560d) -> R272(8d09886)。
+
+## R273 — 迁移 mermaid-to-svg text_wrap.rs（方向① 第 5 片叶子，文本测量+换行原语，layout+renderer 共同前置依赖）
+
+锚点:R273-1 59ef877
+
+### 本轮目标
+
+迁移 `mermaid-to-svg/src/text_wrap.rs`（346 行）—— mermaid-to-svg 渲染栈的**第 5 片叶子**，方向① 的文本测量原语层。`text_wrap.rs` 是渲染栈的**文本测量+换行原语**：把 mermaid 节点标签文本按目标宽度换行成多行（镜像 mermaid.js `splitText.ts` `splitLineToFitWidth`），测量换行后的 (width, height) 供节点盒尺寸（layout）和标签定位（renderer）。**本轮是 layout.rs 和 svg_renderer.rs 的共同硬前置依赖**——grok `layout.rs` 第 5-8 行 `use crate::text_wrap::{...}` 直接导入 6 个符号（`DEFAULT_FONT_SIZE` / `DEFAULT_CHAR_WIDTH` / `DEFAULT_WRAP_WIDTH` / `scale_char_width` / `measure_wrapped_lines_with_font_size` / `wrap_text_lines`），没有 text_wrap，layout 无法计算节点盒尺寸。**本轮的战略修正**：原计划 R273=layout.rs（3375 行），但 layout.rs 硬依赖 text_wrap.rs 且规模过大，故 R273 先迁 text_wrap.rs（346 行纯算法，一次可完成），R274 再啃 layout.rs（拆分子叶子）。迁移到 `agent/minimax_code/mermaid/to_svg/text_wrap.py`（335 行，内部模块，5 公共常量 + 7 公共函数 + 私有辅助簇 + 2 私有常量，`__all__` 12 符号 ASCII 排序），**barrel 不变**（text_wrap 内部，grok `mod text_wrap;` 私有，不进 to_svg barrel，不进 mermaid 根），编写 pytest（42 用例，391 行，覆盖 grok 7 原测试 + 桶契约 + Python 边界），ruff（I001 --fix 后干净）+ 定向 pytest 42 passed + 全量回归 **7505 passed / 10 skipped**（vs R272 基准 7463 passed，+42 = R273 text_wrap 新测试，零真实回归）。
+
+### 融合结论
+
+**方向① 渲染栈迁移的第 5 砖 —— 文本测量原语就位，layout+renderer 前置依赖闭合。** R273 是 mermaid-to-svg 渲染栈的**第 5 片叶子**（R269 theme → R270 config → R271 error+ast → R272 parser → R273 text_wrap），是 layout.rs（AST→dagre 图模型→节点盒尺寸）和 svg_renderer.rs（坐标+形状→SVG 元素）的**共同硬前置依赖**。本轮的核心融合价值是 **grok 双 Unicode crate → Python 纯 stdlib unicodedata 的零新依赖语义克隆**：(1) `unicode_width::UnicodeWidthStr::width` → `_char_width` via `unicodedata.east_asian_width`（W/F=2，其余=1）+ `unicodedata.category` 零化 Cc 控制符和 Mn/Me 组合标记（镜像 crate 的 `None`→0 advance 规则），(2) `unicode_segmentation::UnicodeSegmentation::graphemes(true)` → `_iter_graphemes` UAX #29 近似（Mn/Me 组合标记归并到前导 base char；NFC 标签精确，emoji-ZWJ 序列罕见发散）。**本轮的关键不变量**（每个都有定向测试守卫）：单 token 保持整（box 拓宽，匹配 mermaid htmlLabels 默认）除非超过 `max_width * 5` cap；over-cap token 优先在 identifier 边界（`_` / `-` / `.` / `/`）强制断裂，否则回退到 grapheme 边界；CJK 宽字符计 2 单位（`display_width_units("中")==2.0`）；font-size 非有限/非正回退到默认。这是平台型工具产品演进「方向① 激活 dagre」的**关键第 5 砖**：text_wrap 就位后，layout.rs 的所有前置依赖（R271 ast + R270 config + R273 text_wrap + R246-R268 dagre 全栈 + R272 parser FlowchartGraph）全部满足，R274 layout.rs 可启动。
+
+### 交付
+
+- `agent/minimax_code/mermaid/to_svg/text_wrap.py`（新，335 行，**内部模块**）：5 公共常量（`DEFAULT_FONT_SIZE=16.0` / `DEFAULT_LINE_HEIGHT=1.1` / `DEFAULT_WRAP_WIDTH=200.0` / `DEFAULT_CHAR_WIDTH=8.0` / `DEFAULT_TEXT_HEIGHT=24.0`）+ 7 公共函数（`display_width_units` / `line_width` / `line_width_words` / `scale_char_width` / `wrapped_text_height_with_font_size` / `measure_wrapped_lines_with_font_size` / `wrap_text_lines`）+ 私有辅助簇（`_char_width` / `_normalized_font_size` / `_split_line_to_words` / `_split_line_to_fit_width` / `_check_fit` / `_join_words` / `_iter_graphemes` / `_split_word_to_fit_width` / `_split_token_at_cap`）+ 2 私有常量（`_SINGLE_TOKEN_WIDTH_CAP_FACTOR=5.0` / `_TOKEN_BREAK_CHARS=frozenset({"_","-",".","/"})`）。`__all__`=12 符号（5 const + 7 fn，ASCII 排序，内部模块公共面，镜像 grok 私有 `mod text_wrap;`）。
+- `agent/tests/test_mermaid_to_svg_text_wrap.py`（新，391 行，42 用例）：**7 维度覆盖** —— (1) 5 公共常量精确值；(2) `display_width_units`（ASCII=1 / CJK=2 / 组合标记=0 / 控制符=0 / 空=0，7 参数化）；(3) `line_width` / `line_width_words`（空串短路 + 缩放 + 连接空格）；(4) `wrapped_text_height_with_font_size`（0 行=0 / 1 行=24 / N 行加 spacing / font-size 线性缩放）+ `scale_char_width`（默认 identity / 双倍 size 双倍 width / 非有限回退 5 参数化）；(5) `measure_wrapped_lines_with_font_size`（空=(0,0) + 最宽子行宽+总高）；(6) **grok 7 原测试复刻**（单长 token 保持整 + 宽度超 cap + 长 token+尾词分两行 + 多词空格换行 + over-cap identifier 边界断裂 + grapheme 回退 + CJK 宽字符边界断裂）；(7) **边界**（空文本=[] / `\n` 分组 / 空白行 emit `[""]` / 非有限 max_width=inf 一行）+ `_iter_graphemes` 组合标记归并 + **桶契约**（text_wrap `__all__`=12 ASCII / 不在 to_svg barrel / 深路径可导入 / mermaid 根 `__all__`=17）。
+- **barrel 未变**（无文件改动）：text_wrap 是内部模块（grok `mod text_wrap;` 私有），不进 to_svg barrel（保持 15 符号），不进 mermaid 根（保持 17 符号）。未来 layout 经深路径 `from .text_wrap import wrap_text_lines, ...` 消费 grok layout.rs 第 5-8 行的 6 个导入符号。
+
+### 映射决策树 + 坑
+
+- **🔴 双 Unicode crate → 纯 stdlib unicodedata（零新依赖）**：grok `unicode_width::UnicodeWidthStr::width` + `unicode_segmentation::UnicodeSegmentation::graphemes(true)` 两个 crate。Python 用纯 stdlib `unicodedata`（项目 pyproject 依赖集刻意精简，无 wcwidth/regex/unicode_width）。(a) `_char_width`：`unicodedata.east_asian_width(ch) in ("W","F")` → 2，`unicodedata.category(ch)=="Cc" or in ("Mn","Me")` → 0（镜像 crate `None`→0），否则 1。(b) `_iter_graphemes`：`unicodedata.category(ch) in ("Mn","Me") and current` → 归并到前导 base（UAX #29 近似）。test `display_width_units("中")==2.0` + `é` NFC/NFD 均 1 + `café` 4 graphemes 守卫。
+- **🔴 单 token 保持整（htmlLabels 默认）**：mermaid 默认 `htmlLabels`，单 token 不可断 → box 拓宽容纳它。grok `_split_line_to_fit_width` 当 `current` 为空且 `next_word` 不 fit 时：若 `line_width(word) <= max_width * _SINGLE_TOKEN_WIDTH_CAP_FACTOR`（cap=5x）→ 整 token 单行；否则 force-split。Python 镜像。test `test_wraps_long_single_token_whole_without_slicing`（`mark_filter_restore_context` 216px>200 但<=1000 cap → 保持整）+ `test_long_single_token_measures_wider_than_wrap_cap`（测量宽>cap）守卫。
+- **🔴 over-cap token identifier 边界断裂**：grok `_split_token_at_cap` 在 graphemic prefix 内找最后一个 identifier 边界字符（`_`/`-`/`.`/`/`），`boundary + 1` 保留分隔符在第一行。Python `_TOKEN_BREAK_CHARS=frozenset` + `graphemic_first.rfind(break_char)` 取最大 pos。test `test_pathologically_long_token_breaks_on_identifier_boundary`（`segment_`*25，cap 1000=125 字符，boundary at `_` pos 119，split_pos 120，`endswith("_")`）守卫。
+- **🔴 无 identifier 边界 → grapheme 回退**：grok 当 boundary=-1（无 break char）→ 回退到 `_split_word_to_fit_width` 的 grapheme break。Python 镜像。test `test_over_cap_token_without_break_char_falls_back_to_grapheme_break`（`a`*200 无 break char → grapheme 回退，每行<=cap）守卫。
+- **🔴 CJK 宽字符计 2 单位**：`_char_width("中")==2`（East-Asian Wide）。over-cap CJK token 在 identifier 边界（`_`）断裂，宽字符正确计 2。test `test_over_cap_cjk_token_breaks_on_boundary_and_counts_wide_chars`（`中文_`*50，display_width 250 单位，断裂在 `_`，`endswith("_")`）守卫。
+- **🔴 font-size 非有限/非正回退默认**：grok `wrapped_text_height_with_font_size` / `scale_char_width` 对 NaN/inf/非正 font_size 无显式守卫（Rust f64 算术），Python `_normalized_font_size` 显式回退到 `DEFAULT_FONT_SIZE`（防御性，Python float 算 NaN/inf 不崩溃但语义模糊，回退更安全）。test 5 参数化（-1/0/NaN/inf/-inf）守卫 scale + height 均回退到默认。
+- **🔴 saturating_sub(1) → max(n-1, 0)**：grok `line_count.saturating_sub(1)`（下溢保护），Python `max(line_count - 1, 0)`（早 return on `line_count==0` 使 clamp 防御性）。语义等价。
+- **🔴 VecDeque pop_front/push_front → deque popleft/appendleft**：grok `_split_line_to_fit_width` 用 `VecDeque` + `pop_front`/`push_front`（O(1) 双端）。Python `collections.deque` + `popleft`/`appendleft`。语义等价。
+- **🔴 内部模块（text_wrap 不进 barrel）**：grok `lib.rs` `mod text_wrap;`（私有）+ crate 根**无 `pub use text_wrap`**（layout.rs / svg_renderer.rs 内部 `use crate::text_wrap::{...}`）。Python 镜像：text_wrap.py 有自有 `__all__`=12 符号（内部公共面）但**不通过 to_svg barrel 导出**，深路径 `minimax_code.mermaid.to_svg.text_wrap` 可访问（未来 layout 经 `from .text_wrap import ...` 消费）。barrel 保持 15 符号，mermaid 根保持 17 符号。test 桶契约 4 断言守卫。
+- **本轮 ruff I001 自动修复**：初写 test 的 import 块（`import math` + `import pytest` + `minimax_code.*`）ruff isort 报 I001，`--fix` 自动整理后干净（math 标准库 + pytest 第三方 + minimax_code 第一方，三组空行分隔）。parser 测试无 math 故未触发。
+
+### 验证
+
+- ruff：text_wrap.py + test_text_wrap.py，初版 I001（import 块排序），`--fix` 后 **All checks passed!**（line-length 100，select E/F/W/I/B/UP，ignore E501）。
+- 定向 pytest（test_text_wrap.py）：**42 passed（0.15s）**（grok 7 原测试复刻 + 5 常量 + display_width 7 参数化 + line_width 簇 + height 簇 + scale 簇 + measure + 边界 + grapheme + 桶契约 4）。零失败。
+- 全量回归：**7505 passed, 10 skipped（109.03s, exit 0）** vs R272 基准 7463 passed / 10 skipped。**+42 = R273 text_wrap 新测试**。零真实回归。10 skipped 为预期。
+- CRLF 警告正常（Windows text_wrap.py + test），无害。
+
+### YAGNI 边界
+
+- **layout.rs 待迁（渲染栈第 6 片叶子，R274 候选，须拆分子叶子）**：3375 行 dagre 布局桥接，消费 R271 ast + R270 config + R273 text_wrap（6 符号）+ R246-R268 dagre 全栈 + R272 parser FlowchartGraph AST → dagre 图模型 → 节点/边坐标。**R273 解除 text_wrap 前置依赖后，layout 的所有前置全部满足**。产错误时抛 `DotGenerationError`（R271）。规模过大须拆成 R274a（类型层 LayoutNode/LayoutEdge/LayoutSubgraph/LayoutResult + 常量 + FlowchartLayoutOptions）/ R274b（LayoutEngine 核心引擎）/ R274c（compute_layout 入口 + dagre 桥接）等子叶子。
+- **svg_renderer.rs 待迁（渲染栈后续叶子）**：SVG 元素发射器（坐标 + 形状 → SVG 元素），消费 R273 text_wrap（标签定位）+ layout 产的坐标。产错误时抛 `RenderError`。
+- **mermaid_port/ + xai-grok-mermaid 主机包装 + 20 图表渲染器待迁**：dagre 适配器子目录（把 mermaid AST 桥接到 dagre 图模型）+ 主机 crate engine dispatch + 各 mermaid 图表类型渲染入口。
+- **text_wrap 不外暴到 barrel / mermaid 根**：保持 to_svg 子包内部深路径（`mermaid.to_svg.text_wrap`），不进 to_svg barrel（grok `mod text_wrap;` 私有），不进 mermaid 根（`__all__` 仍 17）。test 守卫 12 符号 absent 于 barrel + mermaid 根 `__all__`=17。
+- **emoji-ZWJ 序列不特殊聚类（YAGNI）**：`_iter_graphemes` UAX #29 近似仅归并 Mn/Me 组合标记到前导 base，不处理 emoji-ZWJ 序列（流程图标签罕见，mermaid 节点标签通常是 NFC 文本 + CJK）。若未来需要，引入 `regex` 或第三方 grapheme 库（当前 YAGNI）。
+- **数据类不强转类型 / 不加默认值**：所有函数忠实 grok 签名，`wrap_text_lines(text, max_width, char_width)` 无默认值（grok 无 `Default`）。
+
+### Commit
+
+`feat(platform): R273 migrate mermaid text_wrap.rs (direction 1, leaf 5)`。feat 提交 59ef877。2 文件 737 insertions（text_wrap.py 新 335 + test_text_wrap.py 新 391，I001 --fix 后）。docs 提交 ITERATION_LOG.md R273 条目。锚点链: ... -> R271(1b7560d) -> R272(8d09886) -> R273(59ef877)。
