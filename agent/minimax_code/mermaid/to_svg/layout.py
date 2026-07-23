@@ -84,6 +84,7 @@ tracks grok's crate-root public surface, which omits ``layout``). Future
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TypeAlias
 
@@ -1125,6 +1126,287 @@ class LayoutEngine:
                 edge_label_positions[idx] = (edge.x, edge.y)
 
         return positions, edge_points, edge_label_positions
+
+    def compute_spacing(self) -> tuple[float, float]:
+        """Return ``(node_spacing, rank_spacing)`` from the layout options.
+
+        Mirrors grok ``compute_spacing`` -- the single source the post-dagre
+        pass reads when it needs the engine's spacing knobs as a pair.
+        """
+        return (self.options.node_spacing, self.options.rank_spacing)
+
+    def center_nodes_in_subgraphs(self, positions: PositionMap, is_vertical: bool) -> None:
+        """Translate each subgraph's nodes so its centre matches the group centre.
+
+        Mirrors grok ``center_nodes_in_subgraphs``. For every connected group of
+        subgraphs (cross-cluster edges link them) the overall group centre is
+        computed from all member nodes; then each subgraph in the group is
+        translated -- preserving intra-subgraph offsets -- so its own node
+        centre matches the group centre. ``is_vertical`` selects the axis (``x``
+        for TB/BT, ``y`` for LR/RL). Mutates ``positions`` in place.
+        """
+        connected_groups = self.find_connected_subgraph_groups()
+        for group in connected_groups:
+            # Compute the overall group centre from all member nodes.
+            all_nodes_in_group: list[str] = []
+            for sg_id in group:
+                for node_id, owner_id in self.node_to_subgraph.items():
+                    if owner_id == sg_id:
+                        all_nodes_in_group.append(node_id)
+            if not all_nodes_in_group:
+                continue
+            all_coords: list[float] = []
+            for node_id in all_nodes_in_group:
+                pos = positions.get(node_id)
+                if pos is not None:
+                    all_coords.append(pos[0] if is_vertical else pos[1])
+            if not all_coords:
+                continue
+            group_avg = sum(all_coords) / len(all_coords)
+
+            # Shift each subgraph's nodes so the subgraph centre matches the
+            # group centre, preserving relative offsets within each subgraph.
+            for sg_id in group:
+                sg_nodes: list[str] = []
+                for node_id, owner_id in self.node_to_subgraph.items():
+                    if owner_id == sg_id:
+                        sg_nodes.append(node_id)
+                if not sg_nodes:
+                    continue
+                sg_coords: list[float] = []
+                for node_id in sg_nodes:
+                    pos = positions.get(node_id)
+                    if pos is not None:
+                        sg_coords.append(pos[0] if is_vertical else pos[1])
+                if not sg_coords:
+                    continue
+                sg_avg = sum(sg_coords) / len(sg_coords)
+                shift = group_avg - sg_avg
+                for node_id in sg_nodes:
+                    pos = positions.get(node_id)
+                    if pos is not None:
+                        x, y = pos
+                        if is_vertical:
+                            positions[node_id] = (x + shift, y)
+                        else:
+                            positions[node_id] = (x, y + shift)
+
+    def find_connected_subgraph_groups(self) -> list[set[str]]:
+        """Group subgraphs linked by cross-cluster edges into connected sets.
+
+        Mirrors grok ``find_connected_subgraph_groups``. Builds an undirected
+        adjacency over subgraphs from edges whose endpoints live in different
+        subgraphs, then a stack DFS collects each connected component; only
+        components of size > 1 are returned (lone subgraphs need no centring).
+        """
+        if not self.subgraphs:
+            return []
+        subgraph_connections: dict[str, set[str]] = {sg.id: set() for sg in self.subgraphs}
+        for edge in self.edges:
+            from_sg = self.node_to_subgraph.get(edge.from_)
+            to_sg = self.node_to_subgraph.get(edge.to)
+            if from_sg is not None and to_sg is not None and from_sg != to_sg:
+                subgraph_connections.setdefault(from_sg, set()).add(to_sg)
+                subgraph_connections.setdefault(to_sg, set()).add(from_sg)
+        visited: set[str] = set()
+        groups: list[set[str]] = []
+        for sg in self.subgraphs:
+            if sg.id in visited:
+                continue
+            group: set[str] = set()
+            stack: list[str] = [sg.id]
+            while stack:
+                current = stack.pop()
+                if current not in group:
+                    group.add(current)
+                    visited.add(current)
+                    for neighbor in subgraph_connections.get(current, set()):
+                        if neighbor not in group:
+                            stack.append(neighbor)
+            if len(group) > 1:
+                groups.append(group)
+        return groups
+
+    def analyze_clusters(self) -> ClusterAnalysis:
+        """Map each subgraph to its member nodes + whether it has external edges.
+
+        Mirrors grok ``analyze_clusters``. ``subgraph_nodes`` collects the member
+        node set per subgraph id (reverse of ``node_to_subgraph``);
+        ``external_edges`` flags ``True`` when any edge has exactly one endpoint
+        inside the subgraph (the XOR of endpoint membership).
+        """
+        subgraph_nodes: dict[str, set[str]] = {}
+        for sg in self.subgraphs:
+            nodes: set[str] = set()
+            for node_id, owner_id in self.node_to_subgraph.items():
+                if owner_id == sg.id:
+                    nodes.add(node_id)
+            subgraph_nodes[sg.id] = nodes
+        external_edges: dict[str, bool] = {}
+        for sg in self.subgraphs:
+            nodes_in_sg = subgraph_nodes[sg.id]
+            has_external = any(
+                (edge.from_ in nodes_in_sg) != (edge.to in nodes_in_sg)
+                for edge in self.edges
+            )
+            external_edges[sg.id] = has_external
+        return ClusterAnalysis(
+            subgraph_nodes=subgraph_nodes,
+            external_edges=external_edges,
+        )
+
+    def compute_subgraph_bounds(
+        self,
+        layout_nodes: dict[str, LayoutNode],
+        padding: float,
+    ) -> list[LayoutSubgraph]:
+        """Compute padded bounding rectangles for every subgraph, bottom-up.
+
+        Mirrors grok ``compute_subgraph_bounds``. Subgraphs are processed
+        leaf-first (children before parents) so a parent rect can expand to
+        encompass its children's padded rects. For each subgraph the min/max
+        bounds come from its directly-owned nodes (centre +/- half-size) plus
+        any already-computed child rects; the title bar reserves
+        :meth:`subgraph_title_height` above the content (0 when the subgraph has
+        no title -- ``title is None``). Subgraphs with no content are skipped.
+        """
+        ordered_ids = self.subgraph_ids_bottom_up()
+        rect_map: dict[str, tuple[float, float, float, float]] = {}
+
+        for sg_id in ordered_ids:
+            sg = next(s for s in self.subgraphs if s.id == sg_id)
+            direct_nodes: list[str] = [
+                node_id
+                for node_id, owner_id in self.node_to_subgraph.items()
+                if owner_id == sg_id
+            ]
+
+            min_x = math.inf
+            min_y = math.inf
+            max_x = -math.inf
+            max_y = -math.inf
+
+            for node_id in direct_nodes:
+                node = layout_nodes.get(node_id)
+                if node is not None:
+                    min_x = min(min_x, node.x - node.width / 2.0)
+                    max_x = max(max_x, node.x + node.width / 2.0)
+                    min_y = min(min_y, node.y - node.height / 2.0)
+                    max_y = max(max_y, node.y + node.height / 2.0)
+
+            for child_sg in self.subgraphs:
+                if child_sg.parent_subgraph_id == sg_id:
+                    child_rect = rect_map.get(child_sg.id)
+                    if child_rect is not None:
+                        cx, cy, cx2, cy2 = child_rect
+                        min_x = min(min_x, cx)
+                        min_y = min(min_y, cy)
+                        max_x = max(max_x, cx2)
+                        max_y = max(max_y, cy2)
+
+            if math.isinf(min_x):
+                continue
+
+            title_padding = (
+                self.subgraph_title_height(sg.title) if sg.title is not None else 0.0
+            )
+            rx = min_x - padding
+            ry = min_y - padding - title_padding
+            rw = (max_x - min_x) + padding * 2.0
+            rh = (max_y - min_y) + padding * 2.0 + title_padding
+            rect_map[sg_id] = (rx, ry, rx + rw, ry + rh)
+
+        result: list[LayoutSubgraph] = []
+        for sg in self.subgraphs:
+            rect = rect_map.get(sg.id)
+            if rect is not None:
+                rx, ry, rx2, ry2 = rect
+                result.append(
+                    LayoutSubgraph(
+                        id=sg.id,
+                        title=sg.title,
+                        x=rx,
+                        y=ry,
+                        width=rx2 - rx,
+                        height=ry2 - ry,
+                    )
+                )
+        return result
+
+    def subgraph_title_height(self, title: str) -> float:
+        """Height of the wrapped subgraph title, floored at the default.
+
+        Mirrors grok ``subgraph_title_height``. The title is wrapped at the
+        engine's ``wrapping_width`` using the font-size-scaled char width; the
+        wrapped height comes from :func:`measure_wrapped_lines_with_font_size`
+        and is clamped to at least :data:`SUBGRAPH_TITLE_HEIGHT`.
+        """
+        char_width = scale_char_width(DEFAULT_CHAR_WIDTH, self.options.font_size)
+        lines = wrap_text_lines(title, self.options.wrapping_width, char_width)
+        _, text_height = measure_wrapped_lines_with_font_size(
+            lines, char_width, self.options.font_size
+        )
+        return max(text_height, SUBGRAPH_TITLE_HEIGHT)
+
+    def subgraph_ids_bottom_up(self) -> list[str]:
+        """Return subgraph ids in leaf-first (post-order) traversal order.
+
+        Mirrors grok ``subgraph_ids_bottom_up``. Builds a parent -> children map
+        (a missing parent key groups top-level subgraphs), then a post-order DFS
+        from each root appends a node after all its descendants -- so leaves
+        appear before their enclosing subgraphs.
+        """
+        children_by_parent: dict[str, list[str]] = {}
+        roots: list[str] = []
+        for sg in self.subgraphs:
+            parent_key = sg.parent_subgraph_id if sg.parent_subgraph_id is not None else ""
+            children_by_parent.setdefault(parent_key, []).append(sg.id)
+            if sg.parent_subgraph_id is None:
+                roots.append(sg.id)
+        result: list[str] = []
+
+        def dfs_post(node_id: str) -> None:
+            for child in children_by_parent.get(node_id, []):
+                dfs_post(child)
+            result.append(node_id)
+
+        for root in roots:
+            dfs_post(root)
+        return result
+
+    def compute_bounds(self, positions: PositionMap) -> tuple[float, float]:
+        """Compute the overall diagram bounds ``(width, height)``.
+
+        Mirrors grok ``compute_bounds``. Empty positions -> ``(200.0, 200.0)``
+        (the fallback viewport). Otherwise the half-extent of every positioned
+        node is maxed into ``(max_x, max_y)`` and padded with :data:`MARGIN`.
+        """
+        if not positions:
+            return (200.0, 200.0)
+        max_x = 0.0
+        max_y = 0.0
+        for node_id, (x, y) in positions.items():
+            node = self.nodes.get(node_id)
+            if node is None:
+                continue
+            max_x = max(max_x, x + node.width / 2.0)
+            max_y = max(max_y, y + node.height / 2.0)
+        return (max_x + MARGIN, max_y + MARGIN)
+
+    def get_node_colors(self, node_id: str) -> tuple[str | None, str | None]:
+        """Look up a node's ``(fill, stroke)`` colours from its style directives.
+
+        Mirrors grok ``get_node_colors``. Reads the node's style property list
+        (last-write-wins from ``StyleStatement`` collection) and returns the
+        first ``fill`` / ``stroke`` value, or ``(None, None)`` when the node has
+        no style directive (or no matching keys).
+        """
+        props = self.node_styles.get(node_id)
+        if props is None:
+            return (None, None)
+        fill = next((value for key, value in props if key == "fill"), None)
+        stroke = next((value for key, value in props if key == "stroke"), None)
+        return (fill, stroke)
 
 
 __all__ = [

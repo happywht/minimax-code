@@ -1657,3 +1657,428 @@ def test_mermaid_root_barrel_unchanged_by_r274c() -> None:
     """R274c adds an internal-method cohort; the R38 root surface stays at 17."""
     assert len(mermaid.__all__) == 17
     assert "to_svg" not in mermaid.__all__
+
+
+# === R274d: boundary + subgraph cluster helpers (9 methods) ================
+#
+# Covers the 9 LayoutEngine instance methods fused from grok's layout.rs impl
+# block: compute_spacing, center_nodes_in_subgraphs, find_connected_subgraph_groups,
+# analyze_clusters, compute_subgraph_bounds, subgraph_title_height,
+# subgraph_ids_bottom_up, compute_bounds, get_node_colors. Each method is exercised
+# on a minimal graph that makes the grok semantics deterministic.
+
+
+def _layout_node(
+    node_id: str,
+    x: float = 0.0,
+    y: float = 0.0,
+    width: float = 40.0,
+    height: float = 20.0,
+    label: str | None = None,
+) -> LayoutNode:
+    """Build a centred :class:`LayoutNode` box (dagre x/y = box centre)."""
+    return LayoutNode(
+        id=node_id,
+        x=x,
+        y=y,
+        width=width,
+        height=height,
+        shape=NodeShape.Rectangle,
+        label=label if label is not None else node_id,
+        fill_color=None,
+        stroke_color=None,
+    )
+
+
+def _connected_subgraphs_graph() -> FlowchartGraph:
+    """Two subgraphs linked by one cross-cluster edge n1 -> n2."""
+    return FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Subgraph(
+                id="sg1",
+                title=None,
+                statements=[Node(id="n1", label="n1", shape=NodeShape.Rectangle)],
+            ),
+            Subgraph(
+                id="sg2",
+                title=None,
+                statements=[Node(id="n2", label="n2", shape=NodeShape.Rectangle)],
+            ),
+            Edge(from_="n1", to="n2", label=None, style=EdgeStyle.Arrow),
+        ],
+    )
+
+
+def _two_isolated_subgraphs_graph() -> FlowchartGraph:
+    """Two subgraphs with no edge linking them (lone components)."""
+    return FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Subgraph(
+                id="sg1",
+                title=None,
+                statements=[Node(id="n1", label="n1", shape=NodeShape.Rectangle)],
+            ),
+            Subgraph(
+                id="sg2",
+                title=None,
+                statements=[Node(id="n2", label="n2", shape=NodeShape.Rectangle)],
+            ),
+        ],
+    )
+
+
+def _internal_edge_subgraph_graph() -> FlowchartGraph:
+    """One subgraph holding both endpoints of a purely internal edge."""
+    return FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Subgraph(
+                id="sg1",
+                title=None,
+                statements=[
+                    Node(id="n1", label="n1", shape=NodeShape.Rectangle),
+                    Node(id="n2", label="n2", shape=NodeShape.Rectangle),
+                    Edge(from_="n1", to="n2", label=None, style=EdgeStyle.Arrow),
+                ],
+            ),
+        ],
+    )
+
+
+def _single_subgraph_graph() -> FlowchartGraph:
+    """One subgraph owning a single node (title None -> falls back to id)."""
+    return FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Subgraph(
+                id="sg",
+                title=None,
+                statements=[Node(id="n1", label="n1", shape=NodeShape.Rectangle)],
+            ),
+        ],
+    )
+
+
+def _empty_subgraph_graph() -> FlowchartGraph:
+    """One subgraph owning no nodes (skipped by compute_subgraph_bounds)."""
+    return FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[Subgraph(id="sg", title=None, statements=[])],
+    )
+
+
+def _nested_subgraphs_graph() -> FlowchartGraph:
+    """Outer subgraph containing one direct node + an inner subgraph."""
+    return FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Subgraph(
+                id="outer",
+                title="Outer",
+                statements=[
+                    Node(id="n1", label="n1", shape=NodeShape.Rectangle),
+                    Subgraph(
+                        id="inner",
+                        title="Inner",
+                        statements=[Node(id="n2", label="n2", shape=NodeShape.Rectangle)],
+                    ),
+                ],
+            ),
+        ],
+    )
+
+
+def _styled_node_graph() -> FlowchartGraph:
+    """A node carrying a fill + stroke style directive."""
+    return FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Node(id="n1", label="n1", shape=NodeShape.Rectangle),
+            StyleStatement(node_id="n1", properties=[("fill", "#fff"), ("stroke", "#000")]),
+        ],
+    )
+
+
+def _fill_only_node_graph() -> FlowchartGraph:
+    """A node carrying only a fill style directive (stroke missing)."""
+    return FlowchartGraph(
+        direction=GraphDirection.TopToBottom,
+        statements=[
+            Node(id="n1", label="n1", shape=NodeShape.Rectangle),
+            StyleStatement(node_id="n1", properties=[("fill", "#f0f0f0")]),
+        ],
+    )
+
+
+def _expected_title_height(title: str) -> float:
+    """Mirror :meth:`subgraph_title_height` under default options (font 16, wrap 200)."""
+    lines = wrap_text_lines(title, DEFAULT_WRAP_WIDTH, DEFAULT_CHAR_WIDTH)
+    _, height = measure_wrapped_lines_with_font_size(
+        lines, DEFAULT_CHAR_WIDTH, DEFAULT_FONT_SIZE
+    )
+    return max(height, layout_mod.SUBGRAPH_TITLE_HEIGHT)
+
+
+# --- compute_spacing -------------------------------------------------------
+
+
+def test_compute_spacing_default_returns_node_and_rank_sep() -> None:
+    """Default options -> ``(NODE_SEP, RANK_SEP)`` = ``(50.0, 50.0)``."""
+    engine = LayoutEngine(_empty_graph())
+    assert engine.compute_spacing() == (layout_mod.NODE_SEP, layout_mod.RANK_SEP)
+
+
+def test_compute_spacing_reflects_custom_options() -> None:
+    """Custom options surface verbatim through ``compute_spacing``."""
+    opts = FlowchartLayoutOptions(node_spacing=30.0, rank_spacing=70.0)
+    engine = LayoutEngine(_empty_graph(), options=opts)
+    assert engine.compute_spacing() == (30.0, 70.0)
+
+
+# --- center_nodes_in_subgraphs ---------------------------------------------
+
+
+def test_center_nodes_in_subgraphs_noop_without_connected_groups() -> None:
+    """Isolated subgraphs form no connected group -> positions untouched."""
+    engine = LayoutEngine(_two_isolated_subgraphs_graph())
+    positions: PositionMap = {"n1": (10.0, 20.0), "n2": (90.0, 80.0)}
+    engine.center_nodes_in_subgraphs(positions, is_vertical=True)
+    assert positions == {"n1": (10.0, 20.0), "n2": (90.0, 80.0)}
+
+
+def test_center_nodes_in_subgraphs_vertical_shifts_x_to_group_centre() -> None:
+    """is_vertical=True centres each subgraph's x on the group centre.
+
+    Group of {sg1, sg2}: avg x = (0 + 100)/2 = 50; sg1 avg 0 -> +50;
+    sg2 avg 100 -> -50; both land at x = 50.
+    """
+    engine = LayoutEngine(_connected_subgraphs_graph())
+    positions = {"n1": (0.0, 5.0), "n2": (100.0, 5.0)}
+    engine.center_nodes_in_subgraphs(positions, is_vertical=True)
+    assert positions == {"n1": (50.0, 5.0), "n2": (50.0, 5.0)}
+
+
+def test_center_nodes_in_subgraphs_horizontal_shifts_y_to_group_centre() -> None:
+    """is_vertical=False centres on the y axis instead."""
+    engine = LayoutEngine(_connected_subgraphs_graph())
+    positions = {"n1": (5.0, 0.0), "n2": (5.0, 100.0)}
+    engine.center_nodes_in_subgraphs(positions, is_vertical=False)
+    assert positions == {"n1": (5.0, 50.0), "n2": (5.0, 50.0)}
+
+
+# --- find_connected_subgraph_groups ----------------------------------------
+
+
+def test_find_connected_subgraph_groups_empty_returns_empty() -> None:
+    """No subgraphs -> no groups."""
+    engine = LayoutEngine(_empty_graph())
+    assert engine.find_connected_subgraph_groups() == []
+
+
+def test_find_connected_subgraph_groups_isolated_subgraphs_skipped() -> None:
+    """Lone components (size 1) are filtered out."""
+    engine = LayoutEngine(_two_isolated_subgraphs_graph())
+    assert engine.find_connected_subgraph_groups() == []
+
+
+def test_find_connected_subgraph_groups_cross_edge_merges_pair() -> None:
+    """A cross-cluster edge merges sg1 + sg2 into one size-2 group."""
+    engine = LayoutEngine(_connected_subgraphs_graph())
+    groups = engine.find_connected_subgraph_groups()
+    assert len(groups) == 1
+    assert groups[0] == {"sg1", "sg2"}
+
+
+# --- analyze_clusters ------------------------------------------------------
+
+
+def test_analyze_clusters_maps_members_per_subgraph() -> None:
+    """``subgraph_nodes`` is the reverse of ``node_to_subgraph``."""
+    engine = LayoutEngine(_connected_subgraphs_graph())
+    analysis = engine.analyze_clusters()
+    assert analysis.subgraph_nodes == {"sg1": {"n1"}, "sg2": {"n2"}}
+
+
+def test_analyze_clusters_flags_external_cross_edge() -> None:
+    """A cross-cluster edge marks both endpoints' subgraphs external."""
+    engine = LayoutEngine(_connected_subgraphs_graph())
+    analysis = engine.analyze_clusters()
+    assert analysis.external_edges == {"sg1": True, "sg2": True}
+
+
+def test_analyze_clusters_internal_edge_not_external() -> None:
+    """An edge with both endpoints inside one subgraph is not external."""
+    engine = LayoutEngine(_internal_edge_subgraph_graph())
+    analysis = engine.analyze_clusters()
+    assert analysis.subgraph_nodes == {"sg1": {"n1", "n2"}}
+    assert analysis.external_edges == {"sg1": False}
+
+
+# --- compute_subgraph_bounds -----------------------------------------------
+
+
+def test_compute_subgraph_bounds_single_subgraph_padded_rect() -> None:
+    """One node + title fallback + padding yields the padded bounding rect.
+
+    Node box (100,100,40,20) -> x[80,120] y[90,110]; title "sg" (None fallback)
+    reserves 24.0 above; padding 8 -> x=72, y=58, w=56, h=60.
+    """
+    engine = LayoutEngine(_single_subgraph_graph())
+    layout_nodes = {"n1": _layout_node("n1", x=100.0, y=100.0, width=40.0, height=20.0)}
+    result = engine.compute_subgraph_bounds(layout_nodes, padding=8.0)
+    assert len(result) == 1
+    sg = result[0]
+    assert sg.id == "sg"
+    assert sg.title == "sg"  # None title falls back to the id at collection time
+    assert sg.x == 72.0
+    assert sg.y == 58.0
+    assert sg.width == 56.0
+    assert sg.height == 60.0
+
+
+def test_compute_subgraph_bounds_skips_empty_subgraph() -> None:
+    """A subgraph with no positioned nodes contributes no rect."""
+    engine = LayoutEngine(_empty_subgraph_graph())
+    assert engine.compute_subgraph_bounds({}, padding=8.0) == []
+
+
+def test_compute_subgraph_bounds_nested_parent_encompasses_child() -> None:
+    """Leaf-first processing lets the parent rect expand around the child rect."""
+    engine = LayoutEngine(_nested_subgraphs_graph())
+    layout_nodes = {
+        "n1": _layout_node("n1", x=0.0, y=0.0, width=40.0, height=20.0),
+        "n2": _layout_node("n2", x=100.0, y=50.0, width=40.0, height=20.0),
+    }
+    result = engine.compute_subgraph_bounds(layout_nodes, padding=8.0)
+    by_id = {sg.id: sg for sg in result}
+    assert set(by_id) == {"inner", "outer"}
+
+    # inner: n2 box [80,120]x[40,60], title "Inner" 24.0, padding 8.
+    inner = by_id["inner"]
+    assert inner.x == 72.0
+    assert inner.y == 8.0
+    assert inner.width == 56.0
+    assert inner.height == 60.0
+
+    # outer encompasses inner (its rect grew around the already-computed child).
+    outer = by_id["outer"]
+    assert outer.x <= inner.x
+    assert outer.y <= inner.y
+    assert outer.x + outer.width >= inner.x + inner.width
+    assert outer.y + outer.height >= inner.y + inner.height
+
+
+# --- subgraph_title_height -------------------------------------------------
+
+
+def test_subgraph_title_height_short_title_floored_at_default() -> None:
+    """A single-line title is clamped up to SUBGRAPH_TITLE_HEIGHT (24.0)."""
+    engine = LayoutEngine(_empty_graph())
+    assert engine.subgraph_title_height("S") == layout_mod.SUBGRAPH_TITLE_HEIGHT
+
+
+def test_subgraph_title_height_long_title_exceeds_floor() -> None:
+    """A multi-line title measures taller than the floor."""
+    engine = LayoutEngine(_empty_graph())
+    long_title = "word " * 60  # wraps to many lines at wrap_width 200
+    expected = _expected_title_height(long_title)
+    assert expected > layout_mod.SUBGRAPH_TITLE_HEIGHT
+    assert engine.subgraph_title_height(long_title) == pytest.approx(expected)
+
+
+# --- subgraph_ids_bottom_up -----------------------------------------------
+
+
+def test_subgraph_ids_bottom_up_flat_subgraphs_preserve_order() -> None:
+    """Flat (sibling) subgraphs emit in collection order."""
+    engine = LayoutEngine(_two_isolated_subgraphs_graph())
+    assert engine.subgraph_ids_bottom_up() == ["sg1", "sg2"]
+
+
+def test_subgraph_ids_bottom_up_nested_leaf_before_parent() -> None:
+    """Post-order traversal emits the inner leaf before its outer parent."""
+    engine = LayoutEngine(_nested_subgraphs_graph())
+    assert engine.subgraph_ids_bottom_up() == ["inner", "outer"]
+
+
+# --- compute_bounds --------------------------------------------------------
+
+
+def test_compute_bounds_empty_returns_fallback_viewport() -> None:
+    """Empty positions -> the ``(200.0, 200.0)`` fallback viewport."""
+    engine = LayoutEngine(_chain_graph())
+    assert engine.compute_bounds({}) == (200.0, 200.0)
+
+
+def test_compute_bounds_max_extents_plus_margin() -> None:
+    """Bounds = max half-extent over positioned nodes + MARGIN on each axis."""
+    engine = LayoutEngine(_chain_graph())
+    positions = {"A": (10.0, 20.0), "B": (30.0, 40.0), "C": (50.0, 60.0)}
+    expected_w = (
+        max(
+            10.0 + engine.nodes["A"].width / 2.0,
+            30.0 + engine.nodes["B"].width / 2.0,
+            50.0 + engine.nodes["C"].width / 2.0,
+        )
+        + layout_mod.MARGIN
+    )
+    expected_h = (
+        max(
+            20.0 + engine.nodes["A"].height / 2.0,
+            40.0 + engine.nodes["B"].height / 2.0,
+            60.0 + engine.nodes["C"].height / 2.0,
+        )
+        + layout_mod.MARGIN
+    )
+    assert engine.compute_bounds(positions) == (expected_w, expected_h)
+
+
+def test_compute_bounds_skips_unknown_node_ids() -> None:
+    """A position for an unknown node id is ignored."""
+    engine = LayoutEngine(_chain_graph())
+    positions = {"A": (10.0, 20.0), "X": (999.0, 999.0)}
+    expected_w = 10.0 + engine.nodes["A"].width / 2.0 + layout_mod.MARGIN
+    expected_h = 20.0 + engine.nodes["A"].height / 2.0 + layout_mod.MARGIN
+    assert engine.compute_bounds(positions) == (expected_w, expected_h)
+
+
+# --- get_node_colors -------------------------------------------------------
+
+
+def test_get_node_colors_unstyled_node_returns_none_pair() -> None:
+    """A node with no style directive -> ``(None, None)``."""
+    engine = LayoutEngine(_chain_graph())
+    assert engine.get_node_colors("A") == (None, None)
+
+
+def test_get_node_colors_returns_fill_and_stroke() -> None:
+    """Both fill and stroke keys are read from the style property list."""
+    engine = LayoutEngine(_styled_node_graph())
+    assert engine.get_node_colors("n1") == ("#fff", "#000")
+
+
+def test_get_node_colors_partial_style_returns_none_for_missing() -> None:
+    """A missing stroke key surfaces as ``None`` (fill still read)."""
+    engine = LayoutEngine(_fill_only_node_graph())
+    assert engine.get_node_colors("n1") == ("#f0f0f0", None)
+
+
+# --- R274d barrel contract: layout stays internal --------------------------
+
+
+def test_layout_module_all_unchanged_by_r274d() -> None:
+    """R274d adds instance methods, not public symbols; ``__all__`` stays at 4."""
+    assert layout_mod.__all__ == [
+        "LayoutEdge",
+        "LayoutNode",
+        "LayoutResult",
+        "LayoutSubgraph",
+    ]
+
+
+def test_mermaid_root_barrel_unchanged_by_r274d() -> None:
+    """R274d adds another internal-method cohort; the R38 root surface stays 17."""
+    assert len(mermaid.__all__) == 17
+    assert "to_svg" not in mermaid.__all__
