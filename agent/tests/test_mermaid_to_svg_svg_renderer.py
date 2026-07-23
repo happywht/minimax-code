@@ -58,8 +58,13 @@ import minimax_code.mermaid as mermaid
 import minimax_code.mermaid.to_svg as to_svg
 from minimax_code.mermaid.to_svg import FlowchartConfig, MermaidTheme, RenderConfig
 from minimax_code.mermaid.to_svg import svg_renderer as svg_renderer_mod
-from minimax_code.mermaid.to_svg.ast import NodeShape
-from minimax_code.mermaid.to_svg.layout import LayoutNode, LayoutSubgraph
+from minimax_code.mermaid.to_svg.ast import EdgeStyle, NodeShape
+from minimax_code.mermaid.to_svg.layout import (
+    LayoutEdge,
+    LayoutNode,
+    LayoutResult,
+    LayoutSubgraph,
+)
 from minimax_code.mermaid.to_svg.svg_renderer import (
     DEFAULT_FONT_FAMILY,
     EDGE_ARROWHEAD_OFFSET,
@@ -73,6 +78,8 @@ from minimax_code.mermaid.to_svg.svg_renderer import (
     EdgeCurve,
     SvgRenderer,
     SvgRenderOptions,
+    render,
+    render_with_config,
 )
 from minimax_code.mermaid.to_svg.text_wrap import (
     DEFAULT_CHAR_WIDTH,
@@ -477,15 +484,16 @@ def test_render_subgraph_background_threads_theme_subgraph_colors() -> None:
 # === internal-module contract (mirrors grok private ``mod svg_renderer;``) ==
 
 
-def test_svg_renderer_module_has_no_all_until_r275c_close() -> None:
-    """R275a does NOT establish ``__all__`` yet (mirrors the layout precedent).
+def test_svg_renderer_module_all_is_two_entry_points_after_r275c_close() -> None:
+    """R275c closes ``__all__`` at the two public entry points.
 
-    The :mod:`.layout` internal module wrote its ``__all__`` only once it
-    reached feature completeness; svg_renderer follows the same discipline --
-    ``__all__`` is established at the R275c close (the two public entry points
-    ``render`` / ``render_with_config``).
+    Mirrors the :mod:`.layout` internal-module precedent (its ``__all__`` was
+    written at feature completeness); svg_renderer does the same once R275c
+    fuses the two grok crate-level ``pub fn`` entry points ``render`` /
+    ``render_with_config``. The internal actor / options / enum symbols stay
+    off the declared surface (reachable only by deep path).
     """
-    assert not hasattr(svg_renderer_mod, "__all__")
+    assert svg_renderer_mod.__all__ == ["render", "render_with_config"]
 
 
 def test_svg_renderer_symbols_not_in_to_svg_barrel() -> None:
@@ -930,3 +938,578 @@ def test_escape_xml_passes_through_plain_text() -> None:
 def test_escape_xml_empty_string_unchanged() -> None:
     """Empty in, empty out."""
     assert SvgRenderer.escape_xml("") == ""
+
+
+# === R275c edge geometry / path / label emitters + orchestrator =============
+#
+# The block below covers the R275c close: the static edge-geometry primitives
+# (``linear_path_d`` / ``basis_spline_path_d`` / ``basis_point`` /
+# ``corner_positions`` / ``fix_corners`` / ``find_adjacent_point`` /
+# ``shorten_end_for_marker`` / ``label_position``), the edge-emitter instance
+# methods (``render_edge_line`` / ``edge_path_d`` / ``render_edge_labels``),
+# the 8-phase ``render`` orchestrator, and the two public entry points. Every
+# numeric expectation is derived by hand from grok's Rust source so the suite
+# is a genuine zero-semantic-clone black box.
+
+
+def _make_edge(
+    style: EdgeStyle,
+    *,
+    points: list[tuple[float, float]] | None = None,
+    label: str | None = None,
+    label_pos: tuple[float, float] | None = None,
+    from_: str = "n1",
+    to: str = "n2",
+) -> LayoutEdge:
+    """Build a :class:`LayoutEdge` with the given style + geometry."""
+    return LayoutEdge(
+        from_=from_,
+        to=to,
+        label=label,
+        style=style,
+        points=points if points is not None else [(0.0, 0.0), (100.0, 0.0)],
+        label_pos=label_pos,
+    )
+
+
+def _make_layout(
+    *,
+    nodes: dict[str, LayoutNode] | None = None,
+    edges: list[LayoutEdge] | None = None,
+    subgraphs: list[LayoutSubgraph] | None = None,
+    width: float = 200.0,
+    height: float = 100.0,
+) -> LayoutResult:
+    """Build a :class:`LayoutResult` with the given nodes / edges / subgraphs."""
+    return LayoutResult(
+        nodes=nodes if nodes is not None else {},
+        edges=edges if edges is not None else [],
+        subgraphs=subgraphs if subgraphs is not None else [],
+        width=width,
+        height=height,
+    )
+
+
+# === linear_path_d (static) ================================================
+
+
+def test_linear_path_d_empty_is_empty_string() -> None:
+    """Empty control points -> ``""`` (grok first().copied() early return)."""
+    assert SvgRenderer.linear_path_d([]) == ""
+
+
+def test_linear_path_d_single_point_is_move_only() -> None:
+    """One point emits just the ``M`` move (no ``L`` segments)."""
+    assert SvgRenderer.linear_path_d([(0.0, 0.0)]) == "M0.0,0.0"
+
+
+def test_linear_path_d_multi_point_emits_move_then_lines() -> None:
+    """Each point past the first appends one ``L`` segment; ``{:.1}`` format."""
+    assert SvgRenderer.linear_path_d([(1.5, 2.5), (10.0, 20.0)]) == "M1.5,2.5L10.0,20.0"
+    assert SvgRenderer.linear_path_d([(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)]) == (
+        "M0.0,0.0L1.0,1.0L2.0,2.0"
+    )
+
+
+# === basis_point (static) ==================================================
+
+
+def test_basis_point_emits_cubic_with_six_coords() -> None:
+    """One ``C`` segment -- three control-point pairs, ``{:.1}`` formatted."""
+    # basis_point(0,0, 10,0, 20,0): (2*0+10)/3=3.3, (0+2*10)/3=6.7, (0+40+20)/6=10.0
+    assert SvgRenderer.basis_point(0.0, 0.0, 10.0, 0.0, 20.0, 0.0) == (
+        "C3.3,0.0 6.7,0.0 10.0,0.0"
+    )
+
+
+def test_basis_point_non_zero_y() -> None:
+    """y-coordinates flow through the same ``(2y0+y1)/3`` etc. kernels."""
+    # basis_point(1,2, 3,4, 5,6): (2*1+3)/3=1.7,(2*2+4)/3=2.7,(1+6+5)/6=2.0,
+    #   (1+2*3)/3=2.3,(2+2*4)/3=3.3,(2+8+6)/6=2.7 -> wait recompute carefully
+    # x: (2*1+3)/3=5/3=1.667->1.7 ; (1+2*3)/3=7/3=2.333->2.3 ; (1+4*3+5)/6=18/6=3.0
+    # y: (2*2+4)/3=8/3=2.667->2.7 ; (2+2*4)/3=10/3=3.333->3.3 ; (2+4*4+6)/6=24/6=4.0
+    assert SvgRenderer.basis_point(1.0, 2.0, 3.0, 4.0, 5.0, 6.0) == (
+        "C1.7,2.7 2.3,3.3 3.0,4.0"
+    )
+
+
+# === basis_spline_path_d (static state machine) ============================
+
+
+def test_basis_spline_path_d_empty_is_empty_string() -> None:
+    """Empty control points -> ``""``."""
+    assert SvgRenderer.basis_spline_path_d([]) == ""
+
+
+def test_basis_spline_path_d_single_point_emits_only_move() -> None:
+    """State 0 -> 1 on the first point: just ``M``; loop ends at state 1."""
+    assert SvgRenderer.basis_spline_path_d([(0.0, 0.0)]) == "M0.0,0.0"
+
+
+def test_basis_spline_path_d_two_points_degenerates_to_line() -> None:
+    """State 0->1 (M), 1->2 (no emit); post-loop state 2 -> trailing ``L``."""
+    assert SvgRenderer.basis_spline_path_d([(0.0, 0.0), (10.0, 0.0)]) == "M0.0,0.0L10.0,0.0"
+
+
+def test_basis_spline_path_d_three_points_emits_lead_in_and_two_cubics() -> None:
+    """State 0->1 (M), 1->2, 2->3 (lead-in L + cubic); post-loop cubic + L."""
+    # Points (0,0),(10,0),(20,0):
+    #   p1: M0.0,0.0
+    #   p2: state 1->2 (no emit)
+    #   p3: state 2->3 -> L{(5*0+10)/6},{0}=L1.7,0.0 + basis_point(0,0,10,0,20,0)
+    #                                                  = C3.3,0.0 6.7,0.0 10.0,0.0
+    #   post state 3 -> basis_point(10,0,20,0,20,0)=C13.3,0.0 16.7,0.0 18.3,0.0 + L20.0,0.0
+    assert SvgRenderer.basis_spline_path_d([(0.0, 0.0), (10.0, 0.0), (20.0, 0.0)]) == (
+        "M0.0,0.0L1.7,0.0C3.3,0.0 6.7,0.0 10.0,0.0C13.3,0.0 16.7,0.0 18.3,0.0L20.0,0.0"
+    )
+
+
+# === corner_positions (static, f64::EPSILON equality) ======================
+
+
+def test_corner_positions_under_three_points_is_empty() -> None:
+    """Fewer than 3 control points -> no corners."""
+    assert SvgRenderer.corner_positions([]) == []
+    assert SvgRenderer.corner_positions([(0.0, 0.0), (0.0, 10.0)]) == []
+
+
+def test_corner_positions_detects_vertical_to_horizontal_corner() -> None:
+    """An L-bend (vertical leg into horizontal leg) flags the midpoint."""
+    # prev=(0,0) curr=(0,10) next=(10,10): vertical->horizontal, both legs >5px.
+    assert SvgRenderer.corner_positions([(0.0, 0.0), (0.0, 10.0), (10.0, 10.0)]) == [1]
+
+
+def test_corner_positions_straight_line_has_no_corner() -> None:
+    """A collinear run (no 90-degree turn) flags nothing."""
+    # prev=(0,0) curr=(0,10) next=(0,20): stays vertical, no turn.
+    assert SvgRenderer.corner_positions([(0.0, 0.0), (0.0, 10.0), (0.0, 20.0)]) == []
+
+
+def test_corner_positions_detects_horizontal_to_vertical_corner() -> None:
+    """The mirror L-bend (horizontal leg into vertical leg) also flags."""
+    # prev=(0,0) curr=(10,0) next=(10,10): horizontal->vertical.
+    assert SvgRenderer.corner_positions([(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)]) == [1]
+
+
+# === find_adjacent_point (static) ==========================================
+
+
+def test_find_adjacent_point_steps_back_toward_a() -> None:
+    """Returns the point on ``a -> b`` that is ``distance`` px from ``b``."""
+    # a=(0,0) b=(0,10) d=5: length=10, ratio=0.5 -> (0, 10-5) = (0, 5)
+    assert SvgRenderer.find_adjacent_point((0.0, 0.0), (0.0, 10.0), 5.0) == (0.0, 5.0)
+
+
+def test_find_adjacent_point_345_triangle() -> None:
+    """A 3-4-5 segment stepped back 2.5 lands at the midpoint."""
+    # a=(0,0) b=(3,4) d=2.5: length=5, ratio=0.5 -> (3-1.5, 4-2.0) = (1.5, 2.0)
+    assert SvgRenderer.find_adjacent_point((0.0, 0.0), (3.0, 4.0), 2.5) == (1.5, 2.0)
+
+
+def test_find_adjacent_point_zero_length_returns_a() -> None:
+    """When ``a == b`` (zero length), ``a`` is returned unchanged."""
+    assert SvgRenderer.find_adjacent_point((5.0, 5.0), (5.0, 5.0), 3.0) == (5.0, 5.0)
+
+
+# === shorten_end_for_marker (static, mutates in place) ====================
+
+
+def test_shorten_end_for_marker_pulls_last_point_back() -> None:
+    """The final control point retreats along its segment by ``offset``."""
+    points = [(0.0, 0.0), (10.0, 0.0)]
+    SvgRenderer.shorten_end_for_marker(points, 3.0)
+    assert points == [(0.0, 0.0), (7.0, 0.0)]
+
+
+def test_shorten_end_for_marker_under_two_points_noop() -> None:
+    """Fewer than 2 points -> no-op (nothing to shorten)."""
+    points = [(0.0, 0.0)]
+    SvgRenderer.shorten_end_for_marker(points, 3.0)
+    assert points == [(0.0, 0.0)]
+
+
+def test_shorten_end_for_marker_segment_shorter_than_offset_noop() -> None:
+    """A segment already shorter than ``offset`` is left untouched."""
+    points = [(0.0, 0.0), (2.0, 0.0)]
+    SvgRenderer.shorten_end_for_marker(points, 3.0)
+    assert points == [(0.0, 0.0), (2.0, 0.0)]
+
+
+def test_shorten_end_for_marker_non_positive_offset_noop() -> None:
+    """``offset <= 0`` short-circuits (no shortening)."""
+    for offset in (0.0, -1.0):
+        points = [(0.0, 0.0), (10.0, 0.0)]
+        SvgRenderer.shorten_end_for_marker(points, offset)
+        assert points == [(0.0, 0.0), (10.0, 0.0)]
+
+
+# === fix_corners (static) ==================================================
+
+
+def test_fix_corners_straight_line_passes_through() -> None:
+    """No detected corners -> every point passes through unchanged."""
+    assert SvgRenderer.fix_corners([(0.0, 0.0), (10.0, 0.0), (20.0, 0.0)]) == [
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (20.0, 0.0),
+    ]
+
+
+def test_fix_corners_small_l_inserts_three_points_no_rounding() -> None:
+    """A small L-bend (box <= 10px on one axis) keeps the corner sharp.
+
+    ``fix_corners`` walks every point: non-corner points pass through
+    unchanged, and each corner point is replaced by three points
+    (``new_prev`` / ``new_corner`` / ``new_next``). The large-box branch needs
+    ``abs(next.x-prev.x) > 10`` -- an L spanning exactly 10px does not qualify,
+    so ``new_corner`` stays at the original corner point.
+    """
+    result = SvgRenderer.fix_corners([(0.0, 0.0), (0.0, 10.0), (10.0, 10.0)])
+    # idx 0 (0,0) passes through; idx 1 (corner) -> new_prev(0,5)/corner(0,10)/
+    # new_next(5,10); idx 2 (10,10) passes through.
+    assert result == [(0.0, 0.0), (0.0, 5.0), (0.0, 10.0), (5.0, 10.0), (10.0, 10.0)]
+
+
+def test_fix_corners_large_l_rounds_corner_with_sqrt2_offset() -> None:
+    """A large L-bend (>= 10px both axes) offsets the corner by ``sqrt(2)*2``.
+
+    ``fix_corners`` walks every point: non-corner points pass through, the
+    corner point is replaced by ``new_prev`` / ``new_corner`` / ``new_next``.
+    With corner.x == new_prev.x (vertical first leg), the first coordinate
+    group applies: x = new_prev.x + 5 - a, y = new_prev.y + a, where
+    ``a = sqrt(2) * 2``.
+    """
+    a = (2.0 ** 0.5) * 2.0
+    result = SvgRenderer.fix_corners([(0.0, 0.0), (0.0, 20.0), (20.0, 20.0)])
+    # idx 0 (0,0) passes through; idx 1 (corner) -> new_prev(0,15)/new_corner/
+    # new_next(5,20); idx 2 (20,20) passes through.
+    # new_prev = find_adjacent_point((0,0),(0,20),5) = (0, 15)
+    # new_next = find_adjacent_point((20,20),(0,20),5) = (5, 20)
+    # corner.x(0) == new_prev.x(0) -> first group; x_diff=5>=0, y_diff=5>=0
+    assert result[0] == (0.0, 0.0)
+    assert result[1] == (0.0, 15.0)
+    assert result[2] == pytest.approx((0.0 + 5.0 - a, 15.0 + a))
+    assert result[3] == (5.0, 20.0)
+    assert result[4] == (20.0, 20.0)
+
+
+# === label_position (static) ===============================================
+
+
+def test_label_position_empty_returns_origin() -> None:
+    """No points -> ``(0, 0)`` (grok ``points.first().copied().unwrap_or``)."""
+    assert SvgRenderer.label_position([]) == (0.0, 0.0)
+
+
+def test_label_position_single_point_returns_that_point() -> None:
+    """Under 2 points -> the first point (or origin when empty)."""
+    assert SvgRenderer.label_position([(5.0, 5.0)]) == (5.0, 5.0)
+
+
+def test_label_position_two_points_returns_midpoint() -> None:
+    """A 2-point edge labels at half its length = the midpoint."""
+    assert SvgRenderer.label_position([(0.0, 0.0), (10.0, 0.0)]) == (5.0, 0.0)
+
+
+def test_label_position_near_zero_length_returns_first_point() -> None:
+    """A degenerate (near-zero-length) polyline short-circuits to point 0."""
+    assert SvgRenderer.label_position([(0.0, 0.0), (0.0, 0.0)]) == (0.0, 0.0)
+
+
+def test_label_position_multi_segment_lands_on_half_length() -> None:
+    """Half-length target lands inside the segment that crosses the midpoint."""
+    # (0,0)->(4,3) len 5; total 5; target 2.5; t=0.5 -> (2, 1.5)
+    assert SvgRenderer.label_position([(0.0, 0.0), (4.0, 3.0)]) == (2.0, 1.5)
+
+
+def test_label_position_three_point_axis_aligned_midpoint() -> None:
+    """An L-polyline's half-length falls at the end of the first leg."""
+    # (0,0)->(4,0)->(4,4): total=8; target=4; seg0 len 4 reaches target at t=1.
+    assert SvgRenderer.label_position([(0.0, 0.0), (4.0, 0.0), (4.0, 4.0)]) == (4.0, 0.0)
+
+
+# === edge_path_d (instance, Linear vs Basis) ===============================
+
+
+def test_edge_path_d_linear_emits_polyline() -> None:
+    """Linear curve -> straight ``M``/``L`` polyline (no corner fixing)."""
+    renderer = _make_renderer(options=SvgRenderOptions(edge_curve=EdgeCurve.Linear))
+    assert renderer.edge_path_d([(0.0, 0.0), (10.0, 0.0), (20.0, 0.0)]) == (
+        "M0.0,0.0L10.0,0.0L20.0,0.0"
+    )
+
+
+def test_edge_path_d_basis_default_emits_spline() -> None:
+    """Default options use Basis -> corner-fix + basis spline (3+ points)."""
+    renderer = _make_renderer()  # default edge_curve is Basis
+    assert renderer.edge_path_d([(0.0, 0.0), (10.0, 0.0), (20.0, 0.0)]) == (
+        "M0.0,0.0L1.7,0.0C3.3,0.0 6.7,0.0 10.0,0.0C13.3,0.0 16.7,0.0 18.3,0.0L20.0,0.0"
+    )
+
+
+# === render_edge_line (6 EdgeStyle variants + skip) ========================
+
+
+def test_render_edge_line_arrow_emits_thin_solid_path_with_marker() -> None:
+    """Arrow -> stroke 1.0, no dash, ``url(#arrowhead)``, endpoint -4px."""
+    renderer = _make_renderer()
+    renderer.render_edge_line(_make_edge(EdgeStyle.Arrow, points=[(0.0, 0.0), (100.0, 0.0)]))
+    assert renderer.output == (
+        f'<path d="M0.0,0.0L96.0,0.0" fill="none" stroke="{renderer.theme.edge_color}" '
+        'stroke-width="1.0" stroke-linecap="round" stroke-linejoin="round" '
+        'marker-end="url(#arrowhead)"/>\n'
+    )
+
+
+def test_render_edge_line_line_emits_thin_solid_no_marker_no_shorten() -> None:
+    """Line (no arrow) -> no marker, endpoint NOT shortened (full length)."""
+    renderer = _make_renderer()
+    renderer.render_edge_line(_make_edge(EdgeStyle.Line, points=[(0.0, 0.0), (100.0, 0.0)]))
+    assert renderer.output == (
+        f'<path d="M0.0,0.0L100.0,0.0" fill="none" stroke="{renderer.theme.edge_color}" '
+        'stroke-width="1.0" stroke-linecap="round" stroke-linejoin="round"/>\n'
+    )
+
+
+def test_render_edge_line_dotted_arrow_emits_dash_and_marker() -> None:
+    """DottedArrow -> dash ``3 3`` + ``url(#arrowhead)``, stroke 1.0, -4px."""
+    renderer = _make_renderer()
+    renderer.render_edge_line(
+        _make_edge(EdgeStyle.DottedArrow, points=[(0.0, 0.0), (100.0, 0.0)])
+    )
+    assert renderer.output == (
+        f'<path d="M0.0,0.0L96.0,0.0" fill="none" stroke="{renderer.theme.edge_color}" '
+        'stroke-width="1.0" stroke-linecap="round" stroke-linejoin="round" '
+        'stroke-dasharray="3 3" marker-end="url(#arrowhead)"/>\n'
+    )
+
+
+def test_render_edge_line_dotted_line_emits_dash_no_marker() -> None:
+    """DottedLine -> dash ``3 3``, no marker, no shorten."""
+    renderer = _make_renderer()
+    renderer.render_edge_line(
+        _make_edge(EdgeStyle.DottedLine, points=[(0.0, 0.0), (100.0, 0.0)])
+    )
+    assert renderer.output == (
+        f'<path d="M0.0,0.0L100.0,0.0" fill="none" stroke="{renderer.theme.edge_color}" '
+        'stroke-width="1.0" stroke-linecap="round" stroke-linejoin="round" '
+        'stroke-dasharray="3 3"/>\n'
+    )
+
+
+def test_render_edge_line_thick_arrow_emits_wide_path_thick_marker() -> None:
+    """ThickArrow -> stroke 3.5, ``url(#arrowhead-thick)``, endpoint -5.5px."""
+    renderer = _make_renderer()
+    renderer.render_edge_line(
+        _make_edge(EdgeStyle.ThickArrow, points=[(0.0, 0.0), (100.0, 0.0)])
+    )
+    assert renderer.output == (
+        f'<path d="M0.0,0.0L94.5,0.0" fill="none" stroke="{renderer.theme.edge_color}" '
+        'stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" '
+        'marker-end="url(#arrowhead-thick)"/>\n'
+    )
+
+
+def test_render_edge_line_thick_line_emits_wide_no_marker() -> None:
+    """ThickLine -> stroke 3.5, no marker, no shorten."""
+    renderer = _make_renderer()
+    renderer.render_edge_line(
+        _make_edge(EdgeStyle.ThickLine, points=[(0.0, 0.0), (100.0, 0.0)])
+    )
+    assert renderer.output == (
+        f'<path d="M0.0,0.0L100.0,0.0" fill="none" stroke="{renderer.theme.edge_color}" '
+        'stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>\n'
+    )
+
+
+def test_render_edge_line_under_two_points_emits_nothing() -> None:
+    """An edge with < 2 control points is skipped (no path element)."""
+    renderer = _make_renderer()
+    renderer.render_edge_line(_make_edge(EdgeStyle.Arrow, points=[(0.0, 0.0)]))
+    assert renderer.output == ""
+
+
+# === render_edge_labels ====================================================
+
+
+def test_render_edge_labels_none_label_emits_nothing() -> None:
+    """An edge with ``label=None`` is skipped."""
+    renderer = _make_renderer()
+    renderer.render_edge_labels([_make_edge(EdgeStyle.Arrow, label=None)])
+    assert renderer.output == ""
+
+
+def test_render_edge_labels_blank_label_emits_nothing() -> None:
+    """An edge with a whitespace-only label is skipped."""
+    renderer = _make_renderer()
+    renderer.render_edge_labels([_make_edge(EdgeStyle.Arrow, label="   ")])
+    assert renderer.output == ""
+
+
+def test_render_edge_labels_single_label_emits_rect_and_text() -> None:
+    """A single short label emits a background rect + the wrapped text.
+
+    label_position([(0,0),(100,0)]) = (50, 0); "hi" wraps to one line; rect is
+    sized 16+2*2 wide x 24+2*2 tall, centered on (50, 0).
+    """
+    renderer = _make_renderer()
+    renderer.render_edge_labels(
+        [_make_edge(EdgeStyle.Arrow, points=[(0.0, 0.0), (100.0, 0.0)], label="hi")]
+    )
+    # rect_x = 50 - 20/2 = 40; rect_y = 0 - 28/2 = -14
+    assert '<rect x="40.0" y="-14.0" width="20.0" height="28.0"' in renderer.output
+    assert 'fill="rgba(232,232,232,0.8)" rx="2"' in renderer.output
+    assert ">hi<" in renderer.output  # label text rendered via tspan
+
+
+def test_render_edge_labels_uses_positive_label_pos_when_given() -> None:
+    """A positive ``label_pos`` overrides the geometric midpoint placement."""
+    renderer = _make_renderer()
+    renderer.render_edge_labels(
+        [_make_edge(EdgeStyle.Arrow, label="hi", label_pos=(50.0, 10.0))]
+    )
+    # rect centered on (50, 10): rect_x=40, rect_y=10-14=-4
+    assert '<rect x="40.0" y="-4.0"' in renderer.output
+
+
+def test_render_edge_labels_separates_overlapping_labels() -> None:
+    """Two labels starting at the same spot are pushed apart.
+
+    Both labels at (50, 10) fully overlap. With dx == dy == 0 the resolver
+    compares ``overlap_amount_x < overlap_amount_y``; for equal "aaa"/"bbb"
+    boxes the overlap amounts are equal, so the ``<`` is false and the else
+    branch separates them along y (shift = half the y-overlap). The two rects
+    end up at different (x, y) anchors.
+    """
+    import re
+
+    renderer = _make_renderer()
+    e1 = _make_edge(EdgeStyle.Arrow, label="aaa", label_pos=(50.0, 10.0))
+    e2 = _make_edge(EdgeStyle.Arrow, label="bbb", label_pos=(50.0, 10.0))
+    renderer.render_edge_labels([e1, e2])
+    assert renderer.output.count("<rect") == 2
+    assert ">aaa<" in renderer.output
+    assert ">bbb<" in renderer.output
+    rects = re.findall(r'<rect x="([-\d.]+)" y="([-\d.]+)"', renderer.output)
+    assert len(rects) == 2
+    assert rects[0] != rects[1]  # separated (along y for equal-size boxes)
+
+
+# === render orchestrator (8-phase emission) ================================
+
+
+def test_render_drains_output_into_return_and_resets_buffer() -> None:
+    """``render`` returns the document and resets ``output`` (``mem::take``)."""
+    renderer = _make_renderer(width=200.0, height=100.0)
+    svg = renderer.render(_make_layout())
+    assert renderer.output == ""  # buffer drained
+    # write_header emits an XML declaration before the <svg> root.
+    assert svg.startswith('<?xml version="1.0" encoding="UTF-8"?>')
+    assert "<svg" in svg
+    assert svg.rstrip().endswith("</svg>")
+
+
+def test_render_orders_header_before_defs_before_footer() -> None:
+    """Phase order: header (<svg) precedes defs (<defs) precedes footer."""
+    renderer = _make_renderer(width=200.0, height=100.0)
+    svg = renderer.render(_make_layout())
+    assert svg.index("<svg") < svg.index("<defs")
+    assert svg.index("<defs") < svg.index("</svg>")
+
+
+def test_render_emits_edge_path_and_node_shape() -> None:
+    """A layout with one node + one arrowed edge emits both elements."""
+    node = _make_node(NodeShape.Rectangle, label="A")
+    edge = _make_edge(EdgeStyle.Arrow, points=[(0.0, 0.0), (100.0, 0.0)])
+    layout = _make_layout(nodes={"n1": node}, edges=[edge], width=200.0, height=100.0)
+    renderer = _make_renderer(width=200.0, height=100.0)
+    svg = renderer.render(layout)
+    assert '<path d="M0.0,0.0L96.0,0.0"' in svg  # edge shortened by arrow offset
+    assert 'marker-end="url(#arrowhead)"' in svg
+    assert "<rect" in svg  # node rectangle
+    assert ">A<" in svg  # node label
+
+
+def test_render_sorts_nodes_by_id_for_deterministic_output() -> None:
+    """Nodes are emitted in id order (grok ``nodes.sort_by``)."""
+    n_b = _make_node(NodeShape.Rectangle, label="B")
+    n_b = LayoutNode(
+        id="n_b",
+        x=n_b.x, y=n_b.y, width=n_b.width, height=n_b.height,
+        shape=n_b.shape, label="B",
+        fill_color=n_b.fill_color, stroke_color=n_b.stroke_color,
+    )
+    n_a = LayoutNode(
+        id="n_a",
+        x=0.0, y=0.0, width=80.0, height=40.0,
+        shape=NodeShape.Rectangle, label="A",
+        fill_color=None, stroke_color=None,
+    )
+    layout = _make_layout(nodes={"n_b": n_b, "n_a": n_a}, width=200.0, height=100.0)
+    renderer = _make_renderer(width=200.0, height=100.0)
+    svg = renderer.render(layout)
+    # n_a sorts before n_b regardless of dict insertion order.
+    assert svg.index(">A<") < svg.index(">B<")
+
+
+# === public entry points (render / render_with_config) ====================
+
+
+def test_render_entry_delegates_to_default_config() -> None:
+    """``render`` == ``render_with_config`` with a default :class:`RenderConfig`."""
+    node = _make_node(NodeShape.Rectangle, label="A")
+    layout = _make_layout(nodes={"n1": node}, width=200.0, height=100.0)
+    assert render(layout, MermaidTheme.light()) == render_with_config(
+        layout, MermaidTheme.light(), RenderConfig()
+    )
+
+
+def test_render_with_config_detects_state_diagram_via_node_shape() -> None:
+    """A StartState node flips ``is_state_diagram`` (no crash; valid SVG)."""
+    node = _make_node(NodeShape.StartState, label="")
+    layout = _make_layout(nodes={"n1": node}, width=100.0, height=100.0)
+    svg = render_with_config(layout, MermaidTheme.light(), RenderConfig())
+    # write_header emits an XML declaration before the <svg> root.
+    assert svg.startswith('<?xml version="1.0" encoding="UTF-8"?>')
+    assert "<svg" in svg
+    assert svg.rstrip().endswith("</svg>")
+
+
+def test_render_with_config_non_state_diagram_for_plain_shapes() -> None:
+    """Plain Rectangle nodes leave ``is_state_diagram`` False (default path)."""
+    node = _make_node(NodeShape.Rectangle, label="A")
+    layout = _make_layout(nodes={"n1": node}, width=200.0, height=100.0)
+    svg = render_with_config(layout, MermaidTheme.light(), RenderConfig())
+    # write_header emits an XML declaration before the <svg> root.
+    assert svg.startswith('<?xml version="1.0" encoding="UTF-8"?>')
+    assert "<svg" in svg
+
+
+def test_render_entry_points_importable_via_deep_path() -> None:
+    """``render`` / ``render_with_config`` resolve via the deep module path."""
+    import importlib
+
+    deep = importlib.import_module("minimax_code.mermaid.to_svg.svg_renderer")
+    assert deep.render is render
+    assert deep.render_with_config is render_with_config
+
+
+# === R275c close: barrel + internal-module contract =======================
+
+
+def test_svg_renderer_entry_points_not_in_to_svg_barrel() -> None:
+    """The two entry points are NOT re-exported through the ``to_svg`` barrel.
+
+    Mirrors grok's private ``mod svg_renderer;`` -- the crate calls
+    ``svg_renderer::render`` internally from ``lib.rs`` but never ``pub use``-s
+    it at the crate root. The barrel stays on the R38 surface.
+    """
+    assert "render" not in to_svg.__all__
+    assert "render_with_config" not in to_svg.__all__
+    assert "svg_renderer" not in to_svg.__all__
+
+
+def test_mermaid_root_barrel_unchanged_by_r275c_close() -> None:
+    """R275c closes svg_renderer's ``__all__``; the R38 root surface stays 17."""
+    assert len(mermaid.__all__) == 17
+    assert "to_svg" not in mermaid.__all__
