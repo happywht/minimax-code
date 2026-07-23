@@ -623,11 +623,12 @@ def test_parse_yaml_value_malformed_returns_sentinel() -> None:
 # === barrel surface contract ===============================================
 
 
-def test_to_svg_subpackage_barrel_reexports_fifteen_symbols() -> None:
-    """The ``to_svg`` barrel re-exports the 15 R269+R270+R271 symbols.
+def test_to_svg_subpackage_barrel_reexports_eighteen_symbols() -> None:
+    """The ``to_svg`` barrel re-exports the 18 R269--R277 symbols.
 
     R269 seeded the barrel (theme, 3 symbols); R270 grew it (config, 5
-    symbols -> 8); R271 grows it again (error, 7 symbols -> 15). The list is
+    symbols -> 8); R271 grew it again (error, 7 symbols -> 15); R277 grew it
+    a final time (render crate-root dispatch, 3 symbols -> 18). The list is
     ASCII-sorted; ``ast`` (R271) stays internal and is intentionally absent.
     """
     assert to_svg.__all__ == [
@@ -645,7 +646,10 @@ def test_to_svg_subpackage_barrel_reexports_fifteen_symbols() -> None:
         "RenderConfig",
         "RenderError",
         "UnsupportedDiagramType",
+        "is_mermaid_diagram",
         "parse_mermaid_frontmatter",
+        "render_mermaid_to_svg",
+        "strip_mermaid_frontmatter",
     ]
     # R270 additions are reachable through the barrel.
     assert to_svg.FlowchartConfig is FlowchartConfig
@@ -663,6 +667,13 @@ def test_to_svg_subpackage_barrel_reexports_fifteen_symbols() -> None:
     assert to_svg.RenderError is not None
     assert "FlowchartGraph" not in to_svg.__all__
     assert "NodeShape" not in to_svg.__all__
+    # R277 render crate-root dispatch symbols are present in ``__all__`` (the
+    # 3-symbol expansion: 15 -> 18). Object-identity reachability for these is
+    # covered by ``test_mermaid_to_svg_render.py`` (the render leaf's own
+    # barrel test), keeping this config-layer test focused on its own symbols.
+    assert "render_mermaid_to_svg" in to_svg.__all__
+    assert "strip_mermaid_frontmatter" in to_svg.__all__
+    assert "is_mermaid_diagram" in to_svg.__all__
 
 
 def test_mermaid_root_barrel_unchanged_by_r270() -> None:

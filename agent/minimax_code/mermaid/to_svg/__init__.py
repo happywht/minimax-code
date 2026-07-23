@@ -53,9 +53,10 @@ Scope of this sub-package
   re-exported through this barrel (the barrel tracks grok's crate-root
   ``pub use`` surface, which omits ``ast``).
 
-Leaves already migrated (R269--R275c): ``theme`` / ``config`` / ``error`` /
-``ast`` / ``parser`` / ``text_wrap`` / ``layout`` / ``svg_renderer`` -- the
-full dagre-backed layout + SVG render stack for flowcharts.
+Leaves already migrated (R269--R275c, R277): ``theme`` / ``config`` /
+``error`` / ``ast`` / ``parser`` / ``text_wrap`` / ``layout`` /
+``svg_renderer`` / ``render`` -- the full dagre-backed layout + SVG render
+stack for flowcharts plus the crate-root render dispatch entry.
 
 YAGNI -- deliberately NOT migrated: ``mermaid_port/`` (6 files, 1194 lines).
 grok's HERMETIC VENDORING PATCH seals the experimental dagre flowchart "port"
@@ -66,11 +67,13 @@ to fix -- and ``compute_layout_ported`` carries ``#[allow(dead_code)]`` with
 Cargo.toml calling it ``unreachable``. Migrating dead-by-design code would
 re-introduce, in Python, a defect the Rust side already paid to seal out.
 
-What is NOT here yet (later rounds): the crate-root ``lib.rs`` dispatch entry
-(``render_mermaid_to_svg`` over the 20 diagram-type renderers) and the 20
-per-diagram renderers themselves (block/c4/class/er/gantt/gitgraph/info/
-journey/kanban/mindmap/packet/pie/quadrant/radar/requirement/sankey/sequence/
-state/timeline/xychart).
+The crate-root render dispatch landed in R277 (``render.render_mermaid_to_svg``
+-- front-matter + theme resolution + diagram-type dispatch over the 19
+unsupported types plus the flowchart default path). What is NOT here yet
+(R279+): the 19 per-diagram renderers themselves (block/c4/class/er/gantt/
+gitgraph/info/journey/kanban/mindmap/packet/pie/quadrant/radar/requirement/
+sankey/sequence/state/timeline/xychart), each a dedicated leaf like grok's
+``pie_diagram`` / ``er_diagram`` / etc.
 """
 
 from __future__ import annotations
@@ -91,6 +94,11 @@ from .error import (
     RenderError,
     UnsupportedDiagramType,
 )
+from .render import (
+    is_mermaid_diagram,
+    render_mermaid_to_svg,
+    strip_mermaid_frontmatter,
+)
 from .theme import MermaidTheme, MermaidThemePreset, MermaidThemeVariables
 
 __all__ = [
@@ -108,5 +116,8 @@ __all__ = [
     "RenderConfig",
     "RenderError",
     "UnsupportedDiagramType",
+    "is_mermaid_diagram",
     "parse_mermaid_frontmatter",
+    "render_mermaid_to_svg",
+    "strip_mermaid_frontmatter",
 ]
