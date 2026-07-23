@@ -19406,3 +19406,53 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R273 migrate mermaid text_wrap.rs (direction 1, leaf 5)`。feat 提交 59ef877。2 文件 737 insertions（text_wrap.py 新 335 + test_text_wrap.py 新 391，I001 --fix 后）。docs 提交 ITERATION_LOG.md R273 条目。锚点链: ... -> R271(1b7560d) -> R272(8d09886) -> R273(59ef877)。
+
+## R274a — 迁移 mermaid-to-svg layout.rs 类型层子叶子（方向① 第 6 片叶子 R274 第 1 子叶子，布局引擎类型层 + 常量 + FlowchartLayoutOptions，~1500 行死代码剥离里程碑）
+
+锚点:R274a-1 9e5ebb8
+
+### 本轮目标
+
+迁移 layout.rs **类型层子叶子**（R274a，方向① 第 6 片叶子 R274 的第 1 子叶子 a）。layout.rs（3375 行）是 mermaid-to-svg 渲染栈**最大的叶子**（dagre 布局引擎），R273 text_wrap 就位后所有前置依赖（R271 ast + R270 config + R273 text_wrap + R246-R268 dagre 全栈 + R272 parser FlowchartGraph）全部满足，但**规模过大须拆成 R274a-e 5 个子叶子**。R274a 是**类型层 + 常量 + FlowchartLayoutOptions**：18 布局常量 + 4 公共 dataclass（LayoutNode / LayoutEdge / LayoutSubgraph / LayoutResult）+ 4 私有内部 dataclass（SubgraphInfo / NodeInfo / EdgeInfo / ClusterAnalysis）+ FlowchartLayoutOptions 值类型（frozen + Default + from_render_config）+ 4 TypeAlias + graph_contains_state_shapes 模块辅助 + _or_default helper，**零方法依赖**（纯数据类型层）。**本轮的工程胜利是 ~1500 行死代码识别+剥离**（YAGNI 极致）：grok layout.rs 的 `compute()` 备用布局器链（L1466 `#[allow(dead_code)]`，整个私有调用链 assign_ranks / group_by_rank / compute_positions* / solve_rank_offsets / normalize_positions / separate_subgraphs / compute_max_node_dimensions 不可达，`grep '\.compute\('` 零调用点）+ apply_flip (L1092) + rotate_layout (L800) + normalize_positions_and_edges (L2086) + shift_external_nodes (L2513) + 2 个 compute_layout_no_subgraph_centering 公共条目（零 import）全部剔除，**实时表面 ~1800 行跨 R274a-e**。迁移到 `agent/minimax_code/mermaid/to_svg/layout.py`（345 行，内部模块，`__all__`=4 公共 struct ASCII 排序），**barrel 不变**（内部模块，grok `mod layout;` 私有，不进 to_svg barrel 不进 mermaid 根），编写 pytest（30 用例，484 行，7 维度覆盖），ruff（W605 raw string 修复后干净）+ 定向 pytest 30 passed + 全量回归 **7535 passed / 10 skipped**（vs R273 基准 7505，+30 = R274a 新测试，零真实回归）。
+
+### 融合结论
+
+**方向① 渲染栈迁移的第 6 砖首子叶子 —— 布局类型层就位，~1500 行死代码剥离。** R274a 是 R274（layout.rs dagre 布局引擎，渲染栈最大叶子）的第 1 子叶子，纯类型层零方法依赖。本轮的核心工程价值是 **~1500 行死代码的静态可达性识别 + 剥离**（YAGNI 极致）：通过 `#[allow(dead_code)]` 标记 + `grep '\.compute\('` 零调用点分析，确认 grok layout.rs 的备用布局器链（`compute()` + 整个私有调用树）+ apply_flip + rotate_layout + normalize_positions_and_edges + shift_external_nodes + 2 个 no_subgraph_centering 公共条目都是死路径（4 个公共入口全走 `compute_with_dagre(bool)`），全部不迁移。本轮的关键不变量（每个有定向测试守卫）：18 常量精确 f64 值；4 公共 dataclass 字段名+类型（`LayoutEdge.from` → `from_` 关键字碰撞，镜像 `ast.Edge`）；FlowchartLayoutOptions `frozen=True` 表达 grok Copy 语义 + `from_render_config` int→float 拓宽 + `font_size_px` 委托；graph_contains_state_shapes 递归子图扫描。这是「方向① 激活 dagre」的**关键第 6 砖首子叶子**：layout 类型层就位，R274b（LayoutEngine 构造 + 测量）→ R274c（dagre 桥接 + 子图 + 状态，重引 DagreGraph 别名 + dagre 依赖）→ R274d（边缘几何）→ R274e（主编排 + 2 入口 + `__all__` 闭合）依次推进。
+
+### 交付
+
+- `agent/minimax_code/mermaid/to_svg/layout.py`（新，345 行，**内部模块**）：18 常量（`FLOWCHART_PADDING=15.0` ... `STATE_FORK_HEIGHT=7.0`，`EDGE_LABEL_GAP` 标记 `#[allow(dead_code)]` 对齐）+ 4 公共 `@dataclass`（LayoutNode 9 字段 / LayoutEdge 6 字段 `from_` 关键字 / LayoutSubgraph 6 字段 / LayoutResult 5 字段）+ 4 私有 `@dataclass`（SubgraphInfo / NodeInfo 7 字段含 rank+order / EdgeInfo / ClusterAnalysis）+ `@dataclass(frozen=True) FlowchartLayoutOptions`（5 字段默认值 Default + `from_render_config` classmethod int→float 拓宽 + `font_size_px` 单次调用缓存）+ 4 TypeAlias（EdgeMap / PositionMap / EdgePointMap / EdgeLabelPosMap）+ `_or_default` helper（`Option<u32>.map(f64::from).unwrap_or`）+ `graph_contains_state_shapes`（递归 isinstance 分发 StartState / EndState / ForkJoin）。`__all__`=4 公共 struct（ASCII 排序 LayoutEdge / LayoutNode / LayoutResult / LayoutSubgraph，内部模块公共面，镜像 grok 私有 `mod layout;` 的 4 `pub struct`；2 `pub fn` 在 R274e 加入）。
+- `agent/tests/test_mermaid_to_svg_layout.py`（新，484 行，30 用例）：**7 维度覆盖** —— (1) 18 常量精确值 + float 非断言 int；(2) 4 公共 dataclass 字段（LayoutNode 9 字段 + None 变体 / LayoutEdge `from_` 关键字 + None 变体 / LayoutSubgraph title None / LayoutResult dict+list 聚合）；(3) 4 私有 dataclass（SubgraphInfo parent None / NodeInfo rank+order int / EdgeInfo / ClusterAnalysis）；(4) FlowchartLayoutOptions Default（5 默认值）+ frozen（AttributeError）+ 值相等 + `from_render_config` ×5（空 config / int 拓宽 float / 部分回退 / font_size 委托有效/无效/未设置 / unwrap_or 综合镜像）；(5) `graph_contains_state_shapes` ×6（空 / 非状态 / StartState/EndState/ForkJoin 参数化 true / 递归子图 / 非状态子图 false）；(6) 4 TypeAlias dict 泛型形态；(7) **桶契约**（layout `__all__`=4 / 不在 to_svg barrel / 深路径可导入 / mermaid 根 `__all__`=17）。
+- **barrel 未变**（无文件改动）：layout 是内部模块（grok `mod layout;` 私有），不进 to_svg barrel（保持 15 符号），不进 mermaid 根（保持 17 符号）。未来 svg_renderer 经深路径 `from .layout import LayoutResult, ...` 消费。
+
+### 映射决策树 + 坑
+
+- **🔴 ~1500 行死代码剥离（YAGNI 极致）**：grok layout.rs 3375 行，静态可达性分析（`#[allow(dead_code)]` 标记 + grep 零调用点）显示 ~1500 行死路径。(a) `compute()` 备用布局器（L1466 `#[allow(dead_code)]`），整个私有调用链不可达（4 公共入口全走 `compute_with_dagre`），`grep '\.compute\('` 零命中；(b) apply_flip (L1092) / rotate_layout (L800) / normalize_positions_and_edges (L2086) / shift_external_nodes (L2513) 零调用；(c) 2 个 compute_layout_no_subgraph_centering 公共条目（`#[allow(dead_code)]`）零 import。全部不迁移，实时表面 ~1800 行跨 R274a-e。模块文档字符串（raw string）记录剥离理由。
+- **🔴 Copy → frozen=True**：grok FlowchartLayoutOptions 是 `#[derive(Debug, Clone, Copy)]`（Copy，与 FlowchartConfig 的非 Copy 区分）。Python `frozen=True` 表达不可变性 + 值语义（与 FlowchartConfig 普通 `@dataclass` 区分）。`from_render_config` 作为 `@classmethod` 工作（frozen 不阻止构造）。test_frozen（AttributeError）+ test_equality_is_value_based 守卫。
+- **🔴 from_render_config int→float 拓宽 + font_size 缓存**：grok `from_render_config` 每个旋钮 `config.flowchart.X.map(f64::from).unwrap_or(default.X)`（Option<u32>→f64）。Python `_or_default(value, default)` 镜像（int|None→float）。`font_size = config.font_size_px()` 单次调用缓存（镜像 grok 单次 `config.font_size_px().unwrap_or`），避免浪费重复调用。test_widens_int_to_float + test_font_size_px_delegation（有效/无效/未设置）+ test_mirrors_grok_unwrap_or 守卫。
+- **🔴 from → from_（关键字碰撞）**：grok struct Edge / LayoutEdge 的 `from` 字段，Python `from` 是关键字，→ `from_`（尾下划线，镜像 `ast.Edge`）。test_layout_edge_fields_and_from_underscore 守卫。
+- **🔴 graph_contains_state_shapes 递归**：grok match 分发 —— Node 检查 shape in (StartState, EndState, ForkJoin)，Subgraph 递归，Edge / StyleStatement else 跳过。Python isinstance 分发。test_recursive_subgraph（嵌套 EndState 检测）+ test_non_state_subgraph_is_false 守卫。
+- **🔴 DagreGraph TypeAlias 推迟 R274c（YAGNI）**：grok 第 5 个 type 别名 `type DagreGraph = Graph<...>` 拉入 dagre 包类型，仅在 dagre 桥接（R274c）消费。R274a 不需要 → 推迟，避免未使用的 dagre 导入。
+- **🔴 Option<String> → str|None / Vec → list / HashMap → dict / HashMap<String, HashSet<String>> → dict[str, set[str]]**：标准映射（UP007 X|Y）。usize / i32 → int（NodeInfo.rank / order）。`type X = HashMap<...>` → `X: TypeAlias = dict[...]`（4 别名）。
+- **本轮 ruff W605 修复**：模块文档字符串里 `grep '\.compute\('` 的反斜杠转义触发 W605（invalid escape sequence），改 `r"""` raw string 文档字符串一次根除（ruff 复检 `All checks passed!`）。
+
+### 验证
+
+- ruff：layout.py + test_layout.py，初版 W605（文档字符串 `\.compute\(` 转义序列），改 `r"""` raw string 后 **All checks passed!**（line-length 100，select E/F/W/I/B/UP，ignore E501）。
+- 定向 pytest（test_layout.py）：**30 passed（0.23s）**（18 常量 + float 守卫 + 4 公共 dataclass + 4 私有 dataclass + FlowchartLayoutOptions Default/frozen/相等/from_render_config ×5 + graph_contains_state_shapes ×6 + 4 TypeAlias + 桶契约 4）。零失败。
+- 全量回归：**7535 passed, 10 skipped（107.46s, exit 0）** vs R273 基准 7505 passed / 10 skipped。**+30 = R274a layout 类型层新测试**。零真实回归。10 skipped 为预期。
+- CRLF 警告正常（Windows layout.py + test），无害。
+
+### YAGNI 边界
+
+- **R274 剩余 4 子叶子（layout.rs 实时表面 ~1800 行）**：R274b（LayoutEngine 构造函数 + 节点/边收集 + 测量）→ R274c（compute_with_dagre 编排 + dagre 桥接 + 子图操作 + 状态图，重引 DagreGraph 别名 + dagre 依赖）→ R274d（边缘几何 + 边界）→ R274e（compute_with_dagre body + 2 公共入口 compute_layout / compute_layout_with_config + `__all__` 闭合）。
+- **~1500 行死代码不迁移**：compute() 备用链 + apply_flip + rotate_layout + normalize_positions_and_edges + shift_external_nodes + 2 no_subgraph_centering 条目（详见融合结论）。
+- **svg_renderer.rs 待迁（渲染栈后续叶子）**：SVG 元素发射器，消费 layout 产坐标 + text_wrap 标签定位。错误抛 RenderError（R271）。
+- **mermaid_port/ + xai-grok-mermaid 主机包装 + 20 图表渲染器待迁**。
+- **layout 不外暴到 barrel / mermaid 根**：保持 to_svg 子包内部深路径（`mermaid.to_svg.layout`），不进 to_svg barrel（grok `mod layout;` 私有），不进 mermaid 根（`__all__` 仍 17）。test 守卫 4 符号 absent 于 barrel + mermaid 根 `__all__`=17。
+- **DagreGraph 别名 + dagre 依赖推迟 R274c（YAGNI）**：R274a 类型层零方法依赖，不引 dagre。
+- **数据类不强转类型**：忠实 grok 字段类型，frozen 仅 FlowchartLayoutOptions（Copy 语义），其余 `@dataclass` 普通。
+
+### Commit
+
+`feat(platform): R274a migrate mermaid layout type layer`。feat 提交 9e5ebb8。2 文件 827 insertions（layout.py 新 345 + test_layout.py 新 484，W605 raw string 修复后）。docs 提交 ITERATION_LOG.md R274a 条目。锚点链: ... -> R272(8d09886) -> R273(59ef877) -> R274a(9e5ebb8)。
