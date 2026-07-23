@@ -19456,3 +19456,51 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R274a migrate mermaid layout type layer`。feat 提交 9e5ebb8。2 文件 827 insertions（layout.py 新 345 + test_layout.py 新 484，W605 raw string 修复后）。docs 提交 ITERATION_LOG.md R274a 条目。锚点链: ... -> R272(8d09886) -> R273(59ef877) -> R274a(9e5ebb8)。
+
+## R274b — 迁移 mermaid-to-svg layout.rs LayoutEngine 构造 + 节点/边收集 + 度量（方向① 第 6 片叶子 R274 第 2 子叶子，布局引擎行为层首叶，11 字段 struct + 8 方法 + 状态/流程图 sizing 表）
+
+锚点:R274b-1 61f12a0
+
+### 本轮目标
+
+迁移 layout.rs **LayoutEngine 行为层首叶**（R274b，方向① 第 6 片叶子 R274 的第 2 子叶子 b）。R274a 类型层（18 常量 + 8 dataclass + FlowchartLayoutOptions + 4 TypeAlias + graph_contains_state_shapes）就位后，本轮迁移 **LayoutEngine struct 的 11 字段 + 构造函数 + 节点/边收集 + 度量方法组**（grok layout.rs L231-264 struct + L1121-1425 方法）：`new()` / `new_with_options()` 构造（消费 FlowchartLayoutOptions + graph_contains_state_shapes 探测 is_state）/ `collect_nodes_and_edges()` 4 分支 isinstance 分发（Node / Edge / Subgraph / StyleStatement，镜像 grok match dispatch，Subgraph 递归）/ `add_node()` / `ensure_node_exists()` / `is_subgraph_id()` / `is_state_diagram()` / `next_node_order()` / `measure_node()`（节点尺寸决策内核：12 流程图 NodeShape 分支 + 5 状态图分支 + fallthrough + 不可达 ValueError）。**本轮的核心价值是 measure_node sizing 表的零语义克隆**：7 个状态常量精确 f64 值（STATE_CHAR_WIDTH=6.7 / STATE_NODE_WIDTH_PADDING=6.0 / STATE_NODE_HEIGHT_PADDING=16.0 / STATE_NODE_MIN_HEIGHT=40.0 / STATE_DIAMOND_PADDING=18.0 / STATE_FORK_WIDTH=70.0 / STATE_FORK_HEIGHT=7.0）+ 关键差异点（状态图 EndState=(14,14) vs 流程图 EndState=(20,20)，双测试覆盖）。推迟 dagre 桥接 / 子图端点方法 / compute_with_dagre 编排器到 R274c-e（YAGNI）。迁移到 `agent/minimax_code/mermaid/to_svg/layout.py`（追加 ~294 行，LayoutEngine 私有内部类，不进 `__all__`，`__all__` 保持 4 公共 struct），**barrel 不变**（内部模块），编写 pytest（追加 51 用例，文件总 81 用例，含 parametrize 展开，645 行），ruff（import 块 magic trailing comma 拆行 I001 + 测试 Statement 移除 F401 修复后干净）+ 定向 pytest 81 passed + 全量回归 **7586 passed / 10 skipped**（vs R274a 基准 7535，+51 = R274b 新测试，零真实回归）。
+
+### 融合结论
+
+**方向① 渲染栈迁移的第 6 砖第 2 子叶子 —— 布局引擎行为层首叶，measure_node sizing 表零语义克隆。** R274b 是 R274（layout.rs dagre 布局引擎）的第 2 子叶子，迁移 LayoutEngine struct 的构造 + 节点/边收集 + 度量方法组。本轮的核心工程价值是 **measure_node 节点尺寸决策内核的零语义克隆**：grok layout.rs measure_node 是一个 12 流程图 NodeShape 分支 + 5 状态图分支 + fallthrough `match` —— Python 用 if/elif 链镜像，关键差异点（状态图 EndState 固定 (14,14) vs 流程图 EndState 固定 (20,20)）双测试覆盖，确保任一系数漂移或分支走错测试即失败。本轮的关键不变量（每个有定向测试守卫）：LayoutEngine 11 字段（graph / options / nodes dict / edges list / node_order / subgraphs / subgraph_membership / subgraph_nodes / is_state / max_rank / cluster_analysis）；collect_nodes_and_edges 4 分支 isinstance 分发（镜像 grok match dispatch，Subgraph 递归，StyleStatement 写 node.style_properties，first-write-wins node_to_subgraph）；measure_node 状态/流程图双 sizing 表（状态图走 7 状态常量，流程图走 text_wrap 度量 + 形状公式）；ensure_node_exists 幂等（已存在则 no-op）；is_state 构造期探测（graph_contains_state_shapes）。这是「方向① 激活 dagre」的**关键第 6 砖第 2 子叶子**：LayoutEngine 行为层首叶就位，R274c（compute_with_dagre 编排 + dagre 桥接 + 子图端点方法 + 状态图，重引 DagreGraph 别名 + dagre 依赖）→ R274d（边缘几何 + 边界）→ R274e（主编排 + 2 入口 + `__all__` 闭合）依次推进。
+
+### 交付
+
+- `agent/minimax_code/mermaid/to_svg/layout.py`（追加 ~294 行，**LayoutEngine 私有内部类**）：`@dataclass LayoutEngine`（11 字段）+ `new()` classmethod（Default FlowchartLayoutOptions + graph_contains_state_shapes 探测 is_state）+ `new_with_options(options)` classmethod + `collect_nodes_and_edges()`（4 分支 isinstance 分发 Node/Edge/Subgraph/StyleStatement，Subgraph 递归 + 记录 subgraphs/subgraph_membership/subgraph_nodes，StyleStatement 写 node.style_properties first-write-wins）+ `add_node()`（next_node_order 自增 + NodeInfo 初始化 rank=-1）+ `ensure_node_exists()`（幂等 no-op）+ `is_subgraph_id()` + `is_state_diagram()` + `next_node_order()` + `measure_node()`（状态/流程图双 sizing 表：12 流程图 NodeShape 分支 Rectangle/RoundedRectangle/Stadium/Diamond/Hexagon/Asymmetric/Subroutine/Cylinder/Circle/StartState(14,14)/EndState(20,20)/ForkJoin(70,10) + 5 状态分支 StartState(14,14)/EndState(14,14)/ForkJoin(STATE_FORK_WIDTH,STATE_FORK_HEIGHT)/Diamond 状态路径 + falls_through_to_flowchart + 不可达 ValueError）。**`__all__` 保持 4 公共 struct 不变**（LayoutEngine 私有内部类，镜像 grok `mod layout;` 私有，不进 `__all__`）。
+- `agent/tests/test_mermaid_to_svg_layout.py`（追加 ~645 行，51 新用例，文件总 81 用例）：**R274b 维度覆盖** —— (1) constructor ×4（Default options / is_state 探测 / new_with_options / 11 字段初始化）；(2) collect Node ×3（add_node 自增 order / NodeInfo rank=-1 / 重复 id 幂等）；(3) collect Edge ×4（from_/to 边 / EdgeInfo / label None / 6 EdgeStyle）；(4) collect Subgraph ×4（递归 / subgraphs 记录 / subgraph_membership / subgraph_nodes）；(5) collect StyleStatement ×2（写 node.style_properties / 不存在 node no-op）；(6) node_to_subgraph first-write-wins ×1；(7) is_subgraph_id ×2；(8) is_state_diagram ×2 parametrize；(9) add_node ×2 / ensure_node_exists ×3 / next_node_order ×1；(10) measure_node 流程图 ~10（12 NodeShape 全覆盖 parametrize + fixed_size StartState(14,14)/EndState(20,20)/ForkJoin(70,10)）；(11) measure_node 状态 ~5（state_fixed_shapes parametrize StartState(14,14)/EndState(14,14)/ForkJoin(STATE_FORK_WIDTH,STATE_FORK_HEIGHT) + falls_through_to_flowchart）；(12) **桶契约 ×2**（LayoutEngine not in module `__all__` / not in to_svg barrel）。**关键 helper 设计**：`_empty_graph()` + `_expected_text(label)`（经 text_wrap 公开 API 重算 (tw, th) 再套形状公式断言，零硬编码浮点，零语义克隆：改 measure_node 任一系数测试即失败）。
+
+### 映射决策树 + 坑
+
+- **🔴 measure_node sizing 表零语义克隆**：grok measure_node 是 12 流程图 NodeShape + 5 状态图分支 + fallthrough `match`。Python if/elif 链镜像。**关键差异点**：状态图 EndState=(14,14) vs 流程图 EndState=(20,20)，双测试覆盖（parametrize state_fixed_shapes vs fixed_size），确保分支走对。test_measure_node_flowchart_shapes + test_measure_node_state_fixed_shapes + 双 EndState 差异守卫。
+- **🔴 7 状态常量精确 f64 值**：STATE_CHAR_WIDTH=6.7 / STATE_NODE_WIDTH_PADDING=6.0 / STATE_NODE_HEIGHT_PADDING=16.0 / STATE_NODE_MIN_HEIGHT=40.0 / STATE_DIAMETER_PADDING=18.0 / STATE_FORK_WIDTH=70.0 / STATE_FORK_HEIGHT=7.0。test_state_constants_match_grok 守卫（R274a 已声明，R274b measure_node 消费）。
+- **🔴 collect_nodes_and_edges 4 分支 isinstance 分发**：grok `match stmt { Node => ..., Edge => ..., Subgraph => ..., Style => ... }`。Python `isinstance(stmt, Node/Edge/Subgraph/StyleStatement)` 分发。Subgraph 递归（collect 自身 statements）。StyleStatement 写 node.style_properties（first-write-wins：已存在则保留首次）。test_collect_subgraph_recursive + test_collect_style_first_write_wins 守卫。
+- **🔴 measure_node 测试算术策略（零硬编码浮点）**：用 `_expected_text(label)` helper 经 text_wrap 公开 API（wrap_text_lines + measure_wrapped_lines_with_font_size）重算 (tw, th)，再套形状公式（如 Rectangle = (tw + 2*padding, th + 2*padding)）断言 measure_node 返回值。避免硬编码浮点，零语义克隆：改 measure_node 任一系数或形状公式测试即失败。
+- **🔴 LayoutEngine 私有内部类不进 `__all__`**：grok LayoutEngine 是私有 struct（`mod layout;` 私有，crate 内消费，不 `pub use`）。Python LayoutEngine 私有内部类，`__all__` 保持 4 公共 struct（LayoutEdge/LayoutNode/LayoutResult/LayoutSubgraph）不变。test_layout_engine_not_in_module_all + test_layout_engine_not_in_to_svg_barrel 守卫。
+- **🔴 DagreGraph 别名 + dagre 桥接推迟 R274c（YAGNI）**：R274b 构造 + 收集 + 度量零 dagre 依赖（measure_node 纯算术），不引 dagre。dagre 桥接（build_dagre_graph / extract_layout_from_dagre）+ DagreGraph 类型别名推迟 R274c。
+- **本轮 ruff I001 + F401 修复**：(a) layout.py 加 text_wrap import 后 import 块超长触发 I001，`ruff check --fix` 自动拆成 magic trailing comma 多行格式（每符号一行），安全格式化不改语义；(b) 测试文件 `Statement` imported but unused（F401，用 isinstance 分发未直接用 Statement 基类），手动 Edit 移除。两修复并行执行（不同文件无依赖），均一次成功。
+
+### 验证
+
+- ruff：layout.py + test_layout.py，初版 2 错（layout.py I001 import 块 + 测试 F401 Statement），I001 `ruff --fix` 拆多行 + F401 手动移除 Statement 后 **All checks passed!**（line-length 100，select E/F/W/I/B/UP，ignore E501）。
+- 定向 pytest（test_layout.py）：**81 passed（0.25s）**（R274a 30 + R274b 51，含 parametrize 展开）。零失败。
+- 全量回归：**7586 passed, 10 skipped（130.27s, exit 0）** vs R274a 基准 7535 passed / 10 skipped。**+51 = R274b LayoutEngine 行为层新测试**。零真实回归。10 skipped 为预期。
+- CRLF 警告正常（Windows layout.py + test），无害。
+
+### YAGNI 边界
+
+- **R274 剩余 3 子叶子（layout.rs 实时表面 ~1500 行）**：R274c（compute_with_dagre 编排 + dagre 桥接 build_dagre_graph/extract_layout_from_dagre/extract_subgraph_layouts + 子图端点方法 dagre_edge_endpoint/subgraph_entry_node_id/subgraph_exit_node_id/nodes_in_subgraph_by_order/layout_endpoint_node + 状态图，重引 DagreGraph 别名 + dagre 依赖）→ R274d（边缘几何 + 边界 edge_label_dimensions）→ R274e（compute_with_dagre body + 2 公共入口 compute_layout / compute_layout_with_config + `__all__` 闭合）。
+- **~1500 行死代码不迁移**（R274a 已剥离，本轮无新增）。
+- **svg_renderer.rs 待迁（渲染栈后续叶子）**：SVG 元素发射器，消费 layout 产坐标 + text_wrap 标签定位。错误抛 MermaidError（R271）。
+- **mermaid_port/ + xai-grok-mermaid 主机包装 + 20 图表渲染器待迁**。
+- **layout 不外暴到 barrel / mermaid 根**：保持 to_svg 子包内部深路径（`mermaid.to_svg.layout`），不进 to_svg barrel（grok `mod layout;` 私有），不进 mermaid 根（`__all__` 仍 17）。test 守卫 LayoutEngine absent 于 module `__all__` + barrel + mermaid 根 `__all__`=17。
+- **DagreGraph 别名 + dagre 依赖推迟 R274c（YAGNI）**：R274b 构造+收集+度量零 dagre 依赖。
+- **LayoutEngine 私有内部类不进 `__all__`**：4 公共 struct 不变，2 `pub fn`（compute_layout/compute_layout_with_config）R274e 加入。
+
+### Commit
+
+`feat(platform): R274b LayoutEngine constructor + node/edge collection + measurement`。feat 提交 61f12a0。2 文件 937 insertions（layout.py +294 + test_layout.py +645，I001/F401 修复后）。docs 提交 ITERATION_LOG.md R274b 条目。锚点链: ... -> R273(59ef877) -> R274a(9e5ebb8) -> R274b(61f12a0)。
