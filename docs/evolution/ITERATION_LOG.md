@@ -19579,3 +19579,82 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R274c migrate mermaid-to-svg layout.rs dagre bridge helpers`。feat 提交 d53b509。2 文件 1035 insertions（layout.py +507 + test_layout.py +531）。docs 提交 ITERATION_LOG.md R274c 条目。锚点链: ... -> R274a(9e5ebb8) -> R274b(61f12a0) -> R274c(d53b509)。
+
+## R274d — 迁移 mermaid-to-svg layout.rs 边界 + 子图簇辅助方法（方向① 第 6 片子 R274 第 4 子叶子，9 个 LayoutEngine 实例方法，零语义克隆）
+
+锚点:R274d-1 5535b8e
+
+### 本轮目标
+
+迁移 layout.rs **边界 + 子图簇辅助方法层**（R274d，方向① 第 6 片叶子 R274 的第 4 子叶子 d）。R274c dagre 桥接 helpers（14 方法 + DagreGraph TypeAlias）就位后，本轮迁移 **LayoutEngine 的 9 个边界/簇辅助实例方法**（grok layout.rs L1130-1409 散布的 impl 块）：
+
+- **间距透传（1）**：`compute_spacing() -> tuple[float, float]`（直接返回 `(options.node_spacing, options.rank_spacing)`，默认 (50.0, 50.0)）。
+- **簇居中对齐（1）**：`center_nodes_in_subgraphs(positions, is_vertical) -> None`（按跨簇连通组计算组中心轴，每子图整体平移到组中心；is_vertical=True 对齐 x 轴，False 对齐 y 轴；原地改 positions）。
+- **簇连通分析（1）**：`find_connected_subgraph_groups() -> list[set[str]]`（跨簇边构建无向邻接表 + 栈 DFS，**仅返回 size > 1 的连通分量**，孤立子图被过滤）。
+- **簇成员 + 外部边标记（1）**：`analyze_clusters() -> ClusterAnalysis`（subgraph_nodes = node_to_subgraph 的逆映射；external_edges[sg] = **带括号 XOR** `(edge.from_ in nodes_in_sg) != (edge.to in nodes_in_sg)` 的 any）。
+- **子图边界矩形（1）**：`compute_subgraph_bounds(layout_nodes, padding) -> list[LayoutSubgraph]`（**叶先序**遍历 subgraph_ids_bottom_up，直接节点中心 ± 半尺寸 + 已算子矩形求 min/max，title_padding 上方预留，跳过空子图 isinf 保护）。
+- **子图标题高度（1）**：`subgraph_title_height(title) -> float`（scale_char_width + wrap_text_lines + measure，**floor 在 SUBGRAPH_TITLE_HEIGHT=24.0**）。
+- **子图后序 id（1）**：`subgraph_ids_bottom_up() -> list[str]`（parent→children 映射，**后序 DFS**：子在父前 append，保证 compute_subgraph_bounds 叶先序可用）。
+- **整体边界（1）**：`compute_bounds(positions) -> tuple[float, float]`（空 → (200.0, 200.0) fallback viewport；否则 max(x + width/2) + MARGIN / max(y + height/2) + MARGIN；**跳过未知 node_id** via `node is None: continue`）。
+- **节点样式颜色（1）**：`get_node_colors(node_id) -> tuple[str|None, str|None]`（读 node_styles[node_id] 的 properties list，fill = 第一个 "fill" 值，stroke = 第一个 "stroke" 值，无样式 → (None, None)）。
+
+**本轮的核心工程价值是簇几何原语 + 标题回退语义的零语义克隆**：9 个方法是 compute_with_dagre 编排器（R274f）的最后一批纯辅助零件。关键发现是 **SubgraphInfo.title 在 collect_nodes_and_edges（L480）收集时 `None → id` 回退**（`stmt.title if stmt.title is not None else stmt.id`），所以 compute_subgraph_bounds 的 `sg.title` 永远非 None，title_padding 永远 ≥ SUBGRAPH_TITLE_HEIGHT——测试预期基于此事实精确计算。迁移到 `agent/minimax_code/mermaid/to_svg/layout.py`（追加 ~290 行，LayoutEngine 实例方法 4 空格缩进，`__all__` 保持 4 公共 struct），**桶不变**（内部模块），编写 pytest（追加 26 用例 + 10 helper，文件总 137 passed），ruff + 定向 pytest **137 passed** + 全量回归 **7642 passed / 10 skipped**（vs R274c 基准 7616，+26 = R274d 新测试，零真实回归）。
+
+### 融合结论
+
+**方向① 渲染栈迁移的第 6 砖第 4 子叶子 —— 边界 + 子图簇辅助方法层，簇几何原语 + 标题回退语义零语义克隆。** R274d 是 R274（layout.rs dagre 布局引擎）的第 4 子叶子，迁移 9 个边界/簇辅助实例方法，为 compute_with_dagre 编排器（R274f）提供最后一批纯零件。本轮的核心工程价值是 **簇连通分析 + 叶先序边界矩形 + 标题回退语义的零语义克隆**：grok 的簇几何是 layout.rs 自包含的纯逻辑（不依赖 dagre-rs），Python 镜像同一个语义，跨簇 DFS 连通分量、带括号 XOR 外部边标记、后序子图 id、叶先序 padded rect 全部有定向测试守卫。
+
+本轮的关键不变量（每个有定向测试守卫）：(1) **SubgraphInfo.title 收集时 None → id 回退**——Subgraph(id, title=None) 收集后 SubgraphInfo.title 回退为 id，所以 compute_subgraph_bounds 的 `if sg.title is not None` 分支永远为真，title_padding 永远 = subgraph_title_height(sg.title) ≥ 24.0（测试用 title="sg"/"Inner" 短标题固定 title_padding=24.0 精确断言 padded rect）；(2) **center_nodes_in_subgraphs 每组每子图独立**——组中心 = 所有成员节点坐标均值，子图均值 = 其节点坐标均值，shift = 组中心 - 子图均值，每组每子图独立计算 → 与集合迭代顺序无关（确定性）；(3) **analyze_clusters 带括号 XOR**——`external_edges[sg] = any((edge.from_ in nodes_in_sg) != (edge.to in nodes_in_sg) for edge in self.edges)`，括号是必须的（`a in S != b in S` 链式比较陷阱，Python 解析为 `a in S and S != (b in S)`）；(4) **compute_subgraph_bounds 叶先序**——subgraph_ids_bottom_up 后序保证子矩形先于父矩形计算，父级 min/max 直接节点 + 已算子矩形，父 rect 必然包含子 rect（嵌套测试守卫）；(5) **compute_bounds 跳过未知 id**——positions 含未知 node_id 时 `self.nodes.get(node_id) is None → continue`，不报错（容错 viewport 计算）；(6) **find_connected_subgraph_groups 仅 size > 1**——孤立子图（无跨簇边）形成 size-1 连通分量被过滤，空子图场景返回 []。这是「方向① 激活 dagre」的**关键第 6 砖第 4 子叶子**：边界/簇辅助零件就位，R274e（边缘几何方法组 edge_label_bounds/connection_point_on_node/line_intersect_rect 等 ~15 方法 ~650 行）→ R274f（compute_with_dagre body + extract_subgraph_layouts + rotate_layout + 2 公共入口 compute_layout/compute_layout_with_config + `__all__` 闭合）依次推进收尾 layout.rs。
+
+### 交付
+
+- `agent/minimax_code/mermaid/to_svg/layout.py`（追加 ~290 行，R274d 9 实例方法，文件总 ~1418 行）：
+
+  - **间距透传（1）**：`compute_spacing() -> tuple[float, float]`（return (self.options.node_spacing, self.options.rank_spacing)，默认 (50.0, 50.0)）。
+  - **簇居中对齐（1）**：`center_nodes_in_subgraphs(positions, is_vertical) -> None`（find_connected_subgraph_groups 取连通组；组中心 = 成员节点轴坐标均值（is_vertical 用 x，否则 y）；每子图 sg_avg = 其节点轴坐标均值，shift = group_avg - sg_avg，所有节点平移 shift；原地改 positions via 元组重赋值）。
+  - **簇连通分析（1）**：`find_connected_subgraph_groups() -> list[set[str]]`（无子图 → []；跨簇边（from_sg != to_sg 且均非 None）构建无向邻接表；栈 DFS；**仅返回 size > 1 连通分量**）。
+  - **簇成员 + 外部边标记（1）**：`analyze_clusters() -> ClusterAnalysis`（subgraph_nodes = node_to_subgraph 逆映射 dict[str, set[str]]；external_edges[sg] = any(带括号 XOR `(edge.from_ in nodes_in_sg) != (edge.to in nodes_in_sg)` for edge in self.edges)）。
+  - **子图边界矩形（1）**：`compute_subgraph_bounds(layout_nodes, padding) -> list[LayoutSubgraph]`（subgraph_ids_bottom_up 叶先序；直接节点（owner==sg_id）中心 ± 半尺寸求 min/max + 已算子矩形（parent_subgraph_id==sg_id）并入 min/max；sg.title 非 None（收集回退保证）→ title_padding = subgraph_title_height(title)，否则 0（死分支）；rx=min_x-padding, ry=min_y-padding-title_padding, rw=(max_x-min_x)+2*padding, rh=(max_y-min_y)+2*padding+title_padding；空子图 isinf 保护 → continue 跳过；按 self.subgraphs 声明序返回 LayoutSubgraph(id, title, x, y, width, height)）。
+  - **子图标题高度（1）**：`subgraph_title_height(title) -> float`（char_width = scale_char_width(DEFAULT_CHAR_WIDTH, options.font_size)；lines = wrap_text_lines(title, options.wrapping_width, char_width)；height = measure_wrapped_lines_with_font_size；return max(height, SUBGRAPH_TITLE_HEIGHT)）。
+  - **子图后序 id（1）**：`subgraph_ids_bottom_up() -> list[str]`（parent→children 映射（缺父 → "" 键）；根 = parent_subgraph_id 为 None；后序 DFS：先递归子再 append 自身 → 叶先序输出）。
+  - **整体边界（1）**：`compute_bounds(positions) -> tuple[float, float]`（空 positions → (200.0, 200.0) fallback；否则 max(x + node.width/2) + MARGIN, max(y + node.height/2) + MARGIN；`node = self.nodes.get(node_id); if node is None: continue` 跳过未知 id）。
+  - **节点样式颜色（1）**：`get_node_colors(node_id) -> tuple[str|None, str|None]`（读 node_styles.get(node_id, [])；fill = 第一个 value where key=="fill"；stroke = 第一个 value where key=="stroke"；无匹配 → (None, None)）。
+
+  **`__all__` 保持 4 公共 struct 不变**（LayoutEdge/LayoutNode/LayoutResult/LayoutSubgraph）。9 个实例方法均私有内部（grok impl 块 self 方法），不进 `__all__`。
+
+- `agent/tests/test_mermaid_to_svg_layout.py`（追加 ~417 行，26 新用例 + 10 helper，文件总 137 passed / 111 + 26）：
+
+  - **R274d 维度覆盖（9 cohort + 桶契约）** —— (1) **compute_spacing cohort（2）**：默认 → (NODE_SEP, RANK_SEP) = (50,50) / 自定义 options 透传；(2) **center_nodes_in_subgraphs cohort（3）**：孤立子图 noop / is_vertical=True x 轴居中（组中心 50，sg1 +50 sg2 -50）/ is_vertical=False y 轴居中；(3) **find_connected_subgraph_groups cohort（3）**：空 [] / 孤立子图 size-1 过滤 [] / 跨簇边合并 {sg1,sg2}；(4) **analyze_clusters cohort（3）**：subgraph_nodes 逆映射 / 跨簇边两 sg external=True / 内部边 sg external=False（带括号 XOR）；(5) **compute_subgraph_bounds cohort（3）**：单子图精确 padded rect（title 回退 id → title_padding=24，padding=8 → x=72 y=58 w=56 h=60）/ 空子图跳过 [] / 嵌套父级 encompass 子级（inner 精确 + outer encompass）；(6) **subgraph_title_height cohort（2）**：短标题 floor 24.0 / 长标题（"word "*60）多行 > 24.0（经 text_wrap 公开 API 重算零硬编码）；(7) **subgraph_ids_bottom_up cohort（2）**：平级 [sg1, sg2] / 嵌套 [inner, outer] 叶先序；(8) **compute_bounds cohort（3）**：空 → (200,200) / max 半尺寸 + MARGIN / 跳过未知 id（X@999,999 不计入）；(9) **get_node_colors cohort（3）**：无样式 (None,None) / fill+stroke ("#fff","#000") / 部分 fill only ("#f0f0f0",None)；(10) **桶契约 cohort（2）**：layout module `__all__` 保持 4 符号 / mermaid 根 barrel 不变（17）。
+  - **关键 helper 设计**：`_layout_node()`（中心 box 工厂）/ `_connected_subgraphs_graph()`（两子图 + 跨簇边）/ `_two_isolated_subgraphs_graph()`（两孤立子图）/ `_internal_edge_subgraph_graph()`（单子图内部边）/ `_single_subgraph_graph()`（单子图 title=None 回退）/ `_empty_subgraph_graph()`（空子图跳过）/ `_nested_subgraphs_graph()`（outer 含 inner 嵌套）/ `_styled_node_graph()`（fill+stroke）/ `_fill_only_node_graph()`（部分样式）/ `_expected_title_height()`（经 text_wrap 公开 API 重算标题高度，零硬编码浮点）。**嵌套子图构造**：Subgraph 语句内嵌 Subgraph（parent_subgraph_id 从递归上下文推导，非参数）。**常量访问**：layout_mod.NODE_SEP / RANK_SEP / MARGIN / SUBGRAPH_TITLE_HEIGHT（不动顶层 import 块）。
+
+### 映射决策树 + 坑
+
+- **🔴 SubgraphInfo.title 收集时 None → id 回退（compute_subgraph_bounds title_padding 永远 ≥ 24.0）**：collect_nodes_and_edges（L480）`title = stmt.title if stmt.title is not None else stmt.id`，收集后 SubgraphInfo.title 永远非 None。所以 compute_subgraph_bounds 的 `if sg.title is not None` 分支永远为真，title_padding 永远 = subgraph_title_height(sg.title) ≥ SUBGRAPH_TITLE_HEIGHT=24.0。测试用 Subgraph(title=None) 构造，预期 SubgraphInfo.title 回退为 id（"sg"），title_padding=24.0，精确断言 padded rect (x=72, y=58, w=56, h=60)。test_compute_subgraph_bounds_single_subgraph_padded_rect 守卫（断言 sg.title == "sg" 回退）。
+- **🔴 analyze_clusters 带括号 XOR（链式比较陷阱）**：`external_edges[sg] = any((edge.from_ in nodes_in_sg) != (edge.to in nodes_in_sg) for edge in self.edges)`。括号必须——`a in S != b in S` 被 Python 解析为链式比较 `a in S and S != (b in S)`，语义错误。带括号才是 XOR（一个端点在簇内，另一个在外）。test_analyze_clusters_internal_edge_not_external 守卫（内部边 n1→n2 两端均在 sg1 → external_edges[sg1]=False）。
+- **🔴 center_nodes_in_subgraphs 每组每子图独立（确定性）**：组中心 = 成员节点轴均值，子图均值 = 其节点轴均值，shift = 组中心 - 子图均值。每组每子图独立计算，与 dict/set 迭代顺序无关（确定性）。test_center_nodes_in_subgraphs_vertical_shifts_x_to_group_centre 守卫（组中心 50，sg1(+50) sg2(-50) 均 → x=50）。
+- **🔴 compute_subgraph_bounds 叶先序（父级 encompass 子级）**：subgraph_ids_bottom_up 后序保证 inner 先于 outer 计算，outer min/max 并入 inner 已算矩形，父 rect 必然包含子 rect。test_compute_subgraph_bounds_nested_parent_encompasses_child 守卫（inner 精确 x=72 y=8 w=56 h=60，outer encompass inner 四边）。
+- **🔴 compute_bounds 跳过未知 id（容错 viewport）**：positions 含未知 node_id 时 `self.nodes.get(node_id) is None → continue`，不报 KeyError。test_compute_bounds_skips_unknown_node_ids 守卫（X@999,999 不计入，result 基于 A only）。
+- **🔴 find_connected_subgraph_groups 仅 size > 1（孤立子图过滤）**：跨簇边构建邻接表 + 栈 DFS，size-1 连通分量（孤立子图）被过滤。空子图场景返回 []。test_find_connected_subgraph_groups_isolated_subgraphs_skipped 守卫。
+- **🔴 subgraph_title_height floor 语义**：wrapped title height 经 text_wrap 公开 API 重算（scale_char_width + wrap_text_lines + measure_wrapped_lines_with_font_size），floor 在 SUBGRAPH_TITLE_HEIGHT=24.0。测试用 _expected_title_height helper 重算预期，零硬编码浮点。test_subgraph_title_height_long_title_exceeds_floor 守卫（"word "*60 多行 > 24.0）。
+- **🔴 subgraph_ids_bottom_up 后序 DFS（叶先序输出）**：parent→children 映射，后序 DFS（先递归子再 append 自身）→ 叶先序输出。test_subgraph_ids_bottom_up_nested_leaf_before_parent 守卫（[inner, outer]）。
+
+### 验证
+
+- ruff：layout.py + test_layout.py，R274d 提交态 **干净**（line-length 100，select E/F/W/I/B/UP，ignore E501；常量经 layout_mod.X 访问不动顶层 import 块）。
+- 定向 pytest（test_layout.py）：**137 passed（0.31s）**（R274a 30 + R274b 51 + R274c 30 + R274d 26）。零失败。
+- 全量回归：**7642 passed, 10 skipped（109.87s, exit 0）** vs R274c 基准 7616 passed / 10 skipped。**+26 = R274d 边界/簇辅助方法新测试**（与 26 个 test_ 函数一致）。零真实回归。10 skipped 为预期。
+- CRLF 警告正常（Windows layout.py + test），无害。
+
+### YAGNI 边界
+
+- **R274 剩余 2 子叶子（layout.rs 实时表面 ~1300 行）**：R274e（**边缘几何方法组** ~15 方法 ~650 行：edge_label_bounds / edge_label_midpoint / is_back_edge / compute_edge_points_with_obstacles / compute_horizontal/vertical_edge_with_obstacles / compute_back_edge_points_simple/_points / straighten_if_aligned / edge_crosses_any_node / line_intersect_rect / build_smooth_u_path / trim_cluster_interior_points / clip_edge_to_boundaries / clip_edge_end_only / connection_point_on_node / connection_point_towards / rect_node helper，grok layout.rs L2602-L3253）→ R274f（compute_with_dagre body + extract_subgraph_layouts + rotate_layout + 2 公共入口 compute_layout / compute_layout_with_config + `from minimax_code.dagre.layout.mod import layout` + `__all__` 闭合，2 `pub fn` 加入）。
+- **~1500 行死代码不迁移**（R274a 已剥离，本轮无新增）。
+- **svg_renderer.rs 待迁（渲染栈后续叶子）**：SVG 元素发射器，消费 layout 产坐标 + text_wrap 标签定位。错误抛 MermaidError（R271）。
+- **mermaid_port/ + xai-grok-mermaid 主机包装 + 20 图表渲染器待迁**。
+- **layout 不外暴到 barrel / mermaid 根**：保持 to_svg 子包内部深路径（`mermaid.to_svg.layout`），不进 to_svg barrel（grok `mod layout;` 私有），不进 mermaid 根（`__all__` 仍 17）。test 守卫 LayoutEngine absent 于 module `__all__` + barrel + mermaid 根 `__all__`=17。
+- **compute_with_dagre 编排器主体 + 2 公共入口推迟 R274f（YAGNI）**：R274c 14 dagre 桥接 + R274d 9 边界/簇辅助是编排器的零件，主体组装（调 detect_back_edges → build_dagre_graph → dagre layout → extract → snap → align → 边界 → materialise LayoutResult）+ 公共入口 + `__all__` 闭合推迟 R274f。
+- **9 边界/簇辅助方法均私有内部**：R274d 已迁移，`__all__` 保持 4 公共 struct 不变，2 `pub fn`（compute_layout/compute_layout_with_config）R274f 加入。
+
+### Commit
+
+`feat(platform): R274d migrate mermaid-to-svg layout.rs boundary helpers`。feat 提交 5535b8e。2 文件 707 insertions（layout.py +290 + test_layout.py +417）。docs 提交 ITERATION_LOG.md R274d 条目。锚点链: ... -> R274b(61f12a0) -> R274c(d53b509) -> R274d(5535b8e)。
