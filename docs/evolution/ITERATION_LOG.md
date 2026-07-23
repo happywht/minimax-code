@@ -19658,3 +19658,83 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R274d migrate mermaid-to-svg layout.rs boundary helpers`。feat 提交 5535b8e。2 文件 707 insertions（layout.py +290 + test_layout.py +417）。docs 提交 ITERATION_LOG.md R274d 条目。锚点链: ... -> R274b(61f12a0) -> R274c(d53b509) -> R274d(5535b8e)。
+
+## R274e — 迁移 mermaid-to-svg layout.rs 边缘几何方法组（方向① 第 6 片子 R274 第 5 子叶子，17 方法 + _dedup_consecutive 模块辅助，零语义克隆）
+
+锚点:R274e-1 1ae7819
+
+### 本轮目标
+
+迁移 layout.rs **边缘几何方法组**（R274e，方向① 第 6 片叶子 R274 的第 5 子叶子 e）。R274d 边界/簇辅助 9 方法就位后，本轮迁移 **LayoutEngine 的 17 个边缘几何方法**（grok layout.rs L2602-L3246 散布的 impl 块）—— compute_with_dagre 编排器（R274f）组装边的全部零件。17 方法 = **13 实例方法**（`&self`）+ **4 关联函数**（`fn name(args)` 无 self → Python `@staticmethod`）+ **1 模块级辅助** `_dedup_consecutive`（镜像 Rust `Vec::dedup`，Python 标准库无等价）：
+
+- **标签定位（2，1 实例 + 1 静态）**：`edge_label_bounds(edge) -> tuple|None`（label=None → None；dims=edge_label_dimensions；label_pos 或回退 edge_label_midpoint）；`@staticmethod edge_label_midpoint(points) -> tuple`（5 分支：空 → (0,0)/单点 → 自身/总长 <0.001 → 首点/段扫描中点/兜底首尾均值）。
+- **方向感知（1）**：`is_back_edge(from_node, to_node) -> bool`（dx/dy；垂直 TB dy<-10 / BT dy>10；水平 LR dx<-10 / RL dx>10）。
+- **障碍物路由（3）**：`compute_edge_points_with_obstacles(from, to, all_nodes) -> list`（内联 back_edge 检查；障碍=排除端点；垂直/水平路由器分发）；`compute_horizontal_edge_with_obstacles(from, to, obstacles) -> list`（travel_right；阻塞 → route_above/below 4 点；否则 mid_x + _dedup_consecutive）；`compute_vertical_edge_with_obstacles`（水平对称对应）。
+- **回边 U 型绕行（2）**：`compute_back_edge_points_simple(from, to, is_vertical) -> list`（offset=60.0；side_x=max(x)+max(w)/2+offset；build_smooth_u_path 9 点）；`compute_back_edge_points(from, to, is_vertical, all_nodes) -> list`（margin=30.0；扫描所有节点选更近的 below_y/above_y）。
+- **边几何修剪（3）**：`straighten_if_aligned(dagre_points, from, to, is_vertical, all_nodes) -> list`（容差=15.0；对齐 + 清空 → 2 点拉直）；`edge_crosses_any_node(points, from, to, all_nodes) -> bool`（<2 → False；line_intersect_rect 检查）；`@staticmethod line_intersect_rect(p1, p2, rect_min, rect_max) -> bool`（同侧拒绝；端点内部；4 边扫描 t,u 参数；denom<1e-10 平行跳过）。
+- **U 型路径构造（1，静态）**：`@staticmethod build_smooth_u_path(start, end, route_coord, is_vertical) -> list`（curve_fraction=0.3；垂直 9 点 side_x+curve_height；水平 9 点 below_y+curve_width）。
+- **簇内部点修剪（1，静态）**：`@staticmethod trim_cluster_interior_points(points, from, to, from_is_cluster, to_is_cluster) -> None`（inside() 嵌套 hw/hh 边界；to 端反向找最后外部点 del tail；from 端前向找首个外部点 del head；**原地修改**）。
+- **边界吸附（2）**：`clip_edge_to_boundaries(points, from, to) -> None`（<2 → return；connection_point_on_node(from) 吸附起点；clip_edge_end_only）；`clip_edge_end_only(points, to) -> None`（connection_point_on_node(to) 吸附终点）。
+- **形状感知连接点（2）**：`connection_point_on_node(node, from_x, from_y) -> tuple`（inbound；Circle/StartState/EndState 半径点；Diamond |dx|/hw+|dy|/hh；default max(denom_x,denom_y)）；`connection_point_towards(node, target_x, target_y) -> tuple`（outbound 对应）。
+- **模块辅助（1）**：`_dedup_consecutive(points) -> list`（返回新列表，仅去连续重复，镜像 `Vec::dedup`；被 compute_horizontal/vertical_edge_with_obstacles 消费）。
+
+**本轮的核心工程价值是形状感知投影 + U 型绕行 + 障碍物路由的零语义克隆**：17 个方法是 compute_with_dagre 编排器（R274f）组装边路径的全部零件。关键发现是 **关联函数 vs 实例方法的精确判定**——grok 的 `fn name(args)` 无 `&self` → Python `@staticmethod`（4 个：edge_label_midpoint/line_intersect_rect/build_smooth_u_path/trim_cluster_interior_points），`fn name(&self, args)` → 实例方法（13 个）。迁移到 `agent/minimax_code/mermaid/to_svg/layout.py`（追加 ~651 行，LayoutEngine 实例/静态方法，`__all__` 保持 4 公共 struct 不变），**桶不变**（内部模块），编写 pytest（追加 49 用例 + 4 helper，文件总 186 passed），ruff + 定向 pytest **186 passed** + 全量回归 **7691 passed / 10 skipped**（vs R274d 基准 7642，+49 = R274e 新测试，零真实回归）。
+
+### 融合结论
+
+**方向① 渲染栈迁移的第 6 砖第 5 子叶子 —— 边缘几何方法组，形状感知投影 + U 型绕行 + 障碍物路由零语义克隆。** R274e 是 R274（layout.rs dagre 布局引擎）的第 5 子叶子，迁移 17 个边缘几何方法（13 实例 + 4 静态）+ 1 模块辅助，为 compute_with_dagre 编排器（R274f）提供组装边的全部零件。本轮的核心工程价值是 **NodeShape 感知的连接点投影 + 回边 U 型绕行 + 障碍物正交路由的零语义克隆**：grok 的边几何是 layout.rs 自包含的纯几何（不依赖 dagre-rs），Python 镜像同一个语义，形状分支投影、线段-矩形相交、9 点 U 型路径、簇内部点修剪全部有定向测试守卫。
+
+本轮的关键不变量（每个有定向测试守卫）：(1) **关联函数 → @staticmethod 判定**——grok `fn name(args)` 无 `&self` 是关联函数（4 个），Python 必须 `@staticmethod`（无 self 参数），实例方法 `fn name(&self, args)` 才有 self（13 个）；test_layout_edge_geometry_helpers_are_instance_or_static_methods 守卫（4 静态可达类属性 + 13 实例不泄漏到模块命名空间）；(2) **edge_label_midpoint 5 分支**——空 → (0,0)/单点 → 自身/总长 <0.001 → 首点/段扫描 50%/兜底首尾均值；参数化 5 case 守卫；(3) **is_back_edge 4 方向 × 正反 8 case**——TB/BT/LR/RL 各正向（False）反向（True），dy/dx 阈值 ±10；(4) **connection_point_towards/on_node 3 形状分支**——Rectangle（右边缘 20,0）/Circle（半径点 20,0）/Diamond（右顶点 20,0），+x target 都投影到 (20,0) 但算法路径不同（rect max(denom)/circle r=min(w,h)/2/diamond |dx|/hw+|dy|/hh）；(5) **line_intersect_rect 4 case**——穿过 True/同侧 False/端点内部 True/退化单点外 False，同侧拒绝 + 4 边 t,u 参数扫描 + denom<1e-10 平行跳过；(6) **build_smooth_u_path 9 点结构**——9 个点，两端点 + rail 中点 path[4] + rail 两侧 path[3]/path[5]，垂直 rail 在 side_x 水平 rail 在 below_y；(7) **_dedup_consecutive 仅连续重复**——镜像 Vec::dedup，非连续重复保留（[(0,0),(1,1),(0,0)] 全保留）；(8) **trim_cluster_interior_points 原地修改**——to 端 del tail 保留最后外部点 + 1，from 端 del head 丢弃首个外部点前的内部点。这是「方向① 激活 dagre」的**关键第 6 砖第 5 子叶子**：边缘几何零件就位，R274f（compute_with_dagre body + extract_subgraph_layouts + rotate_layout + 2 公共入口 compute_layout/compute_layout_with_config + `__all__` 闭合）收尾 layout.rs。
+
+### 交付
+
+- `agent/minimax_code/mermaid/to_svg/layout.py`（追加 ~651 行，R274e 13 实例 + 4 静态 + _dedup_consecutive，文件总 ~2069 行）：
+
+  - **标签定位（2）**：`edge_label_bounds(self, edge)`（label=None → None；dims=self.edge_label_dimensions(label)；None → None；label_pos 或 LayoutEngine.edge_label_midpoint 兜底）；`@staticmethod edge_label_midpoint(points)`（5 分支：len<2 → points[0] 或 (0,0)；total<0.001 → points[0]；target=total*0.5 段扫描；兜底 (首+尾)/2）。
+  - **方向感知（1）**：`is_back_edge(self, from_node, to_node)`（dx=to.x-from.x；dy=to.y-from.y；is_vertical 由 self.graph.direction 判；垂直 TB dy<-10 / BT dy>10；水平 LR dx<-10 / RL dx>10）。
+  - **障碍物路由（3）**：`compute_edge_points_with_obstacles(self, from_node, to_node, all_nodes)`（内联 back_edge 检查 → back → compute_back_edge_points_simple；障碍 = 排除端点的所有节点；is_vertical → compute_vertical/horizontal_edge_with_obstacles）；`compute_horizontal_edge_with_obstacles(self, from, to, obstacles)`（travel_right；from_x/to_x ± width/2；阻塞 → route_above/below 4 点路径；否则 mid_x + connection_point_towards + _dedup_consecutive）；`compute_vertical_edge_with_obstacles`（水平对称）。
+  - **回边 U 型绕行（2）**：`compute_back_edge_points_simple(self, from, to, is_vertical)`（offset=60.0；垂直 side_x=max(x)+max(w)/2+offset；水平 below_y=max(y)+max(h)/2+offset；build_smooth_u_path）；`compute_back_edge_points(self, from, to, is_vertical, all_nodes)`（margin=30.0；垂直 max_right/min_left/center_x/side_x；水平扫描所有节点选 below_y/above_y 更近者）。
+  - **边几何修剪（3）**：`straighten_if_aligned(self, dagre_points, from, to, is_vertical, all_nodes)`（容差 15.0；are_aligned；候选 2 点；edge_crosses_any_node 检查）；`edge_crosses_any_node(self, points, from, to, all_nodes)`（<2 → False；line 首尾；margin=5.0；line_intersect_rect）；`@staticmethod line_intersect_rect(p1, p2, rect_min, rect_max)`（同侧拒绝；内部端点；4 边 t,u 参数；denom<1e-10 跳过）。
+  - **U 型路径（1，静态）**：`@staticmethod build_smooth_u_path(start, end, route_coord, is_vertical)`（curve_fraction=0.3；垂直 9 点 side_x + curve_height；水平 9 点 below_y + curve_width）。
+  - **簇内部点修剪（1，静态）**：`@staticmethod trim_cluster_interior_points(points, from, to, from_is_cluster, to_is_cluster)`（inside() hw/hh 边界；to 端反向找最后外部点 del points[keep:]；from 端前向找首个外部点 del points[0:drop]；原地）。
+  - **边界吸附（2）**：`clip_edge_to_boundaries(self, points, from, to)`（<2 → return；second_point；connection_point_on_node(from)；clip_edge_end_only）；`clip_edge_end_only(self, points, to)`（<2 → return；second_last；connection_point_on_node(to)）。
+  - **形状感知连接点（2）**：`connection_point_on_node(self, node, from_x, from_y)`（dx=node.x-from_x；Circle/StartState/EndState r=min(w,h)/2；Diamond denom=|dx|/hw+|dy|/hh；default denom_x/denom_y max）；`connection_point_towards(self, node, target_x, target_y)`（dx=target_x-node.x；出站对应）。
+  - **模块辅助（1）**：`_dedup_consecutive(points)`（模块级，返回新列表，仅去连续重复，镜像 Vec::dedup）。
+
+  **`__all__` 保持 4 公共 struct 不变**（LayoutEdge/LayoutNode/LayoutResult/LayoutSubgraph）。13 实例 + 4 静态均私有内部，不进 `__all__`。
+
+- `agent/tests/test_mermaid_to_svg_layout.py`（追加 ~485 行，49 新用例 + 4 helper，文件总 186 passed / 137 + 49）：
+
+  - **R274e 维度覆盖（17 方法 + 模块辅助 + 桶契约）** —— (1) **edge_label_midpoint 参数化 5 分支**；(2) **edge_label_bounds 3 case**（None label / 显式 label_pos / 回退 midpoint）；(3) **is_back_edge 参数化 4 方向 × 正反 8 case**；(4) **connection_point_towards 3 形状**（rect/circle/diamond 各 (20,0)）；(5) **connection_point_on_node 3 形状**；(6) **line_intersect_rect 参数化 4 case**；(7) **build_smooth_u_path vertical 9 点 + horizontal 9 点**；(8) **compute_back_edge_points_simple vertical detour**（path[4][0]=80）；(9) **compute_back_edge_points vertical outer side**（path[4][0]=50）；(10) **compute_horizontal_edge_with_obstacles 无障碍直走 + 有障碍绕行**；(11) **compute_vertical_edge_with_obstacles 无障碍直走**；(12) **edge_crosses_any_node 穿过 + 空/退化**；(13) **straighten_if_aligned 对齐拉直 + 不对齐原样**；(14) **trim_cluster_interior_points to_cluster 截尾 + from_cluster 去头**；(15) **clip_edge_end_only 吸附终点**；(16) **clip_edge_to_boundaries 双端吸附**；(17) **compute_edge_points_with_obstacles back edge + forward**；(18) **_dedup_consecutive 参数化 4 case**；(19) **桶契约 2 case**（layout __all__ 保持 4 / 4 静态可达 + 13 实例不泄漏）。
+  - **关键 helper 设计**：`_graph_with_direction(direction)`（_empty_graph 参数化版本，4 方向）/ `_circle_node()`（Circle 形状工厂，_layout_node 仅 Rectangle）/ `_diamond_node()`（Diamond 形状工厂）/ `_layout_edge()`（LayoutEdge 工厂，**style=EdgeStyle.Line** 不是 "Solid"）。**常量访问**：LayoutEngine.edge_label_midpoint / line_intersect_rect / build_smooth_u_path / trim_cluster_interior_points（静态方法经类访问）+ layout_mod._dedup_consecutive（模块级）。
+
+### 映射决策树 + 坑
+
+- **🔴 EdgeStyle 无 "Solid" 成员（事实更正）**：ast.py EdgeStyle 实际成员是 `Arrow, Line, DottedArrow, DottedLine, ThickArrow, ThickLine`（**无 "Solid"**）。`_layout_edge` 工厂用 `style=EdgeStyle.Line`（实线普通线），不是臆想的 "Solid"。前置 Grep 确认 ast.py EdgeStyle 定义避免测试 NameError。
+- **🔴 关联函数 → @staticmethod 判定（4 个）**：grok `fn name(args)` 无 `&self` 是关联函数，Python 必须 `@staticmethod`（无 self）。4 个静态：edge_label_midpoint / line_intersect_rect / build_smooth_u_path / trim_cluster_interior_points。实例方法 `fn name(&self, args)` 才有 self（13 个）。test_layout_edge_geometry_helpers_are_instance_or_static_methods 守卫（assert 4 静态 is not None + 13 实例名 not in vars(layout_mod)）。
+- **🔴 connection_point 形状分支投影点一致但算法不同**：+x target 下 Rectangle（右边缘 max denom_x）、Circle（r=min(w,h)/2 半径点）、Diamond（|dx|/hw+|dy|/hh 顶点）都投影到 (20,0)，但算法路径不同。参数化测试覆盖 3 形状，确保任一分支系数漂移即失败。
+- **🔴 build_smooth_u_path 9 点 rail 结构**：9 个点，path[0]=start、path[8]=end、path[4]=rail 中点（垂直 (side_x, mid_y)、水平 (mid_x, below_y)）、path[3]/path[5] 也在 rail 上。curve_fraction=0.3 控制 curve_height/curve_width。test_build_smooth_u_path_vertical/horizontal_is_9_points_on_rail 守卫（断言 len=9 + rail 点 + 端点）。
+- **🔴 line_intersect_rect 同侧拒绝 + 4 边扫描**：先同侧拒绝（两点在 rect 同一侧外），再端点内部短路（True），再 4 条边的 t,u 参数扫描，denom<1e-10 平行跳过。参数化 4 case（穿过/同侧/端点内部/退化单点）守卫。
+- **🔴 trim_cluster_interior_points 原地修改（in place）**：to 端反向遍历找最后外部点 del points[keep:]（保留最后外部点 + 1 个过渡点）；from 端前向遍历找首个外部点 del points[0:drop]（丢弃首个外部点之前的所有内部点，保留首个外部点）。test_trim_cluster_interior_points_to_cluster_truncates_tail / from_cluster_drops_head 守卫。
+- **🔴 _dedup_consecutive 仅连续重复（Vec::dedup 语义）**：Python list 无标准库连续去重，模块级 helper 返回新列表。[(0,0),(0,0),(1,1),(1,1),(2,2)] → [(0,0),(1,1),(2,2)]；[(0,0),(1,1),(0,0)] → 全保留（非连续）。参数化 4 case 守卫。
+- **🔴 is_back_edge 方向 × 正反 8 case**：dy/dx 阈值 ±10（避免浮点噪声）。TB from(0,100)→to(0,0) dy=-100<-10 True（back，与流向相反）；LR/RL/BT 对称。参数化 8 case 覆盖 4 方向各正反。
+
+### 验证
+
+- ruff：layout.py + test_layout.py，R274e 提交态 **干净**（line-length 100，select E/F/W/I/B/UP，ignore E501）。
+- 定向 pytest（test_layout.py）：**186 passed（0.43s）**（R274a 30 + R274b 51 + R274c 30 + R274d 26 + R274e 49）。零失败。
+- 全量回归：**7691 passed, 10 skipped（150.46s, exit 0）** vs R274d 基准 7642 passed / 10 skipped。**+49 = R274e 边缘几何方法新测试**（与 49 个新 test_ 用例一致）。零真实回归。10 skipped 为预期。1 warning 为预存 fastapi/httpx 弃用（与本迭代无关）。
+- CRLF 警告正常（Windows layout.py + test），无害。
+
+### YAGNI 边界
+
+- **R274 剩余 1 子叶子（layout.rs 实时表面 ~400 行）**：R274f（**compute_with_dagre 编排器主体** + extract_subgraph_layouts + rotate_layout + 2 公共入口 compute_layout/compute_layout_with_config + `from minimax_code.dagre.layout.mod import layout` + `__all__` 闭合，2 `pub fn` 加入 __all__）。R274c 14 dagre 桥接 + R274d 9 边界/簇 + R274e 17 边缘几何是编排器的全部零件，R274f 主体组装（detect_back_edges → build_dagre_graph → dagre layout → extract → snap → align → 边界 → materialise LayoutResult）收尾 layout.rs。
+- **~1500 行死代码不迁移**（R274a 已剥离，本轮无新增）。
+- **svg_renderer.rs 待迁（渲染栈后续叶子）**：SVG 元素发射器，消费 layout 产坐标 + text_wrap 标签定位。错误抛 MermaidError（R271）。
+- **mermaid_port/ + xai-grok-mermaid 主机包装 + 20 图表渲染器待迁**。
+- **layout 不外暴到 barrel / mermaid 根**：保持 to_svg 子包内部深路径（`mermaid.to_svg.layout`），不进 to_svg barrel（grok `mod layout;` 私有），不进 mermaid 根（`__all__` 仍 17）。test 守卫 layout __all__ 保持 4 + 4 静态可达 + 13 实例不泄漏 + mermaid 根 __all__=17。
+- **17 边缘几何方法均私有内部**：R274e 已迁移，`__all__` 保持 4 公共 struct 不变，2 `pub fn`（compute_layout/compute_layout_with_config）R274f 加入。
+
+### Commit
+
+`feat(platform): R274e migrate mermaid-to-svg layout.rs edge geometry helpers`。feat 提交 1ae7819。2 文件 1136 insertions（layout.py +651 + test_layout.py +485）。docs 提交 ITERATION_LOG.md R274e 条目。锚点链: ... -> R274c(d53b509) -> R274d(5535b8e) -> R274e(1ae7819)。
