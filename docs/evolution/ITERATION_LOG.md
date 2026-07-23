@@ -19504,3 +19504,78 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R274b LayoutEngine constructor + node/edge collection + measurement`。feat 提交 61f12a0。2 文件 937 insertions（layout.py +294 + test_layout.py +645，I001/F401 修复后）。docs 提交 ITERATION_LOG.md R274b 条目。锚点链: ... -> R273(59ef877) -> R274a(9e5ebb8) -> R274b(61f12a0)。
+
+## R274c — 迁移 mermaid-to-svg layout.rs dagre 桥接 helpers（方向① 第 6 片子 R274 第 3 子叶子，14 个 dagre 桥接方法 + DagreGraph TypeAlias，零语义克隆）
+
+锚点:R274c-1 d53b509
+
+### 本轮目标
+
+迁移 layout.rs **dagre 桥接 helpers 层**（R274c，方向① 第 6 片叶子 R274 的第 3 子叶子 c）。R274b 行为层首叶（构造 + 节点/边收集 + measure_node sizing 表）就位后，本轮迁移 **LayoutEngine 的 14 个 dagre 桥接实例方法 + DagreGraph TypeAlias**（grok layout.rs L465-512 + L811-1447 + L1663-1734）：
+
+- **子图排序/端点方法组（4）**：`subgraph_ids_in_mermaid_order()`（声明序遍历子图）/ `nodes_in_subgraph_by_order(subgraph_id)`（NodeInfo.order 排序）/ `subgraph_entry_node_id(subgraph_id)`（无同胞入边的首节点）/ `subgraph_exit_node_id(subgraph_id)`（无同胞出边的尾节点，内部环回退 None）。
+- **边端点解析方法组（2）**：`dagre_edge_endpoint(id, is_source)`（普通节点返回自身，子图源折叠到 exit / 汇折叠到 entry）/ `layout_endpoint_node(id, is_source, positions)`（已存在节点读位置，未知子图 id 合成居中 box，未知普通 id 返回 None）。
+- **边标签度量（1）**：`edge_label_dimensions(label)`（STATE_CHAR_WIDTH vs DEFAULT_CHAR_WIDTH 双路估算 + EDGE_LABEL_PADDING*2 双边填充）。
+- **反向边检测（2）**：`dfs_detect_back_edges(...)`（DFS 三色标记，灰栈邻居即反向边）/ `detect_back_edges()`（DAG 返回空集，环图返回边集）。
+- **状态图 rank 对齐方法组（3）**：`longest_path_ranks_without_back_edges(back_edges)`（Kahn 拓扑扫 + 前向最长路径传播，back edges 两 pass 均忽略）/ `snap_state_ranks(positions, back_edges)`（y 投影到 rank 网格，元组整体重赋值）/ `align_state_terminal_singletons(positions, back_edges)`（终端列对齐 fan-in）。
+- **dagre 桥接核心（2）**：`build_dagre_graph(rank_dir, node_sep, rank_sep, back_edges)`（复合多重图 directed/multigraph/compound + edge-index map，subgraph 零尺寸种子 + 声明稳定节点种子 + set_parent 复合嵌套 + 边端点折叠 + back edge/self-loop 丢弃 + 标签 box labelpos="c"）/ `extract_layout_from_dagre(g, edge_map)`（三元组 positions/edge_points/edge_label_positions）。
+
+**本轮的核心价值是 build_dagre_graph 复合图构造的零语义克隆**：grok 用 dagre-rs `Graph::new(directed, multigraph, compound)` + `set_graph(GraphConfig{rankdir,nodesep,ranksep,edgesep=20,marginx=MARGIN,marginy=MARGIN,ranker=longest-path if state})`。Python 用 R246-R268 迁移好的 `minimax_code.dagre` Graph + GraphOption + GraphConfig + GraphNode + GraphEdge 镜像，固定 edgesep=20.0 / marginx,y=MARGIN / SUBGRAPH_PADDING 全部精确 f64 值，ranker 仅状态图开启 longest-path。推迟 compute_with_dagre 编排器主体 + 2 公共入口到 R274e（YAGNI）。迁移到 `agent/minimax_code/mermaid/to_svg/layout.py`（追加 ~507 行，LayoutEngine 实例方法 4 空格缩进，DagreGraph 私有 TypeAlias 不进 `__all__`，`__all__` 保持 4 公共 struct），**桶不变**（内部模块），编写 pytest（追加 30 用例，文件总 103 顶层 test 函数 / 1659 行），ruff + 定向 pytest 111 passed + 邻域 531 passed + 全量回归 **7616 passed / 10 skipped**（vs R274b 基准 7586，+30 = R274c 新测试，零真实回归）。
+
+### 融合结论
+
+**方向① 渲染栈迁移的第 6 砖第 3 子叶子 —— dagre 桥接 helpers 层，build_dagre_graph 复合图构造零语义克隆。** R274c 是 R274（layout.rs dagre 布局引擎）的第 3 子叶子，迁移把收集好的布局模型（R274b LayoutEngine.nodes/edges/subgraphs）桥接到 R246-R268 迁移好的 dagre 栈的 14 个实例方法 + DagreGraph TypeAlias。本轮的核心工程价值是 **build_dagre_graph 复合多重图构造 + extract_layout_from_dagre 三元组提取的零语义克隆**：grok 的桥接是 layout.rs 与 dagre-rs 的接缝，Python 用已迁移的 `minimax_code.dagre.layout.mod.layout` + `minimax_code.data_structures.graphlib.Graph` 镜像同一个接缝，复合图三标志（directed/multigraph/compound）、GraphConfig 6 字段（rankdir/nodesep/ranksep/edgesep=20/marginx,y=MARGIN/ranker 条件）、subgraph 零尺寸种子 + 节点声明稳定种子 + set_parent 双层嵌套、边端点折叠 + back edge/self-loop 丢弃 + edge_map 索引对账全部有定向测试守卫。
+
+本轮的关键不变量（每个有定向测试守卫）：(1) **DagreGraph TypeAlias = `Graph[GraphConfig, GraphNode, GraphEdge]` 私有内部别名**，不进 `__all__`（grok 用泛型别名，crate 内消费）；(2) **子图端点 fallback 语义**——空子图 entry/exit 返回 None，内部环（所有节点都有同胞入/出边）回退 None；(3) **longest_path rank 传播语义**——所有节点初始化 rank 0，rank 仅经前向边上升，仅标一条循环边为反向会留下另一条作前向边（传播仍发生），全循环图返回全 0 dict；(4) **edge_label_dimensions 折行线计数边界效应**——更窄的字符估算并不总产生更窄的测量 box（更窄估算可使标签保持单行，更宽估算使标签折行第一行更短），测试用足够短标签固定折行计数使宽度比较严格成比例；(5) **build_dagre_graph 的 edge_map 索引对账**——dropped back edge/self-loop 的索引也从 edge_map 缺失，extract 步骤通过存活索引重新附着，保证原始边序与 dagre 边序的对账完整性。这是「方向① 激活 dagre」的**关键第 6 砖第 3 子叶子**：dagre 桥接 helpers 就位，R274d（边缘几何 + 边界 compute_spacing/analyze_clusters/center_nodes_in_subgraphs/compute_bounds/get_node_colors 等）→ R274e（compute_with_dagre body + 2 公共入口 compute_layout/compute_layout_with_config + `__all__` 闭合）依次推进收尾 layout.rs。
+
+### 交付
+
+- `agent/minimax_code/mermaid/to_svg/layout.py`（追加 ~507 行，R274c 14 实例方法 + DagreGraph TypeAlias，文件总 1135 行）：
+
+  - **DagreGraph 私有 TypeAlias**：`DagreGraph = Graph[GraphConfig, GraphNode, GraphEdge]`（grok 泛型别名镜像，crate 内消费，不进 `__all__`）。
+  - **子图排序/端点方法组（4）**：`subgraph_ids_in_mermaid_order()`（按 self.subgraphs 声明序返回 id 列表）/ `nodes_in_subgraph_by_order(subgraph_id)`（subgraph_nodes[id] 按 NodeInfo.order 排序）/ `subgraph_entry_node_id(subgraph_id)`（无同胞入边的首节点，遍历内部节点检查是否存在跨边）/ `subgraph_exit_node_id(subgraph_id)`（对称：无同胞出边的尾节点，内部环回退 None）。
+  - **边端点解析方法组（2）**：`dagre_edge_endpoint(id, is_source)`（is_subgraph_id(id) 为真时源折叠到 subgraph_exit_node_id / 汇折叠到 subgraph_entry_node_id，普通节点返回 id）/ `layout_endpoint_node(id, is_source, positions)`（id 在 positions 直接返回；is_subgraph_id 合成居中 box（节点均值）；未知返回 None）。
+  - **边标签度量（1）**：`edge_label_dimensions(label)`（空标签 None；STATE_CHAR_WIDTH if is_state_diagram else DEFAULT_CHAR_WIDTH 经 scale_char_width 缩放 + wrap_text_lines 折行 + measure_wrapped_lines_with_font_size 测量 + EDGE_LABEL_PADDING*2 双边填充）。
+  - **反向边检测（2）**：`dfs_detect_back_edges(start, adj, color, stack_set, back_edges)`（DFS 三色标记递归，白→灰→黑，灰栈邻居即反向边）/ `detect_back_edges()`（遍历所有节点跑 DFS，聚合 back_edges 集合，DAG 返回空集）。
+  - **状态图 rank 对齐方法组（3）**：`longest_path_ranks_without_back_edges(back_edges)`（入度计数器初始化 + ready 队列按 NodeInfo.order 排序的 Kahn 拓扑扫 + 前向 max(rank, parent+1) 传播，back edges 两 pass 均跳过，全循环图返回全 0 dict）/ `snap_state_ranks(positions, back_edges)`（调 longest_path 算 rank，排序去重 positions y 值成网格（0.5px 内合并），max_rank 超网格长度 no-op，元组整体重赋值（Python 元组不可变，grok 原地改 *y））/ `align_state_terminal_singletons(positions, back_edges)`（rank 持单节点 sink（无前向出边）且 ≥2 前驱在严格更低 rank，snap x 到最大前驱 x）。
+  - **dagre 桥接核心（2）**：`build_dagre_graph(rank_dir, node_sep, rank_sep, back_edges) -> tuple[DagreGraph, EdgeMap]`（Graph(GraphOption(directed/multigraph/compound), node_default=GraphNode, edge_default=GraphEdge) + set_graph(GraphConfig{rankdir,nodesep,ranksep,edgesep=20.0,marginx=MARGIN,marginy=MARGIN,ranker=longest-path if state}) + subgraph 零尺寸种子（SUBGRAPH_PADDING）+ 节点按 NodeInfo.order 排序种子化（声明稳定）+ set_parent 双层嵌套（node→subgraph + subgraph→parent_subgraph）+ 边循环：back edge 跳过 + dagre_edge_endpoint 折叠端点 + self-loop 丢弃 + labeled 边测量 box（labelpos="c"）+ edge_map[idx]=(from,to) 索引记录）/ `extract_layout_from_dagre(g, edge_map) -> tuple[PositionMap, EdgePointMap, EdgeLabelPosMap]`（positions 读每个节点 (x,y) + edge_points 复制控制点折线 [(p.x,p.y)...] + edge_label_positions 当 width/height>0 记录 (edge.x,edge.y)）。
+
+  **`__all__` 保持 4 公共 struct 不变**（LayoutEdge/LayoutNode/LayoutResult/LayoutSubgraph，L1130-1135）。DagreGraph 私有 TypeAlias 不进 `__all__`（grok 泛型别名镜像）。
+
+- `agent/tests/test_mermaid_to_svg_layout.py`（追加 ~531 行，30 新用例，文件总 103 顶层 test 函数 / 1659 行）：
+
+  - **R274c 维度覆盖（5 cohort + 桶契约）** —— (1) **子图排序/端点 cohort（6）**：subgraph_ids_in_mermaid_order 空/嵌套外层先 / nodes_in_subgraph_by_order order 排序 / subgraph_entry_node_id 首无同胞入边 / entry_exit 内部环回退 None / entry_exit 空子图 None；(2) **边端点 cohort（5）**：dagre_edge_endpoint 普通节点返回自身 / 子图源折叠 exit 汇折叠 entry / layout_endpoint_node 已存在节点 / 合成居中子图 box / 未知 id None；(3) **边标签度量 cohort（3）**：空 None / padded box 经 text_wrap 公开 API 重算断言（零硬编码浮点）/ state 图窄字符宽度（短标签固定单行折行计数，state_dim[0]<flow_dim[0]）；(4) **rank + 反向边 cohort（7）**：longest_path 链 DAG（A0/B1/C2）/ longest_path 全循环返回全 0 dict（双循环边均标反向）/ snap_state_ranks y 投影到 rank 网格 / snap_state_ranks grid 太短 no-op / align_state_terminal_singletons x snap 到最大前驱 / dfs_detect_back_edges 灰栈邻居记录 / detect_back_edges DAG 空集 + 两节点环；(5) **dagre 桥接核心 cohort（6）**：build_dagre_graph 返回复合图 + edge_map / build_dagre_graph 丢弃 back edge + self-loop / build_dagre_graph 零尺寸 subgraph 节点种子 / extract_layout_from_dagre 读节点位置 / extract_layout_from_dagre 提取边点 + 标签 / (6) **桶契约 cohort（3）**：layout module `__all__` 保持 4 符号 / DagreGraph 别名不在 module `__all__` / mermaid 根 barrel 不变（17）。
+  - **关键 helper 设计**：`_chain_graph()`（3 节点 DAG A→B→C）+ `_two_node_cycle_graph()`（2 节点环 A→B→A），所有 dagre/data_structures 符号 **本地导入**（文件顶层 import 块不动，ruff I001 第一方绝对导入先于相对导入）。**edge_label_dimensions 测试算术策略（零硬编码浮点）**：用 padded box 经 text_wrap 公开 API（scale_char_width + wrap_text_lines + measure_wrapped_lines_with_font_size）重算预期 (tw+2*padding, th+2*padding) 断言。
+
+### 映射决策树 + 坑
+
+- **🔴 build_dagre_graph 复合多重图构造零语义克隆**：grok `Graph::new(directed=true, multigraph=true, compound=true)` + `set_graph(GraphConfig{...})`。Python `Graph(GraphOption(directed=True, multigraph=True, compound=True), node_default_factory=GraphNode, edge_default_factory=GraphEdge)` + `g.set_graph(GraphConfig(rankdir=..., nodesep=..., ranksep=..., edgesep=20.0, marginx=MARGIN, marginy=MARGIN, ranker="longest-path" if is_state else None))`。固定 edgesep=20.0 / MARGIN / SUBGRAPH_PADDING 全部精确 f64 值。test_build_dagre_graph_returns_compound_graph_and_edge_map 守卫。
+- **🔴 edge_map 索引对账（back edge/self-loop 丢弃一致性）**：grok 丢弃 back edge + self-loop 时其索引也从 edge_map 缺失，extract 步骤通过存活索引重新附着。Python 镜像：`for idx, edge in enumerate(self.edges): if back_edge: continue ... edge_map[idx]=(from,to)`。dropped indices 不进 edge_map。test_build_dagre_graph_drops_back_edges_and_self_loops 守卫（断言 dropped 索引不在 edge_map）。
+- **🔴 longest_path rank 传播语义（全 0 初始化 + 仅前向上升）**：所有节点初始化 rank 0（`ranks = {node_id: 0 for node_id in self.nodes}`），rank 仅经前向边上升（`ranks[edge.to] = max(ranks[edge.to], base_rank + 1)`）。仅标一条循环边为反向留下另一条作前向边（传播发生）；全循环图（所有边均标反向）返回全 0 dict。test_longest_path_ranks_chain_dag + test_longest_path_ranks_all_cycle_returns_zero_dict（双循环边均标反向）守卫。
+- **🔴 edge_label_dimensions 折行线计数边界效应**：窄字符估算（STATE_CHAR_WIDTH=6.7）并不总产生更窄 box——更窄估算可使标签保持单行（单行宽度），更宽估算（DEFAULT_CHAR_WIDTH=8.0）使标签折行（第一行更短）。测试用 `"ab"`（足够短，两者均单行）固定折行计数使宽度严格成比例：state box = 2*6.7+4 = 17.4 < flow box = 2*8.0+4 = 20.0。test_edge_label_dimensions_state_diagram_uses_narrower_char_width 守卫（docstring 详述陷阱）。
+- **🔴 snap_state_ranks 元组整体重赋值（Python 元组不可变）**：grok 原地改 `*y = grid[rank]`。Python `positions[node_id] = (x, deduped[rank])` 元组整体重赋值。grid 太短（len(deduped) <= max_rank）或全循环图（空 ranks）no-op。test_snap_state_ranks_projects_y_onto_rank_grid + test_snap_state_ranks_noop_when_grid_too_short 守卫。
+- **🔴 DagreGraph 私有 TypeAlias 不进 `__all__`**：grok `type DagreGraph = Graph<...>` 泛型别名，crate 内消费，不 `pub use`。Python `DagreGraph = Graph[GraphConfig, GraphNode, GraphEdge]` 私有别名，`__all__` 保持 4 公共 struct 不变。test_dagre_graph_alias_internal_not_in_module_all 守卫。
+- **🔴 子图端点 fallback 语义**：空子图 entry/exit 返回 None；内部环（所有节点都有同胞入/出边）回退 None。dagre_edge_endpoint 子图源折叠到 exit / 汇折叠到 entry。test_subgraph_entry_exit_falls_back_on_internal_cycle + test_subgraph_entry_exit_empty_subgraph_returns_none + test_dagre_edge_endpoint_subgraph_source_exit_sink_entry 守卫。
+- **🔴 本地导入策略（ruff I001）**：测试文件顶层 import 块（第一方绝对导入）先于 R274c 块内的 dagre/data_structures 相对导入。所有 dagre/data_structures 符号在 R274c cohort 测试函数内 **本地导入**（`from minimax_code.dagre... import ...`），不动顶层 import 块，避开 I001 first-party/relative 排序冲突。
+
+### 验证
+
+- ruff：layout.py + test_layout.py，R274c 提交态 **干净**（line-length 100，select E/F/W/I/B/UP，ignore E501；本地导入策略避开 I001）。
+- 定向 pytest（test_layout.py）：**111 passed（0.21s）**（R274a 30 + R274b 51 + R274c 30，含 parametrize 展开）。零失败。
+- 邻域回归（mermaid to_svg 7 文件 + dagre_lib + data_structures_graphlib，9 文件）：**531 passed（1.11s）**。零失败。
+- 全量回归：**7616 passed, 10 skipped（155.75s, exit 0）** vs R274b 基准 7586 passed / 10 skipped。**+30 = R274c dagre 桥接 helpers 新测试**（与 grep 30 个 test_ 函数一致）。零真实回归。10 skipped 为预期。
+- CRLF 警告正常（Windows layout.py + test），无害。
+
+### YAGNI 边界
+
+- **R274 剩余 2 子叶子（layout.rs 实时表面 ~1500 行）**：R274d（边缘几何 + 边界 compute_spacing / analyze_clusters / center_nodes_in_subgraphs / find_connected_subgraph_groups / compute_subgraph_bounds / subgraph_ids_bottom_up / subgraph_title_height / compute_bounds / get_node_colors + 边几何方法组）→ R274e（compute_with_dagre body + 2 公共入口 compute_layout / compute_layout_with_config + `from minimax_code.dagre.layout.mod import layout` + `__all__` 闭合，2 `pub fn` 加入）。
+- **~1500 行死代码不迁移**（R274a 已剥离，本轮无新增）。
+- **svg_renderer.rs 待迁（渲染栈后续叶子）**：SVG 元素发射器，消费 layout 产坐标 + text_wrap 标签定位。错误抛 MermaidError（R271）。
+- **mermaid_port/ + xai-grok-mermaid 主机包装 + 20 图表渲染器待迁**。
+- **layout 不外暴到 barrel / mermaid 根**：保持 to_svg 子包内部深路径（`mermaid.to_svg.layout`），不进 to_svg barrel（grok `mod layout;` 私有），不进 mermaid 根（`__all__` 仍 17）。test 守卫 LayoutEngine absent 于 module `__all__` + barrel + mermaid 根 `__all__`=17。
+- **DagreGraph 别名私有**：R274c 已声明（`Graph[GraphConfig, GraphNode, GraphEdge]`），不进 `__all__`，4 公共 struct 不变，2 `pub fn`（compute_layout/compute_layout_with_config）R274e 加入。
+- **compute_with_dagre 编排器主体 + 2 公共入口推迟 R274e（YAGNI）**：R274c 14 helpers 是编排器的零件，主体组装（调 detect_back_edges → build_dagre_graph → dagre layout → extract → snap → align → 边界 → materialise LayoutResult）推迟 R274e。
+
+### Commit
+
+`feat(platform): R274c migrate mermaid-to-svg layout.rs dagre bridge helpers`。feat 提交 d53b509。2 文件 1035 insertions（layout.py +507 + test_layout.py +531）。docs 提交 ITERATION_LOG.md R274c 条目。锚点链: ... -> R274a(9e5ebb8) -> R274b(61f12a0) -> R274c(d53b509)。
