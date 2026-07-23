@@ -79,10 +79,40 @@ the sibling layout stages: every ``bk`` symbol stays out of
 ``dagre.__all__``, reachable only as
 ``minimax_code.dagre.layout.position.bk.position_x``. The barrel
 re-exports the ``bk`` submodule (mirroring grok's ``pub mod bk``
-visibility); the second ``position`` file (``mod``) lands in a later
-leaf, re-exported here as it arrives.
+visibility).
+
+Second and final ``position`` leaf (R267): ``mod`` -- the ``position()``
+orchestrator that closes the coordinate-assignment stage
+(:mod:`~minimax_code.dagre.layout.position.mod`). ``run_layout`` calls
+:func:`position` at ``layout/mod.rs`` line 633 -- the single public entry
+point of the whole ``position`` sub-package -- and it orchestrates the
+R266 :func:`~minimax_code.dagre.layout.position.bk.position_x`
+horizontal pass with a private ``position_y`` rank-sep stacking pass over
+the non-compound projection (R248
+:func:`~minimax_code.dagre.layout.util.as_non_compound_graph`): it stamps
+a ``y`` on every node of the projection, then an ``x``, then writes each
+leaf's ``(x, y)`` back onto the original compound graph. It is the
+**milestone that closes the ``position`` sub-package at 2/2** and the
+**seventeenth zero-semantic-clone leaf** (the second ``position`` leaf)
+after R266: every grok ``clone()`` in this file is an ``f32`` Copy no-op
+(``ranksep.clone()``) stripped on the Python side, and every
+``.unwrap()`` panic on a missing node / config mirrors as an ``assert``
+(the R248 ``util.py`` convention). Two integration details: R266's
+``position_x`` returns an :class:`OrderedHashMap` whose ``.iter()``
+yields ``(key, value)`` pairs -- the exact ``HashMap::iter`` analogue of
+grok's ``position_x(&mut ncg).iter().for_each(|(v, x)| { ... })``; and
+grok's ``height as i32 ... as f32`` max is preserved as ``int(height)``
+(a faithful carry-over of grok's pixel-rounding, not "fixed" to a true
+``f32`` max). Same barrel policy: :func:`position` (the pub fn) /
+``position_y`` (the private helper) stay out of ``dagre.__all__``,
+reachable only as ``minimax_code.dagre.layout.position.mod.position``.
+The barrel now re-exports ``mod`` alongside ``bk``, ``__all__`` grown to
+the ASCII-sorted two.
 """
 
-from minimax_code.dagre.layout.position import bk
+from minimax_code.dagre.layout.position import (
+    bk,
+    mod,
+)
 
-__all__ = ["bk"]
+__all__ = ["bk", "mod"]

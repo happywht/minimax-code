@@ -383,11 +383,11 @@ def test_dagre_barrel_count_unchanged_at_four() -> None:
 
 
 def test_position_subpackage_barrel_reexports_bk() -> None:
-    """The ``position`` sub-package barrel re-exports the single ``bk`` leaf."""
+    """The ``position`` sub-package barrel re-exports ``bk`` (and R267's ``mod``)."""
     import minimax_code.dagre.layout.position as position_pkg
     import minimax_code.dagre.layout.position.bk as bk_mod
 
-    assert position_pkg.__all__ == ["bk"]
+    assert position_pkg.__all__ == ["bk", "mod"]
     assert position_pkg.bk is bk_mod
 
 
