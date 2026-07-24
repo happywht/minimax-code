@@ -41,11 +41,16 @@ Dispatch model (mirrors grok ``render_mermaid_to_svg`` L36-L163)
      left-to-right by longest-path depth (throughput-proportional node bars +
      flow-proportional gradient-stroked cubic-Bezier ribbons), mirroring grok
      lib.rs L98-L100.
-   * The 14 remaining independent per-diagram renderers (er / class / mindmap
-     / gantt / requirement / block / sequence
+   * The ``gantt`` renderer (R285) has its own dedicated arm --
+     :func:`render_gantt_diagram_to_svg` lays a project schedule out as
+     horizontal task bars on a day-scaled timeline (section background bands
+     + bottom date axis with daily grid ticks + inside/outside task labels +
+     left-side section legend), mirroring grok lib.rs L74-L76.
+   * The 13 remaining independent per-diagram renderers (er / class / mindmap
+     / requirement / block / sequence
      / gitgraph / timeline / journey / kanban / quadrant / xychart / c4)
      raise :class:`UnsupportedDiagramType` here. Their per-diagram leaves ship
-     in later rounds (R285+); until then the dispatch reports the type as
+     in later rounds (R286+); until then the dispatch reports the type as
      unsupported rather than running a renderer that does not exist yet.
    * The default path runs the already-migrated flowchart stack
      (``parser.parse_mermaid`` -> ``layout.compute_layout[_with_config]`` ->
@@ -72,6 +77,7 @@ from __future__ import annotations
 
 from .config import parse_mermaid_frontmatter
 from .error import UnsupportedDiagramType
+from .gantt_diagram import render_gantt_diagram_to_svg
 from .info_diagram import render_info_diagram_to_svg
 from .layout import compute_layout, compute_layout_with_config
 from .packet_diagram import render_packet_diagram_to_svg
@@ -91,14 +97,15 @@ __all__ = [
 
 
 #: Diagram-type tokens whose renderers ship as independent per-diagram leaves
-#: in later rounds (R285+). Until those leaves land, the dispatch raises
+#: in later rounds (R286+). Until those leaves land, the dispatch raises
 #: :class:`UnsupportedDiagramType` -- mirrors grok's per-diagram ``if`` arms
 #: (lib.rs L51-L139) minus the renderer bodies. The ``info`` renderer shipped
 #: in R279, the ``stateDiagram`` / ``stateDiagram-v2`` parser shipped in
 #: R280, the ``radar-beta`` renderer shipped in R281, the ``pie`` renderer
-#: shipped in R282, the ``packet-beta`` renderer shipped in R283, and the
-#: ``sankey-beta`` renderer shipped in R284 (their dedicated arms sit above
-#: this check); the 18 tokens below are the remaining unsupported surface.
+#: shipped in R282, the ``packet-beta`` renderer shipped in R283, the
+#: ``sankey-beta`` renderer shipped in R284, and the ``gantt`` renderer
+#: shipped in R285 (their dedicated arms sit above this check); the 17 tokens
+#: below are the remaining unsupported surface.
 #: The five ``C4*`` tokens share grok's single ``c4_diagram`` renderer
 #: (lib.rs L130-L139).
 _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
@@ -106,7 +113,6 @@ _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
         "erDiagram",
         "classDiagram",
         "mindmap",
-        "gantt",
         "requirementDiagram",
         "block-beta",
         "sequenceDiagram",
@@ -168,9 +174,11 @@ def render_mermaid_to_svg(
     ``packet-beta`` renderer (R283) emits the packet diagram via
     :func:`render_packet_diagram_to_svg`; the ``sankey-beta`` renderer (R284)
     emits the sankey flow diagram via
-    :func:`render_sankey_diagram_to_svg`; the 14 remaining per-diagram
+    :func:`render_sankey_diagram_to_svg`; the ``gantt`` renderer (R285) emits
+    the project-schedule gantt chart via
+    :func:`render_gantt_diagram_to_svg`; the 13 remaining per-diagram
     renderers raise :class:`UnsupportedDiagramType` until their leaves ship
-    (R285+). Mirrors grok lib.rs L36-L163.
+    (R286+). Mirrors grok lib.rs L36-L163.
 
     Raises:
         UnsupportedDiagramType: when the diagram-type token names a diagram
@@ -246,6 +254,17 @@ def render_mermaid_to_svg(
     # flows into the SVG root style and the full-canvas background rect.
     if diagram_type == "sankey-beta":
         return render_sankey_diagram_to_svg(body, resolved_theme)
+
+    # ``gantt`` (R285): the dedicated gantt / project-schedule renderer.
+    # Mirrors grok lib.rs L74-L76 -- :func:`render_gantt_diagram_to_svg`
+    # receives the front-matter-stripped body and lays the tasks out as
+    # horizontal bars on a day-scaled timeline (section background bands +
+    # bottom date axis with daily grid ticks + inside/outside task labels +
+    # left-side section legend). Like pie / packet, gantt is NOT theme-aware
+    # -- grok hard-codes mermaid 11.12.2's default gantt palette and ignores
+    # the resolved theme.
+    if diagram_type == "gantt":
+        return render_gantt_diagram_to_svg(body, resolved_theme)
 
     if diagram_type in _UNSUPPORTED_DIAGRAM_TYPES:
         raise UnsupportedDiagramType(diagram_type)
