@@ -28,11 +28,15 @@ Dispatch model (mirrors grok ``render_mermaid_to_svg`` L36-L163)
      :func:`render_radar_diagram_to_svg` emits the radar / spider chart
      (concentric graticule + polar axis spokes + closed Catmull-Rom series
      curves), mirroring grok lib.rs L94-L96.
-   * The 17 remaining independent per-diagram renderers (er / class / mindmap
-     / pie / gantt / requirement / packet / block / sankey / sequence
+   * The ``pie`` renderer (R282) has its own dedicated arm --
+     :func:`render_pie_diagram_to_svg` emits the pie / donut chart (one colored
+     wedge per >=1% slice, d3.pie() descending sort, a right-side legend),
+     mirroring grok lib.rs L70-L72.
+   * The 16 remaining independent per-diagram renderers (er / class / mindmap
+     / gantt / requirement / packet / block / sankey / sequence
      / gitgraph / timeline / journey / kanban / quadrant / xychart / c4)
      raise :class:`UnsupportedDiagramType` here. Their per-diagram leaves ship
-     in later rounds (R282+); until then the dispatch reports the type as
+     in later rounds (R283+); until then the dispatch reports the type as
      unsupported rather than running a renderer that does not exist yet.
    * The default path runs the already-migrated flowchart stack
      (``parser.parse_mermaid`` -> ``layout.compute_layout[_with_config]`` ->
@@ -62,6 +66,7 @@ from .error import UnsupportedDiagramType
 from .info_diagram import render_info_diagram_to_svg
 from .layout import compute_layout, compute_layout_with_config
 from .parser import parse_mermaid
+from .pie_diagram import render_pie_diagram_to_svg
 from .radar_diagram import render_radar_diagram_to_svg
 from .state_diagram import parse_state_diagram
 from .svg_renderer import render, render_with_config
@@ -75,12 +80,13 @@ __all__ = [
 
 
 #: Diagram-type tokens whose renderers ship as independent per-diagram leaves
-#: in later rounds (R280+). Until those leaves land, the dispatch raises
+#: in later rounds (R283+). Until those leaves land, the dispatch raises
 #: :class:`UnsupportedDiagramType` -- mirrors grok's per-diagram ``if`` arms
 #: (lib.rs L51-L139) minus the renderer bodies. The ``info`` renderer shipped
-#: in R279 (its dedicated arm sits above this check); the ``stateDiagram`` /
-#: ``stateDiagram-v2`` parser shipped in R280 (its dedicated arm sits above
-#: this check too); the 21 tokens below are the remaining unsupported surface.
+#: in R279, the ``stateDiagram`` / ``stateDiagram-v2`` parser shipped in
+#: R280, the ``radar-beta`` renderer shipped in R281, and the ``pie``
+#: renderer shipped in R282 (their dedicated arms sit above this check);
+#: the 20 tokens below are the remaining unsupported surface.
 #: The five ``C4*`` tokens share grok's single ``c4_diagram`` renderer
 #: (lib.rs L130-L139).
 _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
@@ -88,7 +94,6 @@ _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
         "erDiagram",
         "classDiagram",
         "mindmap",
-        "pie",
         "gantt",
         "requirementDiagram",
         "packet-beta",
@@ -148,9 +153,10 @@ def render_mermaid_to_svg(
     :func:`render_info_diagram_to_svg`; the ``stateDiagram`` /
     ``stateDiagram-v2`` parser (R280) emits a FlowchartGraph via
     :func:`parse_state_diagram`; the ``radar-beta`` renderer (R281) emits the
-    radar chart via :func:`render_radar_diagram_to_svg`; the 17 remaining
-    per-diagram renderers raise :class:`UnsupportedDiagramType` until their
-    leaves ship (R282+). Mirrors grok lib.rs L36-L163.
+    radar chart via :func:`render_radar_diagram_to_svg`; the ``pie`` renderer
+    (R282) emits the pie chart via :func:`render_pie_diagram_to_svg`; the 16
+    remaining per-diagram renderers raise :class:`UnsupportedDiagramType`
+    until their leaves ship (R283+). Mirrors grok lib.rs L36-L163.
 
     Raises:
         UnsupportedDiagramType: when the diagram-type token names a diagram
@@ -173,11 +179,14 @@ def render_mermaid_to_svg(
     diagram_type = first_diagram_type_token(body)
 
     # ``info`` has its own dedicated renderer (R279): mermaid's version card.
-    # Mirrors grok lib.rs L82-L84 -- the raw ``mermaid_source`` (front-matter
-    # and all) flows to :func:`render_info_diagram_to_svg`, which re-extracts
-    # the token defensively and ignores the body otherwise.
+    # Mirrors grok lib.rs L82-L84, with the per-diagram dispatch contract
+    # lifted in R282: grok lib.rs L47 shadows ``mermaid_source`` with the
+    # front-matter-stripped ``body`` before any per-diagram arm runs, so
+    # :func:`render_info_diagram_to_svg` receives the body (not the raw
+    # source). On a source without front-matter the body equals the source,
+    # so R279's fixtures are unchanged.
     if diagram_type == "info":
-        return render_info_diagram_to_svg(mermaid_source, resolved_theme)
+        return render_info_diagram_to_svg(body, resolved_theme)
 
     # ``stateDiagram`` / ``stateDiagram-v2`` (R280): parse into a
     # FlowchartGraph via the dedicated state parser and ride the dagre stack
@@ -190,12 +199,20 @@ def render_mermaid_to_svg(
         return render(layout_result, resolved_theme)
 
     # ``radar-beta`` (R281): the dedicated radar-chart renderer. Mirrors grok
-    # lib.rs L94-L96 -- the raw ``mermaid_source`` (front-matter and all) flows
-    # to :func:`render_radar_diagram_to_svg`, which scans for the ``radar-beta``
-    # header itself (same pattern as the ``info`` arm above; unlike the
-    # ``stateDiagram`` arm which consumes the front-matter-stripped ``body``).
+    # lib.rs L94-L96 -- :func:`render_radar_diagram_to_svg` receives the
+    # front-matter-stripped body (R282 lifted the arm to the per-diagram
+    # dispatch contract; the body equals the raw source when no front-matter
+    # is present, so R281's fixtures are unchanged). The renderer scans for
+    # the ``radar-beta`` header itself.
     if diagram_type == "radar-beta":
-        return render_radar_diagram_to_svg(mermaid_source, resolved_theme)
+        return render_radar_diagram_to_svg(body, resolved_theme)
+
+    # ``pie`` (R282): the dedicated pie-chart renderer. Mirrors grok lib.rs
+    # L70-L72 -- :func:`render_pie_diagram_to_svg` receives the front-matter-
+    # stripped body and emits a fixed-height SVG with one colored wedge per
+    # >=1% slice (d3.pie() descending sort) plus a right-side legend.
+    if diagram_type == "pie":
+        return render_pie_diagram_to_svg(body, resolved_theme)
 
     if diagram_type in _UNSUPPORTED_DIAGRAM_TYPES:
         raise UnsupportedDiagramType(diagram_type)

@@ -22,12 +22,13 @@ Covers the four migrated symbols plus the module-private helper:
 
 Dispatch invariants asserted (zero-semantic clone):
 
-1. The 21 diagram-type tokens whose dedicated renderers ship in R282+ raise
+1. The 20 diagram-type tokens whose dedicated renderers ship in R283+ raise
    :class:`UnsupportedDiagramType` *before* the flowchart path runs -- this
    matches grok's per-diagram ``if`` arms (L51-L139). The ``info`` renderer
    shipped in R279, the ``stateDiagram`` / ``stateDiagram-v2`` parser shipped
-   in R280, and the ``radar-beta`` renderer shipped in R281 (their dedicated
-   dispatch arms no longer raise); the 21 remaining tokens still do.
+   in R280, the ``radar-beta`` renderer shipped in R281, and the ``pie``
+   renderer shipped in R282 (their dedicated dispatch arms no longer raise);
+   the 20 remaining tokens still do.
 2. Unknown tokens (not in the unsupported set, not ``graph``/``flowchart``)
    fall through to the generic parser -- matching grok's unconditional
    ``parser::parse_mermaid`` at L150. A bare ``flowchart``/``graph`` token
@@ -162,7 +163,6 @@ def test_strip_mermaid_frontmatter_strips_yaml_block() -> None:
 @pytest.mark.parametrize(
     "diagram_type",
     [
-        "pie",
         "erDiagram",
         "sequenceDiagram",
         "classDiagram",
@@ -186,14 +186,15 @@ def test_strip_mermaid_frontmatter_strips_yaml_block() -> None:
     ],
 )
 def test_render_mermaid_to_svg_unsupported_type_raises(diagram_type: str) -> None:
-    """Each of the 21 R282+ diagram tokens raises before the flowchart path.
+    """Each of the 20 R283+ diagram tokens raises before the flowchart path.
 
     Mirrors grok's per-diagram ``if`` arms (lib.rs L51-L139): the dedicated
     renderer is not migrated yet, so dispatch reports the type as
     unsupported. The ``info`` renderer (R279), the ``stateDiagram`` /
-    ``stateDiagram-v2`` parser (R280), and the ``radar-beta`` renderer (R281)
-    are asserted separately; none raises here. The raised
-    :class:`UnsupportedDiagramType` carries the diagram-type token verbatim.
+    ``stateDiagram-v2`` parser (R280), the ``radar-beta`` renderer (R281),
+    and the ``pie`` renderer (R282) are asserted separately; none raises
+    here. The raised :class:`UnsupportedDiagramType` carries the
+    diagram-type token verbatim.
     """
     source = f"{diagram_type}\n  body"
     with pytest.raises(UnsupportedDiagramType) as exc_info:
