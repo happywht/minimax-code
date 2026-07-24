@@ -46,11 +46,16 @@ Dispatch model (mirrors grok ``render_mermaid_to_svg`` L36-L163)
      horizontal task bars on a day-scaled timeline (section background bands
      + bottom date axis with daily grid ticks + inside/outside task labels +
      left-side section legend), mirroring grok lib.rs L74-L76.
-   * The 13 remaining independent per-diagram renderers (er / class / mindmap
+   * The ``kanban`` renderer (R286) has its own dedicated arm --
+     :func:`render_kanban_diagram_to_svg` lays a board out as titled columns
+     of task cards (per-column cluster rect + cluster-label + per-card node
+     with label/assigned placeholders and an optional priority indicator
+     stripe), mirroring grok lib.rs L118-L120.
+   * The 12 remaining independent per-diagram renderers (er / class / mindmap
      / requirement / block / sequence
-     / gitgraph / timeline / journey / kanban / quadrant / xychart / c4)
+     / gitgraph / timeline / journey / quadrant / xychart / c4)
      raise :class:`UnsupportedDiagramType` here. Their per-diagram leaves ship
-     in later rounds (R286+); until then the dispatch reports the type as
+     in later rounds (R287+); until then the dispatch reports the type as
      unsupported rather than running a renderer that does not exist yet.
    * The default path runs the already-migrated flowchart stack
      (``parser.parse_mermaid`` -> ``layout.compute_layout[_with_config]`` ->
@@ -79,6 +84,7 @@ from .config import parse_mermaid_frontmatter
 from .error import UnsupportedDiagramType
 from .gantt_diagram import render_gantt_diagram_to_svg
 from .info_diagram import render_info_diagram_to_svg
+from .kanban_diagram import render_kanban_diagram_to_svg
 from .layout import compute_layout, compute_layout_with_config
 from .packet_diagram import render_packet_diagram_to_svg
 from .parser import parse_mermaid
@@ -97,15 +103,16 @@ __all__ = [
 
 
 #: Diagram-type tokens whose renderers ship as independent per-diagram leaves
-#: in later rounds (R286+). Until those leaves land, the dispatch raises
+#: in later rounds (R287+). Until those leaves land, the dispatch raises
 #: :class:`UnsupportedDiagramType` -- mirrors grok's per-diagram ``if`` arms
 #: (lib.rs L51-L139) minus the renderer bodies. The ``info`` renderer shipped
 #: in R279, the ``stateDiagram`` / ``stateDiagram-v2`` parser shipped in
 #: R280, the ``radar-beta`` renderer shipped in R281, the ``pie`` renderer
 #: shipped in R282, the ``packet-beta`` renderer shipped in R283, the
-#: ``sankey-beta`` renderer shipped in R284, and the ``gantt`` renderer
-#: shipped in R285 (their dedicated arms sit above this check); the 17 tokens
-#: below are the remaining unsupported surface.
+#: ``sankey-beta`` renderer shipped in R284, the ``gantt`` renderer shipped
+#: in R285, and the ``kanban`` renderer shipped in R286 (their dedicated arms
+#: sit above this check); the 16 tokens below are the remaining unsupported
+#: surface.
 #: The five ``C4*`` tokens share grok's single ``c4_diagram`` renderer
 #: (lib.rs L130-L139).
 _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
@@ -119,7 +126,6 @@ _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
         "gitGraph",
         "timeline",
         "journey",
-        "kanban",
         "quadrantChart",
         "xychart-beta",
         "C4Context",
@@ -176,9 +182,11 @@ def render_mermaid_to_svg(
     emits the sankey flow diagram via
     :func:`render_sankey_diagram_to_svg`; the ``gantt`` renderer (R285) emits
     the project-schedule gantt chart via
-    :func:`render_gantt_diagram_to_svg`; the 13 remaining per-diagram
+    :func:`render_gantt_diagram_to_svg`; the ``kanban`` renderer (R286) emits
+    the board-card kanban chart via
+    :func:`render_kanban_diagram_to_svg`; the 12 remaining per-diagram
     renderers raise :class:`UnsupportedDiagramType` until their leaves ship
-    (R286+). Mirrors grok lib.rs L36-L163.
+    (R287+). Mirrors grok lib.rs L36-L163.
 
     Raises:
         UnsupportedDiagramType: when the diagram-type token names a diagram
@@ -265,6 +273,19 @@ def render_mermaid_to_svg(
     # the resolved theme.
     if diagram_type == "gantt":
         return render_gantt_diagram_to_svg(body, resolved_theme)
+
+    # ``kanban`` (R286): the dedicated kanban / board-card renderer. Mirrors
+    # grok lib.rs L118-L120 -- :func:`render_kanban_diagram_to_svg` receives
+    # the front-matter-stripped body and lays the board out as titled columns
+    # of task cards (per-column cluster rect + cluster-label + per-card node
+    # with label/assigned placeholders and an optional priority indicator
+    # stripe). Like sankey, kanban IS theme-aware: ``theme.text_color`` flows
+    # into the root font fill + cluster/label text fills, and
+    # ``theme.node_stroke`` into the node rect + ticket-link strokes (the
+    # SVG-root ``background-color`` and the full-canvas background rect stay
+    # hard-coded ``white``, NOT ``theme.background``).
+    if diagram_type == "kanban":
+        return render_kanban_diagram_to_svg(body, resolved_theme)
 
     if diagram_type in _UNSUPPORTED_DIAGRAM_TYPES:
         raise UnsupportedDiagramType(diagram_type)
