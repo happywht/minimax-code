@@ -266,21 +266,6 @@ def test_sequence_diagram_routes_through_engine_without_panic() -> None:
     assert "Bob" in svg
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Pre-existing dagre network_simplex defect (R269-R271 graphlib port), "
-        "NOT introduced by R278c: the edge-exchange invariant in "
-        "``_exchange_edges`` calls ``Graph.remove_edge(v, w, None)`` for a key "
-        "the counter map does not hold, so ``_decrement_or_remove_entry`` does "
-        "``None -= 1`` (graphlib.py L1031). Triggered by chain edges inside a "
-        "subgraph (``nav --> mark --> global --> sidebar --> page``); grok's "
-        "dagre renders this graph correctly, so the port has a real defect in "
-        "the edge-exchange invariant. R278c migrates the test faithfully "
-        "(independence) -- it flips to xpass once a dedicated dagre "
-        "edge-exchange fix lands."
-    ),
-    strict=True,
-)
 def test_long_identifier_node_labels_survive_intact_in_svg() -> None:
     """grok ``pure_engine.rs`` ``long_identifier_node_labels_survive_intact_in_svg``.
 
@@ -291,6 +276,17 @@ def test_long_identifier_node_labels_survive_intact_in_svg() -> None:
     content. grok calls ``render_mermaid_to_svg`` directly; this port routes
     through :func:`build_svg` (equivalent -- the theme does not affect tspan
     integrity).
+
+    History: this test was ``@pytest.mark.xfail(strict=True)`` from R278c
+    until R299. The defect lived in the dagre network_simplex edge-exchange
+    path: ``_exchange_edges`` calls ``Graph.remove_edge(v, w, None)`` for an
+    edge whose endpoint is absent from the peer's counter map -- a legal
+    state under multigraph anonymous-edge (``name = None``) semantics (e.g.
+    dagre back-edge tree nodes ``_bt*``). grok's ``decrement_or_remove_entry``
+    guards this with ``if let Some`` (a missing key is a no-op); the R269-R271
+    Python port dropped that guard and crashed on ``None -= 1``
+    (graphlib.py ``_decrement_or_remove_entry``). R299 restored the grok
+    no-op contract, flipping this test to a real pass.
     """
     source = (
         "flowchart TB\n"

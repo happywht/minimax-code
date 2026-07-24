@@ -1020,14 +1020,21 @@ def _increment_or_init_entry(counter_map: OrderedHashMap[str, int], key: str) ->
 def _decrement_or_remove_entry(counter_map: OrderedHashMap[str, int], key: str) -> None:
     """Decrement ``counter_map[key]``, removing it when the count hits zero.
 
-    Mirrors grok ``decrement_or_remove_entry``. The caller guarantees ``key``
-    is present (so grok's ``get_mut().unwrap()`` is safe): the count is
-    decremented, and when it drops to ``<= 0`` the entry is dropped entirely.
-    Above zero, :meth:`OrderedHashMap.insert` writes the decremented value
-    back in place (position-preserving, matching grok's in-place ``*value -= 1``).
+    Mirrors grok ``decrement_or_remove_entry`` (graph.rs L899-906): a MISSING
+    key is a no-op. grok's ``if let Some(value) = map.get_mut(k)`` skips the
+    whole block when the key is absent -- a legal state under the multigraph
+    anonymous-edge (``name = None``) semantics, where :meth:`remove_edge` can
+    hit an edge object whose endpoint was never seeded into the peer's
+    counter map (e.g. dagre network_simplex back-edge tree nodes ``_bt*``).
+    The R269-R271 port lost this guard and crashed on ``None -= 1``
+    (TypeError); R299 restores the grok no-op contract. Above zero the count
+    is written back in place (position-preserving, matching grok's in-place
+    ``*value -= 1``); at zero the entry is dropped entirely.
     Used by :meth:`Graph.remove_edge`.
     """
     value = counter_map.get(key)
+    if value is None:
+        return  # grok: missing key -> no-op (the ``if let Some`` guard).
     value -= 1
     if value <= 0:
         counter_map.remove(key)
