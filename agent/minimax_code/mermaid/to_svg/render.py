@@ -88,11 +88,11 @@ Dispatch model (mirrors grok ``render_mermaid_to_svg`` L36-L163)
      L120-L121. mindmap is NOT theme-aware -- grok hard-codes mermaid's default
      mindmap palette (navy root + 8 section hues) and ignores the resolved
      theme (the ``_theme`` param is accepted for dispatch symmetry only).
-   * The 6 remaining independent per-diagram renderers (er / class
+   * The 5 remaining independent per-diagram renderers (er / class
      / requirement / sequence
-     / xychart / c4)
+     / c4)
      raise :class:`UnsupportedDiagramType` here. Their per-diagram leaves ship
-     in later rounds (R293+); until then the dispatch reports the type as
+     in later rounds (R294+); until then the dispatch reports the type as
      unsupported rather than running a renderer that does not exist yet.
    * The default path runs the already-migrated flowchart stack
      (``parser.parse_mermaid`` -> ``layout.compute_layout[_with_config]`` ->
@@ -137,6 +137,7 @@ from .state_diagram import parse_state_diagram
 from .svg_renderer import render, render_with_config
 from .theme import MermaidTheme
 from .timeline_diagram import render_timeline_diagram_to_svg
+from .xychart_diagram import render_xychart_diagram_to_svg
 
 __all__ = [
     "is_mermaid_diagram",
@@ -156,9 +157,10 @@ __all__ = [
 #: in R285, the ``kanban`` renderer shipped in R286, the ``timeline``
 #: renderer shipped in R287, the ``quadrantChart`` renderer shipped in
 #: R288, the ``block-beta`` renderer shipped in R289, the ``journey``
-#: renderer shipped in R290, the ``gitGraph`` renderer shipped in R291, and
-#: the ``mindmap`` renderer shipped in R292 (their dedicated arms sit above
-#: this check); the 10 tokens below are the remaining unsupported surface.
+#: renderer shipped in R290, the ``gitGraph`` renderer shipped in R291, the
+#: ``mindmap`` renderer shipped in R292, and the ``xychart-beta`` renderer
+#: shipped in R293 (their dedicated arms sit above this check); the 9 tokens
+#: below are the remaining unsupported surface.
 #: The five ``C4*`` tokens share grok's single ``c4_diagram`` renderer
 #: (lib.rs L130-L139).
 _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
@@ -167,7 +169,6 @@ _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
         "classDiagram",
         "requirementDiagram",
         "sequenceDiagram",
-        "xychart-beta",
         "C4Context",
         "C4Container",
         "C4Component",
@@ -229,9 +230,14 @@ def render_mermaid_to_svg(
     :func:`render_timeline_diagram_to_svg`; the ``quadrantChart`` renderer
     (R288) emits the four-quadrant chart via
     :func:`render_quadrant_chart_to_svg`; the ``journey`` renderer (R290)
-    emits the user-journey map via :func:`render_journey_diagram_to_svg`; the
-    9 remaining per-diagram renderers raise :class:`UnsupportedDiagramType`
-    until their leaves ship (R291+). Mirrors grok lib.rs L36-L163.
+    emits the user-journey map via :func:`render_journey_diagram_to_svg`;
+    the ``gitGraph`` renderer (R291) emits the git-graph via
+    :func:`render_gitgraph_diagram_to_svg`; the ``mindmap`` renderer (R292)
+    emits the mind-map via :func:`render_mindmap_diagram_to_svg`; the
+    ``xychart-beta`` renderer (R293) emits the cartesian line-chart via
+    :func:`render_xychart_diagram_to_svg`; the 9 remaining unsupported tokens
+    raise :class:`UnsupportedDiagramType` until their leaves ship (R294+).
+    Mirrors grok lib.rs L36-L163.
 
     Raises:
         UnsupportedDiagramType: when the diagram-type token names a diagram
@@ -403,6 +409,18 @@ def render_mermaid_to_svg(
     # symmetry only.
     if diagram_type == "mindmap":
         return render_mindmap_diagram_to_svg(body, resolved_theme)
+
+    # ``xychart-beta`` (R293): the dedicated cartesian line-chart renderer.
+    # Mirrors grok lib.rs L94-L96 -- :func:`render_xychart_diagram_to_svg`
+    # receives the front-matter-stripped body and lays a ``line`` series out on
+    # a fixed 700x500 canvas with a d3-style tick layout (a ``bar`` series is
+    # silently ignored -- grok ships only the ``line`` path). xychart is
+    # theme-aware (2 channels): ``text_color`` -> every axis-line stroke + every
+    # text fill, ``background`` -> the SVG root ``background-color`` style + the
+    # ``main`` group's background rect; the series colors come from the fixed
+    # Tableau-10 palette cycled by series index, NOT the theme.
+    if diagram_type == "xychart-beta":
+        return render_xychart_diagram_to_svg(body, resolved_theme)
 
     if diagram_type in _UNSUPPORTED_DIAGRAM_TYPES:
         raise UnsupportedDiagramType(diagram_type)
