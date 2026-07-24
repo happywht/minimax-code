@@ -88,11 +88,15 @@ Dispatch model (mirrors grok ``render_mermaid_to_svg`` L36-L163)
      L120-L121. mindmap is NOT theme-aware -- grok hard-codes mermaid's default
      mindmap palette (navy root + 8 section hues) and ignores the resolved
      theme (the ``_theme`` param is accepted for dispatch symmetry only).
-   * The 5 remaining independent per-diagram renderers (er / class
-     / requirement / sequence
-     / c4)
-     raise :class:`UnsupportedDiagramType` here. Their per-diagram leaves ship
-     in later rounds (R294+); until then the dispatch reports the type as
+   * The ``requirementDiagram`` renderer (R294) has its own dedicated arm --
+     :func:`render_requirement_diagram_to_svg` parses 7 node kinds + relations,
+     hands them to the dagre layout engine (``compound: false``), and emits a
+     theme-aware SVG (5 channels: background / text_color / edge_color /
+     node_fill / node_stroke). It is the first per-diagram renderer that
+     consumes dagre (phase 2 of direction (1)).
+   * The 4 remaining independent per-diagram renderers (er / class / sequence
+     / c4) raise :class:`UnsupportedDiagramType` here. Their per-diagram leaves
+     ship in later rounds (R295+); until then the dispatch reports the type as
      unsupported rather than running a renderer that does not exist yet.
    * The default path runs the already-migrated flowchart stack
      (``parser.parse_mermaid`` -> ``layout.compute_layout[_with_config]`` ->
@@ -132,6 +136,7 @@ from .parser import parse_mermaid
 from .pie_diagram import render_pie_diagram_to_svg
 from .quadrant_diagram import render_quadrant_chart_to_svg
 from .radar_diagram import render_radar_diagram_to_svg
+from .requirement_diagram import render_requirement_diagram_to_svg
 from .sankey_diagram import render_sankey_diagram_to_svg
 from .state_diagram import parse_state_diagram
 from .svg_renderer import render, render_with_config
@@ -158,16 +163,16 @@ __all__ = [
 #: renderer shipped in R287, the ``quadrantChart`` renderer shipped in
 #: R288, the ``block-beta`` renderer shipped in R289, the ``journey``
 #: renderer shipped in R290, the ``gitGraph`` renderer shipped in R291, the
-#: ``mindmap`` renderer shipped in R292, and the ``xychart-beta`` renderer
-#: shipped in R293 (their dedicated arms sit above this check); the 9 tokens
-#: below are the remaining unsupported surface.
+#: ``mindmap`` renderer shipped in R292, the ``xychart-beta`` renderer shipped
+#: in R293, and the ``requirementDiagram`` renderer shipped in R294 (their
+#: dedicated arms sit above this check); the 8 tokens below are the remaining
+#: unsupported surface.
 #: The five ``C4*`` tokens share grok's single ``c4_diagram`` renderer
 #: (lib.rs L130-L139).
 _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
     {
         "erDiagram",
         "classDiagram",
-        "requirementDiagram",
         "sequenceDiagram",
         "C4Context",
         "C4Container",
@@ -235,8 +240,11 @@ def render_mermaid_to_svg(
     :func:`render_gitgraph_diagram_to_svg`; the ``mindmap`` renderer (R292)
     emits the mind-map via :func:`render_mindmap_diagram_to_svg`; the
     ``xychart-beta`` renderer (R293) emits the cartesian line-chart via
-    :func:`render_xychart_diagram_to_svg`; the 9 remaining unsupported tokens
-    raise :class:`UnsupportedDiagramType` until their leaves ship (R294+).
+    :func:`render_xychart_diagram_to_svg`; the ``requirementDiagram`` renderer
+    (R294) emits the requirement diagram via
+    :func:`render_requirement_diagram_to_svg`; the 8 remaining unsupported
+    tokens raise :class:`UnsupportedDiagramType` until their leaves ship
+    (R295+).
     Mirrors grok lib.rs L36-L163.
 
     Raises:
@@ -421,6 +429,23 @@ def render_mermaid_to_svg(
     # Tableau-10 palette cycled by series index, NOT the theme.
     if diagram_type == "xychart-beta":
         return render_xychart_diagram_to_svg(body, resolved_theme)
+
+    # ``requirementDiagram`` (R294): the dedicated requirement-diagram
+    # renderer. Mirrors grok lib.rs L82-L84 --
+    # :func:`render_requirement_diagram_to_svg` receives the front-matter-
+    # stripped body and parses 7 node kinds (element / requirement /
+    # functionalrequirement / interfacerequirement / performancerequirement /
+    # physicalrequirement / designconstraint) + ``{ key: value }`` property
+    # blocks + ``src -rel-> dst`` relations, hands the nodes + edges to the
+    # dagre layout engine (``compound: false``), and emits a theme-aware SVG.
+    # It is the FIRST per-diagram renderer to consume dagre (phase 2 of
+    # direction (1)); every prior per-diagram leaf computed its geometry by
+    # hand. requirementDiagram is theme-aware (5 channels): ``background`` ->
+    # root bg style, ``text_color`` -> CSS fill + every label fill,
+    # ``edge_color`` -> marker strokes + relationshipLine stroke, ``node_fill``
+    # -> node rect fill, ``node_stroke`` -> node rect stroke + divider line.
+    if diagram_type == "requirementDiagram":
+        return render_requirement_diagram_to_svg(body, resolved_theme)
 
     if diagram_type in _UNSUPPORTED_DIAGRAM_TYPES:
         raise UnsupportedDiagramType(diagram_type)
