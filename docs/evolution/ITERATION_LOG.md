@@ -21051,3 +21051,104 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R284 migrate sankey_diagram renderer`（`0100c3a`，4 文件，+1282/-18）。feat 提交：`sankey_diagram.py`（新建，644 行）+ `render.py`（dispatch sankey arm + `_UNSUPPORTED_DIAGRAM_TYPES` 19->18 + 导入 + docstring）+ `test_mermaid_to_svg_sankey_diagram.py`（新建，52 测试）+ `test_mermaid_to_svg_render.py`（18 token parametrize + docstring）。docs 提交：`docs(platform): R284 iteration log entry`（ITERATION_LOG.md R284 条目）。锚点链: ... -> R282(dbf32ca feat pie_diagram + docs) -> R283(4414ee8 feat packet_diagram + docs) -> R284(0100c3a feat sankey_diagram + docs)。**方向① 第 17 砖：第六个 per-diagram 叶子 + 第五个自包含 SVG 发射器 sankey-beta 加权流向图 longest-path-depth 列布局行为等价移植落地（52 passed，定向 94 passed，全量 mermaid 905 passed/1 xfailed，桶不变 dispatch-only），首个主题感知渲染器（theme.background 流入 SVG 根 + 全画布 rect），下一砖 R285 gantt（437 行）**。
+
+## R285 — 迁移 grok gantt_diagram.rs → render_gantt_diagram_to_svg（方向① 第 18 砖，第七个 per-diagram 叶子 + 第六个自包含 SVG 发射器，gantt 项目进度甘特图 section 分组时间域 day-scale 时间轴 + 嵌入式 <style> CSS 块 + 底部日期轴 daily grid ticks + inside/outside 任务标签 + 左侧 section legend，非主题感知（硬编码 mermaid 11.12.2 默认 gantt 调色板，与 pie/packet 一致异于 sankey），行为等价移植非逐行克隆，桶不变 dispatch-only reach）
+
+锚点:R285-1 <pending>
+
+### 本轮目标
+
+迁移 grok `gantt_diagram.rs`（437 行——第七个 per-diagram 叶子，第六个**渲染器**（自包含 SVG 发射器，同 R279 info / R281 radar / R282 pie / R283 packet / R284 sankey；异于 R280 state 解析器复用 dagre 栈）。gantt 是 mermaid 的项目进度甘特图：一组任务按 **section** 分组，每任务由 `id, start, duration` 描述（start 为绝对 `YYYY-MM-DD` ymd 或 `after <ref_id>` 依赖链），渲染器扫描全部任务的 day 域确定 `[min_day, max_day]` 时间窗口，按 `px_per_day` 缩放铺设水平任务条，底部画 daily grid ticks 的日期轴，section 用交替背景色带分组，长任务名触发 inside/outside 文本放置。**核心算法难点是 Howard Hinnant 日期算法**（`_days_from_civil` / `_day_to_ymd` 互逆——proleptic Gregorian 日期 ↔ epoch day number 转换，用于 ymd 解析 + 日期轴刻度回标）。纯迭代几何——无 AST、无 dagre——故本砖直接从解析模型发射 SVG，且 gantt 是 mermaid 第二个带嵌入式 `<style>` CSS 块的渲染器（pie 是第一个，pie 的 CSS 内联在 wedge 标签）→ Python `render_gantt_diagram_to_svg`，并在 `render.py` dispatch 接入 gantt arm。方向① 第 18 砖。延续 R271--R284 的"行为等价移植非逐行克隆"方法论（用户持续指示："别逐行代码的复刻，要按照功能的复刻" / "按功能进行克隆"）。
+
+### 融合结论
+
+`gantt_diagram.py` 落地 `render_gantt_diagram_to_svg`（1 公共符号，grok `pub fn`）。`render.py` dispatch 新增 gantt arm（位于 R284 sankey arm 之后、`_UNSUPPORTED_DIAGRAM_TYPES` 检查之前），延续 R282 body-shadow 契约传 front-matter-stripped `body`（grok lib.rs L47 shadow）。**桶不变**：gantt_diagram 是 dispatch-only reach，不进 to_svg barrel（镜像 grok crate root 从不 re-export `gantt_diagram` 符号——`lib.rs` L74-L76 仅经 dispatch arm 调用）。`_UNSUPPORTED_DIAGRAM_TYPES` 18 -> 17 token（移除 `gantt`）。8 个"按功能复刻"架构裁决：① **Howard Hinnant 日期算法**（`_days_from_civil(y,m,d)` / `_day_to_ymd(day)` 互逆——Python `//` floor 语义等价 Rust truncation division，关键判别 fixture `(0,1,1)` proleptic Gregorian year 0 同时产生负 day_number AND 负 z，parametrize 测试覆盖该 floor vs truncation-adjusted idiom 等价性）；② **非主题感知**（`_theme` 参数未用——与 R282 pie / R283 packet 硬编码调色板一致，异于 R284 sankey 真正消费 `theme.background`，本会话 `test_render_gantt_is_not_theme_aware` 断言 dark==light 输出验证）；③ `_escape_xml` `&apos;` 变体（同 R282 pie / R283 packet，异于 R281 radar / R284 sankey `&#39;`）；④ **嵌入式 `<style>` CSS 块**（gantt 是 mermaid 第二个带 CSS 的渲染器——pie 第一个 CSS 内联 wedge，gantt CSS 是独立 `<style>` 块声明 section 背景 / 任务条 / 网格 / 字体族规则）；⑤ section 分组 + 时间域 `[min_day, max_day]` 扫描 + `px_per_day` 缩放（grok 布局核心：全任务 day 域 min/max 定窗口，px_per_day = 可用宽度 / day 跨度，任务条 x = (start_day - min_day) * px_per_day，宽度 = duration * px_per_day）；⑥ duration 解析（`d`/`D` -> n 天，`w`/`W` -> n*7 天）+ `after <ref_id>` 依赖解析（前驱任务 end_day 作为后继 start_day，未解析 id 抛 `Unknown gantt dependency id`）；⑦ 6 段 SVG 发射（根 + `<style>` CSS + section 背景带 + 任务条 + 底部日期轴 + 任务标签 inside/outside）；⑧ dispatch body-shadow 延续（R282 lift 已铺契约，gantt arm 零额外开销复用）。
+
+### 决策证据（行为等价映射 + Howard Hinnant 日期算法 + 非主题感知 + &apos; 转义 + 嵌入式 CSS + section/时间域/缩放 + duration/after + 6 段发射 + dispatch body-shadow）
+
+**证据 ① Howard Hinnant 日期算法 `_days_from_civil` / `_day_to_ymd`（grok gantt_diagram.rs 日期原语）。** gantt 的 ymd 解析（`YYYY-MM-DD` -> epoch day number）+ 日期轴刻度回标（day number -> `YYYY-MM-DD` 标签）依赖 Howard Hinnant 的 proleptic Gregorian 日期算法。算法核心：`_days_from_civil(y,m,d)` 将日期转为自 epoch（1970-01-01）的 day number，公式 `y2 = y - (m<=2); era = (y2>=0 ? y2 : y2-399) // 400; yoe = y2 - era*400; doy = (153*(m + (m>2 ? -3 : 9)) + 2)//5 + d - 1; doe = yoe*365 + yoe//4 - yoe//100 + doy; return era*146097 + doe - 719468`。`_day_to_ymd(day)` 是其逆运算。**关键判别点**：Rust 用整数 truncation division（`/`，向零截断），Python `//` 是 floor division（向负无穷）。对正数二者等价，对负数发散（如 Rust `-3 / 2 == -1`，Python `-3 // 2 == -2`）。但 Howard Hinnant 的 idiom 用 `era = (y2 >= 0 ? y2 : y2-399) / 400` 预先调整 y2 为非负再除——**这个 adjustment 让 floor 与 truncation 在 adjusted 值上等价**。-> Python port 直接用 `//`（floor），因为：(a) `era` 计算——grok 的三元 `(y2>=0 ? y2 : y2-399)` 已保证被除数非负，`//` 与 truncation 在非负数上一致；(b) 其余除法（`// 400` / `// 4` / `// 100` / `(153*...+2)//5`）的被除数经 adjustment 后皆非负。**关键验证 fixture `(0,1,1)`**（proleptic Gregorian year 0, month 1, day 1）：`y2 = 0 - 1 = -1`（m<=2 触发）-> `era = (-1 >= 0 ? -1 : -1-399) // 400 = (-400) // 400 = -1`（floor）—— Rust truncation `-400 / 400 = -1`（恰好整除，floor==truncation）。同时 day_number 和 z 都为负，验证 Python floor 在负数域上与 grok truncation-adjusted idiom 行为一致。本会话 parametrize 测试覆盖：epoch `(1970,1,1)->0` / `(1970,1,2)->1` / 闰日 `(2000,2,29)` / `(2024,1,1)` / `(2024,12,31)` / 负 day `(1900,3,1)` / **关键 floor 验证 `(0,1,1)` 负 z**。Howard Hinnant round-trip 测试（`_day_to_ymd(_days_from_civil(y,m,d)) == (y,m,d)`）锁定互逆。
+
+**证据 ② 非主题感知 `_theme` 未用（grok 硬编码 mermaid 11.12.2 默认 gantt 调色板）。** grok `render_gantt_diagram_to_svg` 接收 `theme` 参数但**从不读它**——section 背景 / 任务条 / 网格 / 字体全用硬编码常量（`SECTION_BKG_COLOR="rgba(102,102,255,0.49)"` / `TASK_BKG_COLOR="#8a90dd"` / `TASK_BORDER_COLOR="#534fbc"` / `GRID_COLOR="#333"` / `TITLE_COLOR="#333"` / `FONT_FAMILY="'trebuchet ms', verdana, arial, sans-serif"`）。**与 R282 pie / R283 packet 一致**（硬编码忽略主题），**异于 R284 sankey**（真正消费 `theme.background`）。-> Python port 参数命名 `_theme`（下划线前缀标记未用），忠实保留硬编码调色板。测试 `test_render_gantt_is_not_theme_aware`（明 dark 主题 + 默认 light 主题渲染同一 gantt，断言输出完全相等 `dark == light`）锁定非主题感知语义。这是"按功能复刻"对 grok 主题消费语义的诚实区分——不把 gantt 升级为 sankey 的主题感知模式。
+
+**证据 ③ `_escape_xml` `&apos;` 变体（grok `gantt_diagram.rs` `escape_xml`）。** grok `gantt_diagram.rs` 的 `escape_xml`：`'` -> `&apos;`（XML 命名实体）。**与 R282 pie / R283 packet 一致**，**异于 R281 radar / R284 sankey 的 `&#39;`**（数值字符引用）——四源不一致（radar/sankey 用 `&#39;`，pie/packet/gantt 用 `&apos;`）。port 忠实克隆：`gantt_diagram._escape_xml` 用 `&apos;`，各 helper 独立定义（非共享）。测试 `test_escape_xml_replaces_all_five_significant_char`（`_escape_xml("a&b<c>d\"e'f") == "a&amp;b&lt;c&gt;d&quot;e&apos;f"`）锁定 `&apos;` 变体。这是"按功能复刻"对 grok 源内不一致的诚实镜像——不"统一"五文件的转义形式。
+
+**证据 ④ 嵌入式 `<style>` CSS 块（grok gantt 第二个带 CSS 的渲染器）。** gantt 是 mermaid 第二个在 SVG 内嵌入 `<style>` CSS 块的渲染器（pie 是第一个，但 pie 的 CSS 内联在 wedge 标签的 `style` 属性；gantt 是独立的 `<style>...</style>` 元素块）。CSS 规则声明 section 背景 / 任务条 / 网格 / 字体族（`.section{...}` / `.task{...}` / `.grid{...}` / `text{font-family:...}`）。-> Python port 在 SVG 发射的第 2 段（根元素之后）插入 `<style>` 块，CSS 规则字符串忠实镜像 grok。测试 `test_render_gantt_emits_embedded_style_block`（SVG 含 `<style>` 块 + 关键 CSS 选择器）锁定。这是"按功能复刻"对 grok CSS 发射策略的忠实还原——不为"一致性"把 CSS 改为内联属性。
+
+**证据 ⑤ section 分组 + 时间域 `[min_day, max_day]` 扫描 + `px_per_day` 缩放（grok 布局核心）。** grok `render_gantt_diagram_to_svg` 三阶段布局：**(a) section 分组**（任务按所属 section 聚合，section 名作为左侧行 legend + 交替背景带）；**(b) 时间域扫描**（遍历全部任务的 `[start_day, start_day+duration]` 区间，取 `min_day = min(start_day)` / `max_day = max(start_day+duration)` 定全局时间窗口）；**(c) px_per_day 缩放**（`available_width = _WIDTH - LEFT_PADDING - RIGHT_PADDING`; `day_span = max_day - min_day`; `px_per_day = available_width / day_span`; 任务条 `x = LEFT_PADDING + (start_day - min_day) * px_per_day`; `width = duration * px_per_day`; 任务行 `y` 按 section 分组内序 + `BAR_HEIGHT + BAR_GAP` 步进）。-> Python `_compute_task_geometry` 忠实镜像三阶段。测试 `test_render_gantt_task_bar_x_scales_with_px_per_day`（任务条 x 按日偏移线性缩放）+ `test_render_gantt_section_background_bands_alternate`（section 交替背景）锁定。
+
+**证据 ⑥ duration 解析 + `after <ref_id>` 依赖解析（grok 任务 spec 解析）。** grok 任务 spec 三字段 `id, start, duration`：**(a) duration** 经 `_parse_duration_days` 解析——末字符 `d`/`D` -> `n` 天，`w`/`W` -> `n*7` 天（数字前缀 `int()` 截断），空字符串抛 `Empty duration`，非数字抛 `Invalid duration`，未知单位抛 `Unsupported duration unit`；**(b) start** 两种——绝对 ymd `YYYY-MM-DD`（经 `_parse_ymd_to_day` -> Howard Hinnant day number）或 `after <ref_id>`（查已解析任务表，前驱 `end_day = start_day + duration` 作为后继 `start_day`，未解析 id 抛 `Unknown gantt dependency id`）。-> Python `_parse_duration_days` / `_parse_ymd_to_day` 忠实镜像。测试 `test_parse_duration_days_supports_d_and_w_units`（`5d`->5 / `2w`->14）+ `test_parse_gantt_after_dependency_resolves_to_predecessor_end`（after 链解析到前驱 end_day）+ `test_parse_gantt_after_unknown_id_raises`（未知 id 抛 line-stamped ParseError）锁定。
+
+**证据 ⑦ 6 段 SVG 发射（grok L1-L116 六段发射）。** grok 发射六段：**(a)** SVG 根（`viewBox` + `width`/`height` + `aria-roledescription="gantt"`）；**(b)** `<style>` CSS 块（section/task/grid/text 规则）；**(c)** section 背景带（交替 `SECTION_BKG_COLOR` / `ALT_SECTION_BKG_COLOR` 全宽 rect，左侧 section 名 label）；**(d)** 任务条（每任务一个 `<rect class="task" x y width height rx ry fill stroke>` + 任务 id dom 标识）；**(e)** 底部日期轴（daily grid ticks——每日一条 `GRID_COLOR` 竖线 + 日期 `YYYY-MM-DD` label，经 `_day_to_ymd_str` 回标）；**(f)** 任务标签 inside/outside（短名放条内 `TASK_TEXT_COLOR` 白色，长名放条外右侧 `TASK_TEXT_DARK_COLOR` 黑色——`outside right` 放置策略）。-> Python `render_gantt_diagram_to_svg` 逐段镜像，`_fmt` 桥接所有浮点坐标（整数浮点丢 `.0`，如 `784.0`->`"784"`）。测试 `test_render_gantt_emits_six_segments` + `test_render_gantt_bottom_axis_daily_grid_ticks` + `test_render_gantt_outside_right_text_placement`（长名触发 outside right 放置）锁定六段结构。
+
+**证据 ⑧ dispatch body-shadow 延续（grok lib.rs L47 shadow，R282 lift 已铺契约）。** grok `render_mermaid_to_svg` L47 `let mermaid_source = parsed_source.body.as_ref();` 局部 shadow——所有 per-diagram 分支传 shadow 后的 body。R282 已统一 info/radar/pie 三 arm 传 body 并修正移植保真度；R283 packet / R284 sankey arm 延续；R285 gantt arm 直接复用 `if diagram_type == "gantt": return render_gantt_diagram_to_svg(body, resolved_theme)`——零额外 lift。测试 `test_render_mermaid_to_svg_gantt_strips_frontmatter_before_dispatch`（`---title:Demo---` + gantt body -> 正常渲染，body-shadow 契约锁定）。这是"按功能复刻"对 R282 契约的复用——零额外开销。
+
+### 交付
+
+- `agent/minimax_code/mermaid/to_svg/gantt_diagram.py`（新建，579 行）：
+
+  - **模块 docstring（行为等价移植框架）** —— 开宗明义 "behavioral-equivalent port of grok's gantt_diagram.rs"，区分本砖（第七 per-diagram 叶子 + 第六自包含 SVG 发射器，同 R279 info / R281 radar / R282 pie / R283 packet / R284 sankey）vs R280（解析器复用 dagre 栈）。Howard Hinnant 日期算法段（Python `//` floor vs Rust truncation 等价性 + 关键 fixture `(0,1,1)` 验证）+ 非主题感知段（`_theme` 未用，硬编码调色板）+ 嵌入式 CSS 块段（第二个带 CSS 的渲染器）+ `_escape_xml` `&apos;` 变体段 + dispatch body-shadow 延续段。引用 grok 行号作**契约参照**。
+  - **`__all__ = ["render_gantt_diagram_to_svg"]`**（1 符号，grok `pub fn`）。11 布局常量 + 9 主题色常量 + `_WIDTH=784.0` + 2 frozen dataclass + 8 helper/parser 模块私有/内部；不进 to_svg barrel（dispatch-only reach）。
+  - **常量**（grok verbatim）：`BAR_HEIGHT=20.0` / `BAR_GAP=4.0` / `TOP_PADDING=50.0` / `LEFT_PADDING=75.0` / `RIGHT_PADDING=75.0` / `GRID_LINE_START_PADDING=35.0` / `FONT_SIZE=11.0` / `SECTION_FONT_SIZE=11.0` / `TITLE_TOP_MARGIN=25.0` / `BOTTOM_AXIS_HEIGHT=50.0` / `RX=3.0` / `RY=3.0` + 9 色（`SECTION_BKG_COLOR="rgba(102,102,255,0.49)"` / `ALT_SECTION_BKG_COLOR="white"` / `TASK_BKG_COLOR="#8a90dd"` / `TASK_BORDER_COLOR="#534fbc"` / `TASK_TEXT_COLOR="white"` / `TASK_TEXT_DARK_COLOR="black"` / `GRID_COLOR="#333"` / `TITLE_COLOR="#333"` / `FONT_FAMILY="'trebuchet ms', verdana, arial, sans-serif"`）+ `_WIDTH=784.0`。
+  - **2 个 `@dataclass(frozen=True)`**（grok struct 不可变值类型）：`GanttTask(section, name, start_day, duration_days)` + `GanttChart(title, tasks)`。
+  - **`_fmt(value) -> str`**：Display 浮点桥接（同 R281-R284，整数浮点丢 `.0`）。
+  - **`_escape_xml(s) -> str`**：5 个 XML 显著字符实体化，`'` -> `&apos;`（pie/packet/gantt 变体）。
+  - **`_days_from_civil(y, m, d) -> int`**：Howard Hinnant proleptic Gregorian -> epoch day number，Python `//` floor 等价 Rust truncation-adjusted idiom。
+  - **`_day_to_ymd(day) -> tuple[int, int, int]`**：逆运算，`_day_to_ymd_str(day) -> str` 包 `YYYY-MM-DD` 格式化。
+  - **`_parse_ymd_to_day(s) -> int`**：`YYYY-MM-DD` 解析（`-` 分段，segment-count 检查 + year/month/day 逐段 `int()`），失败抛 `Invalid date` / `Invalid year` / `Invalid month` / `Invalid day`。
+  - **`_parse_duration_days(spec) -> int`**：`d`/`D` -> n，`w`/`W` -> n*7，空抛 `Empty duration`，非数字抛 `Invalid duration`，未知单位抛 `Unsupported duration unit`。
+  - **`parse_gantt_diagram(input) -> GanttChart`**：头部扫描（首 token 须 `gantt`）+ `title` / `dateFormat` / `section` / 任务行（`name :id, start, duration`）+ `after <id>` 依赖解析（前驱 end_day 作后继 start_day）+ 至少一任务。
+  - **`render_gantt_diagram_to_svg(mermaid_source, _theme) -> str`**：parse -> 三阶段布局（section 分组 + 时间域 min/max + px_per_day 缩放）-> 六段 SVG 发射（根 + `<style>` CSS + section 背景带 + 任务条 + 底部日期轴 + 任务标签 inside/outside）。**`_theme` 参数未用**（非主题感知，硬编码调色板）。
+
+- `agent/minimax_code/mermaid/to_svg/render.py`（修改）：
+
+  - **导入块**：`from .gantt_diagram import render_gantt_diagram_to_svg`（isort 序：`.gantt_diagram` 按字母序落位 `.config` 之后、`.info_diagram` 之前）。
+  - **dispatch arm**（sankey arm 之后、unsupported 检查之前）：`if diagram_type == "gantt": return render_gantt_diagram_to_svg(body, resolved_theme)`——传 front-matter-stripped `body`（R282 body-shadow 契约延续）+ **非主题感知注释**（说明 gantt 与 pie/packet 一致忽略主题，硬编码 mermaid 11.12.2 默认 gantt 调色板）。
+  - **`_UNSUPPORTED_DIAGRAM_TYPES` 18 -> 17 token**（移除 `gantt`）。注释刷新 R285 语义（info / state / radar / pie / packet / sankey / gantt 七 arm 已 ship；17 token 仍 raise）。
+  - **docstring 刷新**：dispatch model 段新增 "gantt 专属 arm" 描述 + R285 标注 + section 分组时间域 day-scale 布局 + 非主题感知说明 + "13 remaining" + R286+。
+
+- `agent/tests/test_mermaid_to_svg_gantt_diagram.py`（新建，63 测试，19 section）：
+
+  - **dispatch 冒烟**：`gantt` + 任务端到端渲染 `<svg>...</svg>` / 不再抛 `UnsupportedDiagramType`（R277 曾在 unsupported 集，R285 提升为专属 arm）/ 直接调 renderer 返回结构化 SVG / 头部识别。
+  - **头部语法**：`gantt` 声明识别 + `title` + `dateFormat` + `section` 声明。
+  - **任务语法**：`name :id, start, duration` 三字段 spec + 多任务保序。
+  - **duration 解析**：`d`/`D` -> n 天 / `w`/`W` -> n*7 天 / 空抛 `Empty duration` / 非数字抛 `Invalid duration` / 未知单位抛 `Unsupported duration unit`。
+  - **after 依赖**：`after <ref_id>` 链解析到前驱 end_day / 未知 id 抛 line-stamped `Unknown gantt dependency id`。
+  - **ymd 解析**：`_parse_ymd_to_day` 接受 `YYYY-MM-DD` / segment-count 检查抛 `Invalid date` / 非数字 year 抛 `Invalid year`。
+  - **Howard Hinnant round-trip（parametrize 7 fixture）**：epoch `(1970,1,1)->0` / `(1970,1,2)->1` / 闰日 `(2000,2,29)` / `(2024,1,1)` / `(2024,12,31)` / 负 day `(1900,3,1)` / **关键 floor 验证 `(0,1,1)` 负 z**——`_day_to_ymd(_days_from_civil(y,m,d)) == (y,m,d)` 互逆。
+  - **SVG 结构（6 段）**：根元素 + `<style>` CSS 块 + section 背景带交替 + 任务条 rect 几何 + 底部日期轴 daily grid ticks + 任务标签。
+  - **inside/outside 文本放置**：长名触发 outside right 放置（`TASK_TEXT_DARK_COLOR` 黑色）/ 短名 inside（`TASK_TEXT_COLOR` 白色）。
+  - **`_escape_xml` + `_fmt`**：5 字符全实体化（`&apos;` 变体）+ 整数浮点丢 `.0`（`784.0`->`"784"`）。
+  - **非主题感知**：明 dark 主题 + 默认 light 主题渲染同一 gantt，断言输出完全相等 `dark == light`。
+  - **任务行错误**：无 `:` 抛 `Invalid gantt task line` / spec < 3 字段抛 `Invalid gantt task spec` / 空 tasks 抛 line 1。
+  - **模块/barrel/dataclass 表面**：`__all__ == ["render_gantt_diagram_to_svg"]` / 不在 to_svg barrel（dispatch-only reach，桶 18 不变）/ 冻结 dataclass 赋值抛 `FrozenInstanceError`。
+  - **front-matter dispatch**：`---title:Demo---` + gantt body -> 正常渲染（body-shadow 契约锁定）。
+
+- `agent/tests/test_mermaid_to_svg_render.py`（修改）：
+
+  - **17 token parametrize**（移除 `gantt`）：unsupported 集合从 18 -> 17 token。注释刷新 R285 语义。
+  - **docstring 更新（2 处）**：模块 docstring dispatch invariants 段说明 info（R279）+ state（R280）+ radar（R281）+ pie（R282）+ packet（R283）+ sankey（R284）+ gantt（R285）七 renderer/parser 已 ship，17 token 仍 raise；测试 docstring 同步刷新 R285 gantt 标注；barrel `__all__` 15->18 断言不变（R285 不动 barrel）。
+
+### 验证
+
+- ruff：`gantt_diagram.py` + `render.py` + `test_mermaid_to_svg_gantt_diagram.py` + `test_mermaid_to_svg_render.py` **All checks passed**（line-length 100，select E/F/W/I/B/UP，ignore E501）。CRLF 警告正常（Windows 11），无害。
+- 定向 pytest（gantt_diagram + render 测试）：**104 passed in 0.47s**（63 新 gantt_diagram 测试 + 41 render 测试实例）。gantt 单独套件：**63 passed in 0.21s**；render 单独套件：**41 passed in 0.32s**。质量门控在 feat 提交前已捕获并修复了 1 处 fixture bug（`test_parse_gantt_bad_date_wrapped_into_parse_error` 原用坏日期 fixture `"not-a-date"`——`split("-")` 恰好 3 段，通过 segment-count 检查进入 year 解析，`int("not")` 失败抛 `Invalid year: not-a-date` 而非断言期望的 `Invalid date`；改为无连字符的 `"notadate"`——`split("-")` = 1 段，触发 segment-count 分支抛 `Invalid date: notadate`，并对齐实际行为；并扩展 docstring 说明两种坏日期 fixture 分别覆盖 segment-count 分支 vs year-parser 分支）。**实现代码 gantt_diagram.py 零修改**——缺陷全在测试侧 fixture 选择，Python 实现已正确镜像 grok 行为。
+- 全量 mermaid 回归（`tests/ -k "mermaid"`）：**967 passed, 4 skipped, 7256 deselected, 1 xfailed, 1 warning in 8.81s**，0 failed（R284 基线 905 -> R285 967，新增 62 = 63 gantt 测试 - 1 个 render parametrize token 移除的净增）。1 xfailed 是 R278c 暴露的预存 dagre 缺陷（`network_simplex._exchange_edges` 对子图内链式边 `None -= 1` -> `TypeError`，`long_identifier` xfail(strict=True)）。变更领域（mermaid/to_svg/）内所有测试通过。本轮未跑全 `tests/` 套件（mermaid 子集已覆盖变更域；预存无关 flaky 按"不破坏迭代独立性"原则追踪为预存不相关，不阻塞 R285 提交）。
+
+### YAGNI 边界
+
+- **非主题感知不"升级"为主题感知** —— gantt 与 pie/packet 一致硬编码 mermaid 11.12.2 默认调色板（grok `render_gantt_diagram_to_svg` 接收 `theme` 但从不读）。port 参数命名 `_theme`（下划线前缀标记未用），忠实保留硬编码，不升级为 sankey 的主题感知模式。测试 `test_render_gantt_is_not_theme_aware`（dark==light）锁定。这是"按功能复刻"对 grok 主题消费语义的诚实区分。
+- **`_escape_xml` `&apos;` vs `&#39;` 不"统一"（延续 R281-R284）** —— grok `radar_diagram.rs`/`sankey_diagram.rs` 用 `&#39;`、`pie_diagram.rs`/`packet_diagram.rs`/`gantt_diagram.rs` 用 `&apos;`，五源不一致。port 各自忠实克隆独立 helper，不统一为一个。
+- **Howard Hinnant `//` floor 不"简化"为 Rust truncation 模拟** —— Rust 用 truncation division（`/`），Python `//` 是 floor。但 Howard Hinnant 的 idiom（`era = (y2>=0 ? y2 : y2-399) / 400` 预先调整 y2 非负）让 floor 与 truncation 在 adjusted 值上等价。port 直接用 `//`，parametrize 测试覆盖关键判别 fixture `(0,1,1)`（负 day + 负 z）验证等价性——不手写 truncation-adjusted idiom。
+- **嵌入式 `<style>` CSS 不"内联化"** —— gantt 是第二个带独立 `<style>` 块的渲染器（pie 的 CSS 内联 wedge 标签）。port 忠实发射独立 `<style>` 块，不为"一致性"改为内联属性。
+- **duration `inf`/`nan` 不"接线"** —— duration 数字解析用 `int()` 截断，语义上为有限正整数，port 不接线 `inf`/`nan` 边缘（已记录的非议题）。
+- **dispatch body-shadow 延续非新 lift（R282 已铺契约）** —— R282 已统一 info/radar/pie 三 arm 传 body；R283 packet + R284 sankey + R285 gantt 直接复用该契约，零额外 lift 开销。
+- **`xfail(strict=True)` 暴露预存 dagre 缺陷（延续 R278c--R284）** —— `network_simplex._exchange_edges` 的 `None -= 1` 缺陷待专门 dagre 边交换修复落地后翻转。
+- **桶不变（dispatch-only reach，延续 R279-R284）** —— gantt_diagram 不进 to_svg barrel（镜像 grok crate root 从不 re-export）。桶 `__all__` 仍 18（R277 基线）；gantt 符号仅经 `render.py` dispatch arm 到达。**无 barrel-guard 测试同步**（桶不变，零同步开销）。
+- **修正后路线图**：
+  - **R286+** —— 13 个余下 per-diagram 渲染器（按 grok 源行数升序：kanban 506 / timeline 513 / quadrant 540 / block 547 / journey 563 / gitgraph 576 / mindmap 670 / xychart 867 / requirement 874 / er 936 / class 1144 / c4 1201 / sequence 1326），按复杂度递增逐砖推进。gantt（本砖）是第六个自包含 SVG 发射器（同 R279 info / R281 radar / R282 pie / R283 packet / R284 sankey 模式）+ 第二个带嵌入式 `<style>` CSS 块的渲染器 + 第二个 Howard Hinnant 日期算法消费者；下一砖 kanban（506 行）是余下最简独立渲染器。
+  - **dagre 边交换修复** —— 修复 `network_simplex._exchange_edges` 的 `None -= 1` 缺陷，使 `long_identifier` xfail 翻转。
+- **方向② xai-codebase-graph（tree-sitter 代码索引）+ 方向③ L2 自演化框架骨架接线** 均未开始（方向① 优先）。
+
+### Commit
+
+`feat(platform): R285 migrate gantt_diagram renderer`（`355538c`，4 文件，+1265/-18）。feat 提交：`gantt_diagram.py`（新建，579 行）+ `render.py`（dispatch gantt arm + `_UNSUPPORTED_DIAGRAM_TYPES` 18->17 + 导入 + docstring）+ `test_mermaid_to_svg_gantt_diagram.py`（新建，63 测试）+ `test_mermaid_to_svg_render.py`（17 token parametrize + docstring）。docs 提交：`docs(platform): R285 iteration log entry`（ITERATION_LOG.md R285 条目）。锚点链: ... -> R283(4414ee8 feat packet_diagram + docs) -> R284(0100c3a feat sankey_diagram + docs) -> R285(355538c feat gantt_diagram + docs)。**方向① 第 18 砖：第七个 per-diagram 叶子 + 第六个自包含 SVG 发射器 gantt 项目进度甘特图 section 分组时间域 day-scale 时间轴行为等价移植落地（63 passed，定向 104 passed，全量 mermaid 967 passed/1 xfailed，桶不变 dispatch-only），非主题感知（硬编码 mermaid 11.12.2 默认 gantt 调色板，与 pie/packet 一致异于 sankey），Howard Hinnant 日期算法（Python `//` floor 等价 Rust truncation-adjusted idiom，关键 fixture `(0,1,1)` 负 z 验证），第二个带嵌入式 `<style>` CSS 块的渲染器，下一砖 R286 kanban（506 行）**。
