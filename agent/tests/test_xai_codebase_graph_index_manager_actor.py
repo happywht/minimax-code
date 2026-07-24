@@ -141,10 +141,19 @@ def test_index_manager_not_in_leaf_all() -> None:
     assert "IndexManager" not in im.__all__
 
 
-def test_index_manager_not_in_crate_root_all() -> None:
-    """The actor struct never reaches the crate-root barrel either."""
-    assert "IndexManager" not in xcg_root.__all__
-    assert not hasattr(xcg_root, "IndexManager")
+def test_index_manager_in_crate_root_after_r308() -> None:
+    """R308 barrel reconciliation: ``IndexManager`` reaches the crate root.
+
+    grok ``lib.rs`` L85 re-exports ``IndexManager`` (the actor runtime) at the
+    crate root. R308 completed this barrel reconciliation: ``IndexManager``
+    now lives in the crate-root ``__all__`` and resolves to the same object
+    as the ``index_manager`` leaf module. Pre-R308 this test pinned the
+    opposite (leaf-only) state; the leaf-module ``__all__`` still omits it
+    (grok models it as crate-private at the leaf, re-exported only at the
+    crate root -- see :func:`test_index_manager_not_in_leaf_all`).
+    """
+    assert "IndexManager" in xcg_root.__all__
+    assert xcg_root.IndexManager is im.IndexManager
 
 
 def test_exit_beacon_stays_test_only() -> None:

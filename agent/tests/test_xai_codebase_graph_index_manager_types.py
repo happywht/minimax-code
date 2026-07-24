@@ -358,21 +358,23 @@ def test_crate_root_exports_five_non_colliding_symbols() -> None:
         assert hasattr(xcg_root, sym)
 
 
-def test_crate_root_file_event_still_binds_types_version() -> None:
-    """The crate-root ``FileEvent`` stays bound to the ``types`` version (R300).
+def test_crate_root_file_event_binds_index_manager_version_after_r308() -> None:
+    """The crate-root ``FileEvent`` binds the ``index_manager`` version (R308).
 
-    R306a does **not** clobber it: ``index_manager.FileEvent`` is reachable via
-    the leaf module only. A barrel-reconciliation brick (post-``navigation``)
-    will switch the crate root to the ``index_manager`` version in one atomic
-    edit to match grok ``lib.rs`` L84-L86.
+    R308 barrel reconciliation switches the crate root from the ``types``
+    single-file union (R300 placement, preserved through R306a) to the
+    ``index_manager`` batch container, matching grok ``lib.rs`` L84-L86 in one
+    atomic edit. Pre-R308 this test pinned the opposite (types-bound) state;
+    the ``types``-flavored ``FileEvent`` / ``FileEventKind`` stay reachable via
+    the ``types`` subpackage.
     """
-    # the crate-root symbol IS the types version (R300 placement preserved).
-    assert xcg_root.FileEvent is TypesFileEvent
-    assert xcg_root.FileEventKind is TypesFileEventKind
-    # the index_manager batch version is NOT at the crate root.
-    assert xcg_root.FileEvent is not FileEvent
-    # ... but it is reachable through the leaf module.
-    assert im.FileEvent is FileEvent
+    # the crate-root symbol IS the index_manager batch version (R308 switch).
+    assert xcg_root.FileEvent is FileEvent
+    assert xcg_root.FileEventKind is FileEventKind
+    # the types single-file union is NOT at the crate root.
+    assert xcg_root.FileEvent is not TypesFileEvent
+    # ... but it is reachable through the types subpackage (flavors stay split).
+    assert TypesFileEvent is not FileEvent
 
 
 def test_crate_root_query_error_is_index_manager_version() -> None:

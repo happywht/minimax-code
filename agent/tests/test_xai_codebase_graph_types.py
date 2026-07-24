@@ -598,15 +598,23 @@ def test_crate_root_barrel_mirrors_types_barrel() -> None:
     R301 extends the crate root with ``scope_graph`` node symbols, so the
     crate-root surface is now a *superset* of the types barrel (no longer
     equal). The invariant that matters: every types-barrel name resolves to
-    the same object under both paths. The superset direction
-    (``types <= crate root``) stays robust as the crate root grows in R302+.
+    the same object under both paths -- **except** the R308 flavor-switched
+    triple (``Location`` -> navigation, ``FileEvent`` / ``FileEventKind`` ->
+    index_manager), which grok deliberately keeps split (see the crate-root
+    barrel docstring). The superset direction (``types <= crate root``) stays
+    robust as the crate root grows.
     """
     import minimax_code.xai_codebase_graph as xcg
 
     assert set(xcgt.__all__) <= set(xcg.__all__)
-    # Each types-barrel name resolves to the same object under both paths.
+    # R308 flavor-switched symbols: the name resolves at the crate root but
+    # binds to a DIFFERENT flavor (grok keeps the two flavors split).
+    flavor_switched = {"Location", "FileEvent", "FileEventKind"}
     for name in xcgt.__all__:
-        assert getattr(xcg, name) is getattr(xcgt, name)
+        if name in flavor_switched:
+            assert getattr(xcg, name) is not getattr(xcgt, name)
+        else:
+            assert getattr(xcg, name) is getattr(xcgt, name)
 
 
 def test_barrel_leaf_identity() -> None:

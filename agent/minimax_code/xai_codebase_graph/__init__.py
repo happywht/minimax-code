@@ -56,7 +56,7 @@ the ``IndexError`` enum. The 3 :class:`IndexBuildError` subclasses
 (:class:`IndexWalkError` / :class:`IndexThreadPanic` / :class:`IndexIOError`)
 stay ``manager``-subpackage-only (mirrors the cache design: grok's single
 enum sits at the crate root, the distinguishable failure modes live one
-layer down). The ``navigation`` module follows in a later brick.
+layer down). The ``navigation`` module lands in R307 + R308.
 
 R305h adds the ``manager`` lock sibling (grok ``lock.rs``): the workspace-
 level locking runtime (in-memory same-process dedup + cross-process lock
@@ -96,6 +96,18 @@ deadlock on ``Future.result()``), and exposes the Python-only
 module only. The remaining actor runtime (ACTIVE_MANAGERS / ExitBeacon / the
 actor loop) lands in R306e-R306g.
 
+R307 lands the ``navigation`` module (grok ``navigation.rs``): the
+:class:`Navigator` runtime + :class:`Location` (navigation flavor) +
+:class:`NavigationResult` + the :class:`NavigationError` 6-variant hierarchy
+-- the go-to-definition / go-to-references orchestrator. R308 reconciles
+the crate-root barrel: ``Location`` / ``NavigationError`` /
+``NavigationResult`` / ``Navigator`` reach the crate root (grok ``lib.rs``
+L94); ``FileEvent`` / ``FileEventKind`` switch to the ``index_manager``
+batch-container version (grok L84); and ``IndexManager`` (the actor runtime)
+joins the crate root (grok L85). The ``types``-flavored ``Location`` /
+``FileEvent`` / ``FileEventKind`` stay reachable via the ``types``
+subpackage (grok keeps them split the same way).
+
 The crate-root barrel mirrors grok ``lib.rs``: grok re-exports ``types``,
 ``scope_graph`` node symbols, and the ``interner`` pair at the crate root.
 The Python port keeps them under their subpackages and re-exports them
@@ -117,18 +129,23 @@ discriminator, which has no grok counterpart) live under the
 YAGNI: the ``types`` layer, the ``scope_graph`` node / edge type layer, the
 ``interner`` module, the ``scope_graph/graph.py`` pure-data foundation
 (``QueryVersion`` / ``Snippet`` / ``NodeIndex``), the graph algorithms
-(``ScopeGraph`` / ``ScopeGraphIndex``), and the full ``manager`` subpackage
-(cache R305f / builder R305g / lock R305h) are public. The ``index_manager``
-type layer (R306a) + command layer (R306c) are public; the remaining actor
-runtime (R306d-R306g) and the ``navigation`` module do not exist yet -- the
-barrel grows as they land.
+(``ScopeGraph`` / ``ScopeGraphIndex``), the full ``manager`` subpackage
+(cache R305f / builder R305g / lock R305h), the ``navigation`` module
+(R307), and the full ``index_manager`` surface (R306a-R306g + R308 barrel
+reconciliation) are public. See the per-brick paragraphs above for the
+crate-root barrel bindings (``Location`` -> navigation flavor,
+``FileEvent`` / ``FileEventKind`` -> index_manager batch container,
+``IndexManager`` actor runtime).
 """
 
 from __future__ import annotations
 
 from minimax_code.xai_codebase_graph.index_manager import (
     MAX_INDEXABLE_FILE_SIZE,
+    FileEvent,
+    FileEventKind,
     IndexCommand,
+    IndexManager,
     IndexManagerConfig,
     IndexManagerHandle,
     QueryError,
@@ -158,6 +175,12 @@ from minimax_code.xai_codebase_graph.manager import (
     save_index_async,
     try_lock,
 )
+from minimax_code.xai_codebase_graph.navigation import (
+    Location,
+    NavigationError,
+    NavigationResult,
+    Navigator,
+)
 from minimax_code.xai_codebase_graph.scope_graph import (
     LocalDef,
     LocalImport,
@@ -172,11 +195,8 @@ from minimax_code.xai_codebase_graph.scope_graph import (
     SymbolId,
 )
 from minimax_code.xai_codebase_graph.types import (
-    FileEvent,
-    FileEventKind,
     FileMeta,
     IndexStats,
-    Location,
     Position,
     Range,
     SymbolAlias,
@@ -184,15 +204,24 @@ from minimax_code.xai_codebase_graph.types import (
 )
 
 __all__ = [
-    "FileEvent",
-    "FileEventKind",
     "FileMeta",
     "IndexStats",
     "LanguageRegistry",
     "LocalDef",
     "LocalImport",
     "LocalScope",
+    # navigation (R308) -- grok lib.rs L94 re-exports the navigation quartet
+    # at the crate root. ``Location`` switches from the ``types`` flavor
+    # (file_path/column/range, R300) to the ``navigation`` flavor
+    # (path/line/symbol) -- grok's crate root carries only the navigation
+    # flavor; the ``types::Location`` stays reachable via ``types.Location``.
+    # The 6 ``NavigationError`` subclasses (FileNotFound / PositionOutOfBounds
+    # / NoSymbolAtPosition / UnsupportedLanguage / ParseError / IoError) stay
+    # leaf-module-only (grok re-exports just the base ``NavigationError``).
     "Location",
+    "NavigationError",
+    "NavigationResult",
+    "Navigator",
     "NodeKind",
     "Position",
     "QueryVersion",
@@ -234,27 +263,27 @@ __all__ = [
     "WorkspaceLockGuard",
     "is_operation_in_progress",
     "try_lock",
-    # index_manager (R306a + R306b + R306c + R306d) -- grok ``lib.rs`` L84-L86
-    # re-exports the type layer, the ``is_binary_content`` helper, the
-    # ``IndexCommand`` enum, and the ``IndexManagerHandle`` actor sender of
-    # the channel-actor index manager. The 5 non-colliding type symbols (no
-    # ``types`` counterpart) + ``is_binary_content`` (grok L86, PUB ``fn``) +
-    # ``IndexCommand`` (R306c, grok L84 enum) + ``IndexManagerHandle`` (R306d,
-    # grok L85 actor sender) reach the crate root; the 14 ``IndexCommand``
-    # variant subclasses stay leaf-module-only (grok models them as enum
-    # members, not free symbols). ``FileEvent`` / ``FileEventKind`` stay
-    # bound to the ``types`` version (R300 placement) to avoid clobbering it
-    # -- a barrel-reconciliation brick will switch them to the
-    # ``index_manager`` batch-container version in one atomic edit once
-    # ``navigation`` lands (mirrors the ``types::Location`` /
-    # ``navigation::Location`` split). The Python-only ``ManagerClosedError``
-    # (the asyncio carrier for crossbeam's ``SendError``) is NOT re-exported
-    # here -- grok has no crate-root ``SendError`` re-export, so it stays
-    # leaf-module-only (``from ...index_manager import ManagerClosedError``).
-    # Reachable via the leaf module as
-    # ``minimax_code.xai_codebase_graph.index_manager.FileEvent``.
+    # index_manager (R306a-R306g + R308 barrel reconciliation) -- grok
+    # ``lib.rs`` L84-L86 re-exports the full index_manager surface: the type
+    # layer, ``is_binary_content`` (grok L86 PUB ``fn``), the ``IndexCommand``
+    # enum (R306c, grok L84), the ``IndexManagerHandle`` actor sender (R306d,
+    # grok L85), and ``IndexManager`` itself (the actor runtime, grok L85).
+    # R308 completes the barrel reconciliation flagged in R306a:
+    # ``FileEvent`` / ``FileEventKind`` now bind to the ``index_manager``
+    # batch-container version (the multi-event carrier grok re-exports), no
+    # longer the ``types`` single-file union; the ``types`` ``FileEvent`` /
+    # ``FileEventKind`` / ``Location`` are reachable only via the ``types``
+    # subpackage. The 14 ``IndexCommand`` variant subclasses stay
+    # leaf-module-only (grok models them as enum members, not free symbols).
+    # The Python-only ``ManagerClosedError`` (the asyncio carrier for
+    # crossbeam's ``SendError``) is NOT re-exported here -- grok has no
+    # crate-root ``SendError`` re-export, so it stays leaf-module-only
+    # (``from ...index_manager import ManagerClosedError``).
     "MAX_INDEXABLE_FILE_SIZE",
+    "FileEvent",
+    "FileEventKind",
     "IndexCommand",
+    "IndexManager",
     "IndexManagerConfig",
     "IndexManagerHandle",
     "QueryError",

@@ -593,14 +593,17 @@ def test_all_exports_complete() -> None:
     }
 
 
-def test_navigation_symbols_not_yet_at_crate_root() -> None:
-    """R308 boundary: the 4 navigation symbols are NOT yet in the crate-root barrel.
+def test_navigation_symbols_at_crate_root_after_r308() -> None:
+    """R308 barrel reconciliation: the navigation quartet reaches the crate root.
 
-    grok ``lib.rs`` L94 ``pub use navigation::{...}`` re-exports them at the
-    crate root (with ``navigation::Location`` shadowing ``types::Location``).
-    The Python barrel reconciliation lands in R308; until then the navigation
-    symbols stay leaf-module-only -- this assertion pins the pre-R308 state so
-    R308's atomic switch is a visible, reviewed change.
+    grok ``lib.rs`` L94 ``pub use navigation::{...}`` re-exports
+    ``Location`` / ``NavigationError`` / ``NavigationResult`` / ``Navigator``
+    at the crate root. R308 completed this barrel reconciliation: the 4
+    navigation symbols now live in the crate-root ``__all__`` and resolve to
+    the same objects as the ``navigation`` leaf module. Pre-R308 this test
+    pinned the opposite (leaf-only) state; R308's atomic switch is a visible,
+    reviewed change.
     """
-    for symbol in ("Navigator", "NavigationResult"):
-        assert symbol not in xcg_root.__all__
+    for symbol in ("Location", "NavigationError", "NavigationResult", "Navigator"):
+        assert symbol in xcg_root.__all__
+        assert getattr(xcg_root, symbol) is getattr(nav, symbol)
