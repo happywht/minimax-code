@@ -20952,3 +20952,102 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R283 migrate packet_diagram renderer`（`4414ee8`，4 文件，+1135/-19）。feat 提交：`packet_diagram.py`（新建，461 行）+ `render.py`（dispatch packet arm + `_UNSUPPORTED_DIAGRAM_TYPES` 20->19 + 导入 + docstring）+ `test_mermaid_to_svg_packet_diagram.py`（新建，641 行，97 测试）+ `test_mermaid_to_svg_render.py`（19 token parametrize + docstring）。docs 提交：`docs(platform): R283 iteration log entry`（ITERATION_LOG.md R283 条目）。锚点链: ... -> R281(a0f2557 feat radar_diagram + docs) -> R282(dbf32ca feat pie_diagram + docs) -> R283(4414ee8 feat packet_diagram + docs)。**方向① 第 16 砖：第五个 per-diagram 叶子 + 第四个自包含 SVG 发射器 packet-beta 32-bit-per-row 网格几何图行为等价移植落地（97 passed，全量 mermaid 854 passed/1 xfailed，桶不变 dispatch-only），bare title keyword falls-through grok 真实行为正向锁定，下一砖 R284+ sankey-beta（436 行）**。
+
+## R284 — 迁移 grok sankey_diagram.rs → render_sankey_diagram_to_svg（方向① 第 17 砖，第六个 per-diagram 叶子 + 第五个自包含 SVG 发射器，sankey-beta 加权流向图 longest-path-depth 列布局 + throughput-proportional 节点条 + flow-proportional gradient Bezier ribbon，主题感知（theme.background 流入 SVG 根 + 全画布 rect），行为等价移植非逐行克隆，桶不变 dispatch-only reach）
+
+锚点:R284-1 <pending>
+
+### 本轮目标
+
+迁移 grok `sankey_diagram.rs`（436 行——第六个 per-diagram 叶子，第五个 **渲染器**（自包含 SVG 发射器，同 R279 info / R281 radar / R282 pie / R283 packet；异于 R280 state 解析器复用 dagre 栈）。sankey-beta 是 mermaid 的流量 / Sankey 可视化器：一组加权有向边 `source,target,value` 连接具名节点，按 **longest-path 深度** 从左到右分列布局，每个节点是一条高度 ∝ 吞吐量的竖条，每条边是一条厚度 ∝ 流量值的 gradient-stroke 三次贝塞尔带（`mix-blend-mode: multiply` 实现重叠带叠加暗化）。纯迭代几何——无 AST、无 dagre——故本砖直接从解析模型发射 SVG）→ Python `render_sankey_diagram_to_svg`，并在 `render.py` dispatch 接入 sankey arm。方向① 第 17 砖。延续 R271--R283 的"行为等价移植非逐行克隆"方法论（用户持续指示："别逐行代码的复刻，要按照功能的复刻" / "按功能进行克隆"）。
+
+### 融合结论
+
+`sankey_diagram.py` 落地 `render_sankey_diagram_to_svg`（1 公共符号，grok `pub fn`）。`render.py` dispatch 新增 sankey arm（位于 R283 packet arm 之后、`_UNSUPPORTED_DIAGRAM_TYPES` 检查之前），延续 R282 body-shadow 契约传 front-matter-stripped `body`（grok lib.rs L47 shadow）。**桶不变**：sankey_diagram 是 dispatch-only reach，不进 to_svg barrel（镜像 grok crate root 从不 re-export `sankey_diagram` 符号——`lib.rs` L98-L100 仅经 dispatch arm 调用）。`_UNSUPPORTED_DIAGRAM_TYPES` 19 -> 18 token（移除 `sankey-beta`）。8 个"按功能复刻"架构裁决：① longest-path 深度迭代松弛 + per-layer `ky` 缩放 + 列 `x` 分配（grok L260-L358 布局核心，每节点吞吐量取 max(in_sum, out_sum)，深度经 2N 次扫描早出，ky 取所有深度列 available/throughput_sum 的最小值，列 x 单层 0 / 多层 `(WIDTH-NODE_WIDTH)*depth/(layers-1)`）；② **主题感知**（`theme.background` 流入 SVG 根 `style="background-color"` + 全画布 `<rect fill>` —— 首个主题感知 per-diagram 渲染器，异于 R282 pie / R283 packet 硬编码忽略主题，参数命名 `theme` 非 `_theme`）；③ `_parse_f64` 严格 f64 语法（reject `1_000` 下划线分组 + `inf`/`nan` 特殊名，镜像 Rust `parse::<f64>`，Python `float()` 更宽松接受 PEP 515 下划线）；④ `_format_node_label` EPSILON 容差整数检测（`abs(value - trunc(value)) < f64::EPSILON` 而非 Python 精确 `is_integer()`，镜像 grok `value.fract().abs() < f64::EPSILON`，整数臂 `int(value)` 截断镜像 `value as i64`）；⑤ `_escape_xml` `&#39;` 变体（同 R281 radar，异于 R282 pie / R283 packet `&apos;`）；⑥ BTreeMap/HashMap/BTreeSet 有序集合桥接（`nodes_by_depth` 用 `sorted()` 复现 BTreeMap 升序键遍历，`node_seen` 用 `set`+`not in` 复现 BTreeSet.insert 布尔返回，其余 HashMap 读-by-key 用 `dict`）；⑦ SVG 发射结构（每链路一个 `<linearGradient>` source色@0%/target色@100%，每节点一个 `translate` `<g>` + palette rect，标签 end/start 双锚点按列深度，每链路一个三次贝塞尔 `<path>` 列中点控制点 + `mix-blend-mode:multiply`）；⑧ dispatch body-shadow 延续（R282 lift 已铺契约，sankey arm 零额外开销复用）。
+
+### 决策证据（行为等价映射 + longest-path 深度布局 + ky 缩放 + 主题感知 + f64 严格解析 + EPSILON 容差 + 有序集合桥接 + SVG 发射结构）
+
+**证据 ① longest-path 深度迭代松弛 + per-layer `ky` 缩放 + 列 `x` 分配（grok L236-L358 布局核心）。** grok `compute_layout` 三阶段：**(a) 吞吐量累加**（`in_sum`/`out_sum` 按 link 累加，`value_by_node[node] = max(in_sum, out_sum)`——吞吐量取入出和的较大者，源节点取出度、汇节点取入度、中间节点取较大）；**(b) longest-path 深度**（`preds` 前驱邻接表 + 迭代松弛：`depth[node] = max over preds(depth[pred]+1)`，源节点 depth=0；至多 `2*node_count` 次扫描 + `changed` 早出，收敛后 `max_depth = max(depth.values())`，`layers = max(max_depth,1)+1`）；**(c) per-layer `ky` 缩放**（`ky = min over depth columns(available_height / throughput_sum)`，跳过空列，全空则 1.0——ky 是让最紧列刚好铺满 HEIGHT 的全局缩放因子，确保所有列等比）；**(d) 列 x 分配**（单层 `x=0`，多层 `x = (WIDTH-NODE_WIDTH)*depth/(layers-1)`，节点条均匀横铺；每列 `y` 从 `(HEIGHT-used)/2` 起垂直居中，`used = sum*ky + (n-1)*NODE_PADDING`）。-> Python `_compute_layout` 忠实镜像四阶段：吞吐量 dict + 前驱邻接 + `2N` 扫描松弛（`changed` 早出）+ `sorted(nodes_by_depth.keys())` 升序遍历复现 BTreeMap + per-node `SankeyNodeLayout`（含 `dom_id=f"node-{global_idx+1}"` + palette 回退）。测试锁定：吞吐量取 max、深度松弛收敛、ky 取最小列比、列 x 线性分配、节点 y 垂直居中。
+
+**证据 ② 主题感知 `theme.background`（grok L27-L28 + L34-L35，首个主题感知渲染器）。** grok `render_sankey_diagram_to_svg` **两处读 `theme.background`**：**(a)** SVG 根元素 `style="max-width: {WIDTH}px; background-color: {theme.background};"`（L27-L28）；**(b)** 全画布 `<rect x="0" y="0" width="{WIDTH}" height="{HEIGHT}" fill="{theme.background}"/>`（L34-L35）。**这是 sankey 与 R282 pie / R283 packet 的关键差异**——pie/packet 硬编码调色板（`#efefef`/black）并接收未用的 `_theme`，sankey **真正消费**主题。-> Python `render_sankey_diagram_to_svg(mermaid_source, theme)` 参数命名 `theme`（无下划线前缀），两处发射点 `style="... background-color: {theme.background};"` + `<rect ... fill="{theme.background}"/>`。测试 `test_render_sankey_theme_background_flows_into_svg_root_and_canvas_rect`（明主题 `background` 出现在 SVG 根 style + rect fill 两处）锁定。这是"按功能复刻"对 grok 主题消费语义的诚实区分——不把 sankey 降级为 pie/packet 的忽略主题模式。
+
+**证据 ③ `_parse_f64` 严格 f64 语法（grok `str::parse::<f64>()` 语义）。** grok 链路值经 `parts[2].trim().parse::<f64>()` 解析——Rust `parse::<f64>` 接受标准十进制/指数语法（`5`/`3.5`/`.5`/`5.`/`1e3`/`+1.5`/`-5`）但 **reject 下划线数字分组**（`1_000`）——**发散！** Python `float()` 按 PEP 515 接受 `1_000`（`float("1_000")==1000.0`）。若直接 `float()` 则 `1_000` 接受而 grok reject。grok 的 `parse::<f64>` 还接受 `inf`/`nan` 特殊名，但 mermaid 流值语义上为有限正数——port reject 二者（已记录的非议题）。-> `_parse_f64(raw, line)`：`_F64_RE = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")` 严格全匹配，match 则 `float(raw)`，否则抛 `ParseError(line, f"Invalid sankey value: {raw}")`。错误消息内嵌已 trim 的 `raw`（grok 传 post-trim `parts[2]`）。测试 `test_parse_f64_strict_rejects_underscores_and_specials`（reject `1_000`/`inf`/`nan`/空/x）+ `test_parse_f64_accepts_decimal_and_exponent_grammar`（接受 `5`/`3.5`/`.5`/`1e3`/`-5`）锁定。
+
+**证据 ④ `_format_node_label` EPSILON 容差整数检测（grok `format_sankey_node_label`）。** grok 选整数臂的判据是 `value.fract().abs() < f64::EPSILON`（**容差检查**，非精确整数判定）。Python `float.is_integer()` 是**精确**判定——二者会在"累加到 sub-EPSILON 近整数"的吞吐量上分歧（如 `3.0 - 1e-17`，grok 判整数 Python 判非整数）。-> `_format_node_label(name, value)` 忠实镜像：`if abs(value - math.trunc(value)) < _EPSILON: return f"{name} {int(value)}"`（整数臂 `int(value)` 截断镜像 grok `value as i64`），否则 `return f"{name} {_fmt(value)}"`。`_EPSILON = 2.220446049250313e-16`（`f64::EPSILON` verbatim）。测试 `test_format_node_label_integer_arm_uses_epsilon_tolerance`（`3.0` -> `"name 3"` 整数截断 / sub-EPSILON 漂移仍落整数臂）+ `test_format_node_label_fractional_arm`（`3.5` -> `"name 3.5"`）锁定。这是"按功能复刻"对 Rust `fract()` 容差语义的忠实还原。
+
+**证据 ⑤ `_escape_xml` `&#39;` 变体（grok `sankey_diagram.rs` `escape_xml`）。** grok `sankey_diagram.rs` 的 `escape_xml`：`'` -> `&#39;`（数值字符引用）。**与 R281 radar 一致**，**异于 R282 pie / R283 packet 的 `&apos;`**（XML 命名实体）——四源不一致（radar/sankey 用 `&#39;`，pie/packet 用 `&apos;`）。port 忠实克隆：`sankey_diagram._escape_xml` 用 `&#39;`，各 helper 独立定义（非共享）。测试 `test_escape_xml_replaces_all_five_significant_char`（`_escape_xml("a&b<c>d\"e'f") == "a&amp;b&lt;c&gt;d&quot;e&#39;f"`）锁定 `&#39;` 变体。这是"按功能复刻"对 grok 源内不一致的诚实镜像——不"统一"四文件的转义形式。
+
+**证据 ⑥ BTreeMap/HashMap/BTreeSet 有序集合桥接（grok 三种有序集合的 Python 对偶）。** grok 依赖三种有序集合，Python 对偶语义不同：**(a)** `BTreeSet<String> node_seen`——仅用 `insert` 的布尔返回（是否新增）驱动 `node_order` push；Python `set` + `not in` 检查是行为孪生（`node_seen` 迭代序从不被观察，`node_order` 是规范序）。**(b)** `BTreeMap<usize, Vec<&str>> nodes_by_depth`——按 depth 键升序遍历分配 per-layer `y` 原点 + `x` 列；Python `dict` 保插入序非键序，故布局循环用 `sorted(nodes_by_depth.items())` 复现 BTreeMap 遍历（层内节点序是 `node_order` 序，grok 按该序 push，Python `setdefault(...).append(...)` 匹配）。**(c)** `HashMap`（`in_sum`/`out_sum`/`value_by_node`/`preds`/`depth`/offsets）——迭代序不被观察（皆 read-by-key），Python `dict` 忠实。-> port 三处分别镜像：`node_seen: set[str]` + `not in` push；`nodes_by_depth: dict[int, list[str]]` + `sorted(keys())` 遍历；其余 `dict`。测试 `test_compute_layout_depth_columns_sorted_ascending`（深度列按 0,1,2 升序铺 x）+ `test_parse_sankey_node_order_first_seen`（端点按首次出现序入 node_order）锁定。
+
+**证据 ⑦ SVG 发射结构（grok L17-L116 五段发射）。** grok 发射五段：**(a)** SVG 根（`aria-roledescription="sankey"` + `viewBox="0 0 600 400"` + `style="max-width:600px; background-color:{bg};"` + `width="100%" id="my-svg"`）；**(b)** 全画布背景 rect（theme fill）；**(c)** `<defs>` 内每链路一个 `<linearGradient gradientUnits="userSpaceOnUse" x1=source_x x2=target_x>`（source色 stop@0% + target色 stop@100%）；**(d)** `nodes` 组——每节点一个 `translate(x,y)` `<g class="node" id="node-{i+1}">` + palette `<rect height=h width=NODE_WIDTH>`；**(e)** `node-labels` 组——最右列（`depth==max_depth`）`text-anchor="end"` 标签在条左侧（`x = node.x - LABEL_OFFSET`），其余列 `text-anchor="start"` 标签在条右侧（`x = node.x + NODE_WIDTH + LABEL_OFFSET`），皆 `dy="0em"` 垂直居中于条中点；**(f)** `links` 组——每链路一个 `<g class="link" style="mix-blend-mode: multiply;">` + 三次贝塞尔 `<path d="M{x0},{y0}C{mx},{y0},{mx},{y1},{x1},{y1}" stroke="url(#linearGradient-{i})" stroke-width="{thickness}">`（控制点在列中点 `mx=(x0+x1)/2`，宽度 = `value*ky`）。-> Python `render_sankey_diagram_to_svg` 逐段镜像，`_fmt` 桥接所有浮点坐标（整数浮点丢 `.0`，如 `600.0`->`"600"`）。测试 `test_render_sankey_emits_linear_gradient_per_link` + `test_render_sankey_node_bar_geometry` + `test_render_sankey_link_bezier_path_and_mix_blend` + `test_render_sankey_rightmost_column_label_anchored_end` 锁定五段结构。
+
+**证据 ⑧ dispatch body-shadow 延续（grok lib.rs L47 shadow，R282 lift 已铺契约）。** grok `render_mermaid_to_svg` L47 `let mermaid_source = parsed_source.body.as_ref();` 局部 shadow——所有 per-diagram 分支传 shadow 后的 body。R282 已统一 info/radar/pie 三 arm 传 body 并修正移植保真度；R283 packet arm 延续；R284 sankey arm 直接复用 `if diagram_type == "sankey-beta": return render_sankey_diagram_to_svg(body, resolved_theme)`——零额外 lift。测试 `test_render_mermaid_to_svg_sankey_strips_frontmatter_before_dispatch`（`---config:theme:dark---` + sankey body -> 正常渲染 + dark 主题 background 流入）锁定 body-shadow + 主题感知双重契约。这是"按功能复刻"对 R282 契约的复用——零额外开销。
+
+### 交付
+
+- `agent/minimax_code/mermaid/to_svg/sankey_diagram.py`（新建，644 行）：
+
+  - **模块 docstring（行为等价移植框架）** —— 开宗明义 "behavioral-equivalent port of grok's sankey_diagram.rs"，区分本砖（第六 per-diagram 叶子 + 第五自包含 SVG 发射器，同 R279 info / R281 radar / R282 pie / R283 packet）vs R280（解析器复用 dagre 栈）。主题感知段（grok L27-L28/L34-L35）+ Display 浮点桥接段 + f64 严格解析段（reject 下划线/inf/nan）+ f64 fract/EPSILON 桥接段（容差 vs 精确）+ 有序集合桥接段（BTreeMap/HashMap/BTreeSet 三种对偶）+ dispatch body-shadow 延续段。引用 grok 行号作**契约参照**。
+  - **`__all__ = ["render_sankey_diagram_to_svg"]`**（1 符号，grok `pub fn`）。5 常量 + 10 色 palette + 2 内部常量（`_EPSILON`/`_F64_RE`）+ 5 frozen dataclass + 4 helper/parser/layout 模块私有/内部；不进 to_svg barrel（dispatch-only reach）。
+  - **常量**（grok L6-L15 verbatim）：`WIDTH=600.0` / `HEIGHT=400.0` / `NODE_WIDTH=10.0` / `NODE_PADDING=25.0` / `LABEL_OFFSET=6.0` + `NODE_COLORS` 10 色元组（`#4e79a7`/`#f28e2c`/`#e15759`/`#76b7b2`/`#59a14f`/`#edc948`/`#b07aa1`/`#9c755f`/`#bab0ab`/`#ff9da7`，位置 >=10 回退首项非取模）+ `_EPSILON=2.220446049250313e-16`（f64::EPSILON）+ `_F64_RE`（严格 f64 正则）。
+  - **5 个 `@dataclass(frozen=True)`**（grok struct 不可变值类型）：`SankeyLink`（source/target/value）/ `SankeyDiagram`（links + node_order）/ `SankeyNodeLayout`（name/display_label/dom_id/depth/x/y/height/color）/ `SankeyLinkLayout`（x0/y0/x1/y1/thickness/source_color/target_color）/ `SankeyLayout`（nodes 按 (depth,y,name) 排序 + links 保源序 + max_depth）。
+  - **`_fmt(value) -> str`**：Display 浮点桥接（同 R281/R282/R283）。
+  - **`_escape_xml(s) -> str`**：5 个 XML 显著字符实体化，`'` -> `&#39;`（radar/sankey 变体，异于 pie/packet `&apos;`）。
+  - **`_parse_f64(raw, line) -> float`**：`_F64_RE` 严格全匹配（reject `1_000`/`inf`/`nan`/空），失败抛 `Invalid sankey value`。
+  - **`_format_node_label(name, value) -> str`**：`abs(value - trunc(value)) < _EPSILON` 容差整数检测（非精确 `is_integer()`），整数臂 `int(value)` 截断。
+  - **`parse_sankey_diagram(input) -> SankeyDiagram`**：头部扫描（首 token 须 `sankey-beta`）+ `source,target,value` 链路行（3 字段逗号分割，value 经 `_parse_f64`）+ 端点按首次出现入 `node_order`（`set` + `not in` 复现 BTreeSet.insert 布尔）+ 至少一条链路。
+  - **`_compute_layout(diagram) -> SankeyLayout`**：四阶段——吞吐量累加（max(in_sum,out_sum)）+ 前驱邻接 + longest-path 深度松弛（2N 扫描早出）+ per-layer ky 缩放（最小列比）+ per-node 几何（列 x 线性 / 节点 y 垂直居中 / palette 回退）+ per-link 几何（thickness=value*ky + out/in offset 累积堆叠 + Bezier 锚点）。
+  - **`render_sankey_diagram_to_svg(mermaid_source, theme) -> str`**：parse -> compute_layout -> 五段 SVG 发射（根 + 背景rect + defs gradients + nodes 组 + node-labels 组 + links 组）。**`theme` 参数已用**（`theme.background` 流入根 style + rect fill，主题感知）。
+
+- `agent/minimax_code/mermaid/to_svg/render.py`（修改）：
+
+  - **导入块**：`from .sankey_diagram import render_sankey_diagram_to_svg`（isort 序：`.sankey_diagram` 按字母序落位 `.radar_diagram` 之后、`.state_diagram` 之前）。
+  - **dispatch arm**（packet arm 之后、unsupported 检查之前）：`if diagram_type == "sankey-beta": return render_sankey_diagram_to_svg(body, resolved_theme)`——传 front-matter-stripped `body`（R282 body-shadow 契约延续）+ **主题感知注释**（说明 sankey 读 `theme.background`，异于 pie/packet 忽略主题）。
+  - **`_UNSUPPORTED_DIAGRAM_TYPES` 19 -> 18 token**（移除 `sankey-beta`）。注释刷新 R284 语义（info / state / radar / pie / packet / sankey 六 arm 已 ship；18 token 仍 raise）。
+  - **docstring 刷新**：dispatch model 段新增 "sankey-beta 专属 arm" 描述 + R284 标注 + longest-path 深度布局 + 主题感知说明。
+
+- `agent/tests/test_mermaid_to_svg_sankey_diagram.py`（新建，52 测试）：
+
+  - **dispatch 冒烟 x4**：`sankey-beta` + 链路端到端渲染 `<svg>...</svg>` / 不再抛 `UnsupportedDiagramType`（R277 曾在 unsupported 集，R284 提升为专属 arm）/ 直接调 renderer 返回结构化 SVG / 头部识别。
+  - **链路语法 x3**：`source,target,value` 三字段 / 多链路保序 / 浮点值接受。
+  - **链路错误 x3**：非 3 字段抛 `Invalid sankey link` / 非法 value 抛 `Invalid sankey value` / 无链路抛 line 1。
+  - **头部错误 x2**：首 token 非 `sankey-beta` 抛 / 全空抛 line 1。
+  - **`_parse_f64` x2**：reject 下划线/inf/nan/空/x + 接受十进制/指数语法。
+  - **`_format_node_label` x2**：整数臂 EPSILON 容差（`int()` 截断）+ 分数臂 `_fmt`。
+  - **`_compute_layout` x4**：吞吐量取 max(in,out) + 深度松弛收敛 + ky 取最小列比 + 深度列升序铺 x。
+  - **节点序 x1**：端点按首次出现入 `node_order`。
+  - **几何发射 x5**：linearGradient 每链路一个 / 节点条 rect 几何 / 链路贝塞尔 path + mix-blend-mode / 最右列标签 anchor=end / 非最右列标签 anchor=start。
+  - **主题感知 x1**：`theme.background` 流入 SVG 根 style + 全画布 rect 两处。
+  - **`_escape_xml` x2**：5 字符全实体化（`&#39;` 变体）+ `&` 不双重转义。
+  - **`_fmt` / 常量 x3**：整数浮点丢 `.0` + 10 色 palette + 5 几何常量值。
+  - **模块/barrel/dataclass 表面 x3**：`__all__ == ["render_sankey_diagram_to_svg"]` / 不在 to_svg barrel（dispatch-only reach，桶 18 不变）/ 冻结 dataclass 赋值抛 `FrozenInstanceError`。
+  - **front-matter dispatch x1**：`---config:theme:dark---` + sankey body -> 正常渲染 + dark 主题流入（body-shadow + 主题感知双重契约锁定）。
+
+- `agent/tests/test_mermaid_to_svg_render.py`（修改）：
+
+  - **18 token parametrize**（移除 `sankey-beta`）：unsupported 集合从 19 -> 18 token。注释刷新 R284 语义。
+  - **docstring 更新**：dispatch invariants 段说明 info（R279）+ state（R280）+ radar（R281）+ pie（R282）+ packet（R283）+ sankey（R284）六 renderer/parser 已 ship，18 token 仍 raise；barrel `__all__` 15->18 断言不变（R284 不动 barrel）。
+
+### 验证
+
+- ruff：`sankey_diagram.py` + `render.py` + `test_mermaid_to_svg_sankey_diagram.py` + `test_mermaid_to_svg_render.py` **All checks passed**（line-length 100，select E/F/W/I/B/UP，ignore E501）。CRLF 警告正常（Windows 11），无害。
+- 定向 pytest（sankey_diagram + render 测试）：**94 passed in 0.41s**（52 新 sankey_diagram 测试 + 42 render 测试实例）。sankey 单独套件：**52 passed in 0.23s**。质量门控在 feat 提交前已捕获并修复了 11 处 `ParseError.__str__` 断言粘连缺陷（`"Parse error at line1:` 缺空格，源于早前一次 `replace_all` 误去尾随空格——ParseError 格式为 `"Parse error at line {line}: {message}"`，"line" 与行号间必须有空格；经 Grep 锁定 11 处全在断言行、零 docstring 误报，3 次数字锚定 replace_all 修正：`line1`/`line2`/`line7` 各还原空格）。**实现代码 sankey_diagram.py 零修改**——缺陷全在测试侧断言文本，Python 实现已正确镜像 grok 行为。
+- 全量 mermaid 回归（`tests/ -k "mermaid"`）：**905 passed, 4 skipped, 7256 deselected, 1 xfailed, 1 warning in 7.59s**，0 failed（R283 基线 854 -> R284 905，新增 51 = 52 sankey 测试 - 1 个 render parametrize token 移除的净增）。1 xfailed 是 R278c 暴露的预存 dagre 缺陷（`network_simplex._exchange_edges` 对子图内链式边 `None -= 1` -> `TypeError`，`long_identifier` xfail(strict=True)）。变更领域（mermaid/to_svg/）内所有测试通过。本轮未跑全 `tests/` 套件（mermaid 子集已覆盖变更域；预存无关 flaky 按"不破坏迭代独立性"原则追踪为预存不相关，不阻塞 R284 提交）。
+
+### YAGNI 边界
+
+- **主题感知不"降级"为忽略主题** —— sankey 是首个真正消费 `theme.background` 的 per-diagram 渲染器（grok L27-L28/L34-L35 两处读 background）。port 参数命名 `theme`（非 `_theme`），忠实接线，不降级为 pie/packet 的硬编码模式。这是"按功能复刻"对 grok 主题消费语义的诚实区分。
+- **`_escape_xml` `&#39;` vs `&apos;` 不"统一"（延续 R281-R283）** —— grok `radar_diagram.rs`/`sankey_diagram.rs` 用 `&#39;`、`pie_diagram.rs`/`packet_diagram.rs` 用 `&apos;`，四源不一致。port 各自忠实克隆独立 helper，不统一为一个。
+- **`_parse_f64` reject `inf`/`nan` 不"接线"** —— grok `parse::<f64>` 接受 `inf`/`nan` 特殊名，但 mermaid 流值语义上为有限正数，port reject 二者（已记录的非议题）。下划线分组 `1_000` 则严格 reject（Python `float()` 会接受 PEP 515，发散）。
+- **`_format_node_label` EPSILON 容差不"简化"为 `is_integer()`** —— grok 用 `value.fract().abs() < f64::EPSILON` 容差判定，Python 精确 `is_integer()` 会在 sub-EPSILON 近整数上分歧。port 忠实镜像容差 + `int()` 截断。
+- **dispatch body-shadow 延续非新 lift（R282 已铺契约）** —— R282 已统一 info/radar/pie 三 arm 传 body；R283 packet + R284 sankey 直接复用该契约，零额外 lift 开销。
+- **`xfail(strict=True)` 暴露预存 dagre 缺陷（延续 R278c--R283）** —— `network_simplex._exchange_edges` 的 `None -= 1` 缺陷待专门 dagre 边交换修复落地后翻转。
+- **桶不变（dispatch-only reach，延续 R279-R283）** —— sankey_diagram 不进 to_svg barrel（镜像 grok crate root 从不 re-export）。桶 `__all__` 仍 18（R277 基线）；sankey 符号仅经 `render.py` dispatch arm 到达。**无 barrel-guard 测试同步**（桶不变，零同步开销）。
+- **修正后路线图**：
+  - **R285+** —— 13 个余下 per-diagram 渲染器（按 grok 源行数升序：gantt 437 / kanban 506 / timeline 513 / quadrant 540 / block 547 / journey 563 / gitgraph 576 / mindmap 670 / xychart 867 / requirement 874 / er 936 / class 1144 / c4 1201 / sequence 1326），按复杂度递增逐砖推进。sankey-beta（本砖）是第五个自包含 SVG 发射器（同 R279 info / R281 radar / R282 pie / R283 packet 模式）+ 首个主题感知渲染器；下一砖 gantt（437 行）是余下最简独立渲染器。
+  - **dagre 边交换修复** —— 修复 `network_simplex._exchange_edges` 的 `None -= 1` 缺陷，使 `long_identifier` xfail 翻转。
+- **方向② xai-codebase-graph（tree-sitter 代码索引）+ 方向③ L2 自演化框架骨架接线** 均未开始（方向① 优先）。
+
+### Commit
+
+`feat(platform): R284 migrate sankey_diagram renderer`（`0100c3a`，4 文件，+1282/-18）。feat 提交：`sankey_diagram.py`（新建，644 行）+ `render.py`（dispatch sankey arm + `_UNSUPPORTED_DIAGRAM_TYPES` 19->18 + 导入 + docstring）+ `test_mermaid_to_svg_sankey_diagram.py`（新建，52 测试）+ `test_mermaid_to_svg_render.py`（18 token parametrize + docstring）。docs 提交：`docs(platform): R284 iteration log entry`（ITERATION_LOG.md R284 条目）。锚点链: ... -> R282(dbf32ca feat pie_diagram + docs) -> R283(4414ee8 feat packet_diagram + docs) -> R284(0100c3a feat sankey_diagram + docs)。**方向① 第 17 砖：第六个 per-diagram 叶子 + 第五个自包含 SVG 发射器 sankey-beta 加权流向图 longest-path-depth 列布局行为等价移植落地（52 passed，定向 94 passed，全量 mermaid 905 passed/1 xfailed，桶不变 dispatch-only），首个主题感知渲染器（theme.background 流入 SVG 根 + 全画布 rect），下一砖 R285 gantt（437 行）**。
