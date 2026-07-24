@@ -84,9 +84,17 @@ tagged union that flows through the actor mailbox (grok ``index_manager.rs``
 L110-L168) -- re-exported at the crate root (grok ``lib.rs`` L84). The 14
 variant subclasses stay leaf-module-only (grok models them as enum members).
 The tokio -> asyncio channel-adaptation contract (``mpsc`` ->
-``asyncio.Queue``, ``oneshot`` -> ``asyncio.Future``) is fixed here. The
-remaining actor runtime (Handle / ACTIVE_MANAGERS / ExitBeacon / the actor
-loop) lands in R306d-R306g.
+``asyncio.Queue``, ``oneshot`` -> ``asyncio.Future``) is fixed here.
+
+R306d lands the actor sender: :class:`IndexManagerHandle` -- the producer
+side of the mailbox (grok ``index_manager.rs`` L233-L495), re-exported at
+the crate root (grok ``lib.rs`` L85). It ports grok's three method families
+(fire-and-forget senders / strict request-response / lightweight probes) to
+asyncio, drops the ``*_blocking`` variants (a single-threaded loop would
+deadlock on ``Future.result()``), and exposes the Python-only
+:class:`ManagerClosedError` (crossbeam ``SendError`` equivalent) at the leaf
+module only. The remaining actor runtime (ACTIVE_MANAGERS / ExitBeacon / the
+actor loop) lands in R306e-R306g.
 
 The crate-root barrel mirrors grok ``lib.rs``: grok re-exports ``types``,
 ``scope_graph`` node symbols, and the ``interner`` pair at the crate root.
@@ -122,6 +130,7 @@ from minimax_code.xai_codebase_graph.index_manager import (
     MAX_INDEXABLE_FILE_SIZE,
     IndexCommand,
     IndexManagerConfig,
+    IndexManagerHandle,
     QueryError,
     QueryResult,
     SymbolLocation,
@@ -225,23 +234,29 @@ __all__ = [
     "WorkspaceLockGuard",
     "is_operation_in_progress",
     "try_lock",
-    # index_manager (R306a + R306b + R306c) -- grok ``lib.rs`` L84-L86
-    # re-exports the type layer, the ``is_binary_content`` helper, and the
-    # ``IndexCommand`` enum of the channel-actor index manager. The 5 non-
-    # colliding type symbols (no ``types`` counterpart) +
-    # ``is_binary_content`` (grok L86, PUB ``fn``) + ``IndexCommand`` (R306c,
-    # grok L84 enum) reach the crate root; the 14 ``IndexCommand`` variant
-    # subclasses stay leaf-module-only (grok models them as enum members, not
-    # free symbols). ``FileEvent`` / ``FileEventKind`` stay bound to the
-    # ``types`` version (R300 placement) to avoid clobbering it -- a
-    # barrel-reconciliation brick will switch them to the ``index_manager``
-    # batch-container version in one atomic edit once ``navigation`` lands
-    # (mirrors the ``types::Location`` / ``navigation::Location`` split).
+    # index_manager (R306a + R306b + R306c + R306d) -- grok ``lib.rs`` L84-L86
+    # re-exports the type layer, the ``is_binary_content`` helper, the
+    # ``IndexCommand`` enum, and the ``IndexManagerHandle`` actor sender of
+    # the channel-actor index manager. The 5 non-colliding type symbols (no
+    # ``types`` counterpart) + ``is_binary_content`` (grok L86, PUB ``fn``) +
+    # ``IndexCommand`` (R306c, grok L84 enum) + ``IndexManagerHandle`` (R306d,
+    # grok L85 actor sender) reach the crate root; the 14 ``IndexCommand``
+    # variant subclasses stay leaf-module-only (grok models them as enum
+    # members, not free symbols). ``FileEvent`` / ``FileEventKind`` stay
+    # bound to the ``types`` version (R300 placement) to avoid clobbering it
+    # -- a barrel-reconciliation brick will switch them to the
+    # ``index_manager`` batch-container version in one atomic edit once
+    # ``navigation`` lands (mirrors the ``types::Location`` /
+    # ``navigation::Location`` split). The Python-only ``ManagerClosedError``
+    # (the asyncio carrier for crossbeam's ``SendError``) is NOT re-exported
+    # here -- grok has no crate-root ``SendError`` re-export, so it stays
+    # leaf-module-only (``from ...index_manager import ManagerClosedError``).
     # Reachable via the leaf module as
     # ``minimax_code.xai_codebase_graph.index_manager.FileEvent``.
     "MAX_INDEXABLE_FILE_SIZE",
     "IndexCommand",
     "IndexManagerConfig",
+    "IndexManagerHandle",
     "QueryError",
     "QueryResult",
     "SymbolLocation",

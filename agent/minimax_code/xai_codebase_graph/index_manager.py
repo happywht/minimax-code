@@ -611,6 +611,295 @@ class HasDefinitionCommand(IndexCommand):
     response: asyncio.Future[bool]
 
 
+# === IndexManagerHandle (R306d) ==========================================
+
+
+class ManagerClosedError(RuntimeError):
+    """The actor behind an :class:`IndexManagerHandle` has already exited.
+
+    Functional equivalent of grok ``crossbeam::channel::SendError<IndexCommand>``:
+    the mailbox receiver (the actor loop, R306f) is gone, so a command
+    cannot be delivered. Raised by the fire-and-forget senders
+    (:meth:`IndexManagerHandle.send_event` / :meth:`send_events` /
+    :meth:`rebuild` / :meth:`shutdown`) and by the strict request-response
+    send half -- never by the lightweight ``*_async`` probes, which swallow
+    the closed state and return ``None`` (mirrors grok's ``Option``-returning
+    lightweight queries). grok has no crate-root ``SendError`` re-export, so
+    this stays leaf-module-only (callers import it from ``index_manager``).
+    """
+
+
+class IndexManagerHandle:
+    """Sender-side handle to the channel-actor index manager (R306d).
+
+    Ports grok ``IndexManagerHandle`` (``index_manager.rs`` L233-L495) **by
+    function**, not line-by-line. The handle is the *producer* side of the
+    actor mailbox: it owns nothing but a reference to the shared command
+    queue and a closed flag, and every method either enqueues a
+    fire-and-forget command or builds a request-response command +
+    :class:`asyncio.Future` pair and awaits the response.
+
+    Channel adaptation (tokio -> asyncio, fixed in R306c):
+
+    * grok ``crossbeam::Sender<IndexCommand>``  ->  an unbounded
+      :class:`asyncio.Queue[IndexCommand]`. ``put_nowait`` mirrors
+      crossbeam's synchronous ``send`` -- it never blocks (the queue is
+      unbounded) and the closed state is surfaced via the ``_closed`` flag
+      rather than a ``SendError`` return value.
+    * grok ``tokio::sync::oneshot::Sender<T>``  ->  the
+      :class:`asyncio.Future[T]` carried inside each request-response
+      variant (the R306c ``IndexCommand`` subclasses).
+    * grok ``Arc<ScopeGraphIndex>``  ->  a bare :class:`ScopeGraphIndex`
+      reference (Python has no ``Arc``; the snapshot is shared by
+      reference, exactly as grok's ``Arc`` clone when no mutation is in
+      flight).
+
+    Deliberate functional divergence from grok:
+
+    * **No ``*_blocking`` variants.** grok runs the actor on a dedicated OS
+      thread, so a caller in a synchronous context can ``blocking_recv``
+      the oneshot without deadlocking. The Python port runs the actor on
+      the same :mod:`asyncio` loop as every caller, so a synchronous
+      ``Future.result()`` would deadlock the loop (the actor would never
+      run to resolve it). Every request-response method is therefore
+      ``async``; callers that need a synchronous answer should drive the
+      coroutine from a thread that does not own the actor's loop.
+    * **No ``Clone``.** Python passes the handle by reference, so multiple
+      callers naturally share one mailbox -- there is no ownership to
+      duplicate. (Cloning the handle in grok clones the ``Sender``; the
+      Python equivalent is "hand another caller the same object".)
+    * **``is_closed`` is public, not ``#[cfg(test)]``.** grok gates
+      ``has_run_loop_exited`` behind ``#[cfg(test)]`` because production
+      code detects a dropped actor via ``SendError``. The Python port
+      exposes the same signal as a public property so production callers
+      can poll liveness without trapping an exception.
+
+    R306d ships the producer surface only; the actor loop that *drains*
+    the mailbox lands in R306f. The request-response methods therefore
+    await a :class:`asyncio.Future` that a later brick resolves.
+    """
+
+    __slots__ = ("_mailbox", "_closed")
+
+    def __init__(
+        self, mailbox: asyncio.Queue[IndexCommand], closed: asyncio.Event
+    ) -> None:
+        """Bind the handle to a shared mailbox + closed flag.
+
+        Both arguments are owned by the actor (R306f ``IndexManager.spawn``
+        constructs them); the handle holds them by reference. Sharing the
+        same handle across callers gives them the same mailbox -- exactly
+        grok's multi-producer ``Sender::clone`` semantics, minus the clone.
+        """
+        self._mailbox = mailbox
+        self._closed = closed
+
+    # -- actor-liveness probe --------------------------------------------
+
+    @property
+    def is_closed(self) -> bool:
+        """``True`` once the actor loop has exited (R306f sets the flag).
+
+        Functional equivalent of grok ``has_run_loop_exited`` (gated
+        ``#[cfg(test)]`` there) -- exposed publicly here so production
+        callers can poll actor liveness without trapping
+        :class:`ManagerClosedError`.
+        """
+        return self._closed.is_set()
+
+    # -- fire-and-forget senders (raise on dead actor) ------------------
+
+    def _send_strict(self, command: IndexCommand) -> None:
+        """Enqueue a command or raise :class:`ManagerClosedError`.
+
+        Mirrors grok ``self.command_tx.send(command)`` -- a synchronous,
+        non-blocking enqueue that fails fast (instead of blocking) when the
+        actor is gone. The queue is unbounded so ``put_nowait`` never raises
+        :class:`asyncio.QueueFull`; the only failure mode is the closed flag.
+        """
+        if self._closed.is_set():
+            raise ManagerClosedError(
+                "IndexManager actor has exited; command cannot be delivered"
+            )
+        self._mailbox.put_nowait(command)
+
+    def send_event(self, event: FileEvent) -> None:
+        """Forward a single :class:`FileEvent` to the actor (fire-and-forget).
+
+        grok ``send_event`` returns ``Result<(), SendError>``; the Python
+        port returns ``None`` on success and raises
+        :class:`ManagerClosedError` on a dead actor (the idiomatic Python
+        shape for "this cannot fail unless the destination is gone").
+        """
+        self._send_strict(FileEventCommand(event=event))
+
+    def send_events(self, events: list[FileEvent]) -> None:
+        """Forward a batch of events in one mailbox hop (not ``len(events)``).
+
+        Short-circuits on an empty list (grok L257-L259 returns ``Ok(())``
+        without sending) -- avoids a no-op round-trip through the actor.
+        """
+        if not events:
+            return
+        self._send_strict(FileEventBatchCommand(events=events))
+
+    def rebuild(self) -> None:
+        """Request a full index rebuild (fire-and-forget)."""
+        self._send_strict(RebuildCommand())
+
+    def shutdown(self) -> None:
+        """Tell the actor to exit (fire-and-forget).
+
+        The actor loop (R306f) treats :class:`ShutdownCommand` as the
+        sentinel that breaks its drain loop; the ``_closed`` flag is set
+        as the loop exits, after which further sends raise
+        :class:`ManagerClosedError`.
+        """
+        self._send_strict(ShutdownCommand())
+
+    # -- async request-response (strict: raises on dead actor) ----------
+
+    async def get_snapshot_async(self) -> ScopeGraphIndex:
+        """Snapshot of the current index (async, strict).
+
+        grok ``get_snapshot_async`` returns
+        ``Result<Arc<ScopeGraphIndex>, SendError>`` with
+        ``rx.await.expect(...)`` (panic if the actor drops mid-query). The
+        Python port returns the bare :class:`ScopeGraphIndex` reference
+        (no ``Arc``) and surfaces a dead actor via
+        :class:`ManagerClosedError` on the send half; the await itself does
+        not panic because a well-behaved actor (R306f) always resolves the
+        Future before exit.
+        """
+        fut: asyncio.Future[ScopeGraphIndex] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._send_strict(GetSnapshotCommand(response=fut))
+        return await fut
+
+    async def goto_definition(
+        self, file_path: str, row: int, col: int
+    ) -> QueryResult | QueryError:
+        """Resolve the definition at ``(row, col)`` in ``file_path`` (async).
+
+        grok ``goto_definition`` returns
+        ``Result<Result<QueryResult, QueryError>, SendError>``. The outer
+        ``Result`` (channel send) becomes :class:`ManagerClosedError`; the
+        inner ``Result<QueryResult, QueryError>`` becomes a union value
+        (R306c contract: the actor ``set_result`` on both arms, so a query
+        *miss* is a value the caller inspects via ``isinstance``, not a
+        raise).
+        """
+        fut: asyncio.Future[QueryResult | QueryError] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._send_strict(
+            GotoDefinitionCommand(file_path=file_path, row=row, col=col, response=fut)
+        )
+        return await fut
+
+    async def goto_references(
+        self, file_path: str, row: int, col: int, include_definition: bool
+    ) -> QueryResult | QueryError:
+        """Resolve references at ``(row, col)``; ``include_definition`` adds the def site."""
+        fut: asyncio.Future[QueryResult | QueryError] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._send_strict(
+            GotoReferencesCommand(
+                file_path=file_path,
+                row=row,
+                col=col,
+                include_definition=include_definition,
+                response=fut,
+            )
+        )
+        return await fut
+
+    async def find_definitions(
+        self, symbol: str, context_file: str | None
+    ) -> list[SymbolLocation]:
+        """Locate every definition site of ``symbol`` by name (async)."""
+        fut: asyncio.Future[list[SymbolLocation]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._send_strict(
+            FindDefinitionsCommand(
+                symbol=symbol, context_file=context_file, response=fut
+            )
+        )
+        return await fut
+
+    async def find_references(
+        self, symbol: str, context_file: str | None
+    ) -> list[SymbolLocation]:
+        """Locate every reference site of ``symbol`` by name (async)."""
+        fut: asyncio.Future[list[SymbolLocation]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._send_strict(
+            FindReferencesCommand(symbol=symbol, context_file=context_file, response=fut)
+        )
+        return await fut
+
+    # -- async lightweight probes (Option semantics: None on dead actor) =
+
+    def _send_probe(self, command: IndexCommand) -> bool:
+        """Enqueue a lightweight probe; return ``False`` if the actor is gone.
+
+        Mirrors grok ``self.command_tx.send(cmd).ok()`` -- the lightweight
+        queries swallow the closed state into a falsy return rather than
+        raising (grok ``Option``-returning ``get_file_count`` /
+        ``get_stats`` / ``get_query_version`` / ``has_definition_blocking``).
+        Returns ``True`` on a successful enqueue; the response Future lives
+        on the command itself.
+        """
+        if self._closed.is_set():
+            return False
+        self._mailbox.put_nowait(command)
+        return True
+
+    async def get_file_count_async(self) -> int | None:
+        """Indexed-file count without cloning the index (``None`` if actor gone).
+
+        grok ``get_file_count`` swallows both the send error and the recv
+        error into ``None`` (``Option``-returning lightweight query). The
+        Python port mirrors that: a closed actor returns ``None`` rather
+        than raising.
+        """
+        fut: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+        if not self._send_probe(GetFileCountCommand(response=fut)):
+            return None
+        return await fut
+
+    async def get_stats_async(self) -> IndexStats | None:
+        """Index statistics without cloning the index (``None`` if actor gone)."""
+        fut: asyncio.Future[IndexStats] = asyncio.get_running_loop().create_future()
+        if not self._send_probe(GetStatsCommand(response=fut)):
+            return None
+        return await fut
+
+    async def get_query_version_async(self) -> QueryVersion | None:
+        """Query-version stamp without cloning the index (``None`` if actor gone)."""
+        fut: asyncio.Future[QueryVersion] = (
+            asyncio.get_running_loop().create_future()
+        )
+        if not self._send_probe(GetQueryVersionCommand(response=fut)):
+            return None
+        return await fut
+
+    async def has_definition_async(self, symbol: str) -> bool | None:
+        """Boolean existence check for ``symbol`` (``None`` if actor gone).
+
+        Cheaper than :meth:`find_definitions` when the caller only needs to
+        know *whether* a definition exists (no location list).
+        """
+        fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        if not self._send_probe(HasDefinitionCommand(symbol=symbol, response=fut)):
+            return None
+        return await fut
+
+
 __all__ = [
     "MAX_INDEXABLE_FILE_SIZE",
     "FileEvent",
@@ -644,4 +933,13 @@ __all__ = [
     "GetStatsCommand",
     "GetQueryVersionCommand",
     "HasDefinitionCommand",
+    # R306d -- the actor sender handle. grok ``lib.rs`` L85 re-exports
+    # ``IndexManagerHandle`` at the crate root, so the Python crate-root
+    # barrel mirrors it; grok has no crate-root ``SendError`` re-export (the
+    # crossbeam channel error lives leaf-module-only), so the Python-only
+    # ``ManagerClosedError`` -- the channel-closed carrier that replaces
+    # crossbeam's ``SendError`` in the asyncio port -- stays leaf-module-only
+    # too (callers import it from ``index_manager``).
+    "IndexManagerHandle",
+    "ManagerClosedError",
 ]
