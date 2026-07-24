@@ -23814,3 +23814,215 @@ barrel reconciliation (R308) closes direction (2); direction (3) L2
 self-evolution framework skeleton wiring remains P0 not-started parallel active
 front.
 ```
+
+## R308 — reconcile xai_codebase_graph crate-root barrel to grok lib.rs L84-L102 (direction (2) closer: switch crate-root Location -> navigation flavor + FileEvent/FileEventKind -> index_manager batch container + re-export navigation quartet + IndexManager actor; __all__ 47 -> 51; flips the 4 pre-R308 barrel pins)
+
+Anchor:R308-1 <pending>
+Anchor:R308-2 <pending>
+
+### Round goal
+
+Direction (2) closer -- the **crate-root barrel reconciliation** that R306a
+deferred and R307 explicitly handed off. R300 placed the crate root
+``__init__.py`` bound to the ``types`` flavor (``Location`` as
+``file_path``/``column``/``range``; ``FileEvent`` as the single-file tagged
+union with the ``DELETED`` variant), because at R300 the ``navigation`` module
+did not yet exist and ``index_manager`` was only a type-layer leaf. R306a-g
+landed the full ``index_manager`` actor (including the batch ``FileEvent``
+container grok re-exports at ``lib.rs`` L84) and R307 landed the
+``navigation`` orchestrator (including the navigation-flavored ``Location``
+grok re-exports at L94). The crate root still bound the ``types`` flavor --
+a divergence from grok's ``lib.rs`` that R307's YAGNI boundary explicitly
+deferred to "a barrel-reconciliation brick (post-``navigation``)".
+
+R308 is that brick. It switches the crate root to match grok ``lib.rs``
+L84-L102 in one reviewed atomic edit:
+
+* ``Location`` -> the **navigation** flavor (``path``/``line``/``symbol``)
+* ``FileEvent`` / ``FileEventKind`` -> the **index_manager** batch container
+  (``paths: list[str]`` + ``REMOVED`` variant)
+* the **navigation quartet** (``Location`` / ``NavigationError`` /
+  ``NavigationResult`` / ``Navigator``) reaches the crate root (grok L94)
+* ``IndexManager`` (the actor runtime) reaches the crate root (grok L85)
+* the ``types`` flavor stays reachable via the ``types`` subpackage (grok
+  ships both under separate module paths; the 1:1 split is preserved, not
+  collapsed -- collapsing would be a behavior change, not a port)
+
+This closes direction (2): the ``xai_codebase_graph`` crate root now mirrors
+grok's ``lib.rs`` re-export surface 1:1 for the symbols grok exposes.
+
+### Fusion conclusion
+
+Eight atomic barrel edits in ``__init__.py``, each mapping to a grok
+``lib.rs`` line range:
+
+1. **index_manager 11-symbol re-export (grok L84-L86)** -- ``MAX_INDEXABLE_FILE_SIZE``,
+   ``FileEvent``, ``FileEventKind``, ``IndexCommand``, ``IndexManager``,
+   ``IndexManagerConfig``, ``IndexManagerHandle``, ``QueryError``, ``QueryResult``,
+   ``SymbolLocation``, ``is_binary_content``. ``FileEvent`` / ``FileEventKind``
+   land here bound to the **index_manager batch container** (not the ``types``
+   single-file union), matching grok L84 verbatim. ``IndexManager`` (the actor)
+   and ``IndexManagerHandle`` (the sender) reach the crate root for the first
+   time (R306d placed them at the leaf only).
+2. **navigation quartet re-export (grok L94)** -- ``Location`` /
+   ``NavigationError`` / ``NavigationResult`` / ``Navigator``. ``Location`` lands
+   here bound to the **navigation flavor** (``path``/``line``/``symbol``), not
+   the ``types`` flavor (``file_path``/``line``/``column``/``range``) -- grok's
+   crate root carries only the navigation flavor; the types flavor stays under
+   ``types::``.
+3. **types import slimmed to 6 non-colliding symbols** -- the ``types``
+   re-export drops ``Location`` / ``FileEvent`` / ``FileEventKind`` (now sourced
+   from navigation/index_manager) to avoid clobbering the flavor-correct
+   bindings; the remaining 6 ``types`` symbols (no collision) stay sourced from
+   ``types``.
+4. **``__all__`` expansion 47 -> 51** -- adds ``NavigationError``,
+   ``NavigationResult``, ``Navigator``, ``IndexManager`` (the 4 symbols that
+   previously lived at leaf modules only). Re-sorted + dedup-verified
+   (``len(__all__) == len(set(__all__))``).
+5. **docstring updated** -- records the R307 ``navigation`` module landing and
+   the R308 barrel reconciliation, so the crate-root docstring reflects the
+   actual re-export surface.
+6. **``NavigationError`` 6 subclasses stay leaf-only** -- grok L94 re-exports
+   only the base ``NavigationError``; ``FileNotFound`` /
+   ``PositionOutOfBounds`` / ``NoSymbolAtPosition`` / ``UnsupportedLanguage`` /
+   ``ParseError`` / ``IoError`` are reachable via ``navigation`` but do NOT
+   reach the crate root (mirrors grok exactly).
+7. **star-import integrity** -- ``from package import *`` resolves every one
+   of the 51 ``__all__`` entries to a real attribute (verified by test).
+8. **flavor split preserved, not unified** -- ``types.Location`` vs
+   ``navigation.Location``, ``types.FileEvent`` vs ``index_manager.FileEvent``
+   stay as distinct types under separate module paths (1:1 with grok); the
+   crate root just picks the flavor grok's ``lib.rs`` picks.
+
+### Evidence
+
+grok ``lib.rs`` L84-L102 is the truth source (verbatim re-export order):
+
+* L84-L86 -- ``pub use index_manager::{...}`` re-exports the 11 index_manager
+  symbols (including ``IndexManager``, ``FileEvent``, ``FileEventKind`` with the
+  ``Removed`` variant).
+* L94 -- ``pub use navigation::{Location, NavigationError, NavigationResult,
+  Navigator};`` re-exports the navigation quartet (``Location`` is the
+  navigation flavor; base ``NavigationError`` only, not the 6 subclasses).
+* L99 -- ``pub use types::{...}`` re-exports 6 ``types`` symbols
+  (``FileEvent`` / ``FileEventKind`` / ``Location`` are NOT among them -- grok
+  sources those from index_manager/navigation, not types).
+
+The pre-R308 barrel pins in ``test_xai_codebase_graph_navigation.py``,
+``test_xai_codebase_graph_types.py``,
+``test_xai_codebase_graph_index_manager_actor.py``, and
+``test_xai_codebase_graph_index_manager_types.py`` each carried a docstring
+stating "a barrel-reconciliation brick (post-``navigation``) will switch the
+crate root ... in one atomic edit to match grok ``lib.rs`` L84-L86" -- R308 is
+that brick, and each pin is flipped (renamed + inverted) rather than deleted so
+the ``__all__``-level coverage stays and the switch is documented in-tree.
+
+### Delivery
+
+Committed files (this brick, R308):
+
+* ``agent/minimax_code/xai_codebase_graph/__init__.py`` -- the 8 atomic barrel
+  edits: index_manager 11-symbol import (incl. ``IndexManager`` +
+  ``IndexManagerHandle`` reaching the root), navigation quartet import,
+  ``types`` import slimmed to 6 non-colliding symbols, ``__all__`` 47 -> 51
+  re-sorted, docstring updated to record R307+R308.
+* ``agent/tests/test_xai_codebase_graph_barrel.py`` -- new, 13 tests pinning
+  the reconciled barrel surface: Location flavor switch (navigation, not types)
+  + FileEvent/FileEventKind flavor switch (index_manager batch, not types
+  union) + navigation quartet at root + IndexManager at root + 6
+  NavigationError subclasses leaf-only + ``__all__`` no-duplicates +
+  ``__all__`` contains R308 additions + star-import resolves all + grok L84-L86
+  11-symbol parity.
+* ``agent/tests/test_xai_codebase_graph_navigation.py`` -- flipped 1 pre-R308
+  pin (``test_navigation_symbols_not_yet_at_crate_root`` ->
+  ``test_navigation_symbols_at_crate_root_after_r308``): navigation quartet now
+  in ``__all__`` + same-object at crate root.
+* ``agent/tests/test_xai_codebase_graph_types.py`` -- flipped 1 pre-R308 pin
+  (``test_crate_root_barrel_mirrors_types_barrel``): the flavor-switched triple
+  (``Location`` / ``FileEvent`` / ``FileEventKind``) now binds to non-types
+  objects; the rest of ``types.__all__`` still mirrors 1:1.
+* ``agent/tests/test_xai_codebase_graph_index_manager_actor.py`` -- flipped 1
+  pre-R308 pin (``test_index_manager_not_in_crate_root_all`` ->
+  ``test_index_manager_in_crate_root_after_r308``): ``IndexManager`` now in
+  ``__all__`` + same-object.
+* ``agent/tests/test_xai_codebase_graph_index_manager_types.py`` -- flipped 1
+  pre-R308 pin (``test_crate_root_file_event_still_binds_types_version`` ->
+  ``test_crate_root_file_event_binds_index_manager_version_after_r308``):
+  crate-root ``FileEvent`` / ``FileEventKind`` now bind the index_manager batch
+  version; the ``types`` single-file union stays reachable via the ``types``
+  subpackage and remains a distinct type.
+
+### Verification
+
+* ``ruff check`` -- clean (line-length 100, E/F/W/I/B/UP) across all 5
+  R308-touched test files + the barrel module.
+* Directed R308 -- ``186 passed in 0.96s`` (barrel 13 + navigation + types +
+  index_manager_actor + index_manager_types, 5 files).
+* Full regression -- ``9881 passed, 15 skipped`` in 160.86s (zero regressions
+  vs the R307 baseline of 9868; the +13 delta is exactly the new barrel suite,
+  all green; the 2 failures observed mid-brick -- 1 unrelated flaky timing test
+  in ``test_connection.py`` and the 1 missed pre-R308 pin in
+  ``index_manager_types.py`` -- both resolved by the pin flip and the
+  independent flake passing on re-run).
+
+### YAGNI boundaries
+
+* **``Location`` / ``FileEvent`` split preserved (no unification)** -- grok
+  models the navigation-flavored ``Location`` and the ``types::Location`` (with
+  full ``Range`` + column) as separate types under separate module paths, and
+  the batch ``index_manager::FileEvent`` vs the single-file ``types::FileEvent``
+  union likewise. R308 picks the flavor grok's ``lib.rs`` picks at the crate
+  root; the other flavor stays reachable via its subpackage. Collapsing would be
+  a behavior change, not a port.
+* **6 ``NavigationError`` subclasses stay leaf-module-only** -- grok L94
+  re-exports only the base ``NavigationError``; the subclasses are reachable via
+  ``navigation`` but not the crate root. Mirrors grok exactly.
+* **Tree-sitter runtime still not loaded in this environment** -- inherited
+  from R307; ``_get_parser_and_query`` returns ``(None, None)``. The barrel
+  surface is independent of the runtime; end-to-end parse still degrades to
+  ``ParseError`` until a grammar is registered (out of scope for direction (2)).
+* **Direction (3) still P0 not-started** -- the L2 self-evolution framework
+  skeleton is the remaining parallel active front; R308 closes direction (2)
+  but does not touch direction (3).
+
+### Commit
+
+```
+feat(platform): R308 reconcile xai_codebase_graph crate-root barrel
+
+Closes direction (2) -- reconciles the crate-root barrel to mirror grok
+lib.rs L84-L102 in one reviewed atomic edit. R300 placed the crate root bound
+to the types flavor (Location as file_path/column/range; FileEvent as the
+single-file union with DELETED); R306a-g landed the index_manager batch
+container (grok L84) and R307 landed the navigation-flavored Location (grok
+L94). R308 is the deferred barrel-reconciliation brick that switches the crate
+root to the flavors grok's lib.rs actually re-exports.
+
+Eight atomic barrel edits in __init__.py:
+* index_manager 11-symbol re-export (grok L84-L86): MAX_INDEXABLE_FILE_SIZE,
+  FileEvent, FileEventKind, IndexCommand, IndexManager, IndexManagerConfig,
+  IndexManagerHandle, QueryError, QueryResult, SymbolLocation, is_binary_content.
+  FileEvent/FileEventKind bind the index_manager batch container (paths list +
+  REMOVED variant), not the types single-file union. IndexManager actor +
+  IndexManagerHandle sender reach the crate root for the first time.
+* navigation quartet re-export (grok L94): Location/NavigationError/
+  NavigationResult/Navigator. Location binds the navigation flavor
+  (path/line/symbol), not the types flavor.
+* types import slimmed to 6 non-colliding symbols (Location/FileEvent/
+  FileEventKind dropped to avoid clobbering the flavor-correct bindings).
+* __all__ 47 -> 51 (+NavigationError/NavigationResult/Navigator/IndexManager),
+  re-sorted + dedup-verified.
+* NavigationError 6 subclasses stay leaf-only (grok L94 base only).
+* flavor split preserved (types.Location vs navigation.Location, types.FileEvent
+  vs index_manager.FileEvent stay distinct types under separate module paths).
+
+Flips the 4 pre-R308 barrel pins (navigation/types/index_manager_actor/
+index_manager_types) from "crate root still binds the types flavor" to
+"crate root binds the grok-prescribed flavor after R308" -- renamed + inverted,
+not deleted, so __all__-level coverage stays and the switch is documented.
+
+Verification: ruff clean; directed R308 186 passed in 0.96s; full regression
+9881 passed/15 skipped [R307 baseline 9868 -> +13 delta is the new barrel
+suite, zero regression]. Closes direction (2). Direction (3) L2 self-evolution
+framework skeleton wiring remains P0 not-started parallel active front.
+```
