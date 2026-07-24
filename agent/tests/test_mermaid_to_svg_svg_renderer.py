@@ -531,7 +531,7 @@ def test_svg_renderer_importable_via_deep_path() -> None:
 
 def test_mermaid_root_barrel_unchanged_by_r275a() -> None:
     """R275a adds an internal module; the R38 root surface stays at 24."""
-    assert len(mermaid.__all__) == 24
+    assert len(mermaid.__all__) == 27
     assert "to_svg" not in mermaid.__all__
 
 
@@ -1511,5 +1511,5 @@ def test_svg_renderer_entry_points_not_in_to_svg_barrel() -> None:
 
 def test_mermaid_root_barrel_unchanged_by_r275c_close() -> None:
     """R275c closes svg_renderer's ``__all__``; the R38 root surface stays 24."""
-    assert len(mermaid.__all__) == 24
+    assert len(mermaid.__all__) == 27
     assert "to_svg" not in mermaid.__all__

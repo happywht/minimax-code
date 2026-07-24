@@ -317,4 +317,4 @@ def test_barrel_reexports_subprocess_symbols() -> None:
     assert mermaid_barrel.run_with_timeout is run_with_timeout
     assert mermaid_barrel.SubprocessError is SubprocessError
     assert mermaid_barrel.TimeoutSubprocessError is TimeoutSubprocessError
-    assert len(mermaid_barrel.__all__) == 23
+    assert len(mermaid_barrel.__all__) == 27

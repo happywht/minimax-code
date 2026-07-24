@@ -52,13 +52,20 @@ What is here vs deferred
   step. The raster step is the R278b YAGNI gap, so ``render`` runs the SVG half
   and raises :class:`MermaidRasterizeError` at the raster step rather than
   fabricating PNG bytes.
-* **Host wrapper leaf remaining (R278d)**: ``mmdc.rs`` (the optional CLI
-  engine that shells out to ``mmdc`` / headless Chromium) is not yet migrated.
+* **Host wrapper leaf (R278d)**: :mod:`.mmdc` lands the optional
+  :class:`MmdcEngine` -- the CLI engine that shells out to ``mmdc`` / headless
+  Chromium. Off by default; a caller must construct it explicitly (via
+  :meth:`~minimax_code.mermaid.mmdc.MmdcEngine.detect`). Its raster step is the
+  same R278b YAGNI gap (``render`` runs the SVG half then raises
+  :class:`MermaidRasterizeError`). :func:`default_engine` is the crate-root
+  factory (grok ``lib.rs`` L197--L203) returning the offline
+  :class:`PureRustEngine` -- ``mmdc`` is never selected automatically.
 """
 
 from __future__ import annotations
 
 from .engine import MermaidEngine, RenderLimits, render_checked
+from .mmdc import MmdcEngine, detect_mmdc
 from .errors import (
     MermaidError,
     MermaidLayoutError,
@@ -86,6 +93,20 @@ from .types import (
     RenderParams,
     Rgba,
 )
+
+
+def default_engine() -> PureRustEngine:
+    """Construct the default engine: the offline :class:`PureRustEngine` (grok ``default_engine``).
+
+    Mirrors grok ``lib.rs`` L197--L203: the default is always the pure-Rust
+    engine. ``mmdc`` is never selected automatically -- a caller must construct
+    :class:`MmdcEngine` explicitly (via
+    :meth:`~minimax_code.mermaid.mmdc.MmdcEngine.detect`) to opt into the CLI
+    engine. Returns a fresh :class:`PureRustEngine` each call (stateless, so
+    interchangeable -- value-equal and hashable per R278c).
+    """
+    return PureRustEngine()
+
 
 __all__ = [
     # engine (R38)
@@ -117,4 +138,9 @@ __all__ = [
     "run_with_timeout",
     # pure (R278c)
     "PureRustEngine",
+    # mmdc (R278d)
+    "MmdcEngine",
+    "detect_mmdc",
+    # default_engine factory (R278d, grok lib.rs crate root L197-L203)
+    "default_engine",
 ]

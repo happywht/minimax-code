@@ -480,7 +480,7 @@ def test_layout_importable_via_deep_path() -> None:
 
 def test_mermaid_root_barrel_unchanged_by_layout_leaf() -> None:
     """R274a adds an internal module; the R38 root surface stays at 24."""
-    assert len(mermaid.__all__) == 24
+    assert len(mermaid.__all__) == 27
     assert "to_svg" not in mermaid.__all__
 
 
@@ -1637,7 +1637,7 @@ def test_dagre_graph_alias_internal_not_in_module_all() -> None:
 
 def test_mermaid_root_barrel_unchanged_by_r274c() -> None:
     """R274c adds an internal-method cohort; the R38 root surface stays at 24."""
-    assert len(mermaid.__all__) == 24
+    assert len(mermaid.__all__) == 27
     assert "to_svg" not in mermaid.__all__
 
 
@@ -2055,7 +2055,7 @@ def test_get_node_colors_partial_style_returns_none_for_missing() -> None:
 
 def test_mermaid_root_barrel_unchanged_by_r274d() -> None:
     """R274d adds another internal-method cohort; the R38 root surface stays 24."""
-    assert len(mermaid.__all__) == 24
+    assert len(mermaid.__all__) == 27
     assert "to_svg" not in mermaid.__all__
 
 

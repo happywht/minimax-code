@@ -356,7 +356,7 @@ def test_mermaid_root_barrel_unchanged_by_to_svg_subpackage() -> None:
     surface (the R38 host types/errors stay the root vocabulary). The root
     ``__all__`` count is unchanged.
     """
-    assert len(mermaid.__all__) == 24
+    assert len(mermaid.__all__) == 27
     assert "to_svg" not in mermaid.__all__
 
 

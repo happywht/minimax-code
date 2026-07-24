@@ -108,7 +108,7 @@ def test_pure_module_all_is_single_symbol_pure_rust_engine() -> None:
 def test_mermaid_root_barrel_re_exports_pure_rust_engine() -> None:
     """R278c adds ``PureRustEngine`` to the root barrel; the surface stays at 24."""
     assert "PureRustEngine" in mermaid.__all__
-    assert len(mermaid.__all__) == 24
+    assert len(mermaid.__all__) == 27
     # The barrel re-export is the same object as the leaf definition.
     assert mermaid.PureRustEngine is PureRustEngine
 
