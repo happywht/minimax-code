@@ -22,11 +22,13 @@ Covers the four migrated symbols plus the module-private helper:
 
 Dispatch invariants asserted (zero-semantic clone):
 
-1. The 25 diagram-type tokens whose dedicated renderers ship in R279+ raise
+1. The 24 diagram-type tokens whose dedicated renderers ship in R280+ raise
    :class:`UnsupportedDiagramType` *before* the flowchart path runs -- this
-   matches grok's per-diagram ``if`` arms (L51-L139). State tokens
-   (``stateDiagram`` / ``stateDiagram-v2``) raise here too (their dedicated
-   parser is out of scope for the dagre stack today).
+   matches grok's per-diagram ``if`` arms (L51-L139). The ``info`` renderer
+   shipped in R279 (its dedicated dispatch arm no longer raises); the 24
+   remaining tokens still do. State tokens (``stateDiagram`` /
+   ``stateDiagram-v2``) raise here too (their dedicated parser is out of
+   scope for the dagre stack today).
 2. Unknown tokens (not in the unsupported set, not ``graph``/``flowchart``)
    fall through to the generic parser -- matching grok's unconditional
    ``parser::parse_mermaid`` at L150. A bare ``flowchart``/``graph`` token
@@ -178,7 +180,6 @@ def test_strip_mermaid_frontmatter_strips_yaml_block() -> None:
         "C4Dynamic",
         "C4Deployment",
         "requirementDiagram",
-        "info",
         "packet-beta",
         "block-beta",
         "radar-beta",
@@ -189,12 +190,13 @@ def test_strip_mermaid_frontmatter_strips_yaml_block() -> None:
     ],
 )
 def test_render_mermaid_to_svg_unsupported_type_raises(diagram_type: str) -> None:
-    """Each of the 25 R279+ diagram tokens raises before the flowchart path.
+    """Each of the 24 R280+ diagram tokens raises before the flowchart path.
 
     Mirrors grok's per-diagram ``if`` arms (lib.rs L51-L139): the dedicated
     renderer is not migrated yet, so dispatch reports the type as
-    unsupported. The raised :class:`UnsupportedDiagramType` carries the
-    diagram-type token verbatim.
+    unsupported. The ``info`` renderer shipped in R279 and is asserted
+    separately; it does not raise here. The raised
+    :class:`UnsupportedDiagramType` carries the diagram-type token verbatim.
     """
     source = f"{diagram_type}\n  body"
     with pytest.raises(UnsupportedDiagramType) as exc_info:

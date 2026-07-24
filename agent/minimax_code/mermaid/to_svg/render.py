@@ -17,11 +17,14 @@ Dispatch model (mirrors grok ``render_mermaid_to_svg`` L36-L163)
 3. Extract the first diagram-type token from the body
    (:func:`first_diagram_type_token`).
 4. Dispatch:
-   * The 19 independent per-diagram renderers (er / class / mindmap / state /
-     pie / gantt / requirement / info / packet / block / radar / sankey /
+   * The ``info`` renderer (R279) has its own dedicated arm above the
+     unsupported check -- :func:`render_info_diagram_to_svg` emits the static
+     version card (``v11.12.2``).
+   * The 19 remaining independent per-diagram renderers (er / class / mindmap
+     / state / pie / gantt / requirement / packet / block / radar / sankey /
      sequence / gitgraph / timeline / journey / kanban / quadrant / xychart /
      c4) raise :class:`UnsupportedDiagramType` here. Their per-diagram leaves
-     ship in later rounds (R279+); until then the dispatch reports the type
+     ship in later rounds (R280+); until then the dispatch reports the type
      as unsupported rather than running a renderer that does not exist yet.
    * The default path runs the already-migrated flowchart stack
      (``parser.parse_mermaid`` -> ``layout.compute_layout[_with_config]`` ->
@@ -48,6 +51,7 @@ from __future__ import annotations
 
 from .config import parse_mermaid_frontmatter
 from .error import UnsupportedDiagramType
+from .info_diagram import render_info_diagram_to_svg
 from .layout import compute_layout, compute_layout_with_config
 from .parser import parse_mermaid
 from .svg_renderer import render, render_with_config
@@ -61,13 +65,15 @@ __all__ = [
 
 
 #: Diagram-type tokens whose renderers ship as independent per-diagram leaves
-#: in later rounds (R279+). Until those leaves land, the dispatch raises
+#: in later rounds (R280+). Until those leaves land, the dispatch raises
 #: :class:`UnsupportedDiagramType` -- mirrors grok's per-diagram ``if`` arms
-#: (lib.rs L51-L139) minus the renderer bodies. The state tokens
-#: (``stateDiagram`` / ``stateDiagram-v2``) appear here too: grok routes them
-#: through ``state_diagram::parse_state_diagram`` (a dedicated parser), not
-#: the generic flowchart path, so they are not served by the default stack
-#: today. The five ``C4*`` tokens share grok's single ``c4_diagram`` renderer
+#: (lib.rs L51-L139) minus the renderer bodies. The ``info`` renderer shipped
+#: in R279 (its dedicated arm sits above this check); the 24 tokens below are
+#: the remaining unsupported surface. The state tokens (``stateDiagram`` /
+#: ``stateDiagram-v2``) appear here too: grok routes them through
+#: ``state_diagram::parse_state_diagram`` (a dedicated parser), not the
+#: generic flowchart path, so they are not served by the default stack today.
+#: The five ``C4*`` tokens share grok's single ``c4_diagram`` renderer
 #: (lib.rs L130-L139).
 _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
     {
@@ -79,7 +85,6 @@ _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
         "pie",
         "gantt",
         "requirementDiagram",
-        "info",
         "packet-beta",
         "block-beta",
         "radar-beta",
@@ -126,9 +131,11 @@ def render_mermaid_to_svg(
     Parses the front-matter, resolves the theme (``theme`` arg > front-matter
     ``config`` block > the default light palette), extracts the diagram-type
     token, and dispatches. The flowchart default path runs the dagre-backed
-    stack (``parser`` -> ``layout`` -> ``svg_renderer``); the 19 independent
-    per-diagram renderers raise :class:`UnsupportedDiagramType` until their
-    leaves ship (R279+). Mirrors grok lib.rs L36-L163.
+    stack (``parser`` -> ``layout`` -> ``svg_renderer``); the ``info``
+    renderer (R279) emits mermaid's version card via
+    :func:`render_info_diagram_to_svg`; the 19 remaining per-diagram
+    renderers raise :class:`UnsupportedDiagramType` until their leaves ship
+    (R280+). Mirrors grok lib.rs L36-L163.
 
     Raises:
         UnsupportedDiagramType: when the diagram-type token names a diagram
@@ -149,6 +156,13 @@ def render_mermaid_to_svg(
 
     body = parsed_source.body
     diagram_type = first_diagram_type_token(body)
+
+    # ``info`` has its own dedicated renderer (R279): mermaid's version card.
+    # Mirrors grok lib.rs L82-L84 -- the raw ``mermaid_source`` (front-matter
+    # and all) flows to :func:`render_info_diagram_to_svg`, which re-extracts
+    # the token defensively and ignores the body otherwise.
+    if diagram_type == "info":
+        return render_info_diagram_to_svg(mermaid_source, resolved_theme)
 
     if diagram_type in _UNSUPPORTED_DIAGRAM_TYPES:
         raise UnsupportedDiagramType(diagram_type)
