@@ -24,11 +24,15 @@ Dispatch model (mirrors grok ``render_mermaid_to_svg`` L36-L163)
      dedicated arm too -- :func:`parse_state_diagram` emits a FlowchartGraph
      that rides the dagre stack (``compute_layout`` + ``render``, no config),
      mirroring grok lib.rs L63-L68.
-   * The 18 remaining independent per-diagram renderers (er / class / mindmap
-     / pie / gantt / requirement / packet / block / radar / sankey / sequence
+   * The ``radar-beta`` renderer (R281) has its own dedicated arm --
+     :func:`render_radar_diagram_to_svg` emits the radar / spider chart
+     (concentric graticule + polar axis spokes + closed Catmull-Rom series
+     curves), mirroring grok lib.rs L94-L96.
+   * The 17 remaining independent per-diagram renderers (er / class / mindmap
+     / pie / gantt / requirement / packet / block / sankey / sequence
      / gitgraph / timeline / journey / kanban / quadrant / xychart / c4)
      raise :class:`UnsupportedDiagramType` here. Their per-diagram leaves ship
-     in later rounds (R281+); until then the dispatch reports the type as
+     in later rounds (R282+); until then the dispatch reports the type as
      unsupported rather than running a renderer that does not exist yet.
    * The default path runs the already-migrated flowchart stack
      (``parser.parse_mermaid`` -> ``layout.compute_layout[_with_config]`` ->
@@ -58,6 +62,7 @@ from .error import UnsupportedDiagramType
 from .info_diagram import render_info_diagram_to_svg
 from .layout import compute_layout, compute_layout_with_config
 from .parser import parse_mermaid
+from .radar_diagram import render_radar_diagram_to_svg
 from .state_diagram import parse_state_diagram
 from .svg_renderer import render, render_with_config
 from .theme import MermaidTheme
@@ -75,7 +80,7 @@ __all__ = [
 #: (lib.rs L51-L139) minus the renderer bodies. The ``info`` renderer shipped
 #: in R279 (its dedicated arm sits above this check); the ``stateDiagram`` /
 #: ``stateDiagram-v2`` parser shipped in R280 (its dedicated arm sits above
-#: this check too); the 22 tokens below are the remaining unsupported surface.
+#: this check too); the 21 tokens below are the remaining unsupported surface.
 #: The five ``C4*`` tokens share grok's single ``c4_diagram`` renderer
 #: (lib.rs L130-L139).
 _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
@@ -88,7 +93,6 @@ _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
         "requirementDiagram",
         "packet-beta",
         "block-beta",
-        "radar-beta",
         "sankey-beta",
         "sequenceDiagram",
         "gitGraph",
@@ -143,9 +147,10 @@ def render_mermaid_to_svg(
     renderer (R279) emits mermaid's version card via
     :func:`render_info_diagram_to_svg`; the ``stateDiagram`` /
     ``stateDiagram-v2`` parser (R280) emits a FlowchartGraph via
-    :func:`parse_state_diagram`; the 18 remaining per-diagram renderers raise
-    :class:`UnsupportedDiagramType` until their leaves ship (R281+). Mirrors
-    grok lib.rs L36-L163.
+    :func:`parse_state_diagram`; the ``radar-beta`` renderer (R281) emits the
+    radar chart via :func:`render_radar_diagram_to_svg`; the 17 remaining
+    per-diagram renderers raise :class:`UnsupportedDiagramType` until their
+    leaves ship (R282+). Mirrors grok lib.rs L36-L163.
 
     Raises:
         UnsupportedDiagramType: when the diagram-type token names a diagram
@@ -183,6 +188,14 @@ def render_mermaid_to_svg(
         graph = parse_state_diagram(body)
         layout_result = compute_layout(graph)
         return render(layout_result, resolved_theme)
+
+    # ``radar-beta`` (R281): the dedicated radar-chart renderer. Mirrors grok
+    # lib.rs L94-L96 -- the raw ``mermaid_source`` (front-matter and all) flows
+    # to :func:`render_radar_diagram_to_svg`, which scans for the ``radar-beta``
+    # header itself (same pattern as the ``info`` arm above; unlike the
+    # ``stateDiagram`` arm which consumes the front-matter-stripped ``body``).
+    if diagram_type == "radar-beta":
+        return render_radar_diagram_to_svg(mermaid_source, resolved_theme)
 
     if diagram_type in _UNSUPPORTED_DIAGRAM_TYPES:
         raise UnsupportedDiagramType(diagram_type)
