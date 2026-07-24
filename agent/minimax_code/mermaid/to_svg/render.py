@@ -73,11 +73,17 @@ Dispatch model (mirrors grok ``render_mermaid_to_svg`` L36-L163)
      titled timeline of tasks grouped into sections, where each task carries a
      1-5 satisfaction score (rendered as a happy/neutral/sad face icon) and the
      actors responsible for it, mirroring grok lib.rs L124-L126.
-   * The 8 remaining independent per-diagram renderers (er / class / mindmap
+   * The ``gitGraph`` renderer (R291) has its own dedicated arm --
+     :func:`render_gitgraph_diagram_to_svg` lays branches out on horizontal
+     lanes with commits as bullets and arrows encoding the three edge kinds
+     (same-branch / branch-down / merge-up), mirroring grok lib.rs L122-L123.
+     gitGraph is theme-aware through 4 channels (background / text_color /
+     edge_color / node_fill).
+   * The 7 remaining independent per-diagram renderers (er / class / mindmap
      / requirement / sequence
-     / gitgraph / xychart / c4)
+     / xychart / c4)
      raise :class:`UnsupportedDiagramType` here. Their per-diagram leaves ship
-     in later rounds (R291+); until then the dispatch reports the type as
+     in later rounds (R292+); until then the dispatch reports the type as
      unsupported rather than running a renderer that does not exist yet.
    * The default path runs the already-migrated flowchart stack
      (``parser.parse_mermaid`` -> ``layout.compute_layout[_with_config]`` ->
@@ -106,6 +112,7 @@ from .block_diagram import render_block_diagram_to_svg
 from .config import parse_mermaid_frontmatter
 from .error import UnsupportedDiagramType
 from .gantt_diagram import render_gantt_diagram_to_svg
+from .gitgraph_diagram import render_gitgraph_diagram_to_svg
 from .info_diagram import render_info_diagram_to_svg
 from .journey_diagram import render_journey_diagram_to_svg
 from .kanban_diagram import render_kanban_diagram_to_svg
@@ -138,9 +145,10 @@ __all__ = [
 #: ``sankey-beta`` renderer shipped in R284, the ``gantt`` renderer shipped
 #: in R285, the ``kanban`` renderer shipped in R286, the ``timeline``
 #: renderer shipped in R287, the ``quadrantChart`` renderer shipped in
-#: R288, the ``block-beta`` renderer shipped in R289, and the ``journey``
-#: renderer shipped in R290 (their dedicated arms sit above this check); the
-#: 12 tokens below are the remaining unsupported surface.
+#: R288, the ``block-beta`` renderer shipped in R289, the ``journey``
+#: renderer shipped in R290, and the ``gitGraph`` renderer shipped in
+#: R291 (their dedicated arms sit above this check); the 11 tokens below
+#: are the remaining unsupported surface.
 #: The five ``C4*`` tokens share grok's single ``c4_diagram`` renderer
 #: (lib.rs L130-L139).
 _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
@@ -150,7 +158,6 @@ _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
         "mindmap",
         "requirementDiagram",
         "sequenceDiagram",
-        "gitGraph",
         "xychart-beta",
         "C4Context",
         "C4Container",
@@ -365,6 +372,17 @@ def render_mermaid_to_svg(
     # ignores the resolved theme.
     if diagram_type == "journey":
         return render_journey_diagram_to_svg(body, resolved_theme)
+
+    # ``gitGraph`` (R291): the dedicated git-graph renderer. Mirrors grok
+    # lib.rs L122-L123 -- :func:`render_gitgraph_diagram_to_svg` receives the
+    # front-matter-stripped body and lays branches out on horizontal lanes
+    # with commits as bullets and arrows encoding the three edge kinds
+    # (same-branch / branch-down / merge-up). gitGraph IS theme-aware
+    # (4 channels): ``background`` -> root bg, ``text_color`` -> base font
+    # fill + gitTitleText + tag-hole, ``edge_color`` -> branch stroke,
+    # ``node_fill`` -> tag-label-bkg + commit-merge/reverse/highlight.
+    if diagram_type == "gitGraph":
+        return render_gitgraph_diagram_to_svg(body, resolved_theme)
 
     if diagram_type in _UNSUPPORTED_DIAGRAM_TYPES:
         raise UnsupportedDiagramType(diagram_type)
