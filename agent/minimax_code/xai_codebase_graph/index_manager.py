@@ -33,10 +33,12 @@ channel-adaptation contract: ``mpsc::channel<IndexCommand>`` ->
 ``ScopeGraphIndex`` (Python refs are already shared), and ``Result<T, E>``
 -> ``T | E`` (a query miss is a value, not an exception).
 
-The remaining actor runtime (:class:`IndexManager` /
-:class:`IndexManagerHandle` / the ``ACTIVE_MANAGERS`` singleton /
-``ExitBeacon`` / the actor loop) lands in R306d-R306g -- the type, helper,
-and command layers are zero-runtime-dependency and land first.
+The remaining actor runtime lands brick by brick:
+:class:`IndexManagerHandle` (R306d, the producer side) shipped; R306e adds
+the ``ExitBeacon`` test-only exit guard + the ``_ACTIVE_MANAGERS``
+workspace-dedup singleton; :class:`IndexManager` / the actor loop follow in
+R306f-R306g. The type, helper, and command layers above are
+zero-runtime-dependency and land first.
 
 FileEvent naming -- a deliberate split (mirrors R300):
     grok ships **two** ``FileEvent`` types with different semantics:
@@ -65,9 +67,10 @@ FileEvent naming -- a deliberate split (mirrors R300):
 from __future__ import annotations
 
 import asyncio
+import weakref
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import PurePath
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -677,9 +680,16 @@ class IndexManagerHandle:
     R306d ships the producer surface only; the actor loop that *drains*
     the mailbox lands in R306f. The request-response methods therefore
     await a :class:`asyncio.Future` that a later brick resolves.
+
+    R306e extends this slot list with ``"__weakref__"`` so the handle is
+    weakly referenceable: the ``_ACTIVE_MANAGERS`` workspace-dedup singleton
+    (R306e) holds :class:`weakref.ref` instances pointing at live handles,
+    mirroring grok's ``DashMap<PathBuf, Weak<IndexManagerHandle>>``. grok wraps
+    the handle in ``Arc`` so ``Arc::downgrade`` yields a ``Weak`` for free; a
+    slot-restricted Python class must declare ``__weakref__`` explicitly.
     """
 
-    __slots__ = ("_mailbox", "_closed")
+    __slots__ = ("_mailbox", "_closed", "__weakref__")
 
     def __init__(
         self, mailbox: asyncio.Queue[IndexCommand], closed: asyncio.Event
@@ -898,6 +908,123 @@ class IndexManagerHandle:
         if not self._send_probe(HasDefinitionCommand(symbol=symbol, response=fut)):
             return None
         return await fut
+
+
+# === actor-lifecycle test beacon + workspace-dedup singleton (R306e) ======
+
+
+class ExitBeacon:
+    """Test-only RAII guard that flips a flag when the actor loop exits.
+
+    Functional equivalent of grok ``ExitBeacon`` (``index_manager.rs``
+    L540-L550): a ``#[cfg(test)]`` struct wrapping an
+    ``Arc<std::sync::atomic::AtomicBool>`` whose ``Drop`` impl flips the flag
+    to ``true``, so a test can confirm the actor thread *actually* ran to
+    completion (not merely that the last ``Weak`` stopped upgrading). grok
+    constructs one around the actor at L761
+    (``let _exit_beacon = ExitBeacon(exit_signal);``) and lets it drop as
+    ``run_loop`` returns.
+
+    Adapted to asyncio, not line-ported:
+
+    * **Mutable ``bool``, not ``Arc<AtomicBool>``.** grok needs the atomic
+      because the actor thread and the test thread race on the flag; the
+      Python actor runs on the *same* single event-loop thread as the test,
+      so there is no data race and a plain ``bool`` is sufficient. No task
+      ever ``await``s this signal (it is polled synchronously after the loop
+      returns), so an :class:`asyncio.Event` would add allocation + scheduling
+      cost for nothing.
+    * **Unconditional delivery.** Python has no ``#[cfg(test)]`` conditional
+      compilation, so the class ships in every build. It is kept out of
+      ``__all__`` (test-only visibility, same surface as grok's test gate)
+      and its docstring marks it test-only; R306f's ``run_loop`` will
+      construct one but production callers never read ``exited``.
+    * **Context manager + explicit ``close()``.** grok relies on ``Drop``;
+      Python gives R306f both shapes -- ``with ExitBeacon() as b: ...`` for
+      scoped use and ``b.close()`` / ``b.exited`` for a ``finally`` block --
+      whichever the ``run_loop`` return path finds natural.
+    """
+
+    __slots__ = ("_flag",)
+
+    def __init__(self) -> None:
+        self._flag = False
+
+    def __enter__(self) -> ExitBeacon:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._flag = True
+
+    def close(self) -> None:
+        """Functional equivalent of grok ``Drop`` -- flip the exit flag."""
+        self._flag = True
+
+    @property
+    def exited(self) -> bool:
+        """``True`` once the beacon has been closed / its context exited."""
+        return self._flag
+
+
+def _canonicalize_root(root_path: str | Path) -> str:
+    """Resolve a workspace root to its canonical absolute string.
+
+    Functional equivalent of grok
+    ``dunce::canonicalize(&config.root_path).unwrap_or_else(|_| config.root_path.clone())``
+    (``index_manager.rs`` L591) -- the dedup key the ``_ACTIVE_MANAGERS``
+    singleton hashes by. Two paths that point at the same on-disk workspace
+    must collide in the map so a second ``spawn`` reuses the live manager
+    instead of forking a duplicate actor.
+
+    Adapted to asyncio, not line-ported:
+
+    * **:meth:`Path.resolve`, not ``dunce::canonicalize``.** ``dunce`` exists
+      only to strip the ``\\\\?\\`` verbatim prefix that Rust's
+      ``std::fs::canonicalize`` prepends on Windows (which would break path
+      equality). Python's :meth:`pathlib.Path.resolve` never adds that prefix,
+      so ``dunce``'s sole job is a no-op here -- ``resolve()`` alone is
+      byte-faithful to the "canonicalize, but keep it comparable" intent.
+    * **``strict=False`` (the default) mirrors ``unwrap_or_else``.** grok falls
+      back to the raw path when canonicalize fails (the workspace may not
+      exist yet on first ``spawn``); :meth:`Path.resolve` with
+      ``strict=False`` (Python's default) returns the best-effort absolute
+      path instead of raising, the same fallback.
+    """
+    return str(Path(root_path).resolve())
+
+
+#: Per-process singleton that dedups live :class:`IndexManagerHandle` actors by
+#: workspace. Functional equivalent of grok ``ACTIVE_MANAGERS``
+#: (``index_manager.rs`` L58:
+#: ``static ACTIVE_MANAGERS: Lazy<DashMap<PathBuf, Weak<IndexManagerHandle>>>``).
+#:
+#: Adapted to asyncio, not line-ported:
+#:
+#: * **:class:`weakref.WeakValueDictionary`, not ``DashMap<PathBuf, Weak<_>>``.**
+#:   grok's ``DashMap`` shards for concurrent access from many threads; the
+#:   Python port runs one event-loop thread, so there is no contention to
+#:   shard against and a plain dict-backed weak map is sufficient. The *value*
+#:   side is what matters: a weak ref to the handle, so the moment the last
+#:   caller drops its strong ref the entry becomes collectable -- exactly
+#:   grok's ``Weak<IndexManagerHandle>`` semantics.
+#: * **No dead-weak-removal retry loop.** grok's ``spawn`` (L600-L626) loops
+#:   on ``ACTIVE_MANAGERS.entry(k)`` and, on an occupied-but-dead slot,
+#:   ``remove``s it then retries. :class:`weakref.WeakValueDictionary`
+#:   *automatically* drops a dead entry on GC, so the occupied-but-dead case
+#:   can never be observed in Python -- the whole ``remove + retry`` arm is
+#:   subsumed by the weak map's own lifecycle and is not ported.
+#: * **``__weakref__`` slot.** grok wraps the handle in ``Arc`` so
+#:   ``Arc::downgrade`` yields a ``Weak`` for free; Python requires the target
+#:   class to declare ``__weakref__`` in ``__slots__`` to be weakly
+#:   referenceable, so R306e adds ``"__weakref__"`` to
+#:   :class:`IndexManagerHandle.__slots__`.
+#:
+#: Private (underscored) and not in ``__all__`` -- grok's ``static`` is a
+#: crate-private symbol too; R306f's ``spawn`` will ``__getitem__`` /
+#: ``__setitem__`` against it directly.
+_ACTIVE_MANAGERS: weakref.WeakValueDictionary[str, IndexManagerHandle] = (
+    weakref.WeakValueDictionary()
+)
 
 
 __all__ = [
