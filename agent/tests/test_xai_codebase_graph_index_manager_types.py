@@ -318,14 +318,17 @@ def test_index_manager_config_uses_slots() -> None:
 # === barrel contract ======================================================
 
 
-def test_index_manager_module_all_lists_eight_symbols() -> None:
+def test_index_manager_module_all_contains_type_layer_symbols() -> None:
     """The leaf module re-exports the 7 R306a type symbols + ``is_binary_content``.
 
-    R306b added ``is_binary_content`` (grok ``lib.rs`` L86 PUB ``fn``) to the
-    leaf ``__all__`` -- the 7 -> 8 growth is asserted here so the barrel stays
-    a single source of truth across the type + helper suites.
+    R306b added ``is_binary_content`` (grok ``lib.rs`` L86 PUB ``fn``) and R306c
+    added the 15 command symbols (:class:`IndexCommand` + 14 variants) to the
+    leaf ``__all__``. The 8 type-layer symbols are now a **subset** of the full
+    ``__all__`` (8 -> 23) -- this asserts the subset invariant so the barrel
+    stays a single source of truth across the type + helper + command suites
+    without coupling this suite to the command-layer count.
     """
-    assert set(im.__all__) == {
+    type_layer = {
         "MAX_INDEXABLE_FILE_SIZE",
         "FileEvent",
         "FileEventKind",
@@ -335,6 +338,7 @@ def test_index_manager_module_all_lists_eight_symbols() -> None:
         "IndexManagerConfig",
         "is_binary_content",
     }
+    assert type_layer.issubset(set(im.__all__))
 
 
 def test_crate_root_exports_five_non_colliding_symbols() -> None:

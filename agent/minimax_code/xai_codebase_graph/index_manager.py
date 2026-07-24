@@ -1,4 +1,4 @@
-"""Index manager actor: type + helper layer (R306a + R306b, direction (2) brick 7).
+"""Index manager actor: type + helper + command layer (R306a + R306b + R306c, direction (2) brick 7).
 
 Ported **by function** from grok ``xai-codebase-graph/src/index_manager.rs``.
 
@@ -22,10 +22,21 @@ zero runtime dependency on the channel / tree-sitter machinery):
 * :func:`is_binary_file` / :func:`is_under_hidden_dir` -- the private
   disk-read and hidden-directory classifier helpers.
 
-The channel-actor runtime (:class:`IndexManager` / :class:`IndexManagerHandle`
-/ :class:`IndexCommand` / the ``ACTIVE_MANAGERS`` singleton / ``ExitBeacon``)
-lands in R306c-R306g -- the type + helper layer is zero-dependency and lands
-first.
+R306c lands the channel-command layer (:class:`IndexCommand` -- the 14-
+variant tagged union that flows through the actor mailbox, grok L110-L168).
+grok models it as a Rust ``enum``; the Python port uses a sealed class
+hierarchy (one ``@dataclass`` per variant) so the actor loop (R306f)
+dispatches via ``isinstance``. The brick also fixes the tokio -> asyncio
+channel-adaptation contract: ``mpsc::channel<IndexCommand>`` ->
+``asyncio.Queue[IndexCommand]``, ``oneshot::Sender<T>`` ->
+``asyncio.Future[T]``, ``Arc<ScopeGraphIndex>`` -> a bare
+``ScopeGraphIndex`` (Python refs are already shared), and ``Result<T, E>``
+-> ``T | E`` (a query miss is a value, not an exception).
+
+The remaining actor runtime (:class:`IndexManager` /
+:class:`IndexManagerHandle` / the ``ACTIVE_MANAGERS`` singleton /
+``ExitBeacon`` / the actor loop) lands in R306d-R306g -- the type, helper,
+and command layers are zero-runtime-dependency and land first.
 
 FileEvent naming -- a deliberate split (mirrors R300):
     grok ships **two** ``FileEvent`` types with different semantics:
@@ -53,9 +64,23 @@ FileEvent naming -- a deliberate split (mirrors R300):
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import PurePath
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # The channel-command payload types live in scope_graph / types, but
+    # index_manager stays runtime-clean (the R306a stdlib-only contract is
+    # preserved). All three appear only inside ``asyncio.Future[...]`` field
+    # annotations, which ``from __future__ import annotations`` keeps as
+    # unevaluated strings -- no runtime import, no circular-dependency risk.
+    from minimax_code.xai_codebase_graph.scope_graph import (
+        QueryVersion,
+        ScopeGraphIndex,
+    )
+    from minimax_code.xai_codebase_graph.types import IndexStats
 
 # === constants ============================================================
 
@@ -377,6 +402,215 @@ def is_under_hidden_dir(path: str) -> bool:
     return any(p.startswith(".") and len(p) > 1 for p in PurePath(path).parts)
 
 
+# === index commands (channel-actor mailbox) ==============================
+#
+# R306c -- grok ``index_manager::IndexCommand`` (L110-L168): a 14-variant
+# tagged union that flows through the actor mailbox. grok models it as a Rust
+# ``enum``; the Python port uses a sealed class hierarchy (one ``@dataclass``
+# per variant) so the actor loop (R306f) dispatches via ``isinstance`` --
+# Python's tagged-union ``match``.
+#
+# Channel adaptation (the R306c design core; the runtime lands in R306d /
+# R306f):
+#
+#   grok (tokio)                                  Python (asyncio)
+#   ``mpsc::Sender<IndexCommand>``                ``asyncio.Queue[IndexCommand]``
+#   ``mpsc::Receiver<IndexCommand>``              ``asyncio.Queue[IndexCommand]`` (actor)
+#   ``oneshot::Sender<T>``                        ``asyncio.Future[T]``
+#   ``Arc<ScopeGraphIndex>``                      ``ScopeGraphIndex`` (no Arc)
+#   ``Result<QueryResult, QueryError>``           ``QueryResult | QueryError``
+#
+# The caller (``IndexManagerHandle``, R306d) creates the Future, pushes the
+# command onto the queue, and ``await``s the Future; the actor (R306f) drains
+# the queue, runs the query, and resolves the Future. Fire-and-forget variants
+# carry no Future -- the actor just consumes them. ``Result`` is mapped to a
+# union value (not an exception): a query miss is normal control flow, so the
+# actor ``set_result`` on both arms and reserves ``set_exception`` for real
+# runtime faults.
+
+
+class IndexCommand:
+    """Base marker for the 14 mailbox commands (grok ``IndexCommand``, L110-L168).
+
+    A sealed class hierarchy: every concrete variant below subclasses this.
+    The actor loop (R306f) dispatches via ``isinstance(cmd, <Variant>)`` --
+    Python's tagged-union match. ``__slots__ = ()`` on the base keeps the
+    ``@dataclass(slots=True)`` subclasses ``__dict__``-free (the mailbox can
+    hold thousands of these, so per-command memory must be lean).
+    """
+
+    __slots__ = ()
+
+
+# --- fire-and-forget variants (no response) ------------------------------
+
+
+@dataclass(slots=True)
+class FileEventCommand(IndexCommand):
+    """Process a single :class:`FileEvent` (grok ``FileEvent(FileEvent)``)."""
+
+    event: FileEvent
+
+
+@dataclass(slots=True)
+class FileEventBatchCommand(IndexCommand):
+    """Process a batch of file events (grok ``FileEventBatch(Vec<FileEvent>)``).
+
+    More efficient than one :class:`FileEventCommand` per event: the actor
+    coalesces the whole batch in a single drain cycle.
+    """
+
+    events: list[FileEvent]
+
+
+@dataclass(slots=True)
+class RebuildCommand(IndexCommand):
+    """Rebuild the entire index from scratch (grok ``Rebuild``).
+
+    The actor walks ``root_path`` and reindexes every file. No payload, no
+    response -- the caller observes completion via the index state change.
+    """
+
+
+@dataclass(slots=True)
+class BackgroundRefreshCommand(IndexCommand):
+    """Reindex stale / new files in the background (grok ``BackgroundRefresh``).
+
+    ``stale_files`` are reindexed; ``deleted_files`` are evicted. Fire-and-
+    forget -- the caller does not wait (the background sweep runs to completion
+    on its own schedule).
+    """
+
+    stale_files: list[str]
+    deleted_files: list[str]
+
+
+@dataclass(slots=True)
+class ShutdownCommand(IndexCommand):
+    """Shut the actor down (grok ``Shutdown``).
+
+    The actor drains remaining fire-and-forget work, drops its queue, and
+    exits. No response -- the ``ExitBeacon`` / ``ACTIVE_MANAGERS`` registry
+    (R306e) tracks completion.
+    """
+
+
+# --- request-response variants (oneshot -> Future) -----------------------
+#
+# Each variant carries an ``asyncio.Future`` the actor resolves. The Future's
+# result type mirrors the grok ``oneshot::Sender<T>`` payload. ``QueryResult |
+# QueryError`` keeps grok's ``Result`` value semantics (a miss is a value, not
+# a raised exception).
+
+
+@dataclass(slots=True)
+class GetSnapshotCommand(IndexCommand):
+    """Get a shared snapshot of the current index (grok ``GetSnapshot``).
+
+    grok returns ``Arc<ScopeGraphIndex>``; Python collapses the ``Arc``
+    (object references are already shared). The snapshot is read-only --
+    callers must not mutate the returned index.
+    """
+
+    response: asyncio.Future[ScopeGraphIndex]
+
+
+@dataclass(slots=True)
+class GotoDefinitionCommand(IndexCommand):
+    """Go-to-definition query (grok ``GotoDefinition``).
+
+    ``file_path`` is relative to the index ``root_path``; ``row`` / ``col``
+    are 0-indexed (grok ``usize``, matching tree-sitter's point model).
+    """
+
+    file_path: str
+    row: int
+    col: int
+    response: asyncio.Future[QueryResult | QueryError]
+
+
+@dataclass(slots=True)
+class GotoReferencesCommand(IndexCommand):
+    """Go-to-references query (grok ``GotoReferences``).
+
+    ``include_definition`` folds the definition site into the reference list
+    when ``True`` (grok L133).
+    """
+
+    file_path: str
+    row: int
+    col: int
+    include_definition: bool
+    response: asyncio.Future[QueryResult | QueryError]
+
+
+@dataclass(slots=True)
+class FindDefinitionsCommand(IndexCommand):
+    """Find definitions by symbol name (grok ``FindDefinitions``).
+
+    ``context_file`` (optional) biases same-file / local definitions when the
+    name is ambiguous (grok L139).
+    """
+
+    symbol: str
+    context_file: str | None
+    response: asyncio.Future[list[SymbolLocation]]
+
+
+@dataclass(slots=True)
+class FindReferencesCommand(IndexCommand):
+    """Find references by symbol name (grok ``FindReferences``).
+
+    Mirrors :class:`FindDefinitionsCommand` for the reference side.
+    """
+
+    symbol: str
+    context_file: str | None
+    response: asyncio.Future[list[SymbolLocation]]
+
+
+@dataclass(slots=True)
+class GetFileCountCommand(IndexCommand):
+    """Number of indexed files (grok ``GetFileCount``).
+
+    Lightweight -- no index clone, just a length read.
+    """
+
+    response: asyncio.Future[int]
+
+
+@dataclass(slots=True)
+class GetStatsCommand(IndexCommand):
+    """Index statistics (grok ``GetStats``).
+
+    Lightweight aggregate -- :class:`minimax_code.xai_codebase_graph.types.IndexStats`.
+    """
+
+    response: asyncio.Future[IndexStats]
+
+
+@dataclass(slots=True)
+class GetQueryVersionCommand(IndexCommand):
+    """Query-version stamp of the current index (grok ``GetQueryVersion``).
+
+    Lightweight -- the stamp that drives rebuilds when queries change.
+    """
+
+    response: asyncio.Future[QueryVersion]
+
+
+@dataclass(slots=True)
+class HasDefinitionCommand(IndexCommand):
+    """Does the symbol have any definitions? (grok ``HasDefinition``).
+
+    Lightweight boolean probe -- cheaper than :class:`FindDefinitionsCommand`
+    when the caller only needs existence.
+    """
+
+    symbol: str
+    response: asyncio.Future[bool]
+
+
 __all__ = [
     "MAX_INDEXABLE_FILE_SIZE",
     "FileEvent",
@@ -390,4 +624,24 @@ __all__ = [
     # (``CoalescedEvents`` / ``is_binary_file`` / ``is_under_hidden_dir``)
     # stay module-level (no crate-root re-export, mirroring grok visibility).
     "is_binary_content",
+    # R306c -- the 14 mailbox-command variants. The base :class:`IndexCommand`
+    # is re-exported at the crate root (grok ``lib.rs`` L84 re-exports the
+    # enum); the 14 variant subclasses stay leaf-module-only (grok models
+    # them as enum members, not free symbols) -- callers reach them via
+    # ``minimax_code.xai_codebase_graph.index_manager.FileEventCommand`` etc.
+    "IndexCommand",
+    "FileEventCommand",
+    "FileEventBatchCommand",
+    "RebuildCommand",
+    "BackgroundRefreshCommand",
+    "ShutdownCommand",
+    "GetSnapshotCommand",
+    "GotoDefinitionCommand",
+    "GotoReferencesCommand",
+    "FindDefinitionsCommand",
+    "FindReferencesCommand",
+    "GetFileCountCommand",
+    "GetStatsCommand",
+    "GetQueryVersionCommand",
+    "HasDefinitionCommand",
 ]

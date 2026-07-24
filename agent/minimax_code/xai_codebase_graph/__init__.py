@@ -78,8 +78,15 @@ runtime dependency on the channel / tree-sitter machinery --
 the crate root; ``FileEvent`` / ``FileEventKind`` stay bound to the
 ``types`` version (R300 placement) -- see the module docstring in
 :mod:`minimax_code.xai_codebase_graph.index_manager` for the split rationale.
-The channel-actor runtime (Handle / Command / ACTIVE_MANAGERS / the actor
-loop) lands in R306b-R306g.
+
+R306c lands the channel-command layer: :class:`IndexCommand` -- the 14-variant
+tagged union that flows through the actor mailbox (grok ``index_manager.rs``
+L110-L168) -- re-exported at the crate root (grok ``lib.rs`` L84). The 14
+variant subclasses stay leaf-module-only (grok models them as enum members).
+The tokio -> asyncio channel-adaptation contract (``mpsc`` ->
+``asyncio.Queue``, ``oneshot`` -> ``asyncio.Future``) is fixed here. The
+remaining actor runtime (Handle / ACTIVE_MANAGERS / ExitBeacon / the actor
+loop) lands in R306d-R306g.
 
 The crate-root barrel mirrors grok ``lib.rs``: grok re-exports ``types``,
 ``scope_graph`` node symbols, and the ``interner`` pair at the crate root.
@@ -104,14 +111,16 @@ YAGNI: the ``types`` layer, the ``scope_graph`` node / edge type layer, the
 (``QueryVersion`` / ``Snippet`` / ``NodeIndex``), the graph algorithms
 (``ScopeGraph`` / ``ScopeGraphIndex``), and the full ``manager`` subpackage
 (cache R305f / builder R305g / lock R305h) are public. The ``index_manager``
-type layer (R306a) is public; the channel-actor runtime (R306b-R306g) and
-the ``navigation`` module do not exist yet -- the barrel grows as they land.
+type layer (R306a) + command layer (R306c) are public; the remaining actor
+runtime (R306d-R306g) and the ``navigation`` module do not exist yet -- the
+barrel grows as they land.
 """
 
 from __future__ import annotations
 
 from minimax_code.xai_codebase_graph.index_manager import (
     MAX_INDEXABLE_FILE_SIZE,
+    IndexCommand,
     IndexManagerConfig,
     QueryError,
     QueryResult,
@@ -216,11 +225,14 @@ __all__ = [
     "WorkspaceLockGuard",
     "is_operation_in_progress",
     "try_lock",
-    # index_manager (R306a + R306b) -- grok ``lib.rs`` L84-L86 re-exports
-    # the type layer + the ``is_binary_content`` helper of the channel-actor
-    # index manager. The 5 non-colliding type symbols (no ``types``
-    # counterpart) + ``is_binary_content`` (grok L86, PUB ``fn``) reach the
-    # crate root; ``FileEvent`` / ``FileEventKind`` stay bound to the
+    # index_manager (R306a + R306b + R306c) -- grok ``lib.rs`` L84-L86
+    # re-exports the type layer, the ``is_binary_content`` helper, and the
+    # ``IndexCommand`` enum of the channel-actor index manager. The 5 non-
+    # colliding type symbols (no ``types`` counterpart) +
+    # ``is_binary_content`` (grok L86, PUB ``fn``) + ``IndexCommand`` (R306c,
+    # grok L84 enum) reach the crate root; the 14 ``IndexCommand`` variant
+    # subclasses stay leaf-module-only (grok models them as enum members, not
+    # free symbols). ``FileEvent`` / ``FileEventKind`` stay bound to the
     # ``types`` version (R300 placement) to avoid clobbering it -- a
     # barrel-reconciliation brick will switch them to the ``index_manager``
     # batch-container version in one atomic edit once ``navigation`` lands
@@ -228,6 +240,7 @@ __all__ = [
     # Reachable via the leaf module as
     # ``minimax_code.xai_codebase_graph.index_manager.FileEvent``.
     "MAX_INDEXABLE_FILE_SIZE",
+    "IndexCommand",
     "IndexManagerConfig",
     "QueryError",
     "QueryResult",
