@@ -21,8 +21,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .protocol import INTERNAL_ERROR, INVALID_PARAMS
 from .handler_utils import HandlerError
+from .protocol import INTERNAL_ERROR, INVALID_PARAMS
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -102,7 +102,7 @@ def register_mobile_handlers(
             )
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
-        except Exception as exc:  # pragma: no cover
+        except Exception:  # pragma: no cover
             logger.exception("mobile.pair_start failed")
             await ctx.reply_error(INTERNAL_ERROR, "mobile.pair_start failed")
 
@@ -138,7 +138,7 @@ def register_mobile_handlers(
             await ctx.reply({"device": device})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
-        except Exception as exc:  # pragma: no cover
+        except Exception:  # pragma: no cover
             logger.exception("mobile.pair_confirm failed")
             await ctx.reply_error(INTERNAL_ERROR, "mobile.pair_confirm failed")
 
@@ -153,7 +153,7 @@ def register_mobile_handlers(
             await ctx.reply({"devices": devices})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
-        except Exception as exc:  # pragma: no cover
+        except Exception:  # pragma: no cover
             logger.exception("mobile.list failed")
             await ctx.reply_error(INTERNAL_ERROR, "mobile.list failed")
 
@@ -177,7 +177,7 @@ def register_mobile_handlers(
             await ctx.reply({"ok": True, "device_id": device_id})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
-        except Exception as exc:  # pragma: no cover
+        except Exception:  # pragma: no cover
             logger.exception("mobile.unpair failed")
             await ctx.reply_error(INTERNAL_ERROR, "mobile.unpair failed")
 
@@ -201,7 +201,7 @@ def register_mobile_handlers(
             await ctx.reply({"ok": True, "device": row})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
-        except Exception as exc:  # pragma: no cover
+        except Exception:  # pragma: no cover
             logger.exception("mobile.touch failed")
             await ctx.reply_error(INTERNAL_ERROR, "mobile.touch failed")
 

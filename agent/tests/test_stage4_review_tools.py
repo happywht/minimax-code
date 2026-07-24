@@ -17,13 +17,12 @@ import textwrap
 
 import pytest
 
-from minimax_code.agent.skills._builtin.security import SecurityScanTool
-from minimax_code.agent.skills._builtin.performance import PerformanceCheckTool
-from minimax_code.agent.skills._builtin.type_check import TypeCheckTool
-from minimax_code.agent.skills._builtin.test_coverage import TestCoverageTool
 from minimax_code.agent.skills._builtin.code_review import Provider as CodeReviewProvider
+from minimax_code.agent.skills._builtin.performance import PerformanceCheckTool
+from minimax_code.agent.skills._builtin.security import SecurityScanTool
+from minimax_code.agent.skills._builtin.test_coverage import TestCoverageTool
+from minimax_code.agent.skills._builtin.type_check import TypeCheckTool
 from minimax_code.agent.tools.base import ToolRegistry
-
 
 # ---------------------------------------------------------------------------
 # Helpers

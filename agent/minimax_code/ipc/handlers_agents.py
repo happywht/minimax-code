@@ -60,8 +60,8 @@ import logging
 import uuid
 from typing import Any
 
-from .protocol import INTERNAL_ERROR, INVALID_PARAMS
 from .handler_utils import HandlerError, check_params
+from .protocol import INTERNAL_ERROR, INVALID_PARAMS
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -125,7 +125,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
             await ctx.reply({"agents": agents})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("agent.list failed")
             await ctx.reply_error(INTERNAL_ERROR, "agent.list failed")
 
@@ -152,7 +152,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except ValueError as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("agent.get failed")
             await ctx.reply_error(INTERNAL_ERROR, "agent.get failed")
 
@@ -216,7 +216,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except ValueError as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("agent.create failed")
             await ctx.reply_error(INTERNAL_ERROR, "agent.create failed")
 
@@ -285,7 +285,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except ValueError as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("agent.update failed")
             await ctx.reply_error(INTERNAL_ERROR, "agent.update failed")
 
@@ -312,7 +312,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except ValueError as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("agent.delete failed")
             await ctx.reply_error(INTERNAL_ERROR, "agent.delete failed")
 
@@ -499,7 +499,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except ValueError as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("agent.invoke failed")
             await ctx.reply_error(INTERNAL_ERROR, "agent.invoke failed")
 

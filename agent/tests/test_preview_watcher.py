@@ -14,10 +14,10 @@ from pathlib import Path
 import pytest
 
 from minimax_code.preview.watcher import (
+    DEFAULT_IGNORE_PATTERNS,
     WatcherEvent,
     _classify_change,
     watch_workspace,
-    DEFAULT_IGNORE_PATTERNS,
 )
 
 

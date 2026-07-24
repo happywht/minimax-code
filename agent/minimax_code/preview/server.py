@@ -16,14 +16,15 @@ import asyncio
 import json
 import logging
 import mimetypes
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
-from .watcher import watch_workspace, WatcherEvent
+from .watcher import WatcherEvent, watch_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +192,7 @@ def register_preview_routes(
                         break
                     try:
                         event = await asyncio.wait_for(q.get(), timeout=15.0)
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         # Send a keepalive comment.
                         yield ": keepalive\n\n"
                         continue

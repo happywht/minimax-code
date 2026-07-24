@@ -8,7 +8,6 @@ We check both:
 from __future__ import annotations
 
 import re
-import textwrap
 from pathlib import Path
 
 import pytest
@@ -92,10 +91,10 @@ def test_no_exc_leak_in_http_server() -> None:
 async def test_server_dispatch_sanitizes_exception() -> None:
     """When a handler raises an unhandled Exception, the dispatch
     layer must return 'internal error' without the exception text."""
-    from unittest.mock import AsyncMock, patch
+    from unittest.mock import AsyncMock
 
-    from minimax_code.ipc.server import IPCServer
     from minimax_code.config import Config
+    from minimax_code.ipc.server import IPCServer
 
     server = IPCServer(config=Config.from_env(), stdin=None, stdout=None)
     server._send = AsyncMock()
@@ -122,10 +121,11 @@ async def test_server_dispatch_sanitizes_exception() -> None:
 @pytest.mark.asyncio
 async def test_handler_error_still_propagates_code() -> None:
     """HandlerError with custom code/message still works after sanitization."""
+    from unittest.mock import AsyncMock
+
+    from minimax_code.config import Config
     from minimax_code.ipc.handler_utils import HandlerError
     from minimax_code.ipc.server import IPCServer
-    from minimax_code.config import Config
-    from unittest.mock import AsyncMock
 
     server = IPCServer(config=Config.from_env(), stdin=None, stdout=None)
     server._send = AsyncMock()
@@ -150,10 +150,11 @@ async def test_handler_error_still_propagates_code() -> None:
 @pytest.mark.asyncio
 async def test_handler_logger_called_on_exception() -> None:
     """Verify that logger.exception is called when a handler fails."""
-    from minimax_code.ipc.server import IPCServer
-    from minimax_code.config import Config
-    from unittest.mock import AsyncMock, patch
     import logging
+    from unittest.mock import AsyncMock, patch
+
+    from minimax_code.config import Config
+    from minimax_code.ipc.server import IPCServer
 
     server = IPCServer(config=Config.from_env(), stdin=None, stdout=None)
     server._send = AsyncMock()

@@ -13,7 +13,6 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,7 +20,6 @@ import pytest
 
 from minimax_code.config import Config
 from minimax_code.ipc.server import IPCServer
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -257,10 +255,10 @@ async def test_notification_dao_factory_uses_get_db():
 @pytest.mark.asyncio
 async def test_notification_dao_factory_returns_error_when_no_db():
     """When get_db() returns None, the factory must raise _HandlerError."""
+    from minimax_code.ipc.handler_utils import HandlerError as _HandlerError
     from minimax_code.ipc.handlers_notifications import (
         _make_notification_dao_factory,
     )
-    from minimax_code.ipc.handler_utils import HandlerError as _HandlerError
 
     with patch("minimax_code.app.get_db", return_value=None):
         server = IPCServer(Config())
@@ -288,10 +286,10 @@ async def test_workflow_dao_factory_uses_get_db():
 @pytest.mark.asyncio
 async def test_workflow_dao_factory_returns_error_when_no_db():
     """When get_db() returns None, the factory must raise _HandlerError."""
+    from minimax_code.ipc.handler_utils import HandlerError as _HandlerError
     from minimax_code.ipc.handlers_workflows import (
         _make_workflow_dao_factory,
     )
-    from minimax_code.ipc.handler_utils import HandlerError as _HandlerError
 
     with patch("minimax_code.app.get_db", return_value=None):
         server = IPCServer(Config())
@@ -407,7 +405,6 @@ async def test_rpc_rejects_oversized_body():
 @pytest.mark.asyncio
 async def test_rpc_accepts_normal_body():
     """POST /rpc must accept normal-sized payloads without issue."""
-    import json
 
     from httpx import ASGITransport, AsyncClient
 
@@ -439,7 +436,7 @@ async def test_rpc_accepts_normal_body():
 async def test_send_message_reuses_subagent_llm():
     """agent.send_message must use get_subagent_llm() singleton,
     NOT create a fresh MiniMaxClient() per request."""
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import MagicMock, patch
 
     fake_llm = MagicMock()
     fake_llm.mock = True
@@ -497,7 +494,7 @@ async def test_send_message_reuses_subagent_llm():
 @pytest.mark.asyncio
 async def test_send_message_falls_back_to_default_llm():
     """When get_subagent_llm() returns None, handler must create MiniMaxClient()."""
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import MagicMock, patch
 
     with patch("minimax_code.app.get_subagent_llm", return_value=None):
         from minimax_code.ipc.builtins import handle_agent_send_message
@@ -549,7 +546,7 @@ async def test_send_message_falls_back_to_default_llm():
 async def test_send_message_rejects_no_db_with_clear_error():
     """When get_db() returns None, handler must return a clear error
     instead of opening a second DB connection."""
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import MagicMock, patch
 
     with (
         patch("minimax_code.app.get_subagent_llm", return_value=None),

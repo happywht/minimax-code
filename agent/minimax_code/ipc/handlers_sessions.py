@@ -34,8 +34,8 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from .protocol import INTERNAL_ERROR, INVALID_PARAMS
 from .handler_utils import HandlerError, check_params
+from .protocol import INTERNAL_ERROR, INVALID_PARAMS
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -199,7 +199,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
             await ctx.reply({"sessions": sessions, "total": total})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("session.list failed")
             await ctx.reply_error(INTERNAL_ERROR, "session.list failed")
 
@@ -228,7 +228,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
             )
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("session.get failed")
             await ctx.reply_error(INTERNAL_ERROR, "session.get failed")
 
@@ -341,8 +341,8 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 raise HandlerError(
                     INVALID_PARAMS, "before must be an ISO timestamp string"
                 )
+            from ..app import init_runtime
             from ..storage.dao.messages import MessagesDAO
-            from ..app import get_db, init_runtime
 
             await init_runtime()
             from ..app import get_db as _get_db
@@ -383,7 +383,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
             await ctx.reply({"messages": messages})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("message.list failed")
             await ctx.reply_error(INTERNAL_ERROR, "message.list failed")
 

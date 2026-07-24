@@ -8,12 +8,9 @@ Covers:
 """
 from __future__ import annotations
 
-import pytest
-
 from minimax_code.agent.transports.anthropic_transport import _convert_messages
-from minimax_code.agent.transports.openai_transport import _convert_openai_messages
 from minimax_code.agent.transports.mock_transport import _extract_text
-
+from minimax_code.agent.transports.openai_transport import _convert_openai_messages
 
 # ---------------------------------------------------------------------------
 # Anthropic transport — image conversion

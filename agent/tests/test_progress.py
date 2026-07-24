@@ -31,7 +31,6 @@ from minimax_code.storage.db import (
     make_temp_database_path,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -437,8 +436,8 @@ async def test_task_ipc_list_and_get_round_trip(
     rows correctly."""
     from minimax_code.app import set_progress_tracker
     from minimax_code.ipc.client import IPCClient
-    from minimax_code.storage.dao.tasks import TaskDAO as _TaskDAO
     from minimax_code.progress import ProgressTracker as _Tracker
+    from minimax_code.storage.dao.tasks import TaskDAO as _TaskDAO
 
     # Inject a tracker that points at our test DB so the handlers
     # see a populated task list.
@@ -462,8 +461,8 @@ async def test_task_ipc_cancel_round_trip(
 ) -> None:
     from minimax_code.app import set_progress_tracker
     from minimax_code.ipc.client import IPCClient
-    from minimax_code.storage.dao.tasks import TaskDAO as _TaskDAO
     from minimax_code.progress import ProgressTracker as _Tracker
+    from minimax_code.storage.dao.tasks import TaskDAO as _TaskDAO
 
     tracker = _Tracker(_TaskDAO(async_db))
     set_progress_tracker(tracker)
@@ -483,8 +482,8 @@ async def test_task_ipc_unknown_task_id_returns_error(
 ) -> None:
     from minimax_code.app import set_progress_tracker
     from minimax_code.ipc.client import IPCClient
-    from minimax_code.storage.dao.tasks import TaskDAO as _TaskDAO
     from minimax_code.progress import ProgressTracker as _Tracker
+    from minimax_code.storage.dao.tasks import TaskDAO as _TaskDAO
 
     set_progress_tracker(_Tracker(_TaskDAO(async_db)))
     try:

@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -57,7 +57,7 @@ class BackupManager:
 
         try:
             # Build backup path: .minimax/backups/20260607_143052_src_main.py
-            ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S%f")
+            ts = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S%f")
             # Flatten subdirectories to avoid deep nesting in backup dir.
             rel = self._relative_path(file_path)
             flat_name = rel.replace(os.sep, "_").replace("/", "_")

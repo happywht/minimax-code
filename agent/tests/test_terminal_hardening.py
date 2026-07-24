@@ -15,15 +15,12 @@ import os
 import pytest
 
 from minimax_code.agent.tools.terminal import (
-    ExecCommandTool,
-    _BLOCKED_ENV_PREFIXES,
-    _DENY_COMMANDS,
     _MAX_ARG_LEN,
     _MAX_ARGS,
+    ExecCommandTool,
     _build_safe_env,
     _is_dangerous_cmd,
 )
-
 
 # ---------------------------------------------------------------------------
 # _build_safe_env

@@ -23,7 +23,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover — type hints only
     from ..agent.llm import MiniMaxClient
@@ -98,9 +98,9 @@ class TeamOrchestrator:
     def __init__(
         self,
         *,
-        team_dao: "AgentTeamDAO | None" = None,
-        agent_dao: "AgentDAO | None" = None,
-        llm: "MiniMaxClient | None" = None,
+        team_dao: AgentTeamDAO | None = None,
+        agent_dao: AgentDAO | None = None,
+        llm: MiniMaxClient | None = None,
         emit_event: Any | None = None,
     ) -> None:
         self._team_dao = team_dao

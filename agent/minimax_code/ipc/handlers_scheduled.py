@@ -30,12 +30,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from .handler_utils import HandlerError, check_params
 from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
-    NOT_IMPLEMENTED,
 )
-from .handler_utils import HandlerError, check_params
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -73,7 +72,7 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
             await ctx.reply({"jobs": jobs})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("schedule.list failed")
             await ctx.reply_error(INTERNAL_ERROR, "schedule.list failed")
 
@@ -119,7 +118,7 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
             await ctx.reply({"ok": True, "job_id": job_id})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("schedule.delete failed")
             await ctx.reply_error(INTERNAL_ERROR, "schedule.delete failed")
 
@@ -134,7 +133,7 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
             await ctx.reply({"job": job})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("schedule.enable failed")
             await ctx.reply_error(INTERNAL_ERROR, "schedule.enable failed")
 
@@ -149,7 +148,7 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
             await ctx.reply({"job": job})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("schedule.disable failed")
             await ctx.reply_error(INTERNAL_ERROR, "schedule.disable failed")
 
@@ -177,7 +176,7 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
             )
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("schedule.run_now failed")
             await ctx.reply_error(INTERNAL_ERROR, "schedule.run_now failed")
 
@@ -212,9 +211,8 @@ def _make_scheduler_factory(scheduler: Any | None) -> Any:
         # Lazy import: avoids a circular dependency at module
         # import time (handlers_scheduled is imported by app, not
         # the other way round).
-        from ..scheduler import get_scheduler
-
         from ..app import ensure_db
+        from ..scheduler import get_scheduler
 
         # If a scheduler has already been built by another code
         # path, use it. Otherwise build one now.

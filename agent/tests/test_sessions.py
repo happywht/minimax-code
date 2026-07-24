@@ -32,7 +32,6 @@ from minimax_code.storage.dao.messages import MessagesDAO
 from minimax_code.storage.dao.sessions import SessionsDAO
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

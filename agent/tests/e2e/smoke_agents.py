@@ -94,7 +94,7 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
                     proc.stdout.readline(),
                     timeout=max(0.05, deadline - time.time()),
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 break
             if not raw:
                 break
@@ -254,7 +254,7 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
 
     try:
         await asyncio.wait_for(proc.wait(), timeout=3.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.wait()
 

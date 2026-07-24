@@ -11,7 +11,6 @@ from typing import Any
 
 from .protocol import INVALID_PARAMS
 
-
 # ---------------------------------------------------------------------------
 # HandlerError — unified exception for all handlers
 # ---------------------------------------------------------------------------

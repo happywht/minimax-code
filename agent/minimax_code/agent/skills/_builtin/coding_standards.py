@@ -35,7 +35,6 @@ from ...tools.base import Tool, ToolResult
 from ...tools.file_ops import PathSecurityError, safe_resolve
 from ..runtime import SkillToolProvider
 
-
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------

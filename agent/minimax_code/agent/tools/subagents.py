@@ -111,7 +111,12 @@ class SpawnSubagentTool(Tool):
         if not bool(row.get("enabled", True)):
             return ToolResult.fail(f"sub-agent {row.get('name')!r} is disabled")
 
-        from ...orchestrator import SubAgentConfig, SubAgentRuntime, get_subagent_runtime, make_session_id
+        from ...orchestrator import (
+            SubAgentConfig,
+            SubAgentRuntime,
+            get_subagent_runtime,
+            make_session_id,
+        )
 
         config = SubAgentConfig(
             name=row["name"],

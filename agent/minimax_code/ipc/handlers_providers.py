@@ -30,12 +30,12 @@ import logging
 import os
 from typing import Any
 
+from .handler_utils import HandlerError, check_params
 from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
     STORAGE_ERROR,
 )
-from .handler_utils import HandlerError, check_params
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -122,7 +122,7 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
             await ctx.reply({"providers": providers})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:
+        except Exception:
             logger.exception("provider.list failed")
             await ctx.reply_error(INTERNAL_ERROR, "provider.list failed")
 
@@ -145,7 +145,7 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
             await ctx.reply({"provider": provider})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:
+        except Exception:
             logger.exception("provider.get failed")
             await ctx.reply_error(INTERNAL_ERROR, "provider.get failed")
 
@@ -209,7 +209,7 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
             await ctx.reply({"provider": provider})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:
+        except Exception:
             logger.exception("provider.create failed")
             await ctx.reply_error(INTERNAL_ERROR, "provider.create failed")
 
@@ -283,7 +283,7 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
             await ctx.reply({"provider": provider})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:
+        except Exception:
             logger.exception("provider.update failed")
             await ctx.reply_error(INTERNAL_ERROR, "provider.update failed")
 
@@ -326,7 +326,7 @@ def register_provider_handlers(server: Any, dao: Any = None) -> None:
             await ctx.reply({"ok": True, "deleted": provider_id})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:
+        except Exception:
             logger.exception("provider.delete failed")
             await ctx.reply_error(INTERNAL_ERROR, "provider.delete failed")
 

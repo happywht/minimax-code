@@ -21,7 +21,6 @@ from minimax_code.agent.completion import (
 )
 from minimax_code.agent.types import LLMResponse
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

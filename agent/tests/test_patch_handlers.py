@@ -7,8 +7,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Any, Callable, Coroutine
+from typing import Any
 
 import pytest
 

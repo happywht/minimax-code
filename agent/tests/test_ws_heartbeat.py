@@ -9,8 +9,6 @@ Verifies:
 from __future__ import annotations
 
 import asyncio
-import json
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -151,9 +149,10 @@ async def test_heartbeat_drops_dead_client() -> None:
 async def test_ws_endpoint_handles_pong() -> None:
     """The WS endpoint should silently accept agent.pong messages."""
     from starlette.testclient import TestClient
+
+    from minimax_code.config import Config
     from minimax_code.http_server import build_app
     from minimax_code.ipc.server import IPCServer
-    from minimax_code.config import Config
 
     server = IPCServer(config=Config.from_env(), stdin=None, stdout=None)
     app = build_app(server, version="test")

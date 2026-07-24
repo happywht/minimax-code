@@ -65,8 +65,8 @@ import os
 import subprocess
 from typing import Any
 
-from .protocol import INVALID_PARAMS
 from .handler_utils import HandlerError
+from .protocol import INVALID_PARAMS
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -285,7 +285,7 @@ def register_git_handlers(server: Any) -> None:
             )
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("git.status failed")
             await ctx.reply_error(_GIT_ERROR, "git.status failed")
 
@@ -342,7 +342,7 @@ def register_git_handlers(server: Any) -> None:
             )
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("git.diff failed")
             await ctx.reply_error(_GIT_ERROR, "git.diff failed")
 
@@ -417,7 +417,7 @@ def register_git_handlers(server: Any) -> None:
             await ctx.reply({"entries": entries})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("git.log failed")
             await ctx.reply_error(_GIT_ERROR, "git.log failed")
 

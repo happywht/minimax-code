@@ -10,12 +10,11 @@ silencing on keyring failure), not the keyring library itself.
 
 from __future__ import annotations
 
-from typing import Iterator
+from collections.abc import Iterator
 
 import pytest
 
 from minimax_code import secrets
-
 
 # ---------------------------------------------------------------------------
 # Fakes

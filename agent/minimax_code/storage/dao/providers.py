@@ -12,8 +12,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from ._base import dumps_json, loads_json, now_iso, row_to_dict, rows_to_dicts
-
+from ._base import dumps_json, loads_json, now_iso, row_to_dict
 
 # ---------------------------------------------------------------------------
 # Async DAO

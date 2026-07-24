@@ -15,7 +15,6 @@ workflow.trigger       Manually trigger a workflow run
 
 from __future__ import annotations
 
-from .handler_utils import HandlerError
 import asyncio
 import json
 import logging
@@ -24,6 +23,7 @@ from typing import Any
 from ..ipc.server import Context
 from ..storage.dao.workflows import WorkflowDAO
 from ..workflow import get_workflow_engine
+from .handler_utils import HandlerError
 
 logger = logging.getLogger(__name__)
 

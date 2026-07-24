@@ -34,8 +34,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .protocol import INTERNAL_ERROR, INVALID_PARAMS
 from .handler_utils import HandlerError, check_params
+from .protocol import INTERNAL_ERROR, INVALID_PARAMS
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -108,7 +108,7 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
             await ctx.reply({"tasks": tasks})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("task.list failed")
             await ctx.reply_error(INTERNAL_ERROR, "task.list failed")
 
@@ -131,7 +131,7 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
             await ctx.reply({"task": task})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("task.get failed")
             await ctx.reply_error(INTERNAL_ERROR, "task.get failed")
 
@@ -169,7 +169,7 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
             await ctx.reply({"task_id": task_id})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("task.start failed")
             await ctx.reply_error(INTERNAL_ERROR, "task.start failed")
 
@@ -205,7 +205,7 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
             await ctx.reply_error(
                 INVALID_PARAMS, f"invalid progress value: {exc}"
             )
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("task.update failed")
             await ctx.reply_error(INTERNAL_ERROR, "task.update failed")
 
@@ -237,7 +237,7 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
             await ctx.reply({"task": task})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("task.complete failed")
             await ctx.reply_error(INTERNAL_ERROR, "task.complete failed")
 
@@ -271,7 +271,7 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
             await ctx.reply({"ok": True, "task": updated})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("task.cancel failed")
             await ctx.reply_error(INTERNAL_ERROR, "task.cancel failed")
 

@@ -14,14 +14,13 @@ keyring access. We assert:
 
 from __future__ import annotations
 
-from typing import Iterator
+from collections.abc import Iterator
 
 import pytest
 
 from minimax_code import secrets
 from minimax_code.ipc.handlers_secrets import register_secret_handlers
 from minimax_code.ipc.server import IPCServer
-
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -107,6 +106,7 @@ def handlers(fake_keyring: FakeKeyring, clean_env: None) -> dict[str, Any]:
     and a fresh capture context per handler.
     """
     import io
+
     from minimax_code.config import Config
 
     server = IPCServer(
@@ -190,6 +190,7 @@ async def test_set_rebuilds_active_llm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from unittest.mock import AsyncMock
+
     from minimax_code import app
 
     rebuild = AsyncMock()
@@ -267,6 +268,7 @@ async def test_clear_rebuilds_active_llm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from unittest.mock import AsyncMock
+
     from minimax_code import app
 
     fake_keyring.store[(secrets.KEYRING_SERVICE, secrets.KEYRING_USERNAME)] = "sk-live"

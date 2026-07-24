@@ -27,12 +27,12 @@ import logging
 import os
 from typing import Any
 
+from .handler_utils import HandlerError, check_params
 from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
     STORAGE_ERROR,
 )
-from .handler_utils import HandlerError, check_params
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -69,8 +69,8 @@ async def _ensure_permission_store(server: Any) -> Any:
         if existing is not None:
             return existing
         from ..app import ensure_db
-        from ..storage.dao.permissions import PermissionRuleDAO
         from ..permissions import PermissionStore
+        from ..storage.dao.permissions import PermissionRuleDAO
 
         # Honour the same env-var opt-out as app._maybe_open_db so
         # tests / smoke runs can run with storage disabled.
@@ -137,7 +137,7 @@ def register_permission_handlers(
             await ctx.reply({"rules": store_obj.list_rules()})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("permission.list failed")
             await ctx.reply_error(INTERNAL_ERROR, "permission.list failed")
 
@@ -150,7 +150,7 @@ def register_permission_handlers(
             await ctx.reply({"rule": rule})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover
+        except Exception:  # pragma: no cover
             logger.exception("permission.get failed")
             await ctx.reply_error(INTERNAL_ERROR, "permission.get failed")
 
@@ -169,7 +169,7 @@ def register_permission_handlers(
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except ValueError as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
-        except Exception as exc:  # pragma: no cover
+        except Exception:  # pragma: no cover
             logger.exception("permission.set failed")
             await ctx.reply_error(INTERNAL_ERROR, "permission.set failed")
 
@@ -182,7 +182,7 @@ def register_permission_handlers(
             await ctx.reply({"ok": True, "deleted": deleted})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover
+        except Exception:  # pragma: no cover
             logger.exception("permission.delete failed")
             await ctx.reply_error(INTERNAL_ERROR, "permission.delete failed")
 
@@ -204,7 +204,7 @@ def register_permission_handlers(
             )
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover
+        except Exception:  # pragma: no cover
             logger.exception("permission.check failed")
             await ctx.reply_error(INTERNAL_ERROR, "permission.check failed")
 
@@ -292,7 +292,7 @@ def register_permission_handlers(
                 logger.warning("Failed to push permission.resolved event", exc_info=True)
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("permission.resolve failed")
             await ctx.reply_error(INTERNAL_ERROR, "permission.resolve failed")
 

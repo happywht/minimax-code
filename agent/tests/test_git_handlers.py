@@ -25,20 +25,19 @@ the agent's process cwd.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import shutil
 import sys
 import tempfile
+from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Any, Callable, Coroutine
+from typing import Any
 
 import pytest
 
-from minimax_code.ipc.handlers_git import register_git_handlers
-from minimax_code.ipc.server import Context, IPCServer
 from minimax_code.config import Config
-
+from minimax_code.ipc.handlers_git import register_git_handlers
+from minimax_code.ipc.server import IPCServer
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures

@@ -19,9 +19,9 @@ this module is the canonical type reference for the project.
 from __future__ import annotations
 
 import json
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict
 
 
 class _Base(BaseModel):

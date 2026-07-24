@@ -9,7 +9,6 @@ import pytest
 from minimax_code.storage.dao.agent_teams import AgentTeamDAO
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 

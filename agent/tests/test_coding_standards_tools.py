@@ -16,16 +16,14 @@ import textwrap
 import pytest
 
 from minimax_code.agent.skills._builtin.coding_standards import (
+    _GOOGLE_RE,
+    _SPHINX_RE,
     CheckDocstringTool,
     CheckNamingTool,
     CheckStyleTool,
     Provider,
-    _GOOGLE_RE,
-    _NUMPY_RE,
-    _SPHINX_RE,
 )
 from minimax_code.agent.tools.base import ToolRegistry
-
 
 # ---------------------------------------------------------------------------
 # Helpers

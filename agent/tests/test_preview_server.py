@@ -12,12 +12,11 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
 
 import httpx
 import pytest
 
-from minimax_code.preview.server import PreviewState, build_preview_app, _safe_path
+from minimax_code.preview.server import PreviewState, _safe_path, build_preview_app
 from minimax_code.preview.watcher import WatcherEvent
 
 

@@ -19,14 +19,13 @@ from __future__ import annotations
 
 import ast
 import textwrap
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from ...tools.base import Tool, ToolResult
 from ...tools.file_ops import PathSecurityError, safe_resolve
 from ..runtime import SkillToolProvider
-
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -311,7 +310,7 @@ class GenerateDocTool(Tool):
         signatures: list[dict[str, Any]], title: str, language: str
     ) -> str:
         """Generate bilingual Markdown documentation."""
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        now = datetime.now(UTC).strftime("%Y-%m-%d")
         sections: list[str] = []
 
         if language in ("bilingual", "en"):

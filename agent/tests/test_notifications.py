@@ -13,13 +13,11 @@ Coverage:
 
 from __future__ import annotations
 
-import asyncio
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
-
-import sys
 
 from minimax_code.config import Config
 from minimax_code.ipc.server import IPCServer
@@ -30,7 +28,6 @@ from minimax_code.notifications import (
 )
 from minimax_code.storage.dao.notifications import NotificationDAO
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -179,7 +176,7 @@ class TestNotificationIPC:
         cfg = Config.from_env()
         srv = IPCServer(config=cfg, stdin=sys.stdin, stdout=sys.stdout)
         # Inject the DAO directly so handlers skip the lazy factory
-        setattr(srv, "_notification_dao", NotificationDAO(async_db))
+        srv._notification_dao = NotificationDAO(async_db)
         from minimax_code.ipc.handlers_notifications import register_notification_handlers
         register_notification_handlers(srv)
         return srv
@@ -198,7 +195,7 @@ class TestNotificationIPC:
 
     @pytest.mark.asyncio
     async def test_list(self, server: IPCServer) -> None:
-        dao: NotificationDAO = getattr(server, "_notification_dao")
+        dao: NotificationDAO = server._notification_dao
         await dao.create(type="info", title="IPC Test")
         result = await self._call(server, "notification.list", {})
         assert result["total"] == 1
@@ -206,14 +203,14 @@ class TestNotificationIPC:
 
     @pytest.mark.asyncio
     async def test_mark_read(self, server: IPCServer) -> None:
-        dao: NotificationDAO = getattr(server, "_notification_dao")
+        dao: NotificationDAO = server._notification_dao
         entry = await dao.create(type="info", title="MR")
         result = await self._call(server, "notification.mark_read", {"id": entry["id"]})
         assert result["read"] is True
 
     @pytest.mark.asyncio
     async def test_mark_all_read(self, server: IPCServer) -> None:
-        dao: NotificationDAO = getattr(server, "_notification_dao")
+        dao: NotificationDAO = server._notification_dao
         await dao.create(type="info", title="A")
         await dao.create(type="info", title="B")
         result = await self._call(server, "notification.mark_all_read", {})
@@ -221,14 +218,14 @@ class TestNotificationIPC:
 
     @pytest.mark.asyncio
     async def test_delete(self, server: IPCServer) -> None:
-        dao: NotificationDAO = getattr(server, "_notification_dao")
+        dao: NotificationDAO = server._notification_dao
         entry = await dao.create(type="info", title="Del")
         result = await self._call(server, "notification.delete", {"id": entry["id"]})
         assert result["deleted"] is True
 
     @pytest.mark.asyncio
     async def test_purge(self, server: IPCServer) -> None:
-        dao: NotificationDAO = getattr(server, "_notification_dao")
+        dao: NotificationDAO = server._notification_dao
         await dao.create(type="info", title="Old")
         result = await self._call(server, "notification.purge", {"before_iso": "2030-01-01T00:00:00Z"})
         assert result["purged"] == 1
@@ -299,7 +296,7 @@ class TestPermissionResolvedEvent:
         from unittest.mock import MagicMock
         gater = MagicMock()
         gater.resolve = MagicMock(return_value=True)
-        setattr(server, "_permission_gater", gater)
+        server._permission_gater = gater
 
         # Resolve a fake request via handle_request (real dispatch path)
         resp = await server.handle_request({

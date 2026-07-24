@@ -21,7 +21,6 @@ from minimax_code.agent.skills._builtin.doc_generator import (
 )
 from minimax_code.agent.tools.base import ToolRegistry
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

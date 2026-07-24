@@ -7,16 +7,9 @@ mock/patch to simulate runtime and LLM objects — never hits a real LLM.
 
 from __future__ import annotations
 
-import asyncio
-import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
-
-from minimax_code.agent.tools.base import ToolResult
-
+from unittest.mock import AsyncMock, MagicMock
 
 # ---------------------------------------------------------------------------
 # Helpers: lightweight fakes for Context and Server

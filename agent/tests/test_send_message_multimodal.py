@@ -9,7 +9,6 @@ Covers:
 from __future__ import annotations
 
 import io
-import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -17,7 +16,6 @@ import pytest
 
 from minimax_code.config import Config
 from minimax_code.ipc.builtins import handle_agent_send_message
-from minimax_code.ipc.protocol import Response
 from minimax_code.ipc.server import IPCServer
 
 

@@ -41,8 +41,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .protocol import INVALID_PARAMS
 from .handler_utils import HandlerError
+from .protocol import INVALID_PARAMS
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -105,7 +105,7 @@ def register_secret_handlers(server: Any) -> None:
             )
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:
+        except Exception:
             # The ``secrets`` module already logs the underlying
             # keyring error; we just translate to a friendly IPC
             # envelope so the UI can surface it.
@@ -129,7 +129,7 @@ def register_secret_handlers(server: Any) -> None:
                     "source": secrets.key_source(),
                 }
             )
-        except Exception as exc:
+        except Exception:
             logger.exception("secrets.clear failed")
             await ctx.reply_error(-32603, "could not clear keyring entry")
 

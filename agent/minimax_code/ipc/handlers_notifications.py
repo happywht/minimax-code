@@ -13,13 +13,13 @@ notification.purge         Bulk-delete by criteria
 
 from __future__ import annotations
 
-from .handler_utils import HandlerError
 import asyncio
 import logging
 from typing import Any
 
 from ..ipc.server import Context
 from ..storage.dao.notifications import NotificationDAO
+from .handler_utils import HandlerError
 
 logger = logging.getLogger(__name__)
 

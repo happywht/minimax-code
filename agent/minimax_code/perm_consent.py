@@ -46,8 +46,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ class PendingRequest:
     request_id: str
     tool: str
     args: dict[str, Any]
-    future: "asyncio.Future[bool]"
+    future: asyncio.Future[bool]
 
 
 class PermissionGater:
@@ -135,7 +136,7 @@ class PermissionGater:
         """
         request_id = f"perm_{uuid.uuid4().hex[:12]}"
         loop = asyncio.get_running_loop()
-        future: "asyncio.Future[bool]" = loop.create_future()
+        future: asyncio.Future[bool] = loop.create_future()
 
         async with self._lock:
             self._pending[request_id] = PendingRequest(
@@ -165,7 +166,7 @@ class PermissionGater:
                 future, timeout=timeout if timeout is not None else self.default_timeout
             )
             return bool(decision)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "permission.request %s timed out for tool=%s (denying)",
                 request_id,

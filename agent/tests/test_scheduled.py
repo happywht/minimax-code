@@ -41,7 +41,6 @@ from minimax_code.storage.dao.scheduled_jobs import ScheduledJobsDAO
 from minimax_code.storage.dao.tasks import TasksDAO
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

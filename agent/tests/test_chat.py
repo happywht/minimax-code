@@ -23,14 +23,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from minimax_code.agent.core import AgentConfig, AgentCore
+from minimax_code.agent.core import AgentCore
 from minimax_code.agent.llm import StreamChunk
 from minimax_code.agent.tools import Tool, ToolRegistry, ToolResult
 from minimax_code.ipc.client import IPCClient
@@ -38,7 +37,6 @@ from minimax_code.perm_consent import PermissionGater
 from minimax_code.permissions import PermissionStore
 from minimax_code.storage.dao.permissions import PermissionRuleDAO
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
-
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -395,12 +393,12 @@ class TestPermissionResolveHandler:
         dao = PermissionRuleDAO(async_db)
         store = PermissionStore(dao)
         await store.warm()
-        setattr(client.server, "_permission_store", store)
+        client.server._permission_store = store
 
         # Install a gater on the server, simulate a pending request.
         emit = RecordingEmit()
         gater = PermissionGater(emit=emit)
-        setattr(client.server, "_permission_gater", gater)
+        client.server._permission_gater = gater
 
         # Start a gated request in the background.
         async def _gate() -> bool:
@@ -431,7 +429,7 @@ class TestPermissionResolveHandler:
         client = IPCClient()
         emit = RecordingEmit()
         gater = PermissionGater(emit=emit)
-        setattr(client.server, "_permission_gater", gater)
+        client.server._permission_gater = gater
         result = await client.request(
             "permission.resolve",
             {"request_id": "perm_ghost", "decision": "allow"},
@@ -444,7 +442,7 @@ class TestPermissionResolveHandler:
         client = IPCClient()
         emit = RecordingEmit()
         gater = PermissionGater(emit=emit)
-        setattr(client.server, "_permission_gater", gater)
+        client.server._permission_gater = gater
         async def _gate() -> bool:
             return await gater.request_consent(tool="x", args={}, timeout=2)
         task = asyncio.create_task(_gate())
@@ -496,12 +494,12 @@ class TestChatEndToEnd:
         """
 
         client = IPCClient()
-        setattr(client.server, "_permission_store", perm_store)
+        client.server._permission_store = perm_store
         await perm_store.upsert(tool_pattern="echo", action="ask")
 
         emit = RecordingEmit()
         gater = PermissionGater(emit=emit)
-        setattr(client.server, "_permission_gater", gater)
+        client.server._permission_gater = gater
 
         # Start the gated ask.
         async def _gate() -> bool:

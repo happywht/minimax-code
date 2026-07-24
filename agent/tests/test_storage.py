@@ -38,7 +38,6 @@ from minimax_code.storage.db import (
 )
 from minimax_code.storage.migrations import discover_migrations
 
-
 EXPECTED_MIGRATION_VERSIONS = {
     version for version, _run in discover_migrations(applied=[])
 }

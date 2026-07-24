@@ -162,7 +162,7 @@ class _WSManager:
     handlers can push notifications to individual devices.
     """
 
-    def __init__(self, server: "IPCServer", version: str) -> None:
+    def __init__(self, server: IPCServer, version: str) -> None:
         self._server = server
         self._version = version
         self._clients: set[WebSocket] = set()
@@ -401,7 +401,7 @@ class _WSManager:
 
 
 def build_app(
-    server: "IPCServer",
+    server: IPCServer,
     *,
     version: str | None = None,
     server_started_at: float | None = None,
@@ -553,7 +553,7 @@ def build_app(
                 ).model_dump(exclude_none=True),
                 status_code=200,
             )
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             return JSONResponse(
                 content=Response(
                     id=0,
@@ -659,8 +659,8 @@ def build_app(
         3. Parse the payload and dispatch the mapped action.
         4. Always return 200 so the sender does not retry.
         """
-        from .webhooks import WebhookReceiver, dispatch_webhook_action
         from .storage.dao.webhooks import WebhookDAO
+        from .webhooks import WebhookReceiver, dispatch_webhook_action
 
         url_path = f"/hooks/{path}"
         body = await request.body()
@@ -727,7 +727,7 @@ def build_app(
 
 
 def run(
-    server: "IPCServer",
+    server: IPCServer,
     *,
     host: str = "127.0.0.1",
     port: int = 8765,

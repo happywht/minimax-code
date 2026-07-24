@@ -14,10 +14,10 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-from typing import Any, Optional
+from typing import Any
 
-from ..config import Config
 from ..app import register_app_handlers
+from ..config import Config
 from .protocol import Request
 from .server import IPCServer
 
@@ -89,7 +89,7 @@ class IPCClient:
                         raise RuntimeError(obj["error"])
                     return obj.get("result")
             await asyncio.sleep(0.01)
-        raise asyncio.TimeoutError(f"no response for {method!r} within {timeout}s")
+        raise TimeoutError(f"no response for {method!r} within {timeout}s")
 
     async def collect_events(self, n: int, *, timeout: float = 5.0) -> list[dict[str, Any]]:
         """Block until ``n`` events have been emitted, or timeout."""
@@ -99,7 +99,7 @@ class IPCClient:
             try:
                 evt = await asyncio.wait_for(self._events.get(), timeout=0.5)
                 out.append(evt)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
         return out
 

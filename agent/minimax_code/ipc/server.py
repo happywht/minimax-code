@@ -19,20 +19,20 @@ stdio at all.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, IO, Optional
+from typing import IO, Any
 
 from ..config import Config
 from .handler_utils import HandlerError
 from .protocol import (
-    Event,
     INTERNAL_ERROR,
     INVALID_REQUEST,
     METHOD_NOT_FOUND,
-    Notification,
     PARSE_ERROR,
+    Event,
+    Notification,
     Response,
     RPCError,
     parse_envelope,
@@ -59,7 +59,7 @@ class Context:
     about interleaving bytes.
     """
 
-    server: "IPCServer"
+    server: IPCServer
     method: str
     request_id: str | int | None = None
     _extra: dict[str, Any] = field(default_factory=dict)
@@ -345,7 +345,7 @@ class IPCServer:
             ctx = Context(server=self, method=method, request_id=None)
             try:
                 await handler(params, ctx)
-            except Exception as exc:  # pragma: no cover — defensive
+            except Exception:  # pragma: no cover — defensive
                 logger.exception("notification handler %s crashed", method)
         else:
             # Request — dispatch and reply.
@@ -378,7 +378,7 @@ class IPCServer:
                         error=RPCError(code=exc.code, message=exc.message, data=exc.data),
                     ).to_bytes()
                 )
-            except Exception as exc:
+            except Exception:
                 logger.exception("handler %s raised", method)
                 await self._send(
                     Response(
@@ -470,7 +470,7 @@ class IPCServer:
                 id=request_id,
                 error=RPCError(code=exc.code, message=exc.message, data=exc.data),
             ).model_dump(exclude_none=True)
-        except Exception as exc:
+        except Exception:
             logger.exception("handler %s raised", method)
             return Response(
                 id=request_id,

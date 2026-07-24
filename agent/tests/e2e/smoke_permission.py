@@ -39,7 +39,6 @@ import sys
 import time
 from pathlib import Path
 
-
 # ---------------------------------------------------------------------------
 # Tiny JSON-RPC client over stdio
 # ---------------------------------------------------------------------------
@@ -130,7 +129,7 @@ async def shutdown(proc: asyncio.subprocess.Process) -> None:
         pass
     try:
         await asyncio.wait_for(proc.wait(), timeout=3.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.wait()
 

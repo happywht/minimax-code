@@ -23,7 +23,6 @@ from minimax_code.ipc.client import IPCClient
 from minimax_code.storage.dao.audit import AuditLogDAO
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -167,8 +166,8 @@ class TestAuditLogDAO:
 def _make_client_with_audit_dao(audit_dao: AuditLogDAO) -> IPCClient:
     """Build an IPCClient with the audit DAO pre-injected."""
     client = IPCClient()
-    setattr(client.server, "_audit_log_dao", audit_dao)
-    setattr(client.server, "_audit_log_dao_lock", asyncio.Lock())
+    client.server._audit_log_dao = audit_dao
+    client.server._audit_log_dao_lock = asyncio.Lock()
     return client
 
 

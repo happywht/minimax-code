@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Any, Callable, Coroutine
+from typing import Any
 
 import pytest
 
 from minimax_code.config import Config
-from minimax_code.ipc import handlers_runner
-from minimax_code.ipc import handlers_terminal
+from minimax_code.ipc import handlers_runner, handlers_terminal
 from minimax_code.ipc.handlers_runner import register_runner_handlers
 from minimax_code.ipc.handlers_terminal import register_terminal_handlers
 from minimax_code.ipc.server import IPCServer

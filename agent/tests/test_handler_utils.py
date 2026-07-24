@@ -13,7 +13,6 @@ import pytest
 from minimax_code.ipc.handler_utils import HandlerError, check_params
 from minimax_code.ipc.protocol import INVALID_PARAMS
 
-
 # ---------------------------------------------------------------------------
 # HandlerError
 # ---------------------------------------------------------------------------
@@ -84,9 +83,10 @@ class TestServerDispatchCatchesHandlerError:
 
     @pytest.mark.asyncio
     async def test_handle_request_catches_handler_error(self):
-        from minimax_code.ipc.server import IPCServer
-        from minimax_code.ipc.protocol import INVALID_PARAMS
         from unittest.mock import AsyncMock
+
+        from minimax_code.ipc.protocol import INVALID_PARAMS
+        from minimax_code.ipc.server import IPCServer
 
         server = IPCServer.__new__(IPCServer)
         server._handlers = {}
@@ -110,9 +110,10 @@ class TestServerDispatchCatchesHandlerError:
 
     @pytest.mark.asyncio
     async def test_handle_request_catches_generic_exception(self):
-        from minimax_code.ipc.server import IPCServer
-        from minimax_code.ipc.protocol import INTERNAL_ERROR
         from unittest.mock import AsyncMock
+
+        from minimax_code.ipc.protocol import INTERNAL_ERROR
+        from minimax_code.ipc.server import IPCServer
 
         server = IPCServer.__new__(IPCServer)
         server._handlers = {}
@@ -148,7 +149,7 @@ class TestNoDuplicateDefinitions:
             if not fname.startswith("handlers_") or not fname.endswith(".py"):
                 continue
             fpath = os.path.join(ipc_dir, fname)
-            with open(fpath, "r", encoding="utf-8") as f:
+            with open(fpath, encoding="utf-8") as f:
                 content = f.read()
             assert "class _HandlerError" not in content, f"{fname} still has _HandlerError"
             assert "class _ParamError" not in content, f"{fname} still has _ParamError"
@@ -160,7 +161,7 @@ class TestNoDuplicateDefinitions:
             if not fname.startswith("handlers_") or not fname.endswith(".py"):
                 continue
             fpath = os.path.join(ipc_dir, fname)
-            with open(fpath, "r", encoding="utf-8") as f:
+            with open(fpath, encoding="utf-8") as f:
                 content = f.read()
             assert "def _check_params" not in content, f"{fname} still has _check_params"
 
@@ -171,7 +172,7 @@ class TestNoDuplicateDefinitions:
             if not fname.startswith("handlers_") or not fname.endswith(".py"):
                 continue
             fpath = os.path.join(ipc_dir, fname)
-            with open(fpath, "r", encoding="utf-8") as f:
+            with open(fpath, encoding="utf-8") as f:
                 content = f.read()
             # Must use shared imports if it references HandlerError or check_params
             has_usage = "HandlerError" in content or "check_params(" in content

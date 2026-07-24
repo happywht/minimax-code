@@ -11,7 +11,6 @@ import pytest
 
 from minimax_code.agent.skills.loader import load_skill_dir, parse_frontmatter
 
-
 # ---------------------------------------------------------------------------
 # Fixtures: skill directories
 # ---------------------------------------------------------------------------
@@ -19,7 +18,6 @@ from minimax_code.agent.skills.loader import load_skill_dir, parse_frontmatter
 @pytest.fixture
 def skills_root(tmp_path):
     """Create a temporary skills root with all 4 skill directories."""
-    import shutil
     from pathlib import Path
 
     # Point to the real skills directory
@@ -154,7 +152,6 @@ class TestFrontmatterParsing:
         "dependency-analyzer",
     ])
     def test_parse_frontmatter(self, skills_root, skill_name):
-        from pathlib import Path
 
         skill_file = skills_root / skill_name / "SKILL.md"
         assert skill_file.exists(), f"SKILL.md missing for {skill_name}"

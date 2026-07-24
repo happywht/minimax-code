@@ -18,9 +18,7 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
-import uuid
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -28,7 +26,6 @@ from minimax_code.ipc.client import IPCClient
 from minimax_code.permissions import PermissionStore
 from minimax_code.storage.dao.permissions import PermissionRuleDAO
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -307,8 +304,8 @@ def _make_client_with_perm_handlers(
     client = IPCClient()
     store = PermissionStore(perm_dao)
     # Replace the lazily-built store with our pre-warmed one.
-    setattr(client.server, "_permission_store", store)
-    setattr(client.server, "_permission_store_lock", asyncio.Lock())
+    client.server._permission_store = store
+    client.server._permission_store_lock = asyncio.Lock()
     return client, store
 
 

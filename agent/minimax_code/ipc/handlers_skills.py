@@ -23,12 +23,12 @@ import logging
 import uuid
 from typing import Any
 
+from .handler_utils import HandlerError, check_params
 from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
     NOT_IMPLEMENTED,
 )
-from .handler_utils import HandlerError, check_params
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ def register_skill_handlers(
             await ctx.reply({"skills": [s.manifest() for s in skills]})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("skill.list failed")
             await ctx.reply_error(INTERNAL_ERROR, "skill.list failed")
 
@@ -92,7 +92,7 @@ def register_skill_handlers(
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except KeyError:
             await ctx.reply_error(INVALID_PARAMS, f"unknown skill_id: {params.get('skill_id')!r}")
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("skill.get failed")
             await ctx.reply_error(INTERNAL_ERROR, "skill.get failed")
 
@@ -107,7 +107,7 @@ def register_skill_handlers(
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except KeyError:
             await ctx.reply_error(INVALID_PARAMS, f"unknown skill_id: {params.get('skill_id')!r}")
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("skill.enable failed")
             await ctx.reply_error(INTERNAL_ERROR, "skill.enable failed")
 
@@ -122,7 +122,7 @@ def register_skill_handlers(
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except KeyError:
             await ctx.reply_error(INVALID_PARAMS, f"unknown skill_id: {params.get('skill_id')!r}")
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("skill.disable failed")
             await ctx.reply_error(INTERNAL_ERROR, "skill.disable failed")
 

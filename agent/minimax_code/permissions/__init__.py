@@ -34,7 +34,8 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import logging
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from ..storage.dao.permissions import PermissionRuleDAO
 

@@ -24,7 +24,6 @@ from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 from minimax_code.webhooks.dispatcher import dispatch_webhook_action
 from minimax_code.webhooks.receiver import WebhookPayload, WebhookReceiver
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -236,8 +235,8 @@ class TestWebhookReceiver:
 
 def _make_client_with_webhook_dao(dao: WebhookDAO) -> IPCClient:
     client = IPCClient()
-    setattr(client.server, "_webhook_dao", dao)
-    setattr(client.server, "_webhook_dao_lock", asyncio.Lock())
+    client.server._webhook_dao = dao
+    client.server._webhook_dao_lock = asyncio.Lock()
     return client
 
 

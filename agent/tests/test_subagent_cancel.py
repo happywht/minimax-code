@@ -12,7 +12,6 @@ Validates the cooperative cancellation mechanism for sub-agent runs:
 from __future__ import annotations
 
 import io
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,7 +21,6 @@ from minimax_code.ipc.builtins import _ACTIVE_RUNS
 from minimax_code.ipc.handlers_agents import register_agent_handlers
 from minimax_code.ipc.server import Context, IPCServer
 from minimax_code.orchestrator import SubAgentRuntime, set_subagent_runtime
-
 
 # ---------------------------------------------------------------------------
 # Helpers

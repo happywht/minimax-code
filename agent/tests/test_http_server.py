@@ -37,8 +37,9 @@ import io
 import json
 import time
 import warnings
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 # starlette.testclient warns about the underlying httpx version;
 # the TestClient API we use is stable. Silence the upstream noise
@@ -62,10 +63,8 @@ from minimax_code.ipc.protocol import (
     METHOD_NOT_FOUND,
     PARSE_ERROR,
     Response,
-    RPCError,
 )
 from minimax_code.ipc.server import IPCServer
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

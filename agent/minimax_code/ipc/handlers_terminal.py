@@ -341,7 +341,7 @@ async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
     try:
         await asyncio.wait_for(proc.wait(), timeout=2.0)
         return
-    except asyncio.TimeoutError:
+    except TimeoutError:
         pass
     try:
         proc.kill()
@@ -378,7 +378,7 @@ async def _run_session(
             await asyncio.gather(stdout_task, stderr_task)
             if session.status != "cancelled":
                 session.status = "completed" if session.exit_code == 0 else "failed"
-        except asyncio.TimeoutError:
+        except TimeoutError:
             session.status = "cancelled"
             session.error = f"command timed out after {timeout_s:g}s"
             await _terminate_process(process)

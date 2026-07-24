@@ -27,7 +27,7 @@ class Config(BaseModel):
     max_message_bytes: int = Field(default=8 * 1024 * 1024, ge=1024)
 
     @classmethod
-    def from_env(cls) -> "Config":
+    def from_env(cls) -> Config:
         return cls(
             log_level=os.environ.get("MINIMAX_CODE_LOG_LEVEL", "INFO"),  # type: ignore[arg-type]
             env=os.environ.get("MINIMAX_CODE_ENV", "development"),  # type: ignore[arg-type]

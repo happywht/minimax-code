@@ -20,8 +20,8 @@ import asyncio
 import logging
 from typing import Any
 
-from .protocol import INTERNAL_ERROR, STORAGE_ERROR
 from .handler_utils import HandlerError
+from .protocol import INTERNAL_ERROR
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -93,7 +93,7 @@ async def _handle_audit_list(params: Any, ctx: Context) -> None:
         await ctx.reply({"entries": entries, "total": total})
     except HandlerError as exc:
         await ctx.reply_error(exc.code, exc.message)
-    except Exception as exc:
+    except Exception:
         logger.exception("audit.list failed")
         await ctx.reply_error(INTERNAL_ERROR, "audit.list failed")
 
@@ -107,7 +107,7 @@ async def _handle_audit_stats(params: Any, ctx: Context) -> None:
         await ctx.reply(result)
     except HandlerError as exc:
         await ctx.reply_error(exc.code, exc.message)
-    except Exception as exc:
+    except Exception:
         logger.exception("audit.stats failed")
         await ctx.reply_error(INTERNAL_ERROR, "audit.stats failed")
 
@@ -124,7 +124,7 @@ async def _handle_audit_purge(params: Any, ctx: Context) -> None:
         await ctx.reply({"deleted": deleted})
     except HandlerError as exc:
         await ctx.reply_error(exc.code, exc.message)
-    except Exception as exc:
+    except Exception:
         logger.exception("audit.purge failed")
         await ctx.reply_error(INTERNAL_ERROR, "audit.purge failed")
 

@@ -38,7 +38,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any
 
 import pytest
 
@@ -47,7 +46,6 @@ anthropic = pytest.importorskip("anthropic")
 from minimax_code.agent.transports.anthropic_transport import (  # noqa: E402
     _anthropic_stream_to_chunks,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fake event / stream types mirroring anthropic's wire shape

@@ -10,7 +10,6 @@ Covers (in order):
 from __future__ import annotations
 
 import asyncio
-import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -18,17 +17,12 @@ import pytest
 
 from minimax_code.ipc.handlers_mobile import register_mobile_handlers
 from minimax_code.ipc.protocol import (
-    INTERNAL_ERROR,
     INVALID_PARAMS,
-    Response,
 )
 from minimax_code.mobile import (
-    DEFAULT_TOKEN_TTL_SECONDS,
     PairingError,
     PairingManager,
-    _TokenRecord,
 )
-
 
 # ---------------------------------------------------------------------------
 # MobileDeviceDAO (in-process stub)

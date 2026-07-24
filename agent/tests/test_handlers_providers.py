@@ -34,8 +34,8 @@ class FakeProviderDAO:
 
 def make_client(dao: FakeProviderDAO) -> IPCClient:
     client = IPCClient()
-    setattr(client.server, "_provider_dao", dao)
-    setattr(client.server, "_provider_dao_lock", asyncio.Lock())
+    client.server._provider_dao = dao
+    client.server._provider_dao_lock = asyncio.Lock()
     return client
 
 

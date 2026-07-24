@@ -10,7 +10,6 @@ from minimax_code.config import Config
 from minimax_code.ipc.handlers_teams import register_team_handlers
 from minimax_code.ipc.server import IPCServer
 
-
 # ── Fakes ─────────────────────────────────────────────────────────────────────
 
 

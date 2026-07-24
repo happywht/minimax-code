@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import textwrap
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -32,14 +31,12 @@ from minimax_code.agent.skills import (
     SkillRegistry,
     SkillRuntime,
     load_all,
-    load_skill_dir,
     load_skill_file,
     parse_frontmatter,
     validate_tools,
 )
 from minimax_code.agent.skills.runtime import SkillToolProvider
 from minimax_code.agent.tools import Tool, ToolRegistry, ToolResult
-
 
 # ---------------------------------------------------------------------------
 # Helpers
