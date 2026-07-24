@@ -593,12 +593,19 @@ def test_types_barrel_exports_nine_symbols() -> None:
 
 
 def test_crate_root_barrel_mirrors_types_barrel() -> None:
-    """Both import paths expose the same surface (crate root = subpackage)."""
+    """The crate root re-exports every types-barrel symbol (same object).
+
+    R301 extends the crate root with ``scope_graph`` node symbols, so the
+    crate-root surface is now a *superset* of the types barrel (no longer
+    equal). The invariant that matters: every types-barrel name resolves to
+    the same object under both paths. The superset direction
+    (``types <= crate root``) stays robust as the crate root grows in R302+.
+    """
     import minimax_code.xai_codebase_graph as xcg
 
-    assert set(xcg.__all__) == set(xcgt.__all__)
-    # Each name resolves to the same object under both paths.
-    for name in xcg.__all__:
+    assert set(xcgt.__all__) <= set(xcg.__all__)
+    # Each types-barrel name resolves to the same object under both paths.
+    for name in xcgt.__all__:
         assert getattr(xcg, name) is getattr(xcgt, name)
 
 
