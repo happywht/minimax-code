@@ -32,11 +32,15 @@ Dispatch model (mirrors grok ``render_mermaid_to_svg`` L36-L163)
      :func:`render_pie_diagram_to_svg` emits the pie / donut chart (one colored
      wedge per >=1% slice, d3.pie() descending sort, a right-side legend),
      mirroring grok lib.rs L70-L72.
-   * The 16 remaining independent per-diagram renderers (er / class / mindmap
-     / gantt / requirement / packet / block / sankey / sequence
+   * The ``packet-beta`` renderer (R283) has its own dedicated arm --
+     :func:`render_packet_diagram_to_svg` lays contiguous bit ranges out on a
+     32-bit-per-row grid (one ``#efefef`` rectangle per block fragment with
+     centered label + start/end bit indices), mirroring grok lib.rs L74-L76.
+   * The 15 remaining independent per-diagram renderers (er / class / mindmap
+     / gantt / requirement / block / sankey / sequence
      / gitgraph / timeline / journey / kanban / quadrant / xychart / c4)
      raise :class:`UnsupportedDiagramType` here. Their per-diagram leaves ship
-     in later rounds (R283+); until then the dispatch reports the type as
+     in later rounds (R284+); until then the dispatch reports the type as
      unsupported rather than running a renderer that does not exist yet.
    * The default path runs the already-migrated flowchart stack
      (``parser.parse_mermaid`` -> ``layout.compute_layout[_with_config]`` ->
@@ -65,6 +69,7 @@ from .config import parse_mermaid_frontmatter
 from .error import UnsupportedDiagramType
 from .info_diagram import render_info_diagram_to_svg
 from .layout import compute_layout, compute_layout_with_config
+from .packet_diagram import render_packet_diagram_to_svg
 from .parser import parse_mermaid
 from .pie_diagram import render_pie_diagram_to_svg
 from .radar_diagram import render_radar_diagram_to_svg
@@ -84,9 +89,10 @@ __all__ = [
 #: :class:`UnsupportedDiagramType` -- mirrors grok's per-diagram ``if`` arms
 #: (lib.rs L51-L139) minus the renderer bodies. The ``info`` renderer shipped
 #: in R279, the ``stateDiagram`` / ``stateDiagram-v2`` parser shipped in
-#: R280, the ``radar-beta`` renderer shipped in R281, and the ``pie``
-#: renderer shipped in R282 (their dedicated arms sit above this check);
-#: the 20 tokens below are the remaining unsupported surface.
+#: R280, the ``radar-beta`` renderer shipped in R281, the ``pie`` renderer
+#: shipped in R282, and the ``packet-beta`` renderer shipped in R283 (their
+#: dedicated arms sit above this check); the 19 tokens below are the
+#: remaining unsupported surface.
 #: The five ``C4*`` tokens share grok's single ``c4_diagram`` renderer
 #: (lib.rs L130-L139).
 _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
@@ -96,7 +102,6 @@ _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
         "mindmap",
         "gantt",
         "requirementDiagram",
-        "packet-beta",
         "block-beta",
         "sankey-beta",
         "sequenceDiagram",
@@ -154,9 +159,11 @@ def render_mermaid_to_svg(
     ``stateDiagram-v2`` parser (R280) emits a FlowchartGraph via
     :func:`parse_state_diagram`; the ``radar-beta`` renderer (R281) emits the
     radar chart via :func:`render_radar_diagram_to_svg`; the ``pie`` renderer
-    (R282) emits the pie chart via :func:`render_pie_diagram_to_svg`; the 16
-    remaining per-diagram renderers raise :class:`UnsupportedDiagramType`
-    until their leaves ship (R283+). Mirrors grok lib.rs L36-L163.
+    (R282) emits the pie chart via :func:`render_pie_diagram_to_svg`; the
+    ``packet-beta`` renderer (R283) emits the packet diagram via
+    :func:`render_packet_diagram_to_svg`; the 15 remaining per-diagram
+    renderers raise :class:`UnsupportedDiagramType` until their leaves ship
+    (R284+). Mirrors grok lib.rs L36-L163.
 
     Raises:
         UnsupportedDiagramType: when the diagram-type token names a diagram
@@ -213,6 +220,15 @@ def render_mermaid_to_svg(
     # >=1% slice (d3.pie() descending sort) plus a right-side legend.
     if diagram_type == "pie":
         return render_pie_diagram_to_svg(body, resolved_theme)
+
+    # ``packet-beta`` (R283): the dedicated packet-diagram renderer. Mirrors
+    # grok lib.rs L74-L76 -- :func:`render_packet_diagram_to_svg` receives
+    # the front-matter-stripped body and lays the contiguous bit ranges out
+    # on a 32-bit-per-row grid (one ``#efefef`` rectangle per block fragment
+    # with centered label + start/end bit indices). The renderer hard-codes
+    # its palette and ignores the resolved theme.
+    if diagram_type == "packet-beta":
+        return render_packet_diagram_to_svg(body, resolved_theme)
 
     if diagram_type in _UNSUPPORTED_DIAGRAM_TYPES:
         raise UnsupportedDiagramType(diagram_type)
