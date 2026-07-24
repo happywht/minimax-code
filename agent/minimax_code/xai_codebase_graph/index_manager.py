@@ -67,18 +67,25 @@ FileEvent naming -- a deliberate split (mirrors R300):
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import weakref
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePath
+from typing import Any
 
 # R306f lifts the R306a stdlib-only contract: the actor loop *calls*
 # IndexBuilder / LanguageRegistry / load_index / save_index for real, so the
 # scope-graph / languages / manager / types symbols move to top-level runtime
-# imports. No circular dependency -- none of those modules import
-# index_manager. (QueryVersion / ScopeGraphIndex / IndexStats were
-# TYPE_CHECKING-only through R306e; R306f promotes them to runtime imports.)
+# imports (QueryVersion / ScopeGraphIndex / IndexStats were TYPE_CHECKING-only
+# through R306e; R306f promotes them to runtime). R306g adds the parser cache
+# (``_get_parser_and_query``) + bridge symbol extractor (``extract_symbols_fast``)
+# for the incremental reindex + goto-symbol paths -- binding the actor to
+# tree-sitter. No circular dependency: none of scope_graph / languages / manager
+# / types / paths import index_manager (manager.builder imports scope_graph;
+# bridge imports scope_graph.graph/nodes/types).
+from minimax_code.paths import to_relative_path
 from minimax_code.xai_codebase_graph.languages import LanguageRegistry
 from minimax_code.xai_codebase_graph.manager import (
     CacheError,
@@ -86,11 +93,13 @@ from minimax_code.xai_codebase_graph.manager import (
     load_index,
     save_index,
 )
+from minimax_code.xai_codebase_graph.manager.builder import _get_parser_and_query
 from minimax_code.xai_codebase_graph.scope_graph import (
     QueryVersion,
     ScopeGraphIndex,
 )
-from minimax_code.xai_codebase_graph.types import IndexStats
+from minimax_code.xai_codebase_graph.scope_graph.bridge import extract_symbols_fast
+from minimax_code.xai_codebase_graph.types import FileMeta, IndexStats
 
 # === constants ============================================================
 
@@ -1283,7 +1292,7 @@ class IndexManager:
             if not self._should_index(path):
                 continue
             if kind is FileEventKind.REMOVED:
-                self._index.remove_file(path)
+                self._remove_file(path)
             else:
                 self._reindex_file(path)
             self._updates_processed += 1
@@ -1294,28 +1303,101 @@ class IndexManager:
                 self._save_cache()
 
     def _should_index(self, path: str) -> bool:
-        """Gate: should ``path`` be indexed? (grok ``should_index``, L1186+).
+        """Gate: should ``path`` be indexed? (grok ``should_index``, L1095-L1097).
 
-        The R306f subset applies the hidden-directory classifier only (a
-        pure-path test, no I/O). The binary-content probe, the size ceiling,
-        and the language-registry gate land with the tree-sitter bridge in
-        R306g (they need a file read + a grammar lookup).
+        Two pure-path checks (functional clone, not line-port):
+        * **Language support** -- the registry must have a tree-sitter grammar
+          for ``path``'s extension (an unsupported file yields no symbols;
+          indexing it only wastes a read + parse). Reuses
+          :meth:`LanguageRegistry.is_supported`.
+        * **Hidden directory** -- a path under a ``.git`` / ``.hidden``
+          component is never indexed (the watcher still observes it, but the
+          index skips it). grok converts to the root-relative path *first*
+          (``is_under_hidden_dir(&to_relative_path(root, path))``, L1096) so a
+          root that itself lives under a hidden dir (e.g.
+          ``/home/u/.cache/repo``) does not falsely gate every file out; the
+          port translates the same way before probing
+          :func:`is_under_hidden_dir` (R306b).
+
+        The size ceiling and the binary-content probe live downstream in
+        :meth:`_reindex_file` -- they need a file read, so they fire only when
+        this cheap pure-path gate already said ``True`` (avoid stat-ing files
+        the language gate would have rejected anyway).
         """
-        if is_under_hidden_dir(path):
+        if not self._registry.is_supported(path):
             return False
-        return True
+        rel_str = to_relative_path(self._config.root_path, path).as_posix()
+        return not is_under_hidden_dir(rel_str)
+
+    def _remove_file(self, path: str) -> None:
+        """Remove ``path``'s symbols from the index (grok ``remove_file``, L1246-L1249).
+
+        Thin wrapper that translates the absolute ``path`` (the file-event /
+        background-refresh currency) to the relative-string index key, then
+        delegates to :meth:`ScopeGraphIndex.remove_file`. grok stores relative
+        paths in the index; the Python port inherits that contract, so a raw
+        absolute path passed straight to ``ScopeGraphIndex.remove_file`` would
+        silently miss (no matching interned string). Centralizing the
+        translation here keeps the coalesced-apply + background-eviction
+        callers honest -- the REMOVED-branch fix that closed the R306f
+        ``_apply_coalesced`` key-mismatch bug.
+        """
+        rel_str = to_relative_path(self._config.root_path, path).as_posix()
+        self._index.remove_file(rel_str)
 
     def _reindex_file(self, path: str) -> None:
-        """Reindex one file (tree-sitter parse -> index update).
+        """Reindex one file: drop its old symbols, parse, re-intern (grok ``reindex_file``, L1182-L1210).
 
-        Lands in R306g (requires the tree-sitter runtime). The R306f stub is
-        a no-op so the actor-loop wiring (coalescing, drain, cache-save
-        throttling) is testable in isolation against an in-memory index.
+        Functional clone of grok's incremental-reindex path. Sequence:
+        1. **Drop the file's current symbols** under its relative-string key,
+           so a re-parse after an edit does not double-count stale definitions
+           (grok ``remove_file`` before the parse). A first-time index of a new
+           file is a no-op removal (the key is absent).
+        2. **Resolve the language.** ``registry.for_file_path`` -> ``None``
+           aborts (no grammar). ``_should_index`` already filtered this on the
+           coalesced-apply path, but a rename-into-``.txt`` event can slip
+           past the extension gate, so the lookup is re-checked here.
+        3. **Stat + size gate.** Empty or > 5 MB files skip (no symbols worth
+           the memory; mirrors :data:`MAX_INDEXABLE_FILE_SIZE`).
+        4. **Read + binary gate.** Read failure (deleted between event and
+           drain) or a NUL-byte prefix skips. grok reads then probes; the port
+           reuses :func:`is_binary_content` over the same buffer it parses.
+        5. **Parse.** ``_get_parser_and_query`` returns ``(None, None)`` when
+           the tree-sitter runtime is absent -> degrade (skip). ``parser.parse``
+           -> ``None`` on a malformed grammar aborts -> skip.
+        6. **Intern + meta.** :func:`_intern_symbols_into_index` reuses
+           :func:`extract_symbols_fast` for the symbol classification, then
+           :meth:`ScopeGraphIndex.set_file_meta` records the stat so the next
+           background-refresh sweep can detect staleness.
+
+        Every failure path is a silent ``return`` (grok returns ``()``); the
+        actor loop counts an update only on the happy path via the caller.
         """
-        # TODO(R306g): read file, resolve language via the registry,
-        # parse with tree-sitter, extract symbols, merge into self._index
-        # (intern_symbols_directly).
-        return None
+        rel_str = to_relative_path(self._config.root_path, path).as_posix()
+        self._index.remove_file(rel_str)
+        lang_config = self._registry.for_file_path(path)
+        if lang_config is None:
+            return
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return
+        if stat.st_size == 0 or stat.st_size > MAX_INDEXABLE_FILE_SIZE:
+            return
+        try:
+            src = Path(path).read_bytes()
+        except OSError:
+            return
+        if is_binary_content(src):
+            return
+        parser, query = _get_parser_and_query(lang_config)
+        if parser is None or query is None:
+            return
+        tree = parser.parse(src)
+        if tree is None:
+            return
+        _intern_symbols_into_index(self._index, rel_str, query, tree.root_node, src)
+        self._index.set_file_meta(rel_str, FileMeta.from_stat(stat))
 
     def _rebuild_index(self) -> None:
         """Rebuild the index from scratch (grok ``rebuild_index``, L1252-L1256).
@@ -1431,33 +1513,79 @@ class IndexManager:
     def _get_symbol_at_position(
         self, file_path: str, row: int, col: int
     ) -> str | QueryError:
-        """Extract the symbol name under ``(row, col)`` in ``file_path``.
+        """Extract the symbol name under ``(row, col)`` in ``file_path`` (grok L1046-L1093).
 
-        Mirrors grok ``get_symbol_at_position`` (L1046+). R306f implements
-        the error-path guards (``row == 0`` or ``col == 0`` ->
-        :class:`QueryError` ``NoSymbolAtPosition``); the tree-sitter parse +
-        symbol extraction lands in R306g. Until then every in-bounds position
-        also reports ``NoSymbolAtPosition`` (the parse half is absent).
+        Functional clone of grok ``get_symbol_at_position``. ``row`` / ``col``
+        are **1-indexed** (the LSP convention the frontend speaks), so the
+        cursor hit-test receives ``row - 1`` / ``col - 1`` (0-indexed,
+        tree-sitter's coordinate system). ``row == 0`` or ``col == 0`` is the
+        sentinel for "no cursor" and short-circuits to :class:`QueryError`
+        (grok guards the same).
+
+        Failure modes (each its own :class:`QueryError` variant, matching grok):
+        * **Unsupported language** -- no grammar for ``file_path``'s extension.
+        * **File not found** -- read failure (deleted between request and parse).
+        * **Parse error** -- tree-sitter yielded no tree, or the symbol's byte
+          span is not valid UTF-8 (a slice into the middle of a multibyte
+          sequence).
+        * **No symbol at position** -- the cursor sits on a non-identifier
+          node (a keyword, a bracket, whitespace); the hit-test returns ``None``.
         """
         if row == 0 or col == 0:
             return QueryError.no_symbol_at_position(row=row, col=col)
-        # TODO(R306g): read file, resolve language via registry.for_file_path,
-        # parse with tree-sitter, extract the symbol at (row, col).
-        return QueryError.no_symbol_at_position(row=row, col=col)
+        lang_config = self._registry.for_file_path(file_path)
+        if lang_config is None:
+            return QueryError.unsupported_language(file_path)
+        try:
+            src = Path(file_path).read_bytes()
+        except OSError:
+            return QueryError.file_not_found(file_path)
+        parser, _query = _get_parser_and_query(lang_config)
+        if parser is None:
+            return QueryError.parse_error("tree-sitter parser unavailable")
+        tree = parser.parse(src)
+        if tree is None:
+            return QueryError.parse_error("tree-sitter parse yielded no tree")
+        node = _find_smallest_named_node_at_position(tree.root_node, row - 1, col - 1)
+        if node is None:
+            return QueryError.no_symbol_at_position(row=row, col=col)
+        try:
+            text = src[node.start_byte:node.end_byte].decode("utf-8")
+        except UnicodeDecodeError:
+            return QueryError.parse_error("symbol byte span is not valid UTF-8")
+        return text
 
     def _process_background_refresh(self, cmd: BackgroundRefreshCommand) -> None:
-        """Reindex stale files + evict deleted files in the background.
+        """Reindex stale files + evict deleted files in the background (grok L734-L754, L1100-L1127).
 
-        R306g owns the tree-sitter reindex of ``stale_files`` + the
-        background-refresh scheduling (grok L734-L754). The R306f stub evicts
-        ``deleted_files`` (a pure ``remove_file`` call, no parse) so the
-        command wiring + the eviction path are testable without the parser.
+        Functional clone of grok ``process_background_refresh``:
+        * **Evict deleted files** -- a pure removal (no parse). grok iterates
+          ``deleted_files`` and calls ``remove_file`` per path without a
+          ``should_index`` gate (a deleted file is evicted regardless of its
+          extension); the Python port routes through :meth:`_remove_file` so
+          the absolute -> relative-string key translation stays centralized.
+        * **Reindex stale files** -- each stale path re-runs the full
+          :meth:`_reindex_file` pipeline (drop old symbols -> parse ->
+          re-intern). grok gates the iteration on ``registry.is_supported``
+          (L1113) so an extension flip mid-sweep does not trigger a futile
+          parse; the port mirrors the same gate (``_reindex_file``'s own
+          ``for_file_path`` lookup is the second line of defense).
+
+        ``updates_processed`` advances once per eviction + once per gated stale
+        reindex (the same counter the cache-save throttle in
+        :meth:`_apply_coalesced` reads). grok unconditionally calls
+        ``save_cache`` at the end of the sweep (L1126) -- a background refresh
+        is the natural persistence point -- so the port does too (the
+        ``save_to_cache`` / ``cache_path`` guards live inside :meth:`_save_cache`).
         """
         for path in cmd.deleted_files:
-            if self._should_index(path):
-                self._index.remove_file(path)
+            self._remove_file(path)
+            self._updates_processed += 1
+        for path in cmd.stale_files:
+            if self._registry.is_supported(path):
+                self._reindex_file(path)
                 self._updates_processed += 1
-        # TODO(R306g): reindex cmd.stale_files via tree-sitter.
+        self._save_cache()
 
     # -- spawn (production entrypoint) -------------------------------------
 
@@ -1549,6 +1677,119 @@ class IndexManager:
             except (OSError, CacheError):
                 pass  # fall through to a fresh build
         return IndexBuilder().build(config.root_path)
+
+
+# === R306g tree-sitter helpers (module-level, mirror grok L1447-L1654) =====
+#
+# grok keeps ``intern_symbols_directly`` (L1447-L1511) +
+# ``find_smallest_named_node_at_point`` (L1610-L1638) + ``is_identifier_like``
+# (L1644-L1654) as private free functions at the bottom of ``index_manager.rs``.
+# The Python port mirrors that placement (module-level, after the actor class)
+# and the same three concerns:
+#
+# * :func:`_intern_symbols_into_index` -- incremental-reindex symbol interning
+#   (grok ``intern_symbols_directly``); reused by :meth:`IndexManager._reindex_file`.
+# * :func:`_find_smallest_named_node_at_position` -- the goto-definition /
+#   goto-references cursor hit-test (grok ``find_smallest_named_node_at_point``).
+# * :func:`_is_identifier_like` + :data:`_IDENTIFIER_KINDS` -- the 8-kind
+#   node-type classifier the hit-test prefers (grok ``is_identifier_like``).
+#
+# API translation (Rust tree_sitter -> Python tree_sitter):
+#   node.kind()           -> node.type
+#   node.byte_range()     -> (node.start_byte, node.end_byte)
+#   node.children(cursor) -> node.children
+#   Point row/col compare -> (row, col) tuple compare (lexicographic == row-then-col)
+# The helpers duck-type the node (any object with ``type`` / ``start_byte`` /
+# ``end_byte`` / ``start_point`` / ``end_point`` / ``children`` satisfies the
+# contract), so the unit suite tests them with lightweight fakes -- no
+# tree-sitter runtime needed.
+
+_IDENTIFIER_KINDS: frozenset[str] = frozenset({
+    "identifier",
+    "type_identifier",
+    "property_identifier",
+    "field_identifier",
+    "shorthand_property_identifier",
+    "shorthand_property_identifier_pattern",
+    "attribute",          # Python
+    "package_identifier",  # Go
+})
+
+
+def _is_identifier_like(node: Any) -> bool:
+    """Is ``node`` a symbol-bearing identifier? (grok ``is_identifier_like``, L1644-L1654).
+
+    Mirrors grok's 8-kind table -- the node types a tree-sitter grammar marks
+    as user-named symbols (a function name, a type, a property, an import
+    alias). ``return`` / ``if`` / block nodes fail this test (their ``type``
+    is a grammar keyword, not an identifier), so the hit-test walks past them
+    to the named leaf underneath.
+    """
+    return node.type in _IDENTIFIER_KINDS
+
+
+def _find_smallest_named_node_at_position(node: Any, row: int, col: int) -> Any:
+    """Smallest identifier-like node containing ``(row, col)`` (grok L1610-L1638).
+
+    DFS mirroring grok ``find_smallest_named_node_at_point``:
+    1. Point outside ``node``'s range -> no hit here (``None``).
+    2. Recurse into children; the first identifier-like descendant wins (the
+       tightest scope). A child that contains the point but yields nothing
+       does NOT abort the walk -- a later sibling may hold the point.
+    3. No child holds the point -> return ``node`` itself iff it is
+       identifier-like, else ``None``.
+
+    grok compares ``Point`` structs; the Python port compares ``(row, col)``
+    tuples (lexicographic ordering == row-then-col, the same ordering grok's
+    ``point >= start && point <= end`` enforces). Both endpoints are inclusive:
+    a cursor at a node's first or last cell still resolves to that node.
+    """
+    start = (node.start_point.row, node.start_point.column)
+    end = (node.end_point.row, node.end_point.column)
+    point = (row, col)
+    if point < start or point > end:
+        return None
+    for child in node.children:
+        found = _find_smallest_named_node_at_position(child, row, col)
+        if found is not None:
+            return found
+    return node if _is_identifier_like(node) else None
+
+
+def _intern_symbols_into_index(
+    index: ScopeGraphIndex,
+    rel_str: str,
+    query: Any,
+    root_node: Any,
+    src: bytes,
+) -> None:
+    """Intern a parsed file's symbols into ``index`` (grok ``intern_symbols_directly``, L1447-L1511).
+
+    Reuses :func:`extract_symbols_fast` (R305e bridge) for the capture
+    classification + UTF-8 decode -- the single source of "what counts as a
+    definition / reference / alias" -- then walks the resulting symbol list
+    once, interning each under ``rel_str``'s path id. grok interns the path
+    once up front and threads the id through ``add_definition_with_path_id``;
+    the Python port does the same to avoid per-symbol path re-interning.
+
+    ``rel_str`` is the index key (POSIX relative path), NOT the absolute path
+    -- grok's index keys are relative; the absolute path is for I/O only.
+    Lines are 1-indexed (``Range.start_line()`` is 0-indexed -> ``+ 1``), the
+    same convention :meth:`ScopeGraphIndex.add_file` enforces.
+    """
+    path_id = index.intern(rel_str)
+    # extract_symbols_fast classifies captures by dotted name only (no
+    # symbol-id resolution); its ``_lang_config`` arg is signature parity and
+    # unused, so ``None`` is safe and avoids threading the config through.
+    definitions, references, alias_pairs = extract_symbols_fast(
+        query, root_node, src, None
+    )
+    for name, range_ in definitions:
+        index.add_definition_with_path_id(name, path_id, range_.start_line() + 1)
+    for name, range_ in references:
+        index.add_reference_with_path_id(name, path_id, range_.start_line() + 1)
+    for alias_name, original_name in alias_pairs:
+        index.add_alias(alias_name, original_name)
 
 
 __all__ = [

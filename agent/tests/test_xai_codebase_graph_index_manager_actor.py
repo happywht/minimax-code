@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 
 import pytest
 
@@ -424,20 +425,41 @@ async def test_goto_definition_col_zero_resolves_to_error() -> None:
     await _stop(actor, task)
 
 
-async def test_goto_definition_in_bounds_resolves_to_error_stub() -> None:
-    """R306f stub: in-bounds also reports ``NoSymbolAtPosition`` (parse is R306g)."""
+async def test_goto_definition_in_bounds_resolves_to_file_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """R306g: in-bounds + missing file -> ``FileNotFound`` (real parse, not stub).
+
+    R306f held this slot as a ``NoSymbolAtPosition`` stub while the parser was
+    unbuilt; R306g wires ``_get_symbol_at_position`` to the real read+parse
+    path, so a non-existent ``"a.py"`` now surfaces as
+    :class:`QueryError.file_not_found` -- still a value resolved on the Future,
+    never an exception. ``monkeypatch.chdir(tmp_path)`` guarantees the read
+    fails (an empty cwd has no ``"a.py"``) regardless of the runner's pwd.
+    """
+    monkeypatch.chdir(tmp_path)
     actor = _make_actor()
     fut: asyncio.Future[QueryResult | QueryError] = asyncio.Future()
     task = await _drive(actor, GotoDefinitionCommand("a.py", 5, 5, response=fut))
     resolved = fut.result()
     assert isinstance(resolved, QueryError)
-    assert resolved.kind == QueryError.KIND_NO_SYMBOL_AT_POSITION
-    assert (resolved.row, resolved.col) == (5, 5)
+    assert resolved.kind == QueryError.KIND_FILE_NOT_FOUND
+    assert resolved.path == "a.py"
     await _stop(actor, task)
 
 
-async def test_goto_references_in_bounds_resolves_to_error_stub() -> None:
-    """R306f stub: in-bounds GotoReferences also reports ``NoSymbolAtPosition``."""
+async def test_goto_references_in_bounds_resolves_to_file_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """R306g: in-bounds GotoReferences + missing file -> ``FileNotFound``.
+
+    Same posture as the GotoDefinition sibling above: R306g's real parse path
+    reads the file, and a missing ``"a.py"`` reports ``FileNotFound`` as a
+    resolved value (the actor never raises on a query miss).
+    """
+    monkeypatch.chdir(tmp_path)
     actor = _make_actor()
     fut: asyncio.Future[QueryResult | QueryError] = asyncio.Future()
     task = await _drive(
@@ -445,7 +467,8 @@ async def test_goto_references_in_bounds_resolves_to_error_stub() -> None:
     )
     resolved = fut.result()
     assert isinstance(resolved, QueryError)
-    assert resolved.kind == QueryError.KIND_NO_SYMBOL_AT_POSITION
+    assert resolved.kind == QueryError.KIND_FILE_NOT_FOUND
+    assert resolved.path == "a.py"
     await _stop(actor, task)
 
 
@@ -718,12 +741,22 @@ async def test_get_symbol_col_zero_returns_error() -> None:
     assert (result.row, result.col) == (5, 0)
 
 
-async def test_get_symbol_in_bounds_returns_error_stub() -> None:
-    """R306f stub: in-bounds also returns ``NoSymbolAtPosition`` (parse is R306g)."""
+async def test_get_symbol_in_bounds_returns_file_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """R306g: in-bounds + missing file -> ``FileNotFound`` (real read, not stub).
+
+    R306f returned a ``NoSymbolAtPosition`` stub here; R306g now reads the file
+    for real, so ``"a.py"`` (absent under the chdir'd empty cwd) surfaces as
+    :class:`QueryError.file_not_found`.
+    """
+    monkeypatch.chdir(tmp_path)
     actor = _make_actor()
     result = actor._get_symbol_at_position("a.py", 5, 5)  # noqa: SLF001
     assert isinstance(result, QueryError)
-    assert result.kind == QueryError.KIND_NO_SYMBOL_AT_POSITION
+    assert result.kind == QueryError.KIND_FILE_NOT_FOUND
+    assert result.path == "a.py"
 
 
 # === _save_cache: gate ======================================================
