@@ -666,6 +666,7 @@ def test_module_all_is_single_symbol() -> None:
 
 def test_render_dispatch_no_longer_lists_class_unsupported() -> None:
     """R296 removed ``classDiagram`` (7 -> 6 tokens); R297 removed the 5 C4
-    tokens (6 -> 1); the set keeps shrinking."""
+    tokens (6 -> 1); R298 removed ``sequenceDiagram`` (1 -> 0); the set is
+    EMPTY."""
     assert "classDiagram" not in render_mod._UNSUPPORTED_DIAGRAM_TYPES
-    assert len(render_mod._UNSUPPORTED_DIAGRAM_TYPES) == 1
+    assert len(render_mod._UNSUPPORTED_DIAGRAM_TYPES) == 0

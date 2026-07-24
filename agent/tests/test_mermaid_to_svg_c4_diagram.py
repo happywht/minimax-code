@@ -44,8 +44,8 @@ Functional contracts asserted (zero-semantic clone, Pythonic shape):
    renderer via :func:`render_mermaid_to_svg` (the crate-root dispatch); none
    raises :class:`UnsupportedDiagramType`.
 7. **bucket-guard sync** -- the five ``C4*`` tokens were removed from
-   ``render._UNSUPPORTED_DIAGRAM_TYPES`` (6 -> 1); only ``sequenceDiagram``
-   remains (R298+).
+   ``render._UNSUPPORTED_DIAGRAM_TYPES`` (6 -> 1); R298 then removed
+   ``sequenceDiagram`` (1 -> 0), so the unsupported surface is EMPTY.
 """
 
 from __future__ import annotations
@@ -441,7 +441,7 @@ def test_render_rel_with_techn_emits_bracketed_subtitle() -> None:
     assert "[HTTP]" in svg
 
 
-# === bucket-guard sync (render._UNSUPPORTED_DIAGRAM_TYPES 6 -> 1) ===========
+# === bucket-guard sync (render._UNSUPPORTED_DIAGRAM_TYPES 6 -> 1 -> 0) =====
 
 
 def test_c4_tokens_removed_from_unsupported_set() -> None:
@@ -450,7 +450,8 @@ def test_c4_tokens_removed_from_unsupported_set() -> None:
         assert token not in render_mod._UNSUPPORTED_DIAGRAM_TYPES
 
 
-def test_unsupported_set_is_now_sequence_only() -> None:
-    """Only ``sequenceDiagram`` remains unsupported (R298+ leaf)."""
-    assert render_mod._UNSUPPORTED_DIAGRAM_TYPES == frozenset({"sequenceDiagram"})
-    assert len(render_mod._UNSUPPORTED_DIAGRAM_TYPES) == 1
+def test_unsupported_set_is_now_empty() -> None:
+    """R298 removed ``sequenceDiagram`` (the last leaf) -- the unsupported
+    surface is EMPTY."""
+    assert render_mod._UNSUPPORTED_DIAGRAM_TYPES == frozenset()
+    assert len(render_mod._UNSUPPORTED_DIAGRAM_TYPES) == 0

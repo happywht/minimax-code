@@ -12,12 +12,10 @@ Migration decision matrix (grok ``pure.rs`` inline ``mod tests`` + the
 
 * ``flowchart_svg_contains_node_labels`` -- **migrated**: the SVG half of a
   trivial flowchart carries the ``<svg>`` envelope and both node labels.
-* ``sequence_svg_contains_participants`` -- **adapted**: the Python port has
-  no ``sequenceDiagram`` renderer yet (R279+ leaf; ``parser.py`` L114 lists it
-  as unsupported). The contract that holds today is "routes through the engine
-  without a panic" -- either it renders (once the sequence renderer lands) or
-  it surfaces a typed :class:`MermaidError`. grok's positive assertion returns
-  when the renderer is wired.
+* ``sequence_svg_contains_participants`` -- **migrated (R298)**: the
+  ``sequenceDiagram`` renderer now ships (:func:`render_sequence_diagram_to_svg`,
+  the last per-diagram leaf), so this test's positive participant assertion
+  (Alice / Bob) is active end-to-end.
 * ``render_produces_decodable_png_with_matching_dims`` -- **YAGNI (R278b)**:
   PNG decode + dimension match. The Python ``render`` always raises
   :class:`MermaidRasterizeError` at the raster step (the pure-Rust
@@ -247,15 +245,13 @@ def test_cyclic_login_flow_renders_with_arrowheads() -> None:
 
 
 def test_sequence_diagram_routes_through_engine_without_panic() -> None:
-    """Adapted from grok ``sequence_svg_contains_participants``.
+    """Adapted from grok ``sequence_svg_contains_participants`` (R298 migration).
 
-    The Python port has no ``sequenceDiagram`` renderer yet (R279+ leaf;
-    ``parser.py`` L114 lists it as unsupported, surfacing as
-    :class:`~minimax_code.mermaid.to_svg.error.UnsupportedDiagramType` ->
-    :class:`MermaidUnsupportedError`). The contract that holds today is "routes
-    through the engine without a panic": either it renders (once the sequence
-    renderer lands) or it surfaces a typed :class:`MermaidError`. grok's
-    positive participant assertion activates when the renderer is wired.
+    The ``sequenceDiagram`` renderer now ships
+    (:func:`render_sequence_diagram_to_svg`, R298 leaf), so the engine renders
+    the source into an SVG carrying both participant labels. The try/except arm
+    stays as a defensive guard against any future parse regression -- a typed
+    :class:`MermaidError` is acceptable, a panic / leak is not.
     """
     source = "sequenceDiagram\n  Alice->>Bob: Hello\n  Bob-->>Alice: Hi"
     try:

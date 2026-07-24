@@ -22,22 +22,18 @@ Covers the four migrated symbols plus the module-private helper:
 
 Dispatch invariants asserted (zero-semantic clone):
 
-1. The 6 diagram-type tokens whose dedicated renderers ship in R295+ raise
-   :class:`UnsupportedDiagramType` *before* the flowchart path runs -- this
-   matches grok's per-diagram ``if`` arms (L51-L139). The ``info`` renderer
-   shipped in R279, the ``stateDiagram`` / ``stateDiagram-v2`` parser shipped
-   in R280, the ``radar-beta`` renderer shipped in R281, the ``pie`` renderer
-   shipped in R282, the ``packet-beta`` renderer shipped in R283, the
-   ``sankey-beta`` renderer shipped in R284, the ``gantt`` renderer shipped
-   in R285, the ``kanban`` renderer shipped in R286, the ``timeline``
-   renderer shipped in R287, the ``quadrantChart`` renderer shipped in
-   R288, the ``block-beta`` renderer shipped in R289, the ``journey``
-   renderer shipped in R290, and the ``gitGraph`` renderer shipped in
-   R291, the ``mindmap`` renderer shipped in R292, the ``xychart-beta``
-   renderer shipped in R293, the ``requirementDiagram`` renderer shipped
-   in R294, the ``erDiagram`` renderer shipped in R295, and the
-   ``classDiagram`` renderer shipped in R296 (their dedicated dispatch arms
-   no longer raise); the 6 remaining tokens still do.
+1. Every per-diagram renderer has shipped -- the unsupported-type raise is a
+   dead branch. This mirrors grok's per-diagram ``if`` arms (L51-L139), each
+   now with a migrated body: ``info`` (R279), ``stateDiagram`` /
+   ``stateDiagram-v2`` (R280), ``radar-beta`` (R281), ``pie`` (R282),
+   ``packet-beta`` (R283), ``sankey-beta`` (R284), ``gantt`` (R285),
+   ``kanban`` (R286), ``timeline`` (R287), ``quadrantChart`` (R288),
+   ``block-beta`` (R289), ``journey`` (R290), ``gitGraph`` (R291),
+   ``mindmap`` (R292), ``xychart-beta`` (R293), ``requirementDiagram``
+   (R294), ``erDiagram`` (R295), ``classDiagram`` (R296), the five ``C4*``
+   tokens (R297 -- C4Context / C4Container / C4Component / C4Dynamic /
+   C4Deployment), and ``sequenceDiagram`` (R298 -- the last leaf). The
+   ``_UNSUPPORTED_DIAGRAM_TYPES`` frozenset is now EMPTY.
 2. Unknown tokens (not in the unsupported set, not ``graph``/``flowchart``)
    fall through to the generic parser -- matching grok's unconditional
    ``parser::parse_mermaid`` at L150. A bare ``flowchart``/``graph`` token
@@ -169,38 +165,17 @@ def test_strip_mermaid_frontmatter_strips_yaml_block() -> None:
 # === render_mermaid_to_svg: unsupported-diagram dispatch (grok L51-L139) ===
 
 
-@pytest.mark.parametrize(
-    "diagram_type",
-    [
-        "sequenceDiagram",
-    ],
-)
-def test_render_mermaid_to_svg_unsupported_type_raises(diagram_type: str) -> None:
-    """The 1 remaining R297+ diagram token (``sequenceDiagram``) raises before
-    the flowchart path.
+def test_render_unsupported_diagram_types_is_empty_after_r298() -> None:
+    """The per-diagram unsupported surface is EMPTY -- R298 (sequenceDiagram)
+    was the last leaf.
 
-    Mirrors grok's per-diagram ``if`` arms (lib.rs L51-L139): the dedicated
-    renderer is not migrated yet, so dispatch reports the type as
-    unsupported. The ``info`` renderer (R279), the ``stateDiagram`` /
-    ``stateDiagram-v2`` parser (R280), the ``radar-beta`` renderer (R281),
-    the ``pie`` renderer (R282), the ``packet-beta`` renderer (R283), the
-    ``sankey-beta`` renderer (R284), the ``gantt`` renderer (R285), the
-    ``kanban`` renderer (R286), the ``timeline`` renderer (R287), the
-    ``quadrantChart`` renderer (R288), the ``block-beta`` renderer
-    (R289), the ``journey`` renderer (R290), the ``gitGraph`` renderer
-    (R291), the ``mindmap`` renderer (R292), the ``xychart-beta`` renderer
-    (R293), the ``requirementDiagram`` renderer (R294), the
-    ``erDiagram`` renderer (R295), the ``classDiagram`` renderer (R296),
-    and the C4 renderers (R297 -- C4Context / C4Container / C4Component /
-    C4Dynamic / C4Deployment) are asserted separately; none raises here.
-    The raised :class:`UnsupportedDiagramType` carries the diagram-type
-    token verbatim.
+    Every diagram-type token now routes to a dedicated dispatch arm (R279
+    info through R298 sequenceDiagram); the unsupported-type raise is a dead
+    branch that never fires. Mirrors grok lib.rs L51-L139 where every arm
+    has a migrated body.
     """
-    source = f"{diagram_type}\n  body"
-    with pytest.raises(UnsupportedDiagramType) as exc_info:
-        render_mermaid_to_svg(source)
-    assert exc_info.value.diagram_type == diagram_type
-    assert str(exc_info.value) == f"Unsupported diagram type: {diagram_type}"
+    assert render_mod._UNSUPPORTED_DIAGRAM_TYPES == frozenset()
+    assert len(render_mod._UNSUPPORTED_DIAGRAM_TYPES) == 0
 
 
 # === render_mermaid_to_svg: flowchart default path (grok L150-L162) ========

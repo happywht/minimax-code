@@ -99,12 +99,13 @@ Dispatch model (mirrors grok ``render_mermaid_to_svg`` L36-L163)
      relationships, hands them to the dagre layout engine (``compound: false``),
      and emits a theme-aware SVG with the 8 classic ER markers. It is the
      second per-diagram renderer that consumes dagre (phase 2 of direction (1)).
-   * The single remaining unsupported per-diagram renderer (``sequence``)
-     raises :class:`UnsupportedDiagramType` here. Its per-diagram leaf ships
-     in R298+; until then the dispatch reports the type as unsupported rather
-     than running a renderer that does not exist yet. (The five ``C4*`` tokens
-     shared one renderer that shipped in R297 -- its dedicated arm sits above
-     the unsupported check, mirroring grok lib.rs L130-L139.)
+   * The ``sequenceDiagram`` renderer (R298) has its own dedicated arm above
+     the unsupported check -- :func:`render_sequence_diagram_to_svg` emits the
+     sequence / timing diagram (fixed participant columns + a 37px event-row
+     grid + an activation-bar stack matched to activate/deactivate pairs + a
+     fragment nesting-depth inset for alt/loop/opt/par/critical/break/rect).
+     It is the LAST per-diagram renderer to ship and is dagre-FREE -- it does
+     not consume the dagre layout engine, mirroring grok lib.rs L102-L104.
    * The default path runs the already-migrated flowchart stack
      (``parser.parse_mermaid`` -> ``layout.compute_layout[_with_config]`` ->
      ``svg_renderer.render[_with_config]``), which is the only path the
@@ -148,6 +149,7 @@ from .quadrant_diagram import render_quadrant_chart_to_svg
 from .radar_diagram import render_radar_diagram_to_svg
 from .requirement_diagram import render_requirement_diagram_to_svg
 from .sankey_diagram import render_sankey_diagram_to_svg
+from .sequence_diagram import render_sequence_diagram_to_svg
 from .state_diagram import parse_state_diagram
 from .svg_renderer import render, render_with_config
 from .theme import MermaidTheme
@@ -161,25 +163,24 @@ __all__ = [
 ]
 
 
-#: Diagram-type tokens whose renderers ship as independent per-diagram leaves
-#: in later rounds (R290+). Until those leaves land, the dispatch raises
-#: :class:`UnsupportedDiagramType` -- mirrors grok's per-diagram ``if`` arms
-#: (lib.rs L51-L139) minus the renderer bodies. The ``info`` renderer shipped
-#: in R279, the ``stateDiagram`` / ``stateDiagram-v2`` parser shipped in
-#: R280, the ``radar-beta`` renderer shipped in R281, the ``pie`` renderer
-#: shipped in R282, the ``packet-beta`` renderer shipped in R283, the
-#: ``sankey-beta`` renderer shipped in R284, the ``gantt`` renderer shipped
-#: in R285, the ``kanban`` renderer shipped in R286, the ``timeline``
-#: renderer shipped in R287, the ``quadrantChart`` renderer shipped in
-#: R288, the ``block-beta`` renderer shipped in R289, the ``journey``
-#: renderer shipped in R290, the ``gitGraph`` renderer shipped in R291, the
-#: ``mindmap`` renderer shipped in R292, the ``xychart-beta`` renderer shipped
-#: in R293, the ``requirementDiagram`` renderer shipped in R294, the
-#: ``erDiagram`` renderer shipped in R295, the ``classDiagram`` renderer
-#: shipped in R296, and the five ``C4*`` tokens shipped in R297 (their
-#: dedicated arms sit above this check); the single ``sequenceDiagram`` token
-#: below is the remaining unsupported surface.
-_UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset({"sequenceDiagram"})
+#: Diagram-type tokens whose dedicated renderers have NOT shipped yet.
+#: Mirrors grok's per-diagram ``if`` arms (lib.rs L51-L139): every arm now
+#: has a migrated renderer, so the unsupported surface is EMPTY (R298 was
+#: the last leaf). The ``info`` renderer shipped in R279, the ``stateDiagram``
+#: / ``stateDiagram-v2`` parser shipped in R280, the ``radar-beta`` renderer
+#: shipped in R281, the ``pie`` renderer shipped in R282, the ``packet-beta``
+#: renderer shipped in R283, the ``sankey-beta`` renderer shipped in R284,
+#: the ``gantt`` renderer shipped in R285, the ``kanban`` renderer shipped
+#: in R286, the ``timeline`` renderer shipped in R287, the ``quadrantChart``
+#: renderer shipped in R288, the ``block-beta`` renderer shipped in R289,
+#: the ``journey`` renderer shipped in R290, the ``gitGraph`` renderer
+#: shipped in R291, the ``mindmap`` renderer shipped in R292, the
+#: ``xychart-beta`` renderer shipped in R293, the ``requirementDiagram``
+#: renderer shipped in R294, the ``erDiagram`` renderer shipped in R295,
+#: the ``classDiagram`` renderer shipped in R296, the five ``C4*`` tokens
+#: shipped in R297, and the ``sequenceDiagram`` renderer shipped in R298
+#: (all their dedicated arms sit above this check, which now never fires).
+_UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset()
 
 #: Flowchart-type tokens (grok lib.rs L141 ``matches!(..., Some("graph") | Some("flowchart"))``).
 _FLOWCHART_TOKENS: frozenset[str] = frozenset({"graph", "flowchart"})
@@ -246,9 +247,9 @@ def render_mermaid_to_svg(
     :func:`render_er_diagram_to_svg`; the ``classDiagram`` renderer (R296)
     emits the UML class diagram via :func:`render_class_diagram_to_svg`; the
     five ``C4*`` tokens (R297) share :func:`render_c4_diagram_to_svg`; the
-    single remaining unsupported ``sequenceDiagram`` token raises
-    :class:`UnsupportedDiagramType` until its leaf ships (R298+).
-    Mirrors grok lib.rs L36-L163.
+    ``sequenceDiagram`` renderer (R298) emits the sequence / timing diagram
+    via :func:`render_sequence_diagram_to_svg` -- the LAST per-diagram leaf,
+    dagre-FREE (bespoke temporal geometry). Mirrors grok lib.rs L36-L163.
 
     Raises:
         UnsupportedDiagramType: when the diagram-type token names a diagram
@@ -503,6 +504,25 @@ def render_mermaid_to_svg(
         "C4Deployment",
     ):
         return render_c4_diagram_to_svg(body, resolved_theme)
+
+    # ``sequenceDiagram`` (R298): the dedicated sequence / timing-diagram
+    # renderer. Mirrors grok lib.rs L102-L104 --
+    # :func:`render_sequence_diagram_to_svg` receives the front-matter-
+    # stripped body and lays the diagram out with bespoke temporal geometry
+    # (fixed participant columns + a 37px event-row grid + an activation-bar
+    # stack matched to activate/deactivate pairs + a fragment nesting-depth
+    # inset for alt/loop/opt/par/critical/break/rect). sequenceDiagram is the
+    # LAST per-diagram renderer to ship and is dagre-FREE -- it shares nothing
+    # with the dagre consumers (R294 requirement / R295 er / R296 class). It is
+    # theme-aware (5 channels): ``background`` -> full-canvas background rect,
+    # ``node_fill`` -> participant head/footer box + activation bar + fragment
+    # tab fill, ``node_stroke`` -> participant head/footer box + activation bar
+    # stroke, ``edge_color`` -> lifeline + message arrow + fragment frame
+    # stroke, ``text_color`` -> title + participant labels + message text +
+    # fragment labels; the note palette (``#fff2b0`` fill / ``#333333`` text)
+    # is hard-coded like grok.
+    if diagram_type == "sequenceDiagram":
+        return render_sequence_diagram_to_svg(body, resolved_theme)
 
     if diagram_type in _UNSUPPORTED_DIAGRAM_TYPES:
         raise UnsupportedDiagramType(diagram_type)
