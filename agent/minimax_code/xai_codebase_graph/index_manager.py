@@ -67,23 +67,30 @@ FileEvent naming -- a deliberate split (mirrors R300):
 from __future__ import annotations
 
 import asyncio
+import time
 import weakref
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePath
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    # The channel-command payload types live in scope_graph / types, but
-    # index_manager stays runtime-clean (the R306a stdlib-only contract is
-    # preserved). All three appear only inside ``asyncio.Future[...]`` field
-    # annotations, which ``from __future__ import annotations`` keeps as
-    # unevaluated strings -- no runtime import, no circular-dependency risk.
-    from minimax_code.xai_codebase_graph.scope_graph import (
-        QueryVersion,
-        ScopeGraphIndex,
-    )
-    from minimax_code.xai_codebase_graph.types import IndexStats
+# R306f lifts the R306a stdlib-only contract: the actor loop *calls*
+# IndexBuilder / LanguageRegistry / load_index / save_index for real, so the
+# scope-graph / languages / manager / types symbols move to top-level runtime
+# imports. No circular dependency -- none of those modules import
+# index_manager. (QueryVersion / ScopeGraphIndex / IndexStats were
+# TYPE_CHECKING-only through R306e; R306f promotes them to runtime imports.)
+from minimax_code.xai_codebase_graph.languages import LanguageRegistry
+from minimax_code.xai_codebase_graph.manager import (
+    CacheError,
+    IndexBuilder,
+    load_index,
+    save_index,
+)
+from minimax_code.xai_codebase_graph.scope_graph import (
+    QueryVersion,
+    ScopeGraphIndex,
+)
+from minimax_code.xai_codebase_graph.types import IndexStats
 
 # === constants ============================================================
 
@@ -1025,6 +1032,523 @@ def _canonicalize_root(root_path: str | Path) -> str:
 _ACTIVE_MANAGERS: weakref.WeakValueDictionary[str, IndexManagerHandle] = (
     weakref.WeakValueDictionary()
 )
+
+
+#: Minimum interval (seconds) between automatic cache saves during a file-event
+#: drain burst (grok ``CACHE_SAVE_INTERVAL_SECS``). A rapid burst of file
+#: events does not hit the disk on every event -- the actor saves at most once
+#: per interval, then again on shutdown. Functional equivalent of grok's
+#: ``if last_cache_save.elapsed() >= CACHE_SAVE_INTERVAL_SECS`` gate.
+_CACHE_SAVE_INTERVAL_SECS: float = 30.0
+
+
+#: Strong references to live actor tasks, so the event loop's weak task ref
+#: does not garbage-collect a spawned actor mid-run. An entry is added in
+#: :meth:`IndexManager.spawn` and removed when the task completes (the
+#: ``done_callback`` discards it). grok's OS thread has no equivalent -- a
+#: ``JoinHandle`` keeps the thread alive -- so this set is a Python-only
+#: adaptation for :func:`asyncio.create_task`'s weak-ref semantics.
+_ACTIVE_ACTOR_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _resolve_response(fut: asyncio.Future[object], value: object) -> None:
+    """Resolve a response Future, swallowing an already-done state.
+
+    Functional equivalent of grok ``let _ = response_tx.send(value)`` -- the
+    crossbeam oneshot sender ignores a dropped receiver (the caller may have
+    timed out, cancelled, or moved on). The asyncio carrier mirrors that
+    semantics: if the Future was cancelled or already resolved
+    (``done()``), ``set_result`` is skipped to avoid
+    :class:`asyncio.InvalidStateError`. Only real runtime faults surface as
+    Future exceptions (set by the caller, never here).
+    """
+    if not fut.done():
+        fut.set_result(value)
+
+
+# === IndexManager actor (R306f) ===========================================
+#
+# R306f lands the channel-actor core -- the consumer side of the mailbox --
+# ported by function (not line) from grok ``index_manager.rs``:
+#
+# * struct ``IndexManager`` (L556-L574) + the 7-field actor state.
+# * ``spawn`` (L590-L769) -- the production entrypoint.
+# * ``run_loop`` (L797-L828) -- the drain loop.
+# * ``process_command_coalesced`` (L838-L953) -- the 14-arm command dispatch.
+# * ``apply_coalesced`` (L1133-L1171) -- the file-event batch applier.
+# * ``rebuild_index`` / ``save_cache`` / ``build_fresh_index``
+#   (L1252+).
+#
+# grok runs the actor on a dedicated OS thread blocked on a crossbeam
+# receiver; the Python port runs it as an asyncio task blocked on
+# ``await mailbox.get()`` -- same single-owner, single-consumer contract,
+# cooperative instead of preemptive.
+#
+# Runtime-import boundary: R306a-R306e kept this module stdlib-clean (the
+# scope-graph / types / manager symbols were TYPE_CHECKING-only). R306f lifts
+# that -- the actor *calls* ``IndexBuilder.build`` / ``LanguageRegistry.new``
+# / ``load_index`` / ``save_index`` for real, so they are now top-level
+# runtime imports (no circular dependency: scope_graph / languages / manager
+# never import index_manager).
+
+
+class IndexManager:
+    """Channel-actor index manager: drains the mailbox, serves queries.
+
+    Functional equivalent of grok ``IndexManager`` (``index_manager.rs``
+    L556-L574) -- owns a :class:`ScopeGraphIndex` + :class:`LanguageRegistry`,
+    drains the mailbox of :class:`IndexCommand`, and resolves each
+    request-response Future. Adapted to asyncio, not line-ported:
+
+    * **No ``Arc`` / no ``parser_cache`` / no ``query_cache``.** grok wraps the
+      index in ``Arc`` (shared across threads) and caches tree-sitter
+      ``Parser`` / ``Query`` objects on the struct. Python references are
+      already shared (no ``Arc``), and the tree-sitter caches land with the
+      parser bridge in R306g (deferred -- the R306f subset serves in-memory
+      queries that need no parser).
+    * **asyncio.Queue mailbox, not crossbeam receiver.** grok's
+      ``command_rx.recv()`` blocks the OS thread; ``await self._mailbox.get()``
+      yields the event loop. The drain helper uses ``get_nowait()`` (the
+      ``try_recv`` analog).
+    * **Explicit ``ShutdownCommand``, not channel-disconnect.** grok breaks
+      the loop when ``recv()`` returns ``Err`` (all senders dropped); an
+      :class:`asyncio.Queue` has no disconnect signal, so shutdown is driven
+      by an explicit :class:`ShutdownCommand` (the caller invokes
+      :meth:`IndexManagerHandle.shutdown`). The GC-driven
+      :data:`_ACTIVE_MANAGERS` cleanup handles the caller-gone case.
+    * **``ExitBeacon`` closed in ``finally``.** grok drops the beacon (its
+      ``Drop`` flips the flag) as ``run_loop`` returns; the Python port calls
+      :meth:`ExitBeacon.close` in a ``finally`` block so the flag flips even
+      on an exception path.
+    """
+
+    __slots__ = (
+        "_index",
+        "_registry",
+        "_config",
+        "_mailbox",
+        "_updates_processed",
+        "_last_cache_save",
+        "_beacon",
+    )
+
+    def __init__(
+        self,
+        *,
+        index: ScopeGraphIndex,
+        registry: LanguageRegistry,
+        config: IndexManagerConfig,
+        mailbox: asyncio.Queue[IndexCommand],
+        beacon: ExitBeacon,
+    ) -> None:
+        self._index = index
+        self._registry = registry
+        self._config = config
+        self._mailbox = mailbox
+        self._updates_processed = 0
+        self._last_cache_save = 0.0
+        self._beacon = beacon
+
+    # -- actor entrypoint --------------------------------------------------
+
+    async def run_loop(self) -> None:
+        """Drain the mailbox until a :class:`ShutdownCommand` arrives.
+
+        Functional equivalent of grok ``run_loop`` (L797-L828): seed
+        ``last_cache_save``, loop ``{ recv -> process; break on false }``,
+        then ``save_cache`` on exit. The beacon is closed in a ``finally``
+        block so the exit flag flips even if the loop raises.
+        """
+        self._last_cache_save = time.monotonic()
+        try:
+            while True:
+                cmd = await self._mailbox.get()
+                if not self._process_command(cmd):
+                    break
+        finally:
+            self._save_cache()
+            self._beacon.close()
+
+    # -- 14-variant dispatch ----------------------------------------------
+
+    def _process_command(self, cmd: IndexCommand) -> bool:
+        """Dispatch one command; return ``False`` to break the run_loop.
+
+        Functional equivalent of grok ``process_command_coalesced``
+        (L838-L953): a 14-arm ``match`` dispatched via ``isinstance`` (the
+        Python analog of a tagged-union match). File events coalesce + drain;
+        queries resolve the response Future via ``self._index``;
+        ``Shutdown`` returns ``False``. Synchronous -- every query here is an
+        in-memory read (the tree-sitter parse path lands in R306g behind its
+        own command wiring).
+        """
+        # --- fire-and-forget: file events (coalesce + drain) ---------------
+        if isinstance(cmd, FileEventCommand):
+            coalesced = CoalescedEvents()
+            coalesced.add(cmd.event)
+            return self._drain_and_apply(coalesced)
+        if isinstance(cmd, FileEventBatchCommand):
+            coalesced = CoalescedEvents()
+            for event in cmd.events:
+                coalesced.add(event)
+            return self._drain_and_apply(coalesced)
+
+        # --- fire-and-forget: rebuild / background refresh / shutdown ------
+        if isinstance(cmd, RebuildCommand):
+            self._rebuild_index()
+            return True
+        if isinstance(cmd, BackgroundRefreshCommand):
+            self._process_background_refresh(cmd)
+            return True
+        if isinstance(cmd, ShutdownCommand):
+            return False
+
+        # --- request-response: snapshot + goto (symbol extraction R306g) ---
+        if isinstance(cmd, GetSnapshotCommand):
+            _resolve_response(cmd.response, self._index)
+            return True
+        if isinstance(cmd, GotoDefinitionCommand):
+            _resolve_response(cmd.response, self._handle_goto_definition(cmd))
+            return True
+        if isinstance(cmd, GotoReferencesCommand):
+            _resolve_response(cmd.response, self._handle_goto_references(cmd))
+            return True
+
+        # --- request-response: name queries (in-memory, fully wired) -------
+        if isinstance(cmd, FindDefinitionsCommand):
+            _resolve_response(cmd.response, self._handle_find_definitions(cmd))
+            return True
+        if isinstance(cmd, FindReferencesCommand):
+            _resolve_response(cmd.response, self._handle_find_references(cmd))
+            return True
+
+        # --- request-response: lightweight probes --------------------------
+        if isinstance(cmd, GetFileCountCommand):
+            _resolve_response(cmd.response, self._index.file_count())
+            return True
+        if isinstance(cmd, GetStatsCommand):
+            _resolve_response(cmd.response, IndexStats.new(*self._index.stats()))
+            return True
+        if isinstance(cmd, GetQueryVersionCommand):
+            _resolve_response(cmd.response, self._index.query_version)
+            return True
+        if isinstance(cmd, HasDefinitionCommand):
+            _resolve_response(cmd.response, self._index.has_definition(cmd.symbol))
+            return True
+
+        # Forward-tolerant default: an unknown variant is ignored (grok's
+        # enum is non-exhaustive across versions; the actor stays alive).
+        return True
+
+    def _drain_and_apply(self, coalesced: CoalescedEvents) -> bool:
+        """Drain pending file events into ``coalesced``; apply; recurse on non-file.
+
+        Functional equivalent of grok's ``try_recv`` drain loop inside the
+        ``FileEvent`` arm (L862-L883): keep pulling while the next command is
+        a file event, coalescing each into the batch; on the first non-file
+        command, flush the batch (``apply_coalesced``) then process that
+        command at depth 1 (it cannot be another file event, so the
+        recursion terminates immediately). Returns ``False`` if that drained
+        command was :class:`ShutdownCommand` (the stop signal propagates
+        through to the run_loop).
+        """
+        while True:
+            try:
+                other = self._mailbox.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if isinstance(other, FileEventCommand):
+                coalesced.add(other.event)
+            elif isinstance(other, FileEventBatchCommand):
+                for event in other.events:
+                    coalesced.add(event)
+            else:
+                self._apply_coalesced(coalesced)
+                return self._process_command(other)
+        self._apply_coalesced(coalesced)
+        return True
+
+    # -- coalesced apply / index mutation ---------------------------------
+
+    def _apply_coalesced(self, coalesced: CoalescedEvents) -> None:
+        """Apply a coalesced file-event batch to the index.
+
+        Functional equivalent of grok ``apply_coalesced`` (L1133-L1171):
+        iterate the ``path -> kind`` map, gate each on ``should_index``,
+        ``Created`` / ``Modified`` / ``Renamed`` -> ``reindex_file``,
+        ``Removed`` -> ``remove_file``, then save to cache at most once per
+        :data:`_CACHE_SAVE_INTERVAL_SECS`.
+        """
+        for path, kind in coalesced.events.items():
+            if not self._should_index(path):
+                continue
+            if kind is FileEventKind.REMOVED:
+                self._index.remove_file(path)
+            else:
+                self._reindex_file(path)
+            self._updates_processed += 1
+        if self._config.save_to_cache and self._updates_processed > 0:
+            now = time.monotonic()
+            if now - self._last_cache_save >= _CACHE_SAVE_INTERVAL_SECS:
+                self._last_cache_save = now
+                self._save_cache()
+
+    def _should_index(self, path: str) -> bool:
+        """Gate: should ``path`` be indexed? (grok ``should_index``, L1186+).
+
+        The R306f subset applies the hidden-directory classifier only (a
+        pure-path test, no I/O). The binary-content probe, the size ceiling,
+        and the language-registry gate land with the tree-sitter bridge in
+        R306g (they need a file read + a grammar lookup).
+        """
+        if is_under_hidden_dir(path):
+            return False
+        return True
+
+    def _reindex_file(self, path: str) -> None:
+        """Reindex one file (tree-sitter parse -> index update).
+
+        Lands in R306g (requires the tree-sitter runtime). The R306f stub is
+        a no-op so the actor-loop wiring (coalescing, drain, cache-save
+        throttling) is testable in isolation against an in-memory index.
+        """
+        # TODO(R306g): read file, resolve language via the registry,
+        # parse with tree-sitter, extract symbols, merge into self._index
+        # (intern_symbols_directly).
+        return None
+
+    def _rebuild_index(self) -> None:
+        """Rebuild the index from scratch (grok ``rebuild_index``, L1252-L1256).
+
+        Swaps in a fresh :class:`ScopeGraphIndex` over ``root_path`` and saves
+        it to cache. The fresh walk delegates to :class:`IndexBuilder`
+        (R305g); R306g refines the tree-sitter binding behind the same call.
+        """
+        self._index = self._build_fresh_index()
+        self._save_cache()
+
+    def _build_fresh_index(self) -> ScopeGraphIndex:
+        """Build a fresh index over ``config.root_path`` (grok ``build_fresh_index``).
+
+        Delegates to :class:`IndexBuilder` (R305g). grok walks the workspace
+        on a thread pool; the Python port walks on the calling coroutine
+        (the actor task) -- acceptable for a rebuild triggered by an explicit
+        :class:`RebuildCommand`, not a hot path.
+        """
+        return IndexBuilder().build(self._config.root_path)
+
+    def _save_cache(self) -> None:
+        """Persist the index to cache (grok ``save_cache``, L1259+).
+
+        No-op when ``save_to_cache`` is ``False`` or ``cache_path`` is
+        ``None`` (grok L1259 ``if !self.config.save_to_cache { return; }``).
+        Uses the R305f :func:`save_index` helper.
+        """
+        if not self._config.save_to_cache or self._config.cache_path is None:
+            return
+        save_index(self._config.cache_path, self._index)
+
+    # -- query handlers ----------------------------------------------------
+
+    def _handle_find_definitions(
+        self, cmd: FindDefinitionsCommand
+    ) -> list[SymbolLocation]:
+        """FindDefinitions: rank definitions toward ``context_file``'s language.
+
+        Delegates to :meth:`ScopeGraphIndex.find_definitions_smart` (R305c),
+        which de-duplicates alias-resolved definitions and sorts same-language-
+        family entries first.
+        """
+        results = self._index.find_definitions_smart(
+            cmd.symbol, cmd.context_file, self._registry
+        )
+        return [SymbolLocation.new(path, line) for path, line in results]
+
+    def _handle_find_references(
+        self, cmd: FindReferencesCommand
+    ) -> list[SymbolLocation]:
+        """FindReferences: rank references toward ``context_file``'s language."""
+        results = self._index.find_references_smart(
+            cmd.symbol, cmd.context_file, self._registry
+        )
+        return [
+            SymbolLocation.with_symbol(path, line, name)
+            for name, path, line in results
+        ]
+
+    def _handle_goto_definition(
+        self, cmd: GotoDefinitionCommand
+    ) -> QueryResult | QueryError:
+        """GotoDefinition: symbol under cursor -> definition sites.
+
+        Two phases (grok ``handle_goto_definition``): extract the symbol at
+        ``(row, col)`` (tree-sitter, R306g), then ``find_definitions_smart``
+        resolves it. R306f wires the resolve phase + the error-path guards;
+        the symbol-extraction parse lands in R306g (``_get_symbol_at_position``
+        currently returns ``NoSymbolAtPosition`` past the row/col guard), so
+        every in-bounds GotoDefinition / GotoReferences resolves to the error
+        arm until R306g -- the wiring is testable, the parse is not.
+        """
+        symbol_or_err = self._get_symbol_at_position(cmd.file_path, cmd.row, cmd.col)
+        if isinstance(symbol_or_err, QueryError):
+            return symbol_or_err
+        symbol = symbol_or_err
+        results = self._index.find_definitions_smart(
+            symbol, cmd.file_path, self._registry
+        )
+        return QueryResult(
+            symbol=symbol,
+            locations=[SymbolLocation.new(path, line) for path, line in results],
+        )
+
+    def _handle_goto_references(
+        self, cmd: GotoReferencesCommand
+    ) -> QueryResult | QueryError:
+        """GotoReferences: symbol under cursor -> reference sites.
+
+        Folds the definition site into the list when ``include_definition``
+        (grok L133).
+        """
+        symbol_or_err = self._get_symbol_at_position(cmd.file_path, cmd.row, cmd.col)
+        if isinstance(symbol_or_err, QueryError):
+            return symbol_or_err
+        symbol = symbol_or_err
+        ref_results = self._index.find_references_smart(
+            symbol, cmd.file_path, self._registry
+        )
+        locations = [
+            SymbolLocation.with_symbol(path, line, name)
+            for name, path, line in ref_results
+        ]
+        if cmd.include_definition:
+            def_results = self._index.find_definitions_smart(
+                symbol, cmd.file_path, self._registry
+            )
+            for path, line in def_results:
+                locations.append(SymbolLocation.with_symbol(path, line, symbol))
+        return QueryResult(symbol=symbol, locations=locations)
+
+    def _get_symbol_at_position(
+        self, file_path: str, row: int, col: int
+    ) -> str | QueryError:
+        """Extract the symbol name under ``(row, col)`` in ``file_path``.
+
+        Mirrors grok ``get_symbol_at_position`` (L1046+). R306f implements
+        the error-path guards (``row == 0`` or ``col == 0`` ->
+        :class:`QueryError` ``NoSymbolAtPosition``); the tree-sitter parse +
+        symbol extraction lands in R306g. Until then every in-bounds position
+        also reports ``NoSymbolAtPosition`` (the parse half is absent).
+        """
+        if row == 0 or col == 0:
+            return QueryError.no_symbol_at_position(row=row, col=col)
+        # TODO(R306g): read file, resolve language via registry.for_file_path,
+        # parse with tree-sitter, extract the symbol at (row, col).
+        return QueryError.no_symbol_at_position(row=row, col=col)
+
+    def _process_background_refresh(self, cmd: BackgroundRefreshCommand) -> None:
+        """Reindex stale files + evict deleted files in the background.
+
+        R306g owns the tree-sitter reindex of ``stale_files`` + the
+        background-refresh scheduling (grok L734-L754). The R306f stub evicts
+        ``deleted_files`` (a pure ``remove_file`` call, no parse) so the
+        command wiring + the eviction path are testable without the parser.
+        """
+        for path in cmd.deleted_files:
+            if self._should_index(path):
+                self._index.remove_file(path)
+                self._updates_processed += 1
+        # TODO(R306g): reindex cmd.stale_files via tree-sitter.
+
+    # -- spawn (production entrypoint) -------------------------------------
+
+    @classmethod
+    async def spawn(cls, config: IndexManagerConfig) -> IndexManagerHandle:
+        """Spawn an :class:`IndexManager` actor for ``config.root_path``.
+
+        Functional equivalent of grok ``IndexManager::spawn`` (L590-L769),
+        adapted to asyncio (not line-ported):
+
+        * **Dedup first.** Canonicalize the root (R306e
+          :func:`_canonicalize_root`) and reuse a live handle from
+          :data:`_ACTIVE_MANAGERS` if one exists for the same workspace (the
+          ``WeakValueDictionary`` auto-drops a dead entry on GC, subsuming
+          grok's occupied-but-dead ``remove`` arm).
+        * **asyncio.Queue channel.** grok's ``mpsc::channel`` -> one unbounded
+          :class:`asyncio.Queue` shared by the handle (producer) and the
+          actor task (consumer).
+        * **asyncio task, not OS thread.** grok spawns an OS thread that
+          blocks on ``recv``; Python spawns a task on the current loop that
+          awaits ``mailbox.get()``. The task reference is held in
+          :data:`_ACTIVE_ACTOR_TASKS` so the loop's weak task ref does not
+          garbage-collect it mid-run.
+        * **No ``drop(command_tx)``.** grok drops the actor's sender clone so
+          the channel closes when the last handle drops; an
+          :class:`asyncio.Queue` has no sender-side lifecycle, so shutdown is
+          driven by an explicit :class:`ShutdownCommand`.
+        * **Load-or-build + cache.** grok loads from cache when
+          ``load_from_cache`` (and a cache exists), else builds fresh and
+          saves. The Python port reuses :func:`load_index` (R305f) +
+          :class:`IndexBuilder` (R305g).
+
+        Returns the live :class:`IndexManagerHandle`; the actor runs in the
+        background on the current event loop.
+        """
+        root_key = _canonicalize_root(config.root_path)
+        existing = _ACTIVE_MANAGERS.get(root_key)
+        if existing is not None and not existing.is_closed:
+            return existing
+
+        mailbox: asyncio.Queue[IndexCommand] = asyncio.Queue()
+        closed = asyncio.Event()
+        handle = IndexManagerHandle(mailbox=mailbox, closed=closed)
+        _ACTIVE_MANAGERS[root_key] = handle
+
+        index = await cls._load_or_build_index(config)
+        beacon = ExitBeacon()
+        actor = cls(
+            index=index,
+            registry=LanguageRegistry.new(),
+            config=config,
+            mailbox=mailbox,
+            beacon=beacon,
+        )
+        task = asyncio.create_task(actor._run_until_closed(closed))
+        _ACTIVE_ACTOR_TASKS.add(task)
+        task.add_done_callback(_ACTIVE_ACTOR_TASKS.discard)
+        return handle
+
+    async def _run_until_closed(self, closed: asyncio.Event) -> None:
+        """Run the loop, then flip ``closed`` (the spawn-task wrapper).
+
+        grok closes the channel by dropping the sender; the Python port flips
+        the handle's ``_closed`` :class:`asyncio.Event` once :meth:`run_loop`
+        returns (normal shutdown or exception), so callers probing
+        :attr:`IndexManagerHandle.is_closed` see the actor as gone.
+        """
+        try:
+            await self.run_loop()
+        finally:
+            closed.set()
+
+    @staticmethod
+    async def _load_or_build_index(
+        config: IndexManagerConfig,
+    ) -> ScopeGraphIndex:
+        """Load the index from cache, else build a fresh one (grok L666-L709).
+
+        grok loads when ``load_from_cache`` and a cache file is present;
+        otherwise it builds fresh and (when ``save_to_cache``) writes the
+        cache. The Python port reuses :func:`load_index` (R305f) +
+        :class:`IndexBuilder` (R305g). Cache-staleness detection (query-hash
+        mismatch) lands with the full manager wiring; R306f trusts a present
+        cache file.
+        """
+        if config.load_from_cache and config.cache_path is not None:
+            try:
+                return load_index(config.cache_path)
+            except (OSError, CacheError):
+                pass  # fall through to a fresh build
+        return IndexBuilder().build(config.root_path)
 
 
 __all__ = [
