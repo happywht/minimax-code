@@ -372,8 +372,12 @@ def test_crate_root_barrel_mirrors_scope_graph_nodes() -> None:
     assert LocalImportFromRoot is LocalImport
     assert ReferenceFromRoot is Reference
     assert NodeKindFromRoot is NodeKind
-    # __all__ grew from R300's 9 to R301's 16 (added 7 scope_graph nodes)
-    assert set(xcg_root.__all__) == {
+    # The crate-root barrel is a superset that grows as slices land
+    # (R300 types 9 + R301 scope_graph 7 = 16; R302 adds interner 2 = 18;
+    # R303+ will add languages / manager / navigation). Assert these 16
+    # R300+R301 symbols remain present (subset), not that the barrel is
+    # frozen -- a strict == would break on every later brick.
+    r300_r301_symbols = {
         "FileEvent",
         "FileEventKind",
         "FileMeta",
@@ -391,6 +395,7 @@ def test_crate_root_barrel_mirrors_scope_graph_nodes() -> None:
         "SymbolId",
         "SymbolOccurrence",
     }
+    assert r300_r301_symbols <= set(xcg_root.__all__)
     # EdgeKind (grok lib.rs does not re-export it) + NodeKindKind (no grok
     # counterpart) stay subpackage-only -- not in the crate-root surface.
     assert "EdgeKind" not in xcg_root.__all__

@@ -13,17 +13,23 @@ subpackage): ``Symbol`` / ``SymbolId`` / ``LocalScope`` / ``LocalDef`` /
 ``LocalImport`` / ``Reference`` / ``NodeKind`` (plus ``EdgeKind`` /
 ``NodeKindKind``, exported from the subpackage only -- see below).
 
-Downstream slices (``scope_graph/graph.rs`` runtime, ``interner/``,
-``languages/``, ``manager/``, ``navigation``) follow in R302+.
+R302 adds the string interner (``interner`` module): ``StringId`` /
+``StringInterner`` -- dedup byte-string store backing symbol name storage.
 
-The crate-root barrel mirrors grok ``lib.rs``: grok re-exports ``types`` and
-``scope_graph`` node symbols at the crate root. The Python port keeps them
-under their subpackages and re-exports them here so both import paths work::
+Downstream slices (``scope_graph/graph.rs`` runtime, ``languages/``,
+``manager/``, ``navigation``) follow in R303+.
+
+The crate-root barrel mirrors grok ``lib.rs``: grok re-exports ``types``,
+``scope_graph`` node symbols, and the ``interner`` pair at the crate root.
+The Python port keeps them under their subpackages and re-exports them
+here so both import paths work::
 
     from minimax_code.xai_codebase_graph import Position          # crate root
     from minimax_code.xai_codebase_graph.types import Position    # subpackage
     from minimax_code.xai_codebase_graph import Symbol, NodeKind  # crate root
     from minimax_code.xai_codebase_graph.scope_graph import Symbol  # subpackage
+    from minimax_code.xai_codebase_graph import StringId          # crate root
+    from minimax_code.xai_codebase_graph.interner import StringId  # module
 
 Naming note: grok ``lib.rs`` does **not** re-export ``EdgeKind`` at the crate
 root (it is only consumed inside ``scope_graph``). The Python port follows
@@ -31,14 +37,15 @@ the same surface: ``EdgeKind`` (and the Pythonic ``NodeKindKind``
 discriminator, which has no grok counterpart) live under the
 ``scope_graph`` subpackage barrel only.
 
-YAGNI (R301): the ``types`` layer and the ``scope_graph`` node / edge type
-layer are public. ``scope_graph/graph.rs`` runtime (``ScopeGraph`` etc.),
-``manager`` / ``navigation`` modules do not exist yet -- the barrel will grow
-as they land.
+YAGNI (R302): the ``types`` layer, the ``scope_graph`` node / edge type
+layer, and the ``interner`` module are public. ``scope_graph/graph.rs``
+runtime (``ScopeGraph`` etc.), ``manager`` / ``navigation`` modules do not
+exist yet -- the barrel will grow as they land.
 """
 
 from __future__ import annotations
 
+from minimax_code.xai_codebase_graph.interner import StringId, StringInterner
 from minimax_code.xai_codebase_graph.scope_graph import (
     LocalDef,
     LocalImport,
@@ -73,6 +80,8 @@ __all__ = [
     "Position",
     "Range",
     "Reference",
+    "StringId",
+    "StringInterner",
     "Symbol",
     "SymbolAlias",
     "SymbolId",
