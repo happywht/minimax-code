@@ -20670,3 +20670,90 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R280 port grok state_diagram.rs -> parse_state_diagram (direction (1) brick 11)`（`98a0c2e`，4 文件，+657/-27）。feat 提交：`state_diagram.py`（新建，282 行）+ `render.py`（dispatch state arm + `_STATE_DIAGRAM_TOKENS` 常量 + `_UNSUPPORTED_DIAGRAM_TYPES` 24->22 + 导入 + docstring）+ `test_mermaid_to_svg_state_diagram.py`（新建，330 行，22 测试）+ `test_mermaid_to_svg_render.py`（22 token parametrize + docstring）。docs 提交：`docs(platform): R280 iteration log entry`（ITERATION_LOG.md R280 条目）。锚点链: ... -> R278d(d4a487b feat mmdc + b7089e5 docs) -> R279(feat info_diagram + docs) -> R280(98a0c2e feat state_diagram + docs)。**方向① 第 11 砖：首个 per-diagram 解析器 stateDiagram 状态机行为等价移植落地（72 passed，mermaid 739 passed，全量 7985 passed，桶不变 dispatch-only），下一砖 R281+ 余 17 per-diagram 渲染器**。
+
+## R281 — 迁移 grok radar_diagram.rs → render_radar_diagram_to_svg（方向① 第 14 砖，第三个 per-diagram 叶子 + 第二个自包含 SVG 发射器，radar/spider 极坐标几何图，行为等价移植非逐行克隆，桶不变 dispatch-only reach）
+
+锚点:R281-1 <pending>
+
+### 本轮目标
+
+迁移 grok `radar_diagram.rs`（281 行——第三个 per-diagram 叶子，第二个 per-diagram **渲染器**（自包含 SVG 发射器，同 R279 info；异于 R280 state 解析器复用 dagre 栈）。radar/spider 图：N 条轴线从中心辐射 + 5 环同心圆刻度 + 每条曲线一条闭合 Catmull-Rom 曲线 + 图例，固定 `700×700` 画布）→ Python `render_radar_diagram_to_svg`，并在 `render.py` dispatch 接入 radar arm。方向① 第 14 砖。延续 R271--R280 的"行为等价移植非逐行克隆"方法论（用户持续指示："别逐行代码的复刻，要按照功能的复刻" / "按功能进行克隆"）。
+
+### 融合结论
+
+`radar_diagram.py` 落地 `render_radar_diagram_to_svg`（1 公共符号，grok `pub fn`）。`render.py` dispatch 新增 radar arm（位于 R280 state arm 之后、`_UNSUPPORTED_DIAGRAM_TYPES` 检查之前，传 raw `mermaid_source`——同 R279 info arm 模式，异于 R280 state arm 传 body）。**桶不变**：radar_diagram 是 dispatch-only reach，不进 to_svg barrel（镜像 grok crate root 从不 re-export `radar_diagram` 符号——`lib.rs` L94-L96 仅经 dispatch arm 调用）。`_UNSUPPORTED_DIAGRAM_TYPES` 22 -> 21 token（移除 `radar-beta`）。5 个"按功能复刻"架构裁决：① 冻结 dataclass（grok `struct RadarDiagram` / `struct RadarCurve` -> `@dataclass(frozen=True)`，不可变值类型，测试以 `FrozenInstanceError` 锁定）；② Rust Display 浮点桥接 `_fmt`（grok `format!("{}", 350.0_f64)` 渲染 `"350"`（丢弃尾随 `.0`）；Python `str(350.0)` 渲染 `'350.0'`——发散！故 `_fmt` helper：整数浮点 -> `str(int(value))`，否则 `repr(value)`（最短可往返小数），byte-for-byte 匹配 Rust Display）；③ Catmull-Rom 闭合曲线（grok `closed_round_curve` 四点邻域 + 张力控制点 -> Python 同公式，闭合路径 `M` 开 + N `C` 段 + `Z` 闭）；④ parse_radar 静默跳过（grok 体循环无 `else` 分支——未识别行静默丢弃，异于 state_diagram 的 `Unrecognized` raise，port 忠实镜像此发散契约）；⑤ B904 异常链（`except ValueError as err: raise ParseError(...) from err`——地道 Python 保留异常链，满足 ruff B904）。
+
+### 决策证据（行为等价六映射 + Display 浮点桥接 + 静默跳过发散契约）
+
+**证据 ① 冻结 dataclass（grok L11-L24）。** grok `struct RadarDiagram { axes: Vec<String>, curves: Vec<RadarCurve> }` + `struct RadarCurve { name: String, values: Vec<f64> }` -> Python `@dataclass(frozen=True) class RadarCurve(name: str, values: list[float])` + `@dataclass(frozen=True) class RadarDiagram(axes: list[str], curves: list[RadarCurve])`。frozen=True 镜像 Rust struct 的值语义不可变性；测试 `test_radar_diagram_dataclasses_are_frozen` 以 `pytest.raises(FrozenInstanceError)` 锁定赋值即抛（FrozenInstanceError 是 AttributeError 子类，dataclass 冻结字段赋值触发）。字段名 verbatim（axes / curves / name / values）。
+
+**证据 ② Rust Display 浮点桥接 `_fmt`（grok 多处 `format!("{}", f64)`）。** grok 雷达图几何坐标（如 `RADAR_CENTER = 350.0`、轴线端点 `(cx + r*cos(θ), cy + r*sin(θ))`）经 `format!("{}", f64)` 发射进 SVG path/circle 属性。**关键发散**：Rust `Display` for `350.0_f64` 渲染 `"350"`（整数浮点丢弃尾随 `.0`）；Python `str(350.0)` 渲染 `'350.0'`（保留尾随 `.0`）——若直接 `str()` 会产生 `350.0` 而 grok 是 `350`，SVG byte 不一致。故 `_fmt(value)` helper：`if value == int(value): return str(int(value))`（整数浮点 -> 裸整数串）`else: return repr(value)`（非整数 -> `repr` 给最短可往返小数，如 `repr(0.3)=="0.3"` / `repr(262.5)=="262.5"`，匹配 Rust Display 的最短表示）。测试 `test_fmt_integer_valued_float_drops_trailing_dot_zero`（`_fmt(350.0)=="350"` / `_fmt(0.0)=="0"`）+ `test_fmt_non_integer_uses_repr`（`_fmt(0.3)=="0.3"` / `_fmt(262.5)=="262.5"`）锁定桥接。
+
+**证据 ③ Catmull-Rom 闭合曲线（grok L241-L273）。** grok `closed_round_curve(points, tension)`：对 N 点闭合曲线，每段 i 用四点邻域 `p_prev = points[(i+n-1)%n]` / `p0 = points[i]` / `p1 = points[(i+1)%n]` / `p_next = points[(i+2)%n]`，控制点 `cp1 = p0 + (p1-p_prev)*tension` / `cp2 = p1 - (p_next-p0)*tension`，发射三次贝塞尔 `C cp1x,cp1y cp2x,cp2y p1x,p1y`。路径：`M{x0},{y0}` 开 + N 个 ` C...` 段 + ` Z` 闭。-> Python `_closed_round_curve(points, tension)` 同公式（`(i-1)%n` / `(i+1)%n` / `(i+2)%n` 索引 + tension 缩放控制点）。测试三例：空输入 -> `""`（grok L242-L244）/ 单点 -> `M` 开 + `Z` 闭 + 含 ` C`（一段自闭合）/ 三点 -> 三段 `C`（每顶点一段，闭合）。grok 张力常量 `0.17`（`RADAR_CURVE_TENSION`）verbatim。
+
+**证据 ④ parse_radar 静默跳过（grok L181-L195 无 else 分支）。** grok 体扫描循环 `for line in body`：`if line.starts_with("axis ")` -> 解析轴线 / `else if line.starts_with("curve ")` -> 解析曲线 / **无 else 分支**——未识别行（既非 axis 也非 curve）静默丢弃，不抛错。这是 radar 与 state_diagram 的**发散契约**：state_diagram L105-L108 对未识别行抛 `Unrecognized`，radar 静默跳过。port 忠实镜像：`parse_radar` 体循环只匹配 `axis ` / `curve ` 前缀，其余行 `continue`（无 raise）。测试 `test_parse_radar_silently_skips_unrecognized_body_line`（`some random line` 夹在 axis 与 curve 之间不中断解析，后续 curve 仍落地）锁定此发散。这是"按功能复刻"对 grok 控制流差异的诚实镜像——不"统一"两个解析器的错误策略。
+
+**证据 ⑤ B904 异常链（`_parse_curve` 数值解析）。** grok `parse_curve` 内 `inner.split(',')` 逐 token `parse::<f64>()`，失败则 `Err(ParseError{...})`。-> Python `_parse_curve` 内 `inner.split(',')` 逐 `token.strip()` 后 `float(token)`，`except ValueError as err: raise ParseError(line, f"Invalid curve value: {token}") from err`。`from err` 保留异常链（地道 Python，ruff B904 要求 except 内 raise 带 `from`）。测试 `test_parse_curve_non_numeric_value_raises`（`oops` token -> `ParseError(7, "Invalid curve value: oops")`）。`{token}` 用 strip 后的值（忠实 grok：先 strip 再 parse，错误消息也用 strip 后的 token）。
+
+**证据 ⑥ dispatch 传 raw source（grok lib.rs L94-L96）。** grok `if diagram_type == Some("radar-beta") { return radar_diagram::render_radar_diagram_to_svg(mermaid_source, theme); }` 传 **raw `mermaid_source`**（未 strip front-matter）——同 R279 info arm 模式（lib.rs L82-L84），异于 R280 state arm 传 body（lib.rs L63-L68）。radar_diagram 内部 `parse_radar` 自扫 raw source 找 `radar-beta` 头。port 镜像：`if diagram_type == "radar-beta": return render_radar_diagram_to_svg(mermaid_source, resolved_theme)`（传 `mermaid_source` 非 `body`）。
+
+### 交付
+
+- `agent/minimax_code/mermaid/to_svg/radar_diagram.py`（新建，~430 行）：
+
+  - **模块 docstring（行为等价移植框架）** —— 开宗明义 "behavioral-equivalent port ... NOT a line-by-line translation"，区分本砖（自包含 SVG 发射器，同 R279 info）vs R280（解析器复用 dagre 栈）。Display 浮点桥接段 + Catmull-Rom 几何段 + 静默跳过发散契约段。引用 grok 行号作**契约参照**。
+  - **`__all__ = ["render_radar_diagram_to_svg"]`**（1 符号，grok `pub fn`）。6 helper + 2 dataclass 模块私有/内部；不进 to_svg barrel（dispatch-only reach）。
+  - **常量**：`RADAR_CANVAS_SIZE = 700` / `RADAR_CENTER = 350.0` / `RADAR_MAX_VALUE = 100.0` / `RADAR_RING_COUNT = 5` / `RADAR_CURVE_TENSION = 0.17`（grok `f64`/`usize` 常量）。
+  - **`@dataclass(frozen=True) RadarCurve` / `RadarDiagram`**（grok struct 不可变值类型）。
+  - **`_fmt(value) -> str`**：Display 浮点桥接（整数浮点 -> 裸整数串，否则 repr）。
+  - **`_escape_xml(s) -> str`**：5 个 XML 显著字符实体化（`&` -> `&amp;` 先于其他，避免双重转义）。
+  - **`_closed_round_curve(points, tension) -> str`**：Catmull-Rom 闭合贝塞尔路径（grok L241-L273）。
+  - **`_parse_curve(s, line) -> tuple[str, list[float]]`**：`Name { v1, v2 }` 解析（grok L208-L239），B904 异常链。
+  - **`parse_radar(source) -> RadarDiagram`**：头部扫描（跳空行/注释，首 token 须 `radar-beta`）+ 体扫描（axis 替换式 / curve 追加式 / 其余静默跳过）。
+  - **`render_radar_diagram_to_svg(mermaid_source, theme) -> str`**：parse -> 空轴守卫（raise `ParseError(1, "radar diagram requires at least one axis")`）-> 5 环刻度 + N 轴线/标签 + 闭合曲线（值计数不匹配静默跳过）+ 图例 -> SVG 字符串。
+
+- `agent/minimax_code/mermaid/to_svg/render.py`（修改）：
+
+  - **导入块**：`from .radar_diagram import render_radar_diagram_to_svg`（isort 序：`.radar_diagram` 按字母序落位 `.parser` 与 `.state_diagram` 之间）。
+  - **dispatch arm**（state arm 之后、unsupported 检查之前）：`if diagram_type == "radar-beta": return render_radar_diagram_to_svg(mermaid_source, resolved_theme)`——传 raw `mermaid_source`（镜像 grok lib.rs L94-L96，同 info arm 模式）。注释详述 raw-source 流向 + 自扫头的语义。
+  - **`_UNSUPPORTED_DIAGRAM_TYPES` 22 -> 21 token**（移除 `radar-beta`）。注释刷新 R281 语义（info / state / radar 三 arm 已 ship；21 token 仍 raise）。
+  - **docstring 刷新**：dispatch model 段新增 "radar 专属 arm" 描述 + R281 标注。
+
+- `agent/tests/test_mermaid_to_svg_radar_diagram.py`（新建，~332 行，28 测试）：
+
+  - **dispatch 冒烟 x3**（grok lib.rs `test_simple_radar` L948-L959）：`radar-beta` + axis + curve 端到端渲染 SVG（含 `radarGraticule` class + series 名）/ 不再抛 `UnsupportedDiagramType`（R277 曾在 unsupported 集，R281 提升为专属 arm）/ 直接调 renderer 返回 `<svg>...</svg>`。
+  - **头部识别 x4**：跳空行/注释 / 非 radar 首 token 抛 `ParseError`（line 1）/ 错误首 token 带该行号 / 全空体抛 `ParseError`（line 1）。
+  - **空轴 ParseError x1**：无 `axis` 行抛 `ParseError(1, "radar diagram requires at least one axis")`（grok L29-L34）。
+  - **axis 语法 x2**：`axis A, B, C` 填充 / 后置 `axis` 行替换（last-one-wins）。
+  - **curve 语法 x2**：`curve Name { v1, v2 }` 追加 / 值计数不匹配渲染时静默跳过（grok L106-L108）。
+  - **parse_curve 错误 x4**：缺 `{` / 缺 `}` / 非数值 token / 良构返回 name+floats。
+  - **静默跳过 x2**：未识别体行静默丢弃（非错误，发散契约）/ 穿插空行注释跳过。
+  - **closed_round_curve x3**：空 -> `""` / 单点 -> `M`+`Z` / 三点 -> 三段 `C`。
+  - **escape_xml x2**：5 字符全实体化 / `&` 不双重转义。
+  - **`_fmt` 浮点桥接 x2**：整数浮点 -> 裸整数串 / 非整数 -> repr。
+  - **模块/barrel/dataclass 表面 x3**：`__all__ == ["render_radar_diagram_to_svg"]` / 不在 to_svg barrel（dispatch-only reach，桶 18 不变）/ 冻结 dataclass 赋值抛 `FrozenInstanceError`。
+
+- `agent/tests/test_mermaid_to_svg_render.py`（修改）：
+
+  - **21 token parametrize**（移除 `radar-beta`）：unsupported 集合从 22 -> 21 token。注释刷新 R281 语义。
+  - **docstring 更新**：dispatch invariants 段说明 info（R279）+ state（R280）+ radar（R281）三 renderer/parser 已 ship，21 token 仍 raise；barrel `__all__` 15->18 断言不变（R281 不动 barrel）。
+
+### 验证
+
+- ruff：`radar_diagram.py` + `render.py` + `test_mermaid_to_svg_radar_diagram.py` + `test_mermaid_to_svg_render.py` **All checks passed**（line-length 100，select E/F/W/I/B/UP，ignore E501）。本轮修复 3 个 ruff 错误：B904（`_parse_curve` except 内 raise 缺 `from err`）+ B017×2（冻结 dataclass 测试的盲 `pytest.raises(Exception)` -> `pytest.raises(FrozenInstanceError)`）。
+- 定向 pytest（radar_diagram + render 测试）：73 passed（28 新 radar_diagram 测试 + 45 现有 render 测试用例：20 独立函数 + 1 个 21-token parametrize + 主题/front-matter/barrel 用例）。
+- 全量回归（`tests/`）：**1293 passed, 4 skipped, 1 xfailed in 8.33s**。1 xfailed 是 R278c 暴露的预存 dagre 缺陷（`network_simplex._exchange_edges` 对子图内链式边 `None -= 1` -> `TypeError`，`long_identifier` xfail(strict=True)），与 R281 零关系。4 skipped 是既有跳过项。R281 只动 4 文件（mermaid to_svg 包内部 + 2 测试），影响面与 R279/R280 同级，全量回归确认零回归。CRLF 警告正常（Windows 11），无害。
+
+### YAGNI 边界
+
+- **parse_radar 静默跳过不"修正"** —— grok 体循环无 else 分支，未识别行静默丢弃（异于 state_diagram 的 `Unrecognized` raise）。port 忠实镜像此发散契约，测试 `test_parse_radar_silently_skips_unrecognized_body_line` 锁定。这是"按功能复刻"对 grok 控制流差异的诚实镜像——不"统一"两个解析器的错误策略。
+- **`xfail(strict=True)` 暴露预存 dagre 缺陷（延续 R278c/R278d/R279/R280）** —— `network_simplex._exchange_edges` 的 `None -= 1` 缺陷待专门 dagre 边交换修复落地后翻转。
+- **桶不变（dispatch-only reach）** —— radar_diagram 不进 to_svg barrel（镜像 grok crate root 从不 re-export）。桶 `__all__` 仍 18（R277 基线）；radar 符号仅经 `render.py` dispatch arm 到达。**无 barrel-guard 测试同步**（对比 R278d 的 10 文件 13 断言同步——本轮桶不变，零同步开销）。
+- **修正后路线图**：
+  - **R282+** —— 16 个余下 per-diagram 渲染器（按 grok 源行数升序：pie 309 / packet 331 / sankey 436 / gantt 437 / kanban 506 / timeline 513 / quadrant 540 / block 547 / journey 563 / gitgraph 576 / mindmap 670 / xychart 867 / requirement 874 / er 936 / class 1144 / c4 1201 / sequence 1326），按复杂度递增逐砖推进。radar（本砖）是第二个自包含 SVG 发射器（同 R279 info 模式）；下一砖 pie（309 行）是最简独立渲染器。
+  - **dagre 边交换修复** —— 修复 `network_simplex._exchange_edges` 的 `None -= 1` 缺陷，使 `long_identifier` xfail 翻转。
+- **方向② xai-codebase-graph（tree-sitter 代码索引）+ 方向③ L2 自演化框架骨架接线** 均未开始（方向① 优先）。
+
+### Commit
+
+`feat(platform): R281 port radar diagram renderer`（`a0f2557`，4 文件，+854/-18）。feat 提交：`radar_diagram.py`（新建，~430 行）+ `render.py`（dispatch radar arm + `_UNSUPPORTED_DIAGRAM_TYPES` 22->21 + 导入 + docstring）+ `test_mermaid_to_svg_radar_diagram.py`（新建，~332 行，28 测试）+ `test_mermaid_to_svg_render.py`（21 token parametrize + docstring）。docs 提交：`docs(platform): R281 iteration log entry`（ITERATION_LOG.md R281 条目）。锚点链: ... -> R279(feat info_diagram + docs) -> R280(98a0c2e feat state_diagram + docs) -> R281(a0f2557 feat radar_diagram + docs)。**方向① 第 14 砖：第三个 per-diagram 叶子 + 第二个自包含 SVG 发射器 radar/spider 极坐标几何图行为等价移植落地（73 passed，全量 1293 passed，桶不变 dispatch-only），下一砖 R282 pie（309 行）**。
