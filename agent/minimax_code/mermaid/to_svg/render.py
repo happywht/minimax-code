@@ -68,11 +68,16 @@ Dispatch model (mirrors grok ``render_mermaid_to_svg`` L36-L163)
      layout -> findBounds -> SVG emission), mirroring grok lib.rs L90-L92.
      Block is the most theme-aware renderer in the family: all five
      ``MermaidTheme`` channels flow into the SVG.
-   * The 9 remaining independent per-diagram renderers (er / class / mindmap
+   * The ``journey`` renderer (R290) has its own dedicated arm --
+     :func:`render_journey_diagram_to_svg` lays a user-journey map out as a
+     titled timeline of tasks grouped into sections, where each task carries a
+     1-5 satisfaction score (rendered as a happy/neutral/sad face icon) and the
+     actors responsible for it, mirroring grok lib.rs L124-L126.
+   * The 8 remaining independent per-diagram renderers (er / class / mindmap
      / requirement / sequence
-     / gitgraph / journey / xychart / c4)
+     / gitgraph / xychart / c4)
      raise :class:`UnsupportedDiagramType` here. Their per-diagram leaves ship
-     in later rounds (R290+); until then the dispatch reports the type as
+     in later rounds (R291+); until then the dispatch reports the type as
      unsupported rather than running a renderer that does not exist yet.
    * The default path runs the already-migrated flowchart stack
      (``parser.parse_mermaid`` -> ``layout.compute_layout[_with_config]`` ->
@@ -102,6 +107,7 @@ from .config import parse_mermaid_frontmatter
 from .error import UnsupportedDiagramType
 from .gantt_diagram import render_gantt_diagram_to_svg
 from .info_diagram import render_info_diagram_to_svg
+from .journey_diagram import render_journey_diagram_to_svg
 from .kanban_diagram import render_kanban_diagram_to_svg
 from .layout import compute_layout, compute_layout_with_config
 from .packet_diagram import render_packet_diagram_to_svg
@@ -132,9 +138,9 @@ __all__ = [
 #: ``sankey-beta`` renderer shipped in R284, the ``gantt`` renderer shipped
 #: in R285, the ``kanban`` renderer shipped in R286, the ``timeline``
 #: renderer shipped in R287, the ``quadrantChart`` renderer shipped in
-#: R288, and the ``block-beta`` renderer shipped in R289 (their dedicated
-#: arms sit above this check); the 13 tokens below are the remaining
-#: unsupported surface.
+#: R288, the ``block-beta`` renderer shipped in R289, and the ``journey``
+#: renderer shipped in R290 (their dedicated arms sit above this check); the
+#: 12 tokens below are the remaining unsupported surface.
 #: The five ``C4*`` tokens share grok's single ``c4_diagram`` renderer
 #: (lib.rs L130-L139).
 _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
@@ -145,7 +151,6 @@ _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
         "requirementDiagram",
         "sequenceDiagram",
         "gitGraph",
-        "journey",
         "xychart-beta",
         "C4Context",
         "C4Container",
@@ -207,9 +212,10 @@ def render_mermaid_to_svg(
     emits the chronological timeline board via
     :func:`render_timeline_diagram_to_svg`; the ``quadrantChart`` renderer
     (R288) emits the four-quadrant chart via
-    :func:`render_quadrant_chart_to_svg`; the 10 remaining per-diagram
-    renderers raise :class:`UnsupportedDiagramType` until their leaves ship
-    (R289+). Mirrors grok lib.rs L36-L163.
+    :func:`render_quadrant_chart_to_svg`; the ``journey`` renderer (R290)
+    emits the user-journey map via :func:`render_journey_diagram_to_svg`; the
+    9 remaining per-diagram renderers raise :class:`UnsupportedDiagramType`
+    until their leaves ship (R291+). Mirrors grok lib.rs L36-L163.
 
     Raises:
         UnsupportedDiagramType: when the diagram-type token names a diagram
@@ -346,6 +352,19 @@ def render_mermaid_to_svg(
     # ``node_stroke`` -> the ``.node rect`` fill / stroke).
     if diagram_type == "block-beta":
         return render_block_diagram_to_svg(body, resolved_theme)
+
+    # ``journey`` (R290): the dedicated journey-map renderer. Mirrors grok
+    # lib.rs L124-L126 -- :func:`render_journey_diagram_to_svg` receives the
+    # front-matter-stripped body and lays a user-journey map out as a titled
+    # timeline of tasks grouped into sections (each task carries a 1-5
+    # satisfaction score rendered as a happy/neutral/sad face icon and the
+    # actors responsible for it). Like pie / packet / gantt / timeline,
+    # journey is NOT theme-aware -- grok hard-codes mermaid 11.12.2's default
+    # journey palette (``#333`` text + ``#FFF8DC`` faces + the
+    # ``SECTION_FILLS`` / ``SECTION_SVG_FILLS`` / ``ACTOR_COLOURS`` tables) and
+    # ignores the resolved theme.
+    if diagram_type == "journey":
+        return render_journey_diagram_to_svg(body, resolved_theme)
 
     if diagram_type in _UNSUPPORTED_DIAGRAM_TYPES:
         raise UnsupportedDiagramType(diagram_type)

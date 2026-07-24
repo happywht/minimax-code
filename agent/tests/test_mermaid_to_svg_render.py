@@ -22,7 +22,7 @@ Covers the four migrated symbols plus the module-private helper:
 
 Dispatch invariants asserted (zero-semantic clone):
 
-1. The 13 diagram-type tokens whose dedicated renderers ship in R290+ raise
+1. The 12 diagram-type tokens whose dedicated renderers ship in R291+ raise
    :class:`UnsupportedDiagramType` *before* the flowchart path runs -- this
    matches grok's per-diagram ``if`` arms (L51-L139). The ``info`` renderer
    shipped in R279, the ``stateDiagram`` / ``stateDiagram-v2`` parser shipped
@@ -31,8 +31,9 @@ Dispatch invariants asserted (zero-semantic clone):
    ``sankey-beta`` renderer shipped in R284, the ``gantt`` renderer shipped
    in R285, the ``kanban`` renderer shipped in R286, the ``timeline``
    renderer shipped in R287, the ``quadrantChart`` renderer shipped in
-   R288, and the ``block-beta`` renderer shipped in R289 (their dedicated
-   dispatch arms no longer raise); the 13 remaining tokens still do.
+   R288, the ``block-beta`` renderer shipped in R289, and the ``journey``
+   renderer shipped in R290 (their dedicated dispatch arms no longer raise);
+   the 12 remaining tokens still do.
 2. Unknown tokens (not in the unsupported set, not ``graph``/``flowchart``)
    fall through to the generic parser -- matching grok's unconditional
    ``parser::parse_mermaid`` at L150. A bare ``flowchart``/``graph`` token
@@ -171,7 +172,6 @@ def test_strip_mermaid_frontmatter_strips_yaml_block() -> None:
         "sequenceDiagram",
         "classDiagram",
         "mindmap",
-        "journey",
         "gitGraph",
         "C4Context",
         "C4Container",
@@ -183,7 +183,7 @@ def test_strip_mermaid_frontmatter_strips_yaml_block() -> None:
     ],
 )
 def test_render_mermaid_to_svg_unsupported_type_raises(diagram_type: str) -> None:
-    """Each of the 13 R290+ diagram tokens raises before the flowchart path.
+    """Each of the 12 R291+ diagram tokens raises before the flowchart path.
 
     Mirrors grok's per-diagram ``if`` arms (lib.rs L51-L139): the dedicated
     renderer is not migrated yet, so dispatch reports the type as
@@ -192,8 +192,9 @@ def test_render_mermaid_to_svg_unsupported_type_raises(diagram_type: str) -> Non
     the ``pie`` renderer (R282), the ``packet-beta`` renderer (R283), the
     ``sankey-beta`` renderer (R284), the ``gantt`` renderer (R285), the
     ``kanban`` renderer (R286), the ``timeline`` renderer (R287), the
-    ``quadrantChart`` renderer (R288), and the ``block-beta`` renderer
-    (R289) are asserted separately; none raises here. The raised
+    ``quadrantChart`` renderer (R288), the ``block-beta`` renderer
+    (R289), and the ``journey`` renderer (R290) are asserted separately;
+    none raises here. The raised
     :class:`UnsupportedDiagramType` carries the diagram-type token verbatim.
     """
     source = f"{diagram_type}\n  body"
