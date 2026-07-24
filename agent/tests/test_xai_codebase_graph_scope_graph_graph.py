@@ -667,13 +667,15 @@ def test_scope_graph_barrel_symbols_are_graph_leaf() -> None:
     assert ScopeGraphResult is graph_leaf.ScopeGraphResult
 
 
-def test_scope_graph_barrel_exports_fifteen_symbols() -> None:
-    """``scope_graph/__init__`` ``__all__`` = 12 (R305a) + 3 graph algorithms (R305b).
+def test_scope_graph_barrel_exports_sixteen_symbols() -> None:
+    """``scope_graph/__init__`` ``__all__`` = 12 (R305a) + 3 graph (R305b) + 1 index (R305c).
 
     R301 landed 7 nodes + EdgeKind + NodeKindKind (9). R305a extended with
     NodeIndex / QueryVersion / Snippet (12). R305b adds ScopeGraph / ScopeStack
     / ScopeGraphResult (15), mirroring grok ``scope_graph/mod.rs`` L11-L14 +
-    the inline ``ScopeGraphResult`` (mod.rs L20-L25).
+    the inline ``ScopeGraphResult`` (mod.rs L20-L25). R305c adds ScopeGraphIndex
+    (16) -- the cross-file symbol index aggregating per-file ScopeGraph instances
+    with interned names, alias resolution, and reverse file->symbol indexes.
     """
     from minimax_code.xai_codebase_graph import scope_graph
 
@@ -688,6 +690,7 @@ def test_scope_graph_barrel_exports_fifteen_symbols() -> None:
         "QueryVersion",
         "Reference",
         "ScopeGraph",
+        "ScopeGraphIndex",
         "ScopeGraphResult",
         "ScopeStack",
         "Snippet",
@@ -695,7 +698,7 @@ def test_scope_graph_barrel_exports_fifteen_symbols() -> None:
         "SymbolId",
     }
     assert set(scope_graph.__all__) == expected
-    assert len(scope_graph.__all__) == 15
+    assert len(scope_graph.__all__) == 16
 
 
 def test_crate_root_barrel_reexports_scope_graph_and_result() -> None:

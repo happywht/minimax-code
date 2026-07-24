@@ -341,8 +341,8 @@ def test_node_kind_frozen_hashable() -> None:
 # === barrel contract =======================================================
 
 
-def test_scope_graph_barrel_exports_fifteen_symbols() -> None:
-    """``scope_graph/__init__`` ``__all__`` = 12 (R305a) + 3 graph algorithms (R305b).
+def test_scope_graph_barrel_exports_sixteen_symbols() -> None:
+    """``scope_graph/__init__`` ``__all__`` = 12 (R305a) + 3 graph (R305b) + 1 index (R305c).
 
     R301 landed 7 nodes + EdgeKind + NodeKindKind (9). R305a extends the barrel
     with ``NodeIndex`` / ``QueryVersion`` / ``Snippet`` from ``scope_graph/graph``
@@ -350,6 +350,9 @@ def test_scope_graph_barrel_exports_fifteen_symbols() -> None:
     R305b adds the graph algorithms ``ScopeGraph`` / ``ScopeStack`` /
     ``ScopeGraphResult`` (mirrors grok ``scope_graph/mod.rs`` L11-L14 + the
     inline ``ScopeGraphResult`` at mod.rs L20-L25), bringing the surface to 15.
+    R305c adds ``ScopeGraphIndex`` from ``scope_graph/index`` (the cross-file
+    symbol index that aggregates many per-file ``ScopeGraph`` instances),
+    bringing the surface to 16.
     """
     from minimax_code.xai_codebase_graph import scope_graph
 
@@ -364,6 +367,7 @@ def test_scope_graph_barrel_exports_fifteen_symbols() -> None:
         "QueryVersion",
         "Reference",
         "ScopeGraph",
+        "ScopeGraphIndex",
         "ScopeGraphResult",
         "ScopeStack",
         "Snippet",
@@ -411,6 +415,9 @@ def test_crate_root_barrel_mirrors_scope_graph_nodes() -> None:
         "SymbolOccurrence",
     }
     assert r300_r301_symbols <= set(xcg_root.__all__)
+    # R305c lands ScopeGraphIndex at the crate root (mirrors grok lib.rs
+    # L95-L98, which re-exports ScopeGraph / ScopeGraphResult / ScopeGraphIndex).
+    assert "ScopeGraphIndex" in xcg_root.__all__
     # EdgeKind (grok lib.rs does not re-export it) + NodeKindKind (no grok
     # counterpart) stay subpackage-only -- not in the crate-root surface.
     assert "EdgeKind" not in xcg_root.__all__

@@ -36,10 +36,15 @@ drives index rebuilds.
 
 R305b lands the :class:`ScopeGraph` runtime itself (the per-file scope/def/
 ref/import graph, 22 methods) plus the :class:`ScopeGraphResult`
-``{graph, aliases}`` container. Mirrors grok ``lib.rs`` L95-L98, which
-re-exports ``ScopeGraph`` / ``ScopeGraphResult`` at the crate root alongside
-the node symbols. The ``ScopeGraphIndex`` runtime + binary ser/de, plus
-``manager/`` and ``navigation``, follow in R305c+.
+``{graph, aliases}`` container.
+
+R305c lands the :class:`ScopeGraphIndex` runtime -- the cross-file symbol
+index (~36 in-memory methods) that aggregates per-file :class:`ScopeGraph`
+instances with interned names, alias resolution, and reverse file->symbol
+indexes. Mirrors grok ``lib.rs`` L95-L98, which re-exports ``ScopeGraph`` /
+``ScopeGraphResult`` / ``ScopeGraphIndex`` at the crate root. The SGIX binary
+ser/de (R305d), the tree-sitter bridge (R305e), plus ``manager/`` and
+``navigation``, follow.
 
 The crate-root barrel mirrors grok ``lib.rs``: grok re-exports ``types``,
 ``scope_graph`` node symbols, and the ``interner`` pair at the crate root.
@@ -81,6 +86,7 @@ from minimax_code.xai_codebase_graph.scope_graph import (
     QueryVersion,
     Reference,
     ScopeGraph,
+    ScopeGraphIndex,
     ScopeGraphResult,
     Symbol,
     SymbolId,
@@ -113,6 +119,7 @@ __all__ = [
     "Range",
     "Reference",
     "ScopeGraph",
+    "ScopeGraphIndex",
     "ScopeGraphResult",
     "StringId",
     "StringInterner",
