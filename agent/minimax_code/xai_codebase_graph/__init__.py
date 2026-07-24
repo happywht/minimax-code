@@ -43,8 +43,12 @@ index (~36 in-memory methods) that aggregates per-file :class:`ScopeGraph`
 instances with interned names, alias resolution, and reverse file->symbol
 indexes. Mirrors grok ``lib.rs`` L95-L98, which re-exports ``ScopeGraph`` /
 ``ScopeGraphResult`` / ``ScopeGraphIndex`` at the crate root. The SGIX binary
-ser/de (R305d), the tree-sitter bridge (R305e), plus ``manager/`` and
-``navigation``, follow.
+ser/de (R305d) + the tree-sitter bridge (R305e) follow under ``scope_graph``.
+
+R305f lands the ``manager`` subpackage cache layer (grok ``cache.rs``): the
+8 cache symbols re-exported here (``CACHE_FILE_NAME`` / ``CacheError`` + the
+6 path / probe / load / save helpers) mirror grok ``lib.rs`` L89-L93. The
+``builder`` / ``lock`` siblings and ``navigation`` follow in later bricks.
 
 The crate-root barrel mirrors grok ``lib.rs``: grok re-exports ``types``,
 ``scope_graph`` node symbols, and the ``interner`` pair at the crate root.
@@ -67,8 +71,9 @@ discriminator, which has no grok counterpart) live under the
 YAGNI: the ``types`` layer, the ``scope_graph`` node / edge type layer, the
 ``interner`` module, and the ``scope_graph/graph.py`` pure-data foundation
 (``QueryVersion`` / ``Snippet`` / ``NodeIndex``) are public. The graph
-algorithms (``ScopeGraph`` / ``ScopeGraphIndex``), ``manager`` /
-``navigation`` modules do not exist yet -- the barrel grows as they land.
+algorithms (``ScopeGraph`` / ``ScopeGraphIndex``) and the ``manager`` cache
+subset (R305f) are public. The ``manager`` builder / lock siblings and the
+``navigation`` module do not exist yet -- the barrel grows as they land.
 """
 
 from __future__ import annotations
@@ -77,6 +82,16 @@ from minimax_code.xai_codebase_graph.interner import StringId, StringInterner
 from minimax_code.xai_codebase_graph.languages import (
     LanguageRegistry,
     TSLanguageConfig,
+)
+from minimax_code.xai_codebase_graph.manager import (
+    CACHE_FILE_NAME,
+    CacheError,
+    cache_exists,
+    cache_size,
+    get_cache_path,
+    load_index,
+    save_index,
+    save_index_async,
 )
 from minimax_code.xai_codebase_graph.scope_graph import (
     LocalDef,
@@ -128,4 +143,16 @@ __all__ = [
     "SymbolId",
     "SymbolOccurrence",
     "TSLanguageConfig",
+    # manager (R305f) -- grok lib.rs L89-L93 cache subset (8 symbols).
+    # The 4 CacheError subclasses stay manager-subpackage-only (mirrors grok,
+    # which re-exports just the ``CacheError`` enum at the crate root);
+    # ``except LegacyCacheFormat`` arms import from ``manager.cache`` directly.
+    "CACHE_FILE_NAME",
+    "CacheError",
+    "cache_exists",
+    "cache_size",
+    "get_cache_path",
+    "load_index",
+    "save_index",
+    "save_index_async",
 ]
