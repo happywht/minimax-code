@@ -20417,3 +20417,92 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R278c port xai-grok-mermaid pure.rs -> default PureRustEngine (direction (1) brick 11, behavioral-equivalent port, SVG half live + raster sentinel)`。feat 提交（11 文件）：`pure.py`（新建）+ `__init__.py`（桶扩展 23->24）+ `test_mermaid_pure.py`（新建，17 测试）+ 8 个 barrel-guard 测试同步（ast/config/error/layout/parser/svg_renderer/text_wrap/theme，11 断言 + 17 docstring）。docs 提交：`docs(platform): R278c iteration log entry`（ITERATION_LOG.md R278c 条目）。锚点链: ... -> R277(feat render dispatch + docs) -> R278a(feat subprocess + docs) -> R278b(docs YAGNI raster) -> R278c(feat pure + docs)。**方向① 第 11 砖：默认引擎 PureRustEngine 行为等价移植落地（17/17 测试 + 1 xfail 暴露预存 dagre 缺陷，全量 7928 passed），桶 23->24，下一砖 R278d mmdc.rs + default_engine() 工厂**。
+
+## R278d — 迁移 xai-grok-mermaid mmdc.rs + lib.rs default_engine()（方向① 第 12 砖，可选 mmdc CLI 引擎 MmdcEngine + crate-root 默认工厂，行为等价移植非逐行克隆，async->sync 桥接 + 栅格半段 R278b 哨兵，桶 24->27）
+
+锚点:R278d-1 <pending>
+
+### 本轮目标
+
+迁移 grok `mmdc.rs`（可选 `MmdcEngine` 主机壳层叶子——shell 出 `mmdc` CLI / headless Chromium 产出 SVG，再走共享栅格栈）+ `lib.rs` crate-root `default_engine()` 工厂（grok L197--L203，返回 `PureRustEngine` 作默认，`mmdc` 永不自动选择）。延续 R271--R278c 的"行为等价移植非逐行克隆"方法论（用户持续指示："别逐行代码的复刻，要按照功能的复刻" / "按功能进行克隆"）。
+
+### 融合结论
+
+`mmdc.py` 落地 `MmdcEngine` + `detect_mmdc`（2 公共符号，镜像 grok `lib.rs` L54 `pub use mmdc::{MmdcEngine, detect_mmdc}`）。`__init__.py` 落地 `default_engine()` crate-root 工厂（grok L197--L203）。3 个"按功能复刻"架构裁决：① grok `xai_tty_utils::pager_env` / `detach_std_command` 不移植——其功能（子进程不抢占 TTY / 不分页）已被 R278a `run_with_timeout` 的 `start_new_session=True`（setsid 等价）+ null stdio + batch file-mode 覆盖；② grok 同步 `run_with_timeout`（`std::thread::scope` 隔离阻塞 wait）vs 宿主 asyncio 协程——`MmdcEngine.render`（协议要求同步）经 `_run_async_sync` 桥接（无运行循环时 `asyncio.run`；已有循环时 worker-thread + 自有循环，镜像 grok 阻塞 wait 隔离语义）；③ 栅格半段 raise `MermaidRasterizeError`（R278b 哨兵，与 `PureRustEngine.render` 对称）。桶 24->27（+`MmdcEngine` / +`detect_mmdc` / +`default_engine`）。
+
+### 决策证据（行为等价八映射 + SubprocessError 四分支分类法 + 栅格哨兵）
+
+**证据 ① `which::which("mmdc")` -> `shutil.which`（PATH 查找）。** grok `detect_mmdc` 用 `which::which("mmdc").ok()`；Python `shutil.which("mmdc")` 是同语义的 PATH 查找，返回 `str | None`（clean "not found" 哨兵，非异常）。
+
+**证据 ② `MmdcEngine { bin, timeout }` struct + 四操作 -> 类。** grok `MmdcEngine` 持 `bin` + `timeout` 两字段，暴露 `new` / `detect` / `with_timeout` / `binary` 四操作 -> `class MmdcEngine`（`__slots__ = ("_bin", "_timeout")`）同四操作：`__init__(binary)`（grok `new`）/ `detect()` classmethod / `with_timeout(timeout)` builder（返 self，grok 消费并返 self 的链式人体工学）/ `binary` property（grok accessor）。
+
+**证据 ③ `?` + `match SubprocessError` -> `try`/`except` + `isinstance` 四分支分类法。** grok `?` 早返回 -> `try`/`except`/`raise ... from exc`。grok `match SubprocessError { ... }` -> `_map_subprocess_error` 的 isinstance 四子类分派，按宿主错误类分组：Spawn -> `MermaidUnsupportedError`（引擎不可用，非"输入坏"）/ Timeout -> `MermaidTimeoutError` / NonZeroExit -> `MermaidLayoutError`（渲染/布局失败）/ Wait -> `MermaidRasterizeError`（管线错误）+ defensive fallback（未来变体兜底 Rasterize 而非泄漏裸 `SubprocessError`，保持映射 total）。
+
+**证据 ④ `write_private` -> `os.open(O_CREAT|O_EXCL, 0o600)` / Windows `Path.write_text`。** grok Unix 分支 `OpenOptions::create_new().mode(0o600)`（原子创建 + owner-only，无 umask/chmod TOCTOU 窗）-> `_write_private` 的 `os.open(path, O_WRONLY|O_CREAT|O_EXCL, 0o600)`（父 temp dir 已 0700）；grok Windows `not(unix)` 分支 `fs::write` -> `Path.write_text`（Windows 无 Unix mode bits）。
+
+**证据 ⑤ `pager_env` / `detach_std_command` -> 不移植（R278a 已覆盖）。** grok 经 `xai_tty_utils` 注入 pager-killing env overlay + setsid/console detach。其**功能**（阻止子进程分页或抢 TTY）已被 R278a `run_with_timeout` 覆盖：`start_new_session=True`（子进程自成会话/组 leader，setsid 等价）+ 全 null stdio（stdin/stdout/stderr 均 DEVNULL）+ batch file-mode（`--input`/`--output` 路径，无交互流）+ breach 时 reap 整个进程组。**功能同一，管道已在共享 runner**；`env=None` 继承父环境。未来发现 mmdc/Chromium env foot-gun 再加一个 overlay 调用。这是"按功能复刻"的直接体现：不引入一个仅复述已有能力的符号。
+
+**证据 ⑥ grok 同步 `run_with_timeout` vs 宿主 asyncio 协程 -> `_run_async_sync` 桥接。** grok `run_with_timeout` 同步（`std::thread::scope` 隔离阻塞 wait）；宿主 `run_with_timeout` 是 asyncio 协程（本栈 Python 等价）。但 `MermaidEngine` 协议 `render` 同步（R38；`render_checked` 直接调 `engine.render`）。`_run_async_sync(coro)`：`asyncio.get_running_loop()` 成功 -> worker-thread + 自有 loop（不嵌套/不死锁，镜像 grok `thread::scope` 隔离）；`RuntimeError` -> `asyncio.run(coro)`（常见路径）。协程异常逐字传播（worker 经 box dict 回传）。
+
+**证据 ⑦ 栅格半段 = 类型化哨兵（R278b 对称）。** grok `render` 末尾 `crate::rasterize(&svg, params)`（SVG -> PNG）。栅格栈不可迁移（R278b：无纯 Python resvg/usvg/tiny-skia/fontdb 等价；无 Rust 工具链；PNG 可选）。故 `render` 跑 SVG 半段（spawn mmdc + 读回 SVG）后 raise `MermaidRasterizeError`，不伪造 PNG 字节——与 `PureRustEngine.render` 完全对称。SVG 路径每次调用都执行（raise 前先跑），故引擎非死代码。
+
+**证据 ⑧ `default_engine()` crate-root 工厂（grok `lib.rs` L197--L203）。** crate-root 函数返回 `PureRustEngine`（离线引擎）。`mmdc` 永不自动选择——调用方须显式构造 `MmdcEngine`（经 `detect()`）。每次返回新实例（无状态，可互换——R278c 值相等 + 可哈希）。spy 强契约测试钉死"`detect_mmdc` 从不被咨询"。
+
+### 交付
+
+- `agent/minimax_code/mermaid/mmdc.py`（新建，374 行）：
+
+  - **模块 docstring（行为等价移植框架）** —— 开宗明义 "behavioral-equivalent port ... NOT a line-by-line translation"，列 5 个 Rust->Python 语义映射点（which->shutil.which / struct->类 / `?`->try-except / match->isinstance / write_private->os.open）。"Function-not-line decisions" 段详述 2 个不移植依赖（`pager_env` / `detach_std_command`）+ 理由；"Async-to-sync bridge" 段 + "Raster half YAGNI sentinel" 段。引用 grok 行号作**契约参照**（非逐行翻译声明）。
+  - **`__all__ = ["MmdcEngine", "detect_mmdc"]`**（2 符号，镜像 grok `lib.rs` L54 re-export 面）。`default_engine` 在 `__init__.py`（crate root，镜像 grok lib.rs crate root）。
+  - **`DEFAULT_MMDC_TIMEOUT = 1.5`**（grok `Duration::from_millis(1500)`）。**`_IS_UNIX`** flag（grok `#[cfg(unix)]` 分支）。
+  - **`detect_mmdc() -> str | None`**：`shutil.which("mmdc")`。
+  - **`_theme_arg(theme) -> str`**：LIGHT -> "default" / DARK -> "dark"（grok `MermaidTheme::Light => "default"`）。
+  - **`_map_subprocess_error(exc) -> MermaidError`**：4 变体 isinstance 分派 + defensive fallback。
+  - **`_write_private(path, contents) -> None`**：Unix `os.open(O_CREAT|O_EXCL, 0o600)`（fdopen 成功则 fp 拥有 fd；失败则 close 裸 fd）/ Windows `Path.write_text`。
+  - **`_run_async_sync(coro)`**：无 loop -> `asyncio.run`；有 loop -> worker-thread + 自有 loop（box dict 回传 result/exc）。
+  - **`class MmdcEngine`**（`__slots__ = ("_bin", "_timeout")`）：`__init__(binary)` / `detect()` classmethod（`-> MmdcEngine | None`）/ `with_timeout(timeout) -> MmdcEngine`（返 self）/ `binary` property / `render(source, params) -> RenderedDiagram`（mkdtemp + `_write_private` 源 + cmd `[bin, --input, --output, --outputFormat svg, --theme]` + `_run_async_sync(run_with_timeout)` + 读 SVG + 栅格哨兵 + finally `rmtree`）。
+  - **`_mmdc_engine_is_send_safe()` 占位**（文档化 grok `Send + Sync` 不对称，deliberately unreachable）。
+
+- `agent/minimax_code/mermaid/__init__.py`（桶扩展 24 -> 27）：
+
+  - **导入块**：`from .mmdc import MmdcEngine, detect_mmdc`（isort 序：`.mmdc` 按字母序落位 `.engine` 与 `.pure` 之间）。
+  - **`__all__` 24 -> 27**：`# mmdc (R278d)` 分组（`MmdcEngine`, `detect_mmdc`）+ `# default_engine factory (R278d, grok lib.rs crate root L197-L203)` 分组（`default_engine`）。
+  - **`default_engine() -> PureRustEngine`**：crate-root 工厂，返 `PureRustEngine()`，mmdc 永不自动选择。
+  - **docstring 刷新**：新增 "Host wrapper leaf (R278d)" 段，描述 `MmdcEngine` 离线/CLI 引擎 + `default_engine` 工厂契约。
+
+- `agent/tests/test_mermaid_mmdc.py`（新建，294 行，22 测试）：
+
+  - **barrel surface x3**：根 barrel re-export `MmdcEngine`/`detect_mmdc`/`default_engine` 且 `len(mermaid.__all__) == 27` 且 `is` 同一性 / 模块 `__all__ == ["MmdcEngine", "detect_mmdc"]` / `DEFAULT_MMDC_TIMEOUT == 1.5`。
+  - **pure accessors/mappers x8**：`_theme_arg` light->"default" + dark->"dark" / `binary` round-trip / `with_timeout` 返 self（链式人体工学）/ `_map_subprocess_error` 4 分支（Spawn->Unsupported 含 "could not spawn mmdc" / Timeout->Timeout / NonZeroExit->Layout 含 "exited with 3" / Wait->Rasterize 含 "mmdc wait failed"）。
+  - **跨平台 e2e x2**：missing binary -> `MermaidUnsupportedError`（真实 spawn 跨平台，`match="could not spawn mmdc"`）/ `with_timeout` 值达 runner + theme flag wired（monkeypatch `fake_runner` 写 SVG，断言 `timeout == 7.5` + `--theme default` + `--outputFormat svg`，末尾 raster 哨兵）。
+  - **`detect()` classmethod x2**：mmdc 在 PATH -> engine（`binary` 钉死）/ 不在 -> `None`。
+  - **`default_engine()` 工厂 x3**：返回 `PureRustEngine` 实例 / 满足 `MermaidEngine` 协议（runtime-checkable）/ **spy 强契约**（`detect_mmdc` 从不被咨询——`calls == []`，钉死"mmdc 永不自动选择"）。
+  - **Unix-only `TestFakeMmdcUnixOnly` x4**：`make_fake_mmdc` fixture 工厂造 `#!/bin/sh` fake mmdc（`$4`=output path, `$8`=theme），驱动 4 分支：success（写合法 SVG）-> raster 哨兵 / empty（零退出无输出）-> Layout `match="no readable SVG"` / fail（`exit 3`）-> Layout `match="exited with 3"` / slow（`sleep 30`）-> Timeout（`.with_timeout(0.1)`）。Windows 跳过（无 POSIX shell）；跨平台测试全跑。
+
+- **10 个 barrel-guard 测试文件同步**（barrel 范式维护：root barrel 24->27 时同步所有历史 barrel 守卫）：
+
+  - **13 处断言** `assert len(mermaid.__all__) == 24` -> `== 27`：`test_mermaid_pure.py`(1) / `test_mermaid_subprocess.py`(1, `mermaid_barrel` 变体) / `test_mermaid_to_svg_ast.py`(1) / `config.py`(1) / `error.py`(1) / `layout.py`(3) / `parser.py`(1) / `svg_renderer.py`(2) / `text_wrap.py`(1) / `theme.py`(1) —— R278c 同步过的同组文件（23->24 时同步，本轮 24->27 再同步）。
+  - **正则负向前瞻精确同步**：needle `len\((mermaid(?:_barrel)?)\.__all__\) == 24(?!\.\d)` + repl `len($!1.__all__) == 27`——负向前瞻 `(?!\.\d)` 排除 7 处无关几何常量 `== 24.0`（SUBGRAPH_TITLE_HEIGHT / DEFAULT_TEXT_HEIGHT 等），backreference `$!1` 保留 `mermaid` vs `mermaid_barrel` 变体名。`replace_in_files` dry_run 零误伤确认 -> 应用 `expected_count=13` guard -> 13/13 成功（10 文件）。
+
+### 验证
+
+- ruff：`mmdc.py` + `__init__.py` + `test_mermaid_mmdc.py` + 10 个 barrel-guard 测试 **All checks passed**（line-length 100，select E/F/W/I/B/UP，ignore E501）。本轮修复：测试文件 I001 import 块未排序 -> `ruff check --fix` 自动决定最稳排序（工具优先，不让目视判断替代工具复检）。
+- 定向 pytest（`test_mermaid_mmdc.py`）：**18 passed, 4 skipped**（22 测试；Windows 跳过 Unix-only fake-mmdc 套件 4 测试，跨平台测试全跑）。
+- 全量 agent 回归：**7945 passed, 14 skipped, 1 xfailed, 1 failed in 112.41s**。唯一失败 `test_interval_keeps_global_timeline_across_loops`（断言 `assert period * 0.8 <= gap < period + body * 0.5` 即 `0.063 < 0.055`）是预存 flaky（asyncio.sleep 精度时序测试，period=0.04s body=0.03s 容差 ±15ms，Windows 调度抖动）—— 与 R278d 零关系（R278d 只动 mermaid 包）。**隔离证明**：单独重跑 `pytest tests/test_connection.py::test_interval_keeps_global_timeline_across_loops` -> **PASSED in 0.79s**。按迭代独立性原则不修复（不破坏迭代独立性，不修无关预存 flaky 测试）。
+- 数量对账：基线 7928+10+1=7939（R278c 全量 7928 + R278a 10 skipped + 1 xfailed）-> 本轮 7945+14+1=7960（+1 failed 预存 flaky），差值 = 新增 mmdc 测试数（barrel-guard 同步不增测试数只改断言值）。
+- CRLF 警告正常（Windows 11 文件），无害。
+
+### YAGNI 边界
+
+- **`pager_env` / `detach_std_command` 不移植** —— grok 经 `xai_tty_utils` 注入 pager-killing env + setsid/console detach。功能（子进程不分页/不抢 TTY）已被 R278a `run_with_timeout`（`start_new_session=True` + null stdio + 进程组 reap）覆盖。`env=None` 继承父环境；未来发现 env foot-gun 再加 overlay。
+- **`Send + Sync` bound 不迁移** —— grok `lib.rs` 测试 `default_engine_is_constructible_and_send_sync` 断言 `Arc<dyn MermaidEngine>: Send + Sync`。Python GIL + 引用计数使每个对象跨 GIL 平凡线程安全，无 Python 等价可断言。`_mmdc_engine_is_send_safe()` 占位函数文档化此不对称（deliberately unreachable）。
+- **栅格半段 = 类型化哨兵（延续 R278b）** —— `render()` 跑 SVG 半段后 raise `MermaidRasterizeError`，与 `PureRustEngine.render` 对称。未来 Python 栅格化器接入替换那一条 raise。
+- **`xfail(strict=True)` 暴露预存 dagre 缺陷（延续 R278c）** —— `network_simplex._exchange_edges` 对子图内链式边 `None -= 1` -> `TypeError`。待专门 dagre 边交换修复落地后翻转。
+- **修正后路线图**：
+  - **R279+** —— 19 个 per-diagram 渲染器（block/c4/class/er/gantt/gitgraph/info/journey/kanban/mindmap/packet/pie/quadrant/radar/requirement/sankey/sequence/state/timeline/xychart）。
+  - **dagre 边交换修复** —— 修复 `network_simplex._exchange_edges` 的 `None -= 1` 缺陷，使 `long_identifier` xfail 翻转。
+- **方向② xai-codebase-graph（tree-sitter 代码索引）+ 方向③ L2 自演化框架骨架接线** 均未开始（方向① 优先）。
+
+### Commit
+
+`feat(platform): R278d port xai-grok-mermaid mmdc.rs -> MmdcEngine + default_engine() factory (direction (1) brick 12, behavioral-equivalent port, optional mmdc CLI engine + barrel 24->27)`。feat 提交（13 文件）：`mmdc.py`（新建）+ `__init__.py`（桶扩展 24->27 + default_engine 工厂）+ `test_mermaid_mmdc.py`（新建，22 测试）+ 10 个 barrel-guard 测试同步（pure/subprocess/ast/config/error/layout/parser/svg_renderer/text_wrap/theme，13 断言）。docs 提交：`docs(platform): R278d iteration log entry`（ITERATION_LOG.md R278d 条目）。锚点链: ... -> R278b(docs YAGNI raster) -> R278c(f0a9df6 feat pure + c227a1e docs) -> R278d(feat mmdc + docs)。**方向① 第 12 砖：可选 mmdc CLI 引擎 + crate-root 默认工厂行为等价移植落地（18 passed + 4 skipped，全量 7945 passed，唯一失败是预存 flaky 已隔离），桶 24->27，下一砖 R279+ per-diagram 渲染器**。
