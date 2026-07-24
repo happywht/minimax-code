@@ -56,7 +56,17 @@ the ``IndexError`` enum. The 3 :class:`IndexBuildError` subclasses
 (:class:`IndexWalkError` / :class:`IndexThreadPanic` / :class:`IndexIOError`)
 stay ``manager``-subpackage-only (mirrors the cache design: grok's single
 enum sits at the crate root, the distinguishable failure modes live one
-layer down). The ``lock`` sibling and ``navigation`` follow in later bricks.
+layer down). The ``navigation`` module follows in a later brick.
+
+R305h adds the ``manager`` lock sibling (grok ``lock.rs``): the workspace-
+level locking runtime (in-memory same-process dedup + cross-process lock
+files + stale detection). All 5 lock symbols (:class:`IndexOperation` /
+:class:`LockResult` / :class:`WorkspaceLockGuard` / :func:`is_operation_in_progress`
+/ :func:`try_lock`) are re-exported at the crate root, mirroring grok
+``lib.rs`` L89-L93 re-exporting the same five verbatim. Unlike cache /
+builder, lock exposes no enum-variant subclasses, so nothing stays
+``manager``-subpackage-only -- the crate-root surface is byte-identical to
+grok's.
 
 The crate-root barrel mirrors grok ``lib.rs``: grok re-exports ``types``,
 ``scope_graph`` node symbols, and the ``interner`` pair at the crate root.
@@ -96,12 +106,17 @@ from minimax_code.xai_codebase_graph.manager import (
     CacheError,
     IndexBuilder,
     IndexBuildError,
+    IndexOperation,
+    LockResult,
+    WorkspaceLockGuard,
     cache_exists,
     cache_size,
     get_cache_path,
+    is_operation_in_progress,
     load_index,
     save_index,
     save_index_async,
+    try_lock,
 )
 from minimax_code.xai_codebase_graph.scope_graph import (
     LocalDef,
@@ -171,4 +186,12 @@ __all__ = [
     # enum equivalent); the 3 subclasses stay manager-subpackage-only.
     "IndexBuildError",
     "IndexBuilder",
+    # manager (R305h) -- grok lib.rs L89-L93 re-exports the 5 lock symbols
+    # verbatim. No enum-variant subclasses exist for lock, so the crate-root
+    # surface matches grok's exactly (nothing stays subpackage-only).
+    "IndexOperation",
+    "LockResult",
+    "WorkspaceLockGuard",
+    "is_operation_in_progress",
+    "try_lock",
 ]

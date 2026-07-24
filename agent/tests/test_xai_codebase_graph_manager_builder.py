@@ -509,14 +509,16 @@ def test_build_wraps_worker_exception_as_thread_panic(
 # === barrel contract =======================================================
 
 
-def test_manager_barrel_exports_seventeen_symbols() -> None:
-    """``manager/__init__`` ``__all__`` = 12 cache + 5 builder = 17.
+def test_manager_barrel_exports_twenty_two_symbols() -> None:
+    """``manager/__init__`` ``__all__`` = 12 cache + 5 builder + 5 lock = 22.
 
-    grok ``manager/mod.rs`` re-exports 8 cache + 3 builder symbols (the 3rd is
-    ``type Result<T> = Result<T, IndexError>``, no Python equivalent). The
-    Python port additionally re-exports the cache (4) + builder (3) subclasses
-    so the subclass-per-variant clone keeps every distinguishable failure mode
-    reachable at the package surface for ``except`` arms.
+    grok ``manager/mod.rs`` re-exports 8 cache + 3 builder + 5 lock symbols
+    (the builder 3rd is ``type Result<T> = Result<T, IndexError>``, no Python
+    equivalent). The Python port additionally re-exports the cache (4) +
+    builder (3) subclasses so the subclass-per-variant clone keeps every
+    distinguishable failure mode reachable at the package surface for ``except``
+    arms. The lock surface is identical to grok's: 5 symbols, no enum-variant
+    subclasses to hoist (R305h added these).
     """
     from minimax_code.xai_codebase_graph import manager
 
@@ -540,9 +542,15 @@ def test_manager_barrel_exports_seventeen_symbols() -> None:
         "IndexIOError",
         "IndexThreadPanic",
         "IndexWalkError",
+        # lock (R305h) -- 5 (mirrors grok mod.rs verbatim).
+        "IndexOperation",
+        "LockResult",
+        "WorkspaceLockGuard",
+        "is_operation_in_progress",
+        "try_lock",
     }
     assert set(manager.__all__) == expected
-    assert len(manager.__all__) == 17
+    assert len(manager.__all__) == 22
 
 
 def test_crate_root_exports_builder_and_base() -> None:
