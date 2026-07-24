@@ -127,6 +127,7 @@ from 15 to 18. ``first_diagram_type_token`` stays module-private (grok's
 from __future__ import annotations
 
 from .block_diagram import render_block_diagram_to_svg
+from .class_diagram import render_class_diagram_to_svg
 from .config import parse_mermaid_frontmatter
 from .er_diagram import render_er_diagram_to_svg
 from .error import UnsupportedDiagramType
@@ -170,14 +171,14 @@ __all__ = [
 #: R288, the ``block-beta`` renderer shipped in R289, the ``journey``
 #: renderer shipped in R290, the ``gitGraph`` renderer shipped in R291, the
 #: ``mindmap`` renderer shipped in R292, the ``xychart-beta`` renderer shipped
-#: in R293, the ``requirementDiagram`` renderer shipped in R294, and the
-#: ``erDiagram`` renderer shipped in R295 (their dedicated arms sit above this
-#: check); the 7 tokens below are the remaining unsupported surface.
+#: in R293, the ``requirementDiagram`` renderer shipped in R294, the
+#: ``erDiagram`` renderer shipped in R295, and the ``classDiagram`` renderer
+#: shipped in R296 (their dedicated arms sit above this check); the 6 tokens
+#: below are the remaining unsupported surface.
 #: The five ``C4*`` tokens share grok's single ``c4_diagram`` renderer
 #: (lib.rs L130-L139).
 _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
     {
-        "classDiagram",
         "sequenceDiagram",
         "C4Context",
         "C4Container",
@@ -466,6 +467,23 @@ def render_mermaid_to_svg(
     # -> entityBox fill, ``node_stroke`` -> entityBox stroke + divider lines.
     if diagram_type == "erDiagram":
         return render_er_diagram_to_svg(body, resolved_theme)
+
+    # ``classDiagram`` (R296): the dedicated UML class-diagram renderer.
+    # Mirrors grok lib.rs L51-L60 -- :func:`render_class_diagram_to_svg`
+    # receives the front-matter-stripped body and parses class boxes
+    # (name + optional ``<<stereotype>>`` + attribute/method member partitions)
+    # + binary relationships annotated with one of eight UML relation operators,
+    # hands the nodes + edges to the dagre layout engine (``compound: false``),
+    # and emits a theme-aware SVG whose nodes carry the title / attribute-
+    # divider / method-divider three-band layout and whose edges carry the
+    # classic UML markers (extension / composition / aggregation / dependency
+    # x Start/End). It is the THIRD per-diagram renderer to consume dagre
+    # (phase 3 of direction (1)); classDiagram is theme-aware (4 channels):
+    # ``node_fill`` -> node rect fill, ``node_stroke`` -> border + divider
+    # lines, ``edge_color`` -> marker strokes + relation path stroke,
+    # ``text_color`` -> CSS fill + every label fill.
+    if diagram_type == "classDiagram":
+        return render_class_diagram_to_svg(body, resolved_theme)
 
     if diagram_type in _UNSUPPORTED_DIAGRAM_TYPES:
         raise UnsupportedDiagramType(diagram_type)
