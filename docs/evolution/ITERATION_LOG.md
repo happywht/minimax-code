@@ -20757,3 +20757,97 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R281 port radar diagram renderer`（`a0f2557`，4 文件，+854/-18）。feat 提交：`radar_diagram.py`（新建，~430 行）+ `render.py`（dispatch radar arm + `_UNSUPPORTED_DIAGRAM_TYPES` 22->21 + 导入 + docstring）+ `test_mermaid_to_svg_radar_diagram.py`（新建，~332 行，28 测试）+ `test_mermaid_to_svg_render.py`（21 token parametrize + docstring）。docs 提交：`docs(platform): R281 iteration log entry`（ITERATION_LOG.md R281 条目）。锚点链: ... -> R279(feat info_diagram + docs) -> R280(98a0c2e feat state_diagram + docs) -> R281(a0f2557 feat radar_diagram + docs)。**方向① 第 14 砖：第三个 per-diagram 叶子 + 第二个自包含 SVG 发射器 radar/spider 极坐标几何图行为等价移植落地（73 passed，全量 1293 passed，桶不变 dispatch-only），下一砖 R282 pie（309 行）**。
+
+## R282 — 迁移 grok pie_diagram.rs → render_pie_diagram_to_svg（方向① 第 15 砖，第四个 per-diagram 叶子 + 第三个自包含 SVG 发射器，pie/donut d3.pie 极坐标扇形图，行为等价移植非逐行克隆，dispatch body contract lift 修正 R279/R281 移植保真度，桶不变 dispatch-only reach）
+
+锚点:R282-1 <pending>
+
+### 本轮目标
+
+迁移 grok `pie_diagram.rs`（309 行——第四个 per-diagram 叶子，第三个 per-diagram **渲染器**（自包含 SVG 发射器，同 R279 info / R281 radar；异于 R280 state 解析器复用 dagre 栈）。pie/donut 图：N 个标注切片从 12 点钟方向顺时针扫成彩色扇形，每个扇形带内嵌 `pct%` 标签 + 右侧图例，固定 `450×450` 画布外加动态图例宽度）→ Python `render_pie_diagram_to_svg`，并在 `render.py` dispatch 接入 pie arm。方向① 第 15 砖。延续 R271--R281 的"行为等价移植非逐行克隆"方法论（用户持续指示："别逐行代码的复刻，要按照功能的复刻" / "按功能进行克隆"）。
+
+**附加修正**：本轮重读 grok `lib.rs` L47 `let mermaid_source = parsed_source.body.as_ref();` 发现——grok 在 `render_mermaid_to_svg` 函数作用域内将 `mermaid_source` **局部 shadow** 为 front-matter 剥离后的 `body`，所有 per-diagram 分发分支（info/radar/pie）传的都是 shadow 后的 body 而非原始 source。R279/R281 此前误传 raw source（移植不忠实），R282 统一三 arm 传 `body`，纠正移植保真度。
+
+### 融合结论
+
+`pie_diagram.py` 落地 `render_pie_diagram_to_svg`（1 公共符号，grok `pub fn`）。`render.py` dispatch 新增 pie arm（位于 R281 radar arm 之后、`_UNSUPPORTED_DIAGRAM_TYPES` 检查之前），并**同时修正 info（R279）/ radar（R281）两 arm 传参**——三 arm 统一传 front-matter-stripped `body`（镜像 grok lib.rs L47 shadow），而非此前误传的 raw source。**桶不变**：pie_diagram 是 dispatch-only reach，不进 to_svg barrel（镜像 grok crate root 从不 re-export `pie_diagram` 符号——`lib.rs` L70-L72 仅经 dispatch arm 调用）。`_UNSUPPORTED_DIAGRAM_TYPES` 21 -> 20 token（移除 `pie`）。7 个"按功能复刻"架构裁决：① d3.pie 降序+>=1% 过滤（grok 过滤 `value/total*100 < 1.0` 的切片 + 按值降序排序；图例仍迭代未过滤的原始插入序列）；② Rust `round() as i64` 舍入桥接（grok `(pct).round() as i64` 从零舍入；Python `round()` 银行家舍入发散，故 `int(math.floor(x + 0.5))` 模拟，12.5→13 边界锁定）；③ Rust `Display` 浮点桥接 `_fmt`（同 R281：整数浮点丢 `.0`）；④ 字节长度图例宽度估计（grok `format!(...).len()` 是 Rust 字节计数；Python `len(text.encode("utf-8"))` 忠实镜像）；⑤ escape_xml `&apos;` 变体（grok `pie_diagram.rs` 用 `&apos;` 命名实体，异于 `radar_diagram.rs` 的 `&#39;` 数值——两 Rust 源文件不一致，port 各自忠实克隆）；⑥ 循环变量 `piece`（grok 用 `slice`；Python `slice` 是内置，故循环变量改名 `piece` 避免覆盖）；⑦ dispatch body contract lift（grok lib.rs L47 shadow 修正）。
+
+### 决策证据（行为等价七映射 + d3.pie 降序过滤 + round 桥接 + escape_xml 发散 + L47 body-shadow 修正）
+
+**证据 ① d3.pie 降序 + >=1% 过滤（grok L51-L57）。** grok `render` 先算 `total: f64 = slices.iter().map(|s| s.value).sum()`，`total <= 0.0` 则 `Err(ParseError{line:1, msg:"Pie diagram total must be > 0"})`；随后 `let filtered: Vec<&Slice> = slices.iter().filter(|s| s.value / total * 100.0 >= 1.0).collect()` 再 `.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap())` 降序。-> Python `total = sum(s.value for s in chart.slices)`，`if total <= 0.0: raise ParseError(1, "Pie diagram total must be > 0")`，`filtered = sorted((s for s in chart.slices if s.value / total * 100.0 >= 1.0), key=lambda s: s.value, reverse=True)`。**图例不共享过滤**：grok L156-L199 图例迭代原始 `chart.slices`（插入序列，未过滤、未排序），故被过滤的 <1% 切片仍出现在图例——port 忠实镜像（图例循环用 `chart.slices`，扇形循环用 `filtered`）。测试 `test_render_pie_filters_below_one_percent_slices`（`"Big":100, "Tiny":1`，total=101，Tiny≈0.99%<1% 被过滤 -> 仅 1 个 `pieCircle` 扇形，但 "Tiny" 仍在图例）锁定此分裂契约。
+
+**证据 ② Rust `round() as i64` 舍入桥接（grok L114）。** grok 每扇形内嵌百分比标签 `let pct = (slice.value / total * 100.0).round() as i64;` -> `format!("{}%", pct)`。Rust `f64::round()` 是**从零舍入**（half-away-from-zero）：`12.5_f64.round() == 13.0`。Python 内建 `round()` 是**银行家舍入**（half-to-even）：`round(12.5) == 12`——发散！若直接用 `round()` 则 12.5% 渲染成 `12%` 而 grok 是 `13%`，SVG byte 不一致。故 `pct = int(math.floor(value / total * 100.0 + 0.5))` 模拟 Rust 从零舍入（对正数 pct 总是非负，`floor(x+0.5)` 等价 half-away-from-zero）。测试 `test_render_pie_percentage_rounds_half_away_from_zero`（`"A":1, "B":7`，total=8，A=12.5% -> 断言 `">13%</text>"`）锁定边界——这正是 Python 银行家舍入会给 12 的发散点。
+
+**证据 ③ Rust `Display` 浮点桥接 `_fmt`（grok 多处 `format!("{}", f64)`，同 R281）。** grok 饼图几何坐标（圆心 `PIE_WIDTH/2, PIE_HEIGHT/2` = `(225.0, 225.0)`、半径 `185.0`、扇形端点极坐标）+ 图例 `showData` 的 `[value]` 后缀经 `format!("{}", f64)` 发射。**关键发散**：Rust `Display` for `386.0_f64` 渲染 `"386"`（整数浮点丢弃尾随 `.0`）；Python `str(386.0)` 渲染 `'386.0'`——若直接 `str()` 则 `showData` 图例标签出现 `386.0` 而 grok 是 `386`。故 `_fmt(value)`（同 R281 helper）：`if value == int(value): return str(int(value))` 否则 `return repr(value)`。测试 `test_fmt_integer_valued_float_drops_trailing_dot_zero`（`_fmt(450.0)=="450"` / `_fmt(0.0)=="0"`）+ `test_render_pie_show_data_appends_value_to_legend`（`showData` + `"A":50` -> 图例含 `A [50]`，非 `A [50.0]`）锁定桥接。
+
+**证据 ④ 字节长度图例宽度估计（grok L159-L165）。** grok 估算图例标签宽度用 `format!("{}{}", label, suffix).len()`——Rust `String::len()` 是**字节计数**（UTF-8 编码字节数），不是字符数。对 ASCII 标签字节==字符数，但对非 ASCII（如中文 `宠物` = 6 字节）发散。-> Python `len(text.encode("utf-8"))` 忠实镜像字节计数（非 `len(text)` 字符数）。图例块宽度 = 饼图固定宽 `450` + 动态 `legend_width`，决定最终 SVG viewBox 宽度。这是"按功能复刻"对 Rust 字节语义的诚实镜像——不简化为字符数。
+
+**证据 ⑤ escape_xml `&apos;` 变体（grok L303-L309）。** grok `pie_diagram.rs` 的 `escape_xml`：`'` -> `&apos;`（XML 命名实体）。**与 `radar_diagram.rs` L275-L281 的 `&#39;`（数值字符引用）不一致**——两 Rust 源文件对同一字符用了不同转义形式。port 各自忠实克隆：`pie_diagram._escape_xml` 用 `&apos;`，`radar_diagram._escape_xml` 用 `&#39;`，两 helper 独立定义（非共享）。测试 `test_escape_xml_replaces_all_five_significant_chars`（`_escape_xml("a&b<c>d\"e'f") == "a&amp;b&lt;c&gt;d&quot;e&apos;f"`）锁定 `&apos;` 变体。这是"按功能复刻"对 grok 源内不一致的诚实镜像——不"统一"两文件的转义形式。
+
+**证据 ⑥ 循环变量 `piece`（grok 用 `slice`，Python 内置冲突）。** grok `for slice in filtered.iter()` 用 `slice` 作循环变量；Python `slice` 是**内置类型**（切片对象构造器），若循环变量同名 `slice` 则在该作用域覆盖内置。port 改名 `piece`（扇形/切片同义），避免内置覆盖——地道 Python，行为不变（仅标识符重命名，控制流等价）。这是"按功能复刻"的命名适配——保留语义，适配目标语言生态。
+
+**证据 ⑦ dispatch body contract lift（grok lib.rs L47 shadow 修正）。** grok `render_mermaid_to_svg` 主体：L42 `let parsed_source = parse_mermaid_frontmatter(mermaid_source);` 解析 front-matter；**L47 `let mermaid_source = parsed_source.body.as_ref();`** 在函数作用域内将 `mermaid_source` **局部 shadow** 为剥离 front-matter 后的 `body`！此后所有 per-diagram 分发分支（L70 `pie` / L82 `info` / L94 `radar-beta`）传的 `mermaid_source` 实参都是 shadow 后的 body，非函数入参的原始 source。R279/R281 此前移植误读此 shadow，传了 raw `mermaid_source`（函数入参）——对无 front-matter 的源 body==source 故测试未暴露，但带 `---` front-matter 的源会误传。R282 统一三 arm 传 `body`（`parsed_source.body`），修正移植保真度。`render.py` 三 arm 现均 `return render_X_diagram_to_svg(body, resolved_theme)`；测试 `test_render_mermaid_to_svg_pie_strips_frontmatter_before_dispatch`（`---title:Demo---` front-matter + pie body -> 正常渲染 `pieOuterCircle`）锁定 body-shadow 契约。这是"按功能复刻"对 grok shadow 语义的忠实还原——之前误读不是 grok 的错，是移植方的疏漏，R282 纠正。
+
+### 交付
+
+- `agent/minimax_code/mermaid/to_svg/pie_diagram.py`（新建，433 行）：
+
+  - **模块 docstring（行为等价移植框架）** —— 开宗明义 "behavioral-equivalent port ... NOT a line-by-line translation"，区分本砖（自包含 SVG 发射器，同 R279 info / R281 radar）vs R280（解析器复用 dagre 栈）。d3.pie 降序+>=1% 过滤段 + round 舍入桥接段 + escape_xml `&apos;` 变体段 + dispatch body contract lift 段（grok L47 shadow）。引用 grok 行号作**契约参照**。
+  - **`__all__ = ["render_pie_diagram_to_svg"]`**（1 符号，grok `pub fn`）。6 helper + 2 dataclass 模块私有/内部；不进 to_svg barrel（dispatch-only reach）。
+  - **常量**：`MERMAID_PIE_COLORS`（12 色元组，grok L9-L22：`#ECECFF` / `#ffffde` + 10 个 hsl 字面量）/ `PIE_HEIGHT = PIE_WIDTH = 450.0` / `MARGIN = 40.0` / `RADIUS = 185.0`（= 450/2 - 40）/ `OUTER_STROKE_WIDTH = 2.0` / `OUTER_RADIUS = 186.0`（= RADIUS + 1）/ `TEXT_POSITION = 0.75`（百分比标签在半径 0.75 处）/ `LEGEND_RECT_SIZE = 18.0` / `LEGEND_SPACING = 4.0` / `FONT_FAMILY`。
+  - **`@dataclass(frozen=True) PieSlice` / `PieChart`**（grok struct 不可变值类型，`title: str | None` / `show_data: bool` / `slices: list[PieSlice]`）。
+  - **`_fmt(value) -> str`**：Display 浮点桥接（同 R281）。
+  - **`_escape_xml(s) -> str`**：5 个 XML 显著字符实体化（`&` -> `&amp;` 先于其他），`'` -> `&apos;`（pie 变体）。
+  - **`_polar(cx, cy, r, angle) -> tuple[float, float]`**：极坐标→笛卡尔（`cx + r*cos(angle)`, `cy + r*sin(angle)`，grok L299-L301）。
+  - **`parse_pie_diagram(source) -> PieChart`**：头部扫描（跳空行/注释，首 token 须 `pie`，可选 `showData`）+ `title <text>` 标题行 + `"<label>" : <value>` / `<label> : <value>` 切片行（双引号剥离、float 解析、B904 异常链）。无切片抛 `ParseError(1, "Pie diagram requires at least one slice")`。
+  - **`render_pie_diagram_to_svg(mermaid_source, theme) -> str`**：parse -> total>0 守卫 -> >=1% 过滤 + 降序排序 -> 角度从 `-π/2` 起（12 点钟）顺时针累加 -> `A r,r 0,large_arc,1,...` 圆弧扇形路径（循环变量 `piece`）-> 内嵌 `>pct%</text>` 百分比标签（0.75 半径处）-> 12 色调色板循环 + 右侧图例（字节宽度估计）-> SVG 字符串。
+
+- `agent/minimax_code/mermaid/to_svg/render.py`（修改）：
+
+  - **导入块**：`from .pie_diagram import render_pie_diagram_to_svg`（isort 序：`.pie_diagram` 按字母序落位 `.parser` 之前）。
+  - **dispatch arm**（radar arm 之后、unsupported 检查之前）：`if diagram_type == "pie": return render_pie_diagram_to_svg(body, resolved_theme)`——传 front-matter-stripped `body`（R282 body-shadow 修正）。
+  - **R279/R281 arm 修正**：info arm + radar arm 现均传 `body`（非 raw `mermaid_source`），注释详述 grok lib.rs L47 shadow 语义。
+  - **`_UNSUPPORTED_DIAGRAM_TYPES` 21 -> 20 token**（移除 `pie`）。注释刷新 R282 语义（info / state / radar / pie 四 arm 已 ship；20 token 仍 raise）。
+  - **docstring 刷新**：dispatch model 段新增 "pie 专属 arm" 描述 + R282 标注 + body-shadow 契约说明。
+
+- `agent/tests/test_mermaid_to_svg_pie_diagram.py`（新建，428 行，37 测试）：
+
+  - **dispatch 冒烟 x3**（grok lib.rs `test_simple_pie_diagram` L649-L662）：`pie` + title + 三切片（Dogs/Cats/Rats）端到端渲染 `<svg>...</svg>` / 不再抛 `UnsupportedDiagramType`（R277 曾在 unsupported 集，R282 提升为专属 arm）/ 直接调 renderer 返回 `pieOuterCircle` + `pieTitleText` + `legend`。
+  - **头部识别 x4**：跳空行/注释 / 非 pie 首 token 抛 `ParseError`（line 1）/ 错误首 token 带该行号 / 全空体抛 `ParseError`（line 1）。
+  - **showData + title x4**：`showData` token 置 flag / 无 `showData` flag False / `title` 行设标题 / 无标题 None。
+  - **切片语法 x4**：引号标签剥离 / 无引号接受 / 多切片保持插入序 / 浮点值。
+  - **切片错误 x3**：无 `:` 抛 `Invalid pie slice` / 非数值抛 `Invalid pie value` / 无切片抛 line 1。
+  - **总正数性 x1**：total=0 抛 `Pie diagram total must be > 0`（line 1）。
+  - **>=1% 过滤 + 百分比舍入 x4**：`"Big":100,"Tiny":1` 过滤（1 扇形 + Tiny 仍在图例）/ 三切片各一扇形 / `12.5%` -> `13%`（round 从零舍入边界锁定）/ 三百分比标签齐全。
+  - **showData 图例后缀 x2**：`showData` + `"A":50` -> 图例 `A [50]`（非 `50.0`）/ title XML 转义。
+  - **escape_xml x2**：5 字符全实体化（`&apos;` 变体）/ `&` 不双重转义。
+  - **`_fmt` / `_polar` / 调色板 x5**：整数浮点丢 `.0` / 非整数 repr / `_polar` 极坐标（angle=0 -> `(cx+r,cy)` / angle=π/2 -> `(cx,cy+r)`）/ 12 色调色板 / 前两色 `#ECECFF` / `#ffffde`。
+  - **模块/barrel/dataclass 表面 x3**：`__all__ == ["render_pie_diagram_to_svg"]` / 不在 to_svg barrel（dispatch-only reach，桶 18 不变）/ 冻结 dataclass 赋值抛 `FrozenInstanceError`。
+  - **front-matter dispatch x1**：`---title:Demo---` + pie body -> 正常渲染（body-shadow 契约锁定）。
+
+- `agent/tests/test_mermaid_to_svg_render.py`（修改）：
+
+  - **20 token parametrize**（移除 `pie`）：unsupported 集合从 21 -> 20 token。注释刷新 R282 语义。
+  - **docstring 更新**：dispatch invariants 段说明 info（R279）+ state（R280）+ radar（R281）+ pie（R282）四 renderer/parser 已 ship，20 token 仍 raise；barrel `__all__` 15->18 断言不变（R282 不动 barrel）。
+
+### 验证
+
+- ruff：`pie_diagram.py` + `render.py` + `test_mermaid_to_svg_pie_diagram.py` + `test_mermaid_to_svg_render.py` **All checks passed**（line-length 100，select E/F/W/I/B/UP，ignore E501）。CRLF 警告正常（Windows 11），无害。
+- 定向 pytest（pie_diagram + render 测试）：**80 passed**（37 新 pie_diagram 测试 + 43 现有 render 测试用例）。
+- 全量回归（`tests/`）：**8046 passed, 14 skipped, 1 xfailed, 1 failed in 113.98s**。唯一 failed 是 `tests/test_connection.py::test_interval_keeps_global_timeline_across_loops`——**与 R282 零关系**的计时不稳定测试（asyncio.sleep(0.03) 实际睡 0.0309999s，略低于 0.032 阈值断言；OS 调度精度抖动，非确定性失败，隔离重跑仍失败于同一 0.0001s 差距）。属 connection.py interval 调度子系统，非 mermaid to_svg 包；按"不破坏迭代独立性 / 不修复无关预存 flaky"原则追踪为预存不相关，不阻塞 R282 提交。1 xfailed 是 R278c 暴露的预存 dagre 缺陷（`network_simplex._exchange_edges` 对子图内链式边 `None -= 1` -> `TypeError`，`long_identifier` xfail(strict=True)）。变更领域（mermaid/to_svg/）内所有测试通过。
+
+### YAGNI 边界
+
+- **d3.pie 图例不共享过滤不"统一"** —— grok 图例迭代原始 `chart.slices`（未过滤、插入序），扇形迭代 `filtered`（>=1% 过滤、降序）。port 忠实镜像此分裂（图例用 `chart.slices`，扇形用 `filtered`），测试 `test_render_pie_filters_below_one_percent_slices` 锁定。<1% 切片无扇形但仍在图例——这是"按功能复刻"对 grok 双循环差异的诚实镜像。
+- **escape_xml `&apos;` vs `&#39;` 不"统一"** —— grok `pie_diagram.rs` 用 `&apos;`、`radar_diagram.rs` 用 `&#39;`，两源不一致。port 各自忠实克隆独立 helper，不统一为一个。这是"按功能复刻"对 grok 源内不一致的诚实镜像。
+- **dispatch body-shadow lift 是保真度修正非新功能** —— R279/R281 误传 raw source 是移植疏漏（对无 front-matter 源 body==source 故未暴露）；R282 统一传 body 还原 grok lib.rs L47 shadow 语义。三 arm 测试均新增 front-matter 变体锁定 body-shadow 契约。这是"按功能复刻"的自我纠偏。
+- **`xfail(strict=True)` 暴露预存 dagre 缺陷（延续 R278c/R278d/R279/R280/R281）** —— `network_simplex._exchange_edges` 的 `None -= 1` 缺陷待专门 dagre 边交换修复落地后翻转。
+- **桶不变（dispatch-only reach）** —— pie_diagram 不进 to_svg barrel（镜像 grok crate root 从不 re-export）。桶 `__all__` 仍 18（R277 基线）；pie 符号仅经 `render.py` dispatch arm 到达。**无 barrel-guard 测试同步**（对比 R278d 的 10 文件 13 断言同步——本轮桶不变，零同步开销）。
+- **修正后路线图**：
+  - **R283+** —— 15 个余下 per-diagram 渲染器（按 grok 源行数升序：packet 331 / sankey 436 / gantt 437 / kanban 506 / timeline 513 / quadrant 540 / block 547 / journey 563 / gitgraph 576 / mindmap 670 / xychart 867 / requirement 874 / er 936 / class 1144 / c4 1201 / sequence 1326），按复杂度递增逐砖推进。pie（本砖）是第三个自包含 SVG 发射器（同 R279 info / R281 radar 模式）；下一砖 packet-beta（331 行）是最简余下独立渲染器。
+  - **dagre 边交换修复** —— 修复 `network_simplex._exchange_edges` 的 `None -= 1` 缺陷，使 `long_identifier` xfail 翻转。
+- **方向② xai-codebase-graph（tree-sitter 代码索引）+ 方向③ L2 自演化框架骨架接线** 均未开始（方向① 优先）。
+
+### Commit
+
+`feat(platform): R282 migrate pie_diagram renderer + dispatch body contract`（`dbf32ca`，4 文件，+906/-28）。feat 提交：`pie_diagram.py`（新建，433 行）+ `render.py`（dispatch pie arm + R279/R281 arm body-shadow 修正 + `_UNSUPPORTED_DIAGRAM_TYPES` 21->20 + 导入 + docstring）+ `test_mermaid_to_svg_pie_diagram.py`（新建，428 行，37 测试）+ `test_mermaid_to_svg_render.py`（20 token parametrize + docstring）。docs 提交：`docs(platform): R282 iteration log entry`（ITERATION_LOG.md R282 条目）。锚点链: ... -> R280(98a0c2e feat state_diagram + docs) -> R281(a0f2557 feat radar_diagram + docs) -> R282(dbf32ca feat pie_diagram + docs)。**方向① 第 15 砖：第四个 per-diagram 叶子 + 第三个自包含 SVG 发射器 pie/donut d3.pie 极坐标扇形图行为等价移植落地（80 passed，全量 8046 passed/1 无关 flaky，桶不变 dispatch-only），dispatch body contract lift 修正 R279/R281 移植保真度，下一砖 R283+ packet-beta（331 行）**。
