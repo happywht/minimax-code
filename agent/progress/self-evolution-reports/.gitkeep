@@ -1,0 +1,5 @@
+# Placeholder so the self-evolution report directory is tracked by git.
+# Daily trajectory snapshots (<date>.md) are written here at collection
+# time by the self-evolution Layer 2 collector (R309); they are output,
+# not source, but keeping the directory present means a fresh clone can
+# write the first report without a missing-parent error.

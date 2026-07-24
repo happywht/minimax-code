@@ -38,18 +38,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 import uuid
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from ..storage.dao._base import now_iso
 from ..storage.dao.scheduled_jobs import ScheduledJobsDAO
 from ..storage.dao.sessions import SessionsDAO
 from ..storage.dao.tasks import TasksDAO
 from ..storage.db import AsyncDatabase
-from ..storage.dao._base import now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -330,7 +332,7 @@ class JobScheduler:
                 progress=10,
                 started_at=started_at,
             )
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive
             logger.exception("failed to insert running task row for %s", job_id)
             return
 
@@ -521,11 +523,46 @@ _SCHEDULER: JobScheduler | None = None
 _SCHEDULER_LOCK = asyncio.Lock()
 
 
+def _build_default_payload_runner() -> PayloadFn | None:
+    """Build the default payload runner — the self-evolution dispatcher (R309).
+
+    Returns ``None`` on any import or construction failure so
+    :func:`get_scheduler` falls back to the scheduler's built-in
+    ``_noop_runner`` and stays fully functional (fail-open, same posture
+    as the rest of the boot path).
+
+    The dispatcher is an echo for payloads without ``self_evolution:
+    True`` — identical to ``_noop_runner``'s return shape — so wiring it
+    in front of every scheduled job preserves the existing
+    ``schedule.*`` zero-effect contract. Only the opt-in row installed
+    by ``python -m minimax_code.agent.self_evolution --install``
+    actually triggers a trajectory collection.
+
+    The import is deferred (function-local) to avoid a load-time cycle:
+    ``self_evolution.payload`` imports :data:`PayloadFn` from this module
+    at its own load time, so we must not import it at *ours*.
+    """
+    try:
+        from ..agent.self_evolution import build_payload_runner
+
+        return build_payload_runner(os.getcwd())
+    except Exception:
+        logger.debug(
+            "self-evolution dispatcher unavailable; scheduler falls "
+            "back to noop runner",
+            exc_info=True,
+        )
+        return None
+
+
 async def get_scheduler(db: AsyncDatabase | None = None) -> JobScheduler:
     """Return the process-wide :class:`JobScheduler`, building it lazily.
 
     The first caller passes an open :class:`AsyncDatabase`; subsequent
-    callers ignore the argument and return the cached instance.
+    callers ignore the argument and return the cached instance. The
+    scheduler is built with the self-evolution dispatcher as its payload
+    runner (R309) — fail-open to the noop runner if that package is
+    unavailable.
     """
     global _SCHEDULER
     if _SCHEDULER is not None:
@@ -538,7 +575,7 @@ async def get_scheduler(db: AsyncDatabase | None = None) -> JobScheduler:
                 "get_scheduler() called before scheduler was built "
                 "(no AsyncDatabase provided)"
             )
-        sched = JobScheduler(db)
+        sched = JobScheduler(db, payload_runner=_build_default_payload_runner())
         await sched.start()
         _SCHEDULER = sched
         return sched
