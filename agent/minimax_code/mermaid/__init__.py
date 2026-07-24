@@ -46,9 +46,14 @@ What is here vs deferred
   :class:`MermaidRasterizeError` stays in the taxonomy so a future wiring
   round that adopts a Python rasterizer surfaces failures through the same
   error class.
-* **Host wrapper leaves remaining (R278c/d)**: ``pure.rs`` (the default
-  engine composing the dagre SVG path with the raster step) and ``mmdc.rs``
-  (the optional CLI engine) are not yet migrated.
+* **Default engine (R278c)**: :mod:`.pure` lands the default
+  :class:`PureRustEngine` -- the offline engine composing the dagre SVG path
+  (:func:`~minimax_code.mermaid.to_svg.render_mermaid_to_svg`) with the raster
+  step. The raster step is the R278b YAGNI gap, so ``render`` runs the SVG half
+  and raises :class:`MermaidRasterizeError` at the raster step rather than
+  fabricating PNG bytes.
+* **Host wrapper leaf remaining (R278d)**: ``mmdc.rs`` (the optional CLI
+  engine that shells out to ``mmdc`` / headless Chromium) is not yet migrated.
 """
 
 from __future__ import annotations
@@ -63,6 +68,7 @@ from .errors import (
     MermaidTimeoutError,
     MermaidUnsupportedError,
 )
+from .pure import PureRustEngine
 from .subprocess import (
     NonZeroExitSubprocessError,
     SpawnSubprocessError,
@@ -109,4 +115,6 @@ __all__ = [
     "NonZeroExitSubprocessError",
     "WaitSubprocessError",
     "run_with_timeout",
+    # pure (R278c)
+    "PureRustEngine",
 ]

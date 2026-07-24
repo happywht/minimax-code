@@ -21,7 +21,7 @@ in ``__str__``. Covers:
   variant-specifically (Python's idiomatic equivalent of grok's ``match``),
 * the barrel surface contract: the ``to_svg`` sub-package re-exports the
   base + 6 subclasses (7 error symbols); the R38 ``mermaid`` root barrel is
-  untouched (``__all__`` stays at 23, ``to_svg`` not promoted).
+  untouched (``__all__`` stays at 24, ``to_svg`` not promoted).
 """
 
 from __future__ import annotations
@@ -173,6 +173,6 @@ def test_to_svg_barrel_includes_error_symbols() -> None:
 
 
 def test_mermaid_root_barrel_unchanged_by_error_leaf() -> None:
-    """R271 grows the ``to_svg`` sub-package; the R38 root surface stays at 23."""
-    assert len(mermaid.__all__) == 23
+    """R271 grows the ``to_svg`` sub-package; the R38 root surface stays at 24."""
+    assert len(mermaid.__all__) == 24
     assert "to_svg" not in mermaid.__all__

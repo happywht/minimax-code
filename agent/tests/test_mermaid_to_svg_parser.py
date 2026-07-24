@@ -27,7 +27,7 @@ the deep path. Covers:
 * label normalization (wrapping quotes, the 6 HTML entities, the ``<br>``
   variants, ``\\n`` escapes) and ``%%`` comment skipping,
 * the barrel contract: ``parser`` is internal -- reachable by deep path, NOT
-  re-exported through the ``to_svg`` barrel; the ``mermaid`` root stays at 23.
+  re-exported through the ``to_svg`` barrel; the ``mermaid`` root stays at 24.
 """
 
 from __future__ import annotations
@@ -494,6 +494,6 @@ def test_parse_mermaid_importable_via_deep_path() -> None:
 
 
 def test_mermaid_root_barrel_unchanged_by_parser_leaf() -> None:
-    """R272 adds an internal module; the R38 root surface stays at 23."""
-    assert len(mermaid.__all__) == 23
+    """R272 adds an internal module; the R38 root surface stays at 24."""
+    assert len(mermaid.__all__) == 24
     assert "to_svg" not in mermaid.__all__

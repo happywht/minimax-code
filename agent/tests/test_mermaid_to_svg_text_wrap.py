@@ -386,6 +386,6 @@ def test_text_wrap_importable_via_deep_path() -> None:
 
 
 def test_mermaid_root_barrel_unchanged_by_text_wrap_leaf() -> None:
-    """R273 adds an internal module; the R38 root surface stays at 23."""
-    assert len(mermaid.__all__) == 23
+    """R273 adds an internal module; the R38 root surface stays at 24."""
+    assert len(mermaid.__all__) == 24
     assert "to_svg" not in mermaid.__all__
