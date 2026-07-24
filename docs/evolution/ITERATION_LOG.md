@@ -20331,3 +20331,89 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `docs(platform): R278b raster.rs YAGNI non-migration decision (unportable Rust raster stack, no pure-Python equivalent, optional PNG output)`。docs-only 提交（无 feat，零 Python 代码叶子）。2 文件：`docs/evolution/ITERATION_LOG.md` R278b 条目 + `agent/minimax_code/mermaid/__init__.py` docstring 修正。锚点链: ... -> R276(b68f794 docs YAGNI) -> R277(feat render dispatch + docs) -> R278a(feat subprocess + docs) -> R278b(docs YAGNI raster)。**`raster.rs` 栅格化栈 YAGNI 不迁移（580 行不可移植 Rust 栈节省，无纯 Python 等价 + PNG 可选输出），方向① 第 10 砖第 2 叶裁决为 YAGNI，下一砖 R278c pure.rs 默认引擎**。
+
+## R278c — 迁移 xai-grok-mermaid pure.rs（方向① 第 11 砖，默认引擎 PureRustEngine，行为等价移植非逐行克隆，SVG 半段活跃 + 栅格半段 R278b 哨兵）
+
+锚点:R278c-1 <pending>
+
+### 本轮目标
+
+把 grok `xai-grok-mermaid/src/pure.rs`（72 行核心 + 213 行内联测试，默认 `PureRustEngine` 主机壳层叶子）落地为 Python `mermaid/pure.py`（方向① 第 11 砖）。承接 R277 crate-root 调度层 + R278a subprocess 隔离底座 + R278b raster.rs YAGNI 裁决：R277 打通了 dagre 栈 -> SVG 字符串，R278a 落地 panic 隔离子进程运行器（供可选 `mmdc` 引擎），R278b 裁定栅格化栈（resvg/usvg/tiny-skia/fontdb）不可迁移。`pure.rs` 是把这些组装成**默认引擎**的叶子：`PureRustEngine` 实现 `MermaidEngine::render` —— 跑 SVG 半段（`build_svg` = 主题解析 + dagre 渲染），再跑栅格半段（`crate::rasterize`）。本轮以**行为等价移植**（behavioral-equivalent port）落地：保留每个函数的契约（做什么、引发什么错误、暴露什么分类法），但以地道 Python 实现，**不逐行翻译 Rust 语法**（响应用户方法论："按功能复刻不逐行"）。
+
+### 融合结论
+
+**方向① 第 11 砖 —— `pure.rs` 默认引擎，行为等价移植。** `pure.py` 暴露 1 个公共符号 `PureRustEngine`（镜像 grok `lib.rs` L55 `pub use pure::PureRustEngine`，crate-root barrel 第 24 符号），加 3 个模块私有函数 `build_svg`/`theme_for`/`map_engine_error`（镜像 grok 私有 `fn`，无 `pub`，测试经直接 import 触达，如 grok `mod pure` 测试经 `super::build_svg`）。移植**按功能而非按行**：grok 倚仗的 4 处 Rust 语言特性，各用表达相同语义的 Python 等价物落地 —— (1) `#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]` 单元结构体 -> `__slots__ = ()` + 手写 `__eq__`/`__hash__`/`__repr__` dunder（单元结构体承载的四语义：无状态、值相等、可哈希、可打印），不是翻译 derive 宏；(2) `?` 提前错误返回 -> `try`/`except`/`raise ... from exc`（相同的错误传播契约）；(3) 6 变体枚举上的 `match` -> 按宿主 3 类分组的变体元组上的 `isinstance`（相同的分类）；(4) `pub fn new() -> Self { Self }` -> 省略（Pythonic `PureRustEngine()`，YAGNI）。栅格半段延续 R278b 裁决：`render()` 跑完 SVG 半段（传播 parse/layout/unsupported 错误，与 grok `?` 一致），再 `raise MermaidRasterizeError(...)` —— 诚实的类型化哨兵，不伪造 PNG 字节。crate 根 barrel `__all__` 23 -> 24。
+
+### 决策证据（行为等价四映射 + 栅格哨兵 + 分类法保留）
+
+**证据 ① 单元结构体四语义 -> dunder（非 derive 翻译）。** grok `#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)] pub struct PureRustEngine;`（pure.rs L8-L20）的 derive 宏堆栈承载四个独立语义：`Default`（无参构造）/ `Clone + Copy`（实例可互换）/ `PartialEq + Eq`（值相等，可作 dict key）/ `Debug`（可打印）。逐行翻译 derive 在 Python 无对应物（无宏），故按语义落地：`__slots__ = ()`（无实例 `__dict__`，表"无状态"）+ `__eq__` 返回 `isinstance(other, PureRustEngine)`（表"值相等"）+ `__hash__` 返回 `hash(PureRustEngine)`（表"可哈希，两实例哈希相同"）+ `__repr__` 返回 `"PureRustEngine()"`（表"Debug 打印"）。5 个实例语义测试逐一断言（无 `__dict__` / `==` 相等 / `!=` 异类 / dict key 互换 / repr 形式）。
+
+**证据 ② `?` -> try/except + raise from（错误传播契约保留）。** grok `build_svg`（pure.rs L35-L38）`render_mermaid_to_svg(source, Some(&engine_theme)).map_err(map_engine_error)` —— `?` 隐式提前返回 + `map_err` 重分类。Python `build_svg` 等价：`try: return render_mermaid_to_svg(...) except _EngineMermaidError as exc: raise map_engine_error(exc) from exc`。`from exc` 保留因果链（`__cause__`），与 grok `?` 的传播语义对齐。`render()` 同理：先 `build_svg(source, params.theme)`（SVG 半段错误先于栅格哨兵传播，2 个协议测试断言：合法流程图 raise raster 哨兵；`@@@@` 不支持类型 raise 非 raster 的类型化错误，证明 SVG 半段先执行）。
+
+**证据 ③ 6 变体 match -> isinstance 元组分组（分类法保留）。** grok `map_engine_error`（pure.rs L42-L51）`match` 6 个 `to_svg::error::MermaidError` 变体 -> 3 类（Parse/InvalidDirection/InvalidNodeShape -> Parse；DotGenerationError/RenderError -> Layout；UnsupportedDiagramType -> Unsupported）。Python 等价：3 条 `isinstance(exc, (变体元组))` 链，变体按宿主 3 类分组。`engine_error_taxonomy_maps_every_arm` 测试逐一构造 6 变体，断言映射到正确宿主类 + `str(exc)` 逐字保留。fallthrough 兜底 `return MermaidError(str(exc))`（保持映射完备，未来新变体不泄漏 vendored 类型）。
+
+**证据 ④ `new()` -> 省略（YAGNI）。** grok `impl PureRustEngine { pub fn new() -> Self { Self } }`（pure.rs L14-L18）是 Rust 习惯的显式构造器（`Default::default()` 的等价）。Python 类天然支持 `PureRustEngine()` 无参构造，故不迁移 `new` —— 这是 YAGNI：不引入一个仅复述语言已有能力的符号。延续 R271 `error.py` 起的"grok-enum/derive -> Python-idiomatic"适配范式。
+
+**证据 ⑤ 栅格半段 = R278b 哨兵（诚实边界，非伪造）。** grok `render`（pure.rs L22-L27）`build_svg(source, params.theme)?; crate::rasterize(&svg, params)` —— L25 `crate::rasterize` 是 raster.rs 唯一活跃调用点。R278b 已裁定 raster.rs（resvg/usvg/tiny-skia/fontdb 纯 Rust 栈 + 内嵌 Roboto.ttf）无纯 Python 等价、不可迁移。故 `render()` 跑完 SVG 半段后 `raise MermaidRasterizeError(...)` —— 类型化哨兵，明示"栅格化未接线"，**不伪造 PNG 字节**（伪造会破坏 `RenderedDiagram` 契约 + 误导调用方）。SVG 半段每次 `render` 都执行（在 raise 之前），故默认引擎**非死代码** —— 是协议合规的骨架（SVG 半段活跃，栅格半段诚实哨兵）。未来 Python 栅格化器（如 cairosvg subprocess）接入时，替换那一条 raise 即可，其余不变。
+
+**先例对照 —— R278a enum->subclass tree vs R278c derive->dunder。** 两轮均延续"grok Rust 类型构造 -> Python 等价表达"范式：R278a 把 `SubprocessError` 四变体枚举落地为基类 + 4 子类（调用方 `except TimeoutSubprocessError` 无需 match 枚举）；R278c 把 `#[derive(...)]` 单元结构体落地为 `__slots__` + dunder（保留四语义）。共同原则：保留**调用方观测到的契约**（错误类型、实例语义、分类法），替换**语言特定的实现机制**（derive 宏、enum match、`?`）。
+
+### 交付
+
+- `agent/minimax_code/mermaid/pure.py`（新建，249 行）：
+
+  - **模块 docstring（行为等价移植框架）** —— 开宗明义"behavioral-equivalent port ... NOT a line-by-line translation"，列出 4 个 Rust->Python 语义映射点（derive->dunder / `?`->try-except / match->isinstance / new()->省略）。"Mapping" 段逐一对照 grok 符号 -> Python 落点（`PureRustEngine` / `build_svg` / `theme_for` / `map_engine_error`），引用 grok 行号作为**契约参照**（非逐行翻译声明）。
+  - **`__all__ = ["PureRustEngine"]`**（1 符号，镜像 grok `lib.rs` L55 crate-root re-export 唯一面）。`build_svg`/`theme_for`/`map_engine_error` 模块私有（grok `fn` 无 `pub`）。
+  - **`class PureRustEngine`（`__slots__ = ()`）**：`__eq__`（值相等）/ `__hash__`（hash(PureRustEngine)，两实例同哈希）/ `__repr__`（`"PureRustEngine()"`）/ `render(source, params) -> RenderedDiagram`（SVG 半段 + 栅格哨兵）。无 `new()`（YAGNI，Pythonic 无参构造）。
+  - **`def build_svg(source, theme) -> str`**：`theme_for(theme)` + `render_mermaid_to_svg(...)`，`except _EngineMermaidError: raise map_engine_error(exc) from exc`（grok `?` + `map_err`）。
+  - **`def theme_for(theme) -> _EngineTheme`**：宿主粗粒度 `MermaidTheme`（light/dark）-> 渲染栈 `MermaidTheme`（7 色），仅覆盖 `background` 为宿主单一来源 `LIGHT_SURFACE`/`DARK_SURFACE`（grok L59-L72）。
+  - **`def map_engine_error(exc) -> MermaidError`**：6 变体 `isinstance` 元组分组 -> 3 宿主类（grok L42-L51），`str(exc)` 逐字保留，fallthrough 兜底 `MermaidError`。
+
+- `agent/minimax_code/mermaid/__init__.py`（桶扩展 23 -> 24）：
+
+  - **导入块**：`from .pure import PureRustEngine`（isort 序：`.pure` 按字母序落位）。
+  - **`__all__` 23 -> 24**：`# pure (R278c)` 分组标注，插入 `PureRustEngine`。
+  - **docstring 刷新**：新增 "Default engine (R278c)" 段，描述 `PureRustEngine` 离线引擎（dagre SVG 路径 + 栅格步骤）。
+
+- `agent/tests/test_mermaid_pure.py`（新建，403 行，17 测试）：
+
+  - **barrel + 模块契约 x3**：`pure.__all__ == ["PureRustEngine"]` / 根 barrel re-export `PureRustEngine` 且 `len(mermaid.__all__) == 24` 且 `is` 同一性 / 三私有函数不在 `__all__` 但可 import（镜像 grok `super::build_svg`）。
+  - **`PureRustEngine` 实例语义 x5**：无 `__dict__` / `==` 值相等 + `!=` 异类 / 可哈希 + dict key 互换 / `repr` 形式 / 满足 `MermaidEngine` 协议。
+  - **`render()` 协议 x2**：合法流程图 raise raster 哨兵（match="R278b"）/ 不支持类型 raise 非 raster 类型化错误（证明 SVG 半段先执行）。
+  - **`build_svg` SVG 渲染 x4**：`flowchart_svg_contains_node_labels`（`<svg>` 包络 + 双标签）/ `cyclic_login_flow_renders_with_arrowheads`（8 边循环图，每边恰一个 `marker-end="url(#arrowhead)"`，计数钉死到边数）/ `sequence_diagram_routes_through_engine_without_panic`（适配：sequence 渲染器 R279+ 未落地，契约降为"不 panic，raise 类型化错误或渲染"）/ `long_identifier_node_labels_survive_intact_in_svg`（`xfail(strict=True)`，暴露预存 dagre 缺陷）。
+  - **`theme_for` x1**：light/dark background 各自等于 `LIGHT_SURFACE`/`DARK_SURFACE` 的 hex，且 light != dark。
+  - **`map_engine_error` x1**：6 变体逐一构造，断言映射到正确宿主类 + `str(exc)` 逐字保留。
+  - **`garbage_input_never_panics` x1**（参数化 10 输入）：经 `render_checked`，10 个不可信输入无一 panic（`MermaidPanicError` 即失败；`MermaidRasterizeError`/其他 `MermaidError` 合法）。
+
+- **8 个 barrel-guard 测试文件同步**（barrel 范式维护：root barrel 23->24 时同步所有历史 barrel 守卫）：
+
+  - **11 处断言** `assert len(mermaid.__all__) == 23` -> `== 24`：`test_mermaid_to_svg_ast.py`(1) / `config.py`(1) / `error.py`(1) / `layout.py`(3) / `parser.py`(1) / `svg_renderer.py`(2) / `text_wrap.py`(1) / `theme.py`(1) —— 与 R278a 同一组 8 文件（R278a 17->23 同步过，本轮 23->24 再同步）。
+  - **17 处 docstring** 同步：`stays at 23` -> `stays at 24`（含 layout/svg_renderer 的无 "at" 变体 `stays 23` -> `stays 24` + text_wrap 跨行形式）。test_mermaid_pure.py 自身的 1 处 `== 24` + 1 处 `stays at 24` 是新建（非同步）。
+  - **合计 barrel-guard 覆盖**：9 个测试文件含 barrel 守卫（8 历史 + 1 新建），12 处 `== 24` 断言 + 18 处 `stays at/24` docstring（经 grep 双模式核查）。
+  - **零无关 "23" 受影响**：经 grep 核查，`== 23` / `stays ... 23` 残留为 0（全量回归 7928 passed 印证）。
+
+### 验证
+
+- ruff：`pure.py` + `__init__.py` + `test_mermaid_pure.py` + 8 个 barrel-guard 测试 **All checks passed**（line-length 100，select E/F/W/I/B/UP，ignore E501）。
+- 定向 pytest（`test_mermaid_pure.py`）：**25 passed, 1 xfailed in 0.55s**（17 测试 + 参数化展开；`long_identifier` xfail strict=True 暴露预存 dagre 缺陷，非 R278c 引入）。
+- mermaid 全桶回归（`-k mermaid`）：**682 passed, 1 xfailed**（docstring 修订 + barrel 23->24 + 8 守卫同步零破坏）。
+- 全量 agent 回归：**7928 passed, 10 skipped, 1 xfailed in 119.85s**（零失败；R278b 全量 7903 -> R278c 全量 7928，+25 来自 pure 新建测试，barrel-guard 同步不增测试数只改断言值）。
+- CRLF 警告正常（Windows 11 文件），无害。
+
+### YAGNI 边界
+
+- **栅格半段 = 类型化哨兵（延续 R278b）** —— `render()` 跑 SVG 半段后 `raise MermaidRasterizeError`，不伪造 PNG 字节。grok `crate::rasterize`（resvg/usvg/tiny-skia/fontdb）不可迁移（R278b 裁决）。未来 Python 栅格化器接入替换那一条 raise。
+- **`new()` 不迁移** —— grok `pub fn new() -> Self { Self }` 是 Rust 显式构造器习惯；Python 类天然支持 `PureRustEngine()`，YAGNI 不引入复述语言能力的符号。
+- **`sequenceDiagram` 渲染契约降级** —— Python 端尚无 sequence 渲染器（R279+ 叶子；`parser.py` 列为不支持）。grok `sequence_svg_contains_participants` 的正向断言（参与者标签出现在 SVG）在渲染器落地后激活；本轮契约降为"经引擎不 panic"（raise 类型化错误或渲染皆可）。
+- **`long_identifier` xfail 暴露预存 dagre 缺陷（非 R278c 引入）** —— `network_simplex._exchange_edges` 对子图内链式边（`nav --> mark --> global --> sidebar --> page`）调 `Graph.remove_edge(v, w, None)`，counter map 不持该 key，`_decrement_or_remove_entry` 执行 `None -= 1` -> `TypeError`（graphlib.py L1031）。grok dagre 正确渲染此图，故移植有真实缺陷。`xfail(strict=True)` 记录暴露而不破坏迭代独立性；待专门的 dagre 边交换修复落地后翻转为 xpass。
+- **`MAX_OUTPUT_MEGAPIXELS` 不迁移**（延续 R278b）—— raster.rs 栅格化输出的尺寸上限，仅 `rasterize` 内部消费；`render` 返回 SVG 字符串无像素尺寸，故不迁移。
+- **修正后路线图**：
+  - **R278d（下一砖）** —— `mmdc.rs` -> `mmdc.py` + `default_engine()` 工厂（lib.rs barrel 层；全文件迁移，消费 R278a subprocess + MermaidEngine 协议；`default_engine() -> Arc<dyn MermaidEngine>` 返回 `PureRustEngine` 作默认）。
+  - **R278 tests/pure_engine.rs** —— pure 引擎集成测试迁移（依赖 `default_engine`，随 R278d 落地）。
+  - **R279+** —— 19 个 per-diagram 渲染器（block/c4/class/er/gantt/gitgraph/info/journey/kanban/mindmap/packet/pie/quadrant/radar/requirement/sankey/sequence/state/timeline/xychart）。
+  - **dagre 边交换修复（新后续）** —— 修复 `network_simplex._exchange_edges` 的 `None -= 1` 缺陷，使 `long_identifier` xfail 翻转。
+- **方向② xai-codebase-graph（tree-sitter 代码索引）+ 方向③ L2 自演化框架骨架接线** 均未开始（方向① 优先）。
+
+### Commit
+
+`feat(platform): R278c port xai-grok-mermaid pure.rs -> default PureRustEngine (direction (1) brick 11, behavioral-equivalent port, SVG half live + raster sentinel)`。feat 提交（11 文件）：`pure.py`（新建）+ `__init__.py`（桶扩展 23->24）+ `test_mermaid_pure.py`（新建，17 测试）+ 8 个 barrel-guard 测试同步（ast/config/error/layout/parser/svg_renderer/text_wrap/theme，11 断言 + 17 docstring）。docs 提交：`docs(platform): R278c iteration log entry`（ITERATION_LOG.md R278c 条目）。锚点链: ... -> R277(feat render dispatch + docs) -> R278a(feat subprocess + docs) -> R278b(docs YAGNI raster) -> R278c(feat pure + docs)。**方向① 第 11 砖：默认引擎 PureRustEngine 行为等价移植落地（17/17 测试 + 1 xfail 暴露预存 dagre 缺陷，全量 7928 passed），桶 23->24，下一砖 R278d mmdc.rs + default_engine() 工厂**。
