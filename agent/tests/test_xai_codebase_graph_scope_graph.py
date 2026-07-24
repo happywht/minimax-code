@@ -341,8 +341,8 @@ def test_node_kind_frozen_hashable() -> None:
 # === barrel contract =======================================================
 
 
-def test_scope_graph_barrel_exports_sixteen_symbols() -> None:
-    """``scope_graph/__init__`` ``__all__`` = 12 (R305a) + 3 graph (R305b) + 1 index (R305c).
+def test_scope_graph_barrel_exports_nineteen_symbols() -> None:
+    """``scope_graph/__init__`` ``__all__`` = 12 (R305a) + 3 graph (R305b) + 1 index (R305c) + 3 bridge (R305e).
 
     R301 landed 7 nodes + EdgeKind + NodeKindKind (9). R305a extends the barrel
     with ``NodeIndex`` / ``QueryVersion`` / ``Snippet`` from ``scope_graph/graph``
@@ -352,12 +352,19 @@ def test_scope_graph_barrel_exports_sixteen_symbols() -> None:
     inline ``ScopeGraphResult`` at mod.rs L20-L25), bringing the surface to 15.
     R305c adds ``ScopeGraphIndex`` from ``scope_graph/index`` (the cross-file
     symbol index that aggregates many per-file ``ScopeGraph`` instances),
-    bringing the surface to 16.
+    bringing the surface to 16. R305e adds the tree-sitter bridge free
+    functions ``build_scope_graph`` / ``extract_symbols_fast`` /
+    ``scope_graph_from_definitions_query`` from ``scope_graph/bridge`` (mirrors
+    grok ``mod.rs`` L13 re-export of the two ``graph.rs`` free functions + L30
+    inline ``build_scope_graph``), bringing the surface to 19.
     """
     from minimax_code.xai_codebase_graph import scope_graph
 
     expected = {
         "EdgeKind",
+        "build_scope_graph",
+        "extract_symbols_fast",
+        "scope_graph_from_definitions_query",
         "LocalDef",
         "LocalImport",
         "LocalScope",

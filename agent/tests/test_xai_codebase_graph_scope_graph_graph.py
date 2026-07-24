@@ -667,8 +667,8 @@ def test_scope_graph_barrel_symbols_are_graph_leaf() -> None:
     assert ScopeGraphResult is graph_leaf.ScopeGraphResult
 
 
-def test_scope_graph_barrel_exports_sixteen_symbols() -> None:
-    """``scope_graph/__init__`` ``__all__`` = 12 (R305a) + 3 graph (R305b) + 1 index (R305c).
+def test_scope_graph_barrel_exports_nineteen_symbols() -> None:
+    """``scope_graph/__init__`` ``__all__`` = 12 (R305a) + 3 graph (R305b) + 1 index (R305c) + 3 bridge (R305e).
 
     R301 landed 7 nodes + EdgeKind + NodeKindKind (9). R305a extended with
     NodeIndex / QueryVersion / Snippet (12). R305b adds ScopeGraph / ScopeStack
@@ -676,11 +676,19 @@ def test_scope_graph_barrel_exports_sixteen_symbols() -> None:
     the inline ``ScopeGraphResult`` (mod.rs L20-L25). R305c adds ScopeGraphIndex
     (16) -- the cross-file symbol index aggregating per-file ScopeGraph instances
     with interned names, alias resolution, and reverse file->symbol indexes.
+    R305e adds the tree-sitter bridge free functions build_scope_graph /
+    extract_symbols_fast / scope_graph_from_definitions_query from
+    ``scope_graph/bridge`` (mirrors grok ``mod.rs`` L13 re-export of the two
+    ``graph.rs`` free functions + L30 inline ``build_scope_graph``), bringing
+    the surface to 19.
     """
     from minimax_code.xai_codebase_graph import scope_graph
 
     expected = {
         "EdgeKind",
+        "build_scope_graph",
+        "extract_symbols_fast",
+        "scope_graph_from_definitions_query",
         "LocalDef",
         "LocalImport",
         "LocalScope",
@@ -698,7 +706,7 @@ def test_scope_graph_barrel_exports_sixteen_symbols() -> None:
         "SymbolId",
     }
     assert set(scope_graph.__all__) == expected
-    assert len(scope_graph.__all__) == 16
+    assert len(scope_graph.__all__) == 19
 
 
 def test_crate_root_barrel_reexports_scope_graph_and_result() -> None:

@@ -27,16 +27,30 @@ R305c lands :class:`ScopeGraphIndex` (from :mod:`index`) -- the cross-file
 symbol index that aggregates many per-file :class:`ScopeGraph` instances,
 interned symbol names, alias resolution, and reverse file->symbol indexes
 for O(symbols-in-file) removal / rename. The in-memory runtime (~36 methods)
-mirrors grok ``scope_graph/graph.rs`` ``ScopeGraphIndex``; the SGIX binary
-ser/de and the ``extract_symbols_fast`` / ``scope_graph_from_definitions_query``
-/ ``build_scope_graph`` tree-sitter bridge functions land in R305d-e.
+mirrors grok ``scope_graph/graph.rs`` ``ScopeGraphIndex``.
 
-YAGNI: the SGIX binary ser/de (``save`` / ``load``) and the tree-sitter bridge
-free functions are not yet ported; the barrel grows when they land.
+R305d lands the SGIX v1 binary ser/de (``save`` / ``load`` / ``write_to`` /
+``read_from`` in :mod:`sgix`) -- the on-disk format for
+:class:`ScopeGraphIndex`. These stay in their own module (not re-exported
+here) because grok models them as ``ScopeGraphIndex`` methods reached via the
+type, not as ``mod.rs`` re-exports.
+
+R305e lands the tree-sitter bridge free functions (from :mod:`bridge`):
+:func:`build_scope_graph`, :func:`extract_symbols_fast`, and
+:func:`scope_graph_from_definitions_query`. These re-export here to mirror
+grok ``mod.rs`` L13 (which re-exports the two ``graph.rs`` free functions) +
+L30 (the inline ``build_scope_graph``). The bridge is the single module that
+touches the ``tree_sitter`` runtime -- the deferred-binding兑现点 of range.py
+L9-L14 and types.py L11-L24.
 """
 
 from __future__ import annotations
 
+from minimax_code.xai_codebase_graph.scope_graph.bridge import (
+    build_scope_graph,
+    extract_symbols_fast,
+    scope_graph_from_definitions_query,
+)
 from minimax_code.xai_codebase_graph.scope_graph.edges import EdgeKind
 from minimax_code.xai_codebase_graph.scope_graph.graph import (
     NodeIndex,
@@ -60,6 +74,9 @@ from minimax_code.xai_codebase_graph.scope_graph.nodes import (
 
 __all__ = [
     "EdgeKind",
+    "build_scope_graph",
+    "extract_symbols_fast",
+    "scope_graph_from_definitions_query",
     "LocalDef",
     "LocalImport",
     "LocalScope",
