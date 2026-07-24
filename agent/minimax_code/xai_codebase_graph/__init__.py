@@ -30,8 +30,12 @@ extension / id / file path, a same-language-family check, and a stable
 queries change. Mirrors grok ``lib.rs`` L88
 ``pub use languages::{LanguageRegistry, TSLanguageConfig};``.
 
-Downstream slices (``scope_graph/graph.rs`` runtime, ``manager/``,
-``navigation``) follow in R305+.
+R305a begins the ``scope_graph/graph.rs`` runtime port (pure-data foundation
+only): :class:`QueryVersion` -- the tree-sitter query version stamp that
+drives index rebuilds. Mirrors grok ``lib.rs`` L96 (crate root re-exports
+``QueryVersion`` alongside the node symbols). The ``ScopeGraph`` /
+``ScopeGraphIndex`` graph algorithms and binary ser/de, plus ``manager/`` and
+``navigation``, follow in R305b+.
 
 The crate-root barrel mirrors grok ``lib.rs``: grok re-exports ``types``,
 ``scope_graph`` node symbols, and the ``interner`` pair at the crate root.
@@ -51,10 +55,11 @@ the same surface: ``EdgeKind`` (and the Pythonic ``NodeKindKind``
 discriminator, which has no grok counterpart) live under the
 ``scope_graph`` subpackage barrel only.
 
-YAGNI (R302): the ``types`` layer, the ``scope_graph`` node / edge type
-layer, and the ``interner`` module are public. ``scope_graph/graph.rs``
-runtime (``ScopeGraph`` etc.), ``manager`` / ``navigation`` modules do not
-exist yet -- the barrel will grow as they land.
+YAGNI: the ``types`` layer, the ``scope_graph`` node / edge type layer, the
+``interner`` module, and the ``scope_graph/graph.py`` pure-data foundation
+(``QueryVersion`` / ``Snippet`` / ``NodeIndex``) are public. The graph
+algorithms (``ScopeGraph`` / ``ScopeGraphIndex``), ``manager`` /
+``navigation`` modules do not exist yet -- the barrel grows as they land.
 """
 
 from __future__ import annotations
@@ -69,6 +74,7 @@ from minimax_code.xai_codebase_graph.scope_graph import (
     LocalImport,
     LocalScope,
     NodeKind,
+    QueryVersion,
     Reference,
     Symbol,
     SymbolId,
@@ -97,6 +103,7 @@ __all__ = [
     "Location",
     "NodeKind",
     "Position",
+    "QueryVersion",
     "Range",
     "Reference",
     "StringId",

@@ -4,7 +4,7 @@ Mirrors grok ``xai-codebase-graph/src/scope_graph/mod.rs``. A ScopeGraph
 represents the symbols (definitions, references, imports) and their
 relationships within a single source file.
 
-R301 lands the node / edge type layer only:
+R301 landed the node / edge type layer:
 
 - :class:`EdgeKind` (from :mod:`edges`) -- the 5 relation labels.
 - :class:`Symbol` / :class:`SymbolId` / :class:`LocalScope` /
@@ -12,19 +12,28 @@ R301 lands the node / edge type layer only:
   :class:`NodeKind` / :class:`NodeKindKind` (from :mod:`nodes`) -- the node
   value types.
 
-YAGNI (R301): grok ``scope_graph/mod.rs`` also re-exports the ``graph.rs``
-runtime types (``ScopeGraph`` / ``ScopeGraphIndex`` / ``NodeIndex`` /
-``QueryVersion`` / ``Snippet`` / ``extract_symbols_fast`` /
-``scope_graph_from_definitions_query``) and defines ``ScopeGraphResult`` +
-``build_scope_graph``. All of these depend on ``graph.rs`` (which itself
-depends on ``interner.rs`` + the ``tree_sitter`` crate + ``languages/``);
-they land with the ``graph.rs`` migration. The barrel will grow as they
+R305a extends the barrel with the pure-data foundation of the ``graph.rs``
+runtime (from :mod:`graph`): :data:`NodeIndex`, :class:`QueryVersion`, and
+:class:`Snippet`. These mirror grok ``scope_graph/mod.rs`` L11-L14, which
+re-exports ``NodeIndex`` / ``QueryVersion`` / ``Snippet`` ahead of the heavier
+``ScopeGraph`` / ``ScopeGraphIndex`` / ``ScopeStack`` graph algorithms and the
+``extract_symbols_fast`` / ``scope_graph_from_definitions_query`` bridge
+functions that land in R305b-d.
+
+YAGNI: grok ``scope_graph/mod.rs`` also defines ``ScopeGraphResult`` and
+``build_scope_graph`` (both depend on ``ScopeGraph``). All of these depend on
+the graph algorithms / tree-sitter bridge (R305b-d); the barrel grows as they
 land.
 """
 
 from __future__ import annotations
 
 from minimax_code.xai_codebase_graph.scope_graph.edges import EdgeKind
+from minimax_code.xai_codebase_graph.scope_graph.graph import (
+    NodeIndex,
+    QueryVersion,
+    Snippet,
+)
 from minimax_code.xai_codebase_graph.scope_graph.nodes import (
     LocalDef,
     LocalImport,
@@ -41,9 +50,12 @@ __all__ = [
     "LocalDef",
     "LocalImport",
     "LocalScope",
+    "NodeIndex",
     "NodeKind",
     "NodeKindKind",
+    "QueryVersion",
     "Reference",
+    "Snippet",
     "Symbol",
     "SymbolId",
 ]
