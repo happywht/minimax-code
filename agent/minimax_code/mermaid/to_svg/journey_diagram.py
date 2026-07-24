@@ -81,8 +81,10 @@ R289 block, R288 quadrant):
   data (the arc radii). This is the same D3 bridge R289 ``_fmt_num`` uses.
 
 XML escaping mirrors grok ``escape_xml`` L557-L563 verbatim, including the
-``'`` -> ``&apos;`` mapping (R289 block uses ``&#x27;`` -- each renderer is
-faithful to its own grok source's choice of apostrophe entity).
+``'`` -> ``&apos;`` mapping. Journey joins the named-entity ``&apos;`` group
+(alongside R283 ``packet`` and R289 ``block``); ``radar`` and ``sankey``
+instead use the numeric ``&#39;``. Each renderer faithfully mirrors its own
+grok source's choice of apostrophe entity.
 
 Public surface (1 symbol): :func:`render_journey_diagram_to_svg`. Reached
 only via the ``render.py`` dispatch arm; the barrel does NOT re-export it
@@ -710,8 +712,9 @@ def _escape_xml(s: str) -> str:
     """Escape the five XML-significant characters (mirrors grok ``escape_xml`` L557-L563).
 
     Note the ``'`` -> ``&apos;`` mapping -- grok's journey source uses the
-    named entity (R289 ``block_diagram`` uses ``&#x27``; each renderer is
-    faithful to its own grok source's apostrophe entity).
+    named entity, the same variant R283 ``packet`` and R289 ``block_diagram``
+    use; ``radar`` and ``sankey`` instead use the numeric ``&#39;``. Each
+    renderer is faithful to its own grok source's apostrophe entity.
     """
     return (
         s.replace("&", "&amp;")
