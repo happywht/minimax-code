@@ -16,8 +16,14 @@ subpackage): ``Symbol`` / ``SymbolId`` / ``LocalScope`` / ``LocalDef`` /
 R302 adds the string interner (``interner`` module): ``StringId`` /
 ``StringInterner`` -- dedup byte-string store backing symbol name storage.
 
-Downstream slices (``scope_graph/graph.rs`` runtime, ``languages/``,
-``manager/``, ``navigation``) follow in R303+.
+R303 adds the per-language tree-sitter config type (``languages/`` subpackage):
+``TSLanguageConfig`` -- bundles language ids / extensions / namespaces / the
+definitions query string, resolves symbol-type names to ``SymbolId``, and
+defers the tree-sitter runtime binding (``grammar`` optional) so the type layer
+stays stdlib-clean.
+
+Downstream slices (``languages/mod.rs`` registry + factories,
+``scope_graph/graph.rs`` runtime, ``manager/``, ``navigation``) follow in R304+.
 
 The crate-root barrel mirrors grok ``lib.rs``: grok re-exports ``types``,
 ``scope_graph`` node symbols, and the ``interner`` pair at the crate root.
@@ -46,6 +52,7 @@ exist yet -- the barrel will grow as they land.
 from __future__ import annotations
 
 from minimax_code.xai_codebase_graph.interner import StringId, StringInterner
+from minimax_code.xai_codebase_graph.languages import TSLanguageConfig
 from minimax_code.xai_codebase_graph.scope_graph import (
     LocalDef,
     LocalImport,
@@ -86,4 +93,5 @@ __all__ = [
     "SymbolAlias",
     "SymbolId",
     "SymbolOccurrence",
+    "TSLanguageConfig",
 ]
