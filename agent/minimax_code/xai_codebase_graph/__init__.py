@@ -68,6 +68,19 @@ builder, lock exposes no enum-variant subclasses, so nothing stays
 ``manager``-subpackage-only -- the crate-root surface is byte-identical to
 grok's.
 
+R306a lands the ``index_manager`` type-layer foundation (grok
+``index_manager.rs`` L42-L538): the 7 pure-data symbols that carry no
+runtime dependency on the channel / tree-sitter machinery --
+``MAX_INDEXABLE_FILE_SIZE`` + :class:`FileEventKind` / :class:`FileEvent`
+(the **batch** container, distinct from the ``types`` single-file union) +
+:class:`QueryResult` / :class:`SymbolLocation` + :class:`QueryError` +
+:class:`IndexManagerConfig`. The 5 non-colliding symbols are re-exported at
+the crate root; ``FileEvent`` / ``FileEventKind`` stay bound to the
+``types`` version (R300 placement) -- see the module docstring in
+:mod:`minimax_code.xai_codebase_graph.index_manager` for the split rationale.
+The channel-actor runtime (Handle / Command / ACTIVE_MANAGERS / the actor
+loop) lands in R306b-R306g.
+
 The crate-root barrel mirrors grok ``lib.rs``: grok re-exports ``types``,
 ``scope_graph`` node symbols, and the ``interner`` pair at the crate root.
 The Python port keeps them under their subpackages and re-exports them
@@ -87,15 +100,23 @@ discriminator, which has no grok counterpart) live under the
 ``scope_graph`` subpackage barrel only.
 
 YAGNI: the ``types`` layer, the ``scope_graph`` node / edge type layer, the
-``interner`` module, and the ``scope_graph/graph.py`` pure-data foundation
-(``QueryVersion`` / ``Snippet`` / ``NodeIndex``) are public. The graph
-algorithms (``ScopeGraph`` / ``ScopeGraphIndex``) and the ``manager`` cache
-subset (R305f) are public. The ``manager`` builder / lock siblings and the
-``navigation`` module do not exist yet -- the barrel grows as they land.
+``interner`` module, the ``scope_graph/graph.py`` pure-data foundation
+(``QueryVersion`` / ``Snippet`` / ``NodeIndex``), the graph algorithms
+(``ScopeGraph`` / ``ScopeGraphIndex``), and the full ``manager`` subpackage
+(cache R305f / builder R305g / lock R305h) are public. The ``index_manager``
+type layer (R306a) is public; the channel-actor runtime (R306b-R306g) and
+the ``navigation`` module do not exist yet -- the barrel grows as they land.
 """
 
 from __future__ import annotations
 
+from minimax_code.xai_codebase_graph.index_manager import (
+    MAX_INDEXABLE_FILE_SIZE,
+    IndexManagerConfig,
+    QueryError,
+    QueryResult,
+    SymbolLocation,
+)
 from minimax_code.xai_codebase_graph.interner import StringId, StringInterner
 from minimax_code.xai_codebase_graph.languages import (
     LanguageRegistry,
@@ -194,4 +215,18 @@ __all__ = [
     "WorkspaceLockGuard",
     "is_operation_in_progress",
     "try_lock",
+    # index_manager (R306a) -- grok ``lib.rs`` L84-L86 re-exports the type
+    # layer of the channel-actor index manager. The 5 non-colliding symbols
+    # (no ``types`` counterpart) reach the crate root; ``FileEvent`` /
+    # ``FileEventKind`` stay bound to the ``types`` version (R300 placement)
+    # to avoid clobbering it -- a barrel-reconciliation brick will switch
+    # them to the ``index_manager`` batch-container version in one atomic
+    # edit once ``navigation`` lands (mirrors the ``types::Location`` /
+    # ``navigation::Location`` split). Reachable via the leaf module as
+    # ``minimax_code.xai_codebase_graph.index_manager.FileEvent``.
+    "MAX_INDEXABLE_FILE_SIZE",
+    "IndexManagerConfig",
+    "QueryError",
+    "QueryResult",
+    "SymbolLocation",
 ]
