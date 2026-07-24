@@ -51,11 +51,16 @@ Dispatch model (mirrors grok ``render_mermaid_to_svg`` L36-L163)
      of task cards (per-column cluster rect + cluster-label + per-card node
      with label/assigned placeholders and an optional priority indicator
      stripe), mirroring grok lib.rs L118-L120.
-   * The 12 remaining independent per-diagram renderers (er / class / mindmap
+   * The ``timeline`` renderer (R287) has its own dedicated arm --
+     :func:`render_timeline_diagram_to_svg` lays a chronological board out as
+     a horizontal axis of period nodes each trailing a vertical stack of event
+     cards, grouped under optional colored section banners, with a left-to-
+     right direction arrow underneath, mirroring grok lib.rs L108-L110.
+   * The 11 remaining independent per-diagram renderers (er / class / mindmap
      / requirement / block / sequence
-     / gitgraph / timeline / journey / quadrant / xychart / c4)
+     / gitgraph / journey / quadrant / xychart / c4)
      raise :class:`UnsupportedDiagramType` here. Their per-diagram leaves ship
-     in later rounds (R287+); until then the dispatch reports the type as
+     in later rounds (R288+); until then the dispatch reports the type as
      unsupported rather than running a renderer that does not exist yet.
    * The default path runs the already-migrated flowchart stack
      (``parser.parse_mermaid`` -> ``layout.compute_layout[_with_config]`` ->
@@ -94,6 +99,7 @@ from .sankey_diagram import render_sankey_diagram_to_svg
 from .state_diagram import parse_state_diagram
 from .svg_renderer import render, render_with_config
 from .theme import MermaidTheme
+from .timeline_diagram import render_timeline_diagram_to_svg
 
 __all__ = [
     "is_mermaid_diagram",
@@ -110,9 +116,9 @@ __all__ = [
 #: R280, the ``radar-beta`` renderer shipped in R281, the ``pie`` renderer
 #: shipped in R282, the ``packet-beta`` renderer shipped in R283, the
 #: ``sankey-beta`` renderer shipped in R284, the ``gantt`` renderer shipped
-#: in R285, and the ``kanban`` renderer shipped in R286 (their dedicated arms
-#: sit above this check); the 16 tokens below are the remaining unsupported
-#: surface.
+#: in R285, the ``kanban`` renderer shipped in R286, and the ``timeline``
+#: renderer shipped in R287 (their dedicated arms sit above this check); the
+#: 15 tokens below are the remaining unsupported surface.
 #: The five ``C4*`` tokens share grok's single ``c4_diagram`` renderer
 #: (lib.rs L130-L139).
 _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
@@ -124,7 +130,6 @@ _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
         "block-beta",
         "sequenceDiagram",
         "gitGraph",
-        "timeline",
         "journey",
         "quadrantChart",
         "xychart-beta",
@@ -184,9 +189,11 @@ def render_mermaid_to_svg(
     the project-schedule gantt chart via
     :func:`render_gantt_diagram_to_svg`; the ``kanban`` renderer (R286) emits
     the board-card kanban chart via
-    :func:`render_kanban_diagram_to_svg`; the 12 remaining per-diagram
+    :func:`render_kanban_diagram_to_svg`; the ``timeline`` renderer (R287)
+    emits the chronological timeline board via
+    :func:`render_timeline_diagram_to_svg`; the 11 remaining per-diagram
     renderers raise :class:`UnsupportedDiagramType` until their leaves ship
-    (R287+). Mirrors grok lib.rs L36-L163.
+    (R288+). Mirrors grok lib.rs L36-L163.
 
     Raises:
         UnsupportedDiagramType: when the diagram-type token names a diagram
@@ -286,6 +293,18 @@ def render_mermaid_to_svg(
     # hard-coded ``white``, NOT ``theme.background``).
     if diagram_type == "kanban":
         return render_kanban_diagram_to_svg(body, resolved_theme)
+
+    # ``timeline`` (R287): the dedicated timeline / chronological renderer.
+    # Mirrors grok lib.rs L108-L110 -- :func:`render_timeline_diagram_to_svg`
+    # receives the front-matter-stripped body and lays the periods out as a
+    # horizontal axis of nodes, each trailing a vertical stack of event cards,
+    # grouped under optional colored section banners, with a left-to-right
+    # direction arrow underneath. Like pie / packet / gantt, timeline is NOT
+    # theme-aware -- grok hard-codes mermaid 11.12.2's default timeline palette
+    # (``#333`` text + three fixed ``cScale`` 12-hue palettes) and ignores the
+    # resolved theme.
+    if diagram_type == "timeline":
+        return render_timeline_diagram_to_svg(body, resolved_theme)
 
     if diagram_type in _UNSUPPORTED_DIAGRAM_TYPES:
         raise UnsupportedDiagramType(diagram_type)
