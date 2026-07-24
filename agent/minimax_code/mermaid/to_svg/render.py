@@ -79,11 +79,20 @@ Dispatch model (mirrors grok ``render_mermaid_to_svg`` L36-L163)
      (same-branch / branch-down / merge-up), mirroring grok lib.rs L122-L123.
      gitGraph is theme-aware through 4 channels (background / text_color /
      edge_color / node_fill).
-   * The 7 remaining independent per-diagram renderers (er / class / mindmap
+   * The ``mindmap`` renderer (R292) has its own dedicated arm --
+     :func:`render_mindmap_diagram_to_svg` parses an indented node tree,
+     assigns each root branch a section colour from the 8-hue palette, lays the
+     tree out radially around a central root, and emits an SVG with
+     quadratic-bezier edges, six node shapes (default / rect / rounded-rect /
+     circle / bang / hexagon), and underline decoration, mirroring grok lib.rs
+     L120-L121. mindmap is NOT theme-aware -- grok hard-codes mermaid's default
+     mindmap palette (navy root + 8 section hues) and ignores the resolved
+     theme (the ``_theme`` param is accepted for dispatch symmetry only).
+   * The 6 remaining independent per-diagram renderers (er / class
      / requirement / sequence
      / xychart / c4)
      raise :class:`UnsupportedDiagramType` here. Their per-diagram leaves ship
-     in later rounds (R292+); until then the dispatch reports the type as
+     in later rounds (R293+); until then the dispatch reports the type as
      unsupported rather than running a renderer that does not exist yet.
    * The default path runs the already-migrated flowchart stack
      (``parser.parse_mermaid`` -> ``layout.compute_layout[_with_config]`` ->
@@ -117,6 +126,7 @@ from .info_diagram import render_info_diagram_to_svg
 from .journey_diagram import render_journey_diagram_to_svg
 from .kanban_diagram import render_kanban_diagram_to_svg
 from .layout import compute_layout, compute_layout_with_config
+from .mindmap_diagram import render_mindmap_diagram_to_svg
 from .packet_diagram import render_packet_diagram_to_svg
 from .parser import parse_mermaid
 from .pie_diagram import render_pie_diagram_to_svg
@@ -146,16 +156,15 @@ __all__ = [
 #: in R285, the ``kanban`` renderer shipped in R286, the ``timeline``
 #: renderer shipped in R287, the ``quadrantChart`` renderer shipped in
 #: R288, the ``block-beta`` renderer shipped in R289, the ``journey``
-#: renderer shipped in R290, and the ``gitGraph`` renderer shipped in
-#: R291 (their dedicated arms sit above this check); the 11 tokens below
-#: are the remaining unsupported surface.
+#: renderer shipped in R290, the ``gitGraph`` renderer shipped in R291, and
+#: the ``mindmap`` renderer shipped in R292 (their dedicated arms sit above
+#: this check); the 10 tokens below are the remaining unsupported surface.
 #: The five ``C4*`` tokens share grok's single ``c4_diagram`` renderer
 #: (lib.rs L130-L139).
 _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
     {
         "erDiagram",
         "classDiagram",
-        "mindmap",
         "requirementDiagram",
         "sequenceDiagram",
         "xychart-beta",
@@ -383,6 +392,17 @@ def render_mermaid_to_svg(
     # ``node_fill`` -> tag-label-bkg + commit-merge/reverse/highlight.
     if diagram_type == "gitGraph":
         return render_gitgraph_diagram_to_svg(body, resolved_theme)
+
+    # ``mindmap`` (R292): the dedicated mindmap renderer. Mirrors grok lib.rs
+    # L120-L121 -- :func:`render_mindmap_diagram_to_svg` receives the
+    # front-matter-stripped body and lays an indented node tree out radially
+    # around a central root, with quadratic-bezier edges and six node shapes
+    # (default / rect / rounded-rect / circle / bang / hexagon). mindmap is
+    # NOT theme-aware (grok hard-codes mermaid's default palette and ignores
+    # the resolved theme); the ``_theme`` param is accepted for dispatch
+    # symmetry only.
+    if diagram_type == "mindmap":
+        return render_mindmap_diagram_to_svg(body, resolved_theme)
 
     if diagram_type in _UNSUPPORTED_DIAGRAM_TYPES:
         raise UnsupportedDiagramType(diagram_type)

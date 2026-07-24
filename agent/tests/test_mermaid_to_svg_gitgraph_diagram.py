@@ -398,6 +398,7 @@ def test_module_all_is_single_symbol() -> None:
 
 
 def test_render_dispatch_no_longer_lists_gitgraph_unsupported() -> None:
-    """R291 removes ``gitGraph`` from the unsupported set (12 -> 11 tokens)."""
+    """R291 removed ``gitGraph`` (12 -> 11 tokens); R292 later removed
+    ``mindmap`` (11 -> 10), so the set keeps shrinking as renderers ship."""
     assert "gitGraph" not in render_mod._UNSUPPORTED_DIAGRAM_TYPES
-    assert len(render_mod._UNSUPPORTED_DIAGRAM_TYPES) == 11
+    assert len(render_mod._UNSUPPORTED_DIAGRAM_TYPES) == 10
