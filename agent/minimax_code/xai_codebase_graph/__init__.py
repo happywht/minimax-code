@@ -47,8 +47,16 @@ ser/de (R305d) + the tree-sitter bridge (R305e) follow under ``scope_graph``.
 
 R305f lands the ``manager`` subpackage cache layer (grok ``cache.rs``): the
 8 cache symbols re-exported here (``CACHE_FILE_NAME`` / ``CacheError`` + the
-6 path / probe / load / save helpers) mirror grok ``lib.rs`` L89-L93. The
-``builder`` / ``lock`` siblings and ``navigation`` follow in later bricks.
+6 path / probe / load / save helpers) mirror grok ``lib.rs`` L89-L93.
+
+R305g adds the ``manager`` builder sibling (grok ``builder.rs``): the
+:class:`IndexBuilder` runtime + the :class:`IndexBuildError` base are
+re-exported here, mirroring grok ``lib.rs`` re-exporting ``IndexBuilder`` +
+the ``IndexError`` enum. The 3 :class:`IndexBuildError` subclasses
+(:class:`IndexWalkError` / :class:`IndexThreadPanic` / :class:`IndexIOError`)
+stay ``manager``-subpackage-only (mirrors the cache design: grok's single
+enum sits at the crate root, the distinguishable failure modes live one
+layer down). The ``lock`` sibling and ``navigation`` follow in later bricks.
 
 The crate-root barrel mirrors grok ``lib.rs``: grok re-exports ``types``,
 ``scope_graph`` node symbols, and the ``interner`` pair at the crate root.
@@ -86,6 +94,8 @@ from minimax_code.xai_codebase_graph.languages import (
 from minimax_code.xai_codebase_graph.manager import (
     CACHE_FILE_NAME,
     CacheError,
+    IndexBuilder,
+    IndexBuildError,
     cache_exists,
     cache_size,
     get_cache_path,
@@ -155,4 +165,10 @@ __all__ = [
     "load_index",
     "save_index",
     "save_index_async",
+    # manager (R305g) -- grok lib.rs re-exports ``IndexBuilder`` + the
+    # ``IndexError`` enum at the crate root. The Python port exposes the
+    # :class:`IndexBuilder` runtime + the :class:`IndexBuildError` base (the
+    # enum equivalent); the 3 subclasses stay manager-subpackage-only.
+    "IndexBuildError",
+    "IndexBuilder",
 ]

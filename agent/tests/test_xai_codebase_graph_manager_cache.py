@@ -294,17 +294,20 @@ def test_save_index_worker_swallows_cache_error_and_logs(
 # === barrel contract =======================================================
 
 
-def test_manager_barrel_exports_twelve_symbols() -> None:
-    """``manager/__init__`` ``__all__`` = constant + 5 error classes + 6 functions = 12.
+def test_manager_barrel_includes_cache_twelve() -> None:
+    """``manager/__init__`` ``__all__`` includes the 12 cache symbols (subset).
 
-    grok ``manager/mod.rs`` re-exports 8 cache symbols (constant + ``CacheError``
-    + 6 functions). The Python port additionally re-exports the 4 ``CacheError``
-    subclasses because the subclass-per-variant clone needs them reachable at
-    the package surface for ``except LegacyCacheFormat`` arms.
+    R305g adds 5 builder symbols to the manager barrel (``IndexBuilder`` + the
+    ``IndexBuildError`` base + 3 variants), so the full set is now 17 -- the
+    exhaustive ``len == 17`` assertion lives in
+    :mod:`tests.test_xai_codebase_graph_manager_builder`. The cache suite owns
+    only the cache-subset contract here: the 12 cache symbols (grok's 8
+    re-exports + the 4 ``CacheError`` subclasses needed for ``except`` arms)
+    must all be present.
     """
     from minimax_code.xai_codebase_graph import manager
 
-    expected = {
+    cache_subset = {
         "CACHE_FILE_NAME",
         "CacheDeserializeError",
         "CacheError",
@@ -318,8 +321,8 @@ def test_manager_barrel_exports_twelve_symbols() -> None:
         "save_index",
         "save_index_async",
     }
-    assert set(manager.__all__) == expected
-    assert len(manager.__all__) == 12
+    assert cache_subset <= set(manager.__all__)
+    assert len(cache_subset) == 12
 
 
 def test_crate_root_barrel_exports_cache_subset() -> None:
