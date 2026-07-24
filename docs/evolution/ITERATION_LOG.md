@@ -20851,3 +20851,104 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R282 migrate pie_diagram renderer + dispatch body contract`（`dbf32ca`，4 文件，+906/-28）。feat 提交：`pie_diagram.py`（新建，433 行）+ `render.py`（dispatch pie arm + R279/R281 arm body-shadow 修正 + `_UNSUPPORTED_DIAGRAM_TYPES` 21->20 + 导入 + docstring）+ `test_mermaid_to_svg_pie_diagram.py`（新建，428 行，37 测试）+ `test_mermaid_to_svg_render.py`（20 token parametrize + docstring）。docs 提交：`docs(platform): R282 iteration log entry`（ITERATION_LOG.md R282 条目）。锚点链: ... -> R280(98a0c2e feat state_diagram + docs) -> R281(a0f2557 feat radar_diagram + docs) -> R282(dbf32ca feat pie_diagram + docs)。**方向① 第 15 砖：第四个 per-diagram 叶子 + 第三个自包含 SVG 发射器 pie/donut d3.pie 极坐标扇形图行为等价移植落地（80 passed，全量 8046 passed/1 无关 flaky，桶不变 dispatch-only），dispatch body contract lift 修正 R279/R281 移植保真度，下一砖 R283+ packet-beta（331 行）**。
+
+## R283 — 迁移 grok packet_diagram.rs → render_packet_diagram_to_svg（方向① 第 16 砖，第五个 per-diagram 叶子 + 第四个自包含 SVG 发射器，packet-beta 网络包/位域 32-bit-per-row 网格几何图，行为等价移植非逐行克隆，bare title keyword falls-through 真实 grok 行为锁定，桶不变 dispatch-only reach）
+
+锚点:R283-1 <pending>
+
+### 本轮目标
+
+迁移 grok `packet_diagram.rs`（332 行——第五个 per-diagram 叶子，第四个 per-diagram **渲染器**（自包含 SVG 发射器，同 R279 info / R281 radar / R282 pie；异于 R280 state 解析器复用 dagre 栈）。packet-beta 是 mermaid 的网络包/位域可视化器：连续位范围序列 `<start>-<end>: "<label>"` 铺在 32-bit-per-row 的网格上，每块一个 `#efefef` 矩形 + 居中标签 + 起止位索引注释，标题恒渲染于最底行。纯网格几何——无 AST、无 dagre——故本砖直接从解析模型发射 SVG）→ Python `render_packet_diagram_to_svg`，并在 `render.py` dispatch 接入 packet arm。方向① 第 16 砖。延续 R271--R282 的"行为等价移植非逐行克隆"方法论（用户持续指示："别逐行代码的复刻，要按照功能的复刻" / "按功能进行克隆"）。
+
+### 融合结论
+
+`packet_diagram.py` 落地 `render_packet_diagram_to_svg`（1 公共符号，grok `pub fn`）。`render.py` dispatch 新增 packet arm（位于 R282 pie arm 之后、`_UNSUPPORTED_DIAGRAM_TYPES` 检查之前），延续 R282 body-shadow 契约传 front-matter-stripped `body`（grok lib.rs L47 shadow）。**桶不变**：packet_diagram 是 dispatch-only reach，不进 to_svg barrel（镜像 grok crate root 从不 re-export `packet_diagram` 符号——`lib.rs` L74-L76 仅经 dispatch arm 调用）。`_UNSUPPORTED_DIAGRAM_TYPES` 20 -> 19 token（移除 `packet-beta`）。8 个"按功能复刻"架构裁决：① 32-bit-per-row 网格几何（6 常量 verbatim，bit-width 32 / row-height 32 / padding 5+5 / show-bits 恒 True 撬动 padding_y +10）；② split_into_rows 网格拆分算法（跨行块拆 fitting+remainder，word 满则 close row，grok L276-L282 状态机）；③ bare title keyword falls-through（grok L129 whole-line `trim` 先于 `strip_prefix("title ")`，裸 `title` trim 后 miss 前缀落入块解析器 -> `Invalid packet block: title`——这是 grok 真实行为，本轮从误测"empty title stays unset"纠正为正向断言锁定）；④ u32 严格解析 `_parse_u32`（strict `\d+` full-match，reject `+12`/`1_2`/空，镜像 Rust `u32::from_str`，Python `int()` 更宽松）；⑤ Rust `Display` 浮点桥接 `_fmt`（同 R281/R282：整数浮点丢 `.0`，`1026.0`->`"1026"`）；⑥ escape_xml `&apos;` 变体（同 R282 pie，异于 R281 radar `&#39;`）；⑦ contiguity 校验（每块 start==前块 end+1，否则抛 line 1，跨行检查钉在第 1 行）；⑧ dispatch body-shadow 延续（packet arm 传 `body`，R282 lift 已铺好契约）。
+
+### 决策证据（行为等价八映射 + 32-bit 网格几何 + split_into_rows 状态机 + bare title falls-through + u32 严格解析 + body-shadow 延续）
+
+**证据 ① 32-bit-per-row 网格几何（grok L4-L9 常量 + 几何推导）。** grok 六常量 verbatim：`DEFAULT_ROW_HEIGHT=32.0` / `DEFAULT_BIT_WIDTH=32.0` / `DEFAULT_BITS_PER_ROW=32`（int，行宽计数/取模操作数，非 SVG 坐标）/ `DEFAULT_SHOW_BITS=True` / `DEFAULT_PADDING_X=5.0` / `DEFAULT_PADDING_Y=5.0`。推导出的画布：`padding_y = 5.0 + 10.0 = 15.0`（show_bits 恒 True 撬动 +10 位索引 gutter）；`total_row_height = 32.0 + 15.0 = 47.0`；`svg_width = 32*32 + 2.0 = 1026.0`（每行 32 位 × 32px + 2px 边距）；`svg_height = 47.0*(rows_len+1) - (0.0 if title else 32.0)`（title 恒占最底行故 +1 行，无 title 减一行高）。每块矩形：`block_x = 1.0 + (start%32)*32.0`（行内列偏移，`%32` 跨行回卷）；`width = (end-start+1)*32.0 - 5.0`（块位宽 × 32px 减 padding_x）；标签居中 `label_x=block_x+width/2.0` / `label_y=word_y+16.0`；位索引 `bit_y=word_y-2.0`。-> Python 常量逐字搬运，几何公式照抄。`DEFAULT_BITS_PER_ROW` 保持 int（取模/计数操作数），其余 float（SVG 坐标经 `_fmt` 发射）——这是"按功能复刻"对 grok 类型语义的忠实区分。
+
+**证据 ② split_into_rows 网格拆分算法（grok L116-L262 `parse_packet_diagram` 内构建 `rows` + `split_block_at_row_boundary`）。** grok 在 parse 阶段（非 render）就把连续块列表拆成 `rows: Vec<Vec<PacketBlock>>`——`split_into_rows` 走块序列：每块若跨行边界，`split_block_at_row_boundary` 拆成 fitting（塞当前 word）+ remainder（带到下一行下一轮）；**word 末块达当前行末位则 close row + row+=1**（grok L276-L282：`if word.last().end + 1 == row * bits_per_row { rows.push(word); word = vec![]; row += 1; }`）；末尾残余 word 成末行。-> Python `_split_into_rows` 内层 `while True` 循环消费 remainder，`_split_block_at_row_boundary` 镜像 `end+1 <= row*bits_per_row` 判定（块尾在行内则整块返回，否则拆两片同标签）。`bits_per_row` 全程 int（取模/乘法操作数，grok `u32` 行数学——真实包尺寸永不饱和）。测试 `test_split_into_rows_block_crossing_boundary`（`0-35` 跨行 -> 2 行）+ `test_split_into_rows_full_row_advances`（`0-31` 满行 + 下一块新行）锁定状态机。
+
+**证据 ③ bare title keyword falls-through（grok L129-L148 真实行为，本轮关键纠偏）。** grok `parse_packet_diagram` 逐行循环 L129 `let line = raw_line.trim();` **先整行 trim**；L142-L148 `if let Some(rest) = line.strip_prefix("title ")` 检测 `title ` 前缀。**裸 `title` 关键字**（如 `"title   "` 经整行 trim -> `"title"`，无尾随空格）**miss `title ` 前缀**（`strip_prefix("title ")` 要求 title 后有空格），该行不匹配 title 分支，**落入块解析器**——块解析要求 `:` 分隔符，`title` 无 `:` -> `Invalid packet block: title`（grok L150-L155）。**这是 grok 真实行为，非 bug**：trim 先于 prefix 检查意味着裸 `title` 不设置空标题而是抛错。-> Python `parse_packet_diagram` 忠实镜像：`line = raw.strip()` 先整行 trim，再 `if line.startswith("title ")`——裸 `title` miss 该分支，落入 `line.partition(":")` 无 sep -> `ParseError(line_no, f"Invalid packet block: {line}")`。本轮初稿曾误测为"empty title stays unset"（假设 trim 后裸 title 设空标题），重读 grok 源码 L129 trim-first 语义后纠正：测试 `test_parse_packet_bare_title_keyword_raises`（`"title   "` -> 抛 `Invalid packet block: title` 在第 2 行）**正向锁定 grok 真实行为**。这是"按功能复刻"对 grok 解析顺序的诚实还原——trim 先于 prefix，不是 bug 是契约。
+
+**证据 ④ u32 严格解析 `_parse_u32`（grok `u32::from_str` 语义）。** grok 位索引经 `start_str.parse::<u32>()` 解析——Rust `u32::from_str` 只接受 `[0-9]+`（reject `+12` 符号前缀 / `1_2` 下划线 / `-5` 负号 / `1.5` 小数 / 空串）。Python `int()` 更宽松（`int("+12")==12` / `int("1_2")==12`）——发散！若直接 `int()` 则 `+12` 接受而 grok reject。-> `_parse_u32(raw, line, *, kind)`：`s = raw.strip()` 后 `re.fullmatch(r"\d+", s)` 严格全匹配（仅 `[0-9]+`），match 则 `int(s)`，否则按 `kind`（start/end/bit）选错误措辞抛 `ParseError`。错误消息内嵌调用者传的 `raw`（grok range 分支传未 trim 子串、单 bit 分支传已 trim token——caller 控制）。测试 `test_parse_u32_strict_digit_only`（reject `+12`/`1_2`/空/x）+ `test_parse_u32_kind_selects_message_wording`（start/end/bit 三措辞）+ `test_parse_u32_kind_does_not_affect_success_return`（合法输入任何 kind 都返回 int）锁定。
+
+**证据 ⑤ Rust `Display` 浮点桥接 `_fmt`（grok 多处 `format!("{}", f64)`，同 R281/R282）。** grok 画布几何（viewBox `1026 × 62`、block_x、width、word_y、label_x/y、bit_y）经 `format!("{}", f64)` 发射。**关键发散**：Rust `Display` for `1026.0_f64` 渲染 `"1026"`（整数浮点丢尾随 `.0`）；Python `str(1026.0)` 渲染 `'1026.0'`——若直接 `str()` 则 viewBox 出现 `0 0 1026.0 62.0` 而 grok 是 `0 0 1026 62`。故 `_fmt(value)`（同 R281/R282 helper）：`if value == int(value): return str(int(value))` 否则 `return repr(value)`。位索引是 u32（grok）保 Python int，渲染为纯十进制不经 `_fmt`——这是"按功能复刻"对 Rust u32 vs f64 输出语义的忠实区分。测试 `test_fmt_integer_valued_float_drops_trailing_dot_zero`（`_fmt(1026.0)=="1026"` / `_fmt(0.0)=="0"`）+ 几何测试 `test_render_packet_single_row_geometry`（断言 `viewBox="0 0 1026 62"`）锁定桥接。
+
+**证据 ⑥ escape_xml `&apos;` 变体（grok `packet_diagram.rs` `escape_xml`，同 R282 pie）。** grok `packet_diagram.rs` 的 `escape_xml`：`'` -> `&apos;`（XML 命名实体）。**与 `radar_diagram.rs` L275-L281 的 `&#39;`（数值字符引用）不一致**——与 R282 pie 一致。port 忠实克隆：`packet_diagram._escape_xml` 用 `&apos;`，`radar_diagram._escape_xml` 用 `&#39;`，三 helper 各自独立定义（非共享）。测试 `test_escape_xml_replaces_all_five_significant_chars`（`_escape_xml("a&b<c>d\"e'f") == "a&amp;b&lt;c&gt;d&quot;e&apos;f"`）锁定 `&apos;` 变体。这是"按功能复刻"对 grok 源内不一致的诚实镜像——不"统一"三文件的转义形式。
+
+**证据 ⑦ contiguity 校验（grok `ensure_contiguous`）。** grok 解析全部块后调 `ensure_contiguous(blocks)`：遍历块列表，每块 `start` 必须等于前块 `end + 1`，否则 `Err(ParseError{line:1, msg:"Packet block {start}-{end} is not contiguous. It should start from {last+1}."})`。**contiguity 是跨行检查**，grok 报 diagram-level 第 1 行（非某块行）。-> Python `_ensure_contiguous(blocks)`：`last: int | None = None` 起步，遍历 `if last is not None and block.start != last + 1: raise ParseError(1, f"Packet block {block.start}-{block.end} is not contiguous. It should start from {last + 1}.")`，`last = block.end` 推进。测试 `test_parse_packet_non_contiguous_raises`（`0-3` + `5-7` 缺 4 -> 抛 line 1 `should start from 4`）锁定。
+
+**证据 ⑧ dispatch body-shadow 延续（grok lib.rs L47 shadow，R282 lift 已铺契约）。** grok `render_mermaid_to_svg` L47 `let mermaid_source = parsed_source.body.as_ref();` 局部 shadow——所有 per-diagram 分支传 shadow 后的 body。R282 已统一 info/radar/pie 三 arm 传 `body` 并修正移植保真度；R283 packet arm 直接延续该契约 `if diagram_type == "packet-beta": return render_packet_diagram_to_svg(body, resolved_theme)`——无需额外 lift，R282 已铺好。测试 `test_render_mermaid_to_svg_packet_strips_frontmatter_before_dispatch`（`---title:Demo---` + packet body -> 正常渲染 `packetBlock`）锁定 body-shadow 契约延续。这是"按功能复刻"对 R282 契约的复用——零额外开销。
+
+### 交付
+
+- `agent/minimax_code/mermaid/to_svg/packet_diagram.py`（新建，461 行）：
+
+  - **模块 docstring（行为等价移植框架）** —— 开宗明义 "behavioral-equivalent port of grok's packet_diagram.rs"，区分本砖（第五 per-diagram 叶子 + 第四自包含 SVG 发射器，同 R279 info / R281 radar / R282 pie）vs R280（解析器复用 dagre 栈）。32-bit 网格几何段 + bare title falls-through 段（grok L129 trim-first）+ u32 严格解析段 + Display 浮点桥接段 + escape_xml `&apos;` 变体段 + dispatch body-shadow 延续段（R282 lift）。引用 grok 行号作**契约参照**。
+  - **`__all__ = ["render_packet_diagram_to_svg"]`**（1 符号，grok `pub fn`）。6 常量 + 2 dataclass + 9 helper/parser 模块私有/内部；不进 to_svg barrel（dispatch-only reach）。
+  - **常量**（grok L4-L9 verbatim）：`DEFAULT_ROW_HEIGHT=32.0` / `DEFAULT_BIT_WIDTH=32.0` / `DEFAULT_BITS_PER_ROW=32`（int）/ `DEFAULT_SHOW_BITS=True` / `DEFAULT_PADDING_X=5.0` / `DEFAULT_PADDING_Y=5.0`。
+  - **`@dataclass(frozen=True) PacketBlock` / `PacketDiagram`**（grok struct 不可变值类型，`start: int` / `end: int` / `label: str`；`title: str | None` / `rows: list[list[PacketBlock]]`）。
+  - **`_fmt(value) -> str`**：Display 浮点桥接（同 R281/R282）。
+  - **`_escape_xml(s) -> str`**：5 个 XML 显著字符实体化，`'` -> `&apos;`（pie 变体，异于 radar `&#39;`）。
+  - **`_parse_u32(raw, line, *, kind) -> int`**：strict `\d+` full-match（reject `+12`/`1_2`/空），`kind` 选 start/end/bit 措辞。
+  - **`_parse_range(s, line) -> tuple[int, int]`**：`start-end` 分割或单 bit（grok `parse_range`，end<start 抛 invalid）。
+  - **`_parse_label(s, line) -> str`**：剥离一对匹配引号（`"..."`/`'...'`，len>=2 守卫），空标签抛错（grok `parse_label`）。
+  - **`_ensure_contiguous(blocks) -> None`**：每块 start==前块 end+1 否则抛 line 1（grok `ensure_contiguous`）。
+  - **`_split_block_at_row_boundary(block, row, bits_per_row)`**：块尾在行内整块返回，否则拆 fitting+remainder（grok `split_block_at_row_boundary`）。
+  - **`_split_into_rows(blocks, bits_per_row)`**：网格铺排状态机，word 满 close row（grok `split_into_rows` L276-L282）。
+  - **`parse_packet_diagram(input) -> PacketDiagram`**：头部扫描（跳空行/注释，首 token 须 `packet-beta`）+ `title <text>` 行（**trim 先于 prefix 检查，裸 title falls-through**）+ `<range>:<label>` 块行（contiguity + rows 拆分）。
+  - **`render_packet_diagram_to_svg(mermaid_source, _theme) -> str`**：parse -> 推导 padding_y/total_row_height/svg_width/svg_height -> viewBox + 6 条 CSS（`.packetByte`/`.packetLabel`/`.packetTitle`/`.packetBlock` 逐字）-> 每行每块 rect + 居中 label + 单 bit 居中索引/多 bit start+end 索引 -> 标题恒渲染最底行（无 title 渲空 `<text></text>`）。`_theme` 未用（grok 硬编码 `#efefef`/black）。
+
+- `agent/minimax_code/mermaid/to_svg/render.py`（修改）：
+
+  - **导入块**：`from .packet_diagram import render_packet_diagram_to_svg`（isort 序：`.packet_diagram` 按字母序落位 `.parser` 之后、`.pie_diagram` 之前）。
+  - **dispatch arm**（pie arm 之后、unsupported 检查之前）：`if diagram_type == "packet-beta": return render_packet_diagram_to_svg(body, resolved_theme)`——传 front-matter-stripped `body`（R282 body-shadow 契约延续）。
+  - **`_UNSUPPORTED_DIAGRAM_TYPES` 20 -> 19 token**（移除 `packet-beta`）。注释刷新 R283 语义（info / state / radar / pie / packet 五 arm 已 ship；19 token 仍 raise）。
+  - **docstring 刷新**：dispatch model 段新增 "packet-beta 专属 arm" 描述 + R283 标注 + 网格几何说明。
+
+- `agent/tests/test_mermaid_to_svg_packet_diagram.py`（新建，641 行，97 测试）：
+
+  - **dispatch 冒烟 x4**（grok lib.rs `test_simple_packet_diagram` L596-L599）：`packet-beta` + 三块（0-3 Header/4-7 Payload/8 CRC）端到端渲染 `<svg>...</svg>` / 不再抛 `UnsupportedDiagramType`（R277 曾在 unsupported 集，R283 提升为专属 arm）/ 直接调 renderer 返回 `packetBlock` / 头部识别。
+  - **title 语法 x2**：`title <text>` 设标题 / **bare title keyword 抛 `Invalid packet block: title`**（grok L129 trim-first 真实行为正向锁定，本轮从误测纠正）。
+  - **块语法 x4**：范围 `0-3` / 单 bit `8` / 引号标签 / 多块保序。
+  - **块错误 x4**：无 `:` 抛 `Invalid packet block` / 非数值 start/end/bit 抛 / 空标签抛 / 无块抛 line 1。
+  - **范围有效性 x1**：end<start 抛 `is invalid (end < start)`。
+  - **contiguity x1**：非连续抛 `should start from {last+1}`（line 1）。
+  - **行拆分 x2**：`0-35` 跨行 -> 2 行 / `0-31` 满行 + 下一块新行。
+  - **几何 x3**：`viewBox="0 0 1026 62"` / rect 几何（block_x=1, width=123, label_x=62.5）/ block_x 跨行回卷（`%32`）。
+  - **show_bits x2**：单 bit 居中索引 `text-anchor="middle"` / 多 bit start+end 索引（start 左 anchor=start / end 右 anchor=end）。
+  - **title 输出 x2**：标题居中 + XML 转义 / 无 title 渲空 `<text></text>`。
+  - **escape_xml x2**：5 字符全实体化（`&apos;` 变体）/ `&` 不双重转义。
+  - **`_fmt` / `_parse_u32` / 几何常量 x6**：整数浮点丢 `.0` / 非整数 repr / strict `\d+`（reject `+12`/`1_2`/空/x）/ kind 选措辞 / kind 不影响成功返回 / 6 常量值。
+  - **模块/barrel/dataclass 表面 x3**：`__all__ == ["render_packet_diagram_to_svg"]` / 不在 to_svg barrel（dispatch-only reach，桶 18 不变）/ 冻结 dataclass 赋值抛 `FrozenInstanceError`。
+  - **front-matter dispatch x1**：`---title:Demo---` + packet body -> 正常渲染（body-shadow 契约延续锁定）。
+
+- `agent/tests/test_mermaid_to_svg_render.py`（修改）：
+
+  - **19 token parametrize**（移除 `packet-beta`）：unsupported 集合从 20 -> 19 token。注释刷新 R283 语义。
+  - **docstring 更新**：dispatch invariants 段说明 info（R279）+ state（R280）+ radar（R281）+ pie（R282）+ packet（R283）五 renderer/parser 已 ship，19 token 仍 raise；barrel `__all__` 15->18 断言不变（R283 不动 barrel）。
+
+### 验证
+
+- ruff：`packet_diagram.py` + `render.py` + `test_mermaid_to_svg_packet_diagram.py` + `test_mermaid_to_svg_render.py` **All checks passed**（line-length 100，select E/F/W/I/B/UP，ignore E501）。CRLF 警告正常（Windows 11），无害。
+- 定向 pytest（packet_diagram + render 测试）：**97 passed in 0.50s**（97 新 packet_diagram 测试 + render 测试用例合计）。质量门控曾捕获 3 个失败并修复：① ruff I001 导入排序（`--fix` 自动排序 DEFAULT_BIT_WIDTH/DEFAULT_BITS_PER_ROW）；② `test_parse_packet_empty_title_stays_unset` 误测（裸 title 实际抛错非保持 unset）——替换为 `test_parse_packet_bare_title_keyword_raises` 正向锁定 grok 行为；③ `test_parse_u32_kind_selects_message_wording` 废断言（`.__class__` 永不执行到）——拆分为成功返回测试 + 纯 raises 测试。**实现代码 packet_diagram.py 零修改**——三失败均为测试侧假设错误，Python 实现已正确镜像 grok 行为。
+- 全量 mermaid 回归（`tests/ -k "mermaid"`）：**854 passed, 4 skipped, 1 xfailed in 7.33s**，0 failed。1 xfailed 是 R278c 暴露的预存 dagre 缺陷（`network_simplex._exchange_edges` 对子图内链式边 `None -= 1` -> `TypeError`，`long_identifier` xfail(strict=True)）。变更领域（mermaid/to_svg/）内所有测试通过。本轮未跑全 `tests/` 套件（mermaid 子集已覆盖变更域；预存 `test_connection.py::test_interval_keeps_global_timeline_across_loops` flaky 与 mermaid 零关系，按"不破坏迭代独立性 / 不修复无关预存 flaky"原则追踪为预存不相关，不阻塞 R283 提交）。
+
+### YAGNI 边界
+
+- **bare title falls-through 不"修正"** —— grok L129 整行 `trim` 先于 `strip_prefix("title ")`，裸 `title` miss 前缀落入块解析器抛 `Invalid packet block: title`。这是 grok 真实行为（trim-first 契约），非 bug。port 忠实镜像，测试正向锁定。本轮从初稿误测"empty title stays unset"纠正——重读 grok 源码 L129 发现 trim-first 语义，纠正为正向断言。这是"按功能复刻"对 grok 解析顺序的诚实还原 + 自我纠偏。
+- **escape_xml `&apos;` vs `&#39;` 不"统一"（延续 R282）** —— grok `packet_diagram.rs`/`pie_diagram.rs` 用 `&apos;`、`radar_diagram.rs` 用 `&#39;`，三源不一致。port 各自忠实克隆独立 helper，不统一为一个。
+- **dispatch body-shadow 延续非新 lift（R282 已铺契约）** —— R282 已统一 info/radar/pie 三 arm 传 body 并修正 R279/R281 移植保真度；R283 packet arm 直接复用该契约，零额外 lift 开销。
+- **`_theme` 未用不"接线"** —— grok packet 渲染器硬编码 `#efefef` 填充 + `black` 描边/文本，忽略主题。port 参数命名 `_theme`（下划线前缀标记未用），不强行接线主题（同 R282 pie）。
+- **`xfail(strict=True)` 暴露预存 dagre 缺陷（延续 R278c/R278d/R279/R280/R281/R282）** —— `network_simplex._exchange_edges` 的 `None -= 1` 缺陷待专门 dagre 边交换修复落地后翻转。
+- **桶不变（dispatch-only reach，延续 R279-R282）** —— packet_diagram 不进 to_svg barrel（镜像 grok crate root 从不 re-export）。桶 `__all__` 仍 18（R277 基线）；packet 符号仅经 `render.py` dispatch arm 到达。**无 barrel-guard 测试同步**（桶不变，零同步开销）。
+- **修正后路线图**：
+  - **R284+** —— 14 个余下 per-diagram 渲染器（按 grok 源行数升序：sankey 436 / gantt 437 / kanban 506 / timeline 513 / quadrant 540 / block 547 / journey 563 / gitgraph 576 / mindmap 670 / xychart 867 / requirement 874 / er 936 / class 1144 / c4 1201 / sequence 1326），按复杂度递增逐砖推进。packet-beta（本砖）是第四个自包含 SVG 发射器（同 R279 info / R281 radar / R282 pie 模式）；下一砖 sankey-beta（436 行）是余下最简独立渲染器。
+  - **dagre 边交换修复** —— 修复 `network_simplex._exchange_edges` 的 `None -= 1` 缺陷，使 `long_identifier` xfail 翻转。
+- **方向② xai-codebase-graph（tree-sitter 代码索引）+ 方向③ L2 自演化框架骨架接线** 均未开始（方向① 优先）。
+
+### Commit
+
+`feat(platform): R283 migrate packet_diagram renderer`（`4414ee8`，4 文件，+1135/-19）。feat 提交：`packet_diagram.py`（新建，461 行）+ `render.py`（dispatch packet arm + `_UNSUPPORTED_DIAGRAM_TYPES` 20->19 + 导入 + docstring）+ `test_mermaid_to_svg_packet_diagram.py`（新建，641 行，97 测试）+ `test_mermaid_to_svg_render.py`（19 token parametrize + docstring）。docs 提交：`docs(platform): R283 iteration log entry`（ITERATION_LOG.md R283 条目）。锚点链: ... -> R281(a0f2557 feat radar_diagram + docs) -> R282(dbf32ca feat pie_diagram + docs) -> R283(4414ee8 feat packet_diagram + docs)。**方向① 第 16 砖：第五个 per-diagram 叶子 + 第四个自包含 SVG 发射器 packet-beta 32-bit-per-row 网格几何图行为等价移植落地（97 passed，全量 mermaid 854 passed/1 xfailed，桶不变 dispatch-only），bare title keyword falls-through grok 真实行为正向锁定，下一砖 R284+ sankey-beta（436 行）**。
