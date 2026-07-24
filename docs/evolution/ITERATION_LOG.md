@@ -20587,3 +20587,86 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R279 migrate grok info_diagram.rs -> render_info_diagram_to_svg (direction (1) brick 13, first per-diagram renderer, info version card static SVG, dispatch-only reach, barrel unchanged)`。feat 提交（4 文件）：`info_diagram.py`（新建，207 行）+ `render.py`（dispatch info arm + `_UNSUPPORTED_DIAGRAM_TYPES` 25->24 + 导入 + docstring）+ `test_mermaid_to_svg_info_diagram.py`（新建，16 测试）+ `test_mermaid_to_svg_render.py`（24 token parametrize + docstring）。docs 提交：`docs(platform): R279 iteration log entry`（ITERATION_LOG.md R279 条目）。锚点链: ... -> R278c(feat pure + docs) -> R278d(d4a487b feat mmdc + b7089e5 docs) -> R279(feat info_diagram + docs)。**方向① 第 13 砖：首个 per-diagram 渲染器 info 版本卡片行为等价移植落地（64 passed，全栈 1474 passed，桶不变 dispatch-only），下一砖 R280+ 余 18 per-diagram 渲染器**。
+
+## R280 — 迁移 grok state_diagram.rs → parse_state_diagram（方向① 第 11 砖，首个 per-diagram 解析器，stateDiagram 状态机解析为 FlowchartGraph AST 复用 dagre 栈，行为等价移植非逐行克隆，桶不变 dispatch-only reach）
+
+锚点:R280-1 <pending>
+
+### 本轮目标
+
+迁移 grok `state_diagram.rs`（172 行——首个 per-diagram **解析器**，将 `stateDiagram` / `stateDiagram-v2` 状态机语法解析为已有 `FlowchartGraph` AST，复用 R274 系列 + R275 系列已迁移的 dagre 栈 `compute_layout` + `render`，无 per-diagram layouter/renderer）→ Python `parse_state_diagram`，并在 `render.py` dispatch 接入 state arm。方向① 第 11 砖，第二个 per-diagram 叶子（R279 info 是独立渲染器首叶，本砖是解析器首叶）。延续 R271--R279 的"行为等价移植非逐行克隆"方法论（用户持续指示："别逐行代码的复刻，要按照功能的复刻" / "按功能进行克隆"）。
+
+### 融合结论
+
+`state_diagram.py` 落地 `parse_state_diagram`（1 公共符号，grok `pub fn`）。`render.py` dispatch 新增 state arm（位于 R279 info arm 之后、`_UNSUPPORTED_DIAGRAM_TYPES` 检查之前，经 `compute_layout` + `render` 无配置对）。**桶不变**：state_diagram 是 dispatch-only reach，不进 to_svg barrel（镜像 grok crate root 从不 re-export `state_diagram` 符号——`lib.rs` L63-L68 仅经 dispatch arm 调用）。`_UNSUPPORTED_DIAGRAM_TYPES` 24 -> 22 token（移除 `stateDiagram` / `stateDiagram-v2`）。4 个"按功能复刻"架构裁决：① BTreeMap→dict（grok `BTreeMap<String, NodeShape>` + `node_order: Vec<String>` -> Python 单个插入有序 `dict`——最终语句列表迭代 `node_order` 而非 map，BTreeMap 的键排序永不到达输出，故普通 dict 行为完全等价）；② 无内联 `_first_diagram_type_token`（与 R279 不同——`state_diagram.rs` 是手写行扫描器，自带 header 识别，不调 crate-root helper，故无循环引用边需 sidestep）；③ 死分支忠实克隆（grok L44 `raw.trim()` + L52 `strip_prefix("state ")` 使 L54-L58 "Expected state name after 'state'" 分支不可达——trim 剥离了 strip_prefix 所需的尾随空格，裸 `"state"` 行落入 L105-L108 `Unrecognized` 分支；port 保留此死分支以忠实镜像 grok 控制流）；④ Result→raise（grok `Result<FlowchartGraph, MermaidError::ParseError{line,message}>` -> "返回 graph / 引发 `ParseError(line, message)`"，`str(ParseError)` = `"Parse error at line {line}: {message}"`）。
+
+### 决策证据（行为等价六映射 + BTreeMap→dict + 死分支忠实克隆）
+
+**证据 ① 头部扫描（grok L9-L36）。** grok 手写 `while i < lines.len()` 循环，跳过空行 / `%%` 注释，取首行 `split_whitespace().next()` token，须为 `stateDiagram` 或 `stateDiagram-v2`，否则 `Err(ParseError { line: i+1, ... })`；全空体则 `Err` pinning line 1。-> Python `for idx, raw in enumerate(lines)` + `line.split()[0]` token 检查 `_STATE_HEADER_TOKENS` frozenset，`raise ParseError(idx+1, ...)`；`header_idx is None` 时 `raise ParseError(1, ...)`。1-based `line` 匹配 grok `i+1`（dispatch 传 front-matter-stripped body，故 line 是体行号）。
+
+**证据 ② BTreeMap→dict（grok L38-L40 + L112-L126）。** grok 维护 `nodes: BTreeMap<String, NodeShape>`（键排序 map，用于成员/形状查找）+ `node_order: Vec<String>`（首见序向量）。**关键洞察**：最终语句发射循环 `for id in node_order`（L112）迭代 `node_order` 而**非** BTreeMap，故 BTreeMap 的键排序属性**永不到达输出**。port 用单个 Python `dict`（插入有序，仅用于成员/形状查找）替代两者——行为完全等价，丢弃了从不使用的排序属性。这是"按功能复刻"的直接体现：复刻到达输出的行为，不逐行复刻从不触发的 Rust 数据结构特性。
+
+**证据 ③ 状态构型（grok L52-L75）。** grok `if let Some(rest) = line.strip_prefix("state ")` -> `rest.contains("<<choice>>")` -> `NodeShape::Diamond` / `rest.contains("<<fork>>") || rest.contains("<<join>>")` -> `NodeShape::ForkJoin` / 否则 `NodeShape::RoundedRectangle`。-> Python `if line.startswith("state "):` + `rest = line.removeprefix("state ").strip()` + `"<<choice>>" in rest` / `"<<fork>>" in rest or "<<join>>" in rest` 条件链 verbatim。`NodeShape` 枚举（`Diamond` / `ForkJoin` / `RoundedRectangle`）是 R271 `ast.py` 已迁移的同一枚举。
+
+**证据 ④ 过渡语法（grok L77-L103）。** grok `if let Some((from_raw, rhs)) = line.split_once("-->")` -> `rhs.split_once(':')` 分离 target 与可选 label（空 label -> `None`）。-> Python `if "-->" in line:` + `from_raw, rhs = line.split("-->", 1)` + `rhs.split(":", 1)` 分离；`label_text or None` 将空白 label 折叠为 `None`。`EdgeStyle::Arrow` 固定（state 过渡恒为箭头）。
+
+**证据 ⑤ [*] 伪状态归一化（grok L143-L154）。** grok `normalize_state_id(raw, is_from)`：`raw == "[*]"` -> source 时 `"__start"` / target 时 `"__end"`，否则 raw verbatim。-> Python `_normalize_state_id(raw, is_from)`：`raw.strip() == "[*]"` -> `"__start" if is_from else "__end"`。`__start` / `__end` 经 `_ensure_state_node` 标为 `NodeShape.StartState` / `EndState`（L166-L169），其余默认 `RoundedRectangle`。
+
+**证据 ⑥ 死分支忠实克隆（grok L44 / L52 / L54-L58）。** grok L44 `let line = raw.trim()` 先剥首尾空白；L52 `line.strip_prefix("state ")` 需前缀 `state `（含尾随空格）。因 `trim()` 已剥离尾随空格，裸 `"state"` 行（如 `"  state   "` -> trim -> `"state"`）无尾随空格，`strip_prefix("state ")` 失败，落入 L105-L108 `Unrecognized` 分支。故 L54-L58 `if rest.is_empty() { return Err(... "Expected state name after 'state'") }` 分支**不可达**——trim 总是剥离 strip_prefix 所需的分隔符。port 忠实克隆此控制流（保留 `if not rest: raise ParseError(line_no, "Expected state name after 'state'")`），测试以 `test_parse_state_bare_keyword_is_unrecognized` 锁定 quirk：裸 `"state   "` 行抛 `ParseError(2, "Unrecognized stateDiagram line: state")`（非 "Expected state name"）。这是"按功能复刻"对 grok 死分支的诚实镜像——不"修正"不可达分支，保留 grok 的实际控制流。
+
+### 交付
+
+- `agent/minimax_code/mermaid/to_svg/state_diagram.py`（新建，282 行）：
+
+  - **模块 docstring（行为等价移植框架）** —— 开宗明义 "behavioral-equivalent port ... NOT a line-by-line translation"，区分本砖（per-diagram **解析器**，解析为 FlowchartGraph 复用 dagre 栈）vs R279（per-diagram **渲染器**，独立 SVG 发射）。BTreeMap→dict 映射段 + "Why no inline `_first_diagram_type_token`" 段（与 R279 循环引用预防的对比）。引用 grok 行号作**契约参照**（非逐行翻译声明）。
+  - **`__all__ = ["parse_state_diagram"]`**（1 符号，grok `pub fn`）。2 helper 模块私有；不进 to_svg barrel（dispatch-only reach）。
+  - **`_STATE_HEADER_TOKENS: frozenset[str]`**：`{"stateDiagram", "stateDiagram-v2"}`（grok L19 token 检查）。
+  - **`_normalize_state_id(raw, is_from) -> str`**：`[*]` -> `__start`（source）/ `__end`（target）（grok L143-L154）。
+  - **`_ensure_state_node(nodes, node_order, node_id) -> None`**：首见节点自动创建（`__start`/`__end` -> StartState/EndState，否则 RoundedRectangle）（grok L156-L172）。
+  - **`parse_state_diagram(input) -> FlowchartGraph`**：头部扫描 -> 体扫描（`state ` 声明 + `-->` 过渡）-> 语句发射（节点先于边，StartState/EndState/ForkJoin -> `label=None`，否则 `label=node_id`；`EdgeStyle.Arrow`）-> 返回 `FlowchartGraph(direction=TopToBottom, statements=...)`。
+
+- `agent/minimax_code/mermaid/to_svg/render.py`（修改）：
+
+  - **导入块**：`from .state_diagram import parse_state_diagram`（isort 序：`.state_diagram` 按字母序落位 `.parser` 与 `.svg_renderer` 之间）。
+  - **`_STATE_DIAGRAM_TOKENS: frozenset[str]`**：新常量 `{"stateDiagram", "stateDiagram-v2"}`（dispatch arm 的 token 集）。
+  - **dispatch arm**（info arm 之后、unsupported 检查之前）：`if diagram_type in _STATE_DIAGRAM_TOKENS: graph = parse_state_diagram(body); layout_result = compute_layout(graph); return render(layout_result, resolved_theme)`——传 front-matter-stripped `body`（镜像 grok lib.rs L63-L68），经无配置 `compute_layout` + `render` 对。
+  - **`_UNSUPPORTED_DIAGRAM_TYPES` 24 -> 22 token**（移除 `stateDiagram` / `stateDiagram-v2`）。注释刷新 R280 语义。
+  - **docstring 刷新**：dispatch model 段新增 "state 专属 arm" 描述 + R280 标注。
+
+- `agent/tests/test_mermaid_to_svg_state_diagram.py`（新建，330 行，22 测试）：
+
+  - **dispatch 冒烟 x3**（grok lib.rs `test_simple_state_diagram` L635-L647）：v2 header + 经典 start/idle/working 循环端到端渲染 SVG / v1 `stateDiagram` header 同 arm / 两 header 不再抛 `UnsupportedDiagramType`（R277 曾在 unsupported 集，R280 提升为专属 arm）。
+  - **头部识别 x3**：跳过空行/注释 / 非状态首 token 抛 `ParseError`（line 1）/ 全空体抛 `ParseError`（line 1）。
+  - **[*] 伪状态归一化 x2**：`[*] --> Idle` source -> `__start` StartState / `Idle --> [*]` target -> `__end` EndState。
+  - **自动节点创建 x1**：`A --> B` 边命名未声明节点 -> 自动创建 RoundedRectangle，自标 label=id。
+  - **过渡语法 x3**：`A --> B` 无 label / `A --> B : start working` 带 label（空格保留）/ `A --> B :   ` 空白 label 折叠 None。
+  - **状态构型 x4**：`<<choice>>` -> Diamond / `<<fork>>` -> ForkJoin / `<<join>>` -> ForkJoin / 无构型 -> RoundedRectangle。
+  - **语句顺序 x5**：节点先于边首见序（4 节点 __start/Idle/Working/__end + 3 边）/ start/end/forkjoin 节点 None label / direction=TopToBottom / 已声明节点不被边重复创建 / 返回 FlowchartGraph 类型。
+  - **体行错误 x3**：裸 `state` 关键字 -> Unrecognized（死分支锁定，grok L44/L52/L54-L58）/ `foo bar baz` -> Unrecognized / 穿插空行/注释跳过。
+  - **模块/barrel 表面 x2**：`state_diagram_mod.__all__ == ["parse_state_diagram"]` / `"parse_state_diagram" not in to_svg.__all__`（dispatch-only reach，桶 18 不变）。
+
+- `agent/tests/test_mermaid_to_svg_render.py`（修改）：
+
+  - **22 token parametrize**（移除 `stateDiagram` / `stateDiagram-v2`）：unsupported 集合从 24 -> 22 token。注释刷新 R280 语义。
+  - **docstring 更新**：dispatch invariants 段说明 info renderer（R279）+ stateDiagram parser（R280）已 ship，22 token 仍 raise；barrel `__all__` 15->18 断言不变（R280 不动 barrel）。
+
+### 验证
+
+- ruff：`state_diagram.py` + `render.py` + `test_mermaid_to_svg_state_diagram.py` + `test_mermaid_to_svg_render.py` **All checks passed**（line-length 100，select E/F/W/I/B/UP，ignore E501）。（注：`mermaid/__init__.py` L65 预存 I001 lint 非本轮引入，追溯至提交 `d4a487b R278d`，按"不破坏迭代独立性"原则不在 R280 触碰。）
+- 定向 pytest（state_diagram + render + info_diagram 测试）：**72 passed**（22 新 state_diagram 测试 + 16 R279 info_diagram 测试 + 34 现有 render 测试用例）。
+- mermaid 套件（`-k mermaid`）：**739 passed, 1 xfailed**。1 xfailed 是 R278c 暴露的预存 dagre 缺陷（`network_simplex._exchange_edges` 对子图内链式边 `None -= 1` -> `TypeError`，`long_identifier` xfail(strict=True)），与 R280 零关系。
+- 全量回归（`tests/`）：**7985 passed, 14 skipped, 1 xfailed, 0 failed in 115.36s**。R280 只动 4 文件（mermaid to_svg 包内部 + 2 测试），影响面与 R279 同级，全量回归确认零回归。CRLF 警告正常（Windows 11），无害。
+
+### YAGNI 边界
+
+- **死分支不"修正"** —— grok L54-L58 "Expected state name after 'state'" 分支因 L44 `trim()` + L52 `strip_prefix("state ")` 而不可达；port 忠实保留此死分支（含 `if not rest: raise ParseError(...)` 行），测试以 `test_parse_state_bare_keyword_is_unrecognized` 锁定 quirk（裸 `"state   "` -> Unrecognized，非 "Expected state name"）。这是"按功能复刻"对 grok 控制流的诚实镜像。
+- **`xfail(strict=True)` 暴露预存 dagre 缺陷（延续 R278c/R278d/R279）** —— `network_simplex._exchange_edges` 的 `None -= 1` 缺陷待专门 dagre 边交换修复落地后翻转。
+- **桶不变（dispatch-only reach）** —— state_diagram 不进 to_svg barrel（镜像 grok crate root 从不 re-export）。桶 `__all__` 仍 18（R277 基线）；state 符号仅经 `render.py` dispatch arm 到达。**无 barrel-guard 测试同步**（对比 R278d 的 10 文件 13 断言同步——本轮桶不变，零同步开销）。
+- **修正后路线图**：
+  - **R281+** —— 17 个余下 per-diagram 渲染器（按 grok 源行数升序：radar 281 / pie 309 / packet 331 / sankey 436 / gantt 437 / kanban 506 / timeline 513 / quadrant 540 / block 547 / journey 563 / gitgraph 576 / mindmap 670 / xychart 867 / requirement 874 / er 936 / class 1144 / c4 1201 / sequence 1326），按复杂度递增逐砖推进。state（本砖）是 per-diagram 解析器首砖（解析为 FlowchartGraph 复用 dagre 栈）；后续独立渲染器砖（pie/radar 等）将引入 per-diagram layouter + renderer。
+  - **dagre 边交换修复** —— 修复 `network_simplex._exchange_edges` 的 `None -= 1` 缺陷，使 `long_identifier` xfail 翻转。
+- **方向② xai-codebase-graph（tree-sitter 代码索引）+ 方向③ L2 自演化框架骨架接线** 均未开始（方向① 优先）。
+
+### Commit
+
+`feat(platform): R280 port grok state_diagram.rs -> parse_state_diagram (direction (1) brick 11)`（`98a0c2e`，4 文件，+657/-27）。feat 提交：`state_diagram.py`（新建，282 行）+ `render.py`（dispatch state arm + `_STATE_DIAGRAM_TOKENS` 常量 + `_UNSUPPORTED_DIAGRAM_TYPES` 24->22 + 导入 + docstring）+ `test_mermaid_to_svg_state_diagram.py`（新建，330 行，22 测试）+ `test_mermaid_to_svg_render.py`（22 token parametrize + docstring）。docs 提交：`docs(platform): R280 iteration log entry`（ITERATION_LOG.md R280 条目）。锚点链: ... -> R278d(d4a487b feat mmdc + b7089e5 docs) -> R279(feat info_diagram + docs) -> R280(98a0c2e feat state_diagram + docs)。**方向① 第 11 砖：首个 per-diagram 解析器 stateDiagram 状态机行为等价移植落地（72 passed，mermaid 739 passed，全量 7985 passed，桶不变 dispatch-only），下一砖 R281+ 余 17 per-diagram 渲染器**。
