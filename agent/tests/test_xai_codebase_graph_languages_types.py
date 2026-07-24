@@ -172,10 +172,24 @@ def test_grammar_fn_alias_lives_in_types_leaf() -> None:
 
 
 def test_languages_barrel_exports_tslanguage_config() -> None:
-    """``languages/__init__`` ``__all__`` = TSLanguageConfig (grok mod.rs L13-18)."""
+    """``languages/__init__`` ``__all__`` aligns with grok ``mod.rs`` L13-18.
+
+    R303 landed only ``TSLanguageConfig`` (the config type). R304 extends the
+    barrel to the full grok ``mod.rs`` L13-L18 surface: the registry plus the
+    five ``*_lang`` factories. ``GrammarFn`` stays out (grok does not
+    re-export it).
+    """
     from minimax_code.xai_codebase_graph import languages
 
-    assert set(languages.__all__) == {"TSLanguageConfig"}
+    assert set(languages.__all__) == {
+        "LanguageRegistry",
+        "TSLanguageConfig",
+        "golang",
+        "js_lang",
+        "python_lang",
+        "rust_lang",
+        "ts_lang",
+    }
     assert languages.TSLanguageConfig is types_leaf.TSLanguageConfig
     assert TSLanguageConfigFromSubpkg is TSLanguageConfig
 

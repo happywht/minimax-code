@@ -22,8 +22,16 @@ definitions query string, resolves symbol-type names to ``SymbolId``, and
 defers the tree-sitter runtime binding (``grammar`` optional) so the type layer
 stays stdlib-clean.
 
-Downstream slices (``languages/mod.rs`` registry + factories,
-``scope_graph/graph.rs`` runtime, ``manager/``, ``navigation``) follow in R304+.
+R304 lands the language registry (grok ``languages/mod.rs``):
+:class:`LanguageRegistry` -- preloaded with five language configs (python /
+golang / javascript / rust / typescript factories) and serving lookup by
+extension / id / file path, a same-language-family check, and a stable
+``compute_query_hash`` (``hashlib.blake2b``) used to invalidate the index when
+queries change. Mirrors grok ``lib.rs`` L88
+``pub use languages::{LanguageRegistry, TSLanguageConfig};``.
+
+Downstream slices (``scope_graph/graph.rs`` runtime, ``manager/``,
+``navigation``) follow in R305+.
 
 The crate-root barrel mirrors grok ``lib.rs``: grok re-exports ``types``,
 ``scope_graph`` node symbols, and the ``interner`` pair at the crate root.
@@ -52,7 +60,10 @@ exist yet -- the barrel will grow as they land.
 from __future__ import annotations
 
 from minimax_code.xai_codebase_graph.interner import StringId, StringInterner
-from minimax_code.xai_codebase_graph.languages import TSLanguageConfig
+from minimax_code.xai_codebase_graph.languages import (
+    LanguageRegistry,
+    TSLanguageConfig,
+)
 from minimax_code.xai_codebase_graph.scope_graph import (
     LocalDef,
     LocalImport,
@@ -79,6 +90,7 @@ __all__ = [
     "FileEventKind",
     "FileMeta",
     "IndexStats",
+    "LanguageRegistry",
     "LocalDef",
     "LocalImport",
     "LocalScope",
