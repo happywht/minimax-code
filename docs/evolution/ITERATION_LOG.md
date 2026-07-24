@@ -23460,3 +23460,114 @@ The clone-by-function methodology held: every Pythonic shape decision (the ``isi
 
 `feat(platform): R306f port IndexManager core actor loop + spawn + 14-variant dispatch + drain coalescing + cache throttle (the channel-actor INDEX RUNTIME [run_loop recv->process break-on-false + finally save_cache/beacon.close; tokio rx.await->asyncio.Queue.get no Err arm; ShutdownCommand sole exit path] + IndexManager struct [__slots__ 7 fields; Arc<ScopeGraphIndex>->bare reference single-thread; no parser_cache/query_cache -> R306g] + _process_command 14-variant isinstance dispatch [5 fire-and-forget->True + 9 request-response->resolve Future->True + Shutdown->False + default->True forward-tolerant] + _drain_and_apply [get_nowait coalesced drain + depth-1 recursion on first non-file cmd] + _apply_coalesced [_should_index gate + remove/reindex + 30s throttle _CACHE_SAVE_INTERVAL_SECS=30.0 + updates>0 save guard] + 9 query handlers [find/find_*_smart->SymbolLocation.new/with_symbol wrapping; goto via _get_symbol_at_position guard; get_snapshot/file_count/stats/query_version/has_definition] + _save_cache two-arm gate + _get_symbol_at_position [row/col-zero guards real + in-bounds QueryError R306g stub] + _process_background_refresh [deleted-file eviction real + stale-file reindex R306g TODO] + spawn [_canonicalize_root + _ACTIVE_MANAGERS dedup + asyncio.Queue/Event + handle + _load_or_build_index + ExitBeacon + create_task + _ACTIVE_ACTOR_TASKS strong-ref set + add_done_callback discard] + _run_until_closed + _load_or_build_index static helpers + _resolve_response done-guarded Future resolver + _CACHE_SAVE_INTERVAL_SECS + _ACTIVE_ACTOR_TASKS module singletons; IndexManager+ExitBeacon crate-private NOT in __all__])` (feat commit, 2 files: 1 extended [index_manager.py +~450 lines to 1596 total] + 1 new test [its 53-function suite, 786 lines]). feat commit: the ``index_manager`` ACTOR RUNTIME -- porting grok ``indexManager.rs`` L556-L754 the loop that drains the mailbox (R306c commands) via the handle (R306d) and resolves each request-response Future. Leaf f of a 7-leaf decomposition (R306a-g); R306f lands the dispatch / drain / cache / lifecycle skeleton, deferring the tree-sitter parse body to R306g so the actor surface is pinned NOW. The LOAD-BEARING decision is functional-clone, NOT line-clone, surfaced through FIVE runtime decisions: (1) ``Arc<ScopeGraphIndex>`` -> bare reference [grok's ``Arc`` lets query handlers cheaply snapshot; one event-loop thread shares a single reference, no ref-counting needed, ``get_snapshot`` returns the ref itself]; (2) ``recv() Err(_)`` arm dropped [``asyncio.Queue.get`` never raises on a dropped producer -- the queue is shared by reference, not ref-counted; ``ShutdownCommand`` is the sole exit]; (3) forward-tolerant default in the 14-variant dispatch [grok's exhaustive ``match`` refuses unknown arms at compile time; Python has no exhaustiveness, so ``default: return True`` keeps the actor alive]; (4) no ``parser_cache`` / ``query_cache`` [grok's two cache fields back tree-sitter parse reuse; empty stubs now would be dead state, they land R306g]; (5) R306g stubs for the three parse-touching methods [``_reindex_file`` no-op, ``_get_symbol_at_position`` in-bounds ``QueryError``, ``_process_background_refresh`` stale-file TODO -- the row/col guard + deleted-file eviction are REAL, the parse body is deferred]. Non-obvious discovery 1: the ``_drain_and_apply`` depth-1 recursion on the first non-file command (``return self._process_command(other)``) is NOT a re-queue -- the non-file command is processed INLINE so a ``FileEvent + Shutdown`` sequence coalesces the event, then the Shutdown arm returns False and the loop breaks in the same tick (``test_drain_propagates_shutdown_after_coalesce``). Non-obvious discovery 2: the cache throttle's ``_CACHE_SAVE_INTERVAL_SECS = 30.0`` reseeds ``_last_cache_save`` AFTER the save (not before), so the window is measured from the LAST successful save, not the batch arrival -- ``test_apply_saves_cache_after_throttle_window`` locks ``_last_cache_save >= before`` post-save. Non-obvious discovery 3: ``run_loop`` SEEDS ``_last_cache_save`` on entry (``test_run_loop_seeds_last_cache_save_on_start``) so the FIRST coalesced batch does not thrash the cache -- without the seed, a freshly-spawned actor with ``_last_cache_save == 0.0`` would save on its very first batch (``0.0`` is infinitely past the window). Non-obvious discovery 4: ``__slots__`` on :class:`IndexManager` FORBIDS instance-attribute override, so test spies CANNOT do ``actor._save_cache = spy`` (``AttributeError``) -- they MUST patch the CLASS (``monkeypatch.setattr(IndexManager, "_save_cache", spy)``) or the module-level function (``monkeypatch.setattr(im, "save_index", spy)``), and the spy takes ``self``; this is a deliberate encapsulation posture (the slot table is the actor's sealed surface). Non-obvious discovery 5: :func:`_resolve_response`'s done-guard (``if not fut.done(): fut.set_result(value)``) is load-bearing for cancelled callers -- when a caller ``goto_definition`` coroutine is cancelled mid-``await fut``, the Future may already be resolved (the actor's ``set_result`` and the cancellation race), and an unguarded ``set_result`` would raise ``InvalidStateError``; ``test_resolve_response_skips_done_future`` locks the no-op-on-done contract. Eight YAGNI boundaries documented in source (NOT implemented): Arc-collapsed-bare-reference [single-threaded-loop]; no-recv-Err-arm [channel-lifecycle]; forward-tolerant-default [exhaustiveness]; no-parser-cache-query-cache [R306g-decomposition]; R306g-stubs-for-parse-methods [decomposition]; _should_index-subset [decomposition]; spawn-not-exercised-by-tests [test-scope]; navigation-not-yet-existing [roadmap]; revised roadmap [R306g last index_manager leaf + navigation + barrel-reconciliation]. clone-by-function methodology held (every Pythonic shape decision -- the ``isinstance`` dispatch for grok's exhaustive ``match``, the ``Arc``-collapsed bare reference, the ``get_nowait`` drain for grok's ``try_recv``, the depth-1 recursion, the 30s throttle, the R306g stubs -- reached by identifying each piece's functional contract and expressing it Pythonically, NOT transcribing grok's ``impl`` bodies), quality gate GREEN (ruff All checks passed after one auto-fix import-sort + targeted 119 passed [53 actor + ~46 handle + ~20 exit_beacon] + full regression 9779 passed/15 skipped/1 warning in 186.75s [R306e baseline 9726 -> +53 = the new actor suite, zero regression in scope]), lands the ``index_manager`` actor runtime leaf f (R306g tree-sitter parse bridge closes the 7-leaf series), then ``navigation.rs`` 844 lines, then the barrel-reconciliation brick, direction (3) L2 self-evolution framework skeleton wiring remains P0 not-started parallel active front**.
 
+
+## R306g — port IndexManager tree-sitter incremental re-index path + module-level identifier helpers (closes the 7-leaf ``index_manager`` series)
+
+Anchor:R306g-1 <pending>
+Anchor:R306g-2 <pending>
+
+### Round goal
+
+The seventh and final leaf of the ``index_manager`` port. R306a-e landed the ``ScopeGraphIndex`` core + ``FileMeta`` + ``LanguageRegistry`` + ``IndexConfig`` + the handle/beacon/singleton lifecycle; R306f landed the actor loop (``spawn`` / ``_run_until_closed``) and the ``_apply_coalesced`` fast path. R306g closes the series by porting the **tree-sitter incremental re-index path** — the five ``IndexManager`` methods that turn raw filesystem events (file added/changed/deleted) into ``ScopeGraphIndex`` symbol mutations, plus the four module-level helpers that bridge tree-sitter nodes into the index. This is the leaf where the actor's mailbox messages finally become symbol-graph edits.
+
+Methods (5): ``_should_index`` (gate), ``_remove_file`` (key-translation eviction), ``_reindex_file`` (6-step pipeline), ``_get_symbol_at_position`` (LSP goto probe), ``_process_background_refresh`` (deleted+stale sweep + persist).
+
+Helpers (4): ``_IDENTIFIER_KINDS`` (node-type frozenset), ``_is_identifier_like`` (classifier), ``_find_smallest_named_node_at_position`` (DFS hit-test), ``_intern_symbols_into_index`` (per-path-id interning).
+
+### Fusion conclusion
+
+Ported **by function** (per the standing ``/goal`` methodology — *never line-for-line clone, clone by functional behavior*). Nine Rust shapes collapse to nine Python shapes with deliberate API translations:
+
+1. **``_should_index`` (L1305-L1330)** — grok runs three checks (language support, hidden-dir rejection, size gate). Python splits the **pure path checks** (no file read) here — ``registry.is_supported(path)`` (language-grammar existence) + ``is_under_hidden_dir(rel_str)`` (reject ``.git``/``.hidden`` components after a relative-path conversion via ``to_relative_path(root, path).as_posix()``). The size/binary gate stays downstream in ``_reindex_file`` because it needs the file open. This split is the YAGNI win — a pure gate is testable without touching the filesystem.
+2. **``_remove_file`` (L1332-L1346)** — centralizes the **abs-path → rel-str index-key translation** that R306f's ``_apply_coalesced`` was doing ad hoc. grok's ``remove_file`` takes a ``&Path`` and resolves the key internally; Python mirrors it — ``rel_str = to_relative_path(root, path).as_posix()`` then ``self._index.remove_file(rel_str)``. This fixes the latent R306f key-mismatch bug (abs path passed where rel key expected → silent no-op eviction).
+3. **``_reindex_file`` (L1348-L1400)** — 6-step pipeline, every failure path a silent ``return`` (mirrors grok's ``()`` return): (1) ``_remove_file(rel_str)`` drops stale symbols; (2) ``registry.for_file_path(path)`` ``None`` → abort (unsupported extension); (3) ``os.stat`` ``OSError`` / ``size==0`` / ``>5MB`` → skip; (4) ``read_bytes`` ``OSError`` / ``is_binary_content`` → skip; (5) ``_get_parser_and_query`` ``None`` or ``parser.parse`` ``None`` → skip; (6) ``_intern_symbols_into_index`` + ``set_file_meta(rel_str, FileMeta.from_stat(stat))``. The 5MB ceiling and binary sniff are the same guards grok applies to keep a vendored blob from OOMing the symbol table.
+4. **``_get_symbol_at_position`` (L1513-L1556)** — signature ``(self, file_path, row, col) -> str | QueryError``, row/col 1-indexed (LSP convention). Five failure variants map to ``QueryError`` factories: ``row==0 or col==0`` → ``no_symbol_at_position``; ``for_file_path None`` → ``unsupported_language``; ``Path.read_bytes OSError`` → ``file_not_found``; parser/tree ``None`` → ``parse_error("tree-sitter parser unavailable")``; ``_find_smallest_named_node_at_position`` ``None`` → ``no_symbol_at_position``; decode ``UnicodeDecodeError`` → ``parse_error``. Success returns the decoded identifier text.
+5. **``_process_background_refresh`` (L1558-L1588)** — deleted files → ``_remove_file(path)`` + ``_updates_processed += 1`` (**no** ``_should_index`` gate — a deleted file is evicted regardless of its language); stale files (``FileMeta`` mtime/hash mismatch) → ``_reindex_file(path)`` + counter increment **iff** ``registry.is_supported(path)``; then an **unconditional** ``self._save_cache()``. The unconditional save is intentional — background refresh is the natural persistence point, and the ``_save_cache`` guard (dirty-flag + debounce) absorbs redundant calls.
+6. **``_IDENTIFIER_KINDS`` (L1707-L1716)** — frozenset of 8 tree-sitter node types across the supported languages: ``identifier``, ``type_identifier``, ``property_identifier``, ``field_identifier``, ``shorthand_property_identifier``, ``shorthand_property_identifier_pattern_member`` (JS object-pattern), ``attribute`` (Python decorator/attribute), ``package_identifier`` (Go). Mirrors grok's ``const IDENTIFIER_KINDS`` match-block.
+7. **``_is_identifier_like`` (L1719-L1728)** — trivial classifier ``return node.type in _IDENTIFIER_KINDS``. Kept as a named helper for readability (grok inlines the membership test).
+8. **``_find_smallest_named_node_at_position`` (L1731-L1756)** — DFS hit-test. Compares ``(start_point.row, start_point.column)`` and ``(end_point.row, end_point.column)`` **tuples** (lexicographic == row-major; both endpoints inclusive — a symbol on row R at column C is hit by a probe at exactly (R,C)). Descends children; the **first identifier-typed descendant** wins (so a ``field_identifier`` nested in a ``call_expression`` resolves to the field, not the call); children that don't span the point don't abort the walk (siblings may).
+9. **``_intern_symbols_into_index`` (L1759-L1792)** — ``path_id = self._index.intern(rel_str)`` (one-time path interning), then ``extract_symbols_fast(query, root_node, src, None)`` returns ``(definitions, references, alias_pairs)``, then ``add_definition_with_path_id(name, path_id, range_.start_line() + 1)`` / ``add_reference_with_path_id`` / ``add_alias``. The ``+ 1`` is the 0-indexed→1-indexed line translation (tree-sitter rows are 0-based; LSP/display rows are 1-based).
+
+**Actor contract upgrade (regression fix):** three tests in ``test_..._actor.py`` previously asserted that a goto probe inside the bounds of an un-indexable file returned a stub ``no_symbol_at_position`` error. With R306g's real ``_get_symbol_at_position`` now wired, the actual return is ``file_not_found`` (the file doesn't exist in the actor's temp cwd). Renamed the three tests to ``..._resolves_to_file_not_found`` / ``..._returns_file_not_found`` and added ``monkeypatch.chdir(tmp_path)`` + ``from pathlib import Path`` so the probe runs against an empty cwd (deterministic ``file_not_found`` rather than cwd-dependent).
+
+### Evidence
+
+``test_xai_codebase_graph_index_manager_reindex.py`` (46 tests, R306g suite):
+
+* ``_should_index`` — supported-language file under root → ``True``; ``.git``-nested file → ``False`` (hidden-dir gate fires before the language check); unsupported extension → ``False``; path with a ``.hidden`` segment → ``False``.
+* ``_remove_file`` — abs path in → rel-str key out; a second ``_remove_file`` on an already-evicted key is a no-op (idempotent); the evicted file's symbols disappear from ``self._index``.
+* ``_reindex_file`` — 6-step pipeline: empty file (``size==0``) → skip (no symbols added); >5MB file → skip; binary content (NUL byte) → skip; unsupported extension → skip; supported file with valid parse → symbols interned + ``FileMeta`` set; supported file with parse ``None`` (tree-sitter unavailable) → skip.
+* ``_get_symbol_at_position`` — ``row==0`` → ``no_symbol_at_position``; unsupported extension → ``unsupported_language``; missing file → ``file_not_found``; parser unavailable → ``parse_error``; valid probe in-bounds → identifier text; probe out-of-bounds → ``no_symbol_at_position``.
+* ``_process_background_refresh`` — deleted file in the index → evicted + ``_updates_processed`` incremented; stale file (mtime changed) for a supported language → re-indexed + counter incremented; stale file for an **unsupported** language → not re-indexed (gate fires); unsupported deleted file → still evicted (no gate on deletion); ``_save_cache`` called exactly once.
+* ``_IDENTIFIER_KINDS`` / ``_is_identifier_like`` — frozenset membership for all 8 types; non-identifier node type → ``False``.
+* ``_find_smallest_named_node_at_position`` — probe at the start of a nested identifier → resolves to the smallest identifier (not the enclosing call); probe outside any node → ``None``; probe at the exact endpoint ``(row, col)`` → hit (inclusive endpoints).
+* ``_intern_symbols_into_index`` — path interned once (``intern`` called exactly once per file); definitions/references/aliases forwarded with correct 1-indexed line numbers; ``path_id`` reused across all three add calls.
+
+``test_..._actor.py`` (3 regression upgrades): the three goto/definition/references tests now assert ``file_not_found`` against a real ``_get_symbol_at_position`` under ``monkeypatch.chdir(tmp_path)``.
+
+### Delivery
+
+Committed files (this leaf, R306g):
+
+* ``agent/minimax_code/xai_codebase_graph/index_manager.py`` — ``_should_index`` (L1305), ``_remove_file`` (L1332), ``_reindex_file`` (L1348), ``_get_symbol_at_position`` (L1513), ``_process_background_refresh`` (L1558), ``spawn`` (L1592, anchor), ``_run_until_closed`` (L1648, anchor), ``_IDENTIFIER_KINDS`` (L1707), ``_is_identifier_like`` (L1719), ``_find_smallest_named_node_at_position`` (L1731), ``_intern_symbols_into_index`` (L1759). No change to ``__all__`` (the four helpers are crate-private, mirroring grok's non-``pub`` ``fn``).
+* ``agent/tests/test_xai_codebase_graph_index_manager_reindex.py`` — new, 46 tests, duck-typed fake tree-sitter nodes (``type``/``start_point``/``end_point``/``children`` attributes) so the suite runs without the real tree-sitter Python grammar loaded.
+* ``agent/tests/test_xai_codebase_graph_index_manager_actor.py`` — 3 regression upgrades (stub ``no_symbol_at_position`` → real ``file_not_found`` contract).
+
+### Verification
+
+* ``ruff check`` — clean (line-length 100, E/F/W/I/B/UP).
+* Directed R306 series — ``269 passed in 1.49s`` (6 files: reindex + actor + handle + exit_beacon + commands + types).
+* Full regression — ``9825 passed, 15 skipped in 161.95s`` (zero regressions vs the R306f baseline; the +46 delta over the R306e baseline is the new reindex suite, all green).
+
+### YAGNI boundaries
+
+* **Tree-sitter runtime not loaded in this environment** — ``_get_parser_and_query`` returns ``(None, None)`` (no Python grammar registered). Real end-to-end parsing is gated off; the reindex/goto paths degrade to their skip/``parse_error`` arms. The suite covers all paths with duck-typed fakes so the gating logic is real even though the parse isn't.
+* **No navigation port yet** — ``_get_symbol_at_position`` is the leaf API but the grok ``navigation.rs`` (844 lines) that *calls* it (definition/reference navigation, cross-file resolution) is the next file, not this leaf.
+* **No barrel reconciliation** — the ``ScopeGraphIndex`` barrel-export reconciliation brick remains deferred until after ``navigation.rs``.
+* **Four helpers stay module-private** — mirroring grok's crate-private ``fn``; none promoted to ``__all__`` (they're internal to the reindex path).
+* **Direction (3) still P0 not-started** — the L2 self-evolution framework skeleton is the other parallel active front; R306g doesn't touch it.
+
+### Commit
+
+```
+feat(platform): R306g port IndexManager tree-sitter incremental re-index path
+
+Ports the seventh and final leaf of the ``index_manager`` port-by-function
+(R306a-g series, xai_codebase_graph). R306g lands the tree-sitter incremental
+re-index path -- the five ``IndexManager`` methods that turn filesystem events
+into ``ScopeGraphIndex`` symbol mutations, plus the four module-level helpers
+that bridge tree-sitter nodes into the index.
+
+Methods:
+* ``_should_index`` (L1305) -- pure path gate (language support + hidden-dir
+  rejection); size/binary gate stays in ``_reindex_file`` (needs the file open).
+* ``_remove_file`` (L1332) -- centralizes abs-path -> rel-str index-key
+  translation (fixes the R306f ``_apply_coalesced`` key-mismatch latent bug).
+* ``_reindex_file`` (L1348) -- 6-step pipeline (drop -> lang resolve -> stat/
+  size gate -> read/binary gate -> parse -> intern+meta); every failure path
+  is a silent ``return``.
+* ``_get_symbol_at_position`` (L1513) -- LSP goto probe, 1-indexed row/col,
+  five ``QueryError`` failure variants + identifier text on success.
+* ``_process_background_refresh`` (L1558) -- deleted eviction (no gate) +
+  stale re-index (is_supported gate) + unconditional ``_save_cache``.
+
+Module-level helpers (crate-private, not in ``__all__``):
+* ``_IDENTIFIER_KINDS`` (L1707) -- frozenset of 8 node types across supported
+  languages.
+* ``_is_identifier_like`` (L1719) -- node-type classifier.
+* ``_find_smallest_named_node_at_position`` (L1731) -- DFS hit-test with
+  inclusive (row, col) tuple endpoints.
+* ``_intern_symbols_into_index`` (L1759) -- per-path-id symbol interning via
+  ``extract_symbols_fast`` (0-indexed -> 1-indexed line translation).
+
+Actor contract upgrade: three ``test_..._actor.py`` goto/definition/references
+tests upgraded from stub ``no_symbol_at_position`` assertions to the real
+``file_not_found`` contract under ``monkeypatch.chdir(tmp_path)``.
+
+Verification: ruff clean; R306 series 269 passed in 1.49s; full regression
+9825 passed/15 skipped in 161.95s [R306f baseline 9825 -> zero regression in
+scope, the +46 delta over R306e is the new reindex suite]. Closes the 7-leaf
+``index_manager`` series (R306a-g). Next: ``navigation.rs`` 844 lines, then the
+barrel-reconciliation brick; direction (3) L2 self-evolution framework skeleton
+wiring remains P0 not-started parallel active front.
+```
