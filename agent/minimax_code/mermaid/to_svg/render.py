@@ -56,11 +56,23 @@ Dispatch model (mirrors grok ``render_mermaid_to_svg`` L36-L163)
      a horizontal axis of period nodes each trailing a vertical stack of event
      cards, grouped under optional colored section banners, with a left-to-
      right direction arrow underneath, mirroring grok lib.rs L108-L110.
-   * The 10 remaining independent per-diagram renderers (er / class / mindmap
-     / requirement / block / sequence
+   * The ``quadrantChart`` renderer (R288) has its own dedicated arm --
+     :func:`render_quadrant_chart_to_svg` lays a 500x500 canvas out as four
+     labelled quadrants split by an internal cross, with optional x/y axis
+     range pairs, a title, and clamped [0, 1] data points, mirroring grok
+     lib.rs L104-L106.
+   * The ``block-beta`` renderer (R289) has its own dedicated arm --
+     :func:`render_block_diagram_to_svg` lays labelled rectangular nodes out
+     on a ``columns``-driven grid connected by D3 ``curveBasis`` edges
+     (five-phase pipeline: node sizing -> normalize to max size -> grid
+     layout -> findBounds -> SVG emission), mirroring grok lib.rs L90-L92.
+     Block is the most theme-aware renderer in the family: all five
+     ``MermaidTheme`` channels flow into the SVG.
+   * The 9 remaining independent per-diagram renderers (er / class / mindmap
+     / requirement / sequence
      / gitgraph / journey / xychart / c4)
      raise :class:`UnsupportedDiagramType` here. Their per-diagram leaves ship
-     in later rounds (R289+); until then the dispatch reports the type as
+     in later rounds (R290+); until then the dispatch reports the type as
      unsupported rather than running a renderer that does not exist yet.
    * The default path runs the already-migrated flowchart stack
      (``parser.parse_mermaid`` -> ``layout.compute_layout[_with_config]`` ->
@@ -85,6 +97,7 @@ from 15 to 18. ``first_diagram_type_token`` stays module-private (grok's
 
 from __future__ import annotations
 
+from .block_diagram import render_block_diagram_to_svg
 from .config import parse_mermaid_frontmatter
 from .error import UnsupportedDiagramType
 from .gantt_diagram import render_gantt_diagram_to_svg
@@ -110,7 +123,7 @@ __all__ = [
 
 
 #: Diagram-type tokens whose renderers ship as independent per-diagram leaves
-#: in later rounds (R289+). Until those leaves land, the dispatch raises
+#: in later rounds (R290+). Until those leaves land, the dispatch raises
 #: :class:`UnsupportedDiagramType` -- mirrors grok's per-diagram ``if`` arms
 #: (lib.rs L51-L139) minus the renderer bodies. The ``info`` renderer shipped
 #: in R279, the ``stateDiagram`` / ``stateDiagram-v2`` parser shipped in
@@ -118,9 +131,10 @@ __all__ = [
 #: shipped in R282, the ``packet-beta`` renderer shipped in R283, the
 #: ``sankey-beta`` renderer shipped in R284, the ``gantt`` renderer shipped
 #: in R285, the ``kanban`` renderer shipped in R286, the ``timeline``
-#: renderer shipped in R287, and the ``quadrantChart`` renderer shipped in
-#: R288 (their dedicated arms sit above this check); the 14 tokens below are
-#: the remaining unsupported surface.
+#: renderer shipped in R287, the ``quadrantChart`` renderer shipped in
+#: R288, and the ``block-beta`` renderer shipped in R289 (their dedicated
+#: arms sit above this check); the 13 tokens below are the remaining
+#: unsupported surface.
 #: The five ``C4*`` tokens share grok's single ``c4_diagram`` renderer
 #: (lib.rs L130-L139).
 _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
@@ -129,7 +143,6 @@ _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
         "classDiagram",
         "mindmap",
         "requirementDiagram",
-        "block-beta",
         "sequenceDiagram",
         "gitGraph",
         "journey",
@@ -321,6 +334,18 @@ def render_mermaid_to_svg(
     # rather than ``Display`` -- the renderer carries its own ``_fmt1`` bridge.
     if diagram_type == "quadrantChart":
         return render_quadrant_chart_to_svg(body, resolved_theme)
+
+    # ``block-beta`` (R289): the dedicated block-diagram renderer. Mirrors
+    # grok lib.rs L90-L92 -- :func:`render_block_diagram_to_svg` receives the
+    # front-matter-stripped body and lays labelled rectangular nodes out on a
+    # ``columns``-driven grid connected by D3 ``curveBasis`` edges. Block is
+    # the most theme-aware renderer in the family: all five ``MermaidTheme``
+    # channels flow into the SVG (``background`` -> root bg color + canvas,
+    # ``text_color`` -> CSS font fill + every label text, ``edge_color`` ->
+    # marker / arrowhead / flowchart-link strokes, ``node_fill`` /
+    # ``node_stroke`` -> the ``.node rect`` fill / stroke).
+    if diagram_type == "block-beta":
+        return render_block_diagram_to_svg(body, resolved_theme)
 
     if diagram_type in _UNSUPPORTED_DIAGRAM_TYPES:
         raise UnsupportedDiagramType(diagram_type)
