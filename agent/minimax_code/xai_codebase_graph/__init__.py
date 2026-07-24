@@ -30,12 +30,16 @@ extension / id / file path, a same-language-family check, and a stable
 queries change. Mirrors grok ``lib.rs`` L88
 ``pub use languages::{LanguageRegistry, TSLanguageConfig};``.
 
-R305a begins the ``scope_graph/graph.rs`` runtime port (pure-data foundation
+R305a began the ``scope_graph/graph.rs`` runtime port (pure-data foundation
 only): :class:`QueryVersion` -- the tree-sitter query version stamp that
-drives index rebuilds. Mirrors grok ``lib.rs`` L96 (crate root re-exports
-``QueryVersion`` alongside the node symbols). The ``ScopeGraph`` /
-``ScopeGraphIndex`` graph algorithms and binary ser/de, plus ``manager/`` and
-``navigation``, follow in R305b+.
+drives index rebuilds.
+
+R305b lands the :class:`ScopeGraph` runtime itself (the per-file scope/def/
+ref/import graph, 22 methods) plus the :class:`ScopeGraphResult`
+``{graph, aliases}`` container. Mirrors grok ``lib.rs`` L95-L98, which
+re-exports ``ScopeGraph`` / ``ScopeGraphResult`` at the crate root alongside
+the node symbols. The ``ScopeGraphIndex`` runtime + binary ser/de, plus
+``manager/`` and ``navigation``, follow in R305c+.
 
 The crate-root barrel mirrors grok ``lib.rs``: grok re-exports ``types``,
 ``scope_graph`` node symbols, and the ``interner`` pair at the crate root.
@@ -76,6 +80,8 @@ from minimax_code.xai_codebase_graph.scope_graph import (
     NodeKind,
     QueryVersion,
     Reference,
+    ScopeGraph,
+    ScopeGraphResult,
     Symbol,
     SymbolId,
 )
@@ -106,6 +112,8 @@ __all__ = [
     "QueryVersion",
     "Range",
     "Reference",
+    "ScopeGraph",
+    "ScopeGraphResult",
     "StringId",
     "StringInterner",
     "Symbol",

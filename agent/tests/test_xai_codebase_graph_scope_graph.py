@@ -341,12 +341,15 @@ def test_node_kind_frozen_hashable() -> None:
 # === barrel contract =======================================================
 
 
-def test_scope_graph_barrel_exports_twelve_symbols() -> None:
-    """``scope_graph/__init__`` ``__all__`` = 9 (R301) + 3 graph pure-data (R305a).
+def test_scope_graph_barrel_exports_fifteen_symbols() -> None:
+    """``scope_graph/__init__`` ``__all__`` = 12 (R305a) + 3 graph algorithms (R305b).
 
     R301 landed 7 nodes + EdgeKind + NodeKindKind (9). R305a extends the barrel
     with ``NodeIndex`` / ``QueryVersion`` / ``Snippet`` from ``scope_graph/graph``
     (mirrors grok ``scope_graph/mod.rs`` L11-L14), bringing the surface to 12.
+    R305b adds the graph algorithms ``ScopeGraph`` / ``ScopeStack`` /
+    ``ScopeGraphResult`` (mirrors grok ``scope_graph/mod.rs`` L11-L14 + the
+    inline ``ScopeGraphResult`` at mod.rs L20-L25), bringing the surface to 15.
     """
     from minimax_code.xai_codebase_graph import scope_graph
 
@@ -360,6 +363,9 @@ def test_scope_graph_barrel_exports_twelve_symbols() -> None:
         "NodeKindKind",
         "QueryVersion",
         "Reference",
+        "ScopeGraph",
+        "ScopeGraphResult",
+        "ScopeStack",
         "Snippet",
         "Symbol",
         "SymbolId",
