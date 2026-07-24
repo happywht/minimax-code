@@ -485,6 +485,7 @@ def test_module_all_is_single_symbol() -> None:
 
 def test_render_dispatch_no_longer_lists_er_unsupported() -> None:
     """R295 removed ``erDiagram`` (8 -> 7 tokens); R296 removed ``classDiagram``
-    (7 -> 6 tokens); the set keeps shrinking."""
+    (7 -> 6 tokens); R297 removed the 5 C4 tokens (6 -> 1); the set keeps
+    shrinking."""
     assert "erDiagram" not in render_mod._UNSUPPORTED_DIAGRAM_TYPES
-    assert len(render_mod._UNSUPPORTED_DIAGRAM_TYPES) == 6
+    assert len(render_mod._UNSUPPORTED_DIAGRAM_TYPES) == 1

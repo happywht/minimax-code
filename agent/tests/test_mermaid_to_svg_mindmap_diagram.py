@@ -508,7 +508,8 @@ def test_module_all_is_single_symbol() -> None:
 def test_render_dispatch_no_longer_lists_mindmap_unsupported() -> None:
     """R292 removed ``mindmap`` (11 -> 10); R293 removed ``xychart-beta``
     (10 -> 9); R294 removed ``requirementDiagram`` (9 -> 8); R295 removed
-    ``erDiagram`` (8 -> 7); R296 removed ``classDiagram`` (7 -> 6) -- the
-    set keeps shrinking as renderers ship."""
+    ``erDiagram`` (8 -> 7); R296 removed ``classDiagram`` (7 -> 6); R297
+    removed the 5 C4 tokens (6 -> 1) -- the set keeps shrinking as renderers
+    ship."""
     assert "mindmap" not in render_mod._UNSUPPORTED_DIAGRAM_TYPES
-    assert len(render_mod._UNSUPPORTED_DIAGRAM_TYPES) == 6
+    assert len(render_mod._UNSUPPORTED_DIAGRAM_TYPES) == 1

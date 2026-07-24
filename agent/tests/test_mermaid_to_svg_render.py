@@ -173,15 +173,11 @@ def test_strip_mermaid_frontmatter_strips_yaml_block() -> None:
     "diagram_type",
     [
         "sequenceDiagram",
-        "C4Context",
-        "C4Container",
-        "C4Component",
-        "C4Dynamic",
-        "C4Deployment",
     ],
 )
 def test_render_mermaid_to_svg_unsupported_type_raises(diagram_type: str) -> None:
-    """Each of the 6 R296+ diagram tokens raises before the flowchart path.
+    """The 1 remaining R297+ diagram token (``sequenceDiagram``) raises before
+    the flowchart path.
 
     Mirrors grok's per-diagram ``if`` arms (lib.rs L51-L139): the dedicated
     renderer is not migrated yet, so dispatch reports the type as
@@ -194,8 +190,9 @@ def test_render_mermaid_to_svg_unsupported_type_raises(diagram_type: str) -> Non
     (R289), the ``journey`` renderer (R290), the ``gitGraph`` renderer
     (R291), the ``mindmap`` renderer (R292), the ``xychart-beta`` renderer
     (R293), the ``requirementDiagram`` renderer (R294), the
-    ``erDiagram`` renderer (R295), and the ``classDiagram`` renderer (R296)
-    are asserted separately; none raises here.
+    ``erDiagram`` renderer (R295), the ``classDiagram`` renderer (R296),
+    and the C4 renderers (R297 -- C4Context / C4Container / C4Component /
+    C4Dynamic / C4Deployment) are asserted separately; none raises here.
     The raised :class:`UnsupportedDiagramType` carries the diagram-type
     token verbatim.
     """

@@ -99,10 +99,12 @@ Dispatch model (mirrors grok ``render_mermaid_to_svg`` L36-L163)
      relationships, hands them to the dagre layout engine (``compound: false``),
      and emits a theme-aware SVG with the 8 classic ER markers. It is the
      second per-diagram renderer that consumes dagre (phase 2 of direction (1)).
-   * The 3 remaining independent per-diagram renderers (class / sequence / c4)
-     raise :class:`UnsupportedDiagramType` here. Their per-diagram leaves ship
-     in later rounds (R296+); until then the dispatch reports the type as
-     unsupported rather than running a renderer that does not exist yet.
+   * The single remaining unsupported per-diagram renderer (``sequence``)
+     raises :class:`UnsupportedDiagramType` here. Its per-diagram leaf ships
+     in R298+; until then the dispatch reports the type as unsupported rather
+     than running a renderer that does not exist yet. (The five ``C4*`` tokens
+     shared one renderer that shipped in R297 -- its dedicated arm sits above
+     the unsupported check, mirroring grok lib.rs L130-L139.)
    * The default path runs the already-migrated flowchart stack
      (``parser.parse_mermaid`` -> ``layout.compute_layout[_with_config]`` ->
      ``svg_renderer.render[_with_config]``), which is the only path the
@@ -127,6 +129,7 @@ from 15 to 18. ``first_diagram_type_token`` stays module-private (grok's
 from __future__ import annotations
 
 from .block_diagram import render_block_diagram_to_svg
+from .c4_diagram import render_c4_diagram_to_svg
 from .class_diagram import render_class_diagram_to_svg
 from .config import parse_mermaid_frontmatter
 from .er_diagram import render_er_diagram_to_svg
@@ -172,21 +175,11 @@ __all__ = [
 #: renderer shipped in R290, the ``gitGraph`` renderer shipped in R291, the
 #: ``mindmap`` renderer shipped in R292, the ``xychart-beta`` renderer shipped
 #: in R293, the ``requirementDiagram`` renderer shipped in R294, the
-#: ``erDiagram`` renderer shipped in R295, and the ``classDiagram`` renderer
-#: shipped in R296 (their dedicated arms sit above this check); the 6 tokens
-#: below are the remaining unsupported surface.
-#: The five ``C4*`` tokens share grok's single ``c4_diagram`` renderer
-#: (lib.rs L130-L139).
-_UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
-    {
-        "sequenceDiagram",
-        "C4Context",
-        "C4Container",
-        "C4Component",
-        "C4Dynamic",
-        "C4Deployment",
-    }
-)
+#: ``erDiagram`` renderer shipped in R295, the ``classDiagram`` renderer
+#: shipped in R296, and the five ``C4*`` tokens shipped in R297 (their
+#: dedicated arms sit above this check); the single ``sequenceDiagram`` token
+#: below is the remaining unsupported surface.
+_UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset({"sequenceDiagram"})
 
 #: Flowchart-type tokens (grok lib.rs L141 ``matches!(..., Some("graph") | Some("flowchart"))``).
 _FLOWCHART_TOKENS: frozenset[str] = frozenset({"graph", "flowchart"})
@@ -250,8 +243,11 @@ def render_mermaid_to_svg(
     (R294) emits the requirement diagram via
     :func:`render_requirement_diagram_to_svg`; the ``erDiagram`` renderer (R295)
     emits the entity-relationship diagram via
-    :func:`render_er_diagram_to_svg`; the 7 remaining unsupported tokens raise
-    :class:`UnsupportedDiagramType` until their leaves ship (R296+).
+    :func:`render_er_diagram_to_svg`; the ``classDiagram`` renderer (R296)
+    emits the UML class diagram via :func:`render_class_diagram_to_svg`; the
+    five ``C4*`` tokens (R297) share :func:`render_c4_diagram_to_svg`; the
+    single remaining unsupported ``sequenceDiagram`` token raises
+    :class:`UnsupportedDiagramType` until its leaf ships (R298+).
     Mirrors grok lib.rs L36-L163.
 
     Raises:
@@ -484,6 +480,29 @@ def render_mermaid_to_svg(
     # ``text_color`` -> CSS fill + every label fill.
     if diagram_type == "classDiagram":
         return render_class_diagram_to_svg(body, resolved_theme)
+
+    # ``C4Context`` / ``C4Container`` / ``C4Component`` / ``C4Dynamic`` /
+    # ``C4Deployment`` (R297): the dedicated C4 renderer. Mirrors grok lib.rs
+    # L130-L139 -- all five C4 diagram-type tokens route to one shared
+    # :func:`render_c4_diagram_to_svg`, mirroring grok's single ``c4_diagram``
+    # renderer. C4 does NOT consume dagre -- it uses bespoke grid geometry
+    # (a port of Mermaid's ``Bounds`` class) that self-computes shape
+    # coordinates, so it shares nothing with the dagre consumers (R294
+    # requirement / R295 er / R296 class). ``C4Dynamic`` is the only variant
+    # with divergent render behaviour: relationship labels carry the 1-based
+    # ``{index}: {label}`` prefix; the other four emit the label verbatim.
+    # C4 is theme-aware (3 channels): ``background`` -> root bg style
+    # (normalised ``#ffffff`` -> ``white``), ``text_color`` -> CSS ``fill``
+    # (normalised ``#333333`` -> ``#333``), ``edge_color`` -> the ``.marker``
+    # class fill/stroke; the shape/boundary palette is the fixed C4 palette.
+    if diagram_type in (
+        "C4Context",
+        "C4Container",
+        "C4Component",
+        "C4Dynamic",
+        "C4Deployment",
+    ):
+        return render_c4_diagram_to_svg(body, resolved_theme)
 
     if diagram_type in _UNSUPPORTED_DIAGRAM_TYPES:
         raise UnsupportedDiagramType(diagram_type)
