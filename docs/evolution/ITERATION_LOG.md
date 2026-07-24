@@ -24026,3 +24026,205 @@ Verification: ruff clean; directed R308 186 passed in 0.96s; full regression
 suite, zero regression]. Closes direction (2). Direction (3) L2 self-evolution
 framework skeleton wiring remains P0 not-started parallel active front.
 ```
+
+## R309 — port self-evolution trajectory collector (Layer 2, direction (3) opener: read-only LLM-free trajectory snapshot pipeline — git history + working-tree state + ruff output + pytest collect-only → progress/self-evolution-reports/<date>.md; scheduler dispatcher wired at boot via _build_default_payload_runner, fail-open to _noop_runner; --install persists opt-in row without starting the scheduler; idempotent same-day overwrite; noop path ≡ _noop_runner pinned byte-for-byte; payload.py import-path bug found + fixed at directed-pytest time)
+
+Anchor:R309-1 <pending>
+Anchor:R309-2 <pending>
+
+### Round goal
+
+Direction (3) opener — the **trajectory-collection half** of the
+self-evolution layer described in ``SELF.md §4``. This is **Layer 2**: a
+read-only, LLM-free pipeline that gathers a trajectory snapshot (recent git
+history, working-tree state, ruff output, the pytest collect-only result)
+and renders it as a durable Markdown report under
+``progress/self-evolution-reports/<date>.md``. No ``git commit`` / ``git
+push`` / ``git add``, no LLM interpretation in the default flow — the report
+is raw facts (subprocess stdout), evidence for a human's later judgement.
+Summarisation is an explicitly later, optional layer, not this brick.
+
+R308 closed direction (2) and handed direction (3) off as "P0 not-started
+parallel active front". R309 opens it.
+
+### Fusion conclusion
+
+Four new modules under ``minimax_code/agent/self_evolution/``:
+
+* **``runner.py``** — the ``run_once`` core. Four ``@dataclass(slots=True)``
+  value types (``CommitEntry`` / ``GitSnapshot`` / ``ToolResult`` /
+  ``SelfEvolutionReport``) + the async subprocess primitive ``_run_cmd``
+  (60s per-tool cap; ``FileNotFoundError`` / timeout → structured
+  ``error`` string, never a raise) + tool auto-detect
+  ``_detect_tool_cmd`` (venv-local binary under ``.venv/Scripts|bin``,
+  else the ``uv run <name>`` fallback the project documents) + git
+  collectors (``_parse_log`` via ``%x1e``/``%x1f`` ASCII delimiters —
+  unambiguous without escaping; ``_parse_status_porcelain`` bucketing
+  porcelain-v1 ``XY`` codes into modified/untracked/staged) +
+  ``SelfEvolutionReport.to_markdown`` / ``write_to`` (same-day idempotent
+  overwrite: filename is ``<date>.md``).
+* **``payload.py``** — the scheduler dispatcher. ``build_payload_runner``
+  returns a ``PayloadFn`` closure that **echoes** un-armed payloads
+  (identical to ``_noop_runner``) and runs ``run_once`` + persists the
+  report when ``payload["self_evolution"]`` is truthy. A per-payload
+  ``cwd`` override lets one dispatcher serve jobs targeting different
+  working trees without rebuilding the runner.
+* **``__main__.py``** — the CLI surface, 3 mutually-exclusive modes:
+  ``--once`` (collect now), ``--install`` (persist a ``scheduled_jobs``
+  row **without starting the scheduler** — the running agent picks it up
+  on the next ``_reload_from_db``), ``--report DATE`` (print a prior
+  report to stdout). ``DEFAULT_CRON = "17 9 * * *"`` — deliberately off
+  the ``:00`` / ``:30`` fleet stampede.
+* **``__init__.py``** — package barrel re-exporting the public surface.
+
+Plus the **boot wiring** in ``minimax_code/scheduler/__init__.py``:
+
+* ``_build_default_payload_runner()`` — function-local **deferred** import
+  of ``build_payload_runner``. The import is deferred because
+  ``self_evolution.payload`` imports ``PayloadFn`` from the scheduler at
+  *its* load time, so the scheduler must not import ``self_evolution`` at
+  module top (that would be a load-time cycle). By the time
+  ``get_scheduler`` runs, the scheduler module is fully loaded, so the
+  reverse import resolves cleanly. Returns ``None`` on any failure.
+* ``get_scheduler`` injects the dispatcher via the **public**
+  ``payload_runner=`` constructor kwarg (clean — no private-attr reach);
+  ``JobScheduler.__init__`` then falls back to ``_noop_runner`` when the
+  builder returns ``None`` (fail-open, same posture as the rest of the
+  boot path).
+
+### What changed (key design decisions)
+
+1. **A dispatcher, not a dedicated runner.** A single ``payload_runner``
+   instance fronts every scheduled job; it dispatches on
+   ``payload["self_evolution"]``. Wiring it in front of all jobs is safe
+   by construction — non-opt-in jobs are byte-for-byte indistinguishable
+   from the noop they used to get. Pinned by
+   ``test_dispatcher_noop_matches_scheduler_noop_byte_for_byte`` so a
+   future refactor cannot silently drift and break ``schedule.*``.
+2. **``--install`` does not ``start()``.** ``JobScheduler(db)`` is
+   constructed without ``start()``, so ``add_job`` writes the DB row +
+   next-run but skips APScheduler registration (``self._started`` is
+   False). The running agent process acquires the row on its next
+   ``_reload_from_db`` (boot / scheduler rebuild), where the boot-wired
+   dispatcher fires the actual collection. Starting a *second* scheduler
+   in the CLI process would race the running agent's singleton.
+3. **Idempotent same-day overwrite.** The ``<date>.md`` filename means a
+   re-run the same day replaces in-place; past days are never touched.
+   Pinned by ``test_write_to_overwrites_same_day_report``.
+4. **Fault-tolerant per step.** Each collection step (git / ruff / pytest)
+   returns its own result; one failing step (e.g. ``ruff`` not installed)
+   lands in the report's ``errors`` list, not as a raised exception — a
+   partial trajectory still reaches disk. The dispatcher wraps the whole
+   pass in ``try``/``except`` and returns an ``error`` key so ``_fire``
+   marks the task row ``failed`` instead of crashing the executor thread.
+5. **Collect-only pytest.** ``pytest --co -q`` enumerates tests without
+   executing them, so the snapshot stays side-effect-free and fast (~5s).
+   Running the full suite would be both slow AND a side effect.
+
+### Verification
+
+* ``ruff check`` clean (line-length 100, E/F/W/I/B/UP) across ``runner.py``
+  / ``payload.py`` / ``__main__.py`` / ``scheduler/__init__.py`` /
+  ``test_self_evolution.py``. Three mid-write findings fixed: **UP041**
+  (``except asyncio.TimeoutError`` → builtin ``except TimeoutError`` at
+  ``runner.py:235`` — in Py3.11+ ``asyncio.TimeoutError`` is an alias),
+  **F401** (unused ``import pytest``), **F541** (f-string with no
+  placeholder).
+* **Import-path bug found and fixed at directed-pytest time.**
+  ``payload.py`` originally wrote ``from ..scheduler import PayloadFn``
+  (2 dots), which resolves to the **nonexistent**
+  ``minimax_code.agent.scheduler`` because ``self_evolution`` lives under
+  ``agent/``. Static ruff does not resolve imports, so the
+  ``ModuleNotFoundError`` only surfaced when the test collection imported
+  the package. Fixed to ``from ...scheduler import PayloadFn`` (3 dots →
+  ``minimax_code.scheduler``). **Lesson: directed pytest is the only real
+  proof of import-graph correctness; ruff-clean ≠ import-correct.**
+* Directed R309 — ``8 passed in 1.77s``: ``run_once`` fault-tolerance
+  (non-git cwd) + git history/tree parsing + ``to_markdown`` section
+  rendering + same-day idempotency + dispatcher echo / armed / error-key
+  + noop ≡ ``_noop_runner`` byte-for-byte pin.
+* Full regression — ``9889 passed, 15 skipped`` in 157.89s (zero
+  regressions vs the R308 baseline of 9881/15; the +8 delta is exactly
+  the new ``test_self_evolution.py`` suite, all green;
+  ``test_scheduled.py`` green proves the scheduler boot-wiring preserves
+  every existing ``schedule.*`` semantic).
+
+### YAGNI boundaries
+
+* **Read-only, no git mutation.** Never ``git commit`` / ``git push`` /
+  ``git add``. The report is evidence; committing it is a human's choice.
+  (This is why the collector lives in the agent tree, not in a build hook.)
+* **No LLM in the default flow.** The trajectory is facts (raw stdout),
+  not interpretations. A summarisation layer that feeds the report to an
+  LLM is explicitly a *later* layer — not built here.
+* **``--install`` does not start the scheduler.** It only persists the
+  row. The running process owns the APScheduler singleton.
+* **Dispatcher keyed on payload, not job name.** The opt-in is
+  ``payload["self_evolution"]: True``, not the ``JOB_NAME``. Renaming the
+  job is safe; the dispatcher fires on the payload flag.
+* **No IPC surface yet.** R309 lands the collector + scheduler wiring + a
+  CLI; a ``self_evolution.*`` IPC namespace (so the UI can list/read
+  reports) is a future consumer brick, not this one.
+* **Direction (3) is opened, not closed.** Layer 2 (trajectory
+  collection) lands here; the remaining self-evolution layers
+  (summarisation, retrospective, action proposal) are future bricks. R309
+  is the opener, not the closer.
+
+### Commit
+
+```
+feat(platform): R309 port self-evolution trajectory collector (Layer 2)
+
+Opens direction (3) -- the trajectory-collection half of the self-evolution
+layer (SELF.md §4). Layer 2 is a read-only, LLM-free pipeline: gather a
+trajectory snapshot (git history + working-tree state + ruff output + pytest
+collect-only), render it as Markdown under progress/self-evolution-reports/
+<date>.md. No git mutation, no LLM interpretation in the default flow --
+the report is raw facts (subprocess stdout), evidence for a human's later
+judgement.
+
+Four new modules under minimax_code/agent/self_evolution/:
+* runner.py -- the run_once core: 4 slotted dataclasses + async subprocess
+  primitive (60s per-tool cap, FileNotFoundError/timeout -> structured
+  error not raise) + tool auto-detect (venv-local binary else `uv run`) +
+  git collectors (_parse_log via %x1e/%x1f, _parse_status_porcelain XY
+  bucketing) + to_markdown/write_to (same-day idempotent overwrite).
+* payload.py -- scheduler dispatcher: build_payload_runner returns a
+  PayloadFn closure that echoes un-armed payloads (== _noop_runner) and
+  runs run_once + persists the report when payload["self_evolution"] is
+  truthy. Per-payload cwd override.
+* __main__.py -- CLI: --once (collect now) / --install (persist a
+  scheduled_jobs row WITHOUT starting the scheduler; running agent picks
+  it up on next _reload_from_db) / --report DATE. DEFAULT_CRON "17 9 * * *"
+  (off the :00/:30 fleet stampede).
+* __init__.py -- package barrel.
+
+scheduler/__init__.py boot wiring:
+* _build_default_payload_runner() -- function-local deferred import of
+  build_payload_runner (avoids the load-time cycle: self_evolution.payload
+  imports PayloadFn from scheduler at its load time, so scheduler must not
+  import self_evolution at module top). Returns None on any failure.
+* get_scheduler injects the dispatcher via the public payload_runner= kwarg
+  (clean -- no private-attr reach); JobScheduler.__init__ falls back to
+  _noop_runner when the builder returns None (fail-open, same posture as
+  the rest of the boot path).
+
+Key design: a dispatcher, not a dedicated runner. One payload_runner instance
+fronts every scheduled job; it dispatches on payload["self_evolution"].
+Wiring it in front of all jobs is safe by construction -- non-opt-in jobs
+are byte-for-byte indistinguishable from the noop they used to get (pinned
+by test_dispatcher_noop_matches_scheduler_noop_byte_for_byte).
+
+Import-path bug found + fixed at directed-pytest time: payload.py originally
+wrote `from ..scheduler import PayloadFn` (2 dots -> resolves to nonexistent
+minimax_code.agent.scheduler because self_evolution lives under agent/).
+Static ruff does not resolve imports; the ModuleNotFoundError only surfaced
+when test collection imported the package. Fixed to `...scheduler` (3 dots).
+Lesson: directed pytest is the only real proof of import-graph correctness.
+
+Verification: ruff clean (3 mid-write findings fixed: UP041/F401/F541);
+directed R309 8 passed in 1.77s; full regression 9889 passed/15 skipped in
+157.89s [R308 baseline 9881/15 -> +8 delta is the new self_evolution suite,
+zero regression; test_scheduled.py green proves scheduler boot-wiring
+preserves every existing schedule.* semantic]. Opens direction (3).
+```
