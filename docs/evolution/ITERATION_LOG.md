@@ -20270,3 +20270,64 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R278a migrate xai-grok-mermaid subprocess.rs -> asyncio plumbing (direction (1) brick 10, host-shell tool layer leaf 1)`。feat 提交（11 文件）：`subprocess.py`（新建）+ `__init__.py`（桶扩展 17->23）+ `test_mermaid_subprocess.py`（新建，19 测试）+ 8 个 barrel-guard 测试同步（ast/config/error/layout/parser/svg_renderer/text_wrap/theme，11 断言 + 18 docstring）。docs 提交：`docs(platform): R278a iteration log entry`（ITERATION_LOG.md R278a 条目）。锚点链: ... -> R276(b68f794 docs YAGNI) -> R277(feat render dispatch + docs) -> R278a(feat subprocess + docs)。**方向① 第 10 砖：主机壳层工具层首叶，asyncio spawn/feed/wait/reap 生命周期落地（19/19 测试，全量 7903 passed），桶 17->23，下一砖 R278b raster.rs YAGNI 裁决**。
+
+## R278b — raster.rs 栅格化栈 YAGNI 非迁移决策（不可迁移纯 Rust 栈，无纯 Python 等价，可选 PNG 输出，方向① 第 10 砖 YAGNI 裁决轮）
+
+锚点:R278b-1 <pending>
+
+### 本轮目标
+
+裁决 grok `xai-grok-mermaid/src/raster.rs`（580 行，SVG -> PNG 栅格化层）是否迁移。承接 R278a subprocess.rs 主机壳层工具层首叶（方向① 第 10 砖第一叶完成），本轮原计划迁移 `raster.rs` 作为第 10 砖第二叶，但经**依赖闭包核查**，裁定为**不可迁移的纯 Rust 栈 + 可选功能，YAGNI 不迁移**。本轮**零 Python 代码叶子**，仅修正根 `mermaid/__init__.py` 桶文档（消除双重过时的"What is NOT here"描述：layout 引擎 R269-R277 已迁移不应再列"NOT here" + rasterizer 应为 YAGNI 裁决而非"待未来 wiring"）。
+
+### 融合结论
+
+**方向① 第 10 砖 YAGNI 裁决轮 —— `raster.rs` 栅格化栈不迁移。** `raster.rs` 是 grok `xai-grok-mermaid` crate 的 SVG -> PNG 栅格化层，依赖**纯 Rust 栅格化栈**：`resvg::usvg`（SVG 解析 + 树构建，`usvg::Tree::from_str` + `usvg::Options` + `usvg::FontResolver`）+ `tiny_skia`（`Pixmap` + `Transform` + `Color` 光栅表面）+ `resvg::render`（树 -> 像素）+ `fontdb::Database`/`fontdb::ID`（字体数据库）+ `include_bytes!("../assets/Roboto-Regular.ttf")`（~170 KB 内嵌字体二进制）。Python 生态**无纯 Python 等价栈**：`cairosvg`（C cairo 绑定）/ `svglib`+`reportlab`（非真正 SVG 光栅化，矢量到 reportlab 路径转换）/ `resvg-py`（resvg 的 Rust 绑定，需 Rust 编译）/ `Pillow`（C 图像库，无 SVG 解析）。本项目**不附带 Rust 工具链**（grok-build 只读，迁移目标仅 Python/TS），无法编译 resvg/usvg/tiny-skia。且栅格化是**可选输出格式**：R269-R277 已把 dagre 布局栈 + SVG 渲染端到端打通（`render_mermaid_to_svg` 输出 SVG 字符串），MiniMax Code 前端是 React SPA **直接渲染 SVG**（无需 PNG），PNG 仅是终端 inline-image 优化路径。延续 R276 `mermaid_port/` YAGNI 裁决范式，但**类型根本不同**：R276 是**死代码**（HERMETIC PATCH `is_enabled()->false` 封存的废弃平行实现 + 循环回边缺陷）；R278b 是**活跃代码**（grok `pure.rs` L25 `crate::rasterize(&svg, params)` 真实调用 + `lib.rs` L56 `pub use raster::{MAX_OUTPUT_MEGAPIXELS, rasterize}` re-export），只因技术栈不可迁移而 YAGNI。本轮仅修正根 `mermaid/__init__.py` 桶文档（"What is here vs deferred" 4 段式块：layout+SVG 已迁移 / subprocess 已落地 / rasterizer YAGNI 不迁移 / pure.rs+mmdc.rs 待迁移），无新 Python 代码叶子，节省 580 行不可迁移的 Rust 栅格化栈。
+
+### 决策证据（依赖闭包四要点 + Python 无等价 + 可选性 + 区别于 R276 死代码）
+
+**证据 ① 依赖闭包是纯 Rust 栅格化栈（raster.rs L16/L26/L30/L36-40）。** `raster.rs` 顶部 `use resvg::usvg;`（L16）引入 SVG 解析栈；`pub(crate) const BUNDLED_FONT: &[u8] = include_bytes!("../assets/Roboto-Regular.ttf");`（L26）编译期内嵌 ~170 KB Roboto 字体二进制；`struct FontSet { db: Arc<fontdb::Database>, family: String, bundled_id: fontdb::ID }`（L36-40）用 Rust `fontdb` 字体数据库管理字体解析。核心 `pub fn rasterize(svg: &str, params: &RenderParams)`（L124）调用 `usvg::Tree::from_str(svg, &opt)`（L144）解析 SVG 树 + `tiny_skia::Pixmap::new(width_px, height_px)`（L156）分配像素表面 + `resvg::render(&tree, transform, &mut pixmap.as_mut())`（L169）光栅化 + `pixmap.encode_png()`（L171）编码 PNG。这是 resvg/usvg/tiny-skia/fontdb 四 crate 的**纯 Rust 组合**，无任何 Python 对应物。
+
+**证据 ② Python 生态无纯 Python 等价栈。** 逐一核查 Python SVG 光栅化选项：(a) `cairosvg` —— C `libcairo` 的 ctypes/cffi 绑定，非纯 Python；(b) `svglib` + `reportlab` —— reportlab 是 C 扩展，且 svglib 把 SVG 转 reportlab 绘图路径而非真正光栅化（矢量->矢量，非矢量->像素）；(c) `resvg-py` —— resvg 的 Rust 绑定，**需 Rust 工具链编译**，本项目不附带；(d) `Pillow` —— C 图像库，无 SVG 解析能力（只能处理已光栅化的 PNG/JPEG）。四个候选**无一**是纯 Python 端口。本项目环境（Windows 11，无 Rust 工具链，grok-build 只读）无法在不引入新编译依赖的前提下复刻栅格化。
+
+**证据 ③ 栅格化是可选输出格式（SVG 已满足核心需求）。** R269-R277 已把 dagre 布局栈 + SVG 渲染端到端打通：`mermaid.to_svg.render_mermaid_to_svg(source, theme)` 输出 SVG 字符串（R277 lib.rs crate-root barrel 迁移，49/49 测试）。MiniMax Code 前端是 React SPA（`web/`，Vite 服务），**直接渲染 SVG 字符串**（浏览器原生 SVG 支持，无需服务端光栅化）。PNG 仅是终端 inline-image 优化路径（CLI 工具把 mermaid 渲染为 PNG 嵌入 markdown 终端输出），MiniMax Code 桌面场景**不消费此路径**。YAGNI：不为不存在的需求迁移 580 行不可移植代码。
+
+**证据 ④ raster.rs 是活跃代码，非死代码（区别于 R276）。** grok `pure.rs` L22-27 `impl MermaidEngine for PureRustEngine { fn render(&self, ...) -> ... { let svg = build_svg(source, params.theme)?; crate::rasterize(&svg, params) } }` —— L25 `crate::rasterize(&svg, params)` 是 rasterize 的**唯一活跃调用点**，PureRustEngine 是 `lib.rs` L196-203 `default_engine() -> Arc<dyn MermaidEngine>` 返回的**默认引擎**。`lib.rs` L50 `mod raster;` + L56 `pub use raster::{MAX_OUTPUT_MEGAPIXELS, rasterize};` crate-root re-export。这与 R276 的 `mermaid_port/`（`is_enabled()->false` 无条件禁用 + `#[allow(dead_code)]` 编译器死代码标注 + Cargo.toml `unreachable`）形成**根本对比**：raster.rs 是 grok 默认渲染路径的核心一环（SVG 构造 -> 栅格化 -> PNG），只是因技术栈不可迁移而在 Python 端 YAGNI，不是死代码。R278c 迁移 `pure.rs` 时，`crate::rasterize` 调用将 YAGNI 标记（PureRustEngine.render 返回 SVG 字符串而非 PNG bytes，因栅格化层不迁移）。
+
+**先例对照 —— R276 死代码 YAGNI vs R278b 不可迁移 YAGNI。** 两轮均延续"YAGNI 不迁移 + 桶文档修正 + 零 Python 代码叶子"范式，但 YAGNI 根因不同：R276 的 `mermaid_port/` 是 grok **自己封存的废弃平行实现**（迁移会重新引入循环回边缺陷）；R278b 的 `raster.rs` 是 grok **活跃使用的核心栅格化路径**，但依赖纯 Rust 栈无 Python 等价（迁移需引入 Rust 编译依赖，违背"Python/TS 迁移，grok-build 只读"约束）。两类的共同结论：不在 Python 端复刻无法验证语义等价的代码。
+
+### 交付
+
+- `agent/minimax_code/mermaid/__init__.py`（docstring 修正，零 `__all__`/import 变更）：
+
+  - **消除双重过时的"What is NOT here (wiring round)"段落** —— 旧 docstring（L27-33）落后实际进度 9 个迭代（声称 layout engine 是 grok dagre port "NOT here"，实际 R269-R277 已完整迁移 dagre 布局栈 + `render_mermaid_to_svg` 端到端打通），且把 SVG rasterizer 与 layout 并列为"等未来 wiring round"而非 YAGNI 裁决。替换为 4 段式块：
+    - **Layout + SVG render（R269-R277）**：dagre 布局引擎 + SVG 渲染器已在 `to_svg` 全量迁移，`render_mermaid_to_svg` 端到端输出 SVG，dagre 正确路由循环流程图。
+    - **Subprocess isolation（R278a）**：`subprocess` 落地 panic 隔离子进程运行器（spawn/feed/wait/reap 进程组），支撑可选 `mmdc` 引擎。
+    - **SVG -> PNG rasterization —— YAGNI 不迁移（R278b）**：grok `raster.rs` 经纯 Rust `resvg`/`usvg`/`tiny-skia`/`fontdb` 栈 + 内嵌 Roboto.ttf 光栅化，Python 无纯等价栈（cairosvg/svglib/resvg-py 皆 C/Rust 绑定），项目无 Rust 工具链；PNG 是可选输出（React 前端直接渲染 SVG），故栅格化路径 deferred 非 reimplementation；`MermaidRasterizeError` 保留在 taxonomy 供未来 Python 栅格化器复用。
+    - **Host wrapper leaves remaining（R278c/d）**：`pure.rs`（默认引擎，组合 dagre SVG 路径 + 栅格化步骤）+ `mmdc.rs`（可选 CLI 引擎）尚未迁移。
+
+  - **`__all__` 不变**（23 符号：engine 3 + errors 7 + types 7 + subprocess 6）—— docstring 修订未触碰桶公共面。
+
+- **零新 Python 代码叶子** —— R278b 是 YAGNI 决策轮，不产生 `raster.py` 移植（580 行节省）。
+
+### 验证
+
+- ruff：`mermaid/__init__.py` **All checks passed**（docstring 修订，line-length 100，select E/F/W/I/B/UP，ignore E501）。
+- import 契约：`import minimax_code.mermaid` -> `__all__`=23（engine 3 + errors 7 + types 7 + subprocess 6）。桶公共面零变更。
+- 定向 pytest（全 mermaid 测试桶 `-k mermaid`）：**657 passed in 6.14s**（docstring 修订零破坏，barrel 契约测试 + root `__all__`=23 守卫全绿）。
+- CRLF 警告正常（Windows `mermaid/__init__.py`），无害。
+
+### YAGNI 边界
+
+- **`raster.rs` 栅格化栈不迁移声明（580 行）** —— 纯 Rust 栈（resvg/usvg/tiny-skia/fontdb + include_bytes Roboto.ttf）无纯 Python 等价（cairosvg/svglib/resvg-py/Pillow 皆 C/Rust 绑定），项目无 Rust 工具链（grok-build 只读，迁移目标仅 Python/TS），且 PNG 是可选输出（React 前端直接渲染 SVG）。延续 R276 YAGNI 不迁移范式，但根因不同：R276=死代码（grok 自己封存）；R278b=不可迁移活跃代码（技术栈约束）。
+- **`MermaidRasterizeError` 保留在 taxonomy** —— R38 已迁移的 7 错误类之一。即使 raster.rs 不迁移，未来 Python 栅格化器（如 cairosvg subprocess）可经同一错误类上抛失败，故 taxonomy 不收缩。
+- **`MAX_OUTPUT_MEGAPIXELS` 常量不迁移** —— raster.rs L30 `pub const MAX_OUTPUT_MEGAPIXELS: f32 = 32.0;` + lib.rs L56 re-export 是栅格化输出的尺寸上限（防 OOM），仅 `rasterize` 内部 `clamp_dimensions` 消费。R278c pure.rs 迁移时不消费此常量（render 返回 SVG 字符串，无像素尺寸），故不迁移。
+- **修正后路线图**：
+  - **R278c（下一砖）** —— `pure.rs` -> `pure.py`（PureRustEngine + build_svg + map_engine_error + theme_for；render() 的 `crate::rasterize(&svg, params)` 调用 YAGNI 标记为返回 SVG 字符串而非 PNG bytes，因 R278b 栅格化层不迁移）。
+  - **R278d** —— `mmdc.rs` -> `mmdc.py`（全文件迁移，消费 R278a subprocess + MermaidEngine 协议）。
+  - **R278 tests/pure_engine.rs** —— pure 引擎测试迁移。
+  - **R279+** —— 19 个 per-diagram 渲染器（block/c4/class/er/gantt/gitgraph/info/journey/kanban/mindmap/packet/pie/quadrant/radar/requirement/sankey/sequence/state/timeline/xychart）。
+- **方向② xai-codebase-graph（tree-sitter 代码索引）+ 方向③ L2 自进化框架骨架接线** 均未开始（方向① 优先）。
+
+### Commit
+
+`docs(platform): R278b raster.rs YAGNI non-migration decision (unportable Rust raster stack, no pure-Python equivalent, optional PNG output)`。docs-only 提交（无 feat，零 Python 代码叶子）。2 文件：`docs/evolution/ITERATION_LOG.md` R278b 条目 + `agent/minimax_code/mermaid/__init__.py` docstring 修正。锚点链: ... -> R276(b68f794 docs YAGNI) -> R277(feat render dispatch + docs) -> R278a(feat subprocess + docs) -> R278b(docs YAGNI raster)。**`raster.rs` 栅格化栈 YAGNI 不迁移（580 行不可移植 Rust 栈节省，无纯 Python 等价 + PNG 可选输出），方向① 第 10 砖第 2 叶裁决为 YAGNI，下一砖 R278c pure.rs 默认引擎**。

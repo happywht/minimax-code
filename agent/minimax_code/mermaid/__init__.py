@@ -24,13 +24,31 @@ Scope of this package
   breach. Backs the optional ``mmdc`` engine (R278d) -- grok ``subprocess.rs``
   re-exported at the crate root (``lib.rs`` L57).
 
-What is NOT here (wiring round): the layout engine (grok's vendored
-``mermaid-to-svg`` dagre port) and the SVG rasterizer (``resvg``/``usvg``/
-``tiny-skia``) are Rust rendering stacks. A future wiring round picks a Python
-renderer (``mmdc`` CLI subprocess or ``mermaid.js`` over a headless browser)
-and implements :class:`MermaidEngine`; the guard logic here wraps any such
-engine unchanged. The ``subprocess`` leaf (R278) lands the child-isolation
-plumbing that very ``mmdc`` engine will consume.
+What is here vs deferred
+------------------------
+
+* **Layout + SVG render (R269--R277)**: the vendored dagre layout engine and
+  the SVG renderer are fully migrated under :mod:`.to_svg`, and
+  :func:`~minimax_code.mermaid.to_svg.render_mermaid_to_svg` wires mermaid
+  source end-to-end to an SVG string. The dagre stack routes cyclic
+  flowcharts correctly -- the defect that motivated adopting dagre.
+* **Subprocess isolation (R278a)**: :mod:`.subprocess` lands the
+  panic-isolating child runner (spawn / feed stdin / wait to a wall-clock
+  budget / reap the whole process group on a breach) that the optional
+  ``mmdc`` engine will consume.
+* **SVG -> PNG rasterization -- YAGNI, not migrated (R278b)**: grok
+  ``raster.rs`` rasterizes SVG to PNG via the pure-Rust ``resvg`` / ``usvg``
+  / ``tiny-skia`` / ``fontdb`` stack plus a bundled ``Roboto-Regular.ttf``
+  face. There is no pure-Python equivalent (cairosvg / svglib / ``resvg-py``
+  are C/Rust bindings, not ports), and this project ships no Rust toolchain.
+  PNG is also an optional output here -- the React front end renders SVG
+  directly -- so the raster path is deferred, not reimplemented.
+  :class:`MermaidRasterizeError` stays in the taxonomy so a future wiring
+  round that adopts a Python rasterizer surfaces failures through the same
+  error class.
+* **Host wrapper leaves remaining (R278c/d)**: ``pure.rs`` (the default
+  engine composing the dagre SVG path with the raster step) and ``mmdc.rs``
+  (the optional CLI engine) are not yet migrated.
 """
 
 from __future__ import annotations
