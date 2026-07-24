@@ -116,6 +116,7 @@ from minimax_code.xai_codebase_graph.index_manager import (
     QueryError,
     QueryResult,
     SymbolLocation,
+    is_binary_content,
 )
 from minimax_code.xai_codebase_graph.interner import StringId, StringInterner
 from minimax_code.xai_codebase_graph.languages import (
@@ -215,18 +216,21 @@ __all__ = [
     "WorkspaceLockGuard",
     "is_operation_in_progress",
     "try_lock",
-    # index_manager (R306a) -- grok ``lib.rs`` L84-L86 re-exports the type
-    # layer of the channel-actor index manager. The 5 non-colliding symbols
-    # (no ``types`` counterpart) reach the crate root; ``FileEvent`` /
-    # ``FileEventKind`` stay bound to the ``types`` version (R300 placement)
-    # to avoid clobbering it -- a barrel-reconciliation brick will switch
-    # them to the ``index_manager`` batch-container version in one atomic
-    # edit once ``navigation`` lands (mirrors the ``types::Location`` /
-    # ``navigation::Location`` split). Reachable via the leaf module as
+    # index_manager (R306a + R306b) -- grok ``lib.rs`` L84-L86 re-exports
+    # the type layer + the ``is_binary_content`` helper of the channel-actor
+    # index manager. The 5 non-colliding type symbols (no ``types``
+    # counterpart) + ``is_binary_content`` (grok L86, PUB ``fn``) reach the
+    # crate root; ``FileEvent`` / ``FileEventKind`` stay bound to the
+    # ``types`` version (R300 placement) to avoid clobbering it -- a
+    # barrel-reconciliation brick will switch them to the ``index_manager``
+    # batch-container version in one atomic edit once ``navigation`` lands
+    # (mirrors the ``types::Location`` / ``navigation::Location`` split).
+    # Reachable via the leaf module as
     # ``minimax_code.xai_codebase_graph.index_manager.FileEvent``.
     "MAX_INDEXABLE_FILE_SIZE",
     "IndexManagerConfig",
     "QueryError",
     "QueryResult",
     "SymbolLocation",
+    "is_binary_content",
 ]

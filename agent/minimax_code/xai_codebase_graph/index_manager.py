@@ -1,8 +1,9 @@
-"""Index manager actor: type-layer foundation (R306a, direction (2) brick 7a).
+"""Index manager actor: type + helper layer (R306a + R306b, direction (2) brick 7).
 
 Ported **by function** from grok ``xai-codebase-graph/src/index_manager.rs``.
-This brick lands the pure-data type layer -- the 7 symbols that carry no
-runtime dependency on the channel / tree-sitter / scope-graph machinery:
+
+R306a lands the pure-data type layer -- the 7 symbols that carry no runtime
+dependency on the channel / tree-sitter / scope-graph machinery:
 
 * ``MAX_INDEXABLE_FILE_SIZE`` -- the 5 MB ceiling above which files are skipped.
 * :class:`FileEventKind` / :class:`FileEvent` -- the **batch** file-event
@@ -11,9 +12,20 @@ runtime dependency on the channel / tree-sitter / scope-graph machinery:
 * :class:`QueryError` -- the 4-variant query-failure tagged union.
 * :class:`IndexManagerConfig` -- the spawn config (root path + cache toggles).
 
+R306b lands the pure-logic helpers that sit beside the type layer (still
+zero runtime dependency on the channel / tree-sitter machinery):
+
+* :class:`CoalescedEvents` -- folds a rapid stream of :class:`FileEvent`
+  batches into one ``path -> kind`` map (the actor drains this each cycle).
+* :func:`is_binary_content` -- git-style NUL-byte heuristic over a buffer
+  (PUB: re-exported at the crate root, grok ``lib.rs`` L86).
+* :func:`is_binary_file` / :func:`is_under_hidden_dir` -- the private
+  disk-read and hidden-directory classifier helpers.
+
 The channel-actor runtime (:class:`IndexManager` / :class:`IndexManagerHandle`
 / :class:`IndexCommand` / the ``ACTIVE_MANAGERS`` singleton / ``ExitBeacon``)
-lands in R306b-R306g -- the type layer is zero-dependency and lands first.
+lands in R306c-R306g -- the type + helper layer is zero-dependency and lands
+first.
 
 FileEvent naming -- a deliberate split (mirrors R300):
     grok ships **two** ``FileEvent`` types with different semantics:
@@ -257,6 +269,114 @@ class IndexManagerConfig:
         return self
 
 
+# === event coalescing ====================================================
+
+
+class CoalescedEvents:
+    """Coalesce a stream of :class:`FileEvent` batches into one kind per path.
+
+    Mirrors grok ``index_manager::CoalescedEvents`` (L1520-L1570, private).
+    File-system watchers fire rapidly (a save can produce Created then
+    Modified then Removed in quick succession); the actor drains the
+    coalesced map so each path is reindexed / evicted at most once per
+    drain cycle. The merge rules (grok L1513-L1519):
+
+    * ``Created`` + ``Modified`` -> ``Modified`` (already tracked, reindex)
+    * ``Created`` / ``Modified`` + ``Removed`` -> cancelled (entry dropped)
+    * ``Removed`` + ``Created`` / ``Modified`` -> ``Created`` (replaced)
+    * multiple ``Modified`` -> single ``Modified`` (last writer wins)
+
+    Renames carry two paths (``[from, to]``): ``from`` is inserted as
+    ``Removed`` and ``to`` as ``Created`` (grok L1532-L1538).
+    """
+
+    def __init__(self) -> None:
+        self.events: dict[str, FileEventKind] = {}
+
+    def add(self, event: FileEvent) -> None:
+        """Fold one batch :class:`FileEvent` into the coalesced map.
+
+        Renames split into two inserts: ``paths[0]`` (from) -> ``Removed``,
+        ``paths[1]`` (to) -> ``Created``; every other kind inserts each
+        path with the event's kind (grok ``CoalescedEvents::add``).
+        """
+        if event.kind is FileEventKind.RENAMED and len(event.paths) >= 2:
+            self._insert(event.paths[0], FileEventKind.REMOVED)
+            self._insert(event.paths[1], FileEventKind.CREATED)
+            return
+        for path in event.paths:
+            self._insert(path, event.kind)
+
+    def _insert(self, path: str, kind: FileEventKind) -> None:
+        """Insert one ``path -> kind`` entry, applying the merge rules.
+
+        Mirrors grok ``CoalescedEvents::insert`` (the Rust ``HashMap::entry``
+        API collapses to a ``dict`` membership check + branch).
+        """
+        prev = self.events.get(path)
+        if prev is None:
+            # Vacant entry -> just set it.
+            self.events[path] = kind
+            return
+        # Created/Modified then Removed -> cancel (drop the entry).
+        if prev in (FileEventKind.CREATED, FileEventKind.MODIFIED) and kind is FileEventKind.REMOVED:
+            del self.events[path]
+            return
+        # Removed then Created/Modified -> file replaced, treat as Created.
+        if prev is FileEventKind.REMOVED and kind in (FileEventKind.CREATED, FileEventKind.MODIFIED):
+            self.events[path] = FileEventKind.CREATED
+            return
+        # Same or compatible kinds -> last writer wins.
+        self.events[path] = kind
+
+
+# === binary detection ====================================================
+
+
+def is_binary_content(content: bytes) -> bool:
+    """Heuristic: does ``content`` look binary? (grok ``is_binary_content``).
+
+    Scans the first 8000 bytes for a NUL byte -- the same heuristic git uses
+    (``buffer-is-binary``). PUB: re-exported at the crate root (grok
+    ``lib.rs`` L86) for callers that already hold the buffer (e.g. the
+    indexer that just read a file). Python ``bytes.__contains__`` subsumes
+    grok's ``content[..check_len].contains(&0)`` slice scan.
+    """
+    return b"\x00" in content[:8000]
+
+
+def is_binary_file(path: str) -> bool:
+    """Like :func:`is_binary_content` but reads only an 8 KB prefix from disk.
+
+    Mirrors grok ``is_binary_file`` (L1584-L1594, private). Avoids loading a
+    huge file into memory just to discover it is binary. Any I/O failure
+    (missing file, permission denied, ...) returns ``False`` -- the caller
+    treats unreadable as "not binary" so the indexer surfaces a clearer
+    parse error downstream rather than silently skipping the file.
+    """
+    try:
+        with open(path, "rb") as f:
+            prefix = f.read(8000)
+    except OSError:
+        return False
+    return b"\x00" in prefix
+
+
+# === path classification =================================================
+
+
+def is_under_hidden_dir(path: str) -> bool:
+    """Does ``path`` have any component starting with ``.`` (len > 1)?
+
+    Mirrors grok ``is_under_hidden_dir`` (L1601-L1607, private). Returns
+    ``True`` for paths like ``.claude/worktrees/x/src/main.rs`` or
+    ``.grok/cache/index.bin`` (tool-managed worktrees / caches that should
+    not be indexed). The ``len > 1`` guard excludes the ``.`` current-dir
+    component. ``PurePath`` is used (no filesystem access).
+    """
+    return any(p.startswith(".") and len(p) > 1 for p in PurePath(path).parts)
+
+
 __all__ = [
     "MAX_INDEXABLE_FILE_SIZE",
     "FileEvent",
@@ -265,4 +385,9 @@ __all__ = [
     "SymbolLocation",
     "QueryError",
     "IndexManagerConfig",
+    # R306b -- grok ``is_binary_content`` is a PUB ``fn`` re-exported at the
+    # crate root (grok ``lib.rs`` L86). The 3 private helpers
+    # (``CoalescedEvents`` / ``is_binary_file`` / ``is_under_hidden_dir``)
+    # stay module-level (no crate-root re-export, mirroring grok visibility).
+    "is_binary_content",
 ]
