@@ -22,13 +22,14 @@ Covers the four migrated symbols plus the module-private helper:
 
 Dispatch invariants asserted (zero-semantic clone):
 
-1. The 19 diagram-type tokens whose dedicated renderers ship in R284+ raise
+1. The 18 diagram-type tokens whose dedicated renderers ship in R285+ raise
    :class:`UnsupportedDiagramType` *before* the flowchart path runs -- this
    matches grok's per-diagram ``if`` arms (L51-L139). The ``info`` renderer
    shipped in R279, the ``stateDiagram`` / ``stateDiagram-v2`` parser shipped
    in R280, the ``radar-beta`` renderer shipped in R281, the ``pie`` renderer
-   shipped in R282, and the ``packet-beta`` renderer shipped in R283 (their
-   dedicated dispatch arms no longer raise); the 19 remaining tokens still do.
+   shipped in R282, the ``packet-beta`` renderer shipped in R283, and the
+   ``sankey-beta`` renderer shipped in R284 (their dedicated dispatch arms no
+   longer raise); the 18 remaining tokens still do.
 2. Unknown tokens (not in the unsupported set, not ``graph``/``flowchart``)
    fall through to the generic parser -- matching grok's unconditional
    ``parser::parse_mermaid`` at L150. A bare ``flowchart``/``graph`` token
@@ -178,22 +179,22 @@ def test_strip_mermaid_frontmatter_strips_yaml_block() -> None:
         "C4Deployment",
         "requirementDiagram",
         "block-beta",
-        "sankey-beta",
         "kanban",
         "quadrantChart",
         "xychart-beta",
     ],
 )
 def test_render_mermaid_to_svg_unsupported_type_raises(diagram_type: str) -> None:
-    """Each of the 19 R284+ diagram tokens raises before the flowchart path.
+    """Each of the 18 R285+ diagram tokens raises before the flowchart path.
 
     Mirrors grok's per-diagram ``if`` arms (lib.rs L51-L139): the dedicated
     renderer is not migrated yet, so dispatch reports the type as
     unsupported. The ``info`` renderer (R279), the ``stateDiagram`` /
     ``stateDiagram-v2`` parser (R280), the ``radar-beta`` renderer (R281),
-    the ``pie`` renderer (R282), and the ``packet-beta`` renderer (R283) are
-    asserted separately; none raises here. The raised
-    :class:`UnsupportedDiagramType` carries the diagram-type token verbatim.
+    the ``pie`` renderer (R282), the ``packet-beta`` renderer (R283), and the
+    ``sankey-beta`` renderer (R284) are asserted separately; none raises
+    here. The raised :class:`UnsupportedDiagramType` carries the diagram-type
+    token verbatim.
     """
     source = f"{diagram_type}\n  body"
     with pytest.raises(UnsupportedDiagramType) as exc_info:

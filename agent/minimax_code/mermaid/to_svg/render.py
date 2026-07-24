@@ -36,11 +36,16 @@ Dispatch model (mirrors grok ``render_mermaid_to_svg`` L36-L163)
      :func:`render_packet_diagram_to_svg` lays contiguous bit ranges out on a
      32-bit-per-row grid (one ``#efefef`` rectangle per block fragment with
      centered label + start/end bit indices), mirroring grok lib.rs L74-L76.
-   * The 15 remaining independent per-diagram renderers (er / class / mindmap
-     / gantt / requirement / block / sankey / sequence
+   * The ``sankey-beta`` renderer (R284) has its own dedicated arm --
+     :func:`render_sankey_diagram_to_svg` lays a weighted flow graph out
+     left-to-right by longest-path depth (throughput-proportional node bars +
+     flow-proportional gradient-stroked cubic-Bezier ribbons), mirroring grok
+     lib.rs L98-L100.
+   * The 14 remaining independent per-diagram renderers (er / class / mindmap
+     / gantt / requirement / block / sequence
      / gitgraph / timeline / journey / kanban / quadrant / xychart / c4)
      raise :class:`UnsupportedDiagramType` here. Their per-diagram leaves ship
-     in later rounds (R284+); until then the dispatch reports the type as
+     in later rounds (R285+); until then the dispatch reports the type as
      unsupported rather than running a renderer that does not exist yet.
    * The default path runs the already-migrated flowchart stack
      (``parser.parse_mermaid`` -> ``layout.compute_layout[_with_config]`` ->
@@ -73,6 +78,7 @@ from .packet_diagram import render_packet_diagram_to_svg
 from .parser import parse_mermaid
 from .pie_diagram import render_pie_diagram_to_svg
 from .radar_diagram import render_radar_diagram_to_svg
+from .sankey_diagram import render_sankey_diagram_to_svg
 from .state_diagram import parse_state_diagram
 from .svg_renderer import render, render_with_config
 from .theme import MermaidTheme
@@ -85,14 +91,14 @@ __all__ = [
 
 
 #: Diagram-type tokens whose renderers ship as independent per-diagram leaves
-#: in later rounds (R283+). Until those leaves land, the dispatch raises
+#: in later rounds (R285+). Until those leaves land, the dispatch raises
 #: :class:`UnsupportedDiagramType` -- mirrors grok's per-diagram ``if`` arms
 #: (lib.rs L51-L139) minus the renderer bodies. The ``info`` renderer shipped
 #: in R279, the ``stateDiagram`` / ``stateDiagram-v2`` parser shipped in
 #: R280, the ``radar-beta`` renderer shipped in R281, the ``pie`` renderer
-#: shipped in R282, and the ``packet-beta`` renderer shipped in R283 (their
-#: dedicated arms sit above this check); the 19 tokens below are the
-#: remaining unsupported surface.
+#: shipped in R282, the ``packet-beta`` renderer shipped in R283, and the
+#: ``sankey-beta`` renderer shipped in R284 (their dedicated arms sit above
+#: this check); the 18 tokens below are the remaining unsupported surface.
 #: The five ``C4*`` tokens share grok's single ``c4_diagram`` renderer
 #: (lib.rs L130-L139).
 _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
@@ -103,7 +109,6 @@ _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
         "gantt",
         "requirementDiagram",
         "block-beta",
-        "sankey-beta",
         "sequenceDiagram",
         "gitGraph",
         "timeline",
@@ -161,9 +166,11 @@ def render_mermaid_to_svg(
     radar chart via :func:`render_radar_diagram_to_svg`; the ``pie`` renderer
     (R282) emits the pie chart via :func:`render_pie_diagram_to_svg`; the
     ``packet-beta`` renderer (R283) emits the packet diagram via
-    :func:`render_packet_diagram_to_svg`; the 15 remaining per-diagram
+    :func:`render_packet_diagram_to_svg`; the ``sankey-beta`` renderer (R284)
+    emits the sankey flow diagram via
+    :func:`render_sankey_diagram_to_svg`; the 14 remaining per-diagram
     renderers raise :class:`UnsupportedDiagramType` until their leaves ship
-    (R284+). Mirrors grok lib.rs L36-L163.
+    (R285+). Mirrors grok lib.rs L36-L163.
 
     Raises:
         UnsupportedDiagramType: when the diagram-type token names a diagram
@@ -229,6 +236,16 @@ def render_mermaid_to_svg(
     # its palette and ignores the resolved theme.
     if diagram_type == "packet-beta":
         return render_packet_diagram_to_svg(body, resolved_theme)
+
+    # ``sankey-beta`` (R284): the dedicated sankey / flow-diagram renderer.
+    # Mirrors grok lib.rs L98-L100 -- :func:`render_sankey_diagram_to_svg`
+    # receives the front-matter-stripped body and lays the weighted flow graph
+    # out left-to-right by longest-path depth (throughput-proportional node
+    # bars + flow-proportional gradient-stroked cubic-Bezier ribbons). Unlike
+    # the pie / packet renderers, sankey IS theme-aware: ``theme.background``
+    # flows into the SVG root style and the full-canvas background rect.
+    if diagram_type == "sankey-beta":
+        return render_sankey_diagram_to_svg(body, resolved_theme)
 
     if diagram_type in _UNSUPPORTED_DIAGRAM_TYPES:
         raise UnsupportedDiagramType(diagram_type)
