@@ -94,9 +94,14 @@ Dispatch model (mirrors grok ``render_mermaid_to_svg`` L36-L163)
      theme-aware SVG (5 channels: background / text_color / edge_color /
      node_fill / node_stroke). It is the first per-diagram renderer that
      consumes dagre (phase 2 of direction (1)).
-   * The 4 remaining independent per-diagram renderers (er / class / sequence
-     / c4) raise :class:`UnsupportedDiagramType` here. Their per-diagram leaves
-     ship in later rounds (R295+); until then the dispatch reports the type as
+   * The ``erDiagram`` renderer (R295) has its own dedicated arm --
+     :func:`render_er_diagram_to_svg` parses entity tables + crow's-foot
+     relationships, hands them to the dagre layout engine (``compound: false``),
+     and emits a theme-aware SVG with the 8 classic ER markers. It is the
+     second per-diagram renderer that consumes dagre (phase 2 of direction (1)).
+   * The 3 remaining independent per-diagram renderers (class / sequence / c4)
+     raise :class:`UnsupportedDiagramType` here. Their per-diagram leaves ship
+     in later rounds (R296+); until then the dispatch reports the type as
      unsupported rather than running a renderer that does not exist yet.
    * The default path runs the already-migrated flowchart stack
      (``parser.parse_mermaid`` -> ``layout.compute_layout[_with_config]`` ->
@@ -123,6 +128,7 @@ from __future__ import annotations
 
 from .block_diagram import render_block_diagram_to_svg
 from .config import parse_mermaid_frontmatter
+from .er_diagram import render_er_diagram_to_svg
 from .error import UnsupportedDiagramType
 from .gantt_diagram import render_gantt_diagram_to_svg
 from .gitgraph_diagram import render_gitgraph_diagram_to_svg
@@ -164,14 +170,13 @@ __all__ = [
 #: R288, the ``block-beta`` renderer shipped in R289, the ``journey``
 #: renderer shipped in R290, the ``gitGraph`` renderer shipped in R291, the
 #: ``mindmap`` renderer shipped in R292, the ``xychart-beta`` renderer shipped
-#: in R293, and the ``requirementDiagram`` renderer shipped in R294 (their
-#: dedicated arms sit above this check); the 8 tokens below are the remaining
-#: unsupported surface.
+#: in R293, the ``requirementDiagram`` renderer shipped in R294, and the
+#: ``erDiagram`` renderer shipped in R295 (their dedicated arms sit above this
+#: check); the 7 tokens below are the remaining unsupported surface.
 #: The five ``C4*`` tokens share grok's single ``c4_diagram`` renderer
 #: (lib.rs L130-L139).
 _UNSUPPORTED_DIAGRAM_TYPES: frozenset[str] = frozenset(
     {
-        "erDiagram",
         "classDiagram",
         "sequenceDiagram",
         "C4Context",
@@ -242,9 +247,10 @@ def render_mermaid_to_svg(
     ``xychart-beta`` renderer (R293) emits the cartesian line-chart via
     :func:`render_xychart_diagram_to_svg`; the ``requirementDiagram`` renderer
     (R294) emits the requirement diagram via
-    :func:`render_requirement_diagram_to_svg`; the 8 remaining unsupported
-    tokens raise :class:`UnsupportedDiagramType` until their leaves ship
-    (R295+).
+    :func:`render_requirement_diagram_to_svg`; the ``erDiagram`` renderer (R295)
+    emits the entity-relationship diagram via
+    :func:`render_er_diagram_to_svg`; the 7 remaining unsupported tokens raise
+    :class:`UnsupportedDiagramType` until their leaves ship (R296+).
     Mirrors grok lib.rs L36-L163.
 
     Raises:
@@ -446,6 +452,20 @@ def render_mermaid_to_svg(
     # -> node rect fill, ``node_stroke`` -> node rect stroke + divider line.
     if diagram_type == "requirementDiagram":
         return render_requirement_diagram_to_svg(body, resolved_theme)
+
+    # ``erDiagram`` (R295): the dedicated ER-diagram renderer. Mirrors grok
+    # lib.rs L82-L84 -- :func:`render_er_diagram_to_svg` receives the front-
+    # matter-stripped body and parses entity tables (header + ``type name``
+    # attribute rows) + crow's-foot relationships (``A ||--o{ B : role``),
+    # hands the nodes + edges to the dagre layout engine (``compound: false``),
+    # and emits a theme-aware SVG whose edges carry the 8 classic ER markers.
+    # It is the SECOND per-diagram renderer to consume dagre (phase 2 of
+    # direction (1)); erDiagram is theme-aware (5 channels): ``background`` ->
+    # root bg style, ``text_color`` -> CSS fill + every label fill,
+    # ``edge_color`` -> marker strokes + relationshipLine stroke, ``node_fill``
+    # -> entityBox fill, ``node_stroke`` -> entityBox stroke + divider lines.
+    if diagram_type == "erDiagram":
+        return render_er_diagram_to_svg(body, resolved_theme)
 
     if diagram_type in _UNSUPPORTED_DIAGRAM_TYPES:
         raise UnsupportedDiagramType(diagram_type)

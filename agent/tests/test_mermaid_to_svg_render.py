@@ -171,7 +171,6 @@ def test_strip_mermaid_frontmatter_strips_yaml_block() -> None:
 @pytest.mark.parametrize(
     "diagram_type",
     [
-        "erDiagram",
         "sequenceDiagram",
         "classDiagram",
         "C4Context",
@@ -182,7 +181,7 @@ def test_strip_mermaid_frontmatter_strips_yaml_block() -> None:
     ],
 )
 def test_render_mermaid_to_svg_unsupported_type_raises(diagram_type: str) -> None:
-    """Each of the 8 R295+ diagram tokens raises before the flowchart path.
+    """Each of the 7 R296+ diagram tokens raises before the flowchart path.
 
     Mirrors grok's per-diagram ``if`` arms (lib.rs L51-L139): the dedicated
     renderer is not migrated yet, so dispatch reports the type as
@@ -194,9 +193,10 @@ def test_render_mermaid_to_svg_unsupported_type_raises(diagram_type: str) -> Non
     ``quadrantChart`` renderer (R288), the ``block-beta`` renderer
     (R289), the ``journey`` renderer (R290), the ``gitGraph`` renderer
     (R291), the ``mindmap`` renderer (R292), the ``xychart-beta`` renderer
-    (R293), and the ``requirementDiagram`` renderer (R294) are asserted
-    separately; none raises here. The raised
-    :class:`UnsupportedDiagramType` carries the diagram-type token verbatim.
+    (R293), the ``requirementDiagram`` renderer (R294), and the
+    ``erDiagram`` renderer (R295) are asserted separately; none raises here.
+    The raised :class:`UnsupportedDiagramType` carries the diagram-type
+    token verbatim.
     """
     source = f"{diagram_type}\n  body"
     with pytest.raises(UnsupportedDiagramType) as exc_info:
