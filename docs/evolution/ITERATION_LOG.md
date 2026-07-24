@@ -23571,3 +23571,246 @@ scope, the +46 delta over R306e is the new reindex suite]. Closes the 7-leaf
 barrel-reconciliation brick; direction (3) L2 self-evolution framework skeleton
 wiring remains P0 not-started parallel active front.
 ```
+
+## R307 — port grok navigation.rs -> minimax_code.xai_codebase_graph.navigation (direction (2) brick 8: code-navigation orchestrator; Location + NavigationResult + NavigationError 6-variant hierarchy + Navigator 6 methods; reuses R306g identifier helpers instead of grok's duplicated copy)
+
+Anchor:R307-1 <pending>
+Anchor:R307-2 <pending>
+
+### Round goal
+
+Direction (2) brick 8 -- the **code-navigation orchestrator** that turns the
+symbol graph built by the ``index_manager`` series (R306a-g) into the LSP-style
+"go to definition / go to references" surface a coding agent actually calls.
+grok ``navigation.rs`` (844 lines, but L396-L844 are ``#[cfg(test)]``; the core
+library is ~394 lines) defines a ``Navigator`` that wraps a shared
+``ScopeGraphIndex`` + ``LanguageRegistry`` and answers two questions from a file
+path + 1-indexed ``(row, col)``: *what symbol is under the cursor?* and *where
+is that symbol defined / used?*.
+
+R307 ports that orchestrator **by function** (per the standing ``/goal``
+methodology -- *never line-for-line clone*). It is the direct consumer of the
+``_get_symbol_at_position`` leaf R306g landed internally: R306g built the
+probe; R307 wraps it in a caller-facing ``Navigator`` with six methods, the
+three dataclasses it returns (``Location`` / ``NavigationResult``), and the
+six-variant ``NavigationError`` hierarchy. With R307, the
+``xai_codebase_graph`` package can answer navigation queries end-to-end (modulo
+the not-yet-loaded tree-sitter grammar -- see YAGNI).
+
+### Fusion conclusion
+
+Nine Rust shapes (3 structs + 1 enum + 1 struct-with-methods + 4 free fns) port
+to nine Python shapes with deliberate API translations:
+
+1. **``Location`` (L50-L87)** -- the navigation-flavored location triple
+   ``(path, line, optional symbol)``. grok: ``#[derive(Clone, PartialEq, Eq,
+   Hash)]`` struct with ``new`` / ``with_symbol`` / ``as_path``. Python:
+   ``@dataclass(frozen=True, slots=True)`` (frozen = immutable + hashable, the
+   Python equivalent of grok's ``Hash`` derive; ``slots`` mirrors grok's tight
+   layout). Three ``@classmethod`` constructors (``new`` for the bare
+   ``(path, line)`` form, ``with_symbol`` for the per-reference alias-tagged
+   form, ``as_path`` returning a ``pathlib.Path``) -- classmethods, not grok's
+   ``impl`` associated functions, because Python has no free-standing
+   ``Location::new``. **Kept distinct** from
+   :class:`~minimax_code.xai_codebase_graph.types.Location` (the
+   ``file_path``/``line``/``column``/``range`` flavor) -- grok ships both under
+   separate module paths and this port preserves the 1:1 split rather than
+   unifying.
+2. **``NavigationResult`` (L93-L106)** -- ``(symbol, locations)``. grok derives
+   ``Debug, Clone`` (not ``Hash`` -- a ``Vec`` field isn't hashable in Rust).
+   Python: ``@dataclass(frozen=True, slots=True)``; frozen-but-not-hashable is
+   modeled by a ``list[Location]`` field (mutable in place, not re-bindable) on
+   a frozen dataclass -- the closest Python analog to grok's ``Vec`` on a
+   non-``Copy`` struct.
+3. **``NavigationError`` (L112-L124)** -- grok's 6-variant enum (``FileNotFound``
+   / ``PositionOutOfBounds`` / ``NoSymbolAtPosition`` / ``UnsupportedLanguage``
+   / ``ParseError`` / ``IoError``) with a ``Display`` impl. Python: a base
+   :class:`NavigationError(Exception)` + **six subclasses**, each formatting
+   the exact message grok's ``Display`` produces (``f"File not found: {path}"``
+   etc.). The subclass-per-variant shape lets callers ``except
+   PositionOutOfBounds`` directly -- Python has no enum-with-payload the way
+   Rust does, so the variant's data (``path`` / ``row,col`` / ``ext`` /
+   ``message``) becomes instance attributes.
+4. **``Navigator`` (L207-L403)** -- grok ``struct Navigator { index:
+   Arc<ScopeGraphIndex>, registry: LanguageRegistry }`` with ``index()`` /
+   ``index_mut()`` accessors and six methods. Python: ``@dataclass(slots=True)``
+   holding a **direct reference** (``Arc`` has no Python analog -- ``gc``
+   refcounting replaces it). The ``index_mut`` accessor documents the CoW
+   divergence: grok ``Arc::make_mut`` clones before mutating if other holders
+   exist; Python mutates in place, so the docstring is explicit that callers
+   needing isolation must snapshot first (Pythonic explicit copy vs. grok's
+   implicit CoW).
+5. **``get_symbol_at_position`` (L245-L297)** -- the position probe. Two
+   coordinate translations: (a) ``row``/``col`` are 1-indexed (LSP convention),
+   the tree-sitter hit-test receives ``row-1``/``col-1`` (0-indexed); (b)
+   ``row == 0 or col == 0`` is the "no cursor" sentinel -> ``PositionOutOfBounds``
+   (a zero coordinate is an *invalid query*, distinct from a valid position
+   that lands on a non-symbol node -> ``NoSymbolAtPosition``). Five failure
+   arms: read-fail -> ``FileNotFound``, no language config -> ``UnsupportedLanguage``,
+   parser unavailable / no tree -> ``ParseError``, hit-test ``None`` ->
+   ``NoSymbolAtPosition``, byte span not UTF-8 -> ``ParseError``. The two
+   ``except`` clauses use ``raise ... from None`` (B904-clean) because the
+   specific ``NavigationError`` variant *is* the caller-facing contract -- the
+   swallowed ``OSError``/``UnicodeDecodeError`` chain would only add noise.
+6. **``goto_definition`` / ``goto_references`` (L299-L351)** -- resolve the
+   symbol at the position, then delegate to ``ScopeGraphIndex.find_*_smart``
+   (R305c, ranked toward the file's language family). References carry the
+   matched alias spelling via ``Location.with_symbol``; when
+   ``include_definition`` is set, definitions are **prepended** (grok's
+   ``insert(0, loc)``) and de-duplicated against existing reference sites by
+   ``path`` + ``line`` (an O(n) linear scan mirroring grok's ad-hoc dedup).
+7. **``goto_definition_by_name`` / ``goto_references_by_name`` (L355-L403)** --
+   skip the position parse (the caller already knows the symbol name). **Never
+   raise**: return an empty ``locations`` list when nothing matches (grok
+   returns ``NavigationResult`` directly, not ``Result``). The
+   ``_context_file_str`` free fn (L200-L204) normalizes the optional
+   ``context_file`` argument ``str | os.PathLike | None`` -> ``str | None``
+   (grok ``Option<&Path>``).
+
+**The one deliberate divergence from grok's source layout (DRY correction):**
+grok **duplicates** ``find_smallest_named_node_at_position`` and
+``is_identifier_like`` between ``navigation.rs`` (L346-L394) and
+``index_manager.rs`` (L1610-L1654) -- two identical copies. R306g already
+landed them as module-level helpers in ``index_manager.py``; R307 **imports**
+``_find_smallest_named_node_at_position`` from there instead of re-defining a
+second copy, and reuses ``_get_parser_and_query`` from ``manager.builder``
+(R305e). Same single source ``IndexManager`` uses, eliminating grok's duplicate
+definitions. This is a correction of an upstream DRY violation, not a behavior
+change -- every method behaves identically to grok's.
+
+### Evidence
+
+``test_xai_codebase_graph_navigation.py`` (43 tests, R307 suite):
+
+* **Location** -- ``new`` sets ``symbol=None``; ``with_symbol`` sets the alias;
+  ``as_path`` returns a ``Path``; frozen (re-bind raises ``FrozenInstanceError``);
+  hashable (two equal ``Location`` hash equal).
+* **NavigationResult** -- ``symbol`` + ``locations`` round-trip; frozen
+  (``symbol`` not re-bindable); the ``locations`` list is mutable in place
+  (``append`` works) -- the frozen-but-mutable-list analog of grok's ``Vec`` on
+  a non-``Copy`` struct.
+* **NavigationError hierarchy** -- all six variants are subclasses of
+  ``NavigationError`` (``issubclass``); ``except NavigationError`` catches every
+  variant; each variant formats its exact grok-``Display`` message
+  (``FileNotFound`` -> ``f"File not found: {path}"``, ``PositionOutOfBounds`` ->
+  ``f"Position out of bounds: {row}:{col}"``, etc.).
+* **Navigator accessors** -- ``index`` / ``index_mut`` return the underlying
+  index; the default ``_registry`` is a fresh ``LanguageRegistry``.
+* **``get_symbol_at_position`` error mapping (9 cases)** -- ``row==0`` ->
+  ``PositionOutOfBounds``; ``col==0`` -> ``PositionOutOfBounds``; read fail ->
+  ``FileNotFound``; unsupported extension -> ``UnsupportedLanguage`` (carries
+  the bare extension, ``"unknown"`` for no-suffix files); parser unavailable ->
+  ``ParseError``; parse yields ``None`` -> ``ParseError``; hit-test ``None``
+  -> ``NoSymbolAtPosition``; byte span not UTF-8 -> ``ParseError``; valid
+  in-bounds probe -> the identifier text.
+* **``goto_definition``** -- resolves the symbol then delegates to
+  ``find_definitions_smart``; raises any ``NavigationError`` from the probe;
+  wraps each ``(path, line)`` in ``Location.new``.
+* **``goto_references``** -- ``include_definition=False`` returns references
+  only (each ``Location.with_symbol`` carries the alias); ``include_definition=True``
+  prepends definitions de-duplicated by ``path`` + ``line`` (a definition that
+  duplicates an existing reference site is not double-counted).
+* **``goto_*_by_name``** -- never raise; empty index -> empty ``locations``;
+  ``include_definition`` dedup mirrors the position-based variants;
+  ``context_file=None`` is accepted.
+* **``__all__``** -- the 10 exported names match the list (base ``NavigationError``
+  + 6 subclasses + ``Location`` + ``NavigationResult`` + ``Navigator``).
+* **R308 boundary** -- the crate-root barrel reconciliation (which ``Location``
+  the crate root re-exports) is asserted as *not yet done*.
+
+### Delivery
+
+Committed files (this brick, R307):
+
+* ``agent/minimax_code/xai_codebase_graph/navigation.py`` -- ``Location``
+  (L50), ``NavigationResult`` (L93), ``NavigationError`` + 6 subclasses
+  (L112-L194), ``_context_file_str`` (L200), ``Navigator`` (L207),
+  ``get_symbol_at_position`` (L245), ``goto_definition`` (L299),
+  ``goto_references`` (L316), ``goto_definition_by_name`` (L355),
+  ``goto_references_by_name`` (L372), ``__all__`` (L406, 10 names).
+* ``agent/tests/test_xai_codebase_graph_navigation.py`` -- new, 43 tests,
+  self-contained duck-typed fakes (``_Point`` / ``_FakeNode`` / ``_FakeTree``
+  / ``_FakeParser`` / ``_FakeConfig`` / ``_FakeRegistry`` / ``_FakeIndex``) so
+  the suite runs without the real tree-sitter Python grammar loaded; a
+  ``patch_resolver`` pytest fixture monkeypatches ``_get_parser_and_query`` per
+  test.
+
+### Verification
+
+* ``ruff check`` -- clean (line-length 100, E/F/W/I/B/UP); both B904
+  ``raise ... from None`` sites and the B008 mutable-default cleanup resolved.
+* Directed R307 -- ``43 passed in 0.25s``.
+* Full regression -- ``9868 passed, 15 skipped`` (zero regressions vs the R306g
+  baseline of 9825; the +43 delta is exactly the new navigation suite, all
+  green).
+
+### YAGNI boundaries
+
+* **No crate-root barrel reconciliation yet** -- ``navigation::Location`` vs
+  ``types::Location`` are kept as two distinct types (mirroring grok's separate
+  module paths); which one the crate root ``__init__.py`` re-exports lands in
+  R308. The four navigation symbols are exported from ``navigation.py``'s
+  ``__all__`` but not yet re-exported at the package root.
+* **Tree-sitter runtime not loaded in this environment** --
+  ``_get_parser_and_query`` returns ``(None, None)`` (no Python grammar
+  registered); real end-to-end parsing degrades to ``ParseError``. The suite
+  covers every path with duck-typed fakes so the error-mapping logic is real
+  even though the parse isn't.
+* **``Location`` split preserved (no unification)** -- grok models the
+  navigation-flavored ``Location`` and the ``types::Location`` (with full
+  ``Range`` + column) as separate types under separate module paths; this port
+  keeps them 1:1 rather than collapsing (collapsing would be a behavior change,
+  not a port).
+* **Direction (3) still P0 not-started** -- the L2 self-evolution framework
+  skeleton is the other parallel active front; R307 doesn't touch it.
+
+### Commit
+
+```
+feat(platform): R307 port navigation.rs -> navigation.py
+
+Ports direction (2) brick 8 -- the code-navigation orchestrator that turns
+the symbol graph built by the ``index_manager`` series (R306a-g) into the
+LSP-style go-to-definition / go-to-references surface. grok ``navigation.rs``
+core library (~394 lines; L396-L844 are tests) ports by function to
+``xai_codebase_graph/navigation.py``.
+
+Shapes ported:
+* ``Location`` (L50) -- frozen+slots dataclass, ``(path, line, symbol?)`` +
+  ``new``/``with_symbol``/``as_path`` classmethods. Kept distinct from
+  ``types.Location`` (grok ships both; this port preserves the 1:1 split).
+* ``NavigationResult`` (L93) -- ``(symbol, locations)``, frozen-but-mutable-list
+  analog of grok's ``Vec`` on a non-``Copy`` struct.
+* ``NavigationError`` (L112) + 6 subclasses -- grok's 6-variant enum as a base
+  class + ``FileNotFound``/``PositionOutOfBounds``/``NoSymbolAtPosition``/
+  ``UnsupportedLanguage``/``ParseError``/``IoError``, each formatting its exact
+  grok-``Display`` message.
+* ``Navigator`` (L207) -- slots dataclass wrapping ``ScopeGraphIndex`` +
+  ``LanguageRegistry`` (direct reference, no ``Arc``; ``index_mut`` documents
+  the CoW divergence); six methods.
+
+Methods:
+* ``get_symbol_at_position`` (L245) -- 1-indexed -> 0-indexed translation;
+  ``row==0``/``col==0`` sentinel -> ``PositionOutOfBounds``; five failure arms
+  (``FileNotFound``/``UnsupportedLanguage``/``ParseError``x2/
+  ``NoSymbolAtPosition``); both ``except`` sites ``raise ... from None``
+  (B904-clean).
+* ``goto_definition`` (L299) / ``goto_references`` (L316) -- delegate to
+  ``find_*_smart``; references carry the alias via ``with_symbol``;
+  ``include_definition`` prepends + O(n) dedup by ``path``+``line``.
+* ``goto_*_by_name`` (L355/L372) -- skip the position parse; never raise.
+
+DRY correction: grok duplicates ``find_smallest_named_node_at_position`` /
+``is_identifier_like`` between ``navigation.rs`` and ``index_manager.rs``; this
+port imports ``_find_smallest_named_node_at_position`` from ``index_manager``
+(R306g) and reuses ``_get_parser_and_query`` from ``manager.builder`` (R305e) --
+single source, no second copy. This is the only deliberate divergence from
+grok's layout; it corrects an upstream DRY violation with no behavior change.
+
+Verification: ruff clean; directed R307 43 passed in 0.25s; full regression
+9868 passed/15 skipped [R306g baseline 9825 -> +43 delta is the new navigation
+suite, zero regression]. Closes direction (2) brick 8. Next: the crate-root
+barrel reconciliation (R308) closes direction (2); direction (3) L2
+self-evolution framework skeleton wiring remains P0 not-started parallel active
+front.
+```
