@@ -20506,3 +20506,84 @@ mod.rs 是 order 子包的「编排层根」，单向消费全部 8 个叶子（
 ### Commit
 
 `feat(platform): R278d port xai-grok-mermaid mmdc.rs -> MmdcEngine + default_engine() factory (direction (1) brick 12, behavioral-equivalent port, optional mmdc CLI engine + barrel 24->27)`。feat 提交（13 文件）：`mmdc.py`（新建）+ `__init__.py`（桶扩展 24->27 + default_engine 工厂）+ `test_mermaid_mmdc.py`（新建，22 测试）+ 10 个 barrel-guard 测试同步（pure/subprocess/ast/config/error/layout/parser/svg_renderer/text_wrap/theme，13 断言）。docs 提交：`docs(platform): R278d iteration log entry`（ITERATION_LOG.md R278d 条目）。锚点链: ... -> R278b(docs YAGNI raster) -> R278c(f0a9df6 feat pure + c227a1e docs) -> R278d(feat mmdc + docs)。**方向① 第 12 砖：可选 mmdc CLI 引擎 + crate-root 默认工厂行为等价移植落地（18 passed + 4 skipped，全量 7945 passed，唯一失败是预存 flaky 已隔离），桶 24->27，下一砖 R279+ per-diagram 渲染器**。
+
+---
+
+## R279 — 迁移 grok info_diagram.rs → render_info_diagram_to_svg（方向① 第 13 砖，首个 per-diagram 渲染器，info 版本卡片静态 SVG，行为等价移植非逐行克隆，桶不变 dispatch-only reach）
+
+锚点:R279-1 <pending>
+
+### 本轮目标
+
+迁移 grok `info_diagram.rs`（57 行，最简单的 per-diagram 渲染器——纯静态 `400×150` SVG，唯一内容是固定的 mermaid 版本字符串 `v11.12.2`，无解析/布局/边路由）→ Python `render_info_diagram_to_svg`，并在 `render.py` dispatch 接入 `info` arm。方向① 第 13 砖，首个 per-diagram 渲染器叶子（R280+ 逐砖落地余下 18 个）。延续 R271--R278d 的"行为等价移植非逐行克隆"方法论（用户持续指示："别逐行代码的复刻，要按照功能的复刻" / "按功能进行克隆"）。
+
+### 融合结论
+
+`info_diagram.py` 落地 `render_info_diagram_to_svg`（1 公共符号，grok `pub fn`）。`render.py` dispatch 新增 `info` arm（位于 unsupported 检查之前，传 raw `mermaid_source`）。**桶不变**：info_diagram 是 dispatch-only reach，不进 to_svg barrel（镜像 grok crate root 从不 re-export `info_diagram` 符号——`lib.rs` L82-L84 仅经 dispatch arm 调用）。`_UNSUPPORTED_DIAGRAM_TYPES` 25 -> 24 token（移除 info）。4 个"按功能复刻"架构裁决：① f64->int（`400.0_f64` 的 Display `"400"` == `str(int(400))`）；② SVG 模板 `.replace()` 链（grok 4 段 `push_str(format!(...))` -> 1 个模块级模板带 6 个 `__FOO__` 占位符，CSS `{}` 保持原样规避 f-string/format 转义噪声）；③ 内联 `_first_diagram_type_token` 副本（循环引用预防——render L54 导入 info_diagram，从 render 反向导入 helper 会触发加载期 ImportError）；④ dispatch 传 raw source 的 quirk 锁定（grok 实际行为：带 front-matter 的 info 图触发 ParseError，不写专门测试）。
+
+### 决策证据（行为等价六映射 + dispatch raw-source quirk + 循环引用预防）
+
+**证据 ① token guard（grok L13-L18）。** grok `if first_diagram_type_token(mermaid_source) != Some("info") { return Err(ParseError { line: 1, message: "Expected 'info' declaration" }); }` -> `if _first_diagram_type_token(mermaid_source) != "info": raise ParseError(1, "Expected 'info' declaration")`。`ParseError(line, message)` 形态（`error.py`：`__init__` 设 `self.line`/`self.message`，`super().__init__(f"Parse error at line {line}: {message}")`）。渲染器是公共入口（grok `pub fn`），可直接调用（非仅 dispatch），故 guard 防御误用。
+
+**证据 ② 颜色映射（grok L20-L29 + L37-L38）。** grok `#ffffff` -> `"white"` / `#333333` -> `"#333"`（mermaid 自身 info 卡片的 CSS 缩写压缩）；**edge 用 `theme.edge_color` 原样**（L37-L38 `.marker` 规则，无缩写）-> Python 条件表达式 verbatim：`background_color = "white" if theme.background == "#ffffff" else theme.background` / `text_color = "#333" if theme.text_color == "#333333" else theme.text_color` / `edge_color = theme.edge_color`。这是 renderer 唯一一处与均匀压缩发散的地方（light 的 edge 保持 `#333333` 而非 `#333`），port 精确镜像。light 映射：`background-color: white;` / `16px;fill:#333;}` / `#my-svg .marker{fill:#333333;stroke:#333333;}`（edge 不对称）；dark 映射：`background-color: #1e1e1e;` / `16px;fill:#ffffff;}` / `#my-svg .marker{fill:#888888;stroke:#888888;}`（均无压缩）。
+
+**证据 ③ dispatch 传 raw source（grok lib.rs L82-L84）。** grok `if diagram_type == Some("info") { return info_diagram::render_info_diagram_to_svg(mermaid_source, theme); }` 传 **raw `mermaid_source`**（未 strip front-matter）。info_diagram 内部 guard 重扫 raw source——故带 front-matter 的 info 图（首行 `---`）触发 ParseError（grok 的实际 quirk）。本砖**不为这个边缘情况写专门测试**（front-matter + info 是不现实组合——info 图是静态版本卡片，无配置需求；锁定 quirk 非核心契约），只测 grok 冒烟测试覆盖的核心路径 `"info"`（lib.rs L608-L616 `test_simple_info_diagram`：`render_mermaid_to_svg("info", None)` 成功，断言 `svg.contains("v11.12.2")`）。这是"按功能复刻"的直接体现：复刻核心契约，不逐行复刻边缘 quirk。
+
+**证据 ④ f64 -> int（grok `INFO_WIDTH: f64 = 400.0` / `INFO_HEIGHT: f64 = 150.0`）。** SVG viewBox 无小数像素；Rust `Display` for `400.0_f64` 渲染 `"400"`（丢弃尾随 `.0`）；Python `str(int(400))` 渲染相同 `"400"`。Identical SVG output，像素计数的 Pythonic 类型。`PINNED_MERMAID_VERSION: &str = "11.12.2"` -> `str` verbatim（mermaid 真实 info 图显示构建版本；port 钉同一字符串，渲染卡片 byte-for-byte 相同）。
+
+**证据 ⑤ 内联 `_first_diagram_type_token` 副本（循环引用预防）。** grok 在每个 per-diagram 渲染器内联私有 `first_diagram_type_token`（`info_diagram.rs` L50-L56 是 `lib.rs` L174-L180 的 verbatim 副本）——Rust 必要性：crate-root helper 是私有 `fn`，对兄弟模块不可见，故每个渲染器自带副本。port 镜像此自包含，**而非**从 `render.py` 导入 helper：导入会闭合循环边（`render.render_mermaid_to_svg` 调 `info_diagram.render_info_diagram_to_svg`，故 `render` 在模块顶导入 `info_diagram`；反向导入 `first_diagram_type_token` 会在 `render` 仍处加载中期触发——helper 在 L111 定义，晚于 L54 的 `info_diagram` 导入 -> `ImportError`）。6 行内联副本 sidestep 循环并保持每个 per-diagram 渲染器自包含——同 grok 的 trade-off，同理由，Pythonic 表达。
+
+**证据 ⑥ SVG 模板 `.replace()` 链（括号转义规避）。** grok 从 4 段 `push_str(format!(...))` 拼装 SVG；port 从 1 个模块级模板 `_SVG_TEMPLATE`（6 个 `__FOO__` 占位符）经 `.replace()` 链组装。模板保持每个 CSS `{}` 花括号 verbatim（f-string / `str.format` 会迫使 ~30 条 CSS 规则的每个 `{` -> `{{` / `}` -> `}}` 转义——噪声且脆弱）；`.replace()` 完全规避。输出 byte-for-byte 等于 grok 发射的 SVG。模板由相邻字符串字面量构建，每条 CSS 规则独占一行（diff 可读性 vs grok 单行 `format!`）。
+
+### 交付
+
+- `agent/minimax_code/mermaid/to_svg/info_diagram.py`（新建，207 行）：
+
+  - **模块 docstring（行为等价移植框架）** —— 开宗明义 "behavioral-equivalent port ... NOT a line-by-line translation"，列 5 个 Rust->Python 语义映射点（f64->int / `&str`->str / `Result`->raise / token guard -> ParseError / 颜色 shortcuts -> 条件表达式）。"Why an inline `_first_diagram_type_token`" 段（循环引用预防）+ "SVG assembly" 段（`.replace()` 括号规避）。引用 grok 行号作**契约参照**（非逐行翻译声明）。
+  - **`__all__ = ["render_info_diagram_to_svg"]`**（1 符号，grok `pub fn`）。常量 + token helper 模块私有；不进 to_svg barrel（dispatch-only reach）。
+  - **`INFO_WIDTH: int = 400` / `INFO_HEIGHT: int = 150` / `PINNED_MERMAID_VERSION: str = "11.12.2"`**（grok `f64` 常量 -> `int`/`str`）。
+  - **`_SVG_TEMPLATE`**：模块级字符串（相邻字面量），6 个 `__FOO__` 占位符（`__WIDTH__` / `__HEIGHT__` / `__BACKGROUND__` / `__TEXT__` / `__EDGE__` / `__VERSION__`），CSS `{}` 全 verbatim。
+  - **`_first_diagram_type_token(input) -> str | None`**：6 行内联副本（render.first_diagram_type_token 的自包含拷贝，循环引用预防）。
+  - **`render_info_diagram_to_svg(mermaid_source, theme) -> str`**：token guard（raise `ParseError(1, "Expected 'info' declaration")`）-> 颜色映射（background/text 条件压缩，edge 原样）-> `_SVG_TEMPLATE.replace()` 链 6 替换。
+
+- `agent/minimax_code/mermaid/to_svg/render.py`（修改）：
+
+  - **导入块**：`from .info_diagram import render_info_diagram_to_svg`（isort 序：`.info_diagram` 按字母序落位 `.error` 与 `.layout` 之间）。
+  - **dispatch arm**（`diagram_type = first_diagram_type_token(body)` 之后、unsupported 检查之前）：`if diagram_type == "info": return render_info_diagram_to_svg(mermaid_source, resolved_theme)`——传 raw `mermaid_source`（镜像 grok lib.rs L82-L84）。注释详述 raw-source 流向 + 重新提取 token 的防御语义。
+  - **`_UNSUPPORTED_DIAGRAM_TYPES` 25 -> 24 token**（移除 info）：er/class/mindmap/state/stateDiagram-v2/pie/gantt/requirement/packet/block/radar/sankey/sequence/gitGraph/timeline/journey/kanban/quadrant/xychart/C4Context/C4Container/C4Component/C4Dynamic/C4Deployment。注释刷新 R279/R280+ 语义（info 已 ship 专属 arm；19 个独立 per-diagram 渲染器待 R280+）。
+  - **`_FLOWCHART_TOKENS = frozenset({"graph", "flowchart"})`**（grok lib.rs L141）。
+  - **docstring 刷新**：dispatch model 段新增 "info 专属 arm" 描述 + R279 标注。
+
+- `agent/tests/test_mermaid_to_svg_info_diagram.py`（新建，~200 行，16 测试）：
+
+  - **dispatch 冒烟 x1**（grok lib.rs L608-L616）：`render_mermaid_to_svg("info", None)` 含 `v11.12.2` + `<svg` + `</svg>`。
+  - **light 颜色映射 x4**：`background-color: white;` + 反向断言 `not in` / `16px;fill:#333;}` / `#my-svg .marker{fill:#333333;stroke:#333333;}`（edge 不对称）/ `viewBox="0 0 400 150"` + `>v11.12.2</text>`。
+  - **dark 颜色映射 x4**：`background-color: #1e1e1e;` / `16px;fill:#ffffff;}` / `#my-svg .marker{fill:#888888;stroke:#888888;}` / viewBox+version。
+  - **ParseError 守卫 x2**：`flowchart LR\n  A --> B` 抛 ParseError（`line==1` + `message=="Expected 'info' declaration"` + `str=="Parse error at line 1: Expected 'info' declaration"`）/ 空 source 抛 ParseError。
+  - **常量表面 x3**：`INFO_WIDTH==400`（int）/ `INFO_HEIGHT==150`（int）/ `PINNED_MERMAID_VERSION=="11.12.2"`。
+  - **模块/barrel 表面 x2**：`info_diagram_mod.__all__ == ["render_info_diagram_to_svg"]` / `"render_info_diagram_to_svg" not in to_svg.__all__` + `not hasattr(to_svg, "render_info_diagram_to_svg")`（dispatch-only reach，桶 18 不变）。
+
+- `agent/tests/test_mermaid_to_svg_render.py`（修改）：
+
+  - **24 token parametrize**（移除 `"info"`）：unsupported 集合从 25 -> 24 token（info 已 ship 专属 arm，不再 raise）。注释刷新 R279 语义。
+  - **docstring 更新**：dispatch invariants 段说明 info renderer 已 ship（R279），24 token 仍 raise；barrel `__all__` 15->18 断言不变（R279 不动 barrel）。
+
+### 验证
+
+- ruff：`info_diagram.py` + `render.py` + `test_mermaid_to_svg_info_diagram.py` + `test_mermaid_to_svg_render.py` **All checks passed**（line-length 100，select E/F/W/I/B/UP，ignore E501）。
+- 定向 pytest（info_diagram + render 测试）：**64 passed in 0.23s**（16 新 info_diagram 测试 + 48 现有 render 测试用例：24 独立函数 + 1 个 24-token parametrize）。
+- 全量回归（方向①渲染栈全链路，`-k "mermaid or dagre or svg or graphlib or data_structures"`）：**1474 passed, 4 skipped, 1 xfailed in 8.17s**。1 xfailed 是 R278c 暴露的预存 dagre 缺陷（`network_simplex._exchange_edges` 对子图内链式边 `None -= 1` -> `TypeError`，`long_identifier` xfail(strict=True)），与 R279 零关系。本轮回归聚焦方向①渲染栈（theme/config/error/ast/parser/text_wrap/layout/svg_renderer/render/info_diagram + dagre 全栈 + graphlib + data_structures），覆盖 R279 所有受影响模块——R279 只动 4 文件（mermaid to_svg 包内部 + 2 测试），影响面远小于 R278d 的 barrel 24->27（故无需全 agent 7945 回归，定向栈回归足够）。CRLF 警告正常（Windows 11），无害。
+
+### YAGNI 边界
+
+- **front-matter + info 的 ParseError quirk 不写专门测试** —— grok dispatch 传 raw `mermaid_source`（未 strip front-matter）给 info_diagram，后者 guard 重扫 raw source，故带 front-matter 的 info 图（首行 `---`）触发 ParseError。这是 grok 的实际 quirk，但 front-matter + info 是不现实组合（info 图是静态版本卡片，无配置需求），锁定 quirk 非核心契约。只测 grok 冒烟测试覆盖的 `"info"` 路径（lib.rs L608-L616）。这是"按功能复刻"的直接体现。
+- **`xfail(strict=True)` 暴露预存 dagre 缺陷（延续 R278c/R278d）** —— `network_simplex._exchange_edges` 对子图内链式边 `None -= 1` -> `TypeError`。待专门 dagre 边交换修复落地后翻转。
+- **桶不变（dispatch-only reach）** —— info_diagram 不进 to_svg barrel（镜像 grok crate root 从不 re-export）。桶 `__all__` 仍 18（R277 基线）；info 符号仅经 `render.py` dispatch arm 到达。**无 barrel-guard 测试同步**（对比 R278d 的 10 文件 13 断言同步——本轮桶不变，零同步开销）。
+- **修正后路线图**：
+  - **R280+** —— 18 个余下 per-diagram 渲染器（block/c4/class/er/gantt/gitgraph/journey/kanban/mindmap/packet/pie/quadrant/radar/requirement/sankey/sequence/state/timeline/xychart），按复杂度递增逐砖推进。info（本砖）是最简首砖（纯静态，无解析/布局）；后续砖引入 per-diagram parser + layouter。
+  - **dagre 边交换修复** —— 修复 `network_simplex._exchange_edges` 的 `None -= 1` 缺陷，使 `long_identifier` xfail 翻转。
+- **方向② xai-codebase-graph（tree-sitter 代码索引）+ 方向③ L2 自演化框架骨架接线** 均未开始（方向① 优先）。
+
+### Commit
+
+`feat(platform): R279 migrate grok info_diagram.rs -> render_info_diagram_to_svg (direction (1) brick 13, first per-diagram renderer, info version card static SVG, dispatch-only reach, barrel unchanged)`。feat 提交（4 文件）：`info_diagram.py`（新建，207 行）+ `render.py`（dispatch info arm + `_UNSUPPORTED_DIAGRAM_TYPES` 25->24 + 导入 + docstring）+ `test_mermaid_to_svg_info_diagram.py`（新建，16 测试）+ `test_mermaid_to_svg_render.py`（24 token parametrize + docstring）。docs 提交：`docs(platform): R279 iteration log entry`（ITERATION_LOG.md R279 条目）。锚点链: ... -> R278c(feat pure + docs) -> R278d(d4a487b feat mmdc + b7089e5 docs) -> R279(feat info_diagram + docs)。**方向① 第 13 砖：首个 per-diagram 渲染器 info 版本卡片行为等价移植落地（64 passed，全栈 1474 passed，桶不变 dispatch-only），下一砖 R280+ 余 18 per-diagram 渲染器**。
