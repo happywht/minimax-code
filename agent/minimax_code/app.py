@@ -529,6 +529,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.builtins import handle_agent_cancel, handle_agent_send_message
     from .ipc.handlers_agents import register_agent_handlers
     from .ipc.handlers_audit import register_audit_handlers
+    from .ipc.handlers_checkpoint import register_checkpoint_handlers
     from .ipc.handlers_crash import register_crash_handlers
     from .ipc.handlers_git import register_git_handlers
     from .ipc.handlers_model import register_model_handlers
@@ -580,6 +581,12 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # to skip the lazy path.
     register_session_handlers(server)
     register_workspace_handlers(server)
+    # The checkpoint handlers expose ``checkpoint.*`` — the workspace snapshot
+    # layer (R310): create/list/restore/diff/delete over git-stash refs plus
+    # on-disk untracked-file copies. DAO + CheckpointManager resolve lazily
+    # (DB via ``ensure_db``; snapshot root under ``<data_dir>/checkpoints``),
+    # mirroring the other storage-backed namespaces.
+    register_checkpoint_handlers(server)
     # The permission handlers lazily open the async DB and build a
     # :class:`~.permissions.PermissionStore` on first call. Tests
     # that pre-built a store can pass it via the ``store=`` kwarg
@@ -675,7 +682,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     register_crash_handlers(server)
     logger.info(
         "registered application handlers "
-        "(1 agent.* + 7 agent.* + 5 skill.* + 6 task.* + 5 session.* + 3 workspace.* + "
+        "(1 agent.* + 7 agent.* + 5 skill.* + 6 task.* + 5 session.* + 3 workspace.* + 5 checkpoint.* + "
         "5 permission.* + 6 schedule.* + 7 mobile.* + 3 model.* + "
         "7 provider.* + 3 secrets.* + 3 git.* + 3 patch.* + "
         "4 terminal.* + 2 runner.* + 3 audit.* + 5 webhook.* + "
