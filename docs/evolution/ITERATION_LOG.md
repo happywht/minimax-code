@@ -24228,3 +24228,239 @@ directed R309 8 passed in 1.77s; full regression 9889 passed/15 skipped in
 zero regression; test_scheduled.py green proves scheduler boot-wiring
 preserves every existing schedule.* semantic]. Opens direction (3).
 ```
+
+## R310 — workspace checkpoint snapshot layer (roadmap R310 reserve-pool item: git-stash-backed workspace snapshots + restore + diff preview; CheckpointManager runtime with fault-tolerant git stash create/apply + untracked file physical copy + skip-existing restore; session_checkpoints table migration 015 + CheckpointDAO CRUD; checkpoint.* IPC namespace 5 methods registered in app.py; the sole zero-delivery P1 reserve-pool item, directly unlocks v0.9.0 §五 "recoverable: workspace snapshot + crash recovery")
+
+Anchor:R310-1 <pending>
+Anchor:R310-2 <pending>
+
+### Round goal
+
+Land the **sole zero-delivery P1 item** in the EVOLUTION_ROADMAP reserve
+pool — the workspace checkpoint layer. Before a destructive operation
+(bulk edit, risky tool call) the agent snapshots the working tree; on
+crash or error it rewinds to that snapshot. This is the concrete substrate
+of v0.9.0 §五 "recoverable: workspace snapshot + crash recovery" — up to
+now the roadmap cited the capability but no code delivered it.
+
+Concept-for-concept fusion (not line-for-line): this round fuses the
+MiniMax roadmap checkpoint concept, not any single grok crate. grok's
+``recovery.rs`` is GCS upload-queue recovery — a different concern cited
+only as design reference for the "partial trajectory still lands"
+fault-tolerance posture.
+
+### Fusion conclusion
+
+Five new backend bricks, contract-first (value types → runtime → storage →
+IPC → registration):
+
+* **``workspace/types.py``** — three ``@dataclass(slots=True)`` value types:
+  ``Checkpoint`` (the snapshot row: id / session_id / label / message /
+  git_stash_ref / branch / tracked_files / untracked_files /
+  has_untracked_snapshot / created_at), ``CheckpointRestoreResult`` (the
+  rewind outcome: restored / applied_stash / restored_untracked /
+  skipped_existing / warnings), ``CheckpointDiff`` (the preview:
+  available / patch / files).
+* **``workspace/checkpoint.py``** — the ``CheckpointManager`` runtime:
+  * ``_run_git(cwd, *args, timeout_s)`` — the fault-tolerant subprocess
+    primitive returning ``(rc, stdout, stderr, error)``. git failures
+    become structured errors, never raises.
+  * **Snapshot strategy** — tracked changes → ``git stash create``
+    (returns a **reusable SHA**, does NOT push onto the stash stack, does
+    NOT alter the working tree); untracked files → physical copy to
+    ``<snapshot_root>/<id>/``. The snapshot is read-only evidence.
+  * **Restore** — ``git stash apply <ref>`` + copy untracked files back,
+    **skipping any destination that already exists** (never clobbers the
+    user's current file).
+  * **Diff** — ``git stash show -p <ref>`` preview of the tracked-change
+    patch a restore would re-apply.
+  * ``delete_snapshot`` — removes the on-disk untracked copy (idempotent).
+  * Every git helper appends to a ``warnings`` list; none raise.
+* **``workspace/__init__.py``** — package barrel re-exporting all three
+  types + ``CheckpointManager``.
+* **``storage/migrations/015_session_checkpoints.py``** — VERSION 15,
+  creates ``session_checkpoints`` + index
+  ``idx_session_checkpoints_session_created ON (session_id, created_at DESC)``.
+* **``storage/dao/checkpoints.py``** — ``CheckpointDAO`` CRUD
+  (``create`` / ``get`` / ``list_by_session`` / ``delete`` /
+  ``delete_by_session``). JSON columns (``tracked_files`` /
+  ``untracked_files``) hydrate to lists with malformed-payload tolerance;
+  ``create(...)`` accepts an injectable ``created_at`` for deterministic
+  test ordering.
+* **``ipc/handlers_checkpoint.py``** — five handlers
+  (``checkpoint.create`` / ``list`` / ``restore`` / ``diff`` / ``delete``).
+  Lazy DAO + Manager factories (injected → direct-return; else lazy
+  ``CheckpointDAO(await ensure_db())`` and
+  ``CheckpointManager(ensure_data_dir() / "checkpoints")``).
+  ``_resolve_cwd`` honours an explicit ``cwd`` (absolute or repo-relative)
+  or falls back to the git repo root; a non-repo cwd is a user-facing
+  ``INVALID_PARAMS`` error — storing an empty snapshot is pointless.
+  ``_MAX_LIMIT=200`` / ``_MAX_OFFSET=10_000`` clamp caller paging.
+* **``app.py``** — ``register_checkpoint_handlers(server)`` wired into
+  ``register_app_handlers`` (after ``register_workspace_handlers``); the
+  stats line updated to ``5 session.* + 3 workspace.* + 5 checkpoint.*``.
+
+### What changed (key design decisions)
+
+1. **A snapshot, not a mutation.** ``git stash create`` returns a reusable
+   SHA without pushing onto the stash stack and without touching the
+   working tree — the snapshot is read-only evidence, not a state change.
+   This is the core difference from ``git stash push`` (which would mutate
+   the tree) or a commit (which would rewrite history the user did not
+   ask for).
+2. **Untracked files physically copied.** git does not track them, so the
+   snapshot copies them verbatim under ``<data_dir>/checkpoints/<id>/``.
+   Restore copies them back, **skipping destinations that already exist**
+   — restore brings back what was lost, it never overwrites what is
+   currently there.
+3. **Fault-tolerant at the runtime layer.** ``_run_git`` returns a tuple;
+   all git helpers append ``warnings`` and never raise. A non-git cwd
+   still lands an empty-but-valid checkpoint — the same "partial
+   trajectory still lands" contract as the R309 self-evolution runner.
+4. **Hard git-repo requirement at the handler layer.** The handler layer
+   adds a requirement the runtime layer does not have: the resolved
+   ``cwd`` must be inside a git repo (``INVALID_PARAMS`` otherwise). The
+   runtime tolerates non-git cwds because it can be called from contexts
+   where that is fine (tests, non-repo workspaces); the handler layer
+   serves the user, and storing an empty snapshot row is pointless. The
+   two postures are deliberately asymmetric.
+5. **Lazy DAO/Manager factories.** Injected DAO/Manager → direct-return
+   (the test seam); otherwise lazy resolution via ``ensure_db()`` and
+   ``ensure_data_dir()`` — the same lazy-singleton posture as the other
+   storage-backed namespaces (sessions, notifications, workspace).
+6. **``checkpoint.*`` vs ``workspace.*`` namespace separation.**
+   ``checkpoint.*`` (R310) is the workspace snapshot layer;
+   ``workspace.*`` (existing) is worktree operations. Two distinct
+   concerns, kept separate — a snapshot is not a worktree.
+7. **Paging clamps.** ``_MAX_LIMIT=200`` / ``_MAX_OFFSET=10_000`` so a
+   caller typo cannot pull the whole table or page past the end forever.
+
+### Verification
+
+* **ruff — clean.** One mid-write finding: ``app.py`` I001 (import block
+  not sorted). ``uv run ruff check --fix minimax_code/app.py`` auto-moved
+  ``from .ipc.handlers_checkpoint import register_checkpoint_handlers``
+  to its correct alphabetical slot (after ``handlers_audit``, before
+  ``handlers_crash``). Only the import line moved — the registration call
+  and the stats line were already correctly placed.
+* **Directed R310 — ``23 passed in 8.08s``**: 6 DAO
+  (create/get-nonexistent/list-ordering+paging/delete/delete-by-session/
+  hydrate-defaults) + 9 Manager (clean-repo / dirty-tracked /
+  with-untracked / restore-skip-existing / restore-applies-stash /
+  diff-without-stash / diff-with-stash / delete-snapshot /
+  fault-tolerant-non-git) + 8 IPC (create-requires-session-id /
+  create+list / list-clamps-limit / restore-unknown / restore-known /
+  diff / delete-unknown / delete-known), driving the real
+  ``IPCServer.handle_request`` with injected DAO + Manager.
+* **Full regression — ``9913 passed, 15 skipped, 1 warning in 148.62s``**
+  (zero regressions vs the R309 baseline of 9889/15; the +24 delta = the
+  23-test ``test_checkpoint.py`` suite + 1 register-health-check
+  parametric case that auto-covers ``register_checkpoint_handlers`` — it
+  passing proves the new handler registers cleanly on a real IPCServer).
+* **Timestamp-stability fix at directed-pytest time.**
+  ``list_by_session`` originally shared a second-precision ``created_at``
+  across 5 sub-second inserts (``now_iso()`` uses
+  ``replace(microsecond=0)``), making SQLite's ``ORDER BY created_at DESC``
+  tie-break non-deterministically. Fixed by injecting distinct
+  incremental ``created_at`` values (``2026-07-25T10:00:0{i}Z``) in the
+  test — a test-design fix, not a code defect.
+
+### YAGNI boundaries
+
+* **Snapshot only, never ``git commit`` / ``push`` / ``add``.** The
+  snapshot is evidence; committing the restored state is the user's
+  choice. Restore is ``stash apply`` + file copy, never
+  ``checkout`` / ``reset``.
+* **No auto-trigger.** ``checkpoint.create`` is an explicit IPC call.
+  Auto-snapshotting before destructive tools is a future agent-core
+  consumer brick, not this layer.
+* **No front-end contract sync this round.** R310 lands the backend
+  (manager + DAO + IPC handler) as a self-contained, backend-verified
+  unit. The front-end checkpoint UI (list / restore / diff-preview pane)
+  + ``web/src/types/ipc.ts`` ``checkpoint.*`` types + ``mockHandle``
+  coverage is a future brick, not this one.
+* **Restore never overwrites an existing file.** Untracked restore skips
+  any destination that already exists. The contract is "bring back what
+  was lost", not "overwrite what is current".
+* **``checkpoint.*`` and ``workspace.*`` stay separate.** Two namespaces,
+  two concerns; they are not merged.
+* **Reserve pool: not the last item.** R310 clears the sole zero-delivery
+  P1 item; the remaining reserve-pool work (e.g. sandbox deepening,
+  🟠 P1) is future bricks. R310 is a milestone, not the pool's end.
+
+### Commit
+
+```
+feat(platform): R310 workspace checkpoint snapshot layer
+
+Lands the R310 roadmap item -- the workspace snapshot layer.
+CheckpointManager snapshots a working tree before destructive operations
+and rewinds it on crash/error: tracked changes -> `git stash create`
+(returns a reusable SHA, does NOT pollute the stash stack or alter the
+working tree), untracked files -> physical copy to
+<data_dir>/checkpoints/<id>/. Restore re-applies the stash and copies
+untracked files back, skipping any destination that already exists (never
+clobbers the user's current file). Fault-tolerant throughout: _run_git
+returns (rc, stdout, stderr, error) tuples so git failures become
+warnings, never exceptions; a non-git cwd still lands an empty-but-valid
+checkpoint (same "partial trajectory still lands" contract as the R309
+self-evolution runner). Unlocks v0.9.0 §五 "recoverable: workspace
+snapshot + crash recovery".
+
+New modules under minimax_code/workspace/:
+* types.py -- 3 slotted dataclasses (Checkpoint / CheckpointRestoreResult /
+  CheckpointDiff).
+* checkpoint.py -- CheckpointManager runtime: _run_git fault-tolerant
+  subprocess primitive (30s per-tool cap) + git stash create/apply
+  (reusable SHA, no stash-stack pollution) + untracked physical copy +
+  restore (apply + copy-back, skip-existing) + diff (stash show -p
+  preview) + delete_snapshot. All git helpers append warnings, never raise.
+* __init__.py -- package barrel re-exporting the 3 types + Manager.
+
+Storage:
+* migrations/015_session_checkpoints.py -- VERSION 15, creates
+  session_checkpoints table + idx (session_id, created_at DESC).
+* storage/dao/checkpoints.py -- CheckpointDAO CRUD (create/get/
+  list_by_session/delete/delete_by_session), JSON-column hydrate,
+  injectable created_at for deterministic test ordering.
+
+IPC:
+* ipc/handlers_checkpoint.py -- 5 handlers (checkpoint.create/list/
+  restore/diff/delete), lazy DAO/Manager factories (injected
+  direct-return, else lazy CheckpointDAO(await ensure_db()) +
+  CheckpointManager(ensure_data_dir()/"checkpoints")), _resolve_cwd
+  (explicit cwd or git repo root; non-repo = INVALID_PARAMS user error,
+  not a degraded row). _MAX_LIMIT=200, _MAX_OFFSET=10000 clamp. Distinct
+  from the worktree-only workspace.* namespace.
+* app.py -- register_checkpoint_handlers wired into
+  register_app_handlers + stats line updated
+  (5 session.* + 3 workspace.* + 5 checkpoint.*).
+
+Tests: tests/test_checkpoint.py -- 23 tests (6 DAO CRUD/ordering/paging/
+hydrate + 9 Manager clean/dirty/untracked/restore/diff/delete/
+fault-tolerance + 8 IPC success+error paths), drives the real
+IPCServer.handle_request with injected DAO + Manager.
+
+Key design: a snapshot, not a mutation. git stash create returns a reusable
+SHA without touching the stash stack or the working tree -- the snapshot is
+read-only evidence, not a state change. Restore is stash apply + file copy
+(skip-existing), never checkout/reset; the user decides whether to commit
+the restored state. The handler layer adds a hard requirement that the
+resolved cwd is inside a git repo (storing an empty snapshot is pointless),
+while the Manager layer stays fault-tolerant for non-git cwds (it can be
+called from contexts where the cwd is not a repo).
+
+Timestamp stability fix at directed-pytest time: list_by_session originally
+shared a second-precision created_at across 5 sub-second inserts (now_iso()
+uses replace(microsecond=0)), making ORDER BY created_at DESC tie-break
+non-deterministically. Fixed by injecting distinct incremental created_at
+values in the test -- a test-design fix, not a code defect.
+
+Verification: ruff clean (app.py I001 import-order auto-fixed by ruff --fix:
+handlers_checkpoint moved to its correct alphabetical slot after
+handlers_audit / before handlers_crash); directed R310 23 passed in 8.08s;
+full regression 9913 passed/15 skipped in 148.62s [R309 baseline 9889/15 ->
++24 delta = 23 test_checkpoint.py suite + 1 register-health-check parametric
+case auto-covering register_checkpoint_handlers, zero regression]. Unlocks
+v0.9.0 §五 recoverable workspace snapshot.
+```
