@@ -5,6 +5,26 @@ All notable changes to MiniMax Code are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-07-27
+
+**前端交互增强 + 后端会话能力扩展。** 在 v0.9.0 重构基础上继续迭代。
+
+### Added — 后端
+- 新增 IPC 方法 `session.stats`：返回总会话数、归档会话数、总消息数。
+- 新增 IPC 方法 `session.export`：把单个会话的全部消息导出为 Markdown 文件。
+- `SessionsDAO.stats()` 聚合查询与对应的 pytest 覆盖。
+
+### Added — 前端
+- **全局 Command Palette（Cmd/Ctrl+K）**：快速搜索最近会话、打开设置页、切换 Preview、新建任务。
+- **会话统计**：Sidebar 底部展示当前总会话数和总消息数。
+- **会话导出**：Composer 工具栏新增下载按钮，一键导出当前会话为 `.md`。
+- **空状态打磨**：MessageList 空状态统一使用 `EmptyState` 原语，并替换剩余 `minimax-*` tokens。
+
+### Tests
+- 前端 vitest：61 files / 483 tests 全绿。
+- Playwright e2e：15 specs 全绿。
+- Python `tests/test_sessions.py`：27 passed。
+
 ## [0.9.0] - 2026-07-26
 
 **前端全面重构与视觉刷新。** 引入统一设计系统，拆分巨型文件，按域重组组件目录，

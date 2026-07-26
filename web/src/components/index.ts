@@ -41,6 +41,7 @@ export type { RunnerPanelProps } from "./right-panel/RunnerPanel";
 export { ThemeToggle } from "./layout/ThemeToggle";
 export type { ThemeToggleProps } from "./layout/ThemeToggle";
 export { TopBar } from "./layout/TopBar";
+export { CommandPalette } from "./layout/CommandPalette";
 export { MobilePairingModal } from "./modals/MobilePairingModal";
 export type { MobilePairingModalProps } from "./modals/MobilePairingModal";
 export { CodeReviewPanel } from "./panels/CodeReviewPanel";

@@ -51,6 +51,8 @@ import type {
   RuntimeRecoveryResult,
   ScheduledJob,
   Session,
+  SessionExportResult,
+  SessionStatsResult,
   SetProviderApiKeyResult,
   SkillInfo,
   SubAgentProgress,
@@ -265,6 +267,24 @@ function mockHandle(
         s.updated_at = Date.now();
       }
       return { ok: true, session: s };
+    }
+
+    case "session.stats": {
+      const sessions = Array.from(mockSessions.values());
+      return {
+        total_sessions: sessions.length,
+        archived_sessions: sessions.filter((s) => s.archived).length,
+        total_messages: mockSessionsWithMessages.size,
+      } satisfies SessionStatsResult;
+    }
+
+    case "session.export": {
+      const p = params as { session_id: string };
+      const s = mockSessions.get(p.session_id);
+      const title = s?.title ?? "Untitled session";
+      return {
+        markdown: `# ${title}\n\n<!-- session_id: ${p.session_id} -->\n\n## Assistant\n\nExported from MiniMax Code (mock mode).`,
+      } satisfies SessionExportResult;
     }
 
     case "message.list": {

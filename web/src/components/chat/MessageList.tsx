@@ -14,11 +14,12 @@
  */
 import { lazy, Suspense, useLayoutEffect, useMemo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Sparkles } from "lucide-react";
 import { useChat, useSessionStore, useSubAgentStore } from "../../stores";
 import { SubAgentResultCard } from "../right-panel/SubAgentResultCard";
 import { useMessageWindow } from "../../lib/useMessageWindow";
 import { useSmartScroll } from "../../lib/useSmartScroll";
+import { EmptyState } from "../../ui";
 import type { Message } from "../../types/ipc";
 
 const MessageItem = lazy(() =>
@@ -140,25 +141,19 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
         className="h-full min-h-0 overflow-y-auto px-4 pb-6 pt-4"
       >
       {messages.length === 0 && finishedRuns.length === 0 ? (
-        <div
-          data-testid="empty-state"
-          className="mx-auto mt-16 max-w-md text-center"
-        >
-          <div className="mx-auto mb-3 h-10 w-10 rounded-xl bg-minimax-accent/20 text-minimax-accent flex items-center justify-center text-lg font-semibold">
-            ✦
-          </div>
-          <h2 className="text-base font-medium text-minimax-fg">
-            How can I help you today?
-          </h2>
-          <p className="mt-1 text-xs text-minimax-muted">
-            Ask me to refactor code, explain a file, run a command, or set up
-            a scheduled task.
-          </p>
-          <div className="mt-6 grid grid-cols-1 gap-2 text-left text-xs text-minimax-muted">
-            <Suggestion text="Refactor src/foo.py to use dataclasses" />
-            <Suggestion text="Explain what the IPC bridge does" />
-            <Suggestion text="Set up a daily 9am test reminder" />
-          </div>
+        <div data-testid="empty-state" className="mx-auto mt-16 max-w-md px-4">
+          <EmptyState
+            icon={<Sparkles size={24} />}
+            title="How can I help you today?"
+            hint="Ask me to refactor code, explain a file, run a command, or set up a scheduled task."
+            action={
+              <div className="mt-2 grid w-full grid-cols-1 gap-2 text-left">
+                <Suggestion text="Refactor src/foo.py to use dataclasses" />
+                <Suggestion text="Explain what the IPC bridge does" />
+                <Suggestion text="Set up a daily 9am test reminder" />
+              </div>
+            }
+          />
         </div>
       ) : (
         <div
@@ -200,10 +195,10 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
           type="button"
           data-testid="scroll-to-bottom-btn"
           onClick={() => scrollToBottom("smooth")}
-          className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-minimax-border bg-minimax-panel/95 px-2.5 py-1.5 text-[11px] text-minimax-fg shadow-lg backdrop-blur-sm transition-all duration-200 hover:-translate-y-0.5 hover:bg-minimax-border"
+          className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line bg-surface-1/95 px-2.5 py-1.5 text-[11px] text-ink-0 shadow-pop backdrop-blur-sm transition-all duration-200 hover:-translate-y-0.5 hover:bg-surface-3"
           title="Jump to latest message"
         >
-          <ChevronDown size={14} className="text-minimax-muted" />
+          <ChevronDown size={14} className="text-ink-2" />
           {newContentCount > 0 ? `${newContentCount} new` : "Latest"}
         </button>
       )}
@@ -228,7 +223,7 @@ function MessageListRowView({
     return (
       <div
         data-testid="chat-search-summary"
-        className="rounded-md border border-minimax-border bg-minimax-panel px-3 py-1.5 text-center text-xs text-minimax-muted"
+        className="rounded-md border border-line bg-surface-2 px-3 py-1.5 text-center text-xs text-ink-1"
       >
         Showing {filteredCount} of {totalCount} messages
       </div>
@@ -241,7 +236,7 @@ function MessageListRowView({
         type="button"
         data-testid="load-earlier-messages"
         onClick={onLoadMore}
-        className="w-full rounded-md border border-minimax-border bg-minimax-panel px-3 py-2 text-center text-xs text-minimax-muted hover:border-minimax-accent/40 hover:text-minimax-fg"
+        className="w-full rounded-md border border-line bg-surface-2 px-3 py-2 text-center text-xs text-ink-1 hover:border-accent/40 hover:text-ink-0"
       >
         ↑ Load {Math.min(hiddenCount, 50)} earlier messages ({hiddenCount} hidden)
       </button>
@@ -252,7 +247,7 @@ function MessageListRowView({
     return (
       <div
         data-testid="sub-agent-results"
-        className="flex flex-col gap-1 border-t border-minimax-border/40 pt-2"
+        className="flex flex-col gap-1 border-t border-line/40 pt-2"
       >
         {row.runIds.map((runId) => (
           <SubAgentResultCard key={runId} runId={runId} />
@@ -271,8 +266,8 @@ function MessageListRowView({
 function MessageRowFallback(): JSX.Element {
   return (
     <div className="space-y-2 py-2" aria-busy="true">
-      <div className="h-3 w-2/3 animate-pulse rounded bg-minimax-border/70" />
-      <div className="h-3 w-1/2 animate-pulse rounded bg-minimax-border/50" />
+      <div className="h-3 w-2/3 animate-pulse rounded bg-line/70" />
+      <div className="h-3 w-1/2 animate-pulse rounded bg-line/50" />
     </div>
   );
 }
@@ -292,7 +287,7 @@ function Suggestion({ text }: { text: string }): JSX.Element {
   return (
     <button
       type="button"
-      className="rounded-md border border-minimax-border bg-minimax-panel px-3 py-2 text-left text-minimax-fg hover:border-minimax-accent/40"
+      className="rounded-md border border-line bg-surface-2 px-3 py-2 text-left text-ink-0 hover:border-accent/40"
       onClick={() => {
         // The composer reads its value from local state, so we just
         // fire a custom event the MessageInput listens for. This keeps

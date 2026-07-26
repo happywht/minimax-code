@@ -93,12 +93,28 @@ export function Sidebar({
   const [historyQuery, setHistoryQuery] = useState("");
   const [remoteSearchSessions, setRemoteSearchSessions] = useState<SessionMeta[] | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [stats, setStats] = useState<{ total_sessions: number; total_messages: number } | null>(null);
 
   useEffect(() => {
     if (sessions.length === 0) {
       void refresh();
     }
   }, [sessions.length, refresh]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const result = await typedIPC.sessionStats();
+        if (!cancelled) setStats(result);
+      } catch {
+        // Footer stats are non-critical.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessions.length]);
 
   useEffect(() => {
     const q = historyQuery.trim();
@@ -364,6 +380,12 @@ export function Sidebar({
             testId="sidebar-mobile"
           />
         </div>
+        {stats != null && (
+          <div className="flex items-center justify-between border-b border-line px-3 py-1.5 text-[11px] text-ink-2">
+            <span data-testid="sidebar-stats-sessions">{stats.total_sessions} 会话</span>
+            <span data-testid="sidebar-stats-messages">{stats.total_messages} 消息</span>
+          </div>
+        )}
         <div className="border-t border-line p-2">
           <UserBadge name="本地用户" email="数据仅保存在本机" plan="个人版" />
         </div>

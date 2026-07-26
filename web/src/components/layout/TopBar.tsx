@@ -2,7 +2,7 @@
  * TopBar — the 40px header strip across the top of the app.
  */
 import type { ReactNode } from "react";
-import { Eye, Menu, Settings as SettingsIcon } from "lucide-react";
+import { Command, Eye, Menu, Settings as SettingsIcon } from "lucide-react";
 import { GitStatusBar } from "./GitStatusBar";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { ThemeToggle } from "./ThemeToggle";
@@ -20,6 +20,8 @@ export interface TopBarProps {
   onTogglePreview?: () => void;
   /** Whether the preview panel is currently active. */
   previewActive?: boolean;
+  /** Open the command palette. */
+  onOpenCommandPalette?: () => void;
 }
 
 export function TopBar({
@@ -29,6 +31,7 @@ export function TopBar({
   onToggleSidebar,
   onTogglePreview,
   previewActive = false,
+  onOpenCommandPalette,
 }: TopBarProps): JSX.Element {
   return (
     <header
@@ -58,6 +61,14 @@ export function TopBar({
         className="flex shrink-0 items-center gap-1"
       >
         {rightSlot}
+        <IconButton
+          aria-label="Open command palette"
+          title="Command palette (Ctrl+K)"
+          onClick={onOpenCommandPalette}
+          data-testid="app-topbar-command-palette"
+        >
+          <Command size={14} />
+        </IconButton>
         {onTogglePreview && (
           <Button
             size="sm"

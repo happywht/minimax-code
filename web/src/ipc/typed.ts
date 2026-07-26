@@ -55,6 +55,8 @@ import type {
   ScheduledJob,
   SecretStatus,
   SendMessageResult,
+  SessionExportResult,
+  SessionStatsResult,
   SetModelResult,
   SetProviderApiKeyResult,
   SetReasoningEffortResult,
@@ -97,6 +99,8 @@ export interface TypedIPC {
   unarchiveSession(sessionId: string): Promise<{ ok: true }>;
   deleteSession(sessionId: string): Promise<{ ok: true }>;
   updateSession(sessionId: string, fields: { title?: string }): Promise<UpdateSessionResult>;
+  sessionStats(): Promise<SessionStatsResult>;
+  sessionExport(params: { session_id: string }): Promise<SessionExportResult>;
   listMessages(sessionId: string, opts?: { limit?: number; before?: string }): Promise<ListMessagesResult>;
   listRuns(opts?: { session_id?: string; status?: string; limit?: number; offset?: number }): Promise<ListRunsResult>;
   getRunSteps(runId: string): Promise<RunStepsResult>;
@@ -389,6 +393,9 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         session_id: sid,
         ...fields,
       }),
+    sessionStats: () => client.request<SessionStatsResult>("session.stats", {}),
+    sessionExport: (params) =>
+      client.request<SessionExportResult>("session.export", params),
     listMessages: (sid, opts) =>
       client.request<ListMessagesResult>("message.list", {
         session_id: sid,

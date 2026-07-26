@@ -302,6 +302,28 @@ class SessionsDAO:
         )
         return int(row["n"]) if row else 0
 
+    async def stats(self) -> dict[str, int]:
+        """Return aggregate counts for the session/message dashboard.
+
+        Runs three cheap ``COUNT(*)`` queries so the frontend can
+        show a single-number summary without dragging rows across
+        the wire.
+        """
+        total_row = await self._db.fetchone(
+            "SELECT COUNT(*) AS n FROM sessions"
+        )
+        archived_row = await self._db.fetchone(
+            "SELECT COUNT(*) AS n FROM sessions WHERE archived = 1"
+        )
+        messages_row = await self._db.fetchone(
+            "SELECT COUNT(*) AS n FROM messages"
+        )
+        return {
+            "total_sessions": int(total_row["n"]) if total_row else 0,
+            "archived_sessions": int(archived_row["n"]) if archived_row else 0,
+            "total_messages": int(messages_row["n"]) if messages_row else 0,
+        }
+
 
 # ---------------------------------------------------------------------------
 # Sync helpers

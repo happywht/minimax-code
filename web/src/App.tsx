@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   ChatPanel,
+  CommandPalette,
   ConnectionBanner,
   CrashRecoveryPrompt,
   ErrorBoundary,
@@ -219,7 +220,19 @@ export default function App() {
             setOverlayView(null);
             setView((v) => v === "preview" ? "chat" : "preview");
           }}
+          onOpenCommandPalette={() => {
+            // The palette registers its own shortcut; this button toggles it.
+            window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
+          }}
           previewActive={view === "preview"}
+        />
+        <CommandPalette
+          onOpenSkills={() => setOverlayView("skills")}
+          onOpenSettings={(tab) => openSettings(tab)}
+          onTogglePreview={() => {
+            setOverlayView(null);
+            setView((v) => v === "preview" ? "chat" : "preview");
+          }}
         />
         <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
           {/* Desktop sidebar — always visible on md+ */}

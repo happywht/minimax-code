@@ -323,6 +323,68 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 INTERNAL_ERROR, f"session.update failed: {exc}"
             )
 
+    # ------------------------------------------------------------------ stats
+
+    async def handle_session_stats(params: Any, ctx: Context) -> None:
+        """``session.stats`` → aggregate counts for the UI footer."""
+        try:
+            sess_dao = await dao_factory()
+            if sess_dao is None:
+                await ctx.reply_error(INTERNAL_ERROR, "session.stats: database not available")
+                return
+            stats = await sess_dao.stats()
+            await ctx.reply(stats)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.exception("session.stats failed")
+            await ctx.reply_error(INTERNAL_ERROR, f"session.stats failed: {exc}")
+
+    # ------------------------------------------------------------------ export
+
+    async def handle_session_export(params: Any, ctx: Context) -> None:
+        """``session.export`` → session messages as Markdown.
+
+        Returns ``{ markdown: string }`` suitable for a file download.
+        """
+        try:
+            check_params(params, expected_keys={"session_id"})
+            session_id = str(params["session_id"])
+            sess_dao = await dao_factory()
+            if sess_dao is None:
+                await ctx.reply_error(INTERNAL_ERROR, "session.export: database not available")
+                return
+            session = await sess_dao.get(session_id)
+            if session is None:
+                raise HandlerError(
+                    INVALID_PARAMS, f"unknown session_id: {session_id!r}"
+                )
+            rows = await sess_dao.get_messages(session_id, limit=1000)
+            # Rows are newest-first; render chronologically.
+            lines: list[str] = []
+            lines.append(f"# {session.get('title') or 'Untitled session'}\n")
+            lines.append(f"<!-- session_id: {session_id} -->\n")
+            for r in reversed(rows):
+                role = r.get("role", "assistant")
+                content = r.get("content") or ""
+                created = r.get("created_at") or ""
+                lines.append(f"<!-- created_at: {created} -->\n")
+                if role == "user":
+                    lines.append("## User\n")
+                    lines.append(f"{content}\n")
+                elif role == "tool":
+                    tool_name = r.get("tool_name") or "tool"
+                    lines.append(f"### Tool: {tool_name}\n")
+                    lines.append(f"{content}\n")
+                else:
+                    lines.append("## Assistant\n")
+                    lines.append(f"{content}\n")
+                lines.append("")
+            await ctx.reply({"markdown": "\n".join(lines).strip()})
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.exception("session.export failed")
+            await ctx.reply_error(INTERNAL_ERROR, f"session.export failed: {exc}")
+
     # -------------------------------------------------------------- message.list
 
     async def handle_message_list(params: Any, ctx: Context) -> None:
@@ -394,6 +456,8 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
     server.register("session.unarchive", handle_session_unarchive)
     server.register("session.delete", handle_session_delete)
     server.register("session.update", handle_session_update)
+    server.register("session.stats", handle_session_stats)
+    server.register("session.export", handle_session_export)
     server.register("message.list", handle_message_list)
 
 

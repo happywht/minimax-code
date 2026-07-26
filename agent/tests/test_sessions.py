@@ -793,3 +793,116 @@ async def test_session_ipc_list_pagination_total_stable(
         assert all_returned == set(ids)
     finally:
         set_sessions_dao(None)
+
+
+# ---------------------------------------------------------------------------
+# SessionsDAO.stats
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stats_counts_sessions_and_messages(
+    async_db: AsyncDatabase,
+    sessions_dao: SessionsDAO,
+    id_factory: Any,
+) -> None:
+    """``stats`` returns total sessions, archived sessions, and total messages."""
+    mdao = MessagesDAO(async_db)
+    s1 = id_factory("ses")
+    s2 = id_factory("ses")
+    await sessions_dao.create(id=s1, title="open")
+    await sessions_dao.create(id=s2, title="archived")
+    await sessions_dao.set_archived(s2, True)
+    await mdao.create(id=id_factory("msg"), session_id=s1, role="user", content="hello")
+    await mdao.create(id=id_factory("msg"), session_id=s1, role="assistant", content="hi")
+    stats = await sessions_dao.stats()
+    assert stats == {
+        "total_sessions": 2,
+        "archived_sessions": 1,
+        "total_messages": 2,
+    }
+
+
+# ---------------------------------------------------------------------------
+# IPC handler round-trip — session.stats / session.export
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_session_ipc_stats(
+    async_db: AsyncDatabase,
+    sessions_dao: SessionsDAO,
+    id_factory: Any,
+) -> None:
+    """``session.stats`` returns aggregate counts over the wire."""
+    mdao = MessagesDAO(async_db)
+    s1 = id_factory("ses")
+    s2 = id_factory("ses")
+    await sessions_dao.create(id=s1, title="stats-open")
+    await sessions_dao.create(id=s2, title="stats-archived")
+    await sessions_dao.set_archived(s2, True)
+    await mdao.create(id=id_factory("msg"), session_id=s1, role="user", content="a")
+
+    set_sessions_dao(sessions_dao)
+    try:
+        client = IPCClient()
+        reply = await client.request("session.stats", {})
+        assert reply["total_sessions"] == 2
+        assert reply["archived_sessions"] == 1
+        assert reply["total_messages"] == 1
+    finally:
+        set_sessions_dao(None)
+
+
+@pytest.mark.asyncio
+async def test_session_ipc_export_markdown(
+    async_db: AsyncDatabase,
+    sessions_dao: SessionsDAO,
+    id_factory: Any,
+) -> None:
+    """``session.export`` returns a Markdown rendering of the conversation."""
+    mdao = MessagesDAO(async_db)
+    sid = id_factory("ses")
+    await sessions_dao.create(id=sid, title="export-me")
+    await mdao.create(
+        id=id_factory("msg"),
+        session_id=sid,
+        role="user",
+        content="Hello",
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    await mdao.create(
+        id=id_factory("msg"),
+        session_id=sid,
+        role="assistant",
+        content="World",
+        created_at="2026-01-01T00:00:01+00:00",
+    )
+
+    set_sessions_dao(sessions_dao)
+    try:
+        client = IPCClient()
+        reply = await client.request("session.export", {"session_id": sid})
+        markdown = reply["markdown"]
+        assert "# export-me" in markdown
+        assert "## User" in markdown
+        assert "Hello" in markdown
+        assert "## Assistant" in markdown
+        assert "World" in markdown
+        assert f"<!-- session_id: {sid} -->" in markdown
+    finally:
+        set_sessions_dao(None)
+
+
+@pytest.mark.asyncio
+async def test_session_ipc_export_unknown_session_raises(
+    sessions_dao: SessionsDAO,
+) -> None:
+    """Exporting an unknown session raises a RuntimeError from the JSON-RPC error."""
+    set_sessions_dao(sessions_dao)
+    try:
+        client = IPCClient()
+        with pytest.raises(RuntimeError):
+            await client.request("session.export", {"session_id": "ses_nope"})
+    finally:
+        set_sessions_dao(None)

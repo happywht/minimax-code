@@ -3,9 +3,10 @@
  * permission switch, the "stopping" hint, the context indicator, the
  * character counter + usage meter, and the inline model picker.
  */
-import { Shield, ShieldCheck } from "lucide-react";
-import { Button } from "../../ui";
-import { usePermissionStore } from "../../stores";
+import { Download, Shield, ShieldCheck } from "lucide-react";
+import { Button, IconButton } from "../../ui";
+import { usePermissionStore, useSessionStore } from "../../stores";
+import { typedIPC } from "../../ipc";
 import { toast } from "../layout/ErrorBoundary";
 import { ContextIndicator } from "./ContextIndicator";
 import { ModelSelector } from "./ModelSelector";
@@ -30,6 +31,7 @@ export function ComposerToolbar({
 }: ComposerToolbarProps): JSX.Element {
   const alwaysAllow = usePermissionStore((s) => s.alwaysAllow);
   const setAlwaysAllow = usePermissionStore((s) => s.setAlwaysAllow);
+  const currentSessionId = useSessionStore((s) => s.currentSessionId);
 
   const tokenToneClass = overLimit
     ? "text-status-error font-semibold"
@@ -45,6 +47,29 @@ export function ComposerToolbar({
       : nearLimit
         ? "bg-status-warning"
         : "bg-accent";
+
+  const handleExportSession = async () => {
+    if (!currentSessionId) {
+      toast.error("无法导出", "当前没有选中的会话");
+      return;
+    }
+    try {
+      const { markdown } = await typedIPC.sessionExport({ session_id: currentSessionId });
+      const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      a.href = url;
+      a.download = `minimax-${currentSessionId.slice(0, 8)}-${ts}.md`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success("会话已导出", "Markdown 文件开始下载");
+    } catch (err) {
+      toast.error("导出失败", err instanceof Error ? err.message : String(err));
+    }
+  };
 
   const handleToggleAlwaysAllow = () => {
     const next = !alwaysAllow;
@@ -81,6 +106,16 @@ export function ComposerToolbar({
       >
         {alwaysAllow ? "始终授权：开" : "始终授权"}
       </Button>
+      <IconButton
+        size="sm"
+        aria-label="Export current session as Markdown"
+        title="导出当前会话"
+        data-testid="chat-input-export-session"
+        onClick={() => void handleExportSession()}
+        className="text-[11px] text-ink-2 hover:text-ink-0"
+      >
+        <Download size={12} />
+      </IconButton>
       <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-x-2 gap-y-1">
         {cancelling && (
           <span

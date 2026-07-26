@@ -91,7 +91,8 @@ pnpm test:e2e     # Playwright; starts agent + Vite automatically
 
 ## Notes for agents
 
-- **IPC changes**: update `src/types/ipc.ts`, `src/ipc/typed.ts`, and `docs/ipc-contract.md` together.
+- **IPC changes**: update `src/types/ipc.ts`, `src/ipc/typed.ts`, `agent/minimax_code/ipc/handlers_*.py`, and `docs/ipc-contract.md` together.
+- **New in v0.9.1**: `session.stats` and `session.export` handlers; `CommandPalette` (Cmd/Ctrl+K) for quick navigation.
 - **Mock backend**: `src/ipc/mock.ts` must handle every IPC method so the frontend can run without an agent (`VITE_AGENT_MODE=mock`).
 - **Components index**: `src/components/index.ts` is the public barrel. Keep its export surface stable when moving files.
 - **Tests**: preserve `data-testid` values when restyling; e2e and many unit tests depend on them.
