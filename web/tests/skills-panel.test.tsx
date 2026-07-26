@@ -5,10 +5,10 @@
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { SkillsPanel } from "../src/components/SkillsPanel";
+import { SkillsPanel } from "../src/components/panels/SkillsPanel";
 import { useSkillStore } from "../src/stores";
 
-vi.mock("../src/components/ErrorBoundary", () => ({
+vi.mock("../src/components/layout/ErrorBoundary", () => ({
   toast: { error: vi.fn(), info: vi.fn(), success: vi.fn() },
   toastBus: { push: vi.fn(), dismiss: vi.fn() },
 }));

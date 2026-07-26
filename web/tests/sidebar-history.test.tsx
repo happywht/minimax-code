@@ -5,11 +5,11 @@
  */
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { Sidebar } from "../src/components/Sidebar";
+import { Sidebar } from "../src/components/layout/Sidebar";
 import { useSessionStore } from "../src/stores";
 import { typedIPC } from "../src/ipc";
 
-vi.mock("../src/components/ErrorBoundary", () => ({
+vi.mock("../src/components/layout/ErrorBoundary", () => ({
   toast: { error: vi.fn(), info: vi.fn(), success: vi.fn() },
   toastBus: { push: vi.fn(), dismiss: vi.fn() },
 }));

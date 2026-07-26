@@ -4,7 +4,7 @@
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MessageList } from "../src/components/MessageList";
+import { MessageList } from "../src/components/chat/MessageList";
 import { useChat } from "../src/stores";
 
 describe("MessageList", () => {

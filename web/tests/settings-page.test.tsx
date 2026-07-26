@@ -5,7 +5,7 @@
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { SettingsPage } from "../src/components/SettingsPage";
+import { SettingsPage } from "../src/components/settings/SettingsPage";
 import {
   useModelStore,
   usePermissionStore,
@@ -14,7 +14,7 @@ import {
   useSecretStore,
 } from "../src/stores";
 import type { ProviderInfo, SecretStatus } from "../src/types/ipc";
-import { confirmationBus } from "../src/components/ConfirmationDialog";
+import { confirmationBus } from "../src/components/modals/ConfirmationDialog";
 
 // Per-test mutable backing store for the secrets mock — the
 // IPC factory closure returns fresh `getSecretStatus` / `setSecret`

@@ -10,7 +10,7 @@
  */
 import { describe, expect, it, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { ProgressPanel } from "../src/components/ProgressPanel";
+import { ProgressPanel } from "../src/components/right-panel/ProgressPanel";
 import { useTaskStore } from "../src/stores";
 
 describe("ProgressPanel", () => {

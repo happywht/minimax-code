@@ -5,7 +5,7 @@ import {
   ConfirmationDialog,
   confirmationBus,
   requestConfirmation,
-} from "../src/components/ConfirmationDialog";
+} from "../src/components/modals/ConfirmationDialog";
 
 function ConfirmationHarness({ onResult }: { onResult: (accepted: boolean) => void }): JSX.Element {
   return (

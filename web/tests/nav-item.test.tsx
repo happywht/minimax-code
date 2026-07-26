@@ -5,7 +5,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { Star } from "lucide-react";
-import { NavItem } from "../src/components/NavItem";
+import { NavItem } from "../src/components/layout/NavItem";
 
 describe("NavItem", () => {
   it("renders label and icon", () => {

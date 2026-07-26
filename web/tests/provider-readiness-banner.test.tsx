@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { ProviderReadinessBanner } from "../src/components/ProviderReadinessBanner";
+import { ProviderReadinessBanner } from "../src/components/chat/ProviderReadinessBanner";
 import { useModelStore, useProviderStore } from "../src/stores";
 import type { ProviderInfo } from "../src/types/ipc";
 

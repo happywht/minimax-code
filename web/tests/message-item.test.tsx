@@ -5,7 +5,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { MessageItem } from "../src/components/MessageItem";
+import { MessageItem } from "../src/components/chat/MessageItem";
 import { useChat } from "../src/stores";
 import type { Message } from "../src/types/ipc";
 
@@ -23,7 +23,7 @@ vi.mock("mermaid", () => ({
   default: mermaidMock,
 }));
 
-vi.mock("../src/components/ErrorBoundary", () => ({
+vi.mock("../src/components/layout/ErrorBoundary", () => ({
   toast: toastMock,
 }));
 

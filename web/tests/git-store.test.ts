@@ -20,7 +20,7 @@ const noToast = () => {
   // workspace-switcher test for the same pattern.
 };
 
-vi.mock("../src/components/ErrorBoundary", () => ({
+vi.mock("../src/components/layout/ErrorBoundary", () => ({
   toast: {
     error: vi.fn(),
     info: vi.fn(),
@@ -76,7 +76,7 @@ describe("useGitStore", () => {
 
   it("refreshStatus is silent on failure (no toast)", async () => {
     const { typedIPC } = await import("../src/ipc");
-    const toastMod = await import("../src/components/ErrorBoundary");
+    const toastMod = await import("../src/components/layout/ErrorBoundary");
     vi.mocked(typedIPC.gitStatus).mockRejectedValueOnce(new Error("network down"));
     await useGitStore.getState().refreshStatus();
     expect(toastMod.toast.error).not.toHaveBeenCalled();
@@ -97,7 +97,7 @@ describe("useGitStore", () => {
 
   it("fetchDiff toasts on failure", async () => {
     const { typedIPC } = await import("../src/ipc");
-    const toastMod = await import("../src/components/ErrorBoundary");
+    const toastMod = await import("../src/components/layout/ErrorBoundary");
     vi.mocked(typedIPC.gitDiff).mockRejectedValueOnce(new Error("bad ref"));
     const result = await useGitStore.getState().fetchDiff({ ref: "wat" });
     expect(result).toBeNull();
@@ -119,7 +119,7 @@ describe("useGitStore", () => {
 
   it("fetchLog toasts on failure", async () => {
     const { typedIPC } = await import("../src/ipc");
-    const toastMod = await import("../src/components/ErrorBoundary");
+    const toastMod = await import("../src/components/layout/ErrorBoundary");
     vi.mocked(typedIPC.gitLog).mockRejectedValueOnce(new Error("timeout"));
     const result = await useGitStore.getState().fetchLog();
     expect(result).toBeNull();

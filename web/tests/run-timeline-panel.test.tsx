@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { RunTimelinePanel } from "../src/components/RunTimelinePanel";
+import { RunTimelinePanel } from "../src/components/right-panel/RunTimelinePanel";
 import { usePermissionStore, useRunTimelineStore } from "../src/stores";
 
 vi.mock("../src/ipc", () => ({

@@ -15,7 +15,7 @@ import { useChat } from "../src/stores";
 import { ipc } from "../src/ipc";
 import { StreamEvent, type MessageChunkData } from "../src/types/ipc";
 
-vi.mock("../src/components/ErrorBoundary", () => ({
+vi.mock("../src/components/layout/ErrorBoundary", () => ({
   toast: { error: vi.fn(), info: vi.fn(), success: vi.fn() },
   toastBus: { push: vi.fn(), dismiss: vi.fn() },
 }));

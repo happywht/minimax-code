@@ -5,7 +5,7 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MessageInput } from "../src/components/MessageInput";
+import { MessageInput } from "../src/components/chat/MessageInput";
 import { useChat } from "../src/stores";
 import type { AgentInfo } from "../src/types/ipc";
 

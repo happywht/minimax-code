@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { RunnerPanel } from "../src/components/RunnerPanel";
+import { RunnerPanel } from "../src/components/right-panel/RunnerPanel";
 import { useRunnerStore, useSessionStore, useTerminalStore } from "../src/stores";
 import type { RunnerInfo, TerminalSession } from "../src/types/ipc";
 

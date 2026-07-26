@@ -5,7 +5,7 @@
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { UserBadge } from "../src/components/UserBadge";
+import { UserBadge } from "../src/components/layout/UserBadge";
 
 const PLAN_KEY = "minimax-code:plan";
 

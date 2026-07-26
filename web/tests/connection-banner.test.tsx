@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { ConnectionBanner } from "../src/components/ConnectionBanner";
+import { ConnectionBanner } from "../src/components/layout/ConnectionBanner";
 
 describe("ConnectionBanner", () => {
   it("shows reconnect status and invokes manual retry", () => {

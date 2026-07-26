@@ -7,8 +7,8 @@
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { act, render, screen, fireEvent } from "@testing-library/react";
-import { SubAgentPanel } from "../src/components/SubAgentPanel";
-import { SubAgentResultCard } from "../src/components/SubAgentResultCard";
+import { SubAgentPanel } from "../src/components/right-panel/SubAgentPanel";
+import { SubAgentResultCard } from "../src/components/right-panel/SubAgentResultCard";
 import { useSubAgentStore } from "../src/stores/subAgent";
 import type { SubAgentRun } from "../src/types/ipc";
 

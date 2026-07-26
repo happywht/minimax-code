@@ -11,7 +11,7 @@
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { MessageInput } from "../src/components/MessageInput";
+import { MessageInput } from "../src/components/chat/MessageInput";
 import { useChat, useModelStore, usePermissionStore } from "../src/stores";
 
 const TEST_MODELS = [

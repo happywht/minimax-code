@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { PreviewPanel } from "../src/components/PreviewPanel";
+import { PreviewPanel } from "../src/components/panels/PreviewPanel";
 import { usePreviewStore } from "../src/stores/previewStore";
 
 class FakeEventSource {

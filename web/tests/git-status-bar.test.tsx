@@ -9,10 +9,10 @@
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
-import { GitStatusBar } from "../src/components/GitStatusBar";
+import { GitStatusBar } from "../src/components/layout/GitStatusBar";
 import { useGitStore } from "../src/stores";
 
-vi.mock("../src/components/ErrorBoundary", () => ({
+vi.mock("../src/components/layout/ErrorBoundary", () => ({
   toast: { error: vi.fn(), info: vi.fn(), success: vi.fn() },
   toastBus: { push: vi.fn(), dismiss: vi.fn() },
 }));

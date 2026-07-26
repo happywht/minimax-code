@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { PatchPreviewPanel } from "../src/components/PatchPreviewPanel";
+import { PatchPreviewPanel } from "../src/components/panels/PatchPreviewPanel";
 import { usePatchPreviewStore } from "../src/stores";
 import type { PatchPreviewResult } from "../src/types/ipc";
 

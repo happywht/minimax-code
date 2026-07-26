@@ -4,7 +4,7 @@
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { ModelSelector } from "../src/components/ModelSelector";
+import { ModelSelector } from "../src/components/chat/ModelSelector";
 import { useModelStore } from "../src/stores";
 
 // Mock the typed IPC client so we don't actually round-trip to Tauri.

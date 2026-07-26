@@ -11,10 +11,10 @@
  */
 import { describe, expect, it, beforeEach, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { WorkspaceSwitcher } from "../src/components/WorkspaceSwitcher";
+import { WorkspaceSwitcher } from "../src/components/layout/WorkspaceSwitcher";
 import { useSessionStore } from "../src/stores";
 
-vi.mock("../src/components/ErrorBoundary", () => ({
+vi.mock("../src/components/layout/ErrorBoundary", () => ({
   toast: { error: vi.fn(), info: vi.fn(), success: vi.fn() },
   toastBus: { push: vi.fn(), dismiss: vi.fn() },
 }));

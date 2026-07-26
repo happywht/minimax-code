@@ -8,7 +8,7 @@
  */
 import { describe, expect, it, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { MessageItem } from "../src/components/MessageItem";
+import { MessageItem } from "../src/components/chat/MessageItem";
 import { useChat } from "../src/stores";
 import type { Message } from "../src/types/ipc";
 

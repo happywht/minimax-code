@@ -10,7 +10,7 @@
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
-import { PermissionRequestModal } from "../src/components/PermissionRequestModal";
+import { PermissionRequestModal } from "../src/components/modals/PermissionRequestModal";
 import {
   usePermissionStore,
   _resetPermissionStoreListeners,
@@ -19,7 +19,7 @@ import {
 import { ipc, typedIPC } from "../src/ipc";
 import { StreamEvent } from "../src/types/ipc";
 
-vi.mock("../src/components/ErrorBoundary", () => ({
+vi.mock("../src/components/layout/ErrorBoundary", () => ({
   toast: { error: vi.fn(), info: vi.fn(), success: vi.fn() },
   toastBus: { push: vi.fn(), dismiss: vi.fn() },
 }));

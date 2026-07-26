@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { TerminalPanel } from "../src/components/TerminalPanel";
+import { TerminalPanel } from "../src/components/right-panel/TerminalPanel";
 import { useSessionStore, useTerminalStore } from "../src/stores";
 
 const terminalMocks = vi.hoisted(() => ({
