@@ -7,14 +7,16 @@ import {
   ChevronDown,
   ChevronRight,
   Play,
-  Save,
+  Plus,
   Trash2,
 } from "lucide-react";
+import { Button, IconButton, Input, Panel } from "../../ui";
 import { useScheduleStore, useTaskStore } from "../../stores";
-import { toast } from "../ErrorBoundary";
+import { toast } from "../layout/ErrorBoundary";
 import type { ScheduledJob } from "../../types/ipc";
 import { formatTime } from "../../lib/time";
-import { requestConfirmation } from "../ConfirmationDialog";
+import { requestConfirmation } from "../modals/ConfirmationDialog";
+import { InlineCode, TabHeader } from "./fields";
 
 export { ScheduledTab };
 
@@ -33,49 +35,86 @@ function ScheduledTab(): JSX.Element {
 
   useEffect(() => { if (jobs.length === 0) void refresh(); }, [jobs.length, refresh]);
 
+  const handleCreate = async () => {
+    const job = await create({ name: draftName.trim(), cron: draftCron.trim(), prompt: draftPrompt.trim() });
+    if (job) {
+      toast.success("Job created", job.name);
+      setDraftName(""); setDraftCron(""); setDraftPrompt("");
+    }
+  };
+
   return (
     <section data-testid="settings-scheduled" className="space-y-4">
-      <div>
-        <h2 className="text-sm font-medium">Scheduled jobs</h2>
-        <p className="mt-0.5 text-[11px] text-minimax-muted">
-          Cron jobs the agent runs on a schedule. Use 5-field cron
-          expressions (e.g. <code>*/5 * * * *</code> = every 5 minutes).
-        </p>
-      </div>
-      <div className="rounded-md border border-minimax-border bg-minimax-panel/40 p-3">
-        <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-12">
+      <TabHeader
+        title="Scheduled jobs"
+        hint={
+          <>
+            Cron jobs the agent runs on a schedule. Use 5-field cron expressions (e.g.{" "}
+            <InlineCode>*/5 * * * *</InlineCode> = every 5 minutes).
+          </>
+        }
+      />
+
+      <Panel title="New job">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
           <label htmlFor="scheduled-job-name" className="sr-only">Job Name</label>
-          <input id="scheduled-job-name" name="scheduled-job-name" autoComplete="off"
-            data-testid="settings-job-name" value={draftName}
-            onChange={(e) => setDraftName(e.target.value)} placeholder="e.g. Nightly review…"
-            className="rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-minimax-fg sm:col-span-3" />
+          <Input
+            id="scheduled-job-name"
+            name="scheduled-job-name"
+            autoComplete="off"
+            data-testid="settings-job-name"
+            value={draftName}
+            onChange={(e) => setDraftName(e.target.value)}
+            placeholder="e.g. Nightly review…"
+            className="sm:col-span-3"
+          />
           <label htmlFor="scheduled-job-cron" className="sr-only">Cron Expression</label>
-          <input id="scheduled-job-cron" name="scheduled-job-cron" autoComplete="off" spellCheck={false}
-            data-testid="settings-job-cron" value={draftCron}
-            onChange={(e) => setDraftCron(e.target.value)} placeholder="e.g. 0 2 * * *…"
-            className="rounded border border-minimax-border bg-minimax-bg px-2 py-1 font-mono text-minimax-fg sm:col-span-3" />
+          <Input
+            id="scheduled-job-cron"
+            name="scheduled-job-cron"
+            autoComplete="off"
+            spellCheck={false}
+            data-testid="settings-job-cron"
+            value={draftCron}
+            onChange={(e) => setDraftCron(e.target.value)}
+            placeholder="e.g. 0 2 * * *…"
+            className="font-mono sm:col-span-3"
+          />
           <label htmlFor="scheduled-job-prompt" className="sr-only">Prompt</label>
-          <input id="scheduled-job-prompt" name="scheduled-job-prompt" autoComplete="off"
-            data-testid="settings-job-prompt" value={draftPrompt}
-            onChange={(e) => setDraftPrompt(e.target.value)} placeholder="e.g. Review recent changes…"
-            className="rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-minimax-fg sm:col-span-4" />
-          <button type="button" data-testid="settings-job-add"
+          <Input
+            id="scheduled-job-prompt"
+            name="scheduled-job-prompt"
+            autoComplete="off"
+            data-testid="settings-job-prompt"
+            value={draftPrompt}
+            onChange={(e) => setDraftPrompt(e.target.value)}
+            placeholder="e.g. Review recent changes…"
+            className="sm:col-span-4"
+          />
+          <Button
+            size="sm"
+            variant="subtle"
+            data-testid="settings-job-add"
             disabled={!draftName.trim() || !draftCron.trim()}
-            onClick={async () => {
-              const job = await create({ name: draftName.trim(), cron: draftCron.trim(), prompt: draftPrompt.trim() });
-              if (job) { toast.success("Job created", job.name); setDraftName(""); setDraftCron(""); setDraftPrompt(""); }
-            }}
-            className="inline-flex items-center justify-center gap-1 rounded border border-minimax-accent/40 bg-minimax-accent/10 px-2 py-1 text-xs text-minimax-accent hover:bg-minimax-accent/20 disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-2">
-            <Save size={12} /> Create
-          </button>
+            onClick={() => void handleCreate()}
+            icon={<Plus />}
+            className="sm:col-span-2"
+          >
+            Create
+          </Button>
         </div>
-      </div>
+      </Panel>
+
       <ul className="space-y-1.5" data-testid="settings-jobs-list">
         {jobs.length === 0 && !loading && (
-          <li className="rounded border border-dashed border-minimax-border px-3 py-4 text-center text-xs text-minimax-muted">No scheduled jobs</li>
+          <li className="rounded-lg border border-dashed border-line px-3 py-4 text-center text-xs text-ink-2">
+            No scheduled jobs
+          </li>
         )}
         {jobs.map((j) => (
-          <ScheduledJobRow key={j.id} job={j}
+          <ScheduledJobRow
+            key={j.id}
+            job={j}
             onToggle={(enabled) => void setEnabled(j.id, enabled)}
             onDelete={async () => {
               const accepted = await requestConfirmation({
@@ -111,40 +150,65 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow }: {
   }, [tasks, job.name, job.id]);
 
   return (
-    <li data-testid={`settings-job-row-${job.id}`} className="rounded-md border border-minimax-border bg-minimax-panel/40">
+    <li
+      data-testid={`settings-job-row-${job.id}`}
+      className="rounded-lg border border-line bg-surface-2 transition-colors duration-150 hover:border-line-strong"
+    >
       <div className="flex items-center gap-2 px-3 py-2 text-sm">
-        <button type="button" data-testid={`settings-job-expand-${job.id}`}
+        <IconButton
+          data-testid={`settings-job-expand-${job.id}`}
           onClick={() => setExpanded((v) => !v)}
-          className="shrink-0 rounded p-0.5 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
-          aria-label={expanded ? "Collapse" : "Expand"}>
-          {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        </button>
-        <span className="flex-1 min-w-0">
-          <span className="block truncate font-medium text-minimax-fg">{job.name}</span>
-          <span className="block truncate font-mono text-[11px] text-minimax-muted">{job.cron} · {job.prompt || "(no prompt)"}</span>
+          aria-label={expanded ? "Collapse" : "Expand"}
+          active={expanded}
+        >
+          {expanded ? <ChevronDown /> : <ChevronRight />}
+        </IconButton>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-medium text-ink-0">{job.name}</span>
+          <span className="block truncate font-mono text-[11px] text-ink-2">
+            {job.cron} · {job.prompt || "(no prompt)"}
+          </span>
         </span>
-        <label className="inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-minimax-muted" data-testid={`settings-job-toggle-${job.id}`}>
-          <input type="checkbox" checked={job.enabled} onChange={(e) => onToggle(e.target.checked)} className="h-3 w-3 accent-minimax-accent" />
+        <label
+          className="inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-2"
+          data-testid={`settings-job-toggle-${job.id}`}
+        >
+          <input
+            type="checkbox"
+            checked={job.enabled}
+            onChange={(e) => onToggle(e.target.checked)}
+            className="h-3 w-3 accent-accent"
+          />
           {job.enabled ? "enabled" : "disabled"}
         </label>
-        <button type="button" data-testid={`settings-job-run-now-${job.id}`} onClick={onRunNow} aria-label="Run job now"
-          className="rounded border border-minimax-border p-1 text-minimax-muted hover:text-emerald-300"><Play size={12} /></button>
-        <button type="button" data-testid={`settings-job-delete-${job.id}`} onClick={onDelete} aria-label="Delete job"
-          className="rounded border border-minimax-border p-1 text-minimax-muted hover:text-status-error"><Trash2 size={12} /></button>
+        <IconButton
+          data-testid={`settings-job-run-now-${job.id}`}
+          onClick={onRunNow}
+          aria-label="Run job now"
+        >
+          <Play />
+        </IconButton>
+        <IconButton
+          data-testid={`settings-job-delete-${job.id}`}
+          onClick={onDelete}
+          aria-label="Delete job"
+        >
+          <Trash2 />
+        </IconButton>
       </div>
       {expanded && (
-        <div data-testid={`settings-job-tasks-${job.id}`} className="border-t border-minimax-border/60 px-3 py-2">
+        <div data-testid={`settings-job-tasks-${job.id}`} className="border-t border-line px-3 py-2">
           {relatedTasks.length === 0 ? (
-            <div className="text-[11px] italic text-minimax-muted">No task runs recorded yet.</div>
+            <div className="text-[11px] italic text-ink-2">No task runs recorded yet.</div>
           ) : (
             <ul className="space-y-1">
               {relatedTasks.map((t) => (
-                <li key={t.task_id} className="flex items-center justify-between text-[11px]">
-                  <div className="min-w-0 flex items-center gap-1.5">
+                <li key={t.task_id} className="flex items-center justify-between gap-2 text-[11px]">
+                  <div className="flex min-w-0 items-center gap-1.5">
                     <TaskStatusDot status={t.status} />
-                    <span className="truncate text-minimax-fg">{t.message || t.task_id}</span>
+                    <span className="truncate text-ink-0">{t.message || t.task_id}</span>
                   </div>
-                  <div className="flex shrink-0 items-center gap-2 text-minimax-muted">
+                  <div className="flex shrink-0 items-center gap-2 text-ink-2">
                     <span>{Math.round(t.progress * 100)}%</span>
                     <span>{t.status === "running" ? "running" : formatTime(t.updated_at)}</span>
                   </div>
@@ -160,8 +224,8 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow }: {
 
 function TaskStatusDot({ status }: { status: string }): JSX.Element {
   const colors: Record<string, string> = {
-    running: "bg-minimax-accent animate-pulse", done: "bg-emerald-400",
-    error: "bg-red-400", cancelled: "bg-minimax-muted",
+    running: "bg-accent animate-pulse", done: "bg-status-success",
+    error: "bg-status-error", cancelled: "bg-ink-2",
   };
-  return <span aria-hidden className={`inline-block h-1.5 w-1.5 rounded-full ${colors[status] ?? "bg-minimax-muted"}`} />;
+  return <span aria-hidden className={`inline-block h-1.5 w-1.5 rounded-full ${colors[status] ?? "bg-ink-2"}`} />;
 }

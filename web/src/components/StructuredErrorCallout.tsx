@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Check, ChevronDown, ChevronRight, CircleAlert, Clipboard, RotateCcw, Settings } from "lucide-react";
+import { Button } from "../ui";
 
 export interface StructuredErrorCalloutProps {
   testId?: string;
@@ -89,7 +90,7 @@ export function StructuredErrorCallout({
   return (
     <div
       data-testid={testId}
-      className="rounded-md border border-red-500/30 bg-red-500/5 text-[11px] text-minimax-fg"
+      className="rounded-md border border-status-error/30 bg-[var(--status-error-subtle)] text-[11px] text-ink-0"
     >
       <div className="flex items-start gap-2 px-3 py-2">
         <CircleAlert size={13} className="mt-0.5 shrink-0 text-status-error" />
@@ -97,61 +98,65 @@ export function StructuredErrorCallout({
           <div data-testid={`${testId}-title`} className="font-medium text-status-error">
             {title ?? copy.title}
           </div>
-          <div data-testid={`${testId}-explanation`} className="mt-0.5 text-minimax-muted">
+          <div data-testid={`${testId}-explanation`} className="mt-0.5 text-ink-1">
             {copy.explanation}
           </div>
-          <div data-testid={`${testId}-hint`} className="mt-1 text-minimax-muted/90">
+          <div data-testid={`${testId}-hint`} className="mt-1 text-ink-2">
             {copy.actionHint}
           </div>
         </div>
       </div>
-      <div className="flex flex-wrap items-center gap-1.5 border-t border-red-500/20 px-3 py-1.5">
+      <div className="flex flex-wrap items-center gap-1.5 border-t border-status-error/20 px-3 py-1.5">
         {onRetry ? (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={<RotateCcw />}
             data-testid={`${testId}-retry`}
             onClick={onRetry}
-            className="inline-flex items-center gap-1 rounded px-2 py-1 text-minimax-muted transition-colors hover:bg-minimax-border/60 hover:text-minimax-fg"
+            className="h-6 px-2 text-[11px]"
           >
-            <RotateCcw size={10} />
             Retry
-          </button>
+          </Button>
         ) : null}
         {onOpenSettings && copy.settingsLikely ? (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={<Settings />}
             data-testid={`${testId}-settings`}
             onClick={onOpenSettings}
-            className="inline-flex items-center gap-1 rounded px-2 py-1 text-minimax-muted transition-colors hover:bg-minimax-border/60 hover:text-minimax-fg"
+            className="h-6 px-2 text-[11px]"
           >
-            <Settings size={10} />
             Settings
-          </button>
+          </Button>
         ) : null}
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={copied ? <Check /> : <Clipboard />}
           data-testid={`${testId}-copy`}
           onClick={() => void copyDiagnostics()}
-          className="inline-flex items-center gap-1 rounded px-2 py-1 text-minimax-muted transition-colors hover:bg-minimax-border/60 hover:text-minimax-fg"
+          className="h-6 px-2 text-[11px]"
         >
-          {copied ? <Check size={10} /> : <Clipboard size={10} />}
           {copied ? "Copied" : "Copy diagnostics"}
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={expanded ? <ChevronDown /> : <ChevronRight />}
           data-testid={`${testId}-details-toggle`}
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
-          className="ml-auto inline-flex items-center gap-1 rounded px-2 py-1 text-minimax-muted transition-colors hover:bg-minimax-border/60 hover:text-minimax-fg"
+          className="ml-auto h-6 px-2 text-[11px]"
         >
-          {expanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
           Details
-        </button>
+        </Button>
       </div>
       {expanded ? (
         <pre
           data-testid={`${testId}-details`}
-          className="max-h-40 overflow-auto whitespace-pre-wrap break-words border-t border-red-500/20 bg-minimax-bg/50 px-3 py-2 font-mono text-[11px] text-minimax-muted"
+          className="max-h-40 overflow-auto whitespace-pre-wrap break-words border-t border-status-error/20 bg-surface-0/50 px-3 py-2 font-mono text-[11px] text-ink-1"
         >
           {technicalDetails}
         </pre>

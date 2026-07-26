@@ -9,7 +9,7 @@
 
 import { create } from "zustand";
 import { typedIPC } from "../ipc";
-import { toast } from "../components/ErrorBoundary";
+import { toast } from "../components/layout/ErrorBoundary";
 import type { AgentInfo } from "../types/ipc";
 
 export interface AgentState {

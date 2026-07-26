@@ -1,10 +1,13 @@
-﻿/**
+/**
  * Agents tab — sub-agent CRUD via `agent.*` IPC.
  */
 import { useEffect, useState } from "react";
 import { Bot, Plus, Trash2 } from "lucide-react";
+import { Badge, Button, EmptyState, IconButton, Input, Panel, Spinner, Textarea } from "../../ui";
 import { useAgentStore } from "../../stores";
-import { requestConfirmation } from "../ConfirmationDialog";
+import type { AgentInfo } from "../../types/ipc";
+import { requestConfirmation } from "../modals/ConfirmationDialog";
+import { Field, InlineCode, TabHeader } from "./fields";
 
 export { AgentsTab };
 
@@ -27,77 +30,127 @@ function AgentsTab(): JSX.Element {
     if (a) { setFormName(""); setFormPrompt(""); setShowForm(false); }
   };
 
+  const handleDelete = async (agent: AgentInfo) => {
+    const accepted = await requestConfirmation({
+      title: `Delete agent ${agent.name}?`,
+      description: "This agent will no longer be available in chat or team assignments. Existing conversation history is not deleted.",
+      confirmLabel: "Delete Agent",
+    });
+    if (accepted) await remove(agent.name);
+  };
+
   return (
     <section data-testid="settings-agents" className="space-y-4">
-      <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
-          <h2 className="text-sm font-medium">Sub-agents</h2>
-          <p className="mt-0.5 text-[11px] text-minimax-muted">
-            Manage agents that can be invoked via <code className="rounded bg-minimax-panel px-1 font-mono text-[11px]">@agent</code> in chat.
-          </p>
-        </div>
-        <button type="button" data-testid="settings-agent-create"
-          onClick={() => setShowForm((v) => !v)}
-          className="inline-flex shrink-0 items-center gap-1 rounded border border-minimax-accent/40 bg-minimax-accent/10 px-2 py-1 text-xs text-minimax-accent hover:bg-minimax-accent/20">
-          <Plus size={12} /> New Agent
-        </button>
-      </div>
+      <TabHeader
+        title="Sub-agents"
+        hint={
+          <>
+            Manage agents that can be invoked via <InlineCode>@agent</InlineCode> in chat.
+          </>
+        }
+        action={
+          <Button
+            size="sm"
+            variant="subtle"
+            data-testid="settings-agent-create"
+            onClick={() => setShowForm((v) => !v)}
+            icon={<Plus />}
+          >
+            New Agent
+          </Button>
+        }
+      />
 
       {showForm && (
-        <div data-testid="settings-agent-form" className="rounded-md border border-minimax-border bg-minimax-panel/40 p-3 space-y-2">
-          <label htmlFor="agent-form-name" className="text-[11px] text-minimax-muted">Agent Name</label>
-          <input id="agent-form-name" name="agent-name" autoComplete="off" spellCheck={false}
-            data-testid="settings-agent-form-name" value={formName}
-            onChange={(e) => setFormName(e.target.value)} placeholder="e.g. code-reviewer…"
-            className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs text-minimax-fg" />
-          <label htmlFor="agent-form-prompt" className="text-[11px] text-minimax-muted">System Prompt</label>
-          <textarea id="agent-form-prompt" name="agent-system-prompt" autoComplete="off"
-            data-testid="settings-agent-form-prompt" value={formPrompt}
-            onChange={(e) => setFormPrompt(e.target.value)} placeholder="System prompt…" rows={3}
-            className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs text-minimax-fg resize-none" />
-          <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => setShowForm(false)}
-              className="rounded border border-minimax-border px-2 py-1 text-xs text-minimax-muted hover:text-minimax-fg">Cancel</button>
-            <button type="button" data-testid="settings-agent-form-submit"
-              onClick={() => void handleCreate()} disabled={!formName.trim() || !formPrompt.trim()}
-              className="rounded border border-minimax-accent/40 bg-minimax-accent/10 px-2 py-1 text-xs text-minimax-accent hover:bg-minimax-accent/20 disabled:opacity-50 disabled:cursor-not-allowed">Create</button>
+        <Panel
+          data-testid="settings-agent-form"
+          title="New Agent"
+          actions={
+            <Button size="sm" variant="ghost" onClick={() => setShowForm(false)}>
+              Cancel
+            </Button>
+          }
+        >
+          <div className="space-y-2">
+            <Field label="Agent Name" htmlFor="agent-form-name">
+              <Input
+                id="agent-form-name"
+                name="agent-name"
+                autoComplete="off"
+                spellCheck={false}
+                data-testid="settings-agent-form-name"
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                placeholder="e.g. code-reviewer…"
+              />
+            </Field>
+            <Field label="System Prompt" htmlFor="agent-form-prompt">
+              <Textarea
+                id="agent-form-prompt"
+                name="agent-system-prompt"
+                autoComplete="off"
+                data-testid="settings-agent-form-prompt"
+                value={formPrompt}
+                onChange={(e) => setFormPrompt(e.target.value)}
+                placeholder="System prompt…"
+                rows={3}
+                className="resize-none text-xs"
+              />
+            </Field>
+            <div className="flex justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setShowForm(false)}>
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                data-testid="settings-agent-form-submit"
+                onClick={() => void handleCreate()}
+                disabled={!formName.trim() || !formPrompt.trim()}
+              >
+                Create
+              </Button>
+            </div>
           </div>
-        </div>
+        </Panel>
       )}
 
       {loading && agents.length === 0 ? (
-        <div className="py-4 text-center text-xs text-minimax-muted">Loading agents…</div>
+        <div className="flex items-center justify-center gap-2 py-4 text-xs text-ink-2">
+          <Spinner size={12} /> Loading agents…
+        </div>
       ) : agents.length === 0 ? (
-        <div className="py-4 text-center text-xs italic text-minimax-muted">No sub-agents configured. Click "New Agent" to create one.</div>
+        <EmptyState
+          title="No sub-agents configured."
+          hint='Click "New Agent" to create one.'
+        />
       ) : (
         <ul className="space-y-2">
           {agents.map((a) => (
-            <li key={a.id} data-testid={`settings-agent-row-${a.name}`}
-              className="flex items-center justify-between rounded-md border border-minimax-border bg-minimax-panel/40 p-3">
+            <li
+              key={a.id}
+              data-testid={`settings-agent-row-${a.name}`}
+              className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface-2 p-3 transition-colors duration-150 hover:border-line-strong"
+            >
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5">
-                  <Bot size={12} className="text-minimax-accent" />
-                  <span className="truncate text-xs font-medium text-minimax-fg">{a.name}</span>
-                  {a.enabled ? (
-                    <span className="rounded bg-emerald-500/10 px-1 py-0.5 text-[11px] text-emerald-300">enabled</span>
-                  ) : (
-                    <span className="rounded bg-minimax-border px-1 py-0.5 text-[11px] text-minimax-muted">disabled</span>
-                  )}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Bot size={12} className="shrink-0 text-accent" />
+                  <span className="truncate text-xs font-medium text-ink-0">{a.name}</span>
+                  <Badge tone={a.enabled ? "success" : "neutral"} dot>
+                    {a.enabled ? "enabled" : "disabled"}
+                  </Badge>
                 </div>
-                {a.description && <p className="mt-0.5 truncate text-[11px] text-minimax-muted">{a.description}</p>}
+                {a.description && (
+                  <p className="mt-0.5 truncate text-[11px] text-ink-2">{a.description}</p>
+                )}
               </div>
-              <button type="button" data-testid={`settings-agent-delete-${a.name}`}
-                onClick={async () => {
-                  const accepted = await requestConfirmation({
-                    title: `Delete agent ${a.name}?`,
-                    description: "This agent will no longer be available in chat or team assignments. Existing conversation history is not deleted.",
-                    confirmLabel: "Delete Agent",
-                  });
-                  if (accepted) await remove(a.name);
-                }} aria-label={`Delete agent ${a.name}`}
-                className="ml-2 rounded border border-minimax-border p-1 text-minimax-muted hover:text-status-error">
-                <Trash2 size={12} />
-              </button>
+              <IconButton
+                data-testid={`settings-agent-delete-${a.name}`}
+                onClick={() => void handleDelete(a)}
+                aria-label={`Delete agent ${a.name}`}
+              >
+                <Trash2 />
+              </IconButton>
             </li>
           ))}
         </ul>

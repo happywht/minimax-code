@@ -1,13 +1,15 @@
-﻿/**
+/**
  * Workflows tab — manage automation workflows.
  */
 import { useEffect, useState } from "react";
-import { SkeletonTable } from "../Skeleton";
-import { Play, Plus, Trash2, Workflow } from "lucide-react";
+import { Play, Plus, RefreshCw, Trash2, Workflow } from "lucide-react";
+import { Badge, Button, EmptyState, IconButton, Input, Panel } from "../../ui";
+import { SkeletonTable } from "../layout/Skeleton";
 import { useWorkflowStore } from "../../stores";
 import type { WorkflowEntry } from "../../types/ipc";
 import { formatDateTime } from "../../lib/time";
-import { requestConfirmation } from "../ConfirmationDialog";
+import { requestConfirmation } from "../modals/ConfirmationDialog";
+import { ErrorBanner, Field, Select, TabHeader } from "./fields";
 
 export { WorkflowsTab };
 
@@ -34,123 +36,135 @@ function WorkflowsTab(): JSX.Element {
 
   return (
     <section data-testid="settings-workflows-section" className="space-y-4">
-      <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
-          <h2 className="text-sm font-semibold">Workflows</h2>
-          <p className="text-[11px] text-minimax-muted">
-            Automation workflows triggered by webhooks, schedules, or agent events. Configure trigger conditions and action steps.
-          </p>
-        </div>
-        <div className="flex shrink-0 gap-2">
-          <button
-            type="button"
-            className="rounded border border-minimax-border px-2 py-1 text-xs hover:bg-minimax-accent/20"
-            onClick={() => refresh()}
-          >
-            Refresh
-          </button>
-          <button
-            type="button"
-            data-testid="workflow-create-btn"
-            className="flex items-center gap-1 rounded bg-minimax-accent px-2 py-1 text-xs text-white hover:bg-minimax-accent/80"
-            onClick={() => setShowCreate(!showCreate)}
-          >
-            <Plus size={12} /> New
-          </button>
-        </div>
-      </div>
+      <TabHeader
+        title="Workflows"
+        hint="Automation workflows triggered by webhooks, schedules, or agent events. Configure trigger conditions and action steps."
+        action={
+          <>
+            <Button size="sm" variant="secondary" onClick={() => refresh()} icon={<RefreshCw />}>
+              Refresh
+            </Button>
+            <Button
+              size="sm"
+              variant="primary"
+              data-testid="workflow-create-btn"
+              onClick={() => setShowCreate((v) => !v)}
+              icon={<Plus />}
+            >
+              New
+            </Button>
+          </>
+        }
+      />
 
-      {error && <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-status-error">{error}</div>}
+      {error && <ErrorBanner message={error} />}
 
       {/* Create form */}
       {showCreate && (
-        <div className="space-y-2 rounded border border-minimax-border bg-minimax-panel p-3">
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
-            <div className="min-w-0 sm:col-span-7">
-              <label htmlFor="workflow-name" className="mb-0.5 block text-[11px] text-minimax-muted">Name</label>
-              <input id="workflow-name" name="workflow-name" autoComplete="off"
-                data-testid="workflow-name-input"
-                className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs"
-                placeholder="e.g. Pull request review…"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }}
+        <Panel
+          title="New Workflow"
+          actions={
+            <Button size="sm" variant="ghost" onClick={() => setShowCreate(false)}>
+              Cancel
+            </Button>
+          }
+        >
+          <div className="space-y-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
+              <Field label="Name" htmlFor="workflow-name" className="sm:col-span-7">
+                <Input
+                  id="workflow-name"
+                  name="workflow-name"
+                  autoComplete="off"
+                  data-testid="workflow-name-input"
+                  placeholder="e.g. Pull request review…"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") void handleCreate(); }}
+                />
+              </Field>
+              <Field label="Trigger" htmlFor="workflow-trigger-type" className="sm:col-span-5">
+                <Select
+                  id="workflow-trigger-type"
+                  name="workflow-trigger-type"
+                  value={newTriggerType}
+                  onChange={(e) => setNewTriggerType(e.target.value as "webhook" | "schedule" | "agent_event")}
+                >
+                  <option value="webhook">Webhook</option>
+                  <option value="schedule">Schedule</option>
+                  <option value="agent_event">Agent Event</option>
+                </Select>
+              </Field>
+            </div>
+            <Field label="Description" htmlFor="workflow-description">
+              <Input
+                id="workflow-description"
+                name="workflow-description"
+                autoComplete="off"
+                placeholder="e.g. Review incoming pull requests…"
+                value={newDescription}
+                onChange={(e) => setNewDescription(e.target.value)}
               />
-            </div>
-            <div className="min-w-0 sm:col-span-5">
-              <label htmlFor="workflow-trigger-type" className="mb-0.5 block text-[11px] text-minimax-muted">Trigger</label>
-              <select id="workflow-trigger-type" name="workflow-trigger-type"
-                className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs"
-                value={newTriggerType}
-                onChange={(e) => setNewTriggerType(e.target.value as "webhook" | "schedule" | "agent_event")}
+            </Field>
+            <div className="flex justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setShowCreate(false)}>
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                data-testid="workflow-create-submit"
+                onClick={() => void handleCreate()}
               >
-              <option value="webhook">Webhook</option>
-              <option value="schedule">Schedule</option>
-              <option value="agent_event">Agent Event</option>
-              </select>
+                Create
+              </Button>
             </div>
           </div>
-          <label htmlFor="workflow-description" className="text-[11px] text-minimax-muted">Description</label>
-          <input id="workflow-description" name="workflow-description" autoComplete="off"
-            className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs"
-            placeholder="e.g. Review incoming pull requests…"
-            value={newDescription}
-            onChange={(e) => setNewDescription(e.target.value)}
-          />
-          <div className="flex justify-end gap-2">
-            <button type="button" className="text-xs text-minimax-muted" onClick={() => setShowCreate(false)}>Cancel</button>
-            <button
-              type="button"
-              data-testid="workflow-create-submit"
-              className="rounded bg-minimax-accent px-3 py-1 text-xs text-white hover:bg-minimax-accent/80"
-              onClick={handleCreate}
-            >
-              Create
-            </button>
-          </div>
-        </div>
+        </Panel>
       )}
 
       {/* List */}
       {loading ? (
         <SkeletonTable rows={3} />
       ) : entries.length === 0 ? (
-        <div className="py-8 text-center text-xs text-minimax-muted">
-          No workflows configured. Click "New" to create one.
-        </div>
+        <EmptyState
+          title="No workflows configured."
+          hint='Click "New" to create one.'
+        />
       ) : (
         <div className="space-y-2">
           {entries.map((wf: WorkflowEntry) => (
-            <div key={wf.id} className="rounded border border-minimax-border bg-minimax-panel p-3 space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Workflow size={14} className="text-minimax-accent" />
-                  <span className="text-xs font-semibold">{wf.name}</span>
-                  <span className="rounded bg-minimax-accent/20 px-1.5 py-0.5 text-[11px] text-minimax-accent">{wf.trigger_type}</span>
-                  <span className="rounded bg-minimax-bg px-1.5 py-0.5 text-[11px] text-minimax-muted">{wf.steps.length} step(s)</span>
+            <div
+              key={wf.id}
+              className="space-y-2 rounded-lg border border-line bg-surface-2 p-3 transition-colors duration-150 hover:border-line-strong"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                  <Workflow size={14} className="shrink-0 text-accent" />
+                  <span className="truncate text-xs font-semibold text-ink-0">{wf.name}</span>
+                  <Badge tone="accent">{wf.trigger_type}</Badge>
+                  <Badge tone="neutral">{wf.steps.length} step(s)</Badge>
                 </div>
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    className={`rounded px-1.5 py-0.5 text-[11px] ${wf.enabled ? "text-status-success" : "text-minimax-muted"}`}
-                    onClick={() => wf.enabled ? disable(wf.id) : enable(wf.id)}
+                <div className="flex shrink-0 items-center gap-1">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => void (wf.enabled ? disable(wf.id) : enable(wf.id))}
                   >
-                    {wf.enabled ? "Enabled" : "Disabled"}
-                  </button>
-                  <button
-                    type="button"
+                    <span className={wf.enabled ? "text-status-success" : "text-ink-2"}>
+                      {wf.enabled ? "Enabled" : "Disabled"}
+                    </span>
+                  </Button>
+                  <IconButton
                     data-testid={`workflow-trigger-${wf.id}`}
                     aria-label={`Run workflow ${wf.name}`}
-                    className="rounded px-1.5 py-0.5 text-[11px] text-minimax-accent hover:text-minimax-accent/80"
-                    onClick={() => trigger(wf.id)}
                     title="Manually trigger this workflow"
+                    onClick={() => void trigger(wf.id)}
                   >
-                    <Play size={11} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
+                    <Play />
+                  </IconButton>
+                  <IconButton
                     aria-label={`Delete workflow ${wf.name}`}
-                    className="rounded px-1.5 py-0.5 text-[11px] text-status-error hover:text-status-error"
                     onClick={async () => {
                       const accepted = await requestConfirmation({
                         title: `Delete workflow ${wf.name}?`,
@@ -160,14 +174,14 @@ function WorkflowsTab(): JSX.Element {
                       if (accepted) await remove(wf.id);
                     }}
                   >
-                    <Trash2 size={11} aria-hidden="true" />
-                  </button>
+                    <Trash2 />
+                  </IconButton>
                 </div>
               </div>
               {wf.description && (
-                <p className="text-[11px] text-minimax-muted">{wf.description}</p>
+                <p className="text-[11px] text-ink-2">{wf.description}</p>
               )}
-              <div className="flex items-center gap-3 text-[11px] text-minimax-muted">
+              <div className="flex items-center gap-3 text-[11px] text-ink-2">
                 <span>Runs: {wf.run_count}</span>
                 {wf.last_run_at && <span>Last: {formatDateTime(wf.last_run_at)}</span>}
               </div>
@@ -176,9 +190,7 @@ function WorkflowsTab(): JSX.Element {
         </div>
       )}
 
-      <div className="text-[11px] text-minimax-muted">
-        {total} workflow(s) configured
-      </div>
+      <div className="text-[11px] text-ink-2">{total} workflow(s) configured</div>
     </section>
   );
 }

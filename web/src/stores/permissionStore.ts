@@ -22,7 +22,7 @@
 
 import { create } from "zustand";
 import { ipc, typedIPC } from "../ipc";
-import { toast } from "../components/ErrorBoundary";
+import { toast } from "../components/layout/ErrorBoundary";
 import type {
   PermissionRequestData,
   PermissionResolvedData,

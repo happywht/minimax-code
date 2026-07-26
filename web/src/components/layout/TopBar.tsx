@@ -1,0 +1,87 @@
+/**
+ * TopBar — the 40px header strip across the top of the app.
+ */
+import type { ReactNode } from "react";
+import { Eye, Menu, Settings as SettingsIcon } from "lucide-react";
+import { GitStatusBar } from "./GitStatusBar";
+import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
+import { ThemeToggle } from "./ThemeToggle";
+import { NotificationBell } from "./NotificationBell";
+import { IconButton, Button } from "../../ui";
+
+export interface TopBarProps {
+  testId?: string;
+  /** Render-prop for the right-hand action cluster. */
+  rightSlot?: ReactNode;
+  onOpenSettings?: () => void;
+  /** Toggle the mobile sidebar overlay. Ignored on md+ screens. */
+  onToggleSidebar?: () => void;
+  /** Toggle the live-preview panel. */
+  onTogglePreview?: () => void;
+  /** Whether the preview panel is currently active. */
+  previewActive?: boolean;
+}
+
+export function TopBar({
+  testId = "app-topbar",
+  rightSlot,
+  onOpenSettings,
+  onToggleSidebar,
+  onTogglePreview,
+  previewActive = false,
+}: TopBarProps): JSX.Element {
+  return (
+    <header
+      data-testid={testId}
+      className="flex h-10 w-full shrink-0 items-center justify-between gap-2 overflow-hidden border-b border-line bg-surface-1 px-2 md:px-3"
+    >
+      <div
+        data-testid="app-topbar-left"
+        className="flex min-w-0 flex-1 items-center gap-2"
+      >
+        {onToggleSidebar && (
+          <IconButton
+            size="md"
+            aria-label="Toggle sidebar"
+            onClick={onToggleSidebar}
+            data-testid="app-topbar-hamburger"
+            className="md:hidden"
+          >
+            <Menu size={16} />
+          </IconButton>
+        )}
+        <WorkspaceSwitcher />
+        <GitStatusBar />
+      </div>
+      <div
+        data-testid="app-topbar-right"
+        className="flex shrink-0 items-center gap-1"
+      >
+        {rightSlot}
+        {onTogglePreview && (
+          <Button
+            size="sm"
+            variant={previewActive ? "subtle" : "ghost"}
+            icon={<Eye size={14} />}
+            onClick={onTogglePreview}
+            data-testid="app-topbar-preview"
+            className="hidden sm:inline-flex"
+          >
+            Preview
+          </Button>
+        )}
+        <NotificationBell />
+        <ThemeToggle />
+        <Button
+          size="sm"
+          variant="ghost"
+          icon={<SettingsIcon size={14} />}
+          onClick={onOpenSettings}
+          data-testid="app-topbar-settings"
+        >
+          <span className="hidden sm:inline">Settings</span>
+        </Button>
+      </div>
+    </header>
+  );
+}

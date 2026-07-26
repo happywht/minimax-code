@@ -30,7 +30,7 @@ vi.mock("../../../stores", () => {
 });
 
 vi.mock("../../../types/ipc", () => ({}));
-vi.mock("../../ErrorBoundary", () => ({
+vi.mock("../../layout/ErrorBoundary", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 

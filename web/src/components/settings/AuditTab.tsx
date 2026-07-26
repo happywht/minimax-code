@@ -1,14 +1,24 @@
-﻿/**
+/**
  * Audit tab — audit log viewer with stats, filter, and pagination.
- * Includes StatusBadge sub-component.
  */
 import { useEffect } from "react";
-import { SkeletonTable } from "../Skeleton";
+import { RefreshCw } from "lucide-react";
+import { Badge, Button, EmptyState } from "../../ui";
+import type { BadgeTone } from "../../ui";
+import { SkeletonTable } from "../layout/Skeleton";
 import { useAuditStore } from "../../stores";
 import type { AuditEntry } from "../../types/ipc";
 import { formatDateTime } from "../../lib/time";
+import { Select, TabHeader } from "./fields";
 
 export { AuditTab };
+
+const STATUS_TONES: Record<string, BadgeTone> = {
+  success: "success",
+  fail: "error",
+  timeout: "warning",
+  denied: "warning",
+};
 
 function AuditTab(): JSX.Element {
   const { entries, total, stats, loading, page, pageSize, filterTool, refresh, loadStats, setPage, setFilterTool } = useAuditStore();
@@ -23,39 +33,51 @@ function AuditTab(): JSX.Element {
 
   return (
     <section data-testid="settings-audit-section" className="space-y-4">
-      <h2 className="text-sm font-semibold">Audit Log</h2>
-      <p className="text-[11px] text-minimax-muted">
-        Every tool dispatch is recorded for full traceability. Use this to review what the agent did and when.
-      </p>
+      <TabHeader
+        title="Audit Log"
+        hint="Every tool dispatch is recorded for full traceability. Use this to review what the agent did and when."
+        action={
+          <Button
+            size="sm"
+            variant="secondary"
+            icon={<RefreshCw />}
+            onClick={() => { refresh(); loadStats(); }}
+          >
+            Refresh
+          </Button>
+        }
+      />
 
       {/* Stats dashboard */}
       {stats && stats.total > 0 && (
-        <div className="grid grid-cols-3 gap-3 text-center">
-          <div className="rounded border border-minimax-border bg-minimax-panel px-3 py-2">
-            <div className="text-lg font-bold">{stats.total}</div>
-            <div className="text-[11px] text-minimax-muted">Total Calls</div>
+        <div className="grid grid-cols-3 gap-2 text-center">
+          <div className="rounded-lg border border-line bg-surface-2 px-3 py-2">
+            <div className="text-lg font-semibold text-ink-0">{stats.total}</div>
+            <div className="text-[11px] text-ink-2">Total Calls</div>
           </div>
-          <div className="rounded border border-minimax-border bg-minimax-panel px-3 py-2">
-            <div className="text-lg font-bold">{Object.keys(stats.by_tool).length}</div>
-            <div className="text-[11px] text-minimax-muted">Tools Used</div>
+          <div className="rounded-lg border border-line bg-surface-2 px-3 py-2">
+            <div className="text-lg font-semibold text-ink-0">{Object.keys(stats.by_tool).length}</div>
+            <div className="text-[11px] text-ink-2">Tools Used</div>
           </div>
-          <div className="rounded border border-minimax-border bg-minimax-panel px-3 py-2">
-            <div className="text-lg font-bold text-status-success">
+          <div className="rounded-lg border border-line bg-surface-2 px-3 py-2">
+            <div className="text-lg font-semibold text-status-success">
               {stats.by_status.success ?? 0}
             </div>
-            <div className="text-[11px] text-minimax-muted">Successes</div>
+            <div className="text-[11px] text-ink-2">Successes</div>
           </div>
         </div>
       )}
 
       {/* Filter */}
       <div className="flex items-center gap-2">
-        <label htmlFor="audit-filter-tool" className="text-[11px] text-minimax-muted">Filter by tool:</label>
-        <select
+        <label htmlFor="audit-filter-tool" className="shrink-0 text-[11px] text-ink-2">
+          Filter by tool:
+        </label>
+        <Select
           id="audit-filter-tool"
           name="audit-filter-tool"
           data-testid="audit-filter-tool"
-          className="rounded border border-minimax-border bg-minimax-panel px-2 py-1 text-xs"
+          className="w-auto"
           value={filterTool ?? ""}
           onChange={(e) => setFilterTool(e.target.value || null)}
         >
@@ -63,47 +85,41 @@ function AuditTab(): JSX.Element {
           {stats && Object.keys(stats.by_tool).map((t) => (
             <option key={t} value={t}>{t} ({stats.by_tool[t]})</option>
           ))}
-        </select>
-        <button
-          type="button"
-          className="ml-auto rounded border border-minimax-border px-2 py-1 text-xs hover:bg-minimax-accent/20"
-          onClick={() => { refresh(); loadStats(); }}
-        >
-          Refresh
-        </button>
+        </Select>
       </div>
 
       {/* Table */}
       {loading ? (
         <SkeletonTable rows={5} />
       ) : entries.length === 0 ? (
-        <div className="py-8 text-center text-xs text-minimax-muted">
-          No audit entries yet. Tool calls will appear here once the agent executes tools.
-        </div>
+        <EmptyState
+          title="No audit entries yet."
+          hint="Tool calls will appear here once the agent executes tools."
+        />
       ) : (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto rounded-lg border border-line">
           <table className="w-full text-left text-[11px]">
             <thead>
-              <tr className="border-b border-minimax-border text-minimax-muted">
-                <th className="px-2 py-1">Time</th>
-                <th className="px-2 py-1">Tool</th>
-                <th className="px-2 py-1">Status</th>
-                <th className="px-2 py-1">Duration</th>
-                <th className="px-2 py-1">Permission</th>
-                <th className="px-2 py-1">Error</th>
+              <tr className="border-b border-line bg-surface-1 text-ink-2">
+                <th className="px-2 py-1.5 font-medium">Time</th>
+                <th className="px-2 py-1.5 font-medium">Tool</th>
+                <th className="px-2 py-1.5 font-medium">Status</th>
+                <th className="px-2 py-1.5 font-medium">Duration</th>
+                <th className="px-2 py-1.5 font-medium">Permission</th>
+                <th className="px-2 py-1.5 font-medium">Error</th>
               </tr>
             </thead>
             <tbody>
               {entries.map((e: AuditEntry) => (
-                <tr key={e.id} className="border-b border-minimax-border/40 hover:bg-minimax-panel">
-                  <td className="px-2 py-1 whitespace-nowrap">{e.created_at ? formatDateTime(e.created_at) : "—"}</td>
-                  <td className="px-2 py-1 font-mono">{e.tool_name}</td>
-                  <td className="px-2 py-1">
-                    <StatusBadge status={e.result_status} />
+                <tr key={e.id} className="border-b border-line text-ink-1 last:border-b-0 hover:bg-surface-2">
+                  <td className="whitespace-nowrap px-2 py-1.5">{e.created_at ? formatDateTime(e.created_at) : "—"}</td>
+                  <td className="px-2 py-1.5 font-mono">{e.tool_name}</td>
+                  <td className="px-2 py-1.5">
+                    <Badge tone={STATUS_TONES[e.result_status] ?? "neutral"}>{e.result_status}</Badge>
                   </td>
-                  <td className="px-2 py-1">{e.duration_ms != null ? `${e.duration_ms}ms` : "—"}</td>
-                  <td className="px-2 py-1">{e.permission ?? "—"}</td>
-                  <td className="px-2 py-1 max-w-[200px] truncate text-status-error" title={e.error ?? ""}>{e.error ?? ""}</td>
+                  <td className="px-2 py-1.5">{e.duration_ms != null ? `${e.duration_ms}ms` : "—"}</td>
+                  <td className="px-2 py-1.5">{e.permission ?? "—"}</td>
+                  <td className="max-w-[200px] truncate px-2 py-1.5 text-status-error" title={e.error ?? ""}>{e.error ?? ""}</td>
                 </tr>
               ))}
             </tbody>
@@ -113,36 +129,26 @@ function AuditTab(): JSX.Element {
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-2 text-xs text-minimax-muted">
-          <button
-            type="button"
-            className="rounded border border-minimax-border px-2 py-1 disabled:opacity-40"
+        <div className="flex items-center justify-center gap-2 text-xs text-ink-2">
+          <Button
+            size="sm"
+            variant="secondary"
             disabled={page === 0}
             onClick={() => setPage(page - 1)}
           >
             ← Prev
-          </button>
+          </Button>
           <span>Page {page + 1} of {totalPages}</span>
-          <button
-            type="button"
-            className="rounded border border-minimax-border px-2 py-1 disabled:opacity-40"
+          <Button
+            size="sm"
+            variant="secondary"
             disabled={page + 1 >= totalPages}
             onClick={() => setPage(page + 1)}
           >
             Next →
-          </button>
+          </Button>
         </div>
       )}
     </section>
   );
-}
-
-function StatusBadge({ status }: { status: string }): JSX.Element {
-  const colors: Record<string, string> = {
-    success: "text-status-success",
-    fail: "text-status-error",
-    timeout: "text-status-warning",
-    denied: "text-orange-400",
-  };
-  return <span className={colors[status] ?? "text-minimax-muted"}>{status}</span>;
 }

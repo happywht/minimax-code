@@ -11,7 +11,7 @@ import { create } from "zustand";
 import { typedIPC, ipc } from "../ipc/client";
 import { StreamEvent } from "../types/ipc";
 import type { TeamProgressData } from "../types/ipc";
-import { toast } from "../components/ErrorBoundary";
+import { toast } from "../components/layout/ErrorBoundary";
 import { trimArray, MAX_TEAM_RUNS } from "../lib/eviction";
 
 /** A single team run tracked in the UI. */

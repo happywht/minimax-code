@@ -186,7 +186,7 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 - **IPC Server 核心**：`agent/minimax_code/ipc/server.py` — `IPCServer` + `Context`
 - **Agent Core**：`agent/minimax_code/agent/core.py` — 对话循环、工具调度、流式回调
 - **LLM Client**：`agent/minimax_code/agent/llm.py` — MiniMax API + mock mode
-- **前端 IPC Client**：`web/src/ipc/client.ts` — HTTP/WS transport + mock backend + TypedIPC
+- **前端 IPC Client**：`web/src/ipc/` — `client.ts`（HTTP/WS transport + `ipc` 单例）、`typed.ts`（TypedIPC 类型化 API 层）、`mock.ts`（mock backend `mockHandle`）、`mockData.ts`（mock 数据/状态）
 - **前端入口**：`web/src/App.tsx` — 三栏布局 + store 初始化
 
 ### 修改代码时的注意事项
@@ -194,7 +194,7 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 1. **IPC 契约变更**：任何对消息格式的改动必须同步更新 `docs/ipc-contract.md`、`web/src/types/ipc.ts`、`agent/minimax_code/ipc/protocol.py`
 2. **Handler 注册**：新增 IPC 方法需要在 `register_app_handlers` 中注册，并在对应的 `handlers_*.py` 中实现
 3. **Store 新增**：新 store 需要在 `web/src/stores/index.ts` 中导出
-4. **Mock backend**：`web/src/ipc/client.ts` 底部的 `mockHandle` 必须覆盖所有 IPC 方法，否则前端无法在无 agent 状态下工作
+4. **Mock backend**：`web/src/ipc/mock.ts` 中的 `mockHandle` 必须覆盖所有 IPC 方法，否则前端无法在无 agent 状态下工作
 5. **数据库迁移**：新增表或字段需在 `agent/minimax_code/storage/migrations/` 下添加递增编号的迁移文件
 6. **Transport 共享**：HTTP/WS 和 stdio 共享同一 handler registry，不要在同一进程同时运行两种 transport
 

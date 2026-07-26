@@ -8,7 +8,7 @@
 import { create } from "zustand";
 import { typedIPC } from "../ipc/client";
 import type { AgentTeam, OrchestrationMode } from "../types/ipc";
-import { toast } from "../components/ErrorBoundary";
+import { toast } from "../components/layout/ErrorBoundary";
 
 export interface TeamState {
   teams: AgentTeam[];

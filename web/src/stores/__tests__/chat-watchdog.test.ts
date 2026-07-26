@@ -50,7 +50,7 @@ vi.mock("../../ipc", () => ({
   },
 }));
 
-vi.mock("../../components/ErrorBoundary", () => ({
+vi.mock("../../components/layout/ErrorBoundary", () => ({
   toast: {
     error: (...args: unknown[]) => toastErrorSpy(...args),
     info: (...args: unknown[]) => toastInfoSpy(...args),

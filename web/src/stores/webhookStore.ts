@@ -8,7 +8,7 @@
 import { create } from "zustand";
 import { typedIPC } from "../ipc/client";
 import type { WebhookConfig } from "../types/ipc";
-import { toast } from "../components/ErrorBoundary";
+import { toast } from "../components/layout/ErrorBoundary";
 
 export interface WebhookState {
   entries: WebhookConfig[];

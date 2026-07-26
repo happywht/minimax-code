@@ -76,19 +76,20 @@ describe("shikiLoader", () => {
 // ─── Import verification: MessageItem uses shikiLoader, not static shiki ─
 
 describe("MessageItem shiki integration (P1#12)", () => {
-  it("MessageItem imports from shikiLoader, not from shiki directly", async () => {
-    // Read the source to verify the import path changed
+  it("Code block module imports from shikiLoader, not from shiki directly", async () => {
+    // Read the source to verify the import path changed. The code
+    // renderer lives in components/chat/ after the MessageItem split.
     const fs = await import("fs");
     const path = await import("path");
     const src = fs.readFileSync(
-      path.resolve(__dirname, "../../components/MessageItem.tsx"),
+      path.resolve(__dirname, "../../components/chat/CodeBlock.tsx"),
       "utf-8",
     );
 
     // Should NOT have static shiki import
     expect(src).not.toMatch(/from\s+["']shiki["']/);
     // Should have shikiLoader import
-    expect(src).toMatch(/from\s+["']..\/lib\/shikiLoader["']/);
+    expect(src).toMatch(/from\s+["']..\/..\/lib\/shikiLoader["']/);
     // Should use useEffect for lazy loading (not useMemo for side effects)
     expect(src).toMatch(/useEffect\(\(\)\s*=>\s*\{[\s\S]*?highlight\(/);
   });

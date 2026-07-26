@@ -124,13 +124,13 @@ vi.mock("../../stores/mobileStore", () => ({
 }));
 
 vi.mock("../../types/ipc", () => ({}));
-vi.mock("../../components/ErrorBoundary", () => ({
+vi.mock("../../components/layout/ErrorBoundary", () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
-import { PermissionRequestModal } from "../../components/PermissionRequestModal";
-import { GitViewerModal } from "../../components/GitViewerModal";
-import { MobilePairingModal } from "../../components/MobilePairingModal";
+import { PermissionRequestModal } from "../../components/modals/PermissionRequestModal";
+import { GitViewerModal } from "../../components/modals/GitViewerModal";
+import { MobilePairingModal } from "../../components/modals/MobilePairingModal";
 
 describe("Modal accessibility (P0#4)", () => {
   it("PermissionRequestModal has role=dialog, aria-modal, and focus trap", () => {

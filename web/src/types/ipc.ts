@@ -6,7 +6,7 @@
  * for type-narrowing with these interfaces.
  */
 
-export type JsonRpcId = string | number;
+export type JsonRpcId = string | number | null;
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";

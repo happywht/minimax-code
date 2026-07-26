@@ -9,7 +9,7 @@
 import { create } from "zustand";
 import { typedIPC, ipc } from "../ipc/client";
 import type { NotificationEntry, ListNotificationsResult } from "../types/ipc";
-import { toast } from "../components/ErrorBoundary";
+import { toast } from "../components/layout/ErrorBoundary";
 import { trimArray, MAX_NOTIFICATIONS } from "../lib/eviction";
 
 // Re-export for convenience

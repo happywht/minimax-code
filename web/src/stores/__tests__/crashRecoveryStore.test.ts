@@ -19,7 +19,7 @@ const stubs = vi.hoisted(() => ({
   toastError: vi.fn(),
 }));
 
-vi.mock("../../components/ErrorBoundary", () => ({
+vi.mock("../../components/layout/ErrorBoundary", () => ({
   toast: {
     error: (...args: unknown[]) => stubs.toastError(...args),
     success: vi.fn(),

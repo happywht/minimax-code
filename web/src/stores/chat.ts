@@ -13,7 +13,7 @@
 
 import { create } from "zustand";
 import { ipc, IPCError, typedIPC } from "../ipc";
-import { toast } from "../components/ErrorBoundary";
+import { toast } from "../components/layout/ErrorBoundary";
 import {
   StreamEvent,
   type MessageChunkData,

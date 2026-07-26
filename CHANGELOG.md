@@ -5,6 +5,46 @@ All notable changes to MiniMax Code are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-07-26
+
+**前端全面重构与视觉刷新。** 引入统一设计系统，拆分巨型文件，按域重组组件目录，
+修复存量类型错误，全量测试保持通过。
+
+### Added — 设计系统（Design System）
+- 新 CSS 变量体系：`surface-0/1/2/3`、`line`/`line-strong`、`ink-0/1/2`、
+  `accent` 状态、语义化 `status-*`。
+- 新增 `web/src/ui/` 共享原语组件：`Button`、`IconButton`、`Input`、`Textarea`、
+  `Badge`、`Panel`、`Modal`、`Spinner`、`EmptyState`。
+- Tailwind 配置扩展新 tokens，同时保留 `minimax-*` 作为兼容别名。
+
+### Changed — 组件结构
+- `components/` 按域拆分为 `layout/`、`chat/`、`right-panel/`、`modals/`、
+  `panels/`、`settings/`。
+- `MessageInput.tsx`（30KB）拆分为 `chat/` 下的 hook + 子组件，使用 UI 原语。
+- `MessageItem.tsx`（26KB）拆分为 `chat/` 下的 markdown/code/mermaid/工具卡/操作栏等模块。
+- `RightPanel.tsx`（20KB）拆分为 `right-panel/` 下的 Inspector chrome + 各区块组件。
+- `ProvidersTab.tsx`/`TeamsTab.tsx`/`ModelsTab.tsx`/`WebhooksTab.tsx` 拆分为容器 +
+  hook + 展示组件。
+- `PatchPreviewPanel.tsx` 拆分为共享工具、文件卡、hunk 卡组件。
+- `ErrorBoundary.tsx` 中 toast 子系统抽出 `layout/Toast.tsx`。
+
+### Changed — IPC 客户端结构
+- `web/src/ipc/client.ts`（98KB）拆分为 `client.ts`（transport）、`typed.ts`、
+  `mock.ts`、`mockData.ts`。
+- 修复了 `CrashHistoryEntry` 未使用、`TypedIPC` 缺少崩溃恢复方法、
+  `JsonRpcId` 未允许 `null` 等存量 tsc 错误。
+
+### Changed — 视觉
+- Sidebar/TopBar/NavItem 应用新设计系统：accent rail 选中态、统一表单原语、
+  现代卡片阴影。
+- Settings、Modals、Panels、CodeReview、Git diff 等全部迁移到新 tokens 与原语。
+- 深色/浅色主题同步刷新，尊重 `prefers-reduced-motion`。
+
+### Tests
+- 前端 vitest：60 files / 479 tests 全绿。
+- Playwright e2e：15 specs 全绿。
+- `pnpm build` 通过，生产包正常输出。
+
 ## [0.8.0] - 2026-06-07
 
 **企业多Agent (Enterprise Multi-Agent)。** 四大模块：Agent 团队模板系统、多Agent

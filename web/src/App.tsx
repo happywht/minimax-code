@@ -22,23 +22,23 @@ import {
   useProviderStore,
   useSessionStore,
 } from "./stores";
-import type { SettingsTab } from "./components/SettingsPage";
+import type { SettingsTab } from "./components/settings/SettingsPage";
 import type { SidecarEvent } from "./types/ipc";
 
 const MobilePairingModal = lazy(() =>
-  import("./components/MobilePairingModal").then((module) => ({ default: module.MobilePairingModal })),
+  import("./components/modals/MobilePairingModal").then((module) => ({ default: module.MobilePairingModal })),
 );
 const PreviewPanel = lazy(() =>
-  import("./components/PreviewPanel").then((module) => ({ default: module.PreviewPanel })),
+  import("./components/panels/PreviewPanel").then((module) => ({ default: module.PreviewPanel })),
 );
 const SettingsPage = lazy(() =>
-  import("./components/SettingsPage").then((module) => ({ default: module.SettingsPage })),
+  import("./components/settings/SettingsPage").then((module) => ({ default: module.SettingsPage })),
 );
 const ShortcutsOverlay = lazy(() =>
-  import("./components/ShortcutsOverlay").then((module) => ({ default: module.ShortcutsOverlay })),
+  import("./components/layout/ShortcutsOverlay").then((module) => ({ default: module.ShortcutsOverlay })),
 );
 const SkillsPanel = lazy(() =>
-  import("./components/SkillsPanel").then((module) => ({ default: module.SkillsPanel })),
+  import("./components/panels/SkillsPanel").then((module) => ({ default: module.SkillsPanel })),
 );
 
 type MainView = "chat" | "preview";
@@ -210,7 +210,7 @@ export default function App() {
     <ErrorBoundary>
       <div
         data-testid="app-root"
-        className="flex h-full w-full flex-col overflow-hidden bg-minimax-bg text-minimax-fg"
+        className="flex h-full w-full flex-col overflow-hidden bg-surface-0 text-ink-0"
       >
         <TopBar
           onOpenSettings={() => openSettings("models")}
@@ -238,7 +238,7 @@ export default function App() {
               aria-label="Navigation"
             >
               <div
-                className="absolute inset-0 bg-black/50"
+                className="absolute inset-0 bg-surface-overlay"
                 onClick={() => setSidebarOpen(false)}
               />
               <div className="relative z-50 h-full max-w-[85vw] animate-in slide-in-from-left-4 duration-200">
@@ -312,7 +312,7 @@ export default function App() {
 function DeferredPanelFallback(): JSX.Element {
   return (
     <div className="flex h-full min-h-0 w-full items-center justify-center" aria-busy="true">
-      <div className="h-6 w-6 animate-spin rounded-full border-2 border-minimax-border border-t-minimax-accent" />
+      <div className="h-6 w-6 animate-spin rounded-full border-2 border-line border-t-accent" />
     </div>
   );
 }
@@ -335,7 +335,7 @@ function WorkspaceOverlay({
   return (
     <div
       data-testid="workspace-overlay"
-      className="absolute inset-0 z-30 min-w-0 overflow-hidden bg-minimax-bg/65 p-2 backdrop-blur-sm transition-opacity duration-200 sm:p-3 md:p-4"
+      className="absolute inset-0 z-30 min-w-0 overflow-hidden bg-surface-overlay p-2 backdrop-blur-sm transition-opacity duration-200 sm:p-3 md:p-4"
     >
       <button
         type="button"

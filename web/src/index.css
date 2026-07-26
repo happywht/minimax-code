@@ -3,36 +3,96 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ── Theme tokens (dark default, light via .light class) ── */
+/* ════════════════════════════════════════════════════════════════
+   Design tokens — v0.9 "Aurora" refresh
+   Dark is the default theme; light via `.light` on <html>.
+   Every token is a CSS variable so both themes share class names.
+   Legacy `--minimax-*` names are kept as aliases for compatibility.
+   ════════════════════════════════════════════════════════════════ */
 :root {
   color-scheme: dark;
-  --minimax-bg: #0b0d10;
-  --minimax-panel: #14181d;
-  --minimax-border: #22272e;
-  --minimax-fg: #e6e9ef;
-  --minimax-muted: #8a93a6;
-  --minimax-accent: #7c8cff;
 
-  /* Status semantic colors — visible on dark backgrounds */
-  --status-error: #f87171;       /* red-300 */
-  --status-warning: #fbbf24;     /* amber-400 */
-  --status-success: #34d399;     /* emerald-400 */
-  --status-info: #60a5fa;        /* blue-400 */
+  /* Surfaces — deep neutral with a cool undertone */
+  --surface-0: #090b0f;          /* app canvas */
+  --surface-1: #0e1117;          /* sidebar / topbar */
+  --surface-2: #141821;          /* cards, panels */
+  --surface-3: #1a1f2b;          /* hover / elevated */
+  --surface-overlay: rgb(9 11 15 / 0.72);
+
+  /* Borders — low-contrast hairlines, stronger variant for emphasis */
+  --line: #1f2430;
+  --line-strong: #2c3342;
+
+  /* Text */
+  --ink-0: #eef1f7;              /* primary */
+  --ink-1: #9aa4b8;              /* secondary */
+  --ink-2: #5d6679;              /* tertiary / placeholders */
+
+  /* Accent — indigo-violet, tuned for both themes */
+  --accent: #7c8cff;
+  --accent-hover: #95a3ff;
+  --accent-active: #6a79f0;
+  --accent-contrast: #0b0d14;    /* text on accent fill */
+  --accent-subtle: rgb(124 140 255 / 0.14);
+  --accent-ring: rgb(124 140 255 / 0.45);
+
+  /* Status semantics */
+  --status-error: #f87171;
+  --status-warning: #fbbf24;
+  --status-success: #34d399;
+  --status-info: #60a5fa;
+  --status-error-subtle: rgb(248 113 113 / 0.12);
+  --status-warning-subtle: rgb(251 191 36 / 0.12);
+  --status-success-subtle: rgb(52 211 153 / 0.12);
+  --status-info-subtle: rgb(96 165 250 / 0.12);
+
+  /* Elevation */
+  --shadow-pop: 0 8px 28px rgb(0 0 0 / 0.45), 0 2px 8px rgb(0 0 0 / 0.35);
+  --shadow-modal: 0 24px 64px rgb(0 0 0 / 0.55), 0 4px 16px rgb(0 0 0 / 0.4);
+
+  /* ── Legacy aliases (kept so existing classes keep working) ── */
+  --minimax-bg: var(--surface-0);
+  --minimax-panel: var(--surface-1);
+  --minimax-border: var(--line);
+  --minimax-fg: var(--ink-0);
+  --minimax-muted: var(--ink-1);
+  --minimax-accent: var(--accent);
 }
+
 :root.light {
   color-scheme: light;
-  --minimax-bg: #ffffff;
-  --minimax-panel: #f6f8fa;
-  --minimax-border: #d0d7de;
-  --minimax-fg: #1f2328;
-  --minimax-muted: #57606a;      /* AA 5.3:1 on panel #f6f8fa, 5.7:1 on #fff */
-  --minimax-accent: #5a32a3;     /* AA 6.4:1 on #fff — deeper purple */
 
-  /* Status semantic colors — AA accessible on light backgrounds */
-  --status-error: #dc2626;       /* red-600 — AA 5.5:1 on #fff */
-  --status-warning: #b45309;     /* amber-700 — AA 5.2:1 on #fff */
-  --status-success: #047857;     /* emerald-700 — AA 5.8:1 on #fff */
-  --status-info: #1d4ed8;        /* blue-700 — AA 7.1:1 on #fff */
+  --surface-0: #f7f8fa;
+  --surface-1: #ffffff;
+  --surface-2: #ffffff;
+  --surface-3: #eef1f5;
+  --surface-overlay: rgb(247 248 250 / 0.72);
+
+  --line: #e2e6ec;
+  --line-strong: #cbd2dc;
+
+  --ink-0: #171b24;
+  --ink-1: #57606f;              /* AA 5.6:1 on #fff */
+  --ink-2: #8a93a3;
+
+  --accent: #5a32a3;             /* AA 6.4:1 on #fff */
+  --accent-hover: #6c44bd;
+  --accent-active: #4c2a8c;
+  --accent-contrast: #ffffff;
+  --accent-subtle: rgb(90 50 163 / 0.09);
+  --accent-ring: rgb(90 50 163 / 0.35);
+
+  --status-error: #dc2626;
+  --status-warning: #b45309;
+  --status-success: #047857;
+  --status-info: #1d4ed8;
+  --status-error-subtle: rgb(220 38 38 / 0.08);
+  --status-warning-subtle: rgb(180 83 9 / 0.10);
+  --status-success-subtle: rgb(4 120 87 / 0.09);
+  --status-info-subtle: rgb(29 78 216 / 0.08);
+
+  --shadow-pop: 0 8px 28px rgb(23 27 36 / 0.12), 0 2px 8px rgb(23 27 36 / 0.08);
+  --shadow-modal: 0 24px 64px rgb(23 27 36 / 0.18), 0 4px 16px rgb(23 27 36 / 0.1);
 }
 
 html,
@@ -44,16 +104,20 @@ body,
 
 body {
   font-family: theme("fontFamily.sans");
-  background: var(--minimax-bg);
-  color: var(--minimax-fg);
+  background: var(--surface-0);
+  color: var(--ink-0);
+  font-size: 14px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 * {
   box-sizing: border-box;
 }
 
+/* Theme transitions — only on chrome elements, not list rows */
 html,
 body,
 button,
@@ -61,16 +125,20 @@ input,
 textarea,
 select {
   transition:
-    background-color 0.3s ease,
-    border-color 0.3s ease,
-    color 0.3s ease,
-    fill 0.3s ease,
-    stroke 0.3s ease;
+    background-color 0.25s ease,
+    border-color 0.25s ease,
+    color 0.25s ease,
+    fill 0.25s ease,
+    stroke 0.25s ease;
 }
 
 :focus-visible {
-  outline: 2px solid var(--minimax-accent);
+  outline: 2px solid var(--accent-ring);
   outline-offset: 2px;
+}
+
+::selection {
+  background: var(--accent-subtle);
 }
 
 /* Prose tweaks for assistant markdown */
@@ -117,21 +185,28 @@ select {
   margin: 0.4em 0;
 }
 .prose :where(th, td):not(:where([class~="not-prose"] *)) {
-  border: 1px solid theme("colors.minimax.border");
+  border: 1px solid var(--line);
   padding: 0.25em 0.5em;
 }
 .prose :where(blockquote):not(:where([class~="not-prose"] *)) {
-  border-left: 2px solid theme("colors.minimax.border");
+  border-left: 2px solid var(--line-strong);
   padding-left: 0.75em;
-  color: theme("colors.minimax.muted");
+  color: var(--ink-1);
   margin: 0.4em 0;
 }
 .prose :where(hr):not(:where([class~="not-prose"] *)) {
-  border-color: theme("colors.minimax.border");
+  border-color: var(--line);
   margin: 0.6em 0;
 }
+.prose :where(code):not(:where(pre code)) {
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+  font-size: 0.875em;
+}
 
-/* Custom scrollbar — Linear-style (dark) */
+/* Custom scrollbar — thin, hover-reveal */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -140,19 +215,17 @@ select {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgb(255 255 255 / 0.07);
   border-radius: 8px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.16);
+  background: rgb(255 255 255 / 0.15);
 }
-
-/* Light mode scrollbar override */
 :root.light ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.13);
+  background: rgb(0 0 0 / 0.12);
 }
 :root.light ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.22);
+  background: rgb(0 0 0 / 0.22);
 }
 
 /* ── Animation keyframes ── */
@@ -166,9 +239,9 @@ select {
 .animate-shimmer {
   background: linear-gradient(
     90deg,
-    var(--minimax-border) 25%,
-    var(--minimax-panel) 50%,
-    var(--minimax-border) 75%
+    var(--line) 25%,
+    var(--surface-2) 50%,
+    var(--line) 75%
   );
   background-size: 200% 100%;
   animation: shimmer 1.5s ease-in-out infinite;
@@ -176,12 +249,32 @@ select {
 
 /* Modal entrance animation */
 @keyframes modal-in {
-  0% { opacity: 0; transform: scale(0.95) translateY(8px); }
+  0% { opacity: 0; transform: scale(0.96) translateY(8px); }
   100% { opacity: 1; transform: scale(1) translateY(0); }
 }
 
 .animate-modal-in {
-  animation: modal-in 0.15s ease-out;
+  animation: modal-in 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Soft fade-up used by panels and toasts */
+@keyframes rise-in {
+  0% { opacity: 0; transform: translateY(6px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+.animate-rise-in {
+  animation: rise-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Pulsing dot for streaming / live status */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.animate-pulse-dot {
+  animation: pulse-dot 1.2s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {

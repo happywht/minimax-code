@@ -5,7 +5,7 @@
 
 import { create } from "zustand";
 import { typedIPC } from "../ipc";
-import { toast } from "../components/ErrorBoundary";
+import { toast } from "../components/layout/ErrorBoundary";
 import type { ProviderInfo, ProviderModel } from "../types/ipc";
 import { useModelStore } from "./modelStore";
 

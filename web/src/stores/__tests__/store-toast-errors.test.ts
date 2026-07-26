@@ -18,7 +18,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ── Mock the toast bus ────────────────────────────────────────────────
 const toastErrorSpy = vi.fn();
-vi.mock("../../components/ErrorBoundary", () => ({
+vi.mock("../../components/layout/ErrorBoundary", () => ({
   toast: {
     error: (...args: unknown[]) => toastErrorSpy(...args),
     info: vi.fn(),

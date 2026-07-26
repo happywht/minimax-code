@@ -1,13 +1,22 @@
-﻿/**
+/**
  * API Key tab — legacy MiniMax key management via `secrets.*` IPC.
  */
 import { useEffect, useState } from "react";
-import { Eye, EyeOff, KeyRound, Save, Trash2 } from "lucide-react";
+import { Eye, EyeOff, KeyRound, Trash2 } from "lucide-react";
+import { Badge, Button, IconButton, Input, Panel } from "../../ui";
+import type { BadgeTone } from "../../ui";
 import { useSecretStore } from "../../stores";
-import { SkeletonLine } from "../Skeleton";
-import { requestConfirmation } from "../ConfirmationDialog";
+import { SkeletonLine } from "../layout/Skeleton";
+import { requestConfirmation } from "../modals/ConfirmationDialog";
+import { InlineCode, TabHeader } from "./fields";
 
 export { ApiKeyTab };
+
+const STATUS_META: Record<"keyring" | "env" | "none", { text: string; tone: BadgeTone }> = {
+  keyring: { text: "Stored in OS keyring", tone: "accent" },
+  env: { text: "Using environment variable", tone: "neutral" },
+  none: { text: "Not configured — agent in mock mode", tone: "error" },
+};
 
 function ApiKeyTab(): JSX.Element {
   const status = useSecretStore((s) => s.status);
@@ -21,88 +30,98 @@ function ApiKeyTab(): JSX.Element {
 
   useEffect(() => { if (status === null) void refresh(); }, [status, refresh]);
 
-  const sourceLabel: Record<"keyring" | "env" | "none", string> = {
-    keyring: "OS keyring", env: "environment variable", none: "not configured",
-  };
-
-  const statusPill = status
-    ? { keyring: { text: "Stored in OS keyring", tone: "bg-minimax-accent/20 text-minimax-accent", loading: false },
-        env: { text: "Using environment variable", tone: "bg-minimax-border text-minimax-muted", loading: false },
-        none: { text: "Not configured — agent in mock mode", tone: "bg-red-500/15 text-status-error", loading: false },
-      }[status.source]
-    : { text: "", tone: "", loading: true as const };
-
+  const statusMeta = status ? STATUS_META[status.source] : null;
   const hasKey = status?.configured ?? false;
+
+  const saveDraft = async () => {
+    const ok = await setKey(draft);
+    if (ok) { setDraft(""); setReveal(false); }
+  };
 
   return (
     <section data-testid="settings-api-key" className="space-y-4">
-      <div>
-        <h2 className="text-sm font-medium">MiniMax API key</h2>
-        <p className="mt-0.5 text-[11px] text-minimax-muted">
-          Legacy key for the built-in MiniMax provider. For multi-provider setups, use the Providers tab.
-          Stored in the OS keyring (Windows Credential Manager / macOS Keychain / Linux Secret Service).
-          Falls back to the
-          <code className="mx-1 rounded bg-minimax-panel px-1.5 py-0.5 font-mono text-[11px]">MINIMAX_API_KEY</code>
-          env var if no keyring entry exists.
-        </p>
+      <TabHeader
+        title="MiniMax API key"
+        hint={
+          <>
+            Legacy key for the built-in MiniMax provider. For multi-provider setups, use the
+            Providers tab. Stored in the OS keyring (Windows Credential Manager / macOS Keychain /
+            Linux Secret Service). Falls back to the
+            <InlineCode>MINIMAX_API_KEY</InlineCode>
+            env var if no keyring entry exists.
+          </>
+        }
+      />
+
+      <div data-testid="settings-api-key-status" className="flex items-center gap-1.5">
+        <Badge tone={statusMeta?.tone ?? "neutral"} className="gap-1.5 px-2.5 py-1 text-xs">
+          <KeyRound size={12} aria-hidden="true" />
+          {statusMeta ? (
+            <span data-testid="settings-api-key-status-text">{statusMeta.text}</span>
+          ) : (
+            <SkeletonLine className="h-3 w-24" />
+          )}
+        </Badge>
       </div>
 
-      <div data-testid="settings-api-key-status"
-        className={"inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs " + (statusPill.loading ? "bg-minimax-border" : statusPill.tone)}>
-        <KeyRound size={12} />
-        {statusPill.loading ? (
-          <SkeletonLine className="h-3 w-24" />
-        ) : (
-          <span data-testid="settings-api-key-status-text">{statusPill.text}</span>
-        )}
-      </div>
-
-      <div className="rounded-md border border-minimax-border bg-minimax-panel/40 p-3">
-        <label htmlFor="api-key-input" className="text-[11px] text-minimax-muted">
-          {hasKey ? "Replace the keyring entry" : "Paste a key to store in the OS keyring"}
+      <Panel title={hasKey ? "Replace the keyring entry" : "Paste a key to store in the OS keyring"}>
+        <label htmlFor="api-key-input" className="sr-only">
+          MiniMax API key
         </label>
-        <div className="mt-1.5 flex gap-2">
-          <div className="relative flex-1">
-            <input id="api-key-input" name="legacy-minimax-api-key" data-testid="settings-api-key-input"
-              type={reveal ? "text" : "password"} value={draft}
+        <div className="flex gap-2">
+          <div className="relative min-w-0 flex-1">
+            <Input
+              id="api-key-input"
+              name="legacy-minimax-api-key"
+              data-testid="settings-api-key-input"
+              type={reveal ? "text" : "password"}
+              value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && draft.trim() && !loading) {
-                  void (async () => { const ok = await setKey(draft); if (ok) setDraft(""); })();
-                }
+                if (e.key === "Enter" && draft.trim() && !loading) void saveDraft();
               }}
-              placeholder="sk-…" autoComplete="new-password" spellCheck={false}
-              className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 pr-9 font-mono text-xs text-minimax-fg" />
-            <button type="button" data-testid="settings-api-key-reveal"
+              placeholder="sk-…"
+              autoComplete="new-password"
+              spellCheck={false}
+              className="pr-8 font-mono"
+            />
+            <IconButton
+              size="sm"
+              data-testid="settings-api-key-reveal"
               onClick={() => setReveal((v) => !v)}
               aria-label={reveal ? "Hide API key" : "Show API key"}
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-minimax-muted hover:text-minimax-fg">
-              {reveal ? <EyeOff size={12} /> : <Eye size={12} />}
-            </button>
+              className="absolute right-1 top-1/2 -translate-y-1/2"
+            >
+              {reveal ? <EyeOff /> : <Eye />}
+            </IconButton>
           </div>
-          <button type="button" data-testid="settings-api-key-save"
+          <Button
+            size="sm"
+            variant="primary"
+            data-testid="settings-api-key-save"
             disabled={!draft.trim() || loading}
-            onClick={async () => { const ok = await setKey(draft); if (ok) { setDraft(""); setReveal(false); } }}
-            className="inline-flex items-center justify-center gap-1 rounded border border-minimax-accent/40 bg-minimax-accent/10 px-3 py-1 text-xs text-minimax-accent hover:bg-minimax-accent/20 disabled:cursor-not-allowed disabled:opacity-50">
-            <Save size={12} /> {loading ? "Saving…" : "Save"}
-          </button>
+            loading={loading}
+            onClick={() => void saveDraft()}
+          >
+            Save
+          </Button>
         </div>
-        <p className="mt-1.5 text-[11px] text-minimax-muted">
-          The key is written to <code>{sourceLabel.keyring}</code> on save.
-          It is never echoed back through the wire after the write.
+        <p className="mt-1.5 text-[11px] text-ink-2">
+          The key is written to the OS keyring on save. It is never echoed back through the wire
+          after the write.
         </p>
-      </div>
+      </Panel>
 
       {status?.source === "keyring" && (
-        <div className="rounded-md border border-minimax-border bg-minimax-panel/40 p-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-xs font-medium">Keyring entry</h3>
-              <p className="mt-0.5 text-[11px] text-minimax-muted">
-                Removes the entry from the OS keyring. Does not affect the <code>MINIMAX_API_KEY</code> env var.
-              </p>
-            </div>
-            <button type="button" data-testid="settings-api-key-clear"
+        <Panel
+          title="Keyring entry"
+          actions={
+            <Button
+              size="sm"
+              variant="danger"
+              data-testid="settings-api-key-clear"
+              icon={<Trash2 />}
+              disabled={loading}
               onClick={async () => {
                 const accepted = await requestConfirmation({
                   title: "Clear the legacy MiniMax API key?",
@@ -110,12 +129,17 @@ function ApiKeyTab(): JSX.Element {
                   confirmLabel: "Clear API Key",
                 });
                 if (accepted) await clear();
-              }} disabled={loading}
-              className="inline-flex items-center gap-1 rounded border border-minimax-border px-2 py-1 text-xs text-minimax-muted hover:text-status-error disabled:cursor-not-allowed disabled:opacity-50">
-              <Trash2 size={12} /> Clear keyring
-            </button>
-          </div>
-        </div>
+              }}
+            >
+              Clear keyring
+            </Button>
+          }
+        >
+          <p className="text-[11px] text-ink-2">
+            Removes the entry from the OS keyring. Does not affect the{" "}
+            <InlineCode>MINIMAX_API_KEY</InlineCode> env var.
+          </p>
+        </Panel>
       )}
     </section>
   );
