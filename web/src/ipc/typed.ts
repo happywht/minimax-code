@@ -11,6 +11,7 @@ import type {
   AgentInfo,
   AgentTeam,
   AuditStats,
+  CreateProjectResult,
   CreateProviderResult,
   CreateSessionResult,
   DeleteProviderResult,
@@ -26,9 +27,11 @@ import type {
   ListMessagesResult,
   UpdateMessageResult,
   DeleteMessageResult,
+  UpdateProjectResult,
   ListModelsResult,
   ListNotificationsResult,
   ListPluginsResult,
+  ListProjectsResult,
   ListProvidersResult,
   ListRulesResult,
   ListRunsResult,
@@ -89,6 +92,7 @@ export interface TypedIPC {
     title?: string;
     reuse_empty_session_id?: string;
     model_id?: string;
+    project_id?: string;
     workspace_mode?: "local" | "worktree";
     workspace_path?: string;
     worktree_branch?: string;
@@ -106,6 +110,15 @@ export interface TypedIPC {
   listMessages(sessionId: string, opts?: { limit?: number; before?: string }): Promise<ListMessagesResult>;
   updateMessage(params: { message_id: string; content?: string; metadata?: Record<string, unknown> }): Promise<UpdateMessageResult>;
   deleteMessage(params: { message_id: string }): Promise<DeleteMessageResult>;
+
+  // project
+  listProjects(opts?: { archived?: boolean }): Promise<ListProjectsResult>;
+  createProject(opts: { name: string; description?: string }): Promise<CreateProjectResult>;
+  updateProject(projectId: string, fields: { name?: string; description?: string }): Promise<UpdateProjectResult>;
+  deleteProject(projectId: string): Promise<{ ok: true; project_id: string }>;
+  archiveProject(projectId: string): Promise<{ ok: true; project: import("../types/ipc").Project }>;
+  unarchiveProject(projectId: string): Promise<{ ok: true; project: import("../types/ipc").Project }>;
+
   listRuns(opts?: { session_id?: string; status?: string; limit?: number; offset?: number }): Promise<ListRunsResult>;
   getRunSteps(runId: string): Promise<RunStepsResult>;
 
@@ -409,6 +422,20 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<UpdateMessageResult>("message.update", params),
     deleteMessage: (params) =>
       client.request<DeleteMessageResult>("message.delete", params),
+
+    listProjects: (opts) =>
+      client.request<ListProjectsResult>("project.list", opts ?? {}),
+    createProject: (opts) =>
+      client.request<CreateProjectResult>("project.create", opts),
+    updateProject: (pid, fields) =>
+      client.request<UpdateProjectResult>("project.update", { project_id: pid, ...fields }),
+    deleteProject: (pid) =>
+      client.request<{ ok: true; project_id: string }>("project.delete", { project_id: pid }),
+    archiveProject: (pid) =>
+      client.request<{ ok: true; project: import("../types/ipc").Project }>("project.archive", { project_id: pid }),
+    unarchiveProject: (pid) =>
+      client.request<{ ok: true; project: import("../types/ipc").Project }>("project.unarchive", { project_id: pid }),
+
     listRuns: (opts) =>
       client.request<ListRunsResult>("run.list", opts ?? {}),
     getRunSteps: (runId) =>

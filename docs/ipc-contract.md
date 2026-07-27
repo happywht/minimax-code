@@ -205,10 +205,16 @@ on the next `readline() == ""`.
 | `terminal.list`            | req/res   | List recent in-memory terminal sessions. |
 | `runner.list`              | req/res   | List product-facing runner adapters. |
 | `runner.start`             | req/res   | Start a runner; `native` delegates to a terminal session. |
-| `session.create`           | req/res   | Create a session; optionally reuse the selected empty local session. |
+| `session.create`           | req/res   | Create a session; optionally reuse the selected empty local session. Accepts `project_id` (defaults to `inbox`). |
 | `session.list`             | req/res   | Reserved (storage-layer).                          |
 | `session.archive`          | req/res   | Reserved.                                          |
 | `session.delete`           | req/res   | Reserved.                                          |
+| `project.list`             | req/res   | List projects; optional `archived` filter.         |
+| `project.create`           | req/res   | Create a project with name and optional description. |
+| `project.update`           | req/res   | Rename or update a project's description.          |
+| `project.delete`           | req/res   | Delete a project and move its sessions to `inbox`. |
+| `project.archive`          | req/res   | Archive a project.                                 |
+| `project.unarchive`        | req/res   | Unarchive a project.                               |
 | `workspace.create_worktree_session` | req/res | Create an isolated Git worktree-backed session. |
 | `workspace.list_worktrees` | req/res | List sessions whose `workspace_mode` is `worktree`. |
 | `workspace.delete_worktree` | req/res | Remove a managed worktree and mark the session local. |

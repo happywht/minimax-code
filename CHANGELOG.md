@@ -8,10 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added — 后端
+- **项目/任务分层（v0.10.0）**：
+  - 新增 `projects` 表与 `ProjectsDAO`，支持创建、更新、归档、删除项目。
+  - `sessions` 表新增 `project_id` 列；未指定项目的会话默认归属 `id="inbox"` 的“收件箱”。
+  - 新增 `project.*` IPC 命名空间：`project.list` / `project.create` / `project.update` / `project.delete` / `project.archive` / `project.unarchive`。
+  - 删除项目时，其下会话自动移回收件箱，避免误删。
 - 消息级持久化能力：`MessagesDAO.update()` 支持更新内容与元数据。
 - 新增 IPC 方法 `message.update` 与 `message.delete`：编辑/删除单条消息。
 
 ### Added — 前端
+- **Sidebar 项目化**：会话按项目分组展示；收件箱默认展开置顶，普通项目可折叠，归档项目沉底。
+- 项目行支持新建、重命名、归档/取消归档、删除；删除时提示其下会话将移回收件箱。
+- 新建任务默认写入当前选中的项目（或收件箱）。
 - 用户消息气泡新增操作菜单（复制/编辑/删除）。
 - `MessageItem` 支持内联编辑，保存后同步更新后端并刷新本地消息列表。
 
@@ -25,10 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 为顶部 icon-only 按钮（Sidebar hamburger、Command Palette、Notifications）及右侧面板 collapse 按钮补充 `title` tooltip。
 
 ### Tests
-- 新增 `web/tests/message-actions.test.tsx`，覆盖消息编辑与删除交互。
+- 新增 `agent/tests/test_projects.py`，覆盖项目 DAO 与删除归位逻辑。
+- 新增/更新 `web/tests/sidebar.test.tsx`、`web/tests/sidebar-history.test.tsx`、`web/tests/chat-panel.test.tsx`，适配项目分组与 `project_id` 传参。
 - 前端 vitest：62 files / 486 tests 全绿。
 - Playwright e2e：15 specs 全绿。
-- Python pytest：9889 passed。
+- Python pytest：9902 passed。
 
 ## [0.9.1] - 2026-07-27
 

@@ -133,6 +133,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 workspace_path=_optional_string(p, "workspace_path"),
                 worktree_branch=_optional_string(p, "worktree_branch"),
                 base_branch=_optional_string(p, "base_branch"),
+                project_id=_optional_string(p, "project_id") or "inbox",
             )
             # ``row`` is the persisted dict; echo back the
             # subset the frontend's CreateSessionResult wants
@@ -161,6 +162,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
             sess_dao = await dao_factory()
             check_params(params, expected_keys=set())
             p = params or {}
+            project_id = _optional_string(p, "project_id")
             # The frontend passes ``archived`` as a tri-state: missing
             # (no filter), ``true`` (only archived), ``false`` (active
             # sessions). Anything truthy is "only archived"; ``False``
@@ -181,19 +183,16 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
             offset = max(0, int(p.get("offset") or 0))
             sessions = await sess_dao.list(
                 archived=archived,
+                project_id=project_id,
                 search=search if search else None,
                 limit=limit,
                 offset=offset,
             )
             # ``total`` must reflect the *same* filter combo as the
-            # page above — otherwise a paginated search returns
-            # e.g. ``{"sessions": [..2 rows..], "total": 17}`` and
-            # the UI's "page X of Y" indicator is wrong. This is
-            # the bug the previous attempt shipped: count() did
-            # not accept a search kwarg so the search filter was
-            # silently dropped from the total.
+            # page above.
             total = await sess_dao.count(
                 archived=archived,
+                project_id=project_id,
                 search=search if search else None,
             )
             await ctx.reply({"sessions": sessions, "total": total})

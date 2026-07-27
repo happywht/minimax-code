@@ -14,7 +14,8 @@ vi.mock("../src/ipc", async () => {
     typedIPC: {
       ...actual.typedIPC,
       listSessions: vi.fn(async () => ({ sessions: [] })),
-      createSession: vi.fn(async (_opts: { title?: string } = {}) => ({
+      listProjects: vi.fn(async () => ({ projects: [] })),
+      createSession: vi.fn(async (_opts: { title?: string; project_id?: string } = {}) => ({
         session_id: "ses_test_1",
       })),
       createWorktreeSession: vi.fn(async (_opts: { title?: string; base_ref?: string } = {}) => ({
@@ -41,6 +42,16 @@ describe("Sidebar", () => {
     useChat.getState().reset();
     useSessionStore.setState({
       sessions: [],
+      projects: [
+        {
+          id: "inbox",
+          name: "收件箱",
+          description: "",
+          archived: false,
+          created_at: Date.now(),
+          updated_at: Date.now(),
+        },
+      ],
       currentSessionId: null,
       loading: false,
       filter: "all",
@@ -61,7 +72,9 @@ describe("Sidebar", () => {
     render(<Sidebar />);
     fireEvent.click(screen.getByTestId("sidebar-new-task"));
     await waitFor(() => {
-      expect(typedIPC.createSession).toHaveBeenCalledWith({ title: "New task" });
+      expect(typedIPC.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "New task" }),
+      );
     });
     expect(useSessionStore.getState().currentSessionId).toBe("ses_test_1");
     expect(useChat.getState().messages).toEqual([]);

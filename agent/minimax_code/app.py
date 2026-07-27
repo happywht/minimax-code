@@ -116,6 +116,7 @@ async def _maybe_open_db() -> Any:
         )
         from .progress import ProgressTracker
         from .storage.dao.mobile_devices import MobileDeviceDAO
+        from .storage.dao.projects import ProjectsDAO
         from .storage.dao.sessions import SessionsDAO
         from .storage.dao.tasks import TaskDAO
         from .storage.db import AsyncDatabase, default_database_path
@@ -136,6 +137,9 @@ async def _maybe_open_db() -> Any:
         # Same lifecycle for the sessions DAO that backs the
         # ``session.*`` IPC namespace.
         _set_sessions_dao(SessionsDAO(db))
+        # And the projects DAO that backs ``project.*``.
+        _set_projects_dao(ProjectsDAO(db))
+        await _PROJECTS_DAO.ensure_inbox()
         # And for the mobile-pairing surface: a process-wide
         # :class:`PairingManager` wired to the device DAO. The
         # ``public_key`` is opaque for the PoC (Phase 2 swaps
@@ -296,6 +300,31 @@ def _set_sessions_dao(dao: Any) -> None:
     """Internal setter used by :func:`_maybe_open_db`."""
     global _SESSIONS_DAO
     _SESSIONS_DAO = dao
+
+
+# ---------------------------------------------------------------------------
+# Projects DAO singleton
+# ---------------------------------------------------------------------------
+
+
+_PROJECTS_DAO: Any = None  # type: ignore[no-untyped-def]
+
+
+def get_projects_dao() -> Any:
+    """Return the process-wide :class:`ProjectsDAO`, or ``None``."""
+    return _PROJECTS_DAO
+
+
+def set_projects_dao(dao: Any) -> None:
+    """Replace the cached projects DAO (test seam)."""
+    global _PROJECTS_DAO
+    _PROJECTS_DAO = dao
+
+
+def _set_projects_dao(dao: Any) -> None:
+    """Internal setter used by :func:`_maybe_open_db`."""
+    global _PROJECTS_DAO
+    _PROJECTS_DAO = dao
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +566,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_permissions import register_permission_handlers
     from .ipc.handlers_plugins import register_plugin_handlers
     from .ipc.handlers_providers import register_provider_handlers
+    from .ipc.handlers_projects import register_project_handlers
     from .ipc.handlers_runner import register_runner_handlers
     from .ipc.handlers_runs import register_run_handlers
     from .ipc.handlers_runtime import register_runtime_handlers
@@ -580,6 +610,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # first call). Tests can inject a DAO via the ``dao=`` kwarg
     # to skip the lazy path.
     register_session_handlers(server)
+    register_project_handlers(server)
     register_workspace_handlers(server)
     # The checkpoint handlers expose ``checkpoint.*`` — the workspace snapshot
     # layer (R310): create/list/restore/diff/delete over git-stash refs plus
@@ -1121,6 +1152,7 @@ __all__ = [
     "register_app_handlers",
     "set_http_app",
     "set_progress_tracker",
+    "set_projects_dao",
     "set_repo_map_indexer",
     "set_runtime",
     "set_sessions_dao",

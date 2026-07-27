@@ -1,13 +1,13 @@
 /**
  * Session store — owns the list of known sessions, the current
- * session id, and the section filters for the sidebar. The chat store
- * reads `currentSessionId` when sending messages.
+ * session id, project organization, and the section filters for the
+ * sidebar. The chat store reads `currentSessionId` when sending messages.
  */
 
 import { create } from "zustand";
 import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
-import type { Session } from "../types/ipc";
+import type { Project, Session } from "../types/ipc";
 import { useChat } from "./chat";
 
 export type SessionFilter =
@@ -21,6 +21,8 @@ export type SessionFilter =
 export type SessionMeta = Session;
 
 const CURRENT_SESSION_STORAGE_KEY = "minimax-code:current-session";
+const CURRENT_PROJECT_STORAGE_KEY = "minimax-code:current-project";
+const EXPANDED_PROJECTS_STORAGE_KEY = "minimax-code:expanded-projects";
 let createSessionInFlight: Promise<string> | null = null;
 let refreshSeq = 0;
 
@@ -41,15 +43,56 @@ function storeCurrentSessionId(id: string | null): void {
   }
 }
 
+function readStoredProjectId(): string | null {
+  try {
+    return window.localStorage.getItem(CURRENT_PROJECT_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function storeCurrentProjectId(id: string | null): void {
+  try {
+    if (id) window.localStorage.setItem(CURRENT_PROJECT_STORAGE_KEY, id);
+    else window.localStorage.removeItem(CURRENT_PROJECT_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+function readExpandedProjectIds(): string[] {
+  try {
+    const raw = window.localStorage.getItem(EXPANDED_PROJECTS_STORAGE_KEY);
+    if (!raw) return ["inbox"];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : ["inbox"];
+  } catch {
+    return ["inbox"];
+  }
+}
+
+function storeExpandedProjectIds(ids: string[]): void {
+  try {
+    window.localStorage.setItem(EXPANDED_PROJECTS_STORAGE_KEY, JSON.stringify(ids));
+  } catch {
+    // ignore
+  }
+}
+
 export interface SessionState {
   sessions: SessionMeta[];
+  projects: Project[];
   currentSessionId: string | null;
+  currentProjectId: string | null;
+  expandedProjectIds: string[];
   loading: boolean;
+  loadingProjects: boolean;
   creating: boolean;
   filter: SessionFilter;
 
   refresh: (options?: { loadCurrent?: boolean }) => Promise<void>;
-  create: (title?: string) => Promise<string>;
+  loadProjects: () => Promise<void>;
+  create: (title?: string, projectId?: string) => Promise<string>;
   createWorktree: (title?: string, baseRef?: string) => Promise<string>;
   archive: (id: string) => Promise<void>;
   unarchive: (id: string) => Promise<void>;
@@ -58,12 +101,23 @@ export interface SessionState {
   mergeSessions: (sessions: SessionMeta[]) => void;
   setCurrent: (id: string | null, loadMessages?: boolean) => void;
   setFilter: (filter: SessionFilter) => void;
+  setCurrentProject: (id: string | null) => void;
+  toggleProjectExpanded: (id: string) => void;
+  createProject: (name: string, description?: string) => Promise<Project | null>;
+  updateProject: (id: string, fields: { name?: string; description?: string }) => Promise<void>;
+  deleteProject: (id: string) => Promise<void>;
+  archiveProject: (id: string) => Promise<void>;
+  unarchiveProject: (id: string) => Promise<void>;
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [],
+  projects: [],
   currentSessionId: readStoredSessionId(),
+  currentProjectId: readStoredProjectId(),
+  expandedProjectIds: readExpandedProjectIds(),
   loading: false,
+  loadingProjects: false,
   creating: false,
   filter: "all",
 
@@ -71,15 +125,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const seq = ++refreshSeq;
     set({ loading: true });
     try {
-      const r = await typedIPC.listSessions();
+      const [sessionsResult, projectsResult] = await Promise.all([
+        typedIPC.listSessions(),
+        typedIPC.listProjects(),
+      ]);
       if (seq !== refreshSeq) {
         set({ loading: false });
         return;
       }
       const currentId = get().currentSessionId;
-      const currentExists = !!currentId && r.sessions.some((session) => session.id === currentId);
+      const currentExists = !!currentId && sessionsResult.sessions.some((session) => session.id === currentId);
       set({
-        sessions: r.sessions,
+        sessions: sessionsResult.sessions,
+        projects: projectsResult.projects,
         currentSessionId: currentExists ? currentId : null,
         loading: false,
       });
@@ -97,22 +155,37 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
-  create: async (title?: string) => {
+  loadProjects: async () => {
+    set({ loadingProjects: true });
+    try {
+      const result = await typedIPC.listProjects();
+      set({ projects: result.projects, loadingProjects: false });
+    } catch (err) {
+      set({ loadingProjects: false });
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Failed to load projects", message);
+    }
+  },
+
+  create: async (title?: string, projectId?: string) => {
     if (createSessionInFlight) return createSessionInFlight;
 
     const operation = (async () => {
       set({ creating: true });
       try {
         const reuseId = get().currentSessionId ?? undefined;
+        const targetProject = projectId ?? get().currentProjectId ?? "inbox";
         const r = await typedIPC.createSession({
           title,
           reuse_empty_session_id: reuseId,
+          project_id: targetProject,
         });
         ++refreshSeq;
         const nextSession = r.session ?? {
           id: r.session_id,
           title: title ?? "New task",
           archived: false,
+          project_id: targetProject,
           created_at: Date.now(),
           updated_at: Date.now(),
           model_id: null,
@@ -125,8 +198,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               )
             : [nextSession, ...s.sessions],
           currentSessionId: r.session_id,
+          currentProjectId: targetProject,
+          expandedProjectIds: s.expandedProjectIds.includes(targetProject)
+            ? s.expandedProjectIds
+            : [...s.expandedProjectIds, targetProject],
         }));
         storeCurrentSessionId(r.session_id);
+        storeCurrentProjectId(targetProject);
+        storeExpandedProjectIds(get().expandedProjectIds);
         useChat.getState().reset();
         return r.session_id;
       } catch (err) {
@@ -153,6 +232,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             id: r.session_id,
             title: title ?? "Worktree task",
             archived: false,
+            project_id: "inbox",
             created_at: Date.now(),
             updated_at: Date.now(),
             model_id: null,
@@ -256,8 +336,98 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       void useChat.getState().loadMessages(id);
     }
   },
+
   setFilter: (filter: SessionFilter) => set({ filter }),
 
-  // expose for tests
-  __getState: get,
+  setCurrentProject: (id: string | null) => {
+    set({ currentProjectId: id });
+    storeCurrentProjectId(id);
+  },
+
+  toggleProjectExpanded: (id: string) => {
+    set((s) => {
+      const next = s.expandedProjectIds.includes(id)
+        ? s.expandedProjectIds.filter((x) => x !== id)
+        : [...s.expandedProjectIds, id];
+      storeExpandedProjectIds(next);
+      return { expandedProjectIds: next };
+    });
+  },
+
+  createProject: async (name: string, description?: string) => {
+    try {
+      const r = await typedIPC.createProject({ name, description });
+      set((s) => ({
+        projects: [r.project, ...s.projects],
+        expandedProjectIds: [...s.expandedProjectIds, r.project.id],
+      }));
+      return r.project;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Failed to create project", message);
+      return null;
+    }
+  },
+
+  updateProject: async (id: string, fields: { name?: string; description?: string }) => {
+    try {
+      const r = await typedIPC.updateProject(id, fields);
+      if (r.project) {
+        set((s) => ({
+          projects: s.projects.map((p) =>
+            p.id === id
+              ? { ...p, name: r.project.name, description: r.project.description, updated_at: r.project.updated_at }
+              : p,
+          ),
+        }));
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Failed to update project", message);
+    }
+  },
+
+  deleteProject: async (id: string) => {
+    try {
+      await typedIPC.deleteProject(id);
+      set((s) => ({
+        projects: s.projects.filter((p) => p.id !== id),
+        sessions: s.sessions.map((x) => (x.project_id === id ? { ...x, project_id: "inbox" } : x)),
+        expandedProjectIds: s.expandedProjectIds.filter((x) => x !== id),
+      }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Failed to delete project", message);
+    }
+  },
+
+  archiveProject: async (id: string) => {
+    try {
+      const r = await typedIPC.archiveProject(id);
+      if (r.project) {
+        set((s) => ({
+          projects: s.projects.map((p) => (p.id === id ? { ...p, archived: true, updated_at: r.project.updated_at } : p)),
+          expandedProjectIds: s.expandedProjectIds.filter((x) => x !== id),
+        }));
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Failed to archive project", message);
+    }
+  },
+
+  unarchiveProject: async (id: string) => {
+    try {
+      const r = await typedIPC.unarchiveProject(id);
+      if (r.project) {
+        set((s) => ({
+          projects: s.projects.map((p) => (p.id === id ? { ...p, archived: false, updated_at: r.project.updated_at } : p)),
+        }));
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Failed to unarchive project", message);
+    }
+  },
+
 }));

@@ -72,6 +72,7 @@ class SessionsDAO:
         workspace_path: str | None = None,
         worktree_branch: str | None = None,
         base_branch: str | None = None,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         """Insert a new session row; returns the persisted dict.
 
@@ -82,8 +83,8 @@ class SessionsDAO:
         sql = (
             "INSERT INTO sessions "
             "(id, title, created_at, updated_at, archived, model, system_prompt, "
-            "workspace_mode, workspace_path, worktree_branch, base_branch) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "workspace_mode, workspace_path, worktree_branch, base_branch, project_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         params = (
             id,
@@ -97,6 +98,7 @@ class SessionsDAO:
             workspace_path,
             worktree_branch,
             base_branch,
+            project_id or "inbox",
         )
         async with self._db.transaction() as conn:
             await conn.execute(sql, params)
@@ -124,6 +126,7 @@ class SessionsDAO:
         workspace_path: str | None = None,
         worktree_branch: str | None = None,
         base_branch: str | None = None,
+        project_id: str | None = None,
         touch_updated: bool = True,
     ) -> dict[str, Any] | None:
         """Patch one or more fields; returns the updated row.
@@ -158,6 +161,9 @@ class SessionsDAO:
         if base_branch is not None:
             sets.append("base_branch = ?")
             params.append(base_branch)
+        if project_id is not None:
+            sets.append("project_id = ?")
+            params.append(project_id)
         if touch_updated:
             sets.append("updated_at = ?")
             params.append(now_iso())
@@ -247,6 +253,7 @@ class SessionsDAO:
         self,
         *,
         archived: bool | None = None,
+        project_id: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
         order_by: str | None = None,
@@ -263,6 +270,9 @@ class SessionsDAO:
         if archived is not None:
             where.append("archived = ?")
             params.append(1 if archived else 0)
+        if project_id is not None:
+            where.append("project_id = ?")
+            params.append(project_id)
         if search:
             where.append("title LIKE ? COLLATE NOCASE")
             params.append(f"%{search}%")
@@ -276,6 +286,7 @@ class SessionsDAO:
         self,
         *,
         archived: bool | None = None,
+        project_id: str | None = None,
         search: str | None = None,
     ) -> int:
         """Return the row count matching the same filters as :meth:`list`.
@@ -293,6 +304,9 @@ class SessionsDAO:
         if archived is not None:
             where.append("archived = ?")
             params.append(1 if archived else 0)
+        if project_id is not None:
+            where.append("project_id = ?")
+            params.append(project_id)
         if search:
             where.append("title LIKE ? COLLATE NOCASE")
             params.append(f"%{search}%")
@@ -345,8 +359,8 @@ def create_sync(db, **fields) -> dict[str, Any]:  # type: ignore[no-untyped-def]
     sql = (
         "INSERT INTO sessions "
         "(id, title, created_at, updated_at, archived, model, system_prompt, "
-        "workspace_mode, workspace_path, worktree_branch, base_branch) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "workspace_mode, workspace_path, worktree_branch, base_branch, project_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     params = (
         fields["id"],
@@ -360,6 +374,7 @@ def create_sync(db, **fields) -> dict[str, Any]:  # type: ignore[no-untyped-def]
         fields.get("workspace_path"),
         fields.get("worktree_branch"),
         fields.get("base_branch"),
+        fields.get("project_id") or "inbox",
     )
     with db.transaction() as conn:
         conn.execute(sql, params)
@@ -376,15 +391,20 @@ def list_sync(
     db,  # type: ignore[no-untyped-def]
     *,
     archived: bool | None = None,
+    project_id: str | None = None,
     limit: int | None = None,
     offset: int | None = None,
     order_by: str | None = None,
 ) -> list[dict[str, Any]]:
-    where = ""
+    clauses: list[str] = []
     params: list[Any] = []
     if archived is not None:
-        where = "WHERE archived = ?"
+        clauses.append("archived = ?")
         params.append(1 if archived else 0)
+    if project_id is not None:
+        clauses.append("project_id = ?")
+        params.append(project_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     sql = f"SELECT * FROM sessions {where} ORDER BY {parse_order_by(order_by, _SORTABLE)}"
     sql, params = apply_pagination(sql, params, limit=limit, offset=offset)
     rows = db.fetchall(sql, tuple(params))

@@ -37,6 +37,16 @@ describe("Sidebar history list", () => {
     vi.mocked(typedIPC.listSessions).mockResolvedValue({ sessions: [], total: 0 });
     useSessionStore.setState({
       sessions: [],
+      projects: [
+        {
+          id: "inbox",
+          name: "收件箱",
+          description: "",
+          archived: false,
+          created_at: NOW,
+          updated_at: NOW,
+        },
+      ],
       currentSessionId: null,
       loading: false,
       filter: "all",

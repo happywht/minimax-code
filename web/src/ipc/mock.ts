@@ -74,6 +74,7 @@ import {
   mockJobs,
   mockModels,
   mockPlugins,
+  mockProjects,
   mockProviders,
   mockRunners,
   mockRuns,
@@ -149,6 +150,7 @@ function mockHandle(
       const p = params as {
         title?: string;
         reuse_empty_session_id?: string;
+        project_id?: string;
         workspace_mode?: "local" | "worktree";
         workspace_path?: string;
         worktree_branch?: string;
@@ -176,6 +178,7 @@ function mockHandle(
         archived: false,
         created_at: now,
         updated_at: now,
+        project_id: p?.project_id ?? "inbox",
         model_id: null,
         workspace_mode: p?.workspace_mode ?? "local",
         workspace_path: p?.workspace_path ?? null,
@@ -228,10 +231,11 @@ function mockHandle(
     }
 
     case "session.list": {
-      const p = params as { archived?: boolean; limit?: number; offset?: number; search?: string } | undefined;
+      const p = params as { archived?: boolean; project_id?: string; limit?: number; offset?: number; search?: string } | undefined;
       const search = p?.search?.trim().toLowerCase() ?? "";
       const filtered = Array.from(mockSessions.values())
         .filter((s) => (p?.archived === undefined ? true : s.archived === Boolean(p.archived)))
+        .filter((s) => (p?.project_id === undefined ? true : s.project_id === p.project_id))
         .filter((s) => {
           if (!search) return true;
           return s.title.toLowerCase().includes(search) || s.id.toLowerCase().includes(search);
@@ -287,6 +291,60 @@ function mockHandle(
       return {
         markdown: `# ${title}\n\n<!-- session_id: ${p.session_id} -->\n\n## Assistant\n\nExported from MiniMax Code (mock mode).`,
       } satisfies SessionExportResult;
+    }
+
+    case "project.list": {
+      const p = params as { archived?: boolean } | undefined;
+      const projects = Array.from(mockProjects.values())
+        .filter((proj) => (p?.archived === undefined ? true : proj.archived === Boolean(p.archived)))
+        .sort((a, b) => b.updated_at - a.updated_at);
+      return { projects };
+    }
+
+    case "project.create": {
+      const p = params as { name: string; description?: string };
+      const pid = `proj_${Math.random().toString(36).slice(2, 10)}`;
+      const now = Date.now();
+      const project = {
+        id: pid,
+        name: p.name,
+        description: p.description ?? "",
+        archived: false,
+        created_at: now,
+        updated_at: now,
+      };
+      mockProjects.set(pid, project);
+      return { project };
+    }
+
+    case "project.update": {
+      const p = params as { project_id: string; name?: string; description?: string };
+      const project = mockProjects.get(p.project_id);
+      if (!project) return { ok: false, project: null };
+      if (p.name !== undefined) project.name = p.name;
+      if (p.description !== undefined) project.description = p.description;
+      project.updated_at = Date.now();
+      return { ok: true, project };
+    }
+
+    case "project.delete": {
+      const p = params as { project_id: string };
+      const pid = p.project_id;
+      for (const s of mockSessions.values()) {
+        if (s.project_id === pid) s.project_id = "inbox";
+      }
+      mockProjects.delete(pid);
+      return { ok: true, project_id: pid };
+    }
+
+    case "project.archive":
+    case "project.unarchive": {
+      const p = params as { project_id: string };
+      const project = mockProjects.get(p.project_id);
+      if (!project) return { ok: false, project: null };
+      project.archived = method === "project.archive";
+      project.updated_at = Date.now();
+      return { ok: true, project };
     }
 
     case "message.list": {

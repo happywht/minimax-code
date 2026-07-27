@@ -19,6 +19,7 @@ Resolution is delegated to the [`platformdirs`](https://pypi.org/project/platfor
 erDiagram
     sessions ||--o{ messages : has
     sessions ||--o{ tasks    : has
+    sessions }o--|| projects : "belongs to"
     sessions ||..|| agents   : "uses (config)"
     messages ||--o| messages : "parent/child"
     skills  }o..o{ sessions  : "may inject into"
@@ -30,8 +31,17 @@ erDiagram
         TEXT created_at
         TEXT updated_at
         INT  archived "0/1"
+        TEXT project_id FK
         TEXT model
         TEXT system_prompt
+    }
+    projects {
+        TEXT id PK
+        TEXT name
+        TEXT description
+        INT  archived "0/1"
+        TEXT created_at
+        TEXT updated_at
     }
     messages {
         TEXT id PK
@@ -119,10 +129,22 @@ The dashed edges in the diagram (`agents → sessions`, `skills → sessions`, `
 | `created_at`    | TEXT    | ISO-8601 UTC, second precision.                        |
 | `updated_at`    | TEXT    | Bumped on every mutation. The sidebar sorts by this.   |
 | `archived`      | INTEGER | `0`/`1`. CHECK-constrained; `archived=1` is "tucked away". |
+| `project_id`    | TEXT FK | → `projects.id` **ON DELETE SET NULL**; defaults to `inbox`. The sidebar groups sessions by project. |
 | `model`         | TEXT    | Nullable; e.g. `gpt-4o`, `claude-sonnet-4-20250514`.   |
 | `system_prompt` | TEXT    | Nullable; only set when the user pins one to a session.|
 
-### 2.2 `messages`
+### 2.2 `projects`
+
+| Column        | Type    | Notes                                                  |
+|---------------|---------|--------------------------------------------------------|
+| `id`          | TEXT PK | Natural key; `inbox` is the immutable default project. |
+| `name`        | TEXT    | Display name (e.g. "收件箱").                          |
+| `description` | TEXT    | Optional free text.                                    |
+| `archived`    | INTEGER | `0`/`1`; archived projects are collapsed in the sidebar. |
+| `created_at`  | TEXT    | ISO-8601 UTC.                                          |
+| `updated_at`  | TEXT    | Bumped on every mutation.                              |
+
+### 2.3 `messages`
 
 | Column         | Type    | Notes                                                                  |
 |----------------|---------|------------------------------------------------------------------------|
@@ -224,7 +246,9 @@ Rules are evaluated in insertion order; the first match wins. The auth layer cac
 | Index                            | Table              | Purpose                                                                                  |
 |----------------------------------|--------------------|------------------------------------------------------------------------------------------|
 | `idx_sessions_archived_updated`  | `sessions`         | Sidebar: "active sessions, most recent first". The composite is more selective than `updated_at` alone. |
+| `idx_sessions_project_updated`   | `sessions`         | Project-scoped session listing: sessions within a project, most recent first.            |
 | `idx_sessions_updated`           | `sessions`         | Fallback for "all sessions, most recent first" (admin view).                             |
+| `idx_projects_archived_updated`  | `projects`         | Sidebar project list: active projects first, then archived, sorted by recency.           |
 | `idx_messages_session_created`   | `messages`         | Listing messages for a session in chronological order — the dominant read pattern.      |
 | `idx_messages_parent`            | `messages`         | Branching chat: walk the tree from a node.                                               |
 | `idx_messages_tool_call_id`      | `messages`         | Resolve a tool result back to its originating call.                                      |

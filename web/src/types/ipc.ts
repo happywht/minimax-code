@@ -128,6 +128,7 @@ export interface Session {
   archived: boolean;
   created_at: number;
   updated_at: number;
+  project_id?: string;
   model_id: string | null;
   message_count?: number;
   workspace_mode?: "local" | "worktree";
@@ -631,6 +632,28 @@ export interface SessionStatsResult {
 /** Return shape of `session.export`. */
 export interface SessionExportResult {
   markdown: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  archived: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ListProjectsResult {
+  projects: Project[];
+}
+
+export interface CreateProjectResult {
+  project: Project;
+}
+
+export interface UpdateProjectResult {
+  ok: boolean;
+  project: Project;
 }
 
 export interface ListMessagesResult {

@@ -12,6 +12,7 @@ import type {
   AgentTeam,
   ModelInfo,
   PluginInfo,
+  Project,
   ProviderInfo,
   RunnerInfo,
   ScheduledJob,
@@ -22,6 +23,19 @@ import type {
 } from "../types/ipc";
 export const mockSessions = new Map<string, Session>();
 export const mockSessionsWithMessages = new Set<string>();
+export const mockProjects = new Map<string, Project>([
+  [
+    "inbox",
+    {
+      id: "inbox",
+      name: "收件箱",
+      description: "未归类任务默认目录",
+      archived: false,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+    },
+  ],
+]);
 export const mockRuns = new Map<string, { run: import("../types/ipc").AgentRun; steps: import("../types/ipc").AgentRunStep[] }>();
 export const mockModels: ModelInfo[] = [
   {

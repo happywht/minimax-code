@@ -14,6 +14,7 @@ vi.mock("../src/ipc", async () => {
     typedIPC: {
       ...actual.typedIPC,
       listSessions: vi.fn(async () => ({ sessions: [] })),
+      listProjects: vi.fn(async () => ({ projects: [] })),
       createSession: vi.fn(async () => ({ session_id: "ses_new" })),
     },
   };
@@ -65,7 +66,9 @@ describe("ChatPanel", () => {
     render(<ChatPanel />);
     fireEvent.click(screen.getByTestId("chat-header-new"));
     await waitFor(() => {
-      expect(typedIPC.createSession).toHaveBeenCalledWith({ title: "New task" });
+      expect(typedIPC.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "New task" }),
+      );
     });
   });
 });
