@@ -628,6 +628,23 @@ export interface UpdateSessionProjectResult {
   session: Session;
 }
 
+/** Return shape of `session.batchArchive`. */
+export interface BatchArchiveSessionsResult {
+  ok: boolean;
+  session_ids: string[];
+  sessions: Session[];
+  updated: number;
+}
+
+/** Return shape of `session.batchUpdateProject`. */
+export interface BatchUpdateSessionProjectResult {
+  ok: boolean;
+  project_id: string;
+  session_ids: string[];
+  sessions: Session[];
+  updated: number;
+}
+
 /** Return shape of `session.stats`. */
 export interface SessionStatsResult {
   total_sessions: number;

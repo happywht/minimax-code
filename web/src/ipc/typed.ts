@@ -76,6 +76,8 @@ import type {
   TerminalReadResult,
   TerminalStartResult,
   UpdateProviderResult,
+  BatchArchiveSessionsResult,
+  BatchUpdateSessionProjectResult,
   UpdateSessionProjectResult,
   UpdateSessionResult,
   WebhookConfig,
@@ -107,6 +109,8 @@ export interface TypedIPC {
   deleteSession(sessionId: string): Promise<{ ok: true }>;
   updateSession(sessionId: string, fields: { title?: string }): Promise<UpdateSessionResult>;
   updateSessionProject(sessionId: string, projectId: string): Promise<UpdateSessionProjectResult>;
+  batchArchiveSessions(sessionIds: string[], archived: boolean): Promise<BatchArchiveSessionsResult>;
+  batchUpdateSessionProject(sessionIds: string[], projectId: string): Promise<BatchUpdateSessionProjectResult>;
   sessionStats(): Promise<SessionStatsResult>;
   sessionExport(params: { session_id: string }): Promise<SessionExportResult>;
   listMessages(sessionId: string, opts?: { limit?: number; before?: string }): Promise<ListMessagesResult>;
@@ -415,6 +419,16 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     updateSessionProject: (sid, projectId) =>
       client.request<UpdateSessionProjectResult>("session.updateProject", {
         session_id: sid,
+        project_id: projectId,
+      }),
+    batchArchiveSessions: (sessionIds, archived) =>
+      client.request<BatchArchiveSessionsResult>("session.batchArchive", {
+        session_ids: sessionIds,
+        archived,
+      }),
+    batchUpdateSessionProject: (sessionIds, projectId) =>
+      client.request<BatchUpdateSessionProjectResult>("session.batchUpdateProject", {
+        session_ids: sessionIds,
         project_id: projectId,
       }),
     sessionStats: () => client.request<SessionStatsResult>("session.stats", {}),

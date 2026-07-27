@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 删除项目时，其下会话自动移回收件箱，避免误删。
 - 消息级持久化能力：`MessagesDAO.update()` 支持更新内容与元数据。
 - 新增 IPC 方法 `message.update` 与 `message.delete`：编辑/删除单条消息。
+- **批量会话操作（v0.10.3）**：新增 `session.batchArchive` / `session.batchUpdateProject` IPC 方法及 `SessionsDAO` 批量接口，支持事务级归档与跨项目移动。
 
 ### Added — 前端
 - **Sidebar 项目化**：会话按项目分组展示；收件箱默认展开置顶，普通项目可折叠，归档项目沉底。
@@ -36,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 「新任务」按钮旁新增当前目标项目选择器，明确任务落点。
   - 统一空状态中文文案：`暂无任务`、`无匹配任务`。
 - 为顶部 icon-only 按钮（Sidebar hamburger、Command Palette、Notifications）及右侧面板 collapse 按钮补充 `title` tooltip。
+- **Sidebar 批量操作（v0.10.3）**：会话行支持复选框多选；选中后顶部显示批量工具栏，支持全选可见任务、批量归档/取消归档、批量移动到项目。
 
 ### Fixed
 - 移除前端剩余 `window.prompt/confirm`：项目创建/重命名/删除与技能移除统一使用 Aurora `Modal`。

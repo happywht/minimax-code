@@ -955,3 +955,116 @@ async def test_session_ipc_update_project_moves_session(
     finally:
         set_sessions_dao(None)
         set_projects_dao(None)
+
+
+# ---------------------------------------------------------------------------
+# SessionsDAO batch operations
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_batch_update_project_moves_sessions(
+    async_db: AsyncDatabase,
+    sessions_dao: SessionsDAO,
+    id_factory: Any,
+) -> None:
+    """``batch_update_project`` moves multiple sessions atomically."""
+    from minimax_code.storage.dao.projects import ProjectsDAO
+
+    proj_dao = ProjectsDAO(async_db)
+    project = await proj_dao.create(id=id_factory("proj"), name="Target")
+    sid1 = id_factory("ses")
+    sid2 = id_factory("ses")
+    sid3 = id_factory("ses")
+    await sessions_dao.create(id=sid1, title="a")
+    await sessions_dao.create(id=sid2, title="b")
+    await sessions_dao.create(id=sid3, title="c")
+    rows = await sessions_dao.batch_update_project([sid1, sid2], project["id"])
+    assert len(rows) == 2
+    assert {r["id"] for r in rows} == {sid1, sid2}
+    assert all(r["project_id"] == project["id"] for r in rows)
+    # Empty list is a no-op.
+    assert await sessions_dao.batch_update_project([], project["id"]) == []
+
+
+@pytest.mark.asyncio
+async def test_batch_set_archived_flips_many_sessions(
+    sessions_dao: SessionsDAO,
+    id_factory: Any,
+) -> None:
+    """``batch_set_archived`` archives or unarchives multiple sessions."""
+    sid1 = id_factory("ses")
+    sid2 = id_factory("ses")
+    await sessions_dao.create(id=sid1, title="a")
+    await sessions_dao.create(id=sid2, title="b")
+    rows = await sessions_dao.batch_set_archived([sid1, sid2], True)
+    assert len(rows) == 2
+    assert all(r["archived"] is True for r in rows)
+    rows = await sessions_dao.batch_set_archived([sid1], False)
+    assert len(rows) == 1
+    assert rows[0]["archived"] is False
+
+
+# ---------------------------------------------------------------------------
+# IPC handler round-trip — session.batchArchive / batchUpdateProject
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_session_ipc_batch_archive_round_trip(
+    async_db: AsyncDatabase,
+    sessions_dao: SessionsDAO,
+    seeded_sessions: list[str],
+) -> None:
+    """``session.batchArchive`` archives many sessions and returns updated rows."""
+    set_sessions_dao(sessions_dao)
+    try:
+        client = IPCClient()
+        reply = await client.request(
+            "session.batchArchive",
+            {"session_ids": seeded_sessions[:3], "archived": True},
+        )
+        assert reply["ok"] is True
+        assert reply["updated"] == 3
+        assert len(reply["sessions"]) == 3
+        assert all(s["archived"] is True for s in reply["sessions"])
+    finally:
+        set_sessions_dao(None)
+
+
+@pytest.mark.asyncio
+async def test_session_ipc_batch_update_project_validates_project(
+    async_db: AsyncDatabase,
+    sessions_dao: SessionsDAO,
+    id_factory: Any,
+) -> None:
+    """``session.batchUpdateProject`` validates the target project exists."""
+    from minimax_code.storage.dao.projects import ProjectsDAO
+
+    proj_dao = ProjectsDAO(async_db)
+    await proj_dao.ensure_inbox()
+    project = await proj_dao.create(id=id_factory("proj"), name="Target")
+    sid = id_factory("ses")
+    await sessions_dao.create(id=sid, title="move-me")
+
+    set_sessions_dao(sessions_dao)
+    set_projects_dao(proj_dao)
+    try:
+        client = IPCClient()
+        reply = await client.request(
+            "session.batchUpdateProject",
+            {"session_ids": [sid], "project_id": project["id"]},
+        )
+        assert reply["ok"] is True
+        assert reply["updated"] == 1
+        assert reply["sessions"][0]["project_id"] == project["id"]
+
+        with pytest.raises(Exception) as excinfo:
+            await client.request(
+                "session.batchUpdateProject",
+                {"session_ids": [sid], "project_id": "proj_nope"},
+            )
+        assert "unknown project_id" in str(excinfo.value)
+    finally:
+        set_sessions_dao(None)
+        set_projects_dao(None)

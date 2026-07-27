@@ -249,6 +249,53 @@ class SessionsDAO:
         """Bump ``updated_at`` (called on every new message)."""
         return await self.update(session_id, touch_updated=True)
 
+    async def batch_update_project(
+        self,
+        session_ids: list[str],
+        project_id: str,
+    ) -> list[dict[str, Any]]:
+        """Move multiple sessions to the same project atomically.
+
+        Returns the updated rows for the sessions that were found.
+        """
+        if not session_ids:
+            return []
+        placeholders = ",".join("?" for _ in session_ids)
+        now = now_iso()
+        sql = (
+            f"UPDATE sessions SET project_id = ?, updated_at = ? "
+            f"WHERE id IN ({placeholders})"
+        )
+        async with self._db.transaction() as conn:
+            await conn.execute(sql, (project_id, now, *session_ids))
+        rows = await self._db.fetchall(
+            f"SELECT * FROM sessions WHERE id IN ({placeholders})",
+            tuple(session_ids),
+        )
+        return [_hydrate(r) for r in rows]
+
+    async def batch_set_archived(
+        self,
+        session_ids: list[str],
+        archived: bool,
+    ) -> list[dict[str, Any]]:
+        """Archive or unarchive multiple sessions atomically."""
+        if not session_ids:
+            return []
+        placeholders = ",".join("?" for _ in session_ids)
+        now = now_iso()
+        sql = (
+            f"UPDATE sessions SET archived = ?, updated_at = ? "
+            f"WHERE id IN ({placeholders})"
+        )
+        async with self._db.transaction() as conn:
+            await conn.execute(sql, (1 if archived else 0, now, *session_ids))
+        rows = await self._db.fetchall(
+            f"SELECT * FROM sessions WHERE id IN ({placeholders})",
+            tuple(session_ids),
+        )
+        return [_hydrate(r) for r in rows]
+
     async def list(
         self,
         *,

@@ -89,6 +89,7 @@ export interface SessionState {
   loadingProjects: boolean;
   creating: boolean;
   filter: SessionFilter;
+  selectedSessionIds: Set<string>;
 
   refresh: (options?: { loadCurrent?: boolean }) => Promise<void>;
   loadProjects: () => Promise<void>;
@@ -109,6 +110,12 @@ export interface SessionState {
   deleteProject: (id: string) => Promise<void>;
   archiveProject: (id: string) => Promise<void>;
   unarchiveProject: (id: string) => Promise<void>;
+  selectSession: (id: string, selected?: boolean) => void;
+  toggleSessionSelection: (id: string) => void;
+  clearSessionSelection: () => void;
+  selectAllVisible: (ids: string[]) => void;
+  batchArchiveSessions: (ids: string[], archived: boolean) => Promise<void>;
+  batchMoveToProject: (ids: string[], projectId: string) => Promise<void>;
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -121,6 +128,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   loadingProjects: false,
   creating: false,
   filter: "all",
+  selectedSessionIds: new Set(),
 
   refresh: async (options) => {
     const seq = ++refreshSeq;
@@ -451,6 +459,72 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       toast.error("Failed to unarchive project", message);
+    }
+  },
+
+  selectSession: (id: string, selected = true) => {
+    set((s) => {
+      const next = new Set(s.selectedSessionIds);
+      if (selected) next.add(id);
+      else next.delete(id);
+      return { selectedSessionIds: next };
+    });
+  },
+
+  toggleSessionSelection: (id: string) => {
+    set((s) => {
+      const next = new Set(s.selectedSessionIds);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return { selectedSessionIds: next };
+    });
+  },
+
+  clearSessionSelection: () => set({ selectedSessionIds: new Set() }),
+
+  selectAllVisible: (ids: string[]) => set({ selectedSessionIds: new Set(ids) }),
+
+  batchArchiveSessions: async (ids: string[], archived: boolean) => {
+    if (ids.length === 0) return;
+    try {
+      const r = await typedIPC.batchArchiveSessions(ids, archived);
+      set((s) => {
+        const byId = new Map(s.sessions.map((x) => [x.id, x]));
+        for (const session of r.sessions) {
+          byId.set(session.id, { ...(byId.get(session.id) ?? session), ...session });
+        }
+        return {
+          sessions: Array.from(byId.values()).sort((a, b) => b.updated_at - a.updated_at),
+          selectedSessionIds: new Set(),
+        };
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Batch archive failed", message);
+    }
+  },
+
+  batchMoveToProject: async (ids: string[], projectId: string) => {
+    if (ids.length === 0) return;
+    try {
+      const r = await typedIPC.batchUpdateSessionProject(ids, projectId);
+      set((s) => {
+        const byId = new Map(s.sessions.map((x) => [x.id, x]));
+        for (const session of r.sessions) {
+          byId.set(session.id, { ...(byId.get(session.id) ?? session), ...session });
+        }
+        return {
+          sessions: Array.from(byId.values()).sort((a, b) => b.updated_at - a.updated_at),
+          expandedProjectIds: s.expandedProjectIds.includes(projectId)
+            ? s.expandedProjectIds
+            : [...s.expandedProjectIds, projectId],
+          selectedSessionIds: new Set(),
+        };
+      });
+      storeExpandedProjectIds(get().expandedProjectIds);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Batch move failed", message);
     }
   },
 

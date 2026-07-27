@@ -210,6 +210,8 @@ on the next `readline() == ""`.
 | `session.archive`          | req/res   | Reserved.                                          |
 | `session.delete`           | req/res   | Reserved.                                          |
 | `session.updateProject`    | req/res   | Move a session to a different project (including `inbox`). |
+| `session.batchArchive`     | req/res   | Archive or unarchive multiple sessions at once.    |
+| `session.batchUpdateProject` | req/res | Move multiple sessions to the same project at once. |
 | `project.list`             | req/res   | List projects; optional `archived` filter.         |
 | `project.create`           | req/res   | Create a project with name and optional description. |
 | `project.update`           | req/res   | Rename or update a project's description.          |

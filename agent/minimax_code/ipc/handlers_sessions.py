@@ -373,6 +373,96 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 INTERNAL_ERROR, f"session.updateProject failed: {exc}"
             )
 
+    # ------------------------------------------------------------- batch archive
+
+    async def handle_session_batch_archive(params: Any, ctx: Context) -> None:
+        """``session.batchArchive`` → archive/unarchive many sessions at once."""
+        try:
+            sess_dao = await dao_factory()
+            check_params(params, expected_keys={"session_ids", "archived"})
+            session_ids = params.get("session_ids")
+            if not isinstance(session_ids, list) or not all(
+                isinstance(sid, str) for sid in session_ids
+            ):
+                raise HandlerError(
+                    INVALID_PARAMS, "session_ids must be a list of strings"
+                )
+            archived = bool(params.get("archived"))
+            rows = await sess_dao.batch_set_archived(session_ids, archived)
+            await ctx.reply(
+                {
+                    "ok": True,
+                    "session_ids": session_ids,
+                    "sessions": rows,
+                    "updated": len(rows),
+                }
+            )
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.exception("session.batchArchive failed")
+            await ctx.reply_error(
+                INTERNAL_ERROR, f"session.batchArchive failed: {exc}"
+            )
+
+    # ------------------------------------------------------ batch update project
+
+    async def handle_session_batch_update_project(
+        params: Any, ctx: Context
+    ) -> None:
+        """``session.batchUpdateProject`` → move many sessions to one project."""
+        try:
+            sess_dao = await dao_factory()
+            check_params(params, expected_keys={"session_ids", "project_id"})
+            session_ids = params.get("session_ids")
+            if not isinstance(session_ids, list) or not all(
+                isinstance(sid, str) for sid in session_ids
+            ):
+                raise HandlerError(
+                    INVALID_PARAMS, "session_ids must be a list of strings"
+                )
+            project_id = str(params["project_id"])
+
+            from ..app import get_projects_dao, init_runtime
+
+            proj_dao = get_projects_dao()
+            if proj_dao is None:
+                try:
+                    await init_runtime()
+                except Exception:
+                    pass
+                proj_dao = get_projects_dao()
+            if proj_dao is None:
+                await ctx.reply_error(
+                    INTERNAL_ERROR,
+                    "session.batchUpdateProject: projects DAO not available",
+                )
+                return
+
+            project = await proj_dao.get(project_id)
+            if project is None:
+                raise HandlerError(
+                    INVALID_PARAMS, f"unknown project_id: {project_id!r}"
+                )
+
+            rows = await sess_dao.batch_update_project(session_ids, project_id)
+            await ctx.reply(
+                {
+                    "ok": True,
+                    "project_id": project_id,
+                    "session_ids": session_ids,
+                    "sessions": rows,
+                    "updated": len(rows),
+                }
+            )
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.exception("session.batchUpdateProject failed")
+            await ctx.reply_error(
+                INTERNAL_ERROR, f"session.batchUpdateProject failed: {exc}"
+            )
+
     # ------------------------------------------------------------------ stats
 
     async def handle_session_stats(params: Any, ctx: Context) -> None:
@@ -579,6 +669,8 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
     server.register("session.delete", handle_session_delete)
     server.register("session.update", handle_session_update)
     server.register("session.updateProject", handle_session_update_project)
+    server.register("session.batchArchive", handle_session_batch_archive)
+    server.register("session.batchUpdateProject", handle_session_batch_update_project)
     server.register("session.stats", handle_session_stats)
     server.register("session.export", handle_session_export)
     server.register("message.update", handle_message_update)

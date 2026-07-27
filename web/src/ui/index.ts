@@ -21,3 +21,5 @@ export { EmptyState } from "./EmptyState";
 export type { EmptyStateProps } from "./EmptyState";
 export { DropdownMenu } from "./DropdownMenu";
 export type { DropdownMenuItem, DropdownMenuProps } from "./DropdownMenu";
+export { Checkbox } from "./Checkbox";
+export type { CheckboxProps } from "./Checkbox";

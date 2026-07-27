@@ -286,6 +286,43 @@ function mockHandle(
       return { ok: true, session: s };
     }
 
+    case "session.batchArchive": {
+      const p = params as { session_ids: string[]; archived: boolean };
+      const sessions: import("../types/ipc").Session[] = [];
+      for (const sid of p.session_ids) {
+        const s = mockSessions.get(sid);
+        if (s) {
+          s.archived = p.archived;
+          s.updated_at = Date.now();
+          sessions.push(s);
+        }
+      }
+      return { ok: true, session_ids: p.session_ids, sessions, updated: sessions.length };
+    }
+
+    case "session.batchUpdateProject": {
+      const p = params as { session_ids: string[]; project_id: string };
+      const project = mockProjects.get(p.project_id);
+      const sessions: import("../types/ipc").Session[] = [];
+      if (project) {
+        for (const sid of p.session_ids) {
+          const s = mockSessions.get(sid);
+          if (s) {
+            s.project_id = p.project_id;
+            s.updated_at = Date.now();
+            sessions.push(s);
+          }
+        }
+      }
+      return {
+        ok: true,
+        project_id: p.project_id,
+        session_ids: p.session_ids,
+        sessions,
+        updated: sessions.length,
+      };
+    }
+
     case "session.stats": {
       const sessions = Array.from(mockSessions.values());
       return {

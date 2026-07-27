@@ -25,6 +25,7 @@ describe("sessionStore", () => {
       currentSessionId: null,
       loading: false,
       filter: "all",
+      selectedSessionIds: new Set(),
     });
   });
 
@@ -45,6 +46,26 @@ describe("sessionStore", () => {
     expect(useSessionStore.getState().currentSessionId).toBe("ses_1");
     expect(useChat.getState().messages).toEqual([]);
     expect(window.localStorage.getItem("minimax-code:current-session")).toBe("ses_1");
+  });
+
+  it("manages session selection state", () => {
+    const { selectSession, toggleSessionSelection, selectAllVisible, clearSessionSelection } =
+      useSessionStore.getState();
+
+    selectSession("a");
+    expect(useSessionStore.getState().selectedSessionIds).toEqual(new Set(["a"]));
+
+    toggleSessionSelection("b");
+    expect(useSessionStore.getState().selectedSessionIds).toEqual(new Set(["a", "b"]));
+
+    toggleSessionSelection("a");
+    expect(useSessionStore.getState().selectedSessionIds).toEqual(new Set(["b"]));
+
+    selectAllVisible(["x", "y"]);
+    expect(useSessionStore.getState().selectedSessionIds).toEqual(new Set(["x", "y"]));
+
+    clearSessionSelection();
+    expect(useSessionStore.getState().selectedSessionIds).toEqual(new Set());
   });
 });
 

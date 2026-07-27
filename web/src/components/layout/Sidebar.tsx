@@ -34,7 +34,7 @@ import { NavItem } from "./NavItem";
 import { SessionRow } from "./SessionRow";
 import { UserBadge } from "./UserBadge";
 import { SkeletonLine } from "./Skeleton";
-import { Button, IconButton, Input, Modal, DropdownMenu } from "../../ui";
+import { Button, Checkbox, IconButton, Input, Modal, DropdownMenu } from "../../ui";
 import { typedIPC } from "../../ipc";
 import { useSessionStore, type SessionFilter, type SessionMeta } from "../../stores";
 import type { Project } from "../../types/ipc";
@@ -98,7 +98,14 @@ export function Sidebar({
   const unarchiveProject = useSessionStore((s) => s.unarchiveProject);
   const expandedProjectIds = useSessionStore((s) => s.expandedProjectIds);
   const toggleProjectExpanded = useSessionStore((s) => s.toggleProjectExpanded);
+  const selectedSessionIds = useSessionStore((s) => s.selectedSessionIds);
+  const toggleSessionSelection = useSessionStore((s) => s.toggleSessionSelection);
+  const clearSessionSelection = useSessionStore((s) => s.clearSessionSelection);
+  const selectAllVisible = useSessionStore((s) => s.selectAllVisible);
+  const batchArchiveSessions = useSessionStore((s) => s.batchArchiveSessions);
+  const batchMoveToProject = useSessionStore((s) => s.batchMoveToProject);
   const [historyQuery, setHistoryQuery] = useState("");
+  const [batchMoveOpen, setBatchMoveOpen] = useState(false);
   const [remoteSearchSessions, setRemoteSearchSessions] = useState<SessionMeta[] | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const [stats, setStats] = useState<{ total_sessions: number; total_messages: number } | null>(null);
@@ -165,6 +172,10 @@ export function Sidebar({
       window.clearTimeout(timer);
     };
   }, [filter, historyQuery, mergeSessions]);
+
+  useEffect(() => {
+    clearSessionSelection();
+  }, [filter, historyQuery, clearSessionSelection]);
 
   const filteredSessions = useMemo(() => {
     const q = historyQuery.trim().toLowerCase();
@@ -360,7 +371,11 @@ export function Sidebar({
                 key={s.id}
                 session={s}
                 selected={s.id === currentId}
+                projects={projects}
                 onClick={() => handleSessionClick(s)}
+                selectionActive={selectionActive}
+                isSelected={selectedSessionIds.has(s.id)}
+                onToggleSelect={toggleSessionSelection}
               />
             ))}
             {!searchMode && sessionsInProject.length === 0 && (
@@ -373,6 +388,34 @@ export function Sidebar({
   };
 
   const visibleCount = filteredSessions.length;
+  const selectionActive = selectedSessionIds.size > 0;
+  const selectedCount = selectedSessionIds.size;
+  const allVisibleSelected = visibleCount > 0 && selectedCount === visibleCount;
+
+  const handleSelectAllVisible = () => {
+    if (allVisibleSelected) {
+      clearSessionSelection();
+    } else {
+      selectAllVisible(filteredSessions.map((s) => s.id));
+    }
+  };
+
+  const handleBatchArchive = () => {
+    if (selectedCount === 0) return;
+    const ids = Array.from(selectedSessionIds);
+    const archived = filter !== "archived";
+    void batchArchiveSessions(ids, archived);
+  };
+
+  const handleBatchMove = (projectId: string) => {
+    if (selectedCount === 0) return;
+    void batchMoveToProject(Array.from(selectedSessionIds), projectId);
+    setBatchMoveOpen(false);
+  };
+
+  const batchMoveTargets = useMemo(() => {
+    return [...projects].sort((a, b) => b.updated_at - a.updated_at);
+  }, [projects]);
 
   return (
     <aside
@@ -502,24 +545,71 @@ export function Sidebar({
 
       {/* Project / Session list */}
       <div className="mt-3 flex min-h-0 flex-1 flex-col">
-        <div className="flex items-center justify-between px-4 pt-1 text-[11px] font-medium uppercase tracking-wide text-ink-2">
-          <span>项目</span>
-          <div className="flex items-center gap-1.5">
-            <span data-testid="sidebar-session-count">{visibleCount}</span>
-            <IconButton
-              size="sm"
-              aria-label="New project"
-              title="New project"
-              onClick={() => {
-                setCreateName("");
-                setCreateOpen(true);
-              }}
-              data-testid="sidebar-new-project"
-            >
-              <Plus size={11} />
-            </IconButton>
+        {selectionActive ? (
+          <div
+            data-testid="sidebar-batch-toolbar"
+            className="flex items-center justify-between border-b border-line bg-surface-2 px-3 py-1.5"
+          >
+            <div className="flex items-center gap-2">
+              <Checkbox
+                checked={allVisibleSelected}
+                onChange={handleSelectAllVisible}
+                disabled={visibleCount === 0}
+                data-testid="sidebar-select-all-visible"
+                aria-label="全选可见任务"
+              />
+              <span className="text-xs text-ink-0">已选择 {selectedCount} 个</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <Button
+                size="sm"
+                variant="ghost"
+                icon={<Folder size={14} />}
+                onClick={() => setBatchMoveOpen(true)}
+                data-testid="sidebar-batch-move"
+              >
+                移动
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon={filter === "archived" ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+                onClick={handleBatchArchive}
+                data-testid="sidebar-batch-archive"
+              >
+                {filter === "archived" ? "取消归档" : "归档"}
+              </Button>
+              <IconButton
+                size="sm"
+                aria-label="取消选择"
+                title="取消选择"
+                onClick={clearSessionSelection}
+                data-testid="sidebar-clear-selection"
+              >
+                <X size={14} />
+              </IconButton>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="flex items-center justify-between px-4 pt-1 text-[11px] font-medium uppercase tracking-wide text-ink-2">
+            <span>项目</span>
+            <div className="flex items-center gap-1.5">
+              <span data-testid="sidebar-session-count">{visibleCount}</span>
+              <IconButton
+                size="sm"
+                aria-label="New project"
+                title="New project"
+                onClick={() => {
+                  setCreateName("");
+                  setCreateOpen(true);
+                }}
+                data-testid="sidebar-new-project"
+              >
+                <Plus size={11} />
+              </IconButton>
+            </div>
+          </div>
+        )}
         <div className="px-2 pt-2">
           <label className="relative block">
             <Search
@@ -701,6 +791,37 @@ export function Sidebar({
           <p className="mt-1 text-xs text-ink-2">
             其下任务将移回「收件箱」，任务数据不会丢失。
           </p>
+        </Modal>
+      )}
+
+      {/* Batch move sessions modal */}
+      {batchMoveOpen && (
+        <Modal
+          title="移动选中任务"
+          onClose={() => setBatchMoveOpen(false)}
+          testId="sidebar-batch-move-modal"
+          footer={
+            <Button variant="secondary" size="sm" onClick={() => setBatchMoveOpen(false)}>
+              取消
+            </Button>
+          }
+        >
+          <div className="max-h-64 space-y-1 overflow-y-auto py-1">
+            {batchMoveTargets.length === 0 && (
+              <p className="px-1 py-2 text-[13px] text-ink-2">暂无其他项目</p>
+            )}
+            {batchMoveTargets.map((project) => (
+              <button
+                key={project.id}
+                type="button"
+                onClick={() => handleBatchMove(project.id)}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-ink-0 hover:bg-surface-2"
+              >
+                <span className="text-ink-1">{projectIcon(project)}</span>
+                <span className="flex-1 truncate">{project.name}</span>
+              </button>
+            ))}
+          </div>
         </Modal>
       )}
     </aside>
