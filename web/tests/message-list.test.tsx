@@ -15,7 +15,7 @@ describe("MessageList", () => {
   it("shows the empty state when there are no messages", () => {
     render(<MessageList />);
     expect(screen.getByTestId("empty-state")).toBeInTheDocument();
-    expect(screen.getByText(/How can I help/)).toBeInTheDocument();
+    expect(screen.getByText(/今天想让我做什么/)).toBeInTheDocument();
   });
 
   it("renders messages from the chat store", async () => {

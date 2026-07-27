@@ -93,8 +93,8 @@ function AuditTab(): JSX.Element {
         <SkeletonTable rows={5} />
       ) : entries.length === 0 ? (
         <EmptyState
-          title="No audit entries yet."
-          hint="Tool calls will appear here once the agent executes tools."
+          title="暂无审计记录"
+          hint="Agent 执行工具后，相关记录会出现在这里。"
         />
       ) : (
         <div className="overflow-x-auto rounded-lg border border-line">

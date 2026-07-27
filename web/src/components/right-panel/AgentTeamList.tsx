@@ -75,8 +75,8 @@ export function AgentTeamList({
       <EmptyState
         testId={`${testId}-empty`}
         icon={<Users />}
-        title="No sub-agents"
-        hint="Sub-agents registered by the agent runtime will appear here."
+        title="暂无子 Agent"
+        hint="Agent 运行时装载的子 Agent 会显示在这里。"
       />
     );
   }

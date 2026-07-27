@@ -207,26 +207,26 @@ export function GitStatusBar({
               label="Modified"
               testId="git-status-bar-modified"
               paths={status?.modified ?? []}
-              empty={clean === true ? "no modified files" : null}
+              empty={clean === true ? "暂无修改文件" : null}
             />
             <FileBucket
               label="Staged"
               testId="git-status-bar-staged"
               paths={status?.staged ?? []}
-              empty={clean === true ? "no staged files" : null}
+              empty={clean === true ? "暂无暂存文件" : null}
             />
             <FileBucket
               label="Untracked"
               testId="git-status-bar-untracked"
               paths={status?.untracked ?? []}
-              empty={clean === true ? "no untracked files" : null}
+              empty={clean === true ? "暂无未跟踪文件" : null}
             />
             {status === null ? (
               <div
                 data-testid="git-status-bar-empty"
                 className="px-3 py-2 text-ink-1"
               >
-                Loading git status…
+                正在加载 Git 状态…
               </div>
             ) : clean ? (
               <div

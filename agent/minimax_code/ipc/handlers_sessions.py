@@ -322,6 +322,57 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 INTERNAL_ERROR, f"session.update failed: {exc}"
             )
 
+    # ------------------------------------------------------- update project
+
+    async def handle_session_update_project(params: Any, ctx: Context) -> None:
+        """``session.updateProject`` → move a session to another project.
+
+        Validates that the target project exists (including the reserved
+        ``inbox`` project) before updating ``sessions.project_id``.
+        """
+        try:
+            sess_dao = await dao_factory()
+            check_params(params, expected_keys={"session_id", "project_id"})
+            session_id = str(params["session_id"])
+            project_id = str(params["project_id"])
+
+            # Resolve the projects DAO lazily to keep the session factory
+            # simple while still validating the target project.
+            from ..app import get_projects_dao, init_runtime
+
+            proj_dao = get_projects_dao()
+            if proj_dao is None:
+                try:
+                    await init_runtime()
+                except Exception:
+                    pass
+                proj_dao = get_projects_dao()
+            if proj_dao is None:
+                await ctx.reply_error(
+                    INTERNAL_ERROR, "session.updateProject: projects DAO not available"
+                )
+                return
+
+            project = await proj_dao.get(project_id)
+            if project is None:
+                raise HandlerError(
+                    INVALID_PARAMS, f"unknown project_id: {project_id!r}"
+                )
+
+            row = await sess_dao.update(session_id, project_id=project_id)
+            if row is None:
+                raise HandlerError(
+                    INVALID_PARAMS, f"unknown session_id: {session_id!r}"
+                )
+            await ctx.reply({"ok": True, "session": row})
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.exception("session.updateProject failed")
+            await ctx.reply_error(
+                INTERNAL_ERROR, f"session.updateProject failed: {exc}"
+            )
+
     # ------------------------------------------------------------------ stats
 
     async def handle_session_stats(params: Any, ctx: Context) -> None:
@@ -527,6 +578,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
     server.register("session.unarchive", handle_session_unarchive)
     server.register("session.delete", handle_session_delete)
     server.register("session.update", handle_session_update)
+    server.register("session.updateProject", handle_session_update_project)
     server.register("session.stats", handle_session_stats)
     server.register("session.export", handle_session_export)
     server.register("message.update", handle_message_update)

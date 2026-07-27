@@ -275,6 +275,17 @@ function mockHandle(
       return { ok: true, session: s };
     }
 
+    case "session.updateProject": {
+      const p = params as { session_id: string; project_id: string };
+      const s = mockSessions.get(p.session_id);
+      const project = mockProjects.get(p.project_id);
+      if (!s) return { ok: false, session: null };
+      if (!project) return { ok: false, session: null };
+      s.project_id = p.project_id;
+      s.updated_at = Date.now();
+      return { ok: true, session: s };
+    }
+
     case "session.stats": {
       const sessions = Array.from(mockSessions.values());
       return {

@@ -128,8 +128,8 @@ function WorkflowsTab(): JSX.Element {
         <SkeletonTable rows={3} />
       ) : entries.length === 0 ? (
         <EmptyState
-          title="No workflows configured."
-          hint='Click "New" to create one.'
+          title="暂无工作流"
+          hint='点击「新建」创建一个。'
         />
       ) : (
         <div className="space-y-2">

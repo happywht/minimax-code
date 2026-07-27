@@ -102,7 +102,7 @@ export function SubAgentPanel({
           data-testid={`${testId}-empty`}
           className="px-1 py-3 text-center text-[11px] italic text-minimax-muted"
         >
-          Idle — type <span className="font-mono">@general</span> in chat to spawn.
+          空闲 — 在聊天中输入 <span className="font-mono">@general</span> 来召唤子 Agent。
         </div>
       ) : (
         <ul data-testid={`${testId}-list`} className="space-y-2">

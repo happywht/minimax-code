@@ -74,8 +74,8 @@ function WebhooksTab(): JSX.Element {
         <SkeletonTable rows={3} />
       ) : entries.length === 0 ? (
         <EmptyState
-          title="No webhooks configured."
-          hint='Click "New" to create one.'
+          title="暂无 Webhook"
+          hint='点击「新建」创建一个。'
         />
       ) : (
         <div className="space-y-2">

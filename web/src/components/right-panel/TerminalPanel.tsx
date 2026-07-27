@@ -168,7 +168,7 @@ export function TerminalPanel({ testId = "terminal-panel" }: TerminalPanelProps)
             data-testid={`${testId}-empty`}
             className="rounded border border-minimax-border bg-minimax-bg/30 px-2 py-4 text-center text-[11px] italic text-minimax-muted"
           >
-            No terminal sessions
+            暂无终端会话
           </div>
         ) : (
           <>

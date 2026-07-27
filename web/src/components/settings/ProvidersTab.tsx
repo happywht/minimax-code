@@ -90,8 +90,8 @@ function ProvidersTab(): JSX.Element {
         </div>
       ) : providers.length === 0 ? (
         <EmptyState
-          title="No providers configured."
-          hint='Click "Add Provider" to get started.'
+          title="暂无 Provider"
+          hint='点击「添加 Provider」开始配置。'
         />
       ) : (
         <ul className="space-y-2" data-testid="settings-providers-list">

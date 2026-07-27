@@ -171,7 +171,7 @@ describe("RightPanel — Agent Team section", () => {
     render(<RightPanel initialAgents={[]} />);
     fireEvent.click(screen.getByTestId("right-panel-tab-agents"));
     expect(screen.getByTestId("right-panel-team-empty")).toBeInTheDocument();
-    expect(screen.getByText("No sub-agents")).toBeInTheDocument();
+    expect(screen.getByText("暂无子 Agent")).toBeInTheDocument();
   });
 
   it("renders one card per agent with name + idle status dot", () => {

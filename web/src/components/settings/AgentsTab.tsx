@@ -121,8 +121,8 @@ function AgentsTab(): JSX.Element {
         </div>
       ) : agents.length === 0 ? (
         <EmptyState
-          title="No sub-agents configured."
-          hint='Click "New Agent" to create one.'
+          title="暂无子 Agent"
+          hint='点击「新建 Agent」创建一个。'
         />
       ) : (
         <ul className="space-y-2">

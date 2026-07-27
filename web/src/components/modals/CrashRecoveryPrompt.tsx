@@ -120,7 +120,7 @@ export function CrashRecoveryPrompt(): JSX.Element | null {
         >
           {history.length === 0 ? (
             <div className="px-2 py-8 text-center text-ink-2">
-              No crash history.
+              暂无崩溃历史
             </div>
           ) : (
             <ul className="space-y-2">

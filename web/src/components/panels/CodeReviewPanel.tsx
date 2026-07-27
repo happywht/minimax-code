@@ -201,7 +201,7 @@ export function CodeReviewPanel({
       {/* Empty state */}
       {!loading && !error && !displayComments.length && !rawText && !Object.keys(dimensions).length && (
         <div className="mt-2 text-center text-[11px] italic text-ink-2">
-          Click "Review Diff" or "Run All" to analyze code.
+          点击「Review Diff」或「Run All」开始分析代码。
         </div>
       )}
     </div>

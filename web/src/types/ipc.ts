@@ -622,6 +622,12 @@ export interface UpdateSessionResult {
   session: Session;
 }
 
+/** Return shape of `session.updateProject`. */
+export interface UpdateSessionProjectResult {
+  ok: boolean;
+  session: Session;
+}
+
 /** Return shape of `session.stats`. */
 export interface SessionStatsResult {
   total_sessions: number;

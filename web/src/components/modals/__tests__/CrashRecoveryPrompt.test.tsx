@@ -121,7 +121,7 @@ describe("CrashRecoveryPrompt", () => {
 
     render(<CrashRecoveryPrompt />);
 
-    expect(screen.getByText("No crash history.")).toBeInTheDocument();
+    expect(screen.getByText("暂无崩溃历史")).toBeInTheDocument();
   });
 
   it("closes the history modal via the close button", () => {

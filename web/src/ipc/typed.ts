@@ -76,6 +76,7 @@ import type {
   TerminalReadResult,
   TerminalStartResult,
   UpdateProviderResult,
+  UpdateSessionProjectResult,
   UpdateSessionResult,
   WebhookConfig,
   WorkflowEntry,
@@ -105,6 +106,7 @@ export interface TypedIPC {
   unarchiveSession(sessionId: string): Promise<{ ok: true }>;
   deleteSession(sessionId: string): Promise<{ ok: true }>;
   updateSession(sessionId: string, fields: { title?: string }): Promise<UpdateSessionResult>;
+  updateSessionProject(sessionId: string, projectId: string): Promise<UpdateSessionProjectResult>;
   sessionStats(): Promise<SessionStatsResult>;
   sessionExport(params: { session_id: string }): Promise<SessionExportResult>;
   listMessages(sessionId: string, opts?: { limit?: number; before?: string }): Promise<ListMessagesResult>;
@@ -409,6 +411,11 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<UpdateSessionResult>("session.update", {
         session_id: sid,
         ...fields,
+      }),
+    updateSessionProject: (sid, projectId) =>
+      client.request<UpdateSessionProjectResult>("session.updateProject", {
+        session_id: sid,
+        project_id: projectId,
       }),
     sessionStats: () => client.request<SessionStatsResult>("session.stats", {}),
     sessionExport: (params) =>

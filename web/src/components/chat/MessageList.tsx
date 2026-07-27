@@ -144,13 +144,13 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
         <div data-testid="empty-state" className="mx-auto mt-16 max-w-md px-4">
           <EmptyState
             icon={<Sparkles size={24} />}
-            title="How can I help you today?"
-            hint="Ask me to refactor code, explain a file, run a command, or set up a scheduled task."
+            title="今天想让我做什么？"
+            hint="可以让我重构代码、解释文件、运行命令，或设置定时任务。"
             action={
               <div className="mt-2 grid w-full grid-cols-1 gap-2 text-left">
-                <Suggestion text="Refactor src/foo.py to use dataclasses" />
-                <Suggestion text="Explain what the IPC bridge does" />
-                <Suggestion text="Set up a daily 9am test reminder" />
+                <Suggestion text="把 src/foo.py 重构为使用 dataclasses" />
+                <Suggestion text="解释 IPC bridge 的作用" />
+                <Suggestion text="设置每天上午 9 点的测试提醒" />
               </div>
             }
           />

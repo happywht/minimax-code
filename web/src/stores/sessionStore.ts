@@ -98,6 +98,7 @@ export interface SessionState {
   unarchive: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
   rename: (id: string, title: string) => Promise<void>;
+  moveSessionProject: (id: string, projectId: string) => Promise<void>;
   mergeSessions: (sessions: SessionMeta[]) => void;
   setCurrent: (id: string | null, loadMessages?: boolean) => void;
   setFilter: (filter: SessionFilter) => void;
@@ -309,6 +310,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       toast.error("Rename failed", message);
+    }
+  },
+
+  moveSessionProject: async (id: string, projectId: string) => {
+    try {
+      const r = await typedIPC.updateSessionProject(id, projectId);
+      if (r.session) {
+        set((s) => ({
+          sessions: s.sessions.map((x) =>
+            x.id === id
+              ? { ...x, project_id: r.session.project_id, updated_at: r.session.updated_at }
+              : x,
+          ),
+          // Expand the destination project so the moved row is visible.
+          expandedProjectIds: s.expandedProjectIds.includes(projectId)
+            ? s.expandedProjectIds
+            : [...s.expandedProjectIds, projectId],
+        }));
+        storeExpandedProjectIds(get().expandedProjectIds);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Move to project failed", message);
     }
   },
 

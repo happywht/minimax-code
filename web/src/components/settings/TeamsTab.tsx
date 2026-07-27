@@ -77,8 +77,8 @@ function TeamsTab(): JSX.Element {
         </div>
       ) : teams.length === 0 ? (
         <EmptyState
-          title="No teams configured."
-          hint='Click "New Team" to create one.'
+          title="暂无团队"
+          hint='点击「新建团队」创建一个。'
         />
       ) : (
         <ul className="space-y-2">

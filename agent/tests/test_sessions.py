@@ -26,9 +26,10 @@ from unittest.mock import patch
 
 import pytest
 
-from minimax_code.app import set_sessions_dao
+from minimax_code.app import set_projects_dao, set_sessions_dao
 from minimax_code.ipc.client import IPCClient
 from minimax_code.storage.dao.messages import MessagesDAO
+from minimax_code.storage.dao.projects import ProjectsDAO
 from minimax_code.storage.dao.sessions import SessionsDAO
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 
@@ -906,3 +907,51 @@ async def test_session_ipc_export_unknown_session_raises(
             await client.request("session.export", {"session_id": "ses_nope"})
     finally:
         set_sessions_dao(None)
+
+
+@pytest.mark.asyncio
+async def test_session_ipc_update_project_moves_session(
+    async_db: AsyncDatabase,
+    sessions_dao: SessionsDAO,
+    id_factory: Any,
+) -> None:
+    """``session.updateProject`` moves a session to another project and
+    validates that the target project exists.
+    """
+    proj_dao = ProjectsDAO(async_db)
+    inbox = await proj_dao.ensure_inbox()
+    project = await proj_dao.create(
+        id=id_factory("proj"), name="Target Project", description=""
+    )
+    sid = id_factory("ses")
+    await sessions_dao.create(id=sid, title="move-me", project_id=inbox["id"])
+
+    set_sessions_dao(sessions_dao)
+    set_projects_dao(proj_dao)
+    try:
+        client = IPCClient()
+        reply = await client.request(
+            "session.updateProject",
+            {"session_id": sid, "project_id": project["id"]},
+        )
+        assert reply["ok"] is True
+        assert reply["session"]["project_id"] == project["id"]
+
+        # Moving to an unknown project fails cleanly.
+        with pytest.raises(Exception) as excinfo:
+            await client.request(
+                "session.updateProject",
+                {"session_id": sid, "project_id": "proj_nope"},
+            )
+        assert "unknown project_id" in str(excinfo.value)
+
+        # Moving an unknown session fails cleanly.
+        with pytest.raises(Exception) as excinfo:
+            await client.request(
+                "session.updateProject",
+                {"session_id": "ses_nope", "project_id": inbox["id"]},
+            )
+        assert "unknown session_id" in str(excinfo.value)
+    finally:
+        set_sessions_dao(None)
+        set_projects_dao(None)

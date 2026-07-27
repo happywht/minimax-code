@@ -35,7 +35,7 @@ export function MentionPickerDropdown({
         </div>
       ) : filtered.length === 0 ? (
         <div className="px-2 py-1.5 text-[11px] italic text-ink-2">
-          No agents match “{picker.query}”
+          没有匹配的 Agent「{picker.query}」
         </div>
       ) : (
         <ul data-testid="message-input-agent-picker-list">

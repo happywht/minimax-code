@@ -89,7 +89,7 @@ export function TeamForm({ form, agents }: TeamFormProps): JSX.Element {
           <div className="mt-1 flex flex-wrap gap-1.5">
             {agents.length === 0 && (
               <span className="text-[11px] italic text-ink-2">
-                No agents available — create some first.
+                暂无可用 Agent — 请先创建。
               </span>
             )}
             {agents.map((a) => {

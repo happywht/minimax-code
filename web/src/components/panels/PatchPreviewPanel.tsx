@@ -211,7 +211,7 @@ export function PatchPreviewPanel({
           data-testid={`${testId}-empty`}
           className="mt-2 rounded-md border border-line bg-surface-2/30 px-2 py-2 text-center text-[11px] italic text-ink-2"
         >
-          No changes in this scope.
+          当前范围没有变更。
         </div>
       )}
 

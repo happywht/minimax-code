@@ -31,13 +31,13 @@ import {
   X,
 } from "lucide-react";
 import { NavItem } from "./NavItem";
+import { SessionRow } from "./SessionRow";
 import { UserBadge } from "./UserBadge";
 import { SkeletonLine } from "./Skeleton";
 import { Button, IconButton, Input, Modal, DropdownMenu } from "../../ui";
 import { typedIPC } from "../../ipc";
 import { useSessionStore, type SessionFilter, type SessionMeta } from "../../stores";
 import type { Project } from "../../types/ipc";
-import { formatRelative } from "../../lib/time";
 import { APP_VERSION } from "../../version";
 
 export interface SidebarProps {
@@ -64,24 +64,6 @@ const NAV_ITEMS: Array<{
   { id: "agents", label: "Agents", icon: <Bot size={14} />, group: "primary" },
   { id: "archived", label: "已归档", icon: <Plug size={14} />, group: "history" },
 ];
-
-const MAX_TITLE_LEN = 24;
-
-function statusDotClass(
-  session: { archived: boolean; updated_at: number },
-  now: number = Date.now(),
-): string {
-  if (session.archived) return "bg-ink-2";
-  if (now - session.updated_at > 24 * 60 * 60 * 1000) {
-    return "bg-ink-2";
-  }
-  return "bg-accent";
-}
-
-function truncate(text: string, max: number): string {
-  if (text.length <= max) return text;
-  return text.slice(0, max - 1) + "…";
-}
 
 function projectIcon(project: Project, size = 14): JSX.Element {
   if (project.id === "inbox") return <Inbox size={size} />;
@@ -360,46 +342,10 @@ export function Sidebar({
     );
   };
 
-  const renderSessionRow = (s: SessionMeta) => (
-    <li key={s.id} data-testid={`sidebar-session-row-${s.id}`}>
-      <NavItem
-        icon={
-          <span
-            aria-hidden
-            data-testid={`sidebar-session-dot-${s.id}`}
-            data-status={s.archived ? "archived" : "active"}
-            className={`block h-2 w-2 rounded-sm ${statusDotClass(s)}`}
-          />
-        }
-        label={truncate(s.title || "(untitled)", MAX_TITLE_LEN)}
-        trailing={
-          <span className="ml-1 flex shrink-0 items-center gap-1">
-            {s.workspace_mode === "worktree" && (
-              <span
-                data-testid={`sidebar-session-workspace-${s.id}`}
-                className="rounded border border-accent/30 bg-accent-subtle px-1 py-0.5 text-[11px] text-accent"
-                title={s.workspace_path ?? "Worktree"}
-              >
-                WT
-              </span>
-            )}
-            <span
-              data-testid={`sidebar-session-time-${s.id}`}
-              className="text-[11px] text-ink-2"
-            >
-              {formatRelative(s.updated_at)}
-            </span>
-          </span>
-        }
-        selected={s.id === currentId}
-        onClick={() => {
-          setCurrentProject(s.project_id ?? "inbox");
-          setCurrent(s.id);
-        }}
-        testId={`sidebar-session-${s.id}`}
-      />
-    </li>
-  );
+  const handleSessionClick = (s: SessionMeta) => {
+    setCurrentProject(s.project_id ?? "inbox");
+    setCurrent(s.id);
+  };
 
   const renderProjectGroup = (project: Project) => {
     const sessionsInProject = sessionsByProject.get(project.id) ?? [];
@@ -409,7 +355,14 @@ export function Sidebar({
         {renderProjectHeader(project, sessionsInProject)}
         {expanded && (
           <ul className="space-y-0.5 pl-2">
-            {sessionsInProject.map(renderSessionRow)}
+            {sessionsInProject.map((s) => (
+              <SessionRow
+                key={s.id}
+                session={s}
+                selected={s.id === currentId}
+                onClick={() => handleSessionClick(s)}
+              />
+            ))}
             {!searchMode && sessionsInProject.length === 0 && (
               <li className="px-2 py-1 text-[11px] italic text-ink-2">暂无任务</li>
             )}

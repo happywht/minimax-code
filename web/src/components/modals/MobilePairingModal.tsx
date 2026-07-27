@@ -237,7 +237,7 @@ export function MobilePairingModal({
         {/* Empty state */}
         {devices.length === 0 && !loading && (
           <div className="py-2 text-center text-xs text-ink-2">
-            No paired devices yet.
+            暂无已配对设备。
           </div>
         )}
       </div>

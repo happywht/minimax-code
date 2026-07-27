@@ -29,7 +29,7 @@ describe("ProgressPanel", () => {
   it("shows the empty state when there are no tasks", () => {
     render(<ProgressPanel testId="pp" />);
     expect(screen.getByTestId("pp-empty")).toBeInTheDocument();
-    expect(screen.getByText("No active tasks")).toBeInTheDocument();
+    expect(screen.getByText("暂无运行中任务")).toBeInTheDocument();
   });
 
   it("renders a task row and dismisses it on click", () => {

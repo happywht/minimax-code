@@ -209,6 +209,7 @@ on the next `readline() == ""`.
 | `session.list`             | req/res   | Reserved (storage-layer).                          |
 | `session.archive`          | req/res   | Reserved.                                          |
 | `session.delete`           | req/res   | Reserved.                                          |
+| `session.updateProject`    | req/res   | Move a session to a different project (including `inbox`). |
 | `project.list`             | req/res   | List projects; optional `archived` filter.         |
 | `project.create`           | req/res   | Create a project with name and optional description. |
 | `project.update`           | req/res   | Rename or update a project's description.          |

@@ -158,13 +158,13 @@ export function ModelSelector({
               data-testid="model-selector-search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search models..."
+              placeholder="搜索模型…"
               className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-xs text-minimax-fg placeholder:text-minimax-muted focus:border-minimax-accent focus:outline-none"
             />
           </div>
           {models.length === 0 && (
             <div className="px-3 py-2 text-xs text-minimax-muted">
-              No models available
+              暂无可用模型
             </div>
           )}
           {models.length > 0 && filteredGroups.length === 0 && (
@@ -172,7 +172,7 @@ export function ModelSelector({
               data-testid="model-selector-empty"
               className="px-3 py-3 text-center text-xs italic text-minimax-muted"
             >
-              No models match "{query}".
+              没有匹配的模型「{query}」
             </div>
           )}
           <div className="max-h-64 overflow-y-auto overflow-x-hidden">

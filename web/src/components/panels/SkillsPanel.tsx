@@ -115,8 +115,8 @@ export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelPro
         ) : skills.length === 0 ? (
           <EmptyState
             testId="skills-empty"
-            title="No skills installed"
-            hint="Import a local SKILL.md to add a custom skill."
+            title="暂无技能"
+            hint="导入本地 SKILL.md 以添加自定义技能。"
           />
         ) : (
           <ul data-testid="skills-list" className="space-y-2">

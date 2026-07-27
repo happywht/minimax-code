@@ -51,7 +51,7 @@ function ModelsTab(): JSX.Element {
       <ul className="space-y-1.5" data-testid="settings-models-list">
         {models.length === 0 && !loading && (
           <li>
-            <EmptyState title="No models available — add a provider first." />
+            <EmptyState title="暂无可用模型 — 请先添加 Provider" />
           </li>
         )}
         {models.map((m) => (
@@ -76,7 +76,7 @@ function ModelsTab(): JSX.Element {
           )}
         </div>
         {providers.length === 0 && !providersLoading && (
-          <EmptyState title="No providers found." hint="Add a provider before registering models." />
+          <EmptyState title="暂无 Provider" hint="添加 Provider 后才能注册模型。" />
         )}
         {providers.map((provider) => (
           <ProviderRegistryCard

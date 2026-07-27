@@ -97,7 +97,7 @@ export function NotificationCenter(): JSX.Element {
         )}
         {!loading && entries.length === 0 && (
           <EmptyState
-            title="No notifications yet"
+            title="暂无通知"
             icon={<Info size={24} />}
             testId="notification-center-empty"
           />
