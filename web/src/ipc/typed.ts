@@ -87,6 +87,9 @@ import type {
   RemoveMcpServerResult,
   ListMcpToolsResult,
   InvokeMcpToolResult,
+  CodebaseStatusResult,
+  CodebaseSearchResultShape,
+  CodebaseSummarizeResult,
 } from "../types/ipc";
 import type { IPCClient } from "./client";
 /* ─────────────────────── Typed high-level API ─────────────────────── */
@@ -152,6 +155,12 @@ export interface TypedIPC {
   removeMcpServer(serverId: string): Promise<RemoveMcpServerResult>;
   listMcpTools(serverName: string): Promise<ListMcpToolsResult>;
   invokeMcpTool(serverName: string, toolName: string, args?: Record<string, unknown>): Promise<InvokeMcpToolResult>;
+
+  // codebase
+  getCodebaseStatus(): Promise<CodebaseStatusResult>;
+  buildCodebaseIndex(opts?: { force?: boolean }): Promise<CodebaseStatusResult>;
+  searchCodebase(query: string, opts?: { file_pattern?: string; limit?: number; offset?: number }): Promise<CodebaseSearchResultShape>;
+  summarizeCodebasePath(path: string): Promise<CodebaseSummarizeResult>;
 
   listRuns(opts?: { session_id?: string; status?: string; limit?: number; offset?: number }): Promise<ListRunsResult>;
   getRunSteps(runId: string): Promise<RunStepsResult>;
@@ -499,6 +508,19 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         tool_name: toolName,
         arguments: args ?? {},
       }),
+
+    getCodebaseStatus: () => client.request<CodebaseStatusResult>("codebase.status", {}),
+    buildCodebaseIndex: (opts) =>
+      client.request<CodebaseStatusResult>("codebase.build_index", opts ?? {}),
+    searchCodebase: (query, opts) =>
+      client.request<CodebaseSearchResultShape>("codebase.search", {
+        query,
+        file_pattern: opts?.file_pattern,
+        limit: opts?.limit,
+        offset: opts?.offset,
+      }),
+    summarizeCodebasePath: (path) =>
+      client.request<CodebaseSummarizeResult>("codebase.summarize", { path }),
 
     listRuns: (opts) =>
       client.request<ListRunsResult>("run.list", opts ?? {}),

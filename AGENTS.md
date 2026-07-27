@@ -8,7 +8,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 MiniMax Code 是一个桌面端 AI 编码 Agent 复刻项目。对标 MiniMax Code 全量功能：多轮对话、技能系统、定时任务、多 Agent 协作、移动互联、授权管理、进度面板。v0.2.0 起从 Tauri 桌面壳切换为 web SPA + 本地 Python agent 架构，v0.3.0 新增 thinking_count 通道、Sub-Agent UI、Git 集成和 Code Review 工作流。
 
-当前版本：**v0.10.0**（Unreleased）
+当前版本：**v0.11.0**（Unreleased，Milestone 2 Codebase RAG 进行中）
 
 ## 架构总览
 
@@ -24,12 +24,13 @@ Python Agent (FastAPI + asyncio, 127.0.0.1:8765)
   |- AgentCore (conversation loop + LLM streaming)
   |- ToolRegistry (6 built-in tools)
   |- SkillRuntime (SKILL.md loader + registry)
-  |- SQLite Storage (9 tables via aiosqlite DAOs)
+  |- SQLite Storage (10 tables via aiosqlite DAOs)
   |- APScheduler (cron jobs)
   |- SubAgentRuntime (multi-agent orchestration)
   |- PermissionStore (tool-call consent)
   |- Secrets (OS keyring + env-var fallback)
   |- Git handlers (read-only git subprocess)
+  |- CodebaseIndexer (project-level code indexing + FTS retrieval)
 ```
 
 ## 模块结构图
@@ -53,6 +54,7 @@ graph TD
     C --> C8["minimax_code/progress"];
     C --> C9["minimax_code/skills/_builtin"];
     C --> C10["skills"];
+    C --> C11["minimax_code/codebase"];
 
     B --> B1["src/components"];
     B --> B2["src/stores"];
@@ -69,6 +71,7 @@ graph TD
 |----------|------|------|
 | `web/` | TypeScript + React | Vite-served SPA 前端。React 18 + Zustand 状态管理 + Tailwind CSS 样式 |
 | `agent/` | Python 3.11+ | Agent 核心。FastAPI HTTP/WS transport + asyncio JSON-RPC server + LLM client + SQLite storage |
+| `agent/minimax_code/codebase/` | Python 3.11+ | Codebase RAG：项目级代码索引、chunk 持久化、FTS 检索（v0.11.0 Milestone 2） |
 | `e2e/` | TypeScript (Playwright) | 跨栈 e2e 测试。真实浏览器 + 真实 agent 进程 |
 | `tests/e2e/` | Python | 黑盒 subprocess smoke 测试（agent stdio 模式） |
 | `docs/` | Markdown | 架构文档、IPC 契约、技能规范、设计文档 |
@@ -177,6 +180,7 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 | `mobile.*` | 设备配对 | `handlers_mobile.py` |
 | `secrets.*` | API 密钥管理 | `handlers_secrets.py` |
 | `git.*` | Git 状态/差异/日志 | `handlers_git.py` |
+| `codebase.*` | 代码库索引/检索 | `handlers_codebase.py` |
 
 ## AI 使用指引
 
@@ -187,6 +191,7 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 - **IPC Server 核心**：`agent/minimax_code/ipc/server.py` — `IPCServer` + `Context`
 - **Agent Core**：`agent/minimax_code/agent/core.py` — 对话循环、工具调度、流式回调
 - **LLM Client**：`agent/minimax_code/agent/llm.py` — MiniMax API + mock mode
+- **Codebase RAG**：`agent/minimax_code/codebase/indexer.py` / `store.py` — 代码索引与 chunk 存储
 - **前端 IPC Client**：`web/src/ipc/` — `client.ts`（HTTP/WS transport + `ipc` 单例）、`typed.ts`（TypedIPC 类型化 API 层）、`mock.ts`（mock backend `mockHandle`）、`mockData.ts`（mock 数据/状态）
 - **前端入口**：`web/src/App.tsx` — 三栏布局 + store 初始化
 

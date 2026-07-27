@@ -1304,3 +1304,55 @@ export interface InvokeMcpToolResult {
   content: unknown[] | null;
   isError: boolean;
 }
+// ---------------------------------------------------------------------------
+// v0.11.0 — Codebase RAG
+// ---------------------------------------------------------------------------
+
+/** Lifecycle status of the codebase indexer. */
+export type CodebaseIndexStatus = "idle" | "indexing" | "done" | "error";
+
+/** A single code search result returned by `codebase.search`. */
+export interface CodebaseSearchResult {
+  chunk_id: string;
+  file_path: string;
+  start_line: number;
+  end_line: number;
+  snippet: string;
+  language: string | null;
+  rank: number;
+  symbols: { name: string; kind: string; line: number; children: CodebaseSearchResult["symbols"] }[];
+}
+
+/** Result of `codebase.status` / `codebase.build_index`. */
+export interface CodebaseStatusResult {
+  status: CodebaseIndexStatus;
+  processed: number;
+  total: number;
+  percent: number;
+  message: string;
+  error: string | null;
+  stats: {
+    total_chunks: number;
+    total_files: number;
+    latest_updated_at: string | null;
+  };
+}
+
+/** Result of `codebase.search`. */
+export interface CodebaseSearchResultShape {
+  query: string;
+  file_pattern: string | null;
+  total: number;
+  results: CodebaseSearchResult[];
+}
+
+/** Result of `codebase.summarize`. */
+export interface CodebaseSummarizeResult {
+  path: string;
+  kind: "file" | "directory";
+  language: string | null;
+  total_lines: number;
+  symbols: { name: string; kind: string; line: number; children: CodebaseSummarizeResult["symbols"] }[];
+  snippet: string;
+  file_count: number;
+}

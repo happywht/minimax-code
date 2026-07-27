@@ -6,6 +6,7 @@ import {
   Activity,
   Bot,
   CheckCircle2,
+  Database,
   GitCompare,
   ListChecks,
   Loader2,
@@ -23,7 +24,8 @@ export type InspectorTab =
   | "review"
   | "teamruns"
   | "terminal"
-  | "runner";
+  | "runner"
+  | "codebase";
 
 export interface InspectorTabMeta {
   id: InspectorTab;
@@ -41,6 +43,7 @@ export const INSPECTOR_TABS: InspectorTabMeta[] = [
   { id: "teamruns", label: "Runs", icon: <Loader2 size={12} /> },
   { id: "terminal", label: "Term", icon: <TerminalSquare size={12} /> },
   { id: "runner", label: "Run", icon: <Rocket size={12} /> },
+  { id: "codebase", label: "Code", icon: <Database size={12} /> },
 ];
 
 export function tabMeta(tab: InspectorTab): InspectorTabMeta {

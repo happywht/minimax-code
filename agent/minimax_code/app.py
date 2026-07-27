@@ -44,6 +44,8 @@ _DB_LOCK = asyncio.Lock()
 # MCP server config DAO + runtime registry singletons (v0.11.0 Milestone 1).
 _MCP_SERVERS_DAO: Any = None  # type: ignore[no-untyped-def]
 _MCP_REGISTRY: Any = None  # type: ignore[no-untyped-def]
+# Codebase RAG indexer (v0.11.0 Milestone 2).
+_CODEBASE_INDEXER: Any = None  # type: ignore[no-untyped-def]
 # Plugin registry singleton (platform pillar #3 — Plugins). Lazily
 # built by ensure_plugin_registry(); tests inject via set_plugin_registry().
 _PLUGIN_REGISTRY: Any = None  # type: ignore[no-untyped-def]
@@ -182,6 +184,14 @@ async def _maybe_open_db() -> Any:
                     logger.exception("failed to attach persisted MCP server %s", cfg_row["name"])
         except Exception:  # noqa: BLE001
             logger.exception("failed to load persisted MCP servers")
+        # Codebase RAG indexer (v0.11.0 Milestone 2).
+        global _CODEBASE_INDEXER
+        from .codebase import CodebaseIndexer, CodebaseStore
+        workspace = Path.cwd()
+        env_workspace = os.environ.get("MINIMAX_CODE_WORKSPACE_DIR")
+        if env_workspace:
+            workspace = Path(env_workspace).expanduser().resolve()
+        _CODEBASE_INDEXER = CodebaseIndexer(workspace, CodebaseStore(db))
         # Sub-agent runtime — wire a process-wide MiniMaxClient
         # built from the stored model preference + provider config
         # (or fall back to defaults when no DB preference exists).
@@ -376,6 +386,17 @@ def set_mcp_registry(registry: Any) -> None:
     """Replace the cached MCP registry (test seam)."""
     global _MCP_REGISTRY
     _MCP_REGISTRY = registry
+
+
+def get_codebase_indexer() -> Any:
+    """Return the process-wide :class:`CodebaseIndexer`, or ``None``."""
+    return _CODEBASE_INDEXER
+
+
+def set_codebase_indexer(indexer: Any) -> None:
+    """Replace the cached codebase indexer (test seam)."""
+    global _CODEBASE_INDEXER
+    _CODEBASE_INDEXER = indexer
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +631,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_agents import register_agent_handlers
     from .ipc.handlers_audit import register_audit_handlers
     from .ipc.handlers_checkpoint import register_checkpoint_handlers
+    from .ipc.handlers_codebase import register_codebase_handlers
     from .ipc.handlers_crash import register_crash_handlers
     from .ipc.handlers_git import register_git_handlers
     from .ipc.handlers_mcp import register_mcp_handlers
@@ -705,6 +727,10 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # ``mcp.update_server`` / ``mcp.remove_server`` / ``mcp.list_tools`` /
     # ``mcp.invoke_tool`` for the Settings page's MCP Servers tab.
     register_mcp_handlers(server)
+    # The codebase handlers expose ``codebase.status`` /
+    # ``codebase.build_index`` / ``codebase.search`` / ``codebase.summarize``
+    # for the code-understanding features in v0.11.0 Milestone 2.
+    register_codebase_handlers(server)
     # The git handlers expose ``git.status`` / ``git.diff`` /
     # ``git.log`` for the v0.3.0 code-review flow and the top-bar
     # ``GitStatusBar`` widget. Stateless — every call shells out
@@ -774,7 +800,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
         "7 provider.* + 3 secrets.* + 3 git.* + 3 patch.* + "
         "4 terminal.* + 2 runner.* + 3 audit.* + 5 webhook.* + "
         "5 notification.* + 7 workflow.* + 7 team.* + 5 plugins.* + "
-        "3 telemetry.* + 3 crash.*)"
+        "4 codebase.* + 3 telemetry.* + 3 crash.*)"
     )
 
 
@@ -1233,4 +1259,6 @@ __all__ = [
     "set_mcp_servers_dao",
     "get_mcp_registry",
     "set_mcp_registry",
+    "get_codebase_indexer",
+    "set_codebase_indexer",
 ]

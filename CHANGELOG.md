@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added — 后端
+- **代码库 RAG（v0.11.0 Milestone 2）**：
+  - 新增 `agent/minimax_code/codebase/` 包：`CodebaseIndexer` 项目级索引器 + `CodebaseChunksDAO` chunk 持久化，复用已有 `perception/indexer.py` 与 `xai_codebase_graph/` 能力。
+  - 新增 `codebase_chunks` 表与 `codebase_chunks_fts` FTS5 全文索引（迁移 `018_codebase_chunks.py`）。
+  - 新增 `agent/minimax_code/ipc/handlers_codebase.py`，注册 `codebase.*` IPC 命名空间：`codebase.status` / `codebase.build_index` / `codebase.search` / `codebase.summarize`。
+  - `app.py` 初始化 `CodebaseIndexer` / `CodebaseChunksDAO` 单例并注册 handlers。
+  - 新增 `agent/tests/test_codebase_indexer.py`、`test_codebase_store.py`、`test_handlers_codebase.py` 覆盖索引、存储与 IPC。
 - **MCP 基础设施（v0.11.0 Milestone 1）**：
   - 新增 `mcp_servers` 表与 `McpServersDAO`，持久化外部 MCP 服务器配置（name/transport/command/url/env/enabled）。
   - 新增 `agent/minimax_code/ipc/handlers_mcp.py`，注册 `mcp.*` IPC 命名空间：`mcp.list_servers` / `mcp.add_server` / `mcp.update_server` / `mcp.remove_server` / `mcp.list_tools` / `mcp.invoke_tool`。
@@ -23,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **批量会话操作（v0.10.3）**：新增 `session.batchArchive` / `session.batchUpdateProject` IPC 方法及 `SessionsDAO` 批量接口，支持事务级归档与跨项目移动。
 
 ### Added — 前端
+- **Right Panel Codebase 标签页**：新增 `web/src/components/right-panel/CodebasePanel.tsx`，支持查看索引状态、触发构建索引、FTS 搜索代码库并展示结果；`tabs.tsx` / `InspectorContent.tsx` 注册 `codebase` tab。
+  - 扩展 `web/src/types/ipc.ts`、`web/src/ipc/typed.ts`、`web/src/ipc/mock.ts` 的 Codebase RAG 类型与桩实现。
 - **Settings MCP Servers 标签页**：新增 `web/src/components/settings/McpServersTab.tsx`，支持添加/删除 stdio MCP 服务器、查看连接状态；同步更新 `SettingsPage` tab 路由与 mock backend。
 - 扩展 `web/src/types/ipc.ts`、`web/src/ipc/typed.ts`、`web/src/ipc/mock.ts` 的 MCP 类型与桩实现。
 - **Sidebar 项目化**：会话按项目分组展示；收件箱默认展开置顶，普通项目可折叠，归档项目沉底。
@@ -50,12 +58,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 移除前端剩余 `window.prompt/confirm`：项目创建/重命名/删除与技能移除统一使用 Aurora `Modal`。
 
 ### Tests
+- 新增 Codebase RAG 相关测试：`agent/tests/test_codebase_indexer.py`、`agent/tests/test_codebase_store.py`、`agent/tests/test_handlers_codebase.py`。
 - 新增 MCP 相关测试：`agent/tests/test_handlers_mcp.py`、`agent/tests/test_mcp_servers_dao.py`。
 - 新增 `agent/tests/test_projects.py`，覆盖项目 DAO 与删除归位逻辑。
 - 新增/更新 `web/tests/sidebar.test.tsx`、`web/tests/sidebar-history.test.tsx`、`web/tests/chat-panel.test.tsx`，适配项目分组与 `project_id` 传参。
-- 前端 vitest：62 files / 487 tests 全绿。
+- 放宽 `agent/tests/test_connection.py::test_interval_keeps_global_timeline_across_loops` 的容差，消除 Windows/高负载下时序抖动导致的偶发失败。
+- 前端 vitest：495 tests 全绿。
 - Playwright e2e：15 specs 全绿。
-- Python pytest：9902 passed。
+- Python pytest：9930 passed，15 skipped。
 
 ## [0.9.1] - 2026-07-27
 

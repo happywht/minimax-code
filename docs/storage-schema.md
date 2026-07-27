@@ -266,6 +266,21 @@ Rules are evaluated in insertion order; the first match wins. The auth layer cac
 | `version`    | INTEGER | PK; matches the `NNN_` prefix of the migration filename. |
 | `applied_at` | TEXT    | ISO-8601 UTC.                               |
 
+### 2.11 `codebase_chunks`
+
+| Column         | Type    | Notes                                                                  |
+|----------------|---------|------------------------------------------------------------------------|
+| `id`           | TEXT PK | UUID v4.                                                               |
+| `file_path`    | TEXT    | Path relative to the indexed workspace root.                           |
+| `start_line`   | INTEGER | First line of the chunk (1-indexed).                                   |
+| `end_line`     | INTEGER | Last line of the chunk.                                                |
+| `content`      | TEXT    | Full chunk text used for FTS search and snippet generation.            |
+| `metadata`     | JSON    | Language, total line count, extracted symbols, etc.                    |
+| `created_at`   | TEXT    | ISO-8601 UTC.                                                          |
+| `updated_at`   | TEXT    | Bumped on every re-index.                                              |
+
+The companion FTS5 virtual table `codebase_chunks_fts(file_path, content)` provides keyword search; triggers keep it synchronized with the main table.
+
 ## 3. Index strategy
 
 | Index                            | Table              | Purpose                                                                                  |
@@ -289,6 +304,9 @@ Rules are evaluated in insertion order; the first match wins. The auth layer cac
 | `idx_devices_device_id`          | `mobile_devices`   | Explicit alias of the UNIQUE auto-index.                                                 |
 | `idx_devices_last_seen`          | `mobile_devices`   | "Recently seen" widget.                                                                  |
 | `idx_mcp_servers_enabled_updated`| `mcp_servers`      | Settings list: enabled servers first, sorted by recency.                               |
+| `idx_codebase_chunks_file_path`  | `codebase_chunks`  | Retrieve all chunks for a file (summarize / invalidate).                              |
+| `idx_codebase_chunks_updated_at` | `codebase_chunks`  | Recently indexed files / directory summaries.                                          |
+| `codebase_chunks_fts`            | `codebase_chunks`  | FTS5 virtual table for keyword search over `file_path` + `content`.                    |
 
 Two of these tests assert the planner actually picks the index (`test_messages_index_used_for_session_listing`, `test_sessions_index_used_for_listing`). They run `ANALYZE` first so the planner has statistics.
 

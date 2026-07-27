@@ -230,6 +230,7 @@ on the next `readline() == ""`.
 | `model.list` / `model.get_current` / `model.set_current` / `model.set_reasoning_effort` | req/res | Dynamic model list + current selection + reasoning-effort override. `model.list` entries may carry optional reasoning-effort meta (R58); the `model.list` and `model.get_current` responses echo the user's persisted `reasoning_effort` override (R61 read-back). |
 | `plugins.list` / `plugins.info` / `plugins.enable` / `plugins.disable` / `plugins.reload` | req/res | Platform pillar #3 — discover, inspect, toggle, and hot-reload runtime plugins (fail-open discovery; runtime enable override is in-memory). |
 | `mcp.list_servers` / `mcp.add_server` / `mcp.update_server` / `mcp.remove_server` / `mcp.list_tools` / `mcp.invoke_tool` | req/res | MCP server management and tool invocation (v0.11.0). |
+| `codebase.status` / `codebase.build_index` / `codebase.search` / `codebase.summarize` | req/res | Codebase indexing and retrieval (v0.11.0 Milestone 2). |
 
 ### `model.list` response — reasoning-effort fields (R58)
 
@@ -732,6 +733,15 @@ unexpected param shape. `crash_dir` resolves to `<data_dir>/crashes`
 | `mcp.remove_server` | `{server_id}` | `{ok, server_id}` | Disconnects and deletes the persisted server. |
 | `mcp.list_tools` | `{server_name}` | `{server_name, tools: [{name, description?, input_schema?}]}` | Lists tools exposed by a single connected server. |
 | `mcp.invoke_tool` | `{server_name, tool_name, arguments?}` | `{ok, server_name, tool_name, text?, content?, isError}` | Calls a tool on the named server. Returns the tool result or a structured error. |
+
+### `codebase.*` — codebase indexing and retrieval (v0.11.0 Milestone 2)
+
+| Method | Params | Result | Notes |
+|--------|--------|--------|-------|
+| `codebase.status` | `{}` | `{status, processed, total, percent, message, error, stats: {total_chunks, total_files, latest_updated_at}}` | Returns the current lifecycle status of the indexer plus aggregate stats. |
+| `codebase.build_index` | `{force?}` | `{status, processed, total, percent, message, error, stats}` | Starts a full index build in the background. If already indexing, returns the current progress. `force=true` clears the existing index first. |
+| `codebase.search` | `{query, file_pattern?, limit?, offset?}` | `{query, file_pattern, total, results: [{chunk_id, file_path, start_line, end_line, snippet, language, rank, symbols}]}` | Keyword search over indexed file contents and paths. `file_pattern` is a SQL `LIKE` pattern. |
+| `codebase.summarize` | `{path}` | `{path, kind, language, total_lines, symbols, snippet, file_count}` | Returns a structured summary for a file or directory prefix. |
 
 ## 7. Event names
 

@@ -31,6 +31,9 @@ const TeamRunPanel = lazy(() =>
 const TerminalPanel = lazy(() =>
   import("./TerminalPanel").then((module) => ({ default: module.TerminalPanel })),
 );
+const CodebasePanel = lazy(() =>
+  import("./CodebasePanel").then((module) => ({ default: module.CodebasePanel })),
+);
 
 export interface InspectorContentProps {
   activeTab: InspectorTab;
@@ -119,6 +122,14 @@ export function InspectorContent({
         <section id={`${testId}-teamruns-panel`} role="tabpanel" data-testid={`${testId}-teamrun-body`}>
           <Suspense fallback={<PanelFallback />}>
             <TeamRunPanel />
+          </Suspense>
+        </section>
+      );
+    case "codebase":
+      return (
+        <section id={`${testId}-codebase-panel`} role="tabpanel" data-testid={`${testId}-codebase-body`}>
+          <Suspense fallback={<PanelFallback />}>
+            <CodebasePanel testId={`${testId}-codebase-panel`} />
           </Suspense>
         </section>
       );

@@ -72,6 +72,9 @@ import type {
   RemoveMcpServerResult,
   ListMcpToolsResult,
   InvokeMcpToolResult,
+  CodebaseStatusResult,
+  CodebaseSearchResultShape,
+  CodebaseSummarizeResult,
 } from "../types/ipc";
 import type { IPCClient } from "./client";
 import {
@@ -1078,6 +1081,55 @@ function mockHandle(
         content: null,
         isError: false,
       } satisfies InvokeMcpToolResult;
+    }
+
+    // ── codebase.* mock ───────────────────────────────────────────
+
+    case "codebase.status":
+    case "codebase.build_index": {
+      return {
+        status: "done",
+        processed: 12,
+        total: 12,
+        percent: 100,
+        message: "Mock index ready",
+        error: null,
+        stats: { total_chunks: 12, total_files: 12, latest_updated_at: new Date().toISOString() },
+      } satisfies CodebaseStatusResult;
+    }
+
+    case "codebase.search": {
+      const p = params as { query: string; file_pattern?: string; limit?: number; offset?: number };
+      return {
+        query: p.query,
+        file_pattern: p.file_pattern ?? null,
+        total: 1,
+        results: [
+          {
+            chunk_id: "mock-chunk-1",
+            file_path: "src/example.ts",
+            start_line: 1,
+            end_line: 10,
+            snippet: `Mock search hit for "${p.query}"`,
+            language: "ts",
+            rank: 1.0,
+            symbols: [{ name: "example", kind: "function", line: 1, children: [] }],
+          },
+        ],
+      } satisfies CodebaseSearchResultShape;
+    }
+
+    case "codebase.summarize": {
+      const p = params as { path: string };
+      return {
+        path: p.path,
+        kind: "file",
+        language: "ts",
+        total_lines: 42,
+        symbols: [{ name: "example", kind: "function", line: 1, children: [] }],
+        snippet: "Mock summary snippet.",
+        file_count: 1,
+      } satisfies CodebaseSummarizeResult;
     }
 
     default:
