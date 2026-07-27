@@ -1,12 +1,12 @@
 /**
  * Left sidebar — 240px wide. Contains:
  *   - Brand mark
- *   - "New task" button
+ *   - "New task" button with project selector
  *   - Primary nav
  *   - Session history grouped by project
  *   - Footer: UserBadge
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Archive,
   ArchiveRestore,
@@ -19,6 +19,7 @@ import {
   History,
   Inbox,
   LayoutDashboard,
+  MoreHorizontal,
   Pencil,
   Plus,
   Plug,
@@ -32,7 +33,7 @@ import {
 import { NavItem } from "./NavItem";
 import { UserBadge } from "./UserBadge";
 import { SkeletonLine } from "./Skeleton";
-import { Button, IconButton, Input } from "../../ui";
+import { Button, IconButton, Input, Modal, DropdownMenu } from "../../ui";
 import { typedIPC } from "../../ipc";
 import { useSessionStore, type SessionFilter, type SessionMeta } from "../../stores";
 import type { Project } from "../../types/ipc";
@@ -120,6 +121,15 @@ export function Sidebar({
   const [searchLoading, setSearchLoading] = useState(false);
   const [stats, setStats] = useState<{ total_sessions: number; total_messages: number } | null>(null);
 
+  // Modal state for project operations.
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createName, setCreateName] = useState("");
+  const [renameTarget, setRenameTarget] = useState<Project | null>(null);
+  const [renameName, setRenameName] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
+  const createInputRef = useRef<HTMLInputElement>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     if (sessions.length === 0) {
       void refresh();
@@ -186,9 +196,9 @@ export function Sidebar({
       .sort((a, b) => b.updated_at - a.updated_at);
   }, [filter, historyQuery, remoteSearchSessions, sessions]);
 
-  const searchMode = Boolean(historyQuery.trim() && remoteSearchSessions);
+  const searchMode = Boolean(historyQuery.trim());
 
-  const { inboxProject, activeProjects, archivedProjects } = useMemo(() => {
+  const { inboxProject, activeProjects, archivedProjects, projectById } = useMemo(() => {
     const inbox = projects.find((p) => p.id === "inbox") ?? {
       id: "inbox",
       name: "收件箱",
@@ -199,8 +209,12 @@ export function Sidebar({
     };
     const active = projects.filter((p) => p.id !== "inbox" && !p.archived).sort((a, b) => b.updated_at - a.updated_at);
     const archived = projects.filter((p) => p.id !== "inbox" && p.archived).sort((a, b) => b.updated_at - a.updated_at);
-    return { inboxProject: inbox, activeProjects: active, archivedProjects: archived };
+    const byId = new Map<string, Project>();
+    for (const p of [inbox, ...active, ...archived]) byId.set(p.id, p);
+    return { inboxProject: inbox, activeProjects: active, archivedProjects: archived, projectById: byId };
   }, [projects]);
+
+  const currentProject = projectById.get(currentProjectId ?? "inbox") ?? inboxProject;
 
   const sessionsByProject = useMemo(() => {
     const map = new Map<string, SessionMeta[]>();
@@ -213,31 +227,100 @@ export function Sidebar({
     return map;
   }, [filteredSessions]);
 
+  // When searching, auto-expand projects that have matching sessions so results are visible.
+  const effectiveExpandedIds = useMemo(() => {
+    const base = new Set(expandedProjectIds);
+    if (!searchMode) return base;
+    for (const pid of sessionsByProject.keys()) {
+      if ((sessionsByProject.get(pid)?.length ?? 0) > 0) {
+        base.add(pid);
+      }
+    }
+    return base;
+  }, [expandedProjectIds, searchMode, sessionsByProject]);
+
+  // Project creation
   const handleCreateProject = async () => {
-    const name = window.prompt("新建项目名称：", "");
-    if (!name?.trim()) return;
-    const project = await createProject(name.trim());
+    const name = createName.trim();
+    if (!name) return;
+    const project = await createProject(name);
     if (project) {
       setCurrentProject(project.id);
+      setCreateOpen(false);
+      setCreateName("");
     }
   };
 
-  const handleRenameProject = async (project: Project) => {
-    const name = window.prompt("重命名项目：", project.name);
-    if (!name?.trim() || name.trim() === project.name) return;
-    await updateProject(project.id, { name: name.trim() });
+  // Project rename
+  const startRename = (project: Project) => {
+    setRenameTarget(project);
+    setRenameName(project.name);
   };
 
-  const handleDeleteProject = async (project: Project) => {
-    if (!window.confirm(`删除项目「${project.name}」？其下任务将移回收件箱。`)) return;
-    await deleteProject(project.id);
-    if (currentProjectId === project.id) {
+  const handleRenameProject = async () => {
+    if (!renameTarget) return;
+    const name = renameName.trim();
+    if (!name || name === renameTarget.name) {
+      setRenameTarget(null);
+      return;
+    }
+    await updateProject(renameTarget.id, { name });
+    setRenameTarget(null);
+  };
+
+  // Project deletion
+  const startDelete = (project: Project) => setDeleteTarget(project);
+
+  const handleDeleteProject = async () => {
+    if (!deleteTarget) return;
+    await deleteProject(deleteTarget.id);
+    if (currentProjectId === deleteTarget.id) {
       setCurrentProject("inbox");
     }
+    setDeleteTarget(null);
   };
 
+  const projectMenuItems = (project: Project) => [
+    {
+      id: "rename",
+      label: "重命名",
+      icon: <Pencil size={14} />,
+      onClick: () => startRename(project),
+    },
+    project.archived
+      ? {
+          id: "unarchive",
+          label: "取消归档",
+          icon: <ArchiveRestore size={14} />,
+          onClick: () => void unarchiveProject(project.id),
+        }
+      : {
+          id: "archive",
+          label: "归档项目",
+          icon: <Archive size={14} />,
+          onClick: () => void archiveProject(project.id),
+        },
+    {
+      id: "delete",
+      label: "删除项目",
+      icon: <Trash2 size={14} />,
+      danger: true,
+      onClick: () => startDelete(project),
+    },
+  ];
+
+  const projectSelectorItems = useMemo(() => {
+    const all = [inboxProject, ...activeProjects, ...archivedProjects];
+    return all.map((p) => ({
+      id: p.id,
+      label: p.name,
+      icon: projectIcon(p),
+      onClick: () => setCurrentProject(p.id),
+    }));
+  }, [inboxProject, activeProjects, archivedProjects, setCurrentProject]);
+
   const renderProjectHeader = (project: Project, sessionsInProject: SessionMeta[]) => {
-    const expanded = expandedProjectIds.includes(project.id);
+    const expanded = effectiveExpandedIds.has(project.id);
     const isInbox = project.id === "inbox";
     return (
       <div
@@ -257,43 +340,21 @@ export function Sidebar({
           <span className="rounded bg-surface-3 px-1.5 py-0 text-[11px] text-ink-2">{sessionsInProject.length}</span>
         </button>
         {!isInbox && (
-          <div className="ml-1 flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100">
-            <IconButton
-              size="sm"
-              aria-label="Rename project"
-              title="Rename project"
-              onClick={() => void handleRenameProject(project)}
-            >
-              <Pencil size={12} />
-            </IconButton>
-            {project.archived ? (
+          <DropdownMenu
+            align="right"
+            testId={`sidebar-project-menu-${project.id}`}
+            trigger={
               <IconButton
                 size="sm"
-                aria-label="Unarchive project"
-                title="Unarchive project"
-                onClick={() => void unarchiveProject(project.id)}
+                aria-label="Project options"
+                title="Project options"
+                onClick={(e) => e.stopPropagation()}
               >
-                <ArchiveRestore size={12} />
+                <MoreHorizontal size={14} />
               </IconButton>
-            ) : (
-              <IconButton
-                size="sm"
-                aria-label="Archive project"
-                title="Archive project"
-                onClick={() => void archiveProject(project.id)}
-              >
-                <Archive size={12} />
-              </IconButton>
-            )}
-            <IconButton
-              size="sm"
-              aria-label="Delete project"
-              title="Delete project"
-              onClick={() => void handleDeleteProject(project)}
-            >
-              <Trash2 size={12} />
-            </IconButton>
-          </div>
+            }
+            items={projectMenuItems(project)}
+          />
         )}
       </div>
     );
@@ -342,7 +403,7 @@ export function Sidebar({
 
   const renderProjectGroup = (project: Project) => {
     const sessionsInProject = sessionsByProject.get(project.id) ?? [];
-    const expanded = expandedProjectIds.includes(project.id);
+    const expanded = effectiveExpandedIds.has(project.id);
     return (
       <div key={project.id} className="space-y-0.5">
         {renderProjectHeader(project, sessionsInProject)}
@@ -350,7 +411,7 @@ export function Sidebar({
           <ul className="space-y-0.5 pl-2">
             {sessionsInProject.map(renderSessionRow)}
             {!searchMode && sessionsInProject.length === 0 && (
-              <li className="px-2 py-1 text-[11px] italic text-ink-2">No sessions</li>
+              <li className="px-2 py-1 text-[11px] italic text-ink-2">暂无任务</li>
             )}
           </ul>
         )}
@@ -389,11 +450,29 @@ export function Sidebar({
           className="flex-1"
           loading={creatingSession}
           disabled={creatingSession}
-          onClick={() => void createSession("New task")}
+          onClick={() => void createSession("New task", currentProject.id)}
+          title={`在「${currentProject.name}」创建新任务`}
           data-testid="sidebar-new-task"
         >
           新任务
         </Button>
+        <DropdownMenu
+          align="left"
+          testId="sidebar-project-selector"
+          trigger={
+            <IconButton
+              aria-label={`当前项目：${currentProject.name}`}
+              title={`当前项目：${currentProject.name}`}
+              data-testid="sidebar-project-selector-trigger"
+            >
+              <span className="flex items-center gap-0.5">
+                <span className="[&>svg]:h-3 [&>svg]:w-3">{projectIcon(currentProject, 12)}</span>
+                <ChevronDown size={10} />
+              </span>
+            </IconButton>
+          }
+          items={projectSelectorItems}
+        />
         <IconButton
           aria-label="Create isolated worktree task"
           title="Create isolated worktree task"
@@ -478,7 +557,10 @@ export function Sidebar({
               size="sm"
               aria-label="New project"
               title="New project"
-              onClick={() => void handleCreateProject()}
+              onClick={() => {
+                setCreateName("");
+                setCreateOpen(true);
+              }}
               data-testid="sidebar-new-project"
             >
               <Plus size={11} />
@@ -535,8 +617,8 @@ export function Sidebar({
               className="px-2 py-2 text-[11px] italic text-ink-2"
             >
               {historyQuery.trim()
-                ? "No matching sessions."
-                : "No sessions yet — start a new task ↑"}
+                ? "无匹配任务"
+                : "暂无任务 — 点击上方「新任务」创建"}
             </div>
           )}
 
@@ -549,8 +631,6 @@ export function Sidebar({
               {archivedProjects.map(renderProjectGroup)}
             </div>
           )}
-
-
         </div>
       </div>
 
@@ -574,6 +654,102 @@ export function Sidebar({
           <UserBadge name="本地用户" email="数据仅保存在本机" plan="个人版" />
         </div>
       </div>
+
+      {/* Create project modal */}
+      {createOpen && (
+        <Modal
+          title="新建项目"
+          onClose={() => setCreateOpen(false)}
+          testId="sidebar-create-project-modal"
+          footer={
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setCreateOpen(false)}>
+                取消
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => void handleCreateProject()}
+                disabled={!createName.trim()}
+              >
+                创建
+              </Button>
+            </>
+          }
+        >
+          <Input
+            ref={createInputRef}
+            value={createName}
+            onChange={(e) => setCreateName(e.target.value)}
+            placeholder="项目名称"
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void handleCreateProject();
+            }}
+          />
+        </Modal>
+      )}
+
+      {/* Rename project modal */}
+      {renameTarget && (
+        <Modal
+          title="重命名项目"
+          onClose={() => setRenameTarget(null)}
+          testId="sidebar-rename-project-modal"
+          footer={
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setRenameTarget(null)}>
+                取消
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => void handleRenameProject()}
+                disabled={!renameName.trim() || renameName.trim() === renameTarget.name}
+              >
+                保存
+              </Button>
+            </>
+          }
+        >
+          <Input
+            ref={renameInputRef}
+            value={renameName}
+            onChange={(e) => setRenameName(e.target.value)}
+            placeholder="项目名称"
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void handleRenameProject();
+            }}
+          />
+        </Modal>
+      )}
+
+      {/* Delete project confirm modal */}
+      {deleteTarget && (
+        <Modal
+          title="删除项目"
+          onClose={() => setDeleteTarget(null)}
+          testId="sidebar-delete-project-modal"
+          footer={
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setDeleteTarget(null)}>
+                取消
+              </Button>
+              <Button variant="danger" size="sm" onClick={() => void handleDeleteProject()}>
+                删除
+              </Button>
+            </>
+          }
+        >
+          <p className="text-sm text-ink-0">
+            删除项目「<span className="font-medium">{deleteTarget.name}</span>」？
+          </p>
+          <p className="mt-1 text-xs text-ink-2">
+            其下任务将移回「收件箱」，任务数据不会丢失。
+          </p>
+        </Modal>
+      )}
     </aside>
   );
 }

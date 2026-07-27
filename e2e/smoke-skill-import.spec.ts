@@ -27,9 +27,10 @@ test("skills: imports a personal SKILL.md through the UI", async ({ page }) => {
   await expect(row).toContainText("e2e-personal-helper");
   await expect(row).not.toContainText("built-in");
 
-  page.once("dialog", (dialog) => dialog.accept());
   await page
     .getByRole("button", { name: "Remove skill e2e-personal-helper" })
     .click();
+  await expect(page.getByTestId("skills-remove-modal")).toBeVisible();
+  await page.getByRole("button", { name: "移除" }).click();
   await expect(row).toHaveCount(0);
 });

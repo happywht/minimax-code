@@ -30,12 +30,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ComposerToolbar` 在桌面端改为单行布局，减少输入区视觉噪音。
 
 ### Changed
+- **Sidebar Phase 1 体验优化**：
+  - 项目行操作从 hover-only 按钮改为常驻 `⋯` 下拉菜单，兼容触控设备。
+  - 搜索命中时自动展开所属项目，避免结果折叠隐藏。
+  - 「新任务」按钮旁新增当前目标项目选择器，明确任务落点。
+  - 统一空状态中文文案：`暂无任务`、`无匹配任务`。
 - 为顶部 icon-only 按钮（Sidebar hamburger、Command Palette、Notifications）及右侧面板 collapse 按钮补充 `title` tooltip。
+
+### Fixed
+- 移除前端剩余 `window.prompt/confirm`：项目创建/重命名/删除与技能移除统一使用 Aurora `Modal`。
 
 ### Tests
 - 新增 `agent/tests/test_projects.py`，覆盖项目 DAO 与删除归位逻辑。
 - 新增/更新 `web/tests/sidebar.test.tsx`、`web/tests/sidebar-history.test.tsx`、`web/tests/chat-panel.test.tsx`，适配项目分组与 `project_id` 传参。
-- 前端 vitest：62 files / 486 tests 全绿。
+- 前端 vitest：62 files / 487 tests 全绿。
 - Playwright e2e：15 specs 全绿。
 - Python pytest：9902 passed。
 

@@ -152,7 +152,6 @@ describe("SkillsPanel", () => {
 
   it("removes an imported skill after confirmation", async () => {
     const { typedIPC } = await import("../src/ipc");
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     useSkillStore.setState({
       skills: [
         {
@@ -172,6 +171,11 @@ describe("SkillsPanel", () => {
     fireEvent.click(
       await screen.findByTestId("skills-remove-personal-helper:personal-helper"),
     );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("skills-remove-modal")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByText("移除"));
 
     await waitFor(() =>
       expect(typedIPC.uninstallSkill).toHaveBeenCalledWith(

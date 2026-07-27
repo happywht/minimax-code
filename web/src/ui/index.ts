@@ -19,3 +19,5 @@ export { Spinner } from "./Spinner";
 export type { SpinnerProps } from "./Spinner";
 export { EmptyState } from "./EmptyState";
 export type { EmptyStateProps } from "./EmptyState";
+export { DropdownMenu } from "./DropdownMenu";
+export type { DropdownMenuItem, DropdownMenuProps } from "./DropdownMenu";

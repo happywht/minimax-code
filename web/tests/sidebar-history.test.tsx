@@ -226,7 +226,7 @@ describe("Sidebar history list", () => {
       await vi.advanceTimersByTimeAsync(300);
       await Promise.resolve();
     });
-    expect(screen.getByTestId("sidebar-session-empty")).toHaveTextContent("No matching sessions.");
+    expect(screen.getByTestId("sidebar-session-empty")).toHaveTextContent("无匹配任务");
 
     fireEvent.click(screen.getByTestId("sidebar-session-search-clear"));
     expect(screen.getByTestId("sidebar-session-search")).toHaveValue("");
@@ -277,5 +277,50 @@ describe("Sidebar history list", () => {
     expect(screen.getByTestId("sidebar-session-row-ses_remote")).toBeInTheDocument();
     expect(screen.queryByTestId("sidebar-session-row-ses_local")).toBeNull();
     expect(useSessionStore.getState().sessions.some((s) => s.id === "ses_remote")).toBe(true);
+  });
+
+  it("auto-expands a collapsed project when its session matches the search", () => {
+    useSessionStore.setState({
+      expandedProjectIds: [],
+      projects: [
+        {
+          id: "inbox",
+          name: "收件箱",
+          description: "",
+          archived: false,
+          created_at: NOW,
+          updated_at: NOW,
+        },
+        {
+          id: "proj_docs",
+          name: "Docs",
+          description: "",
+          archived: false,
+          created_at: NOW,
+          updated_at: NOW,
+        },
+      ],
+      sessions: [
+        {
+          id: "ses_collapsed",
+          title: "Draft README",
+          archived: false,
+          created_at: NOW,
+          updated_at: NOW,
+          model_id: null,
+          project_id: "proj_docs",
+        },
+      ],
+    });
+    render(<Sidebar />);
+
+    // Initially collapsed.
+    expect(screen.queryByTestId("sidebar-session-row-ses_collapsed")).toBeNull();
+
+    fireEvent.change(screen.getByTestId("sidebar-session-search"), {
+      target: { value: "README" },
+    });
+    expect(screen.getByTestId("sidebar-session-row-ses_collapsed")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-project-proj_docs").querySelector("button")).toHaveAttribute("aria-expanded", "true");
   });
 });

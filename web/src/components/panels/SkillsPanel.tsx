@@ -6,10 +6,10 @@
  * Users can import an instruction-only or tool-referencing SKILL.md
  * directly from disk; the Agent validates and stores it in user data.
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FileUp, Trash2, Wrench, X } from "lucide-react";
 import { useSkillStore } from "../../stores";
-import { Badge, Button, EmptyState, IconButton, Spinner } from "../../ui";
+import { Badge, Button, EmptyState, IconButton, Modal, Spinner } from "../../ui";
 import { toast } from "../layout/ErrorBoundary";
 
 function readTextFile(file: File): Promise<string> {
@@ -35,6 +35,8 @@ export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelPro
   const remove = useSkillStore((s) => s.remove);
   const setEnabled = useSkillStore((s) => s.setEnabled);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [removeId, setRemoveId] = useState<string | null>(null);
+  const skillToRemove = removeId ? skills.find((s) => s.id === removeId) : undefined;
 
   useEffect(() => {
     void refresh();
@@ -160,11 +162,7 @@ export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelPro
                       data-testid={`skills-remove-${skill.id}`}
                       aria-label={`Remove skill ${skill.name}`}
                       title="Remove custom skill"
-                      onClick={() => {
-                        if (window.confirm(`Remove custom skill ${skill.name}?`)) {
-                          void remove(skill.id);
-                        }
-                      }}
+                      onClick={() => setRemoveId(skill.id)}
                       className="hover:bg-[var(--status-error-subtle)] hover:text-status-error"
                     >
                       <Trash2 />
@@ -176,6 +174,36 @@ export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelPro
           </ul>
         )}
       </div>
+
+      {skillToRemove && (
+        <Modal
+          title="移除技能"
+          testId="skills-remove-modal"
+          onClose={() => setRemoveId(null)}
+          footer={
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setRemoveId(null)}>
+                取消
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => {
+                  void remove(removeId!);
+                  setRemoveId(null);
+                }}
+              >
+                移除
+              </Button>
+            </>
+          }
+        >
+          <p className="text-sm text-ink-0">
+            移除自定义技能「<span className="font-medium">{skillToRemove.name}</span>」？
+          </p>
+          <p className="mt-1 text-xs text-ink-2">移除后可在需要时重新导入。</p>
+        </Modal>
+      )}
     </section>
   );
 }

@@ -43,6 +43,7 @@ Legacy aliases `--minimax-*` (e.g. `minimax-bg`) are kept for backwards compatib
 - `Badge` — status/label pill with semantic `tone`
 - `Panel` — card container with optional header
 - `Modal` — accessible dialog with backdrop, Esc, focus trap, footer slot
+- `DropdownMenu` — accessible toggle menu with focus trap, click-outside/Esc close
 - `Spinner` / `EmptyState`
 
 Import from `../ui` (or `@/ui` in tests, although source code currently prefers relative imports).
