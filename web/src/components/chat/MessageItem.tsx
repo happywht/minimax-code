@@ -21,7 +21,7 @@
  * tool-call/tool-result messages that follow the assistant bubble in
  * the same turn (bounded by the next user/assistant message).
  */
-import React, { useMemo } from "react";
+import React, { useMemo, useState, type ChangeEvent } from "react";
 import type { Message, MessageStatus } from "../../types/ipc";
 import { useChat, useThemeStore } from "../../stores";
 import { extractFileReferences } from "./fileReferences";
@@ -30,9 +30,11 @@ import { summarizeTurn, type TurnSummary } from "./turnSummary";
 import { FileReferenceStrip } from "./FileReferenceStrip";
 import { MarkdownBody } from "./MarkdownBody";
 import { FailedMessageFooter, MessageCopyOverlay } from "./MessageActions";
+import { MessageActionMenu } from "./MessageActionMenu";
 import { MessageStatusBadge } from "./MessageStatusBadge";
 import { ToolCallCard } from "./ToolCallCard";
 import { TurnSummaryRow } from "./TurnSummaryRow";
+import { Textarea, Button } from "../../ui";
 
 export interface MessageItemProps {
   message: Message;
@@ -43,6 +45,8 @@ export const MessageItem = React.memo(function MessageItem({
   message,
   testId,
 }: MessageItemProps): JSX.Element {
+  const [isEditing, setIsEditing] = useState(false);
+  const [editText, setEditText] = useState(message.text);
   const isUser = message.role === "user";
   const isTool = message.role === "tool";
   const isSystem = message.role === "system";
@@ -61,6 +65,8 @@ export const MessageItem = React.memo(function MessageItem({
   // We pull the full message log from the chat store so we can count
   // tool calls that happened in the same turn.
   const messages = useChat((s) => s.messages);
+  const updateMessage = useChat((s) => s.updateMessage);
+  const deleteMessage = useChat((s) => s.deleteMessage);
   const summary = useMemo<TurnSummary | null>(() => {
     if (!isAssistant) return null;
     const idx = messages.findIndex((m) => m.id === message.id);
@@ -93,6 +99,8 @@ export const MessageItem = React.memo(function MessageItem({
             : isCancelled
               ? "border-line bg-surface-1 text-ink-1"
               : "border-line bg-surface-2 text-ink-0");
+  const canEdit = isUser && !message.streaming;
+  const canDelete = !isSystem && !message.streaming;
 
   return (
     <div
@@ -114,11 +122,61 @@ export const MessageItem = React.memo(function MessageItem({
             onAccent={isUser}
           />
         )}
+        {!isSystem && (
+          <div
+            className={
+              "absolute top-1.5 z-10 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100 " +
+              (isUser ? "right-1.5" : "left-1.5")
+            }
+          >
+            <MessageActionMenu
+              messageId={message.id}
+              editable={canEdit}
+              deletable={canDelete}
+              onEdit={() => {
+                setEditText(message.text);
+                setIsEditing(true);
+              }}
+              onDelete={() => void deleteMessage(message.id)}
+            />
+          </div>
+        )}
         {showSummary && summary && (
           <TurnSummaryRow messageId={message.id} summary={summary} />
         )}
         {showStatus && <MessageStatusBadge messageId={message.id} status={status} />}
-        {isQueued && !message.text ? (
+        {isEditing ? (
+          <div className="flex flex-col gap-2">
+            <Textarea
+              value={editText}
+              onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setEditText(e.target.value)}
+              className={isUser ? "bg-accent-contrast text-ink-0" : ""}
+              rows={3}
+              data-testid={`message-edit-input-${message.id}`}
+            />
+            <div className="flex justify-end gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setIsEditing(false)}
+                data-testid={`message-edit-cancel-${message.id}`}
+              >
+                取消
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={() => {
+                  void updateMessage(message.id, editText);
+                  setIsEditing(false);
+                }}
+                data-testid={`message-edit-save-${message.id}`}
+              >
+                保存
+              </Button>
+            </div>
+          </div>
+        ) : isQueued && !message.text ? (
           <div data-testid={`message-skeleton-${message.id}`} className="space-y-2 py-1">
             <div className="h-3 w-52 animate-pulse rounded bg-surface-3" />
             <div className="h-3 w-40 animate-pulse rounded bg-surface-3/70" />

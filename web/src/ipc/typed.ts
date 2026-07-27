@@ -24,6 +24,8 @@ import type {
   ListAuditResult,
   ListJobsResult,
   ListMessagesResult,
+  UpdateMessageResult,
+  DeleteMessageResult,
   ListModelsResult,
   ListNotificationsResult,
   ListPluginsResult,
@@ -102,6 +104,8 @@ export interface TypedIPC {
   sessionStats(): Promise<SessionStatsResult>;
   sessionExport(params: { session_id: string }): Promise<SessionExportResult>;
   listMessages(sessionId: string, opts?: { limit?: number; before?: string }): Promise<ListMessagesResult>;
+  updateMessage(params: { message_id: string; content?: string; metadata?: Record<string, unknown> }): Promise<UpdateMessageResult>;
+  deleteMessage(params: { message_id: string }): Promise<DeleteMessageResult>;
   listRuns(opts?: { session_id?: string; status?: string; limit?: number; offset?: number }): Promise<ListRunsResult>;
   getRunSteps(runId: string): Promise<RunStepsResult>;
 
@@ -401,6 +405,10 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         session_id: sid,
         ...(opts ?? {}),
       }),
+    updateMessage: (params) =>
+      client.request<UpdateMessageResult>("message.update", params),
+    deleteMessage: (params) =>
+      client.request<DeleteMessageResult>("message.delete", params),
     listRuns: (opts) =>
       client.request<ListRunsResult>("run.list", opts ?? {}),
     getRunSteps: (runId) =>

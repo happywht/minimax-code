@@ -5,6 +5,31 @@ All notable changes to MiniMax Code are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — 后端
+- 消息级持久化能力：`MessagesDAO.update()` 支持更新内容与元数据。
+- 新增 IPC 方法 `message.update` 与 `message.delete`：编辑/删除单条消息。
+
+### Added — 前端
+- 用户消息气泡新增操作菜单（复制/编辑/删除）。
+- `MessageItem` 支持内联编辑，保存后同步更新后端并刷新本地消息列表。
+
+### Fixed
+- 修复 TopBar `overflow-hidden` 导致 workspace/git/notification 下拉菜单被裁切、点击后无法查看的问题。
+- `ConnectionBanner` 增加关闭按钮，非按钮区域改为 `pointer-events-none`，避免遮挡顶部下拉菜单。
+- `TopBar` 的 Command Palette 按钮改为直接调用 `toggle()`，不再模拟键盘事件。
+- `ComposerToolbar` 在桌面端改为单行布局，减少输入区视觉噪音。
+
+### Changed
+- 为顶部 icon-only 按钮（Sidebar hamburger、Command Palette、Notifications）及右侧面板 collapse 按钮补充 `title` tooltip。
+
+### Tests
+- 新增 `web/tests/message-actions.test.tsx`，覆盖消息编辑与删除交互。
+- 前端 vitest：62 files / 486 tests 全绿。
+- Playwright e2e：15 specs 全绿。
+- Python pytest：9889 passed。
+
 ## [0.9.1] - 2026-07-27
 
 **前端交互增强 + 后端会话能力扩展。** 在 v0.9.0 重构基础上继续迭代。

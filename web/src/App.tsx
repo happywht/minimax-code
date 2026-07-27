@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ChatPanel,
   CommandPalette,
@@ -25,6 +25,7 @@ import {
 } from "./stores";
 import type { SettingsTab } from "./components/settings/SettingsPage";
 import type { SidecarEvent } from "./types/ipc";
+import type { CommandPaletteHandle } from "./components/layout/CommandPalette";
 
 const MobilePairingModal = lazy(() =>
   import("./components/modals/MobilePairingModal").then((module) => ({ default: module.MobilePairingModal })),
@@ -77,6 +78,8 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [connState, setConnState] = useState<ConnectionState>(agentReady ? "connected" : "connecting");
   const [retryAttempt, setRetryAttempt] = useState(0);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+  const paletteRef = useRef<CommandPaletteHandle>(null);
 
   const retryDelayMs = Math.min(15_000, 1000 * 2 ** retryAttempt);
 
@@ -185,6 +188,10 @@ export default function App() {
   }, [connState, retryConnection, retryDelayMs]);
 
   useEffect(() => {
+    if (connState === "connected") setBannerDismissed(false);
+  }, [connState]);
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const active = document.activeElement as HTMLElement | null;
@@ -220,13 +227,11 @@ export default function App() {
             setOverlayView(null);
             setView((v) => v === "preview" ? "chat" : "preview");
           }}
-          onOpenCommandPalette={() => {
-            // The palette registers its own shortcut; this button toggles it.
-            window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
-          }}
+          onToggleCommandPalette={() => paletteRef.current?.toggle()}
           previewActive={view === "preview"}
         />
         <CommandPalette
+          ref={paletteRef}
           onOpenSkills={() => setOverlayView("skills")}
           onOpenSettings={(tab) => openSettings(tab)}
           onTogglePreview={() => {
@@ -309,11 +314,12 @@ export default function App() {
               <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
             </Suspense>
           )}
-          {connState !== "connected" && view === "chat" && (
+          {connState !== "connected" && view === "chat" && !bannerDismissed && (
             <ConnectionBanner
               state={connState}
               retryDelayMs={retryDelayMs}
               onRetry={retryConnection}
+              onDismiss={() => setBannerDismissed(true)}
             />
           )}
         </div>

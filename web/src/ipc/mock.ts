@@ -53,6 +53,8 @@ import type {
   Session,
   SessionExportResult,
   SessionStatsResult,
+  UpdateMessageResult,
+  DeleteMessageResult,
   SetProviderApiKeyResult,
   SkillInfo,
   SubAgentProgress,
@@ -289,6 +291,24 @@ function mockHandle(
 
     case "message.list": {
       return { messages: [] as ProtocolMessage[] };
+    }
+
+    case "message.update": {
+      const p = params as { message_id: string; content?: string };
+      return {
+        ok: true,
+        message: {
+          id: p.message_id,
+          role: "user",
+          text: p.content ?? "",
+          created_at: Date.now(),
+        },
+      } satisfies UpdateMessageResult;
+    }
+
+    case "message.delete": {
+      const p = params as { message_id: string };
+      return { ok: true, message_id: p.message_id } satisfies DeleteMessageResult;
     }
 
     case "run.list": {

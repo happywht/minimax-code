@@ -31,6 +31,7 @@ export function InspectorHeader({
       </div>
       <IconButton
         aria-label="Collapse right panel"
+        title="Collapse right panel"
         size="sm"
         data-testid={`${testId}-collapse`}
         onClick={onCollapse}

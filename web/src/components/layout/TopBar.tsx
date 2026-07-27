@@ -20,8 +20,8 @@ export interface TopBarProps {
   onTogglePreview?: () => void;
   /** Whether the preview panel is currently active. */
   previewActive?: boolean;
-  /** Open the command palette. */
-  onOpenCommandPalette?: () => void;
+  /** Toggle the command palette. */
+  onToggleCommandPalette?: () => void;
 }
 
 export function TopBar({
@@ -31,12 +31,12 @@ export function TopBar({
   onToggleSidebar,
   onTogglePreview,
   previewActive = false,
-  onOpenCommandPalette,
+  onToggleCommandPalette,
 }: TopBarProps): JSX.Element {
   return (
     <header
       data-testid={testId}
-      className="flex h-10 w-full shrink-0 items-center justify-between gap-2 overflow-hidden border-b border-line bg-surface-1 px-2 md:px-3"
+      className="flex h-10 w-full shrink-0 items-center justify-between gap-2 border-b border-line bg-surface-1 px-2 md:px-3"
     >
       <div
         data-testid="app-topbar-left"
@@ -46,6 +46,7 @@ export function TopBar({
           <IconButton
             size="md"
             aria-label="Toggle sidebar"
+            title="Toggle sidebar"
             onClick={onToggleSidebar}
             data-testid="app-topbar-hamburger"
             className="md:hidden"
@@ -64,7 +65,7 @@ export function TopBar({
         <IconButton
           aria-label="Open command palette"
           title="Command palette (Ctrl+K)"
-          onClick={onOpenCommandPalette}
+          onClick={onToggleCommandPalette}
           data-testid="app-topbar-command-palette"
         >
           <Command size={14} />

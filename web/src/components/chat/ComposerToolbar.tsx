@@ -83,7 +83,7 @@ export function ComposerToolbar({
   };
 
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-line/60 px-2.5 py-1.5">
+    <div className="flex flex-wrap sm:flex-nowrap items-center gap-x-2 gap-y-1 sm:gap-y-0 border-t border-line/60 px-2.5 py-1.5">
       <Button
         variant="ghost"
         size="sm"
@@ -116,7 +116,7 @@ export function ComposerToolbar({
       >
         <Download size={12} />
       </IconButton>
-      <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-x-2 gap-y-1">
+      <div className="flex min-w-0 flex-1 flex-wrap sm:flex-nowrap items-center justify-end gap-x-2 gap-y-1 sm:gap-y-0">
         {cancelling && (
           <span
             data-testid="message-input-stopping"

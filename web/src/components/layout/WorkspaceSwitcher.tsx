@@ -110,7 +110,7 @@ export function WorkspaceSwitcher({
         <ul
           role="listbox"
           data-testid="workspace-switcher-menu"
-          className="absolute left-0 top-full z-20 mt-1 w-60 overflow-hidden rounded-lg border border-line bg-surface-1 shadow-pop"
+          className="absolute left-0 top-full z-50 mt-1 w-60 overflow-hidden rounded-lg border border-line bg-surface-1 shadow-pop"
         >
           {workspaces.length === 0 && (
             <li className="px-3 py-2 text-xs text-ink-1">

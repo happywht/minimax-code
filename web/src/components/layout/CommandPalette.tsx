@@ -1,7 +1,7 @@
 /**
  * CommandPalette — Cmd/Ctrl+K quick navigation for sessions, actions and settings.
  */
-import { useEffect, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { Command, FileText, Settings, Sparkles } from "lucide-react";
 import { Modal, Input } from "../../ui";
 import { useCommandPalette } from "./useCommandPalette";
@@ -14,46 +14,53 @@ const ICONS: Record<PaletteItemType, JSX.Element> = {
   setting: <Settings size={14} />,
 };
 
+export interface CommandPaletteHandle {
+  toggle: () => void;
+}
+
 export interface CommandPaletteProps {
   onOpenSkills?: () => void;
   onOpenSettings?: (tab: SettingsTab) => void;
   onTogglePreview?: () => void;
 }
 
-export function CommandPalette({
-  onOpenSkills,
-  onOpenSettings,
-  onTogglePreview,
-}: CommandPaletteProps): JSX.Element {
-  const {
-    isOpen,
-    close,
-    query,
-    setQuery,
-    filtered,
-    selectedIndex,
-    setSelectedIndex,
-    handleKeyDown,
-    execute,
-  } = useCommandPalette({
-    onOpenSkills,
-    onOpenSettings,
-    onTogglePreview,
-  });
+export const CommandPalette = forwardRef<CommandPaletteHandle, CommandPaletteProps>(
+  function CommandPalette(
+    { onOpenSkills, onOpenSettings, onTogglePreview }: CommandPaletteProps,
+    ref,
+  ): JSX.Element {
+    const {
+      isOpen,
+      close,
+      query,
+      setQuery,
+      filtered,
+      selectedIndex,
+      setSelectedIndex,
+      handleKeyDown,
+      execute,
+      toggle,
+    } = useCommandPalette({
+      onOpenSkills,
+      onOpenSettings,
+      onTogglePreview,
+    });
 
-  const inputRef = useRef<HTMLInputElement>(null);
+    useImperativeHandle(ref, () => ({ toggle }), [toggle]);
 
-  useEffect(() => {
-    if (isOpen) {
-      // Focus the search input when the palette opens.
-      const t = window.setTimeout(() => inputRef.current?.focus(), 50);
-      return () => window.clearTimeout(t);
-    }
-  }, [isOpen]);
+    const inputRef = useRef<HTMLInputElement>(null);
 
-  if (!isOpen) return <></>;
+    useEffect(() => {
+      if (isOpen) {
+        // Focus the search input when the palette opens.
+        const t = window.setTimeout(() => inputRef.current?.focus(), 50);
+        return () => window.clearTimeout(t);
+      }
+    }, [isOpen]);
 
-  return (
+    if (!isOpen) return <></>;
+
+    return (
     <Modal
       testId="command-palette"
       title="Command Palette"
@@ -120,5 +127,6 @@ export function CommandPalette({
         </ul>
       </div>
     </Modal>
-  );
-}
+    );
+  },
+);

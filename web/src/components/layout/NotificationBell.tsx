@@ -28,6 +28,7 @@ export function NotificationBell(): JSX.Element {
     <div ref={ref} className="relative" data-testid="notification-bell">
       <IconButton
         aria-label={`Notifications${unreadCount > 0 ? ` (${unreadCount} unread)` : ""}`}
+        title="Notifications"
         data-testid="notification-bell-btn"
         onClick={toggleOpen}
         className="relative"

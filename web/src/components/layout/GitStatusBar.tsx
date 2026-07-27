@@ -199,7 +199,7 @@ export function GitStatusBar({
               ) : null}
             </>
           }
-          className="absolute left-0 top-full z-30 mt-1 w-72 shadow-pop"
+          className="absolute left-0 top-full z-50 mt-1 w-72 shadow-pop"
           flush
         >
           <div className="max-h-72 overflow-y-auto px-1 py-1 text-xs">

@@ -637,6 +637,18 @@ export interface ListMessagesResult {
   messages: PersistedMessage[];
 }
 
+/** Return shape of `message.update`. */
+export interface UpdateMessageResult {
+  ok: boolean;
+  message: PersistedMessage;
+}
+
+/** Return shape of `message.delete`. */
+export interface DeleteMessageResult {
+  ok: boolean;
+  message_id: string;
+}
+
 export interface ListModelsResult {
   models: ModelInfo[];
   current: string | null;

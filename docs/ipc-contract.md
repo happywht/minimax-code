@@ -212,7 +212,7 @@ on the next `readline() == ""`.
 | `workspace.create_worktree_session` | req/res | Create an isolated Git worktree-backed session. |
 | `workspace.list_worktrees` | req/res | List sessions whose `workspace_mode` is `worktree`. |
 | `workspace.delete_worktree` | req/res | Remove a managed worktree and mark the session local. |
-| `message.list`             | req/res   | Reserved.                                          |
+| `message.list` / `message.update` / `message.delete` | req/res | List messages in a session; update or delete a single message. |
 | `skill.list` / `skill.install` / `skill.uninstall` / `skill.enable` / `skill.disable` / `skill.invoke` | req/res | List, import, remove, configure, and invoke skills. |
 | `scheduler.*`              | req/res   | Reserved.                                          |
 | `agent.list` / `agent.spawn_subagent` | req/res | Sub-agent list and spawn. `agent.spawn_subagent` is keyed by `name` (`agents.name`); clients may also pass legacy `agent_id`, and the backend resolves by name first, then id. |

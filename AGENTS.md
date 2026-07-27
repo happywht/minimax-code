@@ -167,7 +167,7 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 |------|------|-------------|
 | `agent.*` | 消息发送、子 agent 管理 | `handlers_agents.py`, `builtins.py` |
 | `session.*` | 会话 CRUD | `handlers_sessions.py` |
-| `message.*` | 消息列表 | `handlers_sessions.py` |
+| `message.*` | 消息列表 / 编辑 / 删除 | `handlers_sessions.py` |
 | `model.*` | 模型选择 | `handlers_model.py` |
 | `skill.*` | 技能管理/调用 | `handlers_skills.py` |
 | `schedule.*` | 定时任务 | `handlers_scheduled.py` |

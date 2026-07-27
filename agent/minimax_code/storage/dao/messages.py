@@ -144,6 +144,34 @@ class MessagesDAO:
             "tokens_out": int(row["tout"]) if row else 0,
         }
 
+    async def update(
+        self,
+        message_id: str,
+        *,
+        content: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Patch a message's content and/or metadata.
+
+        Returns the updated row, or ``None`` if the id does not exist.
+        Used by the frontend's inline message editor.
+        """
+        sets: list[str] = []
+        params: list[Any] = []
+        if content is not None:
+            sets.append("content = ?")
+            params.append(content)
+        if metadata is not None:
+            sets.append("metadata = ?")
+            params.append(dumps_json(metadata))
+        if not sets:
+            return await self.get(message_id)
+        params.append(message_id)
+        sql = f"UPDATE messages SET {', '.join(sets)} WHERE id = ?"
+        async with self._db.transaction() as conn:
+            await conn.execute(sql, params)
+        return await self.get(message_id)
+
     async def delete(self, message_id: str) -> bool:
         async with self._db.transaction() as conn:
             cur = await conn.execute("DELETE FROM messages WHERE id = ?", (message_id,))

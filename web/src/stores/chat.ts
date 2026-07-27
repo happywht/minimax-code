@@ -41,6 +41,8 @@ export interface ChatState {
   reset: () => void;
   cancel: () => Promise<void>;
   retryMessage: (messageId: string) => Promise<void>;
+  updateMessage: (messageId: string, text: string) => Promise<void>;
+  deleteMessage: (messageId: string) => Promise<void>;
 }
 
 let chunkUnsub: (() => void) | null = null;
@@ -577,6 +579,32 @@ export const useChat = create<ChatState>((set, get) => ({
       error: null,
     }));
     await get().send(content);
+  },
+
+  updateMessage: async (messageId: string, text: string) => {
+    try {
+      await typedIPC.updateMessage({ message_id: messageId, content: text });
+      set((s) => ({
+        messages: s.messages.map((m) =>
+          m.id === messageId ? { ...m, text, retry_content: text } : m
+        ),
+      }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Update failed", message);
+    }
+  },
+
+  deleteMessage: async (messageId: string) => {
+    try {
+      await typedIPC.deleteMessage({ message_id: messageId });
+      set((s) => ({
+        messages: s.messages.filter((m) => m.id !== messageId),
+      }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Delete failed", message);
+    }
   },
 
   loadMessages: async (sessionId: string) => {

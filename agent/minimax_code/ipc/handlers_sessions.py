@@ -385,6 +385,78 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
             logger.exception("session.export failed")
             await ctx.reply_error(INTERNAL_ERROR, f"session.export failed: {exc}")
 
+    # ------------------------------------------------------------------ message.update
+
+    async def handle_message_update(params: Any, ctx: Context) -> None:
+        """``message.update`` → patch content/metadata of a persisted message."""
+        try:
+            check_params(params, expected_keys={"message_id", "content"})
+            message_id = str(params["message_id"])
+            content = params.get("content")
+            if content is not None and not isinstance(content, str):
+                raise HandlerError(INVALID_PARAMS, "content must be a string if provided")
+            metadata = params.get("metadata")
+            if metadata is not None and not isinstance(metadata, dict):
+                raise HandlerError(INVALID_PARAMS, "metadata must be an object if provided")
+
+            from ..app import init_runtime
+            from ..storage.dao.messages import MessagesDAO
+
+            await init_runtime()
+            from ..app import get_db as _get_db
+
+            db = _get_db()
+            if db is None:
+                await ctx.reply_error(INTERNAL_ERROR, "message.update: database not available")
+                return
+            msg_dao = MessagesDAO(db)
+            row = await msg_dao.update(
+                message_id,
+                content=content,
+                metadata=metadata if metadata else None,
+            )
+            if row is None:
+                raise HandlerError(
+                    INVALID_PARAMS, f"unknown message_id: {message_id!r}"
+                )
+            await ctx.reply({"ok": True, "message": row})
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.exception("message.update failed")
+            await ctx.reply_error(INTERNAL_ERROR, f"message.update failed: {exc}")
+
+    # ------------------------------------------------------------------ message.delete
+
+    async def handle_message_delete(params: Any, ctx: Context) -> None:
+        """``message.delete`` → remove a single message row."""
+        try:
+            check_params(params, expected_keys={"message_id"})
+            message_id = str(params["message_id"])
+
+            from ..app import init_runtime
+            from ..storage.dao.messages import MessagesDAO
+
+            await init_runtime()
+            from ..app import get_db as _get_db
+
+            db = _get_db()
+            if db is None:
+                await ctx.reply_error(INTERNAL_ERROR, "message.delete: database not available")
+                return
+            msg_dao = MessagesDAO(db)
+            ok = await msg_dao.delete(message_id)
+            if not ok:
+                raise HandlerError(
+                    INVALID_PARAMS, f"unknown message_id: {message_id!r}"
+                )
+            await ctx.reply({"ok": True, "message_id": message_id})
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.exception("message.delete failed")
+            await ctx.reply_error(INTERNAL_ERROR, f"message.delete failed: {exc}")
+
     # -------------------------------------------------------------- message.list
 
     async def handle_message_list(params: Any, ctx: Context) -> None:
@@ -458,6 +530,8 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
     server.register("session.update", handle_session_update)
     server.register("session.stats", handle_session_stats)
     server.register("session.export", handle_session_export)
+    server.register("message.update", handle_message_update)
+    server.register("message.delete", handle_message_delete)
     server.register("message.list", handle_message_list)
 
 
