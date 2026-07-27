@@ -229,6 +229,7 @@ on the next `readline() == ""`.
 | `permission.*`             | req/res   | Phase 1.4 (ui-shell).                              |
 | `model.list` / `model.get_current` / `model.set_current` / `model.set_reasoning_effort` | req/res | Dynamic model list + current selection + reasoning-effort override. `model.list` entries may carry optional reasoning-effort meta (R58); the `model.list` and `model.get_current` responses echo the user's persisted `reasoning_effort` override (R61 read-back). |
 | `plugins.list` / `plugins.info` / `plugins.enable` / `plugins.disable` / `plugins.reload` | req/res | Platform pillar #3 — discover, inspect, toggle, and hot-reload runtime plugins (fail-open discovery; runtime enable override is in-memory). |
+| `mcp.list_servers` / `mcp.add_server` / `mcp.update_server` / `mcp.remove_server` / `mcp.list_tools` / `mcp.invoke_tool` | req/res | MCP server management and tool invocation (v0.11.0). |
 
 ### `model.list` response — reasoning-effort fields (R58)
 
@@ -720,6 +721,17 @@ unexpected param shape. `crash_dir` resolves to `<data_dir>/crashes`
 | `crash.previous_report` | `{}` | `{available, report_text}` | `available:false` when `last-crash-report.txt` is absent (no previous crash, or already dismissed). `report_text` is the human-readable rendered report. |
 | `crash.history` | `{}` | `{entries: [{filename, timestamp, report_text}]}` | Lists `history/crash-<epoch>.txt`, newest first. `timestamp` is the epoch-seconds parsed from the filename. Non-`crash-<digits>.txt` files are skipped; the list is capped at 50 entries. |
 | `crash.dismiss` | `{}` | `{dismissed}` | Removes `last-crash-report.txt` so the recovery prompt hides. The `history/` archive is untouched. `dismissed:false` when there was nothing to remove or the file could not be deleted. |
+
+### `mcp.*` — MCP server management (v0.11.0)
+
+| Method | Params | Result | Notes |
+|--------|--------|--------|-------|
+| `mcp.list_servers` | `{}` | `{servers: [{id, name, transport, command?, url?, env, enabled, connected}]}]` | Returns all persisted server configs plus live connection status. |
+| `mcp.add_server` | `{id, name, transport, command?, url?, env?, enabled?}` | `{server}` | Validates `transport` is `stdio` or `sse`, persists the configuration, and immediately connects the server. `command` (argv list) is required for `stdio`; `url` is required for `sse`. |
+| `mcp.update_server` | `{server_id, name?, transport?, command?, url?, env?, enabled?}` | `{server}` | Updates a persisted server config and re-attaches it when runtime fields change. |
+| `mcp.remove_server` | `{server_id}` | `{ok, server_id}` | Disconnects and deletes the persisted server. |
+| `mcp.list_tools` | `{server_name}` | `{server_name, tools: [{name, description?, input_schema?}]}` | Lists tools exposed by a single connected server. |
+| `mcp.invoke_tool` | `{server_name, tool_name, arguments?}` | `{ok, server_name, tool_name, text?, content?, isError}` | Calls a tool on the named server. Returns the tool result or a structured error. |
 
 ## 7. Event names
 

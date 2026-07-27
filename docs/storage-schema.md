@@ -110,6 +110,17 @@ erDiagram
         TEXT paired_at
         TEXT last_seen_at
     }
+    mcp_servers {
+        TEXT id PK
+        TEXT name
+        TEXT transport "stdio|sse"
+        TEXT command
+        TEXT url
+        JSON env
+        INT  enabled "0/1"
+        TEXT created_at
+        TEXT updated_at
+    }
     schema_migrations {
         INT  version PK
         TEXT applied_at
@@ -234,7 +245,21 @@ Rules are evaluated in insertion order; the first match wins. The auth layer cac
 | `paired_at`    | TEXT    |                                        |
 | `last_seen_at` | TEXT    | Bumped by the IPC `mobile.touch` handler. |
 
-### 2.9 `schema_migrations`
+### 2.9 `mcp_servers`
+
+| Column        | Type    | Notes                                                  |
+|---------------|---------|--------------------------------------------------------|
+| `id`          | TEXT PK | UUID v4.                                               |
+| `name`        | TEXT    | Display name; user-defined.                            |
+| `transport`   | TEXT    | CHECK in `('stdio','sse')`.                            |
+| `command`     | TEXT    | Shell command line for `stdio` transports; nullable.   |
+| `url`         | TEXT    | Endpoint URL for `sse` transports; nullable.           |
+| `env`         | JSON    | Key/value environment variables; empty object default. |
+| `enabled`     | INTEGER | `0`/`1`; disabled servers are not started at boot.     |
+| `created_at`  | TEXT    | ISO-8601 UTC.                                          |
+| `updated_at`  | TEXT    | Bumped on every mutation.                              |
+
+### 2.10 `schema_migrations`
 
 | Column       | Type    | Notes                                       |
 |--------------|---------|---------------------------------------------|
@@ -263,6 +288,7 @@ Rules are evaluated in insertion order; the first match wins. The auth layer cac
 | `idx_permissions_action`         | `permission_rules` | "List all my allow rules" (UI).                                                          |
 | `idx_devices_device_id`          | `mobile_devices`   | Explicit alias of the UNIQUE auto-index.                                                 |
 | `idx_devices_last_seen`          | `mobile_devices`   | "Recently seen" widget.                                                                  |
+| `idx_mcp_servers_enabled_updated`| `mcp_servers`      | Settings list: enabled servers first, sorted by recency.                               |
 
 Two of these tests assert the planner actually picks the index (`test_messages_index_used_for_session_listing`, `test_sessions_index_used_for_listing`). They run `ANALYZE` first so the planner has statistics.
 

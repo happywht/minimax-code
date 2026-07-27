@@ -41,6 +41,9 @@ _PROVIDER_DAO_SINGLETON: Any = None  # type: ignore[no-untyped-def]
 _REPO_MAP_INDEXER: Any = None  # type: ignore[no-untyped-def]
 _DB_SINGLETON: Any = None  # process-wide AsyncDatabase
 _DB_LOCK = asyncio.Lock()
+# MCP server config DAO + runtime registry singletons (v0.11.0 Milestone 1).
+_MCP_SERVERS_DAO: Any = None  # type: ignore[no-untyped-def]
+_MCP_REGISTRY: Any = None  # type: ignore[no-untyped-def]
 # Plugin registry singleton (platform pillar #3 — Plugins). Lazily
 # built by ensure_plugin_registry(); tests inject via set_plugin_registry().
 _PLUGIN_REGISTRY: Any = None  # type: ignore[no-untyped-def]
@@ -153,6 +156,32 @@ async def _maybe_open_db() -> Any:
         from .storage.dao.providers import ProviderDAO
         global _PROVIDER_DAO_SINGLETON
         _PROVIDER_DAO_SINGLETON = ProviderDAO(db)
+        # MCP server persistence + runtime registry (v0.11.0 Milestone 1).
+        from .agent.tools.base import get_default_registry
+        from .mcp import MCPRegistry, MCPServerConfig
+        from .storage.dao.mcp_servers import McpServersDAO
+        global _MCP_SERVERS_DAO, _MCP_REGISTRY
+        _MCP_SERVERS_DAO = McpServersDAO(db)
+        _MCP_REGISTRY = MCPRegistry(get_default_registry())
+        try:
+            for cfg_row in await _MCP_SERVERS_DAO.list(enabled=True):
+                if cfg_row.get("transport") != "stdio":
+                    continue
+                command = cfg_row.get("command") or []
+                if not command:
+                    continue
+                cfg = MCPServerConfig(
+                    name=cfg_row["name"],
+                    command=command,
+                    env=cfg_row.get("env"),
+                    enabled=True,
+                )
+                try:
+                    await _MCP_REGISTRY.add_server(cfg)
+                except Exception:  # noqa: BLE001 — fail-open
+                    logger.exception("failed to attach persisted MCP server %s", cfg_row["name"])
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to load persisted MCP servers")
         # Sub-agent runtime — wire a process-wide MiniMaxClient
         # built from the stored model preference + provider config
         # (or fall back to defaults when no DB preference exists).
@@ -325,6 +354,28 @@ def _set_projects_dao(dao: Any) -> None:
     """Internal setter used by :func:`_maybe_open_db`."""
     global _PROJECTS_DAO
     _PROJECTS_DAO = dao
+
+
+def get_mcp_servers_dao() -> Any:
+    """Return the process-wide :class:`McpServersDAO`, or ``None``."""
+    return _MCP_SERVERS_DAO
+
+
+def set_mcp_servers_dao(dao: Any) -> None:
+    """Replace the cached MCP servers DAO (test seam)."""
+    global _MCP_SERVERS_DAO
+    _MCP_SERVERS_DAO = dao
+
+
+def get_mcp_registry() -> Any:
+    """Return the process-wide :class:`MCPRegistry`, or ``None``."""
+    return _MCP_REGISTRY
+
+
+def set_mcp_registry(registry: Any) -> None:
+    """Replace the cached MCP registry (test seam)."""
+    global _MCP_REGISTRY
+    _MCP_REGISTRY = registry
 
 
 # ---------------------------------------------------------------------------
@@ -561,12 +612,13 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_checkpoint import register_checkpoint_handlers
     from .ipc.handlers_crash import register_crash_handlers
     from .ipc.handlers_git import register_git_handlers
+    from .ipc.handlers_mcp import register_mcp_handlers
     from .ipc.handlers_model import register_model_handlers
     from .ipc.handlers_patch import register_patch_handlers
     from .ipc.handlers_permissions import register_permission_handlers
     from .ipc.handlers_plugins import register_plugin_handlers
-    from .ipc.handlers_providers import register_provider_handlers
     from .ipc.handlers_projects import register_project_handlers
+    from .ipc.handlers_providers import register_provider_handlers
     from .ipc.handlers_runner import register_runner_handlers
     from .ipc.handlers_runs import register_run_handlers
     from .ipc.handlers_runtime import register_runtime_handlers
@@ -649,6 +701,10 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # Pass the process-wide ProviderDAO singleton (if available) so
     # handlers reuse the same DB connection instead of opening extras.
     register_provider_handlers(server, dao=_PROVIDER_DAO_SINGLETON)
+    # The MCP handlers expose ``mcp.list_servers`` / ``mcp.add_server`` /
+    # ``mcp.update_server`` / ``mcp.remove_server`` / ``mcp.list_tools`` /
+    # ``mcp.invoke_tool`` for the Settings page's MCP Servers tab.
+    register_mcp_handlers(server)
     # The git handlers expose ``git.status`` / ``git.diff`` /
     # ``git.log`` for the v0.3.0 code-review flow and the top-bar
     # ``GitStatusBar`` widget. Stateless — every call shells out
@@ -1173,4 +1229,8 @@ __all__ = [
     "ensure_breaker_registry",
     "get_breaker_registry",
     "set_breaker_registry",
+    "get_mcp_servers_dao",
+    "set_mcp_servers_dao",
+    "get_mcp_registry",
+    "set_mcp_registry",
 ]

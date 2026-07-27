@@ -66,6 +66,12 @@ import type {
   UpdateProviderResult,
   WebhookConfig,
   WorkflowEntry,
+  McpServer,
+  ListMcpServersResult,
+  McpServerResult,
+  RemoveMcpServerResult,
+  ListMcpToolsResult,
+  InvokeMcpToolResult,
 } from "../types/ipc";
 import type { IPCClient } from "./client";
 import {
@@ -117,6 +123,7 @@ export function mockNotify(method: string, params: unknown, client: IPCClient): 
 // R61 backend write-side read-back — the frontend badge switcher consumes it
 // from `model.list` so it stays in sync with the store without a second round-trip.
 let mockReasoningEffort: string | null = null;
+const mockMcpServers = new Map<string, McpServer>();
 function mockHandle(
   method: string,
   params: unknown,
@@ -985,6 +992,92 @@ function mockHandle(
         provider_id: p.provider_id,
         api_key_configured: false,
       } satisfies SetProviderApiKeyResult;
+    }
+
+    // ── mcp.* mock ──────────────────────────────────────────────
+
+    case "mcp.list_servers": {
+      return {
+        servers: Array.from(mockMcpServers.values()),
+      } satisfies ListMcpServersResult;
+    }
+
+    case "mcp.add_server": {
+      const p = params as {
+        id: string;
+        name: string;
+        transport?: "stdio" | "sse";
+        command?: string[];
+        url?: string;
+        env?: Record<string, string>;
+        enabled?: boolean;
+      };
+      const now = new Date().toISOString();
+      const server: McpServer = {
+        id: p.id,
+        name: p.name,
+        transport: p.transport ?? "stdio",
+        command: p.command ?? null,
+        url: p.url ?? null,
+        env: p.env ?? null,
+        enabled: p.enabled ?? true,
+        connected: false,
+        created_at: now,
+        updated_at: now,
+      };
+      mockMcpServers.set(p.id, server);
+      return { server } satisfies McpServerResult;
+    }
+
+    case "mcp.update_server": {
+      const p = params as {
+        server_id: string;
+        name?: string;
+        transport?: "stdio" | "sse";
+        command?: string[];
+        url?: string;
+        env?: Record<string, string>;
+        enabled?: boolean;
+      };
+      const s = mockMcpServers.get(p.server_id);
+      if (!s) return { server: null as unknown as McpServer };
+      if (p.name !== undefined) s.name = p.name;
+      if (p.transport !== undefined) s.transport = p.transport;
+      if (p.command !== undefined) s.command = p.command;
+      if (p.url !== undefined) s.url = p.url;
+      if (p.env !== undefined) s.env = p.env;
+      if (p.enabled !== undefined) s.enabled = p.enabled;
+      s.updated_at = new Date().toISOString();
+      return { server: s } satisfies McpServerResult;
+    }
+
+    case "mcp.remove_server": {
+      const p = params as { server_id: string };
+      const existed = mockMcpServers.delete(p.server_id);
+      return { ok: existed, server_id: p.server_id } satisfies RemoveMcpServerResult;
+    }
+
+    case "mcp.list_tools": {
+      const p = params as { server_name: string };
+      return {
+        server_name: p.server_name,
+        tools: [
+          { name: "read_file", description: "Read a file", inputSchema: { type: "object" } },
+          { name: "list_directory", description: "List a directory", inputSchema: { type: "object" } },
+        ],
+      } satisfies ListMcpToolsResult;
+    }
+
+    case "mcp.invoke_tool": {
+      const p = params as { server_name: string; tool_name: string; arguments?: Record<string, unknown> };
+      return {
+        ok: true,
+        server_name: p.server_name,
+        tool_name: p.tool_name,
+        text: `Mock result from ${p.tool_name}`,
+        content: null,
+        isError: false,
+      } satisfies InvokeMcpToolResult;
     }
 
     default:

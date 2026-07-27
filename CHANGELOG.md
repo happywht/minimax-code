@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added — 后端
+- **MCP 基础设施（v0.11.0 Milestone 1）**：
+  - 新增 `mcp_servers` 表与 `McpServersDAO`，持久化外部 MCP 服务器配置（name/transport/command/url/env/enabled）。
+  - 新增 `agent/minimax_code/ipc/handlers_mcp.py`，注册 `mcp.*` IPC 命名空间：`mcp.list_servers` / `mcp.add_server` / `mcp.update_server` / `mcp.remove_server` / `mcp.list_tools` / `mcp.invoke_tool`。
+  - `MCPRegistry` 新增 `list_server_tools` / `call_tool`，并在 `app.py` 启动时加载已启用服务器到全局单例。
+  - 新增 `agent/tests/test_handlers_mcp.py` 与 `agent/tests/test_mcp_servers_dao.py` 覆盖 IPC 与 DAO。
 - **项目/任务分层（v0.10.0）**：
   - 新增 `projects` 表与 `ProjectsDAO`，支持创建、更新、归档、删除项目。
   - `sessions` 表新增 `project_id` 列；未指定项目的会话默认归属 `id="inbox"` 的“收件箱”。
@@ -18,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **批量会话操作（v0.10.3）**：新增 `session.batchArchive` / `session.batchUpdateProject` IPC 方法及 `SessionsDAO` 批量接口，支持事务级归档与跨项目移动。
 
 ### Added — 前端
+- **Settings MCP Servers 标签页**：新增 `web/src/components/settings/McpServersTab.tsx`，支持添加/删除 stdio MCP 服务器、查看连接状态；同步更新 `SettingsPage` tab 路由与 mock backend。
+- 扩展 `web/src/types/ipc.ts`、`web/src/ipc/typed.ts`、`web/src/ipc/mock.ts` 的 MCP 类型与桩实现。
 - **Sidebar 项目化**：会话按项目分组展示；收件箱默认展开置顶，普通项目可折叠，归档项目沉底。
 - 项目行支持新建、重命名、归档/取消归档、删除；删除时提示其下会话将移回收件箱。
 - 新建任务默认写入当前选中的项目（或收件箱）。
@@ -43,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 移除前端剩余 `window.prompt/confirm`：项目创建/重命名/删除与技能移除统一使用 Aurora `Modal`。
 
 ### Tests
+- 新增 MCP 相关测试：`agent/tests/test_handlers_mcp.py`、`agent/tests/test_mcp_servers_dao.py`。
 - 新增 `agent/tests/test_projects.py`，覆盖项目 DAO 与删除归位逻辑。
 - 新增/更新 `web/tests/sidebar.test.tsx`、`web/tests/sidebar-history.test.tsx`、`web/tests/chat-panel.test.tsx`，适配项目分组与 `project_id` 传参。
 - 前端 vitest：62 files / 487 tests 全绿。

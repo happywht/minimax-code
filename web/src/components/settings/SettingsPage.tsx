@@ -6,6 +6,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import {
+  Blocks,
   Bot,
   CalendarClock,
   Cpu,
@@ -29,10 +30,11 @@ import { TeamsTab } from "./TeamsTab";
 import { AuditTab } from "./AuditTab";
 import { WebhooksTab } from "./WebhooksTab";
 import { WorkflowsTab } from "./WorkflowsTab";
+import { McpServersTab } from "./McpServersTab";
 import { useFocusTrap } from "../../lib/useFocusTrap";
 import { ConfirmationDialog } from "../modals/ConfirmationDialog";
 
-export type SettingsTab = "models" | "providers" | "permissions" | "scheduled" | "api-key" | "agents" | "teams" | "audit" | "webhooks" | "workflows";
+export type SettingsTab = "models" | "providers" | "permissions" | "scheduled" | "api-key" | "agents" | "teams" | "audit" | "webhooks" | "workflows" | "mcp-servers";
 
 const TAB_GROUPS: Array<{
   label: string;
@@ -45,6 +47,7 @@ const TAB_GROUPS: Array<{
       { id: "providers", icon: <Globe size={12} />, label: "Providers", testId: "settings-tab-providers" },
       { id: "api-key", icon: <KeyRound size={12} />, label: "API Key", testId: "settings-tab-api-key" },
       { id: "permissions", icon: <ShieldAlert size={12} />, label: "Permissions", testId: "settings-tab-permissions" },
+      { id: "mcp-servers", icon: <Blocks size={12} />, label: "MCP Servers", testId: "settings-tab-mcp-servers" },
     ],
   },
   {
@@ -159,6 +162,7 @@ export function SettingsPage({ testId = "settings-page", onClose, initialTab = "
           {tab === "audit" && <AuditTab />}
           {tab === "webhooks" && <WebhooksTab />}
           {tab === "workflows" && <WorkflowsTab />}
+          {tab === "mcp-servers" && <McpServersTab />}
         </div>
       </div>
       </div>

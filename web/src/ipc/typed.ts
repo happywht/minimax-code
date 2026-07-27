@@ -82,6 +82,11 @@ import type {
   UpdateSessionResult,
   WebhookConfig,
   WorkflowEntry,
+  ListMcpServersResult,
+  McpServerResult,
+  RemoveMcpServerResult,
+  ListMcpToolsResult,
+  InvokeMcpToolResult,
 } from "../types/ipc";
 import type { IPCClient } from "./client";
 /* ─────────────────────── Typed high-level API ─────────────────────── */
@@ -124,6 +129,29 @@ export interface TypedIPC {
   deleteProject(projectId: string): Promise<{ ok: true; project_id: string }>;
   archiveProject(projectId: string): Promise<{ ok: true; project: import("../types/ipc").Project }>;
   unarchiveProject(projectId: string): Promise<{ ok: true; project: import("../types/ipc").Project }>;
+
+  // mcp
+  listMcpServers(): Promise<ListMcpServersResult>;
+  addMcpServer(opts: {
+    id: string;
+    name: string;
+    transport?: "stdio" | "sse";
+    command?: string[];
+    url?: string;
+    env?: Record<string, string>;
+    enabled?: boolean;
+  }): Promise<McpServerResult>;
+  updateMcpServer(serverId: string, opts: {
+    name?: string;
+    transport?: "stdio" | "sse";
+    command?: string[];
+    url?: string;
+    env?: Record<string, string>;
+    enabled?: boolean;
+  }): Promise<McpServerResult>;
+  removeMcpServer(serverId: string): Promise<RemoveMcpServerResult>;
+  listMcpTools(serverName: string): Promise<ListMcpToolsResult>;
+  invokeMcpTool(serverName: string, toolName: string, args?: Record<string, unknown>): Promise<InvokeMcpToolResult>;
 
   listRuns(opts?: { session_id?: string; status?: string; limit?: number; offset?: number }): Promise<ListRunsResult>;
   getRunSteps(runId: string): Promise<RunStepsResult>;
@@ -456,6 +484,21 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<{ ok: true; project: import("../types/ipc").Project }>("project.archive", { project_id: pid }),
     unarchiveProject: (pid) =>
       client.request<{ ok: true; project: import("../types/ipc").Project }>("project.unarchive", { project_id: pid }),
+
+    listMcpServers: () => client.request<ListMcpServersResult>("mcp.list_servers", {}),
+    addMcpServer: (opts) => client.request<McpServerResult>("mcp.add_server", opts),
+    updateMcpServer: (serverId, opts) =>
+      client.request<McpServerResult>("mcp.update_server", { server_id: serverId, ...opts }),
+    removeMcpServer: (serverId) =>
+      client.request<RemoveMcpServerResult>("mcp.remove_server", { server_id: serverId }),
+    listMcpTools: (serverName) =>
+      client.request<ListMcpToolsResult>("mcp.list_tools", { server_name: serverName }),
+    invokeMcpTool: (serverName, toolName, args) =>
+      client.request<InvokeMcpToolResult>("mcp.invoke_tool", {
+        server_name: serverName,
+        tool_name: toolName,
+        arguments: args ?? {},
+      }),
 
     listRuns: (opts) =>
       client.request<ListRunsResult>("run.list", opts ?? {}),

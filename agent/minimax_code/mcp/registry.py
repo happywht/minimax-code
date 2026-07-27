@@ -176,6 +176,30 @@ class MCPRegistry:
         conn = self._servers.get(_sanitize(server))
         return conn is not None and conn.client.is_initialized
 
+    def _get_conn(self, server: str) -> _ServerConn | None:
+        return self._servers.get(_sanitize(server))
+
+    async def list_server_tools(self, server: str) -> list[dict[str, Any]]:
+        """Return the tools exposed by an attached server.
+
+        Returns an empty list if the server is not connected.
+        """
+        conn = self._get_conn(server)
+        if conn is None or not conn.client.is_initialized:
+            return []
+        try:
+            tools_result = await conn.client.list_tools()
+        except Exception:  # noqa: BLE001 — fail-open
+            return []
+        return [t.model_dump() for t in tools_result.tools]
+
+    async def call_tool(self, server: str, tool: str, arguments: dict[str, Any]) -> CallToolResult:
+        """Call ``tool`` on ``server`` with ``arguments``."""
+        conn = self._get_conn(server)
+        if conn is None or not conn.client.is_initialized:
+            raise MCPClientError(f"MCP server {server!r} is not connected")
+        return await conn.client.call_tool(tool, arguments)
+
     def list_servers(self) -> list[dict[str, Any]]:
         """Snapshot of attached servers (for IPC / UI)."""
         return [

@@ -1245,3 +1245,62 @@ export interface PluginReloadResult {
   failed: number;
   plugins: PluginInfo[];
 }
+
+// ---------------------------------------------------------------------------
+// v0.11.0 — MCP server integration
+// ---------------------------------------------------------------------------
+
+export type McpTransport = "stdio" | "sse";
+
+/** Persisted MCP server configuration — matches `mcp_servers` table row. */
+export interface McpServer {
+  id: string;
+  name: string;
+  transport: McpTransport;
+  command: string[] | null;
+  url: string | null;
+  env: Record<string, string> | null;
+  enabled: boolean;
+  connected?: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Exposed tool on an attached MCP server. */
+export interface McpTool {
+  name: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+}
+
+/** Result of ``mcp.list_servers``. */
+export interface ListMcpServersResult {
+  servers: McpServer[];
+}
+
+/** Result of ``mcp.add_server`` / ``mcp.update_server``. */
+export interface McpServerResult {
+  server: McpServer;
+}
+
+/** Result of ``mcp.remove_server``. */
+export interface RemoveMcpServerResult {
+  ok: boolean;
+  server_id: string;
+}
+
+/** Result of ``mcp.list_tools``. */
+export interface ListMcpToolsResult {
+  server_name: string;
+  tools: McpTool[];
+}
+
+/** Result of ``mcp.invoke_tool``. */
+export interface InvokeMcpToolResult {
+  ok: boolean;
+  server_name: string;
+  tool_name: string;
+  text: string | null;
+  content: unknown[] | null;
+  isError: boolean;
+}
