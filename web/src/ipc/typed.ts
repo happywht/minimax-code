@@ -90,6 +90,11 @@ import type {
   CodebaseStatusResult,
   CodebaseSearchResultShape,
   CodebaseSummarizeResult,
+  ListMemoriesResult,
+  MemoryAddResult,
+  MemoryDeleteResult,
+  MemoryExtractResult,
+  MemoryCategory,
 } from "../types/ipc";
 import type { IPCClient } from "./client";
 /* ─────────────────────── Typed high-level API ─────────────────────── */
@@ -401,6 +406,29 @@ export interface TypedIPC {
   enablePlugin(name: string): Promise<PluginToggleResult>;
   disablePlugin(name: string): Promise<PluginToggleResult>;
   reloadPlugins(): Promise<PluginReloadResult>;
+
+  // memory (v0.11.0) — drive the Settings page's Memory tab.
+  listMemories(opts?: {
+    project_id?: string;
+    session_id?: string;
+    category?: MemoryCategory;
+    limit?: number;
+    offset?: number;
+  }): Promise<ListMemoriesResult>;
+  searchMemories(
+    query: string,
+    opts?: { project_id?: string; category?: MemoryCategory; limit?: number },
+  ): Promise<ListMemoriesResult>;
+  addMemory(opts: {
+    content: string;
+    category?: MemoryCategory;
+    confidence?: number;
+    project_id?: string;
+    session_id?: string;
+    source?: string;
+  }): Promise<MemoryAddResult>;
+  deleteMemory(id: string): Promise<MemoryDeleteResult>;
+  extractMemoryFacts(text: string): Promise<MemoryExtractResult>;
 }
 
 interface WireScheduledJob {
@@ -738,5 +766,14 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     enablePlugin: (name) => client.request<PluginToggleResult>("plugins.enable", { name }),
     disablePlugin: (name) => client.request<PluginToggleResult>("plugins.disable", { name }),
     reloadPlugins: () => client.request<PluginReloadResult>("plugins.reload", {}),
+
+    // memory (v0.11.0)
+    listMemories: (opts) => client.request<ListMemoriesResult>("memory.list", opts ?? {}),
+    searchMemories: (query, opts) =>
+      client.request<ListMemoriesResult>("memory.search", { query, ...(opts ?? {}) }),
+    addMemory: (opts) => client.request<MemoryAddResult>("memory.add", opts),
+    deleteMemory: (id) => client.request<MemoryDeleteResult>("memory.delete", { id }),
+    extractMemoryFacts: (text) =>
+      client.request<MemoryExtractResult>("memory.extract", { text }),
   };
 }

@@ -289,12 +289,18 @@ async def handle_shutdown(_params: Any, ctx: Context) -> None:
     ctx.server.stop()
 
 
-async def _build_system_prompt_extra() -> str | None:
+async def _build_system_prompt_extra(
+    *,
+    session_id: str | None = None,
+    project_id: str | None = None,
+) -> str | None:
     """Build the ``system_prompt_extra`` payload for the current turn.
 
     Assembles context from the repo-map indexer (v0.4.0 Perception
-    Engine). Returns ``None`` when no extra context is available so
-    ``AgentConfig`` stays clean for callers that don't need it.
+    Engine) and, when available, relevant long-term memories for the
+    current session/project (v0.11.0 Milestone 3). Returns ``None`` when
+    no extra context is available so ``AgentConfig`` stays clean for
+    callers that don't need it.
     """
     parts: list[str] = []
     try:
@@ -307,6 +313,22 @@ async def _build_system_prompt_extra() -> str | None:
                 parts.append(repo_map)
     except Exception:
         logger.debug("repo-map generation failed; continuing without")
+
+    try:
+        from ..app import get_db
+        from ..memory import MemoriesDAO, MemoryInjector
+
+        db = get_db()
+        if db is not None:
+            memory_ctx = await MemoryInjector(MemoriesDAO(db)).build_context(
+                project_id=project_id,
+                session_id=session_id,
+                query=None,
+            )
+            if memory_ctx:
+                parts.append(memory_ctx)
+    except Exception:
+        logger.debug("memory context generation failed; continuing without")
 
     return "\n\n".join(parts) if parts else None
 
@@ -400,6 +422,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     #    messages INSERT will surface a clear FK error and the
     #    frontend can react. Mirrors the helper in
     #    :mod:`handlers_agents`.
+    project_id: str | None = None
     try:
         sess_dao = get_sessions_dao()
         if sess_dao is None:
@@ -411,12 +434,15 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         if sess_dao is not None:
             existing = await sess_dao.get(session_id)
             if existing is None:
-                await sess_dao.create(
+                created = await sess_dao.create(
                     id=session_id,
                     title=f"chat:{_title_hint}",
                     system_prompt="",
                     model=None,
                 )
+                project_id = created.get("project_id")
+            else:
+                project_id = existing.get("project_id")
     except Exception:
         logger.exception("could not pre-create session %s; continuing", session_id)
 
@@ -588,7 +614,10 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         llm=llm,
         registry=registry,
         config=AgentConfig(
-            system_prompt_extra=await _build_system_prompt_extra(),
+            system_prompt_extra=await _build_system_prompt_extra(
+                session_id=session_id,
+                project_id=project_id,
+            ),
             stall_timeout=stall_timeout,
             reasoning_effort=main_reasoning_effort,
         ),

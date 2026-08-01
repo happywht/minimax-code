@@ -665,6 +665,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_crash import register_crash_handlers
     from .ipc.handlers_git import register_git_handlers
     from .ipc.handlers_mcp import register_mcp_handlers
+    from .ipc.handlers_memory import register_memory_handlers
     from .ipc.handlers_model import register_model_handlers
     from .ipc.handlers_patch import register_patch_handlers
     from .ipc.handlers_permissions import register_permission_handlers
@@ -823,6 +824,13 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # fail-open, so a missing crash dir or unreadable report never breaks the
     # recovery UI.
     register_crash_handlers(server)
+    # The memory handlers expose ``memory.list`` / ``memory.add`` /
+    # ``memory.delete`` / ``memory.search`` / ``memory.extract`` for the Settings
+    # page's Memory tab. The DAO is built lazily on first call via the
+    # process-wide DB singleton, and the memory injector is wired into
+    # ``agent.send_message`` so relevant project/session memories are injected
+    # into the system prompt (v0.11.0 Milestone 3).
+    register_memory_handlers(server)
     logger.info(
         "registered application handlers "
         "(1 agent.* + 7 agent.* + 5 skill.* + 6 task.* + 5 session.* + 3 workspace.* + 5 checkpoint.* + "
@@ -830,7 +838,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
         "7 provider.* + 3 secrets.* + 3 git.* + 3 patch.* + "
         "4 terminal.* + 2 runner.* + 3 audit.* + 5 webhook.* + "
         "5 notification.* + 7 workflow.* + 7 team.* + 5 plugins.* + "
-        "4 codebase.* + 3 telemetry.* + 3 crash.*)"
+        "4 codebase.* + 5 memory.* + 3 telemetry.* + 3 crash.*)"
     )
 
 

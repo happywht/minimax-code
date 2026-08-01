@@ -181,6 +181,7 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 | `secrets.*` | API 密钥管理 | `handlers_secrets.py` |
 | `git.*` | Git 状态/差异/日志 | `handlers_git.py` |
 | `codebase.*` | 代码库索引/检索 | `handlers_codebase.py` |
+| `memory.*` | 长期记忆管理 | `handlers_memory.py` |
 
 ## AI 使用指引
 

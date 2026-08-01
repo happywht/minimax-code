@@ -231,6 +231,7 @@ on the next `readline() == ""`.
 | `plugins.list` / `plugins.info` / `plugins.enable` / `plugins.disable` / `plugins.reload` | req/res | Platform pillar #3 — discover, inspect, toggle, and hot-reload runtime plugins (fail-open discovery; runtime enable override is in-memory). |
 | `mcp.list_servers` / `mcp.add_server` / `mcp.update_server` / `mcp.remove_server` / `mcp.list_tools` / `mcp.invoke_tool` | req/res | MCP server management and tool invocation (v0.11.0). |
 | `codebase.status` / `codebase.build_index` / `codebase.search` / `codebase.summarize` | req/res | Codebase indexing and retrieval (v0.11.0 Milestone 2). |
+| `memory.list` / `memory.add` / `memory.delete` / `memory.search` / `memory.extract` | req/res | Long-term memory management (v0.11.0 Milestone 3). |
 
 ### `model.list` response — reasoning-effort fields (R58)
 
@@ -742,6 +743,18 @@ unexpected param shape. `crash_dir` resolves to `<data_dir>/crashes`
 | `codebase.build_index` | `{force?}` | `{status, processed, total, percent, message, error, stats}` | Starts a full index build in the background. If already indexing, returns the current progress. `force=true` clears the existing index first. |
 | `codebase.search` | `{query, file_pattern?, limit?, offset?}` | `{query, file_pattern, total, results: [{chunk_id, file_path, start_line, end_line, snippet, language, rank, symbols}]}` | Keyword search over indexed file contents and paths. `file_pattern` is a SQL `LIKE` pattern. |
 | `codebase.summarize` | `{path}` | `{path, kind, language, total_lines, symbols, snippet, file_count}` | Returns a structured summary for a file or directory prefix. |
+
+### `memory.*` — long-term memory (v0.11.0 Milestone 3)
+
+| Method | Params | Result | Notes |
+|--------|--------|--------|-------|
+| `memory.list` | `{project_id?, session_id?, category?, limit?, offset?}` | `{memories: [{id, project_id, session_id, content, category, confidence, source, created_at, updated_at}], total}` | List memories with optional filters. |
+| `memory.add` | `{content, category?, confidence?, project_id?, session_id?, source?}` | `{memory}` | Create a new memory. `category` defaults to `fact`; must be one of `preference`, `decision`, `lesson`, `fact`. |
+| `memory.delete` | `{id}` | `{ok, id}` | Hard-delete a memory by id. |
+| `memory.search` | `{query, project_id?, category?, limit?}` | `{memories, total}` | Substring search over memory content, scoped by optional filters. |
+| `memory.extract` | `{text}` | `{facts: [{content, category, confidence}]}` | Extract candidate memory facts from raw text without persisting them. |
+
+Memories matching the current session's `project_id` or `session_id` are injected into the system prompt via `## Relevant memories` so the agent can recall prior preferences, decisions, lessons, and facts.
 
 ## 7. Event names
 

@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 删除项目时，其下会话自动移回收件箱，避免误删。
 - 消息级持久化能力：`MessagesDAO.update()` 支持更新内容与元数据。
 - 新增 IPC 方法 `message.update` 与 `message.delete`：编辑/删除单条消息。
+- **长期记忆（v0.11.0 Milestone 3）**：
+  - 新增 `agent/minimax_code/memory/` 包：`MemoriesDAO` 持久化记忆、`MemoryExtractor` 轻量事实抽取、`MemoryInjector` 按 project/session 检索并注入系统提示词。
+  - 新增 `memories` 表（迁移 `019_memories.py`），支持 `preference` / `decision` / `lesson` / `fact` 四类记忆。
+  - 新增 `agent/minimax_code/ipc/handlers_memory.py`，注册 `memory.*` IPC 命名空间：`memory.list` / `memory.add` / `memory.delete` / `memory.search` / `memory.extract`。
+  - `app.py` 注册 `memory.*` handlers；`agent.send_message` 根据当前 session 的 `project_id` / `session_id` 拉取相关记忆，注入 `## Relevant memories` 系统提示词上下文。
 - **批量会话操作（v0.10.3）**：新增 `session.batchArchive` / `session.batchUpdateProject` IPC 方法及 `SessionsDAO` 批量接口，支持事务级归档与跨项目移动。
 
 ### Added — 前端
@@ -35,7 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 扩展 `web/src/types/ipc.ts`、`web/src/ipc/typed.ts`、`web/src/ipc/mock.ts` 的 Codebase RAG 类型与桩实现。
 - **消息来源面板**：`MessageItem` 新增可折叠 `SourcesPanel`，展示 assistant message `metadata.sources` 中汇集的 codebase 来源；新增 `SourceAnnotation` 类型并扩展 `MessageMetadata`。
 - **Settings MCP Servers 标签页**：新增 `web/src/components/settings/McpServersTab.tsx`，支持添加/删除 stdio MCP 服务器、查看连接状态；同步更新 `SettingsPage` tab 路由与 mock backend。
-- 扩展 `web/src/types/ipc.ts`、`web/src/ipc/typed.ts`、`web/src/ipc/mock.ts` 的 MCP 类型与桩实现。
+- **Settings Memory 标签页**：新增 `web/src/components/settings/MemoryTab.tsx`，支持查看、搜索、添加、删除长期记忆；同步更新 `SettingsPage` tab 路由与图标。
+- 扩展 `web/src/types/ipc.ts`、`web/src/ipc/typed.ts`、`web/src/ipc/mock.ts` 的 MCP 与 Memory 类型与桩实现。
 - **Sidebar 项目化**：会话按项目分组展示；收件箱默认展开置顶，普通项目可折叠，归档项目沉底。
 - 项目行支持新建、重命名、归档/取消归档、删除；删除时提示其下会话将移回收件箱。
 - 新建任务默认写入当前选中的项目（或收件箱）。

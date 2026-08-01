@@ -8,7 +8,6 @@ import pytest
 
 from minimax_code import app
 from minimax_code.ipc.client import IPCClient
-from minimax_code.ipc.handlers_memory import register_memory_handlers
 from minimax_code.storage.dao.projects import ProjectsDAO
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 
@@ -35,8 +34,9 @@ async def client(async_db: AsyncDatabase) -> IPCClient:
     app._DB_SINGLETON = async_db
     await ProjectsDAO(async_db).create(id="p1", name="Test Project")
     try:
+        # IPCClient calls register_app_handlers(), which now includes
+        # register_memory_handlers(), so no extra registration is needed.
         ipc = IPCClient()
-        register_memory_handlers(ipc.server)
         yield ipc
     finally:
         app._DB_SINGLETON = None

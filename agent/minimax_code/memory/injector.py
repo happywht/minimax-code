@@ -37,8 +37,9 @@ async def build_memory_context(
     """Build a formatted memory context block.
 
     When ``query`` is provided, memories are ranked by a keyword search
-    over ``content``. Otherwise the most recent memories for the given
-    ``project_id`` / ``session_id`` are returned.
+    over ``content`` scoped to ``project_id``. Otherwise the most recent
+    project-wide memories and session-specific memories are returned and
+    de-duplicated.
 
     Returns an empty string when no memories match.
     """
@@ -48,11 +49,22 @@ async def build_memory_context(
     if query:
         memories = await dao.search(query, project_id=project_id, limit=20)
     else:
-        memories = await dao.list(
-            project_id=project_id,
-            session_id=session_id,
-            limit=20,
-        )
+        memories: list[dict[str, object]] = []
+        seen: set[str] = set()
+        if project_id is not None:
+            for m in await dao.list(project_id=project_id, limit=20):
+                mid = m.get("id")
+                if isinstance(mid, str) and mid not in seen:
+                    seen.add(mid)
+                    memories.append(m)
+        if session_id is not None:
+            for m in await dao.list(session_id=session_id, limit=20):
+                mid = m.get("id")
+                if isinstance(mid, str) and mid not in seen:
+                    seen.add(mid)
+                    memories.append(m)
+        # Preserve recency while capping total context length.
+        memories = memories[:20]
 
     if not memories:
         return ""

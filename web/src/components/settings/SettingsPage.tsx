@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   Blocks,
   Bot,
+  Brain,
   CalendarClock,
   Cpu,
   Globe,
@@ -31,10 +32,11 @@ import { AuditTab } from "./AuditTab";
 import { WebhooksTab } from "./WebhooksTab";
 import { WorkflowsTab } from "./WorkflowsTab";
 import { McpServersTab } from "./McpServersTab";
+import { MemoryTab } from "./MemoryTab";
 import { useFocusTrap } from "../../lib/useFocusTrap";
 import { ConfirmationDialog } from "../modals/ConfirmationDialog";
 
-export type SettingsTab = "models" | "providers" | "permissions" | "scheduled" | "api-key" | "agents" | "teams" | "audit" | "webhooks" | "workflows" | "mcp-servers";
+export type SettingsTab = "models" | "providers" | "permissions" | "scheduled" | "api-key" | "agents" | "teams" | "audit" | "webhooks" | "workflows" | "mcp-servers" | "memory";
 
 const TAB_GROUPS: Array<{
   label: string;
@@ -48,6 +50,7 @@ const TAB_GROUPS: Array<{
       { id: "api-key", icon: <KeyRound size={12} />, label: "API Key", testId: "settings-tab-api-key" },
       { id: "permissions", icon: <ShieldAlert size={12} />, label: "Permissions", testId: "settings-tab-permissions" },
       { id: "mcp-servers", icon: <Blocks size={12} />, label: "MCP Servers", testId: "settings-tab-mcp-servers" },
+      { id: "memory", icon: <Brain size={12} />, label: "Memory", testId: "settings-tab-memory" },
     ],
   },
   {
@@ -163,6 +166,7 @@ export function SettingsPage({ testId = "settings-page", onClose, initialTab = "
           {tab === "webhooks" && <WebhooksTab />}
           {tab === "workflows" && <WorkflowsTab />}
           {tab === "mcp-servers" && <McpServersTab />}
+          {tab === "memory" && <MemoryTab />}
         </div>
       </div>
       </div>

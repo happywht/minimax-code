@@ -97,3 +97,8 @@ export {
   startCodebaseStatusPoller,
   type CodebaseState,
 } from "./codebaseStore";
+export {
+  useMemoryStore,
+  type MemoryEntryItem,
+  type MemoryState,
+} from "./memoryStore";

@@ -1372,3 +1372,45 @@ export interface CodebaseSummarizeResult {
   snippet: string;
   file_count: number;
 }
+
+// ---------------------------------------------------------------------------
+// v0.11.0 — Long-term memory
+// ---------------------------------------------------------------------------
+
+/** Persisted memory category. */
+export type MemoryCategory = "preference" | "decision" | "lesson" | "fact";
+
+/** A single long-term memory row — matches the `memories` table. */
+export interface MemoryEntry {
+  id: string;
+  project_id: string | null;
+  session_id: string | null;
+  content: string;
+  category: MemoryCategory;
+  confidence: number;
+  source: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Result of `memory.list` / `memory.search`. */
+export interface ListMemoriesResult {
+  memories: MemoryEntry[];
+  total: number;
+}
+
+/** Result of `memory.add`. */
+export interface MemoryAddResult {
+  memory: MemoryEntry;
+}
+
+/** Result of `memory.delete`. */
+export interface MemoryDeleteResult {
+  ok: boolean;
+  id: string;
+}
+
+/** Result of `memory.extract`. */
+export interface MemoryExtractResult {
+  facts: Array<{ content: string; category: MemoryCategory; confidence: number }>;
+}

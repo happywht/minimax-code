@@ -75,6 +75,12 @@ import type {
   CodebaseStatusResult,
   CodebaseSearchResultShape,
   CodebaseSummarizeResult,
+  MemoryEntry,
+  MemoryCategory,
+  ListMemoriesResult,
+  MemoryAddResult,
+  MemoryDeleteResult,
+  MemoryExtractResult,
 } from "../types/ipc";
 import type { IPCClient } from "./client";
 import {
@@ -127,6 +133,7 @@ export function mockNotify(method: string, params: unknown, client: IPCClient): 
 // from `model.list` so it stays in sync with the store without a second round-trip.
 let mockReasoningEffort: string | null = null;
 const mockMcpServers = new Map<string, McpServer>();
+const mockMemories = new Map<string, MemoryEntry>();
 function mockHandle(
   method: string,
   params: unknown,
@@ -1399,6 +1406,97 @@ function mockHandle(
         task_id: `teamrun_mock_${Date.now()}`,
         success: true,
       };
+    }
+
+    // ── memory.* mock (v0.11.0) ─────────────────────────────────────
+
+    case "memory.list": {
+      const p = params as {
+        project_id?: string;
+        session_id?: string;
+        category?: MemoryCategory;
+        limit?: number;
+        offset?: number;
+      } | undefined;
+      let items = Array.from(mockMemories.values()).sort(
+        (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+      );
+      if (p?.project_id) items = items.filter((m) => m.project_id === p.project_id);
+      if (p?.session_id) items = items.filter((m) => m.session_id === p.session_id);
+      if (p?.category) items = items.filter((m) => m.category === p.category);
+      const offset = p?.offset ?? 0;
+      const limit = p?.limit ?? items.length;
+      return {
+        memories: items.slice(offset, offset + limit),
+        total: items.length,
+      } satisfies ListMemoriesResult;
+    }
+
+    case "memory.search": {
+      const p = params as {
+        query: string;
+        project_id?: string;
+        category?: MemoryCategory;
+        limit?: number;
+      };
+      const q = p.query.trim().toLowerCase();
+      let items = Array.from(mockMemories.values()).filter((m) =>
+        m.content.toLowerCase().includes(q),
+      );
+      if (p.project_id) items = items.filter((m) => m.project_id === p.project_id);
+      if (p.category) items = items.filter((m) => m.category === p.category);
+      items.sort(
+        (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+      );
+      const limit = p.limit ?? items.length;
+      return { memories: items.slice(0, limit), total: items.length } satisfies ListMemoriesResult;
+    }
+
+    case "memory.add": {
+      const p = params as {
+        content: string;
+        category?: MemoryCategory;
+        confidence?: number;
+        project_id?: string;
+        session_id?: string;
+        source?: string;
+      };
+      const now = new Date().toISOString();
+      const memory: MemoryEntry = {
+        id: `mem_${Math.random().toString(36).slice(2, 10)}`,
+        project_id: p.project_id ?? null,
+        session_id: p.session_id ?? null,
+        content: p.content.trim(),
+        category: p.category ?? "fact",
+        confidence: p.confidence ?? 1.0,
+        source: p.source ?? null,
+        created_at: now,
+        updated_at: now,
+      };
+      mockMemories.set(memory.id, memory);
+      return { memory } satisfies MemoryAddResult;
+    }
+
+    case "memory.delete": {
+      const p = params as { id: string };
+      const existed = mockMemories.delete(p.id);
+      return { ok: existed, id: p.id } satisfies MemoryDeleteResult;
+    }
+
+    case "memory.extract": {
+      const p = params as { text: string };
+      const sentences = p.text
+        .replace(/([.!?])\s+/g, "$1\n")
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      return {
+        facts: sentences.map((content) => ({
+          content,
+          category: "fact" as const,
+          confidence: 0.8,
+        })),
+      } satisfies MemoryExtractResult;
     }
 
     // ── plugins.* mock (platform pillar #3) ───────────────────────────
