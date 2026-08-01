@@ -48,6 +48,14 @@ import platformdirs
 
 from .migrations import discover_migrations, ensure_migration_table
 
+try:
+    import sqlite_vec
+
+    _SQLITE_VEC_AVAILABLE = True
+except Exception:  # pragma: no cover — sqlite-vec is a required dep, but be defensive
+    sqlite_vec = None  # type: ignore[assignment]
+    _SQLITE_VEC_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -143,6 +151,28 @@ def _apply_pragmas_sync(conn: sqlite3.Connection) -> None:
         conn.execute(f"PRAGMA {name}={value}")
 
 
+def _load_sqlite_extensions_sync(conn: sqlite3.Connection) -> None:
+    """Load optional SQLite extensions (currently sqlite-vec)."""
+    if not _SQLITE_VEC_AVAILABLE:
+        return
+    try:
+        conn.enable_load_extension(True)
+        conn.load_extension(sqlite_vec.loadable_path())  # type: ignore[union-attr]
+    except Exception:  # noqa: BLE001 — fail-open; vector tables simply won't work
+        logger.debug("failed to load sqlite-vec extension", exc_info=True)
+
+
+async def _load_sqlite_extensions_async(conn: aiosqlite.Connection) -> None:
+    """Load optional SQLite extensions on an aiosqlite connection."""
+    if not _SQLITE_VEC_AVAILABLE:
+        return
+    try:
+        await conn.enable_load_extension(True)
+        await conn.load_extension(sqlite_vec.loadable_path())  # type: ignore[union-attr]
+    except Exception:  # noqa: BLE001 — fail-open
+        logger.debug("failed to load sqlite-vec extension", exc_info=True)
+
+
 def _set_sqlite_udf_safe() -> None:
     """Register Python UDFs that are useful for DAO helpers.
 
@@ -179,6 +209,7 @@ class Database:
         )
         if pragmas:
             _apply_pragmas_sync(self._conn)
+        _load_sqlite_extensions_sync(self._conn)
         _set_sqlite_udf_safe()
         logger.debug("opened sync database at %s", self.path)
 
@@ -315,6 +346,7 @@ class AsyncDatabase:
             for name, value in _DEFAULT_PRAGMAS:
                 await self._conn.execute(f"PRAGMA {name}={value}")
             await self._conn.commit()
+        await _load_sqlite_extensions_async(self._conn)
         _set_sqlite_udf_safe()
         logger.debug("opened async database at %s", self.path)
 

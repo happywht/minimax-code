@@ -299,10 +299,10 @@ def process_file_fast(
     return _FileSymbols(
         path=_relative_path_str(rel_path),
         definitions=[
-            SymbolOccurrence.new(name, rng.start.line + 1) for name, rng in definitions
+            SymbolOccurrence.new(name, rng.start_line() + 1) for name, rng in definitions
         ],
         references=[
-            SymbolOccurrence.new(name, rng.start.line + 1) for name, rng in references
+            SymbolOccurrence.new(name, rng.start_line() + 1) for name, rng in references
         ],
         aliases=[SymbolAlias.new(alias, original) for alias, original in alias_pairs],
         file_meta=FileMeta.from_stat(stat),

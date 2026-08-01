@@ -165,7 +165,7 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
             try:
                 ack = await sched.run_now(job_id)
             except SchedulerError as exc:
-                raise HandlerError(INVALID_PARAMS, str(exc))
+                raise HandlerError(INVALID_PARAMS, str(exc)) from exc
             await ctx.reply(
                 {
                     "ok": True,
@@ -218,10 +218,10 @@ def _make_scheduler_factory(scheduler: Any | None) -> Any:
         # path, use it. Otherwise build one now.
         try:
             sched = await get_scheduler()
-        except Exception:
+        except Exception as exc:
             db = await ensure_db()
             if db is None:
-                raise RuntimeError("storage is unavailable")
+                raise RuntimeError("storage is unavailable") from exc
             sched = await get_scheduler(db)
         return sched
 

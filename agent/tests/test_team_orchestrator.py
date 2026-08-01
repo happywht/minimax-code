@@ -1,4 +1,4 @@
-"""Tests for TeamOrchestrator — parallel/sequential/round-robin + conflict detection."""
+"""Tests for TeamOrchestrator — parallel/sequential/round-robin/vote/review + persistence."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from minimax_code.orchestrator.team_orchestrator import (
 )
 from minimax_code.storage.dao.agent_teams import AgentTeamDAO
 from minimax_code.storage.dao.agents import AgentDAO
+from minimax_code.storage.dao.runs import AgentRunsDAO
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -77,6 +78,8 @@ async def _seed_team_and_agents(
     team_dao: AgentTeamDAO,
     agent_dao: AgentDAO,
     mode: str = "parallel",
+    *,
+    orchestration_config: dict[str, Any] | None = None,
 ) -> None:
     """Create a team 'review' with 2 member agents."""
     await agent_dao.upsert(
@@ -95,6 +98,7 @@ async def _seed_team_and_agents(
         name="review",
         agents=["coder", "reviewer"],
         orchestration_mode=mode,
+        orchestration_config=orchestration_config,
     )
 
 
@@ -169,6 +173,100 @@ async def test_round_robin_returns_results(
     assert result.success is True
     assert result.orchestration_mode == "round-robin"
     assert len(result.agents_run) == 2
+
+
+# ── Tests: vote mode ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_vote_returns_merged_results(
+    make_orchestrator: TeamOrchestrator,
+    team_dao: AgentTeamDAO,
+    agent_dao: AgentDAO,
+) -> None:
+    await _seed_team_and_agents(team_dao, agent_dao, mode="vote")
+    orch = make_orchestrator()
+    result = await orch.run("review", "Vote on best approach")
+
+    assert result.success is True
+    assert result.orchestration_mode == "vote"
+    assert len(result.agents_run) == 2
+    assert "coder" in result.merged_text
+    assert "reviewer" in result.merged_text
+
+
+# ── Tests: review mode ───────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_review_uses_last_agent_as_reviewer(
+    make_orchestrator: TeamOrchestrator,
+    team_dao: AgentTeamDAO,
+    agent_dao: AgentDAO,
+) -> None:
+    await _seed_team_and_agents(team_dao, agent_dao, mode="review")
+    orch = make_orchestrator()
+    result = await orch.run("review", "Write and review a function")
+
+    assert result.success is True
+    assert result.orchestration_mode == "review"
+    # Writers + reviewer
+    assert len(result.agents_run) == 3
+    names = [r.agent_name for r in result.agents_run]
+    assert names == ["coder", "reviewer", "reviewer"]
+    # The reviewer's stub output mentions the consolidation prompt, which
+    # includes the original request.
+    assert "reviewer" in result.merged_text
+
+
+@pytest.mark.asyncio
+async def test_review_uses_configured_review_agent(
+    make_orchestrator: TeamOrchestrator,
+    team_dao: AgentTeamDAO,
+    agent_dao: AgentDAO,
+) -> None:
+    await _seed_team_and_agents(
+        team_dao,
+        agent_dao,
+        mode="review",
+        orchestration_config={"review_agent": "coder"},
+    )
+    orch = make_orchestrator()
+    result = await orch.run("review", "Write and review a function")
+
+    assert result.success is True
+    assert len(result.agents_run) == 3
+    # Reviewer is explicitly coder, last writer is reviewer
+    assert result.agents_run[2].agent_name == "coder"
+    assert "coder" in result.merged_text
+
+
+# ── Tests: persistence ───────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_run_is_persisted(
+    make_orchestrator: TeamOrchestrator,
+    team_dao: AgentTeamDAO,
+    agent_dao: AgentDAO,
+    async_db: AsyncDatabase,
+) -> None:
+    await _seed_team_and_agents(team_dao, agent_dao, mode="parallel")
+    orch = make_orchestrator()
+    result = await orch.run("review", "Persisted run")
+
+    runs_dao = AgentRunsDAO(async_db)
+    run = await runs_dao.get_run(result.task_id)
+    assert run is not None
+    assert run["mode"] == "team"
+    assert run["status"] == "completed"
+    metadata = run["metadata"] or {}
+    team_result = metadata.get("team_result")
+    assert team_result is not None
+    assert team_result["team_name"] == "review"
+    assert team_result["orchestration_mode"] == "parallel"
+    assert team_result["success"] is True
+    assert len(team_result["agents_run"]) == 2
 
 
 # ── Tests: error cases ───────────────────────────────────────────────────────

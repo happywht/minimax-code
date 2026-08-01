@@ -2,12 +2,17 @@
  * Markdown code renderer.
  *
  * Inline code renders as a pill; fenced blocks render as a card with
- * a header (language label + copy button), a line-number gutter, and
- * shiki syntax highlighting (lazy-loaded on first render; falls back
- * to a plain <pre> for unsupported languages). ``mermaid`` fences
- * are delegated to <MermaidBlock />.
+ * a header (language label + optional source tag + copy button), a
+ * line-number gutter, and shiki syntax highlighting (lazy-loaded on
+ * first render; falls back to a plain <pre> for unsupported languages).
+ * ``mermaid`` fences are delegated to <MermaidBlock />.
+ *
+ * v0.11.0: code fence info strings may carry a source annotation, e.g.
+ *   ```ts src/auth.ts#L10-20
+ * which is rendered as a clickable source chip in the block header.
  */
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { FileCode } from "lucide-react";
 import { highlight } from "../../lib/shikiLoader";
 import { CopyButton } from "./CopyButton";
 import { MermaidBlock } from "./MermaidBlock";
@@ -19,6 +24,25 @@ export interface MarkdownCodeProps {
   inline?: boolean;
 }
 
+interface SourceAnnotation {
+  file_path: string;
+  line_range: string | null;
+}
+
+function parseSource(className: string): SourceAnnotation | null {
+  // React-markdown puts the fence info string in the className as
+  // "language-<lang> [extra tokens]". We look for a file-like token.
+  const tokens = className.split(/\s+/);
+  for (const token of tokens) {
+    if (token.startsWith("language-")) continue;
+    const match = /^(.*\.[A-Za-z0-9_]+)(?:#(.*))?$/.exec(token);
+    if (match) {
+      return { file_path: match[1], line_range: match[2] ?? null };
+    }
+  }
+  return null;
+}
+
 export function MarkdownCode({ className, children, inline }: MarkdownCodeProps): JSX.Element {
   const code = String(children ?? "").replace(/\n$/, "");
   const lineNumbers = useMemo(
@@ -27,12 +51,10 @@ export function MarkdownCode({ className, children, inline }: MarkdownCodeProps)
   );
   const langMatch = /language-(\w+)/.exec(className ?? "");
   const hasLang = !!langMatch;
-  // react-markdown 9: inline code has no `language-*` className. We
-  // also fall back to the `inline` prop for older runtimes.
   const isInline = inline || (!hasLang && !code.includes("\n"));
-  // Language detection deferred to highlight() — unknown langs return null.
   const lang = langMatch?.[1] ?? "text";
   const isMermaid = lang.toLowerCase() === "mermaid";
+  const source = useMemo(() => parseSource(className ?? ""), [className]);
   const [html, setHtml] = useState<string | null>(null);
 
   // Lazy-load shiki on first code block render
@@ -66,9 +88,24 @@ export function MarkdownCode({ className, children, inline }: MarkdownCodeProps)
   return (
     <div className="my-2 overflow-hidden rounded-lg border border-line bg-surface-0">
       <div className="flex items-center justify-between gap-2 border-b border-line bg-surface-2 py-0.5 pl-3 pr-1.5">
-        <span className="text-[11px] font-medium uppercase tracking-wider text-ink-2">
-          {lang}
-        </span>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="text-[11px] font-medium uppercase tracking-wider text-ink-2">
+            {lang}
+          </span>
+          {source && (
+            <span
+              className="inline-flex max-w-[16rem] items-center gap-1 truncate rounded bg-surface-3 px-1.5 py-0.5 text-[11px] text-ink-1"
+              title={source.line_range ? `${source.file_path}#${source.line_range}` : source.file_path}
+              data-testid="code-source-tag"
+            >
+              <FileCode size={10} className="text-accent" />
+              <span className="truncate">{source.file_path}</span>
+              {source.line_range && (
+                <span className="text-ink-2">#{source.line_range}</span>
+              )}
+            </span>
+          )}
+        </div>
         <CopyButton text={code} testId="code-copy-button" />
       </div>
       <div className="grid grid-cols-[auto_minmax(0,1fr)] text-[12px] leading-relaxed">

@@ -106,7 +106,7 @@ async def test_heartbeat_sends_ping() -> None:
     # Actually, let's patch asyncio.sleep to control the loop
     ping_calls_1 = [c for c in ws1.send_json.call_args_list
                      if c.args and c.args[0].get("method") == "agent.ping"]
-    ping_calls_2 = [c for c in ws2.send_json.call_args_list
+    [c for c in ws2.send_json.call_args_list
                      if c.args and c.args[0].get("method") == "agent.ping"]
 
     # No pings yet because we haven't waited 30s

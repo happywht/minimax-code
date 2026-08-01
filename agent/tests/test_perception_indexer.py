@@ -139,7 +139,7 @@ async def test_invalidate_all_resets_everything(tmp_path: Path) -> None:
     _write_py(tmp_path, "c.py", "def gamma(): pass\n")
 
     indexer = RepoMapIndexer(tmp_path, max_tokens=5000)
-    first = await indexer.build_map()
+    await indexer.build_map()
 
     _write_py(tmp_path, "c.py", "def delta(): pass\n")
     indexer.invalidate_all()

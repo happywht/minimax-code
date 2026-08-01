@@ -442,7 +442,7 @@ def build_app(
             # 1. Cancel any in-flight agent runs.
             from .ipc.builtins import _ACTIVE_RUNS
 
-            for key, entry in list(_ACTIVE_RUNS.items()):
+            for _key, entry in list(_ACTIVE_RUNS.items()):
                 try:
                     core = entry.get("core") if isinstance(entry, dict) else entry
                     if core:

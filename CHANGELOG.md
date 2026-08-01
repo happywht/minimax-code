@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 新增 `agent/minimax_code/ipc/handlers_codebase.py`，注册 `codebase.*` IPC 命名空间：`codebase.status` / `codebase.build_index` / `codebase.search` / `codebase.summarize`。
   - `app.py` 初始化 `CodebaseIndexer` / `CodebaseChunksDAO` 单例并注册 handlers。
   - 新增 `agent/tests/test_codebase_indexer.py`、`test_codebase_store.py`、`test_handlers_codebase.py` 覆盖索引、存储与 IPC。
+  - `search_codebase` / `summarize_codebase` / `find_symbol` 工具返回结果新增 `source` 字段（`path#Lstart-end` 或 `path#Lline`），并更新系统提示词要求模型在代码块 fence info 中标注来源，使前端 `CodeBlock` 自动渲染 source chip。
 - **MCP 基础设施（v0.11.0 Milestone 1）**：
   - 新增 `mcp_servers` 表与 `McpServersDAO`，持久化外部 MCP 服务器配置（name/transport/command/url/env/enabled）。
   - 新增 `agent/minimax_code/ipc/handlers_mcp.py`，注册 `mcp.*` IPC 命名空间：`mcp.list_servers` / `mcp.add_server` / `mcp.update_server` / `mcp.remove_server` / `mcp.list_tools` / `mcp.invoke_tool`。

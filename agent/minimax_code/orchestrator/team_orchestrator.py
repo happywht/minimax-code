@@ -1,4 +1,4 @@
-"""Team orchestrator — parallel, sequential, and round-robin multi-agent runs.
+"""Team orchestrator — parallel, sequential, round-robin, vote, and review.
 
 The orchestrator takes a named team template (from the ``agent_teams`` table),
 resolves its member agents, and drives them according to the team's
@@ -9,12 +9,18 @@ resolves its member agents, and drives them according to the team's
   plus the accumulated output of the previous agents.
 * **round-robin** — all agents receive the same request; the orchestrator
   returns the first successful result.
+* **vote** — all agents run in parallel; successful outputs are merged.
+* **review** — all agents run in parallel as writers, then a designated
+  reviewer agent consolidates their outputs into a single response.
 
 After all agents finish, the orchestrator runs a lightweight **conflict
 detection** pass that checks whether multiple agents attempted to write
 to the same file path (via ``write_file`` / ``edit_file`` tool calls).
 
-v0.8.0 — Enterprise Multi-Agent.
+The final :class:`TeamRunResult` is persisted to the ``agent_runs`` table
+(``mode="team"``) so callers can query it later via ``team.run.get``.
+
+v0.11.0 — Agent Studio orchestration enhancements.
 """
 
 from __future__ import annotations
@@ -118,14 +124,68 @@ class TeamOrchestrator:
         session_id: str | None = None,
         parent_session_id: str | None = None,
     ) -> TeamRunResult:
-        """Execute a team run.
+        """Execute a team run and persist the result.
 
         Resolves the team template, builds handles for each member
         agent, drives them according to the orchestration mode, and
-        returns a merged :class:`TeamRunResult`.
+        returns a merged :class:`TeamRunResult`. The result is stored
+        in ``agent_runs`` (``mode="team"``) under ``task_id``.
         """
         task_id = f"teamrun_{uuid.uuid4().hex[:10]}"
+        run_session_id = session_id or task_id
 
+        # Persist run start. Fail-open: persistence problems should not
+        # kill the team run.
+        runs_dao: Any | None = None
+        if self._team_dao is not None:
+            try:
+                runs_dao = self._make_runs_dao()
+                await self._ensure_session(run_session_id)
+                await runs_dao.create_run(
+                    id=task_id,
+                    session_id=run_session_id,
+                    mode="team",
+                    status="running",
+                    title=f"Team run: {team_name}",
+                    metadata={"team_result": None, "parent_session_id": parent_session_id},
+                )
+            except Exception:
+                logger.warning("Failed to persist team run start", exc_info=True)
+                runs_dao = None
+
+        result = await self._run_body(
+            team_name,
+            request,
+            session_id=run_session_id,
+            task_id=task_id,
+            parent_session_id=parent_session_id,
+        )
+
+        if runs_dao is not None:
+            try:
+                await runs_dao.update_run_status(
+                    task_id,
+                    status="completed" if result.success else "failed",
+                    metadata={
+                        "team_result": self._result_to_dict(result),
+                        "parent_session_id": parent_session_id,
+                    },
+                )
+            except Exception:
+                logger.warning("Failed to persist team run completion", exc_info=True)
+
+        return result
+
+    async def _run_body(
+        self,
+        team_name: str,
+        request: str,
+        *,
+        session_id: str,
+        task_id: str,
+        parent_session_id: str | None,
+    ) -> TeamRunResult:
+        """Core orchestration logic (persistence-agnostic)."""
         if self._team_dao is None:
             return TeamRunResult(
                 team_name=team_name,
@@ -183,29 +243,39 @@ class TeamOrchestrator:
             )
 
         # Drive orchestration
-        if mode == "parallel":
-            results = await self._run_parallel(
-                configs, request, session_id, task_id, team_name,
+        if mode == "review":
+            results, merged_text, success = await self._run_review(
+                configs, request, session_id, task_id, team_name, team
             )
-        elif mode == "sequential":
-            results = await self._run_sequential(
-                configs, request, session_id, task_id, team_name,
-            )
-        elif mode == "round-robin":
-            results = await self._run_round_robin(
-                configs, request, session_id, task_id, team_name,
-            )
+            conflicts = self._detect_conflicts(results)
         else:
-            results = await self._run_parallel(
-                configs, request, session_id, task_id, team_name,
-            )
+            if mode == "parallel":
+                results = await self._run_parallel(
+                    configs, request, session_id, task_id, team_name,
+                )
+            elif mode == "sequential":
+                results = await self._run_sequential(
+                    configs, request, session_id, task_id, team_name,
+                )
+            elif mode == "round-robin":
+                results = await self._run_round_robin(
+                    configs, request, session_id, task_id, team_name,
+                )
+            elif mode == "vote":
+                results = await self._run_vote(
+                    configs, request, session_id, task_id, team_name,
+                )
+            else:
+                results = await self._run_parallel(
+                    configs, request, session_id, task_id, team_name,
+                )
 
-        # Merge results
-        merged_text = "\n\n---\n\n".join(
-            f"## {r.agent_name}\n{r.text}" for r in results if r.success
-        )
-        conflicts = self._detect_conflicts(results)
-        success = any(r.success for r in results)
+            # Merge results
+            merged_text = "\n\n---\n\n".join(
+                f"## {r.agent_name}\n{r.text}" for r in results if r.success
+            )
+            conflicts = self._detect_conflicts(results)
+            success = any(r.success for r in results)
 
         await self._emit_progress(
             "completed", task_id, team_name, progress=1.0,
@@ -229,7 +299,7 @@ class TeamOrchestrator:
         self,
         configs: list[Any],
         request: str,
-        session_id: str | None,
+        session_id: str,
         task_id: str,
         team_name: str,
     ) -> list[AgentRunResult]:
@@ -253,7 +323,7 @@ class TeamOrchestrator:
         self,
         configs: list[Any],
         request: str,
-        session_id: str | None,
+        session_id: str,
         task_id: str,
         team_name: str,
     ) -> list[AgentRunResult]:
@@ -273,7 +343,7 @@ class TeamOrchestrator:
         self,
         configs: list[Any],
         request: str,
-        session_id: str | None,
+        session_id: str,
         task_id: str,
         team_name: str,
     ) -> list[AgentRunResult]:
@@ -284,13 +354,104 @@ class TeamOrchestrator:
             configs, request, session_id, task_id, team_name,
         )
 
+    async def _run_vote(
+        self,
+        configs: list[Any],
+        request: str,
+        session_id: str,
+        task_id: str,
+        team_name: str,
+    ) -> list[AgentRunResult]:
+        """Run all agents in parallel and let the caller merge outputs."""
+        return await self._run_parallel(
+            configs, request, session_id, task_id, team_name,
+        )
+
+    async def _run_review(
+        self,
+        configs: list[Any],
+        request: str,
+        session_id: str,
+        task_id: str,
+        team_name: str,
+        team: dict[str, Any],
+    ) -> tuple[list[AgentRunResult], str, bool]:
+        """Run writers in parallel, then a reviewer consolidates.
+
+        The reviewer is either the agent named in
+        ``team.orchestration_config.review_agent`` or the last agent in
+        ``configs``. If no reviewer can be determined, fall back to
+        parallel behaviour.
+
+        Returns ``(results, merged_text, success)``.
+        """
+        # Run all agents as writers first.
+        writer_results = await self._run_parallel(
+            configs, request, session_id, task_id, team_name,
+        )
+
+        # Determine reviewer config.
+        review_agent_name: str | None = None
+        orchestration_config = team.get("orchestration_config") or {}
+        if isinstance(orchestration_config, dict):
+            review_agent_name = orchestration_config.get("review_agent")
+
+        reviewer_config: Any | None = None
+        if review_agent_name:
+            for cfg in configs:
+                if cfg.name == review_agent_name:
+                    reviewer_config = cfg
+                    break
+        if reviewer_config is None and configs:
+            reviewer_config = configs[-1]
+
+        if reviewer_config is None:
+            # No reviewer available — parallel fallback.
+            merged_text = "\n\n---\n\n".join(
+                f"## {r.agent_name}\n{r.text}" for r in writer_results if r.success
+            )
+            success = any(r.success for r in writer_results)
+            return writer_results, merged_text, success
+
+        # Build a consolidation prompt from writer outputs.
+        writer_outputs = "\n\n".join(
+            f"## {r.agent_name}\n{r.text}" for r in writer_results if r.success
+        )
+        review_prompt = (
+            f"Original request:\n{request}\n\n"
+            f"Here are outputs from multiple writers:\n\n{writer_outputs}\n\n"
+            "Please review and consolidate the above outputs into a single coherent response."
+        )
+
+        review_result = await self._run_single_agent(
+            reviewer_config,
+            review_prompt,
+            session_id,
+            task_id,
+            team_name,
+            index=len(configs),
+            total=len(configs) + 1,
+        )
+
+        results = [*writer_results, review_result]
+        if review_result.success and review_result.text:
+            merged_text = review_result.text
+            success = True
+        else:
+            # Reviewer failed: fall back to merged writer output.
+            merged_text = "\n\n---\n\n".join(
+                f"## {r.agent_name}\n{r.text}" for r in writer_results if r.success
+            )
+            success = any(r.success for r in writer_results)
+        return results, merged_text, success
+
     # -- single agent execution --------------------------------------------
 
     async def _run_single_agent(
         self,
         config: Any,
         request: str,
-        session_id: str | None,
+        session_id: str,
         task_id: str,
         team_name: str,
         index: int,
@@ -403,6 +564,53 @@ class TeamOrchestrator:
             await self._emit_event("agent.team_progress", payload)
         except Exception:  # pragma: no cover — emitter failure shouldn't kill the run
             logger.warning("Failed to emit team_progress event", exc_info=True)
+
+    # -- persistence helpers ------------------------------------------------
+
+    def _make_runs_dao(self) -> Any:
+        """Build an :class:`AgentRunsDAO` from the team DAO's database."""
+        from ..storage.dao.runs import AgentRunsDAO
+
+        return AgentRunsDAO(self._team_dao._db)
+
+    async def _ensure_session(self, session_id: str) -> None:
+        """Create a placeholder session row if ``session_id`` does not exist."""
+        from ..storage.dao.sessions import SessionsDAO
+
+        sessions_dao = SessionsDAO(self._team_dao._db)
+        existing = await sessions_dao.get(session_id)
+        if existing is not None:
+            return
+        await sessions_dao.create(id=session_id, title=f"Team run session {session_id}")
+
+    @staticmethod
+    def _result_to_dict(result: TeamRunResult) -> dict[str, Any]:
+        """Serialisable representation stored in ``agent_runs.metadata``."""
+        return {
+            "team_name": result.team_name,
+            "orchestration_mode": result.orchestration_mode,
+            "merged_text": result.merged_text,
+            "success": result.success,
+            "agents_run": [
+                {
+                    "agent_name": r.agent_name,
+                    "success": r.success,
+                    "text": r.text,
+                    "error": r.error,
+                    "iterations": r.iterations,
+                    "stub": r.stub,
+                }
+                for r in result.agents_run
+            ],
+            "conflicts": [
+                {
+                    "file_path": c.file_path,
+                    "agents": c.agents,
+                    "conflict_type": c.conflict_type,
+                }
+                for c in result.conflicts
+            ],
+        }
 
     # -- agent resolution ---------------------------------------------------
 

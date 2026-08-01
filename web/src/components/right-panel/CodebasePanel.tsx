@@ -1,100 +1,75 @@
 /**
- * Codebase panel — index status, search, and summaries (v0.11.0 Milestone 2).
+ * Codebase panel — index status, search, hot files and summaries (v0.11.0 Milestone 2).
  */
-import { useEffect, useState } from "react";
-import { Search, RefreshCw, FileCode } from "lucide-react";
+import { useEffect } from "react";
+import { Search, RefreshCw, FileCode, Clock, TrendingUp } from "lucide-react";
 import { Button, Input, Spinner, EmptyState } from "../../ui";
-import { typedIPC } from "../../ipc";
-import { toast } from "../layout/ErrorBoundary";
-import type {
-  CodebaseIndexStatus,
-  CodebaseSearchResult,
-  CodebaseSummarizeResult,
-} from "../../types/ipc";
+import { useCodebaseStore, startCodebaseStatusPoller } from "../../stores";
+import type { CodebaseSearchResult } from "../../types/ipc";
 
 export interface CodebasePanelProps {
   testId?: string;
 }
 
-interface Status {
-  status: CodebaseIndexStatus;
-  processed: number;
-  total: number;
-  percent: number;
-  message: string;
-  error: string | null;
-  stats: {
-    total_chunks: number;
-    total_files: number;
-    latest_updated_at: string | null;
-  };
+function ResultRow({
+  r,
+  testId,
+  onClick,
+}: {
+  r: CodebaseSearchResult;
+  testId: string;
+  onClick?: () => void;
+}): JSX.Element {
+  return (
+    <li
+      key={r.chunk_id}
+      className="rounded-md border border-line bg-surface-1 p-2 text-xs"
+      data-testid={`${testId}-result`}
+    >
+      <button
+        type="button"
+        onClick={onClick}
+        className="flex w-full items-center justify-between text-left"
+      >
+        <span className="font-medium text-minimax-300">{r.file_path}</span>
+        <span className="shrink-0 text-ink-2">
+          {r.language} L{r.start_line}-{r.end_line}
+        </span>
+      </button>
+      <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-surface-2 p-1.5 text-ink-1">
+        {r.snippet}
+      </pre>
+    </li>
+  );
 }
 
 export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.Element {
-  const [status, setStatus] = useState<Status | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [query, setQuery] = useState("");
-  const [searching, setSearching] = useState(false);
-  const [results, setResults] = useState<CodebaseSearchResult[]>([]);
-  const [summaryPath, setSummaryPath] = useState("");
-  const [summary, setSummary] = useState<CodebaseSummarizeResult | null>(null);
-
-  const refreshStatus = async () => {
-    try {
-      const s = await typedIPC.getCodebaseStatus();
-      setStatus(s);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to load codebase status", message);
-    }
-  };
+  const {
+    status,
+    loading,
+    query,
+    searching,
+    results,
+    summaryPath,
+    summary,
+    summarizing,
+    hotFiles,
+    recentFiles,
+    refreshStatus,
+    buildIndex,
+    setQuery,
+    search,
+    setSummaryPath,
+    summarize,
+    touchFile,
+  } = useCodebaseStore();
 
   useEffect(() => {
-    void refreshStatus();
-    const id = setInterval(() => void refreshStatus(), 2000);
-    return () => clearInterval(id);
+    return startCodebaseStatusPoller();
   }, []);
 
-  const handleBuild = async () => {
-    setLoading(true);
-    try {
-      const s = await typedIPC.buildCodebaseIndex({ force: true });
-      setStatus(s);
-      toast.success("Codebase index started");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to build codebase index", message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSearch = async () => {
-    if (!query.trim()) return;
-    setSearching(true);
-    try {
-      const res = await typedIPC.searchCodebase(query.trim());
-      setResults(res.results);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      toast.error("Search failed", message);
-      setResults([]);
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  const handleSummarize = async () => {
-    if (!summaryPath.trim()) return;
-    try {
-      const s = await typedIPC.summarizeCodebasePath(summaryPath.trim());
-      setSummary(s);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      toast.error("Summarize failed", message);
-      setSummary(null);
-    }
-  };
+  const handleSearch = () => void search();
+  const handleBuild = () => void buildIndex(true);
 
   return (
     <section
@@ -109,6 +84,7 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
           size="sm"
           variant="subtle"
           onClick={() => void refreshStatus()}
+          loading={loading}
           data-testid={`${testId}-refresh`}
         >
           <RefreshCw size={12} className="mr-1" />
@@ -141,7 +117,7 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
             <Button
               size="sm"
               variant="primary"
-              onClick={() => void handleBuild()}
+              onClick={handleBuild}
               loading={loading}
               data-testid={`${testId}-build`}
             >
@@ -160,10 +136,17 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
           placeholder="Search code (e.g. auth flow)"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && void handleSearch()}
+          onKeyDown={(e) => e.key === "Enter" && handleSearch()}
           data-testid={`${testId}-search`}
         />
-        <Button size="sm" variant="primary" onClick={() => void handleSearch()} loading={searching}>
+        <Button
+          size="sm"
+          variant="primary"
+          onClick={handleSearch}
+          loading={searching}
+          aria-label="Search"
+          data-testid={`${testId}-search-btn`}
+        >
           <Search size={12} />
         </Button>
       </div>
@@ -181,22 +164,53 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
       ) : (
         <ul className="flex-1 space-y-2 overflow-auto" data-testid={`${testId}-results`}>
           {results.map((r) => (
-            <li
-              key={r.chunk_id}
-              className="rounded-md border border-line bg-surface-1 p-2 text-xs"
-            >
-              <div className="flex items-center justify-between">
-                <span className="font-medium text-minimax-300">{r.file_path}</span>
-                <span className="text-ink-2">
-                  {r.language} L{r.start_line}-{r.end_line}
-                </span>
-              </div>
-              <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-surface-2 p-1.5 text-ink-1">
-                {r.snippet}
-              </pre>
-            </li>
+            <ResultRow key={r.chunk_id} r={r} testId={testId} onClick={() => touchFile(r.file_path)} />
           ))}
         </ul>
+      )}
+
+      {hotFiles.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-ink-2">
+            <TrendingUp size={12} />
+            热门文件
+          </div>
+          <ul className="space-y-1">
+            {hotFiles.map((f) => (
+              <li
+                key={f.file_path}
+                className="flex items-center justify-between rounded bg-surface-1 px-2 py-1 text-xs"
+              >
+                <span className="truncate text-ink-0">{f.file_path}</span>
+                <span className="shrink-0 text-ink-2">{f.count} matches</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {recentFiles.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-ink-2">
+            <Clock size={12} />
+            最近查看
+          </div>
+          <ul className="space-y-1">
+            {recentFiles.map((f) => (
+              <li
+                key={f}
+                className="flex cursor-pointer items-center gap-1.5 rounded bg-surface-1 px-2 py-1 text-xs text-ink-0 hover:bg-surface-2"
+                onClick={() => {
+                  setSummaryPath(f);
+                  void summarize(f);
+                }}
+              >
+                <FileCode size={12} className="text-ink-2" />
+                <span className="truncate">{f}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       <div className="flex gap-2 border-t border-line pt-2">
@@ -204,10 +218,16 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
           placeholder="Summarize path (e.g. src/auth.ts)"
           value={summaryPath}
           onChange={(e) => setSummaryPath(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && void handleSummarize()}
+          onKeyDown={(e) => e.key === "Enter" && void summarize()}
           data-testid={`${testId}-summary-path`}
         />
-        <Button size="sm" variant="subtle" onClick={() => void handleSummarize()}>
+        <Button
+          size="sm"
+          variant="subtle"
+          onClick={() => void summarize()}
+          loading={summarizing}
+          data-testid={`${testId}-summary-btn`}
+        >
           Summary
         </Button>
       </div>

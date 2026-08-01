@@ -1,14 +1,20 @@
-"""Tests for team.* IPC handlers — stub DAO + _CapturedReply context."""
+"""Tests for team.* IPC handlers — stub DAO + real DB integration."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from minimax_code.config import Config
+from minimax_code.ipc.handlers_agents import register_agent_handlers
 from minimax_code.ipc.handlers_teams import register_team_handlers
 from minimax_code.ipc.server import IPCServer
+from minimax_code.storage.dao.agent_teams import AgentTeamDAO
+from minimax_code.storage.dao.agents import AgentDAO
+from minimax_code.storage.dao.runs import AgentRunsDAO
+from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 
 # ── Fakes ─────────────────────────────────────────────────────────────────────
 
@@ -53,6 +59,7 @@ class _StubDAO:
             "color": kw.get("color", ""),
             "agents": kw.get("agents", []),
             "orchestration_mode": kw.get("orchestration_mode", "parallel"),
+            "orchestration_config": kw.get("orchestration_config"),
             "enabled": True,
             "created_at": "2026-06-07T00:00:00",
             "updated_at": "2026-06-07T00:00:00",
@@ -93,7 +100,37 @@ def handlers(stub_dao: _StubDAO) -> dict[str, Any]:
     return server._handlers
 
 
-# ── Tests ─────────────────────────────────────────────────────────────────────
+@pytest.fixture
+def db_path(tmp_path: Path) -> Path:
+    return make_temp_database_path(tmp_path)
+
+
+@pytest.fixture
+async def async_db(db_path: Path) -> AsyncDatabase:
+    db = AsyncDatabase(db_path)
+    await db.connect()
+    await db.migrate()
+    try:
+        yield db
+    finally:
+        await db.close()
+
+
+@pytest.fixture
+def real_handlers(async_db: AsyncDatabase) -> dict[str, Any]:
+    """Handlers wired to real DAOs on a temp database."""
+    server = IPCServer(Config())
+    register_agent_handlers(server, dao=AgentDAO(async_db))
+    register_team_handlers(
+        server,
+        dao=AgentTeamDAO(async_db),
+        agent_dao=AgentDAO(async_db),
+        runs_dao=AgentRunsDAO(async_db),
+    )
+    return server._handlers
+
+
+# ── Tests: stub DAO ───────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -145,6 +182,41 @@ async def test_team_create_invalid_agents(handlers: dict[str, Any]) -> None:
     await handlers["team.create"]({"name": "bad", "agents": "not-a-list"}, ctx)
     assert ctx.error_value is not None
     assert "agents must be a list" in ctx.error_value["message"]
+
+
+@pytest.mark.asyncio
+async def test_team_create_with_orchestration_config(
+    handlers: dict[str, Any],
+) -> None:
+    ctx = _CapturedReply()
+    await handlers["team.create"](
+        {
+            "name": "config-team",
+            "orchestration_mode": "review",
+            "orchestration_config": {"review_agent": "coder"},
+        },
+        ctx,
+    )
+    assert ctx.error_value is None, ctx.error_value
+    team = ctx.reply_value["team"]
+    assert team["orchestration_mode"] == "review"
+    assert team["orchestration_config"] == {"review_agent": "coder"}
+
+
+@pytest.mark.asyncio
+async def test_team_create_rejects_bad_orchestration_config(
+    handlers: dict[str, Any],
+) -> None:
+    ctx = _CapturedReply()
+    await handlers["team.create"](
+        {
+            "name": "bad-config",
+            "orchestration_config": "not-an-object",
+        },
+        ctx,
+    )
+    assert ctx.error_value is not None
+    assert "orchestration_config must be a JSON object" in ctx.error_value["message"]
 
 
 @pytest.mark.asyncio
@@ -218,3 +290,69 @@ async def test_team_list_after_creates(
     await handlers["team.list"](None, ctx)
     names = {t["name"] for t in ctx.reply_value["teams"]}
     assert names == {"t1", "t2"}
+
+
+# ── Tests: real DB integration ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_team_spawn_and_run_get(real_handlers: dict[str, Any]) -> None:
+    # Seed agents and a review-mode team.
+    await real_handlers["agent.create"](
+        {
+            "name": "coder",
+            "system_prompt": "Write code.",
+            "tool_allowlist": ["read_file", "write_file"],
+        },
+        _CapturedReply(),
+    )
+    await real_handlers["agent.create"](
+        {
+            "name": "reviewer",
+            "system_prompt": "Review code.",
+            "tool_allowlist": ["read_file"],
+        },
+        _CapturedReply(),
+    )
+    ctx_create = _CapturedReply()
+    await real_handlers["team.create"](
+        {
+            "name": "review",
+            "agents": ["coder", "reviewer"],
+            "orchestration_mode": "review",
+        },
+        ctx_create,
+    )
+    assert ctx_create.reply_value is not None
+
+    ctx_spawn = _CapturedReply()
+    await real_handlers["team.spawn"](
+        {"team_name": "review", "request": "Write a hello world function"},
+        ctx_spawn,
+    )
+    assert ctx_spawn.error_value is None, ctx_spawn.error_value
+    assert ctx_spawn.reply_value is not None
+    task_id = ctx_spawn.reply_value["task_id"]
+    assert ctx_spawn.reply_value["orchestration_mode"] == "review"
+    assert ctx_spawn.reply_value["success"] is True
+
+    ctx_get = _CapturedReply()
+    await real_handlers["team.run.get"]({"task_id": task_id}, ctx_get)
+    assert ctx_get.error_value is None, ctx_get.error_value
+    assert ctx_get.reply_value is not None
+    run = ctx_get.reply_value["run"]
+    result = ctx_get.reply_value["result"]
+    assert run["id"] == task_id
+    assert run["mode"] == "team"
+    assert result["team_name"] == "review"
+    assert result["orchestration_mode"] == "review"
+    assert result["success"] is True
+    assert len(result["agents_run"]) == 3  # 2 writers + 1 reviewer
+
+
+@pytest.mark.asyncio
+async def test_team_run_get_unknown_task(real_handlers: dict[str, Any]) -> None:
+    ctx = _CapturedReply()
+    await real_handlers["team.run.get"]({"task_id": "teamrun_noexist"}, ctx)
+    assert ctx.error_value is not None
+    assert "unknown team run" in ctx.error_value["message"]

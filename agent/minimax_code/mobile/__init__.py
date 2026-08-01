@@ -192,7 +192,7 @@ class PairingManager:
 
     def has_token(self, token: str) -> bool:
         """Return ``True`` if ``token`` is still in the cache and unexpired."""
-        now = float(self._clock())
+        float(self._clock())
         with self._lock:
             self._evict_expired_locked()
             return token in self._tokens

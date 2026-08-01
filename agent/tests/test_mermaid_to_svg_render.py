@@ -50,10 +50,8 @@ symbols; the barrel ``__all__`` grows 15 -> 18.
 
 from __future__ import annotations
 
-import pytest
-
 import minimax_code.mermaid.to_svg as to_svg
-from minimax_code.mermaid.to_svg import MermaidTheme, UnsupportedDiagramType
+from minimax_code.mermaid.to_svg import MermaidTheme
 from minimax_code.mermaid.to_svg import render as render_mod
 from minimax_code.mermaid.to_svg.render import (
     first_diagram_type_token,

@@ -68,21 +68,23 @@ class LanguageRegistry:
 
     __slots__ = ("_configs", "_by_extension", "_by_id")
 
-    def __init__(self) -> None:
+    def __init__(self, configs: Iterable[TSLanguageConfig] | None = None) -> None:
         """Create a registry preloaded with all supported languages.
 
         Mirrors grok ``LanguageRegistry::new`` / ``Default::default``: the five
         built-in configs are indexed by every extension and every language id
-        they own.
+        they own. Pass ``configs`` to override the default built-in set (used by
+        :func:`default_language_registry` to bind real tree-sitter grammars).
         """
         by_extension: dict[str, TSLanguageConfig] = {}
         by_id: dict[str, TSLanguageConfig] = {}
-        for config in _BUILTIN_CONFIGS:
+        config_tuple = tuple(configs if configs is not None else _BUILTIN_CONFIGS)
+        for config in config_tuple:
             for ext in config.file_extensions():
                 by_extension[ext] = config
             for lang_id in config.language_ids():
                 by_id[lang_id] = config
-        self._configs: tuple[TSLanguageConfig, ...] = _BUILTIN_CONFIGS
+        self._configs: tuple[TSLanguageConfig, ...] = config_tuple
         self._by_extension = by_extension
         self._by_id = by_id
 
@@ -185,6 +187,45 @@ class LanguageRegistry:
             hasher.update(len(query).to_bytes(8, "little"))
             hasher.update(query)
         return int.from_bytes(hasher.digest(), "little")
+
+
+def default_language_registry() -> LanguageRegistry:
+    """Return a :class:`LanguageRegistry` with all five grammars bound.
+
+    Wires the modern tree-sitter grammar packages (which expose their language
+    as a ``PyCapsule``) into the deferred grammar factories, wrapping each
+    capsule in a ``tree_sitter.Language`` instance.
+    """
+    import tree_sitter  # noqa: PLC0415 -- bind only when real parsing is requested
+    import tree_sitter_go  # noqa: PLC0415
+    import tree_sitter_javascript  # noqa: PLC0415
+    import tree_sitter_python  # noqa: PLC0415
+    import tree_sitter_rust  # noqa: PLC0415
+    import tree_sitter_typescript  # noqa: PLC0415
+
+    return LanguageRegistry(
+        configs=[
+            rust_lang(
+                grammar=lambda: tree_sitter.Language(tree_sitter_rust.language())
+            ),
+            ts_lang(
+                grammar=lambda: tree_sitter.Language(
+                    tree_sitter_typescript.language_tsx()
+                )
+            ),
+            js_lang(
+                grammar=lambda: tree_sitter.Language(
+                    tree_sitter_javascript.language()
+                )
+            ),
+            golang(
+                grammar=lambda: tree_sitter.Language(tree_sitter_go.language())
+            ),
+            python_lang(
+                grammar=lambda: tree_sitter.Language(tree_sitter_python.language())
+            ),
+        ]
+    )
 
 
 def compute_query_hash(configs: Iterable[TSLanguageConfig]) -> int:

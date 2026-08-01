@@ -219,4 +219,6 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 
 ## 变更记录 (Changelog)
 
+- **2026-08-01** — Codebase RAG 第二阶段完成：增量索引（mtime + 文件元数据）、启动延迟自动 build、sqlite-vec 向量混合检索、新增 `search_codebase` / `summarize_codebase` / `find_symbol` / `navigate_codebase` 四个 Agent 工具；接入 `xai_codebase_graph` 提供 go-to-definition / find-references（含 tree-sitter 0.26 兼容补丁）。
+- **2026-08-01** — Codebase RAG 第一阶段：文件按 50 行窗口 + 5 行重叠分块；新增 `search_codebase` 内置工具并注入 AgentCore 工具注册表；系统提示引导 Agent 优先搜索索引代码库。
 - **2026-06-04** — 初始化 AGENTS.md，基于 v0.3.0 代码库全面扫描生成

@@ -428,10 +428,9 @@ def _parse_block_scalar(
     if rest and rest[0] in "+-":
         chomp = rest[0]
         rest = rest[1:].strip()
-    explicit_indent: int | None = None
     if rest:
         try:
-            explicit_indent = int(rest)
+            int(rest)
         except ValueError as exc:
             raise _YAMLError(f"invalid block-scalar header: {head!r}") from exc
 

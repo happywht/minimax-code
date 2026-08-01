@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from .embedder import CodebaseEmbedder, get_default_embedder
 from .indexer import CodebaseIndexer
 from .store import CodebaseStore
 
@@ -43,11 +44,20 @@ class SummaryResult:
 
 
 class CodebaseRetriever:
-    """Wraps the store with snippet generation and summarisation helpers."""
+    """Wraps the store with snippet generation and hybrid search."""
 
-    def __init__(self, store: CodebaseStore, indexer: CodebaseIndexer | None = None) -> None:
+    def __init__(
+        self,
+        store: CodebaseStore,
+        indexer: CodebaseIndexer | None = None,
+        embedder: CodebaseEmbedder | None = None,
+        *,
+        vector_weight: float = 0.3,
+    ) -> None:
         self._store = store
         self._indexer = indexer
+        self._embedder = embedder or get_default_embedder()
+        self._vector_weight = max(0.0, min(1.0, vector_weight))
 
     async def search(
         self,
@@ -57,18 +67,77 @@ class CodebaseRetriever:
         limit: int = 20,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """Search the codebase and return snippets.
+        """Hybrid search the codebase and return snippets.
 
+        Combines FTS5 keyword ranking with sqlite-vec vector similarity.
         ``file_pattern`` is a SQL ``LIKE`` pattern (``%`` wildcards).
         """
-        rows = await self._store.search(
+        # 1. Keyword results from FTS5.
+        fts_rows = await self._store.search(
             query=query,
             file_pattern=file_pattern,
-            limit=limit,
-            offset=offset,
+            limit=limit * 2,
+            offset=0,
         )
+
+        # 2. Vector results (if the extension is available).
+        vector_rows: list[dict[str, Any]] = []
+        try:
+            query_embedding = (await self._embedder.embed([query]))[0]
+            vector_rows = await self._store.search_vectors(
+                query_embedding,
+                limit=limit * 2,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("vector search unavailable for query %r", query, exc_info=True)
+
+        # 3. Build a rowid -> distance map for vector results.
+        vec_distance_by_rowid: dict[int, float] = {}
+        min_vec_distance: float | None = None
+        for vr in vector_rows:
+            distance = vr["distance"]
+            vec_distance_by_rowid[vr["rowid"]] = distance
+            if min_vec_distance is None or distance < min_vec_distance:
+                min_vec_distance = distance
+
+        # 4. Normalize and combine scores for FTS rows only.
+        # We use vector similarity to re-rank keyword hits rather than
+        # introducing pure vector hits, which keeps results interpretable
+        # even with lightweight embedders.
+        max_fts_rank = max((row.get("rank", 0.0) or 0.0 for row in fts_rows), default=0.0)
+        max_vec_score = 0.0
+        if min_vec_distance is not None:
+            # Convert L2 distance on unit vectors to a [0, 1] similarity.
+            max_vec_score = max(
+                0.0,
+                1.0 - min_vec_distance / 2.0,
+            )
+
+        scored: list[tuple[float, int, dict[str, Any]]] = []
+        for row in fts_rows:
+            rid = row["rowid"]
+            fts_score = 0.0
+            if max_fts_rank > 0:
+                fts_score = (row.get("rank", 0.0) or 0.0) / max_fts_rank
+
+            vec_score = 0.0
+            distance = vec_distance_by_rowid.get(rid)
+            if distance is not None:
+                vec_score = max(0.0, 1.0 - distance / 2.0)
+                if max_vec_score > 0:
+                    vec_score = vec_score / max_vec_score
+
+            hybrid_score = (
+                (1 - self._vector_weight) * fts_score
+                + self._vector_weight * vec_score
+            )
+            scored.append((hybrid_score, rid, row))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        # 5. Build result objects, honouring offset/limit.
         results: list[SearchResult] = []
-        for row in rows:
+        for _, _, row in scored[offset : offset + limit]:
             metadata = row.get("metadata") or {}
             content = row.get("content") or ""
             snippet = _build_snippet(content, query)

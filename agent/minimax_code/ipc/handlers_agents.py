@@ -381,20 +381,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                     config_row = await agent_dao.get(requested_agent_id)
             if config_row is None:
                 error = f"unknown agent name or id: {name!r}"
-                await _emit_subagent_progress(
-                    ctx,
-                    run_id=run_id,
-                    agent_id=name,
-                    parent_session_id=parent_session_id,
-                    context_message_id=context_message_id,
-                    status="failed",
-                    progress=1.0,
-                    summary="failed",
-                    error=error,
-                )
-                await ctx.reply_error(
-                    INVALID_PARAMS, error
-                )
+                await ctx.reply_error(INVALID_PARAMS, error)
                 return
             name = str(config_row["name"])
 

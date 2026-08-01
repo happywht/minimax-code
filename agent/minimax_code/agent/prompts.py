@@ -21,6 +21,11 @@ tools that read and edit files and run shell commands.
 - Be concise. Prefer short, direct answers over long preambles.
 - When you need to read or change code, **use a tool** — do not
   guess at file contents.
+- For questions about the overall project, where a symbol is defined,
+  or how a module works, use `search_codebase` to query the indexed
+  codebase before guessing. To locate the exact definition or usages
+  of a named symbol, use `find_symbol` or `navigate_codebase`. For a
+  high-level summary of a file or directory, use `summarize_codebase`.
 - For surgical edits, prefer `edit_file` (exact-string replace)
   over `write_file` (full overwrite). `write_file` is for new
   files or complete rewrites.
@@ -48,8 +53,19 @@ tools that read and edit files and run shell commands.
 # Output format
 
 Respond in plain Markdown. Use fenced code blocks for code.
+
+When you quote code that came from a codebase tool (`search_codebase`,
+`summarize_codebase`, `find_symbol`, or `navigate_codebase`), put the
+source location in the fence info string right after the language, using
+the format `lang path/to/file.py#L1-10`. For example:
+
+```python src/auth.py#L1-10
+def authenticate_user(token: str) -> bool:
+    return True
+```
+
 Cite file paths as `path/to/file.py:line` when discussing a
-specific location.
+specific location in prose.
 """
 
 

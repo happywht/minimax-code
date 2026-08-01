@@ -86,7 +86,7 @@ class _CapturedReply:
     def __init__(self) -> None:
         self.reply_value: dict[str, Any] | None = None
         self.error_value: dict[str, Any] | None = None
-        self._loop = asyncio.new_event_loop() if False else None  # placeholder
+        self._loop = None  # placeholder
 
     async def reply(self, value: Any) -> None:
         self.reply_value = value

@@ -94,6 +94,7 @@ pnpm test:e2e     # Playwright; starts agent + Vite automatically
 
 - **IPC changes**: update `src/types/ipc.ts`, `src/ipc/typed.ts`, `agent/minimax_code/ipc/handlers_*.py`, and `docs/ipc-contract.md` together.
 - **New in v0.9.1**: `session.stats` and `session.export` handlers; `CommandPalette` (Cmd/Ctrl+K) for quick navigation.
+- **New in v0.11.0**: composer supports `@agent`, `@repo`, and `#file` mentions. `@repo` and `#file` are resolved via `codebase.search` / `codebase.summarize` and the context is prepended to the outgoing prompt in `MessageInput`. `CodeBlock` renders a source chip when the fence info string contains a file path (e.g. ` ```ts src/auth.ts#L10-20 `).
 - **Mock backend**: `src/ipc/mock.ts` must handle every IPC method so the frontend can run without an agent (`VITE_AGENT_MODE=mock`).
 - **Components index**: `src/components/index.ts` is the public barrel. Keep its export surface stable when moving files.
 - **Tests**: preserve `data-testid` values when restyling; e2e and many unit tests depend on them.

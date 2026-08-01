@@ -22,7 +22,7 @@ def _indexer() -> CodebaseIndexer:
 
 
 def _retriever(indexer: CodebaseIndexer) -> CodebaseRetriever:
-    return CodebaseRetriever(indexer._store, indexer=indexer)
+    return CodebaseRetriever(indexer._store, indexer=indexer, embedder=indexer.embedder)
 
 
 async def handle_codebase_status(_params: Any, ctx: Context) -> None:

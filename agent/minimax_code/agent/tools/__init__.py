@@ -9,6 +9,10 @@ which already contains file_ops, terminal, edit, and search.
 from __future__ import annotations
 
 from .base import Tool, ToolRegistry, ToolResult, get_default_registry, register_tool
+from .codebase_find_symbol import FindSymbolCodebaseTool
+from .codebase_navigate import NavigateCodebaseTool
+from .codebase_search import SearchCodebaseTool
+from .codebase_summarize import SummarizeCodebaseTool
 from .edit import EditFileTool
 from .file_ops import (
     ListDirectoryTool,
@@ -34,6 +38,10 @@ __all__ = [
     "PathSecurityError",
     "ReadFileTool",
     "WriteFileTool",
+    "FindSymbolCodebaseTool",
+    "NavigateCodebaseTool",
+    "SearchCodebaseTool",
+    "SummarizeCodebaseTool",
     "SearchFilesTool",
     "ListSubagentsTool",
     "SpawnSubagentTool",

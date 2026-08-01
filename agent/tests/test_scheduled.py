@@ -348,7 +348,7 @@ class TestJobScheduler:
 
         from minimax_code.storage.dao.tasks import TasksDAO
 
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
         main_loop_alive = asyncio.Event()
 
         async def blocking_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -451,7 +451,7 @@ class TestScheduledIpcHandlers:
         self, client_with_db: tuple[IPCClient, AsyncDatabase, JobScheduler]
     ) -> None:
         client, _db, _sched = client_with_db
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises(RuntimeError) as excinfo:
             await client.request(
                 "schedule.create",
                 {"name": "bad", "cron_expr": "not a cron"},
@@ -465,7 +465,7 @@ class TestScheduledIpcHandlers:
         self, client_with_db: tuple[IPCClient, AsyncDatabase, JobScheduler]
     ) -> None:
         client, _db, _sched = client_with_db
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError):
             await client.request("schedule.create", {})
 
     @pytest.mark.asyncio

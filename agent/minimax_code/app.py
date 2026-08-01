@@ -192,6 +192,9 @@ async def _maybe_open_db() -> Any:
         if env_workspace:
             workspace = Path(env_workspace).expanduser().resolve()
         _CODEBASE_INDEXER = CodebaseIndexer(workspace, CodebaseStore(db))
+        # Kick off a delayed incremental index build so the codebase is
+        # searchable shortly after boot without blocking startup.
+        _schedule_codebase_index_build()
         # Sub-agent runtime — wire a process-wide MiniMaxClient
         # built from the stored model preference + provider config
         # (or fall back to defaults when no DB preference exists).
@@ -397,6 +400,33 @@ def set_codebase_indexer(indexer: Any) -> None:
     """Replace the cached codebase indexer (test seam)."""
     global _CODEBASE_INDEXER
     _CODEBASE_INDEXER = indexer
+
+
+def _schedule_codebase_index_build(*, delay_s: float = 5.0) -> None:
+    """Start a background incremental index build after ``delay_s`` seconds.
+
+    The build is best-effort: failures are logged and do not affect the
+    rest of the application. ``MINIMAX_CODE_DISABLE_AUTO_INDEX=1`` skips
+    the auto-build for tests or resource-constrained environments.
+    """
+    if os.environ.get("MINIMAX_CODE_DISABLE_AUTO_INDEX"):
+        return
+
+    async def _build() -> None:
+        await asyncio.sleep(delay_s)
+        indexer = get_codebase_indexer()
+        if indexer is None:
+            return
+        try:
+            await indexer.build_index(force=False)
+        except Exception:  # noqa: BLE001
+            logger.exception("auto codebase index build failed")
+
+    try:
+        asyncio.get_running_loop().create_task(_build())
+    except RuntimeError:
+        # No running loop during synchronous startup paths; ignore.
+        pass
 
 
 # ---------------------------------------------------------------------------

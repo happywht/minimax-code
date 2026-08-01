@@ -6,7 +6,7 @@ import { describe, expect, it, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MessageInput } from "../src/components/chat/MessageInput";
-import { useChat } from "../src/stores";
+import { useChat, useCodebaseStore } from "../src/stores";
 import type { AgentInfo } from "../src/types/ipc";
 
 const AGENTS: AgentInfo[] = [
@@ -27,6 +27,7 @@ const AGENTS: AgentInfo[] = [
 describe("MessageInput", () => {
   beforeEach(() => {
     useChat.setState({ messages: [], status: "idle", error: null, agentReady: false });
+    useCodebaseStore.getState().reset();
   });
 
   it("renders a textarea and a disabled send button", () => {
@@ -102,8 +103,31 @@ describe("MessageInput", () => {
     render(<MessageInput loadAgents={async () => AGENTS} />);
     await user.type(screen.getByTestId("message-input-textarea"), "@code");
 
-    expect(await screen.findByTestId("message-input-agent-picker")).toBeInTheDocument();
-    expect(screen.getByTestId("message-input-agent-picker-item-code-reviewer")).toHaveTextContent("Code Reviewer");
-    expect(screen.queryByTestId("message-input-agent-picker-item-general")).toBeNull();
+    expect(await screen.findByTestId("message-input-mention-picker")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("message-input-mention-picker-item-agent-code-reviewer"),
+    ).toHaveTextContent("Code Reviewer");
+    expect(screen.queryByTestId("message-input-mention-picker-item-agent-general")).toBeNull();
+  });
+
+  it("opens the repo mention picker for @repo", async () => {
+    const user = userEvent.setup();
+    render(<MessageInput loadAgents={async () => AGENTS} />);
+    await user.type(screen.getByTestId("message-input-textarea"), "@repo");
+    expect(await screen.findByTestId("message-input-mention-picker")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("message-input-mention-picker-item-repo-repo"),
+    ).toHaveTextContent("Current repository");
+  });
+
+  it("opens the file mention picker for #file using recent files", async () => {
+    useCodebaseStore.setState({ recentFiles: ["src/auth.ts", "src/api.ts"] });
+    const user = userEvent.setup();
+    render(<MessageInput loadAgents={async () => AGENTS} />);
+    await user.type(screen.getByTestId("message-input-textarea"), "#api");
+    expect(await screen.findByTestId("message-input-mention-picker")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("message-input-mention-picker-item-file-src/api.ts"),
+    ).toHaveTextContent("api.ts");
   });
 });

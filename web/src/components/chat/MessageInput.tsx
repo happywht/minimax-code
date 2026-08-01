@@ -16,6 +16,7 @@ import { useComposerDraft } from "./useComposerDraft";
 import { useAttachments } from "./useAttachments";
 import { useVoiceInput } from "./useVoiceInput";
 import { useMentionPicker } from "./useMentionPicker";
+import { useMentionContext } from "./useMentionContext";
 import { AttachmentRows } from "./AttachmentRows";
 import { MentionPickerDropdown } from "./MentionPickerDropdown";
 import { ComposerToolbar } from "./ComposerToolbar";
@@ -43,8 +44,10 @@ export function MessageInput({
     setValue: draft.setValue,
     textareaRef: draft.ref,
   });
+  const context = useMentionContext();
 
-  const disabled = status === "sending" || status === "streaming" || status === "cancelling";
+  const disabled =
+    status === "sending" || status === "streaming" || status === "cancelling" || context.loading;
   const streaming = status === "streaming" || status === "sending" || status === "cancelling";
   const cancelling = status === "cancelling";
 
@@ -60,15 +63,21 @@ export function MessageInput({
     if (disabled) return;
     if (draft.overLimit) return;
 
-    const hasText = draft.value.trim().length > 0;
+    const rawText = draft.value;
+    const hasText = rawText.trim().length > 0;
     const hasImages = attachments.attachedImages.length > 0;
     if (!hasText && !hasImages) return;
+
+    // Resolve @repo / #file mentions into codebase context.
+    const resolved = await context.buildContext(rawText);
+    if (!resolved) return;
+    const { text: finalText, hasContext } = resolved;
 
     if (hasImages) {
       // Build multimodal ContentPart array
       const parts: ContentPart[] = [];
       if (hasText) {
-        parts.push({ type: "text", text: draft.value.trim() });
+        parts.push({ type: "text", text: finalText.trim() });
       }
       parts.push(...attachments.attachedImages);
       draft.clear();
@@ -76,11 +85,10 @@ export function MessageInput({
       mention.closePicker();
       await send(parts);
     } else {
-      const text = draft.value;
       draft.clear();
       attachments.clearAll();
       mention.closePicker();
-      await send(text);
+      await send(hasContext ? finalText : rawText);
     }
   };
 
@@ -173,7 +181,7 @@ export function MessageInput({
             value={draft.value}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
-            placeholder="Ask MiniMax anything…  (Enter to send · @agent to spawn a sub-agent)"
+            placeholder="Ask MiniMax anything…  (Enter · @agent · @repo · #file)"
             rows={1}
             data-testid="message-input-textarea"
             disabled={disabled}
@@ -214,12 +222,14 @@ export function MessageInput({
                 data-testid="message-input-send"
                 disabled={
                   (!draft.value.trim() && attachments.attachedImages.length === 0) ||
-                  draft.overLimit
+                  draft.overLimit ||
+                  context.loading
                 }
+                loading={context.loading}
                 icon={<Send size={14} />}
                 className="w-7 px-0"
-                title="Send"
-                aria-label="Send"
+                title={context.loading ? "Loading context…" : "Send"}
+                aria-label={context.loading ? "Loading context…" : "Send"}
               />
             </>
           )}

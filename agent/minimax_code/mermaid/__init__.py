@@ -65,7 +65,6 @@ What is here vs deferred
 from __future__ import annotations
 
 from .engine import MermaidEngine, RenderLimits, render_checked
-from .mmdc import MmdcEngine, detect_mmdc
 from .errors import (
     MermaidError,
     MermaidLayoutError,
@@ -75,6 +74,7 @@ from .errors import (
     MermaidTimeoutError,
     MermaidUnsupportedError,
 )
+from .mmdc import MmdcEngine, detect_mmdc
 from .pure import PureRustEngine
 from .subprocess import (
     NonZeroExitSubprocessError,

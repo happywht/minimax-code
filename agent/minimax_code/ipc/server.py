@@ -502,7 +502,7 @@ class IPCServer:
         try:
             from .builtins import _ACTIVE_RUNS
 
-            for sid, entry in list(_ACTIVE_RUNS.items()):
+            for _sid, entry in list(_ACTIVE_RUNS.items()):
                 try:
                     core = entry.get("core") if isinstance(entry, dict) else entry
                     if core:

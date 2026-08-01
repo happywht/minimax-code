@@ -1152,7 +1152,12 @@ export type ContentPart = ContentPartText | ContentPartImage;
 // ---------------------------------------------------------------------------
 
 /** Orchestration modes for an agent team. */
-export type OrchestrationMode = "parallel" | "sequential" | "round-robin";
+export type OrchestrationMode =
+  | "parallel"
+  | "sequential"
+  | "round-robin"
+  | "vote"
+  | "review";
 
 /** An agent team template — matches `agent_teams` table row. */
 export interface AgentTeam {
@@ -1163,6 +1168,8 @@ export interface AgentTeam {
   color: string;
   agents: string[]; // array of agent names
   orchestration_mode: OrchestrationMode;
+  /** Optional mode-specific configuration (e.g. `review_agent`). */
+  orchestration_config?: Record<string, unknown>;
   enabled: boolean;
   created_at: string;
   updated_at: string;

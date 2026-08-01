@@ -217,7 +217,7 @@ def test_pair_start_returns_token_and_qr() -> None:
 
 def test_pair_confirm_writes_row() -> None:
     server, dao = _build_server_with_dao()
-    info_pair = _PairingManagerHelper().mint()
+    _PairingManagerHelper().mint()
 
     # Re-register handler so the manager is set up with our stub.
     class _PM(PairingManager):

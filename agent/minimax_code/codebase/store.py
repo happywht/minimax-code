@@ -1,4 +1,4 @@
-"""Persistent storage for codebase chunks + FTS5-backed search."""
+"""Persistent storage for codebase chunks + FTS5 + vector search."""
 
 from __future__ import annotations
 
@@ -7,6 +7,14 @@ import uuid
 from typing import Any
 
 from ..storage.dao._base import dumps_json, loads_json, now_iso, row_to_dict
+
+try:
+    from sqlite_vec import serialize_float32
+
+    _HAS_SQLITE_VEC = True
+except Exception:  # pragma: no cover
+    serialize_float32 = None  # type: ignore[assignment]
+    _HAS_SQLITE_VEC = False
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +48,28 @@ class CodebaseStore:
                 sql,
                 (cid, file_path, start_line, end_line, content, dumps_json(metadata), now, now),
             )
-        row = await self._db.fetchone("SELECT * FROM codebase_chunks WHERE id = ?", (cid,))
+        row = await self._db.fetchone(
+            "SELECT rowid, * FROM codebase_chunks WHERE id = ?",
+            (cid,),
+        )
         return self._hydrate(row)
 
     async def delete_chunks_for_file(self, file_path: str) -> int:
-        """Remove all chunks belonging to ``file_path``; return deleted count."""
+        """Remove all chunks + embeddings belonging to ``file_path``.
+
+        Returns the number of chunks deleted.
+        """
         async with self._db.transaction() as conn:
+            rows = await conn.execute(
+                "SELECT rowid FROM codebase_chunks WHERE file_path = ?",
+                (file_path,),
+            )
+            rowids = [r["rowid"] for r in await rows.fetchall()]
+            for rid in rowids:
+                await conn.execute(
+                    "DELETE FROM codebase_chunks_vec WHERE rowid = ?",
+                    (rid,),
+                )
             cur = await conn.execute(
                 "DELETE FROM codebase_chunks WHERE file_path = ?",
                 (file_path,),
@@ -53,8 +77,13 @@ class CodebaseStore:
             return cur.rowcount
 
     async def clear(self) -> int:
-        """Remove all chunks and return deleted count."""
+        """Remove all chunks, embeddings, and file metadata.
+
+        Returns the number of chunks deleted.
+        """
         async with self._db.transaction() as conn:
+            await conn.execute("DELETE FROM codebase_chunks_vec")
+            await conn.execute("DELETE FROM codebase_file_meta")
             cur = await conn.execute("DELETE FROM codebase_chunks")
             return cur.rowcount
 
@@ -80,7 +109,7 @@ class CodebaseStore:
             params.append(file_pattern)
 
         sql = (
-            "SELECT c.*, rank "
+            "SELECT c.rowid, c.*, rank "
             "FROM codebase_chunks_fts fts "
             "JOIN codebase_chunks c ON c.rowid = fts.rowid "
             f"WHERE codebase_chunks_fts MATCH ? {file_where} "
@@ -123,11 +152,72 @@ class CodebaseStore:
         d["metadata"] = loads_json(d.get("metadata"))
         return d
 
+    # ------------------------------------------------------------------
+    # Vector embeddings (sqlite-vec)
+    # ------------------------------------------------------------------
+
+    async def save_embedding(self, rowid: int, embedding: list[float]) -> None:
+        """Upsert the embedding for a chunk rowid."""
+        if not _HAS_SQLITE_VEC or serialize_float32 is None:
+            return
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                "INSERT OR REPLACE INTO codebase_chunks_vec (rowid, embedding) VALUES (?, ?)",
+                (rowid, serialize_float32(embedding)),
+            )
+
+    async def delete_embedding(self, rowid: int) -> None:
+        """Remove the embedding for a single chunk rowid."""
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                "DELETE FROM codebase_chunks_vec WHERE rowid = ?",
+                (rowid,),
+            )
+
+    async def search_vectors(
+        self,
+        query_embedding: list[float],
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return the closest chunks by vector distance.
+
+        Results include the chunk rowid and the raw distance value
+        (smaller is better).
+        """
+        if not _HAS_SQLITE_VEC or serialize_float32 is None:
+            return []
+        sql = (
+            "SELECT rowid, distance "
+            "FROM codebase_chunks_vec "
+            "WHERE embedding MATCH ? "
+            "ORDER BY distance "
+            "LIMIT ?"
+        )
+        rows = await self._db.fetchall(
+            sql,
+            (serialize_float32(query_embedding), limit),
+        )
+        return [{"rowid": r["rowid"], "distance": r["distance"]} for r in rows]
+
+    async def clear_embeddings(self) -> None:
+        """Remove all stored embeddings."""
+        async with self._db.transaction() as conn:
+            await conn.execute("DELETE FROM codebase_chunks_vec")
+
     async def get_chunk(self, chunk_id: str) -> dict[str, Any] | None:
         """Fetch a single chunk by id."""
         row = await self._db.fetchone(
-            "SELECT * FROM codebase_chunks WHERE id = ?",
+            "SELECT rowid, * FROM codebase_chunks WHERE id = ?",
             (chunk_id,),
+        )
+        return self._hydrate(row)
+
+    async def get_chunk_by_rowid(self, rowid: int) -> dict[str, Any] | None:
+        """Fetch a single chunk by SQLite rowid."""
+        row = await self._db.fetchone(
+            "SELECT rowid, * FROM codebase_chunks WHERE rowid = ?",
+            (rowid,),
         )
         return self._hydrate(row)
 
@@ -138,3 +228,54 @@ class CodebaseStore:
             (limit,),
         )
         return [r["file_path"] for r in rows]
+
+    # ------------------------------------------------------------------
+    # File-level metadata for incremental indexing
+    # ------------------------------------------------------------------
+
+    async def get_file_index_state(self) -> dict[str, dict[str, Any]]:
+        """Return the last-known mtime/size for every indexed file."""
+        rows = await self._db.fetchall(
+            "SELECT file_path, mtime, size, indexed_at FROM codebase_file_meta",
+        )
+        return {
+            r["file_path"]: {
+                "mtime": r["mtime"],
+                "size": r["size"],
+                "indexed_at": r["indexed_at"],
+            }
+            for r in rows
+        }
+
+    async def save_file_index_state(
+        self,
+        file_path: str,
+        *,
+        mtime: float,
+        size: int,
+    ) -> None:
+        """Upsert the index state for a single file."""
+        now = now_iso()
+        async with self._db.transaction() as conn:
+            await conn.execute(
+                (
+                    "INSERT OR REPLACE INTO codebase_file_meta "
+                    "(file_path, mtime, size, indexed_at) VALUES (?, ?, ?, ?)"
+                ),
+                (file_path, mtime, size, now),
+            )
+
+    async def delete_file_index_state(self, file_path: str) -> int:
+        """Remove the index state for a deleted file."""
+        async with self._db.transaction() as conn:
+            cur = await conn.execute(
+                "DELETE FROM codebase_file_meta WHERE file_path = ?",
+                (file_path,),
+            )
+            return cur.rowcount
+
+    async def clear_file_index_state(self) -> int:
+        """Remove all file-level index state."""
+        async with self._db.transaction() as conn:
+            cur = await conn.execute("DELETE FROM codebase_file_meta")
+            return cur.rowcount

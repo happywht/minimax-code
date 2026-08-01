@@ -75,6 +75,65 @@ def range_for_node(node: Any) -> Range:
     )
 
 
+class _AdaptedCapture:
+    """Old-style capture object rebuilt from a modern tree-sitter match dict."""
+
+    __slots__ = ("index", "node")
+
+    def __init__(self, index: int, node: Any) -> None:
+        self.index = index
+        self.node = node
+
+
+class _AdaptedMatch:
+    """Old-style match object rebuilt from a modern tree-sitter match tuple."""
+
+    __slots__ = ("captures",)
+
+    def __init__(self, captures: list[_AdaptedCapture]) -> None:
+        self.captures = captures
+
+
+class _TreeSitterQueryCursorAdapter:
+    """Expose the legacy ``cursor.matches(query, root_node, src)`` API over modern tree-sitter.
+
+    Modern tree-sitter (>=0.21) requires the ``Query`` in the
+    ``QueryCursor`` constructor and ``matches`` no longer takes the query
+    or source bytes arguments (``cursor.matches(root_node)``). It also returns
+    ``[(pattern_index, {capture_name: [nodes]})]`` instead of match objects
+    with a ``.captures`` list. The bridge's callers and its test fakes speak
+    the legacy form, so this adapter stores the query on first use, delegates
+    to a modern cursor, and converts the result back to old-style objects.
+    """
+
+    __slots__ = ("_cursor", "_query")
+
+    def __init__(self) -> None:
+        self._cursor: Any = None
+        self._query: Any = None
+
+    def matches(self, query: Any, root_node: Any, src: bytes) -> Any:  # noqa: ARG002 -- legacy signature
+        """Legacy API shim -> modern ``QueryCursor(query).matches(root_node)``."""
+        import tree_sitter  # noqa: PLC0415 -- lazy: single tree-sitter seam
+
+        if self._cursor is None or self._query is not query:
+            self._query = query
+            self._cursor = tree_sitter.QueryCursor(query)
+
+        capture_names = _capture_names(query)
+        name_to_index = {name: idx for idx, name in enumerate(capture_names)}
+
+        for _pattern_idx, capture_dict in self._cursor.matches(root_node):
+            captures: list[_AdaptedCapture] = []
+            for name, nodes in capture_dict.items():
+                idx = name_to_index.get(name)
+                if idx is None:
+                    continue
+                captures.extend(_AdaptedCapture(idx, node) for node in nodes)
+            if captures:
+                yield _AdaptedMatch(captures)
+
+
 def _new_query_cursor() -> Any:
     """Construct a tree-sitter ``QueryCursor`` (grok ``QueryCursor::new()``).
 
@@ -83,26 +142,35 @@ def _new_query_cursor() -> Any:
     bridge is the single seam. A missing ``tree_sitter`` package raises
     ``RuntimeError`` (not ``ImportError``) so callers see the same "bridge
     needs the binding" signal R303's ``language()`` / ``compile_query()`` emit.
+
+    Returns an adapter that speaks the legacy ``matches(query, root_node, src)``
+    API while internally using the modern ``tree_sitter.QueryCursor(query)``
+    constructor.
     """
     try:
-        import tree_sitter
+        import tree_sitter  # noqa: PLC0415,F401 -- lazy import; checked for availability
     except ImportError as exc:
         raise RuntimeError(
             "scope_graph bridge requires the 'tree_sitter' Python package; "
             "install it to build scope graphs from real syntax trees."
         ) from exc
-    return tree_sitter.QueryCursor()
+    return _TreeSitterQueryCursorAdapter()
 
 
 def _capture_names(query: Any) -> list[str]:
     """Return a query's capture-name table (grok ``query.capture_names()``).
 
-    Tolerates both the property form (modern ``tree_sitter.Query.capture_names``
-    is a ``list``) and a callable form so the bridge stays binding-version
-    agnostic.
+    Tolerates three forms so the bridge stays binding-version agnostic:
+
+    * Legacy property: ``query.capture_names`` is a ``list``.
+    * Legacy callable: ``query.capture_names`` is a bound method.
+    * Modern tree-sitter (>=0.21): no ``capture_names`` attribute; use
+      ``query.capture_name(i)`` for ``i`` in ``range(query.capture_count)``.
     """
-    names = query.capture_names
-    return names() if callable(names) else names
+    names = getattr(query, "capture_names", None)
+    if names is not None:
+        return names() if callable(names) else names
+    return [query.capture_name(i) for i in range(query.capture_count)]
 
 
 def scope_graph_from_definitions_query(

@@ -174,7 +174,7 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
         python, "-c",
         "import asyncio, os, sys\n"
         "from pathlib import Path\n"
-        "sys.path.insert(0, r'''%s''')\n"
+        f"sys.path.insert(0, r'''{agent_dir}''')\n"
         "from minimax_code.storage.db import AsyncDatabase\n"
         "async def main():\n"
         "    db = AsyncDatabase(Path(os.environ['MINIMAX_CODE_DATA_DIR']) / 'data.db')\n"
@@ -183,11 +183,11 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
         "    await db.execute(\n"
         "        \"INSERT OR IGNORE INTO sessions (id, title, created_at, updated_at, archived) \"\n"
         "        \"VALUES (?, 'smoke-seed', '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z', 0)\",\n"
-        "        (r'''%s''',),\n"
+        f"        (r'''{seed_id}''',),\n"
         "    )\n"
         "    await db._conn.commit()\n"
         "    await db.close()\n"
-        "asyncio.run(main())\n" % (agent_dir, seed_id),
+        "asyncio.run(main())\n",
         cwd=agent_dir,
         env=env,
         stdout=asyncio.subprocess.PIPE,

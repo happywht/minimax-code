@@ -113,3 +113,34 @@ async def test_clear(store: CodebaseStore) -> None:
     assert removed == 1
     stats = await store.get_stats()
     assert stats["total_chunks"] == 0
+
+
+@pytest.mark.asyncio
+async def test_save_and_search_vectors(store: CodebaseStore) -> None:
+    row = await store.save_chunk(
+        file_path="src/auth.py",
+        start_line=1,
+        end_line=2,
+        content="def authenticate_user(token: str) -> bool:\n    return True\n",
+    )
+    await store.save_embedding(row["rowid"], [0.1] * 128)
+
+    results = await store.search_vectors([0.1] * 128, limit=5)
+    assert len(results) == 1
+    assert results[0]["rowid"] == row["rowid"]
+    assert results[0]["distance"] < 1.0
+
+
+@pytest.mark.asyncio
+async def test_delete_chunks_for_file_removes_embeddings(store: CodebaseStore) -> None:
+    row = await store.save_chunk(
+        file_path="src/auth.py",
+        start_line=1,
+        end_line=1,
+        content="x = 1",
+    )
+    await store.save_embedding(row["rowid"], [0.1] * 128)
+
+    await store.delete_chunks_for_file("src/auth.py")
+    results = await store.search_vectors([0.1] * 128, limit=5)
+    assert results == []

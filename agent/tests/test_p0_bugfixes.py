@@ -128,7 +128,7 @@ async def test_team_spawn_does_not_crash_on_emit():
     await stub_dao.create(name="review-team", agents=["reviewer"])
 
     server = IPCServer(Config())
-    register_team_handlers(server, dao=stub_dao)
+    register_team_handlers(server, dao=stub_dao, agent_dao=MagicMock())
 
     async def _fake_run(team_name, request, **kw):
         return TeamRunResult(
@@ -150,15 +150,9 @@ async def test_team_spawn_does_not_crash_on_emit():
             success=True,
         )
 
-    with (
-        patch(
-            "minimax_code.ipc.handlers_teams._make_agent_dao",
-            return_value=MagicMock(),
-        ),
-        patch(
-            "minimax_code.orchestrator.team_orchestrator.TeamOrchestrator.run",
-            side_effect=_fake_run,
-        ),
+    with patch(
+        "minimax_code.orchestrator.team_orchestrator.TeamOrchestrator.run",
+        side_effect=_fake_run,
     ):
         ctx = _CapturedReply()
         await server._handlers["team.spawn"](
@@ -186,7 +180,7 @@ async def test_team_spawn_emit_does_not_crash_on_listener_error():
     await stub_dao.create(name="resilient-team", agents=["a1"])
 
     server = IPCServer(Config())
-    register_team_handlers(server, dao=stub_dao)
+    register_team_handlers(server, dao=stub_dao, agent_dao=MagicMock())
 
     # Register a bad listener that raises
     def _bad_listener(env):
@@ -207,15 +201,9 @@ async def test_team_spawn_emit_does_not_crash_on_listener_error():
             success=True,
         )
 
-    with (
-        patch(
-            "minimax_code.ipc.handlers_teams._make_agent_dao",
-            return_value=MagicMock(),
-        ),
-        patch(
-            "minimax_code.orchestrator.team_orchestrator.TeamOrchestrator.run",
-            side_effect=_fake_run,
-        ),
+    with patch(
+        "minimax_code.orchestrator.team_orchestrator.TeamOrchestrator.run",
+        side_effect=_fake_run,
     ):
         ctx = _CapturedReply()
         await server._handlers["team.spawn"](

@@ -46,10 +46,10 @@ test("sub-agent: @-picker spawns a sub-agent and a result card appears", async (
   // Type "@" to open the picker; the agent picker should show "general".
   await input.click();
   await input.fill("@");
-  const picker = page.getByTestId("message-input-agent-picker");
+  const picker = page.getByTestId("message-input-mention-picker");
   await expect(picker).toBeVisible({ timeout: 5_000 });
   const generalItem = page.getByTestId(
-    `message-input-agent-picker-item-${generalId}`,
+    `message-input-mention-picker-item-agent-${generalId}`,
   );
   await expect(generalItem).toBeVisible();
 

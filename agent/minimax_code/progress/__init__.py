@@ -46,8 +46,6 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
-from ..storage.dao.tasks import TaskDAO
-
 logger = logging.getLogger(__name__)
 
 

@@ -80,7 +80,7 @@ class TestSendMessageMultimodal:
         mock_app_mod.get_sessions_dao = MagicMock(return_value=None)
         mock_app_mod.init_runtime = AsyncMock()
 
-        mock_msg_dao = MagicMock()
+        MagicMock()
         mock_msg_dao_mod = MagicMock()
         mock_msg_dao_mod.MessagesDAO = MagicMock(return_value=None)
 

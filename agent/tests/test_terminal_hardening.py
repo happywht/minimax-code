@@ -70,7 +70,7 @@ class TestBuildSafeEnv:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
         monkeypatch.setenv("GOOGLE_API_KEY", "google-secret")
         env = _build_safe_env()
-        for key, value in env.items():
+        for _key, value in env.items():
             assert "secret" not in value.lower()
             assert "sk-ant" not in value.lower()
 

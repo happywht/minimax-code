@@ -306,6 +306,85 @@ def _single_hunk_patch(file: dict[str, Any], hunk: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _full_file_patch(file: dict[str, Any]) -> str:
+    """Build a unified patch containing every hunk of ``file``."""
+    if file.get("binary"):
+        raise HandlerError(INVALID_PARAMS, "binary files do not support patch operations")
+    if file.get("status") == "renamed":
+        raise HandlerError(
+            INVALID_PARAMS, "renamed files do not support patch operations yet"
+        )
+
+    old_path = str(file.get("old_path") or file.get("path") or "")
+    new_path = str(file.get("new_path") or file.get("path") or "")
+    if not old_path or not new_path:
+        raise HandlerError(INVALID_PARAMS, "patch file paths are incomplete")
+
+    hunks = file.get("hunks") or []
+    if not hunks:
+        raise HandlerError(INVALID_PARAMS, "file has no hunks to apply")
+
+    is_add = old_path == "/dev/null"
+    is_delete = new_path == "/dev/null"
+    diff_old = old_path if is_add else f"a/{old_path}"
+    diff_new = new_path if is_delete else f"b/{new_path}"
+    old_label = "/dev/null" if is_add else f"a/{old_path}"
+    new_label = "/dev/null" if is_delete else f"b/{new_path}"
+
+    lines: list[str] = [
+        f"diff --git {diff_old} {diff_new}",
+        f"--- {old_label}",
+        f"+++ {new_label}",
+    ]
+    for hunk in hunks:
+        header = str(hunk.get("header") or "")
+        lines.append(
+            f"@@ -{_format_range(int(hunk['old_start']), int(hunk['old_lines']))} "
+            f"+{_format_range(int(hunk['new_start']), int(hunk['new_lines']))} @@"
+            f"{(' ' + header) if header else ''}"
+        )
+        for line in hunk.get("lines") or []:
+            kind = str(line.get("kind"))
+            if kind == "meta":
+                lines.append(str(line.get("content") or ""))
+                continue
+            lines.append(f"{_line_prefix(kind)}{line.get('content') or ''}")
+    return "\n".join(lines) + "\n"
+
+
+def _find_file(parsed: dict[str, Any], *, file_path: str) -> dict[str, Any]:
+    for file in parsed.get("files", []):
+        if file.get("path") != file_path and file.get("old_path") != file_path:
+            continue
+        if file.get("binary"):
+            raise HandlerError(INVALID_PARAMS, "binary files do not support file operations")
+        if file.get("status") == "renamed":
+            raise HandlerError(
+                INVALID_PARAMS, "renamed files do not support file operations yet"
+            )
+        return file
+    raise HandlerError(INVALID_PARAMS, "file_path was not found in the current diff")
+
+
+def _apply_file_patch(
+    patch: str,
+    *,
+    cwd: str | os.PathLike[str] | None,
+    scope: str,
+) -> None:
+    """Run ``git apply --cached --check`` then ``git apply --cached``.
+
+    ``--cached`` stages the patch for both scopes, matching the behaviour of
+    ``apply_hunk``.  The ``scope`` only selects which diff is used as the
+    patch source.
+    """
+    del scope  # scope is validated by callers; target is always the index
+    check_args = ["apply", "--cached", "--check", "--whitespace=nowarn", "-"]
+    apply_args = ["apply", "--cached", "--whitespace=nowarn", "-"]
+    _run_git_with_input(check_args, cwd=cwd, stdin_text=patch)
+    _run_git_with_input(apply_args, cwd=cwd, stdin_text=patch)
+
+
 def _run_git_with_input(
     args: list[str],
     *,
@@ -460,9 +539,114 @@ def register_patch_handlers(server: Any) -> None:
             logger.exception("patch.revert_hunk failed")
             await ctx.reply_error(_GIT_ERROR, "patch.revert_hunk failed")
 
+    async def handle_apply_file(params: Any, ctx: Context) -> None:
+        try:
+            p = params if isinstance(params, dict) else {}
+            cwd = _resolve_cwd(p)
+            scope = p.get("scope", "working")
+            if not isinstance(scope, str):
+                raise HandlerError(
+                    INVALID_PARAMS, "'scope' must be a string when provided"
+                )
+            if scope not in {"working", "staged"}:
+                raise HandlerError(
+                    INVALID_PARAMS,
+                    "apply_file only supports scope 'working' or 'staged'",
+                )
+            file_path = _required_str(p, "file_path")
+            diff_text = _run_git(_operation_diff_args(scope), cwd=cwd)
+            file = _find_file(parse_unified_diff(diff_text), file_path=file_path)
+            patch = _full_file_patch(file)
+            _apply_file_patch(patch, cwd=cwd, scope=scope)
+            await ctx.reply(
+                {
+                    "ok": True,
+                    "operation": "apply_file",
+                    "scope": scope,
+                    "file_path": file_path,
+                }
+            )
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception:
+            logger.exception("patch.apply_file failed")
+            await ctx.reply_error(_GIT_ERROR, "patch.apply_file failed")
+
+    async def handle_apply_all(params: Any, ctx: Context) -> None:
+        try:
+            p = params if isinstance(params, dict) else {}
+            cwd = _resolve_cwd(p)
+            scope = p.get("scope", "working")
+            if not isinstance(scope, str):
+                raise HandlerError(
+                    INVALID_PARAMS, "'scope' must be a string when provided"
+                )
+            if scope not in {"working", "staged"}:
+                raise HandlerError(
+                    INVALID_PARAMS,
+                    "apply_all only supports scope 'working' or 'staged'",
+                )
+            diff_text = _run_git(_operation_diff_args(scope), cwd=cwd)
+            parsed = parse_unified_diff(diff_text)
+            applied: list[str] = []
+            failed: list[dict[str, Any]] = []
+            for file in parsed.get("files", []):
+                if file.get("binary") or file.get("status") == "renamed":
+                    continue
+                path = str(file.get("path") or "")
+                if not path:
+                    continue
+                try:
+                    patch = _full_file_patch(file)
+                    _apply_file_patch(patch, cwd=cwd, scope=scope)
+                    applied.append(path)
+                except HandlerError as exc:
+                    failed.append({"file_path": path, "error": exc.message})
+            await ctx.reply(
+                {
+                    "ok": len(failed) == 0,
+                    "operation": "apply_all",
+                    "scope": scope,
+                    "applied": applied,
+                    "failed": failed,
+                }
+            )
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception:
+            logger.exception("patch.apply_all failed")
+            await ctx.reply_error(_GIT_ERROR, "patch.apply_all failed")
+
+    async def handle_save_snapshot(params: Any, ctx: Context) -> None:
+        try:
+            p = params if isinstance(params, dict) else {}
+            cwd = _resolve_cwd(p)
+            status_text = _run_git(["status", "--porcelain"], cwd=cwd)
+            if not status_text.strip():
+                await ctx.reply(
+                    {"ok": True, "snapshot_ref": None, "clean": True}
+                )
+                return
+            _run_git(
+                ["stash", "push", "-u", "-m", "MiniMax Code patch snapshot"],
+                cwd=cwd,
+            )
+            sha = _run_git(["rev-parse", "-q", "refs/stash"], cwd=cwd).strip()
+            await ctx.reply(
+                {"ok": True, "snapshot_ref": sha, "clean": False}
+            )
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception:
+            logger.exception("patch.save_snapshot failed")
+            await ctx.reply_error(_GIT_ERROR, "patch.save_snapshot failed")
+
     server.register("patch.preview", handle_patch_preview)
     server.register("patch.apply_hunk", handle_apply_hunk)
     server.register("patch.revert_hunk", handle_revert_hunk)
+    server.register("patch.apply_file", handle_apply_file)
+    server.register("patch.apply_all", handle_apply_all)
+    server.register("patch.save_snapshot", handle_save_snapshot)
 
 
 __all__ = ["parse_unified_diff", "register_patch_handlers"]

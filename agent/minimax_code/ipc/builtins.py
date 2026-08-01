@@ -354,7 +354,13 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     # Lazy imports — avoid pulling the agent core / storage layer in
     # for handlers that only need a ping / status response.
     from ..agent import AgentConfig, AgentCore, MiniMaxClient
-    from ..app import get_sessions_dao, init_runtime
+    from ..agent.tools import ToolRegistry, get_default_registry
+    from ..agent.tools.codebase_find_symbol import FindSymbolCodebaseTool
+    from ..agent.tools.codebase_navigate import NavigateCodebaseTool
+    from ..agent.tools.codebase_search import SearchCodebaseTool
+    from ..agent.tools.codebase_summarize import SummarizeCodebaseTool
+    from ..app import get_codebase_indexer, get_sessions_dao, init_runtime
+    from ..codebase import CodebaseRetriever
     from ..storage.dao.messages import MessagesDAO
 
     # 1. Ensure the sessions row exists (FK target for messages).
@@ -526,8 +532,29 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     except Exception:
         logger.debug("reasoning effort override unavailable; using model default")
 
+    # Clone the default tool registry and inject the codebase RAG tool
+    # when a workspace indexer is available (v0.11.0 Milestone 2).
+    registry = ToolRegistry()
+    for tool in get_default_registry().list():
+        registry.register(tool)
+    indexer = get_codebase_indexer()
+    if indexer is not None:
+        try:
+            retriever = CodebaseRetriever(
+                indexer._store,
+                indexer=indexer,
+                embedder=indexer.embedder,
+            )
+            registry.register(SearchCodebaseTool(retriever))
+            registry.register(SummarizeCodebaseTool(retriever))
+            registry.register(FindSymbolCodebaseTool(retriever))
+            registry.register(NavigateCodebaseTool(indexer.graph_index))
+        except Exception:
+            logger.exception("failed to register search_codebase tool")
+
     core = AgentCore(
         llm=llm,
+        registry=registry,
         config=AgentConfig(
             system_prompt_extra=await _build_system_prompt_extra(),
             stall_timeout=stall_timeout,

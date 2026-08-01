@@ -1,18 +1,20 @@
 """JSON-RPC handlers for the ``team.*`` namespace.
 
 Manages agent team templates — named groups of agents with an
-orchestration mode (parallel, sequential, or round-robin).
+orchestration mode (parallel, sequential, round-robin, vote, or review).
 
 Methods:
-    team.list    — list all teams
-    team.create  — create a new team
-    team.get     — get a team by name
-    team.update  — update a team's fields
-    team.delete  — delete a team
-    team.enable  — enable a team
-    team.disable — disable a team
+    team.list      — list all teams
+    team.create    — create a new team
+    team.get       — get a team by name
+    team.update    — update a team's fields
+    team.delete    — delete a team
+    team.enable    — enable a team
+    team.disable   — disable a team
+    team.spawn     — run all agents in a team
+    team.run.get   — query a persisted team run by task_id
 
-v0.8.0 — Enterprise Multi-Agent.
+v0.11.0 — Agent Studio orchestration enhancements.
 """
 
 from __future__ import annotations
@@ -30,7 +32,14 @@ logger = logging.getLogger(__name__)
 # Registration
 # ---------------------------------------------------------------------------
 
-def register_team_handlers(server: Any, *, dao: Any = None) -> None:
+
+def register_team_handlers(
+    server: Any,
+    *,
+    dao: Any = None,
+    agent_dao: Any = None,
+    runs_dao: Any = None,
+) -> None:
     """Register the ``team.*`` handlers on ``server``.
 
     Parameters
@@ -40,8 +49,18 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
     dao:
         Optional pre-built :class:`AgentTeamDAO`. When ``None``,
         handlers resolve the DAO lazily on first call.
+    agent_dao:
+        Optional pre-built :class:`AgentDAO` for ``team.spawn``. When
+        ``None``, the handler resolves it lazily via the process-wide
+        DB singleton.
+    runs_dao:
+        Optional pre-built :class:`AgentRunsDAO` for ``team.run.get``.
+        When ``None``, the handler resolves it lazily via the
+        process-wide DB singleton.
     """
     dao_factory = _make_dao_factory(dao)
+    agent_dao_factory = _make_agent_dao_factory(agent_dao)
+    runs_dao_factory = _make_runs_dao_factory(runs_dao)
 
     # ------------------------------------------------------------------ list
 
@@ -107,6 +126,11 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
             orchestration_mode = str(
                 params.get("orchestration_mode", "parallel")
             )
+            orchestration_config = params.get("orchestration_config")
+            if orchestration_config is not None and not isinstance(orchestration_config, dict):
+                raise HandlerError(
+                    INVALID_PARAMS, "orchestration_config must be a JSON object"
+                )
             team = await team_dao.create(
                 name=name,
                 description=description,
@@ -114,6 +138,7 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
                 color=color,
                 agents=agents if isinstance(agents, list) else [],
                 orchestration_mode=orchestration_mode,
+                orchestration_config=orchestration_config,
             )
             await ctx.reply({"team": team})
         except HandlerError as exc:
@@ -151,6 +176,13 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
                 updates["agents"] = agents
             if "orchestration_mode" in params:
                 updates["orchestration_mode"] = str(params["orchestration_mode"])
+            if "orchestration_config" in params:
+                orchestration_config = params["orchestration_config"]
+                if orchestration_config is not None and not isinstance(orchestration_config, dict):
+                    raise HandlerError(
+                        INVALID_PARAMS, "orchestration_config must be a JSON object"
+                    )
+                updates["orchestration_config"] = orchestration_config
             team = await team_dao.update(name, **updates)
             if team is None:
                 await ctx.reply_error(
@@ -242,7 +274,8 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
     async def handle_team_spawn(params: Any, ctx: Context) -> None:
         """Run all agents in a team and return the merged result.
 
-        Emits ``agent.team_progress`` events during execution.
+        Emits ``agent.team_progress`` events during execution and
+        persists the result to ``agent_runs`` under ``task_id``.
         """
         try:
             check_params(params, expected_keys={"team_name", "request"})
@@ -263,8 +296,7 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
                 )
                 return
 
-            # Build agent DAO
-            agent_dao = await _make_agent_dao()
+            agent_dao_instance = await agent_dao_factory()
 
             # Build emit callback from server context.
             # IPCServer has no ``emit()`` method — we mirror what
@@ -284,7 +316,7 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
 
             orch = TeamOrchestrator(
                 team_dao=team_dao,
-                agent_dao=agent_dao,
+                agent_dao=agent_dao_instance,
                 emit_event=_emit,
             )
             result = await orch.run(
@@ -325,6 +357,47 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
             logger.exception("team.spawn failed")
             await ctx.reply_error(INTERNAL_ERROR, "team.spawn failed")
 
+    # ------------------------------------------------------------ run.get
+
+    async def handle_team_run_get(params: Any, ctx: Context) -> None:
+        """Query a persisted team run by ``task_id``."""
+        try:
+            check_params(params, expected_keys={"task_id"})
+            task_id = str(params["task_id"])
+
+            runs_dao_instance = await runs_dao_factory()
+            if runs_dao_instance is None:
+                await ctx.reply_error(INTERNAL_ERROR, "storage unavailable")
+                return
+
+            run = await runs_dao_instance.get_run(task_id)
+            if run is None:
+                await ctx.reply_error(
+                    INVALID_PARAMS, f"unknown team run: {task_id!r}"
+                )
+                return
+
+            metadata = run.get("metadata") or {}
+            team_result = metadata.get("team_result") or {}
+            await ctx.reply({
+                "run": run,
+                "result": {
+                    "team_name": team_result.get("team_name", ""),
+                    "orchestration_mode": team_result.get(
+                        "orchestration_mode", ""
+                    ),
+                    "merged_text": team_result.get("merged_text", ""),
+                    "agents_run": team_result.get("agents_run", []),
+                    "conflicts": team_result.get("conflicts", []),
+                    "success": team_result.get("success", False),
+                },
+            })
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message)
+        except Exception:
+            logger.exception("team.run.get failed")
+            await ctx.reply_error(INTERNAL_ERROR, "team.run.get failed")
+
     server.register("team.list", handle_team_list)
     server.register("team.get", handle_team_get)
     server.register("team.create", handle_team_create)
@@ -333,10 +406,12 @@ def register_team_handlers(server: Any, *, dao: Any = None) -> None:
     server.register("team.enable", handle_team_enable)
     server.register("team.disable", handle_team_disable)
     server.register("team.spawn", handle_team_spawn)
+    server.register("team.run.get", handle_team_run_get)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_dao_factory(dao: Any | None) -> Any:
     """Return an async factory yielding an :class:`AgentTeamDAO`."""
@@ -363,19 +438,57 @@ def _make_dao_factory(dao: Any | None) -> Any:
 
     return _factory
 
-async def _make_agent_dao() -> Any:
-    """Lazily build an :class:`AgentDAO` from the process-wide DB singleton."""
-    try:
-        from ..app import get_db
-        from ..storage.dao.agents import AgentDAO
 
-        db = get_db()
-        if db is None:
-            logger.warning("storage not initialised; agent DAO unavailable")
+def _make_agent_dao_factory(agent_dao: Any | None) -> Any:
+    """Return an async factory yielding an :class:`AgentDAO}."""
+    if agent_dao is not None:
+
+        async def _factory() -> Any:
+            return agent_dao
+
+        return _factory
+
+    async def _factory() -> Any:
+        try:
+            from ..app import get_db
+            from ..storage.dao.agents import AgentDAO
+
+            db = get_db()
+            if db is None:
+                logger.warning("storage not initialised; agent DAO unavailable")
+                return None
+            return AgentDAO(db)
+        except Exception:  # pragma: no cover — defensive
+            logger.exception("failed to build agent DAO for team.spawn")
             return None
-        return AgentDAO(db)
-    except Exception:  # pragma: no cover — defensive
-        logger.exception("failed to build agent DAO for team.spawn")
-        return None
+
+    return _factory
+
+
+def _make_runs_dao_factory(runs_dao: Any | None) -> Any:
+    """Return an async factory yielding an :class:`AgentRunsDAO}."""
+    if runs_dao is not None:
+
+        async def _factory() -> Any:
+            return runs_dao
+
+        return _factory
+
+    async def _factory() -> Any:
+        try:
+            from ..app import get_db
+            from ..storage.dao.runs import AgentRunsDAO
+
+            db = get_db()
+            if db is None:
+                logger.warning("storage not initialised; runs DAO unavailable")
+                return None
+            return AgentRunsDAO(db)
+        except Exception:  # pragma: no cover — defensive
+            logger.exception("failed to build runs DAO for team.run.get")
+            return None
+
+    return _factory
+
 
 __all__ = ["register_team_handlers"]

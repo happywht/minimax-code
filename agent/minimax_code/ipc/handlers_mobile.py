@@ -132,9 +132,9 @@ def register_mobile_handlers(
                 # PairingError or other DAO errors → INVALID_PARAMS or INTERNAL_ERROR
                 from ..mobile import PairingError
                 if isinstance(exc, PairingError):
-                    raise HandlerError(INVALID_PARAMS, exc.message)
+                    raise HandlerError(INVALID_PARAMS, exc.message) from exc
                 logger.exception("mobile.pair_confirm failed")
-                raise HandlerError(INTERNAL_ERROR, "mobile.pair_confirm failed")
+                raise HandlerError(INTERNAL_ERROR, "mobile.pair_confirm failed") from exc
             await ctx.reply({"device": device})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)

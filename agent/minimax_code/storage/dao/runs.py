@@ -15,7 +15,7 @@ from ._base import (
     row_to_dict,
 )
 
-_VALID_RUN_MODES = frozenset({"chat", "plan", "execute"})
+_VALID_RUN_MODES = frozenset({"chat", "plan", "execute", "team"})
 _VALID_RUN_STATUS = frozenset(
     {"planning", "running", "awaiting_approval", "completed", "failed", "cancelled"}
 )

@@ -41,15 +41,6 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-# starlette.testclient warns about the underlying httpx version;
-# the TestClient API we use is stable. Silence the upstream noise
-# so the test output stays clean.
-warnings.filterwarnings(
-    "ignore",
-    message="Using `httpx`.*deprecated.*",
-    category=DeprecationWarning,
-)
-
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -65,6 +56,15 @@ from minimax_code.ipc.protocol import (
     Response,
 )
 from minimax_code.ipc.server import IPCServer
+
+# starlette.testclient warns about the underlying httpx version;
+# the TestClient API we use is stable. Silence the upstream noise
+# so the test output stays clean.
+warnings.filterwarnings(
+    "ignore",
+    message="Using `httpx`.*deprecated.*",
+    category=DeprecationWarning,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures

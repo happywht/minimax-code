@@ -92,3 +92,8 @@ export {
   type TeamRunState,
   type TeamRunEntry,
 } from "./teamRunStore";
+export {
+  useCodebaseStore,
+  startCodebaseStatusPoller,
+  type CodebaseState,
+} from "./codebaseStore";
