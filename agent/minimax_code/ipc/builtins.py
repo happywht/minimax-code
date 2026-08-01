@@ -46,6 +46,38 @@ def _preview_value(value: Any, *, limit: int = 600) -> str:
     return text if len(text) <= limit else text[:limit] + f"\n...(truncated, {len(text) - limit} chars)"
 
 
+def _extract_sources(output: Any) -> list[dict[str, str | None]]:
+    """Collect structured source annotations from a tool result payload.
+
+    Scans dicts/lists recursively for ``source`` fields produced by
+    codebase tools (``path#L1-10`` or ``path#L5``). Returns stable,
+    de-duplicated annotations suitable for ``MessageMetadata.sources``.
+    """
+    sources: list[dict[str, str | None]] = []
+    seen: set[tuple[str, str | None]] = set()
+
+    def visit(obj: Any) -> None:
+        if isinstance(obj, dict):
+            src = obj.get("source")
+            if isinstance(src, str) and src:
+                if "#" in src:
+                    file_path, line_range = src.split("#", 1)
+                else:
+                    file_path, line_range = src, None
+                key = (file_path, line_range)
+                if key not in seen:
+                    seen.add(key)
+                    sources.append({"file_path": file_path, "line_range": line_range})
+            for value in obj.values():
+                visit(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                visit(item)
+
+    visit(output)
+    return sources
+
+
 class _RunRecorder:
     """Small adapter that mirrors AgentCore callbacks into run timeline rows."""
 
@@ -592,6 +624,10 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         logger.exception("run recorder create failed; continuing without timeline")
         recorder.dao = None
 
+    # v0.11.0: collect codebase tool source annotations across the turn
+    # and attach them to the assistant message metadata on the final chunk.
+    turn_sources: list[dict[str, str | None]] = []
+
     async def _on_chunk(
         delta: str, done: bool, metadata: dict | None = None
     ) -> None:
@@ -606,6 +642,10 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
             # ``metadata=`` merges it into the data dict when
             # present, so the wire format matches the v0.3.0
             # design (``data.metadata = {thinking_count, ...}``).
+            # v0.11.0: merge any codebase sources collected from tool
+            # results so the frontend can render a per-turn sources panel.
+            if metadata is not None and turn_sources:
+                metadata = {**metadata, "sources": turn_sources}
             await ctx.emit(
                 "agent.message_chunk",
                 {
@@ -694,6 +734,13 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
                     "message_id": current_assistant_message_id,
                 },
             )
+            # v0.11.0: harvest source annotations from codebase tool results
+            # so the final assistant message metadata can carry a sources list.
+            try:
+                output = result.output if hasattr(result, "output") else None
+                turn_sources.extend(_extract_sources(output))
+            except Exception:
+                logger.debug("source extraction failed for %s", tool_name, exc_info=True)
             await recorder.tool_result(call, result)
         except Exception:
             logger.exception("on_tool_result emit failed")

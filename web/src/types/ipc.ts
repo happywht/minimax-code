@@ -178,11 +178,19 @@ export interface Message {
   metadata?: MessageMetadata;
 }
 
+/** A single codebase source annotation attached to a message. */
+export interface SourceAnnotation {
+  file_path: string;
+  line_range: string | null;
+}
+
 /** Per-turn metadata snapshot for the v0.3.0 thinking_count channel. */
 export interface MessageMetadata {
   thinking_count: number;
   tokens_in: number;
   tokens_out: number;
+  /** v0.11.0: sources harvested from codebase tools used in this turn. */
+  sources?: SourceAnnotation[];
 }
 
 /** A scheduled job record. */
@@ -431,7 +439,8 @@ export interface MessageChunkData {
    * the v0.3.0 ``thinking_count`` wire format. Earlier chunks in
    * the same turn omit the field; the store keeps the latest
    * non-null value per message so the UI sees a stable snapshot
-   * even before the stream ends.
+   * even before the stream ends. v0.11.0 adds ``metadata.sources``
+   * for codebase tool source annotations.
    */
   metadata?: MessageMetadata;
 }

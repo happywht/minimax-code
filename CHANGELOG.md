@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `app.py` 初始化 `CodebaseIndexer` / `CodebaseChunksDAO` 单例并注册 handlers。
   - 新增 `agent/tests/test_codebase_indexer.py`、`test_codebase_store.py`、`test_handlers_codebase.py` 覆盖索引、存储与 IPC。
   - `search_codebase` / `summarize_codebase` / `find_symbol` 工具返回结果新增 `source` 字段（`path#Lstart-end` 或 `path#Lline`），并更新系统提示词要求模型在代码块 fence info 中标注来源，使前端 `CodeBlock` 自动渲染 source chip。
+  - `agent.send_message` 在最终 assistant message 的 `metadata.sources` 中汇总本轮 codebase 工具来源，供前端展示引用面板。
 - **MCP 基础设施（v0.11.0 Milestone 1）**：
   - 新增 `mcp_servers` 表与 `McpServersDAO`，持久化外部 MCP 服务器配置（name/transport/command/url/env/enabled）。
   - 新增 `agent/minimax_code/ipc/handlers_mcp.py`，注册 `mcp.*` IPC 命名空间：`mcp.list_servers` / `mcp.add_server` / `mcp.update_server` / `mcp.remove_server` / `mcp.list_tools` / `mcp.invoke_tool`。
@@ -32,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added — 前端
 - **Right Panel Codebase 标签页**：新增 `web/src/components/right-panel/CodebasePanel.tsx`，支持查看索引状态、触发构建索引、FTS 搜索代码库并展示结果；`tabs.tsx` / `InspectorContent.tsx` 注册 `codebase` tab。
   - 扩展 `web/src/types/ipc.ts`、`web/src/ipc/typed.ts`、`web/src/ipc/mock.ts` 的 Codebase RAG 类型与桩实现。
+- **消息来源面板**：`MessageItem` 新增可折叠 `SourcesPanel`，展示 assistant message `metadata.sources` 中汇集的 codebase 来源；新增 `SourceAnnotation` 类型并扩展 `MessageMetadata`。
 - **Settings MCP Servers 标签页**：新增 `web/src/components/settings/McpServersTab.tsx`，支持添加/删除 stdio MCP 服务器、查看连接状态；同步更新 `SettingsPage` tab 路由与 mock backend。
 - 扩展 `web/src/types/ipc.ts`、`web/src/ipc/typed.ts`、`web/src/ipc/mock.ts` 的 MCP 类型与桩实现。
 - **Sidebar 项目化**：会话按项目分组展示；收件箱默认展开置顶，普通项目可折叠，归档项目沉底。

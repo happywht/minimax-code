@@ -34,6 +34,7 @@ import { MessageActionMenu } from "./MessageActionMenu";
 import { MessageStatusBadge } from "./MessageStatusBadge";
 import { ToolCallCard } from "./ToolCallCard";
 import { TurnSummaryRow } from "./TurnSummaryRow";
+import { SourcesPanel } from "./SourcesPanel";
 import { Textarea, Button } from "../../ui";
 
 export interface MessageItemProps {
@@ -143,6 +144,9 @@ export const MessageItem = React.memo(function MessageItem({
         )}
         {showSummary && summary && (
           <TurnSummaryRow messageId={message.id} summary={summary} />
+        )}
+        {message.metadata?.sources && message.metadata.sources.length > 0 && (
+          <SourcesPanel sources={message.metadata.sources} />
         )}
         {showStatus && <MessageStatusBadge messageId={message.id} status={status} />}
         {isEditing ? (
