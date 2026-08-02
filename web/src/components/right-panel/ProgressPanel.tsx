@@ -1,4 +1,4 @@
-﻿/**
+/**
  * ProgressPanel — content-only progress list for the right column.
  *
  * Historical role: this used to be a floating, collapsible overlay pinned
@@ -8,13 +8,16 @@
  * tasks (the chrome — header, collapse, agent status — is owned by the
  * container).
  *
+ * v0.11.0: the panel now hydrates from the persisted ``task.list`` ledger
+ * on mount and exposes a cancel affordance for running tasks.
+ *
  * The contract preserved for backwards compatibility with the old
  * progress-panel.test.tsx is the ``testId`` namespace ``pp`` and the
  * ``task-row-<id>`` / ``task-status-<status>`` test ids on the inner
  * elements.
  */
 import { useEffect, useState } from "react";
-import { Activity, CheckCircle2, CircleAlert, Loader2, X } from "lucide-react";
+import { Activity, CheckCircle2, CircleAlert, Loader2, RefreshCw, X, Ban } from "lucide-react";
 import { ipc } from "../../ipc";
 import { useTaskStore } from "../../stores";
 import type { SidecarEvent } from "../../types/ipc";
@@ -28,9 +31,12 @@ export interface ProgressPanelProps {
 export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps): JSX.Element {
   const tasks = useTaskStore((s) => s.tasks);
   const startListening = useTaskStore((s) => s.startListening);
+  const refresh = useTaskStore((s) => s.refresh);
+  const cancel = useTaskStore((s) => s.cancel);
   const remove = useTaskStore((s) => s.remove);
   const [sidecar, setSidecar] = useState<SidecarState>("pending");
   const [sidecarDetail, setSidecarDetail] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
 
   // Wire task.progress events and sidecar events once on mount.
   useEffect(() => {
@@ -65,6 +71,24 @@ export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps)
     };
   }, []);
 
+  // Hydrate from the persisted task ledger on mount.
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const handleCancel = async (taskId: string) => {
+    await cancel(taskId);
+  };
+
   const taskList = Object.values(tasks);
   const runningCount = taskList.filter((t) => t.status === "running").length;
 
@@ -86,7 +110,19 @@ export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps)
             </span>
           )}
         </div>
-        <AgentStatusInline state={sidecar} detail={sidecarDetail} />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            title="Refresh task ledger"
+            onClick={() => void handleRefresh()}
+            disabled={refreshing}
+            className="text-minimax-muted hover:text-minimax-fg disabled:opacity-50"
+            data-testid={`${testId}-refresh`}
+          >
+            <RefreshCw size={10} className={refreshing ? "animate-spin" : ""} />
+          </button>
+          <AgentStatusInline state={sidecar} detail={sidecarDetail} />
+        </div>
       </div>
 
       <div className="space-y-2 px-3 pb-3">
@@ -114,6 +150,18 @@ export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps)
                   </div>
                   <div className="flex items-center gap-1">
                     <StatusBadge status={t.status} />
+                    {t.status === "running" && (
+                      <button
+                        type="button"
+                        aria-label="Cancel task"
+                        title="Cancel task"
+                        onClick={() => void handleCancel(t.task_id)}
+                        className="text-minimax-muted hover:text-status-error"
+                        data-testid={`${testId}-cancel-${t.task_id}`}
+                      >
+                        <Ban size={10} />
+                      </button>
+                    )}
                     <button
                       type="button"
                       aria-label="Dismiss task"
@@ -213,6 +261,7 @@ function StatusBadge({ status }: { status: string }): JSX.Element {
     done: "bg-emerald-500/20 text-emerald-300",
     error: "bg-red-500/20 text-status-error",
     cancelled: "bg-minimax-border text-minimax-muted",
+    pending: "bg-minimax-border text-minimax-muted",
   };
   return (
     <span

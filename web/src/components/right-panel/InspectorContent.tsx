@@ -34,6 +34,9 @@ const TerminalPanel = lazy(() =>
 const CodebasePanel = lazy(() =>
   import("./CodebasePanel").then((module) => ({ default: module.CodebasePanel })),
 );
+const CheckpointPanel = lazy(() =>
+  import("./CheckpointPanel").then((module) => ({ default: module.CheckpointPanel })),
+);
 
 export interface InspectorContentProps {
   activeTab: InspectorTab;
@@ -72,6 +75,14 @@ export function InspectorContent({
         <section id={`${testId}-progress-panel`} role="tabpanel" data-testid={`${testId}-progress-body`}>
           <Suspense fallback={<PanelFallback />}>
             <ProgressPanel testId={`${testId}-progress-panel`} />
+          </Suspense>
+        </section>
+      );
+    case "checkpoints":
+      return (
+        <section id={`${testId}-checkpoints-panel`} role="tabpanel" data-testid={`${testId}-checkpoints-body`}>
+          <Suspense fallback={<PanelFallback />}>
+            <CheckpointPanel testId={`${testId}-checkpoints-panel`} />
           </Suspense>
         </section>
       );

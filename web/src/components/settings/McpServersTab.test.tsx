@@ -55,6 +55,7 @@ describe("McpServersTab", () => {
     vi.clearAllMocks();
     listMcpServers.mockResolvedValue({ servers: [] });
     listMcpTools.mockResolvedValue({
+      server_name: "Server",
       tools: [
         { name: "read_file", description: "Read a file", inputSchema: { type: "object" } },
       ],

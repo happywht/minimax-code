@@ -5,6 +5,7 @@
 import {
   Activity,
   Bot,
+  Camera,
   CheckCircle2,
   Database,
   GitCompare,
@@ -19,6 +20,7 @@ export type InspectorTab =
   | "timeline"
   | "diff"
   | "progress"
+  | "checkpoints"
   | "agents"
   | "subagents"
   | "review"
@@ -37,6 +39,7 @@ export const INSPECTOR_TABS: InspectorTabMeta[] = [
   { id: "timeline", label: "Timeline", icon: <Activity size={12} /> },
   { id: "diff", label: "Diff", icon: <GitCompare size={12} /> },
   { id: "progress", label: "Progress", icon: <ListChecks size={12} /> },
+  { id: "checkpoints", label: "Checkpoints", icon: <Camera size={12} /> },
   { id: "agents", label: "Agents", icon: <Bot size={12} /> },
   { id: "subagents", label: "Sub", icon: <Users size={12} /> },
   { id: "review", label: "Review", icon: <CheckCircle2 size={12} /> },

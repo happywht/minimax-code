@@ -13,6 +13,7 @@ import {
   Cpu,
   Globe,
   KeyRound,
+  Puzzle,
   ScrollText,
   ShieldAlert,
   Users,
@@ -33,10 +34,11 @@ import { WebhooksTab } from "./WebhooksTab";
 import { WorkflowsTab } from "./WorkflowsTab";
 import { McpServersTab } from "./McpServersTab";
 import { MemoryTab } from "./MemoryTab";
+import { PluginsTab } from "./PluginsTab";
 import { useFocusTrap } from "../../lib/useFocusTrap";
 import { ConfirmationDialog } from "../modals/ConfirmationDialog";
 
-export type SettingsTab = "models" | "providers" | "permissions" | "scheduled" | "api-key" | "agents" | "teams" | "audit" | "webhooks" | "workflows" | "mcp-servers" | "memory";
+export type SettingsTab = "models" | "providers" | "permissions" | "scheduled" | "api-key" | "agents" | "teams" | "audit" | "webhooks" | "workflows" | "mcp-servers" | "memory" | "plugins";
 
 const TAB_GROUPS: Array<{
   label: string;
@@ -51,6 +53,7 @@ const TAB_GROUPS: Array<{
       { id: "permissions", icon: <ShieldAlert size={12} />, label: "Permissions", testId: "settings-tab-permissions" },
       { id: "mcp-servers", icon: <Blocks size={12} />, label: "MCP Servers", testId: "settings-tab-mcp-servers" },
       { id: "memory", icon: <Brain size={12} />, label: "Memory", testId: "settings-tab-memory" },
+      { id: "plugins", icon: <Puzzle size={12} />, label: "Plugins", testId: "settings-tab-plugins" },
     ],
   },
   {
@@ -167,6 +170,7 @@ export function SettingsPage({ testId = "settings-page", onClose, initialTab = "
           {tab === "workflows" && <WorkflowsTab />}
           {tab === "mcp-servers" && <McpServersTab />}
           {tab === "memory" && <MemoryTab />}
+          {tab === "plugins" && <PluginsTab />}
         </div>
       </div>
       </div>

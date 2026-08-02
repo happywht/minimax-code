@@ -96,11 +96,11 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
         <div className="space-y-2 rounded-md border border-line bg-surface-1 p-3 text-xs">
           <div className="flex items-center justify-between">
             <span className="text-ink-2">Status</span>
-            <span className="font-medium capitalize text-ink-0">{status.status}</span>
+            <span className="font-medium capitalize text-ink-0" data-testid={`${testId}-status`}>{status.status}</span>
           </div>
           <div className="flex items-center justify-between">
             <span className="text-ink-2">Progress</span>
-            <span className="text-ink-0">{status.percent}%</span>
+            <span className="text-ink-0" data-testid={`${testId}-percent`}>{status.percent}%</span>
           </div>
           <div className="h-1.5 w-full rounded-full bg-surface-2">
             <div
@@ -110,8 +110,8 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
           </div>
           <div className="text-ink-2">{status.message}</div>
           <div className="flex items-center justify-between text-ink-2">
-            <span>Files: {status.stats.total_files}</span>
-            <span>Chunks: {status.stats.total_chunks}</span>
+            <span data-testid={`${testId}-files`}>Files: {status.stats.total_files}</span>
+            <span data-testid={`${testId}-chunks`}>Chunks: {status.stats.total_chunks}</span>
           </div>
           {status.status !== "indexing" && (
             <Button

@@ -10,6 +10,7 @@
 import type {
   AgentInfo,
   AgentTeam,
+  Checkpoint,
   ModelInfo,
   PluginInfo,
   Project,
@@ -137,6 +138,8 @@ export const mockTeams: AgentTeam[] = [
  * discovers on disk. Lets the Settings → Plugins tab render in a plain
  * browser. Real data arrives via the ``plugins.*`` IPC namespace.
  */
+export const mockCheckpoints = new Map<string, Checkpoint>();
+
 export const mockPlugins: PluginInfo[] = [
   {
     name: "code-linter",

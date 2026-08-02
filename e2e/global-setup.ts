@@ -27,6 +27,7 @@ const DEADLINE_MS = 30_000;
 const RUNTIME_DIR = resolve(__dirname, ".runtime", String(AGENT_PORT));
 const PID_FILE = join(RUNTIME_DIR, "agent.json");
 const DATA_DIR = join(RUNTIME_DIR, "data");
+const WORKSPACE_DIR = join(RUNTIME_DIR, "workspace");
 
 // Repo-root relative (this file is in e2e/, repo root is ..).
 const REPO_ROOT = resolve(__dirname, "..");
@@ -34,6 +35,54 @@ const AGENT_DIR = join(REPO_ROOT, "agent");
 
 function isWindows() {
   return process.platform === "win32";
+}
+
+/**
+ * Seed a tiny workspace for the codebase indexer.
+ *
+ * The real agent/ directory contains ~500 source files and takes
+ * close to two minutes to index on modest CI hardware. A small
+ * synthetic workspace lets the codebase smoke test exercise the real
+ * `codebase.build_index` and `codebase.search` handlers in a few
+ * seconds without changing production defaults.
+ */
+function seedCodebaseWorkspace(): void {
+  rmSync(WORKSPACE_DIR, { recursive: true, force: true });
+  mkdirSync(WORKSPACE_DIR, { recursive: true });
+
+  writeFileSync(
+    join(WORKSPACE_DIR, "indexer.py"),
+    `class CodebaseIndexer:
+    """Walks a workspace and persists searchable chunks."""
+
+    def __init__(self, workspace: str) -> None:
+        self.workspace = workspace
+
+    async def build_index(self) -> dict:
+        return {"status": "done", "files": 1}
+
+    async def search(self, query: str) -> list:
+        return []
+`,
+  );
+
+  writeFileSync(
+    join(WORKSPACE_DIR, "search.py"),
+    `from indexer import CodebaseIndexer
+
+async def search_codebase(indexer: CodebaseIndexer, query: str):
+    """Search the indexed codebase for the given query."""
+    return await indexer.search(query)
+`,
+  );
+
+  writeFileSync(
+    join(WORKSPACE_DIR, "handlers.py"),
+    `async def handle_codebase_search(params: dict):
+    query = params.get("query", "")
+    return {"query": query, "results": []}
+`,
+  );
 }
 
 function spawnAgent(): ChildProcess {
@@ -57,6 +106,9 @@ function spawnAgent(): ChildProcess {
       PYTHON_KEYRING_BACKEND: "keyring.backends.null.Keyring",
       // Force a unique data dir so e2e runs don't pollute the user's dev DB.
       MINIMAX_CODE_DATA_DIR: DATA_DIR,
+      // Point the codebase indexer at a tiny synthetic workspace so the
+      // codebase smoke test finishes quickly while still using real handlers.
+      MINIMAX_CODE_WORKSPACE_DIR: WORKSPACE_DIR,
     },
   });
   // Forward child output prefixed so users can see boot logs.
@@ -117,6 +169,7 @@ async function waitForHealth(): Promise<boolean> {
 export default async function globalSetup(): Promise<void> {
   await assertPortAvailable();
   rmSync(DATA_DIR, { recursive: true, force: true });
+  seedCodebaseWorkspace();
   mkdirSync(RUNTIME_DIR, { recursive: true });
   console.log(`[global-setup] cwd: ${process.cwd()}`);
   console.log(`[global-setup] spawning agent in ${AGENT_DIR}`);

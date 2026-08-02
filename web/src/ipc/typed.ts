@@ -99,6 +99,13 @@ import type {
   MemoryDeleteResult,
   MemoryExtractResult,
   MemoryCategory,
+  CheckpointListResult,
+  CheckpointCreateResult,
+  CheckpointRestoreResult,
+  CheckpointDiffResult,
+  CheckpointDeleteResult,
+  TaskListResult,
+  TaskCancelResult,
 } from "../types/ipc";
 import type { IPCClient } from "./client";
 /* ─────────────────────── Typed high-level API ─────────────────────── */
@@ -429,6 +436,17 @@ export interface TypedIPC {
   enablePlugin(name: string): Promise<PluginToggleResult>;
   disablePlugin(name: string): Promise<PluginToggleResult>;
   reloadPlugins(): Promise<PluginReloadResult>;
+
+  // checkpoint (v0.11.0) — drive the RightPanel checkpoint panel.
+  listCheckpoints(sessionId: string, opts?: { limit?: number; offset?: number }): Promise<CheckpointListResult>;
+  createCheckpoint(opts: { session_id: string; label?: string; message?: string; cwd?: string }): Promise<CheckpointCreateResult>;
+  restoreCheckpoint(checkpointId: string, opts?: { cwd?: string }): Promise<CheckpointRestoreResult>;
+  diffCheckpoint(checkpointId: string, opts?: { cwd?: string }): Promise<CheckpointDiffResult>;
+  deleteCheckpoint(checkpointId: string): Promise<CheckpointDeleteResult>;
+
+  // task (v0.11.0) — drive the RightPanel progress ledger.
+  listTasks(opts?: { session_id?: string; status?: string; limit?: number }): Promise<TaskListResult>;
+  cancelTask(taskId: string): Promise<TaskCancelResult>;
 
   // memory (v0.11.0) — drive the Settings page's Memory tab.
   listMemories(opts?: {
@@ -794,6 +812,22 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     enablePlugin: (name) => client.request<PluginToggleResult>("plugins.enable", { name }),
     disablePlugin: (name) => client.request<PluginToggleResult>("plugins.disable", { name }),
     reloadPlugins: () => client.request<PluginReloadResult>("plugins.reload", {}),
+
+    // checkpoint (v0.11.0)
+    listCheckpoints: (sessionId, opts) =>
+      client.request<CheckpointListResult>("checkpoint.list", { session_id: sessionId, ...(opts ?? {}) }),
+    createCheckpoint: (opts) =>
+      client.request<CheckpointCreateResult>("checkpoint.create", opts),
+    restoreCheckpoint: (checkpointId, opts) =>
+      client.request<CheckpointRestoreResult>("checkpoint.restore", { checkpoint_id: checkpointId, ...(opts ?? {}) }),
+    diffCheckpoint: (checkpointId, opts) =>
+      client.request<CheckpointDiffResult>("checkpoint.diff", { checkpoint_id: checkpointId, ...(opts ?? {}) }),
+    deleteCheckpoint: (checkpointId) =>
+      client.request<CheckpointDeleteResult>("checkpoint.delete", { checkpoint_id: checkpointId }),
+
+    // task (v0.11.0)
+    listTasks: (opts) => client.request<TaskListResult>("task.list", opts ?? {}),
+    cancelTask: (taskId) => client.request<TaskCancelResult>("task.cancel", { task_id: taskId }),
 
     // memory (v0.11.0)
     listMemories: (opts) => client.request<ListMemoriesResult>("memory.list", opts ?? {}),

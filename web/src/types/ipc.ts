@@ -1409,6 +1409,90 @@ export interface CodebaseSummarizeResult {
 }
 
 // ---------------------------------------------------------------------------
+// v0.11.0 — Workspace checkpoints
+// ---------------------------------------------------------------------------
+
+/** A persisted workspace checkpoint — matches `session_checkpoints` table row. */
+export interface Checkpoint {
+  id: string;
+  session_id: string;
+  label: string;
+  message: string;
+  git_stash_ref: string | null;
+  branch: string | null;
+  tracked_files: string[];
+  untracked_files: string[];
+  has_untracked_snapshot: boolean;
+  created_at: string;
+}
+
+/** Result of `checkpoint.create`. */
+export interface CheckpointCreateResult {
+  checkpoint: Checkpoint;
+}
+
+/** Result of `checkpoint.list`. */
+export interface CheckpointListResult {
+  checkpoints: Checkpoint[];
+  count: number;
+}
+
+/** Result of `checkpoint.restore`. */
+export interface CheckpointRestoreResult {
+  result: {
+    checkpoint_id: string;
+    restored: boolean;
+    applied_stash: boolean;
+    restored_untracked: string[];
+    skipped_existing: string[];
+    warnings: string[];
+  };
+}
+
+/** Result of `checkpoint.diff`. */
+export interface CheckpointDiffResult {
+  checkpoint_id: string;
+  available: boolean;
+  patch: string;
+  files: string[];
+}
+
+/** Result of `checkpoint.delete`. */
+export interface CheckpointDeleteResult {
+  ok: true;
+  removed_snapshot: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Task ledger
+// ---------------------------------------------------------------------------
+
+/** A single persisted task row — matches the `tasks` table. */
+export interface TaskRow {
+  id: string;
+  session_id: string;
+  title: string;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  progress: number;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  error: string | null;
+}
+
+/** Result of `task.list`. */
+export interface TaskListResult {
+  tasks: TaskRow[];
+}
+
+/** Result of `task.cancel`. */
+export interface TaskCancelResult {
+  ok: true;
+  task: TaskRow;
+  noop?: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // v0.11.0 — Long-term memory
 // ---------------------------------------------------------------------------
 

@@ -85,6 +85,15 @@ import type {
   MemoryAddResult,
   MemoryDeleteResult,
   MemoryExtractResult,
+  Checkpoint,
+  CheckpointListResult,
+  CheckpointCreateResult,
+  CheckpointRestoreResult,
+  CheckpointDiffResult,
+  CheckpointDeleteResult,
+  TaskListResult,
+  TaskCancelResult,
+  TaskRow,
 } from "../types/ipc";
 import type { IPCClient } from "./client";
 import {
@@ -104,6 +113,7 @@ import {
   mockTeams,
   mockTerminalChunks,
   mockTerminalSessions,
+  mockCheckpoints,
 } from "./mockData";
 /**
  * The mock backend is intentionally minimal — it just lets the UI shell
@@ -1492,6 +1502,112 @@ function mockHandle(
         task_id: `teamrun_mock_${Date.now()}`,
         success: true,
       };
+    }
+
+    // ── task.* mock (v0.11.0) ────────────────────────────────────────
+
+    case "task.list": {
+      const p = params as { session_id?: string; status?: string; limit?: number } | undefined;
+      const limit = p?.limit ?? 100;
+      const entries: TaskRow[] = [
+        {
+          id: "task_mock_index",
+          session_id: "mock-ses-1",
+          title: "Mock index build",
+          status: "completed",
+          progress: 100,
+          created_at: new Date(Date.now() - 60_000).toISOString(),
+          started_at: new Date(Date.now() - 55_000).toISOString(),
+          completed_at: new Date(Date.now() - 10_000).toISOString(),
+          error: null,
+        },
+      ];
+      let items = entries;
+      if (p?.session_id) items = items.filter((t) => t.session_id === p.session_id);
+      if (p?.status) items = items.filter((t) => t.status === p.status);
+      return { tasks: items.slice(0, limit) } satisfies TaskListResult;
+    }
+
+    case "task.cancel": {
+      const p = params as { task_id: string };
+      return {
+        ok: true,
+        task: {
+          id: p.task_id,
+          session_id: "mock-ses-1",
+          title: "Mock cancelled task",
+          status: "cancelled",
+          progress: 0,
+          created_at: new Date().toISOString(),
+          started_at: null,
+          completed_at: new Date().toISOString(),
+          error: null,
+        },
+        noop: false,
+      } satisfies TaskCancelResult;
+    }
+
+    // ── checkpoint.* mock (v0.11.0) ──────────────────────────────────
+
+    case "checkpoint.list": {
+      const p = params as { session_id: string } | undefined;
+      const items = Array.from(mockCheckpoints.values())
+        .filter((c) => !p?.session_id || c.session_id === p.session_id)
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      return { checkpoints: items, count: items.length } satisfies CheckpointListResult;
+    }
+
+    case "checkpoint.create": {
+      const p = params as { session_id: string; label?: string; message?: string };
+      const now = new Date().toISOString();
+      const checkpoint: Checkpoint = {
+        id: `ckpt_${Math.random().toString(36).slice(2, 10)}`,
+        session_id: p.session_id,
+        label: p.label || "Checkpoint",
+        message: p.message || "",
+        git_stash_ref: `refs/stash@{${Math.floor(Math.random() * 100)}}`,
+        branch: "main",
+        tracked_files: ["src/example.ts"],
+        untracked_files: [],
+        has_untracked_snapshot: false,
+        created_at: now,
+      };
+      mockCheckpoints.set(checkpoint.id, checkpoint);
+      return { checkpoint } satisfies CheckpointCreateResult;
+    }
+
+    case "checkpoint.restore": {
+      const p = params as { checkpoint_id: string };
+      const checkpoint = mockCheckpoints.get(p.checkpoint_id);
+      if (!checkpoint) throw new Error(`unknown checkpoint: ${p.checkpoint_id}`);
+      return {
+        result: {
+          checkpoint_id: checkpoint.id,
+          restored: true,
+          applied_stash: true,
+          restored_untracked: [],
+          skipped_existing: [],
+          warnings: [],
+        },
+      } satisfies CheckpointRestoreResult;
+    }
+
+    case "checkpoint.diff": {
+      const p = params as { checkpoint_id: string };
+      const checkpoint = mockCheckpoints.get(p.checkpoint_id);
+      if (!checkpoint) throw new Error(`unknown checkpoint: ${p.checkpoint_id}`);
+      return {
+        checkpoint_id: checkpoint.id,
+        available: true,
+        patch: `diff --git a/src/example.ts b/src/example.ts\n@@ -1,1 +1,2 @@\n old\n+new`,
+        files: ["src/example.ts"],
+      } satisfies CheckpointDiffResult;
+    }
+
+    case "checkpoint.delete": {
+      const p = params as { checkpoint_id: string };
+      const existed = mockCheckpoints.delete(p.checkpoint_id);
+      return { ok: true, removed_snapshot: existed } satisfies CheckpointDeleteResult;
     }
 
     // ── memory.* mock (v0.11.0) ─────────────────────────────────────
