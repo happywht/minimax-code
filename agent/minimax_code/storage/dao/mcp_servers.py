@@ -24,6 +24,9 @@ def _hydrate(row: Any) -> dict[str, Any] | None:
     d["enabled"] = bool(d.get("enabled", 1))
     d["command"] = loads_json(d.get("command"))
     d["env"] = loads_json(d.get("env"))
+    d["headers"] = loads_json(d.get("headers"))
+    d["oauth_scopes"] = loads_json(d.get("oauth_scopes"))
+    d["tool_states"] = loads_json(d.get("tool_states"))
     return d
 
 
@@ -43,14 +46,24 @@ class McpServersDAO:
         url: str | None = None,
         env: dict[str, str] | None = None,
         enabled: bool = True,
+        bearer_token: str | None = None,
+        headers: dict[str, str] | None = None,
+        oauth_client_id: str | None = None,
+        oauth_client_secret: str | None = None,
+        oauth_scopes: list[str] | None = None,
+        oauth_callback_port: int | None = None,
+        tool_states: dict[str, bool] | None = None,
     ) -> dict[str, Any]:
         """Insert a new MCP server config and return the persisted row."""
         if transport not in _TRANSPORT_CHOICES:
             raise ValueError(f"transport must be one of {_TRANSPORT_CHOICES}")
         now = now_iso()
         sql = (
-            "INSERT INTO mcp_servers (id, name, transport, command, url, env, enabled, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO mcp_servers ("
+            "id, name, transport, command, url, env, enabled, "
+            "bearer_token, headers, oauth_client_id, oauth_client_secret, "
+            "oauth_scopes, oauth_callback_port, tool_states, created_at, updated_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         async with self._db.transaction() as conn:
             await conn.execute(
@@ -63,6 +76,13 @@ class McpServersDAO:
                     url,
                     dumps_json(env),
                     1 if enabled else 0,
+                    bearer_token,
+                    dumps_json(headers),
+                    oauth_client_id,
+                    oauth_client_secret,
+                    dumps_json(oauth_scopes),
+                    oauth_callback_port,
+                    dumps_json(tool_states),
                     now,
                     now,
                 ),
@@ -88,6 +108,13 @@ class McpServersDAO:
         url: str | None = None,
         env: dict[str, str] | None = None,
         enabled: bool | None = None,
+        bearer_token: str | None = None,
+        headers: dict[str, str] | None = None,
+        oauth_client_id: str | None = None,
+        oauth_client_secret: str | None = None,
+        oauth_scopes: list[str] | None = None,
+        oauth_callback_port: int | None = None,
+        tool_states: dict[str, bool] | None = None,
     ) -> dict[str, Any] | None:
         """Update a persisted MCP server config."""
         sets: list[str] = []
@@ -112,6 +139,27 @@ class McpServersDAO:
         if enabled is not None:
             sets.append("enabled = ?")
             params.append(1 if enabled else 0)
+        if bearer_token is not None:
+            sets.append("bearer_token = ?")
+            params.append(bearer_token)
+        if headers is not None:
+            sets.append("headers = ?")
+            params.append(dumps_json(headers))
+        if oauth_client_id is not None:
+            sets.append("oauth_client_id = ?")
+            params.append(oauth_client_id)
+        if oauth_client_secret is not None:
+            sets.append("oauth_client_secret = ?")
+            params.append(oauth_client_secret)
+        if oauth_scopes is not None:
+            sets.append("oauth_scopes = ?")
+            params.append(dumps_json(oauth_scopes))
+        if oauth_callback_port is not None:
+            sets.append("oauth_callback_port = ?")
+            params.append(oauth_callback_port)
+        if tool_states is not None:
+            sets.append("tool_states = ?")
+            params.append(dumps_json(tool_states))
         if not sets:
             return await self.get(server_id)
         sets.append("updated_at = ?")

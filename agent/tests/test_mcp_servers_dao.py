@@ -92,3 +92,29 @@ async def test_list_filters_enabled(dao: McpServersDAO, id_factory: Any) -> None
     enabled_rows = await dao.list(enabled=True)
     assert len(enabled_rows) == 1
     assert enabled_rows[0]["name"] == "Enabled"
+
+
+@pytest.mark.asyncio
+async def test_create_sse_with_auth_and_tool_states(dao: McpServersDAO, id_factory: Any) -> None:
+    sid = id_factory("mcp")
+    row = await dao.create(
+        id=sid,
+        name="Remote",
+        transport="sse",
+        url="http://localhost/sse",
+        bearer_token="secret",
+        headers={"X-Custom": "yes"},
+        oauth_client_id="client",
+        oauth_client_secret="cs",
+        oauth_scopes=["read"],
+        oauth_callback_port=8765,
+        tool_states={"read": True, "write": False},
+    )
+    assert row["transport"] == "sse"
+    assert row["bearer_token"] == "secret"
+    assert row["headers"] == {"X-Custom": "yes"}
+    assert row["oauth_client_id"] == "client"
+    assert row["oauth_client_secret"] == "cs"
+    assert row["oauth_scopes"] == ["read"]
+    assert row["oauth_callback_port"] == 8765
+    assert row["tool_states"] == {"read": True, "write": False}

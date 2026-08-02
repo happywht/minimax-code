@@ -69,6 +69,7 @@ from .transport import (
     InProcessTransport,
     MCPTransport,
     MCPTransportError,
+    SSETransport,
     StdioTransport,
     make_in_process_pair,
 )
@@ -87,6 +88,7 @@ __all__ = [
     "MCPRegistry",
     "MCPTransport",
     "MCPTransportError",
+    "SSETransport",
     "StdioTransport",
     "bridged_name",
     "make_in_process_pair",

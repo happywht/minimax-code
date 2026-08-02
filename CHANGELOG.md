@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 新增 `agent/minimax_code/ipc/handlers_mcp.py`，注册 `mcp.*` IPC 命名空间：`mcp.list_servers` / `mcp.add_server` / `mcp.update_server` / `mcp.remove_server` / `mcp.list_tools` / `mcp.invoke_tool`。
   - `MCPRegistry` 新增 `list_server_tools` / `call_tool`，并在 `app.py` 启动时加载已启用服务器到全局单例。
   - 新增 `agent/tests/test_handlers_mcp.py` 与 `agent/tests/test_mcp_servers_dao.py` 覆盖 IPC 与 DAO。
+- **MCP 集成增强（v0.11.0 Milestone 1 完成）**：
+  - 新增 SSE 传输：`mcp.transport.SSETransport` 基于 `httpx.AsyncClient` + SSE endpoint，支持自定义 `headers`、`bearer_token` 与 endpoint 发现流程。
+  - 迁移 `024_mcp_auth_tool_states.py` 为 `mcp_servers` 表增加 `bearer_token`、`headers`、OAuth（`oauth_client_id`/`oauth_client_secret_env_var`/`oauth_scopes`）以及 `tool_states` 列。
+  - `McpServersDAO` 与 `MCPServerConfig` 持久化/加载上述认证与授权字段。
+  - `MCPRegistry` 根据 `tool_states` 映射过滤每个桥接工具，缺省为启用；桥接工具对外名称统一为 `mcp__<server>__<tool>`。
+  - `mcp.add_server` / `mcp.update_server` 支持 SSE 与 stdio、认证参数及 `tool_states` 更新；失败保持 fail-open，不影响 agent 启动。
+  - 新增 `agent/tests/test_mcp_sse_transport.py`、`agent/tests/test_mcp_registry_tools.py`，并扩展 `test_handlers_mcp.py` 覆盖 SSE、认证与 per-tool 状态。
 - **项目/任务分层（v0.10.0）**：
   - 新增 `projects` 表与 `ProjectsDAO`，支持创建、更新、归档、删除项目。
   - `sessions` 表新增 `project_id` 列；未指定项目的会话默认归属 `id="inbox"` 的“收件箱”。
@@ -40,6 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 扩展 `web/src/types/ipc.ts`、`web/src/ipc/typed.ts`、`web/src/ipc/mock.ts` 的 Codebase RAG 类型与桩实现。
 - **消息来源面板**：`MessageItem` 新增可折叠 `SourcesPanel`，展示 assistant message `metadata.sources` 中汇集的 codebase 来源；新增 `SourceAnnotation` 类型并扩展 `MessageMetadata`。
 - **Settings MCP Servers 标签页**：新增 `web/src/components/settings/McpServersTab.tsx`，支持添加/删除 stdio MCP 服务器、查看连接状态；同步更新 `SettingsPage` tab 路由与 mock backend。
+  - 扩展 `McpServersTab`：支持 stdio/SSE 传输切换、命令行/URL/env/headers 输入、bearer token、OAuth clientId/scopes，以及基于 `listMcpTools` 的 per-tool 启用开关；工具状态变更通过 `updateMcpServer` 持久化。
+  - `ToolCallCard` 新增 MCP 桥接标识，当工具名为 `mcp__<server>__<tool>` 时渲染 server/tool badge。
+  - 同步扩展 `web/src/types/ipc.ts`、`web/src/ipc/typed.ts`、`web/src/ipc/mock.ts` 的 MCP 认证、OAuth 与 `tool_states` 类型/桩实现。
 - **Settings Memory 标签页**：新增 `web/src/components/settings/MemoryTab.tsx`，支持查看、搜索、添加、删除长期记忆；同步更新 `SettingsPage` tab 路由与图标。
 - 扩展 `web/src/types/ipc.ts`、`web/src/ipc/typed.ts`、`web/src/ipc/mock.ts` 的 MCP 与 Memory 类型与桩实现。
 - **Sidebar 项目化**：会话按项目分组展示；收件箱默认展开置顶，普通项目可折叠，归档项目沉底。
@@ -68,13 +78,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tests
 - 新增 Codebase RAG 相关测试：`agent/tests/test_codebase_indexer.py`、`agent/tests/test_codebase_store.py`、`agent/tests/test_handlers_codebase.py`。
-- 新增 MCP 相关测试：`agent/tests/test_handlers_mcp.py`、`agent/tests/test_mcp_servers_dao.py`。
+- 新增 MCP 相关测试：`agent/tests/test_handlers_mcp.py`、`agent/tests/test_mcp_servers_dao.py`、`agent/tests/test_mcp_sse_transport.py`、`agent/tests/test_mcp_registry_tools.py`、`web/src/components/settings/McpServersTab.test.tsx`、`web/src/components/chat/ToolCallCard.test.tsx`。
 - 新增 `agent/tests/test_projects.py`，覆盖项目 DAO 与删除归位逻辑。
 - 新增/更新 `web/tests/sidebar.test.tsx`、`web/tests/sidebar-history.test.tsx`、`web/tests/chat-panel.test.tsx`，适配项目分组与 `project_id` 传参。
 - 放宽 `agent/tests/test_connection.py::test_interval_keeps_global_timeline_across_loops` 的容差，消除 Windows/高负载下时序抖动导致的偶发失败。
-- 前端 vitest：495 tests 全绿。
+- 前端 vitest：529 tests 全绿。
 - Playwright e2e：15 specs 全绿。
-- Python pytest：9930 passed，15 skipped。
+- Python pytest：10017 passed，15 skipped。
 
 ## [0.9.1] - 2026-07-27
 

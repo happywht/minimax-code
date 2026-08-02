@@ -24,6 +24,13 @@ class FakeMcpServersDAO:
             "url": kwargs.get("url"),
             "env": kwargs.get("env"),
             "enabled": kwargs.get("enabled", True),
+            "bearer_token": kwargs.get("bearer_token"),
+            "headers": kwargs.get("headers"),
+            "oauth_client_id": kwargs.get("oauth_client_id"),
+            "oauth_client_secret": kwargs.get("oauth_client_secret"),
+            "oauth_scopes": kwargs.get("oauth_scopes"),
+            "oauth_callback_port": kwargs.get("oauth_callback_port"),
+            "tool_states": kwargs.get("tool_states"),
             "created_at": "2026-01-01T00:00:00Z",
             "updated_at": "2026-01-01T00:00:00Z",
         }
@@ -43,8 +50,12 @@ class FakeMcpServersDAO:
         row = self.rows.get(server_id)
         if row is None:
             return None
-        for key in ("name", "transport", "command", "url", "env", "enabled"):
-            if key in kwargs:
+        for key in (
+            "name", "transport", "command", "url", "env", "enabled",
+            "bearer_token", "headers", "oauth_client_id", "oauth_client_secret",
+            "oauth_scopes", "oauth_callback_port", "tool_states",
+        ):
+            if key in kwargs and kwargs[key] is not None:
                 row[key] = kwargs[key]
         return row
 
@@ -115,3 +126,44 @@ async def test_mcp_invoke_tool_on_disconnected_server(client: IPCClient) -> None
             "mcp.invoke_tool",
             {"server_name": "missing", "tool_name": "read", "arguments": {}},
         )
+
+
+@pytest.mark.asyncio
+async def test_mcp_add_sse_server_persists_auth_fields(client: IPCClient) -> None:
+    result = await client.request(
+        "mcp.add_server",
+        {
+            "id": "remote",
+            "name": "Remote",
+            "transport": "sse",
+            "url": "http://localhost:3001/sse",
+            "bearer_token": "secret",
+            "headers": {"X-Custom": "yes"},
+            "oauth_client_id": "client",
+            "oauth_client_secret": "cs",
+            "oauth_scopes": ["read"],
+            "oauth_callback_port": 8765,
+        },
+    )
+    server = result["server"]
+    assert server["transport"] == "sse"
+    assert server["url"] == "http://localhost:3001/sse"
+    assert server["bearer_token"] == "secret"
+    assert server["headers"] == {"X-Custom": "yes"}
+    assert server["oauth_client_id"] == "client"
+    assert server["oauth_client_secret"] == "cs"
+    assert server["oauth_scopes"] == ["read"]
+    assert server["oauth_callback_port"] == 8765
+
+
+@pytest.mark.asyncio
+async def test_mcp_update_tool_states(client: IPCClient) -> None:
+    await client.request(
+        "mcp.add_server",
+        {"id": "tools", "name": "Tools", "transport": "stdio", "command": ["echo"]},
+    )
+    result = await client.request(
+        "mcp.update_server",
+        {"server_id": "tools", "tool_states": {"read": True, "write": False}},
+    )
+    assert result["server"]["tool_states"] == {"read": True, "write": False}

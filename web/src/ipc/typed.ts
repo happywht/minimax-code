@@ -152,6 +152,13 @@ export interface TypedIPC {
     url?: string;
     env?: Record<string, string>;
     enabled?: boolean;
+    bearer_token?: string;
+    headers?: Record<string, string>;
+    oauth_client_id?: string;
+    oauth_client_secret?: string;
+    oauth_scopes?: string[];
+    oauth_callback_port?: number;
+    tool_states?: Record<string, boolean>;
   }): Promise<McpServerResult>;
   updateMcpServer(serverId: string, opts: {
     name?: string;
@@ -160,6 +167,13 @@ export interface TypedIPC {
     url?: string;
     env?: Record<string, string>;
     enabled?: boolean;
+    bearer_token?: string;
+    headers?: Record<string, string>;
+    oauth_client_id?: string;
+    oauth_client_secret?: string;
+    oauth_scopes?: string[];
+    oauth_callback_port?: number;
+    tool_states?: Record<string, boolean>;
   }): Promise<McpServerResult>;
   removeMcpServer(serverId: string): Promise<RemoveMcpServerResult>;
   listMcpTools(serverName: string): Promise<ListMcpToolsResult>;

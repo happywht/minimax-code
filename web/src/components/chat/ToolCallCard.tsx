@@ -9,6 +9,38 @@ import { ChevronDown, ChevronRight, Wrench } from "lucide-react";
 import { useState } from "react";
 import type { Message } from "../../types/ipc";
 
+function parseMcpToolName(toolName: string): { server: string; tool: string } | null {
+  const prefix = "mcp__";
+  if (!toolName.startsWith(prefix)) return null;
+  const rest = toolName.slice(prefix.length);
+  const parts = rest.split("__");
+  if (parts.length < 2) return null;
+  const tool = parts.pop()!;
+  const server = parts.join("__");
+  return { server, tool };
+}
+
+function ToolNameLabel({ toolName }: { toolName?: string }): JSX.Element {
+  if (!toolName) {
+    return <span className="truncate font-medium">tool</span>;
+  }
+  const mcp = parseMcpToolName(toolName);
+  if (!mcp) {
+    return <span className="truncate font-medium">{toolName}</span>;
+  }
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      <span className="truncate font-medium">{mcp.tool}</span>
+      <span
+        className="shrink-0 rounded bg-surface-2 px-1 py-0 text-[11px] text-ink-2"
+        title={`MCP server: ${mcp.server}`}
+      >
+        {mcp.server}
+      </span>
+    </span>
+  );
+}
+
 export interface ToolCallCardProps {
   message: Message;
   testId?: string;
@@ -36,7 +68,7 @@ export function ToolCallCard({ message, testId }: ToolCallCardProps): JSX.Elemen
           ) : (
             <ChevronRight size={12} className="shrink-0" />
           )}
-          <span className="truncate font-medium">{message.tool_name ?? "tool"}</span>
+          <ToolNameLabel toolName={message.tool_name} />
           {message.tool_args && (
             <span className="truncate text-[11px] text-ink-2">
               {Object.keys(message.tool_args).join(", ")}

@@ -31,7 +31,7 @@ from typing import Any
 
 from ..agent.tools.base import Tool, ToolRegistry, ToolResult
 from .client import MCPClient, MCPClientError
-from .transport import MCPTransport, StdioTransport
+from .transport import MCPTransport, SSETransport, StdioTransport
 from .types import CallToolResult
 from .types import Tool as MCPTool
 
@@ -65,18 +65,41 @@ class MCPServerConfig:
     name:
         Short human-friendly id used as the tool namespace. Sanitised
         before use, so spaces/cases are fine in config.
+    transport:
+        ``"stdio"`` or ``"sse"``.  Defaults to ``"stdio"`` when omitted.
     command:
-        Argv to launch the server (e.g. ``["npx", "@modelcontextprotocol/server-filesystem", "."]``).
-    env / cwd:
-        Optional overrides passed to the child process.
+        Argv for stdio transport.
+    url:
+        SSE endpoint URL for streamable-HTTP transport.
+    env:
+        Extra environment variables for stdio transport.
+    cwd:
+        Working directory for stdio transport.
+    headers:
+        Extra HTTP headers for SSE transport.
+    bearer_token:
+        Bearer token for SSE transport.
+    oauth_client_id / oauth_client_secret / oauth_scopes / oauth_callback_port:
+        Optional OAuth configuration for SSE transport.
+    tool_states:
+        Per-tool enablement map ``{original_tool_name: enabled}``.
     enabled:
         When ``False`` the server is skipped on :meth:`MCPRegistry.add_server`.
     """
 
     name: str
-    command: list[str]
+    transport: str = "stdio"
+    command: list[str] | None = None
+    url: str | None = None
     env: dict[str, str] | None = None
     cwd: str | None = None
+    headers: dict[str, str] | None = None
+    bearer_token: str | None = None
+    oauth_client_id: str | None = None
+    oauth_client_secret: str | None = None
+    oauth_scopes: list[str] | None = None
+    oauth_callback_port: int | None = None
+    tool_states: dict[str, bool] | None = None
     enabled: bool = True
 
 
@@ -214,7 +237,7 @@ class MCPRegistry:
     # -- mutation ---------------------------------------------------------
 
     async def add_server(self, config: MCPServerConfig) -> bool:
-        """Launch ``config.command``, handshake, and bridge the tools.
+        """Connect to an MCP server, handshake, and bridge the tools.
 
         Returns ``True`` if the server attached successfully, ``False``
         if it was disabled or failed to handshake (fail-open).
@@ -222,11 +245,23 @@ class MCPRegistry:
         if not config.enabled:
             logger.info("MCP server %s disabled, skipping", config.name)
             return False
-        if not config.command:
-            raise ValueError(f"MCP server {config.name!r} has empty command")
-        transport: MCPTransport = StdioTransport(config.command, env=config.env, cwd=config.cwd)
+        transport = self._build_transport(config)
         client = MCPClient(transport)
         return await self._attach_client(config, client, transport)
+
+    def _build_transport(self, config: MCPServerConfig) -> MCPTransport:
+        transport = (config.transport or "stdio").lower()
+        if transport == "sse":
+            if not config.url:
+                raise ValueError(f"MCP server {config.name!r} has empty SSE url")
+            return SSETransport(
+                config.url,
+                headers=config.headers,
+                bearer_token=config.bearer_token,
+            )
+        if not config.command:
+            raise ValueError(f"MCP server {config.name!r} has empty command")
+        return StdioTransport(config.command, env=config.env, cwd=config.cwd)
 
     async def _attach_client(
         self,
@@ -249,9 +284,12 @@ class MCPRegistry:
             logger.warning("MCP server %s attach failed: %s", config.name, exc)
             await client.close()
             return False
+        disabled = {
+            name for name, enabled in (config.tool_states or {}).items() if not enabled
+        }
         conn = _ServerConn(config=config, client=client, transport=transport)
         for mcp_tool in tools_result.tools:
-            self._register_one(conn, mcp_tool)
+            self._register_one(conn, mcp_tool, disabled=disabled)
         self._servers[key] = conn
         logger.info(
             "MCP server %s attached, bridged %d/%d tools",
@@ -261,7 +299,11 @@ class MCPRegistry:
         )
         return True
 
-    def _register_one(self, conn: _ServerConn, mcp_tool: MCPTool) -> None:
+    def _register_one(
+        self, conn: _ServerConn, mcp_tool: MCPTool, *, disabled: set[str]
+    ) -> None:
+        if mcp_tool.name in disabled:
+            return
         tool = _BridgedTool(
             server=conn.config.name, mcp_tool=mcp_tool, client=conn.client, registry=self
         )

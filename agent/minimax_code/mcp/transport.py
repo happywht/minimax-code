@@ -36,6 +36,9 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import Any
+from urllib.parse import urljoin
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +184,172 @@ class StdioTransport(MCPTransport):
 
 
 # ---------------------------------------------------------------------------
+# SSE / Streamable-HTTP transport — HTTP GET for server→client, POST for client→server
+# ---------------------------------------------------------------------------
+
+
+class SSETransport(MCPTransport):
+    """MCP transport over HTTP/SSE (StreamableHTTP / SSE variant).
+
+    Establishes a long-running ``GET <url>`` SSE stream for inbound
+    JSON-RPC messages, and posts outbound JSON-RPC messages to the
+    ``endpoint`` event URL advertised by the server.
+
+    Parameters
+    ----------
+    url:
+        The SSE endpoint URL, e.g. ``http://localhost:3001/sse``.
+    headers:
+        Extra HTTP headers merged over defaults.
+    bearer_token:
+        Optional bearer token sent as ``Authorization: Bearer <token>``.
+    timeout:
+        Seconds to wait for the SSE endpoint advertisement during startup.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        bearer_token: str | None = None,
+        timeout: float = 30.0,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        if not url:
+            raise ValueError("url must be a non-empty string")
+        self._url = url
+        self._base_headers: dict[str, str] = dict(headers or {})
+        if bearer_token:
+            self._base_headers["Authorization"] = f"Bearer {bearer_token}"
+        self._timeout = timeout
+        self._client = client
+        self._response: httpx.Response | None = None
+        self._post_url: str | None = None
+        self._post_url_event = asyncio.Event()
+        self._queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        self._reader_task: asyncio.Task[None] | None = None
+        self._closed = False
+
+    async def start(self) -> None:
+        if self._client is not None and self._response is not None:
+            return  # idempotent
+        headers = {
+            "Accept": "text/event-stream",
+            "Cache-Control": "no-cache",
+            **self._base_headers,
+        }
+        client = self._client
+        created_client = False
+        try:
+            if client is None:
+                client = httpx.AsyncClient(timeout=self._timeout)
+                self._client = client
+                created_client = True
+            self._response = await client.get(self._url, headers=headers)
+            self._response.raise_for_status()
+        except httpx.HTTPError as exc:
+            if created_client:
+                await self._close_client()
+            raise MCPTransportError(f"SSE connection failed: {exc}") from exc
+        self._reader_task = asyncio.create_task(self._read_loop())
+        try:
+            await asyncio.wait_for(self._post_url_event.wait(), timeout=self._timeout)
+        except TimeoutError as exc:
+            await self.close()
+            raise MCPTransportError("SSE endpoint advertisement timed out") from exc
+
+    async def _read_loop(self) -> None:
+        """Parse SSE stream and enqueue JSON-RPC messages."""
+        response = self._response
+        if response is None:
+            return
+        event_name = ""
+        data_lines: list[str] = []
+        try:
+            async for raw in response.aiter_lines():
+                line = raw.rstrip("\n")
+                if line.startswith("event:"):
+                    event_name = line[len("event:"):].strip()
+                elif line.startswith("data:"):
+                    data_lines.append(line[len("data:"):].lstrip())
+                elif line == "":
+                    if data_lines:
+                        payload = "\n".join(data_lines)
+                        data_lines = []
+                        self._dispatch_sse_event(event_name, payload)
+                    event_name = ""
+        except Exception as exc:  # noqa: BLE001 — reader must not die silently
+            logger.warning("SSE transport read loop ended: %s", exc)
+        await self._queue.put(None)
+
+    def _dispatch_sse_event(self, event_name: str, payload: str) -> None:
+        if event_name == "endpoint":
+            self._post_url = urljoin(self._url, payload.strip())
+            self._post_url_event.set()
+            return
+        if event_name not in ("", "message"):
+            logger.debug("ignoring unknown SSE event %r", event_name)
+            return
+        try:
+            message = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            logger.warning("SSE transport dropping malformed message: %s", exc)
+            return
+        if isinstance(message, dict):
+            self._queue.put_nowait(message)
+
+    async def send(self, message: dict[str, Any]) -> None:
+        if self._closed:
+            raise MCPTransportError("transport closed")
+        if self._client is None or self._post_url is None:
+            raise MCPTransportError("SSE endpoint not ready")
+        try:
+            response = await self._client.post(
+                self._post_url,
+                json=message,
+                headers={**self._base_headers, "Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise MCPTransportError(f"failed to send: {exc}") from exc
+
+    async def messages(self) -> AsyncIterator[dict[str, Any]]:
+        while True:
+            item = await self._queue.get()
+            if item is None:
+                return
+            yield item
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._reader_task is not None:
+            self._reader_task.cancel()
+            try:
+                await self._reader_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        await self._close_client()
+        await self._queue.put(None)
+
+    async def _close_client(self) -> None:
+        if self._response is not None:
+            try:
+                await self._response.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+            self._response = None
+        if self._client is not None:
+            try:
+                await self._client.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+            self._client = None
+
+
+# ---------------------------------------------------------------------------
 # In-process transport — paired asyncio queues (tests + server bridge)
 # ---------------------------------------------------------------------------
 
@@ -235,6 +404,7 @@ __all__ = [
     "InProcessTransport",
     "MCPTransport",
     "MCPTransportError",
+    "SSETransport",
     "StdioTransport",
     "make_in_process_pair",
 ]

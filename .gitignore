@@ -88,3 +88,19 @@ data.db
 e2e/.runtime/
 e2e/__screenshots__/
 agent/fetch_news.py
+
+# Local agent runtime data / scratch
+agent/.minimax/
+agent/.tmp_manual/
+agent/notes/
+agent/progress/
+agent/projects/
+agent/reminder.py
+agent/schedule_reminder.bat
+agent/schedule_reminder.sh
+agent/news_*.json
+
+# Local agent/tool workdirs
+grok-build/
+.playwright-mcp/
+.serena/

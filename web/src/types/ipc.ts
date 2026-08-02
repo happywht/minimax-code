@@ -1306,6 +1306,13 @@ export interface McpServer {
   env: Record<string, string> | null;
   enabled: boolean;
   connected?: boolean;
+  bearer_token: string | null;
+  headers: Record<string, string> | null;
+  oauth_client_id: string | null;
+  oauth_client_secret: string | null;
+  oauth_scopes: string[] | null;
+  oauth_callback_port: number | null;
+  tool_states: Record<string, boolean> | null;
   created_at: string;
   updated_at: string;
 }

@@ -167,15 +167,24 @@ async def _maybe_open_db() -> Any:
         _MCP_REGISTRY = MCPRegistry(get_default_registry())
         try:
             for cfg_row in await _MCP_SERVERS_DAO.list(enabled=True):
-                if cfg_row.get("transport") != "stdio":
+                transport = cfg_row.get("transport") or "stdio"
+                if transport == "stdio" and not (cfg_row.get("command") or []):
                     continue
-                command = cfg_row.get("command") or []
-                if not command:
+                if transport == "sse" and not cfg_row.get("url"):
                     continue
                 cfg = MCPServerConfig(
                     name=cfg_row["name"],
-                    command=command,
+                    transport=transport,
+                    command=cfg_row.get("command"),
+                    url=cfg_row.get("url"),
                     env=cfg_row.get("env"),
+                    headers=cfg_row.get("headers"),
+                    bearer_token=cfg_row.get("bearer_token"),
+                    oauth_client_id=cfg_row.get("oauth_client_id"),
+                    oauth_client_secret=cfg_row.get("oauth_client_secret"),
+                    oauth_scopes=cfg_row.get("oauth_scopes"),
+                    oauth_callback_port=cfg_row.get("oauth_callback_port"),
+                    tool_states=cfg_row.get("tool_states"),
                     enabled=True,
                 )
                 try:

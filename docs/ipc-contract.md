@@ -823,11 +823,11 @@ unexpected param shape. `crash_dir` resolves to `<data_dir>/crashes`
 
 | Method | Params | Result | Notes |
 |--------|--------|--------|-------|
-| `mcp.list_servers` | `{}` | `{servers: [{id, name, transport, command?, url?, env, enabled, connected}]}]` | Returns all persisted server configs plus live connection status. |
-| `mcp.add_server` | `{id, name, transport, command?, url?, env?, enabled?}` | `{server}` | Validates `transport` is `stdio` or `sse`, persists the configuration, and immediately connects the server. `command` (argv list) is required for `stdio`; `url` is required for `sse`. |
-| `mcp.update_server` | `{server_id, name?, transport?, command?, url?, env?, enabled?}` | `{server}` | Updates a persisted server config and re-attaches it when runtime fields change. |
+| `mcp.list_servers` | `{}` | `{servers: [{id, name, transport, command?, url?, env?, enabled, connected, bearer_token?, headers?, oauth_client_id?, oauth_client_secret?, oauth_scopes?, oauth_callback_port?, tool_states?}]}`] | Returns all persisted server configs plus live connection status. |
+| `mcp.add_server` | `{id, name, transport, command?, url?, env?, enabled?, bearer_token?, headers?, oauth_client_id?, oauth_client_secret?, oauth_scopes?, oauth_callback_port?, tool_states?}` | `{server}` | Validates `transport` is `stdio` or `sse`, persists the configuration, and immediately connects the server. `command` (argv list) is required for `stdio`; `url` is required for `sse`. |
+| `mcp.update_server` | `{server_id, name?, transport?, command?, url?, env?, enabled?, bearer_token?, headers?, oauth_client_id?, oauth_client_secret?, oauth_scopes?, oauth_callback_port?, tool_states?}` | `{server}` | Updates a persisted server config and re-attaches it when runtime fields change. `tool_states` is a map `{tool_name: enabled}` used to disable individual bridged tools. |
 | `mcp.remove_server` | `{server_id}` | `{ok, server_id}` | Disconnects and deletes the persisted server. |
-| `mcp.list_tools` | `{server_name}` | `{server_name, tools: [{name, description?, input_schema?}]}` | Lists tools exposed by a single connected server. |
+| `mcp.list_tools` | `{server_name}` | `{server_name, tools: [{name, description?, inputSchema?}]}` | Lists tools exposed by a single connected server. |
 | `mcp.invoke_tool` | `{server_name, tool_name, arguments?}` | `{ok, server_name, tool_name, text?, content?, isError}` | Calls a tool on the named server. Returns the tool result or a structured error. |
 
 ### `codebase.*` — codebase indexing and retrieval (v0.11.0 Milestone 2)

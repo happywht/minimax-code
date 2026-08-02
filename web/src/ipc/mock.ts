@@ -138,6 +138,14 @@ export function mockNotify(method: string, params: unknown, client: IPCClient): 
 let mockReasoningEffort: string | null = null;
 const mockMcpServers = new Map<string, McpServer>();
 const mockMemories = new Map<string, MemoryEntry>();
+
+export function resetMockMcpServers(): void {
+  mockMcpServers.clear();
+}
+
+export function resetMockMemories(): void {
+  mockMemories.clear();
+}
 function mockHandle(
   method: string,
   params: unknown,
@@ -1071,6 +1079,13 @@ function mockHandle(
         url?: string;
         env?: Record<string, string>;
         enabled?: boolean;
+        bearer_token?: string;
+        headers?: Record<string, string>;
+        oauth_client_id?: string;
+        oauth_client_secret?: string;
+        oauth_scopes?: string[];
+        oauth_callback_port?: number;
+        tool_states?: Record<string, boolean>;
       };
       const now = new Date().toISOString();
       const server: McpServer = {
@@ -1082,6 +1097,13 @@ function mockHandle(
         env: p.env ?? null,
         enabled: p.enabled ?? true,
         connected: false,
+        bearer_token: p.bearer_token ?? null,
+        headers: p.headers ?? null,
+        oauth_client_id: p.oauth_client_id ?? null,
+        oauth_client_secret: p.oauth_client_secret ?? null,
+        oauth_scopes: p.oauth_scopes ?? null,
+        oauth_callback_port: p.oauth_callback_port ?? null,
+        tool_states: p.tool_states ?? null,
         created_at: now,
         updated_at: now,
       };
@@ -1098,6 +1120,13 @@ function mockHandle(
         url?: string;
         env?: Record<string, string>;
         enabled?: boolean;
+        bearer_token?: string;
+        headers?: Record<string, string>;
+        oauth_client_id?: string;
+        oauth_client_secret?: string;
+        oauth_scopes?: string[];
+        oauth_callback_port?: number;
+        tool_states?: Record<string, boolean>;
       };
       const s = mockMcpServers.get(p.server_id);
       if (!s) return { server: null as unknown as McpServer };
@@ -1107,6 +1136,13 @@ function mockHandle(
       if (p.url !== undefined) s.url = p.url;
       if (p.env !== undefined) s.env = p.env;
       if (p.enabled !== undefined) s.enabled = p.enabled;
+      if (p.bearer_token !== undefined) s.bearer_token = p.bearer_token;
+      if (p.headers !== undefined) s.headers = p.headers;
+      if (p.oauth_client_id !== undefined) s.oauth_client_id = p.oauth_client_id;
+      if (p.oauth_client_secret !== undefined) s.oauth_client_secret = p.oauth_client_secret;
+      if (p.oauth_scopes !== undefined) s.oauth_scopes = p.oauth_scopes;
+      if (p.oauth_callback_port !== undefined) s.oauth_callback_port = p.oauth_callback_port;
+      if (p.tool_states !== undefined) s.tool_states = p.tool_states;
       s.updated_at = new Date().toISOString();
       return { server: s } satisfies McpServerResult;
     }

@@ -1,4 +1,4 @@
-"""MCP server management IPC handlers (v0.11.0 Milestone 1).
+"""MCP server management IPC handlers (v0.11.0).
 
 Provides ``mcp.*`` CRUD over persisted server configs plus runtime
 introspection and invocation of attached MCP servers.
@@ -37,6 +37,75 @@ def _server_row_with_status(row: dict[str, Any], registry: MCPRegistry | None) -
     }
 
 
+def _config_from_row(row: dict[str, Any]) -> MCPServerConfig:
+    """Build a runtime :class:`MCPServerConfig` from a persisted DAO row."""
+    return MCPServerConfig(
+        name=row["name"],
+        transport=row.get("transport") or "stdio",
+        command=row.get("command"),
+        url=row.get("url"),
+        env=row.get("env"),
+        cwd=row.get("cwd"),
+        headers=row.get("headers"),
+        bearer_token=row.get("bearer_token"),
+        oauth_client_id=row.get("oauth_client_id"),
+        oauth_client_secret=row.get("oauth_client_secret"),
+        oauth_scopes=row.get("oauth_scopes"),
+        oauth_callback_port=row.get("oauth_callback_port"),
+        tool_states=row.get("tool_states"),
+        enabled=bool(row.get("enabled", True)),
+    )
+
+
+def _validate_opt_string(value: Any, name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise HandlerError(INVALID_PARAMS, f"'{name}' must be a string")
+    return value
+
+
+def _validate_opt_dict_str(value: Any, name: str) -> dict[str, str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+        raise HandlerError(INVALID_PARAMS, f"'{name}' must be an object with string values")
+    return value
+
+
+def _validate_opt_list_str(value: Any, name: str) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise HandlerError(INVALID_PARAMS, f"'{name}' must be a list of strings")
+    return value
+
+
+def _validate_opt_dict_bool(value: Any, name: str) -> dict[str, bool] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not all(isinstance(k, str) and isinstance(v, bool) for k, v in value.items()):
+        raise HandlerError(INVALID_PARAMS, f"'{name}' must be an object with boolean values")
+    return value
+
+
+def _validate_opt_int(value: Any, name: str) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int):
+        raise HandlerError(INVALID_PARAMS, f"'{name}' must be an integer")
+    return value
+
+
+def _validate_transport_command_url(transport: str, command: Any, url: Any) -> None:
+    if transport not in {"stdio", "sse"}:
+        raise HandlerError(INVALID_PARAMS, "'transport' must be 'stdio' or 'sse'")
+    if transport == "stdio" and command is not None and (not isinstance(command, list) or not command):
+        raise HandlerError(INVALID_PARAMS, "'command' must be a non-empty argv list for stdio transport")
+    if transport == "sse" and url is not None and (not isinstance(url, str) or not url):
+        raise HandlerError(INVALID_PARAMS, "'url' must be a non-empty string for sse transport")
+
+
 async def handle_mcp_list_servers(_params: Any, ctx: Context) -> None:
     """``mcp.list_servers`` — return persisted server configs + live status."""
     try:
@@ -61,15 +130,21 @@ async def handle_mcp_add_server(params: Any, ctx: Context) -> None:
             raise HandlerError(INVALID_PARAMS, "'id' or 'name' must be a non-empty string")
         if not isinstance(name, str) or not name:
             raise HandlerError(INVALID_PARAMS, "'name' must be a non-empty string")
+
         transport = p.get("transport", "stdio")
-        if transport not in {"stdio", "sse"}:
-            raise HandlerError(INVALID_PARAMS, "'transport' must be 'stdio' or 'sse'")
         command = p.get("command")
-        if transport == "stdio" and (not isinstance(command, list) or not command):
-            raise HandlerError(INVALID_PARAMS, "'command' must be a non-empty argv list for stdio transport")
         url = p.get("url")
-        env = p.get("env")
+        _validate_transport_command_url(transport, command, url)
+
+        env = _validate_opt_dict_str(p.get("env"), "env")
         enabled = bool(p.get("enabled", True))
+        bearer_token = _validate_opt_string(p.get("bearer_token"), "bearer_token")
+        headers = _validate_opt_dict_str(p.get("headers"), "headers")
+        oauth_client_id = _validate_opt_string(p.get("oauth_client_id"), "oauth_client_id")
+        oauth_client_secret = _validate_opt_string(p.get("oauth_client_secret"), "oauth_client_secret")
+        oauth_scopes = _validate_opt_list_str(p.get("oauth_scopes"), "oauth_scopes")
+        oauth_callback_port = _validate_opt_int(p.get("oauth_callback_port"), "oauth_callback_port")
+        tool_states = _validate_opt_dict_bool(p.get("tool_states"), "tool_states")
 
         dao = _dao()
         existing = await dao.get(server_id)
@@ -84,16 +159,18 @@ async def handle_mcp_add_server(params: Any, ctx: Context) -> None:
             url=url,
             env=env,
             enabled=enabled,
+            bearer_token=bearer_token,
+            headers=headers,
+            oauth_client_id=oauth_client_id,
+            oauth_client_secret=oauth_client_secret,
+            oauth_scopes=oauth_scopes,
+            oauth_callback_port=oauth_callback_port,
+            tool_states=tool_states,
         )
 
         registry = _registry()
-        if registry is not None and enabled and transport == "stdio":
-            cfg = MCPServerConfig(
-                name=name,
-                command=command,
-                env=env,
-                enabled=True,
-            )
+        if registry is not None and enabled:
+            cfg = _config_from_row(row)
             try:
                 await registry.add_server(cfg)
             except Exception as exc:  # noqa: BLE001 — fail-open, still persisted
@@ -133,7 +210,7 @@ async def handle_mcp_remove_server(params: Any, ctx: Context) -> None:
 async def handle_mcp_update_server(params: Any, ctx: Context) -> None:
     """``mcp.update_server`` — update a persisted server config.
 
-    Re-attaches the server if the command/env changes and it is enabled.
+    Re-attaches the server if any runtime field changes and it is enabled.
     """
     try:
         p = params if isinstance(params, dict) else {}
@@ -145,25 +222,33 @@ async def handle_mcp_update_server(params: Any, ctx: Context) -> None:
         if existing is None:
             raise HandlerError(INVALID_PARAMS, f"unknown server_id: {server_id!r}")
 
-        name = p.get("name")
-        transport = p.get("transport")
+        transport = p.get("transport", existing.get("transport", "stdio"))
         command = p.get("command")
         url = p.get("url")
-        env = p.get("env")
+        _validate_transport_command_url(transport, command, url)
+
+        name = _validate_opt_string(p.get("name"), "name")
+        env = _validate_opt_dict_str(p.get("env"), "env")
         enabled = p.get("enabled")
         if enabled is not None:
             enabled = bool(enabled)
-
-        if transport is not None and transport not in {"stdio", "sse"}:
-            raise HandlerError(INVALID_PARAMS, "'transport' must be 'stdio' or 'sse'")
-        if command is not None and (not isinstance(command, list) or not command):
-            raise HandlerError(INVALID_PARAMS, "'command' must be a non-empty argv list")
-        if env is not None and not isinstance(env, dict):
-            raise HandlerError(INVALID_PARAMS, "'env' must be a JSON object")
+        bearer_token = _validate_opt_string(p.get("bearer_token"), "bearer_token")
+        headers = _validate_opt_dict_str(p.get("headers"), "headers")
+        oauth_client_id = _validate_opt_string(p.get("oauth_client_id"), "oauth_client_id")
+        oauth_client_secret = _validate_opt_string(p.get("oauth_client_secret"), "oauth_client_secret")
+        oauth_scopes = _validate_opt_list_str(p.get("oauth_scopes"), "oauth_scopes")
+        oauth_callback_port = _validate_opt_int(p.get("oauth_callback_port"), "oauth_callback_port")
+        tool_states = _validate_opt_dict_bool(p.get("tool_states"), "tool_states")
 
         registry = _registry()
         # If runtime fields change, detach first so we can re-attach with new config.
-        should_reattach = command is not None or env is not None or enabled is not None
+        runtime_fields = (
+            command, url, env, enabled, transport,
+            bearer_token, headers,
+            oauth_client_id, oauth_client_secret, oauth_scopes, oauth_callback_port,
+            tool_states,
+        )
+        should_reattach = any(field is not None for field in runtime_fields)
         if registry is not None and should_reattach:
             await registry.remove_server(existing["name"])
 
@@ -175,15 +260,17 @@ async def handle_mcp_update_server(params: Any, ctx: Context) -> None:
             url=url,
             env=env,
             enabled=enabled,
+            bearer_token=bearer_token,
+            headers=headers,
+            oauth_client_id=oauth_client_id,
+            oauth_client_secret=oauth_client_secret,
+            oauth_scopes=oauth_scopes,
+            oauth_callback_port=oauth_callback_port,
+            tool_states=tool_states,
         )
 
-        if registry is not None and row and row.get("enabled") and row.get("transport") == "stdio":
-            cfg = MCPServerConfig(
-                name=row["name"],
-                command=row.get("command") or [],
-                env=row.get("env"),
-                enabled=True,
-            )
+        if registry is not None and row and row.get("enabled"):
+            cfg = _config_from_row(row)
             try:
                 await registry.add_server(cfg)
             except Exception as exc:  # noqa: BLE001
