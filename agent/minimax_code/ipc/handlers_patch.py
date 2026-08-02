@@ -132,9 +132,7 @@ def parse_unified_diff(diff_text: str) -> dict[str, Any]:
         if raw.startswith("+++ "):
             current["new_path"] = _strip_prefix(raw[4:].split("\t", 1)[0].strip())
             current["path"] = (
-                current["new_path"]
-                if current["new_path"] != "/dev/null"
-                else current["old_path"]
+                current["new_path"] if current["new_path"] != "/dev/null" else current["old_path"]
             )
             continue
 
@@ -311,9 +309,7 @@ def _full_file_patch(file: dict[str, Any]) -> str:
     if file.get("binary"):
         raise HandlerError(INVALID_PARAMS, "binary files do not support patch operations")
     if file.get("status") == "renamed":
-        raise HandlerError(
-            INVALID_PARAMS, "renamed files do not support patch operations yet"
-        )
+        raise HandlerError(INVALID_PARAMS, "renamed files do not support patch operations yet")
 
     old_path = str(file.get("old_path") or file.get("path") or "")
     new_path = str(file.get("new_path") or file.get("path") or "")
@@ -359,9 +355,7 @@ def _find_file(parsed: dict[str, Any], *, file_path: str) -> dict[str, Any]:
         if file.get("binary"):
             raise HandlerError(INVALID_PARAMS, "binary files do not support file operations")
         if file.get("status") == "renamed":
-            raise HandlerError(
-                INVALID_PARAMS, "renamed files do not support file operations yet"
-            )
+            raise HandlerError(INVALID_PARAMS, "renamed files do not support file operations yet")
         return file
     raise HandlerError(INVALID_PARAMS, "file_path was not found in the current diff")
 
@@ -545,9 +539,7 @@ def register_patch_handlers(server: Any) -> None:
             cwd = _resolve_cwd(p)
             scope = p.get("scope", "working")
             if not isinstance(scope, str):
-                raise HandlerError(
-                    INVALID_PARAMS, "'scope' must be a string when provided"
-                )
+                raise HandlerError(INVALID_PARAMS, "'scope' must be a string when provided")
             if scope not in {"working", "staged"}:
                 raise HandlerError(
                     INVALID_PARAMS,
@@ -578,9 +570,7 @@ def register_patch_handlers(server: Any) -> None:
             cwd = _resolve_cwd(p)
             scope = p.get("scope", "working")
             if not isinstance(scope, str):
-                raise HandlerError(
-                    INVALID_PARAMS, "'scope' must be a string when provided"
-                )
+                raise HandlerError(INVALID_PARAMS, "'scope' must be a string when provided")
             if scope not in {"working", "staged"}:
                 raise HandlerError(
                     INVALID_PARAMS,
@@ -617,24 +607,112 @@ def register_patch_handlers(server: Any) -> None:
             logger.exception("patch.apply_all failed")
             await ctx.reply_error(_GIT_ERROR, "patch.apply_all failed")
 
+    async def handle_revert_file(params: Any, ctx: Context) -> None:
+        try:
+            p = params if isinstance(params, dict) else {}
+            cwd = _resolve_cwd(p)
+            scope = p.get("scope", "working")
+            if not isinstance(scope, str):
+                raise HandlerError(INVALID_PARAMS, "'scope' must be a string when provided")
+            if scope not in {"working", "staged"}:
+                raise HandlerError(
+                    INVALID_PARAMS,
+                    "revert_file only supports scope 'working' or 'staged'",
+                )
+            file_path = _required_str(p, "file_path")
+            diff_text = _run_git(_operation_diff_args(scope), cwd=cwd)
+            file = _find_file(parse_unified_diff(diff_text), file_path=file_path)
+            patch = _full_file_patch(file)
+            check_args = ["apply", "--reverse", "--check", "--whitespace=nowarn", "-"]
+            run_args = ["apply", "--reverse", "--whitespace=nowarn", "-"]
+            if scope == "staged":
+                check_args.insert(1, "--cached")
+                run_args.insert(1, "--cached")
+            _run_git_with_input(check_args, cwd=cwd, stdin_text=patch)
+            _run_git_with_input(run_args, cwd=cwd, stdin_text=patch)
+            await ctx.reply(
+                {
+                    "ok": True,
+                    "operation": "revert_file",
+                    "scope": scope,
+                    "file_path": file_path,
+                }
+            )
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception:
+            logger.exception("patch.revert_file failed")
+            await ctx.reply_error(_GIT_ERROR, "patch.revert_file failed")
+
+    async def handle_revert_all(params: Any, ctx: Context) -> None:
+        try:
+            p = params if isinstance(params, dict) else {}
+            cwd = _resolve_cwd(p)
+            scope = p.get("scope", "working")
+            if not isinstance(scope, str):
+                raise HandlerError(INVALID_PARAMS, "'scope' must be a string when provided")
+            if scope not in {"working", "staged"}:
+                raise HandlerError(
+                    INVALID_PARAMS,
+                    "revert_all only supports scope 'working' or 'staged'",
+                )
+            diff_text = _run_git(_operation_diff_args(scope), cwd=cwd)
+            parsed = parse_unified_diff(diff_text)
+            reverted: list[str] = []
+            failed: list[dict[str, Any]] = []
+            for file in parsed.get("files", []):
+                if file.get("binary") or file.get("status") == "renamed":
+                    continue
+                path = str(file.get("path") or "")
+                if not path:
+                    continue
+                try:
+                    patch = _full_file_patch(file)
+                    check_args = [
+                        "apply",
+                        "--reverse",
+                        "--check",
+                        "--whitespace=nowarn",
+                        "-",
+                    ]
+                    run_args = ["apply", "--reverse", "--whitespace=nowarn", "-"]
+                    if scope == "staged":
+                        check_args.insert(1, "--cached")
+                        run_args.insert(1, "--cached")
+                    _run_git_with_input(check_args, cwd=cwd, stdin_text=patch)
+                    _run_git_with_input(run_args, cwd=cwd, stdin_text=patch)
+                    reverted.append(path)
+                except HandlerError as exc:
+                    failed.append({"file_path": path, "error": exc.message})
+            await ctx.reply(
+                {
+                    "ok": len(failed) == 0,
+                    "operation": "revert_all",
+                    "scope": scope,
+                    "applied": reverted,
+                    "failed": failed,
+                }
+            )
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception:
+            logger.exception("patch.revert_all failed")
+            await ctx.reply_error(_GIT_ERROR, "patch.revert_all failed")
+
     async def handle_save_snapshot(params: Any, ctx: Context) -> None:
         try:
             p = params if isinstance(params, dict) else {}
             cwd = _resolve_cwd(p)
             status_text = _run_git(["status", "--porcelain"], cwd=cwd)
             if not status_text.strip():
-                await ctx.reply(
-                    {"ok": True, "snapshot_ref": None, "clean": True}
-                )
+                await ctx.reply({"ok": True, "snapshot_ref": None, "clean": True})
                 return
             _run_git(
                 ["stash", "push", "-u", "-m", "MiniMax Code patch snapshot"],
                 cwd=cwd,
             )
             sha = _run_git(["rev-parse", "-q", "refs/stash"], cwd=cwd).strip()
-            await ctx.reply(
-                {"ok": True, "snapshot_ref": sha, "clean": False}
-            )
+            await ctx.reply({"ok": True, "snapshot_ref": sha, "clean": False})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception:
@@ -645,7 +723,9 @@ def register_patch_handlers(server: Any) -> None:
     server.register("patch.apply_hunk", handle_apply_hunk)
     server.register("patch.revert_hunk", handle_revert_hunk)
     server.register("patch.apply_file", handle_apply_file)
+    server.register("patch.revert_file", handle_revert_file)
     server.register("patch.apply_all", handle_apply_all)
+    server.register("patch.revert_all", handle_revert_all)
     server.register("patch.save_snapshot", handle_save_snapshot)
 
 

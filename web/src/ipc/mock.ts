@@ -33,9 +33,13 @@ import type {
   Message as ProtocolMessage,
   NotificationEntry,
   OrchestrationMode,
+  PatchApplyAllResult,
+  PatchFileOperationParams,
+  PatchFileOperationResult,
   PatchHunkOperationParams,
   PatchHunkOperationResult,
   PatchPreviewResult,
+  PatchSaveSnapshotResult,
   PermissionRule,
   PluginInfo,
   PluginInfoResult,
@@ -821,6 +825,52 @@ function mockHandle(
         file_path: p.file_path,
         hunk_index: p.hunk_index,
       } satisfies PatchHunkOperationResult;
+    }
+
+    case "patch.apply_file": {
+      const p = params as PatchFileOperationParams;
+      return {
+        ok: true,
+        operation: "apply_file",
+        scope: p.scope ?? "working",
+        file_path: p.file_path,
+      } satisfies PatchFileOperationResult;
+    }
+
+    case "patch.revert_file": {
+      const p = params as PatchFileOperationParams;
+      return {
+        ok: true,
+        operation: "revert_file",
+        scope: p.scope ?? "working",
+        file_path: p.file_path,
+      } satisfies PatchFileOperationResult;
+    }
+
+    case "patch.apply_all": {
+      const p = params as { scope?: string } | undefined;
+      return {
+        ok: true,
+        operation: "apply_all",
+        scope: p?.scope ?? "working",
+        applied: [],
+        failed: [],
+      } satisfies PatchApplyAllResult;
+    }
+
+    case "patch.revert_all": {
+      const p = params as { scope?: string } | undefined;
+      return {
+        ok: true,
+        operation: "revert_all",
+        scope: p?.scope ?? "working",
+        applied: [],
+        failed: [],
+      } satisfies PatchApplyAllResult;
+    }
+
+    case "patch.save_snapshot": {
+      return { ok: true, snapshot_ref: null, clean: true } satisfies PatchSaveSnapshotResult;
     }
 
     case "terminal.start": {

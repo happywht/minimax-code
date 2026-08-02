@@ -8,9 +8,10 @@
  * down to the cards.
  */
 import { useEffect, useRef, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { Archive, CheckCheck, RefreshCw, X } from "lucide-react";
+import { toast } from "../layout/ErrorBoundary";
 import { usePatchPreviewStore } from "../../stores";
-import { IconButton } from "../../ui";
+import { Button, IconButton } from "../../ui";
 import type { PatchFile, PatchHunk } from "../../types/ipc";
 import { PatchFileCard } from "./PatchFileCard";
 import {
@@ -32,10 +33,16 @@ export function PatchPreviewPanel({
   const result = usePatchPreviewStore((s) => s.result);
   const loading = usePatchPreviewStore((s) => s.loading);
   const error = usePatchPreviewStore((s) => s.error);
+  const globalBusy = usePatchPreviewStore((s) => s.globalBusy);
   const setScope = usePatchPreviewStore((s) => s.setScope);
   const refresh = usePatchPreviewStore((s) => s.refresh);
   const applyHunk = usePatchPreviewStore((s) => s.applyHunk);
   const revertHunk = usePatchPreviewStore((s) => s.revertHunk);
+  const applyFile = usePatchPreviewStore((s) => s.applyFile);
+  const revertFile = usePatchPreviewStore((s) => s.revertFile);
+  const applyAll = usePatchPreviewStore((s) => s.applyAll);
+  const revertAll = usePatchPreviewStore((s) => s.revertAll);
+  const saveSnapshot = usePatchPreviewStore((s) => s.saveSnapshot);
   const fileRefs = useRef<Record<string, HTMLLIElement | null>>({});
   const [activeFile, setActiveFile] = useState<string | null>(null);
   const [hunkDecisions, setHunkDecisions] = useState<Record<string, HunkDecision>>({});
@@ -114,6 +121,53 @@ export function PatchPreviewPanel({
     void refresh(opts);
   };
 
+  const runFileOperation = async (file: PatchFile, operation: "approve" | "reject") => {
+    if (scope === "branch" || file.binary) return;
+    const keys = file.hunks.map((h, i) => hunkKey(file, h, i));
+    keys.forEach((key) => decideHunk(key, operation === "approve" ? "applying" : "rejecting"));
+    try {
+      if (operation === "approve") {
+        await applyFile({ scope, file_path: file.path });
+        keys.forEach((key) => decideHunk(key, "approved"));
+      } else {
+        await revertFile({ scope, file_path: file.path });
+        keys.forEach((key) => decideHunk(key, "rejected"));
+      }
+      await refresh();
+    } catch (err) {
+      keys.forEach((key) => failHunk(key, err));
+    }
+  };
+
+  const runGlobalOperation = async (operation: "apply_all" | "revert_all" | "save_snapshot") => {
+    if (scope === "branch" && operation !== "save_snapshot") return;
+    try {
+      if (operation === "save_snapshot") {
+        const res = await saveSnapshot();
+        if (res.clean) {
+          toast.success("Working tree is clean — no snapshot needed");
+        } else {
+          toast.success("Snapshot saved", res.snapshot_ref ?? undefined);
+        }
+        return;
+      }
+      const res = operation === "apply_all" ? await applyAll({ scope }) : await revertAll({ scope });
+      if (!res.ok || res.failed.length > 0) {
+        const detail = res.failed.map((f) => `${f.file_path}: ${f.error}`).join("; ");
+        toast.error("Patch operation partially failed", detail || "Some files could not be processed");
+      } else {
+        toast.success(operation === "apply_all" ? "All changes applied" : "All changes reverted");
+      }
+      refreshAndReset();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Patch operation failed", message);
+    }
+  };
+
+  const canApplyAll = scope === "working" && files.length > 0 && !globalBusy;
+  const canRevertAll = scope !== "branch" && files.length > 0 && !globalBusy;
+
   return (
     <div data-testid={testId} className="px-3 pb-3">
       <div className="flex items-center justify-between gap-2">
@@ -151,6 +205,42 @@ export function PatchPreviewPanel({
         >
           <RefreshCw className={loading ? "animate-spin" : undefined} />
         </IconButton>
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          variant="subtle"
+          data-testid={`${testId}-snapshot`}
+          onClick={() => void runGlobalOperation("save_snapshot")}
+          disabled={globalBusy}
+          className="gap-1"
+        >
+          <Archive size={12} />
+          Snapshot
+        </Button>
+        <Button
+          size="sm"
+          variant="subtle"
+          data-testid={`${testId}-apply-all`}
+          onClick={() => void runGlobalOperation("apply_all")}
+          disabled={!canApplyAll}
+          className="gap-1"
+        >
+          <CheckCheck size={12} />
+          Apply all
+        </Button>
+        <Button
+          size="sm"
+          variant="subtle"
+          data-testid={`${testId}-revert-all`}
+          onClick={() => void runGlobalOperation("revert_all")}
+          disabled={!canRevertAll}
+          className="gap-1"
+        >
+          <X size={12} />
+          Revert all
+        </Button>
       </div>
 
       {error && (
@@ -228,6 +318,8 @@ export function PatchPreviewPanel({
               onDecide={decideHunk}
               onApprove={(hunk, index) => void runHunkOperation(file, hunk, index, "approve")}
               onReject={(hunk, index) => void runHunkOperation(file, hunk, index, "reject")}
+              onApproveFile={(f) => void runFileOperation(f, "approve")}
+              onRejectFile={(f) => void runFileOperation(f, "reject")}
               itemRef={(node) => {
                 fileRefs.current[fileKey(file)] = node;
               }}

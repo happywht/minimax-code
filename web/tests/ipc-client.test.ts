@@ -134,6 +134,40 @@ describe("TypedIPC wrappers", () => {
     expect(r.files).toEqual([]);
   });
 
+  it("patchApplyFile / patchRevertFile / patchApplyAll / patchRevertAll return ok in mock mode", async () => {
+    const client = new IPCClient({ forceMock: true });
+    const t = bindTypedIPC(client);
+
+    const applyFile = await t.patchApplyFile({ scope: "working", file_path: "a.py" });
+    expect(applyFile).toEqual({
+      ok: true,
+      operation: "apply_file",
+      scope: "working",
+      file_path: "a.py",
+    });
+
+    const revertFile = await t.patchRevertFile({ scope: "working", file_path: "a.py" });
+    expect(revertFile).toEqual({
+      ok: true,
+      operation: "revert_file",
+      scope: "working",
+      file_path: "a.py",
+    });
+
+    const applyAll = await t.patchApplyAll({ scope: "working" });
+    expect(applyAll).toMatchObject({ ok: true, operation: "apply_all", scope: "working" });
+
+    const revertAll = await t.patchRevertAll({ scope: "working" });
+    expect(revertAll).toMatchObject({ ok: true, operation: "revert_all", scope: "working" });
+  });
+
+  it("patchSaveSnapshot returns clean in mock mode", async () => {
+    const client = new IPCClient({ forceMock: true });
+    const t = bindTypedIPC(client);
+    const r = await t.patchSaveSnapshot();
+    expect(r).toEqual({ ok: true, snapshot_ref: null, clean: true });
+  });
+
   it("listJobs returns an empty array by default", async () => {
     const client = new IPCClient({ forceMock: true });
     const t = bindTypedIPC(client);

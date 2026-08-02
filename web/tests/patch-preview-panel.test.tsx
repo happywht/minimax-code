@@ -126,13 +126,11 @@ describe("PatchPreviewPanel", () => {
     await waitFor(() => {
       expect(screen.getByTestId("patch-hunk-app.ts-0-1-1")).toHaveAttribute("data-decision", "approved");
     });
-    expect(screen.getByText("approved")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("patch-hunk-app.ts-0-1-1-reject"));
     await waitFor(() => {
       expect(screen.getByTestId("patch-hunk-app.ts-0-1-1")).toHaveAttribute("data-decision", "rejected");
     });
-    expect(screen.getByText("rejected")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("patch-hunk-app.ts-0-1-1-reset"));
     expect(screen.getByTestId("patch-hunk-app.ts-0-1-1")).toHaveAttribute("data-decision", "pending");

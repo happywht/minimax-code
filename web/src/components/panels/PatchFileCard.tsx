@@ -2,7 +2,9 @@
  * PatchFileCard — one changed file inside the patch preview: header
  * (path, status badge, +/- counts) plus its hunk cards.
  */
-import { Badge, type BadgeTone } from "../../ui";
+import { useMemo, useState } from "react";
+import { Check, Loader2, X } from "lucide-react";
+import { Badge, IconButton, type BadgeTone } from "../../ui";
 import type { PatchFile, PatchHunk } from "../../types/ipc";
 import { PatchHunkCard } from "./PatchHunkCard";
 import { hunkKey, type DiffScope, type HunkDecision } from "./patchPreviewShared";
@@ -27,6 +29,8 @@ export interface PatchFileCardProps {
   onDecide: (key: string, decision: HunkDecision | null) => void;
   onApprove: (hunk: PatchHunk, index: number) => void;
   onReject: (hunk: PatchHunk, index: number) => void;
+  onApproveFile: (file: PatchFile) => void;
+  onRejectFile: (file: PatchFile) => void;
   itemRef: (node: HTMLLIElement | null) => void;
 }
 
@@ -39,8 +43,35 @@ export function PatchFileCard({
   onDecide,
   onApprove,
   onReject,
+  onApproveFile,
+  onRejectFile,
   itemRef,
 }: PatchFileCardProps): JSX.Element {
+  const [fileBusy, setFileBusy] = useState(false);
+  const fileDecision = useMemo(() => {
+    if (file.binary || file.hunks.length === 0) return null;
+    const hunkStates = file.hunks.map((h, i) => decisions[hunkKey(file, h, i)]);
+    if (hunkStates.every((d) => d === "approved")) return "approved";
+    if (hunkStates.every((d) => d === "rejected")) return "rejected";
+    if (hunkStates.some((d) => d === "applying" || d === "rejecting")) return "busy";
+    if (hunkStates.some((d) => d === "error")) return "error";
+    return null;
+  }, [file, decisions]);
+
+  const runFileOperation = async (operation: "approve" | "reject") => {
+    if (scope === "branch" || file.binary) return;
+    setFileBusy(true);
+    try {
+      if (operation === "approve") {
+        await onApproveFile(file);
+      } else {
+        await onRejectFile(file);
+      }
+    } finally {
+      setFileBusy(false);
+    }
+  };
+
   return (
     <li
       ref={itemRef}
@@ -62,9 +93,40 @@ export function PatchFileCard({
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
+          {fileDecision && fileDecision !== "busy" && (
+            <Badge tone={fileDecision === "approved" ? "success" : fileDecision === "rejected" ? "error" : "neutral"}>
+              {fileDecision}
+            </Badge>
+          )}
           <StatusBadge status={file.status} />
           <span className="font-mono text-[11px] text-status-success">+{file.additions}</span>
           <span className="font-mono text-[11px] text-status-error">-{file.deletions}</span>
+          {!file.binary && scope !== "branch" && (
+            <>
+              <IconButton
+                size="sm"
+                data-testid={`patch-file-card-${file.path}-approve`}
+                onClick={() => void runFileOperation("approve")}
+                disabled={fileBusy || scope !== "working"}
+                className="h-5 w-5 hover:bg-[var(--status-success-subtle)] hover:text-status-success"
+                title={scope === "working" ? "Approve all hunks in this file" : "Only working files can be approved"}
+                aria-label="Approve all hunks in this file"
+              >
+                {fileBusy ? <Loader2 className="animate-spin" /> : <Check />}
+              </IconButton>
+              <IconButton
+                size="sm"
+                data-testid={`patch-file-card-${file.path}-reject`}
+                onClick={() => void runFileOperation("reject")}
+                disabled={fileBusy}
+                className="h-5 w-5 hover:bg-[var(--status-error-subtle)] hover:text-status-error"
+                title={scope === "staged" ? "Unstage all hunks in this file" : "Reject all hunks in this file"}
+                aria-label={scope === "staged" ? "Unstage all hunks in this file" : "Reject all hunks in this file"}
+              >
+                {fileBusy ? <Loader2 className="animate-spin" /> : <X />}
+              </IconButton>
+            </>
+          )}
         </div>
       </div>
 

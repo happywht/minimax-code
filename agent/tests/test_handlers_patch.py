@@ -23,9 +23,7 @@ def _git_available() -> bool:
     return shutil.which("git") is not None
 
 
-pytestmark = pytest.mark.skipif(
-    not _git_available(), reason="git binary required for these tests"
-)
+pytestmark = pytest.mark.skipif(not _git_available(), reason="git binary required for these tests")
 
 GIT_ERROR = -32000
 _NOT_A_REPO_CEILING = Path(tempfile.mkdtemp(prefix="patch_not_a_repo_"))
@@ -192,3 +190,41 @@ async def test_apply_file_missing_file_errors() -> None:
         assert "not found" in message.lower()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_revert_file_success(repo: Path) -> None:
+    edits = {"a.py": "def a():\n    return 2\n"}
+    _write_working_edits(repo, edits)
+
+    handler, ctx = _make_handler("patch.revert_file")
+    await handler({"cwd": str(repo), "scope": "working", "file_path": "a.py"}, ctx)
+
+    assert ctx.reply_error_payload is None, ctx.reply_error_payload
+    payload = ctx.reply_payload
+    assert payload == {
+        "ok": True,
+        "operation": "revert_file",
+        "scope": "working",
+        "file_path": "a.py",
+    }
+    assert (repo / "a.py").read_text(encoding="utf-8") == "def a():\n    return 1\n"
+
+
+@pytest.mark.asyncio
+async def test_revert_all_success(repo: Path) -> None:
+    edits = {"a.py": "def a():\n    return 2\n", "b.py": "def b():\n    return 2\n"}
+    _write_working_edits(repo, edits)
+
+    handler, ctx = _make_handler("patch.revert_all")
+    await handler({"cwd": str(repo), "scope": "working"}, ctx)
+
+    assert ctx.reply_error_payload is None, ctx.reply_error_payload
+    payload = ctx.reply_payload
+    assert payload["ok"] is True
+    assert payload["operation"] == "revert_all"
+    assert payload["scope"] == "working"
+    assert sorted(payload["applied"]) == ["a.py", "b.py"]
+    assert payload["failed"] == []
+    assert (repo / "a.py").read_text(encoding="utf-8") == "def a():\n    return 1\n"
+    assert (repo / "b.py").read_text(encoding="utf-8") == "def b():\n    return 1\n"

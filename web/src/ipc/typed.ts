@@ -42,9 +42,13 @@ import type {
   ListWorkflowsResult,
   NotificationEntry,
   OrchestrationMode,
+  PatchApplyAllResult,
+  PatchFileOperationParams,
+  PatchFileOperationResult,
   PatchHunkOperationParams,
   PatchHunkOperationResult,
   PatchPreviewResult,
+  PatchSaveSnapshotResult,
   PermissionRule,
   PluginInfoResult,
   PluginReloadResult,
@@ -295,6 +299,11 @@ export interface TypedIPC {
   patchPreview(opts?: { scope?: "staged" | "branch" | "working"; ref?: string }): Promise<PatchPreviewResult>;
   patchApplyHunk(opts: PatchHunkOperationParams): Promise<PatchHunkOperationResult>;
   patchRevertHunk(opts: PatchHunkOperationParams): Promise<PatchHunkOperationResult>;
+  patchApplyFile(opts: PatchFileOperationParams): Promise<PatchFileOperationResult>;
+  patchRevertFile(opts: PatchFileOperationParams): Promise<PatchFileOperationResult>;
+  patchApplyAll(opts?: { scope?: "staged" | "working" }): Promise<PatchApplyAllResult>;
+  patchRevertAll(opts?: { scope?: "staged" | "working" }): Promise<PatchApplyAllResult>;
+  patchSaveSnapshot(): Promise<PatchSaveSnapshotResult>;
   startTerminal(opts: {
     command: string;
     cwd?: string;
@@ -698,6 +707,11 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     patchPreview: (opts) => client.request<PatchPreviewResult>("patch.preview", opts ?? {}),
     patchApplyHunk: (opts) => client.request<PatchHunkOperationResult>("patch.apply_hunk", opts),
     patchRevertHunk: (opts) => client.request<PatchHunkOperationResult>("patch.revert_hunk", opts),
+    patchApplyFile: (opts) => client.request<PatchFileOperationResult>("patch.apply_file", opts),
+    patchRevertFile: (opts) => client.request<PatchFileOperationResult>("patch.revert_file", opts),
+    patchApplyAll: (opts) => client.request<PatchApplyAllResult>("patch.apply_all", opts ?? {}),
+    patchRevertAll: (opts) => client.request<PatchApplyAllResult>("patch.revert_all", opts ?? {}),
+    patchSaveSnapshot: () => client.request<PatchSaveSnapshotResult>("patch.save_snapshot", {}),
     startTerminal: (opts) => client.request<TerminalStartResult>("terminal.start", opts),
     readTerminal: (opts) => client.request<TerminalReadResult>("terminal.read", opts),
     stopTerminal: (sessionId) => client.request<TerminalStartResult>("terminal.stop", { session_id: sessionId }),

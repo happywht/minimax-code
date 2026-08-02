@@ -199,6 +199,11 @@ on the next `readline() == ""`.
 | `patch.preview`            | req/res   | Return structured file/hunk preview for a git diff scope. |
 | `patch.apply_hunk`         | req/res   | Stage one working-tree hunk after validating the current diff. |
 | `patch.revert_hunk`        | req/res   | Discard one working hunk or unstage one staged hunk. |
+| `patch.apply_file`         | req/res   | Apply all hunks of a single file to the index. |
+| `patch.revert_file`        | req/res   | Revert all hunks of a single file. |
+| `patch.apply_all`          | req/res   | Apply every file in the current scope to the index. |
+| `patch.revert_all`         | req/res   | Revert every file in the current scope. |
+| `patch.save_snapshot`      | req/res   | Stash the current working tree before applying patches. |
 | `terminal.start`           | req/res   | Start a lightweight command session. |
 | `terminal.read`            | req/res   | Read incremental stdout/stderr chunks for a session. |
 | `terminal.stop`            | req/res   | Stop a running command session. |
@@ -473,7 +478,97 @@ Response:
 }
 ```
 
-### 6.4 `terminal.*` — lightweight command sessions
+### 6.4 `patch.apply_file` / `patch.revert_file` — file-level operations
+
+`patch.apply_file` stages every hunk of a single file from the working-tree diff.
+`patch.revert_file` discards every hunk of a single file from the working-tree
+ diff, or unstages every hunk from the staged diff.
+
+Request:
+```json
+{
+  "jsonrpc":"2.0",
+  "id":"patch-file-1",
+  "method":"patch.apply_file",
+  "params":{"scope":"working","file_path":"app.py"}
+}
+```
+
+Response:
+```json
+{
+  "jsonrpc":"2.0",
+  "id":"patch-file-1",
+  "result":{
+    "ok":true,
+    "operation":"apply_file",
+    "scope":"working",
+    "file_path":"app.py"
+  }
+}
+```
+
+### 6.5 `patch.apply_all` / `patch.revert_all` — scope-level operations
+
+`patch.apply_all` applies every file in the current scope to the index.
+`patch.revert_all` reverts every file in the current scope. Both return a
+partial-success result listing every file that succeeded or failed.
+
+Request:
+```json
+{
+  "jsonrpc":"2.0",
+  "id":"patch-all-1",
+  "method":"patch.apply_all",
+  "params":{"scope":"working"}
+}
+```
+
+Response:
+```json
+{
+  "jsonrpc":"2.0",
+  "id":"patch-all-1",
+  "result":{
+    "ok":true,
+    "operation":"apply_all",
+    "scope":"working",
+    "applied":["app.py","utils.py"],
+    "failed":[]
+  }
+}
+```
+
+### 6.6 `patch.save_snapshot` — pre-apply stash
+
+Before applying a large patch, the UI can save a snapshot so the user can
+recover the original working tree. Returns `clean: true` when there is nothing
+to stash.
+
+Request:
+```json
+{
+  "jsonrpc":"2.0",
+  "id":"patch-snap-1",
+  "method":"patch.save_snapshot",
+  "params":{}
+}
+```
+
+Response:
+```json
+{
+  "jsonrpc":"2.0",
+  "id":"patch-snap-1",
+  "result":{
+    "ok":true,
+    "snapshot_ref":"abc123…",
+    "clean":false
+  }
+}
+```
+
+### 6.7 `terminal.*` — lightweight command sessions
 
 `terminal.*` is a command-session runner for the inspector panel. It is
 not a full interactive PTY yet: clients start a command, poll output

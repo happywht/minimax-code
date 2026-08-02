@@ -872,6 +872,32 @@ export interface PatchHunkOperationResult {
   hunk_index: number;
 }
 
+export interface PatchFileOperationParams {
+  scope?: "working" | "staged";
+  file_path: string;
+}
+
+export interface PatchFileOperationResult {
+  ok: true;
+  operation: "apply_file" | "revert_file";
+  scope: string;
+  file_path: string;
+}
+
+export interface PatchApplyAllResult {
+  ok: boolean;
+  operation: "apply_all" | "revert_all";
+  scope: string;
+  applied: string[];
+  failed: Array<{ file_path: string; error: string }>;
+}
+
+export interface PatchSaveSnapshotResult {
+  ok: true;
+  snapshot_ref: string | null;
+  clean: boolean;
+}
+
 export type TerminalStatus = "starting" | "running" | "completed" | "failed" | "cancelled";
 export type TerminalStream = "stdout" | "stderr";
 
