@@ -522,7 +522,7 @@ function mockHandle(
               ...run,
               status: "completed" as const,
               completed_at: completedAt,
-              metadata: { iterations: 1 },
+              metadata: { iterations: 1, memory_count: 0 },
             };
             mockRuns.set(runId, { run: completedRun, steps: [completedStep, finalStep] });
             client._emit(StreamEvent.RunStepCompleted, { run_id: runId, step: completedStep });

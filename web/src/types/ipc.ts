@@ -191,6 +191,8 @@ export interface MessageMetadata {
   tokens_out: number;
   /** v0.11.0: sources harvested from codebase tools used in this turn. */
   sources?: SourceAnnotation[];
+  /** v0.11.0: number of long-term memories auto-extracted from this reply. */
+  memory_count?: number;
 }
 
 /** A scheduled job record. */

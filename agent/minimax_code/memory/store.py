@@ -123,6 +123,7 @@ class MemoriesDAO:
         query: str,
         *,
         project_id: str | None = None,
+        session_id: str | None = None,
         category: str | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
@@ -135,6 +136,9 @@ class MemoriesDAO:
         if project_id is not None:
             where.append("project_id = ?")
             params.append(project_id)
+        if session_id is not None:
+            where.append("session_id = ?")
+            params.append(session_id)
         if category is not None:
             where.append("category = ?")
             params.append(category)

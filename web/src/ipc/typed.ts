@@ -417,7 +417,7 @@ export interface TypedIPC {
   }): Promise<ListMemoriesResult>;
   searchMemories(
     query: string,
-    opts?: { project_id?: string; category?: MemoryCategory; limit?: number },
+    opts?: { project_id?: string; session_id?: string; category?: MemoryCategory; limit?: number },
   ): Promise<ListMemoriesResult>;
   addMemory(opts: {
     content: string;

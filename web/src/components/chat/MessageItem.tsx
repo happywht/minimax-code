@@ -35,7 +35,8 @@ import { MessageStatusBadge } from "./MessageStatusBadge";
 import { ToolCallCard } from "./ToolCallCard";
 import { TurnSummaryRow } from "./TurnSummaryRow";
 import { SourcesPanel } from "./SourcesPanel";
-import { Textarea, Button } from "../../ui";
+import { Brain } from "lucide-react";
+import { Badge, Textarea, Button } from "../../ui";
 
 export interface MessageItemProps {
   message: Message;
@@ -148,6 +149,14 @@ export const MessageItem = React.memo(function MessageItem({
         {message.metadata?.sources && message.metadata.sources.length > 0 && (
           <SourcesPanel sources={message.metadata.sources} />
         )}
+        {isAssistant && message.metadata?.memory_count ? (
+          <div className="mb-1.5 flex items-center gap-1">
+            <Badge tone="accent" data-testid={`message-memory-chip-${message.id}`}>
+              <Brain size={10} />
+              <span>{message.metadata.memory_count} memory saved</span>
+            </Badge>
+          </div>
+        ) : null}
         {showStatus && <MessageStatusBadge messageId={message.id} status={status} />}
         {isEditing ? (
           <div className="flex flex-col gap-2">

@@ -31,7 +31,7 @@ export interface MemoryState {
   }) => Promise<void>;
   search: (
     query: string,
-    opts?: { project_id?: string; category?: MemoryCategory; limit?: number },
+    opts?: { project_id?: string; session_id?: string; category?: MemoryCategory; limit?: number },
   ) => Promise<void>;
   add: (opts: {
     content: string;

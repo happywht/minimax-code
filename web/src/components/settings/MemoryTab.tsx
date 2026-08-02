@@ -38,14 +38,23 @@ export function MemoryTab(): JSX.Element {
 
   const [draftContent, setDraftContent] = useState("");
   const [draftCategory, setDraftCategory] = useState<MemoryCategory>("fact");
+  const [draftConfidence, setDraftConfidence] = useState(1.0);
+  const [filterProjectId, setFilterProjectId] = useState("");
+  const [filterSessionId, setFilterSessionId] = useState("");
+
+  const filterOpts = {
+    project_id: filterProjectId.trim() || undefined,
+    session_id: filterSessionId.trim() || undefined,
+  };
 
   useEffect(() => {
-    if (memories.length === 0 && !searchQuery) void refresh();
+    if (memories.length === 0 && !searchQuery) void refresh(filterOpts);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [memories.length, searchQuery, refresh]);
 
   const handleSearch = (query: string) => {
     setSearchQuery(query);
-    void search(query);
+    void search(query, filterOpts);
   };
 
   const handleAdd = async () => {
@@ -54,11 +63,16 @@ export function MemoryTab(): JSX.Element {
       toast.error("Content required", "Please enter a memory before adding.");
       return;
     }
-    const memory = await add({ content, category: draftCategory });
+    const memory = await add({
+      content,
+      category: draftCategory,
+      confidence: draftConfidence,
+    });
     if (memory) {
       toast.success("Memory added");
       setDraftContent("");
       setDraftCategory("fact");
+      setDraftConfidence(1.0);
     }
   };
 
@@ -93,7 +107,7 @@ export function MemoryTab(): JSX.Element {
             placeholder="e.g. Prefer TypeScript strict mode; always add tests for new IPC handlers…"
             className="min-h-[80px]"
           />
-          <div className="flex items-end gap-2">
+          <div className="flex flex-wrap items-end gap-2">
             <div className="w-40">
               <label htmlFor="memory-category" className="mb-1 block text-[11px] text-ink-2">
                 Category
@@ -111,6 +125,22 @@ export function MemoryTab(): JSX.Element {
                 ))}
               </Select>
             </div>
+            <div className="min-w-[140px] flex-1">
+              <label htmlFor="memory-confidence" className="mb-1 block text-[11px] text-ink-2">
+                Confidence {(draftConfidence * 100).toFixed(0)}%
+              </label>
+              <input
+                id="memory-confidence"
+                data-testid="settings-memory-confidence"
+                type="range"
+                min={0}
+                max={1}
+                step={0.1}
+                value={draftConfidence}
+                onChange={(e) => setDraftConfidence(parseFloat(e.target.value))}
+                className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-surface-3 accent-accent"
+              />
+            </div>
             <Button
               size="sm"
               variant="subtle"
@@ -125,24 +155,48 @@ export function MemoryTab(): JSX.Element {
         </div>
       </Panel>
 
-      <div className="relative">
-        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-2" />
-        <Input
-          data-testid="settings-memory-search"
-          value={searchQuery}
-          onChange={(e) => handleSearch(e.target.value)}
-          placeholder="Search memories…"
-          className="pl-8 pr-8"
-        />
-        {searchQuery && (
-          <IconButton
-            className="absolute right-1 top-1/2 -translate-y-1/2"
-            aria-label="Clear search"
-            onClick={() => handleSearch("")}
-          >
-            <X />
-          </IconButton>
-        )}
+      <div className="space-y-2">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-2" />
+          <Input
+            data-testid="settings-memory-search"
+            value={searchQuery}
+            onChange={(e) => handleSearch(e.target.value)}
+            placeholder="Search memories…"
+            className="pl-8 pr-8"
+          />
+          {searchQuery && (
+            <IconButton
+              className="absolute right-1 top-1/2 -translate-y-1/2"
+              aria-label="Clear search"
+              onClick={() => handleSearch("")}
+            >
+              <X />
+            </IconButton>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <Input
+            data-testid="settings-memory-filter-project"
+            value={filterProjectId}
+            onChange={(e) => {
+              setFilterProjectId(e.target.value);
+              void search(searchQuery, { ...filterOpts, project_id: e.target.value.trim() || undefined });
+            }}
+            placeholder="Filter by project id"
+            className="text-xs"
+          />
+          <Input
+            data-testid="settings-memory-filter-session"
+            value={filterSessionId}
+            onChange={(e) => {
+              setFilterSessionId(e.target.value);
+              void search(searchQuery, { ...filterOpts, session_id: e.target.value.trim() || undefined });
+            }}
+            placeholder="Filter by session id"
+            className="text-xs"
+          />
+        </div>
       </div>
 
       <div className="flex items-center gap-2 text-[11px] text-ink-2">

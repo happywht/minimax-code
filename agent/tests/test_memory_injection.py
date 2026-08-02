@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from minimax_code import app
+from minimax_code.ipc.builtins import _RunRecorder
 from minimax_code.memory import MemoriesDAO, MemoryInjector, build_memory_context
+from minimax_code.storage.dao.messages import MessagesDAO
 from minimax_code.storage.dao.projects import ProjectsDAO
+from minimax_code.storage.dao.runs import AgentRunsDAO
 from minimax_code.storage.dao.sessions import SessionsDAO
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 
@@ -82,3 +87,53 @@ async def test_memory_injector_build_context(async_db: AsyncDatabase) -> None:
         assert "Recall me" in ctx
     finally:
         app._DB_SINGLETON = None
+
+
+@pytest.mark.asyncio
+async def test_run_recorder_extracts_and_persists_memories(async_db: AsyncDatabase) -> None:
+    """Assistant replies are auto-extracted into memories and counted in metadata."""
+    await ProjectsDAO(async_db).create(id="p1", name="Test Project")
+    await SessionsDAO(async_db).create(id="s1", title="Test Session")
+    msg = await MessagesDAO(async_db).create(
+        id=f"msg_{uuid.uuid4().hex[:12]}",
+        session_id="s1",
+        role="assistant",
+        content="",
+    )
+
+    async def _emit(_event: str, _payload: dict[str, object]) -> None:
+        return None
+
+    recorder = _RunRecorder(
+        dao=AgentRunsDAO(async_db),
+        db=async_db,
+        emit=_emit,
+        session_id="s1",
+        title="test run",
+        assistant_message_id=msg["id"],
+        project_id="p1",
+    )
+    await recorder.create()
+
+    result = SimpleNamespace(
+        final_text="Use TypeScript for the frontend. Prefer functional components.",
+        iterations=1,
+        usage=None,
+        truncated=False,
+        cancelled=False,
+    )
+    await recorder.complete(result)
+
+    memories = await MemoriesDAO(async_db).list(session_id="s1")
+    assert len(memories) == 2
+    contents = {m["content"] for m in memories}
+    assert "Use TypeScript for the frontend." in contents
+    assert "Prefer functional components." in contents
+    for m in memories:
+        assert m["project_id"] == "p1"
+        assert m["session_id"] == "s1"
+        assert m["category"] == "fact"
+        assert m["source"] == "chat"
+
+    updated = await MessagesDAO(async_db).get(msg["id"])
+    assert updated["metadata"]["memory_count"] == 2

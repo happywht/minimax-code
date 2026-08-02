@@ -751,7 +751,7 @@ unexpected param shape. `crash_dir` resolves to `<data_dir>/crashes`
 | `memory.list` | `{project_id?, session_id?, category?, limit?, offset?}` | `{memories: [{id, project_id, session_id, content, category, confidence, source, created_at, updated_at}], total}` | List memories with optional filters. |
 | `memory.add` | `{content, category?, confidence?, project_id?, session_id?, source?}` | `{memory}` | Create a new memory. `category` defaults to `fact`; must be one of `preference`, `decision`, `lesson`, `fact`. |
 | `memory.delete` | `{id}` | `{ok, id}` | Hard-delete a memory by id. |
-| `memory.search` | `{query, project_id?, category?, limit?}` | `{memories, total}` | Substring search over memory content, scoped by optional filters. |
+| `memory.search` | `{query, project_id?, session_id?, category?, limit?}` | `{memories, total}` | Substring search over memory content, scoped by optional filters. |
 | `memory.extract` | `{text}` | `{facts: [{content, category, confidence}]}` | Extract candidate memory facts from raw text without persisting them. |
 
 Memories matching the current session's `project_id` or `session_id` are injected into the system prompt via `## Relevant memories` so the agent can recall prior preferences, decisions, lessons, and facts.

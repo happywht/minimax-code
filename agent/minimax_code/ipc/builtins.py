@@ -85,18 +85,22 @@ class _RunRecorder:
         self,
         *,
         dao: Any,
+        db: Any,
         emit: Callable[[str, dict[str, Any]], Awaitable[None]],
         session_id: str,
         title: str,
         assistant_message_id: str,
         mode: str = "chat",
+        project_id: str | None = None,
     ) -> None:
         self.dao = dao
+        self.db = db
         self.emit = emit
         self.session_id = session_id
         self.title = title
         self.assistant_message_id = assistant_message_id
         self.mode = mode
+        self.project_id = project_id
         self.run_id = f"run_{uuid.uuid4().hex[:12]}"
         self._status_steps: dict[str, str] = {}
         self._tool_steps: dict[str, str] = {}
@@ -248,6 +252,49 @@ class _RunRecorder:
             },
         )
         await self.emit("run.completed", {"run": run})
+        await self._persist_memories(result)
+
+    async def _persist_memories(self, result: Any) -> None:
+        """Extract facts from the assistant reply and persist them as memories.
+
+        Best-effort: failures are logged but never abort the user's run.
+        """
+        if self.db is None:
+            return
+        text = getattr(result, "final_text", "") or ""
+        if not isinstance(text, str) or not text.strip():
+            return
+        try:
+            from ..memory import MemoriesDAO, MemoryExtractor
+
+            facts = MemoryExtractor().extract_facts(text)
+            if not facts:
+                return
+            memories_dao = MemoriesDAO(self.db)
+            memory_count = 0
+            for fact in facts:
+                await memories_dao.create(
+                    content=fact["content"],
+                    project_id=self.project_id,
+                    session_id=self.session_id,
+                    category="fact",
+                    confidence=float(fact.get("confidence", 0.8)),
+                    source="chat",
+                )
+                memory_count += 1
+            # Echo the count back onto the assistant message metadata so the
+            # UI can render a "N memories saved" chip.
+            from ..storage.dao.messages import MessagesDAO
+
+            msg_dao = MessagesDAO(self.db)
+            existing = await msg_dao.get(self.assistant_message_id)
+            metadata = existing.get("metadata") if existing else None
+            if not isinstance(metadata, dict):
+                metadata = {}
+            metadata["memory_count"] = memory_count
+            await msg_dao.update(self.assistant_message_id, metadata=metadata)
+        except Exception:
+            logger.debug("memory extraction failed; continuing", exc_info=True)
 
     async def fail(self, error: str) -> None:
         if self.dao is None:
@@ -642,10 +689,12 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
 
     recorder = _RunRecorder(
         dao=runs_dao,
+        db=db,
         emit=_emit_run_event,
         session_id=session_id,
         title=_title_hint,
         assistant_message_id=message_id,
+        project_id=project_id,
     )
     try:
         await recorder.create()

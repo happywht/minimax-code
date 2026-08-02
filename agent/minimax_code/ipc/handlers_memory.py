@@ -156,6 +156,7 @@ def register_memory_handlers(server: Any) -> None:
                 raise HandlerError(INVALID_PARAMS, "query must be a non-empty string")
 
             project_id = p.get("project_id")
+            session_id = p.get("session_id")
             category = p.get("category")
             if category is not None and category not in _VALID_CATEGORIES:
                 raise HandlerError(
@@ -168,11 +169,13 @@ def register_memory_handlers(server: Any) -> None:
             memories = await dao.search(
                 query,
                 project_id=project_id,
+                session_id=session_id,
                 category=category,
                 limit=limit,
             )
             total = await dao.count(
                 project_id=project_id,
+                session_id=session_id,
                 category=category,
                 query=query,
             )
