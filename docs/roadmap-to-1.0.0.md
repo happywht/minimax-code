@@ -29,7 +29,7 @@
 
 ### M2 · v0.13.0 性能基线（R9–R14）
 - [x] R9 基准脚本 `agent/tests/bench_startup.py`：冷启动到 /health OK 的耗时基线 `[done @ ddc62ec]`（本机 3 轮：2.574 / 2.586 / 2.607 s）
-- [ ] R10 SQLite 索引审计：messages(session_id) 等热点查询 EXPLAIN QUERY PLAN 逐条过
+- [x] R10 SQLite 索引审计：messages(session_id) 等热点查询 EXPLAIN QUERY PLAN 逐条过 `[done @ 288778a]`（15 条热点零裸表扫，含 LIKE；索引集已完备，测试钉死）
 - [ ] R11 前端首屏：生产 build 产物分析，lazy 路由确认无大块同步加载
 - [ ] R12 长会话：500+ 消息渲染冒烟（jsdom 计时）+ 虚拟化窗口断言
 - [ ] R13 WS 心跳/重连：断连恢复事件流不丢（补 e2e 断言）
