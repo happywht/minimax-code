@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-08-21
+
+### Added — 文档完备（v0.18.0 Milestone 7）
+- **README 全面重写（R40）**：-135/+92 行——快速开始以 `pnpm start` 单进程主线（构建 + agent 托管 web/dist）、命令速查表、8 个环境变量表、8 问 FAQ（无 Key 可用性 / 数据位置与备份 / 换机迁移 / dist 缺失 / 端口占用 / 升级 / 测试 / 数据不上传）。修正 4 处陈旧事实（smoke 6 个非 7、Playwright spec 在根级 `e2e/` 10 个、SQLite 实为 24 张实体表、thinking_count 早已实现）；删除 Phase1-6 / Tauri 考古章节；全部文档链接与 npm scripts 逐一验证存在。
+- **`docs/user-guide.md` 用户手册（R41）**：198 行 19 节面向最终用户——五分钟上手、三栏布局导览、任务与项目管理、对话与工具授权、模型与密钥分工（模型供应商 vs 密钥管理）、命令面板与快捷键、技能系统、多 Agent 协作、检查器 11 tab、自动化三件套（定时 / 工作流 / Webhook）、Memory、MCP 与插件、Git + Code Review + Patch Studio、数据导出导入备份、权限与审计、移动配对、无障碍特性、异常横幅。全部交互主张对照组件源码逐一核实（修正 4 处初稿幻觉：权限弹窗实为允许 / 拒绝 + 总是允许开关、移动配对入口在侧栏非顶栏、任务重命名是双击、删未核实的归档说法）。README 与 CLAUDE.md / AGENTS.md 挂手册链接。
+- **`docs/ipc-contract.md` 与代码对账（R42）**：registry 实测对账挖出真缺口——167 个注册方法中 84 个无文档锚点。补 **Appendix A 方法总表**（81 方法 × 16 命名空间，含一句话用途）；修 1 处事件名笔误（`agent.permission_request` → `permission.request`）。新增 `agent/tests/test_ipc_contract_doc.py` **6 个双向守护测试**：每个注册方法必须见于文档 / 文档 token 必须可解析为真实方法（事件 + 协议帧 + 白名单兜底）/ 事件清单与前端 `StreamEvent` 枚举锁死同步——此后新增 handler 不写文档锚点直接测试红。
+- **CLAUDE.md / AGENTS.md / 模块文档全量对账（R43）**：五个文档（根 CLAUDE.md、AGENTS.md、web/CLAUDE.md、agent/CLAUDE.md、README.md）+216/-143 行，全部数字 registry + filesystem 当场实测——24 张实体表（+FTS/vec 虚表）、10 个工具模块、**35 个 IPC 前缀 / 167 个方法**（命名空间全量表）、31 个 handler 文件、20 个 DAO 模块、25 个迁移、12 个技能、6 个 smoke、10 个 e2e spec、设置页 14 tab 4 组、检查器 11 tab、29 个 stores、15 个流式事件；修正技能目录路径错误（`minimax_code/skills/_builtin` → `minimax_code/agent/skills/_builtin`）；环境变量补 `MINIMAX_CODE_CORS_ORIGINS` / `MINIMAX_CODE_LOG_FILE`；文档结构表补 user-guide / deployment / performance-baseline / roadmap 四行。
+
+### Changed
+- 版本号 0.17.0 → 0.18.0（6 处代码位 + CLAUDE.md / AGENTS.md / README.md 版本行 + `uv lock`）。
+
 ## [0.17.0] - 2026-08-21
 
 ### Added — 无障碍与键盘（v0.17.0 Milestone 6）
