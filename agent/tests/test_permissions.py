@@ -289,6 +289,128 @@ class TestPermissionStore:
 
 
 # ---------------------------------------------------------------------------
+# Factory defaults (R18) — high-risk tools default to "ask" in code
+# ---------------------------------------------------------------------------
+
+
+class TestFactoryDefaults:
+    """R18: the factory-default layer lives in code, not in the DB.
+
+    Contract under test:
+
+    * a fresh install gates ``exec_*`` behind an ``ask`` default;
+    * nothing is ever written to the DB by the defaults;
+    * a user rule for the same pattern shadows the default;
+    * deleting the user rule falls back to the default (delete =
+      "back to factory", never "silently allow");
+    * tools outside the default patterns keep the plain default-allow.
+    """
+
+    @pytest.mark.asyncio
+    async def test_fresh_db_gates_exec_behind_ask(
+        self, perm_dao: PermissionRuleDAO
+    ) -> None:
+        store = PermissionStore(perm_dao)
+        await store.warm()
+        rule = store.lookup("exec_command")
+        assert rule is not None
+        assert rule["tool_pattern"] == "exec_*"
+        assert rule["action"] == "ask"
+        assert rule["origin"] == "default"
+        # Store-layer semantics are unchanged: ask does not block
+        # here — the gater in the agent loop turns it into a prompt.
+        assert store.is_allowed("exec_command") is True
+        assert store.is_denied("exec_command") is False
+
+    @pytest.mark.asyncio
+    async def test_defaults_write_nothing_to_db(
+        self, perm_dao: PermissionRuleDAO
+    ) -> None:
+        store = PermissionStore(perm_dao)
+        await store.warm()
+        store.lookup("exec_command")  # exercise the default path
+        assert await perm_dao.count() == 0, "factory defaults must not persist"
+
+    @pytest.mark.asyncio
+    async def test_user_rule_shadows_default(
+        self, perm_dao: PermissionRuleDAO
+    ) -> None:
+        store = PermissionStore(perm_dao)
+        await store.warm()
+        await store.upsert(tool_pattern="exec_*", action="allow")
+        rule = store.lookup("exec_command")
+        assert rule is not None
+        assert rule["action"] == "allow"
+        assert "origin" not in rule  # a DAO row, not a factory default
+
+    @pytest.mark.asyncio
+    async def test_specific_user_rule_shadows_glob_default(
+        self, perm_dao: PermissionRuleDAO
+    ) -> None:
+        store = PermissionStore(perm_dao)
+        await store.warm()
+        await store.upsert(tool_pattern="exec_command", action="allow")
+        # The specific user rule wins for exec_command …
+        assert store.lookup("exec_command")["action"] == "allow"
+        # … while other exec_* tools still hit the factory default.
+        assert store.lookup("exec_python")["action"] == "ask"
+
+    @pytest.mark.asyncio
+    async def test_delete_falls_back_to_factory_default(
+        self, perm_dao: PermissionRuleDAO
+    ) -> None:
+        store = PermissionStore(perm_dao)
+        await store.warm()
+        await store.upsert(tool_pattern="exec_*", action="allow")
+        assert store.lookup("exec_command")["action"] == "allow"
+        await store.delete("exec_*")
+        rule = store.lookup("exec_command")
+        assert rule is not None
+        assert rule["action"] == "ask"
+        assert rule["origin"] == "default"
+
+    @pytest.mark.asyncio
+    async def test_non_exec_tools_stay_default_allow(
+        self, perm_dao: PermissionRuleDAO
+    ) -> None:
+        store = PermissionStore(perm_dao)
+        await store.warm()
+        for tool in ("read_file", "write_file", "edit_file", "search_files"):
+            assert store.lookup(tool) is None
+            assert store.is_allowed(tool) is True
+
+    @pytest.mark.asyncio
+    async def test_list_rules_appends_uncovered_defaults(
+        self, perm_dao: PermissionRuleDAO
+    ) -> None:
+        store = PermissionStore(perm_dao)
+        await store.warm()
+        # Fresh install: the factory default is visible to the UI …
+        patterns = [r["tool_pattern"] for r in store.list_rules()]
+        assert "exec_*" in patterns
+        # … and stays a single entry even after repeated reads.
+        assert patterns.count("exec_*") == 1
+
+        # A user rule for the same pattern replaces it in the list.
+        await store.upsert(tool_pattern="exec_*", action="deny")
+        rules = store.list_rules()
+        assert [r["tool_pattern"] for r in rules] == ["exec_*"]
+        assert rules[0]["action"] == "deny"
+        assert "origin" not in rules[0]
+
+    @pytest.mark.asyncio
+    async def test_get_returns_factory_default_for_uncovered_pattern(
+        self, perm_dao: PermissionRuleDAO
+    ) -> None:
+        store = PermissionStore(perm_dao)
+        await store.warm()
+        rule = store.get("exec_*")
+        assert rule is not None
+        assert rule["action"] == "ask"
+        assert store.get("does_not_exist") is None
+
+
+# ---------------------------------------------------------------------------
 # IPC handlers — in-process
 # ---------------------------------------------------------------------------
 
@@ -410,6 +532,27 @@ class TestPermissionIPC:
         )
         assert result["ok"] is True
         assert result["deleted"] == 0
+
+    @pytest.mark.asyncio
+    async def test_check_reports_factory_default_ask(
+        self, perm_dao: PermissionRuleDAO
+    ) -> None:
+        """R18: on a fresh install the check endpoint surfaces the
+        factory ``exec_*`` → ask default instead of a bare allow."""
+        client, store = _make_client_with_perm_handlers(perm_dao)
+        await store.warm()
+        result = await client.request(
+            "permission.check", {"tool_name": "exec_command"}
+        )
+        assert result["allowed"] is True  # ask does not block at the store
+        assert result["action"] == "ask"
+        # The default is visible in the listing too, so the Settings
+        # UI can show and override it.
+        listed = await client.request("permission.list", {})
+        assert any(
+            r["tool_pattern"] == "exec_*" and r["action"] == "ask"
+            for r in listed["rules"]
+        )
 
 
 # ---------------------------------------------------------------------------

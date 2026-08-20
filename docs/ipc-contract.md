@@ -232,7 +232,7 @@ on the next `readline() == ""`.
 | `scheduler.*`              | req/res   | Reserved.                                          |
 | `agent.list` / `agent.spawn_subagent` | req/res | Sub-agent list and spawn. `agent.spawn_subagent` is keyed by `name` (`agents.name`); clients may also pass legacy `agent_id`, and the backend resolves by name first, then id. |
 | `mobile.*`                 | req/res   | Phase 2.                                            |
-| `permission.*`             | req/res   | Phase 1.4 (ui-shell).                              |
+| `permission.*`             | req/res   | Tool-call consent rules; ships `exec_*` → ask factory defaults in code (R18). See §6 for the full method table. |
 | `model.list` / `model.get_current` / `model.set_current` / `model.set_reasoning_effort` | req/res | Dynamic model list + current selection + reasoning-effort override. `model.list` entries may carry optional reasoning-effort meta (R58); the `model.list` and `model.get_current` responses echo the user's persisted `reasoning_effort` override (R61 read-back). |
 | `plugins.list` / `plugins.info` / `plugins.enable` / `plugins.disable` / `plugins.reload` | req/res | Platform pillar #3 — discover, inspect, toggle, and hot-reload runtime plugins (fail-open discovery; runtime enable override is in-memory). |
 | `mcp.list_servers` / `mcp.add_server` / `mcp.update_server` / `mcp.remove_server` / `mcp.list_tools` / `mcp.invoke_tool` | req/res | MCP server management and tool invocation (v0.11.0). |
@@ -851,6 +851,35 @@ unexpected param shape. `crash_dir` resolves to `<data_dir>/crashes`
 | `memory.extract` | `{text}` | `{facts: [{content, category, confidence}]}` | Extract candidate memory facts from raw text without persisting them. |
 
 Memories matching the current session's `project_id` or `session_id` are injected into the system prompt via `## Relevant memories` so the agent can recall prior preferences, decisions, lessons, and facts.
+
+### `permission.*` — tool-call consent rules (R18 defaults)
+
+| Method | Params | Result | Notes |
+|--------|--------|--------|-------|
+| `permission.list` | `{}` | `{rules: [{id, tool_pattern, action, scope, created_at, origin?}]}` | User rules first, then factory defaults not shadowed by a user rule for the same `tool_pattern`. |
+| `permission.get` | `{tool_pattern}` | `{rule}` | Exact-pattern lookup: user rule first, factory default as fallback, `null` when neither exists. |
+| `permission.set` | `{tool_pattern, action, scope?}` | `{rule}` | Upsert keyed by `tool_pattern`. `action` ∈ `allow` / `deny` / `ask`; `scope` defaults to `global`. |
+| `permission.delete` | `{tool_pattern}` | `{ok, deleted}` | Deletes the *user* rule only — the factory default (if any) becomes effective again. |
+| `permission.check` | `{tool_name, scope?}` | `{allowed, action?}` | Resolves a concrete tool name against user rules then factory defaults. `allowed` is `false` only for an explicit `deny`; `ask` reports `allowed: true` + `action: "ask"` (the agent-loop gater turns it into a `permission.request` prompt). |
+
+**Factory defaults (R18).** High-risk tools ship gated in code, not in the
+database — nothing is written to `permission_rules` on install:
+
+| Pattern | Action | Origin |
+|---------|--------|--------|
+| `exec_*` | `ask` | `default` |
+
+Semantics:
+
+* A user rule for the same pattern always wins (DB rules are scanned before defaults).
+* Deleting the user rule falls back to the factory default — "delete" means "back to factory", never "silently allow".
+* Defaults appear in `permission.list` / `permission.get` with `origin: "default"` and `created_at: ""` so the UI can badge them; they can be overridden via `permission.set` but not removed via `permission.delete`.
+* Tools with no matching rule (user or default) are default-allow at the store layer — the caller decides whether to prompt.
+
+The wire shape is `{tool_pattern, action}`; the frontend `TypedIPC` layer
+translates to/from its own `{tool, pattern, decision}` shape, and the mock
+backend speaks the wire shape (below the typed layer) so mock mode mirrors
+real behaviour.
 
 ## 7. Event names
 

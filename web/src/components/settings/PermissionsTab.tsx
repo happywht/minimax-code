@@ -146,7 +146,10 @@ function PermissionRuleRow({ rule, onDelete, onUpdate }: {
       data-testid={`settings-permission-row-${rule.id}`}
       className="flex items-center gap-2 rounded-lg border border-line bg-surface-2 px-3 py-2 text-sm transition-colors duration-150 hover:border-line-strong"
     >
-      <Badge tone="neutral">{rule.tool}</Badge>
+      <Badge tone="neutral">
+        {rule.tool}
+        {rule.origin === "default" ? " · default" : ""}
+      </Badge>
       <code className="min-w-0 flex-1 truncate font-mono text-xs text-ink-0">{rule.pattern}</code>
       <Select
         data-testid={`settings-permission-decision-${rule.id}`}
@@ -159,13 +162,25 @@ function PermissionRuleRow({ rule, onDelete, onUpdate }: {
         <option value="deny">deny</option>
         <option value="ask">ask</option>
       </Select>
-      <IconButton
-        data-testid={`settings-permission-delete-${rule.id}`}
-        onClick={onDelete}
-        aria-label="Delete rule"
-      >
-        <Trash2 />
-      </IconButton>
+      {rule.origin === "default" ? (
+        // Factory defaults can be overridden (Select above) but not
+        // deleted — deleting would just fall back to this default.
+        <span
+          data-testid={`settings-permission-locked-${rule.id}`}
+          className="w-8 text-center font-mono text-xs text-ink-2"
+          title="Factory default — override it with the selector; it cannot be deleted"
+        >
+          —
+        </span>
+      ) : (
+        <IconButton
+          data-testid={`settings-permission-delete-${rule.id}`}
+          onClick={onDelete}
+          aria-label="Delete rule"
+        >
+          <Trash2 />
+        </IconButton>
+      )}
     </li>
   );
 }

@@ -23,10 +23,29 @@ Each rule's ``tool_pattern`` is interpreted as:
 * ``"exec_*"`` — fnmatch-style glob (case-sensitive)
 * otherwise exact equality
 
-The first rule that matches wins. If no rule matches, the store
-returns ``True`` for ``is_allowed`` (i.e. the agent's defaults are
-"ask the user, but allow by default at the store layer"). Use
-:meth:`lookup` if you need the full rule object instead of a bool.
+The first rule that matches wins. If no user rule matches, the
+factory defaults below apply. Use :meth:`lookup` if you need the
+full rule object instead of a bool.
+
+Factory defaults (R18)
+----------------------
+High-risk tools ship with an ``ask`` default so a fresh install
+gates shell execution behind the consent modal instead of running
+it silently. The defaults live in code (``DEFAULT_RULES``), *not* in
+the database:
+
+* nothing is written to the user's ``permission_rules`` table;
+* a user rule for the same pattern always wins (DB rules are
+  scanned first);
+* deleting the user rule falls back to the factory default again —
+  "delete" means "back to factory", never "allow silently".
+
+Tools without a matching rule (user or default) remain default-allow
+at the store layer — ``is_allowed`` returns ``True`` and the caller
+decides whether to prompt. The agent loop
+(:func:`minimax_code.agent.core`) turns ``ask`` into a real
+``permission.request`` prompt via
+:class:`~minimax_code.perm_consent.PermissionGater`.
 """
 
 from __future__ import annotations
@@ -43,6 +62,30 @@ logger = logging.getLogger(__name__)
 
 
 _VALID_ACTIONS: frozenset[str] = frozenset({"allow", "deny", "ask"})
+
+# Factory-default rules (R18) — see the module docstring. Evaluated
+# only when no user rule matches, so an explicit user decision
+# (allow / deny / a custom ask) always wins. Rules carry the same
+# shape as DAO rows; ``origin: "default"`` lets the UI badge them
+# and ``created_at: ""`` marks them as non-persisted.
+DEFAULT_RULES: tuple[dict[str, Any], ...] = (
+    {
+        "id": "pr_default_exec",
+        "tool_pattern": "exec_*",
+        "action": "ask",
+        "scope": "global",
+        "created_at": "",
+        "origin": "default",
+    },
+)
+
+
+def _default_matching(tool_name: str) -> dict[str, Any] | None:
+    """Find the first factory default whose pattern matches ``tool_name``."""
+    for rule in DEFAULT_RULES:
+        if _matches(rule.get("tool_pattern") or "", tool_name):
+            return dict(rule)  # copy — callers must not mutate the constant
+    return None
 
 
 class PermissionStore:
@@ -74,18 +117,37 @@ class PermissionStore:
     # -- read API ----------------------------------------------------------
 
     def list_rules(self) -> list[dict[str, Any]]:
-        """Return a snapshot of the cached rules in insertion order."""
-        return list(self._rules.values())
+        """Return user rules plus uncovered factory defaults.
+
+        The cached (user) rules come first in insertion order; any
+        factory default whose ``tool_pattern`` is not present in the
+        cache is appended after them. A default whose pattern *is*
+        covered by a user rule is omitted — the user rule shadows it.
+        """
+        rules = list(self._rules.values())
+        covered = set(self._rules.keys())
+        for default in DEFAULT_RULES:
+            if default.get("tool_pattern") not in covered:
+                rules.append(dict(default))
+        return rules
 
     def get(self, tool_pattern: str) -> dict[str, Any] | None:
-        """Return the cached rule for ``tool_pattern`` (or ``None``)."""
-        return self._rules.get(tool_pattern)
+        """Return the cached rule for ``tool_pattern`` (or the factory default)."""
+        rule = self._rules.get(tool_pattern)
+        if rule is not None:
+            return rule
+        for default in DEFAULT_RULES:
+            if default.get("tool_pattern") == tool_pattern:
+                return dict(default)
+        return None
 
     def lookup(self, tool_name: str) -> dict[str, Any] | None:
         """Find the first rule that matches ``tool_name``.
 
-        Returns the rule dict, or ``None`` if no rule matches. Glob
-        matching is fnmatch-style (e.g. ``exec_*``).
+        User rules are scanned first (insertion order); when none
+        matches, the factory defaults (:data:`DEFAULT_RULES`) get a
+        chance. Returns the rule dict, or ``None`` if neither layer
+        matches. Glob matching is fnmatch-style (e.g. ``exec_*``).
         """
         if not tool_name:
             return None
@@ -93,7 +155,7 @@ class PermissionStore:
             pattern = rule.get("tool_pattern") or ""
             if _matches(pattern, tool_name):
                 return rule
-        return None
+        return _default_matching(tool_name)
 
     def is_allowed(self, tool_name: str, *, scope: str = "global") -> bool:
         """Decide whether ``tool_name`` is currently allowed.
@@ -102,6 +164,9 @@ class PermissionStore:
         ``global`` rules; the per-session / per-user scopes are a
         future addition. Returns ``True`` when no rule matches (the
         agent's default is "ask, but the store doesn't block").
+        Factory defaults (:data:`DEFAULT_RULES`) participate via
+        :meth:`lookup` — an ``ask`` default still returns ``True``
+        here; the agent loop's gater is what turns it into a prompt.
         """
         if not tool_name:
             return True
@@ -200,4 +265,4 @@ def _matches(pattern: str, tool_name: str) -> bool:
     return fnmatch.fnmatchcase(tool_name, pattern)
 
 
-__all__ = ["PermissionStore"]
+__all__ = ["DEFAULT_RULES", "PermissionStore"]

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — 安全加固（进行中，M3）
+- **权限出厂默认（R18）**：高危工具在**代码级**出厂 gated——`DEFAULT_RULES` 常量 `exec_*` → ask，`lookup`/`list_rules`/`get` 在用户规则 miss 后回退默认。零 DB 写入（不 seed 用户库）、用户规则永远优先、删除用户规则即回退出厂默认（无"重启重置"缺陷）；默认规则经 `permission.list`/`get` 携带 `origin: "default"` 标记，UI 徽标显示且不可删除（只能用选择器覆盖）。新增 9 个后端测试（`TestFactoryDefaults` + IPC 默认上报）。契约文档补 `permission.*` 详述段（方法表 + 默认策略语义）。
+- **前端 wire 映射修复**：`bindTypedIPC` 新增 `backendRuleToFrontend` 翻译层——后端 wire 是 `{tool_pattern, action, created_at: ISO-string}`，前端 `PermissionRule` 是 `{tool, pattern, decision, created_at: ms}`，此前 `listRules`/`setRule` 原样透传导致真实 agent 下 Settings 权限 tab 静默断链（mock 两头说前端形状掩盖了断链）；mock backend 改为在 typed 层之下说 wire 形状。新增 `web/src/ipc/__tests__/typed-permission.test.ts`（6 测试：字段映射、wire 参数断言、mock 契约）。
+
 ### Fixed — 安全加固（进行中，M3）
 - **日志密钥脱敏对子 logger 失效**（R17 审计发现）：`SanitizerFilter` 此前挂在 root logger 上，而 logger 级 filter 只对 root 直接 emit 的记录生效——`minimax_code.*` 子 logger 传播来的记录（即全部业务日志）不经消毒直写 stderr/日志文件。改为在 `configure_logging` 中把 filter 附加到**每个 handler**（handler 级 filter 对传播记录同样生效）。新增 `agent/tests/test_secret_audit.py`（6 测试）：子 logger 传播脱敏回归、handler 挂载契约、`secrets.*` RPC 往返不回显 key 明文（含 key 主体子串断言）、INVALID_PARAMS 分支不反射 payload、LLM 错误形状可脱敏。
 - `secrets.status` 防御分支的 `error: str(exc)` 直通 RPC 信封改为经 `redact_value` 消毒（RPC 错误响应不经日志管道）。

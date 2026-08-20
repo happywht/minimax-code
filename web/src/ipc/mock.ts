@@ -8,6 +8,7 @@
  */
 
 import { StreamEvent } from "../types/ipc";
+import type { BackendPermissionRule } from "./typed";
 import type {
   AgentInfo,
   AgentTeam,
@@ -40,7 +41,6 @@ import type {
   PatchHunkOperationResult,
   PatchPreviewResult,
   PatchSaveSnapshotResult,
-  PermissionRule,
   PluginInfo,
   PluginInfoResult,
   PluginReloadResult,
@@ -148,6 +148,9 @@ export function mockNotify(method: string, params: unknown, client: IPCClient): 
 let mockReasoningEffort: string | null = null;
 const mockMcpServers = new Map<string, McpServer>();
 const mockMemories = new Map<string, MemoryEntry>();
+// R18 — user-created permission rules in *wire* shape (the factory
+// exec_* → ask default is synthesised on read, like the real store).
+const mockPermissionRules: BackendPermissionRule[] = [];
 
 export function resetMockMcpServers(): void {
   mockMcpServers.clear();
@@ -560,9 +563,19 @@ function mockHandle(
     case "skill.enable":
     case "skill.disable":
     case "schedule.delete":
-    case "permission.delete":
     case "agent.delete":
       return { ok: true };
+
+    case "permission.delete": {
+      // Deleting the user rule for a pattern falls back to the
+      // factory default — same semantics as the real store.
+      const p = params as { tool_pattern: string };
+      const idx = mockPermissionRules.findIndex(
+        (r) => r.tool_pattern === p.tool_pattern,
+      );
+      if (idx !== -1) mockPermissionRules.splice(idx, 1);
+      return { ok: true, deleted: idx !== -1 ? 1 : 0 };
+    }
 
     case "agent.get": {
       const p = params as { name: string };
@@ -734,20 +747,48 @@ function mockHandle(
     case "mobile.device_status":
       return { devices: [] };
 
-    case "permission.list":
-      return { rules: [] };
+    case "permission.list": {
+      // R18 — mirror the sidecar's factory default (exec_* → ask).
+      // A user rule for the same pattern shadows it, exactly like
+      // the real PermissionStore.
+      const covered = new Set(mockPermissionRules.map((r) => r.tool_pattern));
+      const factory = covered.has("exec_*")
+        ? []
+        : [
+            {
+              id: "pr_default_exec",
+              tool_pattern: "exec_*",
+              action: "ask" as const,
+              scope: "global",
+              created_at: "",
+              origin: "default" as const,
+            },
+          ];
+      return { rules: [...mockPermissionRules, ...factory] };
+    }
 
     case "permission.set": {
-      const p = params as Omit<PermissionRule, "id" | "created_at"> & {
-        id?: string;
+      // Wire shape (what the Python handler consumes) — the typed
+      // layer translates frontend {pattern, decision} before we
+      // ever see it here.
+      const p = params as {
+        tool_pattern: string;
+        action: "allow" | "deny" | "ask";
+        scope?: string;
       };
-      const rule: PermissionRule = {
-        id: p.id ?? `rule_${Math.random().toString(36).slice(2, 10)}`,
-        tool: p.tool,
-        pattern: p.pattern,
-        decision: p.decision,
-        created_at: Date.now(),
+      const existing = mockPermissionRules.find(
+        (r) => r.tool_pattern === p.tool_pattern,
+      );
+      const rule = {
+        id: existing?.id ?? `pr_${Math.random().toString(36).slice(2, 10)}`,
+        tool_pattern: p.tool_pattern,
+        action: p.action,
+        scope: p.scope ?? "global",
+        created_at: existing?.created_at ?? new Date().toISOString(),
       };
+      const idx = mockPermissionRules.indexOf(existing!);
+      if (idx === -1) mockPermissionRules.push(rule);
+      else mockPermissionRules[idx] = rule;
       return { rule };
     }
 

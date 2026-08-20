@@ -162,7 +162,7 @@ A: 1) 在对应的 `handlers_*.py` 中实现 handler 函数；2) 在 `app.py` �
 ### 其他模块
 - `minimax_code/scheduler/` — APScheduler 集成
 - `minimax_code/orchestrator/subagent.py` — SubAgentRuntime
-- `minimax_code/permissions/` — PermissionStore
+- `minimax_code/permissions/` — PermissionStore（R18 起含代码级出厂默认：`exec_*` → ask；用户规则优先，删除用户规则即回退出厂默认，DB 零写入）
 - `minimax_code/mobile/` — PairingManager
 - `minimax_code/progress/` — ProgressTracker
 - `minimax_code/secrets.py` — OS keyring + env-var fallback

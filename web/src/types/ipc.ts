@@ -263,6 +263,9 @@ export interface PermissionRule {
   pattern: string;
   decision: "allow" | "deny" | "ask";
   created_at: number;
+  /** Present (==="default") on factory-default rules — shown by the
+   * Settings UI and not deletable (only overridable). */
+  origin?: "default";
 }
 
 /** An audit log entry — matches `audit_log` table row. */

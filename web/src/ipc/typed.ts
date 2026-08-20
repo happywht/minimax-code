@@ -497,6 +497,30 @@ function normalizeScheduledJob(job: WireScheduledJob): ScheduledJob {
   };
 }
 
+/** Wire shape of a permission rule as the Python sidecar returns it
+ * (`permission.list` / `permission.set`). Distinct from the frontend
+ * `PermissionRule` (tool/pattern/decision) — `bindTypedIPC` translates. */
+export interface BackendPermissionRule {
+  id: string;
+  tool_pattern: string;
+  action: "allow" | "deny" | "ask";
+  scope?: string;
+  created_at?: string;
+  origin?: "default";
+}
+
+/** Map a sidecar rule onto the frontend `PermissionRule` shape. */
+export function backendRuleToFrontend(r: BackendPermissionRule): PermissionRule {
+  return {
+    id: r.id,
+    tool: r.tool_pattern,
+    pattern: r.tool_pattern,
+    decision: r.action,
+    created_at: r.created_at ? Date.parse(r.created_at) || 0 : 0,
+    origin: r.origin,
+  };
+}
+
 export function bindTypedIPC(client: IPCClient): TypedIPC {
   return {
     ping: () => client.ping(),
@@ -699,9 +723,16 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<{
         devices: { id: string; name: string; paired_at: number; online: boolean }[];
       }>("mobile.device_status", {}),
-    listRules: () => client.request<ListRulesResult>("permission.list", {}),
+    listRules: () =>
+      client.request<{ rules: BackendPermissionRule[] }>("permission.list", {}).then(
+        (r) => ({ rules: r.rules.map(backendRuleToFrontend) }),
+      ),
     setRule: (rule) =>
-      client.request<SetRuleResult>("permission.set", rule),
+      client.request<{ rule: BackendPermissionRule }>("permission.set", {
+        tool_pattern: rule.pattern,
+        action: rule.decision,
+        scope: "global",
+      }).then((r) => ({ rule: backendRuleToFrontend(r.rule) })),
     deleteRule: (toolPattern) =>
       client.request<{ ok: true }>("permission.delete", { tool_pattern: toolPattern }),
     resolvePermission: (opts) =>
