@@ -7,14 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added — 安全加固（进行中，M3）
+## [0.14.0] - 2026-08-21
+
+### Added — 安全加固（v0.14.0 Milestone 3）
+- **CORS 白名单安全边界（R15）**：`MINIMAX_CODE_CORS_ORIGINS` 环境变量化（默认不变）——拒绝未列 origin / env 只追加不替换默认集 / 无效项静默丢弃；architecture、ipc-contract、agent CLAUDE.md 三处陈旧说法同步修正（4 新测试）。
+- **RPC 畸形请求防护（R16）**：5 新测试钉死四条拒绝路径——缺 `method` 信封回 INVALID_REQUEST / 超限 body（10MB+1）在 dispatch 之前被拒（spy handler 零调用）/ 恰好 10MB 边界不误杀 / GET 4xx / WS 垃圾帧静默丢弃不断连。
+- **权限出厂默认（R18）**：高危工具在**代码级**出厂 gated——`DEFAULT_RULES` 常量 `exec_*` → ask，`lookup`/`list_rules`/`get` 在用户规则 miss 后回退默认。零 DB 写入（不 seed 用户库）、用户规则永远优先、删除用户规则即回退出厂默认（无"重启重置"缺陷）；默认规则经 `permission.list`/`get` 携带 `origin: "default"` 标记，UI 徽标显示且不可删除（只能用选择器覆盖）。新增 9 个后端测试（`TestFactoryDefaults` + IPC 默认上报）。契约文档补 `permission.*` 详述段（方法表 + 默认策略语义）。
 - **安全回归套件集中化（R19）**：注册 `security` pytest marker，`uv run pytest -m security` 一键跑完整安全面——**151 测试**覆盖 9 个安全面（权限规则+出厂默认、日志/RPC 脱敏、secrets 存储/RPC、终端进程加固、memory 注入防护、审计日志、RPC 畸形拒绝、CORS 白名单）。7 个纯安全测试文件打文件级 marker，混合文件 `test_http_server.py` 的 12 个安全函数逐个打装饰器。新增 `agent/tests/test_security.py` 作为集中入口：模块 docstring 即安全测试地图 + 三重护栏（套件收集 floor ≥ 130 防 marker/文件静默失联、逐文件 AST 计数 floor 防安全文件被清空、`test_http_server.py` 12 函数 marker 存在性 AST 校验）+ 2 个跨切面冒烟（R18 出厂默认 ask→deny 遮蔽→删除回退全链路；redact_value 对 10 种凭据形态消毒 + URL userinfo 剥离 + 嵌套结构遍历 + 输入不可变）。
 
-### Fixed — 安全加固（进行中，M3）
-- **权限出厂默认（R18）**：高危工具在**代码级**出厂 gated——`DEFAULT_RULES` 常量 `exec_*` → ask，`lookup`/`list_rules`/`get` 在用户规则 miss 后回退默认。零 DB 写入（不 seed 用户库）、用户规则永远优先、删除用户规则即回退出厂默认（无"重启重置"缺陷）；默认规则经 `permission.list`/`get` 携带 `origin: "default"` 标记，UI 徽标显示且不可删除（只能用选择器覆盖）。新增 9 个后端测试（`TestFactoryDefaults` + IPC 默认上报）。契约文档补 `permission.*` 详述段（方法表 + 默认策略语义）。
-- **前端 wire 映射修复**：`bindTypedIPC` 新增 `backendRuleToFrontend` 翻译层——后端 wire 是 `{tool_pattern, action, created_at: ISO-string}`，前端 `PermissionRule` 是 `{tool, pattern, decision, created_at: ms}`，此前 `listRules`/`setRule` 原样透传导致真实 agent 下 Settings 权限 tab 静默断链（mock 两头说前端形状掩盖了断链）；mock backend 改为在 typed 层之下说 wire 形状。新增 `web/src/ipc/__tests__/typed-permission.test.ts`（6 测试：字段映射、wire 参数断言、mock 契约）。
+### Changed
+- 版本号 0.13.0 → 0.14.0（6 处代码位 + CLAUDE.md / AGENTS.md / README.md 版本行 + `uv lock`）。
 
-### Fixed — 安全加固（进行中，M3）
+### Fixed — 安全加固（v0.14.0 Milestone 3）
+- **前端 wire 映射修复（R18）**：`bindTypedIPC` 新增 `backendRuleToFrontend` 翻译层——后端 wire 是 `{tool_pattern, action, created_at: ISO-string}`，前端 `PermissionRule` 是 `{tool, pattern, decision, created_at: ms}`，此前 `listRules`/`setRule` 原样透传导致真实 agent 下 Settings 权限 tab 静默断链（mock 两头说前端形状掩盖了断链）；mock backend 改为在 typed 层之下说 wire 形状。新增 `web/src/ipc/__tests__/typed-permission.test.ts`（6 测试：字段映射、wire 参数断言、mock 契约）。
 - **日志密钥脱敏对子 logger 失效**（R17 审计发现）：`SanitizerFilter` 此前挂在 root logger 上，而 logger 级 filter 只对 root 直接 emit 的记录生效——`minimax_code.*` 子 logger 传播来的记录（即全部业务日志）不经消毒直写 stderr/日志文件。改为在 `configure_logging` 中把 filter 附加到**每个 handler**（handler 级 filter 对传播记录同样生效）。新增 `agent/tests/test_secret_audit.py`（6 测试）：子 logger 传播脱敏回归、handler 挂载契约、`secrets.*` RPC 往返不回显 key 明文（含 key 主体子串断言）、INVALID_PARAMS 分支不反射 payload、LLM 错误形状可脱敏。
 - `secrets.status` 防御分支的 `error: str(exc)` 直通 RPC 信封改为经 `redact_value` 消毒（RPC 错误响应不经日志管道）。
 
