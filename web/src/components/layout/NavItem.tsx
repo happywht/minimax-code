@@ -12,6 +12,9 @@ export interface NavItemProps {
   onClick?: () => void;
   testId?: string;
   trailing?: ReactNode;
+  /** Roving-tabindex support for list rows (-1 everywhere but the stop). */
+  tabIndex?: number;
+  onKeyDown?: (event: React.KeyboardEvent<HTMLButtonElement>) => void;
 }
 
 export function NavItem({
@@ -22,11 +25,15 @@ export function NavItem({
   onClick,
   testId,
   trailing,
+  tabIndex,
+  onKeyDown,
 }: NavItemProps): JSX.Element {
   return (
     <button
       type="button"
       onClick={onClick}
+      onKeyDown={onKeyDown}
+      tabIndex={tabIndex}
       data-testid={testId}
       data-selected={selected ? "true" : "false"}
       aria-current={selected ? "page" : undefined}

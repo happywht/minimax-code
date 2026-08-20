@@ -46,6 +46,9 @@ export interface SessionRowProps {
   selectionActive?: boolean;
   isSelected?: boolean;
   onToggleSelect?: (id: string) => void;
+  /** Roving tabindex: this row is the single tab stop of the list. */
+  tabStop?: boolean;
+  onRowKeyDown?: (event: React.KeyboardEvent<HTMLButtonElement>) => void;
 }
 
 export const SessionRow = memo(function SessionRow({
@@ -56,6 +59,8 @@ export const SessionRow = memo(function SessionRow({
   selectionActive = false,
   isSelected = false,
   onToggleSelect,
+  tabStop = false,
+  onRowKeyDown,
 }: SessionRowProps): JSX.Element {
   const [moveOpen, setMoveOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -182,11 +187,14 @@ export const SessionRow = memo(function SessionRow({
     <>
       <li
         data-testid={`sidebar-session-row-${session.id}`}
+        data-session-row="true"
         className="group relative"
       >
         <NavItem
           icon={leadingIcon}
           label={truncate(session.title || strings.layout.sidebar.untitled, MAX_TITLE_LEN)}
+          tabIndex={tabStop ? 0 : -1}
+          onKeyDown={onRowKeyDown}
           trailing={
             <span className="ml-1 flex shrink-0 items-center gap-1">
               {session.workspace_mode === "worktree" && (

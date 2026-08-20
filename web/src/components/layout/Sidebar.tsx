@@ -6,7 +6,7 @@
  *   - Session history grouped by project
  *   - Footer: UserBadge
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Archive,
   ArchiveRestore,
@@ -364,6 +364,61 @@ export function Sidebar({
     setCurrent(s.id);
   };
 
+  // ── Roving tabindex for the session list (R37, M6 keyboard a11y) ──
+  // Exactly one row is a tab stop (tabIndex=0); ArrowUp/Down/Home/End
+  // move it. Rows are queried from the DOM so navigation follows the
+  // rendered order (sessions are grouped by project, so the flat
+  // filteredSessions order doesn't match the DOM order).
+  const sessionListRef = useRef<HTMLDivElement>(null);
+  const [rovingId, setRovingId] = useState<string | null>(null);
+  const visibleSessionIds = useMemo(
+    () => new Set(filteredSessions.map((s) => s.id)),
+    [filteredSessions],
+  );
+  // Fallback chain: last roving target → current session → first row,
+  // each only while still visible (filter/search can invalidate them).
+  const activeRovingId =
+    (rovingId !== null && visibleSessionIds.has(rovingId) ? rovingId : null) ??
+    (currentId !== null && visibleSessionIds.has(currentId) ? currentId : null) ??
+    filteredSessions[0]?.id ??
+    null;
+
+  const focusSessionRow = useCallback((target: HTMLButtonElement) => {
+    target.focus();
+    const tid = target.getAttribute("data-testid") ?? "";
+    if (tid.startsWith("sidebar-session-")) {
+      setRovingId(tid.slice("sidebar-session-".length));
+    }
+  }, []);
+
+  const handleSessionRowKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLButtonElement>) => {
+      const key = event.key;
+      if (key !== "ArrowDown" && key !== "ArrowUp" && key !== "Home" && key !== "End") {
+        return;
+      }
+      const rows = Array.from(
+        sessionListRef.current?.querySelectorAll<HTMLButtonElement>(
+          "[data-session-row] > button",
+        ) ?? [],
+      );
+      const idx = rows.indexOf(event.currentTarget);
+      if (idx === -1) return;
+      event.preventDefault();
+      const last = rows.length - 1;
+      const next =
+        key === "ArrowDown"
+          ? rows[Math.min(idx + 1, last)]
+          : key === "ArrowUp"
+            ? rows[Math.max(idx - 1, 0)]
+            : key === "Home"
+              ? rows[0]
+              : rows[last];
+      focusSessionRow(next);
+    },
+    [focusSessionRow],
+  );
+
   const renderProjectGroup = (project: Project) => {
     const sessionsInProject = sessionsByProject.get(project.id) ?? [];
     const expanded = effectiveExpandedIds.has(project.id);
@@ -382,6 +437,8 @@ export function Sidebar({
                 selectionActive={selectionActive}
                 isSelected={selectedSessionIds.has(s.id)}
                 onToggleSelect={toggleSessionSelection}
+                tabStop={s.id === activeRovingId}
+                onRowKeyDown={handleSessionRowKeyDown}
               />
             ))}
             {!searchMode && sessionsInProject.length === 0 && (
@@ -649,6 +706,7 @@ export function Sidebar({
           </label>
         </div>
         <div
+          ref={sessionListRef}
           data-testid="sidebar-session-list"
           className="mt-1 flex-1 space-y-2 overflow-y-auto px-2 pb-2"
         >
