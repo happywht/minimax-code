@@ -1,12 +1,18 @@
-"""Diagnostics tests (M8 / R45).
+"""Diagnostics tests (M8 / R45 + R47).
 
 ``diag.export`` — sanitized diagnostic bundle: envelope shape,
 platform/config sections, per-table row counts, no-storage degradation,
 in-memory log tail, and the end-to-end RPC round trip.
+
+R47 adds the sanitization guarantees as explicit assertions: no secret
+value (API key, CORS origin) and no absolute user path can appear in a
+serialized bundle, and the log tail is scrubbed by the same
+``SanitizerFilter`` as the stderr sink.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -26,6 +32,7 @@ from minimax_code.logging_setup import (
     get_recent_log_lines,
 )
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
+from minimax_code.telemetry.redact import SanitizerFilter
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -166,3 +173,92 @@ class TestDiagExportIPC:
         assert result["format"] == DIAG_FORMAT
         assert result["version"] == __version__
         assert result["storage"]["db_available"] is True
+
+
+# ---------------------------------------------------------------------------
+# Sanitization guarantees (R47) — the bug-report-safety contract
+# ---------------------------------------------------------------------------
+
+
+def _json_literal(s: str) -> str:
+    """The exact in-JSON representation of *s* (quotes stripped, escapes
+    applied) — a Windows path serializes with doubled backslashes, so a
+    raw ``str(path) not in text`` check would silently pass on leaks."""
+    return json.dumps(s)[1:-1]
+
+
+class TestSanitizationGuarantees:
+    async def test_bundle_hides_api_key_and_data_dir(
+        self, async_db: AsyncDatabase, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The two leaks a bug-report attachment could plausibly carry:
+        a configured API key and the absolute user data directory."""
+        secret_dir = tmp_path / "DiagSecretDir"
+        monkeypatch.setenv("MINIMAX_API_KEY", "sk-diagsecret0123456789abcdef")
+        monkeypatch.setenv("MINIMAX_CODE_DATA_DIR", str(secret_dir))
+        bundle = await build_diagnostic_bundle(async_db)
+        text = json.dumps(bundle)
+        assert "sk-diagsecret0123456789abcdef" not in text
+        assert _json_literal(str(secret_dir)) not in text
+        # The data dir survives only as its basename (the /health precedent).
+        assert bundle["config"]["data_dir_name"] == "DiagSecretDir"
+
+    async def test_bundle_hides_cors_origin_values(
+        self, async_db: AsyncDatabase, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CORS origins are reported as a count only — the origin values
+        themselves (hostnames of the user's trusted frontends) never
+        enter the bundle."""
+        monkeypatch.setenv(
+            "MINIMAX_CODE_CORS_ORIGINS",
+            "https://secret-frontend.example.com,https://another.example.org",
+        )
+        bundle = await build_diagnostic_bundle(async_db)
+        text = json.dumps(bundle)
+        assert "secret-frontend.example.com" not in text
+        assert "another.example.org" not in text
+        assert bundle["config"]["cors_custom_origin_count"] == 2
+
+    async def test_bundle_hides_user_home(
+        self, async_db: AsyncDatabase
+    ) -> None:
+        """No field of the bundle may carry the user's home directory —
+        the strongest absolute-path guarantee, independent of any env var."""
+        bundle = await build_diagnostic_bundle(async_db)
+        text = json.dumps(bundle)
+        home = str(Path.home())
+        if home and home not in (".", "/"):  # degenerate CI containers
+            assert _json_literal(home) not in text
+
+    def test_log_tail_is_scrubbed_by_sanitizer_filter(self) -> None:
+        """The memory tail handler composes with ``SanitizerFilter`` the
+        way ``configure_logging`` mounts it: filter at handler level, so
+        the formatted tail never contains a credential, and a message
+        that *is* a home-relative path collapses to ``~``.
+
+        Driven through ``handler.handle`` (not ``emit``) — that is the
+        real dispatch path where handler filters run, mirroring
+        ``logger.info(...) → callHandlers → handle → filter → emit``.
+
+        Scope note: ``redact_paths`` collapses a string whose value is a
+        home path (the tool-argument case, e.g. ``{"path": ~/proj}``);
+        it is not a substring scrubber for prose. The credential shapes
+        (``sk-…``, Bearer, assignments) *are* substring-scrubbed
+        wherever they appear."""
+        _recent_lines.clear()
+        handler = _MemoryTailHandler()
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        handler.addFilter(SanitizerFilter())
+        home = str(Path.home())
+        handler.handle(_make_record("connect failed with sk-tailsecret1234567890"))
+        handler.handle(_make_record(f"{home}\\proj\\notes.txt"))
+        handler.handle(_make_record(f"{home}/proj/notes.txt"))
+        tail = get_recent_log_lines()
+        assert len(tail) == 3
+        assert "sk-tailsecret1234567890" not in tail[0]
+        assert "[REDACTED]" in tail[0]
+        if home and home not in (".", "/"):
+            assert tail[1].startswith("~"), tail[1]
+            assert home not in tail[1]
+            assert tail[2].startswith("~"), tail[2]
+            assert home not in tail[2]
