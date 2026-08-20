@@ -52,7 +52,7 @@
 - [x] R26 版本 bump 0.15.0 [done @ f86ac2b]
 
 ### M5 · v0.16.0 UI 文案统一（R27–R34）
-- [ ] R27 建 `web/src/ui/strings.ts`（中文文案单一来源）+ layout 域迁移
+- [x] R27 建 `web/src/ui/strings.ts`（中文文案单一来源）+ layout 域迁移 [done @ 98bab19]
 - [ ] R28 chat 域迁移
 - [ ] R29 settings 域迁移
 - [ ] R30 panels 域迁移
