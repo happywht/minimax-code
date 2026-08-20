@@ -36,7 +36,7 @@
 - [x] R14 版本 bump 0.13.0 + 基线数字写入 docs `[done @ 3f92b42]`（新增 `docs/performance-baseline.md`：启动 2.586s / 零裸表扫 / 首屏 123.9KB gzip / 500 条 34 行 164ms / WS 重放环 512，含复测命令与预算）
 
 ### M3 · v0.14.0 安全加固（R15–R20）
-- [ ] R15 CORS 允许列表环境变量化 `MINIMAX_CODE_CORS_ORIGINS`（默认不变）
+- [x] R15 CORS 允许列表环境变量化 `MINIMAX_CODE_CORS_ORIGINS`（默认不变）`[done @ b8bece3]`（功能已存在，本轮钉死安全边界：拒绝未列 origin / env 只追加不替换 / 无效项丢弃，4 新测试；architecture/ipc-contract/agent CLAUDE.md 三处陈旧说法同步）
 - [ ] R16 RPC 防护：畸形请求（非 JSON-RPC/超大 payload）4xx 拒绝测试
 - [ ] R17 secrets 脱敏审计：日志与错误响应不包含 API key 片段
 - [ ] R18 权限默认策略审查：工具默认 ask 清单与文档一致
