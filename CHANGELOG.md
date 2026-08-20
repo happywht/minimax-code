@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-21
+
+### Added — 性能基线（v0.13.0 Milestone 2）
+- **WS 断连事件重放**：广播事件带单调顶层 `seq`，agent 侧保留最近 **512** 条历史环；客户端重连携带 `?since=<last seq>` 即按序重放断线期间错过的事件（`agent.ready` 等生命周期帧无 `seq`、永不重放）。此前广播为 fire-and-forget，断连期间的事件永久丢失。新增 `agent/tests/test_ws_replay.py`（6 单测）与 `e2e/smoke-ws-resume.spec.ts`（断线 → 重连 → seq 递增重放断言）。前端仅在已见过 seq（`wsLastSeq > 0`）时携带 cursor，首连不重放，避免与 RPC 拉取的持久化状态重复。
+- **启动基准脚本**：`agent/tests/bench_startup.py`——冷启动到 `/health` OK 墙钟耗时（基线 2.586 s，3 轮 2.574/2.586/2.607）。
+- **首屏产物预算审计**：`web/scripts/bundle-report.mjs`（`pnpm --filter @minimax/web bundle:report`）实测 gzip 字节并对首屏预算硬断言（JS ≤ 200 KB / CSS ≤ 50 KB，超限 exit 1）。基线：首屏 JS 123.9 KB / CSS 8.2 KB gzip，346 个懒 chunk 2.8 MB gzip 按需加载。
+- **长会话渲染冒烟**：`web/tests/message-list-perf.test.tsx`——500 条消息仅挂载 34 行 DOM（两层窗口：`useMessageWindow` 50 条/页 + `useVirtualizer`），jsdom 渲染 164 ms。
+- **SQLite 索引审计**：15 条热点查询 `EXPLAIN QUERY PLAN` 逐条过，零裸表扫；`agent/tests/test_index_audit.py` 钉死索引集。
+- **性能基线文档**：`docs/performance-baseline.md`——启动/索引/首屏/长会话/WS 五项基线数字与复测命令的单一来源。
+
+### Changed
+- 版本号 0.12.0 → 0.13.0（6 处代码位 + CLAUDE.md / AGENTS.md / README.md 版本行 + `uv lock`）。
+
 ## [0.12.0] - 2026-08-20
 
 ### Added — 生产单进程模式收口（v0.12.0 Milestone 1）
