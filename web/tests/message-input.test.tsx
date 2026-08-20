@@ -117,7 +117,7 @@ describe("MessageInput", () => {
     expect(await screen.findByTestId("message-input-mention-picker")).toBeInTheDocument();
     expect(
       screen.getByTestId("message-input-mention-picker-item-repo-repo"),
-    ).toHaveTextContent("Current repository");
+    ).toHaveTextContent("当前仓库");
   });
 
   it("opens the file mention picker for #file using recent files", async () => {

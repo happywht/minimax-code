@@ -9,15 +9,15 @@
  *   - an ISO-8601 string (e.g. "2026-06-07T12:00:00Z")
  *
  * Rules (each branch is exclusive):
- *   - within 60 seconds              -> "just now"
- *   - within 60 minutes              -> "{n}m ago"
- *   - within 24 hours                -> "{n}h ago"
- *   - within 7 days                  -> "{n}d ago"
- *   - otherwise (same calendar year) -> "MMM D"   (e.g. "Jun 2")
- *   - otherwise (different year)     -> "MMM D, YYYY"
+ *   - within 60 seconds              -> "刚刚"
+ *   - within 60 minutes              -> "{n} 分钟前"
+ *   - within 24 hours                -> "{n} 小时前"
+ *   - within 7 days                  -> "{n} 天前"
+ *   - otherwise (same calendar year) -> "M月D日"
+ *   - otherwise (different year)     -> "YYYY年M月D日"
  *
- * Negative deltas (clock skew) are treated as "just now" rather than
- * "−5m ago" — the value is clamped to 0 inside the helper.
+ * Negative deltas (clock skew) are treated as "刚刚" rather than
+ * a negative "分钟前" — the value is clamped to 0 inside the helper.
  *
  * The function is pure (no `Date.now()` calls); pass `now` explicitly
  * to make tests deterministic. The default arg is convenient for UI
@@ -33,21 +33,6 @@ const MS_PER_MINUTE = 60 * MS_PER_SECOND;
 const MS_PER_HOUR = 60 * MS_PER_MINUTE;
 const MS_PER_DAY = 24 * MS_PER_HOUR;
 const DAYS_THRESHOLD_FOR_YEAR = 7;
-
-const MONTH_NAMES = [
-  "Jan",
-  "Feb",
-  "Mar",
-  "Apr",
-  "May",
-  "Jun",
-  "Jul",
-  "Aug",
-  "Sep",
-  "Oct",
-  "Nov",
-  "Dec",
-] as const;
 
 /** Convert input (epoch-ms number or ISO string) to epoch-ms. */
 function toMs(input: number | string): number {
@@ -66,26 +51,26 @@ export function formatRelative(
   const delta = Math.max(0, now - timestampMs);
 
   if (delta < MS_PER_MINUTE) {
-    return "just now";
+    return "刚刚";
   }
   if (delta < MS_PER_HOUR) {
-    return `${Math.floor(delta / MS_PER_MINUTE)}m ago`;
+    return `${Math.floor(delta / MS_PER_MINUTE)} 分钟前`;
   }
   if (delta < MS_PER_DAY) {
-    return `${Math.floor(delta / MS_PER_HOUR)}h ago`;
+    return `${Math.floor(delta / MS_PER_HOUR)} 小时前`;
   }
   if (delta < DAYS_THRESHOLD_FOR_YEAR * MS_PER_DAY) {
-    return `${Math.floor(delta / MS_PER_DAY)}d ago`;
+    return `${Math.floor(delta / MS_PER_DAY)} 天前`;
   }
 
   const ts = new Date(timestampMs);
   const ref = new Date(now);
-  const month = MONTH_NAMES[ts.getMonth()] ?? "—";
+  const month = ts.getMonth() + 1;
   const day = ts.getDate();
   if (ts.getFullYear() === ref.getFullYear()) {
-    return `${month} ${day}`;
+    return `${month}月${day}日`;
   }
-  return `${month} ${day}, ${ts.getFullYear()}`;
+  return `${ts.getFullYear()}年${month}月${day}日`;
 }
 
 /**

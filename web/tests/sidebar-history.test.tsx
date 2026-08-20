@@ -165,9 +165,9 @@ describe("Sidebar history list", () => {
     const recent = screen.getByTestId("sidebar-session-time-ses_recent");
     const hours = screen.getByTestId("sidebar-session-time-ses_hours");
     const days = screen.getByTestId("sidebar-session-time-ses_days");
-    expect(recent.textContent).toBe("just now");
-    expect(hours.textContent).toBe("3h ago");
-    expect(days.textContent).toBe("2d ago");
+    expect(recent.textContent).toBe("刚刚");
+    expect(hours.textContent).toBe("3 小时前");
+    expect(days.textContent).toBe("2 天前");
   });
 
   it("scrollable: the list element uses overflow-y-auto and a max-height", () => {

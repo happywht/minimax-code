@@ -128,9 +128,9 @@ export function repoMentionOptions(): MentionOption[] {
     {
       kind: "repo",
       id: "repo",
-      label: "Current repository",
-      detail: "Search the indexed codebase",
-      searchText: "repo current repository",
+      label: "当前仓库",
+      detail: "搜索已索引的代码库",
+      searchText: "repo current repository 仓库 当前",
       payload: null,
     },
   ];

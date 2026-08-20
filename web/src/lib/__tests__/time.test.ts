@@ -10,52 +10,52 @@ import { formatRelative, formatDateTime, formatTime } from "../time";
 describe("formatRelative", () => {
   const NOW = 1_700_000_000_000; // fixed reference point
 
-  it("shows 'just now' for timestamps within 60 seconds", () => {
-    expect(formatRelative(NOW, NOW)).toBe("just now");
-    expect(formatRelative(NOW - 30_000, NOW)).toBe("just now");
-    expect(formatRelative(NOW - 59_999, NOW)).toBe("just now");
+  it("shows '刚刚' for timestamps within 60 seconds", () => {
+    expect(formatRelative(NOW, NOW)).toBe("刚刚");
+    expect(formatRelative(NOW - 30_000, NOW)).toBe("刚刚");
+    expect(formatRelative(NOW - 59_999, NOW)).toBe("刚刚");
   });
 
   it("shows minutes for timestamps within 60 minutes", () => {
-    expect(formatRelative(NOW - 60_000, NOW)).toBe("1m ago");
-    expect(formatRelative(NOW - 3_599_999, NOW)).toBe("59m ago");
+    expect(formatRelative(NOW - 60_000, NOW)).toBe("1 分钟前");
+    expect(formatRelative(NOW - 3_599_999, NOW)).toBe("59 分钟前");
   });
 
   it("shows hours for timestamps within 24 hours", () => {
-    expect(formatRelative(NOW - 3_600_000, NOW)).toBe("1h ago");
-    expect(formatRelative(NOW - 86_399_999, NOW)).toBe("23h ago");
+    expect(formatRelative(NOW - 3_600_000, NOW)).toBe("1 小时前");
+    expect(formatRelative(NOW - 86_399_999, NOW)).toBe("23 小时前");
   });
 
   it("shows days for timestamps within 7 days", () => {
-    expect(formatRelative(NOW - 86_400_000, NOW)).toBe("1d ago");
-    expect(formatRelative(NOW - 6 * 86_400_000, NOW)).toBe("6d ago");
+    expect(formatRelative(NOW - 86_400_000, NOW)).toBe("1 天前");
+    expect(formatRelative(NOW - 6 * 86_400_000, NOW)).toBe("6 天前");
   });
 
-  it("shows 'MMM D' for older timestamps in the same year", () => {
+  it("shows 'M月D日' for older timestamps in the same year", () => {
     // 10 days ago
     const ts = NOW - 10 * 86_400_000;
     const result = formatRelative(ts, NOW);
-    // Should be like "Jun 9" — exact month depends on the date
-    expect(result).toMatch(/^[A-Z][a-z]{2} \d{1,2}$/);
+    // Should be like "11月4日" — exact month depends on the date
+    expect(result).toMatch(/^\d{1,2}月\d{1,2}日$/);
   });
 
-  it("shows 'MMM D, YYYY' for different year", () => {
+  it("shows 'YYYY年M月D日' for different year", () => {
     // NOW = 1_700_000_000_000 ≈ Nov 14, 2023
     // Use a date in 2022 — clearly a different year, > 7 days ago
     const oldTs = new Date("2022-03-15T12:00:00Z").getTime();
     const result = formatRelative(oldTs, NOW);
     expect(result).toContain("2022");
-    expect(result).toMatch(/[A-Z][a-z]{2} \d{1,2}, \d{4}/);
+    expect(result).toMatch(/^\d{4}年\d{1,2}月\d{1,2}日$/);
   });
 
   it("accepts ISO string input", () => {
     const iso = new Date(NOW - 5 * 60_000).toISOString();
-    expect(formatRelative(iso, NOW)).toBe("5m ago");
+    expect(formatRelative(iso, NOW)).toBe("5 分钟前");
   });
 
-  it("clamps negative deltas (clock skew) to 'just now'", () => {
+  it("clamps negative deltas (clock skew) to '刚刚'", () => {
     // Timestamp in the future
-    expect(formatRelative(NOW + 300_000, NOW)).toBe("just now");
+    expect(formatRelative(NOW + 300_000, NOW)).toBe("刚刚");
   });
 
   it("returns '—' for invalid input", () => {

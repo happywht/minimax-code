@@ -1092,6 +1092,12 @@ export const strings = {
       failedTitle: "子 Agent 失败",
     },
   },
+  a11y: {
+    navigation: "导航",
+    closeOverlay: "关闭浮层",
+    closeDialog: "关闭对话框",
+    loading: "加载中",
+  },
 } as const;
 
 export type Strings = typeof strings;

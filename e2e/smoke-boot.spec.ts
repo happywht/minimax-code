@@ -53,8 +53,8 @@ test("boot: demo mode points directly to provider configuration", async ({ page 
 
   const banner = page.getByTestId("provider-readiness-banner");
   await expect(banner).toBeVisible({ timeout: 10_000 });
-  await expect(banner).toContainText("Demo Mode");
-  await expect(banner).toContainText("mock responses");
+  await expect(banner).toContainText("演示模式");
+  await expect(banner).toContainText("模拟响应");
 
   await page.getByTestId("provider-readiness-action").click();
   await expect(page.getByTestId("settings-providers")).toBeVisible();
@@ -111,34 +111,34 @@ test("settings: management forms stay labeled and usable on a narrow viewport", 
   };
 
   await page.getByTestId("settings-tab-permissions").click();
-  await expectFullWidth(page.getByLabel("Tool"));
-  await expectFullWidth(page.getByLabel("Decision"));
+  await expectFullWidth(page.getByLabel("工具"));
+  await expectFullWidth(page.getByLabel("决策"));
 
   await page.getByTestId("settings-tab-scheduled").click();
-  await expectFullWidth(page.getByLabel("Job Name"));
-  await expectFullWidth(page.getByLabel("Cron Expression"));
+  await expectFullWidth(page.getByLabel("任务名称"));
+  await expectFullWidth(page.getByLabel("Cron 表达式"));
 
   await page.getByTestId("settings-tab-agents").click();
   await page.getByTestId("settings-agent-create").click();
-  await expectFullWidth(page.getByLabel("Agent Name"));
+  await expectFullWidth(page.getByLabel("Agent 名称"));
 
   await page.getByTestId("settings-tab-teams").click();
   await page.getByTestId("settings-team-create").click();
-  await expectFullWidth(page.getByLabel("Team Name"));
-  await expectFullWidth(page.getByLabel("Orchestration"));
+  await expectFullWidth(page.getByLabel("名称"));
+  await expectFullWidth(page.getByLabel("编排模式"));
 
   await page.getByTestId("settings-tab-webhooks").click();
   await page.getByTestId("webhook-create-btn").click();
-  await expectFullWidth(page.getByLabel("Source"));
-  await expectFullWidth(page.getByLabel("Action"));
+  await expectFullWidth(page.getByLabel("来源"));
+  await expectFullWidth(page.getByLabel("动作"));
 
   await page.getByTestId("settings-tab-workflows").click();
   await page.getByTestId("workflow-create-btn").click();
-  await expectFullWidth(page.getByLabel("Trigger"));
-  await expectFullWidth(page.getByLabel("Description"));
+  await expectFullWidth(page.getByLabel("触发器"));
+  await expectFullWidth(page.getByLabel("描述"));
 
   await page.getByTestId("settings-tab-audit").click();
-  await expect(page.getByLabel("Filter by tool:")).toBeVisible();
+  await expect(page.getByLabel("按工具筛选：")).toBeVisible();
 });
 
 test("settings: destructive provider deletion requires explicit confirmation", async ({ page }) => {
@@ -148,7 +148,7 @@ test("settings: destructive provider deletion requires explicit confirmation", a
   await expect(page.getByTestId("settings-providers")).toBeVisible();
 
   await page.getByTestId("settings-provider-add").click();
-  await page.getByLabel("Name", { exact: true }).fill("E2E Provider");
+  await page.getByLabel("名称", { exact: true }).fill("E2E Provider");
   await page.getByLabel("Base URL").fill("https://example.invalid/v1");
   await page.getByTestId("settings-provider-form-submit").click();
 
@@ -157,13 +157,13 @@ test("settings: destructive provider deletion requires explicit confirmation", a
   });
   await expect(providerCard).toBeVisible();
 
-  await providerCard.getByRole("button", { name: "Delete provider" }).click();
-  await expect(page.getByRole("alertdialog")).toContainText("Delete E2E Provider?");
+  await providerCard.getByRole("button", { name: "删除 Provider" }).click();
+  await expect(page.getByRole("alertdialog")).toContainText("删除 E2E Provider");
   await expect(page.getByTestId("confirmation-cancel")).toBeFocused();
   await page.getByTestId("confirmation-cancel").click();
   await expect(providerCard).toBeVisible();
 
-  await providerCard.getByRole("button", { name: "Delete provider" }).click();
+  await providerCard.getByRole("button", { name: "删除 Provider" }).click();
   await page.getByTestId("confirmation-confirm").click();
   await expect(providerCard).toHaveCount(0);
 });

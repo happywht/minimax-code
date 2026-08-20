@@ -6,6 +6,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { useFocusTrap } from "../lib/useFocusTrap";
 import { IconButton } from "./IconButton";
+import { strings } from "./strings";
 
 export interface ModalProps {
   /** Dialog title shown in the header. */
@@ -68,7 +69,7 @@ export function Modal({
         <header className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-line px-4">
           <h2 className="truncate text-sm font-semibold text-ink-0">{title}</h2>
           <IconButton
-            aria-label="Close dialog"
+            aria-label={strings.a11y.closeDialog}
             onClick={onClose}
             data-testid={testId ? `${testId}-close` : undefined}
           >

@@ -15,6 +15,7 @@ import {
   toast,
 } from "./components";
 import { fetchHealth, ipc, typedIPC } from "./ipc";
+import { strings } from "./ui/strings";
 import {
   initNotificationStore,
   useChat,
@@ -273,7 +274,7 @@ export default function App() {
               className="fixed inset-0 z-40 md:hidden"
               role="dialog"
               aria-modal="true"
-              aria-label="Navigation"
+              aria-label={strings.a11y.navigation}
             >
               <div
                 className="absolute inset-0 bg-surface-overlay"
@@ -378,7 +379,7 @@ function WorkspaceOverlay({
     >
       <button
         type="button"
-        aria-label="Close overlay"
+        aria-label={strings.a11y.closeOverlay}
         className="absolute inset-0 cursor-default"
         onClick={onClose}
       />
