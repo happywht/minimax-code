@@ -57,7 +57,7 @@
 - [x] R29 settings 域迁移 [done @ 849235f]
 - [x] R30 panels 域迁移 [done @ ea58f0b]
 - [x] R31 modals 域迁移 [done @ 379f5f5]
-- [ ] R32 right-panel 域迁移
+- [x] R32 right-panel 域迁移 [done @ 1b11b58]
 - [ ] R33 全量 grep 清零英文面向用户文案（技术术语保留原文）
 - [ ] R34 版本 bump 0.16.0
 
