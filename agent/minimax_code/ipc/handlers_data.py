@@ -6,7 +6,11 @@
     The payload is self-describing: ``format`` / ``schema_version`` /
     ``app_version`` / ``exported_at`` headers plus per-table row lists.
 
-Import (``data.import``) lands in R22 and consumes this exact shape.
+``data.import`` (R22)
+    Validate and replace-import such an envelope inside a single
+    transaction — truncate each envelope table, then refill it from
+    the envelope rows. Idempotent: importing the same file twice
+    leaves the database in the same state as importing it once.
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .handler_utils import HandlerError
-from .protocol import INTERNAL_ERROR
+from .protocol import INTERNAL_ERROR, INVALID_PARAMS
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -78,6 +82,129 @@ async def dump_database(db: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Import (R22)
+# ---------------------------------------------------------------------------
+
+
+def _validate_envelope(envelope: Any, current_schema_version: int) -> None:
+    """Structural + compatibility validation; raises ValueError on bad input."""
+    if not isinstance(envelope, dict):
+        raise ValueError("envelope must be an object")
+    if envelope.get("format") != EXPORT_FORMAT:
+        raise ValueError(f"envelope.format must be {EXPORT_FORMAT!r}")
+    tables = envelope.get("tables")
+    if not isinstance(tables, dict) or not all(
+        isinstance(rows, list) and all(isinstance(r, dict) for r in rows)
+        for rows in tables.values()
+    ):
+        raise ValueError("envelope.tables must map table name -> list of row objects")
+    schema_version = envelope.get("schema_version")
+    if not isinstance(schema_version, int) or isinstance(schema_version, bool):
+        raise ValueError("envelope.schema_version must be an integer")
+    if schema_version > current_schema_version:
+        raise ValueError(
+            f"export schema_version {schema_version} is newer than this install's "
+            f"{current_schema_version}; upgrade the app before importing"
+        )
+
+
+async def _business_table_columns(db: Any) -> dict[str, list[str]]:
+    """Map every business table name -> ordered column-name whitelist."""
+    schema_rows = await db.fetchall(
+        "SELECT name, sql FROM sqlite_master "
+        "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' "
+        "ORDER BY name"
+    )
+    columns: dict[str, list[str]] = {}
+    for row in schema_rows:
+        name = row["name"]
+        if name in _EXCLUDED_TABLES or _is_virtual_table(row["sql"]):
+            continue
+        info = await db.fetchall(f'PRAGMA table_info("{name}")')
+        columns[name] = [r["name"] for r in info]
+    return columns
+
+
+async def restore_database(db: Any, envelope: dict[str, Any]) -> dict[str, Any]:
+    """Replace-import *envelope* into *db* inside a single transaction.
+
+    Semantics (R22 scope):
+
+    * **Replace, not merge** — every table present in the envelope is
+      ``DELETE``-d fully, then repopulated from the envelope rows. Tables
+      absent from the envelope keep their current contents, which makes
+      re-importing the same file idempotent (import twice == import once).
+    * **Column whitelist** — row keys are intersected with the target
+      table's ``PRAGMA table_info`` columns; unknown keys (schema drift
+      between export and import) are dropped, missing columns fall back
+      to SQL defaults. Values are always bound parameters.
+    * **All-or-nothing** — the whole import runs in one ``BEGIN IMMEDIATE``
+      transaction; any failure rolls the database back untouched.
+
+    Returns ``{imported: {table: rows}, skipped_tables: [...]}``.
+    """
+    current = await db.applied_versions()
+    _validate_envelope(envelope, max(current) if current else 0)
+
+    columns_by_table = await _business_table_columns(db)
+    envelope_tables = envelope["tables"]
+
+    # FK enforcement must be off for the truncate-and-refill dance (SQLite
+    # bulk-load idiom); PRAGMA is a no-op inside a transaction, so toggle it
+    # before BEGIN and restore it in the finally block below.
+    await db.execute("PRAGMA foreign_keys=OFF")
+    imported: dict[str, int] = {}
+    skipped: list[str] = []
+    try:
+        async with db.transaction() as conn:
+            for table in sorted(envelope_tables):
+                if table not in columns_by_table:
+                    # Table no longer exists in this install (schema drift).
+                    skipped.append(table)
+                    continue
+                whitelist = columns_by_table[table]
+                # Column set = whitelist ∩ union of envelope row keys, so
+                # drifted columns are dropped and columns absent from every
+                # row keep their SQL DEFAULT instead of a forced NULL.
+                keys = set()
+                for row in envelope_tables[table]:
+                    keys.update(row)
+                cols = [c for c in whitelist if c in keys]
+                if not cols:
+                    # Envelope rows carry no known columns (e.g. an empty
+                    # table dumped as [{}]) — just truncate.
+                    await conn.execute(f'DELETE FROM "{table}"')  # noqa: S608
+                    imported[table] = 0
+                    continue
+                # Column names come from PRAGMA table_info (trusted schema
+                # metadata), never from the envelope — not injectable.
+                col_list = ", ".join(f'"{c}"' for c in cols)
+                placeholders = ", ".join("?" for _ in cols)
+                # ``table`` was matched against the whitelist above.
+                await conn.execute(f'DELETE FROM "{table}"')  # noqa: S608
+                payload = [
+                    tuple(row.get(c) for c in cols) for row in envelope_tables[table]
+                ]
+                if payload:
+                    await conn.executemany(
+                        f'INSERT INTO "{table}" ({col_list}) '  # noqa: S608
+                        f"VALUES ({placeholders})",
+                        payload,
+                    )
+                imported[table] = len(payload)
+    finally:
+        await db.execute("PRAGMA foreign_keys=ON")
+
+    logger.info(
+        "data.import: %d tables, %d rows total, %d skipped",
+        len(imported),
+        sum(imported.values()),
+        len(skipped),
+    )
+    return {"imported": imported, "skipped_tables": skipped}
+
+
+# ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
 
@@ -107,10 +234,46 @@ async def _handle_data_export(params: Any, ctx: Context) -> None:
         await ctx.reply_error(INTERNAL_ERROR, "data.export failed")
 
 
+async def _handle_data_import(params: Any, ctx: Context) -> None:
+    """``data.import`` — params ``{envelope}``; replace-imports it."""
+    try:
+        from ..app import get_db
+
+        db = get_db()
+        if db is None:
+            await ctx.reply_error(
+                INTERNAL_ERROR,
+                "storage not initialised; nowhere to import",
+            )
+            return
+        envelope = (params or {}).get("envelope") if isinstance(params, dict) else None
+        if envelope is None:
+            await ctx.reply_error(
+                INVALID_PARAMS, "data.import requires an 'envelope' object"
+            )
+            return
+        summary = await restore_database(db, envelope)
+        await ctx.reply(summary)
+    except ValueError as exc:
+        # Envelope validation failure — caller's fault, not an internal error.
+        await ctx.reply_error(INVALID_PARAMS, str(exc))
+    except HandlerError as exc:
+        await ctx.reply_error(exc.code, exc.message)
+    except Exception:
+        logger.exception("data.import failed")
+        await ctx.reply_error(INTERNAL_ERROR, "data.import failed")
+
+
 def register_data_handlers(server: Any) -> None:
     """Register all ``data.*`` JSON-RPC methods on *server*."""
     server.register("data.export", _handle_data_export)
+    server.register("data.import", _handle_data_import)
     logger.debug("registered data.* handlers")
 
 
-__all__ = ["EXPORT_FORMAT", "dump_database", "register_data_handlers"]
+__all__ = [
+    "EXPORT_FORMAT",
+    "dump_database",
+    "register_data_handlers",
+    "restore_database",
+]

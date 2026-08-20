@@ -353,7 +353,13 @@ class AsyncDatabase:
     async def connect(self) -> None:
         if self._conn is not None:
             return
-        self._conn = await aiosqlite.connect(str(self.path))
+        # isolation_level=None matches the sync wrapper: we manage
+        # transactions explicitly (BEGIN IMMEDIATE via transaction()).
+        # The sqlite3 legacy implicit-transaction mode would leave DML
+        # issued through bare execute() uncommitted — silently lost on
+        # close — and make a later BEGIN fail with "cannot start a
+        # transaction within a transaction".
+        self._conn = await aiosqlite.connect(str(self.path), isolation_level=None)
         self._conn.row_factory = aiosqlite.Row
         if self._pragmas:
             for name, value in _DEFAULT_PRAGMAS:

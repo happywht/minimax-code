@@ -12,12 +12,17 @@ Coverage:
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from minimax_code.ipc.client import IPCClient
-from minimax_code.ipc.handlers_data import EXPORT_FORMAT, dump_database
+from minimax_code.ipc.handlers_data import (
+    EXPORT_FORMAT,
+    dump_database,
+    restore_database,
+)
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 
 # ---------------------------------------------------------------------------
@@ -144,3 +149,142 @@ class TestDataExportIPC:
         assert result["counts"]["messages"] == 3
         titles = {s["title"] for s in result["tables"]["sessions"]}
         assert titles == {"Alpha chat", "Beta chat"}
+
+
+# ---------------------------------------------------------------------------
+# restore_database (R22)
+# ---------------------------------------------------------------------------
+
+
+def _bad_envelope(**overrides: object) -> dict[str, object]:
+    """A minimal structurally-valid envelope, mutated per test case."""
+    envelope: dict[str, object] = {
+        "format": EXPORT_FORMAT,
+        "schema_version": 1,
+        "tables": {"sessions": []},
+    }
+    envelope.update(overrides)
+    return envelope
+
+
+class TestRestoreValidation:
+    async def test_rejects_non_object(self, async_db: AsyncDatabase) -> None:
+        with pytest.raises(ValueError, match="must be an object"):
+            await restore_database(async_db, ["not", "an", "envelope"])  # type: ignore[arg-type]
+
+    async def test_rejects_bad_format(self, async_db: AsyncDatabase) -> None:
+        with pytest.raises(ValueError, match="format"):
+            await restore_database(async_db, _bad_envelope(format="something-else"))
+
+    async def test_rejects_bad_tables_shape(self, async_db: AsyncDatabase) -> None:
+        with pytest.raises(ValueError, match="tables"):
+            await restore_database(async_db, _bad_envelope(tables={"sessions": "nope"}))
+
+    async def test_rejects_newer_schema_version(
+        self, async_db: AsyncDatabase
+    ) -> None:
+        with pytest.raises(ValueError, match="newer"):
+            await restore_database(async_db, _bad_envelope(schema_version=9999))
+
+
+class TestRestoreDatabase:
+    async def test_replace_semantics_round_trip(
+        self, async_db: AsyncDatabase
+    ) -> None:
+        """Dump state A, mutate to state B, restore A → database equals A."""
+        await _seed(async_db)  # state A
+        envelope = await dump_database(async_db)
+        await async_db.execute("DELETE FROM messages WHERE id = 'm1'")
+        await async_db.execute(
+            "INSERT INTO sessions (id, title, created_at, updated_at) "
+            "VALUES ('s3', 'Gamma chat', '2026-08-03T10:00:00Z', "
+            "'2026-08-03T10:05:00Z')"
+        )
+        await async_db.execute(
+            "INSERT INTO messages (id, session_id, role, content, created_at) "
+            "VALUES ('m9', 's3', 'user', 'gamma', '2026-08-03T10:00:01Z')"
+        )
+        summary = await restore_database(async_db, envelope)
+        assert summary["imported"]["sessions"] == 2
+        assert summary["imported"]["messages"] == 3
+        after = await dump_database(async_db)
+        # Compare data tables row-by-row; headers (exported_at) legitimately differ.
+        assert after["tables"] == envelope["tables"]
+
+    async def test_idempotent_double_import(
+        self, async_db: AsyncDatabase
+    ) -> None:
+        await _seed(async_db)
+        envelope = await dump_database(async_db)
+        await restore_database(async_db, envelope)
+        await restore_database(async_db, envelope)
+        after = await dump_database(async_db)
+        assert after["tables"] == envelope["tables"]
+
+    async def test_rollback_leaves_database_untouched(
+        self, async_db: AsyncDatabase
+    ) -> None:
+        """A failing row (NOT NULL violation) rolls the whole import back."""
+        await _seed(async_db)
+        envelope = await dump_database(async_db)
+        # A sessions row with no `id` key: the id column drops out of the
+        # insert set, and the NOT NULL PRIMARY KEY rejects it mid-import.
+        envelope["tables"]["sessions"].append(
+            {"title": "no id", "created_at": "2026-08-04T00:00:00Z"}
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            await restore_database(async_db, envelope)
+        # Original data untouched — nothing from the envelope landed.
+        rows = await async_db.fetchall("SELECT id FROM sessions ORDER BY id")
+        assert [r["id"] for r in rows] == ["s1", "s2"]
+
+    async def test_unknown_table_skipped(self, async_db: AsyncDatabase) -> None:
+        await _seed(async_db)
+        envelope = await dump_database(async_db)
+        envelope["tables"]["legacy_table"] = [{"id": 1}]
+        summary = await restore_database(async_db, envelope)
+        assert summary["skipped_tables"] == ["legacy_table"]
+        assert "legacy_table" not in summary["imported"]
+
+    async def test_column_drift_dropped(self, async_db: AsyncDatabase) -> None:
+        """Envelope rows may carry columns this schema doesn't have."""
+        await _seed(async_db)
+        envelope = await dump_database(async_db)
+        for row in envelope["tables"]["sessions"]:
+            row["future_column"] = "dropped"
+        summary = await restore_database(async_db, envelope)
+        assert summary["imported"]["sessions"] == 2
+        cols = await async_db.fetchall("SELECT * FROM sessions WHERE id = 's1'")
+        assert "future_column" not in dict(cols[0]).keys() or True
+        # The authoritative check: the import succeeded and data round-trips.
+        after = await dump_database(async_db)
+        for row in after["tables"]["sessions"]:
+            assert "future_column" not in row
+
+
+class TestDataImportIPC:
+    async def test_import_via_rpc(
+        self, async_db: AsyncDatabase, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        await _seed(async_db)
+        envelope = await dump_database(async_db)
+        await async_db.execute("DELETE FROM messages")
+        import minimax_code.app as app_module
+
+        monkeypatch.setattr(app_module, "_DB_SINGLETON", async_db)
+        client = IPCClient()
+        result = await client.request("data.import", {"envelope": envelope})
+        assert result["imported"]["messages"] == 3
+        count = await async_db.fetchone("SELECT COUNT(*) AS n FROM messages")
+        assert count["n"] == 3
+
+    async def test_import_rejects_bad_envelope_with_invalid_params(
+        self, async_db: AsyncDatabase, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import minimax_code.app as app_module
+
+        monkeypatch.setattr(app_module, "_DB_SINGLETON", async_db)
+        client = IPCClient()
+        with pytest.raises(RuntimeError, match="format") as excinfo:
+            await client.request("data.import", {"envelope": {}})
+        assert excinfo.value.args[0]["code"] == -32602

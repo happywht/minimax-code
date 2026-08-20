@@ -239,6 +239,7 @@ on the next `readline() == ""`.
 | `codebase.status` / `codebase.build_index` / `codebase.search` / `codebase.summarize` | req/res | Codebase indexing and retrieval (v0.11.0 Milestone 2). |
 | `memory.list` / `memory.add` / `memory.delete` / `memory.search` / `memory.extract` | req/res | Long-term memory management (v0.11.0 Milestone 3). |
 | `data.export`               | req/res   | Data portability (R21): dump every business table into one self-describing JSON envelope. See §6 for the envelope shape. |
+| `data.import`               | req/res   | Data portability (R22): validate + replace-import such an envelope in one transaction (idempotent). See §6. |
 
 ### `model.list` response — reasoning-effort fields (R58)
 
@@ -887,6 +888,7 @@ real behaviour.
 | Method | Params | Result | Notes |
 |--------|--------|--------|-------|
 | `data.export` | `{}` | envelope (below) | Dump every business table into a single JSON document; the frontend turns it into a downloaded file. |
+| `data.import` | `{envelope}` | `{imported: {table: rows}, skipped_tables: [...]}` | Validate and replace-import an export envelope inside one transaction. |
 
 **Export envelope** (the RPC result itself):
 
@@ -913,6 +915,26 @@ Semantics:
   row count and `set(counts) == set(tables)` always holds.
 * Storage not initialised (e.g. `MINIMAX_CODE_NO_DB=1`) replies
   `-32603` with a "storage not initialised" message instead of an empty dump.
+
+**`data.import` semantics (R22):**
+
+* Validation first, `-32602` on failure: envelope must be an object with
+  `format == "minimax-code-export"`, `tables` mapping to lists of row
+  objects, and an integer `schema_version` **no newer than** this
+  install's (importing a future export is rejected — upgrade first).
+* **Replace, not merge** — each envelope table is fully `DELETE`-d then
+  refilled; tables absent from the envelope keep their current rows.
+  Re-importing the same file is therefore idempotent.
+* **Column whitelist** — row keys are intersected with the target
+  table's `PRAGMA table_info` columns (drifted columns dropped, absent
+  columns fall back to SQL defaults); values are always bound
+  parameters. Envelope tables unknown to this install are reported in
+  `skipped_tables`, not fatal.
+* **All-or-nothing** — the whole import runs inside one
+  `BEGIN IMMEDIATE` transaction with `PRAGMA foreign_keys=OFF` around it
+  (SQLite bulk-load idiom); any failure rolls back to the pre-import
+  state. FTS indexes stay in sync via the existing triggers on
+  `memories`; vec indexes are rebuilt by re-indexing.
 
 ## 7. Event names
 
