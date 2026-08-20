@@ -9,8 +9,8 @@
  * - Fails fast when the dedicated port is occupied or the isolated
  *   agent does not become healthy.
  */
-import { spawn, ChildProcess } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, ChildProcess, execSync } from "node:child_process";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -83,6 +83,30 @@ async def search_codebase(indexer: CodebaseIndexer, query: str):
     return {"query": query, "results": []}
 `,
   );
+}
+
+/**
+ * Ensure web/dist exists before the agent spawns.
+ *
+ * The agent decides its StaticFiles mount once at app-build time
+ * (`_web_dist_dir()` runs inside `build_app`), so a missing dist at
+ * spawn means the production-mode specs would silently test nothing.
+ * Building here keeps `pnpm test:e2e` self-sufficient; an existing
+ * dist is reused as-is (force a rebuild by deleting web/dist).
+ */
+function ensureWebDist(): void {
+  const distIndex = join(REPO_ROOT, "web", "dist", "index.html");
+  if (existsSync(distIndex)) return;
+  console.log("[global-setup] web/dist missing — running pnpm build");
+  execSync("pnpm build", {
+    cwd: REPO_ROOT,
+    stdio: "inherit",
+    shell: isWindows(),
+    timeout: 180_000,
+  });
+  if (!existsSync(distIndex)) {
+    throw new Error("pnpm build finished but web/dist/index.html is still missing");
+  }
 }
 
 function spawnAgent(): ChildProcess {
@@ -168,6 +192,7 @@ async function waitForHealth(): Promise<boolean> {
 
 export default async function globalSetup(): Promise<void> {
   await assertPortAvailable();
+  ensureWebDist();
   rmSync(DATA_DIR, { recursive: true, force: true });
   seedCodebaseWorkspace();
   mkdirSync(RUNTIME_DIR, { recursive: true });
