@@ -88,7 +88,7 @@
 - [x] R52 版本 bump 1.0.0-rc.1 [done @ 6f0b6e2 — 首个 pre-release 挖出 PEP 440 ↔ semver 规范碰撞：metadata 报 `1.0.0rc1` 连字符被吃、`installed_semver()` 在自家版本上抛错——桥接修复 + diag.export 改报 semver 形态 + 4 新测试；13 文件，10129 pytest / 622 vitest / ruff / eslint 0/0 全绿]
 
 ### M10 · 1.0.0 正式（R53–R54）
-- [ ] R53 发布公告 `docs/release-1.0.0.md` + README 徽章/版本终稿
+- [x] R53 发布公告 `docs/release-1.0.0.md` + README 徽章/版本终稿 [done @ aa83a7c — 公告按九条验收标准逐条对账 + 核心数字速览 + 八版本表 + 0.x 升级说明；README 四静态徽章（version/python/node/local-first）+ 版本行指向公告]
 - [ ] R54 版本 bump **1.0.0** 🎉
 
 ## 轮次执行规约
