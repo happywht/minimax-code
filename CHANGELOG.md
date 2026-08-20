@@ -7,11 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0-rc.1] - 2026-08-21
+## [1.0.0] - 2026-08-21
 
-### 1.0.0 总览（R51 汇总——0.12.0 → 1.0.0，八里程碑 54 轮迭代收口）
+### 1.0.0 总览（R51 汇总 · R54 转正——0.12.0 → 1.0.0，十里程碑 54 轮迭代收官）
 
-1.0.0 是 v0.11.0 之上连续八个功能版本 + rc 收口的成果。各版本详录见下方分节，此处一屏总览：
+1.0.0 是 v0.11.0 之上连续八个功能版本 + rc 收口 + 正式发布的成果。各版本详录见下方分节，此处一屏总览：
 
 | 里程碑 | 版本 | 主题 | 代表性成果 |
 |--------|------|------|-----------|
@@ -24,10 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | M7 | 0.18.0 | 文档完备 | README 重写、198 行用户手册、IPC 文档对账 + 双向守护测试、五文档全量对账 |
 | M8 | 0.19.0 | 诊断工具 | `diag.export` 脱敏诊断包（无 keyring 值 / 无绝对用户路径，故障态降级可用）+ 前端导出入口 |
 | M9 | 1.0.0-rc | 质量收口 | 四面全量回归、R32 断言债清偿、flaky 清零（e2e 三连跑）、rc 发布性能数字复测 |
+| M10 | 1.0.0 | 正式发布 | 发布公告 `docs/release-1.0.0.md`（九条验收标准逐条对账）、README 徽章终稿、版本转正 |
 
-**1.0.0-rc 质量数字**：pytest 10125 passed / 15 skipped；vitest 622/622（77 文件）；e2e 21/21（10 spec，三连跑 31.0 / 31.3 / 31.7 s 零失败）；ESLint 0 errors / 0 warnings；`-m security` 151 测试。
+**1.0.0 发布质量数字**：pytest 10129 passed / 15 skipped；vitest 622/622（77 文件）；e2e 21/21（10 spec，三连跑 31.0 / 31.3 / 31.7 s 零失败）；ESLint 0 errors / 0 warnings；`-m security` 151 测试。
 **性能基线（R50 发布复测）**：冷启动 median 2.589 s（预算 ≤5 s）；首屏 JS 136.7 KB / CSS 8.2 KB gzip（预算 200 / 50 KB）；500 条消息长会话仅挂载 34 行 DOM；WS 断连重放 ≤512 条；SQLite 热点查询零裸表扫。详见 `docs/performance-baseline.md`。
 **规模**：168 个 IPC 方法（36 命名空间）、24 张实体表（+FTS/vec 虚表，25 个迁移）、29 个前端 stores、设置页 14 tab、检查器 11 tab、12 个内置技能。
+
+### Changed
+- 版本号 1.0.0-rc.1 → **1.0.0**（R54 · 54 轮收官：6 处代码位 + CLAUDE.md / AGENTS.md 版本行 + `uv lock`；README 版本行与徽章已于 R53 终稿）。stable bump 将 `test_installed_semver_live_metadata_is_parseable` 断言推进为 `v.pre is None`——稳定版无 prerelease 即契约（rc.1 时代断言 `"rc.1"`）。发布公告见 `docs/release-1.0.0.md`。
+
+## [1.0.0-rc.1] - 2026-08-21
 
 ### Fixed — 1.0.0-rc 质量收口（v0.19.0 后，R49–R50）
 - **e2e 断言债清偿（R49）**：R32 文案中文化迁移时 e2e 断言未同步，挖出 8 处断言债修复——placeholder 英文残留（smoke-chat / smoke-thinking-count / smoke-subagent / production-mode 共 5 处改中文）、`getByLabel("决策")` / `getByRole("移除")` 默认子串匹配与中文化 aria-label 撞车（2 处加 `{ exact: true }`）、codebase 统计文案 `Files:/Chunks:` → `文件：/分块：` 与 `Sources` → `来源`、subagent 状态 `completed|failed` → `已完成|失败`。附带发现 production-mode 用的 `web/dist` 过期 4 小时（R32 之前构建），强制重建后验证诊断功能与中文文案均入包。

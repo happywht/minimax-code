@@ -181,4 +181,6 @@ def test_installed_semver_live_metadata_is_parseable():
     v = V.installed_semver()
     assert isinstance(v, V.Version)
     assert (v.major, v.minor, v.patch) == (1, 0, 0)
-    assert v.pre == "rc.1"
+    # Stable 1.0.0: no prerelease segment (the rc.1 era asserted v.pre == "rc.1";
+    # the stable bump makes the absence itself the contract).
+    assert v.pre is None
