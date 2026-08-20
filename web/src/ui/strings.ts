@@ -1080,6 +1080,7 @@ export const strings = {
       agentCount: (completed: number, total: number) => `${completed}/${total} 个 Agent`,
       running: (name: string) => `正在运行：${name}`,
       conflicts: (n: number) => `检测到 ${n} 个文件冲突`,
+      removeAria: "移除团队运行",
     },
     resultCard: {
       unavailable: "子 Agent 结果不可用",

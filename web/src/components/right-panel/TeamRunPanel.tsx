@@ -79,6 +79,7 @@ function RunCard({ run, onRemove }: { run: TeamRunEntry; onRemove: () => void })
               type="button"
               onClick={onRemove}
               className="rounded p-0.5 text-minimax-muted hover:text-minimax-fg"
+              aria-label={strings.rightPanel.teamRuns.removeAria}
             >
               <X size={10} />
             </button>
