@@ -62,7 +62,7 @@
 - [x] R34 版本 bump 0.16.0 [done @ 905017f]
 
 ### M6 · v0.17.0 无障碍与键盘（R35–R39）
-- [ ] R35 Modal 焦点陷阱审计与修复
+- [x] R35 Modal 焦点陷阱审计与修复 `[done @ dabe3bc]`（APG 对照审计修 4 缺陷：document-capture 逃逸拉回 / container 自身 Shift+Tab 防漏 / hidden·aria-hidden·布局不可见过滤（jsdom 兼容）/ contenteditable + [data-autofocus]；5 使用者零改动受益，测试 9+3，全量 550/550）
 - [ ] R36 aria-label / role 补全（icon-only 按钮全覆盖）
 - [ ] R37 列表键盘导航（会话列表 roving tabindex）
 - [ ] R38 对比度抽查（accent/ink tokens 对 WCAG AA）
