@@ -233,6 +233,12 @@ export class IPCClient {
   private responseListeners = new Set<ResponseListener>();
   private sideCarListeners = new Set<SideCarListener>();
   private ws: WebSocket | null = null;
+  /**
+   * Sequence number of the last broadcast event received over the
+   * WebSocket. Sent as `?since=` on reconnect so the agent replays
+   * whatever was published while we were disconnected (v0.13.0).
+   */
+  private wsLastSeq = 0;
   private wsReconnectAttempts = 0;
   private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private wsOpen = false;
@@ -529,7 +535,12 @@ export class IPCClient {
       // Already connecting/connected — bail.
       return;
     }
-    const wsUrl = toWebSocketUrl(this.baseUrl, "/ws");
+    // Resume cursor: only a client that has actually seen a sequenced
+    // event (wsLastSeq > 0) asks for a replay — a first-ever connect
+    // sends no cursor, so a fresh page load doesn't get the whole
+    // history ring re-streamed on top of the RPC-fetched state.
+    const resume = this.wsLastSeq > 0 ? `?since=${this.wsLastSeq}` : "";
+    const wsUrl = `${toWebSocketUrl(this.baseUrl, "/ws")}${resume}`;
     let ws: WebSocket;
     try {
       ws = new WebSocket(wsUrl);
@@ -608,6 +619,11 @@ export class IPCClient {
    *    Otherwise → `listeners.get(method)`.
    */
   private handleEnvelope(env: Record<string, unknown>): void {
+    // v0.13.0 — track the broadcast sequence so a reconnect can ask
+    // the agent to replay everything published after it.
+    if (typeof env.seq === "number" && env.seq > this.wsLastSeq) {
+      this.wsLastSeq = env.seq;
+    }
     if (typeof env.event === "string" && env.event.length > 0) {
       const set = this.listeners.get(env.event);
       if (!set || set.size === 0) return;

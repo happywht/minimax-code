@@ -885,6 +885,36 @@ frontend `IPCClient` uses this to gate the UI (e.g. disable Send if
 the agent is down). Reconnect on close is exponential backoff:
 250ms → 500ms → 1s → 2s, cap at 5s.
 
+#### Event replay on reconnect (v0.13.0)
+
+Every broadcast event carries a monotonic top-level `seq` field:
+
+```json
+{"jsonrpc":"2.0","method":"agent.message_chunk","seq":42,"params":{...}}
+```
+
+The server keeps the last **512** sequenced events in a bounded
+history ring. A client reconnecting with a resume cursor —
+
+```
+GET /ws?since=<last seq seen>
+```
+
+— receives, right after `agent.ready`, all retained events with
+`seq > since` replayed in order through the same stream. This closes
+the "fire-and-forget" gap: events published while the browser was
+reconnecting are no longer silently lost.
+
+Rules:
+
+- Lifecycle frames (`agent.ready`, `agent.ping`) carry **no `seq`**
+  and are never replayed.
+- `seq` is optional on old envelopes; clients that ignore it behave
+  exactly as before (backward compatible).
+- If `since` is ahead of the ring (server restarted), nothing is
+  replayed — the client detects the seq jump on the next live
+  broadcast.
+
 ### 8.2 Health probe (HTTP mode)
 
 `GET /health` returns `{"ok": true, "version": "<agent version>",
@@ -907,8 +937,8 @@ message — EOF is the goodbye.
 - **stdio mode (`--stdio`)**: same as above; EOF on stdin triggers
   `server.run_forever()` return; the CLI exits with `0`.
 - **Web client reconnect**: on `GET /ws` close, `IPCClient` retries
-  with exponential backoff (see §8.1). The HTTP server doesn't
-  queue events for disconnected clients.
+  with exponential backoff (see §8.1) and reconnects with
+  `?since=<last seq>` so missed events are replayed (v0.13.0, §8.1).
 
 ## 10. Buffering & encoding
 

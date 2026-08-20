@@ -41,6 +41,7 @@ import json
 import logging
 import os
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -176,6 +177,12 @@ class _WSManager:
         self._send_queues: dict[int, asyncio.Queue[dict[str, Any] | None]] = {}
         self._sender_tasks: dict[int, asyncio.Task[None]] = {}
         self._max_queue_depth: int = 256  # drop oldest when exceeded
+        # v0.13.0 — resume: monotonic sequence + bounded history ring so
+        # a reconnecting client can replay events it missed while
+        # disconnected (``GET /ws?since=<last seq>``). Lifecycle frames
+        # (agent.ready / agent.ping) carry no seq and are never replayed.
+        self._next_seq = 0
+        self._history: deque[tuple[int, dict[str, Any]]] = deque(maxlen=512)
 
     @property
     def has_clients(self) -> bool:
@@ -205,13 +212,15 @@ class _WSManager:
         parameter, the mapping is stored for targeted push.
         """
         await ws.accept()
-        # Extract device_id from query params (v0.7.0)
+        # Extract device_id / since from query params (v0.7.0 / v0.13.0)
         device_id: str | None = None
+        since_seq: int | None = None
         try:
             for key, val in ws.query_params.items():
                 if key == "device_id" and val:
                     device_id = val
-                    break
+                elif key == "since" and val.isdigit():
+                    since_seq = int(val)
         except Exception:
             pass
 
@@ -251,6 +260,23 @@ class _WSManager:
             logger.exception("failed to send agent.ready; closing socket")
             await self._cleanup_disconnect(ws)
             raise
+
+        # v0.13.0 — resume replay: a client reconnecting with
+        # ``?since=<seq>`` gets every broadcast newer than its last
+        # seen sequence, re-enqueued in order through the same sender
+        # queue live events use. A client whose gap predates the ring
+        # simply receives the oldest retained events — the seq field
+        # lets it detect the jump.
+        if since_seq is not None:
+            replayed = 0
+            for seq, entry in self._history:
+                if seq > since_seq:
+                    self._enqueue(ws, entry)
+                    replayed += 1
+            if replayed:
+                logger.debug(
+                    "ws resume: replayed %d events after seq %d", replayed, since_seq
+                )
 
     async def on_disconnect(self, ws: WebSocket) -> None:
         """Drop a client; tear down the listener if no clients remain."""
@@ -384,7 +410,13 @@ class _WSManager:
                 "params": env.get("data"),
             }
         else:
-            payload = env
+            payload = dict(env)  # copy — we stamp seq onto it below
+        # v0.13.0 — stamp a monotonic sequence and append to the
+        # history ring before fan-out, so reconnecting clients can
+        # ask for everything after their last seen seq.
+        self._next_seq += 1
+        payload["seq"] = self._next_seq
+        self._history.append((self._next_seq, payload))
         # Snapshot the client set under the lock to avoid races
         # with concurrent connect/disconnect.
         for ws in list(self._clients):

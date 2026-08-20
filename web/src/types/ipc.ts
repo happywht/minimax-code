@@ -19,6 +19,13 @@ export interface JsonRpcNotification {
   jsonrpc: "2.0";
   method: string;
   params?: unknown;
+  /**
+   * Monotonic sequence number stamped by the agent on WS broadcasts
+   * (v0.13.0). A client reconnecting with `GET /ws?since=<last seq>`
+   * receives the missed events replayed in order. Lifecycle frames
+   * (`agent.ready`, `agent.ping`) carry no seq and are never replayed.
+   */
+  seq?: number;
 }
 
 export interface JsonRpcResponse<T = unknown> {
