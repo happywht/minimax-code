@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — 安全加固（进行中，M3）
+- **日志密钥脱敏对子 logger 失效**（R17 审计发现）：`SanitizerFilter` 此前挂在 root logger 上，而 logger 级 filter 只对 root 直接 emit 的记录生效——`minimax_code.*` 子 logger 传播来的记录（即全部业务日志）不经消毒直写 stderr/日志文件。改为在 `configure_logging` 中把 filter 附加到**每个 handler**（handler 级 filter 对传播记录同样生效）。新增 `agent/tests/test_secret_audit.py`（6 测试）：子 logger 传播脱敏回归、handler 挂载契约、`secrets.*` RPC 往返不回显 key 明文（含 key 主体子串断言）、INVALID_PARAMS 分支不反射 payload、LLM 错误形状可脱敏。
+- `secrets.status` 防御分支的 `error: str(exc)` 直通 RPC 信封改为经 `redact_value` 消毒（RPC 错误响应不经日志管道）。
+
 ## [0.13.0] - 2026-08-21
 
 ### Added — 性能基线（v0.13.0 Milestone 2）

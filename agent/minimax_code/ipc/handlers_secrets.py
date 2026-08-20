@@ -70,7 +70,18 @@ def register_secret_handlers(server: Any) -> None:
             )
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("secrets.status failed")
-            await ctx.reply({"configured": False, "source": "none", "error": str(exc)})
+            # R17 — the RPC envelope bypasses the logging redaction
+            # pipeline, so an raw ``str(exc)`` here could carry a
+            # secret-shaped fragment from a keyring backend message.
+            from ..telemetry.redact import redact_value
+
+            await ctx.reply(
+                {
+                    "configured": False,
+                    "source": "none",
+                    "error": redact_value(str(exc)),
+                }
+            )
 
     async def handle_secrets_set(params: Any, ctx: Context) -> None:
         try:

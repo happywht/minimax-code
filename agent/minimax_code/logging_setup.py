@@ -85,11 +85,20 @@ def configure_logging(level: LogLevel = "INFO") -> None:
 
     root.setLevel(level)
     # R15 — scrub secrets/paths/URLs from every log record via the same
-    # redactor the telemetry pipeline uses. Attached to the root logger so
-    # every child logger inherits it. Idempotent: repeated
-    # configure_logging() calls do not stack duplicate filters.
+    # redactor the telemetry pipeline uses.
+    #
+    # R17 fix: the filter is attached to each *handler*, not just the
+    # root logger. A logger-level filter only runs for records the root
+    # logger itself emits — records propagated from child loggers
+    # (``minimax_code.*`` — i.e. all business logs) skip it entirely and
+    # leaked to stderr verbatim. A handler-level filter runs for every
+    # record that reaches the handler, propagated or not.
+    sanitizer = SanitizerFilter()
+    for h in root.handlers:
+        if not any(isinstance(f, SanitizerFilter) for f in h.filters):
+            h.addFilter(sanitizer)
     if not any(isinstance(f, SanitizerFilter) for f in root.filters):
-        root.addFilter(SanitizerFilter())
+        root.addFilter(sanitizer)  # belt-and-braces for root-emitted records
     # Tame third-party noise.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
