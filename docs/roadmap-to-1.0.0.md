@@ -44,7 +44,7 @@
 - [x] R20 版本 bump 0.14.0 [done @ 516b957]
 
 ### M4 · v0.15.0 数据可移植（R21–R26）
-- [ ] R21 IPC `data.export`：全部业务表 → 单 JSON（含 schema_version）
+- [x] R21 IPC `data.export`：全部业务表 → 单 JSON（含 schema_version）[done @ 90144d8]
 - [ ] R22 IPC `data.import`：校验 + 幂等导入（事务内）
 - [ ] R23 备份：`data.backup`（SQLite backup API 到指定目录）
 - [ ] R24 前端设置入口：Settings 新 DataTab（导出/导入/备份按钮 + 状态反馈）
