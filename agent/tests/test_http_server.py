@@ -513,3 +513,23 @@ def test_web_dist_env_override_without_index_html_is_ignored(
     with TestClient(app) as c:
         # The agent API still answers regardless of the mount decision.
         assert c.get("/health").json()["ok"] is True
+
+
+async def test_same_origin_rpc_does_not_depend_on_cors_allow_list(
+    client: httpx.AsyncClient,
+) -> None:
+    """Production mode serves the SPA from the agent's own origin, so
+    browser requests are same-origin and never rely on CORS headers.
+
+    This pins that contract: a POST /rpc carrying the agent's own
+    Origin succeeds even though that origin is not in the allow-list.
+    (The e2e production-mode spec exercises the same path with a real
+    browser; this unit test keeps it covered without Playwright.)
+    """
+    r = await client.post(
+        "/rpc",
+        json={"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}},
+        headers={"Origin": "http://testserver"},
+    )
+    assert r.status_code == 200
+    assert "pong" in r.json()["result"]
