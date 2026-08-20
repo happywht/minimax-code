@@ -82,7 +82,7 @@
 - [x] R48 版本 bump 0.19.0 [done @ 25f5990]
 
 ### M9 · 1.0.0-rc（R49–R52）
-- [ ] R49 全量回归：pytest + vitest + 15 e2e + 生产模式 e2e
+- [x] R49 全量回归：pytest + vitest + 15 e2e + 生产模式 e2e [done @ e126472 — 实际口径 10 spec/21 用例；挖出 R32 断言债 8 处修复 + dist 过期重建]
 - [ ] R50 flaky 清零：全部 e2e 连跑 3 轮零失败；性能基线复测
 - [ ] R51 CHANGELOG 汇总 1.0.0 全部条目
 - [ ] R52 版本 bump 1.0.0-rc.1
