@@ -46,7 +46,7 @@
 ### M4 · v0.15.0 数据可移植（R21–R26）
 - [x] R21 IPC `data.export`：全部业务表 → 单 JSON（含 schema_version）[done @ 90144d8]
 - [x] R22 IPC `data.import`：校验 + 幂等导入（事务内）[done @ fbd13b1]
-- [ ] R23 备份：`data.backup`（SQLite backup API 到指定目录）
+- [x] R23 备份：`data.backup`（SQLite backup API 到指定目录）[done @ 0e5e031]
 - [ ] R24 前端设置入口：Settings 新 DataTab（导出/导入/备份按钮 + 状态反馈）
 - [ ] R25 端到端测试：导出→清库→导入→数据等价
 - [ ] R26 版本 bump 0.15.0
