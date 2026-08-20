@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-20
+
+### Added — 生产单进程模式收口（v0.12.0 Milestone 1）
+- **生产模式 e2e 套件**：新增 `e2e/production-mode.spec.ts`（4 specs）——SPA 首页同源启动、`/health` 与 `/rpc` 对 SPA mount 的路由优先级、同源 WS 升级、生产模式下 UI 聊天全链路；`e2e/global-setup.ts` 在 `web/dist` 缺失时自动执行 `pnpm build`（180s 超时 + 产物校验）。
+- **web dist 挂载测试与指引**：`MINIMAX_CODE_WEB_DIST` 覆盖目录含 `index.html` 才挂载（缺 index.html 静默忽略不 crash）；未挂载时日志输出 `run pnpm build first` 指引。
+- **同源契约测试**：生产模式 SPA 与 API 同源，POST `/rpc` 携带自身 Origin 不依赖 CORS 白名单（单元 + e2e 双保险）。
+- **文件日志**：`MINIMAX_CODE_LOG_FILE` 落盘选项——绝对路径原样使用、相对路径解析到数据目录；RotatingFileHandler 5 MB × 3 份（utf-8）；不可写路径降级 stderr-only 不 crash；SanitizerFilter 同样作用于文件 sink。
+- **`/health` 扩展**：新增 `web`（web/dist 是否挂载）与 `data_dir`（数据目录 basename，不含用户路径，脱敏）字段。
+- **部署文档**：新增 `docs/deployment.md`——快速开始、mount 工作原理、8 个环境变量配置表、前后端分离部署、数据备份、故障排查。
+
+### Changed
+- 版本号 0.11.0 → 0.12.0（6 处代码位 + CLAUDE.md / AGENTS.md / README.md 版本行）。
+
 ## [0.11.0] - 2026-08-20
 
 ### Added — 后端
