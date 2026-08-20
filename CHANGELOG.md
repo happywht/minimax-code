@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-08-21
+
+### Added — UI 文案统一（v0.16.0 Milestone 5）
+- **strings.ts 集中文案层（R27–R32）**：新建 `web/src/ui/strings.ts` 作为前端唯一文案源（`as const`，1100+ 行）——静态文案普通属性、插值文案带类型箭头函数、全角标点、技术术语保留原文。六大域分轮迁移完成：layout（R27）、chat（R28）、settings（R29）、panels（R30）、modals（R31）、right-panel（R32，12 子域约 110 条）。组件内不再有硬编码 UI 文案，改文案只动一处；每轮同步对应测试断言。
+- **`strings.a11y` 命名空间（R33，预热 M6 无障碍）**：navigation / closeOverlay / closeDialog / loading 四条基础无障碍标签，App.tsx、Modal、Spinner 接线。
+
+### Changed — UI 文案统一（v0.16.0 Milestone 5）
+- **全量英文清零（R33）**：`formatRelative` 六分支中文化（刚刚 / N 分钟前 / N 小时前 / N 天前 / M月D日 / YYYY年M月D日，删除 MONTH_NAMES）；repo mention 选项中文化（「当前仓库」，searchText 双语命中）。终扫 JSX 文本 / title / aria-label / placeholder 零英文残留（保留清单：Base URL、Cron 表达式、kbd 键名、协议枚举直出、mock 层模拟数据、日期固定格式等）。4 个单元测试文件 + 2 个 e2e spec 断言同步中文。
+- 版本号 0.15.0 → 0.16.0（6 处代码位 + CLAUDE.md / AGENTS.md / README.md 版本行 + `uv lock`）。
+
 ## [0.15.0] - 2026-08-21
 
 ### Added — 数据可移植（v0.15.0 Milestone 4）

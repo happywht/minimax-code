@@ -2,7 +2,7 @@
 
 本地优先的个人 AI 编码 Agent。支持多轮对话、代码工具、技能系统、定时任务、多 Agent 协作、授权管理、Git 与 Code Review 工作流。
 
-当前版本：**v0.15.0**。产品采用本地 Web SPA + Python Agent 架构，默认只监听 `127.0.0.1`，会话、配置和任务数据保存在本机 SQLite 中。
+当前版本：**v0.16.0**。产品采用本地 Web SPA + Python Agent 架构，默认只监听 `127.0.0.1`，会话、配置和任务数据保存在本机 SQLite 中。
 
 ## 个人使用（推荐）
 
@@ -52,7 +52,7 @@ cd agent && uv sync && cd ..
 
 完整契约见 [`docs/architecture.md`](docs/architecture.md) / [`docs/ipc-contract.md`](docs/ipc-contract.md) / [`docs/v0.2.0-web-architecture.md`](docs/v0.2.0-web-architecture.md)。
 
-## 当前状态（v0.15.0）
+## 当前状态（v0.16.0）
 
 - **Phase 1（基础闭环）**：✅ — Vite + React 18 前端 + Python agent 核心 + SQLite 存储 + 技能系统
 - **Phase 2a（授权 / 调度 / 进度）**：✅
