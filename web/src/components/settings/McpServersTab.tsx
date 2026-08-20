@@ -11,6 +11,7 @@ import { typedIPC } from "../../ipc";
 import { toast } from "../layout/ErrorBoundary";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import type { McpServer, McpTool, McpTransport } from "../../types/ipc";
+import { strings } from "../../ui/strings";
 import { Field, Select, TabHeader } from "./fields";
 
 export { McpServersTab };
@@ -26,14 +27,14 @@ function parseJsonObject(
   try {
     const parsed = JSON.parse(value) as unknown;
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { ok: false, error: "Must be a JSON object." };
+      return { ok: false, error: strings.settings.mcp.envNotObject };
     }
     if (!Object.entries(parsed as Record<string, unknown>).every(([, v]) => typeof v === "string")) {
-      return { ok: false, error: "All values must be strings." };
+      return { ok: false, error: strings.settings.mcp.envValuesNotStrings };
     }
     return { ok: true, value: parsed as Record<string, string> };
   } catch {
-    return { ok: false, error: "Invalid JSON." };
+    return { ok: false, error: strings.settings.mcp.invalidJson };
   }
 }
 
@@ -95,7 +96,7 @@ function McpServersTab(): JSX.Element {
       setServers(result.servers);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to load MCP servers", message);
+      toast.error(strings.settings.mcp.loadFailed, message);
     } finally {
       setLoading(false);
     }
@@ -107,23 +108,23 @@ function McpServersTab(): JSX.Element {
 
   const formErrors = useMemo(() => {
     const errors: string[] = [];
-    if (!name.trim()) errors.push("Name is required.");
+    if (!name.trim()) errors.push(strings.settings.mcp.nameRequired);
     if (transport === "stdio" && parseCommand(command).length === 0) {
-      errors.push("Command is required for stdio transport.");
+      errors.push(strings.settings.mcp.commandRequired);
     }
     if (transport === "sse" && !url.trim()) {
-      errors.push("URL is required for SSE transport.");
+      errors.push(strings.settings.mcp.urlRequired);
     }
     const envParsed = parseJsonObject(env);
-    if (!envParsed.ok) errors.push(`Env: ${envParsed.error}`);
+    if (!envParsed.ok) errors.push(strings.settings.mcp.envError(envParsed.error));
     const headersParsed = parseJsonObject(headers);
-    if (!headersParsed.ok) errors.push(`Headers: ${headersParsed.error}`);
+    if (!headersParsed.ok) errors.push(strings.settings.mcp.headersError(headersParsed.error));
     return errors;
   }, [name, transport, command, url, env, headers]);
 
   const handleAdd = async () => {
     if (formErrors.length > 0) {
-      toast.error("Invalid input", formErrors.join(" "));
+      toast.error(strings.settings.mcp.invalidInput, formErrors.join(" "));
       return;
     }
     const envParsed = parseJsonObject(env);
@@ -132,7 +133,7 @@ function McpServersTab(): JSX.Element {
     if (!envParsed.ok) parseErrors.push(envParsed.error);
     if (!headersParsed.ok) parseErrors.push(headersParsed.error);
     if (parseErrors.length > 0) {
-      toast.error("Invalid input", parseErrors.join(" "));
+      toast.error(strings.settings.mcp.invalidInput, parseErrors.join(" "));
       return;
     }
     if (!envParsed.ok || !headersParsed.ok) return;
@@ -141,7 +142,7 @@ function McpServersTab(): JSX.Element {
     const scopes = parseScopes(oauthScopes);
     const callbackPort = oauthCallbackPort ? parseInt(oauthCallbackPort, 10) : undefined;
     if (oauthCallbackPort && Number.isNaN(callbackPort)) {
-      toast.error("Invalid input", "OAuth callback port must be a number.");
+      toast.error(strings.settings.mcp.invalidInput, strings.settings.mcp.portInvalid);
       return;
     }
     try {
@@ -163,27 +164,27 @@ function McpServersTab(): JSX.Element {
       resetForm();
       setShowForm(false);
       await refresh();
-      toast.success("MCP server added");
+      toast.success(strings.settings.mcp.addedToast);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to add MCP server", message);
+      toast.error(strings.settings.mcp.addFailed, message);
     }
   };
 
   const handleDelete = async (server: McpServer) => {
     const accepted = await requestConfirmation({
-      title: `Delete ${server.name}?`,
-      description: "This removes the persisted MCP server configuration.",
-      confirmLabel: "Delete",
+      title: strings.settings.mcp.deleteTitle(server.name),
+      description: strings.settings.mcp.deleteDesc,
+      confirmLabel: strings.settings.mcp.deleteLabel,
     });
     if (!accepted) return;
     try {
       await typedIPC.removeMcpServer(server.id);
       await refresh();
-      toast.success("MCP server deleted");
+      toast.success(strings.settings.mcp.deletedToast);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to delete MCP server", message);
+      toast.error(strings.settings.mcp.deleteFailed, message);
     }
   };
 
@@ -193,7 +194,7 @@ function McpServersTab(): JSX.Element {
       await refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to update MCP server", message);
+      toast.error(strings.settings.mcp.updateFailed, message);
     }
   };
 
@@ -205,7 +206,7 @@ function McpServersTab(): JSX.Element {
     } catch (err) {
       setToolsByServer((prev) => ({ ...prev, [server.id]: [] }));
       const message = err instanceof Error ? err.message : String(err);
-      toast.error(`Failed to list tools for ${server.name}`, message);
+      toast.error(strings.settings.mcp.listToolsFailed(server.name), message);
     } finally {
       setToolsLoading((prev) => ({ ...prev, [server.id]: false }));
     }
@@ -218,7 +219,7 @@ function McpServersTab(): JSX.Element {
       await refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to update tool state", message);
+      toast.error(strings.settings.mcp.toggleToolFailed, message);
     }
   };
 
@@ -233,8 +234,8 @@ function McpServersTab(): JSX.Element {
   return (
     <section data-testid="settings-mcp-servers" className="min-w-0 space-y-4">
       <TabHeader
-        title="MCP Servers"
-        hint="Connect external MCP tool servers. Bridged tools appear in the agent's tool registry."
+        title={strings.settings.mcp.title}
+        hint={strings.settings.mcp.hint}
         action={
           <Button
             size="sm"
@@ -243,38 +244,42 @@ function McpServersTab(): JSX.Element {
             onClick={() => setShowForm((v) => !v)}
             icon={<Plus />}
           >
-            Add Server
+            {strings.settings.mcp.addServer}
           </Button>
         }
       />
 
       {showForm && (
         <div className="space-y-3 rounded-md border border-line bg-surface-1 p-3">
-          <Field label="Name" htmlFor="settings-mcp-name">
+          <Field label={strings.settings.mcp.fieldName} htmlFor="settings-mcp-name">
             <Input
               id="settings-mcp-name"
-              placeholder="Server name (e.g. filesystem)"
+              placeholder={strings.settings.mcp.placeholderName}
               value={name}
               onChange={(e) => setName(e.target.value)}
               data-testid="settings-mcp-name"
             />
           </Field>
 
-          <Field label="Transport" htmlFor="settings-mcp-transport">
+          <Field label={strings.settings.mcp.fieldTransport} htmlFor="settings-mcp-transport">
             <Select
               id="settings-mcp-transport"
               value={transport}
               onChange={(e) => setTransport(e.target.value as McpTransport)}
               data-testid="settings-mcp-transport"
             >
-              <option value="stdio">stdio (local subprocess)</option>
-              <option value="sse">SSE (HTTP stream)</option>
+              <option value="stdio">{strings.settings.mcp.transportStdio}</option>
+              <option value="sse">{strings.settings.mcp.transportSse}</option>
             </Select>
           </Field>
 
           {transport === "stdio" ? (
             <>
-              <Field label="Command" htmlFor="settings-mcp-command" hint="Space-separated argv.">
+              <Field
+                label={strings.settings.mcp.fieldCommand}
+                htmlFor="settings-mcp-command"
+                hint={strings.settings.mcp.commandHint}
+              >
                 <Input
                   id="settings-mcp-command"
                   placeholder="npx @modelcontextprotocol/server-filesystem ."
@@ -283,7 +288,11 @@ function McpServersTab(): JSX.Element {
                   data-testid="settings-mcp-command"
                 />
               </Field>
-              <Field label="Environment variables" htmlFor="settings-mcp-env" hint="JSON object.">
+              <Field
+                label={strings.settings.mcp.fieldEnv}
+                htmlFor="settings-mcp-env"
+                hint={strings.settings.mcp.envHint}
+              >
                 <Input
                   id="settings-mcp-env"
                   placeholder='{"KEY":"value"}'
@@ -295,7 +304,7 @@ function McpServersTab(): JSX.Element {
             </>
           ) : (
             <>
-              <Field label="SSE URL" htmlFor="settings-mcp-url">
+              <Field label={strings.settings.mcp.fieldUrl} htmlFor="settings-mcp-url">
                 <Input
                   id="settings-mcp-url"
                   placeholder="http://localhost:3001/sse"
@@ -304,17 +313,21 @@ function McpServersTab(): JSX.Element {
                   data-testid="settings-mcp-url"
                 />
               </Field>
-              <Field label="Bearer token" htmlFor="settings-mcp-bearer">
+              <Field label={strings.settings.mcp.fieldToken} htmlFor="settings-mcp-bearer">
                 <Input
                   id="settings-mcp-bearer"
                   type="password"
-                  placeholder="Optional bearer token"
+                  placeholder={strings.settings.mcp.tokenHint}
                   value={bearerToken}
                   onChange={(e) => setBearerToken(e.target.value)}
                   data-testid="settings-mcp-bearer"
                 />
               </Field>
-              <Field label="Headers" htmlFor="settings-mcp-headers" hint="JSON object.">
+              <Field
+                label={strings.settings.mcp.fieldHeaders}
+                htmlFor="settings-mcp-headers"
+                hint={strings.settings.mcp.headersHint}
+              >
                 <Input
                   id="settings-mcp-headers"
                   placeholder='{"X-Custom":"value"}'
@@ -327,9 +340,9 @@ function McpServersTab(): JSX.Element {
           )}
 
           <div className="space-y-3 rounded-md border border-line bg-surface-0 p-3">
-            <p className="text-[11px] font-medium text-ink-1">OAuth (optional)</p>
+            <p className="text-[11px] font-medium text-ink-1">{strings.settings.mcp.oauthTitle}</p>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="Client ID" htmlFor="settings-mcp-oauth-id">
+              <Field label={strings.settings.mcp.clientId} htmlFor="settings-mcp-oauth-id">
                 <Input
                   id="settings-mcp-oauth-id"
                   value={oauthClientId}
@@ -337,7 +350,7 @@ function McpServersTab(): JSX.Element {
                   data-testid="settings-mcp-oauth-id"
                 />
               </Field>
-              <Field label="Client secret" htmlFor="settings-mcp-oauth-secret">
+              <Field label={strings.settings.mcp.clientSecret} htmlFor="settings-mcp-oauth-secret">
                 <Input
                   id="settings-mcp-oauth-secret"
                   type="password"
@@ -347,7 +360,11 @@ function McpServersTab(): JSX.Element {
                 />
               </Field>
             </div>
-            <Field label="Scopes" htmlFor="settings-mcp-oauth-scopes" hint="JSON list or comma-separated.">
+            <Field
+              label={strings.settings.mcp.fieldScopes}
+              htmlFor="settings-mcp-oauth-scopes"
+              hint={strings.settings.mcp.scopesHint}
+            >
               <Input
                 id="settings-mcp-oauth-scopes"
                 placeholder="read,write"
@@ -356,7 +373,7 @@ function McpServersTab(): JSX.Element {
                 data-testid="settings-mcp-oauth-scopes"
               />
             </Field>
-            <Field label="Callback port" htmlFor="settings-mcp-oauth-port">
+            <Field label={strings.settings.mcp.callbackPort} htmlFor="settings-mcp-oauth-port">
               <Input
                 id="settings-mcp-oauth-port"
                 type="number"
@@ -370,10 +387,10 @@ function McpServersTab(): JSX.Element {
 
           <div className="flex justify-end gap-2">
             <Button size="sm" variant="ghost" onClick={() => setShowForm(false)}>
-              Cancel
+              {strings.settings.mcp.cancel}
             </Button>
             <Button size="sm" variant="primary" onClick={() => void handleAdd()}>
-              Save
+              {strings.settings.mcp.save}
             </Button>
           </div>
         </div>
@@ -381,7 +398,7 @@ function McpServersTab(): JSX.Element {
 
       {loading && servers.length === 0 ? (
         <div className="flex items-center justify-center gap-2 py-4 text-xs text-ink-2">
-          <Spinner size={12} /> Loading MCP servers…
+          <Spinner size={12} /> {strings.settings.mcp.loading}
         </div>
       ) : servers.length === 0 ? (
         <EmptyState title="暂无 MCP Server" hint="点击「添加 Server」连接外部工具。" />
@@ -402,11 +419,11 @@ function McpServersTab(): JSX.Element {
                     </span>
                     {server.connected ? (
                       <span className="rounded bg-emerald-500/10 px-1.5 py-0 text-[11px] text-emerald-500">
-                        connected
+                        {strings.settings.mcp.connected}
                       </span>
                     ) : (
                       <span className="rounded bg-surface-2 px-1.5 py-0 text-[11px] text-ink-2">
-                        disconnected
+                        {strings.settings.mcp.disconnected}
                       </span>
                     )}
                   </div>
@@ -424,7 +441,7 @@ function McpServersTab(): JSX.Element {
                     data-testid={`settings-mcp-expand-${server.id}`}
                     icon={expandedId === server.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                   >
-                    Tools
+                    {strings.settings.mcp.tools}
                   </Button>
                   <label className="flex cursor-pointer items-center gap-1.5 px-2 text-[11px] text-ink-2">
                     <Checkbox
@@ -432,12 +449,12 @@ function McpServersTab(): JSX.Element {
                       onChange={() => void toggleEnabled(server)}
                       data-testid={`settings-mcp-enabled-${server.id}`}
                     />
-                    Enabled
+                    {strings.settings.mcp.enabled}
                   </label>
                   <Button
                     size="sm"
                     variant="ghost"
-                    aria-label="Delete"
+                    aria-label={strings.settings.mcp.deleteAria}
                     onClick={() => void handleDelete(server)}
                     data-testid={`settings-mcp-delete-${server.id}`}
                   >
@@ -450,7 +467,7 @@ function McpServersTab(): JSX.Element {
                 <div className="mt-3 border-t border-line pt-3">
                   {toolsLoading[server.id] ? (
                     <div className="flex items-center gap-2 text-xs text-ink-2">
-                      <Spinner size={12} /> Loading tools…
+                      <Spinner size={12} /> {strings.settings.mcp.loadingTools}
                     </div>
                   ) : (
                     <ToolsList
@@ -478,9 +495,7 @@ interface ToolsListProps {
 function ToolsList({ server, tools, onToggle }: ToolsListProps): JSX.Element {
   if (tools.length === 0) {
     return (
-      <p className="text-[11px] text-ink-2">
-        No tools available. The server may be disconnected.
-      </p>
+      <p className="text-[11px] text-ink-2">{strings.settings.mcp.noTools}</p>
     );
   }
   return (
@@ -504,7 +519,7 @@ function ToolsList({ server, tools, onToggle }: ToolsListProps): JSX.Element {
                 onChange={(e) => onToggle(server, tool.name, e.target.checked)}
                 data-testid={`settings-mcp-tool-${server.id}-${tool.name}`}
               />
-              {enabled ? "On" : "Off"}
+              {enabled ? strings.settings.mcp.on : strings.settings.mcp.off}
             </label>
           </li>
         );

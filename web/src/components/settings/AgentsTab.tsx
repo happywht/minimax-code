@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { Bot, Plus, Trash2 } from "lucide-react";
 import { Badge, Button, EmptyState, IconButton, Input, Panel, Spinner, Textarea } from "../../ui";
+import { strings } from "../../ui/strings";
 import { useAgentStore } from "../../stores";
 import type { AgentInfo } from "../../types/ipc";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
@@ -32,9 +33,9 @@ function AgentsTab(): JSX.Element {
 
   const handleDelete = async (agent: AgentInfo) => {
     const accepted = await requestConfirmation({
-      title: `Delete agent ${agent.name}?`,
-      description: "This agent will no longer be available in chat or team assignments. Existing conversation history is not deleted.",
-      confirmLabel: "Delete Agent",
+      title: strings.settings.agents.deleteTitle(agent.name),
+      description: strings.settings.agents.deleteDesc,
+      confirmLabel: strings.settings.agents.deleteLabel,
     });
     if (accepted) await remove(agent.name);
   };
@@ -42,10 +43,11 @@ function AgentsTab(): JSX.Element {
   return (
     <section data-testid="settings-agents" className="space-y-4">
       <TabHeader
-        title="Sub-agents"
+        title={strings.settings.agents.title}
         hint={
           <>
-            Manage agents that can be invoked via <InlineCode>@agent</InlineCode> in chat.
+            {strings.settings.agents.hintLead} <InlineCode>@agent</InlineCode>
+            {strings.settings.agents.hintTail}
           </>
         }
         action={
@@ -56,7 +58,7 @@ function AgentsTab(): JSX.Element {
             onClick={() => setShowForm((v) => !v)}
             icon={<Plus />}
           >
-            New Agent
+            {strings.settings.agents.new}
           </Button>
         }
       />
@@ -64,15 +66,15 @@ function AgentsTab(): JSX.Element {
       {showForm && (
         <Panel
           data-testid="settings-agent-form"
-          title="New Agent"
+          title={strings.settings.agents.panelTitle}
           actions={
             <Button size="sm" variant="ghost" onClick={() => setShowForm(false)}>
-              Cancel
+              {strings.settings.agents.cancel}
             </Button>
           }
         >
           <div className="space-y-2">
-            <Field label="Agent Name" htmlFor="agent-form-name">
+            <Field label={strings.settings.agents.fieldName} htmlFor="agent-form-name">
               <Input
                 id="agent-form-name"
                 name="agent-name"
@@ -81,10 +83,10 @@ function AgentsTab(): JSX.Element {
                 data-testid="settings-agent-form-name"
                 value={formName}
                 onChange={(e) => setFormName(e.target.value)}
-                placeholder="e.g. code-reviewer…"
+                placeholder={strings.settings.agents.placeholderName}
               />
             </Field>
-            <Field label="System Prompt" htmlFor="agent-form-prompt">
+            <Field label={strings.settings.agents.fieldPrompt} htmlFor="agent-form-prompt">
               <Textarea
                 id="agent-form-prompt"
                 name="agent-system-prompt"
@@ -92,14 +94,14 @@ function AgentsTab(): JSX.Element {
                 data-testid="settings-agent-form-prompt"
                 value={formPrompt}
                 onChange={(e) => setFormPrompt(e.target.value)}
-                placeholder="System prompt…"
+                placeholder={strings.settings.agents.placeholderPrompt}
                 rows={3}
                 className="resize-none text-xs"
               />
             </Field>
             <div className="flex justify-end gap-2">
               <Button size="sm" variant="ghost" onClick={() => setShowForm(false)}>
-                Cancel
+                {strings.settings.agents.cancel}
               </Button>
               <Button
                 size="sm"
@@ -108,7 +110,7 @@ function AgentsTab(): JSX.Element {
                 onClick={() => void handleCreate()}
                 disabled={!formName.trim() || !formPrompt.trim()}
               >
-                Create
+                {strings.settings.agents.create}
               </Button>
             </div>
           </div>
@@ -117,7 +119,7 @@ function AgentsTab(): JSX.Element {
 
       {loading && agents.length === 0 ? (
         <div className="flex items-center justify-center gap-2 py-4 text-xs text-ink-2">
-          <Spinner size={12} /> Loading agents…
+          <Spinner size={12} /> {strings.settings.agents.loading}
         </div>
       ) : agents.length === 0 ? (
         <EmptyState
@@ -137,7 +139,7 @@ function AgentsTab(): JSX.Element {
                   <Bot size={12} className="shrink-0 text-accent" />
                   <span className="truncate text-xs font-medium text-ink-0">{a.name}</span>
                   <Badge tone={a.enabled ? "success" : "neutral"} dot>
-                    {a.enabled ? "enabled" : "disabled"}
+                    {a.enabled ? strings.settings.agents.enabled : strings.settings.agents.disabled}
                   </Badge>
                 </div>
                 {a.description && (
@@ -147,7 +149,7 @@ function AgentsTab(): JSX.Element {
               <IconButton
                 data-testid={`settings-agent-delete-${a.name}`}
                 onClick={() => void handleDelete(a)}
-                aria-label={`Delete agent ${a.name}`}
+                aria-label={strings.settings.agents.deleteAria(a.name)}
               >
                 <Trash2 />
               </IconButton>

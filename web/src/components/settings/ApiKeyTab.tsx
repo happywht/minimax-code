@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { Eye, EyeOff, KeyRound, Trash2 } from "lucide-react";
 import { Badge, Button, IconButton, Input, Panel } from "../../ui";
+import { strings } from "../../ui/strings";
 import type { BadgeTone } from "../../ui";
 import { useSecretStore } from "../../stores";
 import { SkeletonLine } from "../layout/Skeleton";
@@ -13,9 +14,9 @@ import { InlineCode, TabHeader } from "./fields";
 export { ApiKeyTab };
 
 const STATUS_META: Record<"keyring" | "env" | "none", { text: string; tone: BadgeTone }> = {
-  keyring: { text: "Stored in OS keyring", tone: "accent" },
-  env: { text: "Using environment variable", tone: "neutral" },
-  none: { text: "Not configured — agent in mock mode", tone: "error" },
+  keyring: { text: strings.settings.apiKey.statusKeyring, tone: "accent" },
+  env: { text: strings.settings.apiKey.statusEnv, tone: "neutral" },
+  none: { text: strings.settings.apiKey.statusNone, tone: "error" },
 };
 
 function ApiKeyTab(): JSX.Element {
@@ -41,14 +42,12 @@ function ApiKeyTab(): JSX.Element {
   return (
     <section data-testid="settings-api-key" className="space-y-4">
       <TabHeader
-        title="MiniMax API key"
+        title={strings.settings.apiKey.title}
         hint={
           <>
-            Legacy key for the built-in MiniMax provider. For multi-provider setups, use the
-            Providers tab. Stored in the OS keyring (Windows Credential Manager / macOS Keychain /
-            Linux Secret Service). Falls back to the
+            {strings.settings.apiKey.hintLead}
             <InlineCode>MINIMAX_API_KEY</InlineCode>
-            env var if no keyring entry exists.
+            {strings.settings.apiKey.hintTail}
           </>
         }
       />
@@ -64,9 +63,9 @@ function ApiKeyTab(): JSX.Element {
         </Badge>
       </div>
 
-      <Panel title={hasKey ? "Replace the keyring entry" : "Paste a key to store in the OS keyring"}>
+      <Panel title={hasKey ? strings.settings.apiKey.panelReplace : strings.settings.apiKey.panelNew}>
         <label htmlFor="api-key-input" className="sr-only">
-          MiniMax API key
+          {strings.settings.apiKey.inputLabel}
         </label>
         <div className="flex gap-2">
           <div className="relative min-w-0 flex-1">
@@ -89,7 +88,7 @@ function ApiKeyTab(): JSX.Element {
               size="sm"
               data-testid="settings-api-key-reveal"
               onClick={() => setReveal((v) => !v)}
-              aria-label={reveal ? "Hide API key" : "Show API key"}
+              aria-label={reveal ? strings.settings.apiKey.hide : strings.settings.apiKey.reveal}
               className="absolute right-1 top-1/2 -translate-y-1/2"
             >
               {reveal ? <EyeOff /> : <Eye />}
@@ -103,18 +102,17 @@ function ApiKeyTab(): JSX.Element {
             loading={loading}
             onClick={() => void saveDraft()}
           >
-            Save
+            {strings.settings.apiKey.save}
           </Button>
         </div>
         <p className="mt-1.5 text-[11px] text-ink-2">
-          The key is written to the OS keyring on save. It is never echoed back through the wire
-          after the write.
+          {strings.settings.apiKey.writeNote}
         </p>
       </Panel>
 
       {status?.source === "keyring" && (
         <Panel
-          title="Keyring entry"
+          title={strings.settings.apiKey.keyringEntry}
           actions={
             <Button
               size="sm"
@@ -124,20 +122,21 @@ function ApiKeyTab(): JSX.Element {
               disabled={loading}
               onClick={async () => {
                 const accepted = await requestConfirmation({
-                  title: "Clear the legacy MiniMax API key?",
-                  description: "MiniMax requests using the legacy key will stop until you save another key. Existing conversations are not deleted.",
-                  confirmLabel: "Clear API Key",
+                  title: strings.settings.apiKey.clearConfirmTitle,
+                  description: strings.settings.apiKey.clearConfirmDesc,
+                  confirmLabel: strings.settings.apiKey.clearConfirmLabel,
                 });
                 if (accepted) await clear();
               }}
             >
-              Clear keyring
+              {strings.settings.apiKey.clearButton}
             </Button>
           }
         >
           <p className="text-[11px] text-ink-2">
-            Removes the entry from the OS keyring. Does not affect the{" "}
-            <InlineCode>MINIMAX_API_KEY</InlineCode> env var.
+            {strings.settings.apiKey.clearNoteLead}{" "}
+            <InlineCode>MINIMAX_API_KEY</InlineCode>
+            {strings.settings.apiKey.clearNoteTail}
           </p>
         </Panel>
       )}

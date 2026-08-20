@@ -3,9 +3,13 @@
  */
 import { useState } from "react";
 import { useWebhookStore } from "../../../stores";
+import { strings } from "../../../ui/strings";
 import { compose, minLength, required } from "../../../lib/validators";
 
-const nameValidator = compose(required("Name"), minLength(2, "Name"));
+const nameValidator = compose(
+  required(strings.settings.webhooks.fieldName),
+  minLength(2, strings.settings.webhooks.fieldName),
+);
 
 export function useWebhookForm() {
   const create = useWebhookStore((s) => s.create);

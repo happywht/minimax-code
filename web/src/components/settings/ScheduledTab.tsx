@@ -11,6 +11,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { Button, IconButton, Input, Panel } from "../../ui";
+import { strings } from "../../ui/strings";
 import { useScheduleStore, useTaskStore } from "../../stores";
 import { toast } from "../layout/ErrorBoundary";
 import type { ScheduledJob } from "../../types/ipc";
@@ -38,7 +39,7 @@ function ScheduledTab(): JSX.Element {
   const handleCreate = async () => {
     const job = await create({ name: draftName.trim(), cron: draftCron.trim(), prompt: draftPrompt.trim() });
     if (job) {
-      toast.success("Job created", job.name);
+      toast.success(strings.settings.scheduled.createdToast, job.name);
       setDraftName(""); setDraftCron(""); setDraftPrompt("");
     }
   };
@@ -46,18 +47,19 @@ function ScheduledTab(): JSX.Element {
   return (
     <section data-testid="settings-scheduled" className="space-y-4">
       <TabHeader
-        title="Scheduled jobs"
+        title={strings.settings.scheduled.title}
         hint={
           <>
-            Cron jobs the agent runs on a schedule. Use 5-field cron expressions (e.g.{" "}
-            <InlineCode>*/5 * * * *</InlineCode> = every 5 minutes).
+            {strings.settings.scheduled.hintLead}{" "}
+            <InlineCode>*/5 * * * *</InlineCode>
+            {strings.settings.scheduled.hintTail}
           </>
         }
       />
 
-      <Panel title="New job">
+      <Panel title={strings.settings.scheduled.newTitle}>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
-          <label htmlFor="scheduled-job-name" className="sr-only">Job Name</label>
+          <label htmlFor="scheduled-job-name" className="sr-only">{strings.settings.scheduled.fieldName}</label>
           <Input
             id="scheduled-job-name"
             name="scheduled-job-name"
@@ -65,10 +67,10 @@ function ScheduledTab(): JSX.Element {
             data-testid="settings-job-name"
             value={draftName}
             onChange={(e) => setDraftName(e.target.value)}
-            placeholder="e.g. Nightly review…"
+            placeholder={strings.settings.scheduled.placeholderName}
             className="sm:col-span-3"
           />
-          <label htmlFor="scheduled-job-cron" className="sr-only">Cron Expression</label>
+          <label htmlFor="scheduled-job-cron" className="sr-only">{strings.settings.scheduled.fieldCron}</label>
           <Input
             id="scheduled-job-cron"
             name="scheduled-job-cron"
@@ -77,10 +79,10 @@ function ScheduledTab(): JSX.Element {
             data-testid="settings-job-cron"
             value={draftCron}
             onChange={(e) => setDraftCron(e.target.value)}
-            placeholder="e.g. 0 2 * * *…"
+            placeholder={strings.settings.scheduled.placeholderCron}
             className="font-mono sm:col-span-3"
           />
-          <label htmlFor="scheduled-job-prompt" className="sr-only">Prompt</label>
+          <label htmlFor="scheduled-job-prompt" className="sr-only">{strings.settings.scheduled.fieldPrompt}</label>
           <Input
             id="scheduled-job-prompt"
             name="scheduled-job-prompt"
@@ -88,7 +90,7 @@ function ScheduledTab(): JSX.Element {
             data-testid="settings-job-prompt"
             value={draftPrompt}
             onChange={(e) => setDraftPrompt(e.target.value)}
-            placeholder="e.g. Review recent changes…"
+            placeholder={strings.settings.scheduled.placeholderPrompt}
             className="sm:col-span-4"
           />
           <Button
@@ -100,7 +102,7 @@ function ScheduledTab(): JSX.Element {
             icon={<Plus />}
             className="sm:col-span-2"
           >
-            Create
+            {strings.settings.scheduled.create}
           </Button>
         </div>
       </Panel>
@@ -108,7 +110,7 @@ function ScheduledTab(): JSX.Element {
       <ul className="space-y-1.5" data-testid="settings-jobs-list">
         {jobs.length === 0 && !loading && (
           <li className="rounded-lg border border-dashed border-line px-3 py-4 text-center text-xs text-ink-2">
-            No scheduled jobs
+            {strings.settings.scheduled.empty}
           </li>
         )}
         {jobs.map((j) => (
@@ -118,9 +120,9 @@ function ScheduledTab(): JSX.Element {
             onToggle={(enabled) => void setEnabled(j.id, enabled)}
             onDelete={async () => {
               const accepted = await requestConfirmation({
-                title: `Delete scheduled job ${j.name}?`,
-                description: "The job will stop running and its schedule will be permanently removed.",
-                confirmLabel: "Delete Job",
+                title: strings.settings.scheduled.deleteTitle(j.name),
+                description: strings.settings.scheduled.deleteDesc,
+                confirmLabel: strings.settings.scheduled.deleteLabel,
               });
               if (accepted) await remove(j.id);
             }}
@@ -158,7 +160,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow }: {
         <IconButton
           data-testid={`settings-job-expand-${job.id}`}
           onClick={() => setExpanded((v) => !v)}
-          aria-label={expanded ? "Collapse" : "Expand"}
+          aria-label={expanded ? strings.settings.scheduled.collapse : strings.settings.scheduled.expand}
           active={expanded}
         >
           {expanded ? <ChevronDown /> : <ChevronRight />}
@@ -166,7 +168,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow }: {
         <span className="min-w-0 flex-1">
           <span className="block truncate text-xs font-medium text-ink-0">{job.name}</span>
           <span className="block truncate font-mono text-[11px] text-ink-2">
-            {job.cron} · {job.prompt || "(no prompt)"}
+            {job.cron} · {job.prompt || strings.settings.scheduled.noPrompt}
           </span>
         </span>
         <label
@@ -179,19 +181,19 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow }: {
             onChange={(e) => onToggle(e.target.checked)}
             className="h-3 w-3 accent-accent"
           />
-          {job.enabled ? "enabled" : "disabled"}
+          {job.enabled ? strings.settings.scheduled.enabled : strings.settings.scheduled.disabled}
         </label>
         <IconButton
           data-testid={`settings-job-run-now-${job.id}`}
           onClick={onRunNow}
-          aria-label="Run job now"
+          aria-label={strings.settings.scheduled.runNowAria}
         >
           <Play />
         </IconButton>
         <IconButton
           data-testid={`settings-job-delete-${job.id}`}
           onClick={onDelete}
-          aria-label="Delete job"
+          aria-label={strings.settings.scheduled.deleteAria}
         >
           <Trash2 />
         </IconButton>
@@ -199,7 +201,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow }: {
       {expanded && (
         <div data-testid={`settings-job-tasks-${job.id}`} className="border-t border-line px-3 py-2">
           {relatedTasks.length === 0 ? (
-            <div className="text-[11px] italic text-ink-2">No task runs recorded yet.</div>
+            <div className="text-[11px] italic text-ink-2">{strings.settings.scheduled.noRuns}</div>
           ) : (
             <ul className="space-y-1">
               {relatedTasks.map((t) => (
@@ -210,7 +212,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow }: {
                   </div>
                   <div className="flex shrink-0 items-center gap-2 text-ink-2">
                     <span>{Math.round(t.progress * 100)}%</span>
-                    <span>{t.status === "running" ? "running" : formatTime(t.updated_at)}</span>
+                    <span>{t.status === "running" ? strings.settings.scheduled.running : formatTime(t.updated_at)}</span>
                   </div>
                 </li>
               ))}

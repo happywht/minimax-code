@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { Play, Plus, RefreshCw, Trash2, Workflow } from "lucide-react";
 import { Badge, Button, EmptyState, IconButton, Input, Panel } from "../../ui";
+import { strings } from "../../ui/strings";
 import { SkeletonTable } from "../layout/Skeleton";
 import { useWorkflowStore } from "../../stores";
 import type { WorkflowEntry } from "../../types/ipc";
@@ -37,12 +38,12 @@ function WorkflowsTab(): JSX.Element {
   return (
     <section data-testid="settings-workflows-section" className="space-y-4">
       <TabHeader
-        title="Workflows"
-        hint="Automation workflows triggered by webhooks, schedules, or agent events. Configure trigger conditions and action steps."
+        title={strings.settings.workflows.title}
+        hint={strings.settings.workflows.hint}
         action={
           <>
             <Button size="sm" variant="secondary" onClick={() => refresh()} icon={<RefreshCw />}>
-              Refresh
+              {strings.settings.workflows.refresh}
             </Button>
             <Button
               size="sm"
@@ -51,7 +52,7 @@ function WorkflowsTab(): JSX.Element {
               onClick={() => setShowCreate((v) => !v)}
               icon={<Plus />}
             >
-              New
+              {strings.settings.workflows.new}
             </Button>
           </>
         }
@@ -62,53 +63,53 @@ function WorkflowsTab(): JSX.Element {
       {/* Create form */}
       {showCreate && (
         <Panel
-          title="New Workflow"
+          title={strings.settings.workflows.createTitle}
           actions={
             <Button size="sm" variant="ghost" onClick={() => setShowCreate(false)}>
-              Cancel
+              {strings.settings.workflows.cancel}
             </Button>
           }
         >
           <div className="space-y-2">
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
-              <Field label="Name" htmlFor="workflow-name" className="sm:col-span-7">
+              <Field label={strings.settings.workflows.fieldName} htmlFor="workflow-name" className="sm:col-span-7">
                 <Input
                   id="workflow-name"
                   name="workflow-name"
                   autoComplete="off"
                   data-testid="workflow-name-input"
-                  placeholder="e.g. Pull request review…"
+                  placeholder={strings.settings.workflows.placeholderName}
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") void handleCreate(); }}
                 />
               </Field>
-              <Field label="Trigger" htmlFor="workflow-trigger-type" className="sm:col-span-5">
+              <Field label={strings.settings.workflows.fieldTrigger} htmlFor="workflow-trigger-type" className="sm:col-span-5">
                 <Select
                   id="workflow-trigger-type"
                   name="workflow-trigger-type"
                   value={newTriggerType}
                   onChange={(e) => setNewTriggerType(e.target.value as "webhook" | "schedule" | "agent_event")}
                 >
-                  <option value="webhook">Webhook</option>
-                  <option value="schedule">Schedule</option>
-                  <option value="agent_event">Agent Event</option>
+                  <option value="webhook">{strings.settings.workflows.triggerWebhook}</option>
+                  <option value="schedule">{strings.settings.workflows.triggerSchedule}</option>
+                  <option value="agent_event">{strings.settings.workflows.triggerAgentEvent}</option>
                 </Select>
               </Field>
             </div>
-            <Field label="Description" htmlFor="workflow-description">
+            <Field label={strings.settings.workflows.fieldDescription} htmlFor="workflow-description">
               <Input
                 id="workflow-description"
                 name="workflow-description"
                 autoComplete="off"
-                placeholder="e.g. Review incoming pull requests…"
+                placeholder={strings.settings.workflows.placeholderDesc}
                 value={newDescription}
                 onChange={(e) => setNewDescription(e.target.value)}
               />
             </Field>
             <div className="flex justify-end gap-2">
               <Button size="sm" variant="ghost" onClick={() => setShowCreate(false)}>
-                Cancel
+                {strings.settings.workflows.cancel}
               </Button>
               <Button
                 size="sm"
@@ -116,7 +117,7 @@ function WorkflowsTab(): JSX.Element {
                 data-testid="workflow-create-submit"
                 onClick={() => void handleCreate()}
               >
-                Create
+                {strings.settings.workflows.create}
               </Button>
             </div>
           </div>
@@ -143,7 +144,7 @@ function WorkflowsTab(): JSX.Element {
                   <Workflow size={14} className="shrink-0 text-accent" />
                   <span className="truncate text-xs font-semibold text-ink-0">{wf.name}</span>
                   <Badge tone="accent">{wf.trigger_type}</Badge>
-                  <Badge tone="neutral">{wf.steps.length} step(s)</Badge>
+                  <Badge tone="neutral">{strings.settings.workflows.stepsBadge(wf.steps.length)}</Badge>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
                   <Button
@@ -152,24 +153,24 @@ function WorkflowsTab(): JSX.Element {
                     onClick={() => void (wf.enabled ? disable(wf.id) : enable(wf.id))}
                   >
                     <span className={wf.enabled ? "text-status-success" : "text-ink-2"}>
-                      {wf.enabled ? "Enabled" : "Disabled"}
+                      {wf.enabled ? strings.settings.workflows.enabled : strings.settings.workflows.disabled}
                     </span>
                   </Button>
                   <IconButton
                     data-testid={`workflow-trigger-${wf.id}`}
-                    aria-label={`Run workflow ${wf.name}`}
-                    title="Manually trigger this workflow"
+                    aria-label={strings.settings.workflows.runAria(wf.name)}
+                    title={strings.settings.workflows.runTitle}
                     onClick={() => void trigger(wf.id)}
                   >
                     <Play />
                   </IconButton>
                   <IconButton
-                    aria-label={`Delete workflow ${wf.name}`}
+                    aria-label={strings.settings.workflows.deleteAria(wf.name)}
                     onClick={async () => {
                       const accepted = await requestConfirmation({
-                        title: `Delete workflow ${wf.name}?`,
-                        description: "The workflow definition and its trigger configuration will be permanently removed.",
-                        confirmLabel: "Delete Workflow",
+                        title: strings.settings.workflows.deleteTitle(wf.name),
+                        description: strings.settings.workflows.deleteDesc,
+                        confirmLabel: strings.settings.workflows.deleteLabel,
                       });
                       if (accepted) await remove(wf.id);
                     }}
@@ -182,15 +183,15 @@ function WorkflowsTab(): JSX.Element {
                 <p className="text-[11px] text-ink-2">{wf.description}</p>
               )}
               <div className="flex items-center gap-3 text-[11px] text-ink-2">
-                <span>Runs: {wf.run_count}</span>
-                {wf.last_run_at && <span>Last: {formatDateTime(wf.last_run_at)}</span>}
+                <span>{strings.settings.workflows.runs(wf.run_count)}</span>
+                {wf.last_run_at && <span>{strings.settings.workflows.last(formatDateTime(wf.last_run_at))}</span>}
               </div>
             </div>
           ))}
         </div>
       )}
 
-      <div className="text-[11px] text-ink-2">{total} workflow(s) configured</div>
+      <div className="text-[11px] text-ink-2">{strings.settings.workflows.footer(total)}</div>
     </section>
   );
 }

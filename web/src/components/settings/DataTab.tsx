@@ -12,6 +12,7 @@
 import { useRef, useState } from "react";
 import { DatabaseBackup, Download, HardDriveDownload, Upload } from "lucide-react";
 import { Button, Panel } from "../../ui";
+import { strings } from "../../ui/strings";
 import { typedIPC } from "../../ipc";
 import type {
   DataBackupResult,
@@ -79,12 +80,14 @@ function DataTab(): JSX.Element {
       const totalRows = Object.values(envelope.counts ?? {}).reduce<number>((a, b) => a + b, 0);
       setFeedback({
         kind: "ok",
-        text: `Exported ${totalRows} rows across ${
-          Object.keys(envelope.tables ?? {}).length
-        } tables → ${exportFilename()}`,
+        text: strings.settings.data.exportOk(
+          totalRows,
+          Object.keys(envelope.tables ?? {}).length,
+          exportFilename(),
+        ),
       });
     } catch (err) {
-      setFeedback({ kind: "error", text: `Export failed: ${String(err)}` });
+      setFeedback({ kind: "error", text: strings.settings.data.exportFail(String(err)) });
     } finally {
       setExporting(false);
     }
@@ -99,19 +102,16 @@ function DataTab(): JSX.Element {
       try {
         envelope = JSON.parse(text) as DataExportEnvelope;
       } catch {
-        throw new Error("the file is not valid JSON");
+        throw new Error("文件不是有效的 JSON");
       }
       if (envelope?.format !== "minimax-code-export") {
-        throw new Error("not a MiniMax Code export file (format mismatch)");
+        throw new Error("不是 MiniMax Code 导出文件（格式不匹配）");
       }
       const totalRows = Object.values(envelope.counts ?? {}).reduce<number>((a, b) => a + b, 0);
       const accepted = await requestConfirmation({
-        title: "Import this export file?",
-        description:
-          `Replace-import: every table present in the file overwrites its current data ` +
-          `(${totalRows} rows, schema v${envelope.schema_version}). This cannot be undone — ` +
-          `take a backup first if unsure.`,
-        confirmLabel: "Import",
+        title: strings.settings.data.importConfirmTitle,
+        description: strings.settings.data.importConfirmDesc(totalRows, envelope.schema_version),
+        confirmLabel: strings.settings.data.importConfirmLabel,
       });
       if (!accepted) {
         setFeedback(null);
@@ -123,16 +123,18 @@ function DataTab(): JSX.Element {
         0,
       );
       const skipped = summary.skipped_tables?.length
-        ? ` (${summary.skipped_tables.length} unknown table(s) skipped)`
+        ? strings.settings.data.importSkipped(summary.skipped_tables.length)
         : "";
       setFeedback({
         kind: "ok",
-        text: `Imported ${importedRows} rows across ${
-          Object.keys(summary.imported ?? {}).length
-        } tables${skipped}.`,
+        text: strings.settings.data.importOk(
+          importedRows,
+          Object.keys(summary.imported ?? {}).length,
+          skipped,
+        ),
       });
     } catch (err) {
-      setFeedback({ kind: "error", text: `Import failed: ${String(err)}` });
+      setFeedback({ kind: "error", text: strings.settings.data.importFail(String(err)) });
     } finally {
       setImporting(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -146,10 +148,10 @@ function DataTab(): JSX.Element {
       const result: DataBackupResult = await typedIPC.backupData();
       setFeedback({
         kind: "ok",
-        text: `Backup written: ${result.path} (${formatBytes(result.bytes)})`,
+        text: strings.settings.data.backupOk(result.path, formatBytes(result.bytes)),
       });
     } catch (err) {
-      setFeedback({ kind: "error", text: `Backup failed: ${String(err)}` });
+      setFeedback({ kind: "error", text: strings.settings.data.backupFail(String(err)) });
     } finally {
       setBacking(false);
     }
@@ -158,13 +160,8 @@ function DataTab(): JSX.Element {
   return (
     <section data-testid="settings-data" className="space-y-4">
       <TabHeader
-        title="Data portability"
-        hint={
-          <>
-            Move your data in and out of the local agent database. Export produces a portable
-            JSON envelope; backup produces a file-level SQLite snapshot kept on the same machine.
-          </>
-        }
+        title={strings.settings.data.title}
+        hint={strings.settings.data.hint}
       />
 
       {feedback && (
@@ -184,11 +181,9 @@ function DataTab(): JSX.Element {
         </p>
       )}
 
-      <Panel title="Export to JSON">
+      <Panel title={strings.settings.data.exportTitle}>
         <p className="text-[11px] text-ink-2">
-          Dumps every business table (sessions, messages, memories, permissions, …) into a
-          single self-describing JSON document. Schema-versioned, so an older install
-          refuses to import files from a newer one instead of corrupting itself.
+          {strings.settings.data.exportDesc}
         </p>
         <div className="mt-3">
           <Button
@@ -200,16 +195,14 @@ function DataTab(): JSX.Element {
             loading={exporting}
             onClick={() => void onExport()}
           >
-            Export data
+            {strings.settings.data.exportButton}
           </Button>
         </div>
       </Panel>
 
-      <Panel title="Import from JSON">
+      <Panel title={strings.settings.data.importTitle}>
         <p className="text-[11px] text-ink-2">
-          Restore an export file. Replace semantics: each table in the file fully overwrites
-          its current contents inside one transaction — all rows land or none do. Unknown
-          tables and drifted columns are skipped, never fatal.
+          {strings.settings.data.importDesc}
         </p>
         <input
           ref={fileInputRef}
@@ -232,17 +225,16 @@ function DataTab(): JSX.Element {
             loading={importing}
             onClick={() => fileInputRef.current?.click()}
           >
-            Choose file…
+            {strings.settings.data.importButton}
           </Button>
         </div>
       </Panel>
 
-      <Panel title="Backup snapshot">
+      <Panel title={strings.settings.data.backupTitle}>
         <p className="text-[11px] text-ink-2">
-          Hot-copies the SQLite database via the online backup API — schema, WAL contents,
-          and derived indexes (full-text, vector) included — into{" "}
-          <InlineCode>&lt;data dir&gt;/backups/</InlineCode> with a UTC timestamp in the
-          filename. The agent keeps running; the source is only read.
+          {strings.settings.data.backupDescLead}{" "}
+          <InlineCode>&lt;data dir&gt;/backups/</InlineCode>
+          {strings.settings.data.backupDescTail}
         </p>
         <div className="mt-3">
           <Button
@@ -254,18 +246,14 @@ function DataTab(): JSX.Element {
             loading={backing}
             onClick={() => void onBackup()}
           >
-            Back up now
+            {strings.settings.data.backupButton}
           </Button>
         </div>
       </Panel>
 
       <p className="flex items-start gap-1.5 text-[11px] text-ink-2">
         <DatabaseBackup size={14} className="mt-px shrink-0" aria-hidden="true" />
-        <span>
-          Exports are the cross-version format (e.g. machine-to-machine migration); backups
-          are the same-version disaster-recovery format. Keep at least one backup before a
-          big import.
-        </span>
+        <span>{strings.settings.data.footerNote}</span>
       </p>
     </section>
   );

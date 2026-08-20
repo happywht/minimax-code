@@ -4,6 +4,7 @@
  */
 import { Plus, Trash2 } from "lucide-react";
 import { Badge, Button, IconButton, Input } from "../../../ui";
+import { strings } from "../../../ui/strings";
 import type { ProviderInfo } from "../../../types/ipc";
 import type { ModelDraft } from "./useModelRegistry";
 
@@ -33,7 +34,7 @@ export function ProviderRegistryCard({
           <div className="truncate text-xs font-medium text-ink-0">{provider.name}</div>
           <div className="truncate font-mono text-[11px] text-ink-2">{provider.base_url}</div>
         </div>
-        <Badge tone="neutral">{models.length} models</Badge>
+        <Badge tone="neutral">{strings.settings.modelsRegistry.modelsCount(models.length)}</Badge>
       </div>
 
       {models.length > 0 && (
@@ -48,7 +49,7 @@ export function ProviderRegistryCard({
               <IconButton
                 size="sm"
                 data-testid={`settings-model-remove-${provider.id}-${model.id}`}
-                aria-label={`Remove ${model.id}`}
+                aria-label={strings.settings.modelsRegistry.removeModelAria(model.id)}
                 onClick={() => onRemove(model.id)}
               >
                 <Trash2 />
@@ -62,34 +63,34 @@ export function ProviderRegistryCard({
         <Input
           data-testid={`settings-model-add-id-${provider.id}`}
           name={`model-id-${provider.id}`}
-          aria-label={`${provider.name} model ID`}
+          aria-label={strings.settings.modelsRegistry.modelIdAria(provider.name)}
           autoComplete="off"
           spellCheck={false}
           value={draft.id}
           onChange={(e) => onDraftChange({ id: e.target.value })}
-          placeholder="model id…"
+          placeholder={strings.settings.modelsRegistry.placeholderId}
           className="sm:col-span-4"
         />
         <Input
           data-testid={`settings-model-add-name-${provider.id}`}
           name={`model-name-${provider.id}`}
-          aria-label={`${provider.name} model display name`}
+          aria-label={strings.settings.modelsRegistry.modelNameAria(provider.name)}
           autoComplete="off"
           value={draft.name}
           onChange={(e) => onDraftChange({ name: e.target.value })}
-          placeholder="display name…"
+          placeholder={strings.settings.modelsRegistry.placeholderName}
           className="sm:col-span-4"
         />
         <Input
           data-testid={`settings-model-add-ctx-${provider.id}`}
           name={`model-context-${provider.id}`}
-          aria-label={`${provider.name} context window`}
+          aria-label={strings.settings.modelsRegistry.modelCtxAria(provider.name)}
           type="number"
           inputMode="numeric"
           min="1"
           value={draft.ctx}
           onChange={(e) => onDraftChange({ ctx: e.target.value })}
-          placeholder="context…"
+          placeholder={strings.settings.modelsRegistry.placeholderCtx}
           className="sm:col-span-2"
         />
         <Button
@@ -101,7 +102,7 @@ export function ProviderRegistryCard({
           icon={<Plus />}
           className="sm:col-span-2"
         >
-          Add
+          {strings.settings.modelsRegistry.add}
         </Button>
       </div>
     </div>

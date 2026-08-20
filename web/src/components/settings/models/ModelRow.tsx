@@ -3,6 +3,7 @@
  */
 import { Check } from "lucide-react";
 import { Badge, Button } from "../../../ui";
+import { strings } from "../../../ui/strings";
 import type { ModelInfo } from "../../../types/ipc";
 
 export interface ModelRowProps {
@@ -27,7 +28,7 @@ export function ModelRow({ model, isCurrent, onSelect }: ModelRowProps): JSX.Ele
           <span className="max-w-full truncate text-xs font-medium text-ink-0">{model.name}</span>
           {isCurrent && (
             <Badge tone="accent" data-testid={`settings-model-current-${model.id}`}>
-              current
+              {strings.settings.modelsRow.current}
             </Badge>
           )}
           {model.protocol && (
@@ -37,8 +38,9 @@ export function ModelRow({ model, isCurrent, onSelect }: ModelRowProps): JSX.Ele
           )}
         </div>
         <div className="mt-0.5 truncate text-[11px] text-ink-2">
-          {model.provider} · {(model.context_window / 1000).toFixed(0)}k ctx
-          {model.supports_tools ? " · tools" : ""}
+          {model.provider} ·{" "}
+          {strings.settings.modelsRow.contextK((model.context_window / 1000).toFixed(0))}
+          {model.supports_tools ? ` · ${strings.settings.modelsRow.supportsTools}` : ""}
         </div>
       </div>
       <Button
@@ -49,7 +51,7 @@ export function ModelRow({ model, isCurrent, onSelect }: ModelRowProps): JSX.Ele
         disabled={isCurrent}
         icon={isCurrent ? <Check /> : undefined}
       >
-        {isCurrent ? "Selected" : "Use"}
+        {isCurrent ? strings.settings.modelsRow.selected : strings.settings.modelsRow.use}
       </Button>
     </li>
   );

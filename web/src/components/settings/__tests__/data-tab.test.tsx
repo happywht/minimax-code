@@ -70,9 +70,9 @@ describe("DataTab", () => {
   it("renders the three operation panels", () => {
     render(<DataTab />);
     expect(screen.getByTestId("settings-data")).toBeTruthy();
-    expect(screen.getByText("Export to JSON")).toBeTruthy();
-    expect(screen.getByText("Import from JSON")).toBeTruthy();
-    expect(screen.getByText("Backup snapshot")).toBeTruthy();
+    expect(screen.getByText("导出为 JSON")).toBeTruthy();
+    expect(screen.getByText("从 JSON 导入")).toBeTruthy();
+    expect(screen.getByText("备份快照")).toBeTruthy();
   });
 
   it("exports: downloads a blob and reports the row total", async () => {
@@ -81,7 +81,7 @@ describe("DataTab", () => {
     fireEvent.click(screen.getByTestId("settings-data-export"));
     await waitFor(() => {
       expect(screen.getByTestId("settings-data-feedback").textContent).toContain(
-        "Exported 5 rows across 2 tables",
+        "已导出 2 张表共 5 行",
       );
     });
     expect(mockExportData).toHaveBeenCalledTimes(1);
@@ -98,7 +98,7 @@ describe("DataTab", () => {
     pickFile(ENVELOPE);
     await waitFor(() => {
       expect(screen.getByTestId("settings-data-feedback").textContent).toContain(
-        "Imported 5 rows across 2 tables",
+        "已导入 2 张表共 5 行",
       );
     });
     expect(mockImportData).toHaveBeenCalledWith(ENVELOPE);
@@ -109,7 +109,7 @@ describe("DataTab", () => {
     pickFile({ format: "something-else", tables: {} });
     await waitFor(() => {
       expect(screen.getByTestId("settings-data-error").textContent).toContain(
-        "Import failed",
+        "导入失败",
       );
     });
     expect(mockImportData).not.toHaveBeenCalled();

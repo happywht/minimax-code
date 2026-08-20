@@ -4,6 +4,7 @@
 import { useEffect } from "react";
 import { RefreshCw } from "lucide-react";
 import { Badge, Button, EmptyState } from "../../ui";
+import { strings } from "../../ui/strings";
 import type { BadgeTone } from "../../ui";
 import { SkeletonTable } from "../layout/Skeleton";
 import { useAuditStore } from "../../stores";
@@ -34,8 +35,8 @@ function AuditTab(): JSX.Element {
   return (
     <section data-testid="settings-audit-section" className="space-y-4">
       <TabHeader
-        title="Audit Log"
-        hint="Every tool dispatch is recorded for full traceability. Use this to review what the agent did and when."
+        title={strings.settings.audit.title}
+        hint={strings.settings.audit.hint}
         action={
           <Button
             size="sm"
@@ -43,7 +44,7 @@ function AuditTab(): JSX.Element {
             icon={<RefreshCw />}
             onClick={() => { refresh(); loadStats(); }}
           >
-            Refresh
+            {strings.settings.audit.refresh}
           </Button>
         }
       />
@@ -53,17 +54,17 @@ function AuditTab(): JSX.Element {
         <div className="grid grid-cols-3 gap-2 text-center">
           <div className="rounded-lg border border-line bg-surface-2 px-3 py-2">
             <div className="text-lg font-semibold text-ink-0">{stats.total}</div>
-            <div className="text-[11px] text-ink-2">Total Calls</div>
+            <div className="text-[11px] text-ink-2">{strings.settings.audit.statTotal}</div>
           </div>
           <div className="rounded-lg border border-line bg-surface-2 px-3 py-2">
             <div className="text-lg font-semibold text-ink-0">{Object.keys(stats.by_tool).length}</div>
-            <div className="text-[11px] text-ink-2">Tools Used</div>
+            <div className="text-[11px] text-ink-2">{strings.settings.audit.statTools}</div>
           </div>
           <div className="rounded-lg border border-line bg-surface-2 px-3 py-2">
             <div className="text-lg font-semibold text-status-success">
               {stats.by_status.success ?? 0}
             </div>
-            <div className="text-[11px] text-ink-2">Successes</div>
+            <div className="text-[11px] text-ink-2">{strings.settings.audit.statSuccess}</div>
           </div>
         </div>
       )}
@@ -71,7 +72,7 @@ function AuditTab(): JSX.Element {
       {/* Filter */}
       <div className="flex items-center gap-2">
         <label htmlFor="audit-filter-tool" className="shrink-0 text-[11px] text-ink-2">
-          Filter by tool:
+          {strings.settings.audit.filterLabel}
         </label>
         <Select
           id="audit-filter-tool"
@@ -81,7 +82,7 @@ function AuditTab(): JSX.Element {
           value={filterTool ?? ""}
           onChange={(e) => setFilterTool(e.target.value || null)}
         >
-          <option value="">All</option>
+          <option value="">{strings.settings.audit.filterAll}</option>
           {stats && Object.keys(stats.by_tool).map((t) => (
             <option key={t} value={t}>{t} ({stats.by_tool[t]})</option>
           ))}
@@ -101,12 +102,12 @@ function AuditTab(): JSX.Element {
           <table className="w-full text-left text-[11px]">
             <thead>
               <tr className="border-b border-line bg-surface-1 text-ink-2">
-                <th className="px-2 py-1.5 font-medium">Time</th>
-                <th className="px-2 py-1.5 font-medium">Tool</th>
-                <th className="px-2 py-1.5 font-medium">Status</th>
-                <th className="px-2 py-1.5 font-medium">Duration</th>
-                <th className="px-2 py-1.5 font-medium">Permission</th>
-                <th className="px-2 py-1.5 font-medium">Error</th>
+                <th className="px-2 py-1.5 font-medium">{strings.settings.audit.colTime}</th>
+                <th className="px-2 py-1.5 font-medium">{strings.settings.audit.colTool}</th>
+                <th className="px-2 py-1.5 font-medium">{strings.settings.audit.colStatus}</th>
+                <th className="px-2 py-1.5 font-medium">{strings.settings.audit.colDuration}</th>
+                <th className="px-2 py-1.5 font-medium">{strings.settings.audit.colPermission}</th>
+                <th className="px-2 py-1.5 font-medium">{strings.settings.audit.colError}</th>
               </tr>
             </thead>
             <tbody>
@@ -136,16 +137,16 @@ function AuditTab(): JSX.Element {
             disabled={page === 0}
             onClick={() => setPage(page - 1)}
           >
-            ← Prev
+            {strings.settings.audit.prev}
           </Button>
-          <span>Page {page + 1} of {totalPages}</span>
+          <span>{strings.settings.audit.page(page + 1, totalPages)}</span>
           <Button
             size="sm"
             variant="secondary"
             disabled={page + 1 >= totalPages}
             onClick={() => setPage(page + 1)}
           >
-            Next →
+            {strings.settings.audit.next}
           </Button>
         </div>
       )}

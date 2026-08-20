@@ -8,6 +8,7 @@
 import { useEffect } from "react";
 import { Plus } from "lucide-react";
 import { Button, EmptyState, Spinner } from "../../ui";
+import { strings } from "../../ui/strings";
 import { useProviderStore } from "../../stores";
 import { toast } from "../layout/ErrorBoundary";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
@@ -35,40 +36,40 @@ function ProvidersTab(): JSX.Element {
 
   const handleDelete = async (p: ProviderInfo) => {
     if (p.id === "builtin-minimax") {
-      toast.error("Cannot delete", "The built-in MiniMax provider cannot be removed.");
+      toast.error(strings.settings.providers.builtinDeleteTitle, strings.settings.providers.builtinDeleteDesc);
       return;
     }
     const accepted = await requestConfirmation({
-      title: `Delete ${p.name}?`,
-      description: "This removes the provider, its model registry, and its saved API key from MiniMax Code. This action cannot be undone.",
-      confirmLabel: "Delete Provider",
+      title: strings.settings.providers.deleteTitle(p.name),
+      description: strings.settings.providers.deleteDesc,
+      confirmLabel: strings.settings.providers.deleteLabel,
     });
     if (!accepted) return;
     await remove(p.id);
-    toast.success("Provider deleted", p.name);
+    toast.success(strings.settings.providers.deletedToast, p.name);
   };
 
   const handleSetKey = async (providerId: string, key: string) => {
     const ok = await setApiKey(providerId, key);
-    if (ok) toast.success("API key saved");
+    if (ok) toast.success(strings.settings.providers.keySavedToast);
   };
 
   const handleClearKey = async (provider: ProviderInfo) => {
     const accepted = await requestConfirmation({
-      title: `Clear ${provider.name} API key?`,
-      description: "Real model requests through this provider will stop until you save another key. Existing conversations are not deleted.",
-      confirmLabel: "Clear API Key",
+      title: strings.settings.providers.clearKeyTitle(provider.name),
+      description: strings.settings.providers.clearKeyDesc,
+      confirmLabel: strings.settings.providers.clearKeyLabel,
     });
     if (!accepted) return;
     const ok = await clearApiKey(provider.id);
-    if (ok) toast.success("API key cleared");
+    if (ok) toast.success(strings.settings.providers.keyClearedToast);
   };
 
   return (
     <section data-testid="settings-providers" className="min-w-0 space-y-4">
       <TabHeader
-        title="LLM Providers"
-        hint="Manage LLM providers and API keys. Models from enabled providers appear in the model selector."
+        title={strings.settings.providers.title}
+        hint={strings.settings.providers.hint}
         action={
           <Button
             size="sm"
@@ -77,7 +78,7 @@ function ProvidersTab(): JSX.Element {
             onClick={form.openForCreate}
             icon={<Plus />}
           >
-            Add Provider
+            {strings.settings.providers.add}
           </Button>
         }
       />
@@ -86,7 +87,7 @@ function ProvidersTab(): JSX.Element {
 
       {loading && providers.length === 0 ? (
         <div className="flex items-center justify-center gap-2 py-4 text-xs text-ink-2">
-          <Spinner size={12} /> Loading providers…
+          <Spinner size={12} /> {strings.settings.providers.loading}
         </div>
       ) : providers.length === 0 ? (
         <EmptyState

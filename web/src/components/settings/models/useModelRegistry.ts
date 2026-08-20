@@ -9,6 +9,7 @@
 import { useEffect, useState } from "react";
 import { useModelStore, useProviderStore } from "../../../stores";
 import type { ProviderInfo, ProviderModel } from "../../../types/ipc";
+import { strings } from "../../../ui/strings";
 import { requestConfirmation } from "../../modals/ConfirmationDialog";
 
 export interface ModelDraft {
@@ -69,9 +70,9 @@ export function useModelRegistry() {
 
   const removeModel = async (provider: ProviderInfo, modelId: string) => {
     const accepted = await requestConfirmation({
-      title: `Remove model ${modelId}?`,
-      description: `This removes the model from ${provider.name}. Conversations that selected it will need another active model.`,
-      confirmLabel: "Remove Model",
+      title: strings.settings.modelsRegistry.removeConfirmTitle(modelId),
+      description: strings.settings.modelsRegistry.removeConfirmDesc(provider.name),
+      confirmLabel: strings.settings.modelsRegistry.removeConfirmLabel,
     });
     if (!accepted) return;
     const result = await updateProvider({

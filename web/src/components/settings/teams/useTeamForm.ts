@@ -6,6 +6,7 @@
  */
 import { useState } from "react";
 import { useTeamStore } from "../../../stores";
+import { strings } from "../../../ui/strings";
 import { toast } from "../../layout/ErrorBoundary";
 import type { OrchestrationMode } from "../../../types/ipc";
 import { TEAM_COLORS } from "./constants";
@@ -46,7 +47,7 @@ export function useTeamForm() {
       orchestration_mode: formMode,
     });
     if (t) {
-      toast.success("Team created", t.name);
+      toast.success(strings.settings.teams.createdToast, t.name);
       resetForm();
     }
   };

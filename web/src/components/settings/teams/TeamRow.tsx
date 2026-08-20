@@ -3,6 +3,7 @@
  */
 import { Trash2, Users } from "lucide-react";
 import { Badge, Button, IconButton } from "../../../ui";
+import { strings } from "../../../ui/strings";
 import type { AgentTeam } from "../../../types/ipc";
 
 export interface TeamRowProps {
@@ -29,7 +30,7 @@ export function TeamRow({ team, onToggleEnabled, onDelete }: TeamRowProps): JSX.
               <span className="truncate text-xs font-medium text-ink-0">{team.name}</span>
               <Badge tone="accent">{team.orchestration_mode}</Badge>
               <Badge tone={team.enabled ? "success" : "neutral"} dot>
-                {team.enabled ? "enabled" : "disabled"}
+                {team.enabled ? strings.settings.teams.enabled : strings.settings.teams.disabled}
               </Badge>
             </div>
             {team.description && (
@@ -56,12 +57,12 @@ export function TeamRow({ team, onToggleEnabled, onDelete }: TeamRowProps): JSX.
             data-testid={`settings-team-toggle-${team.name}`}
             onClick={onToggleEnabled}
           >
-            {team.enabled ? "Disable" : "Enable"}
+            {team.enabled ? strings.settings.teams.disable : strings.settings.teams.enable}
           </Button>
           <IconButton
             data-testid={`settings-team-delete-${team.name}`}
             onClick={onDelete}
-            aria-label={`Delete team ${team.name}`}
+            aria-label={strings.settings.teams.deleteAria(team.name)}
           >
             <Trash2 />
           </IconButton>

@@ -7,6 +7,7 @@
  */
 import { useState } from "react";
 import { useProviderStore } from "../../../stores";
+import { strings } from "../../../ui/strings";
 import { toast } from "../../layout/ErrorBoundary";
 import type { ProviderInfo, ProviderModel } from "../../../types/ipc";
 import type { ProviderPreset } from "./presets";
@@ -85,7 +86,7 @@ export function useProviderForm() {
       };
       if (formApiKey.trim()) opts.api_key = formApiKey.trim();
       await update(opts as Parameters<typeof update>[0]);
-      toast.success("Provider updated", formName.trim());
+      toast.success(strings.settings.providers.form.updatedToast, formName.trim());
     } else {
       const result = await create({
         name: formName.trim(),
@@ -94,7 +95,7 @@ export function useProviderForm() {
         models: formModels.length > 0 ? formModels : undefined,
         api_key: formApiKey.trim() || undefined,
       });
-      if (result) toast.success("Provider created", result.name);
+      if (result) toast.success(strings.settings.providers.form.createdToast, result.name);
     }
     resetForm();
   };

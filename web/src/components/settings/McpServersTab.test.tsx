@@ -86,7 +86,7 @@ describe("McpServersTab", () => {
     fireEvent.change(screen.getByTestId("settings-mcp-env"), {
       target: { value: '{"NODE_PATH":"/usr/local"}' },
     });
-    await user.click(screen.getByRole("button", { name: /Save/i }));
+    await user.click(screen.getByRole("button", { name: /保存/ }));
 
     await waitFor(() => {
       expect(addMcpServer).toHaveBeenCalledWith(
@@ -121,7 +121,7 @@ describe("McpServersTab", () => {
     await user.type(screen.getByTestId("settings-mcp-oauth-secret"), "cs");
     await user.type(screen.getByTestId("settings-mcp-oauth-scopes"), "read,write");
     await user.type(screen.getByTestId("settings-mcp-oauth-port"), "8765");
-    await user.click(screen.getByRole("button", { name: /Save/i }));
+    await user.click(screen.getByRole("button", { name: /保存/ }));
 
     await waitFor(() => {
       expect(addMcpServer).toHaveBeenCalledWith(

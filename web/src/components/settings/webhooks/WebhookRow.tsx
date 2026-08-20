@@ -5,6 +5,7 @@
 import { useState } from "react";
 import { Eye, EyeOff, Trash2 } from "lucide-react";
 import { Badge, Button, IconButton } from "../../../ui";
+import { strings } from "../../../ui/strings";
 import type { WebhookConfig } from "../../../types/ipc";
 
 export interface WebhookRowProps {
@@ -33,13 +34,18 @@ export function WebhookRow({
         <div className="flex shrink-0 items-center gap-1">
           <Button size="sm" variant="ghost" onClick={onToggleEnabled}>
             <span className={webhook.enabled ? "text-status-success" : "text-ink-2"}>
-              {webhook.enabled ? "Enabled" : "Disabled"}
+              {webhook.enabled
+                ? strings.settings.webhooks.enabled
+                : strings.settings.webhooks.disabled}
             </span>
           </Button>
           <Button size="sm" variant="ghost" onClick={onRegenerateSecret}>
-            Re-secret
+            {strings.settings.webhooks.regenerateLabel}
           </Button>
-          <IconButton aria-label={`Delete webhook ${webhook.name}`} onClick={onDelete}>
+          <IconButton
+            aria-label={strings.settings.webhooks.deleteAria(webhook.name)}
+            onClick={onDelete}
+          >
             <Trash2 />
           </IconButton>
         </div>
@@ -47,11 +53,15 @@ export function WebhookRow({
       <div className="font-mono text-[11px] text-ink-2">POST {webhook.url_path}</div>
       {webhook.secret && (
         <div className="flex items-center gap-1 text-[11px] text-ink-2">
-          <span>Secret:</span>
+          <span>{strings.settings.webhooks.secretLabel}</span>
           <span className="font-mono">{revealed ? webhook.secret : "••••••••"}</span>
           <IconButton
             size="sm"
-            aria-label={revealed ? "Hide webhook secret" : "Show webhook secret"}
+            aria-label={
+              revealed
+                ? strings.settings.webhooks.hideSecretAria
+                : strings.settings.webhooks.showSecretAria
+            }
             onClick={() => setRevealed((v) => !v)}
           >
             {revealed ? <EyeOff /> : <Eye />}

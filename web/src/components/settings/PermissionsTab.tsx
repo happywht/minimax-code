@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Badge, Button, IconButton, Input, Panel } from "../../ui";
+import { strings } from "../../ui/strings";
 import { usePermissionStore } from "../../stores";
 import { toast } from "../layout/ErrorBoundary";
 import type { PermissionRule } from "../../types/ipc";
@@ -28,14 +29,17 @@ function PermissionsTab(): JSX.Element {
   }, [rules.length, refresh]);
 
   const handleAdd = async () => {
-    const toolErr = required("Tool")(draftTool);
-    const patternErr = compose(required("Pattern"), regexFormat())(draftPattern);
+    const toolErr = required(strings.settings.permissions.fieldTool)(draftTool);
+    const patternErr = compose(
+      required(strings.settings.permissions.fieldPattern),
+      regexFormat(),
+    )(draftPattern);
     if (toolErr || patternErr) {
       setErrors({ tool: toolErr || undefined, pattern: patternErr || undefined });
       return;
     }
     await upsertRule({ tool: draftTool.trim(), pattern: draftPattern.trim(), decision: draftDecision });
-    toast.success("Rule saved", `${draftTool} ${draftPattern} → ${draftDecision}`);
+    toast.success(strings.settings.permissions.savedToast, `${draftTool} ${draftPattern} → ${draftDecision}`);
     setDraftPattern("");
     setErrors({});
   };
@@ -43,20 +47,23 @@ function PermissionsTab(): JSX.Element {
   return (
     <section data-testid="settings-permissions" className="space-y-4">
       <TabHeader
-        title="Permission rules"
+        title={strings.settings.permissions.title}
         hint={
           <>
-            Patterns are matched against tool call arguments. A rule with decision{" "}
-            <InlineCode>allow</InlineCode> skips the confirmation modal;{" "}
-            <InlineCode>deny</InlineCode> blocks the call; <InlineCode>ask</InlineCode> always
-            prompts.
+            {strings.settings.permissions.hintLead}{" "}
+            <InlineCode>allow</InlineCode>
+            {strings.settings.permissions.hintMid1}{" "}
+            <InlineCode>deny</InlineCode>
+            {strings.settings.permissions.hintMid2}{" "}
+            <InlineCode>ask</InlineCode>
+            {strings.settings.permissions.hintTail}
           </>
         }
       />
 
-      <Panel title="Add rule">
+      <Panel title={strings.settings.permissions.addTitle}>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
-          <Field label="Tool" htmlFor="permission-tool" className="sm:col-span-3" hint={errors.tool}>
+          <Field label={strings.settings.permissions.fieldTool} htmlFor="permission-tool" className="sm:col-span-3" hint={errors.tool}>
             <Input
               id="permission-tool"
               name="permission-tool"
@@ -65,11 +72,11 @@ function PermissionsTab(): JSX.Element {
               data-testid="settings-permission-tool"
               value={draftTool}
               onChange={(e) => { setDraftTool(e.target.value); setErrors((prev) => ({ ...prev, tool: undefined })); }}
-              placeholder="e.g. bash…"
+              placeholder={strings.settings.permissions.placeholderTool}
               className={errors.tool ? "border-status-error" : ""}
             />
           </Field>
-          <Field label="Argument Pattern" htmlFor="permission-pattern" className="sm:col-span-5" hint={errors.pattern}>
+          <Field label={strings.settings.permissions.fieldPattern} htmlFor="permission-pattern" className="sm:col-span-5" hint={errors.pattern}>
             <Input
               id="permission-pattern"
               name="permission-pattern"
@@ -78,11 +85,11 @@ function PermissionsTab(): JSX.Element {
               data-testid="settings-permission-pattern"
               value={draftPattern}
               onChange={(e) => { setDraftPattern(e.target.value); setErrors((prev) => ({ ...prev, pattern: undefined })); }}
-              placeholder="e.g. ^git status$…"
+              placeholder={strings.settings.permissions.placeholderPattern}
               className={"font-mono " + (errors.pattern ? "border-status-error" : "")}
             />
           </Field>
-          <Field label="Decision" htmlFor="permission-decision" className="sm:col-span-2">
+          <Field label={strings.settings.permissions.fieldDecision} htmlFor="permission-decision" className="sm:col-span-2">
             <Select
               id="permission-decision"
               name="permission-decision"
@@ -105,7 +112,7 @@ function PermissionsTab(): JSX.Element {
               icon={<Plus />}
               className="w-full"
             >
-              Add
+              {strings.settings.permissions.add}
             </Button>
           </div>
         </div>
@@ -114,7 +121,7 @@ function PermissionsTab(): JSX.Element {
       <ul className="space-y-1.5" data-testid="settings-permissions-list">
         {rules.length === 0 && (
           <li className="rounded-lg border border-dashed border-line px-3 py-4 text-center text-xs text-ink-2">
-            No permission rules yet
+            {strings.settings.permissions.empty}
           </li>
         )}
         {rules.map((r) => (
@@ -123,9 +130,9 @@ function PermissionsTab(): JSX.Element {
             rule={r}
             onDelete={async () => {
               const accepted = await requestConfirmation({
-                title: "Delete permission rule?",
-                description: `The rule for ${r.tool} (${r.pattern}) will no longer control future tool calls.`,
-                confirmLabel: "Delete Rule",
+                title: strings.settings.permissions.deleteTitle,
+                description: strings.settings.permissions.deleteDesc(r.tool, r.pattern),
+                confirmLabel: strings.settings.permissions.deleteLabel,
               });
               if (accepted) await removeRule(r.id);
             }}
@@ -148,13 +155,13 @@ function PermissionRuleRow({ rule, onDelete, onUpdate }: {
     >
       <Badge tone="neutral">
         {rule.tool}
-        {rule.origin === "default" ? " · default" : ""}
+        {rule.origin === "default" ? strings.settings.permissions.defaultBadge : ""}
       </Badge>
       <code className="min-w-0 flex-1 truncate font-mono text-xs text-ink-0">{rule.pattern}</code>
       <Select
         data-testid={`settings-permission-decision-${rule.id}`}
         value={rule.decision}
-        aria-label={`Decision for ${rule.tool} ${rule.pattern}`}
+        aria-label={strings.settings.permissions.decisionAria(rule.tool, rule.pattern)}
         onChange={(e) => onUpdate(e.target.value as "allow" | "deny" | "ask")}
         className="w-auto shrink-0"
       >
@@ -168,7 +175,7 @@ function PermissionRuleRow({ rule, onDelete, onUpdate }: {
         <span
           data-testid={`settings-permission-locked-${rule.id}`}
           className="w-8 text-center font-mono text-xs text-ink-2"
-          title="Factory default — override it with the selector; it cannot be deleted"
+          title={strings.settings.permissions.defaultTitle}
         >
           —
         </span>
@@ -176,7 +183,7 @@ function PermissionRuleRow({ rule, onDelete, onUpdate }: {
         <IconButton
           data-testid={`settings-permission-delete-${rule.id}`}
           onClick={onDelete}
-          aria-label="Delete rule"
+          aria-label={strings.settings.permissions.deleteAria}
         >
           <Trash2 />
         </IconButton>

@@ -76,51 +76,51 @@ describe("Settings tab split (P0#3)", () => {
 
   it("gives compact permission and schedule controls accessible names", () => {
     const permissions = render(<PermissionsTab />);
-    expect(screen.getByLabelText("Tool")).toHaveAttribute("name", "permission-tool");
-    expect(screen.getByLabelText("Argument Pattern")).toHaveAttribute("name", "permission-pattern");
-    expect(screen.getByLabelText("Decision")).toHaveAttribute("name", "permission-decision");
+    expect(screen.getByLabelText("工具")).toHaveAttribute("name", "permission-tool");
+    expect(screen.getByLabelText("参数模式")).toHaveAttribute("name", "permission-pattern");
+    expect(screen.getByLabelText("决策")).toHaveAttribute("name", "permission-decision");
     permissions.unmount();
 
     const scheduled = render(<ScheduledTab />);
-    expect(screen.getByLabelText("Job Name")).toHaveAttribute("name", "scheduled-job-name");
-    expect(screen.getByLabelText("Cron Expression")).toHaveAttribute("name", "scheduled-job-cron");
-    expect(screen.getByLabelText("Prompt")).toHaveAttribute("name", "scheduled-job-prompt");
+    expect(screen.getByLabelText("任务名称")).toHaveAttribute("name", "scheduled-job-name");
+    expect(screen.getByLabelText("Cron 表达式")).toHaveAttribute("name", "scheduled-job-cron");
+    expect(screen.getByLabelText("提示词")).toHaveAttribute("name", "scheduled-job-prompt");
     scheduled.unmount();
   });
 
   it("labels agent and team creation forms", () => {
     const agents = render(<AgentsTab />);
     fireEvent.click(screen.getByTestId("settings-agent-create"));
-    expect(screen.getByLabelText("Agent Name")).toHaveAttribute("name", "agent-name");
-    expect(screen.getByLabelText("System Prompt")).toHaveAttribute("name", "agent-system-prompt");
+    expect(screen.getByLabelText("Agent 名称")).toHaveAttribute("name", "agent-name");
+    expect(screen.getByLabelText("系统提示词")).toHaveAttribute("name", "agent-system-prompt");
     agents.unmount();
 
     const teams = render(<TeamsTab />);
     fireEvent.click(screen.getByTestId("settings-team-create"));
-    expect(screen.getByLabelText("Team Name")).toHaveAttribute("name", "team-name");
-    expect(screen.getByLabelText("Orchestration")).toHaveAttribute("name", "team-orchestration-mode");
-    expect(screen.getByLabelText("Description")).toHaveAttribute("name", "team-description");
-    expect(screen.getAllByRole("button", { name: /Use team color/ })).toHaveLength(5);
+    expect(screen.getByLabelText("名称")).toHaveAttribute("name", "team-name");
+    expect(screen.getByLabelText("编排模式")).toHaveAttribute("name", "team-orchestration-mode");
+    expect(screen.getByLabelText("描述")).toHaveAttribute("name", "team-description");
+    expect(screen.getAllByRole("button", { name: /使用团队颜色/ })).toHaveLength(5);
     teams.unmount();
   });
 
   it("labels webhook, workflow, and audit controls", () => {
     const webhooks = render(<WebhooksTab />);
     fireEvent.click(screen.getByTestId("webhook-create-btn"));
-    expect(screen.getByLabelText("Name")).toHaveAttribute("name", "webhook-name");
-    expect(screen.getByLabelText("Source")).toHaveAttribute("name", "webhook-source");
-    expect(screen.getByLabelText("Action")).toHaveAttribute("name", "webhook-action");
+    expect(screen.getByLabelText("名称")).toHaveAttribute("name", "webhook-name");
+    expect(screen.getByLabelText("来源")).toHaveAttribute("name", "webhook-source");
+    expect(screen.getByLabelText("动作")).toHaveAttribute("name", "webhook-action");
     webhooks.unmount();
 
     const workflows = render(<WorkflowsTab />);
     fireEvent.click(screen.getByTestId("workflow-create-btn"));
-    expect(screen.getByLabelText("Name")).toHaveAttribute("name", "workflow-name");
-    expect(screen.getByLabelText("Trigger")).toHaveAttribute("name", "workflow-trigger-type");
-    expect(screen.getByLabelText("Description")).toHaveAttribute("name", "workflow-description");
+    expect(screen.getByLabelText("名称")).toHaveAttribute("name", "workflow-name");
+    expect(screen.getByLabelText("触发器")).toHaveAttribute("name", "workflow-trigger-type");
+    expect(screen.getByLabelText("描述")).toHaveAttribute("name", "workflow-description");
     workflows.unmount();
 
     const audit = render(<AuditTab />);
-    expect(screen.getByLabelText("Filter by tool:")).toHaveAttribute("name", "audit-filter-tool");
+    expect(screen.getByLabelText("按工具筛选：")).toHaveAttribute("name", "audit-filter-tool");
     audit.unmount();
   });
 });

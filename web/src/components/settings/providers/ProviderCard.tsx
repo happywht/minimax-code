@@ -13,6 +13,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { Badge, Button, IconButton, Input } from "../../../ui";
+import { strings } from "../../../ui/strings";
 import type { ProviderInfo } from "../../../types/ipc";
 
 export interface ProviderCardProps {
@@ -51,14 +52,16 @@ export function ProviderCard({
             <Badge tone={provider.protocol === "anthropic" ? "warning" : "info"} className="font-mono">
               {provider.protocol}
             </Badge>
-            {!provider.enabled && <Badge tone="neutral">disabled</Badge>}
+            {!provider.enabled && (
+              <Badge tone="neutral">{strings.settings.providers.card.disabled}</Badge>
+            )}
             {provider.api_key_configured ? (
               <Badge tone="success" dot>
-                key ✓
+                {strings.settings.providers.card.keyOk}
               </Badge>
             ) : (
               <Badge tone="error" dot>
-                no key
+                {strings.settings.providers.card.noKey}
               </Badge>
             )}
           </div>
@@ -69,16 +72,20 @@ export function ProviderCard({
         <IconButton
           onClick={() => setExpanded((v) => !v)}
           data-testid={`settings-provider-${provider.id}-expand`}
-          aria-label={`${expanded ? "Collapse" : "Expand"} ${provider.name}`}
+          aria-label={
+            expanded
+              ? strings.settings.providers.card.collapseAria(provider.name)
+              : strings.settings.providers.card.expandAria(provider.name)
+          }
           active={expanded}
         >
           {expanded ? <ChevronDown /> : <ChevronRight />}
         </IconButton>
-        <IconButton onClick={onEdit} aria-label="Edit provider">
+        <IconButton onClick={onEdit} aria-label={strings.settings.providers.card.editAria}>
           <Pencil />
         </IconButton>
         {!isBuiltin && (
-          <IconButton onClick={onDelete} aria-label="Delete provider">
+          <IconButton onClick={onDelete} aria-label={strings.settings.providers.card.deleteAria}>
             <Trash2 />
           </IconButton>
         )}
@@ -91,7 +98,7 @@ export function ProviderCard({
           {provider.models.length > 0 && (
             <div>
               <h4 className="mb-1 text-[11px] font-medium text-ink-2">
-                Models ({provider.models.length})
+                {strings.settings.providers.card.modelsTitle(provider.models.length)}
               </h4>
               <div className="flex flex-wrap gap-1">
                 {provider.models.map((m) => (
@@ -111,18 +118,24 @@ export function ProviderCard({
 
           {/* API key management */}
           <div>
-            <h4 className="mb-1 text-[11px] font-medium text-ink-2">API Key</h4>
+            <h4 className="mb-1 text-[11px] font-medium text-ink-2">
+              {strings.settings.providers.card.apiKeyTitle}
+            </h4>
             <div className="flex min-w-0 flex-col gap-2 sm:flex-row">
               <div className="relative min-w-0 flex-1">
                 <Input
                   id={`provider-${provider.id}-api-key`}
                   name={`provider-${provider.id}-api-key`}
-                  aria-label={`${provider.name} API key`}
+                  aria-label={strings.settings.providers.card.keyAria(provider.name)}
                   type={reveal ? "text" : "password"}
                   data-testid={`settings-provider-${provider.id}-key-input`}
                   value={keyDraft}
                   onChange={(e) => setKeyDraft(e.target.value)}
-                  placeholder={provider.api_key_configured ? "Replace key…" : "Enter API key…"}
+                  placeholder={
+                    provider.api_key_configured
+                      ? strings.settings.providers.card.placeholderReplace
+                      : strings.settings.providers.card.placeholderEnter
+                  }
                   autoComplete="new-password"
                   spellCheck={false}
                   className="pr-8 font-mono"
@@ -130,7 +143,11 @@ export function ProviderCard({
                 <IconButton
                   size="sm"
                   onClick={() => setReveal((v) => !v)}
-                  aria-label={reveal ? `Hide ${provider.name} API key` : `Show ${provider.name} API key`}
+                  aria-label={
+                    reveal
+                      ? strings.settings.providers.card.hideKeyAria(provider.name)
+                      : strings.settings.providers.card.showKeyAria(provider.name)
+                  }
                   className="absolute right-1 top-1/2 -translate-y-1/2"
                 >
                   {reveal ? <EyeOff /> : <Eye />}
@@ -143,7 +160,7 @@ export function ProviderCard({
                 disabled={!keyDraft.trim()}
                 onClick={() => { onSetKey(keyDraft.trim()); setKeyDraft(""); }}
               >
-                Save
+                {strings.settings.providers.card.save}
               </Button>
               {provider.api_key_configured && (
                 <Button
@@ -152,7 +169,7 @@ export function ProviderCard({
                   data-testid={`settings-provider-${provider.id}-key-clear`}
                   onClick={onClearKey}
                 >
-                  Clear
+                  {strings.settings.providers.card.clear}
                 </Button>
               )}
             </div>

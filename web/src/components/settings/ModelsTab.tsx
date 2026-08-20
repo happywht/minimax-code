@@ -7,6 +7,7 @@
  */
 import { RefreshCw } from "lucide-react";
 import { Button, EmptyState, Spinner } from "../../ui";
+import { strings } from "../../ui/strings";
 import { TabHeader } from "./fields";
 import { useModelRegistry } from "./models/useModelRegistry";
 import { ModelRow } from "./models/ModelRow";
@@ -32,8 +33,8 @@ function ModelsTab(): JSX.Element {
   return (
     <section data-testid="settings-models" className="min-w-0 space-y-5">
       <TabHeader
-        title="Available models"
-        hint="Select the active model, then manage each provider's model registry below."
+        title={strings.settings.models.title}
+        hint={strings.settings.models.hint}
         action={
           <Button
             size="sm"
@@ -43,7 +44,7 @@ function ModelsTab(): JSX.Element {
             loading={loading}
             icon={<RefreshCw />}
           >
-            Refresh
+            {strings.settings.models.refresh}
           </Button>
         }
       />
@@ -67,11 +68,11 @@ function ModelsTab(): JSX.Element {
       <div data-testid="settings-model-registry" className="space-y-2 border-t border-line pt-4">
         <div className="flex items-center justify-between gap-2">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-1">
-            Provider model registry
+            {strings.settings.models.registryTitle}
           </h3>
           {providersLoading && (
             <span className="flex items-center gap-1.5 text-[11px] text-ink-2">
-              <Spinner size={11} /> Loading providers…
+              <Spinner size={11} /> {strings.settings.models.loadingProviders}
             </span>
           )}
         </div>

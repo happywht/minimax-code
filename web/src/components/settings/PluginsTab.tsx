@@ -8,6 +8,7 @@
 import { useEffect, useState } from "react";
 import { Puzzle, RefreshCw, AlertCircle, CheckCircle2, Link2, Server, ShieldAlert } from "lucide-react";
 import { Button, Checkbox, EmptyState, Spinner } from "../../ui";
+import { strings } from "../../ui/strings";
 import { typedIPC } from "../../ipc";
 import { toast } from "../layout/ErrorBoundary";
 import { TabHeader } from "./fields";
@@ -27,7 +28,7 @@ function PluginsTab(): JSX.Element {
       setPlugins(result.plugins);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to load plugins", msg);
+      toast.error(strings.settings.plugins.loadFailed, msg);
     } finally {
       setLoading(false);
     }
@@ -47,7 +48,7 @@ function PluginsTab(): JSX.Element {
       await load();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to toggle plugin", msg);
+      toast.error(strings.settings.plugins.toggleFailed, msg);
     }
   };
 
@@ -57,12 +58,12 @@ function PluginsTab(): JSX.Element {
       const result = await typedIPC.reloadPlugins();
       setPlugins(result.plugins);
       toast.success(
-        "Plugins reloaded",
-        `${result.reloaded} loaded, ${result.failed} failed`,
+        strings.settings.plugins.reloadedToast,
+        strings.settings.plugins.reloadedDetail(result.reloaded, result.failed),
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to reload plugins", msg);
+      toast.error(strings.settings.plugins.reloadFailed, msg);
     } finally {
       setReloading(false);
     }
@@ -74,8 +75,8 @@ function PluginsTab(): JSX.Element {
   return (
     <section data-testid="settings-plugins" className="min-w-0 space-y-4">
       <TabHeader
-        title="Plugins"
-        hint={`${enabledCount} enabled${failedCount > 0 ? `, ${failedCount} failed` : ""}. Runtime toggles are in-memory until manifest persistence lands.`}
+        title={strings.settings.plugins.title}
+        hint={strings.settings.plugins.hint(enabledCount, failedCount)}
         action={
           <Button
             size="sm"
@@ -85,17 +86,17 @@ function PluginsTab(): JSX.Element {
             disabled={reloading}
             icon={reloading ? <Spinner size={12} /> : <RefreshCw size={12} />}
           >
-            Reload
+            {strings.settings.plugins.reload}
           </Button>
         }
       />
 
       {loading && plugins.length === 0 ? (
         <div className="flex items-center justify-center gap-2 py-4 text-xs text-ink-2">
-          <Spinner size={12} /> Loading plugins…
+          <Spinner size={12} /> {strings.settings.plugins.loading}
         </div>
       ) : plugins.length === 0 ? (
-        <EmptyState title="暂无 Plugin" hint="Plugins are discovered from the configured plugin roots at runtime." />
+        <EmptyState title="暂无 Plugin" hint={strings.settings.plugins.emptyHint} />
       ) : (
         <ul className="space-y-2" data-testid="settings-plugins-list">
           {plugins.map((plugin) => (
@@ -115,16 +116,16 @@ function PluginsTab(): JSX.Element {
                     {!plugin.ok ? (
                       <span className="flex items-center gap-0.5 rounded bg-status-error/10 px-1.5 py-0 text-[11px] text-status-error">
                         <AlertCircle size={10} />
-                        failed
+                        {strings.settings.plugins.statusFailed}
                       </span>
                     ) : plugin.enabled ? (
                       <span className="flex items-center gap-0.5 rounded bg-emerald-500/10 px-1.5 py-0 text-[11px] text-emerald-500">
                         <CheckCircle2 size={10} />
-                        enabled
+                        {strings.settings.plugins.statusEnabled}
                       </span>
                     ) : (
                       <span className="rounded bg-surface-2 px-1.5 py-0 text-[11px] text-ink-2">
-                        disabled
+                        {strings.settings.plugins.statusDisabled}
                       </span>
                     )}
                   </div>
@@ -138,19 +139,19 @@ function PluginsTab(): JSX.Element {
                     {plugin.has_hooks && (
                       <span className="flex items-center gap-0.5">
                         <Link2 size={10} />
-                        hooks
+                        {strings.settings.plugins.hooks}
                       </span>
                     )}
                     {plugin.has_mcp && (
                       <span className="flex items-center gap-0.5">
                         <Server size={10} />
-                        MCP
+                        {strings.settings.plugins.mcp}
                       </span>
                     )}
                     {plugin.has_permissions && (
                       <span className="flex items-center gap-0.5">
                         <ShieldAlert size={10} />
-                        permissions
+                        {strings.settings.plugins.permissions}
                       </span>
                     )}
                     <span className="truncate font-mono">{plugin.path}</span>
@@ -163,7 +164,7 @@ function PluginsTab(): JSX.Element {
                     onChange={() => void toggleEnabled(plugin)}
                     data-testid={`settings-plugins-enabled-${plugin.name}`}
                   />
-                  {plugin.enabled ? "On" : "Off"}
+                  {plugin.enabled ? strings.settings.plugins.on : strings.settings.plugins.off}
                 </label>
               </div>
             </li>

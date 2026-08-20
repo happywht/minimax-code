@@ -99,8 +99,8 @@ describe("validators (P1#15)", () => {
   // compose
   it("compose chains validators and returns first error", () => {
     const v = compose(required("Name"), minLength(3, "Name"));
-    expect(v("")).toContain("required");
-    expect(v("ab")).toContain("at least 3");
+    expect(v("")).toContain("请填写");
+    expect(v("ab")).toContain("至少 3");
     expect(v("abc")).toBe("");
   });
 

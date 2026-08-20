@@ -8,6 +8,7 @@
 import { useEffect } from "react";
 import { Plus } from "lucide-react";
 import { Button, EmptyState, Spinner } from "../../ui";
+import { strings } from "../../ui/strings";
 import { useAgentStore, useTeamStore } from "../../stores";
 import type { AgentTeam } from "../../types/ipc";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
@@ -39,9 +40,9 @@ function TeamsTab(): JSX.Element {
 
   const handleDelete = async (t: AgentTeam) => {
     const accepted = await requestConfirmation({
-      title: `Delete team ${t.name}?`,
-      description: "The team definition and its agent assignments will be permanently removed. Individual agents are kept.",
-      confirmLabel: "Delete Team",
+      title: strings.settings.teams.deleteTitle(t.name),
+      description: strings.settings.teams.deleteDesc,
+      confirmLabel: strings.settings.teams.deleteLabel,
     });
     if (accepted) await remove(t.name);
   };
@@ -49,11 +50,11 @@ function TeamsTab(): JSX.Element {
   return (
     <section data-testid="settings-teams" className="space-y-4">
       <TabHeader
-        title="Agent Teams"
+        title={strings.settings.teams.title}
         hint={
           <>
-            Create named groups of agents that work together. Trigger with{" "}
-            <InlineCode>@team:team-name</InlineCode> in chat.
+            {strings.settings.teams.hintLead} <InlineCode>@team:team-name</InlineCode>
+            {strings.settings.teams.hintTail}
           </>
         }
         action={
@@ -64,7 +65,7 @@ function TeamsTab(): JSX.Element {
             onClick={form.toggleForm}
             icon={<Plus />}
           >
-            New Team
+            {strings.settings.teams.new}
           </Button>
         }
       />
@@ -73,7 +74,7 @@ function TeamsTab(): JSX.Element {
 
       {loading && teams.length === 0 ? (
         <div className="flex items-center justify-center gap-2 py-4 text-xs text-ink-2">
-          <Spinner size={12} /> Loading teams…
+          <Spinner size={12} /> {strings.settings.teams.loading}
         </div>
       ) : teams.length === 0 ? (
         <EmptyState

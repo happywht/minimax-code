@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { Brain, Plus, Search, Trash2, X } from "lucide-react";
 import { Badge } from "../../ui/Badge";
 import { Button, IconButton, Input, Panel, Textarea } from "../../ui";
+import { strings } from "../../ui/strings";
 import { useMemoryStore } from "../../stores";
 import { toast } from "../layout/ErrorBoundary";
 import type { MemoryCategory, MemoryEntry } from "../../types/ipc";
@@ -60,7 +61,7 @@ export function MemoryTab(): JSX.Element {
   const handleAdd = async () => {
     const content = draftContent.trim();
     if (!content) {
-      toast.error("Content required", "Please enter a memory before adding.");
+      toast.error(strings.settings.memory.contentRequiredTitle, strings.settings.memory.contentRequiredDesc);
       return;
     }
     const memory = await add({
@@ -69,7 +70,7 @@ export function MemoryTab(): JSX.Element {
       confidence: draftConfidence,
     });
     if (memory) {
-      toast.success("Memory added");
+      toast.success(strings.settings.memory.addedToast);
       setDraftContent("");
       setDraftCategory("fact");
       setDraftConfidence(1.0);
@@ -78,9 +79,9 @@ export function MemoryTab(): JSX.Element {
 
   const handleDelete = async (memory: MemoryEntry) => {
     const accepted = await requestConfirmation({
-      title: "Delete this memory?",
+      title: strings.settings.memory.deleteTitle,
       description: memory.content.slice(0, 120) + (memory.content.length > 120 ? "…" : ""),
-      confirmLabel: "Delete",
+      confirmLabel: strings.settings.memory.deleteLabel,
     });
     if (accepted) await remove(memory.id);
   };
@@ -88,29 +89,29 @@ export function MemoryTab(): JSX.Element {
   return (
     <section data-testid="settings-memory" className="space-y-4">
       <TabHeader
-        title="Long-term memory"
+        title={strings.settings.memory.title}
         hint={
           <>
-            Facts, preferences, decisions and lessons the agent recalls for matching projects or
-            sessions. Inject via the <InlineCode>## Relevant memories</InlineCode> system prompt
-            block.
+            {strings.settings.memory.hintLead}{" "}
+            <InlineCode>## Relevant memories</InlineCode>
+            {strings.settings.memory.hintTail}
           </>
         }
       />
 
-      <Panel title="Add memory">
+      <Panel title={strings.settings.memory.addTitle}>
         <div className="space-y-3">
           <Textarea
             data-testid="settings-memory-content"
             value={draftContent}
             onChange={(e) => setDraftContent(e.target.value)}
-            placeholder="e.g. Prefer TypeScript strict mode; always add tests for new IPC handlers…"
+            placeholder={strings.settings.memory.placeholder}
             className="min-h-[80px]"
           />
           <div className="flex flex-wrap items-end gap-2">
             <div className="w-40">
               <label htmlFor="memory-category" className="mb-1 block text-[11px] text-ink-2">
-                Category
+                {strings.settings.memory.category}
               </label>
               <Select
                 id="memory-category"
@@ -127,7 +128,7 @@ export function MemoryTab(): JSX.Element {
             </div>
             <div className="min-w-[140px] flex-1">
               <label htmlFor="memory-confidence" className="mb-1 block text-[11px] text-ink-2">
-                Confidence {(draftConfidence * 100).toFixed(0)}%
+                {strings.settings.memory.confidence((draftConfidence * 100).toFixed(0))}
               </label>
               <input
                 id="memory-confidence"
@@ -149,7 +150,7 @@ export function MemoryTab(): JSX.Element {
               onClick={() => void handleAdd()}
               icon={<Plus />}
             >
-              Add
+              {strings.settings.memory.add}
             </Button>
           </div>
         </div>
@@ -162,13 +163,13 @@ export function MemoryTab(): JSX.Element {
             data-testid="settings-memory-search"
             value={searchQuery}
             onChange={(e) => handleSearch(e.target.value)}
-            placeholder="Search memories…"
+            placeholder={strings.settings.memory.searchPlaceholder}
             className="pl-8 pr-8"
           />
           {searchQuery && (
             <IconButton
               className="absolute right-1 top-1/2 -translate-y-1/2"
-              aria-label="Clear search"
+              aria-label={strings.settings.memory.clearSearch}
               onClick={() => handleSearch("")}
             >
               <X />
@@ -183,7 +184,7 @@ export function MemoryTab(): JSX.Element {
               setFilterProjectId(e.target.value);
               void search(searchQuery, { ...filterOpts, project_id: e.target.value.trim() || undefined });
             }}
-            placeholder="Filter by project id"
+            placeholder={strings.settings.memory.filterProject}
             className="text-xs"
           />
           <Input
@@ -193,7 +194,7 @@ export function MemoryTab(): JSX.Element {
               setFilterSessionId(e.target.value);
               void search(searchQuery, { ...filterOpts, session_id: e.target.value.trim() || undefined });
             }}
-            placeholder="Filter by session id"
+            placeholder={strings.settings.memory.filterSession}
             className="text-xs"
           />
         </div>
@@ -202,14 +203,14 @@ export function MemoryTab(): JSX.Element {
       <div className="flex items-center gap-2 text-[11px] text-ink-2">
         <Brain size={12} />
         <span data-testid="settings-memory-count">
-          {total} memory{total === 1 ? "" : "ies"}
+          {strings.settings.memory.count(total)}
         </span>
       </div>
 
       <ul className="space-y-1.5" data-testid="settings-memory-list">
         {memories.length === 0 && !loading && (
           <li className="rounded-lg border border-dashed border-line px-3 py-4 text-center text-xs text-ink-2">
-            {searchQuery ? "No memories match your search" : "No memories yet"}
+            {searchQuery ? strings.settings.memory.emptySearch : strings.settings.memory.empty}
           </li>
         )}
         {memories.map((m) => (
@@ -234,18 +235,18 @@ function MemoryRow({ memory, onDelete }: { memory: MemoryEntry; onDelete: () => 
           <p className="whitespace-pre-wrap text-xs text-ink-0">{memory.content}</p>
           <p className="mt-1 text-[11px] text-ink-2">
             {memory.project_id && (
-              <span className="mr-2">project: {memory.project_id}</span>
+              <span className="mr-2">{strings.settings.memory.rowProject(memory.project_id)}</span>
             )}
             {memory.session_id && (
-              <span className="mr-2">session: {memory.session_id}</span>
+              <span className="mr-2">{strings.settings.memory.rowSession(memory.session_id)}</span>
             )}
-            <span>updated {formatRelative(memory.updated_at)}</span>
+            <span>{strings.settings.memory.rowUpdated(formatRelative(memory.updated_at))}</span>
           </p>
         </div>
         <IconButton
           data-testid={`settings-memory-delete-${memory.id}`}
           onClick={onDelete}
-          aria-label="Delete memory"
+          aria-label={strings.settings.memory.deleteAria}
         >
           <Trash2 />
         </IconButton>

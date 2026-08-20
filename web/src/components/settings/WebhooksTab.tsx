@@ -8,6 +8,7 @@
 import { useEffect } from "react";
 import { Plus, RefreshCw } from "lucide-react";
 import { Button, EmptyState } from "../../ui";
+import { strings } from "../../ui/strings";
 import { SkeletonTable } from "../layout/Skeleton";
 import { useWebhookStore } from "../../stores";
 import type { WebhookConfig } from "../../types/ipc";
@@ -27,18 +28,18 @@ function WebhooksTab(): JSX.Element {
 
   const handleRegenerate = async (wh: WebhookConfig) => {
     const accepted = await requestConfirmation({
-      title: `Regenerate secret for ${wh.name}?`,
-      description: "The current webhook secret will stop working immediately. Update the sender with the new secret before sending more events.",
-      confirmLabel: "Regenerate Secret",
+      title: strings.settings.webhooks.regenerateTitle(wh.name),
+      description: strings.settings.webhooks.regenerateDesc,
+      confirmLabel: strings.settings.webhooks.regenerateLabel,
     });
     if (accepted) await regenerateSecret(wh.id);
   };
 
   const handleDelete = async (wh: WebhookConfig) => {
     const accepted = await requestConfirmation({
-      title: `Delete webhook ${wh.name}?`,
-      description: "Inbound events sent to this webhook will no longer trigger MiniMax Code.",
-      confirmLabel: "Delete Webhook",
+      title: strings.settings.webhooks.deleteTitle(wh.name),
+      description: strings.settings.webhooks.deleteDesc,
+      confirmLabel: strings.settings.webhooks.deleteLabel,
     });
     if (accepted) await remove(wh.id);
   };
@@ -46,12 +47,12 @@ function WebhooksTab(): JSX.Element {
   return (
     <section data-testid="settings-webhooks-section" className="space-y-4">
       <TabHeader
-        title="Webhooks"
-        hint="Configure inbound webhook endpoints for GitHub / Gitee push events and custom integrations."
+        title={strings.settings.webhooks.title}
+        hint={strings.settings.webhooks.hint}
         action={
           <>
             <Button size="sm" variant="secondary" onClick={() => refresh()} icon={<RefreshCw />}>
-              Refresh
+              {strings.settings.webhooks.refresh}
             </Button>
             <Button
               size="sm"
@@ -60,7 +61,7 @@ function WebhooksTab(): JSX.Element {
               onClick={form.toggleForm}
               icon={<Plus />}
             >
-              New
+              {strings.settings.webhooks.new}
             </Button>
           </>
         }
@@ -91,7 +92,7 @@ function WebhooksTab(): JSX.Element {
         </div>
       )}
 
-      <div className="text-[11px] text-ink-2">{total} webhook(s) configured</div>
+      <div className="text-[11px] text-ink-2">{strings.settings.webhooks.footer(total)}</div>
     </section>
   );
 }

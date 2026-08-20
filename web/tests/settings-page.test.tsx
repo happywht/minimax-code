@@ -222,9 +222,9 @@ describe("SettingsPage", () => {
       expect(screen.getByTestId("settings-models-list").children.length).toBe(2);
     });
     expect(screen.getByTestId("settings-nav")).toBeInTheDocument();
-    expect(screen.getByText("Core")).toBeInTheDocument();
+    expect(screen.getByText("核心")).toBeInTheDocument();
     expect(screen.getByTestId("settings-models")).toBeInTheDocument();
-    expect(screen.getByTestId("settings-title")).toHaveTextContent("Settings");
+    expect(screen.getByTestId("settings-title")).toHaveTextContent("设置");
   });
 
   it("highlights the current model and disables its select button", async () => {
@@ -295,7 +295,7 @@ describe("SettingsPage", () => {
     });
     await waitFor(() => {
       expect(screen.getByTestId("settings-permissions-list").textContent).toMatch(
-        /No permission rules yet/,
+        /暂无权限规则/,
       );
     });
   });
@@ -380,7 +380,7 @@ describe("SettingsPage", () => {
     });
     await waitFor(() => {
       expect(screen.getByTestId("settings-api-key-status-text").textContent).toMatch(
-        /Not configured/,
+        /未配置/,
       );
     });
     // The 'Clear keyring' button only appears when the source is
@@ -395,7 +395,7 @@ describe("SettingsPage", () => {
     fireEvent.click(screen.getByTestId("settings-tab-api-key"));
     await waitFor(() => {
       expect(screen.getByTestId("settings-api-key-status-text").textContent).toMatch(
-        /environment variable/i,
+        /环境变量/,
       );
     });
   });
@@ -420,7 +420,7 @@ describe("SettingsPage", () => {
     });
     await waitFor(() => {
       expect(screen.getByTestId("settings-api-key-status-text").textContent).toMatch(
-        /OS keyring/,
+        /系统钥匙串/,
       );
     });
     // The input was cleared after a successful save.
@@ -478,14 +478,14 @@ describe("SettingsPage", () => {
     expect(screen.getByTestId("settings-api-key-clear")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("settings-api-key-clear"));
     expect(typedIPC.clearSecret).not.toHaveBeenCalled();
-    expect(screen.getByRole("alertdialog")).toHaveTextContent("Clear the legacy MiniMax API key?");
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("清除旧版 MiniMax API 密钥？");
     fireEvent.click(screen.getByTestId("confirmation-confirm"));
     await waitFor(() => {
       expect(typedIPC.clearSecret).toHaveBeenCalled();
     });
     await waitFor(() => {
       expect(screen.getByTestId("settings-api-key-status-text").textContent).toMatch(
-        /Not configured/,
+        /未配置/,
       );
     });
   });
@@ -495,7 +495,7 @@ describe("SettingsPage", () => {
     render(<SettingsPage />);
     fireEvent.click(screen.getByTestId("settings-tab-providers"));
     await waitFor(() => {
-      expect(screen.getByTestId("settings-provider-builtin-minimax")).toHaveTextContent("no key");
+      expect(screen.getByTestId("settings-provider-builtin-minimax")).toHaveTextContent("未配置密钥");
     });
     fireEvent.click(screen.getByTestId("settings-provider-builtin-minimax-expand"));
     fireEvent.change(screen.getByTestId("settings-provider-builtin-minimax-key-input"), {
@@ -506,7 +506,7 @@ describe("SettingsPage", () => {
       expect(typedIPC.setProviderApiKey).toHaveBeenCalledWith("builtin-minimax", "sk-provider-test");
     });
     await waitFor(() => {
-      expect(screen.getByTestId("settings-provider-builtin-minimax")).toHaveTextContent("key ✓");
+      expect(screen.getByTestId("settings-provider-builtin-minimax")).toHaveTextContent("密钥 ✓");
     });
   });
 });
