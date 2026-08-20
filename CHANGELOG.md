@@ -7,10 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-08-21
+
 ### Added — 数据可移植（v0.15.0 Milestone 4）
 - **IPC `data.export`（R21）**：全部业务表一键导出为自描述 JSON 信封（即 RPC result 本体）——`format` / `schema_version` / `app_version` / `exported_at` 头部 + 每表行列表与行数。表集合从 `sqlite_master` 动态发现（未来迁移新表自动纳入，零硬编码清单）；`schema_migrations` 排除（应用版本收敛到顶层 `schema_version` 一处）；FTS/vec 虚表排除（派生态，导入端 R22 靠触发器/重建恢复）；存储未初始化（`MINIMAX_CODE_NO_DB=1`）回 `-32603` 而非空导出。新增 `agent/tests/test_data_portability.py`（6 测试：信封元数据、核心 12 表覆盖 pin、系统/虚表排除、行级往返保真、空库语义、IPC 端到端）。契约文档补 `data.*` 详述段与总表行。
 - **IPC `data.import`（R22）**：校验 + **替换式**导入，整体单事务（`BEGIN IMMEDIATE`）保证 all-or-nothing——任何行失败即回滚到导入前状态。校验层拒绝坏信封（非对象 / 错 `format` / `tables` 形状非法 / 未来 `schema_version`，全部 `-32602`）。安全面：列名取 `PRAGMA table_info` 白名单交集（漂移列丢弃、缺失列走 SQL DEFAULT）、值全参数化绑定、信封里的未知表记 `skipped_tables` 跳过而非报错；事务外 `PRAGMA foreign_keys=OFF/ON` 包裹（SQLite bulk-load 惯用法）。**幂等**：重复导入同一信封结果一致（envelope 表全量 DELETE 后回填，envelope 外的表保持不动）。新增 11 测试（校验 4 + 替换语义/幂等/回滚/未知表/列漂移 5 + IPC 端到端 2）。契约文档补 `data.import` 方法行与语义段。
 - **IPC `data.backup`（R23）**：SQLite 在线 backup API 文件级**完整快照**——schema、WAL 内容、FTS 索引与 vec 影子表全含，不阻塞读、源库只读不写（与 JSON 导出互补：备份是文件级全量，导出是跨 schema 可移植）。`target_dir` 可选（缺省 `<数据目录>/backups/`，目录不存在自动创建），文件名带 UTC 毫秒时间戳（`minimax-code-backup-YYYYMMDD-HHMMSS-mmm.db`）重复备份永不互相覆盖。返回 `{path, bytes}`。新增 4 测试（快照可独立打开且数据/迁移版本等价、缺省目录落位、重复备份不同文件、IPC 端到端）。契约文档补 `data.backup` 方法行与语义段。
+- **Settings Data 标签页（R24）**：前端三面板数据可移植 UI——导出（信封 Blob 下载，文件名带本地时间戳 `minimax-code-export-YYYYMMDD-HHMMSS.json`）、导入（文件选择器 → FileReader → `format` 前置校验 → 破坏性操作确认弹窗（明示替换语义与行数）→ summary 反馈含 skipped 表数）、备份（落盘路径 + 人性化体积）。三操作各自 busy 态互斥、共享成功/错误反馈行（`role="status"`）。契约层：`TypedIPC` 新增 `exportData`/`importData`/`backupData`，`types/ipc.ts` 新增 `DataExportEnvelope`/`DataImportSummary`/`DataBackupResult`；**mock backend 全覆盖**（内存信封回声 + format 校验镜像真实 INVALID_PARAMS），浏览器无 agent 模式照常可用。SettingsPage Core 组新增 "Data" 入口。新增 6 组件测试（双 happy path、双失败路径、拒绝确认零调用）。前端全量 545 vitest 通过（+6）。
+- **灾难恢复端到端测试（R25）**：钉死用户恢复序列——导出（RPC）→ 清空全部业务表（FK off 清扫，镜像导入自身的 bulk-load 惯用法）→ 导入（RPC）→ 再导出的 `tables`/`counts` 与原信封逐行等价；第二场景跨连接周期（close → reopen 同一数据库文件，即 agent 重启）用纯 dump/restore 函数复验。文件内累计 23 测试，全量 10103 通过（+2）。
+
+### Changed
+- 版本号 0.14.0 → 0.15.0（6 处代码位 + CLAUDE.md / AGENTS.md / README.md 版本行 + `uv lock`）。
 
 ### Fixed — 数据可移植（v0.15.0 Milestone 4）
 - **异步连接隐式事务缺陷（R22 顺带修根）**：`AsyncDatabase.connect` 漏传 `isolation_level=None`，与同步侧（注释明说 "we manage transactions explicitly"）不一致——legacy 隐式模式下裸 `execute()` 的 DML 永不提交（close 时**静默丢数据**，同连接读未提交才显得"成功"），且留下挂起事务令后续 `BEGIN IMMEDIATE` 炸 `cannot start a transaction within a transaction`。补传后：裸写即刻落盘、`transaction()` 不再撞挂起事务。DAO 写路径本就全走显式 `transaction()`，零行为影响（全量 10086+ 回归验证）。
