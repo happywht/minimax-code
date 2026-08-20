@@ -66,7 +66,7 @@ describe("MessageItem per-turn summary", () => {
     render(<MessageItem message={streaming} />);
     expect(screen.queryByTestId("message-summary-a-streaming")).toBeNull();
     expect(screen.getByTestId("message-status-a-streaming")).toHaveTextContent(
-      "Generating",
+      "生成中",
     );
   });
 

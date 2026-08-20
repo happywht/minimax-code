@@ -6,6 +6,7 @@ import { Check, Copy, RefreshCw } from "lucide-react";
 import { useChat } from "../../stores";
 import type { Message } from "../../types/ipc";
 import { Button, IconButton } from "../../ui";
+import { strings } from "../../ui/strings";
 import { toast } from "../layout/ErrorBoundary";
 import { useCopyFeedback } from "./useCopyFeedback";
 
@@ -27,9 +28,9 @@ export function MessageCopyOverlay({
   const handleCopy = async () => {
     const ok = await copy(text);
     if (ok) {
-      toast.success("Message copied");
+      toast.success(strings.chat.actions.messageCopied);
     } else {
-      toast.error("Copy failed", "Clipboard access was denied.");
+      toast.error(strings.chat.actions.copyFailed, strings.chat.actions.copyFailedDetail);
     }
   };
 
@@ -38,8 +39,8 @@ export function MessageCopyOverlay({
       size="sm"
       data-testid={`message-copy-${messageId}`}
       onClick={() => void handleCopy()}
-      aria-label="Copy message"
-      title="Copy message"
+      aria-label={strings.chat.actions.copyMessage}
+      title={strings.chat.actions.copyMessage}
       className={
         "absolute top-1.5 opacity-0 transition-all duration-200 focus:opacity-100 group-hover:opacity-100 " +
         (onAccent
@@ -67,7 +68,7 @@ export function FailedMessageFooter({ message }: { message: Message }): JSX.Elem
         icon={<RefreshCw />}
         onClick={() => void retryMessage(message.id)}
       >
-        Retry
+        {strings.chat.actions.retry}
       </Button>
     </div>
   );

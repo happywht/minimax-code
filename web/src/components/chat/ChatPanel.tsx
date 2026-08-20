@@ -12,6 +12,8 @@ import { Loader2, MessageSquare, MoreHorizontal, Pencil, RefreshCw, Search, X } 
 import { MessageList } from "./MessageList";
 import { ProviderReadinessBanner } from "./ProviderReadinessBanner";
 import { useChat, useSessionStore } from "../../stores";
+import { strings } from "../../ui/strings";
+import { DEFAULT_SESSION_TITLE } from "../../lib/defaultTitles";
 
 export interface ChatPanelProps {
   testId?: string;
@@ -92,13 +94,13 @@ export function ChatPanel({
   const headerStatus = (() => {
     switch (status) {
       case "sending":
-        return { label: "Sending", tone: "amber" };
+        return { label: strings.chat.headerStatus.sending, tone: "amber" };
       case "streaming":
-        return { label: "Streaming", tone: "accent" };
+        return { label: strings.chat.headerStatus.streaming, tone: "accent" };
       case "error":
-        return { label: "Error", tone: "red" };
+        return { label: strings.chat.headerStatus.error, tone: "red" };
       default:
-        return { label: "Ready", tone: "emerald" };
+        return { label: strings.chat.headerStatus.ready, tone: "emerald" };
     }
   })();
 
@@ -122,7 +124,7 @@ export function ChatPanel({
             <input
               ref={inputRef}
               data-testid="chat-header-title-input"
-              aria-label="Session title"
+              aria-label={strings.chat.header.titleInput}
               name="session-title"
               autoComplete="off"
               value={editValue}
@@ -140,9 +142,9 @@ export function ChatPanel({
               data-testid="chat-header-title"
               className="truncate text-sm font-medium text-minimax-fg"
               onDoubleClick={startEditing}
-              title="Double-click to rename"
+              title={strings.chat.header.renameHint}
             >
-              {current?.title ?? "New task"}
+              {current?.title ?? DEFAULT_SESSION_TITLE}
             </h2>
           )}
           {current && !editing && (
@@ -151,8 +153,8 @@ export function ChatPanel({
               data-testid="chat-header-rename-btn"
               onClick={startEditing}
               className="shrink-0 rounded p-0.5 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
-              title="Rename session"
-              aria-label="Rename session"
+              title={strings.chat.header.rename}
+              aria-label={strings.chat.header.rename}
             >
               <Pencil size={12} />
             </button>
@@ -183,12 +185,12 @@ export function ChatPanel({
           <button
             type="button"
             data-testid="chat-header-new"
-            onClick={() => void createSession("New task")}
+            onClick={() => void createSession(DEFAULT_SESSION_TITLE)}
             disabled={creatingSession}
             className="rounded-md px-2 py-1 text-xs text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg disabled:cursor-wait disabled:opacity-50"
-            title="New task"
+            title={strings.chat.header.newTask}
           >
-            + New
+            {strings.chat.header.newButton}
           </button>
           <button
             type="button"
@@ -201,8 +203,8 @@ export function ChatPanel({
               "rounded-md p-1.5 hover:bg-minimax-border hover:text-minimax-fg " +
               (searchOpen ? "text-minimax-accent" : "text-minimax-muted")
             }
-            title="Search messages"
-            aria-label="Search messages"
+            title={strings.chat.header.search}
+            aria-label={strings.chat.header.search}
           >
             <Search size={12} />
           </button>
@@ -211,8 +213,8 @@ export function ChatPanel({
             data-testid="chat-header-refresh"
             onClick={() => void refreshSessions()}
             className="rounded-md p-1.5 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
-            title="Refresh"
-            aria-label="Refresh sessions"
+            title={strings.chat.header.refresh}
+            aria-label={strings.chat.header.refreshSessions}
           >
             <RefreshCw size={12} />
           </button>
@@ -220,8 +222,8 @@ export function ChatPanel({
             type="button"
             onClick={onMenuClick}
             className="rounded-md p-1.5 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
-            title="More"
-            aria-label="More options"
+            title={strings.chat.header.more}
+            aria-label={strings.chat.header.moreOptions}
           >
             <MoreHorizontal size={14} />
           </button>
@@ -236,17 +238,17 @@ export function ChatPanel({
             ref={searchRef}
             data-testid="chat-search-input"
             type="text"
-            aria-label="Search messages"
+            aria-label={strings.chat.header.search}
             name="message-search"
             autoComplete="off"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search messages…"
+            placeholder={strings.chat.header.searchPlaceholder}
             className="flex-1 bg-transparent text-xs text-minimax-fg placeholder:text-minimax-muted focus:outline-none"
           />
           {searchQuery && (
             <span className="text-[11px] text-minimax-muted">
-              filtering
+              {strings.chat.header.filtering}
             </span>
           )}
           <button
@@ -254,7 +256,7 @@ export function ChatPanel({
             data-testid="chat-search-clear"
             onClick={() => setSearchQuery("")}
             className="rounded p-0.5 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
-            aria-label="Clear search"
+            aria-label={strings.chat.header.clearSearch}
           >
             <X size={12} />
           </button>

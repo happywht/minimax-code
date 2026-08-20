@@ -7,6 +7,7 @@
  */
 import { ChevronDown, ChevronRight, Wrench } from "lucide-react";
 import { useState } from "react";
+import { strings } from "../../ui/strings";
 import type { Message } from "../../types/ipc";
 
 function parseMcpToolName(toolName: string): { server: string; tool: string } | null {
@@ -22,7 +23,7 @@ function parseMcpToolName(toolName: string): { server: string; tool: string } | 
 
 function ToolNameLabel({ toolName }: { toolName?: string }): JSX.Element {
   if (!toolName) {
-    return <span className="truncate font-medium">tool</span>;
+    return <span className="truncate font-medium">{strings.chat.toolCall.fallbackName}</span>;
   }
   const mcp = parseMcpToolName(toolName);
   if (!mcp) {
@@ -33,7 +34,7 @@ function ToolNameLabel({ toolName }: { toolName?: string }): JSX.Element {
       <span className="truncate font-medium">{mcp.tool}</span>
       <span
         className="shrink-0 rounded bg-surface-2 px-1 py-0 text-[11px] text-ink-2"
-        title={`MCP server: ${mcp.server}`}
+        title={strings.chat.toolCall.mcpServer(mcp.server)}
       >
         {mcp.server}
       </span>

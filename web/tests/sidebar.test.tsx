@@ -22,7 +22,7 @@ vi.mock("../src/ipc", async () => {
         session_id: "ses_wt_1",
         session: {
           id: "ses_wt_1",
-          title: "Worktree task",
+          title: "Worktree 任务",
           archived: false,
           created_at: Date.now(),
           updated_at: Date.now(),
@@ -73,7 +73,7 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByTestId("sidebar-new-task"));
     await waitFor(() => {
       expect(typedIPC.createSession).toHaveBeenCalledWith(
-        expect.objectContaining({ title: "New task" }),
+        expect.objectContaining({ title: "新任务" }),
       );
     });
     expect(useSessionStore.getState().currentSessionId).toBe("ses_test_1");
@@ -87,7 +87,7 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByTestId("sidebar-new-worktree-task"));
     await waitFor(() => {
       expect(typedIPC.createWorktreeSession).toHaveBeenCalledWith({
-        title: "Worktree task",
+        title: "Worktree 任务",
         base_ref: "HEAD",
       });
     });

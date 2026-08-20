@@ -5,6 +5,7 @@
  */
 import { Check, Copy } from "lucide-react";
 import { Button } from "../../ui";
+import { strings } from "../../ui/strings";
 import { useCopyFeedback } from "./useCopyFeedback";
 
 export interface CopyButtonProps {
@@ -18,7 +19,7 @@ export interface CopyButtonProps {
 export function CopyButton({
   text,
   testId,
-  title = "Copy",
+  title = strings.chat.actions.copy,
   className = "",
 }: CopyButtonProps): JSX.Element {
   const { copied, copy } = useCopyFeedback();
@@ -33,7 +34,7 @@ export function CopyButton({
       onClick={() => void copy(text)}
       className={className}
     >
-      {copied ? "Copied" : "Copy"}
+      {copied ? strings.chat.actions.copied : strings.chat.actions.copy}
     </Button>
   );
 }

@@ -18,6 +18,7 @@ import { useModelStore } from "../../stores";
 import { useClickOutside } from "../../lib/useClickOutside";
 import type { ModelInfo } from "../../types/ipc";
 import { ReasoningEffortBadge } from "./ReasoningEffortBadge";
+import { strings } from "../../ui/strings";
 
 export type ModelSelectorVariant = "default" | "inline";
 
@@ -105,7 +106,7 @@ export function ModelSelector({
   }, [groups, query]);
 
   const currentModel = models.find((m) => m.id === current) ?? models[0];
-  const label = currentModel ? currentModel.name : "Model";
+  const label = currentModel ? currentModel.name : strings.chat.modelSelector.fallback;
   const isInline = variant === "inline";
 
   /** Color class for protocol badge. */

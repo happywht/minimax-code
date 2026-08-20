@@ -17,7 +17,7 @@ from .server import Context
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TITLE_FMT = "Worktree task — %Y-%m-%d %H:%M"
+_DEFAULT_TITLE_FMT = "Worktree 任务 — %Y-%m-%d %H:%M"
 
 
 def register_workspace_handlers(

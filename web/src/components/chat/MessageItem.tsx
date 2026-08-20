@@ -36,6 +36,7 @@ import { ToolCallCard } from "./ToolCallCard";
 import { TurnSummaryRow } from "./TurnSummaryRow";
 import { SourcesPanel } from "./SourcesPanel";
 import { Brain } from "lucide-react";
+import { strings } from "../../ui/strings";
 import { Badge, Textarea, Button } from "../../ui";
 
 export interface MessageItemProps {
@@ -153,7 +154,7 @@ export const MessageItem = React.memo(function MessageItem({
           <div className="mb-1.5 flex items-center gap-1">
             <Badge tone="accent" data-testid={`message-memory-chip-${message.id}`}>
               <Brain size={10} />
-              <span>{message.metadata.memory_count} memory saved</span>
+              <span>{strings.chat.memory.savedCount(message.metadata.memory_count)}</span>
             </Badge>
           </div>
         ) : null}

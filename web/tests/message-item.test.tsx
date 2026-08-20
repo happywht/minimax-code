@@ -90,8 +90,8 @@ describe("MessageItem", () => {
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith("Copy this exact message.");
     });
-    expect(screen.getByTestId("message-copy-copy-me")).toHaveAttribute("title", "Copy message");
-    expect(toastMock.success).toHaveBeenCalledWith("Message copied");
+    expect(screen.getByTestId("message-copy-copy-me")).toHaveAttribute("title", "复制消息");
+    expect(toastMock.success).toHaveBeenCalledWith("消息已复制");
   });
 
   it("repairs a fenced code block when the language and first line are fused", async () => {
@@ -131,7 +131,7 @@ describe("MessageItem", () => {
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith("const count = 1;\nconsole.log(count);");
     });
-    expect(screen.getByTestId("code-copy-button")).toHaveTextContent("Copied");
+    expect(screen.getByTestId("code-copy-button")).toHaveTextContent("已复制");
   });
 
   it("renders compact file reference cards outside fenced code blocks", async () => {
@@ -282,7 +282,7 @@ describe("MessageItem", () => {
         })}
       />,
     );
-    expect(screen.getByTestId("message-status-a-waiting")).toHaveTextContent("Waiting");
+    expect(screen.getByTestId("message-status-a-waiting")).toHaveTextContent("排队中");
     expect(screen.getByTestId("message-skeleton-a-waiting")).toBeInTheDocument();
   });
 
@@ -301,7 +301,7 @@ describe("MessageItem", () => {
         })}
       />,
     );
-    expect(screen.getByTestId("message-status-a-failed")).toHaveTextContent("Failed");
+    expect(screen.getByTestId("message-status-a-failed")).toHaveTextContent("失败");
     fireEvent.click(screen.getByTestId("message-retry-a-failed"));
     expect(retrySpy).toHaveBeenCalledWith("a-failed");
     retrySpy.mockRestore();

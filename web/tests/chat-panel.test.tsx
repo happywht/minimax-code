@@ -43,22 +43,22 @@ describe("ChatPanel", () => {
   it("renders the header with default title and ready status", async () => {
     render(<ChatPanel />);
     await waitFor(() => {
-      expect(screen.getByTestId("chat-header-title")).toHaveTextContent("New task");
+      expect(screen.getByTestId("chat-header-title")).toHaveTextContent("新任务");
     });
-    expect(screen.getByTestId("chat-header-status")).toHaveTextContent("Ready");
+    expect(screen.getByTestId("chat-header-status")).toHaveTextContent("就绪");
   });
 
   it("shows the error pill and the error message when status is error", () => {
     useChat.setState({ status: "error", error: "boom" });
     render(<ChatPanel />);
-    expect(screen.getByTestId("chat-header-status")).toHaveTextContent("Error");
+    expect(screen.getByTestId("chat-header-status")).toHaveTextContent("错误");
     expect(screen.getByTestId("chat-header-error")).toHaveTextContent("boom");
   });
 
   it("shows the streaming label when status is streaming", () => {
     useChat.setState({ status: "streaming" });
     render(<ChatPanel />);
-    expect(screen.getByTestId("chat-header-status")).toHaveTextContent("Streaming");
+    expect(screen.getByTestId("chat-header-status")).toHaveTextContent("生成中");
   });
 
   it("calls session.create when the + New button is clicked", async () => {
@@ -67,7 +67,7 @@ describe("ChatPanel", () => {
     fireEvent.click(screen.getByTestId("chat-header-new"));
     await waitFor(() => {
       expect(typedIPC.createSession).toHaveBeenCalledWith(
-        expect.objectContaining({ title: "New task" }),
+        expect.objectContaining({ title: "新任务" }),
       );
     });
   });

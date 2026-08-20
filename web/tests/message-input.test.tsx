@@ -79,7 +79,7 @@ describe("MessageInput", () => {
     useChat.setState({ status: "cancelling" });
     render(<MessageInput />);
     expect(screen.getByTestId("message-input-cancel")).toBeDisabled();
-    expect(screen.getByTestId("message-input-stopping")).toHaveTextContent("正在停止...");
+    expect(screen.getByTestId("message-input-stopping")).toHaveTextContent("正在停止…");
   });
 
   it("warns before the input reaches the hard limit and blocks over-limit sends", () => {

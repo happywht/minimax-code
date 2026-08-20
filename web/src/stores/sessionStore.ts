@@ -9,6 +9,8 @@ import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import type { Project, Session } from "../types/ipc";
 import { useChat } from "./chat";
+import { DEFAULT_SESSION_TITLE, DEFAULT_WORKTREE_TITLE } from "../lib/defaultTitles";
+import { strings } from "../ui/strings";
 
 export type SessionFilter =
   | "all"
@@ -192,7 +194,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         ++refreshSeq;
         const nextSession = r.session ?? {
           id: r.session_id,
-          title: title ?? "New task",
+          title: title ?? DEFAULT_SESSION_TITLE,
           archived: false,
           project_id: targetProject,
           created_at: Date.now(),
@@ -219,7 +221,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return r.session_id;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        toast.error("Failed to create session", message);
+        toast.error(strings.chat.toast.sessionCreateFailed, message);
         throw err;
       } finally {
         set({ creating: false });
@@ -239,7 +241,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         sessions: [
           r.session ?? {
             id: r.session_id,
-            title: title ?? "Worktree task",
+            title: title ?? DEFAULT_WORKTREE_TITLE,
             archived: false,
             project_id: "inbox",
             created_at: Date.now(),

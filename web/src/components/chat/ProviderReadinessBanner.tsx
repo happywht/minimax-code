@@ -1,5 +1,6 @@
 import { AlertTriangle, ArrowRight, CircleOff } from "lucide-react";
 import { useModelStore, useProviderStore } from "../../stores";
+import { strings } from "../../ui/strings";
 
 export interface ProviderReadinessBannerProps {
   onOpenProviders: () => void;
@@ -27,16 +28,18 @@ export function ProviderReadinessBanner({
 
   const noModel = !model;
   const title = noModel
-    ? "No Active Model"
+    ? strings.chat.providerBanner.noModelTitle
     : provider?.enabled === false
-      ? "Provider Disabled"
-      : "Demo Mode";
+      ? strings.chat.providerBanner.providerDisabledTitle
+      : strings.chat.providerBanner.demoTitle;
   const detail = noModel
-    ? "Select a model before starting a task."
+    ? strings.chat.providerBanner.noModelDetail
     : provider
-      ? `${model.name} will return mock responses until ${provider.name} has an API key.`
-      : `${model.name} is linked to a provider that is not available.`;
-  const action = noModel ? "Choose Model" : "Configure Provider";
+      ? strings.chat.providerBanner.providerDetail(model.name, provider.name)
+      : strings.chat.providerBanner.unavailableDetail(model.name);
+  const action = noModel
+    ? strings.chat.providerBanner.chooseModel
+    : strings.chat.providerBanner.configureProvider;
   const handleAction = noModel ? onOpenModels : onOpenProviders;
 
   return (

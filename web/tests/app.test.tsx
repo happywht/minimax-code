@@ -124,7 +124,7 @@ describe("App smoke test", () => {
     render(<App />);
 
     const banner = await screen.findByTestId("provider-readiness-banner");
-    expect(banner).toHaveTextContent("Demo Mode");
+    expect(banner).toHaveTextContent("演示模式");
     await user.click(screen.getByTestId("provider-readiness-action"));
 
     expect(await screen.findByTestId("settings-providers")).toBeInTheDocument();

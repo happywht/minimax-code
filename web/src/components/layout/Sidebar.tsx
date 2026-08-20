@@ -1,7 +1,7 @@
 /**
  * Left sidebar — 240px wide. Contains:
  *   - Brand mark
- *   - "New task" button with project selector
+ *   - "新任务" button with project selector
  *   - Primary nav
  *   - Session history grouped by project
  *   - Footer: UserBadge
@@ -36,6 +36,7 @@ import { UserBadge } from "./UserBadge";
 import { SkeletonLine } from "./Skeleton";
 import { Button, Checkbox, IconButton, Input, Modal, DropdownMenu } from "../../ui";
 import { strings } from "../../ui/strings";
+import { DEFAULT_SESSION_TITLE, DEFAULT_WORKTREE_TITLE } from "../../lib/defaultTitles";
 import { typedIPC } from "../../ipc";
 import { useChat, useSessionStore, type SessionFilter, type SessionMeta } from "../../stores";
 import type { Project } from "../../types/ipc";
@@ -453,7 +454,7 @@ export function Sidebar({
           className="flex-1"
           loading={creatingSession}
           disabled={creatingSession}
-          onClick={() => void createSession("New task", currentProject.id)}
+          onClick={() => void createSession(DEFAULT_SESSION_TITLE, currentProject.id)}
           title={`在「${currentProject.name}」创建新任务`}
           data-testid="sidebar-new-task"
         >
@@ -479,7 +480,7 @@ export function Sidebar({
         <IconButton
           aria-label={strings.layout.sidebar.createWorktreeTask}
           title={strings.layout.sidebar.createWorktreeTask}
-          onClick={() => void createWorktree("Worktree task", "HEAD")}
+          onClick={() => void createWorktree(DEFAULT_WORKTREE_TITLE, "HEAD")}
           data-testid="sidebar-new-worktree-task"
         >
           <GitBranch size={14} />

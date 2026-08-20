@@ -20,6 +20,7 @@ import { SubAgentResultCard } from "../right-panel/SubAgentResultCard";
 import { useMessageWindow } from "../../lib/useMessageWindow";
 import { useSmartScroll } from "../../lib/useSmartScroll";
 import { EmptyState } from "../../ui";
+import { strings } from "../../ui/strings";
 import type { Message } from "../../types/ipc";
 
 const MessageItem = lazy(() =>
@@ -196,10 +197,10 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
           data-testid="scroll-to-bottom-btn"
           onClick={() => scrollToBottom("smooth")}
           className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line bg-surface-1/95 px-2.5 py-1.5 text-[11px] text-ink-0 shadow-pop backdrop-blur-sm transition-all duration-200 hover:-translate-y-0.5 hover:bg-surface-3"
-          title="Jump to latest message"
+          title={strings.chat.list.jumpToLatest}
         >
           <ChevronDown size={14} className="text-ink-2" />
-          {newContentCount > 0 ? `${newContentCount} new` : "Latest"}
+          {newContentCount > 0 ? strings.chat.list.newCount(newContentCount) : strings.chat.list.latest}
         </button>
       )}
     </div>
@@ -225,7 +226,7 @@ function MessageListRowView({
         data-testid="chat-search-summary"
         className="rounded-md border border-line bg-surface-2 px-3 py-1.5 text-center text-xs text-ink-1"
       >
-        Showing {filteredCount} of {totalCount} messages
+        {strings.chat.list.searchSummary(filteredCount, totalCount)}
       </div>
     );
   }
@@ -238,7 +239,7 @@ function MessageListRowView({
         onClick={onLoadMore}
         className="w-full rounded-md border border-line bg-surface-2 px-3 py-2 text-center text-xs text-ink-1 hover:border-accent/40 hover:text-ink-0"
       >
-        ↑ Load {Math.min(hiddenCount, 50)} earlier messages ({hiddenCount} hidden)
+        {strings.chat.list.loadEarlier(Math.min(hiddenCount, 50), hiddenCount)}
       </button>
     );
   }

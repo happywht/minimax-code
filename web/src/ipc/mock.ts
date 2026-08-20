@@ -8,6 +8,7 @@
  */
 
 import { StreamEvent } from "../types/ipc";
+import { DEFAULT_SESSION_TITLE, DEFAULT_WORKTREE_TITLE } from "../lib/defaultTitles";
 import type { BackendPermissionRule } from "./typed";
 import type {
   AgentInfo,
@@ -224,7 +225,7 @@ function mockHandle(
         && reusable.workspace_mode === "local"
         && !mockSessionsWithMessages.has(reusable.id)
       ) {
-        reusable.title = p?.title ?? "New task";
+        reusable.title = p?.title ?? DEFAULT_SESSION_TITLE;
         reusable.updated_at = Date.now();
         return { session_id: reusable.id, session: reusable, reused: true };
       }
@@ -233,7 +234,7 @@ function mockHandle(
       const now = Date.now();
       const session: Session = {
         id: sid,
-        title: p?.title ?? "New task",
+        title: p?.title ?? DEFAULT_SESSION_TITLE,
         archived: false,
         created_at: now,
         updated_at: now,
@@ -254,7 +255,7 @@ function mockHandle(
       const p = params as { title?: string; base_ref?: string } | undefined;
       const session: Session = {
         id: sid,
-        title: p?.title ?? "Worktree task",
+        title: p?.title ?? DEFAULT_WORKTREE_TITLE,
         archived: false,
         created_at: now,
         updated_at: now,

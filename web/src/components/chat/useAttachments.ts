@@ -8,6 +8,7 @@
  */
 import { useCallback, useRef, useState } from "react";
 import { toast } from "../layout/ErrorBoundary";
+import { strings } from "../../ui/strings";
 import type { ContentPartImage } from "../../types/ipc";
 import {
   ACCEPTED_EXTS,
@@ -71,7 +72,7 @@ export function useAttachments(
           setValue((v) => v + block);
           textareaRef.current?.focus();
         };
-        reader.onerror = () => toast.error("Failed to read file", file.name);
+        reader.onerror = () => toast.error(strings.chat.toast.fileReadFailed, file.name);
         reader.readAsText(file);
       }
     },
@@ -99,7 +100,7 @@ export function useAttachments(
             return [...prev, { type: "image", media_type: mediaType, data: base64 }];
           });
         };
-        reader.onerror = () => toast.error("Failed to read image", file.name);
+        reader.onerror = () => toast.error(strings.chat.toast.imageReadFailed, file.name);
         reader.readAsDataURL(file);
       }
     },

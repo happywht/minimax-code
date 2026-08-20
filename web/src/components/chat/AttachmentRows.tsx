@@ -3,6 +3,7 @@
  * thumbnail strip for attached images, rendered above the textarea.
  */
 import { Paperclip, X } from "lucide-react";
+import { strings } from "../../ui/strings";
 import { ImagePreview } from "../panels/ImagePreview";
 import type { ContentPartImage } from "../../types/ipc";
 import type { AttachedFile } from "./constants";
@@ -36,7 +37,7 @@ export function AttachmentRows({
               <span className="max-w-[120px] truncate">{f.name}</span>
               <button
                 type="button"
-                aria-label={`Remove ${f.name}`}
+                aria-label={strings.chat.attachments.removeFile(f.name)}
                 className="rounded p-0.5 text-ink-2 transition-colors duration-150 hover:bg-surface-3 hover:text-ink-0"
                 onClick={() => onRemoveFile(i)}
               >

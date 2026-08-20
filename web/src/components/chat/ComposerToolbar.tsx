@@ -11,6 +11,7 @@ import { toast } from "../layout/ErrorBoundary";
 import { ContextIndicator } from "./ContextIndicator";
 import { ModelSelector } from "./ModelSelector";
 import { MAX_INPUT_CHARS } from "./constants";
+import { strings } from "../../ui/strings";
 
 export interface ComposerToolbarProps {
   valueLength: number;
@@ -108,7 +109,7 @@ export function ComposerToolbar({
       </Button>
       <IconButton
         size="sm"
-        aria-label="Export current session as Markdown"
+        aria-label={strings.chat.composer.exportSession}
         title="导出当前会话"
         data-testid="chat-input-export-session"
         onClick={() => void handleExportSession()}
@@ -122,7 +123,7 @@ export function ComposerToolbar({
             data-testid="message-input-stopping"
             className="text-[11px] text-status-warning transition-opacity duration-200"
           >
-            正在停止...
+            {strings.chat.input.stopping}
           </span>
         )}
         <ContextIndicator />

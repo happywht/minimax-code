@@ -8,6 +8,7 @@ import { AlertCircle } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
 import { useThemeStore } from "../../stores";
 import { Spinner } from "../../ui";
+import { strings } from "../../ui/strings";
 import { CopyButton } from "./CopyButton";
 
 export function MermaidBlock({ code }: { code: string }): JSX.Element {
@@ -38,7 +39,7 @@ export function MermaidBlock({ code }: { code: string }): JSX.Element {
       })
       .catch((err) => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Unable to render Mermaid diagram");
+          setError(err instanceof Error ? err.message : strings.chat.mermaid.renderFailed);
         }
       });
 
@@ -56,7 +57,7 @@ export function MermaidBlock({ code }: { code: string }): JSX.Element {
         <span className="text-[11px] font-medium uppercase tracking-wider text-ink-2">
           Mermaid
         </span>
-        <CopyButton text={code} testId="mermaid-copy-button" title="Copy diagram source" />
+        <CopyButton text={code} testId="mermaid-copy-button" title={strings.chat.mermaid.copySource} />
       </div>
       <div className="min-h-32 overflow-auto p-3">
         {error ? (
@@ -79,7 +80,7 @@ export function MermaidBlock({ code }: { code: string }): JSX.Element {
             className="flex items-center gap-2 rounded-md border border-line bg-surface-1 p-3 text-xs text-ink-1"
           >
             <Spinner size={14} />
-            Rendering diagram...
+            {strings.chat.mermaid.rendering}
           </div>
         )}
       </div>

@@ -5,15 +5,16 @@
 import { AlertCircle } from "lucide-react";
 import type { MessageStatus } from "../../types/ipc";
 import { Badge, Spinner, type BadgeTone } from "../../ui";
+import { strings } from "../../ui/strings";
 
 const STATUS_LABELS: Record<MessageStatus, string> = {
-  queued: "Waiting",
-  sending: "Sending",
-  streaming: "Generating",
+  queued: strings.chat.messageStatus.queued,
+  sending: strings.chat.messageStatus.sending,
+  streaming: strings.chat.messageStatus.streaming,
   completed: "",
-  failed: "Failed",
-  cancelling: "Stopping...",
-  cancelled: "Stopped",
+  failed: strings.chat.messageStatus.failed,
+  cancelling: strings.chat.messageStatus.cancelling,
+  cancelled: strings.chat.messageStatus.cancelled,
 };
 
 const STATUS_TONES: Record<MessageStatus, BadgeTone> = {

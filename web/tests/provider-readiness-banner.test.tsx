@@ -58,8 +58,8 @@ describe("ProviderReadinessBanner", () => {
 
   it("shows demo mode and opens provider settings when the key is missing", () => {
     const { onOpenProviders } = renderBanner();
-    expect(screen.getByTestId("provider-readiness-banner")).toHaveTextContent("Demo Mode");
-    expect(screen.getByTestId("provider-readiness-banner")).toHaveTextContent("mock responses");
+    expect(screen.getByTestId("provider-readiness-banner")).toHaveTextContent("演示模式");
+    expect(screen.getByTestId("provider-readiness-banner")).toHaveTextContent("模拟响应");
     fireEvent.click(screen.getByTestId("provider-readiness-action"));
     expect(onOpenProviders).toHaveBeenCalledTimes(1);
   });
@@ -75,7 +75,7 @@ describe("ProviderReadinessBanner", () => {
   it("routes to model settings when no active model exists", () => {
     useModelStore.setState({ current: null });
     const { onOpenModels } = renderBanner();
-    expect(screen.getByTestId("provider-readiness-banner")).toHaveTextContent("No Active Model");
+    expect(screen.getByTestId("provider-readiness-banner")).toHaveTextContent("未选择模型");
     fireEvent.click(screen.getByTestId("provider-readiness-action"));
     expect(onOpenModels).toHaveBeenCalledTimes(1);
   });

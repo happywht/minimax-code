@@ -3,6 +3,7 @@
  * that floats above the composer while a mention token is active.
  */
 import { AtSign, Bot, Database, FileCode } from "lucide-react";
+import { strings } from "../../ui/strings";
 import type { MentionKind, MentionOption, MentionState } from "../../lib/mentions";
 
 export interface MentionPickerDropdownProps {
@@ -13,9 +14,9 @@ export interface MentionPickerDropdownProps {
 }
 
 const HEADER: Record<MentionKind, { icon: JSX.Element; label: string }> = {
-  agent: { icon: <AtSign size={10} />, label: "Spawn sub-agent" },
-  repo: { icon: <Database size={10} />, label: "Repository context" },
-  file: { icon: <FileCode size={10} />, label: "File context" },
+  agent: { icon: <AtSign size={10} />, label: strings.chat.mention.agentHeader },
+  repo: { icon: <Database size={10} />, label: strings.chat.mention.repoHeader },
+  file: { icon: <FileCode size={10} />, label: strings.chat.mention.fileHeader },
 };
 
 const KIND_ICON: Record<MentionKind, JSX.Element> = {
@@ -45,7 +46,7 @@ export function MentionPickerDropdown({
       </div>
       {agentsError && picker.kind === "agent" ? (
         <div className="px-2 py-1.5 text-[11px] text-status-error" title={agentsError}>
-          Failed to load agents
+          {strings.chat.mention.loadFailed}
         </div>
       ) : filtered.length === 0 ? (
         <div className="px-2 py-1.5 text-[11px] italic text-ink-2">

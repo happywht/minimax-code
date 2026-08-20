@@ -11,6 +11,7 @@ import { useCallback, useState } from "react";
 import { typedIPC } from "../../ipc";
 import { extractMentionContext } from "../../lib/mentions";
 import { toast } from "../layout/ErrorBoundary";
+import { strings } from "../../ui/strings";
 
 export interface MentionContextResult {
   /** The text that should actually be sent to the agent. */
@@ -55,7 +56,7 @@ export function useMentionContext(): UseMentionContext {
     if (hasRepo && !cleanText && files.length === 0) {
       // @repo with no question and no files is ambiguous; avoid an
       // empty codebase search.
-      toast.error("Context mention", "Please add a question after @repo.");
+      toast.error(strings.chat.toast.mentionTitle, strings.chat.toast.mentionNeedQuestion);
       return null;
     }
 
@@ -83,7 +84,7 @@ export function useMentionContext(): UseMentionContext {
       return { text, hasContext: true };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to load mention context", message);
+      toast.error(strings.chat.toast.mentionLoadFailed, message);
       return null;
     } finally {
       setLoading(false);

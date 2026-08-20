@@ -23,6 +23,7 @@ import {
 import type { Message, ContentPart } from "../types/ipc";
 import { useSessionStore } from "./sessionStore";
 import { trimArray, MAX_MESSAGES } from "../lib/eviction";
+import { DEFAULT_SESSION_TITLE } from "../lib/defaultTitles";
 
 export type ChatStatus = "idle" | "sending" | "streaming" | "error" | "cancelling";
 
@@ -358,13 +359,15 @@ export const useChat = create<ChatState>((set, get) => ({
     let sessionId = useSessionStore.getState().currentSessionId;
     try {
       if (!sessionId) {
-        const title = displayText.replace(/\s+/g, " ").trim().slice(0, 60) || "New task";
+        const title =
+          displayText.replace(/\s+/g, " ").trim().slice(0, 60) || DEFAULT_SESSION_TITLE;
         sessionId = await useSessionStore.getState().create(title);
       } else {
         const sessions = useSessionStore.getState();
         const current = sessions.sessions.find((session) => session.id === sessionId);
-        if (current?.title === "New task" && get().messages.length === 0) {
-          const title = displayText.replace(/\s+/g, " ").trim().slice(0, 60) || "New task";
+        if (current?.title === DEFAULT_SESSION_TITLE && get().messages.length === 0) {
+          const title =
+            displayText.replace(/\s+/g, " ").trim().slice(0, 60) || DEFAULT_SESSION_TITLE;
           await sessions.rename(sessionId, title);
         }
       }

@@ -4,6 +4,7 @@
 import { useState, useRef, useEffect } from "react";
 import { MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import { IconButton } from "../../ui";
+import { strings } from "../../ui/strings";
 
 export interface MessageActionMenuProps {
   messageId: string;
@@ -36,7 +37,7 @@ export function MessageActionMenu({
     <div ref={ref} className="relative">
       <IconButton
         size="sm"
-        aria-label="Message actions"
+        aria-label={strings.chat.actions.menu}
         data-testid={`message-actions-${messageId}`}
         onClick={() => setOpen((v) => !v)}
         className="text-ink-2 hover:text-ink-0"

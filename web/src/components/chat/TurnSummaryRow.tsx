@@ -3,6 +3,7 @@
  * bubbles: "思考 N 次 · 查看 M 个文件 · 修改 K 个文件".
  */
 import { Brain, Eye, FileEdit } from "lucide-react";
+import { strings } from "../../ui/strings";
 import type { TurnSummary } from "./turnSummary";
 
 export interface TurnSummaryRowProps {
@@ -15,7 +16,7 @@ export function TurnSummaryRow({ messageId, summary }: TurnSummaryRowProps): JSX
     <div
       data-testid={`message-summary-${messageId}`}
       className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 border-b border-line pb-1.5 text-[11px] text-ink-2"
-      aria-label="turn summary"
+      aria-label={strings.chat.turnSummary}
     >
       <span className="inline-flex items-center gap-1">
         <Brain size={10} />

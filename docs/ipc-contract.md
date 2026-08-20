@@ -323,7 +323,7 @@ Session records may include workspace metadata:
 ```json
 {
   "id": "ses_1234",
-  "title": "Worktree task",
+  "title": "Worktree 任务",
   "workspace_mode": "worktree",
   "workspace_path": "C:\\Users\\me\\AppData\\Roaming\\MiniMaxCode\\worktrees\\ses_1234",
   "worktree_branch": null,
@@ -339,7 +339,7 @@ session bound to that worktree.
 Request:
 
 ```json
-{"method":"workspace.create_worktree_session","params":{"title":"Worktree task","base_ref":"HEAD"}}
+{"method":"workspace.create_worktree_session","params":{"title":"Worktree 任务","base_ref":"HEAD"}}
 ```
 
 Response:

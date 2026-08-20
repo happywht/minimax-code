@@ -17,6 +17,7 @@
 import { useMemo } from "react";
 import { useChat } from "../../stores/chat";
 import { useModelStore } from "../../stores/modelStore";
+import { strings } from "../../ui/strings";
 
 /** Format a token count for display (e.g. 1234 → "1.2k"). */
 function fmtTokens(n: number): string {
@@ -67,7 +68,7 @@ export function ContextIndicator() {
         : "text-status-error";
 
   return (
-    <div className="flex items-center gap-1.5" title={`Context: ${fmtTokens(used)} / ${total > 0 ? fmtTokens(total) : "?"} tokens`}>
+    <div className="flex items-center gap-1.5" title={strings.chat.context.title(fmtTokens(used), total > 0 ? fmtTokens(total) : "?")}>
       {/* Thin progress bar */}
       <div className="h-1 w-12 rounded-full bg-minimax-border/40 overflow-hidden">
         <div

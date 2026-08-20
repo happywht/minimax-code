@@ -116,7 +116,7 @@ describe("MessageList", () => {
     Object.defineProperty(list, "scrollTo", { configurable: true, value: scrollTo });
 
     fireEvent.scroll(list);
-    expect(await screen.findByTestId("scroll-to-bottom-btn")).toHaveTextContent("Latest");
+    expect(await screen.findByTestId("scroll-to-bottom-btn")).toHaveTextContent("最新");
 
     act(() => {
       useChat.setState((s) => ({
@@ -130,7 +130,7 @@ describe("MessageList", () => {
     await flushFrames(3);
 
     await waitFor(() => {
-      expect(screen.getByTestId("scroll-to-bottom-btn")).toHaveTextContent("1 new");
+      expect(screen.getByTestId("scroll-to-bottom-btn")).toHaveTextContent("1 条新消息");
     });
 
     fireEvent.click(screen.getByTestId("scroll-to-bottom-btn"));

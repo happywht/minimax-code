@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { typedIPC } from "../../ipc";
 import { useChat, useCodebaseStore, useSessionStore, useSubAgentStore } from "../../stores";
 import { toast } from "../layout/ErrorBoundary";
+import { strings } from "../../ui/strings";
 import type { AgentInfo } from "../../types/ipc";
 import {
   INITIAL_MENTION_STATE,
@@ -186,7 +187,7 @@ export function useMentionPicker({
           updated_at: Date.now(),
           finished_at: Date.now(),
         });
-        toast.error("Sub-agent spawn failed", message);
+        toast.error(strings.chat.toast.subagentFailed, message);
       }
     },
     [value, picker.anchor, closePicker, setValue, textareaRef, subInit, subRegister, addLocalMessage, touchFile],

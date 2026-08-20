@@ -7,6 +7,7 @@
  */
 import { useState } from "react";
 import { ChevronDown, FileCode } from "lucide-react";
+import { strings } from "../../ui/strings";
 import type { SourceAnnotation } from "../../types/ipc";
 
 export interface SourcesPanelProps {
@@ -26,7 +27,7 @@ export function SourcesPanel({ sources, testId }: SourcesPanelProps): JSX.Elemen
         onClick={() => setOpen((o) => !o)}
         className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-ink-2 transition-colors hover:bg-surface-1"
         aria-expanded={open}
-        aria-label="Sources"
+        aria-label={strings.chat.sources}
       >
         <FileCode size={10} />
         {sources.length} 来源

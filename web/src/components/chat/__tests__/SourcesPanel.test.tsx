@@ -23,7 +23,7 @@ describe("SourcesPanel", () => {
 
   it("expands to show source chips when clicked", async () => {
     render(<SourcesPanel sources={SOURCES} />);
-    await userEvent.click(screen.getByRole("button", { name: "Sources" }));
+    await userEvent.click(screen.getByRole("button", { name: "来源" }));
     expect(screen.getByText("src/auth.ts")).toBeInTheDocument();
     expect(screen.getByText("#L10-20")).toBeInTheDocument();
     expect(screen.getByText("README.md")).toBeInTheDocument();

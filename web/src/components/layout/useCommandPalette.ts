@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSessionStore } from "../../stores";
 import { strings } from "../../ui/strings";
+import { DEFAULT_SESSION_TITLE } from "../../lib/defaultTitles";
 import type { SettingsTab } from "../settings/SettingsPage";
 
 export type PaletteItemType = "action" | "session" | "setting";
@@ -145,7 +146,7 @@ export function useCommandPalette({
   const execute = useCallback(
     (item: PaletteItem) => {
       if (item.id === "action:new-task") {
-        void createSession("New task");
+        void createSession(DEFAULT_SESSION_TITLE);
       } else if (item.id === "action:preview") {
         onTogglePreview?.();
       } else if (item.id === "action:skills") {

@@ -20,6 +20,7 @@ import { useMentionContext } from "./useMentionContext";
 import { AttachmentRows } from "./AttachmentRows";
 import { MentionPickerDropdown } from "./MentionPickerDropdown";
 import { ComposerToolbar } from "./ComposerToolbar";
+import { strings } from "../../ui/strings";
 
 export interface MessageInputProps {
   testId?: string;
@@ -127,7 +128,7 @@ export function MessageInput({
             data-testid="message-input-dropzone"
             className="absolute inset-0 z-10 flex items-center justify-center rounded-md bg-accent-subtle"
           >
-            <span className="text-xs font-medium text-accent">Drop files here…</span>
+            <span className="text-xs font-medium text-accent">{strings.chat.input.dropFilesHere}</span>
           </div>
         )}
         <AttachmentRows
@@ -138,19 +139,19 @@ export function MessageInput({
         />
         <div className="flex items-end gap-1 px-2 py-2 sm:gap-2 sm:px-2.5">
           <IconButton
-            aria-label="Attach file"
+            aria-label={strings.chat.input.attachFile}
             data-testid="message-attach-btn"
             onClick={() => attachments.fileInputRef.current?.click()}
-            title="Attach a text file"
+            title={strings.chat.input.attachTextFile}
             className="h-8 w-8"
           >
             <Paperclip size={14} />
           </IconButton>
           <IconButton
-            aria-label="Attach image"
+            aria-label={strings.chat.input.attachImage}
             data-testid="message-image-btn"
             onClick={() => attachments.imageInputRef.current?.click()}
-            title="Attach an image"
+            title={strings.chat.input.attachAnImage}
             className="h-8 w-8"
           >
             <Camera size={14} />
@@ -175,13 +176,13 @@ export function MessageInput({
           />
           <textarea
             ref={draft.ref}
-            aria-label="Message"
+            aria-label={strings.chat.input.messageLabel}
             name="message"
             autoComplete="off"
             value={draft.value}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
-            placeholder="Ask MiniMax anything…  (Enter · @agent · @repo · #file)"
+            placeholder={strings.chat.input.placeholder}
             rows={1}
             data-testid="message-input-textarea"
             disabled={disabled}
@@ -196,13 +197,13 @@ export function MessageInput({
               loading={cancelling}
               icon={<Square size={12} />}
               className="w-7 px-0"
-              title={cancelling ? "Stopping..." : "Stop"}
-              aria-label={cancelling ? "Stopping..." : "Stop"}
+              title={cancelling ? strings.chat.input.stopping : strings.chat.input.stop}
+              aria-label={cancelling ? strings.chat.input.stopping : strings.chat.input.stop}
             />
           ) : (
             <>
               <IconButton
-                aria-label={voice.listening ? "Stop voice input" : "Start voice input"}
+                aria-label={voice.listening ? strings.chat.input.stopVoice : strings.chat.input.startVoice}
                 data-testid="message-voice-btn"
                 onClick={voice.toggleVoice}
                 className={
@@ -211,7 +212,7 @@ export function MessageInput({
                     ? "animate-pulse bg-[var(--status-error-subtle)] text-status-error hover:bg-[var(--status-error-subtle)] hover:text-status-error"
                     : "")
                 }
-                title={voice.listening ? "Listening… click to stop" : "Voice input"}
+                title={voice.listening ? strings.chat.input.listening : strings.chat.input.voiceInput}
               >
                 {voice.listening ? <MicOff size={14} /> : <Mic size={14} />}
               </IconButton>
@@ -228,8 +229,8 @@ export function MessageInput({
                 loading={context.loading}
                 icon={<Send size={14} />}
                 className="w-7 px-0"
-                title={context.loading ? "Loading context…" : "Send"}
-                aria-label={context.loading ? "Loading context…" : "Send"}
+                title={context.loading ? strings.chat.input.loadingContext : strings.chat.input.send}
+                aria-label={context.loading ? strings.chat.input.loadingContext : strings.chat.input.send}
               />
             </>
           )}

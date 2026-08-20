@@ -5,6 +5,7 @@
  */
 import { FileText, Hash } from "lucide-react";
 import { Badge } from "../../ui";
+import { strings } from "../../ui/strings";
 import { CopyButton } from "./CopyButton";
 import type { FileReference } from "./fileReferences";
 
@@ -14,7 +15,7 @@ export function FileReferenceStrip({ refs }: { refs: FileReference[] }): JSX.Ele
     <div
       data-testid="file-reference-strip"
       className="mb-2 flex flex-wrap gap-1.5"
-      aria-label="Referenced files"
+      aria-label={strings.chat.fileRefs.groupLabel}
     >
       {refs.map((ref) => (
         <FileReferenceCard key={`${ref.path}:${ref.line ?? ""}`} refInfo={ref} />
@@ -53,7 +54,7 @@ function FileReferenceCard({ refInfo }: { refInfo: FileReference }): JSX.Element
       <CopyButton
         text={label}
         testId="file-reference-copy"
-        title="Copy file reference"
+        title={strings.chat.fileRefs.copyReference}
         className="shrink-0"
       />
     </div>
