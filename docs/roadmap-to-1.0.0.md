@@ -89,7 +89,7 @@
 
 ### M10 · 1.0.0 正式（R53–R54）
 - [x] R53 发布公告 `docs/release-1.0.0.md` + README 徽章/版本终稿 [done @ aa83a7c — 公告按九条验收标准逐条对账 + 核心数字速览 + 八版本表 + 0.x 升级说明；README 四静态徽章（version/python/node/local-first）+ 版本行指向公告]
-- [ ] R54 版本 bump **1.0.0** 🎉
+- [x] R54 版本 bump **1.0.0** 🎉 `[done @ 343dad2 — 6 代码位 + CLAUDE/AGENTS 版本行 + CHANGELOG（1.0.0 总览移入正式节 + M10 行 + 质量数字 10129）+ uv lock；stable bump 推进 live-metadata 断言 v.pre is None；10129 pytest / 622 vitest / ruff / ESLint 0/0 全绿，54/54 收官]`
 
 ## 轮次执行规约
 
