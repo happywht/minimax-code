@@ -20,16 +20,18 @@ Browser (Vite SPA, localhost:5173)
   |  WebSocket /ws  (server-push streaming events)
   v
 Python Agent (FastAPI + asyncio, 127.0.0.1:8765)
-  |- IPCServer (shared handler registry)
+  |- IPCServer (shared handler registry, 167 methods / 35 namespaces)
   |- AgentCore (conversation loop + LLM streaming)
-  |- ToolRegistry (6 built-in tools)
+  |- ToolRegistry (10 built-in tool modules)
   |- SkillRuntime (SKILL.md loader + registry)
-  |- SQLite Storage (8 tables via aiosqlite DAOs)
+  |- SQLite Storage (24 tables + FTS/vector virtual tables, idempotent migrations)
   |- APScheduler (cron jobs)
-  |- SubAgentRuntime (multi-agent orchestration)
+  |- SubAgentRuntime + Agent Teams (multi-agent orchestration)
   |- PermissionStore (tool-call consent)
   |- Secrets (OS keyring + env-var fallback)
+  |- CodebaseIndexer (project-level code indexing + FTS retrieval)
   |- Git handlers (read-only git subprocess)
+  |- Web dist hosting (production mode, same-origin SPA)
 ```
 
 ## 模块结构图
@@ -51,8 +53,9 @@ graph TD
     C --> C6["minimax_code/permissions"];
     C --> C7["minimax_code/mobile"];
     C --> C8["minimax_code/progress"];
-    C --> C9["minimax_code/skills/_builtin"];
-    C --> C10["skills"];
+    C --> C9["minimax_code/agent/skills/_builtin"];
+    C --> C10["minimax_code/codebase"];
+    C --> C11["agent/skills"];
 
     B --> B1["src/components"];
     B --> B2["src/stores"];
@@ -69,6 +72,7 @@ graph TD
 |----------|------|------|
 | `web/` | TypeScript + React | Vite-served SPA 前端。React 18 + Zustand 状态管理 + Tailwind CSS 样式 |
 | `agent/` | Python 3.11+ | Agent 核心。FastAPI HTTP/WS transport + asyncio JSON-RPC server + LLM client + SQLite storage |
+| `agent/minimax_code/codebase/` | Python 3.11+ | Codebase RAG：项目级代码索引、chunk 持久化、FTS + 向量混合检索 |
 | `e2e/` | TypeScript (Playwright) | 跨栈 e2e 测试。真实浏览器 + 真实 agent 进程 |
 | `tests/e2e/` | Python | 黑盒 subprocess smoke 测试（agent stdio 模式） |
 | `docs/` | Markdown | 架构文档、IPC 契约、技能规范、设计文档 |
@@ -126,6 +130,8 @@ pnpm dev
 | `MINIMAX_CODE_HTTP_HOST` | `127.0.0.1` | Agent 绑定地址 |
 | `MINIMAX_CODE_DATA_DIR` | platformdirs | SQLite 数据库路径 |
 | `MINIMAX_CODE_SKILLS_DIR` | `agent/skills/` | 技能目录 |
+| `MINIMAX_CODE_CORS_ORIGINS` | dev 白名单 | 追加受信 CORS origin（逗号分隔） |
+| `MINIMAX_CODE_LOG_FILE` | 空（仅控制台） | 日志落盘路径（带轮转） |
 
 ## 测试策略
 
@@ -133,8 +139,8 @@ pnpm dev
 |------|------|------|----------|
 | Python 单元 | pytest + pytest-asyncio | `agent/tests/` | IPC、Storage DAO、Agent Core、Tools、Skills、Scheduler、Permissions、Mobile、Sessions、Model、Secrets、HTTP Server、Git handlers |
 | 前端单元 | vitest + @testing-library/react | `web/src/**/*.test.ts(x)` | IPC client、stores、组件渲染 |
-| Python 黑盒 | subprocess + pytest | `tests/e2e/smoke_*.py` | 7 个 smoke：sessions、mobile、agents、phase2b、chat、progress、model |
-| 跨栈 e2e | Playwright | `e2e/*.spec.ts` | boot、session-list、agent-rpc、chat、thinking-count、subagent |
+| Python 黑盒 | subprocess + pytest | `tests/e2e/smoke_*.py` | 6 个 smoke：agents、chat、mobile、model、phase2b、progress |
+| 跨栈 e2e | Playwright | `e2e/*.spec.ts` | 10 个 spec：boot、session-list、agent-rpc、chat、thinking-count、subagent、ws-resume、skill-import、codebase、production-mode |
 
 Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时空目录>` 创建独立数据库。
 
@@ -163,19 +169,43 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 
 ### IPC 命名空间
 
-| 前缀 | 用途 | Handler 文件 |
-|------|------|-------------|
-| `agent.*` | 消息发送、子 agent 管理 | `handlers_agents.py`, `builtins.py` |
-| `session.*` | 会话 CRUD | `handlers_sessions.py` |
-| `message.*` | 消息列表 | `handlers_sessions.py` |
-| `model.*` | 模型选择 | `handlers_model.py` |
-| `skill.*` | 技能管理/调用 | `handlers_skills.py` |
-| `schedule.*` | 定时任务 | `handlers_scheduled.py` |
-| `permission.*` | 权限规则 | `handlers_permissions.py` |
-| `task.*` | 进度追踪 | `handlers_tasks.py` |
-| `mobile.*` | 设备配对 | `handlers_mobile.py` |
-| `secrets.*` | API 密钥管理 | `handlers_secrets.py` |
-| `git.*` | Git 状态/差异/日志 | `handlers_git.py` |
+共 **167 个注册方法、35 个前缀**（含 3 个无点号 built-in）。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。
+
+| 前缀 | 方法数 | 用途 | Handler 文件 |
+|------|--------|------|-------------|
+| `agent.*` | 10 | 消息发送、子 agent 管理 | `builtins.py`, `handlers_agents.py` |
+| `audit.*` | 3 | 审计日志查询 | `handlers_audit.py` |
+| `checkpoint.*` | 5 | 上下文检查点 | `handlers_checkpoint.py` |
+| `codebase.*` | 4 | 代码库索引/检索 | `handlers_codebase.py` |
+| `crash.*` | 3 | 崩溃恢复会话 | `handlers_crash.py` |
+| `data.*` | 3 | 全量导出/导入/备份 | `handlers_data.py` |
+| `git.*` | 3 | Git 状态/差异/日志 | `handlers_git.py` |
+| `mcp.*` | 6 | MCP 服务器管理 | `handlers_mcp.py` |
+| `memory.*` | 5 | 长期记忆 | `handlers_memory.py` |
+| `message.*` | 3 | 消息列表/编辑/删除 | `handlers_sessions.py` |
+| `mobile.*` | 7 | 设备配对/推送 | `handlers_mobile.py` |
+| `model.*` | 4 | 模型列表/切换 | `handlers_model.py` |
+| `notification.*` | 5 | 通知中心 | `handlers_notifications.py` |
+| `patch.*` | 8 | Patch Studio 应用/回退/快照 | `handlers_patch.py` |
+| `permission.*` | 6 | 权限规则管理/解析 | `handlers_permissions.py` |
+| `plugins.*` | 5 | 插件启用/禁用 | `handlers_plugins.py` |
+| `project.*` | 6 | 项目 CRUD | `handlers_projects.py` |
+| `provider.*` | 7 | 多 Provider 接入 | `handlers_providers.py` |
+| `run.*` | 2 | Run 生命周期事件 | `handlers_runs.py` |
+| `runner.*` | 2 | Runner 状态 | `handlers_runner.py` |
+| `runtime.*` | 1 | 运行时信息 | `handlers_runtime.py` |
+| `schedule.*` | 6 | 定时任务 CRUD/启停 | `handlers_scheduled.py` |
+| `secrets.*` | 3 | API 密钥管理 | `handlers_secrets.py` |
+| `session.*` | 12 | 会话 CRUD/归档/批量 | `handlers_sessions.py` |
+| `skill.*` | 7 | 技能管理/调用 | `handlers_skills.py` |
+| `task.*` | 6 | 进度追踪 | `handlers_tasks.py` |
+| `team.*` | 9 | Agent 团队编排 | `handlers_teams.py` |
+| `telemetry.*` | 4 | 遥测数据 | `handlers_telemetry.py` |
+| `terminal.*` | 4 | 终端命令执行 | `handlers_terminal.py` |
+| `webhook.*` | 5 | Webhook 管理 | `handlers_webhooks.py` |
+| `workflow.*` | 7 | 工作流编排 | `handlers_workflows.py` |
+| `workspace.*` | 3 | 工作区/worktree 管理 | `handlers_workspace.py` |
+| `ping` / `status` / `shutdown` | 各 1 | built-in（无点号） | `builtins.py` |
 
 ## AI 使用指引
 
@@ -203,14 +233,17 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 | 文档 | 内容 |
 |------|------|
 | `docs/architecture.md` | 系统架构总览、技术栈、目录结构、数据流 |
-| `docs/ipc-contract.md` | JSON-RPC 2.0 协议详述、方法列表、事件列表 |
-| `docs/storage-schema.md` | SQLite 8 表 ER 图、索引策略、迁移机制 |
+| `docs/ipc-contract.md` | JSON-RPC 2.0 协议详述、方法列表、事件列表、Appendix A 方法总表 |
+| `docs/storage-schema.md` | SQLite 表结构 ER 图、索引策略、迁移机制 |
 | `docs/agent-core.md` | AgentCore 对话循环、工具目录、错误处理矩阵 |
 | `docs/skills.md` | SKILL.md 格式、工具绑定规则、生命周期 |
-| `docs/v0.2.0-web-architecture.md` | Tauri 到 Web 切换的 API 契约 |
-| `docs/v0.3.0-design.md` | v0.3.0 四大功能设计文档 |
+| `docs/user-guide.md` | 面向最终用户的完整操作手册 |
+| `docs/deployment.md` | 生产部署指南（build/start/端口/数据目录/日志） |
+| `docs/performance-baseline.md` | 性能基线数字与复测命令 |
+| `docs/roadmap-to-1.0.0.md` | 54 轮迭代路线图与轮次账本 |
 | `CHANGELOG.md` | 版本变更历史 |
 
 ## 变更记录 (Changelog)
 
+- **2026-08-21** — R43 全面对账同步：24 实体表/167 IPC 方法 35 前缀/10 工具模块/31 handler 文件/6 smoke/10 e2e spec，技能目录路径修正（`agent/skills/`），命名空间表与文档索引按 registry 实测重写
 - **2026-06-04** — 初始化 CLAUDE.md，基于 v0.3.0 代码库全面扫描生成

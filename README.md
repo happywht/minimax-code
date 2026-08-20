@@ -106,7 +106,7 @@ Browser (Vite/React SPA)
 Python Agent (FastAPI + asyncio, 127.0.0.1:8765)
   |- AgentCore（对话循环 + LLM 流式）
   |- ToolRegistry / SkillRuntime / SubAgentRuntime / Scheduler
-  |- SQLite 存储（26 张表，幂等事务化迁移）
+  |- SQLite 存储（24 张表 + FTS/向量虚表，幂等事务化迁移）
   |- PermissionStore（工具调用授权）+ OS keyring（密钥）
 ```
 

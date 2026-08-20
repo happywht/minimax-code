@@ -16,47 +16,42 @@ MiniMax Code 的前端界面。基于 React 18 + Vite + TypeScript + Tailwind CS
 ### 布局结构
 
 ```
-+---------------------------------------------------+
-|  TopBar (workspace + git status + settings)        |
-+--------+---------------------------+---------------+
-| Sidebar | Main Content            | RightPanel    |
-| (240px) | - ChatPanel             | (280px)       |
-|         | - MessageInput          | - Progress    |
-|         | - SettingsPage          | - Sub-agents  |
-|         | - SkillsPanel           |               |
-+---------+-------------------------+---------------+
++--------------------------------------------------------------------+
+|  TopBar (命令面板 Ctrl+K · 预览 · Git 状态 · 通知 · 主题 · 设置)       |
++----------+------------------------------------------+--------------+
+| Sidebar  | Main Content                             | RightPanel   |
+| (项目分组 | - ChatPanel（消息流 + MessageInput 输入框）| 检查器 11 tab |
+|  任务列表)| - SettingsPage（14 tab，覆盖层）          | 可折叠        |
+|          | - SkillsPanel / CodeReview（覆盖层）       |              |
++----------+------------------------------------------+--------------+
 ```
+
+组件按功能域分目录：`layout/`（骨架壳）、`chat/`（对话主区）、`settings/`（设置页 14 个 tab）、`panels/`（覆盖面板）、`modals/`（对话框）、`right-panel/`（检查器）。面向用户的文案统一来自 `src/ui/strings.ts`（中文单一来源），不直接在组件里写英文句子。
 
 ## 对外接口
 
-### IPC Client（`src/ipc/client.ts`）
+### IPC Client（`src/ipc/` 四文件分层）
 
 前端通过 `IPCClient` 单例与 agent 通信：
 
-- **`typedIPC`**：类型安全的高层 API（`ping`、`listSessions`、`sendMessage`、`listModels` 等）
-- **Transport**：HTTP `POST /rpc`（请求/响应）+ `WebSocket /ws`（流式事件）
-- **Mock 模式**：当 agent 不可达或 `VITE_AGENT_MODE=mock` 时，自动降级到内置 mock backend
-- **WebSocket 重连**：指数退避（250ms -> 500ms -> 1s -> 2s，上限 5s）
+- **`client.ts`**：transport 层——HTTP `POST /rpc`（请求/响应）+ `WebSocket /ws`（流式事件）+ `ipc` 单例导出
+- **`typed.ts`**：`TypedIPC` 类型化 API 层（`listSessions`、`sendMessage`、`listModels` 等全部 167 个 RPC 方法的签名）
+- **`mock.ts`**：mock backend `mockHandle`——agent 不可达或 `VITE_AGENT_MODE=mock` 时自动降级，必须覆盖所有 IPC 方法
+- **`mockData.ts`**：mock 模式的数据与状态
+- **WebSocket 重连**：指数退避（250ms -> 500ms -> 1s -> 2s，上限 5s），断线重连后按 `?since=` 重放错过的广播
 
 ### TypedIPC 方法列表
 
+完整签名见 `src/ipc/typed.ts`（服务端 167 个注册方法，命名空间总表见根目录 CLAUDE.md 与 `docs/ipc-contract.md` Appendix A）。常用入口示例：
+
 | 方法 | IPC 方法 | 功能 |
 |------|----------|------|
-| `ping()` | `GET /health` | 存活检测 |
 | `listSessions()` | `session.list` | 会话列表 |
-| `createSession()` | `session.create` | 创建会话 |
 | `sendMessage()` | `agent.send_message` | 发送消息（触发流式响应） |
 | `listModels()` | `model.list` | 模型列表 |
-| `setCurrentModel()` | `model.set_current` | 切换模型 |
-| `listSkills()` | `skill.list` | 技能列表 |
 | `invokeSkill()` | `skill.invoke` | 调用技能 |
-| `listJobs()` | `schedule.list` | 定时任务列表 |
 | `spawnSubagent()` | `agent.spawn_subagent` | 生成子 agent |
-| `gitStatus()` | `git.status` | Git 状态 |
-| `gitDiff()` | `git.diff` | Git 差异 |
-| `gitLog()` | `git.log` | Git 日志 |
-| `getSecretStatus()` | `secrets.status` | API 密钥状态 |
-| ... | ... | 完整列表见 `src/ipc/client.ts:TypedIPC` |
+| `gitStatus()` / `gitDiff()` / `gitLog()` | `git.*` | Git 三件套 |
 
 ## 关键依赖与配置
 
@@ -105,17 +100,21 @@ MiniMax Code 的前端界面。基于 React 18 + Vite + TypeScript + Tailwind CS
 - `PermissionRule` — 权限规则
 - `GitStatusResult` / `GitDiffResult` / `GitLogEntry` — Git 数据
 
-流式事件类型（`StreamEvent` 枚举）：
+流式事件类型（`StreamEvent` 枚举，15 个，与 `agent/tests/test_ipc_contract_doc.py` 锁死同步）：
 - `agent.message_chunk` / `agent.status` / `agent.tool_call` / `agent.tool_result`
 - `permission.request` / `permission.resolved`
-- `task.progress` / `agent.subagent_progress`
+- `task.progress` / `agent.subagent_progress` / `agent.team_progress`
+- `notification.new` / `notification.read`
+- `run.created` / `run.step.started` / `run.step.completed` / `run.completed`
+
+另有两个无 seq 的协议级帧：`agent.ready`（握手）、`agent.ping`（心跳）。
 
 ## 测试与质量
 
 | 类型 | 工具 | 位置 |
 |------|------|------|
-| 单元测试 | vitest (jsdom) | `src/**/*.test.ts(x)` |
-| IPC 测试 | vitest | `src/ipc/__tests__/client-http.test.ts` |
+| 单元测试 | vitest (jsdom) | `src/**/*.test.ts(x)`（组件/store/hook 就近放置，含 `src/stores/__tests__/`、`src/ipc/__tests__/`） |
+| 无障碍回归 | vitest | icon-only 按钮 aria-label 静态扫描 + WCAG AA 对比度 60 断言（`src/ui/` 相关测试） |
 
 运行命令：
 ```bash
@@ -137,48 +136,41 @@ A: 编辑 `tailwind.config.js` 中的 `minimax` 颜色定义（bg、panel、bord
 
 ## 相关文件清单
 
-### 组件
-- `src/components/Sidebar.tsx` — 左侧边栏（导航 + 会话列表）
-- `src/components/ChatPanel.tsx` — 主聊天区域
-- `src/components/MessageList.tsx` / `MessageItem.tsx` — 消息列表/单项
-- `src/components/MessageInput.tsx` — 浮动输入框（含模型选择器、@agent 触发器）
-- `src/components/TopBar.tsx` — 顶部栏（workspace + GitStatusBar + 设置）
-- `src/components/GitStatusBar.tsx` — Git 状态指示器
-- `src/components/RightPanel.tsx` — 右侧面板（进度 + 子 agent）
-- `src/components/SubAgentPanel.tsx` / `SubAgentResultCard.tsx` — 子 agent 进度/结果
-- `src/components/SkillsPanel.tsx` — 技能面板
-- `src/components/SettingsPage.tsx` — 设置页（3 tab）
-- `src/components/PermissionRequestModal.tsx` — 权限弹窗
-- `src/components/ProgressPanel.tsx` — 任务进度面板
-- `src/components/ModelSelector.tsx` — 模型选择下拉
-- `src/components/WorkspaceSwitcher.tsx` — 工作区切换
-- `src/components/ErrorBoundary.tsx` — 错误边界
-- `src/components/index.ts` — 组件 barrel export
+### 组件（`src/components/`，按功能域分目录）
 
-### Stores
-- `src/stores/chat.ts` — 聊天消息流 + 发送
-- `src/stores/sessionStore.ts` — 会话列表/当前会话
-- `src/stores/modelStore.ts` — 模型列表/选择
-- `src/stores/skillStore.ts` — 技能列表
-- `src/stores/scheduleStore.ts` — 定时任务
-- `src/stores/permissionStore.ts` — 权限规则
-- `src/stores/taskStore.ts` — 任务进度
-- `src/stores/subAgent.ts` — 子 agent 管理
-- `src/stores/git.ts` — Git 状态
-- `src/stores/secretStore.ts` — API 密钥
-- `src/stores/index.ts` — Store barrel export
+- `layout/` — 骨架壳：`Sidebar.tsx`（项目分组任务列表 + 连接手机入口）、`TopBar.tsx`、`CommandPalette.tsx`（Ctrl+K）、`GitStatusBar.tsx`、`NotificationCenter.tsx`、`WorkspaceSwitcher.tsx`、`ConnectionBanner.tsx` / `StorageBanner.tsx` / `ProviderReadinessBanner`（在 chat/）等状态横幅、`ShortcutsOverlay.tsx`、`ErrorBoundary.tsx`
+- `chat/` — 对话主区：`ChatPanel.tsx`、`MessageList.tsx` / `MessageItem.tsx` / `MessageInput.tsx`（@提及/附件/语音）、`MarkdownBody.tsx` / `CodeBlock.tsx` / `MermaidBlock.tsx`、`ModelSelector.tsx`、`MessageActionMenu.tsx` 等
+- `settings/` — 设置页：`SettingsPage.tsx`（**14 tab 分 4 组**：核心 models/providers/api-key/permissions/mcp-servers/memory/plugins/data、自动化 scheduled/workflows/webhooks、Agent agents/teams、治理 audit）+ 每 tab 一个组件（`ModelsTab.tsx`、`ProvidersTab.tsx`、`DataTab.tsx` 等）
+- `panels/` — 覆盖面板：`SkillsPanel.tsx`、`CodeReviewPanel.tsx`、`PatchPreviewPanel.tsx`（+ `PatchFileCard` / `PatchHunkCard`）、`PreviewPanel.tsx`
+- `modals/` — 对话框：`PermissionRequestModal.tsx`（允许/拒绝 + 总是允许开关）、`MobilePairingModal.tsx`、`GitViewerModal.tsx`、`CrashRecoveryPrompt.tsx`、`ConfirmationDialog.tsx`
+- `right-panel/` — 检查器：`tabs.tsx` 注册 **11 个 tab**（timeline/diff/progress/checkpoints/agents/subagents/review/teamruns/terminal/runner/codebase），`ProgressPanel.tsx`、`SubAgentPanel.tsx`、`TeamRunPanel.tsx`、`TerminalPanel.tsx`、`RunnerPanel.tsx`、`CodebasePanel.tsx`、`CheckpointPanel.tsx`、`RunTimelinePanel.tsx` 等
+- `RightPanel.tsx` / `StructuredErrorCallout.tsx` / `index.ts` — 面板壳 + barrel export
+
+### Stores（`src/stores/`，29 个）
+
+- 对话域：`chat.ts`（消息流 + 发送）、`subAgent.ts`、`taskStore.ts`
+- 会话域：`sessionStore.ts`
+- 模型域：`modelStore.ts`、`providerStore.ts`、`secretStore.ts`
+- Git/补丁域：`git.ts`、`patchPreviewStore.ts`、`codeReviewStore.ts`
+- 检查器域：`runStore.ts`、`runnerStore.ts`、`teamRunStore.ts`、`teamStore.ts`、`terminalStore.ts`、`codebaseStore.ts`、`agentStore.ts`
+- 自动化域：`scheduleStore.ts`、`workflowStore.ts`、`webhookStore.ts`
+- 系统域：`permissionStore.ts`、`auditStore.ts`、`memoryStore.ts`、`notificationStore.ts`、`mobileStore.ts`、`crashRecoveryStore.ts`、`previewStore.ts`、`skillStore.ts`、`themeStore.ts`
+- `index.ts` — Store barrel export
 
 ### IPC
-- `src/ipc/client.ts` — IPCClient + TypedIPC + mock backend
+- `src/ipc/client.ts` — transport + `ipc` 单例
+- `src/ipc/typed.ts` — TypedIPC 类型化 API 层
+- `src/ipc/mock.ts` / `src/ipc/mockData.ts` — mock backend 与数据
 - `src/ipc/index.ts` — barrel export
-- `src/types/ipc.ts` — 所有 IPC 类型定义
+- `src/types/ipc.ts` — 所有 IPC 类型定义（`StreamEvent` 枚举权威来源）
 
 ### 其他
-- `src/lib/time.ts` — 时间工具
-- `src/lib/workspace.ts` — 工作区工具
+- `src/ui/` — `strings.ts`（中文文案单一来源，layout/chat/settings/panels/modals/right-panel 六域）+ 基础组件库（`Button.tsx`、`IconButton.tsx`、`Modal.tsx`、`Input.tsx`、`Badge.tsx` 等）
+- `src/lib/` — 工具函数与组合式 hooks（`time.ts`、`workspace.ts`、`useClickOutside.ts`、`useMessageWindow.ts` 消息窗口虚拟化等）
 - `src/index.css` — Tailwind 基础样式
 - `index.html` — HTML 入口
 
 ## 变更记录 (Changelog)
 
+- **2026-08-21** — R43 对账同步：组件清单子目录化、设置页 3 tab→14 tab 4 组、检查器 11 tab、stores 10→29、IPC 分层 4 文件、StreamEvent 8→15、新增 strings.ts/hooks 条目
 - **2026-06-04** — 初始化 web 模块 CLAUDE.md
