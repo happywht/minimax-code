@@ -196,7 +196,9 @@ test("chat: streaming follows the bottom until the user scrolls up", async ({ pa
   await expect(page.getByTestId("scroll-to-bottom-btn")).toBeVisible();
   await expect
     .poll(() => page.getByTestId("message-list").evaluate((el) => el.scrollTop))
-    .toBeLessThanOrEqual(userScrollTop + 5);
+    // Tolerance matches useSmartScroll's thresholdPx (50): the assertion only
+    // needs to prove streaming did NOT snap the user back to the bottom.
+    .toBeLessThanOrEqual(userScrollTop + 50);
 });
 
 test("chat: assistant text and tool activity stay interleaved", async ({ page }) => {

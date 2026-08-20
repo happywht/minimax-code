@@ -7,6 +7,22 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { MessageList } from "../src/components/chat/MessageList";
 import { useChat } from "../src/stores";
 
+/**
+ * Advance N animation frames inside act() so rAF-scheduled work settles
+ * before assertions. useSmartScroll schedules its follow/pause logic on
+ * (nested) requestAnimationFrame callbacks — without flushing, assertions
+ * can run before the callback fires, which flakes under load.
+ */
+async function flushFrames(frames: number): Promise<void> {
+  for (let i = 0; i < frames; i += 1) {
+    await act(async () => {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
+  }
+}
+
 describe("MessageList", () => {
   beforeEach(() => {
     useChat.setState({ messages: [], status: "idle", error: null, agentReady: false });
@@ -110,6 +126,8 @@ describe("MessageList", () => {
         ],
       }));
     });
+    // The pause path bumps newContentCount inside a rAF callback.
+    await flushFrames(3);
 
     await waitFor(() => {
       expect(screen.getByTestId("scroll-to-bottom-btn")).toHaveTextContent("1 new");
@@ -154,6 +172,8 @@ describe("MessageList", () => {
         ),
       }));
     });
+    // The follow path calls scrollToBottom from nested rAF callbacks.
+    await flushFrames(3);
 
     await waitFor(() => {
       expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "auto" });
@@ -173,6 +193,8 @@ describe("MessageList", () => {
     });
 
     render(<MessageList />);
+    // Give the virtualizer its first measurement frame before asserting the window.
+    await flushFrames(1);
 
     expect(screen.getByTestId("message-virtualizer")).toBeInTheDocument();
     expect(screen.queryByText("message 0")).toBeNull();
