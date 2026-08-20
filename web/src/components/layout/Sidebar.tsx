@@ -36,7 +36,7 @@ import { UserBadge } from "./UserBadge";
 import { SkeletonLine } from "./Skeleton";
 import { Button, Checkbox, IconButton, Input, Modal, DropdownMenu } from "../../ui";
 import { typedIPC } from "../../ipc";
-import { useSessionStore, type SessionFilter, type SessionMeta } from "../../stores";
+import { useChat, useSessionStore, type SessionFilter, type SessionMeta } from "../../stores";
 import type { Project } from "../../types/ipc";
 import { APP_VERSION } from "../../version";
 
@@ -109,6 +109,10 @@ export function Sidebar({
   const [remoteSearchSessions, setRemoteSearchSessions] = useState<SessionMeta[] | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const [stats, setStats] = useState<{ total_sessions: number; total_messages: number } | null>(null);
+  // Primitive selectors only — streaming chunks mutate messages in place,
+  // so we key off the count and the run status instead of the array ref.
+  const chatMessageCount = useChat((s) => s.messages.length);
+  const chatStatus = useChat((s) => s.status);
 
   // Modal state for project operations.
   const [createOpen, setCreateOpen] = useState(false);
@@ -138,7 +142,7 @@ export function Sidebar({
     return () => {
       cancelled = true;
     };
-  }, [sessions.length]);
+  }, [sessions.length, chatMessageCount, chatStatus]);
 
   useEffect(() => {
     const q = historyQuery.trim();
