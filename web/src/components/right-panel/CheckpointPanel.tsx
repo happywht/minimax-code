@@ -4,7 +4,7 @@
  * Wraps the ``checkpoint.*`` IPC namespace so users can create, list,
  * diff, restore and delete workspace checkpoints from the RightPanel.
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Camera, ChevronDown, ChevronRight, Clock, GitBranch, Trash2, RotateCcw, FileDiff } from "lucide-react";
 import { Button, EmptyState, Spinner } from "../../ui";
 import { typedIPC } from "../../ipc";
@@ -29,7 +29,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
   const [diffs, setDiffs] = useState<Record<string, string>>({});
   const [diffLoading, setDiffLoading] = useState<Record<string, boolean>>({});
 
-  const load = async () => {
+  const load = useCallback(async () => {
     if (!sessionId) return;
     setLoading(true);
     try {
@@ -41,11 +41,11 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
     } finally {
       setLoading(false);
     }
-  };
+  }, [sessionId]);
 
   useEffect(() => {
     void load();
-  }, [sessionId]);
+  }, [load]);
 
   const handleCreate = async () => {
     if (!sessionId) {

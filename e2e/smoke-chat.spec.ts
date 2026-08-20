@@ -152,10 +152,22 @@ test("chat: streaming follows the bottom until the user scrolls up", async ({ pa
     )
     .toBeGreaterThan(1_000);
 
-  await page.getByTestId("message-list").evaluate((el) => {
-    el.scrollTop = el.scrollHeight;
-    el.dispatchEvent(new Event("scroll"));
-  });
+  // Pin the scroller to the bottom and CONFIRM it sticks there before
+  // streaming: virtualization keeps resizing rows right after seeding, and
+  // those scrollHeight shifts fire native scroll events that can flip
+  // useSmartScroll's following flag off between our one-shot scrollTo and
+  // the incoming chunk (observed as distance 941 instead of <= 50).
+  // Re-asserting scrollTop every poll round re-fires the scroll event, so
+  // when this settles the following flag is guaranteed engaged.
+  await expect
+    .poll(() =>
+      page.getByTestId("message-list").evaluate((el) => {
+        el.scrollTop = el.scrollHeight;
+        el.dispatchEvent(new Event("scroll"));
+        return el.scrollHeight - el.scrollTop - el.clientHeight;
+      }),
+    )
+    .toBeLessThanOrEqual(50);
 
   await page.evaluate(async () => {
     // @ts-expect-error Vite serves this source module directly in the browser.

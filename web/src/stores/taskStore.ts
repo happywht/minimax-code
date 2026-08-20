@@ -133,7 +133,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         },
       }));
       return true;
-    } catch (err) {
+    } catch {
       return false;
     }
   },
