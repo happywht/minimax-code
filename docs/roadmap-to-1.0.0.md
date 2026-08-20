@@ -70,7 +70,7 @@
 
 ### M7 · v0.18.0 文档完备（R40–R44）
 - [x] R40 README 重写（快速开始/常见命令/FAQ） `[done @ 0c0fc4c]`（-135/+92 行：pnpm start 主线 + 命令速查表 + 8 环境变量表 + 8 问 FAQ；修 4 处陈旧事实——smoke 6 个非 7、Playwright spec 在根级 e2e/ 10 个、26 张表非 8、thinking_count 早已实现；删 Phase1-6/Tauri 考古；文档链接与 npm scripts 逐一验证存在）
-- [ ] R41 `docs/user-guide.md` 用户手册
+- [ ] R41 `docs/user-guide.md` 用户手册 `[done @ 2721343]`（198 行 19 节：五分钟上手/三栏布局/任务与项目/对话与工具授权/模型密钥分工/命令面板与快捷键/技能/多 Agent/检查器 11 tab/自动化三件套/Memory/MCP 与插件/Git+Review+Patch Studio/数据导出导入备份/权限审计/移动配对/无障碍/异常横幅；全部交互主张对照组件源码核实——修 4 处初稿幻觉：权限弹窗实为允许/拒绝+总是允许开关、移动配对入口在侧栏非顶栏、任务重命名是双击、删未核实的归档；README 加手册链接）
 - [ ] R42 `docs/ipc-contract.md` 与代码对账（方法数/事件数核对脚本或清单）
 - [ ] R43 CLAUDE.md / AGENTS.md / web+agent 模块文档同步
 - [ ] R44 版本 bump 0.18.0
