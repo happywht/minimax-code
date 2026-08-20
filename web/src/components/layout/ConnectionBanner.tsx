@@ -1,6 +1,7 @@
 import { AlertTriangle, RefreshCw, WifiOff, X } from "lucide-react";
 import { Button, IconButton } from "../../ui";
 import { Spinner } from "../../ui/Spinner";
+import { strings } from "../../ui/strings";
 
 export type ConnectionBannerState = "connecting" | "disconnected" | "error";
 
@@ -13,16 +14,16 @@ export interface ConnectionBannerProps {
 
 const COPY: Record<ConnectionBannerState, { title: string; detail: string }> = {
   connecting: {
-    title: "Connecting to agent",
-    detail: "Preparing the local runtime.",
+    title: strings.layout.connection.connectingTitle,
+    detail: strings.layout.connection.connectingDetail,
   },
   disconnected: {
-    title: "Agent disconnected",
-    detail: "Auto-retry is running in the background.",
+    title: strings.layout.connection.disconnectedTitle,
+    detail: strings.layout.connection.disconnectedDetail,
   },
   error: {
-    title: "Connection error",
-    detail: "The local agent did not respond.",
+    title: strings.layout.connection.errorTitle,
+    detail: strings.layout.connection.errorDetail,
   },
 };
 
@@ -63,7 +64,7 @@ export function ConnectionBanner({
         <div className="min-w-0 flex-1">
           <div className="font-medium text-ink-0">{copy.title}</div>
           <div className="truncate text-ink-1">
-            {copy.detail} Next retry in {retrySeconds}s.
+            {copy.detail} {strings.layout.connection.nextRetry(retrySeconds)}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -76,12 +77,12 @@ export function ConnectionBanner({
             onClick={() => void onRetry()}
             className="pointer-events-auto"
           >
-            Retry
+            {strings.layout.connection.retry}
           </Button>
           {onDismiss && (
             <IconButton
-              aria-label="Dismiss connection notice"
-              title="Dismiss"
+              aria-label={strings.layout.connection.dismiss}
+              title={strings.common.close}
               size="sm"
               data-testid="connection-dismiss"
               onClick={onDismiss}

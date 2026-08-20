@@ -9,6 +9,7 @@ import { Archive, Folder, Inbox, MoreHorizontal, Pencil, Trash2 } from "lucide-r
 import { NavItem } from "./NavItem";
 import { formatRelative } from "../../lib/time";
 import { Button, Checkbox, DropdownMenu, IconButton, Input, Modal } from "../../ui";
+import { strings } from "../../ui/strings";
 import { useSessionStore } from "../../stores";
 import type { SessionMeta } from "../../stores";
 import type { Project } from "../../types/ipc";
@@ -185,7 +186,7 @@ export const SessionRow = memo(function SessionRow({
       >
         <NavItem
           icon={leadingIcon}
-          label={truncate(session.title || "(untitled)", MAX_TITLE_LEN)}
+          label={truncate(session.title || strings.layout.sidebar.untitled, MAX_TITLE_LEN)}
           trailing={
             <span className="ml-1 flex shrink-0 items-center gap-1">
               {session.workspace_mode === "worktree" && (
@@ -216,8 +217,8 @@ export const SessionRow = memo(function SessionRow({
             trigger={
               <IconButton
                 size="sm"
-                aria-label="Session options"
-                title="Session options"
+                aria-label={strings.layout.sidebar.sessionOptions}
+                title={strings.layout.sidebar.sessionOptions}
                 onClick={(e) => e.stopPropagation()}
               >
                 <MoreHorizontal size={14} />
@@ -299,7 +300,7 @@ export const SessionRow = memo(function SessionRow({
           }
         >
           <p className="text-[13px] text-ink-0">
-            确认删除「{session.title || "(untitled)"}」？删除后无法恢复。
+            确认删除「{session.title || strings.layout.sidebar.untitled}」？删除后无法恢复。
           </p>
         </Modal>
       )}

@@ -13,8 +13,8 @@ describe("ConnectionBanner", () => {
       />,
     );
 
-    expect(screen.getByTestId("connection-banner")).toHaveTextContent("Agent disconnected");
-    expect(screen.getByTestId("connection-banner")).toHaveTextContent("Next retry in 4s");
+    expect(screen.getByTestId("connection-banner")).toHaveTextContent("与 Agent 的连接已断开");
+    expect(screen.getByTestId("connection-banner")).toHaveTextContent("4 秒后重试");
 
     fireEvent.click(screen.getByTestId("connection-retry"));
     expect(onRetry).toHaveBeenCalledTimes(1);
@@ -29,7 +29,7 @@ describe("ConnectionBanner", () => {
       />,
     );
 
-    expect(screen.getByTestId("connection-banner")).toHaveTextContent("Connection error");
-    expect(screen.getByTestId("connection-banner")).toHaveTextContent("Next retry in 1s");
+    expect(screen.getByTestId("connection-banner")).toHaveTextContent("连接出错");
+    expect(screen.getByTestId("connection-banner")).toHaveTextContent("1 秒后重试");
   });
 });

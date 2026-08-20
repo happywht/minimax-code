@@ -16,12 +16,12 @@ describe("ThemeToggle", () => {
 
     expect(document.documentElement).toHaveClass("dark");
     expect(document.documentElement).not.toHaveClass("light");
-    expect(screen.getByTestId("theme-toggle")).toHaveAccessibleName("Switch to light mode");
+    expect(screen.getByTestId("theme-toggle")).toHaveAccessibleName("切换到浅色模式");
     fireEvent.click(screen.getByTestId("theme-toggle"));
 
     expect(document.documentElement).toHaveClass("light");
     expect(document.documentElement).not.toHaveClass("dark");
     expect(localStorage.getItem("minimax-theme")).toBe("light");
-    expect(screen.getByTestId("theme-toggle")).toHaveAccessibleName("Switch to dark mode");
+    expect(screen.getByTestId("theme-toggle")).toHaveAccessibleName("切换到深色模式");
   });
 });

@@ -1,4 +1,5 @@
 import { DatabaseZap } from "lucide-react";
+import { strings } from "../../ui/strings";
 
 export interface StorageBannerProps {
   degraded: boolean;
@@ -24,10 +25,9 @@ export function StorageBanner({ degraded }: StorageBannerProps): JSX.Element | n
       <div className="mx-auto flex w-full max-w-[780px] items-center gap-2.5">
         <DatabaseZap size={14} aria-hidden="true" className="shrink-0 text-amber-300" />
         <div className="min-w-0 flex-1 text-[11px] leading-4">
-          <span className="font-medium text-amber-200">Local Storage Unavailable</span>
+          <span className="font-medium text-amber-200">{strings.layout.storage.title}</span>
           <span className="ml-1.5 text-minimax-muted">
-            New sessions and messages won&apos;t be saved. Restarting the agent usually
-            recovers this.
+            {strings.layout.storage.detail}
           </span>
         </div>
       </div>

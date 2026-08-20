@@ -23,3 +23,5 @@ export { DropdownMenu } from "./DropdownMenu";
 export type { DropdownMenuItem, DropdownMenuProps } from "./DropdownMenu";
 export { Checkbox } from "./Checkbox";
 export type { CheckboxProps } from "./Checkbox";
+export { strings } from "./strings";
+export type { Strings } from "./strings";

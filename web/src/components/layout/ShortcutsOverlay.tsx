@@ -1,18 +1,10 @@
 import { Keyboard, X } from "lucide-react";
 import { IconButton } from "../../ui/IconButton";
+import { strings } from "../../ui/strings";
 
 export interface ShortcutsOverlayProps {
   onClose: () => void;
 }
-
-const SHORTCUTS = [
-  { key: "?", label: "Open shortcuts" },
-  { key: "Esc", label: "Close panels" },
-  { key: "Enter", label: "Send message" },
-  { key: "Shift Enter", label: "New line" },
-  { key: "@", label: "Pick sub-agent" },
-  { key: "Tab", label: "Accept picker item" },
-];
 
 export function ShortcutsOverlay({ onClose }: ShortcutsOverlayProps): JSX.Element {
   return (
@@ -32,11 +24,11 @@ export function ShortcutsOverlay({ onClose }: ShortcutsOverlayProps): JSX.Elemen
           <div className="flex items-center gap-2">
             <Keyboard size={14} className="text-ink-2" />
             <h2 id="shortcuts-title" className="text-sm font-semibold text-ink-0">
-              Keyboard Shortcuts
+              {strings.layout.shortcuts.title}
             </h2>
           </div>
           <IconButton
-            aria-label="Close shortcuts"
+            aria-label={strings.layout.shortcuts.close}
             data-testid="shortcuts-close"
             onClick={onClose}
           >
@@ -44,7 +36,7 @@ export function ShortcutsOverlay({ onClose }: ShortcutsOverlayProps): JSX.Elemen
           </IconButton>
         </div>
         <div className="divide-y divide-line/60 px-4 py-1">
-          {SHORTCUTS.map((item) => (
+          {strings.layout.shortcuts.items.map((item) => (
             <div key={item.key} className="flex items-center justify-between gap-3 py-2">
               <span className="text-xs text-ink-1">{item.label}</span>
               <kbd className="shrink-0 rounded border border-line bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-ink-0">

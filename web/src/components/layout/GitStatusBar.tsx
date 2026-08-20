@@ -45,6 +45,7 @@ import { Button } from "../../ui/Button";
 import { Spinner } from "../../ui/Spinner";
 import { Badge } from "../../ui/Badge";
 import { Panel } from "../../ui/Panel";
+import { strings } from "../../ui/strings";
 import { useGitStore } from "../../stores";
 import { useClickOutside } from "../../lib/useClickOutside";
 import { GitViewerModal } from "../modals/GitViewerModal";
@@ -103,10 +104,10 @@ export function GitStatusBar({
     (status?.staged?.length ?? 0);
   const indicatorLabel =
     clean === null
-      ? "loading…"
+      ? strings.layout.gitStatus.loading
       : clean
-        ? "clean"
-        : `${totalChanges} change${totalChanges === 1 ? "" : "s"}`;
+        ? strings.layout.gitStatus.clean
+        : strings.layout.gitStatus.changesCount(totalChanges);
 
   return (
     <div ref={containerRef} className="relative min-w-0" data-testid={testId}>
@@ -121,8 +122,8 @@ export function GitStatusBar({
         aria-expanded={open}
         title={
           status
-            ? `Branch ${branch} — ${indicatorLabel}`
-            : "Loading git status…"
+            ? strings.layout.gitStatus.branchTitle(branch, indicatorLabel)
+            : strings.layout.gitStatus.loadingTitle
         }
         className="min-w-0 max-w-[132px] justify-start sm:max-w-[220px]"
       >
@@ -169,7 +170,7 @@ export function GitStatusBar({
         <Panel
           data-testid="git-status-bar-popover"
           role="dialog"
-          aria-label={`Git status on ${branch}`}
+          aria-label={strings.layout.gitStatus.panelLabel(branch)}
           title={
             <span className="normal-case">
               <span className="flex items-center gap-2 text-ink-0">
@@ -204,19 +205,19 @@ export function GitStatusBar({
         >
           <div className="max-h-72 overflow-y-auto px-1 py-1 text-xs">
             <FileBucket
-              label="Modified"
+              label={strings.layout.gitStatus.modified}
               testId="git-status-bar-modified"
               paths={status?.modified ?? []}
               empty={clean === true ? "暂无修改文件" : null}
             />
             <FileBucket
-              label="Staged"
+              label={strings.layout.gitStatus.staged}
               testId="git-status-bar-staged"
               paths={status?.staged ?? []}
               empty={clean === true ? "暂无暂存文件" : null}
             />
             <FileBucket
-              label="Untracked"
+              label={strings.layout.gitStatus.untracked}
               testId="git-status-bar-untracked"
               paths={status?.untracked ?? []}
               empty={clean === true ? "暂无未跟踪文件" : null}
@@ -226,14 +227,14 @@ export function GitStatusBar({
                 data-testid="git-status-bar-empty"
                 className="px-3 py-2 text-ink-1"
               >
-                正在加载 Git 状态…
+                {strings.layout.gitStatus.loadingTitle}
               </div>
             ) : clean ? (
               <div
                 data-testid="git-status-bar-clean-message"
                 className="px-3 py-2 text-ink-1"
               >
-                Working tree clean.
+                {strings.layout.gitStatus.workingTreeClean}
               </div>
             ) : null}
           </div>
@@ -250,7 +251,7 @@ export function GitStatusBar({
               className="flex-1"
             >
               <FileDiff size={12} />
-              View Diff
+              {strings.layout.gitStatus.viewDiff}
             </Button>
             <Button
               type="button"
@@ -264,7 +265,7 @@ export function GitStatusBar({
               className="flex-1"
             >
               <CommitIcon size={12} />
-              View Log
+              {strings.layout.gitStatus.viewLog}
             </Button>
           </div>
         </Panel>

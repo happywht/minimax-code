@@ -9,6 +9,7 @@ import { useRef, useCallback } from "react";
 import { Bell } from "lucide-react";
 import { IconButton } from "../../ui/IconButton";
 import { Badge } from "../../ui/Badge";
+import { strings } from "../../ui/strings";
 import { useNotificationStore } from "../../stores/notificationStore";
 import { NotificationCenter } from "./NotificationCenter";
 import { useClickOutside } from "../../lib/useClickOutside";
@@ -27,8 +28,8 @@ export function NotificationBell(): JSX.Element {
   return (
     <div ref={ref} className="relative" data-testid="notification-bell">
       <IconButton
-        aria-label={`Notifications${unreadCount > 0 ? ` (${unreadCount} unread)` : ""}`}
-        title="Notifications"
+        aria-label={strings.layout.notifications.bellLabel(unreadCount)}
+        title={strings.layout.notifications.title}
         data-testid="notification-bell-btn"
         onClick={toggleOpen}
         className="relative"

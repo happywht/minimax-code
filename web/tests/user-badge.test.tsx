@@ -18,7 +18,7 @@ describe("UserBadge", () => {
     render(<UserBadge name="Ada Lovelace" email="ada@minimax.code" />);
     expect(screen.getByText("AL")).toBeInTheDocument();
     expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
-    expect(screen.getByTestId("user-badge-plan").textContent).toContain("Max Plan");
+    expect(screen.getByTestId("user-badge-plan").textContent).toContain("个人版");
   });
 
   it("shows a single initial for single-word names", () => {
@@ -30,15 +30,15 @@ describe("UserBadge", () => {
     render(<UserBadge name="Bob" email="b@x.com" />);
     const trigger = screen.getByTestId("user-badge-trigger");
     fireEvent.click(trigger);
-    expect(screen.getByText("Settings")).toBeInTheDocument();
-    expect(screen.getByText("Sign out")).toBeInTheDocument();
+    expect(screen.getByText("设置")).toBeInTheDocument();
+    expect(screen.getByText("退出登录")).toBeInTheDocument();
   });
 
   it("invokes onSignOut when Sign out is clicked", () => {
     const onSignOut = vi.fn();
     render(<UserBadge name="Bob" email="b@x.com" onSignOut={onSignOut} />);
     fireEvent.click(screen.getByTestId("user-badge-trigger"));
-    fireEvent.click(screen.getByText("Sign out"));
+    fireEvent.click(screen.getByText("退出登录"));
     expect(onSignOut).toHaveBeenCalledTimes(1);
   });
 
@@ -57,7 +57,7 @@ describe("UserBadge", () => {
 
     const input = screen.getByTestId("user-badge-plan-input") as HTMLInputElement;
     expect(input).toBeInTheDocument();
-    expect(input.value).toBe("Max Plan");
+    expect(input.value).toBe("个人版");
 
     fireEvent.change(input, { target: { value: "Enterprise Plan" } });
     fireEvent.keyDown(input, { key: "Enter" });
@@ -76,7 +76,7 @@ describe("UserBadge", () => {
     const input = screen.getByTestId("user-badge-plan-input") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "   " } });
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(screen.getByTestId("user-badge-plan").textContent).toContain("Max Plan");
+    expect(screen.getByTestId("user-badge-plan").textContent).toContain("个人版");
   });
 
   it("Escape cancels an in-progress edit without persisting", () => {

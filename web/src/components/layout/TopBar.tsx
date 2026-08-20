@@ -8,6 +8,7 @@ import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { ThemeToggle } from "./ThemeToggle";
 import { NotificationBell } from "./NotificationBell";
 import { IconButton, Button } from "../../ui";
+import { strings } from "../../ui/strings";
 
 export interface TopBarProps {
   testId?: string;
@@ -45,8 +46,8 @@ export function TopBar({
         {onToggleSidebar && (
           <IconButton
             size="md"
-            aria-label="Toggle sidebar"
-            title="Toggle sidebar"
+            aria-label={strings.layout.topbar.toggleSidebar}
+            title={strings.layout.topbar.toggleSidebar}
             onClick={onToggleSidebar}
             data-testid="app-topbar-hamburger"
             className="md:hidden"
@@ -63,8 +64,8 @@ export function TopBar({
       >
         {rightSlot}
         <IconButton
-          aria-label="Open command palette"
-          title="Command palette (Ctrl+K)"
+          aria-label={strings.layout.topbar.openCommandPalette}
+          title={strings.layout.topbar.commandPaletteHint}
           onClick={onToggleCommandPalette}
           data-testid="app-topbar-command-palette"
         >
@@ -79,7 +80,7 @@ export function TopBar({
             data-testid="app-topbar-preview"
             className="hidden sm:inline-flex"
           >
-            Preview
+            {strings.layout.topbar.preview}
           </Button>
         )}
         <NotificationBell />
@@ -91,7 +92,7 @@ export function TopBar({
           onClick={onOpenSettings}
           data-testid="app-topbar-settings"
         >
-          <span className="hidden sm:inline">Settings</span>
+          <span className="hidden sm:inline">{strings.layout.topbar.settings}</span>
         </Button>
       </div>
     </header>

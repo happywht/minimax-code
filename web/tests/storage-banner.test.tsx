@@ -13,8 +13,8 @@ describe("StorageBanner", () => {
     render(<StorageBanner degraded />);
     const banner = screen.getByTestId("storage-banner");
     expect(banner).toHaveAttribute("role", "status");
-    expect(banner).toHaveTextContent("Local Storage Unavailable");
-    expect(banner).toHaveTextContent("won't be saved");
+    expect(banner).toHaveTextContent("本地存储不可用");
+    expect(banner).toHaveTextContent("不会被保存");
     // Persistent by design: no dismiss button or action of any kind.
     expect(banner.querySelector("button")).toBeNull();
   });

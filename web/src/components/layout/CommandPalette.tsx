@@ -4,6 +4,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { Command, FileText, Settings, Sparkles } from "lucide-react";
 import { Modal, Input } from "../../ui";
+import { strings } from "../../ui/strings";
 import { useCommandPalette } from "./useCommandPalette";
 import type { PaletteItemType } from "./useCommandPalette";
 import type { SettingsTab } from "../settings/SettingsPage";
@@ -63,7 +64,7 @@ export const CommandPalette = forwardRef<CommandPaletteHandle, CommandPalettePro
     return (
     <Modal
       testId="command-palette"
-      title="Command Palette"
+      title={strings.layout.commandPalette.title}
       onClose={close}
       widthClass="max-w-xl"
       footer={

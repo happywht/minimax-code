@@ -10,6 +10,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { AlertTriangle } from "lucide-react";
 import { Button } from "../../ui/Button";
+import { strings } from "../../ui/strings";
 import { ToastItem, ToastKind, toast, toastBus, ToastViewport } from "./Toast";
 
 export type { ToastItem, ToastKind };
@@ -48,7 +49,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           <div className="max-w-md rounded-xl border border-status-error/40 bg-[var(--status-error-subtle)] p-6 shadow-modal">
             <div className="flex items-center gap-2 text-status-error">
               <AlertTriangle size={18} />
-              <h2 className="text-sm font-semibold">Something went wrong</h2>
+              <h2 className="text-sm font-semibold">{strings.layout.errorBoundary.title}</h2>
             </div>
             <p className="mt-3 text-sm text-ink-1">
               {this.state.error.message}
@@ -59,7 +60,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               onClick={this.reset}
               className="mt-4"
             >
-              Reload component
+              {strings.layout.errorBoundary.reload}
             </Button>
           </div>
         </div>

@@ -88,7 +88,7 @@ describe("GitStatusBar", () => {
     await waitFor(() => {
       expect(screen.getByTestId("git-status-bar-branch")).toHaveTextContent("main");
     });
-    expect(screen.getByTestId("git-status-bar-indicator")).toHaveTextContent("clean");
+    expect(screen.getByTestId("git-status-bar-indicator")).toHaveTextContent("无变更");
     expect(screen.getByTestId("git-status-bar-icon-clean")).toBeInTheDocument();
   });
 
@@ -107,11 +107,11 @@ describe("GitStatusBar", () => {
     await waitFor(() => {
       expect(screen.getByTestId("git-status-bar-branch")).toHaveTextContent("feature");
     });
-    expect(screen.getByTestId("git-status-bar-indicator")).toHaveTextContent("4 changes");
+    expect(screen.getByTestId("git-status-bar-indicator")).toHaveTextContent("4 处变更");
     expect(screen.getByTestId("git-status-bar-icon-dirty")).toBeInTheDocument();
   });
 
-  it("uses singular 'change' for a single modification", async () => {
+  it("uses a singular-friendly count for a single modification", async () => {
     const { typedIPC } = await import("../src/ipc");
     vi.mocked(typedIPC.gitStatus).mockResolvedValue({
       branch: "main",
@@ -124,7 +124,7 @@ describe("GitStatusBar", () => {
     });
     render(<GitStatusBar />);
     await waitFor(() => {
-      expect(screen.getByTestId("git-status-bar-indicator")).toHaveTextContent("1 change");
+      expect(screen.getByTestId("git-status-bar-indicator")).toHaveTextContent("1 处变更");
     });
   });
 
@@ -141,7 +141,7 @@ describe("GitStatusBar", () => {
     });
     render(<GitStatusBar />);
     await waitFor(() => {
-      expect(screen.getByTestId("git-status-bar-indicator")).toHaveTextContent("2 changes");
+      expect(screen.getByTestId("git-status-bar-indicator")).toHaveTextContent("2 处变更");
     });
     expect(screen.queryByTestId("git-status-bar-popover")).toBeNull();
     fireEvent.click(screen.getByTestId("git-status-bar-trigger"));
@@ -170,7 +170,7 @@ describe("GitStatusBar", () => {
     fireEvent.click(screen.getByTestId("git-status-bar-trigger"));
     expect(await screen.findByTestId("git-status-bar-popover")).toBeInTheDocument();
     expect(screen.getByTestId("git-status-bar-clean-message")).toHaveTextContent(
-      /clean/i,
+      "无变更",
     );
   });
 
@@ -201,9 +201,9 @@ describe("GitStatusBar", () => {
     );
     render(<GitStatusBar />);
     // Before the mount refresh resolves, the indicator shows
-    // "loading…". We assert on the spinner specifically.
+    // the loading label. We assert on the spinner specifically.
     expect(screen.getByTestId("git-status-bar-loading")).toBeInTheDocument();
-    expect(screen.getByTestId("git-status-bar-indicator")).toHaveTextContent("loading");
+    expect(screen.getByTestId("git-status-bar-indicator")).toHaveTextContent("加载中");
   });
 
   it("clicking the trigger a second time closes the popover", async () => {

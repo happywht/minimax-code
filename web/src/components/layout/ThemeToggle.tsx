@@ -7,6 +7,7 @@
 
 import { Moon, Sun } from "lucide-react";
 import { IconButton } from "../../ui/IconButton";
+import { strings } from "../../ui/strings";
 import { useThemeStore } from "../../stores/themeStore";
 
 export interface ThemeToggleProps {
@@ -22,8 +23,8 @@ export function ThemeToggle({ testId = "theme-toggle" }: ThemeToggleProps): JSX.
       type="button"
       data-testid={testId}
       onClick={toggle}
-      aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-      title={theme === "dark" ? "Light mode" : "Dark mode"}
+      aria-label={theme === "dark" ? strings.layout.theme.toLight : strings.layout.theme.toDark}
+      title={theme === "dark" ? strings.layout.theme.light : strings.layout.theme.dark}
     >
       {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
     </IconButton>

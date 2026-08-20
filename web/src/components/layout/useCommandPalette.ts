@@ -3,6 +3,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSessionStore } from "../../stores";
+import { strings } from "../../ui/strings";
 import type { SettingsTab } from "../settings/SettingsPage";
 
 export type PaletteItemType = "action" | "session" | "setting";
@@ -74,21 +75,21 @@ export function useCommandPalette({
         id: "action:new-task",
         type: "action",
         title: "新建任务",
-        subtitle: "New chat session",
+        subtitle: strings.layout.commandPalette.newTaskSubtitle,
         keywords: "new task chat create",
       },
       {
         id: "action:preview",
         type: "action",
         title: "切换 Preview",
-        subtitle: "Toggle live preview panel",
+        subtitle: strings.layout.commandPalette.previewSubtitle,
         keywords: "preview toggle",
       },
       {
         id: "action:skills",
         type: "action",
         title: "打开技能面板",
-        subtitle: "Skills library",
+        subtitle: strings.layout.commandPalette.skillsSubtitle,
         keywords: "skills library",
       },
     );
@@ -123,7 +124,7 @@ export function useCommandPalette({
       list.push({
         id: `session:${s.id}`,
         type: "session",
-        title: s.title || "(untitled)",
+        title: s.title || strings.layout.sidebar.untitled,
         subtitle: "历史会话",
         keywords: s.id,
       });

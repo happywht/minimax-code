@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, Info, X } from "lucide-react";
 import { IconButton } from "../../ui/IconButton";
+import { strings } from "../../ui/strings";
 
 export type ToastKind = "error" | "info" | "success";
 
@@ -102,7 +103,7 @@ export function ToastViewport(): JSX.Element | null {
             {t.detail && <div className="mt-0.5 text-xs text-ink-1">{t.detail}</div>}
           </div>
           <IconButton
-            aria-label="Dismiss"
+            aria-label={strings.layout.toast.dismiss}
             size="sm"
             onClick={() => toastBus.dismiss(t.id)}
             className="text-ink-2 hover:bg-surface-3 hover:text-ink-0"

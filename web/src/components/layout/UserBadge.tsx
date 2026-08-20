@@ -28,9 +28,10 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Crown, LogOut, Pencil, Settings } from "lucide-react";
 import { Input } from "../../ui/Input";
+import { strings } from "../../ui/strings";
 
 const PLAN_STORAGE_KEY = "minimax-code:plan";
-const DEFAULT_PLAN = "Max Plan";
+const DEFAULT_PLAN = strings.layout.userBadge.defaultPlan;
 
 export interface UserBadgeProps {
   name?: string;
@@ -62,8 +63,8 @@ function writeStoredPlan(plan: string): void {
 }
 
 export function UserBadge({
-  name = "User",
-  email = "user@example.com",
+  name = strings.layout.userBadge.defaultName,
+  email = strings.layout.userBadge.defaultEmail,
   plan,
   onSignOut,
   onSettings,
@@ -174,7 +175,7 @@ export function UserBadge({
                     startEditing();
                   }
                 }}
-                title="Click to edit plan"
+                title={strings.layout.userBadge.editPlan}
                 className="group flex min-w-0 flex-1 items-center gap-1 truncate rounded text-left transition-colors hover:text-ink-0 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
               >
                 <span className="truncate">{currentPlan}</span>
@@ -216,7 +217,7 @@ export function UserBadge({
                 }}
                 className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-ink-0 transition-colors hover:bg-surface-3"
               >
-                <Settings size={12} /> Settings
+                <Settings size={12} /> {strings.layout.userBadge.settings}
               </button>
               <button
                 type="button"
@@ -226,7 +227,7 @@ export function UserBadge({
                 }}
                 className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-status-error transition-colors hover:bg-surface-3"
               >
-                <LogOut size={12} /> Sign out
+                <LogOut size={12} /> {strings.layout.userBadge.signOut}
               </button>
             </div>,
             document.body,

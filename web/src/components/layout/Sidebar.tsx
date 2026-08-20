@@ -35,6 +35,7 @@ import { SessionRow } from "./SessionRow";
 import { UserBadge } from "./UserBadge";
 import { SkeletonLine } from "./Skeleton";
 import { Button, Checkbox, IconButton, Input, Modal, DropdownMenu } from "../../ui";
+import { strings } from "../../ui/strings";
 import { typedIPC } from "../../ipc";
 import { useChat, useSessionStore, type SessionFilter, type SessionMeta } from "../../stores";
 import type { Project } from "../../types/ipc";
@@ -343,8 +344,8 @@ export function Sidebar({
             trigger={
               <IconButton
                 size="sm"
-                aria-label="Project options"
-                title="Project options"
+                aria-label={strings.layout.sidebar.projectOptions}
+                title={strings.layout.sidebar.projectOptions}
                 onClick={(e) => e.stopPropagation()}
               >
                 <MoreHorizontal size={14} />
@@ -438,7 +439,9 @@ export function Sidebar({
           >
             MiniMax Code
           </h1>
-          <p className="truncate text-[11px] text-ink-2">AI coding agent · v{APP_VERSION}</p>
+          <p className="truncate text-[11px] text-ink-2">
+            {strings.layout.sidebar.brandTagline} · v{APP_VERSION}
+          </p>
         </div>
       </div>
 
@@ -474,8 +477,8 @@ export function Sidebar({
           items={projectSelectorItems}
         />
         <IconButton
-          aria-label="Create isolated worktree task"
-          title="Create isolated worktree task"
+          aria-label={strings.layout.sidebar.createWorktreeTask}
+          title={strings.layout.sidebar.createWorktreeTask}
           onClick={() => void createWorktree("Worktree task", "HEAD")}
           data-testid="sidebar-new-worktree-task"
         >
@@ -601,8 +604,8 @@ export function Sidebar({
               <span data-testid="sidebar-session-count">{visibleCount}</span>
               <IconButton
                 size="sm"
-                aria-label="New project"
-                title="New project"
+                aria-label={strings.layout.sidebar.newProject}
+                title={strings.layout.sidebar.newProject}
                 onClick={() => {
                   setCreateName("");
                   setCreateOpen(true);
@@ -622,19 +625,19 @@ export function Sidebar({
             />
             <Input
               data-testid="sidebar-session-search"
-              aria-label="Search task history"
+              aria-label={strings.layout.sidebar.searchTaskHistory}
               name="session-history-search"
               autoComplete="off"
               value={historyQuery}
               onChange={(event) => setHistoryQuery(event.target.value)}
-              placeholder="Search history…"
+              placeholder={strings.layout.sidebar.searchHistoryPlaceholder}
               fieldSize="sm"
               className="pr-7"
             />
             {historyQuery && (
               <IconButton
                 size="sm"
-                aria-label="Clear history search"
+                aria-label={strings.layout.sidebar.clearHistorySearch}
                 onClick={() => setHistoryQuery("")}
                 data-testid="sidebar-session-search-clear"
                 className="absolute right-1 top-1/2 -translate-y-1/2"

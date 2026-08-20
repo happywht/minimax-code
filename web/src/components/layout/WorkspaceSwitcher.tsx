@@ -17,6 +17,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Check, ChevronDown, Folder } from "lucide-react";
 import { Button } from "../../ui/Button";
+import { strings } from "../../ui/strings";
 import {
   getCurrentWorkspace,
   listWorkspaces,
@@ -75,7 +76,7 @@ export function WorkspaceSwitcher({
     // snappy: the new workspace's sessions replace the old ones
     // immediately even before the network round-trip finishes.
     useSessionStore.setState({ sessions: [], currentSessionId: null });
-    toast.info("Switched workspace", name);
+    toast.info(strings.layout.workspace.switchedToast, name);
     try {
       await refreshSessions();
     } catch {
@@ -114,7 +115,7 @@ export function WorkspaceSwitcher({
         >
           {workspaces.length === 0 && (
             <li className="px-3 py-2 text-xs text-ink-1">
-              No workspaces
+              {strings.layout.workspace.empty}
             </li>
           )}
           {workspaces.map((w) => {

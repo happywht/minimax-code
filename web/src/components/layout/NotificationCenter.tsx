@@ -20,6 +20,7 @@ import { Panel } from "../../ui/Panel";
 import { Button } from "../../ui/Button";
 import { IconButton } from "../../ui/IconButton";
 import { EmptyState } from "../../ui/EmptyState";
+import { strings } from "../../ui/strings";
 import { SkeletonTable } from "./Skeleton";
 import { useNotificationStore } from "../../stores/notificationStore";
 import type { NotificationEntry } from "../../stores/notificationStore";
@@ -57,9 +58,11 @@ export function NotificationCenter(): JSX.Element {
       data-testid="notification-center"
       title={
         <span className="normal-case">
-          Notifications
+          {strings.layout.notifications.title}
           {unreadCount > 0 && (
-            <span className="ml-1.5 text-ink-1">({unreadCount} unread)</span>
+            <span className="ml-1.5 text-ink-1">
+              {strings.layout.notifications.unreadSuffix(unreadCount)}
+            </span>
           )}
         </span>
       }
@@ -72,13 +75,13 @@ export function NotificationCenter(): JSX.Element {
               size="sm"
               icon={<Check size={12} />}
               onClick={() => markAllRead()}
-              title="Mark all as read"
+              title={strings.layout.notifications.markAllReadTitle}
             >
-              Read all
+              {strings.layout.notifications.readAll}
             </Button>
           )}
           <IconButton
-            aria-label="Close notifications"
+            aria-label={strings.layout.notifications.close}
             size="sm"
             onClick={() => setOpen(false)}
           >
@@ -156,7 +159,7 @@ function NotificationItem({
               onClick={() => onMarkRead(entry.id)}
               className="h-auto px-0 py-0 text-[11px] hover:underline"
             >
-              Mark read
+              {strings.layout.notifications.markRead}
             </Button>
           )}
           <Button
@@ -166,7 +169,7 @@ function NotificationItem({
             onClick={() => onDelete(entry.id)}
             className="h-auto px-0 py-0 text-[11px] text-status-error hover:bg-transparent hover:text-status-error hover:underline"
           >
-            Delete
+            {strings.layout.notifications.delete}
           </Button>
         </div>
       </div>
