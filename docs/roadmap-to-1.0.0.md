@@ -54,7 +54,7 @@
 ### M5 · v0.16.0 UI 文案统一（R27–R34）
 - [x] R27 建 `web/src/ui/strings.ts`（中文文案单一来源）+ layout 域迁移 [done @ 98bab19]
 - [x] R28 chat 域迁移 [done @ 7f430d4]
-- [ ] R29 settings 域迁移
+- [x] R29 settings 域迁移 [done @ 849235f]
 - [ ] R30 panels 域迁移
 - [ ] R31 modals 域迁移
 - [ ] R32 right-panel 域迁移
