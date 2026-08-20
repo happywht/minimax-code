@@ -118,7 +118,7 @@ Python Agent (FastAPI + asyncio, 127.0.0.1:8765)
 | 存储 | SQLite（aiosqlite）+ APScheduler 持久化 cron |
 | 测试 | pytest（10100+）+ vitest（600+）+ Playwright e2e（10 specs） |
 
-契约与设计文档见 [`docs/architecture.md`](docs/architecture.md) / [`docs/ipc-contract.md`](docs/ipc-contract.md) / [`docs/storage-schema.md`](docs/storage-schema.md)。
+契约与设计文档见 [`docs/architecture.md`](docs/architecture.md) / [`docs/ipc-contract.md`](docs/ipc-contract.md) / [`docs/storage-schema.md`](docs/storage-schema.md)，面向使用者的完整操作手册见 [`docs/user-guide.md`](docs/user-guide.md)。
 
 ## 目录结构
 
