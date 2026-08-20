@@ -165,6 +165,45 @@ export async function isAgentReachable(baseUrl?: string): Promise<boolean> {
   }
 }
 
+/** Shape of the agent's `GET /health` response body. */
+export interface AgentHealth {
+  ok: boolean;
+  db: boolean;
+  version: string;
+  uptime_s: number;
+}
+
+/**
+ * Fetch the agent's full health payload — unlike `isAgentReachable`
+ * this also reads the body, so callers can surface a degraded storage
+ * layer (`db: false`). Returns `null` when the agent is unreachable,
+ * responds non-2xx, or returns an unparseable body; callers should
+ * treat that as "unknown" (not degraded) and let the connection
+ * banner own the unreachable case.
+ */
+export async function fetchHealth(baseUrl?: string): Promise<AgentHealth | null> {
+  const url = baseUrl && baseUrl.length > 0 ? baseUrl : runtimeAgentBaseUrl();
+  try {
+    const resp = await fetch(`${url.replace(/\/+$/, "")}/health`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+    });
+    if (!resp.ok) return null;
+    const body: unknown = await resp.json();
+    if (typeof body !== "object" || body === null) return null;
+    const record = body as Record<string, unknown>;
+    if (typeof record.db !== "boolean") return null;
+    return {
+      ok: typeof record.ok === "boolean" ? record.ok : true,
+      db: record.db,
+      version: typeof record.version === "string" ? record.version : "",
+      uptime_s: typeof record.uptime_s === "number" ? record.uptime_s : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export interface IPCClientOptions {
   /** Override the agent base URL. Production defaults to the current page origin. */
   baseUrl?: string;

@@ -56,4 +56,6 @@ export { ShortcutsOverlay } from "./layout/ShortcutsOverlay";
 export type { ShortcutsOverlayProps } from "./layout/ShortcutsOverlay";
 export { ConnectionBanner } from "./layout/ConnectionBanner";
 export type { ConnectionBannerProps, ConnectionBannerState } from "./layout/ConnectionBanner";
+export { StorageBanner } from "./layout/StorageBanner";
+export type { StorageBannerProps } from "./layout/StorageBanner";
 export { CrashRecoveryPrompt } from "./modals/CrashRecoveryPrompt";

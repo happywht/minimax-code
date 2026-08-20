@@ -9,11 +9,12 @@ import {
   PermissionRequestModal,
   RightPanel,
   Sidebar,
+  StorageBanner,
   ToastViewport,
   TopBar,
   toast,
 } from "./components";
-import { ipc, typedIPC } from "./ipc";
+import { fetchHealth, ipc, typedIPC } from "./ipc";
 import {
   initNotificationStore,
   useChat,
@@ -79,9 +80,25 @@ export default function App() {
   const [connState, setConnState] = useState<ConnectionState>(agentReady ? "connected" : "connecting");
   const [retryAttempt, setRetryAttempt] = useState(0);
   const [bannerDismissed, setBannerDismissed] = useState(false);
+  const [storageDegraded, setStorageDegraded] = useState(false);
   const paletteRef = useRef<CommandPaletteHandle>(null);
 
   const retryDelayMs = Math.min(15_000, 1000 * 2 ** retryAttempt);
+
+  /**
+   * Probe the agent's `/health` body for a degraded storage layer.
+   * A `null` result (agent unreachable / unparseable body) is treated
+   * as "unknown", not degraded — the connection banner owns the
+   * unreachable case. Forced-mock mode has no real storage to degrade.
+   */
+  const probeStorageHealth = useCallback(async () => {
+    if (ipc.isForcedMock) {
+      setStorageDegraded(false);
+      return;
+    }
+    const health = await fetchHealth();
+    setStorageDegraded(health !== null && !health.db);
+  }, []);
 
   const retryConnection = useCallback(async () => {
     setConnState("connecting");
@@ -90,6 +107,7 @@ export default function App() {
       if (reachable && (ipc.isHttp || ipc.isForcedMock)) {
         setRetryAttempt(0);
         setConnState("connected");
+        void probeStorageHealth();
       } else {
         setRetryAttempt((attempt) => attempt + 1);
         setConnState("error");
@@ -98,7 +116,7 @@ export default function App() {
       setRetryAttempt((attempt) => attempt + 1);
       setConnState("error");
     }
-  }, []);
+  }, [probeStorageHealth]);
 
   const handleViewChange = useCallback((next: SidebarView) => {
     if (next === "skills" || next === "settings" || next === "scheduled" || next === "agents") {
@@ -138,6 +156,7 @@ export default function App() {
           if (ipc.isHttp || ipc.isForcedMock) {
             setRetryAttempt(0);
             setConnState("connected");
+            void probeStorageHealth();
           } else {
             setRetryAttempt((attempt) => attempt + 1);
             setConnState("error");
@@ -152,7 +171,7 @@ export default function App() {
         toast.error("UI init failed", err instanceof Error ? err.message : String(err));
       }
     })();
-  }, [init, refreshSessions, refreshModels, refreshRules, refreshProviders, refreshCrashReport]);
+  }, [init, refreshSessions, refreshModels, refreshRules, refreshProviders, refreshCrashReport, probeStorageHealth]);
 
   // ── 4.6: Mobile sidebar scroll lock ──
   // Prevent background scrolling when the mobile sidebar overlay is open.
@@ -230,6 +249,7 @@ export default function App() {
           onToggleCommandPalette={() => paletteRef.current?.toggle()}
           previewActive={view === "preview"}
         />
+        <StorageBanner degraded={storageDegraded} />
         <CommandPalette
           ref={paletteRef}
           onOpenSkills={() => setOverlayView("skills")}

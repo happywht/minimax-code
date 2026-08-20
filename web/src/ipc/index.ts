@@ -14,10 +14,11 @@ export {
    */
   isTauri,
   isAgentReachable,
+  fetchHealth,
   typedIPC,
   bindTypedIPC,
 } from "./client";
-export type { IPCClientOptions, TypedIPC, StreamEventPayload } from "./client";
+export type { IPCClientOptions, TypedIPC, StreamEventPayload, AgentHealth } from "./client";
 export {
   ErrorCode,
   StreamEvent,
