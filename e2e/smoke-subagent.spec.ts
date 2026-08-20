@@ -40,7 +40,7 @@ test("sub-agent: @-picker spawns a sub-agent and a result card appears", async (
   await page.goto("/");
 
   // The composer should be visible.
-  const input = page.getByPlaceholder(/Ask MiniMax anything/);
+  const input = page.getByPlaceholder(/问 MiniMax 任何问题/);
   await expect(input).toBeVisible({ timeout: 10_000 });
 
   // Type "@" to open the picker; the agent picker should show "general".
@@ -67,5 +67,5 @@ test("sub-agent: @-picker spawns a sub-agent and a result card appears", async (
   await expect(resultCard).toBeVisible({ timeout: 15_000 });
   await expect(
     page.getByTestId("sub-agent-result-status"),
-  ).toHaveText(/completed|failed/);
+  ).toHaveText(/已完成|失败/);
 });

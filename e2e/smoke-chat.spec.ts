@@ -18,8 +18,8 @@ import { test, expect, type Page } from "@playwright/test";
 test("chat: send a message and see the assistant reply", async ({ page }) => {
   await page.goto("/");
 
-  // The chat input is a textarea with placeholder "Ask MiniMax anything...".
-  const input = page.getByPlaceholder(/Ask MiniMax anything/);
+  // The chat input is a textarea with the Chinese placeholder (R32 copy migration).
+  const input = page.getByPlaceholder(/问 MiniMax 任何问题/);
   await expect(input).toBeVisible({ timeout: 10_000 });
 
   const prompt = "ping from e2e";
@@ -43,7 +43,7 @@ test("chat: long conversations scroll inside the middle message area", async ({ 
   test.setTimeout(60_000);
   await page.goto("/");
 
-  const input = page.getByPlaceholder(/Ask MiniMax anything/);
+  const input = page.getByPlaceholder(/问 MiniMax 任何问题/);
   await expect(input).toBeVisible({ timeout: 10_000 });
 
   const longPrompt = Array.from(

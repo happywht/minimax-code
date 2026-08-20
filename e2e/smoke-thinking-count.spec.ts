@@ -23,7 +23,7 @@ test("chat: assistant message shows the thinking_count summary", async ({ page }
   await page.goto("/");
 
   // Wait for the composer to be ready (same selector as smoke-chat).
-  const input = page.getByPlaceholder(/Ask MiniMax anything/);
+  const input = page.getByPlaceholder(/问 MiniMax 任何问题/);
   await expect(input).toBeVisible({ timeout: 10_000 });
 
   // Send a deterministic prompt so the assistant message is easy

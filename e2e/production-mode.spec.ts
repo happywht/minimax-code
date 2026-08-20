@@ -64,7 +64,7 @@ test.describe("production single-process mode", () => {
   test("chats end-to-end through the served SPA", async ({ page }) => {
     test.setTimeout(45_000);
     await page.goto(AGENT_BASE);
-    const input = page.getByPlaceholder(/Ask MiniMax anything/);
+    const input = page.getByPlaceholder(/问 MiniMax 任何问题/);
     await expect(input).toBeVisible({ timeout: 10_000 });
 
     const prompt = "hello from production mode";

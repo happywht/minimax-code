@@ -50,12 +50,12 @@ test("codebase: build index, search, and render SourcesPanel", async ({ page }) 
   await expect(status).toHaveText("done", { timeout: 45_000 });
 
   // Stats should reflect a real workspace (the agent/ directory).
-  await expect(filesStat).toHaveText(/Files: \d+/);
-  await expect(chunksStat).toHaveText(/Chunks: \d+/);
+  await expect(filesStat).toHaveText(/文件：\d+/);
+  await expect(chunksStat).toHaveText(/分块：\d+/);
   const filesText = await filesStat.textContent();
   const chunksText = await chunksStat.textContent();
-  expect(filesText).toMatch(/Files: \d+/);
-  expect(chunksText).toMatch(/Chunks: \d+/);
+  expect(filesText).toMatch(/文件：\d+/);
+  expect(chunksText).toMatch(/分块：\d+/);
 
   // Run a search against the indexed workspace.
   const searchInput = page.getByTestId("right-panel-codebase-panel-search");
@@ -114,7 +114,7 @@ test("codebase: build index, search, and render SourcesPanel", async ({ page }) 
   await expect(sourcesPanel).toBeVisible({ timeout: 5_000 });
   await expect(sourcesPanel).toContainText("2 来源");
 
-  await sourcesPanel.getByRole("button", { name: "Sources" }).click();
+  await sourcesPanel.getByRole("button", { name: "来源" }).click();
   await expect(page.getByText("minimax_code/codebase/indexer.py")).toBeVisible();
   await expect(page.getByText("L1-50")).toBeVisible();
   await expect(page.getByText("minimax_code/ipc/handlers_codebase.py")).toBeVisible();

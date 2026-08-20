@@ -112,7 +112,7 @@ test("settings: management forms stay labeled and usable on a narrow viewport", 
 
   await page.getByTestId("settings-tab-permissions").click();
   await expectFullWidth(page.getByLabel("工具"));
-  await expectFullWidth(page.getByLabel("决策"));
+  await expectFullWidth(page.getByLabel("决策", { exact: true }));
 
   await page.getByTestId("settings-tab-scheduled").click();
   await expectFullWidth(page.getByLabel("任务名称"));
