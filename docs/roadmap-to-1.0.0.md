@@ -47,7 +47,7 @@
 - [x] R21 IPC `data.export`：全部业务表 → 单 JSON（含 schema_version）[done @ 90144d8]
 - [x] R22 IPC `data.import`：校验 + 幂等导入（事务内）[done @ fbd13b1]
 - [x] R23 备份：`data.backup`（SQLite backup API 到指定目录）[done @ 0e5e031]
-- [ ] R24 前端设置入口：Settings 新 DataTab（导出/导入/备份按钮 + 状态反馈）
+- [x] R24 前端设置入口：Settings 新 DataTab（导出/导入/备份按钮 + 状态反馈）[done @ 2c1adde]
 - [ ] R25 端到端测试：导出→清库→导入→数据等价
 - [ ] R26 版本 bump 0.15.0
 
