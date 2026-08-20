@@ -673,6 +673,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_codebase import register_codebase_handlers
     from .ipc.handlers_crash import register_crash_handlers
     from .ipc.handlers_data import register_data_handlers
+    from .ipc.handlers_diag import register_diag_handlers
     from .ipc.handlers_git import register_git_handlers
     from .ipc.handlers_mcp import register_mcp_handlers
     from .ipc.handlers_memory import register_memory_handlers
@@ -794,6 +795,10 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # business table into one self-describing JSON envelope; ``data.import``
     # (R22) consumes the same shape.
     register_data_handlers(server)
+    # Diagnostics handlers (M8 / R45): ``diag.export`` assembles a
+    # sanitized bundle — version / platform / config (enums & counts
+    # only) / per-table row counts / sanitized log tail.
+    register_diag_handlers(server)
     # The webhook handlers expose ``webhook.list`` / ``webhook.create``
     # / ``webhook.update`` / ``webhook.delete`` /
     # ``webhook.regenerate_secret`` for the Settings page's Webhooks tab.

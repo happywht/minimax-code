@@ -241,6 +241,7 @@ on the next `readline() == ""`.
 | `data.export`               | req/res   | Data portability (R21): dump every business table into one self-describing JSON envelope. See §6 for the envelope shape. |
 | `data.import`               | req/res   | Data portability (R22): validate + replace-import such an envelope in one transaction (idempotent). See §6. |
 | `data.backup`               | req/res   | Data portability (R23): online file-level snapshot via the SQLite backup API. See §6. |
+| `diag.export`               | req/res   | Diagnostics (R45): sanitized diagnostic bundle — version / platform / config (enums & counts only, never secret values) / per-table row counts / sanitized log tail. Degrades to `storage: {db_available: false}` when storage is down instead of erroring. |
 
 ### `model.list` response — reasoning-effort fields (R58)
 
@@ -1106,6 +1107,12 @@ document the migration in this file.
 | `checkpoint.diff` | 快照与当前工作区对比 |
 | `checkpoint.restore` | 恢复到指定快照 |
 | `checkpoint.delete` | 删除快照 |
+
+### diag.* — 诊断
+
+| 方法 | 说明 |
+|------|------|
+| `diag.export` | 导出脱敏诊断包：版本 / 平台 / 配置（仅枚举与计数，绝不含密钥值）/ 各表行数 / 已消毒日志尾；存储不可用时降级为 `db_available: false` 而非报错 |
 
 ### git.* — 只读 Git 集成
 

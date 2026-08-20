@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections import deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Literal
@@ -29,6 +30,36 @@ LOG_FILE_BACKUP_COUNT = 3
 
 _FORMAT = "%(asctime)s.%(msecs)03d %(levelname)-7s %(name)s | %(message)s"
 _DATEFMT = "%H:%M:%S"
+
+# In-memory tail of formatted log lines kept for the diagnostic bundle
+# (M8 / R45 ``diag.export``). Small enough to be negligible, large
+# enough to be useful.
+MEMORY_LOG_TAIL_LINES = 200
+
+_recent_lines: deque[str] = deque(maxlen=MEMORY_LOG_TAIL_LINES)
+
+
+class _MemoryTailHandler(logging.Handler):
+    """Keep the last N formatted lines in memory for ``diag.export``.
+
+    Records reach ``emit`` only after passing the handler-level
+    ``SanitizerFilter`` (filters run before emit), so the tail is
+    redacted exactly like the stderr / file sinks.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            _recent_lines.append(self.format(record))
+        except Exception:  # noqa: BLE001 - logging must never raise
+            self.handleError(record)
+
+
+def get_recent_log_lines(limit: int = MEMORY_LOG_TAIL_LINES) -> list[str]:
+    """Return up to *limit* most-recent formatted log lines (oldest first)."""
+    if limit <= 0:
+        return []
+    tail = list(_recent_lines)
+    return tail[-limit:]
 
 
 def _log_file_path() -> Path | None:
@@ -82,6 +113,13 @@ def configure_logging(level: LogLevel = "INFO") -> None:
             # An unwritable log path must never take the agent down;
             # stderr-only is an acceptable degradation.
             root.warning("cannot write log file %s — stderr only", log_file)
+
+    # M8 / R45 — keep a small in-memory tail for the diagnostic bundle.
+    # Added before the sanitizer pass below, so it gets the same
+    # handler-level SanitizerFilter as the other sinks.
+    memory_handler = _MemoryTailHandler()
+    memory_handler.setFormatter(formatter)
+    root.addHandler(memory_handler)
 
     root.setLevel(level)
     # R15 — scrub secrets/paths/URLs from every log record via the same
