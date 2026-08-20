@@ -84,7 +84,7 @@
 ### M9 · 1.0.0-rc（R49–R52）
 - [x] R49 全量回归：pytest + vitest + 15 e2e + 生产模式 e2e [done @ e126472 — 实际口径 10 spec/21 用例；挖出 R32 断言债 8 处修复 + dist 过期重建]
 - [x] R50 flaky 清零：全部 e2e 连跑 3 轮零失败；性能基线复测 [done @ 1c26773 — 21/21 × 3（31.0/31.3/31.7s）；streaming-follow 竞态根因修复（虚拟化余震翻 following flag，poll 内重设 scrollTop）；发布数字：冷启动 2.589s（+0.1%）、首屏 JS 136.7KB（+10.3% 预算内）；ESLint 0 errors/0 warnings]
-- [ ] R51 CHANGELOG 汇总 1.0.0 全部条目
+- [x] R51 CHANGELOG 汇总 1.0.0 全部条目 [done @ 0db57a3 — [Unreleased] 顶部新增 1.0.0 总览：M1-M9 里程碑表 + rc 质量数字 + R50 性能数字 + 规模数字（registry 实测纠正 35→36 命名空间，diag.* 是第 36 个前缀）]
 - [ ] R52 版本 bump 1.0.0-rc.1
 
 ### M10 · 1.0.0 正式（R53–R54）
