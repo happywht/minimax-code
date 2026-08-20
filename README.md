@@ -1,184 +1,141 @@
 # MiniMax Code
 
-本地优先的个人 AI 编码 Agent。支持多轮对话、代码工具、技能系统、定时任务、多 Agent 协作、授权管理、Git 与 Code Review 工作流。
+本地优先的个人 AI 编码 Agent。多轮对话、代码工具、技能系统、定时任务、多 Agent 协作、授权管理、Git 与 Code Review 工作流、数据导出备份——全部跑在你自己的机器上。
 
-当前版本：**v0.17.0**。产品采用本地 Web SPA + Python Agent 架构，默认只监听 `127.0.0.1`，会话、配置和任务数据保存在本机 SQLite 中。
+当前版本：**v0.17.0**。本地 Web SPA + Python Agent 架构，默认只监听 `127.0.0.1`，会话、配置和任务数据保存在本机 SQLite 中，不经过任何第三方服务器。
 
-## 个人使用（推荐）
+## 快速开始
 
-首次安装依赖：
+### 个人使用（推荐）
 
 ```bash
+# 首次：安装依赖
 pnpm install
 cd agent && uv sync && cd ..
-```
 
-之后使用一个命令构建并启动完整产品：
-
-```bash
+# 之后：一个命令构建并启动完整产品
 pnpm start
 ```
 
-浏览器打开 <http://127.0.0.1:8765>。Python Agent 会直接托管构建后的前端，不需要长期运行 Vite。首次进入后可在 Settings 中配置模型 Provider 和 API Key；没有密钥时会进入 mock 模式，便于体验界面和工作流。
+浏览器打开 <http://127.0.0.1:8765>。Python Agent 直接托管构建后的前端，不需要 Vite。首次进入后在 Settings 中配置模型 Provider 和 API Key；没有密钥时自动进入 mock 模式，可完整体验界面和工作流。
 
-## 快速启动（dev mode — 两终端）
+### 开发模式（两终端）
 
 ```bash
-# 终端 1 — Python agent（HTTP 服务，默认绑 127.0.0.1:8765）
+# 终端 1 — Python agent（默认 127.0.0.1:8765）
 cd agent
 uv run python -m minimax_code
-#  → "agent server listening on http://127.0.0.1:8765"
 
 # 终端 2 — Vite 前端 dev server
 AGENT_SKIP=1 pnpm dev
-#  → vite ready
-
-# 浏览器开 http://localhost:5173
+# 浏览器打开 http://localhost:5173
 ```
 
-> 想单终端跑完整开发环境：直接 `pnpm dev`，它会同时拉起 agent + Vite。
-> 如果你已经在另一个终端手动启动了 agent，就用 `AGENT_SKIP=1 pnpm dev`
-> 或 `pnpm dev:web` 只启动前端，避免 8765 端口竞用。
+单终端跑完整开发环境直接 `pnpm dev`（同时拉起 agent + Vite）；已在别处启动 agent 时用 `AGENT_SKIP=1 pnpm dev` 或 `pnpm dev:web` 避免端口竞用。
 
-### 首次安装依赖
+### 前置环境
 
-```bash
-# 1. 装 JS 依赖
-pnpm install
+- **Node.js 20+**（测试用 22.18）
+- **pnpm 9+** — `npm i -g pnpm`
+- **Python 3.11+**（测试用 3.12）
+- **uv** — `pip install uv` 或 [docs.astral.sh/uv](https://docs.astral.sh/uv/)
 
-# 2. 装 Python 依赖（agent 端）
-cd agent && uv sync && cd ..
-```
+## 常见命令
 
-完整契约见 [`docs/architecture.md`](docs/architecture.md) / [`docs/ipc-contract.md`](docs/ipc-contract.md) / [`docs/v0.2.0-web-architecture.md`](docs/v0.2.0-web-architecture.md)。
+| 命令 | 用途 |
+|------|------|
+| `pnpm install` | 安装 JS 依赖 |
+| `cd agent && uv sync` | 安装 Python 依赖 |
+| `pnpm start` | 构建前端 + 单进程启动完整产品（生产模式） |
+| `pnpm build` | 只构建前端生产版本（`web/dist/`） |
+| `pnpm dev` | 开发模式：同时起 agent + Vite |
+| `pnpm dev:web` | 只起 Vite 前端 |
+| `pnpm dev:agent` | 只起 agent |
+| `pnpm test` | 前端单元测试（vitest） |
+| `pnpm lint` | 前端 ESLint 检查 |
+| `pnpm py:test` | Python 单元测试（pytest） |
+| `pnpm test:e2e` | Playwright 跨栈 e2e（需先起 dev 服务） |
 
-## 当前状态（v0.17.0）
+## 常用环境变量
 
-- **Phase 1（基础闭环）**：✅ — Vite + React 18 前端 + Python agent 核心 + SQLite 存储 + 技能系统
-- **Phase 2a（授权 / 调度 / 进度）**：✅
-- **Phase 2b（会话历史 / 移动配对 / 多 Agent）**：✅ — 49+ 单测全过 + 17 步集成 e2e smoke 全过
-- **Phase 3（端到端 chat + 文档）**：✅ — `agent.send_message` 真接通 AgentCore + mock LLM + 消息持久化
-- **Phase 4（模型选择 + 子 Agent 真 LLM）**：✅ — `model.list/get_current/set_current` IPC + `SubAgentRuntime` 走真 MiniMax API（注入式）
-- **Phase 5（设置页 + 权限真弹窗 + 密钥 keyring）**：✅ — Settings 三 Tab、tool-call 运行时授权弹窗、API Key 走 OS keyring
-- **Phase 6（前端完成度 + Playwright e2e + 切到 web）**：✅ — 技能面板 + 三栏布局 + 工作区切换 + per-turn 摘要 + Playwright 跨栈 e2e 跑通
-- **v0.2.0 切换（删 Tauri）**：✅ — 去掉 `src-tauri/`、去掉 `@tauri-apps/api`、`scripts/dev.mjs` 起 agent + Vite，dev 工作流从 3 终端简化为 2 终端
+| 变量 | 默认值 | 用途 |
+|------|--------|------|
+| `MINIMAX_API_KEY` | 空（mock 模式） | MiniMax API 密钥 |
+| `MINIMAX_CODE_HTTP_PORT` | `8765` | Agent HTTP/WS 端口 |
+| `MINIMAX_CODE_HTTP_HOST` | `127.0.0.1` | Agent 绑定地址 |
+| `MINIMAX_CODE_DATA_DIR` | 系统数据目录 | SQLite 数据库所在目录 |
+| `MINIMAX_CODE_CORS_ORIGINS` | dev 白名单 | 生产/自定义 origin 允许列表 |
+| `MINIMAX_CODE_LOG_FILE` | 空（仅控制台） | 日志落盘路径（带轮转） |
+| `VITE_AGENT_URL` | `http://127.0.0.1:8765` | 前端连接的 agent 地址 |
+| `VITE_AGENT_MODE` | 自动检测 | 设为 `mock` 强制前端 mock 模式 |
+
+生产部署细节（端口、数据目录、日志、健康检查）见 [`docs/deployment.md`](docs/deployment.md)。
+
+## FAQ
+
+**Q: 没有 MiniMax API Key 能用吗？**
+A: 能。无 Key 时 agent 和前端都自动降级到 mock 模式：界面、工作流、工具调用全部可用，只是回复是确定性假文本。在 Settings 里配置密钥即可切到真实模型（密钥存 OS keyring，不落盘）。
+
+**Q: 我的数据存在哪里？怎么备份？**
+A: 全部在本机 SQLite 单文件（默认在系统数据目录，Windows 为 `%APPDATA%\MiniMaxCode\`）。备份有三种方式：Settings → Data 标签页一键备份（SQLite 在线快照）；导出 JSON 信封（跨 schema 可移植）；或直接复制数据目录（需先停 agent）。
+
+**Q: 换机器怎么迁移？**
+A: 旧机器 Settings → Data 导出 JSON → 新机器安装启动后在同一入口导入。导入是替换式整体事务（all-or-nothing），失败自动回滚。
+
+**Q: 启动 agent 提示 dist 缺失？**
+A: `pnpm start` 自带构建（等价于 `pnpm build` 后启动）。如果你直接跑 `pnpm dev:agent` 而构建产物不存在，agent 会友好报错并指引——先执行 `pnpm build`，或直接改用 `pnpm start`。
+
+**Q: 8765 端口被占用？**
+A: `MINIMAX_CODE_HTTP_PORT=8899 pnpm dev:agent` 换端口启动 agent，前端开发模式下用 `VITE_AGENT_URL=http://127.0.0.1:8899 pnpm dev:web` 指向它。
+
+**Q: 如何升级到新版本？**
+A: `git pull && pnpm install && cd agent && uv sync && cd .. && pnpm build`。SQLite 迁移在下次启动时自动执行（幂等、事务化，失败整体回滚）。
+
+**Q: 怎么跑测试？**
+A: 三层：`pnpm py:test`（Python 单元）、`pnpm test`（前端单元）、`pnpm test:e2e`（Playwright 跨栈，需先起 dev 服务）。另有 `tests/e2e/` 下 6 个 Python 黑盒 smoke（subprocess 驱动 stdio 模式，需空 workdir 隔离数据）。
+
+**Q: 会话数据会被上传吗？**
+A: 不会。除调用你配置的 LLM API 外，所有数据只在本地；agent 默认只绑定 `127.0.0.1`，不对外网监听。
 
 ## 架构
 
-| 层 | 技术 | 备注 |
-|---|---|---|
-| 前端 | React 18 + Vite + TypeScript + Tailwind + Zustand | 见 `web/src/`；Vite-served SPA |
-| Transport | HTTP + WebSocket (FastAPI on agent) | POST `/rpc` + GET `/ws`（`127.0.0.1:8765`） |
-| Agent 核心 | Python 3.11+ (asyncio) | JSON-RPC 2.0 over HTTP/WS；stdio 模式保留给测试 |
-| LLM 客户端 | httpx (async) | MiniMax API；mock mode（无 KEY 时降级） |
-| 存储 | SQLite (aiosqlite) | 8 张表（sessions / messages / tasks / skills / scheduled_jobs / permission_rules / mobile_devices / agents） |
-| 调度 | APScheduler | 持久化 cron |
-| 测试 | pytest + vitest + Playwright | 单元 + e2e smoke + 跨栈 e2e |
+```
+Browser (Vite/React SPA)
+  |  HTTP POST /rpc (JSON-RPC 2.0) + WebSocket /ws (流式事件)
+  v
+Python Agent (FastAPI + asyncio, 127.0.0.1:8765)
+  |- AgentCore（对话循环 + LLM 流式）
+  |- ToolRegistry / SkillRuntime / SubAgentRuntime / Scheduler
+  |- SQLite 存储（26 张表，幂等事务化迁移）
+  |- PermissionStore（工具调用授权）+ OS keyring（密钥）
+```
 
-详细见 [`docs/architecture.md`](docs/architecture.md) / [`docs/ipc-contract.md`](docs/ipc-contract.md)。
+| 层 | 技术 |
+|---|---|
+| 前端 | React 18 + Vite + TypeScript + Tailwind + Zustand（`web/src/`） |
+| 通信 | HTTP + WebSocket，JSON-RPC 2.0（生产模式同端口同源） |
+| Agent | Python 3.11+ asyncio；stdio 模式保留给测试 |
+| 存储 | SQLite（aiosqlite）+ APScheduler 持久化 cron |
+| 测试 | pytest（10100+）+ vitest（600+）+ Playwright e2e（10 specs） |
+
+契约与设计文档见 [`docs/architecture.md`](docs/architecture.md) / [`docs/ipc-contract.md`](docs/ipc-contract.md) / [`docs/storage-schema.md`](docs/storage-schema.md)。
 
 ## 目录结构
 
 ```
 .
-├── docs/                  # 架构 / IPC 契约 / 设计文档
-├── web/                   # React + Vite 前端
-│   └── src/
-│       ├── components/    # Sidebar / ChatPanel / MessageInput / ProgressPanel / SkillPanel / ...
-│       ├── stores/        # Zustand stores
-│       ├── ipc/           # IPC client (HTTP/WS 包装)
-│       └── types/         # 共享类型
+├── docs/                  # 架构 / IPC 契约 / 存储模型 / 部署 / 设计文档
+├── web/                   # React + Vite 前端（components / stores / ipc / ui）
 ├── agent/                 # Python agent 核心
-│   ├── minimax_code/
-│   │   ├── ipc/           # asyncio JSON-RPC server (HTTP + stdio) + handlers
-│   │   ├── agent/         # AgentCore + MiniMaxClient (LLM)
-│   │   ├── tools/         # file_ops / terminal / edit / search / skill
-│   │   ├── skills/        # SKILL.md loader + registry + runtime
-│   │   ├── storage/       # SQLite + 8 个 DAO + migrations
-│   │   ├── scheduler/     # APScheduler
-│   │   ├── orchestrator/  # SubAgentRuntime
-│   │   ├── auth/          # PermissionStore
-│   │   ├── mobile/        # PairingManager
-│   │   ├── progress/      # ProgressTracker
-│   │   └── secrets/       # OS keyring + env-var fallback
+│   ├── minimax_code/      # ipc / agent / tools / skills / storage / scheduler
+│   │                      # orchestrator / auth / mobile / progress / secrets
 │   └── tests/             # pytest 单元
-├── tests/                 # e2e 测试
-│   ├── e2e/               # Python 黑盒 smoke（agent stdio）
-│   └── e2e-web/           # Playwright 跨栈 e2e
-├── scripts/               # dev.mjs / dev-agent.mjs / start-agent.*
-├── package.json
-├── pnpm-workspace.yaml
-├── README.md
-└── CHANGELOG.md
+├── e2e/                   # Playwright 跨栈 e2e（含生产模式 spec）
+├── tests/e2e/             # Python 黑盒 smoke（agent stdio 模式）
+├── scripts/               # dev.mjs / start-agent.* 等开发辅助
+├── CHANGELOG.md           # 版本变更历史
+└── README.md
 ```
-
-## 前置环境（仅源码开发需要）
-
-- **Node.js 20+** (测试用 22.18)
-- **pnpm 9+** — `npm i -g pnpm`
-- **Python 3.11+** (测试用 3.12)
-- **uv** — `pip install uv` 或下载 [astral-sh/uv](https://docs.astral.sh/uv/)
-
-> v0.1.x 时代需要的 Rust / Tauri CLI / Visual Studio Build Tools / WiX 已全部丢弃。
-> 普通用户直接 clone 仓库 + 两终端命令即可，不再有安装包。
-
-## 测试
-
-```bash
-# Python 单元
-pnpm py:test
-# 等价于：cd agent && uv run pytest
-
-# 前端单元（vitest）
-pnpm test
-# 等价于：pnpm --filter @minimax/web test
-
-# e2e 跨栈（Playwright）— 起两终端的 dev 服务后跑
-pnpm test:e2e
-# 等价于：playwright test
-
-# Python 黑盒 smoke（subprocess 驱动，跑前需在另一终端起 agent）
-cd tests
-python e2e/smoke_sessions.py   <python> <agent_dir> <workdir>
-python e2e/smoke_mobile.py     <python> <agent_dir> <workdir>
-python e2e/smoke_agents.py     <python> <agent_dir> <workdir>
-python e2e/smoke_phase2b.py    <python> <agent_dir> <workdir>
-python e2e/smoke_chat.py       <python> <agent_dir> <workdir>
-python e2e/smoke_progress.py   <python> <agent_dir> <workdir>
-python e2e/smoke_model.py      <python> <agent_dir> <workdir>
-```
-
-> 跑 Python smoke 时 `<workdir>` 必须是**新创建的**空目录 — 所有 smoke 内部用
-> `MINIMAX_CODE_DATA_DIR=<workdir>` 隔离 DB，避免相互污染。
-
-## 分发（release build）
-
-**v0.2.0 内部无打包流程。** 项目是内部 web 工具，**不分发安装包**。要给同事用：
-
-```bash
-git clone <repo>
-pnpm install
-cd agent && uv sync
-# 然后发"两条命令两终端"的说明即可
-```
-
-v0.1.x 时代的 Tauri NSIS / MSI 安装包保留在 `src-tauri/target/release/bundle/`（如历史
-artifact 还在硬盘上），不再被任何文档引用。要彻底删 `src-tauri/` 目录，可 `git rm` 整
-个目录（团队已实施）。
-
-## 已知限制
-
-### 1. `thinking_count` metadata 字段未实现
-
-Web 端 `MessageMetadata` 类型里预留了 `thinkingCount: number` 字段，但当前 AgentCore 的 `metadata` payload 不发这个键。前端会安全地 fallback 到 `0`。后续计划接通真实 MiniMax API 的 thinking-token 计数。
-
-### 2. Sub-agent LLM 走 mock mode（除注入式之外）
-
-`SubAgentRuntime` 默认用 `AgentCore(llm=None)` — stub 模式返回确定性文本。主 chat 链路（`agent.send_message`）的 mock mode 触发条件是 `MINIMAX_API_KEY` 为空。已加 `SubAgentRuntime.inject_llm(client)` 入口：测试用真 LLM 时手动注入 `MiniMaxClient` 即可。`smoke_agents` 已支持这种注入式 e2e。
-
-### 3. 旧 README "Tasks ahead" 段
-
-仓库原 README（Phase 1 skeleton 时代）里"Tasks ahead"等段已过时 — 当前所有 Phase 1–6 + v0.2.0 切换任务都已完成。本 README 是 v0.2.0 终态。完整变更见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## License
 
