@@ -49,7 +49,7 @@ from httpx import ASGITransport
 
 from minimax_code.app import register_app_handlers
 from minimax_code.config import Config
-from minimax_code.http_server import build_app
+from minimax_code.http_server import MAX_RPC_BODY_BYTES, build_app
 from minimax_code.ipc.protocol import (
     METHOD_NOT_FOUND,
     PARSE_ERROR,
@@ -280,6 +280,115 @@ async def test_rpc_empty_body_returns_parse_error(
     assert r.status_code == 200
     body = r.json()
     assert body["error"]["code"] == PARSE_ERROR
+
+
+# ---------------------------------------------------------------------------
+# POST /rpc — malformed-request hardening (roadmap R16, v0.14.0)
+#
+# The transport contract is "HTTP is always 200; failures live in the
+# JSON-RPC ``error`` envelope" (architecture.md). These tests pin the
+# *rejection* semantics: malformed requests never reach handler
+# dispatch, and the boundary itself never misfires.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rpc_missing_method_returns_invalid_request(
+    client: httpx.AsyncClient,
+) -> None:
+    """A JSON object without ``method`` is not a JSON-RPC request."""
+    r = await client.post(
+        "/rpc",
+        content=json.dumps({"jsonrpc": "2.0", "id": "m1"}),
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["error"]["code"] == -32600  # INVALID_REQUEST
+    assert "method" in body["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_rpc_oversized_body_never_reaches_dispatch(
+    ipc_server: IPCServer,
+    app_with_handlers: FastAPI,
+) -> None:
+    """The size guard must fire *before* dispatch — an oversized body
+    costs one length check, not a handler invocation."""
+    calls: list[str] = []
+
+    async def spy(params: dict[str, Any] | None, ctx: Any) -> None:  # noqa: ARG001
+        calls.append("spy")
+
+    ipc_server.register("probe.size_guard", spy)
+    transport = ASGITransport(app=app_with_handlers)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as c:
+        huge = {
+            "jsonrpc": "2.0",
+            "id": "big",
+            "method": "probe.size_guard",
+            "params": {"fill": "x" * (MAX_RPC_BODY_BYTES + 1)},
+        }
+        r = await c.post(
+            "/rpc",
+            content=json.dumps(huge),
+            headers={"Content-Type": "application/json"},
+        )
+    assert r.status_code == 200
+    assert "too large" in r.json()["error"]["message"]
+    assert calls == []  # rejected before the handler ever ran
+
+
+@pytest.mark.asyncio
+async def test_rpc_body_at_exact_limit_is_processed(
+    client: httpx.AsyncClient,
+) -> None:
+    """The boundary is inclusive: a body of exactly MAX_RPC_BODY_BYTES
+    bytes is a valid request and must round-trip through dispatch."""
+    envelope = {
+        "jsonrpc": "2.0",
+        "id": "exact",
+        "method": "ping",
+        "params": {"fill": ""},
+    }
+    # json.dumps adds exactly one byte per fill character (ASCII, no
+    # escapes) — pad so the serialized body lands exactly on the limit.
+    base = len(json.dumps(envelope).encode())
+    envelope["params"]["fill"] = "x" * (MAX_RPC_BODY_BYTES - base)
+    body = json.dumps(envelope).encode()
+    assert len(body) == MAX_RPC_BODY_BYTES
+
+    r = await client.post(
+        "/rpc", content=body, headers={"Content-Type": "application/json"}
+    )
+    assert r.status_code == 200
+    assert "error" not in r.json()
+
+
+@pytest.mark.asyncio
+async def test_rpc_get_method_is_rejected(client: httpx.AsyncClient) -> None:
+    """JSON-RPC requests only travel over POST — GET must get a 4xx.
+    (Starlette answers 404 for a method with no matching route; the
+    exact code is a framework detail, the rejection is the contract.)"""
+    r = await client.get("/rpc")
+    assert 400 <= r.status_code < 500
+
+
+def test_ws_malformed_inbound_frames_are_dropped(app_with_handlers: FastAPI) -> None:
+    """The WS receive loop must drain and silently drop garbage
+    (unparseable JSON, non-object frames) without killing the socket
+    or the server."""
+    with TestClient(app_with_handlers) as c:
+        with c.websocket_connect("/ws") as ws:
+            ws.receive_json()  # agent.ready handshake
+            ws.send_text("{not json")  # unparseable
+            ws.send_text(json.dumps([1, 2, 3]))  # not an object
+            ws.send_text(json.dumps({"method": "agent.pong"}))  # keepalive
+            # Still connected — a subsequent echo-ish probe can use the
+            # same socket. The block exiting without exception is the
+            # assertion that the drain loop survived all three frames.
 
 
 # ---------------------------------------------------------------------------
