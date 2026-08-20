@@ -717,6 +717,13 @@ def build_app(
     if web_dist is not None:
         app.mount("/", StaticFiles(directory=web_dist, html=True), name="web")
         logger.info("serving web UI from %s", web_dist)
+    else:
+        # Not an error — the Vite dev workflow intentionally runs without
+        # a dist — but tell the operator how to get the single-process mode.
+        logger.info(
+            "web UI not mounted (web/dist absent) — run `pnpm build` first to "
+            "serve the SPA from this process on the same port"
+        )
 
     return app
 

@@ -456,3 +456,60 @@ async def test_rpc_response_is_canonical_envelope(
     assert parsed.id == 7
     assert parsed.result is not None
     assert "pong" in parsed.result
+
+
+# ---------------------------------------------------------------------------
+# Production single-process mode (StaticFiles mount of web/dist)
+# ---------------------------------------------------------------------------
+
+
+def test_serves_web_dist_from_env_override(
+    ipc_server: IPCServer,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``MINIMAX_CODE_WEB_DIST`` pins which directory the SPA mounts from.
+
+    The env override takes precedence over the repo-default
+    ``web/dist`` probe, so the mounted shell is exactly the one the
+    operator pointed at — deterministic regardless of whether the
+    local checkout happens to carry a built dist.
+    """
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text(
+        "<!doctype html><title>prod-shell</title><div id='root'></div>",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MINIMAX_CODE_WEB_DIST", str(dist))
+
+    app = build_app(ipc_server, version="web-dist-test")
+    with TestClient(app) as c:
+        resp = c.get("/")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/html")
+        assert "prod-shell" in resp.text
+
+        # API routes keep precedence over the catch-all mount.
+        assert c.get("/health").json()["ok"] is True
+
+
+def test_web_dist_env_override_without_index_html_is_ignored(
+    ipc_server: IPCServer,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured directory lacking index.html never 500s the mount.
+
+    ``_web_dist_dir`` validates the candidate before mounting; a bad
+    override silently falls back to the repo default (or no mount).
+    Either way ``build_app`` must not raise.
+    """
+    empty = tmp_path / "not-a-dist"
+    empty.mkdir()
+    monkeypatch.setenv("MINIMAX_CODE_WEB_DIST", str(empty))
+
+    app = build_app(ipc_server, version="web-dist-bad-test")
+    with TestClient(app) as c:
+        # The agent API still answers regardless of the mount decision.
+        assert c.get("/health").json()["ok"] is True
