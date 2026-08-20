@@ -64,7 +64,7 @@
 ### M6 · v0.17.0 无障碍与键盘（R35–R39）
 - [x] R35 Modal 焦点陷阱审计与修复 `[done @ dabe3bc]`（APG 对照审计修 4 缺陷：document-capture 逃逸拉回 / container 自身 Shift+Tab 防漏 / hidden·aria-hidden·布局不可见过滤（jsdom 兼容）/ contenteditable + [data-autofocus]；5 使用者零改动受益，测试 9+3，全量 550/550）
 - [x] R36 aria-label / role 补全（icon-only 按钮全覆盖） `[done @ 02b2753]`（108 生产文件全扫：IconButton 61 处类型强制 + 原生 60 button 中 4 个 icon-only，唯一漏网 TeamRunPanel 移除按钮已补 strings.rightPanel.teamRuns.removeAria；新增静态审计测试进 CI 防回归——dotall tempered token 扫多行属性，sr-only 文本计为 label；552/552）
-- [ ] R37 列表键盘导航（会话列表 roving tabindex）
+- [x] R37 列表键盘导航（会话列表 roving tabindex） `[done @ 14cc261]`（单 tab stop + fallback 链 rovingId→currentId→首行；ArrowUp/Down clamp、Home/End 端点；导航按渲染 DOM 序跨项目组；7 测试，559/559）
 - [ ] R38 对比度抽查（accent/ink tokens 对 WCAG AA）
 - [ ] R39 版本 bump 0.17.0
 
