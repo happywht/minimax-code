@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { FileCode2 } from "lucide-react";
 import { Button } from "../../ui";
+import { strings } from "../../ui/strings";
 import type { PatchFile, PatchLine } from "../../types/ipc";
 
 export interface PermissionPatchPreviewProps {
@@ -34,7 +35,7 @@ export function PermissionPatchPreview({
     <div data-testid={testId} className="mt-2 border-t border-line/70 pt-2">
       <div className="mb-1.5 flex items-center gap-2 text-[11px] text-ink-2">
         <FileCode2 size={11} />
-        <span>{stats.files} file{stats.files === 1 ? "" : "s"}</span>
+        <span>{strings.modals.fileCount(stats.files)}</span>
         <span className="text-status-success">+{stats.additions}</span>
         <span className="text-status-error">-{stats.deletions}</span>
       </div>
@@ -56,7 +57,7 @@ export function PermissionPatchPreview({
           onClick={() => setExpanded((value) => !value)}
           className="mt-2 h-6 px-2 text-[11px]"
         >
-          {expanded ? "Show less" : "Show full patch"}
+          {expanded ? strings.modals.patchPreview.showLess : strings.modals.patchPreview.showFullPatch}
         </Button>
       )}
     </div>

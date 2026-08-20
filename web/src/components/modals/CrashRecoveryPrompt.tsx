@@ -21,6 +21,7 @@ import { AlertOctagon, History } from "lucide-react";
 
 import { useCrashRecoveryStore } from "../../stores";
 import { Button, Modal } from "../../ui";
+import { strings } from "../../ui/strings";
 import type { CrashHistoryEntry } from "../../types/ipc";
 
 /** Truncate the report preview so a long stack trace does not flood the bar. */
@@ -75,14 +76,14 @@ export function CrashRecoveryPrompt(): JSX.Element | null {
         data-testid="crash-recovery-prompt"
         className="pointer-events-auto fixed inset-x-3 bottom-3 z-40 mx-auto max-w-2xl animate-rise-in rounded-lg border border-status-warning/40 bg-surface-1/95 px-3 py-2 text-xs shadow-pop backdrop-blur"
         role="alertdialog"
-        aria-label="Previous session crashed"
+        aria-label={strings.modals.crash.bannerAria}
       >
         <div className="flex items-start gap-3">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[var(--status-warning-subtle)] text-status-warning">
             <AlertOctagon size={15} />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="font-medium text-ink-0">Your last session crashed</div>
+            <div className="font-medium text-ink-0">{strings.modals.crash.bannerTitle}</div>
             <pre
               data-testid="crash-recovery-report-preview"
               className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-all rounded bg-surface-0/60 px-2 py-1 font-mono text-[11px] text-ink-1"
@@ -98,7 +99,7 @@ export function CrashRecoveryPrompt(): JSX.Element | null {
               data-testid="crash-recovery-history"
               onClick={() => void openHistory()}
             >
-              History
+              {strings.modals.crash.history}
             </Button>
             <Button
               variant="secondary"
@@ -106,7 +107,7 @@ export function CrashRecoveryPrompt(): JSX.Element | null {
               data-testid="crash-recovery-dismiss"
               onClick={() => void dismiss()}
             >
-              Dismiss
+              {strings.modals.crash.dismiss}
             </Button>
           </div>
         </div>
@@ -114,13 +115,13 @@ export function CrashRecoveryPrompt(): JSX.Element | null {
       {historyOpen && (
         <Modal
           testId="crash-history-modal"
-          title="Crash history"
+          title={strings.modals.crash.historyTitle}
           onClose={closeHistory}
           widthClass="max-w-2xl"
         >
           {history.length === 0 ? (
             <div className="px-2 py-8 text-center text-ink-2">
-              暂无崩溃历史
+              {strings.modals.crash.historyEmpty}
             </div>
           ) : (
             <ul className="space-y-2">

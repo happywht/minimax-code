@@ -9,6 +9,7 @@
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
+import { strings } from "../../../ui/strings";
 
 type HistoryEntry = {
   filename: string;
@@ -61,7 +62,7 @@ describe("CrashRecoveryPrompt", () => {
     render(<CrashRecoveryPrompt />);
 
     expect(screen.getByTestId("crash-recovery-prompt")).toBeInTheDocument();
-    expect(screen.getByText("Your last session crashed")).toBeInTheDocument();
+    expect(screen.getByText("上次会话异常退出")).toBeInTheDocument();
     const preview = screen.getByTestId("crash-recovery-report-preview");
     expect(preview.textContent).toBe("SIGBUS at 0xdeadbeef\nstack trace follows");
   });
@@ -121,7 +122,7 @@ describe("CrashRecoveryPrompt", () => {
 
     render(<CrashRecoveryPrompt />);
 
-    expect(screen.getByText("暂无崩溃历史")).toBeInTheDocument();
+    expect(screen.getByText(strings.modals.crash.historyEmpty)).toBeInTheDocument();
   });
 
   it("closes the history modal via the close button", () => {

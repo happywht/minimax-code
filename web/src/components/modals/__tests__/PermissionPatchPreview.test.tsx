@@ -48,15 +48,15 @@ describe("PermissionPatchPreview", () => {
 
     render(<PermissionPatchPreview files={files} />);
 
-    expect(screen.getByText("4 files")).toBeInTheDocument();
+    expect(screen.getByText("4 个文件")).toBeInTheDocument();
     expect(screen.queryByText("+UNIQUE_TAIL_LINE")).not.toBeInTheDocument();
     expect(screen.queryByText("d.ts")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Show full patch" }));
+    fireEvent.click(screen.getByRole("button", { name: "展开完整补丁" }));
 
     expect(screen.getByText("+UNIQUE_TAIL_LINE")).toBeInTheDocument();
     expect(screen.getByText("d.ts")).toBeInTheDocument();
     expect(screen.getByText("+UNIQUE_FOURTH_FILE")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "收起" })).toBeInTheDocument();
   });
 });

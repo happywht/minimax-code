@@ -14,6 +14,7 @@ import { Bell, Copy, QrCode, Smartphone, Trash2 } from "lucide-react";
 import { useMobileStore } from "../../stores/mobileStore";
 import { formatDateTime } from "../../lib/time";
 import { Button, IconButton, Modal } from "../../ui";
+import { strings } from "../../ui/strings";
 import { toast } from "../layout/ErrorBoundary";
 
 export interface MobilePairingModalProps {
@@ -55,7 +56,7 @@ export function MobilePairingModal({
     const tick = () => {
       const remaining = Math.max(0, expiresAt - Date.now());
       if (remaining <= 0) {
-        setCountdown("Expired");
+        setCountdown(strings.modals.mobile.expired);
         clearPairing();
         return;
       }
@@ -75,8 +76,8 @@ export function MobilePairingModal({
   const handleCopyToken = () => {
     if (pairingToken) {
       navigator.clipboard.writeText(pairingToken).then(
-        () => toast.info("Token copied"),
-        () => toast.error("Copy failed"),
+        () => toast.info(strings.modals.mobile.tokenCopied),
+        () => toast.error(strings.modals.mobile.copyFailed),
       );
     }
   };
@@ -84,8 +85,8 @@ export function MobilePairingModal({
   const handleCopyLink = () => {
     if (qrPayload) {
       navigator.clipboard.writeText(qrPayload).then(
-        () => toast.info("Link copied"),
-        () => toast.error("Copy failed"),
+        () => toast.info(strings.modals.mobile.linkCopied),
+        () => toast.error(strings.modals.mobile.copyFailed),
       );
     }
   };
@@ -93,9 +94,13 @@ export function MobilePairingModal({
   const handleTestPush = (deviceId: string, name: string) => {
     void pushNotification({
       device_id: deviceId,
-      notification: { type: "info", title: "Test Push", body: `Hello from MiniMax Code, ${name}!` },
+      notification: {
+        type: "info",
+        title: strings.modals.mobile.testPushTitle,
+        body: strings.modals.mobile.testPushBody(name),
+      },
     }).then((r) => {
-      if (r.ok) toast.info("Push sent");
+      if (r.ok) toast.info(strings.modals.mobile.pushSent);
     });
   };
 
@@ -107,7 +112,7 @@ export function MobilePairingModal({
       title={
         <span className="flex items-center gap-2">
           <Smartphone className="h-3.5 w-3.5 text-accent" />
-          Connect Mobile
+          {strings.modals.mobile.title}
         </span>
       }
     >
@@ -132,25 +137,25 @@ export function MobilePairingModal({
             icon={<QrCode />}
             className="w-full"
           >
-            {loading ? "Generating…" : "Generate Pairing Code"}
+            {loading ? strings.modals.mobile.generating : strings.modals.mobile.generate}
           </Button>
         ) : (
           <div data-testid="mobile-pairing-active" className="space-y-2">
             <div className="rounded-md border border-line bg-surface-2 p-3 text-center">
-              <div className="mb-1 text-[11px] uppercase tracking-wider text-ink-2">
-                Pairing Token
+              <div className="mb-1 text-[11px] tracking-wider text-ink-2">
+                {strings.modals.mobile.tokenLabel}
               </div>
               <div
                 data-testid="mobile-pairing-token"
                 className="cursor-pointer font-mono text-lg font-bold text-accent"
                 onClick={handleCopyToken}
-                title="Click to copy"
+                title={strings.modals.mobile.clickToCopy}
               >
                 {pairingToken}
               </div>
               {countdown && (
                 <div className="mt-1 text-[11px] text-ink-2">
-                  Expires in {countdown}
+                  {strings.modals.mobile.expiresCountdown(countdown)}
                 </div>
               )}
             </div>
@@ -162,7 +167,7 @@ export function MobilePairingModal({
                 onClick={handleCopyToken}
                 className="flex-1"
               >
-                Copy Token
+                {strings.modals.mobile.copyToken}
               </Button>
               <Button
                 variant="secondary"
@@ -171,7 +176,7 @@ export function MobilePairingModal({
                 onClick={handleCopyLink}
                 className="flex-1"
               >
-                Copy Link
+                {strings.modals.mobile.copyLink}
               </Button>
             </div>
           </div>
@@ -180,8 +185,8 @@ export function MobilePairingModal({
         {/* Device list */}
         {devices.length > 0 && (
           <div>
-            <div className="mb-1.5 text-[11px] uppercase tracking-wider text-ink-2">
-              Paired Devices ({devices.length})
+            <div className="mb-1.5 text-[11px] tracking-wider text-ink-2">
+              {strings.modals.mobile.pairedCount(devices.length)}
             </div>
             <ul data-testid="mobile-paired-list" className="space-y-1">
               {devices.map((d) => (
@@ -195,14 +200,15 @@ export function MobilePairingModal({
                       className={`inline-block h-2 w-2 shrink-0 rounded-full ${
                         d.online ? "bg-status-success" : "bg-line-strong"
                       }`}
-                      title={d.online ? "Online" : "Offline"}
+                      title={d.online ? strings.modals.mobile.online : strings.modals.mobile.offline}
                     />
                     <div className="min-w-0">
                       <div className="truncate text-xs font-medium text-ink-0">
                         {d.name || d.id}
                       </div>
                       <div className="text-[11px] text-ink-2">
-                        {d.online ? "Online" : "Offline"} · Paired {formatDateTime(d.paired_at)}
+                        {d.online ? strings.modals.mobile.online : strings.modals.mobile.offline} ·{" "}
+                        {strings.modals.mobile.pairedAt(formatDateTime(d.paired_at))}
                       </div>
                     </div>
                   </div>
@@ -211,8 +217,8 @@ export function MobilePairingModal({
                       <IconButton
                         size="sm"
                         onClick={() => handleTestPush(d.id, d.name || d.id)}
-                        title="Send test notification"
-                        aria-label={`Push test to ${d.name || d.id}`}
+                        title={strings.modals.mobile.sendTestTitle}
+                        aria-label={strings.modals.mobile.pushTestAria(d.name || d.id)}
                       >
                         <Bell />
                       </IconButton>
@@ -222,8 +228,8 @@ export function MobilePairingModal({
                       data-testid={`mobile-unpair-${d.id}`}
                       onClick={() => void unpair(d.id)}
                       className="hover:bg-[var(--status-error-subtle)] hover:text-status-error"
-                      title="Unpair"
-                      aria-label={`Unpair ${d.name || d.id}`}
+                      title={strings.modals.mobile.unpair}
+                      aria-label={strings.modals.mobile.unpairAria(d.name || d.id)}
                     >
                       <Trash2 />
                     </IconButton>

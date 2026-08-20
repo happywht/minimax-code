@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { AlertTriangle } from "lucide-react";
 import { useFocusTrap } from "../../lib/useFocusTrap";
 import { Button } from "../../ui";
+import { strings } from "../../ui/strings";
 
 export interface ConfirmationOptions {
   title: string;
@@ -117,7 +118,7 @@ export function ConfirmationDialog(): JSX.Element | null {
             data-testid="confirmation-cancel"
             onClick={() => confirmationBus.settle(false)}
           >
-            {request.cancelLabel ?? "Cancel"}
+            {request.cancelLabel ?? strings.modals.confirm.cancel}
           </Button>
           <Button
             variant="danger"
@@ -125,7 +126,7 @@ export function ConfirmationDialog(): JSX.Element | null {
             data-testid="confirmation-confirm"
             onClick={() => confirmationBus.settle(true)}
           >
-            {request.confirmLabel ?? "Delete"}
+            {request.confirmLabel ?? strings.modals.confirm.confirm}
           </Button>
         </div>
       </div>

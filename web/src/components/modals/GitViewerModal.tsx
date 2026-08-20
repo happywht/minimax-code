@@ -18,6 +18,7 @@ import { FileText, GitCommit as CommitIcon } from "lucide-react";
 import { SkeletonTable } from "../layout/Skeleton";
 import { useGitStore } from "../../stores";
 import { Modal } from "../../ui";
+import { strings } from "../../ui/strings";
 import type { GitLogEntry } from "../../types/ipc";
 
 export interface GitViewerModalProps {
@@ -82,9 +83,9 @@ export function GitViewerModal({
       widthClass="max-w-3xl"
       title={
         <span className="flex items-center gap-1">
-          <span className="sr-only">Git viewer</span>
-          {tabButton("diff", "Diff", <FileText size={12} />)}
-          {tabButton("log", "Log", <CommitIcon size={12} />)}
+          <span className="sr-only">{strings.modals.gitViewer.srTitle}</span>
+          {tabButton("diff", strings.modals.gitViewer.tabDiff, <FileText size={12} />)}
+          {tabButton("log", strings.modals.gitViewer.tabLog, <CommitIcon size={12} />)}
         </span>
       }
     >
@@ -119,7 +120,7 @@ function DiffContent({
   if (!text) {
     return (
       <div className="px-1 py-6 text-center text-xs text-ink-2">
-        No diff available.
+        {strings.modals.gitViewer.noDiff}
       </div>
     );
   }
@@ -166,7 +167,7 @@ function LogContent({
   if (!entries || entries.length === 0) {
     return (
       <div className="px-1 py-6 text-center text-xs text-ink-2">
-        No commits found.
+        {strings.modals.gitViewer.noCommits}
       </div>
     );
   }
@@ -188,7 +189,7 @@ function LogContent({
             <div className="mt-0.5 flex items-center gap-2 text-[11px] text-ink-2">
               <span>{c.author}</span>
               {c.files_changed != null && c.files_changed.length > 0 ? (
-                <span>{c.files_changed.length} files</span>
+                <span>{strings.modals.fileCount(c.files_changed.length)}</span>
               ) : null}
             </div>
           </div>
