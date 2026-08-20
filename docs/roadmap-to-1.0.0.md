@@ -39,7 +39,7 @@
 - [x] R15 CORS 允许列表环境变量化 `MINIMAX_CODE_CORS_ORIGINS`（默认不变）`[done @ b8bece3]`（功能已存在，本轮钉死安全边界：拒绝未列 origin / env 只追加不替换 / 无效项丢弃，4 新测试；architecture/ipc-contract/agent CLAUDE.md 三处陈旧说法同步）
 - [x] R16 RPC 防护：畸形请求（非 JSON-RPC/超大 payload）4xx 拒绝测试 `[done @ 2a715c9]`（5 新测试钉死：缺 method 信封 INVALID_REQUEST / 超限 body 在 dispatch 之前被拒（spy 零调用）/ 恰好 10MB 边界不误杀 / GET 4xx / WS 垃圾帧静默丢弃不断连）
 - [x] R17 secrets 脱敏审计：日志与错误响应不包含 API key 片段 `[done @ 2349fc9]`（审计挖出真 P1：SanitizerFilter 挂 root logger 对子 logger 传播记录零生效=业务日志消毒全空转；改挂 handler 级修复；另修 secrets.status str(exc) 直通信封；test_secret_audit.py 6 测试：传播回归+挂载契约+RPC 往返不回显+参数分支不反射）
-- [ ] R18 权限默认策略审查：工具默认 ask 清单与文档一致
+- [x] R18 权限默认策略审查：工具默认 ask 清单与文档一致 [done @ fe62aec]
 - [ ] R19 安全回归测试集中化 `agent/tests/test_security.py`
 - [ ] R20 版本 bump 0.14.0
 
