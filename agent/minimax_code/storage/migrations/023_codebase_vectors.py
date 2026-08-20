@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import run_script
+
 VERSION = 23
 
 
@@ -20,7 +22,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS codebase_chunks_vec USING vec0(
 
 
 def run(conn: Any) -> None:
-    conn.executescript(DDL)
+    run_script(conn, DDL)
 
 
 __all__ = ["VERSION", "run"]

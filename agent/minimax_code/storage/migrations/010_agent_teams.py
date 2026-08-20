@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import run_script
+
 VERSION = 10
 
 DDL = r"""
@@ -42,7 +44,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_teams_enabled ON agent_teams(enabled);
 
 def run(conn: Any) -> None:
     """Apply the agent_teams migration to ``conn``."""
-    conn.executescript(DDL)
+    run_script(conn, DDL)
 
     # Add new columns to agents table — use ALTER TABLE with
     # IF-not-exists guard via a pragma trick (SQLite doesn't have

@@ -26,6 +26,8 @@ def run(conn: Any) -> None:
     if "'team'" in sql:
         return
 
+    # Clear any _new leftover from a previous failed run of this migration.
+    conn.execute("DROP TABLE IF EXISTS agent_runs_new")
     conn.execute(
         """
         CREATE TABLE agent_runs_new (
@@ -49,12 +51,12 @@ def run(conn: Any) -> None:
     )
     conn.execute(
         """
-        CREATE INDEX idx_agent_runs_session_created_new
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_session_created_new
             ON agent_runs_new (session_id, created_at DESC)
         """
     )
     conn.execute(
-        "CREATE INDEX idx_agent_runs_status_new ON agent_runs_new (status)"
+        "CREATE INDEX IF NOT EXISTS idx_agent_runs_status_new ON agent_runs_new (status)"
     )
 
     columns = [

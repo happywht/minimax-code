@@ -4,7 +4,10 @@ Migrations are simple modules named ``NNN_short_name.py`` (e.g.
 ``001_initial.py``) that expose a ``VERSION`` (int) and a ``run(conn)``
 function. The ``run`` function receives a ``sqlite3.Connection`` (or
 ``aiosqlite.Connection`` — the surface area we use is identical) and
-is expected to execute DDL using ``executescript`` or ``execute``.
+is expected to execute DDL using :func:`run_script` or ``execute``.
+``Connection.executescript`` must NOT be used: it issues an implicit
+COMMIT that breaks out of the explicit transaction Database.migrate
+wraps around each migration.
 
 The :func:`discover_migrations` helper returns a deterministic,
 version-sorted list of ``(version, run)`` tuples for the migrations
@@ -17,7 +20,8 @@ import importlib
 import logging
 import pkgutil
 import re
-from collections.abc import Callable, Iterable
+import sqlite3
+from collections.abc import Callable, Iterable, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +44,36 @@ _MIGRATION_NAME_RE = re.compile(r"^(\d{3,})_[a-zA-Z0-9_]+$")
 
 def ensure_migration_table(conn) -> None:  # type: ignore[no-untyped-def]
     """Create the ``schema_migrations`` table if it doesn't exist."""
-    conn.executescript(MIGRATIONS_DDL)
+    conn.execute(MIGRATIONS_DDL)
+
+
+def iter_statements(script: str) -> Iterator[str]:
+    """Split a SQL script into complete statements using sqlite3's parser.
+
+    ``sqlite3.complete_statement`` only reports a complete statement once its
+    terminating ``;`` is reached *and* it understands trigger bodies, so
+    semicolons inside ``CREATE TRIGGER … BEGIN … END;`` don't split early.
+    Statements may span multiple lines; blank lines are skipped.
+    """
+    buffer = ""
+    for line in script.splitlines(keepends=True):
+        buffer += line
+        if buffer.strip() and sqlite3.complete_statement(buffer):
+            yield buffer
+            buffer = ""
+    if buffer.strip():
+        yield buffer  # trailing statement without a terminating ';'
+
+
+def run_script(conn, script: str) -> None:  # type: ignore[no-untyped-def]
+    """Execute a multi-statement DDL script one statement at a time.
+
+    Unlike ``Connection.executescript`` this never issues an implicit COMMIT,
+    so it stays inside the caller's explicit transaction — a half-failing
+    migration rolls back cleanly (see ``Database.migrate``).
+    """
+    for stmt in iter_statements(script):
+        conn.execute(stmt)
 
 
 def _iter_migration_modules():  # type: ignore[no-untyped-def]
@@ -93,4 +126,6 @@ __all__ = [
     "MigrationRun",
     "discover_migrations",
     "ensure_migration_table",
+    "iter_statements",
+    "run_script",
 ]

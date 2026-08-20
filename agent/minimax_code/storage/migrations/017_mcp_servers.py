@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import run_script
+
 VERSION = 17
 
 DDL = r"""
@@ -32,4 +34,4 @@ CREATE INDEX IF NOT EXISTS idx_mcp_servers_enabled_updated
 
 
 def run(conn: Any) -> None:
-    conn.executescript(DDL)
+    run_script(conn, DDL)

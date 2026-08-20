@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import run_script
+
 VERSION = 15
 
 DDL = r"""
@@ -47,4 +49,4 @@ CREATE INDEX IF NOT EXISTS idx_session_checkpoints_session_created
 
 
 def run(conn: Any) -> None:
-    conn.executescript(DDL)
+    run_script(conn, DDL)

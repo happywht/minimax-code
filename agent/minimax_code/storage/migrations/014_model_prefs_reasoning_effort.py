@@ -28,6 +28,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import run_script
+
 VERSION = 14
 
 DDL = r"""
@@ -36,7 +38,7 @@ ALTER TABLE model_prefs ADD COLUMN reasoning_effort TEXT;
 
 
 def run(conn: Any) -> None:
-    conn.executescript(DDL)
+    run_script(conn, DDL)
 
 
 __all__ = ["DDL", "VERSION", "run"]

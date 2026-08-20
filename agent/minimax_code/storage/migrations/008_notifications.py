@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import run_script
+
 VERSION = 8
 
 DDL = r"""
@@ -37,7 +39,7 @@ CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at
 
 def run(conn: Any) -> None:
     """Apply the notifications migration to ``conn``."""
-    conn.executescript(DDL)
+    run_script(conn, DDL)
 
 
 __all__ = ["DDL", "VERSION", "run"]

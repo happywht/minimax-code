@@ -241,12 +241,25 @@ class Database:
             new_versions: list[int] = []
             for version, run in pending:
                 logger.info("applying migration %03d", version)
-                with self._conn:  # transaction context
+                # Explicit BEGIN IMMEDIATE (not ``with self._conn:``): the
+                # connection runs in autocommit mode (isolation_level=None),
+                # where the context manager never opens a transaction and its
+                # commit is a no-op — a half-failing migration would leave
+                # partial DDL committed on disk. Mirrors transaction().
+                try:
+                    self._conn.execute("BEGIN IMMEDIATE")
                     run(self._conn)
                     self._conn.execute(
                         "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                         (version, _now_iso()),
                     )
+                    self._conn.execute("COMMIT")
+                except BaseException:
+                    try:
+                        self._conn.execute("ROLLBACK")
+                    except sqlite3.OperationalError:
+                        pass
+                    raise
                 new_versions.append(version)
             if new_versions:
                 logger.info("applied %d migration(s): %s", len(new_versions), new_versions)

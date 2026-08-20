@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from . import run_script
+
 VERSION: int = 19
 
 DDL = r"""
@@ -60,4 +62,4 @@ END;
 
 
 def run(conn) -> None:  # type: ignore[no-untyped-def]
-    conn.executescript(DDL)
+    run_script(conn, DDL)

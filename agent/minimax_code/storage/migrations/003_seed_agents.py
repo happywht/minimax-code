@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import run_script
+
 VERSION = 3
 
 DDL = r"""
@@ -43,7 +45,7 @@ INSERT OR IGNORE INTO agents (name, system_prompt, tool_allowlist, model)
 
 def run(conn: Any) -> None:
     """Apply the seed-agents migration to ``conn``."""
-    conn.executescript(DDL)
+    run_script(conn, DDL)
 
 
 __all__ = ["DDL", "VERSION", "run"]

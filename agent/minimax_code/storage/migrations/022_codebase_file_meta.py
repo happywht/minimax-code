@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import run_script
+
 VERSION = 22
 
 
@@ -24,7 +26,7 @@ CREATE INDEX IF NOT EXISTS idx_codebase_file_meta_path
 
 
 def run(conn: Any) -> None:
-    conn.executescript(DDL)
+    run_script(conn, DDL)
 
 
 __all__ = ["VERSION", "run"]

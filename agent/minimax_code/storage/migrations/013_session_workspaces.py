@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import run_script
+
 VERSION = 13
 
 DDL = r"""
@@ -19,4 +21,4 @@ CREATE INDEX IF NOT EXISTS idx_sessions_workspace_mode_updated
 
 
 def run(conn: Any) -> None:
-    conn.executescript(DDL)
+    run_script(conn, DDL)

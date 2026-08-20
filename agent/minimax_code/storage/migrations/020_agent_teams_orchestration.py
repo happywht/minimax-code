@@ -31,6 +31,8 @@ def run(conn: Any) -> None:
     if _check_is_widened(conn):
         return
 
+    # Clear any _new leftover from a previous failed run of this migration.
+    conn.execute("DROP TABLE IF EXISTS agent_teams_new")
     conn.execute(
         """
         CREATE TABLE agent_teams_new (
@@ -50,7 +52,7 @@ def run(conn: Any) -> None:
         """
     )
     conn.execute(
-        "CREATE INDEX idx_agent_teams_enabled_new ON agent_teams_new(enabled)"
+        "CREATE INDEX IF NOT EXISTS idx_agent_teams_enabled_new ON agent_teams_new(enabled)"
     )
 
     base_cols = [

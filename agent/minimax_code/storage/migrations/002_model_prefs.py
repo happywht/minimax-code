@@ -22,13 +22,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import run_script
+
 VERSION = 2
 
 
-# DDL is broken into a single ``executescript`` payload because
-# SQLite only honors some PRAGMAs (notably ``foreign_keys``) outside
-# of an explicit transaction. ``executescript`` issues an implicit
-# ``COMMIT`` before running its DDL, which is exactly what we want.
 DDL = r"""
 -- ---------------------------------------------------------------------------
 -- model_prefs (user-global model choice)
@@ -55,10 +53,10 @@ def run(conn: Any) -> None:
     """Apply the model_prefs migration to ``conn``.
 
     ``conn`` may be a stdlib ``sqlite3.Connection`` or an
-    ``aiosqlite.Connection`` — both expose ``executescript`` with
-    the same semantics.
+    ``aiosqlite.Connection`` — :func:`run_script` executes the DDL
+    one statement at a time on either.
     """
-    conn.executescript(DDL)
+    run_script(conn, DDL)
 
 
 __all__ = ["DDL", "VERSION", "run"]

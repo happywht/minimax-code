@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import run_script
+
 VERSION = 11
 
 DDL = r"""
@@ -84,7 +86,7 @@ VALUES (
 
 def run(conn: Any) -> None:
     """Apply the seed-review-agents migration to ``conn``."""
-    conn.executescript(DDL)
+    run_script(conn, DDL)
 
 
 __all__ = ["DDL", "VERSION", "run"]

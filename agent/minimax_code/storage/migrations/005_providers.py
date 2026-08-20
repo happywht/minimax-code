@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import run_script
+
 VERSION = 5
 
 DDL = r"""
@@ -57,7 +59,7 @@ INSERT OR IGNORE INTO providers (
 
 def run(conn: Any) -> None:
     """Apply the providers migration to ``conn``."""
-    conn.executescript(DDL)
+    run_script(conn, DDL)
     # Add provider_id column — may fail if column already exists (re-run).
     try:
         conn.execute(

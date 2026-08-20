@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import run_script
+
 VERSION = 12
 
 DDL = r"""
@@ -72,7 +74,7 @@ CREATE INDEX idx_agent_run_steps_tool_call_id
 
 def run(conn: Any) -> None:
     """Apply the run timeline migration to ``conn``."""
-    conn.executescript(DDL)
+    run_script(conn, DDL)
 
 
 __all__ = ["DDL", "VERSION", "run"]
