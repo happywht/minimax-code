@@ -109,6 +109,7 @@ SQLite 数据库，8 张主表 + 1 张迁移记录表。位置由 `platformdirs`
 |----------|------|------|------|
 | 单元测试 | pytest + pytest-asyncio | `tests/` | 15+ 文件（IPC、Storage、Agent Core、Tools、Skills、Scheduler、Permissions、Mobile、Sessions、Model、Secrets、HTTP Server、Git handlers 等） |
 | 黑盒 smoke | subprocess | `tests/e2e/` | 7 个 smoke（sessions、mobile、agents、phase2b、chat、progress、model） |
+| 安全回归 | pytest `-m security` | 8 个域文件 + `tests/test_security.py` 集中入口 | 151 测试（权限/脱敏/secrets/终端加固/注入防护/审计/RPC 拒绝/CORS）；`tests/test_security.py` 持套件 floor（130）防安全覆盖静默蒸发 |
 
 运行命令：
 ```bash

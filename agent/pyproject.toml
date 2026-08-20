@@ -63,6 +63,9 @@ packages = ["minimax_code"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "security: security-regression suite (R19) — run with `uv run pytest -m security`",
+]
 
 [tool.ruff]
 line-length = 100

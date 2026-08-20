@@ -22,6 +22,9 @@ from minimax_code.agent.tools.terminal import (
     _is_dangerous_cmd,
 )
 
+# File-level marker: part of the security-regression suite (R19).
+pytestmark = pytest.mark.security
+
 # ---------------------------------------------------------------------------
 # _build_safe_env
 # ---------------------------------------------------------------------------

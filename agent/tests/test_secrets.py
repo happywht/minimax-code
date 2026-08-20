@@ -16,6 +16,9 @@ import pytest
 
 from minimax_code import secrets
 
+# File-level marker: part of the security-regression suite (R19).
+pytestmark = pytest.mark.security
+
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------

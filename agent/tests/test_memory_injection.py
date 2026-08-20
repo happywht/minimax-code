@@ -17,6 +17,9 @@ from minimax_code.storage.dao.runs import AgentRunsDAO
 from minimax_code.storage.dao.sessions import SessionsDAO
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 
+# File-level marker: part of the security-regression suite (R19).
+pytestmark = pytest.mark.security
+
 
 @pytest.fixture
 async def async_db(tmp_path: Path) -> AsyncDatabase:

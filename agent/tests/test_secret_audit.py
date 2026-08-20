@@ -35,6 +35,9 @@ from minimax_code.ipc.protocol import INVALID_PARAMS
 from minimax_code.ipc.server import IPCServer
 from minimax_code.telemetry.redact import SanitizerFilter
 
+# File-level marker: part of the security-regression suite (R19).
+pytestmark = pytest.mark.security
+
 # A realistic credential *shape* — not a real credential.
 FAKE_KEY = "sk-ant-AUDIT1234567890abcdefghij"
 

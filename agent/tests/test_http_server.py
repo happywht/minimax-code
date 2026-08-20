@@ -293,6 +293,7 @@ async def test_rpc_empty_body_returns_parse_error(
 
 
 @pytest.mark.asyncio
+@pytest.mark.security
 async def test_rpc_missing_method_returns_invalid_request(
     client: httpx.AsyncClient,
 ) -> None:
@@ -309,6 +310,7 @@ async def test_rpc_missing_method_returns_invalid_request(
 
 
 @pytest.mark.asyncio
+@pytest.mark.security
 async def test_rpc_oversized_body_never_reaches_dispatch(
     ipc_server: IPCServer,
     app_with_handlers: FastAPI,
@@ -342,6 +344,7 @@ async def test_rpc_oversized_body_never_reaches_dispatch(
 
 
 @pytest.mark.asyncio
+@pytest.mark.security
 async def test_rpc_body_at_exact_limit_is_processed(
     client: httpx.AsyncClient,
 ) -> None:
@@ -368,6 +371,7 @@ async def test_rpc_body_at_exact_limit_is_processed(
 
 
 @pytest.mark.asyncio
+@pytest.mark.security
 async def test_rpc_get_method_is_rejected(client: httpx.AsyncClient) -> None:
     """JSON-RPC requests only travel over POST — GET must get a 4xx.
     (Starlette answers 404 for a method with no matching route; the
@@ -376,6 +380,7 @@ async def test_rpc_get_method_is_rejected(client: httpx.AsyncClient) -> None:
     assert 400 <= r.status_code < 500
 
 
+@pytest.mark.security
 def test_ws_malformed_inbound_frames_are_dropped(app_with_handlers: FastAPI) -> None:
     """The WS receive loop must drain and silently drop garbage
     (unparseable JSON, non-object frames) without killing the socket
@@ -514,6 +519,7 @@ async def test_ws_listener_unregistered_after_last_disconnect(
 
 
 @pytest.mark.asyncio
+@pytest.mark.security
 async def test_cors_allows_vite_origin(client: httpx.AsyncClient) -> None:
     r = await client.get(
         "/health",
@@ -526,6 +532,7 @@ async def test_cors_allows_vite_origin(client: httpx.AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.security
 async def test_cors_allows_127_origin(client: httpx.AsyncClient) -> None:
     r = await client.get(
         "/health",
@@ -536,6 +543,7 @@ async def test_cors_allows_127_origin(client: httpx.AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.security
 async def test_cors_allows_explicit_additional_origin(
     monkeypatch: pytest.MonkeyPatch,
     ipc_server: IPCServer,
@@ -555,6 +563,7 @@ async def test_cors_allows_explicit_additional_origin(
 
 
 @pytest.mark.asyncio
+@pytest.mark.security
 async def test_cors_rejects_unlisted_origin(client: httpx.AsyncClient) -> None:
     """The security boundary: an origin not on the allow-list gets no
     ``Access-Control-Allow-Origin`` echo — the browser will block it."""
@@ -569,6 +578,7 @@ async def test_cors_rejects_unlisted_origin(client: httpx.AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.security
 async def test_cors_env_append_never_replaces_defaults(
     monkeypatch: pytest.MonkeyPatch,
     ipc_server: IPCServer,
@@ -588,6 +598,7 @@ async def test_cors_env_append_never_replaces_defaults(
 
 
 @pytest.mark.asyncio
+@pytest.mark.security
 async def test_cors_env_ignores_invalid_entries(
     monkeypatch: pytest.MonkeyPatch,
     ipc_server: IPCServer,
@@ -699,6 +710,7 @@ def test_web_dist_env_override_without_index_html_is_ignored(
         assert c.get("/health").json()["ok"] is True
 
 
+@pytest.mark.security
 async def test_same_origin_rpc_does_not_depend_on_cors_allow_list(
     client: httpx.AsyncClient,
 ) -> None:

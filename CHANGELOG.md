@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added — 安全加固（进行中，M3）
+- **安全回归套件集中化（R19）**：注册 `security` pytest marker，`uv run pytest -m security` 一键跑完整安全面——**151 测试**覆盖 9 个安全面（权限规则+出厂默认、日志/RPC 脱敏、secrets 存储/RPC、终端进程加固、memory 注入防护、审计日志、RPC 畸形拒绝、CORS 白名单）。7 个纯安全测试文件打文件级 marker，混合文件 `test_http_server.py` 的 12 个安全函数逐个打装饰器。新增 `agent/tests/test_security.py` 作为集中入口：模块 docstring 即安全测试地图 + 三重护栏（套件收集 floor ≥ 130 防 marker/文件静默失联、逐文件 AST 计数 floor 防安全文件被清空、`test_http_server.py` 12 函数 marker 存在性 AST 校验）+ 2 个跨切面冒烟（R18 出厂默认 ask→deny 遮蔽→删除回退全链路；redact_value 对 10 种凭据形态消毒 + URL userinfo 剥离 + 嵌套结构遍历 + 输入不可变）。
+
+### Fixed — 安全加固（进行中，M3）
 - **权限出厂默认（R18）**：高危工具在**代码级**出厂 gated——`DEFAULT_RULES` 常量 `exec_*` → ask，`lookup`/`list_rules`/`get` 在用户规则 miss 后回退默认。零 DB 写入（不 seed 用户库）、用户规则永远优先、删除用户规则即回退出厂默认（无"重启重置"缺陷）；默认规则经 `permission.list`/`get` 携带 `origin: "default"` 标记，UI 徽标显示且不可删除（只能用选择器覆盖）。新增 9 个后端测试（`TestFactoryDefaults` + IPC 默认上报）。契约文档补 `permission.*` 详述段（方法表 + 默认策略语义）。
 - **前端 wire 映射修复**：`bindTypedIPC` 新增 `backendRuleToFrontend` 翻译层——后端 wire 是 `{tool_pattern, action, created_at: ISO-string}`，前端 `PermissionRule` 是 `{tool, pattern, decision, created_at: ms}`，此前 `listRules`/`setRule` 原样透传导致真实 agent 下 Settings 权限 tab 静默断链（mock 两头说前端形状掩盖了断链）；mock backend 改为在 typed 层之下说 wire 形状。新增 `web/src/ipc/__tests__/typed-permission.test.ts`（6 测试：字段映射、wire 参数断言、mock 契约）。
 

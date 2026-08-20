@@ -135,6 +135,9 @@ def handlers(fake_keyring: FakeKeyring, clean_env: None) -> dict[str, Any]:
 
 from typing import Any  # noqa: E402  (placed after the fixture above for readability)
 
+# File-level marker: part of the security-regression suite (R19).
+pytestmark = pytest.mark.security
+
 
 @pytest.mark.asyncio
 async def test_status_reports_none_when_nothing_set(
