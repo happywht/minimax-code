@@ -26,6 +26,51 @@ function FocusTrapTestComponent({ active }: { active: boolean }) {
   );
 }
 
+function FocusTrapWithHidden({ active }: { active: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useFocusTrap(ref, active);
+  return (
+    <div ref={ref} data-testid="trap-hidden">
+      <button data-testid="btn-hidden-attr" hidden>
+        HiddenAttr
+      </button>
+      <button data-testid="btn-aria-hidden" aria-hidden="true">
+        AriaHidden
+      </button>
+      <button data-testid="btn-visible">Visible</button>
+      <button data-testid="btn-last">Last</button>
+    </div>
+  );
+}
+
+function FocusTrapWithAutofocus({ active }: { active: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useFocusTrap(ref, active);
+  return (
+    <div ref={ref}>
+      <button data-testid="btn-first">First</button>
+      <button data-testid="btn-autofocus" data-autofocus={true}>
+        Autofocus
+      </button>
+      <button data-testid="btn-last">Last</button>
+    </div>
+  );
+}
+
+function FocusTrapWithContentEditable({ active }: { active: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useFocusTrap(ref, active);
+  return (
+    <div ref={ref}>
+      <button data-testid="btn-first">First</button>
+      <div data-testid="editor" contentEditable={true} suppressContentEditableWarning>
+        editable
+      </div>
+      <button data-testid="btn-last">Last</button>
+    </div>
+  );
+}
+
 describe("useFocusTrap hook", () => {
   it("moves focus to first focusable child when activated", () => {
     render(<FocusTrapTestComponent active={true} />);
@@ -95,6 +140,80 @@ describe("useFocusTrap hook", () => {
     // Close — focus should return to trigger
     await user.click(screen.getByTestId("close"));
     expect(trigger).toHaveFocus();
+  });
+
+  it("keeps Shift+Tab inside when focus sits on the container itself", async () => {
+    const user = userEvent.setup();
+    render(
+      <div>
+        <button data-testid="outside">Outside</button>
+        <FocusTrapTestComponent active={true} />,
+      </div>,
+    );
+
+    // Simulate focus resting on the container element itself — a bare
+    // Shift+Tab would otherwise walk out into the background page.
+    const container = screen.getByTestId("trap-container");
+    container.setAttribute("tabindex", "-1");
+    container.focus();
+    expect(container).toHaveFocus();
+
+    await user.tab({ shift: true });
+    expect(screen.getByTestId("btn-last")).toHaveFocus();
+  });
+
+  it("pulls focus back after it escapes the container", async () => {
+    const user = userEvent.setup();
+    render(
+      <div>
+        <button data-testid="outside">Outside</button>
+        <FocusTrapTestComponent active={true} />
+      </div>,
+    );
+
+    // Simulate programmatic focus outside the trap (e.g. a stray
+    // ref.focus() elsewhere in the app).
+    screen.getByTestId("outside").focus();
+    expect(screen.getByTestId("outside")).toHaveFocus();
+
+    // The trap must recapture on the next Tab / Shift+Tab
+    await user.tab();
+    expect(screen.getByTestId("btn-first")).toHaveFocus();
+
+    screen.getByTestId("outside").focus();
+    await user.tab({ shift: true });
+    expect(screen.getByTestId("btn-last")).toHaveFocus();
+  });
+
+  it("skips hidden and aria-hidden elements in the focus cycle", async () => {
+    const user = userEvent.setup();
+    render(
+      <div ref={undefined}>
+        <FocusTrapWithHidden active={true} />
+      </div>,
+    );
+
+    // Initial focus lands on the first *visible* focusable element
+    expect(screen.getByTestId("btn-visible")).toHaveFocus();
+
+    await user.tab();
+    expect(screen.getByTestId("btn-last")).toHaveFocus();
+  });
+
+  it("prefers a [data-autofocus] child for the initial focus", () => {
+    render(<FocusTrapWithAutofocus active={true} />);
+    expect(screen.getByTestId("btn-autofocus")).toHaveFocus();
+  });
+
+  it("includes contenteditable elements in the focus cycle", async () => {
+    const user = userEvent.setup();
+    render(<FocusTrapWithContentEditable active={true} />);
+
+    expect(screen.getByTestId("btn-first")).toHaveFocus();
+    await user.tab();
+    expect(screen.getByTestId("editor")).toHaveFocus();
+    await user.tab();
+    expect(screen.getByTestId("btn-last")).toHaveFocus();
   });
 });
 
