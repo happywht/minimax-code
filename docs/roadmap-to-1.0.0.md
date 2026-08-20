@@ -77,7 +77,7 @@
 
 ### M8 · v0.19.0 诊断工具（R45–R48）
 - [x] R45 IPC `diag.export`：版本/平台/配置（脱敏）/日志尾/表行数 → JSON 下载 [done @ 4ab4eb3]
-- [ ] R46 前端诊断入口（Settings About 区"导出诊断包"）
+- [x] R46 前端诊断入口（Settings About 区"导出诊断包"） [done @ 78840db — 落地为 Data tab 第四面板，理由见 commit note]
 - [ ] R47 诊断测试（脱敏断言：无 keyring 值、无绝对用户路径）
 - [ ] R48 版本 bump 0.19.0
 
