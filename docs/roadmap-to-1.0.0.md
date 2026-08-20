@@ -66,7 +66,7 @@
 - [x] R36 aria-label / role 补全（icon-only 按钮全覆盖） `[done @ 02b2753]`（108 生产文件全扫：IconButton 61 处类型强制 + 原生 60 button 中 4 个 icon-only，唯一漏网 TeamRunPanel 移除按钮已补 strings.rightPanel.teamRuns.removeAria；新增静态审计测试进 CI 防回归——dotall tempered token 扫多行属性，sr-only 文本计为 label；552/552）
 - [x] R37 列表键盘导航（会话列表 roving tabindex） `[done @ 14cc261]`（单 tab stop + fallback 链 rovingId→currentId→首行；ArrowUp/Down clamp、Home/End 端点；导航按渲染 DOM 序跨项目组；7 测试，559/559）
 - [x] R38 对比度抽查（accent/ink tokens 对 WCAG AA） `[done @ 13c9b39]`（两主题 29 组前景×背景全算 WCAG 2.1 公式，挖出 3 处不达标并修：dark/light ink-2 各 ~3.1-3.3:1→4.7:1、light status-error 3.9→6.5:1；60 断言守卫测试进 CI 防回归，619/619）
-- [ ] R39 版本 bump 0.17.0
+- [x] R39 版本 bump 0.17.0 `[done @ ea2c1b9]`（6 代码位 + 3 文档版本行 + CHANGELOG M6 全条目 + uv lock；test_version 16/16 一致性通过）
 
 ### M7 · v0.18.0 文档完备（R40–R44）
 - [ ] R40 README 重写（快速开始/常见命令/FAQ）
