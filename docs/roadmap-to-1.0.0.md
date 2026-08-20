@@ -41,7 +41,7 @@
 - [x] R17 secrets 脱敏审计：日志与错误响应不包含 API key 片段 `[done @ 2349fc9]`（审计挖出真 P1：SanitizerFilter 挂 root logger 对子 logger 传播记录零生效=业务日志消毒全空转；改挂 handler 级修复；另修 secrets.status str(exc) 直通信封；test_secret_audit.py 6 测试：传播回归+挂载契约+RPC 往返不回显+参数分支不反射）
 - [x] R18 权限默认策略审查：工具默认 ask 清单与文档一致 [done @ fe62aec]
 - [x] R19 安全回归测试集中化 `agent/tests/test_security.py` [done @ bf4499e]
-- [ ] R20 版本 bump 0.14.0
+- [x] R20 版本 bump 0.14.0 [done @ 516b957]
 
 ### M4 · v0.15.0 数据可移植（R21–R26）
 - [ ] R21 IPC `data.export`：全部业务表 → 单 JSON（含 schema_version）
