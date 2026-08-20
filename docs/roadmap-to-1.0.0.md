@@ -37,7 +37,7 @@
 
 ### M3 · v0.14.0 安全加固（R15–R20）
 - [x] R15 CORS 允许列表环境变量化 `MINIMAX_CODE_CORS_ORIGINS`（默认不变）`[done @ b8bece3]`（功能已存在，本轮钉死安全边界：拒绝未列 origin / env 只追加不替换 / 无效项丢弃，4 新测试；architecture/ipc-contract/agent CLAUDE.md 三处陈旧说法同步）
-- [ ] R16 RPC 防护：畸形请求（非 JSON-RPC/超大 payload）4xx 拒绝测试
+- [x] R16 RPC 防护：畸形请求（非 JSON-RPC/超大 payload）4xx 拒绝测试 `[done @ 2a715c9]`（5 新测试钉死：缺 method 信封 INVALID_REQUEST / 超限 body 在 dispatch 之前被拒（spy 零调用）/ 恰好 10MB 边界不误杀 / GET 4xx / WS 垃圾帧静默丢弃不断连）
 - [ ] R17 secrets 脱敏审计：日志与错误响应不包含 API key 片段
 - [ ] R18 权限默认策略审查：工具默认 ask 清单与文档一致
 - [ ] R19 安全回归测试集中化 `agent/tests/test_security.py`
