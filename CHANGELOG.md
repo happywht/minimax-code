@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-20
+
 ### Added — 后端
 - **代码库 RAG（v0.11.0 Milestone 2）**：
   - 新增 `agent/minimax_code/codebase/` 包：`CodebaseIndexer` 项目级索引器 + `CodebaseChunksDAO` chunk 持久化，复用已有 `perception/indexer.py` 与 `xai_codebase_graph/` 能力。
@@ -75,6 +77,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - 移除前端剩余 `window.prompt/confirm`：项目创建/重命名/删除与技能移除统一使用 Aurora `Modal`。
+- **存储层可靠性加固**：迁移 016 重写为幂等迁移——`PRAGMA table_info` 列守卫替代裸 `ALTER TABLE ... REFERENCES`（SQLite 在 FK 开启且表有数据行时拒绝该语法，存量库升级必失败）；迁移 024 的 7 条裸 `ALTER` 同样加列守卫；迁移 020/021 重建路径先清理 `_new` 残留表。
+- **`Database.migrate()` 改为显式事务**：`BEGIN IMMEDIATE` → 执行 → 记录版本 → `COMMIT`，失败整体 `ROLLBACK`，杜绝半途失败留下脏 schema；同时清除全部 22 处迁移 `executescript`（其隐式 COMMIT 会破坏外层事务），改用 `run_script` helper 逐句执行。
+- 存量"脏库"下次启动自动自愈：versions 1-15 已记录但 16-24 缺失的库，幂等重放一次补齐（已在真实库副本上验证：123 条会话完整保留、`project_id` 全部归位 `inbox`、`foreign_key_check` 零违规）。
+- 存储降级时前端显示持久琥珀色 `StorageBanner`（探测 `/health` 的 `db` 标志；agent 不可达视为"未知"不误报，连接问题仍归 `ConnectionBanner` 管）。
+- 修复侧栏消息计数停留在「0 消息」：stats 计算补充消息数与对话状态依赖，新消息即时刷新。
+- 版本号 6 处代码位统一 bump 至 0.11.0（含 `version.py` 发行包名 `minimax-code` → `minimax-code-agent` 修正）。
 
 ### Tests
 - 新增 Codebase RAG 相关测试：`agent/tests/test_codebase_indexer.py`、`agent/tests/test_codebase_store.py`、`agent/tests/test_handlers_codebase.py`。
