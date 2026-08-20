@@ -71,7 +71,7 @@ registry**（`agent/minimax_code/ipc/server.py:IPCServer`）：
   ```
   事件无 `id`，`method` 字段直接是事件名（`agent.message_chunk` /
   `agent.tool_call` / `agent.status` / `task.progress` /
-  `agent.permission_request` / `agent.permission_resolved` 等）。
+  `permission.request` / `permission.resolved` 等）。
 
 ### 1.2 stdio（tests + CLI — v0.2.0 保留）
 
@@ -1073,3 +1073,144 @@ document the migration in this file.
 
 > v0.2.0 起不再有 Tauri `Cargo.toml` — version 三处对齐（agent Python
 > package / root `package.json` / `web/package.json`）。
+
+## Appendix A. 方法总表（与代码自动对账）
+
+> 本表由 `agent/tests/test_ipc_contract_doc.py` 双向守护：
+> 新增 handler 未列入此表、或表中/正文提及的方法在代码中不存在，测试即红。
+> 详细的请求/响应形状见上文各命名空间章节；此处保证**每个注册方法都有文档锚点**。
+
+### agent.* — 子 Agent 定义与调用
+
+| 方法 | 说明 |
+|------|------|
+| `agent.create` | 创建子 Agent 定义 |
+| `agent.get` / `agent.update` / `agent.delete` | 子 Agent 定义读取/更新/删除 |
+| `agent.invoke` | 直接调用一个子 Agent |
+| `agent.cancel_subagent` | 取消正在运行的子 Agent |
+
+### audit.* — 审计
+
+| 方法 | 说明 |
+|------|------|
+| `audit.list` | 分页查询审计条目 |
+| `audit.stats` | 审计统计摘要 |
+| `audit.purge` | 按条件清理审计历史 |
+
+### checkpoint.* — 工作区快照
+
+| 方法 | 说明 |
+|------|------|
+| `checkpoint.create` | 创建工作区快照 |
+| `checkpoint.list` | 列出快照 |
+| `checkpoint.diff` | 快照与当前工作区对比 |
+| `checkpoint.restore` | 恢复到指定快照 |
+| `checkpoint.delete` | 删除快照 |
+
+### git.* — 只读 Git 集成
+
+| 方法 | 说明 |
+|------|------|
+| `git.status` | 工作区状态（分支/暂存/未跟踪） |
+| `git.diff` | 工作区差异（详见正文 `git.*` 章节） |
+| `git.log` | 提交日志 |
+
+### mobile.* — 移动配对
+
+| 方法 | 说明 |
+|------|------|
+| `mobile.pair_start` | 发起配对，生成配对令牌 |
+| `mobile.pair_confirm` | 确认配对，绑定设备 |
+| `mobile.list` | 已配对设备列表 |
+| `mobile.device_status` | 设备在线状态 |
+| `mobile.push_notification` | 向设备推送通知 |
+| `mobile.touch` | 设备心跳上报 |
+| `mobile.unpair` | 解绑设备 |
+
+### notification.* — 通知中心
+
+| 方法 | 说明 |
+|------|------|
+| `notification.list` | 通知列表 |
+| `notification.mark_read` / `notification.mark_all_read` | 标记已读 |
+| `notification.delete` / `notification.purge` | 删除单条/批量清理 |
+
+### permission.* — 工具授权
+
+| 方法 | 说明 |
+|------|------|
+| `permission.resolve` | 应答权限请求（allow/deny，供前端弹窗回传） |
+| 权限规则 CRUD | 详见正文 `permission.*` 章节（list/get/set 等） |
+
+### provider.* — 多服务商
+
+| 方法 | 说明 |
+|------|------|
+| `provider.create` / `provider.get` / `provider.list` / `provider.update` / `provider.delete` | Provider 配置 CRUD |
+| `provider.set_api_key` | 写入该 Provider 的 API 密钥（OS keyring） |
+| `provider.clear_api_key` | 清除该 Provider 的密钥 |
+
+### schedule.* — 定时任务
+
+| 方法 | 说明 |
+|------|------|
+| `schedule.create` / `schedule.list` / `schedule.delete` | 定时任务 CRUD（update 见正文） |
+| `schedule.enable` / `schedule.disable` | 启用/停用 |
+| `schedule.run_now` | 立即触发一次 |
+
+### secrets.* — 旧版 MiniMax 密钥
+
+| 方法 | 说明 |
+|------|------|
+| `secrets.status` | 密钥来源状态（keyring/env/none） |
+| `secrets.set` / `secrets.clear` | 写入/清除系统钥匙串条目 |
+
+### session.* — 会话
+
+| 方法 | 说明 |
+|------|------|
+| `session.get` | 单个会话详情 |
+| `session.update` | 更新会话（如标题） |
+| `session.stats` | 会话消息统计 |
+| `session.export` | 导出单个会话 |
+| `session.archive` / `session.unarchive` | 归档/取消归档（archive 见正文） |
+| `session.updateProject` / `session.batchUpdateProject` | 移动到项目（单个/批量） |
+| `session.batchArchive` | 批量归档 |
+
+### skill.* — 技能
+
+| 方法 | 说明 |
+|------|------|
+| `skill.get` | 单个技能详情（list/invoke 见正文） |
+
+### task.* — 任务进度
+
+| 方法 | 说明 |
+|------|------|
+| `task.start` / `task.complete` / `task.cancel` | 任务生命周期 |
+| `task.get` / `task.list` | 任务查询 |
+| `task.update` | 更新任务步骤/进度 |
+
+### team.* — Agent 团队
+
+| 方法 | 说明 |
+|------|------|
+| `team.create` / `team.get` / `team.list` / `team.update` / `team.delete` | 团队 CRUD |
+| `team.enable` / `team.disable` | 启用/停用团队 |
+| `team.spawn` | 触发一次团队运行 |
+| `team.run.get` | 团队运行详情 |
+
+### webhook.* — Webhook
+
+| 方法 | 说明 |
+|------|------|
+| `webhook.create` / `webhook.list` / `webhook.update` / `webhook.delete` | Webhook CRUD |
+| `webhook.regenerate_secret` | 轮换签名密钥 |
+
+### workflow.* — 工作流
+
+| 方法 | 说明 |
+|------|------|
+| `workflow.create` / `workflow.list` / `workflow.update` / `workflow.delete` | 工作流 CRUD |
+| `workflow.enable` / `workflow.disable` | 启用/停用 |
+| `workflow.trigger` | 手动触发一次 |
