@@ -26,7 +26,7 @@
   /* Text */
   --ink-0: #eef1f7;              /* primary */
   --ink-1: #9aa4b8;              /* secondary */
-  --ink-2: #5d6679;              /* tertiary / placeholders */
+  --ink-2: #76839d;              /* tertiary / placeholders — AA 4.7:1 on surface-2 */
 
   /* Accent — indigo-violet, tuned for both themes */
   --accent: #7c8cff;
@@ -73,7 +73,7 @@
 
   --ink-0: #171b24;
   --ink-1: #57606f;              /* AA 5.6:1 on #fff */
-  --ink-2: #8a93a3;
+  --ink-2: #66707e;              /* AA 4.7:1 on surface-0 */
 
   --accent: #5a32a3;             /* AA 6.4:1 on #fff */
   --accent-hover: #6c44bd;
@@ -82,11 +82,11 @@
   --accent-subtle: rgb(90 50 163 / 0.09);
   --accent-ring: rgb(90 50 163 / 0.35);
 
-  --status-error: #dc2626;
+  --status-error: #b91c1c;       /* AA 6.5:1 on #fff */
   --status-warning: #b45309;
   --status-success: #047857;
   --status-info: #1d4ed8;
-  --status-error-subtle: rgb(220 38 38 / 0.08);
+  --status-error-subtle: rgb(185 28 28 / 0.08);
   --status-warning-subtle: rgb(180 83 9 / 0.10);
   --status-success-subtle: rgb(4 120 87 / 0.09);
   --status-info-subtle: rgb(29 78 216 / 0.08);
