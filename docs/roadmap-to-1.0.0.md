@@ -85,7 +85,7 @@
 - [x] R49 全量回归：pytest + vitest + 15 e2e + 生产模式 e2e [done @ e126472 — 实际口径 10 spec/21 用例；挖出 R32 断言债 8 处修复 + dist 过期重建]
 - [x] R50 flaky 清零：全部 e2e 连跑 3 轮零失败；性能基线复测 [done @ 1c26773 — 21/21 × 3（31.0/31.3/31.7s）；streaming-follow 竞态根因修复（虚拟化余震翻 following flag，poll 内重设 scrollTop）；发布数字：冷启动 2.589s（+0.1%）、首屏 JS 136.7KB（+10.3% 预算内）；ESLint 0 errors/0 warnings]
 - [x] R51 CHANGELOG 汇总 1.0.0 全部条目 [done @ 0db57a3 — [Unreleased] 顶部新增 1.0.0 总览：M1-M9 里程碑表 + rc 质量数字 + R50 性能数字 + 规模数字（registry 实测纠正 35→36 命名空间，diag.* 是第 36 个前缀）]
-- [ ] R52 版本 bump 1.0.0-rc.1
+- [x] R52 版本 bump 1.0.0-rc.1 [done @ 6f0b6e2 — 首个 pre-release 挖出 PEP 440 ↔ semver 规范碰撞：metadata 报 `1.0.0rc1` 连字符被吃、`installed_semver()` 在自家版本上抛错——桥接修复 + diag.export 改报 semver 形态 + 4 新测试；13 文件，10129 pytest / 622 vitest / ruff / eslint 0/0 全绿]
 
 ### M10 · 1.0.0 正式（R53–R54）
 - [ ] R53 发布公告 `docs/release-1.0.0.md` + README 徽章/版本终稿
