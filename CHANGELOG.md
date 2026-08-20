@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-08-21
+
+### Added — 诊断工具（v0.19.0 Milestone 8）
+- **IPC `diag.export`（R45）**：第 168 个 IPC 方法——组装脱敏诊断包（单一 JSON RPC result，前端转为下载文件）：版本 / 平台（system / release / machine / python / pid）/ 运行时长 / 配置（**仅枚举、数字、布尔、计数**——绝不读 keyring、绝不含 CORS origin 值；路径只留 basename，沿用 `/health` 先例）/ 各表行数（复用 `data.export` 的虚表排除集）/ 已消毒日志尾（200 行）。**无数据库时降级为 `storage: {db_available: false}` 而非报错**——诊断工具在故障时也必须可用。`logging_setup` 新增 `_MemoryTailHandler` 内存环形缓冲（deque maxlen=200），挂 root logger 且与 stderr / 文件 sink 同享 handler 级 `SanitizerFilter`；单表 COUNT 失败记 -1 不致沉包。
+- **前端诊断入口（R46）**：Settings → 数据 tab 第四面板「诊断包」——`DiagnosticBundle` 类型（storage 为 NO_DB 降级 union）、`TypedIPC.exportDiagnostic()`、mock 同形 bundle、`downloadJson()` 共享下载助手（export / diag 双复用，DRY）。操作互斥禁用；622/622 vitest 全绿。roadmap 原文「Settings About 区」落地为 Data tab 面板（设置页无 About tab，为单按钮新增第 15 个 tab 属过度设计——决策记入 commit note）。
+- **脱敏保证断言测试（R47）**：4 个测试钉死 bug 报告安全契约——序列化 bundle 永不含 `MINIMAX_API_KEY` 值与绝对 `MINIMAX_CODE_DATA_DIR`（data dir 只留 basename）；CORS origins 只报计数；任何字段不含用户 home（与 env 无关）；日志尾经 `handler.handle()` 真实 dispatch 路径验证 `sk-` 形状消毒与 home 相对路径折叠。`_json_literal()` 处理 JSON 转义匹配（Windows 反斜杠泄漏不静默漏检）；`redact_paths` 的边界语义（值即路径整体折叠、非散文子串替换）写入测试 docstring。开发中借测试失败反向验证了 R45 挂载设计：直接 `emit()` 绕过 `handle()` 的 filter 检查会误报未消毒，真实路径上消毒有效。
+
+### Changed
+- 版本号 0.18.0 → 0.19.0（6 处代码位 + CLAUDE.md / AGENTS.md / README.md 版本行 + `uv lock`）。
+
 ## [0.18.0] - 2026-08-21
 
 ### Added — 文档完备（v0.18.0 Milestone 7）
