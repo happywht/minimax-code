@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-08-21
+
+### Added — 无障碍与键盘（v0.17.0 Milestone 6）
+- **Modal 焦点陷阱审计与修复（R35）**：`useFocusTrap` 按 WAI-ARIA APG 对照修复 4 缺陷——document 捕获阶段拦截 Tab 逃逸（焦点跑到容器外时 preventDefault 拉回，Shift+Tab 回最后一个可聚焦元素）；容器自身 Shift+Tab 防漏；`isActuallyFocusable` 过滤 hidden / aria-hidden / 布局不可见（`checkVisibility` 存在性检测，jsdom 无布局自动跳过）；FOCUSABLE_SELECTOR 补 contenteditable，初始焦点支持 `[data-autofocus]` 显式标记（React `autoFocus` prop 不反射为 DOM attribute）。5 个使用者（DropdownMenu、Modal、ConfirmationDialog、PermissionRequestModal、SettingsPage）零改动受益。12 测试（9 hook + 3 modal 契约）。
+- **icon-only 按钮可访问名全覆盖（R36）**：108 个生产 tsx 全量静态扫描——IconButton 组件 `"aria-label"` 必填 prop 类型强制 61 处；原生 button 60 个中 4 个 icon-only，唯一漏网的 TeamRunPanel 移除按钮补 `strings.rightPanel.teamRuns.removeAria`。新增静态审计测试进 CI（dotall tempered token 正则跨多行属性匹配、sr-only 文本计为 label），未来新增 icon-only 按钮漏 label 直接挂测试。
+- **会话列表键盘导航 roving tabindex（R37）**：列表恒有恰一个 `tabIndex=0` 的 tab stop（fallback 链 rovingId → currentId → 首个可见行，搜索/过滤切换后不失效）；ArrowUp/Down 边界 clamp、Home/End 跳端点；导航按渲染 DOM 序（`querySelectorAll`）跨项目组正确移动——`filteredSessions` 时间序与分组渲染序不一致的坑由 DOM 查询天然规避。NavItem 透传 `tabIndex`/`onKeyDown`，SessionRow 标记 `data-session-row`。7 测试（单 stop / fallback / 跨组移动 / clamp / Home+End / stop 持久性 / Enter 选中）。
+- **设计 token WCAG AA 对比度守卫（R38）**：`tests/design-tokens-contrast.test.ts` 直接解析 `index.css` 两个主题块（`:root` / `:root.light`），按 WCAG 2.1 相对亮度公式复算 29 组前景×背景配对 × 2 主题 = 60 断言常驻 CI；含 token 存在性守卫防空扫假绿。配对覆盖 ink-0/1/2 × 四层 surface、accent 三态 × 三层 surface、accent-contrast on accent、四种 status 色 × 两层 surface；11-13px UI 文本不主张大字豁免，一律 4.5:1。
+
+### Fixed — 无障碍与键盘（v0.17.0 Milestone 6）
+- **3 处 sub-AA 颜色 token（R38 审计挖出）**：dark `--ink-2` `#5d6679`（≈3.3:1）→ `#76839d`（≈4.7:1）；light `--ink-2` `#8a93a3`（≈3.1:1）→ `#66707e`（≈4.7:1）——时间戳、placeholder 等 11px 信息文本恢复可读；light `--status-error` `#dc2626`（≈3.9:1 on #fff）→ `#b91c1c`（≈6.5:1，Tailwind red-700），`--status-error-subtle` rgba 字面量同步。
+
+### Changed
+- 版本号 0.16.0 → 0.17.0（6 处代码位 + CLAUDE.md / AGENTS.md / README.md 版本行 + `uv lock`）。
+
 ## [0.16.0] - 2026-08-21
 
 ### Added — UI 文案统一（v0.16.0 Milestone 5）
