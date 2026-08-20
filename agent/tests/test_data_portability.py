@@ -352,3 +352,82 @@ class TestDataBackupIPC:
         result = await client.request("data.backup", {"target_dir": str(tmp_path)})
         assert Path(result["path"]).exists()
         assert result["bytes"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Disaster-recovery round trip (R25)
+# ---------------------------------------------------------------------------
+
+
+class TestDisasterRecoveryRoundTrip:
+    """End-to-end: export → wipe → import → the data comes back identical.
+
+    Exercises the full RPC path (export and import both via ``IPCClient``)
+    against a real migrated database file, with a catastrophic wipe in
+    between — the exact sequence a user follows when recovering from data
+    loss on the same install (or cloning to a fresh one).
+    """
+
+    async def test_export_wipe_import_equivalence(
+        self, async_db: AsyncDatabase, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        await _seed(async_db)
+        import minimax_code.app as app_module
+
+        monkeypatch.setattr(app_module, "_DB_SINGLETON", async_db)
+        client = IPCClient()
+
+        # 1. Export the seeded state over RPC.
+        before = await client.request("data.export", {})
+
+        # 2. Wipe every business table the envelope knows about. FK
+        #    enforcement is off for the sweep (same bulk-load idiom the
+        #    import uses), then restored.
+        await async_db.execute("PRAGMA foreign_keys=OFF")
+        try:
+            for table in before["tables"]:
+                await async_db.execute(f'DELETE FROM "{table}"')
+        finally:
+            await async_db.execute("PRAGMA foreign_keys=ON")
+        wiped = await client.request("data.export", {})
+        user_tables = ("sessions", "messages")
+        for table in user_tables:
+            assert wiped["counts"][table] == 0, f"{table} not wiped"
+
+        # 3. Import the pre-wipe envelope over RPC.
+        summary = await client.request("data.import", {"envelope": before})
+        assert summary["imported"]["sessions"] == before["counts"]["sessions"]
+        assert summary["imported"]["messages"] == before["counts"]["messages"]
+
+        # 4. Data equivalence: a fresh export matches the original table
+        #    contents row-for-row (headers like exported_at may differ).
+        after = await client.request("data.export", {})
+        assert after["tables"] == before["tables"]
+        assert after["counts"] == before["counts"]
+
+    async def test_round_trip_survives_reconnect(
+        self, async_db: AsyncDatabase, tmp_path: Path
+    ) -> None:
+        """The recovery also works across a connection cycle — export,
+        close/reopen the database (agent restart), import, verify."""
+        await _seed(async_db)
+        envelope = await dump_database(async_db)
+        path = async_db.path
+
+        await async_db.close()
+        reopened = AsyncDatabase(path)
+        await reopened.connect()
+
+        rows = await reopened.fetchone("SELECT COUNT(*) AS n FROM sessions")
+        assert rows["n"] == 2  # same file, data intact before the wipe
+        await reopened.execute("PRAGMA foreign_keys=OFF")
+        try:
+            for table in envelope["tables"]:
+                await reopened.execute(f'DELETE FROM "{table}"')
+        finally:
+            await reopened.execute("PRAGMA foreign_keys=ON")
+
+        await restore_database(reopened, envelope)
+        after = await dump_database(reopened)
+        assert after["tables"] == envelope["tables"]
+        await reopened.close()
