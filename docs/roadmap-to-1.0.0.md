@@ -19,13 +19,13 @@
 ## 里程碑与轮次账本
 
 ### M1 · v0.12.0 生产单进程模式收口（R2–R8）
-- [ ] R2 生产模式 e2e：`pnpm build` → agent 服务 dist → 验证 SPA 首页 / `/health` / `/rpc` / WS 全通
-- [ ] R3 `pnpm start` 打磨：dist 缺失时友好报错并指引 build
-- [ ] R4 同源验证：生产模式下前端与 API 同端口（8765），CORS 不再参与；dev 模式白名单不变
-- [ ] R5 日志：`MINIMAX_CODE_LOG_FILE` 落盘选项 + 轮转；生产默认 INFO
-- [ ] R6 `/health` 扩展：`web_dist` 是否挂载、数据目录路径（脱敏）
-- [ ] R7 文档：`docs/deployment.md` 生产部署指南（build/start/端口/数据目录）
-- [ ] R8 版本 bump 0.12.0 + CHANGELOG
+- [x] R2 生产模式 e2e：`pnpm build` → agent 服务 dist → 验证 SPA 首页 / `/health` / `/rpc` / WS 全通 `[done @ 3055d57]`
+- [x] R3 `pnpm start` 打磨：dist 缺失时友好报错并指引 build `[done @ b0fdf27]`
+- [x] R4 同源验证：生产模式下前端与 API 同端口（8765），CORS 不再参与；dev 模式白名单不变 `[done @ a97171e]`
+- [x] R5 日志：`MINIMAX_CODE_LOG_FILE` 落盘选项 + 轮转；生产默认 INFO `[done @ 2759faf]`
+- [x] R6 `/health` 扩展：`web_dist` 是否挂载、数据目录路径（脱敏） `[done @ 2e810b0]`
+- [x] R7 文档：`docs/deployment.md` 生产部署指南（build/start/端口/数据目录） `[done @ 5bc00f4]`
+- [x] R8 版本 bump 0.12.0 + CHANGELOG `[done @ 5686e16]`
 
 ### M2 · v0.13.0 性能基线（R9–R14）
 - [ ] R9 基准脚本 `agent/tests/bench_startup.py`：冷启动到 /health OK 的耗时基线
