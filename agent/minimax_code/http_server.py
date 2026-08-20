@@ -641,11 +641,21 @@ def build_app(
                 db_ok = True
         except Exception:
             pass
+        from .storage.db import default_data_dir
+
+        data_dir = default_data_dir()
         return {
             "ok": True,
             "db": db_ok,
             "version": app_version,
             "uptime_s": int(time.time() - started_at),
+            # Production-mode indicators: whether this process also serves
+            # the built SPA, and which data directory name is in play.
+            # Only the *basename* is reported — enough to tell an env
+            # override apart from the default without leaking the full
+            # user path into screenshots or bug reports.
+            "web": _web_dist_dir() is not None,
+            "data_dir": data_dir.name or None,
         }
 
     # ---- POST /hooks/{path} — inbound webhooks (v0.5.0) ----------------

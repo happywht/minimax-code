@@ -128,6 +128,23 @@ async def test_health_returns_ok(client: httpx.AsyncClient) -> None:
     # agent should report 0 or 1.
     assert isinstance(body["uptime_s"], int)
     assert body["uptime_s"] >= 0
+    # Production-mode indicators (v0.12.0): ``web`` mirrors the StaticFiles
+    # mount decision, ``data_dir`` names the data directory. Machine-state
+    # dependent, so only shape is asserted here.
+    assert isinstance(body["web"], bool)
+    assert body["data_dir"] is None or isinstance(body["data_dir"], str)
+
+
+@pytest.mark.asyncio
+async def test_health_data_dir_reports_basename_only(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """/health must never leak the full user path — basename only."""
+    monkeypatch.setenv("MINIMAX_CODE_DATA_DIR", str(tmp_path / "scratch" / "e2e-db"))
+    r = await client.get("/health")
+    assert r.json()["data_dir"] == "e2e-db"
 
 
 @pytest.mark.asyncio
