@@ -53,7 +53,10 @@ describe("App smoke test", () => {
     await waitFor(() => {
       expect(screen.getByTestId("message-user")).toHaveTextContent("hello");
     }, { timeout: 10_000 });
-  });
+    // End-to-end through the mock backend's streaming setTimeouts: the
+    // default 5s test timeout can fire before the 10s waitFor under
+    // parallel-worker load, so budget the whole test explicitly.
+  }, 15_000);
 
   it("opens shortcuts with ? and closes them with Escape without stealing textarea input", async () => {
     const user = userEvent.setup();
