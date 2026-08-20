@@ -4,6 +4,7 @@
  */
 import { ChevronLeft } from "lucide-react";
 import { IconButton } from "../../ui";
+import { strings } from "../../ui/strings";
 
 export interface CollapsedStripProps {
   testId: string;
@@ -17,7 +18,7 @@ export function CollapsedStrip({ testId, onExpand }: CollapsedStripProps): JSX.E
       className="flex h-full w-8 shrink-0 flex-col items-center border-l border-line bg-surface-1 transition-all duration-200"
     >
       <IconButton
-        aria-label="Expand right panel"
+        aria-label={strings.rightPanel.shell.expand}
         data-testid={`${testId}-expand`}
         onClick={onExpand}
         className="mt-3"

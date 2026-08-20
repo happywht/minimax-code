@@ -14,6 +14,7 @@ import { Bot, CheckCircle2, Loader2, Users } from "lucide-react";
 import { Badge, EmptyState, Spinner } from "../../ui";
 import { useTaskStore } from "../../stores";
 import type { AgentInfo } from "../../types/ipc";
+import { strings } from "../../ui/strings";
 
 type AgentStatus = "idle" | "running" | "done";
 
@@ -53,7 +54,7 @@ export function AgentTeamList({
         className="flex items-center gap-2 px-3 py-3 text-xs text-ink-2"
       >
         <Spinner size={12} />
-        Loading agents…
+        {strings.rightPanel.agents.loading}
       </div>
     );
   }
@@ -65,7 +66,7 @@ export function AgentTeamList({
         className="px-3 py-2 text-xs text-status-error"
         title={error}
       >
-        Failed to load agents
+        {strings.rightPanel.agents.loadFailed}
       </div>
     );
   }
@@ -125,7 +126,10 @@ export function AgentTeamList({
                   </div>
                 ) : (
                   <div className="mt-0.5 truncate text-[11px] italic text-ink-2">
-                    {a.description || (a.enabled ? "idle" : "disabled")}
+                    {a.description ||
+                      (a.enabled
+                        ? strings.rightPanel.agents.idle
+                        : strings.rightPanel.agents.disabled)}
                   </div>
                 )}
               </div>
@@ -140,23 +144,36 @@ export function AgentTeamList({
 function AgentStatusBadge({ status }: { status: AgentStatus }): JSX.Element {
   if (status === "running") {
     return (
-      <Badge tone="warning" data-testid="agent-status-running" title="running">
+      <Badge
+        tone="warning"
+        data-testid="agent-status-running"
+        title={strings.rightPanel.agents.running}
+      >
         <Loader2 size={9} className="animate-spin" aria-hidden="true" />
-        Running
+        {strings.rightPanel.agents.running}
       </Badge>
     );
   }
   if (status === "done") {
     return (
-      <Badge tone="success" data-testid="agent-status-done" title="done">
+      <Badge
+        tone="success"
+        data-testid="agent-status-done"
+        title={strings.rightPanel.agents.done}
+      >
         <CheckCircle2 size={9} aria-hidden="true" />
-        Done
+        {strings.rightPanel.agents.done}
       </Badge>
     );
   }
   return (
-    <Badge tone="neutral" dot data-testid="agent-status-idle" title="idle">
-      Idle
+    <Badge
+      tone="neutral"
+      dot
+      data-testid="agent-status-idle"
+      title={strings.rightPanel.agents.idle}
+    >
+      {strings.rightPanel.agents.idle}
     </Badge>
   );
 }

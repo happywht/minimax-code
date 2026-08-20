@@ -22,7 +22,7 @@ describe("ProgressPanel", () => {
   it("renders the progress section with the Agent status badge", () => {
     render(<ProgressPanel testId="pp" />);
     expect(screen.getByTestId("pp")).toBeInTheDocument();
-    expect(screen.getByText("Progress")).toBeInTheDocument();
+    expect(screen.getByText("进度")).toBeInTheDocument();
     expect(screen.getByTestId("progress-agent-status")).toBeInTheDocument();
   });
 
@@ -43,7 +43,7 @@ describe("ProgressPanel", () => {
     const row = screen.getByTestId("task-row-t-1");
     expect(row).toBeInTheDocument();
     expect(screen.getByTestId("task-status-running")).toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText("Dismiss task"));
+    fireEvent.click(screen.getByLabelText("移除任务"));
     expect(useTaskStore.getState().tasks["t-1"]).toBeUndefined();
   });
 

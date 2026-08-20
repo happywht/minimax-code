@@ -5,6 +5,7 @@
 import { RefreshCw } from "lucide-react";
 import { IconButton, Panel } from "../../ui";
 import type { AgentInfo } from "../../types/ipc";
+import { strings } from "../../ui/strings";
 import { AgentTeamList } from "./AgentTeamList";
 
 export interface AgentTeamPanelProps {
@@ -30,11 +31,11 @@ export function AgentTeamPanel({
       className="p-2"
     >
       <Panel
-        title="Agent Team"
+        title={strings.rightPanel.agents.teamTitle}
         flush
         actions={
           <IconButton
-            aria-label="Refresh agent list"
+            aria-label={strings.rightPanel.agents.refreshAria}
             size="sm"
             data-testid={`${testId}-team-refresh`}
             onClick={onRefresh}

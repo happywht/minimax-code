@@ -12,6 +12,7 @@ import { useSessionStore } from "../../stores";
 import { toast } from "../layout/ErrorBoundary";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import type { Checkpoint } from "../../types/ipc";
+import { strings } from "../../ui/strings";
 
 export interface CheckpointPanelProps {
   testId?: string;
@@ -36,7 +37,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
       setCheckpoints(result.checkpoints);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to load checkpoints", msg);
+      toast.error(strings.rightPanel.checkpoint.loadFailed, msg);
     } finally {
       setLoading(false);
     }
@@ -48,10 +49,10 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
 
   const handleCreate = async () => {
     if (!sessionId) {
-      toast.error("No session selected");
+      toast.error(strings.rightPanel.checkpoint.noSession);
       return;
     }
-    const trimmedLabel = label.trim() || "Checkpoint";
+    const trimmedLabel = label.trim() || strings.rightPanel.checkpoint.defaultLabel;
     setCreating(true);
     try {
       await typedIPC.createCheckpoint({
@@ -61,11 +62,11 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
       });
       setLabel("");
       setMessage("");
-      toast.success("Checkpoint created", trimmedLabel);
+      toast.success(strings.rightPanel.checkpoint.created, trimmedLabel);
       await load();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to create checkpoint", msg);
+      toast.error(strings.rightPanel.checkpoint.createFailed, msg);
     } finally {
       setCreating(false);
     }
@@ -73,34 +74,34 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
 
   const handleDelete = async (ckpt: Checkpoint) => {
     const accepted = await requestConfirmation({
-      title: `Delete checkpoint ${ckpt.label}?`,
-      description: "This removes the stored snapshot metadata. On-disk untracked copies will be orphaned.",
-      confirmLabel: "Delete",
+      title: strings.rightPanel.checkpoint.deleteTitle(ckpt.label),
+      description: strings.rightPanel.checkpoint.deleteDescription,
+      confirmLabel: strings.rightPanel.checkpoint.deleteConfirm,
     });
     if (!accepted) return;
     try {
       await typedIPC.deleteCheckpoint(ckpt.id);
-      toast.success("Checkpoint deleted", ckpt.label);
+      toast.success(strings.rightPanel.checkpoint.deleted, ckpt.label);
       await load();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to delete checkpoint", msg);
+      toast.error(strings.rightPanel.checkpoint.deleteFailed, msg);
     }
   };
 
   const handleRestore = async (ckpt: Checkpoint) => {
     const accepted = await requestConfirmation({
-      title: `Restore checkpoint ${ckpt.label}?`,
-      description: "This rewinds the working tree to the checkpoint state. Uncommitted changes may be overwritten.",
-      confirmLabel: "Restore",
+      title: strings.rightPanel.checkpoint.restoreTitle(ckpt.label),
+      description: strings.rightPanel.checkpoint.restoreDescription,
+      confirmLabel: strings.rightPanel.checkpoint.restoreConfirm,
     });
     if (!accepted) return;
     try {
       await typedIPC.restoreCheckpoint(ckpt.id);
-      toast.success("Checkpoint restored", ckpt.label);
+      toast.success(strings.rightPanel.checkpoint.restored, ckpt.label);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to restore checkpoint", msg);
+      toast.error(strings.rightPanel.checkpoint.restoreFailed, msg);
     }
   };
 
@@ -114,10 +115,16 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
     setDiffLoading((prev) => ({ ...prev, [ckpt.id]: true }));
     try {
       const result = await typedIPC.diffCheckpoint(ckpt.id);
-      setDiffs((prev) => ({ ...prev, [ckpt.id]: result.available ? result.patch : "No diff available." }));
+      setDiffs((prev) => ({
+        ...prev,
+        [ckpt.id]: result.available ? result.patch : strings.rightPanel.checkpoint.noDiff,
+      }));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      setDiffs((prev) => ({ ...prev, [ckpt.id]: `Error loading diff: ${msg}` }));
+      setDiffs((prev) => ({
+        ...prev,
+        [ckpt.id]: strings.rightPanel.checkpoint.diffLoadError(msg),
+      }));
     } finally {
       setDiffLoading((prev) => ({ ...prev, [ckpt.id]: false }));
     }
@@ -128,7 +135,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
       <div className="flex items-center justify-between border-b border-minimax-border px-3 py-2">
         <div className="flex items-center gap-1.5 text-xs font-medium text-minimax-fg">
           <Camera size={12} className="text-minimax-accent" />
-          Checkpoints
+          {strings.rightPanel.checkpoint.title}
         </div>
       </div>
 
@@ -137,7 +144,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
           <div className="space-y-2 rounded-md border border-minimax-border bg-minimax-bg/40 p-2">
             <input
               type="text"
-              placeholder="Checkpoint label"
+              placeholder={strings.rightPanel.checkpoint.labelPlaceholder}
               value={label}
               onChange={(e) => setLabel(e.target.value)}
               className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-[11px] outline-none focus:border-minimax-accent"
@@ -145,7 +152,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
             />
             <input
               type="text"
-              placeholder="Optional message"
+              placeholder={strings.rightPanel.checkpoint.messagePlaceholder}
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               className="w-full rounded border border-minimax-border bg-minimax-bg px-2 py-1 text-[11px] outline-none focus:border-minimax-accent"
@@ -160,7 +167,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                 data-testid={`${testId}-create`}
               >
                 {creating ? <Spinner size={10} /> : <Camera size={10} />}
-                <span className="ml-1">Create</span>
+                <span className="ml-1">{strings.rightPanel.checkpoint.create}</span>
               </Button>
             </div>
           </div>
@@ -172,12 +179,12 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
 
         {loading && checkpoints.length === 0 ? (
           <div className="flex items-center justify-center gap-2 py-4 text-[11px] text-minimax-muted">
-            <Spinner size={12} /> Loading checkpoints…
+            <Spinner size={12} /> {strings.rightPanel.checkpoint.loading}
           </div>
         ) : checkpoints.length === 0 ? (
           <EmptyState
             title="暂无 Checkpoint"
-            hint="点击 Create 保存当前工作区快照。"
+            hint={strings.rightPanel.checkpoint.emptyHint}
           />
         ) : (
           <ul className="space-y-1.5" data-testid={`${testId}-list`}>
@@ -205,7 +212,9 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                         </span>
                       )}
                       <span>
-                        {ckpt.tracked_files.length + ckpt.untracked_files.length} files
+                        {strings.rightPanel.checkpoint.fileCount(
+                          ckpt.tracked_files.length + ckpt.untracked_files.length,
+                        )}
                       </span>
                     </div>
                   </div>
@@ -242,11 +251,11 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                   <div className="mt-2 border-t border-minimax-border pt-2">
                     {diffLoading[ckpt.id] ? (
                       <div className="flex items-center gap-2 text-[11px] text-minimax-muted">
-                        <Spinner size={10} /> Loading diff…
+                        <Spinner size={10} /> {strings.rightPanel.checkpoint.loadingDiff}
                       </div>
                     ) : (
                       <pre className="max-h-40 overflow-auto rounded bg-minimax-bg p-2 font-mono text-[11px] text-minimax-fg">
-                        {diffs[ckpt.id] || "No diff available."}
+                        {diffs[ckpt.id] || strings.rightPanel.checkpoint.noDiff}
                       </pre>
                     )}
                   </div>

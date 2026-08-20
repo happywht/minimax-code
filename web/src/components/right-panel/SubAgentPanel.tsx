@@ -28,6 +28,7 @@ import {
 } from "../../stores";
 import type { SubAgentRun, SubAgentStatus } from "../../types/ipc";
 import { StructuredErrorCallout } from "../StructuredErrorCallout";
+import { strings } from "../../ui/strings";
 
 export interface SubAgentPanelProps {
   testId?: string;
@@ -38,13 +39,41 @@ export interface SubAgentPanelProps {
 }
 
 const STATUS_TONE: Record<SubAgentStatus, { label: string; cls: string; icon: "spin" | "ok" | "err" | "idle" }> = {
-  started: { label: "Started", cls: "text-minimax-muted bg-minimax-border/40 border-minimax-border", icon: "idle" },
-  thinking: { label: "Thinking", cls: "text-minimax-accent bg-minimax-accent/10 border-minimax-accent/30", icon: "spin" },
-  tool_call: { label: "Tool call", cls: "text-amber-300 bg-amber-500/10 border-amber-500/30", icon: "spin" },
-  tool_result: { label: "Tool result", cls: "text-amber-300 bg-amber-500/10 border-amber-500/30", icon: "spin" },
-  completed: { label: "Completed", cls: "text-emerald-300 bg-emerald-500/10 border-emerald-500/30", icon: "ok" },
-  failed: { label: "Failed", cls: "text-status-error bg-red-500/10 border-red-500/30", icon: "err" },
-  cancelled: { label: "Cancelled", cls: "text-minimax-muted bg-minimax-border/40 border-minimax-border", icon: "idle" },
+  started: {
+    label: strings.rightPanel.subagents.status.started,
+    cls: "text-minimax-muted bg-minimax-border/40 border-minimax-border",
+    icon: "idle",
+  },
+  thinking: {
+    label: strings.rightPanel.subagents.status.thinking,
+    cls: "text-minimax-accent bg-minimax-accent/10 border-minimax-accent/30",
+    icon: "spin",
+  },
+  tool_call: {
+    label: strings.rightPanel.subagents.status.tool_call,
+    cls: "text-amber-300 bg-amber-500/10 border-amber-500/30",
+    icon: "spin",
+  },
+  tool_result: {
+    label: strings.rightPanel.subagents.status.tool_result,
+    cls: "text-amber-300 bg-amber-500/10 border-amber-500/30",
+    icon: "spin",
+  },
+  completed: {
+    label: strings.rightPanel.subagents.status.completed,
+    cls: "text-emerald-300 bg-emerald-500/10 border-emerald-500/30",
+    icon: "ok",
+  },
+  failed: {
+    label: strings.rightPanel.subagents.status.failed,
+    cls: "text-status-error bg-red-500/10 border-red-500/30",
+    icon: "err",
+  },
+  cancelled: {
+    label: strings.rightPanel.subagents.status.cancelled,
+    cls: "text-minimax-muted bg-minimax-border/40 border-minimax-border",
+    icon: "idle",
+  },
 };
 
 /** Terminal states — sorted to the bottom and cleared by "Clear done". */
@@ -83,7 +112,9 @@ export function SubAgentPanel({
     <div data-testid={testId} className="px-3 pb-3">
       <div className="mb-2 flex items-center justify-between">
         <span className="text-[11px] uppercase tracking-wider text-minimax-muted">
-          {runs.length === 0 ? "Idle" : `${runs.length} run${runs.length === 1 ? "" : "s"}`}
+          {runs.length === 0
+            ? strings.rightPanel.subagents.idle
+            : strings.rightPanel.subagents.runCount(runs.length)}
         </span>
         {completedCount > 0 && (
           <button
@@ -91,9 +122,9 @@ export function SubAgentPanel({
             data-testid={`${testId}-clear`}
             onClick={clearCompleted}
             className="text-[11px] text-minimax-muted hover:text-minimax-fg"
-            title="Drop completed / failed runs from the list"
+            title={strings.rightPanel.subagents.clearDoneTitle}
           >
-            Clear done
+            {strings.rightPanel.subagents.clearDone}
           </button>
         )}
       </div>
@@ -164,7 +195,7 @@ function SubAgentRow({
               useSubAgentStore.getState().cancelRun(run.run_id);
             }}
             className="shrink-0 rounded-full p-0.5 text-minimax-muted transition-colors hover:bg-red-500/20 hover:text-status-error"
-            title="Cancel this run"
+            title={strings.rightPanel.subagents.cancelTitle}
           >
             <StopCircle size={12} />
           </button>
@@ -177,7 +208,7 @@ function SubAgentRow({
       </div>
       <div
         className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-minimax-border/60"
-        aria-label="progress"
+        aria-label={strings.rightPanel.subagents.progressAria}
         data-testid={`${testId}-${run.run_id}-progress-track`}
       >
         <div
@@ -230,7 +261,7 @@ function SubAgentRow({
           {run.error && (
             <StructuredErrorCallout
               testId={`${testId}-${run.run_id}-error`}
-              title="Sub-agent failed"
+              title={strings.rightPanel.subagents.failedTitle}
               message={run.error}
               context={{
                 run_id: run.run_id,

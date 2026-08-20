@@ -6,6 +6,7 @@ import { Search, RefreshCw, FileCode, Clock, TrendingUp } from "lucide-react";
 import { Button, Input, Spinner, EmptyState } from "../../ui";
 import { useCodebaseStore, startCodebaseStatusPoller } from "../../stores";
 import type { CodebaseSearchResult } from "../../types/ipc";
+import { strings } from "../../ui/strings";
 
 export interface CodebasePanelProps {
   testId?: string;
@@ -79,7 +80,7 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
       className="flex h-full flex-col gap-3 p-3"
     >
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium text-ink-0">Codebase</h3>
+        <h3 className="text-sm font-medium text-ink-0">{strings.rightPanel.codebase.title}</h3>
         <Button
           size="sm"
           variant="subtle"
@@ -88,18 +89,18 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
           data-testid={`${testId}-refresh`}
         >
           <RefreshCw size={12} className="mr-1" />
-          Refresh
+          {strings.rightPanel.codebase.refresh}
         </Button>
       </div>
 
       {status ? (
         <div className="space-y-2 rounded-md border border-line bg-surface-1 p-3 text-xs">
           <div className="flex items-center justify-between">
-            <span className="text-ink-2">Status</span>
+            <span className="text-ink-2">{strings.rightPanel.codebase.status}</span>
             <span className="font-medium capitalize text-ink-0" data-testid={`${testId}-status`}>{status.status}</span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-ink-2">Progress</span>
+            <span className="text-ink-2">{strings.rightPanel.codebase.progress}</span>
             <span className="text-ink-0" data-testid={`${testId}-percent`}>{status.percent}%</span>
           </div>
           <div className="h-1.5 w-full rounded-full bg-surface-2">
@@ -110,8 +111,12 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
           </div>
           <div className="text-ink-2">{status.message}</div>
           <div className="flex items-center justify-between text-ink-2">
-            <span data-testid={`${testId}-files`}>Files: {status.stats.total_files}</span>
-            <span data-testid={`${testId}-chunks`}>Chunks: {status.stats.total_chunks}</span>
+            <span data-testid={`${testId}-files`}>
+              {strings.rightPanel.codebase.files(status.stats.total_files)}
+            </span>
+            <span data-testid={`${testId}-chunks`}>
+              {strings.rightPanel.codebase.chunks(status.stats.total_chunks)}
+            </span>
           </div>
           {status.status !== "indexing" && (
             <Button
@@ -121,19 +126,19 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
               loading={loading}
               data-testid={`${testId}-build`}
             >
-              Build Index
+              {strings.rightPanel.codebase.buildIndex}
             </Button>
           )}
         </div>
       ) : (
         <div className="flex items-center gap-2 py-4 text-xs text-ink-2">
-          <Spinner size={12} /> Loading status…
+          <Spinner size={12} /> {strings.rightPanel.codebase.loadingStatus}
         </div>
       )}
 
       <div className="flex gap-2">
         <Input
-          placeholder="Search code (e.g. auth flow)"
+          placeholder={strings.rightPanel.codebase.searchPlaceholder}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleSearch()}
@@ -144,7 +149,7 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
           variant="primary"
           onClick={handleSearch}
           loading={searching}
-          aria-label="Search"
+          aria-label={strings.rightPanel.codebase.searchAria}
           data-testid={`${testId}-search-btn`}
         >
           <Search size={12} />
@@ -153,13 +158,13 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
 
       {searching && results.length === 0 ? (
         <div className="flex items-center justify-center gap-2 py-4 text-xs text-ink-2">
-          <Spinner size={12} /> Searching…
+          <Spinner size={12} /> {strings.rightPanel.codebase.searching}
         </div>
       ) : results.length === 0 ? (
         <EmptyState
           icon={<FileCode size={20} />}
           title="暂无搜索结果"
-          hint="输入关键词并点击搜索，或先 Build Index。"
+          hint={strings.rightPanel.codebase.searchEmptyHint}
         />
       ) : (
         <ul className="flex-1 space-y-2 overflow-auto" data-testid={`${testId}-results`}>
@@ -182,7 +187,9 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
                 className="flex items-center justify-between rounded bg-surface-1 px-2 py-1 text-xs"
               >
                 <span className="truncate text-ink-0">{f.file_path}</span>
-                <span className="shrink-0 text-ink-2">{f.count} matches</span>
+                <span className="shrink-0 text-ink-2">
+                  {strings.rightPanel.codebase.matchCount(f.count)}
+                </span>
               </li>
             ))}
           </ul>
@@ -215,7 +222,7 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
 
       <div className="flex gap-2 border-t border-line pt-2">
         <Input
-          placeholder="Summarize path (e.g. src/auth.ts)"
+          placeholder={strings.rightPanel.codebase.summaryPathPlaceholder}
           value={summaryPath}
           onChange={(e) => setSummaryPath(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && void summarize()}
@@ -228,7 +235,7 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
           loading={summarizing}
           data-testid={`${testId}-summary-btn`}
         >
-          Summary
+          {strings.rightPanel.codebase.summary}
         </Button>
       </div>
 
@@ -236,7 +243,8 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
         <div className="rounded-md border border-line bg-surface-1 p-3 text-xs">
           <div className="font-medium text-ink-0">{summary.path}</div>
           <div className="text-ink-2">
-            {summary.kind} · {summary.total_lines} lines · {summary.file_count} file(s)
+            {summary.kind} · {strings.rightPanel.codebase.lineCount(summary.total_lines)} ·{" "}
+            {strings.rightPanel.codebase.fileCount(summary.file_count)}
           </div>
           <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-surface-2 p-1.5 text-ink-1">
             {summary.snippet}

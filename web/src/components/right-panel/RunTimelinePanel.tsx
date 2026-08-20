@@ -13,6 +13,7 @@ import { usePermissionStore, useRunTimelineStore, useSessionStore } from "../../
 import type { AgentRunStep, AgentRunStepKind, AgentRunStepStatus } from "../../types/ipc";
 import { buildPermissionPatchFiles } from "../../lib/permissionPatchPreview";
 import { PermissionPatchPreview } from "../modals/PermissionPatchPreview";
+import { strings } from "../../ui/strings";
 
 export interface RunTimelinePanelProps {
   testId?: string;
@@ -86,7 +87,11 @@ export function RunTimelinePanel({
   if (visibleRuns.length === 0 && pending.length === 0) {
     return (
       <div data-testid={testId} className="px-3 py-4 text-xs text-minimax-muted">
-        {loading ? "Loading runs..." : error ? "Run history unavailable." : "No active runs."}
+        {loading
+          ? strings.rightPanel.timeline.loading
+          : error
+            ? strings.rightPanel.timeline.unavailable
+            : strings.rightPanel.timeline.empty}
       </div>
     );
   }
@@ -128,14 +133,14 @@ export function RunTimelinePanel({
                     onClick={() => void resolvePermission(request.request_id, "deny")}
                     className="rounded border border-minimax-border px-2 py-1 text-[11px] text-minimax-fg hover:border-red-500/40 hover:text-status-error"
                   >
-                    Deny
+                    {strings.rightPanel.timeline.deny}
                   </button>
                   <button
                     type="button"
                     onClick={() => void resolvePermission(request.request_id, "allow")}
                     className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-1 text-[11px] text-emerald-200 hover:bg-emerald-500/25"
                   >
-                    Allow
+                    {strings.rightPanel.timeline.allow}
                   </button>
                 </div>
               </div>
@@ -147,7 +152,7 @@ export function RunTimelinePanel({
             <div className="mb-2 flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <div className="truncate text-xs font-medium text-minimax-fg">
-                  {run.title || "Agent run"}
+                  {run.title || strings.rightPanel.timeline.runFallbackTitle}
                 </div>
                 <div className="mt-0.5 font-mono text-[11px] text-minimax-muted">
                   {run.id.slice(0, 12)}
@@ -170,7 +175,7 @@ export function RunTimelinePanel({
           onClick={scrollToBottom}
           className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full border border-minimax-border bg-minimax-panel/95 px-2.5 py-1 text-[11px] font-medium text-minimax-fg shadow-lg backdrop-blur transition-colors duration-200 hover:bg-minimax-border"
         >
-          New events ↓
+          {strings.rightPanel.timeline.newEvents}
         </button>
       )}
     </div>
@@ -250,7 +255,7 @@ function ExpandablePre({
           onClick={() => setExpanded((value) => !value)}
           className="mt-1 rounded border border-minimax-border px-1.5 py-0.5 text-[11px] text-minimax-muted transition-colors hover:border-minimax-accent/40 hover:text-minimax-fg"
         >
-          {expanded ? "Show less" : "Show full"}
+          {expanded ? strings.rightPanel.timeline.showLess : strings.rightPanel.timeline.showFull}
         </button>
       )}
     </div>
@@ -262,13 +267,16 @@ function buildStepDetailText(step: AgentRunStep): string {
   const error = step.error?.trim();
   const parts = [summary];
   if (error && error !== summary) {
-    parts.push(`Error: ${error}`);
+    parts.push(strings.rightPanel.timeline.errorPrefix(error));
   }
   return parts.filter(Boolean).join("\n\n");
 }
 
 function summarizeStepText(text: string, kind: AgentRunStepKind): string {
-  const withoutCode = text.replace(/```[\s\S]*?```/g, "[code block]");
+  const withoutCode = text.replace(
+    /```[\s\S]*?```/g,
+    strings.rightPanel.timeline.codeBlock,
+  );
   const compact = withoutCode.replace(/\n{3,}/g, "\n\n").trim();
   const limit = kind === "final" ? 180 : 260;
   return summarizeLongText(compact, limit);
@@ -317,7 +325,7 @@ function iconForKind(kind: AgentRunStepKind) {
 }
 
 function labelForKind(kind: AgentRunStepKind): string {
-  return kind.replace("_", " ");
+  return strings.rightPanel.timeline.stepKinds[kind];
 }
 
 function statusTone(status: AgentRunStepStatus): string {

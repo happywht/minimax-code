@@ -82,7 +82,7 @@ describe("CodebasePanel", () => {
     });
     expect(screen.getByText("done")).toBeInTheDocument();
     expect(screen.getByText("100%")).toBeInTheDocument();
-    expect(screen.getByText("Files: 12")).toBeInTheDocument();
+    expect(screen.getByText("文件：12")).toBeInTheDocument();
   });
 
   it("runs a search and renders results", async () => {

@@ -4,6 +4,7 @@
  * tab keeps an accessible name even though only the icon is shown.
  */
 import { IconButton } from "../../ui";
+import { strings } from "../../ui/strings";
 import { INSPECTOR_TABS, type InspectorTab } from "./tabs";
 
 export interface InspectorTabBarProps {
@@ -20,7 +21,7 @@ export function InspectorTabBar({
   return (
     <div
       role="tablist"
-      aria-label="Inspector panels"
+      aria-label={strings.rightPanel.shell.panelsAria}
       className="flex gap-1 overflow-x-auto border-b border-line px-2 py-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     >
       {INSPECTOR_TABS.map((tab) => {

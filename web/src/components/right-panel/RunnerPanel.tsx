@@ -7,6 +7,7 @@ import type {
   RunnerPermissionMode,
   RunnerSandboxMode,
 } from "../../types/ipc";
+import { strings } from "../../ui/strings";
 
 export interface RunnerPanelProps {
   testId?: string;
@@ -52,7 +53,8 @@ export function RunnerPanel({ testId = "runner-panel" }: RunnerPanelProps): JSX.
     [runners, selectedId],
   );
   const canStart = Boolean(selected?.available && command.trim() && !starting);
-  const commandPlaceholder = selected?.kind === "external_cli" ? "Ask this runner" : "pnpm test";
+  const commandPlaceholder =
+    selected?.kind === "external_cli" ? strings.rightPanel.runner.askPlaceholder : "pnpm test";
   const isCodex = selected?.id === "codex-cli";
   const isClaude = selected?.id === "claude-code-cli";
 
@@ -78,15 +80,15 @@ export function RunnerPanel({ testId = "runner-panel" }: RunnerPanelProps): JSX.
       <div className="sticky top-0 z-10 bg-minimax-panel pb-2 pt-3">
         <div className="mb-2 flex items-center justify-between">
           <span className="text-[11px] font-medium uppercase tracking-wider text-minimax-muted">
-            Runners
+            {strings.rightPanel.runner.title}
           </span>
           <button
             type="button"
             data-testid={`${testId}-refresh`}
             onClick={() => void list()}
             className="flex h-6 w-6 items-center justify-center rounded text-minimax-muted transition-colors duration-200 hover:bg-minimax-border hover:text-minimax-fg"
-            aria-label="Refresh runners"
-            title="Refresh runners"
+            aria-label={strings.rightPanel.runner.refreshAria}
+            title={strings.rightPanel.runner.refreshAria}
           >
             <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
           </button>
@@ -122,8 +124,8 @@ export function RunnerPanel({ testId = "runner-panel" }: RunnerPanelProps): JSX.
             data-testid={`${testId}-start`}
             disabled={!canStart}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-minimax-accent/15 text-minimax-accent transition-colors duration-200 hover:bg-minimax-accent/25 disabled:cursor-not-allowed disabled:opacity-40"
-            aria-label="Start runner"
-            title="Start runner"
+            aria-label={strings.rightPanel.runner.startAria}
+            title={strings.rightPanel.runner.startAria}
           >
             {starting ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
           </button>
@@ -133,7 +135,7 @@ export function RunnerPanel({ testId = "runner-panel" }: RunnerPanelProps): JSX.
           value={cwd}
           onChange={(event) => setCwd(event.target.value)}
           className="mt-1 h-7 w-full rounded border border-minimax-border bg-minimax-bg px-2 font-mono text-[11px] text-minimax-muted outline-none transition-colors duration-200 placeholder:text-minimax-muted/70 focus:border-minimax-accent/60"
-          placeholder="cwd (default workspace root)"
+          placeholder={strings.rightPanel.terminal.cwdPlaceholder}
         />
       </form>
 
@@ -145,7 +147,7 @@ export function RunnerPanel({ testId = "runner-panel" }: RunnerPanelProps): JSX.
           {isCodex && (
             <>
               <OptionSelect
-                label="Sandbox"
+                label={strings.rightPanel.runner.sandbox}
                 testId={`${testId}-sandbox`}
                 value={settings.sandboxMode}
                 options={["workspace-write", "read-only", "danger-full-access"]}
@@ -154,7 +156,7 @@ export function RunnerPanel({ testId = "runner-panel" }: RunnerPanelProps): JSX.
                 }
               />
               <OptionSelect
-                label="Approval"
+                label={strings.rightPanel.runner.approval}
                 testId={`${testId}-approval`}
                 value={settings.approvalPolicy}
                 options={["never", "on-request", "on-failure", "untrusted"]}
@@ -168,7 +170,7 @@ export function RunnerPanel({ testId = "runner-panel" }: RunnerPanelProps): JSX.
           )}
           {isClaude && (
             <OptionSelect
-              label="Permission"
+              label={strings.rightPanel.runner.permission}
               testId={`${testId}-permission`}
               value={settings.permissionMode}
               options={["acceptEdits", "default", "plan", "bypassPermissions"]}
@@ -321,7 +323,7 @@ function RunnerCard({
       </div>
       {!enabled && (
         <div className="mt-1 truncate text-[11px] text-minimax-muted">
-          {runner.reason ?? "Adapter pending"}
+          {runner.reason ?? strings.rightPanel.runner.adapterPending}
         </div>
       )}
     </button>
@@ -332,7 +334,7 @@ function skeletonRunners(): RunnerInfo[] {
   return [
     {
       id: "native",
-      label: "Loading",
+      label: strings.rightPanel.runner.loading,
       kind: "native",
       available: true,
       command: null,

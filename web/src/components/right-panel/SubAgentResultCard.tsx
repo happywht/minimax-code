@@ -12,6 +12,7 @@ import { Bot, ChevronDown, ChevronRight, CircleAlert, ExternalLink, Sparkles } f
 import { useSubAgentStore } from "../../stores";
 import type { SubAgentRun } from "../../types/ipc";
 import { StructuredErrorCallout } from "../StructuredErrorCallout";
+import { strings } from "../../ui/strings";
 
 export interface SubAgentResultCardProps {
   testId?: string;
@@ -34,7 +35,7 @@ export function SubAgentResultCard({
         data-testid={`${testId}-missing`}
         className="mx-auto my-1 max-w-[80%] rounded-md border border-minimax-border bg-minimax-bg/40 px-3 py-2 text-[11px] italic text-minimax-muted"
       >
-        Sub-agent result unavailable
+        {strings.rightPanel.resultCard.unavailable}
       </div>
     );
   }
@@ -78,7 +79,7 @@ export function SubAgentResultCard({
               : "border-emerald-500/30 text-emerald-300")
           }
         >
-          {failed ? "failed" : "completed"}
+          {failed ? strings.rightPanel.resultCard.failed : strings.rightPanel.resultCard.completed}
         </span>
         <span className="flex-1" />
         {!finished && (
@@ -90,10 +91,10 @@ export function SubAgentResultCard({
             data-testid={`${testId}-open`}
             onClick={() => onOpenRun(run)}
             className="inline-flex items-center gap-0.5 text-[11px] text-minimax-muted hover:text-minimax-fg"
-            title="Open in sub-agent panel"
+            title={strings.rightPanel.resultCard.openTitle}
           >
             <ExternalLink size={9} />
-            open run
+            {strings.rightPanel.resultCard.openRun}
           </button>
         )}
         {run.text && (
@@ -103,7 +104,7 @@ export function SubAgentResultCard({
             onClick={() => setExpanded((v) => !v)}
             aria-expanded={expanded}
             className="text-minimax-muted hover:text-minimax-fg"
-            title={expanded ? "Collapse" : "Expand"}
+            title={expanded ? strings.rightPanel.resultCard.collapse : strings.rightPanel.resultCard.expand}
           >
             {expanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
           </button>
@@ -129,7 +130,7 @@ export function SubAgentResultCard({
         <div className="border-t border-red-500/20 p-2">
           <StructuredErrorCallout
             testId={`${testId}-error`}
-            title="Sub-agent failed"
+            title={strings.rightPanel.resultCard.failedTitle}
             message={run.error}
             context={{
               run_id: run.run_id,

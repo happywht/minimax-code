@@ -4,6 +4,7 @@
  * auto-following run activity.
  */
 import { Button } from "../../ui";
+import { strings } from "../../ui/strings";
 
 export interface FollowRunBarProps {
   testId: string;
@@ -13,7 +14,7 @@ export interface FollowRunBarProps {
 export function FollowRunBar({ testId, onResume }: FollowRunBarProps): JSX.Element {
   return (
     <div className="flex items-center justify-between gap-2 border-b border-line bg-surface-2 px-3 py-1.5">
-      <span className="truncate text-[11px] text-ink-2">Manual tab pinned</span>
+      <span className="truncate text-[11px] text-ink-2">{strings.rightPanel.shell.pinned}</span>
       <Button
         variant="subtle"
         size="sm"
@@ -21,7 +22,7 @@ export function FollowRunBar({ testId, onResume }: FollowRunBarProps): JSX.Eleme
         onClick={onResume}
         className="h-6 px-2 text-[11px]"
       >
-        Follow run
+        {strings.rightPanel.shell.followRun}
       </Button>
     </div>
   );

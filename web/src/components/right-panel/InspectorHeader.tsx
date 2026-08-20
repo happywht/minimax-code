@@ -4,6 +4,7 @@
  */
 import { ChevronRight } from "lucide-react";
 import { IconButton } from "../../ui";
+import { strings } from "../../ui/strings";
 import { tabMeta, type InspectorTab } from "./tabs";
 
 export interface InspectorHeaderProps {
@@ -22,7 +23,7 @@ export function InspectorHeader({
     <header className="flex items-center justify-between border-b border-line px-3 py-2">
       <div className="min-w-0">
         <span className="block text-[11px] font-semibold uppercase tracking-wider text-ink-2">
-          Inspector
+          {strings.rightPanel.shell.inspector}
         </span>
         <span className="mt-0.5 flex items-center gap-1.5 truncate text-xs text-ink-1">
           <span className="flex items-center text-accent">{meta.icon}</span>
@@ -30,8 +31,8 @@ export function InspectorHeader({
         </span>
       </div>
       <IconButton
-        aria-label="Collapse right panel"
-        title="Collapse right panel"
+        aria-label={strings.rightPanel.shell.collapse}
+        title={strings.rightPanel.shell.collapse}
         size="sm"
         data-testid={`${testId}-collapse`}
         onClick={onCollapse}

@@ -62,7 +62,7 @@ describe("RightPanel — chrome", () => {
   it("renders the right panel as a tabbed inspector", () => {
     render(<RightPanel initialAgents={[]} />);
     expect(screen.getByTestId("right-panel")).toBeInTheDocument();
-    expect(screen.getByText("Inspector")).toBeInTheDocument();
+    expect(screen.getByText("检查器")).toBeInTheDocument();
     expect(screen.getByTestId("right-panel-tab-timeline")).toHaveAttribute("aria-selected", "true");
     expect(screen.getByTestId("right-panel-tab-diff")).toBeInTheDocument();
     expect(screen.getByTestId("right-panel-tab-agents")).toBeInTheDocument();
@@ -225,7 +225,7 @@ describe("RightPanel — Agent Team section", () => {
     await waitFor(() => {
       expect(screen.getByTestId("right-panel-team-error")).toBeInTheDocument();
     });
-    expect(screen.getByText("Failed to load agents")).toBeInTheDocument();
+    expect(screen.getByText("加载 Agent 失败")).toBeInTheDocument();
   });
 
   it("refetches the agent list when the refresh action is clicked", async () => {

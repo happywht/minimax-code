@@ -108,7 +108,7 @@ describe("RunTimelinePanel", () => {
     render(<RunTimelinePanel />);
 
     expect(screen.getByText(/Here is the answer/)).toBeInTheDocument();
-    expect(screen.getByText(/\[code block\]/)).toBeInTheDocument();
+    expect(screen.getByText(/\[代码块\]/)).toBeInTheDocument();
     expect(screen.queryByText(/const value = 1/)).toBeNull();
   });
 
@@ -174,7 +174,7 @@ describe("RunTimelinePanel", () => {
       }));
     });
 
-    expect(await screen.findByTestId("run-timeline-new-events")).toHaveTextContent("New events");
+    expect(await screen.findByTestId("run-timeline-new-events")).toHaveTextContent("新事件");
     fireEvent.click(screen.getByTestId("run-timeline-new-events"));
     await waitFor(() => {
       expect(screen.queryByTestId("run-timeline-new-events")).toBeNull();

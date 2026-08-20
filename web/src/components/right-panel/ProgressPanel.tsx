@@ -21,6 +21,7 @@ import { Activity, CheckCircle2, CircleAlert, Loader2, RefreshCw, X, Ban } from 
 import { ipc } from "../../ipc";
 import { useTaskStore } from "../../stores";
 import type { SidecarEvent } from "../../types/ipc";
+import { strings } from "../../ui/strings";
 
 type SidecarState = "pending" | "ready" | "error";
 
@@ -54,7 +55,7 @@ export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps)
           setSidecarDetail("");
         } else if (p.status === "error") {
           setSidecar("error");
-          setSidecarDetail(p.error || "agent crashed");
+          setSidecarDetail(p.error || strings.rightPanel.progress.agentCrashed);
         } else {
           setSidecar("pending");
         }
@@ -63,7 +64,7 @@ export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps)
       // client as "ready" the moment `start()` resolves.
       if (ipc.isMock) {
         setSidecar("ready");
-        setSidecarDetail("mock backend");
+        setSidecarDetail(strings.rightPanel.progress.mockBackend);
       }
     })();
     return () => {
@@ -100,20 +101,20 @@ export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps)
       <div className="flex items-center justify-between border-b border-minimax-border px-3 py-2">
         <div className="flex items-center gap-1.5 text-xs font-medium text-minimax-fg">
           <Activity size={12} className="text-minimax-accent" />
-          Progress
+          {strings.rightPanel.progress.title}
           {runningCount > 0 && (
             <span
               data-testid={`${testId}-running-count`}
               className="ml-1 rounded bg-minimax-accent/20 px-1.5 text-[11px] text-minimax-accent"
             >
-              {runningCount} running
+              {strings.rightPanel.progress.runningCount(runningCount)}
             </span>
           )}
         </div>
         <div className="flex items-center gap-2">
           <button
             type="button"
-            title="Refresh task ledger"
+            title={strings.rightPanel.progress.refreshTitle}
             onClick={() => void handleRefresh()}
             disabled={refreshing}
             className="text-minimax-muted hover:text-minimax-fg disabled:opacity-50"
@@ -153,8 +154,8 @@ export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps)
                     {t.status === "running" && (
                       <button
                         type="button"
-                        aria-label="Cancel task"
-                        title="Cancel task"
+                        aria-label={strings.rightPanel.progress.cancelTitle}
+                        title={strings.rightPanel.progress.cancelTitle}
                         onClick={() => void handleCancel(t.task_id)}
                         className="text-minimax-muted hover:text-status-error"
                         data-testid={`${testId}-cancel-${t.task_id}`}
@@ -164,7 +165,7 @@ export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps)
                     )}
                     <button
                       type="button"
-                      aria-label="Dismiss task"
+                      aria-label={strings.rightPanel.progress.dismissTitle}
                       onClick={() => remove(t.task_id)}
                       className="text-minimax-muted hover:text-minimax-fg"
                     >

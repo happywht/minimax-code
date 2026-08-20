@@ -101,7 +101,7 @@ describe("SubAgentPanel", () => {
     render(<SubAgentPanel autoInit={false} />);
     fireEvent.click(screen.getByTestId(`sub-agent-panel-row-${FAILED_RUN.run_id}-header`));
 
-    expect(screen.getByTestId(`sub-agent-panel-row-${FAILED_RUN.run_id}-error-title`).textContent).toBe("Sub-agent failed");
+    expect(screen.getByTestId(`sub-agent-panel-row-${FAILED_RUN.run_id}-error-title`).textContent).toBe("子 Agent 失败");
     expect(screen.getByTestId(`sub-agent-panel-row-${FAILED_RUN.run_id}-error-explanation`).textContent).toContain("no longer matches");
 
     await act(async () => {
@@ -116,7 +116,7 @@ describe("SubAgentResultCard", () => {
     useSubAgentStore.setState({ runs: { [COMPLETED_RUN.run_id]: COMPLETED_RUN } });
     render(<SubAgentResultCard runId={COMPLETED_RUN.run_id} />);
     expect(screen.getByTestId("sub-agent-result-name").textContent).toBe("Researcher");
-    expect(screen.getByTestId("sub-agent-result-status").textContent).toBe("completed");
+    expect(screen.getByTestId("sub-agent-result-status").textContent).toBe("已完成");
     expect(screen.getByTestId("sub-agent-result-summary").textContent).toBe("done");
   });
 
@@ -144,7 +144,7 @@ describe("SubAgentResultCard", () => {
   it("renders failed sub-agent results with structured details", () => {
     useSubAgentStore.setState({ runs: { [FAILED_RUN.run_id]: FAILED_RUN } });
     render(<SubAgentResultCard runId={FAILED_RUN.run_id} />);
-    expect(screen.getByTestId("sub-agent-result-error-title").textContent).toBe("Sub-agent failed");
+    expect(screen.getByTestId("sub-agent-result-error-title").textContent).toBe("子 Agent 失败");
     fireEvent.click(screen.getByTestId("sub-agent-result-error-details-toggle"));
     expect(screen.getByTestId("sub-agent-result-error-details").textContent).toContain(FAILED_RUN.run_id);
   });

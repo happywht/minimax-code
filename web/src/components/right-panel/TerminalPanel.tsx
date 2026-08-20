@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Play, RefreshCw, Square, TerminalSquare } from "lucide-react";
 import { useSessionStore, useTerminalStore } from "../../stores";
 import type { TerminalChunk, TerminalSession } from "../../types/ipc";
+import { strings } from "../../ui/strings";
 
 export interface TerminalPanelProps {
   testId?: string;
@@ -98,8 +99,8 @@ export function TerminalPanel({ testId = "terminal-panel" }: TerminalPanelProps)
             data-testid={`${testId}-run`}
             disabled={loading || !command.trim()}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-minimax-accent/15 text-minimax-accent transition-colors duration-200 hover:bg-minimax-accent/25 disabled:cursor-not-allowed disabled:opacity-40"
-            aria-label="Run command"
-            title="Run command"
+            aria-label={strings.rightPanel.terminal.runCommand}
+            title={strings.rightPanel.terminal.runCommand}
           >
             {loading ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
           </button>
@@ -109,8 +110,8 @@ export function TerminalPanel({ testId = "terminal-panel" }: TerminalPanelProps)
             onClick={() => activeId && void read(activeId)}
             disabled={!activeId}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-minimax-muted transition-colors duration-200 hover:bg-minimax-border/70 hover:text-minimax-fg disabled:cursor-not-allowed disabled:opacity-40"
-            aria-label="Refresh terminal"
-            title="Refresh terminal"
+            aria-label={strings.rightPanel.terminal.refresh}
+            title={strings.rightPanel.terminal.refresh}
           >
             <RefreshCw size={13} />
           </button>
@@ -120,8 +121,8 @@ export function TerminalPanel({ testId = "terminal-panel" }: TerminalPanelProps)
             onClick={() => activeId && void stop(activeId)}
             disabled={!activeId || !running}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-minimax-muted transition-colors duration-200 hover:bg-red-500/15 hover:text-status-error disabled:cursor-not-allowed disabled:opacity-40"
-            aria-label="Stop command"
-            title="Stop command"
+            aria-label={strings.rightPanel.terminal.stop}
+            title={strings.rightPanel.terminal.stop}
           >
             <Square size={12} />
           </button>
@@ -131,7 +132,7 @@ export function TerminalPanel({ testId = "terminal-panel" }: TerminalPanelProps)
           value={cwd}
           onChange={(event) => setCwd(event.target.value)}
           className="mt-1 h-7 w-full rounded border border-minimax-border bg-minimax-bg px-2 font-mono text-[11px] text-minimax-muted outline-none transition-colors duration-200 placeholder:text-minimax-muted/70 focus:border-minimax-accent/60"
-          placeholder="cwd (default workspace root)"
+          placeholder={strings.rightPanel.terminal.cwdPlaceholder}
         />
       </form>
 
@@ -141,7 +142,7 @@ export function TerminalPanel({ testId = "terminal-panel" }: TerminalPanelProps)
           className="mb-2 rounded border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-[11px] text-status-error"
           title={error}
         >
-          Terminal error
+          {strings.rightPanel.terminal.error}
         </div>
       )}
 
@@ -199,7 +200,7 @@ export function TerminalPanel({ testId = "terminal-panel" }: TerminalPanelProps)
                 }}
                 className="absolute bottom-2 right-2 rounded border border-minimax-border bg-minimax-panel px-2 py-1 text-[11px] text-minimax-accent shadow-lg"
               >
-                New output
+                {strings.rightPanel.terminal.newOutput}
               </button>
             )}
           </>

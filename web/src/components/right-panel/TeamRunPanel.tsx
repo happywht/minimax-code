@@ -21,6 +21,7 @@ import {
   initTeamRunListener,
   type TeamRunEntry,
 } from "../../stores/teamRunStore";
+import { strings } from "../../ui/strings";
 
 function statusIcon(status: TeamRunEntry["status"]) {
   switch (status) {
@@ -71,7 +72,7 @@ function RunCard({ run, onRemove }: { run: TeamRunEntry; onRemove: () => void })
         </div>
         <div className="flex items-center gap-1">
           <span className="text-[11px] text-minimax-muted">
-            {run.agents_completed}/{run.agents_total} agents
+            {strings.rightPanel.teamRuns.agentCount(run.agents_completed, run.agents_total)}
           </span>
           {isDone && (
             <button
@@ -91,7 +92,7 @@ function RunCard({ run, onRemove }: { run: TeamRunEntry; onRemove: () => void })
       {/* Active agent */}
       {run.agent_name && !isDone && (
         <div className="mt-1 text-[11px] text-minimax-muted">
-          Running: <span className="text-minimax-fg">{run.agent_name}</span>
+          {strings.rightPanel.teamRuns.running(run.agent_name)}
         </div>
       )}
 
@@ -100,7 +101,7 @@ function RunCard({ run, onRemove }: { run: TeamRunEntry; onRemove: () => void })
         <div className="mt-1 flex items-center gap-1 text-[11px] text-yellow-300">
           <AlertTriangle size={10} />
           <span>
-            {run.result!.conflicts.length} file conflict(s) detected
+            {strings.rightPanel.teamRuns.conflicts(run.result!.conflicts.length)}
           </span>
         </div>
       ) : null}
@@ -139,9 +140,11 @@ export function TeamRunPanel(): JSX.Element {
       <div className="flex items-center justify-between">
         <h3 className="text-[11px] font-medium text-minimax-fg">
           <Users size={11} className="mr-1 inline text-minimax-accent" />
-          Team Runs
+          {strings.rightPanel.teamRuns.title}
         </h3>
-        <span className="text-[11px] text-minimax-muted">{runs.length} active</span>
+        <span className="text-[11px] text-minimax-muted">
+          {strings.rightPanel.teamRuns.activeCount(runs.length)}
+        </span>
       </div>
       <div className="space-y-1.5">
         {runs.map((r) => (

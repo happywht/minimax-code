@@ -62,11 +62,11 @@ describe("RunTimelinePanel", () => {
 
     expect(screen.queryByText(/UNIQUE_TAIL/)).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Show full" }));
+    fireEvent.click(screen.getByRole("button", { name: "展开全部" }));
 
     expect(screen.getByText(/UNIQUE_TAIL/)).toBeInTheDocument();
     expect(screen.getByTestId("run-timeline-step-detail")).toHaveClass("overflow-auto");
-    expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "收起" })).toBeInTheDocument();
   });
 
   it("shows failed step errors in addition to the step summary", () => {
@@ -79,6 +79,6 @@ describe("RunTimelinePanel", () => {
     );
 
     expect(screen.getByText(/Command failed/)).toBeInTheDocument();
-    expect(screen.getByText(/Error: exit code 1: missing dependency/)).toBeInTheDocument();
+    expect(screen.getByText(/错误：exit code 1: missing dependency/)).toBeInTheDocument();
   });
 });

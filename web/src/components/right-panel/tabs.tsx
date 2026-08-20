@@ -16,6 +16,8 @@ import {
   Users,
 } from "lucide-react";
 
+import { strings } from "../../ui/strings";
+
 export type InspectorTab =
   | "timeline"
   | "diff"
@@ -36,17 +38,17 @@ export interface InspectorTabMeta {
 }
 
 export const INSPECTOR_TABS: InspectorTabMeta[] = [
-  { id: "timeline", label: "Timeline", icon: <Activity size={12} /> },
-  { id: "diff", label: "Diff", icon: <GitCompare size={12} /> },
-  { id: "progress", label: "Progress", icon: <ListChecks size={12} /> },
-  { id: "checkpoints", label: "Checkpoints", icon: <Camera size={12} /> },
-  { id: "agents", label: "Agents", icon: <Bot size={12} /> },
-  { id: "subagents", label: "Sub", icon: <Users size={12} /> },
-  { id: "review", label: "Review", icon: <CheckCircle2 size={12} /> },
-  { id: "teamruns", label: "Runs", icon: <Loader2 size={12} /> },
-  { id: "terminal", label: "Term", icon: <TerminalSquare size={12} /> },
-  { id: "runner", label: "Run", icon: <Rocket size={12} /> },
-  { id: "codebase", label: "Code", icon: <Database size={12} /> },
+  { id: "timeline", label: strings.rightPanel.tabs.timeline, icon: <Activity size={12} /> },
+  { id: "diff", label: strings.rightPanel.tabs.diff, icon: <GitCompare size={12} /> },
+  { id: "progress", label: strings.rightPanel.tabs.progress, icon: <ListChecks size={12} /> },
+  { id: "checkpoints", label: strings.rightPanel.tabs.checkpoints, icon: <Camera size={12} /> },
+  { id: "agents", label: strings.rightPanel.tabs.agents, icon: <Bot size={12} /> },
+  { id: "subagents", label: strings.rightPanel.tabs.subagents, icon: <Users size={12} /> },
+  { id: "review", label: strings.rightPanel.tabs.review, icon: <CheckCircle2 size={12} /> },
+  { id: "teamruns", label: strings.rightPanel.tabs.teamruns, icon: <Loader2 size={12} /> },
+  { id: "terminal", label: strings.rightPanel.tabs.terminal, icon: <TerminalSquare size={12} /> },
+  { id: "runner", label: strings.rightPanel.tabs.runner, icon: <Rocket size={12} /> },
+  { id: "codebase", label: strings.rightPanel.tabs.codebase, icon: <Database size={12} /> },
 ];
 
 export function tabMeta(tab: InspectorTab): InspectorTabMeta {
