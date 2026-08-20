@@ -16,7 +16,8 @@ registry**（`agent/minimax_code/ipc/server.py:IPCServer`）：
 - **HTTP + WebSocket** — 给 web 客户端（Vite-served React SPA）。命令：
   `python -m minimax_code`（默认）。Agent bind `127.0.0.1:8765`
   （override：`--http-port` 或 `MINIMAX_CODE_HTTP_PORT`），CORS allow-list
-  仅 `http://localhost:5173` / `http://127.0.0.1:5173`，本机单用户，**不鉴权**。
+  默认 `http://localhost:5173` / `http://127.0.0.1:5173`（`MINIMAX_CODE_CORS_ORIGINS`
+  可追加受信 origin，v0.14.0 起有拒绝路径测试钉死），本机单用户，**不鉴权**。
 
 > 这不是平行两份实现。HTTP server 是**薄 transport**：`POST /rpc` 把
 > envelope 反序列化后直接 `IPCServer.handle_request(env)`，再把响应

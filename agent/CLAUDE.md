@@ -30,7 +30,7 @@ Python agent 是 MiniMax Code 的后端核心。它是一个 asyncio 进程，�
 | `/rpc` | POST | JSON-RPC 2.0 请求/响应 |
 | `/ws` | GET | WebSocket，server-push 流式事件 |
 
-CORS：仅允许 `http://localhost:5173` / `http://127.0.0.1:5173`。
+CORS：默认允许 `http://localhost:5173` / `http://127.0.0.1:5173`；`MINIMAX_CODE_CORS_ORIGINS`（逗号分隔）可追加受信 origin（解析见 `http_server.py` `_cors_allow_origins`，无效项 warning 忽略）。
 
 ### IPC 命名空间（10 个）
 

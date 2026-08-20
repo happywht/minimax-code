@@ -445,6 +445,64 @@ async def test_cors_allows_explicit_additional_origin(
     assert response.headers.get("access-control-allow-origin") == "http://127.0.0.1:15173"
 
 
+@pytest.mark.asyncio
+async def test_cors_rejects_unlisted_origin(client: httpx.AsyncClient) -> None:
+    """The security boundary: an origin not on the allow-list gets no
+    ``Access-Control-Allow-Origin`` echo — the browser will block it."""
+    r = await client.get(
+        "/health",
+        headers={"Origin": "http://evil.example.com"},
+    )
+    # CORSMiddleware still serves the request (CORS is browser-enforced),
+    # but it must not bless the unlisted origin.
+    assert r.status_code == 200
+    assert "access-control-allow-origin" not in r.headers
+
+
+@pytest.mark.asyncio
+async def test_cors_env_append_never_replaces_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    ipc_server: IPCServer,
+) -> None:
+    """Setting the env var appends to the defaults; the Vite dev
+    origins keep working alongside the configured extra origin."""
+    monkeypatch.setenv("MINIMAX_CODE_CORS_ORIGINS", "http://127.0.0.1:15173")
+    app = build_app(ipc_server, version="cors-append")
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+    ) as custom:
+        for origin in ("http://localhost:5173", "http://127.0.0.1:15173"):
+            r = await custom.get("/health", headers={"Origin": origin})
+            assert r.headers.get("access-control-allow-origin") == origin
+
+
+@pytest.mark.asyncio
+async def test_cors_env_ignores_invalid_entries(
+    monkeypatch: pytest.MonkeyPatch,
+    ipc_server: IPCServer,
+) -> None:
+    """Bad schemes / origins with a path are dropped; the valid entry
+    from the same comma-separated list still lands."""
+    monkeypatch.setenv(
+        "MINIMAX_CODE_CORS_ORIGINS",
+        "ftp://127.0.0.1:15173, http://127.0.0.1:9999/bad/path, http://localhost:3000 ,",
+    )
+    app = build_app(ipc_server, version="cors-invalid")
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+    ) as custom:
+        r_ok = await custom.get("/health", headers={"Origin": "http://localhost:3000"})
+        assert r_ok.headers.get("access-control-allow-origin") == "http://localhost:3000"
+
+        for rejected in ("ftp://127.0.0.1:15173", "http://127.0.0.1:9999"):
+            r_bad = await custom.get("/health", headers={"Origin": rejected})
+            assert "access-control-allow-origin" not in r_bad.headers
+
+
 # ---------------------------------------------------------------------------
 # Sanity: response shape (canonical JSON-RPC 2.0)
 # ---------------------------------------------------------------------------

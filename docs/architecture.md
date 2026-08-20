@@ -192,7 +192,7 @@ minimax-code/                          # 仓库根
 │  │  - POST /rpc  ──► IPCServer.handle_request(env) ─┐       │  │
 │  │  - GET  /ws   ──► register_listener(cb)  ◄───────┤       │  │
 │  │  - GET  /health                                  │       │  │
-│  │  - CORS: http://localhost:5173 only              │       │  │
+│  │  - CORS: 5173 + MINIMAX_CODE_CORS_ORIGINS         │       │  │
 │  └──────────────────────────────────────────────────┼───────┘  │
 │                                                     │          │
 │  ┌──────────────────────────────────────────────────▼───────┐  │
@@ -237,7 +237,7 @@ minimax-code/                          # 仓库根
 2. **HTTP + WebSocket** — 给浏览器里的 web 客户端
    - 命令：`python -m minimax_code`（默认）
    - 端点：`POST /rpc`（请求/响应）、`GET /ws`（流式事件）、`GET /health`（存活探针）
-   - 绑定：`127.0.0.1:8765`（CORS allow-list 仅 `http://localhost:5173`）
+   - 绑定：`127.0.0.1:8765`（CORS allow-list 默认 `http://localhost:5173` / `http://127.0.0.1:5173`，可用 `MINIMAX_CODE_CORS_ORIGINS` 追加受信 origin）
    - HTTP status 永远 `200`，错误走 JSON-RPC 错误信封；`500` 只用于"agent 自己崩了"或"请求无法反序列化"
    - 流式事件（如 `agent.message_chunk`）经 `IPCServer.register_listener(cb)` 推到 WebSocket
 
