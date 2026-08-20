@@ -137,3 +137,48 @@ def test_installed_semver_invalid_raises(monkeypatch):
     monkeypatch.setenv(V.TEST_VERSION_ENV, "totally-not-semver")
     with pytest.raises(ValueError):
         V.installed_semver()
+
+
+# --- PEP 440 metadata bridge (1.0.0-rc.1 era) -------------------------------
+
+
+def test_installed_semver_bridges_pep440_prerelease(monkeypatch):
+    """Package metadata reports PEP 440 normalized forms ("1.0.0rc1" — the
+    hyphen semver wants is dropped by normalization). installed_semver must
+    bridge them back; without this the public API raises on our own version
+    (first bitten by the 1.0.0-rc.1 bump)."""
+    for pep440, expected_pre in [
+        ("1.0.0rc1", "rc.1"),
+        ("1.0.0a1", "a.1"),
+        ("1.0.0b2", "b.2"),
+        ("1.0.0c3", "c.3"),
+        ("1.0.0.dev3", "dev.3"),
+    ]:
+        monkeypatch.setenv(V.TEST_VERSION_ENV, pep440)
+        v = V.installed_semver()
+        assert (v.major, v.minor, v.patch, v.pre) == (1, 0, 0, expected_pre), pep440
+
+
+def test_installed_semver_stable_form_untouched_by_bridge(monkeypatch):
+    """Plain stable versions must bypass the bridge entirely — the regex must
+    not match them (a greedy-optional bridge would corrupt stable parsing)."""
+    monkeypatch.setenv(V.TEST_VERSION_ENV, "1.0.0")
+    v = V.installed_semver()
+    assert (v.major, v.minor, v.patch, v.pre) == (1, 0, 0, None)
+
+
+def test_installed_semver_pep440_post_still_raises(monkeypatch):
+    """.post has no semver equivalent; bridging it would invent semantics,
+    so it stays a ValueError like any other non-semver string."""
+    monkeypatch.setenv(V.TEST_VERSION_ENV, "1.0.0.post1")
+    with pytest.raises(ValueError):
+        V.installed_semver()
+
+
+def test_installed_semver_live_metadata_is_parseable():
+    """Contract: whatever version this checkout ships, installed_semver() must
+    never raise on the real package metadata (source of truth for the bump)."""
+    v = V.installed_semver()
+    assert isinstance(v, V.Version)
+    assert (v.major, v.minor, v.patch) == (1, 0, 0)
+    assert v.pre == "rc.1"

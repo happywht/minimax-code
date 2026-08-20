@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.1] - 2026-08-21
+
 ### 1.0.0 总览（R51 汇总——0.12.0 → 1.0.0，八里程碑 54 轮迭代收口）
 
 1.0.0 是 v0.11.0 之上连续八个功能版本 + rc 收口的成果。各版本详录见下方分节，此处一屏总览：
@@ -31,11 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **e2e 断言债清偿（R49）**：R32 文案中文化迁移时 e2e 断言未同步，挖出 8 处断言债修复——placeholder 英文残留（smoke-chat / smoke-thinking-count / smoke-subagent / production-mode 共 5 处改中文）、`getByLabel("决策")` / `getByRole("移除")` 默认子串匹配与中文化 aria-label 撞车（2 处加 `{ exact: true }`）、codebase 统计文案 `Files:/Chunks:` → `文件：/分块：` 与 `Sources` → `来源`、subagent 状态 `completed|failed` → `已完成|失败`。附带发现 production-mode 用的 `web/dist` 过期 4 小时（R32 之前构建），强制重建后验证诊断功能与中文文案均入包。
 - **streaming-follow e2e 竞态修复（R50）**：`smoke-chat` streaming 跟随断言偶发收到距离 941（期望 ≤50）——根因是种子消息后虚拟化行高持续变化，`scrollHeight` 抖动触发原生 scroll 事件把 `useSmartScroll` 的 following 标志翻 false，随后 chunk 到达走"不跟随"分支。修法为 expect.poll 每轮重设 `scrollTop` 并重发 scroll 事件、断言钉住距离 ≤50 才放行——三连跑 21/21 × 3（31.0 / 31.3 / 31.7 s）零失败。
 - **ESLint warnings 清零（R50）**：`taskStore.cancel` 未用 catch 绑定改 optional catch binding；`CheckpointPanel.load` 包 `useCallback` 补齐 effect 依赖。lint 达 0 errors / 0 warnings。
+- **PEP 440 ↔ semver 版本桥接（R52 bump 挖出）**：`1.0.0-rc.1` 是项目首个 pre-release 版本号，暴露 Python 包元数据与 semver 的规范差异——`importlib.metadata` 报 PEP 440 规范化形态 `1.0.0rc1`（连字符被吃掉），`Version.parse` 按 semver.org 拒绝，公开 API `installed_semver()` 在自家版本号上抛 `not a valid semver`。`installed_semver()` 现将 PEP 440 prerelease 形态（`rc/a/b/c` 紧跟数字与 `.devN`）桥接回 semver 形态再解析；纯稳定版不经桥接、`.post`（semver 无对应）仍抛错。连带 `diag.export` 的 version 字段改报 semver 形态（`1.0.0-rc.1`，与 pyproject/CHANGELOG/UI 字面一致，此前会报 `1.0.0rc1`）。4 个新测试钉死桥接矩阵与"真实 metadata 永不抛错"契约。
 
 ### Changed — 1.0.0-rc 发布性能数字（R50 复测，详见 `docs/performance-baseline.md`）
 - 冷启动 median 2.589 s（3 轮 2.619 / 2.589 / 2.579；基线 2.586 s，**+0.1%**，预算 ≤5 s）。
 - 首屏 JS 136.7 KB / CSS 8.2 KB gzip（基线 123.9 / 8.2 KB——JS +10.3%，v0.14→v0.19 六个版本功能增长的量，预算 200 / 50 KB 内）；懒加载 346 chunk 2852.4 KB 持平。
 - SQLite 零裸表扫、长会话渲染（500 条 34 行 DOM）、WS 重放 ≤512 由全量回归覆盖（10125 pytest + 622 vitest + 21 e2e 全绿）。
+- 版本号 0.19.0 → **1.0.0-rc.1**（6 处代码位 + CLAUDE.md / AGENTS.md / README.md 版本行 + `uv lock`；CHANGELOG `[Unreleased]` 转正）。
 
 ## [0.19.0] - 2026-08-21
 

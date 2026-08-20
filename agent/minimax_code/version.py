@@ -51,7 +51,7 @@ TEST_VERSION_ENV: str = "MINIMAX_CODE_TEST_VERSION"
 #: (e.g. running from a bare checkout without ``uv sync``). Kept in manual sync
 #: with ``pyproject.toml``'s ``version`` — the metadata read is the source of
 #: truth, this only ever engages in unpackaged contexts.
-_FALLBACK_VERSION = "0.19.0"
+_FALLBACK_VERSION = "1.0.0-rc.1"
 
 
 def _resolve_compiled_version() -> str:
@@ -130,10 +130,29 @@ _SEMVER_RE = re.compile(
 def installed_semver() -> Version:
     """Parse :func:`installed` as a :class:`Version` (grok ``installed_semver``).
 
-    Raises ``ValueError`` if the installed string is not valid semver (mirrors
-    grok's ``Result<Version, semver::Error>``).
+    Package metadata reports versions in PEP 440 normalized form, where a
+    prerelease loses its hyphen (``1.0.0-rc.1`` in pyproject becomes
+    ``1.0.0rc1`` in metadata). :class:`Version` speaks semver.org, so bridge
+    the PEP 440 prerelease spellings back to their semver form before parsing.
+    Anything else that is not valid semver still raises ``ValueError``
+    (mirrors grok's ``Result<Version, semver::Error>``).
     """
-    return Version.parse(installed())
+    text = installed()
+    m = _PEP440_PRE_RE.match(text)
+    if m:
+        tag = m["dev"] or m["pre"]
+        text = f"{m['core']}-{tag}.{m['num']}"
+    return Version.parse(text)
+
+
+# PEP 440 normalized prerelease forms that can appear in package metadata:
+# "1.0.0rc1" / "1.0.0a1" / "1.0.0b2" / "1.0.0c3" (tag glued to the number)
+# and "1.0.0.dev3" (dot-prefixed). Normalization folds alpha/beta/pre/preview
+# spellings into a/b/rc before they reach metadata, and drops the hyphen
+# semver would use. A plain "1.0.0" must NOT match — it parses as-is.
+_PEP440_PRE_RE = re.compile(
+    r"^(?P<core>\d+\.\d+\.\d+)(?:\.(?P<dev>dev)|(?P<pre>a|b|c|rc))(?P<num>\d+)$"
+)
 
 
 def display_version(channel_label: str) -> str:

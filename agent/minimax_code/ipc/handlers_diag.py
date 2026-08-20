@@ -151,7 +151,9 @@ async def build_diagnostic_bundle(db: Any | None) -> dict[str, Any]:
     return {
         "format": DIAG_FORMAT,
         "generated_at": datetime.now(UTC).isoformat(),
-        "version": _version.installed(),
+        # semver form (bridged from PEP 440 metadata): matches the literal
+        # spelling in pyproject/CHANGELOG/UI ("1.0.0-rc.1", not "1.0.0rc1")
+        "version": str(_version.installed_semver()),
         "platform": _platform_section(),
         "runtime": _runtime_section(),
         "config": _config_section(),
