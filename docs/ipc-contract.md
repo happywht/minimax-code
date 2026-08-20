@@ -238,6 +238,7 @@ on the next `readline() == ""`.
 | `mcp.list_servers` / `mcp.add_server` / `mcp.update_server` / `mcp.remove_server` / `mcp.list_tools` / `mcp.invoke_tool` | req/res | MCP server management and tool invocation (v0.11.0). |
 | `codebase.status` / `codebase.build_index` / `codebase.search` / `codebase.summarize` | req/res | Codebase indexing and retrieval (v0.11.0 Milestone 2). |
 | `memory.list` / `memory.add` / `memory.delete` / `memory.search` / `memory.extract` | req/res | Long-term memory management (v0.11.0 Milestone 3). |
+| `data.export`               | req/res   | Data portability (R21): dump every business table into one self-describing JSON envelope. See §6 for the envelope shape. |
 
 ### `model.list` response — reasoning-effort fields (R58)
 
@@ -880,6 +881,38 @@ The wire shape is `{tool_pattern, action}`; the frontend `TypedIPC` layer
 translates to/from its own `{tool, pattern, decision}` shape, and the mock
 backend speaks the wire shape (below the typed layer) so mock mode mirrors
 real behaviour.
+
+### `data.*` — data portability (R21+)
+
+| Method | Params | Result | Notes |
+|--------|--------|--------|-------|
+| `data.export` | `{}` | envelope (below) | Dump every business table into a single JSON document; the frontend turns it into a downloaded file. |
+
+**Export envelope** (the RPC result itself):
+
+```json
+{
+  "format": "minimax-code-export",
+  "schema_version": 24,
+  "app_version": "0.14.0",
+  "exported_at": "2026-08-21T00:00:00+00:00",
+  "counts": {"sessions": 2, "messages": 3, "...": 0},
+  "tables": {"sessions": [{...}, {...}], "messages": [{...}, {...}]}
+}
+```
+
+Semantics:
+
+* Table set is discovered from `sqlite_master` at export time — future
+  migrations that add tables are picked up automatically, no hardcoded list.
+* `schema_migrations` is excluded; the applied version travels once in the
+  top-level `schema_version` field.
+* Virtual tables (FTS / vec shadows) are excluded — they are derived state,
+  rebuilt on the target by triggers / re-indexing after `data.import` (R22).
+* Rows serialise as plain `{column: value}` dicts; `counts[table]` is the
+  row count and `set(counts) == set(tables)` always holds.
+* Storage not initialised (e.g. `MINIMAX_CODE_NO_DB=1`) replies
+  `-32603` with a "storage not initialised" message instead of an empty dump.
 
 ## 7. Event names
 

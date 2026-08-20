@@ -672,6 +672,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_checkpoint import register_checkpoint_handlers
     from .ipc.handlers_codebase import register_codebase_handlers
     from .ipc.handlers_crash import register_crash_handlers
+    from .ipc.handlers_data import register_data_handlers
     from .ipc.handlers_git import register_git_handlers
     from .ipc.handlers_mcp import register_mcp_handlers
     from .ipc.handlers_memory import register_memory_handlers
@@ -789,6 +790,10 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # / ``audit.purge`` for the Settings page's Audit tab. The DAO
     # is built lazily on first call (same pattern as scheduled jobs).
     register_audit_handlers(server)
+    # Data-portability handlers (M4 / R21+): ``data.export`` dumps every
+    # business table into one self-describing JSON envelope; ``data.import``
+    # (R22) consumes the same shape.
+    register_data_handlers(server)
     # The webhook handlers expose ``webhook.list`` / ``webhook.create``
     # / ``webhook.update`` / ``webhook.delete`` /
     # ``webhook.regenerate_secret`` for the Settings page's Webhooks tab.

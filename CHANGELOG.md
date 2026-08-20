@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — 数据可移植（v0.15.0 Milestone 4）
+- **IPC `data.export`（R21）**：全部业务表一键导出为自描述 JSON 信封（即 RPC result 本体）——`format` / `schema_version` / `app_version` / `exported_at` 头部 + 每表行列表与行数。表集合从 `sqlite_master` 动态发现（未来迁移新表自动纳入，零硬编码清单）；`schema_migrations` 排除（应用版本收敛到顶层 `schema_version` 一处）；FTS/vec 虚表排除（派生态，导入端 R22 靠触发器/重建恢复）；存储未初始化（`MINIMAX_CODE_NO_DB=1`）回 `-32603` 而非空导出。新增 `agent/tests/test_data_portability.py`（6 测试：信封元数据、核心 12 表覆盖 pin、系统/虚表排除、行级往返保真、空库语义、IPC 端到端）。契约文档补 `data.*` 详述段与总表行。
+
 ## [0.14.0] - 2026-08-21
 
 ### Added — 安全加固（v0.14.0 Milestone 3）
