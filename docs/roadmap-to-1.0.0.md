@@ -33,7 +33,7 @@
 - [x] R11 前端首屏：生产 build 产物分析，lazy 路由确认无大块同步加载 `[done @ 9d158fb]`（首屏 JS 123.9 KB gzip / CSS 8.2 KB；346 个懒 chunk 2.8 MB gzip 按需加载；`pnpm bundle:report` 预算审计落地，超限 exit 1）
 - [x] R12 长会话：500+ 消息渲染冒烟（jsdom 计时）+ 虚拟化窗口断言 `[done @ c7fa8c3]`（500 条消息仅挂载 34 行 DOM（两层窗口：useMessageWindow 50/页 + useVirtualizer），jsdom 渲染 164ms；hook 层 renderHook 直测分页逻辑）
 - [x] R13 WS 心跳/重连：断连恢复事件流不丢（补 e2e 断言）`[done @ d9db747]`（广播单调 seq + 512 深度历史环 + `?since=` 重连重放；agent 6 单测 + e2e smoke-ws-resume，全量 21 spec 绿）
-- [ ] R14 版本 bump 0.13.0 + 基线数字写入 docs
+- [x] R14 版本 bump 0.13.0 + 基线数字写入 docs `[done @ 3f92b42]`（新增 `docs/performance-baseline.md`：启动 2.586s / 零裸表扫 / 首屏 123.9KB gzip / 500 条 34 行 164ms / WS 重放环 512，含复测命令与预算）
 
 ### M3 · v0.14.0 安全加固（R15–R20）
 - [ ] R15 CORS 允许列表环境变量化 `MINIMAX_CODE_CORS_ORIGINS`（默认不变）
