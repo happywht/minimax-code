@@ -16,7 +16,9 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from .handler_utils import HandlerError
@@ -205,6 +207,36 @@ async def restore_database(db: Any, envelope: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Backup (R23)
+# ---------------------------------------------------------------------------
+
+
+async def backup_database(db: Any, target_dir: Path | str | None = None) -> dict[str, Any]:
+    """Hot-copy *db* to a timestamped file via the SQLite backup API.
+
+    Unlike the JSON export, the backup is a **file-level complete snapshot**
+    — schema, WAL contents, FTS indexes and vec shadows included — taken
+    online without blocking readers. The source database is only ever
+    read, never written.
+    """
+    from ..storage.db import default_data_dir
+
+    dest_dir = Path(target_dir).expanduser() if target_dir else default_data_dir() / "backups"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(UTC)
+    dest = dest_dir / f"minimax-code-backup-{now:%Y%m%d-%H%M%S}-{now.microsecond // 1000:03d}.db"
+
+    target = sqlite3.connect(str(dest))
+    try:
+        # aiosqlite's backup() drives the C-level backup on the source's
+        # worker thread; the target stays a plain sync connection.
+        await db._conn.backup(target)  # type: ignore[attr-defined]
+    finally:
+        target.close()
+    return {"path": str(dest), "bytes": dest.stat().st_size}
+
+
+# ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
 
@@ -264,15 +296,42 @@ async def _handle_data_import(params: Any, ctx: Context) -> None:
         await ctx.reply_error(INTERNAL_ERROR, "data.import failed")
 
 
+async def _handle_data_backup(params: Any, ctx: Context) -> None:
+    """``data.backup`` — params ``{target_dir?}``; returns `{path, bytes}`."""
+    try:
+        from ..app import get_db
+
+        db = get_db()
+        if db is None:
+            await ctx.reply_error(
+                INTERNAL_ERROR,
+                "storage not initialised; nothing to back up",
+            )
+            return
+        target_dir = None
+        if isinstance(params, dict) and params.get("target_dir") is not None:
+            target_dir = str(params["target_dir"])
+        result = await backup_database(db, target_dir)
+        await ctx.reply(result)
+        logger.info("data.backup: %s (%d bytes)", result["path"], result["bytes"])
+    except HandlerError as exc:
+        await ctx.reply_error(exc.code, exc.message)
+    except Exception:
+        logger.exception("data.backup failed")
+        await ctx.reply_error(INTERNAL_ERROR, "data.backup failed")
+
+
 def register_data_handlers(server: Any) -> None:
     """Register all ``data.*`` JSON-RPC methods on *server*."""
     server.register("data.export", _handle_data_export)
     server.register("data.import", _handle_data_import)
+    server.register("data.backup", _handle_data_backup)
     logger.debug("registered data.* handlers")
 
 
 __all__ = [
     "EXPORT_FORMAT",
+    "backup_database",
     "dump_database",
     "register_data_handlers",
     "restore_database",

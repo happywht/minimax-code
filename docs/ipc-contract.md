@@ -240,6 +240,7 @@ on the next `readline() == ""`.
 | `memory.list` / `memory.add` / `memory.delete` / `memory.search` / `memory.extract` | req/res | Long-term memory management (v0.11.0 Milestone 3). |
 | `data.export`               | req/res   | Data portability (R21): dump every business table into one self-describing JSON envelope. See §6 for the envelope shape. |
 | `data.import`               | req/res   | Data portability (R22): validate + replace-import such an envelope in one transaction (idempotent). See §6. |
+| `data.backup`               | req/res   | Data portability (R23): online file-level snapshot via the SQLite backup API. See §6. |
 
 ### `model.list` response — reasoning-effort fields (R58)
 
@@ -889,6 +890,7 @@ real behaviour.
 |--------|--------|--------|-------|
 | `data.export` | `{}` | envelope (below) | Dump every business table into a single JSON document; the frontend turns it into a downloaded file. |
 | `data.import` | `{envelope}` | `{imported: {table: rows}, skipped_tables: [...]}` | Validate and replace-import an export envelope inside one transaction. |
+| `data.backup` | `{target_dir?}` | `{path, bytes}` | Online file-level snapshot via the SQLite backup API; default target is `<data_dir>/backups/`. |
 
 **Export envelope** (the RPC result itself):
 
@@ -935,6 +937,18 @@ Semantics:
   (SQLite bulk-load idiom); any failure rolls back to the pre-import
   state. FTS indexes stay in sync via the existing triggers on
   `memories`; vec indexes are rebuilt by re-indexing.
+
+**`data.backup` semantics (R23):**
+
+* File-level **complete snapshot** via the SQLite online backup API —
+  schema, WAL contents, FTS indexes and vec shadows included — taken
+  without blocking readers. Complements the JSON export (which is
+  portable across schema versions but excludes derived state).
+* `target_dir` is created if missing; omitted → `<data_dir>/backups/`.
+  The filename embeds a UTC timestamp with milliseconds
+  (`minimax-code-backup-YYYYMMDD-HHMMSS-mmm.db`), so repeated backups
+  never overwrite each other.
+* The source database is only ever read, never written.
 
 ## 7. Event names
 

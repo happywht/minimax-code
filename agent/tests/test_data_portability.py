@@ -20,6 +20,7 @@ import pytest
 from minimax_code.ipc.client import IPCClient
 from minimax_code.ipc.handlers_data import (
     EXPORT_FORMAT,
+    backup_database,
     dump_database,
     restore_database,
 )
@@ -288,3 +289,66 @@ class TestDataImportIPC:
         with pytest.raises(RuntimeError, match="format") as excinfo:
             await client.request("data.import", {"envelope": {}})
         assert excinfo.value.args[0]["code"] == -32602
+
+
+# ---------------------------------------------------------------------------
+# backup_database / data.backup (R23)
+# ---------------------------------------------------------------------------
+
+
+class TestBackupDatabase:
+    async def test_backup_creates_valid_snapshot(
+        self, async_db: AsyncDatabase, tmp_path: Path
+    ) -> None:
+        """The backup file opens standalone and matches the source data."""
+        await _seed(async_db)
+        result = await backup_database(async_db, tmp_path)
+        assert result["bytes"] > 0
+        snapshot = sqlite3.connect(result["path"])
+        try:
+            titles = {
+                r[0] for r in snapshot.execute("SELECT title FROM sessions")
+            }
+            assert titles == {"Alpha chat", "Beta chat"}
+            n_messages = snapshot.execute(
+                "SELECT COUNT(*) FROM messages"
+            ).fetchone()[0]
+            assert n_messages == 3
+            # Migration bookkeeping travels with the file snapshot too.
+            max_version = snapshot.execute(
+                "SELECT MAX(version) FROM schema_migrations"
+            ).fetchone()[0]
+            assert max_version > 0
+        finally:
+            snapshot.close()
+
+    async def test_backup_default_dir_uses_data_dir(
+        self, async_db: AsyncDatabase, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        await _seed(async_db)
+        monkeypatch.setenv("MINIMAX_CODE_DATA_DIR", str(tmp_path))
+        result = await backup_database(async_db, None)
+        assert Path(result["path"]).parent == tmp_path / "backups"
+
+    async def test_repeated_backups_get_distinct_files(
+        self, async_db: AsyncDatabase, tmp_path: Path
+    ) -> None:
+        await _seed(async_db)
+        first = await backup_database(async_db, tmp_path)
+        second = await backup_database(async_db, tmp_path)
+        assert first["path"] != second["path"]
+        assert len(list(tmp_path.glob("minimax-code-backup-*.db"))) == 2
+
+
+class TestDataBackupIPC:
+    async def test_backup_via_rpc(
+        self, async_db: AsyncDatabase, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        await _seed(async_db)
+        import minimax_code.app as app_module
+
+        monkeypatch.setattr(app_module, "_DB_SINGLETON", async_db)
+        client = IPCClient()
+        result = await client.request("data.backup", {"target_dir": str(tmp_path)})
+        assert Path(result["path"]).exists()
+        assert result["bytes"] > 0
