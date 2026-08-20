@@ -55,7 +55,7 @@
 - [x] R27 建 `web/src/ui/strings.ts`（中文文案单一来源）+ layout 域迁移 [done @ 98bab19]
 - [x] R28 chat 域迁移 [done @ 7f430d4]
 - [x] R29 settings 域迁移 [done @ 849235f]
-- [ ] R30 panels 域迁移
+- [x] R30 panels 域迁移 [done @ ea58f0b]
 - [ ] R31 modals 域迁移
 - [ ] R32 right-panel 域迁移
 - [ ] R33 全量 grep 清零英文面向用户文案（技术术语保留原文）
