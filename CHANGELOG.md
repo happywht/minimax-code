@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 1.0.0 总览（R51 汇总——0.12.0 → 1.0.0，八里程碑 54 轮迭代收口）
+
+1.0.0 是 v0.11.0 之上连续八个功能版本 + rc 收口的成果。各版本详录见下方分节，此处一屏总览：
+
+| 里程碑 | 版本 | 主题 | 代表性成果 |
+|--------|------|------|-----------|
+| M1 | 0.12.0 | 生产单进程模式 | agent 同源托管 web/dist、production-mode e2e、文件日志、部署文档 |
+| M2 | 0.13.0 | 性能基线 | 五项基线（冷启动 / 索引 / 首屏 / 长会话 / WS 重放）+ 预算硬断言进 CI |
+| M3 | 0.14.0 | 安全加固 | CORS 白名单、RPC 畸形防护、权限出厂默认、`-m security` 151 测试 |
+| M4 | 0.15.0 | 数据可移植 | `data.export` / `data.import`（全事务替换式）/ `data.backup`（在线快照）+ 灾难恢复 e2e |
+| M5 | 0.16.0 | UI 文案统一 | `strings.ts` 中文单一来源 1100+ 行，全量英文清零 |
+| M6 | 0.17.0 | 无障碍与键盘 | WAI-ARIA 焦点陷阱、roving tabindex、icon 按钮可访问名静态审计、WCAG AA 60 断言 |
+| M7 | 0.18.0 | 文档完备 | README 重写、198 行用户手册、IPC 文档对账 + 双向守护测试、五文档全量对账 |
+| M8 | 0.19.0 | 诊断工具 | `diag.export` 脱敏诊断包（无 keyring 值 / 无绝对用户路径，故障态降级可用）+ 前端导出入口 |
+| M9 | 1.0.0-rc | 质量收口 | 四面全量回归、R32 断言债清偿、flaky 清零（e2e 三连跑）、rc 发布性能数字复测 |
+
+**1.0.0-rc 质量数字**：pytest 10125 passed / 15 skipped；vitest 622/622（77 文件）；e2e 21/21（10 spec，三连跑 31.0 / 31.3 / 31.7 s 零失败）；ESLint 0 errors / 0 warnings；`-m security` 151 测试。
+**性能基线（R50 发布复测）**：冷启动 median 2.589 s（预算 ≤5 s）；首屏 JS 136.7 KB / CSS 8.2 KB gzip（预算 200 / 50 KB）；500 条消息长会话仅挂载 34 行 DOM；WS 断连重放 ≤512 条；SQLite 热点查询零裸表扫。详见 `docs/performance-baseline.md`。
+**规模**：168 个 IPC 方法（36 命名空间）、24 张实体表（+FTS/vec 虚表，25 个迁移）、29 个前端 stores、设置页 14 tab、检查器 11 tab、12 个内置技能。
+
 ### Fixed — 1.0.0-rc 质量收口（v0.19.0 后，R49–R50）
 - **e2e 断言债清偿（R49）**：R32 文案中文化迁移时 e2e 断言未同步，挖出 8 处断言债修复——placeholder 英文残留（smoke-chat / smoke-thinking-count / smoke-subagent / production-mode 共 5 处改中文）、`getByLabel("决策")` / `getByRole("移除")` 默认子串匹配与中文化 aria-label 撞车（2 处加 `{ exact: true }`）、codebase 统计文案 `Files:/Chunks:` → `文件：/分块：` 与 `Sources` → `来源`、subagent 状态 `completed|failed` → `已完成|失败`。附带发现 production-mode 用的 `web/dist` 过期 4 小时（R32 之前构建），强制重建后验证诊断功能与中文文案均入包。
 - **streaming-follow e2e 竞态修复（R50）**：`smoke-chat` streaming 跟随断言偶发收到距离 941（期望 ≤50）——根因是种子消息后虚拟化行高持续变化，`scrollHeight` 抖动触发原生 scroll 事件把 `useSmartScroll` 的 following 标志翻 false，随后 chunk 到达走"不跟随"分支。修法为 expect.poll 每轮重设 `scrollTop` 并重发 scroll 事件、断言钉住距离 ≤50 才放行——三连跑 21/21 × 3（31.0 / 31.3 / 31.7 s）零失败。
