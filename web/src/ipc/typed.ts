@@ -85,6 +85,7 @@ import type {
   DataBackupResult,
   DataExportEnvelope,
   DataImportSummary,
+  DiagnosticBundle,
   UpdateSessionProjectResult,
   UpdateSessionResult,
   WebhookConfig,
@@ -290,6 +291,9 @@ export interface TypedIPC {
   exportData(): Promise<DataExportEnvelope>;
   importData(envelope: DataExportEnvelope): Promise<DataImportSummary>;
   backupData(targetDir?: string): Promise<DataBackupResult>;
+
+  // diagnostics (R45+) — sanitized bug-report bundle for the Data tab.
+  exportDiagnostic(): Promise<DiagnosticBundle>;
 
   // provider — drive the Settings page's Providers tab.
   listProviders(): Promise<ListProvidersResult>;
@@ -757,6 +761,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
 
     // ── Data portability (R21+) — JSON export / replace-import / file backup ──
     exportData: () => client.request<DataExportEnvelope>("data.export", {}),
+    exportDiagnostic: () => client.request<DiagnosticBundle>("diag.export", {}),
     importData: (envelope) =>
       client.request<DataImportSummary>("data.import", { envelope }),
     backupData: (targetDir) =>

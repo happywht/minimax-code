@@ -12,6 +12,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 const mockExportData = vi.fn();
 const mockImportData = vi.fn();
 const mockBackupData = vi.fn();
+const mockExportDiagnostic = vi.fn();
 let confirmNext = true;
 
 vi.mock("../../../ipc", () => ({
@@ -19,6 +20,7 @@ vi.mock("../../../ipc", () => ({
     exportData: (...a: unknown[]) => mockExportData(...a),
     importData: (...a: unknown[]) => mockImportData(...a),
     backupData: (...a: unknown[]) => mockBackupData(...a),
+    exportDiagnostic: (...a: unknown[]) => mockExportDiagnostic(...a),
   },
 }));
 
@@ -66,13 +68,36 @@ function pickFile(json: unknown): void {
   });
 }
 
+const DIAG_BUNDLE = {
+  format: "minimax-code-diagnostic" as const,
+  generated_at: "2026-08-21T00:00:00Z",
+  version: "0.18.0",
+  platform: {
+    system: "Windows",
+    release: "11",
+    machine: "AMD64",
+    python: "3.12.9",
+    pid: 1234,
+  },
+  runtime: { uptime_s: 60 },
+  config: { log_level: "INFO", http_port: 8765 },
+  storage: {
+    db_available: true,
+    table_count: 2,
+    tables: { sessions: 2, messages: 3 },
+    migrations_applied: 25,
+  },
+  log_tail: ["agent started"],
+};
+
 describe("DataTab", () => {
-  it("renders the three operation panels", () => {
+  it("renders the four operation panels", () => {
     render(<DataTab />);
     expect(screen.getByTestId("settings-data")).toBeTruthy();
     expect(screen.getByText("导出为 JSON")).toBeTruthy();
     expect(screen.getByText("从 JSON 导入")).toBeTruthy();
     expect(screen.getByText("备份快照")).toBeTruthy();
+    expect(screen.getByText("诊断包")).toBeTruthy();
   });
 
   it("exports: downloads a blob and reports the row total", async () => {
@@ -140,5 +165,47 @@ describe("DataTab", () => {
       );
     });
     expect(screen.getByTestId("settings-data-feedback").textContent).toContain("44.0 KB");
+  });
+
+  it("diagnostic: downloads a blob and reports version + table count", async () => {
+    mockExportDiagnostic.mockResolvedValue(DIAG_BUNDLE);
+    render(<DataTab />);
+    fireEvent.click(screen.getByTestId("settings-data-diagnostic"));
+    await waitFor(() => {
+      expect(screen.getByTestId("settings-data-feedback").textContent).toContain(
+        "v0.18.0，2 张表",
+      );
+    });
+    expect(mockExportDiagnostic).toHaveBeenCalledTimes(1);
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("settings-data-feedback").textContent).toContain(
+      "minimax-code-diagnostic-",
+    );
+  });
+
+  it("diagnostic: NO_DB degradation still downloads (0 tables)", async () => {
+    mockExportDiagnostic.mockResolvedValue({
+      ...DIAG_BUNDLE,
+      storage: { db_available: false },
+    });
+    render(<DataTab />);
+    fireEvent.click(screen.getByTestId("settings-data-diagnostic"));
+    await waitFor(() => {
+      expect(screen.getByTestId("settings-data-feedback").textContent).toContain("0 张表");
+    });
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+  });
+
+  it("diagnostic: failure surfaces the error feedback", async () => {
+    mockExportDiagnostic.mockRejectedValue(new Error("agent down"));
+    render(<DataTab />);
+    fireEvent.click(screen.getByTestId("settings-data-diagnostic"));
+    await waitFor(() => {
+      expect(screen.getByTestId("settings-data-error").textContent).toContain(
+        "诊断包导出失败",
+      );
+    });
+    expect(createObjectURL).not.toHaveBeenCalled();
   });
 });

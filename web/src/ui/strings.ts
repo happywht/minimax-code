@@ -390,6 +390,11 @@ export const strings = {
         "通过 online backup API 热复制 SQLite 数据库——含 schema、WAL 内容与派生索引（全文、向量）——写入",
       backupDescTail: "，文件名带 UTC 时间戳。Agent 保持运行；源库只读。",
       backupButton: "立即备份",
+      diagTitle: "诊断包",
+      diagDesc:
+        "导出一份脱敏诊断 JSON（版本 / 平台 / 配置枚举 / 各表行数 / 最近日志尾），" +
+        "可直接附在问题报告里。配置只含枚举与计数，绝不含密钥；路径仅保留目录名。",
+      diagButton: "导出诊断包",
       footerNote:
         "导出是跨版本格式（例如机器间迁移）；备份是同版本的灾备格式。大规模导入前请至少保留一份备份。",
       exportOk: (rows: number, tables: number, file: string) =>
@@ -401,6 +406,9 @@ export const strings = {
       importFail: (err: string) => `导入失败：${err}`,
       backupOk: (path: string, size: string) => `备份已写入：${path}（${size}）`,
       backupFail: (err: string) => `备份失败：${err}`,
+      diagOk: (version: string, tables: number, file: string) =>
+        `已导出诊断包（v${version}，${tables} 张表）→ ${file}`,
+      diagFail: (err: string) => `诊断包导出失败：${err}`,
     },
 
     audit: {

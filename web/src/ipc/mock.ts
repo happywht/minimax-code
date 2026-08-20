@@ -26,6 +26,7 @@ import type {
   DataBackupResult,
   DataExportEnvelope,
   DataImportSummary,
+  DiagnosticBundle,
   ListAuditResult,
   ListNotificationsResult,
   ListPluginsResult,
@@ -904,6 +905,41 @@ function mockHandle(
         path: `mock://backups/minimax-code-backup-${stamp}.db`,
         bytes: 4096,
       } satisfies DataBackupResult;
+    }
+
+    case "diag.export": {
+      // Mirrors the real handler's sanitized shape: enums/counts only in
+      // config, basename paths, NO_DB-style degradation, short tail.
+      return {
+        format: "minimax-code-diagnostic",
+        generated_at: new Date().toISOString(),
+        version: "0.0.0-mock",
+        platform: {
+          system: "MockOS",
+          release: "0",
+          machine: "x86_64",
+          python: "3.12.0",
+          pid: 0,
+        },
+        runtime: { uptime_s: 42 },
+        config: {
+          log_level: "INFO",
+          env: "development",
+          http_host: "127.0.0.1",
+          http_port: 8765,
+          cors_custom_origin_count: 0,
+          log_file_configured: false,
+          data_dir_name: "MiniMaxCode",
+          skills_dir_custom: false,
+        },
+        storage: {
+          db_available: true,
+          table_count: 2,
+          tables: { sessions: 2, messages: 3 },
+          migrations_applied: 1,
+        },
+        log_tail: ["mock agent started", "mock mode active"],
+      } satisfies DiagnosticBundle;
     }
 
     case "patch.preview": {

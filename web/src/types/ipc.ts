@@ -774,6 +774,36 @@ export interface DataBackupResult {
   bytes: number;
 }
 
+/**
+ * Sanitized diagnostic bundle — return shape of `diag.export` (R45).
+ * Safe to attach to a bug report by construction: config carries enums /
+ * numbers / booleans / counts only (never secret values), paths are
+ * reduced to basenames, and the log tail is redacted agent-side.
+ */
+export interface DiagnosticBundle {
+  format: "minimax-code-diagnostic";
+  generated_at: string;
+  version: string;
+  platform: {
+    system: string;
+    release: string;
+    machine: string;
+    python: string;
+    pid: number;
+  };
+  runtime: { uptime_s: number };
+  config: Record<string, string | number | boolean | null>;
+  storage:
+    | {
+        db_available: true;
+        table_count: number;
+        tables: Record<string, number>;
+        migrations_applied: number | null;
+      }
+    | { db_available: false };
+  log_tail: string[];
+}
+
 export interface ListRulesResult {
   rules: PermissionRule[];
 }

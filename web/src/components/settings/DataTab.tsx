@@ -10,7 +10,7 @@
  *    indexes included) into the agent's backups directory.
  */
 import { useRef, useState } from "react";
-import { DatabaseBackup, Download, HardDriveDownload, Upload } from "lucide-react";
+import { Activity, DatabaseBackup, Download, HardDriveDownload, Upload } from "lucide-react";
 import { Button, Panel } from "../../ui";
 import { strings } from "../../ui/strings";
 import { typedIPC } from "../../ipc";
@@ -18,6 +18,7 @@ import type {
   DataBackupResult,
   DataExportEnvelope,
   DataImportSummary,
+  DiagnosticBundle,
 } from "../../types/ipc";
 import { InlineCode, TabHeader } from "./fields";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
@@ -43,6 +44,27 @@ function exportFilename(): string {
   )}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.json`;
 }
 
+/** Same stamp style, but for the diagnostic bundle (R46). */
+function diagFilename(): string {
+  return exportFilename().replace("minimax-code-export-", "minimax-code-diagnostic-");
+}
+
+/** Shared Blob-URL download for JSON payloads (export + diagnostics). */
+function downloadJson(payload: unknown, filename: string): void {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 /** Read a picked file as text — FileReader for the widest compat. */
 function readFileText(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -57,6 +79,7 @@ function DataTab(): JSX.Element {
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [backing, setBacking] = useState(false);
+  const [diagnosing, setDiagnosing] = useState(false);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -65,18 +88,7 @@ function DataTab(): JSX.Element {
     setFeedback(null);
     try {
       const envelope = await typedIPC.exportData();
-      const blob = new Blob([JSON.stringify(envelope, null, 2)], {
-        type: "application/json",
-      });
-      const url = URL.createObjectURL(blob);
-      try {
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = exportFilename();
-        anchor.click();
-      } finally {
-        URL.revokeObjectURL(url);
-      }
+      downloadJson(envelope, exportFilename());
       const totalRows = Object.values(envelope.counts ?? {}).reduce<number>((a, b) => a + b, 0);
       setFeedback({
         kind: "ok",
@@ -90,6 +102,24 @@ function DataTab(): JSX.Element {
       setFeedback({ kind: "error", text: strings.settings.data.exportFail(String(err)) });
     } finally {
       setExporting(false);
+    }
+  };
+
+  const onDiagnostic = async () => {
+    setDiagnosing(true);
+    setFeedback(null);
+    try {
+      const bundle: DiagnosticBundle = await typedIPC.exportDiagnostic();
+      downloadJson(bundle, diagFilename());
+      const tableCount = bundle.storage.db_available ? bundle.storage.table_count : 0;
+      setFeedback({
+        kind: "ok",
+        text: strings.settings.data.diagOk(bundle.version, tableCount, diagFilename()),
+      });
+    } catch (err) {
+      setFeedback({ kind: "error", text: strings.settings.data.diagFail(String(err)) });
+    } finally {
+      setDiagnosing(false);
     }
   };
 
@@ -191,7 +221,7 @@ function DataTab(): JSX.Element {
             variant="primary"
             data-testid="settings-data-export"
             icon={<Download />}
-            disabled={exporting || importing || backing}
+            disabled={exporting || importing || backing || diagnosing}
             loading={exporting}
             onClick={() => void onExport()}
           >
@@ -221,7 +251,7 @@ function DataTab(): JSX.Element {
             variant="secondary"
             data-testid="settings-data-import"
             icon={<Upload />}
-            disabled={exporting || importing || backing}
+            disabled={exporting || importing || backing || diagnosing}
             loading={importing}
             onClick={() => fileInputRef.current?.click()}
           >
@@ -242,11 +272,30 @@ function DataTab(): JSX.Element {
             variant="secondary"
             data-testid="settings-data-backup"
             icon={<HardDriveDownload />}
-            disabled={exporting || importing || backing}
+            disabled={exporting || importing || backing || diagnosing}
             loading={backing}
             onClick={() => void onBackup()}
           >
             {strings.settings.data.backupButton}
+          </Button>
+        </div>
+      </Panel>
+
+      <Panel title={strings.settings.data.diagTitle}>
+        <p className="text-[11px] text-ink-2">
+          {strings.settings.data.diagDesc}
+        </p>
+        <div className="mt-3">
+          <Button
+            size="sm"
+            variant="secondary"
+            data-testid="settings-data-diagnostic"
+            icon={<Activity />}
+            disabled={exporting || importing || backing || diagnosing}
+            loading={diagnosing}
+            onClick={() => void onDiagnostic()}
+          >
+            {strings.settings.data.diagButton}
           </Button>
         </div>
       </Panel>
