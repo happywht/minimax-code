@@ -11,6 +11,7 @@ import {
   Brain,
   CalendarClock,
   Cpu,
+  Database,
   Globe,
   KeyRound,
   Puzzle,
@@ -35,10 +36,11 @@ import { WorkflowsTab } from "./WorkflowsTab";
 import { McpServersTab } from "./McpServersTab";
 import { MemoryTab } from "./MemoryTab";
 import { PluginsTab } from "./PluginsTab";
+import { DataTab } from "./DataTab";
 import { useFocusTrap } from "../../lib/useFocusTrap";
 import { ConfirmationDialog } from "../modals/ConfirmationDialog";
 
-export type SettingsTab = "models" | "providers" | "permissions" | "scheduled" | "api-key" | "agents" | "teams" | "audit" | "webhooks" | "workflows" | "mcp-servers" | "memory" | "plugins";
+export type SettingsTab = "models" | "providers" | "permissions" | "scheduled" | "api-key" | "agents" | "teams" | "audit" | "webhooks" | "workflows" | "mcp-servers" | "memory" | "plugins" | "data";
 
 const TAB_GROUPS: Array<{
   label: string;
@@ -54,6 +56,7 @@ const TAB_GROUPS: Array<{
       { id: "mcp-servers", icon: <Blocks size={12} />, label: "MCP Servers", testId: "settings-tab-mcp-servers" },
       { id: "memory", icon: <Brain size={12} />, label: "Memory", testId: "settings-tab-memory" },
       { id: "plugins", icon: <Puzzle size={12} />, label: "Plugins", testId: "settings-tab-plugins" },
+      { id: "data", icon: <Database size={12} />, label: "Data", testId: "settings-tab-data" },
     ],
   },
   {
@@ -171,6 +174,7 @@ export function SettingsPage({ testId = "settings-page", onClose, initialTab = "
           {tab === "mcp-servers" && <McpServersTab />}
           {tab === "memory" && <MemoryTab />}
           {tab === "plugins" && <PluginsTab />}
+          {tab === "data" && <DataTab />}
         </div>
       </div>
       </div>

@@ -22,6 +22,9 @@ import type {
   GitLogResult,
   GitStatusResult,
   JsonRpcId,
+  DataBackupResult,
+  DataExportEnvelope,
+  DataImportSummary,
   ListAuditResult,
   ListNotificationsResult,
   ListPluginsResult,
@@ -151,6 +154,20 @@ const mockMemories = new Map<string, MemoryEntry>();
 // R18 — user-created permission rules in *wire* shape (the factory
 // exec_* → ask default is synthesised on read, like the real store).
 const mockPermissionRules: BackendPermissionRule[] = [];
+// R21–R23 — in-memory echo of the data-portability envelope. data.import
+// validates + stores it; data.export replays it (or a default envelope
+// before any import) so the Settings Data tab round-trips in browser-only
+// mode. data.backup has no filesystem here — it reports a fake snapshot.
+let mockDataEnvelope: DataExportEnvelope | null = null;
+
+const MOCK_DEFAULT_ENVELOPE: DataExportEnvelope = {
+  format: "minimax-code-export",
+  schema_version: 1,
+  app_version: "0.0.0-mock",
+  exported_at: "1970-01-01T00:00:00Z",
+  counts: { sessions: 0, messages: 0 },
+  tables: { sessions: [], messages: [] },
+};
 
 export function resetMockMcpServers(): void {
   mockMcpServers.clear();
@@ -851,6 +868,41 @@ function mockHandle(
     case "git.diff": {
       const p = params as { scope?: string; ref?: string } | undefined;
       return { diff: "", scope: p?.ref ?? p?.scope ?? "working" } satisfies GitDiffResult;
+    }
+
+    case "data.export": {
+      // Clone so callers mutating the result can't corrupt the stored
+      // envelope (matches the real handler's fresh dump per call).
+      return structuredClone(mockDataEnvelope ?? MOCK_DEFAULT_ENVELOPE);
+    }
+
+    case "data.import": {
+      const envelope = (params as { envelope?: DataExportEnvelope } | undefined)?.envelope;
+      if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
+        throw new Error("invalid params: 'envelope' must be an object");
+      }
+      if (envelope.format !== "minimax-code-export") {
+        // Mirror the real handler's INVALID_PARAMS so the Data tab's
+        // error path is exercised in tests.
+        throw new Error(
+          "invalid params: envelope.format must be 'minimax-code-export'",
+        );
+      }
+      mockDataEnvelope = envelope;
+      const imported: Record<string, number> = {};
+      for (const [table, rows] of Object.entries(envelope.tables ?? {})) {
+        imported[table] = Array.isArray(rows) ? rows.length : 0;
+      }
+      return { imported, skipped_tables: [] } satisfies DataImportSummary;
+    }
+
+    case "data.backup": {
+      const now = new Date();
+      const stamp = now.toISOString().replace(/[:.]/g, "-");
+      return {
+        path: `mock://backups/minimax-code-backup-${stamp}.db`,
+        bytes: 4096,
+      } satisfies DataBackupResult;
     }
 
     case "patch.preview": {

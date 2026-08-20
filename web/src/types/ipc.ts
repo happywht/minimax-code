@@ -747,6 +747,33 @@ export interface SecretStatus {
   source: "keyring" | "env" | "none";
 }
 
+/**
+ * Data-portability envelope — return shape of `data.export` and the
+ * request payload of `data.import` (R21/R22). One JSON document holds
+ * every business table; `schema_version` gates imports from newer
+ * schemas, and `counts` mirrors the per-table row totals.
+ */
+export interface DataExportEnvelope {
+  format: "minimax-code-export";
+  schema_version: number;
+  app_version: string;
+  exported_at: string;
+  counts: Record<string, number>;
+  tables: Record<string, Array<Record<string, unknown>>>;
+}
+
+/** Replace-import summary — return shape of `data.import` (R22). */
+export interface DataImportSummary {
+  imported: Record<string, number>;
+  skipped_tables: string[];
+}
+
+/** Backup snapshot result — return shape of `data.backup` (R23). */
+export interface DataBackupResult {
+  path: string;
+  bytes: number;
+}
+
 export interface ListRulesResult {
   rules: PermissionRule[];
 }

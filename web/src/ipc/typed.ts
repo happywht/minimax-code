@@ -82,6 +82,9 @@ import type {
   UpdateProviderResult,
   BatchArchiveSessionsResult,
   BatchUpdateSessionProjectResult,
+  DataBackupResult,
+  DataExportEnvelope,
+  DataImportSummary,
   UpdateSessionProjectResult,
   UpdateSessionResult,
   WebhookConfig,
@@ -282,6 +285,11 @@ export interface TypedIPC {
   getSecretStatus(): Promise<SecretStatus>;
   setSecret(value: string): Promise<SecretStatus>;
   clearSecret(): Promise<SecretStatus>;
+
+  // data portability (R21+) — drive the Settings page's Data tab.
+  exportData(): Promise<DataExportEnvelope>;
+  importData(envelope: DataExportEnvelope): Promise<DataImportSummary>;
+  backupData(targetDir?: string): Promise<DataBackupResult>;
 
   // provider — drive the Settings page's Providers tab.
   listProviders(): Promise<ListProvidersResult>;
@@ -746,6 +754,16 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     getSecretStatus: () => client.request<SecretStatus>("secrets.status", {}),
     setSecret: (value) => client.request<SecretStatus>("secrets.set", { value }),
     clearSecret: () => client.request<SecretStatus>("secrets.clear", {}),
+
+    // ── Data portability (R21+) — JSON export / replace-import / file backup ──
+    exportData: () => client.request<DataExportEnvelope>("data.export", {}),
+    importData: (envelope) =>
+      client.request<DataImportSummary>("data.import", { envelope }),
+    backupData: (targetDir) =>
+      client.request<DataBackupResult>(
+        "data.backup",
+        targetDir ? { target_dir: targetDir } : {},
+      ),
 
     listProviders: () => client.request<ListProvidersResult>("provider.list", {}),
     createProvider: (opts) =>

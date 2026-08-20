@@ -13,4 +13,5 @@ export { AuditTab } from "./AuditTab";
 export { WebhooksTab } from "./WebhooksTab";
 export { WorkflowsTab } from "./WorkflowsTab";
 export { SettingsPage } from "./SettingsPage";
+export { DataTab } from "./DataTab";
 export type { SettingsPageProps, SettingsTab } from "./SettingsPage";
