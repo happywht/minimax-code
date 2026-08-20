@@ -76,7 +76,7 @@
 - [x] R44 版本 bump 0.18.0 `[done @ 0ef6477]`（6 代码位 katex 依赖除外——web/package.json `"version"` 字段精确替换 + 3 文档版本行 + CHANGELOG M7 全条目 + uv lock 0.17.0→0.18.0；test_version 16/16 一致性通过）
 
 ### M8 · v0.19.0 诊断工具（R45–R48）
-- [ ] R45 IPC `diag.export`：版本/平台/配置（脱敏）/日志尾/表行数 → JSON 下载
+- [x] R45 IPC `diag.export`：版本/平台/配置（脱敏）/日志尾/表行数 → JSON 下载 [done @ 4ab4eb3]
 - [ ] R46 前端诊断入口（Settings About 区"导出诊断包"）
 - [ ] R47 诊断测试（脱敏断言：无 keyring 值、无绝对用户路径）
 - [ ] R48 版本 bump 0.19.0
