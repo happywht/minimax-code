@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { useCodeReviewStore } from "../../stores/codeReviewStore";
 import { Badge, Button, IconButton, type BadgeTone } from "../../ui";
+import { strings } from "../../ui/strings";
 
 export interface CodeReviewPanelProps {
   testId?: string;
@@ -33,10 +34,10 @@ const SEVERITY_DISPLAY: Record<string, { icon: JSX.Element; tone: BadgeTone }> =
 type DimensionTab = "overview" | "security" | "performance" | "style";
 
 const TABS: { key: DimensionTab; label: string; icon: JSX.Element }[] = [
-  { key: "overview", label: "Overview", icon: <FileCode size={9} /> },
-  { key: "security", label: "Security", icon: <ShieldAlert size={9} /> },
-  { key: "performance", label: "Perf", icon: <Zap size={9} /> },
-  { key: "style", label: "Style", icon: <AlertTriangle size={9} /> },
+  { key: "overview", label: strings.panels.codeReview.tabOverview, icon: <FileCode size={9} /> },
+  { key: "security", label: strings.panels.codeReview.tabSecurity, icon: <ShieldAlert size={9} /> },
+  { key: "performance", label: strings.panels.codeReview.tabPerformance, icon: <Zap size={9} /> },
+  { key: "style", label: strings.panels.codeReview.tabStyle, icon: <AlertTriangle size={9} /> },
 ];
 
 export function CodeReviewPanel({
@@ -78,7 +79,7 @@ export function CodeReviewPanel({
           icon={<Play />}
           className="h-6 px-2 text-[11px]"
         >
-          {loading ? "Reviewing…" : "Review Diff"}
+          {loading ? strings.panels.codeReview.reviewing : strings.panels.codeReview.reviewDiff}
         </Button>
         <Button
           variant="secondary"
@@ -87,16 +88,16 @@ export function CodeReviewPanel({
           onClick={() => void runAllChecks()}
           disabled={loading}
           icon={<Play />}
-          title="Run all dimension checks"
+          title={strings.panels.codeReview.runAllTitle}
           className="h-6 px-2 text-[11px]"
         >
-          Run All
+          {strings.panels.codeReview.runAll}
         </Button>
         {(comments.length > 0 || rawText || Object.keys(dimensions).length > 0) && (
           <IconButton
             size="sm"
             onClick={clear}
-            aria-label="Clear review"
+            aria-label={strings.panels.codeReview.clearAria}
           >
             <Trash2 />
           </IconButton>
@@ -152,7 +153,7 @@ export function CodeReviewPanel({
         >
           <span className="flex items-center gap-1">
             <FileCode size={9} />
-            {displayStats.files} file{displayStats.files !== 1 ? "s" : ""}
+            {strings.panels.fileCount(displayStats.files)}
           </span>
           <span className="text-status-success">+{displayStats.additions}</span>
           <span className="text-status-error">−{displayStats.deletions}</span>
@@ -201,7 +202,7 @@ export function CodeReviewPanel({
       {/* Empty state */}
       {!loading && !error && !displayComments.length && !rawText && !Object.keys(dimensions).length && (
         <div className="mt-2 text-center text-[11px] italic text-ink-2">
-          点击「Review Diff」或「Run All」开始分析代码。
+          {strings.panels.codeReview.emptyHint}
         </div>
       )}
     </div>

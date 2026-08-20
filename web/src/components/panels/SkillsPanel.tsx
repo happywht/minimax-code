@@ -11,12 +11,14 @@ import { FileUp, Trash2, Wrench, X } from "lucide-react";
 import { useSkillStore } from "../../stores";
 import { Badge, Button, EmptyState, IconButton, Modal, Spinner } from "../../ui";
 import { toast } from "../layout/ErrorBoundary";
+import { strings } from "../../ui/strings";
 
 function readTextFile(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result ?? ""));
-    reader.onerror = () => reject(reader.error ?? new Error("Unable to read file"));
+    reader.onerror = () =>
+      reject(reader.error ?? new Error(strings.panels.skills.readFailError));
     reader.readAsText(file, "utf-8");
   });
 }
@@ -57,11 +59,10 @@ export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelPro
             className="flex items-center gap-2 text-base font-semibold"
           >
             <Wrench size={16} className="text-accent" />
-            Skills
+            {strings.panels.skills.title}
           </h1>
           <p className="mt-1 text-[11px] text-ink-2">
-            Enable or disable installed skills. Built-in skills ship
-            with the agent; import custom skills from a local SKILL.md.
+            {strings.panels.skills.subtitle}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -71,10 +72,10 @@ export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelPro
             data-testid="skills-add"
             loading={installing}
             icon={<FileUp />}
-            title="Import a SKILL.md file"
+            title={strings.panels.skills.importTitle}
             onClick={() => fileInputRef.current?.click()}
           >
-            {installing ? "Importing..." : "Import"}
+            {installing ? strings.panels.skills.importing : strings.panels.skills.importLabel}
           </Button>
           <input
             ref={fileInputRef}
@@ -90,14 +91,14 @@ export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelPro
                 .then((content) => install(content))
                 .catch((error) => {
                   const message = error instanceof Error ? error.message : String(error);
-                  toast.error("Failed to read skill file", message);
+                  toast.error(strings.panels.skills.readFailToast, message);
                 });
             }}
           />
           {onClose && (
             <IconButton
               data-testid="skills-close"
-              aria-label="Close skills"
+              aria-label={strings.panels.skills.closeAria}
               onClick={onClose}
             >
               <X />
@@ -110,7 +111,7 @@ export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelPro
         {loading && skills.length === 0 ? (
           <p data-testid="skills-loading" className="flex items-center gap-2 text-sm text-ink-1">
             <Spinner size={14} />
-            Loading skills…
+            {strings.panels.skills.loading}
           </p>
         ) : skills.length === 0 ? (
           <EmptyState
@@ -133,8 +134,8 @@ export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelPro
                       {skill.name}
                     </span>
                     {skill.builtin && (
-                      <Badge tone="neutral" className="uppercase tracking-wider">
-                        built-in
+                      <Badge tone="neutral" className="tracking-wider">
+                        {strings.panels.skills.builtinBadge}
                       </Badge>
                     )}
                   </div>
@@ -155,13 +156,17 @@ export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelPro
                       }
                       className="h-3.5 w-3.5 cursor-pointer accent-accent"
                     />
-                    <span>{skill.enabled ? "On" : "Off"}</span>
+                    <span>
+                      {skill.enabled
+                        ? strings.panels.skills.on
+                        : strings.panels.skills.off}
+                    </span>
                   </label>
                   {!skill.builtin && (
                     <IconButton
                       data-testid={`skills-remove-${skill.id}`}
-                      aria-label={`Remove skill ${skill.name}`}
-                      title="Remove custom skill"
+                      aria-label={strings.panels.skills.removeAria(skill.name)}
+                      title={strings.panels.skills.removeTitle}
                       onClick={() => setRemoveId(skill.id)}
                       className="hover:bg-[var(--status-error-subtle)] hover:text-status-error"
                     >

@@ -5,6 +5,7 @@
 import { useMemo, useState } from "react";
 import { Check, Loader2, X } from "lucide-react";
 import { Badge, IconButton, type BadgeTone } from "../../ui";
+import { strings } from "../../ui/strings";
 import type { PatchFile, PatchHunk } from "../../types/ipc";
 import { PatchHunkCard } from "./PatchHunkCard";
 import { hunkKey, type DiffScope, type HunkDecision } from "./patchPreviewShared";
@@ -95,7 +96,11 @@ export function PatchFileCard({
         <div className="flex shrink-0 items-center gap-1.5">
           {fileDecision && fileDecision !== "busy" && (
             <Badge tone={fileDecision === "approved" ? "success" : fileDecision === "rejected" ? "error" : "neutral"}>
-              {fileDecision}
+              {fileDecision === "approved"
+                ? strings.panels.patch.decisionApproved
+                : fileDecision === "rejected"
+                  ? strings.panels.patch.decisionRejected
+                  : strings.panels.patch.decisionFailed}
             </Badge>
           )}
           <StatusBadge status={file.status} />
@@ -109,8 +114,8 @@ export function PatchFileCard({
                 onClick={() => void runFileOperation("approve")}
                 disabled={fileBusy || scope !== "working"}
                 className="h-5 w-5 hover:bg-[var(--status-success-subtle)] hover:text-status-success"
-                title={scope === "working" ? "Approve all hunks in this file" : "Only working files can be approved"}
-                aria-label="Approve all hunks in this file"
+                title={scope === "working" ? strings.panels.patch.fileApproveTitle : strings.panels.patch.fileApproveOnlyWorking}
+                aria-label={strings.panels.patch.fileApproveTitle}
               >
                 {fileBusy ? <Loader2 className="animate-spin" /> : <Check />}
               </IconButton>
@@ -120,8 +125,8 @@ export function PatchFileCard({
                 onClick={() => void runFileOperation("reject")}
                 disabled={fileBusy}
                 className="h-5 w-5 hover:bg-[var(--status-error-subtle)] hover:text-status-error"
-                title={scope === "staged" ? "Unstage all hunks in this file" : "Reject all hunks in this file"}
-                aria-label={scope === "staged" ? "Unstage all hunks in this file" : "Reject all hunks in this file"}
+                title={scope === "staged" ? strings.panels.patch.fileUnstageTitle : strings.panels.patch.fileRejectTitle}
+                aria-label={scope === "staged" ? strings.panels.patch.fileUnstageTitle : strings.panels.patch.fileRejectTitle}
               >
                 {fileBusy ? <Loader2 className="animate-spin" /> : <X />}
               </IconButton>
@@ -132,7 +137,7 @@ export function PatchFileCard({
 
       {file.binary ? (
         <div className="mt-1.5 rounded-md bg-surface-1 px-2 py-1 text-[11px] text-ink-2">
-          Binary file changed
+          {strings.panels.patch.binaryChanged}
         </div>
       ) : (
         file.hunks.length > 0 && (

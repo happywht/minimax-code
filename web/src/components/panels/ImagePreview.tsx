@@ -6,6 +6,7 @@
  * attaches screenshots or images.
  */
 import { X } from "lucide-react";
+import { strings } from "../../ui/strings";
 
 export interface ImagePreviewProps {
   /** base64 data URI or raw base64 string. */
@@ -36,12 +37,12 @@ export function ImagePreview({
     >
       <img
         src={src}
-        alt={`Attached image ${index + 1}`}
+        alt={strings.panels.imagePreview.alt(index + 1)}
         className="h-full w-full object-cover"
       />
       <button
         type="button"
-        aria-label={`Remove image ${index + 1}`}
+        aria-label={strings.panels.imagePreview.removeAria(index + 1)}
         data-testid={`image-preview-remove-${index}`}
         onClick={onRemove}
         className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100"

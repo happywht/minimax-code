@@ -10,6 +10,7 @@
 import { create } from "zustand";
 import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
+import { strings } from "../ui/strings";
 
 export interface ReviewComment {
   file: string;
@@ -61,8 +62,11 @@ export const useCodeReviewStore = create<CodeReviewState>((set) => ({
       const diff = diffResult.diff;
 
       if (!diff || diff.trim().length === 0) {
-        set({ loading: false, rawText: "No changes to review." });
-        toast.info("No changes", "Working tree is clean — nothing to review.");
+        set({ loading: false, rawText: strings.panels.codeReview.noChangesRaw });
+        toast.info(
+          strings.panels.codeReview.noChanges,
+          strings.panels.codeReview.noChangesDetail,
+        );
         return;
       }
 
@@ -87,12 +91,15 @@ export const useCodeReviewStore = create<CodeReviewState>((set) => ({
       if (typeof output === "object" && output !== null) {
         const comments = (output as Record<string, unknown>).comments;
         const count = Array.isArray(comments) ? comments.length : 0;
-        toast.success("Review complete", `${count} comment(s) found`);
+        toast.success(
+          strings.panels.codeReview.reviewComplete,
+          strings.panels.codeReview.commentCount(count),
+        );
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       set({ loading: false, error: message });
-      toast.error("Review failed", message);
+      toast.error(strings.panels.codeReview.reviewFailed, message);
     }
   },
 
@@ -147,7 +154,7 @@ export const useCodeReviewStore = create<CodeReviewState>((set) => ({
           newDimensions[check.key] = {
             comments: [],
             stats: null,
-            rawText: `Check '${check.key}' failed.`,
+            rawText: strings.panels.codeReview.checkFailedRaw(check.key),
           };
         }
       }
@@ -161,13 +168,13 @@ export const useCodeReviewStore = create<CodeReviewState>((set) => ({
       });
 
       toast.success(
-        "All checks complete",
-        `${allComments.length} total finding(s)`,
+        strings.panels.codeReview.allChecksComplete,
+        strings.panels.codeReview.findingCount(allComments.length),
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       set({ loading: false, error: message, dimensions: newDimensions });
-      toast.error("Check failed", message);
+      toast.error(strings.panels.codeReview.checkFailed, message);
     }
   },
 

@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw, TriangleAlert, X, Wifi, WifiOff } from "lucide-react";
 import { usePreviewStore } from "../../stores/previewStore";
 import { Button, IconButton, Input, Spinner } from "../../ui";
+import { strings } from "../../ui/strings";
 
 export interface PreviewPanelProps {
   onClose: () => void;
@@ -47,11 +48,13 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
     setPreviewError(null);
     try {
       const health = await fetch(`${url}/preview/health`);
-      if (!health.ok) throw new Error(`Preview service returned ${health.status}`);
+      if (!health.ok) {
+        throw new Error(strings.panels.preview.serviceError(health.status));
+      }
 
       const file = await fetch(previewUrl);
       if (!file.ok) {
-        let detail = `Preview file not found: ${filePath}`;
+        let detail = strings.panels.preview.fileNotFound(filePath);
         try {
           const body = await file.json() as { error?: string; path?: string };
           if (body.error && body.error !== "not found") detail = body.error;
@@ -120,7 +123,7 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
           <Input
             name="filePath"
             defaultValue={filePath}
-            placeholder="e.g. index.html"
+            placeholder={strings.panels.preview.placeholderPath}
             data-testid="preview-path-input"
             className="flex-1"
           />
@@ -130,14 +133,14 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
             size="sm"
             data-testid="preview-go-btn"
           >
-            Go
+            {strings.panels.preview.goLabel}
           </Button>
         </form>
         <IconButton
           data-testid="preview-reload-btn"
           onClick={reload}
-          aria-label="Reload preview"
-          title="Reload preview"
+          aria-label={strings.panels.preview.reloadAria}
+          title={strings.panels.preview.reloadAria}
         >
           <RefreshCw />
         </IconButton>
@@ -151,8 +154,8 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
         <IconButton
           data-testid="preview-close-btn"
           onClick={onClose}
-          aria-label="Close preview"
-          title="Close preview"
+          aria-label={strings.panels.preview.closeAria}
+          title={strings.panels.preview.closeAria}
         >
           <X />
         </IconButton>
@@ -163,7 +166,7 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
           <div
             data-testid="preview-loading"
             className="flex h-full items-center justify-center text-ink-2"
-            aria-label="Loading preview"
+            aria-label={strings.panels.preview.loadingAria}
           >
             <Spinner size={18} />
           </div>
@@ -182,7 +185,7 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
                 onClick={() => void checkPreview()}
                 className="mt-4"
               >
-                Retry
+                {strings.panels.preview.retryLabel}
               </Button>
             </div>
           </div>
@@ -193,7 +196,7 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
             data-testid="preview-iframe"
             sandbox="allow-scripts allow-same-origin"
             className="h-full w-full border-0 bg-white"
-            title="Live Preview"
+            title={strings.panels.preview.iframeTitle}
           />
         )}
       </div>

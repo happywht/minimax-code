@@ -55,7 +55,7 @@ describe("PreviewPanel", () => {
     render(<PreviewPanel onClose={vi.fn()} />);
 
     expect(await screen.findByTestId("preview-error")).toHaveTextContent(
-      "Preview file not found: index.html",
+      "预览文件不存在：index.html",
     );
     expect(screen.getByTestId("preview-retry-btn")).toBeInTheDocument();
     expect(screen.queryByTestId("preview-iframe")).toBeNull();

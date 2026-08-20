@@ -75,7 +75,7 @@ describe("PatchPreviewPanel", () => {
     await waitFor(() => {
       expect(screen.getByTestId("patch-file-card-app.ts")).toBeInTheDocument();
     });
-    expect(screen.getByTestId("patch-preview-panel-stats")).toHaveTextContent("1 file");
+    expect(screen.getByTestId("patch-preview-panel-stats")).toHaveTextContent("1 个文件");
     expect(screen.getByTestId("patch-preview-panel-stats")).toHaveTextContent("+2");
     expect(screen.getByTestId("patch-preview-panel-stats")).toHaveTextContent("-1");
     expect(screen.getByText("+new line")).toBeInTheDocument();
@@ -91,11 +91,11 @@ describe("PatchPreviewPanel", () => {
     expect(screen.queryByText(/function answer/)).not.toBeInTheDocument();
     expect(screen.queryByText("+UNIQUE_FULL_HUNK_TAIL")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Show full hunk" }));
+    fireEvent.click(screen.getByRole("button", { name: "展开完整改动块" }));
 
     expect(screen.getByText(/function answer/)).toBeInTheDocument();
     expect(screen.getByText("+UNIQUE_FULL_HUNK_TAIL")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "收起" })).toBeInTheDocument();
   });
 
   it("jumps from the file overview to the selected diff card", async () => {

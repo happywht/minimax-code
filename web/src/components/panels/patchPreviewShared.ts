@@ -4,11 +4,12 @@
  */
 import { FileCode2, GitBranch, GitCommitHorizontal } from "lucide-react";
 import type { PatchFile, PatchHunk, PatchLine } from "../../types/ipc";
+import { strings } from "../../ui/strings";
 
 export const SCOPES = [
-  { key: "working", label: "Working", icon: FileCode2 },
-  { key: "staged", label: "Staged", icon: GitCommitHorizontal },
-  { key: "branch", label: "Branch", icon: GitBranch },
+  { key: "working", label: strings.panels.patch.scopeWorking, icon: FileCode2 },
+  { key: "staged", label: strings.panels.patch.scopeStaged, icon: GitCommitHorizontal },
+  { key: "branch", label: strings.panels.patch.scopeBranch, icon: GitBranch },
 ] as const;
 
 export type DiffScope = (typeof SCOPES)[number]["key"];

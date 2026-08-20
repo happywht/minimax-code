@@ -5,6 +5,7 @@
 import { useMemo, useState } from "react";
 import { Check, Loader2, RotateCcw, X } from "lucide-react";
 import { Badge, IconButton, type BadgeTone } from "../../ui";
+import { strings } from "../../ui/strings";
 import type { PatchHunk, PatchLine } from "../../types/ipc";
 import {
   collectHunkPreviewLines,
@@ -13,11 +14,11 @@ import {
 } from "./patchPreviewShared";
 
 const DECISION_DISPLAY: Record<HunkDecision, { tone: BadgeTone; label: string }> = {
-  applying: { tone: "success", label: "staging" },
-  approved: { tone: "success", label: "approved" },
-  rejecting: { tone: "error", label: "rejecting" },
-  rejected: { tone: "error", label: "rejected" },
-  error: { tone: "error", label: "failed" },
+  applying: { tone: "success", label: strings.panels.patch.decisionStaging },
+  approved: { tone: "success", label: strings.panels.patch.decisionApproved },
+  rejecting: { tone: "error", label: strings.panels.patch.decisionRejecting },
+  rejected: { tone: "error", label: strings.panels.patch.decisionRejected },
+  error: { tone: "error", label: strings.panels.patch.decisionFailed },
 };
 
 export function PatchLineContent({
@@ -46,7 +47,9 @@ export function PatchLineContent({
 }
 
 function HunkDecisionBadge({ decision }: { decision?: HunkDecision }): JSX.Element {
-  const display = decision ? DECISION_DISPLAY[decision] : { tone: "neutral" as const, label: "pending" };
+  const display = decision
+    ? DECISION_DISPLAY[decision]
+    : { tone: "neutral" as const, label: strings.panels.patch.decisionPending };
   return <Badge tone={display.tone}>{display.label}</Badge>;
 }
 
@@ -100,8 +103,8 @@ export function PatchHunkCard({
             onClick={() => onApprove(hunk, hunkIndex)}
             disabled={approveDisabled}
             className="h-5 w-5 hover:bg-[var(--status-success-subtle)] hover:text-status-success"
-            title={scope === "working" ? "Approve and stage this hunk" : "Only working hunks can be staged"}
-            aria-label="Approve and stage this hunk"
+            title={scope === "working" ? strings.panels.patch.hunkApproveTitle : strings.panels.patch.hunkOnlyWorkingStaged}
+            aria-label={strings.panels.patch.hunkApproveTitle}
           >
             {decision === "applying" ? <Loader2 className="animate-spin" /> : <Check />}
           </IconButton>
@@ -111,8 +114,8 @@ export function PatchHunkCard({
             onClick={() => onReject(hunk, hunkIndex)}
             disabled={rejectDisabled}
             className="h-5 w-5 hover:bg-[var(--status-error-subtle)] hover:text-status-error"
-            title={scope === "staged" ? "Reject and unstage this hunk" : "Reject this hunk"}
-            aria-label={scope === "staged" ? "Reject and unstage this hunk" : "Reject this hunk"}
+            title={scope === "staged" ? strings.panels.patch.hunkUnstageTitle : strings.panels.patch.hunkRejectTitle}
+            aria-label={scope === "staged" ? strings.panels.patch.hunkUnstageTitle : strings.panels.patch.hunkRejectTitle}
           >
             {decision === "rejecting" ? <Loader2 className="animate-spin" /> : <X />}
           </IconButton>
@@ -122,8 +125,8 @@ export function PatchHunkCard({
               data-testid={`patch-hunk-${hunkKeyValue}-reset`}
               onClick={() => onDecide(hunkKeyValue, null)}
               className="h-5 w-5"
-              title="Reset hunk decision"
-              aria-label="Reset hunk decision"
+              title={strings.panels.patch.hunkResetTitle}
+              aria-label={strings.panels.patch.hunkResetTitle}
             >
               <RotateCcw />
             </IconButton>
@@ -136,7 +139,7 @@ export function PatchHunkCard({
           className="border-b border-status-error/20 bg-[var(--status-error-subtle)] px-2 py-1 text-[11px] text-status-error"
           title={error}
         >
-          Operation failed
+          {strings.panels.patch.hunkOpFailed}
         </div>
       )}
       <pre
@@ -156,7 +159,7 @@ export function PatchHunkCard({
           onClick={() => setExpanded((value) => !value)}
           className="w-full border-t border-line/60 px-2 py-1 text-left text-[11px] text-ink-2 transition-colors duration-150 hover:bg-surface-3 hover:text-ink-0"
         >
-          {expanded ? "Show less" : "Show full hunk"}
+          {expanded ? strings.panels.patch.showLess : strings.panels.patch.showFullHunk}
         </button>
       )}
     </div>

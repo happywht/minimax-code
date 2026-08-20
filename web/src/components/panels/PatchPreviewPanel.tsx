@@ -12,6 +12,7 @@ import { Archive, CheckCheck, RefreshCw, X } from "lucide-react";
 import { toast } from "../layout/ErrorBoundary";
 import { usePatchPreviewStore } from "../../stores";
 import { Button, IconButton } from "../../ui";
+import { strings } from "../../ui/strings";
 import type { PatchFile, PatchHunk } from "../../types/ipc";
 import { PatchFileCard } from "./PatchFileCard";
 import {
@@ -145,23 +146,27 @@ export function PatchPreviewPanel({
       if (operation === "save_snapshot") {
         const res = await saveSnapshot();
         if (res.clean) {
-          toast.success("Working tree is clean — no snapshot needed");
+          toast.success(strings.panels.patch.snapshotClean);
         } else {
-          toast.success("Snapshot saved", res.snapshot_ref ?? undefined);
+          toast.success(strings.panels.patch.snapshotSaved, res.snapshot_ref ?? undefined);
         }
         return;
       }
       const res = operation === "apply_all" ? await applyAll({ scope }) : await revertAll({ scope });
       if (!res.ok || res.failed.length > 0) {
         const detail = res.failed.map((f) => `${f.file_path}: ${f.error}`).join("; ");
-        toast.error("Patch operation partially failed", detail || "Some files could not be processed");
+        toast.error(strings.panels.patch.partialFail, detail || strings.panels.patch.partialFailDetail);
       } else {
-        toast.success(operation === "apply_all" ? "All changes applied" : "All changes reverted");
+        toast.success(
+          operation === "apply_all"
+            ? strings.panels.patch.allApplied
+            : strings.panels.patch.allReverted,
+        );
       }
       refreshAndReset();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Patch operation failed", message);
+      toast.error(strings.panels.patch.opFail, message);
     }
   };
 
@@ -189,7 +194,7 @@ export function PatchPreviewPanel({
                     ? "bg-accent-subtle text-accent"
                     : "text-ink-1 hover:bg-surface-3 hover:text-ink-0")
                 }
-                title={`${label} diff`}
+                title={strings.panels.patch.scopeTitle(label)}
               >
                 <Icon size={10} />
                 <span>{label}</span>
@@ -201,7 +206,7 @@ export function PatchPreviewPanel({
           data-testid={`${testId}-refresh`}
           onClick={() => refreshAndReset()}
           disabled={loading}
-          aria-label="Refresh patch preview"
+          aria-label={strings.panels.patch.refreshAria}
         >
           <RefreshCw className={loading ? "animate-spin" : undefined} />
         </IconButton>
@@ -217,7 +222,7 @@ export function PatchPreviewPanel({
           className="gap-1"
         >
           <Archive size={12} />
-          Snapshot
+          {strings.panels.patch.snapshotLabel}
         </Button>
         <Button
           size="sm"
@@ -228,7 +233,7 @@ export function PatchPreviewPanel({
           className="gap-1"
         >
           <CheckCheck size={12} />
-          Apply all
+          {strings.panels.patch.applyAll}
         </Button>
         <Button
           size="sm"
@@ -239,7 +244,7 @@ export function PatchPreviewPanel({
           className="gap-1"
         >
           <X size={12} />
-          Revert all
+          {strings.panels.patch.revertAll}
         </Button>
       </div>
 
@@ -249,7 +254,7 @@ export function PatchPreviewPanel({
           className="mt-2 rounded-md border border-status-error/30 bg-[var(--status-error-subtle)] px-2 py-1.5 text-[11px] text-status-error"
           title={error}
         >
-          Unable to load diff
+          {strings.panels.patch.loadFail}
         </div>
       )}
 
@@ -258,7 +263,7 @@ export function PatchPreviewPanel({
           data-testid={`${testId}-stats`}
           className="mt-2 flex items-center gap-3 rounded-md border border-line bg-surface-2/40 px-2 py-1.5 text-[11px] text-ink-1"
         >
-          <span>{stats.files} file{stats.files === 1 ? "" : "s"}</span>
+          <span>{strings.panels.fileCount(stats.files)}</span>
           <span className="text-status-success">+{stats.additions}</span>
           <span className="text-status-error">-{stats.deletions}</span>
         </div>
@@ -268,7 +273,7 @@ export function PatchPreviewPanel({
         <div
           data-testid={`${testId}-file-overview`}
           className="mt-2 flex gap-1 overflow-x-auto rounded-md border border-line bg-surface-2/30 p-1"
-          aria-label="Changed files"
+          aria-label={strings.panels.patch.changedFilesAria}
         >
           {files.map((file) => {
             const key = fileKey(file);
@@ -285,7 +290,7 @@ export function PatchPreviewPanel({
                     ? "bg-accent-subtle text-accent"
                     : "text-ink-1 hover:bg-surface-3 hover:text-ink-0")
                 }
-                title={`Jump to ${file.path}`}
+                title={strings.panels.patch.jumpTitle(file.path)}
               >
                 <span className="max-w-32 truncate">{file.path}</span>
                 <span className="text-status-success">+{file.additions}</span>
