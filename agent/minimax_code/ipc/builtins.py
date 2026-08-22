@@ -230,7 +230,14 @@ class _RunRecorder:
         )
         await self.emit("run.step.completed", {"run_id": self.run_id, "step": step})
 
-    async def complete(self, result: Any) -> None:
+    async def complete(self, result: Any, *, blocks: int = 1) -> None:
+        """Close the run timeline with the final block accounting.
+
+        ``blocks`` counts the auto-continue blocks behind this one
+        send-message call (1 when auto-continue is off). ``iterations``
+        and ``compactions`` on ``result`` are already summed across
+        blocks by ``_run_with_auto_continue``.
+        """
         if self.dao is None:
             return
         step = await self.dao.create_step(
@@ -243,6 +250,8 @@ class _RunRecorder:
                 "iterations": getattr(result, "iterations", None),
                 "usage": getattr(result, "usage", None),
                 "truncated": getattr(result, "truncated", False),
+                "blocks": blocks,
+                "compactions": getattr(result, "compactions", 0),
             },
         )
         step = await self.dao.complete_step(step["id"])
@@ -255,6 +264,8 @@ class _RunRecorder:
                 "iterations": getattr(result, "iterations", None),
                 "usage": getattr(result, "usage", None),
                 "truncated": getattr(result, "truncated", False),
+                "blocks": blocks,
+                "compactions": getattr(result, "compactions", 0),
             },
         )
         await self.emit("run.completed", {"run": run})
@@ -468,6 +479,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     from ..agent.tools.codebase_summarize import SummarizeCodebaseTool
     from ..app import get_codebase_indexer, get_sessions_dao, init_runtime
     from ..codebase import CodebaseRetriever
+    from ..models import context_window_for
     from ..storage.dao.messages import MessagesDAO
 
     # 1. Ensure the sessions row exists (FK target for messages).
@@ -602,6 +614,10 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     _stall_env = os.environ.get("MINIMAX_STALL_TIMEOUT", "")
     stall_timeout = float(_stall_env) if _stall_env else 120.0
 
+    # v1.1.0: auto-continue knobs (goal/loop-style long tasks). Off by
+    # default — the manual continue button remains the resume path.
+    auto_continue, auto_continue_max_blocks = _resolve_auto_continue()
+
     # Resolve the process-wide HookManager (R10). Built once via
     # ensure_hook_manager(), which also pours every enabled plugin's
     # hooks into the manager — so plugin lifecycle hooks are
@@ -673,6 +689,15 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
             ),
             stall_timeout=stall_timeout,
             reasoning_effort=main_reasoning_effort,
+            # v1.1.0: feed the catalog's real context window so the
+            # compaction gate in the run loop actually opens. Resolved
+            # from the LLM singleton's current model (kept in sync by
+            # ``rebuild_subagent_llm`` on every model.set_current).
+            context_window=context_window_for(getattr(llm, "default_model", None)),
+            # v1.1.0: auto-continue (goal/loop minimal form) — the loop
+            # itself lives in _run_with_auto_continue below.
+            auto_continue=auto_continue,
+            auto_continue_max_blocks=auto_continue_max_blocks,
         ),
         history_provider=_history,
         persist_message=_persist,
@@ -855,7 +880,14 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         except Exception:
             logger.debug("telemetry session_start emit failed", exc_info=True)
     try:
-        result = await core.run(session_id=session_id, user_message=content)
+        # v1.1.0: auto-continue loop — block 1 plus up to
+        # ``auto_continue_max_blocks - 1`` automatic continuations while
+        # the budget keeps truncating. Stays inside this try so the core
+        # remains registered in ``_ACTIVE_RUNS`` (user cancel works
+        # between blocks) and session_end fires exactly once at the end.
+        result, blocks = await _run_with_auto_continue(
+            core, session_id=session_id, content=content
+        )
     except Exception as exc:
         logger.exception("agent.send_message: AgentCore.run failed")
         await recorder.fail(str(exc))
@@ -894,7 +926,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
             except Exception:
                 logger.debug("telemetry session_end emit failed", exc_info=True)
 
-    await recorder.complete(result)
+    await recorder.complete(result, blocks=blocks)
 
     await ctx.reply(
         {
@@ -903,6 +935,12 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
             "run_id": recorder.run_id,
             "text": result.final_text,
             "iterations": result.iterations,
+            "truncated": result.truncated,
+            # v1.1.0: block accounting for auto-continue (1 when off) —
+            # iterations/compactions above are already summed across
+            # blocks by _run_with_auto_continue.
+            "blocks": blocks,
+            "compactions": result.compactions,
             "stub": llm.mock,
             "tokens_in": result.usage.get("prompt_tokens", 0),
             "tokens_out": result.usage.get("completion_tokens", 0),
@@ -938,10 +976,149 @@ async def handle_agent_cancel(params: Any, ctx: Context) -> None:
     await ctx.reply({"ok": True, "cancelled": str(session_id)})
 
 
+#: Fixed continuation prompt for ``agent.continue_run`` (v1.1.0). Generic
+#: across task domains — the actual task state lives in the conversation
+#: history the send-message pipeline replays.
+_CONTINUE_PROMPT = (
+    "[continue] The previous turn stopped after reaching its iteration "
+    "budget mid-task. Continue from where it stopped: review the "
+    "conversation history above (including earlier tool results), skip "
+    "work that is already done, finish the remaining steps, and then "
+    "give the final answer."
+)
+
+
+def _resolve_auto_continue() -> tuple[bool, int]:
+    """Resolve auto-continue knobs from the environment (v1.1.0).
+
+    ``MINIMAX_AUTO_CONTINUE=1`` opts the main agent into automatic block
+    continuation; ``MINIMAX_AUTO_CONTINUE_MAX_BLOCKS`` caps how many
+    blocks one send-message may run (block 1 + N auto-continuations).
+    Unparseable / out-of-range values fall back to the defaults with a
+    warning — same fail-open posture as ``MINIMAX_STALL_TIMEOUT``.
+    """
+    enabled = os.environ.get("MINIMAX_AUTO_CONTINUE", "").strip() in {"1", "true", "yes"}
+    max_blocks = 5
+    raw = os.environ.get("MINIMAX_AUTO_CONTINUE_MAX_BLOCKS", "").strip()
+    if raw:
+        try:
+            max_blocks = max(1, int(raw))
+        except ValueError:
+            logger.warning("MINIMAX_AUTO_CONTINUE_MAX_BLOCKS=%r is not an int; using 5", raw)
+    return enabled, max_blocks
+
+
+async def _run_with_auto_continue(core: Any, *, session_id: str, content: str) -> tuple[Any, int]:
+    """Run the first block, then auto-continue while the budget truncates.
+
+    Each block is a real ``AgentCore.run`` return — hooks fire, the
+    truncated assistant message persists and streams, and a user cancel
+    between blocks stops the loop (``run`` returns ``cancelled=True``).
+    The returned result carries the *last* block's terminal state
+    (final_text / truncated / cancelled) with ``iterations`` and
+    ``compactions`` summed across blocks, so callers (run recorder,
+    reply envelope) see one logical turn. Returns ``(merged_result,
+    blocks)``.
+    """
+    from dataclasses import replace
+
+    result = await core.run(session_id=session_id, user_message=content)
+    blocks = 1
+    total_iterations = result.iterations
+    total_compactions = result.compactions
+    while (
+        getattr(core.config, "auto_continue", False)
+        and result.truncated
+        and not result.cancelled
+        and blocks < core.config.auto_continue_max_blocks
+    ):
+        blocks += 1
+        logger.info(
+            "auto-continue: block %d/%d for session %s",
+            blocks, core.config.auto_continue_max_blocks, session_id,
+        )
+        result = await core.run(session_id=session_id, user_message=_CONTINUE_PROMPT)
+        total_iterations += result.iterations
+        total_compactions += result.compactions
+    if blocks > 1:
+        result = replace(result, iterations=total_iterations, compactions=total_compactions)
+    return result, blocks
+
+
+async def handle_agent_continue_run(params: Any, ctx: Context) -> None:
+    """``agent.continue_run`` — resume a budget-truncated turn (v1.1.0).
+
+    Block-budget semantics: ``max_iterations`` caps a single *block* of
+    work, not the whole task. This handler validates that the session's
+    most recent run actually ended truncated (budget exhausted without a
+    final answer), marks it as continued, then delegates to
+    :func:`handle_agent_send_message` with a fixed continuation prompt —
+    so the new block gets the full pipeline (history replay, tool
+    dispatch, streaming chunks, run timeline, memory extraction) and the
+    reply envelope is the standard send-message shape the UI already
+    renders.
+
+    Validation failures reply ``{"ok": False, "error": ...}`` instead of
+    forwarding, so the caller can tell "nothing to continue" apart from
+    a real run.
+    """
+    if not isinstance(params, dict):
+        await ctx.reply_error(-32602, "params must be an object")
+        return
+    session_id = params.get("session_id")
+    if not session_id:
+        await ctx.reply_error(-32602, "session_id is required")
+        return
+    session_id = str(session_id)
+
+    # The session's most recent run must have ended truncated. Degraded
+    # storage (no db) → nothing recorded → nothing to continue.
+    try:
+        from ..app import get_db
+        from ..storage.dao.runs import AgentRunsDAO
+
+        db = get_db()
+        if db is None:
+            await ctx.reply({"ok": False, "error": "storage unavailable"})
+            return
+        dao = AgentRunsDAO(db)
+        runs = await dao.list_runs(session_id=session_id, limit=1)
+    except Exception as exc:
+        await ctx.reply({"ok": False, "error": f"run lookup failed: {exc}"})
+        return
+
+    run = runs[0] if runs else None
+    metadata = (run or {}).get("metadata") or {}
+    if (
+        not run
+        or run.get("status") not in ("completed", "cancelled")
+        or not metadata.get("truncated")
+    ):
+        await ctx.reply({"ok": False, "error": "no truncated run to continue"})
+        return
+
+    # Mark the old block as continued (telemetry/UI can spot chain
+    # length). update_run_status uses COALESCE on completed_at, so the
+    # original finish time survives; failures never block the resume.
+    try:
+        await dao.update_run_status(
+            run["id"],
+            status=run.get("status") or "completed",
+            metadata={**metadata, "continued": True},
+        )
+    except Exception:
+        logger.exception("marking run continued failed; continuing anyway")
+
+    await handle_agent_send_message(
+        {"session_id": session_id, "content": _CONTINUE_PROMPT}, ctx
+    )
+
+
 __all__ = [
     "handle_ping",
     "handle_status",
     "handle_shutdown",
     "handle_agent_send_message",
     "handle_agent_cancel",
+    "handle_agent_continue_run",
 ]

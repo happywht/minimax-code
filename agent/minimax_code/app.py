@@ -666,7 +666,11 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     either via the matching ``runtime=`` / ``tracker=`` kwargs
     to skip the lazy path.
     """
-    from .ipc.builtins import handle_agent_cancel, handle_agent_send_message
+    from .ipc.builtins import (
+        handle_agent_cancel,
+        handle_agent_continue_run,
+        handle_agent_send_message,
+    )
     from .ipc.handlers_agents import register_agent_handlers
     from .ipc.handlers_audit import register_audit_handlers
     from .ipc.handlers_checkpoint import register_checkpoint_handlers
@@ -698,6 +702,8 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
 
     server.register("agent.send_message", handle_agent_send_message)
     server.register("agent.cancel", handle_agent_cancel)
+    # v1.1.0: block-budget resume — continue a budget-truncated turn.
+    server.register("agent.continue_run", handle_agent_continue_run)
     # The agent.* (sub-agent) namespace — config CRUD + invoke.
     # The DAO is built lazily on the first call (same pattern
     # as the other storage-backed namespaces).

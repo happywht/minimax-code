@@ -193,8 +193,9 @@ on the next `readline() == ""`.
 
 | Method                     | Direction | Notes                                              |
 |----------------------------|-----------|----------------------------------------------------|
-| `agent.send_message`       | req/res   | Streams events; the HTTP client keeps no fixed run deadline. |
+| `agent.send_message`       | req/res   | Streams events; the HTTP client keeps no fixed run deadline. v1.1.0 reply adds `truncated`, `blocks`, `compactions` (block accounting — when `MINIMAX_AUTO_CONTINUE=1` the turn auto-continues up to `MINIMAX_AUTO_CONTINUE_MAX_BLOCKS` blocks, default 5, summing iterations/compactions across blocks). |
 | `agent.cancel`             | notify    | Cancel the current agent loop for a session.       |
+| `agent.continue_run`       | req/res   | v1.1.0 Resume the latest budget-truncated run: marks it `continued` in metadata, then re-enters `agent.send_message` with a fixed continuation prompt (params: `session_id`; errors `-32602` on bad params, `{"ok":false}` when storage is unavailable or the latest run is not truncated). |
 | `run.list`                 | req/res   | List persisted agent runs for a session.           |
 | `run.steps`                | req/res   | Load one run with its ordered timeline steps.      |
 | `patch.preview`            | req/res   | Return structured file/hunk preview for a git diff scope. |
