@@ -358,7 +358,9 @@ def _build_agent_core(
     resolved_model = model or default_model()
     config = AgentConfig(
         model=resolved_model,
-        max_iterations=int(max_iterations) if max_iterations else 8,
+        # v1.1.1: sub-agent budget aligned with the other sub-agent
+        # defaults (orchestrator / DAO / team runtime all use 50 now).
+        max_iterations=int(max_iterations) if max_iterations else 50,
         skill_instructions=skill.instructions,
         # v1.1.0: real context window so the compaction gate opens here too.
         context_window=context_window_for(resolved_model),

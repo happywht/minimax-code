@@ -196,6 +196,7 @@ on the next `readline() == ""`.
 | `agent.send_message`       | req/res   | Streams events; the HTTP client keeps no fixed run deadline. v1.1.0 reply adds `truncated`, `blocks`, `compactions` (block accounting — when `MINIMAX_AUTO_CONTINUE=1` the turn auto-continues up to `MINIMAX_AUTO_CONTINUE_MAX_BLOCKS` blocks, default 5, summing iterations/compactions across blocks). |
 | `agent.cancel`             | notify    | Cancel the current agent loop for a session.       |
 | `agent.continue_run`       | req/res   | v1.1.0 Resume the latest budget-truncated run: marks it `continued` in metadata, then re-enters `agent.send_message` with a fixed continuation prompt (params: `session_id`; errors `-32602` on bad params, `{"ok":false}` when storage is unavailable or the latest run is not truncated). |
+| `agent.answer_user`        | req/res   | v1.1.1 Answer a pending `ask_user` request (params: `request_id`, `answers` — a non-empty array position-aligned with the questions; each entry is a label string or a list of label strings). Resolves the future the suspended tool call awaits; `{"ok":false}` on unknown/expired ids. |
 | `run.list`                 | req/res   | List persisted agent runs for a session.           |
 | `run.steps`                | req/res   | Load one run with its ordered timeline steps.      |
 | `patch.preview`            | req/res   | Return structured file/hunk preview for a git diff scope. |
@@ -962,6 +963,7 @@ so the frontend can route them by name without a regex.
 | `agent.message_chunk`   | `{session_id, message_id, delta, done}`             |
 | `agent.tool_call`       | `{session_id, tool_call_id, name, args, message_id}` (Phase 1.2) |
 | `agent.tool_result`     | `{session_id, tool_call_id, name?, result, error?, message_id}` |
+| `agent.ask_user`        | `{request_id, session_id, questions[], timeout_s}` — the model paused with structured clarification questions (v1.1.1); the UI renders an inline question card and answers via `agent.answer_user` |
 | `agent.status`          | `{session_id, status, detail?}`                     |
 | `task.progress`         | `{task_id, progress, message?}`                     |
 | `permission.request`    | `{request_id, tool, args}` — modal triggers         |

@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
@@ -71,7 +72,14 @@ from .reliability import (
     RetryPolicy,
     with_retry,
 )
-from .tools import ToolRegistry, ToolResult, get_default_registry
+from .tools import (
+    ASK_USER_MARKER,
+    ASK_USER_TIMEOUT_S,
+    ToolRegistry,
+    ToolResult,
+    get_default_registry,
+)
+from .tools.ask_user import format_answers
 from .types import LLMStreamTimeout
 
 if TYPE_CHECKING:
@@ -196,10 +204,49 @@ StatusCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
 UsageCallback = Callable[[dict[str, int]], Awaitable[None]]
 """Token usage updates — pushed once per LLM call."""
 
+AskUserCallback = Callable[[dict[str, Any]], Awaitable[None]]
+"""Pushed when the model asks the user a structured clarification
+question (``ask_user`` tool). Payload: ``{"request_id", "questions",
+"session_id", "timeout_s"}``. The interactive wait happens *after*
+this callback returns — hosts wire it to the ``agent.ask_user``
+broadcast so the frontend can render an inline question card.
+"""
+
+# v1.1.1 — ask_user request routing. request_id → the AgentCore whose
+# turn is suspended waiting for that answer. Module-level (not per-core)
+# because the ``agent.answer_user`` IPC handler only receives the
+# request_id and must find the owning core without knowing the session.
+# Entries are added in ``_wait_for_ask_user`` and always removed in its
+# ``finally`` (answer / timeout / cancel), so the table never leaks.
+_ASK_USER_ROUTES: dict[str, AgentCore] = {}
+
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
+# v1.1.1 — iteration budget default. The old 12-iteration cap was sized
+# for a small context window and silently truncated long agentic tasks;
+# with a 1M-token window (and intra-loop compaction managing history
+# growth) a safety valve only needs to catch runaway loops, so the
+# default is now 200. Operators can tune it per deployment via the
+# MINIMAX_MAX_ITERATIONS env var; values are clamped to [1, 10_000] so
+# a typo can neither disable the valve (0) nor hang the turn forever.
+_DEFAULT_MAX_ITERATIONS = 200
+_MAX_ITERATIONS_HARD_CAP = 10_000
+
+
+def _default_max_iterations() -> int:
+    raw = os.environ.get("MINIMAX_MAX_ITERATIONS", "")
+    try:
+        value = int(raw) if raw.strip() else _DEFAULT_MAX_ITERATIONS
+    except ValueError:
+        logger.warning(
+            "MINIMAX_MAX_ITERATIONS=%r is not an int; using %d",
+            raw, _DEFAULT_MAX_ITERATIONS,
+        )
+        return _DEFAULT_MAX_ITERATIONS
+    return max(1, min(value, _MAX_ITERATIONS_HARD_CAP))
 
 
 @dataclass
@@ -218,7 +265,10 @@ class AgentConfig:
     # per-protocol effort contract settles, so every existing call stays
     # byte-identical to the pre-R55 behaviour.
     reasoning_effort: ReasoningEffort | str | None = None
-    max_iterations: int = 12
+    # v1.1.1: iteration safety valve (see _default_max_iterations).
+    # Tune per deployment via MINIMAX_MAX_ITERATIONS; explicit
+    # AgentConfig(max_iterations=...) callers are unaffected.
+    max_iterations: int = field(default_factory=_default_max_iterations)
     # Per-tool dispatch timeout (seconds). The tool itself can
     # also enforce its own (shorter) limit; this is the ceiling.
     tool_timeout: float = 120.0
@@ -365,6 +415,12 @@ class AgentCore:
         self.on_tool_result: ToolResultCallback | None = None
         self.on_status: StatusCallback | None = None
         self.on_usage: UsageCallback | None = None
+        self.on_ask_user: AskUserCallback | None = None
+        # v1.1.1 — in-flight ask_user requests owned by this core.
+        # request_id → Future the suspended ``_wait_for_ask_user`` is
+        # awaiting; resolved by ``resolve_ask_user`` (agent.answer_user)
+        # or woken with ``None`` on cancel so the turn aborts cleanly.
+        self._pending_ask_user: dict[str, asyncio.Future[list[Any] | None]] = {}
         # R13 — circuit-breaker registry. One breaker per protected key
         # ("llm" + "tool:<name>"), lazily created on first check. Retry +
         # breaker knobs are read from self.config at call time so they
@@ -409,6 +465,14 @@ class AgentCore:
     def cancel(self) -> None:
         """Request cancellation. Idempotent and async-safe."""
         self._cancel.set()
+        # v1.1.1 — wake every suspended ask_user wait with ``None`` so
+        # the tool result reports cancellation instead of hanging until
+        # the 600s timeout. The route entries are dropped by each
+        # waiter's ``finally`` as it wakes.
+        for request_id, future in list(self._pending_ask_user.items()):
+            if not future.done():
+                future.set_result(None)
+                logger.info("ask_user %s cancelled with the turn", request_id)
 
     def reset_cancel(self) -> None:
         self._cancel.clear()
@@ -416,6 +480,94 @@ class AgentCore:
     @property
     def cancelled(self) -> bool:
         return self._cancel.is_set()
+
+    # -- ask_user interactive wait (v1.1.1) ---------------------------
+
+    def resolve_ask_user(self, request_id: str, answers: Any) -> bool:
+        """Resolve a pending ask_user future (called by agent.answer_user).
+
+        Returns ``True`` when the request existed and was answered.
+        Unknown / already-timed-out ids return ``False`` so the handler
+        can surface a precise error to the frontend.
+        """
+        future = self._pending_ask_user.get(request_id)
+        if future is None or future.done():
+            return False
+        future.set_result(answers)
+        return True
+
+    async def _wait_for_ask_user(
+        self, questions: list[dict[str, Any]]
+    ) -> ToolResult:
+        """Emit ``agent.ask_user`` and suspend until the user answers.
+
+        Called from :meth:`_execute_tool_call` when a tool result carries
+        the ``ask_user`` pending marker. The wait lives *outside* the
+        registry dispatch (which is bounded by ``tool_timeout``) because
+        a human may take minutes to reply — bounded here by
+        ``ASK_USER_TIMEOUT_S`` instead.
+
+        Outcomes (all map to a ``success=True`` result so the model can
+        decide how to proceed — the tool worked; the human is the
+        variable): answered → formatted answers; timeout → explicit
+        no-reply notice; ``None`` → the turn was cancelled; no callback
+        wired → interactive asking unavailable in this context.
+        """
+        request_id = f"ask_{uuid.uuid4().hex[:12]}"
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[list[Any] | None] = loop.create_future()
+        self._pending_ask_user[request_id] = future
+        _ASK_USER_ROUTES[request_id] = self
+
+        if self.on_ask_user is None:
+            # No interactive host (e.g. a headless sub-agent core) —
+            # clean up and tell the model instead of hanging.
+            self._pending_ask_user.pop(request_id, None)
+            _ASK_USER_ROUTES.pop(request_id, None)
+            return ToolResult.ok(
+                output=(
+                    "ask_user unavailable: no interactive client is "
+                    "attached to this agent run. Decide on your own "
+                    "using the codebase, or state your assumption."
+                ),
+                ask_user_skipped=True,
+            )
+
+        try:
+            await self.on_ask_user(
+                {
+                    "request_id": request_id,
+                    "session_id": self._current_session_id,
+                    "questions": questions,
+                    "timeout_s": ASK_USER_TIMEOUT_S,
+                }
+            )
+            answers = await asyncio.wait_for(future, timeout=ASK_USER_TIMEOUT_S)
+        except TimeoutError:
+            return ToolResult.ok(
+                output=(
+                    "The user did not answer within "
+                    f"{ASK_USER_TIMEOUT_S:.0f}s. Proceed with your best "
+                    "judgment and clearly state the assumptions you made."
+                ),
+                ask_user_timeout=True,
+            )
+        except Exception:  # noqa: BLE001 — emit callback must not kill the turn
+            logger.exception("ask_user emit/wait failed for %s", request_id)
+            return ToolResult.fail("ask_user: failed to surface the question")
+        finally:
+            self._pending_ask_user.pop(request_id, None)
+            _ASK_USER_ROUTES.pop(request_id, None)
+
+        if answers is None:
+            return ToolResult.ok(
+                output="The turn was cancelled before the user answered.",
+                ask_user_cancelled=True,
+            )
+        return ToolResult.ok(
+            output=format_answers(questions, answers),
+            ask_user_answered=True,
+        )
 
     # -- mid-turn interjection (R24) ----------------------------------
 
@@ -644,23 +796,53 @@ class AgentCore:
                         messages = compacted
                         compactions += 1
 
-                # v1.1.0 — convergence nudge: when the iteration budget is
-                # nearly spent, prepend nothing and *append* one ephemeral
-                # user note telling the model to wrap up. The note is never
-                # merged into ``messages`` (nor persisted) — it shapes only
-                # the LLM call it was built for, so the conversation history
-                # and the DB stay clean. ``remaining`` counts iterations
-                # after this one; 0 means this is the final chance to answer.
+                # v1.1.1 — handoff nudge (rebuilt from the v1.1.0
+                # convergence nudge). Two triggers, one message shape:
+                # (a) context pressure — reported prompt usage is ≥90% of
+                #     the window even after compaction has been firing;
+                # (b) the iteration safety valve — ≤2 iterations remain
+                #     after this one (rare since the default rose to 200).
+                # The note is ephemeral: appended to the LLM payload only,
+                # never merged into ``messages`` nor persisted.
+                # Wording contract: the note must NEVER lure the model
+                # into faking a final answer. A clean text answer (no
+                # tool_calls) ends the run with truncated=False, and
+                # auto-continue only resumes truncated runs — the old
+                # "produce a final answer now" wording was silently
+                # killing continuation. The message is therefore honest
+                # about what happens next and mode-aware.
                 llm_messages = messages
                 remaining = self.config.max_iterations - iteration - 1
-                if remaining <= 2:
-                    nudge = (
-                        "[system note] The iteration budget is almost exhausted: "
-                        f"{remaining} iteration(s) will remain after this one. "
-                        "Finish your current step and produce a final answer "
-                        "now — do not start new work or call more tools unless "
-                        "strictly necessary to conclude."
-                    )
+                context_pressure = (
+                    last_prompt_tokens is not None
+                    and self.config.context_window
+                    and last_prompt_tokens >= 0.9 * self.config.context_window
+                )
+                if context_pressure or remaining <= 2:
+                    if context_pressure:
+                        reason = "the context window is nearly full"
+                    else:
+                        reason = (
+                            "the iteration budget is almost exhausted: "
+                            f"{remaining} iteration(s) will remain after this one"
+                        )
+                    if getattr(self.config, "auto_continue", False):
+                        directive = (
+                            "Keep working until the task is truly done — do "
+                            "NOT wrap up early and do NOT fake completion. "
+                            "When this block's budget runs out, the runtime "
+                            "automatically continues with a fresh block "
+                            "(history is compacted, nothing is lost)."
+                        )
+                    else:
+                        directive = (
+                            "There will be NO automatic continuation after "
+                            "this block. Finish the current step only if it "
+                            "is cheap, then report honestly: (1) what is "
+                            "done, (2) what remains, (3) the exact next "
+                            "step. Never present unfinished work as complete."
+                        )
+                    nudge = f"[system note] {reason}. {directive}"
                     llm_messages = messages + [{"role": "user", "content": nudge}]
 
                 try:
@@ -1207,6 +1389,16 @@ class AgentCore:
 
         # Truncate pathological output to keep the context window sane.
         result = _truncate_result(result, self.config.max_tool_output_bytes)
+
+        # v1.1.1 — ask_user takeover. The tool returned a pending
+        # marker; the interactive wait happens here, *outside* the
+        # tool_timeout-bounded dispatch (a human may take minutes to
+        # reply). The replacement result carries the user's answers so
+        # the next LLM iteration — and the emitted tool_result event —
+        # see the final payload, never the marker.
+        ask_questions = (result.metadata or {}).get(ASK_USER_MARKER)
+        if result.success and ask_questions is not None:
+            result = await self._wait_for_ask_user(ask_questions)
 
         await self._maybe_emit_tool_result(call_log, result)
 

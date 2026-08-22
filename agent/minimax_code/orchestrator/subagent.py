@@ -88,7 +88,9 @@ class SubAgentConfig:
     tags: list[str] | None = None
     team_id: str | None = None
     skills: list[str] | None = None
-    max_iterations: int = 8
+    # v1.1.1: sub-agent iteration budget, aligned with the other
+    # sub-agent defaults (DAO / team orchestrator / skills runtime).
+    max_iterations: int = 50
     temperature: float | None = None
 
 

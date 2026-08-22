@@ -132,7 +132,7 @@ class SpawnSubagentTool(Tool):
             tags=row.get("tags"),
             team_id=row.get("team_id"),
             skills=row.get("skills"),
-            max_iterations=int(row.get("max_iterations") or 8),
+            max_iterations=int(row.get("max_iterations") or 50),
             temperature=row.get("temperature"),
         )
         runtime = get_subagent_runtime() or SubAgentRuntime()

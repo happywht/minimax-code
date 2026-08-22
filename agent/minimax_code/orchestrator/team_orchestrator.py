@@ -641,7 +641,7 @@ class TeamOrchestrator:
                 tags=row.get("tags"),
                 team_id=row.get("team_id"),
                 skills=row.get("skills"),
-                max_iterations=row.get("max_iterations", 8),
+                max_iterations=row.get("max_iterations", 50),
                 temperature=row.get("temperature"),
             ))
         return configs

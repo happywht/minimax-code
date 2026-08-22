@@ -37,6 +37,7 @@ KNOWN_EVENTS = {
     "agent.status",
     "agent.tool_call",
     "agent.tool_result",
+    "agent.ask_user",
     "permission.request",
     "permission.resolved",
     "task.progress",

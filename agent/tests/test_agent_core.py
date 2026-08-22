@@ -691,16 +691,18 @@ async def test_loop_no_compaction_without_context_window() -> None:
 
 
 @pytest.mark.asyncio
-async def test_loop_injects_convergence_nudge_near_budget() -> None:
-    """v1.1.0 convergence nudge: with ≤2 iterations remaining after the
-    current one, an ephemeral user note is appended to the LLM payload
-    telling the model to wrap up. The note must (a) appear in time,
-    (b) never leak into the in-flight ``messages`` growth, and
-    (c) never be persisted."""
+async def test_loop_injects_handoff_nudge_near_budget() -> None:
+    """v1.1.1 handoff nudge (iteration safety valve): with ≤2 iterations
+    remaining after the current one, an ephemeral user note is appended
+    to the LLM payload. The note must (a) appear in time, (b) never
+    leak into the in-flight ``messages`` growth, (c) never be persisted,
+    and (d) never instruct the model to fake a final answer — the old
+    "produce a final answer now" wording ended runs with truncated=False
+    and silently killed auto-continue."""
     responses = [
         _tool_response(_tool_call("echo", {"text": f"i{i}"}, call_id=f"c{i}"))
         for i in range(3)
-    ] + [_text_response("Final answer, wrapped up.")]
+    ] + [_text_response("Honest status report.")]
     fake = FakeLLM(responses)
     persisted: list[dict[str, Any]] = []
 
@@ -714,7 +716,7 @@ async def test_loop_injects_convergence_nudge_near_budget() -> None:
         persist_message=persist,
     )
     result = await core.run(session_id="s_nudge", user_message="run to the budget")
-    assert result.final_text == "Final answer, wrapped up."
+    assert result.final_text == "Honest status report."
     assert result.truncated is False
 
     # (a) Iteration 0 had 3 iterations remaining → no nudge; iteration 1
@@ -724,6 +726,11 @@ async def test_loop_injects_convergence_nudge_near_budget() -> None:
     assert last["role"] == "user"
     assert "iteration budget is almost exhausted" in last["content"]
     assert "2 iteration(s)" in last["content"]
+    # (d) Manual-continuation mode: honest handoff directive, never a
+    # lure to fabricate completion.
+    assert "NO automatic continuation" in last["content"]
+    assert "Never present unfinished work as complete" in last["content"]
+    assert "final answer now" not in last["content"]
     # The nudge rides on top of the real history — the message right
     # before it is the tool result from iteration 0.
     assert fake.messages[1][-2]["role"] == "tool"
@@ -737,6 +744,87 @@ async def test_loop_injects_convergence_nudge_near_budget() -> None:
 
     # (c) Nothing nudge-flavoured was persisted.
     assert not any("[system note]" in str(m) for m in persisted)
+
+
+@pytest.mark.asyncio
+async def test_loop_nudge_auto_continue_directive_keeps_model_working() -> None:
+    """v1.1.1: with auto_continue on, the nudge must tell the model to
+    KEEP WORKING (the runtime splits blocks automatically) instead of
+    wrapping up — this is the exact regression that made auto-continue
+    never fire in v1.1.0."""
+    responses = [
+        _tool_response(_tool_call("echo", {"text": "i0"}, call_id="c0")),
+        _tool_response(_tool_call("echo", {"text": "i1"}, call_id="c1")),
+        _text_response("Real final after the budget."),
+    ]
+    fake = FakeLLM(responses)
+
+    core = AgentCore(
+        llm=fake,
+        registry=_fresh_registry(CountingTool()),
+        config=AgentConfig(max_iterations=4, auto_continue=True),
+    )
+    await core.run(session_id="s_nudge_ac", user_message="run to the budget")
+
+    nudge = str(fake.messages[1][-1])
+    assert "Keep working until the task is truly done" in nudge
+    assert "automatically continues with a fresh block" in nudge
+    assert "do NOT wrap up early" in nudge
+    assert "NO automatic continuation" not in nudge  # that's the other mode
+
+
+@pytest.mark.asyncio
+async def test_loop_nudge_fires_on_context_pressure() -> None:
+    """v1.1.1: the nudge also fires on context pressure — reported prompt
+    usage ≥90% of the configured window — even when plenty of iterations
+    remain."""
+    # Window 1000 → 90% threshold = 900. Iteration 0 reports 950 usage →
+    # nudge rides iteration 1's payload even though 4 iterations remain.
+    responses = [
+        _tool_response_with_usage(_tool_call("echo", {"text": "i0"}, call_id="c0"), 950),
+        _tool_response(_tool_call("echo", {"text": "i1"}, call_id="c1")),
+        _text_response("Done despite pressure."),
+    ]
+    fake = FakeLLM(responses)
+
+    core = AgentCore(
+        llm=fake,
+        registry=_fresh_registry(CountingTool()),
+        config=AgentConfig(max_iterations=8, context_window=1000),
+    )
+    await core.run(session_id="s_nudge_ctx", user_message="fill the window")
+
+    assert "context window" not in str(fake.messages[0][-1])  # 950 not yet reported
+    nudge = str(fake.messages[1][-1])
+    assert "context window is nearly full" in nudge
+
+
+def test_default_max_iterations_env_knob(monkeypatch: pytest.MonkeyPatch) -> None:
+    """v1.1.1: the iteration safety valve defaults to 200 and honours the
+    MINIMAX_MAX_ITERATIONS env var (clamped to [1, 10_000]; garbage
+    falls back to the default)."""
+    from minimax_code.agent.core import (
+        _DEFAULT_MAX_ITERATIONS,
+        _default_max_iterations,
+    )
+
+    assert _DEFAULT_MAX_ITERATIONS == 200
+
+    monkeypatch.delenv("MINIMAX_MAX_ITERATIONS", raising=False)
+    assert _default_max_iterations() == 200
+    assert AgentConfig().max_iterations == 200
+
+    monkeypatch.setenv("MINIMAX_MAX_ITERATIONS", "64")
+    assert _default_max_iterations() == 64
+
+    monkeypatch.setenv("MINIMAX_MAX_ITERATIONS", "0")  # clamped up
+    assert _default_max_iterations() == 1
+
+    monkeypatch.setenv("MINIMAX_MAX_ITERATIONS", "999999")  # clamped down
+    assert _default_max_iterations() == 10_000
+
+    monkeypatch.setenv("MINIMAX_MAX_ITERATIONS", "twelve")  # garbage → default
+    assert _default_max_iterations() == 200
 
 
 @pytest.mark.asyncio

@@ -826,6 +826,16 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
 
     core.on_tool_call = _on_tool_call
 
+    async def _on_ask_user(payload: dict) -> None:
+        """Push ``agent.ask_user`` so the frontend renders an inline
+        question card and can answer via ``agent.answer_user``."""
+        try:
+            await ctx.emit("agent.ask_user", payload)
+        except Exception:
+            logger.exception("on_ask_user emit failed")
+
+    core.on_ask_user = _on_ask_user
+
     async def _on_tool_result(call: dict, result: Any) -> None:
         """Push ``agent.tool_result`` events with the tool output."""
         try:
@@ -1114,6 +1124,48 @@ async def handle_agent_continue_run(params: Any, ctx: Context) -> None:
     )
 
 
+async def handle_agent_answer_user(params: Any, ctx: Context) -> None:
+    """``agent.answer_user`` — answer a pending ``ask_user`` request (v1.1.1).
+
+    The model pauses mid-turn with structured clarifying questions (the
+    ``ask_user`` tool); the frontend renders them from the
+    ``agent.ask_user`` broadcast and posts the user's selections back
+    through this method. Resolving the future wakes the suspended tool
+    call, whose result becomes the answers the model reads next
+    iteration.
+
+    ``answers`` is position-aligned with the questions: a list where
+    each entry is a label string or a list of label strings
+    (multi-select / Other free text).
+    """
+    if not isinstance(params, dict):
+        await ctx.reply_error(-32602, "params must be an object")
+        return
+    request_id = params.get("request_id")
+    if not request_id or not isinstance(request_id, str):
+        await ctx.reply_error(-32602, "request_id is required")
+        return
+    answers = params.get("answers")
+    if not isinstance(answers, list) or not answers:
+        await ctx.reply_error(-32602, "answers must be a non-empty array")
+        return
+
+    from ..agent.core import _ASK_USER_ROUTES
+
+    core = _ASK_USER_ROUTES.get(request_id)
+    if core is None:
+        await ctx.reply(
+            {"ok": False, "error": "unknown or expired request_id (already answered, timed out, or cancelled)"}
+        )
+        return
+    resolved = core.resolve_ask_user(request_id, answers)
+    if not resolved:
+        await ctx.reply({"ok": False, "error": f"request {request_id} is no longer pending"})
+        return
+    logger.info("ask_user %s answered by user", request_id)
+    await ctx.reply({"ok": True, "request_id": request_id})
+
+
 __all__ = [
     "handle_ping",
     "handle_status",
@@ -1121,4 +1173,5 @@ __all__ = [
     "handle_agent_send_message",
     "handle_agent_cancel",
     "handle_agent_continue_run",
+    "handle_agent_answer_user",
 ]

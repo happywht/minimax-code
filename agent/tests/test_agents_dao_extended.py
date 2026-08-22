@@ -90,7 +90,7 @@ async def test_upsert_minimal_defaults(dao: AgentDAO) -> None:
     assert row["tags"] is None or row["tags"] == []  # loads_json on NULL
     assert row["skills"] is None or row["skills"] == []
     assert row["enabled"] is True
-    assert row["max_iterations"] == 8  # default
+    assert row["max_iterations"] == 50  # v1.1.1 default (was 8)
     assert row["temperature"] is None  # default
 
 

@@ -4,7 +4,7 @@ Three-state machine (Closed/Open/HalfOpen) with a sliding-window error-rate
 trigger. Unlike grok's crate — which only guards the GCS storage client —
 MiniMax wires this in front of the LLM call and per-tool dispatch: the two
 paths that today hard-fail a whole turn on the first 429/503 or on a buggy
-tool looping 12× before ``max_iterations`` kicks in.
+tool looping repeatedly before ``max_iterations`` kicks in.
 
 Semantics kept identical to grok:
 

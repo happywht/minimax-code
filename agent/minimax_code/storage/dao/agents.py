@@ -347,7 +347,7 @@ class AgentDAO:
                 dumps_json(tags) if tags is not None else None,
                 team_id,
                 dumps_json(skills) if skills is not None else None,
-                max_iterations if max_iterations is not None else 8,
+                max_iterations if max_iterations is not None else 50,
                 temperature,
                 now,
                 now,

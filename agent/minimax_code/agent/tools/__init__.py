@@ -8,6 +8,7 @@ which already contains file_ops, terminal, edit, and search.
 
 from __future__ import annotations
 
+from .ask_user import ASK_USER_MARKER, ASK_USER_TIMEOUT_S, AskUserTool
 from .base import Tool, ToolRegistry, ToolResult, get_default_registry, register_tool
 from .codebase_find_symbol import FindSymbolCodebaseTool
 from .codebase_navigate import NavigateCodebaseTool
@@ -32,6 +33,9 @@ __all__ = [
     "ToolResult",
     "get_default_registry",
     "register_tool",
+    "ASK_USER_MARKER",
+    "ASK_USER_TIMEOUT_S",
+    "AskUserTool",
     "EditFileTool",
     "GlobFindTool",
     "ListDirectoryTool",

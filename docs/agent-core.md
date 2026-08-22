@@ -62,9 +62,11 @@ sequenceDiagram
     IPC-->>UI: response {session_id, message_id, text}
 ```
 
-The loop runs for at most `AgentConfig.max_iterations` (default 12)
-turns. On the iteration cap the loop sets `result.truncated = True`
-and returns whatever the last assistant message contained.
+The loop runs for at most `AgentConfig.max_iterations` (default 200,
+v1.1.1 — a runaway-loop safety valve, tunable via
+`MINIMAX_MAX_ITERATIONS`) turns. On the iteration cap the loop sets
+`result.truncated = True` and returns whatever the last assistant
+message contained.
 
 **Block budget (v1.1.0).** `max_iterations` caps a single *block*, not
 the whole task. A budget-truncated turn surfaces a "continue"
@@ -74,9 +76,19 @@ pipeline with a fixed continuation prompt), and with
 `MINIMAX_AUTO_CONTINUE_MAX_BLOCKS` blocks (default 5) per send-message,
 stopping early when the model produces a final answer or the user
 cancels. Iterations and compactions are summed across blocks in the
-reply envelope (`blocks`, `compactions`) and the run's metadata. Near
-the budget's end a convergence nudge is appended to the LLM call
-telling the model to wrap up, and when the conversation exceeds the
+reply envelope (`blocks`, `compactions`) and the run's metadata.
+
+**Handoff nudge (v1.1.1).** Two triggers append one ephemeral user note
+to an LLM call — never persisted, never merged into history: (a)
+context pressure (reported prompt usage ≥90% of the window even after
+compaction has been firing) and (b) the iteration safety valve (≤2
+iterations remaining). The wording is mode-aware and honest: with
+auto-continue on it tells the model to *keep working* (the runtime
+splits blocks); with it off it asks for an explicit handoff (done /
+remaining / next step). It never instructs the model to fabricate a
+final answer — a clean text answer ends the run `truncated=False` and
+auto-continue only resumes truncated runs, so a "wrap up now" nudge
+would silently kill continuation. When the conversation exceeds the
 model's context window the loop compacts history in-flight (see the
 `compaction_threshold` / `context_window` knobs below).
 
@@ -352,7 +364,7 @@ which the calling tool turns into a `ToolResult.fail(...)`.
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `model` | `"MiniMax-M3"` | Default model name |
-| `max_iterations` | `12` | Block cap before `truncated=True` (v1.1.0: per *block*, not per task) |
+| `max_iterations` | `200` | Block cap before `truncated=True` (per *block*, not per task; v1.1.1 raised 12→200, env `MINIMAX_MAX_ITERATIONS`, clamped [1, 10_000]) |
 | `tool_timeout` | `120.0` | Per-tool dispatch timeout (s) |
 | `temperature` | `None` | LLM temperature override |
 | `system_prompt_extra` | `None` | Appended to the system prompt |
