@@ -93,8 +93,46 @@ describe("MessageList", () => {
     expect(screen.queryByTestId("message-tool-group")).not.toBeInTheDocument();
     expect(screen.getByTestId("message-window-row-message-t1")).toBeInTheDocument();
     expect(screen.getByTestId("message-window-row-message-t2")).toBeInTheDocument();
-    expect(await screen.findByText("read_file")).toBeInTheDocument();
-    expect(await screen.findByText("search")).toBeInTheDocument();
+    expect(await screen.findByText("read_file", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(await screen.findByText("search", {}, { timeout: 3000 })).toBeInTheDocument();
+  });
+
+  it("collapses runs of 3+ tool messages into one group row", async () => {
+    useChat.setState({
+      messages: [
+        { id: "u1", role: "user", text: "go", streaming: false, created_at: 1 },
+        { id: "t1", role: "tool", text: "a", tool_name: "read_file", streaming: false, created_at: 2 },
+        { id: "t2", role: "tool", text: "b", tool_name: "read_file", streaming: false, created_at: 3 },
+        { id: "t3", role: "tool", text: "c", tool_name: "exec_command", streaming: false, created_at: 4 },
+        { id: "a1", role: "assistant", text: "done", streaming: false, created_at: 5 },
+      ],
+    });
+    render(<MessageList />);
+
+    // One collapsed group row replaces the three individual cards.
+    const group = await screen.findByTestId("message-tool-group");
+    expect(screen.getByText("工具调用 × 3")).toBeInTheDocument();
+    expect(screen.queryByTestId("message-window-row-message-t1")).not.toBeInTheDocument();
+    expect(group).toHaveTextContent(/read_file ×2/);
+
+    // Expanding reveals the individual tool cards.
+    fireEvent.click(screen.getByRole("button", { name: /工具调用 × 3/ }));
+    expect(await screen.findAllByTestId("message-tool")).toHaveLength(3);
+  });
+
+  it("keeps tool messages ungrouped while a search query is active", async () => {
+    useChat.setState({
+      messages: [
+        { id: "t1", role: "tool", text: "alpha", tool_name: "read_file", streaming: false, created_at: 1 },
+        { id: "t2", role: "tool", text: "beta", tool_name: "search", streaming: false, created_at: 2 },
+        { id: "t3", role: "tool", text: "alpha", tool_name: "glob", streaming: false, created_at: 3 },
+      ],
+    });
+    render(<MessageList searchQuery="alpha" />);
+    expect(await screen.findByTestId("chat-search-summary")).toBeInTheDocument();
+    expect(screen.queryByTestId("message-tool-group")).not.toBeInTheDocument();
+    expect(screen.getByTestId("message-window-row-message-t1")).toBeInTheDocument();
+    expect(screen.getByTestId("message-window-row-message-t3")).toBeInTheDocument();
   });
 
   it("pauses auto-follow when user scrolls up and resumes on button click", async () => {

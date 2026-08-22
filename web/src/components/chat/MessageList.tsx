@@ -22,6 +22,7 @@ import { useSmartScroll } from "../../lib/useSmartScroll";
 import { EmptyState } from "../../ui";
 import { strings } from "../../ui/strings";
 import type { Message } from "../../types/ipc";
+import { ToolCallGroup, TOOL_GROUP_MIN } from "./ToolCallGroup";
 
 const MessageItem = lazy(() =>
   import("./MessageItem").then((module) => ({ default: module.MessageItem })),
@@ -37,6 +38,7 @@ type MessageListRow =
   | { type: "search-summary"; key: string }
   | { type: "load-more"; key: string }
   | { type: "message"; key: string; message: Message }
+  | { type: "tool-group"; key: string; messages: Message[] }
   | { type: "sub-agent-results"; key: string; runIds: string[] };
 
 export function MessageList({ testId = "message-list", searchQuery }: MessageListProps): JSX.Element {
@@ -100,8 +102,24 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
     const next: MessageListRow[] = [];
     if (isFiltered) next.push({ type: "search-summary", key: "search-summary" });
     if (hasMore) next.push({ type: "load-more", key: `load-more-${hiddenCount}` });
-    for (const message of visible) {
+    // Consecutive tool runs of TOOL_GROUP_MIN+ collapse into one group row
+    // so a long agent turn doesn't bury the chat under dozens of cards.
+    // Skipped while searching: filtered results must stay individually
+    // addressable, and filtering can split runs arbitrarily.
+    for (let i = 0; i < visible.length; ) {
+      const message = visible[i];
+      if (!hasQuery && message.role === "tool") {
+        let j = i;
+        while (j < visible.length && visible[j].role === "tool") j += 1;
+        const group = visible.slice(i, j);
+        if (group.length >= TOOL_GROUP_MIN) {
+          next.push({ type: "tool-group", key: `tool-group-${group[0].id}`, messages: group });
+          i = j;
+          continue;
+        }
+      }
       next.push({ type: "message", key: `message-${message.id}`, message });
+      i += 1;
     }
     if (!hasQuery && finishedRuns.length > 0) {
       next.push({
@@ -244,6 +262,10 @@ function MessageListRowView({
     );
   }
 
+  if (row.type === "tool-group") {
+    return <ToolCallGroup messages={row.messages} />;
+  }
+
   if (row.type === "sub-agent-results") {
     return (
       <div
@@ -277,6 +299,9 @@ function estimateRowSize(row: MessageListRow | undefined): number {
   if (!row) return 96;
   if (row.type === "search-summary") return 40;
   if (row.type === "load-more") return 44;
+  // Collapsed group is one 34px summary line; expanded is measured live
+  // by the virtualizer's measureElement, this is only the initial guess.
+  if (row.type === "tool-group") return 40;
   if (row.type === "sub-agent-results") return 96;
   const textLength = row.message.text.length;
   if (row.message.role === "user") return Math.min(180, 48 + textLength / 4);

@@ -226,6 +226,11 @@ export const strings = {
       mcpServer: (server: string) => `MCP 服务器：${server}`,
     },
 
+    toolGroup: {
+      count: (n: number) => `工具调用 × ${n}`,
+      moreTools: (n: number) => `等 ${n} 种工具`,
+    },
+
     mermaid: {
       copySource: "复制图表源码",
       renderFailed: "无法渲染 Mermaid 图表",
