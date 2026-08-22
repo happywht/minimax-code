@@ -35,7 +35,7 @@ import { MessageStatusBadge } from "./MessageStatusBadge";
 import { ToolCallCard } from "./ToolCallCard";
 import { TurnSummaryRow } from "./TurnSummaryRow";
 import { SourcesPanel } from "./SourcesPanel";
-import { Brain } from "lucide-react";
+import { Brain, FastForward } from "lucide-react";
 import { strings } from "../../ui/strings";
 import { Badge, Textarea, Button } from "../../ui";
 
@@ -70,6 +70,10 @@ export const MessageItem = React.memo(function MessageItem({
   const messages = useChat((s) => s.messages);
   const updateMessage = useChat((s) => s.updateMessage);
   const deleteMessage = useChat((s) => s.deleteMessage);
+  const continueRun = useChat((s) => s.continueRun);
+  const chatBusy = useChat(
+    (s) => s.status === "sending" || s.status === "streaming" || s.status === "cancelling",
+  );
   const summary = useMemo<TurnSummary | null>(() => {
     if (!isAssistant) return null;
     const idx = messages.findIndex((m) => m.id === message.id);
@@ -156,6 +160,29 @@ export const MessageItem = React.memo(function MessageItem({
               <Brain size={10} />
               <span>{strings.chat.memory.savedCount(message.metadata.memory_count)}</span>
             </Badge>
+          </div>
+        ) : null}
+        {isAssistant && !message.streaming && message.metadata?.truncated ? (
+          <div
+            className="mt-1.5 flex flex-wrap items-center gap-2"
+            data-testid={`message-truncated-${message.id}`}
+          >
+            <Badge tone="warning">{strings.chat.continueRun.badge}</Badge>
+            {typeof message.metadata.compactions === "number" && message.metadata.compactions > 0 ? (
+              <span className="text-xs text-ink-2">
+                {strings.chat.continueRun.compactions(message.metadata.compactions)}
+              </span>
+            ) : null}
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={chatBusy}
+              onClick={() => void continueRun()}
+              data-testid={`message-continue-${message.id}`}
+            >
+              <FastForward size={12} />
+              {chatBusy ? strings.chat.continueRun.running : strings.chat.continueRun.button}
+            </Button>
           </div>
         ) : null}
         {showStatus && <MessageStatusBadge messageId={message.id} status={status} />}

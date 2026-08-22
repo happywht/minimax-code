@@ -38,6 +38,13 @@ export interface ChatState {
 
   init: () => Promise<void>;
   send: (content: string | ContentPart[]) => Promise<void>;
+  /**
+   * v1.1.0 — resume the latest budget-truncated run. Unlike send(),
+   * no user bubble is added: the backend injects a fixed continuation
+   * prompt server-side and streams the new assistant turn via the
+   * regular message_chunk channel.
+   */
+  continueRun: () => Promise<void>;
   /** Add a user message to the chat log without triggering a backend call. */
   addLocalMessage: (content: string) => void;
   /** Load persisted messages for a session from the backend. */
@@ -533,6 +540,56 @@ export const useChat = create<ChatState>((set, get) => ({
       } else {
         toast.error(strings.toasts.sendFailed, message);
       }
+    }
+  },
+
+  continueRun: async () => {
+    const sessionId = useSessionStore.getState().currentSessionId;
+    if (!sessionId) return;
+    if (get().status === "sending" || get().status === "streaming") return;
+    set({ status: "sending", error: null });
+    try {
+      const result = await typedIPC.continueRun(sessionId);
+      if (!("message_id" in result)) {
+        // Guards: storage unavailable, or the latest run did not end
+        // budget-truncated. Surface the reason, keep the log intact.
+        toast.error(strings.chat.continueRun.failed, result.error);
+        set({ status: "idle" });
+        return;
+      }
+      // Same envelope as send(): chunks normally populated the reply
+      // over WebSocket already; only add a fallback bubble when the
+      // stream produced nothing (e.g. mock-mode timing edge).
+      set((s) => {
+        if (s.messages.some((m) => m.id === result.message_id)) {
+          return {
+            messages: s.messages.map((m) =>
+              m.id === result.message_id
+                ? { ...m, status: "completed", streaming: false }
+                : m,
+            ),
+            status: "idle",
+          };
+        }
+        return {
+          messages: trimArray(ensureMessage(s.messages, {
+            id: result.message_id,
+            role: "assistant",
+            text: result.text || "",
+            streaming: false,
+            status: "completed",
+            created_at: Date.now(),
+            metadata: result.truncated ? { thinking_count: 0, tokens_in: 0, tokens_out: 0, truncated: true } : undefined,
+          }), MAX_MESSAGES),
+          status: "idle",
+        };
+      });
+    } catch (err) {
+      const message = err instanceof IPCError || err instanceof Error
+        ? err.message
+        : String(err);
+      toast.error(strings.chat.continueRun.failed, message);
+      set({ status: "idle", error: message });
     }
   },
 

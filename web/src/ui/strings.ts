@@ -256,6 +256,14 @@ export const strings = {
       savedCount: (count: number) => `已保存 ${count} 条记忆`,
     },
 
+    continueRun: {
+      badge: "迭代预算已用尽",
+      button: "继续执行",
+      running: "继续中…",
+      compactions: (count: number) => `上下文已压缩 ${count} 次`,
+      failed: "无法继续",
+    },
+
     providerBanner: {
       noModelTitle: "未选择模型",
       providerDisabledTitle: "提供商已禁用",

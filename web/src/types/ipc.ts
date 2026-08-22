@@ -200,6 +200,13 @@ export interface MessageMetadata {
   sources?: SourceAnnotation[];
   /** v0.11.0: number of long-term memories auto-extracted from this reply. */
   memory_count?: number;
+  /**
+   * v1.1.0: the turn hit its iteration budget without a final answer.
+   * Drives the "continue" affordance on the message.
+   */
+  truncated?: boolean;
+  /** v1.1.0: how many intra-loop compactions ran during this turn. */
+  compactions?: number;
 }
 
 /** A scheduled job record. */
@@ -622,6 +629,13 @@ export interface SendMessageResult {
   message_id: string;
   run_id?: string;
   text: string;
+  /** v1.1.0: the turn ended budget-truncated (no final answer). */
+  truncated?: boolean;
+  iterations?: number;
+  /** v1.1.0: blocks ran behind this send (auto-continue; 1 when off). */
+  blocks?: number;
+  /** v1.1.0: intra-loop compactions summed across blocks. */
+  compactions?: number;
 }
 
 export interface ListSessionsResult {

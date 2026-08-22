@@ -202,6 +202,8 @@ export interface TypedIPC {
   // agent
   sendMessage(opts: { session_id: string | null; content: string | import("../types/ipc").ContentPart[]; attachments?: unknown }): Promise<SendMessageResult>;
   cancelAgent(sessionId: string): Promise<{ ok: true }>;
+  /** v1.1.0: resume the latest budget-truncated run for a session. */
+  continueRun(sessionId: string): Promise<SendMessageResult | { ok: false; error: string }>;
 
   // agent CRUD
   getAgent(name: string): Promise<{ agent: AgentInfo }>;
@@ -636,6 +638,11 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<SendMessageResult>("agent.send_message", opts),
     cancelAgent: (sid) =>
       client.request<{ ok: true }>("agent.cancel", { session_id: sid }),
+    continueRun: (sid) =>
+      client.request<SendMessageResult | { ok: false; error: string }>(
+        "agent.continue_run",
+        { session_id: sid },
+      ),
 
     // Agent CRUD
     getAgent: (name) =>

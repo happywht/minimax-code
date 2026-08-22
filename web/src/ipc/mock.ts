@@ -579,6 +579,21 @@ function mockHandle(
     }
 
     case "agent.cancel":
+      return { ok: true };
+
+    case "agent.continue_run": {
+      // v1.1.0 — resume a budget-truncated turn. The real backend
+      // validates the latest run then re-enters send_message with a
+      // fixed prompt; the mock just replays the send path.
+      const p = params as { session_id: string };
+      return mockHandle(
+        "agent.send_message",
+        { session_id: p.session_id, content: "[continue] (mock) resuming the truncated turn…" },
+        client,
+        id,
+      );
+    }
+
     case "skill.enable":
     case "skill.disable":
     case "schedule.delete":
