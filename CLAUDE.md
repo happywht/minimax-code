@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MiniMax Code 是一个桌面端 AI 编码 Agent 复刻项目。对标 MiniMax Code 全量功能：多轮对话、技能系统、定时任务、多 Agent 协作、移动互联、授权管理、进度面板。v0.2.0 起从 Tauri 桌面壳切换为 web SPA + 本地 Python agent 架构，v0.3.0 新增 thinking_count 通道、Sub-Agent UI、Git 集成和 Code Review 工作流。
 
-当前版本：**v1.0.0**（2026-08-21）
+当前版本：**v1.1.0**（2026-08-20）
 
 ## 架构总览
 
@@ -169,16 +169,17 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 
 ### IPC 命名空间
 
-共 **167 个注册方法、35 个前缀**（含 3 个无点号 built-in）。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。
+共 **169 个注册方法、36 个前缀**（含 3 个无点号 built-in）。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。
 
 | 前缀 | 方法数 | 用途 | Handler 文件 |
 |------|--------|------|-------------|
-| `agent.*` | 10 | 消息发送、子 agent 管理 | `builtins.py`, `handlers_agents.py` |
+| `agent.*` | 11 | 消息发送、续跑、子 agent 管理 | `builtins.py`, `handlers_agents.py` |
 | `audit.*` | 3 | 审计日志查询 | `handlers_audit.py` |
 | `checkpoint.*` | 5 | 上下文检查点 | `handlers_checkpoint.py` |
 | `codebase.*` | 4 | 代码库索引/检索 | `handlers_codebase.py` |
 | `crash.*` | 3 | 崩溃恢复会话 | `handlers_crash.py` |
 | `data.*` | 3 | 全量导出/导入/备份 | `handlers_data.py` |
+| `diag.*` | 1 | 脱敏诊断包导出 | `handlers_diag.py` |
 | `git.*` | 3 | Git 状态/差异/日志 | `handlers_git.py` |
 | `mcp.*` | 6 | MCP 服务器管理 | `handlers_mcp.py` |
 | `memory.*` | 5 | 长期记忆 | `handlers_memory.py` |

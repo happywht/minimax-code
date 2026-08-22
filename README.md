@@ -1,10 +1,10 @@
 # MiniMax Code
 
-![version](https://img.shields.io/badge/version-1.0.0-blue) ![python](https://img.shields.io/badge/python-3.11%2B-3776ab) ![node](https://img.shields.io/badge/node-20%2B-339933) ![local-first](https://img.shields.io/badge/local--first-SQLite-8b5cf6)
+![version](https://img.shields.io/badge/version-1.1.0-blue) ![python](https://img.shields.io/badge/python-3.11%2B-3776ab) ![node](https://img.shields.io/badge/node-20%2B-339933) ![local-first](https://img.shields.io/badge/local--first-SQLite-8b5cf6)
 
 本地优先的个人 AI 编码 Agent。多轮对话、代码工具、技能系统、定时任务、多 Agent 协作、授权管理、Git 与 Code Review 工作流、数据导出备份——全部跑在你自己的机器上。
 
-当前版本：**v1.0.0**（发布公告见 [`docs/release-1.0.0.md`](docs/release-1.0.0.md)）。本地 Web SPA + Python Agent 架构，默认只监听 `127.0.0.1`，会话、配置和任务数据保存在本机 SQLite 中，不经过任何第三方服务器。
+当前版本：**v1.1.0**（发布公告见 [`docs/release-1.0.0.md`](docs/release-1.0.0.md)）。本地 Web SPA + Python Agent 架构，默认只监听 `127.0.0.1`，会话、配置和任务数据保存在本机 SQLite 中，不经过任何第三方服务器。
 
 ## 快速开始
 

@@ -66,6 +66,37 @@ The loop runs for at most `AgentConfig.max_iterations` (default 12)
 turns. On the iteration cap the loop sets `result.truncated = True`
 and returns whatever the last assistant message contained.
 
+**Block budget (v1.1.0).** `max_iterations` caps a single *block*, not
+the whole task. A budget-truncated turn surfaces a "continue"
+affordance in the UI (`agent.continue_run` re-enters the send-message
+pipeline with a fixed continuation prompt), and with
+`MINIMAX_AUTO_CONTINUE=1` the pipeline continues automatically — up to
+`MINIMAX_AUTO_CONTINUE_MAX_BLOCKS` blocks (default 5) per send-message,
+stopping early when the model produces a final answer or the user
+cancels. Iterations and compactions are summed across blocks in the
+reply envelope (`blocks`, `compactions`) and the run's metadata. Near
+the budget's end a convergence nudge is appended to the LLM call
+telling the model to wrap up, and when the conversation exceeds the
+model's context window the loop compacts history in-flight (see the
+`compaction_threshold` / `context_window` knobs below).
+
+### Lifecycle hooks
+
+`HookManager` (optional on `AgentCore`, `None` = zero overhead) fires
+six events. Only `pre_tool_use` is a gate (its `{"block": true}`
+decision skips the tool); the rest are notifications.
+
+| Event | Fires | Payload highlights |
+| --- | --- | --- |
+| `session_start` / `session_end` | around each send-message run | `session_id` |
+| `pre_tool_use` / `post_tool_use` | around each tool dispatch | `tool_name`, `tool_input` (+ `tool_output` on post) |
+| `pre_loop_iteration` | before each iteration's LLM call (v1.1.0) | `iteration` (0-based) |
+| `post_loop_iteration` | after the iteration's tool batch, on the continue-loop path only (v1.1.0) | `iteration` (0-based) |
+
+The loop-iteration pair lets observers watch long-running turns at
+iteration granularity without per-tool noise; the final-answer
+iteration skips `post_loop_iteration` (session events cover it).
+
 ## 2. Built-in tool catalogue
 
 Every tool inherits from `minimax_code.agent.tools.Tool` and is
@@ -321,13 +352,17 @@ which the calling tool turns into a `ToolResult.fail(...)`.
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `model` | `"MiniMax-M3"` | Default model name |
-| `max_iterations` | `12` | Loop cap before `truncated=True` |
+| `max_iterations` | `12` | Block cap before `truncated=True` (v1.1.0: per *block*, not per task) |
 | `tool_timeout` | `120.0` | Per-tool dispatch timeout (s) |
 | `temperature` | `None` | LLM temperature override |
 | `system_prompt_extra` | `None` | Appended to the system prompt |
 | `skill_instructions` | `None` | Skill runtime output (Phase 1.5) |
 | `max_tool_output_bytes` | `50_000` | Truncate tool output above this |
 | `stall_timeout` | `120.0` | Maximum silence between LLM stream events; `0` disables the watchdog |
+| `compaction_threshold` | `0.8` | History fraction of the context window that triggers compaction |
+| `context_window` | model catalog | Context window (tokens) feeding the compaction gate |
+| `auto_continue` | `False` | v1.1.0 auto-continue blocks on truncation (env `MINIMAX_AUTO_CONTINUE=1`) |
+| `auto_continue_max_blocks` | `5` | Block cap per send-message (env `MINIMAX_AUTO_CONTINUE_MAX_BLOCKS`) |
 
 The underlying provider request timeout defaults to 180 seconds. The chat
 frontend has no independent terminal timeout for `agent.send_message`; only

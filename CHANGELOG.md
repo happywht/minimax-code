@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-20
+
+### Added — 从固定轮数天花板到 context 驱动的长任务循环（v1.1.0）
+
+把「12 轮跑满即强杀」的单块硬顶，升级为**块预算 + 压缩 + 续跑**的长任务三件套：
+
+- **P0 管道**：
+  - `TurnAbortReason.MAX_ITERATIONS`（lifecycle）：截断与用户取消分离——生命周期观察者可区分「预算耗尽」与「停止按钮」，二者不再共享 INTERRUPTED。
+  - `context_window` 接线（builtins）：send-message 构造 `AgentConfig` 时从模型目录解析真实上下文窗口（随 `model.set_current` 同步）；`compaction_threshold=0.8` 默认启用——压缩闸门从「永不打开」变为真实生效。
+  - 循环内 compaction 管道合并（core）：每轮 LLM 调用前用上一轮**真实 token 用量**对照 `should_compact` 决策、`compact_history`（keep_recent=4）执行，`compactions` 计数进 `AgentRunResult` 与消息 metadata——长任务不再因历史膨胀而撞墙。
+- **收敛与续跑**：
+  - 收敛提醒（core）：预算只剩 ≤2 轮时向 LLM 追加 ephemeral user note（不持久化、不进历史），催促收尾出最终答案——从「被动截断」变「主动收敛」。
+  - 块预算语义 + `agent.continue_run`（第 169 个 IPC 方法）：`max_iterations` 是**单块**预算；截断 run 的 assistant 消息带 `truncated: true`，新 handler 校验 session 最近 run 确为截断后 mark `continued` 并以固定 `[continue]` prompt 复用 send-message 全链路（7 个 handler 测试）。
+  - 前端续跑闭环：truncated 消息渲染「迭代预算已用尽」badge + 压缩次数 + 「继续执行」按钮（chatBusy 禁用）→ `chatStore.continueRun` → IPC → WS 流式新气泡（6 个组件测试）；reply envelope 新增 `truncated` 字段。
+- **可观测与自动化**：
+  - `HookEvent` 新增 `pre_loop_iteration` / `post_loop_iteration`（v1.1.0 第 7/8 个 hook 事件）：pre 在每轮 LLM 调用前、post 在工具批次后（final-answer 轮不 fire，避免冗余尾事件）；纯通知 payload 带 0-based `iteration`——长任务观察者获得轮级粒度（echo-stdin 端到端测试）。
+  - **auto-continue（goal/loop 最小形态）**：`MINIMAX_AUTO_CONTINUE=1` + `MINIMAX_AUTO_CONTINUE_MAX_BLOCKS`（默认 5）——send-message 管线在块截断后自动注入续跑 prompt 进下一块，直到模型出最终答案 / 用户取消 / 块上限；块间取消即时生效（`_ACTIVE_RUNS` 全程在册）。reply envelope 新增 `blocks` / `compactions`；run 记录 metadata 同步累计 iterations / compactions / blocks（遥测按 send-message 聚合）。9 个新测试覆盖 env 解析与块循环（禁用单块 / 续到答案 / 上限耗尽仍 truncated 交还手动按钮 / 取消截停）。
+- **文档**：`docs/ipc-contract.md`（send_message envelope + continue_run 行）、`docs/agent-core.md`（块预算语义 + 六事件 hooks 表 + config 表 4 个新旋钮）。
+
+**质量数字**：pytest 10156 passed / 15 skipped（+24 新测试）；vitest 699/699（91 文件，+6）；ESLint 0/0；ruff 全绿；tsc 干净。
+
 ## [1.0.0] - 2026-08-21
 
 ### 1.0.0 总览（R51 汇总 · R54 转正——0.12.0 → 1.0.0，十里程碑 54 轮迭代收官）

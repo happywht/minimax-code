@@ -180,7 +180,7 @@ def test_installed_semver_live_metadata_is_parseable():
     never raise on the real package metadata (source of truth for the bump)."""
     v = V.installed_semver()
     assert isinstance(v, V.Version)
-    assert (v.major, v.minor, v.patch) == (1, 0, 0)
-    # Stable 1.0.0: no prerelease segment (the rc.1 era asserted v.pre == "rc.1";
+    assert (v.major, v.minor, v.patch) == (1, 1, 0)
+    # Stable 1.1.0: no prerelease segment (the rc.1 era asserted v.pre == "rc.1";
     # the stable bump makes the absence itself the contract).
     assert v.pre is None

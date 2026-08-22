@@ -35,14 +35,14 @@ MiniMax Code 的前端界面。基于 React 18 + Vite + TypeScript + Tailwind CS
 前端通过 `IPCClient` 单例与 agent 通信：
 
 - **`client.ts`**：transport 层——HTTP `POST /rpc`（请求/响应）+ `WebSocket /ws`（流式事件）+ `ipc` 单例导出
-- **`typed.ts`**：`TypedIPC` 类型化 API 层（`listSessions`、`sendMessage`、`listModels` 等全部 167 个 RPC 方法的签名）
+- **`typed.ts`**：`TypedIPC` 类型化 API 层（`listSessions`、`sendMessage`、`listModels` 等全部 169 个 RPC 方法的签名）
 - **`mock.ts`**：mock backend `mockHandle`——agent 不可达或 `VITE_AGENT_MODE=mock` 时自动降级，必须覆盖所有 IPC 方法
 - **`mockData.ts`**：mock 模式的数据与状态
 - **WebSocket 重连**：指数退避（250ms -> 500ms -> 1s -> 2s，上限 5s），断线重连后按 `?since=` 重放错过的广播
 
 ### TypedIPC 方法列表
 
-完整签名见 `src/ipc/typed.ts`（服务端 167 个注册方法，命名空间总表见根目录 CLAUDE.md 与 `docs/ipc-contract.md` Appendix A）。常用入口示例：
+完整签名见 `src/ipc/typed.ts`（服务端 169 个注册方法，命名空间总表见根目录 CLAUDE.md 与 `docs/ipc-contract.md` Appendix A）。常用入口示例：
 
 | 方法 | IPC 方法 | 功能 |
 |------|----------|------|

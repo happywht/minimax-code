@@ -32,13 +32,13 @@ Python agent 是 MiniMax Code 的后端核心。它是一个 asyncio 进程，�
 
 CORS：默认允许 `http://localhost:5173` / `http://127.0.0.1:5173`；`MINIMAX_CODE_CORS_ORIGINS`（逗号分隔）可追加受信 origin（解析见 `http_server.py` `_cors_allow_origins`，无效项 warning 忽略）。
 
-### IPC 命名空间（35 个前缀 / 167 个方法）
+### IPC 命名空间（36 个前缀 / 169 个方法）
 
 完整前缀×方法数×handler 文件总表见根目录 CLAUDE.md「IPC 命名空间」节；方法级清单见 `docs/ipc-contract.md` Appendix A（由 `agent/tests/test_ipc_contract_doc.py` 双向守护）。高频命名空间：
 
 | 前缀 | 方法数 | Handler 文件 | 主要功能 |
 |------|--------|-------------|----------|
-| `agent.*` | 10 | `builtins.py`, `handlers_agents.py` | 消息发送、子 agent spawn |
+| `agent.*` | 11 | `builtins.py`, `handlers_agents.py` | 消息发送、续跑、子 agent spawn |
 | `session.*` | 12 | `handlers_sessions.py` | 会话 CRUD、归档、批量 |
 | `message.*` | 3 | `handlers_sessions.py` | 消息列表/编辑/删除 |
 | `model.*` | 4 | `handlers_model.py` | 模型列表/切换 |
@@ -53,7 +53,7 @@ CORS：默认允许 `http://localhost:5173` / `http://127.0.0.1:5173`；`MINIMAX
 | `patch.*` | 8 | `handlers_patch.py` | Patch Studio 应用/回退/快照 |
 | `data.*` | 3 | `handlers_data.py` | 全量导出/导入/备份 |
 
-另有 `audit` / `checkpoint` / `codebase` / `crash` / `mcp` / `memory` / `notification` / `plugins` / `project` / `run` / `runner` / `runtime` / `team` / `telemetry` / `terminal` / `webhook` / `workflow` / `workspace` 共 18 个命名空间，以及无点号 built-in `ping` / `status` / `shutdown`。
+另有 `audit` / `checkpoint` / `codebase` / `crash` / `diag` / `mcp` / `memory` / `notification` / `plugins` / `project` / `run` / `runner` / `runtime` / `team` / `telemetry` / `terminal` / `webhook` / `workflow` / `workspace` 共 19 个命名空间，以及无点号 built-in `ping` / `status` / `shutdown`。
 
 ### 流式事件（WebSocket push，15 个）
 
@@ -164,7 +164,7 @@ A: 1) 在对应的 `handlers_*.py` 中实现 handler 函数；2) 在 `app.py` �
 - `minimax_code/ipc/server.py` — IPCServer + Context（核心调度）
 - `minimax_code/ipc/protocol.py` — 消息类型定义（Request/Response/Event/Notification）
 - `minimax_code/ipc/builtins.py` — ping/status/shutdown + agent.send_message
-- `minimax_code/ipc/handlers_*.py` — 各命名空间 handler（31 个文件：agents、audit、checkpoint、codebase、crash、data、git、mcp、memory、mobile、model、notifications、patch、permissions、plugins、projects、providers、runner、runs、runtime、scheduled、secrets、sessions、skills、tasks、teams、telemetry、terminal、webhooks、workflows、workspace）
+- `minimax_code/ipc/handlers_*.py` — 各命名空间 handler（32 个文件：agents、audit、checkpoint、codebase、crash、data、diag、git、mcp、memory、mobile、model、notifications、patch、permissions、plugins、projects、providers、runner、runs、runtime、scheduled、secrets、sessions、skills、tasks、teams、telemetry、terminal、webhooks、workflows、workspace）
 
 ### Agent 核心
 - `minimax_code/agent/core.py` — AgentCore 对话循环
