@@ -2,101 +2,50 @@
  * MCP Servers tab — manage external MCP server configurations.
  *
  * v0.11.0: supports stdio and SSE transports, authentication
- * (bearer token / headers / OAuth), and per-tool enablement.
+ * (bearer token / headers / OAuth), per-tool enablement, and
+ * in-place editing via the shared `McpServerForm` (add and edit
+ * render the same validated fields; only the submit label differs).
  */
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react";
-import { Button, Checkbox, EmptyState, Input, Spinner } from "../../ui";
+import { ChevronDown, ChevronRight, FlaskConical, Pencil, Plus, Trash2 } from "lucide-react";
+import { Button, Checkbox, EmptyState, ErrorBanner, Spinner } from "../../ui";
 import { typedIPC } from "../../ipc";
 import { toast } from "../layout/ErrorBoundary";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
-import type { McpServer, McpTool, McpTransport } from "../../types/ipc";
+import type {
+  InvokeMcpToolResult,
+  McpServer,
+  McpTool,
+} from "../../types/ipc";
 import { strings } from "../../ui/strings";
-import { Field, Select, TabHeader } from "./fields";
+import { Field, TabHeader } from "./fields";
+import { McpServerForm, serverToFormValues } from "./McpServerForm";
+import type { McpServerFormOptions } from "./McpServerForm";
 
 export { McpServersTab };
-
-function parseCommand(value: string): string[] {
-  return value.trim().split(/\s+/).filter(Boolean);
-}
-
-function parseJsonObject(
-  value: string,
-): { ok: true; value: Record<string, string> } | { ok: false; error: string } {
-  if (!value.trim()) return { ok: true, value: {} };
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { ok: false, error: strings.settings.mcp.envNotObject };
-    }
-    if (!Object.entries(parsed as Record<string, unknown>).every(([, v]) => typeof v === "string")) {
-      return { ok: false, error: strings.settings.mcp.envValuesNotStrings };
-    }
-    return { ok: true, value: parsed as Record<string, string> };
-  } catch {
-    return { ok: false, error: strings.settings.mcp.invalidJson };
-  }
-}
-
-function parseScopes(value: string): string[] {
-  if (!value.trim()) return [];
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
-      return parsed;
-    }
-  } catch {
-    // fall through to comma-separated
-  }
-  return value
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
 
 function McpServersTab(): JSX.Element {
   const [servers, setServers] = useState<McpServer[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
-
-  const [name, setName] = useState("");
-  const [transport, setTransport] = useState<McpTransport>("stdio");
-  const [command, setCommand] = useState("");
-  const [env, setEnv] = useState("");
-  const [url, setUrl] = useState("");
-  const [bearerToken, setBearerToken] = useState("");
-  const [headers, setHeaders] = useState("");
-  const [oauthClientId, setOauthClientId] = useState("");
-  const [oauthClientSecret, setOauthClientSecret] = useState("");
-  const [oauthScopes, setOauthScopes] = useState("");
-  const [oauthCallbackPort, setOauthCallbackPort] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [toolsByServer, setToolsByServer] = useState<Record<string, McpTool[]>>({});
   const [toolsLoading, setToolsLoading] = useState<Record<string, boolean>>({});
 
-  const resetForm = () => {
-    setName("");
-    setTransport("stdio");
-    setCommand("");
-    setEnv("");
-    setUrl("");
-    setBearerToken("");
-    setHeaders("");
-    setOauthClientId("");
-    setOauthClientSecret("");
-    setOauthScopes("");
-    setOauthCallbackPort("");
-  };
-
   const refresh = async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const result = await typedIPC.listMcpServers();
       setServers(result.servers);
     } catch (err) {
+      // Inline banner: a failed load must stay visible so the empty
+      // list below is never read as "no servers configured".
       const message = err instanceof Error ? err.message : String(err);
-      toast.error(strings.settings.mcp.loadFailed, message);
+      setLoadError(`${strings.settings.mcp.loadFailed}: ${message}`);
     } finally {
       setLoading(false);
     }
@@ -106,68 +55,28 @@ function McpServersTab(): JSX.Element {
     void refresh();
   }, []);
 
-  const formErrors = useMemo(() => {
-    const errors: string[] = [];
-    if (!name.trim()) errors.push(strings.settings.mcp.nameRequired);
-    if (transport === "stdio" && parseCommand(command).length === 0) {
-      errors.push(strings.settings.mcp.commandRequired);
-    }
-    if (transport === "sse" && !url.trim()) {
-      errors.push(strings.settings.mcp.urlRequired);
-    }
-    const envParsed = parseJsonObject(env);
-    if (!envParsed.ok) errors.push(strings.settings.mcp.envError(envParsed.error));
-    const headersParsed = parseJsonObject(headers);
-    if (!headersParsed.ok) errors.push(strings.settings.mcp.headersError(headersParsed.error));
-    return errors;
-  }, [name, transport, command, url, env, headers]);
-
-  const handleAdd = async () => {
-    if (formErrors.length > 0) {
-      toast.error(strings.settings.mcp.invalidInput, formErrors.join(" "));
-      return;
-    }
-    const envParsed = parseJsonObject(env);
-    const headersParsed = parseJsonObject(headers);
-    const parseErrors: string[] = [];
-    if (!envParsed.ok) parseErrors.push(envParsed.error);
-    if (!headersParsed.ok) parseErrors.push(headersParsed.error);
-    if (parseErrors.length > 0) {
-      toast.error(strings.settings.mcp.invalidInput, parseErrors.join(" "));
-      return;
-    }
-    if (!envParsed.ok || !headersParsed.ok) return;
-    const envObj = envParsed.value;
-    const headersObj = headersParsed.value;
-    const scopes = parseScopes(oauthScopes);
-    const callbackPort = oauthCallbackPort ? parseInt(oauthCallbackPort, 10) : undefined;
-    if (oauthCallbackPort && Number.isNaN(callbackPort)) {
-      toast.error(strings.settings.mcp.invalidInput, strings.settings.mcp.portInvalid);
-      return;
-    }
+  const handleAdd = async (opts: McpServerFormOptions) => {
     try {
-      const id = name.trim().toLowerCase().replace(/\s+/g, "-");
-      await typedIPC.addMcpServer({
-        id,
-        name: name.trim(),
-        transport,
-        command: transport === "stdio" ? parseCommand(command) : undefined,
-        url: transport === "sse" ? url.trim() : undefined,
-        env: Object.keys(envObj).length > 0 ? envObj : undefined,
-        bearer_token: bearerToken.trim() || undefined,
-        headers: Object.keys(headersObj).length > 0 ? headersObj : undefined,
-        oauth_client_id: oauthClientId.trim() || undefined,
-        oauth_client_secret: oauthClientSecret.trim() || undefined,
-        oauth_scopes: scopes.length > 0 ? scopes : undefined,
-        oauth_callback_port: callbackPort,
-      });
-      resetForm();
+      const id = opts.name.toLowerCase().replace(/\s+/g, "-");
+      await typedIPC.addMcpServer({ id, ...opts });
       setShowForm(false);
       await refresh();
       toast.success(strings.settings.mcp.addedToast);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       toast.error(strings.settings.mcp.addFailed, message);
+    }
+  };
+
+  const handleUpdate = async (server: McpServer, opts: McpServerFormOptions) => {
+    try {
+      await typedIPC.updateMcpServer(server.id, opts);
+      setEditingId(null);
+      await refresh();
+      toast.success(strings.settings.mcp.updatedToast, server.name);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(strings.settings.mcp.updateFailed, message);
     }
   };
 
@@ -241,7 +150,11 @@ function McpServersTab(): JSX.Element {
             size="sm"
             variant="subtle"
             data-testid="settings-mcp-add"
-            onClick={() => setShowForm((v) => !v)}
+            onClick={() => {
+              // Add and edit are mutually exclusive: opening one closes the other.
+              setEditingId(null);
+              setShowForm((v) => !v);
+            }}
             icon={<Plus />}
           >
             {strings.settings.mcp.addServer}
@@ -250,157 +163,27 @@ function McpServersTab(): JSX.Element {
       />
 
       {showForm && (
-        <div className="space-y-3 rounded-md border border-line bg-surface-1 p-3">
-          <Field label={strings.settings.mcp.fieldName} htmlFor="settings-mcp-name">
-            <Input
-              id="settings-mcp-name"
-              placeholder={strings.settings.mcp.placeholderName}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              data-testid="settings-mcp-name"
-            />
-          </Field>
+        <McpServerForm
+          mode="add"
+          idPrefix="settings-mcp"
+          onSubmit={handleAdd}
+          onCancel={() => setShowForm(false)}
+        />
+      )}
 
-          <Field label={strings.settings.mcp.fieldTransport} htmlFor="settings-mcp-transport">
-            <Select
-              id="settings-mcp-transport"
-              value={transport}
-              onChange={(e) => setTransport(e.target.value as McpTransport)}
-              data-testid="settings-mcp-transport"
-            >
-              <option value="stdio">{strings.settings.mcp.transportStdio}</option>
-              <option value="sse">{strings.settings.mcp.transportSse}</option>
-            </Select>
-          </Field>
-
-          {transport === "stdio" ? (
-            <>
-              <Field
-                label={strings.settings.mcp.fieldCommand}
-                htmlFor="settings-mcp-command"
-                hint={strings.settings.mcp.commandHint}
-              >
-                <Input
-                  id="settings-mcp-command"
-                  placeholder="npx @modelcontextprotocol/server-filesystem ."
-                  value={command}
-                  onChange={(e) => setCommand(e.target.value)}
-                  data-testid="settings-mcp-command"
-                />
-              </Field>
-              <Field
-                label={strings.settings.mcp.fieldEnv}
-                htmlFor="settings-mcp-env"
-                hint={strings.settings.mcp.envHint}
-              >
-                <Input
-                  id="settings-mcp-env"
-                  placeholder='{"KEY":"value"}'
-                  value={env}
-                  onChange={(e) => setEnv(e.target.value)}
-                  data-testid="settings-mcp-env"
-                />
-              </Field>
-            </>
-          ) : (
-            <>
-              <Field label={strings.settings.mcp.fieldUrl} htmlFor="settings-mcp-url">
-                <Input
-                  id="settings-mcp-url"
-                  placeholder="http://localhost:3001/sse"
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  data-testid="settings-mcp-url"
-                />
-              </Field>
-              <Field label={strings.settings.mcp.fieldToken} htmlFor="settings-mcp-bearer">
-                <Input
-                  id="settings-mcp-bearer"
-                  type="password"
-                  placeholder={strings.settings.mcp.tokenHint}
-                  value={bearerToken}
-                  onChange={(e) => setBearerToken(e.target.value)}
-                  data-testid="settings-mcp-bearer"
-                />
-              </Field>
-              <Field
-                label={strings.settings.mcp.fieldHeaders}
-                htmlFor="settings-mcp-headers"
-                hint={strings.settings.mcp.headersHint}
-              >
-                <Input
-                  id="settings-mcp-headers"
-                  placeholder='{"X-Custom":"value"}'
-                  value={headers}
-                  onChange={(e) => setHeaders(e.target.value)}
-                  data-testid="settings-mcp-headers"
-                />
-              </Field>
-            </>
-          )}
-
-          <div className="space-y-3 rounded-md border border-line bg-surface-0 p-3">
-            <p className="text-[11px] font-medium text-ink-1">{strings.settings.mcp.oauthTitle}</p>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label={strings.settings.mcp.clientId} htmlFor="settings-mcp-oauth-id">
-                <Input
-                  id="settings-mcp-oauth-id"
-                  value={oauthClientId}
-                  onChange={(e) => setOauthClientId(e.target.value)}
-                  data-testid="settings-mcp-oauth-id"
-                />
-              </Field>
-              <Field label={strings.settings.mcp.clientSecret} htmlFor="settings-mcp-oauth-secret">
-                <Input
-                  id="settings-mcp-oauth-secret"
-                  type="password"
-                  value={oauthClientSecret}
-                  onChange={(e) => setOauthClientSecret(e.target.value)}
-                  data-testid="settings-mcp-oauth-secret"
-                />
-              </Field>
-            </div>
-            <Field
-              label={strings.settings.mcp.fieldScopes}
-              htmlFor="settings-mcp-oauth-scopes"
-              hint={strings.settings.mcp.scopesHint}
-            >
-              <Input
-                id="settings-mcp-oauth-scopes"
-                placeholder="read,write"
-                value={oauthScopes}
-                onChange={(e) => setOauthScopes(e.target.value)}
-                data-testid="settings-mcp-oauth-scopes"
-              />
-            </Field>
-            <Field label={strings.settings.mcp.callbackPort} htmlFor="settings-mcp-oauth-port">
-              <Input
-                id="settings-mcp-oauth-port"
-                type="number"
-                placeholder="8765"
-                value={oauthCallbackPort}
-                onChange={(e) => setOauthCallbackPort(e.target.value)}
-                data-testid="settings-mcp-oauth-port"
-              />
-            </Field>
-          </div>
-
-          <div className="flex justify-end gap-2">
-            <Button size="sm" variant="ghost" onClick={() => setShowForm(false)}>
-              {strings.settings.mcp.cancel}
-            </Button>
-            <Button size="sm" variant="primary" onClick={() => void handleAdd()}>
-              {strings.settings.mcp.save}
-            </Button>
-          </div>
-        </div>
+      {loadError && (
+        <ErrorBanner
+          message={loadError}
+          onRetry={() => void refresh()}
+          testId="settings-mcp-error"
+        />
       )}
 
       {loading && servers.length === 0 ? (
         <div className="flex items-center justify-center gap-2 py-4 text-xs text-ink-2">
           <Spinner size={12} /> {strings.settings.mcp.loading}
         </div>
-      ) : servers.length === 0 ? (
+      ) : servers.length === 0 && !loadError ? (
         <EmptyState title="暂无 MCP Server" hint="点击「添加 Server」连接外部工具。" />
       ) : (
         <ul className="space-y-2" data-testid="settings-mcp-list">
@@ -443,6 +226,19 @@ function McpServersTab(): JSX.Element {
                   >
                     {strings.settings.mcp.tools}
                   </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    aria-label={strings.settings.mcp.editAria}
+                    onClick={() => {
+                      // Add and edit are mutually exclusive.
+                      setShowForm(false);
+                      setEditingId((v) => (v === server.id ? null : server.id));
+                    }}
+                    data-testid={`settings-mcp-edit-${server.id}`}
+                  >
+                    <Pencil size={14} />
+                  </Button>
                   <label className="flex cursor-pointer items-center gap-1.5 px-2 text-[11px] text-ink-2">
                     <Checkbox
                       checked={server.enabled}
@@ -462,6 +258,18 @@ function McpServersTab(): JSX.Element {
                   </Button>
                 </div>
               </div>
+
+              {editingId === server.id && (
+                <div className="mt-3 border-t border-line pt-3" data-testid={`settings-mcp-edit-form-${server.id}`}>
+                  <McpServerForm
+                    mode="edit"
+                    idPrefix="settings-mcp-edit"
+                    initial={serverToFormValues(server)}
+                    onSubmit={(opts) => handleUpdate(server, opts)}
+                    onCancel={() => setEditingId(null)}
+                  />
+                </div>
+              )}
 
               {expandedId === server.id && (
                 <div className="mt-3 border-t border-line pt-3">
@@ -493,6 +301,8 @@ interface ToolsListProps {
 }
 
 function ToolsList({ server, tools, onToggle }: ToolsListProps): JSX.Element {
+  const [testingTool, setTestingTool] = useState<string | null>(null);
+
   if (tools.length === 0) {
     return (
       <p className="text-[11px] text-ink-2">{strings.settings.mcp.noTools}</p>
@@ -502,28 +312,170 @@ function ToolsList({ server, tools, onToggle }: ToolsListProps): JSX.Element {
     <ul className="space-y-1.5" data-testid={`settings-mcp-tools-${server.id}`}>
       {tools.map((tool) => {
         const enabled = server.tool_states?.[tool.name] ?? true;
+        const isTesting = testingTool === tool.name;
         return (
           <li
             key={tool.name}
-            className="flex items-start justify-between gap-3 rounded bg-surface-0 px-2 py-1.5"
+            className="space-y-1.5 rounded bg-surface-0 px-2 py-1.5"
           >
-            <div className="min-w-0">
-              <div className="text-[11px] font-medium text-ink-0">{tool.name}</div>
-              {tool.description && (
-                <div className="text-[11px] text-ink-2">{tool.description}</div>
-              )}
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-[11px] font-medium text-ink-0">{tool.name}</div>
+                {tool.description && (
+                  <div className="text-[11px] text-ink-2">{tool.description}</div>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Button
+                  size="sm"
+                  variant={isTesting ? "subtle" : "ghost"}
+                  aria-label={strings.settings.mcp.testAria(tool.name)}
+                  icon={<FlaskConical size={12} />}
+                  onClick={() => setTestingTool(isTesting ? null : tool.name)}
+                  data-testid={`settings-mcp-test-${server.id}-${tool.name}`}
+                >
+                  {strings.settings.mcp.test}
+                </Button>
+                <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-2">
+                  <Checkbox
+                    checked={enabled}
+                    onChange={(e) => onToggle(server, tool.name, e.target.checked)}
+                    data-testid={`settings-mcp-tool-${server.id}-${tool.name}`}
+                  />
+                  {enabled ? strings.settings.mcp.on : strings.settings.mcp.off}
+                </label>
+              </div>
             </div>
-            <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-[11px] text-ink-2">
-              <Checkbox
-                checked={enabled}
-                onChange={(e) => onToggle(server, tool.name, e.target.checked)}
-                data-testid={`settings-mcp-tool-${server.id}-${tool.name}`}
-              />
-              {enabled ? strings.settings.mcp.on : strings.settings.mcp.off}
-            </label>
+            {isTesting && <ToolTester server={server} tool={tool} />}
           </li>
         );
       })}
     </ul>
+  );
+}
+
+interface ToolTesterProps {
+  server: McpServer;
+  tool: McpTool;
+}
+
+/**
+ * Inline MCP tool runner — edit a JSON arguments payload, invoke the tool
+ * via `mcp.invoke_tool`, and inspect the raw text / structured content.
+ */
+function ToolTester({ server, tool }: ToolTesterProps): JSX.Element {
+  const [argsText, setArgsText] = useState("");
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<InvokeMcpToolResult | null>(null);
+
+  const schemaKeys = useMemo(() => {
+    const props = tool.inputSchema?.properties;
+    if (props && typeof props === "object" && !Array.isArray(props)) {
+      return Object.keys(props).join(", ");
+    }
+    return null;
+  }, [tool.inputSchema]);
+
+  const run = async () => {
+    setError(null);
+    setResult(null);
+    let args: Record<string, unknown> = {};
+    if (argsText.trim()) {
+      try {
+        const parsed = JSON.parse(argsText) as unknown;
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+          setError(strings.settings.mcp.testArgsInvalid);
+          return;
+        }
+        args = parsed as Record<string, unknown>;
+      } catch {
+        setError(strings.settings.mcp.testArgsInvalid);
+        return;
+      }
+    }
+    setRunning(true);
+    try {
+      const r = await typedIPC.invokeMcpTool(server.name, tool.name, args);
+      setResult(r);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(`${strings.settings.mcp.testInvokeFailed}: ${message}`);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const testerId = `${server.id}-${tool.name}`;
+  return (
+    <div
+      data-testid={`settings-mcp-tester-${testerId}`}
+      className="space-y-2 rounded-md border border-line bg-surface-1 p-2"
+    >
+      <Field
+        label={strings.settings.mcp.testArgsLabel}
+        htmlFor={`mcp-tester-args-${testerId}`}
+      >
+        <textarea
+          id={`mcp-tester-args-${testerId}`}
+          data-testid={`settings-mcp-tester-args-${testerId}`}
+          rows={3}
+          className="w-full rounded-md border border-line bg-surface-0 px-2 py-1.5 font-mono text-[11px] text-ink-0 focus:border-accent focus:outline-none"
+          placeholder={strings.settings.mcp.testArgsPlaceholder}
+          value={argsText}
+          onChange={(e) => setArgsText(e.target.value)}
+        />
+      </Field>
+      {schemaKeys && (
+        <p className="text-[11px] text-ink-2">
+          {strings.settings.mcp.testSchemaHint(schemaKeys)}
+        </p>
+      )}
+      <Button
+        size="sm"
+        variant="primary"
+        disabled={running}
+        onClick={() => void run()}
+        data-testid={`settings-mcp-tester-run-${testerId}`}
+      >
+        {running ? strings.settings.mcp.testRunning : strings.settings.mcp.testRun}
+      </Button>
+      {error && (
+        <p
+          role="alert"
+          data-testid={`settings-mcp-tester-error-${testerId}`}
+          className="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-[11px] text-red-400"
+        >
+          {error}
+        </p>
+      )}
+      {result && (
+        <div data-testid={`settings-mcp-tester-result-${testerId}`}>
+          <p
+            className={
+              "text-[11px] font-medium " +
+              (result.isError ? "text-red-400" : "text-ink-1")
+            }
+          >
+            {result.isError
+              ? strings.settings.mcp.testToolError
+              : strings.settings.mcp.testResultTitle}
+          </p>
+          <pre
+            className={
+              "mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded-md border px-2 py-1.5 font-mono text-[11px] " +
+              (result.isError
+                ? "border-red-500/30 bg-red-500/10 text-red-400"
+                : "border-line bg-surface-0 text-ink-0")
+            }
+          >
+            {result.text ??
+              (result.content
+                ? JSON.stringify(result.content, null, 2)
+                : strings.settings.mcp.testResultEmpty)}
+          </pre>
+        </div>
+      )}
+    </div>
   );
 }

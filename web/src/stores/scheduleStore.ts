@@ -17,6 +17,7 @@ import { create } from "zustand";
 import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import type { ScheduledJob } from "../types/ipc";
+import { strings } from "../ui/strings";
 
 export type ScheduledJobEntry = ScheduledJob;
 
@@ -27,6 +28,15 @@ export interface ScheduleState {
   refresh: () => Promise<void>;
   create: (opts: { name: string; cron: string; prompt: string }) => Promise<ScheduledJobEntry | null>;
   remove: (jobId: string) => Promise<void>;
+  /**
+   * Replace a job's definition. The wire contract has no schedule.update,
+   * so this creates the new job first and only deletes the old one on
+   * success — a failed create leaves the original untouched.
+   */
+  update: (
+    jobId: string,
+    opts: { name: string; cron: string; prompt: string },
+  ) => Promise<ScheduledJobEntry | null>;
   enable: (jobId: string) => Promise<void>;
   disable: (jobId: string) => Promise<void>;
   setEnabled: (jobId: string, enabled: boolean) => Promise<void>;
@@ -45,7 +55,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     } catch (err) {
       set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to load scheduled jobs", message);
+      toast.error(strings.toasts.jobsLoadFailed, message);
     }
   },
 
@@ -56,7 +66,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       return r.job;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to create job", message);
+      toast.error(strings.toasts.jobCreateFailed, message);
       return null;
     }
   },
@@ -70,8 +80,26 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     } catch (err) {
       set({ jobs: prev });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to delete job", message);
+      toast.error(strings.toasts.jobDeleteFailed, message);
     }
+  },
+
+  update: async (jobId, opts) => {
+    // create→delete composition: keep the old job unless the new one exists.
+    const created = await get().create(opts);
+    if (!created) return null;
+    const prevJobs = get().jobs;
+    set({ jobs: prevJobs.filter((j) => j.id !== jobId) });
+    try {
+      await typedIPC.deleteJob(jobId);
+    } catch (err) {
+      // New job exists but the stale one lingers — surface the error and
+      // refresh so the list reflects reality on both ends.
+      await get().refresh();
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(strings.toasts.jobDeleteFailed, message);
+    }
+    return created;
   },
 
   enable: async (jobId) => {
@@ -82,7 +110,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to enable job", message);
+      toast.error(strings.toasts.jobEnableFailed, message);
     }
   },
 
@@ -94,7 +122,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to disable job", message);
+      toast.error(strings.toasts.jobDisableFailed, message);
     }
   },
 
@@ -109,10 +137,10 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   runNow: async (jobId) => {
     try {
       await typedIPC.runNowJob(jobId);
-      toast.info("Job triggered", `Job ${jobId} has been triggered.`);
+      toast.info(strings.toasts.jobTriggered, strings.toasts.jobTriggeredDetail(jobId));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to trigger job", message);
+      toast.error(strings.toasts.jobTriggerFailed, message);
     }
   },
 }));

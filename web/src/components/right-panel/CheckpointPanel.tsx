@@ -6,7 +6,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { Camera, ChevronDown, ChevronRight, Clock, GitBranch, Trash2, RotateCcw, FileDiff } from "lucide-react";
-import { Button, EmptyState, Spinner } from "../../ui";
+import { Button, DiffLines, EmptyState, ErrorBanner, Spinner } from "../../ui";
 import { typedIPC } from "../../ipc";
 import { useSessionStore } from "../../stores";
 import { toast } from "../layout/ErrorBoundary";
@@ -28,16 +28,20 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
   const [expandedDiff, setExpandedDiff] = useState<string | null>(null);
   const [diffs, setDiffs] = useState<Record<string, string>>({});
   const [diffLoading, setDiffLoading] = useState<Record<string, boolean>>({});
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!sessionId) return;
     setLoading(true);
+    setLoadError(null);
     try {
       const result = await typedIPC.listCheckpoints(sessionId);
       setCheckpoints(result.checkpoints);
     } catch (err) {
+      // Inline banner (not a toast): a failed load must stay visible so
+      // the empty list below is never read as "no checkpoints yet".
       const msg = err instanceof Error ? err.message : String(err);
-      toast.error(strings.rightPanel.checkpoint.loadFailed, msg);
+      setLoadError(`${strings.rightPanel.checkpoint.loadFailed}: ${msg}`);
     } finally {
       setLoading(false);
     }
@@ -177,11 +181,13 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
           </div>
         )}
 
+        {loadError && <ErrorBanner message={loadError} onRetry={() => void load()} testId={`${testId}-error`} />}
+
         {loading && checkpoints.length === 0 ? (
           <div className="flex items-center justify-center gap-2 py-4 text-[11px] text-minimax-muted">
             <Spinner size={12} /> {strings.rightPanel.checkpoint.loading}
           </div>
-        ) : checkpoints.length === 0 ? (
+        ) : checkpoints.length === 0 && !loadError ? (
           <EmptyState
             title="暂无 Checkpoint"
             hint={strings.rightPanel.checkpoint.emptyHint}
@@ -254,9 +260,15 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                         <Spinner size={10} /> {strings.rightPanel.checkpoint.loadingDiff}
                       </div>
                     ) : (
-                      <pre className="max-h-40 overflow-auto rounded bg-minimax-bg p-2 font-mono text-[11px] text-minimax-fg">
-                        {diffs[ckpt.id] || strings.rightPanel.checkpoint.noDiff}
-                      </pre>
+                      <div
+                        className="max-h-40 overflow-auto rounded bg-minimax-bg p-2"
+                        data-testid={`${testId}-diff-body-${ckpt.id}`}
+                      >
+                        <DiffLines
+                          text={diffs[ckpt.id] ?? ""}
+                          emptyText={strings.rightPanel.checkpoint.noDiff}
+                        />
+                      </div>
                     )}
                   </div>
                 )}

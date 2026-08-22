@@ -2,9 +2,11 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNod
 import {
   ChatPanel,
   CommandPalette,
+  ConfirmationDialog,
   ConnectionBanner,
   CrashRecoveryPrompt,
   ErrorBoundary,
+  InspectorDrawer,
   MessageInput,
   PermissionRequestModal,
   RightPanel,
@@ -76,6 +78,7 @@ export default function App() {
   const [overlayView, setOverlayView] = useState<OverlayView | null>(null);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
   const [mobileModalOpen, setMobileModalOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [connState, setConnState] = useState<ConnectionState>(agentReady ? "connected" : "connecting");
@@ -243,6 +246,7 @@ export default function App() {
         <TopBar
           onOpenSettings={() => openSettings("models")}
           onToggleSidebar={() => setSidebarOpen((v) => !v)}
+          onToggleInspector={() => setInspectorOpen(true)}
           onTogglePreview={() => {
             setOverlayView(null);
             setView((v) => v === "preview" ? "chat" : "preview");
@@ -322,8 +326,12 @@ export default function App() {
           <div className="hidden lg:block">
             <RightPanel />
           </div>
+          <InspectorDrawer open={inspectorOpen} onClose={() => setInspectorOpen(false)}>
+            <RightPanel />
+          </InspectorDrawer>
           <ToastViewport />
           <PermissionRequestModal />
+          <ConfirmationDialog />
           <CrashRecoveryPrompt />
           {mobileModalOpen && (
             <Suspense fallback={null}>

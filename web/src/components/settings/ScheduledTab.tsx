@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
+  Pencil,
   Play,
   Plus,
   Trash2,
@@ -26,6 +27,7 @@ function ScheduledTab(): JSX.Element {
   const refresh = useScheduleStore((s) => s.refresh);
   const create = useScheduleStore((s) => s.create);
   const remove = useScheduleStore((s) => s.remove);
+  const update = useScheduleStore((s) => s.update);
   const setEnabled = useScheduleStore((s) => s.setEnabled);
   const runNow = useScheduleStore((s) => s.runNow);
   const loading = useScheduleStore((s) => s.loading);
@@ -127,6 +129,10 @@ function ScheduledTab(): JSX.Element {
               if (accepted) await remove(j.id);
             }}
             onRunNow={() => void runNow(j.id)}
+            onUpdate={async (name, cron, prompt) => {
+              const job = await update(j.id, { name, cron, prompt });
+              if (job) toast.success(strings.settings.scheduled.updatedToast, job.name);
+            }}
           />
         ))}
       </ul>
@@ -134,12 +140,31 @@ function ScheduledTab(): JSX.Element {
   );
 }
 
-function ScheduledJobRow({ job, onToggle, onDelete, onRunNow }: {
+function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate }: {
   job: ScheduledJob; onToggle: (enabled: boolean) => void;
   onDelete: () => void; onRunNow: () => void;
+  onUpdate: (name: string, cron: string, prompt: string) => Promise<void>;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState(job.name);
+  const [editCron, setEditCron] = useState(job.cron);
+  const [editPrompt, setEditPrompt] = useState(job.prompt);
   const tasks = useTaskStore((s) => s.tasks);
+
+  const startEditing = () => {
+    // Reset the draft to the current definition so reopening after a
+    // cancelled edit never shows stale edits.
+    setEditName(job.name);
+    setEditCron(job.cron);
+    setEditPrompt(job.prompt);
+    setEditing(true);
+  };
+
+  const handleSave = async () => {
+    await onUpdate(editName.trim(), editCron.trim(), editPrompt.trim());
+    setEditing(false);
+  };
 
   const relatedTasks = useMemo(() => {
     const allTasks = Object.values(tasks);
@@ -184,6 +209,13 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow }: {
           {job.enabled ? strings.settings.scheduled.enabled : strings.settings.scheduled.disabled}
         </label>
         <IconButton
+          data-testid={`settings-job-edit-${job.id}`}
+          onClick={editing ? () => setEditing(false) : startEditing}
+          aria-label={strings.settings.scheduled.edit}
+        >
+          <Pencil />
+        </IconButton>
+        <IconButton
           data-testid={`settings-job-run-now-${job.id}`}
           onClick={onRunNow}
           aria-label={strings.settings.scheduled.runNowAria}
@@ -198,6 +230,71 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow }: {
           <Trash2 />
         </IconButton>
       </div>
+      {editing && (
+        <div data-testid={`settings-job-edit-form-${job.id}`} className="border-t border-line px-3 py-2">
+          <p className="mb-2 text-[11px] font-medium text-ink-1">
+            {strings.settings.scheduled.editTitle}
+          </p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
+            <label htmlFor={`scheduled-job-edit-name-${job.id}`} className="sr-only">
+              {strings.settings.scheduled.fieldName}
+            </label>
+            <Input
+              id={`scheduled-job-edit-name-${job.id}`}
+              autoComplete="off"
+              data-testid="settings-job-edit-name"
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              placeholder={strings.settings.scheduled.placeholderName}
+              className="sm:col-span-3"
+            />
+            <label htmlFor={`scheduled-job-edit-cron-${job.id}`} className="sr-only">
+              {strings.settings.scheduled.fieldCron}
+            </label>
+            <Input
+              id={`scheduled-job-edit-cron-${job.id}`}
+              autoComplete="off"
+              spellCheck={false}
+              data-testid="settings-job-edit-cron"
+              value={editCron}
+              onChange={(e) => setEditCron(e.target.value)}
+              placeholder={strings.settings.scheduled.placeholderCron}
+              className="font-mono sm:col-span-3"
+            />
+            <label htmlFor={`scheduled-job-edit-prompt-${job.id}`} className="sr-only">
+              {strings.settings.scheduled.fieldPrompt}
+            </label>
+            <Input
+              id={`scheduled-job-edit-prompt-${job.id}`}
+              autoComplete="off"
+              data-testid="settings-job-edit-prompt"
+              value={editPrompt}
+              onChange={(e) => setEditPrompt(e.target.value)}
+              placeholder={strings.settings.scheduled.placeholderPrompt}
+              className="sm:col-span-4"
+            />
+            <div className="flex gap-1.5 sm:col-span-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                data-testid="settings-job-edit-cancel"
+                onClick={() => setEditing(false)}
+              >
+                {strings.settings.scheduled.cancel}
+              </Button>
+              <Button
+                size="sm"
+                variant="subtle"
+                data-testid="settings-job-edit-save"
+                disabled={!editName.trim() || !editCron.trim()}
+                onClick={() => void handleSave()}
+              >
+                {strings.settings.scheduled.save}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
       {expanded && (
         <div data-testid={`settings-job-tasks-${job.id}`} className="border-t border-line px-3 py-2">
           {relatedTasks.length === 0 ? (

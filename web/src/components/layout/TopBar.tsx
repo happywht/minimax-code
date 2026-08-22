@@ -2,7 +2,7 @@
  * TopBar — the 40px header strip across the top of the app.
  */
 import type { ReactNode } from "react";
-import { Command, Eye, Menu, Settings as SettingsIcon } from "lucide-react";
+import { Command, Eye, Menu, PanelRight, Settings as SettingsIcon } from "lucide-react";
 import { GitStatusBar } from "./GitStatusBar";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { ThemeToggle } from "./ThemeToggle";
@@ -23,6 +23,8 @@ export interface TopBarProps {
   previewActive?: boolean;
   /** Toggle the command palette. */
   onToggleCommandPalette?: () => void;
+  /** Open the inspector drawer. Ignored on lg+ screens (inline panel). */
+  onToggleInspector?: () => void;
 }
 
 export function TopBar({
@@ -33,6 +35,7 @@ export function TopBar({
   onTogglePreview,
   previewActive = false,
   onToggleCommandPalette,
+  onToggleInspector,
 }: TopBarProps): JSX.Element {
   return (
     <header
@@ -63,6 +66,18 @@ export function TopBar({
         className="flex shrink-0 items-center gap-1"
       >
         {rightSlot}
+        {onToggleInspector && (
+          <IconButton
+            aria-label={strings.layout.topbar.toggleInspector}
+            title={strings.layout.topbar.toggleInspector}
+            onClick={onToggleInspector}
+            data-testid="app-topbar-inspector"
+            // md–lg only: from lg up the inspector lives inline instead.
+            className="md:inline-flex lg:hidden"
+          >
+            <PanelRight size={14} />
+          </IconButton>
+        )}
         <IconButton
           aria-label={strings.layout.topbar.openCommandPalette}
           title={strings.layout.topbar.commandPaletteHint}

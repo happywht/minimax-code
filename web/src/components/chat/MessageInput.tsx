@@ -8,7 +8,7 @@
  * ``AttachmentRows``, ``MentionPickerDropdown`` and ``ComposerToolbar``.
  */
 import { Camera, Mic, MicOff, Paperclip, Send, Square } from "lucide-react";
-import { useChat } from "../../stores";
+import { useChat, useSessionStore } from "../../stores";
 import { Button, IconButton } from "../../ui";
 import type { AgentInfo, ContentPart } from "../../types/ipc";
 import { ACCEPTED_EXTS } from "./constants";
@@ -35,8 +35,9 @@ export function MessageInput({
   const status = useChat((s) => s.status);
   const send = useChat((s) => s.send);
   const cancel = useChat((s) => s.cancel);
+  const sessionId = useSessionStore((s) => s.currentSessionId);
 
-  const draft = useComposerDraft();
+  const draft = useComposerDraft(sessionId);
   const attachments = useAttachments(draft.ref, draft.setValue);
   const voice = useVoiceInput(draft.setValue);
   const mention = useMentionPicker({

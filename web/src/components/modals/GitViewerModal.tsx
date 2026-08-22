@@ -17,7 +17,7 @@ import { useCallback, useEffect, useState } from "react";
 import { FileText, GitCommit as CommitIcon } from "lucide-react";
 import { SkeletonTable } from "../layout/Skeleton";
 import { useGitStore } from "../../stores";
-import { Modal } from "../../ui";
+import { Modal, DiffLines } from "../../ui";
 import { strings } from "../../ui/strings";
 import type { GitLogEntry } from "../../types/ipc";
 
@@ -107,7 +107,7 @@ export function GitViewerModal({
 }
 
 // ---------------------------------------------------------------------------
-// Diff renderer — colour-coded unified diff lines
+// Diff renderer — delegated to the shared colour-coded DiffLines
 // ---------------------------------------------------------------------------
 
 function DiffContent({
@@ -117,39 +117,12 @@ function DiffContent({
   text: string | null;
   testId: string;
 }): JSX.Element {
-  if (!text) {
-    return (
-      <div className="px-1 py-6 text-center text-xs text-ink-2">
-        {strings.modals.gitViewer.noDiff}
-      </div>
-    );
-  }
-
-  const lines = text.split("\n");
-
   return (
-    <pre
-      data-testid={testId}
-      className="font-mono text-[11px] leading-relaxed"
-    >
-      {lines.map((line, i) => {
-        let cls = "text-ink-1";
-        if (line.startsWith("+++") || line.startsWith("---")) {
-          cls = "font-semibold text-accent";
-        } else if (line.startsWith("@@")) {
-          cls = "text-status-info";
-        } else if (line.startsWith("+")) {
-          cls = "bg-[var(--status-success-subtle)] text-status-success";
-        } else if (line.startsWith("-")) {
-          cls = "bg-[var(--status-error-subtle)] text-status-error";
-        }
-        return (
-          <div key={i} className={"px-1 " + cls}>
-            {line}
-          </div>
-        );
-      })}
-    </pre>
+    <DiffLines
+      text={text ?? ""}
+      testId={testId}
+      emptyText={strings.modals.gitViewer.noDiff}
+    />
   );
 }
 

@@ -161,4 +161,75 @@ describe("McpServersTab", () => {
       expect(updateMcpServer).toHaveBeenCalledWith("tools", { tool_states: { read_file: false } });
     });
   });
+
+  it("edits an existing server: prefills, submits via updateMcpServer, cancels", async () => {
+    const user = userEvent.setup();
+    listMcpServers.mockResolvedValue({
+      servers: [
+        makeServer({
+          id: "fs",
+          name: "Filesystem",
+          command: ["npx", "@modelcontextprotocol/server-filesystem", "/tmp"],
+          env: { NODE_PATH: "/usr/local" },
+          oauth_scopes: ["read", "write"],
+          oauth_callback_port: 8765,
+        }),
+      ],
+    });
+    updateMcpServer.mockResolvedValue({
+      server: makeServer({ id: "fs", name: "Filesystem", command: ["echo"] }),
+    });
+    listMcpTools.mockResolvedValue({ server_name: "Filesystem", tools: [] });
+
+    render(<McpServersTab />);
+    await waitForLoading();
+
+    // Open the inline edit form — inputs are prefilled from the server row.
+    await user.click(screen.getByTestId("settings-mcp-edit-fs"));
+    expect(screen.getByTestId("settings-mcp-edit-form-fs")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-mcp-edit-name")).toHaveValue("Filesystem");
+    expect(screen.getByTestId("settings-mcp-edit-command")).toHaveValue(
+      "npx @modelcontextprotocol/server-filesystem /tmp",
+    );
+    expect(screen.getByTestId("settings-mcp-edit-env")).toHaveValue('{"NODE_PATH":"/usr/local"}');
+    expect(screen.getByTestId("settings-mcp-edit-oauth-scopes")).toHaveValue("read, write");
+    expect(screen.getByTestId("settings-mcp-edit-oauth-port")).toHaveValue(8765);
+
+    // Change the command and save.
+    await user.clear(screen.getByTestId("settings-mcp-edit-command"));
+    await user.type(screen.getByTestId("settings-mcp-edit-command"), "node server.js");
+    await user.click(screen.getByRole("button", { name: /编辑配置/ }));
+
+    await waitFor(() => {
+      expect(updateMcpServer).toHaveBeenCalledWith(
+        "fs",
+        expect.objectContaining({
+          name: "Filesystem",
+          transport: "stdio",
+          command: ["node", "server.js"],
+          env: { NODE_PATH: "/usr/local" },
+          oauth_scopes: ["read", "write"],
+          oauth_callback_port: 8765,
+        }),
+      );
+    });
+    // The inline form closes after a successful save.
+    await waitFor(() => {
+      expect(screen.queryByTestId("settings-mcp-edit-form-fs")).not.toBeInTheDocument();
+    });
+  });
+
+  it("edit cancel closes the form without calling updateMcpServer", async () => {
+    const user = userEvent.setup();
+    listMcpServers.mockResolvedValue({ servers: [makeServer({ id: "fs", name: "Filesystem" })] });
+
+    render(<McpServersTab />);
+    await waitForLoading();
+
+    await user.click(screen.getByTestId("settings-mcp-edit-fs"));
+    await user.click(screen.getByTestId("settings-mcp-edit-cancel"));
+
+    expect(screen.queryByTestId("settings-mcp-edit-form-fs")).not.toBeInTheDocument();
+    expect(updateMcpServer).not.toHaveBeenCalled();
+  });
 });
