@@ -42,6 +42,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from ..compaction import IntraCompactionConfig, IntraCompactionMode, should_compact
 from ..hooks import HookManager
 from ..lifecycle import (
     ExtensionRegistry,
@@ -235,7 +236,7 @@ class AgentConfig:
     # Compaction: when the conversation history exceeds this fraction
     # of the context window, older turns are summarised.  None disables
     # compaction (default).  Typical value: 0.8.
-    compaction_threshold: float | None = None
+    compaction_threshold: float | None = 0.8
     # Context window size (tokens) for the current model.  Used by
     # compaction to decide when to summarise.  None = unknown / disabled.
     context_window: int | None = None
@@ -246,6 +247,20 @@ class AgentConfig:
     llm_retry_policy: RetryPolicy | None = None
     llm_breaker_config: BreakerConfig | None = None
     tool_breaker_config: BreakerConfig | None = None
+    # v1.1.0: auto-continue — when a turn ends budget-truncated, the
+    # send-message pipeline automatically feeds the fixed continuation
+    # prompt back and starts the next block, until the model produces a
+    # final answer, the user cancels, or the block cap below is hit.
+    # False (the default) keeps the manual "continue" affordance as the
+    # only resume path. The core itself never reads this knob — the
+    # loop lives in the IPC layer (builtins) so a block boundary stays
+    # a real ``run()`` return for hooks / persistence / streaming.
+    auto_continue: bool = False
+    # Hard cap on blocks per send-message when auto-continue is on
+    # (block 1 + N auto-continuations). Guards against a model that
+    # converges never; the trailing truncated block still surfaces the
+    # manual continue button as the escape hatch.
+    auto_continue_max_blocks: int = 5
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +279,10 @@ class AgentRunResult:
     usage: dict[str, int] = field(default_factory=dict)
     cancelled: bool = False
     truncated: bool = False  # hit max_iterations
+    # v1.1.0: how many intra-loop compactions ran this turn (0 when the
+    # turn never crossed the threshold). Surfaces in final metadata so
+    # the UI / telemetry can show "compacted N×" per message.
+    compactions: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +554,21 @@ class AgentCore:
         truncated = False
         final_text = ""
         final_message: Message | None = None
+        # v1.1.0 — intra-loop compaction state. ``last_prompt_tokens`` is
+        # the previous iteration's *real* usage from the LLM response
+        # (``None`` before the first call — the pre-turn gate above already
+        # handled pre-existing history). ``compactions`` counts how many
+        # times the in-flight message list was actually shrunk this turn.
+        # The policy mirrors the AgentConfig knobs: HISTORY_ONLY mode (the
+        # only mode compact_history can execute) and the configured
+        # threshold expressed as a percent of the context window.
+        last_prompt_tokens: int | None = None
+        compactions = 0
+        compaction_policy = IntraCompactionConfig(
+            enabled=True,
+            mode=IntraCompactionMode.HISTORY_ONLY,
+            trigger_threshold_percent=int((self.config.compaction_threshold or 0.8) * 100),
+        )
 
         # R14 — root span wraps the whole turn so every LLM span
         # (``_call_llm_with_resilience``) and every tool span
@@ -556,10 +590,81 @@ class AgentCore:
                     cancelled = True
                     break
 
+                # v1.1.0 — per-iteration lifecycle hook (notification,
+                # fail-open). Observers can watch long-running turns at
+                # iteration granularity without per-tool noise.
+                if self.hooks is not None:
+                    try:
+                        await self.hooks.fire_pre_loop_iteration(
+                            self._current_session_id, iteration
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "pre_loop_iteration hooks raised (iter %d)", iteration, exc_info=True,
+                        )
+
                 await self._emit_status("thinking", {"iteration": iterations})
 
+                # v1.1.0 — intra-loop compaction: check the previous
+                # iteration's real token usage against the context window
+                # before the next LLM call. Decision via should_compact
+                # (the top-level compaction package's trigger — honours
+                # enabled / window / min-steps / threshold gating);
+                # execution via compact_history (turn-boundary summarising
+                # with keep_recent=4). ``len(compacted) < len(messages)``
+                # guards against compact_history's no-op path (all turns
+                # recent → returns the list unchanged) so ``compactions``
+                # never over-counts.
+                if (
+                    last_prompt_tokens is not None
+                    and self.config.context_window
+                    and should_compact(
+                        compaction_policy,
+                        last_prompt_tokens,
+                        self.config.context_window,
+                        iteration,
+                    )
+                ):
+                    from .compaction import compact_history
+
+                    target = int(self.config.context_window * 0.5)
+                    compacted = compact_history(
+                        messages, max_tokens=target, keep_recent=4
+                    )
+                    if len(compacted) < len(messages):
+                        logger.info(
+                            "intra-loop compaction: %d → %d messages "
+                            "(usage %d > %d%% of window %d)",
+                            len(messages),
+                            len(compacted),
+                            last_prompt_tokens,
+                            compaction_policy.trigger_threshold_percent,
+                            self.config.context_window,
+                        )
+                        messages = compacted
+                        compactions += 1
+
+                # v1.1.0 — convergence nudge: when the iteration budget is
+                # nearly spent, prepend nothing and *append* one ephemeral
+                # user note telling the model to wrap up. The note is never
+                # merged into ``messages`` (nor persisted) — it shapes only
+                # the LLM call it was built for, so the conversation history
+                # and the DB stay clean. ``remaining`` counts iterations
+                # after this one; 0 means this is the final chance to answer.
+                llm_messages = messages
+                remaining = self.config.max_iterations - iteration - 1
+                if remaining <= 2:
+                    nudge = (
+                        "[system note] The iteration budget is almost exhausted: "
+                        f"{remaining} iteration(s) will remain after this one. "
+                        "Finish your current step and produce a final answer "
+                        "now — do not start new work or call more tools unless "
+                        "strictly necessary to conclude."
+                    )
+                    llm_messages = messages + [{"role": "user", "content": nudge}]
+
                 try:
-                    response = await self._call_llm_with_resilience(messages)
+                    response = await self._call_llm_with_resilience(llm_messages)
                 except LLMError as exc:
                     await self._emit_status(
                         "error",
@@ -571,6 +676,12 @@ class AgentCore:
 
                 _accumulate_usage(usage_total, response.usage)
                 await self._maybe_emit_usage(response.usage)
+                # v1.1.0: real prompt-side usage feeds the next iteration's
+                # compaction check (``or None`` keeps 0/absent as "unknown",
+                # which skips the check rather than firing it spuriously).
+                last_prompt_tokens = (
+                    int(response.usage.get("prompt_tokens") or 0) or None
+                )
 
                 # Persist the assistant message that came out of this
                 # LLM call (may contain tool_calls).
@@ -622,13 +733,30 @@ class AgentCore:
                     inj_msg = {"role": "user", "content": inj.text}
                     messages.append(inj_msg)
                     await self._maybe_persist(session_id, inj_msg)
+                # v1.1.0 — per-iteration lifecycle hook: this iteration's
+                # tool batch is done and the loop is about to continue.
+                # The final-answer break path skips this — session_end /
+                # turn_done cover the terminal iteration.
+                if self.hooks is not None:
+                    try:
+                        await self.hooks.fire_post_loop_iteration(
+                            self._current_session_id, iteration
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "post_loop_iteration hooks raised (iter %d)", iteration,
+                            exc_info=True,
+                        )
                 # Loop back to call the LLM with the tool messages.
             else:
                 # Loop exhausted without a final answer.
                 truncated = True
                 await self._emit_status("max_iterations", {"iterations": self.config.max_iterations})
                 # R25 — turn-abort lifecycle hook (iteration limit hit).
-                await self._fire_turn_abort(reason=TurnAbortReason.INTERRUPTED)
+                # v1.1.0: dedicated reason — must not share INTERRUPTED
+                # with the user-cancel path below, or lifecycle observers
+                # cannot distinguish "budget exhausted" from "stop button".
+                await self._fire_turn_abort(reason=TurnAbortReason.MAX_ITERATIONS)
                 final_text = (
                     f"I stopped after reaching the {self.config.max_iterations}-iteration limit "
                     "before producing a final answer."
@@ -641,6 +769,11 @@ class AgentCore:
                         "tokens_in": int(usage_total.get("prompt_tokens", 0) or 0),
                         "tokens_out": int(usage_total.get("completion_tokens", 0) or 0),
                         "truncated": True,
+                        # v1.1.0: how many times the turn compacted before
+                        # the budget ran out (0 when it never crossed the
+                        # threshold — still emitted so the UI can tell
+                        # "compacted N×" from "feature absent").
+                        "compactions": compactions,
                     },
                 }
                 messages.append(final_message)
@@ -663,6 +796,7 @@ class AgentCore:
             usage=usage_total,
             cancelled=cancelled,
             truncated=truncated,
+            compactions=compactions,
         )
 
     # -- streaming + tool dispatch -----------------------------------------

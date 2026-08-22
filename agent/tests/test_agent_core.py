@@ -542,6 +542,203 @@ async def test_loop_truncates_at_max_iterations() -> None:
     assert persisted[-1]["content"] == result.final_text
 
 
+class LongResultTool(Tool):
+    """Echo tool whose result payload is long enough (~400 estimated
+    tokens) that a few tool turns push the in-flight message list over
+    the compaction budget — the intra-loop tests need real bulk."""
+
+    name = "echo"
+    description = "echoes a long payload back"
+    parameters = {
+        "type": "object",
+        "properties": {"text": {"type": "string"}},
+        "required": ["text"],
+    }
+
+    async def run(self, **kwargs: Any) -> ToolResult:
+        return ToolResult.ok(output={"echoed": "x" * 1600})
+
+
+def _tool_response_with_usage(
+    call: dict[str, Any], prompt_tokens: int
+) -> list[StreamChunk]:
+    """Tool-call chunk list whose usage reports a chosen prompt size."""
+    return [
+        StreamChunk(delta="working…"),
+        StreamChunk(
+            tool_call_deltas=[call],
+            finish_reason="tool_calls",
+            usage={
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": 4,
+                "total_tokens": prompt_tokens + 4,
+            },
+        ),
+    ]
+
+
+def _compaction_history() -> list[dict[str, Any]]:
+    """8 old user/assistant turns (~320 estimated tokens — under the
+    500-token pre-turn threshold, so only the intra-loop path can act)."""
+    hist: list[dict[str, Any]] = []
+    for i in range(8):
+        hist.append({"role": "user", "content": f"history question {i} " + "h" * 60})
+        hist.append({"role": "assistant", "content": f"history answer {i} " + "a" * 60})
+    return hist
+
+
+@pytest.mark.asyncio
+async def test_loop_compacts_history_intra_loop() -> None:
+    """v1.1.0 intra-loop compaction: when the previous iteration's real
+    prompt usage crosses the threshold, the in-flight message list is
+    compacted before the next LLM call — and the loop itself is not
+    interrupted (the turn still reaches a final answer).
+
+    Setup: window=1000 / threshold=0.5 ⇒ decision threshold 500. The
+    seeded history estimates ~320 tokens (pre-turn gate stays closed),
+    each tool result adds ~400, and the LLM reports prompt_tokens=800 —
+    over the threshold from iteration 3 on (min_steps_before_compact=3
+    holds iterations 0-2 back).
+    """
+    async def load_history(_sid: str) -> list[dict[str, Any]]:
+        return _compaction_history()
+
+    responses = [
+        _tool_response_with_usage(_tool_call("echo", {"text": f"i{i}"}, call_id=f"c{i}"), 800)
+        for i in range(4)
+    ] + [_text_response("Done after compaction.")]
+    fake = FakeLLM(responses)
+
+    core = AgentCore(
+        llm=fake,
+        registry=_fresh_registry(LongResultTool()),
+        config=AgentConfig(
+            max_iterations=8,
+            context_window=1000,
+            compaction_threshold=0.5,
+        ),
+        history_provider=load_history,
+    )
+    result = await core.run(session_id="s_compact", user_message="loop with bulk")
+    assert result.compactions >= 1
+    assert result.truncated is False
+    assert result.final_text == "Done after compaction."
+    # The 4th LLM call (iteration 3) saw fewer messages than the 3rd —
+    # without compaction each tool turn grows the list by 2.
+    assert len(fake.messages[3]) < len(fake.messages[2])
+    # The injected summary line sits right after the system prompt.
+    assert fake.messages[3][1]["role"] == "user"
+    assert fake.messages[3][1]["content"].startswith("[Conversation summary (compacted)]")
+
+
+@pytest.mark.asyncio
+async def test_loop_no_compaction_below_threshold() -> None:
+    """Real usage under the threshold ⇒ the list grows normally and
+    compactions stays 0."""
+    async def load_history(_sid: str) -> list[dict[str, Any]]:
+        return _compaction_history()
+
+    responses = [
+        _tool_response_with_usage(_tool_call("echo", {"text": f"i{i}"}, call_id=f"c{i}"), 100)
+        for i in range(4)
+    ] + [_text_response("Done without compaction.")]
+    fake = FakeLLM(responses)
+
+    core = AgentCore(
+        llm=fake,
+        registry=_fresh_registry(LongResultTool()),
+        config=AgentConfig(
+            # 8 iterations: iteration 4 (the final answer) still has 3
+            # remaining, so the convergence nudge never fires here and
+            # this test stays purely about the compaction gate.
+            max_iterations=8,
+            context_window=1000,
+            compaction_threshold=0.5,
+        ),
+        history_provider=load_history,
+    )
+    result = await core.run(session_id="s_nocompact", user_message="loop small usage")
+    assert result.compactions == 0
+    # Normal growth: one assistant + one tool message per iteration.
+    assert len(fake.messages[3]) == len(fake.messages[2]) + 2
+
+
+@pytest.mark.asyncio
+async def test_loop_no_compaction_without_context_window() -> None:
+    """No context window configured (the pre-v1.1.0 default) ⇒ the
+    gate stays closed no matter how large the reported usage is."""
+    async def load_history(_sid: str) -> list[dict[str, Any]]:
+        return _compaction_history()
+
+    responses = [
+        _tool_response_with_usage(_tool_call("echo", {"text": f"i{i}"}, call_id=f"c{i}"), 999_999)
+        for i in range(4)
+    ] + [_text_response("Done, gate closed.")]
+    fake = FakeLLM(responses)
+
+    core = AgentCore(
+        llm=fake,
+        registry=_fresh_registry(LongResultTool()),
+        config=AgentConfig(
+            max_iterations=8,
+            compaction_threshold=0.8,  # window is None → gate closed
+        ),
+        history_provider=load_history,
+    )
+    result = await core.run(session_id="s_nowindow", user_message="loop no window")
+    assert result.compactions == 0
+    assert len(fake.messages[3]) == len(fake.messages[2]) + 2
+
+
+@pytest.mark.asyncio
+async def test_loop_injects_convergence_nudge_near_budget() -> None:
+    """v1.1.0 convergence nudge: with ≤2 iterations remaining after the
+    current one, an ephemeral user note is appended to the LLM payload
+    telling the model to wrap up. The note must (a) appear in time,
+    (b) never leak into the in-flight ``messages`` growth, and
+    (c) never be persisted."""
+    responses = [
+        _tool_response(_tool_call("echo", {"text": f"i{i}"}, call_id=f"c{i}"))
+        for i in range(3)
+    ] + [_text_response("Final answer, wrapped up.")]
+    fake = FakeLLM(responses)
+    persisted: list[dict[str, Any]] = []
+
+    async def persist(_session_id: str, message: dict[str, Any]) -> None:
+        persisted.append(message)
+
+    core = AgentCore(
+        llm=fake,
+        registry=_fresh_registry(CountingTool()),
+        config=AgentConfig(max_iterations=4),
+        persist_message=persist,
+    )
+    result = await core.run(session_id="s_nudge", user_message="run to the budget")
+    assert result.final_text == "Final answer, wrapped up."
+    assert result.truncated is False
+
+    # (a) Iteration 0 had 3 iterations remaining → no nudge; iteration 1
+    # had 2 → nudge appended as the last message of the payload.
+    assert "iteration budget" not in str(fake.messages[0][-1])
+    last = fake.messages[1][-1]
+    assert last["role"] == "user"
+    assert "iteration budget is almost exhausted" in last["content"]
+    assert "2 iteration(s)" in last["content"]
+    # The nudge rides on top of the real history — the message right
+    # before it is the tool result from iteration 0.
+    assert fake.messages[1][-2]["role"] == "tool"
+
+    # (b) The nudge is ephemeral: iteration 2's payload still starts with
+    # the real history (no nudge accumulated from the previous call).
+    assert "iteration budget" not in str(fake.messages[2][0])
+    assert sum(
+        "iteration budget" in str(m) for m in fake.messages[2]
+    ) == 1  # only its own nudge
+
+    # (c) Nothing nudge-flavoured was persisted.
+    assert not any("[system note]" in str(m) for m in persisted)
+
+
 @pytest.mark.asyncio
 async def test_stream_stall_is_retryable_failure_not_completed_message() -> None:
     """A stalled LLM stream must fail the run instead of looking complete."""

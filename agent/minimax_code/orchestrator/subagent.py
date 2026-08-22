@@ -214,6 +214,7 @@ class SubAgentRuntime:
         # orchestrator module to import.
         from ..agent.core import AgentConfig, AgentCore
         from ..agent.tools import get_default_registry
+        from ..models import context_window_for
         from .resolution import FilteredToolRegistry, resolve_subagent_spec
 
         # R22: resolve the effective model + capability surface in one
@@ -247,6 +248,9 @@ class SubAgentRuntime:
             system_prompt_extra=config.system_prompt or None,
             max_iterations=config.max_iterations,
             reasoning_effort=self._reasoning_effort,
+            # v1.1.0: real context window so the compaction gate opens for
+            # sub-agents too (long tool loops blow the window fastest).
+            context_window=context_window_for(spec.model),
         )
         core = AgentCore(
             llm=self._llm, registry=effective_registry, config=core_config

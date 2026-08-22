@@ -46,14 +46,18 @@ __all__ = [
 class TurnAbortReason(StrEnum):
     """Why a turn ended without producing a final answer.
 
-    Mirrors grok's two-variant enum. MiniMax never raises a transport
-    disconnect inside a turn today, so every abort path lands on
-    ``INTERRUPTED``; ``DISCONNECTED`` is kept for parity so a future
-    remote-agent transport can distinguish the two.
+    Mirrors grok's two-variant enum, plus ``MAX_ITERATIONS`` for the
+    iteration-budget exhaustion path (v1.1.0). MiniMax never raises a
+    transport disconnect inside a turn today; ``DISCONNECTED`` is kept
+    for parity so a future remote-agent transport can distinguish it.
+    ``MAX_ITERATIONS`` separates budget truncation from user cancel —
+    both previously funnelled into ``INTERRUPTED``, leaving downstream
+    observers unable to tell a capped loop from a stop button.
     """
 
     DISCONNECTED = "disconnected"
     INTERRUPTED = "interrupted"
+    MAX_ITERATIONS = "max_iterations"
 
 
 # -- turn lifecycle ---------------------------------------------------------

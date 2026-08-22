@@ -21,12 +21,20 @@ class _Base(BaseModel):
 
 
 class HookEvent(StrEnum):
-    """The four lifecycle events a hook can subscribe to."""
+    """Lifecycle events a hook can subscribe to.
+
+    The v1.1.0 loop-iteration pair (``pre/post_loop_iteration``) fires
+    once per agent-loop iteration — before the LLM call and after the
+    tool batch — so observers can watch long-running turns without
+    per-tool granularity.
+    """
 
     SESSION_START = "session_start"
     PRE_TOOL_USE = "pre_tool_use"
     POST_TOOL_USE = "post_tool_use"
     SESSION_END = "session_end"
+    PRE_LOOP_ITERATION = "pre_loop_iteration"
+    POST_LOOP_ITERATION = "post_loop_iteration"
 
 
 # Events that carry a tool_name and therefore honour a matcher.

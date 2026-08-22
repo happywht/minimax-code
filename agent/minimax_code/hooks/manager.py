@@ -77,6 +77,35 @@ class HookManager:
 
     # -- tool lifecycle -----------------------------------------------------
 
+    async def fire_pre_loop_iteration(
+        self, session_id: str, iteration: int, **extra: Any
+    ) -> list[HookExecutionResult]:
+        """Notification before the LLM call of agent-loop iteration N.
+
+        Payload carries ``iteration`` (0-based). Purely observational —
+        the loop never consults a decision here.
+        """
+        return await self._fire(
+            HookEvent.PRE_LOOP_ITERATION,
+            session_id,
+            extra={"iteration": iteration, **extra},
+        )
+
+    async def fire_post_loop_iteration(
+        self, session_id: str, iteration: int, **extra: Any
+    ) -> list[HookExecutionResult]:
+        """Notification after iteration N's tool batch completed.
+
+        Fires only on the continue-loop path (a final-answer iteration
+        is followed by session_end instead, so no redundant trailing
+        post event exists).
+        """
+        return await self._fire(
+            HookEvent.POST_LOOP_ITERATION,
+            session_id,
+            extra={"iteration": iteration, **extra},
+        )
+
     async def fire_pre_tool_use(
         self,
         session_id: str,

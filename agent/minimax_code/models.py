@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import functools
 import json
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -189,10 +190,56 @@ def default_model_ids() -> tuple[str, ...]:
     return tuple(entry.model for entry in _load_defaults().models)
 
 
+@functools.lru_cache(maxsize=1)
+def _load_raw_model_entries() -> tuple[dict[str, Any], ...]:
+    """Raw per-model dicts from :data:`DEFAULT_MODELS_JSON`, in order.
+
+    :class:`DefaultModels` drops display metadata (``context_window``,
+    ``temperature``, …) by design — this helper keeps the raw dicts so
+    lookups like :func:`context_window_for` can read those fields without
+    re-modelling them onto the pydantic types.
+    """
+    return tuple(json.loads(DEFAULT_MODELS_JSON).get("models") or ())
+
+
+def context_window_for(model_id: str | None) -> int | None:
+    """Context window (tokens) for a model in the default catalog.
+
+    v1.1.0: feeds ``AgentConfig.context_window`` so the agent loop's
+    compaction gate has real numbers instead of the previous always-None
+    (the gate could never open). Falls back to the catalog's ``default``
+    entry when ``model_id`` is unknown/blank, and to ``None`` only when
+    the catalog itself is unusable — a ``None`` return keeps every
+    downstream gate safely closed.
+    """
+    entries = _load_raw_model_entries()
+    if not entries:
+        return None
+    wanted = (model_id or "").strip()
+    if not wanted:
+        wanted = default_model()
+
+    def _window_of(entry: dict[str, Any]) -> int | None:
+        window = entry.get("context_window")
+        return int(window) if isinstance(window, int) and window > 0 else None
+
+    for entry in entries:
+        if entry.get("model") == wanted or entry.get("name") == wanted:
+            return _window_of(entry)
+    # Unknown id (e.g. a provider-side custom model): fall back to the
+    # catalog's default entry so the compaction gate stays usable.
+    default_id = default_model()
+    for entry in entries:
+        if entry.get("model") == default_id or entry.get("name") == default_id:
+            return _window_of(entry)
+    return None
+
+
 __all__ = [
     "DEFAULT_MODELS_JSON",
     "DefaultModelEntry",
     "DefaultModels",
+    "context_window_for",
     "default_image_description_model",
     "default_model",
     "default_model_ids",

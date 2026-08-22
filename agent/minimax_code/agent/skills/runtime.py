@@ -352,13 +352,16 @@ def _build_agent_core(
     pull the whole agent package at import time (which would
     create a cycle on cold start).
     """
-    from ...models import default_model  # R49: lazy, single source for default model
+    from ...models import context_window_for, default_model  # R49: lazy, single source
     from ..core import AgentConfig, AgentCore  # lazy: avoids circular import
 
+    resolved_model = model or default_model()
     config = AgentConfig(
-        model=model or default_model(),
+        model=resolved_model,
         max_iterations=int(max_iterations) if max_iterations else 8,
         skill_instructions=skill.instructions,
+        # v1.1.0: real context window so the compaction gate opens here too.
+        context_window=context_window_for(resolved_model),
     )
     return AgentCore(
         llm=llm,

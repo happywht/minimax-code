@@ -380,7 +380,9 @@ async def test_run_dispatches_abort_on_max_iterations() -> None:
 
     assert result.truncated is True
     assert result.cancelled is False
-    assert rec.events == [("start", False), ("abort", "interrupted")]
+    # v1.1.0: budget exhaustion carries its own reason — distinct from the
+    # user-cancel abort, which stays INTERRUPTED (see test below).
+    assert rec.events == [("start", False), ("abort", "max_iterations")]
     assert not any(e[0] in ("done", "error") for e in rec.events)
 
 

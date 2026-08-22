@@ -113,6 +113,38 @@ async def test_session_start_and_end_fire() -> None:
     assert start[0].ok and end[0].ok
 
 
+# ---------------------------------------------------------------------------
+# v1.1.0 — loop-iteration lifecycle
+# ---------------------------------------------------------------------------
+
+
+async def test_loop_iteration_events_fire_with_iteration_payload() -> None:
+    """pre/post_loop_iteration hooks receive the 0-based iteration on
+    stdin and run like any other notification hook."""
+    # Echo the iteration field back on stdout so the assertion proves
+    # the payload reached the hook process.
+    echo = _py("import json,sys; print(json.load(sys.stdin)['iteration'])")
+    mgr = HookManager()
+    mgr.load_hooks(
+        {
+            "pre_loop_iteration": [{"command": echo}],
+            "post_loop_iteration": [{"command": echo}],
+        }
+    )
+    pre = await mgr.fire_pre_loop_iteration("s1", 3)
+    post = await mgr.fire_post_loop_iteration("s1", 3)
+    assert len(pre) == 1 and len(post) == 1
+    assert pre[0].ok and post[0].ok
+    assert pre[0].stdout.strip() == "3"
+    assert post[0].stdout.strip() == "3"
+
+
+async def test_loop_iteration_events_without_hooks_are_noops() -> None:
+    mgr = HookManager()
+    assert await mgr.fire_pre_loop_iteration("s1", 0) == []
+    assert await mgr.fire_post_loop_iteration("s1", 0) == []
+
+
 async def test_crashing_hook_is_fail_open_in_manager() -> None:
     # A hook whose decision JSON is unparseable should not block.
     mgr = HookManager()

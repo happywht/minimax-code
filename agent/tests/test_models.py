@@ -213,6 +213,41 @@ def test_default_model_ids_first_element_is_default():
     assert ids[0] == M.default_model()
 
 
+# --- context window lookup (v1.1.0) -----------------------------------------
+
+
+def test_context_window_for_known_models():
+    """v1.1.0: every catalog model resolves to its baked-in window."""
+    assert M.context_window_for("MiniMax-M3") == 200_000
+    assert M.context_window_for("MiniMax-M3-fast") == 128_000
+    assert M.context_window_for("MiniMax-Code") == 1_000_000
+
+
+def test_context_window_for_blank_falls_back_to_default_model():
+    """Blank/None resolves the default model's window — the caller passes
+    ``getattr(llm, "default_model", None)`` which is never blank in
+    practice, but the fallback keeps the lookup total."""
+    assert M.context_window_for(None) == M.context_window_for(M.default_model())
+    assert M.context_window_for("") == M.context_window_for(M.default_model())
+    assert M.context_window_for("   ") == M.context_window_for(M.default_model())
+
+
+def test_context_window_for_unknown_model_falls_back_to_default(monkeypatch):
+    """An unknown id resolves the default entry (same fallback philosophy
+    as the scenario accessors), so a provider-side custom model id never
+    silently closes the compaction gate."""
+    assert M.context_window_for("some-custom-model") == M.context_window_for(
+        M.default_model()
+    )
+
+
+def test_context_window_for_empty_catalog_returns_none(monkeypatch):
+    """A degenerate catalog (no models list) returns None — the sentinel
+    that keeps every downstream compaction gate safely closed."""
+    monkeypatch.setattr(M, "_load_raw_model_entries", lambda: ())
+    assert M.context_window_for("MiniMax-M3") is None
+
+
 def test_candidate_models_derived_from_vocabulary():
     """R48 wiring: handlers' ``CANDIDATE_MODELS`` is the vocabulary tuple.
 
