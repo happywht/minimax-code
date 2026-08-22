@@ -105,6 +105,11 @@ export function useCommandPalette({
       { tab: "permissions", label: "设置：权限", keywords: "settings permissions" },
       { tab: "webhooks", label: "设置：Webhooks", keywords: "settings webhooks" },
       { tab: "workflows", label: "设置：工作流", keywords: "settings workflows" },
+      { tab: "mcp-servers", label: "设置：MCP 服务器", keywords: "settings mcp servers tools" },
+      { tab: "memory", label: "设置：长期记忆", keywords: "settings memory long-term" },
+      { tab: "plugins", label: "设置：插件", keywords: "settings plugins" },
+      { tab: "worktrees", label: "设置：工作区", keywords: "settings worktrees git worktree" },
+      { tab: "data", label: "设置：数据", keywords: "settings data export import backup" },
       { tab: "audit", label: "设置：审计", keywords: "settings audit" },
       { tab: "api-key", label: "设置：API 密钥", keywords: "settings api keys" },
     ];

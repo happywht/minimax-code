@@ -111,6 +111,7 @@ export function Sidebar({
   const [remoteSearchSessions, setRemoteSearchSessions] = useState<SessionMeta[] | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const [stats, setStats] = useState<{ total_sessions: number; total_messages: number } | null>(null);
+  const [statsError, setStatsError] = useState(false);
   // Primitive selectors only — streaming chunks mutate messages in place,
   // so we key off the count and the run status instead of the array ref.
   const chatMessageCount = useChat((s) => s.messages.length);
@@ -136,9 +137,14 @@ export function Sidebar({
     void (async () => {
       try {
         const result = await typedIPC.sessionStats();
-        if (!cancelled) setStats(result);
+        if (!cancelled) {
+          setStats(result);
+          setStatsError(false);
+        }
       } catch {
-        // Footer stats are non-critical.
+        // Footer stats are non-critical, but a silent missing footer
+        // reads as "zero sessions" — show the inline fallback row.
+        if (!cancelled) setStatsError(true);
       }
     })();
     return () => {
@@ -757,6 +763,15 @@ export function Sidebar({
           <div className="flex items-center justify-between border-b border-line px-3 py-1.5 text-[11px] text-ink-2">
             <span data-testid="sidebar-stats-sessions">{stats.total_sessions} 会话</span>
             <span data-testid="sidebar-stats-messages">{stats.total_messages} 消息</span>
+          </div>
+        )}
+        {stats == null && statsError && (
+          <div
+            role="status"
+            data-testid="sidebar-stats-error"
+            className="border-b border-line px-3 py-1.5 text-[11px] text-status-error"
+          >
+            {strings.layout.sidebar.statsUnavailable}
           </div>
         )}
         <div className="border-t border-line p-2">

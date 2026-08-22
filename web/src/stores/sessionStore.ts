@@ -28,6 +28,22 @@ const EXPANDED_PROJECTS_STORAGE_KEY = "minimax-code:expanded-projects";
 let createSessionInFlight: Promise<string> | null = null;
 let refreshSeq = 0;
 
+/**
+ * List hygiene: drop background subagent sessions (title "subagent:*",
+ * created by handlers_agents for @-mentions and team runs) and strip the
+ * "chat:*" bootstrap prefix the send_message handler leaves on pre-created
+ * sessions. Both would otherwise surface in the sidebar task list.
+ */
+export function sanitizeSessions(list: SessionMeta[]): SessionMeta[] {
+  return list
+    .filter((s) => !s.title.startsWith("subagent:"))
+    .map((s) =>
+      s.title.startsWith("chat:")
+        ? { ...s, title: s.title.slice("chat:".length).trim() || DEFAULT_SESSION_TITLE }
+        : s,
+    );
+}
+
 function readStoredSessionId(): string | null {
   try {
     return window.localStorage.getItem(CURRENT_SESSION_STORAGE_KEY);
@@ -145,9 +161,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return;
       }
       const currentId = get().currentSessionId;
+      // Existence is checked against the raw list: a subagent session can
+      // legitimately stay "current" (its messages still load) even though
+      // the sidebar list filters it out.
       const currentExists = !!currentId && sessionsResult.sessions.some((session) => session.id === currentId);
       set({
-        sessions: sessionsResult.sessions,
+        sessions: sanitizeSessions(sessionsResult.sessions),
         projects: projectsResult.projects,
         currentSessionId: currentExists ? currentId : null,
         loading: false,
@@ -162,7 +181,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (err) {
       set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to load sessions", message);
+      toast.error(strings.toasts.sessionsLoadFailed, message);
     }
   },
 
@@ -174,7 +193,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (err) {
       set({ loadingProjects: false });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to load projects", message);
+      toast.error(strings.toasts.projectsLoadFailed, message);
     }
   },
 
@@ -260,7 +279,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return r.session_id;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to create worktree task", message);
+      toast.error(strings.toasts.worktreeCreateFailed, message);
       throw err;
     }
   },
@@ -273,7 +292,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Archive failed", message);
+      toast.error(strings.toasts.archiveFailed, message);
     }
   },
 
@@ -285,12 +304,26 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Unarchive failed", message);
+      toast.error(strings.toasts.unarchiveFailed, message);
     }
   },
 
   remove: async (id: string) => {
     try {
+      // Worktree sessions own an on-disk git worktree. Route through
+      // workspace.delete_worktree (git worktree remove + rmtree fallback)
+      // before dropping the DB row, or the directory leaks on disk.
+      const session = get().sessions.find((x) => x.id === id);
+      if (session?.workspace_mode === "worktree") {
+        try {
+          await typedIPC.deleteWorktree(id);
+        } catch (cleanupErr) {
+          // The directory may already be gone; still delete the row,
+          // but surface that cleanup was skipped.
+          const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+          toast.error(strings.toasts.worktreeCleanupDegraded, msg);
+        }
+      }
       await typedIPC.deleteSession(id);
       const removingCurrent = get().currentSessionId === id;
       set((s) => ({
@@ -303,7 +336,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Delete failed", message);
+      toast.error(strings.toasts.sessionDeleteFailed, message);
     }
   },
 
@@ -319,7 +352,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Rename failed", message);
+      toast.error(strings.toasts.renameFailed, message);
     }
   },
 
@@ -342,7 +375,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Move to project failed", message);
+      toast.error(strings.toasts.moveProjectFailed, message);
     }
   },
 
@@ -350,7 +383,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (nextSessions.length === 0) return;
     set((s) => {
       const byId = new Map(s.sessions.map((session) => [session.id, session]));
-      for (const session of nextSessions) {
+      for (const session of sanitizeSessions(nextSessions)) {
         byId.set(session.id, { ...byId.get(session.id), ...session });
       }
       return {
@@ -398,7 +431,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return r.project;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to create project", message);
+      toast.error(strings.toasts.projectCreateFailed, message);
       return null;
     }
   },
@@ -417,7 +450,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to update project", message);
+      toast.error(strings.toasts.projectUpdateFailed, message);
     }
   },
 
@@ -431,7 +464,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to delete project", message);
+      toast.error(strings.toasts.projectDeleteFailed, message);
     }
   },
 
@@ -446,7 +479,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to archive project", message);
+      toast.error(strings.toasts.projectArchiveFailed, message);
     }
   },
 
@@ -460,7 +493,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to unarchive project", message);
+      toast.error(strings.toasts.projectUnarchiveFailed, message);
     }
   },
 
@@ -502,7 +535,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Batch archive failed", message);
+      toast.error(strings.toasts.batchArchiveFailed, message);
     }
   },
 
@@ -526,7 +559,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       storeExpandedProjectIds(get().expandedProjectIds);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Batch move failed", message);
+      toast.error(strings.toasts.batchMoveFailed, message);
     }
   },
 

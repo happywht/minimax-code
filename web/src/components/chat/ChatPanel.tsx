@@ -8,23 +8,36 @@
  * cancels, blur saves.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, MessageSquare, MoreHorizontal, Pencil, RefreshCw, Search, X } from "lucide-react";
+import {
+  Archive,
+  Download,
+  Loader2,
+  MessageSquare,
+  MoreHorizontal,
+  Pencil,
+  RefreshCw,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
 import { MessageList } from "./MessageList";
 import { ProviderReadinessBanner } from "./ProviderReadinessBanner";
 import { useChat, useSessionStore } from "../../stores";
+import { DropdownMenu, type DropdownMenuItem } from "../../ui/DropdownMenu";
+import { requestConfirmation } from "../modals/ConfirmationDialog";
+import { toast } from "../layout/ErrorBoundary";
 import { strings } from "../../ui/strings";
 import { DEFAULT_SESSION_TITLE } from "../../lib/defaultTitles";
+import { exportSessionMarkdown } from "../../lib/exportSession";
 
 export interface ChatPanelProps {
   testId?: string;
-  onMenuClick?: () => void;
   onOpenProviderSettings?: () => void;
   onOpenModelSettings?: () => void;
 }
 
 export function ChatPanel({
   testId = "chat-panel",
-  onMenuClick,
   onOpenProviderSettings = () => {},
   onOpenModelSettings = () => {},
 }: ChatPanelProps): JSX.Element {
@@ -34,6 +47,8 @@ export function ChatPanel({
   const creatingSession = useSessionStore((s) => s.creating);
   const refreshSessions = useSessionStore((s) => s.refresh);
   const renameSession = useSessionStore((s) => s.rename);
+  const archiveSession = useSessionStore((s) => s.archive);
+  const removeSession = useSessionStore((s) => s.remove);
   const status = useChat((s) => s.status);
   const error = useChat((s) => s.error);
 
@@ -90,6 +105,55 @@ export function ChatPanel({
   const cancelEdit = useCallback(() => {
     setEditing(false);
   }, []);
+
+  // Session-level actions behind the header "more" menu. All disabled
+  // until a session is open; delete asks for confirmation first.
+  const menuItems = useMemo<DropdownMenuItem[]>(() => {
+    const disabled = !current;
+    return [
+      {
+        id: "export",
+        label: strings.chat.menu.exportMarkdown,
+        icon: <Download size={14} />,
+        disabled,
+        onClick: () => {
+          if (current) void exportSessionMarkdown(current.id);
+        },
+      },
+      {
+        id: "archive",
+        label: strings.chat.menu.archive,
+        icon: <Archive size={14} />,
+        disabled: disabled || current.archived,
+        onClick: () => {
+          if (!current) return;
+          void archiveSession(current.id).then(() => {
+            toast.success(strings.chat.menu.archivedToast, current.title);
+          });
+        },
+      },
+      {
+        id: "delete",
+        label: strings.chat.menu.delete,
+        icon: <Trash2 size={14} />,
+        danger: true,
+        disabled,
+        onClick: () => {
+          if (!current) return;
+          void (async () => {
+            const ok = await requestConfirmation({
+              title: strings.chat.menu.deleteTitle(current.title),
+              description: strings.chat.menu.deleteDesc,
+              confirmLabel: strings.chat.menu.deleteLabel,
+            });
+            if (!ok) return;
+            await removeSession(current.id);
+            toast.success(strings.chat.menu.delete, current.title);
+          })();
+        },
+      },
+    ];
+  }, [archiveSession, current, removeSession]);
 
   const headerStatus = (() => {
     switch (status) {
@@ -218,15 +282,21 @@ export function ChatPanel({
           >
             <RefreshCw size={12} />
           </button>
-          <button
-            type="button"
-            onClick={onMenuClick}
-            className="rounded-md p-1.5 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
-            title={strings.chat.header.more}
-            aria-label={strings.chat.header.moreOptions}
-          >
-            <MoreHorizontal size={14} />
-          </button>
+          <DropdownMenu
+            align="right"
+            testId="chat-header-menu"
+            trigger={
+              <button
+                type="button"
+                className="rounded-md p-1.5 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
+                title={strings.chat.header.more}
+                aria-label={strings.chat.header.moreOptions}
+              >
+                <MoreHorizontal size={14} />
+              </button>
+            }
+            items={menuItems}
+          />
         </div>
       </header>
 

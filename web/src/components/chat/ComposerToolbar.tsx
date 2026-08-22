@@ -6,12 +6,12 @@
 import { Download, Shield, ShieldCheck } from "lucide-react";
 import { Button, IconButton } from "../../ui";
 import { usePermissionStore, useSessionStore } from "../../stores";
-import { typedIPC } from "../../ipc";
 import { toast } from "../layout/ErrorBoundary";
 import { ContextIndicator } from "./ContextIndicator";
 import { ModelSelector } from "./ModelSelector";
 import { MAX_INPUT_CHARS } from "./constants";
 import { strings } from "../../ui/strings";
+import { exportSessionMarkdown } from "../../lib/exportSession";
 
 export interface ComposerToolbarProps {
   valueLength: number;
@@ -51,25 +51,10 @@ export function ComposerToolbar({
 
   const handleExportSession = async () => {
     if (!currentSessionId) {
-      toast.error("无法导出", "当前没有选中的会话");
+      toast.error(strings.chat.menu.exportFailed, strings.chat.menu.noSession);
       return;
     }
-    try {
-      const { markdown } = await typedIPC.sessionExport({ session_id: currentSessionId });
-      const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-      a.href = url;
-      a.download = `minimax-${currentSessionId.slice(0, 8)}-${ts}.md`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      toast.success("会话已导出", "Markdown 文件开始下载");
-    } catch (err) {
-      toast.error("导出失败", err instanceof Error ? err.message : String(err));
-    }
+    await exportSessionMarkdown(currentSessionId);
   };
 
   const handleToggleAlwaysAllow = () => {

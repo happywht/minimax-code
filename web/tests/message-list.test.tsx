@@ -25,13 +25,27 @@ async function flushFrames(frames: number): Promise<void> {
 
 describe("MessageList", () => {
   beforeEach(() => {
-    useChat.setState({ messages: [], status: "idle", error: null, agentReady: false });
+    useChat.setState({
+      messages: [],
+      status: "idle",
+      error: null,
+      agentReady: false,
+      loadingMessages: false,
+    });
   });
 
   it("shows the empty state when there are no messages", () => {
     render(<MessageList />);
     expect(screen.getByTestId("empty-state")).toBeInTheDocument();
     expect(screen.getByText(/今天想让我做什么/)).toBeInTheDocument();
+  });
+
+  it("shows the history skeleton while messages load instead of the empty state", () => {
+    useChat.setState({ loadingMessages: true });
+    render(<MessageList />);
+    expect(screen.getByTestId("message-list-skeleton")).toBeInTheDocument();
+    expect(screen.getByTestId("message-list-skeleton")).toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByTestId("empty-state")).not.toBeInTheDocument();
   });
 
   it("renders messages from the chat store", async () => {

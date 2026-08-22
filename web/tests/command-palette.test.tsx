@@ -34,8 +34,46 @@ describe("CommandPalette", () => {
     });
   });
 
-  it("calls action callback on Enter", async () => {
-    const onTogglePreview = vi.fn();
+  it("opens the data settings tab from the palette", async () => {
+    const onOpenSettings = vi.fn();
+    render(
+      <CommandPalette
+        onOpenSkills={noop}
+        onOpenSettings={onOpenSettings}
+        onTogglePreview={noop}
+      />,
+    );
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    const input = await screen.findByTestId("command-palette-input");
+    fireEvent.change(input, { target: { value: "数据" } });
+    await waitFor(() => {
+      expect(screen.getByTestId("command-palette-item-setting:data")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("command-palette-item-setting:data"));
+    await waitFor(() => {
+      expect(onOpenSettings).toHaveBeenCalledWith("data");
+    });
+  });
+
+  it("offers the four governance tabs as setting entries", async () => {
+    render(
+      <CommandPalette
+        onOpenSkills={noop}
+        onOpenSettings={noop}
+        onTogglePreview={noop}
+      />,
+    );
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    const input = await screen.findByTestId("command-palette-input");
+    fireEvent.change(input, { target: { value: "settings" } });
+    await waitFor(() => {
+      for (const tab of ["mcp-servers", "memory", "plugins", "data"]) {
+        expect(screen.getByTestId(`command-palette-item-setting:${tab}`)).toBeInTheDocument();
+      }
+    });
+  });
+
+  it("calls action callback on Enter", async () => {    const onTogglePreview = vi.fn();
     render(
       <CommandPalette
         onOpenSkills={noop}

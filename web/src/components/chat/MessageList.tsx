@@ -43,6 +43,7 @@ type MessageListRow =
 
 export function MessageList({ testId = "message-list", searchQuery }: MessageListProps): JSX.Element {
   const messages = useChat((s) => s.messages);
+  const loadingMessages = useChat((s) => s.loadingMessages);
   const sessionId = useSessionStore((s) => s.currentSessionId);
   const runs = useSubAgentStore((s) => s.runs);
   const scrollContentKey = useMemo(
@@ -159,7 +160,9 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
         data-testid={testId}
         className="h-full min-h-0 overflow-y-auto px-4 pb-6 pt-4"
       >
-      {messages.length === 0 && finishedRuns.length === 0 ? (
+      {messages.length === 0 && finishedRuns.length === 0 && loadingMessages ? (
+        <MessageListSkeleton />
+      ) : messages.length === 0 && finishedRuns.length === 0 ? (
         <div data-testid="empty-state" className="mx-auto mt-16 max-w-md px-4">
           <EmptyState
             icon={<Sparkles size={24} />}
@@ -283,6 +286,33 @@ function MessageListRowView({
     <Suspense fallback={<MessageRowFallback />}>
       <MessageItem message={row.message} />
     </Suspense>
+  );
+}
+
+/**
+ * Placeholder shown while a session's persisted history is being fetched
+ * (e.g. right after switching sessions). Mirrors the shape of a short
+ * exchange — a user bubble, an assistant reply, and a tool card — so the
+ * layout doesn't flash the empty state before the first render of history.
+ */
+function MessageListSkeleton(): JSX.Element {
+  return (
+    <div
+      data-testid="message-list-skeleton"
+      aria-busy="true"
+      aria-label={strings.chat.list.loadingHistory}
+      className="mx-auto mt-16 max-w-3xl space-y-6 px-4"
+    >
+      <div className="flex justify-end">
+        <div className="h-10 w-1/3 animate-pulse rounded-2xl bg-line/60" />
+      </div>
+      <div className="space-y-2">
+        <div className="h-3 w-2/3 animate-pulse rounded bg-line/70" />
+        <div className="h-3 w-1/2 animate-pulse rounded bg-line/50" />
+        <div className="h-3 w-3/5 animate-pulse rounded bg-line/40" />
+      </div>
+      <div className="h-16 w-full animate-pulse rounded-lg border border-line/60 bg-line/30" />
+    </div>
   );
 }
 

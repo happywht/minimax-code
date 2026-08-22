@@ -10,6 +10,7 @@ import {
   usePermissionStore,
   useTaskStore,
 } from "../src/stores";
+import { sanitizeSessions } from "../src/stores/sessionStore";
 
 vi.mock("../src/components/layout/ErrorBoundary", () => ({
   toast: { error: vi.fn(), info: vi.fn(), success: vi.fn() },
@@ -66,6 +67,31 @@ describe("sessionStore", () => {
 
     clearSessionSelection();
     expect(useSessionStore.getState().selectedSessionIds).toEqual(new Set());
+  });
+
+  it("sanitizeSessions drops subagent sessions and strips the chat: bootstrap prefix", () => {
+    const base = { archived: false, created_at: 1, updated_at: 1, model_id: null };
+    const out = sanitizeSessions([
+      { ...base, id: "ses_a", title: "正常任务" },
+      { ...base, id: "sub_1", title: "subagent:searcher" },
+      { ...base, id: "ses_b", title: "chat:修复登录 bug" },
+      { ...base, id: "ses_c", title: "chat:" },
+    ]);
+    expect(out.map((s) => s.id)).toEqual(["ses_a", "ses_b", "ses_c"]);
+    expect(out[1].title).toBe("修复登录 bug");
+    // An empty hint degrades to the default title, never a blank row.
+    expect(out[2].title).toBe("新任务");
+  });
+
+  it("mergeSessions filters incoming subagent sessions", () => {
+    const base = { archived: false, created_at: 1, updated_at: 1, model_id: null };
+    useSessionStore.getState().mergeSessions([
+      { ...base, id: "ses_a", title: "正常任务" },
+      { ...base, id: "sub_2", title: "subagent:happy-helper" },
+    ]);
+    const ids = useSessionStore.getState().sessions.map((s) => s.id);
+    expect(ids).toContain("ses_a");
+    expect(ids).not.toContain("sub_2");
   });
 });
 

@@ -95,20 +95,13 @@ describe("IPC mock backend", () => {
   });
 
   it("throws an IPCError with code when the underlying request fails", async () => {
-    // Inject a custom error via the mock helpers.
-    const id = "x";
-    try {
-      // We can't actually make the mock backend throw, so we test the
-      // IPCError constructor directly here.
-      const err = new IPCError({ code: -32603, message: "InternalError", data: { foo: 1 } });
-      expect(err.code).toBe(-32603);
-      expect(err.message).toContain("InternalError");
-      expect(err.message).toContain("foo");
-      expect(err.data).toEqual({ foo: 1 });
-    } catch (e) {
-      throw e;
-    }
-    void id;
+    // We can't actually make the mock backend throw, so we test the
+    // IPCError constructor directly here.
+    const err = new IPCError({ code: -32603, message: "InternalError", data: { foo: 1 } });
+    expect(err.code).toBe(-32603);
+    expect(err.message).toContain("InternalError");
+    expect(err.message).toContain("foo");
+    expect(err.data).toEqual({ foo: 1 });
   });
 });
 

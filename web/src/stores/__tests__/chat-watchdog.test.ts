@@ -121,7 +121,7 @@ describe("Stall watchdog", () => {
     expect(useChat.getState().status).toBe("streaming");
     expect(useChat.getState().error).toBeNull();
     expect(toastInfoSpy).toHaveBeenCalledWith(
-      "Agent is still working",
+      "Agent 正在工作中",
       expect.stringContaining("60 seconds"),
     );
   });
@@ -175,7 +175,7 @@ describe("Stall watchdog", () => {
     expect(useChat.getState().status).toBe("streaming");
     expect(useChat.getState().error).toBeNull();
     expect(toastInfoSpy).toHaveBeenCalledWith(
-      "Agent is still working",
+      "Agent 正在工作中",
       expect.stringContaining("tool progress"),
     );
   });

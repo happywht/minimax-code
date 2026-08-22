@@ -89,23 +89,23 @@ describe("P1#18: Store error toast coverage", () => {
   describe("teamStore", () => {
     it("refresh() calls toast.error on failure", async () => {
       await useTeamStore.getState().refresh();
-      expect(toastErrorSpy).toHaveBeenCalledWith("Failed to load teams", expect.any(String));
+      expect(toastErrorSpy).toHaveBeenCalledWith("加载团队失败", expect.any(String));
     });
 
     it("create() calls toast.error on failure", async () => {
       const result = await useTeamStore.getState().create({ name: "x" });
       expect(result).toBeNull();
-      expect(toastErrorSpy).toHaveBeenCalledWith("Failed to create team", expect.any(String));
+      expect(toastErrorSpy).toHaveBeenCalledWith("创建团队失败", expect.any(String));
     });
 
     it("remove() calls toast.error on failure", async () => {
       await useTeamStore.getState().remove("x");
-      expect(toastErrorSpy).toHaveBeenCalledWith("Failed to delete team", expect.any(String));
+      expect(toastErrorSpy).toHaveBeenCalledWith("删除团队失败", expect.any(String));
     });
 
     it("enable() calls toast.error on failure", async () => {
       await useTeamStore.getState().enable("x");
-      expect(toastErrorSpy).toHaveBeenCalledWith("Failed to enable team", expect.any(String));
+      expect(toastErrorSpy).toHaveBeenCalledWith("启用团队失败", expect.any(String));
     });
   });
 
@@ -113,23 +113,23 @@ describe("P1#18: Store error toast coverage", () => {
   describe("workflowStore", () => {
     it("refresh() calls toast.error on failure", async () => {
       await useWorkflowStore.getState().refresh();
-      expect(toastErrorSpy).toHaveBeenCalledWith("Failed to load workflows", expect.any(String));
+      expect(toastErrorSpy).toHaveBeenCalledWith("加载工作流失败", expect.any(String));
     });
 
     it("create() calls toast.error on failure", async () => {
       const result = await useWorkflowStore.getState().create({ name: "x", trigger_type: "cron" });
       expect(result).toBeNull();
-      expect(toastErrorSpy).toHaveBeenCalledWith("Failed to create workflow", expect.any(String));
+      expect(toastErrorSpy).toHaveBeenCalledWith("创建工作流失败", expect.any(String));
     });
 
     it("remove() calls toast.error on failure", async () => {
       await useWorkflowStore.getState().remove("x");
-      expect(toastErrorSpy).toHaveBeenCalledWith("Failed to delete workflow", expect.any(String));
+      expect(toastErrorSpy).toHaveBeenCalledWith("删除工作流失败", expect.any(String));
     });
 
     it("trigger() calls toast.error on failure", async () => {
       await useWorkflowStore.getState().trigger("x");
-      expect(toastErrorSpy).toHaveBeenCalledWith("Failed to trigger workflow", expect.any(String));
+      expect(toastErrorSpy).toHaveBeenCalledWith("触发工作流失败", expect.any(String));
     });
   });
 
@@ -137,30 +137,30 @@ describe("P1#18: Store error toast coverage", () => {
   describe("webhookStore", () => {
     it("refresh() calls toast.error on failure", async () => {
       await useWebhookStore.getState().refresh();
-      expect(toastErrorSpy).toHaveBeenCalledWith("Failed to load webhooks", expect.any(String));
+      expect(toastErrorSpy).toHaveBeenCalledWith("加载 Webhook 失败", expect.any(String));
     });
 
     it("create() calls toast.error on failure", async () => {
       const result = await useWebhookStore.getState().create({ name: "x" });
       expect(result).toBeNull();
-      expect(toastErrorSpy).toHaveBeenCalledWith("Failed to create webhook", expect.any(String));
+      expect(toastErrorSpy).toHaveBeenCalledWith("创建 Webhook 失败", expect.any(String));
     });
 
     it("update() calls toast.error on failure", async () => {
       await useWebhookStore.getState().update("x", { name: "y" });
-      expect(toastErrorSpy).toHaveBeenCalledWith("Failed to update webhook", expect.any(String));
+      expect(toastErrorSpy).toHaveBeenCalledWith("更新 Webhook 失败", expect.any(String));
     });
 
     it("remove() calls toast.error on failure", async () => {
       await useWebhookStore.getState().remove("x");
-      expect(toastErrorSpy).toHaveBeenCalledWith("Failed to delete webhook", expect.any(String));
+      expect(toastErrorSpy).toHaveBeenCalledWith("删除 Webhook 失败", expect.any(String));
     });
 
     it("regenerateSecret() calls toast.error on failure", async () => {
       const result = await useWebhookStore.getState().regenerateSecret("x");
       expect(result).toBeNull();
       expect(toastErrorSpy).toHaveBeenCalledWith(
-        "Failed to regenerate webhook secret",
+        "重新生成 Webhook 密钥失败",
         expect.any(String),
       );
     });
@@ -171,7 +171,7 @@ describe("P1#18: Store error toast coverage", () => {
     it("refresh() calls toast.error on failure", async () => {
       await useNotificationStore.getState().refresh();
       expect(toastErrorSpy).toHaveBeenCalledWith(
-        "Failed to load notifications",
+        "加载通知失败",
         expect.any(String),
       );
     });
@@ -179,7 +179,7 @@ describe("P1#18: Store error toast coverage", () => {
     it("markRead() calls toast.error on failure", async () => {
       await useNotificationStore.getState().markRead("x");
       expect(toastErrorSpy).toHaveBeenCalledWith(
-        "Failed to mark notification as read",
+        "标记通知已读失败",
         expect.any(String),
       );
     });
@@ -187,7 +187,7 @@ describe("P1#18: Store error toast coverage", () => {
     it("markAllRead() calls toast.error on failure", async () => {
       await useNotificationStore.getState().markAllRead();
       expect(toastErrorSpy).toHaveBeenCalledWith(
-        "Failed to mark all notifications as read",
+        "全部标记已读失败",
         expect.any(String),
       );
     });
@@ -195,7 +195,7 @@ describe("P1#18: Store error toast coverage", () => {
     it("deleteNotification() calls toast.error on failure", async () => {
       await useNotificationStore.getState().deleteNotification("x");
       expect(toastErrorSpy).toHaveBeenCalledWith(
-        "Failed to delete notification",
+        "删除通知失败",
         expect.any(String),
       );
     });
@@ -203,7 +203,7 @@ describe("P1#18: Store error toast coverage", () => {
     it("purge() calls toast.error on failure", async () => {
       await useNotificationStore.getState().purge("2025-01-01T00:00:00Z");
       expect(toastErrorSpy).toHaveBeenCalledWith(
-        "Failed to purge notifications",
+        "清空通知失败",
         expect.any(String),
       );
     });
@@ -228,7 +228,7 @@ describe("P1#18: Store error toast coverage", () => {
         ],
       });
       await useTeamRunStore.getState().spawn({ team_name: "team-x", request: "do it" });
-      expect(toastErrorSpy).toHaveBeenCalledWith("Failed to spawn team", expect.any(String));
+      expect(toastErrorSpy).toHaveBeenCalledWith("发起团队运行失败", expect.any(String));
     });
   });
 });

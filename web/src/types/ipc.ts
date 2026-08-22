@@ -550,7 +550,7 @@ export type AgentRunStepStatus =
 export interface AgentRun {
   id: string;
   session_id: string;
-  mode: "chat" | "plan" | "execute";
+  mode: "chat" | "plan" | "execute" | "team";
   status: AgentRunStatus;
   title: string;
   user_message_id?: string | null;

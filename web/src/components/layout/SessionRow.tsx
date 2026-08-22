@@ -310,6 +310,11 @@ export const SessionRow = memo(function SessionRow({
           <p className="text-[13px] text-ink-0">
             确认删除「{session.title || strings.layout.sidebar.untitled}」？删除后无法恢复。
           </p>
+          {session.workspace_mode === "worktree" && (
+            <p className="mt-2 text-xs text-amber-500">
+              这是 Worktree 任务：删除时会一并清理磁盘上的工作树目录（未提交的改动会丢失）。
+            </p>
+          )}
         </Modal>
       )}
     </>

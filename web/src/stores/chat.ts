@@ -24,6 +24,7 @@ import type { Message, ContentPart } from "../types/ipc";
 import { useSessionStore } from "./sessionStore";
 import { trimArray, MAX_MESSAGES } from "../lib/eviction";
 import { DEFAULT_SESSION_TITLE } from "../lib/defaultTitles";
+import { strings } from "../ui/strings";
 
 export type ChatStatus = "idle" | "sending" | "streaming" | "error" | "cancelling";
 
@@ -32,6 +33,8 @@ export interface ChatState {
   status: ChatStatus;
   error: string | null;
   agentReady: boolean;
+  /** True while loadMessages is fetching history for the current session. */
+  loadingMessages: boolean;
 
   init: () => Promise<void>;
   send: (content: string | ContentPart[]) => Promise<void>;
@@ -89,7 +92,7 @@ function resetStallWatchdog(timeoutMs = STALL_TIMEOUT_MS) {
         activeToolCalls.size > 0
           ? `No tool progress received for ${seconds} seconds. The current tool may have stalled.`
           : `No data received for ${seconds} seconds. The connection may have stalled.`;
-      toast.info("Agent is still working", detail);
+      toast.info(strings.toasts.agentBusy, detail);
       resetStallWatchdogForCurrentActivity();
     }
   }, timeoutMs);
@@ -190,6 +193,7 @@ export const useChat = create<ChatState>((set, get) => ({
   status: "idle",
   error: null,
   agentReady: false,
+  loadingMessages: false,
 
   init: async () => {
     if (get().agentReady) return;
@@ -298,7 +302,7 @@ export const useChat = create<ChatState>((set, get) => ({
             ),
           }));
           pendingAssistantId = null;
-          toast.error("Agent error", detail);
+          toast.error(strings.toasts.agentError, detail);
           clearStallWatchdog();
         } else if (d.status === "idle" || d.status === "done" || d.status === "max_iterations") {
           set({ status: "idle" });
@@ -525,9 +529,9 @@ export const useChat = create<ChatState>((set, get) => ({
         };
       });
       if (isTransportTimeout) {
-        toast.info("Agent is still working", "The request is taking longer than expected. Stream updates continue via WebSocket.");
+        toast.info(strings.toasts.agentBusy, strings.toasts.agentBusyDetail);
       } else {
-        toast.error("Send failed", message);
+        toast.error(strings.toasts.sendFailed, message);
       }
     }
   },
@@ -548,7 +552,7 @@ export const useChat = create<ChatState>((set, get) => ({
       await typedIPC.cancelAgent(sid);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Cancel failed", message);
+      toast.error(strings.toasts.cancelFailed, message);
     }
     pendingAssistantId = null;
     set((s) => ({
@@ -594,7 +598,7 @@ export const useChat = create<ChatState>((set, get) => ({
       }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Update failed", message);
+      toast.error(strings.toasts.messageUpdateFailed, message);
     }
   },
 
@@ -606,7 +610,7 @@ export const useChat = create<ChatState>((set, get) => ({
       }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Delete failed", message);
+      toast.error(strings.toasts.messageDeleteFailed, message);
     }
   },
 
@@ -615,6 +619,7 @@ export const useChat = create<ChatState>((set, get) => ({
     // Bump the sequence counter so any in-flight load from a
     // previous session is silently discarded.
     const seq = ++_loadSeq;
+    set({ loadingMessages: true });
     try {
       const result = await typedIPC.listMessages(sessionId);
       // Stale response — the user has already switched away.
@@ -625,6 +630,7 @@ export const useChat = create<ChatState>((set, get) => ({
         currentSessionId === sessionId &&
         (activeStatus === "sending" || activeStatus === "streaming")
       ) {
+        set({ loadingMessages: false });
         return;
       }
       // Convert backend rows (content → text, add streaming: false)
@@ -640,14 +646,14 @@ export const useChat = create<ChatState>((set, get) => ({
         tool_name: m.tool_name,
         tool_args: m.tool_args,
       }));
-      set({ messages: trimArray(msgs, MAX_MESSAGES), status: "idle", error: null });
+      set({ messages: trimArray(msgs, MAX_MESSAGES), status: "idle", error: null, loadingMessages: false });
     } catch (err) {
       // Stale — skip error toast for abandoned requests.
       if (seq !== _loadSeq) return;
       // If loading fails (e.g. session has no messages yet), just clear.
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to load messages", message);
-      set({ messages: [], status: "idle", error: null });
+      toast.error(strings.toasts.messagesLoadFailed, message);
+      set({ messages: [], status: "idle", error: null, loadingMessages: false });
     }
   },
 
@@ -655,7 +661,7 @@ export const useChat = create<ChatState>((set, get) => ({
     ++_loadSeq;
     clearStallWatchdog();
     pendingAssistantId = null;
-    set({ messages: [], status: "idle", error: null });
+    set({ messages: [], status: "idle", error: null, loadingMessages: false });
   },
 }));
 
