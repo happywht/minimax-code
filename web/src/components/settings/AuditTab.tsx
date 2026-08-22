@@ -2,7 +2,7 @@
  * Audit tab — audit log viewer with stats, filter, and pagination.
  */
 import { useEffect } from "react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Trash2 } from "lucide-react";
 import { Badge, Button, EmptyState } from "../../ui";
 import { strings } from "../../ui/strings";
 import type { BadgeTone } from "../../ui";
@@ -10,6 +10,8 @@ import { SkeletonTable } from "../layout/Skeleton";
 import { useAuditStore } from "../../stores";
 import type { AuditEntry } from "../../types/ipc";
 import { formatDateTime } from "../../lib/time";
+import { toast } from "../layout/ErrorBoundary";
+import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { Select, TabHeader } from "./fields";
 
 export { AuditTab };
@@ -22,7 +24,7 @@ const STATUS_TONES: Record<string, BadgeTone> = {
 };
 
 function AuditTab(): JSX.Element {
-  const { entries, total, stats, loading, page, pageSize, filterTool, refresh, loadStats, setPage, setFilterTool } = useAuditStore();
+  const { entries, total, stats, loading, page, pageSize, filterTool, refresh, loadStats, setPage, setFilterTool, purge } = useAuditStore();
 
   useEffect(() => {
     refresh();
@@ -32,20 +34,48 @@ function AuditTab(): JSX.Element {
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
+  const handlePurge = async () => {
+    const accepted = await requestConfirmation({
+      title: strings.settings.audit.purgeTitle,
+      description: strings.settings.audit.purgeDesc,
+      confirmLabel: strings.settings.audit.purgeLabel,
+    });
+    if (!accepted) return;
+    // "before now" purges every persisted audit row; the store refreshes
+    // the list and stats itself. Failures surface via store.error (the
+    // inline banner) and return 0.
+    const deleted = await purge(new Date().toISOString());
+    if (deleted > 0) {
+      toast.success(strings.settings.audit.purgedToast(deleted));
+    }
+  };
+
   return (
     <section data-testid="settings-audit-section" className="space-y-4">
       <TabHeader
         title={strings.settings.audit.title}
         hint={strings.settings.audit.hint}
         action={
-          <Button
-            size="sm"
-            variant="secondary"
-            icon={<RefreshCw />}
-            onClick={() => { refresh(); loadStats(); }}
-          >
-            {strings.settings.audit.refresh}
-          </Button>
+          <>
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={<RefreshCw />}
+              onClick={() => { refresh(); loadStats(); }}
+            >
+              {strings.settings.audit.refresh}
+            </Button>
+            <Button
+              size="sm"
+              variant="danger"
+              icon={<Trash2 size={12} />}
+              disabled={total === 0 && (!stats || stats.total === 0)}
+              onClick={() => void handlePurge()}
+              data-testid="settings-audit-purge"
+            >
+              {strings.settings.audit.purge}
+            </Button>
+          </>
         }
       />
 

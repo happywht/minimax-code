@@ -12,6 +12,7 @@ import {
   CalendarClock,
   Cpu,
   Database,
+  GitBranch,
   Globe,
   KeyRound,
   Puzzle,
@@ -38,10 +39,10 @@ import { McpServersTab } from "./McpServersTab";
 import { MemoryTab } from "./MemoryTab";
 import { PluginsTab } from "./PluginsTab";
 import { DataTab } from "./DataTab";
+import { WorktreesTab } from "./WorktreesTab";
 import { useFocusTrap } from "../../lib/useFocusTrap";
-import { ConfirmationDialog } from "../modals/ConfirmationDialog";
 
-export type SettingsTab = "models" | "providers" | "permissions" | "scheduled" | "api-key" | "agents" | "teams" | "audit" | "webhooks" | "workflows" | "mcp-servers" | "memory" | "plugins" | "data";
+export type SettingsTab = "models" | "providers" | "permissions" | "scheduled" | "api-key" | "agents" | "teams" | "audit" | "webhooks" | "workflows" | "mcp-servers" | "memory" | "plugins" | "worktrees" | "data";
 
 const TAB_GROUPS: Array<{
   label: string;
@@ -57,6 +58,7 @@ const TAB_GROUPS: Array<{
       { id: "mcp-servers", icon: <Blocks size={12} />, label: strings.settings.page.tabMcp, testId: "settings-tab-mcp-servers" },
       { id: "memory", icon: <Brain size={12} />, label: strings.settings.page.tabMemory, testId: "settings-tab-memory" },
       { id: "plugins", icon: <Puzzle size={12} />, label: strings.settings.page.tabPlugins, testId: "settings-tab-plugins" },
+      { id: "worktrees", icon: <GitBranch size={12} />, label: strings.settings.page.tabWorktrees, testId: "settings-tab-worktrees" },
       { id: "data", icon: <Database size={12} />, label: strings.settings.page.tabData, testId: "settings-tab-data" },
     ],
   },
@@ -175,11 +177,11 @@ export function SettingsPage({ testId = "settings-page", onClose, initialTab = "
           {tab === "mcp-servers" && <McpServersTab />}
           {tab === "memory" && <MemoryTab />}
           {tab === "plugins" && <PluginsTab />}
+          {tab === "worktrees" && <WorktreesTab />}
           {tab === "data" && <DataTab />}
         </div>
       </div>
       </div>
-      <ConfirmationDialog />
     </>
   );
 }

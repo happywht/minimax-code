@@ -8,6 +8,7 @@ import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import type { ProviderInfo, ProviderModel } from "../types/ipc";
 import { useModelStore } from "./modelStore";
+import { strings } from "../ui/strings";
 
 export interface ProviderState {
   providers: ProviderInfo[];
@@ -50,7 +51,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
     } catch (err) {
       set({ loading: false, initialized: true });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to load providers", message);
+      toast.error(strings.toasts.providersLoadFailed, message);
     }
   },
 
@@ -62,7 +63,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
       return r.provider;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to create provider", message);
+      toast.error(strings.toasts.providerCreateFailed, message);
       return null;
     }
   },
@@ -75,7 +76,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
       return r.provider;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to update provider", message);
+      toast.error(strings.toasts.providerUpdateFailed, message);
       return null;
     }
   },
@@ -88,7 +89,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to delete provider", message);
+      toast.error(strings.toasts.providerDeleteFailed, message);
       return false;
     }
   },
@@ -106,7 +107,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to set API key", message);
+      toast.error(strings.toasts.apiKeySetFailed, message);
       return false;
     }
   },
@@ -124,7 +125,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to clear API key", message);
+      toast.error(strings.toasts.apiKeyClearFailed, message);
       return false;
     }
   },

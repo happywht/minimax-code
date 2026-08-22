@@ -11,6 +11,7 @@ import { typedIPC, ipc } from "../ipc/client";
 import type { NotificationEntry, ListNotificationsResult } from "../types/ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import { trimArray, MAX_NOTIFICATIONS } from "../lib/eviction";
+import { strings } from "../ui/strings";
 
 // Re-export for convenience
 export type { NotificationEntry, ListNotificationsResult };
@@ -61,7 +62,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => {
         });
       } catch (err: unknown) {
         const msg = String(err);
-        toast.error("Failed to load notifications", msg);
+        toast.error(strings.toasts.notificationsLoadFailed, msg);
         set({ error: msg });
       } finally {
         set({ loading: false });
@@ -77,7 +78,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => {
         }));
       } catch (err: unknown) {
         const msg = String(err);
-        toast.error("Failed to mark notification as read", msg);
+        toast.error(strings.toasts.notificationReadFailed, msg);
         set({ error: msg });
       }
     },
@@ -92,7 +93,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => {
         }));
       } catch (err: unknown) {
         const msg = String(err);
-        toast.error("Failed to mark all notifications as read", msg);
+        toast.error(strings.toasts.notificationsReadAllFailed, msg);
         set({ error: msg });
       }
     },
@@ -110,7 +111,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => {
         });
       } catch (err: unknown) {
         const msg = String(err);
-        toast.error("Failed to delete notification", msg);
+        toast.error(strings.toasts.notificationDeleteFailed, msg);
         set({ error: msg });
       }
     },
@@ -123,7 +124,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => {
         await get().refresh();
       } catch (err: unknown) {
         const msg = String(err);
-        toast.error("Failed to purge notifications", msg);
+        toast.error(strings.toasts.notificationsPurgeFailed, msg);
         set({ error: msg });
       }
     },

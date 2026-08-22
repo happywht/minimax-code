@@ -15,6 +15,7 @@ import {
   Shield,
   Workflow,
   X,
+  Trash2,
 } from "lucide-react";
 import { Panel } from "../../ui/Panel";
 import { Button } from "../../ui/Button";
@@ -25,6 +26,7 @@ import { SkeletonTable } from "./Skeleton";
 import { useNotificationStore } from "../../stores/notificationStore";
 import type { NotificationEntry } from "../../stores/notificationStore";
 import { formatRelative } from "../../lib/time";
+import { requestConfirmation } from "../modals/ConfirmationDialog";
 
 const TYPE_ICON: Record<string, typeof Info> = {
   info: Info,
@@ -48,10 +50,25 @@ export function NotificationCenter(): JSX.Element {
   const deleteNotification = useNotificationStore((s) => s.deleteNotification);
   const setOpen = useNotificationStore((s) => s.setOpen);
   const refresh = useNotificationStore((s) => s.refresh);
+  const purge = useNotificationStore((s) => s.purge);
 
   useEffect(() => {
     refresh({ limit: 50 });
   }, [refresh]);
+
+  const hasReadEntries = entries.some((e) => e.read);
+
+  const handlePurgeRead = async () => {
+    const accepted = await requestConfirmation({
+      title: strings.layout.notifications.purgeReadTitle,
+      description: strings.layout.notifications.purgeReadDesc,
+      confirmLabel: strings.layout.notifications.purgeReadLabel,
+    });
+    if (!accepted) return;
+    // Purge everything already read ("before now", read-only); the store
+    // refreshes the list itself and toasts on failure.
+    await purge(new Date().toISOString(), true);
+  };
 
   return (
     <Panel
@@ -78,6 +95,18 @@ export function NotificationCenter(): JSX.Element {
               title={strings.layout.notifications.markAllReadTitle}
             >
               {strings.layout.notifications.readAll}
+            </Button>
+          )}
+          {hasReadEntries && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              icon={<Trash2 size={12} />}
+              onClick={() => void handlePurgeRead()}
+              data-testid="notification-purge-read"
+            >
+              {strings.layout.notifications.purgeRead}
             </Button>
           )}
           <IconButton

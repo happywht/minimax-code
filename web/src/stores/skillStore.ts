@@ -16,6 +16,7 @@ import { create } from "zustand";
 import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import type { SkillInfo } from "../types/ipc";
+import { strings } from "../ui/strings";
 
 export type SkillEntry = SkillInfo;
 
@@ -45,7 +46,7 @@ export const useSkillStore = create<SkillState>((set, get) => ({
     } catch (err) {
       set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to load skills", message);
+      toast.error(strings.toasts.skillsLoadFailed, message);
     }
   },
 
@@ -60,12 +61,12 @@ export const useSkillStore = create<SkillState>((set, get) => ({
           result.skill,
         ].sort((a, b) => a.name.localeCompare(b.name)),
       }));
-      toast.success("Skill imported", result.skill.name);
+      toast.success(strings.toasts.skillImported, result.skill.name);
       return result.skill;
     } catch (err) {
       set({ installing: false });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to import skill", message);
+      toast.error(strings.toasts.skillImportFailed, message);
       return null;
     }
   },
@@ -76,10 +77,10 @@ export const useSkillStore = create<SkillState>((set, get) => ({
       set((state) => ({
         skills: state.skills.filter((skill) => skill.id !== skillId),
       }));
-      toast.success("Skill removed");
+      toast.success(strings.toasts.skillRemoved);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to remove skill", message);
+      toast.error(strings.toasts.skillRemoveFailed, message);
     }
   },
 
@@ -94,7 +95,7 @@ export const useSkillStore = create<SkillState>((set, get) => ({
     } catch (err) {
       set({ skills: prev });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to enable skill", message);
+      toast.error(strings.toasts.skillEnableFailed, message);
     }
   },
 
@@ -110,7 +111,7 @@ export const useSkillStore = create<SkillState>((set, get) => ({
     } catch (err) {
       set({ skills: prev });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to disable skill", message);
+      toast.error(strings.toasts.skillDisableFailed, message);
     }
   },
 

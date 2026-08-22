@@ -7,6 +7,7 @@ import { create } from "zustand";
 import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import type { ModelInfo } from "../types/ipc";
+import { strings } from "../ui/strings";
 
 export type ModelEntry = ModelInfo;
 
@@ -51,7 +52,7 @@ export const useModelStore = create<ModelState>((set) => ({
     } catch (err) {
       set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to load models", message);
+      toast.error(strings.toasts.modelsLoadFailed, message);
     }
   },
 
@@ -61,7 +62,7 @@ export const useModelStore = create<ModelState>((set) => ({
       set({ current: r.current });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to switch model", message);
+      toast.error(strings.toasts.modelSwitchFailed, message);
     }
   },
 
@@ -71,7 +72,7 @@ export const useModelStore = create<ModelState>((set) => ({
       set({ reasoningEffort: r.reasoning_effort });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to set reasoning effort", message);
+      toast.error(strings.toasts.effortSetFailed, message);
     }
   },
 }));

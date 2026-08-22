@@ -14,6 +14,7 @@ import { create } from "zustand";
 import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import type { SecretStatus } from "../types/ipc";
+import { strings } from "../ui/strings";
 
 export type SecretSource = SecretStatus["source"];
 
@@ -43,7 +44,7 @@ export const useSecretStore = create<SecretState>((set, get) => ({
     } catch (err) {
       set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to read API key status", message);
+      toast.error(strings.toasts.apiKeyStatusFailed, message);
     }
   },
 
@@ -52,12 +53,12 @@ export const useSecretStore = create<SecretState>((set, get) => ({
     try {
       const s = await typedIPC.setSecret(value);
       set({ status: s, loading: false });
-      toast.success("API key saved", "Stored in OS keyring");
+      toast.success(strings.toasts.apiKeySaved, strings.toasts.apiKeySavedDetail);
       return s;
     } catch (err) {
       set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to save API key", message);
+      toast.error(strings.toasts.apiKeySaveFailed, message);
       // Refresh the status so the UI shows the post-failure truth
       // (the keyring may have partially written before the error).
       void get().refresh();
@@ -70,12 +71,12 @@ export const useSecretStore = create<SecretState>((set, get) => ({
     try {
       const s = await typedIPC.clearSecret();
       set({ status: s, loading: false });
-      toast.success("API key cleared", "Removed from OS keyring");
+      toast.success(strings.toasts.apiKeyCleared, strings.toasts.apiKeyClearedDetail);
       return s;
     } catch (err) {
       set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to clear API key", message);
+      toast.error(strings.toasts.apiKeyClearFailed, message);
       void get().refresh();
       return null;
     }

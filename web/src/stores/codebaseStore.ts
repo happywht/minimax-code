@@ -9,6 +9,7 @@
 import { create } from "zustand";
 import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
+import { strings } from "../ui/strings";
 import type {
   CodebaseSearchResult,
   CodebaseStatusResult,
@@ -109,11 +110,11 @@ export const useCodebaseStore = create<CodebaseState>((set, get) => ({
     try {
       const s = await typedIPC.buildCodebaseIndex({ force });
       set({ status: s, loading: false });
-      toast.success("Codebase index started");
+      toast.success(strings.toasts.codebaseIndexStarted);
     } catch (err) {
       set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to build codebase index", message);
+      toast.error(strings.toasts.codebaseIndexFailed, message);
     }
   },
 
@@ -137,7 +138,7 @@ export const useCodebaseStore = create<CodebaseState>((set, get) => ({
     } catch (err) {
       set({ searching: false });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Search failed", message);
+      toast.error(strings.toasts.codebaseSearchFailed, message);
     }
   },
 
@@ -157,7 +158,7 @@ export const useCodebaseStore = create<CodebaseState>((set, get) => ({
     } catch (err) {
       set({ summarizing: false });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Summarize failed", message);
+      toast.error(strings.toasts.codebaseSummarizeFailed, message);
     }
   },
 

@@ -13,6 +13,7 @@
 import { create } from "zustand";
 import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
+import { strings } from "../ui/strings";
 
 export interface PairedDevice {
   id: string;
@@ -72,7 +73,7 @@ export const useMobileStore = create<MobileState>((set, get) => ({
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       set({ loading: false, error: message });
-      toast.error("Pairing failed", message);
+      toast.error(strings.toasts.pairFailed, message);
     }
   },
 
@@ -84,7 +85,7 @@ export const useMobileStore = create<MobileState>((set, get) => ({
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       set({ loading: false, error: message });
-      toast.error("Failed to load devices", message);
+      toast.error(strings.toasts.devicesLoadFailed, message);
     }
   },
 
@@ -96,7 +97,7 @@ export const useMobileStore = create<MobileState>((set, get) => ({
       }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Unpair failed", message);
+      toast.error(strings.toasts.unpairFailed, message);
     }
   },
 
@@ -120,7 +121,7 @@ export const useMobileStore = create<MobileState>((set, get) => ({
       }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to fetch device status", message);
+      toast.error(strings.toasts.deviceStatusFailed, message);
     }
   },
 
@@ -130,7 +131,7 @@ export const useMobileStore = create<MobileState>((set, get) => ({
       return { ok: r.ok, delivered: r.delivered };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Push notification failed", message);
+      toast.error(strings.toasts.pushFailed, message);
       return { ok: false };
     }
   },

@@ -2,13 +2,14 @@
  * Agents tab — sub-agent CRUD via `agent.*` IPC.
  */
 import { useEffect, useState } from "react";
-import { Bot, Plus, Trash2 } from "lucide-react";
-import { Badge, Button, EmptyState, IconButton, Input, Panel, Spinner, Textarea } from "../../ui";
+import { Plus } from "lucide-react";
+import { Button, EmptyState, Input, Panel, Spinner, Textarea } from "../../ui";
 import { strings } from "../../ui/strings";
 import { useAgentStore } from "../../stores";
 import type { AgentInfo } from "../../types/ipc";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { Field, InlineCode, TabHeader } from "./fields";
+import { AgentRow } from "./agents/AgentRow";
 
 export { AgentsTab };
 
@@ -17,6 +18,7 @@ function AgentsTab(): JSX.Element {
   const loading = useAgentStore((s) => s.loading);
   const refresh = useAgentStore((s) => s.refresh);
   const create = useAgentStore((s) => s.create);
+  const update = useAgentStore((s) => s.update);
   const remove = useAgentStore((s) => s.remove);
 
   const [showForm, setShowForm] = useState(false);
@@ -38,6 +40,14 @@ function AgentsTab(): JSX.Element {
       confirmLabel: strings.settings.agents.deleteLabel,
     });
     if (accepted) await remove(agent.name);
+  };
+
+  const handleToggle = (agent: AgentInfo) => {
+    void update({ name: agent.name, enabled: !agent.enabled });
+  };
+
+  const handleSave = (agent: AgentInfo, fields: { system_prompt?: string; model?: string }) => {
+    void update({ name: agent.name, ...fields });
   };
 
   return (
@@ -129,31 +139,13 @@ function AgentsTab(): JSX.Element {
       ) : (
         <ul className="space-y-2">
           {agents.map((a) => (
-            <li
+            <AgentRow
               key={a.id}
-              data-testid={`settings-agent-row-${a.name}`}
-              className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface-2 p-3 transition-colors duration-150 hover:border-line-strong"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <Bot size={12} className="shrink-0 text-accent" />
-                  <span className="truncate text-xs font-medium text-ink-0">{a.name}</span>
-                  <Badge tone={a.enabled ? "success" : "neutral"} dot>
-                    {a.enabled ? strings.settings.agents.enabled : strings.settings.agents.disabled}
-                  </Badge>
-                </div>
-                {a.description && (
-                  <p className="mt-0.5 truncate text-[11px] text-ink-2">{a.description}</p>
-                )}
-              </div>
-              <IconButton
-                data-testid={`settings-agent-delete-${a.name}`}
-                onClick={() => void handleDelete(a)}
-                aria-label={strings.settings.agents.deleteAria(a.name)}
-              >
-                <Trash2 />
-              </IconButton>
-            </li>
+              agent={a}
+              onToggleEnabled={() => handleToggle(a)}
+              onSave={(fields) => handleSave(a, fields)}
+              onDelete={() => void handleDelete(a)}
+            />
           ))}
         </ul>
       )}

@@ -21,11 +21,13 @@ vi.mock("../../../stores", () => {
     useScheduleStore: ms({ jobs: [], refresh: vi.fn(), create: vi.fn(), remove: vi.fn(), setEnabled: vi.fn(), runNow: vi.fn(), loading: false }),
     useTaskStore: ms({ tasks: {} }),
     useSecretStore: ms({ status: { source: "none", configured: false }, loading: false, refresh: vi.fn(), setKey: vi.fn(), clear: vi.fn() }),
-    useAgentStore: ms({ agents: [], loading: false, refresh: vi.fn(), create: vi.fn(), remove: vi.fn() }),
+    useAgentStore: ms({ agents: [], loading: false, refresh: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn() }),
     useTeamStore: ms({ teams: [], loading: false, refresh: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), enable: vi.fn(), disable: vi.fn() }),
+    useTeamRunStore: ms({ runs: [], spawn: vi.fn(), prune: vi.fn(), remove: vi.fn() }),
+    useSessionStore: ms({ currentSessionId: null }),
     useAuditStore: ms({ entries: [], total: 0, stats: null, loading: false, page: 0, pageSize: 20, filterTool: null, refresh: vi.fn(), loadStats: vi.fn(), setPage: vi.fn(), setFilterTool: vi.fn() }),
     useWebhookStore: ms({ entries: [], total: 0, loading: false, error: null, refresh: vi.fn(), create: vi.fn(), remove: vi.fn(), regenerateSecret: vi.fn(), update: vi.fn() }),
-    useWorkflowStore: ms({ entries: [], total: 0, loading: false, error: null, refresh: vi.fn(), create: vi.fn(), remove: vi.fn(), enable: vi.fn(), disable: vi.fn(), trigger: vi.fn() }),
+    useWorkflowStore: ms({ entries: [], total: 0, loading: false, error: null, refresh: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), enable: vi.fn(), disable: vi.fn(), trigger: vi.fn() }),
   };
 });
 

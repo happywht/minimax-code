@@ -9,6 +9,7 @@ import { create } from "zustand";
 import { typedIPC } from "../ipc/client";
 import type { WebhookConfig } from "../types/ipc";
 import { toast } from "../components/layout/ErrorBoundary";
+import { strings } from "../ui/strings";
 
 export interface WebhookState {
   entries: WebhookConfig[];
@@ -50,7 +51,7 @@ export const useWebhookStore = create<WebhookState>((set, get) => ({
       set({ entries: result.entries, total: result.total, loading: false });
     } catch (e) {
       const msg = String(e);
-      toast.error("Failed to load webhooks", msg);
+      toast.error(strings.toasts.webhooksLoadFailed, msg);
       set({ error: msg, loading: false });
     }
   },
@@ -63,7 +64,7 @@ export const useWebhookStore = create<WebhookState>((set, get) => ({
       return wh;
     } catch (e) {
       const msg = String(e);
-      toast.error("Failed to create webhook", msg);
+      toast.error(strings.toasts.webhookCreateFailed, msg);
       set({ error: msg });
       return null;
     }
@@ -76,7 +77,7 @@ export const useWebhookStore = create<WebhookState>((set, get) => ({
       await get().refresh();
     } catch (e) {
       const msg = String(e);
-      toast.error("Failed to update webhook", msg);
+      toast.error(strings.toasts.webhookUpdateFailed, msg);
       set({ error: msg });
     }
   },
@@ -88,7 +89,7 @@ export const useWebhookStore = create<WebhookState>((set, get) => ({
       await get().refresh();
     } catch (e) {
       const msg = String(e);
-      toast.error("Failed to delete webhook", msg);
+      toast.error(strings.toasts.webhookDeleteFailed, msg);
       set({ error: msg });
     }
   },
@@ -101,7 +102,7 @@ export const useWebhookStore = create<WebhookState>((set, get) => ({
       return wh;
     } catch (e) {
       const msg = String(e);
-      toast.error("Failed to regenerate webhook secret", msg);
+      toast.error(strings.toasts.webhookSecretFailed, msg);
       set({ error: msg });
       return null;
     }

@@ -16,6 +16,7 @@ import { create } from "zustand";
 import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import type { GitDiffResult, GitLogResult, GitStatusResult } from "../types/ipc";
+import { strings } from "../ui/strings";
 
 export interface GitState {
   /** Latest known status snapshot — ``null`` until first refresh. */
@@ -76,7 +77,7 @@ export const useGitStore = create<GitState>((set) => ({
     } catch (err) {
       set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to read git diff", message);
+      toast.error(strings.toasts.gitDiffFailed, message);
       return null;
     }
   },
@@ -90,7 +91,7 @@ export const useGitStore = create<GitState>((set) => ({
     } catch (err) {
       set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to read git log", message);
+      toast.error(strings.toasts.gitLogFailed, message);
       return null;
     }
   },

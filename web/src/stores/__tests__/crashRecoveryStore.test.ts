@@ -103,7 +103,7 @@ describe("crashRecoveryStore", () => {
       expect(state.available).toBe(false);
       expect(state.loading).toBe(false);
       expect(stubs.toastError).toHaveBeenCalledWith(
-        "Failed to read crash report",
+        "读取崩溃报告失败",
         "ipc-down",
       );
     });
@@ -128,7 +128,7 @@ describe("crashRecoveryStore", () => {
       await useCrashRecoveryStore.getState().loadHistory();
 
       expect(stubs.toastError).toHaveBeenCalledWith(
-        "Failed to load crash history",
+        "加载崩溃历史失败",
         "ipc-down",
       );
     });
@@ -178,7 +178,7 @@ describe("crashRecoveryStore", () => {
       await useCrashRecoveryStore.getState().dismiss();
 
       expect(stubs.toastError).toHaveBeenCalledWith(
-        "Failed to dismiss crash report",
+        "忽略崩溃报告失败",
         "ipc-down",
       );
     });

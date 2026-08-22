@@ -13,6 +13,7 @@ import { StreamEvent } from "../types/ipc";
 import type { TeamProgressData } from "../types/ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import { trimArray, MAX_TEAM_RUNS } from "../lib/eviction";
+import { strings } from "../ui/strings";
 
 /** A single team run tracked in the UI. */
 export interface TeamRunEntry {
@@ -59,13 +60,37 @@ export const useTeamRunStore = create<TeamRunState>((set, _get) => ({
   runs: [],
 
   spawn: async (opts) => {
+    // Insert an optimistic entry immediately so the panel shows the run
+    // even before the first WS progress event arrives (or if WS is down).
+    const pendingId = `pending-${opts.team_name}-${Date.now()}`;
+    set((s) => ({
+      runs: trimArray(
+        [
+          ...s.runs,
+          {
+            task_id: pendingId,
+            team_name: opts.team_name,
+            status: "started",
+            progress: 0,
+            agents_total: 0,
+            agents_completed: 0,
+            started_at: Date.now(),
+            updated_at: Date.now(),
+          },
+        ],
+        MAX_TEAM_RUNS,
+      ),
+    }));
     try {
       const result = await typedIPC.spawnTeam(opts);
       set((s) => ({
         runs: s.runs.map((r) =>
-          r.task_id === result.task_id
+          // The pending entry we just inserted, or the real-task_id entry
+          // the WS listener created from the first progress event.
+          r.task_id === pendingId || (result.task_id && r.task_id === result.task_id)
             ? {
                 ...r,
+                task_id: result.task_id ?? r.task_id,
                 status: result.success ? "completed" : "failed",
                 progress: 1,
                 updated_at: Date.now(),
@@ -79,18 +104,14 @@ export const useTeamRunStore = create<TeamRunState>((set, _get) => ({
         ),
       }));
     } catch (e) {
-      // Mark the latest run for this team as failed
+      // Mark the pending run as failed
       const msg = String(e);
-      toast.error("Failed to spawn team", msg);
-      set((s) => {
-        const idx = s.runs.findIndex(
-          (r) => r.team_name === opts.team_name && (r.status === "started" || r.status === "agent_started"),
-        );
-        if (idx === -1) return s;
-        const updated = [...s.runs];
-        updated[idx] = { ...updated[idx], status: "failed", updated_at: Date.now() };
-        return { runs: updated };
-      });
+      toast.error(strings.toasts.teamSpawnFailed, msg);
+      set((s) => ({
+        runs: s.runs.map((r) =>
+          r.task_id === pendingId ? { ...r, status: "failed", updated_at: Date.now() } : r,
+        ),
+      }));
     }
   },
 
@@ -141,24 +162,29 @@ export function initTeamRunListener(): () => void {
           ),
         };
       }
-      // New run
-      return {
-        runs: trimArray([
-          ...s.runs,
-          {
-            task_id: evt.task_id,
-            team_name: evt.team_name,
-            status: evt.status,
-            progress: evt.progress,
-            agents_total: evt.agents_total ?? 0,
-            agents_completed: evt.agents_completed ?? 0,
-            agent_name: evt.agent_name,
-            summary: evt.summary,
-            started_at: Date.now(),
-            updated_at: Date.now(),
-          },
-        ], MAX_TEAM_RUNS),
+      // New run — replace a same-team optimistic "pending-*" entry instead
+      // of appending a duplicate card.
+      const pendingIdx = s.runs.findIndex(
+        (r) => r.team_name === evt.team_name && r.task_id.startsWith("pending-"),
+      );
+      const entry: TeamRunEntry = {
+        task_id: evt.task_id,
+        team_name: evt.team_name,
+        status: evt.status,
+        progress: evt.progress,
+        agents_total: evt.agents_total ?? 0,
+        agents_completed: evt.agents_completed ?? 0,
+        agent_name: evt.agent_name,
+        summary: evt.summary,
+        started_at: Date.now(),
+        updated_at: Date.now(),
       };
+      if (pendingIdx !== -1) {
+        const next = [...s.runs];
+        next[pendingIdx] = entry;
+        return { runs: next };
+      }
+      return { runs: trimArray([...s.runs, entry], MAX_TEAM_RUNS) };
     });
   });
 

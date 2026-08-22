@@ -9,7 +9,8 @@ import { useEffect } from "react";
 import { Plus } from "lucide-react";
 import { Button, EmptyState, Spinner } from "../../ui";
 import { strings } from "../../ui/strings";
-import { useAgentStore, useTeamStore } from "../../stores";
+import { toast } from "../layout/ErrorBoundary";
+import { useAgentStore, useSessionStore, useTeamStore, useTeamRunStore } from "../../stores";
 import type { AgentTeam } from "../../types/ipc";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { InlineCode, TabHeader } from "./fields";
@@ -26,6 +27,9 @@ function TeamsTab(): JSX.Element {
   const remove = useTeamStore((s) => s.remove);
   const enable = useTeamStore((s) => s.enable);
   const disable = useTeamStore((s) => s.disable);
+
+  const spawnRun = useTeamRunStore((s) => s.spawn);
+  const currentSessionId = useSessionStore((s) => s.currentSessionId);
 
   // Available agents for team assignment
   const agents = useAgentStore((s) => s.agents);
@@ -45,6 +49,15 @@ function TeamsTab(): JSX.Element {
       confirmLabel: strings.settings.teams.deleteLabel,
     });
     if (accepted) await remove(t.name);
+  };
+
+  const handleRun = (teamName: string, request: string) => {
+    toast.info(strings.settings.teams.runStartedToast, strings.settings.teams.runStartedDetail);
+    void spawnRun({
+      team_name: teamName,
+      request,
+      session_id: currentSessionId ?? undefined,
+    });
   };
 
   return (
@@ -89,6 +102,7 @@ function TeamsTab(): JSX.Element {
               team={t}
               onToggleEnabled={() => void (t.enabled ? disable(t.name) : enable(t.name))}
               onDelete={() => void handleDelete(t)}
+              onRun={(request) => handleRun(t.name, request)}
             />
           ))}
         </ul>

@@ -13,6 +13,7 @@ import { create } from "zustand";
 import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import type { MemoryCategory, MemoryEntry } from "../types/ipc";
+import { strings } from "../ui/strings";
 
 export type MemoryEntryItem = MemoryEntry;
 
@@ -20,6 +21,8 @@ export interface MemoryState {
   memories: MemoryEntryItem[];
   total: number;
   loading: boolean;
+  /** Last list/search failure — rendered as an inline banner by MemoryTab. */
+  error: string | null;
   searchQuery: string;
 
   refresh: (opts?: {
@@ -49,31 +52,33 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
   memories: [],
   total: 0,
   loading: false,
+  error: null,
   searchQuery: "",
 
   refresh: async (opts) => {
-    set({ loading: true });
+    set({ loading: true, error: null });
     try {
       const r = await typedIPC.listMemories(opts ?? {});
       set({ memories: r.memories, total: r.total, loading: false });
     } catch (err) {
-      set({ loading: false });
+      // Surface as store.error (inline banner) instead of a toast: a
+      // failed load must stay visible so the empty list is never read
+      // as "no memories yet".
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to load memories", message);
+      set({ loading: false, error: `${strings.toasts.memoryLoadFailed}: ${message}` });
     }
   },
 
   search: async (query, opts) => {
-    set({ loading: true, searchQuery: query });
+    set({ loading: true, searchQuery: query, error: null });
     try {
       const r = query.trim()
         ? await typedIPC.searchMemories(query.trim(), opts ?? {})
         : await typedIPC.listMemories(opts ?? {});
       set({ memories: r.memories, total: r.total, loading: false });
     } catch (err) {
-      set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to search memories", message);
+      set({ loading: false, error: `${strings.toasts.memorySearchFailed}: ${message}` });
     }
   },
 
@@ -87,7 +92,7 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
       return r.memory;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to add memory", message);
+      toast.error(strings.toasts.memoryAddFailed, message);
       return null;
     }
   },
@@ -103,7 +108,7 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
     } catch (err) {
       set({ memories: prev, total: prev.length });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to delete memory", message);
+      toast.error(strings.toasts.memoryDeleteFailed, message);
     }
   },
 

@@ -1,7 +1,12 @@
 /**
  * TeamRow — one team card in the Teams tab list.
+ *
+ * v1.1.0: adds an inline "run this team" form (Play button expands a
+ * request textarea) so a team run can be started without typing an
+ * @team: mention in the chat.
  */
-import { Trash2, Users } from "lucide-react";
+import { useState } from "react";
+import { Play, Trash2, Users, X } from "lucide-react";
 import { Badge, Button, IconButton } from "../../../ui";
 import { strings } from "../../../ui/strings";
 import type { AgentTeam } from "../../../types/ipc";
@@ -10,9 +15,22 @@ export interface TeamRowProps {
   team: AgentTeam;
   onToggleEnabled: () => void;
   onDelete: () => void;
+  /** Start a team run with the given request text. */
+  onRun: (request: string) => void;
 }
 
-export function TeamRow({ team, onToggleEnabled, onDelete }: TeamRowProps): JSX.Element {
+export function TeamRow({ team, onToggleEnabled, onDelete, onRun }: TeamRowProps): JSX.Element {
+  const [showRunForm, setShowRunForm] = useState(false);
+  const [request, setRequest] = useState("");
+
+  const submitRun = () => {
+    const trimmed = request.trim();
+    if (!trimmed) return;
+    onRun(trimmed);
+    setShowRunForm(false);
+    setRequest("");
+  };
+
   return (
     <li
       data-testid={`settings-team-row-${team.name}`}
@@ -51,6 +69,14 @@ export function TeamRow({ team, onToggleEnabled, onDelete }: TeamRowProps): JSX.
           </div>
         </div>
         <div className="ml-2 flex shrink-0 items-center gap-1">
+          <IconButton
+            data-testid={`settings-team-run-${team.name}`}
+            onClick={() => setShowRunForm((v) => !v)}
+            aria-label={strings.settings.teams.runAria(team.name)}
+            title={strings.settings.teams.runAria(team.name)}
+          >
+            {showRunForm ? <X /> : <Play />}
+          </IconButton>
           <Button
             size="sm"
             variant="ghost"
@@ -68,6 +94,37 @@ export function TeamRow({ team, onToggleEnabled, onDelete }: TeamRowProps): JSX.
           </IconButton>
         </div>
       </div>
+
+      {showRunForm && (
+        <div data-testid={`settings-team-runform-${team.name}`} className="mt-2 space-y-2 border-t border-line pt-2">
+          <label className="text-[11px] font-medium text-ink-1" htmlFor={`team-run-request-${team.name}`}>
+            {strings.settings.teams.runFormTitle} — {strings.settings.teams.runRequestLabel}
+          </label>
+          <textarea
+            id={`team-run-request-${team.name}`}
+            data-testid={`settings-team-run-input-${team.name}`}
+            value={request}
+            onChange={(e) => setRequest(e.target.value)}
+            placeholder={strings.settings.teams.runRequestPlaceholder}
+            rows={2}
+            className="w-full resize-none rounded-md border border-line bg-surface-1 px-2 py-1.5 text-xs text-ink-0 placeholder:text-ink-2 focus:border-accent/50 focus:outline-none"
+          />
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="ghost" onClick={() => setShowRunForm(false)}>
+              {strings.settings.teams.runCancel}
+            </Button>
+            <Button
+              size="sm"
+              variant="subtle"
+              data-testid={`settings-team-run-submit-${team.name}`}
+              disabled={!request.trim()}
+              onClick={submitRun}
+            >
+              {strings.settings.teams.runSubmit}
+            </Button>
+          </div>
+        </div>
+      )}
     </li>
   );
 }

@@ -14,7 +14,7 @@ import {
   useSecretStore,
 } from "../src/stores";
 import type { ProviderInfo, SecretStatus } from "../src/types/ipc";
-import { confirmationBus } from "../src/components/modals/ConfirmationDialog";
+import { confirmationBus, ConfirmationDialog } from "../src/components/modals/ConfirmationDialog";
 
 // Per-test mutable backing store for the secrets mock — the
 // IPC factory closure returns fresh `getSecretStatus` / `setSecret`
@@ -473,7 +473,14 @@ describe("SettingsPage", () => {
       loading: false,
     });
     const { typedIPC } = await import("../src/ipc");
-    render(<SettingsPage />);
+    // The dialog lives at the App root (mounted once for every consumer
+    // of requestConfirmation), so mount it alongside the page under test.
+    render(
+      <>
+        <SettingsPage />
+        <ConfirmationDialog />
+      </>
+    );
     fireEvent.click(screen.getByTestId("settings-tab-api-key"));
     expect(screen.getByTestId("settings-api-key-clear")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("settings-api-key-clear"));

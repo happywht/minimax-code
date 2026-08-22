@@ -7,10 +7,11 @@
  * v0.8.0 — Enterprise Multi-Agent.
  */
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
+  History,
   Loader2,
   Users,
   X,
@@ -21,7 +22,10 @@ import {
   initTeamRunListener,
   type TeamRunEntry,
 } from "../../stores/teamRunStore";
+import { typedIPC } from "../../ipc";
+import { formatRelative } from "../../lib/time";
 import { strings } from "../../ui/strings";
+import type { AgentRun } from "../../types/ipc";
 
 function statusIcon(status: TeamRunEntry["status"]) {
   switch (status) {
@@ -117,10 +121,32 @@ function RunCard({ run, onRemove }: { run: TeamRunEntry; onRemove: () => void })
   );
 }
 
+/** One row in the persisted-runs history section. */
+function HistoryRow({ run }: { run: AgentRun }): JSX.Element {
+  const done = run.status === "completed";
+  return (
+    <li
+      data-testid={`teamrun-history-${run.id}`}
+      className="flex items-center justify-between gap-2 rounded-md border border-line/60 bg-surface-2/50 px-2 py-1.5 text-[11px]"
+    >
+      <span className="flex min-w-0 items-center gap-1.5">
+        {done ? (
+          <CheckCircle2 size={11} className="shrink-0 text-status-success" />
+        ) : (
+          <XCircle size={11} className="shrink-0 text-status-error" />
+        )}
+        <span className="truncate text-ink-0">{run.title || run.id}</span>
+      </span>
+      <span className="shrink-0 text-ink-2">{formatRelative(run.created_at)}</span>
+    </li>
+  );
+}
+
 export function TeamRunPanel(): JSX.Element {
   const runs = useTeamRunStore((s) => s.runs);
   const prune = useTeamRunStore((s) => s.prune);
   const remove = useTeamRunStore((s) => s.remove);
+  const [history, setHistory] = useState<AgentRun[]>([]);
 
   // Init WS listener on first mount
   useEffect(() => {
@@ -134,7 +160,50 @@ export function TeamRunPanel(): JSX.Element {
     return () => clearInterval(id);
   }, [prune]);
 
-  if (runs.length === 0) return <></>;
+  // Load the persisted team-run history once on mount. run.list returns
+  // runs of every mode, so filter to mode === "team" and keep the latest 5.
+  useEffect(() => {
+    let cancelled = false;
+    typedIPC
+      .listRuns({ limit: 30 })
+      .then((result) => {
+        if (cancelled) return;
+        setHistory(result.runs.filter((r) => r.mode === "team").slice(0, 5));
+      })
+      .catch(() => {
+        // History is best-effort; the live section still works.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const historySection = history.length > 0 && (
+    <div data-testid="teamrun-history" className="mt-2 border-t border-line/50 pt-2">
+      <h4 className="mb-1 flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-ink-2">
+        <History size={10} />
+        {strings.rightPanel.teamRuns.historyTitle}
+      </h4>
+      <ul className="space-y-1">
+        {history.map((r) => (
+          <HistoryRow key={r.id} run={r} />
+        ))}
+      </ul>
+    </div>
+  );
+
+  if (runs.length === 0) {
+    return (
+      <div data-testid="team-run-panel-empty" className="space-y-1.5 text-center">
+        <div className="flex justify-center">
+          <Users size={14} className="text-minimax-muted" />
+        </div>
+        <p className="text-[11px] text-minimax-fg">{strings.rightPanel.teamRuns.emptyTitle}</p>
+        <p className="text-[11px] text-minimax-muted">{strings.rightPanel.teamRuns.emptyHint}</p>
+        {historySection}
+      </div>
+    );
+  }
 
   return (
     <div data-testid="team-run-panel" className="space-y-2">
@@ -152,6 +221,7 @@ export function TeamRunPanel(): JSX.Element {
           <RunCard key={r.task_id} run={r} onRemove={() => remove(r.task_id)} />
         ))}
       </div>
+      {historySection}
     </div>
   );
 }

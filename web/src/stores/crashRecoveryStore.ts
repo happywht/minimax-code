@@ -22,6 +22,7 @@ import { create } from "zustand";
 import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import type { CrashHistoryEntry } from "../types/ipc";
+import { strings } from "../ui/strings";
 
 export interface CrashRecoveryState {
   /** True when a previous-crash report exists and the prompt should show. */
@@ -69,7 +70,7 @@ export const useCrashRecoveryStore = create<CrashRecoveryState>((set, get) => ({
       // toast for diagnosability but leave ``available: false`` so the UI
       // does not block on a missing report.
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to read crash report", message);
+      toast.error(strings.toasts.crashReportLoadFailed, message);
     }
   },
 
@@ -79,7 +80,7 @@ export const useCrashRecoveryStore = create<CrashRecoveryState>((set, get) => ({
       set({ history: result.entries });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to load crash history", message);
+      toast.error(strings.toasts.crashHistoryFailed, message);
     }
   },
 
@@ -100,7 +101,7 @@ export const useCrashRecoveryStore = create<CrashRecoveryState>((set, get) => ({
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to dismiss crash report", message);
+      toast.error(strings.toasts.crashDismissFailed, message);
     }
   },
 

@@ -9,6 +9,7 @@ import { create } from "zustand";
 import { typedIPC } from "../ipc/client";
 import type { WorkflowEntry } from "../types/ipc";
 import { toast } from "../components/layout/ErrorBoundary";
+import { strings } from "../ui/strings";
 
 export interface WorkflowState {
   entries: WorkflowEntry[];
@@ -53,7 +54,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       set({ entries: result.entries, total: result.total, loading: false });
     } catch (e) {
       const msg = String(e);
-      toast.error("Failed to load workflows", msg);
+      toast.error(strings.toasts.workflowsLoadFailed, msg);
       set({ error: msg, loading: false });
     }
   },
@@ -65,7 +66,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       return wf;
     } catch (e) {
       const msg = String(e);
-      toast.error("Failed to create workflow", msg);
+      toast.error(strings.toasts.workflowCreateFailed, msg);
       set({ error: msg });
       return null;
     }
@@ -77,7 +78,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       await get().refresh();
     } catch (e) {
       const msg = String(e);
-      toast.error("Failed to update workflow", msg);
+      toast.error(strings.toasts.workflowUpdateFailed, msg);
       set({ error: msg });
     }
   },
@@ -88,7 +89,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       await get().refresh();
     } catch (e) {
       const msg = String(e);
-      toast.error("Failed to delete workflow", msg);
+      toast.error(strings.toasts.workflowDeleteFailed, msg);
       set({ error: msg });
     }
   },
@@ -99,7 +100,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       await get().refresh();
     } catch (e) {
       const msg = String(e);
-      toast.error("Failed to enable workflow", msg);
+      toast.error(strings.toasts.workflowEnableFailed, msg);
       set({ error: msg });
     }
   },
@@ -110,7 +111,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       await get().refresh();
     } catch (e) {
       const msg = String(e);
-      toast.error("Failed to disable workflow", msg);
+      toast.error(strings.toasts.workflowDisableFailed, msg);
       set({ error: msg });
     }
   },
@@ -121,7 +122,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       await get().refresh();
     } catch (e) {
       const msg = String(e);
-      toast.error("Failed to trigger workflow", msg);
+      toast.error(strings.toasts.workflowTriggerFailed, msg);
       set({ error: msg });
     }
   },

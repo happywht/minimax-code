@@ -11,6 +11,7 @@ import { create } from "zustand";
 import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import type { AgentInfo } from "../types/ipc";
+import { strings } from "../ui/strings";
 
 export interface AgentState {
   agents: AgentInfo[];
@@ -34,7 +35,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     } catch (err) {
       set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to load agents", message);
+      toast.error(strings.toasts.agentsLoadFailed, message);
     }
   },
 
@@ -45,7 +46,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       return r.agent;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to create agent", message);
+      toast.error(strings.toasts.agentsCreateFailed, message);
       return null;
     }
   },
@@ -58,7 +59,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to update agent", message);
+      toast.error(strings.toasts.agentsUpdateFailed, message);
     }
   },
 
@@ -70,7 +71,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     } catch (err) {
       set({ agents: prev });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to delete agent", message);
+      toast.error(strings.toasts.agentsDeleteFailed, message);
     }
   },
 }));

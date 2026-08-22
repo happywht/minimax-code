@@ -29,6 +29,7 @@ import type {
   PermissionRule,
 } from "../types/ipc";
 import { StreamEvent } from "../types/ipc";
+import { strings } from "../ui/strings";
 
 export type PermissionRuleEntry = PermissionRule;
 
@@ -134,7 +135,7 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
     } catch (err) {
       set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to load permission rules", message);
+      toast.error(strings.toasts.rulesLoadFailed, message);
     }
   },
 
@@ -152,7 +153,7 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
       set({ rules: next });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to save rule", message);
+      toast.error(strings.toasts.ruleSaveFailed, message);
     }
   },
 
@@ -164,7 +165,7 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
       set((s) => ({ rules: s.rules.filter((x) => x.id !== id) }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to delete rule", message);
+      toast.error(strings.toasts.ruleDeleteFailed, message);
     }
   },
 
@@ -212,7 +213,7 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
         return { resolving };
       });
       const message = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to resolve permission", message);
+      toast.error(strings.toasts.permissionResolveFailed, message);
     }
   },
 }));

@@ -2,7 +2,7 @@
  * Workflows tab — manage automation workflows.
  */
 import { useEffect, useState } from "react";
-import { Play, Plus, RefreshCw, Trash2, Workflow } from "lucide-react";
+import { ListOrdered, Play, Plus, RefreshCw, Trash2, Workflow } from "lucide-react";
 import { Badge, Button, EmptyState, IconButton, Input, Panel } from "../../ui";
 import { strings } from "../../ui/strings";
 import { SkeletonTable } from "../layout/Skeleton";
@@ -11,12 +11,14 @@ import type { WorkflowEntry } from "../../types/ipc";
 import { formatDateTime } from "../../lib/time";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { ErrorBanner, Field, Select, TabHeader } from "./fields";
+import { StepEditor } from "./workflows/StepEditor";
 
 export { WorkflowsTab };
 
 function WorkflowsTab(): JSX.Element {
-  const { entries, total, loading, error, refresh, create, remove, enable, disable, trigger } = useWorkflowStore();
+  const { entries, total, loading, error, refresh, create, update, remove, enable, disable, trigger } = useWorkflowStore();
   const [showCreate, setShowCreate] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [newTriggerType, setNewTriggerType] = useState<"webhook" | "schedule" | "agent_event">("webhook");
   const [newDescription, setNewDescription] = useState("");
@@ -157,6 +159,15 @@ function WorkflowsTab(): JSX.Element {
                     </span>
                   </Button>
                   <IconButton
+                    data-testid={`workflow-edit-steps-${wf.id}`}
+                    aria-label={strings.settings.workflows.editStepsAria(wf.name)}
+                    title={strings.settings.workflows.editStepsAria(wf.name)}
+                    active={expandedId === wf.id}
+                    onClick={() => setExpandedId((v) => (v === wf.id ? null : wf.id))}
+                  >
+                    <ListOrdered />
+                  </IconButton>
+                  <IconButton
                     data-testid={`workflow-trigger-${wf.id}`}
                     aria-label={strings.settings.workflows.runAria(wf.name)}
                     title={strings.settings.workflows.runTitle}
@@ -186,6 +197,9 @@ function WorkflowsTab(): JSX.Element {
                 <span>{strings.settings.workflows.runs(wf.run_count)}</span>
                 {wf.last_run_at && <span>{strings.settings.workflows.last(formatDateTime(wf.last_run_at))}</span>}
               </div>
+              {expandedId === wf.id && (
+                <StepEditor workflow={wf} onSave={(steps) => update(wf.id, { steps })} />
+              )}
             </div>
           ))}
         </div>

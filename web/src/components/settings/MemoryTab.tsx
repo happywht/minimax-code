@@ -8,7 +8,7 @@
 import { useEffect, useState } from "react";
 import { Brain, Plus, Search, Trash2, X } from "lucide-react";
 import { Badge } from "../../ui/Badge";
-import { Button, IconButton, Input, Panel, Textarea } from "../../ui";
+import { Button, ErrorBanner, IconButton, Input, Panel, Textarea } from "../../ui";
 import { strings } from "../../ui/strings";
 import { useMemoryStore } from "../../stores";
 import { toast } from "../layout/ErrorBoundary";
@@ -30,6 +30,7 @@ export function MemoryTab(): JSX.Element {
   const memories = useMemoryStore((s) => s.memories);
   const total = useMemoryStore((s) => s.total);
   const loading = useMemoryStore((s) => s.loading);
+  const error = useMemoryStore((s) => s.error);
   const searchQuery = useMemoryStore((s) => s.searchQuery);
   const refresh = useMemoryStore((s) => s.refresh);
   const search = useMemoryStore((s) => s.search);
@@ -208,7 +209,16 @@ export function MemoryTab(): JSX.Element {
       </div>
 
       <ul className="space-y-1.5" data-testid="settings-memory-list">
-        {memories.length === 0 && !loading && (
+        {error && (
+          <li>
+            <ErrorBanner
+              message={error}
+              onRetry={() => void refresh(filterOpts)}
+              testId="settings-memory-error"
+            />
+          </li>
+        )}
+        {memories.length === 0 && !loading && !error && (
           <li className="rounded-lg border border-dashed border-line px-3 py-4 text-center text-xs text-ink-2">
             {searchQuery ? strings.settings.memory.emptySearch : strings.settings.memory.empty}
           </li>

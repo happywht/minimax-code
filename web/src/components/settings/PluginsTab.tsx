@@ -7,7 +7,7 @@
  */
 import { useEffect, useState } from "react";
 import { Puzzle, RefreshCw, AlertCircle, CheckCircle2, Link2, Server, ShieldAlert } from "lucide-react";
-import { Button, Checkbox, EmptyState, Spinner } from "../../ui";
+import { Button, Checkbox, EmptyState, ErrorBanner, Spinner } from "../../ui";
 import { strings } from "../../ui/strings";
 import { typedIPC } from "../../ipc";
 import { toast } from "../layout/ErrorBoundary";
@@ -20,15 +20,19 @@ function PluginsTab(): JSX.Element {
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [reloading, setReloading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const result = await typedIPC.listPlugins();
       setPlugins(result.plugins);
     } catch (err) {
+      // Inline banner: a failed load must stay visible so the empty
+      // list below is never read as "no plugins installed".
       const msg = err instanceof Error ? err.message : String(err);
-      toast.error(strings.settings.plugins.loadFailed, msg);
+      setLoadError(`${strings.settings.plugins.loadFailed}: ${msg}`);
     } finally {
       setLoading(false);
     }
@@ -91,11 +95,19 @@ function PluginsTab(): JSX.Element {
         }
       />
 
+      {loadError && (
+        <ErrorBanner
+          message={loadError}
+          onRetry={() => void load()}
+          testId="settings-plugins-error"
+        />
+      )}
+
       {loading && plugins.length === 0 ? (
         <div className="flex items-center justify-center gap-2 py-4 text-xs text-ink-2">
           <Spinner size={12} /> {strings.settings.plugins.loading}
         </div>
-      ) : plugins.length === 0 ? (
+      ) : plugins.length === 0 && !loadError ? (
         <EmptyState title="暂无 Plugin" hint={strings.settings.plugins.emptyHint} />
       ) : (
         <ul className="space-y-2" data-testid="settings-plugins-list">

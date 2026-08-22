@@ -9,6 +9,7 @@ import { create } from "zustand";
 import { typedIPC } from "../ipc/client";
 import type { AgentTeam, OrchestrationMode } from "../types/ipc";
 import { toast } from "../components/layout/ErrorBoundary";
+import { strings } from "../ui/strings";
 
 export interface TeamState {
   teams: AgentTeam[];
@@ -51,7 +52,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       set({ teams: result.teams, loading: false });
     } catch (e) {
       const msg = String(e);
-      toast.error("Failed to load teams", msg);
+      toast.error(strings.toasts.teamsLoadFailed, msg);
       set({ error: msg, loading: false });
     }
   },
@@ -63,7 +64,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       return team.team;
     } catch (e) {
       const msg = String(e);
-      toast.error("Failed to create team", msg);
+      toast.error(strings.toasts.teamCreateFailed, msg);
       set({ error: msg });
       return null;
     }
@@ -75,7 +76,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       await get().refresh();
     } catch (e) {
       const msg = String(e);
-      toast.error("Failed to update team", msg);
+      toast.error(strings.toasts.teamUpdateFailed, msg);
       set({ error: msg });
     }
   },
@@ -86,7 +87,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       await get().refresh();
     } catch (e) {
       const msg = String(e);
-      toast.error("Failed to delete team", msg);
+      toast.error(strings.toasts.teamDeleteFailed, msg);
       set({ error: msg });
     }
   },
@@ -97,7 +98,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       await get().refresh();
     } catch (e) {
       const msg = String(e);
-      toast.error("Failed to enable team", msg);
+      toast.error(strings.toasts.teamEnableFailed, msg);
       set({ error: msg });
     }
   },
@@ -108,7 +109,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       await get().refresh();
     } catch (e) {
       const msg = String(e);
-      toast.error("Failed to disable team", msg);
+      toast.error(strings.toasts.teamDisableFailed, msg);
       set({ error: msg });
     }
   },
