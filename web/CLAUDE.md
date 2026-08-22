@@ -35,14 +35,14 @@ MiniMax Code 的前端界面。基于 React 18 + Vite + TypeScript + Tailwind CS
 前端通过 `IPCClient` 单例与 agent 通信：
 
 - **`client.ts`**：transport 层——HTTP `POST /rpc`（请求/响应）+ `WebSocket /ws`（流式事件）+ `ipc` 单例导出
-- **`typed.ts`**：`TypedIPC` 类型化 API 层（`listSessions`、`sendMessage`、`listModels` 等全部 169 个 RPC 方法的签名）
+- **`typed.ts`**：`TypedIPC` 类型化 API 层（`listSessions`、`sendMessage`、`listModels` 等全部 170 个 RPC 方法的签名）
 - **`mock.ts`**：mock backend `mockHandle`——agent 不可达或 `VITE_AGENT_MODE=mock` 时自动降级，必须覆盖所有 IPC 方法
 - **`mockData.ts`**：mock 模式的数据与状态
 - **WebSocket 重连**：指数退避（250ms -> 500ms -> 1s -> 2s，上限 5s），断线重连后按 `?since=` 重放错过的广播
 
 ### TypedIPC 方法列表
 
-完整签名见 `src/ipc/typed.ts`（服务端 169 个注册方法，命名空间总表见根目录 CLAUDE.md 与 `docs/ipc-contract.md` Appendix A）。常用入口示例：
+完整签名见 `src/ipc/typed.ts`（服务端 170 个注册方法，命名空间总表见根目录 CLAUDE.md 与 `docs/ipc-contract.md` Appendix A）。常用入口示例：
 
 | 方法 | IPC 方法 | 功能 |
 |------|----------|------|
@@ -100,8 +100,9 @@ MiniMax Code 的前端界面。基于 React 18 + Vite + TypeScript + Tailwind CS
 - `PermissionRule` — 权限规则
 - `GitStatusResult` / `GitDiffResult` / `GitLogEntry` — Git 数据
 
-流式事件类型（`StreamEvent` 枚举，15 个，与 `agent/tests/test_ipc_contract_doc.py` 锁死同步）：
+流式事件类型（`StreamEvent` 枚举，16 个，与 `agent/tests/test_ipc_contract_doc.py` 锁死同步）：
 - `agent.message_chunk` / `agent.status` / `agent.tool_call` / `agent.tool_result`
+- `agent.ask_user` — 模型挂起等待澄清回答（v1.1.1 问答卡）
 - `permission.request` / `permission.resolved`
 - `task.progress` / `agent.subagent_progress` / `agent.team_progress`
 - `notification.new` / `notification.read`
@@ -172,5 +173,6 @@ A: 编辑 `tailwind.config.js` 中的 `minimax` 颜色定义（bg、panel、bord
 
 ## 变更记录 (Changelog)
 
+- **2026-08-23** — v1.1.1：新增 `AskUserCard` 问答卡（chat 域）与 `agent.ask_user` 事件（StreamEvent 16 个）、`agent.answer_user` IPC；IPC 方法 170
 - **2026-08-21** — R43 对账同步：组件清单子目录化、设置页 3 tab→14 tab 4 组、检查器 11 tab、stores 10→29、IPC 分层 4 文件、StreamEvent 8→15、新增 strings.ts/hooks 条目
 - **2026-06-04** — 初始化 web 模块 CLAUDE.md

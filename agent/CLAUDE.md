@@ -32,13 +32,13 @@ Python agent 是 MiniMax Code 的后端核心。它是一个 asyncio 进程，�
 
 CORS：默认允许 `http://localhost:5173` / `http://127.0.0.1:5173`；`MINIMAX_CODE_CORS_ORIGINS`（逗号分隔）可追加受信 origin（解析见 `http_server.py` `_cors_allow_origins`，无效项 warning 忽略）。
 
-### IPC 命名空间（36 个前缀 / 169 个方法）
+### IPC 命名空间（36 个前缀 / 170 个方法）
 
 完整前缀×方法数×handler 文件总表见根目录 CLAUDE.md「IPC 命名空间」节；方法级清单见 `docs/ipc-contract.md` Appendix A（由 `agent/tests/test_ipc_contract_doc.py` 双向守护）。高频命名空间：
 
 | 前缀 | 方法数 | Handler 文件 | 主要功能 |
 |------|--------|-------------|----------|
-| `agent.*` | 11 | `builtins.py`, `handlers_agents.py` | 消息发送、续跑、子 agent spawn |
+| `agent.*` | 12 | `builtins.py`, `handlers_agents.py` | 消息发送、续跑、ask_user 应答、子 agent spawn |
 | `session.*` | 12 | `handlers_sessions.py` | 会话 CRUD、归档、批量 |
 | `message.*` | 3 | `handlers_sessions.py` | 消息列表/编辑/删除 |
 | `model.*` | 4 | `handlers_model.py` | 模型列表/切换 |
@@ -55,12 +55,13 @@ CORS：默认允许 `http://localhost:5173` / `http://127.0.0.1:5173`；`MINIMAX
 
 另有 `audit` / `checkpoint` / `codebase` / `crash` / `diag` / `mcp` / `memory` / `notification` / `plugins` / `project` / `run` / `runner` / `runtime` / `team` / `telemetry` / `terminal` / `webhook` / `workflow` / `workspace` 共 19 个命名空间，以及无点号 built-in `ping` / `status` / `shutdown`。
 
-### 流式事件（WebSocket push，15 个）
+### 流式事件（WebSocket push，16 个）
 
 权威清单 = 前端 `web/src/types/ipc.ts` 的 `StreamEvent` 枚举，由 `tests/test_ipc_contract_doc.py` 锁死同步：
 
 - `agent.message_chunk` — LLM 流式输出 + metadata（thinking_count）
 - `agent.tool_call` / `agent.tool_result` — 工具调用中间状态
+- `agent.ask_user` — 结构化澄清问题（v1.1.1；UI 渲染内联问答卡，经 `agent.answer_user` 应答）
 - `agent.status` — Agent 状态变化
 - `agent.subagent_progress` / `agent.team_progress` — 子 agent / 团队进度
 - `permission.request` / `permission.resolved` — 权限弹窗
@@ -90,6 +91,7 @@ CORS：默认允许 `http://localhost:5173` / `http://127.0.0.1:5173`；`MINIMAX
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `MINIMAX_API_KEY` | 空（mock mode） | MiniMax API 密钥 |
+| `MINIMAX_MAX_ITERATIONS` | `200` | Agent 迭代安全阀（v1.1.1；clamp [1, 10000]） |
 | `MINIMAX_CODE_LOG_LEVEL` | `INFO` | 日志级别 |
 | `MINIMAX_CODE_ENV` | `development` | 环境 |
 | `MINIMAX_CODE_HTTP_PORT` | `8765` | HTTP 端口 |
@@ -201,6 +203,7 @@ A: 1) 在对应的 `handlers_*.py` 中实现 handler 函数；2) 在 `app.py` �
 
 ## 变更记录 (Changelog)
 
+- **2026-08-23** — v1.1.1：ask_user 工具（第 10 工具 + agent.answer_user + agent.ask_user 事件）、max_iterations 12→200（env `MINIMAX_MAX_ITERATIONS`）、subagent 默认 50；IPC 170 方法 / 36 前缀 / 事件 16
 - **2026-08-21** — R43 对账同步：24 实体表/167 IPC 方法 35 前缀/31 handler 文件/10 工具模块/20 DAO/25 迁移/12 技能/6 smoke，事件 7→15，环境变量补 CORS/LOG_FILE
 - **2026-06-06** — 新增 [`minimax_code/SELF.md`](minimax_code/SELF.md)，定义主 agent 行为准则（边界地图、自进化层定位、给下一个对话窗口的开局指引）。是 `CLAUDE.md` 的人本补充，新会话开局请优先阅读。
 - **2026-06-04** — 初始化 agent 模块 CLAUDE.md

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-23
+
+### Added — ask_user 工具全链路（v1.1.1）
+
+补齐「模型能力与工具目录不匹配」的最后一块：模型有澄清意愿却没有提问通道，现在有了。
+
+- **agent 侧（core + builtins）**：新内置工具 `ask_user`——模型以结构化问卷（`summary` + 多个 `question`：单选 `options` / 多选 `multi` / 自由文本 `allow_other`）向用户提问，循环在 `_execute_tool_call` 层**挂起**（`ASK_USER_TIMEOUT_S=600s`），经模块级路由表 `_ASK_USER_ROUTES` 唤醒，答案作为 tool result 回填继续循环。超时 / 取消 / 会话清理均有兜底。第 10 个内置工具。
+- **IPC**：`agent.answer_user`（第 170 个 IPC 方法）——按 `request_id` 提交 `answers`，校验必答项与选项合法性，唤醒挂起循环。
+- **流式事件**：`agent.ask_user`（第 16 个事件）——挂起瞬间广播完整问卷 payload；三处契约（registry ↔ `web/src/types/ipc.ts` ↔ `docs/ipc-contract.md`）由 `test_ipc_contract_doc.py` 锁死同步。
+- **前端问答卡（chat）**：`AskUserCard` 内联渲染于消息流——单选 radio、多选 checkbox（上限校验）、「其他」自填输入、必答校验、禁用态回显；`chatStore.answerAskUser()` 走 TypedIPC 全链路。11 个组件测试 + 10 个 store 测试。
+
+### Changed — 迭代预算与交接提醒重构（v1.1.1）
+
+回应「1M 上下文配 12 轮×5 块太保守」：预算本质是**失控保险丝**，不是任务天花板。
+
+- **`max_iterations` 12 → 200**：单块默认预算提升 16.7 倍；env 旋钮 `MINIMAX_MAX_ITERATIONS`（clamp [1, 10000]，垃圾值回退 200 + warning）。1M 窗口 + auto-continue 块循环下，实际任务上限 = 200 × 块数，预算只兜「工具死循环」。
+- **subagent 默认迭代 8 → 50**：五处对齐（orchestrator/subagent.py、tools/subagents.py、skills/runtime.py、team_orchestrator.py、dao/agents.py）。DB schema DEFAULT 8 保留（SQLite 无法 ALTER 列 DEFAULT；生产插入全走 DAO，重建表成本高收益零）。
+- **nudge 重写为「诚实交接」**：双触发——(a) context 压力（prompt 用量 ≥90% 窗口，压缩闸门之后的兜底提醒）；(b) 安全阀（剩余 ≤2 轮）。**模式感知文案**：auto-continue 开 → 「Keep working... runtime automatically continues with a fresh block」；关 → 诚实交接三段式（done / remaining / next step）。旧文案「produce a final answer now」已删除——它诱导模型交纯文本 final → `truncated=False` → auto-continue 只续跑 truncated runs，**续跑被提醒亲手杀死**，这是 v1.1.0「未触发 auto-continue」的根因。新措辞契约写入代码注释与 `docs/agent-core.md`。
+- **文档**：`docs/agent-core.md`（循环预算、Handoff nudge 段、config 表）、三份 CLAUDE.md（170 方法 / 36 前缀 / agent.* 12 / 事件 16）、环境变量表补 `MINIMAX_MAX_ITERATIONS`。
+
+**质量数字**：pytest 10180 passed / 15 skipped（+24 新测试）；vitest 720/720（93 文件，+21）；ESLint 0/0；ruff 全绿；tsc 干净。`tests/app.test.tsx` 补 fetch stub——本机 8765 活 agent 会劫持 `/health` 探针把 IPC client 切到 HTTP 模式，mock 断言全灭还白耗真实 LLM 调用。
+
 ## [1.1.0] - 2026-08-20
 
 ### Added — 从固定轮数天花板到 context 驱动的长任务循环（v1.1.0）
