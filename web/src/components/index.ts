@@ -7,6 +7,8 @@
 export { Sidebar } from "./layout/Sidebar";
 export { NavItem } from "./layout/NavItem";
 export { ChatPanel } from "./chat/ChatPanel";
+export { AskUserCard } from "./chat/AskUserCard";
+export type { AskUserCardProps } from "./chat/AskUserCard";
 export { ProviderReadinessBanner } from "./chat/ProviderReadinessBanner";
 export type { ProviderReadinessBannerProps } from "./chat/ProviderReadinessBanner";
 export { MessageList } from "./chat/MessageList";

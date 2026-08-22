@@ -264,6 +264,17 @@ export const strings = {
       failed: "无法继续",
     },
 
+    askUser: {
+      title: "需要你的确认",
+      subtitle: "Agent 已暂停，等待你的选择后继续",
+      timeoutHint: (seconds: number) => `${Math.round(seconds / 60)} 分钟内未作答将自动跳过`,
+      unanswered: (index: number) => `第 ${index} 问尚未选择`,
+      other: "其他",
+      otherPlaceholder: "输入自定义回答…",
+      submit: "提交回答",
+      skip: "跳过",
+    },
+
     providerBanner: {
       noModelTitle: "未选择模型",
       providerDisabledTitle: "提供商已禁用",
@@ -1272,6 +1283,7 @@ export const strings = {
     messageUpdateFailed: "更新消息失败",
     messageDeleteFailed: "删除消息失败",
     messagesLoadFailed: "加载消息失败",
+    askUserSubmitFailed: "提交回答失败",
     // memory
     memoryLoadFailed: "加载记忆失败",
     memorySearchFailed: "搜索记忆失败",

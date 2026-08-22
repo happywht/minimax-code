@@ -581,6 +581,19 @@ function mockHandle(
     case "agent.cancel":
       return { ok: true };
 
+    case "agent.answer_user": {
+      // Mock has no suspended ask_user waits — every request_id is
+      // unknown/expired from the mock backend's point of view.
+      const p = params as { request_id?: string; answers?: unknown[] };
+      if (!p || typeof p !== "object" || typeof p.request_id !== "string") {
+        throw new Error("invalid params: 'request_id' is required");
+      }
+      if (!Array.isArray(p.answers) || p.answers.length === 0) {
+        throw new Error("invalid params: 'answers' must be a non-empty array");
+      }
+      return { ok: false, error: "unknown or expired request_id (mock backend)" };
+    }
+
     case "agent.continue_run": {
       // v1.1.0 — resume a budget-truncated turn. The real backend
       // validates the latest run then re-enters send_message with a

@@ -497,6 +497,36 @@ export interface ToolResultData {
   message_id: string;
 }
 
+/** One selectable option of an `ask_user` question. */
+export interface AskUserOption {
+  label: string;
+  description?: string;
+}
+
+/** One question raised by the agent via the `ask_user` tool. */
+export interface AskUserQuestion {
+  question: string;
+  header: string;
+  options: AskUserOption[];
+  multiSelect: boolean;
+}
+
+/** Wire shape of one `agent.ask_user` event — the agent is suspended until answered. */
+export interface AskUserData {
+  request_id: string;
+  session_id: string;
+  questions: AskUserQuestion[];
+  /** Seconds the agent will wait before giving up (default 600). */
+  timeout_s: number;
+}
+
+/** Result shape for `agent.answer_user`. */
+export interface AnswerUserResult {
+  ok: boolean;
+  request_id?: string;
+  error?: string;
+}
+
 export interface PermissionRequestData {
   request_id: string;
   tool: string;
@@ -1143,6 +1173,7 @@ export const StreamEvent = {
   AgentStatus: "agent.status",
   ToolCall: "agent.tool_call",
   ToolResult: "agent.tool_result",
+  AskUser: "agent.ask_user",
   PermissionRequest: "permission.request",
   PermissionResolved: "permission.resolved",
   TaskProgress: "task.progress",

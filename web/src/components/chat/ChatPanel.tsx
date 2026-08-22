@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { MessageList } from "./MessageList";
 import { ProviderReadinessBanner } from "./ProviderReadinessBanner";
+import { AskUserCard } from "./AskUserCard";
 import { useChat, useSessionStore } from "../../stores";
 import { DropdownMenu, type DropdownMenuItem } from "../../ui/DropdownMenu";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
@@ -335,6 +336,8 @@ export function ChatPanel({
 
       {/* Message list */}
       <MessageList searchQuery={searchOpen ? searchQuery : undefined} />
+      {/* Inline questionnaire while the agent is suspended in ask_user */}
+      <AskUserCard />
       <ProviderReadinessBanner
         onOpenProviders={onOpenProviderSettings}
         onOpenModels={onOpenModelSettings}

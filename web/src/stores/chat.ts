@@ -16,6 +16,7 @@ import { ipc, IPCError, typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import {
   StreamEvent,
+  type AskUserData,
   type MessageChunkData,
   type ToolCallData,
   type ToolResultData,
@@ -35,6 +36,11 @@ export interface ChatState {
   agentReady: boolean;
   /** True while loadMessages is fetching history for the current session. */
   loadingMessages: boolean;
+  /**
+   * Pending `ask_user` questionnaire — the agent is suspended until the
+   * user answers (or the backend 600 s timeout fires). Null when idle.
+   */
+  askUser: AskUserData | null;
 
   init: () => Promise<void>;
   send: (content: string | ContentPart[]) => Promise<void>;
@@ -54,12 +60,22 @@ export interface ChatState {
   retryMessage: (messageId: string) => Promise<void>;
   updateMessage: (messageId: string, text: string) => Promise<void>;
   deleteMessage: (messageId: string) => Promise<void>;
+  /**
+   * Answer the pending ask_user questionnaire. One entry per question
+   * (positionally aligned); a multi-select answer is an array of labels.
+   * The card stays up on transport errors so the user can retry, and is
+   * cleared once the backend accepts or explicitly rejects the answer.
+   */
+  submitAskUser: (answers: Array<string | string[]>) => Promise<void>;
+  /** Decline to answer — replies "(skipped by user)" for every question. */
+  skipAskUser: () => Promise<void>;
 }
 
 let chunkUnsub: (() => void) | null = null;
 let toolCallUnsub: (() => void) | null = null;
 let toolResultUnsub: (() => void) | null = null;
 let statusUnsub: (() => void) | null = null;
+let askUserUnsub: (() => void) | null = null;
 let pendingAssistantId: string | null = null;
 
 // HMR cleanup — tear down WS listeners when this module is hot-replaced
@@ -70,6 +86,7 @@ if (import.meta.hot) {
     toolCallUnsub?.();
     toolResultUnsub?.();
     statusUnsub?.();
+    askUserUnsub?.();
   });
 }
 
@@ -201,6 +218,7 @@ export const useChat = create<ChatState>((set, get) => ({
   error: null,
   agentReady: false,
   loadingMessages: false,
+  askUser: null,
 
   init: async () => {
     if (get().agentReady) return;
@@ -285,6 +303,13 @@ export const useChat = create<ChatState>((set, get) => ({
         activeToolCalls.delete(data.tool_call_id);
         activeToolNames.delete(data.tool_call_id);
         resetStallWatchdogForCurrentActivity();
+        // An ask_user tool result means the suspension is over — the
+        // answer was accepted, timed out, or the run was cancelled.
+        // Either way the pending card must not linger (timeout/cancel
+        // never route through submitAskUser).
+        if (toolName === "ask_user") {
+          set({ askUser: null });
+        }
       });
     }
     if (!statusUnsub) {
@@ -317,6 +342,17 @@ export const useChat = create<ChatState>((set, get) => ({
         } else {
           resetStallWatchdogForCurrentActivity();
         }
+      });
+    }
+
+    if (!askUserUnsub) {
+      askUserUnsub = ipc.on<AskUserData>(StreamEvent.AskUser, (env) => {
+        const data = env.data;
+        if (!data) return;
+        // A fresh questionnaire always replaces any stale one — the
+        // backend serialises ask_user suspensions per run, so at most
+        // one card is live at a time.
+        set({ askUser: data });
       });
     }
 
@@ -671,6 +707,33 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
+  submitAskUser: async (answers) => {
+    const current = get().askUser;
+    if (!current) return;
+    try {
+      const result = await typedIPC.answerUser(current.request_id, answers);
+      if (!result.ok) {
+        // The backend explicitly rejected the answer (unknown/expired
+        // request_id) — the card is dead weight, drop it.
+        set({ askUser: null });
+        toast.error(strings.toasts.askUserSubmitFailed, result.error);
+        return;
+      }
+      set({ askUser: null });
+    } catch (err) {
+      // Transport failure — keep the card so the user can retry while
+      // the backend timeout window is still open.
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(strings.toasts.askUserSubmitFailed, message);
+    }
+  },
+
+  skipAskUser: async () => {
+    const current = get().askUser;
+    if (!current) return;
+    await get().submitAskUser(current.questions.map(() => "(skipped by user)"));
+  },
+
   loadMessages: async (sessionId: string) => {
     if (!sessionId) return;
     // Bump the sequence counter so any in-flight load from a
@@ -718,7 +781,7 @@ export const useChat = create<ChatState>((set, get) => ({
     ++_loadSeq;
     clearStallWatchdog();
     pendingAssistantId = null;
-    set({ messages: [], status: "idle", error: null, loadingMessages: false });
+    set({ messages: [], status: "idle", error: null, loadingMessages: false, askUser: null });
   },
 }));
 

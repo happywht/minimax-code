@@ -64,6 +64,7 @@ import type {
   ScheduledJob,
   SecretStatus,
   SendMessageResult,
+  AnswerUserResult,
   SessionExportResult,
   SessionStatsResult,
   SetModelResult,
@@ -204,6 +205,11 @@ export interface TypedIPC {
   cancelAgent(sessionId: string): Promise<{ ok: true }>;
   /** v1.1.0: resume the latest budget-truncated run for a session. */
   continueRun(sessionId: string): Promise<SendMessageResult | { ok: false; error: string }>;
+  /** Answer a pending ask_user suspension. One entry per question, positionally aligned. */
+  answerUser(
+    requestId: string,
+    answers: Array<string | string[]>,
+  ): Promise<AnswerUserResult>;
 
   // agent CRUD
   getAgent(name: string): Promise<{ agent: AgentInfo }>;
@@ -643,6 +649,11 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         "agent.continue_run",
         { session_id: sid },
       ),
+    answerUser: (requestId, answers) =>
+      client.request<AnswerUserResult>("agent.answer_user", {
+        request_id: requestId,
+        answers,
+      }),
 
     // Agent CRUD
     getAgent: (name) =>
