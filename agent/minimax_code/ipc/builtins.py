@@ -170,6 +170,12 @@ class _RunRecorder:
             return
         tool_name = str(call.get("name") or "unknown")
         tool_call_id = str(call.get("id") or f"toolu_{uuid.uuid4().hex[:10]}")
+        if tool_call_id in self._tool_steps:
+            # Idempotency guard: a duplicate tool_call event for the same
+            # tool_call_id must reuse the existing step — creating a second
+            # one would orphan the first in "running" state forever on the
+            # timeline (bit users as a spinner+red pair on exec_command).
+            return
         args = call.get("args") or call.get("arguments") or {}
         step = await self.dao.create_step(
             run_id=self.run_id,

@@ -912,8 +912,16 @@ class AgentCore:
             return _PreparedToolCall(
                 call_log, name, args, "deny", None, denied,
             )
+        emitted_call = False
         if action == "ask" and self._permission_gater is not None:
+            # Emit before the (possibly long) consent wait so the UI shows
+            # the pending call. When consent is granted, control falls
+            # through and must NOT emit again at the bottom of this method:
+            # a second emit for the same tool_call_id used to create a
+            # duplicate run step that stayed "running" forever (the
+            # consent-path double-emit bug on exec_* tools).
             await self._maybe_emit_tool_call(call_log, None)
+            emitted_call = True
             allowed = await self._permission_gater.request_consent(
                 tool=name, args=args
             )
@@ -962,7 +970,8 @@ class AgentCore:
                     call_log, name, args, "hook_block", None, blocked,
                 )
 
-        await self._maybe_emit_tool_call(call_log, None)
+        if not emitted_call:
+            await self._maybe_emit_tool_call(call_log, None)
         # R13 — per-tool circuit breaker. A flaky tool the LLM keeps
         # re-invoking would otherwise burn all max_iterations before the
         # loop gives up; the breaker fast-fails it after consecutive

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from minimax_code.storage.dao.runs import AgentRunsDAO
@@ -110,3 +112,51 @@ async def test_run_handlers_list_and_steps(monkeypatch, tmp_path, id_factory) ->
     finally:
         monkeypatch.setattr(app_module, "_DB_SINGLETON", None)
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_run_recorder_tool_call_is_idempotent_per_tool_call_id(
+    async_db, id_factory
+) -> None:
+    """A duplicate tool_call event for the same tool_call_id must not create
+    a second step — the duplicate used to orphan the first step in "running"
+    state forever on the timeline (spinner + red pair on exec_command)."""
+    from minimax_code.ipc.builtins import _RunRecorder
+
+    sessions = SessionsDAO(async_db)
+    dao = AgentRunsDAO(async_db)
+    sid = id_factory("ses")
+    await sessions.create(id=sid, title="dup guard")
+
+    events: list[str] = []
+
+    async def _emit(event: str, _payload: dict) -> None:
+        events.append(event)
+
+    recorder = _RunRecorder(
+        dao=dao,
+        db=async_db,
+        emit=_emit,
+        session_id=sid,
+        title="test run",
+        assistant_message_id=None,
+    )
+    await recorder.create()
+
+    call = {"id": "call_dup_1", "name": "exec_command", "args": {"cmd": ["ls"]}}
+    await recorder.tool_call(call)
+    await recorder.tool_call(call)  # duplicate — must be a no-op
+
+    steps = await dao.list_steps(recorder.run_id)
+    tool_steps = [s for s in steps if s["kind"] == "tool_call"]
+    assert len(tool_steps) == 1, "duplicate tool_call event must not add a step"
+    assert events.count("run.step.started") == 1
+    # And tool_result completes THE one step (no orphan left "running").
+    await recorder.tool_result(
+        call,
+        SimpleNamespace(success=True, output="ok", error=None, metadata=None),
+    )
+    steps = await dao.list_steps(recorder.run_id)
+    tool_steps = [s for s in steps if s["kind"] == "tool_call"]
+    assert len(tool_steps) == 1
+    assert tool_steps[0]["status"] == "completed"

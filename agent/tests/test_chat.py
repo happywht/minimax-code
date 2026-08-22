@@ -228,6 +228,12 @@ class TestAgentCoreGating:
             permission_store=perm_store,
             permission_gater=gater,
         )
+        emitted_calls: list[str] = []
+
+        async def _on_tool_call(call: dict) -> None:
+            emitted_calls.append(str(call.get("id")))
+
+        core.on_tool_call = _on_tool_call
 
         async def _resolve_later() -> None:
             # Let the gater register its pending request + emit the event.
@@ -249,6 +255,10 @@ class TestAgentCoreGating:
         # The tool ran (user said allow).
         assert len(tool.calls) == 1
         assert tool.calls[0]["text"] == "ping"
+        # Regression (consent double-emit): the ask-allowed path used to
+        # emit on_tool_call twice for the same tool_call_id — the duplicate
+        # orphaned a run step in "running" forever. Exactly one emit here.
+        assert emitted_calls == ["c1"]
         # And the agent finalized cleanly.
         assert result.final_text == "allowed!"
 
