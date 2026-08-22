@@ -4,7 +4,7 @@
  * tree can render and a message can be sent end-to-end without the
  * Rust shell.
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "../src/App";
@@ -22,6 +22,20 @@ beforeAll(() => {
       configurable: true,
     });
   }
+  // This suite asserts mock-backend behaviour. A real agent listening
+  // on 127.0.0.1:8765 (e.g. a dev server started next to the tests)
+  // would answer the /health probe, flip the IPC client to HTTP mode,
+  // and break every mock assumption below (plus spend real LLM calls).
+  // Reject all fetches so the probe fails and the client falls back
+  // to the in-process mock deterministically.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => Promise.reject(new Error("network disabled in app tests"))),
+  );
+});
+
+afterAll(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("App smoke test", () => {
