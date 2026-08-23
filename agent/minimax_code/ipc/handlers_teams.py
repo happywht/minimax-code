@@ -298,26 +298,16 @@ def register_team_handlers(
 
             agent_dao_instance = await agent_dao_factory()
 
-            # Build emit callback from server context.
-            # IPCServer has no ``emit()`` method — we mirror what
-            # ``Context.emit()`` does: create an Event envelope,
-            # write it to stdout, then fan out to WS listeners.
-            async def _emit(event_name: str, payload: Any) -> None:
-                try:
-                    from .protocol import Event
-
-                    env = Event(event=event_name, data=payload)
-                    await server._send(env.to_bytes())
-                    server.notify(env.model_dump(exclude_none=True))
-                except Exception:
-                    logger.warning("Failed to emit %s", event_name, exc_info=True)
-
+            # v1.2.0: reuse ``ctx.emit`` directly instead of hand-mirroring
+            # its envelope dance (Event + stdout + WS fan-out) here. The
+            # hand-rolled copy had already drifted once (no metadata support)
+            # and bought nothing — the handler owns a live Context.
             from ..orchestrator.team_orchestrator import TeamOrchestrator
 
             orch = TeamOrchestrator(
                 team_dao=team_dao,
                 agent_dao=agent_dao_instance,
-                emit_event=_emit,
+                emit_event=ctx.emit,
             )
             result = await orch.run(
                 team_name,

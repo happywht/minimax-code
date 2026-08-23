@@ -20,17 +20,33 @@ from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 
 
 class _CapturedReply:
-    """Minimal Context substitute that captures reply / reply_error."""
+    """Minimal Context substitute that captures reply / reply_error / emit.
+
+    ``emit`` mirrors the real ``Context.emit`` signature (event, data,
+    keyword-only metadata) so handlers can pass it straight through as an
+    ``emit_event`` callback — captured tuples stay available for assertions.
+    """
 
     def __init__(self) -> None:
         self.reply_value: dict[str, Any] | None = None
         self.error_value: dict[str, Any] | None = None
+        self.emitted: list[tuple[str, Any]] = []
 
     async def reply(self, value: Any) -> None:
         self.reply_value = value
 
     async def reply_error(self, code: int, message: str, data: Any = None) -> None:
         self.error_value = {"code": code, "message": message, "data": data}
+
+    async def emit(
+        self,
+        event: str,
+        data: Any = None,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        payload = {**data, "metadata": metadata} if metadata and isinstance(data, dict) else data
+        self.emitted.append((event, payload))
 
 
 class _StubDAO:

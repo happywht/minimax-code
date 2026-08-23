@@ -120,6 +120,15 @@ export function PermissionRequestModal({
             >
               Agent 准备调用 <code className="rounded bg-surface-3 px-1.5 py-0.5 text-ink-0">{current.tool}</code>
             </p>
+            {current.session_id && (
+              <p
+                data-testid="permission-request-modal-session"
+                className="mt-0.5 text-[11px] text-ink-2"
+                title={current.session_id}
+              >
+                所属会话 <code className="font-mono">{current.session_id.slice(0, 12)}</code>
+              </p>
+            )}
           </div>
         </div>
 

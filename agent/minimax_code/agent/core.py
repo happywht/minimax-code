@@ -1277,7 +1277,7 @@ class AgentCore:
             await self._maybe_emit_tool_call(call_log, None)
             emitted_call = True
             allowed = await self._permission_gater.request_consent(
-                tool=name, args=args
+                tool=name, args=args, session_id=self._current_session_id or None
             )
             if not allowed:
                 denied = ToolResult.fail(

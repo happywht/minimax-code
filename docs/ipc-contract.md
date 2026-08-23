@@ -966,7 +966,7 @@ so the frontend can route them by name without a regex.
 | `agent.ask_user`        | `{request_id, session_id, questions[], timeout_s}` — the model paused with structured clarification questions (v1.1.1); the UI renders an inline question card and answers via `agent.answer_user` |
 | `agent.status`          | `{session_id, status, detail?}`                     |
 | `task.progress`         | `{task_id, progress, message?}`                     |
-| `permission.request`    | `{request_id, tool, args}` — modal triggers         |
+| `permission.request`    | `{request_id, tool, args, session_id?}` — modal triggers; `session_id` (v1.2.0) tags which conversation the gated call belongs to |
 | `permission.resolved`   | `{request_id, decision}`                            |
 | `run.created`           | `{run}`                                              |
 | `run.step.started`      | `{run_id, step}`                                    |

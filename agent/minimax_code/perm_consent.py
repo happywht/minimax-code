@@ -125,6 +125,7 @@ class PermissionGater:
         *,
         tool: str,
         args: dict[str, Any],
+        session_id: str | None = None,
         timeout: float | None = None,
     ) -> bool:
         """Emit a ``permission.request`` event and block until resolve.
@@ -133,6 +134,11 @@ class PermissionGater:
         (or timed out). The pending entry is always cleaned up
         before returning, so a later ``resolve`` for the same
         request_id is a no-op.
+
+        ``session_id`` (v1.2.0) tags the event with the conversation
+        the gated tool call belongs to, so the frontend modal can show
+        which session is asking — several parallel sessions used to pop
+        indistinguishable prompts.
         """
         request_id = f"perm_{uuid.uuid4().hex[:12]}"
         loop = asyncio.get_running_loop()
@@ -143,15 +149,16 @@ class PermissionGater:
                 request_id=request_id, tool=tool, args=dict(args), future=future
             )
 
+        payload: dict[str, Any] = {
+            "request_id": request_id,
+            "tool": tool,
+            "args": dict(args),
+        }
+        if session_id:
+            payload["session_id"] = session_id
+
         try:
-            await self._emit(
-                "permission.request",
-                {
-                    "request_id": request_id,
-                    "tool": tool,
-                    "args": dict(args),
-                },
-            )
+            await self._emit("permission.request", payload)
         except Exception:  # pragma: no cover — defensive
             logger.exception(
                 "emit permission.request failed for tool=%s (denying)", tool

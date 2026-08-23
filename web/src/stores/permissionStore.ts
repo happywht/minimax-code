@@ -39,6 +39,8 @@ export interface PendingPermission {
   request_id: string;
   tool: string;
   args: Record<string, unknown>;
+  /** v1.2.0 — which session asked (parallel prompts used to be indistinguishable). */
+  session_id?: string;
   /** Wall-clock timestamp (Date.now()) the request arrived. */
   received_at: number;
 }
@@ -94,6 +96,7 @@ function ensureListeners(): void {
             request_id: data.request_id,
             tool: data.tool,
             args: data.args,
+            session_id: data.session_id,
             received_at: Date.now(),
           },
         },
