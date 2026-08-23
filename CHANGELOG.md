@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-08-23
+
+### Fixed — 长中文 write/edit 工具调用被截断（max_tokens 硬编码 4096）
+
+用户实测反馈「每次长 edit/write 都会被截在某个中文位置……改用 exec_command 写文件绕过」。取证确认根因不在工具，而在 LLM 输出预算：`AgentCore._stream_turn` 调 `stream_chat` 不传 `max_tokens`，anthropic transport 的兜底 `max_tokens or 4096` 硬编码 4096——300 行中文文档轻松 5-8k tokens，tool_use 的 `input_json_delta` 流被拦腰截断（`stop_reason=max_tokens` → `finish_reason="length"`），arguments JSON 不完整，`_prepare_tool_call` 里 `json.loads` 抛错，工具以「malformed JSON args」失败。中文 token 边界最密集，所以截断点几乎总落在中文位置。openai transport 不传不设限（无此问题），**anthropic 是唯一硬编码点**。
+
+- **输出预算配置化（agent core）**：`AgentConfig.max_output_tokens` 新字段，默认 **32768**（8× 提升），env 旋钮 `MINIMAX_CODE_MAX_OUTPUT_TOKENS`（clamp [1024, 131072]，垃圾值 warning 回退——仿 `MINIMAX_MAX_ITERATIONS` 既有模式）；`_stream_turn` 显式透传 `max_tokens=config.max_output_tokens`。
+- **transport 兜底对齐（anthropic）**：`max_tokens or 4096` → `or 32_768`（Anthropic 协议 max_tokens 必填所以兜底必须存在；与 core 默认一致，直连 transport 的调用者同享新余量）。
+- **截断可观测性 + 自愈提示**：run 循环检测 `finish_reason == "length"` 且有 pending tool_calls 时打 loud warning（指向 env 旋钮）；malformed JSON 工具错误信息从裸 parse error 增强为指明「参数被输出上限截断——改小 payload（分段写）或调大 `MINIMAX_CODE_MAX_OUTPUT_TOKENS`」，模型下一轮可据此自愈而非重复失败。
+- **回归测试（9 个，`test_output_token_budget.py`）**：env 旋钮（默认/覆盖/clamp/垃圾）、AgentConfig 显式值、core 透传（async-generator spy 捕获 kwargs）、anthropic 兜底 32768 锁死（防回退 4096）+ 显式值优先、openai 双向 parity（显式发出/缺省不设键）、malformed 错误含恢复指引。4 个存量测试 fake 的 `stream_chat` 签名补 `max_tokens` 形参（R55 补 `reasoning_effort` 同款适配）。
+
+**质量数字**：pytest **10204 passed / 15 skipped**（10195 基线 + 9 新增）；ruff 全绿。
+
 ## [1.2.0] - 2026-08-23
 
 ### Fixed — 全局审计修复：跨会话串台、幽灵时间线、技能契约断裂（14 项，5 刀 + P3）

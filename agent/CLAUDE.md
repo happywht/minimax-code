@@ -92,6 +92,7 @@ CORS：默认允许 `http://localhost:5173` / `http://127.0.0.1:5173`；`MINIMAX
 |------|--------|------|
 | `MINIMAX_API_KEY` | 空（mock mode） | MiniMax API 密钥 |
 | `MINIMAX_MAX_ITERATIONS` | `200` | Agent 迭代安全阀（v1.1.1；clamp [1, 10000]） |
+| `MINIMAX_CODE_MAX_OUTPUT_TOKENS` | `32768` | 单次 LLM 调用输出预算（v1.2.1；clamp [1024, 131072]，防长中文 write/edit 参数截断） |
 | `MINIMAX_CODE_LOG_LEVEL` | `INFO` | 日志级别 |
 | `MINIMAX_CODE_ENV` | `development` | 环境 |
 | `MINIMAX_CODE_HTTP_PORT` | `8765` | HTTP 端口 |
@@ -203,6 +204,7 @@ A: 1) 在对应的 `handlers_*.py` 中实现 handler 函数；2) 在 `app.py` �
 
 ## 变更记录 (Changelog)
 
+- **2026-08-23** — v1.2.1：修复长中文 write/edit 工具调用截断——`AgentConfig.max_output_tokens`（默认 32768，env `MINIMAX_CODE_MAX_OUTPUT_TOKENS`）、`_stream_turn` 透传 max_tokens、anthropic transport 兜底 4096→32768、finish_reason=length 截断 warning、malformed JSON 错误附恢复指引；9 个回归测试（`test_output_token_budget.py`）
 - **2026-08-23** — v1.2.0：全局审计修复（agent 侧）——scheduler `_dispatch_prompt_job` 真实跑 prompt 任务往 session 发消息、025 migration（`scheduled_jobs.result_persist` 列）+ TasksDAO 结果读写、`permission.request` 广播补 session_id 归属、teams handler `emit_event=ctx.emit` 净化（metadata keyword-only）、技能调用结果落库 skill_runs
 - **2026-08-23** — v1.1.3：修复 context 指示器恒 0——core 持久化带 metadata 副本、builtins `_persist` 传 `tokens_in`/`tokens_out` 列；前端 ContextIndicator 取最新占用而非累加
 - **2026-08-23** — v1.1.2：修复长会话历史口癖污染——`_build_system_prompt_extra` 前置 stale-note advisory、nudge 防复述指令 + context-pressure 节流（`context_nudge_fired` / `compacted_this_iteration`）
