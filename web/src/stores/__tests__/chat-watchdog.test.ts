@@ -93,7 +93,10 @@ describe("Stall watchdog", () => {
   function emit(event: string, data: Record<string, unknown>): void {
     const handler = handlers.get(event);
     if (!handler) throw new Error(`No handler registered for event: ${event}`);
-    handler({ data });
+    // v1.2.0 session guard: chat-stream events stamped with a foreign
+    // session_id are dropped, so test events must carry the id the
+    // mocked sessionStore reports as current ("test-session").
+    handler({ data: { session_id: "test-session", ...data } });
   }
 
   // ── Helpers: simulate streaming start ────────────────────────────

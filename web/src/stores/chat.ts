@@ -16,6 +16,7 @@ import { ipc, IPCError, typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import {
   StreamEvent,
+  type AgentStatusData,
   type AskUserData,
   type MessageChunkData,
   type ToolCallData,
@@ -78,16 +79,24 @@ let statusUnsub: (() => void) | null = null;
 let askUserUnsub: (() => void) | null = null;
 let pendingAssistantId: string | null = null;
 
+/** Tear down all WS subscriptions (HMR hot-replace / app unmount). */
+export function disposeChatSubscriptions(): void {
+  chunkUnsub?.();
+  toolCallUnsub?.();
+  toolResultUnsub?.();
+  statusUnsub?.();
+  askUserUnsub?.();
+  chunkUnsub = null;
+  toolCallUnsub = null;
+  toolResultUnsub = null;
+  statusUnsub = null;
+  askUserUnsub = null;
+}
+
 // HMR cleanup — tear down WS listeners when this module is hot-replaced
 // so stale subscriptions don't accumulate and cause duplicate event handling.
 if (import.meta.hot) {
-  import.meta.hot.dispose(() => {
-    chunkUnsub?.();
-    toolCallUnsub?.();
-    toolResultUnsub?.();
-    statusUnsub?.();
-    askUserUnsub?.();
-  });
+  import.meta.hot.dispose(disposeChatSubscriptions);
 }
 
 /** Monotonic counter to prevent stale loadMessages from overwriting state. */
@@ -133,6 +142,21 @@ function clearStallWatchdog() {
   }
   activeToolCalls.clear();
   activeToolNames.clear();
+}
+
+/**
+ * Session guard for chat-stream events. The backend fans every broadcast
+ * out to every WebSocket client — skill.invoke, agent.invoke and runs in
+ * other tabs all ride the same message_chunk/tool_call/status channel,
+ * stamped with their own (temporary) session ids. Only events belonging
+ * to the currently open session may touch this store; anything else is a
+ * background run and must not pollute the visible conversation.
+ */
+function isCurrentSessionEvent(data: { session_id?: string | null }): boolean {
+  return (
+    !!data.session_id &&
+    data.session_id === useSessionStore.getState().currentSessionId
+  );
 }
 
 function ensureMessage(
@@ -228,6 +252,7 @@ export const useChat = create<ChatState>((set, get) => ({
       chunkUnsub = ipc.on<MessageChunkData>(StreamEvent.MessageChunk, (env) => {
         const data = env.data;
         if (!data) return;
+        if (!isCurrentSessionEvent(data)) return;
         set((s) => {
           // The v0.3.0 thinking_count channel attaches a
           // ``metadata`` field to the final ``done=True`` chunk
@@ -255,6 +280,7 @@ export const useChat = create<ChatState>((set, get) => ({
       toolCallUnsub = ipc.on<ToolCallData>(StreamEvent.ToolCall, (env) => {
         const data = env.data;
         if (!data) return;
+        if (!isCurrentSessionEvent(data)) return;
         const id = `tc-${data.tool_call_id}`;
         set((s) => ({
           messages: trimArray(ensureMessage(s.messages, {
@@ -281,6 +307,7 @@ export const useChat = create<ChatState>((set, get) => ({
       toolResultUnsub = ipc.on<ToolResultData>(StreamEvent.ToolResult, (env) => {
         const data = env.data;
         if (!data) return;
+        if (!isCurrentSessionEvent(data)) return;
         const id = `tr-${data.tool_call_id}`;
         const text = data.error
           ? `✗ ${data.error}`
@@ -313,9 +340,10 @@ export const useChat = create<ChatState>((set, get) => ({
       });
     }
     if (!statusUnsub) {
-      statusUnsub = ipc.on(StreamEvent.AgentStatus, (env) => {
-        const d = env.data as { status?: string; detail?: string } | undefined;
+      statusUnsub = ipc.on<AgentStatusData>(StreamEvent.AgentStatus, (env) => {
+        const d = env.data;
         if (!d) return;
+        if (!isCurrentSessionEvent(d)) return;
         if (d.status === "error") {
           const detail = d.detail ?? "Agent run failed";
           set((s) => ({
@@ -349,6 +377,7 @@ export const useChat = create<ChatState>((set, get) => ({
       askUserUnsub = ipc.on<AskUserData>(StreamEvent.AskUser, (env) => {
         const data = env.data;
         if (!data) return;
+        if (!isCurrentSessionEvent(data)) return;
         // A fresh questionnaire always replaces any stale one — the
         // backend serialises ask_user suspensions per run, so at most
         // one card is live at a time.
@@ -453,6 +482,15 @@ export const useChat = create<ChatState>((set, get) => ({
         sessions.setCurrent(result.session_id, false);
         await sessions.refresh({ loadCurrent: false });
       }
+      // Session-switch race guard — the user may have opened another
+      // session while this HTTP reply was in flight. Chunks for the old
+      // session were already dropped by the subscription guard; the
+      // fallback below must not write the old session's reply into the
+      // newly opened conversation either.
+      if (useSessionStore.getState().currentSessionId !== sessionId) {
+        pendingAssistantId = null;
+        return;
+      }
       // The HTTP response arrives *after* all WebSocket chunk events
       // have been processed (the agent streams chunks via WS, then
       // sends the JSON-RPC reply).  If the message was already
@@ -512,6 +550,20 @@ export const useChat = create<ChatState>((set, get) => ({
             ? err.message
             : String(err);
       const isTransportTimeout = message.includes("request timed out");
+
+      // Session-switch race guard — if the user moved to another session
+      // mid-send, this error belongs to the old conversation. The new
+      // session's loadMessages already reset the status; only release
+      // this run's local bookkeeping.
+      if (
+        !isTransportTimeout &&
+        sessionId &&
+        useSessionStore.getState().currentSessionId !== sessionId
+      ) {
+        pendingAssistantId = null;
+        clearStallWatchdog();
+        return;
+      }
 
       set((s) => {
         // A client/proxy timeout does not prove the backend run ended.

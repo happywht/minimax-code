@@ -11,7 +11,7 @@
  *  - the metadata survives a streaming→idle state transition
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { useChat } from "../src/stores";
+import { useChat, useSessionStore } from "../src/stores";
 import { ipc } from "../src/ipc";
 import { StreamEvent, type MessageChunkData } from "../src/types/ipc";
 
@@ -48,6 +48,10 @@ describe("chatStore v0.3.0 thinking_count metadata", () => {
     (ipc as unknown as { forceMock: boolean }).forceMock = true;
     (ipc as unknown as { started: boolean }).started = false;
     (ipc as unknown as { mode: string }).mode = "mock";
+    // v1.2.0 session guard: chunks stamped with a foreign session_id are
+    // dropped, so the real sessionStore must report the emitting session
+    // ("ses_test") as current before init() arms the listeners.
+    useSessionStore.setState({ currentSessionId: "ses_test" });
     await useChat.getState().init();
   });
 
