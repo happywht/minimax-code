@@ -362,11 +362,28 @@ async def _build_system_prompt_extra(
 
     Assembles context from the repo-map indexer (v0.4.0 Perception
     Engine) and, when available, relevant long-term memories for the
-    current session/project (v0.11.0 Milestone 3). Returns ``None`` when
-    no extra context is available so ``AgentConfig`` stays clean for
-    callers that don't need it.
+    current session/project (v0.11.0 Milestone 3). Always leads with the
+    stale-note advisory (v1.1.1) so history pollution from old run-loop
+    nudges is neutralised on every turn.
     """
-    parts: list[str] = []
+    parts: list[str] = [
+        # v1.1.1 — stale-note advisory. The run loop's ephemeral nudges
+        # ([system note] …) are never persisted, but the model's
+        # acknowledgements of them ARE ("收到，立刻收尾…", "budget
+        # exhausted — wrapping up"). Later turns then imitated those
+        # acknowledgements on every reply long after the note itself was
+        # gone — the exact pollution observed on long multi-turn
+        # sessions. The advisory is always true (the notes never persist)
+        # and costs ~60 tokens per turn.
+        "Stale-note advisory: earlier assistant messages in this "
+        "conversation may contain phrases like \"wrapping up\", \"budget "
+        "exhausted\", or \"no new work\" (e.g. 收尾 / 预算归零). Those "
+        "acknowledged ephemeral system notes that applied only to the "
+        "run which produced them — the notes are gone and their "
+        "constraints no longer apply. Do not imitate those phrases: "
+        "answer the current user message on its own merits, and only "
+        "describe work as finished when it actually is.",
+    ]
     try:
         from ..app import ensure_repo_map_indexer
 

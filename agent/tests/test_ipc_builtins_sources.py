@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from minimax_code.ipc.builtins import _extract_sources
 
 
@@ -82,3 +84,29 @@ def test_extract_sources_handles_path_without_range() -> None:
     assert _extract_sources(output) == [
         {"file_path": "README.md", "line_range": None},
     ]
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_extra_leads_with_stale_note_advisory() -> None:
+    """v1.1.1: the system prompt always leads with the stale-note
+    advisory. Acknowledgements of old run-loop nudges ("收到，立刻收尾…")
+    persist in history and later turns imitate them; the advisory is the
+    constant countermeasure and must be present even when no repo map
+    and no memories are available."""
+    from unittest.mock import patch
+
+    from minimax_code.ipc.builtins import _build_system_prompt_extra
+
+    async def _no_indexer() -> None:
+        return None
+
+    with (
+        patch("minimax_code.app.ensure_repo_map_indexer", _no_indexer),
+        patch("minimax_code.app.get_db", lambda: None),
+    ):
+        extra = await _build_system_prompt_extra(session_id="s", project_id=None)
+
+    assert extra is not None
+    assert extra.startswith("Stale-note advisory")
+    assert "no longer apply" in extra
+    assert "Do not imitate those phrases" in extra

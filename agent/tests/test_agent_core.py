@@ -799,6 +799,89 @@ async def test_loop_nudge_fires_on_context_pressure() -> None:
     assert "context window is nearly full" in nudge
 
 
+@pytest.mark.asyncio
+async def test_loop_context_nudge_fires_once_per_run() -> None:
+    """v1.1.1 throttle: under sustained context pressure the nudge is
+    injected exactly once per run. Repeating it every iteration trained
+    the model to open every reply with an acknowledgement ("收到，立刻
+    收尾…"), and those acknowledgements persist into history — the exact
+    pollution this guard exists to stop."""
+    # Window 1000 → pressure bar 900; every iteration reports 950.
+    responses = [
+        _tool_response_with_usage(_tool_call("echo", {"text": f"i{i}"}, call_id=f"c{i}"), 950)
+        for i in range(5)
+    ] + [_text_response("Done despite sustained pressure.")]
+    fake = FakeLLM(responses)
+
+    core = AgentCore(
+        llm=fake,
+        registry=_fresh_registry(CountingTool()),
+        config=AgentConfig(max_iterations=8, context_window=1000),
+    )
+    await core.run(session_id="s_nudge_once", user_message="fill the window")
+
+    fired = [
+        idx
+        for idx, payload in enumerate(fake.messages)
+        if "context window is nearly full" in str(payload)
+    ]
+    assert len(fired) == 1
+    # The wording forbids echoing the note into the reply — the reply is
+    # persisted, so any acknowledgement would outlive the note itself.
+    assert "do not mention it, acknowledge it" in str(fake.messages[fired[0]][-1])
+
+
+@pytest.mark.asyncio
+async def test_loop_skips_context_nudge_right_after_compaction() -> None:
+    """v1.1.1 staleness guard: right after an intra-loop compaction the
+    reported usage still describes the pre-compaction payload, so the
+    context-pressure nudge must wait one iteration instead of alarming
+    the model with stale numbers."""
+    async def load_history(_sid: str) -> list[dict[str, Any]]:
+        return _compaction_history()
+
+    # threshold 0.5 ⇒ compact above 500; pressure bar is 900. Reporting
+    # 950 every iteration opens both gates from min-steps on.
+    responses = [
+        _tool_response_with_usage(_tool_call("echo", {"text": f"i{i}"}, call_id=f"c{i}"), 950)
+        for i in range(6)
+    ] + [_text_response("Done after the mixed gates.")]
+    fake = FakeLLM(responses)
+
+    core = AgentCore(
+        llm=fake,
+        registry=_fresh_registry(LongResultTool()),
+        config=AgentConfig(
+            max_iterations=8,
+            context_window=1000,
+            compaction_threshold=0.5,
+        ),
+        history_provider=load_history,
+    )
+    result = await core.run(session_id="s_nudge_stale", user_message="bulk under pressure")
+    assert result.compactions >= 1
+
+    def _payload_has(payload: list[dict[str, Any]], marker: str) -> bool:
+        return any(marker in str(m) for m in payload)
+
+    fired = [idx for idx, p in enumerate(fake.messages)
+             if _payload_has(p, "context window is nearly full")]
+    compacted = [
+        idx
+        for idx, p in enumerate(fake.messages)
+        if any(
+            isinstance(m, dict)
+            and str(m.get("content", "")).startswith("[Conversation summary (compacted)]")
+            for m in p
+        )
+    ]
+    assert compacted, "expected at least one compacted payload"
+    assert len(fired) == 1
+    # The compaction iteration itself carries no nudge — its usage data
+    # is stale by construction.
+    assert fired[0] not in compacted
+
+
 def test_default_max_iterations_env_knob(monkeypatch: pytest.MonkeyPatch) -> None:
     """v1.1.1: the iteration safety valve defaults to 200 and honours the
     MINIMAX_MAX_ITERATIONS env var (clamped to [1, 10_000]; garbage

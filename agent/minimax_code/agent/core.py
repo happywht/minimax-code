@@ -716,6 +716,14 @@ class AgentCore:
         # threshold expressed as a percent of the context window.
         last_prompt_tokens: int | None = None
         compactions = 0
+        # v1.1.1 — one context-pressure nudge per run. Repeating the note
+        # every iteration trains the model to open every reply with an
+        # acknowledgement ("收到，立刻收尾…"), and that acknowledgement is
+        # persisted — the exact historical-pattern pollution observed on
+        # long multi-turn sessions. The iteration safety valve below still
+        # fires on every late iteration (it is the final handoff, ≤2
+        # occurrences by construction).
+        context_nudge_fired = False
         compaction_policy = IntraCompactionConfig(
             enabled=True,
             mode=IntraCompactionMode.HISTORY_ONLY,
@@ -767,6 +775,7 @@ class AgentCore:
                 # guards against compact_history's no-op path (all turns
                 # recent → returns the list unchanged) so ``compactions``
                 # never over-counts.
+                compacted_this_iteration = False
                 if (
                     last_prompt_tokens is not None
                     and self.config.context_window
@@ -795,11 +804,16 @@ class AgentCore:
                         )
                         messages = compacted
                         compactions += 1
+                        compacted_this_iteration = True
 
                 # v1.1.1 — handoff nudge (rebuilt from the v1.1.0
                 # convergence nudge). Two triggers, one message shape:
                 # (a) context pressure — reported prompt usage is ≥90% of
-                #     the window even after compaction has been firing;
+                #     the window even after compaction has been firing.
+                #     One-shot per run (``context_nudge_fired``) and
+                #     skipped on the iteration right after a compaction
+                #     (``last_prompt_tokens`` still holds the stale
+                #     pre-compaction value then);
                 # (b) the iteration safety valve — ≤2 iterations remain
                 #     after this one (rare since the default rose to 200).
                 # The note is ephemeral: appended to the LLM payload only,
@@ -810,17 +824,25 @@ class AgentCore:
                 # auto-continue only resumes truncated runs — the old
                 # "produce a final answer now" wording was silently
                 # killing continuation. The message is therefore honest
-                # about what happens next and mode-aware.
+                # about what happens next and mode-aware. It also forbids
+                # the model from acknowledging the note in its reply:
+                # acknowledgements get persisted, and later turns then
+                # imitate them ("收到，立刻收尾…") long after the note
+                # itself is gone — the historical-pattern pollution seen
+                # in production.
                 llm_messages = messages
                 remaining = self.config.max_iterations - iteration - 1
                 context_pressure = (
-                    last_prompt_tokens is not None
+                    not context_nudge_fired
+                    and not compacted_this_iteration
+                    and last_prompt_tokens is not None
                     and self.config.context_window
                     and last_prompt_tokens >= 0.9 * self.config.context_window
                 )
                 if context_pressure or remaining <= 2:
                     if context_pressure:
                         reason = "the context window is nearly full"
+                        context_nudge_fired = True
                     else:
                         reason = (
                             "the iteration budget is almost exhausted: "
@@ -842,7 +864,12 @@ class AgentCore:
                             "done, (2) what remains, (3) the exact next "
                             "step. Never present unfinished work as complete."
                         )
-                    nudge = f"[system note] {reason}. {directive}"
+                    nudge = (
+                        f"[system note] {reason}. {directive} This note is "
+                        "informational: do not mention it, acknowledge it, "
+                        "or announce wrapping up in your reply — just adjust "
+                        "your behaviour and keep the reply about the work."
+                    )
                     llm_messages = messages + [{"role": "user", "content": nudge}]
 
                 try:
