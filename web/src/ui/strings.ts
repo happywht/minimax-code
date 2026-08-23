@@ -92,8 +92,14 @@ export const strings = {
     },
 
     workspace: {
-      switchedToast: "已切换工作区",
-      empty: "暂无工作区",
+      switchedToast: "已切换项目",
+      createdToast: "已创建项目",
+      createFailedToast: "新建项目失败",
+      empty: "暂无项目",
+      createLabel: "新建项目",
+      createPlaceholder: "项目名称…",
+      archivedSuffix: "已归档",
+      triggerLabel: (name: string) => `当前项目：${name}`,
     },
 
     theme: {

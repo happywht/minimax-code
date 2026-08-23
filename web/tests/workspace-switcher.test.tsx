@@ -1,54 +1,65 @@
 /**
- * Tests for the WorkspaceSwitcher dropdown.
+ * Tests for the WorkspaceSwitcher dropdown (v1.2.2: project switcher).
+ *
+ * The component is wired to the real project system — the same
+ * `sessionStore` slice the sidebar selector drives — instead of the
+ * removed localStorage-only workspace list (`lib/workspace.ts`).
  *
  * Covers:
- *   1. Renders the current workspace name on first mount (after
- *      localStorage is seeded).
+ *   1. Renders the current project name (falls back to the inbox
+ *      seed when no project is selected).
  *   2. Clicking the trigger opens the dropdown and lists every
- *      workspace with a checkmark on the active one.
- *   3. Selecting another workspace updates localStorage, clears the
- *      session list, and calls `sessionStore.refresh()`.
+ *      project (inbox first) with a checkmark on the active one.
+ *   3. Selecting another project persists `currentProjectId` in the
+ *      store (and localStorage) *without* wiping the session list —
+ *      projects are grouping labels, switching only routes new
+ *      sessions.
+ *   4. The inline create row creates a project and selects it.
  */
 import { describe, expect, it, beforeEach, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { WorkspaceSwitcher } from "../src/components/layout/WorkspaceSwitcher";
 import { useSessionStore } from "../src/stores";
+import type { Project } from "../src/types/ipc";
 
 vi.mock("../src/components/layout/ErrorBoundary", () => ({
   toast: { error: vi.fn(), info: vi.fn(), success: vi.fn() },
   toastBus: { push: vi.fn(), dismiss: vi.fn() },
 }));
 
-vi.mock("../src/ipc", async () => {
-  const actual = await vi.importActual<typeof import("../src/ipc")>("../src/ipc");
+function makeProject(overrides: Partial<Project> & { id: string }): Project {
   return {
-    ...actual,
-    typedIPC: {
-      ...actual.typedIPC,
-      listSessions: vi.fn(async () => ({ sessions: [] })),
-    },
-  };
-});
-
-function seedWorkspaces(workspaces: Array<{ name: string; path?: string }>) {
-  localStorage.setItem(
-    "minimax-code:workspaces",
-    JSON.stringify(
-      workspaces.map((w) => ({ name: w.name, path: w.path ?? "" })),
-    ),
-  );
-  localStorage.setItem(
-    "minimax-code:current-workspace",
-    workspaces[0]?.name ?? "default",
-  );
+    name: overrides.id,
+    description: "",
+    archived: false,
+    created_at: 1,
+    updated_at: 1,
+    ...overrides,
+  } as Project;
 }
+
+function seedProjects(projects: Project[], currentProjectId: string | null) {
+  useSessionStore.setState({ projects, currentProjectId });
+}
+
+const SAMPLE_SESSION = {
+  id: "ses_keep",
+  title: "existing task",
+  archived: false,
+  created_at: 0,
+  updated_at: 0,
+  model_id: null,
+};
 
 beforeEach(() => {
   localStorage.clear();
   useSessionStore.setState({
-    sessions: [],
-    currentSessionId: null,
+    sessions: [SAMPLE_SESSION] as never,
+    projects: [],
+    currentProjectId: null,
+    currentSessionId: "ses_keep",
     loading: false,
+    loadingProjects: false,
     filter: "all",
   });
 });
@@ -57,75 +68,132 @@ afterEach(() => {
   localStorage.clear();
 });
 
-describe("WorkspaceSwitcher", () => {
-  it("renders the current workspace name from localStorage", () => {
-    seedWorkspaces([{ name: "alpha" }, { name: "beta", path: "/work/beta" }]);
+describe("WorkspaceSwitcher (project switcher)", () => {
+  it("falls back to the inbox project when nothing is selected", () => {
+    seedProjects(
+      [makeProject({ id: "inbox", name: "收件箱" }), makeProject({ id: "p1", name: "官网改版" })],
+      null,
+    );
     render(<WorkspaceSwitcher />);
     expect(screen.getByTestId("workspace-switcher")).toBeInTheDocument();
-    expect(screen.getByTestId("workspace-switcher-label")).toHaveTextContent(
-      "alpha",
+    expect(screen.getByTestId("workspace-switcher-label")).toHaveTextContent("收件箱");
+  });
+
+  it("renders the current project name", () => {
+    seedProjects(
+      [makeProject({ id: "inbox", name: "收件箱" }), makeProject({ id: "p1", name: "官网改版" })],
+      "p1",
+    );
+    render(<WorkspaceSwitcher />);
+    expect(screen.getByTestId("workspace-switcher-label")).toHaveTextContent("官网改版");
+  });
+
+  it("synthesizes an inbox entry when the store has no projects yet", () => {
+    seedProjects([], null);
+    render(<WorkspaceSwitcher />);
+    expect(screen.getByTestId("workspace-switcher-label")).toHaveTextContent("收件箱");
+    fireEvent.click(screen.getByTestId("workspace-switcher-trigger"));
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+    expect(screen.getByTestId("workspace-option-inbox")).toHaveAttribute(
+      "aria-selected",
+      "true",
     );
   });
 
-  it("opens the dropdown and lists all workspaces with a checkmark on the active one", () => {
-    seedWorkspaces([
-      { name: "alpha" },
-      { name: "beta", path: "/work/beta" },
-      { name: "gamma" },
-    ]);
+  it("lists inbox first with a checkmark on the active project", () => {
+    seedProjects(
+      [
+        makeProject({ id: "p1", name: "官网改版", updated_at: 5 }),
+        makeProject({ id: "inbox", name: "收件箱" }),
+        makeProject({ id: "p2", name: "移动端", updated_at: 9 }),
+      ],
+      "p2",
+    );
     render(<WorkspaceSwitcher />);
     fireEvent.click(screen.getByTestId("workspace-switcher-trigger"));
     const menu = screen.getByTestId("workspace-switcher-menu");
     expect(menu).toBeInTheDocument();
     const options = screen.getAllByRole("option");
     expect(options).toHaveLength(3);
-    expect(options[0]).toHaveAttribute("aria-selected", "true");
-    expect(options[1]).toHaveAttribute("aria-selected", "false");
+    // Inbox is always first; the active project carries the checkmark.
+    expect(screen.getByTestId("workspace-option-inbox")).toHaveAttribute(
+      "aria-selected",
+      "false",
+    );
+    expect(screen.getByTestId("workspace-option-p2")).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     expect(screen.getByTestId("workspace-switcher-check")).toBeInTheDocument();
   });
 
-  it("switching a workspace persists selection, clears the session list, and triggers a refresh", async () => {
-    seedWorkspaces([{ name: "alpha" }, { name: "beta" }]);
-    useSessionStore.setState({
-      sessions: [
-        {
-          id: "ses_old",
-          title: "old",
-          archived: false,
-          created_at: 0,
-          updated_at: 0,
-          model_id: null,
-        },
-      ],
-      currentSessionId: "ses_old",
+  it("switching a project updates the store + localStorage and keeps the session list", async () => {
+    seedProjects(
+      [makeProject({ id: "inbox", name: "收件箱" }), makeProject({ id: "p1", name: "官网改版" })],
+      null,
+    );
+    render(<WorkspaceSwitcher />);
+    fireEvent.click(screen.getByTestId("workspace-switcher-trigger"));
+    fireEvent.click(screen.getByTestId("workspace-option-p1"));
+
+    // Selection persisted in the store and to localStorage.
+    expect(useSessionStore.getState().currentProjectId).toBe("p1");
+    await waitFor(() => {
+      expect(localStorage.getItem("minimax-code:current-project")).toBe("p1");
     });
-    const refreshSpy = vi.fn(async () => {
-      // Simulate the refresh wiping the previous session set so the
-      // store ends up in a clean state for the new workspace.
-      useSessionStore.setState({ sessions: [], currentSessionId: null });
+    // Label reflects the new project.
+    expect(screen.getByTestId("workspace-switcher-label")).toHaveTextContent("官网改版");
+    // v1.2.2 semantics: projects are grouping labels — the existing
+    // session list is NOT cleared on switch.
+    expect(useSessionStore.getState().sessions).toHaveLength(1);
+    // Dropdown closed after the selection.
+    expect(screen.queryByTestId("workspace-switcher-menu")).toBeNull();
+  });
+
+  it("creating a project from the inline row selects it and appends it", async () => {
+    const createdProject = makeProject({ id: "p_new", name: "新项目" });
+    // Mirror the real store action: it appends the project to the
+    // list before returning it (the component only calls setCurrentProject).
+    const createProject = vi.fn(async () => {
+      useSessionStore.setState((s) => ({
+        projects: [createdProject, ...s.projects],
+      }));
+      return createdProject;
     });
-    useSessionStore.setState({ refresh: refreshSpy });
+    seedProjects([makeProject({ id: "inbox", name: "收件箱" })], null);
+    useSessionStore.setState({ createProject });
 
     render(<WorkspaceSwitcher />);
     fireEvent.click(screen.getByTestId("workspace-switcher-trigger"));
-    fireEvent.click(screen.getByTestId("workspace-option-beta"));
+    const input = screen.getByTestId("workspace-switcher-create-input");
+    fireEvent.change(input, { target: { value: "新项目" } });
+    fireEvent.click(screen.getByTestId("workspace-switcher-create-submit"));
 
-    // Selection persisted to localStorage.
-    expect(localStorage.getItem("minimax-code:current-workspace")).toBe(
-      "beta",
-    );
-    // Label reflects the new workspace.
-    expect(screen.getByTestId("workspace-switcher-label")).toHaveTextContent(
-      "beta",
-    );
-    // Refresh was called.
     await waitFor(() => {
-      expect(refreshSpy).toHaveBeenCalledTimes(1);
+      expect(useSessionStore.getState().currentProjectId).toBe("p_new");
     });
-    // Session list was cleared as part of the switch.
-    expect(useSessionStore.getState().sessions).toEqual([]);
-    expect(useSessionStore.getState().currentSessionId).toBeNull();
-    // Dropdown closed after the selection.
-    expect(screen.queryByTestId("workspace-switcher-menu")).toBeNull();
+    expect(createProject).toHaveBeenCalledWith("新项目");
+    // Dropdown closed and the label shows the new project.
+    await waitFor(() => {
+      expect(screen.queryByTestId("workspace-switcher-menu")).toBeNull();
+    });
+    expect(screen.getByTestId("workspace-switcher-label")).toHaveTextContent("新项目");
+  });
+
+  it("empty name does not call createProject", async () => {
+    const createProject = vi.fn(async () => null);
+    seedProjects([makeProject({ id: "inbox", name: "收件箱" })], null);
+    useSessionStore.setState({ createProject });
+
+    render(<WorkspaceSwitcher />);
+    fireEvent.click(screen.getByTestId("workspace-switcher-trigger"));
+    fireEvent.change(screen.getByTestId("workspace-switcher-create-input"), {
+      target: { value: "   " },
+    });
+    fireEvent.click(screen.getByTestId("workspace-switcher-create-submit"));
+
+    expect(createProject).not.toHaveBeenCalled();
+    // The menu stays open so the user can fix the name.
+    expect(screen.getByTestId("workspace-switcher-menu")).toBeInTheDocument();
   });
 });

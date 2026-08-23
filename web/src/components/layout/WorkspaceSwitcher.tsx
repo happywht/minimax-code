@@ -1,31 +1,28 @@
 /**
- * Workspace switcher — compact dropdown button in the top header
- * that shows the current workspace name and lets the user pick a
- * different one. The list is persisted to `localStorage`; a fresh
- * install is seeded with a single "default" entry.
+ * Project switcher — compact dropdown button in the top header that
+ * shows the current project name and lets the user pick a different
+ * one, plus an inline "new project" row.
  *
- * Switching a workspace:
- *   1. Persists the new selection to `localStorage`.
- *   2. Triggers `sessionStore.refresh()` so the sidebar re-fetches
- *      the session list under the new workspace key.
- *   3. Shows a toast confirming the switch.
+ * v1.2.2: rewired from the old localStorage-only workspace list
+ * (`lib/workspace.ts`, removed) to the real project system — the same
+ * `sessionStore` slice the sidebar selector drives. Both UIs share
+ * one state source (`currentProjectId` + `projects`), so switching
+ * here updates the sidebar grouping and vice-versa. Projects are
+ * grouping labels for sessions (not filesystem workspaces): switching
+ * only changes where *new* sessions land, so the existing session
+ * list is deliberately left untouched.
  *
- * Designed to mirror MiniMax Code's breadcrumb-style top bar:
- * 40px tall, panel background, bottom border, workspace name with a
- * chevron-down, and a 240px dropdown on click.
+ * Keeps the MiniMax Code breadcrumb-style top bar: 40px tall, panel
+ * background, project name with a chevron-down, and a dropdown on
+ * click.
  */
-import { useEffect, useRef, useState, useCallback } from "react";
-import { Check, ChevronDown, Folder } from "lucide-react";
+import { useMemo, useRef, useState, useCallback } from "react";
+import { Check, ChevronDown, Folder, Inbox, Plus } from "lucide-react";
 import { Button } from "../../ui/Button";
 import { strings } from "../../ui/strings";
-import {
-  getCurrentWorkspace,
-  listWorkspaces,
-  setCurrentWorkspace,
-  type WorkspaceEntry,
-} from "../../lib/workspace";
 import { useClickOutside } from "../../lib/useClickOutside";
 import { useSessionStore } from "../../stores";
+import type { Project } from "../../types/ipc";
 import { toast } from "./ErrorBoundary";
 
 export interface WorkspaceSwitcherProps {
@@ -35,53 +32,77 @@ export interface WorkspaceSwitcherProps {
 export function WorkspaceSwitcher({
   testId = "workspace-switcher",
 }: WorkspaceSwitcherProps): JSX.Element {
-  const [current, setCurrent] = useState<string>(() => getCurrentWorkspace());
-  const [workspaces, setWorkspaces] = useState<WorkspaceEntry[]>(() =>
-    listWorkspaces(),
-  );
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const projects = useSessionStore((s) => s.projects);
+  const currentProjectId = useSessionStore((s) => s.currentProjectId);
+  const setCurrentProject = useSessionStore((s) => s.setCurrentProject);
+  const createProject = useSessionStore((s) => s.createProject);
 
-  const refreshSessions = useSessionStore((s) => s.refresh);
+  const [open, setOpen] = useState(false);
+  const [createName, setCreateName] = useState("");
+  const [creating, setCreating] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   // Close on outside click — shared hook replaces inline mousedown listener.
   const closeMenu = useCallback(() => setOpen(false), []);
   useClickOutside(containerRef, closeMenu, { enabled: open });
 
-  // Keep state in sync if some other code path (e.g. tests) mutates
-  // localStorage directly between renders.
-  useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (
-        e.key === "minimax-code:current-workspace" ||
-        e.key === "minimax-code:workspaces"
-      ) {
-        setCurrent(getCurrentWorkspace());
-        setWorkspaces(listWorkspaces());
-      }
+  // Mirror the sidebar's grouping: inbox first, then active, then
+  // archived. Same order in both switchers keeps one mental model.
+  const { orderedProjects, inboxProject } = useMemo(() => {
+    const inbox: Project =
+      projects.find((p) => p.id === "inbox") ?? {
+        id: "inbox",
+        name: "收件箱",
+        description: "",
+        archived: false,
+        created_at: 0,
+        updated_at: 0,
+      };
+    const byUpdated = (a: Project, b: Project) => b.updated_at - a.updated_at;
+    const active = projects
+      .filter((p) => p.id !== "inbox" && !p.archived)
+      .sort(byUpdated);
+    const archived = projects
+      .filter((p) => p.id !== "inbox" && p.archived)
+      .sort(byUpdated);
+    return {
+      orderedProjects: [inbox, ...active, ...archived],
+      inboxProject: inbox,
     };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
+  }, [projects]);
 
-  const selectWorkspace = async (name: string) => {
-    if (name === current) {
-      setOpen(false);
-      return;
-    }
-    setCurrentWorkspace(name);
-    setCurrent(name);
+  const currentProject = useMemo(
+    () =>
+      orderedProjects.find((p) => p.id === (currentProjectId ?? "inbox")) ??
+      inboxProject,
+    [orderedProjects, currentProjectId, inboxProject],
+  );
+
+  const selectProject = (project: Project) => {
     setOpen(false);
-    // Clearing the cached session list makes the sidebar feel
-    // snappy: the new workspace's sessions replace the old ones
-    // immediately even before the network round-trip finishes.
-    useSessionStore.setState({ sessions: [], currentSessionId: null });
-    toast.info(strings.layout.workspace.switchedToast, name);
+    if (project.id === currentProject.id) return;
+    setCurrentProject(project.id);
+    toast.info(strings.layout.workspace.switchedToast, project.name);
+  };
+
+  const handleCreate = async () => {
+    const name = createName.trim();
+    if (!name || creating) return;
+    setCreating(true);
     try {
-      await refreshSessions();
+      const project = await createProject(name);
+      if (project) {
+        setCurrentProject(project.id);
+        setCreateName("");
+        setOpen(false);
+        toast.info(strings.layout.workspace.createdToast, project.name);
+      } else {
+        toast.error(strings.layout.workspace.createFailedToast, name);
+      }
     } catch {
-      // refresh() already toasts on failure; we just need to keep
-      // the UI responsive when the round-trip rejects.
+      toast.error(strings.layout.workspace.createFailedToast, name);
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -96,10 +117,12 @@ export function WorkspaceSwitcher({
         data-testid="workspace-switcher-trigger"
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-label={strings.layout.workspace.triggerLabel(currentProject.name)}
+        title={strings.layout.workspace.triggerLabel(currentProject.name)}
         className="min-w-0 max-w-[110px] justify-between sm:max-w-[180px]"
       >
         <span data-testid="workspace-switcher-label" className="min-w-0 truncate">
-          {current}
+          {currentProject.name}
         </span>
         <ChevronDown
           size={12}
@@ -108,52 +131,86 @@ export function WorkspaceSwitcher({
         />
       </Button>
       {open && (
-        <ul
-          role="listbox"
+        <div
           data-testid="workspace-switcher-menu"
           className="absolute left-0 top-full z-50 mt-1 w-60 overflow-hidden rounded-lg border border-line bg-surface-1 shadow-pop"
         >
-          {workspaces.length === 0 && (
-            <li className="px-3 py-2 text-xs text-ink-1">
-              {strings.layout.workspace.empty}
-            </li>
-          )}
-          {workspaces.map((w) => {
-            const isCurrent = w.name === current;
-            return (
-              <li key={w.name}>
-                <button
-                  type="button"
-                  role="option"
-                  aria-selected={isCurrent}
-                  onClick={() => void selectWorkspace(w.name)}
-                  data-testid={`workspace-option-${w.name}`}
-                  className={
-                    "flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-ink-0 transition-colors hover:bg-surface-3 " +
-                    (isCurrent ? "bg-accent-subtle" : "")
-                  }
-                >
-                  <Folder size={12} className="shrink-0 text-ink-2" />
-                  <span className="flex-1 truncate">
-                    <span className="block text-ink-0">{w.name}</span>
-                    {w.path && (
-                      <span className="block text-[11px] text-ink-1">
-                        {w.path}
-                      </span>
-                    )}
-                  </span>
-                  {isCurrent && (
-                    <Check
-                      size={12}
-                      className="shrink-0 text-accent"
-                      data-testid="workspace-switcher-check"
-                    />
-                  )}
-                </button>
+          <ul role="listbox" aria-label={strings.layout.workspace.triggerLabel(currentProject.name)}>
+            {orderedProjects.length === 0 && (
+              <li className="px-3 py-2 text-xs text-ink-1">
+                {strings.layout.workspace.empty}
               </li>
-            );
-          })}
-        </ul>
+            )}
+            {orderedProjects.map((p) => {
+              const isCurrent = p.id === currentProject.id;
+              return (
+                <li key={p.id}>
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={isCurrent}
+                    onClick={() => selectProject(p)}
+                    data-testid={`workspace-option-${p.id}`}
+                    className={
+                      "flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-ink-0 transition-colors hover:bg-surface-3 " +
+                      (isCurrent ? "bg-accent-subtle" : "")
+                    }
+                  >
+                    {p.id === "inbox" ? (
+                      <Inbox size={12} className="shrink-0 text-ink-2" />
+                    ) : (
+                      <Folder size={12} className="shrink-0 text-ink-2" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate text-ink-0">
+                      {p.name}
+                      {p.archived && (
+                        <span className="ml-1 text-[11px] text-ink-2">
+                          ({strings.layout.workspace.archivedSuffix})
+                        </span>
+                      )}
+                    </span>
+                    {isCurrent && (
+                      <Check
+                        size={12}
+                        className="shrink-0 text-accent"
+                        data-testid="workspace-switcher-check"
+                      />
+                    )}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+          <div className="border-t border-line p-2">
+            <div className="flex items-center gap-1.5">
+              <Plus size={12} className="shrink-0 text-ink-2" />
+              <input
+                value={createName}
+                onChange={(e) => setCreateName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void handleCreate();
+                  if (e.key === "Escape") setOpen(false);
+                }}
+                placeholder={strings.layout.workspace.createPlaceholder}
+                aria-label={strings.layout.workspace.createLabel}
+                data-testid="workspace-switcher-create-input"
+                className="min-w-0 flex-1 rounded border border-line bg-surface-0 px-2 py-1 text-xs text-ink-0 placeholder:text-ink-2 focus:border-accent focus:outline-none"
+              />
+              <Button
+                type="button"
+                size="sm"
+                loading={creating}
+                disabled={creating || createName.trim().length === 0}
+                onClick={() => void handleCreate()}
+                data-testid="workspace-switcher-create-submit"
+                aria-label={strings.layout.workspace.createLabel}
+                className="!px-1.5 !py-0.5"
+              >
+                <Plus size={12} />
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
