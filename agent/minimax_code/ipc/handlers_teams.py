@@ -302,11 +302,19 @@ def register_team_handlers(
             # its envelope dance (Event + stdout + WS fan-out) here. The
             # hand-rolled copy had already drifted once (no metadata support)
             # and bought nothing — the handler owns a live Context.
+            # v1.2.2: inject the process-wide LLM singleton. The factory
+            # below used to omit ``llm=``, leaving TeamOrchestrator._llm
+            # permanently None — every member SubAgentRuntime then fell
+            # back to the canned "stub: agent xxx would handle..." path,
+            # so team runs never produced a real answer. None (no db /
+            # boot not yet run) keeps the legacy stub path for tests.
+            from ..app import get_subagent_llm
             from ..orchestrator.team_orchestrator import TeamOrchestrator
 
             orch = TeamOrchestrator(
                 team_dao=team_dao,
                 agent_dao=agent_dao_instance,
+                llm=get_subagent_llm(),
                 emit_event=ctx.emit,
             )
             result = await orch.run(

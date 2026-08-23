@@ -372,3 +372,113 @@ async def test_team_run_get_unknown_task(real_handlers: dict[str, Any]) -> None:
     await real_handlers["team.run.get"]({"task_id": "teamrun_noexist"}, ctx)
     assert ctx.error_value is not None
     assert "unknown team run" in ctx.error_value["message"]
+
+
+# ── Tests: LLM wiring (v1.2.2 regression) ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_team_spawn_injects_llm_singleton(
+    real_handlers: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v1.2.2 regression: ``team.spawn`` must wire the process-wide
+    LLM singleton into :class:`TeamOrchestrator`.
+
+    Before the fix the handler omitted ``llm=`` when constructing the
+    orchestrator, so ``TeamOrchestrator._llm`` was permanently ``None``
+    and every member SubAgentRuntime returned the canned
+    ``stub: agent xxx would handle...`` envelope — team runs in a real
+    deployment never produced an actual answer. The SubAgentRuntime
+    layer already had real-vs-stub coverage (``test_agents.py``); this
+    test pins the *handler-level* wiring, which is the link the old
+    tests missed (they all ran with ``_SUBAGENT_LLM = None``).
+    """
+
+    class _FakeLLM:
+        """Minimal ``stream_chat`` stand-in (mirrors test_agents._FakeLLM)."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def stream_chat(  # type: ignore[no-untyped-def]
+            self, messages, **_kwargs
+        ):
+            from minimax_code.agent.llm import StreamChunk
+
+            self.calls += 1
+            yield StreamChunk(delta=f"[{messages[0]['content'][:12]}] team reply")
+            yield StreamChunk(
+                finish_reason="stop",
+                usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            )
+
+    fake = _FakeLLM()
+    monkeypatch.setattr("minimax_code.app._SUBAGENT_LLM", fake)
+
+    await real_handlers["agent.create"](
+        {
+            "name": "solo",
+            "system_prompt": "Do things.",
+            "tool_allowlist": ["read_file"],
+        },
+        _CapturedReply(),
+    )
+    ctx_create = _CapturedReply()
+    await real_handlers["team.create"](
+        {"name": "solo-team", "agents": ["solo"], "orchestration_mode": "parallel"},
+        ctx_create,
+    )
+    assert ctx_create.reply_value is not None
+
+    ctx_spawn = _CapturedReply()
+    await real_handlers["team.spawn"](
+        {"team_name": "solo-team", "request": "say hi"}, ctx_spawn
+    )
+    assert ctx_spawn.error_value is None, ctx_spawn.error_value
+    result = ctx_spawn.reply_value
+    assert result is not None
+    assert result["success"] is True
+    agents_run = result["agents_run"]
+    assert len(agents_run) == 1
+    assert agents_run[0]["stub"] is False, (
+        "team.spawn lost its LLM wiring — the member fell back to the "
+        "stub path (handler forgot llm=get_subagent_llm()?)"
+    )
+    assert not agents_run[0]["text"].startswith("stub:")
+    assert fake.calls >= 1, "the member never drove the injected LLM"
+
+
+@pytest.mark.asyncio
+async def test_team_spawn_without_llm_keeps_stub_path(
+    real_handlers: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backward-compat: no LLM singleton (no db / boot not run) →
+    members keep the deterministic stub envelope instead of erroring."""
+    monkeypatch.setattr("minimax_code.app._SUBAGENT_LLM", None)
+
+    await real_handlers["agent.create"](
+        {
+            "name": "loner",
+            "system_prompt": "Do things.",
+            "tool_allowlist": ["read_file"],
+        },
+        _CapturedReply(),
+    )
+    ctx_create = _CapturedReply()
+    await real_handlers["team.create"](
+        {"name": "loner-team", "agents": ["loner"], "orchestration_mode": "parallel"},
+        ctx_create,
+    )
+    assert ctx_create.reply_value is not None
+
+    ctx_spawn = _CapturedReply()
+    await real_handlers["team.spawn"](
+        {"team_name": "loner-team", "request": "say hi"}, ctx_spawn
+    )
+    assert ctx_spawn.error_value is None, ctx_spawn.error_value
+    result = ctx_spawn.reply_value
+    assert result is not None
+    assert result["success"] is True
+    assert result["agents_run"][0]["stub"] is True

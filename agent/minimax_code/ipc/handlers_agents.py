@@ -385,15 +385,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 return
             name = str(config_row["name"])
 
-            from ..orchestrator import SubAgentConfig
-
-            config = SubAgentConfig(
-                name=config_row["name"],
-                system_prompt=config_row.get("system_prompt") or "",
-                tool_allowlist=config_row.get("tool_allowlist"),
-                model=config_row.get("model"),
-                id=config_row.get("id"),
-            )
+            config = _config_from_row(config_row)
             # Resolve the runtime lazily — the singleton is set
             # by :func:`minimax_code.app._maybe_open_db`, which
             # may not have run yet at handler-registration time
@@ -414,74 +406,97 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
             tracker = await _get_tracker()
             task_id: str | None = None
             message_id = f"msg_{uuid.uuid4().hex[:8]}"
-            if tracker is not None:
-                task_id = await tracker.start_task(
-                    session_id,
-                    f"subagent:{name}",
-                    emit=ctx.emit,
-                )
+            try:
+                if tracker is not None:
+                    task_id = await tracker.start_task(
+                        session_id,
+                        f"subagent:{name}",
+                        emit=ctx.emit,
+                    )
 
-            # 2. Run the sub-agent. When the runtime has an LLM
-            # injected, this forwards to AgentCore.run and
-            # returns the model's actual final text (and sets
-            # ``stub=False``). When the runtime is unconfigured
-            # (no LLM), the deterministic stub envelope is
-            # returned (``stub=True``).
-            result = await runtime.invoke(
-                handle, session_id=session_id, request=request
-            )
-            is_stub = bool(result.get("stub", True))
-            final_text = result.get("text", "")
-
-            # 3. Stream a single agent.message_chunk with the
-            # final text so the frontend sees a stream. The
-            # streamed delta and the final reply text are kept
-            # in sync (both come from ``final_text``).
-            await ctx.emit(
-                "agent.message_chunk",
-                {
-                    "session_id": session_id,
-                    "message_id": message_id,
-                    "delta": final_text,
-                    "done": False,
-                    "agent": name,
-                },
-            )
-            # 4. Bump the progress to 50 (mid-stream).
-            if tracker is not None and task_id is not None:
-                await tracker.update(
-                    task_id,
-                    50,
-                    message=("stub: half-way through" if is_stub else "half-way through"),
-                    emit=ctx.emit,
+                # 2. Run the sub-agent. When the runtime has an LLM
+                # injected, this forwards to AgentCore.run and
+                # returns the model's actual final text (and sets
+                # ``stub=False``). When the runtime is unconfigured
+                # (no LLM), the deterministic stub envelope is
+                # returned (``stub=True``).
+                result = await runtime.invoke(
+                    handle, session_id=session_id, request=request
                 )
-            # 5. Final chunk marker.
-            await ctx.emit(
-                "agent.message_chunk",
-                {
-                    "session_id": session_id,
-                    "message_id": message_id,
-                    "delta": "",
-                    "done": True,
-                    "agent": name,
-                },
-            )
-            # 6. Mark the task complete.
-            if tracker is not None and task_id is not None:
-                await tracker.complete(task_id, emit=ctx.emit)
-            await ctx.reply(
-                {
-                    "agent": name,
-                    "request": request,
-                    "session_id": session_id,
-                    "text": final_text,
-                    "iterations": result.get("iterations", 0),
-                    "tool_calls": result.get("tool_calls", []),
-                    "task_id": task_id,
-                    "message_id": message_id,
-                    "stub": is_stub,
-                }
-            )
+                is_stub = bool(result.get("stub", True))
+                final_text = result.get("text", "")
+
+                # 3. Stream a single agent.message_chunk with the
+                # final text so the frontend sees a stream. The
+                # streamed delta and the final reply text are kept
+                # in sync (both come from ``final_text``).
+                await ctx.emit(
+                    "agent.message_chunk",
+                    {
+                        "session_id": session_id,
+                        "message_id": message_id,
+                        "delta": final_text,
+                        "done": False,
+                        "agent": name,
+                    },
+                )
+                # 4. Bump the progress to 50 (mid-stream).
+                if tracker is not None and task_id is not None:
+                    await tracker.update(
+                        task_id,
+                        50,
+                        message=(
+                            "stub: half-way through" if is_stub else "half-way through"
+                        ),
+                        emit=ctx.emit,
+                    )
+                # 5. Final chunk marker.
+                await ctx.emit(
+                    "agent.message_chunk",
+                    {
+                        "session_id": session_id,
+                        "message_id": message_id,
+                        "delta": "",
+                        "done": True,
+                        "agent": name,
+                    },
+                )
+                # 6. Mark the task complete.
+                if tracker is not None and task_id is not None:
+                    await tracker.complete(task_id, emit=ctx.emit)
+                await ctx.reply(
+                    {
+                        "agent": name,
+                        "request": request,
+                        "session_id": session_id,
+                        "text": final_text,
+                        "iterations": result.get("iterations", 0),
+                        "tool_calls": result.get("tool_calls", []),
+                        "task_id": task_id,
+                        "message_id": message_id,
+                        "stub": is_stub,
+                    }
+                )
+            except BaseException as exc:
+                # v1.2.2: the ``tasks`` row must not stay "running"
+                # forever when anything between start and complete
+                # blows up (LLM failure, emit error, cancellation).
+                # BaseException so a cancelled run also closes its
+                # row; the original error is always re-raised for
+                # the outer except clauses to answer with.
+                if tracker is not None and task_id is not None:
+                    try:
+                        await tracker.complete(
+                            task_id,
+                            success=False,
+                            error=str(exc) or exc.__class__.__name__,
+                            emit=ctx.emit,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "agent.invoke: marking task %s failed errored", task_id
+                        )
+                raise
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except ValueError as exc:
@@ -591,15 +606,9 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 return
             name = str(config_row["name"])
 
-            from ..orchestrator import SubAgentConfig, make_session_id
+            from ..orchestrator import make_session_id
 
-            config = SubAgentConfig(
-                name=config_row["name"],
-                system_prompt=config_row.get("system_prompt") or "",
-                tool_allowlist=config_row.get("tool_allowlist"),
-                model=config_row.get("model"),
-                id=config_row.get("id"),
-            )
+            config = _config_from_row(config_row)
             runtime = _resolve_runtime()
             handle = runtime.build(config)
 
@@ -918,6 +927,43 @@ async def _emit_subagent_progress(
     if error is not None:
         payload["error"] = error
     await ctx.emit("agent.subagent_progress", payload)
+
+
+def _config_from_row(config_row: dict[str, Any]) -> Any:
+    """Build a full :class:`SubAgentConfig` from a persisted DAO row.
+
+    v1.2.2 regression: ``agent.invoke`` / ``agent.spawn_subagent``
+    used to construct the config with only five fields, silently
+    dropping the persisted ``max_iterations`` / ``temperature`` /
+    ``skills`` (…) — a sub-agent saved with a 200-iteration budget
+    actually ran at the default 50. Fields absent or NULL in the row
+    keep their dataclass defaults.
+    """
+    from ..orchestrator import SubAgentConfig
+
+    kwargs: dict[str, Any] = {}
+    if config_row.get("max_iterations") is not None:
+        kwargs["max_iterations"] = int(config_row["max_iterations"])
+    if config_row.get("temperature") is not None:
+        kwargs["temperature"] = float(config_row["temperature"])
+    if config_row.get("skills"):
+        kwargs["skills"] = list(config_row["skills"])
+    if config_row.get("tags"):
+        kwargs["tags"] = list(config_row["tags"])
+    return SubAgentConfig(
+        name=str(config_row["name"]),
+        system_prompt=config_row.get("system_prompt") or "",
+        tool_allowlist=config_row.get("tool_allowlist"),
+        model=config_row.get("model"),
+        id=config_row.get("id"),
+        description=str(config_row.get("description") or ""),
+        enabled=bool(config_row.get("enabled", True)),
+        icon=str(config_row.get("icon") or ""),
+        color=str(config_row.get("color") or ""),
+        category=str(config_row.get("category") or ""),
+        team_id=config_row.get("team_id"),
+        **kwargs,
+    )
 
 def _normalise_allowlist(value: Any) -> list[str] | None:
     """Coerce the IPC ``tool_allowlist`` field into a list of strings.
