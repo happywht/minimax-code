@@ -249,6 +249,13 @@ class _WSManager:
                     "params": {
                         "server": "minimax-code-agent",
                         "version": self._version,
+                        # v1.2.2 — seq epoch anchor: the counter restarts
+                        # at 1 in every new process, so a client still
+                        # holding the previous epoch's high watermark
+                        # can detect the reset and drop its stale
+                        # ``?since=`` cursor (which would otherwise
+                        # filter out every replay from the new epoch).
+                        "next_seq": self._next_seq + 1,
                     },
                 }
             )

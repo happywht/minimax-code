@@ -661,7 +661,34 @@ export class IPCClient {
 
     // Lifecycle — server confirms the runtime is up. No listener
     // fan-out; presence of an open WebSocket is the signal UIs use.
-    if (method === "agent.ready") return;
+    if (method === "agent.ready") {
+      // v1.2.2 — seq epoch check. The agent's broadcast counter
+      // restarts at 1 in every new process, but our wsLastSeq keeps
+      // the *previous* process's high watermark. The server anchors
+      // the frame with `next_seq` (the seq the next broadcast will
+      // carry); if that is at or behind our watermark, this is a new
+      // epoch — the `?since=` cursor we just reconnected with filters
+      // out every replay from the new epoch. Drop the stale cursor
+      // and reconnect once without it, so the full history ring
+      // replays. (Once the new epoch's seq has run *past* the old
+      // watermark the old cursor is naturally valid again, which is
+      // why the comparison — not a mere restart — drives the reset.)
+      const params = (env.params ?? {}) as { next_seq?: unknown };
+      if (
+        typeof params.next_seq === "number" &&
+        params.next_seq <= this.wsLastSeq &&
+        this.ws
+      ) {
+        this.wsLastSeq = 0;
+        // This connection's replay already ran against the stale
+        // cursor (and matched nothing) — only a fresh connect gets
+        // the full replay. ready is the first frame of a connection,
+        // so the reconnected ready sees wsLastSeq = 0 and never
+        // re-triggers this branch (no loop).
+        this.ws.close(1000, "seq-epoch-reset");
+      }
+      return;
+    }
 
     // Heartbeat ping — reply with pong to keep the connection alive.
     if (method === "agent.ping" && this.ws && this.ws.readyState === WebSocket.OPEN) {

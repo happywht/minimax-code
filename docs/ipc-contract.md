@@ -51,7 +51,7 @@ registry**（`agent/minimax_code/ipc/server.py:IPCServer`）：
 - `POST /rpc` 永远返回 HTTP `200`；失败走 JSON-RPC `error` envelope
   （`code` / `message` / `data`）。`500` 仅用于"agent 自己崩了"或"请求
   无法反序列化"。
-- `GET /ws` 连接成功后，服务端立刻发 `{"method":"agent.ready","params":{"server":"minimax-code-agent","version":"0.2.0"}}`
+- `GET /ws` 连接成功后，服务端立刻发 `{"method":"agent.ready","params":{"server":"minimax-code-agent","version":"0.2.0","next_seq":<int>}}`（`next_seq` 为下一条广播事件的 seq 纪元锚点，v1.2.2）
   一次，然后开始推流。Agent 关闭时干净 close。
 - 请求示例：
   ```json
@@ -980,8 +980,12 @@ so the frontend can route them by name without a regex.
 On `GET /ws` connect, the server pushes one envelope:
 
 ```json
-{"jsonrpc":"2.0","method":"agent.ready","params":{"server":"minimax-code-agent","version":"0.2.0"}}
+{"jsonrpc":"2.0","method":"agent.ready","params":{"server":"minimax-code-agent","version":"0.2.0","next_seq":48}}
 ```
+
+`next_seq` (v1.2.2) is the seq the next broadcast will carry — the
+epoch anchor clients compare their resume cursor against (see
+"Event replay on reconnect" below).
 
 On agent shutdown, the server cleanly closes the WebSocket. The
 frontend `IPCClient` uses this to gate the UI (e.g. disable Send if
@@ -1015,8 +1019,12 @@ Rules:
 - `seq` is optional on old envelopes; clients that ignore it behave
   exactly as before (backward compatible).
 - If `since` is ahead of the ring (server restarted), nothing is
-  replayed — the client detects the seq jump on the next live
-  broadcast.
+  replayed. v1.2.2: the client detects the epoch reset via the
+  `next_seq` anchor on the ready frame — when `next_seq <= its high
+  watermark`, the cursor points into the previous process's numbering,
+  so the client drops it (resets to 0) and reconnects once without
+  `?since=` to get a full ring replay. Live events on the current
+  connection are unaffected (fan-out ignores `seq`).
 
 ### 8.2 Health probe (HTTP mode)
 

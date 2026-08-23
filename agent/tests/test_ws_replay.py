@@ -140,8 +140,9 @@ async def test_since_beyond_history_replays_nothing() -> None:
     mgr._on_event({"event": "agent.status", "data": {"i": 0}})
 
     # Client's last seq is ahead of the ring (server restarted) —
-    # replay nothing; the client detects the seq jump on the next
-    # live broadcast.
+    # replay nothing. v1.2.2: the client detects this epoch reset via
+    # the ``next_seq`` anchor on the ready frame (see tests below),
+    # drops its stale cursor, and reconnects without ``?since=``.
     ws = _make_mock_ws(query={"since": "9999"})
     await mgr.on_connect(ws)
     await _drain_sender()
@@ -150,4 +151,67 @@ async def test_since_beyond_history_replays_nothing() -> None:
     assert [p["method"] for p in payloads] == ["agent.ready"]
 
     await mgr.on_disconnect(ws)
+    await _drain_sender()
+
+
+# ---------------------------------------------------------------------------
+# v1.2.2 — ready-frame ``next_seq`` anchor (epoch-reset detection)
+# ---------------------------------------------------------------------------
+
+
+def _ready_payload(payloads: list[dict]) -> dict:
+    ready = [p for p in payloads if p.get("method") == "agent.ready"]
+    assert ready, "no agent.ready frame was sent"
+    return ready[0]
+
+
+@pytest.mark.asyncio
+async def test_ready_frame_carries_next_seq_anchor() -> None:
+    """The ready frame advertises the seq the next broadcast will
+    carry — the anchor clients compare their watermark against."""
+    mgr = _make_manager()
+
+    ws = _make_mock_ws()
+    await mgr.on_connect(ws)
+    await _drain_sender()
+    ready = _ready_payload([c.args[0] for c in ws.send_json.call_args_list])
+    assert ready["params"]["next_seq"] == 1, "fresh process must anchor at 1"
+    await mgr.on_disconnect(ws)
+    await _drain_sender()
+
+    for i in range(5):
+        mgr._on_event({"event": "agent.status", "data": {"i": i}})
+
+    ws2 = _make_mock_ws()
+    await mgr.on_connect(ws2)
+    await _drain_sender()
+    ready2 = _ready_payload([c.args[0] for c in ws2.send_json.call_args_list])
+    assert ready2["params"]["next_seq"] == 6, "anchor must be last seq + 1"
+    await mgr.on_disconnect(ws2)
+    await _drain_sender()
+
+
+@pytest.mark.asyncio
+async def test_ready_anchor_exposes_epoch_reset_to_stale_client() -> None:
+    """The v1.2.2 regression: a client holding the *previous*
+    process's watermark (47) reconnects after an agent restart. The
+    fresh process anchors at ``next_seq=1`` — 1 <= 47 tells the client
+    its ``?since=47`` cursor points into a dead epoch."""
+    old_mgr = _make_manager()  # simulates the pre-restart process
+    for _ in range(47):
+        old_mgr._on_event({"event": "agent.status", "data": {}})
+
+    restarted = _make_manager()  # fresh process: counter back at 0
+    ws = _make_mock_ws(query={"since": "47"})
+    await restarted.on_connect(ws)
+    await _drain_sender()
+
+    payloads = [c.args[0] for c in ws.send_json.call_args_list]
+    ready = _ready_payload(payloads)
+    assert ready["params"]["next_seq"] == 1
+    # And the replay the stale cursor asked for is empty — exactly
+    # what the client uses the anchor to recover from.
+    assert [p["method"] for p in payloads] == ["agent.ready"]
+
+    await restarted.on_disconnect(ws)
     await _drain_sender()

@@ -2,7 +2,7 @@
  * Tests for the typed IPC layer — the mock backend, the typed
  * wrappers, and the IPCError class.
  */
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import { IPCClient, IPCError, bindTypedIPC, isTauri, typedIPC } from "../src/ipc";
 
 describe("IPC mock backend", () => {
@@ -201,5 +201,81 @@ describe("module-level singleton", () => {
   it("typedIPC is the same as the bound singleton", () => {
     expect(typedIPC).toBeDefined();
     expect(typeof typedIPC.listSessions).toBe("function");
+  });
+});
+
+describe("seq epoch reset (agent.ready next_seq anchor, v1.2.2)", () => {
+  type Priv = {
+    wsLastSeq: number;
+    handleEnvelope: (env: Record<string, unknown>) => void;
+    ws: { close: (code?: number, reason?: string) => void } | null;
+  };
+
+  function makeClient(startSeq: number) {
+    const client = new IPCClient({ forceMock: true });
+    const priv = client as unknown as Priv;
+    priv.wsLastSeq = startSeq;
+    priv.ws = { close: vi.fn() };
+    return { client, priv };
+  }
+
+  function readyFrame(nextSeq?: number) {
+    return {
+      jsonrpc: "2.0",
+      method: "agent.ready",
+      params: { server: "minimax-code-agent", version: "t", ...(nextSeq === undefined ? {} : { next_seq: nextSeq }) },
+    };
+  }
+
+  it("resets the watermark and reconnects when the anchor is at or behind it", () => {
+    // The v1.2.2 regression: agent restarted, client still holds the
+    // previous process's watermark (47); the fresh process anchors at
+    // 1 — 1 <= 47 means the ?since=47 cursor points into a dead epoch.
+    const { priv } = makeClient(47);
+    priv.handleEnvelope(readyFrame(1));
+    expect(priv.wsLastSeq).toBe(0);
+    expect(priv.ws?.close).toHaveBeenCalledWith(1000, "seq-epoch-reset");
+  });
+
+  it("keeps the watermark when the anchor is ahead (same process)", () => {
+    const { priv } = makeClient(47);
+    priv.handleEnvelope(readyFrame(48));
+    expect(priv.wsLastSeq).toBe(47);
+    expect(priv.ws?.close).not.toHaveBeenCalled();
+  });
+
+  it("keeps the watermark once the new epoch has run past it", () => {
+    // After a restart the fresh process may have already broadcast
+    // past the old watermark — the old cursor is naturally valid then,
+    // so the comparison (not a mere restart) must drive the reset.
+    const { priv } = makeClient(47);
+    priv.handleEnvelope(readyFrame(61));
+    expect(priv.wsLastSeq).toBe(47);
+    expect(priv.ws?.close).not.toHaveBeenCalled();
+  });
+
+  it("does nothing on a first-ever connect (watermark 0)", () => {
+    const { priv } = makeClient(0);
+    priv.handleEnvelope(readyFrame(1));
+    expect(priv.wsLastSeq).toBe(0);
+    expect(priv.ws?.close).not.toHaveBeenCalled();
+  });
+
+  it("ignores ready frames without an anchor (older servers)", () => {
+    const { priv } = makeClient(47);
+    priv.handleEnvelope(readyFrame());
+    expect(priv.wsLastSeq).toBe(47);
+    expect(priv.ws?.close).not.toHaveBeenCalled();
+  });
+
+  it("still advances the watermark on live sequenced events", () => {
+    const { priv } = makeClient(0);
+    priv.handleEnvelope({
+      jsonrpc: "2.0",
+      method: "agent.status",
+      params: { status: "thinking" },
+      seq: 5,
+    });
+    expect(priv.wsLastSeq).toBe(5);
   });
 });
