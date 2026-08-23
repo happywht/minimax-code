@@ -21,15 +21,15 @@ import type { Message } from "../../../types/ipc";
 
 /* ────────── Helpers ────────── */
 
-/** Build an assistant message with a given tokens_in value. */
-function assistantMsg(id: string, tokensIn: number): Message {
+/** Build an assistant message with a given usage footprint. */
+function assistantMsg(id: string, tokensIn: number, tokensOut = 0): Message {
   return {
     id,
     role: "assistant",
     text: "irrelevant",
     streaming: false,
     created_at: Date.now(),
-    metadata: { thinking_count: 0, tokens_in: tokensIn, tokens_out: 10 },
+    metadata: { thinking_count: 0, tokens_in: tokensIn, tokens_out: tokensOut },
   };
 }
 
@@ -162,14 +162,25 @@ describe("ContextIndicator", () => {
     expect(container.innerHTML).toBe("");
   });
 
-  it("aggregates tokens_in across multiple assistant messages", () => {
-    // Two assistant messages: 3000 + 7000 = 10000 tokens used.
+  it("uses the latest assistant footprint instead of summing turns", () => {
+    // tokens_in already contains the whole history when the model saw it,
+    // so summing turns counts the history once per turn. Only the LAST
+    // assistant message's footprint is the current context size.
     renderWith(
       [assistantMsg("a1", 3000), userMsg("u1"), assistantMsg("a2", 7000)],
       "model-1",
       100_000,
     );
-    // 10000 / 100000 = 10% → green
-    expect(screen.getByText("10.0k/100.0k")).toBeInTheDocument();
+    // 7000 / 100000 = 7% → green — NOT 3000+7000=10k.
+    expect(screen.getByText("7.0k/100.0k")).toBeInTheDocument();
+    expect(screen.queryByText("10.0k/100.0k")).not.toBeInTheDocument();
+  });
+
+  it("adds the latest turn's tokens_out to the footprint", () => {
+    // The footprint is tokens_in + tokens_out of the latest assistant
+    // message: what that call saw plus what it produced — i.e. the
+    // context size going into the next turn.
+    renderWith([assistantMsg("a1", 6000, 1000)], "model-1", 100_000);
+    expect(screen.getByText("7.0k/100.0k")).toBeInTheDocument();
   });
 });

@@ -570,6 +570,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         try:
             mid = f"msg_{uuid.uuid4().hex[:12]}"
             md = msg.get("metadata")
+            md_dict = md if isinstance(md, dict) else None
             # Serialize list content (multimodal) as JSON string
             raw_cont = msg.get("content")
             if isinstance(raw_cont, list):
@@ -577,6 +578,15 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
                 cont_str = _json.dumps(raw_cont)
             else:
                 cont_str = str(raw_cont or "")
+            # v1.1.3 — mirror the usage numbers onto the dedicated columns
+            # too, so SUM(tokens_in) style session stats work; before this
+            # only the metadata JSON carried them (and regular completions
+            # carried neither).
+            def _md_int(key: str) -> int:
+                try:
+                    return int((md_dict or {}).get(key) or 0)
+                except (TypeError, ValueError):
+                    return 0
             await msg_dao.create(
                 id=mid,
                 session_id=sid,
@@ -584,7 +594,9 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
                 content=cont_str,
                 tool_calls=msg.get("tool_calls"),
                 tool_call_id=msg.get("tool_call_id"),
-                metadata=md if isinstance(md, dict) else None,
+                tokens_in=_md_int("tokens_in"),
+                tokens_out=_md_int("tokens_out"),
+                metadata=md_dict,
             )
         except Exception:
             # The agent loop treats persistence as best-effort; a

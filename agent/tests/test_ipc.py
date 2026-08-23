@@ -141,3 +141,38 @@ async def test_agent_send_message_streams_hello(
     # The final message_chunk must have done=True.
     final = [e for e in chunks if e["data"].get("done") is True]
     assert final, "expected a final done event"
+
+
+@pytest.mark.asyncio
+async def test_agent_send_message_persists_token_usage(
+    isolated_runtime: None,
+) -> None:
+    """v1.1.3 — the persisted assistant row carries real usage.
+
+    Before this, regular completions hit the DB with metadata=NULL and
+    tokens_in=tokens_out=0, so the context indicator showed 0 after any
+    session reload and session.stats summed zeroes.
+    """
+    client = IPCClient()
+    reply = await client.request(
+        "agent.send_message", {"content": "hello", "session_id": None}
+    )
+    session_id = reply["session_id"]
+
+    from minimax_code.app import get_db
+
+    db = get_db()
+    assert db is not None
+    row = await db.fetchone(
+        "SELECT tokens_in, tokens_out, metadata FROM messages "
+        "WHERE session_id = ? AND role = 'assistant' "
+        "ORDER BY id DESC LIMIT 1",
+        (session_id,),
+    )
+    assert row is not None, "expected a persisted assistant row"
+    assert int(row["tokens_in"]) >= 1
+    assert int(row["tokens_out"]) >= 1
+    meta = json.loads(row["metadata"]) if row["metadata"] else None
+    assert isinstance(meta, dict)
+    assert int(meta.get("tokens_in", 0)) >= 1
+    assert "thinking_count" in meta

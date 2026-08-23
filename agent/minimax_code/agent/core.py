@@ -896,7 +896,18 @@ class AgentCore:
                 # LLM call (may contain tool_calls).
                 assistant_msg = response.message
                 messages.append(assistant_msg)
-                await self._maybe_persist(session_id, assistant_msg)
+                # v1.1.3 — persist a copy carrying the per-call usage
+                # metadata (tokens_in/tokens_out/thinking_count). The
+                # metadata lives on the LLMResponse, not on the message
+                # dict, and merging it into ``assistant_msg`` itself would
+                # leak a non-protocol key into the LLM history sent on the
+                # next iteration's API call — so only the persisted copy
+                # sees it. Before this, every regular-completion row hit
+                # the DB with metadata=NULL / tokens=0, and the context
+                # indicator fell back to 0 after any session reload.
+                await self._maybe_persist(
+                    session_id, {**assistant_msg, "metadata": response.metadata}
+                )
 
                 tool_calls = _extract_tool_calls(assistant_msg)
                 if not tool_calls:

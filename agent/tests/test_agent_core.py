@@ -542,6 +542,48 @@ async def test_loop_truncates_at_max_iterations() -> None:
     assert persisted[-1]["content"] == result.final_text
 
 
+@pytest.mark.asyncio
+async def test_loop_persists_usage_metadata_on_regular_completions() -> None:
+    """v1.1.3 — regular completions must persist their usage metadata.
+
+    Before this, only the max-iterations truncation path attached
+    metadata; every normal assistant row hit the DB with
+    metadata=None / tokens=0 and the context indicator fell back to 0
+    after any session reload. The persisted copy must also stay out of
+    the in-flight LLM history (no non-protocol keys in API payloads).
+    """
+    tool = CountingTool()
+    fake = FakeLLM([
+        _tool_response(_tool_call("echo", {"text": "x"}, call_id="c1")),
+        _text_response("final answer"),
+    ])
+    persisted: list[dict[str, Any]] = []
+
+    async def persist(_session_id: str, message: dict[str, Any]) -> None:
+        persisted.append(message)
+
+    core = AgentCore(
+        llm=fake, registry=_fresh_registry(tool), persist_message=persist
+    )
+    result = await core.run(session_id="s_usage_meta", user_message="go")
+    assert result.truncated is False
+
+    # Both assistant rows (tool-call turn + final turn) carry usage.
+    assistant_rows = [m for m in persisted if m["role"] == "assistant"]
+    assert len(assistant_rows) == 2
+    for row in assistant_rows:
+        md = row["metadata"]
+        assert md["tokens_in"] == 3
+        assert md["tokens_out"] >= 1
+        assert "thinking_count" in md
+
+    # The in-flight history sent to the LLM stays protocol-clean: no
+    # message payload may carry the metadata key.
+    for payload in fake.messages:
+        for msg in payload:
+            assert "metadata" not in msg
+
+
 class LongResultTool(Tool):
     """Echo tool whose result payload is long enough (~400 estimated
     tokens) that a few tool turns push the in-flight message list over
