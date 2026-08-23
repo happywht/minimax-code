@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-08-23
+
+### Fixed — 上下文指示器恒显示 0（tokens 从未持久化）
+
+用户实测反馈：会话底部的 context 指示器长聊后仍显示 `0/1M`。取证（真实库只读）发现**整个数据库所有消息的 `tokens_in`/`tokens_out` 均为 0、`metadata` 均为 NULL**——不是显示问题，是持久化链路三层叠加缺陷：
+
+- **持久化副本缺 metadata（core，主因）**：常规完成路径持久化的是 `response.message`，而 `response.metadata`（`tokens_in`/`tokens_out`/`thinking_count`）只挂在 LLMResponse 对象上、从未合并进持久化消息——唯一带 metadata 落库的路径是迭代超限截断。实时 done chunk 其实带 usage（前端内存有值），但任何刷新 / 切会话都从 DB 读 → 归零。修复：持久化时写入带 metadata 的**副本**（`{**assistant_msg, "metadata": response.metadata}`），原消息保持协议干净（不向下一轮 LLM API payload 泄漏非协议键）。
+- **DAO tokens 列从未写入（builtins `_persist`）**：`msg_dao.create(...)` 调用从未传 `tokens_in`/`tokens_out` 参数（默认 0）——`session.stats` 的 `SUM(tokens_in)` 汇总也恒 0。修复：从 metadata 提取（`int()` 容错）镜像到专用列。
+- **指示器聚合语义错误（web ContextIndicator）**：旧实现**累加**所有 assistant 消息的 `tokens_in`——但 `tokens_in` 是该次 LLM 调用看到的完整 prompt（已含全部历史 + system prompt），累加会把历史重复计 N 次、系统性虚高。修复：取**最后一条**带 usage 的 assistant 消息的 `tokens_in + tokens_out`（最近一次调用的完整上下文占用 + 本轮输出，即进入下一轮时的上下文大小）。
+
+新增回归测试：`test_loop_persists_usage_metadata_on_regular_completions`（副本带 metadata 且 LLM payload 无污染）、`test_agent_send_message_persists_token_usage`（端到端落库断言）、前端 2 个语义测试（取最新而非累加 / 含 tokens_out）。
+
 ## [1.1.2] - 2026-08-23
 
 ### Fixed — 长会话「每轮回复都带收尾表态」的历史口癖污染

@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MiniMax Code 是一个桌面端 AI 编码 Agent 复刻项目。对标 MiniMax Code 全量功能：多轮对话、技能系统、定时任务、多 Agent 协作、移动互联、授权管理、进度面板。v0.2.0 起从 Tauri 桌面壳切换为 web SPA + 本地 Python agent 架构，v0.3.0 新增 thinking_count 通道、Sub-Agent UI、Git 集成和 Code Review 工作流。
 
-当前版本：**v1.1.2**（2026-08-23）
+当前版本：**v1.1.3**（2026-08-23）
 
 ## 架构总览
 
@@ -247,6 +247,7 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 
 ## 变更记录 (Changelog)
 
+- **2026-08-23** — v1.1.3：修复 context 指示器恒 0——usage metadata 合并进持久化副本、`_persist` 镜像 tokens 列、指示器语义改为取最新占用（`tokens_in + tokens_out`）而非累加
 - **2026-08-23** — v1.1.2：修复长会话历史口癖污染——stale-note advisory（system prompt 前置）+ nudge 防复述指令 + context-pressure 节流（每 run 一次、压缩后跳过）
 - **2026-08-23** — v1.1.1：ask_user 工具全链路（IPC 170 方法 / 事件 16）、max_iterations 12→200 + env 旋钮、nudge 诚实交接重构、subagent 默认 50；环境变量表补 `MINIMAX_MAX_ITERATIONS`
 - **2026-08-21** — R43 全面对账同步：24 实体表/167 IPC 方法 35 前缀/10 工具模块/31 handler 文件/6 smoke/10 e2e spec，技能目录路径修正（`agent/skills/`），命名空间表与文档索引按 registry 实测重写
