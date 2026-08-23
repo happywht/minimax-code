@@ -60,6 +60,7 @@ class FakeLLM:
         tool_choice: Any = None,
         temperature: float | None = None,
         reasoning_effort: Any = None,  # R55: mirror MiniMaxClient.stream_chat kwarg
+        max_tokens: int | None = None,  # v1.2.1: output-token budget
     ) -> AsyncIterator[StreamChunk]:
         self.call_count += 1
         self.messages.append(list(messages))

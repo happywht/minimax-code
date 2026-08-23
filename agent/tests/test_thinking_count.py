@@ -69,6 +69,7 @@ class _RecordingLLM:
         tool_choice: Any = None,
         temperature: float | None = None,
         reasoning_effort: Any = None,  # R55: mirror MiniMaxClient.stream_chat kwarg
+        max_tokens: int | None = None,  # v1.2.1: output-token budget
     ) -> AsyncIterator[StreamChunk]:
         # Match the real client's bookkeeping — reset on entry and
         # commit on the final usage chunk.

@@ -476,7 +476,14 @@ class AnthropicTransport(LLMTransport):
                     temperature if temperature is not None
                     else anthropic.NOT_GIVEN
                 ),
-                max_tokens=max_tokens or 4096,
+                # Anthropic requires max_tokens, so a fallback must exist
+                # even when the caller omits it. v1.2.1: 4096 → 32768 —
+                # the old cap silently truncated long write_file/edit_file
+                # arguments mid-stream (stop_reason=max_tokens ⇒ malformed
+                # JSON on the tool side). Matches AgentConfig's
+                # max_output_tokens default so direct callers get the same
+                # headroom the core now sends explicitly.
+                max_tokens=max_tokens or 32_768,
                 output_config=(
                     {"effort": _effort_token}
                     if _effort_token is not None

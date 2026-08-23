@@ -249,6 +249,31 @@ def _default_max_iterations() -> int:
     return max(1, min(value, _MAX_ITERATIONS_HARD_CAP))
 
 
+# v1.2.1: output-token budget for a single LLM call. Before this knob the
+# anthropic transport silently capped streamed output at 4096 tokens — a
+# long Chinese write_file/edit_file tool_use easily needs 5-8k tokens, so
+# its arguments JSON got cut mid-stream (stop_reason=max_tokens), landed
+# in _prepare_tool_call as malformed JSON, and the tool failed with a
+# confusing error. 32768 gives large file writes headroom while staying
+# far below every registry context window (128k-1M). Tunable via the
+# MINIMAX_CODE_MAX_OUTPUT_TOKENS env var; clamped to [1024, 131072].
+_DEFAULT_MAX_OUTPUT_TOKENS = 32_768
+_MAX_OUTPUT_TOKENS_HARD_CAP = 131_072
+
+
+def _default_max_output_tokens() -> int:
+    raw = os.environ.get("MINIMAX_CODE_MAX_OUTPUT_TOKENS", "")
+    try:
+        value = int(raw) if raw.strip() else _DEFAULT_MAX_OUTPUT_TOKENS
+    except ValueError:
+        logger.warning(
+            "MINIMAX_CODE_MAX_OUTPUT_TOKENS=%r is not an int; using %d",
+            raw, _DEFAULT_MAX_OUTPUT_TOKENS,
+        )
+        return _DEFAULT_MAX_OUTPUT_TOKENS
+    return max(1024, min(value, _MAX_OUTPUT_TOKENS_HARD_CAP))
+
+
 @dataclass
 class AgentConfig:
     """Tunable knobs for a single :class:`AgentCore` instance."""
@@ -269,6 +294,11 @@ class AgentConfig:
     # Tune per deployment via MINIMAX_MAX_ITERATIONS; explicit
     # AgentConfig(max_iterations=...) callers are unaffected.
     max_iterations: int = field(default_factory=_default_max_iterations)
+    # v1.2.1: per-call output-token budget forwarded to the transport as
+    # ``max_tokens`` (see _default_max_output_tokens). Without it the
+    # anthropic transport fell back to a 4096-token cap and long
+    # write_file/edit_file arguments were truncated mid-stream.
+    max_output_tokens: int = field(default_factory=_default_max_output_tokens)
     # Per-tool dispatch timeout (seconds). The tool itself can
     # also enforce its own (shorter) limit; this is the ceiling.
     tool_timeout: float = 120.0
@@ -910,6 +940,20 @@ class AgentCore:
                 )
 
                 tool_calls = _extract_tool_calls(assistant_msg)
+                # v1.2.1: "length" + pending tool calls means the output
+                # budget cut the turn mid-tool-arguments — the arguments
+                # JSON may be incomplete and will land in
+                # _prepare_tool_call as "malformed JSON args". Log the
+                # truncation loudly so the root cause is discoverable
+                # (raise MINIMAX_CODE_MAX_OUTPUT_TOKENS if it recurs).
+                if response.finish_reason == "length" and tool_calls:
+                    logger.warning(
+                        "turn hit the output-token limit (%d) with %d pending "
+                        "tool call(s); their arguments may be truncated and "
+                        "fail to parse — raise MINIMAX_CODE_MAX_OUTPUT_TOKENS "
+                        "if this recurs",
+                        self.config.max_output_tokens, len(tool_calls),
+                    )
                 if not tool_calls:
                     # Final answer.
                     final_text = assistant_msg.get("content") or ""
@@ -1146,6 +1190,11 @@ class AgentCore:
             # yet, so ``None`` (the AgentConfig default) leaves the request
             # byte-identical to the pre-R55 path.
             reasoning_effort=self.config.reasoning_effort,
+            # v1.2.1: without an explicit budget the anthropic transport
+            # capped output at 4096 tokens and long tool arguments were
+            # truncated mid-stream (surfacing as malformed-JSON tool
+            # failures on write_file/edit_file).
+            max_tokens=self.config.max_output_tokens,
         ).__aiter__()
         while True:
             try:
@@ -1231,7 +1280,19 @@ class AgentCore:
             try:
                 args = json.loads(raw_args) if raw_args.strip() else {}
             except json.JSONDecodeError as exc:
-                err = ToolResult.fail(f"tool '{name}' got malformed JSON args: {exc}")
+                # v1.2.1: the dominant real-world cause is the output-token
+                # limit cutting the streamed arguments mid-string (typically
+                # inside long non-ASCII content, where token boundaries are
+                # densest). Tell the model HOW to recover so it can retry
+                # with a smaller payload instead of repeating the failure.
+                err = ToolResult.fail(
+                    f"tool '{name}' got malformed JSON args: {exc}. This "
+                    "usually means the arguments were truncated by the "
+                    "output-token limit — retry with a smaller payload "
+                    "(e.g. write the file in smaller chunks with append/"
+                    "edit steps) or ask the user to raise "
+                    "MINIMAX_CODE_MAX_OUTPUT_TOKENS."
+                )
                 await self._maybe_emit_tool_call(call, err)
                 return _PreparedToolCall(
                     call_log={**call, "name": name, "args": {}},
