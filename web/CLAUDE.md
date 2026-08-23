@@ -173,6 +173,7 @@ A: 编辑 `tailwind.config.js` 中的 `minimax` 颜色定义（bg、panel、bord
 
 ## 变更记录 (Changelog)
 
+- **2026-08-23** — v1.2.2：多 Agent 协作与系统稳定性专项（web 侧）——WS 客户端 seq 纪元对齐：`agent.ready` 帧读 `next_seq` 锚点，`next_seq <= wsLastSeq` 时重置水位并主动 `close(1000, "seq-epoch-reset")` 重连获全量重放（agent 重启后新纪元历史此前永久无法重放）；WorkspaceSwitcher 重写接真实 `workspace.*` IPC、删除死代码 `lib/workspace.ts`、文案入 `strings.ts`；`ipc-client.test.ts` +6 纪元重置测试
 - **2026-08-23** — v1.2.0：全局审计修复（web 侧）——chat 五订阅 `isCurrentSessionEvent` 守卫 + `disposeChatSubscriptions()` 导出、teamRunStore 读 `env.data`、invokeSkill 对象 args 平铺到 wire 顶层 + codeReviewStore 读平铺 reply + mock 同步、runStore 双守卫（run.created 过滤 / run.completed 孤儿丢弃）+ loadRuns stale/replace、ProgressPanel 展示 done 任务 result；新增 `session-guards.test.ts`（9）+ `typed-skills.test.ts`（5）
 - **2026-08-23** — v1.1.3：`ContextIndicator` 语义修正——取最后一条 assistant 消息的 `tokens_in + tokens_out`（当前上下文真实占用）替代累加（历史重复计数、系统性虚高）
 - **2026-08-23** — v1.1.1：新增 `AskUserCard` 问答卡（chat 域）与 `agent.ask_user` 事件（StreamEvent 16 个）、`agent.answer_user` IPC；IPC 方法 170

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-08-23
+
+### Fixed — 多 Agent 协作与系统稳定性专项（评估发现的 8 项全量闭环）
+
+起因于用户要求「举一反三：评估团队管理 / 子 agent 管理 / 各项能力稳定性 / 系统稳定性 / 项目切换」。全局评估产出 8 项修复性价比总榜（🥇 team.spawn LLM 注入 → ⑧ per-project workspace root），本轮全量闭环前 7 项 + 辅助加固项；⑧（per-project workspace root）为架构级改动，单独请示后排期。
+
+- **① team.spawn LLM 注入（agent，最高优先）**：`teams.spawn` 构造 `TeamOrchestrator` 时漏传 `llm=`，`_llm` 永远 None——每个成员 SubAgentRuntime 落入 canned stub 路径（"stub: agent xxx would handle..."），**团队运行从不产生真实回答**。修复：注入进程级 `get_subagent_llm()`（None 时保留 stub 供测试）。
+- **② WorkspaceSwitcher 重接（web）**：前端工作区切换器与真实 IPC 脱节。重写组件接 `workspace.*` 三方法、删除死代码 `lib/workspace.ts`、文案入 `strings.ts` 单一来源。
+- **③ invoke/spawn 配置透传（agent）**：`agent.invoke` / `agent.spawn_subagent` 此前只透传 `system_prompt`/`tool_allowlist`/`model`，丢弃持久化的 `max_iterations` / `temperature`。抽 `_config_from_row` helper 统一透传。
+- **④ 调度器收尾保护（agent）**：fire-and-forget `create_task` 结果无强引用（asyncio 经典坑——任务可被 GC、异常无人见）；收尾 bookkeeping 一步抛错即中断后续（task 永卡 "running"）。修复：`_spawn_fire` 持强引用 + `_done` 回调记录异常；completed/failed/last_run 每步独立守卫。
+- **⑤ 权限 gater 注册表（agent）**：legacy 单槽 `server._permission_gater` 被每个新 `agent.send_message` 覆盖——并发 run 的同意弹窗永远无人应答、超时被拒。修复：`register_gater` / `unregister_gater` / `resolve_any_gater` 按 session_id 注册（legacy 槽保留兼容，`unregister` 条件清理）；run 结束 `finally` 注销防死 gater。
+- **⑥ 终端进程树杀（agent）**：`exec` 工具超时只 `proc.kill()` 主进程——Windows/POSIX 下孙进程成孤儿继续跑。修复：`_child_spawn_kwargs`（POSIX `start_new_session`）+ `_signal_process_tree`（Windows `taskkill /F /T`、POSIX `killpg`，失败回退 `proc.kill`）。
+- **⑦ WS seq 纪元对齐（agent + web）**：agent 重启后 seq 计数归 1，前端 `wsLastSeq` 仍持旧进程高水位（如 47）——重连 `?since=47` 在新纪元 replay 全空，**新纪元历史永久无法重放且永不自愈**。修复：ready 帧加 `next_seq` 锚点（下一条广播的 seq）；前端收到 `agent.ready` 判 `next_seq <= wsLastSeq` 即重置水位并主动 `close(1000, "seq-epoch-reset")` 触发无 cursor 重连，获得全量 512 环重放（新纪元已追平旧水位时旧 cursor 天然有效，故用比较而非"检测重启"驱动重置；无循环——重连后 ready 到达时水位已为 0）。
+- **辅助｜team 运行稳定性三旋钮（agent）**：裸 `gather` 无并发上限（大团队瞬间 fan 出 N 个 LLM 循环）→ `asyncio.Semaphore`（env `MINIMAX_CODE_TEAM_MAX_CONCURRENCY`，默认 4，`<=0` 不设限）；`runtime.invoke` 无超时（挂死的子 agent 拖死整个团队 run）→ `asyncio.wait_for` 墙钟超时（env `MINIMAX_CODE_SUBAGENT_TIMEOUT_S`，默认 600s，`<=0` 禁用，TimeoutError 显式分支给友好 error）；`success = any(...)` 部分失败被静默掩盖 → `_merge_texts` 统一合并（失败时前置 `> ⚠ N of M agents failed: ...` advisory，review 模式 writer 失败同样可见）；模块 docstring 的 round-robin「first successful result wins」承诺与实现不符 → 如实改为「当前与 parallel 一致，保留为扩展点」。
+
+### Added — 回归测试（46 个新测试：Python 36 + web 10）
+
+`test_handlers_teams.py`（LLM 注入）、`test_subagent_config_passthrough.py`（配置透传）、`test_scheduler_hardening.py`（强引用 + 收尾守卫）、`test_gater_registry.py`（6 测试：注册/解析/注销/legacy 兼容）、`test_process_tree_kill.py`（7 测试：进程树信号/spawn kwargs/回退）、`test_ws_replay.py` +2（ready 锚点 / 纪元重置暴露）、`ipc-client.test.ts` +6（锚点≤水位重置 / 同进程不动 / 追平不动 / 首连不动 / 无锚点兼容 / live 推进）、`test_team_orchestrator.py` +7（env 解析 ×2 / 并发上限=2 / 默认全并发 / 墙钟超时 / 部分失败 advisory ×2）、`workspace-switcher.test.tsx` 重写（+4）。
+
+**质量数字**：pytest **10240 passed / 15 skipped**（v1.2.1 基线 10204 + 36 新增）；vitest **747/747（95 文件）**；ESLint 0/0；ruff 全绿。
+
 ## [1.2.1] - 2026-08-23
 
 ### Fixed — 长中文 write/edit 工具调用被截断（max_tokens 硬编码 4096）

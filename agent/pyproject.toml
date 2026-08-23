@@ -1,6 +1,6 @@
 [project]
 name = "minimax-code-agent"
-version = "1.2.1"
+version = "1.2.2"
 description = "MiniMax Code Python agent — JSON-RPC 2.0 over HTTP/WS + stdio"
 readme = "README.md"
 requires-python = ">=3.11"

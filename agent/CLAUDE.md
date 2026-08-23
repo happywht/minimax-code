@@ -102,6 +102,8 @@ CORS：默认允许 `http://localhost:5173` / `http://127.0.0.1:5173`；`MINIMAX
 | `MINIMAX_CODE_SKILLS_DIR` | `agent/skills/` | 技能根目录 |
 | `MINIMAX_CODE_CORS_ORIGINS` | dev 白名单 | 追加受信 CORS origin（逗号分隔，无效项忽略） |
 | `MINIMAX_CODE_LOG_FILE` | 空（仅控制台） | 日志落盘路径（带轮转） |
+| `MINIMAX_CODE_TEAM_MAX_CONCURRENCY` | `4` | 单次团队运行的最大并发子 agent 数（v1.2.2；`<=0` 不设限） |
+| `MINIMAX_CODE_SUBAGENT_TIMEOUT_S` | `600` | 子 agent 墙钟超时秒数（v1.2.2；`<=0` 禁用） |
 
 ## 数据模型
 
@@ -204,6 +206,7 @@ A: 1) 在对应的 `handlers_*.py` 中实现 handler 函数；2) 在 `app.py` �
 
 ## 变更记录 (Changelog)
 
+- **2026-08-23** — v1.2.2：多 Agent 协作与系统稳定性专项（agent 侧）——`teams.spawn` 注入 `get_subagent_llm()`（`TeamOrchestrator._llm` 不再恒 None）；`agent.invoke`/`spawn_subagent` 配置透传（`_config_from_row`：`max_iterations`/`temperature`）；调度器 `_spawn_fire` 强引用 + `_done` 异常回调 + 收尾每步守卫；权限 gater 注册表（`register_gater`/`unregister_gater`/`resolve_any_gater` 按 session，legacy 单槽兼容）；终端进程树杀（Windows `taskkill /F /T` / POSIX `killpg` + 回退）；WS ready 帧 `next_seq` 锚点（seq 纪元重置检测）；team 并发 Semaphore + 子 agent 墙钟超时 + `_merge_texts` 部分失败 advisory（env `MINIMAX_CODE_TEAM_MAX_CONCURRENCY` / `MINIMAX_CODE_SUBAGENT_TIMEOUT_S`）
 - **2026-08-23** — v1.2.1：修复长中文 write/edit 工具调用截断——`AgentConfig.max_output_tokens`（默认 32768，env `MINIMAX_CODE_MAX_OUTPUT_TOKENS`）、`_stream_turn` 透传 max_tokens、anthropic transport 兜底 4096→32768、finish_reason=length 截断 warning、malformed JSON 错误附恢复指引；9 个回归测试（`test_output_token_budget.py`）
 - **2026-08-23** — v1.2.0：全局审计修复（agent 侧）——scheduler `_dispatch_prompt_job` 真实跑 prompt 任务往 session 发消息、025 migration（`scheduled_jobs.result_persist` 列）+ TasksDAO 结果读写、`permission.request` 广播补 session_id 归属、teams handler `emit_event=ctx.emit` 净化（metadata keyword-only）、技能调用结果落库 skill_runs
 - **2026-08-23** — v1.1.3：修复 context 指示器恒 0——core 持久化带 metadata 副本、builtins `_persist` 传 `tokens_in`/`tokens_out` 列；前端 ContextIndicator 取最新占用而非累加
