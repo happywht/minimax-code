@@ -66,6 +66,12 @@ export function CodeReviewPanel({
       ? stats
       : dimensions[activeTab]?.stats ?? null;
 
+  // Dimension tabs get their own rawText outlet; the overview tab keeps
+  // the top-level one. Without this, per-dimension review text had no
+  // render path at all.
+  const displayRawText =
+    activeTab === "overview" ? rawText : dimensions[activeTab]?.rawText ?? "";
+
   return (
     <div data-testid={testId} className="px-3 pb-3">
       {/* Action bar */}
@@ -190,7 +196,7 @@ export function CodeReviewPanel({
       )}
 
       {/* Raw text fallback */}
-      {!displayComments.length && rawText && activeTab === "overview" && (
+      {!displayComments.length && displayRawText && (
         <pre
           data-testid="code-review-raw"
           className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-line bg-surface-2/40 p-2 text-[11px] text-ink-1"

@@ -282,6 +282,9 @@ def register_skill_handlers(
                             "message_id": message_id,
                             "skill_id": skill_id,
                             "text": result.final_text,
+                            # Canonical output channel for the frontend —
+                            # mirrors ``text`` so callers read one key.
+                            "output": result.final_text,
                             "iterations": result.iterations,
                             "tool_calls": result.tool_calls,
                             "cancelled": result.cancelled,
@@ -311,6 +314,7 @@ def register_skill_handlers(
                             "message_id": message_id,
                             "skill_id": skill_id,
                             "text": review["text"],
+                            "output": review["text"],
                             "iterations": review.get("iterations", 0),
                             "tool_calls": review.get("tool_calls", 0),
                             "cancelled": False,
@@ -393,12 +397,17 @@ def register_skill_handlers(
                 model=model,
                 max_iterations=max_iterations,
             )
+            await _persist_invoke_turn(session_id, skill_id, request, result)
             await ctx.reply(
                 {
                     "session_id": session_id,
                     "message_id": message_id,
                     "skill_id": skill_id,
                     "text": result.final_text,
+                    # Canonical output channel — the generic path used to
+                    # reply without it while the frontend read ``output``,
+                    # so every skill result rendered as ``undefined``.
+                    "output": result.final_text,
                     "iterations": result.iterations,
                     "tool_calls": result.tool_calls,
                     "cancelled": result.cancelled,
@@ -421,6 +430,54 @@ def register_skill_handlers(
     server.register("skill.install", handle_skill_install)
     server.register("skill.uninstall", handle_skill_uninstall)
     server.register("skill.invoke", handle_skill_invoke)
+
+
+async def _persist_invoke_turn(
+    session_id: str, skill_id: str, request: str, result: Any
+) -> None:
+    """Best-effort persistence of a ``skill.invoke`` turn (v1.2.0).
+
+    Skill output used to live only in the event stream — reload the app
+    and whatever a skill produced (a code review, a digest) was gone.
+    Now the turn is written to the messages ledger when — and only
+    when — the caller supplied a ``session_id`` that actually exists.
+    The fallback ``skill_*`` id names no session row and would violate
+    the messages→sessions FK, so it is skipped.
+
+    Persistence is an enhancement, never a failure mode: any error here
+    is logged and swallowed because the IPC reply already carries the
+    full result.
+    """
+    if not session_id or session_id.startswith("skill_"):
+        return
+    try:
+        from ..app import get_db
+        from ..storage.dao.messages import MessagesDAO
+        from ..storage.dao.sessions import SessionsDAO
+
+        db = get_db()
+        if db is None:
+            return
+        if await SessionsDAO(db).get(session_id) is None:
+            return
+        dao = MessagesDAO(db)
+        meta: dict[str, Any] = {"source": "skill_invoke", "skill_id": skill_id}
+        await dao.create(
+            id=f"msg_{uuid.uuid4().hex[:12]}",
+            session_id=session_id,
+            role="user",
+            content=request,
+            metadata=meta,
+        )
+        await dao.create(
+            id=f"msg_{uuid.uuid4().hex[:12]}",
+            session_id=session_id,
+            role="assistant",
+            content=result.final_text,
+            metadata={**meta, "iterations": result.iterations},
+        )
+    except Exception:
+        logger.warning("skill.invoke persist skipped", exc_info=True)
 
 def _make_runtime_factory(runtime: Any | None) -> Any:
     """Return an async factory that yields a runtime, building it lazily if needed.

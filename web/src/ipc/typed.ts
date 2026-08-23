@@ -72,6 +72,7 @@ import type {
   SetReasoningEffortResult,
   SetRuleResult,
   SkillInfo,
+  SkillInvokeResult,
   SpawnSubagentParams,
   SpawnSubagentResult,
   TelemetryMetrics,
@@ -255,7 +256,7 @@ export interface TypedIPC {
   uninstallSkill(skillId: string): Promise<{ ok: true; skill_id: string }>;
   enableSkill(skillId: string): Promise<{ ok: true }>;
   disableSkill(skillId: string): Promise<{ ok: true }>;
-  invokeSkill(skillId: string, args: unknown): Promise<{ ok: true; output: unknown }>;
+  invokeSkill(skillId: string, args: unknown): Promise<SkillInvokeResult>;
 
   // scheduler — wire = ``schedule.*`` (per handlers_scheduled.py).
   // The JS API is friendlier (cron / prompt) than the wire (cron_expr / payload)
@@ -682,11 +683,22 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<{ ok: true }>("skill.enable", { skill_id: sid }),
     disableSkill: (sid) =>
       client.request<{ ok: true }>("skill.disable", { skill_id: sid }),
-    invokeSkill: (sid, args) =>
-      client.request<{ ok: true; output: unknown }>("skill.invoke", {
+    invokeSkill: (sid, args) => {
+      // Backend contract (handlers_skills.py): ``skill_id`` + ``request``
+      // are required keys, and the code-review diff route reads ``diff``
+      // from the *top level* of params. Flatten the args object onto the
+      // wire so special routes see their keys while ``request`` keeps the
+      // canonical value for the generic skill path.
+      const flat: Record<string, unknown> =
+        args && typeof args === "object" && !Array.isArray(args)
+          ? (args as Record<string, unknown>)
+          : {};
+      return client.request<SkillInvokeResult>("skill.invoke", {
         skill_id: sid,
         request: args,
-      }),
+        ...flat,
+      });
+    },
 
     listJobs: async () => {
       const result = await client.request<{ jobs: WireScheduledJob[] }>("schedule.list", {});

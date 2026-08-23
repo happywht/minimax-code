@@ -689,8 +689,46 @@ function mockHandle(
       return { ok: true, skill_id: skillId };
     }
 
-    case "skill.invoke":
-      return { ok: true, output: { skill: (params as { skill_id: string }).skill_id } };
+    case "skill.invoke": {
+      // Mirror the real backend reply shape (handlers_skills.py):
+      // ``text``/``output`` carry the final reply, ``comments``/``stats``
+      // ride along only on the code-review diff route.
+      const p = params as { skill_id?: string; request?: unknown; diff?: string };
+      const skillId = p.skill_id ?? "unknown";
+      const message_id = `msg_mock_${Math.random().toString(36).slice(2, 10)}`;
+      if (typeof p.diff === "string" && p.diff.length > 0 && skillId === "code-review:code-review") {
+        const text = "Mock review: diff received, no blocking issues found.";
+        return {
+          session_id: "skill_mock",
+          message_id,
+          skill_id: skillId,
+          text,
+          output: text,
+          iterations: 1,
+          tool_calls: 0,
+          cancelled: false,
+          truncated: false,
+          comments: [],
+          stats: { files: 1, additions: 3, deletions: 1 },
+        };
+      }
+      const requestText =
+        typeof p.request === "string" && p.request.length > 0
+          ? p.request
+          : JSON.stringify(p.request ?? {});
+      const text = `[mock] Skill ${skillId} processed request: ${requestText}`;
+      return {
+        session_id: "skill_mock",
+        message_id,
+        skill_id: skillId,
+        text,
+        output: text,
+        iterations: 1,
+        tool_calls: 0,
+        cancelled: false,
+        truncated: false,
+      };
+    }
 
     case "schedule.list":
       return { jobs: mockJobs };
@@ -897,7 +935,23 @@ function mockHandle(
 
     case "git.diff": {
       const p = params as { scope?: string; ref?: string } | undefined;
-      return { diff: "", scope: p?.ref ?? p?.scope ?? "working" } satisfies GitDiffResult;
+      // A non-empty sample diff keeps the review pipeline exercisable in
+      // mock mode — a constant "" here masked the whole code-review flow
+      // behind the "no changes" early return.
+      const sampleDiff = [
+        "diff --git a/src/example.ts b/src/example.ts",
+        "index 0000001..0000002 100644",
+        "--- a/src/example.ts",
+        "+++ b/src/example.ts",
+        "@@ -1,3 +1,4 @@",
+        " export function greet(name: string): string {",
+        "-  return `hello ${name}`;",
+        "+  // greeting with logging",
+        "+  console.log(\"greeting\", name);",
+        "+  return `hello ${name}`;",
+        " }",
+      ].join("\n");
+      return { diff: sampleDiff, scope: p?.ref ?? p?.scope ?? "working" } satisfies GitDiffResult;
     }
 
     case "data.export": {
@@ -1678,6 +1732,7 @@ function mockHandle(
           started_at: new Date(Date.now() - 55_000).toISOString(),
           completed_at: new Date(Date.now() - 10_000).toISOString(),
           error: null,
+          result: "Indexed 42 files · 128 chunks · FTS + vector shards rebuilt",
         },
       ];
       let items = entries;
@@ -1700,6 +1755,7 @@ function mockHandle(
           started_at: null,
           completed_at: new Date().toISOString(),
           error: null,
+          result: null,
         },
         noop: false,
       } satisfies TaskCancelResult;

@@ -229,6 +229,33 @@ export interface SkillInfo {
   builtin: boolean;
 }
 
+/**
+ * Reply from `skill.invoke` — mirrors handlers_skills.py verbatim.
+ * `text` and `output` carry the same final reply; `output` is the
+ * canonical channel the UI reads. `comments`/`stats` ride along only
+ * on the code-review diff route.
+ */
+export interface SkillInvokeResult {
+  session_id: string;
+  message_id: string;
+  skill_id: string;
+  text: string;
+  output: string;
+  iterations: number;
+  tool_calls: number;
+  cancelled: boolean;
+  truncated: boolean;
+  /** Code-review diff route only — severity is free-form; narrow at the call site. */
+  comments?: Array<{
+    file: string;
+    line: number | null;
+    severity: string;
+    message: string;
+  }>;
+  /** Code-review diff route only. */
+  stats?: { files: number; additions: number; deletions: number };
+}
+
 /** A sub-agent record — v0.8.0 extended with icon, category, tags, etc. */
 export interface AgentInfo {
   id: string;
@@ -531,6 +558,9 @@ export interface PermissionRequestData {
   request_id: string;
   tool: string;
   args: Record<string, unknown>;
+  /** v1.2.0 — the conversation the gated tool call belongs to (omitted
+   *  when the gater has no session context, e.g. bare CLI runs). */
+  session_id?: string;
 }
 
 export interface PermissionResolvedData {
@@ -1590,6 +1620,8 @@ export interface TaskRow {
   started_at: string | null;
   completed_at: string | null;
   error: string | null;
+  /** v1.2.0 — the run's result text (e.g. the LLM reply of a scheduled prompt). */
+  result: string | null;
 }
 
 /** Result of `task.list`. */

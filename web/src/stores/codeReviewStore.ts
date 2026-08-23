@@ -70,32 +70,36 @@ export const useCodeReviewStore = create<CodeReviewState>((set) => ({
         return;
       }
 
-      // 2. Invoke code-review skill
+      // 2. Invoke code-review skill — the typed layer flattens ``{diff}``
+      // onto the wire top level so the backend diff route fires.
       const skillResult = await typedIPC.invokeSkill(
         "code-review:code-review",
         { diff },
       );
 
-      // 3. Parse the result
-      const output = skillResult.output as Record<string, unknown> | string;
-      if (typeof output === "object" && output !== null) {
-        const comments = Array.isArray(output.comments)
-          ? (output.comments as ReviewComment[])
-          : [];
-        const stats = output.stats as ReviewStats | null;
-        set({ comments, stats, rawText: JSON.stringify(output, null, 2), loading: false });
-      } else {
-        set({ rawText: String(output), loading: false });
-      }
+      // 3. Read the reply per the backend contract (handlers_skills.py):
+      // ``text``/``output`` carry the review body, ``comments``/``stats``
+      // ride along on the diff route.
+      const severityOk = new Set(["info", "warning", "error"]);
+      const comments: ReviewComment[] = (skillResult.comments ?? []).map((c) => ({
+        file: c.file,
+        line: c.line ?? null,
+        severity: severityOk.has(c.severity)
+          ? (c.severity as ReviewComment["severity"])
+          : "info",
+        message: c.message,
+      }));
+      set({
+        comments,
+        stats: skillResult.stats ?? null,
+        rawText: skillResult.output || skillResult.text || "",
+        loading: false,
+      });
 
-      if (typeof output === "object" && output !== null) {
-        const comments = (output as Record<string, unknown>).comments;
-        const count = Array.isArray(comments) ? comments.length : 0;
-        toast.success(
-          strings.panels.codeReview.reviewComplete,
-          strings.panels.codeReview.commentCount(count),
-        );
-      }
+      toast.success(
+        strings.panels.codeReview.reviewComplete,
+        strings.panels.codeReview.commentCount(comments.length),
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       set({ loading: false, error: message });
@@ -106,16 +110,35 @@ export const useCodeReviewStore = create<CodeReviewState>((set) => ({
   runAllChecks: async (path?: string) => {
     set({ loading: true, error: null, dimensions: {} });
     const newDimensions: Record<string, DimensionResult> = {};
-    let allComments: ReviewComment[] = [];
+    const allComments: ReviewComment[] = [];
 
-    const checks: Array<{
-      key: string;
-      tool: string;
-      args: Record<string, unknown>;
-    }> = [
-      { key: "security", tool: "security_scan", args: { path: path ?? "." } },
-      { key: "performance", tool: "performance_check", args: { path: path ?? "." } },
-      { key: "style", tool: "check_style", args: { path: path ?? "." } },
+    // Each dimension sends the skill an explicit, self-describing request.
+    // The old wire shape ({tool, path}) named tools the backend doesn't
+    // have — the LLM received an opaque dict-repr instead of instructions.
+    const target = path ?? "the working tree";
+    const checks: Array<{ key: string; request: string }> = [
+      {
+        key: "security",
+        request:
+          `Security review of ${target}: look for injection risks, unsafe ` +
+          "deserialization, hardcoded secrets, and permission gaps. Report each " +
+          "finding as file, line, severity (info|warning|error), and a one-line message.",
+      },
+      {
+        key: "performance",
+        request:
+          `Performance review of ${target}: look for quadratic hot paths, ` +
+          "redundant I/O in loops, unbounded memory growth, and needless " +
+          "re-computation. Report each finding as file, line, severity " +
+          "(info|warning|error), and a one-line message.",
+      },
+      {
+        key: "style",
+        request:
+          `Style review of ${target}: look for naming inconsistencies, dead ` +
+          "code, oversized functions, and comment/code drift. Report each " +
+          "finding as file, line, severity (info|warning|error), and a one-line message.",
+      },
     ];
 
     try {
@@ -123,33 +146,18 @@ export const useCodeReviewStore = create<CodeReviewState>((set) => ({
         try {
           const result = await typedIPC.invokeSkill(
             "code-review:code-review",
-            { tool: check.tool, ...check.args },
+            { request: check.request },
           );
 
-          const output = result.output as Record<string, unknown> | string;
-          if (typeof output === "object" && output !== null) {
-            const findings = Array.isArray(output.findings)
-              ? (output.findings as Array<Record<string, unknown>>)
-              : [];
-            const comments: ReviewComment[] = findings.map((f) => ({
-              file: String(f.file ?? ""),
-              line: f.line != null ? Number(f.line) : null,
-              severity: (String(f.severity ?? "info") as ReviewComment["severity"]),
-              message: String(f.message ?? ""),
-            }));
-            newDimensions[check.key] = {
-              comments,
-              stats: null,
-              rawText: JSON.stringify(output, null, 2),
-            };
-            allComments = allComments.concat(comments);
-          } else {
-            newDimensions[check.key] = {
-              comments: [],
-              stats: null,
-              rawText: String(output),
-            };
-          }
+          // The skill returns free-form review text — surface it verbatim
+          // in the dimension tab (findings stay unstructured until the
+          // backend emits them as data).
+          const body = result.output || result.text || "";
+          newDimensions[check.key] = {
+            comments: [],
+            stats: null,
+            rawText: body || strings.panels.codeReview.checkFailedRaw(check.key),
+          };
         } catch {
           newDimensions[check.key] = {
             comments: [],
