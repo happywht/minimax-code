@@ -8,6 +8,7 @@ import {
   type RunCreatedData,
   type RunStepData,
 } from "../types/ipc";
+import { useSessionStore } from "./sessionStore";
 
 export interface RunTimelineEntry extends AgentRun {
   steps: AgentRunStep[];
@@ -84,6 +85,10 @@ export const useRunTimelineStore = create<RunTimelineState>((set, get) => ({
       createdUnsub = ipc.on<RunCreatedData>(StreamEvent.RunCreated, (env) => {
         const run = env.data?.run;
         if (!run) return;
+        // Session guard — run.created is broadcast for every run in the
+        // process (background skills, sub-agents, other tabs). The
+        // timeline panel is scoped to the currently open session.
+        if (run.session_id !== useSessionStore.getState().currentSessionId) return;
         set((s) => {
           const order = trimOrder([run.id, ...s.order.filter((id) => id !== run.id)]);
           const keep = new Set(order);
@@ -116,6 +121,15 @@ export const useRunTimelineStore = create<RunTimelineState>((set, get) => ({
       completedRunUnsub = ipc.on<RunCompletedData>(StreamEvent.RunCompleted, (env) => {
         const run = env.data?.run;
         if (!run) return;
+        // Orphan/foreign guard — a completed run we never saw created
+        // belongs to another session (its created event was filtered);
+        // upserting it here would append a ghost timeline entry.
+        if (
+          !get().runs[run.id] &&
+          run.session_id !== useSessionStore.getState().currentSessionId
+        ) {
+          return;
+        }
         set((s) => ({ runs: upsertRun(s.runs, run) }));
       });
     }
@@ -138,8 +152,12 @@ export const useRunTimelineStore = create<RunTimelineState>((set, get) => ({
           }
         }),
       );
-      set((s) => {
-        let nextRuns = { ...s.runs };
+      // Stale guard — the user may have switched sessions while the
+      // per-run step fetches were in flight; don't splice the old
+      // session's timeline into the newly opened one.
+      if (useSessionStore.getState().currentSessionId !== sessionId) return;
+      set(() => {
+        let nextRuns: Record<string, RunTimelineEntry> = {};
         const loadedOrder: string[] = [];
         for (const entry of entries) {
           nextRuns = upsertRun(nextRuns, entry.run);
@@ -148,14 +166,9 @@ export const useRunTimelineStore = create<RunTimelineState>((set, get) => ({
           }
           loadedOrder.push(entry.run.id);
         }
-        const order = trimOrder([
-          ...loadedOrder,
-          ...s.order.filter((id) => !loadedOrder.includes(id)),
-        ]);
-        const keep = new Set(order);
-        for (const id of Object.keys(nextRuns)) {
-          if (!keep.has(id)) delete nextRuns[id];
-        }
+        // Replace, don't merge — this store is scoped to one session;
+        // leftovers from a previously opened session must not linger.
+        const order = trimOrder(loadedOrder);
         return { runs: nextRuns, order, loading: false };
       });
     } catch (err) {

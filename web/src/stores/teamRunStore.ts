@@ -141,7 +141,12 @@ export function initTeamRunListener(): () => void {
   if (_unsubscribe) return _unsubscribe;
 
   const unsub = ipc.on<TeamProgressData>(StreamEvent.TeamProgress, (env) => {
-    const evt = env as unknown as TeamProgressData;
+    // The callback receives the event *envelope*; the progress payload
+    // itself lives in `env.data`. Casting the envelope to the payload
+    // type made every field access return undefined, so each progress
+    // event appended a ghost entry and the panel never updated.
+    const evt = env.data;
+    if (!evt) return;
     useTeamRunStore.setState((s) => {
       const existing = s.runs.find((r) => r.task_id === evt.task_id);
       if (existing) {
