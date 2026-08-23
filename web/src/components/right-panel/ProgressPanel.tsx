@@ -191,6 +191,15 @@ export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps)
                     {t.message}
                   </div>
                 )}
+                {t.status === "done" && t.result && (
+                  <div
+                    data-testid={`task-result-${t.task_id}`}
+                    title={t.result}
+                    className="mt-1 max-h-16 overflow-hidden whitespace-pre-wrap break-words rounded bg-minimax-bg/60 px-1.5 py-1 font-mono text-[11px] leading-4 text-minimax-fg/70"
+                  >
+                    {t.result}
+                  </div>
+                )}
               </li>
             ))}
           </ul>

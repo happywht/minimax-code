@@ -8,12 +8,17 @@ Coverage map:
 * :func:`build_payload_runner` dispatcher contract — noop echo when
   unarmed, collection when armed, structured error on failure, and the
   zero-regression guarantee (noop path ≡ scheduler ``_noop_runner``).
+* the v1.2.0 scheduled-``prompt`` branch — one LLM turn per fire with a
+  fresh client each time, errors as structured ``error`` keys, and
+  ``_content_text``'s dual content shapes (mock str / wire blocks).
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 from minimax_code.agent.self_evolution import build_payload_runner
@@ -214,3 +219,107 @@ async def test_dispatcher_noop_matches_scheduler_noop_byte_for_byte():
     dispatched = await runner_fn(body)
     noop = await _noop_runner(body)
     assert dispatched == noop
+
+
+# ---------------------------------------------------------------------------
+# build_payload_runner — scheduled prompt branch (v1.2.0)
+# ---------------------------------------------------------------------------
+
+
+def _fake_llm_client(
+    reply: str = "scheduled reply", fail_with: Exception | None = None
+) -> type:
+    """Build a ``MiniMaxClient`` stand-in class capturing prompts.
+
+    Instances register on the class so tests can assert per-fire
+    construction (the real runner must build a fresh client every fire
+    because the scheduler drives payloads on a worker thread's private
+    event loop — see ``_run_prompt``).
+    """
+
+    class FakeClient:
+        instances: list[FakeClient] = []
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.prompts: list[list[dict[str, Any]]] = []
+            self.closed = False
+            FakeClient.instances.append(self)
+
+        async def __aenter__(self) -> FakeClient:
+            return self
+
+        async def __aexit__(self, *exc: object) -> bool:
+            self.closed = True
+            return False
+
+        async def chat(self, messages: list[dict[str, Any]], **kwargs: object) -> Any:
+            self.prompts.append(messages)
+            if fail_with is not None:
+                raise fail_with
+            return SimpleNamespace(
+                message={"role": "assistant", "content": reply},
+                usage={},
+                finish_reason="stop",
+                model="mock",
+                metadata=None,
+            )
+
+    return FakeClient
+
+
+async def test_dispatcher_runs_prompt_payload_with_llm(monkeypatch, tmp_path):
+    """A ``{"prompt": ...}`` payload runs one LLM turn (v1.2.0).
+
+    Scheduled prompts used to be echoed back at the user without ever
+    reaching a model; now the reply text comes back under ``output``.
+    """
+    fake = _fake_llm_client(reply="morning digest ready")
+    monkeypatch.setattr("minimax_code.agent.llm.MiniMaxClient", fake)
+
+    runner_fn = build_payload_runner(str(tmp_path), report_dir=tmp_path / "reports")
+    result = await runner_fn({"prompt": "summarise yesterday's commits"})
+
+    assert result == {"ok": True, "output": "morning digest ready"}
+    # One fresh client per fire, and the prompt reached it as a user turn.
+    assert len(fake.instances) == 1
+    assert fake.instances[0].prompts == [
+        [{"role": "user", "content": "summarise yesterday's commits"}]
+    ]
+    assert fake.instances[0].closed is True
+
+
+async def test_dispatcher_prompt_failure_returns_error_key(monkeypatch, tmp_path):
+    """An LLM failure surfaces as ``{"ok": False, "error": ...}``.
+
+    That is the shape ``_fire`` checks to mark the task row ``failed``
+    instead of crashing the executor thread.
+    """
+    fake = _fake_llm_client(fail_with=RuntimeError("api down"))
+    monkeypatch.setattr("minimax_code.agent.llm.MiniMaxClient", fake)
+
+    runner_fn = build_payload_runner(str(tmp_path), report_dir=tmp_path / "reports")
+    result = await runner_fn({"prompt": "hello"})
+
+    assert result["ok"] is False
+    assert "scheduled prompt failed" in result["error"]
+    assert "api down" in result["error"]
+
+
+async def test_dispatcher_ignores_blank_prompt(tmp_path):
+    """A blank or non-string prompt falls back to the echo contract."""
+    runner_fn = build_payload_runner(str(tmp_path), report_dir=tmp_path / "reports")
+    echoed = await runner_fn({"prompt": "   "})
+    assert echoed == {"ok": True, "echo": {"prompt": "   "}}
+
+
+def test_content_text_handles_string_and_block_shapes():
+    """``_content_text`` accepts mock (str) and wire (block list) shapes."""
+    assert payload_mod._content_text({"content": "plain"}) == "plain"
+    blocks = [
+        {"type": "text", "text": "hello "},
+        {"type": "tool_use", "id": "t1"},  # non-text blocks are skipped
+        {"type": "text", "text": "world"},
+    ]
+    assert payload_mod._content_text({"content": blocks}) == "hello world"
+    assert payload_mod._content_text({}) == ""
+    assert payload_mod._content_text({"content": 42}) == ""

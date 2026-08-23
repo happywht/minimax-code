@@ -19,6 +19,8 @@ export interface TaskProgressEntry {
   status: TaskStatus;
   progress: number;
   message?: string;
+  /** v1.2.0 — the run's persisted result text (LLM reply for prompt payloads). */
+  result?: string;
   updated_at: number;
 }
 
@@ -64,6 +66,7 @@ function entryFromRow(row: TaskRow): TaskProgressEntry {
     status,
     progress: Math.max(0, Math.min(1, row.progress / 100)),
     message,
+    result: row.result ?? undefined,
     updated_at,
   };
 }
@@ -80,20 +83,36 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     });
   },
 
-  upsert: (data) =>
+  upsert: (data) => {
+    const prev = get().tasks[data.task_id];
+    const status = normalizeStatus(data.status);
     set((s) => {
       const updated = {
         ...s.tasks,
         [data.task_id]: {
+          // Spread the previous entry so fields the event payload cannot
+          // carry (``result`` only lives in the persisted ledger) survive
+          // progress ticks instead of being clobbered back to undefined.
+          ...s.tasks[data.task_id],
           task_id: data.task_id,
-          status: normalizeStatus(data.status),
+          status,
           progress: Math.max(0, Math.min(1, data.progress)),
           message: data.message,
           updated_at: Date.now(),
         },
       };
       return { tasks: evictOldest(updated, MAX_TASKS, (e) => e.updated_at) };
-    }),
+    });
+    // The ``task.progress`` event fires before the scheduler persists the
+    // final row, so a terminal transition cannot carry the result text yet.
+    // Re-hydrate from the ledger once the task settles — refresh() only
+    // merges rows and never emits events, so this cannot loop.
+    const wasLive = !prev || prev.status === "pending" || prev.status === "running";
+    const terminal = status === "done" || status === "error" || status === "cancelled";
+    if (wasLive && terminal) {
+      void get().refresh();
+    }
+  },
 
   remove: (taskId) =>
     set((s) => {

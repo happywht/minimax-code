@@ -61,4 +61,46 @@ describe("ProgressPanel", () => {
     render(<ProgressPanel testId="pp" />);
     expect(screen.getByTestId("pp-running-count").textContent).toContain("1");
   });
+
+  it("renders a done task's persisted result text (v1.2.0)", () => {
+    // Mirror what entryFromRow produces after a ledger refresh: a done
+    // entry carrying the run's result (e.g. a scheduled prompt's reply).
+    useTaskStore.setState({
+      tasks: {
+        "t-r": {
+          task_id: "t-r",
+          status: "done",
+          progress: 1,
+          result: "LLM digest: 3 commits since yesterday",
+          updated_at: Date.now(),
+        },
+      },
+    });
+    render(<ProgressPanel testId="pp" />);
+    const result = screen.getByTestId("task-result-t-r");
+    expect(result).toBeInTheDocument();
+    expect(result.textContent).toContain("LLM digest: 3 commits");
+  });
+
+  it("keeps a persisted result across later progress ticks", () => {
+    useTaskStore.setState({
+      tasks: {
+        "t-k": {
+          task_id: "t-k",
+          status: "done",
+          progress: 1,
+          result: "kept",
+          updated_at: Date.now(),
+        },
+      },
+    });
+    // A late ``task.progress`` event carries no ``result`` — it must not
+    // clobber the one hydrated from the ledger.
+    useTaskStore.getState().upsert({
+      task_id: "t-k",
+      progress: 1,
+      status: "done",
+    });
+    expect(useTaskStore.getState().tasks["t-k"].result).toBe("kept");
+  });
 });

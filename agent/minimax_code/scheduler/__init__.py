@@ -364,6 +364,7 @@ class JobScheduler:
             status="completed",
             progress=100,
             error=None,
+            result=result_text,
         )
         # If the payload returned a structured dict with "error" or
         # "ok=false" we record the error string in the task row too
@@ -506,6 +507,13 @@ def _stringify_payload_result(result: Any) -> str:
         return result
     if isinstance(result, dict) and "error" in result:
         return f"error: {result['error']}"
+    # A dict carrying a non-empty ``output`` string (the scheduled-prompt
+    # runner) means the text IS the result — store it verbatim instead of
+    # a truncated JSON repr of the envelope around it.
+    if isinstance(result, dict):
+        output = result.get("output")
+        if isinstance(output, str) and output:
+            return output
     try:
         import json
 

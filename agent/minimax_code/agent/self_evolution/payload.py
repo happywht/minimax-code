@@ -17,7 +17,10 @@ self-evolution row installed by ``--install`` — routes through that one
 runner. So the closure returned here **dispatches** on the payload:
 
 * ``payload["self_evolution"]`` truthy → collect a trajectory and
-  summarise it (the new behaviour this layer adds).
+  summarise it (the self-evolution behaviour this layer adds).
+* ``payload["prompt"]`` a non-empty string → run one LLM turn and
+  return the reply text under ``output`` (v1.2.0 — scheduled prompts
+  used to be echoed back at the user without ever reaching a model).
 * otherwise → echo the payload exactly like ``_noop_runner`` (so the
   existing ``schedule.*`` surface keeps its zero-effect contract).
 
@@ -73,21 +76,70 @@ def build_payload_runner(
     report_dir_str = str(report_dir)
 
     async def runner(payload: dict[str, Any]) -> dict[str, Any]:
-        # Dispatch on the opt-in flag. Payloads without it fall through
-        # to a noop echo so this runner is a safe universal default.
-        if not payload.get("self_evolution"):
-            return {"ok": True, "echo": payload}
-        target_cwd = payload.get("cwd") or cwd_str
-        try:
-            report = await run_once(target_cwd)
-            path = report.write_to(report_dir_str)
-        except Exception as exc:  # pragma: no cover — defensive
-            # Returning an ``error`` key lets ``_fire`` mark the task row
-            # ``failed`` rather than tearing down the executor thread.
-            return {"ok": False, "error": f"self-evolution failed: {exc}"}
-        return _summarize(report, path)
+        # Dispatch on the payload shape: ``self_evolution`` collects a
+        # trajectory, a plain ``prompt`` string goes to the LLM, and
+        # anything else falls through to a noop echo so this runner
+        # stays a safe universal default.
+        if payload.get("self_evolution"):
+            target_cwd = payload.get("cwd") or cwd_str
+            try:
+                report = await run_once(target_cwd)
+                path = report.write_to(report_dir_str)
+            except Exception as exc:  # pragma: no cover — defensive
+                # Returning an ``error`` key lets ``_fire`` mark the task
+                # row ``failed`` rather than tearing down the executor.
+                return {"ok": False, "error": f"self-evolution failed: {exc}"}
+            return _summarize(report, path)
+        prompt = payload.get("prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            return await _run_prompt(prompt)
+        return {"ok": True, "echo": payload}
 
     return runner
+
+
+async def _run_prompt(prompt: str) -> dict[str, Any]:
+    """Run one LLM turn for a scheduled ``prompt`` payload (v1.2.0).
+
+    A fresh :class:`~minimax_code.agent.llm.MiniMaxClient` per fire is
+    deliberate: the scheduler drives payloads on a worker thread's
+    private event loop, so a shared client (whose httpx transport binds
+    to the loop it was created on) would break. Create → chat → close,
+    then discard.
+
+    Without an API key configured the client runs in mock mode, which
+    keeps this path exercisable in dev and CI.
+    """
+    # Deferred import, mirroring the scheduler's own lazy wiring of this
+    # module, keeps the import graph acyclic at load time.
+    from ..llm import MiniMaxClient
+
+    try:
+        async with MiniMaxClient() as client:
+            response = await client.chat([{"role": "user", "content": prompt}])
+        return {"ok": True, "output": _content_text(response.message)}
+    except Exception as exc:
+        # Returning an ``error`` key lets ``_fire`` mark the task row
+        # ``failed`` with the reason instead of crashing the executor.
+        return {"ok": False, "error": f"scheduled prompt failed: {exc}"}
+
+
+def _content_text(message: dict[str, Any]) -> str:
+    """Extract the text body from an LLM reply message.
+
+    ``content`` arrives as a plain string in mock mode and as a list of
+    typed blocks on the wire — handle both shapes.
+    """
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
 
 
 def _summarize(report: SelfEvolutionReport, path: Path) -> dict[str, Any]:

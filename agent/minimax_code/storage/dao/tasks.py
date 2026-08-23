@@ -125,6 +125,7 @@ class TasksDAO:
         status: str,
         progress: int | None = None,
         error: str | None = None,
+        result: str | None = None,
     ) -> dict[str, Any] | None:
         if status not in _VALID_STATUS:
             raise ValueError(f"status must be one of {sorted(_VALID_STATUS)}")
@@ -147,6 +148,9 @@ class TasksDAO:
         if error is not None:
             sets.append("error = ?")
             params.append(error)
+        if result is not None:
+            sets.append("result = ?")
+            params.append(result)
         params.append(task_id)
         sql = f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?"
         async with self._db.transaction() as conn:

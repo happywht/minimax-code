@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -35,6 +36,7 @@ from minimax_code.scheduler import (
     InvalidCronError,
     JobScheduler,
     SchedulerError,
+    _stringify_payload_result,
     set_scheduler,
 )
 from minimax_code.storage.dao.scheduled_jobs import ScheduledJobsDAO
@@ -293,6 +295,9 @@ class TestJobScheduler:
                 if tasks:
                     break
             assert tasks, "expected a task row to be written after run_now"
+            # Give the tail of _fire (record_run) a beat to land before
+            # stop() + fixture close the db out from under it.
+            await asyncio.sleep(0.2)
             t = tasks[0]
             assert t["title"].startswith("[manual]")
             assert t["status"] == "completed"
@@ -525,3 +530,92 @@ class TestScheduledIpcHandlers:
             )
         text = str(excinfo.value).lower()
         assert "unknown" in text or "32602" in text
+
+
+# ---------------------------------------------------------------------------
+# _stringify_payload_result + tasks.result persistence (v1.2.0)
+# ---------------------------------------------------------------------------
+
+
+class TestStringifyPayloadResult:
+    def test_none_maps_to_ok(self) -> None:
+        assert _stringify_payload_result(None) == "ok"
+
+    def test_string_passes_through_untruncated(self) -> None:
+        assert _stringify_payload_result("plain text") == "plain text"
+
+    def test_error_dict_prefixes_error(self) -> None:
+        assert _stringify_payload_result({"ok": False, "error": "boom"}) == "error: boom"
+
+    def test_output_dict_returns_text_verbatim(self) -> None:
+        """The scheduled-prompt envelope stores its full reply, not a
+        truncated JSON repr of the dict around it."""
+        long_reply = "x" * 500
+        assert _stringify_payload_result({"ok": True, "output": long_reply}) == long_reply
+
+    def test_echo_dict_stays_truncated_json(self) -> None:
+        out = _stringify_payload_result({"ok": True, "echo": {"k": "v" * 500}})
+        assert out.startswith('{"ok"')
+        assert len(out) == 200
+
+
+class _ReplyLLMClient:
+    """Async-context-manager stand-in for ``MiniMaxClient``; one fixed reply."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    async def __aenter__(self) -> _ReplyLLMClient:
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+    async def chat(self, messages: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(
+            message={"role": "assistant", "content": "r" * 350}
+        )
+
+
+class TestPromptResultPersistence:
+    async def test_run_now_persists_prompt_reply_as_result(
+        self, async_db: AsyncDatabase, monkeypatch, tmp_path
+    ) -> None:
+        """End-to-end: a ``{"prompt": ...}`` job stores the LLM reply in
+        the new ``tasks.result`` column, untruncated (v1.2.0).
+
+        Before this, the result string only ever reached the logger and
+        the reply itself was echoed back at the user without running.
+        """
+        from minimax_code.agent.self_evolution import build_payload_runner
+
+        monkeypatch.setattr(
+            "minimax_code.agent.llm.MiniMaxClient", _ReplyLLMClient
+        )
+        runner = build_payload_runner(str(tmp_path))
+
+        sched = JobScheduler(async_db, payload_runner=runner)
+        await sched.start()
+        try:
+            row = await sched.add_job(
+                name="digest", cron_expr="* * * * *", payload={"prompt": "hi"}
+            )
+            ack = await sched.run_now(row["id"])
+            assert ack["ok"] is True
+
+            tdao = TasksDAO(async_db)
+            tasks: list[dict[str, Any]] = []
+            for _ in range(40):
+                await asyncio.sleep(0.05)
+                tasks = await tdao.list()
+                if tasks and tasks[0]["status"] == "completed":
+                    break
+            assert tasks, "expected a task row after run_now"
+            assert tasks[0]["status"] == "completed"
+            # The reply text (350 chars) survives whole — the old echo
+            # path would have stored a 200-char truncated JSON blob.
+            assert tasks[0]["result"] == "r" * 350
+            # Let the tail of _fire (record_run) land before close.
+            await asyncio.sleep(0.2)
+        finally:
+            await sched.stop()
