@@ -628,15 +628,16 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     except Exception:
         logger.debug("permission store unavailable; running without gating")
 
-    from ..perm_consent import PermissionGater
+    from ..perm_consent import PermissionGater, register_gater
 
     gater = PermissionGater(emit=ctx.emit)
     # Stash the gater on the server so the ``permission.resolve``
     # handler (registered earlier in the same server) can find it.
-    # The gater is request-scoped; the handler races on the
-    # request_id-keyed map, so concurrent ``agent.send_message``
-    # invocations stay isolated.
-    ctx.server._permission_gater = gater
+    # v1.2.2: registry-keyed by session — the legacy single
+    # ``_permission_gater`` slot was overwritten by every new
+    # ``agent.send_message`` call, so a concurrent run's consent
+    # prompts could never be resolved and were denied by timeout.
+    register_gater(ctx.server, session_id, gater)
 
     # Allow operators to tune or disable the per-chunk stall watchdog.
     # ``MINIMAX_STALL_TIMEOUT=180`` → 180 s; ``0`` → disable.
@@ -942,6 +943,14 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         return
     finally:
         _ACTIVE_RUNS.pop(session_id, None)
+        # v1.2.2: drop this run's consent gater from the server
+        # registry so resolve stops seeing a dead gater.
+        try:
+            from ..perm_consent import unregister_gater
+
+            unregister_gater(ctx.server, session_id)
+        except Exception:  # pragma: no cover — defensive
+            logger.debug("unregister_gater failed", exc_info=True)
         # Fire session_end hooks (R10) symmetrically — even on failure —
         # so plugins see the complete run lifecycle. Fail-open.
         if hook_manager is not None:

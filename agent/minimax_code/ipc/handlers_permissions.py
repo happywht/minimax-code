@@ -34,6 +34,7 @@ from .protocol import (
     STORAGE_ERROR,
 )
 from .server import Context
+from ..perm_consent import resolve_any_gater
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +249,8 @@ def register_permission_handlers(
                         f"decision must be 'allow' or 'deny' (got {decision_raw!r})",
                     )
             gater = getattr(ctx.server, "_permission_gater", None)
-            if gater is None:
+            registry = getattr(ctx.server, "_permission_gaters", None)
+            if gater is None and not registry:
                 # No gater → the agent loop isn't waiting on a
                 # consent decision. Treat as a no-op success so the
                 # frontend's modal can close cleanly even after a
@@ -261,7 +263,11 @@ def register_permission_handlers(
                     }
                 )
                 return
-            ok = gater.resolve(request_id, decision)
+            # v1.2.2: walk every live gater (concurrent runs each have
+            # their own) — the first one that owns the request_id
+            # claims it. The legacy single-slot gater is also covered
+            # as a fallback inside resolve_any_gater.
+            ok = resolve_any_gater(ctx.server, request_id, decision)
             if not ok:
                 await ctx.reply(
                     {

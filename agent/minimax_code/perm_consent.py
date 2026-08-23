@@ -87,7 +87,9 @@ class PermissionGater:
 
     The gater is created per-request (one per ``agent.send_message``
     call) and stashed on the server so the ``permission.resolve``
-    handler can find it via :func:`getattr(server, "_permission_gater")`.
+    handler can find it — since v1.2.2 via the session-keyed registry
+    (:func:`register_gater`), with the legacy single
+    ``_permission_gater`` slot kept for compatibility.
 
     The gater is *not* shared between concurrent ``agent.send_message``
     invocations. Each fresh request gets its own gater — the
@@ -217,4 +219,81 @@ class PermissionGater:
         return n
 
 
-__all__ = ["PermissionGater", "PendingRequest"]
+# ---------------------------------------------------------------------------
+# Server-side gater registry (v1.2.2)
+# ---------------------------------------------------------------------------
+
+
+def register_gater(server: Any, session_id: str, gater: PermissionGater) -> None:
+    """Track a run-scoped gater on the server for ``permission.resolve``.
+
+    v1.2.2: concurrent ``agent.send_message`` runs used to overwrite the
+    single ``_permission_gater`` slot — run A's consent prompts became
+    unresolvable the moment run B started, timing out (denied) after 5
+    minutes. The registry keeps every live gater reachable; resolve
+    walks the candidates and the first gater that recognises the
+    request_id claims it. The legacy single-slot attribute is still
+    written so readers (and tests) that only look at
+    ``_permission_gater`` keep working.
+    """
+    registry: dict[str, PermissionGater] | None = getattr(
+        server, "_permission_gaters", None
+    )
+    if not isinstance(registry, dict):
+        registry = {}
+        try:
+            server._permission_gaters = registry
+        except Exception:  # pragma: no cover — defensive
+            return
+    registry[session_id] = gater
+    try:
+        server._permission_gater = gater
+    except Exception:  # pragma: no cover — defensive
+        pass
+
+
+def unregister_gater(server: Any, session_id: str) -> None:
+    """Drop a finished run's gater from the registry (idempotent).
+
+    Also clears the legacy single slot *if* it still points at this
+    run's gater — a finished run's gater must stop claiming resolves
+    from every path, not just the registry walk.
+    """
+    gater: PermissionGater | None = None
+    registry = getattr(server, "_permission_gaters", None)
+    if isinstance(registry, dict):
+        gater = registry.pop(session_id, None)
+    try:
+        if gater is not None and getattr(server, "_permission_gater", None) is gater:
+            server._permission_gater = None
+    except Exception:  # pragma: no cover — defensive
+        pass
+
+
+def resolve_any_gater(server: Any, request_id: str, decision: bool) -> bool:
+    """Try to resolve ``request_id`` against every live gater.
+
+    Returns ``True`` the moment a gater claims the request (its
+    ``resolve()`` answers ``True`` when it owns the id). Registry
+    candidates are tried first, then the legacy single-slot gater — so
+    both the concurrent path and the old single-run path (plus tests
+    that set ``server._permission_gater`` directly) keep working.
+    """
+    registry = getattr(server, "_permission_gaters", None)
+    if isinstance(registry, dict):
+        for gater in list(registry.values()):
+            if gater.resolve(request_id, decision):
+                return True
+    legacy = getattr(server, "_permission_gater", None)
+    if legacy is not None and legacy.resolve(request_id, decision):
+        return True
+    return False
+
+
+__all__ = [
+    "PermissionGater",
+    "PendingRequest",
+    "register_gater",
+    "unregister_gater",
+    "resolve_any_gater",
+]
