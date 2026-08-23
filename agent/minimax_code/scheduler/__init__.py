@@ -67,6 +67,11 @@ logger = logging.getLogger(__name__)
 _SCHEDULED_SESSION_NAME = "scheduled-tasks"
 _SCHEDULED_SESSION_ID_PREFIX = "ses_sched_"
 
+#: Safety valve for a hung scheduled payload (seconds). Far above any
+#: legitimate agent run, but stops one stuck payload from holding an
+#: executor worker thread forever (v1.2.2).
+_PAYLOAD_TIMEOUT_S = 3600.0
+
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -137,6 +142,11 @@ class JobScheduler:
         # the IPC layer concurrently.
         self._id_lock = threading.Lock()
         self._scheduled_session_id: str | None = None
+        # v1.2.2: strong references for fire-and-forget ``_fire`` tasks.
+        # Bare ``loop.create_task`` results were never stored, so the
+        # loop was free to garbage-collect a task mid-run (a known
+        # asyncio pitfall) and any exception died unseen.
+        self._inflight: set[asyncio.Task] = set()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -240,8 +250,7 @@ class JobScheduler:
             raise SchedulerError(f"unknown job_id: {job_id!r}")
         # Schedule the run on the event loop so the IPC reply is
         # delivered promptly even if the payload is slow.
-        loop = asyncio.get_running_loop()
-        loop.create_task(self._fire(row, source="manual"))
+        self._spawn_fire(row, source="manual")
         # We don't have a task id back yet; the row will appear in
         # ``task.list`` after the payload completes. The IPC handler
         # just acknowledges the kick.
@@ -254,6 +263,25 @@ class JobScheduler:
     # ------------------------------------------------------------------
     # Internal: APScheduler plumbing
     # ------------------------------------------------------------------
+
+    def _spawn_fire(self, row: dict[str, Any], *, source: str) -> None:
+        """Launch ``_fire`` as a tracked, crash-logging background task."""
+        task = asyncio.get_running_loop().create_task(self._fire(row, source=source))
+        self._inflight.add(task)
+
+        def _done(t: asyncio.Task) -> None:
+            self._inflight.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.error(
+                    "scheduler fire for job %s crashed",
+                    row.get("id"),
+                    exc_info=exc,
+                )
+
+        task.add_done_callback(_done)
 
     def _register_with_aps(self, row: dict[str, Any]) -> None:
         job_id = row["id"]
@@ -280,7 +308,7 @@ class JobScheduler:
                 finally:
                     loop.close()
                 return
-            loop.create_task(self._fire(row, source="cron"))
+            self._spawn_fire(row, source="cron")
 
         try:
             self._aps.add_job(
@@ -340,39 +368,59 @@ class JobScheduler:
         # CPU-bound callback doesn't stall IPC.
         loop = asyncio.get_running_loop()
         try:
+            # v1.2.2: pass the main loop down so the payload coroutine
+            # runs on IT (via run_coroutine_threadsafe), not on a
+            # private loop that breaks main-loop-bound resources
+            # (aiosqlite connections, asyncio.Lock, …).
             result = await loop.run_in_executor(
-                None, _run_payload_sync, self._payload_runner, payload
+                None, _run_payload_sync, self._payload_runner, payload, loop
             )
         except BaseException as exc:  # sync runner raised
             logger.exception("payload for job %s raised", job_id)
-            await self._tasks.update_status(
-                task_id,
-                status="failed",
-                progress=100,
-                error=f"{type(exc).__name__}: {exc}",
-            )
+            try:
+                await self._tasks.update_status(
+                    task_id,
+                    status="failed",
+                    progress=100,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            except Exception:  # pragma: no cover — defensive
+                logger.exception("failed to mark task %s failed", task_id)
             # Still record the run so the UI can show "last run failed".
-            await self._dao.update_last_run(job_id, now_iso())
+            try:
+                await self._dao.update_last_run(job_id, now_iso())
+            except Exception:  # pragma: no cover — defensive
+                logger.exception("failed to update last_run for job %s", job_id)
             return
 
         # Build the "result" string the task row stores. We accept
         # either a string or any JSON-serialisable structure.
         result_text = _stringify_payload_result(result)
 
-        await self._tasks.update_status(
-            task_id,
-            status="completed",
-            progress=100,
-            error=None,
-            result=result_text,
-        )
+        # v1.2.2: each bookkeeping step is individually guarded — one
+        # failed write (e.g. transient SQLITE_BUSY) used to abort the
+        # rest, leaving stale "running" task rows and a missing
+        # last_run_at update.
+        try:
+            await self._tasks.update_status(
+                task_id,
+                status="completed",
+                progress=100,
+                error=None,
+                result=result_text,
+            )
+        except Exception:  # pragma: no cover — defensive
+            logger.exception("failed to complete task %s", task_id)
         # If the payload returned a structured dict with "error" or
         # "ok=false" we record the error string in the task row too
         # so the UI can surface the failure reason.
         if isinstance(result, dict) and result.get("error"):
-            await self._tasks.update_status(
-                task_id, status="failed", progress=100, error=str(result["error"])
-            )
+            try:
+                await self._tasks.update_status(
+                    task_id, status="failed", progress=100, error=str(result["error"])
+                )
+            except Exception:  # pragma: no cover — defensive
+                logger.exception("failed to mark task %s failed", task_id)
 
         # Compute the next run *now* so the UI list is current even if
         # APScheduler is slow to publish next_fire_time.
@@ -382,9 +430,12 @@ class JobScheduler:
             next_run_at = _isoformat(nxt) if nxt else None
         except Exception:  # pragma: no cover — defensive
             next_run_at = None
-        await self._dao.record_run(
-            job_id, last_run_at=now_iso(), next_run_at=next_run_at
-        )
+        try:
+            await self._dao.record_run(
+                job_id, last_run_at=now_iso(), next_run_at=next_run_at
+            )
+        except Exception:  # pragma: no cover — defensive
+            logger.exception("failed to record run for job %s", job_id)
         logger.info(
             "fired job %s (source=%s) result=%s", job_id, source, result_text
         )
@@ -479,24 +530,39 @@ async def _noop_runner(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_payload_sync(
-    runner: PayloadFn, payload: dict[str, Any]
+    runner: PayloadFn,
+    payload: dict[str, Any],
+    main_loop: Any = None,
 ) -> Any:
     """Adapt an async ``PayloadFn`` to a blocking executor call.
 
-    The scheduler's thread-pool executor must call a sync callable,
-    so we spin a private event loop here for the duration of the
-    payload. This keeps the main asyncio loop free for IPC.
+    v1.2.2: the payload now runs on the agent's *main* event loop via
+    ``run_coroutine_threadsafe`` — the previous ``asyncio.run`` fallback
+    spun a private loop, so any main-loop-bound resource (aiosqlite
+    connections, locks) touched by the runner blew up with "attached to
+    a different loop". The executor thread blocks on the concurrent
+    future until the payload finishes; a generous safety timeout
+    cancels a hung payload instead of leaking the worker thread forever.
     """
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
+    loop = main_loop
+    if loop is None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
     if loop is not None and loop.is_running():
-        # We're already on a loop — shouldn't happen because we route
-        # through ``run_in_executor``, but be defensive.
-        coro = runner(payload)
-        return asyncio.run_coroutine_threadsafe(coro, loop).result()
-    # No running loop: drive the coroutine on a private loop.
+        fut = asyncio.run_coroutine_threadsafe(runner(payload), loop)
+        try:
+            return fut.result(timeout=_PAYLOAD_TIMEOUT_S)
+        except TimeoutError:
+            # Safety valve: cancel the coroutine on the main loop and
+            # surface the timeout to ``_fire``'s failure branch. On a
+            # finished future ``cancel()`` is a no-op, so a legitimate
+            # TimeoutError raised *by* the payload propagates as-is.
+            fut.cancel()
+            raise
+    # No usable loop (direct sync call, e.g. unit tests): private-loop
+    # fallback keeps the old behaviour.
     return asyncio.run(runner(payload))
 
 
