@@ -4,7 +4,7 @@
 
 本地优先的个人 AI 编码 Agent。多轮对话、代码工具、技能系统、定时任务、多 Agent 协作、授权管理、Git 与 Code Review 工作流、数据导出备份——全部跑在你自己的机器上。
 
-当前版本：**v1.1.1**（发布公告见 [`docs/release-1.0.0.md`](docs/release-1.0.0.md)）。本地 Web SPA + Python Agent 架构，默认只监听 `127.0.0.1`，会话、配置和任务数据保存在本机 SQLite 中，不经过任何第三方服务器。
+当前版本：**v1.1.2**（发布公告见 [`docs/release-1.0.0.md`](docs/release-1.0.0.md)）。本地 Web SPA + Python Agent 架构，默认只监听 `127.0.0.1`，会话、配置和任务数据保存在本机 SQLite 中，不经过任何第三方服务器。
 
 ## 快速开始
 

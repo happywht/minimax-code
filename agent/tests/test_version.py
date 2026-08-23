@@ -8,7 +8,9 @@ frozen-ness.
 
 from __future__ import annotations
 
+import tomllib
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 
 import pytest
 
@@ -180,7 +182,12 @@ def test_installed_semver_live_metadata_is_parseable():
     never raise on the real package metadata (source of truth for the bump)."""
     v = V.installed_semver()
     assert isinstance(v, V.Version)
-    assert (v.major, v.minor, v.patch) == (1, 1, 0)
-    # Stable 1.1.0: no prerelease segment (the rc.1 era asserted v.pre == "rc.1";
+    # The expected pin lives in pyproject.toml. A literal here rots silently on
+    # every bump (1.1.1 shipped with the stale 1.1.0 pin and nobody noticed
+    # until 1.1.2), so derive it instead of re-asserting it.
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    expected = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"]
+    assert (v.major, v.minor, v.patch) == tuple(int(p) for p in expected.split(".")[:3])
+    # Stable releases: no prerelease segment (the rc.1 era asserted v.pre == "rc.1";
     # the stable bump makes the absence itself the contract).
     assert v.pre is None

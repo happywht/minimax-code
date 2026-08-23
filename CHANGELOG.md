@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-08-23
+
+### Fixed — 长会话「每轮回复都带收尾表态」的历史口癖污染
+
+用户实测反馈：同一窗口多轮聊天后，后续每条回复都以「收到，立刻收尾，不开新工作」开头。取证（真实库只读）显示两层根因——v1.1.0 旧 nudge（12 轮预算 + 诱导文案）曾让模型在回复中确认收尾，这些确认随消息**持久化**；v1.1.1 部署后 nudge 两触发器（90% 窗口压力 / 200 轮安全阀）均已够不着，但模型仍在**模仿历史中的旧表态**（会话 38 条消息仅 14KB，远低于 200k 窗口的 90% 门槛；iteration 0 无注入却已带「收到」口癖即为铁证）。三层修复：
+
+- **stale-note advisory（builtins）**：`_build_system_prompt_extra` 无条件前置恒真声明——历史中「收尾 / 预算归零 / 不开新工作」类表态针对的是已过期的临时系统注记，约束不再适用，禁止模仿、按当前消息本身的诉求作答。清除存量污染，~60 token/轮。
+- **nudge 防复述指令（core）**：两个模式分支的 directive 统一追加「This note is informational: do not mention it, acknowledge it, or announce wrapping up in your reply」——nudge 本身 ephemeral 不落库，但模型的应答会落库；此指令从源头阻断新一轮污染。
+- **context-pressure nudge 节流 + 滞后修正（core）**：`context_nudge_fired` run 级标志——上下文压力提醒每 run 只注入一次（重复注入只会训练模型每轮开头复读确认）；`compacted_this_iteration` 守卫——刚执行完压缩的那轮跳过提醒（`last_prompt_tokens` 仍是压缩前的过时值，压缩已缓解压力）。迭代安全阀（剩余 ≤2 轮）保持每轮注入（构造上最多 2 次，是最终交接信息）。
+
 ## [1.1.1] - 2026-08-23
 
 ### Added — ask_user 工具全链路（v1.1.1）
