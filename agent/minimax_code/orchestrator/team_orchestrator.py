@@ -5,17 +5,27 @@ resolves its member agents, and drives them according to the team's
 ``orchestration_mode``:
 
 * **parallel**  — ``asyncio.gather``; all agents receive the same request.
+  Concurrency is bounded (see ``MINIMAX_CODE_TEAM_MAX_CONCURRENCY``).
 * **sequential** — agents run one-by-one; each receives the original request
   plus the accumulated output of the previous agents.
-* **round-robin** — all agents receive the same request; the orchestrator
-  returns the first successful result.
-* **vote** — all agents run in parallel; successful outputs are merged.
+* **round-robin** — currently identical to parallel: every agent gets the
+  same request and every result is returned. (An earlier revision of this
+  docstring promised "first successful result wins"; that behaviour never
+  shipped — kept as an extension point.)
+* **vote** — currently identical to parallel; merging/selection of the
+  outputs is left to the caller (see ``merged_text`` / ``agents_run``).
 * **review** — all agents run in parallel as writers, then a designated
   reviewer agent consolidates their outputs into a single response.
+
+Every agent runs under a wall-clock timeout (``MINIMAX_CODE_SUBAGENT_TIMEOUT_S``,
+default 600 s) — a hung agent (dead LLM connection, infinite tool loop) used
+to hang the whole team run forever.
 
 After all agents finish, the orchestrator runs a lightweight **conflict
 detection** pass that checks whether multiple agents attempted to write
 to the same file path (via ``write_file`` / ``edit_file`` tool calls).
+Partial failure is surfaced up front in ``merged_text`` (a ``> ⚠`` advisory
+line) rather than silently swallowed by ``success = any(...)``.
 
 The final :class:`TeamRunResult` is persisted to the ``agent_runs`` table
 (``mode="team"``) so callers can query it later via ``team.run.get``.
@@ -27,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -37,6 +48,37 @@ if TYPE_CHECKING:  # pragma: no cover — type hints only
     from ..storage.dao.agents import AgentDAO
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# v1.2.2 stability knobs (read per-run so tests / operators can tune live)
+# ---------------------------------------------------------------------------
+
+
+def _team_concurrency_limit() -> int:
+    """Max agents of one team run executing at once.
+
+    ``MINIMAX_CODE_TEAM_MAX_CONCURRENCY`` (default 4); <= 0 disables the
+    cap. A large team used to fan every agent out at once, each with its
+    own LLM loop and tool budget.
+    """
+    raw = os.environ.get("MINIMAX_CODE_TEAM_MAX_CONCURRENCY", "")
+    try:
+        return int(raw)
+    except ValueError:
+        return 4
+
+
+def _subagent_wall_clock_s() -> float:
+    """Per-agent wall-clock timeout in seconds.
+
+    ``MINIMAX_CODE_SUBAGENT_TIMEOUT_S`` (default 600); <= 0 disables the
+    timeout.
+    """
+    raw = os.environ.get("MINIMAX_CODE_SUBAGENT_TIMEOUT_S", "")
+    try:
+        return float(raw)
+    except ValueError:
+        return 600.0
 
 
 # ---------------------------------------------------------------------------
@@ -271,11 +313,8 @@ class TeamOrchestrator:
                 )
 
             # Merge results
-            merged_text = "\n\n---\n\n".join(
-                f"## {r.agent_name}\n{r.text}" for r in results if r.success
-            )
+            merged_text, success = self._merge_texts(results)
             conflicts = self._detect_conflicts(results)
-            success = any(r.success for r in results)
 
         await self._emit_progress(
             "completed", task_id, team_name, progress=1.0,
@@ -303,12 +342,29 @@ class TeamOrchestrator:
         task_id: str,
         team_name: str,
     ) -> list[AgentRunResult]:
-        """Run all agents concurrently via ``asyncio.gather``."""
-        coros = [
-            self._run_single_agent(cfg, request, session_id, task_id, team_name, idx, len(configs))
-            for idx, cfg in enumerate(configs)
-        ]
-        results = await asyncio.gather(*coros, return_exceptions=True)
+        """Run all agents concurrently via ``asyncio.gather``.
+
+        v1.2.2: concurrency is bounded by a semaphore
+        (``MINIMAX_CODE_TEAM_MAX_CONCURRENCY``, default 4).
+        """
+        limit = _team_concurrency_limit()
+        sem = asyncio.Semaphore(limit) if limit > 0 else None
+        total = len(configs)
+
+        async def _bounded(idx: int, cfg: Any) -> AgentRunResult:
+            if sem is None:
+                return await self._run_single_agent(
+                    cfg, request, session_id, task_id, team_name, idx, total,
+                )
+            async with sem:
+                return await self._run_single_agent(
+                    cfg, request, session_id, task_id, team_name, idx, total,
+                )
+
+        results = await asyncio.gather(
+            *(_bounded(idx, cfg) for idx, cfg in enumerate(configs)),
+            return_exceptions=True,
+        )
         out: list[AgentRunResult] = []
         for r in results:
             if isinstance(r, Exception):
@@ -407,10 +463,7 @@ class TeamOrchestrator:
 
         if reviewer_config is None:
             # No reviewer available — parallel fallback.
-            merged_text = "\n\n---\n\n".join(
-                f"## {r.agent_name}\n{r.text}" for r in writer_results if r.success
-            )
-            success = any(r.success for r in writer_results)
+            merged_text, success = self._merge_texts(writer_results)
             return writer_results, merged_text, success
 
         # Build a consolidation prompt from writer outputs.
@@ -437,12 +490,18 @@ class TeamOrchestrator:
         if review_result.success and review_result.text:
             merged_text = review_result.text
             success = True
+            failed = [r for r in writer_results if not r.success]
+            if failed:
+                reasons = ", ".join(
+                    f"{r.agent_name} ({r.error or 'failed'})" for r in failed
+                )
+                merged_text = (
+                    f"> ⚠ {len(failed)} of {len(writer_results)} writer agents "
+                    f"failed: {reasons}\n\n{merged_text}"
+                )
         else:
             # Reviewer failed: fall back to merged writer output.
-            merged_text = "\n\n---\n\n".join(
-                f"## {r.agent_name}\n{r.text}" for r in writer_results if r.success
-            )
-            success = any(r.success for r in writer_results)
+            merged_text, success = self._merge_texts(writer_results)
         return results, merged_text, success
 
     # -- single agent execution --------------------------------------------
@@ -474,9 +533,16 @@ class TeamOrchestrator:
         try:
             runtime = SubAgentRuntime(llm=self._llm)
             handle = runtime.build(config)
-            envelope = await runtime.invoke(
-                handle, session_id=sid, request=request,
-            )
+            timeout_s = _subagent_wall_clock_s()
+            if timeout_s > 0:
+                envelope = await asyncio.wait_for(
+                    runtime.invoke(handle, session_id=sid, request=request),
+                    timeout=timeout_s,
+                )
+            else:
+                envelope = await runtime.invoke(
+                    handle, session_id=sid, request=request,
+                )
             await self._emit_progress(
                 "agent_completed", task_id, team_name,
                 agent_name=agent_name,
@@ -492,6 +558,18 @@ class TeamOrchestrator:
                 tool_calls=envelope.get("tool_calls", []),
                 stub=envelope.get("stub", True),
             )
+        except TimeoutError:
+            # v1.2.2: a hung agent fails itself instead of hanging the
+            # whole team run forever.
+            logger.warning(
+                "Agent %s timed out (%ss wall clock) in team %s",
+                agent_name, timeout_s, team_name,
+            )
+            return AgentRunResult(
+                agent_name=agent_name,
+                success=False,
+                error=f"timed out after {timeout_s:g}s wall clock",
+            )
         except Exception as exc:
             logger.exception("Agent %s failed in team %s", agent_name, team_name)
             return AgentRunResult(
@@ -499,6 +577,30 @@ class TeamOrchestrator:
                 success=False,
                 error=str(exc),
             )
+
+    # -- result merging -----------------------------------------------------
+
+    @staticmethod
+    def _merge_texts(results: list[AgentRunResult]) -> tuple[str, bool]:
+        """Join successful outputs; surface partial failure up front.
+
+        ``success = any(...)`` means one healthy agent marks the run
+        successful even when its peers failed — the advisory line keeps
+        that partial failure visible instead of silently dropped.
+        """
+        merged = "\n\n---\n\n".join(
+            f"## {r.agent_name}\n{r.text}" for r in results if r.success
+        )
+        failed = [r for r in results if not r.success]
+        if failed:
+            reasons = ", ".join(
+                f"{r.agent_name} ({r.error or 'failed'})" for r in failed
+            )
+            merged = (
+                f"> ⚠ {len(failed)} of {len(results)} agents failed: "
+                f"{reasons}\n\n{merged}"
+            )
+        return merged, any(r.success for r in results)
 
     # -- conflict detection ------------------------------------------------
 

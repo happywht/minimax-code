@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import minimax_code.orchestrator.subagent as subagent_module
 from minimax_code.orchestrator.team_orchestrator import (
     AgentRunResult,
     TeamOrchestrator,
+    _subagent_wall_clock_s,
+    _team_concurrency_limit,
 )
 from minimax_code.storage.dao.agent_teams import AgentTeamDAO
 from minimax_code.storage.dao.agents import AgentDAO
@@ -403,3 +407,253 @@ def test_detect_conflicts_read_only_no_conflict() -> None:
     ]
     conflicts = TeamOrchestrator._detect_conflicts(results)
     assert len(conflicts) == 0
+
+
+# ── Tests: v1.2.2 stability knobs ────────────────────────────────────────────
+
+
+def test_team_concurrency_limit_env_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MINIMAX_CODE_TEAM_MAX_CONCURRENCY", raising=False)
+    assert _team_concurrency_limit() == 4
+
+    monkeypatch.setenv("MINIMAX_CODE_TEAM_MAX_CONCURRENCY", "7")
+    assert _team_concurrency_limit() == 7
+
+    # Non-numeric values fall back to the default instead of crashing the run.
+    monkeypatch.setenv("MINIMAX_CODE_TEAM_MAX_CONCURRENCY", "lots")
+    assert _team_concurrency_limit() == 4
+
+    # <= 0 disables the cap entirely.
+    monkeypatch.setenv("MINIMAX_CODE_TEAM_MAX_CONCURRENCY", "0")
+    assert _team_concurrency_limit() == 0
+
+
+def test_subagent_wall_clock_env_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MINIMAX_CODE_SUBAGENT_TIMEOUT_S", raising=False)
+    assert _subagent_wall_clock_s() == 600.0
+
+    monkeypatch.setenv("MINIMAX_CODE_SUBAGENT_TIMEOUT_S", "30")
+    assert _subagent_wall_clock_s() == 30.0
+
+    monkeypatch.setenv("MINIMAX_CODE_SUBAGENT_TIMEOUT_S", "soon")
+    assert _subagent_wall_clock_s() == 600.0
+
+    monkeypatch.setenv("MINIMAX_CODE_SUBAGENT_TIMEOUT_S", "0")
+    assert _subagent_wall_clock_s() == 0.0
+
+
+async def _seed_fleet(
+    team_dao: AgentTeamDAO, agent_dao: AgentDAO, count: int,
+) -> None:
+    """Create a 'fleet' parallel team with ``count`` member agents."""
+    names = [f"a{i}" for i in range(count)]
+    for name in names:
+        await agent_dao.upsert(
+            name=name,
+            system_prompt="Do the thing.",
+            tool_allowlist=["read_file"],
+            model=None,
+        )
+    await team_dao.create(name="fleet", agents=names, orchestration_mode="parallel")
+
+
+def _make_counting_runtime(state: dict[str, int]):
+    """Fake SubAgentRuntime whose invoke tracks concurrent invocations.
+
+    ``_run_single_agent`` imports SubAgentRuntime lazily from
+    ``orchestrator.subagent``, so patching the module attribute works.
+    """
+    delay = state.get("delay", 0.02)
+
+    class CountingRuntime:
+        def __init__(self, llm: object | None = None) -> None:
+            pass
+
+        def build(self, config: Any) -> Any:
+            return config
+
+        async def invoke(
+            self, handle: Any, session_id: str | None = None, request: str = "",
+        ) -> dict[str, Any]:
+            state["inflight"] += 1
+            state["peak"] = max(state["peak"], state["inflight"])
+            try:
+                await asyncio.sleep(delay)
+                return {
+                    "text": f"ok:{handle.name}",
+                    "iterations": 1,
+                    "tool_calls": [],
+                    "stub": True,
+                }
+            finally:
+                state["inflight"] -= 1
+
+    return CountingRuntime
+
+
+@pytest.mark.asyncio
+async def test_parallel_concurrency_capped_by_env(
+    make_orchestrator: TeamOrchestrator,
+    team_dao: AgentTeamDAO,
+    agent_dao: AgentDAO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4 agents with MINIMAX_CODE_TEAM_MAX_CONCURRENCY=2: at most 2 run at once."""
+    await _seed_fleet(team_dao, agent_dao, count=4)
+    monkeypatch.setenv("MINIMAX_CODE_TEAM_MAX_CONCURRENCY", "2")
+    state = {"inflight": 0, "peak": 0}
+    monkeypatch.setattr(
+        subagent_module, "SubAgentRuntime", _make_counting_runtime(state),
+    )
+
+    result = await make_orchestrator().run("fleet", "go")
+
+    assert result.success is True
+    assert len(result.agents_run) == 4
+    assert state["peak"] == 2, (
+        f"expected the semaphore to hold concurrency at 2, saw {state['peak']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_parallel_full_concurrency_by_default(
+    make_orchestrator: TeamOrchestrator,
+    team_dao: AgentTeamDAO,
+    agent_dao: AgentDAO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without the env cap a 4-agent team still fans all 4 out at once."""
+    await _seed_fleet(team_dao, agent_dao, count=4)
+    monkeypatch.delenv("MINIMAX_CODE_TEAM_MAX_CONCURRENCY", raising=False)
+    state = {"inflight": 0, "peak": 0}
+    monkeypatch.setattr(
+        subagent_module, "SubAgentRuntime", _make_counting_runtime(state),
+    )
+
+    result = await make_orchestrator().run("fleet", "go")
+
+    assert result.success is True
+    assert state["peak"] == 4, (
+        f"expected full fan-out by default, saw peak {state['peak']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_hung_agent_times_out(
+    make_orchestrator: TeamOrchestrator,
+    team_dao: AgentTeamDAO,
+    agent_dao: AgentDAO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sub-agent stuck past the wall clock fails itself, not the process."""
+
+    class HangingRuntime:
+        def __init__(self, llm: object | None = None) -> None:
+            pass
+
+        def build(self, config: Any) -> Any:
+            return config
+
+        async def invoke(
+            self, handle: Any, session_id: str | None = None, request: str = "",
+        ) -> dict[str, Any]:
+            await asyncio.sleep(30)
+            return {}
+
+    await _seed_fleet(team_dao, agent_dao, count=1)
+    monkeypatch.setenv("MINIMAX_CODE_SUBAGENT_TIMEOUT_S", "0.05")
+    monkeypatch.setattr(subagent_module, "SubAgentRuntime", HangingRuntime)
+
+    result = await make_orchestrator().run("fleet", "hang")
+
+    assert result.success is False
+    failed = result.agents_run[0]
+    assert failed.success is False
+    assert "timed out" in (failed.error or "")
+    assert "0.05" in (failed.error or "")
+    # The timeout is surfaced in the merged text too (partial-failure advisory).
+    assert "> ⚠ 1 of 1 agents failed: a0" in result.merged_text
+
+
+@pytest.mark.asyncio
+async def test_partial_failure_surfaced_in_merged_text(
+    make_orchestrator: TeamOrchestrator,
+    team_dao: AgentTeamDAO,
+    agent_dao: AgentDAO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One failed agent must not vanish behind success = any(...)."""
+    fail_names = {"reviewer"}
+
+    class FlakyRuntime:
+        def __init__(self, llm: object | None = None) -> None:
+            pass
+
+        def build(self, config: Any) -> Any:
+            return config
+
+        async def invoke(
+            self, handle: Any, session_id: str | None = None, request: str = "",
+        ) -> dict[str, Any]:
+            if handle.name in fail_names:
+                raise RuntimeError("boom")
+            return {
+                "text": f"ok:{handle.name}",
+                "iterations": 1,
+                "tool_calls": [],
+                "stub": True,
+            }
+
+    await _seed_team_and_agents(team_dao, agent_dao, mode="parallel")
+    monkeypatch.setattr(subagent_module, "SubAgentRuntime", FlakyRuntime)
+
+    result = await make_orchestrator().run("review", "go")
+
+    # any() semantics preserved: the healthy agent still marks the run done.
+    assert result.success is True
+    assert result.merged_text.startswith(
+        "> ⚠ 1 of 2 agents failed: reviewer (boom)"
+    )
+    assert "ok:coder" in result.merged_text
+
+
+@pytest.mark.asyncio
+async def test_review_mode_writer_failure_surfaced(
+    make_orchestrator: TeamOrchestrator,
+    team_dao: AgentTeamDAO,
+    agent_dao: AgentDAO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review mode: a failed writer stays visible even when the reviewer
+    consolidates successfully."""
+    fail_names = {"coder"}
+
+    class FlakyWriterRuntime:
+        def __init__(self, llm: object | None = None) -> None:
+            pass
+
+        def build(self, config: Any) -> Any:
+            return config
+
+        async def invoke(
+            self, handle: Any, session_id: str | None = None, request: str = "",
+        ) -> dict[str, Any]:
+            if handle.name in fail_names:
+                raise RuntimeError("boom")
+            return {
+                "text": f"ok:{handle.name}",
+                "iterations": 1,
+                "tool_calls": [],
+                "stub": True,
+            }
+
+    await _seed_team_and_agents(team_dao, agent_dao, mode="review")
+    monkeypatch.setattr(subagent_module, "SubAgentRuntime", FlakyWriterRuntime)
+
+    result = await make_orchestrator().run("review", "go")
+
+    assert result.success is True
+    # Both members run as writers (the reviewer then consolidates), so the
+    # advisory denominates over 2 writers.
+    assert "> ⚠ 1 of 2 writer agents failed: coder (boom)" in result.merged_text
+    assert "ok:reviewer" in result.merged_text
