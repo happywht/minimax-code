@@ -173,6 +173,7 @@ A: 编辑 `tailwind.config.js` 中的 `minimax` 颜色定义（bg、panel、bord
 
 ## 变更记录 (Changelog)
 
+- **2026-08-23** — v1.2.0：全局审计修复（web 侧）——chat 五订阅 `isCurrentSessionEvent` 守卫 + `disposeChatSubscriptions()` 导出、teamRunStore 读 `env.data`、invokeSkill 对象 args 平铺到 wire 顶层 + codeReviewStore 读平铺 reply + mock 同步、runStore 双守卫（run.created 过滤 / run.completed 孤儿丢弃）+ loadRuns stale/replace、ProgressPanel 展示 done 任务 result；新增 `session-guards.test.ts`（9）+ `typed-skills.test.ts`（5）
 - **2026-08-23** — v1.1.3：`ContextIndicator` 语义修正——取最后一条 assistant 消息的 `tokens_in + tokens_out`（当前上下文真实占用）替代累加（历史重复计数、系统性虚高）
 - **2026-08-23** — v1.1.1：新增 `AskUserCard` 问答卡（chat 域）与 `agent.ask_user` 事件（StreamEvent 16 个）、`agent.answer_user` IPC；IPC 方法 170
 - **2026-08-21** — R43 对账同步：组件清单子目录化、设置页 3 tab→14 tab 4 组、检查器 11 tab、stores 10→29、IPC 分层 4 文件、StreamEvent 8→15、新增 strings.ts/hooks 条目

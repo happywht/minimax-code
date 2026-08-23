@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-23
+
+### Fixed — 全局审计修复：跨会话串台、幽灵时间线、技能契约断裂（14 项，5 刀 + P3）
+
+起因于用户实测反馈「代码审查的后台对话信息会输出到当前会话里」。全局检索发现根因是**后端把所有 WebSocket 事件广播给所有客户端，而前端 store 大多不校验 session 归属**——任何后台任务（技能调用、定时任务、其他标签页）的流式事件都会污染当前打开的会话。本次以 5 刀主修复 + P3 杂项闭环全部 14 项审计问题。
+
+- **第 1 刀｜chat 五订阅 session 守卫（web）**：`message_chunk` / `tool_call` / `tool_result` / `agent.status` / `ask_user` 五个订阅全部加 `isCurrentSessionEvent` 守卫（`session_id === currentSessionId` 才放行）；`send()` 回填竞态守卫（响应返回时 session 已切换则不回填本地占位）。导出 `disposeChatSubscriptions()` 供测试拆卸。
+- **第 2 刀｜teamRunStore envelope 解包（web）**：`agent.team_progress` 事件处理把广播 envelope 直接 cast 成 payload——所有字段 undefined 产生幽灵条目。修复为读 `env.data`，空 data 跳过。
+- **第 3 刀｜invokeSkill 契约对齐（web，wire/output/mock 三方）**：后端要求 `skill_id` + `request` 必填、特殊路由键（`diff`）在 params 顶层——typed 层旧实现只传 `{skill_id, request}` 导致代码审查技能收到 dict-repr 而非指令。修复：对象 args 平铺到 wire 顶层；`codeReviewStore` 读取平铺 reply（`text`/`output`/`comments`/`stats`）；mock backend 同步说 wire 形状。
+- **第 4 刀｜runStore session 过滤 + stale 守卫（web）**：`run.created` 按 session 过滤；`run.completed` 孤儿守卫（未见过 created 且 session 不匹配则丢弃，不再追加幽灵时间线条目）；`loadRuns` 加 stale 守卫 + replace 语义（切会话竞态不再混合两个会话的 runs）。
+- **第 5 刀｜scheduler 真实 prompt runner（agent）**：定时任务此前只跑技能/工作流模板，`prompt` 类型任务不产生任何输出。修复：真实 prompt 任务走 `agent.send_message` 往指定 session 发消息（`_dispatch_prompt_job`），新增 `025` migration 给 `scheduled_jobs.result_persist` 持久化结果列 + `tasks.result` IPC 返回最新结果；前端 `ProgressPanel` 展示 `done` 任务的 result 摘要。
+- **P3 杂项**：`permission.request` 五文件补 `session_id` 归属（前端弹窗不再跨会话误弹）；`teams.spawn` 系列 handler 的 `emit_event=ctx.emit` 净化（metadata keyword-only 签名对齐）；技能调用结果落库（`skill_runs` 表此前不写）；ProgressPanel 最小字号 11px 合规（a11y 规则）。
+
+### Added — 回归测试网（防串台复发）
+
+14 个新回归测试 + 存量测试适配：`session-guards.test.ts`（9 测试覆盖第 1/2/4 刀——事件总线注入模式，双模块路径 mock）、`typed-skills.test.ts`（5 测试覆盖第 3 刀——wire 平铺 + mock reply 形状）、`progress-panel.test.tsx` 补 result 展示断言；`chat-watchdog` / `chat-thinking-count` 存量测试适配 session 守卫（事件注入补 `session_id`）。
+
+**质量数字**：pytest **10195 passed / 15 skipped**；vitest **737/737（95 文件）**；ESLint 0/0；ruff 全绿；tsc 干净。
+
 ## [1.1.3] - 2026-08-23
 
 ### Fixed — 上下文指示器恒显示 0（tokens 从未持久化）

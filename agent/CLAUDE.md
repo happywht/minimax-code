@@ -203,6 +203,7 @@ A: 1) 在对应的 `handlers_*.py` 中实现 handler 函数；2) 在 `app.py` �
 
 ## 变更记录 (Changelog)
 
+- **2026-08-23** — v1.2.0：全局审计修复（agent 侧）——scheduler `_dispatch_prompt_job` 真实跑 prompt 任务往 session 发消息、025 migration（`scheduled_jobs.result_persist` 列）+ TasksDAO 结果读写、`permission.request` 广播补 session_id 归属、teams handler `emit_event=ctx.emit` 净化（metadata keyword-only）、技能调用结果落库 skill_runs
 - **2026-08-23** — v1.1.3：修复 context 指示器恒 0——core 持久化带 metadata 副本、builtins `_persist` 传 `tokens_in`/`tokens_out` 列；前端 ContextIndicator 取最新占用而非累加
 - **2026-08-23** — v1.1.2：修复长会话历史口癖污染——`_build_system_prompt_extra` 前置 stale-note advisory、nudge 防复述指令 + context-pressure 节流（`context_nudge_fired` / `compacted_this_iteration`）
 - **2026-08-23** — v1.1.1：ask_user 工具（第 10 工具 + agent.answer_user + agent.ask_user 事件）、max_iterations 12→200（env `MINIMAX_MAX_ITERATIONS`）、subagent 默认 50；IPC 170 方法 / 36 前缀 / 事件 16
