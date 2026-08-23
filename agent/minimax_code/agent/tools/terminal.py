@@ -32,6 +32,8 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import signal
+import subprocess
 import sys
 import time
 from collections.abc import Mapping
@@ -49,6 +51,73 @@ _MAX_OUTPUT_BYTES = 5 * 1024 * 1024  # 5 MiB
 _MAX_ARGS = 100  # Maximum number of arguments
 _MAX_ARG_LEN = 4096  # Maximum length of a single argument
 _PROCESS_SEMAPHORE = asyncio.Semaphore(10)  # Max concurrent children
+
+
+# ---------------------------------------------------------------------------
+# Process-tree control (v1.2.2)
+# ---------------------------------------------------------------------------
+
+# SIGKILL is POSIX-only in the signal module; on Windows the tree kill
+# goes through ``taskkill /F /T`` and never reads the signal value, so
+# the conventional 9 is a safe stand-in.
+_SIGKILL = getattr(signal, "SIGKILL", 9)
+
+
+def _child_spawn_kwargs() -> dict[str, Any]:
+    """Platform kwargs so the child leads its own process group/session.
+
+    This is what makes killing the *whole* tree possible: POSIX
+    ``killpg`` requires the child to own its process group, otherwise
+    a group kill would take the agent process down with it.
+    """
+    if sys.platform == "win32":
+        # ``taskkill /T`` walks the tree by parent-PID — no group flag
+        # needed (CREATE_NEW_PROCESS_GROUP only gates Ctrl+C delivery).
+        return {}
+    return {"start_new_session": True}
+
+
+async def _signal_process_tree(
+    proc: asyncio.subprocess.Process, sig: int
+) -> None:
+    """Deliver *sig* to *proc* and every descendant, not just the child.
+
+    ``proc.kill()`` reaches only the direct child — a command that
+    spawned its own children (build tool, dev server) used to leave
+    them orphaned, still holding ports and locks in the workspace.
+
+    Windows maps every signal to ``taskkill /F /T /PID`` (force-kill
+    the tree); SIGTERM-vs-SIGKILL nuance doesn't exist there and
+    ``Process.terminate()`` was already a hard TerminateProcess.
+    POSIX sends the signal to the child's process group. Both fall
+    back to a plain ``proc.kill()`` when the tree-wide call fails.
+    """
+    if proc.returncode is not None:
+        return
+    if sys.platform == "win32":
+        rc = await asyncio.to_thread(
+            subprocess.call,
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if rc != 0:
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+        return
+    try:
+        killpg = getattr(os, "killpg", None)
+        getpgid = getattr(os, "getpgid", None)
+        if killpg is None or getpgid is None:  # pragma: no cover — non-POSIX
+            raise OSError("killpg/getpgid unavailable on this platform")
+        killpg(getpgid(proc.pid), sig)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
 
 # ---------------------------------------------------------------------------
 # Environment variable sanitisation
@@ -325,6 +394,7 @@ class ExecCommandTool(Tool):
                     env=child_env,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    **_child_spawn_kwargs(),
                 )
             except FileNotFoundError as exc:
                 return ToolResult.fail(f"command not found: {exc}")
@@ -340,10 +410,9 @@ class ExecCommandTool(Tool):
                 timed_out = False
             except TimeoutError:
                 timed_out = True
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
+                # v1.2.2: kill the whole tree — grandchildren used to
+                # survive a plain proc.kill() and stay orphaned.
+                await _signal_process_tree(proc, _SIGKILL)
                 try:
                     stdout_b, stderr_b = await proc.communicate()
                 except Exception:  # pragma: no cover — defensive
@@ -402,4 +471,11 @@ class ExecCommandTool(Tool):
         )
 
 
-__all__ = ["ExecCommandTool", "_build_safe_env", "_is_dangerous_cmd"]
+__all__ = [
+    "ExecCommandTool",
+    "_build_safe_env",
+    "_is_dangerous_cmd",
+    "_child_spawn_kwargs",
+    "_signal_process_tree",
+    "_SIGKILL",
+]

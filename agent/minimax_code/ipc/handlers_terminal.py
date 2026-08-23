@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -21,6 +22,11 @@ from typing import Any
 from .handler_utils import HandlerError
 from .protocol import INVALID_PARAMS
 from .server import Context
+from ..agent.tools.terminal import (
+    _SIGKILL,
+    _child_spawn_kwargs,
+    _signal_process_tree,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -332,22 +338,27 @@ async def _complete_run_tracking(
 
 
 async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
+    """Stop *proc*, escalating through the whole process tree.
+
+    v1.2.2: every signal now targets the tree (grandchildren included) —
+    the old terminate→kill ladder only reached the direct child, so a
+    command that spawned its own workers left them orphaned after a
+    timeout or user stop. On Windows the first signal is already a
+    hard tree kill (taskkill /F /T), so the escalation is a no-op.
+    """
     if proc.returncode is not None:
         return
-    try:
-        proc.terminate()
-    except ProcessLookupError:
-        return
+    await _signal_process_tree(proc, signal.SIGTERM)
     try:
         await asyncio.wait_for(proc.wait(), timeout=2.0)
         return
     except TimeoutError:
         pass
+    await _signal_process_tree(proc, _SIGKILL)
     try:
-        proc.kill()
-    except ProcessLookupError:
-        return
-    await proc.wait()
+        await proc.wait()
+    except Exception:  # pragma: no cover — defensive
+        logger.debug("proc.wait after tree kill failed", exc_info=True)
 
 
 async def _run_session(
@@ -365,6 +376,7 @@ async def _run_session(
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **_child_spawn_kwargs(),
         )
         session.process = process
         session.status = "running"
