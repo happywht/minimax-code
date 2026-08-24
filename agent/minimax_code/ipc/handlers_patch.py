@@ -16,7 +16,7 @@ import subprocess
 from typing import Any
 
 from .handler_utils import HandlerError
-from .handlers_git import _GIT_ERROR, _GIT_TIMEOUT_S, _resolve_cwd, _run_git
+from .handlers_git import _GIT_ERROR, _GIT_TIMEOUT_S, _run_git, _scoped_cwd
 from .protocol import INVALID_PARAMS
 from .server import Context
 
@@ -438,7 +438,7 @@ def register_patch_handlers(server: Any) -> None:
     async def handle_patch_preview(params: Any, ctx: Context) -> None:
         try:
             p = params if isinstance(params, dict) else {}
-            cwd = _resolve_cwd(p)
+            cwd = await _scoped_cwd(p)
             cmd, scope, ref = _diff_args(p)
             diff_text = _run_git(cmd, cwd=cwd)
             parsed = parse_unified_diff(diff_text)
@@ -460,7 +460,7 @@ def register_patch_handlers(server: Any) -> None:
     async def handle_apply_hunk(params: Any, ctx: Context) -> None:
         try:
             p = params if isinstance(params, dict) else {}
-            cwd = _resolve_cwd(p)
+            cwd = await _scoped_cwd(p)
             scope = p.get("scope", "working")
             if not isinstance(scope, str):
                 raise HandlerError(INVALID_PARAMS, "'scope' must be a string when provided")
@@ -498,7 +498,7 @@ def register_patch_handlers(server: Any) -> None:
     async def handle_revert_hunk(params: Any, ctx: Context) -> None:
         try:
             p = params if isinstance(params, dict) else {}
-            cwd = _resolve_cwd(p)
+            cwd = await _scoped_cwd(p)
             scope = p.get("scope", "working")
             if not isinstance(scope, str):
                 raise HandlerError(INVALID_PARAMS, "'scope' must be a string when provided")
@@ -536,7 +536,7 @@ def register_patch_handlers(server: Any) -> None:
     async def handle_apply_file(params: Any, ctx: Context) -> None:
         try:
             p = params if isinstance(params, dict) else {}
-            cwd = _resolve_cwd(p)
+            cwd = await _scoped_cwd(p)
             scope = p.get("scope", "working")
             if not isinstance(scope, str):
                 raise HandlerError(INVALID_PARAMS, "'scope' must be a string when provided")
@@ -567,7 +567,7 @@ def register_patch_handlers(server: Any) -> None:
     async def handle_apply_all(params: Any, ctx: Context) -> None:
         try:
             p = params if isinstance(params, dict) else {}
-            cwd = _resolve_cwd(p)
+            cwd = await _scoped_cwd(p)
             scope = p.get("scope", "working")
             if not isinstance(scope, str):
                 raise HandlerError(INVALID_PARAMS, "'scope' must be a string when provided")
@@ -610,7 +610,7 @@ def register_patch_handlers(server: Any) -> None:
     async def handle_revert_file(params: Any, ctx: Context) -> None:
         try:
             p = params if isinstance(params, dict) else {}
-            cwd = _resolve_cwd(p)
+            cwd = await _scoped_cwd(p)
             scope = p.get("scope", "working")
             if not isinstance(scope, str):
                 raise HandlerError(INVALID_PARAMS, "'scope' must be a string when provided")
@@ -647,7 +647,7 @@ def register_patch_handlers(server: Any) -> None:
     async def handle_revert_all(params: Any, ctx: Context) -> None:
         try:
             p = params if isinstance(params, dict) else {}
-            cwd = _resolve_cwd(p)
+            cwd = await _scoped_cwd(p)
             scope = p.get("scope", "working")
             if not isinstance(scope, str):
                 raise HandlerError(INVALID_PARAMS, "'scope' must be a string when provided")
@@ -702,7 +702,7 @@ def register_patch_handlers(server: Any) -> None:
     async def handle_save_snapshot(params: Any, ctx: Context) -> None:
         try:
             p = params if isinstance(params, dict) else {}
-            cwd = _resolve_cwd(p)
+            cwd = await _scoped_cwd(p)
             status_text = _run_git(["status", "--porcelain"], cwd=cwd)
             if not status_text.strip():
                 await ctx.reply({"ok": True, "snapshot_ref": None, "clean": True})

@@ -65,7 +65,7 @@ import os
 import subprocess
 from typing import Any
 
-from .handler_utils import HandlerError
+from .handler_utils import HandlerError, ensure_cwd_within_root, project_root_from_params
 from .protocol import INVALID_PARAMS
 from .server import Context
 
@@ -153,6 +153,24 @@ def _resolve_cwd(params: dict[str, Any] | None) -> str | None:
         )
     return cwd
 
+async def _scoped_cwd(params: dict[str, Any] | None) -> str | None:
+    """Resolve the git working directory with optional project scope.
+
+    Without a rooted ``project_id`` this is exactly :func:`_resolve_cwd`
+    — legacy behaviour, zero contract change for existing callers. When
+    the params carry a project with a ``root_path`` (v1.3.0 strict
+    isolation): an explicit ``cwd`` must resolve inside the project
+    root, and a missing ``cwd`` anchors at the project root instead of
+    the process CWD. Shared with the ``patch.*`` handlers.
+    """
+    root = await project_root_from_params(params)
+    cwd = _resolve_cwd(params)
+    if root is None:
+        return cwd
+    if cwd is None:
+        return str(root)
+    return ensure_cwd_within_root(cwd, root)
+
 def _parse_status_porcelain_v2(text: str) -> tuple[list[str], list[str], list[str]]:
     """Split ``git status --porcelain=v2 -z`` output into three buckets.
 
@@ -231,7 +249,7 @@ def register_git_handlers(server: Any) -> None:
 
     async def handle_git_status(params: Any, ctx: Context) -> None:
         try:
-            cwd = _resolve_cwd(params if isinstance(params, dict) else None)
+            cwd = await _scoped_cwd(params if isinstance(params, dict) else None)
 
             # Branch: ``rev-parse --abbrev-ref HEAD`` returns
             # ``HEAD`` when detached; we echo that as-is so the UI
@@ -292,7 +310,7 @@ def register_git_handlers(server: Any) -> None:
     async def handle_git_diff(params: Any, ctx: Context) -> None:
         try:
             p = params if isinstance(params, dict) else {}
-            cwd = _resolve_cwd(p)
+            cwd = await _scoped_cwd(p)
             scope = p.get("scope", "working")
             ref = p.get("ref")
             if not isinstance(scope, str):
@@ -349,7 +367,7 @@ def register_git_handlers(server: Any) -> None:
     async def handle_git_log(params: Any, ctx: Context) -> None:
         try:
             p = params if isinstance(params, dict) else {}
-            cwd = _resolve_cwd(p)
+            cwd = await _scoped_cwd(p)
             n = p.get("n", 10)
             if not isinstance(n, int) or n <= 0:
                 raise HandlerError(

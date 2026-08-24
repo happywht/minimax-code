@@ -35,9 +35,13 @@ from typing import Any
 
 import pytest
 
+from minimax_code.app import set_projects_dao
 from minimax_code.config import Config
 from minimax_code.ipc.handlers_git import register_git_handlers
+from minimax_code.ipc.protocol import INVALID_PARAMS
 from minimax_code.ipc.server import IPCServer
+from minimax_code.storage.dao.projects import ProjectsDAO
+from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -123,7 +127,7 @@ def _build_repo(tmp_path: Path) -> Path:
         ``src/app.py``  — modified, unstaged (visible to ``git diff``)
     """
     repo = tmp_path / "repo"
-    repo.mkdir()
+    repo.mkdir(parents=True)
     env = os.environ.copy()
     env.setdefault("GIT_AUTHOR_NAME", "Test")
     env.setdefault("GIT_AUTHOR_EMAIL", "test@example.com")
@@ -394,6 +398,106 @@ class TestGitLog:
         assert ctx.reply_payload is None
         code, _, _ = ctx.reply_error_payload
         assert code == GIT_ERROR
+
+
+# ---------------------------------------------------------------------------
+# v1.3.0 — project-scoped cwd (strict isolation)
+# ---------------------------------------------------------------------------
+
+
+class TestProjectScope:
+    """``params.project_id`` scopes git calls to the project's root.
+
+    A rooted project: missing ``cwd`` anchors at the root, an explicit
+    ``cwd`` must resolve inside it. Params without a ``project_id`` —
+    or for a project without ``root_path`` — keep the legacy behaviour
+    byte-for-byte.
+    """
+
+    @pytest.fixture
+    async def rooted(self, tmp_path: Path):
+        """Two temp repos; project ``proj_rooted`` is bound to repo_a."""
+        import subprocess
+
+        db = AsyncDatabase(make_temp_database_path(tmp_path))
+        await db.connect()
+        await db.migrate()
+        dao = ProjectsDAO(db)
+        await dao.ensure_inbox()
+
+        repo_a = _build_repo(tmp_path / "A")  # keeps the unstaged edit
+        repo_b = _build_repo(tmp_path / "B")  # committed clean below
+        subprocess.check_call(["git", "add", "-A"], cwd=str(repo_b))
+        subprocess.check_call(
+            ["git", "commit", "-m", "clean"], cwd=str(repo_b)
+        )
+
+        await dao.create(id="proj_rooted", name="Rooted", root_path=str(repo_a))
+        await dao.create(id="proj_rootless", name="Rootless")
+        set_projects_dao(dao)
+        try:
+            yield repo_a, repo_b
+        finally:
+            set_projects_dao(None)
+            await db.close()
+
+    @pytest.mark.asyncio
+    async def test_default_cwd_anchors_at_project_root(self, rooted) -> None:
+        repo_a, _ = rooted
+        handler, ctx = _make_handler(repo_a, "git.status")
+        await handler({"project_id": "proj_rooted"}, ctx)
+        assert ctx.reply_error_payload is None
+        # repo_a carries the fixture's unstaged edit — proves the call
+        # ran inside repo_a, not the process cwd.
+        assert ctx.reply_payload["clean"] is False
+        assert any("src/app.py" in p for p in ctx.reply_payload["modified"])
+
+    @pytest.mark.asyncio
+    async def test_explicit_cwd_inside_root_allowed(self, rooted) -> None:
+        repo_a, _ = rooted
+        handler, ctx = _make_handler(repo_a, "git.status")
+        await handler({"project_id": "proj_rooted", "cwd": str(repo_a / "src")}, ctx)
+        assert ctx.reply_error_payload is None
+        assert ctx.reply_payload["branch"] == "main"
+
+    @pytest.mark.asyncio
+    async def test_relative_cwd_resolves_against_root(self, rooted) -> None:
+        repo_a, _ = rooted
+        handler, ctx = _make_handler(repo_a, "git.status")
+        await handler({"project_id": "proj_rooted", "cwd": "src"}, ctx)
+        assert ctx.reply_error_payload is None
+        assert ctx.reply_payload["branch"] == "main"
+
+    @pytest.mark.asyncio
+    async def test_explicit_cwd_outside_root_rejected(self, rooted) -> None:
+        repo_a, repo_b = rooted
+        handler, ctx = _make_handler(repo_a, "git.status")
+        await handler({"project_id": "proj_rooted", "cwd": str(repo_b)}, ctx)
+        assert ctx.reply_payload is None
+        code, message, _ = ctx.reply_error_payload
+        assert code == INVALID_PARAMS
+        assert "outside the project root" in message
+
+    @pytest.mark.asyncio
+    async def test_rootless_project_keeps_legacy_behaviour(self, rooted) -> None:
+        repo_a, repo_b = rooted
+        handler, ctx = _make_handler(repo_a, "git.status")
+        # No root_path on the project → no containment, cwd passes
+        # through untouched (legacy semantics).
+        await handler({"project_id": "proj_rootless", "cwd": str(repo_b)}, ctx)
+        assert ctx.reply_error_payload is None
+        assert ctx.reply_payload["clean"] is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_project_keeps_legacy_behaviour(self, rooted) -> None:
+        repo_a, repo_b = rooted
+        handler, ctx = _make_handler(repo_a, "git.diff")
+        await handler(
+            {"project_id": "does-not-exist", "cwd": str(repo_b), "scope": "staged"},
+            ctx,
+        )
+        assert ctx.reply_error_payload is None
+        assert ctx.reply_payload["diff"] == ""
 
 
 # ---------------------------------------------------------------------------

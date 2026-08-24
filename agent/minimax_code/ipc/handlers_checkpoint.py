@@ -32,6 +32,7 @@ from typing import Any
 from ..storage.dao.checkpoints import CheckpointDAO
 from ..storage.db import ensure_data_dir
 from ..workspace import Checkpoint, CheckpointManager, CheckpointRestoreResult
+from ..workspace_ctx import env_or_cwd_root, resolve_root_for_session
 from .handler_utils import HandlerError, check_params
 from .protocol import INTERNAL_ERROR, INVALID_PARAMS
 from .server import Context
@@ -72,7 +73,7 @@ def register_checkpoint_handlers(
             session_id = _string_required(p, "session_id")
             label = _string_param(p, "label") or "Checkpoint"
             message = _string_param(p, "message") or ""
-            workdir = await _resolve_cwd(p)
+            workdir = await _resolve_cwd(p, session_id=session_id)
 
             ckpt_dao = await dao_factory()
             mgr = await manager_factory()
@@ -136,13 +137,17 @@ def register_checkpoint_handlers(
             check_params(params, expected_keys={"checkpoint_id"})
             p = params or {}
             checkpoint_id = _string_required(p, "checkpoint_id")
-            workdir = await _resolve_cwd(p)
             ckpt_dao = await dao_factory()
             row = await ckpt_dao.get(checkpoint_id)
             if row is None:
                 raise HandlerError(
                     INVALID_PARAMS, f"unknown checkpoint_id: {checkpoint_id!r}"
                 )
+            # Resolve cwd after the row lookup — the checkpoint's owning
+            # session decides the project-scoped root (v1.3.0).
+            workdir = await _resolve_cwd(
+                p, session_id=str(row.get("session_id") or "") or None
+            )
             mgr = await manager_factory()
             result = await mgr.restore(workdir, _row_to_checkpoint(row))
             await ctx.reply({"result": _result_to_dict(result)})
@@ -161,13 +166,15 @@ def register_checkpoint_handlers(
             check_params(params, expected_keys={"checkpoint_id"})
             p = params or {}
             checkpoint_id = _string_required(p, "checkpoint_id")
-            workdir = await _resolve_cwd(p)
             ckpt_dao = await dao_factory()
             row = await ckpt_dao.get(checkpoint_id)
             if row is None:
                 raise HandlerError(
                     INVALID_PARAMS, f"unknown checkpoint_id: {checkpoint_id!r}"
                 )
+            workdir = await _resolve_cwd(
+                p, session_id=str(row.get("session_id") or "") or None
+            )
             mgr = await manager_factory()
             diff = await mgr.diff(workdir, _row_to_checkpoint(row))
             await ctx.reply(
@@ -297,12 +304,17 @@ def _make_manager_factory(manager: Any | None) -> Any:
 # ---------------------------------------------------------------------------
 
 
-async def _resolve_cwd(params: dict[str, Any]) -> Path:
+async def _resolve_cwd(
+    params: dict[str, Any], *, session_id: str | None = None
+) -> Path:
     """Resolve the working tree to snapshot/rewind.
 
-    Honours an explicit ``cwd`` (absolute or repo-relative); otherwise
-    falls back to the current git repo root. A non-repo cwd is a
-    user-facing error — storing an empty snapshot is pointless.
+    Honours an explicit ``cwd`` (absolute or repo-relative); otherwise a
+    session-scoped root (worktree workspace / project ``root_path``,
+    v1.3.0) wins when it differs from the process-wide default — legacy
+    sessions without a project root keep the git-toplevel behaviour
+    untouched. A non-repo cwd is a user-facing error — storing an empty
+    snapshot is pointless.
     """
     explicit = _string_param(params, "cwd")
     if explicit:
@@ -310,6 +322,10 @@ async def _resolve_cwd(params: dict[str, Any]) -> Path:
         if not candidate.is_absolute():
             candidate = (Path.cwd() / candidate).resolve()
         return candidate
+    if session_id:
+        root = await resolve_root_for_session(session_id)
+        if root != env_or_cwd_root():
+            return root
     return await _git_repo_root()
 
 

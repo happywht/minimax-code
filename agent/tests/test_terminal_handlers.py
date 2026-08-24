@@ -10,10 +10,13 @@ from typing import Any
 
 import pytest
 
+from minimax_code.app import set_projects_dao
 from minimax_code.config import Config
 from minimax_code.ipc import handlers_terminal
 from minimax_code.ipc.handlers_terminal import default_working_directory, register_terminal_handlers
+from minimax_code.ipc.protocol import INVALID_PARAMS
 from minimax_code.ipc.server import IPCServer
+from minimax_code.storage.dao.projects import ProjectsDAO
 from minimax_code.storage.dao.runs import AgentRunsDAO
 from minimax_code.storage.dao.sessions import SessionsDAO
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
@@ -208,3 +211,106 @@ def uuid4_hex() -> str:
     import uuid
 
     return uuid.uuid4().hex[:10]
+
+
+# ---------------------------------------------------------------------------
+# v1.3.0 — project-scoped cwd (strict isolation)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def rooted_dirs(tmp_path: Path):
+    """A rooted project (``proj_rooted`` → ``root/``) plus a rootless sibling."""
+    db = AsyncDatabase(make_temp_database_path(tmp_path))
+    await db.connect()
+    await db.migrate()
+    dao = ProjectsDAO(db)
+    await dao.ensure_inbox()
+
+    root = tmp_path / "root"
+    (root / "sub").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    await dao.create(id="proj_rooted", name="Rooted", root_path=str(root))
+    await dao.create(id="proj_rootless", name="Rootless")
+    set_projects_dao(dao)
+    try:
+        yield root, outside
+    finally:
+        set_projects_dao(None)
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_cwd_default_anchors_at_project_root(rooted_dirs) -> None:
+    root, _ = rooted_dirs
+    cwd = await handlers_terminal._cwd_from_params({"project_id": "proj_rooted"})
+    assert cwd == str(root.resolve())
+
+
+@pytest.mark.asyncio
+async def test_cwd_inside_root_allowed(rooted_dirs) -> None:
+    root, _ = rooted_dirs
+    cwd = await handlers_terminal._cwd_from_params(
+        {"project_id": "proj_rooted", "cwd": str(root / "sub")}
+    )
+    assert cwd == str((root / "sub").resolve())
+
+
+@pytest.mark.asyncio
+async def test_relative_cwd_resolves_against_root(rooted_dirs) -> None:
+    root, _ = rooted_dirs
+    cwd = await handlers_terminal._cwd_from_params(
+        {"project_id": "proj_rooted", "cwd": "sub"}
+    )
+    assert cwd == str((root / "sub").resolve())
+
+
+@pytest.mark.asyncio
+async def test_cwd_outside_root_rejected(rooted_dirs) -> None:
+    _, outside = rooted_dirs
+    with pytest.raises(handlers_terminal.HandlerError) as excinfo:
+        await handlers_terminal._cwd_from_params(
+            {"project_id": "proj_rooted", "cwd": str(outside)}
+        )
+    assert excinfo.value.code == INVALID_PARAMS
+    assert "outside the project root" in excinfo.value.message
+
+
+@pytest.mark.asyncio
+async def test_rootless_project_keeps_legacy_default(
+    rooted_dirs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("MINIMAX_CODE_WORKSPACE", raising=False)
+    monkeypatch.delenv("MINIMAX_CODE_WORKSPACE_ROOT", raising=False)
+    cwd = await handlers_terminal._cwd_from_params({"project_id": "proj_rootless"})
+    assert cwd == default_working_directory()
+
+
+@pytest.mark.asyncio
+async def test_nonexistent_cwd_rejected(tmp_path: Path) -> None:
+    with pytest.raises(handlers_terminal.HandlerError) as excinfo:
+        await handlers_terminal._cwd_from_params({"cwd": str(tmp_path / "nope")})
+    assert excinfo.value.code == INVALID_PARAMS
+    assert "existing directory" in excinfo.value.message
+
+
+@pytest.mark.asyncio
+async def test_terminal_start_uses_project_root(rooted_dirs) -> None:
+    root, _ = rooted_dirs
+    start, ctx = _make_handler("terminal.start")
+    await start(
+        {
+            "command": _python_command("print('rooted terminal')"),
+            "project_id": "proj_rooted",
+            "timeout_s": 5,
+        },
+        ctx,
+    )
+    assert ctx.reply_error_payload is None
+    session = ctx.reply_payload["session"]
+    assert session["cwd"] == str(root.resolve())
+    payload = await _read_until_done(session["id"])
+    await _await_session_task(session["id"])
+    assert payload["session"]["status"] == "completed"

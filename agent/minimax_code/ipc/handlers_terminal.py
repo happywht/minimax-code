@@ -24,7 +24,7 @@ from ..agent.tools.terminal import (
     _child_spawn_kwargs,
     _signal_process_tree,
 )
-from .handler_utils import HandlerError
+from .handler_utils import HandlerError, ensure_cwd_within_root, project_root_from_params
 from .protocol import INVALID_PARAMS
 from .server import Context
 
@@ -159,12 +159,22 @@ def default_working_directory() -> str:
     return str(current)
 
 
-def _cwd_from_params(params: dict[str, Any]) -> str:
+async def _cwd_from_params(params: dict[str, Any]) -> str:
+    """Resolve the terminal cwd, honouring an optional project scope.
+
+    Priority: explicit ``cwd`` (validated to resolve inside the project
+    root when the params carry a rooted ``project_id``, v1.3.0 strict
+    isolation) → the project root itself → the legacy env/marker/CWD
+    default chain via :func:`default_working_directory`.
+    """
+    root = await project_root_from_params(params)
     raw = params.get("cwd")
     if raw is None or raw == "":
-        return default_working_directory()
+        return str(root) if root is not None else default_working_directory()
     if not isinstance(raw, str):
         raise HandlerError(INVALID_PARAMS, "'cwd' must be a string when provided")
+    if root is not None:
+        raw = ensure_cwd_within_root(raw, root)
     path = Path(raw).expanduser().resolve()
     if not path.exists() or not path.is_dir():
         raise HandlerError(INVALID_PARAMS, "'cwd' must point to an existing directory")
@@ -458,7 +468,7 @@ def register_terminal_handlers(server: Any) -> None:
         try:
             p = _require_params(params)
             command = _command_from_params(p)
-            cwd = _cwd_from_params(p)
+            cwd = await _cwd_from_params(p)
             timeout_s = _timeout_from_params(p)
             chat_session_id = _chat_session_id_from_params(p)
             session = await start_terminal_command(

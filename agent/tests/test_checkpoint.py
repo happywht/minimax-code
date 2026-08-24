@@ -17,15 +17,19 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from minimax_code.app import set_projects_dao, set_sessions_dao
 from minimax_code.config import Config
 from minimax_code.ipc.handlers_checkpoint import register_checkpoint_handlers
 from minimax_code.ipc.protocol import INVALID_PARAMS
 from minimax_code.ipc.server import IPCServer
 from minimax_code.storage.dao.checkpoints import CheckpointDAO
+from minimax_code.storage.dao.projects import ProjectsDAO
+from minimax_code.storage.dao.sessions import SessionsDAO
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 from minimax_code.workspace import CheckpointManager
 
@@ -506,3 +510,162 @@ class TestCheckpointIPC:
         # A second delete now 404s — the row is gone.
         again = await self._call(server, "checkpoint.delete", {"checkpoint_id": ckpt_id})
         assert "error" in again
+
+
+# ---------------------------------------------------------------------------
+# v1.3.0 — project-scoped cwd resolution
+# ---------------------------------------------------------------------------
+
+
+class _SpyManager:
+    """Records the cwd each handler call resolved to; returns minimal fakes."""
+
+    def __init__(self) -> None:
+        self.cwds: list[str] = []
+
+    async def create(self, *, cwd: Path, **kwargs: Any) -> Any:
+        self.cwds.append(str(cwd))
+        return SimpleNamespace(
+            git_stash_ref=None,
+            branch="main",
+            tracked_files=[],
+            untracked_files=[],
+            has_untracked_snapshot=False,
+            created_at="2026-01-01T00:00:00Z",
+        )
+
+    async def restore(self, cwd: Path, checkpoint: Any) -> Any:
+        self.cwds.append(str(cwd))
+        return SimpleNamespace(
+            checkpoint_id=checkpoint.id,
+            restored=True,
+            applied_stash=None,
+            restored_untracked=False,
+            skipped_existing=[],
+            warnings=[],
+        )
+
+    async def diff(self, cwd: Path, checkpoint: Any) -> Any:
+        self.cwds.append(str(cwd))
+        return SimpleNamespace(
+            checkpoint_id=checkpoint.id, available=False, patch="", files=[]
+        )
+
+    def delete_snapshot(self, checkpoint_id: str) -> bool:
+        return False
+
+
+class TestCheckpointProjectRoot:
+    """``checkpoint.*`` resolves cwd from the session's project root.
+
+    create/restore/diff resolve the workdir via ``resolve_root_for_session``
+    when no explicit ``cwd`` is given; an explicit ``cwd`` still wins
+    (legacy semantics), and a session without a project root keeps the
+    git-toplevel fallback untouched.
+    """
+
+    @pytest.fixture
+    async def rooted_session(
+        self, tmp_path: Path, async_db: AsyncDatabase, git_repo: Path
+    ):
+        projects = ProjectsDAO(async_db)
+        await projects.ensure_inbox()
+        sessions = SessionsDAO(async_db)
+        pid = "proj_ck"
+        await projects.create(id=pid, name="CK", root_path=str(git_repo))
+        sid = "ses_ck"
+        await sessions.create(id=sid, title="ck", project_id=pid)
+        set_projects_dao(projects)
+        set_sessions_dao(sessions)
+        try:
+            yield sid
+        finally:
+            set_projects_dao(None)
+            set_sessions_dao(None)
+
+    def _server(self, ckpt_dao: CheckpointDAO, spy: _SpyManager) -> IPCServer:
+        srv = IPCServer(config=Config.from_env(), stdin=sys.stdin, stdout=sys.stdout)
+        register_checkpoint_handlers(srv, dao=ckpt_dao, manager=spy)
+        return srv
+
+    async def _call(self, server: IPCServer, method: str, params: dict) -> dict:
+        resp = await server.handle_request({
+            "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
+        })
+        assert resp is not None
+        return resp
+
+    @pytest.mark.asyncio
+    async def test_create_anchors_at_session_project_root(
+        self, rooted_session, ckpt_dao: CheckpointDAO, git_repo: Path
+    ) -> None:
+        spy = _SpyManager()
+        server = self._server(ckpt_dao, spy)
+        resp = await self._call(
+            server, "checkpoint.create", {"session_id": rooted_session}
+        )
+        assert "result" in resp, resp
+        assert spy.cwds == [str(git_repo.resolve())]
+
+    @pytest.mark.asyncio
+    async def test_explicit_cwd_wins_over_session_root(
+        self, rooted_session, ckpt_dao: CheckpointDAO, tmp_path: Path
+    ) -> None:
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        spy = _SpyManager()
+        server = self._server(ckpt_dao, spy)
+        resp = await self._call(server, "checkpoint.create", {
+            "session_id": rooted_session,
+            "cwd": str(elsewhere),
+        })
+        assert "result" in resp, resp
+        assert spy.cwds == [str(elsewhere.resolve())]
+
+    @pytest.mark.asyncio
+    async def test_restore_uses_checkpoint_owning_session_root(
+        self, rooted_session, ckpt_dao: CheckpointDAO, git_repo: Path
+    ) -> None:
+        # Seed a row owned by the rooted session; restore must resolve
+        # the workdir from that session's project, not the process cwd.
+        row = await ckpt_dao.create(
+            session_id=rooted_session,
+            label="seed",
+            message="",
+            git_stash_ref=None,
+            branch="main",
+            tracked_files=[],
+            untracked_files=[],
+            has_untracked_snapshot=False,
+            checkpoint_id="ckpt_seed",
+            created_at="2026-01-01T00:00:00Z",
+        )
+        spy = _SpyManager()
+        server = self._server(ckpt_dao, spy)
+        resp = await self._call(
+            server, "checkpoint.restore", {"checkpoint_id": row["id"]}
+        )
+        assert "result" in resp, resp
+        assert spy.cwds == [str(git_repo.resolve())]
+
+    @pytest.mark.asyncio
+    async def test_session_without_project_keeps_git_toplevel(
+        self, ckpt_dao: CheckpointDAO, async_db: AsyncDatabase, git_repo: Path
+    ) -> None:
+        sessions = SessionsDAO(async_db)
+        await sessions.create(id="ses_plain", title="plain")
+        set_sessions_dao(sessions)
+        try:
+            spy = _SpyManager()
+            server = self._server(ckpt_dao, spy)
+            resp = await self._call(
+                server, "checkpoint.create", {"session_id": "ses_plain"}
+            )
+            assert "result" in resp, resp
+            # Fallback = the process git toplevel (the agent repo), NOT
+            # the fixture repo — proves the legacy path is untouched.
+            cwd = Path(spy.cwds[0])
+            assert cwd != git_repo.resolve()
+            assert (cwd / ".git").exists()
+        finally:
+            set_sessions_dao(None)
