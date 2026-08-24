@@ -27,6 +27,7 @@ import logging
 import os
 from typing import Any
 
+from ..perm_consent import resolve_any_gater
 from .handler_utils import HandlerError, check_params
 from .protocol import (
     INTERNAL_ERROR,
@@ -34,7 +35,6 @@ from .protocol import (
     STORAGE_ERROR,
 )
 from .server import Context
-from ..perm_consent import resolve_any_gater
 
 logger = logging.getLogger(__name__)
 
