@@ -8,13 +8,24 @@ containment-checked ``read_artifact`` tool.
 
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from minimax_code.agent.tools.artifacts import BRIEF_NAME, ReadArtifactTool
-from minimax_code.agent.tools.subagents import SpawnSubagentTool
+from minimax_code.agent.tools.artifacts import (
+    BRIEF_NAME,
+    COMPLETION_NAME,
+    REPORT_NAME,
+    ReadArtifactTool,
+    ReportCompletionTool,
+)
+from minimax_code.agent.tools.subagents import (
+    SpawnSubagentTool,
+    _clone_registry_with_report,
+)
 from minimax_code.orchestrator.subagent import (
     SubAgentRuntime,
     set_subagent_runtime,
@@ -197,3 +208,130 @@ async def test_read_artifact_empty_run_id(app_db, stub_runtime):
     out = await ReadArtifactTool().run(run_id="   ")
     assert not out.success
     assert "run_id is required" in (out.error or "")
+
+
+# ---------------------------------------------------------------------------
+# report_completion (v1.4.0 commit 5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_report_completion_writes_dual_handoff(workspace_root):
+    tool = ReportCompletionTool("run_report1", agent_name="reviewer")
+    out = await tool.run(
+        status="completed",
+        summary="Auth flow reviewed; two issues found.",
+        files=["src/auth.py", "tests/test_auth.py"],
+        gaps=["refresh-token rotation untested"],
+        next_steps=["add rotation test"],
+    )
+    assert out.success
+    base = workspace_root / ".minimax" / "artifacts" / "run_report1"
+
+    report = json.loads((base / REPORT_NAME).read_text(encoding="utf-8"))
+    assert report["run_id"] == "run_report1"
+    assert report["agent"] == "reviewer"
+    assert report["status"] == "completed"
+    assert report["files"] == ["src/auth.py", "tests/test_auth.py"]
+    assert report["gaps"] == ["refresh-token rotation untested"]
+    assert report["next_steps"] == ["add rotation test"]
+
+    md = (base / COMPLETION_NAME).read_text(encoding="utf-8")
+    assert "Auth flow reviewed" in md
+    assert "src/auth.py" in md
+    assert "## Next steps" in md
+
+
+@pytest.mark.asyncio
+async def test_report_completion_rejects_bad_status(workspace_root):
+    tool = ReportCompletionTool("run_report2")
+    out = await tool.run(status="weird", summary="x")
+    assert not out.success
+    assert "status" in (out.error or "")
+
+
+@pytest.mark.asyncio
+async def test_report_completion_skips_without_root():
+    tool = ReportCompletionTool("run_report3")
+    out = await tool.run(status="partial", summary="no root to anchor")
+    assert out.success  # soft protocol — the sub-agent did its part
+    assert out.output["skipped"] is True
+
+
+def test_clone_registry_scopes_injection():
+    """The per-run tool reaches the clone; the global registry stays clean."""
+    cloned = _clone_registry_with_report("run_report4", "general")
+    assert cloned.has("report_completion")
+    assert cloned.has("read_file")  # default surface preserved
+
+    from minimax_code.agent.tools.base import get_default_registry
+
+    assert not get_default_registry().has("report_completion")
+
+
+class _ReportingRuntime(SubAgentRuntime):
+    """Mimics a sub-agent that finds and calls its injected tool."""
+
+    async def invoke(self, handle, *, session_id: str, request: str) -> dict[str, Any]:
+        tool = handle.core.registry.get("report_completion")
+        assert tool is not None, "report_completion must reach the sub-agent"
+        report = await tool.run(status="completed", summary="done via injected tool")
+        assert report.success
+        return {
+            "agent": handle.config.name,
+            "request": request,
+            "session_id": session_id,
+            "text": "final answer",
+            "cancelled": False,
+            "iterations": 1,
+            "tool_calls": [],
+            "stub": False,
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            "truncated": False,
+        }
+
+
+@pytest.mark.asyncio
+async def test_spawn_reports_when_subagent_calls_tool(app_db, workspace_root):
+    prev = set_subagent_runtime(_ReportingRuntime())
+    try:
+        dao = AgentDAO(app_db)
+        await dao.upsert(name="rep_agent", system_prompt="report your work")
+        out = await SpawnSubagentTool().run(agent_name="rep_agent", prompt="do it")
+        assert out.success
+        assert out.output["reported"] is True
+        assert "warning" not in out.output
+
+        base = workspace_root / ".minimax" / "artifacts" / out.output["run_id"]
+        assert (base / COMPLETION_NAME).is_file()
+        assert (base / REPORT_NAME).is_file()
+    finally:
+        set_subagent_runtime(prev)
+
+
+@pytest.mark.asyncio
+async def test_spawn_flags_unreported_run(app_db, stub_runtime, workspace_root):
+    """The stub runtime never reports — the envelope must say so."""
+    name = await _seed_agent(app_db)
+    out = await SpawnSubagentTool().run(agent_name=name, prompt="stay silent")
+    assert out.success
+    assert out.output["reported"] is False
+    assert "did not call report_completion" in out.output["warning"]
+
+
+@pytest.mark.asyncio
+async def test_allowlist_agent_sees_report_completion(app_db, workspace_root):
+    """allowlist mode: the appended name survives the filtered view."""
+    prev = set_subagent_runtime(_ReportingRuntime())
+    try:
+        dao = AgentDAO(app_db)
+        await dao.upsert(
+            name="rep_allowlisted",
+            system_prompt="narrow agent",
+            tool_allowlist=["read_file"],
+        )
+        out = await SpawnSubagentTool().run(agent_name="rep_allowlisted", prompt="go")
+        assert out.success  # invoke's tool lookup + call succeeded
+        assert out.output["reported"] is True
+    finally:
+        set_subagent_runtime(prev)

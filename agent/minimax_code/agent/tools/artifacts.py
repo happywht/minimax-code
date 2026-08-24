@@ -20,6 +20,10 @@ from .base import Tool, ToolResult, register_tool
 logger = logging.getLogger(__name__)
 
 BRIEF_NAME = "BRIEF.md"
+COMPLETION_NAME = "COMPLETION.md"
+REPORT_NAME = "REPORT.json"
+
+_VALID_REPORT_STATUS = ("completed", "partial", "blocked")
 
 
 def artifact_dir(run_id: str) -> Path | None:
@@ -72,6 +76,149 @@ def write_brief(
     except Exception:  # pragma: no cover — fail-open by contract
         logger.debug("artifact brief write failed for %s", run_id, exc_info=True)
         return None
+
+
+def completion_reported(run_id: str) -> bool:
+    """True when the sub-agent published its ``COMPLETION.md``.
+
+    Soft-enforcement probe: ``_drive_run`` checks this at wind-down to
+    flag runs that skipped the report protocol (``reported=False`` in
+    the envelope — a warning, never an error).
+    """
+    base = artifact_dir(run_id)
+    if base is None:
+        return False
+    try:
+        return (base / COMPLETION_NAME).is_file()
+    except OSError:  # pragma: no cover — defensive
+        return False
+
+
+def _completion_markdown(report: dict[str, Any]) -> str:
+    """Render the machine report as the human-readable ``COMPLETION.md``."""
+    lines = [
+        f"# Sub-Agent Completion — {report['agent']}",
+        "",
+        f"- **Run**: `{report['run_id']}`",
+        f"- **Status**: {report['status']}",
+        f"- **Written**: {report['written_at']}",
+        "",
+        "## Summary",
+        "",
+        report["summary"],
+        "",
+    ]
+    for heading, key in (("Files", "files"), ("Gaps", "gaps"), ("Next steps", "next_steps")):
+        items = report.get(key) or []
+        lines.append(f"## {heading}")
+        lines.append("")
+        if items:
+            lines.extend(f"- {item}" for item in items)
+        else:
+            lines.append("- _none_")
+        lines.append("")
+    return "\n".join(lines)
+
+
+class ReportCompletionTool(Tool):
+    """Per-run tool injected into the sub-agent's cloned registry.
+
+    Intentionally **not** ``@register_tool``-decorated: it must never
+    appear in the main agent's tool surface — only the spawned sub-agent
+    sees it, bound to its own ``run_id``. Writes the dual handoff
+    (``COMPLETION.md`` for humans, ``REPORT.json`` for machines).
+    """
+
+    name = "report_completion"
+    description = (
+        "Publish this run's final structured handoff. Call exactly once "
+        "before finishing: writes COMPLETION.md (human-readable) and "
+        "REPORT.json (machine-readable) into the run's artifact directory "
+        "so the main agent can read them back with read_artifact."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": list(_VALID_REPORT_STATUS),
+                "description": (
+                    "'completed' (goal met), 'partial' (some findings, "
+                    "goal not fully met), or 'blocked' (could not proceed)."
+                ),
+            },
+            "summary": {
+                "type": "string",
+                "description": "1-3 sentences describing the outcome.",
+            },
+            "files": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Files read, written, or changed during the run.",
+            },
+            "gaps": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "What remains unknown, unverified, or untested.",
+            },
+            "next_steps": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Suggested follow-ups for the main agent.",
+            },
+        },
+        "required": ["status", "summary"],
+        "additionalProperties": False,
+    }
+
+    def __init__(self, run_id: str, *, agent_name: str = "") -> None:
+        super().__init__()
+        self._run_id = run_id
+        self._agent_name = agent_name
+
+    async def run(
+        self,
+        status: str,
+        summary: str,
+        files: list[str] | None = None,
+        gaps: list[str] | None = None,
+        next_steps: list[str] | None = None,
+    ) -> ToolResult:
+        if status not in _VALID_REPORT_STATUS:
+            return ToolResult.fail(
+                f"status must be one of {list(_VALID_REPORT_STATUS)}, got {status!r}"
+            )
+        if not str(summary).strip():
+            return ToolResult.fail("summary is required")
+
+        import json
+
+        report: dict[str, Any] = {
+            "run_id": self._run_id,
+            "agent": self._agent_name,
+            "status": status,
+            "summary": summary,
+            "files": [str(f) for f in files or []],
+            "gaps": [str(g) for g in gaps or []],
+            "next_steps": [str(s) for s in next_steps or []],
+            "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        }
+        base = artifact_dir(self._run_id)
+        if base is None:
+            # No workspace root — nothing to anchor. Soft protocol: the
+            # sub-agent did its part; report success with skipped=True.
+            return ToolResult.ok({**report, "skipped": True, "reason": "no workspace root"})
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            (base / REPORT_NAME).write_text(
+                json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            (base / COMPLETION_NAME).write_text(
+                _completion_markdown(report), encoding="utf-8"
+            )
+        except OSError as exc:
+            return ToolResult.fail(f"report write failed: {exc}")
+        return ToolResult.ok({**report, "skipped": False, "artifact_dir": str(base)})
 
 
 @register_tool

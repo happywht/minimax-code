@@ -72,6 +72,7 @@ def _snapshot(run_id: str, result: dict[str, Any]) -> dict[str, Any]:
         "stub": bool(result.get("stub", True)),
         "usage": result.get("usage") or {},
         "truncated": bool(result.get("truncated", False)),
+        "reported": bool(result.get("reported", False)),
     }
 
 
@@ -86,6 +87,44 @@ def _agent_summary(row: dict[str, Any]) -> dict[str, Any]:
         "tools": row.get("tool_allowlist") or [],
         "model": row.get("model"),
     }
+
+
+# v1.4.0 — the completion protocol paragraph appended to every spawned
+# sub-agent's system prompt. Soft enforcement: the run completes either
+# way, but a missing report surfaces as reported=False + a warning on
+# the main agent's side.
+REPORT_PROTOCOL_PROMPT = (
+    "\n## Completion protocol\n\n"
+    "Before finishing, you MUST call the `report_completion` tool exactly "
+    "once with:\n"
+    "- `status`: completed | partial | blocked\n"
+    "- `summary`: 1-3 sentences on the outcome\n"
+    "- `files`: paths you read or changed\n"
+    "- `gaps`: what remains unknown or unverified\n"
+    "- `next_steps`: suggested follow-ups for the main agent\n\n"
+    "That call writes this run's official handoff (COMPLETION.md / "
+    "REPORT.json), which the main agent reads back with `read_artifact`. "
+    "Skipping it leaves the run flagged as unreported.\n"
+)
+
+
+def _clone_registry_with_report(run_id: str, agent_name: str) -> Any:
+    """Clone the default registry + the run's ``report_completion`` tool.
+
+    The default registry is process-global and shared with the main
+    agent — registering the per-run tool there would leak it into the
+    parent's surface (and let stale run_ids pile up). A per-spawn clone
+    (builtins.py's codebase-tool injection uses the same pattern) keeps
+    the injection scoped to this one sub-agent.
+    """
+    from .artifacts import ReportCompletionTool
+    from .base import ToolRegistry, get_default_registry
+
+    cloned = ToolRegistry()
+    for tool in get_default_registry().list():
+        cloned.register(tool)
+    cloned.register(ReportCompletionTool(run_id, agent_name=agent_name))
+    return cloned
 
 
 async def _agent_dao() -> Any:
@@ -232,13 +271,20 @@ async def _drive_run(
         handle.core.on_tool_result = prev_on_tool_result
 
     cancelled = bool(result.get("cancelled", False)) or partial
-    result = {**result, "cancelled": cancelled, "partial": partial}
+    # v1.4.0 — soft enforcement: did the sub-agent publish its handoff?
+    # The probe is file-based (fail-open False) so a missing workspace
+    # root or an I/O hiccup only downgrades the flag, never the run.
+    from .artifacts import completion_reported
+
+    reported = completion_reported(run_id)
+    result = {**result, "cancelled": cancelled, "partial": partial, "reported": reported}
     summary_text = str(result.get("text", ""))
     completion_metadata = {
         **run_metadata,
         "iterations": result.get("iterations", 0),
         "stub": bool(result.get("stub", True)),
         "partial": partial,
+        "reported": reported,
         # check_subagent / wait_subagent read the outcome from the run
         # row once the task is gone (agent restart, late poll).
         "result_text": summary_text,
@@ -374,6 +420,10 @@ class SpawnSubagentTool(Tool):
             get_subagent_runtime,
         )
 
+        # v1.4.0 — the run id is minted before the config so the
+        # report_completion tool injected below can bind to it.
+        run_id = f"run_{uuid.uuid4().hex[:12]}"
+
         config = SubAgentConfig(
             name=row["name"],
             system_prompt=row.get("system_prompt") or "",
@@ -391,8 +441,21 @@ class SpawnSubagentTool(Tool):
             max_iterations=int(row.get("max_iterations") or 50),
             temperature=row.get("temperature"),
         )
+
+        # v1.4.0 — completion protocol injection: a cloned registry with
+        # the run-scoped report_completion tool, the tool appended to a
+        # non-None allowlist (a FilteredToolRegistry would otherwise hide
+        # it), and the protocol paragraph appended to the system prompt.
+        config.tool_allowlist = (
+            None
+            if config.tool_allowlist is None
+            else [*config.tool_allowlist, "report_completion"]
+        )
+        config.system_prompt = config.system_prompt.rstrip() + REPORT_PROTOCOL_PROMPT
         runtime = get_subagent_runtime() or SubAgentRuntime()
-        handle = runtime.build(config)
+        handle = runtime.build(
+            config, registry=_clone_registry_with_report(run_id, row["name"])
+        )
 
         # ---------------------------------------------------------------
         # v1.4.0 — lifecycle: run row + progress events + cancel channel.
@@ -411,7 +474,6 @@ class SpawnSubagentTool(Tool):
             make_session_id as _make_session_id,
         )
 
-        run_id = f"run_{uuid.uuid4().hex[:12]}"
         parent = parent_session_id or current_parent_session()
         sub_session = _make_session_id("subagent")
         emit = await resolve_subagent_emit(parent)
@@ -498,24 +560,31 @@ class SpawnSubagentTool(Tool):
             )
 
         result = await _drive_run(**drive_kwargs)
-        return ToolResult.ok(
-            {
-                "agent": row["name"],
-                "run_id": run_id,
-                "session_id": sub_session,
-                "parent_session_id": parent,
-                "text": result.get("text", ""),
-                "iterations": result.get("iterations", 0),
-                "tool_calls": result.get("tool_calls", []),
-                "stub": bool(result.get("stub", True)),
-                # v1.4.0 — bubbled run-level facts (P3-12 usage冒泡).
-                "usage": result.get("usage") or {},
-                "cancelled": bool(result.get("cancelled", False)),
-                "partial": bool(result.get("partial", False)),
-                "truncated": bool(result.get("truncated", False)),
-                **artifact,
-            }
-        )
+        envelope: dict[str, Any] = {
+            "agent": row["name"],
+            "run_id": run_id,
+            "session_id": sub_session,
+            "parent_session_id": parent,
+            "text": result.get("text", ""),
+            "iterations": result.get("iterations", 0),
+            "tool_calls": result.get("tool_calls", []),
+            "stub": bool(result.get("stub", True)),
+            # v1.4.0 — bubbled run-level facts (P3-12 usage冒泡).
+            "usage": result.get("usage") or {},
+            "cancelled": bool(result.get("cancelled", False)),
+            "partial": bool(result.get("partial", False)),
+            "truncated": bool(result.get("truncated", False)),
+            "reported": bool(result.get("reported", False)),
+            **artifact,
+        }
+        if not envelope["reported"]:
+            # Soft enforcement surfaces here: the sub-agent skipped the
+            # completion protocol, so the handoff may be incomplete.
+            envelope["warning"] = (
+                "⚠ sub-agent did not call report_completion; "
+                "result may be incomplete"
+            )
+        return ToolResult.ok(envelope)
 
 
 async def _lookup_finished_run(run_id: str) -> ToolResult:
@@ -541,6 +610,7 @@ async def _lookup_finished_run(run_id: str) -> ToolResult:
             "partial": bool(meta.get("partial", False)),
             "text": meta.get("result_text", ""),
             "iterations": meta.get("iterations", 0),
+            "reported": bool(meta.get("reported", False)),
             "error": row.get("error"),
         }
     )
