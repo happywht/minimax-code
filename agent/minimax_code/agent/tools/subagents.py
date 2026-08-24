@@ -96,6 +96,15 @@ class SpawnSubagentTool(Tool):
         prompt: str,
         parent_session_id: str | None = None,
     ) -> ToolResult:
+        # v1.4.0 — exempt this dispatch from the generic tool_timeout
+        # ceiling: a sub-agent legitimately runs a whole agent loop
+        # (LLM turns + tools) inside one tool call. The value is set as
+        # an *instance* attribute at run time (not at import time) so
+        # env knob changes and test monkeypatches take effect.
+        from ...orchestrator.subagent import subagent_wall_clock_s
+
+        self.dispatch_timeout = subagent_wall_clock_s()
+
         if not agent_name.strip():
             return ToolResult.fail("agent_name is required")
         if not prompt.strip():
@@ -147,5 +156,9 @@ class SpawnSubagentTool(Tool):
                 "iterations": result.get("iterations", 0),
                 "tool_calls": result.get("tool_calls", []),
                 "stub": bool(result.get("stub", True)),
+                # v1.4.0 — bubbled run-level facts (P3-12 usage冒泡).
+                "usage": result.get("usage") or {},
+                "cancelled": bool(result.get("cancelled", False)),
+                "truncated": bool(result.get("truncated", False)),
             }
         )

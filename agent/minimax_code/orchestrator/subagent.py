@@ -38,6 +38,7 @@ Why a runtime + handle (vs. just a factory function)
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -46,6 +47,26 @@ if TYPE_CHECKING:  # pragma: no cover — only for type hints
     from ..agent.llm import MiniMaxClient
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Wall-clock knob (single source of truth)
+# ---------------------------------------------------------------------------
+
+
+def subagent_wall_clock_s() -> float:
+    """Per-sub-agent wall-clock timeout in seconds.
+
+    ``MINIMAX_CODE_SUBAGENT_TIMEOUT_S`` (default 600); ``<= 0`` disables
+    the timeout. Extracted from ``team_orchestrator`` in v1.4.0 so the
+    tool path (``spawn_subagent``'s dispatch-timeout exemption) and the
+    team path share one implementation.
+    """
+    raw = os.environ.get("MINIMAX_CODE_SUBAGENT_TIMEOUT_S", "")
+    try:
+        return float(raw)
+    except ValueError:
+        return 600.0
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +312,9 @@ class SubAgentRuntime:
                 "iterations": N,
                 "tool_calls": [...],
                 "stub": <True|False>,
+                "usage": {...},          # v1.4.0 — bubbled token usage
+                "cancelled": <bool>,     # v1.4.0 — cooperative cancel flag
+                "truncated": <bool>,     # v1.4.0 — compaction flag
             }
         """
         if not request or not isinstance(request, str):
@@ -314,6 +338,9 @@ class SubAgentRuntime:
                 "iterations": 0,
                 "tool_calls": [],
                 "stub": True,
+                "usage": {},
+                "cancelled": False,
+                "truncated": False,
             }
 
         # Real-LLM path — drive the AgentCore. The core already
@@ -337,6 +364,12 @@ class SubAgentRuntime:
             "iterations": run_result.iterations,
             "tool_calls": list(run_result.tool_calls),
             "stub": False,
+            # v1.4.0 — bubble the run-level facts so callers (team
+            # merger, tool envelope, telemetry) can see the real cost
+            # without re-running the core.
+            "usage": dict(run_result.usage),
+            "cancelled": bool(run_result.cancelled),
+            "truncated": bool(run_result.truncated),
         }
 
 
@@ -403,4 +436,5 @@ __all__ = [
     "get_subagent_runtime",
     "make_session_id",
     "set_subagent_runtime",
+    "subagent_wall_clock_s",
 ]

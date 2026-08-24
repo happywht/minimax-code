@@ -47,6 +47,8 @@ if TYPE_CHECKING:  # pragma: no cover — type hints only
     from ..storage.dao.agent_teams import AgentTeamDAO
     from ..storage.dao.agents import AgentDAO
 
+from .subagent import subagent_wall_clock_s
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -72,13 +74,10 @@ def _subagent_wall_clock_s() -> float:
     """Per-agent wall-clock timeout in seconds.
 
     ``MINIMAX_CODE_SUBAGENT_TIMEOUT_S`` (default 600); <= 0 disables the
-    timeout.
+    timeout. Alias of :func:`.subagent.subagent_wall_clock_s` since v1.4.0 —
+    kept so existing imports (tests included) stay stable.
     """
-    raw = os.environ.get("MINIMAX_CODE_SUBAGENT_TIMEOUT_S", "")
-    try:
-        return float(raw)
-    except ValueError:
-        return 600.0
+    return subagent_wall_clock_s()
 
 
 # ---------------------------------------------------------------------------

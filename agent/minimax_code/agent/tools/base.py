@@ -107,6 +107,14 @@ class Tool:
         "required": [],
         "additionalProperties": False,
     }
+    # Per-tool dispatch timeout in seconds. ``None`` (the default) means
+    # the tool is governed by ``AgentConfig.tool_timeout`` like every
+    # other tool. Tools that legitimately embed a long-running subtask
+    # (e.g. spawn_subagent, which runs a whole sub-agent loop inside
+    # its ``run``) declare a larger value — or set it as an instance
+    # attribute at run time — so the agent loop's ``wait_for`` doesn't
+    # kill them at the generic ceiling (v1.4.0).
+    dispatch_timeout: float | None = None
 
     async def run(self, **kwargs: Any) -> ToolResult:  # pragma: no cover
         raise NotImplementedError

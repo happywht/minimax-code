@@ -1462,14 +1462,32 @@ class AgentCore:
                 tool_call_id=tool_call_id,
             ):
                 t0 = time.monotonic()
+                # v1.4.0 — per-tool timeout exemption. Tools that embed a
+                # long-running subtask (spawn_subagent runs a whole sub-agent
+                # loop inside its ``run``) declare a ``dispatch_timeout``;
+                # everything else stays under the generic config ceiling.
+                # A declared value <= 0 disables the timeout entirely
+                # (``wait_for(timeout=None)`` never raises TimeoutError).
+                try:
+                    tool_obj = self.registry.get(name)
+                except KeyError:  # pragma: no cover — dispatch() re-checks
+                    tool_obj = None
+                raw_exemption = getattr(tool_obj, "dispatch_timeout", None)
+                if raw_exemption is None:
+                    effective_timeout: float | None = self.config.tool_timeout
+                elif raw_exemption <= 0:
+                    effective_timeout = None
+                else:
+                    effective_timeout = float(raw_exemption)
                 try:
                     result = await asyncio.wait_for(
                         self.registry.dispatch(name, args),
-                        timeout=self.config.tool_timeout,
+                        timeout=effective_timeout,
                     )
                 except TimeoutError:
+                    # Only reachable when effective_timeout is a real number.
                     result = ToolResult.fail(
-                        f"tool '{name}' exceeded {self.config.tool_timeout:.0f}s timeout"
+                        f"tool '{name}' exceeded {effective_timeout:.0f}s timeout"  # type: ignore[operator]
                     )
                     if tool_breaker is not None:
                         await tool_breaker.record(Outcome.FAILURE)
