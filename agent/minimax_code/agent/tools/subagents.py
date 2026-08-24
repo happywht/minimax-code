@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import Any
@@ -59,6 +60,21 @@ async def _emit_safe(emit: Any, event: dict[str, Any]) -> None:
         logger.debug("subagent_progress emit failed", exc_info=True)
 
 
+def _snapshot(run_id: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Project an invoke envelope into the check/wait response shape."""
+    return {
+        "run_id": run_id,
+        "status": "cancelled" if result.get("cancelled") else "completed",
+        "partial": bool(result.get("partial", False)),
+        "text": result.get("text", ""),
+        "iterations": result.get("iterations", 0),
+        "tool_calls": result.get("tool_calls", []),
+        "stub": bool(result.get("stub", True)),
+        "usage": result.get("usage") or {},
+        "truncated": bool(result.get("truncated", False)),
+    }
+
+
 def _agent_summary(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row.get("id"),
@@ -107,6 +123,148 @@ async def _ensure_session_row(session_id: str, title: str) -> None:
         logger.debug("ensure_session_row(%s) failed; continuing", session_id)
 
 
+async def _drive_run(
+    *,
+    runtime: Any,
+    handle: Any,
+    run_id: str,
+    sub_session: str,
+    prompt: str,
+    row: dict[str, Any],
+    parent: str | None,
+    emit: Any,
+    run_dao: Any,
+    run_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Drive one sub-agent run through its full lifecycle.
+
+    Shared by the foreground (``wait=True``) and background
+    (``wait=False``) spawn paths — persistence, progress events, the
+    wall-clock partial guard, and the ``_ACTIVE_RUNS`` cancel channel
+    behave identically either way. Returns the invoke envelope (with a
+    ``partial`` flag when the wall clock fired).
+    """
+    from ...orchestrator.subagent import subagent_wall_clock_s
+
+    agent_id = row.get("id")
+    emit_event = lambda status, progress, summary, **kw: _subagent_event(  # noqa: E731
+        run_id=run_id,
+        agent_id=agent_id,
+        parent_session_id=parent,
+        status=status,
+        progress=progress,
+        summary=summary,
+        **kw,
+    )
+
+    # Register for IPC cancellation (agent.cancel_subagent) and
+    # process-wide shutdown sweeps. Imported lazily: builtins pulls
+    # in the whole agent stack, so a module-level import would loop.
+    try:
+        from ...ipc.builtins import _ACTIVE_RUNS
+
+        _ACTIVE_RUNS[run_id] = {"core": handle.core, "type": "subagent"}
+    except Exception:  # pragma: no cover — defensive
+        logger.debug("subagent run not registered for cancellation", exc_info=True)
+
+    # Live progress bridge: mirror the core's tool callbacks as
+    # tool_call / tool_result progress events (fail-open). The previous
+    # callbacks are restored afterwards so a reused handle is untouched.
+    async def _on_tool_call(call: dict[str, Any]) -> None:
+        await _emit_safe(
+            emit, emit_event("tool_call", 0.55, str(call.get("name") or "tool")[:80])
+        )
+
+    async def _on_tool_result(call: dict[str, Any], _result: Any) -> None:
+        await _emit_safe(
+            emit,
+            emit_event("tool_result", 0.70, f"{call.get('name') or 'tool'} done"[:80]),
+        )
+
+    prev_on_tool_call = getattr(handle.core, "on_tool_call", None)
+    prev_on_tool_result = getattr(handle.core, "on_tool_result", None)
+    handle.core.on_tool_call = _on_tool_call
+    handle.core.on_tool_result = _on_tool_result
+
+    try:
+        await _emit_safe(emit, emit_event("started", 0.05, prompt[:80]))
+
+        # Wall-clock guard: shield the invoke so a timeout cancels the
+        # core *cooperatively* (run() checkpoints return a partial
+        # AgentRunResult) instead of destroying the coroutine. The
+        # wind-down is bounded: an in-flight tool waits out its own
+        # tool_timeout and an LLM stall its stall timeout.
+        inner = asyncio.ensure_future(
+            runtime.invoke(handle, session_id=sub_session, request=prompt)
+        )
+        wall = subagent_wall_clock_s()
+        partial = False
+        try:
+            if wall and wall > 0:
+                result = await asyncio.wait_for(asyncio.shield(inner), timeout=wall)
+            else:
+                result = await inner
+        except TimeoutError:
+            partial = True
+            if handle.core is not None:
+                handle.core.cancel()
+            result = await inner  # cooperative wind-down — keeps partials
+    except Exception as exc:
+        if run_dao is not None:
+            try:
+                await run_dao.update_run_status(
+                    run_id, status="failed", error=str(exc), metadata=run_metadata
+                )
+            except Exception:  # pragma: no cover — defensive
+                logger.debug("subagent run failure not persisted", exc_info=True)
+        await _emit_safe(
+            emit, emit_event("failed", 1.0, str(exc)[:80], error=str(exc))
+        )
+        raise
+    finally:
+        try:
+            from ...ipc.builtins import _ACTIVE_RUNS
+
+            _ACTIVE_RUNS.pop(run_id, None)
+        except Exception:  # pragma: no cover — defensive
+            pass
+        handle.core.on_tool_call = prev_on_tool_call
+        handle.core.on_tool_result = prev_on_tool_result
+
+    cancelled = bool(result.get("cancelled", False)) or partial
+    result = {**result, "cancelled": cancelled, "partial": partial}
+    summary_text = str(result.get("text", ""))
+    completion_metadata = {
+        **run_metadata,
+        "iterations": result.get("iterations", 0),
+        "stub": bool(result.get("stub", True)),
+        "partial": partial,
+        # check_subagent / wait_subagent read the outcome from the run
+        # row once the task is gone (agent restart, late poll).
+        "result_text": summary_text,
+    }
+    if run_dao is not None:
+        try:
+            await run_dao.update_run_status(
+                run_id,
+                status="cancelled" if cancelled else "completed",
+                metadata=completion_metadata,
+            )
+        except Exception:  # pragma: no cover — defensive
+            logger.debug("subagent run completion not persisted", exc_info=True)
+
+    await _emit_safe(
+        emit,
+        emit_event(
+            "cancelled" if cancelled else "completed",
+            1.0,
+            summary_text[:80] or ("partial result" if partial else "done"),
+            text=summary_text or None,
+        ),
+    )
+    return result
+
+
 @register_tool
 class ListSubagentsTool(Tool):
     name = "list_subagents"
@@ -144,14 +302,18 @@ class SpawnSubagentTool(Tool):
     description = (
         "Delegate a focused piece of work to a named sub-agent and return its final result. "
         "Use this for specialist review, parallel research, or focused analysis that should "
-        "not distract the main conversation."
+        "not distract the main conversation. Set wait=false to run in the background and "
+        "collect later with check_subagent / wait_subagent."
     )
     parameters = {
         "type": "object",
         "properties": {
             "agent_name": {
                 "type": "string",
-                "description": "Sub-agent name from list_subagents, for example 'general' or 'security-reviewer'.",
+                "description": (
+                    "Sub-agent name from list_subagents, for example 'general' "
+                    "or 'security-reviewer'."
+                ),
             },
             "prompt": {
                 "type": "string",
@@ -160,6 +322,15 @@ class SpawnSubagentTool(Tool):
             "parent_session_id": {
                 "type": "string",
                 "description": "Optional current chat session id for traceability.",
+            },
+            "wait": {
+                "type": "boolean",
+                "description": (
+                    "Wait for the sub-agent to finish (default true). Set false to "
+                    "run in background; poll with check_subagent(run_id) or collect "
+                    "with wait_subagent(run_id)."
+                ),
+                "default": True,
             },
         },
         "required": ["agent_name", "prompt"],
@@ -171,6 +342,7 @@ class SpawnSubagentTool(Tool):
         agent_name: str,
         prompt: str,
         parent_session_id: str | None = None,
+        wait: bool = True,
     ) -> ToolResult:
         # v1.4.0 — exempt this dispatch from the generic tool_timeout
         # ceiling: a sub-agent legitimately runs a whole agent loop
@@ -274,88 +446,45 @@ class SpawnSubagentTool(Tool):
             run_dao = None
             logger.warning("subagent run row not persisted", exc_info=True)
 
-        # Register for IPC cancellation (agent.cancel_subagent) and
-        # process-wide shutdown sweeps. Imported lazily: builtins pulls
-        # in the whole agent stack, so a module-level import would loop.
-        try:
-            from ...ipc.builtins import _ACTIVE_RUNS
-
-            _ACTIVE_RUNS[run_id] = {"core": handle.core, "type": "subagent"}
-        except Exception:  # pragma: no cover — defensive
-            logger.debug("subagent run not registered for cancellation", exc_info=True)
-
-        try:
-            await _emit_safe(
-                emit,
-                _subagent_event(
-                    run_id=run_id,
-                    agent_id=row.get("id"),
-                    parent_session_id=parent,
-                    status="started",
-                    progress=0.05,
-                    summary=prompt[:80],
-                ),
-            )
-            result = await runtime.invoke(
-                handle, session_id=sub_session, request=prompt
-            )
-        except Exception as exc:
-            if run_dao is not None:
-                try:
-                    await run_dao.update_run_status(
-                        run_id, status="failed", error=str(exc), metadata=run_metadata
-                    )
-                except Exception:  # pragma: no cover — defensive
-                    logger.debug("subagent run failure not persisted", exc_info=True)
-            await _emit_safe(
-                emit,
-                _subagent_event(
-                    run_id=run_id,
-                    agent_id=row.get("id"),
-                    parent_session_id=parent,
-                    status="failed",
-                    progress=1.0,
-                    summary=str(exc)[:80],
-                    error=str(exc),
-                ),
-            )
-            raise
-        finally:
-            try:
-                from ...ipc.builtins import _ACTIVE_RUNS
-
-                _ACTIVE_RUNS.pop(run_id, None)
-            except Exception:  # pragma: no cover — defensive
-                pass
-
-        cancelled = bool(result.get("cancelled", False))
-        final_status = "cancelled" if cancelled else "completed"
-        completion_metadata = {
-            **run_metadata,
-            "iterations": result.get("iterations", 0),
-            "stub": bool(result.get("stub", True)),
-        }
-        if run_dao is not None:
-            try:
-                await run_dao.update_run_status(
-                    run_id, status=final_status, metadata=completion_metadata
-                )
-            except Exception:  # pragma: no cover — defensive
-                logger.debug("subagent run completion not persisted", exc_info=True)
-
-        summary_text = str(result.get("text", ""))
-        await _emit_safe(
-            emit,
-            _subagent_event(
-                run_id=run_id,
-                agent_id=row.get("id"),
-                parent_session_id=parent,
-                status="completed" if not cancelled else "cancelled",
-                progress=1.0,
-                summary=summary_text[:80] or "done",
-                text=summary_text or None,
-            ),
+        drive_kwargs = dict(
+            runtime=runtime,
+            handle=handle,
+            run_id=run_id,
+            sub_session=sub_session,
+            prompt=prompt,
+            row=row,
+            parent=parent,
+            emit=emit,
+            run_dao=run_dao,
+            run_metadata=run_metadata,
         )
+
+        if not wait:
+            # Background path: hand the full lifecycle to a task the
+            # module-level registry keeps alive (weak task refs would
+            # let the GC kill it mid-flight) and return immediately.
+            from ...orchestrator.subagent import register_background_run
+
+            task = asyncio.get_running_loop().create_task(
+                _drive_run(**drive_kwargs), name=f"subagent:{run_id}"
+            )
+            register_background_run(run_id, task)
+            return ToolResult.ok(
+                {
+                    "agent": row["name"],
+                    "run_id": run_id,
+                    "session_id": sub_session,
+                    "parent_session_id": parent,
+                    "status": "running",
+                    "wait": False,
+                    "hint": (
+                        "running in background — poll check_subagent(run_id) "
+                        "or collect with wait_subagent(run_id)"
+                    ),
+                }
+            )
+
+        result = await _drive_run(**drive_kwargs)
         return ToolResult.ok(
             {
                 "agent": row["name"],
@@ -369,6 +498,126 @@ class SpawnSubagentTool(Tool):
                 # v1.4.0 — bubbled run-level facts (P3-12 usage冒泡).
                 "usage": result.get("usage") or {},
                 "cancelled": bool(result.get("cancelled", False)),
+                "partial": bool(result.get("partial", False)),
                 "truncated": bool(result.get("truncated", False)),
             }
         )
+
+
+async def _lookup_finished_run(run_id: str) -> ToolResult:
+    """Read a finished (or restarted-away) run's outcome from storage."""
+    try:
+        from ...app import get_db
+        from ...storage.dao.runs import AgentRunsDAO
+
+        db = get_db()
+    except Exception:  # pragma: no cover — defensive
+        db = None
+    if db is None:
+        return ToolResult.fail(f"unknown run_id: {run_id!r}")
+    row = await AgentRunsDAO(db).get_run(run_id)
+    if row is None:
+        return ToolResult.fail(f"unknown run_id: {run_id!r}")
+    meta = row.get("metadata") or {}
+    return ToolResult.ok(
+        {
+            "run_id": run_id,
+            "status": row.get("status"),
+            "agent": meta.get("agent_name"),
+            "partial": bool(meta.get("partial", False)),
+            "text": meta.get("result_text", ""),
+            "iterations": meta.get("iterations", 0),
+            "error": row.get("error"),
+        }
+    )
+
+
+@register_tool
+class CheckSubagentTool(Tool):
+    name = "check_subagent"
+    description = (
+        "Check the current status of a sub-agent run started with "
+        "spawn_subagent(wait=false). Returns 'running' while in flight, or the "
+        "final outcome (text / iterations / partial flag) once finished."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "run_id": {
+                "type": "string",
+                "description": "Run id returned by spawn_subagent.",
+            },
+        },
+        "required": ["run_id"],
+        "additionalProperties": False,
+    }
+
+    async def run(self, run_id: str) -> ToolResult:
+        if not run_id.strip():
+            return ToolResult.fail("run_id is required")
+        from ...orchestrator.subagent import get_background_run
+
+        task = get_background_run(run_id.strip())
+        if task is None:
+            # Not in flight — the persisted row carries the outcome.
+            return await _lookup_finished_run(run_id.strip())
+        if task.done() and not task.cancelled():
+            exc = task.exception()
+            if exc is not None:
+                return ToolResult.ok(
+                    {"run_id": run_id, "status": "failed", "error": str(exc)}
+                )
+            return ToolResult.ok(_snapshot(run_id, task.result()))
+        return ToolResult.ok({"run_id": run_id, "status": "running"})
+
+
+@register_tool
+class WaitSubagentTool(Tool):
+    name = "wait_subagent"
+    description = (
+        "Wait for a background sub-agent run to finish and return its full result. "
+        "On timeout the run keeps going — the response says 'running' and you can "
+        "call wait_subagent again."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "run_id": {
+                "type": "string",
+                "description": "Run id returned by spawn_subagent(wait=false).",
+            },
+            "timeout_s": {
+                "type": "number",
+                "description": "How long to wait before returning 'running'.",
+                "default": 120,
+            },
+        },
+        "required": ["run_id"],
+        "additionalProperties": False,
+    }
+
+    async def run(self, run_id: str, timeout_s: float = 120) -> ToolResult:
+        if not run_id.strip():
+            return ToolResult.fail("run_id is required")
+        from ...orchestrator.subagent import get_background_run
+
+        rid = run_id.strip()
+        task = get_background_run(rid)
+        if task is None:
+            return await _lookup_finished_run(rid)
+        try:
+            # Shield: a timeout cancels the wrapper, never the run —
+            # the task keeps its lifecycle (persistence + events) intact.
+            result = await asyncio.wait_for(
+                asyncio.shield(task), timeout=max(0.1, float(timeout_s))
+            )
+        except TimeoutError:
+            return ToolResult.ok(
+                {
+                    "run_id": rid,
+                    "status": "running",
+                    "timeout": True,
+                    "hint": "still running; call wait_subagent again or check_subagent",
+                }
+            )
+        return ToolResult.ok(_snapshot(rid, result))

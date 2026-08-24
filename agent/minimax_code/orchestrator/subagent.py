@@ -37,6 +37,7 @@ Why a runtime + handle (vs. just a factory function)
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
@@ -152,6 +153,46 @@ async def resolve_subagent_emit(session_id: str | None) -> Any:
     if not session_id:
         return None
     return _SUBAGENT_EVENT_ROUTES.get(session_id)
+
+
+# ---------------------------------------------------------------------------
+# Background run registry (v1.4.0)
+# ---------------------------------------------------------------------------
+#
+# ``spawn_subagent(wait=False)`` hands the run to a background task. The
+# event loop only keeps *weak* references to tasks, so a module-level
+# strong-ref table is required or the task can be garbage-collected
+# mid-flight (same lesson as the scheduler's ``_spawn_fire`` fire-and-
+# forget set). Entries are popped by a done-callback — never manually —
+# so the registry cannot leak; crashed tasks log their exception here
+# because nothing else ever awaits them.
+
+_BACKGROUND_RUNS: dict[str, asyncio.Task] = {}
+
+
+def _on_background_run_done(run_id: str, task: asyncio.Task) -> None:
+    """Discard the finished task; log crashes nobody else will see."""
+    _BACKGROUND_RUNS.pop(run_id, None)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:  # pragma: no cover — defensive logging
+        logger.error("background sub-agent run %s crashed", run_id, exc_info=exc)
+
+
+def register_background_run(run_id: str, task: asyncio.Task) -> None:
+    """Hold a strong reference to a background sub-agent run task."""
+    _BACKGROUND_RUNS[run_id] = task
+    task.add_done_callback(lambda _t, rid=run_id: _on_background_run_done(rid, _t))
+
+
+def get_background_run(run_id: str) -> asyncio.Task | None:
+    """Return the live background task for ``run_id``, if any.
+
+    ``None`` means "not currently running" — the run either finished
+    (its ``agent_runs`` row carries the outcome) or never existed.
+    """
+    return _BACKGROUND_RUNS.get(run_id)
 
 
 # ---------------------------------------------------------------------------
@@ -519,9 +560,11 @@ __all__ = [
     "SubAgentRuntime",
     "SubAgentConfigError",
     "current_parent_session",
+    "get_background_run",
     "get_subagent_runtime",
     "make_session_id",
     "pop_subagent_emit",
+    "register_background_run",
     "register_subagent_emit",
     "reset_parent_session",
     "resolve_subagent_emit",
