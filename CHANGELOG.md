@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-08-24
+
+### Added — Per-Project Workspace Root（每项目独立工作区根，严格隔离）
+
+v1.2.2 评估总榜第 ⑧ 项（唯一遗留）独立排期做透。此前所有会话共享一个进程级工作区根（env `MINIMAX_CODE_WORKSPACE` 或进程 cwd），「项目」只是纯标签分组——项目 A 的会话可自由读写项目 B 的文件，代码索引全局一份互相覆盖。v1.3.0 起每个 project 可绑定 `root_path`，会话运行时按「会话 → 项目 → root」解析工作区，**严格隔离**（相对路径锚定项目根，绝对路径也必须在项目根内，越界一律 `PathSecurityError` / INVALID_PARAMS；跨项目需求 = 把项目根设为共同父目录）。**存量零破坏**：root_path 为空 ≡ v1.2.2 行为（回退 env/cwd），containment 仅在显式 project_id 存在时启用，system prompt 条件化注入。
+
+- **数据层（migration 026）**：`projects.root_path TEXT NOT NULL DEFAULT ''`（PRAGMA 守卫幂等）；`ProjectsDAO.create/update` 透传（`""` 清除、None 不改）、`_hydrate` 防御式回退；`project.create/update` 收 `root_path`，`_normalize_root()`（strip → expanduser → resolve），非空时 `is_dir()` 校验否则 INVALID_PARAMS。
+- **根解析核心（`workspace_ctx.py`）**：优先级 `session.workspace_path`（worktree 会话）> `project.root_path`（存在且 is_dir）> `MINIMAX_CODE_WORKSPACE` > cwd；root 指向不存在目录 → warning + 回退（用户删目录不炸会话）。`ContextVar` per-task 隔离 + token 式 `set/reset`；`session_root_scope(session_id)` asynccontextmanager。`file_ops._default_workspace()` 首行改读 current_root——**10 个工具 + 8 个 builtin 技能工具 + BackupManager 一次全部生效，零签名改动**，safe_resolve 三层防护（拒 `..`/containment/敏感目录黑名单）自动跟随新根；ExecTool 缺省 cwd 同步接入。
+- **run 入口 + 子 agent/团队**：`agent.send_message` 解析 session 后 `set_current_root`（既有 finally reset 同层）；system prompt 仅当根与进程根不同源时插一行工作区根声明；`agent.invoke` / `agent.spawn_subagent` / `teams.spawn` 自行包 `session_root_scope`（gather 并发子 agent 天然继承父根且互不污染）；repo-map indexer 按 root 缓存。
+- **codebase per-root（migration 027）**：`codebase_chunks.root` 列 + `codebase_file_meta` 重建为 `(root, file_path)` 复合 PK（同事务四步重建，不触碰 FTS/vec 虚表）；store 全部读写方法加 `root` keyword；indexer 增量 diff 只看本根（**修复跨根 build 误删对方 chunks 的存量正确性 bug**）；`_CODEBASE_INDEXERS` 按 root 字典缓存；`codebase.*` 四 handler 收可选 `project_id`；顺带修 dev 脚本三个 env 拼写不一（`_WORKSPACE`/`_WORKSPACE_ROOT`/`_WORKSPACE_DIR`）导致索引根错落 `agent/` 子目录的隐性 bug（`_WORKSPACE_DIR` 保留兼容 + DeprecationWarning）。
+- **git / terminal / patch / checkpoint per-project**：共享 `handler_utils`（`project_root_from_params` + `ensure_cwd_within_root` 越界 INVALID_PARAMS）；git 三 handler / patch 八 handler / terminal.start 收可选 `project_id`（缺省 cwd：显式存在性校验 + 有 project root 时 containment）；checkpoint create/restore 后端自解析会话根（前端零改动）。
+- **前端 + worktree 归档**：`Project.root_path` 类型必填（`""` = 未绑定）；git/codebase/patch 三 store action 时刻快照 `currentProjectId` 注入 wire（未选项目 = 不带键，legacy 行为）；新建项目 Modal 增「根目录」可选输入（绑定后无法访问根外路径的说明文案）；WorkspaceSwitcher 选项 tooltip 显示绑定根；`workspace.create_worktree_session` 收可选 `project_id`（ghost id 快速失败防孤儿 checkout），`createWorktree` 按 `currentProjectId ?? "inbox"` 归档（去硬编码）。
+
+### 已知限制（本版不做）
+
+- PreviewState（预览面板）仍锚定进程级 env 根。
+- 切换项目后 git 状态栏 / codebase 面板靠下一轮轮询（≤2s）自动带上新 project_id 恢复，无即时 store 重置桥接（避免 sessionStore→git/codebase 反向 import 循环）。
+- `_CODEBASE_INDEXERS` 无 LRU 逐出（项目手建数量有限）。
+
+### Added — 回归测试（87 个新测试：Python 78 + web 9）
+
+`test_migration_026.py`（升级路径/幂等/DAO roundtrip/handler 校验）、`test_workspace_ctx.py`（优先级四分支/目录缺失回退/ContextVar 并发隔离/跨根拒绝/exec 缺省 cwd）、`test_workspace_scope_runs.py`（run 入口/子 agent/团队 scope 泄漏）、`test_codebase_multi_root.py`（A/B 双根 build 后 search 互不可见；增量 build A 不删 B 的 chunks——现状必挂的正确性回归）、`test_patch_project_root.py` / `test_git.py` / `test_checkpoint.py` 扩展（双 repo 双 project / 无 project_id 回归 / 显式 cwd 越界拒绝）、`test_workspace_worktrees.py` +2（project_id 归档 / ghost id 快速失败）；web `project-root-scope.test.ts`（8 测试：真实 typed bindings 对 spied `client.request` 锁 wire 契约 + store 注入双层，含 legacy 无键分支）、`workspace-switcher.test.tsx` +1（root_path tooltip / 未绑定无 title）。
+
+**质量数字**：pytest **10318 passed / 15 skipped**（v1.2.2 基线 10240 + 78 Python 侧含 flaky 修复）；vitest **756/756（96 文件）**；tsc 0 错误；ESLint 0/0；ruff 全绿。
+
 ## [1.2.2] - 2026-08-23
 
 ### Fixed — 多 Agent 协作与系统稳定性专项（评估发现的 8 项全量闭环）

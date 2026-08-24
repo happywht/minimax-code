@@ -1,6 +1,6 @@
 [project]
 name = "minimax-code-agent"
-version = "1.2.2"
+version = "1.3.0"
 description = "MiniMax Code Python agent — JSON-RPC 2.0 over HTTP/WS + stdio"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -70,7 +70,8 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-exclude = [".tmp_manual"]
+# .tmp_manual: scratch dir; agenthub: agent self-generated runtime artifact (untracked)
+exclude = [".tmp_manual", "agenthub"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]

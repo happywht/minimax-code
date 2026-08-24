@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MiniMax Code 是一个桌面端 AI 编码 Agent 复刻项目。对标 MiniMax Code 全量功能：多轮对话、技能系统、定时任务、多 Agent 协作、移动互联、授权管理、进度面板。v0.2.0 起从 Tauri 桌面壳切换为 web SPA + 本地 Python agent 架构，v0.3.0 新增 thinking_count 通道、Sub-Agent UI、Git 集成和 Code Review 工作流。
 
-当前版本：**v1.2.2**（2026-08-23）
+当前版本：**v1.3.0**（2026-08-24）
 
 ## 架构总览
 
@@ -136,6 +136,7 @@ pnpm dev
 | `MINIMAX_CODE_LOG_FILE` | 空（仅控制台） | 日志落盘路径（带轮转） |
 | `MINIMAX_CODE_TEAM_MAX_CONCURRENCY` | `4` | 单次团队运行的最大并发子 agent 数（v1.2.2；`<=0` 不设限） |
 | `MINIMAX_CODE_SUBAGENT_TIMEOUT_S` | `600` | 子 agent 墙钟超时秒数（v1.2.2；`<=0` 禁用） |
+| `MINIMAX_CODE_WORKSPACE` | 进程 cwd | 进程级工作区回退根（v1.3.0 起为唯一权威拼写；`_WORKSPACE_DIR` 已 deprecated 仅兼容）；项目绑定 `root_path` 后按「worktree > 项目根 > 此 env > cwd」解析 |
 
 ## 测试策略
 
@@ -250,6 +251,7 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 
 ## 变更记录 (Changelog)
 
+- **2026-08-24** — v1.3.0：Per-Project Workspace Root 专项（严格隔离）——项目可绑定 `root_path`（migration 026；`project.create/update` 收 `root_path`，须为已存在目录）；新模块 `workspace_ctx.py` 按「worktree 会话路径 > 项目根 > `MINIMAX_CODE_WORKSPACE` > cwd」解析，ContextVar 按 task 隔离，`send_message`/续跑/子 agent/团队全链路注入 + system prompt 条件化提示；`file_ops._default_workspace()` 单点接线使 10 工具 + 8 builtin 技能工具 + BackupManager 零签名改动生效，严格 containment（项目 A 会话相对/绝对路径均不得越出 A 根，越界 `PathSecurityError`/`-32602`）；codebase 索引 per-root（migration 027：chunks 加 root 列 + file_meta 复合 PK，修跨根误删 + dev 脚本索引根错位存量 bug，`_CODEBASE_INDEXERS` 按根缓存）；`git.*`/`patch.*`/`codebase.*`/`terminal.start`/`workspace.create_worktree_session` 加可选 `project_id`（无参 = 存量行为零破坏，未知 id 快速失败）；checkpoint 后端自解析会话根；前端 `Project.root_path` 类型、新建项目 Modal 根目录输入、WorkspaceSwitcher 根路径 tooltip、git/codebase/patch store action 自动注入 `currentProjectId`、`createWorktree` 去硬编码 inbox；87 个新回归测试（Python 78 + web 9），pytest 10318 / vitest 756 全绿；已知限制：PreviewState 仍进程级根
 - **2026-08-23** — v1.2.2：多 Agent 协作与系统稳定性专项（8 项总榜 7 项 + 辅助项闭环）——① `teams.spawn` 注入 `get_subagent_llm()`（此前 `_llm` 恒 None、团队运行永远 stub）；② WorkspaceSwitcher 重接真实 IPC；③ `agent.invoke`/`spawn_subagent` 经 `_config_from_row` 透传 `max_iterations`/`temperature`；④ 调度器 `_spawn_fire` 强引用 + 收尾 bookkeeping 每步守卫（task 不再永卡 running）；⑤ 权限 gater 按 session 注册表（并发 run 弹窗不再互相覆盖）；⑥ 终端进程树杀（`taskkill /F /T` / `killpg`）；⑦ WS seq 纪元对齐（ready 帧 `next_seq` 锚点 + 前端检测重置主动重连，agent 重启后历史可重放）；辅助：team 并发 Semaphore（env `MINIMAX_CODE_TEAM_MAX_CONCURRENCY` 默认 4）+ 子 agent 墙钟超时（env `MINIMAX_CODE_SUBAGENT_TIMEOUT_S` 默认 600s）+ 部分失败 `> ⚠` advisory；46 个新回归测试（Python 36 + web 10），pytest 10240 / vitest 747 全绿
 - **2026-08-23** — v1.2.1：修复长中文 write/edit 工具调用截断——anthropic transport `max_tokens or 4096` 硬编码截断 tool_use 参数流（malformed JSON 工具失败）；`AgentConfig.max_output_tokens`（env `MINIMAX_CODE_MAX_OUTPUT_TOKENS`，默认 32768）+ `_stream_turn` 透传 + transport 兜底对齐 + 截断 warning 与 malformed 错误恢复指引；9 个新回归测试，pytest 10204 全绿
 - **2026-08-23** — v1.2.0：全局审计修复（14 项，5 刀 + P3）——chat 五订阅 session 守卫（跨会话串台根因：后端广播所有事件到所有客户端）、teamRunStore envelope 解包、invokeSkill wire 契约对齐、runStore session 过滤 + 孤儿守卫、scheduler 真实 prompt runner（025 migration + tasks.result）；permission 归属 / teams emit 净化等 P3；14 个新回归测试，pytest 10195 / vitest 737 全绿

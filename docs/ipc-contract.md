@@ -191,6 +191,15 @@ on the next `readline() == ""`.
 
 ## 6. Application methods (Phase 1)
 
+> **v1.3.0 — per-project scoping.** The methods marked **`project_id?`** below accept an
+> optional `project_id` parameter. When the referenced project has a bound `root_path`
+> (set via `project.create` / `project.update`), the call is anchored at that root:
+> relative paths resolve against it and absolute paths must stay inside it (out-of-root
+> access fails with `-32602`). When the parameter is omitted — or the project is
+> unrooted — behaviour is identical to v1.2.2 (process root from
+> `MINIMAX_CODE_WORKSPACE` / cwd). `agent.send_message` resolves the root implicitly
+> from the session's project, so it needs no explicit parameter.
+
 | Method                     | Direction | Notes                                              |
 |----------------------------|-----------|----------------------------------------------------|
 | `agent.send_message`       | req/res   | Streams events; the HTTP client keeps no fixed run deadline. v1.1.0 reply adds `truncated`, `blocks`, `compactions` (block accounting — when `MINIMAX_AUTO_CONTINUE=1` the turn auto-continues up to `MINIMAX_AUTO_CONTINUE_MAX_BLOCKS` blocks, default 5, summing iterations/compactions across blocks). |
@@ -199,15 +208,15 @@ on the next `readline() == ""`.
 | `agent.answer_user`        | req/res   | v1.1.1 Answer a pending `ask_user` request (params: `request_id`, `answers` — a non-empty array position-aligned with the questions; each entry is a label string or a list of label strings). Resolves the future the suspended tool call awaits; `{"ok":false}` on unknown/expired ids. |
 | `run.list`                 | req/res   | List persisted agent runs for a session.           |
 | `run.steps`                | req/res   | Load one run with its ordered timeline steps.      |
-| `patch.preview`            | req/res   | Return structured file/hunk preview for a git diff scope. |
-| `patch.apply_hunk`         | req/res   | Stage one working-tree hunk after validating the current diff. |
-| `patch.revert_hunk`        | req/res   | Discard one working hunk or unstage one staged hunk. |
-| `patch.apply_file`         | req/res   | Apply all hunks of a single file to the index. |
-| `patch.revert_file`        | req/res   | Revert all hunks of a single file. |
-| `patch.apply_all`          | req/res   | Apply every file in the current scope to the index. |
-| `patch.revert_all`         | req/res   | Revert every file in the current scope. |
-| `patch.save_snapshot`      | req/res   | Stash the current working tree before applying patches. |
-| `terminal.start`           | req/res   | Start a lightweight command session. |
+| `patch.preview`            | req/res   | Return structured file/hunk preview for a git diff scope. **`project_id?`** |
+| `patch.apply_hunk`         | req/res   | Stage one working-tree hunk after validating the current diff. **`project_id?`** |
+| `patch.revert_hunk`        | req/res   | Discard one working hunk or unstage one staged hunk. **`project_id?`** |
+| `patch.apply_file`         | req/res   | Apply all hunks of a single file to the index. **`project_id?`** |
+| `patch.revert_file`        | req/res   | Revert all hunks of a single file. **`project_id?`** |
+| `patch.apply_all`          | req/res   | Apply every file in the current scope to the index. **`project_id?`** |
+| `patch.revert_all`         | req/res   | Revert every file in the current scope. **`project_id?`** |
+| `patch.save_snapshot`      | req/res   | Stash the current working tree before applying patches. **`project_id?`** |
+| `terminal.start`           | req/res   | Start a lightweight command session. **`project_id?`** anchors the default cwd (an explicit `cwd` must then stay inside the root). |
 | `terminal.read`            | req/res   | Read incremental stdout/stderr chunks for a session. |
 | `terminal.stop`            | req/res   | Stop a running command session. |
 | `terminal.list`            | req/res   | List recent in-memory terminal sessions. |
@@ -221,12 +230,12 @@ on the next `readline() == ""`.
 | `session.batchArchive`     | req/res   | Archive or unarchive multiple sessions at once.    |
 | `session.batchUpdateProject` | req/res | Move multiple sessions to the same project at once. |
 | `project.list`             | req/res   | List projects; optional `archived` filter.         |
-| `project.create`           | req/res   | Create a project with name and optional description. |
-| `project.update`           | req/res   | Rename or update a project's description.          |
+| `project.create`           | req/res   | Create a project with name, optional description, and optional `root_path` (v1.3.0; must be an existing directory when non-empty — normalised via expanduser/resolve). |
+| `project.update`           | req/res   | Rename or update a project; `root_path` may be set or cleared (`""` unroots the project, `null`/omitted leaves it unchanged). |
 | `project.delete`           | req/res   | Delete a project and move its sessions to `inbox`. |
 | `project.archive`          | req/res   | Archive a project.                                 |
 | `project.unarchive`        | req/res   | Unarchive a project.                               |
-| `workspace.create_worktree_session` | req/res | Create an isolated Git worktree-backed session. |
+| `workspace.create_worktree_session` | req/res | Create an isolated Git worktree-backed session. Optional `project_id` (v1.3.0) files the session under that project — unknown ids fail fast with `-32602` before any checkout is created; omitted → `inbox`. |
 | `workspace.list_worktrees` | req/res | List sessions whose `workspace_mode` is `worktree`. |
 | `workspace.delete_worktree` | req/res | Remove a managed worktree and mark the session local. |
 | `message.list` / `message.update` / `message.delete` | req/res | List messages in a session; update or delete a single message. |
@@ -238,7 +247,7 @@ on the next `readline() == ""`.
 | `model.list` / `model.get_current` / `model.set_current` / `model.set_reasoning_effort` | req/res | Dynamic model list + current selection + reasoning-effort override. `model.list` entries may carry optional reasoning-effort meta (R58); the `model.list` and `model.get_current` responses echo the user's persisted `reasoning_effort` override (R61 read-back). |
 | `plugins.list` / `plugins.info` / `plugins.enable` / `plugins.disable` / `plugins.reload` | req/res | Platform pillar #3 — discover, inspect, toggle, and hot-reload runtime plugins (fail-open discovery; runtime enable override is in-memory). |
 | `mcp.list_servers` / `mcp.add_server` / `mcp.update_server` / `mcp.remove_server` / `mcp.list_tools` / `mcp.invoke_tool` | req/res | MCP server management and tool invocation (v0.11.0). |
-| `codebase.status` / `codebase.build_index` / `codebase.search` / `codebase.summarize` | req/res | Codebase indexing and retrieval (v0.11.0 Milestone 2). |
+| `codebase.status` / `codebase.build_index` / `codebase.search` / `codebase.summarize` | req/res | Codebase indexing and retrieval (v0.11.0 Milestone 2). **`project_id?`** (v1.3.0): indexes are keyed per project root and mutually isolated. |
 | `memory.list` / `memory.add` / `memory.delete` / `memory.search` / `memory.extract` | req/res | Long-term memory management (v0.11.0 Milestone 3). |
 | `data.export`               | req/res   | Data portability (R21): dump every business table into one self-describing JSON envelope. See §6 for the envelope shape. |
 | `data.import`               | req/res   | Data portability (R22): validate + replace-import such an envelope in one transaction (idempotent). See §6. |
@@ -399,6 +408,8 @@ Request:
 
 `scope` accepts `"working"`, `"staged"`, or `"branch"`; an explicit
 `ref` string overrides `scope` and is passed to `git diff --no-color -M`.
+Since v1.3.0 all `patch.*` methods accept an optional `project_id`
+(see the table in section 6) anchoring the repo at that project's root.
 The method is read-only. It keeps `git.diff` unchanged and returns the
 same raw diff plus a UI-friendly structure:
 
@@ -841,10 +852,10 @@ unexpected param shape. `crash_dir` resolves to `<data_dir>/crashes`
 
 | Method | Params | Result | Notes |
 |--------|--------|--------|-------|
-| `codebase.status` | `{}` | `{status, processed, total, percent, message, error, stats: {total_chunks, total_files, latest_updated_at}}` | Returns the current lifecycle status of the indexer plus aggregate stats. |
-| `codebase.build_index` | `{force?}` | `{status, processed, total, percent, message, error, stats}` | Starts a full index build in the background. If already indexing, returns the current progress. `force=true` clears the existing index first. |
-| `codebase.search` | `{query, file_pattern?, limit?, offset?}` | `{query, file_pattern, total, results: [{chunk_id, file_path, start_line, end_line, snippet, language, rank, symbols}]}` | Keyword search over indexed file contents and paths. `file_pattern` is a SQL `LIKE` pattern. |
-| `codebase.summarize` | `{path}` | `{path, kind, language, total_lines, symbols, snippet, file_count}` | Returns a structured summary for a file or directory prefix. |
+| `codebase.status` | `{project_id?}` | `{status, processed, total, percent, message, error, stats: {total_chunks, total_files, latest_updated_at}}` | Returns the current lifecycle status of the indexer plus aggregate stats. With `project_id` (v1.3.0), reports the index keyed at that project's root. |
+| `codebase.build_index` | `{force?, project_id?}` | `{status, processed, total, percent, message, error, stats}` | Starts a full index build in the background. If already indexing, returns the current progress. `force=true` clears the existing index first. Indexes are keyed per project root — building project A never touches project B's chunks. |
+| `codebase.search` | `{query, file_pattern?, limit?, offset?, project_id?}` | `{query, file_pattern, total, results: [{chunk_id, file_path, start_line, end_line, snippet, language, rank, symbols}]}` | Keyword search over indexed file contents and paths. `file_pattern` is a SQL `LIKE` pattern. With `project_id` (v1.3.0), searches only that project's index. |
+| `codebase.summarize` | `{path, project_id?}` | `{path, kind, language, total_lines, symbols, snippet, file_count}` | Returns a structured summary for a file or directory prefix. `path` resolves against the project root when `project_id` is given. |
 
 ### `memory.*` — long-term memory (v0.11.0 Milestone 3)
 
@@ -1129,9 +1140,9 @@ document the migration in this file.
 
 | 方法 | 说明 |
 |------|------|
-| `git.status` | 工作区状态（分支/暂存/未跟踪） |
-| `git.diff` | 工作区差异（详见正文 `git.*` 章节） |
-| `git.log` | 提交日志 |
+| `git.status` | 工作区状态（分支/暂存/未跟踪）；v1.3.0 起接受可选 `project_id`，锚定该项目的 `root_path` |
+| `git.diff` | 工作区差异（详见正文 `git.*` 章节）；v1.3.0 起接受可选 `project_id` |
+| `git.log` | 提交日志；v1.3.0 起接受可选 `project_id` |
 
 ### mobile.* — 移动配对
 
