@@ -416,6 +416,18 @@ class SpawnSubagentTool(Tool):
         sub_session = _make_session_id("subagent")
         emit = await resolve_subagent_emit(parent)
 
+        # v1.4.0 — artifact handoff anchor: BRIEF.md under the run's
+        # artifact directory (fail-open; no workspace root = no files).
+        from .artifacts import artifact_info, write_brief
+
+        write_brief(
+            run_id,
+            agent_name=row["name"],
+            prompt=prompt,
+            parent_session_id=parent,
+        )
+        artifact = artifact_info(run_id)
+
         run_metadata: dict[str, Any] = {
             "parent_session_id": parent,
             "agent_name": row["name"],
@@ -477,6 +489,7 @@ class SpawnSubagentTool(Tool):
                     "parent_session_id": parent,
                     "status": "running",
                     "wait": False,
+                    **artifact,
                     "hint": (
                         "running in background — poll check_subagent(run_id) "
                         "or collect with wait_subagent(run_id)"
@@ -500,6 +513,7 @@ class SpawnSubagentTool(Tool):
                 "cancelled": bool(result.get("cancelled", False)),
                 "partial": bool(result.get("partial", False)),
                 "truncated": bool(result.get("truncated", False)),
+                **artifact,
             }
         )
 
