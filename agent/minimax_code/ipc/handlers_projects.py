@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from pathlib import Path
 from typing import Any
 
 from .handler_utils import HandlerError, check_params
@@ -19,6 +20,22 @@ from .server import Context
 logger = logging.getLogger(__name__)
 
 INBOX_ID = "inbox"
+
+
+def _normalize_root(value: Any) -> str:
+    """Normalize a ``root_path`` param into a canonical absolute string.
+
+    Empty / whitespace-only input maps to ``""`` (process-wide workspace).
+    Non-empty input is expanded and resolved to a platform-canonical
+    absolute path. Existence is validated by the caller — this helper
+    only canonicalizes.
+    """
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    return str(Path(text).expanduser().resolve())
 
 
 def register_project_handlers(server: Any, *, dao: Any = None) -> None:
@@ -49,11 +66,18 @@ def register_project_handlers(server: Any, *, dao: Any = None) -> None:
             description = params.get("description", "")
             if not isinstance(description, str):
                 raise HandlerError(INVALID_PARAMS, "description must be a string")
+            root_path = _normalize_root(params.get("root_path"))
+            if root_path and not Path(root_path).is_dir():
+                raise HandlerError(
+                    INVALID_PARAMS,
+                    f"root_path must be an existing directory: {root_path}",
+                )
             new_id = f"proj_{uuid.uuid4().hex[:8]}"
             row = await proj_dao.create(
                 id=new_id,
                 name=name,
                 description=description.strip(),
+                root_path=root_path,
             )
             await ctx.reply({"project": row})
         except HandlerError as exc:
@@ -77,6 +101,14 @@ def register_project_handlers(server: Any, *, dao: Any = None) -> None:
                 updates["name"] = name
             if "description" in params and params["description"] is not None:
                 updates["description"] = str(params["description"]).strip()
+            if "root_path" in params and params["root_path"] is not None:
+                root_path = _normalize_root(params["root_path"])
+                if root_path and not Path(root_path).is_dir():
+                    raise HandlerError(
+                        INVALID_PARAMS,
+                        f"root_path must be an existing directory: {root_path}",
+                    )
+                updates["root_path"] = root_path
             if not updates:
                 raise HandlerError(INVALID_PARAMS, "project.update: no fields to update")
             row = await proj_dao.update(project_id, **updates)

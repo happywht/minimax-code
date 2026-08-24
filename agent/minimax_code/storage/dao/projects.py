@@ -49,17 +49,18 @@ class ProjectsDAO:
         name: str,
         description: str = "",
         archived: bool = False,
+        root_path: str = "",
     ) -> dict[str, Any]:
         """Insert a new project and return the persisted row."""
         now = now_iso()
         sql = (
-            "INSERT INTO projects (id, name, description, archived, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)"
+            "INSERT INTO projects (id, name, description, archived, root_path, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
         )
         async with self._db.transaction() as conn:
             await conn.execute(
                 sql,
-                (id, name, description, 1 if archived else 0, now, now),
+                (id, name, description, 1 if archived else 0, root_path, now, now),
             )
         row = await self._db.fetchone("SELECT * FROM projects WHERE id = ?", (id,))
         return _hydrate(row)
@@ -74,8 +75,14 @@ class ProjectsDAO:
         *,
         name: str | None = None,
         description: str | None = None,
+        root_path: str | None = None,
     ) -> dict[str, Any] | None:
-        """Rename or update a project's description."""
+        """Rename, re-describe, or re-root a project.
+
+        ``root_path`` follows tri-state semantics: ``None`` leaves it
+        untouched, ``""`` clears it back to the process-wide workspace,
+        and a non-empty string binds the project to that directory.
+        """
         if project_id == INBOX_ID:
             raise ValueError("cannot update the reserved inbox project")
         sets: list[str] = []
@@ -86,6 +93,9 @@ class ProjectsDAO:
         if description is not None:
             sets.append("description = ?")
             params.append(description)
+        if root_path is not None:
+            sets.append("root_path = ?")
+            params.append(root_path)
         if not sets:
             return await self.get(project_id)
         sets.append("updated_at = ?")
@@ -154,6 +164,8 @@ def _hydrate(row: Any) -> dict[str, Any] | None:
     if d is None:
         return None
     d["archived"] = bool(d.get("archived", 0))
+    # Defensive: rows read before migration 026 (or hand-built dicts) lack the column.
+    d.setdefault("root_path", "")
     return d
 
 
@@ -161,8 +173,8 @@ def create_sync(db, **fields) -> dict[str, Any]:  # type: ignore[no-untyped-def]
     """Sync variant of :meth:`ProjectsDAO.create`."""
     now = now_iso()
     sql = (
-        "INSERT INTO projects (id, name, description, archived, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)"
+        "INSERT INTO projects (id, name, description, archived, root_path, "
+        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
     )
     with db.transaction() as conn:
         conn.execute(
@@ -172,6 +184,7 @@ def create_sync(db, **fields) -> dict[str, Any]:  # type: ignore[no-untyped-def]
                 fields["name"],
                 fields.get("description", ""),
                 1 if fields.get("archived") else 0,
+                fields.get("root_path", ""),
                 now,
                 now,
             ),
