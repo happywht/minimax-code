@@ -54,6 +54,7 @@ export function WorkspaceSwitcher({
         id: "inbox",
         name: "收件箱",
         description: "",
+        root_path: "",
         archived: false,
         created_at: 0,
         updated_at: 0,
@@ -151,6 +152,7 @@ export function WorkspaceSwitcher({
                     aria-selected={isCurrent}
                     onClick={() => selectProject(p)}
                     data-testid={`workspace-option-${p.id}`}
+                    title={p.root_path || undefined}
                     className={
                       "flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-ink-0 transition-colors hover:bg-surface-3 " +
                       (isCurrent ? "bg-accent-subtle" : "")

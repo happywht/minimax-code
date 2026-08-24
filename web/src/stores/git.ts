@@ -17,6 +17,18 @@ import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import type { GitDiffResult, GitLogResult, GitStatusResult } from "../types/ipc";
 import { strings } from "../ui/strings";
+import { useSessionStore } from "./sessionStore";
+
+/**
+ * v1.3.0: the project the UI is currently browsing scopes every
+ * ``git.*`` call, so the status bar reflects the selected project's
+ * root rather than the process cwd. Snapshot at call time — git state
+ * is polled, not subscribed.
+ */
+function currentProjectScope(): { project_id?: string } {
+  const pid = useSessionStore.getState().currentProjectId;
+  return pid ? { project_id: pid } : {};
+}
 
 export interface GitState {
   /** Latest known status snapshot — ``null`` until first refresh. */
@@ -57,7 +69,7 @@ export const useGitStore = create<GitState>((set) => ({
   refreshStatus: async () => {
     set({ loading: true });
     try {
-      const s = await typedIPC.gitStatus();
+      const s = await typedIPC.gitStatus(currentProjectScope());
       set({ status: s, loading: false });
     } catch (err) {
       set({ loading: false });
@@ -71,7 +83,7 @@ export const useGitStore = create<GitState>((set) => ({
   fetchDiff: async (opts) => {
     set({ loading: true });
     try {
-      const d = await typedIPC.gitDiff(opts ?? {});
+      const d = await typedIPC.gitDiff({ ...opts, ...currentProjectScope() });
       set({ lastDiff: d, loading: false });
       return d;
     } catch (err) {
@@ -85,7 +97,7 @@ export const useGitStore = create<GitState>((set) => ({
   fetchLog: async (opts) => {
     set({ loading: true });
     try {
-      const l = await typedIPC.gitLog(opts ?? {});
+      const l = await typedIPC.gitLog({ ...opts, ...currentProjectScope() });
       set({ lastLog: l, loading: false });
       return l;
     } catch (err) {

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { typedIPC } from "../ipc";
+import { useSessionStore } from "./sessionStore";
 import type {
   PatchApplyAllResult,
   PatchFileOperationParams,
@@ -11,6 +12,16 @@ import type {
 } from "../types/ipc";
 
 export type PatchPreviewScope = "working" | "staged" | "branch";
+
+/**
+ * v1.3.0: every ``patch.*`` call is scoped at the project the UI is
+ * browsing, so apply/revert operate on that project's root (the
+ * backend gates the git cwd on it). Snapshot at call time.
+ */
+function currentProjectScope(): { project_id?: string } {
+  const pid = useSessionStore.getState().currentProjectId;
+  return pid ? { project_id: pid } : {};
+}
 
 export interface PatchPreviewState {
   scope: PatchPreviewScope;
@@ -43,7 +54,7 @@ export const usePatchPreviewStore = create<PatchPreviewState>((set, get) => ({
     const scope = opts?.scope ?? get().scope;
     set({ scope, loading: true, error: null });
     try {
-      const result = await typedIPC.patchPreview({ scope, ref: opts?.ref });
+      const result = await typedIPC.patchPreview({ scope, ref: opts?.ref, ...currentProjectScope() });
       set({ result, loading: false });
       return result;
     } catch (err) {
@@ -53,13 +64,13 @@ export const usePatchPreviewStore = create<PatchPreviewState>((set, get) => ({
     }
   },
 
-  applyHunk: async (opts) => typedIPC.patchApplyHunk(opts),
+  applyHunk: async (opts) => typedIPC.patchApplyHunk({ ...opts, ...currentProjectScope() }),
 
-  revertHunk: async (opts) => typedIPC.patchRevertHunk(opts),
+  revertHunk: async (opts) => typedIPC.patchRevertHunk({ ...opts, ...currentProjectScope() }),
 
-  applyFile: async (opts) => typedIPC.patchApplyFile(opts),
+  applyFile: async (opts) => typedIPC.patchApplyFile({ ...opts, ...currentProjectScope() }),
 
-  revertFile: async (opts) => typedIPC.patchRevertFile(opts),
+  revertFile: async (opts) => typedIPC.patchRevertFile({ ...opts, ...currentProjectScope() }),
 
   applyAll: async (opts) => {
     set({ globalBusy: true });
@@ -68,7 +79,7 @@ export const usePatchPreviewStore = create<PatchPreviewState>((set, get) => ({
       if (scope === "branch") {
         return { ok: false, operation: "apply_all", scope, applied: [], failed: [] };
       }
-      const result = await typedIPC.patchApplyAll({ scope });
+      const result = await typedIPC.patchApplyAll({ scope, ...currentProjectScope() });
       return result;
     } finally {
       set({ globalBusy: false });
@@ -82,7 +93,7 @@ export const usePatchPreviewStore = create<PatchPreviewState>((set, get) => ({
       if (scope === "branch") {
         return { ok: false, operation: "revert_all", scope, applied: [], failed: [] };
       }
-      const result = await typedIPC.patchRevertAll({ scope });
+      const result = await typedIPC.patchRevertAll({ scope, ...currentProjectScope() });
       return result;
     } finally {
       set({ globalBusy: false });
@@ -92,7 +103,7 @@ export const usePatchPreviewStore = create<PatchPreviewState>((set, get) => ({
   saveSnapshot: async () => {
     set({ globalBusy: true });
     try {
-      const result = await typedIPC.patchSaveSnapshot();
+      const result = await typedIPC.patchSaveSnapshot(currentProjectScope());
       return result;
     } finally {
       set({ globalBusy: false });

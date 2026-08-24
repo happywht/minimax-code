@@ -39,6 +39,9 @@ def register_workspace_handlers(
                 raise HandlerError(INVALID_PARAMS, "params must be an object")
             title = _string_param(p, "title") or datetime.now().strftime(_DEFAULT_TITLE_FMT)
             base_ref = _string_param(p, "base_ref") or "HEAD"
+            project_id = _string_param(p, "project_id")
+            if project_id and project_id != "inbox":
+                await _validate_project_id(project_id)
             repo = configured_repo or await _git_repo_root()
             root = configured_worktree_root or (ensure_data_dir() / "worktrees")
             root.mkdir(parents=True, exist_ok=True)
@@ -55,6 +58,7 @@ def register_workspace_handlers(
                     workspace_mode="worktree",
                     workspace_path=str(worktree_path),
                     base_branch=base_ref,
+                    project_id=project_id or "inbox",
                 )
             except Exception:
                 await _remove_worktree(repo, worktree_path)
@@ -145,6 +149,23 @@ def _string_param(params: dict[str, Any], key: str) -> str | None:
         raise HandlerError(INVALID_PARAMS, f"{key} must be a string")
     value = value.strip()
     return value or None
+
+
+async def _validate_project_id(project_id: str) -> None:
+    """Reject a ``project_id`` that no project row backs (v1.3.0).
+
+    A worktree session filed under a ghost project would silently
+    vanish from every project-filtered list, so the id is checked
+    before the worktree is created — failing fast also keeps the
+    ``worktree add`` from leaving an orphaned checkout behind.
+    """
+    from ..app import get_projects_dao
+
+    dao = get_projects_dao()
+    if dao is None:  # pragma: no cover - runtime not initialised
+        return
+    if await dao.get(project_id) is None:
+        raise HandlerError(INVALID_PARAMS, f"unknown project_id: {project_id!r}")
 
 
 def _make_dao_factory(dao: Any | None) -> Any:

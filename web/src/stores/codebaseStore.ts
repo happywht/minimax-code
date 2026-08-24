@@ -10,11 +10,22 @@ import { create } from "zustand";
 import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import { strings } from "../ui/strings";
+import { useSessionStore } from "./sessionStore";
 import type {
   CodebaseSearchResult,
   CodebaseStatusResult,
   CodebaseSummarizeResult,
 } from "../types/ipc";
+
+/**
+ * v1.3.0: every ``codebase.*`` call is scoped at the project the UI
+ * is browsing, so build/search hit that project's index shard (the
+ * backend keys indexes by project root). Snapshot at call time.
+ */
+function currentProjectScope(): { project_id?: string } {
+  const pid = useSessionStore.getState().currentProjectId;
+  return pid ? { project_id: pid } : {};
+}
 
 export interface CodebaseState {
   /** Latest status snapshot — ``null`` until first refresh. */
@@ -97,7 +108,7 @@ export const useCodebaseStore = create<CodebaseState>((set, get) => ({
   refreshStatus: async () => {
     set({ loading: true });
     try {
-      const s = await typedIPC.getCodebaseStatus();
+      const s = await typedIPC.getCodebaseStatus(currentProjectScope());
       set({ status: s, loading: false });
     } catch {
       set({ loading: false });
@@ -108,7 +119,7 @@ export const useCodebaseStore = create<CodebaseState>((set, get) => ({
   buildIndex: async (force = true) => {
     set({ loading: true });
     try {
-      const s = await typedIPC.buildCodebaseIndex({ force });
+      const s = await typedIPC.buildCodebaseIndex({ force, ...currentProjectScope() });
       set({ status: s, loading: false });
       toast.success(strings.toasts.codebaseIndexStarted);
     } catch (err) {
@@ -128,7 +139,7 @@ export const useCodebaseStore = create<CodebaseState>((set, get) => ({
     }
     set({ searching: true, query });
     try {
-      const res = await typedIPC.searchCodebase(query);
+      const res = await typedIPC.searchCodebase(query, currentProjectScope());
       const hotFiles = computeHotFiles(res.results);
       set({ results: res.results, hotFiles, searching: false });
       // Record every distinct matched file as recently touched.
@@ -152,7 +163,7 @@ export const useCodebaseStore = create<CodebaseState>((set, get) => ({
     }
     set({ summarizing: true, summaryPath: path });
     try {
-      const s = await typedIPC.summarizeCodebasePath(path);
+      const s = await typedIPC.summarizeCodebasePath(path, currentProjectScope());
       set({ summary: s, summarizing: false });
       get().touchFile(path);
     } catch (err) {

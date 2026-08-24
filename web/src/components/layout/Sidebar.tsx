@@ -120,6 +120,8 @@ export function Sidebar({
   // Modal state for project operations.
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
+  // v1.3.0: optional absolute workspace root anchoring the new project.
+  const [createRoot, setCreateRoot] = useState("");
   const [renameTarget, setRenameTarget] = useState<Project | null>(null);
   const [renameName, setRenameName] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
@@ -208,6 +210,7 @@ export function Sidebar({
       id: "inbox",
       name: "收件箱",
       description: "",
+      root_path: "",
       archived: false,
       created_at: Date.now(),
       updated_at: Date.now(),
@@ -248,11 +251,13 @@ export function Sidebar({
   const handleCreateProject = async () => {
     const name = createName.trim();
     if (!name) return;
-    const project = await createProject(name);
+    const rootPath = createRoot.trim() || undefined;
+    const project = await createProject(name, undefined, rootPath);
     if (project) {
       setCurrentProject(project.id);
       setCreateOpen(false);
       setCreateName("");
+      setCreateRoot("");
     }
   };
 
@@ -672,6 +677,7 @@ export function Sidebar({
                 title={strings.layout.sidebar.newProject}
                 onClick={() => {
                   setCreateName("");
+                  setCreateRoot("");
                   setCreateOpen(true);
                 }}
                 data-testid="sidebar-new-project"
@@ -810,6 +816,15 @@ export function Sidebar({
             onKeyDown={(e) => {
               if (e.key === "Enter") void handleCreateProject();
             }}
+          />
+          <p className="mt-3 mb-1 text-[11px] text-ink-2">
+            根目录（可选）：绑定后该项目的会话、终端与代码索引都以该目录为工作区根，且无法访问根外路径。
+          </p>
+          <Input
+            data-testid="sidebar-create-project-root"
+            value={createRoot}
+            onChange={(e) => setCreateRoot(e.target.value)}
+            placeholder="例如 D:\projects\my-app（留空则不绑定）"
           />
         </Modal>
       )}

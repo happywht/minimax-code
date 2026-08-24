@@ -131,7 +131,7 @@ export interface TypedIPC {
     worktree_branch?: string;
     base_branch?: string;
   }): Promise<CreateSessionResult>;
-  createWorktreeSession(opts?: { title?: string; base_ref?: string }): Promise<CreateSessionResult>;
+  createWorktreeSession(opts?: { title?: string; base_ref?: string; project_id?: string }): Promise<CreateSessionResult>;
   listWorktreeSessions(): Promise<ListSessionsResult>;
   deleteWorktree(sessionId: string): Promise<UpdateSessionResult>;
   archiveSession(sessionId: string): Promise<{ ok: true }>;
@@ -149,8 +149,8 @@ export interface TypedIPC {
 
   // project
   listProjects(opts?: { archived?: boolean }): Promise<ListProjectsResult>;
-  createProject(opts: { name: string; description?: string }): Promise<CreateProjectResult>;
-  updateProject(projectId: string, fields: { name?: string; description?: string }): Promise<UpdateProjectResult>;
+  createProject(opts: { name: string; description?: string; root_path?: string }): Promise<CreateProjectResult>;
+  updateProject(projectId: string, fields: { name?: string; description?: string; root_path?: string }): Promise<UpdateProjectResult>;
   deleteProject(projectId: string): Promise<{ ok: true; project_id: string }>;
   archiveProject(projectId: string): Promise<{ ok: true; project: import("../types/ipc").Project }>;
   unarchiveProject(projectId: string): Promise<{ ok: true; project: import("../types/ipc").Project }>;
@@ -193,10 +193,10 @@ export interface TypedIPC {
   invokeMcpTool(serverName: string, toolName: string, args?: Record<string, unknown>): Promise<InvokeMcpToolResult>;
 
   // codebase
-  getCodebaseStatus(): Promise<CodebaseStatusResult>;
-  buildCodebaseIndex(opts?: { force?: boolean }): Promise<CodebaseStatusResult>;
-  searchCodebase(query: string, opts?: { file_pattern?: string; limit?: number; offset?: number }): Promise<CodebaseSearchResultShape>;
-  summarizeCodebasePath(path: string): Promise<CodebaseSummarizeResult>;
+  getCodebaseStatus(opts?: { project_id?: string }): Promise<CodebaseStatusResult>;
+  buildCodebaseIndex(opts?: { force?: boolean; project_id?: string }): Promise<CodebaseStatusResult>;
+  searchCodebase(query: string, opts?: { file_pattern?: string; limit?: number; offset?: number; project_id?: string }): Promise<CodebaseSearchResultShape>;
+  summarizeCodebasePath(path: string, opts?: { project_id?: string }): Promise<CodebaseSummarizeResult>;
 
   listRuns(opts?: { session_id?: string; status?: string; limit?: number; offset?: number }): Promise<ListRunsResult>;
   getRunSteps(runId: string): Promise<RunStepsResult>;
@@ -331,21 +331,21 @@ export interface TypedIPC {
   // code-review flow. ``gitStatus`` is the cheap call (the widget
   // polls it on a short interval); ``gitDiff`` and ``gitLog`` are
   // on-demand.
-  gitStatus(): Promise<GitStatusResult>;
-  gitDiff(opts: { scope?: "staged" | "branch" | "working"; ref?: string }): Promise<GitDiffResult>;
-  gitLog(opts?: { n?: number }): Promise<GitLogResult>;
+  gitStatus(opts?: { project_id?: string }): Promise<GitStatusResult>;
+  gitDiff(opts: { scope?: "staged" | "branch" | "working"; ref?: string; project_id?: string }): Promise<GitDiffResult>;
+  gitLog(opts?: { n?: number; project_id?: string }): Promise<GitLogResult>;
   // crash recovery (R231) — read persisted crash-report files written at boot.
   crashPreviousReport(): Promise<CrashPreviousReportResult>;
   crashHistory(): Promise<CrashHistoryResult>;
   crashDismiss(): Promise<CrashDismissResult>;
-  patchPreview(opts?: { scope?: "staged" | "branch" | "working"; ref?: string }): Promise<PatchPreviewResult>;
+  patchPreview(opts?: { scope?: "staged" | "branch" | "working"; ref?: string; project_id?: string }): Promise<PatchPreviewResult>;
   patchApplyHunk(opts: PatchHunkOperationParams): Promise<PatchHunkOperationResult>;
   patchRevertHunk(opts: PatchHunkOperationParams): Promise<PatchHunkOperationResult>;
   patchApplyFile(opts: PatchFileOperationParams): Promise<PatchFileOperationResult>;
   patchRevertFile(opts: PatchFileOperationParams): Promise<PatchFileOperationResult>;
-  patchApplyAll(opts?: { scope?: "staged" | "working" }): Promise<PatchApplyAllResult>;
-  patchRevertAll(opts?: { scope?: "staged" | "working" }): Promise<PatchApplyAllResult>;
-  patchSaveSnapshot(): Promise<PatchSaveSnapshotResult>;
+  patchApplyAll(opts?: { scope?: "staged" | "working"; project_id?: string }): Promise<PatchApplyAllResult>;
+  patchRevertAll(opts?: { scope?: "staged" | "working"; project_id?: string }): Promise<PatchApplyAllResult>;
+  patchSaveSnapshot(opts?: { project_id?: string }): Promise<PatchSaveSnapshotResult>;
   startTerminal(opts: {
     command: string;
     cwd?: string;
@@ -623,7 +623,10 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         arguments: args ?? {},
       }),
 
-    getCodebaseStatus: () => client.request<CodebaseStatusResult>("codebase.status", {}),
+    getCodebaseStatus: (opts) =>
+      client.request<CodebaseStatusResult>("codebase.status", {
+        project_id: opts?.project_id,
+      }),
     buildCodebaseIndex: (opts) =>
       client.request<CodebaseStatusResult>("codebase.build_index", opts ?? {}),
     searchCodebase: (query, opts) =>
@@ -632,9 +635,13 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         file_pattern: opts?.file_pattern,
         limit: opts?.limit,
         offset: opts?.offset,
+        project_id: opts?.project_id,
       }),
-    summarizeCodebasePath: (path) =>
-      client.request<CodebaseSummarizeResult>("codebase.summarize", { path }),
+    summarizeCodebasePath: (path, opts) =>
+      client.request<CodebaseSummarizeResult>("codebase.summarize", {
+        path,
+        project_id: opts?.project_id,
+      }),
 
     listRuns: (opts) =>
       client.request<ListRunsResult>("run.list", opts ?? {}),
@@ -812,7 +819,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     clearProviderApiKey: (providerId) =>
       client.request<SetProviderApiKeyResult>("provider.clear_api_key", { provider_id: providerId }),
 
-    gitStatus: () => client.request<GitStatusResult>("git.status", {}),
+    gitStatus: (opts) =>
+      client.request<GitStatusResult>("git.status", { project_id: opts?.project_id }),
     gitDiff: (opts) => client.request<GitDiffResult>("git.diff", opts ?? {}),
     gitLog: (opts) => client.request<GitLogResult>("git.log", opts ?? {}),
     // ── Crash recovery (R231) — read persisted crash-report files written at boot ──
@@ -827,7 +835,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     patchRevertFile: (opts) => client.request<PatchFileOperationResult>("patch.revert_file", opts),
     patchApplyAll: (opts) => client.request<PatchApplyAllResult>("patch.apply_all", opts ?? {}),
     patchRevertAll: (opts) => client.request<PatchApplyAllResult>("patch.revert_all", opts ?? {}),
-    patchSaveSnapshot: () => client.request<PatchSaveSnapshotResult>("patch.save_snapshot", {}),
+    patchSaveSnapshot: (opts) =>
+      client.request<PatchSaveSnapshotResult>("patch.save_snapshot", opts ?? {}),
     startTerminal: (opts) => client.request<TerminalStartResult>("terminal.start", opts),
     readTerminal: (opts) => client.request<TerminalReadResult>("terminal.read", opts),
     stopTerminal: (sessionId) => client.request<TerminalStartResult>("terminal.stop", { session_id: sessionId }),

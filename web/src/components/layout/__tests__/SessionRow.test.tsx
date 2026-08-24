@@ -9,8 +9,8 @@ import type { SessionMeta } from "../../../stores";
 import type { Project } from "../../../types/ipc";
 
 const mockProjects: Project[] = [
-  { id: "inbox", name: "收件箱", description: "", archived: false, created_at: 0, updated_at: 10 },
-  { id: "p1", name: "Project One", description: "", archived: false, created_at: 0, updated_at: 20 },
+  { id: "inbox", name: "收件箱", description: "", root_path: "", archived: false, created_at: 0, updated_at: 10 },
+  { id: "p1", name: "Project One", description: "", root_path: "", archived: false, created_at: 0, updated_at: 20 },
 ];
 
 function makeSession(overrides: Partial<SessionMeta> = {}): SessionMeta {

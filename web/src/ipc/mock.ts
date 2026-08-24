@@ -253,7 +253,7 @@ function mockHandle(
     case "workspace.create_worktree_session": {
       const sid = `ses_${Math.random().toString(36).slice(2, 10)}`;
       const now = Date.now();
-      const p = params as { title?: string; base_ref?: string } | undefined;
+      const p = params as { title?: string; base_ref?: string; project_id?: string } | undefined;
       const session: Session = {
         id: sid,
         title: p?.title ?? DEFAULT_WORKTREE_TITLE,
@@ -261,6 +261,7 @@ function mockHandle(
         created_at: now,
         updated_at: now,
         model_id: null,
+        project_id: p?.project_id ?? "inbox",
         workspace_mode: "worktree",
         workspace_path: `/tmp/minimax-code/worktrees/${sid}`,
         worktree_branch: null,
@@ -411,13 +412,14 @@ function mockHandle(
     }
 
     case "project.create": {
-      const p = params as { name: string; description?: string };
+      const p = params as { name: string; description?: string; root_path?: string };
       const pid = `proj_${Math.random().toString(36).slice(2, 10)}`;
       const now = Date.now();
       const project = {
         id: pid,
         name: p.name,
         description: p.description ?? "",
+        root_path: p.root_path ?? "",
         archived: false,
         created_at: now,
         updated_at: now,
@@ -427,11 +429,12 @@ function mockHandle(
     }
 
     case "project.update": {
-      const p = params as { project_id: string; name?: string; description?: string };
+      const p = params as { project_id: string; name?: string; description?: string; root_path?: string };
       const project = mockProjects.get(p.project_id);
       if (!project) return { ok: false, project: null };
       if (p.name !== undefined) project.name = p.name;
       if (p.description !== undefined) project.description = p.description;
+      if (p.root_path !== undefined) project.root_path = p.root_path;
       project.updated_at = Date.now();
       return { ok: true, project };
     }

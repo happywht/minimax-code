@@ -123,8 +123,8 @@ export interface SessionState {
   setFilter: (filter: SessionFilter) => void;
   setCurrentProject: (id: string | null) => void;
   toggleProjectExpanded: (id: string) => void;
-  createProject: (name: string, description?: string) => Promise<Project | null>;
-  updateProject: (id: string, fields: { name?: string; description?: string }) => Promise<void>;
+  createProject: (name: string, description?: string, rootPath?: string) => Promise<Project | null>;
+  updateProject: (id: string, fields: { name?: string; description?: string; root_path?: string }) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
   archiveProject: (id: string) => Promise<void>;
   unarchiveProject: (id: string) => Promise<void>;
@@ -254,7 +254,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   createWorktree: async (title?: string, baseRef?: string) => {
     try {
-      const r = await typedIPC.createWorktreeSession({ title, base_ref: baseRef });
+      // v1.3.0: the worktree session is filed under the currently
+      // selected project so per-project scoping (git/codebase/tools)
+      // applies to it — "inbox" only when nothing is selected.
+      const projectId = get().currentProjectId ?? "inbox";
+      const r = await typedIPC.createWorktreeSession({ title, base_ref: baseRef, project_id: projectId });
       ++refreshSeq;
       set((s) => ({
         sessions: [
@@ -262,7 +266,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             id: r.session_id,
             title: title ?? DEFAULT_WORKTREE_TITLE,
             archived: false,
-            project_id: "inbox",
+            project_id: projectId,
             created_at: Date.now(),
             updated_at: Date.now(),
             model_id: null,
@@ -421,9 +425,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
-  createProject: async (name: string, description?: string) => {
+  createProject: async (name: string, description?: string, rootPath?: string) => {
     try {
-      const r = await typedIPC.createProject({ name, description });
+      const r = await typedIPC.createProject({
+        name,
+        description,
+        root_path: rootPath?.trim() ? rootPath.trim() : undefined,
+      });
       set((s) => ({
         projects: [r.project, ...s.projects],
         expandedProjectIds: [...s.expandedProjectIds, r.project.id],
@@ -436,14 +444,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
-  updateProject: async (id: string, fields: { name?: string; description?: string }) => {
+  updateProject: async (id: string, fields: { name?: string; description?: string; root_path?: string }) => {
     try {
       const r = await typedIPC.updateProject(id, fields);
       if (r.project) {
         set((s) => ({
           projects: s.projects.map((p) =>
             p.id === id
-              ? { ...p, name: r.project.name, description: r.project.description, updated_at: r.project.updated_at }
+              ? {
+                  ...p,
+                  name: r.project.name,
+                  description: r.project.description,
+                  root_path: r.project.root_path,
+                  updated_at: r.project.updated_at,
+                }
               : p,
           ),
         }));

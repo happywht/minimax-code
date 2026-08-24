@@ -31,6 +31,7 @@ function makeProject(overrides: Partial<Project> & { id: string }): Project {
   return {
     name: overrides.id,
     description: "",
+    root_path: "",
     archived: false,
     created_at: 1,
     updated_at: 1,
@@ -195,5 +196,24 @@ describe("WorkspaceSwitcher (project switcher)", () => {
     expect(createProject).not.toHaveBeenCalled();
     // The menu stays open so the user can fix the name.
     expect(screen.getByTestId("workspace-switcher-menu")).toBeInTheDocument();
+  });
+
+  it("surfaces a rooted project's root_path as the option tooltip (v1.3.0)", () => {
+    seedProjects(
+      [
+        makeProject({ id: "inbox", name: "收件箱" }),
+        makeProject({ id: "pA", name: "项目A", root_path: "D:\\tmp\\projA" }),
+        makeProject({ id: "pB", name: "项目B" }), // unrooted
+      ],
+      "pA",
+    );
+
+    render(<WorkspaceSwitcher />);
+    fireEvent.click(screen.getByTestId("workspace-switcher-trigger"));
+
+    expect(screen.getByTestId("workspace-option-pA")).toHaveAttribute("title", "D:\\tmp\\projA");
+    // Unrooted projects render no tooltip instead of an empty title.
+    expect(screen.getByTestId("workspace-option-pB")).not.toHaveAttribute("title");
+    expect(screen.getByTestId("workspace-option-inbox")).not.toHaveAttribute("title");
   });
 });

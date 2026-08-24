@@ -31,6 +31,7 @@ export const mockProjects = new Map<string, Project>([
       id: "inbox",
       name: "收件箱",
       description: "未归类任务默认目录",
+      root_path: "",
       archived: false,
       created_at: Date.now(),
       updated_at: Date.now(),

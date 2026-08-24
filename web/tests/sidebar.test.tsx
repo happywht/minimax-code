@@ -18,7 +18,7 @@ vi.mock("../src/ipc", async () => {
       createSession: vi.fn(async (_opts: { title?: string; project_id?: string } = {}) => ({
         session_id: "ses_test_1",
       })),
-      createWorktreeSession: vi.fn(async (_opts: { title?: string; base_ref?: string } = {}) => ({
+      createWorktreeSession: vi.fn(async (_opts: { title?: string; base_ref?: string; project_id?: string } = {}) => ({
         session_id: "ses_wt_1",
         session: {
           id: "ses_wt_1",
@@ -47,6 +47,7 @@ describe("Sidebar", () => {
           id: "inbox",
           name: "收件箱",
           description: "",
+          root_path: "",
           archived: false,
           created_at: Date.now(),
           updated_at: Date.now(),
@@ -89,6 +90,7 @@ describe("Sidebar", () => {
       expect(typedIPC.createWorktreeSession).toHaveBeenCalledWith({
         title: "Worktree 任务",
         base_ref: "HEAD",
+        project_id: "inbox", // v1.3.0: no project selected → inbox
       });
     });
     expect(useSessionStore.getState().currentSessionId).toBe("ses_wt_1");

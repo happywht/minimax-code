@@ -93,7 +93,7 @@ describe("CodebasePanel", () => {
     fireEvent.click(screen.getByTestId("codebase-search-btn"));
 
     await waitFor(() => {
-      expect(typedIPC.searchCodebase).toHaveBeenCalledWith("auth");
+      expect(typedIPC.searchCodebase).toHaveBeenCalledWith("auth", {});
     });
     expect(screen.getByTestId("codebase-results")).toBeInTheDocument();
     expect(screen.getAllByTestId("codebase-result")).toHaveLength(2);
@@ -109,7 +109,7 @@ describe("CodebasePanel", () => {
     fireEvent.click(screen.getByTestId("codebase-summary-btn"));
 
     await waitFor(() => {
-      expect(typedIPC.summarizeCodebasePath).toHaveBeenCalledWith("src/auth.ts");
+      expect(typedIPC.summarizeCodebasePath).toHaveBeenCalledWith("src/auth.ts", {});
     });
     expect(screen.getByText("Auth utilities")).toBeInTheDocument();
     expect(screen.getByText("最近查看")).toBeInTheDocument();

@@ -756,6 +756,8 @@ export interface Project {
   id: string;
   name: string;
   description: string;
+  /** v1.3.0: absolute workspace root this project is anchored at ("" = unrooted). */
+  root_path: string;
   archived: boolean;
   created_at: number;
   updated_at: number;
@@ -1003,6 +1005,8 @@ export interface PatchHunkOperationParams {
   hunk_index: number;
   old_start?: number;
   new_start?: number;
+  /** v1.3.0: scope the operation at this project's root. */
+  project_id?: string;
 }
 
 export interface PatchHunkOperationResult {
@@ -1016,6 +1020,8 @@ export interface PatchHunkOperationResult {
 export interface PatchFileOperationParams {
   scope?: "working" | "staged";
   file_path: string;
+  /** v1.3.0: scope the operation at this project's root. */
+  project_id?: string;
 }
 
 export interface PatchFileOperationResult {

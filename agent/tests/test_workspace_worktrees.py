@@ -123,3 +123,83 @@ async def test_delete_worktree_session_returns_to_local(
     assert deleted["ok"] is True
     assert deleted["session"]["workspace_mode"] == "local"
     assert not path.exists()
+
+
+class _StubProjectsDAO:
+    """Minimal ProjectsDAO.get stand-in for the v1.3.0 project_id gate."""
+
+    def __init__(self, known: set[str]) -> None:
+        self._known = known
+
+    async def get(self, project_id: str) -> object | None:
+        return object() if project_id in self._known else None
+
+
+@pytest.mark.asyncio
+async def test_create_worktree_session_files_under_project_id(
+    tmp_path: Path,
+    git_repo: Path,
+    sessions_dao: SessionsDAO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v1.3.0: a rooted project_id lands on the session; no id → inbox."""
+    import minimax_code.app as app_mod
+
+    monkeypatch.setattr(
+        app_mod, "get_projects_dao", lambda: _StubProjectsDAO(known={"p_rooted"})
+    )
+
+    stdout = io.StringIO()
+    server = IPCServer(config=Config.from_env(), stdin=io.StringIO(), stdout=stdout)
+    register_workspace_handlers(
+        server,
+        dao=sessions_dao,
+        repo_root=git_repo,
+        worktree_root=tmp_path / "managed-worktrees",
+    )
+
+    rooted = await request(
+        server,
+        stdout,
+        "workspace.create_worktree_session",
+        {"project_id": "p_rooted"},
+    )
+    assert rooted["session"]["project_id"] == "p_rooted"
+
+    legacy = await request(server, stdout, "workspace.create_worktree_session", {})
+    assert legacy["session"]["project_id"] == "inbox"
+
+
+@pytest.mark.asyncio
+async def test_create_worktree_session_rejects_unknown_project_id(
+    tmp_path: Path,
+    git_repo: Path,
+    sessions_dao: SessionsDAO,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v1.3.0: a ghost project_id fails fast, before any checkout exists."""
+    import minimax_code.app as app_mod
+
+    monkeypatch.setattr(app_mod, "get_projects_dao", lambda: _StubProjectsDAO(known=set()))
+
+    stdout = io.StringIO()
+    server = IPCServer(config=Config.from_env(), stdin=io.StringIO(), stdout=stdout)
+    worktree_root = tmp_path / "managed-worktrees"
+    register_workspace_handlers(
+        server,
+        dao=sessions_dao,
+        repo_root=git_repo,
+        worktree_root=worktree_root,
+    )
+
+    with pytest.raises(RuntimeError, match="unknown project_id"):
+        await request(
+            server,
+            stdout,
+            "workspace.create_worktree_session",
+            {"project_id": "ghost"},
+        )
+
+    # Fail-fast guarantee: no orphaned checkout was created.
+    if worktree_root.exists():
+        assert list(worktree_root.iterdir()) == []
