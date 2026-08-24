@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..workspace_ctx import session_root_scope
 from .handler_utils import HandlerError, check_params
 from .protocol import INTERNAL_ERROR, INVALID_PARAMS
 from .server import Context
@@ -317,12 +318,17 @@ def register_team_handlers(
                 llm=get_subagent_llm(),
                 emit_event=ctx.emit,
             )
-            result = await orch.run(
-                team_name,
-                request,
-                session_id=session_id,
-                parent_session_id=parent_session_id,
-            )
+            # v1.3.0: scope the whole team run to the driving session's
+            # root — members spawned via ``create_task`` copy the context
+            # and inherit it; the scope makes this handler independent of
+            # whether it was called from a parent run or directly.
+            async with session_root_scope(session_id or parent_session_id):
+                result = await orch.run(
+                    team_name,
+                    request,
+                    session_id=session_id,
+                    parent_session_id=parent_session_id,
+                )
             await ctx.reply({
                 "team_name": result.team_name,
                 "orchestration_mode": result.orchestration_mode,

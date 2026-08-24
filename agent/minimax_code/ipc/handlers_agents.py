@@ -60,6 +60,7 @@ import logging
 import uuid
 from typing import Any
 
+from ..workspace_ctx import session_root_scope
 from .handler_utils import HandlerError, check_params
 from .protocol import INTERNAL_ERROR, INVALID_PARAMS
 from .server import Context
@@ -420,9 +421,13 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 # ``stub=False``). When the runtime is unconfigured
                 # (no LLM), the deterministic stub envelope is
                 # returned (``stub=True``).
-                result = await runtime.invoke(
-                    handle, session_id=session_id, request=request
-                )
+                # v1.3.0: publish the session's workspace root for the
+                # invocation — top-level entry, so unlike runs spawned
+                # inside ``agent.send_message`` it must scope itself.
+                async with session_root_scope(session_id):
+                    result = await runtime.invoke(
+                        handle, session_id=session_id, request=request
+                    )
                 is_stub = bool(result.get("stub", True))
                 final_text = result.get("text", "")
 
@@ -655,9 +660,13 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
             if hasattr(handle, "core") and handle.core is not None:
                 _ACTIVE_RUNS[run_id] = {"core": handle.core, "type": "subagent"}
             try:
-                result = await runtime.invoke(
-                    handle, session_id=sub_session_id, request=request
-                )
+                # v1.3.0: scope the run to the sub-session's root —
+                # mirrors the invoke handler above (top-level entry,
+                # no parent task context to inherit from).
+                async with session_root_scope(sub_session_id):
+                    result = await runtime.invoke(
+                        handle, session_id=sub_session_id, request=request
+                    )
             finally:
                 _ACTIVE_RUNS.pop(run_id, None)
             is_stub = bool(result.get("stub", True))

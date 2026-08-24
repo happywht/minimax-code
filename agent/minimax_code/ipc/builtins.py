@@ -384,10 +384,27 @@ async def _build_system_prompt_extra(
         "answer the current user message on its own merits, and only "
         "describe work as finished when it actually is.",
     ]
+    # v1.3.0: workspace-root advisory. Injected only when this run is
+    # anchored at a project root that differs from the process default
+    # — sessions on the default root see no extra prompt noise.
+    try:
+        from ..workspace_ctx import current_root, env_or_cwd_root
+
+        root = current_root()
+        if root is not None and root != env_or_cwd_root():
+            parts.append(
+                f"Workspace root for this session: {root}\n"
+                "All relative file paths resolve against this root. "
+                "Absolute paths must stay inside it; access outside the "
+                "root is rejected."
+            )
+    except Exception:  # pragma: no cover — defensive
+        logger.debug("workspace-root advisory build failed", exc_info=True)
     try:
         from ..app import ensure_repo_map_indexer
+        from ..workspace_ctx import current_root
 
-        indexer = await ensure_repo_map_indexer()
+        indexer = await ensure_repo_map_indexer(current_root())
         if indexer is not None:
             repo_map = await indexer.build_map()
             if repo_map:
@@ -545,6 +562,20 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         logger.exception("failed to open storage for chat")
         await ctx.reply_error(-32603, "storage unavailable")
         return
+
+    # 2.5. v1.3.0 — publish this session's workspace root for the run.
+    #     Everything below (prompt build, tool dispatch, sub-agents
+    #     spawned via create_task) reads it through ``current_root()``;
+    #     file tools anchor relative paths and enforce containment
+    #     against it. Resolution never raises — a broken chain (missing
+    #     project dir etc.) degrades to the process root.
+    _root_token = None
+    try:
+        from ..workspace_ctx import resolve_root_for_session, set_current_root
+
+        _root_token = set_current_root(await resolve_root_for_session(session_id))
+    except Exception:  # pragma: no cover — defensive
+        logger.exception("workspace root resolution failed; using process default")
 
     async def _history(sid: str) -> list[dict[str, Any]]:
         try:
@@ -943,6 +974,16 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         return
     finally:
         _ACTIVE_RUNS.pop(session_id, None)
+        # v1.3.0: unpublish the session root. Placed here so both the
+        # happy path and every error path inside the run reset it.
+        if _root_token is not None:
+            try:
+                from ..workspace_ctx import reset_current_root
+
+                reset_current_root(_root_token)
+            except Exception:  # pragma: no cover — defensive
+                logger.debug("workspace root reset failed", exc_info=True)
+            _root_token = None
         # v1.2.2: drop this run's consent gater from the server
         # registry so resolve stops seeing a dead gater.
         try:

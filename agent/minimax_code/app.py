@@ -39,6 +39,11 @@ _RUNTIME: SkillRuntime | None = None
 _RUNTIME_LOCK = asyncio.Lock()
 _PROVIDER_DAO_SINGLETON: Any = None  # type: ignore[no-untyped-def]
 _REPO_MAP_INDEXER: Any = None  # type: ignore[no-untyped-def]
+# v1.3.0: per-root repo-map indexers keyed by resolved workspace path.
+# ``_REPO_MAP_INDEXER`` (legacy single slot) remains the default-root
+# entry so existing getters/setters keep working; entries for project
+# roots live alongside it. No LRU — projects are hand-created and few.
+_REPO_MAP_INDEXERS: dict[str, Any] = {}
 _DB_SINGLETON: Any = None  # process-wide AsyncDatabase
 _DB_LOCK = asyncio.Lock()
 # MCP server config DAO + runtime registry singletons (v0.11.0 Milestone 1).
@@ -876,34 +881,53 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
 # ---------------------------------------------------------------------------
 
 
+def _default_repo_map_root() -> Path:
+    """The legacy process-wide repo-map root (env or CWD, resolved)."""
+    return Path(os.environ.get("MINIMAX_CODE_WORKSPACE", os.getcwd())).resolve()
+
+
 def get_repo_map_indexer() -> Any:
-    """Return the process-wide :class:`RepoMapIndexer`, or ``None``."""
-    return _REPO_MAP_INDEXER
+    """Return the repo-map indexer for the default root, or ``None``."""
+    return _REPO_MAP_INDEXERS.get(str(_default_repo_map_root()), _REPO_MAP_INDEXER)
 
 
 def set_repo_map_indexer(indexer: Any) -> None:
-    """Replace the cached repo-map indexer (test seam)."""
+    """Replace the cached repo-map indexer for the default root (test seam)."""
     global _REPO_MAP_INDEXER
     _REPO_MAP_INDEXER = indexer
+    _REPO_MAP_INDEXERS[str(_default_repo_map_root())] = indexer
 
 
-async def ensure_repo_map_indexer() -> Any:
-    """Build the repo-map indexer on first call, cache it, and return it.
+async def ensure_repo_map_indexer(root: Path | None = None) -> Any:
+    """Build the repo-map indexer for *root*, cache it, and return it.
 
     The indexer walks the workspace and extracts a compressed symbol
     tree that is injected into the LLM's system prompt. Building the
     map is async-safe and idempotent — a second call returns the
     cached instance.
+
+    v1.3.0: indexers are cached per resolved root so project-rooted
+    sessions get a repo map of *their* tree, not the process default's.
+    ``root=None`` keeps the legacy env/CWD behaviour.
     """
-    global _REPO_MAP_INDEXER
-    if _REPO_MAP_INDEXER is not None:
-        return _REPO_MAP_INDEXER
+    workspace = (
+        Path(root).expanduser().resolve()
+        if root is not None
+        else _default_repo_map_root()
+    )
+    key = str(workspace)
+    cached = _REPO_MAP_INDEXERS.get(key)
+    if cached is not None:
+        return cached
     try:
         from .agent.perception.indexer import RepoMapIndexer
 
-        workspace = Path(os.environ.get("MINIMAX_CODE_WORKSPACE", os.getcwd()))
         indexer = RepoMapIndexer(workspace, max_tokens=2000)
-        _REPO_MAP_INDEXER = indexer
+        _REPO_MAP_INDEXERS[key] = indexer
+        if key == str(_default_repo_map_root()):
+            # Keep the legacy single-slot view in sync for the default root.
+            global _REPO_MAP_INDEXER
+            _REPO_MAP_INDEXER = indexer
         logger.info("repo-map indexer initialised (workspace=%s)", workspace)
         return indexer
     except Exception:
