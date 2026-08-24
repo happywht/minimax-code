@@ -79,16 +79,27 @@ class CodebaseIndexer:
         max_files: int = _MAX_FILES,
         max_file_size: int = _MAX_FILE_SIZE,
         embedder: CodebaseEmbedder | None = None,
+        root_key: str = "",
     ) -> None:
         self._workspace = Path(workspace).expanduser().resolve()
         self._store = store
         self._max_files = max_files
         self._max_file_size = max_file_size
         self._embedder = embedder or get_default_embedder()
+        # v1.3.0: the storage shard this indexer reads/writes. The default
+        # "" keeps the legacy global-index semantics; a per-project indexer
+        # passes its resolved root so multiple workspaces share one DB
+        # without seeing (or deleting) each other's chunks.
+        self._root_key = root_key
         self._graph_index = CodebaseGraphIndex(self._workspace)
         self._progress = IndexProgress()
         self._lock = asyncio.Lock()
         self._task: asyncio.Task[Any] | None = None
+
+    @property
+    def root_key(self) -> str:
+        """The storage shard key this indexer writes to."""
+        return self._root_key
 
     @property
     def embedder(self) -> CodebaseEmbedder:
@@ -153,13 +164,18 @@ class CodebaseIndexer:
             self._progress.processed = 0
 
             if force:
-                await self._store.clear()
-                await self._store.clear_file_index_state()
+                await self._store.clear(self._root_key)
+                await self._store.clear_file_index_state(self._root_key)
                 files_to_index = current_files
                 self._progress.message = f"Indexing {len(files_to_index)} files"
             else:
-                previous_state = await self._store.get_file_index_state()
+                previous_state = await self._store.get_file_index_state(
+                    root=self._root_key
+                )
                 current_paths = {f[0] for f in current_files}
+                # v1.3.0: the diff only sees this root's shard, so an
+                # incremental build of project A no longer treats project
+                # B's files as deleted.
                 deleted_paths = set(previous_state.keys()) - current_paths
 
                 files_to_index = []
@@ -169,8 +185,12 @@ class CodebaseIndexer:
                         files_to_index.append((rel_path, mtime, size))
 
                 for rel_path in deleted_paths:
-                    await self._store.delete_chunks_for_file(rel_path)
-                    await self._store.delete_file_index_state(rel_path)
+                    await self._store.delete_chunks_for_file(
+                        rel_path, root=self._root_key
+                    )
+                    await self._store.delete_file_index_state(
+                        rel_path, root=self._root_key
+                    )
 
                 unchanged = len(current_files) - len(files_to_index)
                 self._progress.total = len(files_to_index) + len(deleted_paths)
@@ -242,7 +262,7 @@ class CodebaseIndexer:
         symbols: list[SymbolNode] = parser(text, full.name) if parser else []
 
         # Delete old chunks for this file then insert fresh line windows.
-        await self._store.delete_chunks_for_file(rel_path)
+        await self._store.delete_chunks_for_file(rel_path, root=self._root_key)
         lines = text.splitlines()
         total_lines = len(lines)
         language = ext.lstrip(".")
@@ -289,7 +309,9 @@ class CodebaseIndexer:
             except Exception:  # noqa: BLE001
                 logger.exception("failed to embed chunks for %s", rel_path)
 
-        await self._store.save_file_index_state(rel_path, mtime=mtime, size=size)
+        await self._store.save_file_index_state(
+            rel_path, mtime=mtime, size=size, root=self._root_key
+        )
 
     async def _save_chunk(
         self,
@@ -314,6 +336,7 @@ class CodebaseIndexer:
             end_line=end_line,
             content=content,
             metadata=metadata,
+            root=self._root_key,
         )
 
     def _rel_path(self, full: Path) -> str:
@@ -324,8 +347,8 @@ class CodebaseIndexer:
 
     async def invalidate_path(self, rel_path: str) -> None:
         """Remove a file from the index (e.g. after deletion)."""
-        await self._store.delete_chunks_for_file(rel_path)
-        await self._store.delete_file_index_state(rel_path)
+        await self._store.delete_chunks_for_file(rel_path, root=self._root_key)
+        await self._store.delete_file_index_state(rel_path, root=self._root_key)
 
 
 def _symbol_to_dict(node: SymbolNode) -> dict[str, Any]:

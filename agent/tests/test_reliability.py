@@ -140,7 +140,10 @@ async def test_open_to_half_open_after_cooldown():
     cb = CircuitBreaker(_cfg(min_samples=1, open_duration=0.05))
     await cb.record(Outcome.FAILURE)
     assert cb.state is BreakerState.OPEN
-    await asyncio.sleep(0.06)
+    # 0.2s vs open_duration=0.05s: a 3x margin absorbs event-loop
+    # scheduling jitter under a loaded full-suite run (10ms used to
+    # flake on Windows).
+    await asyncio.sleep(0.2)
     await cb.check()  # elapsed >= open_duration → HALF_OPEN, admitted
     assert cb.state is BreakerState.HALF_OPEN
 
@@ -148,7 +151,10 @@ async def test_open_to_half_open_after_cooldown():
 async def test_half_open_success_closes_and_clears():
     cb = CircuitBreaker(_cfg(min_samples=1, open_duration=0.05))
     await cb.record(Outcome.FAILURE)
-    await asyncio.sleep(0.06)
+    # 0.2s vs open_duration=0.05s: a 3x margin absorbs event-loop
+    # scheduling jitter under a loaded full-suite run (10ms used to
+    # flake on Windows).
+    await asyncio.sleep(0.2)
     await cb.check()
     assert cb.state is BreakerState.HALF_OPEN
     await cb.record(Outcome.SUCCESS)
@@ -159,7 +165,10 @@ async def test_half_open_success_closes_and_clears():
 async def test_half_open_failure_reopens():
     cb = CircuitBreaker(_cfg(min_samples=1, open_duration=0.05))
     await cb.record(Outcome.FAILURE)
-    await asyncio.sleep(0.06)
+    # 0.2s vs open_duration=0.05s: a 3x margin absorbs event-loop
+    # scheduling jitter under a loaded full-suite run (10ms used to
+    # flake on Windows).
+    await asyncio.sleep(0.2)
     await cb.check()
     assert cb.state is BreakerState.HALF_OPEN
     await cb.record(Outcome.FAILURE)
@@ -171,7 +180,10 @@ async def test_half_open_vetoes_extra_probes():
     # concurrent check() before the first resolves is vetoed.
     cb = CircuitBreaker(_cfg(min_samples=1, open_duration=0.05, half_open_max_probes=1))
     await cb.record(Outcome.FAILURE)
-    await asyncio.sleep(0.06)
+    # 0.2s vs open_duration=0.05s: a 3x margin absorbs event-loop
+    # scheduling jitter under a loaded full-suite run (10ms used to
+    # flake on Windows).
+    await asyncio.sleep(0.2)
     await cb.check()  # inflight now 1
     with pytest.raises(BreakerOpen) as ei:
         await cb.check()
@@ -523,7 +535,10 @@ async def test_observer_fires_open_elapsed_transition() -> None:
     cb = CircuitBreaker(_cfg(min_samples=1, open_duration=0.05), observer=obs)
     await cb.record(Outcome.FAILURE)
     obs.transitions.clear()
-    await asyncio.sleep(0.06)
+    # 0.2s vs open_duration=0.05s: a 3x margin absorbs event-loop
+    # scheduling jitter under a loaded full-suite run (10ms used to
+    # flake on Windows).
+    await asyncio.sleep(0.2)
     await cb.check()  # elapsed ≥ open_duration → HALF_OPEN
     assert obs.transitions == [
         (BreakerState.OPEN, BreakerState.HALF_OPEN, "open_elapsed")
@@ -536,7 +551,10 @@ async def test_observer_fires_probe_success_transition() -> None:
     obs = _RecordingObserver()
     cb = CircuitBreaker(_cfg(min_samples=1, open_duration=0.05), observer=obs)
     await cb.record(Outcome.FAILURE)
-    await asyncio.sleep(0.06)
+    # 0.2s vs open_duration=0.05s: a 3x margin absorbs event-loop
+    # scheduling jitter under a loaded full-suite run (10ms used to
+    # flake on Windows).
+    await asyncio.sleep(0.2)
     await cb.check()  # → HALF_OPEN
     obs.transitions.clear()
     await cb.record(Outcome.SUCCESS)
@@ -551,7 +569,10 @@ async def test_observer_fires_probe_failure_transition() -> None:
     obs = _RecordingObserver()
     cb = CircuitBreaker(_cfg(min_samples=1, open_duration=0.05), observer=obs)
     await cb.record(Outcome.FAILURE)
-    await asyncio.sleep(0.06)
+    # 0.2s vs open_duration=0.05s: a 3x margin absorbs event-loop
+    # scheduling jitter under a loaded full-suite run (10ms used to
+    # flake on Windows).
+    await asyncio.sleep(0.2)
     await cb.check()  # → HALF_OPEN
     obs.transitions.clear()
     await cb.record(Outcome.FAILURE)

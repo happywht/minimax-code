@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +52,11 @@ _MCP_SERVERS_DAO: Any = None  # type: ignore[no-untyped-def]
 _MCP_REGISTRY: Any = None  # type: ignore[no-untyped-def]
 # Codebase RAG indexer (v0.11.0 Milestone 2).
 _CODEBASE_INDEXER: Any = None  # type: ignore[no-untyped-def]
+# v1.3.0: per-root codebase indexers keyed by resolved workspace path —
+# the same sharding scheme as the repo-map cache above. The default root
+# uses the legacy ``root_key=''`` storage shard so existing indexes and
+# incremental state survive the upgrade untouched. No LRU by design.
+_CODEBASE_INDEXERS: dict[str, Any] = {}
 # Plugin registry singleton (platform pillar #3 — Plugins). Lazily
 # built by ensure_plugin_registry(); tests inject via set_plugin_registry().
 _PLUGIN_REGISTRY: Any = None  # type: ignore[no-untyped-def]
@@ -198,14 +204,11 @@ async def _maybe_open_db() -> Any:
                     logger.exception("failed to attach persisted MCP server %s", cfg_row["name"])
         except Exception:  # noqa: BLE001
             logger.exception("failed to load persisted MCP servers")
-        # Codebase RAG indexer (v0.11.0 Milestone 2).
+        # Codebase RAG indexer (v0.11.0 Milestone 2, per-root in v1.3.0).
+        # ``_DB_SINGLETON`` is set above, so ensure_codebase_indexer()
+        # reuses this same db handle for the default-root indexer.
         global _CODEBASE_INDEXER
-        from .codebase import CodebaseIndexer, CodebaseStore
-        workspace = Path.cwd()
-        env_workspace = os.environ.get("MINIMAX_CODE_WORKSPACE_DIR")
-        if env_workspace:
-            workspace = Path(env_workspace).expanduser().resolve()
-        _CODEBASE_INDEXER = CodebaseIndexer(workspace, CodebaseStore(db))
+        _CODEBASE_INDEXER = ensure_codebase_indexer()
         # Kick off a delayed incremental index build so the codebase is
         # searchable shortly after boot without blocking startup.
         _schedule_codebase_index_build()
@@ -405,15 +408,87 @@ def set_mcp_registry(registry: Any) -> None:
     _MCP_REGISTRY = registry
 
 
+def _default_codebase_root() -> Path:
+    """The process-wide codebase root: ``MINIMAX_CODE_WORKSPACE`` or CWD.
+
+    v1.3.0 consolidates three historical env spellings onto the canonical
+    ``MINIMAX_CODE_WORKSPACE`` (the one dev scripts actually set). The old
+    ``MINIMAX_CODE_WORKSPACE_DIR`` spelling is still honoured — with a
+    deprecation warning — so existing deployments keep indexing the same
+    tree. Before this, a workspace set via the canonical name was silently
+    ignored here and the indexer fell back to the process CWD (``agent/``
+    under ``pnpm dev``), indexing the wrong tree.
+    """
+    env = os.environ.get("MINIMAX_CODE_WORKSPACE")
+    if not env:
+        legacy = os.environ.get("MINIMAX_CODE_WORKSPACE_DIR")
+        if legacy:
+            warnings.warn(
+                "MINIMAX_CODE_WORKSPACE_DIR is deprecated; "
+                "set MINIMAX_CODE_WORKSPACE instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            env = legacy
+    return Path(env or os.getcwd()).expanduser().resolve()
+
+
 def get_codebase_indexer() -> Any:
-    """Return the process-wide :class:`CodebaseIndexer`, or ``None``."""
-    return _CODEBASE_INDEXER
+    """Return the codebase indexer for the default root, or ``None``."""
+    return _CODEBASE_INDEXERS.get(str(_default_codebase_root()), _CODEBASE_INDEXER)
 
 
 def set_codebase_indexer(indexer: Any) -> None:
-    """Replace the cached codebase indexer (test seam)."""
+    """Replace the cached codebase indexer for the default root (test seam)."""
     global _CODEBASE_INDEXER
     _CODEBASE_INDEXER = indexer
+    if indexer is not None:
+        _CODEBASE_INDEXERS[str(_default_codebase_root())] = indexer
+
+
+def ensure_codebase_indexer(root: Path | None = None) -> Any:
+    """Build the :class:`CodebaseIndexer` for *root*, cache it, return it.
+
+    v1.3.0: indexers are cached per resolved root so project-rooted
+    sessions build and search *their* tree. The default root's indexer
+    keeps the legacy ``root_key=''`` storage shard (existing chunks and
+    incremental state stay valid); any other root shards under its own
+    resolved path. Returns ``None`` when storage is unavailable — callers
+    treat that as "codebase search disabled", same as before.
+    """
+    global _CODEBASE_INDEXER
+    workspace = (
+        Path(root).expanduser().resolve()
+        if root is not None
+        else _default_codebase_root()
+    )
+    key = str(workspace)
+    is_default = key == str(_default_codebase_root())
+    cached = _CODEBASE_INDEXERS.get(key)
+    if cached is not None:
+        # Cache hit: refresh the legacy single-slot view as well — the
+        # slot can lag behind the bucket dict when only it was cleared
+        # (test seams do this). Otherwise get_codebase_indexer() would
+        # wrongly report the default root as unavailable. Found by a
+        # full-suite run where earlier tests left buckets behind.
+        if is_default:
+            _CODEBASE_INDEXER = cached
+        return cached
+
+    db = get_db()
+    if db is None:
+        logger.warning("storage unavailable; codebase indexer disabled")
+        return None
+    from .codebase import CodebaseIndexer, CodebaseStore
+
+    root_key = "" if is_default else key
+    indexer = CodebaseIndexer(workspace, CodebaseStore(db), root_key=root_key)
+    _CODEBASE_INDEXERS[key] = indexer
+    if is_default:
+        # Keep the legacy single-slot view in sync for the default root.
+        _CODEBASE_INDEXER = indexer
+    logger.info("codebase indexer initialised (workspace=%s)", workspace)
+    return indexer
 
 
 def _schedule_codebase_index_build(*, delay_s: float = 5.0) -> None:
@@ -1352,4 +1427,5 @@ __all__ = [
     "set_mcp_registry",
     "get_codebase_indexer",
     "set_codebase_indexer",
+    "ensure_codebase_indexer",
 ]

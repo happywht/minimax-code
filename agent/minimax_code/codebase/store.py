@@ -1,4 +1,11 @@
-"""Persistent storage for codebase chunks + FTS5 + vector search."""
+"""Persistent storage for codebase chunks + FTS5 + vector search.
+
+v1.3.0 — every chunk carries a ``root`` dimension (the resolved
+workspace root it was indexed from, ``""`` for the legacy process-wide
+default). All read/write methods accept a ``root`` keyword so callers
+stay inside their own shard; ``None`` on the aggregate helpers means
+"no root filter" (whole-index views for status pages and exports).
+"""
 
 from __future__ import annotations
 
@@ -34,19 +41,22 @@ class CodebaseStore:
         content: str,
         metadata: dict[str, Any] | None = None,
         chunk_id: str | None = None,
+        root: str = "",
     ) -> dict[str, Any]:
         """Insert or replace a single chunk and return the hydrated row."""
         cid = chunk_id or str(uuid.uuid4())
         now = now_iso()
         sql = (
             "INSERT OR REPLACE INTO codebase_chunks "
-            "(id, file_path, start_line, end_line, content, metadata, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            "(id, file_path, start_line, end_line, content, metadata, "
+            "created_at, updated_at, root) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         async with self._db.transaction() as conn:
             await conn.execute(
                 sql,
-                (cid, file_path, start_line, end_line, content, dumps_json(metadata), now, now),
+                (cid, file_path, start_line, end_line, content,
+                 dumps_json(metadata), now, now, root),
             )
         row = await self._db.fetchone(
             "SELECT rowid, * FROM codebase_chunks WHERE id = ?",
@@ -54,15 +64,15 @@ class CodebaseStore:
         )
         return self._hydrate(row)
 
-    async def delete_chunks_for_file(self, file_path: str) -> int:
-        """Remove all chunks + embeddings belonging to ``file_path``.
+    async def delete_chunks_for_file(self, file_path: str, *, root: str = "") -> int:
+        """Remove all chunks + embeddings belonging to ``file_path`` in *root*.
 
         Returns the number of chunks deleted.
         """
         async with self._db.transaction() as conn:
             rows = await conn.execute(
-                "SELECT rowid FROM codebase_chunks WHERE file_path = ?",
-                (file_path,),
+                "SELECT rowid FROM codebase_chunks WHERE file_path = ? AND root = ?",
+                (file_path, root),
             )
             rowids = [r["rowid"] for r in await rows.fetchall()]
             for rid in rowids:
@@ -71,20 +81,43 @@ class CodebaseStore:
                     (rid,),
                 )
             cur = await conn.execute(
-                "DELETE FROM codebase_chunks WHERE file_path = ?",
-                (file_path,),
+                "DELETE FROM codebase_chunks WHERE file_path = ? AND root = ?",
+                (file_path, root),
             )
             return cur.rowcount
 
-    async def clear(self) -> int:
-        """Remove all chunks, embeddings, and file metadata.
+    async def clear(self, root: str | None = None) -> int:
+        """Remove chunks, embeddings, and file metadata.
 
+        ``root=None`` wipes the whole index (legacy behaviour, used by
+        full exports); a string — including the default shard ``""`` —
+        removes only that root's data, leaving other shards untouched.
         Returns the number of chunks deleted.
         """
         async with self._db.transaction() as conn:
-            await conn.execute("DELETE FROM codebase_chunks_vec")
-            await conn.execute("DELETE FROM codebase_file_meta")
-            cur = await conn.execute("DELETE FROM codebase_chunks")
+            if root is None:
+                await conn.execute("DELETE FROM codebase_chunks_vec")
+                await conn.execute("DELETE FROM codebase_file_meta")
+                cur = await conn.execute("DELETE FROM codebase_chunks")
+                return cur.rowcount
+            rows = await conn.execute(
+                "SELECT rowid FROM codebase_chunks WHERE root = ?",
+                (root,),
+            )
+            rowids = [r["rowid"] for r in await rows.fetchall()]
+            for rid in rowids:
+                await conn.execute(
+                    "DELETE FROM codebase_chunks_vec WHERE rowid = ?",
+                    (rid,),
+                )
+            await conn.execute(
+                "DELETE FROM codebase_file_meta WHERE root = ?",
+                (root,),
+            )
+            cur = await conn.execute(
+                "DELETE FROM codebase_chunks WHERE root = ?",
+                (root,),
+            )
             return cur.rowcount
 
     async def search(
@@ -94,11 +127,12 @@ class CodebaseStore:
         file_pattern: str | None = None,
         limit: int = 20,
         offset: int = 0,
+        root: str = "",
     ) -> list[dict[str, Any]]:
         """Keyword search over content and file paths using FTS5.
 
         Results are ranked by the FTS5 ``rank`` helper and joined back to
-        the main table for full metadata.
+        the main table for full metadata, filtered to *root*'s shard.
         """
         if not query or not query.strip():
             return []
@@ -112,32 +146,43 @@ class CodebaseStore:
             "SELECT c.rowid, c.*, rank "
             "FROM codebase_chunks_fts fts "
             "JOIN codebase_chunks c ON c.rowid = fts.rowid "
-            f"WHERE codebase_chunks_fts MATCH ? {file_where} "
+            f"WHERE codebase_chunks_fts MATCH ? AND c.root = ? {file_where} "
             "ORDER BY rank DESC "
             "LIMIT ? OFFSET ?"
         )
-        params = [query, *params, limit, offset]
+        params = [query, root, *params, limit, offset]
         rows = await self._db.fetchall(sql, tuple(params))
         return [self._hydrate(r) for r in rows]
 
-    async def get_file_chunks(self, file_path: str) -> list[dict[str, Any]]:
-        """Return all chunks for a single file, ordered by start line."""
+    async def get_file_chunks(
+        self, file_path: str, *, root: str = ""
+    ) -> list[dict[str, Any]]:
+        """Return all chunks for a single file in *root*, ordered by start line."""
         rows = await self._db.fetchall(
-            "SELECT * FROM codebase_chunks WHERE file_path = ? ORDER BY start_line",
-            (file_path,),
+            "SELECT * FROM codebase_chunks WHERE file_path = ? AND root = ? "
+            "ORDER BY start_line",
+            (file_path, root),
         )
         return [self._hydrate(r) for r in rows]
 
-    async def get_stats(self) -> dict[str, Any]:
-        """Return aggregate indexing statistics."""
+    async def get_stats(self, *, root: str | None = None) -> dict[str, Any]:
+        """Return aggregate indexing statistics.
+
+        ``root=None`` reports across every shard; a string reports one.
+        """
+        where = "WHERE root = ?" if root is not None else ""
+        params: tuple[Any, ...] = (root,) if root is not None else ()
         total_row = await self._db.fetchone(
-            "SELECT COUNT(*) AS total FROM codebase_chunks",
+            f"SELECT COUNT(*) AS total FROM codebase_chunks {where}",
+            params,
         )
         files_row = await self._db.fetchone(
-            "SELECT COUNT(DISTINCT file_path) AS files FROM codebase_chunks",
+            f"SELECT COUNT(DISTINCT file_path) AS files FROM codebase_chunks {where}",
+            params,
         )
         latest_row = await self._db.fetchone(
-            "SELECT MAX(updated_at) AS latest FROM codebase_chunks",
+            f"SELECT MAX(updated_at) AS latest FROM codebase_chunks {where}",
+            params,
         )
         return {
             "total_chunks": total_row["total"] if total_row else 0,
@@ -179,11 +224,17 @@ class CodebaseStore:
         query_embedding: list[float],
         *,
         limit: int = 20,
+        root: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return the closest chunks by vector distance.
 
         Results include the chunk rowid and the raw distance value
-        (smaller is better).
+        (smaller is better). When *root* is given, candidates whose
+        rowid belongs to another shard are filtered out afterwards (the
+        vec0 table has no root column; rowids are joined back to
+        ``codebase_chunks``), so a post-filter may yield fewer than
+        ``limit`` rows — callers use these for re-ranking, not as a
+        standalone result set.
         """
         if not _HAS_SQLITE_VEC or serialize_float32 is None:
             return []
@@ -198,20 +249,36 @@ class CodebaseStore:
             sql,
             (serialize_float32(query_embedding), limit),
         )
-        return [{"rowid": r["rowid"], "distance": r["distance"]} for r in rows]
+        results = [{"rowid": r["rowid"], "distance": r["distance"]} for r in rows]
+        if root is None or not results:
+            return results
+        rowids = [r["rowid"] for r in results]
+        placeholders = ",".join("?" * len(rowids))
+        root_rows = await self._db.fetchall(
+            f"SELECT rowid FROM codebase_chunks "
+            f"WHERE rowid IN ({placeholders}) AND root = ?",
+            (*rowids, root),
+        )
+        allowed = {r["rowid"] for r in root_rows}
+        return [r for r in results if r["rowid"] in allowed]
 
     async def clear_embeddings(self) -> None:
         """Remove all stored embeddings."""
         async with self._db.transaction() as conn:
             await conn.execute("DELETE FROM codebase_chunks_vec")
 
-    async def get_chunk(self, chunk_id: str) -> dict[str, Any] | None:
-        """Fetch a single chunk by id."""
+    async def get_chunk(
+        self, chunk_id: str, *, root: str | None = None
+    ) -> dict[str, Any] | None:
+        """Fetch a single chunk by id (optionally constrained to *root*)."""
         row = await self._db.fetchone(
             "SELECT rowid, * FROM codebase_chunks WHERE id = ?",
             (chunk_id,),
         )
-        return self._hydrate(row)
+        hydrated = self._hydrate(row)
+        if hydrated is not None and root is not None and hydrated.get("root") != root:
+            return None
+        return hydrated
 
     async def get_chunk_by_rowid(self, rowid: int) -> dict[str, Any] | None:
         """Fetch a single chunk by SQLite rowid."""
@@ -221,11 +288,19 @@ class CodebaseStore:
         )
         return self._hydrate(row)
 
-    async def list_files(self, *, limit: int = 1000) -> list[str]:
-        """Return distinct indexed file paths, most recently updated first."""
+    async def list_files(
+        self, *, limit: int = 1000, root: str | None = None
+    ) -> list[str]:
+        """Return distinct indexed file paths, most recently updated first.
+
+        ``root=None`` lists across every shard; a string lists one.
+        """
+        where = "WHERE root = ?" if root is not None else ""
+        params: tuple[Any, ...] = (root,) if root is not None else ()
         rows = await self._db.fetchall(
-            "SELECT DISTINCT file_path FROM codebase_chunks ORDER BY updated_at DESC LIMIT ?",
-            (limit,),
+            f"SELECT DISTINCT file_path FROM codebase_chunks {where} "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (*params, limit),
         )
         return [r["file_path"] for r in rows]
 
@@ -233,10 +308,14 @@ class CodebaseStore:
     # File-level metadata for incremental indexing
     # ------------------------------------------------------------------
 
-    async def get_file_index_state(self) -> dict[str, dict[str, Any]]:
-        """Return the last-known mtime/size for every indexed file."""
+    async def get_file_index_state(
+        self, *, root: str = ""
+    ) -> dict[str, dict[str, Any]]:
+        """Return the last-known mtime/size for every indexed file in *root*."""
         rows = await self._db.fetchall(
-            "SELECT file_path, mtime, size, indexed_at FROM codebase_file_meta",
+            "SELECT file_path, mtime, size, indexed_at FROM codebase_file_meta "
+            "WHERE root = ?",
+            (root,),
         )
         return {
             r["file_path"]: {
@@ -253,29 +332,36 @@ class CodebaseStore:
         *,
         mtime: float,
         size: int,
+        root: str = "",
     ) -> None:
-        """Upsert the index state for a single file."""
+        """Upsert the index state for a single file within *root*."""
         now = now_iso()
         async with self._db.transaction() as conn:
             await conn.execute(
                 (
                     "INSERT OR REPLACE INTO codebase_file_meta "
-                    "(file_path, mtime, size, indexed_at) VALUES (?, ?, ?, ?)"
+                    "(root, file_path, mtime, size, indexed_at) VALUES (?, ?, ?, ?, ?)"
                 ),
-                (file_path, mtime, size, now),
+                (root, file_path, mtime, size, now),
             )
 
-    async def delete_file_index_state(self, file_path: str) -> int:
-        """Remove the index state for a deleted file."""
+    async def delete_file_index_state(self, file_path: str, *, root: str = "") -> int:
+        """Remove the index state for a deleted file within *root*."""
         async with self._db.transaction() as conn:
             cur = await conn.execute(
-                "DELETE FROM codebase_file_meta WHERE file_path = ?",
-                (file_path,),
+                "DELETE FROM codebase_file_meta WHERE file_path = ? AND root = ?",
+                (file_path, root),
             )
             return cur.rowcount
 
-    async def clear_file_index_state(self) -> int:
-        """Remove all file-level index state."""
+    async def clear_file_index_state(self, root: str | None = None) -> int:
+        """Remove file-level index state (all roots, or one shard)."""
         async with self._db.transaction() as conn:
-            cur = await conn.execute("DELETE FROM codebase_file_meta")
+            if root is None:
+                cur = await conn.execute("DELETE FROM codebase_file_meta")
+            else:
+                cur = await conn.execute(
+                    "DELETE FROM codebase_file_meta WHERE root = ?",
+                    (root,),
+                )
             return cur.rowcount

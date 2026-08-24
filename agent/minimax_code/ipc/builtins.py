@@ -511,10 +511,16 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     from ..agent.tools.codebase_navigate import NavigateCodebaseTool
     from ..agent.tools.codebase_search import SearchCodebaseTool
     from ..agent.tools.codebase_summarize import SummarizeCodebaseTool
-    from ..app import get_codebase_indexer, get_sessions_dao, init_runtime
+    from ..app import (
+        ensure_codebase_indexer,
+        get_codebase_indexer,
+        get_sessions_dao,
+        init_runtime,
+    )
     from ..codebase import CodebaseRetriever
     from ..models import context_window_for
     from ..storage.dao.messages import MessagesDAO
+    from ..workspace_ctx import current_root
 
     # 1. Ensure the sessions row exists (FK target for messages).
     #    Best-effort: if the sessions DAO is unavailable the
@@ -722,16 +728,26 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
 
     # Clone the default tool registry and inject the codebase RAG tool
     # when a workspace indexer is available (v0.11.0 Milestone 2).
+    # v1.3.0: the indexer follows the run's workspace root (published by
+    # the caller via workspace_ctx) so a project-rooted session searches
+    # its own shard. Fail-open to the default root either way.
     registry = ToolRegistry()
     for tool in get_default_registry().list():
         registry.register(tool)
-    indexer = get_codebase_indexer()
+    try:
+        indexer = ensure_codebase_indexer(current_root())
+    except Exception:
+        logger.debug("per-root codebase indexer unavailable", exc_info=True)
+        indexer = None
+    if indexer is None:
+        indexer = get_codebase_indexer()
     if indexer is not None:
         try:
             retriever = CodebaseRetriever(
                 indexer._store,
                 indexer=indexer,
                 embedder=indexer.embedder,
+                root=indexer.root_key,
             )
             registry.register(SearchCodebaseTool(retriever))
             registry.register(SummarizeCodebaseTool(retriever))

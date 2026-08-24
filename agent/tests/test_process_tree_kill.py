@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -30,7 +29,6 @@ from minimax_code.agent.tools.terminal import (
     _child_spawn_kwargs,
     _signal_process_tree,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

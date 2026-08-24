@@ -53,11 +53,15 @@ class CodebaseRetriever:
         embedder: CodebaseEmbedder | None = None,
         *,
         vector_weight: float = 0.3,
+        root: str = "",
     ) -> None:
         self._store = store
         self._indexer = indexer
         self._embedder = embedder or get_default_embedder()
         self._vector_weight = max(0.0, min(1.0, vector_weight))
+        # v1.3.0: the storage shard this retriever reads from — must match
+        # the indexer's root_key or queries silently miss every chunk.
+        self._root = root
 
     async def search(
         self,
@@ -78,6 +82,7 @@ class CodebaseRetriever:
             file_pattern=file_pattern,
             limit=limit * 2,
             offset=0,
+            root=self._root,
         )
 
         # 2. Vector results (if the extension is available).
@@ -87,6 +92,7 @@ class CodebaseRetriever:
             vector_rows = await self._store.search_vectors(
                 query_embedding,
                 limit=limit * 2,
+                root=self._root,
             )
         except Exception:  # noqa: BLE001
             logger.debug("vector search unavailable for query %r", query, exc_info=True)
@@ -162,12 +168,12 @@ class CodebaseRetriever:
 
     async def summarize(self, path: str) -> dict[str, Any]:
         """Return a structured summary for a file or directory prefix."""
-        chunks = await self._store.get_file_chunks(path)
+        chunks = await self._store.get_file_chunks(path, root=self._root)
         if chunks:
             return self._summarize_file(path, chunks[0])
 
         # Directory prefix: gather files whose path starts with the prefix.
-        rows = await self._store.list_files(limit=1000)
+        rows = await self._store.list_files(limit=1000, root=self._root)
         matching = [f for f in rows if f.startswith(path)]
         if not matching:
             return SummaryResult(
@@ -182,7 +188,7 @@ class CodebaseRetriever:
         total_lines = 0
         symbols: list[dict[str, Any]] = []
         for file_path in matching[:20]:
-            file_chunks = await self._store.get_file_chunks(file_path)
+            file_chunks = await self._store.get_file_chunks(file_path, root=self._root)
             if file_chunks:
                 meta = file_chunks[0].get("metadata") or {}
                 total_lines += meta.get("total_lines", 0)
