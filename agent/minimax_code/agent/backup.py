@@ -37,8 +37,12 @@ class BackupManager:
         if workspace is not None:
             self._workspace = workspace
         else:
-            env = os.environ.get("MINIMAX_CODE_WORKSPACE")
-            self._workspace = Path(env) if env else Path.cwd()
+            # Session-scoped root first (per-project workspace); env/CWD
+            # fallback keeps the legacy process-wide behaviour.
+            from ..workspace_ctx import current_root, env_or_cwd_root
+
+            root = current_root()
+            self._workspace = root if root is not None else env_or_cwd_root()
 
     @property
     def backup_root(self) -> Path:

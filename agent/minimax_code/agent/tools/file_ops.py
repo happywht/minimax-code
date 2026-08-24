@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from ...workspace_ctx import current_root, env_or_cwd_root
 from .base import Tool, ToolResult, register_tool
 
 # ---------------------------------------------------------------------------
@@ -46,12 +47,16 @@ _SENSITIVE_DIR_NAMES = {
 def _default_workspace() -> Path:
     """Resolve the workspace root the tools are allowed to touch.
 
-    Reads ``MINIMAX_CODE_WORKSPACE`` if set; otherwise falls back to
-    the current working directory. The path is resolved to an
-    absolute, symlink-free form before being used in comparisons.
+    Session-scoped root first (per-project workspace, published on the
+    ContextVar by ``agent.send_message``); otherwise falls back to
+    ``MINIMAX_CODE_WORKSPACE`` or the current working directory. The
+    path is resolved to an absolute, symlink-free form before being
+    used in comparisons.
     """
-    raw = os.environ.get("MINIMAX_CODE_WORKSPACE") or os.getcwd()
-    return Path(raw).expanduser().resolve()
+    root = current_root()
+    if root is not None:
+        return root
+    return env_or_cwd_root()
 
 
 def _is_sensitive(p: Path) -> bool:

@@ -22,6 +22,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from ....workspace_ctx import current_root, env_or_cwd_root
 from ...tools.base import Tool, ToolResult
 from ...tools.file_ops import PathSecurityError, safe_resolve
 from ..runtime import SkillToolProvider
@@ -104,7 +105,8 @@ class ASTRenameTool(Tool):
             except PathSecurityError as exc:
                 return ToolResult.fail(str(exc))
         else:
-            target = Path(os.environ.get("MINIMAX_CODE_WORKSPACE", os.getcwd()))
+            root = current_root()
+            target = root if root is not None else env_or_cwd_root()
 
         if not target.exists():
             return ToolResult.fail(f"path not found: {raw_path or target}")

@@ -40,7 +40,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .base import Tool, ToolResult, register_tool
-from .file_ops import PathSecurityError, safe_resolve
+from .file_ops import PathSecurityError, _default_workspace, safe_resolve
 
 # ---------------------------------------------------------------------------
 # Resource limits
@@ -368,7 +368,7 @@ class ExecCommandTool(Tool):
 
         cwd_arg = kwargs.get("cwd")
         try:
-            cwd = safe_resolve(cwd_arg) if cwd_arg else None
+            cwd = safe_resolve(cwd_arg) if cwd_arg else _default_workspace()
         except PathSecurityError as exc:
             return ToolResult.fail(str(exc))
 
