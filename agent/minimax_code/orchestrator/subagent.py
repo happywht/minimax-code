@@ -40,6 +40,8 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from collections.abc import Awaitable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -67,6 +69,89 @@ def subagent_wall_clock_s() -> float:
         return float(raw)
     except ValueError:
         return 600.0
+
+
+# ---------------------------------------------------------------------------
+# Parent-session context (v1.4.0)
+# ---------------------------------------------------------------------------
+#
+# Tool-path sub-agents run inside ``spawn_subagent.run()`` with no
+# idea which chat session spawned them. The run needs the parent
+# session id for two things: the ``agent_runs.session_id`` FK (the
+# timeline row lives under the parent session) and the
+# ``agent.subagent_progress`` routing key (the frontend filters by
+# ``parent_session_id``). ``builtins.send_message`` publishes the
+# current session at the same layer as the v1.3.0 workspace root;
+# asyncio tasks inherit the ContextVar, so sub-agents spawned via
+# ``create_task`` (teams, background runs) see it too.
+
+_current_parent_session: ContextVar[str | None] = ContextVar(
+    "minimax_parent_session", default=None
+)
+
+
+def current_parent_session() -> str | None:
+    """Return the chat session id that spawned this sub-agent, if any."""
+    return _current_parent_session.get()
+
+
+def set_parent_session(session_id: str | None) -> Any:
+    """Publish ``session_id`` as the spawning session; returns a reset token.
+
+    Token-based (same shape as ``workspace_ctx.set_current_root``):
+    pass the token to :func:`reset_parent_session` in a ``finally``
+    to restore the previous value. The reset never raises.
+    """
+    return _current_parent_session.set(session_id)
+
+
+def reset_parent_session(token: Any) -> None:
+    """Restore the parent-session context to its pre-``set`` value."""
+    try:
+        _current_parent_session.reset(token)
+    except Exception:  # pragma: no cover — defensive (bad token)
+        logger.debug("parent-session reset failed", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Event routes (v1.4.0)
+# ---------------------------------------------------------------------------
+#
+# The tool path (``spawn_subagent``) has no access to ``ctx.emit`` —
+# ``app.py`` doesn't hold the IPCServer singleton and the fs_bus is
+# in-memory only. Same-shaped problem (and solution) as
+# ``core._ASK_USER_ROUTES``: ``builtins.send_message`` registers an
+# emit callable keyed by session id while a run is in flight; the
+# tool looks it up and skips silently (fail-open) when absent (stdio
+# transport, CLI, tests without routes).
+
+Emit = Awaitable[None]
+
+_SUBAGENT_EVENT_ROUTES: dict[str, Any] = {}
+
+
+def register_subagent_emit(session_id: str, emit: Any) -> None:
+    """Route ``agent.subagent_progress`` events for ``session_id`` to ``emit``.
+
+    ``emit`` is an ``async (event, payload) -> None`` callable —
+    typically a thin wrapper over ``ctx.emit``.
+    """
+    _SUBAGENT_EVENT_ROUTES[session_id] = emit
+
+
+def pop_subagent_emit(session_id: str) -> Any:
+    """Drop the route for ``session_id``; returns the callable or ``None``."""
+    return _SUBAGENT_EVENT_ROUTES.pop(session_id, None)
+
+
+async def resolve_subagent_emit(session_id: str | None) -> Any:
+    """Resolve the emit callable for ``session_id`` (``None`` when absent).
+
+    Callers treat ``None`` as "no sink configured" and skip the event.
+    """
+    if not session_id:
+        return None
+    return _SUBAGENT_EVENT_ROUTES.get(session_id)
 
 
 # ---------------------------------------------------------------------------
@@ -433,8 +518,14 @@ __all__ = [
     "SubAgentHandle",
     "SubAgentRuntime",
     "SubAgentConfigError",
+    "current_parent_session",
     "get_subagent_runtime",
     "make_session_id",
+    "pop_subagent_emit",
+    "register_subagent_emit",
+    "reset_parent_session",
+    "resolve_subagent_emit",
+    "set_parent_session",
     "set_subagent_runtime",
     "subagent_wall_clock_s",
 ]

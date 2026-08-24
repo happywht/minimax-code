@@ -2,9 +2,61 @@
 
 from __future__ import annotations
 
+import logging
+import uuid
 from typing import Any
 
 from .base import Tool, ToolResult, register_tool
+
+logger = logging.getLogger(__name__)
+
+
+def _subagent_event(
+    *,
+    run_id: str,
+    agent_id: str | None,
+    parent_session_id: str | None,
+    status: str,
+    progress: float,
+    summary: str,
+    text: str | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Build an ``agent.subagent_progress`` payload (wire shape parity).
+
+    Mirrors ``handlers_agents._emit_subagent_progress`` so the frontend
+    store applies the same projection to both the IPC-path and the
+    tool-path events. ``parent_session_id`` is mandatory for routing —
+    ``runsForSession`` filters on it.
+    """
+    payload: dict[str, Any] = {
+        "run_id": run_id,
+        "agent_id": agent_id or "",
+        "parent_session_id": parent_session_id,
+        "context_message_id": None,
+        "status": status,
+        "progress": max(0.0, min(1.0, float(progress))),
+        "summary": summary,
+    }
+    if text is not None:
+        payload["text"] = text
+    if error is not None:
+        payload["error"] = error
+    return payload
+
+
+async def _emit_safe(emit: Any, event: dict[str, Any]) -> None:
+    """Push one event through the routed emit callable; fail-open."""
+    if emit is None:
+        return
+    try:
+        import inspect
+
+        result = emit("agent.subagent_progress", event)
+        if inspect.isawaitable(result):
+            await result
+    except Exception:  # pragma: no cover — emit must never break the run
+        logger.debug("subagent_progress emit failed", exc_info=True)
 
 
 def _agent_summary(row: dict[str, Any]) -> dict[str, Any]:
@@ -29,6 +81,30 @@ async def _agent_dao() -> Any:
     if db is None:
         raise RuntimeError("storage layer is not available; sub-agent registry disabled")
     return AgentDAO(db)
+
+
+async def _ensure_session_row(session_id: str, title: str) -> None:
+    """Create a placeholder session row when ``session_id`` is synthetic.
+
+    ``agent_runs.session_id`` has a NOT-NULL FK to ``sessions``; the
+    tool path mints its own sub-session id (so sub-agent messages never
+    pollute the parent history), and that id needs a row before a run
+    can reference it. Mirrors ``TeamOrchestrator._ensure_session`` /
+    ``handlers_agents``'s helper. Fail-open: a storage hiccup must not
+    block the spawn (the run row is then skipped too).
+    """
+    try:
+        from ...app import get_sessions_dao, init_runtime
+
+        await init_runtime()
+        dao = get_sessions_dao()
+        if dao is None:
+            return
+        if await dao.get(session_id) is not None:
+            return
+        await dao.create(id=session_id, title=title, system_prompt="", model=None)
+    except Exception:  # pragma: no cover — defensive
+        logger.debug("ensure_session_row(%s) failed; continuing", session_id)
 
 
 @register_tool
@@ -124,7 +200,6 @@ class SpawnSubagentTool(Tool):
             SubAgentConfig,
             SubAgentRuntime,
             get_subagent_runtime,
-            make_session_id,
         )
 
         config = SubAgentConfig(
@@ -146,12 +221,147 @@ class SpawnSubagentTool(Tool):
         )
         runtime = get_subagent_runtime() or SubAgentRuntime()
         handle = runtime.build(config)
-        session_id = parent_session_id or make_session_id("subagent_tool")
-        result = await runtime.invoke(handle, session_id=session_id, request=prompt)
+
+        # ---------------------------------------------------------------
+        # v1.4.0 — lifecycle: run row + progress events + cancel channel.
+        #
+        # The sub-agent runs in its own synthetic session so its messages
+        # never pollute the parent chat history; the run row references
+        # that session (NOT-NULL FK) and carries the parent id in
+        # metadata for the timeline. Everything below is fail-open —
+        # a storage or emit failure degrades visibility, never the run.
+        # ---------------------------------------------------------------
+        from ...orchestrator.subagent import (
+            current_parent_session,
+            resolve_subagent_emit,
+        )
+        from ...orchestrator.subagent import (
+            make_session_id as _make_session_id,
+        )
+
+        run_id = f"run_{uuid.uuid4().hex[:12]}"
+        parent = parent_session_id or current_parent_session()
+        sub_session = _make_session_id("subagent")
+        emit = await resolve_subagent_emit(parent)
+
+        run_metadata: dict[str, Any] = {
+            "parent_session_id": parent,
+            "agent_name": row["name"],
+            "agent_id": row.get("id"),
+            "prompt": prompt,
+            "source": "tool",
+        }
+        run_dao: Any = None
+        try:
+            from ...app import get_db
+            from ...storage.dao.runs import AgentRunsDAO
+
+            db = get_db()
+            if db is not None:
+                run_dao = AgentRunsDAO(db)
+                await _ensure_session_row(
+                    sub_session, title=f"[subagent] {row['name']}"
+                )
+                await run_dao.create_run(
+                    id=run_id,
+                    session_id=sub_session,
+                    mode="subagent",
+                    status="running",
+                    title=f"[subagent] {row['name']}",
+                    metadata=run_metadata,
+                )
+        except Exception:
+            run_dao = None
+            logger.warning("subagent run row not persisted", exc_info=True)
+
+        # Register for IPC cancellation (agent.cancel_subagent) and
+        # process-wide shutdown sweeps. Imported lazily: builtins pulls
+        # in the whole agent stack, so a module-level import would loop.
+        try:
+            from ...ipc.builtins import _ACTIVE_RUNS
+
+            _ACTIVE_RUNS[run_id] = {"core": handle.core, "type": "subagent"}
+        except Exception:  # pragma: no cover — defensive
+            logger.debug("subagent run not registered for cancellation", exc_info=True)
+
+        try:
+            await _emit_safe(
+                emit,
+                _subagent_event(
+                    run_id=run_id,
+                    agent_id=row.get("id"),
+                    parent_session_id=parent,
+                    status="started",
+                    progress=0.05,
+                    summary=prompt[:80],
+                ),
+            )
+            result = await runtime.invoke(
+                handle, session_id=sub_session, request=prompt
+            )
+        except Exception as exc:
+            if run_dao is not None:
+                try:
+                    await run_dao.update_run_status(
+                        run_id, status="failed", error=str(exc), metadata=run_metadata
+                    )
+                except Exception:  # pragma: no cover — defensive
+                    logger.debug("subagent run failure not persisted", exc_info=True)
+            await _emit_safe(
+                emit,
+                _subagent_event(
+                    run_id=run_id,
+                    agent_id=row.get("id"),
+                    parent_session_id=parent,
+                    status="failed",
+                    progress=1.0,
+                    summary=str(exc)[:80],
+                    error=str(exc),
+                ),
+            )
+            raise
+        finally:
+            try:
+                from ...ipc.builtins import _ACTIVE_RUNS
+
+                _ACTIVE_RUNS.pop(run_id, None)
+            except Exception:  # pragma: no cover — defensive
+                pass
+
+        cancelled = bool(result.get("cancelled", False))
+        final_status = "cancelled" if cancelled else "completed"
+        completion_metadata = {
+            **run_metadata,
+            "iterations": result.get("iterations", 0),
+            "stub": bool(result.get("stub", True)),
+        }
+        if run_dao is not None:
+            try:
+                await run_dao.update_run_status(
+                    run_id, status=final_status, metadata=completion_metadata
+                )
+            except Exception:  # pragma: no cover — defensive
+                logger.debug("subagent run completion not persisted", exc_info=True)
+
+        summary_text = str(result.get("text", ""))
+        await _emit_safe(
+            emit,
+            _subagent_event(
+                run_id=run_id,
+                agent_id=row.get("id"),
+                parent_session_id=parent,
+                status="completed" if not cancelled else "cancelled",
+                progress=1.0,
+                summary=summary_text[:80] or "done",
+                text=summary_text or None,
+            ),
+        )
         return ToolResult.ok(
             {
                 "agent": row["name"],
-                "session_id": session_id,
+                "run_id": run_id,
+                "session_id": sub_session,
+                "parent_session_id": parent,
                 "text": result.get("text", ""),
                 "iterations": result.get("iterations", 0),
                 "tool_calls": result.get("tool_calls", []),

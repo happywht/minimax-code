@@ -15,7 +15,7 @@ from ._base import (
     row_to_dict,
 )
 
-_VALID_RUN_MODES = frozenset({"chat", "plan", "execute", "team"})
+_VALID_RUN_MODES = frozenset({"chat", "plan", "execute", "team", "subagent"})
 _VALID_RUN_STATUS = frozenset(
     {"planning", "running", "awaiting_approval", "completed", "failed", "cancelled"}
 )
@@ -84,10 +84,13 @@ class AgentRunsDAO:
         *,
         session_id: str | None = None,
         status: str | None = None,
+        mode: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
         order_by: str | None = None,
     ) -> list[dict[str, Any]]:
+        if mode is not None and mode not in _VALID_RUN_MODES:
+            raise ValueError(f"mode must be one of {sorted(_VALID_RUN_MODES)}")
         where: list[str] = []
         params: list[Any] = []
         if session_id is not None:
@@ -96,6 +99,9 @@ class AgentRunsDAO:
         if status is not None:
             where.append("status = ?")
             params.append(status)
+        if mode is not None:
+            where.append("mode = ?")
+            params.append(mode)
         where_sql = "WHERE " + " AND ".join(where) if where else ""
         sql = (
             f"SELECT * FROM agent_runs {where_sql} "

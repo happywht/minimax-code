@@ -583,6 +583,27 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     except Exception:  # pragma: no cover — defensive
         logger.exception("workspace root resolution failed; using process default")
 
+    # 2.6. v1.4.0 — publish this session as the *parent* for sub-agents
+    #     spawned during the run, and route their ``agent.subagent_progress``
+    #     events back through this connection. The tool path
+    #     (``spawn_subagent``) has no other way to reach ``ctx.emit``;
+    #     without the route the tool degrades to silent (fail-open).
+    _parent_token = None
+    try:
+        from ..orchestrator.subagent import (
+            register_subagent_emit,
+            set_parent_session,
+        )
+
+        _parent_token = set_parent_session(session_id)
+        register_subagent_emit(
+            session_id,
+            lambda event, payload: ctx.emit(event, payload),
+        )
+    except Exception:  # pragma: no cover — defensive
+        _parent_token = None
+        logger.debug("subagent parent-session publish failed", exc_info=True)
+
     async def _history(sid: str) -> list[dict[str, Any]]:
         try:
             rows = await msg_dao.list_for_session(sid, order_by="created_at ASC")
@@ -990,6 +1011,21 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         return
     finally:
         _ACTIVE_RUNS.pop(session_id, None)
+        # v1.4.0: unpublish the parent-session context and drop this
+        # run's event route so a later run with the same session id
+        # starts from a clean slate (same layer as the root reset).
+        if _parent_token is not None:
+            try:
+                from ..orchestrator.subagent import (
+                    pop_subagent_emit,
+                    reset_parent_session,
+                )
+
+                pop_subagent_emit(session_id)
+                reset_parent_session(_parent_token)
+            except Exception:  # pragma: no cover — defensive
+                logger.debug("subagent parent-session unpublish failed", exc_info=True)
+            _parent_token = None
         # v1.3.0: unpublish the session root. Placed here so both the
         # happy path and every error path inside the run reset it.
         if _root_token is not None:

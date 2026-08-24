@@ -39,11 +39,15 @@ def register_run_handlers(server: Any) -> None:
             dao = await _get_dao()
             session_id = params.get("session_id")
             status = params.get("status")
+            # v1.4.0: optional mode filter — 'subagent' surfaces tool-path
+            # sub-agent runs (see migration 028) without post-filtering.
+            mode = params.get("mode")
             limit = params.get("limit", 20)
             offset = params.get("offset", 0)
             runs = await dao.list_runs(
                 session_id=str(session_id) if session_id else None,
                 status=str(status) if status else None,
+                mode=str(mode) if mode else None,
                 limit=int(limit) if limit else 20,
                 offset=int(offset) if offset else 0,
                 order_by="created_at DESC",
