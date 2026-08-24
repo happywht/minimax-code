@@ -37,6 +37,11 @@ export function RunTimelinePanel({
   }, [init]);
 
   useEffect(() => {
+    // A different session is a fresh context: re-arm follow mode so the
+    // panel lands on the newest events instead of staying wherever the
+    // user happened to scroll in the previous session.
+    setIsFollowing(true);
+    setHasNewEvents(false);
     void loadForSession(currentSessionId);
   }, [currentSessionId, loadForSession]);
 
@@ -51,11 +56,11 @@ export function RunTimelinePanel({
   const [hasNewEvents, setHasNewEvents] = useState(false);
   const eventCount = pending.length + visibleRuns.reduce((total, run) => total + run.steps.length, 0);
 
-  const scrollToBottom = () => {
+  const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
     const el = scrollRef.current;
     if (!el) return;
     if (typeof el.scrollTo === "function") {
-      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      el.scrollTo({ top: el.scrollHeight, behavior });
     } else {
       el.scrollTop = el.scrollHeight;
     }
@@ -74,6 +79,18 @@ export function RunTimelinePanel({
     // the latest event should pull the panel down.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventCount]);
+
+  useEffect(() => {
+    // Session history replaced (initial load or session switch): jump to
+    // the latest events without animation. eventCount alone is not a
+    // reliable trigger here — two sessions can produce the same step
+    // count, which would leave the panel stranded mid-scroll.
+    if (loading || eventCount === 0) return;
+    if (isFollowing) {
+      scrollToBottom("auto");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
 
   const handleScroll = () => {
     const el = scrollRef.current;
@@ -172,7 +189,7 @@ export function RunTimelinePanel({
         <button
           type="button"
           data-testid="run-timeline-new-events"
-          onClick={scrollToBottom}
+          onClick={() => scrollToBottom()}
           className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full border border-minimax-border bg-minimax-panel/95 px-2.5 py-1 text-[11px] font-medium text-minimax-fg shadow-lg backdrop-blur transition-colors duration-200 hover:bg-minimax-border"
         >
           {strings.rightPanel.timeline.newEvents}

@@ -333,6 +333,92 @@ async def test_message_list_restores_tool_display_details(
     assert tool_rows[0]["tool_args"] == {"path": "app.py", "start": 1}
 
 
+@pytest.mark.asyncio
+async def test_message_list_returns_newest_window(
+    async_db: AsyncDatabase,
+    sessions_dao: SessionsDAO,
+    id_factory: Any,
+) -> None:
+    """``message.list`` returns the *newest* N messages, not the oldest.
+
+    Sessions longer than the default limit used to lose their latest
+    turns: ``ORDER BY created_at ASC LIMIT n`` fetched the first N rows
+    ever written, so the chat panel repopulated with the session's
+    opening messages instead of the current conversation. The wire list
+    stays ascending; only the window moves to the tail.
+    """
+    sid = id_factory("ses")
+    await sessions_dao.create(id=sid, title="long history")
+    mdao = MessagesDAO(async_db)
+    for i in range(120):
+        await mdao.create(
+            id=id_factory("msg"),
+            session_id=sid,
+            role="user" if i % 2 == 0 else "assistant",
+            content=f"msg-{i:03d}",
+            created_at=f"2026-01-01T00:{i // 60:02d}:{i % 60:02d}+00:00",
+        )
+
+    async def fake_init_runtime() -> object:
+        return object()
+
+    with (
+        patch("minimax_code.app.init_runtime", side_effect=fake_init_runtime),
+        patch("minimax_code.app.get_db", return_value=async_db),
+    ):
+        client = IPCClient()
+        reply = await client.request("message.list", {"session_id": sid})
+
+    texts = [m["text"] for m in reply["messages"]]
+    assert len(texts) == 100
+    assert texts[0] == "msg-020"
+    assert texts[-1] == "msg-119"
+
+
+@pytest.mark.asyncio
+async def test_message_list_before_pagination_walks_backwards_from_cursor(
+    async_db: AsyncDatabase,
+    sessions_dao: SessionsDAO,
+    id_factory: Any,
+) -> None:
+    """``before`` pagination returns the N rows closest to the cursor.
+
+    The window must walk backwards from the cursor (fetch DESC, reverse
+    to ASC on the wire), not jump to the session start.
+    """
+    sid = id_factory("ses")
+    await sessions_dao.create(id=sid, title="paged history")
+    mdao = MessagesDAO(async_db)
+    for i in range(90):
+        await mdao.create(
+            id=id_factory("msg"),
+            session_id=sid,
+            role="user",
+            content=f"msg-{i:03d}",
+            created_at=f"2026-01-01T00:{i // 60:02d}:{i % 60:02d}+00:00",
+        )
+
+    async def fake_init_runtime() -> object:
+        return object()
+
+    # msg-059 was written at 00:00:59; rows strictly before it are
+    # msg-000..msg-058, and the 30 closest to the cursor are msg-029..msg-058.
+    with (
+        patch("minimax_code.app.init_runtime", side_effect=fake_init_runtime),
+        patch("minimax_code.app.get_db", return_value=async_db),
+    ):
+        client = IPCClient()
+        reply = await client.request(
+            "message.list",
+            {"session_id": sid, "limit": 30, "before": "2026-01-01T00:00:59+00:00"},
+        )
+
+    texts = [m["text"] for m in reply["messages"]]
+    assert len(texts) == 30
+    assert texts[0] == "msg-029"
+    assert texts[-1] == "msg-058"
+
+
 # ---------------------------------------------------------------------------
 # Concurrency: archive / unarchive race
 # ---------------------------------------------------------------------------

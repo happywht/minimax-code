@@ -602,9 +602,10 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
     async def handle_message_list(params: Any, ctx: Context) -> None:
         """``message.list`` → ``{ messages: [...] }``.
 
-        Returns messages for a given session, ordered by ``created_at``.
-        The frontend calls this when switching sessions in the sidebar
-        to repopulate the chat panel with the conversation history.
+        Returns the newest messages for a given session; the wire list is
+        always ordered by ``created_at`` ascending. The frontend calls this
+        when switching sessions in the sidebar to repopulate the chat panel
+        with the conversation history.
         """
         try:
             check_params(params, expected_keys={"session_id"})
@@ -627,8 +628,15 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 return
             msg_dao = MessagesDAO(db)
             rows = await msg_dao.list_for_session(
-                session_id, limit=limit, before=before, order_by="created_at ASC"
+                session_id, limit=limit, before=before, order_by="created_at DESC"
             )
+            # Fetch newest-first, then restore the ascending wire order.
+            # ASC + LIMIT would return the *oldest* N rows, silently dropping
+            # the latest conversation once a session grows past `limit`
+            # messages; the same head-truncation applied to `before`
+            # pagination (it must return the rows closest to the cursor,
+            # not the ones at the session start).
+            rows.reverse()
             # Convert backend rows to the frontend Message shape.
             # Backend: {id, role, content, tool_calls, tool_call_id, metadata, created_at}
             # Frontend: {id, role, text, streaming, created_at, metadata, ...}
