@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-25
+
+### Added — Sub-Agent Lifecycle 专项（工具路径子 agent 完整生命周期）
+
+13 条使用反馈收敛的三大缺口独立排期做透：此前**工具路径**（主 agent 调 `spawn_subagent`）spawn 的子 agent 被 `tool_timeout=120s` 一刀切罩死（超 2 分钟必超时）、不落库（agent 重启后无迹可查）、不发事件（SubAgentPanel 完全不可见）、超时丢 partial、结果只活在 envelope 字符串里没有交接物。v1.4.0 三层递进修复，**前端 SubAgentPanel 零改动**复用显示（事件 wire 形状与 IPC 路径完全一致，必带 `parent_session_id`）。
+
+- **层 1 止血（超时豁免 + usage 冒泡）**：`Tool` 基类新增 `dispatch_timeout: float | None = None` 声明式豁免（None = 走 `config.tool_timeout`），core `_execute_tool_call` 按工具实例解析生效超时；`SpawnSubagentTool.run()` 开头实例级赋值 `subagent_wall_clock_s()`（env `MINIMAX_CODE_SUBAGENT_TIMEOUT_S`，默认 600s，动态读取）。`subagent.py` 的 `invoke` envelope 透传 `usage` / `cancelled` / `truncated`（此前拿在手边却丢弃）。
+- **层 2a 状态机（落库 + 事件可见）**：migration 028（`agent_runs.mode` CHECK 加宽 `'subagent'`，四步重建 + `_v28` 后缀全新索引名——021 RENAME 残留同名索引会让 `IF NOT EXISTS` 静默跳过随后被 DROP 连删，重建后表裸奔 SCAN）；DAO `_VALID_RUN_MODES` + `list_runs(mode=)` 过滤（`run.list` 收可选 `mode`）；每次 spawn 生成 `run_id` → 补 session 行（NOT-NULL FK）→ `create_run(mode='subagent')` → 注册 `_ACTIVE_RUNS`（IPC `agent.cancel_subagent` + 进程关停扫杀打通）→ 终态落库。事件路由：`_SUBAGENT_EVENT_ROUTES` 按 session 注册表（`builtins.send_message` 注册 / finally 清），工具路径 emit `agent.subagent_progress` 四段（started/completed/failed/cancelled）+ 实时桥接 core 回调（tool_call/tool_result），全链路 fail-open（emit 不可达 = 静默，绝不阻塞运行）。
+- **层 2b 异步化 + partial + 强引用**：`spawn_subagent(wait=False)` 后台运行（模块级 `_BACKGROUND_RUNS` 强引用 + done-callback reap，GC 不可回收、异常有日志）；新增 `check_subagent(run_id)`（不 await 探状态，task 消失后从库取件）+ `wait_subagent(run_id, timeout_s=120)`（shield 等待，超时**不杀** run）。墙钟 partial：`ensure_future` → `shield` → 超时 `core.cancel()` → `await` 协作收尾（run() 检查点返回已累积 text/tool_calls），envelope 带 `cancelled=True` + `partial=True`，落库 status='cancelled' + `metadata.partial`。
+- **层 3 artifact 交接协议**：每次 spawn 在 `<workspace_root>/.minimax/artifacts/<run_id>/` 锚定交接目录（root 取 `workspace_ctx.current_root()`，v1.3.0 天然 per-project；无 root = fail-open 跳过）：**BRIEF.md**（spawn 时写任务简报）+ **COMPLETION.md / REPORT.json**（子 agent 经注入的 `report_completion` 工具写结构化交接 {status, files, gaps, next_steps}）。`report_completion` 每次 spawn 经克隆 registry 注入（全局 registry 零污染）、allowlist 模式自动追加、子 agent system_prompt 拼协议段；**软强制**：收尾探测 COMPLETION.md，缺失 → envelope `reported=False` + 主 agent 侧警示（不失败）。新增 `read_artifact(run_id, rel_path?)`（containment 锚定该 run 目录，`..`/绝对路径越界拒绝）。
+- **工具面**：主 agent 新增 3 个工具（`check_subagent` / `wait_subagent` / `read_artifact`），子 agent 注入 1 个（`report_completion`，仅克隆 registry 可见）；`wait` 默认 true 存量 prompt/技能零破坏，异步是 opt-in 能力。
+
+### Fixed
+
+- migration 028 索引丢失隐患：版本后缀唯一索引名 + `sqlite_master` 索引存在性防回归断言（`test_index_audit` 全量红暴露的 RENAME 交互坑）。
+
+### 已知限制（本版不做）
+
+- 子 agent 面板 UI 不持久——agent 重启后事件态丢失（run 数据在 `agent_runs` 表可查，`check_subagent` 查库可恢复终态）。
+- stub（无 API key mock）路径的子 agent 永远 `reported=False`（mock 不调工具，警示语义正确但常驻）。
+
+### Added — 回归测试（48 个新测试，Python 侧；pytest 10366 / vitest 756 全绿）
+
+- `test_tool_dispatch_timeout.py`（层 1）、`test_subagent_lifecycle_runs.py`（migration 028 + 落库 + 事件路由 + cancel）、`test_subagent_async.py`（异步生命周期 + partial + GC 存活 + 实时事件，10 个）、`test_subagent_artifacts.py`（BRIEF/read_artifact/越界/report 注入与软强制，17 个）。
+
 ## [1.3.0] - 2026-08-24
 
 ### Added — Per-Project Workspace Root（每项目独立工作区根，严格隔离）

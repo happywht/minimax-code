@@ -206,7 +206,7 @@ on the next `readline() == ""`.
 | `agent.cancel`             | notify    | Cancel the current agent loop for a session.       |
 | `agent.continue_run`       | req/res   | v1.1.0 Resume the latest budget-truncated run: marks it `continued` in metadata, then re-enters `agent.send_message` with a fixed continuation prompt (params: `session_id`; errors `-32602` on bad params, `{"ok":false}` when storage is unavailable or the latest run is not truncated). |
 | `agent.answer_user`        | req/res   | v1.1.1 Answer a pending `ask_user` request (params: `request_id`, `answers` — a non-empty array position-aligned with the questions; each entry is a label string or a list of label strings). Resolves the future the suspended tool call awaits; `{"ok":false}` on unknown/expired ids. |
-| `run.list`                 | req/res   | List persisted agent runs for a session.           |
+| `run.list`                 | req/res   | List persisted agent runs for a session. v1.4.0 accepts an optional `mode` filter (`chat` / `plan` / `execute` / `team` / `subagent`) — `mode: "subagent"` returns runs spawned via the `spawn_subagent` tool path. |
 | `run.steps`                | req/res   | Load one run with its ordered timeline steps.      |
 | `patch.preview`            | req/res   | Return structured file/hunk preview for a git diff scope. **`project_id?`** |
 | `patch.apply_hunk`         | req/res   | Stage one working-tree hunk after validating the current diff. **`project_id?`** |
@@ -241,7 +241,7 @@ on the next `readline() == ""`.
 | `message.list` / `message.update` / `message.delete` | req/res | List messages in a session; update or delete a single message. |
 | `skill.list` / `skill.install` / `skill.uninstall` / `skill.enable` / `skill.disable` / `skill.invoke` | req/res | List, import, remove, configure, and invoke skills. |
 | `scheduler.*`              | req/res   | Reserved.                                          |
-| `agent.list` / `agent.spawn_subagent` | req/res | Sub-agent list and spawn. `agent.spawn_subagent` is keyed by `name` (`agents.name`); clients may also pass legacy `agent_id`, and the backend resolves by name first, then id. |
+| `agent.list` / `agent.spawn_subagent` | req/res | Sub-agent list and spawn. `agent.spawn_subagent` is keyed by `name` (`agents.name`); clients may also pass legacy `agent_id`, and the backend resolves by name first, then id. Since v1.4.0, sub-agents spawned through the `spawn_subagent` **tool path** also emit `agent.subagent_progress` events (same wire shape, always carrying `parent_session_id`) and persist to `agent_runs` with `mode='subagent'` — the SubAgentPanel picks them up with zero frontend changes. |
 | `mobile.*`                 | req/res   | Phase 2.                                            |
 | `permission.*`             | req/res   | Tool-call consent rules; ships `exec_*` → ask factory defaults in code (R18). See §6 for the full method table. |
 | `model.list` / `model.get_current` / `model.set_current` / `model.set_reasoning_effort` | req/res | Dynamic model list + current selection + reasoning-effort override. `model.list` entries may carry optional reasoning-effort meta (R58); the `model.list` and `model.get_current` responses echo the user's persisted `reasoning_effort` override (R61 read-back). |

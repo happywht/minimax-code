@@ -125,7 +125,12 @@ to call.
 | `exec_command` | Run a shell command with hard timeout. | `cmd` (list) | `cwd`, `env`, `timeout` (default 30s, cap 600s) |
 | `search_files` | Recursive text search (ripgrep fast path, pure-Python fallback). | `pattern` | `path`, `regex`, `file_pattern`, `case_sensitive`, `max_results` |
 | `list_subagents` | List enabled sub-agents that can receive delegated specialist work. | — | `include_disabled` |
-| `spawn_subagent` | Delegate a focused task to a named sub-agent and return its final result. | `agent_name`, `prompt` | `parent_session_id` |
+| `spawn_subagent` | Delegate a focused task to a named sub-agent and return its final result (persisted as an `agent_runs` row with `mode='subagent'`; exempt from the generic `tool_timeout` ceiling — the sub-agent wall clock `MINIMAX_CODE_SUBAGENT_TIMEOUT_S` governs, and a timeout returns the accumulated partial). | `agent_name`, `prompt` | `parent_session_id`, `wait` (default true; false = background, collect via check/wait) |
+| `check_subagent` | Poll a background run (`wait=false`) without blocking: `running` while in flight, or the final outcome once finished (read from the persisted run row after the task is reaped). | `run_id` | — |
+| `wait_subagent` | Await a background run's completion (shielded — a timeout never kills the run; the response says `running` and the call repeats). | `run_id` | `timeout_s` (default 120) |
+| `read_artifact` | Read a file from a sub-agent run's artifact directory (`<workspace_root>/.minimax/artifacts/<run_id>/`); containment-checked against that run's directory, traversal rejected. | `run_id` | `rel_path` (default `BRIEF.md`) |
+
+**`report_completion` — injected tool (not in the main registry).** Every sub-agent spawned via `spawn_subagent` gets a per-run `report_completion` tool injected into a *cloned* tool registry (the global registry is never touched — the tool binds to the run id). At spawn time the tool name is also appended to `tool_allowlist` when one is set (otherwise `FilteredToolRegistry` would filter it out), and a completion-protocol section is appended to the sub-agent's system prompt. The sub-agent calls it exactly once before finishing: `status` (`completed`/`partial`/`blocked`), `summary`, `files`, `gaps`, `next_steps` — written to the artifact dir as both `COMPLETION.md` (human) and `REPORT.json` (machine). Enforcement is soft: when the run finishes without a report, the spawn envelope carries `reported=false` plus a `⚠ sub-agent did not call report_completion; result may be incomplete` warning instead of failing.
 
 ### Schema examples
 

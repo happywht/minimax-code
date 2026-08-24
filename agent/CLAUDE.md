@@ -103,7 +103,7 @@ CORS：默认允许 `http://localhost:5173` / `http://127.0.0.1:5173`；`MINIMAX
 | `MINIMAX_CODE_CORS_ORIGINS` | dev 白名单 | 追加受信 CORS origin（逗号分隔，无效项忽略） |
 | `MINIMAX_CODE_LOG_FILE` | 空（仅控制台） | 日志落盘路径（带轮转） |
 | `MINIMAX_CODE_TEAM_MAX_CONCURRENCY` | `4` | 单次团队运行的最大并发子 agent 数（v1.2.2；`<=0` 不设限） |
-| `MINIMAX_CODE_SUBAGENT_TIMEOUT_S` | `600` | 子 agent 墙钟超时秒数（v1.2.2；`<=0` 禁用） |
+| `MINIMAX_CODE_SUBAGENT_TIMEOUT_S` | `600` | 子 agent 墙钟超时秒数（v1.2.2 team 路径；v1.4.0 起工具路径 `spawn_subagent` 同受管辖并豁免 `tool_timeout`；`<=0` 禁用） |
 
 ## 数据模型
 
@@ -125,7 +125,7 @@ SQLite 数据库，**24 张表**（23 张业务表 + `schema_migrations` 迁移�
 
 DAO 层共 20 个模块（`storage/dao/`）。
 
-迁移策略：前向迁移（NNN_name.py，当前 001-025 共 25 个），无回滚，`migrate()` 在显式事务内逐个执行（失败整体回滚）。WAL 模式，foreign_keys ON。
+迁移策略：前向迁移（NNN_name.py，当前 001-028 共 28 个），无回滚，`migrate()` 在显式事务内逐个执行（失败整体回滚）。WAL 模式，foreign_keys ON。
 
 ## 测试与质量
 
@@ -175,13 +175,13 @@ A: 1) 在对应的 `handlers_*.py` 中实现 handler 函数；2) 在 `app.py` �
 - `minimax_code/agent/core.py` — AgentCore 对话循环
 - `minimax_code/agent/llm.py` — MiniMaxClient（httpx async + mock）
 - `minimax_code/agent/prompts.py` — System prompt 模板
-- `minimax_code/agent/tools/` — 10 个工具模块 + base（file_ops、edit、search、glob、terminal、subagents、codebase_search、codebase_summarize、codebase_find_symbol、codebase_navigate）
+- `minimax_code/agent/tools/` — 11 个工具模块 + base（file_ops、edit、search、glob、terminal、subagents、artifacts、codebase_search、codebase_summarize、codebase_find_symbol、codebase_navigate）
 - `minimax_code/agent/skills/` — 技能系统（loader、registry、runtime）
 - `minimax_code/agent/skills/_builtin/` — 内置技能工具
 
 ### 存储层
 - `minimax_code/storage/db.py` — 同步/异步 Database wrapper
-- `minimax_code/storage/migrations/` — 迁移文件（001-025 共 25 个，前向幂等）
+- `minimax_code/storage/migrations/` — 迁移文件（001-028 共 28 个，前向幂等）
 - `minimax_code/storage/dao/` — 20 个 DAO 模块
 
 ### 其他模块
@@ -206,6 +206,7 @@ A: 1) 在对应的 `handlers_*.py` 中实现 handler 函数；2) 在 `app.py` �
 
 ## 变更记录 (Changelog)
 
+- **2026-08-25** — v1.4.0：子 Agent 生命周期专项（agent 侧）——① 止血：`Tool.dispatch_timeout` 豁免属性（`base.py`）+ `core.py` `_execute_tool_call` 按工具实例取 effective timeout；`subagent_wall_clock_s()` 从 team_orchestrator 提取为公开函数（单一实现两处对齐），`spawn_subagent` run() 实例级赋值（env 旋钮动态生效）；invoke envelope 透传 `usage`/`cancelled`/`truncated`。② 状态机：migration 028（`agent_runs` mode CHECK 加 `'subagent'`，四步表重建 + `_v28` 后缀索引名防 021 RENAME 残留同名索引连删）+ DAO `_VALID_RUN_MODES`/`list_runs(mode=)`；`orchestrator/subagent.py` 加 `_current_parent_session` ContextVar + `_SUBAGENT_EVENT_ROUTES` 事件路由表（builtins send_message 注册 / finally pop，工具层 fail-open 查表 emit）；工具路径 spawn 全链路：`_ensure_session` 补 FK 行 → `create_run(mode='subagent')` → `_ACTIVE_RUNS` 注册（IPC `agent.cancel_subagent` 与进程关停打通）→ started/实时 tool_call/tool_result/completed/failed/cancelled 事件（wire 形状同 `_emit_subagent_progress`，必带 `parent_session_id`）。③ 异步化：`wait=false` 后台 task（模块级 `_BACKGROUND_RUNS` 强引用 + done_callback 异常记录）+ `check_subagent`/`wait_subagent` 新工具（wait 超时不杀 task）；wait=true shield 墙钟超时 → `core.cancel()` 协作收尾保 partial（`metadata.partial=true`）。④ artifact 协议：新模块 `tools/artifacts.py`（spawn 写 `BRIEF.md` + `report_completion` per-run 注入工具（克隆 registry + allowlist 追加，写 `COMPLETION.md`/`REPORT.json`）+ `read_artifact` containment 锚定）+ 子 agent system_prompt 拼协议段 + 软强制（envelope `reported` 字段，未上报 warning 不失败）；新增 `test_tool_dispatch_timeout.py`/`test_subagent_lifecycle_runs.py`/`test_subagent_async.py`/`test_subagent_artifacts.py`，Python 侧 +48 测试（pytest 10366）
 - **2026-08-24** — v1.3.0：Per-Project Workspace Root 专项（agent 侧）——migration 026（`projects.root_path TEXT NOT NULL DEFAULT ''`，PRAGMA 列守卫）+ 027（`codebase_chunks` 加 `root` 列 + `codebase_file_meta` 重建为 `(root, file_path)` 复合 PK，同事务防重入，存量行 root='' 零重索引）；新模块 `workspace_ctx.py`（ContextVar 根解析「worktree > 项目根 > env > cwd」+ `set/reset_current_root` token 式 + `session_root_scope` asynccontextmanager，项目根目录缺失时 warning 回退）；`file_ops._default_workspace()` 单点接线（10 工具 + 8 builtin 技能工具 + BackupManager 零签名生效，严格 containment 越界拒绝）；`builtins.py` send_message 注入根 + system prompt 条件化「当前项目工作区根」提示；`handlers_agents.py`/`handlers_teams.py` 子 agent 与团队 scope 包装（并发天然隔离）；codebase per-root（store 全方法 `root` keyword + `_CODEBASE_INDEXERS` dict 按根缓存，修跨根增量误删 + `_WORKSPACE_DIR` 索引根错位存量 bug，deprecated warning）；`git.*`/`patch.*`/`codebase.*`/`terminal.start`/`workspace.create_worktree_session` 可选 `project_id`（`_validate_project_id` 未知 id 快速失败，显式 cwd containment 仅在带 project root 时启用）；checkpoint create/restore 后端自解析会话根；新增 `test_migration_026` / `test_workspace_ctx` / `test_workspace_scope_runs` / `test_codebase_multi_root`（A/B 双根互不可见）/ `test_patch_project_root` 等，Python 侧 +78 测试（pytest 10318）
 - **2026-08-23** — v1.2.2：多 Agent 协作与系统稳定性专项（agent 侧）——`teams.spawn` 注入 `get_subagent_llm()`（`TeamOrchestrator._llm` 不再恒 None）；`agent.invoke`/`spawn_subagent` 配置透传（`_config_from_row`：`max_iterations`/`temperature`）；调度器 `_spawn_fire` 强引用 + `_done` 异常回调 + 收尾每步守卫；权限 gater 注册表（`register_gater`/`unregister_gater`/`resolve_any_gater` 按 session，legacy 单槽兼容）；终端进程树杀（Windows `taskkill /F /T` / POSIX `killpg` + 回退）；WS ready 帧 `next_seq` 锚点（seq 纪元重置检测）；team 并发 Semaphore + 子 agent 墙钟超时 + `_merge_texts` 部分失败 advisory（env `MINIMAX_CODE_TEAM_MAX_CONCURRENCY` / `MINIMAX_CODE_SUBAGENT_TIMEOUT_S`）
 - **2026-08-23** — v1.2.1：修复长中文 write/edit 工具调用截断——`AgentConfig.max_output_tokens`（默认 32768，env `MINIMAX_CODE_MAX_OUTPUT_TOKENS`）、`_stream_turn` 透传 max_tokens、anthropic transport 兜底 4096→32768、finish_reason=length 截断 warning、malformed JSON 错误附恢复指引；9 个回归测试（`test_output_token_budget.py`）
