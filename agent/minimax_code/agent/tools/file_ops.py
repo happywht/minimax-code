@@ -18,6 +18,7 @@ string the LLM can act on.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 from typing import Any
@@ -131,6 +132,29 @@ class PathSecurityError(ValueError):
     """Raised when a tool argument violates the path-safety policy."""
 
 
+def file_sha256(path: Path) -> str | None:
+    """Streaming sha256 hex digest of ``path``'s on-disk bytes.
+
+    v1.5.0 CAS foundation. Two invariants:
+
+    * Always hash the bytes on disk, never an in-memory string —
+      ``edit_file`` writes with default newline translation on
+      Windows, so ``updated.encode()`` can differ from what landed.
+      Hashing the file keeps read/write/edit on one footing
+      (disk bytes).
+    * Never raises — ``None`` means "hash unavailable" and callers
+      treat it as CAS-not-applicable rather than an error.
+    """
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # read_file
 # ---------------------------------------------------------------------------
@@ -203,6 +227,12 @@ class ReadFileTool(Tool):
             except UnicodeDecodeError:
                 return ToolResult.fail("file is not decodable as utf-8 or latin-1")
 
+        # v1.5.0 CAS: fingerprint the raw bytes we read (pre-decode,
+        # pre-line-slice) so it always describes the full file on disk.
+        # Truncated reads cannot offer a whole-file hash — null means
+        # "CAS unavailable for this read".
+        sha = None if truncated else hashlib.sha256(data).hexdigest()
+
         total_lines = text.count("\n") + (1 if text and not text.endswith("\n") else 0)
         if start_line is not None or end_line is not None:
             lines = text.splitlines()
@@ -220,6 +250,7 @@ class ReadFileTool(Tool):
                 "path": str(target),
                 "content": text,
                 "truncated": truncated,
+                "sha256": sha,
             },
             total_lines=total_lines,
             returned_bytes=len(text.encode("utf-8")),
@@ -244,6 +275,16 @@ class WriteFileTool(Tool):
         "properties": {
             "path": {"type": "string", "description": "Target file path."},
             "content": {"type": "string", "description": "Full file body. May be empty."},
+            "expected_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+                "description": (
+                    "Optional optimistic lock: the sha256 the file had when you "
+                    "last read it. On mismatch (or if the file no longer exists) "
+                    "the write fails with the current hash — re-read the file, "
+                    "then reapply your change."
+                ),
+            },
         },
         "required": ["path", "content"],
         "additionalProperties": False,
@@ -267,6 +308,37 @@ class WriteFileTool(Tool):
 
         existed = target.exists()
 
+        # v1.5.0 CAS — optimistic lock. Hash the on-disk bytes *before*
+        # the write; if the caller's last-read fingerprint no longer
+        # matches, someone else touched the file and we refuse rather
+        # than silently clobber (the v1.4.2 field report's finding #2).
+        previous_sha = file_sha256(target) if existed else None
+        expected = kwargs.get("expected_sha256")
+        if expected is not None:
+            if not isinstance(expected, str) or len(expected) != 64:
+                return ToolResult.fail("'expected_sha256' must be a 64-char hex string")
+            if not existed:
+                return ToolResult.fail(
+                    "write_file blocked: file no longer exists (deleted since "
+                    "your read)",
+                    output={
+                        "path": str(target),
+                        "expected_sha256": expected,
+                        "file_exists": False,
+                    },
+                )
+            if previous_sha != expected.strip().lower():
+                return ToolResult.fail(
+                    "write_file blocked: file changed since your read (sha256 "
+                    "mismatch) — re-read the file and reapply your change",
+                    output={
+                        "path": str(target),
+                        "expected_sha256": expected,
+                        "current_sha256": previous_sha,
+                        "file_exists": True,
+                    },
+                )
+
         # Pre-write backup for existing files (best-effort, never blocks).
         backup_meta = None
         if existed:
@@ -288,6 +360,7 @@ class WriteFileTool(Tool):
             return ToolResult.fail(f"write failed: {exc}")
 
         size = target.stat().st_size
+        new_sha = file_sha256(target)
         # R16 — mirror the successful write onto the causal file-change bus.
         # Fail-open: a bus failure must never break the tool that just wrote.
         try:
@@ -309,6 +382,8 @@ class WriteFileTool(Tool):
                 "created": not existed,
                 "overwritten": existed,
                 "size_bytes": size,
+                "previous_sha256": previous_sha,
+                "sha256": new_sha,
                 **({"backup": backup_meta} if backup_meta else {}),
             },
             created=not existed,

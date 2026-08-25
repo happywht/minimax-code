@@ -14,7 +14,7 @@ import difflib
 from typing import Any
 
 from .base import Tool, ToolResult, register_tool
-from .file_ops import PathSecurityError, safe_resolve
+from .file_ops import PathSecurityError, file_sha256, safe_resolve
 
 
 @register_tool
@@ -36,6 +36,15 @@ class EditFileTool(Tool):
                 "type": "boolean",
                 "default": False,
                 "description": "If True, replace every non-overlapping occurrence.",
+            },
+            "expected_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+                "description": (
+                    "Optional optimistic lock: the sha256 the file had when "
+                    "you last read it. On mismatch the edit fails with the "
+                    "current hash — re-read the file, then reapply your edit."
+                ),
             },
         },
         "required": ["path", "old_string", "new_string"],
@@ -74,6 +83,33 @@ class EditFileTool(Tool):
         except OSError as exc:
             return ToolResult.fail(f"read failed: {exc}")
 
+        # v1.5.0 CAS — verify the on-disk bytes match the caller's
+        # last-read fingerprint before touching anything. Placed ahead
+        # of the backup so a blocked edit mints no backup at all.
+        # This closes edit_file's blind spot: ``old_string`` matching
+        # only guards the matched region; concurrent changes elsewhere
+        # in the file used to be silently clobbered by the rewrite.
+        previous_sha = file_sha256(target)
+        expected = kwargs.get("expected_sha256")
+        if expected is not None:
+            if not isinstance(expected, str) or len(expected) != 64:
+                return ToolResult.fail("'expected_sha256' must be a 64-char hex string")
+            if previous_sha is None:
+                return ToolResult.fail(
+                    "edit_file blocked: file is no longer readable",
+                    output={"path": str(target), "expected_sha256": expected},
+                )
+            if previous_sha != expected.strip().lower():
+                return ToolResult.fail(
+                    "edit_file blocked: file changed since your read (sha256 "
+                    "mismatch) — re-read the file and reapply your edit",
+                    output={
+                        "path": str(target),
+                        "expected_sha256": expected,
+                        "current_sha256": previous_sha,
+                    },
+                )
+
         # Pre-edit backup (best-effort, never blocks).
         backup_meta = None
         try:
@@ -104,6 +140,10 @@ class EditFileTool(Tool):
             target.write_text(updated, encoding="utf-8")
         except OSError as exc:
             return ToolResult.fail(f"write failed: {exc}")
+
+        # Hash the bytes that actually landed (write_text applies
+        # platform newline translation on Windows) — see file_sha256.
+        new_sha = file_sha256(target)
 
         changed_lines, removed, added = _line_delta(original, updated)
         diff = "".join(
@@ -141,6 +181,8 @@ class EditFileTool(Tool):
                 "lines_removed": removed,
                 "lines_added": added,
                 "diff": diff,
+                "previous_sha256": previous_sha,
+                "sha256": new_sha,
                 **({"backup": backup_meta} if backup_meta else {}),
             },
             replacements=occurrences if replace_all else 1,
