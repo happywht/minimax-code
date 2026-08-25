@@ -275,6 +275,16 @@ def test_prompt_appends_sandbox_protocol_last() -> None:
     assert SANDBOX_PROTOCOL_PROMPT is not REPORT_PROTOCOL_PROMPT
 
 
+def test_tool_description_teaches_sandbox_for_writes() -> None:
+    """v1.5.1 A-layer: the spawn_subagent description is the LLM's
+    decision entry point — it must nudge towards ``sandbox=true`` +
+    ``collect_subagent`` when the sub-agent writes files in parallel."""
+    desc = SpawnSubagentTool.description.lower()
+    assert "sandbox=true" in desc
+    assert "collect_subagent" in desc
+    assert "write" in desc
+
+
 @pytest.mark.asyncio
 async def test_spawn_sandbox_true_creates_dir_and_envelope(
     app_db: AsyncDatabase, stub_runtime, workspace_root: Path

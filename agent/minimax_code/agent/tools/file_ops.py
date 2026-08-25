@@ -23,7 +23,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from ...workspace_ctx import current_root, env_or_cwd_root
+from ...workspace_ctx import current_root, current_run_id, env_or_cwd_root
 from .base import Tool, ToolResult, register_tool
 from .sandbox import overlay_read_target, redirect_write_target
 
@@ -154,6 +154,46 @@ def file_sha256(path: Path) -> str | None:
     except OSError:
         return None
     return digest.hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# In-flight write registry (v1.5.1 — cross-run write awareness)
+# ---------------------------------------------------------------------------
+
+#: Process-wide map of ``normcase(path) -> run_id`` for files an in-flight
+#: sub-agent run has declared an interest in. Purely advisory: writes are
+#: never blocked on it — the registry only powers a ``concurrent_writer``
+#: warning in the tool output so the LLM can coordinate (or guard the
+#: write with ``expected_sha256``). Entries are released wholesale in
+#: ``subagents._drive_run``'s finally; a hung run legitimately keeps its
+#: claims (it may still write again), and process death clears everything.
+_INFLIGHT_WRITES: dict[str, str] = {}
+
+
+def _reg_key(path: Path | str) -> str:
+    """Case-normalised registry key (Windows paths fold to one entry)."""
+    return os.path.normcase(str(path))
+
+
+def in_flight_writer(path: Path | str, *, exclude: str | None = None) -> str | None:
+    """The run id currently claiming *path*, if any (excluding *exclude*)."""
+    owner = _INFLIGHT_WRITES.get(_reg_key(path))
+    if owner is not None and owner != exclude:
+        return owner
+    return None
+
+
+def claim_write(path: Path | str, run_id: str) -> None:
+    """Declare that *run_id* is writing *path* (first claim wins per run)."""
+    key = _reg_key(path)
+    if _INFLIGHT_WRITES.get(key) != run_id:
+        _INFLIGHT_WRITES[key] = run_id
+
+
+def release_run_writes(run_id: str) -> None:
+    """Drop every claim held by *run_id* (called on run completion)."""
+    for key in [k for k, owner in _INFLIGHT_WRITES.items() if owner == run_id]:
+        del _INFLIGHT_WRITES[key]
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +353,16 @@ class WriteFileTool(Tool):
         except PathSecurityError as exc:
             return ToolResult.fail(str(exc))
 
+        # v1.5.1 — cross-run write awareness. Register this run's claim
+        # on the *workspace* path (the merge target for sandboxed runs)
+        # and surface any rival in-flight run as an advisory warning.
+        # Never blocks — the registry is coordination, not a lock; pair
+        # with expected_sha256 when the warning fires.
+        run_id = current_run_id()
+        concurrent_writer = in_flight_writer(target, exclude=run_id)
+        if run_id:
+            claim_write(target, run_id)
+
         # v1.5.0 sandbox: CAS verifies the overlay read view (mirror if
         # present, workspace original otherwise); the write itself is
         # redirected into the sandbox mirror with a COW baseline
@@ -394,6 +444,9 @@ class WriteFileTool(Tool):
                     [str(write_target)],
                     "write_file",
                     size_bytes=size,
+                    # v1.5.1 — attribute the write to its owning run so
+                    # the main agent's change notes can skip its own.
+                    **({"run_id": run_id} if run_id else {}),
                 )
         except Exception:  # noqa: BLE001 — file write must never break on the bus
             pass
@@ -406,6 +459,13 @@ class WriteFileTool(Tool):
             "sha256": new_sha,
             **({"backup": backup_meta} if backup_meta else {}),
         }
+        if concurrent_writer:
+            output["concurrent_writer"] = concurrent_writer
+            output["warning"] = (
+                f"⚠ in-flight run {concurrent_writer} has also claimed this "
+                "file — coordinate with it, or guard your write with "
+                "expected_sha256 after a fresh read"
+            )
         if write_target != target:
             output["sandboxed"] = True
             output["sandbox_path"] = str(write_target)

@@ -104,6 +104,31 @@ def reset_sandbox(token: Token[Path | None]) -> None:
     _current_sandbox.reset(token)
 
 
+#: The owning run id for the current task (v1.5.1), or ``None`` for the
+#: main agent (which runs outside any run scope). Set once at the top of
+#: a sub-agent drive by ``subagents._drive_run``; the write tools read
+#: it to attribute file writes (fs-bus events) and to consult/populate
+#: the in-flight write registry (cross-run concurrent-writer warnings).
+_current_run_id: ContextVar[str | None] = ContextVar(
+    "minimax_run_id", default=None
+)
+
+
+def current_run_id() -> str | None:
+    """The sub-agent run id owning this task, or ``None`` (main agent)."""
+    return _current_run_id.get()
+
+
+def set_current_run_id(run_id: str) -> Token[str | None]:
+    """Publish *run_id* for the current task; returns the reset token."""
+    return _current_run_id.set(run_id)
+
+
+def reset_current_run_id(token: Token[str | None]) -> None:
+    """Undo a previous :func:`set_current_run_id` (call in ``finally``)."""
+    _current_run_id.reset(token)
+
+
 # ---------------------------------------------------------------------------
 # Resolution chain
 # ---------------------------------------------------------------------------
@@ -219,13 +244,16 @@ async def _get_session(session_id: str) -> Any | None:
 
 __all__ = [
     "current_root",
+    "current_run_id",
     "current_sandbox",
     "env_or_cwd_root",
     "reset_current_root",
+    "reset_current_run_id",
     "reset_sandbox",
     "resolve_root_for_project_id",
     "resolve_root_for_session",
     "session_root_scope",
     "set_current_root",
+    "set_current_run_id",
     "set_sandbox",
 ]

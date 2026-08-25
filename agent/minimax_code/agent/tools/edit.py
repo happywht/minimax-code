@@ -13,8 +13,15 @@ from __future__ import annotations
 import difflib
 from typing import Any
 
+from ...workspace_ctx import current_run_id
 from .base import Tool, ToolResult, register_tool
-from .file_ops import PathSecurityError, file_sha256, safe_resolve
+from .file_ops import (
+    PathSecurityError,
+    claim_write,
+    file_sha256,
+    in_flight_writer,
+    safe_resolve,
+)
 from .sandbox import overlay_read_target, redirect_write_target
 
 
@@ -71,6 +78,14 @@ class EditFileTool(Tool):
             target = safe_resolve(path)
         except PathSecurityError as exc:
             return ToolResult.fail(str(exc))
+
+        # v1.5.1 — cross-run write awareness (mirror of write_file's
+        # hook): claim the workspace path for this run, surface any rival
+        # in-flight run as an advisory warning. Never blocks.
+        run_id = current_run_id()
+        concurrent_writer = in_flight_writer(target, exclude=run_id)
+        if run_id:
+            claim_write(target, run_id)
 
         # v1.5.0 sandbox: edit_file's internal read routes through the
         # overlay too — otherwise the second edit of the same file
@@ -180,6 +195,8 @@ class EditFileTool(Tool):
                     "edit_file",
                     lines_added=added,
                     lines_removed=removed,
+                    # v1.5.1 — attribute the edit to its owning run.
+                    **({"run_id": run_id} if run_id else {}),
                 )
         except Exception:  # noqa: BLE001 — file edit must never break on the bus
             pass
@@ -195,6 +212,13 @@ class EditFileTool(Tool):
             "sha256": new_sha,
             **({"backup": backup_meta} if backup_meta else {}),
         }
+        if concurrent_writer:
+            output["concurrent_writer"] = concurrent_writer
+            output["warning"] = (
+                f"⚠ in-flight run {concurrent_writer} has also claimed this "
+                "file — coordinate with it, or guard your edit with "
+                "expected_sha256 after a fresh read"
+            )
         if write_target != target:
             output["sandboxed"] = True
             output["sandbox_path"] = str(write_target)

@@ -238,6 +238,14 @@ async def _drive_run(
     """
     from ...orchestrator.subagent import subagent_wall_clock_s
 
+    # v1.5.1 — publish the owning run id for the whole drive (sandboxed
+    # or not): the write tools attribute fs-bus events to it and consult
+    # the in-flight write registry for cross-run warnings. Released and
+    # reset in the finally below.
+    from ...workspace_ctx import reset_current_run_id, set_current_run_id
+
+    run_id_token = set_current_run_id(run_id)
+
     # v1.5.0 — publish the per-run sandbox for the whole drive. Both
     # spawn paths reach here with a context carrying the session root;
     # file_ops/edit then pick the sandbox up via the ContextVar
@@ -336,6 +344,16 @@ async def _drive_run(
             pass
         handle.core.on_tool_call = prev_on_tool_call
         handle.core.on_tool_result = prev_on_tool_result
+        # v1.5.1 — the run is leaving flight: drop its write claims and
+        # unpublish the run id (order matters — claims go first so no
+        # fresh claim can race in under the still-published id).
+        try:
+            from .file_ops import release_run_writes
+
+            release_run_writes(run_id)
+        except Exception:  # pragma: no cover — advisory registry
+            pass
+        reset_current_run_id(run_id_token)
         if sandbox_token is not None:
             from ...workspace_ctx import reset_sandbox
 
@@ -440,7 +458,12 @@ class SpawnSubagentTool(Tool):
         "Delegate a focused piece of work to a named sub-agent and return its final result. "
         "Use this for specialist review, parallel research, or focused analysis that should "
         "not distract the main conversation. Set wait=false to run in the background and "
-        "collect later with check_subagent / wait_subagent."
+        "collect later with check_subagent / wait_subagent. "
+        "If the sub-agent will WRITE files (especially while other sub-agents or you are "
+        "editing the same workspace), set sandbox=true: its writes land in a private "
+        "sandbox instead of racing the workspace, and you merge them afterwards with "
+        "collect_subagent(run_id), which reports three-way conflicts instead of silently "
+        "overwriting. For read-only work leave sandbox=false."
     )
     parameters = {
         "type": "object",

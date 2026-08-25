@@ -754,6 +754,12 @@ class AgentCore:
         # fires on every late iteration (it is the final handoff, ≤2
         # occurrences by construction).
         context_nudge_fired = False
+        # v1.5.1 — fs-bus change-note state. The watermark starts as
+        # ``None`` ("not yet initialised"); the first per-iteration poll
+        # anchors it to the bus's current maximum seq, so the run starts
+        # at "now" and never replays history. Each following iteration
+        # drains only events that landed since the last poll.
+        fs_note_watermark: int | None = None
         compaction_policy = IntraCompactionConfig(
             enabled=True,
             mode=IntraCompactionMode.HISTORY_ONLY,
@@ -861,6 +867,7 @@ class AgentCore:
                 # itself is gone — the historical-pattern pollution seen
                 # in production.
                 llm_messages = messages
+                ephemeral_notes: list[Message] = []
                 remaining = self.config.max_iterations - iteration - 1
                 context_pressure = (
                     not context_nudge_fired
@@ -900,7 +907,33 @@ class AgentCore:
                         "or announce wrapping up in your reply — just adjust "
                         "your behaviour and keep the reply about the work."
                     )
-                    llm_messages = messages + [{"role": "user", "content": nudge}]
+                    ephemeral_notes.append({"role": "user", "content": nudge})
+
+                # v1.5.1 — foreign-change note. Poll the fs-bus for file
+                # writes by *other* in-flight runs (and, for a sub-agent,
+                # by the main agent) since our watermark. Same ephemeral
+                # contract as the nudge above: LLM payload only, never
+                # persisted, never acknowledged. Fail-open — awareness
+                # must never break the loop.
+                try:
+                    from ..app import ensure_fs_bus
+                    from ..fsnotify.notes import drain_foreign_changes
+                    from ..workspace_ctx import current_run_id
+
+                    foreign_note, fs_note_watermark = drain_foreign_changes(
+                        ensure_fs_bus(),
+                        self_run_id=current_run_id(),
+                        watermark=fs_note_watermark,
+                    )
+                    if foreign_note:
+                        ephemeral_notes.append(
+                            {"role": "user", "content": foreign_note}
+                        )
+                except Exception:  # noqa: BLE001 — advisory polling
+                    logger.debug("fs change-note poll failed", exc_info=True)
+
+                if ephemeral_notes:
+                    llm_messages = messages + ephemeral_notes
 
                 try:
                     response = await self._call_llm_with_resilience(llm_messages)
