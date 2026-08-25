@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-08-25
+
+### Fixed — 真实环境压测（3 sub-agent 并行协作白板）回报的 dispatch 路由 bug
+
+- **`ToolRegistry.dispatch` 删除 legacy args-dict 误判分支**：原启发式「`run` 恰好声明单个位置参数 = legacy 工具收整个参数 dict」在全库**零真实使用者**（builtin 技能工具 / MCP 桥接 / codebase 工具全是 `**kwargs` 约定），唯一效果是误伤恰好单参数的工具——`check_subagent(run_id)` 被 LLM 调用时收到 `{"run_id": ...}` 整个 dict，`run_id.strip()` 直接抛 `'dict' object has no attribute 'strip'`（压测实锤）；`list_subagents(include_disabled)` 更阴险——dict 恒 truthy，静默变成「永远列出 disabled」。现 dispatch 一律 `tool.run(**args)`。48 个 v1.4.0 测试没抓到的原因：测试直接调 `tool.run(...)` 绕过了路由层——新回归测试全部走 `registry.dispatch` 全链路。
+- **`REPORT_PROTOCOL_PROMPT` 新增 Budget rule**：教子 agent「核心交付物落盘即调 `report_completion`，打磨前先报，`status: partial` 早报好过不报」——压测暴露 iteration 预算耗尽时子 agent 没机会上报、软强制失效（agent 定义 `max_iterations=8` 配置过小时尤甚；预算配置在 agents 表，UI 可调）。
+
 ## [1.4.0] - 2026-08-25
 
 ### Added — Sub-Agent Lifecycle 专项（工具路径子 agent 完整生命周期）

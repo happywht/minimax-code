@@ -237,7 +237,7 @@ class TestCoreAuditHook:
             name = "hello"
             description = "test tool"
 
-            async def run(self, args: dict) -> ToolResult:  # type: ignore[override]
+            async def run(self, **kwargs: object) -> ToolResult:
                 return ToolResult.ok("hello world")
 
         registry.register(HelloTool())
