@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MiniMax Code 是一个桌面端 AI 编码 Agent 复刻项目。对标 MiniMax Code 全量功能：多轮对话、技能系统、定时任务、多 Agent 协作、移动互联、授权管理、进度面板。v0.2.0 起从 Tauri 桌面壳切换为 web SPA + 本地 Python agent 架构，v0.3.0 新增 thinking_count 通道、Sub-Agent UI、Git 集成和 Code Review 工作流。
 
-当前版本：**v1.5.0**（2026-08-25）
+当前版本：**v1.5.1**（2026-08-26）
 
 ## 架构总览
 
@@ -251,6 +251,7 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 
 ## 变更记录 (Changelog)
 
+- **2026-08-26** — v1.5.1：共享 workspace 并发感知（第三轮压测 3 项残留收口，全 advisory）——① **A**：`spawn_subagent` 工具 description 加并发写决策引导（写文件且并行 → `sandbox=true` + `collect_subagent`；只读 false）；② **B**：新模块 `fsnotify/notes.py`——`AgentCore` 每 iteration 以 seq 高水位轮询 fs_bus（首次 poll 初始化不回放历史），其他 in-flight run 的写入聚合为 `[system note] Files changed by other agents` ephemeral 追加 LLM payload（不持久化禁 acknowledge、去重 ≤8 行、沙盒路径投影 `src/a.py (sandboxed by run_x)`、fail-open）；按 `run_id` 自过滤，子 agent 天然见主 agent 的写；③ **C**：`file_ops._INFLIGHT_WRITES`（normcase → run_id）+ `workspace_ctx._current_run_id` ContextVar（`_drive_run` 发布/finally 释放）；write/edit 触碰即 claim，rival 命中写照常成功但 output 带 `concurrent_writer` + warning（主 agent 只查警不登记）；23 个新测试，pytest 10438 / vitest 758 全绿
 - **2026-08-25** — v1.5.0：写安全专项（CAS + 沙盒 + collect 三层）——① CAS 乐观锁：`read_file` 输出 `sha256`，`write_file`/`edit_file` 收可选 `expected_sha256`（不匹配 fail 带 `current_sha256`），输出 `previous_sha256`/`sha256`，全部从磁盘 bytes 算（Windows 换行翻译坑）；② opt-in per-run 沙盒：`spawn_subagent(sandbox=True)` 写入透明重定向 `<root>/.minimax/sandboxes/<run_id>/`（COW `_base/` 基线、overlay 读覆盖 read/edit 两处、`.minimax/` pass-through、fail-closed），`workspace_ctx.py` 加 `_current_sandbox` ContextVar，新模块 `tools/sandbox.py`（工具模块 11→12）；③ `collect_subagent(run_id, on_conflict)` 三方对比合并（冲突三 sha 全报、`.merged` marker 幂等、fs_bus cause=`collect_subagent`）+ `files_written` 五处传播（含落 run 行重启存活）；37 个新测试（全走 dispatch），pytest 10415；已知限制：exec_command 绕过、search/glob 不 overlay、team 路径不在本期、沙盒不 prune（v1.6 候选）
 - **2026-08-25** — v1.4.2：并发压测回报修复——`TASK_PRECEDENCE_PROMPT` 注入（spawn 拼接顺序 `system_prompt → 任务优先级声明 → completion 协议`），修子 agent 被 workspace 旧 CONTRACT.md 触发、跟随常设角色模板叛变的一次性任务劫持（实测：whiteboard-render-engineer 被派「写 B_*.txt」却重写 17KB wb_render.js）；并发压测其余发现定性入 CHANGELOG（write-write 已有 overwritten+backup 兜底、sha/CAS/沙盒/deadlock 列 backlog、file:modified 在 fs_bus 已存在主 agent 订阅面缺失）；2 个新回归测试，pytest 10375
 - **2026-08-25** — v1.4.1：压测回报 bug 修复——`ToolRegistry.dispatch` 删除 legacy args-dict 误判分支（全库零真实使用者，唯一效果是误伤单参数工具：`check_subagent` 收到整个 args dict 抛 `'dict' object has no attribute 'strip'`、`list_subagents` 的 `include_disabled` 恒 truthy 静默列出 disabled），dispatch 一律 `run(**args)`；`REPORT_PROTOCOL_PROMPT` 加 Budget rule（核心交付物落盘即上报，防 iteration 预算耗尽丢 report；agents 表 `max_iterations=8` 配置过小时尤甚，预算在 UI 可调）；新回归测试走 `registry.dispatch` 全链路（旧测试直接调 `run()` 绕过路由层是漏网根因），pytest 10373

@@ -92,6 +92,25 @@ would silently kill continuation. When the conversation exceeds the
 model's context window the loop compacts history in-flight (see the
 `compaction_threshold` / `context_window` knobs below).
 
+**Foreign-change note (v1.5.1).** Before each iteration's LLM call the
+loop also polls the fs-bus (seq-high-watermark poll, not a
+subscription — no lifecycle to manage) for file writes emitted by
+*other* in-flight runs while this run works. Foreign writes are
+aggregated into one `[system note] Files changed by other agents`
+message appended to that call's payload only — same ephemeral
+contract as the nudge: never persisted, never merged into history,
+and the wording tells the model not to acknowledge it (re-read a
+listed path before editing; prefer `expected_sha256`). The first poll
+anchors the watermark to the bus's current maximum seq, so a run
+never replays pre-run history. Self-filtering is by `run_id`
+attribute: the main agent's own writes (unattributed) stay hidden
+from it, and a sub-agent *does* see the main agent's writes —
+two-way awareness by construction. Notes de-duplicate per path
+(latest event wins), cap at 8 listed files plus an overflow line, and
+project sandbox mirror paths back to workspace-relative form
+(`src/a.py (sandboxed by run_x)`). The whole poll is fail-open:
+awareness must never break the run loop.
+
 ### Lifecycle hooks
 
 `HookManager` (optional on `AgentCore`, `None` = zero overhead) fires
@@ -119,13 +138,13 @@ to call.
 | Name | Description | Required args | Optional args |
 | --- | --- | --- | --- |
 | `read_file` | Read a UTF-8/latin-1 text file; binary rejected. Output includes `sha256` of the on-disk bytes (null when truncated — CAS is unavailable for such reads). | `path` | `start_line`, `end_line`, `max_bytes` |
-| `write_file` | Overwrite a file (UTF-8, no newline translation). Output includes `previous_sha256` (pre-write hash when overwriting) and `sha256` (post-write). | `path`, `content` | `expected_sha256` (CAS check, v1.5.0) |
+| `write_file` | Overwrite a file (UTF-8, no newline translation). Output includes `previous_sha256` (pre-write hash when overwriting) and `sha256` (post-write). When another in-flight run claims the path, the write still succeeds but the output carries a `concurrent_writer` advisory (v1.5.1 — see §8b). | `path`, `content` | `expected_sha256` (CAS check, v1.5.0) |
 | `list_directory` | List immediate children of a directory. | — | `path` (default workspace), `pattern` |
-| `edit_file` | Replace an exact substring in a file. Output includes `previous_sha256` / `sha256`. | `path`, `old_string`, `new_string` | `replace_all`, `expected_sha256` (CAS check, v1.5.0) |
+| `edit_file` | Replace an exact substring in a file. Output includes `previous_sha256` / `sha256`, plus the `concurrent_writer` advisory when another run claims the path (v1.5.1). | `path`, `old_string`, `new_string` | `replace_all`, `expected_sha256` (CAS check, v1.5.0) |
 | `exec_command` | Run a shell command with hard timeout. | `cmd` (list) | `cwd`, `env`, `timeout` (default 30s, cap 600s) |
 | `search_files` | Recursive text search (ripgrep fast path, pure-Python fallback). | `pattern` | `path`, `regex`, `file_pattern`, `case_sensitive`, `max_results` |
 | `list_subagents` | List enabled sub-agents that can receive delegated specialist work. | — | `include_disabled` |
-| `spawn_subagent` | Delegate a focused task to a named sub-agent and return its final result (persisted as an `agent_runs` row with `mode='subagent'`; exempt from the generic `tool_timeout` ceiling — the sub-agent wall clock `MINIMAX_CODE_SUBAGENT_TIMEOUT_S` governs, and a timeout returns the accumulated partial). | `agent_name`, `prompt` | `parent_session_id`, `wait` (default true; false = background, collect via check/wait), `sandbox` (default false; v1.5.0 redirects the run's writes into an isolated sandbox, see §8a) |
+| `spawn_subagent` | Delegate a focused task to a named sub-agent and return its final result (persisted as an `agent_runs` row with `mode='subagent'`; exempt from the generic `tool_timeout` ceiling — the sub-agent wall clock `MINIMAX_CODE_SUBAGENT_TIMEOUT_S` governs, and a timeout returns the accumulated partial). The description teaches the write-safety decision: if the sub-agent will write files (especially in parallel with other runs), spawn with `sandbox=true` and merge via `collect_subagent`; read-only work stays `sandbox=false` (v1.5.1). | `agent_name`, `prompt` | `parent_session_id`, `wait` (default true; false = background, collect via check/wait), `sandbox` (default false; v1.5.0 redirects the run's writes into an isolated sandbox, see §8a) |
 | `check_subagent` | Poll a background run (`wait=false`) without blocking: `running` while in flight, or the final outcome once finished (read from the persisted run row after the task is reaped). | `run_id` | — |
 | `wait_subagent` | Await a background run's completion (shielded — a timeout never kills the run; the response says `running` and the call repeats). | `run_id` | `timeout_s` (default 120) |
 | `read_artifact` | Read a file from a sub-agent run's artifact directory (`<workspace_root>/.minimax/artifacts/<run_id>/`); containment-checked against that run's directory, traversal rejected. | `run_id` | `rel_path` (default `BRIEF.md`) |
@@ -423,6 +442,39 @@ Known limitations (deliberate, v1.5.0 scope):
   candidate).
 * The team path (`teams.spawn`) is out of scope — it has no run id
   and no per-member registry clone to hang the sandbox on.
+
+## 8b. Shared-workspace concurrency awareness (v1.5.1)
+
+The sandbox (§8a) isolates writers that opt in; CAS catches stale
+writes at commit time. v1.5.1 adds the *awareness* layer between
+them — three advisory mechanisms, none of which changes any write
+path's behaviour:
+
+* **In-flight write registry** (`file_ops._INFLIGHT_WRITES`). Every
+  sub-agent run publishes its run id via a `_current_run_id`
+  ContextVar (`workspace_ctx.py`, set at the top of `_drive_run`,
+  released in its `finally`). When `write_file`/`edit_file` runs
+  inside a run id, it claims each path it touches (normcase-folded —
+  Windows case-insensitivity); when the run completes, all its claims
+  are released. The main agent (run id `None`) never claims, only
+  checks.
+* **`concurrent_writer` advisory.** Before writing, the tool checks
+  whether a *different* in-flight run claims the path. If so, the
+  write **still succeeds** (advisory by design — coordination is the
+  LLM's call), but the output carries `concurrent_writer: "<run_id>"`
+  plus a warning that names the rival run and recommends re-reading
+  and arming `expected_sha256`. Registry keys use the workspace
+  address, so a sandboxed run's merge target (`collect_subagent`
+  copying back into the workspace) is a conflict surface too.
+* **Foreign-change notes** (the loop-side mirror — see §1). The
+  claims above are also what attributes fs-bus events with `run_id`,
+  which the per-iteration poll filters on: a run sees everyone's
+  writes but its own.
+
+Failure posture: all three layers are fail-open / advisory. A wedged
+run legitimately keeps its claims (it may still be writing); a run
+cancelled or crashing out of `_drive_run` releases them in the
+`finally`.
 
 ## 9. Configuration
 

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-08-26
+
+### Added — 共享 workspace 并发感知（第三轮压测 3 项残留收口）
+
+v1.5.0 三层写安全发布后的第三轮并发压测确认主体修复全部实测通过，残留三项（P0-2 沙盒非默认、P2-6 写前无 in-flight 检查、P2-7 主 agent 无 file:modified 感知）以小专项收口。三层全部 advisory——不改任何写路径行为，只补感知面，无 DB migration：
+
+- **A — `spawn_subagent` 工具级沙盒引导（P0-2 的 prompt 侧收口）**：工具 description（LLM 的 spawn 决策入口）从纯功能描述扩为并发写决策指引——子 agent 将写文件（尤其与其他 run 并行编辑同一 workspace）→ `sandbox=true`，写入落私有沙盒零竞态，事后 `collect_subagent(run_id)` 三方对比合并（冲突三 sha 全报不静默覆盖）；只读工作保持 `sandbox=false`。机制 v1.5.0 已就绪且仍默认 false，缺的正是 LLM 在决策点上「知道何时该开」。
+- **B — fs_bus → 主 agent ephemeral 通知桥（P2-7）**：新模块 `fsnotify/notes.py`（纯函数）。`AgentCore` 每 iteration LLM 调用前以 seq 高水位轮询 `bus.recent()`（首次 poll 将水位初始化为当前 max——run 从「现在」开始永不回放历史；选轮询而非 subscribe queue：零生命周期管理，无需 try/finally 包裹 run 主体），其他 in-flight run 的文件写入聚合为一条 `[system note] Files changed by other agents` 追加进该次 LLM payload 尾部。契约照抄 v1.1.2 nudge：ephemeral——只进 payload 不进 messages 不持久化，措辞明示模型不得 acknowledge（防历史口癖污染）；同 path 多事件去重保最新，≤8 行 + 溢出行；沙盒镜像路径投影回工作区相对形（`src/a.py (sandboxed by run_x)`，不向 prompt 泄漏沙盒布局）；全程 fail-open（感知永不破坏 run loop）。自过滤按 fs_bus 事件的 `run_id` attribute：双方 None = 主 agent 自己的写（隐藏）；子 agent 天然看到主 agent 的写（双向感知白送）。压测场景「主 agent 正在编辑 `wb_render.js`、子 agent 同时重写它」从此在下一轮 payload 即可见，不再是静默 last-write-wins。
+- **C — in-flight 写登记 + `concurrent_writer` 警告（P2-6）**：`file_ops._INFLIGHT_WRITES`（进程级 dict，`os.path.normcase` 折叠 key → run_id，Windows 大小写不敏感）。`workspace_ctx.py` 新增 token 式 `_current_run_id` ContextVar 三件套；`_drive_run` 顶部无条件发布 run_id、finally 先 `release_run_writes(run_id)` 再 reset token（顺序防竞态；挂死 run 合法保留 claim——它可能还在写）。带 run id 的 `write_file`/`edit_file` 顺手 claim 各自触碰的路径；主 agent（run id None）只查警不登记。写前查 rival claim：命中则写**照常成功**，但 output 带 `concurrent_writer: "<run_id>"` + warning（纯 advisory 不阻塞——协调是 LLM 的决策，配合 B 的 note 与 CAS 的 `expected_sha256` 三位一体）。登记 key 用 workspace 原路径：沙盒 run 的合并目标（`collect_subagent` 拷回 workspace）同样是冲突面。
+
+### 回归测试（23 个新测试）
+
+- `test_write_registry.py`（10，全走 `registry.dispatch`）：rival 警告不阻塞 / 同 run 二写静默 / 主 agent 见子 agent claim / release 只清自己 / normcase 折叠 / edit 同款 / 无关文件隔离 / 主 agent 不登记 / fs_bus emit 带 `run_id` attribute（主 agent 写无此 attr）/ `_drive_run` 集成（invoke 内快照断言 claim 归属 run_id、run 结束登记表清空 + ContextVar 复位）。
+- `test_fs_change_notes.py`（12）：纯函数面（watermark/自过滤/双方 None/子 agent 见主 agent 写/全过滤仍推水位/去重保最新/沙盒路径投影含反斜杠/8 行截断/空事件）+ drain（水位初始化不产 note / bus None / 异常 fail-open）+ AgentCore 集成（FakeLLM 两轮：note 只出现在第二轮 payload 尾部、persisted 消息零污染）。
+- `test_subagent_sandbox.py` +1：description 沙盒引导源码钉（`sandbox=true` / `collect_subagent` / write 三锚点）。
+
 ## [1.5.0] - 2026-08-25
 
 ### Added — 写安全专项（CAS 乐观锁 + per-run 子 Agent 沙盒 + collect 合并）
