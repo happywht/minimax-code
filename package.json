@@ -1,6 +1,6 @@
 {
   "name": "minimax-code",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "private": true,
   "description": "MiniMax Code web — React + Python agent",
   "type": "module",

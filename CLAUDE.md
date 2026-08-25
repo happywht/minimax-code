@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MiniMax Code 是一个桌面端 AI 编码 Agent 复刻项目。对标 MiniMax Code 全量功能：多轮对话、技能系统、定时任务、多 Agent 协作、移动互联、授权管理、进度面板。v0.2.0 起从 Tauri 桌面壳切换为 web SPA + 本地 Python agent 架构，v0.3.0 新增 thinking_count 通道、Sub-Agent UI、Git 集成和 Code Review 工作流。
 
-当前版本：**v1.4.2**（2026-08-25）
+当前版本：**v1.5.0**（2026-08-25）
 
 ## 架构总览
 
@@ -22,7 +22,7 @@ Browser (Vite SPA, localhost:5173)
 Python Agent (FastAPI + asyncio, 127.0.0.1:8765)
   |- IPCServer (shared handler registry, 170 methods / 36 namespaces)
   |- AgentCore (conversation loop + LLM streaming)
-  |- ToolRegistry (11 built-in tool modules)
+  |- ToolRegistry (12 built-in tool modules)
   |- SkillRuntime (SKILL.md loader + registry)
   |- SQLite Storage (24 tables + FTS/vector virtual tables, idempotent migrations)
   |- APScheduler (cron jobs)
@@ -251,6 +251,7 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 
 ## 变更记录 (Changelog)
 
+- **2026-08-25** — v1.5.0：写安全专项（CAS + 沙盒 + collect 三层）——① CAS 乐观锁：`read_file` 输出 `sha256`，`write_file`/`edit_file` 收可选 `expected_sha256`（不匹配 fail 带 `current_sha256`），输出 `previous_sha256`/`sha256`，全部从磁盘 bytes 算（Windows 换行翻译坑）；② opt-in per-run 沙盒：`spawn_subagent(sandbox=True)` 写入透明重定向 `<root>/.minimax/sandboxes/<run_id>/`（COW `_base/` 基线、overlay 读覆盖 read/edit 两处、`.minimax/` pass-through、fail-closed），`workspace_ctx.py` 加 `_current_sandbox` ContextVar，新模块 `tools/sandbox.py`（工具模块 11→12）；③ `collect_subagent(run_id, on_conflict)` 三方对比合并（冲突三 sha 全报、`.merged` marker 幂等、fs_bus cause=`collect_subagent`）+ `files_written` 五处传播（含落 run 行重启存活）；37 个新测试（全走 dispatch），pytest 10415；已知限制：exec_command 绕过、search/glob 不 overlay、team 路径不在本期、沙盒不 prune（v1.6 候选）
 - **2026-08-25** — v1.4.2：并发压测回报修复——`TASK_PRECEDENCE_PROMPT` 注入（spawn 拼接顺序 `system_prompt → 任务优先级声明 → completion 协议`），修子 agent 被 workspace 旧 CONTRACT.md 触发、跟随常设角色模板叛变的一次性任务劫持（实测：whiteboard-render-engineer 被派「写 B_*.txt」却重写 17KB wb_render.js）；并发压测其余发现定性入 CHANGELOG（write-write 已有 overwritten+backup 兜底、sha/CAS/沙盒/deadlock 列 backlog、file:modified 在 fs_bus 已存在主 agent 订阅面缺失）；2 个新回归测试，pytest 10375
 - **2026-08-25** — v1.4.1：压测回报 bug 修复——`ToolRegistry.dispatch` 删除 legacy args-dict 误判分支（全库零真实使用者，唯一效果是误伤单参数工具：`check_subagent` 收到整个 args dict 抛 `'dict' object has no attribute 'strip'`、`list_subagents` 的 `include_disabled` 恒 truthy 静默列出 disabled），dispatch 一律 `run(**args)`；`REPORT_PROTOCOL_PROMPT` 加 Budget rule（核心交付物落盘即上报，防 iteration 预算耗尽丢 report；agents 表 `max_iterations=8` 配置过小时尤甚，预算在 UI 可调）；新回归测试走 `registry.dispatch` 全链路（旧测试直接调 `run()` 绕过路由层是漏网根因），pytest 10373
 - **2026-08-25** — v1.4.0：子 Agent 生命周期专项（三层）——① 止血：`Tool.dispatch_timeout` per-tool 超时豁免属性（`core.py` 按工具实例取 effective timeout），`spawn_subagent` 豁免 `tool_timeout` 120s 改受 `MINIMAX_CODE_SUBAGENT_TIMEOUT_S` 墙钟管辖，invoke envelope 透传 `usage`/`cancelled`/`truncated`；② 状态机：工具路径 spawn 全链路落库（migration 028：`agent_runs.mode` CHECK 加 `'subagent'`，`_v28` 后缀索引修复 021 RENAME 残留索引连删坑；`run.list` 加可选 `mode` 过滤）+ `agent.subagent_progress` 事件路由（`_SUBAGENT_EVENT_ROUTES` 按 session 注册 emit，SubAgentPanel 零改动复用）+ 异步化（`wait=false` 后台 task 强引用 + `check_subagent`/`wait_subagent` 取件工具）+ shield 墙钟 partial（超时协作取消、已完成 text/tool_calls 保留、`metadata.partial`）；③ artifact 协议：`<root>/.minimax/artifacts/<run_id>/` 目录约定，spawn 自动写 `BRIEF.md`，子 agent 注入 `report_completion` 工具（克隆 registry + allowlist 追加 + system_prompt 协议段，写 `COMPLETION.md`/`REPORT.json`），主 agent 新增 `read_artifact`（containment 锚定），软强制（未上报 → envelope `reported=false` + 警告）；`_ACTIVE_RUNS` 注册打通 IPC 取消与进程关停；48 个新回归测试（pytest 10366 / vitest 756 全绿）；已知限制：SubAgentPanel UI 态不持久（agent 重启后事件态丢失，run 数据可查 `agent_runs`）、stub 路径永远 `reported=false`

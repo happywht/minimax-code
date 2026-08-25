@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-08-25
+
+### Added — 写安全专项（CAS 乐观锁 + per-run 子 Agent 沙盒 + collect 合并）
+
+并发压测（3 子 agent 并行共享一个 workspace 根）暴露的两项写安全 backlog 独立排期做透（v1.4.2 评估已公示立项承诺）。三层递进，每层独立 opt-in、可独立回退，无 DB migration（沙盒状态纯文件系统，`sandbox`/`files_written` 骑 JSON metadata 列）：
+
+- **层 1 — CAS 乐观锁（全局生效，per-call 可选）**：新 helper `file_sha256(path)`（file_ops.py，流式 1MiB 分块，OSError → None 不抛）。`read_file` 输出加 `sha256`（未截断时 = 全文件磁盘 hash；truncated → null，大文件 CAS 不可用）；`write_file` / `edit_file` 收可选 `expected_sha256`（64-hex）——提供则校验写前磁盘 hash，不匹配 fail 带 `current_sha256` + "re-read the file" 指引（磁盘字节不变），目标已不存在 fail（`file_exists: false`），malformed 提前 fail；输出统一加 `previous_sha256`（覆盖时写前 hash）+ `sha256`（写后）。**所有 sha256 一律从磁盘 bytes 算**——`edit.py` 的 `write_text` 无 newline 参数，Windows 换行翻译使内存字符串 ≠ 磁盘 bytes，内存口径会全盘错位。`edit_file` 的校验插在 read 之后、backup 之前（被挡的 edit 不产生 backup）。TOCTOU 窗口仍在（乐观锁本质，narrowed not eliminated——同 run 并行工具批靠 CAS 二次确认）。
+- **层 2 — opt-in per-run 沙盒（`spawn_subagent(sandbox: bool = False)`）**：sandboxed 子 agent 经 `write_file`/`edit_file` 的全部写入透明重定向到 `<root>/.minimax/sandboxes/<run_id>/`，共享 workspace 在主 agent 合并前零污染。三条设计裁决：① **透明 COW 重定向 > 硬拒绝**（硬拒绝对「子 agent 编辑既有文件」主场景不可用，COW 零 prompt 协作成本）——首次触碰 workspace 既有文件时原件 copy2 进 `<sandbox>/_base/<rel>` 作合并基线（O(touched files)，失败降级为按新文件合并）；`.minimax/` 路径 pass-through（防嵌套/自撞）；**fail-closed**：无 workspace root 或沙盒目录创建失败 → `ToolResult.fail`（静默回退共享 workspace 等于没修）。② **overlay 读覆盖 `read_file` 与 `edit_file` 内部读两处**（一个 `overlay_read_target()` helper）——否则 edit 二次读 workspace 原件会静默丢掉第一次沙盒编辑（正是要消灭的 clobber 类）；重定向时 output 加 `sandboxed: true` + `sandbox_path`（`path` 保持 LLM 视角）。③ `_base/` COW 快照作冲突基线（整库 manifest O(repo)、BackupManager 全局非 run 级、git merge-base 依赖 VCS，全不取）。实现：`workspace_ctx.py` 新增 token 式 `_current_sandbox` ContextVar 三件套（同构 `_current_root`）；新模块 `agent/tools/sandbox.py`（沙盒 lookup helpers，绝不 import 兄弟工具模块防循环）；`subagents.py` `SANDBOX_PROTOCOL_PROMPT` 拼接在 completion 协议之后（教子 agent：写入已沙盒化、read_file 反映自己的写入、优先 write_file/edit_file 而非 shell 写）；`_drive_run` 顶部 set / finally reset token——wait=true inline 与 wait=false `create_task` context 拷贝链全覆盖。默认 false，存量 spawn 零行为变化。
+- **层 3 — `collect_subagent(run_id, on_conflict)` 合并工具（主 agent 侧，子 agent 不可见）**：对每个沙盒文件三方对比（`_base/` 快照 vs workspace 现值 vs 沙盒镜像，全 `file_sha256` 字节级——二进制天然支持，全程无 read_text）：workspace 未动 → merge；两侧一致 → noop；workspace 独立变更 → **冲突**，三 sha + reason 全报绝不静默 clobber；workspace 被删 → 冲突；独立创建 → 冲突。`on_conflict`：`fail`（默认，拒绝整个 collect、不写 marker——人工解决后重跑幂等，已 merge 文件降级 noop）/ `skip`（保留 workspace 版）/ `overwrite`（应用沙盒版，标 `conflict_resolved: "overwrite"`）。in-flight 拒绝（先 wait_subagent）；`.merged` marker 幂等（二次 collect 返回原 report + `already_collected: true`，不重拷贝）；fs_bus 按 created/modified 批量 emit（cause=`collect_subagent`，fail-open）；per-file OSError 进 `errors` 清单 walk 永不中断。
+- **`files_written` 清单五处传播**：`_drive_run` 收尾（root context 仍活时）`sandbox_files_written(run_id)`（fail-open）→ result dict、`completion_metadata`（落 run 行，agent 重启后存活）、`_snapshot`、wait=true envelope、`_lookup_finished_run`——全部条件注入（非沙盒 run 无此 key，输出零噪声）。
+
+### 回归测试（37 个新测试；pytest 10415 / vitest 756 全绿）
+
+- `test_file_cas.py`（12）、`test_subagent_sandbox.py`（14，含 wait=false 后台 ContextVar 链 + fail-closed 双路）、`test_subagent_collect.py`（14，含二进制字节级、fs_bus cause、run 行 files_written、双 collect mtime 不变）。全部走 `registry.dispatch` 全链路（v1.4.1 铁律）。
+
+### 已知限制（本版不做，评估已裁决）
+
+- `exec_command`（shell 写）绕过沙盒重定向——SANDBOX_PROTOCOL 教导优先 write_file/edit_file，不强制（YAGNI）；search/glob/list_directory 不 overlay（视图分裂有界：SANDBOX_PROTOCOL 教「用 read_file 验证」）；team 路径（`teams.spawn` 每 member 新建 runtime、无 run_id）不在本期（后续专项）；沙盒目录合并后不清理（marker 防重复工作，prune 列 v1.6 候选）。
+
 ## [1.4.2] - 2026-08-25
 
 ### Fixed — 并发压测回报的 system prompt 劫持（子 agent 叛变跟随常设角色）
