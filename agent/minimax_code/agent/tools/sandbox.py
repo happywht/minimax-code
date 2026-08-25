@@ -41,11 +41,15 @@ void the very contract the caller opted into.
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
+import time
 from pathlib import Path
+from typing import Any
 
 from ...workspace_ctx import current_root, current_sandbox, env_or_cwd_root
+from .base import Tool, ToolResult, register_tool
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +194,7 @@ def sandbox_files_written(run_id: str) -> list[str]:
 
 __all__ = [
     "BASE_DIR",
+    "CollectSubagentTool",
     "MERGED_MARKER",
     "SANDBOX_RELPATH",
     "overlay_read_target",
@@ -197,3 +202,226 @@ __all__ = [
     "sandbox_files_written",
     "sandbox_root_for",
 ]
+
+
+# ---------------------------------------------------------------------------
+# collect_subagent — main-agent-side merge (v1.5.0 layer 3)
+# ---------------------------------------------------------------------------
+
+
+def _emit_collect(emits: dict[str, list[str]]) -> None:
+    """Mirror merged files onto the causal file-change bus (fail-open)."""
+    try:
+        from ...app import ensure_fs_bus
+
+        bus = ensure_fs_bus()
+        if bus is None:
+            return
+        for kind, paths in emits.items():
+            if paths:
+                bus.emit(kind, paths, "collect_subagent")
+    except Exception:  # noqa: BLE001 — collect must never break on the bus
+        logger.debug("collect_subagent fs_bus emit failed", exc_info=True)
+
+
+@register_tool
+class CollectSubagentTool(Tool):
+    """Merge a finished sandboxed run's writes back into the workspace.
+
+    Three-way compare per file — the ``_base/`` COW snapshot (what the
+    workspace looked like when the run first touched the file), the
+    workspace's current bytes, and the sandbox mirror's bytes, all
+    hashed at the byte level so binaries merge as first-class citizens:
+
+    * workspace unchanged since the snapshot → apply the sandbox version
+    * workspace already equals the sandbox version → no-op
+    * workspace changed independently → **conflict**, surfaced with all
+      three hashes rather than silently clobbered
+
+    ``on_conflict`` decides what happens to conflicts: ``fail`` refuses
+    the whole collect (no marker written — resolve manually and re-run,
+    already-merged files degrade to no-ops so the re-run is idempotent);
+    ``skip`` keeps the workspace version; ``overwrite`` applies the
+    sandbox version. A successful collect writes the ``.merged`` marker
+    making subsequent collects no-ops.
+    """
+
+    name = "collect_subagent"
+    description = (
+        "Merge a finished sandboxed sub-agent run's sandbox writes back "
+        "into the shared workspace. Call after wait_subagent/check_subagent "
+        "reports completion. Reports per-file merges, no-ops and conflicts "
+        "with full sha256 fingerprints; on_conflict picks the policy for "
+        "workspace-vs-sandbox divergence (fail=stop and report, "
+        "skip=keep workspace, overwrite=apply sandbox)."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "run_id": {
+                "type": "string",
+                "description": "The sandboxed run to collect (from spawn_subagent).",
+            },
+            "on_conflict": {
+                "type": "string",
+                "enum": ["fail", "skip", "overwrite"],
+                "default": "fail",
+                "description": (
+                    "Policy when the workspace copy changed independently "
+                    "since the sandbox snapshot: 'fail' refuses the collect "
+                    "and reports all three hashes; 'skip' keeps the workspace "
+                    "version; 'overwrite' applies the sandbox version."
+                ),
+            },
+        },
+        "required": ["run_id"],
+        "additionalProperties": False,
+    }
+
+    async def run(self, **kwargs: Any) -> ToolResult:
+        run_id = kwargs.get("run_id")
+        on_conflict = kwargs.get("on_conflict", "fail") or "fail"
+        if not isinstance(run_id, str) or not run_id.strip():
+            return ToolResult.fail("'run_id' must be a non-empty string")
+        run_id = run_id.strip()
+        if on_conflict not in ("fail", "skip", "overwrite"):
+            return ToolResult.fail(
+                "'on_conflict' must be one of: fail, skip, overwrite"
+            )
+
+        # In-flight guard: merging under a live run races its own writes.
+        from ...orchestrator.subagent import get_background_run
+
+        if get_background_run(run_id) is not None:
+            return ToolResult.fail(
+                f"run {run_id!r} is still in flight — wait_subagent first, "
+                "then collect"
+            )
+
+        sb_dir = sandbox_root_for(run_id)
+        if sb_dir is None or not sb_dir.is_dir():
+            return ToolResult.fail(
+                f"no sandbox found for run {run_id!r} (the run never opted "
+                "into sandbox=true, or the sandbox tree was pruned)"
+            )
+
+        # Idempotence: a second collect returns the first run's report.
+        marker = sb_dir / MERGED_MARKER
+        if marker.exists():
+            prior: dict[str, Any] = {}
+            try:
+                prior = json.loads(marker.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                pass
+            return ToolResult.ok({**prior, "already_collected": True})
+
+        from .file_ops import file_sha256
+
+        root = _workspace_root()
+        assert root is not None  # sandbox_root_for resolved, so root exists
+
+        merged: list[dict[str, Any]] = []
+        noop: list[str] = []
+        conflicts: list[dict[str, Any]] = []
+        skipped: list[str] = []
+        errors: list[dict[str, Any]] = []
+        emits: dict[str, list[str]] = {"created": [], "modified": []}
+
+        for rel in sandbox_files_written(run_id):
+            try:
+                sb_file = sb_dir.joinpath(*rel.split("/"))
+                base_file = (sb_dir / BASE_DIR).joinpath(*rel.split("/"))
+                ws_file = root.joinpath(*rel.split("/"))
+
+                sb_sha = file_sha256(sb_file)
+                if sb_sha is None:
+                    errors.append(
+                        {"path": rel, "error": "sandbox copy is unreadable"}
+                    )
+                    continue
+                has_base = base_file.exists()
+                base_sha = file_sha256(base_file) if has_base else None
+                ws_existed = ws_file.exists()
+                cur_sha = file_sha256(ws_file) if ws_existed else None
+
+                # Classify: conflict, no-op, or merge.
+                conflict_reason = ""
+                if has_base:
+                    if cur_sha is None:
+                        conflict_reason = "workspace copy was deleted after the sandbox snapshot"
+                    elif cur_sha != base_sha and cur_sha != sb_sha:
+                        conflict_reason = "workspace copy changed since the sandbox snapshot"
+                elif cur_sha is not None and cur_sha != sb_sha:
+                    conflict_reason = "file was created independently in the workspace"
+
+                if not conflict_reason and cur_sha == sb_sha:
+                    noop.append(rel)
+                    continue
+
+                if conflict_reason:
+                    entry = {
+                        "path": rel,
+                        "reason": conflict_reason,
+                        "sandbox_sha256": sb_sha,
+                    }
+                    if base_sha is not None:
+                        entry["base_sha256"] = base_sha
+                    if cur_sha is not None:
+                        entry["current_sha256"] = cur_sha
+                    if on_conflict == "fail":
+                        conflicts.append(entry)
+                    elif on_conflict == "skip":
+                        skipped.append(rel)
+                    else:  # overwrite — resolve by applying the sandbox bytes
+                        ws_file.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(sb_file, ws_file)
+                        merged.append(
+                            {"path": rel, "conflict_resolved": "overwrite"}
+                        )
+                        emits["modified"].append(str(ws_file))
+                    continue
+
+                # Clean merge: workspace still at the baseline (or absent).
+                ws_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(sb_file, ws_file)
+                merged.append({"path": rel})
+                emits["created" if not ws_existed else "modified"].append(
+                    str(ws_file)
+                )
+            except OSError as exc:
+                errors.append({"path": rel, "error": str(exc)})
+                continue  # the walk must survive any single bad file
+
+        _emit_collect(emits)
+
+        report: dict[str, Any] = {
+            "run_id": run_id,
+            "sandbox_dir": str(sb_dir),
+            "strategy": on_conflict,
+            "merged": merged,
+            "noop": noop,
+            "conflicts": conflicts,
+            "skipped": skipped,
+            "errors": errors,
+            "collected_at": time.time(),
+        }
+
+        if conflicts:
+            # 'fail' policy: refuse without the marker so a manual
+            # resolution + re-run stays idempotent (already-merged
+            # files come back as no-ops).
+            return ToolResult.fail(
+                f"collect_subagent: {len(conflicts)} conflict(s) between the "
+                "workspace and the sandbox — resolve manually or re-run with "
+                "on_conflict=skip/overwrite; no marker was written",
+                output=report,
+            )
+
+        try:
+            marker.write_text(
+                json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except OSError:
+            logger.debug("collect marker write failed for %s", run_id, exc_info=True)
+
+        return ToolResult.ok(report)

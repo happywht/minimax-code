@@ -62,7 +62,7 @@ async def _emit_safe(emit: Any, event: dict[str, Any]) -> None:
 
 def _snapshot(run_id: str, result: dict[str, Any]) -> dict[str, Any]:
     """Project an invoke envelope into the check/wait response shape."""
-    return {
+    snap: dict[str, Any] = {
         "run_id": run_id,
         "status": "cancelled" if result.get("cancelled") else "completed",
         "partial": bool(result.get("partial", False)),
@@ -74,6 +74,9 @@ def _snapshot(run_id: str, result: dict[str, Any]) -> dict[str, Any]:
         "truncated": bool(result.get("truncated", False)),
         "reported": bool(result.get("reported", False)),
     }
+    if result.get("files_written") is not None:
+        snap["files_written"] = result["files_written"]
+    return snap
 
 
 def _agent_summary(row: dict[str, Any]) -> dict[str, Any]:
@@ -339,13 +342,30 @@ async def _drive_run(
             reset_sandbox(sandbox_token)
 
     cancelled = bool(result.get("cancelled", False)) or partial
+    # v1.5.0 — surface what the sandbox holds before the root scope goes
+    # away; the main agent merges it with collect_subagent. Fail-open:
+    # an I/O hiccup downgrades to an absent key, never a failed run.
+    files_written: list[str] | None = None
+    if run_metadata.get("sandbox"):
+        try:
+            from .sandbox import sandbox_files_written
+
+            files_written = sandbox_files_written(run_id)
+        except Exception:  # noqa: BLE001 — manifest is advisory
+            files_written = None
     # v1.4.0 — soft enforcement: did the sub-agent publish its handoff?
     # The probe is file-based (fail-open False) so a missing workspace
     # root or an I/O hiccup only downgrades the flag, never the run.
     from .artifacts import completion_reported
 
     reported = completion_reported(run_id)
-    result = {**result, "cancelled": cancelled, "partial": partial, "reported": reported}
+    result = {
+        **result,
+        "cancelled": cancelled,
+        "partial": partial,
+        "reported": reported,
+        **({"files_written": files_written} if files_written is not None else {}),
+    }
     summary_text = str(result.get("text", ""))
     completion_metadata = {
         **run_metadata,
@@ -356,6 +376,9 @@ async def _drive_run(
         # check_subagent / wait_subagent read the outcome from the run
         # row once the task is gone (agent restart, late poll).
         "result_text": summary_text,
+        # v1.5.0 — sandbox manifest; survives restarts on the run row so
+        # a post-restart collect_subagent still knows what to merge.
+        **({"files_written": files_written} if files_written is not None else {}),
     }
     if run_dao is not None:
         try:
@@ -696,6 +719,12 @@ class SpawnSubagentTool(Tool):
             # v1.5.0 — mirrors the spawn flag; a sandboxed run's files
             # live under .minimax/sandboxes/<run_id>/ until collected.
             "sandbox": bool(sandbox),
+            # v1.5.0 — sandbox manifest for the follow-up collect call.
+            **(
+                {"files_written": result["files_written"]}
+                if result.get("files_written") is not None
+                else {}
+            ),
             **artifact,
         }
         if not envelope["reported"]:
@@ -733,6 +762,12 @@ async def _lookup_finished_run(run_id: str) -> ToolResult:
             "iterations": meta.get("iterations", 0),
             "reported": bool(meta.get("reported", False)),
             "error": row.get("error"),
+            # v1.5.0 — sandbox manifest off the persisted run row.
+            **(
+                {"files_written": meta["files_written"]}
+                if meta.get("files_written") is not None
+                else {}
+            ),
         }
     )
 

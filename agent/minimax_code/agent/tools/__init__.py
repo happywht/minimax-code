@@ -24,6 +24,7 @@ from .file_ops import (
     safe_resolve,
 )
 from .glob import GlobFindTool
+from .sandbox import CollectSubagentTool
 from .search import SearchFilesTool
 from .subagents import (
     CheckSubagentTool,
@@ -44,6 +45,7 @@ __all__ = [
     "AskUserTool",
     "BRIEF_NAME",
     "CheckSubagentTool",
+    "CollectSubagentTool",
     "EditFileTool",
     "GlobFindTool",
     "ListDirectoryTool",
