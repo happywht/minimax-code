@@ -166,3 +166,32 @@ def test_report_protocol_prompt_mentions_budget_rule() -> None:
 
     assert "Budget rule" in REPORT_PROTOCOL_PROMPT
     assert "iteration budget" in REPORT_PROTOCOL_PROMPT
+
+
+def test_task_precedence_prompt_pins_assignment_over_role() -> None:
+    """v1.4.2 field report: a spawned sub-agent discovered an old
+    CONTRACT.md in the workspace and followed its standing system-prompt
+    role ("implement the whiteboard renderer") instead of the one-off
+    assignment in the first user message. The injected paragraph must
+    state that the current assignment outranks the standing role."""
+    from minimax_code.agent.tools.subagents import TASK_PRECEDENCE_PROMPT
+
+    assert "current assignment" in TASK_PRECEDENCE_PROMPT
+    assert "takes precedence" in TASK_PRECEDENCE_PROMPT
+    # Workspace files are context, never a mandate to reinterpret the task.
+    assert "context only" in TASK_PRECEDENCE_PROMPT
+
+
+def test_spawn_injection_order_precedence_before_protocol() -> None:
+    """The composition must be: agent prompt → task precedence →
+    completion protocol. Precedence has to arrive before the report
+    instructions so the model reads the priority rule first."""
+    from minimax_code.agent.tools import subagents as mod
+
+    assert mod.TASK_PRECEDENCE_PROMPT != mod.REPORT_PROTOCOL_PROMPT
+    # The composition happens inline in SpawnSubagentTool.run; pin the
+    # ordering by checking the source keeps the tuple order.
+    import inspect
+
+    src = inspect.getsource(mod.SpawnSubagentTool.run)
+    assert src.index("TASK_PRECEDENCE_PROMPT") < src.index("REPORT_PROTOCOL_PROMPT")

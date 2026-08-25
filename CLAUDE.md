@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MiniMax Code 是一个桌面端 AI 编码 Agent 复刻项目。对标 MiniMax Code 全量功能：多轮对话、技能系统、定时任务、多 Agent 协作、移动互联、授权管理、进度面板。v0.2.0 起从 Tauri 桌面壳切换为 web SPA + 本地 Python agent 架构，v0.3.0 新增 thinking_count 通道、Sub-Agent UI、Git 集成和 Code Review 工作流。
 
-当前版本：**v1.4.1**（2026-08-25）
+当前版本：**v1.4.2**（2026-08-25）
 
 ## 架构总览
 
@@ -251,6 +251,7 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 
 ## 变更记录 (Changelog)
 
+- **2026-08-25** — v1.4.2：并发压测回报修复——`TASK_PRECEDENCE_PROMPT` 注入（spawn 拼接顺序 `system_prompt → 任务优先级声明 → completion 协议`），修子 agent 被 workspace 旧 CONTRACT.md 触发、跟随常设角色模板叛变的一次性任务劫持（实测：whiteboard-render-engineer 被派「写 B_*.txt」却重写 17KB wb_render.js）；并发压测其余发现定性入 CHANGELOG（write-write 已有 overwritten+backup 兜底、sha/CAS/沙盒/deadlock 列 backlog、file:modified 在 fs_bus 已存在主 agent 订阅面缺失）；2 个新回归测试，pytest 10375
 - **2026-08-25** — v1.4.1：压测回报 bug 修复——`ToolRegistry.dispatch` 删除 legacy args-dict 误判分支（全库零真实使用者，唯一效果是误伤单参数工具：`check_subagent` 收到整个 args dict 抛 `'dict' object has no attribute 'strip'`、`list_subagents` 的 `include_disabled` 恒 truthy 静默列出 disabled），dispatch 一律 `run(**args)`；`REPORT_PROTOCOL_PROMPT` 加 Budget rule（核心交付物落盘即上报，防 iteration 预算耗尽丢 report；agents 表 `max_iterations=8` 配置过小时尤甚，预算在 UI 可调）；新回归测试走 `registry.dispatch` 全链路（旧测试直接调 `run()` 绕过路由层是漏网根因），pytest 10373
 - **2026-08-25** — v1.4.0：子 Agent 生命周期专项（三层）——① 止血：`Tool.dispatch_timeout` per-tool 超时豁免属性（`core.py` 按工具实例取 effective timeout），`spawn_subagent` 豁免 `tool_timeout` 120s 改受 `MINIMAX_CODE_SUBAGENT_TIMEOUT_S` 墙钟管辖，invoke envelope 透传 `usage`/`cancelled`/`truncated`；② 状态机：工具路径 spawn 全链路落库（migration 028：`agent_runs.mode` CHECK 加 `'subagent'`，`_v28` 后缀索引修复 021 RENAME 残留索引连删坑；`run.list` 加可选 `mode` 过滤）+ `agent.subagent_progress` 事件路由（`_SUBAGENT_EVENT_ROUTES` 按 session 注册 emit，SubAgentPanel 零改动复用）+ 异步化（`wait=false` 后台 task 强引用 + `check_subagent`/`wait_subagent` 取件工具）+ shield 墙钟 partial（超时协作取消、已完成 text/tool_calls 保留、`metadata.partial`）；③ artifact 协议：`<root>/.minimax/artifacts/<run_id>/` 目录约定，spawn 自动写 `BRIEF.md`，子 agent 注入 `report_completion` 工具（克隆 registry + allowlist 追加 + system_prompt 协议段，写 `COMPLETION.md`/`REPORT.json`），主 agent 新增 `read_artifact`（containment 锚定），软强制（未上报 → envelope `reported=false` + 警告）；`_ACTIVE_RUNS` 注册打通 IPC 取消与进程关停；48 个新回归测试（pytest 10366 / vitest 756 全绿）；已知限制：SubAgentPanel UI 态不持久（agent 重启后事件态丢失，run 数据可查 `agent_runs`）、stub 路径永远 `reported=false`
 - **2026-08-24** — v1.3.0：Per-Project Workspace Root 专项（严格隔离）——项目可绑定 `root_path`（migration 026；`project.create/update` 收 `root_path`，须为已存在目录）；新模块 `workspace_ctx.py` 按「worktree 会话路径 > 项目根 > `MINIMAX_CODE_WORKSPACE` > cwd」解析，ContextVar 按 task 隔离，`send_message`/续跑/子 agent/团队全链路注入 + system prompt 条件化提示；`file_ops._default_workspace()` 单点接线使 10 工具 + 8 builtin 技能工具 + BackupManager 零签名改动生效，严格 containment（项目 A 会话相对/绝对路径均不得越出 A 根，越界 `PathSecurityError`/`-32602`）；codebase 索引 per-root（migration 027：chunks 加 root 列 + file_meta 复合 PK，修跨根误删 + dev 脚本索引根错位存量 bug，`_CODEBASE_INDEXERS` 按根缓存）；`git.*`/`patch.*`/`codebase.*`/`terminal.start`/`workspace.create_worktree_session` 加可选 `project_id`（无参 = 存量行为零破坏，未知 id 快速失败）；checkpoint 后端自解析会话根；前端 `Project.root_path` 类型、新建项目 Modal 根目录输入、WorkspaceSwitcher 根路径 tooltip、git/codebase/patch store action 自动注入 `currentProjectId`、`createWorktree` 去硬编码 inbox；87 个新回归测试（Python 78 + web 9），pytest 10318 / vitest 756 全绿；已知限制：PreviewState 仍进程级根

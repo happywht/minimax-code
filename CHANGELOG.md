@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-08-25
+
+### Fixed — 并发压测回报的 system prompt 劫持（子 agent 叛变跟随常设角色）
+
+- **`TASK_PRECEDENCE_PROMPT` 注入**：并发压测实测——`whiteboard-render-engineer`（agents 表 system prompt 写死「实现渲染引擎」）被派发一次性任务「写 B_*.txt」，因 workspace 里的旧 CONTRACT.md「本能被触发」，跑去重写 17KB 的 `wb_render.js`。根因：spawn 注入段只有 completion 协议、没有任务优先级声明，常设角色模板压过首条 user message 的一次性任务。现在拼接顺序为 `agent system_prompt → TASK_PRECEDENCE_PROMPT（当前任务优先于常设角色，workspace 文件只是 context，冲突时跟随当前任务并在上报中注明）→ REPORT_PROTOCOL_PROMPT`。两个新回归测试（常量内容锚点 + 注入顺序），pytest 10375。
+- **并发压测其余发现定性**（未修，记录结论）：write-write last-write-wins 属实但已有 `overwritten` 返回标志 + BackupManager 预写备份（`.minimax/backups/` 10 份/文件）兜底；`previous_sha`/CAS/per-run 沙盒/deadlock 检测为架构级 backlog（CAS 立项时一并做内容指纹，避免读了没人消费的字段）；`file:modified` 事件在进程内 fs_bus 已存在，主 agent LLM 订阅面缺失。
+
 ## [1.4.1] - 2026-08-25
 
 ### Fixed — 真实环境压测（3 sub-agent 并行协作白板）回报的 dispatch 路由 bug
