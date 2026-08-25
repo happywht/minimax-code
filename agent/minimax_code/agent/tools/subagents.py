@@ -131,6 +131,32 @@ REPORT_PROTOCOL_PROMPT = (
     "Skipping it leaves the run flagged as unreported.\n"
 )
 
+# v1.5.0 — the sandbox paragraph, appended last when the spawn opted
+# into per-run write isolation. Transparent by design: the sub-agent
+# keeps using ordinary workspace paths and the tool layer redirects
+# writes into the run's sandbox (COW snapshot on first touch). The
+# search-view caveat is the one known limitation the paragraph must
+# teach — search/glob/list show the workspace, not the sandbox.
+SANDBOX_PROTOCOL_PROMPT = (
+    "\n## Write sandbox\n\n"
+    "This run is sandboxed: every file you write or edit through "
+    "`write_file` / `edit_file` lands in this run's private sandbox — "
+    "the shared workspace stays untouched until the main agent merges "
+    "your output. Nothing changes for you:\n"
+    "- Keep using normal workspace paths exactly as you would.\n"
+    "- `read_file` reflects your own writes (your view: your sandbox "
+    "edits + every untouched original).\n"
+    "- Prefer `write_file` / `edit_file` over writing via "
+    "`exec_command` — shell writes bypass the sandbox and hit the "
+    "shared workspace directly.\n"
+    "- `search_files` / `find_files` / `list_directory` show the "
+    "workspace view, NOT your sandboxed writes — verify current file "
+    "state with `read_file` instead.\n"
+    "When this run finishes, the main agent merges your sandbox "
+    "output; conflicts against workspace changes are surfaced "
+    "explicitly, never silently overwritten.\n"
+)
+
 
 def _clone_registry_with_report(run_id: str, agent_name: str) -> Any:
     """Clone the default registry + the run's ``report_completion`` tool.
@@ -208,6 +234,20 @@ async def _drive_run(
     ``partial`` flag when the wall clock fired).
     """
     from ...orchestrator.subagent import subagent_wall_clock_s
+
+    # v1.5.0 — publish the per-run sandbox for the whole drive. Both
+    # spawn paths reach here with a context carrying the session root;
+    # file_ops/edit then pick the sandbox up via the ContextVar
+    # (overlay reads + redirected writes). Reset in the finally below
+    # so nothing leaks into sibling runs on the caller's side.
+    sandbox_token = None
+    if run_metadata.get("sandbox"):
+        from ...workspace_ctx import set_sandbox
+        from .sandbox import sandbox_root_for
+
+        sb_dir = sandbox_root_for(run_id)
+        if sb_dir is not None:
+            sandbox_token = set_sandbox(sb_dir)
 
     agent_id = row.get("id")
     emit_event = lambda status, progress, summary, **kw: _subagent_event(  # noqa: E731
@@ -293,6 +333,10 @@ async def _drive_run(
             pass
         handle.core.on_tool_call = prev_on_tool_call
         handle.core.on_tool_result = prev_on_tool_result
+        if sandbox_token is not None:
+            from ...workspace_ctx import reset_sandbox
+
+            reset_sandbox(sandbox_token)
 
     cancelled = bool(result.get("cancelled", False)) or partial
     # v1.4.0 — soft enforcement: did the sub-agent publish its handoff?
@@ -402,6 +446,17 @@ class SpawnSubagentTool(Tool):
                 ),
                 "default": True,
             },
+            "sandbox": {
+                "type": "boolean",
+                "description": (
+                    "Opt into per-run write isolation (default false): the "
+                    "sub-agent's file writes are redirected to a private "
+                    "sandbox directory and merged back afterwards with "
+                    "collect_subagent(run_id). Use true when parallel "
+                    "sub-agents may touch the same files."
+                ),
+                "default": False,
+            },
         },
         "required": ["agent_name", "prompt"],
         "additionalProperties": False,
@@ -413,6 +468,7 @@ class SpawnSubagentTool(Tool):
         prompt: str,
         parent_session_id: str | None = None,
         wait: bool = True,
+        sandbox: bool = False,
     ) -> ToolResult:
         # v1.4.0 — exempt this dispatch from the generic tool_timeout
         # ceiling: a sub-agent legitimately runs a whole agent loop
@@ -448,6 +504,27 @@ class SpawnSubagentTool(Tool):
         # report_completion tool injected below can bind to it.
         run_id = f"run_{uuid.uuid4().hex[:12]}"
 
+        # v1.5.0 — sandbox fail-closed guard. A sandbox the caller
+        # explicitly asked for is a safety contract, not a nicety: if
+        # the directory cannot be created (or no root resolves), fail
+        # the spawn rather than silently running unsandboxed against
+        # the shared workspace. This is deliberately stricter than the
+        # fail-open artifacts/emit family elsewhere in this file.
+        if sandbox:
+            from .sandbox import sandbox_root_for
+
+            sb_dir = sandbox_root_for(run_id)
+            if sb_dir is None:  # pragma: no cover — env_or_cwd_root always yields
+                return ToolResult.fail(
+                    "sandbox requested but no workspace root could be resolved"
+                )
+            try:
+                sb_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                return ToolResult.fail(
+                    f"sandbox requested but directory creation failed: {exc}"
+                )
+
         config = SubAgentConfig(
             name=row["name"],
             system_prompt=row.get("system_prompt") or "",
@@ -473,6 +550,8 @@ class SpawnSubagentTool(Tool):
         # v1.4.2 — TASK_PRECEDENCE_PROMPT sits between the agent's own
         # prompt and the protocol so the current assignment outranks the
         # standing role template (field-reported hijack fix).
+        # v1.5.0 — SANDBOX_PROTOCOL_PROMPT goes last, only when the
+        # spawn opted into write isolation.
         config.tool_allowlist = (
             None
             if config.tool_allowlist is None
@@ -482,6 +561,7 @@ class SpawnSubagentTool(Tool):
             config.system_prompt.rstrip()
             + TASK_PRECEDENCE_PROMPT
             + REPORT_PROTOCOL_PROMPT
+            + (SANDBOX_PROTOCOL_PROMPT if sandbox else "")
         )
         runtime = get_subagent_runtime() or SubAgentRuntime()
         handle = runtime.build(
@@ -527,6 +607,10 @@ class SpawnSubagentTool(Tool):
             "agent_id": row.get("id"),
             "prompt": prompt,
             "source": "tool",
+            # v1.5.0 — rides the JSON metadata column (no migration):
+            # _drive_run reads it to publish the sandbox ContextVar and
+            # the collect path reads it after restarts.
+            "sandbox": bool(sandbox),
         }
         run_dao: Any = None
         try:
@@ -582,6 +666,9 @@ class SpawnSubagentTool(Tool):
                     "parent_session_id": parent,
                     "status": "running",
                     "wait": False,
+                    # v1.5.0 — tell the caller this run writes are
+                    # isolated and a collect step is expected.
+                    "sandbox": bool(sandbox),
                     **artifact,
                     "hint": (
                         "running in background — poll check_subagent(run_id) "
@@ -606,6 +693,9 @@ class SpawnSubagentTool(Tool):
             "partial": bool(result.get("partial", False)),
             "truncated": bool(result.get("truncated", False)),
             "reported": bool(result.get("reported", False)),
+            # v1.5.0 — mirrors the spawn flag; a sandboxed run's files
+            # live under .minimax/sandboxes/<run_id>/ until collected.
+            "sandbox": bool(sandbox),
             **artifact,
         }
         if not envelope["reported"]:

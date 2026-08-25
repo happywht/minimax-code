@@ -25,6 +25,7 @@ from typing import Any
 
 from ...workspace_ctx import current_root, env_or_cwd_root
 from .base import Tool, ToolResult, register_tool
+from .sandbox import overlay_read_target, redirect_write_target
 
 # ---------------------------------------------------------------------------
 # Path-safety policy
@@ -194,9 +195,14 @@ class ReadFileTool(Tool):
         except PathSecurityError as exc:
             return ToolResult.fail(str(exc))
 
-        if not target.exists():
+        # v1.5.0 sandbox: reads resolve through the overlay — the
+        # sub-agent sees its own sandboxed writes plus the untouched
+        # workspace originals (see sandbox.overlay_read_target).
+        read_target = overlay_read_target(target)
+
+        if not read_target.exists():
             return ToolResult.fail(f"file not found: {target}")
-        if target.is_dir():
+        if read_target.is_dir():
             return ToolResult.fail(f"path is a directory, not a file: {target}")
 
         max_bytes = int(kwargs.get("max_bytes") or 1_048_576)
@@ -204,7 +210,7 @@ class ReadFileTool(Tool):
         end_line = kwargs.get("end_line")
 
         try:
-            with target.open("rb") as fh:
+            with read_target.open("rb") as fh:
                 data = fh.read(max_bytes + 1)
         except OSError as exc:
             return ToolResult.fail(f"read failed: {exc}")
@@ -245,13 +251,17 @@ class ReadFileTool(Tool):
             selected = lines[s - 1 : e]
             text = "\n".join(selected) + ("\n" if selected and e < len(lines) else "")
 
+        output: dict[str, Any] = {
+            "path": str(target),
+            "content": text,
+            "truncated": truncated,
+            "sha256": sha,
+        }
+        if read_target != target:
+            output["sandboxed"] = True
+            output["sandbox_path"] = str(read_target)
         return ToolResult.ok(
-            output={
-                "path": str(target),
-                "content": text,
-                "truncated": truncated,
-                "sha256": sha,
-            },
+            output=output,
             total_lines=total_lines,
             returned_bytes=len(text.encode("utf-8")),
         )
@@ -303,16 +313,25 @@ class WriteFileTool(Tool):
         except PathSecurityError as exc:
             return ToolResult.fail(str(exc))
 
-        if target.exists() and target.is_dir():
+        # v1.5.0 sandbox: CAS verifies the overlay read view (mirror if
+        # present, workspace original otherwise); the write itself is
+        # redirected into the sandbox mirror with a COW baseline
+        # snapshot of the original on first touch. Without a sandbox
+        # both collapse onto ``target`` — byte-for-byte the v1.5.0-CAS
+        # behavior.
+        read_target = overlay_read_target(target)
+        write_target = redirect_write_target(target)
+
+        if read_target.exists() and read_target.is_dir():
             return ToolResult.fail(f"path is an existing directory: {target}")
 
-        existed = target.exists()
+        existed = read_target.exists()
 
         # v1.5.0 CAS — optimistic lock. Hash the on-disk bytes *before*
         # the write; if the caller's last-read fingerprint no longer
         # matches, someone else touched the file and we refuse rather
         # than silently clobber (the v1.4.2 field report's finding #2).
-        previous_sha = file_sha256(target) if existed else None
+        previous_sha = file_sha256(read_target) if existed else None
         expected = kwargs.get("expected_sha256")
         if expected is not None:
             if not isinstance(expected, str) or len(expected) != 64:
@@ -340,27 +359,29 @@ class WriteFileTool(Tool):
                 )
 
         # Pre-write backup for existing files (best-effort, never blocks).
+        # Backs up the file being overwritten as the caller sees it —
+        # the sandbox mirror when sandboxed, the original otherwise.
         backup_meta = None
         if existed:
             try:
                 from ..backup import BackupManager
-                backup_meta = BackupManager().backup(target)
+                backup_meta = BackupManager().backup(read_target)
             except Exception:
                 pass
 
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
+            write_target.parent.mkdir(parents=True, exist_ok=True)
             # ``newline=""`` keeps the bytes the caller passed
             # verbatim — without it, Python on Windows would
             # silently rewrite ``\n`` to ``\r\n``, surprising
             # callers (and us) on round-trip.
-            with target.open("w", encoding="utf-8", newline="") as fh:
+            with write_target.open("w", encoding="utf-8", newline="") as fh:
                 fh.write(content)
         except OSError as exc:
             return ToolResult.fail(f"write failed: {exc}")
 
-        size = target.stat().st_size
-        new_sha = file_sha256(target)
+        size = write_target.stat().st_size
+        new_sha = file_sha256(write_target)
         # R16 — mirror the successful write onto the causal file-change bus.
         # Fail-open: a bus failure must never break the tool that just wrote.
         try:
@@ -370,22 +391,26 @@ class WriteFileTool(Tool):
             if bus is not None:
                 bus.emit(
                     "created" if not existed else "modified",
-                    [str(target)],
+                    [str(write_target)],
                     "write_file",
                     size_bytes=size,
                 )
         except Exception:  # noqa: BLE001 — file write must never break on the bus
             pass
+        output: dict[str, Any] = {
+            "path": str(target),
+            "created": not existed,
+            "overwritten": existed,
+            "size_bytes": size,
+            "previous_sha256": previous_sha,
+            "sha256": new_sha,
+            **({"backup": backup_meta} if backup_meta else {}),
+        }
+        if write_target != target:
+            output["sandboxed"] = True
+            output["sandbox_path"] = str(write_target)
         return ToolResult.ok(
-            output={
-                "path": str(target),
-                "created": not existed,
-                "overwritten": existed,
-                "size_bytes": size,
-                "previous_sha256": previous_sha,
-                "sha256": new_sha,
-                **({"backup": backup_meta} if backup_meta else {}),
-            },
+            output=output,
             created=not existed,
             size_bytes=size,
         )

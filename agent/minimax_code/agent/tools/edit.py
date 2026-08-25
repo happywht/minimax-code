@@ -15,6 +15,7 @@ from typing import Any
 
 from .base import Tool, ToolResult, register_tool
 from .file_ops import PathSecurityError, file_sha256, safe_resolve
+from .sandbox import overlay_read_target, redirect_write_target
 
 
 @register_tool
@@ -71,13 +72,23 @@ class EditFileTool(Tool):
         except PathSecurityError as exc:
             return ToolResult.fail(str(exc))
 
-        if not target.exists():
+        # v1.5.0 sandbox: edit_file's internal read routes through the
+        # overlay too — otherwise the second edit of the same file
+        # would resurrect the workspace original and silently lose the
+        # first sandboxed edit (the exact clobber class the sandbox
+        # exists to prevent). CAS + backup verify the overlay view;
+        # the rewrite lands in the sandbox mirror. Without a sandbox
+        # both collapse onto ``target``.
+        read_target = overlay_read_target(target)
+        write_target = redirect_write_target(target)
+
+        if not read_target.exists():
             return ToolResult.fail(f"file not found: {target}")
-        if target.is_dir():
+        if read_target.is_dir():
             return ToolResult.fail(f"path is a directory: {target}")
 
         try:
-            original = target.read_text(encoding="utf-8")
+            original = read_target.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             return ToolResult.fail("file is not valid UTF-8")
         except OSError as exc:
@@ -89,7 +100,7 @@ class EditFileTool(Tool):
         # This closes edit_file's blind spot: ``old_string`` matching
         # only guards the matched region; concurrent changes elsewhere
         # in the file used to be silently clobbered by the rewrite.
-        previous_sha = file_sha256(target)
+        previous_sha = file_sha256(read_target)
         expected = kwargs.get("expected_sha256")
         if expected is not None:
             if not isinstance(expected, str) or len(expected) != 64:
@@ -114,7 +125,7 @@ class EditFileTool(Tool):
         backup_meta = None
         try:
             from ..backup import BackupManager
-            backup_meta = BackupManager().backup(target)
+            backup_meta = BackupManager().backup(read_target)
         except Exception:
             pass
 
@@ -137,13 +148,13 @@ class EditFileTool(Tool):
             updated = original.replace(old, new, 1)
 
         try:
-            target.write_text(updated, encoding="utf-8")
+            write_target.write_text(updated, encoding="utf-8")
         except OSError as exc:
             return ToolResult.fail(f"write failed: {exc}")
 
         # Hash the bytes that actually landed (write_text applies
         # platform newline translation on Windows) — see file_sha256.
-        new_sha = file_sha256(target)
+        new_sha = file_sha256(write_target)
 
         changed_lines, removed, added = _line_delta(original, updated)
         diff = "".join(
@@ -165,7 +176,7 @@ class EditFileTool(Tool):
             if bus is not None:
                 bus.emit(
                     "modified",
-                    [str(target)],
+                    [str(write_target)],
                     "edit_file",
                     lines_added=added,
                     lines_removed=removed,
@@ -173,18 +184,23 @@ class EditFileTool(Tool):
         except Exception:  # noqa: BLE001 — file edit must never break on the bus
             pass
 
+        output: dict[str, Any] = {
+            "path": str(target),
+            "replacements": occurrences if replace_all else 1,
+            "changed_lines": changed_lines,
+            "lines_removed": removed,
+            "lines_added": added,
+            "diff": diff,
+            "previous_sha256": previous_sha,
+            "sha256": new_sha,
+            **({"backup": backup_meta} if backup_meta else {}),
+        }
+        if write_target != target:
+            output["sandboxed"] = True
+            output["sandbox_path"] = str(write_target)
+
         return ToolResult.ok(
-            output={
-                "path": str(target),
-                "replacements": occurrences if replace_all else 1,
-                "changed_lines": changed_lines,
-                "lines_removed": removed,
-                "lines_added": added,
-                "diff": diff,
-                "previous_sha256": previous_sha,
-                "sha256": new_sha,
-                **({"backup": backup_meta} if backup_meta else {}),
-            },
+            output=output,
             replacements=occurrences if replace_all else 1,
             lines_removed=removed,
             lines_added=added,

@@ -79,6 +79,31 @@ def reset_current_root(token: Token[Path | None]) -> None:
     _current_root.reset(token)
 
 
+#: The per-run sandbox directory (v1.5.0), or ``None`` when tool I/O goes
+#: straight to the workspace. Set once at the top of a sandboxed sub-agent
+#: run by ``subagents._drive_run``; inherited by every child task of that
+#: run via the ContextVar copy-on-create_task semantics, and never leaks
+#: back into the parent.
+_current_sandbox: ContextVar[Path | None] = ContextVar(
+    "minimax_sandbox_dir", default=None
+)
+
+
+def current_sandbox() -> Path | None:
+    """The sandbox dir for the current run, or ``None`` (direct I/O)."""
+    return _current_sandbox.get()
+
+
+def set_sandbox(root: Path) -> Token[Path | None]:
+    """Publish *root* as the active sandbox; returns the reset token."""
+    return _current_sandbox.set(Path(root).resolve())
+
+
+def reset_sandbox(token: Token[Path | None]) -> None:
+    """Undo a previous :func:`set_sandbox` (call in ``finally``)."""
+    _current_sandbox.reset(token)
+
+
 # ---------------------------------------------------------------------------
 # Resolution chain
 # ---------------------------------------------------------------------------
@@ -194,10 +219,13 @@ async def _get_session(session_id: str) -> Any | None:
 
 __all__ = [
     "current_root",
+    "current_sandbox",
     "env_or_cwd_root",
     "reset_current_root",
+    "reset_sandbox",
     "resolve_root_for_project_id",
     "resolve_root_for_session",
     "session_root_scope",
     "set_current_root",
+    "set_sandbox",
 ]
