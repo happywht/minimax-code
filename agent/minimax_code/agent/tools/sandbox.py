@@ -44,7 +44,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
+import stat as stat_mod
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -64,7 +67,18 @@ BASE_DIR = "_base"
 
 #: Written by ``collect_subagent`` after a successful merge; makes a
 #: second collect a no-op instead of re-merging (idempotence marker).
+#: v1.5.x kept this inside the sandbox directory (``sb_dir/.merged``);
+#: v1.6.0 moved markers to a flat sibling directory so pruning a
+#: sandbox never destroys its receipt. The legacy location is still
+#: *read* for pre-upgrade sandboxes (see ``_read_collected_report``).
 MERGED_MARKER = ".merged"
+
+#: v1.6.0 home for per-run collect receipts:
+#: ``<root>/.minimax/sandboxes/.collected/<run_id>.json``. Sibling of
+#: the per-run sandbox trees, never scanned by ``sandbox_mirror_files``
+#: (which anchors at a run directory), and ``run_<hex12>`` ids cannot
+#: collide with the dotted directory name.
+COLLECTED_DIR = ".collected"
 
 
 # ---------------------------------------------------------------------------
@@ -235,11 +249,79 @@ def sandbox_files_written(run_id: str) -> list[str]:
     return sandbox_mirror_files(root)
 
 
+def collected_marker_path(run_id: str) -> Path | None:
+    """The v1.6.0 collect receipt for *run_id* (flat sibling directory).
+
+    Returns ``None`` only when no workspace root can be resolved.
+    """
+    root = _workspace_root()
+    if root is None:  # pragma: no cover — env_or_cwd_root always yields
+        return None
+    return root / SANDBOX_RELPATH / COLLECTED_DIR / f"{run_id}.json"
+
+
+def _read_collected_report(run_id: str) -> dict[str, Any] | None:
+    """The prior collect report when *run_id* was already collected.
+
+    Checks the v1.6.0 flat receipt first, then the legacy in-sandbox
+    ``.merged`` marker (pre-upgrade sandboxes). An unreadable marker
+    still counts as collected — an empty report is returned so the
+    re-collect can never re-merge over resolved state.
+    """
+    new_marker = collected_marker_path(run_id)
+    if new_marker is not None:
+        try:
+            if new_marker.exists():
+                return json.loads(new_marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+    legacy = sandbox_root_for(run_id)
+    if legacy is not None:
+        legacy_marker = legacy / MERGED_MARKER
+        try:
+            if legacy_marker.exists():
+                return json.loads(legacy_marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+    return None
+
+
+def _chmod_retry(func, path, _exc) -> None:  # noqa: ANN001 — shutil callback
+    """rmtree callback: clear the read-only bit and retry the step once."""
+    os.chmod(path, stat_mod.S_IWRITE)
+    func(path)
+
+
+def _prune_sandbox(run_id: str) -> tuple[bool, str | None]:
+    """Delete the run's sandbox tree (best-effort, read-only aware).
+
+    Returns ``(pruned, error)`` — a missing directory counts as pruned.
+    Never raises: pruning failures surface as ``prune_error`` on the
+    collect report instead of failing an otherwise successful merge.
+    """
+    sb_dir = sandbox_root_for(run_id)
+    if sb_dir is None or not sb_dir.is_dir():
+        return True, None
+    try:
+        # onexc is 3.12+; onerror is deprecated but identical for our
+        # single-callback use on 3.11.
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(sb_dir, onexc=_chmod_retry)
+        else:  # pragma: no cover — dev/CI run 3.12+
+            shutil.rmtree(sb_dir, onerror=_chmod_retry)
+        return True, None
+    except OSError as exc:
+        logger.debug("sandbox prune failed for %s: %s", run_id, exc)
+        return False, str(exc)
+
+
 __all__ = [
     "BASE_DIR",
+    "COLLECTED_DIR",
     "CollectSubagentTool",
     "MERGED_MARKER",
     "SANDBOX_RELPATH",
+    "collected_marker_path",
     "mirror_children",
     "overlay_read_target",
     "redirect_write_target",
@@ -287,8 +369,12 @@ class CollectSubagentTool(Tool):
     the whole collect (no marker written — resolve manually and re-run,
     already-merged files degrade to no-ops so the re-run is idempotent);
     ``skip`` keeps the workspace version; ``overwrite`` applies the
-    sandbox version. A successful collect writes the ``.merged`` marker
-    making subsequent collects no-ops.
+    sandbox version. A successful collect writes its receipt under
+    ``.minimax/sandboxes/.collected/<run_id>.json`` making subsequent
+    collects no-ops — and, since v1.6.0, prunes the sandbox tree itself
+    (disable with ``prune=false``). Pruning is conservative: conflicts,
+    per-file errors, skipped files or an unwritable receipt all keep the
+    sandbox on disk so the merge can be resolved and re-run.
     """
 
     name = "collect_subagent"
@@ -298,7 +384,9 @@ class CollectSubagentTool(Tool):
         "reports completion. Reports per-file merges, no-ops and conflicts "
         "with full sha256 fingerprints; on_conflict picks the policy for "
         "workspace-vs-sandbox divergence (fail=stop and report, "
-        "skip=keep workspace, overwrite=apply sandbox)."
+        "skip=keep workspace, overwrite=apply sandbox). On success prunes "
+        "the sandbox tree (prune=false keeps it) after recording the "
+        "collect receipt."
     )
     parameters = {
         "type": "object",
@@ -318,6 +406,17 @@ class CollectSubagentTool(Tool):
                     "version; 'overwrite' applies the sandbox version."
                 ),
             },
+            "prune": {
+                "type": "boolean",
+                "default": True,
+                "description": (
+                    "Delete the sandbox tree after a fully successful "
+                    "collect. The receipt under "
+                    ".minimax/sandboxes/.collected/ is always kept, so "
+                    "already-collected detection survives pruning. Kept "
+                    "automatically on conflicts, errors or skipped files."
+                ),
+            },
         },
         "required": ["run_id"],
         "additionalProperties": False,
@@ -326,6 +425,7 @@ class CollectSubagentTool(Tool):
     async def run(self, **kwargs: Any) -> ToolResult:
         run_id = kwargs.get("run_id")
         on_conflict = kwargs.get("on_conflict", "fail") or "fail"
+        prune = bool(kwargs.get("prune", True))
         if not isinstance(run_id, str) or not run_id.strip():
             return ToolResult.fail("'run_id' must be a non-empty string")
         run_id = run_id.strip()
@@ -343,22 +443,43 @@ class CollectSubagentTool(Tool):
                 "then collect"
             )
 
+        # Idempotence first (new receipt home, then the legacy in-sandbox
+        # marker): a second collect replays the first run's report. A
+        # legacy marker lives inside the tree a prune would delete, so it
+        # is migrated to the flat home first — and a failed migration
+        # cancels the prune rather than destroying the only receipt.
+        prior = _read_collected_report(run_id)
+        if prior is not None:
+            replay: dict[str, Any] = {**prior, "already_collected": True}
+            can_prune = prune
+            new_marker = collected_marker_path(run_id)
+            if prune and new_marker is not None and not new_marker.exists():
+                # Migration exists only to make the prune safe; with
+                # prune=False the legacy layout stays exactly as found.
+                try:
+                    new_marker.parent.mkdir(parents=True, exist_ok=True)
+                    new_marker.write_text(
+                        json.dumps(prior, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                except OSError:
+                    logger.debug(
+                        "receipt migration failed for %s", run_id, exc_info=True
+                    )
+                    can_prune = False
+            if can_prune:
+                pruned, prune_error = _prune_sandbox(run_id)
+                replay["pruned"] = pruned
+                if prune_error:
+                    replay["prune_error"] = prune_error
+            return ToolResult.ok(replay)
+
         sb_dir = sandbox_root_for(run_id)
         if sb_dir is None or not sb_dir.is_dir():
             return ToolResult.fail(
                 f"no sandbox found for run {run_id!r} (the run never opted "
                 "into sandbox=true, or the sandbox tree was pruned)"
             )
-
-        # Idempotence: a second collect returns the first run's report.
-        marker = sb_dir / MERGED_MARKER
-        if marker.exists():
-            prior: dict[str, Any] = {}
-            try:
-                prior = json.loads(marker.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                pass
-            return ToolResult.ok({**prior, "already_collected": True})
 
         from .file_ops import file_sha256
 
@@ -452,21 +573,41 @@ class CollectSubagentTool(Tool):
         }
 
         if conflicts:
-            # 'fail' policy: refuse without the marker so a manual
+            # 'fail' policy: refuse without the receipt so a manual
             # resolution + re-run stays idempotent (already-merged
             # files come back as no-ops).
             return ToolResult.fail(
                 f"collect_subagent: {len(conflicts)} conflict(s) between the "
                 "workspace and the sandbox — resolve manually or re-run with "
-                "on_conflict=skip/overwrite; no marker was written",
+                "on_conflict=skip/overwrite; no receipt was written",
                 output=report,
             )
 
-        try:
-            marker.write_text(
-                json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
-            )
-        except OSError:
-            logger.debug("collect marker write failed for %s", run_id, exc_info=True)
+        # Receipt first, prune second — deleting the tree without a
+        # durable receipt would destroy the idempotence evidence and
+        # wedge future collects into "no sandbox found".
+        marker_written = False
+        new_marker = collected_marker_path(run_id)
+        if new_marker is not None:
+            try:
+                new_marker.parent.mkdir(parents=True, exist_ok=True)
+                new_marker.write_text(
+                    json.dumps(report, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                marker_written = True
+            except OSError:
+                logger.debug(
+                    "collect receipt write failed for %s", run_id, exc_info=True
+                )
+
+        # Conservative prune gate: the receipt must be durable and the
+        # merge must have fully succeeded — errors or skipped files mean
+        # the sandbox still holds the only copy of something.
+        if prune and marker_written and not errors and not skipped:
+            pruned, prune_error = _prune_sandbox(run_id)
+            report["pruned"] = pruned
+            if prune_error:
+                report["prune_error"] = prune_error
 
         return ToolResult.ok(report)

@@ -28,7 +28,12 @@ from typing import Any
 import pytest
 
 from minimax_code.agent.tools import get_default_registry
-from minimax_code.agent.tools.sandbox import BASE_DIR, MERGED_MARKER, SANDBOX_RELPATH
+from minimax_code.agent.tools.sandbox import (
+    BASE_DIR,
+    COLLECTED_DIR,
+    MERGED_MARKER,
+    SANDBOX_RELPATH,
+)
 from minimax_code.agent.tools.subagents import (
     SpawnSubagentTool,
     _lookup_finished_run,
@@ -88,6 +93,11 @@ def _sandbox(root: Path, run_id: str) -> Path:
     return sb
 
 
+def _receipt(root: Path, run_id: str) -> Path:
+    """v1.6.0 collect receipt: ``.minimax/sandboxes/.collected/<id>.json``."""
+    return root / SANDBOX_RELPATH / COLLECTED_DIR / f"{run_id}.json"
+
+
 def _stage(
     root: Path,
     run_id: str,
@@ -141,8 +151,10 @@ async def test_collect_merges_new_and_clean_files(workspace_root: Path) -> None:
     assert out["noop"] == [] and out["conflicts"] == []
     assert (workspace_root / "brand_new.py").read_bytes() == b"# new"
     assert (workspace_root / "modified.py").read_bytes() == b"v2\n"
-    # Marker written → the next collect is a no-op.
-    assert (workspace_root / SANDBOX_RELPATH / run_id / MERGED_MARKER).is_file()
+    # Receipt in its v1.6.0 home + default prune of the sandbox tree.
+    assert out["pruned"] is True
+    assert _receipt(workspace_root, run_id).is_file()
+    assert not (workspace_root / SANDBOX_RELPATH / run_id).exists()
 
 
 @pytest.mark.asyncio
@@ -155,6 +167,8 @@ async def test_collect_binary_files_merge_at_byte_level(workspace_root: Path) ->
     assert res.success, res.error
     merged_file = workspace_root / "asset.bin"
     assert merged_file.read_bytes() == payload  # byte-identical, NULs intact
+    # Clean merge → default prune removed the sandbox tree.
+    assert not (workspace_root / SANDBOX_RELPATH / run_id).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -180,9 +194,12 @@ async def test_conflict_fail_reports_three_hashes_no_clobber(
     assert conflict["current_sha256"] is not None
     assert conflict["sandbox_sha256"] is not None
     assert "changed since" in conflict["reason"]
-    # Fail policy: workspace untouched, no marker (re-run stays possible).
+    # Fail policy: workspace untouched, no receipt anywhere (re-run stays
+    # possible) and the sandbox survives for a retry.
     assert (workspace_root / "shared.txt").read_bytes() == b"external edit"
     assert not (workspace_root / SANDBOX_RELPATH / run_id / MERGED_MARKER).exists()
+    assert not _receipt(workspace_root, run_id).exists()
+    assert (workspace_root / SANDBOX_RELPATH / run_id).is_dir()
 
 
 @pytest.mark.asyncio
@@ -200,7 +217,12 @@ async def test_conflict_skip_keeps_workspace(workspace_root: Path) -> None:
     assert res.output["skipped"] == ["shared.txt"]
     assert res.output["merged"] == []
     assert (workspace_root / "shared.txt").read_bytes() == b"external edit"
-    assert (workspace_root / SANDBOX_RELPATH / run_id / MERGED_MARKER).is_file()
+    # Skip keeps the workspace version but the collect still succeeded —
+    # receipt written, yet the sandbox is preserved (the skipped file's
+    # only sandbox copy lives there).
+    assert _receipt(workspace_root, run_id).is_file()
+    assert (workspace_root / SANDBOX_RELPATH / run_id).is_dir()
+    assert "pruned" not in res.output
 
 
 @pytest.mark.asyncio
@@ -305,7 +327,9 @@ async def test_collect_empty_sandbox_succeeds_with_empty_report(
     res = await _dispatch("collect_subagent", {"run_id": "run_empty"})
     assert res.success, res.error
     assert res.output["merged"] == [] and res.output["noop"] == []
-    assert (workspace_root / SANDBOX_RELPATH / "run_empty" / MERGED_MARKER).is_file()
+    # Even an empty sandbox gets its receipt and its default prune.
+    assert _receipt(workspace_root, "run_empty").is_file()
+    assert not (workspace_root / SANDBOX_RELPATH / "run_empty").exists()
 
 
 # ---------------------------------------------------------------------------
