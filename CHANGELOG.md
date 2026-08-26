@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-08-26
+
+### Added — 第四轮压测三项残留收口（env 默认 + append 路径 + 进度可见性）
+
+第四轮压测验证报告实测通过 3 项（沙盒完整工作流、in-flight 警告、write_file 增强 return），仍列 3 项未修：沙盒默认 false 每次要显式传参、无 append_file 大文件分片路径、后台子 agent 无进度可见性。本版以三项小改收口，全部 opt-in / 向后兼容，无 DB migration，41 个新测试全走 `registry.dispatch`：
+
+- **① `MINIMAX_CODE_SANDBOX_DEFAULT` env 旋钮**：并行写负载的运维可以把进程级沙盒默认打开，不必教每个调用方拼 `sandbox=true`。优先级：显式传参 > env > false。默认仍 false——静默默认开会把单 agent 快路径变成陷阱（未 collect 的产出物 + 不 prune 的沙盒目录），opt-in 契约不变。`subagents.py` 新增 `_sandbox_default()` helper（truthy 拼写 `1/true/yes/on`），`spawn_subagent` 的 `sandbox` 参数改为 `bool | None = None`，顶部归一化。
+- **② `append_file` 工具（写安全三层全接入 + 沙盒镜像 seeding）**：向文件尾部 verbatim 追加（UTF-8 字节保真、不注入分隔符——换行归调用方管；文件不存在则带父目录创建）。继承全部写防护：CAS `expected_sha256`（不匹配 fail 带 `current_sha256`）、BackupManager 快照、`concurrent_writer` advisory、fs_bus 归因（cause=`append_file`，带 `run_id` attribute）。**沙盒镜像 seeding 是 append 特有的正确性关键步**：`redirect_write_target` 只 COW 原件进 `_base/` 不拷贝到镜像路径——"a" 模式打开全新镜像会从空文件起步，后续 `collect_subagent` 三方对比看到 workspace == base 走 merge 分支，不完整镜像覆盖 workspace = 静默数据丢失。`append_file` 打开前先 seed：`write_target != read_target` 且原件存在且镜像不存在 → `shutil.copy2` 原件进镜像；copy 失败 fail-closed（此步非 advisory）。大输出推荐形态：`write_file` 第一片 + `append_file` 后续，防单次工具调用截断。
+- **③ `report_progress` 子 agent 进度上报（per-run 注入工具）**：与 `report_completion` 同一注入路径（克隆 registry + allowlist 追加 + system prompt 协议段，主 registry 永不触碰）。子 agent 在**里程碑**（非每步）调 `report_progress(note, percent?)`——percent clamp [0,100]——向 run 的 artifact 目录追加 `PROGRESS.jsonl` JSON 行账本。账本三处可见：`check_subagent` running 响应 / `wait_subagent` 超时响应 / `_snapshot` 与 finished-run envelope 的 `progress` key（`{total, recent[], latest_percent}` 投影）；同时经 `_SUBAGENT_EVENT_ROUTES` 路由推 live `agent.subagent_progress` 事件（复用前端闭合 status union：`status="thinking"` + `summary=note` + `progress` 分数，前端 SubAgentPanel 零改动）。进度是中期、完成是最终——协议段明示不替代 `report_completion`。prompt 拼接顺序变为：agent 模板 → 任务优先级 → completion 协议 → progress 协议 → 沙盒段。
+- **④ 高安全并发模板收编文档**：`docs/agent-core.md` 新增 §8c——spawn(sandbox=true) → check/wait → collect 三步编排 + `read_file` → `write_file(expected_sha256)` CAS 环 + `write_file`/`append_file` 分片模板，即第四轮报告验证收敛出的组合用法；§8a 补 append 镜像 seeding 语义；§2 工具目录表同步。
+
+### 回归测试（41 个新测试；pytest 10479 / vitest 758 全绿）
+
+- `test_append_file.py`（15）：tail 追加 + sha 往返 + 字节保真 / create missing + parents / verbatim 无分隔符 / CAS 四路（mismatch 带 current_sha 磁盘不变、match、deleted、malformed）/ 参数与路径校验 / rival 警告不阻塞 + 同 run 静默 / backup / fs_bus cause + run_id / **沙盒 seed 钉**（镜像 = 原内容+append、`_base` = 原内容、workspace 不动）/ 沙盒新文件 / overlay 读反映 append / **collect 端到端**（合并落地原内容+tail）。
+- `test_report_progress.py`（13）：JSONL 追加与条目形状 / 校验三路（空 note、坏 percent、clamp）/ 无 root 跳过 / live 事件推送（路由注册 + `_emit_safe` monkeypatch，断言 status/summary/progress/agent_id/parent_session_id）/ 主 registry 无泄漏 / 脏行跳过 / summary 投影形状 / `_snapshot` 注入与 bare 无 key / prompt 顺序源码钉 / 克隆含双工具 / allowlist 源码钉。
+- `test_sandbox_env_default.py`（13）：truthy 九拼写参数化 + unset / 行为级 spawn 三例（省略参数继承 env 开 + 沙盒目录真建、显式 false 击败 env、显式 true 存活 env off）。
+
 ## [1.5.1] - 2026-08-26
 
 ### Added — 共享 workspace 并发感知（第三轮压测 3 项残留收口）

@@ -139,18 +139,21 @@ to call.
 | --- | --- | --- | --- |
 | `read_file` | Read a UTF-8/latin-1 text file; binary rejected. Output includes `sha256` of the on-disk bytes (null when truncated — CAS is unavailable for such reads). | `path` | `start_line`, `end_line`, `max_bytes` |
 | `write_file` | Overwrite a file (UTF-8, no newline translation). Output includes `previous_sha256` (pre-write hash when overwriting) and `sha256` (post-write). When another in-flight run claims the path, the write still succeeds but the output carries a `concurrent_writer` advisory (v1.5.1 — see §8b). | `path`, `content` | `expected_sha256` (CAS check, v1.5.0) |
+| `append_file` | Append bytes to a file's tail verbatim (UTF-8, no separator injected — the caller owns line breaks; creates the file with parent dirs when missing). Inherits every write-safety layer: CAS (`expected_sha256`), backup, the `concurrent_writer` advisory, and sandbox redirection with **mirror seeding** — when appending inside a sandbox to a file that only exists in the workspace, the original is first copied into the sandbox mirror so "a"-mode never starts from empty (v1.5.2 — the unseeded mirror would later merge a truncated file over the workspace original). The recommended shape for large multi-part outputs: `write_file` the first chunk, `append_file` the rest. | `path`, `content` | `expected_sha256` (CAS check) |
 | `list_directory` | List immediate children of a directory. | — | `path` (default workspace), `pattern` |
 | `edit_file` | Replace an exact substring in a file. Output includes `previous_sha256` / `sha256`, plus the `concurrent_writer` advisory when another run claims the path (v1.5.1). | `path`, `old_string`, `new_string` | `replace_all`, `expected_sha256` (CAS check, v1.5.0) |
 | `exec_command` | Run a shell command with hard timeout. | `cmd` (list) | `cwd`, `env`, `timeout` (default 30s, cap 600s) |
 | `search_files` | Recursive text search (ripgrep fast path, pure-Python fallback). | `pattern` | `path`, `regex`, `file_pattern`, `case_sensitive`, `max_results` |
 | `list_subagents` | List enabled sub-agents that can receive delegated specialist work. | — | `include_disabled` |
-| `spawn_subagent` | Delegate a focused task to a named sub-agent and return its final result (persisted as an `agent_runs` row with `mode='subagent'`; exempt from the generic `tool_timeout` ceiling — the sub-agent wall clock `MINIMAX_CODE_SUBAGENT_TIMEOUT_S` governs, and a timeout returns the accumulated partial). The description teaches the write-safety decision: if the sub-agent will write files (especially in parallel with other runs), spawn with `sandbox=true` and merge via `collect_subagent`; read-only work stays `sandbox=false` (v1.5.1). | `agent_name`, `prompt` | `parent_session_id`, `wait` (default true; false = background, collect via check/wait), `sandbox` (default false; v1.5.0 redirects the run's writes into an isolated sandbox, see §8a) |
-| `check_subagent` | Poll a background run (`wait=false`) without blocking: `running` while in flight, or the final outcome once finished (read from the persisted run row after the task is reaped). | `run_id` | — |
-| `wait_subagent` | Await a background run's completion (shielded — a timeout never kills the run; the response says `running` and the call repeats). | `run_id` | `timeout_s` (default 120) |
+| `spawn_subagent` | Delegate a focused task to a named sub-agent and return its final result (persisted as an `agent_runs` row with `mode='subagent'`; exempt from the generic `tool_timeout` ceiling — the sub-agent wall clock `MINIMAX_CODE_SUBAGENT_TIMEOUT_S` governs, and a timeout returns the accumulated partial). The description teaches the write-safety decision: if the sub-agent will write files (especially in parallel with other runs), spawn with `sandbox=true` and merge via `collect_subagent`; read-only work stays `sandbox=false` (v1.5.1). | `agent_name`, `prompt` | `parent_session_id`, `wait` (default true; false = background, collect via check/wait), `sandbox` (default false, or the process-wide `MINIMAX_CODE_SANDBOX_DEFAULT` when the arg is omitted — explicit arg > env > false, v1.5.2; v1.5.0 redirects the run's writes into an isolated sandbox, see §8a) |
+| `check_subagent` | Poll a background run (`wait=false`) without blocking: `running` while in flight, or the final outcome once finished (read from the persisted run row after the task is reaped). Responses may carry `progress` — the run's `PROGRESS.jsonl` ledger projected to `{total, recent[], latest_percent}` — whenever the sub-agent has called `report_progress` (v1.5.2). | `run_id` | — |
+| `wait_subagent` | Await a background run's completion (shielded — a timeout never kills the run; the response says `running` and the call repeats). Timeout responses carry the same `progress` projection as `check_subagent` (v1.5.2). | `run_id` | `timeout_s` (default 120) |
 | `read_artifact` | Read a file from a sub-agent run's artifact directory (`<workspace_root>/.minimax/artifacts/<run_id>/`); containment-checked against that run's directory, traversal rejected. | `run_id` | `rel_path` (default `BRIEF.md`) |
 | `collect_subagent` | Merge a finished sandboxed run's writes back into the shared workspace (v1.5.0). Three-way compare per file (the `_base/` COW snapshot vs the workspace's current bytes vs the sandbox mirror, all hashed from disk bytes); conflicts surface all three sha256 fingerprints instead of silently clobbering. Refuses while the run is in flight. | `run_id` | `on_conflict` (`fail` / `skip` / `overwrite`, default `fail`) |
 
 **`report_completion` — injected tool (not in the main registry).** Every sub-agent spawned via `spawn_subagent` gets a per-run `report_completion` tool injected into a *cloned* tool registry (the global registry is never touched — the tool binds to the run id). At spawn time the tool name is also appended to `tool_allowlist` when one is set (otherwise `FilteredToolRegistry` would filter it out), and a completion-protocol section is appended to the sub-agent's system prompt. The sub-agent calls it exactly once before finishing: `status` (`completed`/`partial`/`blocked`), `summary`, `files`, `gaps`, `next_steps` — written to the artifact dir as both `COMPLETION.md` (human) and `REPORT.json` (machine). Enforcement is soft: when the run finishes without a report, the spawn envelope carries `reported=false` plus a `⚠ sub-agent did not call report_completion; result may be incomplete` warning instead of failing.
+
+**`report_progress` — injected tool (v1.5.2, not in the main registry).** Same injection path as `report_completion` (cloned registry, allowlist append, a protocol section in the system prompt): the sub-agent calls `report_progress(note, percent?)` at *milestones* — not per step — to append a JSON line to the run's `PROGRESS.jsonl` ledger in the artifact dir. `percent` is clamped to [0, 100]; a missing workspace root degrades to `skipped: true` (soft protocol). The ledger surfaces in three places: a `progress` key (`{total, recent[], latest_percent}`) on `check_subagent`'s running response, `wait_subagent`'s timeout response, and `_snapshot`/finished-run envelopes; and a live `agent.subagent_progress` event rides the existing sub-agent event route (`status="thinking"` with `summary=note` and a `progress` fraction, reusing the frontend's closed status union). It complements rather than replaces `report_completion` — progress is interim, completion is final.
 
 ### Schema examples
 
@@ -390,9 +393,11 @@ which the calling tool turns into a `ToolResult.fail(...)`.
 
 Path safety (§8) confines *where* a tool may write; the sub-agent
 sandbox confines *whose* writes land in the shared workspace. When a
-spawn opts in (`spawn_subagent(..., sandbox=true)`), every
-`write_file` / `edit_file` the sub-agent makes is transparently
-redirected into `<workspace_root>/.minimax/sandboxes/<run_id>/` —
+spawn opts in (`spawn_subagent(..., sandbox=true)` — or omits the arg
+under `MINIMAX_CODE_SANDBOX_DEFAULT`, v1.5.2), every
+`write_file` / `edit_file` / `append_file` the sub-agent makes is
+transparently redirected into
+`<workspace_root>/.minimax/sandboxes/<run_id>/` —
 the shared workspace stays untouched until the main agent merges via
 `collect_subagent`. The opt-in is per-spawn and defaults to false;
 non-sandboxed runs behave exactly as before.
@@ -419,6 +424,17 @@ Mechanics (`agent/tools/sandbox.py` + `workspace_ctx.py`):
   the LLM asked for). Without the overlay, an edit's re-read would
   silently resurrect the workspace original and lose the first
   sandboxed edit.
+* **Append mirror seeding (v1.5.2, correctness-critical).**
+  `redirect_write_target` snapshots the original into `_base/` but
+  does not copy it to the mirror path — an "a"-mode open of a fresh
+  mirror would start from empty, and the eventual three-way compare
+  would see workspace == base and happily *merge*, overwriting the
+  workspace with a file that silently lost its pre-append content.
+  `append_file` therefore seeds the mirror first: when the write
+  target differs from the read target, the original exists, and the
+  mirror does not, it copies the original into the mirror before
+  opening for append. A failed copy fails the append (fail-closed —
+  this one is not advisory).
 * **`.minimax/` passes through untouched** (artifacts, backups and
   sandbox internals are never re-redirected — nested-sandbox and
   `_base` self-collision hazards).
@@ -475,6 +491,48 @@ Failure posture: all three layers are fail-open / advisory. A wedged
 run legitimately keeps its claims (it may still be writing); a run
 cancelled or crashing out of `_drive_run` releases them in the
 `finally`.
+
+## 8c. The high-safety concurrency recipe (v1.5.2)
+
+The three sections above are layers; this is the composition the
+field reports converged on — the spawn/wait/collect orchestration
+for any parallel-writing sub-agent, and the CAS arm/disarm loop for
+anything writing into the shared workspace directly. v1.5.2 closes
+the gaps that used to make it awkward (sandbox had to be spelled out
+per spawn, large outputs had no append path, background runs were
+invisible until done):
+
+```text
+# 1. Spawn writers sandboxed (env MINIMAX_CODE_SANDBOX_DEFAULT=true
+#    flips the default for the whole process; the explicit arg wins).
+spawn_subagent(agent_name="impl", prompt="...", wait=false, sandbox=true)
+
+# 2. While it runs: poll milestones — the response carries the
+#    PROGRESS.jsonl projection ({total, recent[], latest_percent}).
+check_subagent(run_id)            # or wait_subagent(run_id, timeout_s)
+
+# 3. When finished: merge with the three-way compare. Conflicts
+#    surface all three sha256 fingerprints — never a silent clobber.
+collect_subagent(run_id)          # on_conflict: fail (default) | skip | overwrite
+```
+
+For writes the main agent (or any non-sandboxed run) makes itself,
+arm the CAS lock around every read→write cycle — the failure output
+carries `current_sha256`, which becomes the next `expected_sha256`
+after a deliberate re-read:
+
+```text
+read_file(path)                        # → sha256 of the on-disk bytes
+write_file(path, content,              # or edit_file / append_file —
+           expected_sha256=<that sha>) # mismatch fails with current_sha256
+# → output.sha256 arms the next cycle
+```
+
+Large multi-part outputs (long generated files that risk tool-call
+truncation): `write_file` the first chunk, then `append_file` the
+rest — each append carries the same CAS, backup, advisory and
+sandbox protections, and the caller owns line breaks (no separator
+is injected between chunks).
 
 ## 9. Configuration
 
