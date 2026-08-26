@@ -183,6 +183,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
             skills = params.get("skills")
             max_iterations = params.get("max_iterations")
             temperature = params.get("temperature")
+            enabled = params.get("enabled")
             # Build kwargs for extended upsert
             upsert_kwargs: dict[str, Any] = {}
             if description is not None:
@@ -205,6 +206,8 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 upsert_kwargs["max_iterations"] = int(max_iterations)
             if temperature is not None:
                 upsert_kwargs["temperature"] = float(temperature)
+            if enabled is not None:
+                upsert_kwargs["enabled"] = bool(enabled)
             agent = await agent_dao.upsert(
                 name=name,
                 system_prompt=system_prompt,
@@ -274,6 +277,12 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 upsert_kwargs["max_iterations"] = int(params["max_iterations"])
             if "temperature" in params:
                 upsert_kwargs["temperature"] = float(params["temperature"])
+            if "enabled" in params:
+                # Enable/disable toggle from the settings UI. Before this
+                # branch the key was silently dropped (DAO had no enabled
+                # write path either) — the toggle reported success but the
+                # row never changed.
+                upsert_kwargs["enabled"] = bool(params["enabled"])
             agent = await agent_dao.upsert(
                 name=name,
                 system_prompt=str(new_prompt),

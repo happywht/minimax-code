@@ -728,6 +728,12 @@ class TeamOrchestrator:
             if row is None:
                 logger.warning("Agent %r not found, skipping", name)
                 continue
+            if not bool(row.get("enabled", True)):
+                # Same skip-and-warn semantics as a deleted member: a
+                # disabled agent must not run with a team, mirroring the
+                # spawn_subagent tool path which rejects disabled rows.
+                logger.warning("Agent %r is disabled, skipping", name)
+                continue
             configs.append(SubAgentConfig(
                 name=row["name"],
                 system_prompt=row.get("system_prompt", ""),

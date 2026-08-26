@@ -293,6 +293,7 @@ class AgentDAO:
         skills: list[str] | None = None,
         max_iterations: int | None = None,
         temperature: float | None = None,
+        enabled: bool | None = None,
     ) -> dict[str, Any]:
         """Insert-or-update by ``name``.
 
@@ -306,6 +307,10 @@ class AgentDAO:
 
         ``tool_allowlist`` may be ``None`` (clears the allowlist)
         or a list of strings; non-list inputs raise ``ValueError``.
+
+        ``enabled`` may be ``None`` (leave as-is on update / column
+        default on insert) or a bool — the enable/disable toggle the
+        settings UI sends via ``agent.update``.
         """
         if not name or not isinstance(name, str):
             raise ValueError(f"name must be a non-empty string, got {name!r}")
@@ -331,8 +336,9 @@ class AgentDAO:
                 "INSERT INTO agents "
                 "(id, name, system_prompt, tool_allowlist, model, "
                 "description, icon, color, category, tags, team_id, "
-                "skills, max_iterations, temperature, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                "skills, max_iterations, temperature, enabled, "
+                "created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             params = (
                 agent_id,
@@ -353,6 +359,7 @@ class AgentDAO:
                 # migration 029).
                 max_iterations if max_iterations is not None else 100,
                 temperature,
+                1 if (enabled is None or enabled) else 0,
                 now,
                 now,
             )
@@ -402,6 +409,9 @@ class AgentDAO:
             if temperature is not None:
                 sets.append("temperature = ?")
                 params.append(temperature)
+            if enabled is not None:
+                sets.append("enabled = ?")
+                params.append(1 if enabled else 0)
             sets.append("updated_at = ?")
             params.append(now_iso())
             params.append(name)
