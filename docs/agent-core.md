@@ -140,16 +140,17 @@ to call.
 | `read_file` | Read a UTF-8/latin-1 text file; binary rejected. Output includes `sha256` of the on-disk bytes (null when truncated — CAS is unavailable for such reads). | `path` | `start_line`, `end_line`, `max_bytes` |
 | `write_file` | Overwrite a file (UTF-8, no newline translation). Output includes `previous_sha256` (pre-write hash when overwriting) and `sha256` (post-write). When another in-flight run claims the path, the write still succeeds but the output carries a `concurrent_writer` advisory (v1.5.1 — see §8b). | `path`, `content` | `expected_sha256` (CAS check, v1.5.0) |
 | `append_file` | Append bytes to a file's tail verbatim (UTF-8, no separator injected — the caller owns line breaks; creates the file with parent dirs when missing). Inherits every write-safety layer: CAS (`expected_sha256`), backup, the `concurrent_writer` advisory, and sandbox redirection with **mirror seeding** — when appending inside a sandbox to a file that only exists in the workspace, the original is first copied into the sandbox mirror so "a"-mode never starts from empty (v1.5.2 — the unseeded mirror would later merge a truncated file over the workspace original). The recommended shape for large multi-part outputs: `write_file` the first chunk, `append_file` the rest. | `path`, `content` | `expected_sha256` (CAS check) |
-| `list_directory` | List immediate children of a directory. | — | `path` (default workspace), `pattern` |
+| `list_directory` | List immediate children of a directory. Inside a sandbox the view merges the sandbox mirrors of that directory: same-name entries take the sandbox copy (marked `sandboxed: true`, `path` stays the workspace address), sandbox-only directories answer even without a workspace counterpart, and `_base` / the merge marker stay hidden (v1.6.0 — see §8a). | — | `path` (default workspace), `pattern` |
 | `edit_file` | Replace an exact substring in a file. Output includes `previous_sha256` / `sha256`, plus the `concurrent_writer` advisory when another run claims the path (v1.5.1). | `path`, `old_string`, `new_string` | `replace_all`, `expected_sha256` (CAS check, v1.5.0) |
-| `exec_command` | Run a shell command with hard timeout. | `cmd` (list) | `cwd`, `env`, `timeout` (default 30s, cap 600s) |
-| `search_files` | Recursive text search (ripgrep fast path, pure-Python fallback). | `pattern` | `path`, `regex`, `file_pattern`, `case_sensitive`, `max_results` |
+| `exec_command` | Run a shell command with hard timeout. Inside a sandbox the process still runs with the real workspace cwd (the sandbox only holds COW'd files — redirecting cwd would break test-runner scenarios), but the output carries a `sandbox_escape` advisory when files changed on disk that the write redirect never saw: shell writes bypass the sandbox, escape into the shared workspace, and are invisible to `collect_subagent`'s three-way compare (v1.6.0 — see §8a). | `cmd` (list) | `cwd`, `env`, `timeout` (default 30s, cap 600s) |
+| `search_files` | Recursive text search (ripgrep fast path, pure-Python fallback). Inside a sandbox the search always takes the Python engine (rg cannot see sandbox mirrors) and unions the mirrors into the candidate set — the sandbox copy wins on path collision and results are reported at workspace addresses; narrow `path` when possible, the walker is slower than rg (v1.6.0). | `pattern` | `path`, `regex`, `file_pattern`, `case_sensitive`, `max_results` |
+| `find_files` | Glob-match files under a directory (`**/*.py` patterns, depth-bounded). Inside a sandbox, sandbox-only matches are unioned into the results (projected to workspace addresses); `.minimax` is hard-excluded even when the caller replaces the default `exclude_dirs` table (v1.6.0). | `pattern` | `path`, `max_depth`, `max_results`, `exclude_dirs` |
 | `list_subagents` | List enabled sub-agents that can receive delegated specialist work. | — | `include_disabled` |
 | `spawn_subagent` | Delegate a focused task to a named sub-agent and return its final result (persisted as an `agent_runs` row with `mode='subagent'`; exempt from the generic `tool_timeout` ceiling — the sub-agent wall clock `MINIMAX_CODE_SUBAGENT_TIMEOUT_S` governs, and a timeout returns the accumulated partial). The description teaches the write-safety decision: if the sub-agent will write files (especially in parallel with other runs), spawn with `sandbox=true` and merge via `collect_subagent`; read-only work stays `sandbox=false` (v1.5.1). | `agent_name`, `prompt` | `parent_session_id`, `wait` (default true; false = background, collect via check/wait), `sandbox` (default false, or the process-wide `MINIMAX_CODE_SANDBOX_DEFAULT` when the arg is omitted — explicit arg > env > false, v1.5.2; v1.5.0 redirects the run's writes into an isolated sandbox, see §8a) |
 | `check_subagent` | Poll a background run (`wait=false`) without blocking: `running` while in flight, or the final outcome once finished (read from the persisted run row after the task is reaped). Responses may carry `progress` — the run's `PROGRESS.jsonl` ledger projected to `{total, recent[], latest_percent}` — whenever the sub-agent has called `report_progress` (v1.5.2). | `run_id` | — |
 | `wait_subagent` | Await a background run's completion (shielded — a timeout never kills the run; the response says `running` and the call repeats). Timeout responses carry the same `progress` projection as `check_subagent` (v1.5.2). | `run_id` | `timeout_s` (default 120) |
 | `read_artifact` | Read a file from a sub-agent run's artifact directory (`<workspace_root>/.minimax/artifacts/<run_id>/`); containment-checked against that run's directory, traversal rejected. | `run_id` | `rel_path` (default `BRIEF.md`) |
-| `collect_subagent` | Merge a finished sandboxed run's writes back into the shared workspace (v1.5.0). Three-way compare per file (the `_base/` COW snapshot vs the workspace's current bytes vs the sandbox mirror, all hashed from disk bytes); conflicts surface all three sha256 fingerprints instead of silently clobbering. Refuses while the run is in flight. | `run_id` | `on_conflict` (`fail` / `skip` / `overwrite`, default `fail`) |
+| `collect_subagent` | Merge a finished sandboxed run's writes back into the shared workspace (v1.5.0). Three-way compare per file (the `_base/` COW snapshot vs the workspace's current bytes vs the sandbox mirror, all hashed from disk bytes); conflicts surface all three sha256 fingerprints instead of silently clobbering. Refuses while the run is in flight. On success records its receipt under `.minimax/sandboxes/.collected/<run_id>.json` (idempotence — later collects replay the first report) and prunes the sandbox tree; pruning is conservative (kept on conflicts, per-file errors, skipped files, or an unwritable receipt) and rmtree failures are advisory `prune_error`, retried self-healing by the next collect (v1.6.0). | `run_id` | `on_conflict` (`fail` / `skip` / `overwrite`, default `fail`), `prune` (default true) |
 
 **`report_completion` — injected tool (not in the main registry).** Every sub-agent spawned via `spawn_subagent` gets a per-run `report_completion` tool injected into a *cloned* tool registry (the global registry is never touched — the tool binds to the run id). At spawn time the tool name is also appended to `tool_allowlist` when one is set (otherwise `FilteredToolRegistry` would filter it out), and a completion-protocol section is appended to the sub-agent's system prompt. The sub-agent calls it exactly once before finishing: `status` (`completed`/`partial`/`blocked`), `summary`, `files`, `gaps`, `next_steps` — written to the artifact dir as both `COMPLETION.md` (human) and `REPORT.json` (machine). Enforcement is soft: when the run finishes without a report, the spawn envelope carries `reported=false` plus a `⚠ sub-agent did not call report_completion; result may be incomplete` warning instead of failing.
 
@@ -270,7 +271,7 @@ Tool results are serialised into the conversation as OpenAI-style
 | `old_string` matches >1 location, `replace_all=False` | same | Returns `ToolResult.fail("'old_string' matches N locations; narrow it or pass replace_all=True")`. |
 | `expected_sha256` ≠ on-disk hash before write (CAS, v1.5.0) | `write_file.run` / `edit_file.run` | Returns `ToolResult.fail(...)` carrying `current_sha256` and a "re-read the file" hint; the file on disk is untouched (the edit check fires before the backup, so a blocked edit produces no backup either). |
 | `spawn_subagent(sandbox=true)` with no workspace root, or sandbox mkdir failure | `SpawnSubagentTool.run` | **Fails closed**: `ToolResult.fail(...)`. Unlike the artifacts/fs_bus fail-open family, a silent fallback to the shared workspace would void the contract the caller opted into. |
-| `collect_subagent` finds workspace-vs-sandbox divergence | `CollectSubagentTool.run` | With `on_conflict=fail` (default): `ToolResult.fail(...)` whose output carries the full report (all three sha256 fingerprints per conflict) and **no `.merged` marker** — resolve manually and re-run; already-merged files degrade to no-ops so the re-run is idempotent. `skip` keeps the workspace version; `overwrite` applies the sandbox version. |
+| `collect_subagent` finds workspace-vs-sandbox divergence | `CollectSubagentTool.run` | With `on_conflict=fail` (default): `ToolResult.fail(...)` whose output carries the full report (all three sha256 fingerprints per conflict) and **no receipt written** — resolve manually and re-run; already-merged files degrade to no-ops so the re-run is idempotent. `skip` keeps the workspace version; `overwrite` applies the sandbox version. The sandbox tree is kept (never pruned) so the retry can succeed. |
 | Invalid regex | `search_files.run` | Returns `ToolResult.fail("invalid regex: …")`. |
 | LLM loop hits `max_iterations` | `AgentCore.run` | Sets `result.truncated = True`; emits `status: "max_iterations"`. |
 | Cancellation requested mid-loop | `AgentCore.cancel` + `AgentCore.run` | `result.cancelled = True`; loop exits at the next chunk boundary. |
@@ -424,6 +425,44 @@ Mechanics (`agent/tools/sandbox.py` + `workspace_ctx.py`):
   the LLM asked for). Without the overlay, an edit's re-read would
   silently resurrect the workspace original and lose the first
   sandboxed edit.
+* **Overlay *views* (v1.6.0).** `search_files` / `find_files` /
+  `list_directory` union the sandbox mirrors into their workspace
+  views (`sandbox_mirror_files()` / `mirror_children()` in
+  `sandbox.py`): same-key entries take the sandbox copy (the
+  sub-agent's write is the newer truth), sandbox-only files and
+  directories stay visible, and every reported address is a
+  workspace address — sandbox locations never leak into results.
+  Under a sandbox `search_files` always takes the Python engine
+  (rg cannot see mirrors; the tool description teaches narrowing
+  `path`). The main-agent path is untouched except for one stock
+  bug fix: the Python walker's prune table now skips `.minimax`
+  (it previously leaked backups/sandbox internals into results),
+  and `find_files` hard-excludes `.minimax` even when the caller
+  replaces the default `exclude_dirs` table.
+* **exec escape detection (v1.6.0, advisory).** `exec_command`
+  under a sandbox still runs against the real workspace cwd — but
+  the tool snapshots the workspace before and after (mtime_ns +
+  size, off the event loop via `to_thread`), subtracts writes the
+  fs bus attributes to *other* runs in the window, and surfaces
+  whatever remains as `sandbox_escape` in the output (≤50 changed
+  paths + count + warning) plus `exec_command_sandbox_escape`
+  events on the bus. Shell writes bypass the write redirect and
+  are invisible to the collect three-way compare — the advisory
+  is the only signal the deliverable never reached the sandbox.
+  Orphan writes landing after a timeout kill can be missed
+  (TOCTOU-by-design; byte-hash precision was judged not worth a
+  full double walk).
+* **Collect prune + flat receipts (v1.6.0).** A successful collect
+  records its receipt under
+  `.minimax/sandboxes/.collected/<run_id>.json` — outside the tree
+  it prunes — then deletes the sandbox tree (`prune=true` default;
+  kept on conflicts, per-file errors, skipped files, or an
+  unwritable receipt: no evidence, no deletion). rmtree failures
+  are advisory (`prune_error` on the report) and the next collect
+  retries the prune. Legacy v1.5.x in-sandbox `.merged` markers are
+  still read; when pruning, they are migrated to the flat home
+  first (a failed migration cancels the prune — the receipt must
+  outlive the tree).
 * **Append mirror seeding (v1.5.2, correctness-critical).**
   `redirect_write_target` snapshots the original into `_base/` but
   does not copy it to the mirror path — an "a"-mode open of a fresh
@@ -445,17 +484,13 @@ Mechanics (`agent/tools/sandbox.py` + `workspace_ctx.py`):
   `agent_runs` row carry the list of workspace-relative paths the
   sandbox holds (absent when the run is not sandboxed).
 
-Known limitations (deliberate, v1.5.0 scope):
+Known limitations (deliberate, v1.6.0 scope):
 
-* `exec_command` writes are **not** redirected — the sandbox
-  protocol teaches sub-agents to prefer `write_file`/`edit_file`
-  over shell writes, but a shell `echo >` escapes the sandbox.
-* `search_files` / `glob` / `list_directory` see the workspace view
-  — sandboxed writes are invisible to them until collected. The
-  protocol teaches "verify with `read_file`".
-* Sandbox directories are not pruned after collection (the
-  `.merged` marker prevents repeated work; pruning is a v1.6
-  candidate).
+* `exec_command` still runs against the real workspace cwd — its
+  writes bypass the sandbox write redirect and are never merged
+  by `collect_subagent`. The escape detector makes this visible
+  (advisory), but the protocol still teaches sub-agents to
+  deliver files via `write_file`/`edit_file`/`append_file`.
 * The team path (`teams.spawn`) is out of scope — it has no run id
   and no per-member registry clone to hang the sandbox on.
 
@@ -514,6 +549,9 @@ check_subagent(run_id)            # or wait_subagent(run_id, timeout_s)
 # 3. When finished: merge with the three-way compare. Conflicts
 #    surface all three sha256 fingerprints — never a silent clobber.
 collect_subagent(run_id)          # on_conflict: fail (default) | skip | overwrite
+#    prune: true (default, v1.6.0) deletes the sandbox tree once the
+#    merge is clean and the receipt is safely on disk; kept on
+#    conflicts / errors / skipped files so a retry stays possible.
 ```
 
 For writes the main agent (or any non-sandboxed run) makes itself,

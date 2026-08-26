@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-08-26
+
+### Added — Sandbox Deepening 专项（v1.5.0 四项已知限制收掉三项）
+
+v1.5.0 写安全专项发布时公示的四项沙盒已知限制，本期收掉三项（exec 绕过 → 逃逸检测、search/glob/list 不 overlay → overlay 视图、沙盒不 prune → 保守 prune）；第四项 team 路径沙盒牵扯 `team_orchestrator.py` 的 run_id 贯穿改造，独立立项（本期不做）。三子项各自独立成切片可单独 revert，无 DB migration，全部 advisory / 向后兼容（legacy v1.5.x 沙盒目录与 `.merged` marker 原样兼容）：
+
+- **① `exec_command` 沙盒逃逸检测（advisory，不 fail）**：shell 写入（`echo >`、脚本产物、构建输出）绕过沙盒写重定向直接落 workspace，且 `collect_subagent` 三方对比看不到——静默漏合并，子 agent 以为交付了、主 agent 合并不到。现在 `current_sandbox() is not None` 时（主 agent 零开销）：exec 前 pre-walk workspace（`(mtime_ns, size)` 快照，`asyncio.to_thread` 不卡事件循环，窄排除表 `.git/.venv/node_modules/__pycache__/.pytest_cache/.minimax`——不排除 build/dist，构建产物正是要检测的逃逸形态），exec 后 post-walk diff 出 added/modified/removed；**fs_bus 窗口差集减除**防并发误报——水位之后的 `write_file/edit_file/append_file/collect_subagent` 事件且 `run_id != 当前 run` 的路径从 diff 减去（多 run 并行是本专项立标场景）。剩余非空 → 两个返回路径（正常 + timed_out）的 output 均注入 `sandbox_escape: {changed(≤50), changed_count, changed_truncated, warning}`，并按 diff 类别逐路径 emit 合法枚举 kind（created/modified/removed，cause=`exec_command_sandbox_escape` + run_id attribute）→ 主 agent 的 v1.5.1 notes 轮询天然看到。`SANDBOX_PROTOCOL_PROMPT` 第三 bullet 同步改写：逃逸写入不进 collect，见 `sandbox_escape` warning 用 write_file 重写交付物再上报。
+- **② search / find / list overlay（消灭视图分裂）+ 存量剪枝修复**：此前子 agent 搜不到自己刚写的沙盒文件（协议教「用 read_file 验证」，视图分裂有界但反直觉）。现在三个只读工具经 `sandbox.py` 新共享 helpers（`sandbox_mirror_files` / `mirror_children`，单点导出）把沙盒镜像并进 workspace 视图：**`search_files`** 沙盒激活时强制 python 引擎（rg 看不到 mirror）、候选集 rel-posix key 去重 union（同名沙盒版覆盖——子 agent 的写是更新的真相）、读取统一走 `overlay_read_target`、single_file 分支同样 overlay；**`find_files`**（glob）walk 后做 mirror union（path 前缀过滤 + rel 投影 + max_depth + 同名覆盖）；**`list_directory`** 单层 entries 并入 mirror children（name 冲突取沙盒版、`path` 投影回 workspace 地址——绝不泄漏沙盒绝对路径、加 `sandboxed: true`、`_base`/marker 隐藏）、沙盒-only 目录放行（`target.exists() or mirror.is_dir()`）。所有结果地址一律 workspace 地址。**存量 bug 顺手修复**：python 引擎剪枝表此前缺 `.minimax`（主 agent 会搜到 backups/sandboxes 内部文件），rg 本就跳隐藏目录故只在 python 路径触发；`find_files` 的 `.minimax` 改为硬排除（walk always-prune + 结果过滤双保险——用户显式传 `exclude_dirs` 整体覆盖默认表时不再泄漏）。`SANDBOX_PROTOCOL_PROMPT` 第四 bullet 从「search/find/list 显示 workspace 视图，看不到你的沙盒写入」改写为 overlay 语义。
+- **③ `collect_subagent` prune + receipt 新家（磁盘不再无限增长）**：此前 collect 合并后沙盒镜像目录永不清理。现在：receipt 一律写新家 `<root>/.minimax/sandboxes/.collected/<run_id>.json`（flat sibling 目录——`sandbox_files_written` 锚定 run 目录永不扫到，`run_<hex12>` id 不与点号目录撞名），写成功且 merge 干净（无 conflicts-errors-skipped）则 `shutil.rmtree` 沙盒树（`prune=true` 默认，schema 已同步——`additionalProperties: False`）。**保守门设计**：receipt 没写成不删（无凭证不删数据——删树无 receipt = 毁幂等证据 + 楔死后续 collect 为 "no sandbox found"）；conflicts+fail 永不 prune 永不写 receipt（重跑可能）；skipped 非空保留（沙盒版本是该文件唯一副本）；errors 非空保留。rmtree 失败 advisory（`prune_error` 进 report，merge 仍 ok）+ **already-collected 分支重试 prune 自愈**（防锁文件后残留树）。**legacy 迁移**：v1.5.x 的 `sb_dir/.merged` marker 仍被读取（升级前 collect 的沙盒照常识别为 already-collected）；命中且 prune 时先迁移 receipt 到新家再删树（迁移失败取消 prune——凭证必须活得比树久）；`prune=false` 时 legacy 布局原样保留。already-collected 检查统一前置到 in-flight guard 之后，命中返回 `{**prior, "already_collected": true}`。
+
+### Changed
+
+- `docs/agent-core.md`：§2 工具目录表（`exec_command` 加 sandbox_escape、`search_files`/`find_files`/`list_directory` 加 overlay、`collect_subagent` 加 prune 与 receipt home；`find_files` 此前从未进过工具表，本次补行）；§8a Mechanics 补三条 v1.6 bullet + Known limitations 收窄为两项（exec 不重定向本质未变——advisory 可见但永不合并；team 路径）；§8c 高安全模板 collect 步补 prune 说明；错误矩阵 conflict 行措辞 `.merged` → receipt + 沙盒保留语义。
+- `SANDBOX_PROTOCOL_PROMPT` 第三、四 bullet 改写（逃逸重写指引 + overlay 视图语义）。
+
+### 回归测试（40 个新测试；pytest 10519 / vitest 758 全绿）
+
+- `test_exec_sandbox_escape.py`（10）：逃逸检出（python 写文件 → changed）/ 无沙盒零开销（monkeypatch `_scan_workspace` 计数=0）/ 无写入无警 / 窗口内其他 run 写入不误报（fs_bus 差集减除）/ removed 检出 / 窄表钉子（`.minimax` 不报、build 产物报）/ timed_out 路径也带 / emit 形状（FakeBus + 合法枚举 + cause + run_id）/ 50 条截断 / prompt 第三 bullet 钉。
+- `test_sandbox_overlay_views.py`（16）：find_files 三例（union / 同名覆盖 / 前缀+深度）+ exclude_dirs 硬排除钉 + search 四例（强制 python 引擎 / mirror 命中去重 / single_file overlay / 主路径 `.minimax` 剪枝回归）+ list_directory 三例（新增投影 sandboxed / 同名取 mirror / 沙盒-only 目录）+ 无沙盒零变化回归钉 + prompt 第四 bullet 钉 + 剪枝表单元 + helper 单元。
+- `test_collect_prune.py`（14）：默认 prune 删树 + receipt 形状 / 二次 collect 重放 / prune=false 保留 / conflicts·skip·errors 三门保留 / rmtree 失败 advisory + 二次不重合并（mtime 钉）/ 失败 prune 自愈重试 / receipt 写失败阻塞 prune（无凭证不删数据钉）/ legacy 识别（prune=false 原样）/ legacy 迁移后 prune + 迁移后幂等 / dispatch 接受 prune 参数（schema 钉，bogus 仍拒）/ marker 路径形状 / `sandbox_files_written` 不含 `.collected`。
+- `test_subagent_collect.py` 同步迁移五处旧 marker 位置钉子到新家。
+
 ## [1.5.2] - 2026-08-26
 
 ### Added — 第四轮压测三项残留收口（env 默认 + append 路径 + 进度可见性）
