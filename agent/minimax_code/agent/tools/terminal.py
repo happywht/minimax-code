@@ -18,6 +18,19 @@ v0.5.0 hardening
   processes at once.
 * Argument count and length limits — ``_MAX_ARGS``, ``_MAX_ARG_LEN``.
 
+v1.6.0 sandbox escape detection
+-------------------------------
+A sandboxed sub-agent (``spawn_subagent(sandbox=True)``) can still
+shell out and write the *shared workspace* directly — exec has no
+write-redirection layer. Those writes are invisible to
+``collect_subagent``'s three-way compare, so without this detector
+they silently bypass the merge. When (and only when) the caller runs
+inside a sandbox, the tool snapshots the workspace before/after the
+child, diffs the two, subtracts writes the fs-bus attributes to other
+actors, and reports the remainder as an advisory
+``sandbox_escape`` block. Main-agent calls pay zero overhead: the
+snapshot walk never runs outside a sandbox.
+
 Streaming model
 ---------------
 The tool buffers stdout / stderr line-by-line and returns a
@@ -30,6 +43,7 @@ live tail it should call ``run_streaming`` directly.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import signal
@@ -37,10 +51,14 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
+from ...workspace_ctx import current_run_id, current_sandbox
 from .base import Tool, ToolResult, register_tool
 from .file_ops import PathSecurityError, _default_workspace, safe_resolve
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Resource limits
@@ -305,6 +323,192 @@ def _matches_deny_arg(arg: str, pattern: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Sandbox escape detection (v1.6.0)
+# ---------------------------------------------------------------------------
+
+# Narrow exclude set for the escape walk. Unlike glob's broad default
+# table we deliberately keep build artifacts visible — a sandboxed exec
+# dropping files into ``build/`` or ``dist/`` is exactly the escape form
+# this detector exists to surface. Only provenance-free noise is pruned.
+_ESCAPE_EXCLUDE_DIRS: frozenset[str] = frozenset({
+    ".git", ".hg", ".svn",
+    ".venv", "venv",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    ".minimax",  # sandboxes / backups / artifacts — our own machinery
+})
+
+# Report cap: enough for the sub-agent (and the main agent's change-notes
+# feed) to act on, small enough to keep the tool payload bounded.
+_ESCAPE_MAX_REPORT = 50
+
+# fs-bus causes that attribute a workspace write to a known tool. Events
+# with these causes and a *different* run id are subtracted from the raw
+# diff — a concurrent run's (or the main agent's) legitimate write landing
+# inside our exec window must not be misreported as an escape.
+_ATTRIBUTED_CAUSES: frozenset[str] = frozenset({
+    "write_file", "edit_file", "append_file", "collect_subagent",
+})
+
+# Diff class → the closed FsEventKind union (created/modified/removed).
+# An illegal kind string would be swallowed by the bus's fail-open and
+# silently vanish, so the mapping is explicit.
+_ESCAPE_KIND_MAP: dict[str, str] = {
+    "added": "created",
+    "modified": "modified",
+    "removed": "removed",
+}
+
+# The windowed attribution lookback. The bus buffer is 500 events deep;
+# beyond that we accept a rare false positive over paying for persistence.
+_ESCAPE_BUS_LOOKBACK = 500
+
+
+def _normkey(rel_posix: str) -> str:
+    """Canonical snapshot key: normcase (case-folding on Windows) with
+    forward slashes preserved — plain ``os.path.normcase`` flips ``/`` to
+    ``\\`` there, which would leak into the human-facing report."""
+    return os.path.normcase(rel_posix).replace(os.sep, "/")
+
+
+def _scan_workspace(root: Path) -> dict[str, tuple[int, int]]:
+    """Snapshot every regular file under *root* as ``{key: (mtime_ns, size)}``.
+
+    Keys are :func:`_normkey` of the forward-slash relative path so the
+    pre/post diff is stable across platforms and separators (the project's
+    established normcase-key convention, cf. ``file_ops._INFLIGHT_WRITES``).
+    Excluded directory names are pruned in-place during the walk; stat
+    failures are skipped (a racy delete mid-walk must not break the call).
+    Pure sync — callers wrap in ``asyncio.to_thread`` to keep the loop live.
+    """
+    snap: dict[str, tuple[int, int]] = {}
+    for dirpath, dirnames, filenames in os.walk(root, topdown=True):
+        dirnames[:] = [d for d in dirnames if d not in _ESCAPE_EXCLUDE_DIRS]
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            rel = os.path.relpath(full, root).replace(os.sep, "/")
+            snap[_normkey(rel)] = (st.st_mtime_ns, st.st_size)
+    return snap
+
+
+def _diff_snapshots(
+    pre: dict[str, tuple[int, int]],
+    post: dict[str, tuple[int, int]],
+) -> list[tuple[str, str]]:
+    """Classify snapshot deltas as ``[(change, rel_posix)]`` sorted by path.
+
+    ``change`` is one of ``added`` / ``modified`` / ``removed``. The
+    ``(mtime_ns, size)`` pair is a cheap fingerprint: a rewrite landing in
+    the same nanosecond tick with the same size is invisible — a documented
+    TOCTOU residual; content-hashing every file on every exec is not worth
+    the walk cost for an advisory signal.
+    """
+    out: list[tuple[str, str]] = []
+    for key, stat in post.items():
+        old = pre.get(key)
+        if old is None:
+            out.append(("added", key))
+        elif old != stat:
+            out.append(("modified", key))
+    for key in pre:
+        if key not in post:
+            out.append(("removed", key))
+    out.sort(key=lambda item: item[1])
+    return out
+
+
+def _bus_watermark() -> int:
+    """The fs bus's highest buffered seq (0 when the bus is off or empty).
+
+    Taken right after the pre-walk so the attribution window covers
+    [watermark, post-walk]: everything attributed in that span is a known
+    tool write, and everything left in the diff is the exec's own doing.
+    """
+    try:
+        from ...app import ensure_fs_bus
+
+        bus = ensure_fs_bus()
+        if bus is None:
+            return 0
+        events = bus.recent(limit=1)
+        return events[-1].seq if events else 0
+    except Exception:  # noqa: BLE001 — advisory path must never raise
+        return 0
+
+
+def _attributed_paths(root: Path, watermark: int, own_run: str | None) -> set[str]:
+    """Normcase-rel paths other actors wrote into the workspace since *watermark*.
+
+    Subtracted from the raw diff so concurrent runs' and the main agent's
+    tool writes are not misreported. Only ``_ATTRIBUTED_CAUSES`` events
+    count; the sub-agent's own run id is excluded — its tool writes are
+    sandbox-redirected and pruned from the walk anyway, but the guard keeps
+    the semantics explicit.
+    """
+    try:
+        from ...app import ensure_fs_bus
+
+        bus = ensure_fs_bus()
+        if bus is None:
+            return set()
+        attributed: set[str] = set()
+        for event in bus.recent(limit=_ESCAPE_BUS_LOOKBACK):
+            if event.seq <= watermark:
+                continue
+            if event.cause not in _ATTRIBUTED_CAUSES:
+                continue
+            attrs = dict(event.attributes)
+            if own_run is not None and attrs.get("run_id") == own_run:
+                continue
+            for path in event.paths:
+                try:
+                    rel = os.path.relpath(path, root)
+                except ValueError:
+                    continue  # different drive — not under this root
+                if rel.startswith(".."):
+                    continue
+                attributed.add(_normkey(rel.replace(os.sep, "/")))
+        return attributed
+    except Exception:  # noqa: BLE001 — advisory path must never raise
+        return set()
+
+
+def _emit_escape(
+    changed: list[tuple[str, str]], root: Path, run_id: str | None
+) -> None:
+    """Mirror unattributed exec-window changes onto the fs bus (fail-open).
+
+    The main agent's v1.5.1 change-notes poll picks these up under cause
+    ``exec_command_sandbox_escape``; kinds go through ``_ESCAPE_KIND_MAP``
+    onto the closed FsEventKind union so nothing is silently dropped.
+    """
+    try:
+        from ...app import ensure_fs_bus
+
+        bus = ensure_fs_bus()
+        if bus is None:
+            return
+        by_kind: dict[str, list[str]] = {}
+        for change, rel in changed:
+            abs_path = str(root.joinpath(*rel.split("/")))
+            by_kind.setdefault(_ESCAPE_KIND_MAP[change], []).append(abs_path)
+        for kind, paths in by_kind.items():
+            bus.emit(
+                kind,
+                paths,
+                "exec_command_sandbox_escape",
+                **({"run_id": run_id} if run_id else {}),
+            )
+    except Exception:  # noqa: BLE001 — advisory path must never raise
+        logger.debug("sandbox_escape fs_bus emit failed", exc_info=True)
+
+
 @register_tool
 class ExecCommandTool(Tool):
     name = "exec_command"
@@ -314,7 +518,12 @@ class ExecCommandTool(Tool):
         "shell interpolation); arguments are passed as a list. Use 'cwd' "
         "to scope the working directory and 'env' to inject extra "
         "environment variables. Default timeout is 30 seconds; hard cap "
-        "is 10 minutes. Output is capped at 5 MiB per stream."
+        "is 10 minutes. Output is capped at 5 MiB per stream. NOTE: in a "
+        "sandboxed run, files written by the child land in the shared "
+        "workspace directly (not the sandbox) and will NOT be merged by "
+        "collect_subagent — write deliverables with write_file instead; "
+        "any workspace writes detected here come back as a sandbox_escape "
+        "warning."
     )
     parameters = {
         "type": "object",
@@ -384,6 +593,21 @@ class ExecCommandTool(Tool):
         # Build sanitized child environment.
         child_env = _build_safe_env(extra_env)
 
+        # v1.6.0 — sandbox escape detection setup. Sandbox runs only;
+        # the main agent's exec calls skip all of this. The pre-walk sits
+        # inside the semaphore so writes landing while we *queue* for a
+        # slot are in the "before" snapshot, not misread as escapes.
+        escape_root = _default_workspace() if current_sandbox() is not None else None
+        pre_snapshot: dict[str, tuple[int, int]] | None = None
+        watermark = 0
+        if escape_root is not None:
+            try:
+                pre_snapshot = await asyncio.to_thread(_scan_workspace, escape_root)
+                watermark = _bus_watermark()
+            except Exception:  # noqa: BLE001 — advisory must never break exec
+                logger.debug("escape pre-walk failed", exc_info=True)
+                pre_snapshot = None
+
         # Acquire concurrency semaphore.
         async with _PROCESS_SEMAPHORE:
             started = time.monotonic()
@@ -432,6 +656,37 @@ class ExecCommandTool(Tool):
         exit_code = proc.returncode
         duration = time.monotonic() - started
 
+        # v1.6.0 — post-walk at the convergence point: both the timeout
+        # and the normal return path flow through here, so an escape
+        # during a killed command is reported too (the tree kill may race
+        # a straggler write — that write happened, it must be surfaced).
+        escape_info: dict[str, Any] | None = None
+        if pre_snapshot is not None and escape_root is not None:
+            try:
+                post_snapshot = await asyncio.to_thread(_scan_workspace, escape_root)
+                own_run = current_run_id()
+                attributed = _attributed_paths(escape_root, watermark, own_run)
+                raw_diff = _diff_snapshots(pre_snapshot, post_snapshot)
+                changed = [(c, p) for c, p in raw_diff if p not in attributed]
+                if changed:
+                    escape_info = {
+                        "changed": [
+                            f"{change}:{rel}"
+                            for change, rel in changed[:_ESCAPE_MAX_REPORT]
+                        ],
+                        "changed_count": len(changed),
+                        "changed_truncated": len(changed) > _ESCAPE_MAX_REPORT,
+                        "warning": (
+                            "exec_command wrote the shared workspace while "
+                            "this run is sandboxed — these changes bypass "
+                            "collect_subagent. Re-write deliverables with "
+                            "write_file before reporting completion."
+                        ),
+                    }
+                    _emit_escape(changed, escape_root, own_run)
+            except Exception:  # noqa: BLE001 — advisory must never break exec
+                logger.debug("escape post-walk failed", exc_info=True)
+
         if timed_out:
             return ToolResult.fail(
                 f"command timed out after {timeout}s (killed)",
@@ -443,6 +698,7 @@ class ExecCommandTool(Tool):
                     "duration_s": duration,
                     "truncated_stdout": truncated_stdout,
                     "truncated_stderr": truncated_stderr,
+                    **({"sandbox_escape": escape_info} if escape_info else {}),
                 },
                 exit_code=-1,
                 timed_out=True,
@@ -460,6 +716,7 @@ class ExecCommandTool(Tool):
                 "duration_s": duration,
                 "truncated_stdout": truncated_stdout,
                 "truncated_stderr": truncated_stderr,
+                **({"sandbox_escape": escape_info} if escape_info else {}),
             },
             error=err_msg,
             metadata={
@@ -478,4 +735,10 @@ __all__ = [
     "_child_spawn_kwargs",
     "_signal_process_tree",
     "_SIGKILL",
+    "_ESCAPE_EXCLUDE_DIRS",
+    "_scan_workspace",
+    "_diff_snapshots",
+    "_bus_watermark",
+    "_attributed_paths",
+    "_emit_escape",
 ]
