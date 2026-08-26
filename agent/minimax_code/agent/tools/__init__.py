@@ -26,6 +26,11 @@ from .file_ops import (
 from .glob import GlobFindTool
 from .sandbox import CollectSubagentTool
 from .search import SearchFilesTool
+from .shared_memory import (
+    SharedMemoryGetTool,
+    SharedMemoryListTool,
+    SharedMemoryPutTool,
+)
 from .subagents import (
     CheckSubagentTool,
     ListSubagentsTool,
@@ -33,6 +38,7 @@ from .subagents import (
     WaitSubagentTool,
 )
 from .terminal import ExecCommandTool
+from .verification import VerifySubagentTool
 
 __all__ = [
     "Tool",
@@ -57,10 +63,14 @@ __all__ = [
     "SearchCodebaseTool",
     "SearchFilesTool",
     "FindSymbolCodebaseTool",
+    "SharedMemoryGetTool",
+    "SharedMemoryListTool",
+    "SharedMemoryPutTool",
     "SpawnSubagentTool",
     "SummarizeCodebaseTool",
     "WaitSubagentTool",
     "WriteFileTool",
     "ExecCommandTool",
+    "VerifySubagentTool",
     "safe_resolve",
 ]

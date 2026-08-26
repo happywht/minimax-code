@@ -3,14 +3,63 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
+import time
 import uuid
 from typing import Any
 
 from .base import Tool, ToolResult, register_tool
 
 logger = logging.getLogger(__name__)
+
+
+# P0-4 — DAG dependency tracking. ``_BACKGROUND_DEP_PENDING`` holds
+# the list of run_ids a background run is still waiting on; entries
+# are pruned once the dep completes. ``_BACKGROUND_STARTED_AT`` is
+# P1-3 telemetry (wall-clock elapsed for check_subagent).
+_BACKGROUND_STARTED_AT: dict[str, float] = {}
+_BACKGROUND_DEP_PENDING: dict[str, list[str]] = {}
+
+
+def record_background_started(run_id: str, started_at: float | None = None) -> float:
+    """Record a background run's spawn timestamp; return the recorded ts.
+
+    Used by the P0-4 DAG path to keep elapsed-s honest for runs that
+    are still satisfying ``depends_on`` (we report their started_at
+    from *spawn*, not from *first execution*).
+    """
+    ts = float(started_at) if started_at is not None else time.time()
+    _BACKGROUND_STARTED_AT[run_id] = ts
+    return ts
+
+
+def set_background_deps(run_id: str, deps: list[str]) -> None:
+    """Mark a background run as waiting on ``deps`` (P0-4).
+
+    Empty list is a no-op (the run is ready to execute immediately).
+    """
+    if not deps:
+        _BACKGROUND_DEP_PENDING.pop(run_id, None)
+        return
+    _BACKGROUND_DEP_PENDING[run_id] = list(deps)
+
+
+def clear_background_dep(dep_run_id: str) -> None:
+    """Drop ``dep_run_id`` from every other run's pending list (P0-4).
+
+    Called by the orchestrator when a background run completes (any
+    terminal status). A failed dep does NOT auto-fail dependents —
+    the model gets the error envelope on check_subagent and decides.
+    """
+    for rid, deps in list(_BACKGROUND_DEP_PENDING.items()):
+        if dep_run_id in deps:
+            deps = [d for d in deps if d != dep_run_id]
+            if not deps:
+                _BACKGROUND_DEP_PENDING.pop(rid, None)
+            else:
+                _BACKGROUND_DEP_PENDING[rid] = deps
 
 
 def _subagent_event(
@@ -52,41 +101,11 @@ async def _emit_safe(emit: Any, event: dict[str, Any]) -> None:
     if emit is None:
         return
     try:
-        import inspect
-
         result = emit("agent.subagent_progress", event)
         if inspect.isawaitable(result):
             await result
     except Exception:  # pragma: no cover — emit must never break the run
         logger.debug("subagent_progress emit failed", exc_info=True)
-
-
-def _snapshot(run_id: str, result: dict[str, Any]) -> dict[str, Any]:
-    """Project an invoke envelope into the check/wait response shape."""
-    snap: dict[str, Any] = {
-        "run_id": run_id,
-        "status": "cancelled" if result.get("cancelled") else "completed",
-        "partial": bool(result.get("partial", False)),
-        "text": result.get("text", ""),
-        "iterations": result.get("iterations", 0),
-        "tool_calls": result.get("tool_calls", []),
-        "stub": bool(result.get("stub", True)),
-        "usage": result.get("usage") or {},
-        "truncated": bool(result.get("truncated", False)),
-        "reported": bool(result.get("reported", False)),
-    }
-    if result.get("files_written") is not None:
-        snap["files_written"] = result["files_written"]
-    # v1.5.2 — interim progress ledger projection (fail-open; the key
-    # is absent when the sub-agent never called report_progress). The
-    # ledger lives under the run's artifact dir, resolvable from the
-    # caller's workspace root — same root the spawn used.
-    from .artifacts import progress_summary
-
-    progress = progress_summary(run_id)
-    if progress is not None:
-        snap["progress"] = progress
-    return snap
 
 
 def _agent_summary(row: dict[str, Any]) -> dict[str, Any]:
@@ -133,12 +152,14 @@ REPORT_PROTOCOL_PROMPT = (
     "- `files`: paths you read or changed\n"
     "- `gaps`: what remains unknown or unverified\n"
     "- `next_steps`: suggested follow-ups for the main agent\n\n"
-    "**Budget rule:** call `report_completion` as soon as your core "
-    "deliverables are written to disk — before any polish or extra "
-    "verification passes. If your iteration budget runs out first, you "
-    "lose the chance to report and the run is flagged unreported. "
-    "Reporting `status: partial` early is always better than never "
-    "reporting.\n\n"
+    "**Budget rule (P0-3 v1.5.3):** call `report_completion` as soon as "
+    "your core deliverables are written to disk — before any polish or "
+    "extra verification passes. The runtime will warn you when the "
+    "iteration budget is close (default: 8 iterations remaining); treat "
+    "that warning as 'wrap up and report now'. If your iteration budget "
+    "runs out first, you lose the chance to report and the run is flagged "
+    "unreported. Reporting `status: partial` early is always better than "
+    "never reporting.\n\n"
     "That call writes this run's official handoff (COMPLETION.md / "
     "REPORT.json), which the main agent reads back with `read_artifact`. "
     "Skipping it leaves the run flagged as unreported.\n"
@@ -172,6 +193,24 @@ SANDBOX_PROTOCOL_PROMPT = (
     "When this run finishes, the main agent merges your sandbox "
     "output; conflicts against workspace changes are surfaced "
     "explicitly, never silently overwritten.\n"
+)
+
+# v_opt1 — P0-3 soft-completion nudge. The hard 100-iteration cap
+# is fine for runaway loops, but a write-heavy sub-agent that just
+# shipped 30 KB of HTML needs a nudge to *stop calling tools* and
+# report. When the sub-agent is on its last few iterations, the agent
+# loop appends the iteration count to the protocol paragraph so the
+# next reasoning turn sees "you have N left, call report_completion
+# now". Cheap, fail-open — we only append when we're already near the
+# limit, and the prompt is the same shape as the existing completion
+# paragraph so the LLM doesn't have to learn a new pattern.
+SOFT_COMPLETION_NUDGE_PROMPT = (
+    "\n## Iteration budget nudge\n\n"
+    "When the assistant message reports you have only a couple of "
+    "iterations left, **stop calling write_file / edit_file / search "
+    "tools and call `report_completion` next** — even if you haven't "
+    "polished every file. Reporting `status: partial` with what you "
+    "have is always better than running out of budget unreported.\n"
 )
 
 # v1.5.2 — the interim progress protocol paragraph. Field report: a
@@ -272,8 +311,66 @@ async def _drive_run(
     wall-clock partial guard, and the ``_ACTIVE_RUNS`` cancel channel
     behave identically either way. Returns the invoke envelope (with a
     ``partial`` flag when the wall clock fired).
+
+    P0-4 v1.5.3 — DAG wait. If this run has unmet ``depends_on``
+    deps (the spawn flow already populated ``_BACKGROUND_DEP_PENDING``),
+    we poll the background-run registry on a 0.5s tick and only kick
+    off the actual agent loop once every dep has reached a terminal
+    state. The poll is bounded by ``subagent_wall_clock_s()`` so a
+    dep that hangs forever cannot pin this run past the global
+    timeout (the wall-clock guard further down will still fire and
+    flag the run partial).
     """
-    from ...orchestrator.subagent import subagent_wall_clock_s
+    from ...orchestrator.subagent import get_background_run, subagent_wall_clock_s
+
+    # P0-4 — satisfy DAG deps first. Skip when the run has no pending
+    # deps (the spawn flow calls ``set_background_deps`` with [] which
+    # pops the entry).
+    deps_blocking = list(_BACKGROUND_DEP_PENDING.get(run_id) or [])
+    if deps_blocking:
+        # Unknown deps (typo'd run_id, or already reaped before this
+        # run started) can never be cleared by the completion hook —
+        # waiting on them would pin this run until the wall clock
+        # fires. Warn once and treat them as satisfied.
+        unknown = [d for d in deps_blocking if get_background_run(d) is None]
+        if unknown:
+            logger.warning(
+                "sub-agent %s: depends_on %s not in the background registry; "
+                "treating as satisfied",
+                run_id,
+                unknown,
+            )
+            known = [d for d in deps_blocking if get_background_run(d) is not None]
+            if known:
+                _BACKGROUND_DEP_PENDING[run_id] = known
+            else:
+                _BACKGROUND_DEP_PENDING.pop(run_id, None)
+        wall_dep_start = time.time()
+        while _BACKGROUND_DEP_PENDING.get(run_id):
+            still_running = [
+                d
+                for d in _BACKGROUND_DEP_PENDING.get(run_id) or []
+                # A dep that vanished mid-wait (reaped before its hook
+                # ran) counts as done — a run cannot become un-finished.
+                if (dep := get_background_run(d)) is not None and not dep.done()
+            ]
+            if not still_running:
+                break
+            await asyncio.sleep(0.5)
+            # Honour the same wall-clock cap as the rest of the drive.
+            wall = subagent_wall_clock_s()
+            if wall and wall > 0 and (time.time() - wall_dep_start) > wall:
+                # A dep is taking longer than the budget allows — give
+                # up the wait and run anyway (the caller can decide
+                # whether the partial result is acceptable).
+                logger.warning(
+                    "sub-agent %s: dep wait exceeded wall-clock %ss; proceeding",
+                    run_id, wall,
+                )
+                break
+        # One last sweep: even if the loop exited by timeout, drop any
+        # deps the cleanup hook hasn't already cleared.
+        _BACKGROUND_DEP_PENDING.pop(run_id, None)
 
     # v1.5.1 — publish the owning run id for the whole drive (sandboxed
     # or not): the write tools attribute fs-bus events to it and consult
@@ -559,6 +656,22 @@ class SpawnSubagentTool(Tool):
                 ),
                 "default": False,
             },
+            # P0-4 v1.5.3 — DAG dependency list. Each entry must be a
+            # run_id returned by a previous ``spawn_subagent(wait=false)``
+            # call. The new run waits in ``status='waiting_deps'`` until
+            # every listed run reaches a terminal state, then proceeds
+            # automatically. ``wait=false`` is required (otherwise the
+            # caller can just chain ``wait_subagent`` itself); passing
+            # ``wait=true`` together with ``depends_on`` is rejected.
+            "depends_on": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "List of run_ids this run waits for before executing. "
+                    "Only honoured when wait=false. P0-4 DAG scheduling."
+                ),
+                "default": [],
+            },
         },
         "required": ["agent_name", "prompt"],
         "additionalProperties": False,
@@ -571,6 +684,7 @@ class SpawnSubagentTool(Tool):
         parent_session_id: str | None = None,
         wait: bool = True,
         sandbox: bool | None = None,
+        depends_on: list[str] | None = None,
     ) -> ToolResult:
         # v1.5.2 — explicit arg wins, else the env default, else false.
         # ``None`` (the LLM omitting the key) is indistinguishable from
@@ -578,6 +692,22 @@ class SpawnSubagentTool(Tool):
         # knob needs.
         if sandbox is None:
             sandbox = _sandbox_default()
+
+        # P0-4 v1.5.3 — depends_on validation. A DAG branch only makes
+        # sense when the run is in the background (the caller can't wait
+        # on a foreground run that's itself waiting on another run).
+        deps: list[str] = list(depends_on or [])
+        if deps and wait:
+            return ToolResult.fail(
+                "depends_on requires wait=false (foreground runs cannot "
+                "wait on background dependencies — chain wait_subagent "
+                "explicitly instead)"
+            )
+        for d in deps:
+            if not isinstance(d, str) or not d.strip():
+                return ToolResult.fail(
+                    "depends_on entries must be non-empty run_id strings"
+                )
 
         # v1.4.0 — exempt this dispatch from the generic tool_timeout
         # ceiling: a sub-agent legitimately runs a whole agent loop
@@ -634,6 +764,17 @@ class SpawnSubagentTool(Tool):
                     f"sandbox requested but directory creation failed: {exc}"
                 )
 
+        # P0-3 v1.6.1: the row's budget is passed through verbatim.
+        # Legacy rows carrying the old default (8) were lifted to 100
+        # once and for all by migration 029 — a runtime clamp here
+        # would silently override budgets the user explicitly tuned
+        # (e.g. an intentional 50).
+        raw_max = row.get("max_iterations")
+        try:
+            parsed_max = int(raw_max) if raw_max is not None else 100
+        except (TypeError, ValueError):
+            parsed_max = 100
+
         config = SubAgentConfig(
             name=row["name"],
             system_prompt=row.get("system_prompt") or "",
@@ -648,7 +789,7 @@ class SpawnSubagentTool(Tool):
             tags=row.get("tags"),
             team_id=row.get("team_id"),
             skills=row.get("skills"),
-            max_iterations=int(row.get("max_iterations") or 50),
+            max_iterations=parsed_max,
             temperature=row.get("temperature"),
         )
 
@@ -671,6 +812,12 @@ class SpawnSubagentTool(Tool):
             + TASK_PRECEDENCE_PROMPT
             + REPORT_PROTOCOL_PROMPT
             + PROGRESS_PROTOCOL_PROMPT
+            # v_opt1 — P0-3 soft-completion nudge: always included; the
+            # paragraph itself is conditional ("when the assistant
+            # message reports you have only a couple of iterations
+            # left") so adding it to every spawn is zero-cost when the
+            # budget isn't tight and pays off when it is.
+            + SOFT_COMPLETION_NUDGE_PROMPT
             + (SANDBOX_PROTOCOL_PROMPT if sandbox else "")
         )
         runtime = get_subagent_runtime() or SubAgentRuntime()
@@ -767,28 +914,49 @@ class SpawnSubagentTool(Tool):
             # let the GC kill it mid-flight) and return immediately.
             from ...orchestrator.subagent import register_background_run
 
+            # P0-4 — record the spawn timestamp up-front so check_subagent
+            # can report elapsed_s even while the run is queued for its
+            # dependencies. Same for the dep list — the dep-clearing
+            # callback (registered below) fires on the task's done state.
+            record_background_started(run_id)
+            set_background_deps(run_id, deps)
             task = asyncio.get_running_loop().create_task(
                 _drive_run(**drive_kwargs), name=f"subagent:{run_id}"
             )
             register_background_run(run_id, task)
-            return ToolResult.ok(
-                {
-                    "agent": row["name"],
-                    "run_id": run_id,
-                    "session_id": sub_session,
-                    "parent_session_id": parent,
-                    "status": "running",
-                    "wait": False,
-                    # v1.5.0 — tell the caller this run writes are
-                    # isolated and a collect step is expected.
-                    "sandbox": bool(sandbox),
-                    **artifact,
-                    "hint": (
-                        "running in background — poll check_subagent(run_id) "
-                        "or collect with wait_subagent(run_id)"
-                    ),
-                }
-            )
+
+            # P0-4 — when this task finishes, drop it from every other
+            # run's pending list. We register the callback *after* the
+            # task is created so add_done_callback won't fire on the
+            # synchronous "task already done" path.
+            def _on_finish(_t: asyncio.Task, rid: str = run_id) -> None:
+                _BACKGROUND_STARTED_AT.pop(rid, None)
+                _BACKGROUND_DEP_PENDING.pop(rid, None)
+                clear_background_dep(rid)
+
+            task.add_done_callback(_on_finish)
+
+            envelope: dict[str, Any] = {
+                "agent": row["name"],
+                "run_id": run_id,
+                "session_id": sub_session,
+                "parent_session_id": parent,
+                "status": "waiting_deps" if deps else "running",
+                "wait": False,
+                # v1.5.0 — tell the caller this run writes are
+                # isolated and a collect step is expected.
+                "sandbox": bool(sandbox),
+                # P0-4 — surface the dep set on the spawn envelope so
+                # the caller can sanity-check the DAG.
+                "depends_on": deps,
+                **artifact,
+                "hint": (
+                    "waiting on dependencies" if deps else
+                    "running in background — poll check_subagent(run_id) "
+                    "or collect with wait_subagent(run_id)"
+                ),
+            }
+            return ToolResult.ok(envelope)
 
         result = await _drive_run(**drive_kwargs)
         envelope: dict[str, Any] = {
@@ -895,27 +1063,39 @@ class CheckSubagentTool(Tool):
         if not run_id.strip():
             return ToolResult.fail("run_id is required")
         from ...orchestrator.subagent import get_background_run
+        from .verification import build_subagent_status
 
-        task = get_background_run(run_id.strip())
+        rid = run_id.strip()
+        task = get_background_run(rid)
         if task is None:
             # Not in flight — the persisted row carries the outcome.
-            return await _lookup_finished_run(run_id.strip())
+            return await _lookup_finished_run(rid)
         if task.done() and not task.cancelled():
             exc = task.exception()
             if exc is not None:
+                # P1-3 — even the failed branch goes through the same
+                # projector so the caller gets a consistent shape
+                # (status='completed' plus a non-empty ``error`` key).
                 return ToolResult.ok(
-                    {"run_id": run_id, "status": "failed", "error": str(exc)}
+                    build_subagent_status(
+                        rid, task_result={"error": str(exc), "cancelled": False}
+                    )
                 )
-            return ToolResult.ok(_snapshot(run_id, task.result()))
-        # v1.5.2 — running snapshot carries the interim progress ledger
-        # (absent when the sub-agent has not reported any milestones yet).
-        from .artifacts import progress_summary
-
-        running: dict[str, Any] = {"run_id": run_id, "status": "running"}
-        progress = progress_summary(run_id)
-        if progress is not None:
-            running["progress"] = progress
-        return ToolResult.ok(running)
+            # P1-3 — finished branch gets the rich envelope (a strict
+            # superset of the legacy _snapshot shape: the full
+            # tool_calls list and files_written ride along).
+            return ToolResult.ok(build_subagent_status(rid, task_result=task.result()))
+        # P1-3 — running snapshot. Same projector keeps the shape
+        # consistent across check/wait/finish; elapsed_s comes from the
+        # spawn-time table, deps_pending explains a queued run.
+        started_at = _BACKGROUND_STARTED_AT.get(rid)
+        return ToolResult.ok(
+            build_subagent_status(
+                rid,
+                started_at=started_at,
+                deps_pending=_BACKGROUND_DEP_PENDING.get(rid),
+            )
+        )
 
 
 @register_tool
@@ -962,16 +1142,24 @@ class WaitSubagentTool(Tool):
             # v1.5.2 — the timeout answer is where the ledger matters
             # most: show the coordinator what the sub-agent has been
             # doing instead of a bare "running".
-            from .artifacts import progress_summary
+            # P1-3 v1.5.3 — route the timeout payload through the same
+            # ``build_subagent_status`` projector as check_subagent, so
+            # the coordinator can compare envelopes apples-to-apples.
+            from .verification import build_subagent_status
 
-            payload: dict[str, Any] = {
-                "run_id": rid,
-                "status": "running",
-                "timeout": True,
-                "hint": "still running; call wait_subagent again or check_subagent",
-            }
-            progress = progress_summary(rid)
-            if progress is not None:
-                payload["progress"] = progress
+            payload = build_subagent_status(
+                rid,
+                started_at=_BACKGROUND_STARTED_AT.get(rid),
+                deps_pending=_BACKGROUND_DEP_PENDING.get(rid),
+            )
+            payload["timeout"] = True
+            payload["hint"] = (
+                "still running; call wait_subagent again or check_subagent"
+            )
             return ToolResult.ok(payload)
-        return ToolResult.ok(_snapshot(rid, result))
+        # Same projection as check_subagent's finished branch — one
+        # envelope shape across every code path (the legacy _snapshot
+        # was folded into the projector).
+        from .verification import build_subagent_status
+
+        return ToolResult.ok(build_subagent_status(rid, task_result=result))

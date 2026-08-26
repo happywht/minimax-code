@@ -34,11 +34,11 @@ from minimax_code.agent.tools.base import ToolRegistry, get_default_registry
 from minimax_code.agent.tools.subagents import (
     PROGRESS_PROTOCOL_PROMPT,
     _clone_registry_with_report,
-    _snapshot,
 )
 from minimax_code.agent.tools.subagents import (
     _emit_safe as _real_emit_safe,
 )
+from minimax_code.agent.tools.verification import build_subagent_status
 from minimax_code.workspace_ctx import reset_current_root, set_current_root
 
 
@@ -202,12 +202,18 @@ async def test_snapshot_includes_progress_when_present(workspace_root: Path) -> 
     reg = _run_registry(run_id)
     await _report(reg, {"note": "halfway", "percent": 50})
 
-    snap = _snapshot(run_id, {"text": "done", "tool_calls": [], "usage": {}})
+    # v1.6.1 — the legacy _snapshot was folded into the unified
+    # build_subagent_status projector (check/wait/finish all use it).
+    snap = build_subagent_status(
+        run_id, task_result={"text": "done", "tool_calls": [], "usage": {}}
+    )
     assert snap["progress"]["total"] == 1
     assert snap["progress"]["latest_percent"] == 50
 
     # Absent when the sub-agent never reported — key omitted, not null.
-    bare = _snapshot("run_never_reported", {"text": "", "tool_calls": []})
+    bare = build_subagent_status(
+        "run_never_reported", task_result={"text": "", "tool_calls": []}
+    )
     assert "progress" not in bare
 
 

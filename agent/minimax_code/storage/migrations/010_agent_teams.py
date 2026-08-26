@@ -69,6 +69,10 @@ def _alter_agents(conn: Any) -> None:
         ("tags", "TEXT"),             # JSON array
         ("team_id", "TEXT"),
         ("skills", "TEXT"),           # JSON array of skill names
+        # NOTE (v1.6.1): migrations are immutable once shipped — the
+        # default lives here as 8 for historical fidelity. Fresh installs
+        # get the current default via the DAO (100); existing rows were
+        # lifted by migration 029. Never edit an applied migration.
         ("max_iterations", "INTEGER NOT NULL DEFAULT 8"),
         ("temperature", "REAL"),
         ("updated_at", "TEXT"),

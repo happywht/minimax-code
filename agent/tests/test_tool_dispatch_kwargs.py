@@ -154,6 +154,11 @@ def test_all_tools_survive_kwargs_routing() -> None:
         "wait_subagent",
         "spawn_subagent",
         "read_artifact",
+        # P0-2 / P0-5 named-param tools (v1.5.3).
+        "shared_memory_put",
+        "shared_memory_get",
+        "shared_memory_list",
+        "verify_subagent",
     }
     unexpected = [n for n in flagged if n not in expected_subset and not n.startswith("mcp__")]
     assert unexpected == []

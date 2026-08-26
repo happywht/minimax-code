@@ -742,7 +742,10 @@ class TeamOrchestrator:
                 tags=row.get("tags"),
                 team_id=row.get("team_id"),
                 skills=row.get("skills"),
-                max_iterations=row.get("max_iterations", 50),
+                # P0-3 v1.5.3: raised default 50 → 100 to match the
+                # tool-path default in subagents.py; team blocks share
+                # the same per-row override path.
+                max_iterations=row.get("max_iterations", 100),
                 temperature=row.get("temperature"),
             ))
         return configs

@@ -347,7 +347,11 @@ class AgentDAO:
                 dumps_json(tags) if tags is not None else None,
                 team_id,
                 dumps_json(skills) if skills is not None else None,
-                max_iterations if max_iterations is not None else 50,
+                # P0-3: current default 100 — a sub-agent needs
+                # headroom to call report_completion after writing a
+                # non-trivial deliverable (legacy rows were lifted by
+                # migration 029).
+                max_iterations if max_iterations is not None else 100,
                 temperature,
                 now,
                 now,

@@ -249,6 +249,25 @@ def _default_max_iterations() -> int:
     return max(1, min(value, _MAX_ITERATIONS_HARD_CAP))
 
 
+# P0-3 v1.5.3 — soft-limit knob. The handoff-nudge fires when the
+# remaining iteration count drops to this value (or below). Default 8
+# keeps a sub-agent roughly two LLM rounds + 5 tool calls worth of
+# headroom past the warning, which is enough for the model to call
+# report_completion after a final write_file without the warning
+# being so early it fires while the deliverable is still mid-write.
+# Hard-coded floor at 1 so a typo can't disable the trigger.
+_DEFAULT_SOFT_LIMIT_REMAINING = 8
+
+
+def _soft_limit_remaining() -> int:
+    raw = os.environ.get("MINIMAX_SOFT_LIMIT_REMAINING", "")
+    try:
+        value = int(raw) if raw.strip() else _DEFAULT_SOFT_LIMIT_REMAINING
+    except ValueError:
+        return _DEFAULT_SOFT_LIMIT_REMAINING
+    return max(1, value)
+
+
 # v1.2.1: output-token budget for a single LLM call. Before this knob the
 # anthropic transport silently capped streamed output at 4096 tokens — a
 # long Chinese write_file/edit_file tool_use easily needs 5-8k tokens, so
@@ -876,7 +895,17 @@ class AgentCore:
                     and self.config.context_window
                     and last_prompt_tokens >= 0.9 * self.config.context_window
                 )
-                if context_pressure or remaining <= 2:
+                # P0-3 v1.5.3 — soft-limit nudge. The previous "<=2
+                # iterations remain" trigger fired too late for sub-agents
+                # writing multi-file deliverables (the model often used
+                # the last two iterations on a single large write_file
+                # and never reached report_completion). We now honour an
+                # env-tunable ``MINIMAX_SOFT_LIMIT_REMAINING`` (default
+                # 8) — operators can dial it lower for tight SLAs or
+                # higher for big-batch jobs. The wording is the same as
+                # before so existing snapshots stay readable.
+                soft_remaining = _soft_limit_remaining()
+                if context_pressure or remaining <= soft_remaining:
                     if context_pressure:
                         reason = "the context window is nearly full"
                         context_nudge_fired = True

@@ -256,7 +256,7 @@ def test_config_from_row_keeps_defaults_for_sparse_rows() -> None:
             "id": "agent_abc",
         }
     )
-    assert cfg.max_iterations == 50  # dataclass default, not None
+    assert cfg.max_iterations == 100  # dataclass default (P0-3 v1.5.3), not None
     assert cfg.temperature is None
     assert cfg.skills is None
     assert cfg.tags is None

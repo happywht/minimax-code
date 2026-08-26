@@ -237,7 +237,15 @@ class SubAgentConfig:
     skills: list[str] | None = None
     # v1.1.1: sub-agent iteration budget, aligned with the other
     # sub-agent defaults (DAO / team orchestrator / skills runtime).
-    max_iterations: int = 50
+    # P0-3 v1.5.3: raised default 50 → 100 so a sub-agent writing a
+    # non-trivial deliverable (HTML/JS app, multi-file refactor) can
+    # reach ``report_completion`` before the valve fires. Operators
+    # with a tighter SLA can still set per-row ``max_iterations``.
+    # The actual runtime cap is enforced in ``AgentCore``; the agent
+    # loop's *soft* completion nudge (also P0-3) fires earlier so a
+    # self-aware sub-agent finishes cleanly instead of stranding a
+    # truncated run.
+    max_iterations: int = 100
     temperature: float | None = None
 
 

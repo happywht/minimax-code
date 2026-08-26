@@ -735,19 +735,25 @@ async def test_loop_no_compaction_without_context_window() -> None:
 
 
 @pytest.mark.asyncio
-async def test_loop_injects_handoff_nudge_near_budget() -> None:
-    """v1.1.1 handoff nudge (iteration safety valve): with ≤2 iterations
-    remaining after the current one, an ephemeral user note is appended
-    to the LLM payload. The note must (a) appear in time, (b) never
-    leak into the in-flight ``messages`` growth, (c) never be persisted,
-    and (d) never instruct the model to fake a final answer — the old
-    "produce a final answer now" wording ended runs with truncated=False
-    and silently killed auto-continue."""
+async def test_loop_injects_handoff_nudge_near_budget(monkeypatch) -> None:
+    """v1.1.1 handoff nudge (iteration safety valve): when the remaining
+    iteration count drops to the soft limit, an ephemeral user note is
+    appended to the LLM payload. The note must (a) appear in time, (b)
+    never leak into the in-flight ``messages`` growth, (c) never be
+    persisted, and (d) never instruct the model to fake a final answer —
+    the old "produce a final answer now" wording ended runs with
+    truncated=False and silently killed auto-continue.
+
+    v1.5.3 (P0-3) moved the trigger from a hard-coded "<=2 remaining" to
+    the env-tunable ``MINIMAX_SOFT_LIMIT_REMAINING`` (default 8) — the
+    pin below dials it back to 2 to keep the iteration-0/1 timing
+    assertions sharp, which also proves the env knob is wired."""
     responses = [
         _tool_response(_tool_call("echo", {"text": f"i{i}"}, call_id=f"c{i}"))
         for i in range(3)
     ] + [_text_response("Honest status report.")]
     fake = FakeLLM(responses)
+    monkeypatch.setenv("MINIMAX_SOFT_LIMIT_REMAINING", "2")
     persisted: list[dict[str, Any]] = []
 
     async def persist(_session_id: str, message: dict[str, Any]) -> None:
