@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -474,6 +475,185 @@ class WriteFileTool(Tool):
             created=not existed,
             size_bytes=size,
         )
+
+
+# ---------------------------------------------------------------------------
+# append_file (v1.5.2)
+# ---------------------------------------------------------------------------
+
+
+@register_tool
+class AppendFileTool(Tool):
+    name = "append_file"
+    description = (
+        "Append UTF-8 text to the end of a file, creating it (and parent "
+        "directories) when missing. Built for very large files: write the "
+        "first chunk with write_file, then stream the rest as append_file "
+        "calls so each call's content stays well under the output budget. "
+        "The content lands verbatim at the current tail — include a "
+        "leading newline yourself when the existing tail has no trailing "
+        "one."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Target file path."},
+            "content": {
+                "type": "string",
+                "description": "Text to append at the end of the file.",
+            },
+            "expected_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+                "description": (
+                    "Optional optimistic lock: the sha256 the file had when "
+                    "you last read it. On mismatch (or if the file no longer "
+                    "exists) the append fails with the current hash — "
+                    "re-read the file, then reapply your append."
+                ),
+            },
+        },
+        "required": ["path", "content"],
+        "additionalProperties": False,
+    }
+
+    async def run(self, **kwargs: Any) -> ToolResult:
+        path = kwargs.get("path")
+        content = kwargs.get("content")
+        if not isinstance(path, str) or not path:
+            return ToolResult.fail("'path' must be a non-empty string")
+        if not isinstance(content, str):
+            return ToolResult.fail("'content' must be a string")
+
+        try:
+            target = safe_resolve(path)
+        except PathSecurityError as exc:
+            return ToolResult.fail(str(exc))
+
+        # v1.5.1 registry — same advisory contract as write_file: claim
+        # the workspace path for this run, surface rival in-flight runs.
+        run_id = current_run_id()
+        concurrent_writer = in_flight_writer(target, exclude=run_id)
+        if run_id:
+            claim_write(target, run_id)
+
+        read_target = overlay_read_target(target)
+        write_target = redirect_write_target(target)
+
+        if read_target.exists() and read_target.is_dir():
+            return ToolResult.fail(f"path is an existing directory: {target}")
+
+        existed = read_target.exists()
+
+        # v1.5.2 — sandbox staging, the append-specific correctness step.
+        # ``redirect_write_target`` snapshots the original into ``_base``
+        # but does NOT seed the mirror itself; opening a fresh mirror in
+        # "a" mode would start from empty, and the eventual collect's
+        # three-way compare would then happily overwrite the workspace
+        # with a file that lost its pre-append content. Seed the mirror
+        # from the overlay read view (the workspace original on first
+        # touch) so the mirror is always the full file. Fail-closed: this
+        # copy is correctness, not visibility.
+        if (
+            write_target != read_target
+            and read_target.exists()
+            and read_target.is_file()
+            and not write_target.exists()
+        ):
+            try:
+                write_target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(read_target, write_target)
+            except OSError as exc:
+                return ToolResult.fail(
+                    f"append failed while staging the sandbox mirror: {exc}"
+                )
+
+        # v1.5.0 CAS — the lock guards the pre-append state of the file.
+        previous_sha = file_sha256(read_target) if existed else None
+        expected = kwargs.get("expected_sha256")
+        if expected is not None:
+            if not isinstance(expected, str) or len(expected) != 64:
+                return ToolResult.fail("'expected_sha256' must be a 64-char hex string")
+            if not existed:
+                return ToolResult.fail(
+                    "append_file blocked: file no longer exists (deleted since "
+                    "your read)",
+                    output={
+                        "path": str(target),
+                        "expected_sha256": expected,
+                        "file_exists": False,
+                    },
+                )
+            if previous_sha != expected.strip().lower():
+                return ToolResult.fail(
+                    "append_file blocked: file changed since your read (sha256 "
+                    "mismatch) — re-read the file and reapply your append",
+                    output={
+                        "path": str(target),
+                        "expected_sha256": expected,
+                        "current_sha256": previous_sha,
+                        "file_exists": True,
+                    },
+                )
+
+        # Pre-append backup (best-effort) — the tail being extended as
+        # the caller sees it: sandbox mirror when sandboxed, original
+        # otherwise.
+        backup_meta = None
+        if existed:
+            try:
+                from ..backup import BackupManager
+                backup_meta = BackupManager().backup(read_target)
+            except Exception:
+                pass
+
+        appended_bytes = len(content.encode("utf-8"))
+        try:
+            write_target.parent.mkdir(parents=True, exist_ok=True)
+            # "a" + newline="": byte-faithful tail writes, same contract
+            # as write_file's "w" — Windows never rewrites our \n.
+            with write_target.open("a", encoding="utf-8", newline="") as fh:
+                fh.write(content)
+        except OSError as exc:
+            return ToolResult.fail(f"append failed: {exc}")
+
+        size = write_target.stat().st_size
+        new_sha = file_sha256(write_target)
+        # R16 — mirror the append onto the causal file-change bus (fail-open).
+        try:
+            from ...app import ensure_fs_bus
+
+            bus = ensure_fs_bus()
+            if bus is not None:
+                bus.emit(
+                    "created" if not existed else "modified",
+                    [str(write_target)],
+                    "append_file",
+                    size_bytes=size,
+                    **({"run_id": run_id} if run_id else {}),
+                )
+        except Exception:  # noqa: BLE001 — the append must never break on the bus
+            pass
+        output: dict[str, Any] = {
+            "path": str(target),
+            "created": not existed,
+            "appended_bytes": appended_bytes,
+            "size_bytes": size,
+            "previous_sha256": previous_sha,
+            "sha256": new_sha,
+            **({"backup": backup_meta} if backup_meta else {}),
+        }
+        if concurrent_writer:
+            output["concurrent_writer"] = concurrent_writer
+            output["warning"] = (
+                f"⚠ in-flight run {concurrent_writer} has also claimed this "
+                "file — coordinate with it, or guard your append with "
+                "expected_sha256 after a fresh read"
+            )
+        if write_target != target:
+            output["sandboxed"] = True
+            output["sandbox_path"] = str(write_target)
+        return ToolResult.ok(output=output, created=not existed, size_bytes=size)
 
 
 # ---------------------------------------------------------------------------

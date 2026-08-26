@@ -10,6 +10,7 @@ against that run's directory, so a hostile rel_path cannot escape.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 BRIEF_NAME = "BRIEF.md"
 COMPLETION_NAME = "COMPLETION.md"
 REPORT_NAME = "REPORT.json"
+# v1.5.2 — append-only interim progress ledger (one JSON object per line).
+PROGRESS_NAME = "PROGRESS.jsonl"
 
 _VALID_REPORT_STATUS = ("completed", "partial", "blocked")
 
@@ -92,6 +95,67 @@ def completion_reported(run_id: str) -> bool:
         return (base / COMPLETION_NAME).is_file()
     except OSError:  # pragma: no cover — defensive
         return False
+
+
+# ---------------------------------------------------------------------------
+# Interim progress ledger (v1.5.2)
+# ---------------------------------------------------------------------------
+
+
+def read_progress(run_id: str, *, limit: int | None = 5) -> list[dict[str, Any]]:
+    """Parse the run's ``PROGRESS.jsonl`` (tail ``limit``; all when ``None``).
+
+    Fail-open by contract — a missing ledger, an unreadable file, or a
+    corrupt line yields fewer entries, never an exception. Corrupt lines
+    are skipped individually so one bad write cannot hide the rest.
+    """
+    base = artifact_dir(run_id)
+    if base is None:
+        return []
+    try:
+        lines = (base / PROGRESS_NAME).read_text(
+            encoding="utf-8", errors="replace"
+        ).splitlines()
+    except OSError:
+        return []
+    entries: list[dict[str, Any]] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            parsed = json.loads(stripped)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            entries.append(parsed)
+    if limit is not None:
+        entries = entries[-limit:]
+    return entries
+
+
+def progress_summary(run_id: str, *, recent: int = 3) -> dict[str, Any] | None:
+    """Compact envelope projection of the ledger (``None`` when empty).
+
+    Feeds ``check_subagent`` / ``wait_subagent`` / the final envelope so
+    the coordinator can follow a long run without blocking on it — the
+    v1.5.2 answer to the "sub-agent invisible until done" field report.
+    """
+    entries = read_progress(run_id, limit=None)
+    if not entries:
+        return None
+    latest = entries[-1]
+    return {
+        "total": len(entries),
+        "recent": [
+            {
+                "note": entry.get("note"),
+                **({"percent": entry["percent"]} if entry.get("percent") is not None else {}),
+            }
+            for entry in entries[-recent:]
+        ],
+        "latest_percent": latest.get("percent"),
+    }
 
 
 def _completion_markdown(report: dict[str, Any]) -> str:
@@ -191,8 +255,6 @@ class ReportCompletionTool(Tool):
         if not str(summary).strip():
             return ToolResult.fail("summary is required")
 
-        import json
-
         report: dict[str, Any] = {
             "run_id": self._run_id,
             "agent": self._agent_name,
@@ -219,6 +281,125 @@ class ReportCompletionTool(Tool):
         except OSError as exc:
             return ToolResult.fail(f"report write failed: {exc}")
         return ToolResult.ok({**report, "skipped": False, "artifact_dir": str(base)})
+
+
+class ReportProgressTool(Tool):
+    """Per-run interim progress tool injected into the cloned registry (v1.5.2).
+
+    Same containment as :class:`ReportCompletionTool` — deliberately not
+    ``@register_tool``-decorated, so it never leaks onto the main agent's
+    surface. Appends one JSON line to the run's ``PROGRESS.jsonl`` and
+    best-effort pushes a live ``agent.subagent_progress`` event through
+    the routed emit so the UI panel updates without waiting for the run
+    to finish; the coordinator polls the same ledger through
+    ``check_subagent``'s ``progress`` summary.
+    """
+
+    name = "report_progress"
+    description = (
+        "Report interim progress on a long-running task: appends a "
+        "one-line note (and optional 0-100 percent) to this run's "
+        "progress ledger and notifies the coordinator / UI immediately. "
+        "Call it at meaningful milestones — phase finished, halfway "
+        "point, blocked investigation — not after every single step."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "note": {
+                "type": "string",
+                "description": "One-line status note: what was just done / what is next.",
+            },
+            "percent": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100,
+                "description": "Optional overall completion estimate, 0-100.",
+            },
+        },
+        "required": ["note"],
+        "additionalProperties": False,
+    }
+
+    def __init__(
+        self, run_id: str, *, agent_name: str = "", agent_id: str | None = None
+    ) -> None:
+        super().__init__()
+        self._run_id = run_id
+        self._agent_name = agent_name
+        self._agent_id = agent_id
+
+    async def _push_event(self, entry: dict[str, Any]) -> None:
+        """Live UI push through the routed emit; fail-open.
+
+        Reuses the ``thinking`` status on purpose: the frontend's
+        STATUS_TONE map is a closed union, and an unknown status would
+        render nothing. ``summary`` carries the note text; ``progress``
+        carries the percent when the sub-agent supplied one.
+        """
+        try:
+            from ...orchestrator.subagent import (
+                current_parent_session,
+                resolve_subagent_emit,
+            )
+            from .subagents import _emit_safe, _subagent_event
+
+            parent = current_parent_session()
+            emit = await resolve_subagent_emit(parent)
+            if emit is None:
+                return
+            pct = entry.get("percent")
+            await _emit_safe(
+                emit,
+                _subagent_event(
+                    run_id=self._run_id,
+                    agent_id=self._agent_id,
+                    parent_session_id=parent,
+                    status="thinking",
+                    progress=(float(pct) / 100.0) if pct is not None else 0.4,
+                    summary=str(entry.get("note", ""))[:80],
+                ),
+            )
+        except Exception:  # noqa: BLE001 — the ledger write already succeeded
+            logger.debug("report_progress event push failed", exc_info=True)
+
+    async def run(self, note: str, percent: int | None = None) -> ToolResult:
+        if not isinstance(note, str) or not note.strip():
+            return ToolResult.fail("'note' must be a non-empty string")
+        pct: int | None = None
+        if percent is not None:
+            try:
+                pct = max(0, min(100, int(percent)))
+            except (TypeError, ValueError):
+                return ToolResult.fail("'percent' must be an integer between 0 and 100")
+
+        entry: dict[str, Any] = {
+            "run_id": self._run_id,
+            "note": note.strip(),
+            **({"percent": pct} if pct is not None else {}),
+            "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        }
+        base = artifact_dir(self._run_id)
+        if base is None:
+            # No workspace root — nothing to anchor. The event push
+            # below may still reach the UI, so run it before returning.
+            await self._push_event(entry)
+            return ToolResult.ok({**entry, "skipped": True, "reason": "no workspace root"})
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            with (base / PROGRESS_NAME).open("a", encoding="utf-8", newline="") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError as exc:
+            return ToolResult.fail(f"progress write failed: {exc}")
+        await self._push_event(entry)
+        return ToolResult.ok(
+            {
+                **entry,
+                "skipped": False,
+                "ledger": str(base / PROGRESS_NAME),
+                "entries_total": len(read_progress(self._run_id, limit=None)),
+            }
+        )
 
 
 @register_tool

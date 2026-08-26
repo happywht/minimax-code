@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from typing import Any
 
@@ -76,6 +77,15 @@ def _snapshot(run_id: str, result: dict[str, Any]) -> dict[str, Any]:
     }
     if result.get("files_written") is not None:
         snap["files_written"] = result["files_written"]
+    # v1.5.2 — interim progress ledger projection (fail-open; the key
+    # is absent when the sub-agent never called report_progress). The
+    # ledger lives under the run's artifact dir, resolvable from the
+    # caller's workspace root — same root the spawn used.
+    from .artifacts import progress_summary
+
+    progress = progress_summary(run_id)
+    if progress is not None:
+        snap["progress"] = progress
     return snap
 
 
@@ -160,23 +170,46 @@ SANDBOX_PROTOCOL_PROMPT = (
     "explicitly, never silently overwritten.\n"
 )
 
+# v1.5.2 — the interim progress protocol paragraph. Field report: a
+# background sub-agent was invisible until it finished — the
+# coordinator had nothing to poll but status=running. This paragraph
+# teaches the sub-agent to append milestone notes to the run's ledger
+# (PROGRESS.jsonl), which check_subagent / wait_subagent surface and
+# report_progress also pushes live to the UI panel.
+PROGRESS_PROTOCOL_PROMPT = (
+    "\n## Progress reporting\n\n"
+    "For tasks with more than a couple of steps, call the "
+    "`report_progress` tool at meaningful milestones (phase finished, "
+    "halfway point, blocked investigation) with a one-line note and an "
+    "optional 0-100 percent. The coordinator polls these notes while "
+    "you keep working — they are also shown live in the UI. Do not "
+    "call it after every single step, and it never replaces the final "
+    "`report_completion` call.\n"
+)
 
-def _clone_registry_with_report(run_id: str, agent_name: str) -> Any:
-    """Clone the default registry + the run's ``report_completion`` tool.
+
+def _clone_registry_with_report(
+    run_id: str, agent_name: str, agent_id: str | None = None
+) -> Any:
+    """Clone the default registry + the run's artifact-protocol tools.
 
     The default registry is process-global and shared with the main
     agent — registering the per-run tool there would leak it into the
     parent's surface (and let stale run_ids pile up). A per-spawn clone
     (builtins.py's codebase-tool injection uses the same pattern) keeps
-    the injection scoped to this one sub-agent.
+    the injection scoped to this one sub-agent. v1.5.2 adds the sibling
+    ``report_progress`` tool (interim ledger), bound to the same run.
     """
-    from .artifacts import ReportCompletionTool
+    from .artifacts import ReportCompletionTool, ReportProgressTool
     from .base import ToolRegistry, get_default_registry
 
     cloned = ToolRegistry()
     for tool in get_default_registry().list():
         cloned.register(tool)
     cloned.register(ReportCompletionTool(run_id, agent_name=agent_name))
+    cloned.register(
+        ReportProgressTool(run_id, agent_name=agent_name, agent_id=agent_id)
+    )
     return cloned
 
 
@@ -451,6 +484,24 @@ class ListSubagentsTool(Tool):
         return ToolResult.ok({"agents": agents, "count": len(agents)})
 
 
+def _sandbox_default() -> bool:
+    """Process-wide sandbox default (v1.5.2) — ``MINIMAX_CODE_SANDBOX_DEFAULT``.
+
+    Stays opt-in (``false``) out of the box: a silent default-on would
+    turn the single-agent fast path into a trap — every spawn would
+    need a collect step and unpruned sandboxes would pile up. Operators
+    running parallel-write workloads can flip the env once instead of
+    teaching every caller to pass ``sandbox=true``. Same truthy-spelling
+    family as ``subagent_wall_clock_s()``.
+    """
+    return os.environ.get("MINIMAX_CODE_SANDBOX_DEFAULT", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 @register_tool
 class SpawnSubagentTool(Tool):
     name = "spawn_subagent"
@@ -495,11 +546,12 @@ class SpawnSubagentTool(Tool):
             "sandbox": {
                 "type": "boolean",
                 "description": (
-                    "Opt into per-run write isolation (default false): the "
-                    "sub-agent's file writes are redirected to a private "
-                    "sandbox directory and merged back afterwards with "
-                    "collect_subagent(run_id). Use true when parallel "
-                    "sub-agents may touch the same files."
+                    "Opt into per-run write isolation (default false, or the "
+                    "MINIMAX_CODE_SANDBOX_DEFAULT env): the sub-agent's file "
+                    "writes are redirected to a private sandbox directory "
+                    "and merged back afterwards with collect_subagent(run_id). "
+                    "Use true when parallel sub-agents may touch the same "
+                    "files."
                 ),
                 "default": False,
             },
@@ -514,8 +566,15 @@ class SpawnSubagentTool(Tool):
         prompt: str,
         parent_session_id: str | None = None,
         wait: bool = True,
-        sandbox: bool = False,
+        sandbox: bool | None = None,
     ) -> ToolResult:
+        # v1.5.2 — explicit arg wins, else the env default, else false.
+        # ``None`` (the LLM omitting the key) is indistinguishable from
+        # "leave it to policy", which is exactly the contract the env
+        # knob needs.
+        if sandbox is None:
+            sandbox = _sandbox_default()
+
         # v1.4.0 — exempt this dispatch from the generic tool_timeout
         # ceiling: a sub-agent legitimately runs a whole agent loop
         # (LLM turns + tools) inside one tool call. The value is set as
@@ -601,17 +660,21 @@ class SpawnSubagentTool(Tool):
         config.tool_allowlist = (
             None
             if config.tool_allowlist is None
-            else [*config.tool_allowlist, "report_completion"]
+            else [*config.tool_allowlist, "report_completion", "report_progress"]
         )
         config.system_prompt = (
             config.system_prompt.rstrip()
             + TASK_PRECEDENCE_PROMPT
             + REPORT_PROTOCOL_PROMPT
+            + PROGRESS_PROTOCOL_PROMPT
             + (SANDBOX_PROTOCOL_PROMPT if sandbox else "")
         )
         runtime = get_subagent_runtime() or SubAgentRuntime()
         handle = runtime.build(
-            config, registry=_clone_registry_with_report(run_id, row["name"])
+            config,
+            registry=_clone_registry_with_report(
+                run_id, row["name"], agent_id=row.get("id")
+            ),
         )
 
         # ---------------------------------------------------------------
@@ -775,7 +838,7 @@ async def _lookup_finished_run(run_id: str) -> ToolResult:
     if row is None:
         return ToolResult.fail(f"unknown run_id: {run_id!r}")
     meta = row.get("metadata") or {}
-    return ToolResult.ok(
+    result = ToolResult.ok(
         {
             "run_id": run_id,
             "status": row.get("status"),
@@ -793,6 +856,15 @@ async def _lookup_finished_run(run_id: str) -> ToolResult:
             ),
         }
     )
+    # v1.5.2 — same progress ledger projection as _snapshot: the caller
+    # (main agent) resolves the same workspace root the spawn used, so
+    # the on-disk ledger is reachable even after an agent restart.
+    from .artifacts import progress_summary
+
+    progress = progress_summary(run_id)
+    if progress is not None:
+        result.output["progress"] = progress
+    return result
 
 
 @register_tool
@@ -831,7 +903,15 @@ class CheckSubagentTool(Tool):
                     {"run_id": run_id, "status": "failed", "error": str(exc)}
                 )
             return ToolResult.ok(_snapshot(run_id, task.result()))
-        return ToolResult.ok({"run_id": run_id, "status": "running"})
+        # v1.5.2 — running snapshot carries the interim progress ledger
+        # (absent when the sub-agent has not reported any milestones yet).
+        from .artifacts import progress_summary
+
+        running: dict[str, Any] = {"run_id": run_id, "status": "running"}
+        progress = progress_summary(run_id)
+        if progress is not None:
+            running["progress"] = progress
+        return ToolResult.ok(running)
 
 
 @register_tool
@@ -875,12 +955,19 @@ class WaitSubagentTool(Tool):
                 asyncio.shield(task), timeout=max(0.1, float(timeout_s))
             )
         except TimeoutError:
-            return ToolResult.ok(
-                {
-                    "run_id": rid,
-                    "status": "running",
-                    "timeout": True,
-                    "hint": "still running; call wait_subagent again or check_subagent",
-                }
-            )
+            # v1.5.2 — the timeout answer is where the ledger matters
+            # most: show the coordinator what the sub-agent has been
+            # doing instead of a bare "running".
+            from .artifacts import progress_summary
+
+            payload: dict[str, Any] = {
+                "run_id": rid,
+                "status": "running",
+                "timeout": True,
+                "hint": "still running; call wait_subagent again or check_subagent",
+            }
+            progress = progress_summary(rid)
+            if progress is not None:
+                payload["progress"] = progress
+            return ToolResult.ok(payload)
         return ToolResult.ok(_snapshot(rid, result))
