@@ -26,7 +26,13 @@ from typing import Any
 
 from ...workspace_ctx import current_root, current_run_id, env_or_cwd_root
 from .base import Tool, ToolResult, register_tool
-from .sandbox import overlay_read_target, redirect_write_target
+from .sandbox import (
+    BASE_DIR,
+    MERGED_MARKER,
+    mirror_children,
+    overlay_read_target,
+    redirect_write_target,
+)
 
 # ---------------------------------------------------------------------------
 # Path-safety policy
@@ -668,7 +674,8 @@ class ListDirectoryTool(Tool):
         "List immediate children of a directory. Each entry includes the "
         "name, whether it is a directory, and the file size in bytes "
         "(0 for directories). The optional glob-style 'pattern' argument "
-        "filters by name (e.g. '*.py')."
+        "filters by name (e.g. '*.py'). Inside a write sandbox entries "
+        "coming from your sandboxed writes are marked 'sandboxed': true."
     )
     parameters = {
         "type": "object",
@@ -689,19 +696,31 @@ class ListDirectoryTool(Tool):
         except PathSecurityError as exc:
             return ToolResult.fail(str(exc))
 
+        # Sandbox-only directories (created by this run's writes, absent
+        # from the workspace) stay visible through their mirror.
+        mirror = mirror_children(target)
         if not target.exists():
-            return ToolResult.fail(f"directory not found: {target}")
-        if not target.is_dir():
+            if mirror is None:
+                return ToolResult.fail(f"directory not found: {target}")
+        elif not target.is_dir():
             return ToolResult.fail(f"not a directory: {target}")
 
         pattern = kwargs.get("pattern")
         try:
-            entries = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+            ws_entries = (
+                sorted(
+                    target.iterdir(), key=lambda p: (p.is_file(), p.name.lower())
+                )
+                if target.is_dir()
+                else []
+            )
         except OSError as exc:
-            return ToolResult.fail(f"list failed: {exc}")
+            if mirror is None:
+                return ToolResult.fail(f"list failed: {exc}")
+            ws_entries = []  # the sandbox view still answers — fail-open
 
-        out: list[dict[str, Any]] = []
-        for entry in entries:
+        out: dict[str, dict[str, Any]] = {}
+        for entry in ws_entries:
             if pattern and not _fnmatch(entry.name, pattern):
                 continue
             try:
@@ -709,16 +728,49 @@ class ListDirectoryTool(Tool):
                 size = 0 if is_dir else entry.stat().st_size
             except OSError:
                 is_dir, size = False, 0
-            out.append(
-                {
+            out[entry.name] = {
+                "name": entry.name,
+                "path": str(entry),
+                "is_dir": is_dir,
+                "size_bytes": size,
+            }
+
+        if mirror is not None:
+            # Sandbox children override same-name workspace entries and
+            # always report the workspace address — the sandbox location
+            # is an implementation detail that must never leak. The
+            # merge marker and COW baseline tree stay hidden.
+            try:
+                mirror_entries = sorted(
+                    mirror.iterdir(), key=lambda p: (p.is_file(), p.name.lower())
+                )
+            except OSError:
+                mirror_entries = []
+            for entry in mirror_entries:
+                if entry.name in (BASE_DIR, MERGED_MARKER):
+                    continue
+                if pattern and not _fnmatch(entry.name, pattern):
+                    continue
+                try:
+                    is_dir = entry.is_dir()
+                    size = 0 if is_dir else entry.stat().st_size
+                except OSError:
+                    is_dir, size = False, 0
+                out[entry.name] = {
                     "name": entry.name,
-                    "path": str(entry),
+                    "path": str(target / entry.name),
                     "is_dir": is_dir,
                     "size_bytes": size,
+                    "sandboxed": True,
                 }
-            )
-        return ToolResult.ok(output={"directory": str(target), "entries": out},
-                             count=len(out))
+
+        entries_out = sorted(
+            out.values(), key=lambda e: (not e["is_dir"], e["name"].lower())
+        )
+        return ToolResult.ok(
+            output={"directory": str(target), "entries": entries_out},
+            count=len(entries_out),
+        )
 
 
 # ---------------------------------------------------------------------------

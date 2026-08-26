@@ -15,12 +15,13 @@ Mechanics (three rulings from the design review):
   original into ``<sandbox>/_base/<rel>`` — that snapshot is the merge
   baseline ``collect_subagent`` diffs against (O(touched files), unlike
   a whole-repo manifest).
-* **Overlay reads cover read_file *and* edit_file's internal read.**
-  Both route through :func:`overlay_read_target`; otherwise an edit's
-  re-read would silently resurrect the workspace original and lose the
-  first sandboxed edit — the exact clobber class this feature exists to
-  kill. ``search``/``glob``/``list_directory`` are *not* overlaid
-  (known limitation, spelled out in SANDBOX_PROTOCOL_PROMPT).
+* **Overlay reads cover every read-side view.** ``read_file`` and
+  ``edit_file``'s internal read both route through
+  :func:`overlay_read_target`; since v1.6.0 ``search_files`` /
+  ``find_files`` / ``list_directory`` union the sandbox mirrors into
+  their workspace views too (:func:`sandbox_mirror_files` /
+  :func:`mirror_children`), so a sandboxed agent sees one coherent
+  world instead of a split view of its own writes.
 * **``.minimax/`` passes through untouched.** Artifacts, backups and
   sandbox internals must never be re-redirected (nested-sandbox and
   ``_base`` self-collision hazards). ``report_completion`` already
@@ -169,21 +170,24 @@ def redirect_write_target(target: Path) -> Path:
     return mirror
 
 
-def sandbox_files_written(run_id: str) -> list[str]:
-    """Workspace-relative posix paths this run's sandbox holds.
+def sandbox_mirror_files(sandbox: Path) -> list[str]:
+    """Workspace-relative posix paths the sandbox tree holds.
 
-    Walks the sandbox tree excluding ``_base/`` and the merge marker —
-    i.e. exactly the files the sub-agent wrote or modified. Empty when
-    the sandbox directory does not exist (nothing written / pruned).
+    Same walk :func:`sandbox_files_written` reports, anchored at an
+    explicit sandbox directory — the shared helper behind the v1.6.0
+    overlay views (``search_files`` / ``find_files`` /
+    ``list_directory``), which union these mirrors into the workspace
+    view so a sandboxed sub-agent can see its own writes. ``_base/``
+    snapshots and the merge marker are excluded; empty when the
+    directory does not exist.
     """
-    root = sandbox_root_for(run_id)
-    if root is None or not root.is_dir():
+    if not sandbox.is_dir():
         return []
     written: list[str] = []
-    for path in sorted(root.rglob("*")):
+    for path in sorted(sandbox.rglob("*")):
         if path.is_dir():
             continue
-        rel = path.relative_to(root)
+        rel = path.relative_to(sandbox)
         if rel.parts and rel.parts[0] == BASE_DIR:
             continue
         if path.name == MERGED_MARKER:
@@ -192,14 +196,55 @@ def sandbox_files_written(run_id: str) -> list[str]:
     return written
 
 
+def mirror_children(target: Path) -> Path | None:
+    """The sandbox mirror of workspace directory *target*, if populated.
+
+    ``list_directory``'s overlay hook. Returns the mirror directory even
+    when *target* itself does not exist in the workspace (sandbox-only
+    directories must stay visible), or ``None`` when this run is not
+    sandboxed / the target is not redirectable / the mirror is absent.
+    Callers must skip ``_base`` and the merge marker when iterating.
+    """
+    sandbox = current_sandbox()
+    if sandbox is None:
+        return None
+    root = _workspace_root()
+    if root is None:
+        return None
+    mirror = _mirror_path(target, sandbox, root)
+    if mirror is None:
+        return None
+    try:
+        if mirror.is_dir():
+            return mirror
+    except OSError:  # pragma: no cover — unreadable mirror ≈ absent
+        pass
+    return None
+
+
+def sandbox_files_written(run_id: str) -> list[str]:
+    """Workspace-relative posix paths this run's sandbox holds.
+
+    Walks the sandbox tree excluding ``_base/`` and the merge marker —
+    i.e. exactly the files the sub-agent wrote or modified. Empty when
+    the sandbox directory does not exist (nothing written / pruned).
+    """
+    root = sandbox_root_for(run_id)
+    if root is None:
+        return []
+    return sandbox_mirror_files(root)
+
+
 __all__ = [
     "BASE_DIR",
     "CollectSubagentTool",
     "MERGED_MARKER",
     "SANDBOX_RELPATH",
+    "mirror_children",
     "overlay_read_target",
     "redirect_write_target",
     "sandbox_files_written",
+    "sandbox_mirror_files",
     "sandbox_root_for",
 ]
 

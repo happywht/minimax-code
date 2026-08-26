@@ -147,9 +147,10 @@ REPORT_PROTOCOL_PROMPT = (
 # v1.5.0 — the sandbox paragraph, appended last when the spawn opted
 # into per-run write isolation. Transparent by design: the sub-agent
 # keeps using ordinary workspace paths and the tool layer redirects
-# writes into the run's sandbox (COW snapshot on first touch). The
-# search-view caveat is the one known limitation the paragraph must
-# teach — search/glob/list show the workspace, not the sandbox.
+# writes into the run's sandbox (COW snapshot on first touch). Since
+# v1.6.0 every read-side view (read/search/find/list) is overlaid, so
+# the paragraph only needs to teach the one asymmetry left: shell
+# writes bypass the sandbox (detected and reported as sandbox_escape).
 SANDBOX_PROTOCOL_PROMPT = (
     "\n## Write sandbox\n\n"
     "This run is sandboxed: every file you write or edit through "
@@ -164,9 +165,10 @@ SANDBOX_PROTOCOL_PROMPT = (
     "and will NOT be merged by collect. If an exec result carries a "
     "`sandbox_escape` warning, rewrite those files with `write_file` "
     "before reporting completion.\n"
-    "- `search_files` / `find_files` / `list_directory` show the "
-    "workspace view, NOT your sandboxed writes — verify current file "
-    "state with `read_file` instead.\n"
+    "- `search_files` / `find_files` / `list_directory` transparently "
+    "include your sandboxed writes — they show the same merged view "
+    "`read_file` gives you (directory entries from your sandbox are "
+    "marked `sandboxed: true`).\n"
     "When this run finishes, the main agent merges your sandbox "
     "output; conflicts against workspace changes are surfaced "
     "explicitly, never silently overwritten.\n"

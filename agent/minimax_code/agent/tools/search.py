@@ -5,6 +5,12 @@ for blazing fast recursive search. Otherwise we fall back to a
 pure-Python walker that uses :mod:`re` for content search and
 :mod:`fnmatch` for filename search.
 
+Since v1.6.0 a run inside a write sandbox always uses the Python
+walker: rg cannot see the sandbox mirrors, so the walker unions
+mirror files into the workspace candidates (sandbox copy wins on
+key collision) and reads every candidate through the overlay.
+Narrow ``path`` when possible — the walker is slower than rg.
+
 The tool returns a list of matches capped at ``max_results`` to
 keep the LLM prompt small. The default cap (200) is enough for
 most tasks; agents that want exhaustive results should paginate
@@ -22,8 +28,10 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from ...workspace_ctx import current_sandbox
 from .base import Tool, ToolResult, register_tool
 from .file_ops import PathSecurityError, safe_resolve
+from .sandbox import overlay_read_target, sandbox_mirror_files
 
 # Search output limits.
 _DEFAULT_MAX_RESULTS = 200
@@ -39,7 +47,9 @@ class SearchFilesTool(Tool):
         "directory. By default uses ripgrep if available, else falls back "
         "to a pure-Python walker. Returns up to 'max_results' matches with "
         "file path, line number, and the matched line (truncated to 400 "
-        "chars). Optionally filter by file glob (e.g. '*.py')."
+        "chars). Optionally filter by file glob (e.g. '*.py'). Inside a "
+        "write sandbox the search transparently covers your sandboxed "
+        "writes too (slower Python engine — narrow 'path' when possible)."
     )
     parameters = {
         "type": "object",
@@ -93,7 +103,11 @@ class SearchFilesTool(Tool):
             escaped = re.escape(pattern)
             rx = re.compile(escaped, flags=0 if case_sensitive else re.IGNORECASE)
 
-        if shutil.which("rg"):
+        # Sandbox runs always take the Python walker — rg cannot see the
+        # sandbox mirrors, so the fast path would silently miss the
+        # sub-agent's own writes.
+        sandbox = current_sandbox()
+        if shutil.which("rg") and sandbox is None:
             try:
                 return await _rg_search(
                     pattern=pattern,
@@ -114,6 +128,7 @@ class SearchFilesTool(Tool):
             file_pattern=file_pattern,
             max_results=max_results,
             single_file=single_file,
+            sandbox=sandbox,
         )
 
 
@@ -139,6 +154,9 @@ async def _rg_search(
         cmd.append("-i")
     if file_pattern and file_pattern != "*":
         cmd.extend(["--glob", file_pattern])
+    # rg already skips hidden directories; belt-and-braces in case a
+    # future flag flips that default (``.minimax`` must stay invisible).
+    cmd.extend(["--glob", "!.minimax"])
     # Collect more than max_results then trim — rg has no early-exit
     # we can rely on across versions, so we over-fetch and slice.
     cmd.extend(["-m", str(max_results), "--", pattern, str(root)])
@@ -218,23 +236,44 @@ def _python_search(
     file_pattern: str,
     max_results: int,
     single_file: Path | None,
+    sandbox: Path | None = None,
 ) -> ToolResult:
+    import fnmatch
 
-    files: Iterable[Path]
+    # Candidates carry the workspace-relative posix path alongside the
+    # path to actually *read* — under a sandbox the read target may be
+    # the mirror copy while the reported address stays the workspace
+    # one (never leak sandbox locations into results).
+    candidates: list[tuple[Path, str]]
     if single_file is not None:
-        files = [single_file]
+        read_path = overlay_read_target(single_file) if sandbox else single_file
+        candidates = [(read_path, _workspace_rel(single_file, root))]
     else:
-        files = _walk_files(root, file_pattern)
+        # Insertion-ordered union: the workspace walk keeps its legacy
+        # order, a sandbox mirror overrides the same-key entry in place
+        # (the sub-agent's write is the newer truth), mirror-only files
+        # append at the end.
+        seen: dict[str, Path] = {}
+        for f in _walk_files(root, file_pattern):
+            seen[_workspace_rel(f, root)] = f
+        if sandbox is not None:
+            for rel in sandbox_mirror_files(sandbox):
+                if file_pattern not in ("*", "") and not fnmatch.fnmatch(
+                    rel.rsplit("/", 1)[-1], file_pattern
+                ):
+                    continue
+                seen[rel] = sandbox.joinpath(*rel.split("/"))
+        candidates = [(p, rel) for rel, p in seen.items()]
 
     matches: list[dict[str, Any]] = []
-    for f in files:
+    for read_path, rel in candidates:
         try:
-            if f.stat().st_size > _MAX_FILE_BYTES:
+            if read_path.stat().st_size > _MAX_FILE_BYTES:
                 continue
         except OSError:
             continue
         try:
-            data = f.read_bytes()
+            data = read_path.read_bytes()
         except OSError:
             continue
         if b"\x00" in data[:_BINARY_SNIFF_BYTES]:
@@ -249,7 +288,7 @@ def _python_search(
 
         for i, line in enumerate(text.splitlines(), 1):
             if rx.search(line):
-                matches.append(_format_match(f, root, i, line))
+                matches.append(_format_match(rel, i, line))
                 if len(matches) >= max_results:
                     return ToolResult.ok(
                         output={"root": str(root), "matches": matches, "engine": "python"},
@@ -272,11 +311,16 @@ def _walk_files(root: Path, file_pattern: str) -> Iterable[Path]:
             yield root
         return
     for dirpath, dirnames, filenames in os.walk(root):
-        # Skip dot-directories and the usual noise.
+        # Skip dot-directories and the usual noise. ``.minimax`` holds
+        # our own machinery (backups / sandboxes / artifacts) — it must
+        # never leak into search results.
         dirnames[:] = [
             d
             for d in dirnames
-            if d not in (".git", ".venv", "node_modules", "__pycache__", ".pytest_cache")
+            if d not in (
+                ".git", ".venv", "node_modules", "__pycache__",
+                ".pytest_cache", ".minimax",
+            )
         ]
         for name in filenames:
             if file_pattern not in ("*", "") and not fnmatch.fnmatch(name, file_pattern):
@@ -284,13 +328,18 @@ def _walk_files(root: Path, file_pattern: str) -> Iterable[Path]:
             yield Path(dirpath) / name
 
 
-def _format_match(file: Path, root: Path, lineno: int, line: str) -> dict[str, Any]:
-    if len(line) > 400:
-        line = line[:397] + "..."
+def _workspace_rel(file: Path, root: Path) -> str:
+    """Workspace-relative posix path for *file* (absolute on anchor mismatch)."""
     try:
         rel = str(file.resolve().relative_to(root))
     except ValueError:
-        rel = str(file)
+        return str(file)
+    return rel.replace("\\", "/")
+
+
+def _format_match(rel: str, lineno: int, line: str) -> dict[str, Any]:
+    if len(line) > 400:
+        line = line[:397] + "..."
     return {"file": rel, "line": lineno, "text": line}
 
 
