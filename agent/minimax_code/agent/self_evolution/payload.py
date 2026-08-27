@@ -18,6 +18,10 @@ runner. So the closure returned here **dispatches** on the payload:
 
 * ``payload["self_evolution"]`` truthy → collect a trajectory and
   summarise it (the self-evolution behaviour this layer adds).
+* ``payload["command"]`` a non-empty string → run it as a shell
+  subprocess (``cwd`` / ``timeout_s`` honoured) and return the captured
+  output (v1.6.1 — the tool-execution path scheduled prompts can't
+  offer; see :func:`_run_command`).
 * ``payload["prompt"]`` a non-empty string → run one LLM turn and
   return the reply text under ``output`` (v1.2.0 — scheduled prompts
   used to be echoed back at the user without ever reaching a model).
@@ -42,11 +46,22 @@ Failure model
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
 from ...scheduler import PayloadFn
 from .runner import SelfEvolutionReport, run_once
+
+# ``command`` payload knobs. The timeout ceiling keeps the kill *inside*
+# the payload: the scheduler's own safety valve cancels the coroutine at
+# 3600s, and a cancelled ``communicate()`` never gets to kill the child
+# (leaked process) — so an absurd ``timeout_s`` is clamped below it.
+_DEFAULT_COMMAND_TIMEOUT_S = 600.0
+_COMMAND_TIMEOUT_CEILING_S = 3500.0
+# Per-stream output cap in bytes, mirroring ``verify_subagent``: enough
+# for a diagnostic tail, small enough to keep the ``tasks`` row lean.
+_COMMAND_OUTPUT_CAP = 20_000
 
 
 def build_payload_runner(
@@ -90,6 +105,9 @@ def build_payload_runner(
                 # row ``failed`` rather than tearing down the executor.
                 return {"ok": False, "error": f"self-evolution failed: {exc}"}
             return _summarize(report, path)
+        command = payload.get("command")
+        if isinstance(command, str) and command.strip():
+            return await _run_command(payload, command)
         prompt = payload.get("prompt")
         if isinstance(prompt, str) and prompt.strip():
             return await _run_prompt(prompt)
@@ -122,6 +140,109 @@ async def _run_prompt(prompt: str) -> dict[str, Any]:
         # Returning an ``error`` key lets ``_fire`` mark the task row
         # ``failed`` with the reason instead of crashing the executor.
         return {"ok": False, "error": f"scheduled prompt failed: {exc}"}
+
+
+async def _run_command(payload: dict[str, Any], command: str) -> dict[str, Any]:
+    """Run a ``command`` payload as a shell subprocess.
+
+    The ``prompt`` branch can only talk to an LLM — it has no
+    tool-execution ability, so a job that needs to *do* something
+    (run an iteration script, refresh an index, …) had no path through
+    the built-in scheduler at all. This branch gives ``schedule.create``
+    a ``{"command": "...", "cwd": "...", "timeout_s": 600}`` payload
+    shape: the command runs via ``create_subprocess_shell`` on the main
+    event loop (the scheduler drives payloads there since v1.2.2), with
+    output captured and capped per stream.
+
+    Failure model — ``error`` means *scheduling infrastructure* failed:
+
+    * spawn failure / timeout → ``error`` key present, so ``_fire``
+      marks the ``tasks`` row ``failed``;
+    * a non-zero exit code is a *command result*, not a scheduling
+      failure: ``ok=False`` without ``error`` (same philosophy as the
+      ``verify_subagent`` tool — e.g. an iteration runner exiting early
+      on its presence lock stays a "completed" tick with the exit code
+      visible in the result JSON).
+    """
+    # Deferred import: the tree-kill remedy is shared with
+    # ``verify_subagent`` (a bare kill() leaves the wrapped child
+    # holding the pipes on Windows) — one implementation, not a copy.
+    from ..tools.verification import _kill_process_tree
+
+    cwd = payload.get("cwd")
+    workdir = None
+    if isinstance(cwd, str) and cwd.strip():
+        workdir = str(Path(cwd).expanduser())
+
+    timeout_s = _coerce_timeout(payload.get("timeout_s"))
+
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            cwd=workdir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": f"scheduled command failed to spawn: {exc}"}
+
+    timed_out = False
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(
+            proc.communicate(), timeout=timeout_s
+        )
+    except TimeoutError:
+        timed_out = True
+        await _kill_process_tree(proc)
+        # Drain the (now-closed) pipes so the process reaps and whatever
+        # the child printed before the kill still reaches the report.
+        try:
+            stdout_b, stderr_b = await proc.communicate()
+        except Exception:  # pragma: no cover — defensive
+            stdout_b, stderr_b = b"", b""
+
+    stdout, stdout_trunc = _decode_capped(stdout_b)
+    stderr, stderr_trunc = _decode_capped(stderr_b)
+    result: dict[str, Any] = {
+        "ok": proc.returncode == 0 and not timed_out,
+        "exit_code": proc.returncode,
+        "timed_out": timed_out,
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_truncated": stdout_trunc,
+        "stderr_truncated": stderr_trunc,
+    }
+    if workdir:
+        result["cwd"] = workdir
+    if timed_out:
+        result["error"] = f"scheduled command timed out after {timeout_s}s"
+    return result
+
+
+def _coerce_timeout(value: Any) -> float:
+    """Normalise a payload ``timeout_s`` into a safe float.
+
+    Non-numeric / non-positive values fall back to the default; the
+    ceiling rationale lives next to ``_COMMAND_TIMEOUT_CEILING_S``.
+    ``bool`` is rejected explicitly — it subclasses ``int`` but
+    ``timeout_s: true`` is never a sane knob.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return _DEFAULT_COMMAND_TIMEOUT_S
+    if value <= 0:
+        return _DEFAULT_COMMAND_TIMEOUT_S
+    return min(float(value), _COMMAND_TIMEOUT_CEILING_S)
+
+
+def _decode_capped(data: bytes) -> tuple[str, bool]:
+    """Decode subprocess output, capping at ``_COMMAND_OUTPUT_CAP`` bytes.
+
+    Returns ``(text, truncated)``; the cap is applied on raw bytes so a
+    10 MB stdout can't be fully materialised as a str first.
+    """
+    if len(data) > _COMMAND_OUTPUT_CAP:
+        return data[:_COMMAND_OUTPUT_CAP].decode("utf-8", errors="replace"), True
+    return data.decode("utf-8", errors="replace"), False
 
 
 def _content_text(message: dict[str, Any]) -> str:
