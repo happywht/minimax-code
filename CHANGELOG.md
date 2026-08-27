@@ -7,10 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **退役设置页「API 密钥」tab**（#137）：legacy 全局 MiniMax key 的 UI 入口撤下，密钥管理统一收敛到「服务商」tab 的 per-provider 体系（builtin-minimax 也是一个 provider，一样配 key）。Web 侧六连删——`SettingsPage.tsx` 的 tab 类型/导航/渲染分支、`ApiKeyTab.tsx` 组件删除、settings barrel export、`strings.ts` 的 `settings.apiKey` 域（26 行）与 `tabApiKey`、命令面板 `设置：API 密钥` 入口；测试同步清理（`settings-split.test` barrel 断言 10→9、`settings-page.test` 删 5 个 api-key tab 测试与 secret mock）。**保留兼容**：`secrets.*` IPC 三方法、`mock.ts` 对应分支、`secretStore.ts` 原样保留（Providers tab 的 key 徽章仍走 `secrets.has_provider_key` 底座）。
+
+### Changed
+
+- **legacy 全局 key → per-provider 槽一次性迁移**（`secrets.py`）：`get_provider_key("builtin-minimax")` 此前每次动态 fallback 读 legacy 全局 key（`minimax-code/api_key` 槽 + env），导致用户在「服务商」tab 点「清除密钥」后 per-provider 槽被删、下次查询又从 legacy 槽把 key 迁回来——**清除操作静默失效**。现在：legacy keyring 槽有值 → 首次读取时拷贝进 per-provider 槽（迁移 copy fail-open，写失败仍返回 legacy 值，下次幂等重试；legacy 条目保留不销毁）；`clear_provider_key("builtin-minimax")` 连带清 legacy 槽（防复活闭环，清理失败 advisory）；env var 保持动态 fallback 永不写盘（部署层显式配置，持久化会冻结 env 变更语义）。5 个新测试进 `test_secrets.py`（迁移拷贝 / 迁移幂等 / 写失败 fail-open / clear 连坐且清除终局 / custom provider clear 不动 legacy）。
+
 ### Fixed
 
+- **#138 OpenAI transport 对 compat provider 的流式 usage 解析为空（智谱 GLM 路径 tokens 恒 0）**：模型切换链路本身完全正常（切换生效、真 API 调用成功、正文解析正常），但 `openai_transport.py` 的流解析只认 OpenAI 官方的「尾部 empty-choices chunk 带 usage」形状——智谱 GLM（及 DeepSeek 等 compat provider）把 `usage` 挂在**带 `finish_reason` 的同一个 chunk** 上，finish 分支 yield 了硬编码的 `usage={}` → 每条 GLM 回复 `tokens_in/tokens_out` 恒 0、context 指示器归零，用户侧表现为「切了模型没反应」。同时 `delta.reasoning_content`（GLM 思考流字段）被静默丢弃、usage 的 `completion_tokens_details.reasoning_tokens` 从未被提取 → thinking_count 恒 0。修复：新增共享 `_usage_to_dict` mapper（SDK 对象与 raw dict 双形状；`reasoning_tokens` → `thinking_tokens` 键，与 anthropic transport 同约定），finish 分支与 empty-choices 分支统一走它；实测智谱 glm-5.3 从 `{TEXT 空、usage None、thinking 0}` 修复为 `{TEXT '收到'、usage {16,72,88}、thinking 69}`。新测试文件 `test_openai_usage_stream.py`（8 个，用真实 openai SDK + httpx MockTransport 复刻两家 provider 的原始 SSE 报文，防 SDK parse 形状漂移）。
 - **1214 modelCode 不存在（v1.6.2 的读侧续集）**：切到第三方 provider（如智谱 GLM）后发消息报 `400 {"code": "1214", "message": "modelCode：不存在"}`，且**无论切什么模型都报同样的错**。v1.6.2 修复了写侧（`model.set_current` 落库 `provider_id`，LLM 单例 rebuild 后 protocol/base_url/key/model 全部正确），但 `agent.send_message` 构造 `AgentConfig` 时不传 `model` → 运行循环每次 stream 都盖 dataclass 默认值 `"MiniMax-M3"` 的章（`core.py: model=self.config.model`）→ 智谱端点收到 MiniMax 的模型名 → 1214。修复：`AgentConfig.model` 与 `context_window` 同源，从 LLM 单例的 `default_model` 镜像（`builtins.py`，`rebuild_subagent_llm()` 每次切模型都同步两者）。回归测试 2 个进 `test_model_provider_routing.py`（mock AgentCore + side_effect 捕获真实 `AgentConfig`，断言单例指向 `glm-5.3` 时 config.model 跟随而非默认值；无单例 fallback 路径填 `default_model()` 永不为空）。
 - （v1.6.2 收编）切模型不切 provider：`model.set_current` 省略 `provider_id` 时反查模型属主 provider 落库，第三方模型不再静默记到 `builtin-minimax` 名下烧 MiniMax 配额（`32655f2`）。
+- **迁移语义破坏测试隔离点的回归**：`test_ipc.py` 的 token-usage 集成测试红——其 fixture 靠 patch `secrets.get_api_key` 强制 mock mode，但迁移改造后 `get_provider_key("builtin-minimax")` 的 fallback 链改走 `_read_keyring` / `_read_keyring_username` 私有直读（旧实现是 `return get_api_key()`，patch 一个函数名挡住整条链），send_message 路径经 `get_subagent_llm()` → `get_provider_key()` 读到开发机真 keyring 值 → 走真协议 → usage 恒 0。修复：fixture 补 patch 两个内部读函数，测试意图（无凭据端到端）恢复完整。
 
 ## [1.6.0] - 2026-08-26
 

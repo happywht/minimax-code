@@ -25,6 +25,18 @@ async def isolated_runtime(
 ) -> AsyncIterator[None]:
     """Keep the chat integration test isolated from the live product DB."""
     monkeypatch.setattr("minimax_code.secrets.get_api_key", lambda: None)
+    # v1.6.4: get_provider_key("builtin-minimax") no longer routes its
+    # fallback through get_api_key() — it reads the per-provider slot
+    # and the legacy keyring entry directly. The send_message path
+    # builds its LLM via get_subagent_llm() → get_provider_key(), so
+    # stubbing get_api_key alone no longer forces mock mode: a real
+    # keyring entry on the dev machine leaked in and the run hit the
+    # live protocol with zero usage. Stub both readers to keep this
+    # test credential-free end to end.
+    monkeypatch.setattr("minimax_code.secrets._read_keyring", lambda: None)
+    monkeypatch.setattr(
+        "minimax_code.secrets._read_keyring_username", lambda _username: None
+    )
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
     monkeypatch.setenv("MINIMAX_CODE_DATA_DIR", str(tmp_path))
     yield

@@ -41,7 +41,6 @@ import {
   ProvidersTab,
   PermissionsTab,
   ScheduledTab,
-  ApiKeyTab,
   AgentsTab,
   TeamsTab,
   AuditTab,
@@ -54,7 +53,6 @@ const TABS = [
   { Component: ProvidersTab, testId: "settings-providers" },
   { Component: PermissionsTab, testId: "settings-permissions" },
   { Component: ScheduledTab, testId: "settings-scheduled" },
-  { Component: ApiKeyTab, testId: "settings-api-key" },
   { Component: AgentsTab, testId: "settings-agents" },
   { Component: TeamsTab, testId: "settings-teams" },
   { Component: AuditTab, testId: "settings-audit-section" },
@@ -63,8 +61,8 @@ const TABS = [
 ];
 
 describe("Settings tab split (P0#3)", () => {
-  it("barrel exports exactly 10 tab components", () => {
-    expect(TABS).toHaveLength(10);
+  it("barrel exports exactly 9 tab components", () => {
+    expect(TABS).toHaveLength(9);
   });
 
   it.each(TABS.map(({ Component, testId }) => ({ Component, testId })))(

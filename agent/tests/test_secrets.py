@@ -180,13 +180,101 @@ def test_set_api_key_propagates_backend_failure(
         secrets.set_api_key("sk-will-fail")
 
 
-def test_builtin_provider_key_falls_back_to_legacy_global_key(
+def test_builtin_provider_key_falls_back_to_env_var(
     fake_keyring: FakeKeyring, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The built-in MiniMax provider remains compatible with the legacy key."""
+    """The built-in provider reads the env var dynamically (never persists it)."""
     monkeypatch.setenv(secrets.ENV_VAR, "sk-legacy-minimax")
     assert secrets.get_provider_key("builtin-minimax") == "sk-legacy-minimax"
     assert secrets.has_provider_key("builtin-minimax") is True
+    # Env values must NOT be copied into the per-provider keyring slot —
+    # persisting them would freeze a deployment-layer override forever.
+    assert ("minimax-code", "provider:builtin-minimax") not in fake_keyring.store
+
+
+def test_builtin_provider_migrates_legacy_keyring_entry(
+    fake_keyring: FakeKeyring, clean_env: None
+) -> None:
+    """A legacy global keyring entry migrates into the per-provider slot on first read."""
+    fake_keyring.store[(secrets.KEYRING_SERVICE, secrets.KEYRING_USERNAME)] = "sk-old"
+    assert secrets.get_provider_key("builtin-minimax") == "sk-old"
+    # The value was copied so the Providers tab owns the lifecycle now.
+    assert fake_keyring.store[(secrets.KEYRING_SERVICE, "provider:builtin-minimax")] == (
+        "sk-old"
+    )
+    # The legacy entry itself is NOT deleted by a read (data-preserving).
+    assert fake_keyring.store[(secrets.KEYRING_SERVICE, secrets.KEYRING_USERNAME)] == (
+        "sk-old"
+    )
+    # Second read hits the per-provider slot directly (no re-migration).
+    assert secrets.get_provider_key("builtin-minimax") == "sk-old"
+
+
+def test_builtin_provider_migration_survives_keyring_write_failure(
+    fake_keyring: FakeKeyring, clean_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the migration copy fails, the legacy value is still served (fail-open)."""
+    fake_keyring.store[(secrets.KEYRING_SERVICE, secrets.KEYRING_USERNAME)] = "sk-old"
+    # Reads succeed; only the migration write blows up (e.g. keyring full).
+    import keyring
+    import keyring.errors
+
+    def broken_set(service: str, username: str, value: str) -> None:
+        raise keyring.errors.KeyringError("write failed")
+
+    monkeypatch.setattr(keyring, "set_password", broken_set)
+    assert secrets.get_provider_key("builtin-minimax") == "sk-old"
+
+
+def test_clear_builtin_provider_key_also_removes_legacy_entry(
+    fake_keyring: FakeKeyring, clean_env: None
+) -> None:
+    """Clearing the built-in provider's key drops the legacy entry too — otherwise
+    the next get_provider_key() would migrate it back and undo the clear."""
+    fake_keyring.store[(secrets.KEYRING_SERVICE, secrets.KEYRING_USERNAME)] = "sk-old"
+    # First read migrates the legacy entry into the provider slot.
+    assert secrets.get_provider_key("builtin-minimax") == "sk-old"
+    secrets.clear_provider_key("builtin-minimax")
+    assert ("minimax-code", "provider:builtin-minimax") not in fake_keyring.store
+    assert (secrets.KEYRING_SERVICE, secrets.KEYRING_USERNAME) not in fake_keyring.store
+    # The clear is final — nothing comes back.
+    assert secrets.get_provider_key("builtin-minimax") is None
+
+
+def test_clear_builtin_provider_key_legacy_cleanup_failure_is_advisory(
+    fake_keyring: FakeKeyring, clean_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the legacy cleanup fails, the provider-slot clear still succeeded."""
+    fake_keyring.store[
+        (secrets.KEYRING_SERVICE, "provider:builtin-minimax")
+    ] = "sk-pro"
+    real_delete = fake_keyring.delete_password
+
+    def flaky_delete(service: str, username: str) -> None:
+        if username == secrets.KEYRING_USERNAME:
+            import keyring.errors
+
+            raise keyring.errors.KeyringError("legacy cleanup failed")
+        real_delete(service, username)
+
+    import keyring
+
+    monkeypatch.setattr(keyring, "delete_password", flaky_delete)
+    secrets.clear_provider_key("builtin-minimax")  # must not raise
+    assert ("minimax-code", "provider:builtin-minimax") not in fake_keyring.store
+
+
+def test_clear_custom_provider_key_leaves_legacy_alone(
+    fake_keyring: FakeKeyring, clean_env: None
+) -> None:
+    """Clearing a custom provider's key never touches the legacy global entry."""
+    fake_keyring.store[(secrets.KEYRING_SERVICE, secrets.KEYRING_USERNAME)] = "sk-old"
+    fake_keyring.store[(secrets.KEYRING_SERVICE, "provider:custom-openai")] = "sk-x"
+    secrets.clear_provider_key("custom-openai")
+    assert (secrets.KEYRING_SERVICE, "provider:custom-openai") not in fake_keyring.store
+    assert fake_keyring.store[(secrets.KEYRING_SERVICE, secrets.KEYRING_USERNAME)] == (
+        "sk-old"
+    )
 
 
 def test_custom_provider_does_not_reuse_legacy_minimax_key(

@@ -111,7 +111,6 @@ export function useCommandPalette({
       { tab: "worktrees", label: "设置：工作区", keywords: "settings worktrees git worktree" },
       { tab: "data", label: "设置：数据", keywords: "settings data export import backup" },
       { tab: "audit", label: "设置：审计", keywords: "settings audit" },
-      { tab: "api-key", label: "设置：API 密钥", keywords: "settings api keys" },
     ];
     for (const { tab, label, keywords } of settingsTabs) {
       list.push({

@@ -21,7 +21,7 @@ MiniMax Code 的前端界面。基于 React 18 + Vite + TypeScript + Tailwind CS
 +----------+------------------------------------------+--------------+
 | Sidebar  | Main Content                             | RightPanel   |
 | (项目分组 | - ChatPanel（消息流 + MessageInput 输入框）| 检查器 11 tab |
-|  任务列表)| - SettingsPage（14 tab，覆盖层）          | 可折叠        |
+|  任务列表)| - SettingsPage（13 tab，覆盖层）          | 可折叠        |
 |          | - SkillsPanel / CodeReview（覆盖层）       |              |
 +----------+------------------------------------------+--------------+
 ```
@@ -141,7 +141,7 @@ A: 编辑 `tailwind.config.js` 中的 `minimax` 颜色定义（bg、panel、bord
 
 - `layout/` — 骨架壳：`Sidebar.tsx`（项目分组任务列表 + 连接手机入口）、`TopBar.tsx`、`CommandPalette.tsx`（Ctrl+K）、`GitStatusBar.tsx`、`NotificationCenter.tsx`、`WorkspaceSwitcher.tsx`、`ConnectionBanner.tsx` / `StorageBanner.tsx` / `ProviderReadinessBanner`（在 chat/）等状态横幅、`ShortcutsOverlay.tsx`、`ErrorBoundary.tsx`
 - `chat/` — 对话主区：`ChatPanel.tsx`、`MessageList.tsx` / `MessageItem.tsx` / `MessageInput.tsx`（@提及/附件/语音）、`MarkdownBody.tsx` / `CodeBlock.tsx` / `MermaidBlock.tsx`、`ModelSelector.tsx`、`MessageActionMenu.tsx` 等
-- `settings/` — 设置页：`SettingsPage.tsx`（**14 tab 分 4 组**：核心 models/providers/api-key/permissions/mcp-servers/memory/plugins/data、自动化 scheduled/workflows/webhooks、Agent agents/teams、治理 audit）+ 每 tab 一个组件（`ModelsTab.tsx`、`ProvidersTab.tsx`、`DataTab.tsx` 等）
+- `settings/` — 设置页：`SettingsPage.tsx`（**13 tab 分 4 组**：核心 models/providers/permissions/mcp-servers/memory/plugins/data、自动化 scheduled/workflows/webhooks、Agent agents/teams、治理 audit）+ 每 tab 一个组件（`ModelsTab.tsx`、`ProvidersTab.tsx`、`DataTab.tsx` 等）
 - `panels/` — 覆盖面板：`SkillsPanel.tsx`、`CodeReviewPanel.tsx`、`PatchPreviewPanel.tsx`（+ `PatchFileCard` / `PatchHunkCard`）、`PreviewPanel.tsx`
 - `modals/` — 对话框：`PermissionRequestModal.tsx`（允许/拒绝 + 总是允许开关）、`MobilePairingModal.tsx`、`GitViewerModal.tsx`、`CrashRecoveryPrompt.tsx`、`ConfirmationDialog.tsx`
 - `right-panel/` — 检查器：`tabs.tsx` 注册 **11 个 tab**（timeline/diff/progress/checkpoints/agents/subagents/review/teamruns/terminal/runner/codebase），`ProgressPanel.tsx`、`SubAgentPanel.tsx`、`TeamRunPanel.tsx`、`TerminalPanel.tsx`、`RunnerPanel.tsx`、`CodebasePanel.tsx`、`CheckpointPanel.tsx`、`RunTimelinePanel.tsx` 等

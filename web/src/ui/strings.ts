@@ -347,7 +347,6 @@ export const strings = {
       groupGovernance: "治理",
       tabModels: "模型",
       tabProviders: "Provider",
-      tabApiKey: "API 密钥",
       tabPermissions: "权限",
       tabMcp: "MCP 服务器",
       tabMemory: "记忆",
@@ -392,33 +391,6 @@ export const strings = {
       removeConfirmDesc: (provider: string) =>
         `该模型将从 ${provider} 移除。已选中它的会话需要另选一个可用模型。`,
       removeConfirmLabel: "移除模型",
-    },
-
-    apiKey: {
-      statusKeyring: "已存入系统钥匙串",
-      statusEnv: "正在使用环境变量",
-      statusNone: "未配置——Agent 处于模拟模式",
-      title: "MiniMax API 密钥",
-      hintLead:
-        "旧版内置 MiniMax Provider 使用的密钥。多 Provider 配置请使用「Provider」标签页。" +
-        "存入系统钥匙串（Windows 凭据管理器 / macOS 钥匙串 / Linux Secret Service）；" +
-        "若钥匙串无条目，则回退到",
-      hintTail: "环境变量。",
-      inputLabel: "MiniMax API 密钥",
-      reveal: "显示 API 密钥",
-      hide: "隐藏 API 密钥",
-      panelNew: "粘贴密钥以存入系统钥匙串",
-      panelReplace: "替换钥匙串条目",
-      save: "保存",
-      writeNote: "保存时密钥写入系统钥匙串，写入后不再经由网络回传。",
-      keyringEntry: "钥匙串条目",
-      clearButton: "清除钥匙串",
-      clearConfirmTitle: "清除旧版 MiniMax API 密钥？",
-      clearConfirmDesc:
-        "使用旧版密钥的 MiniMax 请求将停止，直至保存新密钥。已有会话不会被删除。",
-      clearConfirmLabel: "清除 API 密钥",
-      clearNoteLead: "从系统钥匙串删除该条目。不影响",
-      clearNoteTail: "环境变量。",
     },
 
     worktrees: {

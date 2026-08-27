@@ -59,6 +59,11 @@ KEYRING_USERNAME: Final = "api_key"
 #: first, this is the *fallback*. Documented here for discoverability.
 ENV_VAR: Final = "MINIMAX_API_KEY"
 
+#: Provider id that owns the legacy global key. v1.6.4: the API Key
+#: settings tab was retired, so the legacy keyring entry migrates
+#: into this provider's per-provider slot on first read.
+_BUILTIN_MINIMAX: Final = "builtin-minimax"
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -163,8 +168,14 @@ def get_provider_key(provider_id: str) -> str | None:
 
     Lookup order:
     1. OS keyring (``minimax-code / provider:<provider_id>``).
-    2. For the built-in MiniMax provider only, the legacy global key
-       via :func:`get_api_key` (fallback).
+    2. For the built-in MiniMax provider only — one-time migration:
+       the legacy global keyring entry (``minimax-code / api_key``)
+       is copied into the per-provider slot, then served. The legacy
+       entry itself is left in place; it is removed only when the
+       user clears the provider key (see :func:`clear_provider_key`),
+       which keeps "clear" final.
+    3. For the built-in provider only, the ``MINIMAX_API_KEY`` env
+       var (dynamic — never persisted to the keyring).
 
     Returns ``None`` if no key is found anywhere.
     """
@@ -174,8 +185,21 @@ def get_provider_key(provider_id: str) -> str | None:
     # The legacy global key belongs to MiniMax. Reusing it for an
     # arbitrary OpenAI-compatible provider makes that provider look
     # configured while sending the wrong credential.
-    if provider_id == "builtin-minimax":
-        return get_api_key()
+    if provider_id == _BUILTIN_MINIMAX:
+        legacy = _read_keyring()
+        if legacy:
+            # Migrate on first sight so the Providers tab owns the
+            # credential lifecycle (the API Key tab was retired).
+            # Fail-open: a broken keyring still serves the value, and
+            # the next call retries the copy (idempotent, same value).
+            try:
+                set_provider_key(provider_id, legacy)
+            except Exception:
+                logger.debug(
+                    "legacy key migration deferred for %s", provider_id, exc_info=True
+                )
+            return legacy
+        return _read_env()
     return None
 
 
@@ -198,7 +222,13 @@ def set_provider_key(provider_id: str, value: str) -> None:
 def clear_provider_key(provider_id: str) -> None:
     """Remove a provider-specific API key from the OS keyring.
 
-    Idempotent — calling when no entry exists is a no-op.
+    Idempotent — calling when no entry exists is a no-op. Raises
+    :class:`keyring.errors.KeyringError` on backend failure.
+
+    For the built-in MiniMax provider the legacy global keyring
+    entry is removed too — otherwise the next
+    :func:`get_provider_key` call would migrate it right back and
+    silently undo the user's "clear".
     """
     import keyring
     import keyring.errors
@@ -211,6 +241,17 @@ def clear_provider_key(provider_id: str) -> None:
     except keyring.errors.KeyringError:
         logger.exception("failed to delete provider key from keyring")
         raise
+    if provider_id == _BUILTIN_MINIMAX:
+        # Fail-open on purpose: if the legacy entry survives, the
+        # migration in get_provider_key() will bring it back — but
+        # the explicit clear was persisted for the provider slot,
+        # which is what the UI surfaces.
+        try:
+            clear_api_key()
+        except Exception:
+            logger.debug(
+                "legacy key cleanup deferred for %s", provider_id, exc_info=True
+            )
 
 
 def has_provider_key(provider_id: str) -> bool:

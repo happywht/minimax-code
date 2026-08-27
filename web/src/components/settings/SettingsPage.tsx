@@ -14,7 +14,6 @@ import {
   Database,
   GitBranch,
   Globe,
-  KeyRound,
   Puzzle,
   ScrollText,
   ShieldAlert,
@@ -29,7 +28,6 @@ import { ModelsTab } from "./ModelsTab";
 import { ProvidersTab } from "./ProvidersTab";
 import { PermissionsTab } from "./PermissionsTab";
 import { ScheduledTab } from "./ScheduledTab";
-import { ApiKeyTab } from "./ApiKeyTab";
 import { AgentsTab } from "./AgentsTab";
 import { TeamsTab } from "./TeamsTab";
 import { AuditTab } from "./AuditTab";
@@ -42,7 +40,7 @@ import { DataTab } from "./DataTab";
 import { WorktreesTab } from "./WorktreesTab";
 import { useFocusTrap } from "../../lib/useFocusTrap";
 
-export type SettingsTab = "models" | "providers" | "permissions" | "scheduled" | "api-key" | "agents" | "teams" | "audit" | "webhooks" | "workflows" | "mcp-servers" | "memory" | "plugins" | "worktrees" | "data";
+export type SettingsTab = "models" | "providers" | "permissions" | "scheduled" | "agents" | "teams" | "audit" | "webhooks" | "workflows" | "mcp-servers" | "memory" | "plugins" | "worktrees" | "data";
 
 const TAB_GROUPS: Array<{
   label: string;
@@ -53,7 +51,6 @@ const TAB_GROUPS: Array<{
     tabs: [
       { id: "models", icon: <Cpu size={12} />, label: strings.settings.page.tabModels, testId: "settings-tab-models" },
       { id: "providers", icon: <Globe size={12} />, label: strings.settings.page.tabProviders, testId: "settings-tab-providers" },
-      { id: "api-key", icon: <KeyRound size={12} />, label: strings.settings.page.tabApiKey, testId: "settings-tab-api-key" },
       { id: "permissions", icon: <ShieldAlert size={12} />, label: strings.settings.page.tabPermissions, testId: "settings-tab-permissions" },
       { id: "mcp-servers", icon: <Blocks size={12} />, label: strings.settings.page.tabMcp, testId: "settings-tab-mcp-servers" },
       { id: "memory", icon: <Brain size={12} />, label: strings.settings.page.tabMemory, testId: "settings-tab-memory" },
@@ -168,7 +165,6 @@ export function SettingsPage({ testId = "settings-page", onClose, initialTab = "
           {tab === "providers" && <ProvidersTab />}
           {tab === "permissions" && <PermissionsTab />}
           {tab === "scheduled" && <ScheduledTab />}
-          {tab === "api-key" && <ApiKeyTab />}
           {tab === "agents" && <AgentsTab />}
           {tab === "teams" && <TeamsTab />}
           {tab === "audit" && <AuditTab />}

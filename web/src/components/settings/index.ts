@@ -6,7 +6,6 @@ export { ModelsTab } from "./ModelsTab";
 export { ProvidersTab } from "./ProvidersTab";
 export { PermissionsTab } from "./PermissionsTab";
 export { ScheduledTab } from "./ScheduledTab";
-export { ApiKeyTab } from "./ApiKeyTab";
 export { AgentsTab } from "./AgentsTab";
 export { TeamsTab } from "./TeamsTab";
 export { AuditTab } from "./AuditTab";
