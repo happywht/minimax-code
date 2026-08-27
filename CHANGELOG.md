@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **1214 modelCode 不存在（v1.6.2 的读侧续集）**：切到第三方 provider（如智谱 GLM）后发消息报 `400 {"code": "1214", "message": "modelCode：不存在"}`，且**无论切什么模型都报同样的错**。v1.6.2 修复了写侧（`model.set_current` 落库 `provider_id`，LLM 单例 rebuild 后 protocol/base_url/key/model 全部正确），但 `agent.send_message` 构造 `AgentConfig` 时不传 `model` → 运行循环每次 stream 都盖 dataclass 默认值 `"MiniMax-M3"` 的章（`core.py: model=self.config.model`）→ 智谱端点收到 MiniMax 的模型名 → 1214。修复：`AgentConfig.model` 与 `context_window` 同源，从 LLM 单例的 `default_model` 镜像（`builtins.py`，`rebuild_subagent_llm()` 每次切模型都同步两者）。回归测试 2 个进 `test_model_provider_routing.py`（mock AgentCore + side_effect 捕获真实 `AgentConfig`，断言单例指向 `glm-5.3` 时 config.model 跟随而非默认值；无单例 fallback 路径填 `default_model()` 永不为空）。
+- （v1.6.2 收编）切模型不切 provider：`model.set_current` 省略 `provider_id` 时反查模型属主 provider 落库，第三方模型不再静默记到 `builtin-minimax` 名下烧 MiniMax 配额（`32655f2`）。
+
 ## [1.6.0] - 2026-08-26
 
 ### Added — Sandbox Deepening 专项（v1.5.0 四项已知限制收掉三项）

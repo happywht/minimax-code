@@ -518,7 +518,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         init_runtime,
     )
     from ..codebase import CodebaseRetriever
-    from ..models import context_window_for
+    from ..models import context_window_for, default_model
     from ..storage.dao.messages import MessagesDAO
     from ..workspace_ctx import current_root
 
@@ -792,6 +792,16 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
             # from the LLM singleton's current model (kept in sync by
             # ``rebuild_subagent_llm`` on every model.set_current).
             context_window=context_window_for(getattr(llm, "default_model", None)),
+            # v1.6.3 field report: mirror the LLM singleton's current
+            # model into the config. The run loop stamps ``config.model``
+            # on every stream call (core.py: ``model=self.config.model``);
+            # leaving it at the dataclass default ("MiniMax-M3") sent the
+            # MiniMax model id to whatever provider the singleton pointed
+            # at — a third-party provider answered 400 "modelCode not
+            # found" no matter which model the user selected. Same source
+            # as the context_window lookup above, so the pair stays in
+            # sync across every rebuild_subagent_llm().
+            model=str(getattr(llm, "default_model", "") or default_model()),
             # v1.1.0: auto-continue (goal/loop minimal form) — the loop
             # itself lives in _run_with_auto_continue below.
             auto_continue=auto_continue,
