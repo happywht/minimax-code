@@ -652,11 +652,13 @@ function mockHandle(
         reasoning_effort: mockReasoningEffort,
       };
 
-    case "model.set_current":
+    case "model.set_current": {
+      const p = params as { model_id?: string; provider_id?: string };
       return {
-        current:
-          (params as { model_id: string }).model_id ?? mockModels[0].id,
+        current: p.model_id ?? mockModels[0].id,
+        provider_id: p.provider_id,
       };
+    }
 
     case "model.set_reasoning_effort": {
       const raw = (params as { reasoning_effort?: string | null }).reasoning_effort;

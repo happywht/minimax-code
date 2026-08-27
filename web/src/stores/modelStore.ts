@@ -58,7 +58,18 @@ export const useModelStore = create<ModelState>((set) => ({
 
   setCurrent: async (id: string) => {
     try {
-      const r = await typedIPC.setCurrentModel(id);
+      // Resolve the owning provider from the cached model list so the
+      // switch routes to that provider's endpoint/key. Without this the
+      // backend preference row could pin the model to the wrong provider
+      // and every request would keep hitting the MiniMax quota even after
+      // switching to a third-party model (v1.6.2 field report).
+      const entry = useModelStore
+        .getState()
+        .models.find((m) => m.id === id);
+      const r = await typedIPC.setCurrentModel(
+        id,
+        entry?.provider_id ?? undefined,
+      );
       set({ current: r.current });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

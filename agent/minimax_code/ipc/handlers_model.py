@@ -297,12 +297,21 @@ def register_model_handlers(
             if provider_id is not None:
                 provider_id = str(provider_id).strip() or None
 
-            # Validate model exists across all enabled providers.
+            # Validate model exists across all enabled providers, and
+            # record which provider owns each model id so an omitted
+            # provider_id can be resolved below.
             valid_models = set()
+            model_owner: dict[str, str] = {}
             try:
                 prov_dao = await _ensure_provider_dao()
                 for m in await prov_dao.list_models():
-                    valid_models.add(m.get("id"))
+                    mid = m.get("id")
+                    valid_models.add(mid)
+                    pid = m.get("provider_id")
+                    # First enabled provider wins when several providers
+                    # expose the same model id.
+                    if pid and mid not in model_owner:
+                        model_owner[mid] = pid
             except HandlerError:
                 pass  # DB unavailable — skip validation (best-effort).
 
@@ -312,6 +321,14 @@ def register_model_handlers(
                     f"unknown model {model!r}; valid options: {sorted(valid_models)}",
                     data={"valid": sorted(valid_models)},
                 )
+
+            # Route the model to its owning provider when the caller did
+            # not supply one. The DAO otherwise pins provider_id to
+            # "builtin-minimax", which silently billed every model switch
+            # to the MiniMax provider even when the model belonged to a
+            # third-party one (v1.6.2 field report).
+            if provider_id is None:
+                provider_id = model_owner.get(model)
 
             await dao_obj.set_current(model, provider_id=provider_id)
             # Rebuild sub-agent LLM so the next agent.send_message uses

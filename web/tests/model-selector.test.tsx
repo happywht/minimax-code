@@ -16,8 +16,8 @@ vi.mock("../src/ipc", async () => {
       ...actual.typedIPC,
       listModels: vi.fn(async () => ({
         models: [
-          { id: "m1", name: "M1", provider: "p", context_window: 1000, supports_tools: true },
-          { id: "m2", name: "M2", provider: "p", context_window: 2000, supports_tools: true },
+          { id: "m1", name: "M1", provider: "p", provider_id: "prov-a", context_window: 1000, supports_tools: true },
+          { id: "m2", name: "M2", provider: "p", provider_id: "prov-b", context_window: 2000, supports_tools: true },
         ],
         current: "m1",
       })),
@@ -79,7 +79,10 @@ describe("ModelSelector", () => {
     const options = screen.getAllByRole("option");
     fireEvent.click(options[1]);
     await waitFor(() => {
-      expect(typedIPC.setCurrentModel).toHaveBeenCalledWith("m2");
+      // The switch must carry the owning provider so the backend routes
+      // to that provider's endpoint/key (v1.6.2 field report: model-only
+      // switches silently billed every provider to MiniMax).
+      expect(typedIPC.setCurrentModel).toHaveBeenCalledWith("m2", "prov-b");
     });
   });
 });

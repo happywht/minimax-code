@@ -247,7 +247,7 @@ export interface TypedIPC {
 
   // model
   listModels(): Promise<ListModelsResult>;
-  setCurrentModel(modelId: string): Promise<SetModelResult>;
+  setCurrentModel(modelId: string, providerId?: string): Promise<SetModelResult>;
   setReasoningEffort(effort: string | null): Promise<SetReasoningEffortResult>;
 
   // skill
@@ -674,8 +674,17 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<{ ok: true }>("agent.delete", { name }),
 
     listModels: () => client.request<ListModelsResult>("model.list", {}),
-    setCurrentModel: (modelId) =>
-      client.request<SetModelResult>("model.set_current", { model_id: modelId }),
+    // Provider id rides along when known (the store resolves it from the
+    // model list). The backend also reverse-looks it up when omitted, but
+    // sending it explicitly keeps the two sides from drifting on duplicate
+    // model ids across providers.
+    setCurrentModel: (modelId, providerId) =>
+      client.request<SetModelResult>(
+        "model.set_current",
+        providerId
+          ? { model_id: modelId, provider_id: providerId }
+          : { model_id: modelId },
+      ),
     setReasoningEffort: (effort) =>
       client.request<SetReasoningEffortResult>("model.set_reasoning_effort", {
         reasoning_effort: effort,

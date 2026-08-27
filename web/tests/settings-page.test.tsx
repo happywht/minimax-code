@@ -245,7 +245,9 @@ describe("SettingsPage", () => {
     });
     fireEvent.click(screen.getByTestId("settings-model-select-m2"));
     await waitFor(() => {
-      expect(typedIPC.setCurrentModel).toHaveBeenCalledWith("m2");
+      // The switch carries the owning provider id (resolved from the
+      // model list) so the backend routes to the right endpoint/key.
+      expect(typedIPC.setCurrentModel).toHaveBeenCalledWith("m2", "builtin-minimax");
     });
     await waitFor(() => {
       expect(useModelStore.getState().current).toBe("m2");
