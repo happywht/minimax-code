@@ -180,6 +180,44 @@ class OpenAITransport(LLMTransport):
 # ---------------------------------------------------------------------------
 
 
+def _usage_to_dict(usage: Any) -> dict[str, int]:
+    """Map an OpenAI SDK usage object (or raw dict) to the wire dict.
+
+    Providers disagree on where in-stream usage lands — the official API
+    sends a trailing empty-choices chunk, Zhipu GLM / DeepSeek attach it
+    to the chunk carrying ``finish_reason`` — so both call sites share
+    this mapper. ``completion_tokens_details.reasoning_tokens`` feeds
+    ``thinking_tokens`` so the thinking_count channel works on reasoning
+    models (same convention as the anthropic transport).
+    """
+    if not usage:
+        return {}
+    if isinstance(usage, dict):
+        prompt_tokens = usage.get("prompt_tokens") or 0
+        completion_tokens = usage.get("completion_tokens") or 0
+        total_tokens = usage.get("total_tokens") or 0
+        details = usage.get("completion_tokens_details")
+        reasoning = (
+            details.get("reasoning_tokens")
+            if isinstance(details, dict)
+            else None
+        )
+    else:
+        prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+        completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+        total_tokens = getattr(usage, "total_tokens", 0) or 0
+        details = getattr(usage, "completion_tokens_details", None)
+        reasoning = getattr(details, "reasoning_tokens", None) if details else None
+    data = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+    if isinstance(reasoning, int) and reasoning > 0:
+        data["thinking_tokens"] = reasoning
+    return data
+
+
 def _sanitize_tools(
     tools: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -248,22 +286,20 @@ async def _openai_stream_to_chunks(
     async for chunk in stream:
         if not chunk.choices:
             # Some providers send an empty-choices chunk at the end
-            # carrying only ``usage``.
+            # carrying only ``usage`` (the official OpenAI shape).
             if hasattr(chunk, "usage") and chunk.usage:
                 yield StreamChunk(
                     finish_reason=None,
-                    usage={
-                        "prompt_tokens": chunk.usage.prompt_tokens or 0,
-                        "completion_tokens": chunk.usage.completion_tokens or 0,
-                        "total_tokens": chunk.usage.total_tokens or 0,
-                    },
+                    usage=_usage_to_dict(chunk.usage),
                 )
             continue
 
         choice = chunk.choices[0]
         delta = choice.delta
 
-        # Text content
+        # Text content. Reasoning models (Zhipu GLM, DeepSeek-R...) stream
+        # their thinking via ``delta.reasoning_content``; we do not surface
+        # that stream — the token count arrives later via usage.reasoning_tokens.
         text = delta.content
         tool_call_deltas: list[dict[str, Any]] = []
 
@@ -296,9 +332,12 @@ async def _openai_stream_to_chunks(
         if choice.finish_reason:
             # OpenAI uses "tool_calls" (plural) for tool-use stops.
             # Keep as-is — core.py already handles this value.
+            # Zhipu GLM and other compat providers attach ``usage`` to this
+            # same final chunk instead of a trailing empty-choices chunk —
+            # read it here so token accounting works on those providers.
             yield StreamChunk(
                 finish_reason=choice.finish_reason,
-                usage={},
+                usage=_usage_to_dict(getattr(chunk, "usage", None)),
             )
 
     # If usage wasn't sent in-stream (some providers don't support
