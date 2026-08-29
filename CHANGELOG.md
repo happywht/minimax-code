@@ -5,7 +5,12 @@ All notable changes to MiniMax Code are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.6.1] - 2026-08-29
+
+### Added
+
+- **多 Agent 协作优化 v1**（`b001a63`，optimization_v1 清单 P0-2/3/4/5 + P1-3，审计修复后落地）：① **`shared_memory_put/get/list` 跨 agent 交接存储**——`.minimax/shared_memory/store.json`，workspace + run 双 scope，文件锁互斥，损坏 store 进隔离区而非静默重写；② **iteration budget 运行时默认 8→100 全链路**（DAO upsert / `_config_from_row` / skills runtime，migration 029 上提 migration-010 时代卡在 8 的存量行；handoff nudge 改 env 旋钮 `MINIMAX_SOFT_LIMIT_REMAINING`，默认 8、硬下限 1）；③ **`depends_on` DAG 门控**——后台 spawn 等待上游 run id；未知/已回收依赖视为满足而非死等（修空转到 600s 墙钟）；`waiting_deps` 经统一投影输出；④ **`verify_subagent` 无头验收器**——锚定 workspace 根（`is_relative_to` 而非 `startswith`），超时进程树杀（`taskkill /F /T` / `killpg`），孤儿子进程不再握住管道卡死回收；⑤ **`build_subagent_status` 统一投影**——check/wait envelope 共用一份（running / waiting_deps / completed / cancelled / failed），是 legacy `_snapshot` 形状的超集；finished run 不再误报 running。审计修复：cwd 前缀绕过、双重投影、脏 import、未回收 kill、损坏 store 重写、`__all__` 泄漏。34 个新测试（4 文件，全走 `registry.dispatch`），pytest 10553 / vitest 758 全绿。
+- **定时任务 command 载荷分支**（`d8c08b2`）：payload 形如 `{command, cwd?, timeout_s?}` 经 `create_subprocess_shell` 在主事件循环执行，per-stream 输出 20 KB 封顶。失败模型——`error` 键 = 调度基础设施失败（spawn 失败/超时 → `_fire` 置 task 行 failed）；非零退出码是命令结果（`ok=False` 且无 `error`，与 `terminal.*` 同哲学）。需要「做事」的定时任务（跑迭代脚本、刷新索引）不再只能走纯 LLM 对话的 prompt 分支。
 
 ### Removed
 
@@ -17,10 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **发版版本锚遗漏（第 7 处）**：`minimax_code/__init__.py` 硬编码 `__version__` 此前不在 bump 清单里（v1.6.0 的 "version bump x6" 漏数），与 pyproject/dist-info 版本脱钩——`test_diag` 的 envelope 断言（`bundle["version"] == __version__`）在任何 bump 之后必红。本次随 v1.6.1 一并 bump，diag 套件 15 passed。
+- **子 agent 启用/停用开关静默无效**（`ca50935`）：设置页开关发 `agent.update {name, enabled: false}` 回复成功但行从未变化——`handle_agent_update` 无 `enabled` 分支、`AgentDAO.upsert` 无写路径（`mock.ts` 实现了、真后端从未跟上）。修复：`AgentDAO.upsert` 加 `enabled` 参数（None = 保持不变）+ INSERT 列与 UPDATE SET；`handle_agent_create/update` 对称收参分支。
 - **#138 OpenAI transport 对 compat provider 的流式 usage 解析为空（智谱 GLM 路径 tokens 恒 0）**：模型切换链路本身完全正常（切换生效、真 API 调用成功、正文解析正常），但 `openai_transport.py` 的流解析只认 OpenAI 官方的「尾部 empty-choices chunk 带 usage」形状——智谱 GLM（及 DeepSeek 等 compat provider）把 `usage` 挂在**带 `finish_reason` 的同一个 chunk** 上，finish 分支 yield 了硬编码的 `usage={}` → 每条 GLM 回复 `tokens_in/tokens_out` 恒 0、context 指示器归零，用户侧表现为「切了模型没反应」。同时 `delta.reasoning_content`（GLM 思考流字段）被静默丢弃、usage 的 `completion_tokens_details.reasoning_tokens` 从未被提取 → thinking_count 恒 0。修复：新增共享 `_usage_to_dict` mapper（SDK 对象与 raw dict 双形状；`reasoning_tokens` → `thinking_tokens` 键，与 anthropic transport 同约定），finish 分支与 empty-choices 分支统一走它；实测智谱 glm-5.3 从 `{TEXT 空、usage None、thinking 0}` 修复为 `{TEXT '收到'、usage {16,72,88}、thinking 69}`。新测试文件 `test_openai_usage_stream.py`（8 个，用真实 openai SDK + httpx MockTransport 复刻两家 provider 的原始 SSE 报文，防 SDK parse 形状漂移）。
-- **1214 modelCode 不存在（v1.6.2 的读侧续集）**：切到第三方 provider（如智谱 GLM）后发消息报 `400 {"code": "1214", "message": "modelCode：不存在"}`，且**无论切什么模型都报同样的错**。v1.6.2 修复了写侧（`model.set_current` 落库 `provider_id`，LLM 单例 rebuild 后 protocol/base_url/key/model 全部正确），但 `agent.send_message` 构造 `AgentConfig` 时不传 `model` → 运行循环每次 stream 都盖 dataclass 默认值 `"MiniMax-M3"` 的章（`core.py: model=self.config.model`）→ 智谱端点收到 MiniMax 的模型名 → 1214。修复：`AgentConfig.model` 与 `context_window` 同源，从 LLM 单例的 `default_model` 镜像（`builtins.py`，`rebuild_subagent_llm()` 每次切模型都同步两者）。回归测试 2 个进 `test_model_provider_routing.py`（mock AgentCore + side_effect 捕获真实 `AgentConfig`，断言单例指向 `glm-5.3` 时 config.model 跟随而非默认值；无单例 fallback 路径填 `default_model()` 永不为空）。
-- （v1.6.2 收编）切模型不切 provider：`model.set_current` 省略 `provider_id` 时反查模型属主 provider 落库，第三方模型不再静默记到 `builtin-minimax` 名下烧 MiniMax 配额（`32655f2`）。
+- **1214 modelCode 不存在（v1.6.1 的读侧续集）**：切到第三方 provider（如智谱 GLM）后发消息报 `400 {"code": "1214", "message": "modelCode：不存在"}`，且**无论切什么模型都报同样的错**。v1.6.1 修复了写侧（`model.set_current` 落库 `provider_id`，LLM 单例 rebuild 后 protocol/base_url/key/model 全部正确），但 `agent.send_message` 构造 `AgentConfig` 时不传 `model` → 运行循环每次 stream 都盖 dataclass 默认值 `"MiniMax-M3"` 的章（`core.py: model=self.config.model`）→ 智谱端点收到 MiniMax 的模型名 → 1214。修复：`AgentConfig.model` 与 `context_window` 同源，从 LLM 单例的 `default_model` 镜像（`builtins.py`，`rebuild_subagent_llm()` 每次切模型都同步两者）。回归测试 2 个进 `test_model_provider_routing.py`（mock AgentCore + side_effect 捕获真实 `AgentConfig`，断言单例指向 `glm-5.3` 时 config.model 跟随而非默认值；无单例 fallback 路径填 `default_model()` 永不为空）。
+- （v1.6.1 收编）切模型不切 provider：`model.set_current` 省略 `provider_id` 时反查模型属主 provider 落库，第三方模型不再静默记到 `builtin-minimax` 名下烧 MiniMax 配额（`32655f2`）。
 - **迁移语义破坏测试隔离点的回归**：`test_ipc.py` 的 token-usage 集成测试红——其 fixture 靠 patch `secrets.get_api_key` 强制 mock mode，但迁移改造后 `get_provider_key("builtin-minimax")` 的 fallback 链改走 `_read_keyring` / `_read_keyring_username` 私有直读（旧实现是 `return get_api_key()`，patch 一个函数名挡住整条链），send_message 路径经 `get_subagent_llm()` → `get_provider_key()` 读到开发机真 keyring 值 → 走真协议 → usage 恒 0。修复：fixture 补 patch 两个内部读函数，测试意图（无凭据端到端）恢复完整。
+- **Linux 下调度命令超时会杀死 agent 自身（P1，进程组自杀）**：`self_evolution/payload.py` 的 `command` 载荷分支 spawn 子进程时未开新会话——POSIX 上 `create_subprocess_shell` 的子进程默认继承 agent 的进程组，超时路径的 `_kill_process_tree` 调 `killpg(os.getpgid(proc.pid))` 时把 agent 自己（或 pytest 宿主）一并 SIGKILL。实测症状：`test_scheduler_command_payload` 的超时用例一跑就把 pytest 整个杀掉（exit 137，伪装成 OOM——此前全量套件在 67% 处静默中断的真凶）。修复：spawn 加 `start_new_session=True`（Windows no-op，与 `verify_subagent` 同模式），超时用例 11 passed、全量套件恢复可跑完。Windows 开发机走 `taskkill /F /T` 不受影响，故存量基线从未暴露。
+- **`test_send_message_multimodal` 测试顺序依赖（隔离缺陷）**：3 个用例用 `patch.dict(sys.modules, {"minimax_code.agent": MagicMock…})` 顶替真包，但 handler 的 lazy import 链在 mock 域里没有对应的 `agent.tools`（+4 个 codebase 工具子模块）与 `codebase` 包（其 import 期反向依赖 `agent.perception`）的 sys.modules 键——只有当更早的测试已把真实模块预热进缓存时才碰巧通过。全量套件顺序下绿、单文件跑必红（Linux 容器分段跑暴露）。修复：mock 域补 6 个键，单文件 4 passed，用例不再依赖运行顺序。
+
+**Linux 容器测量基线附注**：v1.6.1 全量 pytest 为 7 failed / 10595 passed / 7 skipped——7 个失败全部为断言 Windows 语义的用例（normcase no-op、盘符路径、时钟精度、npx 可用性等），逐项清单与根因见 `docs/performance-baseline.md`「Linux 容器已知平台差异测试」，不计为回归；Windows 全量基线全绿。
 
 ## [1.6.0] - 2026-08-26
 
