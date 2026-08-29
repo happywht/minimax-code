@@ -13,6 +13,7 @@ import { create } from "zustand";
 import { ipc, typedIPC } from "../ipc";
 import {
   StreamEvent,
+  type AgentRun,
   type SubAgentProgress,
   type SubAgentRun,
   type SubAgentStatus,
@@ -28,7 +29,13 @@ export interface SubAgentState {
   error: string | null;
 
   init: () => Promise<void>;
-  /** Register a new run (called by the spawn UI flow before the first event). */
+  /**
+   * Backfill the table from the persisted ``agent_runs`` rows
+   * (mode=subagent) — the panel's event-only state died on every
+   * agent restart. Live events win: rows already present are never
+   * overwritten by the backfill.
+   */
+  hydrate: () => Promise<void>;
   register: (run: SubAgentRun) => void;
   /** Update an existing run from a push event payload. */
   applyProgress: (progress: SubAgentProgress) => void;
@@ -57,6 +64,50 @@ function coerceStatus(value: unknown): SubAgentStatus {
     : "started";
 }
 
+/** ISO string → epoch ms; 0 when missing/unparseable (keeps sort stable). */
+function toEpochMs(value: string | null | undefined): number {
+  if (!value) return 0;
+  const t = Date.parse(value);
+  return Number.isNaN(t) ? 0 : t;
+}
+
+/**
+ * Map one persisted ``agent_runs`` row (mode=subagent) to the panel's
+ * SubAgentRun shape. Sub-agent rows hang off their own sub-session, so
+ * the parent link comes from ``metadata.parent_session_id``.
+ *
+ * Non-terminal DB statuses map to "started": after an agent restart a
+ * lingering "running" row is almost always an orphan, and a grey idle
+ * pill is more honest than a spinner that never advances.
+ */
+function runRowToSubAgent(row: AgentRun): SubAgentRun {
+  const meta = (row.metadata ?? {}) as Record<string, unknown>;
+  const str = (v: unknown): string => (typeof v === "string" ? v : "");
+  const status: SubAgentStatus =
+    row.status === "completed" || row.status === "failed" || row.status === "cancelled"
+      ? row.status
+      : "started";
+  const title = row.title.replace(/^\[subagent\]\s*/, "");
+  const startedAt = toEpochMs(row.started_at ?? row.created_at);
+  const updatedAt = toEpochMs(row.completed_at ?? row.started_at ?? row.created_at);
+  const parentSessionId = str(meta.parent_session_id);
+  return {
+    run_id: row.id,
+    agent_id: str(meta.agent_id),
+    agent_name: str(meta.agent_name) || title,
+    prompt: str(meta.prompt),
+    parent_session_id: parentSessionId || undefined,
+    status,
+    progress: status === "completed" ? 1 : 0,
+    summary: title,
+    text: str(meta.result_text) || undefined,
+    error: row.error ?? undefined,
+    started_at: startedAt,
+    updated_at: updatedAt,
+    finished_at: status !== "started" ? updatedAt : undefined,
+  };
+}
+
 export const useSubAgentStore = create<SubAgentState>((set, get) => ({
   runs: {},
   subscribed: false,
@@ -83,6 +134,27 @@ export const useSubAgentStore = create<SubAgentState>((set, get) => ({
       );
     }
     set({ subscribed: true });
+    // Backfill rows persisted before this page loaded (agent restart
+    // wiped the in-memory event state). Fail-open: a cold backend just
+    // leaves the live stream as the only source, as before.
+    await get().hydrate();
+  },
+
+  hydrate: async () => {
+    try {
+      const result = await typedIPC.listRuns({ mode: "subagent", limit: MAX_SUBAGENT_RUNS });
+      set((s) => {
+        const runs = { ...s.runs };
+        for (const row of result.runs) {
+          // Live events win — only fill rows this page never saw.
+          if (runs[row.id] !== undefined) continue;
+          runs[row.id] = runRowToSubAgent(row);
+        }
+        return { runs: evictOldest(runs, MAX_SUBAGENT_RUNS, (r) => r.updated_at) };
+      });
+    } catch {
+      // Fail-open — the live event stream keeps working without the backfill.
+    }
   },
 
   register: (run) =>

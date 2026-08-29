@@ -147,13 +147,13 @@ A: 编辑 `tailwind.config.js` 中的 `minimax` 颜色定义（bg、panel、bord
 - `right-panel/` — 检查器：`tabs.tsx` 注册 **11 个 tab**（timeline/diff/progress/checkpoints/agents/subagents/review/teamruns/terminal/runner/codebase），`ProgressPanel.tsx`、`SubAgentPanel.tsx`、`TeamRunPanel.tsx`、`TerminalPanel.tsx`、`RunnerPanel.tsx`、`CodebasePanel.tsx`、`CheckpointPanel.tsx`、`RunTimelinePanel.tsx` 等
 - `RightPanel.tsx` / `StructuredErrorCallout.tsx` / `index.ts` — 面板壳 + barrel export
 
-### Stores（`src/stores/`，29 个）
+### Stores（`src/stores/`，30 个）
 
 - 对话域：`chat.ts`（消息流 + 发送）、`subAgent.ts`、`taskStore.ts`
 - 会话域：`sessionStore.ts`
 - 模型域：`modelStore.ts`、`providerStore.ts`、`secretStore.ts`
 - Git/补丁域：`git.ts`、`patchPreviewStore.ts`、`codeReviewStore.ts`
-- 检查器域：`runStore.ts`、`runnerStore.ts`、`teamRunStore.ts`、`teamStore.ts`、`terminalStore.ts`、`codebaseStore.ts`、`agentStore.ts`
+- 检查器域：`runStore.ts`、`runnerStore.ts`、`teamRunStore.ts`、`teamStore.ts`、`terminalStore.ts`、`codebaseStore.ts`、`agentStore.ts`、`checkpoint.ts`
 - 自动化域：`scheduleStore.ts`、`workflowStore.ts`、`webhookStore.ts`
 - 系统域：`permissionStore.ts`、`auditStore.ts`、`memoryStore.ts`、`notificationStore.ts`、`mobileStore.ts`、`crashRecoveryStore.ts`、`previewStore.ts`、`skillStore.ts`、`themeStore.ts`
 - `index.ts` — Store barrel export
@@ -173,6 +173,7 @@ A: 编辑 `tailwind.config.js` 中的 `minimax` 颜色定义（bg、panel、bord
 
 ## 变更记录 (Changelog)
 
+- **2026-08-29** — Unreleased（迭代优化计划 R1：演进缺口收尾，web 侧）——① **checkpoint 前端状态 store 化**：新 store `checkpoint.ts`（`useCheckpointStore`，stores 29→30，检查器域）——列表 per-session 缓存 / diff per-id 缓存 / 展开态、加载态、错误态上移；`CheckpointPanel.tsx` 改薄组件（表单草稿留 useState），RightPanel tab 切换不再丢状态或重复请求，create/delete 后 `invalidate` 强刷 + 陈旧 diff 剪除；② **SubAgentPanel 重启回填**：`subAgent.ts` 新增 `hydrate()`（`init()` 订阅后调 `run.list {mode:"subagent"}` 从 `agent_runs` 回填；终态直映、非终态→`"started"`、ISO→epoch、title 去前缀、`metadata.result_text`/`parent_session_id` 回填；live 事件优先不覆盖、fail-open）；③ **契约对齐**：`AgentRun.mode` 补 `"subagent"`（migration 028 漂移修正）、`typed.ts` `listRuns` 补 `mode`、`mock.ts` `run.list` 补 mode 过滤；新增 `stores/__tests__/checkpoint-store.test.ts`（9）+ `stores/__tests__/subagent-hydrate.test.ts`（8），vitest 768 全绿
 - **2026-08-24** — v1.3.0：Per-Project Workspace Root 专项（web 侧）——`Project` 类型加 `root_path: string`；`typed.ts` `createProject`/`updateProject` 加 `root_path?`，`gitStatus`/`gitDiff`/`gitLog`、codebase 4 方法、patch 3 方法、`createWorktreeSession` 加可选 `project_id`（`mock.ts`/`mockData.ts` 双面契约同步）；`sessionStore.createProject(name, desc?, rootPath?)`、`createWorktree` wire 传 `project_id: currentProjectId ?? "inbox"`（去硬编码）；`git.ts`/`codebaseStore.ts`/`patchPreviewStore.ts` action 内自动注入 `useSessionStore.getState().currentProjectId`（未选项目不带键 = 后端 legacy 行为，组件层零改动）；Sidebar 新建项目 Modal 加「根目录」可选 Input（绝对路径 placeholder + 必须存在的提示）；`WorkspaceSwitcher` 项目条目 tooltip 显示 root_path；`strings.ts` layout 域 +5 文案；新增 `stores/__tests__/project-root-scope.test.ts`（8 测试，importOriginal 单点 mock `ipc/client` + `bindTypedIPC(spyClient)` 一箭双雕锁 typed wire 契约与 store 注入）+ workspace-switcher tooltip 断言，web 侧 +9 测试（vitest 756）
 - **2026-08-23** — v1.2.2：多 Agent 协作与系统稳定性专项（web 侧）——WS 客户端 seq 纪元对齐：`agent.ready` 帧读 `next_seq` 锚点，`next_seq <= wsLastSeq` 时重置水位并主动 `close(1000, "seq-epoch-reset")` 重连获全量重放（agent 重启后新纪元历史此前永久无法重放）；WorkspaceSwitcher 重写接真实 `workspace.*` IPC、删除死代码 `lib/workspace.ts`、文案入 `strings.ts`；`ipc-client.test.ts` +6 纪元重置测试
 - **2026-08-23** — v1.2.0：全局审计修复（web 侧）——chat 五订阅 `isCurrentSessionEvent` 守卫 + `disposeChatSubscriptions()` 导出、teamRunStore 读 `env.data`、invokeSkill 对象 args 平铺到 wire 顶层 + codeReviewStore 读平铺 reply + mock 同步、runStore 双守卫（run.created 过滤 / run.completed 孤儿丢弃）+ loadRuns stale/replace、ProgressPanel 展示 done 任务 result；新增 `session-guards.test.ts`（9）+ `typed-skills.test.ts`（5）

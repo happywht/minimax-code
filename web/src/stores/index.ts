@@ -102,3 +102,7 @@ export {
   type MemoryEntryItem,
   type MemoryState,
 } from "./memoryStore";
+export {
+  useCheckpointStore,
+  type CheckpointState,
+} from "./checkpoint";

@@ -5,6 +5,23 @@ All notable changes to MiniMax Code are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Checkpoint 前端状态 store 化**（迭代优化计划 R1：演进缺口收尾）：新 store `web/src/stores/checkpoint.ts`（`useCheckpointStore`，stores 29→30）——checkpoint 列表按 session 缓存（re-mount 零请求）、diff 文本按 checkpoint id 缓存、展开态/加载态/错误态全部上移；CheckpointPanel 改薄组件（label/message 表单草稿留 useState），RightPanel tab 切换不再丢状态、切回不再重复请求；create/delete 成功后 `invalidate(sessionId)` 强刷列表并清掉已删 checkpoint 的 diff 缓存；加载失败写 per-session `loadError`（内联横幅 + 重试），不再把空列表误读为「无 checkpoint」。+9 测试（`stores/__tests__/checkpoint-store.test.ts`：缓存命中不发请求 / invalidate 强刷 + 陈旧 diff 剪除 / diff 缓存与错误粘滞 / 无 diff 哨兵）。
+- **SubAgentPanel 重启回填**（v1.4.0 已知限制「agent 重启后事件态丢失」收口）：`useSubAgentStore` 新增 `hydrate()`——`init()` 订阅事件后调 `run.list {mode: "subagent"}` 从 `agent_runs` 落库行回填面板。映射规则：终态（completed/failed/cancelled）直映，非终态（running/planning/awaiting_approval）→ `"started"`（agent 重启后残留的 running 行几乎必是孤儿，灰色 idle pill 比永不推进的 spinner 诚实）；ISO 时间戳 → epoch 毫秒；title 去 `[subagent] ` 前缀作 summary；`metadata.result_text` 回填详情 text、`metadata.parent_session_id` 供会话过滤（subagent 行挂独立 sub_session）。**live 事件优先**：已存在同 run_id 的行不覆盖；回填失败 fail-open（事件流照常）。+8 测试（`stores/__tests__/subagent-hydrate.test.ts`：wire 形状 / 三类终态与非终态映射 / 无 metadata 容错 / live 优先 / parent 过滤 / fail-open）。
+
+### Fixed
+
+- **`AgentRun.mode` 契约漂移**：前端 `web/src/types/ipc.ts` 的 mode 联合类型缺 `"subagent"`（migration 028 加列值、`run.list` 的 mode 过滤均为 v1.4.0 已有，前端类型没跟上）；`typed.ts` `listRuns` opts 补 `mode?: string`；`mock.ts` `run.list` 补 mode 过滤分支（mock 契约对齐）。
+
+### Changed
+
+- **evolution 账本归档对齐**（R1 三标的之一）：`docs/evolution/ITERATION_LOG.md` 尾部追加归档声明——回合制账本（R1→R310，Grok 融合专项，基准 v0.8.0 → 目标 v0.9.0）就此封卷，v1.0.0 起权威变更账本 = 根 `CHANGELOG.md`，附回合↔版本对照表与 v1.x 变更查询路径；`docs/evolution/EVOLUTION_ROADMAP.md` 头部标注只读历史档案。消除「evolution 目录像是仍在活跃维护」的误导。
+
+（R1 全量验证：vitest 768 全绿（基线 751 + 17 新增）、ESLint 零告警、`tsc -b` 零错误；后端零改动。）
+
 ## [1.6.1] - 2026-08-29
 
 ### Added

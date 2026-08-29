@@ -24464,3 +24464,29 @@ full regression 9913 passed/15 skipped in 148.62s [R309 baseline 9889/15 ->
 case auto-covering register_checkpoint_handlers, zero regression]. Unlocks
 v0.9.0 §五 recoverable workspace snapshot.
 ```
+
+---
+
+## 账本归档声明（v1.x 起）
+
+> **本回合制账本止于 R310。** 自 v1.0.0 起，项目切换为版本制演进，**权威变更账本 = 根目录 [`CHANGELOG.md`](../../CHANGELOG.md)**；本文件转为只读历史档案，不再追加回合。
+
+### 为什么停
+
+- 回合制「目标 → 实现 → 验证 → commit」闭环服务于 Grok 融合专项的密集搭建期（2026-07-18 启动，基准 v0.8.0，目标 v0.9.0，R1→R310 共 310 回合）。
+- v1.0.0 起演进以版本（minor 发版）为单位规划与收口：每个专项的动机、切片、验证口径、已知限制由 CHANGELOG 版本条目 + 任务系统审计记录承载，双账本只会制造两处需要人工同步的记录。
+
+### 回合 ↔ 版本对照
+
+| 回合区间 | 版本区间 | 主题 |
+|---|---|---|
+| R1 – R52 | v0.8.x | 融合奠基：演进控制中心、模型 ID 词汇表、消费端单来源接线 |
+| R53 – R224 | v0.8.x – v0.9.0 | Grok crate 类型契约层融合（reasoning_effort 系列等） |
+| R225 – R310 | v0.9.0 | 功能模块实体建设（crash 恢复、checkpoint 快照层等，收口 v0.9.0 验收项） |
+| （版本制） | v1.0.0 – v1.6.1 | 见 `CHANGELOG.md`（写安全 CAS/沙盒、子 Agent 生命周期、per-project workspace、多 Agent 协作优化等专项） |
+
+### v1.x 之后查任何变更
+
+1. `CHANGELOG.md` 对应版本条目（动机 + 切片 + 验证口径）
+2. `git log --oneline`（提交粒度）
+3. 任务系统 stage 记录（过程审计）

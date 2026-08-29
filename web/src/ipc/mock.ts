@@ -482,9 +482,10 @@ function mockHandle(
     }
 
     case "run.list": {
-      const p = params as { session_id?: string; limit?: number; offset?: number } | undefined;
+      const p = params as { session_id?: string; mode?: string; limit?: number; offset?: number } | undefined;
       let runs = Array.from(mockRuns.values()).map((r) => r.run);
       if (p?.session_id) runs = runs.filter((r) => r.session_id === p.session_id);
+      if (p?.mode) runs = runs.filter((r) => r.mode === p.mode);
       runs.sort((a, b) => b.created_at.localeCompare(a.created_at));
       const offset = p?.offset ?? 0;
       const limit = p?.limit ?? 20;
