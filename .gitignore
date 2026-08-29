@@ -104,3 +104,6 @@ agent/news_*.json
 grok-build/
 .playwright-mcp/
 .serena/
+
+# Added by Heart to keep per-project runtime files (exports, uploads, worktrees) out of git
+.heart/

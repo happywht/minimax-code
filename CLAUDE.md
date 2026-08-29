@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MiniMax Code 是一个桌面端 AI 编码 Agent 复刻项目。对标 MiniMax Code 全量功能：多轮对话、技能系统、定时任务、多 Agent 协作、移动互联、授权管理、进度面板。v0.2.0 起从 Tauri 桌面壳切换为 web SPA + 本地 Python agent 架构，v0.3.0 新增 thinking_count 通道、Sub-Agent UI、Git 集成和 Code Review 工作流。
 
-当前版本：**v1.6.0**（2026-08-26）
+当前版本：**v1.6.1**（2026-08-29）
 
 ## 架构总览
 
@@ -20,9 +20,9 @@ Browser (Vite SPA, localhost:5173)
   |  WebSocket /ws  (server-push streaming events)
   v
 Python Agent (FastAPI + asyncio, 127.0.0.1:8765)
-  |- IPCServer (shared handler registry, 170 methods / 36 namespaces)
+  |- IPCServer (shared handler registry, 170 methods / 34 namespaces)
   |- AgentCore (conversation loop + LLM streaming)
-  |- ToolRegistry (12 built-in tool modules)
+  |- ToolRegistry (15 built-in tool modules)
   |- SkillRuntime (SKILL.md loader + registry)
   |- SQLite Storage (24 tables + FTS/vector virtual tables, idempotent migrations)
   |- APScheduler (cron jobs)
@@ -138,6 +138,7 @@ pnpm dev
 | `MINIMAX_CODE_SUBAGENT_TIMEOUT_S` | `600` | 子 agent 墙钟超时秒数（v1.2.2 team 路径；v1.4.0 起工具路径 `spawn_subagent` 同受管辖并豁免 `tool_timeout`；`<=0` 禁用） |
 | `MINIMAX_CODE_WORKSPACE` | 进程 cwd | 进程级工作区回退根（v1.3.0 起为唯一权威拼写；`_WORKSPACE_DIR` 已 deprecated 仅兼容）；项目绑定 `root_path` 后按「worktree > 项目根 > 此 env > cwd」解析 |
 | `MINIMAX_CODE_SANDBOX_DEFAULT` | 空（false） | `spawn_subagent` 省略 `sandbox` 参数时的进程级默认（v1.5.2；优先级：显式传参 > env > false） |
+| `MINIMAX_SOFT_LIMIT_REMAINING` | `8` | 子 agent 剩余迭代预算低于该值时注入 handoff nudge（v1.6.1；clamp 下限 1；budget 本身默认 100） |
 
 ## 测试策略
 
@@ -175,7 +176,7 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 
 ### IPC 命名空间
 
-共 **170 个注册方法、36 个前缀**（含 3 个无点号 built-in）。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。
+共 **170 个注册方法、34 个前缀**（33 个点号命名空间 + 3 个无点号 built-in，v1.6.1 实测对账）。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。
 
 | 前缀 | 方法数 | 用途 | Handler 文件 |
 |------|--------|------|-------------|
@@ -252,6 +253,7 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 
 ## 变更记录 (Changelog)
 
+- **2026-08-29** — v1.6.1：债务清偿发版（收口 v1.6.0 后 7 提交 + 文档对账 + 性能复测）——① **多 Agent 协作优化 v1**（`b001a63`，optimization_v1 P0-2/3/4/5 + P1-3）：`shared_memory_put/get/list` 跨 agent 交接存储（workspace/run 双 scope、文件锁、损坏隔离）；iteration budget 默认 8→100 全链路（migration 029 上提存量行；nudge 改 env `MINIMAX_SOFT_LIMIT_REMAINING`）；`depends_on` DAG 门控（未知/已回收依赖视为满足，修 600s 空转）；`verify_subagent` 无头验收器（workspace 根锚定 + 超时进程树杀）；`build_subagent_status` 统一投影（finished 不再误报 running）；+34 测试；② **定时任务 command 载荷分支**（`d8c08b2`）：`{command, cwd?, timeout_s?}` 经 `create_subprocess_shell` 执行、per-stream 20 KB 封顶，基础设施失败（`error`）与命令退出码（`ok=False`）分离；③ **修复**：子 agent 启用/停用开关静默无效（`ca50935`，`AgentDAO.upsert` 补 `enabled` 写路径）；切模型不切 provider（`32655f2`）；`AgentConfig.model` 不随 LLM 单例镜像致第三方 provider 1214（`9806848`）；compat provider 流式 usage 解析为空——智谱 GLM tokens/thinking_count 恒 0（`#138`，含 `reasoning_content` 思考流）；legacy 全局 key → per-provider 槽一次性迁移、清除不再复活（`#137`）；设置页退役「API 密钥」tab（`#137`）；Linux 下调度命令超时 killpg 进程组自杀（payload.py spawn 补 `start_new_session`，Windows 不受影响）；`test_send_message_multimodal` mock 域补 6 个 sys.modules 键修测试顺序依赖；④ **文档对账**：IPC 前缀 36→34（33 点号 + builtin，方法数 170 不变）、工具模块 12→15（补漏 ask_user + 新增 shared_memory/verification）、migration 28→29、环境变量表补 `MINIMAX_SOFT_LIMIT_REMAINING`；⑤ **性能复测**（Linux 容器新锚点）：冷启动 median 2.291 s、首屏 JS 144.8 KB / CSS 8.3 KB gzip（预算内）、索引审计 15 passed 零裸表扫——v1.5→v1.6 沙盒/overlay/CAS 重功能落地后无 P0 级退化；全量 pytest 10595 passed，7 个 Windows 语义用例在 Linux 红属平台差异（清单见 performance-baseline）
 - **2026-08-26** — v1.6.0：Sandbox Deepening 专项（v1.5.0 四项沙盒已知限制收掉三项，team 路径独立立项不做）——① **exec_command 逃逸检测（advisory）**：沙盒 run 的 exec 前后各 walk 一次 workspace（`(mtime_ns, size)` 快照 + fs_bus 窗口差集减除防并发误报），非零 diff → `sandbox_escape`（changed ≤50 + warning）注入正常与 timed_out 双输出路径 + `exec_command_sandbox_escape` 事件 → 主 agent notes 轮询可见；主 agent 零开销；② **search/find/list overlay**：三个只读工具经 `sandbox.py` 新 helpers（`sandbox_mirror_files`/`mirror_children`）把沙盒镜像并进 workspace 视图（同名取沙盒版、地址投影回 workspace、`sandboxed: true`；search 沙盒下强制 python 引擎）；存量修复——search python 剪枝表补 `.minimax`、`find_files` 的 `.minimax` 硬排除（显式覆盖 `exclude_dirs` 不再泄漏）；③ **collect prune + receipt 新家**：receipt 一律写 `.minimax/sandboxes/.collected/<run_id>.json`（flat sibling），`prune`（默认 true）在 receipt 落盘且无 conflicts/errors/skipped 时 rmtree 沙盒树；保守门（无凭证不删、conflicts+fail 永不 prune）+ rmtree 失败 advisory 自愈重试 + legacy `.merged` marker 迁移兼容；40 个新测试全走 dispatch（escape 10 + overlay 16 + prune 14），pytest 10519 / vitest 758 全绿
 - **2026-08-26** — v1.5.2：第四轮压测三项残留收口——① `MINIMAX_CODE_SANDBOX_DEFAULT` env 旋钮（`spawn_subagent` 省略 `sandbox` 参数时的进程级默认；优先级：显式传参 > env > false，默认 false 不变）；② `append_file` 工具（第 13 个内置工具）：尾部 verbatim 追加、CAS/backup/in-flight advisory/fs_bus 归因全继承 + **沙盒镜像 seeding**（append 前先 copy2 原件进镜像——`redirect_write_target` 只 COW `_base/` 不 seed 镜像，"a" 模式空镜像起步会让 collect 三方对比把不完整文件 merge 回 workspace = 静默数据丢失；copy 失败 fail-closed 非 advisory）；③ `report_progress` per-run 注入工具（与 report_completion 同路径：克隆 registry + allowlist + 协议段）：子 agent 里程碑级上报 → `PROGRESS.jsonl` 账本 → `check_subagent`/`wait_subagent`/envelope 的 `progress` 投影 + live `agent.subagent_progress` 事件（复用闭合 status union，前端零改动）；④ `docs/agent-core.md` 新增 §8c 高安全并发模板（spawn(sandbox)→wait→collect 编排 + CAS 环 + 分片写模板）；41 个新测试全走 dispatch（append 15 + progress 13 + env 13），pytest 10479 / vitest 758 全绿
 - **2026-08-26** — v1.5.1：共享 workspace 并发感知（第三轮压测 3 项残留收口，全 advisory）——① **A**：`spawn_subagent` 工具 description 加并发写决策引导（写文件且并行 → `sandbox=true` + `collect_subagent`；只读 false）；② **B**：新模块 `fsnotify/notes.py`——`AgentCore` 每 iteration 以 seq 高水位轮询 fs_bus（首次 poll 初始化不回放历史），其他 in-flight run 的写入聚合为 `[system note] Files changed by other agents` ephemeral 追加 LLM payload（不持久化禁 acknowledge、去重 ≤8 行、沙盒路径投影 `src/a.py (sandboxed by run_x)`、fail-open）；按 `run_id` 自过滤，子 agent 天然见主 agent 的写；③ **C**：`file_ops._INFLIGHT_WRITES`（normcase → run_id）+ `workspace_ctx._current_run_id` ContextVar（`_drive_run` 发布/finally 释放）；write/edit 触碰即 claim，rival 命中写照常成功但 output 带 `concurrent_writer` + warning（主 agent 只查警不登记）；23 个新测试，pytest 10438 / vitest 758 全绿
