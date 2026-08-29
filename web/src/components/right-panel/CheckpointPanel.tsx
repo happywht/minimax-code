@@ -3,12 +3,14 @@
  *
  * Wraps the ``checkpoint.*`` IPC namespace so users can create, list,
  * diff, restore and delete workspace checkpoints from the RightPanel.
+ * List / diff / loading state lives in ``useCheckpointStore`` so it
+ * survives tab switches; only the form drafts stay local.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Camera, ChevronDown, ChevronRight, Clock, GitBranch, Trash2, RotateCcw, FileDiff } from "lucide-react";
 import { Button, DiffLines, EmptyState, ErrorBanner, Spinner } from "../../ui";
 import { typedIPC } from "../../ipc";
-import { useSessionStore } from "../../stores";
+import { useSessionStore, useCheckpointStore } from "../../stores";
 import { toast } from "../layout/ErrorBoundary";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import type { Checkpoint } from "../../types/ipc";
@@ -20,36 +22,20 @@ export interface CheckpointPanelProps {
 
 export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanelProps): JSX.Element {
   const sessionId = useSessionStore((s) => s.currentSessionId);
-  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
-  const [loading, setLoading] = useState(false);
+  const checkpoints = useCheckpointStore((s) => (sessionId ? s.bySession[sessionId] : undefined)) ?? [];
+  const loading = useCheckpointStore((s) => (sessionId ? !!s.loading[sessionId] : false));
+  const loadError = useCheckpointStore((s) => (sessionId ? s.loadError[sessionId] : null)) ?? null;
+  const expandedDiff = useCheckpointStore((s) => s.expandedDiffId);
+  const load = useCheckpointStore((s) => s.load);
+  const invalidate = useCheckpointStore((s) => s.invalidate);
+  const toggleExpand = useCheckpointStore((s) => s.toggleExpand);
   const [label, setLabel] = useState("");
   const [message, setMessage] = useState("");
   const [creating, setCreating] = useState(false);
-  const [expandedDiff, setExpandedDiff] = useState<string | null>(null);
-  const [diffs, setDiffs] = useState<Record<string, string>>({});
-  const [diffLoading, setDiffLoading] = useState<Record<string, boolean>>({});
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    if (!sessionId) return;
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const result = await typedIPC.listCheckpoints(sessionId);
-      setCheckpoints(result.checkpoints);
-    } catch (err) {
-      // Inline banner (not a toast): a failed load must stay visible so
-      // the empty list below is never read as "no checkpoints yet".
-      const msg = err instanceof Error ? err.message : String(err);
-      setLoadError(`${strings.rightPanel.checkpoint.loadFailed}: ${msg}`);
-    } finally {
-      setLoading(false);
-    }
-  }, [sessionId]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (sessionId) void load(sessionId);
+  }, [sessionId, load]);
 
   const handleCreate = async () => {
     if (!sessionId) {
@@ -67,7 +53,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
       setLabel("");
       setMessage("");
       toast.success(strings.rightPanel.checkpoint.created, trimmedLabel);
-      await load();
+      await invalidate(sessionId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.error(strings.rightPanel.checkpoint.createFailed, msg);
@@ -86,7 +72,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
     try {
       await typedIPC.deleteCheckpoint(ckpt.id);
       toast.success(strings.rightPanel.checkpoint.deleted, ckpt.label);
-      await load();
+      if (sessionId) await invalidate(sessionId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.error(strings.rightPanel.checkpoint.deleteFailed, msg);
@@ -106,31 +92,6 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.error(strings.rightPanel.checkpoint.restoreFailed, msg);
-    }
-  };
-
-  const toggleDiff = async (ckpt: Checkpoint) => {
-    if (expandedDiff === ckpt.id) {
-      setExpandedDiff(null);
-      return;
-    }
-    setExpandedDiff(ckpt.id);
-    if (diffs[ckpt.id] !== undefined) return;
-    setDiffLoading((prev) => ({ ...prev, [ckpt.id]: true }));
-    try {
-      const result = await typedIPC.diffCheckpoint(ckpt.id);
-      setDiffs((prev) => ({
-        ...prev,
-        [ckpt.id]: result.available ? result.patch : strings.rightPanel.checkpoint.noDiff,
-      }));
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setDiffs((prev) => ({
-        ...prev,
-        [ckpt.id]: strings.rightPanel.checkpoint.diffLoadError(msg),
-      }));
-    } finally {
-      setDiffLoading((prev) => ({ ...prev, [ckpt.id]: false }));
     }
   };
 
@@ -181,7 +142,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
           </div>
         )}
 
-        {loadError && <ErrorBanner message={loadError} onRetry={() => void load()} testId={`${testId}-error`} />}
+        {loadError && <ErrorBanner message={`${strings.rightPanel.checkpoint.loadFailed}: ${loadError}`} onRetry={() => sessionId && void load(sessionId, true)} testId={`${testId}-error`} />}
 
         {loading && checkpoints.length === 0 ? (
           <div className="flex items-center justify-center gap-2 py-4 text-[11px] text-minimax-muted">
@@ -228,7 +189,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => void toggleDiff(ckpt)}
+                      onClick={() => toggleExpand(ckpt.id)}
                       data-testid={`${testId}-diff-${ckpt.id}`}
                       icon={expandedDiff === ckpt.id ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
                     >
@@ -255,21 +216,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
 
                 {expandedDiff === ckpt.id && (
                   <div className="mt-2 border-t border-minimax-border pt-2">
-                    {diffLoading[ckpt.id] ? (
-                      <div className="flex items-center gap-2 text-[11px] text-minimax-muted">
-                        <Spinner size={10} /> {strings.rightPanel.checkpoint.loadingDiff}
-                      </div>
-                    ) : (
-                      <div
-                        className="max-h-40 overflow-auto rounded bg-minimax-bg p-2"
-                        data-testid={`${testId}-diff-body-${ckpt.id}`}
-                      >
-                        <DiffLines
-                          text={diffs[ckpt.id] ?? ""}
-                          emptyText={strings.rightPanel.checkpoint.noDiff}
-                        />
-                      </div>
-                    )}
+                    <CheckpointDiffBody checkpointId={ckpt.id} testId={testId} />
                   </div>
                 )}
               </li>
@@ -278,5 +225,33 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
         )}
       </div>
     </section>
+  );
+}
+
+/**
+ * The expanded diff body subscribes to the per-checkpoint loading flag
+ * on its own so the panel above doesn't re-render while every diff
+ * fetch resolves.
+ */
+function CheckpointDiffBody({ checkpointId, testId }: { checkpointId: string; testId: string }): JSX.Element {
+  const text = useCheckpointStore((s) => s.diffs[checkpointId]);
+  const diffLoading = useCheckpointStore((s) => !!s.diffLoading[checkpointId]);
+  if (diffLoading || text === undefined) {
+    return (
+      <div className="flex items-center gap-2 text-[11px] text-minimax-muted">
+        <Spinner size={10} /> {strings.rightPanel.checkpoint.loadingDiff}
+      </div>
+    );
+  }
+  return (
+    <div
+      className="max-h-40 overflow-auto rounded bg-minimax-bg p-2"
+      data-testid={`${testId}-diff-body-${checkpointId}`}
+    >
+      <DiffLines
+        text={text}
+        emptyText={strings.rightPanel.checkpoint.noDiff}
+      />
+    </div>
   );
 }
