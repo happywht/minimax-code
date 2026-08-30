@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **手机视口下检查器按钮误现**（backlog B4：移动端适配·实测发现）：TopBar 的 Inspector 按钮类名 `md:inline-flex lg:hidden` 缺默认 `hidden`——&lt;768px 手机视口两个断点类都不激活，按钮回落默认显示；点击后 InspectorDrawer 虽有 `lg:hidden` guard 会 CSS 隐藏，但按钮本身就不该出现在手机上（检查器是 md–lg 平板区间的专属逃生门）。修复：补 `hidden md:inline-flex lg:hidden`。由新 e2e 移动视口 spec 抓出（375 宽断言按钮 hidden 失败定位）。
 - **危险命令检测的跨平台漏检**（backlog B1：平台差异测试收口·实现项）：`terminal.py` `_is_dangerous_cmd` 的扩展名剥离被 `sys.platform == "win32"` 门住——Linux/macOS 上跑 agent 时，Windows 风格 argv（如 `C:\Python312\python.exe -c ...`）剥路径后仍是 `python.exe`，不匹配危险词表即漏检。修复：`.exe/.bat/.cmd/.com/.ps1` 已知 Windows 可执行扩展**全平台**剥离（新 `_strip_executable_name` helper），Windows 上任意其他带点名保留原剥离语义；POSIX 点缀名（`python3.12`）不受影响。+1 直测用例（Linux 命中 python.exe/python.bat/sudo.cmd + python3.12 放行）。
 - **7 项 Windows 语义用例跨平台收口**（backlog B1：测试项，v1.6.1 备案的 Linux 容器 7 failed 清零，全量 10611 passed / 9 skipped / 0 failed 首次单平台全绿）：① `test_registry_folds_path_case` / ② `test_symbol_location_backslash`——纯 Windows FS 语义（normcase 折叠 / 反斜杠分隔符），`skipif` 非 win32 显式声明；③ `test_path_prefix_stripped`——随上述实现修复转绿，双断言全平台跑；④ `test_exec_default_cwd_is_session_root`——容器无 `python` 命令的环境差异（非平台语义），改 `sys.executable` 两平台都跑；⑤ `test_hunk_value_equality`——值相等断言不该依赖时钟粒度（Windows 粗粒度两次 `now()` 同值、Linux 高精度必不等），`created_at` 固定字面值；⑥ `test_mcp_add_and_list_server`——add_server 真实 attach（spawn npx），断言环境自适应（无 npx 必 False，有 npx 验 bool 形态）；⑦ `test_attributed_foreign_write_not_flagged`——**根因更正**：非备案的「mtime_ns 精度」，实为注入 `sleep(0.05)` 相对子进程生命周期的双向时序竞态（快机 emit 晚于减除扫描；朴素哨兵又早于 watermark 读取），改两级握手（子进程落 workspace 外 ready 文件 → injector 见 ready 写 go + emit → 子进程过关卡写文件）把 emit 确定性钉入归因窗口 `(watermark, post-walk)`，连跑 3 次稳定。`docs/performance-baseline.md` 平台差异备案段同步重写为处置对照表（含 ⑦ 根因更正）。
 
@@ -24,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **right-panel 硬编码文案收敛**（迭代优化计划 R3：前端体验打磨·切片 A，规范修复）：right-panel 5 组件的 10 处硬编码中文文案迁入 `strings.ts` rightPanel 域既有分组（agents/progress/codebase/subagents/checkpoint），文案原文不变仅搬家，对齐「面向用户文案统一来自 src/ui/strings.ts」的模块规范（web/CLAUDE.md）。SubAgentPanel 空闲召唤文案因内嵌 `font-mono` 的 `@general` span 拆 idleHintPre/idleHintPost 两 key（strings.ts 保持纯字符串模块）。
 - **TeamRunPanel 沙盒运行可视化**（R3·切片 B）：RunCard 消费 R2 落地的 `result.sandbox`/`sandbox_summary`——① 沙盒运行的卡片标题旁渲染「沙箱」徽章（accent 描边小标签）；② 合并统计行「沙盒已回收 N 个运行 · 合并落盘 M 个文件」（collected/merged_files）；③ skipped_runs 非空或 errors>0 时渲染黄色 AlertTriangle 警示行（与 conflicts 同视觉级；后端 collect 为 skip 策略 advisory，黄色而非红色符合「运行成功但有文件滞留沙盒」语义）。文案 5 key 全入 strings.ts teamRuns 组。HistoryRow 不动（`run.list` 数据源无 sandbox_summary 字段）。+3 测试（徽章+统计行 / skipped·errors 警示行 / 无 summary 零渲染）。
 - **evolution 账本归档对齐**（R1 三标的之一）：`docs/evolution/ITERATION_LOG.md` 尾部追加归档声明——回合制账本（R1→R310，Grok 融合专项，基准 v0.8.0 → 目标 v0.9.0）就此封卷，v1.0.0 起权威变更账本 = 根 `CHANGELOG.md`，附回合↔版本对照表与 v1.x 变更查询路径；`docs/evolution/EVOLUTION_ROADMAP.md` 头部标注只读历史档案。消除「evolution 目录像是仍在活跃维护」的误导。
+- **移动视口 e2e 回归**（backlog B4：移动端适配·验证收口）：新 spec `e2e/smoke-mobile-viewport.spec.ts`（第 11 个 e2e spec）——375×667 手机档（hamburger 开 Sidebar 抽屉 + 遮罩关闭 / Inspector 按钮隐藏 / chat 主区与 composer 无横向溢出且可输入）+ 820×1180 平板档（hamburger 隐藏 / Inspector 按钮开合 InspectorDrawer + backdrop 关闭 / 无横向溢出）。溢出审计结论：双档 `scrollWidth ≤ clientWidth` 全过，布局骨架（viewport meta、&lt;768px 抽屉、md–lg InspectorDrawer、max-w-[780px] 弹性约束、CodeBlock/Mermaid overflow-auto）健康，零溢出修复需求。配套 jsdom `tests/app-mobile.test.tsx`（3 用例：抽屉默认不渲染 / hamburger 开 + 遮罩关 / 抽屉内导航自动收抽屉并开 overlay）。
 
 （R1 全量验证：vitest 768 全绿（基线 751 + 17 新增）、ESLint 零告警、`tsc -b` 零错误；后端零改动。）
 
@@ -36,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 （B2 性能专项复测（backlog 第 2 项，2026-08-30）：五项基线全项无 P0 退化——冷启动 median **2.138 s**（v1.6.1 锚点 2.291 s 的 −6.7%，预算 5 s 余量 57%）；首屏 JS **145.7 KB** / CSS **8.3 KB** gzip（预算 200/50 内，R3 增量 +0.9 KB）；懒加载 347 chunks 2865.2 KB 持平；索引审计 15 + WS 重放 8 + 长会话渲染 2 显式复跑全绿。`python -X importtime` profile：冷启动 import 大头 fastapi 425 ms（`openapi.models` 174 ms）属 transport 必要成本，**判定无优化必要**（lazy-import 拆分否决：余量充足，拆分只增复杂度）。数字入 `docs/performance-baseline.md` B2 复测列。）
 
 （B3 全量验证：vitest 779 全绿（基线 771 + 8 新增）、`tsc -b` 零错误、ESLint 零告警；后端零改动、IPC 契约零变更（TaskRow 既有字段纯前端消费）。）
+
+（B4 全量验证：移动视口 e2e 6/6 + 桌面 smoke-boot e2e 5/5（含 narrow viewport 用例，TopBar 修复零回归）、vitest 782 全绿（779 + 3 新增 app-mobile）、`tsc -b` 零错误、ESLint 零告警；溢出审计零修复需求（唯一实测缺陷 = Inspector 按钮误现，已修）。）
 
 ## [1.6.1] - 2026-08-29
 
