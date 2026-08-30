@@ -1226,7 +1226,7 @@ document the migration in this file.
 |------|------|
 | `team.create` / `team.get` / `team.list` / `team.update` / `team.delete` | 团队 CRUD |
 | `team.enable` / `team.disable` | 启用/停用团队 |
-| `team.spawn` | 触发一次团队运行 |
+| `team.spawn` | 触发一次团队运行（v1.7.0 起可选 `sandbox: boolean`：每个成员写入各自 `team_<task_id>_<idx>_<name>` 沙盒树，编排器在 sequential 成员间 / reviewer 前 / 收尾时自动 collect（skip 策略），reply 增 `sandbox` + 条件性 `sandbox_summary`/`agents_run[].run_id`；缺省走 `MINIMAX_CODE_SANDBOX_DEFAULT` env > false） |
 | `team.run.get` | 团队运行详情 |
 
 ### webhook.* — Webhook

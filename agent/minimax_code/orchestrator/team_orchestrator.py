@@ -30,6 +30,21 @@ line) rather than silently swallowed by ``success = any(...)``.
 The final :class:`TeamRunResult` is persisted to the ``agent_runs`` table
 (``mode="team"``) so callers can query it later via ``team.run.get``.
 
+v1.7.0 (R2) — optional per-member write sandboxing. ``team.spawn`` may pass
+``sandbox=true`` (or default it via ``MINIMAX_CODE_SANDBOX_DEFAULT``): every
+member then runs inside its own ``.minimax/sandboxes/<run_id>/`` tree using
+the exact same ContextVar machinery as the ``spawn_subagent`` tool path
+(COW ``_base/`` snapshot, overlay reads, redirected writes, fail-closed
+setup). Deterministic run ids (``team_<task_id>_<idx>_<name>``) survive
+replays, and review re-running a config as reviewer gets a distinct index.
+The orchestrator merges finished sandboxes back itself (skip-on-conflict):
+sequentially between members (so successors see their predecessors'
+writes), before the reviewer consolidates, and once for every remaining
+run at the end. The aggregate lands in ``sandbox_summary`` — conflicts are
+advisories, never run-killers; the sandbox tree stays on disk whenever a
+merge was refused, so a human can re-run ``collect_subagent`` with an
+explicit policy.
+
 v0.11.0 — Agent Studio orchestration enhancements.
 """
 
@@ -38,6 +53,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -80,6 +96,19 @@ def _subagent_wall_clock_s() -> float:
     return subagent_wall_clock_s()
 
 
+def _sandbox_run_id(task_id: str, index: int, agent_name: str) -> str:
+    """Deterministic sandbox run id for one team member slot.
+
+    v1.7.0 R2 — ``team_<task_id>_<idx>_<name>``: the task id keys it to
+    one team run, the zero-padded index makes reviewer re-runs (index
+    ``len(configs)``) distinct from their writer slot, and the name is
+    flattened to path-safe characters so arbitrary agent names can never
+    escape the sandbox directory.
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", agent_name).strip("_") or "agent"
+    return f"team_{task_id}_{index:02d}_{safe[:40]}"
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -96,6 +125,11 @@ class AgentRunResult:
     iterations: int = 0
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     stub: bool = True
+    # v1.7.0 R2 — per-member sandbox run id (sandboxed team runs only).
+    # ``None`` on unsandboxed runs and on fail-closed sandbox setup
+    # refusals (nothing was ever activated, so there is nothing to
+    # collect).
+    run_id: str | None = None
 
 
 @dataclass
@@ -118,6 +152,10 @@ class TeamRunResult:
     conflicts: list[TeamConflict] = field(default_factory=list)
     task_id: str | None = None
     success: bool = True
+    # v1.7.0 R2 — auto-collect aggregate for sandboxed team runs:
+    # {collected, merged_files, conflicts, errors, skipped_runs,
+    #  skipped_files}. Empty dict on unsandboxed runs.
+    sandbox_summary: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +178,10 @@ class TeamOrchestrator:
     emit_event:
         Optional async callback ``async (event_name, payload) -> None``
         for pushing ``agent.team_progress`` events over the WebSocket.
+    sandbox:
+        v1.7.0 R2 — run every member inside its own per-run write
+        sandbox and auto-collect the results (see the module docstring).
+        ``run(sandbox=...)`` overrides the instance default per call.
     """
 
     def __init__(
@@ -149,11 +191,13 @@ class TeamOrchestrator:
         agent_dao: AgentDAO | None = None,
         llm: MiniMaxClient | None = None,
         emit_event: Any | None = None,
+        sandbox: bool = False,
     ) -> None:
         self._team_dao = team_dao
         self._agent_dao = agent_dao
         self._llm = llm
         self._emit_event = emit_event
+        self._sandbox = bool(sandbox)
 
     # -- public API ---------------------------------------------------------
 
@@ -164,6 +208,7 @@ class TeamOrchestrator:
         *,
         session_id: str | None = None,
         parent_session_id: str | None = None,
+        sandbox: bool | None = None,
     ) -> TeamRunResult:
         """Execute a team run and persist the result.
 
@@ -172,6 +217,7 @@ class TeamOrchestrator:
         returns a merged :class:`TeamRunResult`. The result is stored
         in ``agent_runs`` (``mode="team"``) under ``task_id``.
         """
+        sandbox_enabled = self._sandbox if sandbox is None else bool(sandbox)
         task_id = f"teamrun_{uuid.uuid4().hex[:10]}"
         run_session_id = session_id or task_id
 
@@ -200,6 +246,7 @@ class TeamOrchestrator:
             session_id=run_session_id,
             task_id=task_id,
             parent_session_id=parent_session_id,
+            sandbox=sandbox_enabled,
         )
 
         if runs_dao is not None:
@@ -225,6 +272,7 @@ class TeamOrchestrator:
         session_id: str,
         task_id: str,
         parent_session_id: str | None,
+        sandbox: bool = False,
     ) -> TeamRunResult:
         """Core orchestration logic (persistence-agnostic)."""
         if self._team_dao is None:
@@ -283,37 +331,101 @@ class TeamOrchestrator:
                 merged_text="Error: no valid agents found for team members.",
             )
 
+        # v1.7.0 R2 — per-run auto-collect bookkeeping. ``processed``
+        # tracks every run_id the orchestrator already attempted to
+        # collect (success or refusal) so the final sweep below never
+        # double-collects what sequential/review already merged.
+        collect_state: dict[str, Any] = {
+            "processed": set(),
+            "runs": 0,
+            "merged_files": 0,
+            "conflicts": [],
+            "errors": 0,
+            "skipped_runs": [],
+            "skipped_files": [],
+        }
+
         # Drive orchestration
         if mode == "review":
             results, merged_text, success = await self._run_review(
-                configs, request, session_id, task_id, team_name, team
+                configs, request, session_id, task_id, team_name, team,
+                sandbox=sandbox, collect_state=collect_state,
             )
             conflicts = self._detect_conflicts(results)
         else:
             if mode == "parallel":
                 results = await self._run_parallel(
                     configs, request, session_id, task_id, team_name,
+                    sandbox=sandbox,
                 )
             elif mode == "sequential":
                 results = await self._run_sequential(
                     configs, request, session_id, task_id, team_name,
+                    sandbox=sandbox, collect_state=collect_state,
                 )
             elif mode == "round-robin":
                 results = await self._run_round_robin(
                     configs, request, session_id, task_id, team_name,
+                    sandbox=sandbox,
                 )
             elif mode == "vote":
                 results = await self._run_vote(
                     configs, request, session_id, task_id, team_name,
+                    sandbox=sandbox,
                 )
             else:
                 results = await self._run_parallel(
                     configs, request, session_id, task_id, team_name,
+                    sandbox=sandbox,
                 )
 
             # Merge results
             merged_text, success = self._merge_texts(results)
             conflicts = self._detect_conflicts(results)
+
+        # v1.7.0 R2 — final sweep: collect every sandboxed run that the
+        # mode-specific hooks (sequential between members, review before
+        # the reviewer) have not merged yet. Pure parallel modes land
+        # here for all their runs.
+        sandbox_summary: dict[str, Any] = {}
+        if sandbox:
+            for r in results:
+                if r.run_id and r.run_id not in collect_state["processed"]:
+                    await self._collect_one(r, collect_state)
+            # Defensive: the skip policy resolves conflicts inline (they
+            # land in skipped_runs), so this projection stays empty in
+            # practice — kept so any future policy change surfaces
+            # through the existing conflicts channel, not a silent drop.
+            conflicts.extend(
+                TeamConflict(
+                    file_path=c["path"],
+                    agents=[c["agent_name"]],
+                    conflict_type="sandbox_collect",
+                )
+                for c in collect_state["conflicts"]
+            )
+            sandbox_summary = {
+                "collected": collect_state["runs"],
+                "merged_files": collect_state["merged_files"],
+                "conflicts": collect_state["conflicts"],
+                "errors": collect_state["errors"],
+                "skipped_runs": sorted(set(collect_state["skipped_runs"])),
+                "skipped_files": collect_state["skipped_files"],
+            }
+            # Sandbox collect problems are advisories, never run-killers:
+            # the sandbox tree survives any refused merge (the receipt
+            # gate is conservative), so a human can re-run
+            # ``collect_subagent`` with an explicit policy later.
+            if (
+                collect_state["skipped_runs"]
+                or collect_state["errors"]
+                or collect_state["conflicts"]
+            ):
+                merged_text = (
+                    "> ⚠ sandbox collect: some member runs left files "
+                    "unmerged in their sandboxes (skipped/conflicted) — "
+                    "see sandbox_summary\n\n" + merged_text
+                )
 
         await self._emit_progress(
             "completed", task_id, team_name, progress=1.0,
@@ -329,6 +441,7 @@ class TeamOrchestrator:
             conflicts=conflicts,
             task_id=task_id,
             success=success,
+            sandbox_summary=sandbox_summary,
         )
 
     # -- orchestration modes ------------------------------------------------
@@ -340,6 +453,8 @@ class TeamOrchestrator:
         session_id: str,
         task_id: str,
         team_name: str,
+        *,
+        sandbox: bool = False,
     ) -> list[AgentRunResult]:
         """Run all agents concurrently via ``asyncio.gather``.
 
@@ -354,10 +469,12 @@ class TeamOrchestrator:
             if sem is None:
                 return await self._run_single_agent(
                     cfg, request, session_id, task_id, team_name, idx, total,
+                    sandbox=sandbox,
                 )
             async with sem:
                 return await self._run_single_agent(
                     cfg, request, session_id, task_id, team_name, idx, total,
+                    sandbox=sandbox,
                 )
 
         results = await asyncio.gather(
@@ -381,15 +498,26 @@ class TeamOrchestrator:
         session_id: str,
         task_id: str,
         team_name: str,
+        *,
+        sandbox: bool = False,
+        collect_state: dict[str, Any] | None = None,
     ) -> list[AgentRunResult]:
-        """Run agents one-by-one; each receives prior accumulated output."""
+        """Run agents one-by-one; each receives prior accumulated output.
+
+        v1.7.0 R2: with sandboxing on, each member's sandbox is merged
+        back immediately after it finishes — the successor's overlay
+        view would otherwise miss the predecessor's writes entirely.
+        """
         results: list[AgentRunResult] = []
         accumulated = request
         for idx, cfg in enumerate(configs):
             result = await self._run_single_agent(
                 cfg, accumulated, session_id, task_id, team_name, idx, len(configs),
+                sandbox=sandbox,
             )
             results.append(result)
+            if sandbox and collect_state is not None and result.run_id:
+                await self._collect_one(result, collect_state)
             if result.success and result.text:
                 accumulated = f"{request}\n\n--- Previous agent ({result.agent_name}) output ---\n{result.text}"
         return results
@@ -401,12 +529,14 @@ class TeamOrchestrator:
         session_id: str,
         task_id: str,
         team_name: str,
+        *,
+        sandbox: bool = False,
     ) -> list[AgentRunResult]:
         """All agents receive the same request; return all results."""
         # Semantically identical to parallel for the stub path.
         # In a real system, round-robin might distribute sub-tasks.
         return await self._run_parallel(
-            configs, request, session_id, task_id, team_name,
+            configs, request, session_id, task_id, team_name, sandbox=sandbox,
         )
 
     async def _run_vote(
@@ -416,10 +546,12 @@ class TeamOrchestrator:
         session_id: str,
         task_id: str,
         team_name: str,
+        *,
+        sandbox: bool = False,
     ) -> list[AgentRunResult]:
         """Run all agents in parallel and let the caller merge outputs."""
         return await self._run_parallel(
-            configs, request, session_id, task_id, team_name,
+            configs, request, session_id, task_id, team_name, sandbox=sandbox,
         )
 
     async def _run_review(
@@ -430,6 +562,9 @@ class TeamOrchestrator:
         task_id: str,
         team_name: str,
         team: dict[str, Any],
+        *,
+        sandbox: bool = False,
+        collect_state: dict[str, Any] | None = None,
     ) -> tuple[list[AgentRunResult], str, bool]:
         """Run writers in parallel, then a reviewer consolidates.
 
@@ -438,12 +573,24 @@ class TeamOrchestrator:
         ``configs``. If no reviewer can be determined, fall back to
         parallel behaviour.
 
+        v1.7.0 R2: with sandboxing on, writer sandboxes are merged back
+        before the reviewer runs — the reviewer reads the workspace, so
+        its overlay must already include the writers' files.
+
         Returns ``(results, merged_text, success)``.
         """
         # Run all agents as writers first.
         writer_results = await self._run_parallel(
-            configs, request, session_id, task_id, team_name,
+            configs, request, session_id, task_id, team_name, sandbox=sandbox,
         )
+
+        # v1.7.0 R2 — merge writer sandboxes before the reviewer looks
+        # at the workspace (its own sandbox overlay only carries its
+        # own writes plus the untouched originals).
+        if sandbox and collect_state is not None:
+            for r in writer_results:
+                if r.run_id and r.run_id not in collect_state["processed"]:
+                    await self._collect_one(r, collect_state)
 
         # Determine reviewer config.
         review_agent_name: str | None = None
@@ -483,6 +630,7 @@ class TeamOrchestrator:
             team_name,
             index=len(configs),
             total=len(configs) + 1,
+            sandbox=sandbox,
         )
 
         results = [*writer_results, review_result]
@@ -514,8 +662,17 @@ class TeamOrchestrator:
         team_name: str,
         index: int,
         total: int,
+        *,
+        sandbox: bool = False,
     ) -> AgentRunResult:
-        """Build, invoke, and wrap the result for one agent."""
+        """Build, invoke, and wrap the result for one agent.
+
+        v1.7.0 R2: with ``sandbox=True`` the member runs inside its own
+        per-run write sandbox — same ContextVar machinery and fail-closed
+        setup contract as the ``spawn_subagent`` tool path. Teardown
+        mirrors it too: write claims are released before the run id and
+        sandbox are unpublished.
+        """
         from .subagent import SubAgentRuntime
 
         agent_name = config.name
@@ -529,18 +686,70 @@ class TeamOrchestrator:
             agents_completed=index,
         )
 
+        # v1.7.0 R2 — deterministic per-member sandbox run id: stable
+        # across replays, unique per member slot (review re-running a
+        # writer config as the reviewer lands on index len(configs), so
+        # writer and reviewer never share a tree).
+        run_id: str | None = None
+        sandbox_token = None
+        run_id_token = None
+        effective_request = request
+        if sandbox:
+            run_id = _sandbox_run_id(task_id, index, agent_name)
+            from ..agent.tools.sandbox import sandbox_root_for
+            from ..agent.tools.subagents import SANDBOX_PROTOCOL_PROMPT
+            from ..workspace_ctx import set_current_run_id, set_sandbox
+
+            sb_dir = sandbox_root_for(run_id)
+            if sb_dir is None:  # pragma: no cover — env_or_cwd_root always yields
+                return AgentRunResult(
+                    agent_name=agent_name,
+                    success=False,
+                    error=(
+                        "sandbox requested but no workspace root could "
+                        "be resolved"
+                    ),
+                )
+            try:
+                sb_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                # Fail-closed, same contract as the tool path: an
+                # explicitly requested sandbox is a safety promise, not
+                # a nicety — refuse rather than run unsandboxed against
+                # the shared workspace. run_id stays None: nothing was
+                # activated, so there is nothing to collect.
+                return AgentRunResult(
+                    agent_name=agent_name,
+                    success=False,
+                    error=(
+                        f"sandbox requested but directory creation "
+                        f"failed: {exc}"
+                    ),
+                )
+            # Same protocol paragraph the tool path appends to the
+            # system prompt; prepended to the request here because team
+            # configs are shared objects (review re-runs one) — mutating
+            # system_prompt would stack a copy per re-run.
+            effective_request = (
+                f"{SANDBOX_PROTOCOL_PROMPT.strip()}\n\n{request}"
+            )
+            run_id_token = set_current_run_id(run_id)
+            sandbox_token = set_sandbox(sb_dir)
+
         try:
             runtime = SubAgentRuntime(llm=self._llm)
             handle = runtime.build(config)
             timeout_s = _subagent_wall_clock_s()
             if timeout_s > 0:
                 envelope = await asyncio.wait_for(
-                    runtime.invoke(handle, session_id=sid, request=request),
+                    runtime.invoke(
+                        handle, session_id=sid, request=effective_request,
+                    ),
                     timeout=timeout_s,
                 )
             else:
                 envelope = await runtime.invoke(
-                    handle, session_id=sid, request=request,
+                    handle, session_id=sid, request=effective_request,
                 )
             await self._emit_progress(
                 "agent_completed", task_id, team_name,
@@ -556,10 +765,13 @@ class TeamOrchestrator:
                 iterations=envelope.get("iterations", 0),
                 tool_calls=envelope.get("tool_calls", []),
                 stub=envelope.get("stub", True),
+                run_id=run_id,
             )
         except TimeoutError:
             # v1.2.2: a hung agent fails itself instead of hanging the
-            # whole team run forever.
+            # whole team run forever. run_id survives on purpose: a
+            # timed-out sandbox may still hold partial writes worth
+            # merging.
             logger.warning(
                 "Agent %s timed out (%ss wall clock) in team %s",
                 agent_name, timeout_s, team_name,
@@ -568,6 +780,7 @@ class TeamOrchestrator:
                 agent_name=agent_name,
                 success=False,
                 error=f"timed out after {timeout_s:g}s wall clock",
+                run_id=run_id,
             )
         except Exception as exc:
             logger.exception("Agent %s failed in team %s", agent_name, team_name)
@@ -575,7 +788,80 @@ class TeamOrchestrator:
                 agent_name=agent_name,
                 success=False,
                 error=str(exc),
+                run_id=run_id,
             )
+        finally:
+            # Tool-path teardown order: drop write claims first (no
+            # fresh claim can race in under the still-published id),
+            # then unpublish run id and sandbox so nothing leaks into
+            # sibling runs on the caller's side.
+            if run_id_token is not None:
+                try:
+                    from ..agent.tools.file_ops import release_run_writes
+
+                    release_run_writes(run_id)
+                except Exception:  # pragma: no cover — advisory registry
+                    pass
+                from ..workspace_ctx import reset_current_run_id
+
+                reset_current_run_id(run_id_token)
+            if sandbox_token is not None:
+                from ..workspace_ctx import reset_sandbox
+
+                reset_sandbox(sandbox_token)
+
+    async def _collect_one(
+        self,
+        result: AgentRunResult,
+        state: dict[str, Any],
+    ) -> None:
+        """Auto-collect one finished sandboxed member run (skip policy).
+
+        Advisories only: a refused or crashing collect counts as an
+        error in the summary instead of failing the team run — the
+        sandbox tree survives (the collect receipt gate is
+        conservative), so a human can re-run ``collect_subagent`` with
+        an explicit policy later.
+        """
+        from ..agent.tools.sandbox import collect_sandbox_run
+
+        state["processed"].add(result.run_id)
+        try:
+            ok, error, report = await collect_sandbox_run(
+                result.run_id, on_conflict="skip", prune=True,
+            )
+        except Exception:  # noqa: BLE001 — advisory path
+            logger.warning(
+                "sandbox collect crashed for %s", result.run_id, exc_info=True,
+            )
+            state["errors"] += 1
+            return
+        if not ok:
+            # "no sandbox found" or an unexpected refusal — nothing was
+            # merged and nothing was lost; surface as an error count.
+            logger.warning(
+                "sandbox collect refused for %s: %s", result.run_id, error,
+            )
+            state["errors"] += 1
+            return
+        state["runs"] += 1
+        state["merged_files"] += len(report.get("merged", []))
+        skipped = report.get("skipped", [])
+        if skipped:
+            state["skipped_runs"].append(result.run_id)
+            state["skipped_files"].extend(
+                f"{result.run_id}:{p}" for p in skipped
+            )
+        file_errors = report.get("errors", [])
+        if file_errors:
+            state["errors"] += len(file_errors)
+        for c in report.get("conflicts", []):  # defensive: skip never emits
+            state["conflicts"].append({
+                "run_id": result.run_id,
+                "agent_name": result.agent_name,
+                "path": c.get("path", ""),
+                "reason": c.get("reason", ""),
+            })
 
     # -- result merging -----------------------------------------------------
 
@@ -687,7 +973,7 @@ class TeamOrchestrator:
     @staticmethod
     def _result_to_dict(result: TeamRunResult) -> dict[str, Any]:
         """Serialisable representation stored in ``agent_runs.metadata``."""
-        return {
+        out: dict[str, Any] = {
             "team_name": result.team_name,
             "orchestration_mode": result.orchestration_mode,
             "merged_text": result.merged_text,
@@ -700,6 +986,9 @@ class TeamOrchestrator:
                     "error": r.error,
                     "iterations": r.iterations,
                     "stub": r.stub,
+                    # v1.7.0 R2 — only present for sandboxed members, so
+                    # persisted legacy metadata stays byte-comparable.
+                    **({"run_id": r.run_id} if r.run_id else {}),
                 }
                 for r in result.agents_run
             ],
@@ -712,6 +1001,9 @@ class TeamOrchestrator:
                 for c in result.conflicts
             ],
         }
+        if result.sandbox_summary:
+            out["sandbox_summary"] = result.sandbox_summary
+        return out
 
     # -- agent resolution ---------------------------------------------------
 

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **team 路径沙盒化**（迭代优化计划 R2：多 Agent 深化，v1.5.0 写安全专项公示的第四项已知限制就此收口）：`team.spawn` 收可选 `sandbox: boolean`（缺省梯子：显式传参 > `MINIMAX_CODE_SANDBOX_DEFAULT` env > false，与 `spawn_subagent` 同规）。开启后每个成员写入各自的确定性 run 沙盒树 `team_<task_id>_<idx>_<name>`（复用 v1.5.0 全套底座：COW `_base/` 快照 + overlay 读 + 写重定向 + fail-closed 建目录 + `SANDBOX_PROTOCOL_PROMPT` 前置注入 request——team config 是共享对象，review 会重跑同一 config，mutate system_prompt 会逐次叠加）；`_run_single_agent` 以 `set_current_run_id`/`set_sandbox` ContextVar 激活，finally 按工具路径同序释放（write claims → run id → sandbox）。**编排器自动 collect**（skip 策略，advisory 永不杀 run）：sequential 每成员跑完即收（后继 overlay 得见前驱写入）、review 模式 writers 全收后再跑 reviewer（reviewer 读 workspace，合并必须先行）、其余模式团队末尾统一扫尾；`collect_subagent` 核心提取为 `sandbox.py` 模块级 `collect_sandbox_run()`（工具壳留参数校验 + in-flight guard，wire 形状与消息字符串逐字不变）。reply / `agent_runs.metadata.team_result` 增 `sandbox` + 条件性 `sandbox_summary`（collected/merged_files/conflicts/errors/skipped_runs/skipped_files）与 `agents_run[].run_id`（仅沙盒成员携带，legacy 元数据字节可比）；冲突/跳过时 `merged_text` 前置 `> ⚠ sandbox collect` advisory。前端契约同步：`typed.ts` `spawnTeam` opts/返回类型、`mock.ts`、`teamRunStore`（result 存 `sandbox`/`sandbox_summary`，R3 TeamRunPanel 消费候选）。+10 测试（`agent/tests/test_team_sandbox.py`：run_id 确定性与名字消毒 / 默认零痕迹 / 预置 mirror 全链路 collect+prune / skip 冲突保 workspace+advisory / sequential 成员间时序 / review writers 先于 reviewer / ContextVar 复位 / handler env 缺省与显式覆盖 / reply 形状）。
 - **Checkpoint 前端状态 store 化**（迭代优化计划 R1：演进缺口收尾）：新 store `web/src/stores/checkpoint.ts`（`useCheckpointStore`，stores 29→30）——checkpoint 列表按 session 缓存（re-mount 零请求）、diff 文本按 checkpoint id 缓存、展开态/加载态/错误态全部上移；CheckpointPanel 改薄组件（label/message 表单草稿留 useState），RightPanel tab 切换不再丢状态、切回不再重复请求；create/delete 成功后 `invalidate(sessionId)` 强刷列表并清掉已删 checkpoint 的 diff 缓存；加载失败写 per-session `loadError`（内联横幅 + 重试），不再把空列表误读为「无 checkpoint」。+9 测试（`stores/__tests__/checkpoint-store.test.ts`：缓存命中不发请求 / invalidate 强刷 + 陈旧 diff 剪除 / diff 缓存与错误粘滞 / 无 diff 哨兵）。
 - **SubAgentPanel 重启回填**（v1.4.0 已知限制「agent 重启后事件态丢失」收口）：`useSubAgentStore` 新增 `hydrate()`——`init()` 订阅事件后调 `run.list {mode: "subagent"}` 从 `agent_runs` 落库行回填面板。映射规则：终态（completed/failed/cancelled）直映，非终态（running/planning/awaiting_approval）→ `"started"`（agent 重启后残留的 running 行几乎必是孤儿，灰色 idle pill 比永不推进的 spinner 诚实）；ISO 时间戳 → epoch 毫秒；title 去 `[subagent] ` 前缀作 summary；`metadata.result_text` 回填详情 text、`metadata.parent_session_id` 供会话过滤（subagent 行挂独立 sub_session）。**live 事件优先**：已存在同 run_id 的行不覆盖；回填失败 fail-open（事件流照常）。+8 测试（`stores/__tests__/subagent-hydrate.test.ts`：wire 形状 / 三类终态与非终态映射 / 无 metadata 容错 / live 优先 / parent 过滤 / fail-open）。
 
@@ -21,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **evolution 账本归档对齐**（R1 三标的之一）：`docs/evolution/ITERATION_LOG.md` 尾部追加归档声明——回合制账本（R1→R310，Grok 融合专项，基准 v0.8.0 → 目标 v0.9.0）就此封卷，v1.0.0 起权威变更账本 = 根 `CHANGELOG.md`，附回合↔版本对照表与 v1.x 变更查询路径；`docs/evolution/EVOLUTION_ROADMAP.md` 头部标注只读历史档案。消除「evolution 目录像是仍在活跃维护」的误导。
 
 （R1 全量验证：vitest 768 全绿（基线 751 + 17 新增）、ESLint 零告警、`tsc -b` 零错误；后端零改动。）
+
+（R2 全量验证：pytest 10605 passed + 7 个既有 Linux 平台差异红（与 `docs/performance-baseline.md` v1.6.1 备案清单逐项一致，基线 10595 + 10 新增）、ruff 全绿、`tsc -b` 零错误、vitest 768 全绿。）
 
 ## [1.6.1] - 2026-08-29
 

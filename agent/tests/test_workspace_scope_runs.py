@@ -114,7 +114,8 @@ class _RecordingOrchestrator:
         self.observed: list[Path | None] = []
 
     async def run(  # type: ignore[no-untyped-def]
-        self, team_name, request, *, session_id=None, parent_session_id=None
+        self, team_name, request, *, session_id=None, parent_session_id=None,
+        sandbox=None,
     ):
         self.observed.append(current_root())
         return SimpleNamespace(
@@ -125,6 +126,7 @@ class _RecordingOrchestrator:
             conflicts=[],
             task_id=f"teamrun_{uuid.uuid4().hex[:8]}",
             success=True,
+            sandbox_summary={},
         )
 
 

@@ -119,6 +119,7 @@ describe("teamRunStore.spawn", () => {
       team_name: "调研小队",
       orchestration_mode: "parallel",
       merged_text: "汇总结果",
+      sandbox: false,
       agents_run: [],
       conflicts: [],
       task_id: "teamrun_xyz",
