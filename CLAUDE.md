@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MiniMax Code 是一个桌面端 AI 编码 Agent 复刻项目。对标 MiniMax Code 全量功能：多轮对话、技能系统、定时任务、多 Agent 协作、移动互联、授权管理、进度面板。v0.2.0 起从 Tauri 桌面壳切换为 web SPA + 本地 Python agent 架构，v0.3.0 新增 thinking_count 通道、Sub-Agent UI、Git 集成和 Code Review 工作流。
 
-当前版本：**v1.7.0**（2026-08-30）
+当前版本：**v1.7.1**（2026-08-30）
 
 ## 架构总览
 
@@ -253,6 +253,8 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 | `CHANGELOG.md` | 版本变更历史 |
 
 ## 变更记录 (Changelog)
+
+- **2026-08-30** — v1.7.1：易用性专项发版（评估 → 实测 → 修复，v1.3.0 公示的「PreviewState 仍进程级根」已知限制就此收口）——① **Preview 面板 per-project 根**（R2）：`PreviewState.set_root()` re-root on switch（停 watcher → 换根 → 排空事件队列 → 按需重启；三条路由闭包改请求时读活根，containment 同随）；新 IPC `preview.set_root {project_id?}`（方法 170→171、前缀 34→35，新 handler `handlers_preview.py`，未知 id/根不存在 `-32602` 快速失败）；前端 `previewStore.setRoot` 接线收敛在 `sessionStore.setCurrentProject`/`create()`/boot `refresh()` 单一 choke point；契约五连同步 + 22 测试；② **预览换根后的两级浏览器缓存投毒**（R1 实测抓出的 R2 硬阻断 bug）：文件响应补 `Cache-Control: no-store`（iframe 导航命中启发式缓存复用旧文档）+ 探针 fetch 补 `cache: "no-store"`（导航缓存条目无 CORS 头，被探针复用即永久 `Failed to fetch`）+ 网络错误文案本地化；③ **实测修复**：冷启动空态文案迁 `strings.chat.emptyState`（示例改通用任务）；Context 指示器 `fmtTokens` 整数千位去 `.0` 尾巴；④ **修复**：v1.7.0 发版漏 bump `version.py` 兜底字面量（版本钉测试抓出；本版七处版本钉统一 `1.7.1`）；⑤ **发布线收口**（R0）：v1.6.1+v1.7.0 共 9 提交（含 5 个真实 bug 修复）并入本分支基线，master fast-forward 留给用户；⑥ **R1 黄金路径实测记录**（12 段 Playwright 走查：13 设置 tab / 检查器 tab / 命令面板 / 终端 / Git 状态栏 / 预览双根热重载全过，零 pageerror；结构性发现三条只记录不改）。pytest 10629 / vitest 793 / 11 e2e spec 全绿
 
 - **2026-08-30** — v1.7.0：迭代优化计划 R1–R3 + backlog B1–B4 双线收口发版（v1.5.0 写安全专项四项已知限制全部收清）——① **team 路径沙盒化**（R2）：`team.spawn` 收可选 `sandbox`（缺省梯子同 `spawn_subagent`：显式传参 > env > false），成员写各自确定性 run 沙盒树（复用 v1.5.0 全套底座），编排器自动 collect（skip 策略 advisory：sequential 成员间即时收、review writers 先于 reviewer、其余模式末尾扫尾）；`collect_subagent` 核心提取为 `sandbox.py` 模块级 `collect_sandbox_run()`；② **Checkpoint 前端 store 化**（R1）：新 store `checkpoint.ts`（stores 29→30，列表/diff/展开态缓存），SubAgentPanel 重启回填 `hydrate()`（`run.list {mode:"subagent"}` 落库行回填，v1.4.0 已知限制「重启后事件态丢失」收口）+ evolution 账本归档对齐；③ **前端打磨**（R3）：right-panel 文案收敛 `strings.ts` + TeamRunPanel 沙盒可视化；④ **进度面板重设计**（B3）：title 主行 / 分区列表（运行中·最近完成）/ 中文徽章 / 相对时间+耗时 / 详情展开 / 百分数；⑤ **修复**：手机视口 Inspector 按钮误现（B4，断点类缺默认 `hidden`）；危险命令检测跨平台漏检（B1，Windows 可执行扩展全平台剥离）；7 项 Windows 语义用例跨平台收口（B1，pytest **10611 单平台全量首次全绿**）；⑥ **移动视口 e2e**（B4）：第 11 个 spec（375 手机档 + 820 平板档）；⑦ **性能复测**（B2）：五项基线无 P0 退化（冷启动 2.138 s，较 v1.6.1 锚点 −6.7%），判定无优化必要；vitest 782 / e2e 11 spec 全绿
 
