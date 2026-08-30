@@ -1125,6 +1125,8 @@ export const strings = {
       loadingDiff: "正在加载 Diff…",
       fileCount: (n: number) => `${n} 个文件`,
       emptyHint: "点击「创建」保存当前工作区快照。",
+      selectSessionHint: "选择会话后管理 Checkpoints",
+      emptyTitle: "暂无 Checkpoint",
     },
     codebase: {
       title: "代码库",
@@ -1144,6 +1146,9 @@ export const strings = {
       summary: "总结",
       lineCount: (n: number) => `${n} 行`,
       fileCount: (n: number) => `${n} 个文件`,
+      searchEmptyTitle: "暂无搜索结果",
+      hotFilesTitle: "热门文件",
+      recentFilesTitle: "最近查看",
     },
     terminal: {
       cwdPlaceholder: "cwd（默认为工作区根目录）",
@@ -1167,6 +1172,8 @@ export const strings = {
     },
     subagents: {
       idle: "空闲",
+      idleHintPre: "空闲 — 在聊天中输入",
+      idleHintPost: " 来召唤子 Agent。",
       runCount: (n: number) => `${n} 个运行`,
       clearDone: "清除已完成",
       clearDoneTitle: "从列表中清除已完成/失败的运行",
@@ -1191,6 +1198,7 @@ export const strings = {
       dismissTitle: "移除任务",
       agentCrashed: "agent 已崩溃",
       mockBackend: "mock 后端",
+      empty: "暂无运行中任务",
     },
     agents: {
       teamTitle: "Agent 团队",
@@ -1201,6 +1209,8 @@ export const strings = {
       disabled: "已禁用",
       running: "运行中",
       done: "已完成",
+      emptyTitle: "暂无子 Agent",
+      emptyHint: "Agent 运行时装载的子 Agent 会显示在这里。",
     },
     teamRuns: {
       title: "团队运行",
@@ -1213,6 +1223,11 @@ export const strings = {
       removeAria: "移除团队运行",
       historyTitle: "最近团队运行",
       historyEmpty: "还没有历史运行记录",
+      sandboxBadge: "沙箱",
+      sandboxCollected: (n: number) => `沙盒已回收 ${n} 个运行`,
+      sandboxMergedFiles: (n: number) => `合并落盘 ${n} 个文件`,
+      sandboxSkipped: (n: number) => `${n} 个沙盒运行未合并`,
+      sandboxErrors: (n: number) => `合并错误 ${n} 个`,
     },
     resultCard: {
       unavailable: "子 Agent 结果不可用",

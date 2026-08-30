@@ -163,7 +163,7 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
       ) : results.length === 0 ? (
         <EmptyState
           icon={<FileCode size={20} />}
-          title="暂无搜索结果"
+          title={strings.rightPanel.codebase.searchEmptyTitle}
           hint={strings.rightPanel.codebase.searchEmptyHint}
         />
       ) : (
@@ -178,7 +178,7 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
         <div className="space-y-1.5">
           <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-ink-2">
             <TrendingUp size={12} />
-            热门文件
+            {strings.rightPanel.codebase.hotFilesTitle}
           </div>
           <ul className="space-y-1">
             {hotFiles.map((f) => (
@@ -200,7 +200,7 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
         <div className="space-y-1.5">
           <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-ink-2">
             <Clock size={12} />
-            最近查看
+            {strings.rightPanel.codebase.recentFilesTitle}
           </div>
           <ul className="space-y-1">
             {recentFiles.map((f) => (

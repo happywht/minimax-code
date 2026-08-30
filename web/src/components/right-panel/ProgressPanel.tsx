@@ -132,7 +132,7 @@ export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps)
             data-testid={`${testId}-empty`}
             className="rounded-md border border-dashed border-minimax-border p-3 text-center text-[11px] text-minimax-muted"
           >
-            暂无运行中任务
+            {strings.rightPanel.progress.empty}
           </div>
         ) : (
           <ul className="space-y-1.5" data-testid={`${testId}-task-list`}>

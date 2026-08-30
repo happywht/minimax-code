@@ -76,8 +76,8 @@ export function AgentTeamList({
       <EmptyState
         testId={`${testId}-empty`}
         icon={<Users />}
-        title="暂无子 Agent"
-        hint="Agent 运行时装载的子 Agent 会显示在这里。"
+        title={strings.rightPanel.agents.emptyTitle}
+        hint={strings.rightPanel.agents.emptyHint}
       />
     );
   }
