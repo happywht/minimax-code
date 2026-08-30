@@ -1199,6 +1199,20 @@ export const strings = {
       agentCrashed: "agent 已崩溃",
       mockBackend: "mock 后端",
       empty: "暂无运行中任务",
+      /** B3 redesign — section headers + localized status labels. */
+      sectionRunning: "运行中",
+      sectionSettled: "最近完成",
+      statusLabel: {
+        running: "运行中",
+        pending: "等待中",
+        done: "已完成",
+        error: "失败",
+        cancelled: "已取消",
+      } as Record<string, string>,
+      durationPrefix: "耗时",
+      expandTitle: "展开详情",
+      collapseTitle: "收起详情",
+      percent: (n: number) => `${n}%`,
     },
     agents: {
       teamTitle: "Agent 团队",

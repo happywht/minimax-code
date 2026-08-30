@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **进度面板重设计**（backlog B3：ProgressPanel 信息架构与体验升级，六项）：① **title 主行**——后端 `TaskRow.title` 前端首次消费（`TaskProgressEntry` 扩展 `title`/`session_id`/`created_at`，`entryFromRow` 取值；live `task.progress` 事件不携带这些字段，upsert 的 spread-prev 与 result 同模式保留不被 clobber），卡片标题从 mono task_id 换为人类可读 title（无 title 回退 task_id），task_id 降为次行元信息；② **分区列表**——`partitionTasks()` 纯函数把任务分「运行中」（running/pending）与「最近完成」（done/error/cancelled）两小节，各自按 updated_at 降序，不再混排；③ **状态徽章中文化**——5 态映射入 `strings.ts`（运行中/等待中/已完成/失败/已取消），消除组件内英文 status 直出（与 strings 规范对齐）；④ **时间信息**——每卡片次行显示相对时间（`formatRelative`）+ 终态耗时（新 `lib/time.ts` `formatDuration`：<1h 输出 `MM:SS`、≥1h 输出 `X 小时 Y 分`，锚点为 ledger 的 created_at→updated_at）；⑤ **详情可展开**——result/error 正文从 `max-h-16` 死截断改为 `line-clamp-2` + 点击展开/收起（`aria-expanded`），error 的 message 同样进详情区；⑥ **进度百分数**——进度条右端显示 `NN%`。testId 契约保持（`pp` 命名空间 / `task-row-<id>` / `task-status-<status>`），列表 testid 拆 `-task-list-live`/`-task-list-settled`。+8 测试（title 展示与回退 / 分区归属与顺序 / 小节内排序 / 耗时 / 中文徽章全覆盖 / 百分数 / 展开-收起）。
 - **right-panel 硬编码文案收敛**（迭代优化计划 R3：前端体验打磨·切片 A，规范修复）：right-panel 5 组件的 10 处硬编码中文文案迁入 `strings.ts` rightPanel 域既有分组（agents/progress/codebase/subagents/checkpoint），文案原文不变仅搬家，对齐「面向用户文案统一来自 src/ui/strings.ts」的模块规范（web/CLAUDE.md）。SubAgentPanel 空闲召唤文案因内嵌 `font-mono` 的 `@general` span 拆 idleHintPre/idleHintPost 两 key（strings.ts 保持纯字符串模块）。
 - **TeamRunPanel 沙盒运行可视化**（R3·切片 B）：RunCard 消费 R2 落地的 `result.sandbox`/`sandbox_summary`——① 沙盒运行的卡片标题旁渲染「沙箱」徽章（accent 描边小标签）；② 合并统计行「沙盒已回收 N 个运行 · 合并落盘 M 个文件」（collected/merged_files）；③ skipped_runs 非空或 errors>0 时渲染黄色 AlertTriangle 警示行（与 conflicts 同视觉级；后端 collect 为 skip 策略 advisory，黄色而非红色符合「运行成功但有文件滞留沙盒」语义）。文案 5 key 全入 strings.ts teamRuns 组。HistoryRow 不动（`run.list` 数据源无 sandbox_summary 字段）。+3 测试（徽章+统计行 / skipped·errors 警示行 / 无 summary 零渲染）。
 - **evolution 账本归档对齐**（R1 三标的之一）：`docs/evolution/ITERATION_LOG.md` 尾部追加归档声明——回合制账本（R1→R310，Grok 融合专项，基准 v0.8.0 → 目标 v0.9.0）就此封卷，v1.0.0 起权威变更账本 = 根 `CHANGELOG.md`，附回合↔版本对照表与 v1.x 变更查询路径；`docs/evolution/EVOLUTION_ROADMAP.md` 头部标注只读历史档案。消除「evolution 目录像是仍在活跃维护」的误导。
@@ -33,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 （B1 全量验证：pytest 10611 passed / 9 skipped / 0 failed——单平台全量首次全绿，v1.6.1 备案的 7 项 Linux 平台差异红清零；安全回归套件 `-m security` 157 passed 确认 `terminal.py` 危险命令修复零回归。）
 
 （B2 性能专项复测（backlog 第 2 项，2026-08-30）：五项基线全项无 P0 退化——冷启动 median **2.138 s**（v1.6.1 锚点 2.291 s 的 −6.7%，预算 5 s 余量 57%）；首屏 JS **145.7 KB** / CSS **8.3 KB** gzip（预算 200/50 内，R3 增量 +0.9 KB）；懒加载 347 chunks 2865.2 KB 持平；索引审计 15 + WS 重放 8 + 长会话渲染 2 显式复跑全绿。`python -X importtime` profile：冷启动 import 大头 fastapi 425 ms（`openapi.models` 174 ms）属 transport 必要成本，**判定无优化必要**（lazy-import 拆分否决：余量充足，拆分只增复杂度）。数字入 `docs/performance-baseline.md` B2 复测列。）
+
+（B3 全量验证：vitest 779 全绿（基线 771 + 8 新增）、`tsc -b` 零错误、ESLint 零告警；后端零改动、IPC 契约零变更（TaskRow 既有字段纯前端消费）。）
 
 ## [1.6.1] - 2026-08-29
 
