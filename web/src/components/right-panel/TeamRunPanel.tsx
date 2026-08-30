@@ -57,6 +57,9 @@ function ProgressBar({ progress }: { progress: number }) {
 function RunCard({ run, onRemove }: { run: TeamRunEntry; onRemove: () => void }) {
   const isDone = run.status === "completed" || run.status === "failed";
   const hasConflicts = run.result?.conflicts?.length;
+  const summary = run.result?.sandbox_summary;
+  const hasSandboxIssues =
+    !!summary && ((summary.skipped_runs?.length ?? 0) > 0 || summary.errors > 0);
 
   return (
     <div
@@ -73,6 +76,14 @@ function RunCard({ run, onRemove }: { run: TeamRunEntry; onRemove: () => void })
           {statusIcon(run.status)}
           <Users size={11} className="text-minimax-accent" />
           <span className="font-medium text-minimax-fg">{run.team_name}</span>
+          {isDone && run.result?.sandbox && (
+            <span
+              data-testid={`teamrun-sandbox-${run.task_id}`}
+              className="rounded-sm border border-minimax-accent/40 bg-minimax-accent/10 px-1 py-px text-[11px] leading-none text-minimax-accent"
+            >
+              {strings.rightPanel.teamRuns.sandboxBadge}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1">
           <span className="text-[11px] text-minimax-muted">
@@ -108,6 +119,35 @@ function RunCard({ run, onRemove }: { run: TeamRunEntry; onRemove: () => void })
           <span>
             {strings.rightPanel.teamRuns.conflicts(run.result!.conflicts.length)}
           </span>
+        </div>
+      ) : null}
+
+      {/* Sandbox auto-collect summary (v1.7.0 R2 — sandboxed team runs) */}
+      {summary && (
+        <div className="mt-1 text-[11px] text-minimax-muted">
+          {strings.rightPanel.teamRuns.sandboxCollected(summary.collected)}
+          {" · "}
+          {strings.rightPanel.teamRuns.sandboxMergedFiles(summary.merged_files)}
+        </div>
+      )}
+
+      {/* Sandbox leftovers — runs whose files stayed unmerged in sandboxes */}
+      {hasSandboxIssues ? (
+        <div className="mt-1 flex flex-col gap-0.5 text-[11px] text-yellow-300">
+          {(summary!.skipped_runs?.length ?? 0) > 0 && (
+            <div className="flex items-center gap-1">
+              <AlertTriangle size={10} />
+              <span>
+                {strings.rightPanel.teamRuns.sandboxSkipped(summary!.skipped_runs!.length)}
+              </span>
+            </div>
+          )}
+          {summary!.errors > 0 && (
+            <div className="flex items-center gap-1">
+              <AlertTriangle size={10} />
+              <span>{strings.rightPanel.teamRuns.sandboxErrors(summary!.errors)}</span>
+            </div>
+          )}
         </div>
       ) : null}
 

@@ -138,7 +138,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
           </div>
         ) : (
           <div className="rounded-md border border-dashed border-minimax-border p-3 text-center text-[11px] text-minimax-muted">
-            选择会话后管理 Checkpoints
+            {strings.rightPanel.checkpoint.selectSessionHint}
           </div>
         )}
 
@@ -150,7 +150,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
           </div>
         ) : checkpoints.length === 0 && !loadError ? (
           <EmptyState
-            title="暂无 Checkpoint"
+            title={strings.rightPanel.checkpoint.emptyTitle}
             hint={strings.rightPanel.checkpoint.emptyHint}
           />
         ) : (

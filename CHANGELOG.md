@@ -19,11 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **right-panel 硬编码文案收敛**（迭代优化计划 R3：前端体验打磨·切片 A，规范修复）：right-panel 5 组件的 10 处硬编码中文文案迁入 `strings.ts` rightPanel 域既有分组（agents/progress/codebase/subagents/checkpoint），文案原文不变仅搬家，对齐「面向用户文案统一来自 src/ui/strings.ts」的模块规范（web/CLAUDE.md）。SubAgentPanel 空闲召唤文案因内嵌 `font-mono` 的 `@general` span 拆 idleHintPre/idleHintPost 两 key（strings.ts 保持纯字符串模块）。
+- **TeamRunPanel 沙盒运行可视化**（R3·切片 B）：RunCard 消费 R2 落地的 `result.sandbox`/`sandbox_summary`——① 沙盒运行的卡片标题旁渲染「沙箱」徽章（accent 描边小标签）；② 合并统计行「沙盒已回收 N 个运行 · 合并落盘 M 个文件」（collected/merged_files）；③ skipped_runs 非空或 errors>0 时渲染黄色 AlertTriangle 警示行（与 conflicts 同视觉级；后端 collect 为 skip 策略 advisory，黄色而非红色符合「运行成功但有文件滞留沙盒」语义）。文案 5 key 全入 strings.ts teamRuns 组。HistoryRow 不动（`run.list` 数据源无 sandbox_summary 字段）。+3 测试（徽章+统计行 / skipped·errors 警示行 / 无 summary 零渲染）。
 - **evolution 账本归档对齐**（R1 三标的之一）：`docs/evolution/ITERATION_LOG.md` 尾部追加归档声明——回合制账本（R1→R310，Grok 融合专项，基准 v0.8.0 → 目标 v0.9.0）就此封卷，v1.0.0 起权威变更账本 = 根 `CHANGELOG.md`，附回合↔版本对照表与 v1.x 变更查询路径；`docs/evolution/EVOLUTION_ROADMAP.md` 头部标注只读历史档案。消除「evolution 目录像是仍在活跃维护」的误导。
 
 （R1 全量验证：vitest 768 全绿（基线 751 + 17 新增）、ESLint 零告警、`tsc -b` 零错误；后端零改动。）
 
 （R2 全量验证：pytest 10605 passed + 7 个既有 Linux 平台差异红（与 `docs/performance-baseline.md` v1.6.1 备案清单逐项一致，基线 10595 + 10 新增）、ruff 全绿、`tsc -b` 零错误、vitest 768 全绿。）
+
+（R3 全量验证：vitest 771 全绿（基线 768 + 3 新增）、`tsc -b` 零错误、ESLint 零告警、`grep -nP` 中文扫描 right-panel 组件目录零硬编码残留（仅 `__tests__` 断言文件命中，属正常）；期间字号守卫测试（P2#26 最小 11px）抓到沙盒徽章初版 `text-[10px]`，已即时修正。）
 
 ## [1.6.1] - 2026-08-29
 
