@@ -17,19 +17,19 @@ e2e 21/21 × 3 连跑零失败。详见各节"R50 复测"列与 CHANGELOG 0.19.0
 首屏 JS 144.8 KB / CSS 8.3 KB gzip（预算内）、SQLite 索引审计 15 passed
 零裸表扫。v1.5→v1.6 的沙盒/overlay/CAS 等重功能落地后无 P0 级退化。
 
-**Linux 容器已知平台差异测试（v1.6.1 全量 7 failed / 10595 passed 的构成）**：
-以下 7 个用例断言 Windows 语义，在 Linux 容器上红属预期，不计为回归
-（Windows 开发机全量基线为全绿）：
+**Linux 容器平台差异测试（2026-08-30 B1 收口，全量 10611 passed / 9 skipped / 0 failed）**：
+v1.6.1 曾备案 7 个 Windows 语义用例在 Linux 容器红（10595 passed / 7 failed）。
+B1 逐项排查后全部收口——单平台全量全绿不再需要豁免清单：
 
-| 测试 | 差异根因 |
-|------|----------|
-| `test_write_registry.py::test_registry_folds_path_case` | `os.path.normcase` 在 Linux 是 no-op，大小写折叠不生效 |
-| `test_xai_codebase_graph_index_manager_types.py::test_symbol_location_as_path_handles_backslash_separator` | 反斜杠分隔符仅 Windows 路径合法 |
-| `test_terminal_hardening.py::test_path_prefix_stripped` | 危险命令路径前缀剥离按 Windows 形态断言 |
-| `test_workspace_ctx.py::test_exec_default_cwd_is_session_root` | 会话根解析的盘符语义 |
-| `test_hunks_types.py::test_hunk_value_equality` | Linux 文件系统时钟精度（`created_at` 不等） |
-| `test_handlers_mcp.py::test_mcp_add_and_list_server` | 容器内有 npx → `connected=True`，断言按「无 npx」写 |
-| `test_exec_sandbox_escape.py::test_attributed_foreign_write_not_flagged` | fs `mtime_ns` 时序窗口在容器内核上更细 |
+| 测试 | 原备案根因 | B1 实查与处置 |
+|------|-----------|--------------|
+| `test_write_registry.py::test_registry_folds_path_case` | normcase 大小写折叠不生效 | 属实（Windows FS 语义）→ `skipif` 非 win32 显式声明 |
+| `test_xai_codebase_graph_index_manager_types.py::test_symbol_location_as_path_handles_backslash_separator` | 反斜杠分隔符仅 Windows 合法 | 属实 → `skipif` 非 win32 |
+| `test_terminal_hardening.py::test_path_prefix_stripped` | 路径前缀剥离按 Windows 形态断言 | **实为产品缺陷**：`_is_dangerous_cmd` 扩展名剥离被 `sys.platform == "win32"` 门住，Linux 上 `python.exe` 不剥导致危险命令漏检 → 实现修复（`.exe/.bat/.cmd/.com/.ps1` 全平台剥离）+ 新增跨平台用例 |
+| `test_workspace_ctx.py::test_exec_default_cwd_is_session_root` | 会话根解析的盘符语义 | 实为环境差异（容器无 `python` 命令）→ 测试改 `sys.executable`，两平台都跑 |
+| `test_hunks_types.py::test_hunk_value_equality` | Linux 文件系统时钟精度 | 属实但属测试设计脆弱（值相等断言依赖时钟粒度）→ `created_at` 固定字面值 |
+| `test_handlers_mcp.py::test_mcp_add_and_list_server` | 容器内有 npx → `connected=True` | 属实（add 真实 attach）→ 断言环境自适应（无 npx 必 False，有 npx 验 bool 形态） |
+| `test_exec_sandbox_escape.py::test_attributed_foreign_write_not_flagged` | fs `mtime_ns` 时序窗口更细 | **备案定性有误**：实为测试时序竞态——`sleep(0.05)` 注入相对子进程生命周期两头都可能出窗（快机晚于减除扫描、朴素哨兵早于 watermark）→ 两级握手（ready→go）钉死 emit 落入归因窗口 |
 
 ## 1. Agent 冷启动（R9）
 

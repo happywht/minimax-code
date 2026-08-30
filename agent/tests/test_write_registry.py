@@ -17,6 +17,7 @@ since v1.4.1).
 
 from __future__ import annotations
 
+import sys
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -160,6 +161,10 @@ async def test_release_clears_claims(workspace_root: Path) -> None:
     assert in_flight_writer(workspace_root / "other.txt") == "run_y"
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="case-folding via os.path.normcase is a Windows-FS semantic; on Linux it is a no-op",
+)
 @pytest.mark.asyncio
 async def test_registry_folds_path_case(workspace_root: Path) -> None:
     with run_as("run_a"):

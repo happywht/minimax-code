@@ -146,6 +146,18 @@ class TestIsDangerousCmd:
         assert _is_dangerous_cmd(["/usr/bin/sudo", "ls"]) is not None
         assert _is_dangerous_cmd(["C:\\Python312\\python.exe", "-c", "1"]) is not None
 
+    def test_windows_exec_extension_stripped_on_all_platforms(self) -> None:
+        """Known Windows executable extensions are recognised off-Windows too.
+
+        An agent running on Linux may still be asked to run a Windows-style
+        argv; the danger check must not depend on the host platform.
+        """
+        assert _is_dangerous_cmd(["python.exe", "-c", "1"]) is not None
+        assert _is_dangerous_cmd([".\\python.bat", "-c", "1"]) is not None
+        assert _is_dangerous_cmd(["sudo.cmd", "ls"]) is not None
+        # POSIX dotted names carry no Windows extension — left intact.
+        assert _is_dangerous_cmd(["python3.12", "--version"]) is None
+
     def test_empty_cmd_safe(self) -> None:
         assert _is_dangerous_cmd([]) is None
 

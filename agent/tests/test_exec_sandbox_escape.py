@@ -159,15 +159,39 @@ async def test_attributed_foreign_write_not_flagged(
     Real bus; a background task emits the foreign run's write_file event
     while the child is running — the diff sees both files but only the
     unattributed one survives into the report.
+
+    Ordering is enforced with a two-way handshake instead of a wall-clock
+    sleep because the attribution window is bounded on BOTH sides: the bus
+    watermark is taken right after the pre-walk (before spawn) and the
+    subtraction scan runs right after the post-walk. A plain sleep(0.05)
+    races on fast hosts (emit lands after the scan), while a naive sentinel
+    races the other way (emit lands during the pre-walk, at or before the
+    watermark). Here the child first drops a ready-file *outside* the
+    workspace (a sentinel inside would pollute the escape diff), the
+    injector waits for it — hence strictly after spawn, hence strictly
+    above the watermark — and only then drops the go-file and emits; the
+    child spins on the go-file before writing, so the emit also strictly
+    precedes the post-walk.
     """
     bus = FsEventBus()
     monkeypatch.setattr("minimax_code.app.ensure_fs_bus", lambda: bus)
 
-    body = "open('esc.txt', 'w').write('mine')\nopen('foreign.txt', 'w').write('x')\n"
+    ready = tmp_path / "ready.txt"  # tmp_path root — outside the workspace snapshot
+    go = tmp_path / "go.txt"
+    body = (
+        "import os, time\n"
+        f"open({str(ready)!r}, 'w').write('r')\n"
+        f"while not os.path.exists({str(go)!r}):\n"
+        "    time.sleep(0.005)\n"
+        "open('esc.txt', 'w').write('mine')\n"
+        "open('foreign.txt', 'w').write('x')\n"
+    )
     cmd = _script(tmp_path, body)
 
     async def inject_foreign_event() -> None:
-        await asyncio.sleep(0.05)
+        while not ready.exists():
+            await asyncio.sleep(0.005)
+        go.write_text("go", encoding="utf-8")
         bus.emit(
             "created",
             [str(workspace_root / "foreign.txt")],

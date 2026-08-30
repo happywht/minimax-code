@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`AgentRun.mode` 契约漂移**：前端 `web/src/types/ipc.ts` 的 mode 联合类型缺 `"subagent"`（migration 028 加列值、`run.list` 的 mode 过滤均为 v1.4.0 已有，前端类型没跟上）；`typed.ts` `listRuns` opts 补 `mode?: string`；`mock.ts` `run.list` 补 mode 过滤分支（mock 契约对齐）。
+- **危险命令检测的跨平台漏检**（backlog B1：平台差异测试收口·实现项）：`terminal.py` `_is_dangerous_cmd` 的扩展名剥离被 `sys.platform == "win32"` 门住——Linux/macOS 上跑 agent 时，Windows 风格 argv（如 `C:\Python312\python.exe -c ...`）剥路径后仍是 `python.exe`，不匹配危险词表即漏检。修复：`.exe/.bat/.cmd/.com/.ps1` 已知 Windows 可执行扩展**全平台**剥离（新 `_strip_executable_name` helper），Windows 上任意其他带点名保留原剥离语义；POSIX 点缀名（`python3.12`）不受影响。+1 直测用例（Linux 命中 python.exe/python.bat/sudo.cmd + python3.12 放行）。
+- **7 项 Windows 语义用例跨平台收口**（backlog B1：测试项，v1.6.1 备案的 Linux 容器 7 failed 清零，全量 10611 passed / 9 skipped / 0 failed 首次单平台全绿）：① `test_registry_folds_path_case` / ② `test_symbol_location_backslash`——纯 Windows FS 语义（normcase 折叠 / 反斜杠分隔符），`skipif` 非 win32 显式声明；③ `test_path_prefix_stripped`——随上述实现修复转绿，双断言全平台跑；④ `test_exec_default_cwd_is_session_root`——容器无 `python` 命令的环境差异（非平台语义），改 `sys.executable` 两平台都跑；⑤ `test_hunk_value_equality`——值相等断言不该依赖时钟粒度（Windows 粗粒度两次 `now()` 同值、Linux 高精度必不等），`created_at` 固定字面值；⑥ `test_mcp_add_and_list_server`——add_server 真实 attach（spawn npx），断言环境自适应（无 npx 必 False，有 npx 验 bool 形态）；⑦ `test_attributed_foreign_write_not_flagged`——**根因更正**：非备案的「mtime_ns 精度」，实为注入 `sleep(0.05)` 相对子进程生命周期的双向时序竞态（快机 emit 晚于减除扫描；朴素哨兵又早于 watermark 读取），改两级握手（子进程落 workspace 外 ready 文件 → injector 见 ready 写 go + emit → 子进程过关卡写文件）把 emit 确定性钉入归因窗口 `(watermark, post-walk)`，连跑 3 次稳定。`docs/performance-baseline.md` 平台差异备案段同步重写为处置对照表（含 ⑦ 根因更正）。
 
 ### Changed
 
