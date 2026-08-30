@@ -21,6 +21,12 @@ export interface TaskProgressEntry {
   message?: string;
   /** v1.2.0 — the run's persisted result text (LLM reply for prompt payloads). */
   result?: string;
+  /** Human-readable title from the persisted ledger (B3). Live events do not carry it. */
+  title?: string;
+  /** Owning session id from the persisted ledger (B3). */
+  session_id?: string;
+  /** Creation time (epoch ms) from the persisted ledger; anchors duration display (B3). */
+  created_at?: number;
   updated_at: number;
 }
 
@@ -61,12 +67,16 @@ function entryFromRow(row: TaskRow): TaskProgressEntry {
   const message = status === "error" && row.error ? row.error : undefined;
   const updatedAtRaw = row.completed_at || row.created_at;
   const updated_at = updatedAtRaw ? new Date(updatedAtRaw).getTime() || Date.now() : Date.now();
+  const created_ms = row.created_at ? new Date(row.created_at).getTime() || undefined : undefined;
   return {
     task_id: row.id,
     status,
     progress: Math.max(0, Math.min(1, row.progress / 100)),
     message,
     result: row.result ?? undefined,
+    title: row.title || undefined,
+    session_id: row.session_id || undefined,
+    created_at: created_ms,
     updated_at,
   };
 }

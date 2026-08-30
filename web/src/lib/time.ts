@@ -99,3 +99,25 @@ export function formatTime(input: number | string): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+
+/**
+ * Format a duration (ms) as a compact human string.
+ *   - under 1 hour  -> "MM:SS" (e.g. "04:07")
+ *   - 1 hour or more -> "X 小时 Y 分" (e.g. "2 小时 5 分")
+ *
+ * Negative inputs (clock skew) are clamped to 0 -> "00:00". Used by the
+ * progress panel's settled-task duration display.
+ */
+export function formatDuration(durationMs: number): string {
+  const totalSeconds = Math.floor(Math.max(0, durationMs) / MS_PER_SECOND);
+  if (totalSeconds < 3600) {
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${pad(minutes)}:${pad(seconds)}`;
+  }
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours} 小时 ${minutes} 分`;
+}

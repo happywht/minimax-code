@@ -11,22 +11,49 @@
  * v0.11.0: the panel now hydrates from the persisted ``task.list`` ledger
  * on mount and exposes a cancel affordance for running tasks.
  *
+ * B3 redesign: the ledger's ``title`` becomes the primary identifier
+ * (the mono task id moves to a metadata line), tasks are partitioned
+ * into live / settled sections (newest first), status badges are
+ * localized via strings.ts, each card shows relative time + settled
+ * duration + a progress percentage, and result / error bodies are
+ * expandable instead of hard-truncated at max-h-16.
+ *
  * The contract preserved for backwards compatibility with the old
  * progress-panel.test.tsx is the ``testId`` namespace ``pp`` and the
  * ``task-row-<id>`` / ``task-status-<status>`` test ids on the inner
  * elements.
  */
-import { useEffect, useState } from "react";
-import { Activity, CheckCircle2, CircleAlert, Loader2, RefreshCw, X, Ban } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { Activity, CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Loader2, RefreshCw, X, Ban } from "lucide-react";
 import { ipc } from "../../ipc";
-import { useTaskStore } from "../../stores";
+import { useTaskStore, type TaskProgressEntry } from "../../stores";
 import type { SidecarEvent } from "../../types/ipc";
 import { strings } from "../../ui/strings";
+import { formatDuration, formatRelative } from "../../lib/time";
 
 type SidecarState = "pending" | "ready" | "error";
 
 export interface ProgressPanelProps {
   testId?: string;
+}
+
+/** Split entries into live (running/pending) and settled, newest first. */
+function partitionTasks(
+  entries: TaskProgressEntry[],
+): { live: TaskProgressEntry[]; settled: TaskProgressEntry[] } {
+  const live: TaskProgressEntry[] = [];
+  const settled: TaskProgressEntry[] = [];
+  for (const t of entries) {
+    if (t.status === "running" || t.status === "pending") {
+      live.push(t);
+    } else {
+      settled.push(t);
+    }
+  }
+  const byNewest = (a: TaskProgressEntry, b: TaskProgressEntry) => b.updated_at - a.updated_at;
+  live.sort(byNewest);
+  settled.sort(byNewest);
+  return { live, settled };
 }
 
 export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps): JSX.Element {
@@ -92,6 +119,7 @@ export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps)
 
   const taskList = Object.values(tasks);
   const runningCount = taskList.filter((t) => t.status === "running").length;
+  const { live, settled } = partitionTasks(taskList);
 
   return (
     <section
@@ -135,77 +163,187 @@ export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps)
             {strings.rightPanel.progress.empty}
           </div>
         ) : (
-          <ul className="space-y-1.5" data-testid={`${testId}-task-list`}>
-            {taskList.map((t) => (
-              <li
-                key={t.task_id}
-                data-testid={`task-row-${t.task_id}`}
-                className="rounded-md border border-minimax-border bg-minimax-bg/40 p-2"
+          <>
+            {live.length > 0 && (
+              <TaskSection
+                label={strings.rightPanel.progress.sectionRunning}
+                listTestId={`${testId}-task-list-live`}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <StatusDot status={t.status} />
-                    <span className="truncate font-mono text-[11px] text-minimax-muted">
-                      {t.task_id}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <StatusBadge status={t.status} />
-                    {t.status === "running" && (
-                      <button
-                        type="button"
-                        aria-label={strings.rightPanel.progress.cancelTitle}
-                        title={strings.rightPanel.progress.cancelTitle}
-                        onClick={() => void handleCancel(t.task_id)}
-                        className="text-minimax-muted hover:text-status-error"
-                        data-testid={`${testId}-cancel-${t.task_id}`}
-                      >
-                        <Ban size={10} />
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      aria-label={strings.rightPanel.progress.dismissTitle}
-                      onClick={() => remove(t.task_id)}
-                      className="text-minimax-muted hover:text-minimax-fg"
-                    >
-                      <X size={10} />
-                    </button>
-                  </div>
-                </div>
-                <div className="mt-1.5 h-1 w-full overflow-hidden rounded bg-minimax-border">
-                  <div
-                    className={
-                      "h-full transition-all " +
-                      (t.status === "error"
-                        ? "bg-red-500"
-                        : t.status === "done"
-                          ? "bg-emerald-500"
-                          : "bg-minimax-accent")
-                    }
-                    style={{ width: `${Math.round(t.progress * 100)}%` }}
+                {live.map((t) => (
+                  <TaskCard
+                    key={t.task_id}
+                    task={t}
+                    testId={testId}
+                    onCancel={() => void handleCancel(t.task_id)}
+                    onDismiss={() => remove(t.task_id)}
                   />
-                </div>
-                {t.message && (
-                  <div className="mt-1 truncate text-[11px] text-minimax-muted">
-                    {t.message}
-                  </div>
-                )}
-                {t.status === "done" && t.result && (
-                  <div
-                    data-testid={`task-result-${t.task_id}`}
-                    title={t.result}
-                    className="mt-1 max-h-16 overflow-hidden whitespace-pre-wrap break-words rounded bg-minimax-bg/60 px-1.5 py-1 font-mono text-[11px] leading-4 text-minimax-fg/70"
-                  >
-                    {t.result}
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
+                ))}
+              </TaskSection>
+            )}
+            {settled.length > 0 && (
+              <TaskSection
+                label={strings.rightPanel.progress.sectionSettled}
+                listTestId={`${testId}-task-list-settled`}
+              >
+                {settled.map((t) => (
+                  <TaskCard
+                    key={t.task_id}
+                    task={t}
+                    testId={testId}
+                    onCancel={() => void handleCancel(t.task_id)}
+                    onDismiss={() => remove(t.task_id)}
+                  />
+                ))}
+              </TaskSection>
+            )}
+          </>
         )}
       </div>
     </section>
+  );
+}
+
+function TaskSection({
+  label,
+  listTestId,
+  children,
+}: {
+  label: string;
+  listTestId: string;
+  children: ReactNode;
+}): JSX.Element {
+  return (
+    <div>
+      <div className="px-0.5 pb-1 text-[11px] font-medium uppercase tracking-wide text-minimax-muted">
+        {label}
+      </div>
+      <ul className="space-y-1.5" data-testid={listTestId}>
+        {children}
+      </ul>
+    </div>
+  );
+}
+
+function TaskCard({
+  task,
+  testId,
+  onCancel,
+  onDismiss,
+}: {
+  task: TaskProgressEntry;
+  testId: string;
+  onCancel: () => void;
+  onDismiss: () => void;
+}): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+  const pct = Math.round(task.progress * 100);
+  const settled = task.status !== "running" && task.status !== "pending";
+  const detail = task.status === "error" ? task.message || task.result : task.result;
+
+  return (
+    <li
+      data-testid={`task-row-${task.task_id}`}
+      className="rounded-md border border-minimax-border bg-minimax-bg/40 p-2"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <StatusDot status={task.status} />
+          <span
+            data-testid={`task-title-${task.task_id}`}
+            className="truncate text-[11px] text-minimax-fg"
+            title={task.title || task.task_id}
+          >
+            {task.title || task.task_id}
+          </span>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <StatusBadge status={task.status} />
+          {task.status === "running" && (
+            <button
+              type="button"
+              aria-label={strings.rightPanel.progress.cancelTitle}
+              title={strings.rightPanel.progress.cancelTitle}
+              onClick={onCancel}
+              className="text-minimax-muted hover:text-status-error"
+              data-testid={`${testId}-cancel-${task.task_id}`}
+            >
+              <Ban size={10} />
+            </button>
+          )}
+          <button
+            type="button"
+            aria-label={strings.rightPanel.progress.dismissTitle}
+            title={strings.rightPanel.progress.dismissTitle}
+            onClick={onDismiss}
+            className="text-minimax-muted hover:text-minimax-fg"
+          >
+            <X size={10} />
+          </button>
+        </div>
+      </div>
+      <div className="mt-1 flex items-center gap-1.5 text-[11px] text-minimax-muted">
+        <span className="truncate font-mono">{task.task_id}</span>
+        <span aria-hidden>·</span>
+        <span className="whitespace-nowrap">{formatRelative(task.updated_at)}</span>
+        {settled && task.created_at !== undefined && (
+          <>
+            <span aria-hidden>·</span>
+            <span className="whitespace-nowrap" data-testid={`task-duration-${task.task_id}`}>
+              {strings.rightPanel.progress.durationPrefix}{" "}
+              {formatDuration(task.updated_at - task.created_at)}
+            </span>
+          </>
+        )}
+      </div>
+      <div className="mt-1.5 flex items-center gap-1.5">
+        <div className="h-1 flex-1 overflow-hidden rounded bg-minimax-border">
+          <div
+            className={
+              "h-full transition-all " +
+              (task.status === "error"
+                ? "bg-red-500"
+                : task.status === "done"
+                  ? "bg-emerald-500"
+                  : "bg-minimax-accent")
+            }
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+        <span
+          data-testid={`task-percent-${task.task_id}`}
+          className="w-8 shrink-0 text-right font-mono text-[11px] text-minimax-muted"
+        >
+          {strings.rightPanel.progress.percent(pct)}
+        </span>
+      </div>
+      {task.message && task.status !== "error" && (
+        <div className="mt-1 truncate text-[11px] text-minimax-muted">{task.message}</div>
+      )}
+      {detail && (
+        <button
+          type="button"
+          data-testid={`task-detail-toggle-${task.task_id}`}
+          aria-expanded={expanded}
+          title={expanded ? strings.rightPanel.progress.collapseTitle : strings.rightPanel.progress.expandTitle}
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-1 block w-full text-left"
+        >
+          <div
+            data-testid={`task-detail-${task.task_id}`}
+            className={
+              "whitespace-pre-wrap break-words rounded bg-minimax-bg/60 px-1.5 py-1 font-mono text-[11px] leading-4 text-minimax-fg/70 " +
+              (expanded ? "" : "line-clamp-2")
+            }
+          >
+            {detail}
+          </div>
+          <div className="flex items-center gap-0.5 pt-0.5 text-[11px] text-minimax-muted">
+            {expanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+            {expanded ? strings.rightPanel.progress.collapseTitle : strings.rightPanel.progress.expandTitle}
+          </div>
+        </button>
+      )}
+    </li>
   );
 }
 
@@ -277,11 +415,11 @@ function StatusBadge({ status }: { status: string }): JSX.Element {
     <span
       data-testid={`task-status-${status}`}
       className={
-        "rounded px-1.5 py-0.5 text-[11px] font-medium uppercase " +
+        "rounded px-1.5 py-0.5 text-[11px] font-medium " +
         (map[status] ?? "bg-minimax-border text-minimax-muted")
       }
     >
-      {status}
+      {strings.rightPanel.progress.statusLabel[status] ?? status}
     </span>
   );
 }
