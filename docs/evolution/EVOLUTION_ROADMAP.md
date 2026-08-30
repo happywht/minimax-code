@@ -1,5 +1,7 @@
 # MiniMax Code ↔ Grok Build 融合演进路线图
 
+> ⚠️ **已归档（只读历史档案）**：本路线图对应 v0.8.0 → v0.9.0 融合专项，随 R310 收官完成历史使命。v1.0.0 起的演进规划与变更记录以根目录 `CHANGELOG.md` 为权威账本；本文件与 [`ITERATION_LOG.md`](./ITERATION_LOG.md) 不再更新。
+
 > **愿景**：把 Grok Build（xAI 终端 AI 编码 Agent，70+ Rust crates）的**架构设定与平台级能力**，深度融合到 MiniMax Code（Python + React 桌面 Agent），演进为**高度进化、可通用的平台型工具产品**。
 >
 > **方法论**：理念融合（非代码移植）。Grok 的 Rust crate 是设计参考蓝本，我们用 Python/TypeScript 在 MiniMax Code 的 asyncio + JSON-RPC + React SPA 架构上**重新实现等价能力**，并保持与现有 IPC 契约、存储层、技能系统的兼容。

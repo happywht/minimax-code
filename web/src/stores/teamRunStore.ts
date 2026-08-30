@@ -32,6 +32,16 @@ export interface TeamRunEntry {
     merged_text: string;
     success: boolean;
     conflicts: Array<{ file_path: string; agents: string[]; conflict_type: string }>;
+    /** v1.7.0 R2 — auto-collect aggregate (sandboxed runs only). */
+    sandbox?: boolean;
+    sandbox_summary?: {
+      collected: number;
+      merged_files: number;
+      conflicts: Array<{ run_id: string; agent_name: string; path: string; reason: string }>;
+      errors: number;
+      skipped_runs: string[];
+      skipped_files: string[];
+    };
   };
 }
 
@@ -44,6 +54,8 @@ export interface TeamRunState {
     request: string;
     session_id?: string;
     parent_session_id?: string;
+    /** v1.7.0 R2 — per-member write sandboxing (default: env knob > false). */
+    sandbox?: boolean;
   }) => Promise<void>;
 
   /** Clear completed/failed runs older than `maxAgeMs`. */
@@ -98,6 +110,8 @@ export const useTeamRunStore = create<TeamRunState>((set, _get) => ({
                   merged_text: result.merged_text,
                   success: result.success,
                   conflicts: result.conflicts,
+                  sandbox: result.sandbox,
+                  ...(result.sandbox_summary ? { sandbox_summary: result.sandbox_summary } : {}),
                 },
               }
             : r,

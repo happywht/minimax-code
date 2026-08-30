@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import uuid
 from pathlib import Path
 
@@ -307,7 +308,9 @@ async def test_exec_default_cwd_is_session_root(tmp_path: Path) -> None:
 
     token = set_current_root(proj)
     try:
-        result = await ExecCommandTool().run(cmd=["python", "probe.py"])
+        # sys.executable: the interpreter running the tests always exists,
+        # unlike a bare "python" which Linux containers often lack.
+        result = await ExecCommandTool().run(cmd=[sys.executable, "probe.py"])
         assert result.success, str(result.error)
         stdout = str(result.output["stdout"]).strip()
         assert Path(stdout).resolve() == proj.resolve()

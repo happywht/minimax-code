@@ -20,7 +20,10 @@ adds Python-specific coverage for the contract surface:
 
 from __future__ import annotations
 
+import sys
 from pathlib import PurePath
+
+import pytest
 
 import minimax_code.xai_codebase_graph as xcg_root
 from minimax_code.xai_codebase_graph import index_manager as im
@@ -166,6 +169,10 @@ def test_symbol_location_as_path_returns_purepath() -> None:
     assert p.as_posix() == "src/foo.py"
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="backslash is a path separator only on Windows; PurePath keeps it inside the filename on POSIX",
+)
 def test_symbol_location_as_path_handles_backslash_separator() -> None:
     """Windows-style relative paths round-trip through ``PurePath``."""
     loc = SymbolLocation.new("src\\foo.py", 1)

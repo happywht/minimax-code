@@ -73,7 +73,9 @@ export function TopBar({
             onClick={onToggleInspector}
             data-testid="app-topbar-inspector"
             // md–lg only: from lg up the inspector lives inline instead.
-            className="md:inline-flex lg:hidden"
+            // (the leading `hidden` matters: without it the button is
+            // visible on phones, where the drawer is lg-guarded anyway)
+            className="hidden md:inline-flex lg:hidden"
           >
             <PanelRight size={14} />
           </IconButton>

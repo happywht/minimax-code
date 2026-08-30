@@ -443,171 +443,218 @@ class CollectSubagentTool(Tool):
                 "then collect"
             )
 
-        # Idempotence first (new receipt home, then the legacy in-sandbox
-        # marker): a second collect replays the first run's report. A
-        # legacy marker lives inside the tree a prune would delete, so it
-        # is migrated to the flat home first — and a failed migration
-        # cancels the prune rather than destroying the only receipt.
-        prior = _read_collected_report(run_id)
-        if prior is not None:
-            replay: dict[str, Any] = {**prior, "already_collected": True}
-            can_prune = prune
-            new_marker = collected_marker_path(run_id)
-            if prune and new_marker is not None and not new_marker.exists():
-                # Migration exists only to make the prune safe; with
-                # prune=False the legacy layout stays exactly as found.
-                try:
-                    new_marker.parent.mkdir(parents=True, exist_ok=True)
-                    new_marker.write_text(
-                        json.dumps(prior, indent=2, ensure_ascii=False),
-                        encoding="utf-8",
-                    )
-                except OSError:
-                    logger.debug(
-                        "receipt migration failed for %s", run_id, exc_info=True
-                    )
-                    can_prune = False
-            if can_prune:
-                pruned, prune_error = _prune_sandbox(run_id)
-                replay["pruned"] = pruned
-                if prune_error:
-                    replay["prune_error"] = prune_error
-            return ToolResult.ok(replay)
+        # All merge logic lives in :func:`collect_sandbox_run` (v1.7.0
+        # extraction) so the team orchestrator can reuse the exact same
+        # collect semantics without going through a Tool instance. The
+        # tool shell only owns tool-facing concerns: param validation
+        # and the in-flight guard above.
+        ok, error, report = await collect_sandbox_run(
+            run_id, on_conflict=on_conflict, prune=prune,
+        )
+        if not ok:
+            return ToolResult.fail(error, output=(report or None))
+        return ToolResult.ok(report)
 
-        sb_dir = sandbox_root_for(run_id)
-        if sb_dir is None or not sb_dir.is_dir():
-            return ToolResult.fail(
-                f"no sandbox found for run {run_id!r} (the run never opted "
-                "into sandbox=true, or the sandbox tree was pruned)"
-            )
 
-        from .file_ops import file_sha256
+async def collect_sandbox_run(
+    run_id: str,
+    *,
+    on_conflict: str = "fail",
+    prune: bool = True,
+) -> tuple[bool, str | None, dict[str, Any]]:
+    """Merge a finished sandboxed run's writes back into the workspace.
 
-        root = _workspace_root()
-        assert root is not None  # sandbox_root_for resolved, so root exists
+    Shared core behind ``collect_subagent`` (tool path) and the team
+    orchestrator's end-of-run auto-collect. Three-way compare per file —
+    the ``_base/`` COW snapshot (what the workspace looked like when the
+    run first touched the file), the workspace's current bytes, and the
+    sandbox mirror's bytes, all hashed at the byte level so binaries
+    merge as first-class citizens:
 
-        merged: list[dict[str, Any]] = []
-        noop: list[str] = []
-        conflicts: list[dict[str, Any]] = []
-        skipped: list[str] = []
-        errors: list[dict[str, Any]] = []
-        emits: dict[str, list[str]] = {"created": [], "modified": []}
+    * workspace unchanged since the snapshot → apply the sandbox version
+    * workspace already equals the sandbox version → no-op
+    * workspace changed independently → **conflict**, surfaced with all
+      three hashes rather than silently clobbered
 
-        for rel in sandbox_files_written(run_id):
-            try:
-                sb_file = sb_dir.joinpath(*rel.split("/"))
-                base_file = (sb_dir / BASE_DIR).joinpath(*rel.split("/"))
-                ws_file = root.joinpath(*rel.split("/"))
+    ``on_conflict`` decides what happens to conflicts: ``fail`` refuses
+    the whole collect (no marker written — resolve manually and re-run,
+    already-merged files degrade to no-ops so the re-run is idempotent);
+    ``skip`` keeps the workspace version; ``overwrite`` applies the
+    sandbox version. A successful collect writes its receipt under
+    ``.minimax/sandboxes/.collected/<run_id>.json`` making subsequent
+    collects no-ops — and, since v1.6.0, prunes the sandbox tree itself
+    (disable with ``prune=False``). Pruning is conservative: conflicts,
+    per-file errors, skipped files or an unwritable receipt all keep the
+    sandbox on disk so the merge can be resolved and re-run.
 
-                sb_sha = file_sha256(sb_file)
-                if sb_sha is None:
-                    errors.append(
-                        {"path": rel, "error": "sandbox copy is unreadable"}
-                    )
-                    continue
-                has_base = base_file.exists()
-                base_sha = file_sha256(base_file) if has_base else None
-                ws_existed = ws_file.exists()
-                cur_sha = file_sha256(ws_file) if ws_existed else None
-
-                # Classify: conflict, no-op, or merge.
-                conflict_reason = ""
-                if has_base:
-                    if cur_sha is None:
-                        conflict_reason = "workspace copy was deleted after the sandbox snapshot"
-                    elif cur_sha != base_sha and cur_sha != sb_sha:
-                        conflict_reason = "workspace copy changed since the sandbox snapshot"
-                elif cur_sha is not None and cur_sha != sb_sha:
-                    conflict_reason = "file was created independently in the workspace"
-
-                if not conflict_reason and cur_sha == sb_sha:
-                    noop.append(rel)
-                    continue
-
-                if conflict_reason:
-                    entry = {
-                        "path": rel,
-                        "reason": conflict_reason,
-                        "sandbox_sha256": sb_sha,
-                    }
-                    if base_sha is not None:
-                        entry["base_sha256"] = base_sha
-                    if cur_sha is not None:
-                        entry["current_sha256"] = cur_sha
-                    if on_conflict == "fail":
-                        conflicts.append(entry)
-                    elif on_conflict == "skip":
-                        skipped.append(rel)
-                    else:  # overwrite — resolve by applying the sandbox bytes
-                        ws_file.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(sb_file, ws_file)
-                        merged.append(
-                            {"path": rel, "conflict_resolved": "overwrite"}
-                        )
-                        emits["modified"].append(str(ws_file))
-                    continue
-
-                # Clean merge: workspace still at the baseline (or absent).
-                ws_file.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(sb_file, ws_file)
-                merged.append({"path": rel})
-                emits["created" if not ws_existed else "modified"].append(
-                    str(ws_file)
-                )
-            except OSError as exc:
-                errors.append({"path": rel, "error": str(exc)})
-                continue  # the walk must survive any single bad file
-
-        _emit_collect(emits)
-
-        report: dict[str, Any] = {
-            "run_id": run_id,
-            "sandbox_dir": str(sb_dir),
-            "strategy": on_conflict,
-            "merged": merged,
-            "noop": noop,
-            "conflicts": conflicts,
-            "skipped": skipped,
-            "errors": errors,
-            "collected_at": time.time(),
-        }
-
-        if conflicts:
-            # 'fail' policy: refuse without the receipt so a manual
-            # resolution + re-run stays idempotent (already-merged
-            # files come back as no-ops).
-            return ToolResult.fail(
-                f"collect_subagent: {len(conflicts)} conflict(s) between the "
-                "workspace and the sandbox — resolve manually or re-run with "
-                "on_conflict=skip/overwrite; no receipt was written",
-                output=report,
-            )
-
-        # Receipt first, prune second — deleting the tree without a
-        # durable receipt would destroy the idempotence evidence and
-        # wedge future collects into "no sandbox found".
-        marker_written = False
+    Returns ``(ok, error, report)`` — ``ok=False`` carries the
+    human-readable reason in ``error`` (and the detailed ``report``
+    whenever one exists).
+    """
+    # Idempotence first (new receipt home, then the legacy in-sandbox
+    # marker): a second collect replays the first run's report. A
+    # legacy marker lives inside the tree a prune would delete, so it
+    # is migrated to the flat home first — and a failed migration
+    # cancels the prune rather than destroying the only receipt.
+    prior = _read_collected_report(run_id)
+    if prior is not None:
+        replay: dict[str, Any] = {**prior, "already_collected": True}
+        can_prune = prune
         new_marker = collected_marker_path(run_id)
-        if new_marker is not None:
+        if prune and new_marker is not None and not new_marker.exists():
+            # Migration exists only to make the prune safe; with
+            # prune=False the legacy layout stays exactly as found.
             try:
                 new_marker.parent.mkdir(parents=True, exist_ok=True)
                 new_marker.write_text(
-                    json.dumps(report, indent=2, ensure_ascii=False),
+                    json.dumps(prior, indent=2, ensure_ascii=False),
                     encoding="utf-8",
                 )
-                marker_written = True
             except OSError:
                 logger.debug(
-                    "collect receipt write failed for %s", run_id, exc_info=True
+                    "receipt migration failed for %s", run_id, exc_info=True
                 )
-
-        # Conservative prune gate: the receipt must be durable and the
-        # merge must have fully succeeded — errors or skipped files mean
-        # the sandbox still holds the only copy of something.
-        if prune and marker_written and not errors and not skipped:
+                can_prune = False
+        if can_prune:
             pruned, prune_error = _prune_sandbox(run_id)
-            report["pruned"] = pruned
+            replay["pruned"] = pruned
             if prune_error:
-                report["prune_error"] = prune_error
+                replay["prune_error"] = prune_error
+        return True, None, replay
 
-        return ToolResult.ok(report)
+    sb_dir = sandbox_root_for(run_id)
+    if sb_dir is None or not sb_dir.is_dir():
+        return False, (
+            f"no sandbox found for run {run_id!r} (the run never opted "
+            "into sandbox=true, or the sandbox tree was pruned)"
+        ), {}
+
+    from .file_ops import file_sha256
+
+    root = _workspace_root()
+    assert root is not None  # sandbox_root_for resolved, so root exists
+
+    merged: list[dict[str, Any]] = []
+    noop: list[str] = []
+    conflicts: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    errors: list[dict[str, Any]] = []
+    emits: dict[str, list[str]] = {"created": [], "modified": []}
+
+    for rel in sandbox_files_written(run_id):
+        try:
+            sb_file = sb_dir.joinpath(*rel.split("/"))
+            base_file = (sb_dir / BASE_DIR).joinpath(*rel.split("/"))
+            ws_file = root.joinpath(*rel.split("/"))
+
+            sb_sha = file_sha256(sb_file)
+            if sb_sha is None:
+                errors.append(
+                    {"path": rel, "error": "sandbox copy is unreadable"}
+                )
+                continue
+            has_base = base_file.exists()
+            base_sha = file_sha256(base_file) if has_base else None
+            ws_existed = ws_file.exists()
+            cur_sha = file_sha256(ws_file) if ws_existed else None
+
+            # Classify: conflict, no-op, or merge.
+            conflict_reason = ""
+            if has_base:
+                if cur_sha is None:
+                    conflict_reason = "workspace copy was deleted after the sandbox snapshot"
+                elif cur_sha != base_sha and cur_sha != sb_sha:
+                    conflict_reason = "workspace copy changed since the sandbox snapshot"
+            elif cur_sha is not None and cur_sha != sb_sha:
+                conflict_reason = "file was created independently in the workspace"
+
+            if not conflict_reason and cur_sha == sb_sha:
+                noop.append(rel)
+                continue
+
+            if conflict_reason:
+                entry = {
+                    "path": rel,
+                    "reason": conflict_reason,
+                    "sandbox_sha256": sb_sha,
+                }
+                if base_sha is not None:
+                    entry["base_sha256"] = base_sha
+                if cur_sha is not None:
+                    entry["current_sha256"] = cur_sha
+                if on_conflict == "fail":
+                    conflicts.append(entry)
+                elif on_conflict == "skip":
+                    skipped.append(rel)
+                else:  # overwrite — resolve by applying the sandbox bytes
+                    ws_file.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(sb_file, ws_file)
+                    merged.append(
+                        {"path": rel, "conflict_resolved": "overwrite"}
+                    )
+                    emits["modified"].append(str(ws_file))
+                continue
+
+            # Clean merge: workspace still at the baseline (or absent).
+            ws_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(sb_file, ws_file)
+            merged.append({"path": rel})
+            emits["created" if not ws_existed else "modified"].append(
+                str(ws_file)
+            )
+        except OSError as exc:
+            errors.append({"path": rel, "error": str(exc)})
+            continue  # the walk must survive any single bad file
+
+    _emit_collect(emits)
+
+    report: dict[str, Any] = {
+        "run_id": run_id,
+        "sandbox_dir": str(sb_dir),
+        "strategy": on_conflict,
+        "merged": merged,
+        "noop": noop,
+        "conflicts": conflicts,
+        "skipped": skipped,
+        "errors": errors,
+        "collected_at": time.time(),
+    }
+
+    if conflicts:
+        # 'fail' policy: refuse without the receipt so a manual
+        # resolution + re-run stays idempotent (already-merged
+        # files come back as no-ops).
+        return False, (
+            f"collect_subagent: {len(conflicts)} conflict(s) between the "
+            "workspace and the sandbox — resolve manually or re-run with "
+            "on_conflict=skip/overwrite; no receipt was written"
+        ), report
+
+    # Receipt first, prune second — deleting the tree without a
+    # durable receipt would destroy the idempotence evidence and
+    # wedge future collects into "no sandbox found".
+    marker_written = False
+    new_marker = collected_marker_path(run_id)
+    if new_marker is not None:
+        try:
+            new_marker.parent.mkdir(parents=True, exist_ok=True)
+            new_marker.write_text(
+                json.dumps(report, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            marker_written = True
+        except OSError:
+            logger.debug(
+                "collect receipt write failed for %s", run_id, exc_info=True
+            )
+
+    # Conservative prune gate: the receipt must be durable and the
+    # merge must have fully succeeded — errors or skipped files mean
+    # the sandbox still holds the only copy of something.
+    if prune and marker_written and not errors and not skipped:
+        pruned, prune_error = _prune_sandbox(run_id)
+        report["pruned"] = pruned
+        if prune_error:
+            report["prune_error"] = prune_error
+
+    return True, None, report

@@ -84,6 +84,80 @@ describe("TeamRunPanel", () => {
     expect(useTeamRunStore.getState().runs).toHaveLength(0);
   });
 
+  const SANDBOX_SUMMARY = {
+    collected: 2,
+    merged_files: 3,
+    conflicts: [],
+    errors: 0,
+    skipped_runs: [],
+    skipped_files: [],
+  };
+
+  it("renders the sandbox badge and collect stats for a sandboxed run", () => {
+    useTeamRunStore.setState({
+      runs: [
+        {
+          ...RUN,
+          status: "completed" as const,
+          result: {
+            merged_text: "汇总结果",
+            success: true,
+            conflicts: [],
+            sandbox: true,
+            sandbox_summary: SANDBOX_SUMMARY,
+          },
+        },
+      ],
+    });
+    render(<TeamRunPanel />);
+    expect(screen.getByTestId("teamrun-sandbox-task_1")).toHaveTextContent("沙箱");
+    expect(screen.getByTestId("teamrun-task_1")).toHaveTextContent("沙盒已回收 2 个运行");
+    expect(screen.getByTestId("teamrun-task_1")).toHaveTextContent("合并落盘 3 个文件");
+    // Clean collect — no warning line.
+    expect(screen.getByTestId("teamrun-task_1")).not.toHaveTextContent("未合并");
+  });
+
+  it("warns when sandbox runs were skipped or errored during collect", () => {
+    useTeamRunStore.setState({
+      runs: [
+        {
+          ...RUN,
+          status: "completed" as const,
+          result: {
+            merged_text: "汇总结果",
+            success: true,
+            conflicts: [],
+            sandbox: true,
+            sandbox_summary: {
+              ...SANDBOX_SUMMARY,
+              collected: 1,
+              skipped_runs: ["team_x_01_writer"],
+              errors: 2,
+            },
+          },
+        },
+      ],
+    });
+    render(<TeamRunPanel />);
+    expect(screen.getByTestId("teamrun-task_1")).toHaveTextContent("1 个沙盒运行未合并");
+    expect(screen.getByTestId("teamrun-task_1")).toHaveTextContent("合并错误 2 个");
+  });
+
+  it("renders no sandbox rows when the run was not sandboxed", () => {
+    useTeamRunStore.setState({
+      runs: [
+        {
+          ...RUN,
+          status: "completed" as const,
+          result: { merged_text: "汇总结果", success: true, conflicts: [] },
+        },
+      ],
+    });
+    render(<TeamRunPanel />);
+    expect(screen.queryByTestId("teamrun-sandbox-task_1")).not.toBeInTheDocument();
+    expect(screen.getByTestId("teamrun-task_1")).not.toHaveTextContent("沙盒已回收");
+  });
+
   it("renders persisted team-run history from run.list", async () => {
     vi.mocked(typedIPC.listRuns).mockResolvedValue({
       runs: [
@@ -119,6 +193,7 @@ describe("teamRunStore.spawn", () => {
       team_name: "调研小队",
       orchestration_mode: "parallel",
       merged_text: "汇总结果",
+      sandbox: false,
       agents_run: [],
       conflicts: [],
       task_id: "teamrun_xyz",

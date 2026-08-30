@@ -198,7 +198,7 @@ export interface TypedIPC {
   searchCodebase(query: string, opts?: { file_pattern?: string; limit?: number; offset?: number; project_id?: string }): Promise<CodebaseSearchResultShape>;
   summarizeCodebasePath(path: string, opts?: { project_id?: string }): Promise<CodebaseSummarizeResult>;
 
-  listRuns(opts?: { session_id?: string; status?: string; limit?: number; offset?: number }): Promise<ListRunsResult>;
+  listRuns(opts?: { session_id?: string; status?: string; mode?: string; limit?: number; offset?: number }): Promise<ListRunsResult>;
   getRunSteps(runId: string): Promise<RunStepsResult>;
 
   // agent
@@ -430,10 +430,14 @@ export interface TypedIPC {
     request: string;
     session_id?: string;
     parent_session_id?: string;
+    /** v1.7.0 R2 — per-member write sandboxing (default: env knob > false). */
+    sandbox?: boolean;
   }): Promise<{
     team_name: string;
     orchestration_mode: string;
     merged_text: string;
+    /** v1.7.0 R2 — whether this run sandboxed its members. */
+    sandbox: boolean;
     agents_run: Array<{
       agent_name: string;
       success: boolean;
@@ -441,6 +445,8 @@ export interface TypedIPC {
       error: string;
       iterations: number;
       stub: boolean;
+      /** v1.7.0 R2 — sandboxed members only (deterministic team_ run id). */
+      run_id?: string;
     }>;
     conflicts: Array<{
       file_path: string;
@@ -449,6 +455,15 @@ export interface TypedIPC {
     }>;
     task_id: string | null;
     success: boolean;
+    /** v1.7.0 R2 — auto-collect aggregate; present only when sandboxed. */
+    sandbox_summary?: {
+      collected: number;
+      merged_files: number;
+      conflicts: Array<{ run_id: string; agent_name: string; path: string; reason: string }>;
+      errors: number;
+      skipped_runs: string[];
+      skipped_files: string[];
+    };
   }>;
 
   // plugins (platform pillar #3) — drive the Settings page's Plugins tab.

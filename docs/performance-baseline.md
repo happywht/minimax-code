@@ -5,22 +5,51 @@
 > 本文档是这些数字的**单一来源**——回归复测时对照本文更新，并在 CHANGELOG 记录。
 
 测量环境：Windows 11 Home，开发机（结果因机器而异；基线看数量级与相对变化，
-不做跨机横向比较）。
+不做跨机横向比较）。**2026-08-29 起测量环境切换为 Linux 容器**（Python 3.12.3 /
+Node 22 / uv loop 同口径命令），跨环境数字不可直接横向比较——v1.6.1 列是新环境
+的**新锚点**，后续复测对照 v1.6.1 列而非 R50 列。
 
 **1.0.0-rc 发布复测（R50，2026-08-21）**：冷启动 median 2.589 s（+0.1%）、
 首屏 JS 136.7 KB / CSS 8.2 KB gzip、SQLite 零裸表扫与 WS 重放回归全绿、
 e2e 21/21 × 3 连跑零失败。详见各节"R50 复测"列与 CHANGELOG 0.19.0 后续记录。
+
+**v1.6.1 发布复测（2026-08-29，Linux 容器新锚点）**：冷启动 median 2.291 s、
+首屏 JS 144.8 KB / CSS 8.3 KB gzip（预算内）、SQLite 索引审计 15 passed
+零裸表扫。v1.5→v1.6 的沙盒/overlay/CAS 等重功能落地后无 P0 级退化。
+
+**Linux 容器平台差异测试（2026-08-30 B1 收口，全量 10611 passed / 9 skipped / 0 failed）**：
+v1.6.1 曾备案 7 个 Windows 语义用例在 Linux 容器红（10595 passed / 7 failed）。
+B1 逐项排查后全部收口——单平台全量全绿不再需要豁免清单：
+
+| 测试 | 原备案根因 | B1 实查与处置 |
+|------|-----------|--------------|
+| `test_write_registry.py::test_registry_folds_path_case` | normcase 大小写折叠不生效 | 属实（Windows FS 语义）→ `skipif` 非 win32 显式声明 |
+| `test_xai_codebase_graph_index_manager_types.py::test_symbol_location_as_path_handles_backslash_separator` | 反斜杠分隔符仅 Windows 合法 | 属实 → `skipif` 非 win32 |
+| `test_terminal_hardening.py::test_path_prefix_stripped` | 路径前缀剥离按 Windows 形态断言 | **实为产品缺陷**：`_is_dangerous_cmd` 扩展名剥离被 `sys.platform == "win32"` 门住，Linux 上 `python.exe` 不剥导致危险命令漏检 → 实现修复（`.exe/.bat/.cmd/.com/.ps1` 全平台剥离）+ 新增跨平台用例 |
+| `test_workspace_ctx.py::test_exec_default_cwd_is_session_root` | 会话根解析的盘符语义 | 实为环境差异（容器无 `python` 命令）→ 测试改 `sys.executable`，两平台都跑 |
+| `test_hunks_types.py::test_hunk_value_equality` | Linux 文件系统时钟精度 | 属实但属测试设计脆弱（值相等断言依赖时钟粒度）→ `created_at` 固定字面值 |
+| `test_handlers_mcp.py::test_mcp_add_and_list_server` | 容器内有 npx → `connected=True` | 属实（add 真实 attach）→ 断言环境自适应（无 npx 必 False，有 npx 验 bool 形态） |
+| `test_exec_sandbox_escape.py::test_attributed_foreign_write_not_flagged` | fs `mtime_ns` 时序窗口更细 | **备案定性有误**：实为测试时序竞态——`sleep(0.05)` 注入相对子进程生命周期两头都可能出窗（快机晚于减除扫描、朴素哨兵早于 watermark）→ 两级握手（ready→go）钉死 emit 落入归因窗口 |
+
+**B2 性能专项复测（2026-08-30，v1.6.1 + B1/R1-R3 迭代优化后，随 v1.7.0 固化）**：五项基线全项
+复测，无 P0 退化——冷启动 median 2.138 s（较 v1.6.1 锚点 −6.7%，预算 5 s 余量
+57%）；首屏 JS 145.7 KB / CSS 8.3 KB gzip（预算内，R3 文案收敛 + 沙盒可视化增量
++0.9 KB）；懒加载 347 chunks 2865.2 KB 持平；索引审计 15 passed + WS 重放
+8 passed + 长会话渲染 2 passed 显式复跑全绿。`python -X importtime` profile
+结论：冷启动 import 大头为 fastapi（425 ms，其中 `openapi.models` 174 ms），
+属 transport 必要成本——**本轮判定无优化必要**（lazy-import 拆分方案否决：
+预算余量充足，拆分只增复杂度）。
 
 ## 1. Agent 冷启动（R9）
 
 脚本：`agent/tests/bench_startup.py`（冷启动 → `GET /health` 返回 `ok:true` 的
 墙钟耗时；每次独立临时数据目录）。
 
-| 指标 | 基线（2026-08-20） | R50 复测（2026-08-21） |
-|------|--------------------|------------------------|
-| 冷启动到 healthy | **2.586 s**（3 轮：2.574 / 2.586 / 2.607） | **2.589 s**（3 轮：2.619 / 2.589 / 2.579，+0.1%） |
+| 指标 | 基线（2026-08-20） | R50 复测（2026-08-21） | v1.6.1 复测（2026-08-29，Linux 容器） | B2 复测（2026-08-30，v1.7.0） |
+|------|--------------------|------------------------|--------------------------------------|----------------------|
+| 冷启动到 healthy | **2.586 s**（3 轮：2.574 / 2.586 / 2.607） | **2.589 s**（3 轮：2.619 / 2.589 / 2.579，+0.1%） | **2.291 s**（3 轮：3.092 / 2.142 / 2.291） | **2.138 s**（3 轮：2.026 / 2.391 / 2.138，较锚点 −6.7%） |
 
-构成：Python import + FastAPI app 构建 + 24 个 SQLite 迁移 + skills 加载
+构成：Python import + FastAPI app 构建 + 29 个 SQLite 迁移 + skills 加载
 （12 个）+ web/dist 挂载判定。预算：**≤ 5 s**（超 2 倍基线视为退化）。
 
 复测：`cd agent && uv run python tests/bench_startup.py`（回归测试
@@ -36,11 +65,11 @@ e2e 21/21 × 3 连跑零失败。详见各节"R50 复测"列与 CHANGELOG 0.19.0
 
 生产构建（`pnpm build`）首屏加载分析：
 
-| 指标 | 基线（2026-08-20） | R50 复测（2026-08-21） |
-|------|--------------------|------------------------|
-| 首屏 JS（gzip） | **123.9 KB** | **136.7 KB**（+10.3%，v0.14→v0.19 六版本功能增长，预算 200 内） |
-| 首屏 CSS（gzip） | **8.2 KB** | **8.2 KB**（持平） |
-| 懒加载 chunk | 346 个，共 2.8 MB gzip（按需，不阻塞首屏） | 346 个，共 2852.4 KB gzip（持平） |
+| 指标 | 基线（2026-08-20） | R50 复测（2026-08-21） | v1.6.1 复测（2026-08-29） | B2 复测（2026-08-30，v1.7.0） |
+|------|--------------------|------------------------|--------------------------|----------------------|
+| 首屏 JS（gzip） | **123.9 KB** | **136.7 KB**（+10.3%，v0.14→v0.19 六版本功能增长，预算 200 内） | **144.8 KB**（较 R50 +5.9%，v1.2→v1.6 功能增长，预算 200 内） | **145.7 KB**（较 v1.6.1 +0.6%，R3 文案收敛 + 沙盒可视化增量，预算 200 内） |
+| 首屏 CSS（gzip） | **8.2 KB** | **8.2 KB**（持平） | **8.3 KB**（+1.2%） | **8.3 KB**（持平） |
+| 懒加载 chunk | 346 个，共 2.8 MB gzip（按需，不阻塞首屏） | 346 个，共 2852.4 KB gzip（持平） | 347 个，共 2864.5 KB gzip（持平） | 347 个，共 2865.2 KB gzip（持平） |
 
 预算审计已落地：`web` 包的 `pnpm bundle:report`（`scripts/bundle-report.mjs`）
 实测 gzip 字节并对首屏预算硬断言，超限 exit 1。

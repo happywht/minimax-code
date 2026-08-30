@@ -263,6 +263,26 @@ _UNCONDITIONAL_BLOCK: frozenset[str] = frozenset({
     k for k, v in _DENY_COMMANDS.items() if not v
 })
 
+# Windows executable extensions stripped from the base command on every
+# platform — an agent running on Linux must still recognise the danger in a
+# Windows-style argv (``C:\Python312\python.exe -c ...``) it was asked to
+# run. Other dotted names (``python3.12``) are left alone off-Windows.
+_WIN_EXEC_EXTS: frozenset[str] = frozenset({".exe", ".bat", ".cmd", ".com", ".ps1"})
+
+
+def _strip_executable_name(base: str) -> str:
+    """Lowercased basename of *base* with a Windows-style extension removed.
+
+    Known Windows executable extensions are stripped on every platform; on
+    Windows any other trailing ``.ext`` is stripped too (original behaviour).
+    """
+    if "/" in base or "\\" in base:
+        base = base.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    stem, dot, ext = base.rpartition(".")
+    if dot and (f".{ext}" in _WIN_EXEC_EXTS or sys.platform == "win32"):
+        return stem
+    return base
+
 
 def _is_dangerous_cmd(cmd: list[str]) -> str | None:
     """Return a reason string if *cmd* is dangerous, else ``None``.
@@ -272,13 +292,7 @@ def _is_dangerous_cmd(cmd: list[str]) -> str | None:
     """
     if not cmd:
         return None
-    base = cmd[0].lower()
-    # Normalize path: extract just the executable name.
-    if "/" in base or "\\" in base:
-        base = base.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-    # Remove extension on Windows.
-    if sys.platform == "win32" and "." in base:
-        base = base.rsplit(".", 1)[0]
+    base = _strip_executable_name(cmd[0].lower())
 
     # Unconditional block — e.g. sudo, shutdown.
     if base in _UNCONDITIONAL_BLOCK:

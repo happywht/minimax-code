@@ -47,6 +47,7 @@ Failure model
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any
 
@@ -177,11 +178,19 @@ async def _run_command(payload: dict[str, Any], command: str) -> dict[str, Any]:
     timeout_s = _coerce_timeout(payload.get("timeout_s"))
 
     try:
+        # New session on POSIX so ``_kill_process_tree``'s ``killpg`` targets
+        # the command's own group — without it the child inherits the agent's
+        # process group and a timeout kill takes the agent down with it (the
+        # flag is a no-op on Windows). Same pattern as ``verify_subagent``.
+        spawn_kwargs: dict[str, Any] = {}
+        if os.name != "nt":
+            spawn_kwargs["start_new_session"] = True
         proc = await asyncio.create_subprocess_shell(
             command,
             cwd=workdir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **spawn_kwargs,
         )
     except Exception as exc:
         return {"ok": False, "error": f"scheduled command failed to spawn: {exc}"}

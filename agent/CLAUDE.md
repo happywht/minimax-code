@@ -32,7 +32,7 @@ Python agent 是 MiniMax Code 的后端核心。它是一个 asyncio 进程，�
 
 CORS：默认允许 `http://localhost:5173` / `http://127.0.0.1:5173`；`MINIMAX_CODE_CORS_ORIGINS`（逗号分隔）可追加受信 origin（解析见 `http_server.py` `_cors_allow_origins`，无效项 warning 忽略）。
 
-### IPC 命名空间（36 个前缀 / 170 个方法）
+### IPC 命名空间（34 个前缀 / 170 个方法）
 
 完整前缀×方法数×handler 文件总表见根目录 CLAUDE.md「IPC 命名空间」节；方法级清单见 `docs/ipc-contract.md` Appendix A（由 `agent/tests/test_ipc_contract_doc.py` 双向守护）。高频命名空间：
 
@@ -105,6 +105,7 @@ CORS：默认允许 `http://localhost:5173` / `http://127.0.0.1:5173`；`MINIMAX
 | `MINIMAX_CODE_TEAM_MAX_CONCURRENCY` | `4` | 单次团队运行的最大并发子 agent 数（v1.2.2；`<=0` 不设限） |
 | `MINIMAX_CODE_SUBAGENT_TIMEOUT_S` | `600` | 子 agent 墙钟超时秒数（v1.2.2 team 路径；v1.4.0 起工具路径 `spawn_subagent` 同受管辖并豁免 `tool_timeout`；`<=0` 禁用） |
 | `MINIMAX_CODE_SANDBOX_DEFAULT` | 空（false） | `spawn_subagent` 省略 `sandbox` 参数时的进程级默认（v1.5.2；优先级：显式传参 > env > false） |
+| `MINIMAX_SOFT_LIMIT_REMAINING` | `8` | 子 agent 剩余迭代预算低于该值时注入 handoff nudge（v1.6.1；clamp 下限 1；budget 本身默认 100） |
 
 ## 数据模型
 
@@ -126,7 +127,7 @@ SQLite 数据库，**24 张表**（23 张业务表 + `schema_migrations` 迁移�
 
 DAO 层共 20 个模块（`storage/dao/`）。
 
-迁移策略：前向迁移（NNN_name.py，当前 001-028 共 28 个），无回滚，`migrate()` 在显式事务内逐个执行（失败整体回滚）。WAL 模式，foreign_keys ON。
+迁移策略：前向迁移（NNN_name.py，当前 001-029 共 29 个），无回滚，`migrate()` 在显式事务内逐个执行（失败整体回滚）。WAL 模式，foreign_keys ON。
 
 ## 测试与质量
 
@@ -176,13 +177,13 @@ A: 1) 在对应的 `handlers_*.py` 中实现 handler 函数；2) 在 `app.py` �
 - `minimax_code/agent/core.py` — AgentCore 对话循环
 - `minimax_code/agent/llm.py` — MiniMaxClient（httpx async + mock）
 - `minimax_code/agent/prompts.py` — System prompt 模板
-- `minimax_code/agent/tools/` — 12 个工具模块 + base（file_ops、edit、search、glob、terminal、subagents、artifacts、sandbox、codebase_search、codebase_summarize、codebase_find_symbol、codebase_navigate）
+- `minimax_code/agent/tools/` — 15 个工具模块 + base（file_ops、edit、search、glob、terminal、subagents、artifacts、sandbox、ask_user、codebase_search、codebase_summarize、codebase_find_symbol、codebase_navigate、shared_memory、verification；v1.6.1 实测对账，此前口径漏数 ask_user）
 - `minimax_code/agent/skills/` — 技能系统（loader、registry、runtime）
 - `minimax_code/agent/skills/_builtin/` — 内置技能工具
 
 ### 存储层
 - `minimax_code/storage/db.py` — 同步/异步 Database wrapper
-- `minimax_code/storage/migrations/` — 迁移文件（001-028 共 28 个，前向幂等）
+- `minimax_code/storage/migrations/` — 迁移文件（001-029 共 29 个，前向幂等）
 - `minimax_code/storage/dao/` — 20 个 DAO 模块
 
 ### 其他模块
@@ -207,6 +208,8 @@ A: 1) 在对应的 `handlers_*.py` 中实现 handler 函数；2) 在 `app.py` �
 
 ## 变更记录 (Changelog)
 
+- **2026-08-30** — v1.7.0（迭代优化计划 R2：多 Agent 深化·team 路径沙盒化，agent 侧）——v1.5.0 四项写安全已知限制的最后一项收口：① **`collect_subagent` 核心提取**：`tools/sandbox.py` 新增模块级 `async def collect_sandbox_run(run_id, *, on_conflict, prune) -> (ok, error, report)`，合并循环/receipt/prune 原样迁入；`CollectSubagentTool.run` 尾部改委托，壳只留参数校验 + in-flight guard，wire 形状与消息字符串逐字不变；② **`team_orchestrator.py` 沙盒贯穿**：`TeamOrchestrator(sandbox=)` / `run(sandbox=)` 参数链；`_run_single_agent` 派生确定性 run id `team_<task_id>_<idx>_<name>`（`_sandbox_run_id` helper：re 消毒 agent 名防路径逃逸、review 的 reviewer 落独立 index）+ fail-closed 建目录 + `set_current_run_id`/`set_sandbox` ContextVar 激活 + finally 按工具路径同序释放（`release_run_writes` → run id → sandbox）+ `SANDBOX_PROTOCOL_PROMPT` 前置 request（不 mutate 共享 config 的 system_prompt，防 review 重跑叠加）；**自动 collect（skip 策略）**——`_collect_one` advisory 合并（拒绝/崩溃计入 summary errors，永不杀 run），sequential 成员间即时收（后继可见前驱写入）、review writers 全收后跑 reviewer、其余模式 `_run_body` 末尾扫尾（`collect_state["processed"]` 防双收）；`AgentRunResult.run_id` / `TeamRunResult.sandbox_summary` 新字段，`_result_to_dict` 条件序列化保 legacy 字节可比；③ **`handlers_teams.py`**：`team.spawn` 收 `sandbox`（缺省 `_sandbox_default()` env 梯子）+ reply 增 `sandbox`/条件 `sandbox_summary`/`agents_run[].run_id`；+10 测试 `tests/test_team_sandbox.py`（预置 mirror + 进度 hook 时序断言，无真实 LLM 驱动全链路）
+- **2026-08-29** — v1.6.1：债务清偿发版（agent 侧）——① **多 Agent 协作优化 v1**（`b001a63`）：新工具模块 `tools/shared_memory.py`（`shared_memory_put/get/list`，`.minimax/shared_memory/store.json`，workspace/run 双 scope，文件锁，损坏 store 隔离）与 `tools/verification.py`（`verify_subagent` 无头验收器：workspace 根 `is_relative_to` 锚定、超时进程树杀 `taskkill /F /T` / `killpg`）；iteration budget 默认 8→100 全链路（DAO upsert / `_config_from_row` / skills runtime；migration 029 上提 migration-010 时代卡 8 的存量行，只动 `=8` 不碰显式 10 与用户调优值，不改列 DEFAULT；handoff nudge 改 env `MINIMAX_SOFT_LIMIT_REMAINING` 默认 8、硬下限 1）；`depends_on` DAG 门控（后台 spawn 等上游 run id，未知/已回收依赖视为满足，修空转到 600s 墙钟；`waiting_deps` 走统一投影）；`build_subagent_status` 统一投影（running / waiting_deps / completed / cancelled / failed，`_snapshot` 超集，finished 不再误报 running）；+34 测试（4 文件全走 dispatch）；② **定时任务 command 载荷分支**（`d8c08b2`）：`{command, cwd?, timeout_s?}` 经 `create_subprocess_shell` 主循环执行、per-stream 20 KB 封顶；`error` 键 = 基础设施失败（spawn 失败/超时 → task 行 failed），非零退出码 = 命令结果（`ok=False` 无 `error`）；③ **修复**：`AgentDAO.upsert` 补 `enabled` 写路径（启停开关此前静默无效，`ca50935`）；`model.set_current` 省略 `provider_id` 时反查属主 provider（`32655f2`）；`AgentConfig.model` 从 LLM 单例 `default_model` 镜像（修第三方 provider 1214，`9806848`）；openai transport `_usage_to_dict` 共享 mapper + finish chunk 挂 usage 形状（修 compat provider tokens 恒 0 + `reasoning_content` 思考流丢弃，`#138`）；`secrets.py` legacy 全局 key → per-provider 槽一次性迁移（清除不再复活，`#137`）；④ 对账：工具模块 12→15（补漏 ask_user + 新增 shared_memory/verification）、migration 28→29、IPC 前缀 36→34（方法数 170 不变）、env 表补 `MINIMAX_SOFT_LIMIT_REMAINING`
 - **2026-08-26** — v1.6.0：Sandbox Deepening 专项（v1.5.0 四项已知限制收掉三项，team 路径独立立项不做）——① **exec_command 逃逸检测（advisory）**：沙盒 run 的 exec 前后各 walk 一次 workspace（`(mtime_ns, size)` 快照，`asyncio.to_thread`；窄排除表不含 build/dist——构建产物正是逃逸形态），diff 后减去 fs_bus 窗口内其他 run 的写入（防并发误报），剩余以 `sandbox_escape: {changed(≤50), changed_count, warning}` 注入正常与 timed_out 双输出路径 + emit 合法枚举 kind（cause=`exec_command_sandbox_escape` + run_id）→ 主 agent v1.5.1 notes 轮询天然可见；主 agent 零开销；`SANDBOX_PROTOCOL_PROMPT` 第三 bullet 改写（见 warning 用 write_file 重写交付物）。② **search/find/list overlay + 剪枝修复**：`sandbox.py` 新增共享 helpers `sandbox_mirror_files`/`mirror_children`；`search_files` 沙盒激活强制 python 引擎 + rel-posix key union（同名沙盒版覆盖）+ 读取走 `overlay_read_target`（含 single_file 分支）；`find_files` walk 后 mirror union（前缀过滤 + rel 投影 + depth + 覆盖）；`list_directory` entries 并入 mirror children（`path` 投影回 workspace 地址 + `sandboxed: true` + `_base`/marker 隐藏）+ 沙盒-only 目录放行；**存量修复**——search python 剪枝表补 `.minimax`（此前主 agent 能搜到 backups/sandboxes 内部）、`find_files` 的 `.minimax` 硬排除（用户显式覆盖 `exclude_dirs` 不再泄漏）；第四 bullet 改 overlay 语义。③ **collect prune + receipt 新家**：receipt 一律写 `<root>/.minimax/sandboxes/.collected/<run_id>.json`（flat sibling，`sandbox_files_written` 永不扫到），`prune` 参数（默认 true，schema 同步）在 receipt 落盘且无 conflicts/errors/skipped 时 rmtree 沙盒树（`onexc`/`onerror` 双兼容 + `_chmod_retry` 清只读位）；保守门——receipt 没写成不删（无凭证不删数据）、conflicts+fail 永不 prune 永不写 receipt、skipped/errors 非空保留；rmtree 失败 advisory（`prune_error`）+ already-collected 分支重试 prune 自愈；legacy `sb_dir/.merged` marker 仍读（升级前沙盒照常识别），命中且 prune 时先迁移 receipt 再删树（迁移失败取消 prune），`prune=false` 时 legacy 布局原样；already-collected 检查前置到 in-flight guard 后。40 个新测试（`test_exec_sandbox_escape.py` 10 + `test_sandbox_overlay_views.py` 16 + `test_collect_prune.py` 14，全走 dispatch；`test_subagent_collect.py` 五处旧 marker 钉子同步迁移），pytest 10519 / vitest 758 全绿
 - **2026-08-26** — v1.5.2：第四轮压测三项残留收口——① `MINIMAX_CODE_SANDBOX_DEFAULT` env 旋钮：`subagents.py` 新增 `_sandbox_default()` helper（truthy `1/true/yes/on`），`spawn_subagent` 的 `sandbox` 参数改 `bool | None = None` 顶部归一化（优先级：显式传参 > env > false，默认 false 不变）；② `append_file` 工具（file_ops.py，工具模块 12 个、内置工具第 13 个）：尾部 verbatim 追加（UTF-8 字节保真不注入分隔符、missing 带父目录创建），CAS `expected_sha256` / backup / `concurrent_writer` advisory / fs_bus 归因（cause=`append_file` + `run_id` attribute）全继承；**沙盒镜像 seeding**——`redirect_write_target` 只 COW `_base/` 不 seed 镜像，append 打开前检测 `write_target != read_target` 且原件存在且镜像不存在 → `shutil.copy2` 原件进镜像（copy 失败 fail-closed），否则 collect 三方对比会把不完整镜像 merge 回 workspace（静默数据丢失）；③ `report_progress` per-run 注入工具（artifacts.py：`PROGRESS_NAME` 常量 + `read_progress`/`progress_summary` helper + `ReportProgressTool`；subagents.py：`PROGRESS_PROTOCOL_PROMPT` + `_clone_registry_with_report` 扩为双工具注入）：子 agent 里程碑级 `report_progress(note, percent?)` → `.minimax/artifacts/<run_id>/PROGRESS.jsonl` JSON 行账本 → `check_subagent` running / `wait_subagent` timeout / `_snapshot` 与 finished-run envelope 的 `progress` key（`{total, recent[], latest_percent}`）+ live `agent.subagent_progress` 事件（`status="thinking"` + `summary` + `progress` 分数，复用前端闭合 union）；prompt 拼接顺序：agent 模板 → 任务优先级 → completion → progress → 沙盒；41 个新测试（`test_append_file.py` 15 + `test_report_progress.py` 13 + `test_sandbox_env_default.py` 13，全走 dispatch），pytest 10479 / vitest 758 全绿
 - **2026-08-26** — v1.5.1：共享 workspace 并发感知（第三轮压测 3 项残留收口，全 advisory 零写路径行为变化）——① **A**：`spawn_subagent` 工具 description 加并发写决策引导（写文件且并行 → `sandbox=true` + `collect_subagent` 合并；只读保持 false）；② **B**：新模块 `fsnotify/notes.py`——`AgentCore` 每 iteration 以 seq 高水位轮询 `bus.recent()`（首次 poll 初始化水位不回放历史；轮询非 subscribe 零生命周期管理），其他 in-flight run 的写入聚合为 `[system note] Files changed by other agents` 追加 LLM payload 尾部（ephemeral 不持久化禁 acknowledge，去重 ≤8 行，沙盒路径投影 `src/a.py (sandboxed by run_x)`，fail-open）；自过滤按 `run_id` attribute，子 agent 天然见主 agent 的写；③ **C**：`file_ops._INFLIGHT_WRITES`（normcase key → run_id）+ `workspace_ctx._current_run_id` ContextVar 三件套（`_drive_run` 顶部发布 / finally 释放 claims 再 reset）；带 run id 的 write/edit claim 触碰路径，主 agent 只查警；rival 命中写照常成功但 output 带 `concurrent_writer` + warning。23 个新测试（`test_write_registry.py` 10 + `test_fs_change_notes.py` 12 + sandbox description 钉 1），pytest 10438 / vitest 758 全绿

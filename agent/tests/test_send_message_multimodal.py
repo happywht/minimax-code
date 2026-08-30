@@ -92,6 +92,19 @@ class TestSendMessageMultimodal:
         with patch.dict("sys.modules", {
             "minimax_code.agent": mock_agent_mod,
             "minimax_code.agent.core": mock_agent_mod,
+            # The tools subpackage needs its own entries: the handler's lazy
+            # ``from ..agent.tools...`` imports resolve through sys.modules,
+            # and without them the MagicMock standing in for the parent
+            # package fails the submodule lookup ("is not a package") unless
+            # an earlier test already imported the real modules.
+            "minimax_code.agent.tools": MagicMock(),
+            "minimax_code.agent.tools.codebase_find_symbol": MagicMock(),
+            "minimax_code.agent.tools.codebase_navigate": MagicMock(),
+            "minimax_code.agent.tools.codebase_search": MagicMock(),
+            "minimax_code.agent.tools.codebase_summarize": MagicMock(),
+            # The real codebase package reaches back into
+            # ``agent.perception`` on import, so it must be mocked too.
+            "minimax_code.codebase": MagicMock(),
             "minimax_code.app": mock_app_mod,
             "minimax_code.storage.dao.messages": mock_msg_dao_mod,
             "minimax_code.storage.db": mock_db_mod,
@@ -146,6 +159,19 @@ class TestSendMessageMultimodal:
         with patch.dict("sys.modules", {
             "minimax_code.agent": mock_agent_mod,
             "minimax_code.agent.core": mock_agent_mod,
+            # The tools subpackage needs its own entries: the handler's lazy
+            # ``from ..agent.tools...`` imports resolve through sys.modules,
+            # and without them the MagicMock standing in for the parent
+            # package fails the submodule lookup ("is not a package") unless
+            # an earlier test already imported the real modules.
+            "minimax_code.agent.tools": MagicMock(),
+            "minimax_code.agent.tools.codebase_find_symbol": MagicMock(),
+            "minimax_code.agent.tools.codebase_navigate": MagicMock(),
+            "minimax_code.agent.tools.codebase_search": MagicMock(),
+            "minimax_code.agent.tools.codebase_summarize": MagicMock(),
+            # The real codebase package reaches back into
+            # ``agent.perception`` on import, so it must be mocked too.
+            "minimax_code.codebase": MagicMock(),
             "minimax_code.app": mock_app_mod,
             "minimax_code.storage.dao.messages": mock_msg_dao_mod,
             "minimax_code.storage.db": mock_db_mod,
@@ -224,6 +250,19 @@ class TestSendMessageMultimodal:
         with patch.dict("sys.modules", {
             "minimax_code.agent": mock_agent_mod,
             "minimax_code.agent.core": mock_agent_mod,
+            # The tools subpackage needs its own entries: the handler's lazy
+            # ``from ..agent.tools...`` imports resolve through sys.modules,
+            # and without them the MagicMock standing in for the parent
+            # package fails the submodule lookup ("is not a package") unless
+            # an earlier test already imported the real modules.
+            "minimax_code.agent.tools": MagicMock(),
+            "minimax_code.agent.tools.codebase_find_symbol": MagicMock(),
+            "minimax_code.agent.tools.codebase_navigate": MagicMock(),
+            "minimax_code.agent.tools.codebase_search": MagicMock(),
+            "minimax_code.agent.tools.codebase_summarize": MagicMock(),
+            # The real codebase package reaches back into
+            # ``agent.perception`` on import, so it must be mocked too.
+            "minimax_code.codebase": MagicMock(),
             "minimax_code.app": mock_app_mod,
             "minimax_code.storage.dao.messages": mock_msg_dao_mod,
             "minimax_code.storage.db": mock_db_mod,
