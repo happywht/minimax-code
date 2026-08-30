@@ -51,7 +51,7 @@ TEST_VERSION_ENV: str = "MINIMAX_CODE_TEST_VERSION"
 #: (e.g. running from a bare checkout without ``uv sync``). Kept in manual sync
 #: with ``pyproject.toml``'s ``version`` — the metadata read is the source of
 #: truth, this only ever engages in unpackaged contexts.
-_FALLBACK_VERSION = "1.7.0"
+_FALLBACK_VERSION = "1.7.1"
 
 
 def _resolve_compiled_version() -> str:
