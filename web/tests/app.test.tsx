@@ -79,8 +79,21 @@ describe("App smoke test", () => {
       screen.getByTestId("message-input-textarea"),
     );
 
+    // The preceding "submits a message" test leaves focus on its (by
+    // now unmounted) textarea; under parallel-worker load jsdom does
+    // not always reset document.activeElement back to <body> during
+    // cleanup, and App's `?` handler ignores the key while an editable
+    // element holds focus. Blur explicitly so the keypress starts
+    // from a clean slate.
+    (document.activeElement as HTMLElement | null)?.blur();
+
     await user.keyboard("?");
-    expect(screen.getByTestId("shortcuts-overlay")).toBeInTheDocument();
+    // Under parallel-worker load the keypress→setState→commit chain can
+    // straddle an act() boundary; wait for the overlay instead of
+    // asserting synchronously.
+    await waitFor(() => {
+      expect(screen.getByTestId("shortcuts-overlay")).toBeInTheDocument();
+    });
 
     await user.keyboard("{Escape}");
     expect(screen.queryByTestId("shortcuts-overlay")).toBeNull();
