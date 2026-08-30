@@ -5,6 +5,24 @@ All notable changes to MiniMax Code are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Preview 面板 per-project 根**（易用性专项 R2：v1.3.0 公示的最后一项已知限制「PreviewState 仍进程级根」就此收口）：预览服务（静态文件 / health / SSE 热重载）此前在 `build_app()` 启动时锚定 `MINIMAX_CODE_WORKSPACE`/cwd 一次定格，多项目切换后预览服务错根。现为 **re-root on switch**：`PreviewState.set_root(new_root)` 停旧 watcher → 换根 → 排空残留事件队列 → 仅当此前在跑才重启（同根 noop 不动 task、stopped 态保持 stopped）；三条路由闭包改为请求时读 `state.workspace`（containment 守卫同随新根）；`build_app()` 把 HTTP 绑定的 state 发布为进程级单例（`set_preview_state`），stdio 模式由 `ensure_preview_state()` 惰性补建。新 IPC 方法 `preview.set_root {project_id?}`（新 handler 文件 `ipc/handlers_preview.py`，方法 170→171、前缀 34→35）：project_id 省略/空白 = 回落进程默认根，项目未绑 `root_path` 同样回落（与 v1.3.0 workspace 解析语义一致）；未知 project_id / 根目录不存在 → `-32602` 快速失败且 state 不动。前端：`previewStore` 增 `setRoot(projectId?)`（调 IPC + 记录 `rootProjectId`/`rootWorkspace` + reload 触刷 iframe，失败 toast 且停留旧根）；接线收敛在项目变更唯一 choke point——`sessionStore.setCurrentProject` / `create()` 行内 + 启动 `refresh()` 一次性 boot 同步（陈旧 id 对照已加载项目表降级 null，不报错）。契约五连同步：`docs/ipc-contract.md` §6.0.2 + Appendix A、`typed.ts`/`mock.ts`/`mockData.ts`/`types/ipc.ts`、三份 CLAUDE.md 计数对账。+19 测试（`test_preview_server.py` +10：换根语义 5 / 路由跟随活根 + 新根 containment 2 / 单例 3；`test_handlers_preview.py` 9：happy path 4 / fast-fail 2；web `preview-root.test.ts` 6：wire 契约 3 / sessionStore 接线 3）。
+
+### Fixed
+
+- **v1.7.0 发版漏 bump `version.py` 兜底字面量**（全量验证门禁抓出）：`_FALLBACK_VERSION` 仍为 `1.6.1`，与 `pyproject.toml` 的 `1.7.0` 不一致（该字面量仅在裸 checkout 无 dist metadata 时生效，但 `test_version_pins_agree_across_project_files` 钉三处一致）。对齐为 `1.7.0`。
+- **预览换根后的两级浏览器缓存投毒**（易用性专项 R1 实测发现，R2 功能的硬阻断 bug，真实 agent + 前端全链路走查抓出）：项目 A→B 切换后预览 iframe 永久渲染 A 的旧文档、探针 fetch 持续 `Failed to fetch`，而后端四连 `set_root` 全部成功——根因全在浏览器 HTTP 缓存，两级修复：① **文件响应缺 `Cache-Control`**——iframe 对同 URL 的导航命中启发式缓存直接复用旧文档（换根后文件路径不变是常态，`index.html` 人人命中），`preview_file` 的 `FileResponse` 补 `Cache-Control: no-store`（实时预览服务永远回源）；② **CORS 探针被导航缓存条目投毒**——导航响应不带 `Origin` 故无 `Access-Control-Allow-Origin` 头，其缓存条目被组件的 health/file 探针 fetch 复用即判 CORS 失败（TypeError），且同 URL 永久失败、手动重试无效，`PreviewPanel.checkPreview` 两个 fetch 补 `cache: "no-store"`；③ 网络级失败文案本地化——裸 `Failed to fetch` 换为可行动提示「无法连接预览服务，请确认 Agent 正在运行后重试」（strings.ts `preview.unreachable`，TypeError 分支映射）。+4 测试（`test_preview_server.py` 钉响应头 1；web `PreviewPanel.test.tsx` 3：探针 no-store 契约 / 换根重载后仍 no-store / 本地化错误文案）。
+- **冷启动空态文案绕过 strings.ts + 占位示例失真**（易用性专项 R1 实测发现，视觉走查定位）：MessageList 空态的标题/提示/三张建议卡硬编码在组件内（违反「文案单一来源」模块规范），且示例「把 src/foo.py 重构为使用 dataclasses」「解释 IPC bridge 的作用」是开发期占位文案——新用户项目里没有 `src/foo.py` 也没有 IPC bridge，点击示例的心理预期落空。迁入 `strings.chat.emptyState`（title/hint/suggestions 数组），示例改写为不依赖虚构路径的通用任务（重构补类型标注 / 解释模块职责 / 定时测试提醒）。+2 测试（`MessageList-empty.test.tsx`：标题与提示渲染自 strings / 每条建议一张卡）。
+- **Context 指示器整数千位带 `.0` 尾巴**（易用性专项 R1 实测发现，截图走查定位）：`fmtTokens` 一律 `toFixed(1)`，200k 窗口显示为 `0/200.0k`、占用 100k 时 `100.0k/200.0k`——整数部分无信息量还拉长标签。改为整数千/百万省略小数（`200k`、`7k`），非整数千保留一位小数（`1.2k`、`12.3k`）。既有 8 处断言同步更新（`5.0k/200.0k` → `5k/200k` 等）。
+
+### Changed
+
+- **发布线收口**（易用性专项 R0）：v1.6.1 + v1.7.0 共 9 个提交（含 5 个真实 bug 修复）此前停在 `chat/7fed98ad` 分支未合 master——从 master 部署拿到的是带 bug 版本。本轮把 v1.7.0 内容（`68e81dd`）并入本工作分支作为基线（Heart 分支门禁拦截 master 直写，master 的 fast-forward 留给用户执行）。
+- **易用性实测 pass 记录**（易用性专项 R1）：真实 agent（HTTP 8765）+ Vite dev server + Playwright 驱动浏览器完成黄金路径走查（12 段脚本，/tmp 临时产物不入库）：冷启动空态 / 新建会话 / mock 消息往返（thinking + 时间线回放）/ 检查器 tab / 设置 13 tab 全开 / 命令面板 Ctrl+K / 快捷键 overlay `?` / 终端 echo / Git 状态栏 / 预览双根 A↔B + SSE 热重载。功能性结论：13 设置 tab 与检查器 tab 全部可开、零 pageerror、空态均有引导；预览链路修复后切换 ~1.4s 完成内容翻转。结构性发现（本轮只记录不改）：mock 模式警示横幅视觉权重弱于其重要性、检查器 11 个图标 tab 无文字标签（依赖 tooltip 可发现性差）、composer 状态栏 `67/200.0k` 与 `0/8000` 两个计数语义不明（建议加 tooltip）。
+
 ## [1.7.0] - 2026-08-30
 
 ### Added

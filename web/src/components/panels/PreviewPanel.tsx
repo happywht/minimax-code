@@ -23,6 +23,17 @@ export interface PreviewPanelProps {
   onClose: () => void;
 }
 
+/**
+ * Fetch init that bypasses the HTTP cache for the CORS probes.
+ *
+ * The iframe navigation to the same URL stores a response that carries no
+ * ``Access-Control-Allow-Origin`` header (navigations don't send ``Origin``).
+ * A later cache hit for the probe fetch reuses that entry and the browser
+ * rejects it as a CORS failure — "Failed to fetch" — permanently, even after
+ * a project re-root. ``cache: "no-store"`` sidesteps the poisoned entry.
+ */
+const PROBE_FETCH_INIT: RequestInit = { cache: "no-store" };
+
 export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
   const url = usePreviewStore((s) => s.url);
   const filePath = usePreviewStore((s) => s.filePath);
@@ -47,12 +58,12 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
     setPreviewState("checking");
     setPreviewError(null);
     try {
-      const health = await fetch(`${url}/preview/health`);
+      const health = await fetch(`${url}/preview/health`, PROBE_FETCH_INIT);
       if (!health.ok) {
         throw new Error(strings.panels.preview.serviceError(health.status));
       }
 
-      const file = await fetch(previewUrl);
+      const file = await fetch(previewUrl, PROBE_FETCH_INIT);
       if (!file.ok) {
         let detail = strings.panels.preview.fileNotFound(filePath);
         try {
@@ -65,7 +76,15 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
       }
       setPreviewState("ready");
     } catch (error) {
-      setPreviewError(error instanceof Error ? error.message : String(error));
+      // Network-level failures surface as a TypeError with a browser-locale
+      // message ("Failed to fetch") — map them to an actionable hint instead.
+      setPreviewError(
+        error instanceof TypeError
+          ? strings.panels.preview.unreachable
+          : error instanceof Error
+            ? error.message
+            : String(error),
+      );
       setPreviewState("error");
     }
   }, [filePath, previewUrl, url]);

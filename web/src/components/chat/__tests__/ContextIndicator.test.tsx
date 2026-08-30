@@ -94,13 +94,13 @@ describe("ContextIndicator", () => {
   it("renders progress bar with correct text when messages have tokens_in", () => {
     // 5000 tokens used, 200k context window → 2.5% → green bar
     renderWith([assistantMsg("a1", 5000)], "model-1", 200_000);
-    expect(screen.getByText("5.0k/200.0k")).toBeInTheDocument();
+    expect(screen.getByText("5k/200k")).toBeInTheDocument();
   });
 
   it("uses green color when usage < 70%", () => {
     // 100k tokens used, 200k context window → 50% → green
     renderWith([assistantMsg("a1", 100_000)], "model-1", 200_000);
-    const label = screen.getByText("100.0k/200.0k");
+    const label = screen.getByText("100k/200k");
     // The <span> carries the text color class.
     expect(label.className).toContain("text-status-success");
     // The progress bar carries the bg color class.
@@ -112,7 +112,7 @@ describe("ContextIndicator", () => {
   it("uses amber color when usage between 70% and 90%", () => {
     // 150k tokens used, 200k context window → 75% → amber
     renderWith([assistantMsg("a1", 150_000)], "model-1", 200_000);
-    const label = screen.getByText("150.0k/200.0k");
+    const label = screen.getByText("150k/200k");
     expect(label.className).toContain("text-status-warning");
     const bar = label.parentElement!.querySelector("div[style]");
     expect(bar?.className).toContain("bg-amber-400");
@@ -121,7 +121,7 @@ describe("ContextIndicator", () => {
   it("uses red color when usage > 90%", () => {
     // 190k tokens used, 200k context window → 95% → red
     renderWith([assistantMsg("a1", 190_000)], "model-1", 200_000);
-    const label = screen.getByText("190.0k/200.0k");
+    const label = screen.getByText("190k/200k");
     expect(label.className).toContain("text-status-error");
     const bar = label.parentElement!.querySelector("div[style]");
     expect(bar?.className).toContain("bg-red-400");
@@ -140,9 +140,9 @@ describe("ContextIndicator", () => {
   });
 
   it("shows used/total format when both values are present", () => {
-    // 12345 tokens used, 100k window → "12.3k/100.0k"
+    // 12345 tokens used, 100k window → "12.3k/100k"
     renderWith([assistantMsg("a1", 12_345)], "model-1", 100_000);
-    expect(screen.getByText("12.3k/100.0k")).toBeInTheDocument();
+    expect(screen.getByText("12.3k/100k")).toBeInTheDocument();
   });
 
   it("shows only used value when no context_window", () => {
@@ -172,7 +172,7 @@ describe("ContextIndicator", () => {
       100_000,
     );
     // 7000 / 100000 = 7% → green — NOT 3000+7000=10k.
-    expect(screen.getByText("7.0k/100.0k")).toBeInTheDocument();
+    expect(screen.getByText("7k/100k")).toBeInTheDocument();
     expect(screen.queryByText("10.0k/100.0k")).not.toBeInTheDocument();
   });
 
@@ -181,6 +181,6 @@ describe("ContextIndicator", () => {
     // message: what that call saw plus what it produced — i.e. the
     // context size going into the next turn.
     renderWith([assistantMsg("a1", 6000, 1000)], "model-1", 100_000);
-    expect(screen.getByText("7.0k/100.0k")).toBeInTheDocument();
+    expect(screen.getByText("7k/100k")).toBeInTheDocument();
   });
 });

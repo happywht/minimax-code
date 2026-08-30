@@ -9,6 +9,7 @@ import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import type { Project, Session } from "../types/ipc";
 import { useChat } from "./chat";
+import { usePreviewStore } from "./previewStore";
 import { DEFAULT_SESSION_TITLE, DEFAULT_WORKTREE_TITLE } from "../lib/defaultTitles";
 import { strings } from "../ui/strings";
 
@@ -27,6 +28,9 @@ const CURRENT_PROJECT_STORAGE_KEY = "minimax-code:current-project";
 const EXPANDED_PROJECTS_STORAGE_KEY = "minimax-code:expanded-projects";
 let createSessionInFlight: Promise<string> | null = null;
 let refreshSeq = 0;
+// v1.7.1: one-shot boot flag — the first successful refresh syncs the
+// preview root to the restored currentProjectId (see refresh()).
+let previewRootSynced = false;
 
 /**
  * List hygiene: drop background subagent sessions (title "subagent:*",
@@ -178,6 +182,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (currentExists && options?.loadCurrent !== false) {
         void useChat.getState().loadMessages(currentId);
       }
+      // v1.7.1 boot sync: after a page reload the backend preview root is
+      // still whatever it was last switched to (or the process default),
+      // while the UI restores its project selection from localStorage —
+      // re-anchor once. A stale restored id (project since deleted) falls
+      // back to the process default instead of erroring.
+      if (!previewRootSynced) {
+        previewRootSynced = true;
+        const pid = get().currentProjectId;
+        const known = pid && projectsResult.projects.some((p) => p.id === pid);
+        void usePreviewStore.getState().setRoot(known ? pid : null);
+      }
     } catch (err) {
       set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);
@@ -237,6 +252,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         storeCurrentProjectId(targetProject);
         storeExpandedProjectIds(get().expandedProjectIds);
         useChat.getState().reset();
+        // v1.7.1: a new session under another project switches the active
+        // project too — keep the preview root in step (see setCurrentProject).
+        void usePreviewStore.getState().setRoot(targetProject);
         return r.session_id;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -413,6 +431,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setCurrentProject: (id: string | null) => {
     set({ currentProjectId: id });
     storeCurrentProjectId(id);
+    // v1.7.1: follow the selected project's root — the live-preview
+    // surface (files / health / SSE) re-roots on the backend and the
+    // iframe reloads. "inbox" and projects without a bound root_path
+    // degrade to the process default root on the backend side.
+    void usePreviewStore.getState().setRoot(id);
   },
 
   toggleProjectExpanded: (id: string) => {

@@ -766,6 +766,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_patch import register_patch_handlers
     from .ipc.handlers_permissions import register_permission_handlers
     from .ipc.handlers_plugins import register_plugin_handlers
+    from .ipc.handlers_preview import register_preview_handlers
     from .ipc.handlers_projects import register_project_handlers
     from .ipc.handlers_providers import register_provider_handlers
     from .ipc.handlers_runner import register_runner_handlers
@@ -818,6 +819,12 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     register_session_handlers(server)
     register_project_handlers(server)
     register_workspace_handlers(server)
+    # The preview handlers expose ``preview.set_root`` — the live-preview
+    # re-root seam (v1.7.1). The state is resolved via the process-wide
+    # singleton ``http_server.build_app`` publishes (lazily built at the
+    # process-default root in stdio mode); the projects DAO is looked up
+    # lazily on first call. Tests can inject either via kwargs.
+    register_preview_handlers(server)
     # The checkpoint handlers expose ``checkpoint.*`` — the workspace snapshot
     # layer (R310): create/list/restore/diff/delete over git-stash refs plus
     # on-disk untracked-file copies. DAO + CheckpointManager resolve lazily
@@ -947,7 +954,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
         "7 provider.* + 3 secrets.* + 3 git.* + 3 patch.* + "
         "4 terminal.* + 2 runner.* + 3 audit.* + 5 webhook.* + "
         "5 notification.* + 7 workflow.* + 7 team.* + 5 plugins.* + "
-        "4 codebase.* + 5 memory.* + 3 telemetry.* + 3 crash.*)"
+        "4 codebase.* + 5 memory.* + 3 telemetry.* + 3 crash.* + 1 preview.*)"
     )
 
 

@@ -369,6 +369,37 @@ Response:
 only managed worktrees under the data-dir `worktrees/` root, and marks the
 session back to `workspace_mode: "local"`.
 
+### 6.0.2 `preview.set_root` — 预览服务换根（v1.7.1）
+
+Re-points the live-preview surface (static serving, `/preview/health`, SSE
+hot-reload) at another workspace root without restarting the process.
+Closes the last v1.3.0 known limitation ("PreviewState 仍进程级根"):
+the frontend calls this on every project switch.
+
+Request:
+
+```json
+{"method":"preview.set_root","params":{"project_id":"proj_ab12"}}
+```
+
+Response:
+
+```json
+{"ok": true, "workspace": "/abs/path/to/project-root", "project_id": "proj_ab12"}
+```
+
+Semantics:
+
+* `project_id` omitted / empty → the process-default root
+  (`MINIMAX_CODE_WORKSPACE` or CWD). A project *without* a bound
+  `root_path` degrades to the same default.
+* Unknown `project_id`, or a `root_path` that no longer exists on disk →
+  `-32602 INVALID_PARAMS` fast fail (nothing is switched).
+* Switching stops the old file watcher, drops events queued against the
+  old root, and restarts the watcher on the new root. Existing SSE
+  subscribers keep their connections — the next events they receive come
+  from the new root.
+
 ### 6.1 `agent.send_message` — the streaming example
 
 Request:
@@ -1170,6 +1201,12 @@ document the migration in this file.
 |------|------|
 | `permission.resolve` | 应答权限请求（allow/deny，供前端弹窗回传） |
 | 权限规则 CRUD | 详见正文 `permission.*` 章节（list/get/set 等） |
+
+### preview.* — 实时预览
+
+| 方法 | 说明 |
+|------|------|
+| `preview.set_root` | 预览服务换根（v1.7.1）：可选 `project_id` 锚定项目 `root_path`，省略回落进程默认根；未知 id / 根目录不存在 `-32602` 快速失败；详见正文 §6.0.2 |
 
 ### provider.* — 多服务商
 

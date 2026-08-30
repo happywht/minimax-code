@@ -107,6 +107,7 @@ import {
   mockJobs,
   mockModels,
   mockPlugins,
+  mockPreviewState,
   mockProjects,
   mockProviders,
   mockRunners,
@@ -457,6 +458,24 @@ function mockHandle(
       project.archived = method === "project.archive";
       project.updated_at = Date.now();
       return { ok: true, project };
+    }
+
+    case "preview.set_root": {
+      // v1.7.1 — mirror the backend semantics: omitted/empty project_id
+      // or a project without a bound root_path falls back to the default
+      // workspace; unknown ids fail with INVALID_PARAMS.
+      const p = params as { project_id?: string } | undefined;
+      const pid = p?.project_id?.trim() || null;
+      if (pid === null) {
+        mockPreviewState.workspace = "/tmp/minimax-workspace";
+        return { ok: true, workspace: mockPreviewState.workspace, project_id: null };
+      }
+      const project = mockProjects.get(pid);
+      if (!project) {
+        throw new Error(`invalid params: unknown project_id: '${pid}'`);
+      }
+      mockPreviewState.workspace = project.root_path || "/tmp/minimax-workspace";
+      return { ok: true, workspace: mockPreviewState.workspace, project_id: pid };
     }
 
     case "message.list": {

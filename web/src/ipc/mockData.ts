@@ -39,6 +39,13 @@ export const mockProjects = new Map<string, Project>([
   ],
 ]);
 export const mockRuns = new Map<string, { run: import("../types/ipc").AgentRun; steps: import("../types/ipc").AgentRunStep[] }>();
+/**
+ * v1.7.1 — mutable mock state for `preview.set_root`: the workspace root
+ * the mock preview surface is currently anchored to. Mirrors the backend's
+ * process-wide PreviewState so the preview panel behaves the same in mock
+ * mode (project switch → re-root → iframe reload).
+ */
+export const mockPreviewState = { workspace: "/tmp/minimax-workspace" };
 export const mockModels: ModelInfo[] = [
   {
     id: "minimax-M2.7",
