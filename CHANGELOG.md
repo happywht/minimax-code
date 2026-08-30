@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 （R3 全量验证：vitest 771 全绿（基线 768 + 3 新增）、`tsc -b` 零错误、ESLint 零告警、`grep -nP` 中文扫描 right-panel 组件目录零硬编码残留（仅 `__tests__` 断言文件命中，属正常）；期间字号守卫测试（P2#26 最小 11px）抓到沙盒徽章初版 `text-[10px]`，已即时修正。）
 
+（B1 全量验证：pytest 10611 passed / 9 skipped / 0 failed——单平台全量首次全绿，v1.6.1 备案的 7 项 Linux 平台差异红清零；安全回归套件 `-m security` 157 passed 确认 `terminal.py` 危险命令修复零回归。）
+
+（B2 性能专项复测（backlog 第 2 项，2026-08-30）：五项基线全项无 P0 退化——冷启动 median **2.138 s**（v1.6.1 锚点 2.291 s 的 −6.7%，预算 5 s 余量 57%）；首屏 JS **145.7 KB** / CSS **8.3 KB** gzip（预算 200/50 内，R3 增量 +0.9 KB）；懒加载 347 chunks 2865.2 KB 持平；索引审计 15 + WS 重放 8 + 长会话渲染 2 显式复跑全绿。`python -X importtime` profile：冷启动 import 大头 fastapi 425 ms（`openapi.models` 174 ms）属 transport 必要成本，**判定无优化必要**（lazy-import 拆分否决：余量充足，拆分只增复杂度）。数字入 `docs/performance-baseline.md` B2 复测列。）
+
 ## [1.6.1] - 2026-08-29
 
 ### Added
