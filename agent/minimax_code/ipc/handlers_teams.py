@@ -288,6 +288,14 @@ def register_team_handlers(
             parent_session_id = params.get("parent_session_id")
             if parent_session_id is not None:
                 parent_session_id = str(parent_session_id)
+            # v1.7.0 R2 — same defaulting ladder as spawn_subagent:
+            # explicit param > MINIMAX_CODE_SANDBOX_DEFAULT > false.
+            sandbox_param = params.get("sandbox")
+            if sandbox_param is None:
+                from ..agent.tools.subagents import _sandbox_default
+
+                sandbox_param = _sandbox_default()
+            sandbox = bool(sandbox_param)
 
             # Resolve DAOs lazily
             team_dao = await dao_factory()
@@ -328,11 +336,16 @@ def register_team_handlers(
                     request,
                     session_id=session_id,
                     parent_session_id=parent_session_id,
+                    sandbox=sandbox,
                 )
-            await ctx.reply({
+            # v1.7.0 R2 — agents_run entries carry run_id only for
+            # sandboxed members; sandbox_summary only when non-empty
+            # (unsandboxed replies stay byte-identical to v1.6.1).
+            reply = {
                 "team_name": result.team_name,
                 "orchestration_mode": result.orchestration_mode,
                 "merged_text": result.merged_text,
+                "sandbox": sandbox,
                 "agents_run": [
                     {
                         "agent_name": r.agent_name,
@@ -341,6 +354,7 @@ def register_team_handlers(
                         "error": r.error,
                         "iterations": r.iterations,
                         "stub": r.stub,
+                        **({"run_id": r.run_id} if r.run_id else {}),
                     }
                     for r in result.agents_run
                 ],
@@ -354,7 +368,10 @@ def register_team_handlers(
                 ],
                 "task_id": result.task_id,
                 "success": result.success,
-            })
+            }
+            if result.sandbox_summary:
+                reply["sandbox_summary"] = result.sandbox_summary
+            await ctx.reply(reply)
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
         except Exception:

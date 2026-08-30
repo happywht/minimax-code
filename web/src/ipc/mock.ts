@@ -1708,11 +1708,12 @@ function mockHandle(
       return { team: t } satisfies { team: AgentTeam };
     }
     case "team.spawn": {
-      const p = params as { team_name: string; request: string };
+      const p = params as { team_name: string; request: string; sandbox?: boolean };
       return {
         team_name: p.team_name,
         orchestration_mode: "parallel",
         merged_text: `[mock] Team ${p.team_name} processed: ${p.request}`,
+        sandbox: false,
         agents_run: [
           { agent_name: "agent-1", success: true, text: `Handled: ${p.request}`, error: "", iterations: 1, stub: true },
         ],
