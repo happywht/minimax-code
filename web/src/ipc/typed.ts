@@ -50,6 +50,7 @@ import type {
   PatchPreviewResult,
   PatchSaveSnapshotResult,
   PermissionRule,
+  PreviewSetRootResult,
   PluginInfoResult,
   PluginReloadResult,
   PluginToggleResult,
@@ -346,6 +347,8 @@ export interface TypedIPC {
   patchApplyAll(opts?: { scope?: "staged" | "working"; project_id?: string }): Promise<PatchApplyAllResult>;
   patchRevertAll(opts?: { scope?: "staged" | "working"; project_id?: string }): Promise<PatchApplyAllResult>;
   patchSaveSnapshot(opts?: { project_id?: string }): Promise<PatchSaveSnapshotResult>;
+  // preview (v1.7.1) — re-root the live-preview surface on project switch.
+  setPreviewRoot(opts?: { project_id?: string }): Promise<PreviewSetRootResult>;
   startTerminal(opts: {
     command: string;
     cwd?: string;
@@ -861,6 +864,11 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     patchRevertAll: (opts) => client.request<PatchApplyAllResult>("patch.revert_all", opts ?? {}),
     patchSaveSnapshot: (opts) =>
       client.request<PatchSaveSnapshotResult>("patch.save_snapshot", opts ?? {}),
+    setPreviewRoot: (opts) =>
+      client.request<PreviewSetRootResult>(
+        "preview.set_root",
+        opts?.project_id ? { project_id: opts.project_id } : {},
+      ),
     startTerminal: (opts) => client.request<TerminalStartResult>("terminal.start", opts),
     readTerminal: (opts) => client.request<TerminalReadResult>("terminal.read", opts),
     stopTerminal: (sessionId) => client.request<TerminalStartResult>("terminal.stop", { session_id: sessionId }),

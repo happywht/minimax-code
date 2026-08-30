@@ -9,6 +9,10 @@ Routes
 - ``GET /preview/health``       — liveness probe
 - ``GET /preview/events``       — SSE stream of file-change events
 - ``GET /preview/{file_path}``  — serve a workspace file (with path-traversal guard)
+
+Since v1.7.1 the served root is mutable: :meth:`PreviewState.set_root`
+(reached from the ``preview.set_root`` IPC handler) re-points the whole
+surface at another project root without restarting the process.
 """
 from __future__ import annotations
 
@@ -99,6 +103,73 @@ class PreviewState:
         self._watcher_task = None
         self._fanout_task = None
 
+    async def set_root(self, new_root: Path) -> None:
+        """Re-point the preview surface at *new_root* (v1.7.1).
+
+        Stops the current watcher/fan-out tasks, swaps the root, and
+        restarts them only if they were running (a state that was never
+        started stays quiet). Any events queued against the old root are
+        dropped from the main queue so subscribers do not receive stale
+        paths; events already fanned out into subscriber queues may
+        trigger at most one spurious iframe reload, which the frontend's
+        own re-root reload supersedes. No-op when the root is unchanged.
+        """
+        root = Path(new_root).expanduser().resolve()
+        if root == self.workspace:
+            return
+        was_running = (
+            self._watcher_task is not None and not self._watcher_task.done()
+        )
+        await self.stop()
+        self.workspace = root
+        while not self.event_queue.empty():
+            self.event_queue.get_nowait()
+        if was_running:
+            await self.start_watcher()
+        logger.info("preview root switched: workspace=%s", root)
+
+
+# ---------------------------------------------------------------------------
+# Process-wide state singleton (v1.7.1)
+# ---------------------------------------------------------------------------
+#
+# ``http_server.build_app`` creates the PreviewState bound to the HTTP app
+# and publishes it here so the ``preview.set_root`` IPC handler — which is
+# registered on the IPCServer and has no FastAPI handle — can reach the
+# *same* instance the routes serve from. In stdio mode (no HTTP app) the
+# singleton is built lazily at the process-default root so the IPC method
+# still round-trips; there is simply no route serving from it.
+
+_PREVIEW_STATE: PreviewState | None = None
+
+
+def get_preview_state() -> PreviewState | None:
+    """Return the process-wide preview state, or ``None`` if not yet built."""
+    return _PREVIEW_STATE
+
+
+def set_preview_state(state: PreviewState | None) -> None:
+    """Publish *state* as the process-wide preview state (``build_app`` seam)."""
+    global _PREVIEW_STATE
+    _PREVIEW_STATE = state
+
+
+def ensure_preview_state() -> PreviewState:
+    """Return the process-wide preview state, building it once on demand.
+
+    The lazy instance is rooted at the process-default workspace
+    (``MINIMAX_CODE_WORKSPACE`` or CWD — the same authority
+    :func:`minimax_code.workspace_ctx.env_or_cwd_root` defines). No watcher
+    is started here; that only happens from the HTTP lifespan or the SSE
+    endpoint, so a lazily built state in stdio mode costs one object.
+    """
+    global _PREVIEW_STATE
+    if _PREVIEW_STATE is None:
+        from ..workspace_ctx import env_or_cwd_root
+
+        _PREVIEW_STATE = PreviewState(env_or_cwd_root())
+    return _PREVIEW_STATE
+
 
 def _safe_path(workspace: Path, file_path: str) -> Path | None:
     """Resolve *file_path* under *workspace*, returning ``None`` if it escapes."""
@@ -165,7 +236,12 @@ def register_preview_routes(
     *,
     state: PreviewState | None = None,
 ) -> PreviewState:
-    """Register preview routes on an existing FastAPI application."""
+    """Register preview routes on an existing FastAPI application.
+
+    *workspace* is only the *initial* root: the routes read the live root
+    from ``state.workspace`` on every request (v1.7.1), so
+    :meth:`PreviewState.set_root` re-points the whole surface at runtime.
+    """
     state = state or PreviewState(workspace)
     app.state.preview = state
 
@@ -173,7 +249,7 @@ def register_preview_routes(
 
     @app.get("/preview/health")
     async def preview_health() -> dict[str, Any]:
-        return {"ok": True, "workspace": str(workspace)}
+        return {"ok": True, "workspace": str(state.workspace)}
 
     # ---- GET /preview/events -------------------------------------------
 
@@ -218,7 +294,7 @@ def register_preview_routes(
     @app.get("/preview/{file_path:path}", response_model=None)
     async def preview_file(file_path: str) -> FileResponse | JSONResponse:
         """Serve a file from the workspace."""
-        safe = _safe_path(workspace, file_path)
+        safe = _safe_path(state.workspace, file_path)
         if safe is None:
             return JSONResponse(
                 content={"error": "path traversal denied"},
@@ -232,6 +308,12 @@ def register_preview_routes(
         return FileResponse(
             safe,
             media_type=_guess_content_type(safe),
+            # Live preview: never let the browser serve a stale document from
+            # heuristic caching. Without this, an iframe navigation to the
+            # same URL (e.g. after a project re-root on the same file path)
+            # can be satisfied from cache and keep rendering the previous
+            # project's content indefinitely.
+            headers={"Cache-Control": "no-store"},
         )
 
     return state

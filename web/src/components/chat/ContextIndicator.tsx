@@ -24,10 +24,16 @@ import { useChat } from "../../stores/chat";
 import { useModelStore } from "../../stores/modelStore";
 import { strings } from "../../ui/strings";
 
-/** Format a token count for display (e.g. 1234 → "1.2k"). */
+/** Format a token count for display (e.g. 1234 → "1.2k", 200000 → "200k"). */
 function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  if (n >= 1_000_000) {
+    const m = n / 1_000_000;
+    return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+  }
+  if (n >= 1_000) {
+    const k = n / 1_000;
+    return `${Number.isInteger(k) ? k : k.toFixed(1)}k`;
+  }
   return String(n);
 }
 

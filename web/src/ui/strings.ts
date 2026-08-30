@@ -178,6 +178,16 @@ export const strings = {
       ready: "就绪",
     },
 
+    emptyState: {
+      title: "今天想让我做什么？",
+      hint: "可以让我重构代码、解释文件、运行命令，或设置定时任务。",
+      suggestions: [
+        "帮我重构一段代码并补充类型标注",
+        "解释这个项目中某个模块的职责",
+        "设置每天上午 9 点的测试提醒",
+      ],
+    },
+
     messageStatus: {
       queued: "排队中",
       sending: "发送中",
@@ -910,6 +920,7 @@ export const strings = {
       iframeTitle: "实时预览",
       serviceError: (status: number) => `预览服务返回 ${status}`,
       fileNotFound: (path: string) => `预览文件不存在：${path}`,
+      unreachable: "无法连接预览服务，请确认 Agent 正在运行后重试",
     },
 
     // SkillsPanel — 技能面板
@@ -1346,6 +1357,8 @@ export const strings = {
     projectDeleteFailed: "删除项目失败",
     projectArchiveFailed: "归档项目失败",
     projectUnarchiveFailed: "取消归档项目失败",
+    // preview
+    previewRootFailed: "切换预览根目录失败",
     batchArchiveFailed: "批量归档失败",
     batchMoveFailed: "批量移动失败",
     // skills

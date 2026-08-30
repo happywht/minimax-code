@@ -776,6 +776,15 @@ export interface UpdateProjectResult {
   project: Project;
 }
 
+/** v1.7.1 — `preview.set_root` reply: the preview surface's new root. */
+export interface PreviewSetRootResult {
+  ok: boolean;
+  /** Absolute path of the workspace the preview now serves. */
+  workspace: string;
+  /** The project the root was resolved from, or `null` for the process default. */
+  project_id: string | null;
+}
+
 export interface ListMessagesResult {
   messages: PersistedMessage[];
 }

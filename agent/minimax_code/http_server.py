@@ -459,9 +459,13 @@ def build_app(
     preview_workspace = Path(
         os.environ.get("MINIMAX_CODE_WORKSPACE", os.getcwd())
     ).resolve()
-    from .preview.server import PreviewState
+    from .preview.server import PreviewState, set_preview_state
 
     preview_state = PreviewState(preview_workspace)
+    # v1.7.1: publish the HTTP-bound state as the process-wide singleton so
+    # the ``preview.set_root`` IPC handler (no FastAPI handle of its own)
+    # re-roots the *same* instance these routes serve from.
+    set_preview_state(preview_state)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

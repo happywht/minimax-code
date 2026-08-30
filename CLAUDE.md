@@ -20,7 +20,7 @@ Browser (Vite SPA, localhost:5173)
   |  WebSocket /ws  (server-push streaming events)
   v
 Python Agent (FastAPI + asyncio, 127.0.0.1:8765)
-  |- IPCServer (shared handler registry, 170 methods / 34 namespaces)
+  |- IPCServer (shared handler registry, 171 methods / 35 namespaces)
   |- AgentCore (conversation loop + LLM streaming)
   |- ToolRegistry (15 built-in tool modules)
   |- SkillRuntime (SKILL.md loader + registry)
@@ -176,7 +176,7 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 
 ### IPC 命名空间
 
-共 **170 个注册方法、34 个前缀**（33 个点号命名空间 + 3 个无点号 built-in，v1.6.1 实测对账）。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。
+共 **171 个注册方法、35 个前缀**（34 个点号命名空间 + 3 个无点号 built-in，v1.7.1 实测对账）。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。
 
 | 前缀 | 方法数 | 用途 | Handler 文件 |
 |------|--------|------|-------------|
@@ -197,6 +197,7 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 | `patch.*` | 8 | Patch Studio 应用/回退/快照 | `handlers_patch.py` |
 | `permission.*` | 6 | 权限规则管理/解析 | `handlers_permissions.py` |
 | `plugins.*` | 5 | 插件启用/禁用 | `handlers_plugins.py` |
+| `preview.*` | 1 | 预览服务换根（v1.7.1） | `handlers_preview.py` |
 | `project.*` | 6 | 项目 CRUD | `handlers_projects.py` |
 | `provider.*` | 7 | 多 Provider 接入 | `handlers_providers.py` |
 | `run.*` | 2 | Run 生命周期事件 | `handlers_runs.py` |
