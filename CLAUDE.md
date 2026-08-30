@@ -147,7 +147,7 @@ pnpm dev
 | Python 单元 | pytest + pytest-asyncio | `agent/tests/` | IPC、Storage DAO、Agent Core、Tools、Skills、Scheduler、Permissions、Mobile、Sessions、Model、Secrets、HTTP Server、Git handlers |
 | 前端单元 | vitest + @testing-library/react | `web/src/**/*.test.ts(x)` | IPC client、stores、组件渲染 |
 | Python 黑盒 | subprocess + pytest | `tests/e2e/smoke_*.py` | 6 个 smoke：agents、chat、mobile、model、phase2b、progress |
-| 跨栈 e2e | Playwright | `e2e/*.spec.ts` | 10 个 spec：boot、session-list、agent-rpc、chat、thinking-count、subagent、ws-resume、skill-import、codebase、production-mode |
+| 跨栈 e2e | Playwright | `e2e/*.spec.ts` | 11 个 spec：boot、session-list、agent-rpc、chat、thinking-count、subagent、ws-resume、skill-import、codebase、production-mode、mobile-viewport |
 
 Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时空目录>` 创建独立数据库。
 
