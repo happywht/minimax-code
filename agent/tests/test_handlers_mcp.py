@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from typing import Any
 
 import pytest
@@ -106,7 +107,15 @@ async def test_mcp_add_and_list_server(client: IPCClient) -> None:
     result = await client.request("mcp.list_servers", {})
     assert len(result["servers"]) == 1
     assert result["servers"][0]["name"] == "Filesystem"
-    assert result["servers"][0]["connected"] is False
+    # add_server attaches the server for real (it spawns the stdio command),
+    # so `connected` tracks the environment: without npx the attach cannot
+    # succeed; with npx it is best-effort (npm availability / network) and
+    # may legitimately come back True.
+    connected = result["servers"][0]["connected"]
+    if shutil.which("npx") is None:
+        assert connected is False
+    else:
+        assert isinstance(connected, bool)
 
 
 @pytest.mark.asyncio

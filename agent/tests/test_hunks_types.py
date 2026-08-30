@@ -10,6 +10,7 @@ adds.
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from datetime import UTC, datetime
 
 import pytest
 
@@ -137,10 +138,14 @@ def test_hunk_defaults_patch_none_selected_false():
 
 
 def test_hunk_value_equality():
-    a = _make_hunk()
-    b = _make_hunk()
+    # created_at pins to a fixed value: the default datetime.now() made the
+    # comparison depend on clock granularity (coarse on Windows — both calls
+    # land in the same tick; fine on Linux — they differ).
+    created = datetime(2024, 1, 1, tzinfo=UTC)
+    a = _make_hunk(created_at=created)
+    b = _make_hunk(created_at=created)
     assert a == b
-    assert a != _make_hunk(new_text="different\n")
+    assert a != _make_hunk(created_at=created, new_text="different\n")
 
 
 def test_hunk_is_frozen():
