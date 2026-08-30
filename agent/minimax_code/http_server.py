@@ -31,11 +31,22 @@ trusted origins can be supplied through ``MINIMAX_CODE_CORS_ORIGINS``. The
 HTTP server binds ``127.0.0.1`` so anything on the LAN is
 unreachable, but we still set a tight CORS allow-list so a
 malicious site can't impersonate the agent.
+
+Token auth (v1.8.0)
+-------------------
+Binding to ``0.0.0.0`` (remote deployments) requires authentication:
+set ``MINIMAX_CODE_HTTP_TOKEN`` and every capability surface
+(``/rpc``, ``/complete``, ``/preview/*``, the ``/ws`` upgrade) rejects
+requests without the matching bearer token. See
+``TokenAuthMiddleware`` above for the credential channels and the
+intentionally anonymous paths. With the env unset, behaviour is
+byte-for-byte the pre-v1.8.0 localhost deployment.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hmac
 import importlib.metadata
 import json
 import logging
@@ -45,12 +56,15 @@ from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import MutableHeaders
+from starlette.requests import HTTPConnection
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .ipc.protocol import (
     INVALID_REQUEST,
@@ -77,6 +91,137 @@ CORS_ALLOW_HEADERS: list[str] = ["Content-Type", "Authorization"]
 # Maximum request body size for POST /rpc (10 MB).
 # Prevents OOM from oversized payloads.
 MAX_RPC_BODY_BYTES: int = 10 * 1024 * 1024
+
+# ---------------------------------------------------------------------------
+# Token auth (v1.8.0)
+# ---------------------------------------------------------------------------
+#
+# Setting ``MINIMAX_CODE_HTTP_TOKEN`` turns on bearer-token auth for every
+# capability surface: ``POST /rpc`` (the full 171-method registry — project
+# I/O, terminal, secrets), ``POST /complete``, the ``/preview/*`` file
+# server, and the ``/ws`` upgrade. Without the env the behaviour is exactly
+# the pre-v1.8.0 localhost-only deployment.
+#
+# Deliberately left anonymous:
+# - ``/health``        — liveness probe; reports ok/db/version/uptime only.
+# - ``/hooks/{path}``  — inbound webhooks; verified by their own HMAC secret.
+# - ``/`` (web/dist)   — the SPA bundle; no data, and the browser must be
+#                        able to load it before any token is configured.
+#
+# Credential channels, tried in order:
+# 1. ``Authorization: Bearer <token>`` header (fetch / curl),
+# 2. ``?token=<token>`` query (WS upgrade, iframe src, EventSource),
+# 3. the ``minimax_token`` cookie — seeded by a successful query-token
+#    response under ``/preview`` so the iframe's relative asset requests
+#    (``style.css``, ``app.js``) pass without a token in each URL.
+
+AUTH_ENV_VAR: str = "MINIMAX_CODE_HTTP_TOKEN"
+AUTH_COOKIE_NAME: str = "minimax_token"
+# Cookie lifetime for the preview seeded credential (24 h, matches a long
+# editing session; the cookie only ever holds a token the client already
+# had in the URL).
+AUTH_COOKIE_MAX_AGE: int = 24 * 3600
+PROTECTED_PATH_PREFIXES: tuple[str, ...] = ("/rpc", "/complete", "/preview")
+
+WS_AUTH_CLOSE_CODE: int = 4401  # "unauthorized" — app-defined WS close code
+
+
+def auth_token() -> str | None:
+    """Return the configured token, or ``None`` when auth is disabled."""
+    raw = os.environ.get(AUTH_ENV_VAR, "").strip()
+    return raw or None
+
+
+def _credential_from_connection(conn: HTTPConnection) -> str | None:
+    """Extract the presented credential from a request / websocket."""
+    header = conn.headers.get("authorization", "")
+    if header.lower().startswith("bearer "):
+        candidate = header[7:].strip()
+        if candidate:
+            return candidate
+    query_token = (conn.query_params.get("token") or "").strip()
+    if query_token:
+        return query_token
+    cookie_token = (conn.cookies.get(AUTH_COOKIE_NAME) or "").strip()
+    if cookie_token:
+        # The cookie is minted percent-encoded (see TokenAuthMiddleware) so
+        # arbitrary token characters survive the Set-Cookie round-trip.
+        return unquote(cookie_token)
+    return None
+
+
+def credential_matches(conn: HTTPConnection) -> bool:
+    """True when auth is off, or the connection presents the right token."""
+    expected = auth_token()
+    if expected is None:
+        return True
+    provided = _credential_from_connection(conn)
+    if not provided:
+        return False
+    return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+
+
+class TokenAuthMiddleware:
+    """Reject unauthenticated requests to the protected path prefixes.
+
+    Pure ASGI middleware (not ``BaseHTTPMiddleware``) so it composes cheaply
+    and never interferes with streaming responses. Registered *before* the
+    CORS middleware so the CORS layer sits outside it: preflight OPTIONS
+    requests never reach this check, and a 401 response still carries the
+    ``Access-Control-Allow-Origin`` header a cross-origin browser client
+    needs to even see the status code.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path: str = scope.get("path", "")
+        expected = auth_token()
+        if expected is None or not path.startswith(PROTECTED_PATH_PREFIXES):
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope, receive)
+        if not credential_matches(request):
+            response = JSONResponse(
+                content={
+                    "error": "unauthorized",
+                    "hint": (
+                        f"set Authorization: Bearer <token> or ?token=<token> "
+                        f"(server auth enabled via {AUTH_ENV_VAR})"
+                    ),
+                },
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            await response(scope, receive, send)
+            return
+
+        # Seed the preview cookie after a successful query-token response so
+        # the iframe's *relative* asset requests (no token in their URL)
+        # authenticate via the cookie channel. Only minted for the exact
+        # configured token, scoped to /preview, HttpOnly + SameSite=Strict.
+        seed_cookie: str | None = None
+        if path.startswith("/preview"):
+            provided = _credential_from_connection(request)
+            if provided is not None and hmac.compare_digest(
+                provided.encode("utf-8"), expected.encode("utf-8")
+            ):
+                seed_cookie = (
+                    f"{AUTH_COOKIE_NAME}={quote(provided, safe='')}; "
+                    f"Path=/preview; Max-Age={AUTH_COOKIE_MAX_AGE}; "
+                    f"HttpOnly; SameSite=Strict"
+                )
+
+        async def send_with_cookie(message: Any) -> None:
+            if seed_cookie is not None and message["type"] == "http.response.start":
+                MutableHeaders(scope=message).append("set-cookie", seed_cookie)
+            await send(message)
+
+        await self.app(scope, receive, send_with_cookie)
 
 
 def _cors_allow_origins() -> list[str]:
@@ -543,6 +688,11 @@ def build_app(
         lifespan=lifespan,
     )
 
+    # Registration order matters: middlewares added first end up *inside* the
+    # stack, so adding the token check before CORS puts the CORS layer
+    # outside it — preflight OPTIONS never hits the auth check, and 401s
+    # still carry the CORS headers a cross-origin browser client needs.
+    app.add_middleware(TokenAuthMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_allow_origins(),
@@ -632,6 +782,17 @@ def build_app(
 
     @app.websocket("/ws")
     async def ws_endpoint(websocket: WebSocket) -> None:
+        # v1.8.0 — token gate on the upgrade itself. The browser WebSocket
+        # API cannot set custom headers, so the credential arrives as a
+        # ``?token=`` query param (header form still accepted for non-
+        # browser clients). Rejecting *before* ``accept()`` makes uvicorn
+        # answer the upgrade with HTTP 403 instead of opening a socket.
+        if not credential_matches(websocket):
+            try:
+                await websocket.close(code=WS_AUTH_CLOSE_CODE)
+            except Exception:  # pragma: no cover — defensive
+                pass
+            return
         try:
             await ws_manager.on_connect(websocket)
         except WebSocketDisconnect:
@@ -699,6 +860,10 @@ def build_app(
             # user path into screenshots or bug reports.
             "web": _web_dist_dir() is not None,
             "data_dir": data_dir.name or None,
+            # v1.8.0 — surface auth state so a web client can tell "agent
+            # enabled token auth" apart from "agent unreachable" before
+            # its first /rpc call fails. No secret material here.
+            "auth": auth_token() is not None,
         }
 
     # ---- POST /hooks/{path} — inbound webhooks (v0.5.0) ----------------
@@ -816,7 +981,14 @@ def run(
 
 
 __all__ = [
+    "AUTH_COOKIE_NAME",
+    "AUTH_ENV_VAR",
     "CORS_ALLOW_ORIGINS",
+    "PROTECTED_PATH_PREFIXES",
+    "TokenAuthMiddleware",
+    "WS_AUTH_CLOSE_CODE",
+    "auth_token",
     "build_app",
+    "credential_matches",
     "run",
 ]

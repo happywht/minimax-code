@@ -491,8 +491,15 @@ Known limitations (deliberate, v1.6.0 scope):
   by `collect_subagent`. The escape detector makes this visible
   (advisory), but the protocol still teaches sub-agents to
   deliver files via `write_file`/`edit_file`/`append_file`.
-* The team path (`teams.spawn`) is out of scope — it has no run id
-  and no per-member registry clone to hang the sandbox on.
+* ~~The team path (`teams.spawn`) is out of scope~~ — closed in
+  v1.7.0: `team.spawn` takes an optional `sandbox` flag (default
+  ladder identical to `spawn_subagent`: explicit arg > env
+  `MINIMAX_CODE_SANDBOX_DEFAULT` > false). Each member writes into
+  its own deterministic run sandbox tree reusing this §8a stack;
+  the orchestrator auto-collects (`collect_sandbox_run`), with the
+  skip policy advisory — sequential members collect immediately
+  after each step, review writers before the reviewer, other modes
+  at the end of the run.
 
 ## 8b. Shared-workspace concurrency awareness (v1.5.1)
 

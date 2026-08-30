@@ -60,6 +60,8 @@ export { ConnectionBanner } from "./layout/ConnectionBanner";
 export type { ConnectionBannerProps, ConnectionBannerState } from "./layout/ConnectionBanner";
 export { StorageBanner } from "./layout/StorageBanner";
 export type { StorageBannerProps } from "./layout/StorageBanner";
+export { MockModeBanner } from "./layout/MockModeBanner";
+export type { MockModeBannerProps } from "./layout/MockModeBanner";
 export { InspectorDrawer } from "./layout/InspectorDrawer";
 export type { InspectorDrawerProps } from "./layout/InspectorDrawer";
 export { CrashRecoveryPrompt } from "./modals/CrashRecoveryPrompt";

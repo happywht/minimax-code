@@ -38,7 +38,7 @@ describe("MessageInput", () => {
     expect(send).toBeDisabled();
     expect(screen.queryByTestId("message-input-token-warning")).toBeNull();
     expect(screen.getByTestId("message-input-token-count")).toHaveAccessibleName(
-      "输入字符 0/8000",
+      "输入字符计数：0/8000，超出上限将无法发送",
     );
   });
 

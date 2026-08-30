@@ -45,6 +45,7 @@ import {
   type ToolCallData,
   type ToolResultData,
 } from "../types/ipc";
+import { strings } from "../ui/strings";
 import { mockNotify, mockRequest } from "./mock";
 import { bindTypedIPC, type TypedIPC } from "./typed";
 /* ─────────────────────── Internal types ─────────────────────── */
@@ -99,6 +100,49 @@ function runtimeAgentBaseUrl(): string {
     return window.location.origin;
   }
   return DEFAULT_AGENT_BASE_URL;
+}
+
+/* ─────────────────────── Agent access token (v1.8.0) ─────────────────────── */
+
+/**
+ * localStorage key holding the bearer token for deployments that set
+ * ``MINIMAX_CODE_HTTP_TOKEN`` on the agent. Empty/absent = no token sent
+ * (the pre-v1.8.0 localhost behaviour).
+ */
+export const AGENT_TOKEN_STORAGE_KEY = "minimax_token";
+
+/** Read the configured access token ("" when unset or storage unavailable). */
+export function getAgentToken(): string {
+  try {
+    return (localStorage.getItem(AGENT_TOKEN_STORAGE_KEY) ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Persist (non-empty, trimmed) or clear (empty) the access token.
+ * Callers follow up with `ipc.restart()` so the next RPC/WS carries it.
+ */
+export function setAgentToken(token: string): void {
+  try {
+    const trimmed = token.trim();
+    if (trimmed) {
+      localStorage.setItem(AGENT_TOKEN_STORAGE_KEY, trimmed);
+    } else {
+      localStorage.removeItem(AGENT_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // Storage unavailable — degrade to sending no token.
+  }
+}
+
+/** Headers for RPC calls — always JSON, plus the Bearer token when set. */
+function rpcHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const token = getAgentToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
 }
 
 /** Convert an `http://host:port` base URL to its `ws://` equivalent. */
@@ -171,6 +215,8 @@ export interface AgentHealth {
   db: boolean;
   version: string;
   uptime_s: number;
+  /** v1.8.0 — true when the agent has token auth enabled. */
+  auth?: boolean;
 }
 
 /**
@@ -198,6 +244,7 @@ export async function fetchHealth(baseUrl?: string): Promise<AgentHealth | null>
       db: record.db,
       version: typeof record.version === "string" ? record.version : "",
       uptime_s: typeof record.uptime_s === "number" ? record.uptime_s : 0,
+      auth: typeof record.auth === "boolean" ? record.auth : false,
     };
   } catch {
     return null;
@@ -439,7 +486,7 @@ export class IPCClient {
     // ripple into the UI loop.
     void fetch(`${this.baseUrl}/rpc`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: rpcHeaders(),
       body: JSON.stringify({
         jsonrpc: "2.0",
         method,
@@ -539,8 +586,14 @@ export class IPCClient {
     // event (wsLastSeq > 0) asks for a replay — a first-ever connect
     // sends no cursor, so a fresh page load doesn't get the whole
     // history ring re-streamed on top of the RPC-fetched state.
-    const resume = this.wsLastSeq > 0 ? `?since=${this.wsLastSeq}` : "";
-    const wsUrl = `${toWebSocketUrl(this.baseUrl, "/ws")}${resume}`;
+    const query: string[] = [];
+    if (this.wsLastSeq > 0) query.push(`since=${this.wsLastSeq}`);
+    // v1.8.0 — the browser WebSocket API cannot set headers, so the token
+    // rides the query string when the deployment requires auth.
+    const token = getAgentToken();
+    if (token) query.push(`token=${encodeURIComponent(token)}`);
+    const qs = query.length > 0 ? `?${query.join("&")}` : "";
+    const wsUrl = `${toWebSocketUrl(this.baseUrl, "/ws")}${qs}`;
     let ws: WebSocket;
     try {
       ws = new WebSocket(wsUrl);
@@ -764,7 +817,7 @@ export class IPCClient {
     try {
       resp = await fetch(`${this.baseUrl}/rpc`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: rpcHeaders(),
         body: JSON.stringify({
           jsonrpc: "2.0",
           id,
@@ -790,9 +843,15 @@ export class IPCClient {
 
     if (!resp.ok) {
       // 5xx / non-2xx → transport-level failure, not a JSON-RPC error.
+      // 401 gets an actionable message: the deployment set
+      // MINIMAX_CODE_HTTP_TOKEN and this client has no/mismatched token.
       throw new IPCError({
         code: ErrorCode.InternalError,
-        message: `HTTP ${resp.status} ${resp.statusText}`,
+        message:
+          resp.status === 401
+            ? strings.layout.auth.rpcRejected
+            : `HTTP ${resp.status} ${resp.statusText}`,
+        data: { status: resp.status },
       });
     }
 

@@ -1,334 +1,182 @@
-# MiniMax Code 复刻 - 架构设计文档
+# MiniMax Code — 系统架构文档
 
-> 这是整个项目的架构契约。所有后续任务（project-skeleton, storage-layer, agent-core, ui-shell, skills-system）都必须遵守本文定义的接口和模块边界。
->
-> **v0.2.0 状态**：项目从 Tauri 桌面壳切到"web SPA + 本地 Python agent"。架构图、技术栈表、目录树、IPC 路由全部按 web 模式重写；v0.1.x 时代的 Rust / Tauri 描述已过时，仅作历史参考。详细切换说明见 [`docs/v0.2.0-web-architecture.md`](v0.2.0-web-architecture.md) 与 [`CHANGELOG.md`](../CHANGELOG.md) 的 v0.2.0 段。
+> 本文档是项目的架构现状权威，与 **v1.8.0** 代码库对账重写（2026-08-30）。
+> v0.2.0 时代的切换说明（Tauri → web SPA）保留在 [`docs/v0.2.0-web-architecture.md`](v0.2.0-web-architecture.md) 仅作历史参考；
+> 各专项深读：IPC 全量方法 [`docs/ipc-contract.md`](ipc-contract.md) Appendix A、库表 [`docs/storage-schema.md`](storage-schema.md)、
+> Agent 循环 [`docs/agent-core.md`](agent-core.md)、技能 [`docs/skills.md`](skills.md)、部署 [`docs/deployment.md`](deployment.md)。
 
 ## 1. 项目目标
 
-复刻 MiniMax Code：AI 编码 Agent + 技能系统 + 定时任务 + 多 Agent 协作 + 移动互联 + 授权管理。**v0.2.0 起以 web SPA + 本地 Python agent 的形态继续开发**（不再有 Tauri 桌面壳）。Phase 1 阶段目标是跑通最小可演示闭环：浏览器 ↔ HTTP/WS ↔ Agent ↔ 工具 ↔ LLM。
+复刻 MiniMax Code：AI 编码 Agent + 技能系统 + 定时任务 + 多 Agent 协作 + 移动互联 + 授权管理 + 进度面板。
+形态为 **web SPA + 本地 Python agent**（前后端分离，HTTP + WebSocket 通信，JSON-RPC 2.0 协议）。
+v1.8.0 当前规模：**171 个 IPC 方法 / 35 个前缀**、**24 张实体表**（+ FTS/向量虚表）、**15 个内置工具模块**、前端 **30 个 Zustand stores**、
+测试 **pytest 10651 / vitest 808 / 6 个 Python 黑盒 smoke / 11 个 Playwright 跨栈 spec**。
 
-## 2. 截图识别的核心功能（必须覆盖）
+## 2. 功能模块（截图识别 → 现状对照）
 
-| 模块 | 截图位置 | 核心能力 |
-|---|---|---|
-| 多轮对话 | 主区 | 流式 LLM 输出、tool call 中间状态、消息历史 |
-| 技能系统 | 侧边栏"技能" | SKILL.md 加载、enable/disable、运行时注入 |
-| 定时任务 | 侧边栏"定时任务" | cron 表达式、调度、持久化 |
-| 连接手机 | 侧边栏"连接手机" | 配对、推送、远程控制 PoC |
-| 任务历史 | 侧边栏"任务历史" | 会话持久化、检索、归档 |
-| 多 Agent | 侧边栏"Agents" | 子 Agent spawn、任务分发、结果汇总 |
-| 进度面板 | 右上"进度" | 长任务进度上报、可视化 |
-| 授权管理 | 底部"始终授权" | 工具调用权限粒度控制 |
-| 模型选择 | 底部"模型" | 多模型切换 |
-| 新建任务 | 侧边栏顶部 | 创建新会话 |
+| 模块 | 现状实现 |
+|---|---|
+| 多轮对话 | `agent.send_message` 流式循环 + `agent.message_chunk` 流 + thinking_count 通道 + ask_user 问答卡 |
+| 技能系统 | SKILL.md loader + registry + per-skill 工具绑定（`skill.*` 7 方法） |
+| 定时任务 | APScheduler cron + command 载荷分支 + 真实 prompt runner（`schedule.*` 6 方法） |
+| 移动互联 | 配对/推送/远程控制（`mobile.*` 7 方法，PoC 级——升级立项 v1.9） |
+| 多 Agent | 子 agent 全生命周期（spawn/wait/collect + artifact 协议）+ Agent Teams 编排（`team.*` 9 方法）+ 沙盒隔离 |
+| 进度面板 | task ledger + `task.progress`/`agent.subagent_progress`/`agent.team_progress` 事件族 |
+| 授权管理 | per-session 权限 gater + 规则持久化 + 「始终授权」（`permission.*` 6 方法） |
+| 模型选择 | 多 Provider 接入（MiniMax + anthropic 兼容 + 第三方）+ per-provider 密钥槽（`model.*`/`provider.*`） |
+| 代码库检索 | per-root 索引 + chunk 持久化 + FTS/向量混合检索（`codebase.*` 4 方法） |
+| Git 集成 | 状态/差异/日志只读三件套 + Code Review 工作流（写操作 v1.9 立项） |
+| Patch Studio | 应用/回退/快照（`patch.*` 8 方法） |
+| 预览面板 | per-project 根 + 双路由静态服务 + 热重载（`preview.*`） |
 
 ## 3. 技术栈
 
-| 层 | 技术 | 理由 |
+| 层 | 技术 | 说明 |
 |---|---|---|
-| 前端 | React 18 + Vite + TypeScript | 生态成熟、组件化、类型安全；Vite dev server 直接服务 SPA |
-| Transport | HTTP transport (FastAPI on agent) + WebSocket events | `POST /rpc` 处理请求、`GET /ws` 推流；与 stdio 共享同一 handler registry |
-| 样式 | Tailwind CSS | 快速、对标 Linear/Claude Code 风格 |
-| 状态 | Zustand | 轻量、TypeScript 友好 |
-| Agent 核心 | Python 3.11+ | 用户舒适区、生态丰富（LLM SDK、工具库） |
-| LLM 客户端 | httpx (async) | 流式支持、轻量、可控 |
-| 存储 | SQLite (stdlib sqlite3 / aiosqlite) | 本地、零运维、ACID |
-| IPC | JSON-RPC 2.0 over HTTP/WS (web) + stdio (tests / CLI) | 双模式：stdio 给 pytest + CLI；HTTP+WS 给浏览器 |
-| 调度 | APScheduler | 成熟、支持 cron |
-| 测试 (Python) | pytest + pytest-asyncio | 标准 |
-| 测试 (前端) | vitest + @testing-library/react | 快速、TS 原生 |
-| 测试 (e2e) | Playwright | 跨栈 e2e，浏览器真跑 + agent 真起 |
+| 前端 | React 18 + Vite + TypeScript (strict) | `web/`，路径别名 `@/` |
+| 状态 | Zustand（30 stores） | 每 store 管一个 UI 切片，`src/stores/index.ts` barrel |
+| 样式 | Tailwind CSS | 自定义 `minimax` 颜色主题；最小字号 11px 有测试守护 |
+| Transport | FastAPI（HTTP `POST /rpc` + `GET /ws`）+ stdio | **共享同一 handler registry**，HTTP server 只是薄 transport |
+| Agent 核心 | Python 3.11+ 全 asyncio | aiosqlite / httpx / FastAPI / pydantic v2 |
+| 存储 | SQLite + FTS5 + 向量虚表 | 24 实体表，migration 029，幂等迁移 |
+| 调度 | APScheduler | cron + command 载荷 |
+| 鉴权 | Bearer token（v1.8.0） | env `MINIMAX_CODE_HTTP_TOKEN` 启用；未启用 = 零变化 |
+| 测试 | pytest / vitest / Playwright | 单元 + 黑盒 smoke + 跨栈 e2e 三层 |
 
-> **Transport** 走两条路，**共享同一份 handler registry**（`agent/minimax_code/ipc/server.py`）：
-> 1. **stdio JSON-RPC 2.0** — 给 pytest 子进程 smoke + CLI 调试（`python -m minimax_code --stdio`）
-> 2. **HTTP + WebSocket** — 给 web 客户端（`python -m minimax_code` 默认模式）
->
-> 这两条路由不是平行两份实现：HTTP server 只是薄 transport，把 `POST /rpc` 反序列化后调
-> `IPCServer.handle_request(env)`，再把响应序列化回 HTTP body；流式事件经
-> `IPCServer.register_listener(cb)` 注入到 WebSocket。详细见
-> [`docs/v0.2.0-web-architecture.md`](v0.2.0-web-architecture.md)。
-
-## 4. 目录结构
+## 4. 目录结构（现状，深度有裁剪）
 
 ```
-minimax-code/                          # 仓库根
-├── package.json                       # pnpm workspace 根（含 dev / test:e2e 脚本）
-├── pnpm-workspace.yaml
-├── README.md
-├── docs/
-│   ├── architecture.md                # 本文档
-│   ├── ipc-contract.md                # IPC 消息格式
-│   ├── v0.2.0-web-architecture.md     # v0.2.0 切换的 API 契约 / 工作流
-│   ├── storage-schema.md              # 数据库 schema
-│   ├── agent-core.md                  # agent 循环图
-│   ├── skills.md                      # 技能格式规范
-│   └── ui-components.md               # 组件树
-├── web/                               # React 前端（Vite-served SPA）
-│   ├── package.json
-│   ├── vite.config.ts
-│   ├── tailwind.config.js
-│   ├── index.html
+minimax-code/
+├── CLAUDE.md / CHANGELOG.md / README.md
+├── docs/                    # architecture / ipc-contract / storage-schema / agent-core /
+│                            # skills / user-guide / deployment / performance-baseline / roadmap
+├── scripts/                 # dev.mjs（agent + Vite 并行拉起）
+├── web/                     # React SPA（Vite）
 │   ├── src/
-│   │   ├── main.tsx
-│   │   ├── App.tsx
-│   │   ├── components/
-│   │   │   ├── Sidebar.tsx
-│   │   │   ├── ChatPanel.tsx
-│   │   │   ├── ProgressPanel.tsx
-│   │   │   ├── MessageItem.tsx
-│   │   │   ├── MessageInput.tsx
-│   │   │   ├── ModelSelector.tsx
-│   │   │   └── ...
-│   │   ├── stores/                    # Zustand stores
-│   │   ├── ipc/
-│   │   │   └── client.ts              # HTTP/WS client（封装 fetch + WebSocket）
-│   │   └── types/
-│   │       └── ipc.ts                 # 共享 IPC 类型
+│   │   ├── App.tsx          # 三栏壳 + 连接状态机 + 各横幅挂载
+│   │   ├── components/      # layout/ chat/ settings/(14 tab) panels/ modals/ right-panel/(11 tab)
+│   │   ├── stores/          # 30 个 Zustand store
+│   │   ├── ipc/             # client.ts(transport+token) typed.ts(171 方法签名) mock.ts mockData.ts
+│   │   ├── ui/              # strings.ts（中文文案单一来源）+ 基础组件库
+│   │   └── types/ipc.ts     # 共享类型 + StreamEvent 枚举（16 事件）
 │   └── tests/
-├── agent/                             # Python Agent 核心
-│   ├── pyproject.toml                 # uv 管理
-│   ├── README.md
+├── agent/                   # Python Agent（uv 管理）
 │   ├── minimax_code/
-│   │   ├── __init__.py
-│   │   ├── __main__.py                # python -m minimax_code 入口（HTTP/stdio 模式）
-│   │   ├── config.py                  # 全局配置
-│   │   ├── logging.py
-│   │   ├── ipc/
-│   │   │   ├── __init__.py
-│   │   │   ├── server.py              # JSON-RPC over stdio server（共享 handler registry）
-│   │   │   ├── http_server.py         # FastAPI 薄 transport（POST /rpc + GET /ws）
-│   │   │   ├── client.py              # 客户端（测试用）
-│   │   │   └── protocol.py            # 消息类型定义
-│   │   ├── agent/
-│   │   │   ├── __init__.py
-│   │   │   ├── core.py                # 对话循环
-│   │   │   ├── llm.py                 # MiniMax API client
-│   │   │   ├── prompts.py             # system prompt 模板
-│   │   │   ├── tools/
-│   │   │   │   ├── __init__.py
-│   │   │   │   ├── base.py            # Tool 抽象 + registry
-│   │   │   │   ├── file_ops.py
-│   │   │   │   ├── terminal.py
-│   │   │   │   ├── edit.py
-│   │   │   │   └── search.py
-│   │   │   └── skills/
-│   │   │       ├── __init__.py
-│   │   │       ├── loader.py
-│   │   │       ├── registry.py
-│   │   │       └── runtime.py
-│   │   ├── storage/
-│   │   │   ├── __init__.py
-│   │   │   ├── db.py                  # SQLite 连接管理
-│   │   │   ├── schema.py
-│   │   │   ├── migrations/
-│   │   │   │   └── 001_initial.py
-│   │   │   └── dao/
-│   │   │       ├── sessions.py
-│   │   │       ├── messages.py
-│   │   │       ├── tasks.py
-│   │   │       ├── skills.py
-│   │   │       ├── scheduled_jobs.py
-│   │   │       ├── agents.py
-│   │   │       └── permissions.py
-│   │   ├── scheduler/
-│   │   │   ├── __init__.py
-│   │   │   └── cron.py
-│   │   ├── orchestrator/              # Phase 2
-│   │   │   └── manager.py
-│   │   ├── auth/
-│   │   │   └── permissions.py
-│   │   └── mobile/                    # Phase 2
-│   │       └── pairing.py
-│   ├── skills/                        # 内置技能
-│   │   ├── commit-helper/
-│   │   │   └── SKILL.md
-│   │   ├── code-review/
-│   │   │   ├── SKILL.md
-│   │   │   └── tools/
-│   │   └── test-generator/
-│   │       └── SKILL.md
-│   └── tests/
-│       ├── conftest.py
-│       ├── test_ipc.py
-│       ├── test_storage.py
-│       ├── test_agent_core.py
-│       ├── test_tools.py
-│       └── test_skills.py
-└── tests/                             # 端到端测试
-    ├── e2e/                           # Python 黑盒 smoke（agent stdio 模式）
-    │   ├── smoke_sessions.py
-    │   ├── smoke_mobile.py
-    │   ├── smoke_agents.py
-    │   ├── smoke_phase2b.py
-    │   ├── smoke_chat.py
-    │   ├── smoke_progress.py
-    │   └── smoke_model.py
-    └── e2e-web/                       # Playwright 跨栈 e2e（web 模式）
-        ├── playwright.config.ts
-        └── *.spec.ts
+│   │   ├── __main__.py      # cli_entry() → HTTP 或 stdio
+│   │   ├── app.py           # register_app_handlers(server) — 31 个 handler 文件的注册 choke point
+│   │   ├── ipc/             # server.py(IPCServer+Context) http_server.py(FastAPI+token 鉴权) protocol.py
+│   │   ├── agent/           # core.py(循环) llm.py(多 provider) prompts.py tools/(15 模块) skills/
+│   │   ├── storage/         # db.py migrations/(001–029) dao/ backup.py
+│   │   ├── scheduler/       # cron + command 载荷
+│   │   ├── orchestrator/    # teams.py(团队编排) verification.py
+│   │   ├── permissions/     # gater + PermissionStore
+│   │   ├── mobile/          # 配对/推送
+│   │   ├── progress/        # PROGRESS.jsonl 账本
+│   │   ├── codebase/        # per-root 索引 + FTS/向量混合检索
+│   │   ├── preview/         # PreviewState per-project 根
+│   │   ├── workspace_ctx.py # per-project workspace 解析（worktree > 项目根 > env > cwd）
+│   │   └── http_server.py   # FastAPI 薄 transport + token 鉴权 + web dist hosting
+│   ├── skills/              # 内置技能目录（SKILL.md）
+│   └── tests/               # pytest（含 test_ipc_contract_doc.py 双向守护文档锚点）
+├── e2e/                     # Playwright 跨栈 spec（11 个）
+└── tests/e2e/               # Python 黑盒 smoke（6 个，stdio 模式）
 ```
 
 ## 5. 系统架构图
 
 ```
-┌────────────────────────────────────────────────────────────────┐
-│  Browser (Chromium / Firefox / Edge)                            │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │  React SPA (web/, served by Vite)                         │  │
-│  │  ┌─────────┐ ┌──────────────┐ ┌──────────────────────┐  │  │
-│  │  │ Sidebar │ │  Chat Panel  │ │  Progress Panel      │  │  │
-│  │  └─────────┘ └──────────────┘ └──────────────────────┘  │  │
-│  │  Zustand stores  ◄────  IPC Client (fetch + WebSocket)  │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                              │ HTTP POST /rpc + WS /ws         │
-│                              │ (127.0.0.1:8765)                │
-└──────────────────────────────┼─────────────────────────────────┘
-                               │
-┌──────────────────────────────▼─────────────────────────────────┐
-│  agent/  (Python 3.11+, asyncio)                                │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │  HTTP Server (FastAPI, thin transport)                   │  │
-│  │  - POST /rpc  ──► IPCServer.handle_request(env) ─┐       │  │
-│  │  - GET  /ws   ──► register_listener(cb)  ◄───────┤       │  │
-│  │  - GET  /health                                  │       │  │
-│  │  - CORS: 5173 + MINIMAX_CODE_CORS_ORIGINS         │       │  │
-│  └──────────────────────────────────────────────────┼───────┘  │
-│                                                     │          │
-│  ┌──────────────────────────────────────────────────▼───────┐  │
-│  │  IPC Server (asyncio, shared handler registry)            │  │
-│  │  - HandlerRegistry: agent.* / skill.* / task.* /         │  │
-│  │    session.* / mobile.* / permission.* / schedule.* /    │  │
-│  │    model.* / secrets.* / system.* / __init__.*            │  │
-│  │  - register_listener(cb) for HTTP→WS event forwarding    │  │
-│  └──────┬────────────────────────────────────────────────────┘  │
-│         │                                                        │
-│  ┌──────▼─────────┐  ┌────────────────┐  ┌──────────────────┐   │
-│  │  Agent Core    │  │  LLM Client    │  │  Tool Registry   │   │
-│  │  (loop)        │  │  MiniMax API   │  │  - file_ops      │   │
-│  │                │  │  httpx+SSE     │  │  - terminal      │   │
-│  │                │  │                │  │  - edit / search │   │
-│  │                │  │                │  │  - skill_<X>     │   │
-│  └────────────────┘  └────────────────┘  └──────────────────┘   │
-│                                                                 │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │  Storage (SQLite)                                          │  │
-│  │  - sessions / messages / tasks / skills / jobs / agents   │  │
-│  │  - permission_rules / mobile_devices                       │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                                                                 │
-│  ┌──────────────┐ ┌──────────────┐ ┌────────────────────────┐  │
-│  │ Scheduler    │ │ Orchestrator │ │ Auth/Permissions       │  │
-│  │ (cron)       │ │ (multi-agent)│ │ (tool gating)          │  │
-│  └──────────────┘ └──────────────┘ └────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ Browser (Vite dev :5173 / 生产模式同源 :8765)                      │
+│  React SPA — 30 Zustand stores ◄── IPCClient                      │
+│   HTTP: POST /rpc (Authorization: Bearer <token>)                 │
+│   WS:   GET /ws?since=<seq>&token=<token>（seq 纪元重放）          │
+└──────────────────────────┬───────────────────────────────────────┘
+                           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ Python Agent (FastAPI + asyncio, 默认 127.0.0.1:8765)             │
+│                                                                    │
+│  http_server.py — 薄 transport                                     │
+│   POST /rpc   token 校验 → IPCServer.handle_request(env)           │
+│   GET  /ws    握手 token 校验（失败 close 4401）→ 事件流            │
+│   GET  /health 匿名探针（ok/db/version/uptime）                     │
+│   GET  /preview/*  per-project 根静态服务 + token                    │
+│   （生产模式另托管 web/dist — 同源 SPA，免 CORS）                    │
+│                                                                    │
+│  IPCServer（共享 handler registry：171 方法 / 35 前缀）              │
+│   ├ AgentCore（对话循环 + 工具调度 + 流式回调 + CAS/沙盒/并发感知）   │
+│   ├ ToolRegistry（15 内置工具：file_ops/edit/search/terminal/       │
+│   │  ask_user/shared_memory/verification/report_* …）              │
+│   ├ SkillRuntime（SKILL.md loader + registry）                     │
+│   ├ SubAgentRuntime + Agent Teams（沙盒化编排 + artifact 协议）     │
+│   ├ APScheduler（cron + command 载荷）                              │
+│   ├ CodebaseIndexer（per-root FTS/向量检索）                        │
+│   ├ PermissionStore（per-session gater）                           │
+│   └ SQLite Storage（24 表 + migration 029 幂等迁移）                │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
-## 6. IPC 契约（概要，详细见 `ipc-contract.md` 与 `v0.2.0-web-architecture.md`）
+stdio 模式（`python -m minimax_code --stdio`）走同一 registry，供 pytest 黑盒 smoke 与 CLI 调试；**两种 transport 不在同进程混跑**。
 
-**协议**：JSON-RPC 2.0，UTF-8。
+## 6. IPC 契约（概要）
 
-**Transport（双模式，共享 handler registry）**：
+**协议**：JSON-RPC 2.0，UTF-8。错误码 `-32700 ~ -32005`（`-32001` ToolExecution / `-32002` PermissionDenied / `-32003` LLM / `-32004` Storage / `-32005` PathSecurity）。
 
-1. **stdio JSON-RPC 2.0** — 给 pytest 子进程 smoke + CLI 调试
-   - 命令：`python -m minimax_code --stdio`
-   - 编码：UTF-8 行分隔（每条消息一行 JSON，以 `\n` 结尾）
-   - 用途：tests/ 下的黑盒 smoke、CLI 调试
-2. **HTTP + WebSocket** — 给浏览器里的 web 客户端
-   - 命令：`python -m minimax_code`（默认）
-   - 端点：`POST /rpc`（请求/响应）、`GET /ws`（流式事件）、`GET /health`（存活探针）
-   - 绑定：`127.0.0.1:8765`（CORS allow-list 默认 `http://localhost:5173` / `http://127.0.0.1:5173`，可用 `MINIMAX_CODE_CORS_ORIGINS` 追加受信 origin）
-   - HTTP status 永远 `200`，错误走 JSON-RPC 错误信封；`500` 只用于"agent 自己崩了"或"请求无法反序列化"
-   - 流式事件（如 `agent.message_chunk`）经 `IPCServer.register_listener(cb)` 推到 WebSocket
+**方法面**：171 个注册方法、35 个前缀（34 点号命名空间 + `ping`/`status`/`shutdown` 三个无点号 built-in）。
+方法级全量清单以 [`docs/ipc-contract.md`](ipc-contract.md) **Appendix A** 为权威，由 `agent/tests/test_ipc_contract_doc.py` **双向守护**——新增 handler 无文档锚点即测试红。
 
-**消息方向**：
-- 浏览器 → agent：`request` (有 id) / `notification` (无 id) over `POST /rpc`
-- agent → 浏览器：`response` / `event`（推送）over `POST /rpc` 响应体 / `GET /ws` 帧
+前缀 → 职责速查（方法数见 Appendix A）：`agent`(12) `audit`(3) `checkpoint`(5) `codebase`(4) `crash`(3) `data`(3) `diag`(1) `git`(3) `mcp`(6) `memory`(5) `message`(3) `mobile`(7) `model`(4) `notification`(5) `patch`(8) `permission`(6) `plugins`(5) `preview`(1) `project`(6) `provider`(7) `run`(2) `runner`(2) `runtime`(1) `schedule`(6) `secrets`(3) `session`(12) `skill`(7) `task`(6) `team`(9) `telemetry`(4) `terminal`(4) `webhook`(5) `workflow`(7) `workspace`(3) + built-in(3)。
 
-**请求方法**（Python 端实现，前端通过 `POST /rpc` 调用）：
-- `agent.send_message` { session_id, content, attachments? } → 流式推送 `agent.message_chunk` event
-- `agent.cancel` { session_id }
-- `session.create` { title? } → { session_id }
-- `session.list` { archived?, limit?, offset? } → { sessions: [...] }
-- `session.archive` / `session.unarchive` { session_id }
-- `session.delete` { session_id }
-- `message.list` { session_id, limit?, before? } → { messages: [...] }
-- `skill.list` / `skill.enable` / `skill.disable` / `skill.invoke`
-- `scheduler.list_jobs` / `scheduler.create_job` / `scheduler.delete_job` / `scheduler.toggle_job`
-- `agent.list_agents` / `agent.spawn_subagent` (Phase 2)
-- `mobile.pair` / `mobile.list_devices` / `mobile.send` (Phase 2)
-- `permission.set_rule` / `permission.list_rules`
-- `model.list` / `model.set_current`
+**流式事件**：16 个 `StreamEvent`（`agent.message_chunk`/`agent.tool_call`/`agent.tool_result`/`agent.status`/`agent.ask_user`/`agent.subagent_progress`/`agent.team_progress`/`task.progress`/`permission.*`/`notification.*`/`run.*`），前端 `src/types/ipc.ts` 的 `StreamEvent` 枚举与后端锁死同步；另有协议级 `agent.ready`（含 `next_seq` 纪元锚点）与 `agent.ping` 心跳。WS 断线重连按 `?since=` 重放，agent 重启后纪元变化触发全量重放（v1.2.2）。
 
-**流式事件**（Python → 前端）：
-- `agent.message_chunk` { session_id, message_id, delta, done }
-- `agent.tool_call` { session_id, tool_call_id, name, args }
-- `agent.tool_result` { session_id, tool_call_id, name?, result, error?, message_id }
-- `agent.status` { session_id, status, detail? }
-- `task.progress` { task_id, progress, message? }
-- `permission.request` { request_id, tool, args } — 前端弹窗确认
-- `permission.resolved` { request_id, decision }
+**鉴权（v1.8.0）**：env `MINIMAX_CODE_HTTP_TOKEN` 设置即启用——`/rpc` 走 `Authorization: Bearer`，`/ws` 握手与 `/preview/*` 走 `?token=` query（浏览器 WS API 不能带自定义 header），比较用 `hmac.compare_digest`；`/health` 保持匿名。未设置 = 与 v1.7.1 行为逐字节一致（本地模式零破坏）。
 
-**错误码**（标准 JSON-RPC + 自定义）：
-- `-32700` ParseError
-- `-32600` InvalidRequest
-- `-32601` MethodNotFound
-- `-32602` InvalidParams
-- `-32603` InternalError
-- `-32001` ToolExecutionError
-- `-32002` PermissionDenied
-- `-32003` LLMError
-- `-32004` StorageError
+## 7. 数据流（典型场景）
 
-## 7. 数据流（典型场景：用户问"列出当前目录"）
+1. 用户发送消息 → `IPCClient.request` fetch `POST /rpc`（自动注入 Bearer token）
+2. HTTP server 校验 token → 反序列化 → `IPCServer.handle_request(env)`
+3. `agent.send_message` handler：workspace 解析（worktree > 项目根 > env > cwd）→ AgentCore
+4. AgentCore：system prompt + history → LLM 流式（usage/thinking_count 随流回填）
+5. tool_call → per-session permission gater（必要时 `permission.request` 事件 → 前端弹窗）
+6. ToolRegistry.dispatch（per-tool 超时；写工具带 CAS `expected_sha256` 校验 + 沙盒重定向 + in-flight 并发感知）
+7. tool_result 回填 LLM → 循环至 final answer（iteration 预算 + context-pressure 节流）
+8. 全程 `agent.*` 事件经 `register_listener(cb)` 推 WS；消息/usage 落 SQLite
+9. 前端 store 订阅事件（session 守卫防串台）→ UI 更新
 
-1. 用户在输入框敲消息，点发送
-2. 前端：`ipc.send('agent.send_message', { session_id, content })` — `IPCClient.request` fetch `POST /rpc`，body 为 JSON-RPC 2.0 envelope
-3. Agent HTTP server：反序列化 → 调 `IPCServer.handle_request(env)`
-4. Python：IPC server 收到 → 解析 → 调 AgentCore
-5. AgentCore：拼 system prompt + history → LLM.stream
-6. LLM 返回：包含 tool_call(name=list_directory, args={path: "."})
-7. AgentCore：解析 tool_call → 注册 permission 事件 → ToolRegistry.dispatch
-8. Tool 执行：list_directory(".") → 返回 ["file1.py", "file2.py", ...]
-9. AgentCore：把 tool_result 回填 LLM → LLM 继续生成
-10. LLM 返回 final answer："当前目录有以下文件：..."
-11. AgentCore：流式推送 `agent.message_chunk` — 经 `IPCServer.register_listener(cb)` 推到所有 WebSocket 客户端
-12. 前端：WebSocket 收到事件 → 实时更新 UI
-13. 完成后：HTTP 响应体返回 `{result: {session_id, message_id, text}}`；同时存储到 SQLite 的 messages 表
+## 8. 关键技术决策（演进累积）
 
-## 8. 关键技术决策
-
-| 决策 | 选择 | 理由 |
+| 决策 | 选择 | 版本 |
 |---|---|---|
-| 前端分发 | Vite-served React SPA | 单一 web 形态，无桌面壳；hot reload 简单 |
-| 前后端 transport | HTTP + WebSocket（FastAPI on agent） | 与 stdio 共享同一 handler registry；浏览器友好，调试标准 |
-| 前端框架 | React | 生态最广、招人容易（未来扩展） |
-| IPC 协议 | JSON-RPC 2.0（HTTP/WS + stdio 双模式） | 简单、跨语言、调试方便；既有 stdio 测试基础设施全部保留 |
-| 异步 | asyncio | Python 生态标准 |
-| LLM SDK | 直接用 httpx，不绑 SDK | 可控、易测试 |
-| 存储 | SQLite | 本地、零运维 |
-| 任务调度 | APScheduler | 成熟、支持 cron、async 友好 |
-| 测试 | pytest + vitest + Playwright | 行业标准；Playwright 接替 v0.1.x 缺失的跨栈 e2e |
-| 打包 | 无（内部 web 工具） | 不分发安装包，省掉 Rust/Tauri/MSI/NSIS 工具链 |
+| 前后端 transport | HTTP + WS 与 stdio 共享 registry | v0.2.0 |
+| IPC 文档 | Appendix A 双向测试守护 | R43 |
+| 长输出截断 | `max_output_tokens` 32k + env 旋钮 | v1.2.1 |
+| WS 重放 | seq 纪元对齐 + `?since=` 重放 | v1.2.2 |
+| 工作区隔离 | per-project root_path + 严格 containment | v1.3.0 |
+| 子 agent 生命周期 | 落库 + artifact 协议 + 墙钟超时 | v1.4.0 |
+| 写安全 | CAS 乐观锁 + opt-in 沙盒 + collect 三方合并 | v1.5.0 |
+| 沙盒深化 | exec 逃逸检测 + 只读工具 overlay + prune | v1.6.0 |
+| 协作优化 | shared_memory + DAG 门控 + 无头验收 | v1.6.1 |
+| 预览根 | per-project re-root + 缓存投毒修复 | v1.7.1 |
+| HTTP 鉴权 | Bearer token + WS close 4401 + /health 匿名 | **v1.8.0** |
 
 ## 9. 安全边界
 
-- **路径白名单**：工具操作禁止 `..`、禁止访问 `~/.ssh`、系统目录
-- **命令超时**：terminal 工具强制超时（默认 30s）
-- **授权粒度**：每个工具调用前可弹窗确认（或"始终授权"）
-- **API Key 存储**：OS keyring（Windows Credential Manager）
-- **日志脱敏**：不在日志里打印 API key、token
+- **传输鉴权**（v1.8.0）：`MINIMAX_CODE_HTTP_TOKEN` 启用后 `/rpc` `/ws` `/preview` 全部校验；公网部署必须启用（见 deployment.md）
+- **路径 containment**：工具操作锚定 workspace 根，禁止 `..` 越界（`PathSecurityError` → `-32602`）；沙盒 run 写入重定向 `.minimax/sandboxes/<run_id>/`
+- **CAS 乐观锁**：`write_file`/`edit_file` 可带 `expected_sha256`，不匹配 fail-fast
+- **命令安全**：terminal/exec 超时 + 进程树杀（`killpg`/`taskkill /F /T`）+ 危险命令检测（跨平台）+ 沙盒逃逸 advisory 检测
+- **授权粒度**：每工具调用可弹窗（per-session gater），「始终授权」仅当前会话
+- **密钥存储**：OS keyring + env-var 兜底；per-provider 槽；legacy 全局 key 一次性迁移
+- **日志脱敏**：不打印 API key/token；diag 导出脱敏
 
-## 10. Phase 划分
+## 10. 版本演进（Phase 划分已成历史，现行节奏按发版）
 
-- **Phase 1**：T0 基础闭环 = project-skeleton + storage + agent-core + ui-shell + skills + 集成测试
-- **Phase 2**：多 Agent / 调度 / 移动互联 / 授权粒度 / 进度面板
-- **Phase 3**：端到端 chat + 文档
-- **Phase 4**：模型选择 + 子 Agent 真 LLM
-- **Phase 5**：设置页 + 权限真弹窗 + 密钥 keyring
-- **Phase 6**：前端完成度 + 跨栈 e2e
-- **v0.2.0 切换（删 Tauri）**：去掉 `src-tauri/` 与 `@tauri-apps/api`；agent 加 HTTP+WS transport（复用 IPCServer 同一份 handler registry）；dev workflow 从 3 终端简化为 2 终端；引入 Playwright 跨栈 e2e。详见 [`docs/v0.2.0-web-architecture.md`](v0.2.0-web-architecture.md)。
+v0.x 打基础（Tauri 剥离 → web SPA，Phase 1–6 闭环）→ v1.0–v1.2 稳定性（全局审计修复、协作专项、长输出截断）→
+v1.3 工作区隔离 → v1.4 子 agent 生命周期 → v1.5–v1.6 写安全与沙盒深化 → v1.6.1 债务清偿 → v1.7 迭代优化收口 →
+v1.7.1 易用性专项 → **v1.8.0 安全与收口**（HTTP token 鉴权 + 文档对账 + 易用性三连）。
+
+完整轮次账本见 [`docs/roadmap-to-1.0.0.md`](roadmap-to-1.0.0.md) 与 [`CHANGELOG.md`](../CHANGELOG.md)。
 
 ---
 
-> 本文档作为所有 worker 任务的契约源。任务 prompt 中提到"参考 docs/architecture.md"时即指本文。如对架构有疑问，先在 deliverable.md 中提出，由 orchestrator 决策。
+> 本文档与代码对账的守护点：IPC 方法数（Appendix A 双向测试）、StreamEvent 枚举（前后端锁死）、命名空间表（根 CLAUDE.md）。
+> 改架构先改本文，再动代码。

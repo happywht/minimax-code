@@ -17,6 +17,9 @@ export {
   fetchHealth,
   typedIPC,
   bindTypedIPC,
+  AGENT_TOKEN_STORAGE_KEY,
+  getAgentToken,
+  setAgentToken,
 } from "./client";
 export type { IPCClientOptions, TypedIPC, StreamEventPayload, AgentHealth } from "./client";
 export {

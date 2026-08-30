@@ -8,6 +8,7 @@ import {
   ErrorBoundary,
   InspectorDrawer,
   MessageInput,
+  MockModeBanner,
   PermissionRequestModal,
   RightPanel,
   Sidebar,
@@ -255,6 +256,9 @@ export default function App() {
           previewActive={view === "preview"}
         />
         <StorageBanner degraded={storageDegraded} />
+        <MockModeBanner
+          active={ipc.isForcedMock || (connState === "error" && ipc.isMock)}
+        />
         <CommandPalette
           ref={paletteRef}
           onOpenSkills={() => setOverlayView("skills")}

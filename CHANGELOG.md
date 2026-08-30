@@ -5,6 +5,28 @@ All notable changes to MiniMax Code are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-08-30
+
+### Added
+
+- **HTTP token 鉴权**（安全专项 R1，P0——堵住公网部署裸奔缺口：v1.8.0 前所有端点零认证，任何人可达即可全功能操控含终端执行与文件读写的 Agent）：env `MINIMAX_CODE_HTTP_TOKEN` 设置即启用，未设置 = 与 v1.7.1 行为逐字节一致（本地 127.0.0.1 模式零破坏）。语义分端点：`POST /rpc` 走 `Authorization: Bearer <token>`，缺失/错误 → HTTP 401 + JSON-RPC error 帧（`-32002` 语义）；`GET /ws` 握手走 `?token=` query（浏览器 WebSocket API 无法带自定义 header），失败 close code `4401`；`GET /preview/*` 接受 Bearer 头或 `?token=` query；`GET /health` 保持匿名（探针语义，只暴露 ok/db/version/uptime 无敏感数据）。令牌比较用 `hmac.compare_digest`（常数时间，防时序侧信道）。+22 测试（`agent/tests/test_http_auth.py`：未启用零变化（既有 /rpc /ws /health 行为逐项回归）+ 启用后无凭据 401 / WS 握手拒 / 错令牌拒 / 带对令牌全通 / health 匿名可达 / preview 同语义）。
+- **前端访问令牌层**（R1 前端侧）：`client.ts` 新增 token 存取（localStorage `minimax_token`，`getAgentToken`/`setAgentToken` 经 `ipc/index.ts` barrel 导出）——所有 RPC 请求自动注入 Bearer 头、WebSocket URL 自动附加 `?token=`、`AgentHealth` 探测带凭据；401 响应映射可行动提示「服务端已启用鉴权，请在设置中配置访问令牌」（`strings.layout.auth` 新文案组）。设置页 DataTab 顶部新增「访问令牌」面板（密码型输入 + 保存/清除按钮；已存令牌时显示清除；保存/清除后 `ipc.restart()` 重建 transport 即刻生效）。+9 web 测试（`ipc/__tests__/ipc-token.test.ts` 7：存取往返 / Bearer 注入 / WS query 附加 / 401 文案；DataTab token 面板 2：空态隐藏清除按钮 / 保存持久化并重启 transport）。
+- **`docs/deployment.md` 远程部署节**（R1 文档侧）：绑定 `0.0.0.0` + 启用令牌的两步指引、systemd `Environment` 示例（含 `EnvironmentFile` 权限 600 变体）、鉴权语义表（分端点携带方式与失败行为）、浏览器侧配置说明、curl 双验示例（无凭据被拒/带凭据通过）、网络收敛建议（安全组收窄、反代加 TLS、单密钥模型的边界声明）。
+- **Mock 模式警示横幅**（易用性三连 R3-1，v1.7.1 实测结构性发现收口）：新组件 `MockModeBanner`——`VITE_AGENT_MODE=mock` 强制或 agent 探测失败降级 mock 时，页面顶部显示 violet 强配色横幅（FlaskConical 图标 + `strings.layout.mock` 文案：当前数据来自前端内置 mock 后端，不会连接真实 Agent），此前 mock 路径与真实会话视觉零差异，演示/调试者易误以为在对话真实 Agent。显示条件 `ipc.isForcedMock || (connState === "error" && ipc.isMock)`（探针 pending 期不闪现；reprobe 成功即消失）。
+- **检查器 tab 首次发现提示**（R3-2）：RightPanel 展开时 TabBar 下渲染一次性 hint（「上方 11 个图标即检查器视图：时间线、差异、进度、子 Agent、终端等，点击切换」+ 知道了按钮）；dismiss 写 localStorage `minimax_inspector_hint_seen` 永不再现——图标 tab 的 title/aria 早已齐备，但首次接触没有任何东西宣告这条图标带的存在。
+- **Composer 字符计数语义提示**（R3-3）：`0/8000` 计数裸看不知所云（什么除以什么？超了会怎样？），补 `title` + `aria-label` 双通道说明（「输入字符计数：42/8000，超出上限将无法发送」，`strings.chat.composer.charCount`），此前仅有 aria-label 无可视悬停提示且文案硬编码组件内。
+
+### Changed
+
+- **`docs/architecture.md` 全文重写至 v1.8.0 现状**（文档对账 R2，P1——该文档自 v0.2.0 停更，方法数 ~30 vs 实际 171、目录树缺 9 个子模块、IPC 契约节停留在 Phase 2 时代）：现状规模对账（171 方法/35 前缀/24 表/15 工具模块/30 stores/10651+808 测试）、功能模块表逐项对照现状实现、目录树补 codebase/preview/progress/permissions/workspace_ctx 等、架构图补 token 鉴权与 preview 端点、IPC 节收敛为「Appendix A 为权威 + 前缀速查 + 16 StreamEvent 概述 + 鉴权语义」、技术决策表改为演进累积（v0.2.0 → v1.8.0 十一行）、安全边界节补传输鉴权/CAS/沙盒/containment、Phase 划分历史化。
+- **`docs/agent-core.md` §8a team bullet 收口**（R2）：「The team path (`teams.spawn`) is out of scope」自 v1.7.0 起已不成立——改为标注收口版本与实现要点（`team.spawn` 可选 `sandbox`、缺省梯子同 `spawn_subagent`、成员写各自确定性 run 沙盒树、编排器 `collect_sandbox_run` 自动收集 + advisory skip 策略）。
+- **`web/CLAUDE.md` 设置 tab 数字对齐**（R2）：布局图「13 tab」与目录说明「14 个 tab」并存不一致，根因是 settings bullet 漏数 `worktrees` tab（8 核心组 tab 只列了 7 个）——三处统一为 14 tab 分 4 组，核心组清单补 worktrees。
+
+### 发版收口
+
+- 七处版本钉统一 `1.8.0`（`agent/pyproject.toml`、`minimax_code/__init__.py`、`version.py` 兜底字面量、根/`web` 的 `package.json`、`web/src/version.ts`、`agent/uv.lock`），版本一致性 20 测试全绿。
+- 全量回归：pytest **10651 passed / 9 skipped**（+22）、vitest **808**（+15，793 → 808）、tsc 零错误。
+
 ## [1.7.1] - 2026-08-30
 
 ### Added

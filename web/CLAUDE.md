@@ -21,7 +21,7 @@ MiniMax Code 的前端界面。基于 React 18 + Vite + TypeScript + Tailwind CS
 +----------+------------------------------------------+--------------+
 | Sidebar  | Main Content                             | RightPanel   |
 | (项目分组 | - ChatPanel（消息流 + MessageInput 输入框）| 检查器 11 tab |
-|  任务列表)| - SettingsPage（13 tab，覆盖层）          | 可折叠        |
+|  任务列表)| - SettingsPage（14 tab，覆盖层）          | 可折叠        |
 |          | - SkillsPanel / CodeReview（覆盖层）       |              |
 +----------+------------------------------------------+--------------+
 ```
@@ -141,7 +141,7 @@ A: 编辑 `tailwind.config.js` 中的 `minimax` 颜色定义（bg、panel、bord
 
 - `layout/` — 骨架壳：`Sidebar.tsx`（项目分组任务列表 + 连接手机入口）、`TopBar.tsx`、`CommandPalette.tsx`（Ctrl+K）、`GitStatusBar.tsx`、`NotificationCenter.tsx`、`WorkspaceSwitcher.tsx`、`ConnectionBanner.tsx` / `StorageBanner.tsx` / `ProviderReadinessBanner`（在 chat/）等状态横幅、`ShortcutsOverlay.tsx`、`ErrorBoundary.tsx`
 - `chat/` — 对话主区：`ChatPanel.tsx`、`MessageList.tsx` / `MessageItem.tsx` / `MessageInput.tsx`（@提及/附件/语音）、`MarkdownBody.tsx` / `CodeBlock.tsx` / `MermaidBlock.tsx`、`ModelSelector.tsx`、`MessageActionMenu.tsx` 等
-- `settings/` — 设置页：`SettingsPage.tsx`（**13 tab 分 4 组**：核心 models/providers/permissions/mcp-servers/memory/plugins/data、自动化 scheduled/workflows/webhooks、Agent agents/teams、治理 audit）+ 每 tab 一个组件（`ModelsTab.tsx`、`ProvidersTab.tsx`、`DataTab.tsx` 等）
+- `settings/` — 设置页：`SettingsPage.tsx`（**14 tab 分 4 组**：核心 models/providers/permissions/mcp-servers/memory/plugins/worktrees/data、自动化 scheduled/workflows/webhooks、Agent agents/teams、治理 audit）+ 每 tab 一个组件（`ModelsTab.tsx`、`ProvidersTab.tsx`、`DataTab.tsx` 等）
 - `panels/` — 覆盖面板：`SkillsPanel.tsx`、`CodeReviewPanel.tsx`、`PatchPreviewPanel.tsx`（+ `PatchFileCard` / `PatchHunkCard`）、`PreviewPanel.tsx`
 - `modals/` — 对话框：`PermissionRequestModal.tsx`（允许/拒绝 + 总是允许开关）、`MobilePairingModal.tsx`、`GitViewerModal.tsx`、`CrashRecoveryPrompt.tsx`、`ConfirmationDialog.tsx`
 - `right-panel/` — 检查器：`tabs.tsx` 注册 **11 个 tab**（timeline/diff/progress/checkpoints/agents/subagents/review/teamruns/terminal/runner/codebase），`ProgressPanel.tsx`、`SubAgentPanel.tsx`、`TeamRunPanel.tsx`、`TerminalPanel.tsx`、`RunnerPanel.tsx`、`CodebasePanel.tsx`、`CheckpointPanel.tsx`、`RunTimelinePanel.tsx` 等
@@ -172,6 +172,8 @@ A: 编辑 `tailwind.config.js` 中的 `minimax` 颜色定义（bg、panel、bord
 - `index.html` — HTML 入口
 
 ## 变更记录 (Changelog)
+
+- **2026-08-30** — v1.8.0（安全与收口专项，web 侧）——① **`client.ts` 访问令牌层**（R1）：token 存取（localStorage `minimax_token`，`getAgentToken`/`setAgentToken` 经 `ipc/index.ts` 导出）+ 全部 RPC 请求自动注入 `Authorization: Bearer` + WebSocket URL 附加 `?token=` + 探测带凭据；401 响应映射可行动提示（`strings.layout.auth` 组：`required`/`settingsTitle`/`settingsDetail`/`settingsPlaceholder`/`save`/`clear`/`cleared`）；② **DataTab「访问令牌」面板**：密码型 Input + 保存/清除（`settings-token-*` testid 族），已存令牌条件渲染清除按钮，保存/清除后 `ipc.restart()` 重建 transport 即刻生效；③ **MockModeBanner**（R3-1）：新横幅组件（violet + FlaskConical），`ipc.isForcedMock || (connState === "error" && ipc.isMock)` 时显示，mock 后端与真实会话不再视觉同形；④ **检查器 tab 首次发现提示**（R3-2）：RightPanel 内 `InspectorHint`（11 图标 tab 说明 + dismiss 持久化 localStorage `minimax_inspector_hint_seen`）；⑤ **ComposerToolbar 计数语义**（R3-3）：`0/8000` 补 title/aria（`strings.chat.composer.charCount`）；⑥ 设置 tab 数字对齐（R2）：布局图/目录说明/settings bullet 统一 14 tab（核心组补漏数的 worktrees）。+15 测试（ipc-token 7 + data-tab token 2 + mock-banner 2 + inspector-hint 3 + composer-toolbar 1，vitest 808）
 
 - **2026-08-30** — v1.7.1（易用性专项：Preview per-project 根 + 实测修复，web 侧）——① **`previewStore` 增 `setRoot(projectId?)`**：调 `preview.set_root` IPC + 记录 `rootProjectId`/`rootWorkspace` + `reload()` 触刷 iframe（失败 toast 停留旧根）；接线收敛在项目变更唯一 choke point——`sessionStore.setCurrentProject` / `create()` 行内 + 启动 `refresh()` boot 同步（陈旧 id 对照已加载项目表降级 null 不报错）；② **`PreviewPanel` CORS 探针缓存旁路**：health/file 两个 fetch 补 `cache: "no-store"`（实测：iframe 导航的缓存条目不带 `Access-Control-Allow-Origin`，被探针复用即永久 `Failed to fetch`，手动重试无效）；网络级 TypeError 映射本地化文案 `preview.unreachable`（裸浏览器错误不再直出）；③ **冷启动空态文案迁 `strings.chat.emptyState`**：标题/提示/建议卡原先硬编码组件内且示例依赖虚构路径（`src/foo.py`），改写为通用任务；④ **`ContextIndicator.fmtTokens` 整数千位去 `.0`**（`200k` 非 `200.0k`，非整数千保留一位小数）；⑤ 契约同步：`typed.ts`/`mock.ts`/`mockData.ts`/`types/ipc.ts` 补 `preview.setRoot`；+11 测试（`PreviewPanel.test.tsx` 3 + `MessageList-empty.test.tsx` 2 + `preview-root.test.ts` 6，vitest 793）
 - **2026-08-30** — v1.7.0（backlog B4：移动端适配收口，web 侧）——① **实测修复**：TopBar Inspector 按钮补默认 `hidden`（原 `md:inline-flex lg:hidden` 在 &lt;768px 两断点类都不激活，按钮误现于手机）；② **新 e2e spec** `e2e/smoke-mobile-viewport.spec.ts`（第 11 个）：375×667 手机档（hamburger/Sidebar 抽屉开合/Inspector 按钮隐藏/无横向溢出/composer 可用）+ 820×1180 平板档（hamburger 隐藏/InspectorDrawer 开合/无溢出）；③ **jsdom** `tests/app-mobile.test.tsx`（3 用例：App 级抽屉交互语义）；④ 溢出审计结论：双档零溢出，骨架（viewport meta、&lt;768 抽屉、md–lg InspectorDrawer、max-w 弹性、overflow-auto）健康零修复需求。vitest 782（+3）/ mobile e2e 6/6 / 桌面 boot 5/5

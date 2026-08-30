@@ -66,9 +66,27 @@ export const strings = {
       nextRetry: (seconds: number) => `${seconds} 秒后重试。`,
     },
 
+    auth: {
+      rpcRejected: "HTTP 401：服务端已启用访问鉴权，请配置访问令牌后重试",
+      settingsTitle: "访问令牌",
+      settingsDetail:
+        "服务端设置 MINIMAX_CODE_HTTP_TOKEN 后，在此填入相同的令牌。留空表示本地无鉴权部署。",
+      settingsPlaceholder: "粘贴服务端配置的访问令牌",
+      save: "保存令牌",
+      clear: "清除",
+      saved: "访问令牌已保存",
+      cleared: "访问令牌已清除",
+      serverRequiresAuth: "服务端已启用鉴权",
+    },
+
     storage: {
       title: "本地存储不可用",
       detail: "新的会话与消息不会被保存。重启 Agent 后通常可恢复。",
+    },
+
+    mock: {
+      title: "Mock 演示模式",
+      detail: "当前数据来自前端内置 mock 后端，不会连接真实 Agent。启动 Agent 后点击重连即可恢复。",
     },
 
     errorBoundary: {
@@ -316,6 +334,7 @@ export const strings = {
 
     composer: {
       exportSession: "将当前会话导出为 Markdown",
+      charCount: (used: number, max: number) => `输入字符计数：${used}/${max}，超出上限将无法发送`,
     },
 
     /** Chat header "more options" dropdown (session-level actions). */
@@ -1086,6 +1105,11 @@ export const strings = {
       expand: "展开右侧面板",
       pinned: "已手动固定标签页",
       followRun: "跟随运行",
+      hint: {
+        text: "上方 11 个图标即检查器视图：时间线、差异、进度、子 Agent、终端等，点击切换。",
+        dismiss: "知道了",
+        dismissAria: "关闭检查器提示",
+      },
     },
     timeline: {
       loading: "正在加载运行…",

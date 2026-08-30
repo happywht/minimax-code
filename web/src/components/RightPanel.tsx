@@ -15,6 +15,8 @@
  * primitives from ``src/ui``.
  */
 import { useState } from "react";
+import { Lightbulb, X } from "lucide-react";
+import { strings } from "../ui/strings";
 import type { AgentInfo } from "../types/ipc";
 import { CollapsedStrip } from "./right-panel/CollapsedStrip";
 import { FollowRunBar } from "./right-panel/FollowRunBar";
@@ -24,6 +26,56 @@ import { InspectorTabBar } from "./right-panel/InspectorTabBar";
 import type { InspectorTab } from "./right-panel/tabs";
 import { useAgentTeam } from "./right-panel/useAgentTeam";
 import { useInspectorFollow } from "./right-panel/useInspectorFollow";
+
+/** localStorage flag suppressing the first-run inspector tab hint. */
+const HINT_SEEN_KEY = "minimax_inspector_hint_seen";
+
+/**
+ * One-time discoverability hint under the tab strip: the 11 icon-only
+ * tabs have title/aria labels but nothing announces the strip itself on
+ * first sight (v1.7.1 walkthrough finding). Dismissed once, never again.
+ */
+function InspectorHint(): JSX.Element | null {
+  const [seen, setSeen] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(HINT_SEEN_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  if (seen) return null;
+
+  const dismiss = () => {
+    try {
+      localStorage.setItem(HINT_SEEN_KEY, "1");
+    } catch {
+      /* private mode — hint just returns for this session */
+    }
+    setSeen(true);
+  };
+
+  return (
+    <div
+      data-testid="inspector-tab-hint"
+      className="flex items-start gap-1.5 border-b border-line/60 bg-surface-2/60 px-2 py-1.5"
+    >
+      <Lightbulb size={11} aria-hidden="true" className="mt-0.5 shrink-0 text-status-warning" />
+      <p className="min-w-0 flex-1 text-[11px] leading-4 text-ink-2">
+        {strings.rightPanel.shell.hint.text}
+      </p>
+      <button
+        type="button"
+        onClick={dismiss}
+        aria-label={strings.rightPanel.shell.hint.dismissAria}
+        data-testid="inspector-tab-hint-dismiss"
+        className="shrink-0 rounded p-0.5 text-ink-3 hover:bg-surface-3 hover:text-ink-0"
+      >
+        <X size={10} aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
 
 export interface RightPanelProps {
   testId?: string;
@@ -66,6 +118,7 @@ export function RightPanel({
         onCollapse={() => setCollapsed(true)}
       />
       <InspectorTabBar testId={testId} activeTab={activeTab} onSelect={selectTab} />
+      <InspectorHint />
       {!followRun ? <FollowRunBar testId={testId} onResume={resumeFollow} /> : null}
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         <InspectorContent

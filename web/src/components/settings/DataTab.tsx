@@ -10,10 +10,10 @@
  *    indexes included) into the agent's backups directory.
  */
 import { useRef, useState } from "react";
-import { Activity, DatabaseBackup, Download, HardDriveDownload, Upload } from "lucide-react";
-import { Button, Panel } from "../../ui";
+import { Activity, DatabaseBackup, Download, HardDriveDownload, KeyRound, Upload } from "lucide-react";
+import { Button, Input, Panel } from "../../ui";
 import { strings } from "../../ui/strings";
-import { typedIPC } from "../../ipc";
+import { getAgentToken, ipc, setAgentToken, typedIPC } from "../../ipc";
 import type {
   DataBackupResult,
   DataExportEnvelope,
@@ -82,6 +82,8 @@ function DataTab(): JSX.Element {
   const [diagnosing, setDiagnosing] = useState(false);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // v1.8.0 — access token for deployments that enable agent-side auth.
+  const [tokenDraft, setTokenDraft] = useState(() => getAgentToken());
 
   const onExport = async () => {
     setExporting(true);
@@ -187,12 +189,68 @@ function DataTab(): JSX.Element {
     }
   };
 
+  /** Persist the token and force the transport to re-probe with it. */
+  const onSaveToken = async () => {
+    setAgentToken(tokenDraft);
+    setFeedback({ kind: "ok", text: strings.layout.auth.saved });
+    // restart() closes the WS and re-probes /health so the next RPC
+    // carries the new Authorization header / query param.
+    await ipc.restart();
+  };
+
+  const onClearToken = async () => {
+    setAgentToken("");
+    setTokenDraft("");
+    setFeedback({ kind: "ok", text: strings.layout.auth.cleared });
+    await ipc.restart();
+  };
+
   return (
     <section data-testid="settings-data" className="space-y-4">
       <TabHeader
         title={strings.settings.data.title}
         hint={strings.settings.data.hint}
       />
+
+      <Panel title={strings.layout.auth.settingsTitle}>
+        <p className="flex items-start gap-1.5 text-[11px] text-ink-2">
+          <KeyRound size={14} className="mt-px shrink-0" aria-hidden="true" />
+          <span>{strings.layout.auth.settingsDetail}</span>
+        </p>
+        <div className="mt-3 flex items-center gap-2">
+          <Input
+            data-testid="settings-token-input"
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            className="max-w-xs font-mono"
+            placeholder={strings.layout.auth.settingsPlaceholder}
+            value={tokenDraft}
+            onChange={(e) => setTokenDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void onSaveToken();
+            }}
+          />
+          <Button
+            size="sm"
+            variant="primary"
+            data-testid="settings-token-save"
+            onClick={() => void onSaveToken()}
+          >
+            {strings.layout.auth.save}
+          </Button>
+          {getAgentToken() && (
+            <Button
+              size="sm"
+              variant="secondary"
+              data-testid="settings-token-clear"
+              onClick={() => void onClearToken()}
+            >
+              {strings.layout.auth.clear}
+            </Button>
+          )}
+        </div>
+      </Panel>
 
       {feedback && (
         <p

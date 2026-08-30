@@ -14,6 +14,9 @@ const mockImportData = vi.fn();
 const mockBackupData = vi.fn();
 const mockExportDiagnostic = vi.fn();
 let confirmNext = true;
+// Backing store behind the getAgentToken/setAgentToken mock pair so the
+// conditional clear-button rendering tracks what the panel persisted.
+let currentToken = "";
 
 vi.mock("../../../ipc", () => ({
   typedIPC: {
@@ -22,6 +25,12 @@ vi.mock("../../../ipc", () => ({
     backupData: (...a: unknown[]) => mockBackupData(...a),
     exportDiagnostic: (...a: unknown[]) => mockExportDiagnostic(...a),
   },
+  // v1.8.0 — DataTab's access-token panel reads/persists through these.
+  getAgentToken: () => currentToken,
+  setAgentToken: vi.fn((t: string) => {
+    currentToken = t;
+  }),
+  ipc: { restart: vi.fn(async () => undefined) },
 }));
 
 vi.mock("../../modals/ConfirmationDialog", () => ({
@@ -50,6 +59,7 @@ const revokeObjectURL = vi.fn();
 beforeEach(() => {
   vi.clearAllMocks();
   confirmNext = true;
+  currentToken = "";
   URL.createObjectURL = createObjectURL;
   URL.revokeObjectURL = revokeObjectURL;
 });
@@ -207,5 +217,27 @@ describe("DataTab", () => {
       );
     });
     expect(createObjectURL).not.toHaveBeenCalled();
+  });
+});
+
+describe("DataTab access token (v1.8.0)", () => {
+  it("shows the token panel with save and hides clear when empty", () => {
+    render(<DataTab />);
+    expect(screen.getByTestId("settings-token-input")).toBeTruthy();
+    expect(screen.getByTestId("settings-token-save")).toBeTruthy();
+    expect(screen.queryByTestId("settings-token-clear")).toBeNull();
+  });
+
+  it("saving a token persists it and restarts the transport", async () => {
+    const { setAgentToken } = await import("../../../ipc");
+    render(<DataTab />);
+    fireEvent.change(screen.getByTestId("settings-token-input"), {
+      target: { value: "tok-1" },
+    });
+    fireEvent.click(screen.getByTestId("settings-token-save"));
+    await waitFor(() => {
+      expect(setAgentToken).toHaveBeenCalledWith("tok-1");
+    });
+    expect(screen.getByTestId("settings-token-clear")).toBeTruthy();
   });
 });

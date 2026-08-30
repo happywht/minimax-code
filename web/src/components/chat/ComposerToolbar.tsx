@@ -115,7 +115,8 @@ export function ComposerToolbar({
         <div className="flex min-w-[72px] flex-col items-end gap-1 sm:min-w-[92px]">
           <span
             data-testid="message-input-token-count"
-            aria-label={`输入字符 ${valueLength}/${MAX_INPUT_CHARS}`}
+            aria-label={strings.chat.composer.charCount(valueLength, MAX_INPUT_CHARS)}
+            title={strings.chat.composer.charCount(valueLength, MAX_INPUT_CHARS)}
             className={`text-[11px] transition-colors duration-200 ${tokenToneClass}`}
           >
             {valueLength}/{MAX_INPUT_CHARS}

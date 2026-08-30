@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MiniMax Code 是一个桌面端 AI 编码 Agent 复刻项目。对标 MiniMax Code 全量功能：多轮对话、技能系统、定时任务、多 Agent 协作、移动互联、授权管理、进度面板。v0.2.0 起从 Tauri 桌面壳切换为 web SPA + 本地 Python agent 架构，v0.3.0 新增 thinking_count 通道、Sub-Agent UI、Git 集成和 Code Review 工作流。
 
-当前版本：**v1.7.1**（2026-08-30）
+当前版本：**v1.8.0**（2026-08-30）
 
 ## 架构总览
 
@@ -132,6 +132,7 @@ pnpm dev
 | `MINIMAX_CODE_HTTP_HOST` | `127.0.0.1` | Agent 绑定地址 |
 | `MINIMAX_CODE_DATA_DIR` | platformdirs | SQLite 数据库路径 |
 | `MINIMAX_CODE_SKILLS_DIR` | `agent/skills/` | 技能目录 |
+| `MINIMAX_CODE_HTTP_TOKEN` | 空（**不启用鉴权**） | v1.8.0 访问令牌：设置后 `/rpc`（Bearer）/`/ws`（`?token=`，失败 close 4401）/`/preview` 全部要求凭据，`/health` 匿名；比较用 `hmac.compare_digest`；公网部署必设 |
 | `MINIMAX_CODE_CORS_ORIGINS` | dev 白名单 | 追加受信 CORS origin（逗号分隔） |
 | `MINIMAX_CODE_LOG_FILE` | 空（仅控制台） | 日志落盘路径（带轮转） |
 | `MINIMAX_CODE_TEAM_MAX_CONCURRENCY` | `4` | 单次团队运行的最大并发子 agent 数（v1.2.2；`<=0` 不设限） |
@@ -253,6 +254,8 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 | `CHANGELOG.md` | 版本变更历史 |
 
 ## 变更记录 (Changelog)
+
+- **2026-08-30** — v1.8.0：安全与收口发版（评审驱动：2026-08-30 系统完备性评审 P0×2 全清）——① **HTTP token 鉴权**（R1，P0，堵公网裸奔缺口）：env `MINIMAX_CODE_HTTP_TOKEN` 设置即启用（未设置 = 行为与 v1.7.1 逐字节一致）；`/rpc` Bearer → 401、`/ws` `?token=` 握手失败 close 4401、`/preview` 双通道、`/health` 匿名探针；`hmac.compare_digest` 常数时间比较；+22 pytest（`test_http_auth.py`）；② **前端访问令牌层**：`client.ts` token 存取（localStorage `minimax_token`）+ RPC Bearer 注入 + WS query 附加 + 401 可行动提示；DataTab「访问令牌」面板（保存/清除 + `ipc.restart()` 即刻生效）；+9 vitest；③ **`deployment.md` 远程部署节**：`0.0.0.0` + token 两步指引、systemd Environment 示例、分端点鉴权语义表、curl 双验、网络收敛建议；④ **文档对账**（R2，P1）：`architecture.md` 停更 16 版本后全文重写至 v1.8.0 现状（171 方法/35 前缀/24 表/15 工具/30 stores、目录树补 9 模块、技术决策改演进累积表、安全边界补传输鉴权）；`agent-core.md` §8a team bullet 收口（「out of scope」→ v1.7.0 已实现）；`web/CLAUDE.md` 13/14 tab 对齐（根因：漏数 worktrees）；⑤ **易用性三连**（R3，v1.7.1 实测三条结构性发现收口）：MockModeBanner 新组件（mock 后端运行时 violet 警示横幅，此前 mock 与真实会话视觉零差异）；检查器 11 图标 tab 首次发现提示（localStorage 一次性记忆）；composer `0/8000` 计数补 title/aria 语义说明（迁 strings.ts）；+6 vitest；⑥ 七处版本钉统一 `1.8.0`。pytest 10651 / vitest 808 全绿
 
 - **2026-08-30** — v1.7.1：易用性专项发版（评估 → 实测 → 修复，v1.3.0 公示的「PreviewState 仍进程级根」已知限制就此收口）——① **Preview 面板 per-project 根**（R2）：`PreviewState.set_root()` re-root on switch（停 watcher → 换根 → 排空事件队列 → 按需重启；三条路由闭包改请求时读活根，containment 同随）；新 IPC `preview.set_root {project_id?}`（方法 170→171、前缀 34→35，新 handler `handlers_preview.py`，未知 id/根不存在 `-32602` 快速失败）；前端 `previewStore.setRoot` 接线收敛在 `sessionStore.setCurrentProject`/`create()`/boot `refresh()` 单一 choke point；契约五连同步 + 22 测试；② **预览换根后的两级浏览器缓存投毒**（R1 实测抓出的 R2 硬阻断 bug）：文件响应补 `Cache-Control: no-store`（iframe 导航命中启发式缓存复用旧文档）+ 探针 fetch 补 `cache: "no-store"`（导航缓存条目无 CORS 头，被探针复用即永久 `Failed to fetch`）+ 网络错误文案本地化；③ **实测修复**：冷启动空态文案迁 `strings.chat.emptyState`（示例改通用任务）；Context 指示器 `fmtTokens` 整数千位去 `.0` 尾巴；④ **修复**：v1.7.0 发版漏 bump `version.py` 兜底字面量（版本钉测试抓出；本版七处版本钉统一 `1.7.1`）；⑤ **发布线收口**（R0）：v1.6.1+v1.7.0 共 9 提交（含 5 个真实 bug 修复）并入本分支基线，master fast-forward 留给用户；⑥ **R1 黄金路径实测记录**（12 段 Playwright 走查：13 设置 tab / 检查器 tab / 命令面板 / 终端 / Git 状态栏 / 预览双根热重载全过，零 pageerror；结构性发现三条只记录不改）。pytest 10629 / vitest 793 / 11 e2e spec 全绿
 
