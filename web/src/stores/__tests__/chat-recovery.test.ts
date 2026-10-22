@@ -1,0 +1,152 @@
+import { beforeAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "@testing-library/react";
+import { StreamEvent, type AgentRun, type Message, type SendMessageResult } from "../../types/ipc";
+
+const api = vi.hoisted(() => ({
+  listMessages: vi.fn(), sendMessage: vi.fn(),
+  handlers: new Map<string, (env: { data: any }) => void>(),
+}));
+vi.mock("../../ipc", () => ({
+  IPCError: class extends Error {},
+  typedIPC: api,
+  ipc: { start: vi.fn(), ping: vi.fn().mockResolvedValue(true),
+    on: (event: string, fn: (env: { data: any }) => void) => {
+      api.handlers.set(event, fn); return () => api.handlers.delete(event);
+    } },
+}));
+import { useChat as store } from "../chat";
+import { useSessionStore } from "../sessionStore";
+
+const run: AgentRun = { id: "r", session_id: "s", mode: "chat", status: "completed",
+  title: "task", created_at: "2026-10-23T00:00:00Z", request_key: "accepted",
+  user_message_id: "user", assistant_message_id: "answer" };
+const messages: Message[] = [
+  { id: "user", role: "user", text: "task", streaming: false, created_at: 1, metadata: { run_id: "r" } },
+  { id: "answer", role: "assistant", text: "complete answer", streaming: false, created_at: 2, metadata: { run_id: "r" } },
+];
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+const recover = (rows = [run]) => store.getState().reconcileRuns(rows, () => true);
+const emit = (event: string, data: Record<string, unknown>) =>
+  api.handlers.get(event)?.({ data: { session_id: "s", run_id: "r", ...data } });
+
+beforeAll(() => store.getState().init());
+beforeEach(() => {
+  store.getState().reset();
+  vi.clearAllMocks();
+  useSessionStore.setState({ currentSessionId: "s", sessions: [] });
+  api.listMessages.mockResolvedValue({ messages });
+});
+afterEach(() => store.getState().reset());
+
+describe("conversation reconciliation from durable runs", () => {
+  it("restores an offline final transcript and ignores all late notifications for that run", async () => {
+    store.setState({ status: "streaming" });
+    await recover();
+    const restored = store.getState().messages;
+    expect(restored.map((m) => m.id)).toEqual(["user", "answer"]);
+    expect(store.getState().status).toBe("idle");
+    emit(StreamEvent.MessageChunk, { message_id: "answer", delta: "duplicate", done: false });
+    emit(StreamEvent.ToolCall, { tool_call_id: "old-tool", name: "exec", args: {} });
+    emit(StreamEvent.ToolResult, { tool_call_id: "old-tool", result: "late" });
+    emit(StreamEvent.AgentStatus, { status: "error", detail: "stale failure" });
+    emit(StreamEvent.AskUser, { request_id: "old-question", questions: [], timeout_s: 600 });
+    expect(store.getState().messages).toEqual(restored);
+    expect(store.getState().status).toBe("idle");
+    expect(store.getState().askUser).toBeNull();
+    emit(StreamEvent.MessageChunk, { run_id: "new", message_id: "new-answer", delta: "new", done: false });
+    expect(store.getState().messages.at(-1)?.text).toBe("new");
+    expect(store.getState().status).toBe("streaming");
+  });
+
+  it("replaces confirmed provisional messages and keeps unconfirmed local input", async () => {
+    store.setState({ status: "error", error: "offline", messages: [
+      { id: "local-user", role: "user", text: "task", streaming: false, created_at: 1, metadata: { request_key: "accepted" } },
+      { id: "local-answer", role: "assistant", text: "offline", streaming: false, created_at: 2, metadata: { request_key: "accepted" } },
+      { id: "unsent", role: "user", text: "do not lose", streaming: false, created_at: 3, metadata: { request_key: "unsent-key" } },
+    ] });
+    await recover();
+    expect(store.getState().messages.map((m) => m.id)).toEqual(["user", "answer", "unsent"]);
+    expect(store.getState().error).toBe("offline");
+  });
+
+  it.each(["failed", "cancelled", "interrupted"] as const)("retains unpersisted partial output as %s", async (status) => {
+    store.setState({ messages: [{ id: "partial", role: "assistant", text: "partial evidence",
+      created_at: 3, streaming: true, metadata: { run_id: "r" } }] });
+    await recover([{ ...run, status, error: "unfinished" }]);
+    expect(store.getState().messages.at(-1)).toMatchObject({ id: "partial", text: "partial evidence",
+      streaming: false, status: status === "cancelled" ? "cancelled" : "failed" });
+    expect(store.getState().status).toBe(status === "cancelled" ? "idle" : "error");
+  });
+
+  it.each(["running", "queued", "waiting_input", "budget_paused"] as const)("does not replace an active %s conversation", async (status) => {
+    await recover([{ ...run, status }]);
+    expect(api.listMessages).not.toHaveBeenCalled();
+  });
+
+  it("discards history after switching sessions", async () => {
+    const pending = deferred<{ messages: Message[] }>();
+    api.listMessages.mockReturnValueOnce(pending.promise);
+    const syncing = recover();
+    await waitFor(() => expect(api.listMessages).toHaveBeenCalled());
+    store.getState().reset();
+    useSessionStore.setState({ currentSessionId: "other" });
+    store.getState().addLocalMessage("other conversation");
+    pending.resolve({ messages });
+    await syncing;
+    expect(store.getState().messages.map((m) => m.text)).toEqual(["other conversation"]);
+  });
+
+  it("discards history when a new local input or a different run arrives during the read", async () => {
+    for (const action of [() => store.getState().addLocalMessage("new local input"),
+      () => emit(StreamEvent.ToolCall, { run_id: "new", tool_call_id: "new-tool", name: "read", args: {} })]) {
+      const pending = deferred<{ messages: Message[] }>();
+      api.listMessages.mockReturnValueOnce(pending.promise);
+      const syncing = recover();
+      await waitFor(() => expect(api.listMessages).toHaveBeenCalled());
+      action();
+      const current = store.getState().messages;
+      pending.resolve({ messages });
+      await syncing;
+      expect(store.getState().messages).toEqual(current);
+      api.listMessages.mockClear();
+    }
+  });
+
+  it("allows late packets from the same completed run while fetching its authoritative history", async () => {
+    const pending = deferred<{ messages: Message[] }>();
+    api.listMessages.mockReturnValueOnce(pending.promise);
+    const syncing = recover();
+    await waitFor(() => expect(api.listMessages).toHaveBeenCalled());
+    emit(StreamEvent.MessageChunk, { message_id: "answer", delta: "partial", done: false });
+    pending.resolve({ messages });
+    await syncing;
+    expect(store.getState().messages.at(-1)?.text).toBe("complete answer");
+  });
+
+  it("waits for the pending HTTP reply and then removes provisional duplicates", async () => {
+    const pending = deferred<SendMessageResult>();
+    api.sendMessage.mockReturnValueOnce(pending.promise);
+    const sending = store.getState().send("task");
+    await waitFor(() => expect(api.sendMessage).toHaveBeenCalled());
+    const key = api.sendMessage.mock.calls[0][0].idempotency_key;
+    const syncing = recover([{ ...run, request_key: key }]);
+    expect(api.listMessages).not.toHaveBeenCalled();
+    pending.resolve({ session_id: "s", message_id: "answer", text: "complete answer" });
+    await Promise.all([sending, syncing]);
+    expect(store.getState().messages.map((m) => m.id)).toEqual(["user", "answer"]);
+  });
+
+  it("preserves history on a read failure and retries on a later reconciliation", async () => {
+    store.getState().addLocalMessage("local");
+    const before = store.getState().messages;
+    api.listMessages.mockRejectedValueOnce(new Error("offline"));
+    await recover();
+    expect(store.getState().messages).toEqual(before);
+    await recover();
+    expect(store.getState().messages.map((m) => m.text)).toEqual(["task", "complete answer", "local"]);
+  });
+});

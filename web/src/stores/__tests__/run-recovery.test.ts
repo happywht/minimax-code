@@ -4,6 +4,7 @@ import type { AgentRun, RunStepsResult } from "../../types/ipc";
 
 const api = vi.hoisted(() => ({
   listRuns: vi.fn(), getRunSteps: vi.fn(), getRunEvents: vi.fn(),
+  listMessages: vi.fn(),
   handlers: new Map<string, () => void>(),
   sidecar: null as null | ((event: { status: string }) => void),
 }));
@@ -19,6 +20,7 @@ vi.mock("../../ipc", () => ({
 }));
 import { useRunTimelineStore as store } from "../runStore";
 import { useSessionStore } from "../sessionStore";
+import { useChat } from "../chat";
 import { StreamEvent } from "../../types/ipc";
 
 const run: AgentRun = {
@@ -37,11 +39,13 @@ function deferred<T>() {
 beforeEach(async () => {
   await idle();
   store.getState().reset();
+  useChat.getState().reset();
   vi.resetAllMocks();
   useSessionStore.setState({ currentSessionId: "s1" });
   api.listRuns.mockResolvedValue({ runs: [run] });
   api.getRunSteps.mockResolvedValue(snapshot());
   api.getRunEvents.mockResolvedValue({ events: [], next_seq: 1, has_more: false });
+  api.listMessages.mockResolvedValue({ messages: [] });
 });
 
 describe("durable run recovery", () => {
@@ -52,6 +56,7 @@ describe("durable run recovery", () => {
     await idle();
     expect(store.getState().runs.r1.status).toBe("completed");
     expect(api.getRunSteps).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(api.listMessages).toHaveBeenCalledWith("s1", { limit: 500 }));
   });
 
   it("pages ordered events and applies the final state rather than a stale notification", async () => {
@@ -121,6 +126,20 @@ describe("durable run recovery", () => {
     useSessionStore.setState({ currentSessionId: null });
     await store.getState().loadForSession(null);
     expect(store.getState().runs).toEqual({});
+  });
+
+  it("does not invalidate pending conversation recovery on duplicate unchanged wakeups", async () => {
+    const pending = deferred<{ messages: import("../../types/ipc").Message[] }>();
+    api.getRunSteps.mockResolvedValue(snapshot({ ...run, status: "completed" }));
+    api.listMessages.mockReturnValueOnce(pending.promise);
+    await store.getState().loadForSession("s1");
+    await waitFor(() => expect(api.listMessages).toHaveBeenCalledTimes(1));
+    api.handlers.get(StreamEvent.RunCompleted)?.();
+    await idle();
+    pending.resolve({ messages: [{ id: "saved", role: "assistant", text: "recovered",
+      streaming: false, created_at: 1 }] });
+    await waitFor(() => expect(useChat.getState().messages[0]?.id).toBe("saved"));
+    expect(api.listMessages).toHaveBeenCalledTimes(1);
   });
 
   it("rejects cross-session snapshots and coalesces a notification burst", async () => {

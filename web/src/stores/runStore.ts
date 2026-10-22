@@ -7,6 +7,7 @@ import {
   type RunStepsResult,
 } from "../types/ipc";
 import { useSessionStore } from "./sessionStore";
+import { useChat } from "./chat";
 
 export interface RunTimelineEntry extends AgentRun {
   steps: AgentRunStep[];
@@ -31,6 +32,7 @@ let snapshots = new Map<string, RunStepsResult>();
 let pending = false;
 let forceSnapshot = false;
 let worker: Promise<void> | null = null;
+let conversationStamp = "";
 
 function validateSnapshot(snapshot: RunStepsResult, runId: string, sessionId: string): RunStepsResult {
   if (snapshot.run.id !== runId || snapshot.run.session_id !== sessionId ||
@@ -93,6 +95,12 @@ async function drain(): Promise<void> {
         };
       }
       useRunTimelineStore.setState({ runs: next, order: entries.map((entry) => entry.run.id), error: null });
+      const stamp = entries.map((entry) => `${entry.run.id}:${entry.cursor}`).join("|");
+      if (refresh || stamp !== conversationStamp) {
+        conversationStamp = stamp;
+        void useChat.getState().reconcileRuns(entries.map((entry) => entry.run),
+          () => isCurrent() && conversationStamp === stamp);
+      }
     } catch (err) {
       if (isCurrent()) useRunTimelineStore.setState({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -104,6 +112,7 @@ function requestSync(sessionId: string | null, refresh = false): Promise<void> {
     session = sessionId;
     generation++;
     snapshots.clear();
+    conversationStamp = "";
     useRunTimelineStore.setState({ runs: {}, order: [], error: null });
     refresh = true;
   }
@@ -149,6 +158,7 @@ export const useRunTimelineStore = create<RunTimelineState>((set, get) => ({
     generation++;
     session = null;
     snapshots.clear();
+    conversationStamp = "";
     pending = false;
     forceSnapshot = false;
     unsubs.forEach((unsub) => unsub());

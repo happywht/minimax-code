@@ -563,6 +563,16 @@ message for that run. Message insertion, pointer update and its journal event
 commit together. Legacy messages can lack this linkage; an unpersisted partial
 stream after cancellation is not a confirmed saved assistant message.
 
+Native chat notifications (message chunks, tool calls/results, status and questions)
+also include a top-level `run_id`; legacy emitters may omit it. Partial text chunks
+include this identity in their metadata before final usage is known. After terminal
+run recovery, the browser reads committed messages and ignores late packets for
+those recovered runs. A new session, input or newer run invalidates an in-flight
+history read. Browser-only provisional messages use a local `request_key` matching
+the submitted idempotency key so confirmed rows replace their provisional copies;
+unconfirmed local input and interrupted partial output remain visible. This key is
+not a new persisted message field. Failed history reads preserve the current view.
+
 When reviewed recovery encounters a recorded tool call without a saved result,
 the model-history projection provides an explicitly **unknown outcome** placeholder
 for protocol pairing. It does not execute the tool or save an invented result.

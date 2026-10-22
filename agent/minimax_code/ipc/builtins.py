@@ -1013,22 +1013,19 @@ async def _handle_agent_send_message(
     ) -> None:
         try:
             _assistant_segment()
-            # The agent loop only attaches ``metadata`` to the
-            # trailing ``done=True`` chunk per turn; every earlier
-            # delta passes ``None``. ``ctx.emit`` with
-            # ``metadata=`` merges it into the data dict when
-            # present, so the wire format matches the v0.3.0
-            # design (``data.metadata = {thinking_count, ...}``).
+            # Usage arrives on the trailing chunk. All partial chunks carry
+            # run identity so interrupted output can be reconciled with history
+            # without inventing a completed/persisted message or zero usage.
             # v0.11.0: merge any codebase sources collected from tool
             # results so the frontend can render a per-turn sources panel.
             if metadata is not None and turn_sources:
                 metadata = {**metadata, "sources": turn_sources}
-            if metadata is not None:
-                metadata = {**metadata, "run_id": job.run_id}
+            metadata = {**(metadata or {}), "run_id": job.run_id}
             await ctx.emit(
                 "agent.message_chunk",
                 {
                     "session_id": session_id,
+                    "run_id": job.run_id,
                     "message_id": current_assistant_message_id,
                     "delta": delta,
                     "done": done,
@@ -1049,7 +1046,7 @@ async def _handle_agent_send_message(
         try:
             await ctx.emit(
                 "agent.status",
-                {"session_id": session_id, "status": status, **detail},
+                {**detail, "session_id": session_id, "status": status, "run_id": job.run_id},
             )
             await recorder.status(status, detail)
         except Exception as exc:
@@ -1068,6 +1065,7 @@ async def _handle_agent_send_message(
                 "agent.message_chunk",
                 {
                     "session_id": session_id,
+                    "run_id": job.run_id,
                     "message_id": current_assistant_message_id,
                     "delta": "",
                     "done": True,
@@ -1085,6 +1083,7 @@ async def _handle_agent_send_message(
                 "agent.tool_call",
                 {
                     "session_id": session_id,
+                    "run_id": job.run_id,
                     "tool_call_id": tool_call_id,
                     "name": tool_name,
                     "args": args,
@@ -1104,7 +1103,7 @@ async def _handle_agent_send_message(
         """Push ``agent.ask_user`` so the frontend renders an inline
         question card and can answer via ``agent.answer_user``."""
         try:
-            await ctx.emit("agent.ask_user", payload)
+            await ctx.emit("agent.ask_user", {**payload, "run_id": job.run_id})
         except Exception:
             logger.exception("on_ask_user emit failed")
 
@@ -1120,6 +1119,7 @@ async def _handle_agent_send_message(
                 "agent.tool_result",
                 {
                     "session_id": session_id,
+                    "run_id": job.run_id,
                     "tool_call_id": tool_call_id,
                     "name": tool_name,
                     "result": result.output if hasattr(result, "output") else str(result),

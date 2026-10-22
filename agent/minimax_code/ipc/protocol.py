@@ -72,6 +72,13 @@ class MessageMetadata(_Base):
     tokens_out: int | None = None
 
 
+class RunStreamContext(_Base):
+    """Chat notification context; older emitters may omit the durable run ID."""
+
+    session_id: str
+    run_id: str | None = None
+
+
 class ChildWorkspaceSummary(_Base):
     """Optional result field on real sub-agent and team member execution."""
 

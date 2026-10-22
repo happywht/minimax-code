@@ -193,6 +193,8 @@ export interface SourceAnnotation {
 
 /** Per-turn metadata snapshot for the v0.3.0 thinking_count channel. */
 export interface MessageMetadata {
+  /** Browser-only association until a submitted user message is persisted. */
+  request_key?: string;
   /** Originating durable run, absent on legacy/imported messages. */
   run_id?: string;
   thinking_count?: number;
@@ -476,8 +478,13 @@ export interface ListWebhooksResult {
 
 /* ─────────────────────── Event payload shapes ─────────────────────── */
 
-export interface MessageChunkData {
+/** Durable run identity lets clients discard late notifications after recovery. */
+export interface RunStreamContext {
   session_id: string;
+  run_id?: string;
+}
+
+export interface MessageChunkData extends RunStreamContext {
   message_id: string;
   delta: string;
   done: boolean;
@@ -493,8 +500,7 @@ export interface MessageChunkData {
   metadata?: MessageMetadata;
 }
 
-export interface AgentStatusData {
-  session_id: string;
+export interface AgentStatusData extends RunStreamContext {
   status:
     | "thinking"
     | "calling_tool"
@@ -508,16 +514,14 @@ export interface AgentStatusData {
   detail?: string;
 }
 
-export interface ToolCallData {
-  session_id: string;
+export interface ToolCallData extends RunStreamContext {
   tool_call_id: string;
   name: string;
   args: Record<string, unknown>;
   message_id: string;
 }
 
-export interface ToolResultData {
-  session_id: string;
+export interface ToolResultData extends RunStreamContext {
   tool_call_id: string;
   /** Tool name. Present on the Python agent stream; optional for older emitters. */
   name?: string;
@@ -541,9 +545,8 @@ export interface AskUserQuestion {
 }
 
 /** Wire shape of one `agent.ask_user` event — the agent is suspended until answered. */
-export interface AskUserData {
+export interface AskUserData extends RunStreamContext {
   request_id: string;
-  session_id: string;
   questions: AskUserQuestion[];
   /** Seconds the agent will wait before giving up (default 600). */
   timeout_s: number;

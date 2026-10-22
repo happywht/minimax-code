@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { IPCClient } from "../client";
 import { mockRequest } from "../mock";
 import { bindTypedIPC } from "../typed";
-import type { RunAdmissionResult, RunGetResult } from "../../types/ipc";
+import type { RunAdmissionResult, RunGetResult, ListMessagesResult } from "../../types/ipc";
 
 describe("durable run contract", () => {
   afterEach(() => vi.useRealTimers());
@@ -41,5 +41,26 @@ describe("durable run contract", () => {
     const resumed = await mockRequest<RunAdmissionResult>("run.resume", { run_id: first.run.id, idempotency_key: "again", reviewed: true }, client);
     expect(resumed.run.resumed_from_id).toBe(first.run.id);
     await vi.runAllTimersAsync();
+  });
+
+  it("mock completed runs expose the same message IDs and text through history recovery", async () => {
+    vi.useFakeTimers();
+    const client = new IPCClient();
+    const params = { session_id: "mock-history-test", content: "remember this", idempotency_key: "history-once" };
+    const admitted = await mockRequest<RunAdmissionResult>("run.start", params, client);
+    await vi.runAllTimersAsync();
+    const { run, result } = await mockRequest<RunGetResult>("run.get", { run_id: admitted.run.id }, client);
+    if (!result || "error" in result) throw new Error("Expected a completed mock receipt");
+    expect(run.request_key).toBe(params.idempotency_key);
+    const history = await mockRequest<ListMessagesResult>("message.list", { session_id: params.session_id }, client);
+    expect(history.messages.map((message) => message.id)).toEqual([run.user_message_id, run.assistant_message_id]);
+    expect(history.messages[1]).toMatchObject({ id: result?.message_id, text: result?.text, metadata: { run_id: run.id } });
+    await mockRequest("run.start", params, client);
+    expect(await mockRequest("message.list", { session_id: params.session_id }, client)).toEqual(history);
+    expect(await mockRequest("message.list", { session_id: "other-mock-session" }, client)).toEqual({ messages: [] });
+    await mockRequest("message.update", { message_id: run.user_message_id, content: "edited" }, client);
+    await mockRequest("message.delete", { message_id: run.assistant_message_id }, client);
+    const edited = await mockRequest<ListMessagesResult>("message.list", { session_id: params.session_id }, client);
+    expect(edited.messages.map((message) => message.text)).toEqual(["edited"]);
   });
 });

@@ -158,6 +158,7 @@ const mockRunReceipts = new Map<string, import("../types/ipc").SendMessageResult
 const mockRunRequests = new Map<string, import("../types/ipc").SendMessageParams>();
 const mockRequestKeys = new Map<string, { signature: string; runId: string }>();
 const mockRunEvents = new Map<string, import("../types/ipc").RunEvent[]>();
+const mockMessages = new Map<string, ProtocolMessage[]>();
 
 function recordRunEvent(
   runId: string,
@@ -469,11 +470,16 @@ function mockHandle(
     }
 
     case "message.list": {
-      return { messages: [] as ProtocolMessage[] };
+      const p = params as { session_id: string; limit?: number; before?: string };
+      const rows = mockMessages.get(p.session_id) ?? [];
+      const filtered = p.before ? rows.filter((message) => message.created_at < Date.parse(p.before!)) : rows;
+      return { messages: structuredClone(filtered.slice(-(p.limit ?? 100))) };
     }
 
     case "message.update": {
       const p = params as { message_id: string; content?: string };
+      const saved = [...mockMessages.values()].flat().find((message) => message.id === p.message_id);
+      if (saved) saved.text = p.content ?? "";
       return {
         ok: true,
         message: {
@@ -487,12 +493,13 @@ function mockHandle(
 
     case "message.delete": {
       const p = params as { message_id: string };
+      for (const [sid, rows] of mockMessages) mockMessages.set(sid, rows.filter((message) => message.id !== p.message_id));
       return { ok: true, message_id: p.message_id } satisfies DeleteMessageResult;
     }
 
     case "run.list": {
       const p = params as { session_id?: string; limit?: number; offset?: number } | undefined;
-      let runs = Array.from(mockRuns.values()).map((r) => r.run);
+      let runs = Array.from(mockRuns.values()).reverse().map((r) => r.run);
       if (p?.session_id) runs = runs.filter((r) => r.session_id === p.session_id);
       runs.sort((a, b) => b.created_at.localeCompare(a.created_at));
       const offset = p?.offset ?? 0;
@@ -595,6 +602,7 @@ function mockHandle(
       mockSessionsWithMessages.add(sid);
       const mid = `msg_${Math.random().toString(36).slice(2, 10)}`;
       const runId = `run_${Math.random().toString(36).slice(2, 10)}`;
+      const userId = `msg_${Math.random().toString(36).slice(2, 10)}`;
       const nowIso = new Date().toISOString();
       const run: import("../types/ipc").AgentRun = {
         id: runId,
@@ -606,6 +614,8 @@ function mockHandle(
         status: "running",
         title: String(p.content).slice(0, 32),
         assistant_message_id: mid,
+        user_message_id: userId,
+        request_key: p.idempotency_key,
         created_at: nowIso,
         started_at: nowIso,
       };
@@ -622,6 +632,10 @@ function mockHandle(
         ordinal: 1,
       };
       mockRuns.set(runId, { run, steps: [thinkingStep] });
+      mockMessages.set(sid, [...(mockMessages.get(sid) ?? []), {
+        id: userId, role: "user", text: typeof p.content === "string" ? p.content : JSON.stringify(p.content),
+        streaming: false, created_at: Date.parse(nowIso), metadata: { run_id: runId },
+      }]);
       mockRunRequests.set(runId, structuredClone(p));
       if (requestKey) mockRequestKeys.set(requestKey, { signature, runId });
       recordRunEvent(runId, "created", { run });
@@ -639,6 +653,7 @@ function mockHandle(
             delta,
             done: i === chunks.length - 1,
             metadata: { run_id: runId, thinking_count: 0, tokens_in: 0, tokens_out: 0 },
+            run_id: runId,
           } satisfies MessageChunkData);
           if (i === chunks.length - 1) {
             const completedAt = new Date().toISOString();
@@ -670,6 +685,10 @@ function mockHandle(
               metadata: { ...run.metadata, iterations: 1, memory_count: 0 },
             };
             mockRuns.set(runId, { run: completedRun, steps: [completedStep, finalStep] });
+            mockMessages.set(sid, [...(mockMessages.get(sid) ?? []), {
+              id: mid, role: "assistant", text: reply, streaming: false, created_at: Date.parse(completedAt),
+              metadata: { run_id: runId, thinking_count: 0, tokens_in: 0, tokens_out: 0 },
+            }]);
             mockRunReceipts.set(runId, { session_id: sid, message_id: mid, run_id: runId, text: reply, cancelled: false });
             recordRunEvent(runId, "step_updated", { step: completedStep });
             recordRunEvent(runId, "step_created", { step: finalStep });

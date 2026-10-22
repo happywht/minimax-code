@@ -55,9 +55,20 @@ test("timeline recovers a completed offline run and survives a page reload", asy
   }, runId);
   await expect.poll(async () => (await readRun())?.status).toBe("completed");
   expect((await readRun()).steps).toEqual(saved.steps);
+  const readMessages = () => page.evaluate(async () => {
+    // @ts-expect-error Vite exposes this source module in the test browser.
+    const { useChat } = await import("/src/stores/chat.ts");
+    return useChat.getState().messages;
+  });
+  await expect.poll(async () => (await readMessages()).map((message: { id: string }) => message.id))
+    .toEqual(messages.map((message: { id: string }) => message.id));
+  expect((await readMessages()).find((message: { id: string }) => message.id === assistant.id)?.text)
+    .toBe(assistant.text);
   await page.reload();
   await expect(page.getByPlaceholder(/问 MiniMax 任何问题/)).toBeVisible();
   await selectSession();
   await expect.poll(async () => (await readRun())?.status).toBe("completed");
   expect((await readRun()).steps).toEqual(saved.steps);
+  await expect.poll(async () => (await readMessages()).map((message: { id: string }) => message.id))
+    .toEqual(messages.map((message: { id: string }) => message.id));
 });

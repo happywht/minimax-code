@@ -22,7 +22,7 @@ import {
   type ToolCallData,
   type ToolResultData,
 } from "../types/ipc";
-import type { Message, ContentPart } from "../types/ipc";
+import type { Message, ContentPart, AgentRun } from "../types/ipc";
 import { useSessionStore } from "./sessionStore";
 import { trimArray, MAX_MESSAGES } from "../lib/eviction";
 import { DEFAULT_SESSION_TITLE } from "../lib/defaultTitles";
@@ -58,6 +58,7 @@ export interface ChatState {
   addLocalMessage: (content: string) => void;
   /** Load persisted messages for a session from the backend. */
   loadMessages: (sessionId: string) => Promise<void>;
+  reconcileRuns: (runs: AgentRun[], stillCurrent: () => boolean) => Promise<void>;
   reset: () => void;
   cancel: () => Promise<void>;
   retryMessage: (messageId: string) => Promise<void>;
@@ -112,6 +113,11 @@ if (import.meta.hot) {
 
 /** Monotonic counter to prevent stale loadMessages from overwriting state. */
 let _loadSeq = 0;
+let _viewRevision = 0;
+let _reconcileSeq = 0;
+const recoveredMessageIds = new Set<string>();
+const recoveredRunIds = new Set<string>();
+let reconcilingRunIds = new Set<string>();
 
 /** Frontend inactivity notice. Only the backend may terminate a run. */
 const STALL_TIMEOUT_MS = 60_000;
@@ -163,11 +169,18 @@ function clearStallWatchdog() {
  * to the currently open session may touch this store; anything else is a
  * background run and must not pollute the visible conversation.
  */
-function isCurrentSessionEvent(data: { session_id?: string | null }): boolean {
+function isCurrentSessionEvent(data: { session_id?: string | null; run_id?: string }): boolean {
   return (
     !!data.session_id &&
+    !(data.run_id && recoveredRunIds.has(data.run_id)) &&
     data.session_id === useSessionStore.getState().currentSessionId
   );
+}
+
+function noteStreamActivity(data: { run_id?: string }): void {
+  // A completed run's late packets are superseded by its committed history.
+  // Activity from a different run must invalidate the pending history read.
+  if (!data.run_id || !reconcilingRunIds.has(data.run_id)) ++_viewRevision;
 }
 
 function ensureMessage(
@@ -266,6 +279,8 @@ export const useChat = create<ChatState>((set, get) => ({
         const data = env.data;
         if (!data) return;
         if (!isCurrentSessionEvent(data)) return;
+        if (recoveredMessageIds.has(data.message_id)) return;
+        noteStreamActivity(data);
         set((s) => {
           // The v0.3.0 thinking_count channel attaches a
           // ``metadata`` field to the final ``done=True`` chunk
@@ -297,6 +312,7 @@ export const useChat = create<ChatState>((set, get) => ({
         if (!data) return;
         if (!isCurrentSessionEvent(data)) return;
         const id = `tc-${data.tool_call_id}`;
+        noteStreamActivity(data);
         set((s) => ({
           messages: trimArray(ensureMessage(s.messages, {
             id,
@@ -324,6 +340,7 @@ export const useChat = create<ChatState>((set, get) => ({
         if (!data) return;
         if (!isCurrentSessionEvent(data)) return;
         const id = `tr-${data.tool_call_id}`;
+        noteStreamActivity(data);
         const text = data.error
           ? `✗ ${data.error}`
           : `✓ ${typeof data.result === "string" ? data.result : JSON.stringify(data.result)}`;
@@ -359,6 +376,7 @@ export const useChat = create<ChatState>((set, get) => ({
         const d = env.data;
         if (!d) return;
         if (!isCurrentSessionEvent(d)) return;
+        noteStreamActivity(d);
         if (d.status === "error") {
           const detail = d.detail ?? "Agent run failed";
           set((s) => ({
@@ -396,6 +414,7 @@ export const useChat = create<ChatState>((set, get) => ({
         // A fresh questionnaire always replaces any stale one — the
         // backend serialises ask_user suspensions per run, so at most
         // one card is live at a time.
+        noteStreamActivity(data);
         set({ askUser: data });
       });
     }
@@ -407,6 +426,7 @@ export const useChat = create<ChatState>((set, get) => ({
   addLocalMessage: (content: string) => {
     const text = content.trim();
     if (!text) return;
+    ++_viewRevision;
     set((s) => ({
       messages: trimArray([
         ...s.messages,
@@ -414,6 +434,7 @@ export const useChat = create<ChatState>((set, get) => ({
           id: `user-${Date.now()}`,
           role: "user",
           text,
+          metadata: { request_key: crypto.randomUUID() },
           streaming: false,
           status: "completed",
           created_at: Date.now(),
@@ -444,6 +465,7 @@ export const useChat = create<ChatState>((set, get) => ({
 
     if (!displayText && !parts?.length) return;
 
+    ++_viewRevision;
     activeToolCalls.clear();
     activeToolNames.clear();
     set({ status: "sending", error: null });
@@ -463,6 +485,7 @@ export const useChat = create<ChatState>((set, get) => ({
         }
       }
 
+      const requestKey = crypto.randomUUID();
       const userMessage: Message = {
         id: `user-${Date.now()}`,
         role: "user",
@@ -470,6 +493,7 @@ export const useChat = create<ChatState>((set, get) => ({
         streaming: false,
         status: "completed",
         created_at: Date.now(),
+        metadata: { request_key: requestKey },
       };
       const assistantPlaceholderId = `assistant-pending-${Date.now()}`;
       pendingAssistantId = assistantPlaceholderId;
@@ -481,6 +505,7 @@ export const useChat = create<ChatState>((set, get) => ({
         status: "queued",
         retry_content: parts ? displayText : text,
         created_at: Date.now(),
+        metadata: { request_key: requestKey },
       };
       set((s) => ({
         messages: trimArray([...s.messages, userMessage, assistantPlaceholder], MAX_MESSAGES),
@@ -491,7 +516,7 @@ export const useChat = create<ChatState>((set, get) => ({
       const result = await trackRequest(sessionId, typedIPC.sendMessage({
         session_id: sessionId,
         content: wireContent,
-        idempotency_key: crypto.randomUUID(),
+        idempotency_key: requestKey,
         ...(get().executionMode === "plan" ? { mode: "plan" as const } : {}),
       }));
       if (result.session_id && result.session_id !== sessionId) {
@@ -668,6 +693,7 @@ export const useChat = create<ChatState>((set, get) => ({
     const sessionId = useSessionStore.getState().currentSessionId;
     if (!sessionId) return;
     if (get().status === "sending" || get().status === "streaming" || get().status === "cancelling") return;
+    ++_viewRevision;
     set({ status: "sending", error: null });
     try {
       const result = await trackRequest(sessionId, typedIPC.continueRun(sessionId));
@@ -717,6 +743,7 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   cancel: async () => {
+    ++_viewRevision;
     clearStallWatchdog();
     const sid = useSessionStore.getState().currentSessionId;
     if (!sid) return;
@@ -772,8 +799,10 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   updateMessage: async (messageId: string, text: string) => {
+    ++_viewRevision;
     try {
       await typedIPC.updateMessage({ message_id: messageId, content: text });
+      ++_viewRevision;
       set((s) => ({
         messages: s.messages.map((m) =>
           m.id === messageId ? { ...m, text, retry_content: text } : m
@@ -786,8 +815,10 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   deleteMessage: async (messageId: string) => {
+    ++_viewRevision;
     try {
       await typedIPC.deleteMessage({ message_id: messageId });
+      ++_viewRevision;
       set((s) => ({
         messages: s.messages.filter((m) => m.id !== messageId),
       }));
@@ -822,6 +853,67 @@ export const useChat = create<ChatState>((set, get) => ({
     const current = get().askUser;
     if (!current) return;
     await get().submitAskUser(current.questions.map(() => "(skipped by user)"));
+  },
+
+  reconcileRuns: async (runs, stillCurrent) => {
+    const latest = runs[0];
+    const terminal = new Set(["completed", "failed", "cancelled", "interrupted"]);
+    if (!latest || runs.some((run) => !terminal.has(run.status) || run.session_id !== latest.session_id)) return;
+    const sid = latest.session_id;
+    const seq = ++_reconcileSeq;
+    const loadSeq = _loadSeq;
+    const revision = _viewRevision;
+    reconcilingRunIds = new Set(runs.map((run) => run.id));
+    const isCurrent = () => seq === _reconcileSeq && loadSeq === _loadSeq && stillCurrent()
+      && useSessionStore.getState().currentSessionId === sid;
+    try {
+      // Let the original reply handler finish before replacing provisional rows.
+      await inFlightRequests.get(sid)?.catch(() => undefined);
+      await Promise.resolve();
+      if (!isCurrent() || revision !== _viewRevision || inFlightRequests.has(sid)) return;
+      const acceptedKeys = new Set(runs.filter((run) => run.user_message_id).map((run) => run.request_key));
+      if (get().status === "sending") {
+        const pendingKey = get().messages.find((m) => m.id === pendingAssistantId)?.metadata?.request_key;
+        if (!pendingKey || !acceptedKeys.has(pendingKey)) return;
+      }
+      const result = await typedIPC.listMessages(sid, { limit: 500 });
+      if (!isCurrent() || revision !== _viewRevision || inFlightRequests.has(sid)) return;
+      const saved: Message[] = (result.messages ?? []).map((m) => ({
+        ...m, text: m.text ?? m.content ?? "", streaming: false, status: m.status ?? "completed",
+      }));
+      const savedIds = new Set(saved.map((m) => m.id));
+      const byRun = new Map(runs.map((run) => [run.id, run]));
+      const retained = get().messages.filter((message) => {
+        if (savedIds.has(message.id)) return false;
+        const key = message.metadata?.request_key;
+        if (key && !acceptedKeys.has(key)) return true; // retain an unconfirmed local submission
+        const run = byRun.get(message.metadata?.run_id ?? "");
+        return message.role === "assistant" && !!run && run.status !== "completed";
+      }).map((message): Message => {
+        const run = byRun.get(message.metadata?.run_id ?? "");
+        return run ? { ...message, streaming: false, status: run.status === "cancelled" ? "cancelled" : "failed" } : message;
+      });
+      const hasUnconfirmedInput = retained.some((m) => m.metadata?.request_key && !acceptedKeys.has(m.metadata.request_key));
+      recoveredMessageIds.clear();
+      recoveredRunIds.clear();
+      savedIds.forEach((id) => recoveredMessageIds.add(id));
+      runs.forEach((run) => recoveredRunIds.add(run.id));
+      if (!hasUnconfirmedInput) {
+        pendingAssistantId = null;
+        activeToolCalls.clear();
+        activeToolNames.clear();
+        clearStallWatchdog();
+      }
+      set({ messages: trimArray([...saved, ...retained], MAX_MESSAGES),
+        ...(!hasUnconfirmedInput ? { status: latest.status === "failed" || latest.status === "interrupted" ? "error" as const : "idle" as const,
+          error: latest.error ?? null, askUser: null } : {}),
+      });
+    } catch {
+      // A missing history response must never erase the current view. A fresh
+      // reconnect or explicit timeline refresh will retry the reconciliation.
+    } finally {
+      if (seq === _reconcileSeq) reconcilingRunIds.clear();
+    }
   },
 
   loadMessages: async (sessionId: string) => {
@@ -871,6 +963,11 @@ export const useChat = create<ChatState>((set, get) => ({
 
   reset: () => {
     ++_loadSeq;
+    ++_viewRevision;
+    ++_reconcileSeq;
+    recoveredMessageIds.clear();
+    recoveredRunIds.clear();
+    reconcilingRunIds.clear();
     clearStallWatchdog();
     pendingAssistantId = null;
     set({ messages: [], status: "idle", error: null, loadingMessages: false, askUser: null });

@@ -630,6 +630,13 @@ async def test_stream_history_receipt_and_run_use_the_same_assistant_ids(native,
     messages = await MessagesDAO(native.db).list_for_session("one")
     assistants = [m for m in messages if m["role"] == "assistant"]
     chunks = [c.args[1] for c in ctx.emit.call_args_list if c.args[0] == "agent.message_chunk"]
+    chat_events = {"agent.message_chunk", "agent.tool_call", "agent.tool_result", "agent.status"}
+    emitted = [c for c in ctx.emit.call_args_list if c.args[0] in chat_events]
+    assert {c.args[0] for c in emitted} == chat_events
+    assert all(c.args[1]["run_id"] == receipt["run_id"] for c in emitted)
+    partial_chunks = [c for c in emitted if c.args[0] == "agent.message_chunk" and c.args[1]["delta"]]
+    assert partial_chunks
+    assert all(c.kwargs["metadata"]["run_id"] == receipt["run_id"] for c in partial_chunks)
     assert len(assistants) == (3 if auto_continue else 2)
     assert {m["id"] for m in assistants} == {chunk["message_id"] for chunk in chunks}
     assert all(m["metadata"]["run_id"] == receipt["run_id"] for m in messages)
