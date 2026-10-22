@@ -212,6 +212,8 @@ class MiniMaxClient:
         Updates :attr:`thinking_count` and :attr:`last_reasoning_effort`
         after the stream completes.
         """
+        if isinstance(error := getattr(self, "configuration_error", None), str) and error:
+            raise RuntimeError(error)
         async for chunk in self._transport.stream_chat(
             messages,
             model=model or self.default_model,

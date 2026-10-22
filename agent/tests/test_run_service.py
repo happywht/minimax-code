@@ -54,6 +54,7 @@ async def native(monkeypatch, tmp_path):
     class Core:
         def __init__(self, **kwargs):
             self.config = kwargs["config"]
+            self.llm = kwargs["llm"]
             self.cancelled = False
             cores.append(self)
 
@@ -304,3 +305,40 @@ async def test_cancelling_before_first_task_instruction_cleans_queue():
         await service.wait(job)
     operation.assert_not_awaited()
     assert not service._jobs and not service._locks
+
+
+async def test_queued_native_request_keeps_model_captured_at_admission(native, monkeypatch):
+    from minimax_code import app
+
+    selected = {"client": SimpleNamespace(default_model="first", mock=True, provider_id="p1"),
+                "effort": "low"}
+    monkeypatch.setattr(app, "get_subagent_llm", lambda: selected["client"])
+    monkeypatch.setattr(app, "get_reasoning_effort_override", lambda: selected["effort"])
+    first = asyncio.create_task(send(native, content="first"))
+    await asyncio.wait_for(native.started.get(), 2)
+    selected.update(client=SimpleNamespace(default_model="queued", mock=True, provider_id="p2"), effort="high")
+    expected = selected["client"]
+    admitted = asyncio.Event()
+    service = get_run_service(native.server)
+    submit = service.submit
+
+    def observed_submit(*args):
+        job = submit(*args)
+        admitted.set()
+        return job
+
+    monkeypatch.setattr(service, "submit", observed_submit)
+    queued = asyncio.create_task(send(native, content="queued"))
+    await asyncio.wait_for(admitted.wait(), 2)
+    selected.update(client=SimpleNamespace(default_model="other", mock=True, provider_id="p3"), effort=None)
+    other = asyncio.create_task(send(native, "two", "other"))
+    assert await asyncio.wait_for(native.started.get(), 2) == ("two", "other")
+    native.release.set()
+    await asyncio.wait_for(asyncio.gather(first, queued, other), 3)
+    assert [core.config.model for core in native.cores] == ["first", "other", "queued"]
+    assert [core.config.reasoning_effort for core in native.cores] == ["low", None, "high"]
+    assert native.cores[-1].llm is expected
+    runs = await native.dao.list_runs(session_id="one")
+    row = next(row for row in runs if row["title"] == "queued")
+    assert row["metadata"]["model_snapshot"]["model"] == "queued"
+    assert row["metadata"]["model_snapshot"]["provider_id"] == "p2"

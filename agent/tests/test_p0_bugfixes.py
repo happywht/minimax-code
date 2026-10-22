@@ -481,8 +481,8 @@ async def test_send_message_reuses_subagent_llm(bind_test_sessions):
 
 
 @pytest.mark.asyncio
-async def test_send_message_falls_back_to_default_llm(bind_test_sessions):
-    """When get_subagent_llm() returns None, handler must create MiniMaxClient()."""
+async def test_send_message_refuses_uninitialized_model(bind_test_sessions):
+    """An unavailable runtime must not silently choose another provider."""
     from unittest.mock import MagicMock, patch
 
     bind_test_sessions("ses_fb")
@@ -527,9 +527,10 @@ async def test_send_message_falls_back_to_default_llm(bind_test_sessions):
                 ctx,
             )
 
-    assert ctx.error_value is None, f"unexpected error: {ctx.error_value}"
-    assert ctx.reply_value is not None
-    assert ctx.reply_value["session_id"] == "ses_fb"
+    assert ctx.error_value["code"] == -32003
+    assert "not initialized" in ctx.error_value["message"]
+    assert ctx.reply_value is None
+    mock_core.run.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -71,6 +71,16 @@ class RunEventsParams(BaseModel):
     limit: int = Field(default=100, ge=1, le=500)
 
 
+class NativeModelSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    engine: Literal["native"] = "native"
+    provider_id: str | None
+    model: str
+    protocol: str | None
+    reasoning_effort: str | None
+    context_window: int
+
+
 class RunEvent(_Base):
     id: str
     run_id: str

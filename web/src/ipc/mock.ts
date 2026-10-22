@@ -537,6 +537,9 @@ function mockHandle(
         id: runId,
         session_id: sid,
         mode: p.mode ?? "chat",
+        metadata: { model_snapshot: { engine: "native", model: mockModels[0].id,
+          provider_id: mockModels[0].provider_id ?? null, protocol: mockModels[0].protocol ?? null,
+          reasoning_effort: mockReasoningEffort, context_window: mockModels[0].context_window } },
         status: "running",
         title: String(p.content).slice(0, 32),
         assistant_message_id: mid,
@@ -597,7 +600,7 @@ function mockHandle(
               ...run,
               status: "completed" as const,
               completed_at: completedAt,
-              metadata: { iterations: 1, memory_count: 0 },
+              metadata: { ...run.metadata, iterations: 1, memory_count: 0 },
             };
             mockRuns.set(runId, { run: completedRun, steps: [completedStep, finalStep] });
             recordRunEvent(runId, "step_updated", { step: completedStep });

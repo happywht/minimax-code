@@ -47,7 +47,6 @@ from minimax_code.config import Config
 from minimax_code.ipc.builtins import handle_agent_send_message
 from minimax_code.ipc.client import IPCClient
 from minimax_code.ipc.server import IPCServer
-from minimax_code.models import default_model
 from minimax_code.storage.dao.model_prefs import ModelPrefsDAO
 from minimax_code.storage.dao.providers import ProviderDAO
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
@@ -327,9 +326,8 @@ async def test_send_message_mirrors_singleton_model_into_config() -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_message_without_singleton_falls_back_to_default() -> None:
-    """No singleton yet (fresh boot) → the bare fallback client's own
-    default model fills the config; the field is never blank."""
+async def test_send_message_without_initialized_runtime_refuses_execution() -> None:
+    """Failure to initialize cannot silently route to a default provider."""
     mock_core = MagicMock()
     setup = _send_message_patches(mock_core, llm=None)
 
@@ -341,6 +339,6 @@ async def test_send_message_without_singleton_falls_back_to_default() -> None:
             {"content": "hi", "session_id": setup["sid"]}, ctx
         )
 
-    assert ctx.error_value is None, ctx.error_value
-    config = setup["captured"]["config"]
-    assert config.model == default_model()
+    assert ctx.error_value["code"] == -32003
+    assert "not initialized" in ctx.error_value["message"]
+    assert not setup["captured"]

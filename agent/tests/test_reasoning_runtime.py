@@ -1,33 +1,7 @@
-"""R62 runtime wiring tests — stored reasoning_effort → AgentConfig.
+"""Stored reasoning effort is loaded onto a client and published atomically.
 
-The reasoning_effort axis (R53 type layer → R54 transport pipe → R55
-config→core→client → R56/R57 wire emission) had one missing seam: the
-*source* of the ``AgentConfig.reasoning_effort`` value. R61 persisted the
-override to ``model_prefs`` and added the ``model.set_reasoning_effort`` IPC,
-but the value sat in the DB unused — no construction site read it back. R62
-closes that gap with a process-wide singleton (``_REASONING_EFFORT_OVERRIDE``)
-loaded by ``_rebuild_subagent_llm`` and read by both agent construction sites
-(main agent in ``builtins.py`` + sub-agent in ``SubAgentRuntime.build``).
-
-These tests pin the R62 contract — ``stored value → singleton →
-AgentConfig.reasoning_effort`` — *not* the downstream pipe. The downstream
-half (AgentConfig → stream_chat → transport → wire) is already pinned by
-``test_reasoning_wiring.py`` (R54/R55/R56/R57); these tests prove the value
-actually *arrives* at the AgentConfig that ``test_reasoning_wiring`` takes as
-its starting point.
-
-Coverage map
-------------
-* Singleton getter/setter (``get_reasoning_effort_override`` /
-  ``_set_reasoning_effort_override``) — the cache itself.
-* ``_rebuild_subagent_llm`` forwards the stored effort into the singleton
-  (the async loader is the single write site; the sync ``_set_subagent_llm``
-  cannot await the DAO).
-* ``SubAgentRuntime`` construction + ``set_reasoning_effort`` hot-swap thread
-  the value into ``AgentConfig.reasoning_effort`` at ``build`` time.
-* ``_set_subagent_llm`` reads the singleton into the runtime singleton — the
-  timing invariant (rebuild writes *before* this setter reads).
-* End-to-end: DB → rebuild → set_subagent_llm → build → AgentConfig.
+The asynchronous loader must never change the currently selected effort before
+its provider/client is ready. Native admission captures that published selection.
 """
 
 from __future__ import annotations
@@ -62,10 +36,12 @@ def _reset_process_singletons():
     """
     import minimax_code.app as app
 
+    prev_llm = app.get_subagent_llm()
     prev_effort = app.get_reasoning_effort_override()
     prev_runtime = get_subagent_runtime()
     app._set_reasoning_effort_override(None)
     yield
+    app.set_subagent_llm(prev_llm)
     app._set_reasoning_effort_override(prev_effort)
     set_subagent_runtime(prev_runtime)
 
@@ -108,11 +84,7 @@ def test_effort_override_clears_on_none():
 # _rebuild_subagent_llm forwards the stored effort into the singleton
 # ---------------------------------------------------------------------------
 #
-# This is the heart of R62: the async loader (the only place that can await
-# the DAO) writes the singleton so the synchronous downstream sites can read
-# it. The effort is extracted *before* the provider lookup so the singleton
-# stays coherent with the DB even when the client build itself falls back to
-# defaults (provider missing → early return).
+# Loading is side-effect free; publish only after all configuration reads finish.
 
 
 @pytest.mark.asyncio
@@ -127,7 +99,7 @@ async def test_rebuild_loads_stored_effort_into_singleton(tmp_path: Path):
         dao = ModelPrefsDAO(db)
         await dao.set_reasoning_effort("xhigh")
         assert app.get_reasoning_effort_override() is None  # before rebuild
-        await app._rebuild_subagent_llm(db)
+        app._set_subagent_llm(await app._rebuild_subagent_llm(db))
         assert app.get_reasoning_effort_override() == "xhigh"
     finally:
         await db.close()
@@ -149,10 +121,10 @@ async def test_rebuild_clears_singleton_when_override_cleared(tmp_path: Path):
     try:
         dao = ModelPrefsDAO(db)
         await dao.set_reasoning_effort("high")
-        await app._rebuild_subagent_llm(db)
+        app._set_subagent_llm(await app._rebuild_subagent_llm(db))
         assert app.get_reasoning_effort_override() == "high"
         await dao.set_reasoning_effort(None)
-        await app._rebuild_subagent_llm(db)
+        app._set_subagent_llm(await app._rebuild_subagent_llm(db))
         assert app.get_reasoning_effort_override() is None
     finally:
         await db.close()
@@ -160,13 +132,7 @@ async def test_rebuild_clears_singleton_when_override_cleared(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_rebuild_effort_set_even_when_provider_missing(tmp_path: Path):
-    """The singleton is refreshed even on the provider-None early-return path.
-
-    A fresh temp DB has no provider row, so ``_rebuild_subagent_llm`` returns
-    early with a default client — but the effort extraction runs *before* the
-    provider lookup, so the singleton still reflects whatever ``get_current``
-    returned. This keeps the cache coherent with the DB in every code path.
-    """
+    """Unavailable selections retain their effort without becoming executable."""
     import minimax_code.app as app
 
     db = AsyncDatabase(make_temp_database_path(tmp_path))
@@ -175,8 +141,9 @@ async def test_rebuild_effort_set_even_when_provider_missing(tmp_path: Path):
     try:
         dao = ModelPrefsDAO(db)
         await dao.set_reasoning_effort("low")
-        # No provider seeded → early-return path; effort must still land.
-        await app._rebuild_subagent_llm(db)
+        await db.execute("DELETE FROM providers")
+        # Publish an unavailable selection, preserving its requested effort.
+        app._set_subagent_llm(await app._rebuild_subagent_llm(db))
         assert app.get_reasoning_effort_override() == "low"
     finally:
         await db.close()
@@ -274,7 +241,7 @@ async def test_end_to_end_stored_effort_reaches_subagent_config(tmp_path: Path):
     """Persisted override → runtime singleton → built AgentConfig.
 
     The boot-path ordering is exercised for real here: ``_rebuild_subagent_llm``
-    loads the effort into the singleton first, then ``_set_subagent_llm`` reads
+    loads the effort onto the client, then ``_set_subagent_llm`` publishes
     it into the freshly-built runtime. The DB stores what the handler
     canonicalised (R61); the runtime forwards it verbatim — no re-canonicalisation
     at this layer (the wire emit happens downstream via R56/R57).
@@ -287,7 +254,7 @@ async def test_end_to_end_stored_effort_reaches_subagent_config(tmp_path: Path):
     try:
         dao = ModelPrefsDAO(db)
         await dao.set_reasoning_effort("high")
-        # Boot path: rebuild writes the singleton, THEN set_subagent_llm reads it.
+        # Boot path: publish the completely loaded client and effort together.
         client = await app._rebuild_subagent_llm(db)
         app._set_subagent_llm(client)
         runtime = get_subagent_runtime()

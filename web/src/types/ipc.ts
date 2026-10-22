@@ -614,6 +614,15 @@ export type AgentRunStepStatus =
   | "failed"
   | "cancelled";
 
+export interface NativeModelSnapshot {
+  engine: "native";
+  provider_id: string | null;
+  model: string;
+  protocol: string | null;
+  reasoning_effort: string | null;
+  context_window: number;
+}
+
 export interface AgentRun {
   id: string;
   session_id: string;
@@ -626,7 +635,7 @@ export interface AgentRun {
   started_at?: string | null;
   completed_at?: string | null;
   error?: string | null;
-  metadata?: Record<string, unknown> | null;
+  metadata?: (Record<string, unknown> & { model_snapshot?: NativeModelSnapshot | null }) | null;
 }
 
 export interface AgentRunStep {

@@ -586,7 +586,7 @@ async def test_send_message_publishes_and_resets_root(
 
     ctx = _FakeContext(server=IPCServer(Config()))
     with (
-        patch("minimax_code.app.get_subagent_llm", return_value=None),
+        patch("minimax_code.app.get_subagent_llm", return_value=SimpleNamespace(default_model="test", mock=True)),
         patch("minimax_code.app.init_runtime", return_value=MagicMock()),
         patch("minimax_code.app.get_sessions_dao", return_value=fake_sessions),
         patch("minimax_code.app.get_db", return_value=_make_fake_db()),

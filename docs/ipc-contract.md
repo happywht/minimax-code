@@ -508,6 +508,16 @@ run history returns storage error -32004 before model or tool execution.
 This first service integration does not yet provide durable queued admission,
 request idempotency keys, or cross-engine/child-task lifecycle coordination.
 
+Native requests capture the client, model, reasoning effort and context limit at
+admission, before waiting for the session lease. Child tasks inherit that model
+runtime; a later global selection cannot change it. Run metadata includes
+`model_snapshot: {engine: "native", provider_id: string | null, model: string,
+protocol: string | null, reasoning_effort: string | null, context_window: number}`
+from creation through completion. It contains no credential or endpoint URL; old
+runs may omit it. Missing/disabled providers and empty endpoint configuration reject execution with
+-32003 instead of silently changing providers. This does not yet freeze workspace,
+permission rules or budgets, and the in-memory queue is not restart-durable.
+
 Request:
 ```json
 {

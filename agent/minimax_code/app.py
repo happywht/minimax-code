@@ -551,20 +551,7 @@ def set_subagent_llm(llm: Any) -> None:
     _SUBAGENT_LLM = llm
 
 
-# R62: process-wide reasoning-effort override singleton.
-#
-# The persisted effort (``model_prefs.reasoning_effort``, written by the
-# ``model.set_reasoning_effort`` IPC handler) is loaded once at boot by
-# :func:`_rebuild_subagent_llm` and cached here so *both* agent
-# construction sites — the main agent (:mod:`builtins`) and the sub-agent
-# runtime (:func:`_set_subagent_llm` → :class:`SubAgentRuntime`) — read a
-# single source without each reopening the DB. ``None`` means "no override;
-# use the model's own default effort" (the pre-R62 behaviour).
-#
-# The main-agent path is async (it can ``await`` the DAO directly); the
-# sub-agent ``build`` path is *synchronous* and cannot await, so it reads
-# this singleton instead — that asymmetry is the whole reason the singleton
-# exists rather than each site reading the DAO inline.
+# Published together with the client, after all asynchronous configuration reads.
 _REASONING_EFFORT_OVERRIDE: str | None = None
 
 
@@ -582,10 +569,10 @@ def get_reasoning_effort_override() -> str | None:
 
 
 def _set_reasoning_effort_override(effort: str | None) -> None:
-    """Internal setter used by :func:`_rebuild_subagent_llm`.
+    """Internal setter used while publishing a complete model selection.
 
     Public mutation happens only via ``model.set_reasoning_effort`` →
-    :func:`rebuild_subagent_llm` → :func:`_rebuild_subagent_llm` → here
+    :func:`rebuild_subagent_llm` → load client → :func:`_set_subagent_llm` → here
     (there is no separate IPC for the in-memory cache; the DB write in
     the handler is the source of truth, and this cache is a derived
     view refreshed on every rebuild).
@@ -605,18 +592,11 @@ def _set_subagent_llm(llm: Any) -> None:
     """
     global _SUBAGENT_LLM
     _SUBAGENT_LLM = llm
+    _set_reasoning_effort_override(getattr(llm, "reasoning_effort_override", _REASONING_EFFORT_OVERRIDE))
     try:
         from .orchestrator.subagent import SubAgentRuntime, set_subagent_runtime
 
-        # R62: thread the persisted reasoning-effort override into the
-        # sub-agent runtime so every built sub-agent inherits it. The
-        # singleton is loaded by ``_rebuild_subagent_llm`` (which runs
-        # *before* this setter in both the boot path
-        # ``_set_subagent_llm(await _rebuild_subagent_llm(db))`` and the
-        # rebuild path ``rebuild_subagent_llm``), so it is already current
-        # when we read it here — no DB call needed in this synchronous
-        # setter (which is the whole point: ``SubAgentRuntime.build`` is
-        # sync and cannot await the DAO itself).
+        # No await between publishing the client, effort and child runtime.
         set_subagent_runtime(
             SubAgentRuntime(
                 llm=llm, reasoning_effort=_REASONING_EFFORT_OVERRIDE
@@ -666,8 +646,8 @@ async def _rebuild_subagent_llm(db: Any) -> Any:
     protocol / base_url / api_key, and constructs a client ready for
     real API calls (or mock mode when no key is configured).
 
-    Falls back to ``MiniMaxClient()`` defaults on any error so the
-    agent always boots — even with a corrupt DB or missing provider.
+    Configuration failures produce an unavailable client. Boot remains usable,
+    but execution cannot silently fall back to another provider or model.
     """
     try:
         from . import secrets
@@ -680,40 +660,44 @@ async def _rebuild_subagent_llm(db: Any) -> Any:
         pref = await prefs_dao.get_current()
         model_id = pref.get("model_id", default_model()) if isinstance(pref, dict) else default_model()  # R52: was "MiniMax-M3" literal
         provider_id = pref.get("provider_id", "builtin-minimax") if isinstance(pref, dict) else "builtin-minimax"
-        # R62: cache the persisted reasoning-effort override into the
-        # process-wide singleton *before* returning, so the sub-agent
-        # runtime (built next by ``_set_subagent_llm`` from this client)
-        # and the main agent (``builtins.py``) both read the freshly-loaded
-        # value. Done here — in the async loader — because the synchronous
-        # ``_set_subagent_llm`` cannot await the DAO. Placed before the
-        # provider lookup so a missing provider (the early-return path
-        # below) still refreshes the cache from whatever ``get_current``
-        # returned, keeping the singleton coherent with the DB even when
-        # the client build itself falls back to defaults.
         effort = pref.get("reasoning_effort") if isinstance(pref, dict) else None
-        _set_reasoning_effort_override(effort)
 
         prov_dao = ProviderDAO(db)
         provider = await prov_dao.get(provider_id)
 
-        if provider is None:
-            logger.debug("provider %s not found; falling back to defaults", provider_id)
-            return MiniMaxClient()
+        if (provider is None or not provider.get("enabled", True)
+                or not isinstance(provider.get("base_url"), str)
+                or not provider["base_url"].strip()):
+            client = MiniMaxClient(api_key="", mock=True, model=model_id)
+            client.configuration_error = "Selected provider is missing, disabled, or has no endpoint"
+            client.reasoning_effort_override = effort
+            client.provider_id = provider_id
+            return client
 
         protocol = provider.get("protocol", "anthropic")
         base_url = provider.get("base_url", "")
         api_key = secrets.get_provider_key(provider_id) or ""
 
-        return MiniMaxClient(
+        client = MiniMaxClient(
             protocol=protocol,
-            api_key=api_key or None,
-            base_url=base_url or None,
+            api_key=api_key,
+            base_url=base_url,
             model=model_id,
         )
+        client.reasoning_effort_override = effort
+        client.provider_id = provider_id
+        return client
     except Exception:
-        logger.exception("rebuild_subagent_llm failed; falling back to defaults")
+        logger.exception("rebuild_subagent_llm failed; model runtime unavailable")
         from .agent.llm import MiniMaxClient
-        return MiniMaxClient()
+        client = MiniMaxClient(api_key="", mock=True)
+        client.configuration_error = "Model configuration could not be loaded"
+        client.reasoning_effort_override = None
+        client.provider_id = None
+        return client
+
+
+_MODEL_REBUILD_GENERATION = 0
 
 
 async def rebuild_subagent_llm() -> Any:
@@ -726,7 +710,14 @@ async def rebuild_subagent_llm() -> Any:
     db = get_db()
     if db is None:
         return
+    global _MODEL_REBUILD_GENERATION
+    _MODEL_REBUILD_GENERATION += 1
+    generation = _MODEL_REBUILD_GENERATION
     llm = await _rebuild_subagent_llm(db)
+    if generation != _MODEL_REBUILD_GENERATION:
+        # A newer change has already started; never publish a stale completion.
+        await llm.close()
+        return
     _set_subagent_llm(llm)
 
 

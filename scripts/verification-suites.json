@@ -15,6 +15,7 @@
     "tests/test_process_owner_lifetime.py",
     "tests/test_managed_paths.py",
     "tests/test_model_provider_routing.py",
+    "tests/test_model_snapshot.py",
     "tests/test_permissions.py",
     "tests/test_security.py",
     "tests/test_secrets.py",

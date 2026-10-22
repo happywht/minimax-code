@@ -42,6 +42,7 @@ import logging
 import os
 import uuid
 from collections.abc import Awaitable
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -358,6 +359,8 @@ class SubAgentRuntime:
         it inherits the parent (caller-supplied or global) registry
         in full.
         """
+        if isinstance(error := getattr(self._llm, "configuration_error", None), str) and error:
+            raise SubAgentConfigError(error)
         if not config.name or not isinstance(config.name, str):
             raise SubAgentConfigError(
                 f"name must be a non-empty string, got {config.name!r}"
@@ -371,7 +374,7 @@ class SubAgentRuntime:
         # orchestrator module to import.
         from ..agent.core import AgentConfig, AgentCore
         from ..agent.tools import get_default_registry
-        from ..models import context_window_for
+        from ..models import context_window_for, default_model
         from .resolution import FilteredToolRegistry, resolve_subagent_spec
 
         # R22: resolve the effective model + capability surface in one
@@ -381,7 +384,8 @@ class SubAgentRuntime:
         # the sub-agent inherits from.
         base_registry = registry or get_default_registry()
         spec = resolve_subagent_spec(
-            config, available_tool_names=base_registry.names()
+            config, available_tool_names=base_registry.names(),
+            parent_model=str(getattr(self._llm, "default_model", "") or default_model()),
         )
         if spec.is_restricted:
             # ALLOWLIST mode: wrap the base in a read-only view that
@@ -567,6 +571,17 @@ def make_session_id(prefix: str = "subagent") -> str:
 # or by saving/replacing the previous value.
 
 _SUBAGENT_RUNTIME: SubAgentRuntime | None = None
+_RUN_RUNTIME: ContextVar[SubAgentRuntime | None] = ContextVar("run_subagent_runtime", default=None)
+
+
+@contextmanager
+def subagent_runtime_scope(runtime: SubAgentRuntime):
+    """Children inherit the accepted parent client through task context."""
+    token = _RUN_RUNTIME.set(runtime)
+    try:
+        yield
+    finally:
+        _RUN_RUNTIME.reset(token)
 
 
 def get_subagent_runtime() -> SubAgentRuntime | None:
@@ -577,7 +592,7 @@ def get_subagent_runtime() -> SubAgentRuntime | None:
     Callers that need a runtime should fall back to constructing
     a default :class:`SubAgentRuntime` themselves.
     """
-    return _SUBAGENT_RUNTIME
+    return _RUN_RUNTIME.get() or _SUBAGENT_RUNTIME
 
 
 def set_subagent_runtime(runtime: SubAgentRuntime | None) -> None:

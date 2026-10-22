@@ -39,8 +39,16 @@ async def isolated_runtime(
     )
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
     monkeypatch.setenv("MINIMAX_CODE_DATA_DIR", str(tmp_path))
-    yield
+    # The integration fixture owns a complete runtime, including setup.
+    # A prior unit test may have injected a skills-only runtime.
+    await _clear_runtime()
+    try:
+        yield
+    finally:
+        await _clear_runtime()
 
+
+async def _clear_runtime():
     import minimax_code.app as app_module
     from minimax_code.app import (
         get_db,

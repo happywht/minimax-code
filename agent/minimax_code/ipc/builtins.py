@@ -18,6 +18,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from minimax_code import __version__
+from minimax_code.model_snapshot import ModelSnapshot
 from minimax_code.runs import RunJob, get_run_service
 
 from .protocol import LLM_ERROR
@@ -95,6 +96,7 @@ class _RunRecorder:
         assistant_message_id: str,
         mode: str = "chat",
         project_id: str | None = None,
+        model_snapshot: dict[str, Any] | None = None,
     ) -> None:
         self.dao = dao
         self.db = db
@@ -104,6 +106,7 @@ class _RunRecorder:
         self.assistant_message_id = assistant_message_id
         self.mode = mode
         self.project_id = project_id
+        self.model_snapshot = model_snapshot
         self.run_id = f"run_{uuid.uuid4().hex[:12]}"
         self._status_steps: dict[str, str] = {}
         self._tool_steps: dict[str, str] = {}
@@ -118,6 +121,7 @@ class _RunRecorder:
             status="running",
             title=self.title,
             assistant_message_id=self.assistant_message_id,
+            metadata={"model_snapshot": self.model_snapshot},
         )
         await self.emit("run.created", {"run": run})
         return run
@@ -264,6 +268,7 @@ class _RunRecorder:
             status="cancelled" if getattr(result, "cancelled", False) else "completed",
             assistant_message_id=self.assistant_message_id,
             metadata={
+                "model_snapshot": self.model_snapshot,
                 "iterations": getattr(result, "iterations", None),
                 "usage": getattr(result, "usage", None),
                 "truncated": getattr(result, "truncated", False),
@@ -452,11 +457,29 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     session_id = str(request.get("session_id") or f"ses_{uuid.uuid4().hex[:8]}")
     request["session_id"] = session_id
     service = get_run_service(ctx.server)
+    try:
+        from ..app import get_db, init_runtime
+
+        await init_runtime()
+        if get_db() is None:
+            raise RuntimeError("storage unavailable: database not initialized")
+    except Exception as exc:
+        await ctx.reply_error(-32004, f"Cannot start task: {exc}")
+        return
+    try:
+        model_snapshot = ModelSnapshot.capture()
+    except Exception as exc:
+        await ctx.reply_error(LLM_ERROR, f"Cannot start task: {exc}")
+        return
 
     async def execute(job: RunJob) -> None:
         try:
-            with execution_scope(ExecutionPolicy(read_only=mode == "plan")):
-                await _handle_agent_send_message(request, ctx, job=job)
+            from ..orchestrator.subagent import SubAgentRuntime, subagent_runtime_scope
+
+            runtime = SubAgentRuntime(llm=model_snapshot.client,
+                                      reasoning_effort=model_snapshot.reasoning_effort)
+            with execution_scope(ExecutionPolicy(read_only=mode == "plan")), subagent_runtime_scope(runtime):
+                await _handle_agent_send_message(request, ctx, job=job, model_snapshot=model_snapshot)
         except BaseException as exc:
             if job.record is not None:
                 # The core/tool cancellation has unwound before recording a terminal state.
@@ -499,7 +522,9 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
                          **({"run_id": job.record.run_id} if job.record is not None else {})})
 
 
-async def _handle_agent_send_message(params: Any, ctx: Context, *, job: RunJob) -> None:
+async def _handle_agent_send_message(
+    params: Any, ctx: Context, *, job: RunJob, model_snapshot: ModelSnapshot,
+) -> None:
     """End-to-end chat handler for ``agent.send_message``.
 
     This is the canonical user-message entry point. The handler:
@@ -573,7 +598,7 @@ async def _handle_agent_send_message(params: Any, ctx: Context, *, job: RunJob) 
 
     # Lazy imports — avoid pulling the agent core / storage layer in
     # for handlers that only need a ping / status response.
-    from ..agent import AgentConfig, AgentCore, MiniMaxClient
+    from ..agent import AgentConfig, AgentCore
     from ..agent.tools import ToolRegistry, get_default_registry
     from ..agent.tools.codebase_find_symbol import FindSymbolCodebaseTool
     from ..agent.tools.codebase_navigate import NavigateCodebaseTool
@@ -586,7 +611,6 @@ async def _handle_agent_send_message(params: Any, ctx: Context, *, job: RunJob) 
         init_runtime,
     )
     from ..codebase import CodebaseRetriever
-    from ..models import context_window_for, default_model
     from ..storage.dao.messages import MessagesDAO
     from ..workspace_ctx import current_root
 
@@ -731,16 +755,8 @@ async def _handle_agent_send_message(params: Any, ctx: Context, *, job: RunJob) 
             # is already seeing. Log and continue.
             logger.exception("persist_message(%s, role=%s) failed", sid, msg.get("role"))
 
-    # 3. Reuse the process-wide LLM client singleton.  It is built
-    #    once at process boot (via ``_rebuild_subagent_llm`` in
-    #    ``app.py``) and kept in sync when the user changes model or
-    #    provider.  Creating a new ``MiniMaxClient`` per request would
-    #    open a fresh httpx connection pool and re-read the DB every
-    #    time — wasteful and slow.
-    from ..app import get_subagent_llm
-    llm = get_subagent_llm()
-    if llm is None:
-        llm = MiniMaxClient()
+    # The accepted request keeps this client even while waiting for its session.
+    llm = model_snapshot.client
 
     # 3a. Resolve the permission store (lazily built by the
     #     ``permission.*`` handlers) and create a per-request
@@ -798,24 +814,6 @@ async def _handle_agent_send_message(params: Any, ctx: Context, *, job: RunJob) 
     except Exception:
         logger.debug("telemetry engine unavailable; running without telemetry")
 
-    # R62: read the persisted reasoning-effort override so the main agent's
-    # AgentConfig threads it into every LLM call (R55 wired config →
-    # ``stream_chat`` → transport → wire). The override lives in the
-    # process-wide singleton loaded by ``_rebuild_subagent_llm`` at boot
-    # (and refreshed after every ``model.set_reasoning_effort`` /
-    # ``model.set_current`` via ``rebuild_subagent_llm``). Symmetric to the
-    # sub-agent path, which reads the same singleton in
-    # ``SubAgentRuntime.build``. None-safe and fail-open: a missing override
-    # (or a fresh boot before prefs loaded) leaves ``reasoning_effort=None``
-    # → the model's own default effort (the pre-R62 behaviour).
-    main_reasoning_effort: str | None = None
-    try:
-        from ..app import get_reasoning_effort_override
-
-        main_reasoning_effort = get_reasoning_effort_override()
-    except Exception:
-        logger.debug("reasoning effort override unavailable; using model default")
-
     # Clone the default tool registry and inject the codebase RAG tool
     # when a workspace indexer is available (v0.11.0 Milestone 2).
     # v1.3.0: the indexer follows the run's workspace root (published by
@@ -855,22 +853,9 @@ async def _handle_agent_send_message(params: Any, ctx: Context, *, job: RunJob) 
                 project_id=project_id,
             ),
             stall_timeout=stall_timeout,
-            reasoning_effort=main_reasoning_effort,
-            # v1.1.0: feed the catalog's real context window so the
-            # compaction gate in the run loop actually opens. Resolved
-            # from the LLM singleton's current model (kept in sync by
-            # ``rebuild_subagent_llm`` on every model.set_current).
-            context_window=context_window_for(getattr(llm, "default_model", None)),
-            # v1.6.3 field report: mirror the LLM singleton's current
-            # model into the config. The run loop stamps ``config.model``
-            # on every stream call (core.py: ``model=self.config.model``);
-            # leaving it at the dataclass default ("MiniMax-M3") sent the
-            # MiniMax model id to whatever provider the singleton pointed
-            # at — a third-party provider answered 400 "modelCode not
-            # found" no matter which model the user selected. Same source
-            # as the context_window lookup above, so the pair stays in
-            # sync across every rebuild_subagent_llm().
-            model=str(getattr(llm, "default_model", "") or default_model()),
+            reasoning_effort=model_snapshot.reasoning_effort,
+            context_window=model_snapshot.context_window,
+            model=model_snapshot.model,
             # v1.1.0: auto-continue (goal/loop minimal form) — the loop
             # itself lives in _run_with_auto_continue below.
             auto_continue=auto_continue,
@@ -905,6 +890,7 @@ async def _handle_agent_send_message(params: Any, ctx: Context, *, job: RunJob) 
         assistant_message_id=message_id,
         project_id=project_id,
         mode=params.get("mode", "chat"),
+        model_snapshot=model_snapshot.metadata(),
     )
     job.record = recorder
     try:
