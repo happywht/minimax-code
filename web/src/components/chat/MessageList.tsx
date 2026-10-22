@@ -12,7 +12,7 @@
  * text match. When a query is active only matching messages are shown;
  * an empty query shows all.
  */
-import { lazy, Suspense, useLayoutEffect, useMemo } from "react";
+import { lazy, Suspense, useMemo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronDown, Sparkles } from "lucide-react";
 import { useChat, useSessionStore, useSubAgentStore } from "../../stores";
@@ -56,7 +56,6 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
   );
   const {
     containerRef: scrollRef,
-    isFollowing,
     showNewContentButton,
     newContentCount,
     scrollToBottom,
@@ -148,10 +147,8 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
     getItemKey: (index) => rows[index]?.key ?? index,
   });
 
-  useLayoutEffect(() => {
-    if (!isFollowing || rows.length === 0) return;
-    rowVirtualizer.scrollToIndex(rows.length - 1, { align: "end" });
-  }, [isFollowing, rowVirtualizer, rows.length, scrollContentKey]);
+  // useSmartScroll owns following, including virtual-content resize updates.
+  // A second scrollToIndex reconciliation can outlive an upward user gesture.
 
   return (
     <div className="relative min-h-0 flex-1 overflow-hidden">

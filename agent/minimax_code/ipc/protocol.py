@@ -55,6 +55,34 @@ class PreviewAccessResult(_Base):
     expires_in: int = Field(ge=0, le=900)
 
 
+class RunEventsParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    run_id: str = Field(min_length=1)
+    after_seq: int = Field(default=0, ge=0, le=2**53 - 1)
+    limit: int = Field(default=100, ge=1, le=500)
+
+
+class RunEvent(_Base):
+    id: str
+    run_id: str
+    seq: int = Field(ge=1)
+    type: Literal["created", "status", "step_created", "step_updated", "recovered"]
+    created_at: str
+    data: dict[str, Any]
+
+
+class RunEventsResult(_Base):
+    events: list[RunEvent]
+    next_seq: int = Field(ge=0)
+    has_more: bool
+
+
+class RunSnapshotResult(_Base):
+    run: dict[str, Any]
+    steps: list[dict[str, Any]]
+    cursor: int = Field(ge=0)
+
+
 # ---- Error object ---------------------------------------------------------
 
 

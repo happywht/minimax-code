@@ -245,6 +245,33 @@ describe("MessageList", () => {
     expect(screen.queryByTestId("scroll-to-bottom-btn")).not.toBeInTheDocument();
   });
 
+  it("does not resume from a queued bottom event after the user wheels up", async () => {
+    useChat.setState({ messages: [
+      { id: "u1", role: "user", text: "hello", streaming: false, created_at: 1 },
+      { id: "a1", role: "assistant", text: "reply", streaming: true, created_at: 2 },
+    ] });
+    render(<MessageList />);
+    await flushFrames(3);
+    const list = screen.getByTestId("message-list");
+    Object.defineProperty(list, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(list, "clientHeight", { configurable: true, value: 400 });
+    Object.defineProperty(list, "scrollTop", { configurable: true, writable: true, value: 600 });
+    const scrollTo = vi.fn();
+    Object.defineProperty(list, "scrollTo", { configurable: true, value: scrollTo });
+    fireEvent.wheel(list, { deltaY: -200 });
+    // Native scrolling has not applied the wheel delta yet. This event must
+    // not undo the user's pause simply because it reports the previous bottom.
+    fireEvent.scroll(list);
+    act(() => useChat.setState((state) => ({ messages: state.messages.map((message) =>
+      message.id === "a1" ? { ...message, text: "reply grows after wheel" } : message) })));
+    await flushFrames(3);
+    expect(screen.getByTestId("scroll-to-bottom-btn")).toBeInTheDocument();
+    expect(scrollTo).not.toHaveBeenCalled();
+    fireEvent.wheel(list, { deltaY: 200 });
+    fireEvent.scroll(list);
+    expect(screen.queryByTestId("scroll-to-bottom-btn")).not.toBeInTheDocument();
+  });
+
   it("virtualizes the visible message window for long conversations", async () => {
     useChat.setState({
       messages: Array.from({ length: 80 }, (_, index) => ({

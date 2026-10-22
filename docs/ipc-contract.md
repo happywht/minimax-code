@@ -207,7 +207,8 @@ on the next `readline() == ""`.
 | `agent.continue_run`       | req/res   | v1.1.0 Resume the latest budget-truncated run: marks it `continued` in metadata, then re-enters `agent.send_message` with a fixed continuation prompt (params: `session_id`; errors `-32602` on bad params, `{"ok":false}` when storage is unavailable or the latest run is not truncated). |
 | `agent.answer_user`        | req/res   | v1.1.1 Answer a pending `ask_user` request (params: `request_id`, `answers` — a non-empty array position-aligned with the questions; each entry is a label string or a list of label strings). Resolves the future the suspended tool call awaits; `{"ok":false}` on unknown/expired ids. |
 | `run.list`                 | req/res   | List persisted agent runs for a session. v1.4.0 accepts an optional `mode` filter (`chat` / `plan` / `execute` / `team` / `subagent`) — `mode: "subagent"` returns runs spawned via the `spawn_subagent` tool path. |
-| `run.steps`                | req/res   | Load one run with its ordered timeline steps.      |
+| `run.steps`                | req/res   | Load one run, ordered steps and a consistent durable `cursor`. |
+| `run.events`               | req/res   | Read persisted changes after a run-scoped sequence, independent of WS replay. |
 | `patch.preview`            | req/res   | Return structured file/hunk preview for a git diff scope. **`project_id?`** |
 | `patch.apply_hunk`         | req/res   | Stage one working-tree hunk after validating the current diff. **`project_id?`** |
 | `patch.revert_hunk`        | req/res   | Discard one working hunk or unstage one staged hunk. **`project_id?`** |
@@ -296,6 +297,37 @@ only prunes legacy overlays. A process restart does not silently reclassify a
 
 See [child-workspaces.md](child-workspaces.md) for limits and operational details.
 No RPC is added or removed, and no SQLite migration is required.
+
+### Durable run history (M2 foundation)
+
+`run.steps({run_id})` now returns `{run, steps, cursor}` from one database
+transaction. `cursor` is the highest persisted sequence for that run; an older
+run without journal entries has cursor 0. Existing `run.list` callers are unchanged.
+
+`run.events({run_id, after_seq?: 0, limit?: 100})` returns
+`{events, next_seq, has_more}`. `after_seq` is a non-negative integer (at most
+JavaScript's safe integer limit); `limit` is 1–500. Unknown runs, extra keys,
+invalid types and cursors ahead of the run return `-32602`. A cursor ahead of the
+database means the caller must reload the snapshot, for example after restoring
+an older backup. Always take a new snapshot when reconnecting to a different
+service or after an import; cursors are scoped to this execution database and run.
+
+Each event has `{id, run_id, seq, type, created_at, data}`. IDs are persistent
+opaque strings, sequences increase within one run, and times are UTC ISO strings.
+Types are `created`, `status`, `step_created`, `step_updated`, and `recovered`.
+The `data` object's `run` and/or `step` fields contain the row at that change,
+not its later state.
+Clients can take a snapshot, then page events strictly after its cursor until
+`has_more` is false; repeated reads have stable IDs and sequence numbers.
+
+Run/step changes and their events commit in the same transaction before existing
+WS notifications. Event failure rolls back the state change. This journal covers
+existing DAO-backed chat, team and tool-path sub-agent timelines, not streamed
+text deltas, permission prompts or every external side effect. The browser's full
+reconnect integration and RunService admission/state machine remain follow-up work.
+Boot recovery records unfinished steps as failed with their previous arguments
+intact and a `requires_review` recovery marker; it does not retry tools. The legacy
+run status remains `failed` until the later RunService state migration.
 
 ### Preview HTTP access (M1)
 

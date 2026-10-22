@@ -161,6 +161,11 @@ async def restore_database(db: Any, envelope: dict[str, Any]) -> dict[str, Any]:
     skipped: list[str] = []
     try:
         async with db.transaction() as conn:
+            # Older exports have timeline state but no durable event history.
+            # Do not attach this installation's previous events to imported runs.
+            if ("run_events" in columns_by_table and "run_events" not in envelope_tables
+                    and {"agent_runs", "agent_run_steps"} & envelope_tables.keys()):
+                await conn.execute("DELETE FROM run_events")
             for table in sorted(envelope_tables):
                 if table not in columns_by_table:
                     # Table no longer exists in this install (schema drift).

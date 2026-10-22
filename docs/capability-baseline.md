@@ -1,6 +1,6 @@
 # 当前能力基线
 
-核对时间：2026-10-22。起点 `78962fb`，根 package.json、web/package.json、agent/pyproject.toml 的包版本均为 1.6.0，之后有未发布修复。当前注册 **170 个 RPC，33 个带点号命名空间，加 3 个无点号方法**。统计来自 `register_app_handlers`；AGENTS 表与 IPC 文档受测试守护。
+核对起点：2026-10-22 的 `78962fb`。根 package.json、web/package.json、agent/pyproject.toml 的包版本均为 1.6.0，之后有未发布修复。加入 M2 事件读取接口后，当前注册 **171 个 RPC，33 个带点号命名空间，加 3 个无点号方法**。统计来自 `register_app_handlers`；AGENTS 表与 IPC 文档受测试守护。
 
 成熟度：**功能覆盖较广的个人开发预览版**。不使用单一完成百分比。以下“生产入口已接入”仅指真实启动路径能够调用，不代表无人值守、真实模型质量或全部边界已验收。
 

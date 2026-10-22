@@ -166,3 +166,40 @@ Linux 目前仍是显式取消/超时的进程组回收，服务骤停后的生�
 
 限制与回退见 [child-workspaces.md](child-workspaces.md)。删除、文件模式、精确恢复、
 工作副本清理 UI、重启后 running 状态核对仍待完成；这批不是 M1 整体验收完成。
+
+### M2 第一批：持久运行事件
+
+迁移 030 增加 `run_events`，保留既有运行及步骤。公共 DAO 将状态、步骤与对应事件
+放入同一事务，提交后沿用现有通知；并发步骤的 ordinal 同时在事务内分配。
+`run.steps` 增加一致快照游标，`run.events` 提供每 run 有界分页。Python/TypeScript、
+typed IPC、mock、契约与注册表统计同步更新为 171 个方法。
+
+启动恢复现在原子写入失败状态、未结束步骤和待核对标记，保留工具参数，不重放写操作。
+旧版本导入若不带事件表，会清空本地旧事件，防止把旧记录挂到导入后的运行上。
+目前仍兼容 `failed` 状态；`interrupted`、统一 RunService、浏览器自动补齐与子 Agent
+面板恢复尚待后续接入，不能将这一批视为 M2 完成。
+
+故障注入和相关集成回归 **127 项通过**，前端 IPC 与时间线 **28 项通过**；覆盖事件写入
+失败时回滚、取消中途写入、并发序号、漏通知后读取、数据库重开、崩溃恢复幂等、迁移
+保全及导入导出。证据：`.verification/m2-run-events-integration.log`、
+`.verification/m2-run-events-web.log`。本批引入数据库迁移，回退应用需同时恢复升级前
+数据库备份；不提供反向迁移。
+
+首次完整基线在文档字段名被误识别为 RPC 的守护测试处失败，已改正文档表述。
+后续快照 `ab054f7b26541` 的 lint、构建、758 前端、563 核心后端与 35 回放通过，
+跨栈 23 通过、1 失败：用户向上滚轮后仍可能跳回底部。定位为队列中的旧底部滚动
+事件重新开启跟随，以及虚拟列表和滚动 Hook 同时驱动定位。现在只由 Hook 跟随，
+暂停后须新的向下输入或明确点击才能恢复；新增旧事件竞态回归。组件 **10 项通过**，
+真实浏览器聊天回归连续三轮 **12 项通过**（`.verification/m2-scroll-race-web.log`、
+`.verification/m2-scroll-race-browser.log`）。完整基线及全量后端结果待下项登记。
+
+等待回归期间只读核对了本机 Codex CLI 0.156.1，并将其稳定协议 Schema 导出至
+`.verification/codex-app-server-0.156.1/`，关键文件哈希及映射备注记录在
+`.verification/codex-adapter-protocol-notes.json`。官方文档确认应使用对应 CLI 版本生成
+[App Server 协议](https://learn.chatgpt.com/docs/app-server)。未启动模型调用，M4 未接入。
+
+本批最终源码快照 `962da55d3bc1` 的完整基线通过：lint、构建、**759 前端、563 核心
+后端、35 协议回放、24 跨栈**（`.verification/2026-10-22T18-38-44-350Z-baseline/`）。
+同快照全量后端 **10716 通过、16 跳过、6 警告**
+（`.verification/2026-10-22T18-43-22-922Z-full/`）；警告包含旧 mock 的未等待协程，
+后续需清理。上述证据对应 Windows，不替代 Linux 验证或真实模型评测。

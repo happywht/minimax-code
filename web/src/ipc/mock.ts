@@ -133,15 +133,8 @@ export function mockRequest<T>(
   const id =
     (params as { __id?: JsonRpcId } | undefined)?.__id ??
     `mock-${Math.random().toString(36).slice(2)}`;
-  return new Promise<T>((resolve) => {
-    // Resolve on the next microtask so the caller's `await` always
-    // gets a turn to settle (avoids the "test timed out" issue when
-    // the caller is also driving setTimeout / fake timers).
-    Promise.resolve().then(() => {
-      const result = mockHandle(method, params, client, id);
-      resolve(result as T);
-    });
-  });
+  // Propagate validation failures instead of leaving the outer promise pending.
+  return Promise.resolve().then(() => mockHandle(method, params, client, id) as T);
 }
 
 export function mockNotify(method: string, params: unknown, client: IPCClient): void {
@@ -161,6 +154,19 @@ const mockPermissionRules: BackendPermissionRule[] = [];
 // before any import) so the Settings Data tab round-trips in browser-only
 // mode. data.backup has no filesystem here — it reports a fake snapshot.
 let mockDataEnvelope: DataExportEnvelope | null = null;
+const mockRunEvents = new Map<string, import("../types/ipc").RunEvent[]>();
+
+function recordRunEvent(
+  runId: string,
+  type: import("../types/ipc").RunEvent["type"],
+  data: import("../types/ipc").RunEvent["data"],
+): void {
+  const events = mockRunEvents.get(runId) ?? [];
+  events.push({ id: `evt_${runId}_${events.length + 1}`, run_id: runId,
+    seq: events.length + 1, type, created_at: new Date().toISOString(),
+    data: structuredClone(data) });
+  mockRunEvents.set(runId, events);
+}
 
 const MOCK_DEFAULT_ENVELOPE: DataExportEnvelope = {
   format: "minimax-code-export",
@@ -494,10 +500,27 @@ function mockHandle(
     case "run.steps": {
       const runId = (params as { run_id: string }).run_id;
       const entry = mockRuns.get(runId);
+      if (!entry) throw new Error("unknown run_id");
       return {
-        run: entry?.run ?? null,
-        steps: entry?.steps ?? [],
+        run: entry.run,
+        steps: entry.steps,
+        cursor: mockRunEvents.get(runId)?.length ?? 0,
       };
+    }
+
+    case "run.events": {
+      const p = params as { run_id: string; after_seq?: number; limit?: number };
+      if (!p || !mockRuns.has(p.run_id)) throw new Error("unknown run_id");
+      const after = p.after_seq ?? 0;
+      const limit = p.limit ?? 100;
+      const events = mockRunEvents.get(p.run_id) ?? [];
+      if (!Number.isSafeInteger(after) || after < 0 || after > events.length ||
+          !Number.isInteger(limit) || limit < 1 || limit > 500) {
+        throw new Error("invalid run.events cursor or limit");
+      }
+      const page = events.slice(after, after + limit);
+      const next = page.at(-1)?.seq ?? after;
+      return { events: structuredClone(page), next_seq: next, has_more: next < events.length };
     }
 
     case "agent.send_message": {
@@ -533,6 +556,8 @@ function mockHandle(
         ordinal: 1,
       };
       mockRuns.set(runId, { run, steps: [thinkingStep] });
+      recordRunEvent(runId, "created", { run });
+      recordRunEvent(runId, "step_created", { step: thinkingStep });
       setTimeout(() => client._emit(StreamEvent.RunCreated, { run }), 0);
       setTimeout(() => client._emit(StreamEvent.RunStepStarted, { run_id: runId, step: thinkingStep }), 8);
       const reply = `(mock reply) Received: ${p.content}`;
@@ -575,6 +600,9 @@ function mockHandle(
               metadata: { iterations: 1, memory_count: 0 },
             };
             mockRuns.set(runId, { run: completedRun, steps: [completedStep, finalStep] });
+            recordRunEvent(runId, "step_updated", { step: completedStep });
+            recordRunEvent(runId, "step_created", { step: finalStep });
+            recordRunEvent(runId, "status", { run: completedRun });
             client._emit(StreamEvent.RunStepCompleted, { run_id: runId, step: completedStep });
             client._emit(StreamEvent.RunStepCompleted, { run_id: runId, step: finalStep });
             client._emit(StreamEvent.RunCompleted, { run: completedRun });

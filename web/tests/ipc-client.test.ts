@@ -78,6 +78,16 @@ describe("IPC mock backend", () => {
 
     const detail = await t.getRunSteps(sent.run_id as string);
     expect(detail.steps.map((s) => s.kind)).toContain("final");
+    expect(detail.cursor).toBe(5);
+    const first = await t.getRunEvents(sent.run_id as string, { limit: 2 });
+    expect(first.events.map((event) => event.seq)).toEqual([1, 2]);
+    expect(first.has_more).toBe(true);
+    const rest = await t.getRunEvents(sent.run_id as string, { after_seq: first.next_seq });
+    expect(rest.events.at(-1)?.data.run?.status).toBe("completed");
+    expect(rest.has_more).toBe(false);
+    await expect(t.getRunEvents(sent.run_id as string, { after_seq: 999 }))
+      .rejects.toThrow("invalid run.events");
+    await expect(t.getRunSteps("missing-run")).rejects.toThrow("unknown run_id");
   });
 
   it("dispatches event envelopes by event name", () => {

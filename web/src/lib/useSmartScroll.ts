@@ -21,11 +21,13 @@ export function useSmartScroll<T extends HTMLElement = HTMLDivElement>({
   const followingRef = useRef(true);
   const frameRef = useRef<number | null>(null);
   const pointerActiveRef = useRef(false);
+  const resumeIntentRef = useRef(false);
   const previousKeyRef = useRef<unknown>(contentKey);
   const [isFollowing, setIsFollowing] = useState(true);
   const [newContentCount, setNewContentCount] = useState(0);
 
   const pauseFollowing = useCallback(() => {
+    resumeIntentRef.current = false;
     followingRef.current = false;
     setIsFollowing(false);
   }, []);
@@ -36,7 +38,12 @@ export function useSmartScroll<T extends HTMLElement = HTMLDivElement>({
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
     // Virtual row measurements and scroll anchoring also dispatch scroll.
     // Leaving the bottom disables follow only during an actual user gesture.
-    const next = distance <= thresholdPx || (followingRef.current && !pointerActiveRef.current);
+    // A queued scroll event can still report the old bottom after an upward
+    // wheel gesture. Only new downward input (or a scrollbar drag) may resume.
+    const nearBottom = distance <= thresholdPx;
+    const next = followingRef.current
+      ? nearBottom || !pointerActiveRef.current
+      : nearBottom && (resumeIntentRef.current || pointerActiveRef.current);
     followingRef.current = next;
     setIsFollowing(next);
     if (next) setNewContentCount(0);
@@ -52,6 +59,7 @@ export function useSmartScroll<T extends HTMLElement = HTMLDivElement>({
       el.scrollTop = el.scrollHeight;
     }
     followingRef.current = true;
+    resumeIntentRef.current = false;
     setIsFollowing(true);
     setNewContentCount(0);
   }, []);
@@ -64,10 +72,13 @@ export function useSmartScroll<T extends HTMLElement = HTMLDivElement>({
     };
     const onWheel = (event: WheelEvent) => {
       if (event.deltaY < 0) pauseFollowing();
+      else if (event.deltaY > 0) resumeIntentRef.current = true;
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) {
         pauseFollowing();
+      } else if (["ArrowDown", "PageDown", "End", " "].includes(event.key)) {
+        resumeIntentRef.current = true;
       }
     };
     const onPointerDown = () => { pointerActiveRef.current = true; };
@@ -77,6 +88,7 @@ export function useSmartScroll<T extends HTMLElement = HTMLDivElement>({
     const onTouchMove = (event: TouchEvent) => {
       const nextY = event.touches[0]?.clientY;
       if (touchY != null && nextY != null && nextY > touchY) pauseFollowing();
+      else if (touchY != null && nextY != null && nextY < touchY) resumeIntentRef.current = true;
       touchY = nextY ?? null;
     };
     el.addEventListener("scroll", onScroll, { passive: true });

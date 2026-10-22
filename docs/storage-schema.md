@@ -352,7 +352,28 @@ The async wrapper holds an `asyncio.Lock` and runs every query through `aiosqlit
 * **No schema diff / migration generator.** Migrations are hand-written. Tools like `alembic` or `sqlx` would be a Phase 3 polish item.
 * **`platformdirs` is hard-coded to `appname='MiniMaxCode'`, `appauthor=False`, `roaming=True`.** If you change the product name, update both `db.py` and the test that asserts the path.
 
-## 7. See also
+## 7. Schema 030: durable run events
+
+`run_events` adds `id TEXT PRIMARY KEY`, `run_id` referencing `agent_runs` with
+`ON DELETE CASCADE`, positive integer `seq`, `type`, UTC `created_at`, and JSON
+`data`. A unique `(run_id, seq)` index supports ordered cursor reads. The migration
+adds a table without rebuilding runs or steps; prior actions are not backfilled
+as invented events. Existing snapshots therefore start at cursor 0 until changed.
+
+`AgentRunsDAO` writes each new run, status or step together with its event in one
+transaction. Concurrent step ordinals and event sequences are allocated under the
+database write lock. Recovery closes unfinished steps and appends its review marker
+in that same transaction. `run.steps` reads a consistent snapshot and cursor;
+`run.events` reads bounded pages. Raw SQL maintenance is outside this journal.
+
+JSON export/import includes the new table. Importing legacy run/step tables without
+an event table clears the previous event history in the import transaction, so
+stale events cannot describe replacement rows. Clients must reload snapshots after
+imports. To roll back an application upgrade, restore the corresponding pre-upgrade
+database backup; reverse migrations are not supplied. Retention limits and complete
+RunService recovery are still pending.
+
+## 8. See also
 
 * `agent/minimax_code/storage/db.py` — connection wrappers
 * `agent/minimax_code/storage/migrations/001_initial.py` — the initial schema

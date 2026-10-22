@@ -60,6 +60,7 @@ import type {
   RunnerSandboxMode,
   RunnerStartResult,
   RunStepsResult,
+  RunEventsResult,
   RuntimeRecoveryResult,
   ScheduledJob,
   SecretStatus,
@@ -201,6 +202,7 @@ export interface TypedIPC {
 
   listRuns(opts?: { session_id?: string; status?: string; limit?: number; offset?: number }): Promise<ListRunsResult>;
   getRunSteps(runId: string): Promise<RunStepsResult>;
+  getRunEvents(runId: string, opts?: { after_seq?: number; limit?: number }): Promise<RunEventsResult>;
 
   // agent
   sendMessage(opts: import("../types/ipc").SendMessageParams & { attachments?: unknown }): Promise<SendMessageResult>;
@@ -649,6 +651,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<ListRunsResult>("run.list", opts ?? {}),
     getRunSteps: (runId) =>
       client.request<RunStepsResult>("run.steps", { run_id: runId }),
+    getRunEvents: (runId, opts) =>
+      client.request<RunEventsResult>("run.events", { run_id: runId, ...opts }),
 
     sendMessage: (opts) =>
       client.request<SendMessageResult>("agent.send_message", opts),

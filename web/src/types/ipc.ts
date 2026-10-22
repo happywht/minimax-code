@@ -617,7 +617,7 @@ export type AgentRunStepStatus =
 export interface AgentRun {
   id: string;
   session_id: string;
-  mode: "chat" | "plan" | "execute" | "team";
+  mode: "chat" | "plan" | "execute" | "team" | "subagent";
   status: AgentRunStatus;
   title: string;
   user_message_id?: string | null;
@@ -668,6 +668,22 @@ export interface ListRunsResult {
 export interface RunStepsResult {
   run: AgentRun;
   steps: AgentRunStep[];
+  cursor: number;
+}
+
+export interface RunEvent {
+  id: string;
+  run_id: string;
+  seq: number;
+  type: "created" | "status" | "step_created" | "step_updated" | "recovered";
+  created_at: string;
+  data: { run?: AgentRun; step?: AgentRunStep };
+}
+
+export interface RunEventsResult {
+  events: RunEvent[];
+  next_seq: number;
+  has_more: boolean;
 }
 
 /* ─────────────────────── Method-result shapes ─────────────────────── */

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import uuid
 from typing import Any
 
@@ -25,8 +24,6 @@ _VALID_STEP_KIND = frozenset(
 _VALID_STEP_STATUS = frozenset({"pending", "running", "completed", "failed", "cancelled"})
 _RUN_SORTABLE = ("created_at", "completed_at", "status", "id")
 _STEP_SORTABLE = ("ordinal", "started_at", "completed_at", "id")
-
-logger = logging.getLogger(__name__)
 
 
 class AgentRunsDAO:
@@ -72,8 +69,9 @@ class AgentRunsDAO:
                     dumps_json(metadata),
                 ),
             )
-        row = await self._db.fetchone("SELECT * FROM agent_runs WHERE id = ?", (run_id,))
-        return _hydrate_run(row)
+            run = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
+            await _append_event(conn, run_id, "created", {"run": run})
+        return run
 
     async def get_run(self, run_id: str) -> dict[str, Any] | None:
         row = await self._db.fetchone("SELECT * FROM agent_runs WHERE id = ?", (run_id,))
@@ -142,7 +140,10 @@ class AgentRunsDAO:
                 f"UPDATE agent_runs SET {', '.join(sets)} WHERE id = ?",
                 tuple(params),
             )
-        return await self.get_run(run_id)
+            run = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
+            if run is not None:
+                await _append_event(conn, run_id, "status", {"run": run})
+        return run
 
     async def create_step(
         self,
@@ -165,14 +166,15 @@ class AgentRunsDAO:
         if status not in _VALID_STEP_STATUS:
             raise ValueError(f"status must be one of {sorted(_VALID_STEP_STATUS)}")
         step_id = id or f"step_{uuid.uuid4().hex[:12]}"
-        if ordinal is None:
-            row = await self._db.fetchone(
-                "SELECT COALESCE(MAX(ordinal), 0) + 1 AS next_ordinal "
-                "FROM agent_run_steps WHERE run_id = ?",
-                (run_id,),
-            )
-            ordinal = int(row["next_ordinal"]) if row else 1
         async with self._db.transaction() as conn:
+            owner = await _fetchone(conn, "SELECT session_id FROM agent_runs WHERE id = ?", (run_id,))
+            if owner is None or owner["session_id"] != session_id:
+                raise ValueError("step session must match its run")
+            if ordinal is None:
+                row = await _fetchone(conn,
+                    "SELECT COALESCE(MAX(ordinal), 0) + 1 AS next_ordinal "
+                    "FROM agent_run_steps WHERE run_id = ?", (run_id,))
+                ordinal = int(row["next_ordinal"])
             await conn.execute(
                 "INSERT INTO agent_run_steps "
                 "(id, run_id, session_id, kind, status, title, summary, "
@@ -194,8 +196,9 @@ class AgentRunsDAO:
                     ordinal,
                 ),
             )
-        row = await self._db.fetchone("SELECT * FROM agent_run_steps WHERE id = ?", (step_id,))
-        return _hydrate_step(row)
+            step = _hydrate_step(await _fetchone(conn, "SELECT * FROM agent_run_steps WHERE id = ?", (step_id,)))
+            await _append_event(conn, run_id, "step_created", {"step": step})
+        return step
 
     async def complete_step(
         self,
@@ -235,7 +238,48 @@ class AgentRunsDAO:
                 f"UPDATE agent_run_steps SET {', '.join(sets)} WHERE id = ?",
                 tuple(params),
             )
-        return await self.get_step(step_id)
+            step = _hydrate_step(await _fetchone(conn, "SELECT * FROM agent_run_steps WHERE id = ?", (step_id,)))
+            if step is not None:
+                await _append_event(conn, step["run_id"], "step_updated", {"step": step})
+        return step
+
+    async def snapshot(self, run_id: str) -> dict[str, Any] | None:
+        """Read state and its cursor in one transaction, including legacy runs."""
+        async with self._db.transaction() as conn:
+            run = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
+            if run is None:
+                return None
+            async with conn.execute(
+                "SELECT * FROM agent_run_steps WHERE run_id = ? ORDER BY ordinal, id", (run_id,)
+            ) as cursor:
+                steps = [_hydrate_step(row) for row in await cursor.fetchall()]
+            row = await _fetchone(conn, "SELECT COALESCE(MAX(seq), 0) AS seq FROM run_events WHERE run_id = ?", (run_id,))
+            return {"run": run, "steps": steps, "cursor": row["seq"]}
+
+    async def events(self, run_id: str, *, after_seq: int = 0, limit: int = 100) -> dict[str, Any] | None:
+        """Return bounded ordered changes strictly after a run-scoped cursor."""
+        if type(after_seq) is not int or not 0 <= after_seq <= 2**53 - 1:
+            raise ValueError("after_seq must be a non-negative safe integer")
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("limit must be an integer from 1 to 500")
+        async with self._db.transaction() as conn:
+            if await _fetchone(conn, "SELECT id FROM agent_runs WHERE id = ?", (run_id,)) is None:
+                return None
+            row = await _fetchone(conn, "SELECT COALESCE(MAX(seq), 0) AS seq FROM run_events WHERE run_id = ?", (run_id,))
+            if after_seq > row["seq"]:
+                raise ValueError("cursor is ahead of this run; reload its snapshot")
+            async with conn.execute(
+                "SELECT * FROM run_events WHERE run_id = ? AND seq > ? ORDER BY seq LIMIT ?",
+                (run_id, after_seq, limit + 1),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        events = []
+        for row in rows[:limit]:
+            event = dict(row)
+            event["data"] = loads_json(event["data"])
+            events.append(event)
+        return {"events": events, "next_seq": events[-1]["seq"] if events else after_seq,
+                "has_more": len(rows) > limit}
 
     async def get_step(self, step_id: str) -> dict[str, Any] | None:
         row = await self._db.fetchone(
@@ -266,56 +310,73 @@ class AgentRunsDAO:
         *,
         reason: str = "orphaned by unexpected shutdown",
     ) -> dict[str, Any]:
-        """Mark every in-flight run as ``failed`` (crash recovery, R12).
+        """Atomically close orphan runs and record recovery; never repeat tools.
 
-        Fuses grok-build's ``cleanup_stale_sessions`` + ORPHAN_RECOVERED
-        semantics into the existing ``agent_runs`` table — no new schema.
-        Idempotent: safe on every boot; when nothing is in flight it
-        returns ``recovered:0`` without touching rows.
-
-        For each orphan the run flips to ``failed`` and a recovery
-        ``status`` step is appended (grok ``RewindMarker`` append-only
-        audit: recovery records itself rather than silently mutating).
+        Keeps the legacy ``failed`` status until the RunService state migration.
+        Only called at boot, before accepting work.
         """
-        rows = await self._db.fetchall(
-            "SELECT id, session_id FROM agent_runs "
-            "WHERE status IN ('planning', 'running', 'awaiting_approval')",
-            (),
-        )
-        if not rows:
-            return {"recovered": 0, "run_ids": [], "sessions": []}
-        run_ids = [str(r["id"]) for r in rows]
-        sessions = [str(r["session_id"]) for r in rows]
         ts = now_iso()
-        placeholders = ",".join("?" for _ in run_ids)
         async with self._db.transaction() as conn:
-            await conn.execute(
-                "UPDATE agent_runs SET status = 'failed', error = ?, "
-                "completed_at = COALESCE(completed_at, ?) "
-                f"WHERE id IN ({placeholders})",
-                (reason, ts, *run_ids),
-            )
-        # Append a recovery step per orphan — append-only audit trail so
-        # the timeline shows "recovered after crash" rather than silently
-        # flipping status. A single bad row never blocks the rest.
-        for run_id, session_id in zip(run_ids, sessions, strict=True):
-            try:
-                await self.create_step(
-                    run_id=run_id,
-                    session_id=session_id,
-                    kind="status",
-                    status="completed",
-                    title="recovered after unexpected shutdown",
-                    summary=reason,
-                    payload={
-                        "recovered_at": ts,
-                        "recovery_reason": reason,
-                        "schema_version": 1,
-                    },
+            async with conn.execute(
+                "SELECT id, session_id FROM agent_runs "
+                "WHERE status IN ('planning', 'running', 'awaiting_approval')"
+            ) as cursor:
+                rows = await cursor.fetchall()
+            for row in rows:
+                run_id, session_id = row["id"], row["session_id"]
+                await conn.execute(
+                    "UPDATE agent_runs SET status = 'failed', error = ?, "
+                    "completed_at = COALESCE(completed_at, ?) WHERE id = ?",
+                    (reason, ts, run_id),
                 )
-            except Exception:
-                logger.exception("failed to append recovery step for run %s", run_id)
+                # An unfinished tool may already have changed files. Keep its
+                # result unknown and visible; closing a spinner is not retrying it.
+                async with conn.execute(
+                    "SELECT id FROM agent_run_steps WHERE run_id = ? "
+                    "AND status IN ('pending', 'running')", (run_id,)
+                ) as cursor:
+                    unfinished = await cursor.fetchall()
+                for pending in unfinished:
+                    await conn.execute(
+                        "UPDATE agent_run_steps SET status = 'failed', error = ?, "
+                        "completed_at = ? WHERE id = ?", (reason, ts, pending["id"]),
+                    )
+                    step = _hydrate_step(await _fetchone(conn,
+                        "SELECT * FROM agent_run_steps WHERE id = ?", (pending["id"],)))
+                    await _append_event(conn, run_id, "step_updated", {"step": step})
+                step_id = f"step_{uuid.uuid4().hex[:12]}"
+                await conn.execute(
+                    "INSERT INTO agent_run_steps "
+                    "(id, run_id, session_id, kind, status, title, summary, payload, "
+                    "started_at, completed_at, ordinal) "
+                    "SELECT ?, ?, ?, 'status', 'completed', ?, ?, ?, ?, ?, "
+                    "COALESCE(MAX(ordinal), 0) + 1 FROM agent_run_steps WHERE run_id = ?",
+                    (step_id, run_id, session_id, "recovered after unexpected shutdown", reason,
+                     dumps_json({"recovered_at": ts, "recovery_reason": reason,
+                                 "schema_version": 1, "requires_review": True}), ts, ts, run_id),
+                )
+                step = _hydrate_step(await _fetchone(conn,
+                    "SELECT * FROM agent_run_steps WHERE id = ?", (step_id,)))
+                run = _hydrate_run(await _fetchone(conn,
+                    "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
+                await _append_event(conn, run_id, "recovered", {"run": run, "step": step})
+        run_ids = [row["id"] for row in rows]
+        sessions = [row["session_id"] for row in rows]
         return {"recovered": len(run_ids), "run_ids": run_ids, "sessions": sessions}
+
+
+async def _fetchone(conn: Any, sql: str, params: tuple = ()) -> Any:
+    async with conn.execute(sql, params) as cursor:
+        return await cursor.fetchone()
+
+
+async def _append_event(conn: Any, run_id: str, kind: str, data: dict[str, Any]) -> None:
+    """Caller owns the write transaction; event failure rolls back state too."""
+    await conn.execute(
+        "INSERT INTO run_events (id, run_id, seq, type, created_at, data) "
+        "SELECT ?, ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ? FROM run_events WHERE run_id = ?",
+        (f"evt_{uuid.uuid4().hex}", run_id, kind, now_iso(), dumps_json(data), run_id),
+    )
 
 
 def _hydrate_run(row: Any) -> dict[str, Any] | None:

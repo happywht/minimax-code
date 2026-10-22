@@ -5,8 +5,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from pydantic import ValidationError
+
 from .handler_utils import HandlerError, check_params
-from .protocol import INTERNAL_ERROR, INVALID_PARAMS
+from .protocol import INTERNAL_ERROR, INVALID_PARAMS, RunEventsParams
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -66,20 +68,38 @@ def register_run_handlers(server: Any) -> None:
             check_params(params, expected_keys={"run_id"})
             run_id = str(params["run_id"])
             dao = await _get_dao()
-            run = await dao.get_run(run_id)
-            if run is None:
+            snapshot = await dao.snapshot(run_id)
+            if snapshot is None:
                 await ctx.reply_error(INVALID_PARAMS, f"unknown run_id: {run_id!r}")
                 return
-            steps = await dao.list_steps(run_id, order_by="ordinal ASC")
-            await ctx.reply({"run": run, "steps": steps})
+            await ctx.reply(snapshot)
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception:
             logger.exception("run.steps failed")
             await ctx.reply_error(INTERNAL_ERROR, "run.steps failed")
 
+    async def handle_run_events(params: Any, ctx: Context) -> None:
+        try:
+            request = RunEventsParams.model_validate(params)
+            dao = await _get_dao()
+            result = await dao.events(**request.model_dump())
+            if result is None:
+                raise HandlerError(INVALID_PARAMS, "unknown run_id")
+            await ctx.reply(result)
+        except ValidationError:
+            await ctx.reply_error(INVALID_PARAMS, "invalid run.events params")
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except ValueError as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("run.events failed")
+            await ctx.reply_error(INTERNAL_ERROR, "run.events failed")
+
     server.register("run.list", handle_run_list)
     server.register("run.steps", handle_run_steps)
+    server.register("run.events", handle_run_events)
 
 
 __all__ = ["register_run_handlers"]

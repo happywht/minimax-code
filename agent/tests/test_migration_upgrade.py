@@ -132,6 +132,23 @@ def test_clean_upgrade_from_v15_with_live_sessions(db_path: Path) -> None:
         db.close()
 
 
+def test_run_events_upgrade_preserves_existing_timeline(db_path: Path) -> None:
+    with Database(db_path) as db:
+        _apply(db, _migrations_up_to(29), record=True)
+        _seed_sessions(db, 1)
+        db.execute("INSERT INTO agent_runs (id, session_id, created_at, title) "
+                   "VALUES ('legacy-run', 'sess_0', ?, 'original')", (_T0,))
+        db.execute("INSERT INTO agent_run_steps (id, run_id, session_id, kind, started_at) "
+                   "VALUES ('legacy-step', 'legacy-run', 'sess_0', 'thought', ?)", (_T0,))
+        assert 30 in db.migrate()
+        assert db.fetchone("SELECT title FROM agent_runs WHERE id = 'legacy-run'")[0] == "original"
+        assert db.fetchone("SELECT COUNT(*) FROM agent_run_steps")[0] == 1
+        # History is not fabricated for actions which predate the journal.
+        assert db.fetchone("SELECT COUNT(*) FROM run_events")[0] == 0
+        assert db.fetchall("PRAGMA foreign_key_check") == []
+        assert db.migrate() == []
+
+
 # ---------------------------------------------------------------------------
 # 2. Dirty self-heal (the real-world stuck database)
 # ---------------------------------------------------------------------------
