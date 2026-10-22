@@ -220,6 +220,28 @@ describe("P2#33: session quick-switch race condition", () => {
     expect(state.messages[0].text).toBe("local prompt still sending");
   });
 
+  it.each(["idle", "streaming", "cancelling"] as const)("retains cached history and %s state when refresh fails", async (status) => {
+    useSessionStore.setState({ currentSessionId: "refresh-failed" });
+    const messages: Message[] = [{ id: "saved", role: "assistant", text: "existing work",
+      created_at: 1, streaming: status === "streaming" }];
+    useChat.setState({ messages, status });
+    vi.mocked(typedIPC.listMessages).mockRejectedValueOnce(new Error("network unavailable"));
+    await useChat.getState().loadMessages("refresh-failed");
+    expect(useChat.getState().messages).toEqual(messages);
+    expect(useChat.getState().status).toBe(status);
+    expect(useChat.getState().loadingMessages).toBe(false);
+  });
+
+  it("does not turn pending cancellation into idle when history refresh succeeds", async () => {
+    useSessionStore.setState({ currentSessionId: "cancel-refresh" });
+    useChat.setState({ status: "cancelling", messages: [{ id: "pending", role: "assistant",
+      text: "stopping", created_at: 1, streaming: true, status: "cancelling" }] });
+    vi.mocked(typedIPC.listMessages).mockResolvedValueOnce({ messages: [] });
+    await useChat.getState().loadMessages("cancel-refresh");
+    expect(useChat.getState().status).toBe("cancelling");
+    expect(useChat.getState().messages[0].id).toBe("pending");
+  });
+
   it("ignores a stale session refresh that predates creating the current session", async () => {
     let resolveList: (value: { sessions: any[]; total: number }) => void = () => {};
     vi.mocked(typedIPC.listSessions).mockImplementationOnce(

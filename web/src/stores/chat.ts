@@ -838,7 +838,7 @@ export const useChat = create<ChatState>((set, get) => ({
       const activeStatus = get().status;
       if (
         currentSessionId === sessionId &&
-        (activeStatus === "sending" || activeStatus === "streaming")
+        (activeStatus === "sending" || activeStatus === "streaming" || activeStatus === "cancelling")
       ) {
         set({ loadingMessages: false });
         return;
@@ -860,10 +860,12 @@ export const useChat = create<ChatState>((set, get) => ({
     } catch (err) {
       // Stale — skip error toast for abandoned requests.
       if (seq !== _loadSeq) return;
-      // If loading fails (e.g. session has no messages yet), just clear.
+      // An unavailable history endpoint is not an empty conversation. Session
+      // switches already reset their view; a refresh failure must preserve the
+      // current transcript and execution/cancellation state.
       const message = err instanceof Error ? err.message : String(err);
       toast.error(strings.toasts.messagesLoadFailed, message);
-      set({ messages: [], status: "idle", error: null, loadingMessages: false });
+      set({ loadingMessages: false });
     }
   },
 
