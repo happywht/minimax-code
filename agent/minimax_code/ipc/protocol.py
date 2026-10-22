@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class _Base(BaseModel):
@@ -34,6 +34,18 @@ class SendMessageParams(_Base):
     session_id: str | None = None
     content: str | list[dict[str, Any]]
     mode: Literal["chat", "plan", "execute"] = "chat"
+
+
+class ChildWorkspaceSummary(_Base):
+    """Optional result field on real sub-agent and team member execution."""
+
+    run_id: str
+    path: str
+    kind: Literal["git_worktree", "directory"]
+    state: Literal["preparing", "running", "completed", "failed", "cancelled", "needs_review", "collected"]
+    files_written: list[str] = Field(default_factory=list)
+    omitted: list[str] = Field(default_factory=list)
+    collection_required: bool = True
 
 
 # ---- Error object ---------------------------------------------------------

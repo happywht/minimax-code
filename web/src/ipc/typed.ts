@@ -75,6 +75,7 @@ import type {
   SkillInvokeResult,
   SpawnSubagentParams,
   SpawnSubagentResult,
+  ChildWorkspaceSummary,
   TelemetryMetrics,
   TelemetryRecentResult,
   TelemetryTraceResult,
@@ -441,6 +442,7 @@ export interface TypedIPC {
       error: string;
       iterations: number;
       stub: boolean;
+      workspace?: ChildWorkspaceSummary;
     }>;
     conflicts: Array<{
       file_path: string;

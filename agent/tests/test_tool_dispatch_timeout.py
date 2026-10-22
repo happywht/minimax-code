@@ -215,7 +215,8 @@ async def test_stub_envelope_carries_defaults():
 
 
 @pytest.mark.asyncio
-async def test_real_envelope_bubbles_run_facts():
+async def test_real_envelope_bubbles_run_facts(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINIMAX_CODE_WORKSPACE", str(tmp_path))
     runtime = SubAgentRuntime(llm=FakeLLM([_text_response("real answer")]))
     handle = runtime.build(SubAgentConfig(name="echoer"))
     envelope = await runtime.invoke(handle, session_id="s_real", request="hi")

@@ -487,9 +487,35 @@ class SubAgentRuntime:
                 f"sub-agent {handle.config.name!r} has no AgentCore; "
                 "did you forget to call SubAgentRuntime.build?"
             )
-        run_result = await core.run(
-            session_id=session_id, user_message=request
+        from ..execution import require_write_access
+        from ..workspace.child import active_child, prepare_child
+        from ..workspace_ctx import (
+            current_root,
+            current_run_id,
+            current_sandbox,
+            env_or_cwd_root,
         )
+
+        # All real execution paths (tool, RPC and team) cross this boundary.
+        # The legacy explicit file overlay remains file-only; otherwise a
+        # child always receives an owned working copy, even sandbox=false.
+        require_write_access()
+        child = None
+        if current_sandbox() is None:
+            run_id = (current_run_id() if not active_child() else None) or f"run_{uuid.uuid4().hex[:12]}"
+            child = await prepare_child(current_root() or env_or_cwd_root(), run_id)
+        try:
+            if child is None:
+                run_result = await core.run(session_id=session_id, user_message=request)
+            else:
+                with child.scope():
+                    run_result = await core.run(session_id=session_id, user_message=request)
+        except BaseException as exc:
+            if child is not None:
+                child.finish("cancelled" if isinstance(exc, asyncio.CancelledError) else "failed")
+            raise
+        if child is not None:
+            child.finish("cancelled" if run_result.cancelled else "completed")
         return {
             "agent": handle.config.name,
             "request": request,
@@ -504,6 +530,8 @@ class SubAgentRuntime:
             "usage": dict(run_result.usage),
             "cancelled": bool(run_result.cancelled),
             "truncated": bool(run_result.truncated),
+            **({"workspace": child.summary(), "files_written": child.record["changes"]}
+               if child is not None else {}),
         }
 
 

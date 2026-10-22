@@ -490,6 +490,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                         "task_id": task_id,
                         "message_id": message_id,
                         "stub": is_stub,
+                        **({"workspace": result["workspace"]} if "workspace" in result else {}),
                     }
                 )
             except BaseException as exc:
@@ -674,9 +675,15 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 # mirrors the invoke handler above (top-level entry,
                 # no parent task context to inherit from).
                 async with session_root_scope(parent_session_id):
-                    result = await runtime.invoke(
-                        handle, session_id=sub_session_id, request=request
-                    )
+                    from ..workspace_ctx import reset_current_run_id, set_current_run_id
+
+                    run_token = set_current_run_id(run_id)
+                    try:
+                        result = await runtime.invoke(
+                            handle, session_id=sub_session_id, request=request
+                        )
+                    finally:
+                        reset_current_run_id(run_token)
             finally:
                 _ACTIVE_RUNS.pop(run_id, None)
             is_stub = bool(result.get("stub", True))
@@ -734,6 +741,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                     "context_message_id": context_message_id,
                     "display_name": display_name,
                     "stub": is_stub,
+                    **({"workspace": result["workspace"]} if "workspace" in result else {}),
                 }
             )
         except HandlerError as exc:

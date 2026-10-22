@@ -20,6 +20,8 @@
     "tests/test_workspace_ctx.py",
     "tests/test_workspace_scope_runs.py",
     "tests/test_workspace_worktrees.py",
+    "tests/test_child_workspace.py",
+    "tests/test_child_workspace_edges.py",
     "tests/test_git_handlers.py",
     "tests/test_patch_handlers.py",
     "tests/test_runner_handlers.py",

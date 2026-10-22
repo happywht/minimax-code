@@ -934,9 +934,21 @@ export interface SetRuleResult {
   rule: PermissionRule;
 }
 
+/** Owned working copy; pending edits are collected explicitly, never auto-merged. */
+export interface ChildWorkspaceSummary {
+  run_id: string;
+  path: string;
+  kind: "git_worktree" | "directory";
+  state: "preparing" | "running" | "completed" | "failed" | "cancelled" | "needs_review" | "collected";
+  files_written: string[];
+  omitted: string[];
+  collection_required: boolean;
+}
+
 export interface SpawnSubagentResult {
   agent_run_id: string;
   agent_id: string;
+  workspace?: ChildWorkspaceSummary;
 }
 
 /* ─────────────────────── Git integration (§3-4 of v0.3.0 design) ─────────────────────── */

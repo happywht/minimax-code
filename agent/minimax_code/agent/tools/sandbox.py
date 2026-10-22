@@ -378,14 +378,15 @@ class CollectSubagentTool(Tool):
 
     name = "collect_subagent"
     description = (
-        "Merge a finished sandboxed sub-agent run's sandbox writes back "
+        "Merge a finished sub-agent's independent workspace or legacy file overlay "
         "into the shared workspace. Call after wait_subagent/check_subagent "
         "reports completion. Reports per-file merges, no-ops and conflicts "
         "with full sha256 fingerprints; on_conflict picks the policy for "
         "workspace-vs-sandbox divergence (fail=stop and report, "
         "skip=keep workspace and leave collection incomplete). On success prunes "
         "the sandbox tree (prune=false keeps it) after recording the "
-        "collect receipt."
+        "collect receipt. Independent workspaces and backups are retained for review; "
+        "deletions require manual review."
     )
     parameters = {
         "type": "object",
@@ -449,6 +450,19 @@ class CollectSubagentTool(Tool):
                 f"run {run_id!r} is still in flight — wait_subagent first, "
                 "then collect"
             )
+
+        from ...workspace.child import collect_child, load_child
+
+        try:
+            root = _workspace_root()
+            child = load_child(root, run_id) if root is not None else None
+            if child is not None:
+                report = collect_child(child, on_conflict=on_conflict)
+                if not report["complete"]:
+                    return ToolResult.fail("Child changes require conflict review", output=report)
+                return ToolResult.ok(report)
+        except (OSError, ValueError) as exc:
+            return ToolResult.fail(str(exc))
 
         # Idempotence first (new receipt home, then the legacy in-sandbox
         # marker): a second collect replays the first run's report. A

@@ -96,6 +96,7 @@ class AgentRunResult:
     iterations: int = 0
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     stub: bool = True
+    workspace: dict[str, Any] | None = None
 
 
 @dataclass
@@ -556,6 +557,7 @@ class TeamOrchestrator:
                 iterations=envelope.get("iterations", 0),
                 tool_calls=envelope.get("tool_calls", []),
                 stub=envelope.get("stub", True),
+                workspace=envelope.get("workspace"),
             )
         except TimeoutError:
             # v1.2.2: a hung agent fails itself instead of hanging the
@@ -700,6 +702,7 @@ class TeamOrchestrator:
                     "error": r.error,
                     "iterations": r.iterations,
                     "stub": r.stub,
+                    **({"workspace": r.workspace} if r.workspace is not None else {}),
                 }
                 for r in result.agents_run
             ],

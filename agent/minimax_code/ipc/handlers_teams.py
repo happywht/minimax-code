@@ -341,6 +341,7 @@ def register_team_handlers(
                         "error": r.error,
                         "iterations": r.iterations,
                         "stub": r.stub,
+                        **({"workspace": r.workspace} if r.workspace is not None else {}),
                     }
                     for r in result.agents_run
                 ],

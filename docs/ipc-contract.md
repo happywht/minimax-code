@@ -254,6 +254,49 @@ on the next `readline() == ""`.
 | `data.backup`               | req/res   | Data portability (R23): online file-level snapshot via the SQLite backup API. See §6. |
 | `diag.export`               | req/res   | Diagnostics (R45): sanitized diagnostic bundle — version / platform / config (enums & counts only, never secret values) / per-table row counts / sanitized log tail. Degrades to `storage: {db_available: false}` when storage is down instead of erroring. |
 
+### Sub-agent working copies (M1, additive result fields)
+
+Real `agent.invoke`, `agent.spawn_subagent`, `spawn_subagent` tool runs and
+`team.spawn` members now use an independent working copy by default. Git roots
+use detached worktrees; other roots use owned directories. `sandbox=false`
+does not restore shared-directory execution. The explicit legacy
+`sandbox=true` file overlay remains available and still forbids shell commands.
+Stub/mock runs create no working copy and omit this field.
+
+Their result may include `workspace` (`ChildWorkspaceSummary` in Python/TS):
+
+```json
+{
+  "run_id": "run_example",
+  "path": "/project/.minimax/child-workspaces/run_example/workspace",
+  "kind": "git_worktree",
+  "state": "completed",
+  "files_written": ["src/example.py"],
+  "omitted": [],
+  "collection_required": true
+}
+```
+
+`kind` is `git_worktree` or `directory`. States are `preparing`, `running`,
+`completed`, `failed`, `cancelled`, `needs_review`, `collected`. Team responses
+and persisted `team.run.get` results carry the same optional field on each
+`agents_run` member; tool-path run metadata and check/wait responses retain it.
+`path` names an execution-host directory, not a browser download URL. Completion
+does not mean edits were merged or independently verified.
+
+`collect_subagent(run_id)` recognizes both new copies and legacy overlays.
+It checks the original hashes against the current parent files, preflights
+conflicts before a default `fail` collection, and atomically applies additions
+and modifications with backups. Changed parent files, aliases, post-run child
+edits and deletions are retained for review; `skip` can collect nonconflicting
+edits but leaves `complete=false`. Successful receipts are replayable after a
+restart. New copies/backups are retained even when `prune=true`; that parameter
+only prunes legacy overlays. A process restart does not silently reclassify a
+`running` manifest as finished (recovery remains an M2 task).
+
+See [child-workspaces.md](child-workspaces.md) for limits and operational details.
+No RPC is added or removed, and no SQLite migration is required.
+
 ### `model.list` response — reasoning-effort fields (R58)
 
 Each entry in `model.list`'s `models` array is enriched with optional
@@ -979,9 +1022,9 @@ Semantics:
   without blocking readers. Complements the JSON export (which is
   portable across schema versions but excludes derived state).
 * `target_dir` is created if missing; omitted → `<data_dir>/backups/`.
-  The filename embeds a UTC timestamp with milliseconds
-  (`minimax-code-backup-YYYYMMDD-HHMMSS-mmm.db`), so repeated backups
-  never overwrite each other.
+  The filename embeds a UTC timestamp and an exclusively created random suffix
+  (`minimax-code-backup-YYYYMMDD-HHMMSS-<unique>.db`), so backups created
+  in the same clock tick cannot overwrite an earlier snapshot.
 * The source database is only ever read, never written.
 
 ## 7. Event names

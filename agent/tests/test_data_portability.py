@@ -331,13 +331,28 @@ class TestBackupDatabase:
         assert Path(result["path"]).parent == tmp_path / "backups"
 
     async def test_repeated_backups_get_distinct_files(
-        self, async_db: AsyncDatabase, tmp_path: Path
+        self, async_db: AsyncDatabase, tmp_path: Path, monkeypatch
     ) -> None:
+        from types import SimpleNamespace
+
+        from minimax_code.ipc import handlers_data
+
+        frozen = handlers_data.datetime.now(handlers_data.UTC)
+        monkeypatch.setattr(handlers_data, "datetime", SimpleNamespace(now=lambda tz: frozen))
         await _seed(async_db)
         first = await backup_database(async_db, tmp_path)
+        await async_db._conn.execute("UPDATE sessions SET title = 'Later version'")
+        await async_db._conn.commit()
         second = await backup_database(async_db, tmp_path)
         assert first["path"] != second["path"]
         assert len(list(tmp_path.glob("minimax-code-backup-*.db"))) == 2
+        original = sqlite3.connect(first["path"])
+        try:
+            assert {r[0] for r in original.execute("SELECT title FROM sessions")} == {
+                "Alpha chat", "Beta chat",
+            }
+        finally:
+            original.close()
 
 
 class TestDataBackupIPC:

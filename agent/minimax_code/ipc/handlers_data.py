@@ -16,7 +16,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -224,7 +226,14 @@ async def backup_database(db: Any, target_dir: Path | str | None = None) -> dict
     dest_dir = Path(target_dir).expanduser() if target_dir else default_data_dir() / "backups"
     dest_dir.mkdir(parents=True, exist_ok=True)
     now = datetime.now(UTC)
-    dest = dest_dir / f"minimax-code-backup-{now:%Y%m%d-%H%M%S}-{now.microsecond // 1000:03d}.db"
+    # Clock resolution is not uniqueness: two backups can share a millisecond.
+    # Exclusive creation also prevents concurrent requests overwriting a prior
+    # snapshot. Keep the timestamp for human sorting and add a random suffix.
+    descriptor, filename = tempfile.mkstemp(
+        prefix=f"minimax-code-backup-{now:%Y%m%d-%H%M%S}-", suffix=".db", dir=dest_dir,
+    )
+    os.close(descriptor)
+    dest = Path(filename)
 
     target = sqlite3.connect(str(dest))
     try:

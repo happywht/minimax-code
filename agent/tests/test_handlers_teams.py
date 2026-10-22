@@ -381,6 +381,7 @@ async def test_team_run_get_unknown_task(real_handlers: dict[str, Any]) -> None:
 async def test_team_spawn_injects_llm_singleton(
     real_handlers: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
     """v1.2.2 regression: ``team.spawn`` must wire the process-wide
     LLM singleton into :class:`TeamOrchestrator`.
@@ -413,6 +414,7 @@ async def test_team_spawn_injects_llm_singleton(
                 usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
             )
 
+    monkeypatch.setenv("MINIMAX_CODE_WORKSPACE", str(tmp_path))
     fake = _FakeLLM()
     monkeypatch.setattr("minimax_code.app._SUBAGENT_LLM", fake)
 

@@ -432,6 +432,7 @@ async def _drive_run(
     handle.core.on_tool_call = _on_tool_call
     handle.core.on_tool_result = _on_tool_result
 
+    inner: asyncio.Future[Any] | None = None
     try:
         await _emit_safe(emit, emit_event("started", 0.05, prompt[:80]))
 
@@ -454,17 +455,28 @@ async def _drive_run(
             partial = True
             if handle.core is not None:
                 handle.core.cancel()
-            result = await inner  # cooperative wind-down — keeps partials
-    except Exception as exc:
+            try:
+                result = await asyncio.wait_for(asyncio.shield(inner), timeout=5)
+            except TimeoutError:
+                inner.cancel()
+                await asyncio.gather(inner, return_exceptions=True)
+                raise TimeoutError("Sub-agent did not stop within the cancellation grace period") from None
+    except BaseException as exc:
+        if inner is not None and not inner.done():
+            if handle.core is not None:
+                handle.core.cancel()
+            inner.cancel()
+            await asyncio.gather(inner, return_exceptions=True)
+        failure_status = "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
         if run_dao is not None:
             try:
                 await run_dao.update_run_status(
-                    run_id, status="failed", error=str(exc), metadata=run_metadata
+                    run_id, status=failure_status, error=str(exc) or type(exc).__name__, metadata=run_metadata
                 )
             except Exception:  # pragma: no cover — defensive
                 logger.debug("subagent run failure not persisted", exc_info=True)
         await _emit_safe(
-            emit, emit_event("failed", 1.0, str(exc)[:80], error=str(exc))
+            emit, emit_event(failure_status, 1.0, str(exc)[:80], error=str(exc))
         )
         raise
     finally:
@@ -495,7 +507,7 @@ async def _drive_run(
     # v1.5.0 — surface what the sandbox holds before the root scope goes
     # away; the main agent merges it with collect_subagent. Fail-open:
     # an I/O hiccup downgrades to an absent key, never a failed run.
-    files_written: list[str] | None = None
+    files_written: list[str] | None = result.get("files_written")
     if run_metadata.get("sandbox"):
         try:
             from .sandbox import sandbox_files_written
@@ -523,6 +535,7 @@ async def _drive_run(
         "stub": bool(result.get("stub", True)),
         "partial": partial,
         "reported": reported,
+        **({"workspace": result["workspace"]} if "workspace" in result else {}),
         # check_subagent / wait_subagent read the outcome from the run
         # row once the task is gone (agent restart, late poll).
         "result_text": summary_text,
@@ -586,12 +599,9 @@ class ListSubagentsTool(Tool):
 def _sandbox_default() -> bool:
     """Process-wide sandbox default (v1.5.2) — ``MINIMAX_CODE_SANDBOX_DEFAULT``.
 
-    Stays opt-in (``false``) out of the box: a silent default-on would
-    turn the single-agent fast path into a trap — every spawn would
-    need a collect step and unpruned sandboxes would pile up. Operators
-    running parallel-write workloads can flip the env once instead of
-    teaching every caller to pass ``sandbox=true``. Same truthy-spelling
-    family as ``subagent_wall_clock_s()``.
+    Selects the legacy file-only overlay when true. False now selects the
+    independent working copy in SubAgentRuntime, never shared writes. Both
+    real execution modes require explicit collection of completed edits.
     """
     return os.environ.get("MINIMAX_CODE_SANDBOX_DEFAULT", "").strip().lower() in (
         "1",
@@ -606,6 +616,8 @@ class SpawnSubagentTool(Tool):
     name = "spawn_subagent"
     description = (
         "Delegate a focused piece of work to a named sub-agent and return its final result. "
+        "Real runs use independent working copies by default; use collect_subagent to merge "
+        "their completed edits. sandbox=true selects the legacy file-only overlay instead. "
         "Use this for specialist review, parallel research, or focused analysis that should "
         "not distract the main conversation. Set wait=false to run in the background and "
         "collect later with check_subagent / wait_subagent. "
@@ -976,6 +988,7 @@ class SpawnSubagentTool(Tool):
             # live under .minimax/sandboxes/<run_id>/ until collected.
             "sandbox": bool(sandbox),
             # v1.5.0 — sandbox manifest for the follow-up collect call.
+            **({"workspace": result["workspace"]} if "workspace" in result else {}),
             **(
                 {"files_written": result["files_written"]}
                 if result.get("files_written") is not None
@@ -1018,6 +1031,7 @@ async def _lookup_finished_run(run_id: str) -> ToolResult:
             "iterations": meta.get("iterations", 0),
             "reported": bool(meta.get("reported", False)),
             "error": row.get("error"),
+            **({"workspace": meta["workspace"]} if "workspace" in meta else {}),
             # v1.5.0 — sandbox manifest off the persisted run row.
             **(
                 {"files_written": meta["files_written"]}

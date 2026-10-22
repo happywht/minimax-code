@@ -213,9 +213,10 @@ class _FakeLLM:
 
 
 @pytest.mark.asyncio
-async def test_subagent_invoke_uses_injected_llm_not_stub() -> None:
+async def test_subagent_invoke_uses_injected_llm_not_stub(tmp_path, monkeypatch) -> None:
     """An LLM injected into SubAgentRuntime makes invoke() forward to
     AgentCore.run (real path), not return the deterministic stub."""
+    monkeypatch.setenv("MINIMAX_CODE_WORKSPACE", str(tmp_path))
     fake = _FakeLLM(text="hello from real LLM")
     runtime = SubAgentRuntime(llm=fake)
     handle = runtime.build(

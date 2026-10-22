@@ -98,6 +98,8 @@ def build_subagent_status(
             payload["error"] = err
         if task_result.get("files_written") is not None:
             payload["files_written"] = task_result["files_written"]
+        if task_result.get("workspace") is not None:
+            payload["workspace"] = task_result["workspace"]
     # Always overlay the progress ledger if it exists.
     from .artifacts import progress_summary
 

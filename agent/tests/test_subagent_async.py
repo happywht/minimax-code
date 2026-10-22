@@ -374,3 +374,36 @@ async def test_realtime_tool_events_bridged(app_db, scripted):
     tool_events = [p for _, p in events if p["status"].startswith("tool")]
     assert all(p["parent_session_id"] == parent for p in tool_events)
     assert all(0.0 <= p["progress"] <= 1.0 for p in tool_events)
+
+
+@pytest.mark.asyncio
+async def test_outer_cancellation_stops_shielded_child_before_unregistering(app_db):
+    """Cancelling the driver must not leave its shielded invoke writing files."""
+    from minimax_code.agent.tools.subagents import _drive_run
+    from minimax_code.ipc.builtins import _ACTIVE_RUNS
+    from minimax_code.orchestrator.subagent import SubAgentConfig
+
+    started, stopped = asyncio.Event(), asyncio.Event()
+
+    class WaitingRuntime(SubAgentRuntime):
+        async def invoke(self, handle, **kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+    runtime = WaitingRuntime()
+    handle = runtime.build(SubAgentConfig(name="waiting"))
+    task = asyncio.create_task(_drive_run(
+        runtime=runtime, handle=handle, run_id="run_outer_cancel", sub_session="s",
+        prompt="wait", row={"id": "a"}, parent=None, emit=None,
+        run_dao=None, run_metadata={},
+    ))
+    await started.wait()
+    assert "run_outer_cancel" in _ACTIVE_RUNS
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert stopped.is_set()
+    assert "run_outer_cancel" not in _ACTIVE_RUNS

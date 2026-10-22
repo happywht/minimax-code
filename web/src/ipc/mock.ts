@@ -815,6 +815,8 @@ function mockHandle(
           } satisfies SubAgentProgress);
         }, 80 * (i + 1));
       });
+      // Stub execution has no filesystem side effects and therefore no
+      // workspace field. Real runs return ChildWorkspaceSummary separately.
       return { agent_run_id: runId, agent_id: agentName };
     }
 

@@ -36,9 +36,10 @@ def artifact_dir(run_id: str) -> Path | None:
     (v1.3.0), so artifacts never cross project boundaries. ``None`` is
     the "no workspace" signal callers treat as skip-artifacts.
     """
+    from ...workspace.child import artifact_root
     from ...workspace_ctx import current_root
 
-    root = current_root()
+    root = artifact_root(run_id) or current_root()
     if root is None:
         return None
     from ...managed_paths import run_data_path
