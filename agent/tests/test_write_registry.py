@@ -17,6 +17,7 @@ since v1.4.1).
 
 from __future__ import annotations
 
+import os
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -161,11 +162,13 @@ async def test_release_clears_claims(workspace_root: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_registry_folds_path_case(workspace_root: Path) -> None:
+async def test_registry_respects_host_path_case(workspace_root: Path) -> None:
     with run_as("run_a"):
         res = await _dispatch("write_file", {"path": "Case.txt", "content": "x"})
         assert res.success, res.error
-    assert in_flight_writer(workspace_root / "case.TXT") == "run_a"
+    assert in_flight_writer(workspace_root / "Case.txt") == "run_a"
+    expected = "run_a" if os.path.normcase("Case.txt") == os.path.normcase("case.TXT") else None
+    assert in_flight_writer(workspace_root / "case.TXT") == expected
 
 
 @pytest.mark.asyncio

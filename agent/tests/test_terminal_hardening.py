@@ -142,9 +142,12 @@ class TestIsDangerousCmd:
         assert _is_dangerous_cmd(["SUDO", "ls"]) is not None
         assert _is_dangerous_cmd(["Python", "-c", "print(1)"]) is not None
 
-    def test_path_prefix_stripped(self) -> None:
-        assert _is_dangerous_cmd(["/usr/bin/sudo", "ls"]) is not None
-        assert _is_dangerous_cmd(["C:\\Python312\\python.exe", "-c", "1"]) is not None
+    @pytest.mark.parametrize("executable", [
+        "/usr/bin/python", "C:\\Python312\\python.exe",
+        "/mnt/c/Python312/PYTHON.EXE", "python.cmd", "python.bat", "python.com",
+    ])
+    def test_path_prefix_stripped(self, executable: str) -> None:
+        assert _is_dangerous_cmd([executable, "-c", "1"]) is not None
 
     def test_empty_cmd_safe(self) -> None:
         assert _is_dangerous_cmd([]) is None

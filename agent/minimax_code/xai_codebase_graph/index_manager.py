@@ -207,7 +207,7 @@ class SymbolLocation:
         ``Path::new(&self.path)`` reference -- the path is relative to the
         index ``root_path`` and may use either separator.
         """
-        return PurePath(self.path)
+        return PurePath(self.path.replace("\\", "/"))
 
 
 @dataclass(slots=True)

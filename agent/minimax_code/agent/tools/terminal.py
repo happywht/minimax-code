@@ -271,8 +271,8 @@ def _is_dangerous_cmd(cmd: list[str]) -> str | None:
     # Normalize path: extract just the executable name.
     if "/" in base or "\\" in base:
         base = base.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-    # Remove extension on Windows.
-    if sys.platform == "win32" and "." in base:
+    # Recognize Windows executables on either host, including interop paths.
+    if base.endswith((".exe", ".com", ".cmd", ".bat")):
         base = base.rsplit(".", 1)[0]
 
     # Unconditional block — e.g. sudo, shutdown.

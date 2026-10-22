@@ -18,6 +18,7 @@ live at the bottom of the file.
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -527,6 +528,41 @@ class TestBuiltinSkills:
         tool = GetGitDiffTool()
         result = await tool.run(path="Z:/this/does/not/exist")
         assert result.success is False
+
+    async def test_commit_helper_scopes_file_and_directory(self, tmp_path: Path) -> None:
+        from minimax_code.agent.skills._builtin.commit_helper import GetGitDiffTool
+
+        def git(*args: str) -> None:
+            subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+        git("init")
+        nested = tmp_path / "nested"
+        nested.mkdir()
+        target = nested / "a[1].txt"
+        other = tmp_path / "other.txt"
+        for file in (target, other):
+            file.write_text("old\n", encoding="utf-8")
+        git("add", ".")
+        for file in (target, other):
+            file.write_text("new\n", encoding="utf-8")
+        for path in ("nested", "nested/a[1].txt", str(target)):
+            result = await GetGitDiffTool().run(path=path)
+            assert result.success, result.error
+            assert "+new" in result.output["diff"]
+            assert "other.txt" not in result.output["diff"]
+        target.unlink()
+        deleted = await GetGitDiffTool().run(path="nested/a[1].txt")
+        assert deleted.success and "-old" in deleted.output["diff"]
+
+    async def test_commit_helper_rejects_missing_workspace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from minimax_code.agent.skills._builtin.commit_helper import GetGitDiffTool
+
+        monkeypatch.setenv("MINIMAX_CODE_WORKSPACE", str(tmp_path / "gone"))
+        result = await GetGitDiffTool().run()
+        assert not result.success
+        assert "unavailable" in result.error
 
     async def test_code_review_find_complex_functions(self, tmp_path: Path) -> None:
         from minimax_code.agent.skills._builtin.code_review import FindComplexFunctionsTool

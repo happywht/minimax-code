@@ -138,7 +138,7 @@ def test_hunk_defaults_patch_none_selected_false():
 
 def test_hunk_value_equality():
     a = _make_hunk()
-    b = _make_hunk()
+    b = _make_hunk(created_at=a.created_at)
     assert a == b
     assert a != _make_hunk(new_text="different\n")
 

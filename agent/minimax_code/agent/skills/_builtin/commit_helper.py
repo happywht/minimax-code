@@ -22,6 +22,7 @@ import asyncio
 from typing import Any
 
 from ....execution import capture_output, spawn_exec
+from ....workspace_ctx import WorkspaceUnavailableError
 from ...tools.base import Tool, ToolResult
 from ...tools.file_ops import PathSecurityError, safe_resolve
 from ..runtime import SkillToolProvider
@@ -68,19 +69,21 @@ class GetGitDiffTool(Tool):
         max_bytes = int(kwargs.get("max_bytes") or _MAX_DIFF_BYTES)
 
         # Resolve path against the workspace safety policy.
-        cwd: str | None = None
-        if raw_path:
-            try:
+        try:
+            root = safe_resolve(".")
+            if raw_path:
                 resolved = safe_resolve(raw_path)
-            except PathSecurityError as exc:
-                return ToolResult.fail(str(exc))
-            cwd = str(resolved)
+                if not resolved.exists() and not resolved.parent.is_dir():
+                    return ToolResult.fail(f"path parent does not exist: {resolved}")
+                pathspec = resolved.relative_to(root).as_posix()
+        except (PathSecurityError, WorkspaceUnavailableError) as exc:
+            return ToolResult.fail(str(exc))
 
-        cmd: list[str] = ["git", "diff"]
+        cmd: list[str] = ["git", "--literal-pathspecs", "diff"]
         if staged:
             cmd.append("--cached")
         if raw_path:
-            cmd.extend(["--", raw_path])
+            cmd.extend(["--", pathspec])
 
         # Inherit environment, force unbuffered output.
         env: dict[str, str] = {}
@@ -93,13 +96,15 @@ class GetGitDiffTool(Tool):
         try:
             proc = await spawn_exec(
                 *cmd,
-                cwd=cwd,
+                cwd=str(root),
                 env=env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
         except FileNotFoundError:
             return ToolResult.fail("git is not installed or not on PATH")
+        except WorkspaceUnavailableError as exc:
+            return ToolResult.fail(str(exc))
         except OSError as exc:
             return ToolResult.fail(f"failed to spawn git: {exc}")
 
