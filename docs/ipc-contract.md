@@ -297,6 +297,36 @@ only prunes legacy overlays. A process restart does not silently reclassify a
 See [child-workspaces.md](child-workspaces.md) for limits and operational details.
 No RPC is added or removed, and no SQLite migration is required.
 
+### Preview HTTP access (M1)
+
+`POST /preview/access` requires application authentication and accepts
+`{"session_id": "..."}` (or `null` for the configured default directory).
+It resolves the current directory before issuing a bounded read capability:
+
+```json
+{"path": "/preview/view/<opaque-grant>", "expires_in": 899}
+```
+
+`PreviewAccessResult` is shared by Python and TypeScript. `path` is relative
+to the service origin; `expires_in` is the remaining lifetime in seconds,
+at most 900. Grants are in memory, reused for an unchanged binding while
+sufficient lifetime remains, and capped at 128 active bindings. Application
+tokens never enter these URLs. A grant authorizes GET/HEAD only under its
+own `/preview/view/<grant>/` prefix; file containment and sensitive-path
+checks still apply. It cannot authenticate RPC or another grant request.
+The server rechecks the bound workspace for each file request. Missing or
+expired access returns 401; a changed binding returns 409. Reopen the preview
+to obtain new access. Existing authenticated `/preview/session/...` routes
+remain supported for non-iframe clients.
+
+Access issuance and file responses use `Cache-Control: no-store` and
+`Referrer-Policy: no-referrer`; event streams use `Cache-Control: no-cache`.
+Sandboxed module assets permit CORS `Origin: null` only on a valid read grant;
+this exception does not apply to application endpoints. The iframe retains
+its opaque origin, CSP blocks network connections and form submissions,
+and application cookies remain HttpOnly/SameSite=Strict with port-specific
+names. No JSON-RPC method or database schema changes in this addition.
+
 ### `model.list` response — reasoning-effort fields (R58)
 
 Each entry in `model.list`'s `models` array is enriched with optional

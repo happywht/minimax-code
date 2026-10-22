@@ -40,15 +40,21 @@ def register_workspace_handlers(
                 raise HandlerError(INVALID_PARAMS, "params must be an object")
             title = _string_param(p, "title") or datetime.now().strftime(_DEFAULT_TITLE_FMT)
             base_ref = _string_param(p, "base_ref") or "HEAD"
+            if base_ref.startswith("-") or "\0" in base_ref:
+                raise HandlerError(INVALID_PARAMS, "base_ref must be a Git commit reference, not an option")
             project_id = _string_param(p, "project_id")
             require_write_access()
             repo = await _repository_for_project(project_id, configured_repo)
+            revision = (await _run_git(repo, "rev-parse", "--verify", "--end-of-options",
+                                       base_ref + "^{commit}")).strip()
+            if len(revision) not in {40, 64} or any(c not in "0123456789abcdef" for c in revision):
+                raise HandlerError(INVALID_PARAMS, "base_ref did not resolve to a commit")
             root = configured_worktree_root or (ensure_data_dir() / "worktrees")
             root.mkdir(parents=True, exist_ok=True)
 
             session_id = f"ses_{uuid.uuid4().hex[:8]}"
             worktree_path = (root / session_id).resolve()
-            await _run_git(repo, "worktree", "add", "--detach", str(worktree_path), base_ref)
+            await _run_git(repo, "worktree", "add", "--detach", str(worktree_path), revision)
 
             sess_dao = await dao_factory()
             try:

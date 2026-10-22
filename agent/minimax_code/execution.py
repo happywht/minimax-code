@@ -137,12 +137,14 @@ async def spawn_exec(*argv: str, cwd: str | Path | None = None,
     resolved_cwd = process_cwd(cwd)
     child_env = process_environment(env)
     if sys.platform == "win32":
+        from ._windows_process_host import parent_arguments
+
         # Resolve the binary before wrapping to preserve spawn error semantics.
         binary = shutil.which(argv[0], path=child_env.get("PATH"))
         if binary is None:
             raise FileNotFoundError(f"command not found: {argv[0]}")
         argv = (sys.executable, "-I", "-S", str(Path(__file__).with_name("_windows_process_host.py")),
-                "--exec", binary, *argv[1:])
+                *parent_arguments(), "--exec", binary, *argv[1:])
     return await _spawn(asyncio.create_subprocess_exec,
         *argv, cwd=resolved_cwd, env=child_env,
         **(spawn_options() | kwargs),
@@ -152,9 +154,11 @@ async def spawn_exec(*argv: str, cwd: str | Path | None = None,
 async def spawn_shell(command: str, *, cwd: str | Path | None = None,
                       env: Mapping[str, str] | None = None, **kwargs: Any) -> asyncio.subprocess.Process:
     if sys.platform == "win32":
+        from ._windows_process_host import parent_arguments
+
         return await _spawn(asyncio.create_subprocess_exec,
             sys.executable, "-I", "-S", str(Path(__file__).with_name("_windows_process_host.py")),
-            "--shell", command, cwd=process_cwd(cwd), env=process_environment(env),
+            *parent_arguments(), "--shell", command, cwd=process_cwd(cwd), env=process_environment(env),
             **(spawn_options() | kwargs),
         )
     return await _spawn(asyncio.create_subprocess_shell,

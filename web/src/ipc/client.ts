@@ -47,6 +47,7 @@ import {
 } from "../types/ipc";
 import { mockNotify, mockRequest } from "./mock";
 import { authHeaders, authProtocols, ensureSession, rememberHealth } from "./httpAuth";
+import { localBrowserOrigin } from "./localOrigin";
 import { bindTypedIPC, type TypedIPC } from "./typed";
 /* ─────────────────────── Internal types ─────────────────────── */
 
@@ -254,7 +255,7 @@ export class IPCClient {
 
   constructor(opts?: IPCClientOptions) {
     const envUrl = readViteEnv("VITE_AGENT_URL");
-    this.baseUrl = (opts?.baseUrl && opts.baseUrl.length > 0
+    this.baseUrl = localBrowserOrigin(opts?.baseUrl && opts.baseUrl.length > 0
       ? opts.baseUrl
       : envUrl && envUrl.length > 0
         ? envUrl

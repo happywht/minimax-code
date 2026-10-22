@@ -43,6 +43,33 @@ def test_trusted_browser_bootstrap_sets_http_only_cookie(secured_app):
         assert client.post("/rpc", json={"jsonrpc": "2.0", "id": 1, "method": "ping"}).status_code == 200
 
 
+def test_agent_and_preview_ports_keep_independent_cookie_sessions(secured_app, tmp_path):
+    from minimax_code.preview.server import build_preview_app
+
+    (tmp_path / "index.html").write_text("preview fixture")
+    preview = build_preview_app(tmp_path)
+    headers = {"Origin": "http://localhost:5173", "X-Minimax-Client": "web"}
+    with (TestClient(secured_app, base_url="http://testserver:8765", client=("127.0.0.1", 1)) as main,
+          TestClient(preview, base_url="http://testserver:8766", client=("127.0.0.1", 2)) as files):
+        main_auth = main.post("/auth/session", headers=headers)
+        preview_auth = files.post("/auth/session", headers=headers)
+        assert main_auth.status_code == preview_auth.status_code == 200
+        assert "minimax_session_8765=" in main_auth.headers["set-cookie"]
+        assert "minimax_session_8766=" in preview_auth.headers["set-cookie"]
+        cookies = "; ".join(response.headers["set-cookie"].split(";", 1)[0]
+                            for response in (main_auth, preview_auth))
+        assert main.post("/rpc", headers={"Cookie": cookies},
+                         json={"jsonrpc": "2.0", "id": 1, "method": "ping"}).status_code == 200
+        assert files.get("/preview/index.html", headers={"Cookie": cookies}).status_code == 200
+        assert files.get("/health").json()["auth_required"] is True
+
+
+@pytest.mark.parametrize("host", ["localhost:bad-port", "localhost:99999", "user@localhost"])
+def test_invalid_host_syntax_is_rejected_before_cookie_parsing(secured_app, host):
+    with TestClient(secured_app) as client:
+        assert client.get("/health", headers={"Host": host}).status_code == 400
+
+
 def test_remote_client_cannot_self_issue_token_even_with_trusted_origin(secured_app):
     with TestClient(secured_app, client=("192.0.2.10", 50000)) as client:
         response = client.post("/auth/session", headers={

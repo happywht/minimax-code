@@ -138,5 +138,31 @@ MCP 优先官方 Python SDK，保留现有配置和工具桥接；真实互操�
 35 协议回放、23 跨栈**（`.verification/2026-10-22T17-49-14-578Z-baseline/`）。
 此后只校正备份文件名/legacy overlay 的文档说明并登记结果，没有再改变执行逻辑。
 
+### 服务异常退出与预览认证批次
+
+- Windows 受管启动器新增服务进程句柄等待，并检查 PID 与创建时间。服务端自身被
+  终止时，启动器退出触发 Job 回收命令及后代；不会仅凭可能复用的 PID 判断身份。
+  依据 Microsoft [进程等待](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)
+  与 [创建时间查询](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes)。
+  真实 exec/shell 服务崩溃、原有进程边界和 worktree 回归共 33 项通过。
+- 会话 worktree 创建先拒绝选项形式和 NUL，再解析为固定提交；缺失引用或 blob
+  不会创建目录，annotated tag 正常工作。保留用户输入的 base_branch 元数据。
+- 本地预览认证先统一回环主机名、隔离各端口 Cookie，再用有时限的目录读取凭据
+  支持 opaque iframe 的 CSS/模块资源。首次真实浏览器测试发现 Strict cookie
+  无法覆盖沙盒子资源（ORB 拒绝），修复后认证、页面与相对 CSS 用例 3 项通过；
+  加入实际样式、模块执行、父页面访问被拒绝的断言后专项 1 项通过。
+- 凭据不能调用 RPC/签发新凭据/写入；失效、目录重绑和越界读回归通过。
+  后端相关 37 项、前端相关 38 项通过；较早进程/预览联合后端 119 项通过。
+  证据在 `.verification/m1-process-owner.log`、`m1-preview-grants-python.log`、
+  `m1-preview-web.log`、`m1-preview-grants-e2e.log`、`m1-preview-render-e2e.log`。
+
+此批没有数据库迁移。回退需配套回退前端与服务端，并会撤销本批崩溃回收和预览修复。
+源码快照 `56eb2a28d497` 的完整基线通过：lint、构建、**758 前端、538 核心后端、
+35 协议回放、24 跨栈**（`.verification/2026-10-22T18-14-52-190Z-baseline/`）。
+随后仅将崩溃测试的 PID 通知文件改为原子发布，避免读取半写入夹具，并校正文档。
+Linux 目前仍是显式取消/超时的进程组回收，服务骤停后的生命周期需随 Linux 常驻服务
+及受限执行环境继续验证；Windows 测试不能替代该证据。M1/M2 恢复衔接与完整阶段
+验收仍未完成。
+
 限制与回退见 [child-workspaces.md](child-workspaces.md)。删除、文件模式、精确恢复、
 工作副本清理 UI、重启后 running 状态核对仍待完成；这批不是 M1 整体验收完成。

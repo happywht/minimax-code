@@ -254,3 +254,26 @@ async def test_delete_preserves_user_files_on_refusal(tmp_path, git_repo, sessio
     assert marker.read_text(encoding="utf-8") == "keep me"
     assert original.exists()
     assert (await sessions_dao.get(created["session_id"]))["workspace_mode"] == "worktree"
+
+
+@pytest.mark.parametrize("reference", ["--orphan", "--force", "HEAD\0ignored", "missing-ref", "HEAD:README.md"])
+async def test_create_rejects_options_missing_refs_and_non_commits(tmp_path, git_repo, sessions_dao, reference):
+    stdout = io.StringIO()
+    server = IPCServer(config=Config.from_env(), stdin=io.StringIO(), stdout=stdout)
+    root = tmp_path / "worktrees"
+    register_workspace_handlers(server, dao=sessions_dao, repo_root=git_repo, worktree_root=root)
+    with pytest.raises(RuntimeError):
+        await request(server, stdout, "workspace.create_worktree_session", {"base_ref": reference})
+    assert not root.exists()
+    assert await sessions_dao.list() == []
+
+
+async def test_create_resolves_annotated_tag_to_commit(tmp_path, git_repo, sessions_dao):
+    subprocess.run(["git", "tag", "-a", "release", "-m", "release"], cwd=git_repo, check=True)
+    stdout = io.StringIO()
+    server = IPCServer(config=Config.from_env(), stdin=io.StringIO(), stdout=stdout)
+    register_workspace_handlers(server, dao=sessions_dao, repo_root=git_repo,
+                                worktree_root=tmp_path / "worktrees")
+    result = await request(server, stdout, "workspace.create_worktree_session", {"base_ref": "release"})
+    assert result["base_branch"] == "release"
+    assert (Path(result["worktree_path"]) / "README.md").read_text() == "hello\n"

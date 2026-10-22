@@ -30,7 +30,11 @@ curl http://127.0.0.1:8765/health
 
 `/health` 和 SPA 静态资源可用于就绪探测；`/rpc`、`/ws`、预览、补全和文件接口需要认证。服务默认生成仅本次进程有效的随机 token，也可通过 `MINIMAX_CODE_AUTH_TOKEN` 注入固定 token。不要把它写入仓库、URL 或前端构建变量。CLI 请求使用 `Authorization: Bearer <token>`。
 
-本机受信浏览器页面通过 `POST /auth/session` 获取会话：请求必须带受信 Origin 和 `X-Minimax-Client: web`，且连接来自回环地址；远端客户端不能自行领取 token。浏览器 token 仅在内存中，HTTP 使用 Bearer，WebSocket 使用 `minimax-auth.<token>` 子协议。服务另设 HttpOnly、SameSite=Strict cookie 供预览与 SSE 使用。进程重启后前端重新握手。
+本机受信浏览器页面通过 `POST /auth/session` 获取会话：请求必须带受信 Origin 和 `X-Minimax-Client: web`，且连接来自回环地址；远端客户端不能自行领取 token。浏览器 token 仅在内存中，HTTP 使用 Bearer，WebSocket 使用 `minimax-auth.<token>` 子协议。服务另设 HttpOnly、SameSite=Strict cookie，名称按端口区分，避免独立预览服务覆盖主服务会话。进程重启后前端重新握手。
+
+预览 iframe 保持 `sandbox=allow-scripts`，不授予同源权限。由于沙盒子资源不会携带 Strict cookie，前端先使用应用认证调用 `POST /preview/access`，取得绑定当前工作目录、最多 15 分钟有效的只读预览路径。页面、CSS、模块脚本和预览事件通过该路径读取；它不能用于 RPC、签发访问凭据或写入。目录重新绑定、失效或服务重启后需重新打开预览。这个临时路径具有读取所选目录预览文件的能力，不等同应用 token；不要公开分享。官方服务入口关闭访问日志；独立托管预览时也应关闭访问日志。签发及文件响应通过 `no-store` 和 `no-referrer` 避免缓存与引用来源传播。
+
+开发环境中，前端会将本地 `localhost`/`127.0.0.1` 服务地址统一到当前浏览器的回环主机名，保留服务端口和协议；远程地址保持原样。独立预览服务也提供公开的 `/health` 认证能力探测，文件读取仍需应用认证或上述只读路径。
 
 所有 HTTP/WS 请求检查 Host，默认只接受 `localhost`、`127.0.0.1`、`::1`；需要额外名称时用 `MINIMAX_CODE_ALLOWED_HOSTS` 明确列出，禁止通配符。`MINIMAX_CODE_CORS_ORIGINS` 是可调用应用的受信页面列表，不要添加不受控站点。认证边界信任本机操作系统账户；远程访问继续采用 SSH 隧道，不应公开监听服务。
 

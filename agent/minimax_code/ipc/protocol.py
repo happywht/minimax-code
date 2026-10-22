@@ -48,6 +48,13 @@ class ChildWorkspaceSummary(_Base):
     collection_required: bool = True
 
 
+class PreviewAccessResult(_Base):
+    """HTTP-only read capability; never a general application auth token."""
+
+    path: str
+    expires_in: int = Field(ge=0, le=900)
+
+
 # ---- Error object ---------------------------------------------------------
 
 

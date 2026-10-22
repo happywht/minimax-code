@@ -49,6 +49,11 @@ function isWindows() {
 function seedCodebaseWorkspace(): void {
   rmSync(WORKSPACE_DIR, { recursive: true, force: true });
   mkdirSync(WORKSPACE_DIR, { recursive: true });
+  writeFileSync(join(WORKSPACE_DIR, "index.html"),
+    '<!doctype html><html><head><link rel="stylesheet" href="preview.css"><script type="module" src="preview.js"></script></head><body><h1>Authenticated preview fixture</h1></body></html>');
+  writeFileSync(join(WORKSPACE_DIR, "preview.css"), "h1 { color: rgb(0, 128, 0); }");
+  writeFileSync(join(WORKSPACE_DIR, "preview.js"),
+    "document.body.dataset.moduleReady='yes'; try { void window.parent.document.title; document.body.dataset.parentAccess='allowed'; } catch { document.body.dataset.parentAccess='blocked'; }");
 
   writeFileSync(
     join(WORKSPACE_DIR, "indexer.py"),
@@ -123,7 +128,7 @@ function spawnAgent(): ChildProcess {
       PYTHONIOENCODING: "utf-8",
       MINIMAX_CODE_LOG_LEVEL: "WARNING",
       MINIMAX_CODE_HTTP_PORT: String(AGENT_PORT),
-      MINIMAX_CODE_CORS_ORIGINS: WEB_BASE,
+      MINIMAX_CODE_CORS_ORIGINS: `${WEB_BASE},${WEB_BASE.replace("127.0.0.1", "localhost")}`,
       MINIMAX_CODE_FORCE_MOCK: "1",
       MINIMAX_CODE_AUTH_TOKEN: E2E_AUTH_TOKEN,
       // Never read or spend a developer's credential-store API key.

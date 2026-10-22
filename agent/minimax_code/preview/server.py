@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import mimetypes
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -24,6 +25,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
+from ..ipc.protocol import PreviewAccessResult
 from .watcher import WatcherEvent, watch_workspace
 
 logger = logging.getLogger(__name__)
@@ -154,6 +156,10 @@ def build_preview_app(workspace: Path) -> FastAPI:
 
     install_application_auth(app, CORS_ORIGINS)
 
+    @app.get("/health")
+    async def health():
+        return {"ok": True, "auth_required": True}
+
     # Add CORS middleware so the Vite SPA can connect.
     from fastapi.middleware.cors import CORSMiddleware
 
@@ -228,6 +234,15 @@ def register_preview_routes(
                     # Use a timeout so we can check for disconnects.
                     if await request.is_disconnected():
                         break
+                    if request.url.path.startswith("/preview/view/"):
+                        record = request.app.state.auth.preview_grant(request.url.path)
+                        if record is None:
+                            break
+                        try:
+                            if await session_workspace(record["session_id"]) != root:
+                                break
+                        except HTTPException:
+                            break
                     try:
                         event = await asyncio.wait_for(q.get(), timeout=15.0)
                     except TimeoutError:
@@ -253,11 +268,52 @@ def register_preview_routes(
 
     # ---- GET /preview/{file_path} --------------------------------------
 
+    async def grant_workspace(request: Request, grant: str) -> Path:
+        record = request.app.state.auth.preview_grant(f"/preview/view/{grant}/file")
+        if record is None:
+            raise HTTPException(401, "Preview access expired; reload the preview")
+        root = await session_workspace(record["session_id"])
+        if str(root) != record["workspace"]:
+            raise HTTPException(409, "Preview workspace binding changed; reload the preview")
+        return root
+
+    @app.post("/preview/access")
+    async def preview_access(request: Request) -> JSONResponse:
+        try:
+            body = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(400, "Expected a JSON object") from exc
+        if not isinstance(body, dict) or set(body) - {"session_id"}:
+            raise HTTPException(400, "Expected an optional session_id")
+        session_id = body.get("session_id")
+        if session_id is not None and not isinstance(session_id, str):
+            raise HTTPException(400, "session_id must be a string")
+        root = await session_workspace(session_id)
+        try:
+            grant = request.app.state.auth.issue_preview_grant(str(root), session_id)
+        except ValueError as exc:
+            raise HTTPException(429, str(exc)) from exc
+        remaining = max(0, int(request.app.state.auth.preview_grants[grant]["expires"] - time.monotonic()))
+        result = PreviewAccessResult(path=f"/preview/view/{grant}", expires_in=remaining)
+        return JSONResponse(result.model_dump(),
+                            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
+    @app.get("/preview/view/{grant}/events")
+    async def granted_events(request: Request, grant: str):
+        # Resolve the binding before opening a read-only event stream.
+        await grant_workspace(request, grant)
+        record = request.app.state.auth.preview_grant(request.url.path)
+        assert record is not None
+        return await preview_events(request, record["session_id"])
+
     @app.get("/preview/{file_path:path}", response_model=None)
     @app.get("/preview/session/{session_id}/{file_path:path}", response_model=None)
-    async def preview_file(file_path: str, session_id: str | None = None) -> FileResponse | JSONResponse:
+    @app.get("/preview/view/{grant}/{file_path:path}", response_model=None)
+    async def preview_file(request: Request, file_path: str, session_id: str | None = None,
+                           grant: str | None = None) -> FileResponse | JSONResponse:
         """Serve a file from the workspace."""
-        safe = _safe_path(await session_workspace(session_id), file_path)
+        root = await grant_workspace(request, grant) if grant else await session_workspace(session_id)
+        safe = _safe_path(root, file_path)
         if safe is None:
             return JSONResponse(
                 content={"error": "path traversal denied"},
@@ -275,6 +331,8 @@ def register_preview_routes(
                 "Content-Security-Policy": "sandbox allow-scripts; default-src 'self' data: blob:; connect-src 'none'; form-action 'none'",
                 "X-Content-Type-Options": "nosniff",
                 "Referrer-Policy": "no-referrer",
+                "Cache-Control": "no-store",
+                **({"Access-Control-Allow-Origin": "null"} if grant else {}),
             },
         )
 

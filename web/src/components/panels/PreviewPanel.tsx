@@ -17,6 +17,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw, TriangleAlert, X, Wifi, WifiOff } from "lucide-react";
 import { usePreviewStore } from "../../stores/previewStore";
 import { useSessionStore } from "../../stores";
+import { authHeaders, ensureSession, rememberHealth } from "../../ipc/httpAuth";
+import { localBrowserOrigin } from "../../ipc/localOrigin";
+import type { PreviewAccessResult } from "../../types/ipc";
 import { Button, IconButton, Input, Spinner } from "../../ui";
 import { strings } from "../../ui/strings";
 
@@ -37,25 +40,44 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
   const eventSourceRef = useRef<EventSource | null>(null);
   const [previewState, setPreviewState] = useState<"checking" | "ready" | "error">("checking");
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [accessBase, setAccessBase] = useState<string | null>(null);
 
   // Build the full preview URL.
   const encodedPath = filePath
     .split("/")
     .map((part) => encodeURIComponent(part))
     .join("/");
-  const previewBase = `${url}/preview${sessionId ? `/session/${encodeURIComponent(sessionId)}` : ""}`;
-  const previewUrl = `${previewBase}/${encodedPath}`;
+  const serviceBase = localBrowserOrigin(url);
+  const previewBase = `${serviceBase}/preview${sessionId ? `/session/${encodeURIComponent(sessionId)}` : ""}`;
+  const previewUrl = accessBase ? `${accessBase}/${encodedPath}` : undefined;
 
   const checkPreview = useCallback(async () => {
     setPreviewState("checking");
     setPreviewError(null);
+    setAccessBase(null);
     try {
+      // Standalone preview services have their own token. Bootstrap before
+      // the iframe and EventSource, which cannot attach Authorization headers.
+      const service = await fetch(`${serviceBase}/health`);
+      await rememberHealth(serviceBase, service);
+      await ensureSession(serviceBase, true);
       const health = await fetch(`${previewBase}/health`, { credentials: "include" });
       if (!health.ok) {
         throw new Error(strings.panels.preview.serviceError(health.status));
       }
 
-      const file = await fetch(previewUrl, { credentials: "include" });
+      const access = await fetch(`${serviceBase}/preview/access`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json", ...authHeaders(serviceBase) },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+      if (!access.ok) throw new Error(strings.panels.preview.serviceError(access.status));
+      const grant = await access.json() as PreviewAccessResult;
+      if (!grant.path?.startsWith("/preview/view/") || grant.path.includes("..")) {
+        throw new Error("Preview service returned invalid access metadata");
+      }
+      const grantedBase = `${serviceBase}${grant.path}`;
+      const file = await fetch(`${grantedBase}/${encodedPath}`);
       if (!file.ok) {
         let detail = strings.panels.preview.fileNotFound(filePath);
         try {
@@ -66,12 +88,13 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
         }
         throw new Error(detail);
       }
+      setAccessBase(grantedBase);
       setPreviewState("ready");
     } catch (error) {
       setPreviewError(error instanceof Error ? error.message : String(error));
       setPreviewState("error");
     }
-  }, [filePath, previewUrl, previewBase]);
+  }, [filePath, encodedPath, previewBase, serviceBase, sessionId]);
 
   useEffect(() => {
     void checkPreview();
@@ -79,7 +102,8 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
 
   // SSE connection to the preview server for hot-reload.
   useEffect(() => {
-    const es = new EventSource(`${previewBase}/events`, { withCredentials: true });
+    if (previewState !== "ready" || !accessBase) return;
+    const es = new EventSource(`${accessBase}/events`);
     eventSourceRef.current = es;
 
     es.onopen = () => setConnected(true);
@@ -103,7 +127,7 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
       eventSourceRef.current = null;
       setConnected(false);
     };
-  }, [previewBase, setConnected, reload]);
+  }, [accessBase, previewState, setConnected, reload]);
 
   const handlePathSubmit = useCallback(
     (e: React.FormEvent<HTMLFormElement>) => {

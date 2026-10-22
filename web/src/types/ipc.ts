@@ -945,6 +945,12 @@ export interface ChildWorkspaceSummary {
   collection_required: boolean;
 }
 
+/** HTTP POST /preview/access; a temporary read-only preview path. */
+export interface PreviewAccessResult {
+  path: string;
+  expires_in: number;
+}
+
 export interface SpawnSubagentResult {
   agent_run_id: string;
   agent_id: string;
