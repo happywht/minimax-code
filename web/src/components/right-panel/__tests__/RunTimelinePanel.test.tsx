@@ -53,6 +53,7 @@ describe("RunTimelinePanel", () => {
       initialized: true,
       loading: false,
       error: null,
+      loadForSession: vi.fn().mockResolvedValue(undefined),
     });
   });
 

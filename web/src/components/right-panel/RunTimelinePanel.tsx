@@ -14,6 +14,7 @@ import type { AgentRunStep, AgentRunStepKind, AgentRunStepStatus } from "../../t
 import { buildPermissionPatchFiles } from "../../lib/permissionPatchPreview";
 import { PermissionPatchPreview } from "../modals/PermissionPatchPreview";
 import { strings } from "../../ui/strings";
+import { Button } from "../../ui";
 
 export interface RunTimelinePanelProps {
   testId?: string;
@@ -101,13 +102,22 @@ export function RunTimelinePanel({
     if (nearBottom) setHasNewEvents(false);
   };
 
+  const syncError = error ? (
+    <div role="alert" className="px-3 py-2 text-xs text-status-warning">
+      <p>{strings.rightPanel.timeline.unavailable} {error}</p>
+      {visibleRuns.length > 0 && <p>{strings.rightPanel.timeline.stale}</p>}
+      <Button size="sm" variant="ghost" loading={loading}
+        onClick={() => void loadForSession(currentSessionId)}>{strings.common.retry}</Button>
+    </div>
+  ) : null;
+
   if (visibleRuns.length === 0 && pending.length === 0) {
     return (
       <div data-testid={testId} className="px-3 py-4 text-xs text-minimax-muted">
         {loading
           ? strings.rightPanel.timeline.loading
           : error
-            ? strings.rightPanel.timeline.unavailable
+            ? syncError
             : strings.rightPanel.timeline.empty}
       </div>
     );
@@ -115,6 +125,7 @@ export function RunTimelinePanel({
 
   return (
     <div data-testid={testId} className="relative">
+      {syncError}
       <div
         ref={scrollRef}
         data-testid="run-timeline-scroll"

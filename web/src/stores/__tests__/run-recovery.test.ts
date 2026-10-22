@@ -1,0 +1,136 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "@testing-library/react";
+import type { AgentRun, RunStepsResult } from "../../types/ipc";
+
+const api = vi.hoisted(() => ({
+  listRuns: vi.fn(), getRunSteps: vi.fn(), getRunEvents: vi.fn(),
+  handlers: new Map<string, () => void>(),
+  sidecar: null as null | ((event: { status: string }) => void),
+}));
+vi.mock("../../ipc", () => ({
+  typedIPC: api,
+  ipc: {
+    on: (event: string, fn: () => void) => {
+      api.handlers.set(event, fn);
+      return () => api.handlers.delete(event);
+    },
+    onSideCar: (fn: typeof api.sidecar) => { api.sidecar = fn; return () => { api.sidecar = null; }; },
+  },
+}));
+import { useRunTimelineStore as store } from "../runStore";
+import { useSessionStore } from "../sessionStore";
+import { StreamEvent } from "../../types/ipc";
+
+const run: AgentRun = {
+  id: "r1", session_id: "s1", mode: "chat", status: "running", title: "Work",
+  created_at: "2026-10-23T00:00:00Z",
+};
+const snapshot = (row = run, cursor = 1): RunStepsResult => ({ run: row, cursor, steps: [] });
+const idle = () => waitFor(() => expect(store.getState().loading).toBe(false));
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+beforeEach(async () => {
+  await idle();
+  store.getState().reset();
+  vi.resetAllMocks();
+  useSessionStore.setState({ currentSessionId: "s1" });
+  api.listRuns.mockResolvedValue({ runs: [run] });
+  api.getRunSteps.mockResolvedValue(snapshot());
+  api.getRunEvents.mockResolvedValue({ events: [], next_seq: 1, has_more: false });
+});
+
+describe("durable run recovery", () => {
+  it("reconnects from a fresh snapshot even without a final notification", async () => {
+    await store.getState().loadForSession("s1");
+    api.getRunSteps.mockResolvedValue(snapshot({ ...run, status: "completed" }, 4));
+    api.sidecar?.({ status: "started" });
+    await idle();
+    expect(store.getState().runs.r1.status).toBe("completed");
+    expect(api.getRunSteps).toHaveBeenCalledTimes(2);
+  });
+
+  it("pages ordered events and applies the final state rather than a stale notification", async () => {
+    await store.getState().loadForSession("s1");
+    const step = { id: "st", run_id: "r1", session_id: "s1", kind: "tool_call",
+      status: "completed", title: "check", summary: "ok", started_at: run.created_at, ordinal: 1 };
+    api.getRunEvents.mockResolvedValueOnce({ events: [
+      { run_id: "r1", seq: 2, data: { step } },
+    ], next_seq: 2, has_more: true }).mockResolvedValueOnce({ events: [
+      { run_id: "r1", seq: 3, data: { run: { ...run, status: "failed", error: "check failed" } } },
+    ], next_seq: 3, has_more: false });
+    api.handlers.get(StreamEvent.RunCompleted)?.();
+    await idle();
+    expect(store.getState().runs.r1.status).toBe("failed");
+    expect(store.getState().runs.r1.steps).toEqual([step]);
+    expect(api.getRunEvents.mock.calls.map((args) => args[1].after_seq)).toEqual([1, 2]);
+  });
+
+  it("refreshes after an invalidated cursor or sequence gap", async () => {
+    await store.getState().loadForSession("s1");
+    api.getRunEvents.mockRejectedValueOnce(Object.assign(new Error("cursor ahead"), { code: -32602 }));
+    api.getRunSteps.mockResolvedValue(snapshot(run, 0));
+    api.handlers.get(StreamEvent.RunCompleted)?.();
+    await idle();
+    api.getRunEvents.mockResolvedValueOnce({ events: [{ run_id: "r1", seq: 9, data: {} }], next_seq: 9, has_more: false });
+    api.getRunSteps.mockResolvedValue(snapshot({ ...run, status: "cancelled" }, 9));
+    api.handlers.get(StreamEvent.RunCompleted)?.();
+    await idle();
+    expect(api.getRunSteps).toHaveBeenCalledTimes(3);
+    expect(store.getState().runs.r1.status).toBe("cancelled");
+  });
+
+  it("queues notifications during loading so an older snapshot cannot hide completion", async () => {
+    const pending = deferred<RunStepsResult>();
+    api.getRunSteps.mockReturnValueOnce(pending.promise);
+    const loading = store.getState().loadForSession("s1");
+    await waitFor(() => expect(api.getRunSteps).toHaveBeenCalledTimes(1));
+    api.getRunEvents.mockResolvedValue({ events: [{ run_id: "r1", seq: 2,
+      data: { run: { ...run, status: "completed" } } }], next_seq: 2, has_more: false });
+    api.handlers.get(StreamEvent.RunCompleted)?.();
+    pending.resolve(snapshot());
+    await loading;
+    expect(store.getState().runs.r1.status).toBe("completed");
+  });
+
+  it("discards late data and errors after switching sessions", async () => {
+    const pending = deferred<RunStepsResult>();
+    api.getRunSteps.mockReturnValueOnce(pending.promise);
+    const first = store.getState().loadForSession("s1");
+    await waitFor(() => expect(api.getRunSteps).toHaveBeenCalledTimes(1));
+    useSessionStore.setState({ currentSessionId: "s2" });
+    api.listRuns.mockResolvedValue({ runs: [] });
+    const second = store.getState().loadForSession("s2");
+    expect(store.getState().runs).toEqual({});
+    pending.reject(new Error("old session error"));
+    await Promise.all([first, second]);
+    expect(store.getState().error).toBeNull();
+    expect(store.getState().runs).toEqual({});
+  });
+
+  it("keeps visible history and reports fetch failure instead of silently erasing steps", async () => {
+    await store.getState().loadForSession("s1");
+    api.getRunSteps.mockRejectedValue(new Error("database unavailable"));
+    await store.getState().loadForSession("s1");
+    expect(store.getState().runs.r1.title).toBe("Work");
+    expect(store.getState().error).toBe("database unavailable");
+    useSessionStore.setState({ currentSessionId: null });
+    await store.getState().loadForSession(null);
+    expect(store.getState().runs).toEqual({});
+  });
+
+  it("rejects cross-session snapshots and coalesces a notification burst", async () => {
+    await store.getState().loadForSession("s1");
+    for (let i = 0; i < 50; i++) api.handlers.get(StreamEvent.RunStepStarted)?.();
+    await idle();
+    expect(api.getRunEvents).toHaveBeenCalledTimes(1);
+    api.getRunSteps.mockResolvedValue(snapshot({ ...run, session_id: "s-other" }));
+    await store.getState().loadForSession("s1");
+    expect(store.getState().runs.r1.session_id).toBe("s1");
+    expect(store.getState().error).toContain("Invalid run snapshot");
+  });
+});

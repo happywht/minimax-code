@@ -6,6 +6,7 @@ import { usePermissionStore, useRunTimelineStore } from "../src/stores";
 vi.mock("../src/ipc", () => ({
   ipc: {
     on: vi.fn(() => vi.fn()),
+    onSideCar: vi.fn(() => vi.fn()),
   },
   typedIPC: {},
 }));
@@ -13,6 +14,8 @@ vi.mock("../src/ipc", () => ({
 describe("RunTimelinePanel", () => {
   beforeEach(() => {
     useRunTimelineStore.getState().reset();
+    // These are rendering tests; network synchronization has its own store suite.
+    useRunTimelineStore.setState({ loadForSession: vi.fn().mockResolvedValue(undefined) });
     usePermissionStore.setState({ pending: {} });
   });
 
@@ -45,8 +48,12 @@ describe("RunTimelinePanel", () => {
       },
     });
 
+    useRunTimelineStore.setState({ error: "connection lost" });
     render(<RunTimelinePanel />);
 
+    expect(screen.getByRole("alert")).toHaveTextContent("connection lost");
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(useRunTimelineStore.getState().loadForSession).toHaveBeenCalled();
     expect(screen.getByText("Fix tests")).toBeInTheDocument();
     expect(screen.getByText("exec_command")).toBeInTheDocument();
     expect(screen.getByText('{"cmd":["pytest"]}')).toBeInTheDocument();

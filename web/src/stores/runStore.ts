@@ -4,9 +4,7 @@ import {
   StreamEvent,
   type AgentRun,
   type AgentRunStep,
-  type RunCompletedData,
-  type RunCreatedData,
-  type RunStepData,
+  type RunStepsResult,
 } from "../types/ipc";
 import { useSessionStore } from "./sessionStore";
 
@@ -25,174 +23,140 @@ export interface RunTimelineState {
   reset: () => void;
 }
 
-let createdUnsub: (() => void) | null = null;
-let startedUnsub: (() => void) | null = null;
-let completedStepUnsub: (() => void) | null = null;
-let completedRunUnsub: (() => void) | null = null;
-
 const MAX_RUNS = 20;
+let unsubs: (() => void)[] = [];
+let session: string | null = null;
+let generation = 0;
+let snapshots = new Map<string, RunStepsResult>();
+let pending = false;
+let forceSnapshot = false;
+let worker: Promise<void> | null = null;
 
-function upsertRun(
-  runs: Record<string, RunTimelineEntry>,
-  run: AgentRun,
-): Record<string, RunTimelineEntry> {
-  const existing = runs[run.id];
-  return {
-    ...runs,
-    [run.id]: {
-      ...existing,
-      ...run,
-      steps: existing?.steps ?? [],
-    },
-  };
+function validateSnapshot(snapshot: RunStepsResult, runId: string, sessionId: string): RunStepsResult {
+  if (snapshot.run.id !== runId || snapshot.run.session_id !== sessionId ||
+      !Number.isSafeInteger(snapshot.cursor) || snapshot.cursor < 0 ||
+      snapshot.steps.some((step) => step.run_id !== runId || step.session_id !== sessionId)) {
+    throw new Error("Invalid run snapshot; refresh the timeline.");
+  }
+  return snapshot;
 }
 
-function upsertStep(
-  runs: Record<string, RunTimelineEntry>,
-  runId: string,
-  step: AgentRunStep,
-): Record<string, RunTimelineEntry> {
-  const existing = runs[runId];
-  if (!existing) return runs;
-  const steps = existing.steps.some((s) => s.id === step.id)
-    ? existing.steps.map((s) => (s.id === step.id ? { ...s, ...step } : s))
-    : [...existing.steps, step];
-  steps.sort((a, b) => a.ordinal - b.ordinal);
-  return {
-    ...runs,
-    [runId]: {
-      ...existing,
-      steps,
-    },
-  };
+async function catchUp(runId: string, sessionId: string, refresh: boolean): Promise<RunStepsResult> {
+  const full = async () => validateSnapshot(await typedIPC.getRunSteps(runId), runId, sessionId);
+  let entry = snapshots.get(runId);
+  if (refresh || !entry) return full();
+  // Bound a busy run's catch-up. A fresh snapshot replaces excessively long replay.
+  for (let page = 0; page < 10; page++) {
+    let result;
+    try {
+      result = await typedIPC.getRunEvents(runId, { after_seq: entry.cursor, limit: 100 });
+    } catch (err) {
+      // Import/restore can replace the journal and invalidate a browser's cursor.
+      if (typeof err === "object" && err !== null && "code" in err && err.code === -32602) return full();
+      throw err;
+    }
+    let run = entry.run;
+    const steps = new Map(entry.steps.map((step) => [step.id, step]));
+    let cursor = entry.cursor;
+    for (const event of result.events) {
+      if (event.run_id !== runId || event.seq !== cursor + 1) return full();
+      if (event.data.run) run = event.data.run;
+      if (event.data.step) steps.set(event.data.step.id, event.data.step);
+      cursor = event.seq;
+    }
+    if (result.next_seq !== cursor || (result.has_more && cursor === entry.cursor)) return full();
+    entry = validateSnapshot({ run, steps: [...steps.values()], cursor }, runId, sessionId);
+    if (!result.has_more) return entry;
+  }
+  return full();
 }
 
-function trimOrder(order: string[]): string[] {
-  return order.slice(0, MAX_RUNS);
+async function drain(): Promise<void> {
+  while (pending) {
+    pending = false;
+    const current = session;
+    const epoch = generation;
+    const refresh = forceSnapshot;
+    forceSnapshot = false;
+    if (!current) continue;
+    const isCurrent = () => epoch === generation && current === useSessionStore.getState().currentSessionId;
+    try {
+      const { runs } = await typedIPC.listRuns({ session_id: current, limit: MAX_RUNS });
+      const entries = await Promise.all(runs.map((run) => catchUp(run.id, current, refresh)));
+      if (!isCurrent()) continue;
+      snapshots = new Map(entries.map((entry) => [entry.run.id, entry]));
+      const next: Record<string, RunTimelineEntry> = {};
+      for (const entry of entries) {
+        next[entry.run.id] = {
+          ...entry.run,
+          steps: [...entry.steps].sort((a, b) => a.ordinal - b.ordinal || a.id.localeCompare(b.id)),
+        };
+      }
+      useRunTimelineStore.setState({ runs: next, order: entries.map((entry) => entry.run.id), error: null });
+    } catch (err) {
+      if (isCurrent()) useRunTimelineStore.setState({ error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+}
+
+function requestSync(sessionId: string | null, refresh = false): Promise<void> {
+  if (session !== sessionId) {
+    session = sessionId;
+    generation++;
+    snapshots.clear();
+    useRunTimelineStore.setState({ runs: {}, order: [], error: null });
+    refresh = true;
+  }
+  if (!sessionId) {
+    pending = false;
+    useRunTimelineStore.setState({ runs: {}, order: [], loading: false, error: null });
+    return Promise.resolve();
+  }
+  pending = true;
+  forceSnapshot ||= refresh;
+  useRunTimelineStore.setState({ loading: true });
+  if (!worker) {
+    // Start on the next microtask so all notifications in this batch coalesce.
+    worker = Promise.resolve().then(drain).finally(() => {
+      worker = null;
+      if (pending) void requestSync(session);
+      else useRunTimelineStore.setState({ loading: false });
+    });
+  }
+  return worker;
 }
 
 export const useRunTimelineStore = create<RunTimelineState>((set, get) => ({
-  runs: {},
-  order: [],
-  initialized: false,
-  loading: false,
-  error: null,
-
+  runs: {}, order: [], initialized: false, loading: false, error: null,
   init: () => {
     if (get().initialized) return;
-
-    if (!createdUnsub) {
-      createdUnsub = ipc.on<RunCreatedData>(StreamEvent.RunCreated, (env) => {
-        const run = env.data?.run;
-        if (!run) return;
-        // Session guard — run.created is broadcast for every run in the
-        // process (background skills, sub-agents, other tabs). The
-        // timeline panel is scoped to the currently open session.
-        if (run.session_id !== useSessionStore.getState().currentSessionId) return;
-        set((s) => {
-          const order = trimOrder([run.id, ...s.order.filter((id) => id !== run.id)]);
-          const keep = new Set(order);
-          const nextRuns = upsertRun(s.runs, run);
-          for (const id of Object.keys(nextRuns)) {
-            if (!keep.has(id)) delete nextRuns[id];
-          }
-          return { runs: nextRuns, order };
-        });
-      });
-    }
-
-    if (!startedUnsub) {
-      startedUnsub = ipc.on<RunStepData>(StreamEvent.RunStepStarted, (env) => {
-        const data = env.data;
-        if (!data?.step) return;
-        set((s) => ({ runs: upsertStep(s.runs, data.run_id, data.step) }));
-      });
-    }
-
-    if (!completedStepUnsub) {
-      completedStepUnsub = ipc.on<RunStepData>(StreamEvent.RunStepCompleted, (env) => {
-        const data = env.data;
-        if (!data?.step) return;
-        set((s) => ({ runs: upsertStep(s.runs, data.run_id, data.step) }));
-      });
-    }
-
-    if (!completedRunUnsub) {
-      completedRunUnsub = ipc.on<RunCompletedData>(StreamEvent.RunCompleted, (env) => {
-        const run = env.data?.run;
-        if (!run) return;
-        // Orphan/foreign guard — a completed run we never saw created
-        // belongs to another session (its created event was filtered);
-        // upserting it here would append a ghost timeline entry.
-        if (
-          !get().runs[run.id] &&
-          run.session_id !== useSessionStore.getState().currentSessionId
-        ) {
-          return;
-        }
-        set((s) => ({ runs: upsertRun(s.runs, run) }));
-      });
-    }
-
+    const wake = () => { void requestSync(useSessionStore.getState().currentSessionId); };
+    // Notifications are wakeups; durable snapshots/events are the source of truth.
+    unsubs = [
+      ...[StreamEvent.RunCreated, StreamEvent.RunStepStarted, StreamEvent.RunStepCompleted,
+        StreamEvent.RunCompleted].map((event) => ipc.on(event, wake)),
+      ipc.onSideCar((event) => {
+        if (event.status === "started") void requestSync(useSessionStore.getState().currentSessionId, true);
+      }),
+    ];
     set({ initialized: true });
   },
-
-  loadForSession: async (sessionId) => {
-    if (!sessionId) return;
+  loadForSession: (sessionId) => {
     get().init();
-    set({ loading: true, error: null });
-    try {
-      const { runs } = await typedIPC.listRuns({ session_id: sessionId, limit: MAX_RUNS });
-      const entries = await Promise.all(
-        runs.map(async (run) => {
-          try {
-            return await typedIPC.getRunSteps(run.id);
-          } catch {
-            return { run, steps: [] };
-          }
-        }),
-      );
-      // Stale guard — the user may have switched sessions while the
-      // per-run step fetches were in flight; don't splice the old
-      // session's timeline into the newly opened one.
-      if (useSessionStore.getState().currentSessionId !== sessionId) return;
-      set(() => {
-        let nextRuns: Record<string, RunTimelineEntry> = {};
-        const loadedOrder: string[] = [];
-        for (const entry of entries) {
-          nextRuns = upsertRun(nextRuns, entry.run);
-          for (const step of entry.steps) {
-            nextRuns = upsertStep(nextRuns, entry.run.id, step);
-          }
-          loadedOrder.push(entry.run.id);
-        }
-        // Replace, don't merge — this store is scoped to one session;
-        // leftovers from a previously opened session must not linger.
-        const order = trimOrder(loadedOrder);
-        return { runs: nextRuns, order, loading: false };
-      });
-    } catch (err) {
-      set({
-        loading: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    return requestSync(sessionId, true);
   },
-
   reset: () => {
+    generation++;
+    session = null;
+    snapshots.clear();
+    pending = false;
+    forceSnapshot = false;
+    unsubs.forEach((unsub) => unsub());
+    unsubs = [];
     set({ runs: {}, order: [], initialized: false, loading: false, error: null });
   },
 }));
 
 if (import.meta.hot) {
-  import.meta.hot.dispose(() => {
-    createdUnsub?.();
-    startedUnsub?.();
-    completedStepUnsub?.();
-    completedRunUnsub?.();
-    createdUnsub = null;
-    startedUnsub = null;
-    completedStepUnsub = null;
-    completedRunUnsub = null;
-  });
+  import.meta.hot.dispose(() => useRunTimelineStore.getState().reset());
 }

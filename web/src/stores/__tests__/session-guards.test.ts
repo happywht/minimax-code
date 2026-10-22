@@ -31,6 +31,7 @@ function makeMockIpcModule() {
     ipc: {
       start: vi.fn().mockResolvedValue(undefined),
       ping: vi.fn().mockResolvedValue(true),
+      onSideCar: vi.fn(() => vi.fn()),
       on: vi.fn((event: string, handler: (env: { data?: unknown }) => void) => {
         const list = bus.handlers.get(event) ?? [];
         list.push(handler);
@@ -41,7 +42,7 @@ function makeMockIpcModule() {
       }),
     },
     IPCError: class extends Error {},
-    typedIPC: {},
+    typedIPC: { listRuns: vi.fn().mockResolvedValue({ runs: [] }) },
   };
 }
 
@@ -203,71 +204,14 @@ describe("teamRunStore envelope unwrap (v1.2.0 cut 2)", () => {
   });
 });
 
-describe("runStore session filter (v1.2.0 cut 4)", () => {
-  it("drops run.created for a foreign session", () => {
+describe("runStore session filter", () => {
+  it("does not trust foreign run payloads as timeline state", async () => {
     openSession("s-now");
-    fire(StreamEvent.RunCreated, {
-      run: {
-        id: "run-foreign",
-        session_id: "s-other",
-        mode: "chat",
-        status: "running",
-        title: "other tab's run",
-        created_at: "2026-08-23T00:00:00Z",
-      },
-    });
-    expect(useRunTimelineStore.getState().order).toHaveLength(0);
-
-    fire(StreamEvent.RunCreated, {
-      run: {
-        id: "run-own",
-        session_id: "s-now",
-        mode: "chat",
-        status: "running",
-        title: "my run",
-        created_at: "2026-08-23T00:00:01Z",
-      },
-    });
-    expect(useRunTimelineStore.getState().order).toContain("run-own");
-  });
-
-  it("drops orphan run.completed from a foreign session but updates known runs", () => {
-    openSession("s-now");
-    fire(StreamEvent.RunCreated, {
-      run: {
-        id: "run-own",
-        session_id: "s-now",
-        mode: "chat",
-        status: "running",
-        title: "my run",
-        created_at: "2026-08-23T00:00:00Z",
-      },
-    });
-
-    // A foreign completion we never saw created — ghost entry, dropped.
-    fire(StreamEvent.RunCompleted, {
-      run: {
-        id: "run-ghost",
-        session_id: "s-other",
-        mode: "chat",
-        status: "completed",
-        title: "ghost",
-        created_at: "2026-08-23T00:00:02Z",
-      },
-    });
-    expect(useRunTimelineStore.getState().runs["run-ghost"]).toBeUndefined();
-
-    // Completing a run we did see — updates in place.
-    fire(StreamEvent.RunCompleted, {
-      run: {
-        id: "run-own",
-        session_id: "s-now",
-        mode: "chat",
-        status: "completed",
-        title: "my run",
-        created_at: "2026-08-23T00:00:00Z",
-      },
-    });
-    expect(useRunTimelineStore.getState().runs["run-own"]?.status).toBe("completed");
+    for (const event of [StreamEvent.RunCreated, StreamEvent.RunCompleted]) {
+      fire(event, { run: { id: "foreign", session_id: "s-other", status: "completed" } });
+    }
+    await useRunTimelineStore.getState().loadForSession("s-now");
+    expect(useRunTimelineStore.getState().order).toEqual([]);
+    expect(useRunTimelineStore.getState().runs).toEqual({});
   });
 });

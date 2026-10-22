@@ -1079,6 +1079,7 @@ export const strings = {
     timeline: {
       loading: "正在加载运行…",
       unavailable: "运行历史不可用。",
+      stale: "当前显示上次成功同步的记录。",
       empty: "暂无活动运行。",
       deny: "拒绝",
       allow: "允许",
