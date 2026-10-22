@@ -255,6 +255,8 @@ Tool results are serialised into the conversation as OpenAI-style
 
 | Failure mode | Where caught | What happens |
 | --- | --- | --- |
+| Native history read or required message/run-step write fails | Native adapters raise `RunPersistenceError`; core propagates it | Stops execution. Missing user/assistant/intent evidence prevents the next model/tool dispatch; missing post-tool evidence stops further calls and requires review of effects. The finalizer saves a failed receipt when storage permits. |
+| One parallel tool task raises a fatal callback error | `AgentCore._run_tool_batch` | Cancels and drains sibling tasks before releasing the session lease; no background tool from that batch is left writing after failure is reported. |
 | Network error / timeout in HTTP call | `MiniMaxClient._post_streaming` | Retries with exponential backoff (1s→2s→4s, cap 16s, max 3 attempts). Final failure raises `LLMError`. |
 | Open LLM stream produces no event for `stall_timeout` | `AgentCore._stream_turn` | Raises `LLMStreamTimeout`; the run is recorded as failed and may be retried. It is never reported as completed. |
 | 4xx (except 429) | same | No retry. Raises `LLMError("HTTP NNN: …")` immediately. |
@@ -601,6 +603,14 @@ backend `done`, `error`, or cancellation events may end the visible run.
 * `MINIMAX_API_BASE` — API root URL. Default `https://api.minimax.com/v1`.
 
 ## 10. Storage integration (Phase 1 seam)
+
+The Native IPC adapter treats conversation history and run evidence as required.
+It raises `RunPersistenceError` on read/write failure; core callback wrappers must
+propagate that class. Optional telemetry/UI failures retain their existing isolation.
+If storage cannot even save termination, the API reports an unconfirmed result and
+the last persisted state is retained for startup recovery; it cannot claim a saved
+failure receipt. Integrations using the generic callbacks should raise this class
+when persistence is mandatory rather than relying on the legacy best-effort seam.
 
 `AgentCore` takes two optional callables that the storage layer
 satisfies directly:

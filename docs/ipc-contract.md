@@ -548,6 +548,13 @@ returns the result separately. State and result/event writes commit atomically.
 Run cancellation applies only to a service-owned task; it does not infer ownership
 from a database row. `agent.cancel` still requests cancellation of the whole session.
 
+Native history/evidence persistence errors stop the run with code `-32004` and
+`data: {run_id, requires_review: true}` when the error receipt can be saved.
+If saving termination also fails, no confirmed result is returned; inspect the
+persisted state and server diagnostics before recovery. Ordinary notification
+delivery failures do not change a durable result. Parallel tool siblings are
+cancelled and drained before a fatal evidence error releases the session lease.
+
 Request:
 ```json
 {

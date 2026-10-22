@@ -518,3 +518,81 @@ async def test_shutdown_after_admission_before_scheduling_saves_cancel_receipt(n
     assert retry.reply.call_args.args[0]["cancelled"] is True
     assert len(await native.dao.list_runs()) == 1
     assert native.cores == []
+
+
+@pytest.mark.parametrize("fault,model_calls,writes", [
+    ("history", 0, 0), ("user", 0, 0), ("assistant", 1, 0),
+    ("thinking", 0, 0), ("intent", 1, 0), ("result", 1, 1), ("tool", 1, 1),
+])
+async def test_evidence_failure_stops_native_execution(native, monkeypatch, fault, model_calls, writes):
+    from test_agent_core import CountingTool, FakeLLM, _text_response, _tool_call, _tool_response
+
+    from minimax_code import agent, app
+    from minimax_code.agent.core import AgentCore
+    from minimax_code.agent.tools import ToolRegistry, ToolResult
+    from minimax_code.storage.dao.messages import MessagesDAO
+
+    class Write(CountingTool):
+        async def run(self, **kwargs):
+            self.calls.append(kwargs)
+            (native.root / "effect.txt").write_text("applied", encoding="utf-8")
+            return ToolResult.ok(output="saved")
+
+    tool = Write()
+    registry = ToolRegistry()
+    registry.register(tool)
+    llm = FakeLLM([_tool_response(_tool_call("echo", {"text": "write"})), _text_response("done")])
+    llm.default_model, llm.mock = "test", True
+    monkeypatch.setattr(agent, "AgentCore", AgentCore)
+    monkeypatch.setattr(app, "get_subagent_llm", lambda: llm)
+    monkeypatch.setattr("minimax_code.agent.tools.get_default_registry", lambda: registry)
+    if fault == "history":
+        monkeypatch.setattr(MessagesDAO, "list_for_session", AsyncMock(side_effect=OSError("read failure")))
+    elif fault in {"user", "assistant", "tool"}:
+        await native.db.execute(f"""CREATE TRIGGER fail_message BEFORE INSERT ON messages
+            WHEN NEW.role = '{fault}' BEGIN SELECT RAISE(FAIL, 'storage failure'); END""")
+    else:
+        event, kind = {"thinking": ("INSERT", "thought"), "intent": ("INSERT", "tool_call"),
+                       "result": ("UPDATE", "tool_call")}[fault]
+        condition = " AND NEW.status = 'completed'" if fault == "result" else ""
+        await native.db.execute(f"""CREATE TRIGGER fail_step BEFORE {event} ON agent_run_steps
+            WHEN NEW.kind = '{kind}'{condition} BEGIN SELECT RAISE(FAIL, 'storage failure'); END""")
+    ctx = await send(native)
+    ctx.reply.assert_not_awaited()
+    error = ctx.reply_error.call_args.args
+    assert error[0] == -32004 and error[2]["requires_review"] is True
+    assert llm.call_count == model_calls and len(tool.calls) == writes
+    assert (native.root / "effect.txt").exists() is bool(writes)
+    run = (await native.dao.list_runs())[0]
+    assert run["status"] == "failed"
+    assert (await native.dao.result_payload(run["id"]))["error"]["code"] == -32004
+
+
+async def test_fatal_tool_callback_drains_sibling_cleanup_before_releasing_session():
+    from minimax_code.agent.core import AgentCore
+    from minimax_code.run_errors import RunPersistenceError
+
+    core = AgentCore()
+    core._prepare_tool_call = AsyncMock(side_effect=lambda call: call)
+    sibling_started, cleaning, cleaned, release = (asyncio.Event() for _ in range(4))
+
+    async def execute(call):
+        if call["id"] == "failure":
+            await sibling_started.wait()
+            raise RunPersistenceError("could not save result")
+        sibling_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaning.set()
+            await release.wait()
+            cleaned.set()
+
+    core._execute_tool_call = execute
+    batch = asyncio.create_task(core._run_tool_batch([{"id": "failure"}, {"id": "sibling"}]))
+    await asyncio.wait_for(cleaning.wait(), 2)
+    assert not batch.done() and not cleaned.is_set()
+    release.set()
+    with pytest.raises(RunPersistenceError):
+        await asyncio.wait_for(batch, 2)
+    assert cleaned.is_set()

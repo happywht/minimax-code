@@ -54,6 +54,7 @@ from ..lifecycle import (
     TurnStartInput,
 )
 from ..models import default_model
+from ..run_errors import RunPersistenceError
 from ..telemetry.tracing import Tracer, get_tracer
 from .interjection import (
     FormattedInterjection,
@@ -1637,9 +1638,17 @@ class AgentCore:
             prepared.append(await self._prepare_tool_call(call))
         if not prepared:
             return []
-        return list(await asyncio.gather(
-            *(self._execute_tool_call(p) for p in prepared)
-        ))
+        tasks = [asyncio.create_task(self._execute_tool_call(p)) for p in prepared]
+        try:
+            return list(await asyncio.gather(*tasks))
+        except BaseException:
+            # gather does not cancel siblings when one task raises. A journal
+            # failure must not release the session lease while other tools write.
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
     def _cancel_prepared(self, call: dict[str, Any]) -> _PreparedToolCall:
         """Build a short-circuiting prepared call for a cancelled slot.
@@ -1774,6 +1783,8 @@ class AgentCore:
             return
         try:
             await self.on_tool_call(call)
+        except RunPersistenceError:
+            raise
         except Exception:  # pragma: no cover
             logger.exception("on_tool_call callback raised")
 
@@ -1782,6 +1793,8 @@ class AgentCore:
             return
         try:
             await self.on_tool_result(call, result)
+        except RunPersistenceError:
+            raise
         except Exception:  # pragma: no cover
             logger.exception("on_tool_result callback raised")
 
@@ -1790,6 +1803,8 @@ class AgentCore:
             return
         try:
             await self.on_status(status, detail)
+        except RunPersistenceError:
+            raise
         except Exception:  # pragma: no cover
             logger.exception("on_status callback raised")
 
@@ -1806,6 +1821,8 @@ class AgentCore:
             return
         try:
             await self._persist_message(session_id, dict(message))
+        except RunPersistenceError:
+            raise
         except Exception:  # pragma: no cover — defensive
             logger.exception("persist_message failed; continuing")
 

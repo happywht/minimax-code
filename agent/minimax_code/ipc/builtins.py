@@ -802,9 +802,10 @@ async def _handle_agent_send_message(
                     msg["tool_call_id"] = tcid
                 out.append(msg)
             return out
-        except Exception:
-            logger.exception("history_provider(%s) failed; returning []", sid)
-            return []
+        except Exception as exc:
+            from ..run_errors import RunPersistenceError
+
+            raise RunPersistenceError("Conversation history could not be loaded; execution stopped") from exc
 
     async def _persist(sid: str, msg: dict[str, Any]) -> None:
         try:
@@ -838,11 +839,10 @@ async def _handle_agent_send_message(
                 tokens_out=_md_int("tokens_out"),
                 metadata=md_dict,
             )
-        except Exception:
-            # The agent loop treats persistence as best-effort; a
-            # failure here must not abort the LLM stream the user
-            # is already seeing. Log and continue.
-            logger.exception("persist_message(%s, role=%s) failed", sid, msg.get("role"))
+        except Exception as exc:
+            from ..run_errors import RunPersistenceError
+
+            raise RunPersistenceError("Conversation evidence could not be saved; inspect the run and workspace before resuming") from exc
 
     # The accepted request keeps this client even while waiting for its session.
     llm = model_snapshot.client
@@ -1040,8 +1040,10 @@ async def _handle_agent_send_message(
                 {"session_id": session_id, "status": status, **detail},
             )
             await recorder.status(status, detail)
-        except Exception:
-            logger.exception("on_status emit failed")
+        except Exception as exc:
+            from ..run_errors import RunPersistenceError
+
+            raise RunPersistenceError("Run status could not be saved; execution stopped") from exc
 
     core.on_status = _on_status
 
@@ -1079,8 +1081,10 @@ async def _handle_agent_send_message(
             )
             start_new_assistant_message = True
             await recorder.tool_call(call)
-        except Exception:
-            logger.exception("on_tool_call emit failed")
+        except Exception as exc:
+            from ..run_errors import RunPersistenceError
+
+            raise RunPersistenceError("Tool intent could not be saved; execution stopped before dispatch") from exc
 
     core.on_tool_call = _on_tool_call
 
@@ -1119,8 +1123,10 @@ async def _handle_agent_send_message(
             except Exception:
                 logger.debug("source extraction failed for %s", tool_name, exc_info=True)
             await recorder.tool_result(call, result)
-        except Exception:
-            logger.exception("on_tool_result emit failed")
+        except Exception as exc:
+            from ..run_errors import RunPersistenceError
+
+            raise RunPersistenceError("Tool result could not be saved; inspect its effects before resuming") from exc
 
     core.on_tool_result = _on_tool_result
 
@@ -1159,8 +1165,11 @@ async def _handle_agent_send_message(
     except Exception as exc:
         logger.exception("agent.send_message: AgentCore.run failed")
         from ..agent.types import LLMStreamTimeout
+        from ..run_errors import RunPersistenceError
 
-        if isinstance(exc, LLMStreamTimeout):
+        if isinstance(exc, RunPersistenceError):
+            await ctx.reply_error(-32004, str(exc), {"run_id": job.run_id, "requires_review": True})
+        elif isinstance(exc, LLMStreamTimeout):
             await ctx.reply_error(
                 LLM_ERROR,
                 str(exc),
