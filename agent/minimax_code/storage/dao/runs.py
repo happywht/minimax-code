@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from typing import Any
 
@@ -16,7 +18,8 @@ from ._base import (
 
 _VALID_RUN_MODES = frozenset({"chat", "plan", "execute", "team", "subagent"})
 _VALID_RUN_STATUS = frozenset(
-    {"planning", "running", "awaiting_approval", "completed", "failed", "cancelled"}
+    {"queued", "planning", "running", "awaiting_approval", "waiting_input",
+     "budget_paused", "interrupted", "completed", "failed", "cancelled"}
 )
 _VALID_STEP_KIND = frozenset(
     {"thought", "status", "plan", "tool_call", "observation", "approval", "patch", "final"}
@@ -26,11 +29,91 @@ _RUN_SORTABLE = ("created_at", "completed_at", "status", "id")
 _STEP_SORTABLE = ("ordinal", "started_at", "completed_at", "id")
 
 
+class RequestConflictError(ValueError):
+    """The same idempotency key cannot describe different user input."""
+
+
+def _request_hash(request: dict[str, Any]) -> str:
+    canonical = json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 class AgentRunsDAO:
     """Async DAO for ``agent_runs`` and ``agent_run_steps``."""
 
     def __init__(self, db) -> None:  # type: ignore[no-untyped-def]
         self._db = db
+
+    async def find_request(self, session_id: str, key: str, request: dict[str, Any]):
+        row = await self._db.fetchone(
+            "SELECT * FROM agent_runs WHERE session_id = ? AND request_key = ?", (session_id, key))
+        if row is not None and row["request_hash"] != _request_hash(request):
+            raise RequestConflictError("idempotency_key already belongs to different input")
+        return _hydrate_run(row)
+
+    async def admit_run(
+        self, *, session_id: str, request: dict[str, Any], title: str,
+        metadata: dict[str, Any], request_key: str | None = None,
+        resumed_from_id: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Commit a queued request and its first event before any execution.
+
+        Retries compare user intent, not mutable global defaults. The first
+        request's saved execution context remains authoritative.
+        """
+        if request_key is not None and (
+            not isinstance(request_key, str) or not request_key.strip() or len(request_key) > 128
+        ):
+            raise ValueError("idempotency_key must be a non-empty string of at most 128 characters")
+        mode = request.get("mode", "chat")
+        if mode not in {"chat", "plan", "execute"}:
+            raise ValueError("native admission requires chat, plan or execute mode")
+        canonical = json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        fingerprint = _request_hash(request)
+        async with self._db.transaction() as conn:
+            if request_key is not None:
+                old = await _fetchone(conn, "SELECT * FROM agent_runs WHERE session_id = ? AND request_key = ?",
+                                      (session_id, request_key))
+                if old is not None:
+                    if old["request_hash"] != fingerprint:
+                        raise RequestConflictError("idempotency_key already belongs to different input")
+                    return _hydrate_run(old), False
+            pending = await _fetchone(conn,
+                "SELECT COUNT(*) AS n FROM agent_runs WHERE session_id = ? AND request IS NOT NULL "
+                "AND status IN ('queued', 'planning', 'running', 'awaiting_approval', 'waiting_input', 'budget_paused')",
+                (session_id,))
+            if pending["n"] >= 32:
+                raise ValueError("Session queue is full (32 pending tasks)")
+            run_id, ts = f"run_{uuid.uuid4().hex}", now_iso()
+            await conn.execute(
+                "INSERT INTO agent_runs (id, session_id, mode, status, title, created_at, "
+                "assistant_message_id, metadata, request_key, request_hash, request, resumed_from_id) "
+                "VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)",
+                (run_id, session_id, mode, title, ts, f"msg_{uuid.uuid4().hex}",
+                 dumps_json(metadata), request_key, fingerprint, canonical, resumed_from_id))
+            run = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
+            await _append_event(conn, run_id, "created", {"run": run})
+            return run, True
+
+    async def claim_run(self, run_id: str) -> dict[str, Any] | None:
+        """A committed queued record can be claimed once; no implicit retry."""
+        async with self._db.transaction() as conn:
+            cursor = await conn.execute(
+                "UPDATE agent_runs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'",
+                (now_iso(), run_id))
+            if cursor.rowcount != 1:
+                return None
+            run = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
+            await _append_event(conn, run_id, "status", {"run": run})
+            return run
+
+    async def request_payload(self, run_id: str) -> dict[str, Any] | None:
+        row = await self._db.fetchone("SELECT request FROM agent_runs WHERE id = ?", (run_id,))
+        return loads_json(row["request"]) if row else None
+
+    async def result_payload(self, run_id: str) -> dict[str, Any] | None:
+        row = await self._db.fetchone("SELECT result FROM agent_runs WHERE id = ?", (run_id,))
+        return loads_json(row["result"]) if row else None
 
     async def create_run(
         self,
@@ -117,12 +200,13 @@ class AgentRunsDAO:
         error: str | None = None,
         assistant_message_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        result: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         if status not in _VALID_RUN_STATUS:
             raise ValueError(f"status must be one of {sorted(_VALID_RUN_STATUS)}")
         sets = ["status = ?"]
         params: list[Any] = [status]
-        if status in {"completed", "failed", "cancelled"}:
+        if status in {"completed", "failed", "cancelled", "interrupted"}:
             sets.append("completed_at = COALESCE(completed_at, ?)")
             params.append(now_iso())
         if error is not None:
@@ -134,6 +218,9 @@ class AgentRunsDAO:
         if metadata is not None:
             sets.append("metadata = ?")
             params.append(dumps_json(metadata))
+        if result is not None:
+            sets.append("result = ?")
+            params.append(dumps_json(result))
         params.append(run_id)
         async with self._db.transaction() as conn:
             await conn.execute(
@@ -305,14 +392,16 @@ class AgentRunsDAO:
         rows = await self._db.fetchall(sql, tuple(params))
         return [_hydrate_step(r) for r in rows]
 
-    async def terminate_run(self, run_id: str, *, status: str, error: str) -> dict[str, Any] | None:
+    async def terminate_run(
+        self, run_id: str, *, status: str, error: str, result: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         """Close active steps and the run atomically, after execution has stopped."""
         if status not in {"failed", "cancelled"}:
             raise ValueError("termination status must be failed or cancelled")
         ts = now_iso()
         async with self._db.transaction() as conn:
             row = await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,))
-            if row is None or row["status"] in {"completed", "failed", "cancelled"}:
+            if row is None or row["status"] in {"completed", "failed", "cancelled", "interrupted"}:
                 return _hydrate_run(row)
             async with conn.execute(
                 "SELECT id FROM agent_run_steps WHERE run_id = ? AND status IN ('pending', 'running')",
@@ -328,8 +417,8 @@ class AgentRunsDAO:
                     "SELECT * FROM agent_run_steps WHERE id = ?", (step["id"],)))
                 await _append_event(conn, run_id, "step_updated", {"step": updated})
             await conn.execute(
-                "UPDATE agent_runs SET status = ?, error = ?, completed_at = ? WHERE id = ?",
-                (status, error, ts, run_id),
+                "UPDATE agent_runs SET status = ?, error = ?, completed_at = ?, result = ? WHERE id = ?",
+                (status, error, ts, dumps_json(result), run_id),
             )
             run = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
             await _append_event(conn, run_id, "status", {"run": run})
@@ -342,20 +431,20 @@ class AgentRunsDAO:
     ) -> dict[str, Any]:
         """Atomically close orphan runs and record recovery; never repeat tools.
 
-        Keeps the legacy ``failed`` status until the RunService state migration.
+        Preserve the distinction between failure and an unknown interruption.
         Only called at boot, before accepting work.
         """
         ts = now_iso()
         async with self._db.transaction() as conn:
             async with conn.execute(
-                "SELECT id, session_id FROM agent_runs "
-                "WHERE status IN ('planning', 'running', 'awaiting_approval')"
+                "SELECT id, session_id, status FROM agent_runs "
+                "WHERE status IN ('queued', 'planning', 'running', 'awaiting_approval', 'waiting_input')"
             ) as cursor:
                 rows = await cursor.fetchall()
             for row in rows:
                 run_id, session_id = row["id"], row["session_id"]
                 await conn.execute(
-                    "UPDATE agent_runs SET status = 'failed', error = ?, "
+                    "UPDATE agent_runs SET status = 'interrupted', error = ?, "
                     "completed_at = COALESCE(completed_at, ?) WHERE id = ?",
                     (reason, ts, run_id),
                 )
@@ -383,7 +472,8 @@ class AgentRunsDAO:
                     "COALESCE(MAX(ordinal), 0) + 1 FROM agent_run_steps WHERE run_id = ?",
                     (step_id, run_id, session_id, "recovered after unexpected shutdown", reason,
                      dumps_json({"recovered_at": ts, "recovery_reason": reason,
-                                 "schema_version": 1, "requires_review": True}), ts, ts, run_id),
+                                 "schema_version": 1, "requires_review": row["status"] != "queued",
+                                 "previous_status": row["status"]}), ts, ts, run_id),
                 )
                 step = _hydrate_step(await _fetchone(conn,
                     "SELECT * FROM agent_run_steps WHERE id = ?", (step_id,)))
@@ -414,6 +504,9 @@ def _hydrate_run(row: Any) -> dict[str, Any] | None:
     if d is None:
         return None
     d["metadata"] = loads_json(d.get("metadata"))
+    # Do not duplicate full prompts/results in every journal event or list row.
+    for private in ("request", "request_hash", "result"):
+        d.pop(private, None)
     return d
 
 

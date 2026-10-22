@@ -246,9 +246,17 @@ class Database:
                 # where the context manager never opens a transaction and its
                 # commit is a no-op — a half-failing migration would leave
                 # partial DDL committed on disk. Mirrors transaction().
+                rebuild = bool(getattr(run, "requires_foreign_keys_off", False))
+                foreign_keys = self._conn.execute("PRAGMA foreign_keys").fetchone()[0]
+                if rebuild:
+                    if self._conn.in_transaction:
+                        raise RuntimeError("Schema rebuild requires a separate migration transaction")
+                    self._conn.execute("PRAGMA foreign_keys = OFF")
                 try:
                     self._conn.execute("BEGIN IMMEDIATE")
                     run(self._conn)
+                    if rebuild and self._conn.execute("PRAGMA foreign_key_check").fetchone():
+                        raise sqlite3.IntegrityError("Migration would leave invalid foreign keys")
                     self._conn.execute(
                         "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                         (version, _now_iso()),
@@ -260,6 +268,9 @@ class Database:
                     except sqlite3.OperationalError:
                         pass
                     raise
+                finally:
+                    if rebuild:
+                        self._conn.execute(f"PRAGMA foreign_keys = {int(foreign_keys)}")
                 new_versions.append(version)
             if new_versions:
                 logger.info("applied %d migration(s): %s", len(new_versions), new_versions)

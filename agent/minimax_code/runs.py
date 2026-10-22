@@ -1,8 +1,8 @@
 """Service-owned native execution tasks, independent of RPC connection lifetime.
 
 The session lease includes setup, tool execution, persistence and cleanup. The
-service is scoped to the IPC server (one transport per process). Durable queue
-admission and cross-engine scheduling will build on this ownership boundary.
+service is scoped to the IPC server (one transport per process). Native requests
+are durably admitted before scheduling; cross-engine scheduling remains separate.
 """
 
 from __future__ import annotations
@@ -20,12 +20,18 @@ logger = logging.getLogger(__name__)
 @dataclass(eq=False)
 class RunJob:
     session_id: str
+    run_id: str | None = None
+    dao: Any = None
+    started: bool = False
     task: asyncio.Task[Any] | None = None
     cancel_callback: Callable[[], None] | None = None
     cancel_requested: bool = False
     record: Any = None
     message_id: str = field(default_factory=lambda: f"msg_{uuid.uuid4().hex[:8]}")
     result: dict[str, Any] | None = None
+    error: dict[str, Any] | None = None
+    workspace: str | None = None
+    project_id: str | None = None
 
 
 class RunService:
@@ -33,24 +39,49 @@ class RunService:
         self._jobs: dict[str, list[RunJob]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._closing = False
+        self._by_run: dict[str, RunJob] = {}
+        self._admissions: set[asyncio.Task[Any]] = set()
+        self._admission_lock = asyncio.Lock()
 
-    def submit(self, session_id: str, operation: Callable[[RunJob], Awaitable[Any]]) -> RunJob:
+    def submit(
+        self, session_id: str, operation: Callable[[RunJob], Awaitable[Any]], *,
+        job: RunJob | None = None,
+        finalize: Callable[[RunJob, BaseException | None], Awaitable[None]] | None = None,
+    ) -> RunJob:
         """Atomically enqueue before the first await; same-session jobs are FIFO."""
         if self._closing:
             raise RuntimeError("Run service is shutting down")
         queue = self._jobs.setdefault(session_id, [])
-        if len(queue) >= 32:
+        if job is None and len(queue) >= 32:
             raise RuntimeError("Session queue is full (32 pending tasks)")
         lock = self._locks.setdefault(session_id, asyncio.Lock())
-        job = RunJob(session_id)
+        job = job or RunJob(session_id)
         queue.append(job)
+        if job.run_id:
+            self._by_run[job.run_id] = job
 
         async def drive() -> Any:
+            job.started = True
+            finalized = False
             try:
                 async with lock:
-                    if job.cancel_requested:
-                        raise asyncio.CancelledError
-                    return await operation(job)
+                    error = None
+                    try:
+                        if job.cancel_requested:
+                            raise asyncio.CancelledError
+                        return await operation(job)
+                    except BaseException as exc:
+                        error = exc
+                        raise
+                    finally:
+                        # Persistence remains inside the session lease.
+                        finalized = True
+                        if finalize:
+                            await finalize(job, error)
+            except BaseException as exc:
+                if not finalized and finalize:
+                    await finalize(job, exc)
+                raise
             finally:
                 self._remove(job)
 
@@ -58,7 +89,56 @@ class RunService:
         job.task.add_done_callback(lambda task: self._finished(job, task))
         return job
 
+    async def admit(
+        self, *, dao: Any, session_id: str, request: dict[str, Any], title: str,
+        metadata: dict[str, Any], request_key: str | None, workspace: str,
+        project_id: str | None, operation: Callable[[RunJob], Awaitable[Any]],
+        finalize: Callable[[RunJob, BaseException | None], Awaitable[None]],
+        resumed_from_id: str | None = None,
+    ) -> tuple[dict[str, Any], RunJob | None, bool]:
+        async def accept():
+            async with self._admission_lock:
+                if self._closing:
+                    raise RuntimeError("Run service is shutting down")
+                run, created = await dao.admit_run(
+                    session_id=session_id, request=request, title=title, metadata=metadata,
+                    request_key=request_key, resumed_from_id=resumed_from_id)
+                if not created:
+                    return run, self._by_run.get(run["id"]), False
+                job = RunJob(session_id, run_id=run["id"], dao=dao,
+                             message_id=run["assistant_message_id"], workspace=workspace,
+                             project_id=project_id)
+                try:
+                    self.submit(session_id, operation, job=job, finalize=finalize)
+                except BaseException:
+                    await dao.terminate_run(run["id"], status="cancelled",
+                                            error="Service closed before execution started",
+                                            result={"session_id": session_id,
+                                                    "message_id": job.message_id,
+                                                    "run_id": job.run_id, "text": "",
+                                                    "cancelled": True})
+                    raise
+                return run, job, True
+
+        task = asyncio.create_task(accept(), name=f"admit-run:{session_id}")
+        self._admissions.add(task)
+        def finished(task):
+            self._admissions.discard(task)
+            if not task.cancelled():
+                task.exception()  # detached RPC waiters must not leak exceptions
+        task.add_done_callback(finished)
+        return await asyncio.shield(task)
+
+    def get_job(self, run_id: str) -> RunJob | None:
+        return self._by_run.get(run_id)
+
+    async def job_for_run(self, run_id: str) -> RunJob | None:
+        async with self._admission_lock:
+            return self.get_job(run_id)
+
     def _remove(self, job: RunJob) -> None:
+        if job.run_id and self._by_run.get(job.run_id) is job:
+            self._by_run.pop(job.run_id, None)
         queue = self._jobs.get(job.session_id)
         if queue and job in queue:
             queue.remove(job)
@@ -82,20 +162,31 @@ class RunService:
         """Request stop for active and queued work; retain leases until teardown."""
         jobs = list(self._jobs.get(session_id, []))
         for job in jobs:
-            if job.cancel_requested or job.task is None or job.task.done():
-                continue
-            job.cancel_requested = True
-            if job.cancel_callback is not None:
-                try:
-                    job.cancel_callback()
-                except Exception:
-                    logger.exception("Run cancellation callback failed")
-            job.task.cancel()
+            self._cancel(job)
         return len(jobs)
+
+    def cancel_run(self, run_id: str) -> bool:
+        job = self.get_job(run_id)
+        return self._cancel(job) if job is not None else False
+
+    def _cancel(self, job: RunJob) -> bool:
+        if job.cancel_requested or job.task is None or job.task.done():
+            return False
+        job.cancel_requested = True
+        if job.cancel_callback is not None:
+            try:
+                job.cancel_callback()
+            except Exception:
+                logger.exception("Run cancellation callback failed")
+        # A not-yet-started task must enter drive() to persist cancellation.
+        if job.started:
+            job.task.cancel()
+        return True
 
     async def shutdown(self) -> None:
         """Drain cancellation/child-process cleanup before closing the database."""
         self._closing = True
+        await asyncio.gather(*self._admissions, return_exceptions=True)
         jobs = [job for queue in self._jobs.values() for job in queue]
         for session_id in list(self._jobs):
             self.cancel_session(session_id)

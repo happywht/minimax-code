@@ -590,6 +590,10 @@ export interface PersistedMessage {
 }
 
 export type AgentRunStatus =
+  | "queued"
+  | "waiting_input"
+  | "budget_paused"
+  | "interrupted"
   | "planning"
   | "running"
   | "awaiting_approval"
@@ -629,6 +633,8 @@ export interface AgentRun {
   mode: "chat" | "plan" | "execute" | "team" | "subagent";
   status: AgentRunStatus;
   title: string;
+  request_key?: string | null;
+  resumed_from_id?: string | null;
   user_message_id?: string | null;
   assistant_message_id?: string | null;
   created_at: string;
@@ -712,7 +718,20 @@ export interface StatusResult extends PingResult {
 export interface SendMessageParams {
   session_id: string | null;
   content: string | ContentPart[];
+  idempotency_key?: string;
   mode?: "chat" | "plan" | "execute";
+}
+
+export interface RunStartParams extends SendMessageParams {
+  session_id: string;
+  idempotency_key: string;
+  engine?: "native";
+}
+
+export interface RunAdmissionResult { run: AgentRun; created: boolean }
+export interface RunGetResult {
+  run: AgentRun;
+  result: SendMessageResult | { error: { code: number; message: string; data?: unknown } } | null;
 }
 
 export interface SendMessageResult {
@@ -1269,6 +1288,7 @@ export const StreamEvent = {
   NotificationRead: "notification.read",
   TeamProgress: "agent.team_progress",
   RunCreated: "run.created",
+  RunUpdated: "run.updated",
   RunStepStarted: "run.step.started",
   RunStepCompleted: "run.step.completed",
   RunCompleted: "run.completed",

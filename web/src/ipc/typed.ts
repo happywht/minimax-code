@@ -9,6 +9,10 @@
 
 import type {
   AgentInfo,
+  AgentRun,
+  RunStartParams,
+  RunAdmissionResult,
+  RunGetResult,
   AgentTeam,
   AuditStats,
   CreateProjectResult,
@@ -201,6 +205,10 @@ export interface TypedIPC {
   summarizeCodebasePath(path: string, opts?: { project_id?: string }): Promise<CodebaseSummarizeResult>;
 
   listRuns(opts?: { session_id?: string; status?: string; limit?: number; offset?: number }): Promise<ListRunsResult>;
+  startRun(params: RunStartParams): Promise<RunAdmissionResult>;
+  getRun(runId: string): Promise<RunGetResult>;
+  cancelRun(runId: string): Promise<{ ok: boolean; requested: boolean; run: AgentRun }>;
+  resumeRun(runId: string, idempotencyKey: string, reviewed?: boolean): Promise<RunAdmissionResult>;
   getRunSteps(runId: string): Promise<RunStepsResult>;
   getRunEvents(runId: string, opts?: { after_seq?: number; limit?: number }): Promise<RunEventsResult>;
 
@@ -649,6 +657,11 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
 
     listRuns: (opts) =>
       client.request<ListRunsResult>("run.list", opts ?? {}),
+    startRun: (params) => client.request<RunAdmissionResult>("run.start", params),
+    getRun: (runId) => client.request<RunGetResult>("run.get", { run_id: runId }),
+    cancelRun: (runId) => client.request("run.cancel", { run_id: runId }),
+    resumeRun: (runId, idempotencyKey, reviewed = false) =>
+      client.request<RunAdmissionResult>("run.resume", { run_id: runId, idempotency_key: idempotencyKey, reviewed }),
     getRunSteps: (runId) =>
       client.request<RunStepsResult>("run.steps", { run_id: runId }),
     getRunEvents: (runId, opts) =>

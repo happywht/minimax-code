@@ -1294,7 +1294,7 @@ async def _run_crash_recovery(db: Any) -> None:
        ``.minimax_code_running`` marker means the previous PID never
        reached ``atexit`` → it crashed (OOM / segfault / ``kill -9``).
     2. :func:`AgentRunsDAO.recover_orphans` — flips every in-flight run
-       to ``failed`` and appends a recovery ``status`` step (append-only
+       to ``interrupted`` and appends a recovery ``status`` step (append-only
        audit, grok ``RewindMarker`` semantics).
 
     Each can fail independently without blocking the other, and the
@@ -1326,7 +1326,7 @@ async def _run_crash_recovery(db: Any) -> None:
         report = None
         crashed = False
 
-    # (2) Orphan-run recovery — flip every in-flight run to failed and
+    # (2) Orphan-run recovery — mark in-flight runs interrupted and
     #     append an audit step. Idempotent on a clean DB.
     try:
         dao = AgentRunsDAO(db)

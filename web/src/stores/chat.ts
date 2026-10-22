@@ -491,6 +491,7 @@ export const useChat = create<ChatState>((set, get) => ({
       const result = await trackRequest(sessionId, typedIPC.sendMessage({
         session_id: sessionId,
         content: wireContent,
+        idempotency_key: crypto.randomUUID(),
         ...(get().executionMode === "plan" ? { mode: "plan" as const } : {}),
       }));
       if (result.session_id && result.session_id !== sessionId) {

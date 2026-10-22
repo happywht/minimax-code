@@ -209,6 +209,10 @@ on the next `readline() == ""`.
 | `run.list`                 | req/res   | List persisted agent runs for a session. v1.4.0 accepts an optional `mode` filter (`chat` / `plan` / `execute` / `team` / `subagent`) — `mode: "subagent"` returns runs spawned via the `spawn_subagent` tool path. |
 | `run.steps`                | req/res   | Load one run, ordered steps and a consistent durable `cursor`. |
 | `run.events`               | req/res   | Read persisted changes after a run-scoped sequence, independent of WS replay. |
+| `run.start` | req/res | Durably admit a native request; return `{run, created}` immediately. Requires session, content and idempotency key. |
+| `run.get` | req/res | Read `{run, result}`; result is a committed reply, an error envelope, or null. |
+| `run.cancel` | req/res | Request cancellation of one run; `requested` is acknowledgement, not completed teardown. |
+| `run.resume` | req/res | Create a linked run from saved input after review, using the original model and workspace; never replay tool steps. |
 | `patch.preview`            | req/res   | Return structured file/hunk preview for a git diff scope. **`project_id?`** |
 | `patch.apply_hunk`         | req/res   | Stage one working-tree hunk after validating the current diff. **`project_id?`** |
 | `patch.revert_hunk`        | req/res   | Discard one working hunk or unstage one staged hunk. **`project_id?`** |
@@ -505,8 +509,8 @@ text fallback and the message ID; a run ID exists only if its record was created
 Unavailable iteration/usage counts are omitted. If completion committed before
 cancellation, the successful result remains authoritative. Failure to create the
 run history returns storage error -32004 before model or tool execution.
-This first service integration does not yet provide durable queued admission,
-request idempotency keys, or cross-engine/child-task lifecycle coordination.
+Native admission is now durable. Cross-engine/child-task lifecycle coordination
+and persisted approval/budget enforcement are still pending.
 
 Native requests capture the client, model, reasoning effort and context limit at
 admission, before waiting for the session lease. Child tasks inherit that model
@@ -516,7 +520,33 @@ protocol: string | null, reasoning_effort: string | null, context_window: number
 from creation through completion. It contains no credential or endpoint URL; old
 runs may omit it. Missing/disabled providers and empty endpoint configuration reject execution with
 -32003 instead of silently changing providers. This does not yet freeze workspace,
-permission rules or budgets, and the in-memory queue is not restart-durable.
+permission rules or budgets. The accepted workspace path and project are also
+saved; execution validates the captured directory and never follows later rebinding.
+
+
+A caller may supply `idempotency_key` (1–128 non-blank characters) with an explicit
+`session_id` on `agent.send_message`; it is required on `run.start`. A duplicate key
+with identical input joins the existing task or returns its stored result. Reusing
+that key for different input is invalid; changing global settings does not cause
+re-execution. Keys are scoped to a session and retained with the run. Model engine
+selection on `run.start` currently accepts only `native`. The original reply endpoint
+still waits for completion; transport loss never cancels an admitted request.
+
+Run states additionally include `queued`, `waiting_input`, `budget_paused` and
+`interrupted`. The first and last are integrated here; input/budget pause owners
+are future work. Startup marks unfinished requests interrupted; a queued request
+has not started, while a previously running request needs review. No request or
+tool is automatically replayed. `run.resume` accepts `{run_id, idempotency_key,
+reviewed?: boolean}`; started requests require explicit `reviewed: true`. It creates
+a new request with a recovery handoff and `resumed_from_id`; the original record
+stays intact. The original provider/model/effort and workspace binding must still
+match. Legacy runs without a saved request/context need a new task with a handoff.
+
+The request, terminal result and journal survive restart. Private request bodies
+and full results are excluded from timeline events and list records; `run.get`
+returns the result separately. State and result/event writes commit atomically.
+Run cancellation applies only to a service-owned task; it does not infer ownership
+from a database row. `agent.cancel` still requests cancellation of the whole session.
 
 Request:
 ```json
@@ -1127,6 +1157,7 @@ so the frontend can route them by name without a regex.
 | `permission.request`    | `{request_id, tool, args, session_id?}` — modal triggers; `session_id` (v1.2.0) tags which conversation the gated call belongs to |
 | `permission.resolved`   | `{request_id, decision}`                            |
 | `run.created`           | `{run}`                                              |
+| `run.updated` | `{run}`; queued request claimed for execution. |
 | `run.step.started`      | `{run_id, step}`                                    |
 | `run.step.completed`    | `{run_id, step}`                                    |
 | `run.completed`         | `{run}`                                              |

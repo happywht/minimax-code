@@ -344,7 +344,7 @@ The async wrapper holds an `asyncio.Lock` and runs every query through `aiosqlit
 * **No connection pool.** A single connection per process is intentional. The agent is async-first; sync code goes through `Database` and pays for serialization.
 * **No row-level encryption.** The DB file is plaintext SQLite. Sensitive fields (e.g. the mobile device public key) are at rest in cleartext. Use OS-level full-disk encryption if you need more.
 * **No write-ahead journaling of the schema.** A migration that fails partway through is rolled back as a single transaction, but a manual edit to the DB file is not protected. Operate on a backup when experimenting.
-* **Indexes are not partial.** A partial index on `messages WHERE parent_id IS NOT NULL` would be smaller if branching chat ever becomes the dominant write path; for now the regular index is fine.
+* **Message indexes are not partial.** A partial index on `messages WHERE parent_id IS NOT NULL` would be smaller if branching chat ever becomes the dominant write path; for now the regular index is fine. Run request keys use a partial unique index from schema 031.
 * **`tool_calls` JSON is opaque to SQLite.** You can't query "all assistant turns that called `terminal`" without a JSON1 extension. Phase 2 may add generated columns or a separate `message_tool_calls` table.
 * **No foreign-key index for `messages.parent_id`.** SQLite doesn't auto-index FKs. The `idx_messages_parent` index covers the `ON DELETE SET NULL` cascade and tree traversal.
 * **`name` columns are not normalized.** `SkillsDAO.upsert` matches by exact `name`; if a user renames a skill directory on disk, the old row remains orphaned. Phase 2 will add a "scan & reconcile" pass.
@@ -373,7 +373,34 @@ imports. To roll back an application upgrade, restore the corresponding pre-upgr
 database backup; reverse migrations are not supplied. Retention limits and complete
 RunService recovery are still pending.
 
-## 8. See also
+## 8. Schema 031: durable native requests
+
+`agent_runs` adds nullable `request_key`, `request_hash`, JSON `request`, JSON
+`result`, and `resumed_from_id` (self-reference, `ON DELETE SET NULL`). A partial
+unique index on `(session_id, request_key)` applies only to non-null keys. The hash
+is SHA-256 of canonical JSON user input; mutable global model/workspace selection
+does not change the identity of an already accepted request. Request and result
+bodies are excluded from timeline rows/events; `run.get` returns the receipt.
+
+The status constraint additionally accepts `queued`, `waiting_input`,
+`budget_paused` and `interrupted`. Only queued/interrupted have execution owners in
+this change. Admission inserts a queued record and event atomically. Claiming is a
+single queued-to-running compare-and-set. Terminal receipt, status and status event
+commit together. Startup marks unfinished requests interrupted and closes unfinished
+steps with a review marker; it never reruns an uncertain write. Recovery creates a
+new request linked to the original run after explicit review.
+
+SQLite table rebuilding requires foreign keys disabled **before** the migration
+transaction. Migrations 021, 028 and 031 opt into this runner behavior; foreign-key
+integrity is checked before commit and the prior enforcement setting is restored
+even after rollback. Schema 031 preserves child rows and attached indexes/triggers.
+No historical request bodies or completed receipts are invented for legacy runs.
+
+Back up the database before upgrading. Rollback requires restoring the matching
+pre-upgrade database with the prior application version; there is no reverse
+migration. The migration itself is transactional, including failure after rebuilding.
+
+## 9. See also
 
 * `agent/minimax_code/storage/db.py` — connection wrappers
 * `agent/minimax_code/storage/migrations/001_initial.py` — the initial schema

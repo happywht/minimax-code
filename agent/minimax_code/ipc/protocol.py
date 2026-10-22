@@ -34,6 +34,24 @@ class SendMessageParams(_Base):
     session_id: str | None = None
     content: str | list[dict[str, Any]]
     mode: Literal["chat", "plan", "execute"] = "chat"
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class RunStartParams(SendMessageParams):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    session_id: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    engine: Literal["native"] = "native"
+
+
+class RunIdParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    run_id: str = Field(min_length=1)
+
+
+class RunResumeParams(RunIdParams):
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    reviewed: bool = False
 
 
 class SendMessageResult(_Base):

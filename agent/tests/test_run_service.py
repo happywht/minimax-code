@@ -129,7 +129,7 @@ async def test_same_session_serializes_setup_and_persistence_but_other_sessions_
     second = asyncio.create_task(send(native, content="second"))
     other = asyncio.create_task(send(native, "two", "other"))
     assert await asyncio.wait_for(native.started.get(), 2) == ("two", "other")
-    assert len(await native.dao.list_runs(session_id="one")) == 1
+    assert sorted(row["status"] for row in await native.dao.list_runs(session_id="one")) == ["queued", "running"]
     native.release.set()
     await asyncio.wait_for(asyncio.gather(first, second, other), 3)
     assert await asyncio.wait_for(native.started.get(), 3) == ("one", "second")
@@ -251,14 +251,15 @@ async def test_storage_failure_prevents_model_and_hook_execution(native):
     assert native.started.empty()
     assert await native.dao.list_runs() == []
     assert "one" not in builtins._ACTIVE_RUNS
-    assert not native.server._permission_gaters
+    assert not getattr(native.server, "_permission_gaters", {})
 
 
 async def test_setup_exception_releases_session_routes_and_allows_next_run(native, monkeypatch):
     monkeypatch.setattr(builtins, "_build_system_prompt_extra", AsyncMock(side_effect=RuntimeError("setup failed")))
-    with pytest.raises(RuntimeError, match="setup failed"):
-        await send(native)
-    assert not native.server._permission_gaters
+    failed = await send(native)
+    assert failed.reply_error.call_args.args[0] == -32603
+    assert failed.reply_error.call_args.args[1] == "setup failed"
+    assert not getattr(native.server, "_permission_gaters", {})
     assert not get_run_service(native.server)._jobs
     monkeypatch.setattr(builtins, "_build_system_prompt_extra", AsyncMock(return_value=None))
     native.release.set()
@@ -322,8 +323,8 @@ async def test_queued_native_request_keeps_model_captured_at_admission(native, m
     service = get_run_service(native.server)
     submit = service.submit
 
-    def observed_submit(*args):
-        job = submit(*args)
+    def observed_submit(*args, **kwargs):
+        job = submit(*args, **kwargs)
         admitted.set()
         return job
 
@@ -342,3 +343,178 @@ async def test_queued_native_request_keeps_model_captured_at_admission(native, m
     row = next(row for row in runs if row["title"] == "queued")
     assert row["metadata"]["model_snapshot"]["model"] == "queued"
     assert row["metadata"]["model_snapshot"]["provider_id"] == "p2"
+
+
+async def run_rpc(native, method, params):
+    from minimax_code.ipc.handlers_runs import register_run_handlers
+
+    if "run.start" not in native.server._handlers:
+        register_run_handlers(native.server)
+    ctx = Context(native.server)
+    await native.server._handlers[method](params, ctx)
+    return ctx
+
+
+async def test_duplicate_waiters_and_completed_retry_share_one_execution(native, monkeypatch):
+    from minimax_code import app
+
+    params = {"session_id": "one", "content": "write once", "idempotency_key": "same"}
+    first, second = Context(native.server), Context(native.server)
+    a = asyncio.create_task(builtins.handle_agent_send_message(params, first))
+    await asyncio.wait_for(native.started.get(), 2)
+    b = asyncio.create_task(builtins.handle_agent_send_message(params, second))
+    native.release.set()
+    await asyncio.wait_for(asyncio.gather(a, b), 3)
+    assert first.reply.call_args.args[0] == second.reply.call_args.args[0]
+    assert len(native.cores) == 1
+    monkeypatch.setattr(app, "get_subagent_llm", lambda: None)
+    retry = Context(native.server)
+    await builtins.handle_agent_send_message(params, retry)
+    assert retry.reply.call_args.args[0] == first.reply.call_args.args[0]
+    conflict = Context(native.server)
+    await builtins.handle_agent_send_message({**params, "content": "different"}, conflict)
+    assert conflict.reply_error.call_args.args[0] == -32602
+    assert len(native.cores) == 1
+
+
+async def test_start_returns_receipt_and_targeted_cancel_preserves_other_work(native):
+    first = await run_rpc(native, "run.start", {"session_id": "one", "content": "first", "idempotency_key": "first"})
+    await asyncio.wait_for(native.started.get(), 2)
+    a = first.reply.call_args.args[0]["run"]
+    second = await run_rpc(native, "run.start", {"session_id": "one", "content": "second", "idempotency_key": "second"})
+    b = second.reply.call_args.args[0]["run"]
+    assert b["status"] == "queued"
+    job = get_run_service(native.server).get_job(b["id"])
+    cancelled = await run_rpc(native, "run.cancel", {"run_id": b["id"]})
+    assert cancelled.reply.call_args.args[0]["requested"] is True
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(get_run_service(native.server).wait(job), 2)
+    status = await run_rpc(native, "run.get", {"run_id": b["id"]})
+    receipt = status.reply.call_args.args[0]
+    assert receipt["run"]["status"] == "cancelled" and receipt["result"]["cancelled"] is True
+    assert (await native.dao.get_run(a["id"]))["status"] == "running"
+    native.release.set()
+    await get_run_service(native.server).wait(get_run_service(native.server).get_job(a["id"]))
+    assert len(native.cores) == 1
+
+
+async def test_disconnect_during_admission_does_not_leave_a_stranded_queue_record(native, monkeypatch):
+    committed, release = asyncio.Event(), asyncio.Event()
+    original = AgentRunsDAO.admit_run
+
+    async def delayed(self, **kwargs):
+        result = await original(self, **kwargs)
+        committed.set()
+        await release.wait()
+        return result
+
+    monkeypatch.setattr(AgentRunsDAO, "admit_run", delayed)
+    waiter = asyncio.create_task(send(native))
+    await asyncio.wait_for(committed.wait(), 2)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    release.set()
+    await asyncio.wait_for(native.started.get(), 2)
+    native.release.set()
+    job = get_run_service(native.server)._jobs["one"][0]
+    await asyncio.wait_for(get_run_service(native.server).wait(job), 2)
+    assert (await native.dao.list_runs())[0]["status"] == "completed"
+
+
+async def test_queued_run_does_not_follow_later_workspace_rebinding(native):
+    from minimax_code.workspace_ctx import current_root
+
+    a, b = native.root / "a", native.root / "b"
+    a.mkdir()
+    b.mkdir()
+    sessions = SessionsDAO(native.db)
+    await sessions.update("one", workspace_path=str(a))
+    roots = []
+
+    async def record_root():
+        roots.append(current_root())
+
+    native.tool = record_root
+    first = asyncio.create_task(send(native, content="first"))
+    await asyncio.wait_for(native.started.get(), 2)
+    accepted = await run_rpc(native, "run.start", {"session_id": "one", "content": "queued", "idempotency_key": "queue"})
+    run = accepted.reply.call_args.args[0]["run"]
+    job = get_run_service(native.server).get_job(run["id"])
+    await sessions.update("one", workspace_path=str(b))
+    native.release.set()
+    await asyncio.wait_for(asyncio.gather(first, get_run_service(native.server).wait(job)), 3)
+    assert roots == [a, a]
+    assert (await native.dao.get_run(run["id"]))["metadata"]["workspace_snapshot"] == str(a)
+
+
+async def test_resume_requires_review_and_creates_a_new_linked_run(native):
+    from minimax_code.model_snapshot import ModelSnapshot
+
+    old, _ = await native.dao.admit_run(session_id="one", request={"session_id": "one", "mode": "chat", "content": "original task"},
+        request_key="old", title="old", metadata={"model_snapshot": ModelSnapshot.capture().metadata(), "workspace_snapshot": str(native.root)})
+    await native.dao.claim_run(old["id"])
+    await native.dao.create_step(run_id=old["id"], session_id="one", kind="tool_call", title="possibly applied write")
+    await native.dao.recover_orphans()
+    request = {"run_id": old["id"], "idempotency_key": "resume"}
+    denied = await run_rpc(native, "run.resume", request)
+    assert denied.reply_error.call_args.args[0] == -32602
+    accepted = await run_rpc(native, "run.resume", {**request, "reviewed": True})
+    run = accepted.reply.call_args.args[0]["run"]
+    assert run["id"] != old["id"] and run["resumed_from_id"] == old["id"]
+    _, content = await asyncio.wait_for(native.started.get(), 2)
+    assert "original task" in content and "Verify which actions already took effect" in content
+    job = get_run_service(native.server).get_job(run["id"])
+    native.release.set()
+    await asyncio.wait_for(get_run_service(native.server).wait(job), 2)
+    assert (await native.dao.get_run(old["id"]))["status"] == "interrupted"
+    retry = await run_rpc(native, "run.resume", {**request, "reviewed": True})
+    assert retry.reply.call_args.args[0]["created"] is False
+    assert len(native.cores) == 1
+
+
+async def test_durable_cancel_before_worker_first_instruction_persists_result(native, monkeypatch):
+    service = get_run_service(native.server)
+    submit = service.submit
+
+    def cancel_immediately(*args, **kwargs):
+        job = submit(*args, **kwargs)
+        assert not job.started
+        service.cancel_run(job.run_id)
+        return job
+
+    monkeypatch.setattr(service, "submit", cancel_immediately)
+    ctx = await send(native)
+    assert ctx.reply.call_args.args[0]["cancelled"] is True
+    assert (await native.dao.list_runs())[0]["status"] == "cancelled"
+    assert native.cores == []
+
+
+async def test_notification_failure_cannot_change_durable_outcome(native):
+    ctx = Context(native.server)
+    ctx.emit.side_effect = ConnectionError("observer disconnected")
+    native.release.set()
+    await builtins.handle_agent_send_message(
+        {"session_id": "one", "content": "finish despite disconnection", "idempotency_key": "offline"}, ctx)
+    ctx.reply_error.assert_not_awaited()
+    receipt = ctx.reply.call_args.args[0]
+    assert receipt["text"] == "done"
+    assert (await native.dao.get_run(receipt["run_id"]))["status"] == "completed"
+    assert await native.dao.result_payload(receipt["run_id"]) == receipt
+
+
+async def test_shutdown_after_admission_before_scheduling_saves_cancel_receipt(native, monkeypatch):
+    service = get_run_service(native.server)
+
+    def closed(*args, **kwargs):
+        raise RuntimeError("service closed")
+
+    monkeypatch.setattr(service, "submit", closed)
+    params = {"session_id": "one", "content": "never execute", "idempotency_key": "closed"}
+    first, retry = Context(native.server), Context(native.server)
+    await builtins.handle_agent_send_message(params, first)
+    assert first.reply_error.call_args.args[0] == -32004
+    await builtins.handle_agent_send_message(params, retry)
+    assert retry.reply.call_args.args[0]["cancelled"] is True
+    assert len(await native.dao.list_runs()) == 1
+    assert native.cores == []

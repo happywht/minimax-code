@@ -39,7 +39,7 @@ class _FakeCtx:
     async def reply(self, data: Any) -> None:
         self._replied.append(data)
 
-    async def reply_error(self, code: int, message: str) -> None:
+    async def reply_error(self, code: int, message: str, data: Any = None) -> None:
         self._errors.append((code, message))
 
     async def emit(self, event: str, data: Any, **kw: Any) -> None:
@@ -53,10 +53,12 @@ class TestSendMessageMultimodal:
     def recorded_run(self, monkeypatch):
         # This suite isolates content mapping. Storage admission and failure
         # rollback are exercised with a real database in test_run_service.py.
-        recorder = MagicMock()
-        recorder.create = AsyncMock()
-        recorder.complete = AsyncMock()
-        monkeypatch.setattr("minimax_code.ipc.builtins._RunRecorder", lambda **kw: recorder)
+        from run_dao_stub import make_run_dao_stub
+
+        dao = make_run_dao_stub()
+        monkeypatch.setattr("minimax_code.storage.dao.runs.AgentRunsDAO", lambda db: dao)
+        monkeypatch.setattr("minimax_code.ipc.builtins._RunRecorder._persist_memories", AsyncMock())
+        monkeypatch.setattr("minimax_code.ipc.handlers_permissions._ensure_permission_store", AsyncMock(return_value=None))
 
     @pytest.mark.asyncio
     async def test_string_content_backward_compat(self) -> None:
@@ -101,12 +103,10 @@ class TestSendMessageMultimodal:
         mock_bpe = AsyncMock(return_value=None)
 
         with patch.dict("sys.modules", {
-            "minimax_code.agent": mock_agent_mod,
-            "minimax_code.agent.core": mock_agent_mod,
             "minimax_code.app": mock_app_mod,
             "minimax_code.storage.dao.messages": mock_msg_dao_mod,
             "minimax_code.storage.db": mock_db_mod,
-        }), patch("minimax_code.ipc.builtins._build_system_prompt_extra", mock_bpe):
+        }), patch("minimax_code.agent.AgentCore", mock_core_cls), patch("minimax_code.ipc.builtins._build_system_prompt_extra", mock_bpe):
             await handle_agent_send_message(
                 {"content": "Hello world", "session_id": "test-ses-1"},
                 ctx,
@@ -157,12 +157,10 @@ class TestSendMessageMultimodal:
         mock_bpe = AsyncMock(return_value=None)
 
         with patch.dict("sys.modules", {
-            "minimax_code.agent": mock_agent_mod,
-            "minimax_code.agent.core": mock_agent_mod,
             "minimax_code.app": mock_app_mod,
             "minimax_code.storage.dao.messages": mock_msg_dao_mod,
             "minimax_code.storage.db": mock_db_mod,
-        }), patch("minimax_code.ipc.builtins._build_system_prompt_extra", mock_bpe):
+        }), patch("minimax_code.agent.AgentCore", mock_core_cls), patch("minimax_code.ipc.builtins._build_system_prompt_extra", mock_bpe):
             await handle_agent_send_message(
                 {"content": multimodal_content, "session_id": "test-ses-2"},
                 ctx,
@@ -217,8 +215,10 @@ class TestSendMessageMultimodal:
         mock_sess_dao = MagicMock()
         mock_sess_dao.get = AsyncMock(return_value=None)
 
-        async def fake_create(**kw: Any) -> None:
+        async def fake_create(**kw: Any) -> dict[str, Any]:
             created_titles.append(kw.get("title", ""))
+            mock_sess_dao.get.return_value = {"project_id": None}
+            return {"project_id": None}
 
         mock_sess_dao.create = fake_create
 
@@ -235,16 +235,15 @@ class TestSendMessageMultimodal:
         mock_bpe = AsyncMock(return_value=None)
 
         with patch.dict("sys.modules", {
-            "minimax_code.agent": mock_agent_mod,
-            "minimax_code.agent.core": mock_agent_mod,
             "minimax_code.app": mock_app_mod,
             "minimax_code.storage.dao.messages": mock_msg_dao_mod,
             "minimax_code.storage.db": mock_db_mod,
-        }), patch("minimax_code.ipc.builtins._build_system_prompt_extra", mock_bpe):
+        }), patch("minimax_code.agent.AgentCore", mock_core_cls), patch("minimax_code.ipc.builtins._build_system_prompt_extra", mock_bpe):
             await handle_agent_send_message(
                 {"content": multimodal_content, "session_id": "test-ses-4"},
                 ctx,
             )
 
+        assert ctx._errors == []
         assert len(created_titles) > 0
         assert "Analyze this architecture diagram"[:32] in created_titles[0]

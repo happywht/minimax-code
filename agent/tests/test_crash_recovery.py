@@ -80,7 +80,7 @@ class TestRecoverOrphans:
         assert result["run_ids"] == []
         assert result["sessions"] == []
 
-    async def test_flips_running_to_failed_and_appends_step(self, db: AsyncDatabase):
+    async def test_marks_running_interrupted_and_appends_step(self, db: AsyncDatabase):
         await _seed_session(db, "sess_a")
         dao = AgentRunsDAO(db)
         run = await dao.create_run(session_id="sess_a", mode="chat", status="running")
@@ -92,7 +92,7 @@ class TestRecoverOrphans:
         assert run["id"] in result["run_ids"]
 
         after = await dao.get_run(run["id"])
-        assert after["status"] == "failed"
+        assert after["status"] == "interrupted"
         assert after["error"]  # recovery reason recorded
 
         # Append-only audit: a recovery status step is visible on the
@@ -118,6 +118,6 @@ class TestRecoverOrphans:
         await dao.create_run(session_id="s1", status="running")
         first = await dao.recover_orphans()
         assert first["recovered"] == 1
-        # After the first pass the run is already ``failed`` → not in flight.
+        # After the first pass the run is already ``interrupted`` → not in flight.
         second = await dao.recover_orphans()
         assert second["recovered"] == 0

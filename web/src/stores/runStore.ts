@@ -133,7 +133,7 @@ export const useRunTimelineStore = create<RunTimelineState>((set, get) => ({
     const wake = () => { void requestSync(useSessionStore.getState().currentSessionId); };
     // Notifications are wakeups; durable snapshots/events are the source of truth.
     unsubs = [
-      ...[StreamEvent.RunCreated, StreamEvent.RunStepStarted, StreamEvent.RunStepCompleted,
+      ...[StreamEvent.RunCreated, StreamEvent.RunUpdated, StreamEvent.RunStepStarted, StreamEvent.RunStepCompleted,
         StreamEvent.RunCompleted].map((event) => ipc.on(event, wake)),
       ipc.onSideCar((event) => {
         if (event.status === "started") void requestSync(useSessionStore.getState().currentSessionId, true);

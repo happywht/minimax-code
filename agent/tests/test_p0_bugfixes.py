@@ -100,12 +100,9 @@ def _make_fake_db() -> AsyncMock:
 
 
 def _make_fake_runs_dao() -> MagicMock:
-    dao = MagicMock()
-    dao.create_run = AsyncMock(return_value={"id": "run_test"})
-    dao.create_step = AsyncMock(return_value={"id": "step_test"})
-    dao.complete_step = AsyncMock(return_value={"id": "step_test"})
-    dao.update_run_status = AsyncMock(return_value={"id": "run_test"})
-    return dao
+    from run_dao_stub import make_run_dao_stub
+
+    return make_run_dao_stub()
 
 
 # ── P0#1: team.spawn server.emit() → server.notify() ─────────────────────────

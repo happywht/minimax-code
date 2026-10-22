@@ -97,6 +97,7 @@ class _RunRecorder:
         mode: str = "chat",
         project_id: str | None = None,
         model_snapshot: dict[str, Any] | None = None,
+        run_id: str | None = None,
     ) -> None:
         self.dao = dao
         self.db = db
@@ -107,13 +108,22 @@ class _RunRecorder:
         self.mode = mode
         self.project_id = project_id
         self.model_snapshot = model_snapshot
-        self.run_id = f"run_{uuid.uuid4().hex[:12]}"
+        self.run_metadata: dict[str, Any] = {}
+        self.admitted = run_id is not None
+        self.run_id = run_id or f"run_{uuid.uuid4().hex[:12]}"
         self._status_steps: dict[str, str] = {}
         self._tool_steps: dict[str, str] = {}
 
     async def create(self) -> dict[str, Any] | None:
         if self.dao is None:
             return None
+        if self.admitted:
+            run = await self.dao.claim_run(self.run_id)
+            if run is None:
+                raise RuntimeError("Run is no longer queued; refusing duplicate execution")
+            self.run_metadata = run.get("metadata") or {}
+            await self.emit("run.updated", {"run": run})
+            return run
         run = await self.dao.create_run(
             id=self.run_id,
             session_id=self.session_id,
@@ -237,7 +247,7 @@ class _RunRecorder:
         )
         await self.emit("run.step.completed", {"run_id": self.run_id, "step": step})
 
-    async def complete(self, result: Any, *, blocks: int = 1) -> None:
+    async def complete(self, result: Any, *, blocks: int = 1, receipt: dict[str, Any] | None = None) -> None:
         """Close the run timeline with the final block accounting.
 
         ``blocks`` counts the auto-continue blocks behind this one
@@ -267,7 +277,9 @@ class _RunRecorder:
             self.run_id,
             status="cancelled" if getattr(result, "cancelled", False) else "completed",
             assistant_message_id=self.assistant_message_id,
+            result=receipt,
             metadata={
+                **self.run_metadata,
                 "model_snapshot": self.model_snapshot,
                 "iterations": getattr(result, "iterations", None),
                 "usage": getattr(result, "usage", None),
@@ -439,37 +451,136 @@ async def _build_system_prompt_extra(
     return "\n\n".join(parts) if parts else None
 
 
-async def handle_agent_send_message(params: Any, ctx: Context) -> None:
-    from ..execution import ExecutionPolicy, execution_scope
+class _RunContext:
+    """Capture a worker reply; transport waiters can detach or join independently."""
 
-    mode = params.get("mode", "chat") if isinstance(params, dict) else "chat"
-    if mode not in {"chat", "plan", "execute"}:
-        await ctx.reply_error(-32602, "mode must be chat, plan, or execute")
+    def __init__(self, ctx: Context, job: RunJob):
+        self.server, self._ctx, self.job = ctx.server, ctx, job
+
+    async def emit(self, event, data, **kwargs):
+        await _notify_run(self._ctx, event, data, **kwargs)
+
+    async def reply(self, result):
+        self.job.result = result
+
+    async def reply_error(self, code, message, data=None):
+        self.job.error = {"code": code, "message": message, "data": data}
+
+
+async def _notify_run(ctx, event, data, **kwargs):
+    try:
+        await ctx.emit(event, data, **kwargs)
+    except Exception:
+        # Notifications are hints; disconnected observers cannot fail execution.
+        # Durable state and receipts remain queryable through run.*.
+        logger.debug("Run notification delivery failed: %s", event, exc_info=True)
+
+
+async def _reply_for_run(ctx, dao, service, run, job, *, created, wait):
+    if not wait:
+        await ctx.reply({"run": run, "created": created})
         return
+    if job is not None:
+        try:
+            await service.wait(job)
+        except asyncio.CancelledError:
+            if asyncio.current_task().cancelling():
+                raise  # only this RPC waiter detached
+        except Exception:
+            # The finalizer saves the same error receipt for the first waiter
+            # and later retries. If persistence failed, report unconfirmed below.
+            logger.debug("Run worker exited with an error", exc_info=True)
+    receipt = await dao.result_payload(run["id"])
+    if receipt is not None:
+        if "error" in receipt:
+            error = receipt["error"]
+            await ctx.reply_error(error["code"], error["message"], error.get("data"))
+        else:
+            await ctx.reply(receipt)
+        return
+    current = await dao.get_run(run["id"])
+    await ctx.reply_error(LLM_ERROR, "Run has no confirmed result; inspect its state before resuming",
+                          {"run_id": run["id"], "status": current["status"] if current else None})
+
+
+async def handle_agent_send_message(
+    params: Any, ctx: Context, *, wait: bool = True, resumed_from_id: str | None = None,
+    required_model: dict[str, Any] | None = None, required_workspace: str | None = None,
+) -> None:
+    from ..execution import ExecutionPolicy, execution_scope
+    from ..storage.dao.runs import AgentRunsDAO, RequestConflictError
+
     if not isinstance(params, dict):
         await ctx.reply_error(-32602, "params must be an object")
+        return
+    mode = params.get("mode", "chat")
+    if mode not in {"chat", "plan", "execute"}:
+        await ctx.reply_error(-32602, "mode must be chat, plan, or execute")
         return
     content = params.get("content")
     if not isinstance(content, (str, list)) or not content or (isinstance(content, str) and not content.strip()):
         await ctx.reply_error(-32602, "content must be a non-empty string or non-empty list")
         return
-    request = copy.deepcopy(params)
-    session_id = str(request.get("session_id") or f"ses_{uuid.uuid4().hex[:8]}")
-    request["session_id"] = session_id
+    key = params.get("idempotency_key")
+    if key is not None and (not isinstance(key, str) or not key.strip() or len(key) > 128
+                            or not isinstance(params.get("session_id"), str) or not params["session_id"]):
+        await ctx.reply_error(-32602, "idempotency_key requires an explicit session_id and 1–128 non-blank characters")
+        return
+    session_id = str(params.get("session_id") or f"ses_{uuid.uuid4().hex[:8]}")
+    request = {"session_id": session_id, "mode": mode, "content": copy.deepcopy(content)}
     service = get_run_service(ctx.server)
     try:
-        from ..app import get_db, init_runtime
+        from ..app import get_db, get_sessions_dao, init_runtime
 
         await init_runtime()
-        if get_db() is None:
+        db = get_db()
+        if db is None:
             raise RuntimeError("storage unavailable: database not initialized")
+        dao = AgentRunsDAO(db)
     except Exception as exc:
         await ctx.reply_error(-32004, f"Cannot start task: {exc}")
         return
     try:
+        existing = await dao.find_request(session_id, key, request) if key is not None else None
+    except RequestConflictError as exc:
+        await ctx.reply_error(-32602, str(exc))
+        return
+    if existing is not None:
+        job = await service.job_for_run(existing["id"])
+        await _reply_for_run(ctx, dao, service, existing, job, created=False, wait=wait)
+        return
+    try:
         model_snapshot = ModelSnapshot.capture()
+        if required_model is not None and model_snapshot.metadata() != required_model:
+            raise RuntimeError("Select the original provider, model and reasoning effort before resuming")
     except Exception as exc:
         await ctx.reply_error(LLM_ERROR, f"Cannot start task: {exc}")
+        return
+    if isinstance(content, str):
+        title = content.strip()[:32]
+    else:
+        title = next((p["text"][:32] for p in content if isinstance(p, dict)
+                      and p.get("type") == "text" and isinstance(p.get("text"), str)), "[multimodal]")
+    try:
+        from ..workspace_ctx import resolve_root_for_session
+
+        sessions = get_sessions_dao()
+        if sessions is None:
+            raise RuntimeError("Session storage is unavailable")
+        session = await sessions.get(session_id)
+        if session is None:
+            try:
+                session = await sessions.create(id=session_id, title=f"chat:{title}", system_prompt="", model=None)
+            except Exception:
+                session = await sessions.get(session_id)
+                if session is None:
+                    raise
+        root = str(await resolve_root_for_session(session_id))
+        if required_workspace is not None and root != required_workspace:
+            raise RuntimeError("Session workspace changed; restore its binding or start a new task")
+        project_id = session.get("project_id")
+    except Exception as exc:
+        await ctx.reply_error(-32602, f"Cannot start task: {exc}")
         return
 
     async def execute(job: RunJob) -> None:
@@ -479,26 +590,9 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
             runtime = SubAgentRuntime(llm=model_snapshot.client,
                                       reasoning_effort=model_snapshot.reasoning_effort)
             with execution_scope(ExecutionPolicy(read_only=mode == "plan")), subagent_runtime_scope(runtime):
-                await _handle_agent_send_message(request, ctx, job=job, model_snapshot=model_snapshot)
-        except BaseException as exc:
-            if job.record is not None:
-                # The core/tool cancellation has unwound before recording a terminal state.
-                cancelled = isinstance(exc, asyncio.CancelledError)
-                run = await job.record.dao.terminate_run(
-                    job.record.run_id, status="cancelled" if cancelled else "failed",
-                    error="Cancelled by user or service shutdown" if cancelled else str(exc),
-                )
-                await job.record.emit("run.completed", {"run": run})
-                if cancelled and run and run["status"] == "completed" and job.result is not None:
-                    # Completion committed before cancellation (e.g. while
-                    # extracting optional memories). Preserve the actual result.
-                    await ctx.reply(job.result)
-                    return
-            raise
+                await _handle_agent_send_message(request, _RunContext(ctx, job), job=job,
+                                                 model_snapshot=model_snapshot)
         finally:
-            # Setup failures used to bypass the inner run-loop finally block.
-            # The task owns its ContextVars; these process/server routes also
-            # need cleanup before releasing the session lease.
             from ..orchestrator.subagent import pop_subagent_emit
             from ..perm_consent import unregister_gater
 
@@ -506,20 +600,38 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
             pop_subagent_emit(session_id)
             unregister_gater(ctx.server, session_id)
 
+    async def finalize(job: RunJob, error: BaseException | None) -> None:
+        current = await dao.get_run(job.run_id)
+        if current and current["status"] in {"completed", "failed", "cancelled", "interrupted"}:
+            return
+        cancelled = isinstance(error, asyncio.CancelledError) or job.cancel_requested
+        if cancelled:
+            receipt = {"session_id": session_id, "message_id": job.message_id,
+                       "run_id": job.run_id, "text": "", "cancelled": True}
+            reason = "Cancelled by user or service shutdown"
+        else:
+            failure = job.error or {"code": -32603, "message": str(error or "Run ended without a confirmed result")}
+            receipt, reason = {"error": failure}, failure["message"]
+        run = await dao.terminate_run(job.run_id, status="cancelled" if cancelled else "failed",
+                                      error=reason, result=receipt)
+        await _notify_run(ctx, "run.completed", {"run": run})
+
     try:
-        job = service.submit(session_id, execute)
-    except RuntimeError as exc:
-        await ctx.reply_error(-32603, str(exc))
+        run, job, created = await service.admit(
+            dao=dao, session_id=session_id, request=request, request_key=key, title=title,
+            metadata={"model_snapshot": model_snapshot.metadata(), "workspace_snapshot": root,
+                      "project_id": project_id}, workspace=root, project_id=project_id,
+            operation=execute, finalize=finalize, resumed_from_id=resumed_from_id)
+    except (RequestConflictError, ValueError) as exc:
+        await ctx.reply_error(-32602, str(exc))
         return
-    try:
-        await service.wait(job)
-    except asyncio.CancelledError:
-        if asyncio.current_task().cancelling():
-            # The HTTP/stdio waiter went away; the service still owns the job.
-            raise
-        await ctx.reply({"session_id": session_id, "message_id": job.message_id,
-                         "text": "", "cancelled": True,
-                         **({"run_id": job.record.run_id} if job.record is not None else {})})
+    except Exception:
+        logger.exception("durable run admission failed")
+        await ctx.reply_error(-32004, "Cannot start task: request could not be durably admitted")
+        return
+    if created:
+        await _notify_run(ctx, "run.created", {"run": run})
+    await _reply_for_run(ctx, dao, service, run, job, created=created, wait=wait)
 
 
 async def _handle_agent_send_message(
@@ -607,41 +719,13 @@ async def _handle_agent_send_message(
     from ..app import (
         ensure_codebase_indexer,
         get_codebase_indexer,
-        get_sessions_dao,
         init_runtime,
     )
     from ..codebase import CodebaseRetriever
     from ..storage.dao.messages import MessagesDAO
     from ..workspace_ctx import current_root
 
-    # 1. Ensure the sessions row exists (FK target for messages).
-    #    Best-effort: if the sessions DAO is unavailable the
-    #    messages INSERT will surface a clear FK error and the
-    #    frontend can react. Mirrors the helper in
-    #    :mod:`handlers_agents`.
-    project_id: str | None = None
-    try:
-        sess_dao = get_sessions_dao()
-        if sess_dao is None:
-            try:
-                await init_runtime()
-            except Exception:
-                logger.debug("init_runtime failed; continuing without lazy session bootstrap")
-            sess_dao = get_sessions_dao()
-        if sess_dao is not None:
-            existing = await sess_dao.get(session_id)
-            if existing is None:
-                created = await sess_dao.create(
-                    id=session_id,
-                    title=f"chat:{_title_hint}",
-                    system_prompt="",
-                    model=None,
-                )
-                project_id = created.get("project_id")
-            else:
-                project_id = existing.get("project_id")
-    except Exception:
-        logger.exception("could not pre-create session %s; continuing", session_id)
+    project_id = job.project_id
 
     # 2. Resolve the process-wide database and messages DAO.
     #    Reuse the singleton opened by ``init_runtime`` so we never
@@ -668,9 +752,14 @@ async def _handle_agent_send_message(
     #     against it. An invalid binding must stop before any model/tool call.
     _root_token = None
     try:
-        from ..workspace_ctx import resolve_root_for_session, set_current_root
+        from pathlib import Path
 
-        _root_token = set_current_root(await resolve_root_for_session(session_id))
+        from ..workspace_ctx import set_current_root
+
+        root = Path(job.workspace or "")
+        if not job.workspace or not root.is_dir() or root.resolve(strict=True) != root:
+            raise RuntimeError("Accepted workspace is missing or has changed; rebind before starting a new task")
+        _root_token = set_current_root(root)
     except Exception as exc:
         logger.warning("workspace root resolution failed: %s", exc)
         await ctx.reply_error(-32602, f"Cannot start task: {exc}")
@@ -891,6 +980,7 @@ async def _handle_agent_send_message(
         project_id=project_id,
         mode=params.get("mode", "chat"),
         model_snapshot=model_snapshot.metadata(),
+        run_id=job.run_id,
     )
     job.record = recorder
     try:
@@ -1068,7 +1158,6 @@ async def _handle_agent_send_message(
         )
     except Exception as exc:
         logger.exception("agent.send_message: AgentCore.run failed")
-        await recorder.fail(str(exc))
         from ..agent.types import LLMStreamTimeout
 
         if isinstance(exc, LLMStreamTimeout):
@@ -1154,7 +1243,7 @@ async def _handle_agent_send_message(
         "tokens_in": result.usage.get("prompt_tokens", 0),
         "tokens_out": result.usage.get("completion_tokens", 0),
     }
-    await recorder.complete(result, blocks=blocks)
+    await recorder.complete(result, blocks=blocks, receipt=job.result)
     await ctx.reply(job.result)
 
 

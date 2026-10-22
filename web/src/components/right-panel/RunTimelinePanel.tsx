@@ -15,6 +15,7 @@ import { buildPermissionPatchFiles } from "../../lib/permissionPatchPreview";
 import { PermissionPatchPreview } from "../modals/PermissionPatchPreview";
 import { strings } from "../../ui/strings";
 import { Button } from "../../ui";
+import { RunRecoveryActions } from "./RunRecoveryActions";
 
 export interface RunTimelinePanelProps {
   testId?: string;
@@ -193,6 +194,7 @@ export function RunTimelinePanel({
                 <TimelineStep key={step.id} step={step} />
               ))}
             </ol>
+            <RunRecoveryActions run={run} refresh={() => loadForSession(currentSessionId)} />
           </article>
         ))}
       </div>
@@ -323,12 +325,12 @@ function RunStatusBadge({ status }: { status: string }): JSX.Element {
   const cls =
     status === "completed"
       ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-      : status === "failed" || status === "cancelled"
+      : status === "failed" || status === "cancelled" || status === "interrupted"
         ? "border-red-500/30 bg-red-500/10 text-status-error"
         : "border-minimax-accent/30 bg-minimax-accent/10 text-minimax-accent";
   return (
     <span className={"shrink-0 rounded border px-1.5 py-0.5 text-[11px] " + cls}>
-      {status}
+      {({ queued: "排队中", interrupted: "中断，待核对", waiting_input: "等待输入", budget_paused: "预算暂停" } as Record<string, string>)[status] ?? status}
     </span>
   );
 }

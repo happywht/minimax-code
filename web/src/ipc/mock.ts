@@ -154,6 +154,9 @@ const mockPermissionRules: BackendPermissionRule[] = [];
 // before any import) so the Settings Data tab round-trips in browser-only
 // mode. data.backup has no filesystem here — it reports a fake snapshot.
 let mockDataEnvelope: DataExportEnvelope | null = null;
+const mockRunReceipts = new Map<string, import("../types/ipc").SendMessageResult>();
+const mockRunRequests = new Map<string, import("../types/ipc").SendMessageParams>();
+const mockRequestKeys = new Map<string, { signature: string; runId: string }>();
 const mockRunEvents = new Map<string, import("../types/ipc").RunEvent[]>();
 
 function recordRunEvent(
@@ -523,12 +526,72 @@ function mockHandle(
       return { events: structuredClone(page), next_seq: next, has_more: next < events.length };
     }
 
+    case "run.start": {
+      const p = params as import("../types/ipc").RunStartParams;
+      if (!p.session_id || !p.idempotency_key || (p.engine && p.engine !== "native")) {
+        throw new Error("run.start requires a session and idempotency key, with native engine");
+      }
+      const created = !mockRequestKeys.has(p.session_id + "\0" + p.idempotency_key);
+      const reply = mockHandle("agent.send_message", p, client, id) as import("../types/ipc").SendMessageResult;
+      return { run: structuredClone(mockRuns.get(reply.run_id!)!.run), created };
+    }
+    case "run.get": {
+      const runId = (params as { run_id: string }).run_id;
+      const entry = mockRuns.get(runId);
+      if (!entry) throw new Error("unknown run_id");
+      return { run: structuredClone(entry.run), result: structuredClone(mockRunReceipts.get(runId) ?? null) };
+    }
+    case "run.cancel": {
+      const runId = (params as { run_id: string }).run_id;
+      const entry = mockRuns.get(runId);
+      if (!entry) throw new Error("unknown run_id");
+      if (["completed", "failed", "cancelled", "interrupted"].includes(entry.run.status)) {
+        return { ok: true, requested: false, run: structuredClone(entry.run) };
+      }
+      entry.run = { ...entry.run, status: "cancelled", completed_at: new Date().toISOString() };
+      entry.steps = entry.steps.map((step) => {
+        if (!["pending", "running"].includes(step.status)) return step;
+        const stopped = { ...step, status: "cancelled" as const, completed_at: entry.run.completed_at };
+        recordRunEvent(runId, "step_updated", { step: stopped });
+        return stopped;
+      });
+      mockRunReceipts.set(runId, { session_id: entry.run.session_id, message_id: entry.run.assistant_message_id!,
+        run_id: runId, text: "", cancelled: true });
+      recordRunEvent(runId, "status", { run: entry.run });
+      client._emit(StreamEvent.RunCompleted, { run: structuredClone(entry.run) });
+      return { ok: true, requested: true, run: structuredClone(entry.run) };
+    }
+    case "run.resume": {
+      const p = params as { run_id: string; idempotency_key: string; reviewed?: boolean };
+      const entry = mockRuns.get(p.run_id);
+      const original = mockRunRequests.get(p.run_id);
+      if (!entry || !original || !["interrupted", "failed", "cancelled"].includes(entry.run.status)) {
+        throw new Error("Run cannot be resumed; start a new task");
+      }
+      if (entry.run.started_at && !p.reviewed) throw new Error("Review prior steps and workspace before resuming");
+      const note = `\n\n[Runtime recovery context: prior run ${entry.run.id} ended as ${entry.run.status}. Continue the original task after inspecting the existing workspace and prior conversation. Verify which actions already took effect before repeating a write. No tool step has been automatically retried.]`;
+      const content = typeof original.content === "string" ? original.content + note
+        : [...original.content, { type: "text" as const, text: note }];
+      const result = mockHandle("run.start", { ...original, content, idempotency_key: p.idempotency_key }, client, id) as import("../types/ipc").RunAdmissionResult;
+      mockRuns.get(result.run.id)!.run.resumed_from_id = p.run_id;
+      return { ...result, run: structuredClone(mockRuns.get(result.run.id)!.run) };
+    }
+
     case "agent.send_message": {
       const p = params as import("../types/ipc").SendMessageParams;
       if (p.mode && !["chat", "plan", "execute"].includes(p.mode)) {
         throw new Error("mode must be chat, plan, or execute");
       }
       const sid = p.session_id ?? `ses_${Math.random().toString(36).slice(2, 10)}`;
+      const requestKey = p.idempotency_key ? sid + "\0" + p.idempotency_key : null;
+      const signature = JSON.stringify({ content: p.content, mode: p.mode ?? "chat" });
+      const previous = requestKey ? mockRequestKeys.get(requestKey) : null;
+      if (previous) {
+        if (previous.signature !== signature) throw new Error("idempotency_key already belongs to different input");
+        const run = mockRuns.get(previous.runId)!.run;
+        return structuredClone(mockRunReceipts.get(run.id) ?? { session_id: sid,
+          message_id: run.assistant_message_id!, run_id: run.id, text: "", cancelled: false });
+      }
       mockSessionsWithMessages.add(sid);
       const mid = `msg_${Math.random().toString(36).slice(2, 10)}`;
       const runId = `run_${Math.random().toString(36).slice(2, 10)}`;
@@ -559,6 +622,8 @@ function mockHandle(
         ordinal: 1,
       };
       mockRuns.set(runId, { run, steps: [thinkingStep] });
+      mockRunRequests.set(runId, structuredClone(p));
+      if (requestKey) mockRequestKeys.set(requestKey, { signature, runId });
       recordRunEvent(runId, "created", { run });
       recordRunEvent(runId, "step_created", { step: thinkingStep });
       setTimeout(() => client._emit(StreamEvent.RunCreated, { run }), 0);
@@ -567,6 +632,7 @@ function mockHandle(
       const chunks = reply.match(/.{1,12}/g) ?? [reply];
       chunks.forEach((delta, i) => {
         setTimeout(() => {
+          if (mockRuns.get(runId)?.run.status === "cancelled") return;
           client._emit(StreamEvent.MessageChunk, {
             session_id: sid,
             message_id: mid,
@@ -603,6 +669,7 @@ function mockHandle(
               metadata: { ...run.metadata, iterations: 1, memory_count: 0 },
             };
             mockRuns.set(runId, { run: completedRun, steps: [completedStep, finalStep] });
+            mockRunReceipts.set(runId, { session_id: sid, message_id: mid, run_id: runId, text: reply, cancelled: false });
             recordRunEvent(runId, "step_updated", { step: completedStep });
             recordRunEvent(runId, "step_created", { step: finalStep });
             recordRunEvent(runId, "status", { run: completedRun });

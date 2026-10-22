@@ -103,6 +103,9 @@ def _iter_migration_modules():  # type: ignore[no-untyped-def]
                 f"migration {name} declares VERSION={declared_version} "
                 f"but filename implies {version}"
             )
+        # Schema rebuilds opt in so the runner disables FK enforcement BEFORE
+        # BEGIN, then checks all references before committing and restores it.
+        run.requires_foreign_keys_off = bool(getattr(module, "DISABLE_FOREIGN_KEYS", False))
         yield version, run, name
 
 

@@ -25,8 +25,15 @@ test("timeline recovers a completed offline run and survives a page reload", asy
   }, sessionId);
   await selectSession();
   await context.setOffline(true);
-  const result = await rpc("agent.send_message", { session_id: sessionId, content: "offline durable recovery probe" });
-  expect(result).toBeTruthy();
+  const input = { session_id: sessionId, content: "offline durable recovery probe", idempotency_key: "offline-once" };
+  const admitted = await rpc("run.start", input);
+  expect(admitted.created).toBe(true);
+  const retry = await rpc("run.start", input);
+  expect(retry.created).toBe(false);
+  expect(retry.run.id).toBe(admitted.run.id);
+  await expect.poll(async () => (await rpc("run.get", { run_id: admitted.run.id })).run.status).toBe("completed");
+  const receipt = await rpc("run.get", { run_id: admitted.run.id });
+  expect(await rpc("agent.send_message", input)).toEqual(receipt.result);
   const { runs } = await rpc("run.list", { session_id: sessionId });
   expect(runs).toHaveLength(1);
   expect(runs[0].status).toBe("completed");

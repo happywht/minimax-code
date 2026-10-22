@@ -47,6 +47,7 @@ KNOWN_EVENTS = {
     "notification.read",
     "agent.team_progress",
     "run.created",
+    "run.updated",
     "run.step.started",
     "run.step.completed",
     "run.completed",

@@ -8,7 +8,14 @@ from typing import Any
 from pydantic import ValidationError
 
 from .handler_utils import HandlerError, check_params
-from .protocol import INTERNAL_ERROR, INVALID_PARAMS, RunEventsParams
+from .protocol import (
+    INTERNAL_ERROR,
+    INVALID_PARAMS,
+    RunEventsParams,
+    RunIdParams,
+    RunResumeParams,
+    RunStartParams,
+)
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -97,9 +104,86 @@ def register_run_handlers(server: Any) -> None:
             logger.exception("run.events failed")
             await ctx.reply_error(INTERNAL_ERROR, "run.events failed")
 
+    async def handle_run_start(params: Any, ctx: Context) -> None:
+        from .builtins import handle_agent_send_message
+
+        try:
+            request = RunStartParams.model_validate(params)
+        except ValidationError:
+            await ctx.reply_error(INVALID_PARAMS, "run.start requires a session, input and idempotency key; only native is currently supported")
+            return
+        await handle_agent_send_message(request.model_dump(exclude={"engine"}), ctx, wait=False)
+
+    async def handle_run_get(params: Any, ctx: Context) -> None:
+        try:
+            request = RunIdParams.model_validate(params)
+            dao = await _get_dao()
+            run = await dao.get_run(request.run_id)
+            if run is None:
+                raise HandlerError(INVALID_PARAMS, "unknown run_id")
+            await ctx.reply({"run": run, "result": await dao.result_payload(request.run_id)})
+        except ValidationError as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+
+    async def handle_run_cancel(params: Any, ctx: Context) -> None:
+        from ..runs import get_run_service
+
+        try:
+            request = RunIdParams.model_validate(params)
+            dao = await _get_dao()
+            run = await dao.get_run(request.run_id)
+            if run is None:
+                raise HandlerError(INVALID_PARAMS, "unknown run_id")
+            requested = get_run_service(ctx.server).cancel_run(request.run_id)
+            await ctx.reply({"ok": True, "requested": requested, "run": run})
+        except ValidationError as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+
+    async def handle_run_resume(params: Any, ctx: Context) -> None:
+        from .builtins import handle_agent_send_message
+
+        try:
+            request = RunResumeParams.model_validate(params)
+            dao = await _get_dao()
+            run = await dao.get_run(request.run_id)
+            if run is None or run["status"] not in {"interrupted", "failed", "cancelled"}:
+                raise HandlerError(INVALID_PARAMS, "Only interrupted, failed or cancelled runs can be resumed")
+            previous = await dao.request_payload(request.run_id)
+            metadata = run.get("metadata") or {}
+            if previous is None or not metadata.get("model_snapshot") or not metadata.get("workspace_snapshot"):
+                raise HandlerError(INVALID_PARAMS, "This legacy run has no saved request/context; start a new task with a handoff")
+            if run.get("started_at") and not request.reviewed:
+                raise HandlerError(INVALID_PARAMS, "Review the prior steps and workspace before resuming; their effects will not be automatically replayed")
+            note = (
+                f"\n\n[Runtime recovery context: prior run {run['id']} ended as {run['status']}. "
+                "Continue the original task after inspecting the existing workspace and prior conversation. "
+                "Verify which actions already took effect before repeating a write. No tool step has been automatically retried.]"
+            )
+            content = previous["content"]
+            if isinstance(content, list):
+                content = [*content, {"type": "text", "text": note}]
+            else:
+                content += note
+            await handle_agent_send_message(
+                {**previous, "content": content, "idempotency_key": request.idempotency_key},
+                ctx, wait=False, resumed_from_id=run["id"],
+                required_model=metadata["model_snapshot"], required_workspace=metadata["workspace_snapshot"])
+        except ValidationError as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+
     server.register("run.list", handle_run_list)
     server.register("run.steps", handle_run_steps)
     server.register("run.events", handle_run_events)
+    server.register("run.start", handle_run_start)
+    server.register("run.get", handle_run_get)
+    server.register("run.cancel", handle_run_cancel)
+    server.register("run.resume", handle_run_resume)
 
 
 __all__ = ["register_run_handlers"]

@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 VERSION = 28
+DISABLE_FOREIGN_KEYS = True
 
 
 def run(conn: Any) -> None:
