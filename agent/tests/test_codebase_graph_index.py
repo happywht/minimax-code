@@ -57,3 +57,29 @@ async def test_graph_index_empty_for_unknown_symbol(workspace: Path) -> None:
     index = CodebaseGraphIndex(workspace)
     result = await index.find_definitions("does_not_exist")
     assert result["locations"] == []
+
+
+async def test_planning_navigation_does_not_spawn_git(workspace, monkeypatch):
+    import subprocess
+
+    from minimax_code.execution import ExecutionPolicy, execution_scope
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Code navigation must not start unmanaged processes")
+
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    with execution_scope(ExecutionPolicy(workspace, read_only=True)):
+        result = await CodebaseGraphIndex(workspace).find_definitions("helper")
+    assert result["locations"]
+
+
+async def test_graph_index_excludes_external_symlink(workspace, tmp_path):
+    external = tmp_path / "private.py"
+    external.write_text("def private_external_symbol(): pass\n", encoding="utf-8")
+    try:
+        (workspace / "linked.py").symlink_to(external)
+    except OSError:
+        pytest.skip("symlink requires OS permission")
+    index = CodebaseGraphIndex(workspace)
+    assert (await index.find_definitions("helper"))["locations"]
+    assert not (await index.find_definitions("private_external_symbol"))["locations"]

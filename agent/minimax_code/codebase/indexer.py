@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -12,27 +11,13 @@ from typing import Any
 
 from ..agent.perception.parsers import PARSERS, SymbolNode
 from .embedder import CodebaseEmbedder, get_default_embedder
+from .files import discover_sources, read_source
 from .graph_index import CodebaseGraphIndex
 from .store import CodebaseStore
 
 logger = logging.getLogger(__name__)
 
 _SOURCE_EXTENSIONS = set(PARSERS.keys())
-
-# Directories to always skip (matches perception indexer + common build dirs).
-_SKIP_DIRS = {
-    ".git", ".venv", "node_modules", "__pycache__", ".pytest_cache",
-    ".mypy_cache", ".tox", "dist", "build", ".eggs", ".minimax",
-    ".hg", ".svn", "vendor", ".next", ".nuxt", "coverage", ".coverage",
-    "htmlcov", ".terraform", ".serverless", ".playwright-mcp", ".ruff_cache",
-    "grok-build",
-}
-
-_SKIP_FILES = {
-    "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
-    "uv.lock", "poetry.lock", "go.sum",
-    ".DS_Store", "Thumbs.db",
-}
 
 _MAX_FILES = 500
 _MAX_FILE_SIZE = 2 * 1024 * 1024  # 2 MB
@@ -218,37 +203,17 @@ class CodebaseIndexer:
 
     def _sync_discover_files(self) -> list[tuple[str, float, int]]:
         """Synchronous file discovery (runs in thread pool)."""
-        files: list[tuple[str, float, int]] = []
-        count = 0
-        for dirpath, dirnames, filenames in os.walk(self._workspace):
-            dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
-            for name in filenames:
-                if name in _SKIP_FILES:
-                    continue
-                if count >= self._max_files:
-                    logger.info("codebase: hit file limit (%d)", self._max_files)
-                    files.sort(key=lambda x: x[0])
-                    return files
-                full = Path(dirpath) / name
-                ext = full.suffix.lower()
-                if ext not in _SOURCE_EXTENSIONS:
-                    continue
-                try:
-                    st = full.stat()
-                except OSError:
-                    continue
-                if st.st_size > self._max_file_size:
-                    continue
-                files.append((self._rel_path(full), st.st_mtime, st.st_size))
-                count += 1
-        files.sort(key=lambda x: x[0])
-        return files
+        return discover_sources(
+            self._workspace, supported=lambda path: path.suffix.lower() in _SOURCE_EXTENSIONS,
+            max_files=self._max_files, max_file_size=self._max_file_size,
+        )
 
     async def _index_file(self, rel_path: str, *, mtime: float, size: int) -> None:
         full = self._workspace / rel_path
         try:
-            data = await asyncio.to_thread(full.read_bytes)
-        except OSError:
+            data = await asyncio.to_thread(read_source, self._workspace, rel_path,
+                                           max_file_size=self._max_file_size)
+        except (OSError, ValueError):
             return
         if b"\x00" in data[:_BINARY_SNIFF]:
             return

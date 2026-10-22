@@ -20,6 +20,7 @@ from ..xai_codebase_graph.languages import LanguageRegistry
 from ..xai_codebase_graph.languages.registry import default_language_registry
 from ..xai_codebase_graph.manager.builder import IndexBuilder
 from ..xai_codebase_graph.navigation import NavigationError
+from .files import discover_sources
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,13 @@ class CodebaseGraphIndex:
         import asyncio
 
         builder = IndexBuilder.with_registry(self._registry)
-        return await asyncio.to_thread(builder.build, self._workspace)
+        sources = await asyncio.to_thread(
+            discover_sources, self._workspace,
+            supported=lambda path: self._registry.is_supported(str(path)),
+            max_files=5000, max_file_size=2 * 1024 * 1024,
+        )
+        return await asyncio.to_thread(builder.build_from_files, self._workspace,
+                                       [str(self._workspace / rel) for rel, _, _ in sources])
 
     async def find_definitions(self, symbol: str) -> dict[str, Any]:
         """Return definition locations for ``symbol``.

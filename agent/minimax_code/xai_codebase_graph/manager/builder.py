@@ -400,6 +400,11 @@ class IndexBuilder:
         ``root_path`` for portability.
         """
         file_paths = self._collect_files(root_path)
+        return self.build_from_files(root_path, file_paths)
+
+    def build_from_files(self, root_path: str | PathLike[str],
+                         file_paths: list[str]) -> ScopeGraphIndex:
+        """Build from a host-validated list without discovering files or spawning Git."""
         if not file_paths:
             index = ScopeGraphIndex()
             # Set query version even for an empty index so cache validation works.
