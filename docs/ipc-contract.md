@@ -556,12 +556,18 @@ delivery failures do not change a durable result. Parallel tool siblings are
 cancelled and drained before a fatal evidence error releases the session lease.
 
 Native persisted messages include optional `metadata.run_id`. Assistant streaming
-IDs are also the stored `message.list` IDs; `run.assistant_message_id` and the final
+IDs are also the stored `message.list` IDs; the run's `assistant_message_id` and the final
 receipt identify the last saved assistant segment, including after tool turns or
-automatic continuation. `run.user_message_id` identifies the first saved user
+automatic continuation. The run's `user_message_id` identifies the first saved user
 message for that run. Message insertion, pointer update and its journal event
 commit together. Legacy messages can lack this linkage; an unpersisted partial
 stream after cancellation is not a confirmed saved assistant message.
+
+When reviewed recovery encounters a recorded tool call without a saved result,
+the model-history projection provides an explicitly **unknown outcome** placeholder
+for protocol pairing. It does not execute the tool or save an invented result.
+Malformed or unmatched tool evidence stops continuation for review. The original
+conversation and timeline remain unchanged.
 
 Request:
 ```json

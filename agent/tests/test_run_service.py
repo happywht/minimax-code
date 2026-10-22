@@ -637,3 +637,38 @@ async def test_stream_history_receipt_and_run_use_the_same_assistant_ids(native,
     assert run["user_message_id"] == messages[0]["id"]
     assert run["assistant_message_id"] == receipt["message_id"] == assistants[-1]["id"]
     assert assistants[-1]["content"] == receipt["text"] == "final answer"
+
+
+async def test_reviewed_resume_exposes_unknown_tool_outcome_without_inventing_saved_result(native, monkeypatch):
+    from test_agent_core import FakeLLM, _text_response, _tool_call
+
+    from minimax_code import agent, app
+    from minimax_code.agent.core import AgentCore
+    from minimax_code.model_snapshot import ModelSnapshot
+    from minimax_code.storage.dao.messages import MessagesDAO
+
+    llm = FakeLLM([_text_response("Reviewed existing files; no repeated write")])
+    llm.default_model, llm.mock = "test", True
+    monkeypatch.setattr(agent, "AgentCore", AgentCore)
+    monkeypatch.setattr(app, "get_subagent_llm", lambda: llm)
+    old, _ = await native.dao.admit_run(session_id="one", title="uncertain write",
+        request={"session_id": "one", "mode": "chat", "content": "write file"}, request_key="before-crash",
+        metadata={"model_snapshot": ModelSnapshot.capture().metadata(), "workspace_snapshot": str(native.root)})
+    await native.dao.claim_run(old["id"])
+    messages = MessagesDAO(native.db)
+    await messages.create(id="old-assistant", session_id="one", role="assistant", run_id=old["id"],
+                          tool_calls=[_tool_call("write_file", {"path": "effect.txt"}, "uncertain-call")])
+    (native.root / "effect.txt").write_text("already applied", encoding="utf-8")
+    await native.dao.recover_orphans()
+    ctx = await run_rpc(native, "run.resume", {"run_id": old["id"], "idempotency_key": "reviewed-resume", "reviewed": True})
+    ctx.reply_error.assert_not_awaited()
+    run = ctx.reply.call_args.args[0]["run"]
+    service = get_run_service(native.server)
+    job = service.get_job(run["id"])
+    if job:
+        await service.wait(job)
+    assert (await native.dao.get_run(run["id"]))["status"] == "completed"
+    projected = next(m for m in llm.messages[0] if m.get("tool_call_id") == "uncertain-call")
+    assert "UNKNOWN" in projected["content"]
+    assert not any(m["role"] == "tool" for m in await messages.list_for_session("one"))
+    assert (native.root / "effect.txt").read_text(encoding="utf-8") == "already applied"

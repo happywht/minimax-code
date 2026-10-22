@@ -184,9 +184,11 @@ class AgentRunsDAO:
             where.append("mode = ?")
             params.append(mode)
         where_sql = "WHERE " + " AND ".join(where) if where else ""
+        ordering = parse_order_by(order_by, _RUN_SORTABLE)
+        direction = "DESC" if ordering.endswith("DESC") else "ASC"
         sql = (
             f"SELECT * FROM agent_runs {where_sql} "
-            f"ORDER BY {parse_order_by(order_by, _RUN_SORTABLE)}"
+            f"ORDER BY {ordering}, rowid {direction}"
         )
         sql, params = apply_pagination(sql, params, limit=limit, offset=offset)
         rows = await self._db.fetchall(sql, tuple(params))

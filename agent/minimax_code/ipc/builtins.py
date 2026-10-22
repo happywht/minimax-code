@@ -787,24 +787,16 @@ async def _handle_agent_send_message(
         logger.debug("subagent parent-session publish failed", exc_info=True)
 
     async def _history(sid: str) -> list[dict[str, Any]]:
-        try:
-            rows = await msg_dao.list_for_session(sid, order_by="created_at ASC")
-            out: list[dict[str, Any]] = []
-            for r in rows:
-                role = r.get("role") or "user"
-                content_text = r.get("content") or ""
-                msg: dict[str, Any] = {"role": role, "content": content_text}
-                tc = r.get("tool_calls")
-                if tc:
-                    msg["tool_calls"] = tc
-                tcid = r.get("tool_call_id")
-                if tcid:
-                    msg["tool_call_id"] = tcid
-                out.append(msg)
-            return out
-        except Exception as exc:
-            from ..run_errors import RunPersistenceError
+        from ..run_errors import RunPersistenceError
 
+        try:
+            from ..conversation import project_history
+
+            rows = await msg_dao.list_for_session(sid, order_by="created_at ASC")
+            return project_history(rows)
+        except RunPersistenceError:
+            raise
+        except Exception as exc:
             raise RunPersistenceError("Conversation history could not be loaded; execution stopped") from exc
 
     async def _persist(sid: str, msg: dict[str, Any]) -> None:

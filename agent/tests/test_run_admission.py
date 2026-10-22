@@ -59,6 +59,22 @@ async def test_message_link_cannot_cross_session_or_append_to_finished_run(dao):
     assert await messages.get("late") is None
 
 
+async def test_same_timestamp_preserves_message_order_and_latest_run(dao):
+    from minimax_code.storage.dao.messages import MessagesDAO
+
+    messages = MessagesDAO(dao._db)
+    for mid in ("z-user", "a-assistant", "m-tool"):
+        await messages.create(id=mid, session_id="s", role="user", created_at="2026-10-23T00:00:00Z")
+    # An alternate covering index must not change chronological tie ordering.
+    await dao._db.execute("CREATE INDEX alternate_messages ON messages(session_id,created_at,id)")
+    assert [m["id"] for m in await messages.list_for_session("s")] == ["z-user", "a-assistant", "m-tool"]
+    for rid in ("z-first", "a-latest"):
+        await dao.create_run(id=rid, session_id="s")
+    await dao._db.execute("UPDATE agent_runs SET created_at='2026-10-23T00:00:00Z'")
+    await dao._db.execute("CREATE INDEX alternate_runs ON agent_runs(session_id,created_at,id)")
+    assert (await dao.list_runs(session_id="s", limit=1))[0]["id"] == "a-latest"
+
+
 async def test_concurrent_duplicate_admission_commits_one_request_and_event(dao):
     results = await asyncio.gather(*(admit(dao) for _ in range(12)))
     assert sum(created for _, created in results) == 1

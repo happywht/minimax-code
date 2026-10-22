@@ -612,6 +612,14 @@ the last persisted state is retained for startup recovery; it cannot claim a sav
 failure receipt. Integrations using the generic callbacks should raise this class
 when persistence is mandatory rather than relying on the legacy best-effort seam.
 
+For interrupted tool turns, the Native history projection supplies a tool-shaped
+placeholder only for a missing result of an existing recorded call. It explicitly
+says the outcome is unknown and effects may already exist; it is not written back
+as execution evidence. This keeps protocol call/result pairing valid after review
+without claiming the tool failed, succeeded or never ran. Unmatched tool results,
+invalid call IDs or duplicate IDs within one turn stop continuation instead of
+inventing missing calls. Original persisted rows remain unchanged.
+
 `AgentCore` takes two optional callables that the storage layer
 satisfies directly:
 

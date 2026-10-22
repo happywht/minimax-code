@@ -121,7 +121,11 @@ class MessagesDAO:
         if role is not None:
             where.append("role = ?")
             params.append(role)
-        sql = f"SELECT * FROM messages WHERE {' AND '.join(where)} ORDER BY {parse_order_by(order_by, _SORTABLE, default='created_at ASC')}"
+        ordering = parse_order_by(order_by, _SORTABLE, default="created_at ASC")
+        direction = "DESC" if ordering.endswith("DESC") else "ASC"
+        # Multiple tool messages commonly share the second-precision timestamp.
+        # Preserve insertion order rather than leaving ties to the query planner.
+        sql = f"SELECT * FROM messages WHERE {' AND '.join(where)} ORDER BY {ordering}, rowid {direction}"
         sql, params = apply_pagination(sql, params, limit=limit, offset=offset)
         rows = await self._db.fetchall(sql, tuple(params))
         return [_hydrate(r) for r in rows]
