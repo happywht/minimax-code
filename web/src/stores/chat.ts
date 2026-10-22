@@ -80,6 +80,15 @@ let toolResultUnsub: (() => void) | null = null;
 let statusUnsub: (() => void) | null = null;
 let askUserUnsub: (() => void) | null = null;
 let pendingAssistantId: string | null = null;
+const inFlightRequests = new Map<string, Promise<unknown>>();
+
+function trackRequest<T>(sessionId: string, request: Promise<T>): Promise<T> {
+  const tracked = request.finally(() => {
+    if (inFlightRequests.get(sessionId) === tracked) inFlightRequests.delete(sessionId);
+  });
+  inFlightRequests.set(sessionId, tracked);
+  return tracked;
+}
 
 /** Tear down all WS subscriptions (HMR hot-replace / app unmount). */
 export function disposeChatSubscriptions(): void {
@@ -267,8 +276,10 @@ export const useChat = create<ChatState>((set, get) => ({
           // later one that omits it.
           const next = applyAssistantChunk(s.messages, data);
           return {
-            messages: trimArray(next, MAX_MESSAGES),
-            status: data.done ? "idle" : "streaming",
+            messages: trimArray(s.status === "cancelling"
+              ? next.map((m) => m.id === data.message_id ? { ...m, status: "cancelling" as const } : m)
+              : next, MAX_MESSAGES),
+            status: s.status === "cancelling" ? "cancelling" : data.done ? "idle" : "streaming",
           };
         });
         // Stall watchdog: reset on every chunk, clear on done.
@@ -297,7 +308,7 @@ export const useChat = create<ChatState>((set, get) => ({
             created_at: Date.now(),
             streaming: false,
           }), MAX_MESSAGES),
-          status: "streaming",
+          status: s.status === "cancelling" ? "cancelling" : "streaming",
         }));
         // Tool execution is activity. It can legitimately run longer
         // than the normal 60 s stream silence window, so arm the wider
@@ -369,7 +380,7 @@ export const useChat = create<ChatState>((set, get) => ({
           toast.error(strings.toasts.agentError, detail);
           clearStallWatchdog();
         } else if (d.status === "idle" || d.status === "done" || d.status === "max_iterations") {
-          set({ status: "idle" });
+          if (get().status !== "cancelling") set({ status: "idle" });
           clearStallWatchdog();
         } else {
           resetStallWatchdogForCurrentActivity();
@@ -415,7 +426,7 @@ export const useChat = create<ChatState>((set, get) => ({
     // Concurrency guard — prevent double-send from rapid clicks or
     // multiple call sites.  The UI disables the button but the store
     // is the source of truth.
-    if (get().status === "sending" || get().status === "streaming") return;
+    if (get().status === "sending" || get().status === "streaming" || get().status === "cancelling") return;
 
     // Normalize to wire format
     const isString = typeof content === "string";
@@ -477,11 +488,11 @@ export const useChat = create<ChatState>((set, get) => ({
       resetStallWatchdogForCurrentActivity();
       // Send string for pure text, list for multimodal
       const wireContent = parts ?? text;
-      const result = await typedIPC.sendMessage({
+      const result = await trackRequest(sessionId, typedIPC.sendMessage({
         session_id: sessionId,
         content: wireContent,
         ...(get().executionMode === "plan" ? { mode: "plan" as const } : {}),
-      });
+      }));
       if (result.session_id && result.session_id !== sessionId) {
         const sessions = useSessionStore.getState();
         sessions.setCurrent(result.session_id, false);
@@ -494,6 +505,22 @@ export const useChat = create<ChatState>((set, get) => ({
       // newly opened conversation either.
       if (useSessionStore.getState().currentSessionId !== sessionId) {
         pendingAssistantId = null;
+        return;
+      }
+      clearStallWatchdog();
+      if (result.cancelled) {
+        const pending = pendingAssistantId;
+        set((s) => ({
+          status: "idle",
+          messages: s.messages.map((m) =>
+            m.id === result.message_id || m.id === pending
+              ? { ...m, streaming: false, status: "cancelled", text: m.text || "Stopped." }
+              : m,
+          ),
+        }));
+        pendingAssistantId = null;
+        activeToolCalls.clear();
+        activeToolNames.clear();
         return;
       }
       // The HTTP response arrives *after* all WebSocket chunk events
@@ -639,10 +666,11 @@ export const useChat = create<ChatState>((set, get) => ({
   continueRun: async () => {
     const sessionId = useSessionStore.getState().currentSessionId;
     if (!sessionId) return;
-    if (get().status === "sending" || get().status === "streaming") return;
+    if (get().status === "sending" || get().status === "streaming" || get().status === "cancelling") return;
     set({ status: "sending", error: null });
     try {
-      const result = await typedIPC.continueRun(sessionId);
+      const result = await trackRequest(sessionId, typedIPC.continueRun(sessionId));
+      if (useSessionStore.getState().currentSessionId !== sessionId) return;
       if (!("message_id" in result)) {
         // Guards: storage unavailable, or the latest run did not end
         // budget-truncated. Surface the reason, keep the log intact.
@@ -658,7 +686,7 @@ export const useChat = create<ChatState>((set, get) => ({
           return {
             messages: s.messages.map((m) =>
               m.id === result.message_id
-                ? { ...m, status: "completed", streaming: false }
+                ? { ...m, status: result.cancelled ? "cancelled" : "completed", streaming: false }
                 : m,
             ),
             status: "idle",
@@ -670,7 +698,7 @@ export const useChat = create<ChatState>((set, get) => ({
             role: "assistant",
             text: result.text || "",
             streaming: false,
-            status: "completed",
+            status: result.cancelled ? "cancelled" : "completed",
             created_at: Date.now(),
             metadata: result.truncated ? { thinking_count: 0, tokens_in: 0, tokens_out: 0, truncated: true } : undefined,
           }), MAX_MESSAGES),
@@ -678,6 +706,7 @@ export const useChat = create<ChatState>((set, get) => ({
         };
       });
     } catch (err) {
+      if (useSessionStore.getState().currentSessionId !== sessionId) return;
       const message = err instanceof IPCError || err instanceof Error
         ? err.message
         : String(err);
@@ -690,6 +719,8 @@ export const useChat = create<ChatState>((set, get) => ({
     clearStallWatchdog();
     const sid = useSessionStore.getState().currentSessionId;
     if (!sid) return;
+    const request = inFlightRequests.get(sid);
+    const previous = get();
     set((s) => ({
       status: "cancelling",
       messages: s.messages.map((m) =>
@@ -703,21 +734,22 @@ export const useChat = create<ChatState>((set, get) => ({
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       toast.error(strings.toasts.cancelFailed, message);
+      if (useSessionStore.getState().currentSessionId === sid) {
+        set((s) => ({
+          status: s.status === "cancelling" ? previous.status : s.status,
+          messages: s.messages.map((m) => m.status === "cancelling"
+            ? { ...m, status: previous.messages.find((old) => old.id === m.id)?.status
+              ?? (m.streaming ? "streaming" : "completed") }
+            : m),
+        }));
+        resetStallWatchdogForCurrentActivity();
+      }
+      return;
     }
-    pendingAssistantId = null;
-    set((s) => ({
-      status: "idle",
-      messages: s.messages.map((m) =>
-        m.status === "cancelling"
-          ? {
-              ...m,
-              text: m.text || "Stopped.",
-              streaming: false,
-              status: "cancelled",
-            }
-          : m,
-      ),
-    }));
+    // The cancellation RPC only acknowledges the request. The original run
+    // response determines whether cancellation or committed completion won.
+    if (request) await request.catch(() => undefined);
+    else if (useSessionStore.getState().currentSessionId === sid) await get().loadMessages(sid);
   },
 
   retryMessage: async (messageId: string) => {

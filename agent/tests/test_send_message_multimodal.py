@@ -49,6 +49,15 @@ class _FakeCtx:
 class TestSendMessageMultimodal:
     """Test multimodal content handling in agent.send_message."""
 
+    @pytest.fixture(autouse=True)
+    def recorded_run(self, monkeypatch):
+        # This suite isolates content mapping. Storage admission and failure
+        # rollback are exercised with a real database in test_run_service.py.
+        recorder = MagicMock()
+        recorder.create = AsyncMock()
+        recorder.complete = AsyncMock()
+        monkeypatch.setattr("minimax_code.ipc.builtins._RunRecorder", lambda **kw: recorder)
+
     @pytest.mark.asyncio
     async def test_string_content_backward_compat(self) -> None:
         """String content should still work without error."""

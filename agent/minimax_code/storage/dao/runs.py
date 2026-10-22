@@ -305,6 +305,36 @@ class AgentRunsDAO:
         rows = await self._db.fetchall(sql, tuple(params))
         return [_hydrate_step(r) for r in rows]
 
+    async def terminate_run(self, run_id: str, *, status: str, error: str) -> dict[str, Any] | None:
+        """Close active steps and the run atomically, after execution has stopped."""
+        if status not in {"failed", "cancelled"}:
+            raise ValueError("termination status must be failed or cancelled")
+        ts = now_iso()
+        async with self._db.transaction() as conn:
+            row = await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,))
+            if row is None or row["status"] in {"completed", "failed", "cancelled"}:
+                return _hydrate_run(row)
+            async with conn.execute(
+                "SELECT id FROM agent_run_steps WHERE run_id = ? AND status IN ('pending', 'running')",
+                (run_id,),
+            ) as cursor:
+                steps = await cursor.fetchall()
+            for step in steps:
+                await conn.execute(
+                    "UPDATE agent_run_steps SET status = ?, error = ?, completed_at = ? WHERE id = ?",
+                    (status, error, ts, step["id"]),
+                )
+                updated = _hydrate_step(await _fetchone(conn,
+                    "SELECT * FROM agent_run_steps WHERE id = ?", (step["id"],)))
+                await _append_event(conn, run_id, "step_updated", {"step": updated})
+            await conn.execute(
+                "UPDATE agent_runs SET status = ?, error = ?, completed_at = ? WHERE id = ?",
+                (status, error, ts, run_id),
+            )
+            run = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
+            await _append_event(conn, run_id, "status", {"run": run})
+            return run
+
     async def recover_orphans(
         self,
         *,

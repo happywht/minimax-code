@@ -8,6 +8,8 @@ bootstrap in :mod:`minimax_code.app` (introduced in a later task).
 
 from __future__ import annotations
 
+import asyncio
+import copy
 import logging
 import os
 import time
@@ -16,6 +18,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from minimax_code import __version__
+from minimax_code.runs import RunJob, get_run_service
 
 from .protocol import LLM_ERROR
 from .server import Context
@@ -316,7 +319,7 @@ class _RunRecorder:
     async def fail(self, error: str) -> None:
         if self.dao is None:
             return
-        run = await self.dao.update_run_status(self.run_id, status="failed", error=error)
+        run = await self.dao.terminate_run(self.run_id, status="failed", error=error)
         await self.emit("run.completed", {"run": run})
 
 
@@ -438,11 +441,65 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     if mode not in {"chat", "plan", "execute"}:
         await ctx.reply_error(-32602, "mode must be chat, plan, or execute")
         return
-    with execution_scope(ExecutionPolicy(read_only=mode == "plan")):
-        await _handle_agent_send_message(params, ctx)
+    if not isinstance(params, dict):
+        await ctx.reply_error(-32602, "params must be an object")
+        return
+    content = params.get("content")
+    if not isinstance(content, (str, list)) or not content or (isinstance(content, str) and not content.strip()):
+        await ctx.reply_error(-32602, "content must be a non-empty string or non-empty list")
+        return
+    request = copy.deepcopy(params)
+    session_id = str(request.get("session_id") or f"ses_{uuid.uuid4().hex[:8]}")
+    request["session_id"] = session_id
+    service = get_run_service(ctx.server)
+
+    async def execute(job: RunJob) -> None:
+        try:
+            with execution_scope(ExecutionPolicy(read_only=mode == "plan")):
+                await _handle_agent_send_message(request, ctx, job=job)
+        except BaseException as exc:
+            if job.record is not None:
+                # The core/tool cancellation has unwound before recording a terminal state.
+                cancelled = isinstance(exc, asyncio.CancelledError)
+                run = await job.record.dao.terminate_run(
+                    job.record.run_id, status="cancelled" if cancelled else "failed",
+                    error="Cancelled by user or service shutdown" if cancelled else str(exc),
+                )
+                await job.record.emit("run.completed", {"run": run})
+                if cancelled and run and run["status"] == "completed" and job.result is not None:
+                    # Completion committed before cancellation (e.g. while
+                    # extracting optional memories). Preserve the actual result.
+                    await ctx.reply(job.result)
+                    return
+            raise
+        finally:
+            # Setup failures used to bypass the inner run-loop finally block.
+            # The task owns its ContextVars; these process/server routes also
+            # need cleanup before releasing the session lease.
+            from ..orchestrator.subagent import pop_subagent_emit
+            from ..perm_consent import unregister_gater
+
+            _ACTIVE_RUNS.pop(session_id, None)
+            pop_subagent_emit(session_id)
+            unregister_gater(ctx.server, session_id)
+
+    try:
+        job = service.submit(session_id, execute)
+    except RuntimeError as exc:
+        await ctx.reply_error(-32603, str(exc))
+        return
+    try:
+        await service.wait(job)
+    except asyncio.CancelledError:
+        if asyncio.current_task().cancelling():
+            # The HTTP/stdio waiter went away; the service still owns the job.
+            raise
+        await ctx.reply({"session_id": session_id, "message_id": job.message_id,
+                         "text": "", "cancelled": True,
+                         **({"run_id": job.record.run_id} if job.record is not None else {})})
 
 
-async def _handle_agent_send_message(params: Any, ctx: Context) -> None:
+async def _handle_agent_send_message(params: Any, ctx: Context, *, job: RunJob) -> None:
     """End-to-end chat handler for ``agent.send_message``.
 
     This is the canonical user-message entry point. The handler:
@@ -512,7 +569,7 @@ async def _handle_agent_send_message(params: Any, ctx: Context) -> None:
     else:
         _title_hint = ""
 
-    message_id = f"msg_{uuid.uuid4().hex[:8]}"
+    message_id = job.message_id
 
     # Lazy imports — avoid pulling the agent core / storage layer in
     # for handlers that only need a ping / status response.
@@ -828,6 +885,7 @@ async def _handle_agent_send_message(params: Any, ctx: Context) -> None:
     # Inject the telemetry engine (R11) so every tool dispatch mirrors into
     # the in-memory event bus. Optional — None when telemetry is disabled.
     core.telemetry_engine = telemetry_engine
+    job.cancel_callback = core.cancel
 
     async def _emit_run_event(event: str, data: dict[str, Any]) -> None:
         try:
@@ -848,11 +906,13 @@ async def _handle_agent_send_message(params: Any, ctx: Context) -> None:
         project_id=project_id,
         mode=params.get("mode", "chat"),
     )
+    job.record = recorder
     try:
         await recorder.create()
     except Exception:
-        logger.exception("run recorder create failed; continuing without timeline")
-        recorder.dao = None
+        logger.exception("run recorder create failed; refusing unrecorded execution")
+        await ctx.reply_error(-32004, "Cannot start task: run history could not be saved")
+        return
 
     # v0.11.0: collect codebase tool source annotations across the turn
     # and attach them to the assistant message metadata on the final chunk.
@@ -866,6 +926,7 @@ async def _handle_agent_send_message(params: Any, ctx: Context) -> None:
             if start_new_assistant_message:
                 current_assistant_message_id = f"msg_{uuid.uuid4().hex[:8]}"
                 start_new_assistant_message = False
+            job.message_id = current_assistant_message_id
             # The agent loop only attaches ``metadata`` to the
             # trailing ``done=True`` chunk per turn; every earlier
             # delta passes ``None``. ``ctx.emit`` with
@@ -1090,26 +1151,25 @@ async def _handle_agent_send_message(params: Any, ctx: Context) -> None:
             except Exception:
                 logger.debug("telemetry session_end emit failed", exc_info=True)
 
+    job.result = {
+        "session_id": session_id,
+        "message_id": current_assistant_message_id,
+        "run_id": recorder.run_id,
+        "text": result.final_text,
+        "iterations": result.iterations,
+        "truncated": result.truncated,
+        "cancelled": bool(getattr(result, "cancelled", False)),
+        # v1.1.0: block accounting for auto-continue (1 when off) —
+        # iterations/compactions above are already summed across
+        # blocks by _run_with_auto_continue.
+        "blocks": blocks,
+        "compactions": result.compactions,
+        "stub": llm.mock,
+        "tokens_in": result.usage.get("prompt_tokens", 0),
+        "tokens_out": result.usage.get("completion_tokens", 0),
+    }
     await recorder.complete(result, blocks=blocks)
-
-    await ctx.reply(
-        {
-            "session_id": session_id,
-            "message_id": current_assistant_message_id,
-            "run_id": recorder.run_id,
-            "text": result.final_text,
-            "iterations": result.iterations,
-            "truncated": result.truncated,
-            # v1.1.0: block accounting for auto-continue (1 when off) —
-            # iterations/compactions above are already summed across
-            # blocks by _run_with_auto_continue.
-            "blocks": blocks,
-            "compactions": result.compactions,
-            "stub": llm.mock,
-            "tokens_in": result.usage.get("prompt_tokens", 0),
-            "tokens_out": result.usage.get("completion_tokens", 0),
-        }
-    )
+    await ctx.reply(job.result)
 
 
 async def handle_agent_cancel(params: Any, ctx: Context) -> None:
@@ -1131,7 +1191,10 @@ async def handle_agent_cancel(params: Any, ctx: Context) -> None:
         await ctx.reply_error(-32602, "session_id is required")
         return
 
-    entry = _ACTIVE_RUNS.pop(str(session_id), None)
+    if get_run_service(ctx.server).cancel_session(str(session_id)):
+        await ctx.reply({"ok": True, "cancelled": str(session_id)})
+        return
+    entry = _ACTIVE_RUNS.get(str(session_id))
     if entry is None or not entry.get("core"):
         await ctx.reply({"ok": True, "note": "no active session"})
         return

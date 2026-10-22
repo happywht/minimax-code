@@ -711,6 +711,8 @@ export interface SendMessageResult {
   message_id: string;
   run_id?: string;
   text: string;
+  /** Cancellation is confirmed after the service-owned task has unwound. */
+  cancelled?: boolean;
   /** v1.1.0: the turn ended budget-truncated (no final answer). */
   truncated?: boolean;
   iterations?: number;

@@ -36,6 +36,15 @@ class SendMessageParams(_Base):
     mode: Literal["chat", "plan", "execute"] = "chat"
 
 
+class SendMessageResult(_Base):
+    session_id: str
+    message_id: str
+    text: str
+    run_id: str | None = None
+    cancelled: bool = False
+    iterations: int | None = None
+
+
 class ChildWorkspaceSummary(_Base):
     """Optional result field on real sub-agent and team member execution."""
 

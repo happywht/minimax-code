@@ -609,7 +609,7 @@ function mockHandle(
           }
         }, 12 * i);
       });
-      return { session_id: sid, message_id: mid, run_id: runId, text: "" };
+      return { session_id: sid, message_id: mid, run_id: runId, text: "", cancelled: false };
     }
 
     case "agent.cancel":

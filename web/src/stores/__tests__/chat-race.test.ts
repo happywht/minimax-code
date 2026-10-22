@@ -44,6 +44,48 @@ describe("P2#33: session quick-switch race condition", () => {
     });
   });
 
+  it("keeps a cancelled response cancelled instead of marking it completed", async () => {
+    useSessionStore.setState({ currentSessionId: "cancelled-session" });
+    vi.mocked(typedIPC.sendMessage).mockResolvedValueOnce({
+      session_id: "cancelled-session", message_id: "cancelled-message", text: "", cancelled: true,
+    });
+    await useChat.getState().send("cancel this task");
+    const assistant = useChat.getState().messages.find((message) => message.role === "assistant");
+    expect(assistant?.status).toBe("cancelled");
+    expect(assistant?.streaming).toBe(false);
+    expect(useChat.getState().status).toBe("idle");
+  });
+
+  it("waits for run cleanup after cancellation acknowledgement", async () => {
+    useSessionStore.setState({ currentSessionId: "waiting-cancel" });
+    let finish!: (value: any) => void;
+    vi.mocked(typedIPC.sendMessage).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    vi.mocked(typedIPC.cancelAgent).mockResolvedValueOnce({ ok: true });
+    const sending = useChat.getState().send("long task");
+    const cancelling = useChat.getState().cancel();
+    await Promise.resolve();
+    expect(useChat.getState().status).toBe("cancelling");
+    expect(useChat.getState().messages.find((m) => m.role === "assistant")?.status).toBe("cancelling");
+    finish({ session_id: "waiting-cancel", message_id: "cancelled", text: "", cancelled: true });
+    await Promise.all([sending, cancelling]);
+    expect(useChat.getState().status).toBe("idle");
+    expect(useChat.getState().messages.find((m) => m.role === "assistant")?.status).toBe("cancelled");
+  });
+
+  it("does not report cancellation when the cancel request fails", async () => {
+    useSessionStore.setState({ currentSessionId: "cancel-failed" });
+    let finish!: (value: any) => void;
+    vi.mocked(typedIPC.sendMessage).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    vi.mocked(typedIPC.cancelAgent).mockRejectedValueOnce(new Error("connection failed"));
+    const sending = useChat.getState().send("keep working");
+    await useChat.getState().cancel();
+    expect(useChat.getState().status).toBe("sending");
+    expect(useChat.getState().messages.find((m) => m.role === "assistant")?.status).toBe("queued");
+    finish({ session_id: "cancel-failed", message_id: "done", text: "completed", cancelled: false });
+    await sending;
+    expect(useChat.getState().messages.find((m) => m.role === "assistant")?.status).toBe("completed");
+  });
+
   it("stale loadMessages should not overwrite newer session data", async () => {
     const sessionA = "session-a";
     const sessionB = "session-b";

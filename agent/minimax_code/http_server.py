@@ -477,6 +477,12 @@ def build_app(
         finally:
             await preview_state.stop()
 
+            # Native jobs outlive their RPC waiters. Drain them before closing
+            # shared model clients or SQLite so cancellation can be persisted.
+            from .runs import get_run_service
+
+            await get_run_service(server).shutdown()
+
             # ── Graceful shutdown sequence ──────────────────────────
             # 1. Cancel any in-flight agent runs.
             from .ipc.builtins import _ACTIVE_RUNS

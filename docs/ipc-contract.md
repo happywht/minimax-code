@@ -203,7 +203,7 @@ on the next `readline() == ""`.
 | Method                     | Direction | Notes                                              |
 |----------------------------|-----------|----------------------------------------------------|
 | `agent.send_message`       | req/res   | Streams events; the HTTP client keeps no fixed run deadline. v1.1.0 reply adds `truncated`, `blocks`, `compactions` (block accounting — when `MINIMAX_AUTO_CONTINUE=1` the turn auto-continues up to `MINIMAX_AUTO_CONTINUE_MAX_BLOCKS` blocks, default 5, summing iterations/compactions across blocks). |
-| `agent.cancel`             | notify    | Cancel the current agent loop for a session.       |
+| `agent.cancel`             | req/res   | Request cancellation of active and queued native work for a session; acknowledgement does not imply cleanup has finished. |
 | `agent.continue_run`       | req/res   | v1.1.0 Resume the latest budget-truncated run: marks it `continued` in metadata, then re-enters `agent.send_message` with a fixed continuation prompt (params: `session_id`; errors `-32602` on bad params, `{"ok":false}` when storage is unavailable or the latest run is not truncated). |
 | `agent.answer_user`        | req/res   | v1.1.1 Answer a pending `ask_user` request (params: `request_id`, `answers` — a non-empty array position-aligned with the questions; each entry is a label string or a list of label strings). Resolves the future the suspended tool call awaits; `{"ok":false}` on unknown/expired ids. |
 | `run.list`                 | req/res   | List persisted agent runs for a session. v1.4.0 accepts an optional `mode` filter (`chat` / `plan` / `execute` / `team` / `subagent`) — `mode: "subagent"` returns runs spawned via the `spawn_subagent` tool path. |
@@ -495,6 +495,18 @@ spawning. This policy is inherited by async child tasks. The run stores its
 mode and `agent.continue_run` preserves it. A missing explicitly bound project
 or worktree directory rejects the request; it must never fall back to the
 service process directory. Planning is a tool/process policy, not an OS sandbox.
+
+Native chat/continue execution is owned by RunService, independently of the HTTP
+or stdio request waiter. Same-session requests execute FIFO, including setup and
+final persistence; different sessions can execute concurrently. Cancellation
+stops active and queued work for that session and holds the execution lease until
+cleanup finishes. A confirmed cancellation returns `cancelled: true`, an empty
+text fallback and the message ID; a run ID exists only if its record was created.
+Unavailable iteration/usage counts are omitted. If completion committed before
+cancellation, the successful result remains authoritative. Failure to create the
+run history returns storage error -32004 before model or tool execution.
+This first service integration does not yet provide durable queued admission,
+request idempotency keys, or cross-engine/child-task lifecycle coordination.
 
 Request:
 ```json

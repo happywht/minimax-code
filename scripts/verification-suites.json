@@ -4,6 +4,7 @@
     "tests/test_agent_core.py",
     "tests/test_agent_runs.py",
     "tests/test_run_events.py",
+    "tests/test_run_service.py",
     "tests/test_crash_recovery.py",
     "tests/test_ipc.py",
     "tests/test_ipc_contract_doc.py",
