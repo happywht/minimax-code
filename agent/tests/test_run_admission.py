@@ -30,6 +30,35 @@ async def admit(dao, key="request", content="work", **kwargs):
                                request_key=key, **kwargs)
 
 
+async def test_message_and_run_link_roll_back_together_if_journal_fails(dao):
+    from minimax_code.storage.dao.messages import MessagesDAO
+
+    run, _ = await admit(dao)
+    await dao.claim_run(run["id"])
+    await dao._db.execute("""CREATE TRIGGER fail_journal BEFORE INSERT ON run_events
+        BEGIN SELECT RAISE(FAIL, 'journal unavailable'); END""")
+    messages = MessagesDAO(dao._db)
+    with pytest.raises(sqlite3.IntegrityError):
+        await messages.create(id="user", session_id="s", role="user", run_id=run["id"])
+    assert await messages.get("user") is None
+    assert (await dao.get_run(run["id"]))["user_message_id"] is None
+
+
+async def test_message_link_cannot_cross_session_or_append_to_finished_run(dao):
+    from minimax_code.storage.dao.messages import MessagesDAO
+
+    run, _ = await admit(dao)
+    await SessionsDAO(dao._db).create(id="other")
+    messages = MessagesDAO(dao._db)
+    with pytest.raises(ValueError, match="session"):
+        await messages.create(id="wrong", session_id="other", role="user", run_id=run["id"])
+    assert await messages.get("wrong") is None
+    await dao.terminate_run(run["id"], status="cancelled", error="stop")
+    with pytest.raises(ValueError, match="terminated"):
+        await messages.create(id="late", session_id="s", role="assistant", run_id=run["id"])
+    assert await messages.get("late") is None
+
+
 async def test_concurrent_duplicate_admission_commits_one_request_and_event(dao):
     results = await asyncio.gather(*(admit(dao) for _ in range(12)))
     assert sum(created for _, created in results) == 1

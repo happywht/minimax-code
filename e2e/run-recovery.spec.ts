@@ -34,6 +34,12 @@ test("timeline recovers a completed offline run and survives a page reload", asy
   await expect.poll(async () => (await rpc("run.get", { run_id: admitted.run.id })).run.status).toBe("completed");
   const receipt = await rpc("run.get", { run_id: admitted.run.id });
   expect(await rpc("agent.send_message", input)).toEqual(receipt.result);
+  const { messages } = await rpc("message.list", { session_id: sessionId });
+  const assistant = messages.find((message: { id: string }) => message.id === receipt.result.message_id);
+  expect(assistant.text).toBe(receipt.result.text);
+  expect(assistant.metadata.run_id).toBe(admitted.run.id);
+  expect(receipt.run.assistant_message_id).toBe(assistant.id);
+  expect(messages[0].id).toBe(receipt.run.user_message_id);
   const { runs } = await rpc("run.list", { session_id: sessionId });
   expect(runs).toHaveLength(1);
   expect(runs[0].status).toBe("completed");

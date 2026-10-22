@@ -359,3 +359,23 @@ RunService 保存失败回执。若工具已经写入后保存结果失败，提
 故障测试确认清理完成前任务不会返回。相关核心 **75 项通过**，扩展 **169 项通过、
 3 警告**（依赖弃用及旧模拟记忆存储）；Python lint 通过。日志为
 `.verification/m2-evidence-core.log`、`.verification/m2-evidence-expanded.log`。
+
+
+### 流式回复与持久消息使用同一标识
+
+Native 过去为显示消息和数据库记录分别生成 ID，导致刷新后与运行回执无法稳定对应。
+现在助手片段在首次流式输出或保存时分配一次 ID；工具轮次、无文本工具调用和自动
+继续产生的新片段各自保留相同标识。所有保存的 Native 消息附带 metadata.run_id，
+运行的 user_message_id 指向首条用户输入，assistant_message_id 指向最后保存的助手
+片段。消息插入、指针更新与事件在同一事务提交；跨会话或已结束运行拒绝追加。
+
+这不要求新迁移，旧消息仍允许没有 run_id；取消前尚未保存的部分流式输出不冒充
+已保存消息。Python/TypeScript 元数据契约、mock 事件和文档同步更新。回退代码后
+已有 JSON 元数据可保留，但新消息会失去一致的运行关联。
+
+相关后端首轮 **72 项通过**，扩展 **187 项通过、2 警告**（旧模拟记忆存储）；前端
+相关 **26 项通过**，TypeScript/Python lint 通过。证据为 `.verification/m2-message-link.log`、
+`.verification/m2-message-expanded.log`、`.verification/m2-message-ui.log`。
+真实浏览器离线恢复用例也增加了 message.list、最终回执和 run 指针一致性的检查，
+真实浏览器检查 **1 项通过**（`.verification/m2-message-e2e.log`），生产构建通过。
+断线期间消息视图主动补齐及不完整工具历史的投影仍待接入。

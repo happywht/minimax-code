@@ -596,3 +596,44 @@ async def test_fatal_tool_callback_drains_sibling_cleanup_before_releasing_sessi
     with pytest.raises(RunPersistenceError):
         await asyncio.wait_for(batch, 2)
     assert cleaned.is_set()
+
+
+@pytest.mark.parametrize("empty_tool_turn,auto_continue", [(False, False), (True, False), (True, True)])
+async def test_stream_history_receipt_and_run_use_the_same_assistant_ids(native, monkeypatch, empty_tool_turn, auto_continue):
+    from test_agent_core import CountingTool, FakeLLM, _text_response, _tool_call, _tool_response
+
+    from minimax_code import agent, app
+    from minimax_code.agent.core import AgentCore
+    from minimax_code.agent.tools import ToolRegistry
+    from minimax_code.storage.dao.messages import MessagesDAO
+
+    registry = ToolRegistry()
+    registry.register(CountingTool())
+    first = _tool_response(_tool_call("echo", {"text": "hello"}))
+    if empty_tool_turn:
+        first = first[1:]
+    llm = FakeLLM([first, _text_response("final answer")])
+    llm.default_model, llm.mock = "test", True
+
+    def core(**kwargs):
+        if auto_continue:
+            kwargs["config"].max_iterations = 1
+        return AgentCore(**kwargs)
+
+    monkeypatch.setattr(agent, "AgentCore", core)
+    monkeypatch.setattr(app, "get_subagent_llm", lambda: llm)
+    monkeypatch.setattr("minimax_code.agent.tools.get_default_registry", lambda: registry)
+    monkeypatch.setattr(builtins, "_resolve_auto_continue", lambda: (auto_continue, 2))
+    ctx = await send(native)
+    ctx.reply_error.assert_not_awaited()
+    receipt = ctx.reply.call_args.args[0]
+    messages = await MessagesDAO(native.db).list_for_session("one")
+    assistants = [m for m in messages if m["role"] == "assistant"]
+    chunks = [c.args[1] for c in ctx.emit.call_args_list if c.args[0] == "agent.message_chunk"]
+    assert len(assistants) == (3 if auto_continue else 2)
+    assert {m["id"] for m in assistants} == {chunk["message_id"] for chunk in chunks}
+    assert all(m["metadata"]["run_id"] == receipt["run_id"] for m in messages)
+    run = await native.dao.get_run(receipt["run_id"])
+    assert run["user_message_id"] == messages[0]["id"]
+    assert run["assistant_message_id"] == receipt["message_id"] == assistants[-1]["id"]
+    assert assistants[-1]["content"] == receipt["text"] == "final answer"

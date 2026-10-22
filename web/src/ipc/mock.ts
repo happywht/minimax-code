@@ -638,6 +638,7 @@ function mockHandle(
             message_id: mid,
             delta,
             done: i === chunks.length - 1,
+            metadata: { run_id: runId, thinking_count: 0, tokens_in: 0, tokens_out: 0 },
           } satisfies MessageChunkData);
           if (i === chunks.length - 1) {
             const completedAt = new Date().toISOString();

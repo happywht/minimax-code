@@ -63,6 +63,15 @@ class SendMessageResult(_Base):
     iterations: int | None = None
 
 
+class MessageMetadata(_Base):
+    """Persisted and streamed metadata; old messages may omit run linkage."""
+
+    run_id: str | None = None
+    thinking_count: int | None = None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+
+
 class ChildWorkspaceSummary(_Base):
     """Optional result field on real sub-agent and team member execution."""
 

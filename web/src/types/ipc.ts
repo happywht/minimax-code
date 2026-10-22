@@ -193,9 +193,11 @@ export interface SourceAnnotation {
 
 /** Per-turn metadata snapshot for the v0.3.0 thinking_count channel. */
 export interface MessageMetadata {
-  thinking_count: number;
-  tokens_in: number;
-  tokens_out: number;
+  /** Originating durable run, absent on legacy/imported messages. */
+  run_id?: string;
+  thinking_count?: number;
+  tokens_in?: number;
+  tokens_out?: number;
   /** v0.11.0: sources harvested from codebase tools used in this turn. */
   sources?: SourceAnnotation[];
   /** v0.11.0: number of long-term memories auto-extracted from this reply. */

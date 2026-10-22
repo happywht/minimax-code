@@ -485,6 +485,21 @@ class AgentRunsDAO:
         return {"recovered": len(run_ids), "run_ids": run_ids, "sessions": sessions}
 
 
+async def link_run_message(conn: Any, run_id: str, session_id: str, message_id: str, role: str) -> None:
+    """Link a saved message inside the caller's message-insert transaction."""
+    run = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
+    if run is None or run["session_id"] != session_id:
+        raise ValueError("message session must match its run")
+    if run["status"] in {"completed", "failed", "cancelled", "interrupted"}:
+        raise ValueError("cannot append a message to a terminated run")
+    column = "assistant_message_id" if role == "assistant" else "user_message_id" if role == "user" else None
+    if column is None or (role == "user" and run.get(column)) or run.get(column) == message_id:
+        return
+    await conn.execute(f"UPDATE agent_runs SET {column} = ? WHERE id = ?", (message_id, run_id))
+    run[column] = message_id
+    await _append_event(conn, run_id, "status", {"run": run})
+
+
 async def _fetchone(conn: Any, sql: str, params: tuple = ()) -> Any:
     async with conn.execute(sql, params) as cursor:
         return await cursor.fetchone()

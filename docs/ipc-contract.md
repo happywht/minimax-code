@@ -555,6 +555,14 @@ persisted state and server diagnostics before recovery. Ordinary notification
 delivery failures do not change a durable result. Parallel tool siblings are
 cancelled and drained before a fatal evidence error releases the session lease.
 
+Native persisted messages include optional `metadata.run_id`. Assistant streaming
+IDs are also the stored `message.list` IDs; `run.assistant_message_id` and the final
+receipt identify the last saved assistant segment, including after tool turns or
+automatic continuation. `run.user_message_id` identifies the first saved user
+message for that run. Message insertion, pointer update and its journal event
+commit together. Legacy messages can lack this linkage; an unpersisted partial
+stream after cancellation is not a confirmed saved assistant message.
+
 Request:
 ```json
 {

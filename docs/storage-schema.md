@@ -400,6 +400,13 @@ Back up the database before upgrading. Rollback requires restoring the matching
 pre-upgrade database with the prior application version; there is no reverse
 migration. The migration itself is transactional, including failure after rebuilding.
 
+Native messages use their streaming assistant ID when persisted and carry
+`metadata.run_id`. `MessagesDAO.create(run_id=...)` validates session ownership and
+rejects terminated runs. In the message-insert transaction it sets the first user
+message pointer or latest assistant pointer and appends the corresponding run event.
+An event failure rolls back both the message and pointer. This uses existing columns
+and JSON metadata; there is no additional migration or invented linkage for old rows.
+
 ## 9. See also
 
 * `agent/minimax_code/storage/db.py` — connection wrappers

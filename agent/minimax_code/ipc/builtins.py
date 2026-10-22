@@ -808,10 +808,19 @@ async def _handle_agent_send_message(
             raise RunPersistenceError("Conversation history could not be loaded; execution stopped") from exc
 
     async def _persist(sid: str, msg: dict[str, Any]) -> None:
+        nonlocal start_new_assistant_message, assistant_saved
         try:
-            mid = f"msg_{uuid.uuid4().hex[:12]}"
+            role = str(msg.get("role", "user"))
+            if role == "assistant":
+                mid = _assistant_segment()
+            else:
+                mid = f"msg_{uuid.uuid4().hex}"
+                if role == "user" and assistant_saved:
+                    # Automatic continuation starts a new model response even
+                    # when the previous block ended without another tool call.
+                    start_new_assistant_message = True
             md = msg.get("metadata")
-            md_dict = md if isinstance(md, dict) else None
+            md_dict = {**(md if isinstance(md, dict) else {}), "run_id": job.run_id}
             # Serialize list content (multimodal) as JSON string
             raw_cont = msg.get("content")
             if isinstance(raw_cont, list):
@@ -831,14 +840,18 @@ async def _handle_agent_send_message(
             await msg_dao.create(
                 id=mid,
                 session_id=sid,
-                role=str(msg.get("role", "user")),
+                role=role,
                 content=cont_str,
                 tool_calls=msg.get("tool_calls"),
                 tool_call_id=msg.get("tool_call_id"),
                 tokens_in=_md_int("tokens_in"),
                 tokens_out=_md_int("tokens_out"),
                 metadata=md_dict,
+                run_id=job.run_id,
             )
+            if role == "assistant":
+                assistant_saved = True
+                recorder.assistant_message_id = mid
         except Exception as exc:
             from ..run_errors import RunPersistenceError
 
@@ -969,6 +982,15 @@ async def _handle_agent_send_message(
 
     current_assistant_message_id = message_id
     start_new_assistant_message = False
+    assistant_saved = False
+
+    def _assistant_segment() -> str:
+        nonlocal current_assistant_message_id, start_new_assistant_message
+        if start_new_assistant_message:
+            current_assistant_message_id = f"msg_{uuid.uuid4().hex}"
+            start_new_assistant_message = False
+        job.message_id = current_assistant_message_id
+        return current_assistant_message_id
 
     recorder = _RunRecorder(
         dao=runs_dao,
@@ -997,12 +1019,8 @@ async def _handle_agent_send_message(
     async def _on_chunk(
         delta: str, done: bool, metadata: dict | None = None
     ) -> None:
-        nonlocal current_assistant_message_id, start_new_assistant_message
         try:
-            if start_new_assistant_message:
-                current_assistant_message_id = f"msg_{uuid.uuid4().hex[:8]}"
-                start_new_assistant_message = False
-            job.message_id = current_assistant_message_id
+            _assistant_segment()
             # The agent loop only attaches ``metadata`` to the
             # trailing ``done=True`` chunk per turn; every earlier
             # delta passes ``None``. ``ctx.emit`` with
@@ -1013,6 +1031,8 @@ async def _handle_agent_send_message(
             # results so the frontend can render a per-turn sources panel.
             if metadata is not None and turn_sources:
                 metadata = {**metadata, "sources": turn_sources}
+            if metadata is not None:
+                metadata = {**metadata, "run_id": job.run_id}
             await ctx.emit(
                 "agent.message_chunk",
                 {

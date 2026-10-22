@@ -57,6 +57,7 @@ class MessagesDAO:
         tokens_in: int = 0,
         tokens_out: int = 0,
         metadata: dict[str, Any] | None = None,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         if role not in _VALID_ROLES:
             raise ValueError(
@@ -83,6 +84,10 @@ class MessagesDAO:
         )
         async with self._db.transaction() as conn:
             await conn.execute(sql, params)
+            if run_id is not None:
+                from .runs import link_run_message
+
+                await link_run_message(conn, run_id, session_id, id, role)
         row = await self._db.fetchone("SELECT * FROM messages WHERE id = ?", (id,))
         return _hydrate(row)
 
