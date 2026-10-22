@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw, TriangleAlert, X, Wifi, WifiOff } from "lucide-react";
 import { usePreviewStore } from "../../stores/previewStore";
+import { useSessionStore } from "../../stores";
 import { Button, IconButton, Input, Spinner } from "../../ui";
 import { strings } from "../../ui/strings";
 
@@ -24,6 +25,7 @@ export interface PreviewPanelProps {
 }
 
 export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
+  const sessionId = useSessionStore((s) => s.currentSessionId);
   const url = usePreviewStore((s) => s.url);
   const filePath = usePreviewStore((s) => s.filePath);
   const connected = usePreviewStore((s) => s.connected);
@@ -41,18 +43,19 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
     .split("/")
     .map((part) => encodeURIComponent(part))
     .join("/");
-  const previewUrl = `${url}/preview/${encodedPath}`;
+  const previewBase = `${url}/preview${sessionId ? `/session/${encodeURIComponent(sessionId)}` : ""}`;
+  const previewUrl = `${previewBase}/${encodedPath}`;
 
   const checkPreview = useCallback(async () => {
     setPreviewState("checking");
     setPreviewError(null);
     try {
-      const health = await fetch(`${url}/preview/health`);
+      const health = await fetch(`${previewBase}/health`, { credentials: "include" });
       if (!health.ok) {
         throw new Error(strings.panels.preview.serviceError(health.status));
       }
 
-      const file = await fetch(previewUrl);
+      const file = await fetch(previewUrl, { credentials: "include" });
       if (!file.ok) {
         let detail = strings.panels.preview.fileNotFound(filePath);
         try {
@@ -68,7 +71,7 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
       setPreviewError(error instanceof Error ? error.message : String(error));
       setPreviewState("error");
     }
-  }, [filePath, previewUrl, url]);
+  }, [filePath, previewUrl, previewBase]);
 
   useEffect(() => {
     void checkPreview();
@@ -76,7 +79,7 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
 
   // SSE connection to the preview server for hot-reload.
   useEffect(() => {
-    const es = new EventSource(`${url}/preview/events`);
+    const es = new EventSource(`${previewBase}/events`, { withCredentials: true });
     eventSourceRef.current = es;
 
     es.onopen = () => setConnected(true);
@@ -100,7 +103,7 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
       eventSourceRef.current = null;
       setConnected(false);
     };
-  }, [url, setConnected, reload]);
+  }, [previewBase, setConnected, reload]);
 
   const handlePathSubmit = useCallback(
     (e: React.FormEvent<HTMLFormElement>) => {
@@ -194,7 +197,7 @@ export function PreviewPanel({ onClose }: PreviewPanelProps): JSX.Element {
             key={`${previewUrl}:${reloadCounter}`}
             src={previewUrl}
             data-testid="preview-iframe"
-            sandbox="allow-scripts allow-same-origin"
+            sandbox="allow-scripts"
             className="h-full w-full border-0 bg-white"
             title={strings.panels.preview.iframeTitle}
           />

@@ -373,12 +373,20 @@ class TestCheckpointManager:
 
 class TestCheckpointIPC:
     @pytest.fixture
-    def server(self, ckpt_dao: CheckpointDAO, manager: CheckpointManager) -> IPCServer:
+    async def server(self, ckpt_dao: CheckpointDAO, manager: CheckpointManager,
+                     async_db: AsyncDatabase, git_repo: Path):
+        sessions = SessionsDAO(async_db)
+        for sid in ("sess_ipc", "sess_limit", "sess_r", "sess_d", "sess_del"):
+            await sessions.create(id=sid, title=sid, workspace_path=str(git_repo))
+        set_sessions_dao(sessions)
         cfg = Config.from_env()
         srv = IPCServer(config=cfg, stdin=sys.stdin, stdout=sys.stdout)
         # Inject the DAO + manager so handlers skip the lazy factories.
         register_checkpoint_handlers(srv, dao=ckpt_dao, manager=manager)
-        return srv
+        try:
+            yield srv
+        finally:
+            set_sessions_dao(None)
 
     async def _call(self, server: IPCServer, method: str, params: dict[str, Any]) -> dict:
         """Dispatch via the real handle_request path; return the full response."""
@@ -608,7 +616,7 @@ class TestCheckpointProjectRoot:
         assert spy.cwds == [str(git_repo.resolve())]
 
     @pytest.mark.asyncio
-    async def test_explicit_cwd_wins_over_session_root(
+    async def test_explicit_cwd_cannot_escape_session_root(
         self, rooted_session, ckpt_dao: CheckpointDAO, tmp_path: Path
     ) -> None:
         elsewhere = tmp_path / "elsewhere"
@@ -619,8 +627,9 @@ class TestCheckpointProjectRoot:
             "session_id": rooted_session,
             "cwd": str(elsewhere),
         })
-        assert "result" in resp, resp
-        assert spy.cwds == [str(elsewhere.resolve())]
+        assert "error" in resp, resp
+        assert resp["error"]["code"] == INVALID_PARAMS
+        assert spy.cwds == []
 
     @pytest.mark.asyncio
     async def test_restore_uses_checkpoint_owning_session_root(
@@ -655,6 +664,9 @@ class TestCheckpointProjectRoot:
         sessions = SessionsDAO(async_db)
         await sessions.create(id="ses_plain", title="plain")
         set_sessions_dao(sessions)
+        projects = ProjectsDAO(async_db)
+        await projects.ensure_inbox()
+        set_projects_dao(projects)
         try:
             spy = _SpyManager()
             server = self._server(ckpt_dao, spy)
@@ -669,3 +681,66 @@ class TestCheckpointProjectRoot:
             assert (cwd / ".git").exists()
         finally:
             set_sessions_dao(None)
+            set_projects_dao(None)
+
+
+@pytest.mark.parametrize("identifier", ["../victim", "..", ".", "a/b", "CON", "C:\\temp"])
+def test_checkpoint_deletion_rejects_untrusted_identifier(tmp_path, identifier):
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    marker = victim / "keep.txt"
+    marker.write_text("user data", encoding="utf-8")
+    manager = CheckpointManager(tmp_path / "snapshots")
+    with pytest.raises(ValueError):
+        manager.delete_snapshot(identifier)
+    assert marker.read_text(encoding="utf-8") == "user data"
+
+
+async def test_checkpoint_rejects_untrusted_file_entries(tmp_path):
+    from minimax_code.workspace import Checkpoint
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = CheckpointManager(tmp_path / "snapshots")
+    snapshot = manager.snapshot_dir("ckpt_bad")
+    snapshot.mkdir(parents=True)
+    checkpoint = Checkpoint(id="ckpt_bad", session_id="session", label="test", message="",
+                            git_stash_ref=None, branch=None, tracked_files=[],
+                            untracked_files=["../../outside.txt", str(tmp_path / "absolute.txt")],
+                            has_untracked_snapshot=True, created_at="")
+    result = await manager.restore(workspace, checkpoint)
+    assert not result.restored
+    assert len(result.warnings) == 2
+    assert not (tmp_path / "outside.txt").exists()
+    assert not (tmp_path / "absolute.txt").exists()
+
+
+async def test_checkpoint_roundtrips_unicode_untracked_filename(git_repo, tmp_path):
+    manager = CheckpointManager(tmp_path / "snapshots")
+    name = "资料 空格.txt"
+    target = git_repo / name
+    target.write_text("original", encoding="utf-8")
+    snapshot = await manager.create(git_repo, checkpoint_id="ckpt_unicode",
+                                     session_id="session", label="unicode")
+    assert name in snapshot.untracked_files
+    target.unlink()
+    result = await manager.restore(git_repo, snapshot)
+    assert result.restored
+    assert target.read_text(encoding="utf-8") == "original"
+
+
+def test_checkpoint_deletion_rejects_symlinked_snapshot(tmp_path):
+    victim = tmp_path / "outside"
+    victim.mkdir()
+    marker = victim / "keep.txt"
+    marker.write_text("preserve", encoding="utf-8")
+    manager = CheckpointManager(tmp_path / "snapshots")
+    link = manager.snapshot_dir("ckpt_link")
+    link.parent.mkdir()
+    try:
+        link.symlink_to(victim, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink requires OS permission")
+    with pytest.raises(ValueError):
+        manager.delete_snapshot("ckpt_link")
+    assert marker.read_text(encoding="utf-8") == "preserve"

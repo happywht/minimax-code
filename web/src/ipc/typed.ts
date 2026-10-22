@@ -202,7 +202,7 @@ export interface TypedIPC {
   getRunSteps(runId: string): Promise<RunStepsResult>;
 
   // agent
-  sendMessage(opts: { session_id: string | null; content: string | import("../types/ipc").ContentPart[]; attachments?: unknown }): Promise<SendMessageResult>;
+  sendMessage(opts: import("../types/ipc").SendMessageParams & { attachments?: unknown }): Promise<SendMessageResult>;
   cancelAgent(sessionId: string): Promise<{ ok: true }>;
   /** v1.1.0: resume the latest budget-truncated run for a session. */
   continueRun(sessionId: string): Promise<SendMessageResult | { ok: false; error: string }>;

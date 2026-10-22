@@ -162,9 +162,14 @@ async def test_terminal_session_tracks_run_timeline(
     await db.connect()
     await db.migrate()
     monkeypatch.setattr(app_module, "_DB_SINGLETON", db)
+    from minimax_code.storage.dao.projects import ProjectsDAO
+
+    monkeypatch.setattr(app_module, "get_sessions_dao", lambda: SessionsDAO(db))
+    monkeypatch.setattr(app_module, "get_projects_dao", lambda: ProjectsDAO(db))
     try:
         chat_session_id = f"ses_{uuid4_hex()}"
-        await SessionsDAO(db).create(id=chat_session_id, title="terminal timeline")
+        await SessionsDAO(db).create(id=chat_session_id, title="terminal timeline",
+                                     workspace_path=str(tmp_path))
 
         start, ctx = _make_handler("terminal.start")
         await start(

@@ -29,11 +29,17 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from ..execution import capture_output, spawn_exec
 from ..storage.dao.checkpoints import CheckpointDAO
 from ..storage.db import ensure_data_dir
 from ..workspace import Checkpoint, CheckpointManager, CheckpointRestoreResult
-from ..workspace_ctx import env_or_cwd_root, resolve_root_for_session
-from .handler_utils import HandlerError, check_params
+from ..workspace_ctx import (
+    WorkspaceUnavailableError,
+    env_or_cwd_root,
+    require_directory,
+    resolve_root_for_session,
+)
+from .handler_utils import HandlerError, check_params, ensure_cwd_within_root
 from .protocol import INTERNAL_ERROR, INVALID_PARAMS
 from .server import Context
 
@@ -201,13 +207,14 @@ def register_checkpoint_handlers(
             p = params or {}
             checkpoint_id = _string_required(p, "checkpoint_id")
             ckpt_dao = await dao_factory()
-            deleted = await ckpt_dao.delete(checkpoint_id)
-            if not deleted:
+            row = await ckpt_dao.get(checkpoint_id)
+            if row is None:
                 raise HandlerError(
                     INVALID_PARAMS, f"unknown checkpoint_id: {checkpoint_id!r}"
                 )
             mgr = await manager_factory()
             removed_snapshot = mgr.delete_snapshot(checkpoint_id)
+            await ckpt_dao.delete(checkpoint_id)
             await ctx.reply({"ok": True, "removed_snapshot": removed_snapshot})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
@@ -309,35 +316,32 @@ async def _resolve_cwd(
 ) -> Path:
     """Resolve the working tree to snapshot/rewind.
 
-    Honours an explicit ``cwd`` (absolute or repo-relative); otherwise a
-    session-scoped root (worktree workspace / project ``root_path``,
-    v1.3.0) wins when it differs from the process-wide default — legacy
-    sessions without a project root keep the git-toplevel behaviour
-    untouched. A non-repo cwd is a user-facing error — storing an empty
-    snapshot is pointless.
+    Explicit paths must stay inside the verified session root. Legacy
+    unbound sessions retain the process git-toplevel default; invalid
+    bindings never fall back to another checkout.
     """
+    try:
+        root = await resolve_root_for_session(session_id)
+    except WorkspaceUnavailableError as exc:
+        raise HandlerError(INVALID_PARAMS, str(exc)) from exc
     explicit = _string_param(params, "cwd")
     if explicit:
-        candidate = Path(explicit).expanduser()
-        if not candidate.is_absolute():
-            candidate = (Path.cwd() / candidate).resolve()
-        return candidate
+        return require_directory(ensure_cwd_within_root(explicit, root))
     if session_id:
-        root = await resolve_root_for_session(session_id)
         if root != env_or_cwd_root():
             return root
     return await _git_repo_root()
 
 
 async def _git_repo_root() -> Path:
-    proc = await asyncio.create_subprocess_exec(
+    proc = await spawn_exec(
         "git",
         "rev-parse",
         "--show-toplevel",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    out, err = await proc.communicate()
+    out, err = await capture_output(proc, timeout=30)
     if proc.returncode != 0:
         raise HandlerError(
             INVALID_PARAMS,

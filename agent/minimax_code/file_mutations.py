@@ -1,0 +1,69 @@
+"""Atomic replacement with a last-moment baseline check for native file tools."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import shutil
+import stat
+import tempfile
+from collections.abc import Callable
+from pathlib import Path
+from typing import BinaryIO
+
+from .execution import require_write_access
+
+
+def _atomic_replace(target: Path, write: Callable[[BinaryIO], object], *, baseline_path: Path,
+                    baseline_sha256: str | None) -> None:
+    require_write_access()
+    target = Path(target)
+    parent = target.parent.resolve()
+    if parent != target.parent or target.is_symlink():
+        raise OSError("Write target changed to a symbolic link; re-read before writing")
+    mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else None
+    fd, temporary = tempfile.mkstemp(prefix=".minimax-write-", dir=parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            write(stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        current = None
+        if baseline_path.exists():
+            with baseline_path.open("rb") as source:
+                current = hashlib.file_digest(source, "sha256").hexdigest()
+        if current != baseline_sha256:
+            raise OSError("File changed during write preparation; re-read before retrying")
+        if target.is_symlink() or target.parent.resolve() != parent:
+            raise OSError("Write target changed during preparation")
+        if mode is not None:
+            os.chmod(temporary, mode)
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def atomic_write_text(target: Path, content: str, *, baseline_path: Path,
+                      baseline_sha256: str | None) -> None:
+    _atomic_replace(target, lambda stream: stream.write(content.encode("utf-8")),
+                    baseline_path=baseline_path, baseline_sha256=baseline_sha256)
+
+
+def atomic_append_text(target: Path, content: str, *, baseline_path: Path,
+                       baseline_sha256: str | None) -> None:
+    def write(stream: BinaryIO) -> None:
+        if baseline_sha256 is not None:
+            with baseline_path.open("rb") as source:
+                shutil.copyfileobj(source, stream, 65536)
+        stream.write(content.encode("utf-8"))
+
+    _atomic_replace(target, write, baseline_path=baseline_path, baseline_sha256=baseline_sha256)
+
+
+def atomic_copy_file(source: Path, target: Path, *, baseline_sha256: str | None) -> None:
+    def write(stream: BinaryIO) -> None:
+        with source.open("rb") as incoming:
+            shutil.copyfileobj(incoming, stream, 65536)
+
+    _atomic_replace(target, write, baseline_path=target, baseline_sha256=baseline_sha256)

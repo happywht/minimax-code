@@ -50,6 +50,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from ...execution import communicate_bounded, spawn_shell
 from ...scheduler import PayloadFn
 from .runner import SelfEvolutionReport, run_once
 
@@ -164,11 +165,6 @@ async def _run_command(payload: dict[str, Any], command: str) -> dict[str, Any]:
       on its presence lock stays a "completed" tick with the exit code
       visible in the result JSON).
     """
-    # Deferred import: the tree-kill remedy is shared with
-    # ``verify_subagent`` (a bare kill() leaves the wrapped child
-    # holding the pipes on Windows) — one implementation, not a copy.
-    from ..tools.verification import _kill_process_tree
-
     cwd = payload.get("cwd")
     workdir = None
     if isinstance(cwd, str) and cwd.strip():
@@ -177,7 +173,7 @@ async def _run_command(payload: dict[str, Any], command: str) -> dict[str, Any]:
     timeout_s = _coerce_timeout(payload.get("timeout_s"))
 
     try:
-        proc = await asyncio.create_subprocess_shell(
+        proc = await spawn_shell(
             command,
             cwd=workdir,
             stdout=asyncio.subprocess.PIPE,
@@ -188,21 +184,16 @@ async def _run_command(payload: dict[str, Any], command: str) -> dict[str, Any]:
 
     timed_out = False
     try:
-        stdout_b, stderr_b = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout_s
-        )
+        captured = await communicate_bounded(proc, timeout=timeout_s, limit=_COMMAND_OUTPUT_CAP)
+        stdout_b, stderr_b = captured.stdout, captured.stderr
+        stdout_trunc, stderr_trunc = captured.stdout_truncated, captured.stderr_truncated
     except TimeoutError:
         timed_out = True
-        await _kill_process_tree(proc)
-        # Drain the (now-closed) pipes so the process reaps and whatever
-        # the child printed before the kill still reaches the report.
-        try:
-            stdout_b, stderr_b = await proc.communicate()
-        except Exception:  # pragma: no cover — defensive
-            stdout_b, stderr_b = b"", b""
+        stdout_b, stderr_b = b"", b""
+        stdout_trunc = stderr_trunc = False
 
-    stdout, stdout_trunc = _decode_capped(stdout_b)
-    stderr, stderr_trunc = _decode_capped(stderr_b)
+    stdout = stdout_b.decode("utf-8", errors="replace")
+    stderr = stderr_b.decode("utf-8", errors="replace")
     result: dict[str, Any] = {
         "ok": proc.returncode == 0 and not timed_out,
         "exit_code": proc.returncode,

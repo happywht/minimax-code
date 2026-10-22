@@ -156,7 +156,7 @@ async def test_ws_endpoint_handles_pong() -> None:
 
     server = IPCServer(config=Config.from_env(), stdin=None, stdout=None)
     app = build_app(server, version="test")
-    client = TestClient(app)
+    client = TestClient(app, headers={"Authorization": f"Bearer {app.state.auth.token}"})
 
     with client.websocket_connect("/ws") as ws:
         # Read the agent.ready event

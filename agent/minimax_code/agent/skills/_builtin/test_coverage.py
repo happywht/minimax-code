@@ -11,11 +11,11 @@ v0.8.0 — Enterprise Multi-Agent.
 from __future__ import annotations
 
 import asyncio
-import os
 import shutil
 from pathlib import Path
 from typing import Any
 
+from ....execution import capture_output, spawn_exec
 from ...tools.base import Tool, ToolResult
 from ...tools.file_ops import PathSecurityError, safe_resolve
 
@@ -84,11 +84,11 @@ class TestCoverageTool(Tool):
             "--no-header",
             "-q",
         )
-        env = os.environ.copy()
+        env: dict[str, str] = {}
         env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = ""  # ensure cov plugin loads
 
         try:
-            proc = await asyncio.create_subprocess_exec(
+            proc = await spawn_exec(
                 *argv,
                 env=env,
                 stdout=asyncio.subprocess.PIPE,
@@ -99,12 +99,8 @@ class TestCoverageTool(Tool):
             return None
 
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=120.0)
+            stdout_b, stderr_b = await capture_output(proc, timeout=120.0)
         except TimeoutError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
             return None
 
         stdout = stdout_b.decode("utf-8", errors="replace")

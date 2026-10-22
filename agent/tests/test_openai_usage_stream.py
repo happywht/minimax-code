@@ -25,6 +25,8 @@ from minimax_code.agent.transports.openai_transport import (
     _usage_to_dict,
 )
 
+pytestmark = pytest.mark.replay
+
 # --- Wire fixtures: byte-for-byte shapes captured from live providers. ------
 
 ZHIPU_REASONING = (

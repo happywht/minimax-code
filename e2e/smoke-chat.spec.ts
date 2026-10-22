@@ -107,19 +107,18 @@ test("chat: long conversations scroll inside the middle message area", async ({ 
   expect(box).not.toBeNull();
   if (!box) return;
 
-  const wheelMetrics = await page.evaluate(() => {
-    const scroller = document.querySelector<HTMLElement>('[data-testid="message-list"]');
-    if (!scroller) throw new Error("message list missing");
-    const maxScrollTop = scroller.scrollHeight - scroller.clientHeight;
-    scroller.scrollTop = Math.floor(maxScrollTop / 2);
-    scroller.dispatchEvent(new Event("scroll"));
-    return { scrollTop: scroller.scrollTop, maxScrollTop };
-  });
-  expect(wheelMetrics.maxScrollTop).toBeGreaterThan(200);
-  expect(wheelMetrics.scrollTop).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(async () => {
+    // @ts-expect-error Vite serves this source module directly in the browser.
+    const { useChat } = await import("/src/stores/chat.ts");
+    return useChat.getState().status;
+  })).toBe("idle");
+  await expect.poll(() => page.getByTestId("message-list").evaluate(
+    (el) => el.scrollHeight - el.scrollTop - el.clientHeight,
+  )).toBeLessThanOrEqual(50);
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
 
   const beforeWheelUp = await page.getByTestId("message-list").evaluate((el) => el.scrollTop);
+  expect(beforeWheelUp).toBeGreaterThan(200);
   await page.mouse.wheel(0, -700);
   await expect
     .poll(() => page.getByTestId("message-list").evaluate((el) => el.scrollTop))
@@ -135,6 +134,9 @@ test("chat: streaming follows the bottom until the user scrolls up", async ({ pa
     // These browser-side imports resolve to the same Vite modules used by the app.
     // @ts-expect-error Vite serves this source module directly in the browser.
     const { useChat } = await import("/src/stores/chat.ts");
+    // @ts-expect-error Vite serves this source module directly in the browser.
+    const { useSessionStore } = await import("/src/stores/sessionStore.ts");
+    await useSessionStore.getState().create("Scroll fixture");
     const seed = Array.from({ length: 36 }, (_, index) => ({
       id: `seed-${index}`,
       role: index % 2 === 0 ? "user" : "assistant",
@@ -172,14 +174,17 @@ test("chat: streaming follows the bottom until the user scrolls up", async ({ pa
   await page.evaluate(async () => {
     // @ts-expect-error Vite serves this source module directly in the browser.
     const { ipc } = await import("/src/ipc/index.ts");
+    // @ts-expect-error Vite serves this source module directly in the browser.
+    const { useSessionStore } = await import("/src/stores/sessionStore.ts");
     ipc._emit("agent.message_chunk", {
-      session_id: "scroll-session",
+      session_id: useSessionStore.getState().currentSessionId,
       message_id: "stream-follow",
       delta: "streaming line\n".repeat(180),
       done: false,
     });
   });
 
+  await expect(page.getByText(/streaming line/).first()).toBeVisible();
   await expect
     .poll(() =>
       page.getByTestId("message-list").evaluate(
@@ -188,17 +193,20 @@ test("chat: streaming follows the bottom until the user scrolls up", async ({ pa
     )
     .toBeLessThanOrEqual(50);
 
-  const userScrollTop = await page.getByTestId("message-list").evaluate((el) => {
-    el.scrollTop = Math.max(0, el.scrollTop - 900);
-    el.dispatchEvent(new Event("scroll"));
-    return el.scrollTop;
-  });
+  const scroller = page.getByTestId("message-list");
+  const beforeUserScroll = await scroller.evaluate((el) => el.scrollTop);
+  await scroller.hover();
+  await page.mouse.wheel(0, -900);
+  await expect.poll(() => scroller.evaluate((el) => el.scrollTop)).toBeLessThan(beforeUserScroll);
+  const userScrollTop = await scroller.evaluate((el) => el.scrollTop);
 
   await page.evaluate(async () => {
     // @ts-expect-error Vite serves this source module directly in the browser.
     const { ipc } = await import("/src/ipc/index.ts");
+    // @ts-expect-error Vite serves this source module directly in the browser.
+    const { useSessionStore } = await import("/src/stores/sessionStore.ts");
     ipc._emit("agent.message_chunk", {
-      session_id: "scroll-session",
+      session_id: useSessionStore.getState().currentSessionId,
       message_id: "stream-follow",
       delta: "more output that must not steal the user's position\n".repeat(40),
       done: false,
@@ -223,6 +231,11 @@ test("chat: assistant text and tool activity stay interleaved", async ({ page })
     const { useChat } = await import("/src/stores/chat.ts");
     // @ts-expect-error Vite serves these source modules directly in the browser.
     const { ipc } = await import("/src/ipc/index.ts");
+    // Create a real selected session. A synthetic ID can be cleared by the
+    // boot-time session refresh, erasing injected messages nondeterministically.
+    // @ts-expect-error Vite serves these source modules directly in the browser.
+    const { useSessionStore } = await import("/src/stores/sessionStore.ts");
+    const sessionId = await useSessionStore.getState().create("Timeline fixture");
     useChat.setState({
       messages: [{
         id: "timeline-user",
@@ -236,40 +249,47 @@ test("chat: assistant text and tool activity stay interleaved", async ({ page })
       error: null,
     });
     ipc._emit("agent.message_chunk", {
-      session_id: "timeline-session",
+      session_id: sessionId,
       message_id: "timeline-before-tool",
       delta: "I will inspect the files first.",
       done: false,
     });
     ipc._emit("agent.message_chunk", {
-      session_id: "timeline-session",
+      session_id: sessionId,
       message_id: "timeline-before-tool",
       delta: "",
       done: true,
     });
     ipc._emit("agent.tool_call", {
-      session_id: "timeline-session",
+      session_id: sessionId,
       tool_call_id: "timeline-read",
       name: "read_file",
       args: { path: "README.md" },
       message_id: "timeline-before-tool",
     });
     ipc._emit("agent.tool_result", {
-      session_id: "timeline-session",
+      session_id: sessionId,
       tool_call_id: "timeline-read",
       name: "read_file",
       result: "README contents",
       message_id: "timeline-before-tool",
     });
     ipc._emit("agent.message_chunk", {
-      session_id: "timeline-session",
+      session_id: sessionId,
       message_id: "timeline-after-tool",
       delta: "The project structure is healthy.",
+      done: true,
+    });
+    ipc._emit("agent.message_chunk", {
+      session_id: "another-session",
+      message_id: "foreign-message",
+      delta: "This belongs to another session.",
       done: true,
     });
   });
 
   await expect(page.getByText("The project structure is healthy.", { exact: true })).toBeVisible();
+  await expect(page.getByText("This belongs to another session.", { exact: true })).toHaveCount(0);
   const timeline = await page.getByTestId("message-list").evaluate((el) =>
     Array.from(el.querySelectorAll<HTMLElement>("[data-role]"), (node) => ({
       role: node.dataset.role,

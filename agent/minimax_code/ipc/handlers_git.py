@@ -42,7 +42,7 @@ the stderr message preserved in ``data`` for debugging.
 
 Performance
 -----------
-Git invocations use ``subprocess.run`` with a 5 s timeout. The diff
+Git invocations use the shared asynchronous process boundary with a 5 s timeout. The diff
 text is small for working-tree changes; the log is bounded by ``n``
 (default 10). None of this should ever block the event loop for
 more than a frame or two. If we ever need to run ``git log -p``
@@ -60,11 +60,12 @@ singletons.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-import subprocess
 from typing import Any
 
+from ..execution import communicate_bounded, spawn_exec
 from .handler_utils import HandlerError, ensure_cwd_within_root, project_root_from_params
 from .protocol import INVALID_PARAMS
 from .server import Context
@@ -93,45 +94,32 @@ _GIT_TIMEOUT_S = 5.0
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _run_git(args: list[str], *, cwd: str | os.PathLike[str] | None = None) -> str:
-    """Run ``git <args>`` and return stdout.
-
-    On any non-zero exit (including "not a git repository") the
-    whole stderr is wrapped in a :class:HandlerError with code
-    :data:_GIT_ERROR` so handlers don't have to re-implement the
-    translation. The timeout is shared across all calls.
-    """
-    cmd = ["git", *args]
+async def _run_git(args: list[str], *, cwd: str | os.PathLike[str] | None = None,
+                   input_bytes: bytes | None = None) -> str:
+    """Bounded, cancellable Git execution with no ambient service secrets."""
+    cmd = ["git", "--no-pager", "-c", "core.fsmonitor=false", *args]
     try:
-        proc = subprocess.run(
-            cmd,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT_S,
-            check=False,
-        )
-    except FileNotFoundError as exc:  # pragma: no cover — host without git
-        raise HandlerError(
-            _GIT_ERROR,
-            "git binary not found on PATH",
-            data={"cmd": cmd},
-        ) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise HandlerError(
-            _GIT_ERROR,
-            f"git {' '.join(args)} timed out after {_GIT_TIMEOUT_S}s",
-            data={"cmd": cmd, "timeout_s": _GIT_TIMEOUT_S},
-        ) from exc
-
+        proc = await spawn_exec(*cmd, cwd=cwd,
+                                stdin=asyncio.subprocess.PIPE if input_bytes is not None else asyncio.subprocess.DEVNULL,
+                                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        output = await communicate_bounded(proc, timeout=_GIT_TIMEOUT_S, input=input_bytes)
+    except FileNotFoundError as exc:
+        raise HandlerError(_GIT_ERROR, "git binary not found on PATH", data={"cmd": cmd}) from exc
+    except TimeoutError as exc:
+        raise HandlerError(_GIT_ERROR, f"git timed out after {_GIT_TIMEOUT_S}s",
+                           data={"cmd": cmd, "timeout_s": _GIT_TIMEOUT_S}) from exc
+    if output.stdout_truncated or output.stderr_truncated:
+        raise HandlerError(_GIT_ERROR, "Git output exceeded the limit; results are incomplete")
     if proc.returncode != 0:
-        stderr = (proc.stderr or "").strip() or "git failed with no stderr"
-        raise HandlerError(
-            _GIT_ERROR,
-            stderr,
-            data={"cmd": cmd, "returncode": proc.returncode},
-        )
-    return proc.stdout
+        stderr = output.stderr.decode("utf-8", errors="replace").strip() or "git failed with no stderr"
+        raise HandlerError(_GIT_ERROR, stderr, data={"cmd": cmd, "returncode": proc.returncode})
+    return output.stdout.decode("utf-8", errors="replace")
+
+
+def _validate_ref(ref: str | None) -> None:
+    if ref is not None and (not isinstance(ref, str) or not ref.strip() or ref.startswith("-") or "\0" in ref):
+        raise HandlerError(INVALID_PARAMS, "'ref' must be a revision, not a command option")
+
 
 def _resolve_cwd(params: dict[str, Any] | None) -> str | None:
     """Pull an optional ``cwd`` override out of ``params``.
@@ -255,7 +243,7 @@ def register_git_handlers(server: Any) -> None:
             # ``HEAD`` when detached; we echo that as-is so the UI
             # can show "HEAD (detached)" if it wants.
             branch = (
-                _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd).strip()
+                (await _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd)).strip()
                 or "HEAD"
             )
 
@@ -265,10 +253,10 @@ def register_git_handlers(server: Any) -> None:
             ahead = 0
             behind = 0
             try:
-                rev_out = _run_git(
+                rev_out = (await _run_git(
                     ["rev-list", "--left-right", "--count", "HEAD...@{u}"],
                     cwd=cwd,
-                ).strip()
+                )).strip()
                 if rev_out:
                     left, right = rev_out.split("\t", 1)
                     ahead = int(left)
@@ -280,10 +268,10 @@ def register_git_handlers(server: Any) -> None:
 
             # Status: porcelain v2 + NUL gives us a parseable
             # stream of (X, Y, path) tuples.
-            status_text = _run_git(
+            status_text = (await _run_git(
                 ["status", "--porcelain=v2", "-z", "--untracked-files=normal"],
                 cwd=cwd,
-            )
+            ))
             modified, untracked, staged = _parse_status_porcelain_v2(status_text)
             # "clean" means nothing modified, nothing untracked,
             # nothing staged. We don't penalise ahead/behind —
@@ -322,10 +310,12 @@ def register_git_handlers(server: Any) -> None:
                     INVALID_PARAMS, "'ref' must be a string when provided"
                 )
 
+            _validate_ref(ref)
+
             # Build the diff argv. ``--no-color`` strips ANSI for
             # the wire; ``-M`` enables rename detection (catches
             # ``git mv`` as a rename rather than add+delete).
-            base_args = ["diff", "--no-color", "-M"]
+            base_args = ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "-M"]
             if ref is not None:
                 # Explicit ref wins. Treat the ref as a revision
                 # range the user composed themselves; ``git diff``
@@ -350,7 +340,7 @@ def register_git_handlers(server: Any) -> None:
                 cmd = [*base_args, diff_target]
             else:
                 cmd = base_args
-            diff_text = _run_git(cmd, cwd=cwd)
+            diff_text = (await _run_git([*cmd, "--"], cwd=cwd))
 
             await ctx.reply(
                 {
@@ -394,10 +384,10 @@ def register_git_handlers(server: Any) -> None:
             # subject that contains ``\n`` (rare but possible) does
             # not bleed into the next commit's file list.
             fmt = "__COMMIT__%H__%an__%s__END__"
-            raw = _run_git(
+            raw = (await _run_git(
                 ["log", f"-n{n}", f"--format={fmt}", "--name-only"],
                 cwd=cwd,
-            )
+            ))
 
             entries: list[dict[str, Any]] = []
             if raw.strip():

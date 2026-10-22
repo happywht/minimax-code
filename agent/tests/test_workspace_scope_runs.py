@@ -376,12 +376,14 @@ async def test_invoke_defaults_without_project(
     agent_handlers: dict[str, Any],
     agent_dao: AgentDAO,
     sessions_dao: SessionsDAO,
+    projects_dao: ProjectsDAO,
     root_runtime: _RootRecordingRuntime,
 ) -> None:
     """A session without a project resolves to the process default root."""
     sid = _sid()
     await sessions_dao.create(id=sid, title="no project")
     set_sessions_dao(sessions_dao)
+    set_projects_dao(projects_dao)
 
     name = _agname()
     await agent_dao.upsert(name=name, system_prompt="x")
@@ -474,11 +476,13 @@ async def test_team_spawn_scopes_to_session_root(
 async def test_team_spawn_defaults_without_project(
     team_handlers: dict[str, Any],
     sessions_dao: SessionsDAO,
+    projects_dao: ProjectsDAO,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sid = _sid()
     await sessions_dao.create(id=sid, title="no project")
     set_sessions_dao(sessions_dao)
+    set_projects_dao(projects_dao)
 
     captured: list[_RecordingOrchestrator] = []
 

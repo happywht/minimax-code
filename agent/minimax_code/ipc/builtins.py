@@ -432,6 +432,17 @@ async def _build_system_prompt_extra(
 
 
 async def handle_agent_send_message(params: Any, ctx: Context) -> None:
+    from ..execution import ExecutionPolicy, execution_scope
+
+    mode = params.get("mode", "chat") if isinstance(params, dict) else "chat"
+    if mode not in {"chat", "plan", "execute"}:
+        await ctx.reply_error(-32602, "mode must be chat, plan, or execute")
+        return
+    with execution_scope(ExecutionPolicy(read_only=mode == "plan")):
+        await _handle_agent_send_message(params, ctx)
+
+
+async def _handle_agent_send_message(params: Any, ctx: Context) -> None:
     """End-to-end chat handler for ``agent.send_message``.
 
     This is the canonical user-message entry point. The handler:
@@ -573,15 +584,16 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
     #     Everything below (prompt build, tool dispatch, sub-agents
     #     spawned via create_task) reads it through ``current_root()``;
     #     file tools anchor relative paths and enforce containment
-    #     against it. Resolution never raises — a broken chain (missing
-    #     project dir etc.) degrades to the process root.
+    #     against it. An invalid binding must stop before any model/tool call.
     _root_token = None
     try:
         from ..workspace_ctx import resolve_root_for_session, set_current_root
 
         _root_token = set_current_root(await resolve_root_for_session(session_id))
-    except Exception:  # pragma: no cover — defensive
-        logger.exception("workspace root resolution failed; using process default")
+    except Exception as exc:
+        logger.warning("workspace root resolution failed: %s", exc)
+        await ctx.reply_error(-32602, f"Cannot start task: {exc}")
+        return
 
     # 2.6. v1.4.0 — publish this session as the *parent* for sub-agents
     #     spawned during the run, and route their ``agent.subagent_progress``
@@ -834,6 +846,7 @@ async def handle_agent_send_message(params: Any, ctx: Context) -> None:
         title=_title_hint,
         assistant_message_id=message_id,
         project_id=project_id,
+        mode=params.get("mode", "chat"),
     )
     try:
         await recorder.create()
@@ -1261,7 +1274,8 @@ async def handle_agent_continue_run(params: Any, ctx: Context) -> None:
         logger.exception("marking run continued failed; continuing anyway")
 
     await handle_agent_send_message(
-        {"session_id": session_id, "content": _CONTINUE_PROMPT}, ctx
+        {"session_id": session_id, "content": _CONTINUE_PROMPT,
+         "mode": run.get("mode", "chat")}, ctx
     )
 
 

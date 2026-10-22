@@ -43,6 +43,19 @@ _current_root: ContextVar[Path | None] = ContextVar(
 )
 
 
+class WorkspaceUnavailableError(ValueError):
+    """An explicitly bound workspace cannot safely be used."""
+
+
+def require_directory(path: Path | str) -> Path:
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.is_dir():
+        raise WorkspaceUnavailableError(
+            f"Workspace directory is unavailable: {resolved}. Rebind the project before running."
+        )
+    return resolved
+
+
 # ---------------------------------------------------------------------------
 # Process-wide fallback root
 # ---------------------------------------------------------------------------
@@ -56,7 +69,7 @@ def env_or_cwd_root() -> Path:
     is set, so the two can never drift apart.
     """
     raw = os.environ.get("MINIMAX_CODE_WORKSPACE") or os.getcwd()
-    return Path(raw).expanduser().resolve()
+    return require_directory(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -135,52 +148,40 @@ def reset_current_run_id(token: Token[str | None]) -> None:
 
 
 async def _project_root(project_id: str | None) -> Path | None:
-    """The project's ``root_path`` if set and the directory exists.
-
-    Returns ``None`` for unknown projects, empty roots, DAO unavailability,
-    or a root pointing at a missing directory (the run falls back to the
-    process root with a warning rather than exploding the session).
-    """
+    """Return an optional unbound root; fail closed for an invalid binding."""
     if not project_id:
         return None
     dao = _get_projects_dao()
     if dao is None:
-        return None
+        raise WorkspaceUnavailableError("Project storage is unavailable; cannot verify workspace.")
     try:
         project = await dao.get(project_id)
     except Exception as exc:  # pragma: no cover — defensive
         logger.warning("project lookup failed for %s: %s", project_id, exc)
-        return None
+        raise WorkspaceUnavailableError("Project lookup failed; cannot verify workspace.") from exc
     if not project:
-        return None
+        raise WorkspaceUnavailableError(f"Project {project_id!r} no longer exists. Rebind the session.")
     raw = str(project.get("root_path") or "").strip()
     if not raw:
         return None
-    path = Path(raw).expanduser()
-    if not path.is_dir():
-        logger.warning(
-            "project %s root_path %s is not a directory — falling back to "
-            "the process workspace",
-            project_id,
-            raw,
-        )
-        return None
-    return path.resolve()
+    return require_directory(raw)
 
 
 async def resolve_root_for_session(session_id: str | None) -> Path:
     """Resolve the workspace root a session's agent run should use.
 
     Priority: ``session.workspace_path`` (worktree sessions) →
-    ``project.root_path`` → :func:`env_or_cwd_root`.  Never raises — a
-    broken chain degrades to the process root.
+    ``project.root_path`` → :func:`env_or_cwd_root`. An invalid explicit
+    binding raises instead of silently selecting a different directory.
     """
     if session_id:
         session = await _get_session(session_id)
+        if not session:
+            raise WorkspaceUnavailableError(f"Session {session_id!r} no longer exists.")
         if session:
             ws_raw = str(session.get("workspace_path") or "").strip()
-            if ws_raw and Path(ws_raw).expanduser().is_dir():
-                return Path(ws_raw).expanduser().resolve()
+            if ws_raw:
+                return require_directory(ws_raw)
             root = await _project_root(
                 str(session.get("project_id") or "").strip() or None
             )
@@ -192,8 +193,7 @@ async def resolve_root_for_session(session_id: str | None) -> Path:
 async def resolve_root_for_project_id(project_id: str | None) -> Path:
     """Resolve a root directly from a project id (git/codebase/terminal).
 
-    Projects without a root resolve to the process-wide default, so
-    callers can treat the return value as always valid.
+    Unbound projects use the process-wide default. Invalid bindings raise.
     """
     root = await _project_root(project_id)
     return root if root is not None else env_or_cwd_root()
@@ -235,11 +235,13 @@ async def _get_session(session_id: str) -> Any | None:
 
         dao = get_sessions_dao()
         if dao is None:
-            return None
+            raise WorkspaceUnavailableError("Session storage is unavailable; cannot verify workspace.")
         return await dao.get(session_id)
+    except WorkspaceUnavailableError:
+        raise
     except Exception as exc:  # pragma: no cover — defensive
         logger.warning("session lookup failed for %s: %s", session_id, exc)
-        return None
+        raise WorkspaceUnavailableError("Session lookup failed; cannot verify workspace.") from exc
 
 
 __all__ = [

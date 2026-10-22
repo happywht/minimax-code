@@ -19,9 +19,9 @@ The exit code is surfaced so the agent can react to errors.
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 
+from ....execution import capture_output, spawn_exec
 from ...tools.base import Tool, ToolResult
 from ...tools.file_ops import PathSecurityError, safe_resolve
 from ..runtime import SkillToolProvider
@@ -83,7 +83,7 @@ class GetGitDiffTool(Tool):
             cmd.extend(["--", raw_path])
 
         # Inherit environment, force unbuffered output.
-        env = os.environ.copy()
+        env: dict[str, str] = {}
         env.setdefault("PYTHONUNBUFFERED", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")
         # Disable git's colour codes — they're noise in tool output.
@@ -91,7 +91,7 @@ class GetGitDiffTool(Tool):
 
         proc: asyncio.subprocess.Process | None = None
         try:
-            proc = await asyncio.create_subprocess_exec(
+            proc = await spawn_exec(
                 *cmd,
                 cwd=cwd,
                 env=env,
@@ -104,12 +104,8 @@ class GetGitDiffTool(Tool):
             return ToolResult.fail(f"failed to spawn git: {exc}")
 
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+            stdout_b, stderr_b = await capture_output(proc, timeout=15.0)
         except TimeoutError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
             return ToolResult.fail("git diff timed out after 15s")
 
         diff_text = stdout_b.decode("utf-8", errors="replace")

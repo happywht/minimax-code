@@ -1,7 +1,9 @@
 # minimax-code-agent
 
-The Python half of MiniMax Code. Runs as a Tauri sidecar and exposes the
-agent API to the React frontend over a JSON-RPC 2.0 stdio channel.
+The Python half of MiniMax Code (package version 1.6.0 plus unreleased fixes).
+FastAPI serves JSON-RPC 2.0 over HTTP and pushes events over WebSocket to the
+React SPA. Production mode also serves the prebuilt frontend. The optional
+stdio transport shares the same handler registry for tests and CLI clients.
 
 ## Run
 
@@ -23,18 +25,24 @@ minimax_code/
 ├── __main__.py            # CLI entry
 ├── config.py
 ├── logging_setup.py
-├── ipc/                   # JSON-RPC over stdio server
+├── http_server.py         # HTTP / WebSocket transport and SPA hosting
+├── ipc/                   # shared JSON-RPC handlers + stdio transport
 │   ├── server.py
 │   ├── client.py          # client used in tests
 │   └── protocol.py        # message envelopes
-├── agent/                 # conversation loop (Phase 1.2)
-├── tools/                 # file_ops / terminal / edit / search
-├── skills/                # SKILL.md loader + registry
-├── storage/               # SQLite (Phase 1.3)
+├── agent/                 # conversation loop, tools/, skills/
+├── storage/               # SQLite + incremental migrations
 ├── scheduler/             # APScheduler wrappers
-├── orchestrator/          # multi-agent (Phase 2)
-├── auth/                  # permissions
-└── mobile/                # mobile pairing (Phase 2)
+├── orchestrator/          # subagents and teams
+├── permissions/           # tool consent and rules
+└── mobile/                # experimental mobile pairing
 ```
 
-See `../docs/ipc-contract.md` for the wire format.
+For tests, install `uv sync --frozen --extra dev`. From the repository root,
+`pnpm verify:core`, `pnpm verify:replay`, and `pnpm verify:full` provide separate
+offline suites. Normal tests use an empty keyring and temporary data directory.
+Live tests require both the `live` marker and `--run-live`.
+
+See [verification](../docs/verification.md), [capability boundaries](../docs/capability-baseline.md),
+and the [IPC contract](../docs/ipc-contract.md). Workspaces and file overlays are
+not OS process sandboxes; long-running remote production use remains planned.

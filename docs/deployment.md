@@ -26,6 +26,20 @@ curl http://127.0.0.1:8765/health
 
 ## 工作原理
 
+### 应用认证（M1，开发分支）
+
+`/health` 和 SPA 静态资源可用于就绪探测；`/rpc`、`/ws`、预览、补全和文件接口需要认证。服务默认生成仅本次进程有效的随机 token，也可通过 `MINIMAX_CODE_AUTH_TOKEN` 注入固定 token。不要把它写入仓库、URL 或前端构建变量。CLI 请求使用 `Authorization: Bearer <token>`。
+
+本机受信浏览器页面通过 `POST /auth/session` 获取会话：请求必须带受信 Origin 和 `X-Minimax-Client: web`，且连接来自回环地址；远端客户端不能自行领取 token。浏览器 token 仅在内存中，HTTP 使用 Bearer，WebSocket 使用 `minimax-auth.<token>` 子协议。服务另设 HttpOnly、SameSite=Strict cookie 供预览与 SSE 使用。进程重启后前端重新握手。
+
+所有 HTTP/WS 请求检查 Host，默认只接受 `localhost`、`127.0.0.1`、`::1`；需要额外名称时用 `MINIMAX_CODE_ALLOWED_HOSTS` 明确列出，禁止通配符。`MINIMAX_CODE_CORS_ORIGINS` 是可调用应用的受信页面列表，不要添加不受控站点。认证边界信任本机操作系统账户；远程访问继续采用 SSH 隧道，不应公开监听服务。
+
+预览文件复用文件工具的敏感路径和目录边界检查。HTML/SVG 等响应带 CSP sandbox，预览脚本不能继承应用源或调用 RPC。开发时前端与后端应使用相同的主机名（例如都用 `127.0.0.1`），避免浏览器拒绝跨站预览 cookie。生产环境使用同源 SPA。
+
+当前会话的预览使用 `/preview/session/{session_id}/`；会话不存在、绑定目录丢失时返回 409，并要求重新绑定。无会话时的旧 `/preview/` 入口仍使用默认工作区。切换项目后预览状态随会话更新。
+
+此批没有数据库迁移。回退时可恢复代码及前端构建，但会同时撤销认证和执行安全修复；不要把旧服务暴露给远端客户端。
+
 agent 在构建 FastAPI app 时探测 `web/dist`（见 `http_server.py` 的 `_web_dist_dir()`）：
 
 1. 优先取环境变量 `MINIMAX_CODE_WEB_DIST` 指定的目录；

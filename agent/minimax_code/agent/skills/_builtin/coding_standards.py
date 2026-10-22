@@ -25,12 +25,12 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import os
 import re
 import shutil
 from pathlib import Path
 from typing import Any
 
+from ....execution import capture_output, spawn_exec
 from ...tools.base import Tool, ToolResult
 from ...tools.file_ops import PathSecurityError, safe_resolve
 from ..runtime import SkillToolProvider
@@ -127,12 +127,12 @@ class CheckStyleTool(Tool):
     async def _run_ruff(self, target: Path, max_findings: int) -> ToolResult:
         """Run ruff format-check and return structured findings."""
         argv = ("ruff", "check", "--output-format", "json", "--select", "E,W")
-        env = os.environ.copy()
+        env: dict[str, str] = {}
         env["FORCE_COLOR"] = "0"
         env["NO_COLOR"] = "1"
 
         try:
-            proc = await asyncio.create_subprocess_exec(
+            proc = await spawn_exec(
                 *argv,
                 str(target),
                 env=env,
@@ -143,12 +143,8 @@ class CheckStyleTool(Tool):
             return ToolResult.fail(f"failed to spawn ruff: {exc}")
 
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+            stdout_b, stderr_b = await capture_output(proc, timeout=30.0)
         except TimeoutError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
             return ToolResult.fail("ruff timed out after 30s")
 
         import json as _json

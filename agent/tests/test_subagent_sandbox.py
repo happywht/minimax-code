@@ -236,7 +236,7 @@ async def test_write_output_reports_sandbox_path(
 
 
 @pytest.mark.asyncio
-async def test_dot_minimax_paths_pass_through(
+async def test_dot_minimax_paths_cannot_bypass_overlay(
     workspace_root: Path, sandbox_scope: Path
 ) -> None:
     """Artifacts / backups / sandbox internals must never be re-redirected
@@ -244,12 +244,43 @@ async def test_dot_minimax_paths_pass_through(
     res = await _dispatch(
         "write_file", {"path": ".minimax/notes/x.md", "content": "meta"}
     )
-    assert res.success, res.error
-    assert (workspace_root / ".minimax" / "notes" / "x.md").read_text(
-        encoding="utf-8"
-    ) == "meta"
-    assert "sandboxed" not in res.output
+    assert not res.success
+    assert not (workspace_root / ".minimax" / "notes" / "x.md").exists()
     assert not (sandbox_scope / "notes").exists()
+
+
+@pytest.mark.parametrize("path", ["_base/file.txt", ".MINIMAX/other-run/file.txt"])
+async def test_reserved_paths_cannot_corrupt_overlay_metadata(workspace_root, sandbox_scope, path):
+    result = await _dispatch("write_file", {"path": path, "content": "corrupt"})
+    assert not result.success
+    assert not (workspace_root / path).exists()
+
+
+async def test_baseline_copy_failure_prevents_write(workspace_root, sandbox_scope, monkeypatch):
+    from minimax_code import file_mutations
+
+    target = workspace_root / "original.txt"
+    target.write_text("user version", encoding="utf-8")
+
+    def fail(*args, **kwargs):
+        raise OSError("baseline disk failure")
+
+    monkeypatch.setattr(file_mutations, "atomic_copy_file", fail)
+    result = await _dispatch("write_file", {"path": "original.txt", "content": "agent version"})
+    assert not result.success
+    assert "baseline disk failure" in result.error
+    assert target.read_text(encoding="utf-8") == "user version"
+    assert not (sandbox_scope / "original.txt").exists()
+
+
+async def test_external_creation_does_not_become_a_late_baseline(workspace_root, sandbox_scope):
+    first = await _dispatch("write_file", {"path": "new.txt", "content": "agent first"})
+    assert first.success
+    (workspace_root / "new.txt").write_text("independent user file", encoding="utf-8")
+    second = await _dispatch("write_file", {"path": "new.txt", "content": "agent second"})
+    assert second.success
+    assert not (sandbox_scope / BASE_DIR / "new.txt").exists()
+    assert (workspace_root / "new.txt").read_text(encoding="utf-8") == "independent user file"
 
 
 # ---------------------------------------------------------------------------

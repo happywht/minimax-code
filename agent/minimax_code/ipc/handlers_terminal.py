@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import signal
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -19,11 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..agent.tools.terminal import (
-    _SIGKILL,
-    _child_spawn_kwargs,
-    _signal_process_tree,
-)
+from ..execution import spawn_shell, terminate_tree
+from ..workspace_ctx import WorkspaceUnavailableError, require_directory, resolve_root_for_session
 from .handler_utils import HandlerError, ensure_cwd_within_root, project_root_from_params
 from .protocol import INVALID_PARAMS
 from .server import Context
@@ -148,9 +144,7 @@ def default_working_directory() -> str:
         raw = os.environ.get(key)
         if not raw:
             continue
-        path = Path(raw).expanduser().resolve()
-        if path.exists() and path.is_dir():
-            return str(path)
+        return str(require_directory(raw))
 
     current = Path.cwd().resolve()
     for candidate in (current, *current.parents):
@@ -168,6 +162,14 @@ async def _cwd_from_params(params: dict[str, Any]) -> str:
     default chain via :func:`default_working_directory`.
     """
     root = await project_root_from_params(params)
+    chat_session_id = _chat_session_id_from_params(params)
+    if chat_session_id:
+        try:
+            # A worktree session owns its execution directory even if its
+            # project also has a different (main checkout) root.
+            root = await resolve_root_for_session(chat_session_id)
+        except WorkspaceUnavailableError as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
     raw = params.get("cwd")
     if raw is None or raw == "":
         return str(root) if root is not None else default_working_directory()
@@ -348,27 +350,8 @@ async def _complete_run_tracking(
 
 
 async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
-    """Stop *proc*, escalating through the whole process tree.
-
-    v1.2.2: every signal now targets the tree (grandchildren included) —
-    the old terminate→kill ladder only reached the direct child, so a
-    command that spawned its own workers left them orphaned after a
-    timeout or user stop. On Windows the first signal is already a
-    hard tree kill (taskkill /F /T), so the escalation is a no-op.
-    """
-    if proc.returncode is not None:
-        return
-    await _signal_process_tree(proc, signal.SIGTERM)
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=2.0)
-        return
-    except TimeoutError:
-        pass
-    await _signal_process_tree(proc, _SIGKILL)
-    try:
-        await proc.wait()
-    except Exception:  # pragma: no cover — defensive
-        logger.debug("proc.wait after tree kill failed", exc_info=True)
+    """Use the shared process-tree cleanup and its bounded wait."""
+    await terminate_tree(proc)
 
 
 async def _run_session(
@@ -377,18 +360,20 @@ async def _run_session(
     emit: Callable[[str, dict[str, Any]], Awaitable[None]],
 ) -> None:
     try:
+        if session.status == "cancelled":
+            return
         await _create_run_tracking(session, emit)
-        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-        process = await asyncio.create_subprocess_shell(
+        process = await spawn_shell(
             session.command,
             cwd=session.cwd,
-            env=env,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            **_child_spawn_kwargs(),
         )
         session.process = process
+        if session.status == "cancelled":
+            await _terminate_process(process)
+            return
         session.status = "running"
         session.updated_at = time.time()
         assert process.stdout is not None
@@ -396,8 +381,10 @@ async def _run_session(
         stdout_task = asyncio.create_task(_read_stream(session, process.stdout, "stdout"))
         stderr_task = asyncio.create_task(_read_stream(session, process.stderr, "stderr"))
         try:
-            session.exit_code = await asyncio.wait_for(process.wait(), timeout=timeout_s)
-            await asyncio.gather(stdout_task, stderr_task)
+            session.exit_code, _, _ = await asyncio.wait_for(
+                asyncio.gather(process.wait(), stdout_task, stderr_task), timeout=timeout_s
+            )
+            await _terminate_process(process)
             if session.status != "cancelled":
                 session.status = "completed" if session.exit_code == 0 else "failed"
         except TimeoutError:
@@ -405,10 +392,18 @@ async def _run_session(
             session.error = f"command timed out after {timeout_s:g}s"
             await _terminate_process(process)
             session.exit_code = process.returncode
-            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
         finally:
+            for reader in (stdout_task, stderr_task):
+                reader.cancel()
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
             session.completed_at = time.time()
             session.updated_at = session.completed_at
+    except asyncio.CancelledError:
+        session.status = "cancelled"
+        session.error = "cancelled"
+        if session.process is not None:
+            await asyncio.shield(_terminate_process(session.process))
+        raise
     except Exception as exc:
         session.status = "failed"
         session.error = str(exc)

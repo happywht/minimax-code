@@ -684,6 +684,12 @@ export interface StatusResult extends PingResult {
   active_sessions: number;
 }
 
+export interface SendMessageParams {
+  session_id: string | null;
+  content: string | ContentPart[];
+  mode?: "chat" | "plan" | "execute";
+}
+
 export interface SendMessageResult {
   session_id: string;
   message_id: string;

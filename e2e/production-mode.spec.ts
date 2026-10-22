@@ -43,7 +43,12 @@ test.describe("production single-process mode", () => {
 
   test("upgrades a same-origin WebSocket at /ws", async ({ page }) => {
     await page.goto(AGENT_BASE);
-    const opened = await page.evaluate((origin: string) => {
+    const opened = await page.evaluate(async (origin: string) => {
+      // A raw socket must wait for authentication, independent of React boot.
+      const auth = await fetch(`${origin}/auth/session`, {
+        method: "POST", credentials: "include", headers: { "X-Minimax-Client": "web" },
+      });
+      if (!auth.ok) return false;
       return new Promise<boolean>((resolve) => {
         const ws = new WebSocket(origin.replace(/^http/i, "ws") + "/ws");
         const timer = setTimeout(() => resolve(false), 5_000);

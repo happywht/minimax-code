@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { PreviewPanel } from "../src/components/panels/PreviewPanel";
 import { usePreviewStore } from "../src/stores/previewStore";
+import { useSessionStore } from "../src/stores";
 
 class FakeEventSource {
   onopen: (() => void) | null = null;
@@ -19,6 +20,7 @@ function response(ok: boolean, status: number, body: object = {}) {
 }
 
 beforeEach(() => {
+  useSessionStore.setState({ currentSessionId: null });
   vi.stubGlobal("EventSource", FakeEventSource);
   usePreviewStore.setState({
     url: "http://preview.test",
@@ -29,6 +31,14 @@ beforeEach(() => {
 });
 
 describe("PreviewPanel", () => {
+  it("binds preview and relative assets to the selected session", async () => {
+    useSessionStore.setState({ currentSessionId: "session-project-a" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(true, 200)));
+    render(<PreviewPanel onClose={vi.fn()} />);
+    const iframe = await screen.findByTestId("preview-iframe");
+    expect(iframe).toHaveAttribute("src", "http://preview.test/preview/session/session-project-a/index.html");
+    expect(iframe.getAttribute("sandbox")).not.toContain("allow-same-origin");
+  });
   it("loads the iframe after health and file checks pass", async () => {
     vi.stubGlobal(
       "fetch",

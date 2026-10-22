@@ -7,6 +7,7 @@ import sys
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -34,8 +35,9 @@ class _CapturingContext:
 
 
 @pytest.fixture(autouse=True)
-def _clear_sessions() -> None:
+def _clear_sessions(monkeypatch) -> None:
     handlers_terminal._SESSIONS.clear()  # type: ignore[attr-defined]
+    monkeypatch.setattr(handlers_runner, "_run_probe", AsyncMock(return_value=(True, "fixture version", None)))
 
 
 def _make_handler(
@@ -105,7 +107,7 @@ async def test_runner_start_external_cli_fails_explicitly(
     monkeypatch.setattr(
         handlers_runner,
         "_runner_catalog",
-        lambda: [
+        AsyncMock(return_value=[
             {
                 "id": "native",
                 "label": "Native shell",
@@ -128,7 +130,7 @@ async def test_runner_start_external_cli_fails_explicitly(
                 "supports_prompt": True,
                 "supports_terminal": True,
             },
-        ],
+        ]),
     )
     handler, ctx = _make_handler("runner.start")
     await handler({"runner_id": "codex-cli", "command": "hello"}, ctx)
@@ -174,7 +176,7 @@ async def test_runner_start_external_cli_delegates_to_terminal(
     monkeypatch.setattr(
         handlers_runner,
         "_runner_catalog",
-        lambda: [
+        AsyncMock(return_value=[
             {
                 "id": "native",
                 "label": "Native shell",
@@ -197,7 +199,7 @@ async def test_runner_start_external_cli_delegates_to_terminal(
                 "supports_prompt": True,
                 "supports_terminal": True,
             },
-        ],
+        ]),
     )
     monkeypatch.setattr(handlers_runner, "start_terminal_command", fake_start_terminal_command)
 
@@ -258,7 +260,7 @@ async def test_runner_start_codex_cli_uses_safety_options(
     monkeypatch.setattr(
         handlers_runner,
         "_runner_catalog",
-        lambda: [
+        AsyncMock(return_value=[
             {
                 "id": "native",
                 "label": "Native shell",
@@ -281,7 +283,7 @@ async def test_runner_start_codex_cli_uses_safety_options(
                 "supports_prompt": True,
                 "supports_terminal": True,
             },
-        ],
+        ]),
     )
     monkeypatch.setattr(handlers_runner, "start_terminal_command", fake_start_terminal_command)
 
@@ -311,7 +313,7 @@ async def test_runner_start_rejects_invalid_safety_option(
     monkeypatch.setattr(
         handlers_runner,
         "_runner_catalog",
-        lambda: [
+        AsyncMock(return_value=[
             {
                 "id": "native",
                 "label": "Native shell",
@@ -334,7 +336,7 @@ async def test_runner_start_rejects_invalid_safety_option(
                 "supports_prompt": True,
                 "supports_terminal": True,
             },
-        ],
+        ]),
     )
 
     handler, ctx = _make_handler("runner.start")

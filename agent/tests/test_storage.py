@@ -91,10 +91,13 @@ def id_factory() -> callable:
 # ---------------------------------------------------------------------------
 
 
-def test_default_paths_are_windows_roaming_appdata() -> None:
+def test_default_paths_are_windows_roaming_appdata(monkeypatch) -> None:
     """On Windows, default_data_dir() must point at %APPDATA%\\MiniMaxCode."""
     if not _is_windows():
         pytest.skip("Windows-specific path test")
+    # This is a pure path-resolution check; remove the isolation override
+    # explicitly without opening or writing the real application database.
+    monkeypatch.delenv("MINIMAX_CODE_DATA_DIR", raising=False)
     assert str(default_data_dir()).endswith("MiniMaxCode")
     assert "AppData" in str(default_data_dir())
     assert str(default_database_path()).endswith("data.db")

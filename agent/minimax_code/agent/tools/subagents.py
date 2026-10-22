@@ -170,8 +170,7 @@ REPORT_PROTOCOL_PROMPT = (
 # keeps using ordinary workspace paths and the tool layer redirects
 # writes into the run's sandbox (COW snapshot on first touch). Since
 # v1.6.0 every read-side view (read/search/find/list) is overlaid, so
-# the paragraph only needs to teach the one asymmetry left: shell
-# writes bypass the sandbox (detected and reported as sandbox_escape).
+# Shell execution is disabled: a file overlay cannot isolate processes.
 SANDBOX_PROTOCOL_PROMPT = (
     "\n## Write sandbox\n\n"
     "This run is sandboxed: every file you write or edit through "
@@ -181,11 +180,10 @@ SANDBOX_PROTOCOL_PROMPT = (
     "- Keep using normal workspace paths exactly as you would.\n"
     "- `read_file` reflects your own writes (your view: your sandbox "
     "edits + every untouched original).\n"
-    "- Prefer `write_file` / `edit_file` over writing via "
-    "`exec_command` — shell writes hit the shared workspace directly "
-    "and will NOT be merged by collect. If an exec result carries a "
-    "`sandbox_escape` warning, rewrite those files with `write_file` "
-    "before reporting completion.\n"
+    "- Use `write_file` / `edit_file` for changes. `exec_command` and "
+    "other process tools are unavailable in this file overlay because "
+    "it cannot isolate shell writes. Ask the parent to validate after "
+    "collect_subagent merges the files into an independent workspace.\n"
     "- `search_files` / `find_files` / `list_directory` transparently "
     "include your sandboxed writes — they show the same merged view "
     "`read_file` gives you (directory entries from your sandbox are "

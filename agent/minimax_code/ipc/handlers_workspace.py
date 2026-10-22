@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..execution import capture_output, require_write_access, spawn_exec
 from ..storage.db import ensure_data_dir
+from ..workspace_ctx import WorkspaceUnavailableError, require_directory
 from .handler_utils import HandlerError, check_params
 from .protocol import INTERNAL_ERROR, INVALID_PARAMS
 from .server import Context
@@ -40,9 +41,8 @@ def register_workspace_handlers(
             title = _string_param(p, "title") or datetime.now().strftime(_DEFAULT_TITLE_FMT)
             base_ref = _string_param(p, "base_ref") or "HEAD"
             project_id = _string_param(p, "project_id")
-            if project_id and project_id != "inbox":
-                await _validate_project_id(project_id)
-            repo = configured_repo or await _git_repo_root()
+            require_write_access()
+            repo = await _repository_for_project(project_id, configured_repo)
             root = configured_worktree_root or (ensure_data_dir() / "worktrees")
             root.mkdir(parents=True, exist_ok=True)
 
@@ -61,7 +61,10 @@ def register_workspace_handlers(
                     project_id=project_id or "inbox",
                 )
             except Exception:
-                await _remove_worktree(repo, worktree_path)
+                try:
+                    await _remove_worktree(repo, worktree_path)
+                except Exception:
+                    logger.exception("Preserved worktree after session creation failed: %s", worktree_path)
                 raise
 
             await ctx.reply(
@@ -113,14 +116,15 @@ def register_workspace_handlers(
             if not path_raw:
                 raise HandlerError(INVALID_PARAMS, "worktree session has no workspace_path")
             root = (configured_worktree_root or (ensure_data_dir() / "worktrees")).resolve()
-            target = Path(path_raw).resolve()
-            if root not in (target, *target.parents):
+            require_write_access()
+            target = Path(path_raw).absolute()
+            if target != target.resolve() or target.parent != root:
                 raise HandlerError(
                     INVALID_PARAMS,
                     "refusing to remove worktree outside managed worktree root",
                     {"path": str(target), "root": str(root)},
                 )
-            repo = configured_repo or await _git_repo_root()
+            repo = await _repository_for_project(session.get("project_id"), configured_repo)
             await _remove_worktree(repo, target)
             row = await sess_dao.update(
                 session_id,
@@ -151,21 +155,24 @@ def _string_param(params: dict[str, Any], key: str) -> str | None:
     return value or None
 
 
-async def _validate_project_id(project_id: str) -> None:
-    """Reject a ``project_id`` that no project row backs (v1.3.0).
-
-    A worktree session filed under a ghost project would silently
-    vanish from every project-filtered list, so the id is checked
-    before the worktree is created — failing fast also keeps the
-    ``worktree add`` from leaving an orphaned checkout behind.
-    """
+async def _repository_for_project(project_id: str | None, fallback: Path | None) -> Path:
+    """A selected project's binding takes precedence over the process default."""
     from ..app import get_projects_dao
 
-    dao = get_projects_dao()
-    if dao is None:  # pragma: no cover - runtime not initialised
-        return
-    if await dao.get(project_id) is None:
-        raise HandlerError(INVALID_PARAMS, f"unknown project_id: {project_id!r}")
+    path = fallback
+    if project_id and project_id != "inbox":
+        dao = get_projects_dao()
+        if dao is None:
+            raise HandlerError(INVALID_PARAMS, "Project storage is unavailable")
+        project = await dao.get(project_id)
+        if project is None:
+            raise HandlerError(INVALID_PARAMS, f"unknown project_id: {project_id!r}")
+        if project.get("root_path"):
+            path = Path(project["root_path"])
+    try:
+        return await _git_repo_root(require_directory(path) if path else None)
+    except WorkspaceUnavailableError as exc:
+        raise HandlerError(INVALID_PARAMS, str(exc)) from exc
 
 
 def _make_dao_factory(dao: Any | None) -> Any:
@@ -188,15 +195,16 @@ def _make_dao_factory(dao: Any | None) -> Any:
     return _factory
 
 
-async def _git_repo_root() -> Path:
-    proc = await asyncio.create_subprocess_exec(
+async def _git_repo_root(cwd: Path | None = None) -> Path:
+    proc = await spawn_exec(
         "git",
         "rev-parse",
         "--show-toplevel",
+        cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    out, err = await proc.communicate()
+    out, err = await capture_output(proc, timeout=30)
     if proc.returncode != 0:
         raise HandlerError(
             INVALID_PARAMS,
@@ -207,15 +215,16 @@ async def _git_repo_root() -> Path:
 
 
 async def _run_git(repo: Path, *args: str) -> str:
-    proc = await asyncio.create_subprocess_exec(
+    proc = await spawn_exec(
         "git",
         "-C",
         str(repo),
         *args,
+        cwd=repo,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    out, err = await proc.communicate()
+    out, err = await capture_output(proc, timeout=60)
     if proc.returncode != 0:
         raise HandlerError(
             INVALID_PARAMS,
@@ -227,7 +236,6 @@ async def _run_git(repo: Path, *args: str) -> str:
 
 async def _remove_worktree(repo: Path, path: Path) -> None:
     if path.exists():
-        try:
-            await _run_git(repo, "worktree", "remove", "--force", str(path))
-        except HandlerError:
-            shutil.rmtree(path, ignore_errors=True)
+        # Git refuses dirty, untracked, locked or unregistered directories.
+        # Never turn that refusal into a recursive filesystem deletion.
+        await _run_git(repo, "worktree", "remove", str(path))

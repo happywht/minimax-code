@@ -33,6 +33,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from ...execution import capture_output, spawn_exec
+
 # Record/field separators for ``git log`` parsing. These ASCII control
 # characters never appear in real commit metadata, so they make
 # unambiguous delimiters without escaping — simpler than the
@@ -217,7 +219,7 @@ async def _run_cmd(
     in which case ``rc`` is ``None`` and the streams are empty.
     """
     try:
-        proc = await asyncio.create_subprocess_exec(
+        proc = await spawn_exec(
             *cmd,
             cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
@@ -229,17 +231,11 @@ async def _run_cmd(
         return None, "", "", f"could not spawn {cmd[0]}: {exc}"
 
     try:
-        stdout_b, stderr_b = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout_s
-        )
+        stdout_b, stderr_b = await capture_output(proc, timeout=timeout_s)
     except TimeoutError:
-        # Kill the runaway process so it doesn't linger as a zombie.
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        await proc.wait()
         return None, "", "", f"timed out after {timeout_s}s"
+    except RuntimeError as exc:
+        return None, "", "", str(exc)
 
     rc = proc.returncode
     stdout = stdout_b.decode("utf-8", errors="replace") if stdout_b else ""

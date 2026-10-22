@@ -12,9 +12,9 @@ and returns pass/fail with the captured stderr.
 
 The verifier is intentionally shell-style — operators want to wire
 whatever fits the deliverable, not learn a new declarative mini-DSL.
-The execution is sandboxed to ``workspace_ctx.current_root()`` (the
-sub-agent's overlay view) and the command runs via
-:mod:`subprocess.run` with a hard wall-clock timeout (default 30s).
+The command runs in the trusted local workspace through the shared execution
+policy with a hard wall-clock timeout (default 30s). File-overlay runs cannot
+start processes; a working directory is not an operating-system sandbox.
 
 P1-3 — check_subagent richer state
 ----------------------------------
@@ -31,14 +31,13 @@ ride along so the v1.5.0 five-point propagation contract holds.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
-import os
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
+from ...execution import communicate_bounded, spawn_shell
 from .base import Tool, ToolResult, register_tool
 
 logger = logging.getLogger(__name__)
@@ -119,38 +118,6 @@ def _workspace_root() -> Path | None:
     return current_root()
 
 
-async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
-    """Kill the shell *and* its children.
-
-    On Windows a bare ``proc.kill()`` only kills the wrapper shell; the
-    wrapped child inherits the stdout/stderr pipe handles, so
-    ``proc.wait()`` then blocks until the orphan exits on its own (a
-    ``sleep(5)`` verifier held the wall clock for its full 5s in the
-    regression test). Windows uses ``taskkill /F /T`` (same remedy as
-    ``terminal.py``); POSIX kills the process group when the spawn
-    opened a new session, falling back to a single kill.
-    """
-    if proc.returncode is not None:
-        return
-    if os.name == "nt":
-        killer = await asyncio.create_subprocess_exec(
-            "taskkill",
-            "/F",
-            "/T",
-            "/PID",
-            str(proc.pid),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        with contextlib.suppress(Exception):
-            await killer.wait()
-    else:
-        with contextlib.suppress(Exception):
-            os.killpg(os.getpgid(proc.pid), 9)
-        with contextlib.suppress(Exception):
-            proc.kill()
-
-
 @register_tool
 class VerifySubagentTool(Tool):
     """Run a headless verification command and return pass/fail.
@@ -168,7 +135,7 @@ class VerifySubagentTool(Tool):
         "Runs ``command`` via subprocess inside the workspace root and "
         "returns pass/fail plus captured stdout/stderr. Use to syntax-check "
         "JS/Python, run pytest, or any other shell-runnable check. "
-        "The command is sandboxed to the workspace (paths are resolved "
+        "The command runs in the trusted local workspace (paths are resolved "
         "relative to the workspace root) and timed out at ``timeout_s``."
     )
     parameters = {
@@ -229,33 +196,17 @@ class VerifySubagentTool(Tool):
             timeout = 30.0
         run_id = f"verify_{uuid.uuid4().hex[:8]}"
         try:
-            spawn_kwargs: dict[str, Any] = {}
-            # New session on POSIX so _kill_process_tree can signal the
-            # whole group; the flag is a no-op on Windows.
-            if os.name != "nt":
-                spawn_kwargs["start_new_session"] = True
-            proc = await asyncio.create_subprocess_shell(
-                command,
-                cwd=str(workdir),
-                stdout=asyncio.subprocess.PIPE,
+            proc = await spawn_shell(
+                command, cwd=str(workdir), stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
-                **spawn_kwargs,
             )
         except Exception as exc:
             return ToolResult.fail(f"failed to start verifier: {exc}")
         start = time.time()
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
-            )
+            captured = await communicate_bounded(proc, timeout=timeout, limit=20_000)
+            stdout_b, stderr_b = captured.stdout, captured.stderr
         except TimeoutError:
-            with contextlib.suppress(Exception):
-                await _kill_process_tree(proc)
-            # Reap the killed process — an un-awaited child can leave a
-            # zombie / hold the pipe handles open on Windows.
-            with contextlib.suppress(Exception):
-                await proc.wait()
             return ToolResult.fail(
                 f"verifier timed out after {timeout}s",
                 output={

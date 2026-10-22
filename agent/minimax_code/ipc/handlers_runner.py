@@ -8,12 +8,14 @@ settings into a concrete command line.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
+from ..execution import capture_output, spawn_exec, spawn_shell
 from .handler_utils import HandlerError
 from .handlers_terminal import default_working_directory, start_terminal_command
 from .protocol import INVALID_PARAMS
@@ -37,30 +39,26 @@ def _shell_command(args: list[str]) -> str:
     return shlex.join(args)
 
 
-def _run_probe(path: str, args: list[str]) -> tuple[bool, str | None, str | None]:
+async def _run_probe(path: str, args: list[str]) -> tuple[bool, str | None, str | None]:
     command = [path, *args]
     try:
         is_cmd = Path(path).suffix.lower() in {".cmd", ".bat"}
-        result = subprocess.run(
-            _shell_command(command) if is_cmd else command,
-            shell=is_cmd,
-            capture_output=True,
-            text=True,
-            timeout=_PROBE_TIMEOUT_S,
-            check=False,
-        )
+        streams = {"stdout": asyncio.subprocess.PIPE, "stderr": asyncio.subprocess.PIPE}
+        proc = (await spawn_shell(_shell_command(command), **streams) if is_cmd
+                else await spawn_exec(*command, **streams))
+        stdout, stderr = await capture_output(proc, timeout=_PROBE_TIMEOUT_S)
     except PermissionError as exc:
         return False, None, f"not runnable: {exc.strerror or 'permission denied'}"
     except Exception as exc:
         return False, None, f"not runnable: {exc}"
-    text = (result.stdout or result.stderr or "").strip()
+    text = (stdout or stderr).decode("utf-8", errors="replace").strip()
     version = text.splitlines()[0].strip() if text else None
-    if result.returncode != 0:
-        return False, version, text or f"probe exited with code {result.returncode}"
+    if proc.returncode != 0:
+        return False, version, text or f"probe exited with code {proc.returncode}"
     return True, version, None
 
 
-def _runner_entry(
+async def _runner_entry(
     *,
     id: str,
     label: str,
@@ -93,7 +91,7 @@ def _runner_entry(
             "supports_prompt": supports_prompt,
             "supports_terminal": True,
         }
-    ok, version, reason = _run_probe(path, version_args or ["--version"])
+    ok, version, reason = await _run_probe(path, version_args or ["--version"])
     return {
         "id": id,
         "label": label,
@@ -107,8 +105,8 @@ def _runner_entry(
     }
 
 
-def _runner_catalog() -> list[dict[str, Any]]:
-    return [
+async def _runner_catalog() -> list[dict[str, Any]]:
+    return list(await asyncio.gather(
         _runner_entry(
             id="native",
             label="Native shell",
@@ -130,7 +128,7 @@ def _runner_catalog() -> list[dict[str, Any]]:
             version_args=["--version"],
             supports_prompt=True,
         ),
-    ]
+    ))
 
 
 def _require_params(params: Any) -> dict[str, Any]:
@@ -143,7 +141,7 @@ def _runner_id_from_params(params: dict[str, Any]) -> str:
     runner_id = params.get("runner_id", "native")
     if not isinstance(runner_id, str) or not runner_id:
         raise HandlerError(INVALID_PARAMS, "'runner_id' must be a non-empty string")
-    known = {runner["id"] for runner in _runner_catalog()}
+    known = {"native", "codex-cli", "claude-code-cli"}
     if runner_id not in known:
         raise HandlerError(INVALID_PARAMS, f"unknown runner_id: {runner_id!r}")
     return runner_id
@@ -254,7 +252,7 @@ def register_runner_handlers(server: Any) -> None:
 
     async def handle_list(params: Any, ctx: Context) -> None:
         try:
-            await ctx.reply({"runners": _runner_catalog()})
+            await ctx.reply({"runners": await _runner_catalog()})
         except Exception as exc:
             await ctx.reply_error(_RUNNER_ERROR, "runner.list failed", {"error": str(exc)})
 
@@ -262,7 +260,11 @@ def register_runner_handlers(server: Any) -> None:
         try:
             p = _require_params(params)
             runner_id = _runner_id_from_params(p)
-            runner = next(item for item in _runner_catalog() if item["id"] == runner_id)
+            if runner_id == "native":
+                runner = await _runner_entry(id="native", label="Native shell", command_name=None,
+                                             version_args=None, supports_prompt=False)
+            else:
+                runner = next(item for item in await _runner_catalog() if item["id"] == runner_id)
             if runner_id != "native" and not runner["available"]:
                 raise HandlerError(
                     _RUNNER_ERROR,

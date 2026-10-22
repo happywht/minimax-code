@@ -28,6 +28,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from ...execution import capture_output, is_read_only, spawn_exec
 from ...workspace_ctx import current_sandbox
 from .base import Tool, ToolResult, register_tool
 from .file_ops import PathSecurityError, safe_resolve
@@ -107,7 +108,7 @@ class SearchFilesTool(Tool):
         # sandbox mirrors, so the fast path would silently miss the
         # sub-agent's own writes.
         sandbox = current_sandbox()
-        if shutil.which("rg") and sandbox is None:
+        if shutil.which("rg") and sandbox is None and not is_read_only():
             try:
                 return await _rg_search(
                     pattern=pattern,
@@ -164,8 +165,9 @@ async def _rg_search(
         cmd[-1] = str(single_file)
 
     try:
-        proc = await asyncio.create_subprocess_exec(
+        proc = await spawn_exec(
             *cmd,
+            cwd=root,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -173,12 +175,8 @@ async def _rg_search(
         return ToolResult.fail("ripgrep disappeared mid-flight")
 
     try:
-        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=60)
+        stdout_b, stderr_b = await capture_output(proc, timeout=60)
     except TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
         return ToolResult.fail("ripgrep timed out after 60s")
 
     if proc.returncode not in (0, 1):  # 1 == "no matches"

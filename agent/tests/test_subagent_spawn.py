@@ -126,12 +126,13 @@ def _unique(prefix: str = "ag") -> str:
 
 @pytest.mark.asyncio
 async def test_spawn_subagent_emits_progress_stream(
-    handlers: dict[str, Any], agent_dao: AgentDAO
+    handlers: dict[str, Any], agent_dao: AgentDAO, bind_test_sessions
 ) -> None:
     name = _unique("happy")
     await agent_dao.upsert(name=name, system_prompt="x")
     ctx = _FakeContext()
     parent_sid = f"ses_{uuid.uuid4().hex[:8]}"
+    bind_test_sessions(parent_sid)
     ctx_mid = f"msg_{uuid.uuid4().hex[:8]}"
     await handlers["agent.spawn_subagent"](
         {

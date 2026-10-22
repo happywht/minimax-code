@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AGENT_BASE, AGENT_PORT, WEB_BASE } from "./runtime-config";
+import { AGENT_BASE, AGENT_PORT, WEB_BASE, E2E_AUTH_TOKEN } from "./runtime-config";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -125,6 +125,7 @@ function spawnAgent(): ChildProcess {
       MINIMAX_CODE_HTTP_PORT: String(AGENT_PORT),
       MINIMAX_CODE_CORS_ORIGINS: WEB_BASE,
       MINIMAX_CODE_FORCE_MOCK: "1",
+      MINIMAX_CODE_AUTH_TOKEN: E2E_AUTH_TOKEN,
       // Never read or spend a developer's credential-store API key.
       MINIMAX_API_KEY: "",
       PYTHON_KEYRING_BACKEND: "keyring.backends.null.Keyring",

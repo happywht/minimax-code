@@ -35,6 +35,8 @@ export function MessageInput({
   const status = useChat((s) => s.status);
   const send = useChat((s) => s.send);
   const cancel = useChat((s) => s.cancel);
+  const executionMode = useChat((s) => s.executionMode);
+  const setExecutionMode = useChat((s) => s.setExecutionMode);
   const sessionId = useSessionStore((s) => s.currentSessionId);
 
   const draft = useComposerDraft(sessionId);
@@ -242,6 +244,20 @@ export function MessageInput({
           agentsError={mention.agentsError}
           onSelect={(option) => void mention.select(option)}
         />
+        <label className="flex items-center gap-2 px-2 text-xs text-minimax-text-secondary">
+          任务模式
+          <select
+            aria-label="任务模式"
+            data-testid="execution-mode"
+            value={executionMode}
+            disabled={disabled}
+            onChange={(event) => setExecutionMode(event.target.value as "execute" | "plan")}
+            className="rounded border bg-transparent px-2 py-1"
+          >
+            <option value="execute">执行</option>
+            <option value="plan">只读规划</option>
+          </select>
+        </label>
         <ComposerToolbar
           valueLength={draft.value.length}
           overLimit={draft.overLimit}

@@ -72,7 +72,7 @@ CORS_ALLOW_ORIGINS: list[str] = [
     "http://127.0.0.1:5173",
 ]
 CORS_ALLOW_METHODS: list[str] = ["GET", "POST"]
-CORS_ALLOW_HEADERS: list[str] = ["Content-Type", "Authorization"]
+CORS_ALLOW_HEADERS: list[str] = ["Content-Type", "Authorization", "X-Minimax-Client"]
 
 # Maximum request body size for POST /rpc (10 MB).
 # Prevents OOM from oversized payloads.
@@ -539,6 +539,9 @@ def build_app(
         lifespan=lifespan,
     )
 
+    from .http_security import install_application_auth
+
+    install_application_auth(app, _cors_allow_origins())
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_allow_origins(),
@@ -685,6 +688,7 @@ def build_app(
         data_dir = default_data_dir()
         return {
             "ok": True,
+            "auth_required": True,
             "db": db_ok,
             "version": app_version,
             "uptime_s": int(time.time() - started_at),

@@ -13,6 +13,10 @@
     "lint": "pnpm --filter @minimax/web lint",
     "test": "pnpm --filter @minimax/web test",
     "test:e2e": "playwright test",
+    "verify:baseline": "node scripts/verify.mjs --suite=baseline --repeat=3",
+    "verify:core": "node scripts/verify.mjs --suite=core",
+    "verify:replay": "node scripts/verify.mjs --suite=replay",
+    "verify:full": "node scripts/verify.mjs --suite=full",
     "py:install": "cd agent && uv sync",
     "py:run": "cd agent && uv run python -m minimax_code",
     "py:test": "cd agent && uv run pytest"

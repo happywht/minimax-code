@@ -78,12 +78,18 @@ class FakeToolRegistry:
 
 
 @pytest.fixture
-def client() -> IPCClient:
+def client(monkeypatch) -> IPCClient:
+    from unittest.mock import AsyncMock
+
     dao = FakeMcpServersDAO()
     registry = MCPRegistry(FakeToolRegistry())
+    # Handler CRUD tests must not launch npx or depend on installed servers.
+    monkeypatch.setattr(registry, "add_server", AsyncMock(side_effect=RuntimeError("offline fixture")))
     app.set_mcp_servers_dao(dao)
     app.set_mcp_registry(registry)
-    return IPCClient()
+    yield IPCClient()
+    app.set_mcp_servers_dao(None)
+    app.set_mcp_registry(None)
 
 
 @pytest.mark.asyncio

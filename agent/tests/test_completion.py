@@ -197,6 +197,7 @@ class TestCompletionRoute:
         async with AsyncClient(
             transport=ASGITransport(app=_app),
             base_url="http://test",
+            headers={"Authorization": f"Bearer {_app.state.auth.token}"},
         ) as client:
             resp = await client.post(
                 "/complete",
@@ -221,6 +222,7 @@ class TestCompletionRoute:
         async with AsyncClient(
             transport=ASGITransport(app=_app),
             base_url="http://test",
+            headers={"Authorization": f"Bearer {_app.state.auth.token}"},
         ) as client:
             resp = await client.post(
                 "/complete",
@@ -236,6 +238,7 @@ class TestCompletionRoute:
         async with AsyncClient(
             transport=ASGITransport(app=_app),
             base_url="http://test",
+            headers={"Authorization": f"Bearer {_app.state.auth.token}"},
         ) as client:
             resp = await client.post(
                 "/complete",
@@ -252,6 +255,7 @@ class TestCompletionRoute:
         async with AsyncClient(
             transport=ASGITransport(app=_app),
             base_url="http://test",
+            headers={"Authorization": f"Bearer {_app.state.auth.token}"},
         ) as client:
             resp = await client.post(
                 "/complete",

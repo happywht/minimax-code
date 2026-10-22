@@ -37,5 +37,9 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: "./tests/setup.ts",
+    // Each worker owns a jsdom + markdown module graph. Unbounded workers on
+    // high-core machines contend on cold transforms and starve DOM deadlines.
+    maxWorkers: 4,
+    minWorkers: 1,
   },
 });

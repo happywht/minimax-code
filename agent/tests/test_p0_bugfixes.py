@@ -377,7 +377,7 @@ async def test_rpc_rejects_oversized_body():
     body = json.dumps(huge_payload).encode()
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", headers={"Authorization": f"Bearer {app.state.auth.token}"}) as client:
         resp = await client.post(
             "/rpc",
             content=body,
@@ -404,7 +404,7 @@ async def test_rpc_accepts_normal_body():
     payload = {"jsonrpc": "2.0", "method": "ping", "id": 1}
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", headers={"Authorization": f"Bearer {app.state.auth.token}"}) as client:
         resp = await client.post(
             "/rpc",
             json=payload,
@@ -421,10 +421,12 @@ async def test_rpc_accepts_normal_body():
 
 
 @pytest.mark.asyncio
-async def test_send_message_reuses_subagent_llm():
+async def test_send_message_reuses_subagent_llm(bind_test_sessions):
     """agent.send_message must use get_subagent_llm() singleton,
     NOT create a fresh MiniMaxClient() per request."""
     from unittest.mock import MagicMock, patch
+
+    bind_test_sessions("ses_test123")
 
     fake_llm = MagicMock()
     fake_llm.mock = True
@@ -451,7 +453,6 @@ async def test_send_message_reuses_subagent_llm():
             # All lazy imports in builtins.py use ``from ..app import ...``
             # so we patch at the source module.
             patch("minimax_code.app.init_runtime", return_value=MagicMock()),
-            patch("minimax_code.app.get_sessions_dao", return_value=None),
             patch("minimax_code.app.get_db", return_value=_make_fake_db()),
             patch(
                 "minimax_code.storage.dao.runs.AgentRunsDAO",
@@ -480,9 +481,11 @@ async def test_send_message_reuses_subagent_llm():
 
 
 @pytest.mark.asyncio
-async def test_send_message_falls_back_to_default_llm():
+async def test_send_message_falls_back_to_default_llm(bind_test_sessions):
     """When get_subagent_llm() returns None, handler must create MiniMaxClient()."""
     from unittest.mock import MagicMock, patch
+
+    bind_test_sessions("ses_fb")
 
     with patch("minimax_code.app.get_subagent_llm", return_value=None):
         from minimax_code.ipc.builtins import handle_agent_send_message
@@ -503,7 +506,6 @@ async def test_send_message_falls_back_to_default_llm():
 
         with (
             patch("minimax_code.app.init_runtime", return_value=MagicMock()),
-            patch("minimax_code.app.get_sessions_dao", return_value=None),
             patch("minimax_code.app.get_db", return_value=_make_fake_db()),
             patch(
                 "minimax_code.storage.dao.runs.AgentRunsDAO",

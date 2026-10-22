@@ -65,6 +65,8 @@ testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
     "security: security-regression suite (R19) — run with `uv run pytest -m security`",
+    "live: real external service/model test; skipped unless --run-live is supplied",
+    "replay: offline wire-format replay through a real protocol SDK",
 ]
 
 [tool.ruff]

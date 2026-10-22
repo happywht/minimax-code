@@ -489,15 +489,16 @@ class TestProjectScope:
         assert ctx.reply_payload["clean"] is True
 
     @pytest.mark.asyncio
-    async def test_unknown_project_keeps_legacy_behaviour(self, rooted) -> None:
+    async def test_unknown_project_cannot_redirect_to_explicit_cwd(self, rooted) -> None:
         repo_a, repo_b = rooted
         handler, ctx = _make_handler(repo_a, "git.diff")
         await handler(
             {"project_id": "does-not-exist", "cwd": str(repo_b), "scope": "staged"},
             ctx,
         )
-        assert ctx.reply_error_payload is None
-        assert ctx.reply_payload["diff"] == ""
+        assert ctx.reply_error_payload is not None
+        assert ctx.reply_error_payload[0] == -32602
+        assert "no longer exists" in ctx.reply_error_payload[1]
 
 
 # ---------------------------------------------------------------------------
@@ -590,3 +591,14 @@ class TestReviewDiff:
         assert stats["files"] == 1
         assert stats["additions"] == 1
         assert stats["deletions"] == 2
+
+
+@pytest.mark.parametrize("ref", ["--output=TARGET", "--ext-diff", "-R", ""])
+async def test_diff_ref_cannot_be_a_command_option(repo, tmp_path, ref):
+    target = tmp_path / "preserve.txt"
+    target.write_text("user data", encoding="utf-8")
+    handler, ctx = _make_handler(repo, "git.diff")
+    await handler({"cwd": str(repo), "ref": ref.replace("TARGET", str(target))}, ctx)
+    assert ctx.reply_payload is None
+    assert ctx.reply_error_payload[0] == -32602
+    assert target.read_text(encoding="utf-8") == "user data"

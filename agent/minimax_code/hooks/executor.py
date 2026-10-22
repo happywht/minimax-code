@@ -11,9 +11,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from dataclasses import dataclass
 
+from ..execution import communicate_bounded, spawn_exec
 from .types import HookConfig, HookContext, HookDecision
 
 logger = logging.getLogger(__name__)
@@ -40,37 +40,30 @@ class HookExecutor:
     """Runs hooks as child processes. Always fail-open."""
 
     async def run(self, hook: HookConfig, context: HookContext) -> HookExecutionResult:
-        env = dict(os.environ)
-        if hook.env:
-            env.update(hook.env)
         stdin_payload = (
             context.model_dump_json().encode("utf-8") if hook.pass_stdin else None
         )
         try:
-            proc = await asyncio.create_subprocess_exec(
+            proc = await spawn_exec(
                 *hook.command,
-                stdin=asyncio.subprocess.PIPE if stdin_payload is not None else None,
+                stdin=asyncio.subprocess.PIPE if stdin_payload is not None else asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=env,
+                env=hook.env,
+                cwd=context.cwd,
             )
         except (OSError, ValueError) as exc:
             label = hook.command[0] if hook.command else "<empty>"
             logger.warning("hook %s failed to spawn: %s", label, exc)
             return HookExecutionResult(error=f"spawn failed: {exc}")
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(
-                proc.communicate(input=stdin_payload),
-                timeout=hook.timeout,
-            )
+            captured = await communicate_bounded(proc, input=stdin_payload, timeout=hook.timeout, limit=64 * 1024)
+            stdout_b, stderr_b = captured.stdout, captured.stderr
         except TimeoutError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            await proc.wait()
             logger.warning("hook %s timed out after %ss", hook.command, hook.timeout)
             return HookExecutionResult(timed_out=True)
+        if captured.stdout_truncated or captured.stderr_truncated:
+            return HookExecutionResult(exit_code=proc.returncode, error="hook output limit exceeded")
         result = HookExecutionResult(
             exit_code=proc.returncode,
             stdout=stdout_b.decode("utf-8", errors="replace"),

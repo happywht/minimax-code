@@ -18,18 +18,12 @@ v0.5.0 hardening
   processes at once.
 * Argument count and length limits — ``_MAX_ARGS``, ``_MAX_ARG_LEN``.
 
-v1.6.0 sandbox escape detection
--------------------------------
-A sandboxed sub-agent (``spawn_subagent(sandbox=True)``) can still
-shell out and write the *shared workspace* directly — exec has no
-write-redirection layer. Those writes are invisible to
-``collect_subagent``'s three-way compare, so without this detector
-they silently bypass the merge. When (and only when) the caller runs
-inside a sandbox, the tool snapshots the workspace before/after the
-child, diffs the two, subtracts writes the fs-bus attributes to other
-actors, and reports the remainder as an advisory
-``sandbox_escape`` block. Main-agent calls pay zero overhead: the
-snapshot walk never runs outside a sandbox.
+M1 file-overlay boundary
+------------------------
+File-overlay runs cannot start processes. The old v1.6.0 snapshot helpers
+remain available for diagnostics but are no longer a protection mechanism.
+Windows processes use kill-on-close Jobs; POSIX processes use their own
+session. Neither mechanism restricts file or network access.
 
 Streaming model
 ---------------
@@ -54,6 +48,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from ...execution import communicate_bounded, spawn_exec
 from ...workspace_ctx import current_run_id, current_sandbox
 from .base import Tool, ToolResult, register_tool
 from .file_ops import PathSecurityError, _default_workspace, safe_resolve
@@ -518,12 +513,9 @@ class ExecCommandTool(Tool):
         "shell interpolation); arguments are passed as a list. Use 'cwd' "
         "to scope the working directory and 'env' to inject extra "
         "environment variables. Default timeout is 30 seconds; hard cap "
-        "is 10 minutes. Output is capped at 5 MiB per stream. NOTE: in a "
-        "sandboxed run, files written by the child land in the shared "
-        "workspace directly (not the sandbox) and will NOT be merged by "
-        "collect_subagent — write deliverables with write_file instead; "
-        "any workspace writes detected here come back as a sandbox_escape "
-        "warning."
+        "is 10 minutes. Output is capped at 5 MiB per stream. Processes "
+        "are unavailable in file-overlay sub-agent runs because overlays "
+        "cannot isolate shell writes; use file tools for those tasks."
     )
     parameters = {
         "type": "object",
@@ -553,6 +545,11 @@ class ExecCommandTool(Tool):
     }
 
     async def run(self, **kwargs: Any) -> ToolResult:
+        if current_sandbox() is not None:
+            return ToolResult.fail(
+                "Processes cannot run in a file overlay: it does not isolate shell writes. "
+                "Use file tools, or run the command in an independent workspace."
+            )
         cmd = kwargs.get("cmd")
         if not isinstance(cmd, list) or not cmd:
             return ToolResult.fail("'cmd' must be a non-empty list of strings")
@@ -612,13 +609,12 @@ class ExecCommandTool(Tool):
         async with _PROCESS_SEMAPHORE:
             started = time.monotonic()
             try:
-                proc = await asyncio.create_subprocess_exec(
+                proc = await spawn_exec(
                     *cmd,
                     cwd=str(cwd) if cwd else None,
                     env=child_env,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    **_child_spawn_kwargs(),
                 )
             except FileNotFoundError as exc:
                 return ToolResult.fail(f"command not found: {exc}")
@@ -628,28 +624,14 @@ class ExecCommandTool(Tool):
                 return ToolResult.fail(f"failed to spawn: {exc}")
 
             try:
-                stdout_b, stderr_b = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
+                captured = await communicate_bounded(proc, timeout=timeout, limit=_MAX_OUTPUT_BYTES)
+                stdout_b, stderr_b = captured.stdout, captured.stderr
+                truncated_stdout, truncated_stderr = captured.stdout_truncated, captured.stderr_truncated
                 timed_out = False
             except TimeoutError:
                 timed_out = True
-                # v1.2.2: kill the whole tree — grandchildren used to
-                # survive a plain proc.kill() and stay orphaned.
-                await _signal_process_tree(proc, _SIGKILL)
-                try:
-                    stdout_b, stderr_b = await proc.communicate()
-                except Exception:  # pragma: no cover — defensive
-                    stdout_b, stderr_b = b"", b""
-
-        truncated_stdout = False
-        truncated_stderr = False
-        if len(stdout_b) > _MAX_OUTPUT_BYTES:
-            stdout_b = stdout_b[:_MAX_OUTPUT_BYTES]
-            truncated_stdout = True
-        if len(stderr_b) > _MAX_OUTPUT_BYTES:
-            stderr_b = stderr_b[:_MAX_OUTPUT_BYTES]
-            truncated_stderr = True
+                stdout_b, stderr_b = b"", b""
+                truncated_stdout = truncated_stderr = False
 
         stdout = stdout_b.decode("utf-8", errors="replace")
         stderr = stderr_b.decode("utf-8", errors="replace")

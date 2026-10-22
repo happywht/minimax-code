@@ -12,11 +12,10 @@ from __future__ import annotations
 import logging
 import os
 import re
-import subprocess
 from typing import Any
 
 from .handler_utils import HandlerError
-from .handlers_git import _GIT_ERROR, _GIT_TIMEOUT_S, _run_git, _scoped_cwd
+from .handlers_git import _GIT_ERROR, _run_git, _scoped_cwd, _validate_ref
 from .protocol import INVALID_PARAMS
 from .server import Context
 
@@ -36,9 +35,10 @@ def _diff_args(params: dict[str, Any]) -> tuple[list[str], str, str | None]:
     if ref is not None and not isinstance(ref, str):
         raise HandlerError(INVALID_PARAMS, "'ref' must be a string when provided")
 
-    base_args = ["diff", "--no-color", "-M"]
+    _validate_ref(ref)
+    base_args = ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "-M"]
     if ref is not None:
-        return [*base_args, ref], ref, ref
+        return [*base_args, ref, "--"], ref, ref
     if scope == "staged":
         return [*base_args, "--staged"], scope, None
     if scope == "branch":
@@ -53,9 +53,9 @@ def _diff_args(params: dict[str, Any]) -> tuple[list[str], str, str | None]:
 
 def _operation_diff_args(scope: str) -> list[str]:
     if scope == "working":
-        return ["diff", "--no-color", "-M"]
+        return ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "-M"]
     if scope == "staged":
-        return ["diff", "--no-color", "-M", "--staged"]
+        return ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "-M", "--staged"]
     raise HandlerError(
         INVALID_PARAMS,
         "hunk operations only support scope 'working' or 'staged'",
@@ -360,7 +360,7 @@ def _find_file(parsed: dict[str, Any], *, file_path: str) -> dict[str, Any]:
     raise HandlerError(INVALID_PARAMS, "file_path was not found in the current diff")
 
 
-def _apply_file_patch(
+async def _apply_file_patch(
     patch: str,
     *,
     cwd: str | os.PathLike[str] | None,
@@ -375,45 +375,13 @@ def _apply_file_patch(
     del scope  # scope is validated by callers; target is always the index
     check_args = ["apply", "--cached", "--check", "--whitespace=nowarn", "-"]
     apply_args = ["apply", "--cached", "--whitespace=nowarn", "-"]
-    _run_git_with_input(check_args, cwd=cwd, stdin_text=patch)
-    _run_git_with_input(apply_args, cwd=cwd, stdin_text=patch)
+    (await _run_git_with_input(check_args, cwd=cwd, stdin_text=patch))
+    (await _run_git_with_input(apply_args, cwd=cwd, stdin_text=patch))
 
 
-def _run_git_with_input(
-    args: list[str],
-    *,
-    cwd: str | os.PathLike[str] | None,
-    stdin_text: str,
-) -> str:
-    cmd = ["git", *args]
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=cwd,
-            input=stdin_text.encode("utf-8"),
-            capture_output=True,
-            timeout=_GIT_TIMEOUT_S,
-            check=False,
-        )
-    except FileNotFoundError as exc:  # pragma: no cover
-        raise HandlerError(_GIT_ERROR, "git binary not found on PATH", data={"cmd": cmd}) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise HandlerError(
-            _GIT_ERROR,
-            f"git {' '.join(args)} timed out after {_GIT_TIMEOUT_S}s",
-            data={"cmd": cmd, "timeout_s": _GIT_TIMEOUT_S},
-        ) from exc
-
-    if proc.returncode != 0:
-        stderr = proc.stderr.decode("utf-8", errors="replace").strip()
-        if not stderr:
-            stderr = "git failed with no stderr"
-        raise HandlerError(
-            _GIT_ERROR,
-            stderr,
-            data={"cmd": cmd, "returncode": proc.returncode},
-        )
-    return proc.stdout.decode("utf-8", errors="replace")
+async def _run_git_with_input(args: list[str], *, cwd: str | os.PathLike[str] | None,
+                              stdin_text: str) -> str:
+    return (await _run_git(args, cwd=cwd, input_bytes=stdin_text.encode("utf-8")))
 
 
 def _operation_result(
@@ -440,7 +408,7 @@ def register_patch_handlers(server: Any) -> None:
             p = params if isinstance(params, dict) else {}
             cwd = await _scoped_cwd(p)
             cmd, scope, ref = _diff_args(p)
-            diff_text = _run_git(cmd, cwd=cwd)
+            diff_text = (await _run_git(cmd, cwd=cwd))
             parsed = parse_unified_diff(diff_text)
             await ctx.reply(
                 {
@@ -466,7 +434,7 @@ def register_patch_handlers(server: Any) -> None:
                 raise HandlerError(INVALID_PARAMS, "'scope' must be a string when provided")
             file_path = _required_str(p, "file_path")
             hunk_index = _required_int(p, "hunk_index")
-            diff_text = _run_git(_operation_diff_args(scope), cwd=cwd)
+            diff_text = (await _run_git(_operation_diff_args(scope), cwd=cwd))
             file, hunk = _find_hunk(
                 parse_unified_diff(diff_text),
                 file_path=file_path,
@@ -475,12 +443,12 @@ def register_patch_handlers(server: Any) -> None:
             )
             patch = _single_hunk_patch(file, hunk)
             args = ["apply", "--cached", "--check", "--whitespace=nowarn", "-"]
-            _run_git_with_input(args, cwd=cwd, stdin_text=patch)
-            _run_git_with_input(
+            (await _run_git_with_input(args, cwd=cwd, stdin_text=patch))
+            (await _run_git_with_input(
                 ["apply", "--cached", "--whitespace=nowarn", "-"],
                 cwd=cwd,
                 stdin_text=patch,
-            )
+            ))
             await ctx.reply(
                 _operation_result(
                     operation="apply_hunk",
@@ -504,7 +472,7 @@ def register_patch_handlers(server: Any) -> None:
                 raise HandlerError(INVALID_PARAMS, "'scope' must be a string when provided")
             file_path = _required_str(p, "file_path")
             hunk_index = _required_int(p, "hunk_index")
-            diff_text = _run_git(_operation_diff_args(scope), cwd=cwd)
+            diff_text = (await _run_git(_operation_diff_args(scope), cwd=cwd))
             file, hunk = _find_hunk(
                 parse_unified_diff(diff_text),
                 file_path=file_path,
@@ -517,8 +485,8 @@ def register_patch_handlers(server: Any) -> None:
             if scope == "staged":
                 args.insert(1, "--cached")
                 run_args.insert(1, "--cached")
-            _run_git_with_input(args, cwd=cwd, stdin_text=patch)
-            _run_git_with_input(run_args, cwd=cwd, stdin_text=patch)
+            (await _run_git_with_input(args, cwd=cwd, stdin_text=patch))
+            (await _run_git_with_input(run_args, cwd=cwd, stdin_text=patch))
             await ctx.reply(
                 _operation_result(
                     operation="revert_hunk",
@@ -546,10 +514,10 @@ def register_patch_handlers(server: Any) -> None:
                     "apply_file only supports scope 'working' or 'staged'",
                 )
             file_path = _required_str(p, "file_path")
-            diff_text = _run_git(_operation_diff_args(scope), cwd=cwd)
+            diff_text = (await _run_git(_operation_diff_args(scope), cwd=cwd))
             file = _find_file(parse_unified_diff(diff_text), file_path=file_path)
             patch = _full_file_patch(file)
-            _apply_file_patch(patch, cwd=cwd, scope=scope)
+            (await _apply_file_patch(patch, cwd=cwd, scope=scope))
             await ctx.reply(
                 {
                     "ok": True,
@@ -576,7 +544,7 @@ def register_patch_handlers(server: Any) -> None:
                     INVALID_PARAMS,
                     "apply_all only supports scope 'working' or 'staged'",
                 )
-            diff_text = _run_git(_operation_diff_args(scope), cwd=cwd)
+            diff_text = (await _run_git(_operation_diff_args(scope), cwd=cwd))
             parsed = parse_unified_diff(diff_text)
             applied: list[str] = []
             failed: list[dict[str, Any]] = []
@@ -588,7 +556,7 @@ def register_patch_handlers(server: Any) -> None:
                     continue
                 try:
                     patch = _full_file_patch(file)
-                    _apply_file_patch(patch, cwd=cwd, scope=scope)
+                    (await _apply_file_patch(patch, cwd=cwd, scope=scope))
                     applied.append(path)
                 except HandlerError as exc:
                     failed.append({"file_path": path, "error": exc.message})
@@ -620,7 +588,7 @@ def register_patch_handlers(server: Any) -> None:
                     "revert_file only supports scope 'working' or 'staged'",
                 )
             file_path = _required_str(p, "file_path")
-            diff_text = _run_git(_operation_diff_args(scope), cwd=cwd)
+            diff_text = (await _run_git(_operation_diff_args(scope), cwd=cwd))
             file = _find_file(parse_unified_diff(diff_text), file_path=file_path)
             patch = _full_file_patch(file)
             check_args = ["apply", "--reverse", "--check", "--whitespace=nowarn", "-"]
@@ -628,8 +596,8 @@ def register_patch_handlers(server: Any) -> None:
             if scope == "staged":
                 check_args.insert(1, "--cached")
                 run_args.insert(1, "--cached")
-            _run_git_with_input(check_args, cwd=cwd, stdin_text=patch)
-            _run_git_with_input(run_args, cwd=cwd, stdin_text=patch)
+            (await _run_git_with_input(check_args, cwd=cwd, stdin_text=patch))
+            (await _run_git_with_input(run_args, cwd=cwd, stdin_text=patch))
             await ctx.reply(
                 {
                     "ok": True,
@@ -656,7 +624,7 @@ def register_patch_handlers(server: Any) -> None:
                     INVALID_PARAMS,
                     "revert_all only supports scope 'working' or 'staged'",
                 )
-            diff_text = _run_git(_operation_diff_args(scope), cwd=cwd)
+            diff_text = (await _run_git(_operation_diff_args(scope), cwd=cwd))
             parsed = parse_unified_diff(diff_text)
             reverted: list[str] = []
             failed: list[dict[str, Any]] = []
@@ -679,8 +647,8 @@ def register_patch_handlers(server: Any) -> None:
                     if scope == "staged":
                         check_args.insert(1, "--cached")
                         run_args.insert(1, "--cached")
-                    _run_git_with_input(check_args, cwd=cwd, stdin_text=patch)
-                    _run_git_with_input(run_args, cwd=cwd, stdin_text=patch)
+                    (await _run_git_with_input(check_args, cwd=cwd, stdin_text=patch))
+                    (await _run_git_with_input(run_args, cwd=cwd, stdin_text=patch))
                     reverted.append(path)
                 except HandlerError as exc:
                     failed.append({"file_path": path, "error": exc.message})
@@ -703,15 +671,15 @@ def register_patch_handlers(server: Any) -> None:
         try:
             p = params if isinstance(params, dict) else {}
             cwd = await _scoped_cwd(p)
-            status_text = _run_git(["status", "--porcelain"], cwd=cwd)
+            status_text = (await _run_git(["status", "--porcelain"], cwd=cwd))
             if not status_text.strip():
                 await ctx.reply({"ok": True, "snapshot_ref": None, "clean": True})
                 return
-            _run_git(
+            (await _run_git(
                 ["stash", "push", "-u", "-m", "MiniMax Code patch snapshot"],
                 cwd=cwd,
-            )
-            sha = _run_git(["rev-parse", "-q", "refs/stash"], cwd=cwd).strip()
+            ))
+            sha = (await _run_git(["rev-parse", "-q", "refs/stash"], cwd=cwd)).strip()
             await ctx.reply({"ok": True, "snapshot_ref": sha, "clean": False})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)

@@ -58,6 +58,7 @@ pnpm-debug.log*
 
 # Coverage / test
 coverage/
+.verification/
 .nyc_output/
 
 # Local tool state

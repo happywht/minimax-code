@@ -31,6 +31,8 @@ import { strings } from "../ui/strings";
 export type ChatStatus = "idle" | "sending" | "streaming" | "error" | "cancelling";
 
 export interface ChatState {
+  executionMode: "execute" | "plan";
+  setExecutionMode: (mode: "execute" | "plan") => void;
   messages: Message[];
   status: ChatStatus;
   error: string | null;
@@ -237,6 +239,8 @@ function applyAssistantChunk(
 }
 
 export const useChat = create<ChatState>((set, get) => ({
+  executionMode: "execute",
+  setExecutionMode: (executionMode) => set({ executionMode }),
   messages: [],
   status: "idle",
   error: null,
@@ -476,6 +480,7 @@ export const useChat = create<ChatState>((set, get) => ({
       const result = await typedIPC.sendMessage({
         session_id: sessionId,
         content: wireContent,
+        ...(get().executionMode === "plan" ? { mode: "plan" as const } : {}),
       });
       if (result.session_id && result.session_id !== sessionId) {
         const sessions = useSessionStore.getState();

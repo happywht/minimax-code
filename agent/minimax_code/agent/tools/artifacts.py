@@ -41,7 +41,9 @@ def artifact_dir(run_id: str) -> Path | None:
     root = current_root()
     if root is None:
         return None
-    return (root / ".minimax" / "artifacts" / run_id).resolve()
+    from ...managed_paths import run_data_path
+
+    return run_data_path(root, "artifacts", run_id)
 
 
 def write_brief(
@@ -439,6 +441,8 @@ class ReadArtifactTool(Tool):
             return ToolResult.fail(
                 "no workspace root is active — artifact directory is unavailable"
             )
+        if not base.is_dir():
+            return ToolResult.fail(f"artifact not found for run {rid!r}")
 
         # Containment: anchored at THIS run's directory, traversal and
         # out-of-bounds absolute paths rejected (same checks as the

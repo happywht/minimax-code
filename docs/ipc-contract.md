@@ -348,6 +348,10 @@ Session records may include workspace metadata:
 Creates a Git worktree under the MiniMax Code data directory and persists a
 session bound to that worktree.
 
+When `project_id` is supplied, its bound directory selects the repository.
+An unavailable binding fails with `-32602`; it never falls back to the server
+directory. Unbound inbox sessions retain the configured default repository.
+
 Request:
 
 ```json
@@ -367,9 +371,25 @@ Response:
 
 `workspace.delete_worktree` accepts `{ "session_id": "ses_1234" }`, removes
 only managed worktrees under the data-dir `worktrees/` root, and marks the
-session back to `workspace_mode: "local"`.
+session back to `workspace_mode: "local"`. The target must be a direct child
+of the managed root with no symlink redirection. Git refusal (including dirty,
+untracked or locked worktrees) preserves files and session metadata; there is
+no force-delete fallback.
+
+Git and Patch diff `ref` values must be nonempty revisions and cannot begin
+with `-`; command options such as `--output=...` are rejected with `-32602`.
+Diff previews disable external diff/text conversion commands. Git operations
+share bounded asynchronous process execution; truncated output is an error.
 
 ### 6.1 `agent.send_message` — the streaming example
+
+Optional `mode` is `chat` (legacy default), `execute`, or `plan`. In `plan`,
+the execution policy blocks file mutations, arbitrary subprocesses and tools
+outside the built-in read-only allow-list, including MCP tools and subagent
+spawning. This policy is inherited by async child tasks. The run stores its
+mode and `agent.continue_run` preserves it. A missing explicitly bound project
+or worktree directory rejects the request; it must never fall back to the
+service process directory. Planning is a tool/process policy, not an OS sandbox.
 
 Request:
 ```json

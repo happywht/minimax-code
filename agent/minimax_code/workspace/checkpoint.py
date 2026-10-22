@@ -28,10 +28,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ..execution import capture_output, require_write_access, spawn_exec
+from ..file_mutations import atomic_copy_file
+from ..managed_paths import managed_child
+from ..workspace_ctx import require_directory
 from .types import Checkpoint, CheckpointDiff, CheckpointRestoreResult
 
 logger = logging.getLogger(__name__)
@@ -52,8 +57,8 @@ async def _run_git(
     instead of crashing. Mirrors :func:`minimax_code.agent.self_evolution.runner._run_cmd`.
     """
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "git",
+        proc = await spawn_exec(
+            "git", "--no-pager", "-c", "core.fsmonitor=false",
             *args,
             cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
@@ -65,15 +70,11 @@ async def _run_git(
         return None, "", "", f"could not spawn git: {exc}"
 
     try:
-        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+        out_b, err_b = await capture_output(proc, timeout=timeout_s)
     except TimeoutError:
-        # Kill the runaway process so it doesn't linger as a zombie.
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        await proc.wait()
         return None, "", "", f"git timed out after {timeout_s}s"
+    except RuntimeError as exc:
+        return None, "", "", str(exc)
 
     rc = proc.returncode
     out = out_b.decode("utf-8", errors="replace") if out_b else ""
@@ -113,7 +114,7 @@ class CheckpointManager:
 
     def snapshot_dir(self, checkpoint_id: str) -> Path:
         """Directory holding the untracked-file copy for one checkpoint."""
-        return self._snapshot_root / checkpoint_id
+        return managed_child(self._snapshot_root, checkpoint_id)
 
     # ------------------------------------------------------------------
     # create
@@ -137,7 +138,9 @@ class CheckpointManager:
         empty/``None`` and append a warning — the snapshot itself still
         succeeds with whatever slices were collectable.
         """
-        cwd_str = str(cwd)
+        require_write_access()
+        self.snapshot_dir(checkpoint_id)
+        cwd_str = str(require_directory(cwd))
         warnings: list[str] = []
 
         branch = await self._branch(cwd_str, warnings)
@@ -189,7 +192,9 @@ class CheckpointManager:
         skipping any destination that already exists — a rewind must
         never clobber work the user did after the snapshot.
         """
-        cwd_str = str(cwd)
+        require_write_access()
+        self.snapshot_dir(checkpoint.id)
+        cwd_str = str(require_directory(cwd))
         warnings: list[str] = []
         applied_stash = False
         restored_untracked: list[str] = []
@@ -228,17 +233,17 @@ class CheckpointManager:
         can no longer be resolved (e.g. garbage-collected), so the UI can
         show "snapshot expired" instead of a stale diff.
         """
-        if not checkpoint.git_stash_ref:
+        if not checkpoint.git_stash_ref or not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", checkpoint.git_stash_ref):
             return CheckpointDiff(
                 checkpoint_id=checkpoint.id, available=False, patch="", files=[]
             )
-        cwd_str = str(cwd)
+        cwd_str = str(require_directory(cwd))
         rc, patch, _, err = await _run_git(
             cwd_str,
             "stash",
             "show",
             "-p",
-            "--no-color",
+            "--no-color", "--no-ext-diff", "--no-textconv",
             checkpoint.git_stash_ref,
             timeout_s=self._timeout_s,
         )
@@ -261,9 +266,10 @@ class CheckpointManager:
         Returns whether anything was removed. Idempotent — safe to call
         for checkpoints that never had an untracked slice.
         """
+        require_write_access()
         directory = self.snapshot_dir(checkpoint_id)
         if directory.exists():
-            shutil.rmtree(directory, ignore_errors=True)
+            shutil.rmtree(directory)
             return True
         return False
 
@@ -299,13 +305,14 @@ class CheckpointManager:
     async def _stash_files(
         self, cwd: str, stash_ref: str | None, warnings: list[str] | None
     ) -> list[str]:
-        if not stash_ref:
+        if not stash_ref or not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", stash_ref):
             return []
         rc, out, _, err = await _run_git(
             cwd,
             "stash",
             "show",
             "--name-only",
+            "-z",
             "--no-color",
             stash_ref,
             timeout_s=self._timeout_s,
@@ -314,7 +321,7 @@ class CheckpointManager:
             if warnings is not None:
                 warnings.append(f"stash files: {err or 'git failed'}")
             return []
-        return [ln for ln in out.splitlines() if ln.strip()]
+        return [name for name in out.split("\0") if name]
 
     async def _untracked_files(self, cwd: str, warnings: list[str]) -> list[str]:
         rc, out, _, err = await _run_git(
@@ -322,16 +329,20 @@ class CheckpointManager:
             "ls-files",
             "--others",
             "--exclude-standard",
+            "-z",
             timeout_s=self._timeout_s,
         )
         if err is not None or rc != 0:
             warnings.append(f"untracked: {err or 'git failed'}")
             return []
-        return [ln for ln in out.splitlines() if ln.strip()]
+        return [name for name in out.split("\0") if name]
 
     async def _stash_apply(
         self, cwd: str, stash_ref: str, warnings: list[str]
     ) -> bool:
+        if not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", stash_ref):
+            warnings.append("stash apply: invalid snapshot ref")
+            return False
         rc, out, err_out, err = await _run_git(
             cwd, "stash", "apply", stash_ref, timeout_s=self._timeout_s
         )
@@ -364,13 +375,13 @@ class CheckpointManager:
             return False
         ok = False
         for rel in files:
-            src = Path(cwd) / rel
-            dst = dest_root / rel
             try:
+                src = _checkpoint_file(Path(cwd), rel)
+                dst = _checkpoint_file(dest_root, rel)
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst)
+                atomic_copy_file(src, dst, baseline_sha256=None)
                 ok = True
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 warnings.append(f"snapshot copy {rel}: {exc}")
         return ok
 
@@ -385,22 +396,32 @@ class CheckpointManager:
         restored: list[str] = []
         skipped: list[str] = []
         for rel in files:
-            src = src_root / rel
-            dst = Path(cwd) / rel
-            if not src.exists():
-                warnings.append(f"restore {rel}: snapshot missing")
-                continue
-            if dst.exists():
-                # Never clobber existing user work — record and move on.
-                skipped.append(rel)
-                continue
             try:
+                src = _checkpoint_file(src_root, rel)
+                dst = _checkpoint_file(Path(cwd), rel)
+                if not src.exists():
+                    warnings.append(f"restore {rel}: snapshot missing")
+                    continue
+                if dst.exists():
+                    skipped.append(rel)
+                    continue
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst)
+                atomic_copy_file(src, dst, baseline_sha256=None)
                 restored.append(rel)
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 warnings.append(f"restore {rel}: {exc}")
         return restored, skipped
+
+
+def _checkpoint_file(root: Path, relative: str) -> Path:
+    path = Path(relative)
+    if path.is_absolute() or ".." in path.parts or not path.parts:
+        raise ValueError("Snapshot file must be workspace-relative")
+    base = root.absolute()
+    target = base / path
+    if target.resolve() != target or not target.is_relative_to(base):
+        raise ValueError("Snapshot file escapes its directory or contains a symbolic link")
+    return target
 
 
 __all__ = ["CheckpointManager"]

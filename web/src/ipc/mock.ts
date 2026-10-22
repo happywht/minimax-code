@@ -501,7 +501,10 @@ function mockHandle(
     }
 
     case "agent.send_message": {
-      const p = params as { session_id: string | null; content: string };
+      const p = params as import("../types/ipc").SendMessageParams;
+      if (p.mode && !["chat", "plan", "execute"].includes(p.mode)) {
+        throw new Error("mode must be chat, plan, or execute");
+      }
       const sid = p.session_id ?? `ses_${Math.random().toString(36).slice(2, 10)}`;
       mockSessionsWithMessages.add(sid);
       const mid = `msg_${Math.random().toString(36).slice(2, 10)}`;
@@ -510,7 +513,7 @@ function mockHandle(
       const run: import("../types/ipc").AgentRun = {
         id: runId,
         session_id: sid,
-        mode: "chat",
+        mode: p.mode ?? "chat",
         status: "running",
         title: String(p.content).slice(0, 32),
         assistant_message_id: mid,

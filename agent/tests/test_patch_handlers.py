@@ -253,3 +253,14 @@ async def test_revert_hunk_unstages_only_selected_staged_hunk(two_hunk_repo: Pat
     assert "line 18 changed" in staged
     assert "line 2 changed" in working
     assert "line 18 changed" not in working
+
+
+@pytest.mark.parametrize("ref", ["--output=TARGET", "--ext-diff", "-R", ""])
+async def test_diff_ref_cannot_be_a_command_option(repo, tmp_path, ref):
+    target = tmp_path / "preserve.txt"
+    target.write_text("user data", encoding="utf-8")
+    handler, ctx = _make_handler("patch.preview")
+    await handler({"cwd": str(repo), "ref": ref.replace("TARGET", str(target))}, ctx)
+    assert ctx.reply_payload is None
+    assert ctx.reply_error_payload[0] == -32602
+    assert target.read_text(encoding="utf-8") == "user data"

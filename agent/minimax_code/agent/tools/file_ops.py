@@ -20,11 +20,17 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 from pathlib import Path
 from typing import Any
 
-from ...workspace_ctx import current_root, current_run_id, env_or_cwd_root
+from ...execution import require_write_access
+from ...workspace_ctx import (
+    WorkspaceUnavailableError,
+    current_root,
+    current_run_id,
+    env_or_cwd_root,
+    require_directory,
+)
 from .base import Tool, ToolResult, register_tool
 from .sandbox import (
     BASE_DIR,
@@ -99,7 +105,10 @@ def safe_resolve(path: str | os.PathLike[str], workspace: Path | None = None) ->
     Returns the canonical absolute :class:`Path`. Raises
     :class:`PathSecurityError` for any violation.
     """
-    ws = (workspace or _default_workspace()).resolve()
+    try:
+        ws = require_directory(workspace or _default_workspace())
+    except WorkspaceUnavailableError as exc:
+        raise PathSecurityError(str(exc)) from exc
     raw = Path(path).expanduser()
 
     # Reject empty / whitespace-only paths early.
@@ -356,6 +365,11 @@ class WriteFileTool(Tool):
             return ToolResult.fail("'content' must be a string")
 
         try:
+            require_write_access()
+        except PermissionError as exc:
+            return ToolResult.fail(str(exc))
+
+        try:
             target = safe_resolve(path)
         except PathSecurityError as exc:
             return ToolResult.fail(str(exc))
@@ -376,8 +390,11 @@ class WriteFileTool(Tool):
         # snapshot of the original on first touch. Without a sandbox
         # both collapse onto ``target`` — byte-for-byte the v1.5.0-CAS
         # behavior.
-        read_target = overlay_read_target(target)
-        write_target = redirect_write_target(target)
+        try:
+            read_target = overlay_read_target(target)
+            write_target = redirect_write_target(target)
+        except OSError as exc:
+            return ToolResult.fail(str(exc))
 
         if read_target.exists() and read_target.is_dir():
             return ToolResult.fail(f"path is an existing directory: {target}")
@@ -432,8 +449,9 @@ class WriteFileTool(Tool):
             # verbatim — without it, Python on Windows would
             # silently rewrite ``\n`` to ``\r\n``, surprising
             # callers (and us) on round-trip.
-            with write_target.open("w", encoding="utf-8", newline="") as fh:
-                fh.write(content)
+            from ...file_mutations import atomic_write_text
+
+            atomic_write_text(write_target, content, baseline_path=read_target, baseline_sha256=previous_sha)
         except OSError as exc:
             return ToolResult.fail(f"write failed: {exc}")
 
@@ -524,6 +542,10 @@ class AppendFileTool(Tool):
     }
 
     async def run(self, **kwargs: Any) -> ToolResult:
+        try:
+            require_write_access()
+        except PermissionError as exc:
+            return ToolResult.fail(str(exc))
         path = kwargs.get("path")
         content = kwargs.get("content")
         if not isinstance(path, str) or not path:
@@ -543,36 +565,16 @@ class AppendFileTool(Tool):
         if run_id:
             claim_write(target, run_id)
 
-        read_target = overlay_read_target(target)
-        write_target = redirect_write_target(target)
+        try:
+            read_target = overlay_read_target(target)
+            write_target = redirect_write_target(target)
+        except OSError as exc:
+            return ToolResult.fail(str(exc))
 
         if read_target.exists() and read_target.is_dir():
             return ToolResult.fail(f"path is an existing directory: {target}")
 
         existed = read_target.exists()
-
-        # v1.5.2 — sandbox staging, the append-specific correctness step.
-        # ``redirect_write_target`` snapshots the original into ``_base``
-        # but does NOT seed the mirror itself; opening a fresh mirror in
-        # "a" mode would start from empty, and the eventual collect's
-        # three-way compare would then happily overwrite the workspace
-        # with a file that lost its pre-append content. Seed the mirror
-        # from the overlay read view (the workspace original on first
-        # touch) so the mirror is always the full file. Fail-closed: this
-        # copy is correctness, not visibility.
-        if (
-            write_target != read_target
-            and read_target.exists()
-            and read_target.is_file()
-            and not write_target.exists()
-        ):
-            try:
-                write_target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(read_target, write_target)
-            except OSError as exc:
-                return ToolResult.fail(
-                    f"append failed while staging the sandbox mirror: {exc}"
-                )
 
         # v1.5.0 CAS — the lock guards the pre-append state of the file.
         previous_sha = file_sha256(read_target) if existed else None
@@ -616,10 +618,12 @@ class AppendFileTool(Tool):
         appended_bytes = len(content.encode("utf-8"))
         try:
             write_target.parent.mkdir(parents=True, exist_ok=True)
-            # "a" + newline="": byte-faithful tail writes, same contract
-            # as write_file's "w" — Windows never rewrites our \n.
-            with write_target.open("a", encoding="utf-8", newline="") as fh:
-                fh.write(content)
+            from ...file_mutations import atomic_append_text
+
+            # Stream the original bytes and new tail into a temporary file.
+            # A failed append must not leave a partial tail or empty mirror.
+            atomic_append_text(write_target, content, baseline_path=read_target,
+                               baseline_sha256=previous_sha)
         except OSError as exc:
             return ToolResult.fail(f"append failed: {exc}")
 

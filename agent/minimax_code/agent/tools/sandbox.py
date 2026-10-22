@@ -22,22 +22,18 @@ Mechanics (three rulings from the design review):
   their workspace views too (:func:`sandbox_mirror_files` /
   :func:`mirror_children`), so a sandboxed agent sees one coherent
   world instead of a split view of its own writes.
-* **``.minimax/`` passes through untouched.** Artifacts, backups and
-  sandbox internals must never be re-redirected (nested-sandbox and
-  ``_base`` self-collision hazards). ``report_completion`` already
-  bypasses ``write_file`` and is unaffected either way.
+* **Managed metadata is not writable through child file tools.**
+  ``.minimax/`` and reserved overlay paths are rejected on writes.
+  Artifact helpers retain their own scoped paths.
 
 Import graph: this module must not import sibling tool modules (tools
 import each other's helpers and ``file_ops`` imports nothing from here
 at module level it doesn't already own) — collect-side hashing does a
 lazy ``file_sha256`` import instead.
 
-Failure philosophy: unlike the fail-*open* artifacts/fs_bus family, the
-*lookup* helpers here never raise — a missing root or an unreadable
-original degrades to "no overlay / no baseline", and the spawn-side
-guard (``subagents``) is what fails closed when the sandbox directory
-cannot be created: a silent fallback to the shared workspace would
-void the very contract the caller opted into.
+Writes fail closed if the overlay or its baseline cannot be verified.
+Read lookups retain the workspace view for paths without an overlay.
+
 """
 
 from __future__ import annotations
@@ -96,7 +92,9 @@ def sandbox_root_for(run_id: str) -> Path | None:
     root = current_root() or env_or_cwd_root()
     if root is None:  # pragma: no cover — env_or_cwd_root always yields
         return None
-    return root / SANDBOX_RELPATH / run_id
+    from ...managed_paths import run_data_path
+
+    return run_data_path(root, "sandboxes", run_id)
 
 
 def _workspace_root() -> Path | None:
@@ -115,7 +113,7 @@ def _mirror_path(target: Path, sandbox: Path, root: Path) -> Path | None:
         rel = target.relative_to(root)
     except ValueError:
         return None
-    if rel.parts and rel.parts[0] == ".minimax":
+    if rel.parts and rel.parts[0].casefold() == ".minimax":
         return None
     return sandbox.joinpath(*rel.parts)
 
@@ -153,34 +151,33 @@ def overlay_read_target(target: Path) -> Path:
 def redirect_write_target(target: Path) -> Path:
     """Where a write should land: always the sandbox mirror.
 
-    Copy-on-write: the first time a write touches a path that exists in
-    the workspace, the original is snapshotted into ``<sandbox>/_base/``
-    as the merge baseline. Best-effort — a failed copy means the merge
-    will treat the file as newly created (still safe, just a coarser
-    diff). Never raises: a redirect failure here must not turn into a
-    tool crash; the spawn-side guard already failed closed on the
-    directory we could not even create.
+    Copy-on-write snapshots must succeed before a write is allowed.
+    Managed metadata cannot be modified through ordinary child file tools.
     """
     sandbox = current_sandbox()
     if sandbox is None:
         return target
     root = _workspace_root()
     if root is None:
-        return target
+        raise PermissionError("Cannot verify the overlay workspace")
     mirror = _mirror_path(target, sandbox, root)
     if mirror is None:
-        return target
-    try:
-        mirror.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists() and target.is_file():
-            base = sandbox / BASE_DIR
-            baseline = base.joinpath(*target.relative_to(root).parts)
-            if not baseline.exists():
-                baseline.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(target, baseline)
-    except OSError as exc:
-        # Degrade to "no baseline" rather than refusing the write.
-        logger.debug("sandbox COW baseline failed for %s: %s", target, exc)
+        raise PermissionError("Overlay file tools cannot modify managed metadata or external paths")
+    rel = target.relative_to(root)
+    if rel.parts[0].casefold() in (BASE_DIR, MERGED_MARKER):
+        raise PermissionError("Path collides with reserved overlay metadata")
+    if mirror.resolve() != mirror or not sandbox.is_relative_to(root):
+        raise PermissionError("Overlay path changed to a symbolic link")
+    mirror.parent.mkdir(parents=True, exist_ok=True)
+    if not mirror.exists() and target.exists() and target.is_file():
+        baseline = (sandbox / BASE_DIR).joinpath(*rel.parts)
+        if baseline.resolve() != baseline:
+            raise PermissionError("Overlay baseline changed to a symbolic link")
+        if not baseline.exists():
+            from ...file_mutations import atomic_copy_file
+
+            baseline.parent.mkdir(parents=True, exist_ok=True)
+            atomic_copy_file(target, baseline, baseline_sha256=None)
     return mirror
 
 
@@ -257,7 +254,9 @@ def collected_marker_path(run_id: str) -> Path | None:
     root = _workspace_root()
     if root is None:  # pragma: no cover — env_or_cwd_root always yields
         return None
-    return root / SANDBOX_RELPATH / COLLECTED_DIR / f"{run_id}.json"
+    from ...managed_paths import run_data_path
+
+    return run_data_path(root, "sandboxes", run_id, receipt=True)
 
 
 def _read_collected_report(run_id: str) -> dict[str, Any] | None:
@@ -274,7 +273,7 @@ def _read_collected_report(run_id: str) -> dict[str, Any] | None:
             if new_marker.exists():
                 return json.loads(new_marker.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return {}
+            return {"errors": [{"error": "collect receipt is unreadable; manual review required"}]}
     legacy = sandbox_root_for(run_id)
     if legacy is not None:
         legacy_marker = legacy / MERGED_MARKER
@@ -282,7 +281,7 @@ def _read_collected_report(run_id: str) -> dict[str, Any] | None:
             if legacy_marker.exists():
                 return json.loads(legacy_marker.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return {}
+            return {"errors": [{"error": "collect receipt is unreadable; manual review required"}]}
     return None
 
 
@@ -368,8 +367,8 @@ class CollectSubagentTool(Tool):
     ``on_conflict`` decides what happens to conflicts: ``fail`` refuses
     the whole collect (no marker written — resolve manually and re-run,
     already-merged files degrade to no-ops so the re-run is idempotent);
-    ``skip`` keeps the workspace version; ``overwrite`` applies the
-    sandbox version. A successful collect writes its receipt under
+    ``skip`` keeps the workspace version and leaves collection incomplete.
+    Automatic conflict overwrite is disabled. A successful collect writes its receipt under
     ``.minimax/sandboxes/.collected/<run_id>.json`` making subsequent
     collects no-ops — and, since v1.6.0, prunes the sandbox tree itself
     (disable with ``prune=false``). Pruning is conservative: conflicts,
@@ -384,7 +383,7 @@ class CollectSubagentTool(Tool):
         "reports completion. Reports per-file merges, no-ops and conflicts "
         "with full sha256 fingerprints; on_conflict picks the policy for "
         "workspace-vs-sandbox divergence (fail=stop and report, "
-        "skip=keep workspace, overwrite=apply sandbox). On success prunes "
+        "skip=keep workspace and leave collection incomplete). On success prunes "
         "the sandbox tree (prune=false keeps it) after recording the "
         "collect receipt."
     )
@@ -397,13 +396,13 @@ class CollectSubagentTool(Tool):
             },
             "on_conflict": {
                 "type": "string",
-                "enum": ["fail", "skip", "overwrite"],
+                "enum": ["fail", "skip"],
                 "default": "fail",
                 "description": (
                     "Policy when the workspace copy changed independently "
                     "since the sandbox snapshot: 'fail' refuses the collect "
                     "and reports all three hashes; 'skip' keeps the workspace "
-                    "version; 'overwrite' applies the sandbox version."
+                    "version without marking collection complete."
                 ),
             },
             "prune": {
@@ -423,15 +422,23 @@ class CollectSubagentTool(Tool):
     }
 
     async def run(self, **kwargs: Any) -> ToolResult:
+        from ...execution import require_write_access
+
+        try:
+            require_write_access()
+        except PermissionError as exc:
+            return ToolResult.fail(str(exc))
+        if current_sandbox() is not None:
+            return ToolResult.fail("Only the parent workspace may collect child changes")
         run_id = kwargs.get("run_id")
         on_conflict = kwargs.get("on_conflict", "fail") or "fail"
         prune = bool(kwargs.get("prune", True))
         if not isinstance(run_id, str) or not run_id.strip():
             return ToolResult.fail("'run_id' must be a non-empty string")
         run_id = run_id.strip()
-        if on_conflict not in ("fail", "skip", "overwrite"):
+        if on_conflict not in ("fail", "skip"):
             return ToolResult.fail(
-                "'on_conflict' must be one of: fail, skip, overwrite"
+                "'on_conflict' must be fail or skip; automatic conflict overwrite is disabled"
             )
 
         # In-flight guard: merging under a live run races its own writes.
@@ -450,6 +457,9 @@ class CollectSubagentTool(Tool):
         # cancels the prune rather than destroying the only receipt.
         prior = _read_collected_report(run_id)
         if prior is not None:
+            if (not isinstance(prior, dict) or not isinstance(prior.get("merged"), list)
+                    or any(prior.get(key) for key in ("errors", "skipped", "conflicts"))):
+                return ToolResult.fail("Previous collect was incomplete; preserve the workspace for manual review", output=prior)
             replay: dict[str, Any] = {**prior, "already_collected": True}
             can_prune = prune
             new_marker = collected_marker_path(run_id)
@@ -497,7 +507,12 @@ class CollectSubagentTool(Tool):
             try:
                 sb_file = sb_dir.joinpath(*rel.split("/"))
                 base_file = (sb_dir / BASE_DIR).joinpath(*rel.split("/"))
-                ws_file = root.joinpath(*rel.split("/"))
+                from ...file_mutations import atomic_copy_file
+                from .file_ops import safe_resolve
+
+                ws_file = safe_resolve(rel, workspace=root)
+                if sb_file.resolve() != sb_file:
+                    raise OSError("Sandbox source changed to a symbolic link")
 
                 sb_sha = file_sha256(sb_file)
                 if sb_sha is None:
@@ -538,23 +553,16 @@ class CollectSubagentTool(Tool):
                         conflicts.append(entry)
                     elif on_conflict == "skip":
                         skipped.append(rel)
-                    else:  # overwrite — resolve by applying the sandbox bytes
-                        ws_file.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(sb_file, ws_file)
-                        merged.append(
-                            {"path": rel, "conflict_resolved": "overwrite"}
-                        )
-                        emits["modified"].append(str(ws_file))
                     continue
 
                 # Clean merge: workspace still at the baseline (or absent).
                 ws_file.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(sb_file, ws_file)
+                atomic_copy_file(sb_file, ws_file, baseline_sha256=cur_sha)
                 merged.append({"path": rel})
                 emits["created" if not ws_existed else "modified"].append(
                     str(ws_file)
                 )
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 errors.append({"path": rel, "error": str(exc)})
                 continue  # the walk must survive any single bad file
 
@@ -579,9 +587,15 @@ class CollectSubagentTool(Tool):
             return ToolResult.fail(
                 f"collect_subagent: {len(conflicts)} conflict(s) between the "
                 "workspace and the sandbox — resolve manually or re-run with "
-                "on_conflict=skip/overwrite; no receipt was written",
+                "on_conflict=skip; no receipt was written",
                 output=report,
             )
+
+        if errors:
+            return ToolResult.fail("Some files could not be collected; no completion receipt was written", output=report)
+        if skipped:
+            report["complete"] = False
+            return ToolResult.ok(report)
 
         # Receipt first, prune second — deleting the tree without a
         # durable receipt would destroy the idempotence evidence and

@@ -1518,21 +1518,33 @@ async def test_interval_missed_tick_resets_to_now() -> None:
     assert elapsed < 0.01  # immediate (missed -> reset, not another period wait)
 
 
-async def test_interval_aligns_consecutive_ticks_to_grid() -> None:
-    # Back-to-back ticks land ~period apart on the global grid. The period is
-    # kept >= 100 ms so the Windows ~15 ms timer granularity does not wash the
-    # alignment signal out (the production probe runs at CLOCK_PROBE_INTERVAL).
+async def test_interval_aligns_consecutive_ticks_to_grid(monkeypatch) -> None:
+    # Check the scheduling contract with a controlled clock. Real callback
+    # jitter may shorten the next gap while still landing on the right grid.
+    from types import SimpleNamespace
+
+    from minimax_code.computer_hub_sdk import connection
+
+    now = 10.0
+    delays = []
+
+    async def sleep(delay):
+        nonlocal now
+        delays.append(delay)
+        now += delay
+
+    monkeypatch.setattr(connection, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(connection, "asyncio", SimpleNamespace(
+        get_running_loop=asyncio.get_running_loop,
+        ensure_future=asyncio.ensure_future, sleep=sleep,
+    ))
     interval = _Interval(0.1)
-    loop = asyncio.get_running_loop()
     await interval.tick()
-    stamps = [loop.time()]
-    for _ in range(2):
-        await interval.tick()
-        stamps.append(loop.time())
-    gap0 = stamps[1] - stamps[0]
-    gap1 = stamps[2] - stamps[1]
-    assert 0.075 <= gap0 < 0.16
-    assert 0.075 <= gap1 < 0.16
+    await interval.tick()
+    now += 0.03  # callback was scheduled late; next tick still uses the grid
+    await interval.tick()
+    assert delays == pytest.approx([0.1, 0.07])
+    assert now == pytest.approx(10.2)
 
 
 # ===========================================================================

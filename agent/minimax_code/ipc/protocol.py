@@ -28,6 +28,14 @@ class _Base(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
 
+class SendMessageParams(_Base):
+    """Additive task mode; plan is enforced by execution/tool policy."""
+
+    session_id: str | None = None
+    content: str | list[dict[str, Any]]
+    mode: Literal["chat", "plan", "execute"] = "chat"
+
+
 # ---- Error object ---------------------------------------------------------
 
 

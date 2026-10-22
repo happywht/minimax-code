@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from .watcher import WatcherEvent, watch_workspace
@@ -44,6 +44,7 @@ class PreviewState:
         self._watcher_task: asyncio.Task[None] | None = None
         self._fanout_task: asyncio.Task[None] | None = None
         self._subscribers: list[asyncio.Queue[WatcherEvent]] = []
+        self.children: dict[Path, PreviewState] = {}
 
     async def start_watcher(self) -> None:
         """Start the background file-system watcher."""
@@ -87,6 +88,9 @@ class PreviewState:
 
     async def stop(self) -> None:
         """Cancel watcher and fan-out tasks."""
+        for child in list(self.children.values()):
+            await child.stop()
+        self.children.clear()
         tasks = [task for task in (self._watcher_task, self._fanout_task) if task is not None]
         for task in tasks:
             if not task.done():
@@ -103,10 +107,13 @@ class PreviewState:
 def _safe_path(workspace: Path, file_path: str) -> Path | None:
     """Resolve *file_path* under *workspace*, returning ``None`` if it escapes."""
     # Normalise and resolve to an absolute path.
-    resolved = (workspace / file_path).resolve()
+    if not workspace.is_dir():
+        return None
+    from ..agent.tools.file_ops import PathSecurityError, safe_resolve
+
     try:
-        resolved.relative_to(workspace)
-    except ValueError:
+        resolved = safe_resolve(file_path, workspace=workspace)
+    except (ValueError, PathSecurityError):
         # Path traversal attempt — reject.
         return None
     return resolved
@@ -143,6 +150,10 @@ def build_preview_app(workspace: Path) -> FastAPI:
         lifespan=lifespan,
     )
 
+    from ..http_security import install_application_auth
+
+    install_application_auth(app, CORS_ORIGINS)
+
     # Add CORS middleware so the Vite SPA can connect.
     from fastapi.middleware.cors import CORSMiddleware
 
@@ -150,7 +161,7 @@ def build_preview_app(workspace: Path) -> FastAPI:
         CORSMiddleware,
         allow_origins=CORS_ORIGINS,
         allow_credentials=True,
-        allow_methods=["GET"],
+        allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
 
@@ -169,22 +180,49 @@ def register_preview_routes(
     state = state or PreviewState(workspace)
     app.state.preview = state
 
+    async def session_workspace(session_id: str | None) -> Path:
+        from ..workspace_ctx import (
+            WorkspaceUnavailableError,
+            require_directory,
+            resolve_root_for_session,
+        )
+
+        try:
+            return await resolve_root_for_session(session_id) if session_id else require_directory(workspace)
+        except WorkspaceUnavailableError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     # ---- GET /preview/health -------------------------------------------
 
     @app.get("/preview/health")
-    async def preview_health() -> dict[str, Any]:
-        return {"ok": True, "workspace": str(workspace)}
+    @app.get("/preview/session/{session_id}/health")
+    async def preview_health(session_id: str | None = None) -> dict[str, Any]:
+        return {"ok": True, "workspace": str(await session_workspace(session_id))}
 
     # ---- GET /preview/events -------------------------------------------
 
     @app.get("/preview/events")
-    async def preview_events(request: Request) -> StreamingResponse:
+    @app.get("/preview/session/{session_id}/events")
+    async def preview_events(request: Request, session_id: str | None = None) -> StreamingResponse:
         """SSE endpoint — streams file-change events to the client."""
 
-        await state.start_watcher()
+        root = await session_workspace(session_id)
+        active = state
+        if root != state.workspace:
+            if root not in state.children:
+                if len(state.children) >= 32:
+                    idle_root = next((path for path, item in state.children.items()
+                                      if not item._subscribers), None)
+                    if idle_root is None:
+                        raise HTTPException(status_code=429, detail="Too many active previews")
+                    idle = state.children.pop(idle_root)
+                    await idle.stop()
+                state.children[root] = PreviewState(root)
+            active = state.children[root]
+        await active.start_watcher()
 
         async def event_stream() -> AsyncIterator[str]:
-            q = state.subscribe()
+            q = active.subscribe()
             try:
                 while True:
                     # Use a timeout so we can check for disconnects.
@@ -201,7 +239,7 @@ def register_preview_routes(
             except asyncio.CancelledError:
                 pass
             finally:
-                state.unsubscribe(q)
+                active.unsubscribe(q)
 
         return StreamingResponse(
             event_stream(),
@@ -216,9 +254,10 @@ def register_preview_routes(
     # ---- GET /preview/{file_path} --------------------------------------
 
     @app.get("/preview/{file_path:path}", response_model=None)
-    async def preview_file(file_path: str) -> FileResponse | JSONResponse:
+    @app.get("/preview/session/{session_id}/{file_path:path}", response_model=None)
+    async def preview_file(file_path: str, session_id: str | None = None) -> FileResponse | JSONResponse:
         """Serve a file from the workspace."""
-        safe = _safe_path(workspace, file_path)
+        safe = _safe_path(await session_workspace(session_id), file_path)
         if safe is None:
             return JSONResponse(
                 content={"error": "path traversal denied"},
@@ -232,6 +271,11 @@ def register_preview_routes(
         return FileResponse(
             safe,
             media_type=_guess_content_type(safe),
+            headers={
+                "Content-Security-Policy": "sandbox allow-scripts; default-src 'self' data: blob:; connect-src 'none'; form-action 'none'",
+                "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "no-referrer",
+            },
         )
 
     return state

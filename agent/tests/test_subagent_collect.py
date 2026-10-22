@@ -217,16 +217,15 @@ async def test_conflict_skip_keeps_workspace(workspace_root: Path) -> None:
     assert res.output["skipped"] == ["shared.txt"]
     assert res.output["merged"] == []
     assert (workspace_root / "shared.txt").read_bytes() == b"external edit"
-    # Skip keeps the workspace version but the collect still succeeded —
-    # receipt written, yet the sandbox is preserved (the skipped file's
-    # only sandbox copy lives there).
-    assert _receipt(workspace_root, run_id).is_file()
+    # Partial collection remains retryable and cannot be pruned by replay.
+    assert not _receipt(workspace_root, run_id).exists()
+    assert res.output["complete"] is False
     assert (workspace_root / SANDBOX_RELPATH / run_id).is_dir()
     assert "pruned" not in res.output
 
 
 @pytest.mark.asyncio
-async def test_conflict_overwrite_applies_sandbox(workspace_root: Path) -> None:
+async def test_conflict_overwrite_is_rejected(workspace_root: Path) -> None:
     run_id = "run_ow"
     _stage(
         workspace_root, run_id, "shared.txt",
@@ -236,11 +235,11 @@ async def test_conflict_overwrite_applies_sandbox(workspace_root: Path) -> None:
     res = await _dispatch(
         "collect_subagent", {"run_id": run_id, "on_conflict": "overwrite"}
     )
-    assert res.success, res.error
-    assert res.output["merged"] == [
-        {"path": "shared.txt", "conflict_resolved": "overwrite"}
-    ]
-    assert (workspace_root / "shared.txt").read_bytes() == b"sandbox edit"
+    assert not res.success
+    assert "overwrite is disabled" in res.error
+    assert (workspace_root / "shared.txt").read_bytes() == b"external edit"
+    assert not _receipt(workspace_root, run_id).exists()
+
 
 
 @pytest.mark.asyncio

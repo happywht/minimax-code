@@ -22,7 +22,7 @@
  * 16-char chunks, guaranteeing a multi-frame sequenced burst.
  */
 import { test, expect } from "@playwright/test";
-import { AGENT_BASE } from "./runtime-config";
+import { AGENT_BASE, E2E_AUTH_TOKEN } from "./runtime-config";
 
 type WsFrame = {
   method?: string;
@@ -38,7 +38,7 @@ function wsUrl(since?: number): string {
 /** Open a WebSocket and resolve once it's open. */
 function openWs(url: string): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(url, [`minimax-auth.${E2E_AUTH_TOKEN}`]);
     ws.onopen = () => resolve(ws);
     ws.onerror = () => reject(new Error(`WS failed to open: ${url}`));
   });

@@ -31,7 +31,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -39,6 +38,8 @@ from typing import Any
 from urllib.parse import urljoin
 
 import httpx
+
+from ..execution import spawn_exec, terminate_tree
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,7 @@ class StdioTransport(MCPTransport):
         self._proc: asyncio.subprocess.Process | None = None
         self._queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         self._reader_task: asyncio.Task[None] | None = None
+        self._stderr_task: asyncio.Task[None] | None = None
         self._closed = False
 
     @property
@@ -107,23 +109,27 @@ class StdioTransport(MCPTransport):
     async def start(self) -> None:
         if self._proc is not None:
             return  # idempotent
-        env: dict[str, str] | None = None
-        if self._env is not None:
-            env = dict(os.environ)
-            env.update(self._env)
         try:
-            self._proc = await asyncio.create_subprocess_exec(
+            self._proc = await spawn_exec(
                 *self._command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=env,
+                env=self._env,
                 cwd=self._cwd,
             )
         except (OSError, FileNotFoundError) as exc:
             raise MCPTransportError(f"failed to spawn MCP server: {exc}") from exc
         self._reader_task = asyncio.create_task(self._read_loop())
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
         logger.debug("started MCP server %s pid=%s", self._command[0], self._proc.pid)
+
+    async def _drain_stderr(self) -> None:
+        # Protocol servers may write arbitrarily large diagnostics. Drain
+        # without buffering them or exposing configured credentials in logs.
+        assert self._proc is not None and self._proc.stderr is not None
+        while await self._proc.stderr.read(65536):
+            pass
 
     async def _read_loop(self) -> None:
         """Pump stdout lines into the queue until EOF or close."""
@@ -173,14 +179,10 @@ class StdioTransport(MCPTransport):
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
         if self._proc is not None:
-            try:
-                self._proc.terminate()
-                await asyncio.wait_for(self._proc.wait(), timeout=5.0)
-            except Exception:  # noqa: BLE001 — best-effort teardown
-                try:
-                    self._proc.kill()
-                except ProcessLookupError:
-                    pass
+            await terminate_tree(self._proc)
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
+            await asyncio.gather(self._stderr_task, return_exceptions=True)
 
 
 # ---------------------------------------------------------------------------

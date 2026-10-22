@@ -8,7 +8,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 MiniMax Code 是一个桌面端 AI 编码 Agent 复刻项目。对标 MiniMax Code 全量功能：多轮对话、技能系统、定时任务、多 Agent 协作、移动互联、授权管理、进度面板。v0.2.0 起从 Tauri 桌面壳切换为 web SPA + 本地 Python agent 架构，v0.3.0 新增 thinking_count 通道、Sub-Agent UI、Git 集成和 Code Review 工作流。
 
-当前版本：**v1.2.0**（2026-08-23）
+当前包版本：**v1.6.0，另有未发布修复**（2026-10-22 核对）。当前为个人开发预览版；能力边界见 `docs/capability-baseline.md`，生产路线图见 `docs/production-roadmap.md`。
 
 ## 架构总览
 
@@ -20,11 +20,11 @@ Browser (Vite SPA, localhost:5173)
   |  WebSocket /ws  (server-push streaming events)
   v
 Python Agent (FastAPI + asyncio, 127.0.0.1:8765)
-  |- IPCServer (shared handler registry, 167 methods / 35 namespaces)
+  |- IPCServer (170 methods: 33 dotted namespaces + 3 standalone methods)
   |- AgentCore (conversation loop + LLM streaming)
-  |- ToolRegistry (10 built-in tool modules)
+  |- ToolRegistry (built-in tools + skill/MCP bridges)
   |- SkillRuntime (SKILL.md loader + registry)
-  |- SQLite Storage (24 tables + FTS/vector virtual tables, idempotent migrations)
+  |- SQLite Storage (incremental migrations + FTS/vector virtual tables)
   |- APScheduler (cron jobs)
   |- SubAgentRuntime + Agent Teams (multi-agent orchestration)
   |- PermissionStore (tool-call consent)
@@ -142,7 +142,7 @@ pnpm dev
 | Python 黑盒 | subprocess + pytest | `tests/e2e/smoke_*.py` | 6 个 smoke：agents、chat、mobile、model、phase2b、progress |
 | 跨栈 e2e | Playwright | `e2e/*.spec.ts` | 10 个 spec：boot、session-list、agent-rpc、chat、thinking-count、subagent、ws-resume、skill-import、codebase、production-mode |
 
-Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时空目录>` 创建独立数据库。
+Python 测试隔离策略：默认使用空 keyring、临时数据目录，并阻止测试进程对外建立 TCP 连接。协议回放允许真实 SDK 解析受控响应；真实服务测试必须使用 `live` 标记和 `--run-live`。该标记不是生产功能或预算保障。统一验证入口为 `pnpm verify:baseline`（三轮）、`pnpm verify:full`（独立全量），详情见 `docs/verification.md`。Python 黑盒 smoke 使用独立临时数据目录。
 
 ## 编码规范
 
@@ -169,16 +169,17 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 
 ### IPC 命名空间
 
-共 **167 个注册方法、35 个前缀**（含 3 个无点号 built-in）。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。
+共 **170 个注册方法、33 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
 
 | 前缀 | 方法数 | 用途 | Handler 文件 |
 |------|--------|------|-------------|
-| `agent.*` | 10 | 消息发送、子 agent 管理 | `builtins.py`, `handlers_agents.py` |
+| `agent.*` | 12 | 消息发送、子 agent 管理 | `builtins.py`, `handlers_agents.py` |
 | `audit.*` | 3 | 审计日志查询 | `handlers_audit.py` |
 | `checkpoint.*` | 5 | 上下文检查点 | `handlers_checkpoint.py` |
 | `codebase.*` | 4 | 代码库索引/检索 | `handlers_codebase.py` |
 | `crash.*` | 3 | 崩溃恢复会话 | `handlers_crash.py` |
 | `data.*` | 3 | 全量导出/导入/备份 | `handlers_data.py` |
+| `diag.*` | 1 | 诊断包导出 | `handlers_diag.py` |
 | `git.*` | 3 | Git 状态/差异/日志 | `handlers_git.py` |
 | `mcp.*` | 6 | MCP 服务器管理 | `handlers_mcp.py` |
 | `memory.*` | 5 | 长期记忆 | `handlers_memory.py` |

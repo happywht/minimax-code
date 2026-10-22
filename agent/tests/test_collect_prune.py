@@ -159,7 +159,7 @@ async def test_skipped_files_keep_sandbox(workspace_root: Path) -> None:
     assert "pruned" not in res.output
     # The skipped file's only sandbox copy lives in the tree — keep it.
     assert box.is_dir()
-    assert _receipt_path(workspace_root, run_id).is_file()
+    assert not _receipt_path(workspace_root, run_id).exists()
 
 
 async def test_errors_keep_sandbox(
@@ -173,13 +173,39 @@ async def test_errors_keep_sandbox(
     )
 
     res = await _dispatch("collect_subagent", {"run_id": run_id})
-    assert res.success, res.error
+    assert not res.success
     assert res.output["errors"] == [
         {"path": "a.txt", "error": "sandbox copy is unreadable"}
     ]
     assert "pruned" not in res.output
     assert box.is_dir()
-    assert _receipt_path(workspace_root, run_id).is_file()
+    assert not _receipt_path(workspace_root, run_id).exists()
+
+
+async def test_skipped_collect_can_be_retried_after_resolution(workspace_root: Path):
+    run_id = "run_skip_retry"
+    box = _stage(workspace_root, run_id, "shared.txt", sb=b"agent")
+    (workspace_root / "shared.txt").write_bytes(b"user")
+    first = await _dispatch("collect_subagent", {"run_id": run_id, "on_conflict": "skip"})
+    assert first.success and first.output["complete"] is False
+    again = await _dispatch("collect_subagent", {"run_id": run_id})
+    assert not again.success
+    assert (box / "shared.txt").read_bytes() == b"agent"
+    (workspace_root / "shared.txt").write_bytes(b"agent")
+    resolved = await _dispatch("collect_subagent", {"run_id": run_id})
+    assert resolved.success and resolved.output["pruned"]
+
+
+@pytest.mark.parametrize("receipt", ["{broken", '{"merged": [], "skipped": ["shared.txt"]}'])
+async def test_invalid_or_partial_receipt_never_prunes(workspace_root: Path, receipt):
+    run_id = "run_old_partial"
+    box = _stage(workspace_root, run_id, "shared.txt", sb=b"only copy")
+    marker = _receipt_path(workspace_root, run_id)
+    marker.parent.mkdir(parents=True)
+    marker.write_text(receipt, encoding="utf-8")
+    result = await _dispatch("collect_subagent", {"run_id": run_id})
+    assert not result.success
+    assert (box / "shared.txt").read_bytes() == b"only copy"
 
 
 # ---------------------------------------------------------------------------

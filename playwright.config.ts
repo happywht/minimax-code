@@ -1,5 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
-import { AGENT_BASE, AGENT_PORT, WEB_BASE, WEB_PORT } from "./e2e/runtime-config";
+import { AGENT_BASE, AGENT_PORT, WEB_BASE, WEB_PORT, E2E_AUTH_TOKEN } from "./e2e/runtime-config";
 
 /**
  * Playwright config for MiniMax Code v0.2.0 e2e.
@@ -32,6 +32,7 @@ export default defineConfig({
   outputDir: "test-results",
   timeout: 30_000,
   use: {
+    extraHTTPHeaders: { Authorization: `Bearer ${E2E_AUTH_TOKEN}` },
     baseURL: WEB_BASE,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",

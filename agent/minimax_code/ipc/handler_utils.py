@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..workspace_ctx import _project_root
+from ..workspace_ctx import WorkspaceUnavailableError, _project_root
 from .protocol import INVALID_PARAMS
 
 # ---------------------------------------------------------------------------
@@ -73,7 +73,10 @@ async def project_root_from_params(params: Any) -> Path | None:
     project_id = params.get("project_id")
     if not isinstance(project_id, str) or not project_id:
         return None
-    return await _project_root(project_id)
+    try:
+        return await _project_root(project_id)
+    except WorkspaceUnavailableError as exc:
+        raise HandlerError(INVALID_PARAMS, str(exc)) from exc
 
 
 def ensure_cwd_within_root(cwd: str, root: Path) -> str:

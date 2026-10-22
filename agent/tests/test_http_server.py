@@ -107,7 +107,8 @@ async def client(app_with_handlers: FastAPI) -> AsyncIterator[httpx.AsyncClient]
     """An ``httpx.AsyncClient`` wired to the ASGI app in-process."""
     transport = ASGITransport(app=app_with_handlers)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
+        transport=transport, base_url="http://testserver",
+        headers={"Authorization": f"Bearer {app_with_handlers.state.auth.token}"}
     ) as c:
         yield c
 
@@ -167,7 +168,7 @@ async def test_main_app_serves_preview_routes(
     monkeypatch.setenv("MINIMAX_CODE_WORKSPACE", str(tmp_path))
     app = build_app(ipc_server, version="0.2.0-test")
     transport = ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver", headers={"Authorization": f"Bearer {app.state.auth.token}"}) as c:
         health = await c.get("/preview/health")
         preview = await c.get("/preview/index.html")
 
@@ -325,7 +326,8 @@ async def test_rpc_oversized_body_never_reaches_dispatch(
     ipc_server.register("probe.size_guard", spy)
     transport = ASGITransport(app=app_with_handlers)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
+        transport=transport, base_url="http://testserver",
+        headers={"Authorization": f"Bearer {app_with_handlers.state.auth.token}"}
     ) as c:
         huge = {
             "jsonrpc": "2.0",
@@ -385,7 +387,7 @@ def test_ws_malformed_inbound_frames_are_dropped(app_with_handlers: FastAPI) -> 
     """The WS receive loop must drain and silently drop garbage
     (unparseable JSON, non-object frames) without killing the socket
     or the server."""
-    with TestClient(app_with_handlers) as c:
+    with TestClient(app_with_handlers, headers={"Authorization": f"Bearer {app_with_handlers.state.auth.token}"}) as c:
         with c.websocket_connect("/ws") as ws:
             ws.receive_json()  # agent.ready handshake
             ws.send_text("{not json")  # unparseable
@@ -407,7 +409,7 @@ def test_ws_receives_agent_ready(app_with_handlers: FastAPI) -> None:
     The lifecycle event is per-client, sent directly by the WS
     handler — it is *not* routed through the IPCServer listener.
     """
-    with TestClient(app_with_handlers) as c:
+    with TestClient(app_with_handlers, headers={"Authorization": f"Bearer {app_with_handlers.state.auth.token}"}) as c:
         with c.websocket_connect("/ws") as ws:
             # Send a no-op text frame so the server's receive
             # loop wakes up; the agent.ready push was already
@@ -438,7 +440,7 @@ def test_ws_fans_out_handler_emits(
 
     ipc_server.register("test.emit_event", emit_handler)
 
-    with TestClient(app_with_handlers) as c:
+    with TestClient(app_with_handlers, headers={"Authorization": f"Bearer {app_with_handlers.state.auth.token}"}) as c:
         with c.websocket_connect("/ws") as ws:
             # Drain the lifecycle frame first.
             ws.send_text("ping")
@@ -495,7 +497,7 @@ async def test_ws_listener_unregistered_after_last_disconnect(
     # ``asyncio.to_thread`` so the rest of the test can stay
     # async and we can poll the listener list afterward.
     def open_and_close() -> None:
-        with TestClient(app_with_handlers) as c:
+        with TestClient(app_with_handlers, headers={"Authorization": f"Bearer {app_with_handlers.state.auth.token}"}) as c:
             with c.websocket_connect("/ws") as ws:
                 ws.send_text("ping")
                 ready = ws.receive_json()
@@ -679,7 +681,7 @@ def test_serves_web_dist_from_env_override(
     monkeypatch.setenv("MINIMAX_CODE_WEB_DIST", str(dist))
 
     app = build_app(ipc_server, version="web-dist-test")
-    with TestClient(app) as c:
+    with TestClient(app, headers={"Authorization": f"Bearer {app.state.auth.token}"}) as c:
         resp = c.get("/")
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("text/html")
@@ -705,7 +707,7 @@ def test_web_dist_env_override_without_index_html_is_ignored(
     monkeypatch.setenv("MINIMAX_CODE_WEB_DIST", str(empty))
 
     app = build_app(ipc_server, version="web-dist-bad-test")
-    with TestClient(app) as c:
+    with TestClient(app, headers={"Authorization": f"Bearer {app.state.auth.token}"}) as c:
         # The agent API still answers regardless of the mount decision.
         assert c.get("/health").json()["ok"] is True
 

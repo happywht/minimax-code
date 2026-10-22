@@ -46,6 +46,7 @@ import {
   type ToolResultData,
 } from "../types/ipc";
 import { mockNotify, mockRequest } from "./mock";
+import { authHeaders, authProtocols, ensureSession, rememberHealth } from "./httpAuth";
 import { bindTypedIPC, type TypedIPC } from "./typed";
 /* ─────────────────────── Internal types ─────────────────────── */
 
@@ -159,6 +160,7 @@ export async function isAgentReachable(baseUrl?: string): Promise<boolean> {
       method: "GET",
       headers: { Accept: "application/json" },
     });
+    await rememberHealth(url.replace(/\/+$/, ""), resp);
     return resp.ok;
   } catch {
     return false;
@@ -319,8 +321,14 @@ export class IPCClient {
 
     const reachable = await isAgentReachable(this.baseUrl);
     this.mode = reachable ? "http" : "mock";
-    if (reachable) this.connectWs();
-    this.startResolve?.();
+    try {
+      if (reachable) {
+        await ensureSession(this.baseUrl);
+        this.connectWs();
+      }
+    } finally {
+      this.startResolve?.();
+    }
   }
 
   /** Tear down transport — useful for tests. */
@@ -379,6 +387,7 @@ export class IPCClient {
     if (this.forceMock) return true;
     const reachable = await isAgentReachable(this.baseUrl);
     if (!reachable) return false;
+    await ensureSession(this.baseUrl);
     this.mode = "http";
     this.started = true;
     this.startResolve?.();
@@ -439,7 +448,7 @@ export class IPCClient {
     // ripple into the UI loop.
     void fetch(`${this.baseUrl}/rpc`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders(this.baseUrl) },
       body: JSON.stringify({
         jsonrpc: "2.0",
         method,
@@ -543,7 +552,8 @@ export class IPCClient {
     const wsUrl = `${toWebSocketUrl(this.baseUrl, "/ws")}${resume}`;
     let ws: WebSocket;
     try {
-      ws = new WebSocket(wsUrl);
+      const protocols = authProtocols(this.baseUrl);
+      ws = protocols.length ? new WebSocket(wsUrl, protocols) : new WebSocket(wsUrl);
     } catch (err) {
       // Constructing the WS can throw synchronously in some
       // environments (e.g. invalid URL). Treat as a connection
@@ -737,7 +747,10 @@ export class IPCClient {
     );
     this.wsReconnectTimer = setTimeout(() => {
       this.wsReconnectTimer = null;
-      this.connectWs();
+      void ensureSession(this.baseUrl, true).then(
+        () => this.connectWs(),
+        () => this.scheduleReconnect(),
+      );
     }, delay);
   }
 
@@ -753,6 +766,7 @@ export class IPCClient {
     method: string,
     params: unknown,
     id: JsonRpcId,
+    retryAuth = true,
   ): Promise<T> {
     // Per-method timeout — streaming agent calls can run for minutes
     // while the frontend receives progress via WebSocket; fast CRUD
@@ -764,7 +778,7 @@ export class IPCClient {
     try {
       resp = await fetch(`${this.baseUrl}/rpc`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders(this.baseUrl) },
         body: JSON.stringify({
           jsonrpc: "2.0",
           id,
@@ -788,6 +802,10 @@ export class IPCClient {
       if (timer) clearTimeout(timer);
     }
 
+    if (resp.status === 401 && retryAuth) {
+      await ensureSession(this.baseUrl, true);
+      return this.httpRequest<T>(method, params, id, false);
+    }
     if (!resp.ok) {
       // 5xx / non-2xx → transport-level failure, not a JSON-RPC error.
       throw new IPCError({

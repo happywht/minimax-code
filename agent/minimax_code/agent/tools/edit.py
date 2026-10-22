@@ -13,6 +13,7 @@ from __future__ import annotations
 import difflib
 from typing import Any
 
+from ...execution import require_write_access
 from ...workspace_ctx import current_run_id
 from .base import Tool, ToolResult, register_tool
 from .file_ops import (
@@ -75,6 +76,11 @@ class EditFileTool(Tool):
             return ToolResult.fail("'old_string' and 'new_string' are identical — nothing to do")
 
         try:
+            require_write_access()
+        except PermissionError as exc:
+            return ToolResult.fail(str(exc))
+
+        try:
             target = safe_resolve(path)
         except PathSecurityError as exc:
             return ToolResult.fail(str(exc))
@@ -94,8 +100,11 @@ class EditFileTool(Tool):
         # exists to prevent). CAS + backup verify the overlay view;
         # the rewrite lands in the sandbox mirror. Without a sandbox
         # both collapse onto ``target``.
-        read_target = overlay_read_target(target)
-        write_target = redirect_write_target(target)
+        try:
+            read_target = overlay_read_target(target)
+            write_target = redirect_write_target(target)
+        except OSError as exc:
+            return ToolResult.fail(str(exc))
 
         if not read_target.exists():
             return ToolResult.fail(f"file not found: {target}")
@@ -163,7 +172,9 @@ class EditFileTool(Tool):
             updated = original.replace(old, new, 1)
 
         try:
-            write_target.write_text(updated, encoding="utf-8")
+            from ...file_mutations import atomic_write_text
+
+            atomic_write_text(write_target, updated, baseline_path=read_target, baseline_sha256=previous_sha)
         except OSError as exc:
             return ToolResult.fail(f"write failed: {exc}")
 

@@ -14,3 +14,5 @@ export const AGENT_PORT = readPort("MINIMAX_CODE_E2E_PORT", 18_765);
 export const WEB_PORT = readPort("MINIMAX_CODE_E2E_WEB_PORT", 15_173);
 export const AGENT_BASE = `http://127.0.0.1:${AGENT_PORT}`;
 export const WEB_BASE = `http://127.0.0.1:${WEB_PORT}`;
+// Only the isolated test agent uses this public fixture value.
+export const E2E_AUTH_TOKEN = "minimax-e2e-fixture-token-not-a-user-secret";

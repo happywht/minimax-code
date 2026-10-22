@@ -12,11 +12,11 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import os
 import shutil
 from pathlib import Path
 from typing import Any
 
+from ....execution import capture_output, spawn_exec
 from ...tools.base import Tool, ToolResult
 from ...tools.file_ops import PathSecurityError, safe_resolve
 
@@ -79,11 +79,11 @@ class TypeCheckTool(Tool):
 
     async def _run_mypy(self, target: Path, max_findings: int) -> ToolResult | None:
         argv = ("mypy", "--output", "json", "--no-error-summary")
-        env = os.environ.copy()
+        env: dict[str, str] = {}
         env["FORCE_COLOR"] = "0"
 
         try:
-            proc = await asyncio.create_subprocess_exec(
+            proc = await spawn_exec(
                 *argv,
                 str(target),
                 env=env,
@@ -94,12 +94,8 @@ class TypeCheckTool(Tool):
             return None
 
         try:
-            stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+            stdout_b, _ = await capture_output(proc, timeout=60.0)
         except TimeoutError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
             return None
 
         import json as _json
@@ -139,11 +135,11 @@ class TypeCheckTool(Tool):
 
     async def _run_pyright(self, target: Path, max_findings: int) -> ToolResult | None:
         argv = ("pyright", "--outputjson")
-        env = os.environ.copy()
+        env: dict[str, str] = {}
         env["FORCE_COLOR"] = "0"
 
         try:
-            proc = await asyncio.create_subprocess_exec(
+            proc = await spawn_exec(
                 *argv,
                 str(target),
                 env=env,
@@ -154,12 +150,8 @@ class TypeCheckTool(Tool):
             return None
 
         try:
-            stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+            stdout_b, _ = await capture_output(proc, timeout=60.0)
         except TimeoutError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
             return None
 
         import json as _json

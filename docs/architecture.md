@@ -1,5 +1,7 @@
 # MiniMax Code 复刻 - 架构设计文档
 
+> 2026-10-22 基线说明：包版本已到 v1.6.0，本文保留早期设计背景，不能把目标能力视为当前已完成能力。当前接入状态以 [能力基线](capability-baseline.md) 为准；后续执行遵循 [个人生产路线图](production-roadmap.md)。现有 HTTP/WS 与 stdio 共用 170 个 RPC，下一阶段通过 RunService 收拢入口，不重写 React + Python 架构。
+
 > 这是整个项目的架构契约。所有后续任务（project-skeleton, storage-layer, agent-core, ui-shell, skills-system）都必须遵守本文定义的接口和模块边界。
 >
 > **v0.2.0 状态**：项目从 Tauri 桌面壳切到"web SPA + 本地 Python agent"。架构图、技术栈表、目录树、IPC 路由全部按 web 模式重写；v0.1.x 时代的 Rust / Tauri 描述已过时，仅作历史参考。详细切换说明见 [`docs/v0.2.0-web-architecture.md`](v0.2.0-web-architecture.md) 与 [`CHANGELOG.md`](../CHANGELOG.md) 的 v0.2.0 段。

@@ -25,8 +25,8 @@ from minimax_code.storage.dao.projects import ProjectsDAO
 from minimax_code.storage.dao.sessions import SessionsDAO
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 from minimax_code.workspace_ctx import (
+    WorkspaceUnavailableError,
     current_root,
-    env_or_cwd_root,
     reset_current_root,
     resolve_root_for_project_id,
     resolve_root_for_session,
@@ -144,10 +144,10 @@ async def test_worktree_workspace_path_wins_over_project_root(
 
 
 @pytest.mark.asyncio
-async def test_missing_project_root_dir_falls_back(
+async def test_missing_project_root_dir_blocks_execution(
     projects_dao: ProjectsDAO, sessions_dao: SessionsDAO, tmp_path: Path
 ) -> None:
-    """A deleted root directory degrades to the process root, not a crash."""
+    """A deleted root must never redirect a task into the service directory."""
     pid = _pid()
     await projects_dao.create(id=pid, name="Gone", root_path=str(tmp_path / "deleted"))
     sid = _sid()
@@ -156,9 +156,23 @@ async def test_missing_project_root_dir_falls_back(
     set_projects_dao(projects_dao)
     set_sessions_dao(sessions_dao)
 
-    assert await resolve_root_for_session(sid) == env_or_cwd_root()
-    # project-id resolution also degrades to the process root
-    assert await resolve_root_for_project_id(pid) == env_or_cwd_root()
+    with pytest.raises(WorkspaceUnavailableError, match="Rebind"):
+        await resolve_root_for_session(sid)
+    with pytest.raises(WorkspaceUnavailableError, match="Rebind"):
+        await resolve_root_for_project_id(pid)
+
+
+async def test_missing_worktree_does_not_fall_back_to_project(
+    projects_dao: ProjectsDAO, sessions_dao: SessionsDAO, tmp_path: Path
+) -> None:
+    pid, sid = _pid(), _sid()
+    await projects_dao.create(id=pid, name="Valid project", root_path=str(tmp_path))
+    await sessions_dao.create(id=sid, title="missing worktree", project_id=pid,
+                              workspace_mode="worktree", workspace_path=str(tmp_path / "gone"))
+    set_projects_dao(projects_dao)
+    set_sessions_dao(sessions_dao)
+    with pytest.raises(WorkspaceUnavailableError, match="Rebind"):
+        await resolve_root_for_session(sid)
 
 
 @pytest.mark.asyncio
@@ -184,6 +198,18 @@ async def test_env_root_used_when_project_has_no_root(
 # ---------------------------------------------------------------------------
 # ContextVar semantics
 # ---------------------------------------------------------------------------
+
+async def test_unknown_session_never_falls_back(sessions_dao):
+    set_sessions_dao(sessions_dao)
+    with pytest.raises(WorkspaceUnavailableError, match="no longer exists"):
+        await resolve_root_for_session("deleted-session")
+
+
+async def test_unavailable_session_storage_never_falls_back():
+    set_sessions_dao(None)
+    with pytest.raises(WorkspaceUnavailableError, match="storage is unavailable"):
+        await resolve_root_for_session("bound-session")
+
 
 
 @pytest.mark.asyncio

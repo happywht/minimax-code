@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### M1 — 执行边界与文件保全（进行中）
+
+- 项目/会话目录失效时停止执行；worktree 采用所选项目，删除拒绝脏目录、非注册目录与管理根目录，不再强制递归删除。
+- HTTP/WS/预览增加应用认证及 Host/Origin 校验；预览绑定当前会话。规划模式在执行层禁止命令和修改。
+- 终端、工具、Hooks、MCP、Git/Patch、检查点与检查命令逐步统一环境白名单、输出上限、取消及进程树回收；Windows 使用 kill-on-close Job，不能等同 OS 沙盒。
+- 文件写入、追加与合并使用原子替换；overlay 禁止 shell 和共享元数据写入。合并禁止自动覆盖冲突，部分失败不写完成回执，历史异常回执不能触发清理。
+- 修复 Git ref 选项注入、产物运行 ID 路径穿越、检查点路径与中文文件名处理。独立子 Agent worktree 及后续阶段仍在实施，尚未宣称个人生产验收完成。
+- 修复虚拟消息列表尺寸变化误停自动跟随；滚轮、键盘、触摸和滚动条操作可暂停跟随，回到底部继续。跨栈测试使用真实会话和明确认证等待，避免启动刷新竞态。
+
+### M0 — 可信验证基线
+
+- 修复时间线跨栈夹具的当前会话设置，增加其他会话事件不得混入的断言；保留产品端会话隔离。
+- MessageList 测试预加载真实懒加载模块，并限制 Vitest worker 并发，避免把冷模块转换耗时计入渲染断言超时。
+- 默认后端测试使用空 keyring、临时数据目录和外部连接拦截；分离受控协议回放与显式启用的 live 测试。
+- 增加带源码摘要、退出码、日志与 JUnit 证据的分层验证入口；Windows/Linux CI 连续三轮基线及独立全量后端任务。
+- 校正文档版本与 170 RPC / 33 命名空间统计，增加能力边界、验证说明和 M0–M7 实施台账。本阶段不引入生产数据库迁移。
+
 ### Removed
 
 - **退役设置页「API 密钥」tab**（#137）：legacy 全局 MiniMax key 的 UI 入口撤下，密钥管理统一收敛到「服务商」tab 的 per-provider 体系（builtin-minimax 也是一个 provider，一样配 key）。Web 侧六连删——`SettingsPage.tsx` 的 tab 类型/导航/渲染分支、`ApiKeyTab.tsx` 组件删除、settings barrel export、`strings.ts` 的 `settings.apiKey` 域（26 行）与 `tabApiKey`、命令面板 `设置：API 密钥` 入口；测试同步清理（`settings-split.test` barrel 断言 10→9、`settings-page.test` 删 5 个 api-key tab 测试与 secret mock）。**保留兼容**：`secrets.*` IPC 三方法、`mock.ts` 对应分支、`secretStore.ts` 原样保留（Providers tab 的 key 徽章仍走 `secrets.has_provider_key` 底座）。

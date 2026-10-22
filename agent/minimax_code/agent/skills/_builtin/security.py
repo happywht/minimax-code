@@ -18,12 +18,12 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import os
 import re
 import shutil
 from pathlib import Path
 from typing import Any
 
+from ....execution import capture_output, spawn_exec
 from ...tools.base import Tool, ToolResult
 from ...tools.file_ops import PathSecurityError, safe_resolve
 
@@ -96,11 +96,11 @@ class SecurityScanTool(Tool):
         elif min_severity == "medium":
             argv = ("bandit", "-r", "-f", "json", "-l", "-m")
 
-        env = os.environ.copy()
+        env: dict[str, str] = {}
         env["FORCE_COLOR"] = "0"
 
         try:
-            proc = await asyncio.create_subprocess_exec(
+            proc = await spawn_exec(
                 *argv,
                 str(target),
                 env=env,
@@ -111,12 +111,8 @@ class SecurityScanTool(Tool):
             return None
 
         try:
-            stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+            stdout_b, _ = await capture_output(proc, timeout=60.0)
         except TimeoutError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
             return None
 
         import json as _json

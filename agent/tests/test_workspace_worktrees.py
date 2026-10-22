@@ -128,11 +128,12 @@ async def test_delete_worktree_session_returns_to_local(
 class _StubProjectsDAO:
     """Minimal ProjectsDAO.get stand-in for the v1.3.0 project_id gate."""
 
-    def __init__(self, known: set[str]) -> None:
+    def __init__(self, known: set[str], root: Path | None = None) -> None:
         self._known = known
+        self._root = root
 
     async def get(self, project_id: str) -> object | None:
-        return object() if project_id in self._known else None
+        return {"root_path": str(self._root) if self._root else ""} if project_id in self._known else None
 
 
 @pytest.mark.asyncio
@@ -203,3 +204,53 @@ async def test_create_worktree_session_rejects_unknown_project_id(
     # Fail-fast guarantee: no orphaned checkout was created.
     if worktree_root.exists():
         assert list(worktree_root.iterdir()) == []
+
+
+async def test_bound_project_overrides_process_repository(tmp_path, git_repo, sessions_dao, monkeypatch):
+    import minimax_code.app as app_mod
+
+    monkeypatch.setattr(app_mod, "get_projects_dao",
+                        lambda: _StubProjectsDAO({"selected"}, git_repo))
+    wrong = tmp_path / "wrong-default"
+    wrong.mkdir()
+    stdout = io.StringIO()
+    server = IPCServer(config=Config.from_env(), stdin=io.StringIO(), stdout=stdout)
+    register_workspace_handlers(server, dao=sessions_dao, repo_root=wrong,
+                                worktree_root=tmp_path / "worktrees")
+    result = await request(server, stdout, "workspace.create_worktree_session",
+                           {"project_id": "selected"})
+    assert (Path(result["worktree_path"]) / "README.md").read_text() == "hello\n"
+
+
+async def test_missing_bound_project_does_not_fall_back(tmp_path, git_repo, sessions_dao, monkeypatch):
+    import minimax_code.app as app_mod
+
+    monkeypatch.setattr(app_mod, "get_projects_dao",
+                        lambda: _StubProjectsDAO({"selected"}, tmp_path / "gone"))
+    stdout = io.StringIO()
+    server = IPCServer(config=Config.from_env(), stdin=io.StringIO(), stdout=stdout)
+    root = tmp_path / "worktrees"
+    register_workspace_handlers(server, dao=sessions_dao, repo_root=git_repo, worktree_root=root)
+    with pytest.raises(RuntimeError, match="unavailable"):
+        await request(server, stdout, "workspace.create_worktree_session", {"project_id": "selected"})
+    assert not root.exists()
+
+
+@pytest.mark.parametrize("kind", ["dirty", "unregistered", "managed-root"])
+async def test_delete_preserves_user_files_on_refusal(tmp_path, git_repo, sessions_dao, kind):
+    stdout = io.StringIO()
+    server = IPCServer(config=Config.from_env(), stdin=io.StringIO(), stdout=stdout)
+    root = tmp_path / "worktrees"
+    register_workspace_handlers(server, dao=sessions_dao, repo_root=git_repo, worktree_root=root)
+    created = await request(server, stdout, "workspace.create_worktree_session", {})
+    original = Path(created["worktree_path"])
+    target = original if kind == "dirty" else (root if kind == "managed-root" else root / "unregistered")
+    target.mkdir(exist_ok=True)
+    marker = target / "user-data.txt"
+    marker.write_text("keep me", encoding="utf-8")
+    await sessions_dao.update(created["session_id"], workspace_path=str(target))
+    with pytest.raises(RuntimeError):
+        await request(server, stdout, "workspace.delete_worktree", {"session_id": created["session_id"]})
+    assert marker.read_text(encoding="utf-8") == "keep me"
+    assert original.exists()
+    assert (await sessions_dao.get(created["session_id"]))["workspace_mode"] == "worktree"

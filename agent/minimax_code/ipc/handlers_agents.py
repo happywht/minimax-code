@@ -370,6 +370,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
             )
             request = str(params["request"])
             session_id = params.get("session_id")
+            workspace_session_id = str(session_id).strip() if session_id else None
             if session_id is None or not str(session_id).strip():
                 # Sub-agent invocations don't need to live inside a
                 # real chat session, but the ``tasks`` table has a
@@ -433,7 +434,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 # v1.3.0: publish the session's workspace root for the
                 # invocation — top-level entry, so unlike runs spawned
                 # inside ``agent.send_message`` it must scope itself.
-                async with session_root_scope(session_id):
+                async with session_root_scope(workspace_session_id):
                     result = await runtime.invoke(
                         handle, session_id=session_id, request=request
                     )
@@ -672,7 +673,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 # v1.3.0: scope the run to the sub-session's root —
                 # mirrors the invoke handler above (top-level entry,
                 # no parent task context to inherit from).
-                async with session_root_scope(sub_session_id):
+                async with session_root_scope(parent_session_id):
                     result = await runtime.invoke(
                         handle, session_id=sub_session_id, request=request
                     )

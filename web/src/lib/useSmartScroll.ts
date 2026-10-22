@@ -20,15 +20,23 @@ export function useSmartScroll<T extends HTMLElement = HTMLDivElement>({
   const containerRef = useRef<T>(null);
   const followingRef = useRef(true);
   const frameRef = useRef<number | null>(null);
+  const pointerActiveRef = useRef(false);
   const previousKeyRef = useRef<unknown>(contentKey);
   const [isFollowing, setIsFollowing] = useState(true);
   const [newContentCount, setNewContentCount] = useState(0);
+
+  const pauseFollowing = useCallback(() => {
+    followingRef.current = false;
+    setIsFollowing(false);
+  }, []);
 
   const updateFollowState = useCallback(() => {
     const el = containerRef.current;
     if (!el) return true;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const next = distance <= thresholdPx;
+    // Virtual row measurements and scroll anchoring also dispatch scroll.
+    // Leaving the bottom disables follow only during an actual user gesture.
+    const next = distance <= thresholdPx || (followingRef.current && !pointerActiveRef.current);
     followingRef.current = next;
     setIsFollowing(next);
     if (next) setNewContentCount(0);
@@ -54,12 +62,63 @@ export function useSmartScroll<T extends HTMLElement = HTMLDivElement>({
     const onScroll = () => {
       updateFollowState();
     };
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) pauseFollowing();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) {
+        pauseFollowing();
+      }
+    };
+    const onPointerDown = () => { pointerActiveRef.current = true; };
+    const onPointerUp = () => { pointerActiveRef.current = false; };
+    let touchY: number | null = null;
+    const onTouchStart = (event: TouchEvent) => { touchY = event.touches[0]?.clientY ?? null; };
+    const onTouchMove = (event: TouchEvent) => {
+      const nextY = event.touches[0]?.clientY;
+      if (touchY != null && nextY != null && nextY > touchY) pauseFollowing();
+      touchY = nextY ?? null;
+    };
     el.addEventListener("scroll", onScroll, { passive: true });
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("keydown", onKeyDown);
+    el.addEventListener("pointerdown", onPointerDown, { passive: true });
+    window.addEventListener("pointerup", onPointerUp, { passive: true });
+    window.addEventListener("pointercancel", onPointerUp, { passive: true });
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: true });
     updateFollowState();
     return () => {
       el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("keydown", onKeyDown);
+      el.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
     };
-  }, [updateFollowState]);
+  }, [pauseFollowing, updateFollowState]);
+
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let resizeFrame: number | null = null;
+    const observer = new ResizeObserver(() => {
+      if (resizeFrame != null) cancelFrame(resizeFrame);
+      resizeFrame = requestFrame(() => {
+        resizeFrame = null;
+        if (followingRef.current) scrollToBottom("auto");
+      });
+    });
+    observer.observe(el);
+    // The virtualizer's height changes after lazy rows and markdown measure.
+    if (el.firstElementChild) observer.observe(el.firstElementChild);
+    return () => {
+      observer.disconnect();
+      if (resizeFrame != null) cancelFrame(resizeFrame);
+    };
+  }, [contentKey, scrollToBottom]);
 
   useLayoutEffect(() => {
     if (Object.is(previousKeyRef.current, contentKey)) return;

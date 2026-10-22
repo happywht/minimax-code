@@ -2,7 +2,7 @@
  * Tests for the MessageList — verifies the empty state renders and
  * that message bubbles are listed.
  */
-import { describe, expect, it, beforeEach, vi } from "vitest";
+import { describe, expect, it, beforeAll, beforeEach, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MessageList } from "../src/components/chat/MessageList";
 import { useChat } from "../src/stores";
@@ -24,6 +24,13 @@ async function flushFrames(frames: number): Promise<void> {
 }
 
 describe("MessageList", () => {
+  beforeAll(async () => {
+    // Load the real lazy boundary before timing DOM assertions. Its markdown
+    // dependency graph needs a cold Vite transform; that is module setup, not
+    // a rendering deadline. Keep Suspense and the actual component in use.
+    await import("../src/components/chat/MessageItem");
+  });
+
   beforeEach(() => {
     useChat.setState({
       messages: [],
@@ -167,6 +174,7 @@ describe("MessageList", () => {
     });
     Object.defineProperty(list, "scrollTo", { configurable: true, value: scrollTo });
 
+    fireEvent.wheel(list, { deltaY: -200 });
     fireEvent.scroll(list);
     expect(await screen.findByTestId("scroll-to-bottom-btn")).toHaveTextContent("最新");
 
@@ -209,6 +217,10 @@ describe("MessageList", () => {
 
     fireEvent.scroll(list);
 
+    // Layout growth emits a native scroll without user input. Following must
+    // survive until the next frame, when the new bottom is known.
+    Object.defineProperty(list, "scrollHeight", { configurable: true, value: 2000 });
+    fireEvent.scroll(list);
     act(() => {
       useChat.setState((s) => ({
         messages: s.messages.map((message) =>
@@ -228,7 +240,7 @@ describe("MessageList", () => {
     await flushFrames(3);
 
     await waitFor(() => {
-      expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "auto" });
+        expect(scrollTo).toHaveBeenCalledWith({ top: 2000, behavior: "auto" });
     });
     expect(screen.queryByTestId("scroll-to-bottom-btn")).not.toBeInTheDocument();
   });

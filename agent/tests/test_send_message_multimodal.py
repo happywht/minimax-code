@@ -77,7 +77,9 @@ class TestSendMessageMultimodal:
         mock_agent_mod.AgentConfig = MagicMock()
 
         mock_app_mod = MagicMock()
-        mock_app_mod.get_sessions_dao = MagicMock(return_value=None)
+        mock_app_mod.get_sessions_dao = MagicMock(
+            return_value=MagicMock(get=AsyncMock(return_value={"project_id": None}))
+        )
         mock_app_mod.init_runtime = AsyncMock()
 
         MagicMock()
@@ -132,7 +134,9 @@ class TestSendMessageMultimodal:
         mock_agent_mod.AgentConfig = MagicMock()
 
         mock_app_mod = MagicMock()
-        mock_app_mod.get_sessions_dao = MagicMock(return_value=None)
+        mock_app_mod.get_sessions_dao = MagicMock(
+            return_value=MagicMock(get=AsyncMock(return_value={"project_id": None}))
+        )
         mock_app_mod.init_runtime = AsyncMock()
 
         mock_msg_dao_mod = MagicMock()

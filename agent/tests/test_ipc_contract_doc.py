@@ -16,6 +16,7 @@ asserting, bidirectionally, that:
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -85,6 +86,20 @@ def _doc_tokens(namespaces: set[str]) -> set[str]:
 
 def test_doc_exists() -> None:
     assert DOC_PATH.is_file(), "docs/ipc-contract.md must exist"
+
+
+def test_agents_namespace_counts_match_registry() -> None:
+    """The contributor quick-reference must not advertise stale RPC counts."""
+    registered = _registered_methods()
+    counts = Counter(method.split(".")[0] for method in registered if "." in method)
+    doc = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    documented = dict(
+        (name, int(count))
+        for name, count in re.findall(r"\| `([a-z_]+)\.\*` \| (\d+) \|", doc)
+    )
+    assert documented == dict(counts)
+    assert f"{len(registered)} 个注册方法、{len(counts)} 个带点号命名空间" in doc
+    assert f"另有 {len(registered) - sum(counts.values())} 个无点号方法" in doc
 
 
 def test_every_registered_method_is_documented() -> None:

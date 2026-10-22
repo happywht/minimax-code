@@ -41,7 +41,7 @@ def app(workspace: Path):
 async def client(app):
     """httpx async client backed by the ASGI transport."""
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+    async with httpx.AsyncClient(transport=transport, base_url="http://test", headers={"Authorization": f"Bearer {app.state.auth.token}"}) as c:
         yield c
 
 
