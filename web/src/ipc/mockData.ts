@@ -32,6 +32,7 @@ export const mockProjects = new Map<string, Project>([
       name: "收件箱",
       description: "未归类任务默认目录",
       root_path: "",
+      validate_command: "",
       archived: false,
       created_at: Date.now(),
       updated_at: Date.now(),

@@ -55,6 +55,7 @@ export function WorkspaceSwitcher({
         name: "收件箱",
         description: "",
         root_path: "",
+        validate_command: "",
         archived: false,
         created_at: 0,
         updated_at: 0,

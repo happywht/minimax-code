@@ -460,6 +460,35 @@ async def _build_system_prompt_extra(
     except Exception:
         logger.debug("memory context generation failed; continuing without")
 
+    # M3 — acceptance contract. When the project declares a validate
+    # command, the model must run it (exec tool) before claiming a code
+    # change is done and quote the real result; the pipeline also runs
+    # it automatically on file-modifying runs, so honesty is enforced
+    # twice — once by instruction, once by evidence.
+    if project_id:
+        try:
+            from ..app import get_db as _get_db
+            from ..storage.dao.projects import ProjectsDAO
+            from ..verification import normalize_validate_command
+
+            _db = _get_db()
+            if _db is not None:
+                proj_row = await ProjectsDAO(_db).get(str(project_id))
+                _cmd = normalize_validate_command(
+                    (proj_row or {}).get("validate_command"))
+                if _cmd:
+                    parts.append(
+                        "Project acceptance contract: this project's "
+                        f"validation command is `{_cmd}`. Before you "
+                        "report a code change as complete, run it with "
+                        "the exec tool and quote the actual exit code "
+                        "and output. Never claim success while it "
+                        "fails; if it fails, fix the code or report "
+                        "the failure honestly."
+                    )
+        except Exception:
+            logger.debug("validate-command advisory build failed", exc_info=True)
+
     return "\n\n".join(parts) if parts else None
 
 
@@ -591,6 +620,18 @@ async def handle_agent_send_message(
         if required_workspace is not None and root != required_workspace:
             raise RuntimeError("Session workspace changed; restore its binding or start a new task")
         project_id = session.get("project_id")
+        # M3 — snapshot the project's acceptance command at admission so
+        # a mid-run rebind cannot swap what this run will be validated
+        # with. Unset / inbox (no project) means no automatic validation.
+        validate_command = ""
+        if project_id:
+            from ..storage.dao.projects import ProjectsDAO
+
+            proj_row = await ProjectsDAO(db).get(str(project_id))
+            if proj_row is not None:
+                from ..verification import normalize_validate_command
+
+                validate_command = normalize_validate_command(proj_row.get("validate_command"))
     except Exception as exc:
         await ctx.reply_error(-32602, f"Cannot start task: {exc}")
         return
@@ -664,12 +705,13 @@ async def handle_agent_send_message(
             dao=dao, session_id=session_id, request=request, request_key=key, title=title,
             metadata={"model_snapshot": model_snapshot.metadata(), "workspace_snapshot": root,
                       "project_id": project_id,
+                      "validate_command": validate_command,
                       "budget": {"limit_tokens": run_budget, "daily_limit": daily_limit,
                                  "daily_baseline": daily_baseline}},
             workspace=root, project_id=project_id,
             operation=execute, finalize=finalize, resumed_from_id=resumed_from_id,
             budget_tokens=run_budget, daily_baseline=daily_baseline,
-            daily_budget_limit=daily_limit)
+            daily_budget_limit=daily_limit, validate_command=validate_command)
     except (RequestConflictError, ValueError) as exc:
         await ctx.reply_error(-32602, str(exc))
         return
@@ -1325,6 +1367,31 @@ async def _handle_agent_send_message(
         "requires_review": bool(tool_failures) or bool(result.truncated),
         "failures": tool_failures[:5],
     }
+
+    # M3 — automatic acceptance. When the project declares a validate
+    # command and this run actually wrote files, run the command now and
+    # attach the evidence. A failing validation forces review: the
+    # verbal "done" cannot mask a failing project.
+    if job.validate_command and job.workspace:
+        try:
+            from ..app import ensure_fs_bus
+            from ..verification import (
+                resolve_validate_timeout,
+                run_touched_files,
+                run_validate_command,
+            )
+
+            if run_touched_files(ensure_fs_bus(), job.run_id):
+                validation = await run_validate_command(
+                    job.validate_command,
+                    cwd=job.workspace,
+                    timeout_s=resolve_validate_timeout(),
+                )
+                verification["validation"] = validation
+                if not validation.get("ok"):
+                    verification["requires_review"] = True
+        except Exception:
+            logger.exception("automatic validation failed; continuing without evidence")
     job.result = {
         "session_id": session_id,
         "message_id": current_assistant_message_id,

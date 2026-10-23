@@ -13,6 +13,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+# M3 — validate-command normalisation lives with its executor so the
+# handler and the acceptance runner share one definition of "configured".
+from ..verification import normalize_validate_command
 from .handler_utils import HandlerError, check_params
 from .protocol import INTERNAL_ERROR, INVALID_PARAMS
 from .server import Context
@@ -72,12 +75,16 @@ def register_project_handlers(server: Any, *, dao: Any = None) -> None:
                     INVALID_PARAMS,
                     f"root_path must be an existing directory: {root_path}",
                 )
+            validate_command = normalize_validate_command(params.get("validate_command"))
+            if len(validate_command) > 500:
+                raise HandlerError(INVALID_PARAMS, "validate_command must be at most 500 characters")
             new_id = f"proj_{uuid.uuid4().hex[:8]}"
             row = await proj_dao.create(
                 id=new_id,
                 name=name,
                 description=description.strip(),
                 root_path=root_path,
+                validate_command=validate_command,
             )
             await ctx.reply({"project": row})
         except HandlerError as exc:
@@ -109,6 +116,11 @@ def register_project_handlers(server: Any, *, dao: Any = None) -> None:
                         f"root_path must be an existing directory: {root_path}",
                     )
                 updates["root_path"] = root_path
+            if "validate_command" in params and params["validate_command"] is not None:
+                validate_command = normalize_validate_command(params["validate_command"])
+                if len(validate_command) > 500:
+                    raise HandlerError(INVALID_PARAMS, "validate_command must be at most 500 characters")
+                updates["validate_command"] = validate_command
             if not updates:
                 raise HandlerError(INVALID_PARAMS, "project.update: no fields to update")
             row = await proj_dao.update(project_id, **updates)

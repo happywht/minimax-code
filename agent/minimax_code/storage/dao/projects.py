@@ -50,17 +50,19 @@ class ProjectsDAO:
         description: str = "",
         archived: bool = False,
         root_path: str = "",
+        validate_command: str = "",
     ) -> dict[str, Any]:
         """Insert a new project and return the persisted row."""
         now = now_iso()
         sql = (
             "INSERT INTO projects (id, name, description, archived, root_path, "
-            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+            "validate_command, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         )
         async with self._db.transaction() as conn:
             await conn.execute(
                 sql,
-                (id, name, description, 1 if archived else 0, root_path, now, now),
+                (id, name, description, 1 if archived else 0, root_path,
+                 validate_command, now, now),
             )
         row = await self._db.fetchone("SELECT * FROM projects WHERE id = ?", (id,))
         return _hydrate(row)
@@ -76,12 +78,13 @@ class ProjectsDAO:
         name: str | None = None,
         description: str | None = None,
         root_path: str | None = None,
+        validate_command: str | None = None,
     ) -> dict[str, Any] | None:
-        """Rename, re-describe, or re-root a project.
+        """Rename, re-describe, re-root, or re-bind the validate command.
 
-        ``root_path`` follows tri-state semantics: ``None`` leaves it
-        untouched, ``""`` clears it back to the process-wide workspace,
-        and a non-empty string binds the project to that directory.
+        Tri-state semantics (``root_path`` and ``validate_command``):
+        ``None`` leaves the field untouched, ``""`` clears it, and a
+        non-empty string sets the new value.
         """
         if project_id == INBOX_ID:
             raise ValueError("cannot update the reserved inbox project")
@@ -96,6 +99,9 @@ class ProjectsDAO:
         if root_path is not None:
             sets.append("root_path = ?")
             params.append(root_path)
+        if validate_command is not None:
+            sets.append("validate_command = ?")
+            params.append(validate_command)
         if not sets:
             return await self.get(project_id)
         sets.append("updated_at = ?")
@@ -164,8 +170,10 @@ def _hydrate(row: Any) -> dict[str, Any] | None:
     if d is None:
         return None
     d["archived"] = bool(d.get("archived", 0))
-    # Defensive: rows read before migration 026 (or hand-built dicts) lack the column.
+    # Defensive: rows read before migration 026/032 (or hand-built dicts)
+    # lack the columns.
     d.setdefault("root_path", "")
+    d.setdefault("validate_command", "")
     return d
 
 
@@ -174,7 +182,7 @@ def create_sync(db, **fields) -> dict[str, Any]:  # type: ignore[no-untyped-def]
     now = now_iso()
     sql = (
         "INSERT INTO projects (id, name, description, archived, root_path, "
-        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        "validate_command, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     )
     with db.transaction() as conn:
         conn.execute(
@@ -185,6 +193,7 @@ def create_sync(db, **fields) -> dict[str, Any]:  # type: ignore[no-untyped-def]
                 fields.get("description", ""),
                 1 if fields.get("archived") else 0,
                 fields.get("root_path", ""),
+                fields.get("validate_command", ""),
                 now,
                 now,
             ),

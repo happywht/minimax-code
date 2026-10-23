@@ -123,8 +123,8 @@ export interface SessionState {
   setFilter: (filter: SessionFilter) => void;
   setCurrentProject: (id: string | null) => void;
   toggleProjectExpanded: (id: string) => void;
-  createProject: (name: string, description?: string, rootPath?: string) => Promise<Project | null>;
-  updateProject: (id: string, fields: { name?: string; description?: string; root_path?: string }) => Promise<void>;
+  createProject: (name: string, description?: string, rootPath?: string, validateCommand?: string) => Promise<Project | null>;
+  updateProject: (id: string, fields: { name?: string; description?: string; root_path?: string; validate_command?: string }) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
   archiveProject: (id: string) => Promise<void>;
   unarchiveProject: (id: string) => Promise<void>;
@@ -425,12 +425,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
-  createProject: async (name: string, description?: string, rootPath?: string) => {
+  createProject: async (name: string, description?: string, rootPath?: string, validateCommand?: string) => {
     try {
       const r = await typedIPC.createProject({
         name,
         description,
         root_path: rootPath?.trim() ? rootPath.trim() : undefined,
+        validate_command: validateCommand?.trim() ? validateCommand.trim() : undefined,
       });
       set((s) => ({
         projects: [r.project, ...s.projects],
@@ -444,7 +445,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
-  updateProject: async (id: string, fields: { name?: string; description?: string; root_path?: string }) => {
+  updateProject: async (id: string, fields: { name?: string; description?: string; root_path?: string; validate_command?: string }) => {
     try {
       const r = await typedIPC.updateProject(id, fields);
       if (r.project) {

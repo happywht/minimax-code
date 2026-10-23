@@ -422,7 +422,7 @@ function mockHandle(
     }
 
     case "project.create": {
-      const p = params as { name: string; description?: string; root_path?: string };
+      const p = params as { name: string; description?: string; root_path?: string; validate_command?: string };
       const pid = `proj_${Math.random().toString(36).slice(2, 10)}`;
       const now = Date.now();
       const project = {
@@ -430,6 +430,7 @@ function mockHandle(
         name: p.name,
         description: p.description ?? "",
         root_path: p.root_path ?? "",
+        validate_command: p.validate_command ?? "",
         archived: false,
         created_at: now,
         updated_at: now,
@@ -439,12 +440,13 @@ function mockHandle(
     }
 
     case "project.update": {
-      const p = params as { project_id: string; name?: string; description?: string; root_path?: string };
+      const p = params as { project_id: string; name?: string; description?: string; root_path?: string; validate_command?: string };
       const project = mockProjects.get(p.project_id);
       if (!project) return { ok: false, project: null };
       if (p.name !== undefined) project.name = p.name;
       if (p.description !== undefined) project.description = p.description;
       if (p.root_path !== undefined) project.root_path = p.root_path;
+      if (p.validate_command !== undefined) project.validate_command = p.validate_command;
       project.updated_at = Date.now();
       return { ok: true, project };
     }

@@ -48,6 +48,7 @@ describe("Sidebar", () => {
           name: "收件箱",
           description: "",
           root_path: "",
+          validate_command: "",
           archived: false,
           created_at: Date.now(),
           updated_at: Date.now(),

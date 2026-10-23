@@ -122,6 +122,7 @@ export function Sidebar({
   const [createName, setCreateName] = useState("");
   // v1.3.0: optional absolute workspace root anchoring the new project.
   const [createRoot, setCreateRoot] = useState("");
+  const [createValidate, setCreateValidate] = useState("");
   const [renameTarget, setRenameTarget] = useState<Project | null>(null);
   const [renameName, setRenameName] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
@@ -211,6 +212,7 @@ export function Sidebar({
       name: "收件箱",
       description: "",
       root_path: "",
+      validate_command: "",
       archived: false,
       created_at: Date.now(),
       updated_at: Date.now(),
@@ -252,12 +254,14 @@ export function Sidebar({
     const name = createName.trim();
     if (!name) return;
     const rootPath = createRoot.trim() || undefined;
-    const project = await createProject(name, undefined, rootPath);
+    const validateCommand = createValidate.trim() || undefined;
+    const project = await createProject(name, undefined, rootPath, validateCommand);
     if (project) {
       setCurrentProject(project.id);
       setCreateOpen(false);
       setCreateName("");
       setCreateRoot("");
+      setCreateValidate("");
     }
   };
 
@@ -825,6 +829,16 @@ export function Sidebar({
             value={createRoot}
             onChange={(e) => setCreateRoot(e.target.value)}
             placeholder="例如 D:\projects\my-app（留空则不绑定）"
+          />
+          <p className="mt-3 mb-1 text-[11px] text-ink-2">
+            验证命令（可选）：项目声明的验收命令（如 pytest -x -q）。Agent 修改文件的
+            任务完成前会自动执行它，真实结果计入验收证据，失败将标记需人工复核。
+          </p>
+          <Input
+            data-testid="sidebar-create-project-validate"
+            value={createValidate}
+            onChange={(e) => setCreateValidate(e.target.value)}
+            placeholder="例如 pytest -x -q 或 npm test（留空则不验证）"
           />
         </Modal>
       )}

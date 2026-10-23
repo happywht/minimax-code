@@ -38,6 +38,9 @@ class RunJob:
     budget_tokens: int | None = None
     daily_baseline: int = 0
     daily_budget_limit: int | None = None
+    # M3 — the project's acceptance command, snapshotted at admission so
+    # a mid-run rebind cannot swap what the run will be validated with.
+    validate_command: str = ""
 
 
 class RunService:
@@ -103,6 +106,7 @@ class RunService:
         resumed_from_id: str | None = None,
         budget_tokens: int | None = None, daily_baseline: int = 0,
         daily_budget_limit: int | None = None,
+        validate_command: str = "",
     ) -> tuple[dict[str, Any], RunJob | None, bool]:
         async def accept():
             async with self._admission_lock:
@@ -117,7 +121,8 @@ class RunService:
                              message_id=run["assistant_message_id"], workspace=workspace,
                              project_id=project_id, budget_tokens=budget_tokens,
                              daily_baseline=daily_baseline,
-                             daily_budget_limit=daily_budget_limit)
+                             daily_budget_limit=daily_budget_limit,
+                             validate_command=validate_command)
                 try:
                     self.submit(session_id, operation, job=job, finalize=finalize)
                 except BaseException:

@@ -155,8 +155,8 @@ export interface TypedIPC {
 
   // project
   listProjects(opts?: { archived?: boolean }): Promise<ListProjectsResult>;
-  createProject(opts: { name: string; description?: string; root_path?: string }): Promise<CreateProjectResult>;
-  updateProject(projectId: string, fields: { name?: string; description?: string; root_path?: string }): Promise<UpdateProjectResult>;
+  createProject(opts: { name: string; description?: string; root_path?: string; validate_command?: string }): Promise<CreateProjectResult>;
+  updateProject(projectId: string, fields: { name?: string; description?: string; root_path?: string; validate_command?: string }): Promise<UpdateProjectResult>;
   deleteProject(projectId: string): Promise<{ ok: true; project_id: string }>;
   archiveProject(projectId: string): Promise<{ ok: true; project: import("../types/ipc").Project }>;
   unarchiveProject(projectId: string): Promise<{ ok: true; project: import("../types/ipc").Project }>;

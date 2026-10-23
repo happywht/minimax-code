@@ -831,6 +831,12 @@ export interface Project {
   description: string;
   /** v1.3.0: absolute workspace root this project is anchored at ("" = unrooted). */
   root_path: string;
+  /**
+   * M3: command that proves this project's code is good (e.g. `pytest -x`).
+   * Runs that modify files execute it and attach the result to the run's
+   * acceptance evidence ("" = no automatic validation).
+   */
+  validate_command: string;
   archived: boolean;
   created_at: number;
   updated_at: number;
