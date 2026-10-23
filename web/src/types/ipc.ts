@@ -754,6 +754,16 @@ export interface SendMessageResult {
   budget_paused?: boolean;
   /** M2 — budget snapshot at the end of the run (null when unbudgeted). */
   budget?: { limit_tokens: number | null; daily_limit: number | null; used_tokens: number; pauses: number } | null;
+  /**
+   * M2 — acceptance evidence. Failed tool calls mean the verbal "done"
+   * is not a verified completion (运行结束 ≠ 验收通过).
+   */
+  verification?: {
+    tool_calls: number;
+    failed_tool_calls: number;
+    requires_review: boolean;
+    failures: { tool: string; error: string }[];
+  };
   iterations?: number;
   /** v1.1.0: blocks ran behind this send (auto-continue; 1 when off). */
   blocks?: number;

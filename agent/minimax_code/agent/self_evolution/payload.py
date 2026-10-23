@@ -128,15 +128,55 @@ async def _run_prompt(prompt: str) -> dict[str, Any]:
 
     Without an API key configured the client runs in mock mode, which
     keeps this path exercisable in dev and CI.
+
+    M2 budget guard — an unattended job must never spend outside the
+    daily cap: the call is refused before it starts when today's
+    already-spent total (the same ``messages`` SUM the chat admission
+    gate reads) is at or over ``MINIMAX_CODE_DAILY_BUDGET_TOKENS``. The
+    turn's own usage is returned under ``tokens_used`` so the ``tasks``
+    row shows what the fire cost even though this path does not yet run
+    inside the RunService (planned for M5).
     """
     # Deferred import, mirroring the scheduler's own lazy wiring of this
     # module, keeps the import graph acyclic at load time.
+    from ...app import get_db
+    from ...budget import daily_budget_limit
     from ..llm import MiniMaxClient
+
+    limit = daily_budget_limit()
+    if limit is not None:
+        spent = 0
+        db = get_db()
+        if db is not None:
+            try:
+                row = await db.fetchone(
+                    "SELECT COALESCE(SUM(tokens_in + tokens_out), 0) AS n FROM messages "
+                    "WHERE date(created_at) = date('now', 'localtime')"
+                )
+                spent = int(row["n"] or 0) if row else 0
+            except Exception:  # noqa: BLE001 — fail-open on the read only
+                spent = 0
+        if spent >= limit:
+            return {
+                "ok": False,
+                "error": (
+                    f"daily token budget exhausted ({spent} spent of {limit}); "
+                    "scheduled prompt refused"
+                ),
+                "daily_budget": {"limit": limit, "spent": spent},
+            }
 
     try:
         async with MiniMaxClient() as client:
             response = await client.chat([{"role": "user", "content": prompt}])
-        return {"ok": True, "output": _content_text(response.message)}
+        usage = response.usage or {}
+        return {
+            "ok": True,
+            "output": _content_text(response.message),
+            "tokens_used": int(usage.get("total_tokens")
+                               or (int(usage.get("prompt_tokens") or 0)
+                                   + int(usage.get("completion_tokens") or 0))),
+        }
     except Exception as exc:
         # Returning an ``error`` key lets ``_fire`` mark the task row
         # ``failed`` with the reason instead of crashing the executor.

@@ -100,7 +100,7 @@ MiniMax Code 的前端界面。基于 React 18 + Vite + TypeScript + Tailwind CS
 - `PermissionRule` — 权限规则
 - `GitStatusResult` / `GitDiffResult` / `GitLogEntry` — Git 数据
 
-流式事件类型（`StreamEvent` 枚举，16 个，与 `agent/tests/test_ipc_contract_doc.py` 锁死同步）：
+流式事件类型（`StreamEvent` 枚举，17 个，与 `agent/tests/test_ipc_contract_doc.py` 锁死同步）：
 - `agent.message_chunk` / `agent.status` / `agent.tool_call` / `agent.tool_result`
 - `agent.ask_user` — 模型挂起等待澄清回答（v1.1.1 问答卡）
 - `permission.request` / `permission.resolved`

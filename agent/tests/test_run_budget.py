@@ -246,14 +246,18 @@ async def native(monkeypatch, tmp_path):
             if native.exhausted:
                 return SimpleNamespace(final_text="Paused", iterations=1, usage={},
                                        truncated=False, cancelled=False, compactions=0,
-                                       budget_exhausted=True)
+                                       budget_exhausted=True,
+                                       tool_calls=[], tool_results=[])
             return SimpleNamespace(final_text="done", iterations=1, usage={},
                                    truncated=False, cancelled=False, compactions=0,
-                                   budget_exhausted=False)
+                                   budget_exhausted=False,
+                                   tool_calls=native.tool_calls,
+                                   tool_results=native.tool_results)
 
     monkeypatch.setattr(agent, "AgentCore", Core)
     native = SimpleNamespace(db=db, dao=AgentRunsDAO(db), server=server, cores=cores,
-                             started=started, release=release, exhausted=True, root=tmp_path)
+                             started=started, release=release, exhausted=True, root=tmp_path,
+                             tool_calls=[], tool_results=[])
     try:
         yield native
     finally:
@@ -384,3 +388,36 @@ async def test_recover_orphans_closes_budget_paused_runs_without_review_flag(nat
     payload = steps[-1]["payload"]
     assert payload["requires_review"] is False
     assert payload["previous_status"] == "budget_paused"
+
+
+async def test_receipt_carries_verification_evidence(native) -> None:
+    """M2 acceptance semantics: failed tool calls must not melt into a
+    plain "completed" — the receipt and the run row both carry the
+    failure evidence so a caller can demand review."""
+    native.exhausted = False
+    native.tool_calls = [{"name": "write_file", "id": "t1"},
+                         {"name": "exec_command", "id": "t2"}]
+    native.tool_results = [SimpleNamespace(success=True, error=None),
+                           SimpleNamespace(success=False, error="exit code 1: tests failed")]
+    await _send(native, {"session_id": "one", "content": "do the thing"})
+    run = (await native.dao.list_runs(session_id="one"))[0]
+    receipt = await native.dao.result_payload(run["id"])
+    assert receipt["verification"]["tool_calls"] == 2
+    assert receipt["verification"]["failed_tool_calls"] == 1
+    assert receipt["verification"]["requires_review"] is True
+    assert receipt["verification"]["failures"] == [
+        {"tool": "exec_command", "error": "exit code 1: tests failed"}]
+    # The durable run row mirrors the same evidence.
+    assert run["metadata"]["verification"]["failed_tool_calls"] == 1
+    assert run["status"] == "completed"  # status stays; evidence separates
+
+
+async def test_clean_receipt_requires_no_review(native) -> None:
+    native.exhausted = False
+    native.tool_calls = [{"name": "read_file", "id": "t1"}]
+    native.tool_results = [SimpleNamespace(success=True, error=None)]
+    await _send(native, {"session_id": "one", "content": "just read"})
+    run = (await native.dao.list_runs(session_id="one"))[0]
+    receipt = await native.dao.result_payload(run["id"])
+    assert receipt["verification"]["failed_tool_calls"] == 0
+    assert receipt["verification"]["requires_review"] is False

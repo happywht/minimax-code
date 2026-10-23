@@ -279,7 +279,10 @@ async def test_dispatcher_runs_prompt_payload_with_llm(monkeypatch, tmp_path):
     runner_fn = build_payload_runner(str(tmp_path), report_dir=tmp_path / "reports")
     result = await runner_fn({"prompt": "summarise yesterday's commits"})
 
-    assert result == {"ok": True, "output": "morning digest ready"}
+    # v1.6.1: the fire's token cost is surfaced for the tasks row.
+    assert result["ok"] is True
+    assert result["output"] == "morning digest ready"
+    assert result["tokens_used"] == 0  # mock usage is empty
     # One fresh client per fire, and the prompt reached it as a user turn.
     assert len(fake.instances) == 1
     assert fake.instances[0].prompts == [
@@ -323,3 +326,55 @@ def test_content_text_handles_string_and_block_shapes():
     assert payload_mod._content_text({"content": blocks}) == "hello world"
     assert payload_mod._content_text({}) == ""
     assert payload_mod._content_text({"content": 42}) == ""
+
+
+# ---------------------------------------------------------------------------
+# build_payload_runner — M2 daily budget guard on the prompt branch
+# ---------------------------------------------------------------------------
+
+
+async def test_prompt_refused_when_daily_budget_exhausted(monkeypatch, tmp_path):
+    """An unattended prompt must not spend once the day is over its cap.
+
+    The gate reads the same ``messages`` SUM the chat admission path
+    uses, and refusal lands as a structured ``error`` key so ``_fire``
+    marks the ``tasks`` row failed with the reason.
+    """
+    from minimax_code.storage.dao.messages import MessagesDAO
+    from minimax_code.storage.dao.sessions import SessionsDAO
+    from minimax_code.storage.db import AsyncDatabase
+
+    db = AsyncDatabase(tmp_path / "budget.db")
+    await db.connect()
+    await db.migrate()
+    await SessionsDAO(db).create(id="ses", title="ses")
+    await MessagesDAO(db).create(id="m1", session_id="ses", role="assistant",
+                                 content="spent", tokens_in=60, tokens_out=60)
+    monkeypatch.setenv("MINIMAX_CODE_DAILY_BUDGET_TOKENS", "100")
+    monkeypatch.setattr("minimax_code.app.get_db", lambda: db)
+
+    fake = _fake_llm_client()
+    monkeypatch.setattr("minimax_code.agent.llm.MiniMaxClient", fake)
+    try:
+        runner_fn = build_payload_runner(str(tmp_path), report_dir=tmp_path / "reports")
+        result = await runner_fn({"prompt": "unattended work"})
+    finally:
+        await db.close()
+
+    assert result["ok"] is False
+    assert "daily token budget exhausted" in result["error"]
+    assert result["daily_budget"] == {"limit": 100, "spent": 120}
+    assert fake.instances == []  # refused before any model call
+
+
+async def test_prompt_runs_when_daily_budget_unset(monkeypatch, tmp_path):
+    """No daily cap configured → the prompt path is unchanged."""
+    monkeypatch.delenv("MINIMAX_CODE_DAILY_BUDGET_TOKENS", raising=False)
+    fake = _fake_llm_client(reply="still works")
+    monkeypatch.setattr("minimax_code.agent.llm.MiniMaxClient", fake)
+
+    runner_fn = build_payload_runner(str(tmp_path), report_dir=tmp_path / "reports")
+    result = await runner_fn({"prompt": "hello"})
+
+    assert result["ok"] is True
+    assert result["output"] == "still works"

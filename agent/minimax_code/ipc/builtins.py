@@ -247,13 +247,15 @@ class _RunRecorder:
         )
         await self.emit("run.step.completed", {"run_id": self.run_id, "step": step})
 
-    async def complete(self, result: Any, *, blocks: int = 1, receipt: dict[str, Any] | None = None) -> None:
+    async def complete(self, result: Any, *, blocks: int = 1, receipt: dict[str, Any] | None = None,
+                       verification: dict[str, Any] | None = None) -> None:
         """Close the run timeline with the final block accounting.
 
         ``blocks`` counts the auto-continue blocks behind this one
         send-message call (1 when auto-continue is off). ``iterations``
         and ``compactions`` on ``result`` are already summed across
-        blocks by ``_run_with_auto_continue``.
+        blocks by ``_run_with_auto_continue``. ``verification`` carries
+        the acceptance evidence (tool failure counts) into the run row.
         """
         if self.dao is None:
             return
@@ -269,6 +271,7 @@ class _RunRecorder:
                 "truncated": getattr(result, "truncated", False),
                 "blocks": blocks,
                 "compactions": getattr(result, "compactions", 0),
+                "verification": verification,
             },
         )
         step = await self.dao.complete_step(step["id"])
@@ -294,6 +297,7 @@ class _RunRecorder:
                 "blocks": blocks,
                 "compactions": getattr(result, "compactions", 0),
                 "budget_exhausted": budget_exhausted,
+                "verification": verification,
             },
         )
         await self.emit("run.completed", {"run": run})
@@ -1304,6 +1308,23 @@ async def _handle_agent_send_message(
             except Exception:
                 logger.debug("telemetry session_end emit failed", exc_info=True)
 
+    # M2 — acceptance evidence. A run's verbal "done" is not proof: any
+    # failed tool call is surfaced here so a completion with failed
+    # commands can be told apart from a verified one (运行结束 ≠ 验收通过).
+    # Defensive access: stub cores in tests may omit the log fields.
+    tool_calls_log = getattr(result, "tool_calls", None) or []
+    tool_results_log = getattr(result, "tool_results", None) or []
+    tool_failures = [
+        {"tool": str(call.get("name") or "unknown"), "error": str(getattr(res, "error", None) or "")[:300]}
+        for call, res in zip(tool_calls_log, tool_results_log, strict=True)
+        if not getattr(res, "success", True)
+    ]
+    verification = {
+        "tool_calls": len(tool_calls_log),
+        "failed_tool_calls": len(tool_failures),
+        "requires_review": bool(tool_failures) or bool(result.truncated),
+        "failures": tool_failures[:5],
+    }
     job.result = {
         "session_id": session_id,
         "message_id": current_assistant_message_id,
@@ -1316,6 +1337,7 @@ async def _handle_agent_send_message(
         # completion without decoding the run status enum.
         "budget_paused": bool(getattr(result, "budget_exhausted", False)),
         "budget": core.budget.snapshot() if core.budget is not None else None,
+        "verification": verification,
         # v1.1.0: block accounting for auto-continue (1 when off) —
         # iterations/compactions above are already summed across
         # blocks by _run_with_auto_continue.
@@ -1325,7 +1347,7 @@ async def _handle_agent_send_message(
         "tokens_in": result.usage.get("prompt_tokens", 0),
         "tokens_out": result.usage.get("completion_tokens", 0),
     }
-    await recorder.complete(result, blocks=blocks, receipt=job.result)
+    await recorder.complete(result, blocks=blocks, receipt=job.result, verification=verification)
     await ctx.reply(job.result)
 
 
