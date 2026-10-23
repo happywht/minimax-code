@@ -32,6 +32,12 @@ class RunJob:
     error: dict[str, Any] | None = None
     workspace: str | None = None
     project_id: str | None = None
+    # M2 — resolved budget for this run (None = unlimited) and the
+    # day's already-spent total captured at admission. Execution reads
+    # them off the job; resume overrides come in through the same path.
+    budget_tokens: int | None = None
+    daily_baseline: int = 0
+    daily_budget_limit: int | None = None
 
 
 class RunService:
@@ -95,6 +101,8 @@ class RunService:
         project_id: str | None, operation: Callable[[RunJob], Awaitable[Any]],
         finalize: Callable[[RunJob, BaseException | None], Awaitable[None]],
         resumed_from_id: str | None = None,
+        budget_tokens: int | None = None, daily_baseline: int = 0,
+        daily_budget_limit: int | None = None,
     ) -> tuple[dict[str, Any], RunJob | None, bool]:
         async def accept():
             async with self._admission_lock:
@@ -107,7 +115,9 @@ class RunService:
                     return run, self._by_run.get(run["id"]), False
                 job = RunJob(session_id, run_id=run["id"], dao=dao,
                              message_id=run["assistant_message_id"], workspace=workspace,
-                             project_id=project_id)
+                             project_id=project_id, budget_tokens=budget_tokens,
+                             daily_baseline=daily_baseline,
+                             daily_budget_limit=daily_budget_limit)
                 try:
                     self.submit(session_id, operation, job=job, finalize=finalize)
                 except BaseException:

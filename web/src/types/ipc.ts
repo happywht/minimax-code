@@ -725,6 +725,8 @@ export interface SendMessageParams {
   content: string | ContentPart[];
   idempotency_key?: string;
   mode?: "chat" | "plan" | "execute";
+  /** M2 — per-run token budget; omit defers to the env default, 0 disables. */
+  budget_tokens?: number;
 }
 
 export interface RunStartParams extends SendMessageParams {
@@ -748,6 +750,10 @@ export interface SendMessageResult {
   cancelled?: boolean;
   /** v1.1.0: the turn ended budget-truncated (no final answer). */
   truncated?: boolean;
+  /** M2 — the run paused at a call boundary on its token budget. */
+  budget_paused?: boolean;
+  /** M2 — budget snapshot at the end of the run (null when unbudgeted). */
+  budget?: { limit_tokens: number | null; daily_limit: number | null; used_tokens: number; pauses: number } | null;
   iterations?: number;
   /** v1.1.0: blocks ran behind this send (auto-continue; 1 when off). */
   blocks?: number;

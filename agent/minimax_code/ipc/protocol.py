@@ -35,6 +35,10 @@ class SendMessageParams(_Base):
     content: str | list[dict[str, Any]]
     mode: Literal["chat", "plan", "execute"] = "chat"
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+    # M2 — per-run token budget. None defers to the env default
+    # (MINIMAX_CODE_RUN_BUDGET_TOKENS); 0 disables budgeting for this
+    # run; a positive value caps the run (and its sub-agents).
+    budget_tokens: int | None = Field(default=None, ge=0)
 
 
 class RunStartParams(SendMessageParams):
@@ -52,6 +56,9 @@ class RunIdParams(BaseModel):
 class RunResumeParams(RunIdParams):
     idempotency_key: str = Field(min_length=1, max_length=128)
     reviewed: bool = False
+    # M2 — raise the per-run cap when resuming a budget_paused run.
+    # None inherits the original run's cap from its metadata.
+    budget_tokens: int | None = Field(default=None, ge=0)
 
 
 class SendMessageResult(_Base):

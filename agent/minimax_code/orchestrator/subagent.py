@@ -416,6 +416,15 @@ class SubAgentRuntime:
         core = AgentCore(
             llm=self._llm, registry=effective_registry, config=core_config
         )
+        # M2 — parent+child shared budget. The parent run publishes its
+        # BudgetState via ContextVar before dispatching tools; a sub-agent
+        # spawned inside that scope spends from the same pot, so the run
+        # cap covers every token the task (and its children) burn.
+        from ..budget import current_budget
+
+        shared_budget = current_budget()
+        if shared_budget is not None:
+            core.budget = shared_budget
         return SubAgentHandle(agent_id=config.id, config=config, core=core)
 
     # -- invoke ------------------------------------------------------------

@@ -150,26 +150,46 @@ def register_run_handlers(server: Any) -> None:
             request = RunResumeParams.model_validate(params)
             dao = await _get_dao()
             run = await dao.get_run(request.run_id)
-            if run is None or run["status"] not in {"interrupted", "failed", "cancelled"}:
-                raise HandlerError(INVALID_PARAMS, "Only interrupted, failed or cancelled runs can be resumed")
+            if run is None or run["status"] not in {"interrupted", "failed", "cancelled", "budget_paused"}:
+                raise HandlerError(INVALID_PARAMS, "Only interrupted, failed, cancelled or budget-paused runs can be resumed")
             previous = await dao.request_payload(request.run_id)
             metadata = run.get("metadata") or {}
             if previous is None or not metadata.get("model_snapshot") or not metadata.get("workspace_snapshot"):
                 raise HandlerError(INVALID_PARAMS, "This legacy run has no saved request/context; start a new task with a handoff")
-            if run.get("started_at") and not request.reviewed:
+            # A budget pause is a clean stop at a call boundary — no
+            # uncertain writes, so the review gate only applies to the
+            # other resumable statuses.
+            if run["status"] != "budget_paused" and run.get("started_at") and not request.reviewed:
                 raise HandlerError(INVALID_PARAMS, "Review the prior steps and workspace before resuming; their effects will not be automatically replayed")
+            # M2 — budget: explicit override wins; otherwise inherit the
+            # original cap so a plain resume cannot silently exceed what
+            # the caller first authorised.
+            saved_budget = (metadata.get("budget") or {}).get("limit_tokens")
+            budget_override = request.budget_tokens if request.budget_tokens is not None else saved_budget
+            if run["status"] == "budget_paused" and request.budget_tokens is None:
+                raise HandlerError(
+                    INVALID_PARAMS,
+                    "This run paused on its token budget; pass budget_tokens to raise the cap before resuming",
+                )
             note = (
                 f"\n\n[Runtime recovery context: prior run {run['id']} ended as {run['status']}. "
                 "Continue the original task after inspecting the existing workspace and prior conversation. "
                 "Verify which actions already took effect before repeating a write. No tool step has been automatically retried.]"
             )
+            if run["status"] == "budget_paused":
+                note = (
+                    f"\n\n[Budget recovery context: prior run {run['id']} paused at a model-call "
+                    f"boundary with its token budget exhausted. The workspace reflects only confirmed "
+                    "effects; continue the task with the raised budget.]"
+                )
             content = previous["content"]
             if isinstance(content, list):
                 content = [*content, {"type": "text", "text": note}]
             else:
                 content += note
             await handle_agent_send_message(
-                {**previous, "content": content, "idempotency_key": request.idempotency_key},
+                {**previous, "content": content, "idempotency_key": request.idempotency_key,
+                 "budget_tokens": budget_override},
                 ctx, wait=False, resumed_from_id=run["id"],
                 required_model=metadata["model_snapshot"], required_workspace=metadata["workspace_snapshot"])
         except ValidationError as exc:

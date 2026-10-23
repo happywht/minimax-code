@@ -273,9 +273,16 @@ class _RunRecorder:
         )
         step = await self.dao.complete_step(step["id"])
         await self.emit("run.step.completed", {"run_id": self.run_id, "step": step})
+        # M2 — a budget pause is a clean stop at a call boundary: the
+        # run is neither completed nor failed, and run.resume continues
+        # it without the review gate.
+        cancelled = bool(getattr(result, "cancelled", False))
+        budget_exhausted = bool(getattr(result, "budget_exhausted", False))
+        status = "cancelled" if cancelled else (
+            "budget_paused" if budget_exhausted else "completed")
         run = await self.dao.update_run_status(
             self.run_id,
-            status="cancelled" if getattr(result, "cancelled", False) else "completed",
+            status=status,
             assistant_message_id=self.assistant_message_id,
             result=receipt,
             metadata={
@@ -286,6 +293,7 @@ class _RunRecorder:
                 "truncated": getattr(result, "truncated", False),
                 "blocks": blocks,
                 "compactions": getattr(result, "compactions", 0),
+                "budget_exhausted": budget_exhausted,
             },
         )
         await self.emit("run.completed", {"run": run})
@@ -583,6 +591,35 @@ async def handle_agent_send_message(
         await ctx.reply_error(-32602, f"Cannot start task: {exc}")
         return
 
+    # M2 — resolve the run budget before admission. The daily baseline
+    # (today's spent total) is queried once here; the in-flight run adds
+    # its own usage on top inside the core. A day already over its cap
+    # refuses new work fast, before any model call.
+    from ..budget import daily_budget_limit, resolve_run_budget
+
+    budget_override = params.get("budget_tokens")
+    run_budget = resolve_run_budget(budget_override)
+    daily_limit = daily_budget_limit()
+    daily_baseline = 0
+    if daily_limit is not None:
+        try:
+            row = await db.fetchone(
+                "SELECT COALESCE(SUM(tokens_in + tokens_out), 0) AS n FROM messages "
+                "WHERE date(created_at) = date('now', 'localtime')"
+            )
+            daily_baseline = int(row["n"] or 0) if row else 0
+        except Exception:
+            logger.warning("daily budget baseline query failed; treating as 0", exc_info=True)
+            daily_baseline = 0
+        if daily_baseline >= daily_limit:
+            await ctx.reply_error(
+                LLM_ERROR,
+                f"Daily token budget exhausted ({daily_baseline} spent of {daily_limit}); "
+                "raise MINIMAX_CODE_DAILY_BUDGET_TOKENS or wait for the next day",
+                {"daily_budget": {"limit": daily_limit, "spent": daily_baseline}},
+            )
+            return
+
     async def execute(job: RunJob) -> None:
         try:
             from ..orchestrator.subagent import SubAgentRuntime, subagent_runtime_scope
@@ -602,7 +639,9 @@ async def handle_agent_send_message(
 
     async def finalize(job: RunJob, error: BaseException | None) -> None:
         current = await dao.get_run(job.run_id)
-        if current and current["status"] in {"completed", "failed", "cancelled", "interrupted"}:
+        # budget_paused is a terminal settle too — the run stopped cleanly
+        # at a call boundary and must not be re-terminated as failed here.
+        if current and current["status"] in {"completed", "failed", "cancelled", "interrupted", "budget_paused"}:
             return
         cancelled = isinstance(error, asyncio.CancelledError) or job.cancel_requested
         if cancelled:
@@ -620,8 +659,13 @@ async def handle_agent_send_message(
         run, job, created = await service.admit(
             dao=dao, session_id=session_id, request=request, request_key=key, title=title,
             metadata={"model_snapshot": model_snapshot.metadata(), "workspace_snapshot": root,
-                      "project_id": project_id}, workspace=root, project_id=project_id,
-            operation=execute, finalize=finalize, resumed_from_id=resumed_from_id)
+                      "project_id": project_id,
+                      "budget": {"limit_tokens": run_budget, "daily_limit": daily_limit,
+                                 "daily_baseline": daily_baseline}},
+            workspace=root, project_id=project_id,
+            operation=execute, finalize=finalize, resumed_from_id=resumed_from_id,
+            budget_tokens=run_budget, daily_baseline=daily_baseline,
+            daily_budget_limit=daily_limit)
     except (RequestConflictError, ValueError) as exc:
         await ctx.reply_error(-32602, str(exc))
         return
@@ -954,6 +998,10 @@ async def _handle_agent_send_message(
             # itself lives in _run_with_auto_continue below.
             auto_continue=auto_continue,
             auto_continue_max_blocks=auto_continue_max_blocks,
+            # M2 — run + daily token budgets resolved at admission.
+            run_budget_tokens=job.budget_tokens,
+            daily_budget_tokens=job.daily_budget_limit,
+            daily_budget_baseline=job.daily_baseline,
         ),
         history_provider=_history,
         persist_message=_persist,
@@ -961,6 +1009,15 @@ async def _handle_agent_send_message(
         permission_gater=gater,
         hooks=hook_manager,
     )
+    # M2 — durable run row mirrors waiting states so "why is it idle"
+    # survives a page reload. Writes go through the same DAO + events
+    # channel as every other status change.
+    async def _set_run_state(state: str) -> None:
+        run = await runs_dao.update_run_status(job.run_id, status=state)
+        if run is not None:
+            await _emit_run_event("run.updated", {"run": run})
+
+    core.run_state_hook = _set_run_state
     # Inject the telemetry engine (R11) so every tool dispatch mirrors into
     # the in-memory event bus. Optional — None when telemetry is disabled.
     core.telemetry_engine = telemetry_engine
@@ -1255,6 +1312,10 @@ async def _handle_agent_send_message(
         "iterations": result.iterations,
         "truncated": result.truncated,
         "cancelled": bool(getattr(result, "cancelled", False)),
+        # M2 — the caller can distinguish a budget pause from a normal
+        # completion without decoding the run status enum.
+        "budget_paused": bool(getattr(result, "budget_exhausted", False)),
+        "budget": core.budget.snapshot() if core.budget is not None else None,
         # v1.1.0: block accounting for auto-continue (1 when off) —
         # iterations/compactions above are already summed across
         # blocks by _run_with_auto_continue.
@@ -1353,6 +1414,9 @@ async def _run_with_auto_continue(core: Any, *, session_id: str, content: str) -
         getattr(core.config, "auto_continue", False)
         and result.truncated
         and not result.cancelled
+        # M2 — a budget pause must never auto-continue: the caller set
+        # a spending cap, and continuing would silently exceed it.
+        and not getattr(result, "budget_exhausted", False)
         and blocks < core.config.auto_continue_max_blocks
     ):
         blocks += 1

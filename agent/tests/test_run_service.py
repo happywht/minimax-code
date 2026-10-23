@@ -55,6 +55,7 @@ async def native(monkeypatch, tmp_path):
         def __init__(self, **kwargs):
             self.config = kwargs["config"]
             self.llm = kwargs["llm"]
+            self.budget = None  # real AgentCore always sets this; receipt reads it
             self.cancelled = False
             cores.append(self)
 

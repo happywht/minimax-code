@@ -660,8 +660,13 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     startRun: (params) => client.request<RunAdmissionResult>("run.start", params),
     getRun: (runId) => client.request<RunGetResult>("run.get", { run_id: runId }),
     cancelRun: (runId) => client.request("run.cancel", { run_id: runId }),
-    resumeRun: (runId, idempotencyKey, reviewed = false) =>
-      client.request<RunAdmissionResult>("run.resume", { run_id: runId, idempotency_key: idempotencyKey, reviewed }),
+    resumeRun: (runId, idempotencyKey, reviewed = false, budgetTokens?: number) =>
+      client.request<RunAdmissionResult>("run.resume", {
+        run_id: runId,
+        idempotency_key: idempotencyKey,
+        reviewed,
+        ...(budgetTokens !== undefined ? { budget_tokens: budgetTokens } : {}),
+      }),
     getRunSteps: (runId) =>
       client.request<RunStepsResult>("run.steps", { run_id: runId }),
     getRunEvents: (runId, opts) =>

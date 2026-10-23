@@ -440,7 +440,8 @@ class AgentRunsDAO:
         async with self._db.transaction() as conn:
             async with conn.execute(
                 "SELECT id, session_id, status FROM agent_runs "
-                "WHERE status IN ('queued', 'planning', 'running', 'awaiting_approval', 'waiting_input')"
+                "WHERE status IN ('queued', 'planning', 'running', 'awaiting_approval', "
+                "'waiting_input', 'budget_paused')"
             ) as cursor:
                 rows = await cursor.fetchall()
             for row in rows:
@@ -474,7 +475,10 @@ class AgentRunsDAO:
                     "COALESCE(MAX(ordinal), 0) + 1 FROM agent_run_steps WHERE run_id = ?",
                     (step_id, run_id, session_id, "recovered after unexpected shutdown", reason,
                      dumps_json({"recovered_at": ts, "recovery_reason": reason,
-                                 "schema_version": 1, "requires_review": row["status"] != "queued",
+                                 "schema_version": 1,
+                                 # A budget pause stopped at a call boundary — its
+                                 # effects are confirmed, so it never needs review.
+                                 "requires_review": row["status"] not in {"queued", "budget_paused"},
                                  "previous_status": row["status"]}), ts, ts, run_id),
                 )
                 step = _hydrate_step(await _fetchone(conn,

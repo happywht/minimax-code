@@ -361,6 +361,15 @@ class AgentConfig:
     # converges never; the trailing truncated block still surfaces the
     # manual continue button as the escape hatch.
     auto_continue_max_blocks: int = 5
+    # M2 — run-scoped token budget. Checked before every LLM call;
+    # exhausting it pauses the run at a clean call boundary
+    # (``budget_paused``) instead of mid-write. None = unlimited.
+    run_budget_tokens: int | None = None
+    # M2 — daily whole-process token cap plus the already-spent total
+    # queried once at admission. The in-flight run adds its own usage on
+    # top, so a long run also pauses when it pushes the day over the line.
+    daily_budget_tokens: int | None = None
+    daily_budget_baseline: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +392,11 @@ class AgentRunResult:
     # turn never crossed the threshold). Surfaces in final metadata so
     # the UI / telemetry can show "compacted N×" per message.
     compactions: int = 0
+    # M2 — the run paused at a call boundary because the token budget
+    # ran out. Distinct from ``truncated`` (iteration cap): budget
+    # pauses must NOT trigger auto-continue, which would spend more
+    # than the caller authorised.
+    budget_exhausted: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +480,25 @@ class AgentCore:
         self.on_status: StatusCallback | None = None
         self.on_usage: UsageCallback | None = None
         self.on_ask_user: AskUserCallback | None = None
+        # M2 — run state observer. When set, the loop reports waiting
+        # states ("awaiting_approval" / "waiting_input") and their
+        # return to "running" so the durable run row reflects why the
+        # run is idle. Fail-open: observer errors never kill the run.
+        self.run_state_hook: Callable[[str], Awaitable[None]] | None = None
+        # M2 — shared spend tracker (this run + everything it spawns).
+        # Built from the config knobs; survives across auto-continue
+        # blocks because they re-enter ``run()`` on the same instance.
+        from ..budget import BudgetState
+
+        self.budget: BudgetState | None = (
+            BudgetState(
+                limit_tokens=self.config.run_budget_tokens,
+                daily_limit=self.config.daily_budget_tokens,
+                daily_baseline=self.config.daily_budget_baseline,
+            )
+            if (self.config.run_budget_tokens or self.config.daily_budget_tokens)
+            else None
+        )
         # v1.1.1 — in-flight ask_user requests owned by this core.
         # request_id → Future the suspended ``_wait_for_ask_user`` is
         # awaiting; resolved by ``resolve_ask_user`` (agent.answer_user)
@@ -592,8 +625,13 @@ class AgentCore:
                     "timeout_s": ASK_USER_TIMEOUT_S,
                 }
             )
+            # M2 — surface "waiting for the user" on the durable run row
+            # while the inline question card is open.
+            await self._notify_run_state("waiting_input")
             answers = await asyncio.wait_for(future, timeout=ASK_USER_TIMEOUT_S)
+            await self._notify_run_state("running")
         except TimeoutError:
+            await self._notify_run_state("running")
             return ToolResult.ok(
                 output=(
                     "The user did not answer within "
@@ -716,6 +754,30 @@ class AgentCore:
         """
         self.reset_cancel()
         self._current_session_id = session_id
+        # M2 — publish the shared budget so sub-agents spawned inside
+        # this turn inherit the same spend pot (parent+child shared
+        # budget). Scoped to this turn; nested run() calls (auto-continue
+        # blocks) republish the same instance harmlessly.
+        budget_token = None
+        if self.budget is not None:
+            from ..budget import publish_current_budget
+
+            budget_token = publish_current_budget(self.budget)
+        try:
+            return await self._run_turn(session_id, user_message)
+        finally:
+            if budget_token is not None:
+                from ..budget import reset_current_budget
+
+                reset_current_budget(budget_token)
+
+    async def _run_turn(
+        self,
+        session_id: str,
+        user_message: str,
+    ) -> AgentRunResult:
+        """Original turn body; ``run`` wraps it with budget scoping."""
+        self._current_session_id = session_id
 
         history: list[Message] = []
         if self._history_provider is not None:
@@ -754,6 +816,9 @@ class AgentCore:
         iterations = 0
         cancelled = False
         truncated = False
+        # M2 — set when the pre-call budget gate fires; the run ends as
+        # ``budget_paused`` instead of completed/truncated.
+        budget_exhausted = False
         final_text = ""
         final_message: Message | None = None
         # v1.1.0 — intra-loop compaction state. ``last_prompt_tokens`` is
@@ -965,6 +1030,46 @@ class AgentCore:
                 if ephemeral_notes:
                     llm_messages = messages + ephemeral_notes
 
+                # M2 — pre-call budget gate. Checked before every new
+                # call (never after spend): if the projected call would
+                # break the run or daily limit, pause at this clean
+                # boundary. The projection reuses the last real prompt
+                # usage plus the configured output cap.
+                if self.budget is not None:
+                    from ..budget import projected_call_tokens
+
+                    if self.budget.would_exceed(
+                        projected_call_tokens(
+                            last_prompt_tokens, self.config.max_output_tokens
+                        )
+                    ):
+                        self.budget.pauses += 1
+                        budget_exhausted = True
+                        await self._emit_status(
+                            "budget_paused",
+                            {
+                                "iteration": iterations,
+                                "budget": self.budget.snapshot(),
+                            },
+                        )
+                        final_text = (
+                            "Paused: the token budget for this task is "
+                            "exhausted. Raise the budget and resume the "
+                            "run to continue from this point."
+                        )
+                        final_message = {
+                            "role": "assistant",
+                            "content": final_text,
+                            "metadata": {
+                                "budget_paused": True,
+                                "budget": self.budget.snapshot(),
+                            },
+                        }
+                        await self._emit_chunk(
+                            final_text, True, final_message["metadata"]
+                        )
+                        break
+
                 try:
                     response = await self._call_llm_with_resilience(llm_messages)
                 except LLMError as exc:
@@ -977,6 +1082,8 @@ class AgentCore:
                     raise
 
                 _accumulate_usage(usage_total, response.usage)
+                if self.budget is not None:
+                    self.budget.record(response.usage)
                 await self._maybe_emit_usage(response.usage)
                 # v1.1.0: real prompt-side usage feeds the next iteration's
                 # compaction check (``or None`` keeps 0/absent as "unknown",
@@ -1124,6 +1231,7 @@ class AgentCore:
             cancelled=cancelled,
             truncated=truncated,
             compactions=compactions,
+            budget_exhausted=budget_exhausted,
         )
 
     # -- streaming + tool dispatch -----------------------------------------
@@ -1400,9 +1508,13 @@ class AgentCore:
             # consent-path double-emit bug on exec_* tools).
             await self._maybe_emit_tool_call(call_log, None)
             emitted_call = True
+            # M2 — the durable run row reflects why the run is idle
+            # while the consent modal is open.
+            await self._notify_run_state("awaiting_approval")
             allowed = await self._permission_gater.request_consent(
                 tool=name, args=args, session_id=self._current_session_id or None
             )
+            await self._notify_run_state("running")
             if not allowed:
                 denied = ToolResult.fail(
                     f"tool '{name}' denied by user",
@@ -1797,6 +1909,23 @@ class AgentCore:
             raise
         except Exception:  # pragma: no cover
             logger.exception("on_tool_result callback raised")
+
+    async def _notify_run_state(self, state: str) -> None:
+        """Report a run-level waiting state to the durable run row.
+
+        Fired around consent waits ("awaiting_approval") and ask_user
+        waits ("waiting_input"), plus "running" on return. Fail-open:
+        the durable status is advisory — a broken observer must never
+        kill the user's run.
+        """
+        if self.run_state_hook is None:
+            return
+        try:
+            await self.run_state_hook(state)
+        except Exception:  # noqa: BLE001 — advisory status only
+            logger.warning(
+                "run state hook failed for %s", state, exc_info=True
+            )
 
     async def _emit_status(self, status: str, detail: dict[str, Any]) -> None:
         if self.on_status is None:
