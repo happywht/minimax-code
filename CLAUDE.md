@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MiniMax Code 是一个桌面端 AI 编码 Agent 复刻项目。对标 MiniMax Code 全量功能：多轮对话、技能系统、定时任务、多 Agent 协作、移动互联、授权管理、进度面板。v0.2.0 起从 Tauri 桌面壳切换为 web SPA + 本地 Python agent 架构，v0.3.0 新增 thinking_count 通道、Sub-Agent UI、Git 集成和 Code Review 工作流。
 
-当前版本：**v1.6.1**（2026-10-23）
+当前版本：**v1.6.2**（2026-10-23）
 
 ## 架构总览
 
@@ -20,7 +20,7 @@ Browser (Vite SPA, localhost:5173)
   |  WebSocket /ws  (server-push streaming events)
   v
 Python Agent (FastAPI + asyncio, 127.0.0.1:8765)
-  |- IPCServer (shared handler registry, 171 methods / 36 namespaces)
+  |- IPCServer (shared handler registry, 172 methods / 36 namespaces)
   |- AgentCore (conversation loop + LLM streaming)
   |- ToolRegistry (12 built-in tool modules)
   |- SkillRuntime (SKILL.md loader + registry)
@@ -141,6 +141,8 @@ pnpm dev
 | `MINIMAX_CODE_RUN_BUDGET_TOKENS` | 空（不限） | 单 run token 预算默认值（v1.6.1 M2；`send_message.budget_tokens` 显式传参优先，0=不限）；耗尽 run 转 `budget_paused` |
 | `MINIMAX_CODE_DAILY_BUDGET_TOKENS` | 空（不限） | 当日全进程 token 预算（v1.6.1 M2）；admission 与 scheduled prompt 前置检查，超限拒绝新任务 |
 | `MINIMAX_CODE_SCHEDULED_BUDGET_TOKENS` | 空（不限） | 无人值守任务的 run 预算强制下限（v1.6.1 M2；覆盖 `MINIMAX_CODE_RUN_BUDGET_TOKENS`，显式传参仍优先） |
+| `MINIMAX_CODE_MAX_SUBAGENTS` | `2` | 同时驱动的子 agent 并发上限（v1.6.2 M3；`<=0` 不限；排队不计入墙钟超时） |
+| `MINIMAX_CODE_VALIDATE_TIMEOUT_S` | `600` | 项目验证命令的单次超时（v1.6.2 M3；上限 900s） |
 
 ## 测试策略
 
@@ -178,7 +180,7 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 
 ### IPC 命名空间
 
-共 **171 个注册方法、36 个前缀**（含 3 个无点号 built-in）。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。
+共 **172 个注册方法、36 个前缀**（含 3 个无点号 built-in）。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。
 
 | 前缀 | 方法数 | 用途 | Handler 文件 |
 |------|--------|------|-------------|
@@ -214,7 +216,7 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 | `terminal.*` | 4 | 终端命令执行 | `handlers_terminal.py` |
 | `webhook.*` | 5 | Webhook 管理 | `handlers_webhooks.py` |
 | `workflow.*` | 7 | 工作流编排 | `handlers_workflows.py` |
-| `workspace.*` | 3 | 工作区/worktree 管理 | `handlers_workspace.py` |
+| `workspace.*` | 4 | 工作区/worktree 管理（含 merge_worktree）| `handlers_workspace.py` |
 | `ping` / `status` / `shutdown` | 各 1 | built-in（无点号） | `builtins.py` |
 
 ## AI 使用指引
@@ -255,6 +257,7 @@ Python 测试隔离策略：每个 smoke 使用 `MINIMAX_CODE_DATA_DIR=<临时�
 
 ## 变更记录 (Changelog)
 
+- **2026-10-23** — v1.6.2：M3「完成可验收的编程闭环」三批专项——**M3-A 验证命令闭环**（migration 032 `projects.validate_command` + 新模块 `verification.py`：`run_validate_command` spawn_shell 执行 + `MINIMAX_CODE_VALIDATE_TIMEOUT_S`；admission 快照进 run metadata；system prompt 注入验收契约；改文件的 run 完成前自动执行验证，证据进 `verification.validation`，失败强制 `requires_review`；非 git run 只读不触发；前端新建项目 Modal/类型/mock 全链路）——**M3-B 上下文质量**（compaction 重写为六要素结构化摘要：任务目标/用户约束/关键决策/修改清单（tool_calls args 解析）/验证结果/待办，确定性零额外 LLM 调用，`[Conversation summary (compacted)]` 前缀契约保留；工具大输出 spill：>50KB 落盘 `.minimax/tool-outputs/<session>/`，模型看 4KB 预览 + read_file 引用，fail-open 退回截断；`search_codebase` 双分支加 `retrieval_note` 如实标注 n-gram 哈希）——**M3-C 隔离与合并**（`MINIMAX_CODE_MAX_SUBAGENTS` 并发上限默认 2、排队不计墙钟；run 基线检查点：git run claim 时自动 `git stash create` 快照 + metadata 记 `baseline_checkpoint`，非 git 跳过防无界拷贝；新 IPC `workspace.merge_worktree`：worktree 提交 → worktree 内验证 → `--no-ff` 合并主 checkout，冲突先收集再 abort 结构化报告不自动覆盖、幂等 already_merged；IPC 172 方法 / 迁移 32；测试 +21（test_project_validation 9 + test_m3_context 5 + test_m3_isolation 7），分层回归 107-171 全绿 / vitest 794 全绿
 - **2026-10-23** — v1.6.1：M2「可靠任务运行与恢复」收口专项（批次一预算+状态机，批次二验收+护栏）——① **预算引擎**（新模块 `minimax_code/budget.py`）：`BudgetState` 单 run + 每日双维度（每日基线 admission 时一次查询，run 内增量叠加），`send_message` 新参数 `budget_tokens` > `MINIMAX_CODE_SCHEDULED_BUDGET_TOKENS`（无人值守下限）> `MINIMAX_CODE_RUN_BUDGET_TOKENS` > 不限；每次 LLM 调用**前**投影检查（上轮真实 prompt + 输出上限），耗尽在干净调用边界暂停 → run 落 `budget_paused`（`finalize` 认其为终态、auto-continue 明确不续预算块、receipt 带 `budget_paused` + 快照）；ContextVar 发布共享池，子 agent 从同一预算花钱（父子共用）；每日超限 admission 直接拒绝；② **状态机激活**：`run_state_hook`（fail-open）在权限 consent 等待期落 `awaiting_approval`、ask_user 等待期落 `waiting_input`、返回即回 `running`——run 行首次如实反映「为什么闲着」；`run.resume` 白名单加 `budget_paused`（免 review 门、必须带 `budget_tokens` 提额），`recover_orphans` 覆盖 `budget_paused`（重启转 interrupted 且 `requires_review=false`）；③ **验收语义**：receipt/metadata/final step 新增 `verification`（tool_calls / failed_tool_calls / requires_review / failures≤5）——「失败命令不能被汇总成任务成功」，运行结束 ≠ 验收通过；④ **scheduled prompt 护栏**：`_run_prompt` 前置每日预算门（超限拒跑标 failed）+ 用量透出 `tokens_used` 落 tasks 行（进 RunService 完整工具循环仍是 M5）；⑤ IPC 171 方法 / 36 前缀 / 事件 17（`run.updated`），迁移 31（030 run_events 表 + 031 durable admission CHECK）；前端同步 `SendMessageParams.budget_tokens`、`SendMessageResult.verification`、`resumeRun` 第 4 参；测试 +19 dispatch 级（test_run_budget 16 + test_run_states 3），分层回归 pytest 约 240 用次全绿 / vitest 794 全绿
 - **2026-10-23** — production-foundation 基线（15 个提交，M0/M1/M2 前段）：Windows+Linux CI（`.github/workflows/verify.yml` 分层 baseline/full）、应用认证（`http_security.install_application_auth`）、执行边界硬化、子 agent 工作区隔离、RunService 落库（`runs.py` 会话 FIFO + 幂等 admission + 优雅关停）、run 事件持久化（migration 030）+ 断线重连快照恢复、模型选择 admission 冻结 + 子任务继承、`run.start/get/cancel/resume/events` 5 方法、消息落库一致性修复；调试残留待清理
 - **2026-08-26** — v1.6.0：Sandbox Deepening 专项（v1.5.0 四项沙盒已知限制收掉三项，team 路径独立立项不做）——① **exec_command 逃逸检测（advisory）**：沙盒 run 的 exec 前后各 walk 一次 workspace（`(mtime_ns, size)` 快照 + fs_bus 窗口差集减除防并发误报），非零 diff → `sandbox_escape`（changed ≤50 + warning）注入正常与 timed_out 双输出路径 + `exec_command_sandbox_escape` 事件 → 主 agent notes 轮询可见；主 agent 零开销；② **search/find/list overlay**：三个只读工具经 `sandbox.py` 新 helpers（`sandbox_mirror_files`/`mirror_children`）把沙盒镜像并进 workspace 视图（同名取沙盒版、地址投影回 workspace、`sandboxed: true`；search 沙盒下强制 python 引擎）；存量修复——search python 剪枝表补 `.minimax`、`find_files` 的 `.minimax` 硬排除（显式覆盖 `exclude_dirs` 不再泄漏）；③ **collect prune + receipt 新家**：receipt 一律写 `.minimax/sandboxes/.collected/<run_id>.json`（flat sibling），`prune`（默认 true）在 receipt 落盘且无 conflicts/errors/skipped 时 rmtree 沙盒树；保守门（无凭证不删、conflicts+fail 永不 prune）+ rmtree 失败 advisory 自愈重试 + legacy `.merged` marker 迁移兼容；40 个新测试全走 dispatch（escape 10 + overlay 16 + prune 14），pytest 10519 / vitest 758 全绿

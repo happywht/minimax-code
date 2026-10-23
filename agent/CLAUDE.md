@@ -32,7 +32,7 @@ Python agent 是 MiniMax Code 的后端核心。它是一个 asyncio 进程，�
 
 CORS：默认允许 `http://localhost:5173` / `http://127.0.0.1:5173`；`MINIMAX_CODE_CORS_ORIGINS`（逗号分隔）可追加受信 origin（解析见 `http_server.py` `_cors_allow_origins`，无效项 warning 忽略）。
 
-### IPC 命名空间（36 个前缀 / 171 个方法）
+### IPC 命名空间（36 个前缀 / 172 个方法）
 
 完整前缀×方法数×handler 文件总表见根目录 CLAUDE.md「IPC 命名空间」节；方法级清单见 `docs/ipc-contract.md` Appendix A（由 `agent/tests/test_ipc_contract_doc.py` 双向守护）。高频命名空间：
 
@@ -129,7 +129,7 @@ SQLite 数据库，**25 张表**（24 张业务表含 `run_events`（030）+ `sc
 
 DAO 层共 20 个模块（`storage/dao/`）。
 
-迁移策略：前向迁移（NNN_name.py，当前 001-031 共 31 个），无回滚，`migrate()` 在显式事务内逐个执行（失败整体回滚）。WAL 模式，foreign_keys ON。
+迁移策略：前向迁移（NNN_name.py，当前 001-032 共 32 个），无回滚，`migrate()` 在显式事务内逐个执行（失败整体回滚）。WAL 模式，foreign_keys ON。
 
 ## 测试与质量
 
@@ -185,7 +185,7 @@ A: 1) 在对应的 `handlers_*.py` 中实现 handler 函数；2) 在 `app.py` �
 
 ### 存储层
 - `minimax_code/storage/db.py` — 同步/异步 Database wrapper
-- `minimax_code/storage/migrations/` — 迁移文件（001-031 共 31 个，前向幂等）
+- `minimax_code/storage/migrations/` — 迁移文件（001-032 共 32 个，前向幂等）
 - `minimax_code/storage/dao/` — 20 个 DAO 模块
 
 ### 其他模块
@@ -210,6 +210,7 @@ A: 1) 在对应的 `handlers_*.py` 中实现 handler 函数；2) 在 `app.py` �
 
 ## 变更记录 (Changelog)
 
+- **2026-10-23** — v1.6.2：M3 编程闭环三批（agent 侧）——A：`verification.py`（`run_validate_command`/`normalize_validate_command`/`run_touched_files`/`resolve_validate_timeout`）+ migration 032 `projects.validate_command` + builtins admission 快照/系统提示验收契约/自动验收（`verification.validation` + requires_review 联动）；B：`compaction.py` 六要素结构化摘要（`_summarise_old_turns` 重写，修改清单从 tool_calls args 解析）+ `core.py` `_spool_large_output`（`.minimax/tool-outputs/<session>/`，`_SPOOL_PREVIEW_BYTES` 4KB，fail-open）+ `codebase_search` `retrieval_note`；C：`subagents.py` `_spawn_semaphore`（`MINIMAX_CODE_MAX_SUBAGENTS` 默认 2，`_drive_run` 排队不计墙钟）+ builtins run 基线检查点（git probe → `CheckpointManager` stash create + `baseline_checkpoint` metadata，非 git 跳过）+ `handlers_workspace.py` `workspace.merge_worktree`（wt 提交 → wt 内验证 → `--no-ff` 合并，冲突先收集后 abort）；+21 测试
 - **2026-10-23** — v1.6.1：M2 收口专项（agent 侧）——① 预算引擎：新模块 `minimax_code/budget.py`（`BudgetState` 单 run+每日双维、`resolve_run_budget` 优先级链、ContextVar 父子共享池）；`core.py` 调用前投影 gate（`AgentRunResult.budget_exhausted`；`run()` 包裹 `_run_turn` 发布预算作用域）；`builtins.py` admission 预算解析 + 每日基线查询 + `finalize` 认 `budget_paused` 为终态 + receipt 带 `verification`（tool_calls/failed_tool_calls/requires_review/failures≤5）；② 状态机：`core.run_state_hook` 在 consent/ask_user 等待期落 `awaiting_approval`/`waiting_input`、返回即回 `running`；`handlers_runs.py` resume 白名单加 `budget_paused`（免 review、必须提额）；`dao/runs.py` `recover_orphans` 覆盖 budget_paused（`requires_review=false`）；③ scheduled prompt 护栏：`self_evolution/payload.py` `_run_prompt` 每日预算门 + `tokens_used` 透出；④ 协议：`SendMessageParams.budget_tokens`、`RunResumeParams.budget_tokens`；IPC 171 方法 / 事件 17；+19 dispatch 级测试（test_run_budget 16 + test_run_states 3）
 - **2026-08-26** — v1.6.0：Sandbox Deepening 专项（v1.5.0 四项已知限制收掉三项，team 路径独立立项不做）——① **exec_command 逃逸检测（advisory）**：沙盒 run 的 exec 前后各 walk 一次 workspace（`(mtime_ns, size)` 快照，`asyncio.to_thread`；窄排除表不含 build/dist——构建产物正是逃逸形态），diff 后减去 fs_bus 窗口内其他 run 的写入（防并发误报），剩余以 `sandbox_escape: {changed(≤50), changed_count, warning}` 注入正常与 timed_out 双输出路径 + emit 合法枚举 kind（cause=`exec_command_sandbox_escape` + run_id）→ 主 agent v1.5.1 notes 轮询天然可见；主 agent 零开销；`SANDBOX_PROTOCOL_PROMPT` 第三 bullet 改写（见 warning 用 write_file 重写交付物）。② **search/find/list overlay + 剪枝修复**：`sandbox.py` 新增共享 helpers `sandbox_mirror_files`/`mirror_children`；`search_files` 沙盒激活强制 python 引擎 + rel-posix key union（同名沙盒版覆盖）+ 读取走 `overlay_read_target`（含 single_file 分支）；`find_files` walk 后 mirror union（前缀过滤 + rel 投影 + depth + 覆盖）；`list_directory` entries 并入 mirror children（`path` 投影回 workspace 地址 + `sandboxed: true` + `_base`/marker 隐藏）+ 沙盒-only 目录放行；**存量修复**——search python 剪枝表补 `.minimax`（此前主 agent 能搜到 backups/sandboxes 内部）、`find_files` 的 `.minimax` 硬排除（用户显式覆盖 `exclude_dirs` 不再泄漏）；第四 bullet 改 overlay 语义。③ **collect prune + receipt 新家**：receipt 一律写 `<root>/.minimax/sandboxes/.collected/<run_id>.json`（flat sibling，`sandbox_files_written` 永不扫到），`prune` 参数（默认 true，schema 同步）在 receipt 落盘且无 conflicts/errors/skipped 时 rmtree 沙盒树（`onexc`/`onerror` 双兼容 + `_chmod_retry` 清只读位）；保守门——receipt 没写成不删（无凭证不删数据）、conflicts+fail 永不 prune 永不写 receipt、skipped/errors 非空保留；rmtree 失败 advisory（`prune_error`）+ already-collected 分支重试 prune 自愈；legacy `sb_dir/.merged` marker 仍读（升级前沙盒照常识别），命中且 prune 时先迁移 receipt 再删树（迁移失败取消 prune），`prune=false` 时 legacy 布局原样；already-collected 检查前置到 in-flight guard 后。40 个新测试（`test_exec_sandbox_escape.py` 10 + `test_sandbox_overlay_views.py` 16 + `test_collect_prune.py` 14，全走 dispatch；`test_subagent_collect.py` 五处旧 marker 钉子同步迁移），pytest 10519 / vitest 758 全绿
 - **2026-08-26** — v1.5.2：第四轮压测三项残留收口——① `MINIMAX_CODE_SANDBOX_DEFAULT` env 旋钮：`subagents.py` 新增 `_sandbox_default()` helper（truthy `1/true/yes/on`），`spawn_subagent` 的 `sandbox` 参数改 `bool | None = None` 顶部归一化（优先级：显式传参 > env > false，默认 false 不变）；② `append_file` 工具（file_ops.py，工具模块 12 个、内置工具第 13 个）：尾部 verbatim 追加（UTF-8 字节保真不注入分隔符、missing 带父目录创建），CAS `expected_sha256` / backup / `concurrent_writer` advisory / fs_bus 归因（cause=`append_file` + `run_id` attribute）全继承；**沙盒镜像 seeding**——`redirect_write_target` 只 COW `_base/` 不 seed 镜像，append 打开前检测 `write_target != read_target` 且原件存在且镜像不存在 → `shutil.copy2` 原件进镜像（copy 失败 fail-closed），否则 collect 三方对比会把不完整镜像 merge 回 workspace（静默数据丢失）；③ `report_progress` per-run 注入工具（artifacts.py：`PROGRESS_NAME` 常量 + `read_progress`/`progress_summary` helper + `ReportProgressTool`；subagents.py：`PROGRESS_PROTOCOL_PROMPT` + `_clone_registry_with_report` 扩为双工具注入）：子 agent 里程碑级 `report_progress(note, percent?)` → `.minimax/artifacts/<run_id>/PROGRESS.jsonl` JSON 行账本 → `check_subagent` running / `wait_subagent` timeout / `_snapshot` 与 finished-run envelope 的 `progress` key（`{total, recent[], latest_percent}`）+ live `agent.subagent_progress` 事件（`status="thinking"` + `summary` + `progress` 分数，复用前端闭合 union）；prompt 拼接顺序：agent 模板 → 任务优先级 → completion → progress → 沙盒；41 个新测试（`test_append_file.py` 15 + `test_report_progress.py` 13 + `test_sandbox_env_default.py` 13，全走 dispatch），pytest 10479 / vitest 758 全绿
