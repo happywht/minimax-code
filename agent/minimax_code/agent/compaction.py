@@ -107,12 +107,11 @@ def compact_history(
 
     result = system_msgs.copy()
     if summary:
+        # The "[Conversation summary (compacted)]" prefix is a contract:
+        # observers and tests match on it to detect compacted payloads.
         result.append({
             "role": "user",
-            "content": (
-                "[Conversation summary (compacted)]\n"
-                f"{summary}"
-            ),
+            "content": f"[Conversation summary (compacted)]\n{summary}",
         })
     result.extend(recent_msgs)
 
@@ -138,35 +137,166 @@ def _find_turn_boundaries(turns: list[Message]) -> list[tuple[int, int]]:
 
 
 def _summarise_old_turns(turn_groups: list[list[Message]]) -> str:
-    """Summarise a list of turn groups into a compact text."""
-    parts: list[str] = []
-    for group in turn_groups:
-        user_msg = ""
-        tool_count = 0
-        assistant_parts: list[str] = []
+    """Summarise old turns into a structured, six-section digest (M3).
 
+    Deterministic extraction — no extra LLM call. The sections mirror
+    what a resuming model needs to continue the task faithfully:
+    任务目标 / 用户约束 / 关键决策 / 修改清单 / 验证结果 / 待办.
+    """
+
+    # --- pass 1: collect raw material across all old turns ------------
+    first_user_text = ""
+    constraint_sentences: list[str] = []
+    assistant_points: list[str] = []
+    changed_paths: list[str] = []
+    tool_count = 0
+    verification_lines: list[str] = []
+    last_assistant_text = ""
+
+    for group in turn_groups:
         for msg in group:
             role = msg.get("role", "")
             content = _msg_text(msg)
 
             if role == "user":
-                # Truncate user message to first 200 chars.
-                user_msg = content[:200] + ("..." if len(content) > 200 else "")
+                if not first_user_text:
+                    first_user_text = content
+                for sentence in _split_sentences(content):
+                    if _is_constraint(sentence):
+                        constraint_sentences.append(sentence)
             elif role == "assistant":
                 if content:
-                    assistant_parts.append(content[:150] + ("..." if len(content) > 150 else ""))
+                    last_assistant_text = content
+                    if len(assistant_points) < 6:
+                        assistant_points.append(content[:150] + ("..." if len(content) > 150 else ""))
+                for call in _message_tool_calls(msg):
+                    tool_count += 1
+                    path = _mutating_path(call)
+                    if path and path not in changed_paths:
+                        changed_paths.append(path)
             elif role == "tool":
                 tool_count += 1
-            # tool_call messages are counted but not detailed.
+                if len(verification_lines) < 4 and _looks_like_verification(msg, group):
+                    verification_lines.append(content[:160] + ("..." if len(content) > 160 else ""))
 
-        summary_line = f"User: {user_msg}"
-        if assistant_parts:
-            summary_line += f" → Assistant: {'; '.join(assistant_parts[:2])}"
-        if tool_count:
-            summary_line += f" [{tool_count} tool call(s)]"
-        parts.append(summary_line)
+    # --- pass 2: render the six sections ------------------------------
+    parts: list[str] = []
 
-    return "\n".join(parts)
+    objective = (first_user_text or "").strip()
+    if objective:
+        parts.append(f"## Task objective\n{objective[:500]}{'...' if len(objective) > 500 else ''}")
+
+    if constraint_sentences:
+        shown = "; ".join(_dedupe(constraint_sentences)[:6])
+        parts.append(f"## User constraints\n{shown[:400]}")
+
+    if assistant_points:
+        parts.append("## Key assistant responses\n" + "\n".join(f"- {p}" for p in assistant_points[:4]))
+
+    if changed_paths:
+        shown = ", ".join(_dedupe(changed_paths)[:12])
+        extra = "" if len(changed_paths) <= 12 else f" (+{len(changed_paths) - 12} more)"
+        parts.append(f"## Files modified by tools\n{shown}{extra}")
+
+    if verification_lines:
+        parts.append("## Command / verification results\n" + "\n".join(f"- {v}" for v in verification_lines))
+
+    pending = (last_assistant_text or "").strip()
+    if pending:
+        parts.append(f"## Where the work stood\n{pending[-300:]}")
+    if tool_count:
+        parts.append(f"({tool_count} tool call(s) across the compacted turns.)")
+
+    return "\n\n".join(parts)
+
+
+_CONSTRAINT_MARKERS = (
+    "不要", "别", "必须", "不能", "禁止", "务必", "只能", "记得",
+    "do not", "don't", "never", "must", "only", "always", "avoid",
+    "make sure", "keep ", "without",
+)
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split on CJK and Latin sentence terminators."""
+    import re as _re
+
+    raw = _re.split(r"[。！？；\n.!?;]", text)
+    return [s.strip() for s in raw if s.strip()]
+
+
+def _is_constraint(sentence: str) -> bool:
+    lowered = sentence.lower()
+    return len(sentence) <= 200 and any(m in lowered for m in _CONSTRAINT_MARKERS)
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        key = item.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(item)
+    return out
+
+
+def _message_tool_calls(msg: Message) -> list[dict[str, Any]]:
+    """Extract tool calls from an assistant message (nested or flat)."""
+    calls = msg.get("tool_calls") or []
+    out: list[dict[str, Any]] = []
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        fn = call.get("function") or {}
+        name = str(fn.get("name") or call.get("name") or "")
+        raw_args = fn.get("arguments") if isinstance(fn, dict) else None
+        args: Any = raw_args
+        if isinstance(raw_args, str):
+            import json as _json
+
+            try:
+                args = _json.loads(raw_args)
+            except ValueError:
+                args = {}
+        out.append({"name": name, "args": args if isinstance(args, dict) else {}})
+    return out
+
+
+_MUTATING_TOOLS = ("write_file", "edit_file", "append_file", "read_file", "exec_command")
+
+
+def _mutating_path(call: dict[str, Any]) -> str:
+    """Return the file a tool call touched, for the change ledger."""
+    name = call.get("name", "")
+    if name not in ("write_file", "edit_file", "append_file"):
+        return ""
+    args = call.get("args") or {}
+    for key in ("file_path", "path"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _looks_like_verification(msg: Message, group: list[Message]) -> bool:
+    """True when a tool message follows an exec-style call in its turn.
+
+    Heuristic: the assistant message right before the tool result asked
+    for a command execution (exec_command / Bash family), or the result
+    text opens with exit-code markers.
+    """
+    text = _msg_text(msg)[:200].lower()
+    if "exit code" in text or "exit_code" in text:
+        return True
+    for candidate in group:
+        if candidate is msg:
+            break
+        if candidate.get("role") == "assistant":
+            for call in _message_tool_calls(candidate):
+                if call.get("name") in ("exec_command", "bash", "run_terminal"):
+                    return True
+    return False
 
 
 def _msg_text(msg: Message) -> str:

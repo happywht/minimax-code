@@ -14,6 +14,15 @@ from .base import Tool, ToolResult
 
 _MAX_RESULTS = 20
 
+# M3 — honest labelling of what the default ranking actually is. The
+# stock embedder is a deterministic character n-gram hash (no neural
+# model); a semantic embedder is opt-in configuration.
+_RETRIEVAL_NOTE = (
+    "Ranking uses character n-gram hash embeddings (lexical-overlap "
+    "biased, not a semantic model). Configure an embedding model for "
+    "true semantic retrieval; verify critical matches by reading the file."
+)
+
 
 def _format_source(
     file_path: str | None,
@@ -102,6 +111,7 @@ class SearchCodebaseTool(Tool):
                     "query": query,
                     "match_count": 0,
                     "matches": [],
+                    "retrieval_note": _RETRIEVAL_NOTE,
                     "note": "No indexed matches found. Try a different query or run codebase.build_index.",
                 },
                 match_count=0,
@@ -130,6 +140,10 @@ class SearchCodebaseTool(Tool):
                 "query": query,
                 "match_count": len(matches),
                 "matches": matches,
+                # M3 — honest labelling: the default embedder is a
+                # character n-gram hash, not a semantic model. The model
+                # (and the user) must know what the ranking actually is.
+                "retrieval_note": _RETRIEVAL_NOTE,
             },
             match_count=len(matches),
         )

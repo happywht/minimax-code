@@ -33,6 +33,7 @@ coroutine naturally before bailing.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import logging
 import os
@@ -509,6 +510,8 @@ class AgentCore:
         # breaker knobs are read from self.config at call time so they
         # stay hot-reloadable across a session.
         self._breakers = CircuitBreakerRegistry()
+        # M3 — spill sequence for oversized tool outputs (file naming).
+        self._spool_seq = itertools.count(1)
         # R23 — per-file write locks. Keyed by the target file path so
         # concurrent write_file / edit_file calls against the *same* path
         # serialize (mirrors grok's lock_path_for_args); cross-file writes
@@ -1679,8 +1682,17 @@ class AgentCore:
                         await tool_breaker.record(Outcome.SUCCESS)
                 duration_ms = int((time.monotonic() - t0) * 1000)
 
-        # Truncate pathological output to keep the context window sane.
-        result = _truncate_result(result, self.config.max_tool_output_bytes)
+        # Keep pathological output out of the context window: spill the
+        # full payload to the workspace when possible, fall back to a
+        # plain truncation notice when there is nowhere to write it.
+        spilled = _spool_large_output(
+            result,
+            self.config.max_tool_output_bytes,
+            session_id=self._current_session_id or "",
+            tool_name=name,
+            seq=next(self._spool_seq),
+        )
+        result = spilled or _truncate_result(result, self.config.max_tool_output_bytes)
 
         # v1.1.1 — ask_user takeover. The tool returned a pending
         # marker; the interactive wait happens here, *outside* the
@@ -2138,6 +2150,76 @@ def _truncate_result(result: ToolResult, max_bytes: int) -> ToolResult:
         output=new_output,
         error=result.error,
         metadata={**result.metadata, "truncated": True, "original_bytes": len(encoded)},
+    )
+
+
+# M3 — how much of a spilled output the model sees inline (bytes of the
+# serialized payload). Enough to judge relevance; the full payload is on
+# disk behind a read_file reference.
+_SPOOL_PREVIEW_BYTES = 4_000
+
+
+def _spool_large_output(
+    result: ToolResult,
+    max_bytes: int,
+    *,
+    session_id: str,
+    tool_name: str,
+    seq: int,
+) -> ToolResult | None:
+    """Spill an oversized tool output to disk and return a reference.
+
+    Instead of dropping the tail (``_truncate_result``), the full
+    serialized payload is written under the run's workspace at
+    ``.minimax/tool-outputs/<session>/<seq>-<tool>.json`` and the model
+    sees a preview plus a read_file reference. Returns ``None`` when
+    spilling does not apply (small output, no workspace, write failure)
+    so the caller falls back to plain truncation — spilling is an
+    optimisation, never a new failure mode.
+    """
+    if max_bytes <= 0:
+        return None
+    try:
+        encoded = json.dumps(result.output, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return None
+    if len(encoded) <= max_bytes:
+        return None
+    try:
+        from pathlib import Path
+
+        from ..workspace_ctx import current_root
+
+        root = current_root()
+        if root is None:
+            return None
+        safe_tool = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in tool_name) or "tool"
+        spill_dir = Path(root) / ".minimax" / "tool-outputs" / (session_id or "unknown")
+        spill_dir.mkdir(parents=True, exist_ok=True)
+        spill_path = spill_dir / f"{seq:04d}-{safe_tool}.json"
+        spill_path.write_text(encoded, encoding="utf-8")
+    except Exception:  # noqa: BLE001 — spilling must never break the tool
+        logger.warning("tool output spill failed for %s; falling back to truncation", tool_name, exc_info=True)
+        return None
+
+    rel_path = f".minimax/tool-outputs/{session_id or 'unknown'}/{spill_path.name}"
+    preview = encoded[:_SPOOL_PREVIEW_BYTES]
+    new_output: Any = {
+        "_spilled": True,
+        "spill_path": rel_path,
+        "original_bytes": len(encoded),
+        "preview": preview + ("\n…(preview cut — full payload at the path above)" if len(encoded) > _SPOOL_PREVIEW_BYTES else ""),
+        "summary": (
+            f"Full output ({len(encoded)} bytes) saved to {rel_path}. "
+            "Read it with read_file when the preview is not enough."
+        ),
+    }
+    return ToolResult(
+        success=result.success,
+        output=new_output,
+        error=result.error,
+        metadata={**result.metadata, "spilled": True, "spill_path": rel_path,
+                  "original_bytes": len(encoded)},
     )
 
 
