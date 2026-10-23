@@ -146,9 +146,143 @@ def register_workspace_handlers(
             logger.exception("workspace.delete_worktree failed")
             await ctx.reply_error(INTERNAL_ERROR, f"workspace.delete_worktree failed: {exc}")
 
+    async def handle_merge_worktree(params: Any, ctx: Context) -> None:
+        """``workspace.merge_worktree`` — commit, validate, then merge (M3).
+
+        Flow: commit the worktree's pending changes → run the project's
+        validate command *inside the worktree* (完成验证后再合并) → merge
+        the worktree commits into the main checkout with --no-ff.
+        Conflicts abort the merge and are reported — never auto-resolved;
+        a failing validation stops the merge before it starts.
+        """
+        try:
+            check_params(params, expected_keys={"session_id"})
+            session_id = _string_param(params, "session_id")
+            if not session_id:
+                raise HandlerError(INVALID_PARAMS, "session_id is required")
+            commit_message = _string_param(params, "commit_message") or (
+                f"Merge worktree session {session_id}")
+            run_validate_raw = params.get("run_validate")
+            run_validate = True if run_validate_raw is None else bool(run_validate_raw)
+            require_write_access()
+
+            sess_dao = await dao_factory()
+            session = await sess_dao.get(session_id)
+            if session is None:
+                raise HandlerError(INVALID_PARAMS, f"unknown session_id: {session_id!r}")
+            if session.get("workspace_mode") != "worktree":
+                raise HandlerError(INVALID_PARAMS, "session is not a worktree session")
+            worktree_raw = session.get("workspace_path")
+            if not worktree_raw:
+                raise HandlerError(INVALID_PARAMS, "worktree session has no workspace_path")
+            worktree = Path(worktree_raw)
+            if not worktree.is_dir():
+                raise HandlerError(INVALID_PARAMS, f"worktree directory is missing: {worktree}")
+
+            # The main checkout lives at the common git dir's parent.
+            common_raw = (await _run_git(worktree, "rev-parse", "--git-common-dir")).strip()
+            common = Path(common_raw)
+            main_repo = common.parent if common.name == ".git" else common
+            if not (main_repo / ".git").exists():
+                raise HandlerError(INVALID_PARAMS, f"cannot locate the main checkout from {common}")
+
+            main_branch = (await _run_git(main_repo, "rev-parse", "--abbrev-ref", "HEAD")).strip()
+            if main_branch in {"", "HEAD"}:
+                raise HandlerError(INVALID_PARAMS,
+                                   "main checkout is in detached HEAD; give it a branch before merging")
+
+            # 1) Commit pending work inside the worktree (a dirty tree
+            #    cannot be merged).
+            status = (await _run_git(worktree, "status", "--porcelain")).strip()
+            committed_pending = False
+            if status:
+                await _run_git(worktree, "add", "-A")
+                await _run_git(worktree, "commit", "-m", commit_message)
+                committed_pending = True
+
+            head = (await _run_git(worktree, "rev-parse", "HEAD")).strip()
+
+            # 2) Idempotency: a head already contained by any local
+            #    branch in the main checkout needs no merge.
+            containing = (await _run_git(main_repo, "branch", "--contains", head)).strip()
+            if containing and not committed_pending:
+                await ctx.reply({"merged": False, "reason": "already_merged",
+                                 "worktree_head": head, "main_branch": main_branch})
+                return
+
+            # 3) Validate inside the worktree BEFORE merging (M3: 完成
+            #    验证后再合并). A failure stops the merge with evidence.
+            validation: dict[str, Any] | None = None
+            if run_validate and session.get("project_id"):
+                from ..app import get_projects_dao
+                from ..verification import normalize_validate_command, run_validate_command
+
+                proj_dao = get_projects_dao()
+                if proj_dao is not None:
+                    project = await proj_dao.get(str(session["project_id"]))
+                    command = normalize_validate_command((project or {}).get("validate_command"))
+                    if command:
+                        validation = await run_validate_command(command, cwd=str(worktree))
+                        if not validation.get("ok"):
+                            await ctx.reply({"merged": False, "reason": "validation_failed",
+                                             "worktree_head": head, "validation": validation})
+                            return
+
+            # 4) Merge via a temporary branch (a detached worktree HEAD
+            #    cannot be merged directly).
+            merge_branch = f"worktree-merge/{session_id}"
+            try:
+                await _run_git(main_repo, "branch", "-D", merge_branch)
+            except HandlerError:
+                pass  # no stale branch — first merge for this session
+            await _run_git(worktree, "branch", merge_branch, head)
+            try:
+                await _run_git(main_repo, "merge", "--no-ff", merge_branch,
+                               "-m", commit_message)
+            except HandlerError as exc:
+                # Conflicts: collect the unmerged files FIRST (they vanish
+                # after the abort), then abort cleanly and report — never
+                # auto-resolve.
+                try:
+                    conflicts = (await _run_git(main_repo, "diff", "--name-only",
+                                                "--diff-filter=U")).split()
+                except HandlerError:
+                    conflicts = []
+                try:
+                    await _run_git(main_repo, "merge", "--abort")
+                except HandlerError:
+                    logger.warning("merge --abort failed after conflict; leaving repo state for inspection", exc_info=True)
+                await ctx.reply({
+                    "merged": False, "reason": "conflicts", "conflicts": conflicts,
+                    "worktree_head": head, "main_branch": main_branch,
+                    "detail": exc.data.get("stderr", "")[:500] if exc.data else "",
+                })
+                return
+            finally:
+                try:
+                    await _run_git(main_repo, "branch", "-D", merge_branch)
+                except HandlerError:
+                    pass
+
+            merge_commit = (await _run_git(main_repo, "rev-parse", "HEAD")).strip()
+            await ctx.reply({
+                "merged": True,
+                "worktree_head": head,
+                "merge_commit": merge_commit,
+                "main_branch": main_branch,
+                "committed_pending": committed_pending,
+                "validation": validation,
+            })
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.exception("workspace.merge_worktree failed")
+            await ctx.reply_error(INTERNAL_ERROR, f"workspace.merge_worktree failed: {exc}")
+
     server.register("workspace.create_worktree_session", handle_create_worktree_session)
     server.register("workspace.list_worktrees", handle_list_worktrees)
     server.register("workspace.delete_worktree", handle_delete_worktree)
+    server.register("workspace.merge_worktree", handle_merge_worktree)
 
 
 def _string_param(params: dict[str, Any], key: str) -> str | None:

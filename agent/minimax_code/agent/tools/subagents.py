@@ -14,6 +14,32 @@ from .base import Tool, ToolResult, register_tool
 
 logger = logging.getLogger(__name__)
 
+# M3 — global cap on sub-agents driving concurrently (规划: 多 Agent
+# 默认最多两个子任务). A spawn beyond the cap queues on this semaphore
+# instead of being rejected; queueing time is NOT counted against the
+# wall-clock guard, which starts when the slot is granted.
+_MAX_CONCURRENT_SUBAGENTS: asyncio.Semaphore | None = None
+
+
+def _spawn_semaphore() -> asyncio.Semaphore | None:
+    """Lazily build the concurrency limiter from the env knob.
+
+    ``MINIMAX_CODE_MAX_SUBAGENTS`` defaults to 2; ``<=0`` disables the
+    cap. Built once per process — the knob is read at first spawn.
+    """
+    global _MAX_CONCURRENT_SUBAGENTS
+    if _MAX_CONCURRENT_SUBAGENTS is None:
+        raw = os.environ.get("MINIMAX_CODE_MAX_SUBAGENTS", "").strip()
+        value = 2
+        if raw:
+            try:
+                value = int(raw)
+            except ValueError:
+                logger.warning("MINIMAX_CODE_MAX_SUBAGENTS=%r is not an int; using 2", raw)
+                value = 2
+        _MAX_CONCURRENT_SUBAGENTS = None if value <= 0 else asyncio.Semaphore(value)
+    return _MAX_CONCURRENT_SUBAGENTS
+
 
 # P0-4 — DAG dependency tracking. ``_BACKGROUND_DEP_PENDING`` holds
 # the list of run_ids a background run is still waiting on; entries
@@ -433,14 +459,22 @@ async def _drive_run(
     handle.core.on_tool_result = _on_tool_result
 
     inner: asyncio.Future[Any] | None = None
+    sem = _spawn_semaphore()
+    slot_acquired = False
     try:
         await _emit_safe(emit, emit_event("started", 0.05, prompt[:80]))
+
+        # M3 — wait for a concurrency slot before driving the agent loop.
+        if sem is not None:
+            await sem.acquire()
+            slot_acquired = True
 
         # Wall-clock guard: shield the invoke so a timeout cancels the
         # core *cooperatively* (run() checkpoints return a partial
         # AgentRunResult) instead of destroying the coroutine. The
         # wind-down is bounded: an in-flight tool waits out its own
-        # tool_timeout and an LLM stall its stall timeout.
+        # tool_timeout and an LLM stall its stall timeout. The clock
+        # starts here — queueing for a slot does not burn the budget.
         inner = asyncio.ensure_future(
             runtime.invoke(handle, session_id=sub_session, request=prompt)
         )
@@ -480,6 +514,8 @@ async def _drive_run(
         )
         raise
     finally:
+        if slot_acquired and sem is not None:
+            sem.release()
         try:
             from ...ipc.builtins import _ACTIVE_RUNS
 

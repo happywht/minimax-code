@@ -1107,6 +1107,65 @@ async def _handle_agent_send_message(
         await ctx.reply_error(-32004, "Cannot start task: run history could not be saved")
         return
 
+    # M3 — automatic baseline checkpoint. Snapshot the workspace the
+    # moment the run is claimed, before any tool executes, so a later
+    # restore can revert exactly this run's changes. Uses ``git stash
+    # create`` (a dangling ref — the working tree is untouched) plus an
+    # untracked-file copy; failures are advisory and never block the run.
+    if job.workspace:
+        try:
+            from pathlib import Path as _P
+
+            from ..storage.dao.checkpoints import CheckpointDAO
+            from ..storage.db import ensure_data_dir
+            from ..workspace.checkpoint import CheckpointManager
+
+            ws_root = _P(job.workspace)
+            if ws_root.is_dir():
+                # Only git workspaces get a baseline: without git the
+                # manager would try to copy EVERY untracked file under
+                # the data dir — an unbounded copy on big folders.
+                probe = await asyncio.create_subprocess_exec(
+                    "git", "-C", job.workspace, "rev-parse", "--git-dir",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                if await probe.wait() != 0:
+                    logger.debug("run baseline skipped: %s is not a git workspace", job.workspace)
+                else:
+                    ckpt_root = ensure_data_dir() / "checkpoints"
+                    ckpt_root.mkdir(parents=True, exist_ok=True)
+                    mgr = CheckpointManager(ckpt_root)
+                ckpt_id = f"ckpt_{uuid.uuid4().hex[:12]}"
+                snapshot = await mgr.create(
+                    cwd=job.workspace,
+                    checkpoint_id=ckpt_id,
+                    session_id=session_id,
+                    label="run-baseline",
+                    message=f"Automatic baseline before run {job.run_id}",
+                )
+                await CheckpointDAO(db).create(
+                    session_id=session_id,
+                    label="run-baseline",
+                    message=f"Automatic baseline before run {job.run_id}",
+                    git_stash_ref=snapshot.git_stash_ref,
+                    branch=snapshot.branch,
+                    tracked_files=snapshot.tracked_files,
+                    untracked_files=snapshot.untracked_files,
+                    has_untracked_snapshot=snapshot.has_untracked_snapshot,
+                    checkpoint_id=ckpt_id,
+                    created_at=snapshot.created_at,
+                )
+                recorder.run_metadata = {**recorder.run_metadata,
+                                         "baseline_checkpoint": ckpt_id}
+                await runs_dao.update_run_status(
+                    job.run_id, status="running",
+                    metadata={**recorder.run_metadata,
+                              "model_snapshot": model_snapshot.metadata()},
+                )
+        except Exception:
+            logger.warning("run baseline checkpoint failed; continuing without it", exc_info=True)
+
     # v0.11.0: collect codebase tool source annotations across the turn
     # and attach them to the assistant message metadata on the final chunk.
     turn_sources: list[dict[str, str | None]] = []
