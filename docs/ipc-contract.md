@@ -246,6 +246,12 @@ on the next `readline() == ""`.
 | `workspace.merge_worktree` | req/res | M3 — commit pending worktree changes, run the project validate command inside the worktree, then `--no-ff` merge into the main checkout. Conflicts abort cleanly and report unmerged files; a failing validation stops the merge with evidence. |
 | `engine.list` | req/res | M4 — capability cards for every registered engine (native / Codex), availability probed live; `default: "native"`. |
 | `engine.status` | req/res | M4 — one engine's card by id. Unavailable engines carry `unavailable_reason` so the UI can disable them explicitly. |
+| `host.create` | req/res | M5 — register a remote Linux run host (name/hostname/username/port/identity_file reference — credentials are never stored). Duplicate names and missing identity files fail fast. |
+| `host.list` | req/res | M5 — list hosts, optional `enabled` filter. |
+| `host.get` | req/res | M5 — one host by id. |
+| `host.update` | req/res | M5 — tri-state field update incl. enable/disable. |
+| `host.delete` | req/res | M5 — remove the host (its runs are history and survive). |
+| `host.probe` | req/res | M5 — SSH connection diagnosis + version handshake (uname / python3 / codex), outcome persisted (`last_probe_at` / `last_probe_ok` / `agent_version`). |
 | `message.list` / `message.update` / `message.delete` | req/res | List messages in a session; update or delete a single message. |
 | `skill.list` / `skill.install` / `skill.uninstall` / `skill.enable` / `skill.disable` / `skill.invoke` | req/res | List, import, remove, configure, and invoke skills. |
 | `scheduler.*`              | req/res   | Reserved.                                          |

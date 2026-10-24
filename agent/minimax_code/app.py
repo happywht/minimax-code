@@ -803,6 +803,11 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_engines import register_engine_handlers
 
     register_engine_handlers(server)
+    # M5 — remote Linux run hosts: registration, SSH connection
+    # diagnosis and the agent version handshake.
+    from .ipc.handlers_hosts import register_host_handlers
+
+    register_host_handlers(server)
     # Runtime diagnostics — exposes the boot-time crash-recovery
     # snapshot (R12) so the Settings page can surface "recovered N
     # orphan runs after an unexpected shutdown". Read-only handler.

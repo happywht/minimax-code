@@ -169,7 +169,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 
 ### IPC 命名空间
 
-共 **178 个注册方法、34 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
+共 **184 个注册方法、35 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
 
 | 前缀 | 方法数 | 用途 | Handler 文件 |
 |------|--------|------|-------------|
@@ -180,6 +180,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 | `crash.*` | 3 | 崩溃恢复会话 | `handlers_crash.py` |
 | `data.*` | 3 | 全量导出/导入/备份 | `handlers_data.py` |
 | `engine.*` | 2 | 引擎注册表能力卡（native/Codex 可用性探测） | `handlers_engines.py` |
+| `host.*` | 6 | 远程 Linux 主机：注册/诊断/版本握手 | `handlers_hosts.py` |
 | `diag.*` | 1 | 诊断包导出 | `handlers_diag.py` |
 | `git.*` | 3 | Git 状态/差异/日志 | `handlers_git.py` |
 | `mcp.*` | 6 | MCP 服务器管理 | `handlers_mcp.py` |
