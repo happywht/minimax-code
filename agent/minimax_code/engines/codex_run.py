@@ -73,6 +73,7 @@ async def drive_codex_run(
     prompt: str,
     resume_thread_id: str | None = None,
     codex_cmd: list[str] | None = None,
+    approval_gate: CodexApprovalGate | None = None,
 ) -> dict[str, Any]:
     """Drive one Codex turn; returns the reply envelope (receipt).
 
@@ -90,11 +91,29 @@ async def drive_codex_run(
         )
 
     import os
+    import shutil
 
     cmd_raw = os.environ.get("MINIMAX_CODE_CODEX_CMD", "").strip()
-    codex_cmd = json.loads(cmd_raw) if cmd_raw else codex_cmd
+    if cmd_raw:
+        codex_cmd = json.loads(cmd_raw)
+    elif codex_cmd is None or codex_cmd[0] in ("codex",):
+        # Windows: bare "codex" is an npm .cmd shim — CreateProcess
+        # needs the resolved absolute path.
+        exe = shutil.which("codex")
+        base = [exe] if exe else ["codex"]
+        codex_cmd = [*base, "app-server"]
 
-    gate = CodexApprovalGate()
+    gate = approval_gate or CodexApprovalGate()
+    # Strong refs for fire-and-forget emits — a bare create_task can be
+    # garbage-collected before it ever runs (the task would silently
+    # vanish, and with it every permission.request).
+    background_tasks: set[asyncio.Task[None]] = set()
+
+    def spawn_notify(coro: Any) -> None:
+        task = asyncio.create_task(coro)
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+
     conn = AppServerConnection(
         cwd=Path(job.workspace) if job.workspace else None,
         codex_cmd=codex_cmd,
@@ -110,7 +129,7 @@ async def drive_codex_run(
 
     def _emit_chunk(delta: str, done: bool) -> None:
         try:
-            asyncio.create_task(emit("agent.message_chunk", {
+            spawn_notify(emit("agent.message_chunk", {
                 "session_id": job.session_id,
                 "run_id": job.run_id,
                 "message_id": job.message_id,
@@ -139,7 +158,7 @@ async def drive_codex_run(
                 budget.record(usage)
                 if budget.would_exceed(0) and turn_id and not turn_done.done():
                     logger.warning("codex run %s: budget exhausted; interrupting", job.run_id)
-                    asyncio.create_task(conn.request("turn/interrupt", {
+                    spawn_notify(conn.request("turn/interrupt", {
                         "threadId": thread_id, "turnId": turn_id}, timeout=10))
         elif method == "turn/completed":
             if not turn_done.done():
@@ -162,7 +181,7 @@ async def drive_codex_run(
         fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
         gate._pending[request_id] = fut
         try:
-            asyncio.create_task(emit("permission.request", {
+            spawn_notify(emit("permission.request", {
                 "request_id": request_id,
                 "session_id": job.session_id,
                 "run_id": job.run_id,
@@ -187,12 +206,17 @@ async def drive_codex_run(
 
     conn.on_notification = on_notification
     conn.on_server_request = on_server_request
+
+    def _on_server_exited() -> None:
+        if not turn_done.done():
+            turn_done.set_exception(RuntimeError("codex app-server exited mid-turn"))
+    conn.on_exited = _on_server_exited
     if getattr(job, "cancel_callback", None) is not None:
         def _on_cancel() -> None:
             nonlocal cancelled
             cancelled = True
             if turn_id and thread_id and not turn_done.done():
-                asyncio.create_task(conn.request("turn/interrupt", {
+                spawn_notify(conn.request("turn/interrupt", {
                     "threadId": thread_id, "turnId": turn_id}, timeout=10))
         job.cancel_callback = _on_cancel
 
@@ -203,15 +227,14 @@ async def drive_codex_run(
 
         # Thread lifecycle — resume the stored external session when the
         # caller supplies one (M4: 后续继续使用原会话).
+        cwd_params = {"cwd": job.workspace} if job.workspace else {}
         if resume_thread_id:
             result = await conn.request("thread/resume", {
-                "thread_id": resume_thread_id, "cwd": job.workspace,
+                "thread_id": resume_thread_id, **cwd_params,
             }, timeout=60)
         else:
-            result = await conn.request("thread/start", {
-                "cwd": job.workspace,
-            }, timeout=60)
-        thread_id = (result or {}).get("thread_id") or thread_id
+            result = await conn.request("thread/start", cwd_params, timeout=60)
+        thread_id = _extract(result, "thread", "id", "thread_id") or thread_id
 
         turn = await conn.request("turn/start", {
             "threadId": thread_id,
@@ -219,7 +242,7 @@ async def drive_codex_run(
             if isinstance(prompt, str) else prompt,
             "cwd": job.workspace,
         }, timeout=60)
-        turn_id = (turn or {}).get("turn_id") or (turn or {}).get("id")
+        turn_id = _extract(turn, "turn", "id", "turn_id") or _extract(turn, None, "id")
 
         await asyncio.wait_for(turn_done, timeout=None)
         _emit_chunk("", True)
@@ -234,6 +257,19 @@ async def drive_codex_run(
                         budget=budget.snapshot() if budget else None)
     finally:
         await conn.close()
+
+
+def _extract(payload: Any, wrapper: str | None, *keys: str) -> Any:
+    """Pull an id out of a Codex response (nested ``thread``/``turn``
+    objects or flat fields — the wire shape drifted across versions)."""
+    data = payload if isinstance(payload, dict) else {}
+    source = data.get(wrapper) if wrapper else None
+    for candidate in (source if isinstance(source, dict) else {}, data):
+        for key in keys:
+            value = candidate.get(key)
+            if value:
+                return value
+    return None
 
 
 def _receipt(job: Any, text: str, usage: dict[str, int], *, thread_id: str | None,

@@ -108,6 +108,7 @@ class AppServerConnection:
         self._reader_task: asyncio.Task[None] | None = None
         self.on_notification: Callable[[dict[str, Any]], Any] | None = None
         self.on_server_request: Callable[[dict[str, Any]], Any] | None = None
+        self.on_exited: Callable[[], None] | None = None
         # Background tasks for async server-request replies (strong refs).
         self._bg: set[asyncio.Task[None]] = set()
         self.closed = False
@@ -128,6 +129,15 @@ class AppServerConnection:
         while True:
             raw = await self._proc.stdout.readline()
             if not raw:
+                # The server died mid-conversation: fail every pending
+                # request and tell the driver, or a waiting turn would
+                # hang forever.
+                for fut in self._pending.values():
+                    if not fut.done():
+                        fut.set_exception(RuntimeError("codex app-server process exited"))
+                exited = getattr(self, "on_exited", None)
+                if exited is not None:
+                    exited()
                 break
             try:
                 obj = json.loads(raw.decode("utf-8").strip())

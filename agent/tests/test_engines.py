@@ -246,6 +246,64 @@ async def test_appserver_connection_contract(tmp_path) -> None:
         await conn.close()
 
 
+async def test_appserver_async_approval_round_trip(tmp_path) -> None:
+    """The human-in-the-loop approval path: the handler returns a
+    coroutine (it waits on a human), and the RESPONSE must be written
+    back to the server when it settles — a broken reply path means the
+    real Codex waits 300s and denies every command."""
+
+    fake_lines: list[str] = []
+
+    fake_src = """
+import json, sys
+for raw in sys.stdin:
+    req = json.loads(raw)
+    rid = req.get("id")
+    method = req.get("method", "")
+    if method == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": rid,
+                          "result": {"userAgent": {"version": "0.163.0"}}}), flush=True)
+    elif method == "turn/start":
+        print(json.dumps({"jsonrpc": "2.0", "id": rid, "result": {"turn_id": "t1"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": "srv-9",
+                          "method": "execCommandApproval",
+                          "params": {"conversationId": "th", "callId": "c"}}), flush=True)
+        # wait for the approval response line, then finish
+        resp = json.loads(sys.stdin.readline())
+        print(json.dumps({"jsonrpc": "2.0", "method": "approval_echo",
+                          "params": resp}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "method": "turn/completed",
+                          "params": {}}), flush=True)
+    elif rid is not None:
+        print(json.dumps({"jsonrpc": "2.0", "id": rid, "result": {}}), flush=True)
+"""
+    fake = tmp_path / "fake_codex_async.py"
+    fake.write_text(fake_src, encoding="utf-8")
+
+    conn = AppServerConnection(cwd=tmp_path, codex_cmd=[sys.executable, str(fake)])
+    await conn.start()
+    try:
+        notifications: list[dict] = []
+        conn.on_notification = notifications.append
+
+        async def human_handler(req: dict) -> dict:
+            await asyncio.sleep(0.2)  # simulating the human thinking
+            return {"decision": "approved"}
+
+        conn.on_server_request = human_handler
+        await conn.request("initialize", {"clientInfo": {"name": "t", "version": "0"}}, timeout=10)
+        await conn.request("turn/start", {"threadId": "th", "input": "x"}, timeout=10)
+        for _ in range(100):
+            if any(n["method"] == "turn/completed" for n in notifications):
+                break
+            await asyncio.sleep(0.05)
+        echoes = [n for n in notifications if n["method"] == "approval_echo"]
+        assert echoes, "the approval response must reach the server"
+        assert echoes[0]["params"].get("result", {}).get("decision") == "approved"
+    finally:
+        await conn.close()
+
+
 async def test_engine_cards_via_list_engines() -> None:
     cards = await list_engines()
     assert [c.id for c in cards] == ["native", "codex"]

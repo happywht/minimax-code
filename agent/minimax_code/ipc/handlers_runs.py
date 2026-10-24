@@ -240,7 +240,8 @@ async def _start_codex_run(request: RunStartParams, ctx: Context, *,
     the turn driver differs (Codex App Server instead of AgentCore).
     """
     from ..budget import daily_budget_limit, resolve_run_budget
-    from ..engines.codex_run import drive_codex_run
+    from ..engines.codex_run import CodexApprovalGate, drive_codex_run
+    from ..perm_consent import register_gater, unregister_gater
     from ..runs import get_run_service
     from .builtins import _notify_run
 
@@ -299,12 +300,18 @@ async def _start_codex_run(request: RunStartParams, ctx: Context, *,
 
     async def operation(job: Any) -> None:
         emit = _codex_emit_factory(ctx, job)
+        # M4 — approvals resolve through the SAME permission.resolve RPC
+        # the native gater uses; without this registration the human's
+        # answer never reaches Codex and every request times out denied.
+        approval_gate = CodexApprovalGate()
+        register_gater(ctx.server, session_id, approval_gate)
 
         async def _run() -> None:
             await dao.update_run_status(job.run_id, status="running")
             result = await drive_codex_run(
                 job, emit=emit, prompt=request.content,
-                resume_thread_id=resume_thread_id)
+                resume_thread_id=resume_thread_id,
+                approval_gate=approval_gate)
             job.result = result
             status = ("cancelled" if result.get("cancelled")
                       else "budget_paused" if result.get("budget_paused")
@@ -323,6 +330,8 @@ async def _start_codex_run(request: RunStartParams, ctx: Context, *,
         except BaseException as exc:
             job.error = {"code": -32603, "message": str(exc) or type(exc).__name__}
             raise
+        finally:
+            unregister_gater(ctx.server, session_id)
 
     async def finalize(job: Any, error: BaseException | None) -> None:
         current = await dao.get_run(job.run_id)
@@ -340,13 +349,25 @@ async def _start_codex_run(request: RunStartParams, ctx: Context, *,
                                       error=reason, result=receipt)
         await _notify_run(ctx, "run.completed", {"run": run})
 
+    # Codex turns execute somewhere real: session project root > env
+    # workspace > process cwd. thread/start rejects null cwd.
+    from ..workspace_ctx import resolve_root_for_session
+
+    try:
+        codex_workspace = str(await resolve_root_for_session(session_id))
+    except Exception:
+        # Unresolvable workspace falls back to the process cwd — the
+        # Codex thread still needs a real directory to run in.
+        import os
+
+        codex_workspace = os.getcwd()
     run, job, created = await service.admit(
         dao=dao, session_id=session_id, request=request_payload,
         request_key=request.idempotency_key, title=title,
         metadata={"engine": "codex",
                   "budget": {"limit_tokens": run_budget, "daily_limit": daily_limit,
                              "daily_baseline": daily_baseline}},
-        workspace=None, project_id=None,
+        workspace=codex_workspace, project_id=None,
         operation=operation, finalize=finalize,
         resumed_from_id=None, budget_tokens=run_budget,
         daily_baseline=daily_baseline)
