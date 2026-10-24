@@ -108,6 +108,8 @@ class AppServerConnection:
         self._reader_task: asyncio.Task[None] | None = None
         self.on_notification: Callable[[dict[str, Any]], Any] | None = None
         self.on_server_request: Callable[[dict[str, Any]], Any] | None = None
+        # Background tasks for async server-request replies (strong refs).
+        self._bg: set[asyncio.Task[None]] = set()
         self.closed = False
 
     async def start(self) -> None:
@@ -144,17 +146,38 @@ class AppServerConnection:
                     fut.set_result(obj.get("result"))
             return
         if "method" in obj and "id" in obj:
-            # A server-originated REQUEST (approval prompts live here).
+            # A server-originated REQUEST — approval prompts live here.
+            # The handler may return the response params directly, or a
+            # coroutine/future that resolves to them (approval waits on
+            # a human). The reply is written back when it settles.
             handler = self.on_server_request
-            if handler is not None:
-                response = handler(obj)
-                if asyncio.iscoroutine(response):
-                    response = None  # sync short-circuit only; async handlers own their reply
+            if handler is None:
+                self._send_response(obj["id"], {})
+                return
+            result = handler(obj)
+            if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
+                async def _settle(awaitable: Any, req_id: Any) -> None:
+                    try:
+                        params = await awaitable
+                    except Exception:
+                        logger.exception("server request handler failed; replying denied")
+                        params = {}
+                    self._send_response(req_id, params or {})
+
+                self._bg.add(asyncio.create_task(_settle(result, obj["id"])))
+            else:
+                self._send_response(obj["id"], result or {})
             return
         if "method" in obj:
             handler = self.on_notification
             if handler is not None:
                 handler(obj)
+
+    def _send_response(self, req_id: Any, params: dict[str, Any]) -> None:
+        assert self._proc is not None and self._proc.stdin is not None
+        line = json.dumps({"jsonrpc": "2.0", "id": req_id,
+                           "result": params}, ensure_ascii=False) + "\n"
+        self._proc.stdin.write(line.encode("utf-8"))
 
     async def request(self, method: str, params: dict[str, Any] | None = None,
                       timeout: float = 30.0) -> Any:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import sys
 from unittest.mock import AsyncMock
 
@@ -40,11 +41,18 @@ class Ctx:
 
 
 @pytest.fixture
-def server():
+async def server():
     srv = IPCServer(Config(), stdin=io.StringIO(), stdout=io.StringIO())
     register_engine_handlers(srv)
     register_run_handlers(srv)
-    return srv
+    try:
+        yield srv
+    finally:
+        # Drain background jobs — a leaked codex run task would hang the
+        # event loop on teardown.
+        from minimax_code.runs import get_run_service
+
+        await get_run_service(srv).shutdown()
 
 
 async def test_engine_list_includes_native_and_codex(server) -> None:
@@ -80,25 +88,87 @@ async def test_engine_status_reports_reason_for_unavailable(server, monkeypatch)
     bad.reply_error.assert_awaited_once()
 
 
-async def test_run_start_rejects_unwired_engine_without_fallback(server) -> None:
+async def test_run_start_codex_admits_and_names_failures(server, monkeypatch, tmp_path) -> None:
+    """engine=codex admits durably and drives through the App Server.
+
+    The driver is pointed at a scripted fake codex; the run completes
+    with the fake's streamed answer, and a DEAD codex command names the
+    failure in the run row — never a silent fallback to native.
+    """
+    from minimax_code import app
+    from minimax_code.storage.dao.sessions import SessionsDAO
+    from minimax_code.storage.db import AsyncDatabase
+
+    db = AsyncDatabase(tmp_path / "codex.db")
+    await db.connect()
+    await db.migrate()
+    sessions = SessionsDAO(db)
+    monkeypatch.setattr(app, "init_runtime", AsyncMock())
+    monkeypatch.setattr(app, "get_db", lambda: db)
+    monkeypatch.setattr(app, "get_sessions_dao", lambda: sessions)
+
+    fake = tmp_path / "fake_codex.py"
+    fake.write_text(FAKE_CODEX, encoding="utf-8")
+    monkeypatch.setenv("MINIMAX_CODE_CODEX_CMD",
+                       json.dumps([sys.executable, str(fake)]))
+
     ctx = Ctx(server)
     await server._handlers["run.start"]({
-        "session_id": "ses_x", "content": "hi",
+        "session_id": "ses_codex", "content": "run the tests",
         "idempotency_key": "k1", "engine": "codex",
     }, ctx)
-    # codex IS available on this machine, but its run driver is not wired
-    # yet — the error must name the engine, not fall back to native.
-    msg = str(ctx.reply_error.await_args.args[1])
-    assert "codex" in msg and "not wired" in msg
+    if ctx.reply.await_args is None:
+        pytest.fail(f'run.start failed: {ctx.reply_error.await_args_list}')
+    created = ctx.reply.await_args.args[0]
+    assert created["created"] is True
+    run_id = created["run"]["id"]
+    row = {"status": "queued"}
+    for _ in range(300):
+        await asyncio.sleep(0.02)
+        row = await ctx_reply_run(server, run_id)
+        if row["status"] in {"completed", "failed", "cancelled"}:
+            break
+    assert row["status"] == "completed", row
+    receipt = row["result"]
+    assert receipt["engine"] == "codex"
+    assert "running tests" in receipt["text"]
+
+    # A dead codex command names the failure in the run row.
+    monkeypatch.setenv("MINIMAX_CODE_CODEX_CMD",
+                       json.dumps([sys.executable, "-c", "import sys; sys.exit(3)"]))
+    ctx2 = Ctx(server)
+    await server._handlers["run.start"]({
+        "session_id": "ses_codex", "content": "again",
+        "idempotency_key": "k2", "engine": "codex",
+    }, ctx2)
+    run_id2 = ctx2.reply.await_args.args[0]["run"]["id"]
+    row2 = {"status": "queued"}
+    for _ in range(700):
+        await asyncio.sleep(0.05)
+        row2 = (await ctx_reply_run(server, run_id2))
+        if row2["status"] in {"completed", "failed", "cancelled"}:
+            break
+    assert row2["status"] == "failed"
 
     # Unknown engine ids are rejected at the protocol layer (Literal),
     # before any engine lookup happens.
-    ctx2 = Ctx(server)
+    ctx3 = Ctx(server)
     await server._handlers["run.start"]({
         "session_id": "ses_x", "content": "hi",
-        "idempotency_key": "k2", "engine": "bogus",
-    }, ctx2)
-    assert "run.start requires" in str(ctx2.reply_error.await_args.args[1])
+        "idempotency_key": "k3", "engine": "bogus",
+    }, ctx3)
+    assert "run.start requires" in str(ctx3.reply_error.await_args.args[1])
+    await db.close()
+
+
+async def ctx_reply_run(server, run_id):
+    from minimax_code.app import get_db
+    from minimax_code.storage.dao.runs import AgentRunsDAO
+
+    dao = AgentRunsDAO(get_db())
+    run = await dao.get_run(run_id)
+    result = await dao.result_payload(run_id)
+    return {**run, "result": result}
 
 
 # ---------------------------------------------------------------------------

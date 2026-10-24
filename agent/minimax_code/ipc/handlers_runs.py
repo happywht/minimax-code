@@ -12,6 +12,7 @@ from .handler_utils import HandlerError, check_params
 from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
+    LLM_ERROR,
     RunEventsParams,
     RunIdParams,
     RunResumeParams,
@@ -133,12 +134,7 @@ def register_run_handlers(server: Any) -> None:
                     {"engine": info.to_dict()},
                 )
                 return
-            await ctx.reply_error(
-                INVALID_PARAMS,
-                f"engine {request.engine!r} is registered but its run driver is not wired yet "
-                "(M4-B); use the native engine for now",
-                {"engine": info.to_dict()},
-            )
+            await _start_codex_run(request, ctx, engine_info=info.to_dict())
             return
         await handle_agent_send_message(request.model_dump(exclude={"engine"}), ctx, wait=False)
 
@@ -232,6 +228,141 @@ def register_run_handlers(server: Any) -> None:
     server.register("run.get", handle_run_get)
     server.register("run.cancel", handle_run_cancel)
     server.register("run.resume", handle_run_resume)
+
+
+async def _start_codex_run(request: RunStartParams, ctx: Context, *,
+                           engine_info: dict[str, Any],
+                           resume_thread_id: str | None = None) -> None:
+    """Durably admit and drive one Codex-engine run (M4-B).
+
+    Mirrors the native admission path: idempotency keys, budget
+    resolution and the RunService lease all behave identically — only
+    the turn driver differs (Codex App Server instead of AgentCore).
+    """
+    from ..budget import daily_budget_limit, resolve_run_budget
+    from ..engines.codex_run import drive_codex_run
+    from ..runs import get_run_service
+    from .builtins import _notify_run
+
+    if not isinstance(request.content, str) or not request.content.strip():
+        await ctx.reply_error(INVALID_PARAMS, "codex runs require string content")
+        return
+    session_id = request.session_id
+    title = request.content.strip()[:32]
+    try:
+        from ..app import get_db, get_sessions_dao, init_runtime
+        from ..storage.dao.runs import AgentRunsDAO
+
+        await init_runtime()
+        db = get_db()
+        if db is None:
+            raise RuntimeError("database not initialized")
+        dao = AgentRunsDAO(db)
+        # agent_runs carries an FK on sessions — mirror the native path
+        # and auto-create the session row on first use.
+        sessions = get_sessions_dao()
+        if sessions is not None and await sessions.get(session_id) is None:
+            try:
+                await sessions.create(id=session_id, title=f"codex:{title}",
+                                      system_prompt="", model=None)
+            except Exception:
+                if await sessions.get(session_id) is None:
+                    raise
+    except Exception as exc:
+        await ctx.reply_error(-32004, f"Cannot start task: {exc}")
+        return
+
+    session_id = request.session_id
+    service = get_run_service(ctx.server)
+    run_budget = resolve_run_budget(request.budget_tokens)
+    daily_limit = daily_budget_limit()
+    daily_baseline = 0
+    if daily_limit is not None:
+        try:
+            row = await db.fetchone(
+                "SELECT COALESCE(SUM(tokens_in + tokens_out), 0) AS n FROM messages "
+                "WHERE date(created_at) = date('now', 'localtime')")
+            daily_baseline = int(row["n"] or 0) if row else 0
+        except Exception:
+            daily_baseline = 0
+        if daily_baseline >= daily_limit:
+            await ctx.reply_error(
+                LLM_ERROR,
+                f"Daily token budget exhausted ({daily_baseline} spent of {daily_limit})",
+                {"daily_budget": {"limit": daily_limit, "spent": daily_baseline}},
+            )
+            return
+
+    request_payload = {"session_id": session_id, "mode": "chat",
+                       "content": request.content, "engine": "codex"}
+    title = request.content.strip()[:32]
+
+    async def operation(job: Any) -> None:
+        emit = _codex_emit_factory(ctx, job)
+
+        async def _run() -> None:
+            await dao.update_run_status(job.run_id, status="running")
+            result = await drive_codex_run(
+                job, emit=emit, prompt=request.content,
+                resume_thread_id=resume_thread_id)
+            job.result = result
+            status = ("cancelled" if result.get("cancelled")
+                      else "budget_paused" if result.get("budget_paused")
+                      else "completed")
+            await dao.update_run_status(
+                job.run_id, status=status, result=result,
+                metadata={"codex_thread_id": result.get("codex_thread_id"),
+                          "engine": "codex"},
+            )
+            await _notify_run(ctx, "run.completed",
+                              {"run": await dao.get_run(job.run_id)})
+
+        task = asyncio.create_task(_run(), name=f"codex-run:{job.run_id}")
+        try:
+            await task
+        except BaseException as exc:
+            job.error = {"code": -32603, "message": str(exc) or type(exc).__name__}
+            raise
+
+    async def finalize(job: Any, error: BaseException | None) -> None:
+        current = await dao.get_run(job.run_id)
+        if current and current["status"] in {"completed", "failed", "cancelled",
+                                             "interrupted", "budget_paused"}:
+            return
+        cancelled = isinstance(error, asyncio.CancelledError) or job.cancel_requested
+        reason = "Cancelled by user or service shutdown" if cancelled \
+            else str(error or "Codex run ended without a confirmed result")
+        receipt = ({"session_id": session_id, "run_id": job.run_id,
+                    "text": "", "cancelled": True} if cancelled
+                   else {"error": {"code": -32603, "message": reason}})
+        run = await dao.terminate_run(job.run_id,
+                                      status="cancelled" if cancelled else "failed",
+                                      error=reason, result=receipt)
+        await _notify_run(ctx, "run.completed", {"run": run})
+
+    run, job, created = await service.admit(
+        dao=dao, session_id=session_id, request=request_payload,
+        request_key=request.idempotency_key, title=title,
+        metadata={"engine": "codex",
+                  "budget": {"limit_tokens": run_budget, "daily_limit": daily_limit,
+                             "daily_baseline": daily_baseline}},
+        workspace=None, project_id=None,
+        operation=operation, finalize=finalize,
+        resumed_from_id=None, budget_tokens=run_budget,
+        daily_baseline=daily_baseline)
+    if created:
+        await _notify_run(ctx, "run.created", {"run": run})
+    await ctx.reply({"run": run, "created": created})
+
+
+def _codex_emit_factory(ctx: Context, job: Any):
+    """Wrap ctx.emit so notification failures never kill a Codex run."""
+    from .builtins import _notify_run
+
+    async def emit(event: str, data: dict[str, Any]) -> None:
+        await _notify_run(ctx, event, {**data, "session_id": job.session_id,
+                                       "run_id": job.run_id})
+    return emit
 
 
 __all__ = ["register_run_handlers"]
