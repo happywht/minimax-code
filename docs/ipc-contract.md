@@ -243,6 +243,9 @@ on the next `readline() == ""`.
 | `workspace.create_worktree_session` | req/res | Create an isolated Git worktree-backed session. Optional `project_id` (v1.3.0) files the session under that project — unknown ids fail fast with `-32602` before any checkout is created; omitted → `inbox`. |
 | `workspace.list_worktrees` | req/res | List sessions whose `workspace_mode` is `worktree`. |
 | `workspace.delete_worktree` | req/res | Remove a managed worktree and mark the session local. |
+| `workspace.merge_worktree` | req/res | M3 — commit pending worktree changes, run the project validate command inside the worktree, then `--no-ff` merge into the main checkout. Conflicts abort cleanly and report unmerged files; a failing validation stops the merge with evidence. |
+| `engine.list` | req/res | M4 — capability cards for every registered engine (native / Codex), availability probed live; `default: "native"`. |
+| `engine.status` | req/res | M4 — one engine's card by id. Unavailable engines carry `unavailable_reason` so the UI can disable them explicitly. |
 | `message.list` / `message.update` / `message.delete` | req/res | List messages in a session; update or delete a single message. |
 | `skill.list` / `skill.install` / `skill.uninstall` / `skill.enable` / `skill.disable` / `skill.invoke` | req/res | List, import, remove, configure, and invoke skills. |
 | `scheduler.*`              | req/res   | Reserved.                                          |

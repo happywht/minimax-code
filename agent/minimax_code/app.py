@@ -798,6 +798,11 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # Run timeline read APIs — lets the frontend replay persisted
     # agent runs instead of relying only on live WebSocket events.
     register_run_handlers(server)
+    # M4 — engine registry cards (native + Codex) with live
+    # availability probes so the UI can disable what is missing.
+    from .ipc.handlers_engines import register_engine_handlers
+
+    register_engine_handlers(server)
     # Runtime diagnostics — exposes the boot-time crash-recovery
     # snapshot (R12) so the Settings page can surface "recovered N
     # orphan runs after an unexpected shutdown". Read-only handler.

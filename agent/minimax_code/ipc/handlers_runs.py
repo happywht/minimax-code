@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -111,6 +112,33 @@ def register_run_handlers(server: Any) -> None:
             request = RunStartParams.model_validate(params)
         except ValidationError:
             await ctx.reply_error(INVALID_PARAMS, "run.start requires a session, input and idempotency key; only native is currently supported")
+            return
+        # M4 — engines are pinned at admission and never silently fall
+        # back. "codex" runs on the Codex App Server adapter; an
+        # unavailable engine names its reason instead of degrading.
+        if request.engine != "native":
+            from ..engines import get_engine
+
+            engine = get_engine(request.engine)
+            if engine is None:
+                await ctx.reply_error(INVALID_PARAMS, f"unknown engine: {request.engine!r}")
+                return
+            info = engine.info()
+            if asyncio.iscoroutine(info):
+                info = await info
+            if not info.available:
+                await ctx.reply_error(
+                    INVALID_PARAMS,
+                    f"engine {request.engine!r} is unavailable: {info.unavailable_reason}",
+                    {"engine": info.to_dict()},
+                )
+                return
+            await ctx.reply_error(
+                INVALID_PARAMS,
+                f"engine {request.engine!r} is registered but its run driver is not wired yet "
+                "(M4-B); use the native engine for now",
+                {"engine": info.to_dict()},
+            )
             return
         await handle_agent_send_message(request.model_dump(exclude={"engine"}), ctx, wait=False)
 

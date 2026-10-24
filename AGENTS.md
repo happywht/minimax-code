@@ -169,7 +169,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 
 ### IPC 命名空间
 
-共 **175 个注册方法、33 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
+共 **178 个注册方法、34 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
 
 | 前缀 | 方法数 | 用途 | Handler 文件 |
 |------|--------|------|-------------|
@@ -179,6 +179,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 | `codebase.*` | 4 | 代码库索引/检索 | `handlers_codebase.py` |
 | `crash.*` | 3 | 崩溃恢复会话 | `handlers_crash.py` |
 | `data.*` | 3 | 全量导出/导入/备份 | `handlers_data.py` |
+| `engine.*` | 2 | 引擎注册表能力卡（native/Codex 可用性探测） | `handlers_engines.py` |
 | `diag.*` | 1 | 诊断包导出 | `handlers_diag.py` |
 | `git.*` | 3 | Git 状态/差异/日志 | `handlers_git.py` |
 | `mcp.*` | 6 | MCP 服务器管理 | `handlers_mcp.py` |
@@ -205,7 +206,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 | `terminal.*` | 4 | 终端命令执行 | `handlers_terminal.py` |
 | `webhook.*` | 5 | Webhook 管理 | `handlers_webhooks.py` |
 | `workflow.*` | 7 | 工作流编排 | `handlers_workflows.py` |
-| `workspace.*` | 3 | 工作区/worktree 管理 | `handlers_workspace.py` |
+| `workspace.*` | 4 | 工作区/worktree 管理（含 merge_worktree） | `handlers_workspace.py` |
 | `ping` / `status` / `shutdown` | 各 1 | built-in（无点号） | `builtins.py` |
 
 ## AI 使用指引

@@ -45,7 +45,10 @@ class RunStartParams(SendMessageParams):
     model_config = ConfigDict(extra="forbid", strict=True)
     session_id: str = Field(min_length=1)
     idempotency_key: str = Field(min_length=1, max_length=128)
-    engine: Literal["native"] = "native"
+    # M4 — engine pinned at admission. "codex" routes to the Codex
+    # App Server adapter; unknown/unavailable values are named in the
+    # error instead of silently falling back to native.
+    engine: Literal["native", "codex"] = "native"
 
 
 class RunIdParams(BaseModel):
