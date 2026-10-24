@@ -846,6 +846,27 @@ export interface ListProjectsResult {
   projects: Project[];
 }
 
+/** M4 — capability card for one agent engine (native / Codex). */
+export interface EngineInfo {
+  id: string;
+  name: string;
+  available: boolean;
+  /** Why this engine cannot be used right now (null when available). */
+  unavailable_reason: string | null;
+  /** streaming / resume / cancel / approvals / usage / steer. */
+  capabilities: Record<string, boolean>;
+  version: string | null;
+}
+
+export interface ListEnginesResult {
+  engines: EngineInfo[];
+  default: string;
+}
+
+export interface EngineStatusResult {
+  engine: EngineInfo;
+}
+
 export interface CreateProjectResult {
   project: Project;
 }

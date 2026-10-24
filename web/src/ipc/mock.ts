@@ -451,6 +451,43 @@ function mockHandle(
       return { ok: true, project };
     }
 
+    case "engine.list": {
+      // M4 — mock cards: native always available, codex reported from
+      // the environment the same way the real probe would.
+      const codexAvailable = false;
+      return {
+        default: "native",
+        engines: [
+          {
+            id: "native",
+            name: "Native (built-in Python agent)",
+            available: true,
+            unavailable_reason: null,
+            capabilities: { streaming: true, resume: true, cancel: true,
+                            approvals: true, usage: true, steer: true },
+            version: "mock",
+          },
+          {
+            id: "codex",
+            name: "Codex (OpenAI Codex CLI)",
+            available: codexAvailable,
+            unavailable_reason: codexAvailable ? null : "codex CLI not found on PATH (mock)",
+            capabilities: { streaming: true, resume: true, cancel: true,
+                            approvals: true, usage: true, steer: true },
+            version: codexAvailable ? "mock" : null,
+          },
+        ],
+      };
+    }
+
+    case "engine.status": {
+      const p = params as { engine_id: string };
+      const list = mockHandle("engine.list", {} as unknown, undefined as never, null) as import("../types/ipc").ListEnginesResult;
+      const engine = list.engines.find((e) => e.id === p.engine_id);
+      if (!engine) throw new Error(`unknown engine_id: ${p.engine_id}`);
+      return { engine };
+    }
+
     case "project.delete": {
       const p = params as { project_id: string };
       const pid = p.project_id;

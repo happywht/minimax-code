@@ -157,6 +157,9 @@ export interface TypedIPC {
   listProjects(opts?: { archived?: boolean }): Promise<ListProjectsResult>;
   createProject(opts: { name: string; description?: string; root_path?: string; validate_command?: string }): Promise<CreateProjectResult>;
   updateProject(projectId: string, fields: { name?: string; description?: string; root_path?: string; validate_command?: string }): Promise<UpdateProjectResult>;
+  /** M4 — engine registry cards with live availability probes. */
+  listEngines(): Promise<import("../types/ipc").ListEnginesResult>;
+  getEngineStatus(engineId: string): Promise<import("../types/ipc").EngineStatusResult>;
   deleteProject(projectId: string): Promise<{ ok: true; project_id: string }>;
   archiveProject(projectId: string): Promise<{ ok: true; project: import("../types/ipc").Project }>;
   unarchiveProject(projectId: string): Promise<{ ok: true; project: import("../types/ipc").Project }>;
@@ -613,6 +616,10 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<CreateProjectResult>("project.create", opts),
     updateProject: (pid, fields) =>
       client.request<UpdateProjectResult>("project.update", { project_id: pid, ...fields }),
+    listEngines: () =>
+      client.request<import("../types/ipc").ListEnginesResult>("engine.list", {}),
+    getEngineStatus: (engineId: string) =>
+      client.request<import("../types/ipc").EngineStatusResult>("engine.status", { engine_id: engineId }),
     deleteProject: (pid) =>
       client.request<{ ok: true; project_id: string }>("project.delete", { project_id: pid }),
     archiveProject: (pid) =>

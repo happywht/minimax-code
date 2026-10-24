@@ -12,6 +12,7 @@ import { TabHeader } from "./fields";
 import { useModelRegistry } from "./models/useModelRegistry";
 import { ModelRow } from "./models/ModelRow";
 import { ProviderRegistryCard } from "./models/ProviderRegistryCard";
+import { EngineCards } from "./models/EngineCards";
 
 export { ModelsTab };
 
@@ -89,6 +90,10 @@ function ModelsTab(): JSX.Element {
             onRemove={(modelId) => void removeModel(provider, modelId)}
           />
         ))}
+      </div>
+
+      <div className="border-t border-line pt-4">
+        <EngineCards />
       </div>
     </section>
   );
