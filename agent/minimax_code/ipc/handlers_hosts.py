@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from ..hosts.ssh import probe_host
+from ..hosts.ssh import fetch_file, probe_host, push_file, run_ssh
 from ..storage.dao.hosts import HostsDAO
 from .handler_utils import HandlerError, check_params
 from .protocol import INTERNAL_ERROR, INVALID_PARAMS
@@ -153,12 +153,106 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
             logger.exception("host.probe failed")
             await ctx.reply_error(INTERNAL_ERROR, "host.probe failed")
 
+    async def handle_host_exec(params: Any, ctx: Context) -> None:
+        """Execute one command on the remote host (M5 execution base)."""
+        try:
+            check_params(params, expected_keys={"host_id", "command"})
+            dao_obj = await dao_factory()
+            host = await dao_obj.get(str(params["host_id"]))
+            if host is None:
+                raise HandlerError(INVALID_PARAMS,
+                                   f"unknown host_id: {params['host_id']!r}")
+            if not host.get("enabled"):
+                raise HandlerError(INVALID_PARAMS, "host is disabled")
+            command = str(params["command"])
+            if not command.strip():
+                raise HandlerError(INVALID_PARAMS, "command cannot be empty")
+            timeout = float(params.get("timeout_s") or 300.0)
+            result = await run_ssh(host, command, timeout=timeout, runner=runner)
+            await ctx.reply({
+                "ok": result.ok,
+                "exit_code": result.exit_code,
+                "stdout": result.stdout[-20000:],
+                "stderr": result.stderr[-20000:],
+                "timed_out": result.timed_out,
+            })
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception:  # pragma: no cover — defensive
+            logger.exception("host.exec failed")
+            await ctx.reply_error(INTERNAL_ERROR, "host.exec failed")
+
+    async def handle_host_push(params: Any, ctx: Context) -> None:
+        """Upload a local file to the host with sha256 verification (M5)."""
+        try:
+            check_params(params, expected_keys={"host_id", "local_path", "remote_path"})
+            dao_obj = await dao_factory()
+            host = await dao_obj.get(str(params["host_id"]))
+            if host is None:
+                raise HandlerError(INVALID_PARAMS,
+                                   f"unknown host_id: {params['host_id']!r}")
+            if not host.get("enabled"):
+                raise HandlerError(INVALID_PARAMS, "host is disabled")
+            local_path = Path(str(params["local_path"])).expanduser()
+            if not local_path.is_file():
+                raise HandlerError(INVALID_PARAMS,
+                                   f"local_path is not a file: {local_path}")
+            remote_path = str(params["remote_path"]).strip()
+            if not remote_path or remote_path.startswith("-"):
+                raise HandlerError(INVALID_PARAMS, "remote_path must be an absolute path")
+            result = await push_file(host, local_path, remote_path,
+                                     runner=runner)
+            await ctx.reply({
+                "ok": result.ok,
+                "exit_code": result.exit_code,
+                "stderr": result.stderr[-2000:],
+                "remote_path": remote_path,
+            })
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception:  # pragma: no cover — defensive
+            logger.exception("host.push failed")
+            await ctx.reply_error(INTERNAL_ERROR, "host.push failed")
+
+    async def handle_host_fetch(params: Any, ctx: Context) -> None:
+        """Download a remote file to the local machine with sha256 verification."""
+        try:
+            check_params(params, expected_keys={"host_id", "remote_path", "local_path"})
+            dao_obj = await dao_factory()
+            host = await dao_obj.get(str(params["host_id"]))
+            if host is None:
+                raise HandlerError(INVALID_PARAMS,
+                                   f"unknown host_id: {params['host_id']!r}")
+            if not host.get("enabled"):
+                raise HandlerError(INVALID_PARAMS, "host is disabled")
+            remote_path = str(params["remote_path"]).strip()
+            if not remote_path or remote_path.startswith("-"):
+                raise HandlerError(INVALID_PARAMS, "remote_path must be an absolute path")
+            local_path = Path(str(params["local_path"])).expanduser()
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            result = await fetch_file(host, remote_path, local_path,
+                                      runner=runner)
+            await ctx.reply({
+                "ok": result.ok,
+                "exit_code": result.exit_code,
+                "stderr": result.stderr[-2000:],
+                "local_path": str(local_path),
+            })
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception:  # pragma: no cover — defensive
+            logger.exception("host.fetch failed")
+            await ctx.reply_error(INTERNAL_ERROR, "host.fetch failed")
+
     server.register("host.create", handle_host_create)
     server.register("host.list", handle_host_list)
     server.register("host.get", handle_host_get)
     server.register("host.update", handle_host_update)
     server.register("host.delete", handle_host_delete)
     server.register("host.probe", handle_host_probe)
+    server.register("host.exec", handle_host_exec)
+    server.register("host.push", handle_host_push)
+    server.register("host.fetch", handle_host_fetch)
 
 
 def _make_dao_factory(dao: Any | None) -> Any:

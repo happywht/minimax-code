@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -158,3 +159,111 @@ async def test_host_probe_unknown_id_errors(host_server) -> None:
     ctx = host_server.ctx()
     await host_server.server._handlers["host.probe"]({"host_id": "ghost"}, ctx)
     ctx.reply_error.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# M5-B — host.exec / host.push / host.fetch
+# ---------------------------------------------------------------------------
+
+
+async def test_host_exec_runs_command_via_ssh(host_server) -> None:
+    srv = host_server.server
+    ctx = host_server.ctx()
+    await srv._handlers["host.create"]({
+        "name": "exec-1", "hostname": "10.0.0.5", "username": "ci"}, ctx)
+    host = ctx.reply.await_args.args[0]["host"]
+
+    captured = {}
+
+    async def exec_runner(argv):
+        captured["argv"] = argv
+        assert argv[0] == "ssh" and "10.0.0.5" in argv[-2]
+        assert "echo hello" in argv[-1]
+        return 0, b"hello\n", b""
+
+    host_server.runner_slot["fn"] = exec_runner
+    await srv._handlers["host.exec"]({
+        "host_id": host["id"], "command": "echo hello"}, host_server.ctx())
+    # Re-fetch handler registry entry bound to the latest slot.
+    result = None
+    probe_ctx = host_server.ctx()
+    await srv._handlers["host.probe"]({"host_id": host["id"]}, probe_ctx)
+    exec_ctx = host_server.ctx()
+    await srv._handlers["host.exec"]({
+        "host_id": host["id"], "command": "echo hello"}, exec_ctx)
+    result = exec_ctx.reply.await_args.args[0]
+    assert result["ok"] is True
+    assert "hello" in result["stdout"]
+
+    # Disabled hosts refuse execution.
+    await srv._handlers["host.update"]({
+        "host_id": host["id"], "enabled": False}, host_server.ctx())
+    denied = host_server.ctx()
+    await srv._handlers["host.exec"]({
+        "host_id": host["id"], "command": "echo no"}, denied)
+    assert "disabled" in str(denied.reply_error.await_args.args[1])
+
+
+async def test_host_push_fetch_with_sha_verification(host_server, tmp_path) -> None:
+    srv = host_server.server
+    ctx = host_server.ctx()
+    await srv._handlers["host.create"]({
+        "name": "file-1", "hostname": "10.0.0.7", "username": "ci"}, ctx)
+    host = ctx.reply.await_args.args[0]["host"]
+
+    local = tmp_path / "payload.txt"
+    local.write_text("round-trip", encoding="utf-8")
+    remote_file = tmp_path / "remote-side.txt"  # stands in for the remote copy
+
+    calls: list[list[str]] = []
+
+    import hashlib
+
+    async def scp_simulator(argv):
+        calls.append(argv)
+        if argv[0] == "scp":
+            # Upload: argv[-2]=local, argv[-1]=remote:dest — mirror the
+            # file so the remote-side sha256sum has something to hash.
+            if str(local) in argv[-2]:
+                remote_file.write_text(local.read_text(encoding="utf-8"),
+                                       encoding="utf-8")
+            # Download: argv[-2]=remote:src, argv[-1]=local dest.
+            else:
+                Path(argv[-1]).write_text(
+                    remote_file.read_text(encoding="utf-8"), encoding="utf-8")
+            return 0, b"", b""
+        # ssh sha256sum — return the REAL hash of the mirrored file.
+        digest = hashlib.sha256(remote_file.read_bytes()).hexdigest()
+        return 0, f"{digest}  /tmp/payload.txt\n".encode(), b""
+
+    host_server.runner_slot["fn"] = scp_simulator
+
+    # Push: the sha256sum round-trip reads the "remote" file we mirrored.
+    push_ctx = host_server.ctx()
+    await srv._handlers["host.push"]({
+        "host_id": host["id"], "local_path": str(local),
+        "remote_path": "/tmp/payload.txt"}, push_ctx)
+    push_result = push_ctx.reply.await_args.args[0]
+    assert push_result["ok"] is True, push_result
+
+    # Fetch into a fresh local path.
+    download_target = tmp_path / "downloaded.txt"
+    fetch_ctx = host_server.ctx()
+    await srv._handlers["host.fetch"]({
+        "host_id": host["id"], "remote_path": "/tmp/payload.txt",
+        "local_path": str(download_target)}, fetch_ctx)
+    fetched = fetch_ctx.reply.await_args.args[0]
+    assert fetched["ok"] is True, fetched
+    assert download_target.read_text(encoding="utf-8") == "round-trip"
+
+    # A missing remote file must fail sha verification (sha256sum of a
+    # non-existent path returns nothing to match).
+    from minimax_code.hosts.ssh import fetch_file
+
+    async def empty_runner(argv):
+        return 0, b"", b""
+
+    bad = await fetch_file(
+        {"hostname": "h", "username": "u", "port": 22, "identity_file": ""},
+        "/tmp/missing.txt", tmp_path / "out.bin", runner=empty_runner)
+    assert bad.ok is False

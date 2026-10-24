@@ -252,6 +252,9 @@ on the next `readline() == ""`.
 | `host.update` | req/res | M5 — tri-state field update incl. enable/disable. |
 | `host.delete` | req/res | M5 — remove the host (its runs are history and survive). |
 | `host.probe` | req/res | M5 — SSH connection diagnosis + version handshake (uname / python3 / codex), outcome persisted (`last_probe_at` / `last_probe_ok` / `agent_version`). |
+| `host.exec` | req/res | M5 — execute one command on the remote host over ssh (BatchMode, bounded timeout); structured `{ok, exit_code, stdout, stderr, timed_out}`. Disabled hosts refuse. |
+| `host.push` | req/res | M5 — scp a local file to the host, then verify sha256 on both ends; a mismatch is a structured failure, not a silent corruption. |
+| `host.fetch` | req/res | M5 — scp a remote file to the local machine with the same sha256 verification. |
 | `message.list` / `message.update` / `message.delete` | req/res | List messages in a session; update or delete a single message. |
 | `skill.list` / `skill.install` / `skill.uninstall` / `skill.enable` / `skill.disable` / `skill.invoke` | req/res | List, import, remove, configure, and invoke skills. |
 | `scheduler.*`              | req/res   | Reserved.                                          |
