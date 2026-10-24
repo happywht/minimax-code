@@ -148,7 +148,12 @@ class ProviderDAO:
             if not p.get("enabled"):
                 continue
             for m in p.get("models") or []:
-                entry = dict(m)
+                # Callers may register models as plain id strings
+                # (``["glm-4.6"]``) or as full dicts (``{"id": ...}``).
+                # A bare string used to crash dict() here and take down
+                # every model.set_current call.
+                entry = dict(m) if isinstance(m, dict) else {"id": str(m)}
+                entry.setdefault("id", str(m))
                 entry["provider_id"] = p["id"]
                 entry["provider_name"] = p["name"]
                 entry["provider"] = p["name"]

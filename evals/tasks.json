@@ -1,0 +1,48 @@
+{
+  "budget_tokens_per_task": 60000,
+  "validate_timeout_s": 120,
+  "tasks": [
+    {
+      "id": "task1-fix-total",
+      "category": "fix-simple",
+      "prompt": "inventory.py 里的 total_value() 返回的数字明显不对——店里这些货总值不可能这么小。帮我找到问题修好，然后跑测试确认全绿。",
+      "mutation": null,
+      "acceptance": {"command": "python -m pytest -q", "expect_all_pass": true}
+    },
+    {
+      "id": "task2-discount-wiring",
+      "category": "cross-file",
+      "prompt": "orders.py 的 create_order 现在完全不考虑折扣。test_orders.py 底部有两段被注释掉的测试，把它们启用并让它们全部通过——折扣计算用现成的 discount 模块，订单结果里需要增加 discount_rate 字段。",
+      "mutation": "enable_test_orders",
+      "acceptance": {"command": "python -m pytest -q", "expect_all_pass": true}
+    },
+    {
+      "id": "task3-fix-test",
+      "category": "fix-test",
+      "prompt": "test_discount.py 里 test_ten_percent_tier 这个测试总是失败。我检查过 discount.py 的逻辑，15 件给 10% 折扣是对的，所以我怀疑测试本身写错了。帮我判断到底谁对谁错，把错的一方修好，保证整个测试套件全绿。",
+      "mutation": "break_test_discount",
+      "acceptance": {"command": "python -m pytest -q", "expect_all_pass": true}
+    },
+    {
+      "id": "task4-extract-money",
+      "category": "refactor",
+      "prompt": "orders.py 和 discount.py 里都有「金额四舍五入到分」的散落写法（round(x, 2)）。请新建一个 money.py，提供 round_cents(value) 函数，并让两个模块改用它。行为必须完全不变，测试必须保持全绿。",
+      "mutation": null,
+      "acceptance": {"command": "python -m pytest -q", "expect_all_pass": true, "require_file": "money.py"}
+    },
+    {
+      "id": "task5-edge-lookup",
+      "category": "edge-case",
+      "prompt": "inventory.lookup 遇到不存在的商品编号会直接崩掉。test_inventory.py 底部有两段被注释的防御性测试，启用它们并让 lookup 满足：不存在的编号抛 KeyError，负数编号抛 ValueError（需要给 lookup 加校验）。",
+      "mutation": "enable_test_inventory",
+      "acceptance": {"command": "python -m pytest -q", "expect_all_pass": true}
+    },
+    {
+      "id": "task6-boundary-discount",
+      "category": "regression",
+      "prompt": "折扣档位的边界好像有问题：买恰好 10 件的时候折扣行为可疑。请核实 discount.py 的档位边界是否正确，修正错误，并把 test_discount.py 底部两段注释的边界测试启用后保证全绿。注意：修复不能破坏其他测试。",
+      "mutation": "enable_test_discount_boundary",
+      "acceptance": {"command": "python -m pytest -q", "expect_all_pass": true}
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+# Evaluation runtime artifacts — never commit.
+.data/
+runs/
+report-*.md
+__pycache__/
