@@ -446,3 +446,12 @@ Legacy task/message evidence remains unknown rather than inventing a pass.
 * `agent/minimax_code/storage/dao/` — typed DAO classes
 * `agent/tests/test_storage.py` — 27 unit tests
 * `docs/architecture.md` §5 — system architecture (Storage sits under the agent)
+
+
+### Schema036：固定调度与发生记录
+
+scheduled_jobs 追加 revision/context_version/context/timezone/binding_state/binding_reason/deleted_at/active_occurrence_id。
+迁移将所有旧任务停用并标为 needs_rebind，保留原 payload。schedule_occurrences 保存不可变 prompt/context/job revision、cron UTC 时点或 manual_key、coalesced_through、fingerprint、独立 session/task/run 关联与终态原因。
+唯一索引分别约束 cron(job_id,revision,scheduled_for) 与 manual(job_id,manual_key)；任务行 active_occurrence_id 在同一事务中提供跨修订租约。
+发生创建与隔离 session/task 同事务；Native 接单同时保存 run、用户消息、occurrence.run_id 与 task.run_id。终态投影以精确当前 run_id 作 CAS，旧恢复来源不能覆盖已接单子运行。
+任务软删除以保留幂等键和历史；不自动删除发生证据。升级前备份数据库，回退需旧应用及匹配的升级前数据库备份，不提供或宣称已验证逆向迁移。

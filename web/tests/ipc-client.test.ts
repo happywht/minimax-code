@@ -181,7 +181,7 @@ describe("TypedIPC wrappers", () => {
   it("createJob + listJobs round-trip", async () => {
     const client = new IPCClient({ forceMock: true });
     const t = bindTypedIPC(client);
-    const r = await t.createJob({ name: "test", cron: "* * * * *", prompt: "hi" });
+    const r = await t.createJob({ name: "test", cron: "* * * * *", prompt: "hi", context: {project_id:"p",provider_id:"offline",model:"test",budget_tokens:1000,mode:"execute",timezone:"Asia/Shanghai"} });
     expect(r.job.name).toBe("test");
     const list = await t.listJobs();
     expect(list.jobs.find((j) => j.id === r.job.id)?.cron).toBe("* * * * *");

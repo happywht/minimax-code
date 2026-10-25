@@ -389,6 +389,7 @@ async def _build_system_prompt_extra(
     *,
     session_id: str | None = None,
     project_id: str | None = None,
+    validate_command_override: str | None = None,
 ) -> str | None:
     """Build the ``system_prompt_extra`` payload for the current turn.
 
@@ -474,7 +475,7 @@ async def _build_system_prompt_extra(
             _db = _get_db()
             if _db is not None:
                 proj_row = await ProjectsDAO(_db).get(str(project_id))
-                _cmd = normalize_validate_command(
+                _cmd = normalize_validate_command(validate_command_override if validate_command_override is not None else
                     (proj_row or {}).get("validate_command"))
                 if _cmd:
                     parts.append(
@@ -547,7 +548,7 @@ async def _reply_for_run(ctx, dao, service, run, job, *, created, wait):
 async def handle_agent_send_message(
     params: Any, ctx: Context, *, wait: bool = True, resumed_from_id: str | None = None,
     required_model: dict[str, Any] | None = None, required_workspace: str | None = None,
-    continuation: bool = False,
+    continuation: bool = False, internal_schedule: dict[str, Any] | None = None,
 ) -> None:
     from ..execution import ExecutionPolicy, execution_scope
     from ..storage.dao.runs import AgentRunsDAO, RequestConflictError
@@ -579,6 +580,10 @@ async def handle_agent_send_message(
         if db is None:
             raise RuntimeError("storage unavailable: database not initialized")
         dao = AgentRunsDAO(db)
+        scheduled = await db.fetchone("SELECT id FROM schedule_occurrences WHERE session_id=? LIMIT 1", (session_id,))
+        if scheduled and internal_schedule is None:
+            await ctx.reply_error(-32602, "Scheduled conversations require reviewed run.resume with their saved context")
+            return
         pinned = await db.fetchone("SELECT engine FROM sessions WHERE id=?", (session_id,))
         if pinned and pinned["engine"] != "native":
             await ctx.reply_error(-32602, "This session uses Codex; send through run.start or create a Native session")
@@ -594,13 +599,6 @@ async def handle_agent_send_message(
     if existing is not None:
         job = await service.job_for_run(existing["id"])
         await _reply_for_run(ctx, dao, service, existing, job, created=False, wait=wait)
-        return
-    try:
-        model_snapshot = ModelSnapshot.capture()
-        if required_model is not None and model_snapshot.metadata() != required_model:
-            raise RuntimeError("Select the original provider, model and reasoning effort before resuming")
-    except Exception as exc:
-        await ctx.reply_error(LLM_ERROR, f"Cannot start task: {exc}")
         return
     if isinstance(content, str):
         title = content.strip()[:32]
@@ -625,6 +623,10 @@ async def handle_agent_send_message(
         if required_workspace is not None and root != required_workspace:
             raise RuntimeError("Session workspace changed; restore its binding or start a new task")
         project_id = session.get("project_id")
+        if internal_schedule is not None:
+            saved = internal_schedule["context"]
+            if project_id != saved["project_id"] or root != saved["workspace"]:
+                raise ValueError("Scheduled session binding changed")
         # M3 — snapshot the project's acceptance command at admission so
         # a mid-run rebind cannot swap what this run will be validated
         # with. Unset / inbox (no project) means no automatic validation.
@@ -641,6 +643,9 @@ async def handle_agent_send_message(
         await ctx.reply_error(-32602, f"Cannot start task: {exc}")
         return
 
+    if internal_schedule is not None:
+        validate_command = internal_schedule["context"]["validate_command"]
+
     # M2 — resolve the run budget before admission. The daily baseline
     # (today's spent total) is queried once here; the in-flight run adds
     # its own usage on top inside the core. A day already over its cap
@@ -648,14 +653,14 @@ async def handle_agent_send_message(
     from ..budget import daily_budget_limit, resolve_run_budget
 
     budget_override = params.get("budget_tokens")
-    run_budget = resolve_run_budget(budget_override)
+    run_budget = internal_schedule["context"]["budget_tokens"] if internal_schedule is not None else resolve_run_budget(budget_override)
     daily_limit = daily_budget_limit()
     daily_baseline = 0
     if daily_limit is not None:
         try:
             row = await db.fetchone(
                 "SELECT COALESCE(SUM(tokens_in + tokens_out), 0) AS n FROM messages "
-                "WHERE date(created_at) = date('now', 'localtime')"
+                "WHERE date(created_at, 'localtime') = date('now', 'localtime')"
             )
             daily_baseline = int(row["n"] or 0) if row else 0
         except Exception:
@@ -670,7 +675,28 @@ async def handle_agent_send_message(
             )
             return
 
+    try:
+        if internal_schedule is not None:
+            from ..schedule_context import resolve_model
+            model_snapshot = await resolve_model(db, internal_schedule["context"])
+        else:
+            model_snapshot = ModelSnapshot.capture()
+        if internal_schedule is None and required_model is not None and model_snapshot.metadata() != required_model:
+            raise RuntimeError("Select the original provider, model and reasoning effort before resuming")
+    except Exception as exc:
+        await ctx.reply_error(LLM_ERROR, f"Cannot start task: {exc}")
+        return
+    async def close_owned_model():
+        if internal_schedule is not None:
+            try:
+                await model_snapshot.client.close()
+            except Exception:
+                logger.exception("scheduled model client close failed")
+
     async def execute(job: RunJob) -> None:
+        from ..schedule_context import ScheduledChildren, scheduled_runtime
+        children = ScheduledChildren() if internal_schedule is not None else None
+        schedule_token = scheduled_runtime.set({"context":internal_schedule["context"],"children":children}) if internal_schedule is not None else None
         try:
             from ..orchestrator.subagent import SubAgentRuntime, subagent_runtime_scope
 
@@ -678,8 +704,12 @@ async def handle_agent_send_message(
                                       reasoning_effort=model_snapshot.reasoning_effort)
             with execution_scope(ExecutionPolicy(read_only=mode == "plan")), subagent_runtime_scope(runtime):
                 await _handle_agent_send_message(request, _RunContext(ctx, job), job=job,
-                                                 model_snapshot=model_snapshot)
+                                                 model_snapshot=model_snapshot, internal_schedule=internal_schedule)
         finally:
+            if children is not None:
+                await children.drain(cancel=True)
+            if schedule_token is not None:
+                scheduled_runtime.reset(schedule_token)
             from ..orchestrator.subagent import pop_subagent_emit
             from ..perm_consent import unregister_gater
 
@@ -688,6 +718,7 @@ async def handle_agent_send_message(
             unregister_gater(ctx.server, session_id)
 
     async def finalize(job: RunJob, error: BaseException | None) -> None:
+        await close_owned_model()
         current = await dao.get_run(job.run_id)
         # A completed receipt is immutable. A preliminary budget pause can
         # still fail or be cancelled before its final evidence is settled.
@@ -715,7 +746,8 @@ async def handle_agent_send_message(
     try:
         run, job, created = await service.admit(
             dao=dao, session_id=session_id, request=request, request_key=key, title=title,
-            metadata={"model_snapshot": model_snapshot.metadata(), "workspace_snapshot": root,
+            metadata={**({"schedule": internal_schedule} if internal_schedule is not None else {}),
+                      "model_snapshot": model_snapshot.metadata(), "workspace_snapshot": root,
                       "project_id": project_id,
                       "validate_command": validate_command,
                       "budget": {"limit_tokens": run_budget, "daily_limit": daily_limit,
@@ -726,12 +758,16 @@ async def handle_agent_send_message(
             daily_budget_limit=daily_limit, validate_command=validate_command,
             continuation=continuation)
     except (RequestConflictError, ValueError) as exc:
+        await close_owned_model()
         await ctx.reply_error(-32602, str(exc))
         return
     except Exception:
+        await close_owned_model()
         logger.exception("durable run admission failed")
         await ctx.reply_error(-32004, "Cannot start task: request could not be durably admitted")
         return
+    if not created:
+        await close_owned_model()
     if created:
         await _notify_run(ctx, "run.created", {"run": run})
     await _reply_for_run(ctx, dao, service, run, job, created=created, wait=wait)
@@ -739,6 +775,7 @@ async def handle_agent_send_message(
 
 async def _handle_agent_send_message(
     params: Any, ctx: Context, *, job: RunJob, model_snapshot: ModelSnapshot,
+    internal_schedule: dict[str, Any] | None = None,
 ) -> None:
     """End-to-end chat handler for ``agent.send_message``.
 
@@ -966,11 +1003,25 @@ async def _handle_agent_send_message(
 
         perm_store = await _ensure_permission_store(ctx.server)
     except Exception:
+        if internal_schedule is not None:
+            raise RuntimeError("Scheduled permission policy is unavailable") from None
         logger.debug("permission store unavailable; running without gating")
 
     from ..perm_consent import PermissionGater, register_gater
 
-    gater = PermissionGater(emit=ctx.emit)
+    async def approval_emit(event, data):
+        if internal_schedule is not None and event == "permission.request":
+            data = {**data, "approval_policy": "explicit_once"}
+        await ctx.emit(event, data)
+    if internal_schedule is not None:
+        from ..schedule_context import FrozenPermissions
+        if perm_store is None:
+            raise RuntimeError("Scheduled permission policy is unavailable")
+        perm_store = FrozenPermissions(internal_schedule["context"]["permission_rules"], perm_store)
+    gater = PermissionGater(emit=approval_emit)
+    if internal_schedule is not None:
+        from ..schedule_context import scheduled_runtime
+        scheduled_runtime.set({**(scheduled_runtime.get() or {}),"context":internal_schedule["context"],"permissions":perm_store,"gater":gater})
     # Stash the gater on the server so the ``permission.resolve``
     # handler (registered earlier in the same server) can find it.
     # v1.2.2: registry-keyed by session — the legacy single
@@ -996,7 +1047,7 @@ async def _handle_agent_send_message(
     try:
         from ..app import ensure_hook_manager
 
-        hook_manager = ensure_hook_manager()
+        hook_manager = ensure_hook_manager() if internal_schedule is None else None
     except Exception:
         logger.debug("hook manager unavailable; running without hooks")
 
@@ -1048,6 +1099,7 @@ async def _handle_agent_send_message(
             system_prompt_extra=await _build_system_prompt_extra(
                 session_id=session_id,
                 project_id=project_id,
+                **({"validate_command_override": job.validate_command} if internal_schedule is not None else {}),
             ),
             stall_timeout=stall_timeout,
             reasoning_effort=model_snapshot.reasoning_effort,
@@ -1149,33 +1201,33 @@ async def _handle_agent_send_message(
                     ckpt_root = ensure_data_dir() / "checkpoints"
                     ckpt_root.mkdir(parents=True, exist_ok=True)
                     mgr = CheckpointManager(ckpt_root)
-                ckpt_id = f"ckpt_{uuid.uuid4().hex[:12]}"
-                snapshot = await mgr.create(
-                    cwd=job.workspace,
-                    checkpoint_id=ckpt_id,
-                    session_id=session_id,
-                    label="run-baseline",
-                    message=f"Automatic baseline before run {job.run_id}",
-                )
-                await CheckpointDAO(db).create(
-                    session_id=session_id,
-                    label="run-baseline",
-                    message=f"Automatic baseline before run {job.run_id}",
-                    git_stash_ref=snapshot.git_stash_ref,
-                    branch=snapshot.branch,
-                    tracked_files=snapshot.tracked_files,
-                    untracked_files=snapshot.untracked_files,
-                    has_untracked_snapshot=snapshot.has_untracked_snapshot,
-                    checkpoint_id=ckpt_id,
-                    created_at=snapshot.created_at,
-                )
-                recorder.run_metadata = {**recorder.run_metadata,
-                                         "baseline_checkpoint": ckpt_id}
-                await runs_dao.update_run_status(
-                    job.run_id, status="running",
-                    metadata={**recorder.run_metadata,
-                              "model_snapshot": model_snapshot.metadata()},
-                )
+                    ckpt_id = f"ckpt_{uuid.uuid4().hex[:12]}"
+                    snapshot = await mgr.create(
+                        cwd=job.workspace,
+                        checkpoint_id=ckpt_id,
+                        session_id=session_id,
+                        label="run-baseline",
+                        message=f"Automatic baseline before run {job.run_id}",
+                    )
+                    await CheckpointDAO(db).create(
+                        session_id=session_id,
+                        label="run-baseline",
+                        message=f"Automatic baseline before run {job.run_id}",
+                        git_stash_ref=snapshot.git_stash_ref,
+                        branch=snapshot.branch,
+                        tracked_files=snapshot.tracked_files,
+                        untracked_files=snapshot.untracked_files,
+                        has_untracked_snapshot=snapshot.has_untracked_snapshot,
+                        checkpoint_id=ckpt_id,
+                        created_at=snapshot.created_at,
+                    )
+                    recorder.run_metadata = {**recorder.run_metadata,
+                                             "baseline_checkpoint": ckpt_id}
+                    await runs_dao.update_run_status(
+                        job.run_id, status="running",
+                        metadata={**recorder.run_metadata,
+                                  "model_snapshot": model_snapshot.metadata()},
+                    )
         except Exception:
             logger.warning("run baseline checkpoint failed; continuing without it", exc_info=True)
 
@@ -1340,6 +1392,12 @@ async def _handle_agent_send_message(
             )
         except Exception:
             logger.debug("telemetry session_start emit failed", exc_info=True)
+    descendants = []
+    children = None
+    if internal_schedule is not None:
+        from ..schedule_context import scheduled_runtime
+        children = (scheduled_runtime.get() or {}).get("children")
+    child_drain_complete = False
     try:
         # v1.1.0: auto-continue loop — block 1 plus up to
         # ``auto_continue_max_blocks - 1`` automatic continuations while
@@ -1349,6 +1407,19 @@ async def _handle_agent_send_message(
         result, blocks = await _run_with_auto_continue(
             core, session_id=session_id, content=content
         )
+        if children is not None and children.tasks:
+            from ..verification import verification_evidence
+            pending_proof = verification_evidence(status="running",base={"requires_review":True})
+            job.result = {"session_id":session_id,"message_id":current_assistant_message_id,
+                "run_id":job.run_id,"text":result.final_text,"run_status":"running",
+                "tokens_in":result.usage.get("prompt_tokens",0),"tokens_out":result.usage.get("completion_tokens",0),
+                "verification":pending_proof}
+            current_run = await runs_dao.get_run(job.run_id)
+            await runs_dao.update_run_status(job.run_id,status=current_run["status"],result=job.result,
+                metadata={**(current_run.get("metadata") or {}),"verification":pending_proof})
+        if children is not None:
+            descendants = await children.drain(cancel=bool(result.cancelled or result.truncated or getattr(result,"budget_exhausted",False)))
+        child_drain_complete = True
     except Exception as exc:
         logger.exception("agent.send_message: AgentCore.run failed")
         from ..agent.types import LLMStreamTimeout
@@ -1365,6 +1436,10 @@ async def _handle_agent_send_message(
             await ctx.reply_error(-32603, "agent.send_message failed")
         return
     finally:
+        if children is not None and not child_drain_complete:
+            descendants = await children.drain(cancel=True)
+            if job.result is not None:
+                job.result["verification"] = {**job.result.get("verification",{}),"children":descendants,"requires_review":True}
         _ACTIVE_RUNS.pop(session_id, None)
         # v1.4.0: unpublish the parent-session context and drop this
         # run's event route so a later run with the same session id
@@ -1436,7 +1511,8 @@ async def _handle_agent_send_message(
     verification_base = {
         "tool_calls": len(tool_calls_log),
         "failed_tool_calls": len(tool_failures),
-        "requires_review": bool(tool_failures) or bool(result.truncated),
+        "requires_review": bool(tool_failures) or bool(result.truncated) or any(child["requires_review"] for child in descendants),
+        **({"children": descendants} if descendants else {}),
         "failures": tool_failures[:5],
     }
 

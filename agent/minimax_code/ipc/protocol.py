@@ -41,6 +41,58 @@ class SendMessageParams(_Base):
     budget_tokens: int | None = Field(default=None, ge=0)
 
 
+class ScheduleContext(_Base):
+    """Versioned local Native authority snapshot, built by the scheduler only."""
+    version: Literal[1] = 1
+    host: Literal["local"] = "local"
+    engine: Literal["native"] = "native"
+    project_id: str
+    workspace: str
+    directory_identity: list[int]
+    provider_id: str
+    protocol: str
+    provider_fingerprint: str
+    model: str
+    reasoning_effort: str | None = None
+    mode: Literal["chat", "execute", "plan"]
+    budget_tokens: int = Field(gt=0, strict=True)
+    permission_policy_version: Literal[1] = 1
+    permission_rules: list[dict[str, Any]]
+    hooks_policy: Literal["disabled"] = "disabled"
+    validate_command: str = ""
+    timezone: str = "Asia/Shanghai"
+
+
+class ScheduleRunNowParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    job_id: str
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    expected_revision: int = Field(gt=0)
+
+
+class ScheduleOccurrence(_Base):
+    id: str
+    job_id: str
+    revision: int
+    source: Literal["cron", "manual"]
+    context: ScheduleContext
+    session_id: str
+    task_id: str
+    run_id: str | None = None
+    status: str
+    scheduled_for: str | None = None
+    coalesced_through: str | None = None
+    verification: dict[str, Any] | None = None
+
+
+class PermissionRequestData(_Base):
+    request_id: str
+    tool: str
+    args: dict[str, Any]
+    session_id: str | None = None
+    approval_policy: Literal["explicit_once"] | None = None
+
+
 class RunStartParams(SendMessageParams):
     model_config = ConfigDict(extra="forbid", strict=True)
     session_id: str = Field(min_length=1)

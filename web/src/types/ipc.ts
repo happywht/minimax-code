@@ -304,7 +304,41 @@ export interface ScheduledJob {
   enabled: boolean;
   last_run_at: number | null;
   next_run_at: number | null;
+  revision?: number;
+  context?: ScheduleContext | null;
+  binding_state?: "ready" | "needs_rebind" | "blocked" | "requires_review";
+  binding_reason?: string | null;
+  active_occurrence_id?: string | null;
 }
+
+export interface ScheduleContext {
+  hooks_policy?: "disabled";
+  version?: number;
+  host?: "local";
+  engine?: "native";
+  project_id: string;
+  workspace?: string;
+  provider_id: string;
+  model: string;
+  reasoning_effort?: string | null;
+  mode: "chat" | "execute" | "plan";
+  budget_tokens: number;
+  timezone: string;
+  validate_command?: string;
+  permission_rules?: { tool_pattern: string; action: string }[];
+}
+
+export interface ScheduleDefinition { name: string; cron: string; prompt: string; context: ScheduleContext }
+export interface ScheduleOccurrence {
+  id: string; job_id: string; revision: number; source: "cron" | "manual";
+  session_id: string; task_id: string; run_id: string | null; status: string;
+  reason?: string | null; scheduled_for?: string | null; coalesced_through?: string | null;
+  created_at: string; context: ScheduleContext;
+  verification?: VerificationEvidence;
+  execution_status?: string;
+  result?: string | null;
+}
+export interface ScheduleTriggerResult { ok: true; job_id: string; occurrence_id: string; task_id: string; run_id: string | null; status: string; created: boolean }
 
 /** A skill record. */
 export interface SkillInfo {
@@ -648,6 +682,7 @@ export interface AnswerUserResult {
 }
 
 export interface PermissionRequestData {
+  approval_policy?: "explicit_once";
   request_id: string;
   tool: string;
   args: Record<string, unknown>;

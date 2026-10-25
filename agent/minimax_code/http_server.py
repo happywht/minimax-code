@@ -477,6 +477,11 @@ def build_app(
         finally:
             await preview_state.stop()
 
+            # Fence cron/manual dispatch before cancelling admitted work. Never
+            # wait for approval here: RunService owns cancellation and cleanup.
+            from .scheduler import quiesce_scheduler
+            await quiesce_scheduler()
+
             # Native jobs outlive their RPC waiters. Drain them before closing
             # shared model clients or SQLite so cancellation can be persisted.
             from .runs import get_run_service
@@ -498,16 +503,8 @@ def build_app(
             _ACTIVE_RUNS.clear()
             logger.info("graceful shutdown: cancelled %d active runs", count)
 
-            # 2. Stop the APScheduler if it is running.
-            try:
-                from .scheduler import get_scheduler
-
-                sched = await get_scheduler()
-                if sched is not None:
-                    sched.shutdown(wait=False)
-                    logger.info("graceful shutdown: scheduler stopped")
-            except Exception:
-                pass
+            # Dispatcher waiters now observe durable terminal run receipts.
+            await quiesce_scheduler(wait=True)
 
             # 3. Close the LLM client (httpx connection pool).
             try:

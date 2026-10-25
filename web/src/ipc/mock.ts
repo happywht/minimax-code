@@ -982,37 +982,29 @@ function mockHandle(
       return { jobs: mockJobs };
 
     case "schedule.create": {
-      // The wire speaks ``cron_expr`` + ``payload``; we accept either
-      // (caller may use either) and normalise to the ScheduledJob
-      // shape the UI consumes (``cron`` + ``prompt``).
-      const p = params as
-        | { name: string; cron_expr?: string; cron?: string; payload?: { prompt?: string }; prompt?: string };
-      const cron = p.cron_expr ?? p.cron ?? "";
-      const prompt = p.prompt ?? p.payload?.prompt ?? "";
-      const job: ScheduledJob = {
-        id: `job_${Math.random().toString(36).slice(2, 10)}`,
-        name: p.name,
-        cron,
-        prompt,
-        enabled: true,
-        last_run_at: null,
-        next_run_at: null,
-      };
+      const p = params as {name: string; cron_expr: string; payload: {prompt: string}; context: import("../types/ipc").ScheduleContext};
+      if (!p.context?.project_id || !p.context.provider_id || !p.context.model || !(p.context.budget_tokens > 0) || Object.keys(p.payload).some((key) => key !== "prompt")) throw new Error("Bind local Native context and a positive budget");
+      const job: ScheduledJob = {id:crypto.randomUUID(), name:p.name, cron:p.cron_expr, prompt:p.payload.prompt,
+        context:p.context, revision:1, enabled:false, binding_state:"blocked", binding_reason:"Mock 模式不执行真实调度",last_run_at:null,next_run_at:null};
       mockJobs.push(job);
-      return { job };
+      return {job};
     }
-
-    case "schedule.enable":
+    case "schedule.update": {
+      const p = params as {job_id:string; expected_revision:number; name:string; cron_expr:string; payload:{prompt:string}; context:import("../types/ipc").ScheduleContext};
+      const job = mockJobs.find((entry) => entry.id === p.job_id);
+      if (!job || job.revision !== p.expected_revision) throw new Error("Schedule revision conflict");
+      if (!p.context?.project_id || !p.context.provider_id || !p.context.model || !(p.context.budget_tokens > 0) || Object.keys(p.payload).some((key) => key !== "prompt") || !p.payload.prompt?.trim()) throw new Error("Bind local Native context and a positive budget");
+      Object.assign(job,{name:p.name,cron:p.cron_expr,prompt:p.payload.prompt,context:p.context,revision:p.expected_revision+1});
+      return {job};
+    }
+    case "schedule.occurrences": return {occurrences:[]};
+    case "schedule.enable": throw new Error("Mock 模式不执行真实调度");
     case "schedule.disable": {
-      const p = params as { job_id: string };
-      const job = mockJobs.find((j) => j.id === p.job_id);
-      if (job) job.enabled = method === "schedule.enable";
-      return { job: job ?? null };
+      const job = mockJobs.find((entry) => entry.id === (params as {job_id:string}).job_id);
+      if (job) job.enabled=false;
+      return {job:job??null};
     }
-    case "schedule.run_now": {
-      const p = params as { job_id: string };
-      return { ok: true as const, job_id: p.job_id, triggered_at: Date.now() / 1000 };
-    }
+    case "schedule.run_now": throw new Error("Mock 模式不执行真实调度");
 
     case "agent.list":
       return { agents: mockAgents };

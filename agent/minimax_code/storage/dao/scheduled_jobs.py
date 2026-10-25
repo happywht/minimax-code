@@ -141,8 +141,11 @@ class ScheduledJobsDAO:
     async def delete(self, job_id: str) -> bool:
         async with self._db.transaction() as conn:
             cur = await conn.execute(
-                "DELETE FROM scheduled_jobs WHERE id = ?", (job_id,)
+                "UPDATE scheduled_jobs SET enabled=0,deleted_at=? WHERE id=? AND deleted_at IS NULL", (now_iso(), job_id)
             )
+            await conn.execute("UPDATE schedule_occurrences SET status='cancelled',reason='Schedule deleted before admission',updated_at=?,completed_at=? WHERE job_id=? AND run_id IS NULL AND status IN ('pending','blocked')", (now_iso(),now_iso(),job_id))
+            await conn.execute("UPDATE tasks SET status='cancelled',completed_at=? WHERE id IN (SELECT task_id FROM schedule_occurrences WHERE job_id=? AND run_id IS NULL AND status='cancelled')",(now_iso(),job_id))
+            await conn.execute("UPDATE scheduled_jobs SET active_occurrence_id=NULL WHERE id=? AND active_occurrence_id IN (SELECT id FROM schedule_occurrences WHERE job_id=? AND run_id IS NULL)",(job_id,job_id))
             return cur.rowcount > 0
 
     async def count(self, *, enabled: bool | None = None) -> int:
@@ -165,7 +168,8 @@ class ScheduledJobsDAO:
         Equivalent to ``list(enabled=None)`` with a deterministic order
         so IPC consumers can render a stable list.
         """
-        return await self.list(order_by="name ASC")
+        rows = await self.list(order_by="name ASC")
+        return [row for row in rows if not row.get("deleted_at")]
 
     async def update_enabled(
         self, job_id: str, enabled: bool
@@ -212,6 +216,7 @@ def _hydrate(row: Any) -> dict[str, Any] | None:
     if d is None:
         return None
     d["payload"] = loads_json(d.get("payload"))
+    d["context"] = loads_json(d.get("context"))
     d["enabled"] = bool(d.get("enabled", 0))
     return d
 

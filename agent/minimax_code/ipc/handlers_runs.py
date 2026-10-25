@@ -223,11 +223,15 @@ def register_run_handlers(server: Any) -> None:
                 content = [*content, {"type": "text", "text": note}]
             else:
                 content += note
+            saved_schedule = metadata.get("schedule")
+            if saved_schedule and budget_override is not None:
+                saved_schedule = {**saved_schedule, "context": {**saved_schedule["context"], "budget_tokens": budget_override}}
             await handle_agent_send_message(
                 {**previous, "content": content, "idempotency_key": request.idempotency_key,
                  "budget_tokens": budget_override},
                 ctx, wait=False, resumed_from_id=run["id"],
-                required_model=metadata["model_snapshot"], required_workspace=metadata["workspace_snapshot"])
+                required_model=metadata["model_snapshot"], required_workspace=metadata["workspace_snapshot"],
+                internal_schedule=saved_schedule)
         except (ValidationError, ValueError) as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
         except HandlerError as exc:

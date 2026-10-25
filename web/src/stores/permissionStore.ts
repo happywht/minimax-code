@@ -36,6 +36,7 @@ export type PermissionRuleEntry = PermissionRule;
 export type Decision = "allow" | "deny";
 
 export interface PendingPermission {
+  approval_policy?: "explicit_once";
   request_id: string;
   tool: string;
   args: Record<string, unknown>;
@@ -84,7 +85,7 @@ function ensureListeners(): void {
       if (!data) return;
       const state = usePermissionStore.getState();
       // Native convenience settings cannot grant external-engine approvals.
-      if (state.alwaysAllow && !data.tool.startsWith("codex:")) {
+      if (state.alwaysAllow && !data.tool.startsWith("codex:") && data.approval_policy !== "explicit_once") {
         state._enqueueRequest(data);
         void state.resolve(data.request_id, "allow").catch(() => undefined);
         return;
@@ -95,6 +96,7 @@ function ensureListeners(): void {
           [data.request_id]: {
             request_id: data.request_id,
             tool: data.tool,
+            approval_policy: data.approval_policy,
             args: data.args,
             session_id: data.session_id,
             received_at: Date.now(),
@@ -179,6 +181,7 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
         [data.request_id]: {
           request_id: data.request_id,
           tool: data.tool,
+          approval_policy: data.approval_policy,
           args: data.args,
           received_at: Date.now(),
         },

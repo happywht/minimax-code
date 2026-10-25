@@ -236,17 +236,31 @@ async def communicate_bounded(proc: asyncio.subprocess.Process, *, timeout: floa
 
     tasks = [asyncio.create_task(read(proc.stdout)), asyncio.create_task(read(proc.stderr)),
              asyncio.create_task(write()), asyncio.create_task(proc.wait())]
-    try:
-        stdout, stderr, _, _ = await asyncio.wait_for(asyncio.gather(*tasks), timeout)
-        # A successful command must not leave detached workers behind merely
-        # because they closed their inherited stdout/stderr handles.
-        await terminate_tree(proc)
-        return ProcessOutput(stdout[0], stderr[0], stdout[1], stderr[1])
-    except BaseException:
+
+    async def cleanup() -> None:
         try:
-            await asyncio.shield(terminate_tree(proc))
+            # Even a successful command can leave detached workers which
+            # closed their inherited stdout/stderr handles.
+            await terminate_tree(proc)
         finally:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-        raise
+
+    try:
+        stdout, stderr, _, _ = await asyncio.wait_for(asyncio.gather(*tasks), timeout)
+        return ProcessOutput(stdout[0], stderr[0], stdout[1], stderr[1])
+    finally:
+        # Retain the same cleanup on success, timeout and cancellation. Shield
+        # prevents an interrupted owner from cancelling it; continuing to await
+        # it prevents that owner from releasing resources while reaping runs.
+        cleaning = asyncio.create_task(cleanup())
+        cancelled = None
+        while not cleaning.done():
+            try:
+                await asyncio.shield(cleaning)
+            except asyncio.CancelledError as exc:
+                cancelled = cancelled or exc
+        cleaning.result()
+        if cancelled is not None:
+            raise cancelled

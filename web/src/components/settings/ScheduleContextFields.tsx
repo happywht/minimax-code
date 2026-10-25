@@ -1,0 +1,56 @@
+import { useEffect, useState } from "react";
+import { Button, Input } from "../../ui";
+import { useModelStore, useSessionStore } from "../../stores";
+import { VerificationBadge } from "../chat/VerificationBadge";
+import { typedIPC } from "../../ipc";
+import type { ScheduleContext, ScheduleOccurrence, ScheduledJob } from "../../types/ipc";
+
+const labels: Record<string,string> = {ready:"已绑定",needs_rebind:"需要重新绑定",blocked:"配置受阻",requires_review:"需要核对",pending:"待接单",running:"运行中",awaiting_approval:"等待授权",completed:"执行结束",budget_paused:"预算暂停",cancelled:"已取消",failed:"执行失败",interrupted:"运行中断",superseded:"已被重新绑定替代",manual:"手动",cron:"定时",chat:"对话（可写）",execute:"执行",plan:"只读规划"};
+const label = (value: string) => labels[value] ?? value;
+export const emptyScheduleContext = (): ScheduleContext => ({ project_id: "", provider_id: "", model: "", mode: "execute", budget_tokens: 0, timezone: "Asia/Shanghai" });
+export const validScheduleContext = (context: ScheduleContext): boolean => !!(context.project_id && context.provider_id && context.model && context.budget_tokens > 0);
+
+export function ScheduleContextFields({ value, onChange }: { value: ScheduleContext; onChange: (next: ScheduleContext) => void }): JSX.Element {
+  const projects = useSessionStore((state) => state.projects);
+  const models = useModelStore((state) => state.models);
+  const patch = (next: Partial<ScheduleContext>) => onChange({ ...value, ...next });
+  return <div className="grid grid-cols-2 gap-2 text-xs" data-testid="schedule-context-fields">
+    <p className="col-span-2 text-ink-2">Local / Native · 独立会话 · 权限保存为快照，后续全局允许不扩展授权；自动任务禁用全局与插件钩子</p>
+    <label>项目与目录<select aria-label="调度项目" className="w-full bg-surface-2" value={value.project_id} onChange={(event) => patch({ project_id: event.target.value })}>
+      <option value="">选择项目</option>{projects.filter((project) => project.id !== "inbox" && project.root_path).map((project) => <option key={project.id} value={project.id}>{project.name} · {project.root_path}</option>)}
+    </select></label>
+    <label>Provider / 模型<select aria-label="调度模型" className="w-full bg-surface-2" value={`${value.provider_id}|${value.model}`} onChange={(event) => { const [provider_id, model] = event.target.value.split("|"); patch({ provider_id, model }); }}>
+      <option value="|">选择模型</option>{models.filter((model) => model.provider_id).map((model) => <option key={`${model.provider_id}|${model.id}`} value={`${model.provider_id}|${model.id}`}>{model.provider} / {model.name}</option>)}
+    </select></label>
+    <label>单次 token 上限（必填正数）<Input aria-label="调度预算" type="number" min={1} value={value.budget_tokens || ""} onChange={(event) => patch({ budget_tokens: Number(event.target.value) })} /></label>
+    <label>模式<select aria-label="调度模式" className="w-full bg-surface-2" value={value.mode} onChange={(event) => patch({ mode: event.target.value as ScheduleContext["mode"] })}>
+      <option value="execute">执行</option><option value="chat">对话（可写）</option><option value="plan">只读规划</option>
+    </select></label>
+    <label>推理强度<Input aria-label="调度推理强度" value={value.reasoning_effort ?? ""} onChange={(event) => patch({ reasoning_effort: event.target.value || null })} /></label>
+    <label>时区<Input aria-label="调度时区" value={value.timezone} onChange={(event) => patch({ timezone: event.target.value })} /></label>
+  </div>;
+}
+
+export function ScheduleSnapshot({ job }: { job: ScheduledJob }): JSX.Element {
+  const context = job.context;
+  return <div className="px-3 text-[11px] text-ink-2" data-testid={`schedule-snapshot-${job.id}`}>
+    <p>r{job.revision ?? 1} · {label(job.binding_state ?? "needs_rebind")} · {job.binding_reason}</p>
+    {context && <p>Local / Native · {context.workspace} · {context.provider_id} / {context.model} · {context.reasoning_effort ?? "默认强度"} · {label(context.mode)} · {context.budget_tokens} tokens · {context.timezone}<br />权限：{context.permission_rules?.map((rule) => `${rule.tool_pattern}:${rule.action}`).join("，") || "逐次询问"} · 校验：{context.validate_command || "未配置"} · 自动任务钩子已禁用</p>}
+  </div>;
+}
+
+export function ScheduleHistory({ job, onOpenSession }: { job: ScheduledJob; onOpenSession?: () => void }): JSX.Element {
+  const [history, setHistory] = useState<ScheduleOccurrence[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let current = true;
+    void typedIPC.listScheduleOccurrences(job.id).then((result) => { if (current) {setHistory(result.occurrences);setError(null); } }, (failure: unknown) => { if (current) setError(String(failure)); });
+    return () => { current = false; };
+  }, [job.id, job.active_occurrence_id]);
+  return <div className="space-y-1">{error ?? (history.length === 0 ? "暂无发生记录" : history.map((occurrence) => <div key={occurrence.id}>
+    <p>{label(occurrence.source)} · {occurrence.scheduled_for ?? occurrence.created_at} · {label(occurrence.status === "blocked" ? "blocked" : occurrence.execution_status ?? occurrence.status)} · {occurrence.reason}</p>
+    <VerificationBadge evidence={occurrence.verification} />
+    {occurrence.result && <p className="whitespace-pre-wrap">{occurrence.result}</p>}
+    <Button onClick={() => { void useSessionStore.getState().setCurrent(occurrence.session_id); onOpenSession?.(); }}>查看任务 {occurrence.task_id} / 运行 {occurrence.run_id ?? "尚未接单"}</Button>
+  </div>))}</div>;
+}

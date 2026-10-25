@@ -72,6 +72,8 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
             await ctx.reply({"jobs": jobs})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
+        except ValueError as exc:
+            await ctx.reply_error(INVALID_PARAMS,str(exc))
         except Exception:  # pragma: no cover — defensive
             logger.exception("schedule.list failed")
             await ctx.reply_error(INTERNAL_ERROR, "schedule.list failed")
@@ -93,10 +95,13 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
                 cron_expr=cron_expr,
                 payload=payload,
                 enabled=enabled,
+                context=params.get("context") or {},
             )
             await ctx.reply({"job": job})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
+        except ValueError as exc:
+            await ctx.reply_error(INVALID_PARAMS,str(exc))
         except Exception as exc:  # pragma: no cover — defensive
             msg = str(exc)
             # Surface "invalid cron" as a 4xx-style code so the UI can
@@ -118,6 +123,8 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
             await ctx.reply({"ok": True, "job_id": job_id})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
+        except ValueError as exc:
+            await ctx.reply_error(INVALID_PARAMS,str(exc))
         except Exception:  # pragma: no cover — defensive
             logger.exception("schedule.delete failed")
             await ctx.reply_error(INTERNAL_ERROR, "schedule.delete failed")
@@ -127,12 +134,14 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
             sched = await scheduler_factory()
             check_params(params, expected_keys={"job_id"})
             job_id = str(params["job_id"])
-            job = await sched.enable(job_id)
+            job = await sched.enable(job_id, acknowledge_occurrence_id=params.get("acknowledge_occurrence_id"))
             if job is None:
                 raise HandlerError(INVALID_PARAMS, f"unknown job_id: {job_id!r}")
             await ctx.reply({"job": job})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
+        except ValueError as exc:
+            await ctx.reply_error(INVALID_PARAMS,str(exc))
         except Exception:  # pragma: no cover — defensive
             logger.exception("schedule.enable failed")
             await ctx.reply_error(INTERNAL_ERROR, "schedule.enable failed")
@@ -148,6 +157,8 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
             await ctx.reply({"job": job})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
+        except ValueError as exc:
+            await ctx.reply_error(INVALID_PARAMS,str(exc))
         except Exception:  # pragma: no cover — defensive
             logger.exception("schedule.disable failed")
             await ctx.reply_error(INTERNAL_ERROR, "schedule.disable failed")
@@ -157,29 +168,46 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
             sched = await scheduler_factory()
             check_params(params, expected_keys={"job_id"})
             job_id = str(params["job_id"])
+            if set(params) - {"job_id", "idempotency_key", "expected_revision"}:
+                raise HandlerError(INVALID_PARAMS, "Unexpected manual trigger payload")
             # We don't await the fire — the cron task is fire-and-
             # forget. The IPC reply just confirms the kick. The
             # resulting ``tasks`` row is visible via ``task.list``.
             from ..scheduler import SchedulerError
 
             try:
-                ack = await sched.run_now(job_id)
+                ack = await sched.run_now(job_id, idempotency_key=params.get("idempotency_key"), expected_revision=params.get("expected_revision"))
             except SchedulerError as exc:
                 raise HandlerError(INVALID_PARAMS, str(exc)) from exc
-            await ctx.reply(
-                {
-                    "ok": True,
-                    "job_id": job_id,
-                    "triggered_at": ack.get("triggered_at"),
-                    "run_id": None,  # the task id is only known after the fire completes
-                }
-            )
+            await ctx.reply({"ok": True, **ack})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
+        except ValueError as exc:
+            await ctx.reply_error(INVALID_PARAMS,str(exc))
         except Exception:  # pragma: no cover — defensive
             logger.exception("schedule.run_now failed")
             await ctx.reply_error(INTERNAL_ERROR, "schedule.run_now failed")
 
+    async def handle_schedule_update(params, ctx):
+        try:
+            sched = await scheduler_factory()
+            check_params(params, expected_keys={"job_id","expected_revision","name","cron_expr","payload","context"})
+            job = await sched.update_job(params["job_id"], expected_revision=params["expected_revision"], name=params["name"],
+                cron_expr=params["cron_expr"],payload=params["payload"],context=params["context"])
+            await ctx.reply({"job":job})
+        except Exception as exc:
+            await ctx.reply_error(INVALID_PARAMS,str(exc))
+
+    async def handle_occurrences(params, ctx):
+        try:
+            sched = await scheduler_factory()
+            await sched._reconcile_occurrences()
+            await ctx.reply({"occurrences":await sched._occurrences.list((params or {}).get("job_id"))})
+        except Exception as exc:
+            await ctx.reply_error(INTERNAL_ERROR,str(exc))
+
+    server.register("schedule.update", handle_schedule_update)
+    server.register("schedule.occurrences", handle_occurrences)
     server.register("schedule.list", handle_schedule_list)
     server.register("schedule.create", handle_schedule_create)
     server.register("schedule.delete", handle_schedule_delete)

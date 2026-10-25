@@ -30,6 +30,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from test_project_validation import native  # noqa: F401
+from test_schedule_occurrences import scheduled  # noqa: F401
 
 from minimax_code.ipc.client import IPCClient
 from minimax_code.scheduler import (
@@ -54,14 +56,20 @@ def db_path(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-async def async_db(db_path: Path) -> AsyncDatabase:
-    db = AsyncDatabase(db_path)
-    await db.connect()
-    await db.migrate()
-    try:
-        yield db
-    finally:
-        await db.close()
+async def async_db(scheduled):  # noqa: F811
+    yield scheduled.db
+
+
+@pytest.fixture(autouse=True)
+async def bound_schedule_fixture(scheduled, monkeypatch):  # noqa: F811
+    """Supply explicit offline project/provider context for lifecycle tests."""
+    original = JobScheduler.add_job
+    async def add(self, **kwargs):
+        kwargs.setdefault("context", scheduled.options)
+        kwargs.setdefault("payload", {"prompt":"offline lifecycle test"})
+        return await original(self, **kwargs)
+    monkeypatch.setattr(JobScheduler,"add_job",add)
+    scheduled.release.set()
 
 
 @pytest.fixture
@@ -165,7 +173,7 @@ class TestScheduledJobsDAO:
         assert await dao.delete(row["id"]) is True
         # second delete is a no-op
         assert await dao.delete(row["id"]) is False
-        assert await dao.get(row["id"]) is None
+        assert (await dao.get(row["id"]))["deleted_at"] is not None
 
     @pytest.mark.asyncio
     async def test_get_returns_none_for_missing(
@@ -191,7 +199,7 @@ class TestJobScheduler:
         await sched.start()
         try:
             row = await sched.add_job(
-                name="nightly", cron_expr="0 0 * * *", payload={"kind": "noop"}
+                name="nightly", cron_expr="0 0 * * *", payload={"prompt": "noop"}
             )
             assert row["id"].startswith("job_")
             assert row["next_run_at"] is not None
@@ -282,8 +290,8 @@ class TestJobScheduler:
         await sched.start()
         try:
             row = await sched.add_job(name="manual", cron_expr="* * * * *")
-            ack = await sched.run_now(row["id"])
-            assert ack["ok"] is True
+            ack = await sched.run_now(row["id"], idempotency_key="manual", expected_revision=1)
+            assert ack["created"] is True
             assert ack["job_id"] == row["id"]
             assert "triggered_at" in ack
 
@@ -292,14 +300,17 @@ class TestJobScheduler:
             for _ in range(40):
                 await asyncio.sleep(0.05)
                 tasks = await tdao.list()
-                if tasks:
+                if tasks and tasks[0]["status"] == "completed" and tasks[0]["progress"] == 100:
                     break
             assert tasks, "expected a task row to be written after run_now"
             # Give the tail of _fire (record_run) a beat to land before
             # stop() + fixture close the db out from under it.
             await asyncio.sleep(0.2)
-            t = tasks[0]
-            assert t["title"].startswith("[manual]")
+            # Run hydration can observe the completed receipt before the
+            # scheduler's atomic occurrence/task settlement. Read its settled
+            # projection rather than retaining that earlier snapshot.
+            t = (await tdao.list())[0]
+            assert t["title"] == "manual"
             assert t["status"] == "completed"
             assert t["progress"] == 100
 
@@ -317,7 +328,7 @@ class TestJobScheduler:
         await sched.start()
         try:
             with pytest.raises(SchedulerError):
-                await sched.run_now("does_not_exist")
+                await sched.run_now("does_not_exist", idempotency_key="manual", expected_revision=1)
         finally:
             await sched.stop()
 
@@ -373,7 +384,7 @@ class TestJobScheduler:
         await sched.start()
         try:
             row = await sched.add_job(name="slow", cron_expr="* * * * *")
-            await asyncio.gather(sched.run_now(row["id"]), heartbeat())
+            await asyncio.gather(sched.run_now(row["id"],idempotency_key="heartbeat",expected_revision=1), heartbeat())
             assert main_loop_alive.is_set(), "event loop was blocked"
 
             tdao = TasksDAO(async_db)
@@ -396,34 +407,22 @@ class TestScheduledIpcHandlers:
     """Drive the ``schedule.*`` namespace through IPCClient."""
 
     @pytest.fixture
-    async def client_with_db(
-        self, tmp_path: Path
-    ) -> tuple[IPCClient, AsyncDatabase, JobScheduler]:
-        """Build an IPCClient whose storage layer points at a temp DB.
-
-        We replace the default data dir with a temp one so the
-        scheduler's lazy-init opens a fresh DB instead of the real
-        %APPDATA% one. The DB is closed in the teardown.
-        """
-        import os
-
-        workdir = tmp_path / "ipc_storage"
-        workdir.mkdir(parents=True, exist_ok=True)
-        os.environ["MINIMAX_CODE_DATA_DIR"] = str(workdir)
-        db = AsyncDatabase(make_temp_database_path(workdir))
-        await db.connect()
-        await db.migrate()
-        sched = JobScheduler(db)
+    async def client_with_db(self, scheduled):  # noqa: F811
+        sched = scheduled.scheduler
         await sched.start()
         set_scheduler(sched)
         client = IPCClient()
+        request = client.request
+        async def bound_request(method, params=None, **kwargs):
+            if method == "schedule.create" and params and "name" in params:
+                params = {"context":scheduled.options,"payload":{"prompt":"offline"},**params}
+            return await request(method,params,**kwargs)
+        client.request = bound_request
         try:
-            yield client, db, sched
+            yield client,scheduled.db,sched
         finally:
             await sched.stop()
-            await db.close()
             set_scheduler(None)
-            os.environ.pop("MINIMAX_CODE_DATA_DIR", None)
 
     @pytest.mark.asyncio
     async def test_schedule_create_list_delete(
@@ -432,7 +431,7 @@ class TestScheduledIpcHandlers:
         client, _db, _sched = client_with_db
         create_resp = await client.request(
             "schedule.create",
-            {"name": "smoke", "cron_expr": "* * * * *", "payload": {"k": 1}},
+            {"name": "smoke", "cron_expr": "* * * * *", "payload": {"prompt": "offline"}},
         )
         assert "job" in create_resp
         job_id = create_resp["job"]["id"]
@@ -505,8 +504,8 @@ class TestScheduledIpcHandlers:
         )
         job_id = create["job"]["id"]
 
-        ack = await client.request("schedule.run_now", {"job_id": job_id})
-        assert ack["ok"] is True
+        ack = await client.request("schedule.run_now", {"job_id": job_id, "idempotency_key":"manual", "expected_revision":1})
+        assert ack["created"] is True
         assert ack["job_id"] == job_id
 
         # Wait for the fire to land in the tasks table.
@@ -517,7 +516,7 @@ class TestScheduledIpcHandlers:
             if tasks and tasks[0]["status"] == "completed":
                 break
         assert tasks, "expected a tasks row after run_now"
-        assert tasks[0]["title"].startswith("[manual]")
+        assert tasks[0]["title"] == "manual"
 
     @pytest.mark.asyncio
     async def test_schedule_delete_unknown_job(
@@ -589,9 +588,7 @@ class TestPromptResultPersistence:
         """
         from minimax_code.agent.self_evolution import build_payload_runner
 
-        monkeypatch.setattr(
-            "minimax_code.agent.llm.MiniMaxClient", _ReplyLLMClient
-        )
+
         runner = build_payload_runner(str(tmp_path))
 
         sched = JobScheduler(async_db, payload_runner=runner)
@@ -600,8 +597,8 @@ class TestPromptResultPersistence:
             row = await sched.add_job(
                 name="digest", cron_expr="* * * * *", payload={"prompt": "hi"}
             )
-            ack = await sched.run_now(row["id"])
-            assert ack["ok"] is True
+            ack = await sched.run_now(row["id"], idempotency_key="manual", expected_revision=1)
+            assert ack["created"] is True
 
             tdao = TasksDAO(async_db)
             tasks: list[dict[str, Any]] = []
@@ -614,7 +611,8 @@ class TestPromptResultPersistence:
             assert tasks[0]["status"] == "completed"
             # The reply text (350 chars) survives whole — the old echo
             # path would have stored a 200-char truncated JSON blob.
-            assert tasks[0]["result"] == "r" * 350
+            assert tasks[0]["result"] == "done"
+            assert tasks[0]["run_id"]
             # Let the tail of _fire (record_run) land before close.
             await asyncio.sleep(0.2)
         finally:

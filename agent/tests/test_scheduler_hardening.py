@@ -27,11 +27,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from test_project_validation import native  # noqa: F401
+from test_schedule_occurrences import create, scheduled, settled, wait_until  # noqa: F401
 
 import minimax_code.scheduler as scheduler_module
 from minimax_code.scheduler import JobScheduler, _run_payload_sync
-from minimax_code.storage.dao.scheduled_jobs import ScheduledJobsDAO
-from minimax_code.storage.dao.tasks import TasksDAO
 from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 
 # ---------------------------------------------------------------------------
@@ -151,36 +151,26 @@ async def test_spawn_fire_logs_crash(
 
 
 @pytest.mark.asyncio
-async def test_fire_survives_bookkeeping_failure(async_db: AsyncDatabase) -> None:
-    """A failing ``update_status(completed)`` in the success path must
-    not abort ``record_run`` — each bookkeeping step is guarded."""
-    scheduler = JobScheduler(async_db)
-    record_calls: list[str] = []
-
-    class _FailingTasks(TasksDAO):
-        async def update_status(self, task_id: str, **kwargs: Any) -> Any:
-            if kwargs.get("status") == "completed":
-                raise RuntimeError("simulated SQLITE_BUSY")
-            return await super().update_status(task_id, **kwargs)
-
-    class _RecordingJobs(ScheduledJobsDAO):
-        async def record_run(self, job_id: str, **kwargs: Any) -> Any:
-            record_calls.append(job_id)
-            return await super().record_run(job_id, **kwargs)
-
-    scheduler._tasks = _FailingTasks(async_db)
-    scheduler._dao = _RecordingJobs(async_db)
-
-    row = {
-        "id": "job_guard",
-        "name": "guarded",
-        "cron_expr": "* * * * *",
-        "payload": {},
-    }
-    # Must not raise despite update_status blowing up mid-bookkeeping.
-    await scheduler._fire(row, source="manual")
-
-    assert record_calls == ["job_guard"], "record_run was skipped by the failure"
+async def test_fire_survives_bookkeeping_failure(scheduled, monkeypatch) -> None:  # noqa: F811
+    """A task projection failure preserves the authoritative run and blocks recurrence."""
+    state=scheduled
+    original=state.scheduler._occurrences.settle
+    async def fail_completed(oid,status,**kwargs):
+        if status=="completed":
+            raise RuntimeError("simulated SQLITE_BUSY")
+        return await original(oid,status,**kwargs)
+    monkeypatch.setattr(state.scheduler._occurrences,"settle",fail_completed)
+    job=await create(state)
+    ack=await state.scheduler.run_now(job["id"],idempotency_key="one",expected_revision=1)
+    state.release.set()
+    await asyncio.gather(*list(state.scheduler._inflight),return_exceptions=True)
+    occurrence=await state.scheduler._occurrences.get(ack["occurrence_id"])
+    assert occurrence["status"]=="running"
+    run=await state.dao.get_run(occurrence["run_id"])
+    assert run["status"]=="completed" and (await state.dao.result_payload(run["id"]))["text"]=="done"
+    monkeypatch.setattr(state.scheduler._occurrences,"settle",original)
+    await state.scheduler._reconcile_occurrences()
+    assert (await state.scheduler._occurrences.get(occurrence["id"]))["status"]=="completed"
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +252,7 @@ async def test_prompt_fire_runs_through_runservice(monkeypatch, tmp_path) -> Non
     result = await scheduler._run_prompt_via_runservice(
         {"prompt": "refresh the dashboard", "job_id": "job-9",
          "budget_tokens": 5000},
-        prompt="refresh the dashboard", session_id="ses-sched")
+        prompt="refresh the dashboard", session_id="ses-sched", occurrence={"id":"offline-occ","context":{"mode":"execute","budget_tokens":5000},"job_id":"job-9","revision":1})
 
     assert result["ok"] is True
     assert result["output"] == "scheduled work done"
@@ -272,7 +262,7 @@ async def test_prompt_fire_runs_through_runservice(monkeypatch, tmp_path) -> Non
     # idempotency key (minute-window replay guard).
     assert captured["params"]["session_id"] == "ses-sched"
     assert captured["params"]["budget_tokens"] == 5000
-    assert captured["params"]["idempotency_key"].startswith("sched-job-9-")
+    assert captured["params"]["idempotency_key"] == "schedule:offline-occ"
     assert captured["wait"] is False  # accept first so the task can link before waiting
 
     # A failing turn lands as a structured error for the tasks row.
@@ -283,7 +273,7 @@ async def test_prompt_fire_runs_through_runservice(monkeypatch, tmp_path) -> Non
     monkeypatch.setattr(builtins_mod, "handle_agent_send_message", failing_send)
     result = await scheduler._run_prompt_via_runservice(
         {"prompt": "oops", "job_id": "job-9"},
-        prompt="oops", session_id="ses-sched")
+        prompt="oops", session_id="ses-sched", occurrence={"id":"offline-occ","context":{"mode":"execute","budget_tokens":5000},"job_id":"job-9","revision":1})
     assert result["ok"] is False
     assert "model exploded" in result["error"]
 

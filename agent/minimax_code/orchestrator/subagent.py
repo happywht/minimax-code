@@ -184,6 +184,10 @@ def _on_background_run_done(run_id: str, task: asyncio.Task) -> None:
 def register_background_run(run_id: str, task: asyncio.Task) -> None:
     """Hold a strong reference to a background sub-agent run task."""
     _BACKGROUND_RUNS[run_id] = task
+    from ..schedule_context import scheduled_runtime
+    schedule = scheduled_runtime.get()
+    if schedule and schedule.get("children"):
+        schedule["children"].register(run_id,task)
     task.add_done_callback(lambda _t, rid=run_id: _on_background_run_done(rid, _t))
 
 
@@ -404,17 +408,21 @@ class SubAgentRuntime:
         # to ``None`` (no override — the model's own default effort),
         # preserving the pre-R62 behaviour when no override is stored or
         # when the runtime was built before any preference was loaded.
+        from ..schedule_context import scheduled_runtime
+        scheduled = scheduled_runtime.get()
+        saved = scheduled["context"] if scheduled else {}
         core_config = AgentConfig(
-            model=spec.model,
+            model=saved.get("model", spec.model),
             system_prompt_extra=config.system_prompt or None,
             max_iterations=config.max_iterations,
             reasoning_effort=self._reasoning_effort,
             # v1.1.0: real context window so the compaction gate opens for
             # sub-agents too (long tool loops blow the window fastest).
-            context_window=context_window_for(spec.model),
+            context_window=saved.get("context_window", context_window_for(spec.model)),
         )
         core = AgentCore(
-            llm=self._llm, registry=effective_registry, config=core_config
+            llm=self._llm, registry=effective_registry, config=core_config,
+            **({"permission_store": scheduled["permissions"], "permission_gater": scheduled["gater"]} if scheduled else {}),
         )
         # M2 — parent+child shared budget. The parent run publishes its
         # BudgetState via ContextVar before dispatching tools; a sub-agent
@@ -536,6 +544,7 @@ class SubAgentRuntime:
             "text": run_result.final_text or "",
             "iterations": run_result.iterations,
             "tool_calls": list(run_result.tool_calls),
+            "verification": {"requires_review": any(not item.success for item in getattr(run_result,"tool_results",[]) or [])},
             "stub": False,
             # v1.4.0 — bubble the run-level facts so callers (team
             # merger, tool envelope, telemetry) can see the real cost

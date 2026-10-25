@@ -1,9 +1,4 @@
-/**
- * ScheduledTab edit flow (P2-5) — the pencil button opens an inline form
- * prefilled with the job's current definition; saving composes
- * create(new) + delete(old) in the store because the wire contract has
- * no schedule.update.
- */
+/** Revision-based schedule editing preserves immutable occurrence history. */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -13,6 +8,8 @@ vi.mock("../../ipc", () => ({
   typedIPC: {
     listJobs: vi.fn(),
     createJob: vi.fn(),
+    updateJob: vi.fn(),
+    listScheduleOccurrences: vi.fn().mockResolvedValue({occurrences:[]}),
     deleteJob: vi.fn(),
     enableJob: vi.fn(),
     disableJob: vi.fn(),
@@ -31,10 +28,12 @@ import { ScheduledTab } from "./ScheduledTab";
 const listJobs = vi.mocked(typedIPC.listJobs);
 const createJob = vi.mocked(typedIPC.createJob);
 const deleteJob = vi.mocked(typedIPC.deleteJob);
+const updateJob = vi.mocked(typedIPC.updateJob);
 
 function makeJob(overrides: Partial<ScheduledJob> = {}): ScheduledJob {
   return {
-    id: "job_1",
+    id: "job_1", revision:1,binding_state:"ready",
+    context:{project_id:"p",provider_id:"offline",model:"test",budget_tokens:1000,mode:"execute",timezone:"Asia/Shanghai"},
     name: "Nightly Review",
     cron: "0 2 * * *",
     prompt: "审查最近的改动",
@@ -67,10 +66,10 @@ describe("ScheduledTab editing (P2-5)", () => {
     expect(screen.getByTestId("settings-job-edit-prompt")).toHaveValue("审查最近的改动");
   });
 
-  it("saves by creating the new job then deleting the old one", async () => {
+  it("saves the same job with a revision compare-and-swap", async () => {
     const user = userEvent.setup();
-    const updated = makeJob({ id: "job_2", name: "Morning Review", cron: "30 7 * * *" });
-    createJob.mockResolvedValue({ job: updated });
+    const updated = makeJob({ id: "job_1", revision:2, name: "Morning Review", cron: "30 7 * * *" });
+    updateJob.mockResolvedValue({ job: updated });
     deleteJob.mockResolvedValue({ ok: true });
 
     render(<ScheduledTab />);
@@ -88,12 +87,12 @@ describe("ScheduledTab editing (P2-5)", () => {
     await user.click(screen.getByTestId("settings-job-edit-save"));
 
     await waitFor(() => {
-      expect(createJob).toHaveBeenCalledWith({
+      expect(updateJob).toHaveBeenCalledWith("job_1",1,{
         name: "Morning Review",
         cron: "30 7 * * *",
-        prompt: "审查最近的改动",
+        prompt: "审查最近的改动", context: makeJob().context,
       });
-      expect(deleteJob).toHaveBeenCalledWith("job_1");
+      expect(deleteJob).not.toHaveBeenCalled();
     });
     // The list reflects the replacement, and the inline form closes.
     await waitFor(() => {
@@ -137,4 +136,21 @@ describe("ScheduledTab editing (P2-5)", () => {
     await user.click(screen.getByTestId("settings-job-edit-job_1"));
     expect(screen.getByTestId("settings-job-edit-name")).toHaveValue("Nightly Review");
   });
+});
+
+
+it("retains the manual key AND original revision after lost ACK and an edit", async () => {
+  useScheduleStore.setState({jobs:[makeJob({id:"retry"})]});
+  const run = vi.mocked(typedIPC.runNowJob);
+  run.mockRejectedValueOnce(new Error("lost ACK"));
+  await useScheduleStore.getState().runNow("retry");
+  const original = run.mock.calls.at(-1)!;
+  useScheduleStore.setState({jobs:[makeJob({id:"retry",revision:2})]});
+  run.mockResolvedValueOnce({ok:true,job_id:"retry",occurrence_id:"o",task_id:"t",run_id:"r",status:"completed",created:false});
+  await useScheduleStore.getState().runNow("retry");
+  expect(run.mock.calls.at(-1)).toEqual(original);
+  useScheduleStore.setState({jobs:[makeJob({id:"retry",revision:2})]});
+  await useScheduleStore.getState().runNow("retry");
+  expect(run.mock.calls.at(-1)?.[1]).not.toBe(original[1]);
+  expect(run.mock.calls.at(-1)?.[2]).toBe(2);
 });

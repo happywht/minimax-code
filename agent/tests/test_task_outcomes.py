@@ -156,14 +156,24 @@ async def fire(native, monkeypatch, *, flags=None, command=None, link_failure=Fa
     import minimax_code.scheduler as module
     native.result_flags = flags or {}
     await native.projects.create(id="p", name="p", root_path=str(native.root), validate_command=command or "")
-    await native.sessions.create(id="scheduled", title="scheduled", project_id="p")
+    from minimax_code.model_snapshot import ModelSnapshot
+    from minimax_code.storage.dao.providers import ProviderDAO
+    provider = await ProviderDAO(native.db).create(name="offline",protocol="openai",base_url="https://offline.invalid")
+    async def offline_model(db, context):
+        from minimax_code.schedule_context import validate_context
+        await validate_context(db,context)
+        return ModelSnapshot(SimpleNamespace(default_model="test",mock=True,close=AsyncMock()),"test",None,10000,provider["id"],"openai")
+    monkeypatch.setattr("minimax_code.schedule_context.resolve_model",offline_model)
+    monkeypatch.setattr("minimax_code.ipc.handlers_permissions._ensure_permission_store",AsyncMock(return_value=SimpleNamespace(lookup=lambda _: {"action":"allow"})))
     scheduler = JobScheduler(native.db)
-    scheduler._ensure_scheduled_session = AsyncMock(return_value="scheduled")
     monkeypatch.setattr(module, "_IPC_SERVER", native.server)
     if link_failure:
         monkeypatch.setattr(scheduler._tasks, "link_run", AsyncMock(side_effect=RuntimeError("link failed")))
-    row = await scheduler.add_job(name="work", cron_expr="* * * * *", payload={"prompt": "work"}, enabled=False)
-    pending = asyncio.create_task(scheduler._fire(row, source="manual"))
+    row = await scheduler.add_job(name="work", cron_expr="* * * * *", payload={"prompt": "work"}, context={"project_id":"p","provider_id":provider["id"],"model":"test","budget_tokens":10000})
+    await scheduler.run_now(row["id"],idempotency_key="manual",expected_revision=1)
+    async def drain():
+        await asyncio.gather(*list(scheduler._inflight),return_exceptions=True)
+    pending=asyncio.create_task(drain())
     for _ in range(500):
         tasks = await scheduler._tasks.list()
         if link_failure and pending.done():
@@ -199,8 +209,8 @@ async def test_link_failure_cancels_and_drains_admitted_writer(native, monkeypat
     scheduler, pending = await fire(native, monkeypatch, link_failure=True)
     await asyncio.wait_for(pending, 5)
     task = (await scheduler._tasks.list())[0]
-    runs = await native.dao.list_runs(session_id="scheduled")
-    assert task["status"] == "failed" and "link failed" in task["error"]
+    runs = await native.dao.list_runs(session_id=task["session_id"])
+    assert task["status"] == "cancelled" and "link failed" in task["error"]
     assert runs[0]["status"] == "cancelled"
     assert get_run_service(native.server).get_job(runs[0]["id"]) is None
 
@@ -326,7 +336,7 @@ def test_migration_035_upgrades_populated_tasks_with_indexes_triggers_and_foreig
         conn.execute("CREATE TRIGGER task_custom AFTER UPDATE ON tasks BEGIN INSERT INTO task_audit VALUES(NEW.id); END")
         conn.execute("CREATE INDEX task_custom_idx ON tasks(title)")
         monkeypatch.setattr(db_module, "discover_migrations", discover)
-        assert db.migrate() == [35]
+        assert db.migrate() == [35, 36]
         assert tuple(conn.execute("SELECT result,run_id FROM tasks WHERE id='t'").fetchone()) == ("saved old answer", None)
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         for state in ["budget_paused", "interrupted", "requires_review"]:

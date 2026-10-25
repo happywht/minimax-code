@@ -1,0 +1,47 @@
+import { test, expect } from "@playwright/test";
+import { resolve } from "node:path";
+import { AGENT_BASE, AGENT_PORT } from "./runtime-config";
+
+test("bound schedule edits atomically and exposes a blocked credential occurrence", async ({ page, request }) => {
+  const rpc = async (method: string, params: Record<string, unknown>) => {
+    const response = await request.post(`${AGENT_BASE}/rpc`, {data:{jsonrpc:"2.0",id:method,method,params}});
+    const envelope = await response.json();
+    expect(envelope.error).toBeUndefined();
+    return envelope.result;
+  };
+  const project = (await rpc("project.create",{name:"Scheduler isolated",root_path:resolve("e2e/.runtime",String(AGENT_PORT),"workspace")})).project;
+  const provider = (await rpc("provider.create",{name:"No credentials",protocol:"openai",base_url:"https://offline.invalid/v1",models:[{id:"offline-model",name:"Offline fixture",context_window:32000}]})).provider;
+  await page.goto("/");
+  await page.getByTestId("sidebar-nav-settings").click();
+  await page.getByTestId("settings-tab-scheduled").click();
+  await page.getByTestId("settings-job-name").fill("Bound offline schedule");
+  await page.getByTestId("settings-job-cron").fill("0 3 * * *");
+  await page.getByTestId("settings-job-prompt").fill("Inspect local files");
+  await page.getByLabel("调度项目").selectOption(project.id);
+  await page.getByLabel("调度模型").selectOption(`${provider.id}|offline-model`);
+  await expect(page.getByTestId("settings-job-add")).toBeDisabled();
+  await page.getByLabel("调度预算").fill("1000");
+  await page.getByTestId("settings-job-add").click();
+  await expect(page.getByText("Bound offline schedule",{exact:true})).toBeVisible();
+  const jobs = await rpc("schedule.list",{});
+  const job = jobs.jobs.find((entry: {name:string}) => entry.name === "Bound offline schedule");
+  expect(job.context.hooks_policy).toBe("disabled");
+  await expect(page.getByTestId(`schedule-snapshot-${job.id}`)).toContainText("1000 tokens");
+  await page.getByTestId(`settings-job-edit-${job.id}`).click();
+  await page.getByTestId("settings-job-edit-name").fill("Edited bound schedule");
+  await page.getByTestId("settings-job-edit-save").click();
+  await expect(page.getByTestId(`schedule-snapshot-${job.id}`)).toContainText("r2");
+  expect((await rpc("schedule.list",{})).jobs.find((entry: {id:string}) => entry.id===job.id).revision).toBe(2);
+  await page.getByTestId(`settings-job-run-now-${job.id}`).click();
+  await expect.poll(async () => (await rpc("schedule.occurrences",{job_id:job.id})).occurrences[0]?.status).toBe("blocked");
+  await page.getByTestId(`settings-job-expand-${job.id}`).click();
+  const history = page.getByTestId(`settings-job-tasks-${job.id}`);
+  await expect(history).toContainText("credentials are unavailable");
+  await expect(history).toContainText("配置受阻");
+  await history.getByRole("button",{name:/查看任务/}).click();
+  await expect(page.getByTestId("settings-page")).not.toBeVisible();
+  const occurrence = (await rpc("schedule.occurrences",{job_id:job.id})).occurrences[0];
+  expect(occurrence.run_id).toBeNull();
+  const historyMessages = await rpc("message.list",{session_id:occurrence.session_id});
+  expect(historyMessages.messages).toEqual([]);
+});

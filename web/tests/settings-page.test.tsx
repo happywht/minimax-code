@@ -11,6 +11,7 @@ import {
   usePermissionStore,
   useProviderStore,
   useScheduleStore,
+  useSessionStore,
 } from "../src/stores";
 import type { ProviderInfo } from "../src/types/ipc";
 import { confirmationBus } from "../src/components/modals/ConfirmationDialog";
@@ -298,6 +299,7 @@ describe("SettingsPage", () => {
 
   it("switches to the scheduled tab and creates a new job", async () => {
     const { typedIPC } = await import("../src/ipc");
+    useSessionStore.setState({projects:[{id:"p",name:"project",description:"",root_path:"C:/project",validate_command:"",archived:false,created_at:0,updated_at:0}]});
     render(<SettingsPage />);
     fireEvent.click(screen.getByTestId("settings-tab-scheduled"));
     fireEvent.change(screen.getByTestId("settings-job-name"), {
@@ -306,12 +308,18 @@ describe("SettingsPage", () => {
     fireEvent.change(screen.getByTestId("settings-job-cron"), {
       target: { value: "0 2 * * *" },
     });
+    fireEvent.change(screen.getByTestId("settings-job-prompt"),{target:{value:"review"}});
+    await waitFor(() => expect(screen.getByLabelText("调度模型").querySelectorAll("option").length).toBeGreaterThan(1));
+    fireEvent.change(screen.getByLabelText("调度项目"),{target:{value:"p"}});
+    fireEvent.change(screen.getByLabelText("调度模型"),{target:{value:"builtin-minimax|m1"}});
+    fireEvent.change(screen.getByLabelText("调度预算"),{target:{value:"1000"}});
     fireEvent.click(screen.getByTestId("settings-job-add"));
     await waitFor(() => {
       expect(typedIPC.createJob).toHaveBeenCalledWith({
         name: "nightly",
         cron: "0 2 * * *",
-        prompt: "",
+        prompt: "review",
+        context:{project_id:"p",provider_id:"builtin-minimax",model:"m1",mode:"execute",budget_tokens:1000,timezone:"Asia/Shanghai"},
       });
     });
     await waitFor(() => {

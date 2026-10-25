@@ -16,7 +16,7 @@
 import { create } from "zustand";
 import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
-import type { ScheduledJob } from "../types/ipc";
+import type { ScheduledJob, ScheduleDefinition } from "../types/ipc";
 import { strings } from "../ui/strings";
 
 export type ScheduledJobEntry = ScheduledJob;
@@ -26,22 +26,22 @@ export interface ScheduleState {
   loading: boolean;
 
   refresh: () => Promise<void>;
-  create: (opts: { name: string; cron: string; prompt: string }) => Promise<ScheduledJobEntry | null>;
+  create: (opts: ScheduleDefinition) => Promise<ScheduledJobEntry | null>;
   remove: (jobId: string) => Promise<void>;
   /**
-   * Replace a job's definition. The wire contract has no schedule.update,
-   * so this creates the new job first and only deletes the old one on
-   * success — a failed create leaves the original untouched.
+   * Compare-and-swap the definition; running occurrences retain their snapshot.
    */
   update: (
     jobId: string,
-    opts: { name: string; cron: string; prompt: string },
+    opts: ScheduleDefinition,
   ) => Promise<ScheduledJobEntry | null>;
-  enable: (jobId: string) => Promise<void>;
+  enable: (jobId: string, acknowledgeOccurrenceId?: string) => Promise<void>;
   disable: (jobId: string) => Promise<void>;
   setEnabled: (jobId: string, enabled: boolean) => Promise<void>;
   runNow: (jobId: string) => Promise<void>;
 }
+
+const manualKeys = new Map<string, {key:string; expectedRevision:number}>();
 
 export const useScheduleStore = create<ScheduleState>((set, get) => ({
   jobs: [],
@@ -85,26 +85,20 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   },
 
   update: async (jobId, opts) => {
-    // create→delete composition: keep the old job unless the new one exists.
-    const created = await get().create(opts);
-    if (!created) return null;
-    const prevJobs = get().jobs;
-    set({ jobs: prevJobs.filter((j) => j.id !== jobId) });
+    const existing = get().jobs.find((job) => job.id === jobId);
     try {
-      await typedIPC.deleteJob(jobId);
+      const result = await typedIPC.updateJob(jobId, existing?.revision ?? 1, opts);
+      set((state) => ({jobs:state.jobs.map((job) => job.id === jobId ? result.job : job)}));
+      return result.job;
     } catch (err) {
-      // New job exists but the stale one lingers — surface the error and
-      // refresh so the list reflects reality on both ends.
-      await get().refresh();
-      const message = err instanceof Error ? err.message : String(err);
-      toast.error(strings.toasts.jobDeleteFailed, message);
+      toast.error(strings.toasts.jobCreateFailed, err instanceof Error ? err.message : String(err));
+      return null;
     }
-    return created;
   },
 
-  enable: async (jobId) => {
+  enable: async (jobId, acknowledgeOccurrenceId) => {
     try {
-      const r = await typedIPC.enableJob(jobId);
+      const r = await typedIPC.enableJob(jobId, acknowledgeOccurrenceId);
       set((s) => ({
         jobs: s.jobs.map((j) => (j.id === jobId ? r.job : j)),
       }));
@@ -136,7 +130,12 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
 
   runNow: async (jobId) => {
     try {
-      await typedIPC.runNowJob(jobId);
+      const job = get().jobs.find((entry) => entry.id === jobId);
+      const intent = manualKeys.get(jobId) ?? {key:crypto.randomUUID(),expectedRevision:job?.revision ?? 1};
+      manualKeys.set(jobId,intent);
+      await typedIPC.runNowJob(jobId,intent.key,intent.expectedRevision);
+      manualKeys.delete(jobId);
+      await get().refresh();
       toast.info(strings.toasts.jobTriggered, strings.toasts.jobTriggeredDetail(jobId));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

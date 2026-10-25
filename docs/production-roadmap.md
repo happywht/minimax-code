@@ -24,7 +24,7 @@
 | M2（7–10 日）运行与恢复 | RunService、幂等键、固定 ExecutionContext、每会话单写任务、持久事件/审批/结果、预算与熔断 | 重复提交不重复执行；断线补齐最终状态；重启准确标记中断和待核对写操作 | 实施中；主任务持久接单/幂等/恢复、模型及工作区快照已接入；预算、权限快照及子任务恢复待完成 |
 | M3（6–9 日）编程闭环 | 需求→计划→修改→验证→审查→交付；真实验证命令、结构化压缩、输出文件引用、rg/符号/FTS、基线撤销、worktree 合并后复验 | 固定任务集交付正确差异和验证证据；保留用户同期修改 | 部分实现；校验执行/证据已接入，完整任务集与其余闭环未验收 |
 | M4（4–6 日）CodexEngine | App Server 会话创建/续接、结构化事件、审批/取消、外部 session ID、能力探测与契约回放 | 两引擎跑同批任务；Codex 不可用明确解释，Native 独立可用 | 会话/历史/恢复离线闭环已验证；真实双引擎任务集待验收 |
-| M5（6–9 日）远程与自动化 | SSH 隧道、本地代理、主机握手、systemd 用户服务、容器、文件传输；定时提示词进入 RunService | Windows 关闭不影响 Linux 任务；重连完整结果；重复触发无重复副作用 | 本地调度/传输保护部分实现；稳定 occurrence、共享预算及远程持久执行待完成 |
+| M5（6–9 日）远程与自动化 | SSH 隧道、本地代理、主机握手、systemd 用户服务、容器、文件传输；定时提示词进入 RunService | Windows 关闭不影响 Linux 任务；重连完整结果；重复触发无重复副作用 | 本地调度/传输保护部分实现；本地固定上下文/稳定 occurrence 已实现；共享预算及远程持久执行待完成 |
 | M6（8–12 日）办公交付 | 附件登记/解析；搜索与来源；官方 MCP SDK 互操作；研究、资料成稿、表格三个工作流；统一 artifact 登记/预览/下载/验证 | 原文件不覆盖、引用可追溯、报告渲染完整、表格独立验算一致 | 待实施 |
 | M7（6–8 日 + 14 天）生产验收 | Windows 一键启动、Linux 版本安装、预构建发布、诊断、升级/恢复、完整备份、保留策略、真实日常使用 | 全新安装/升级/备份恢复演练；14 天 ≥30 个真实任务；阻断问题清零 | 待实施 |
 
@@ -558,3 +558,16 @@ Schema035 扩展任务暂停/中断/需要核对状态并关联 run_id，定时�
 当前 Windows 离线证据见 `.verification/task-outcome-*.log`，不包含付费模型、远程部署、40项真实任务集或三轮完整基线。
 
 最终离线验证：扩大后端 **280 项通过**（包含真实 SQLite 重开/035 升级、假 App Server、多轮恢复、预算/接单及底层进程树回收），全部前端 **818 项通过**；隔离后端的真实浏览器 smoke-chat/run-recovery **5 项通过**。TypeScript、ESLint、生产构建、修改 Python 文件 ruff 和 diff 空白检查通过。证据：`.verification/task-outcome-backend-expanded.log`、`task-outcome-web-full.log`、`task-outcome-e2e.log`、`task-outcome-types.log`、`task-outcome-lint.log`、`task-outcome-build.log`、`task-outcome-ruff.log`、`task-outcome-diff.log`。核心验证清单加入 outcome/project validation 两个测试模块。Schema035 升级前备份数据库；回退必须使用旧应用及匹配的升级前数据库备份，未提供或验证逆向迁移。
+
+
+### 2026-10-26：本地调度固定上下文和持久发生记录
+
+Schema036 将旧任务全部停用/needs_rebind，原始 payload 保留。新任务仅 Local/Native prompt，固定项目目录及身份、Provider/协议/endpoint 摘要、模型/强度、权限策略、正预算、校验命令及时区；禁用自动任务的全局/插件钩子。显式内部 admission 注入上下文，公开 run.start 不能伪造权限快照。缺少密钥或配置漂移不推理；后续全局 allow 不扩大授权。
+
+每次发生拥有独立会话/任务；持久 manual key+revision 或 cron UTC due 身份去重，接单原子关联 run/user/task/occurrence。SQLite 租约覆盖授权、验证和清理，跨 revision 不重叠。多个错过周期合并一次；停用/删除阻止未接单工作，重新启用不回放停用区间。修改使用 revision CAS，软删除保留历史。
+
+中断/失败/暂停/需核对停止后续自动调度；审查恢复使用原上下文及同一发生租约，精确 run_id CAS 防止旧来源覆盖恢复子任务。重启未接单工作复用 occurrence，已接单不盲目重放外部副作用。HTTP 关闭先隔离调度再取消并等待 RunService，最后关闭存储。递归子任务清理持有同一个 drain，父任务重复取消也等待真实进程树和清理中新注册的后代完成；进程正常退出、超时或取消共用一次清理，完成前保留模型客户端、权限路由及发生租约。
+
+离线受控验收记录见 `.verification/scheduler-context-*.log`；本批没有付费模型、Linux 重新部署或全基线三轮，不声明整个 M5 完成。共享每日预算账本和远程持久执行仍待完成。Schema036 升级前备份；回退需匹配的升级前数据库备份与旧应用，无已验证逆向迁移。
+
+本批最终证据：扩大后端 **384 项通过**（23 个模块，选择清单为 `.verification/scheduler-context-backend-selection.txt`，含 036 旧数据迁移、真实 RunService、四类子进程崩溃/重开、原生取消/校验、契约及共用执行边界/终端进程回收）；递归子任务/产物证据专项 **16 项通过**，包含真实子进程及孙进程心跳停止、父答案保留和未收集变更需核对，以及截断/取消/预算/超时/正常进程清理中父任务重复取消和新增后代的受控竞态。全部前端 **820 项通过**；真实浏览器 **6 项通过**，覆盖新调度创建/原位修改/缺凭据阻塞历史/打开会话及原有 Native smoke/recovery。TypeScript、ESLint、生产构建、修改 Python 文件 ruff 和 diff 检查通过；构建保留既有大 chunk 提示。证据为 `.verification/scheduler-context-{backend,children,web-full,e2e,types,lint,build,ruff,diff}.log`。子任务专项与扩大后端有重叠，不相加作为独立场景数。共享每日预算仍是后续工作；本批仅修正已有日计量查询两侧本地日期口径一致。

@@ -243,6 +243,18 @@ describe("PermissionRequestModal", () => {
     expect(screen.getByTestId("permission-request-modal-tool")).toHaveTextContent("echo");
   });
 
+  it("scheduled explicit-once write approval keeps its preview and ignores global alwaysAllow", async () => {
+    const resolveSpy = vi.spyOn(typedIPC, "resolvePermission");
+    usePermissionStore.setState({alwaysAllow:true});
+    render(<PermissionRequestModal />);
+    await act(async () => { ipc._emit(StreamEvent.PermissionRequest,{request_id:"scheduled-write",tool:"write_file",approval_policy:"explicit_once",args:{path:"README.md",content:"# Scheduled"}}); });
+    expect(resolveSpy).not.toHaveBeenCalled();
+    expect(usePermissionStore.getState().pending["scheduled-write"].approval_policy).toBe("explicit_once");
+    expect(screen.getByTestId("permission-request-modal-tool")).toHaveTextContent("write_file");
+    expect(screen.getByTestId("permission-request-modal-patch-preview")).toBeInTheDocument();
+    resolveSpy.mockRestore();
+  });
+
   it("Native alwaysAllow keeps Codex approvals manual", async () => {
     const resolveSpy = vi.spyOn(typedIPC, "resolvePermission");
     usePermissionStore.setState({ alwaysAllow: true });

@@ -133,6 +133,18 @@ class AgentRunsDAO:
                 (run_id, session_id, mode, title, ts, f"msg_{uuid.uuid4().hex}",
                  dumps_json(metadata), request_key, fingerprint, canonical, resumed_from_id))
             run = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
+            if metadata.get("schedule"):
+                binding = metadata["schedule"]
+                occurrence = await _fetchone(conn, "SELECT o.*,j.active_occurrence_id,j.enabled AS job_enabled,j.deleted_at,j.revision AS job_revision,j.binding_state FROM schedule_occurrences o JOIN scheduled_jobs j ON j.id=o.job_id WHERE o.id=?", (binding["occurrence_id"],))
+                if (not occurrence or occurrence["session_id"] != session_id
+                        or occurrence["active_occurrence_id"] != occurrence["id"]
+                        or (occurrence["run_id"] and occurrence["run_id"] != resumed_from_id)):
+                    raise ValueError("Scheduled occurrence ownership changed")
+                if not resumed_from_id and (not occurrence["job_enabled"] or occurrence["deleted_at"]
+                        or occurrence["job_revision"] != occurrence["revision"] or occurrence["binding_state"] != "ready"):
+                    raise ValueError("Schedule changed before admission; dispatch is suspended")
+                await conn.execute("UPDATE schedule_occurrences SET run_id=?,status='running',updated_at=? WHERE id=?", (run_id, ts, occurrence["id"]))
+                await conn.execute("UPDATE tasks SET run_id=? WHERE id=?", (run_id, occurrence["task_id"]))
             if codex:
                 user_id = f"msg_{uuid.uuid4().hex}"
                 await conn.execute(

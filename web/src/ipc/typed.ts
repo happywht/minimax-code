@@ -1,3 +1,4 @@
+import type { ScheduleDefinition, ScheduleOccurrence, ScheduleTriggerResult } from "../types/ipc";
 /**
  * Typed high-level IPC API — the `TypedIPC` interface and the
  * `bindTypedIPC(client)` factory that maps friendly JS method names to
@@ -290,11 +291,13 @@ export interface TypedIPC {
   // The JS API is friendlier (cron / prompt) than the wire (cron_expr / payload)
   // and the binding translates at the boundary.
   listJobs(): Promise<ListJobsResult>;
-  createJob(opts: { name: string; cron: string; prompt: string }): Promise<{ job: ScheduledJob }>;
+  createJob(opts: ScheduleDefinition): Promise<{ job: ScheduledJob }>;
+  updateJob(jobId: string, expectedRevision: number, opts: ScheduleDefinition): Promise<{job: ScheduledJob}>;
+  listScheduleOccurrences(jobId: string): Promise<{occurrences: ScheduleOccurrence[]}>;
   deleteJob(jobId: string): Promise<{ ok: true }>;
-  enableJob(jobId: string): Promise<{ job: ScheduledJob }>;
+  enableJob(jobId: string, acknowledgeOccurrenceId?: string): Promise<{ job: ScheduledJob }>;
   disableJob(jobId: string): Promise<{ job: ScheduledJob }>;
-  runNowJob(jobId: string): Promise<{ ok: true; job_id: string; triggered_at: number | null }>;
+  runNowJob(jobId: string, idempotencyKey: string, expectedRevision: number): Promise<ScheduleTriggerResult>;
 
   // agent (multi-agent)
   listAgents(): Promise<ListAgentsResult>;
@@ -523,6 +526,11 @@ export interface TypedIPC {
 }
 
 interface WireScheduledJob {
+  revision?: number;
+  context?: ScheduledJob["context"];
+  binding_state?: ScheduledJob["binding_state"];
+  binding_reason?: string | null;
+  active_occurrence_id?: string | null;
   id: string;
   name: string;
   cron?: string;
@@ -538,6 +546,8 @@ function normalizeScheduledJob(job: WireScheduledJob): ScheduledJob {
   const payloadPrompt = job.payload?.prompt;
   return {
     id: job.id,
+    revision: job.revision, context: job.context, binding_state: job.binding_state,
+    binding_reason: job.binding_reason, active_occurrence_id: job.active_occurrence_id,
     name: job.name,
     cron: job.cron ?? job.cron_expr ?? "",
     prompt: job.prompt ?? (typeof payloadPrompt === "string" ? payloadPrompt : ""),
@@ -781,22 +791,27 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         name: opts.name,
         // Wire names differ from the JS API for historical reasons.
         cron_expr: opts.cron,
-        payload: { prompt: opts.prompt },
+        payload: { prompt: opts.prompt }, context: opts.context,
       });
       return { job: normalizeScheduledJob(result.job) };
     },
+    updateJob: async (jid, expectedRevision, opts) => {
+      const result = await client.request<{job: WireScheduledJob}>("schedule.update", { job_id: jid, expected_revision: expectedRevision, name: opts.name, cron_expr: opts.cron, payload: {prompt:opts.prompt}, context: opts.context });
+      return {job:normalizeScheduledJob(result.job)};
+    },
+    listScheduleOccurrences: (jid) => client.request<{occurrences: ScheduleOccurrence[]}>("schedule.occurrences",{job_id:jid}),
     deleteJob: (jid) =>
       client.request<{ ok: true }>("schedule.delete", { job_id: jid }),
-    enableJob: async (jid) => {
-      const result = await client.request<{ job: WireScheduledJob }>("schedule.enable", { job_id: jid });
+    enableJob: async (jid, acknowledgeOccurrenceId) => {
+      const result = await client.request<{ job: WireScheduledJob }>("schedule.enable", { job_id: jid, ...(acknowledgeOccurrenceId ? {acknowledge_occurrence_id: acknowledgeOccurrenceId} : {}) });
       return { job: normalizeScheduledJob(result.job) };
     },
     disableJob: async (jid) => {
       const result = await client.request<{ job: WireScheduledJob }>("schedule.disable", { job_id: jid });
       return { job: normalizeScheduledJob(result.job) };
     },
-    runNowJob: (jid) =>
-      client.request<{ ok: true; job_id: string; triggered_at: number | null }>("schedule.run_now", { job_id: jid }),
+    runNowJob: (jid, idempotencyKey, expectedRevision) =>
+      client.request<ScheduleTriggerResult>("schedule.run_now", { job_id: jid, idempotency_key: idempotencyKey, expected_revision: expectedRevision }),
 
     listAgents: () => client.request<ListAgentsResult>("agent.list", {}),
     // Map frontend keys → backend keys. New callers send agent_name

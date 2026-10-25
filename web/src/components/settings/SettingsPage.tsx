@@ -164,7 +164,7 @@ export function SettingsPage({ testId = "settings-page", onClose, initialTab = "
           {tab === "models" && <ModelsTab />}
           {tab === "providers" && <ProvidersTab />}
           {tab === "permissions" && <PermissionsTab />}
-          {tab === "scheduled" && <ScheduledTab />}
+          {tab === "scheduled" && <ScheduledTab onOpenSession={onClose} />}
           {tab === "agents" && <AgentsTab />}
           {tab === "teams" && <TeamsTab />}
           {tab === "audit" && <AuditTab />}

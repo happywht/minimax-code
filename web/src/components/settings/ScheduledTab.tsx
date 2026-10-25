@@ -2,7 +2,7 @@
  * Scheduled tab — manage cron jobs via `schedule.*` IPC.
  * Includes ScheduledJobRow and TaskStatusDot sub-components.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -13,16 +13,16 @@ import {
 } from "lucide-react";
 import { Button, IconButton, Input, Panel } from "../../ui";
 import { strings } from "../../ui/strings";
-import { useScheduleStore, useTaskStore } from "../../stores";
+import { useScheduleStore } from "../../stores";
 import { toast } from "../layout/ErrorBoundary";
-import type { ScheduledJob } from "../../types/ipc";
-import { formatTime } from "../../lib/time";
+import type { ScheduledJob, ScheduleContext } from "../../types/ipc";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { InlineCode, TabHeader } from "./fields";
+import { emptyScheduleContext, validScheduleContext, ScheduleContextFields, ScheduleSnapshot, ScheduleHistory } from "./ScheduleContextFields";
 
 export { ScheduledTab };
 
-function ScheduledTab(): JSX.Element {
+function ScheduledTab({onOpenSession}: {onOpenSession?: () => void}): JSX.Element {
   const jobs = useScheduleStore((s) => s.jobs);
   const refresh = useScheduleStore((s) => s.refresh);
   const create = useScheduleStore((s) => s.create);
@@ -35,11 +35,12 @@ function ScheduledTab(): JSX.Element {
   const [draftName, setDraftName] = useState("");
   const [draftCron, setDraftCron] = useState("");
   const [draftPrompt, setDraftPrompt] = useState("");
+  const [draftContext, setDraftContext] = useState(emptyScheduleContext);
 
   useEffect(() => { if (jobs.length === 0) void refresh(); }, [jobs.length, refresh]);
 
   const handleCreate = async () => {
-    const job = await create({ name: draftName.trim(), cron: draftCron.trim(), prompt: draftPrompt.trim() });
+    const job = await create({ name: draftName.trim(), cron: draftCron.trim(), prompt: draftPrompt.trim(), context: draftContext });
     if (job) {
       toast.success(strings.settings.scheduled.createdToast, job.name);
       setDraftName(""); setDraftCron(""); setDraftPrompt("");
@@ -99,7 +100,7 @@ function ScheduledTab(): JSX.Element {
             size="sm"
             variant="subtle"
             data-testid="settings-job-add"
-            disabled={!draftName.trim() || !draftCron.trim()}
+            disabled={!draftName.trim() || !draftCron.trim() || !draftPrompt.trim() || !validScheduleContext(draftContext)}
             onClick={() => void handleCreate()}
             icon={<Plus />}
             className="sm:col-span-2"
@@ -107,6 +108,7 @@ function ScheduledTab(): JSX.Element {
             {strings.settings.scheduled.create}
           </Button>
         </div>
+        <ScheduleContextFields value={draftContext} onChange={setDraftContext} />
       </Panel>
 
       <ul className="space-y-1.5" data-testid="settings-jobs-list">
@@ -119,6 +121,7 @@ function ScheduledTab(): JSX.Element {
           <ScheduledJobRow
             key={j.id}
             job={j}
+            onOpenSession={onOpenSession}
             onToggle={(enabled) => void setEnabled(j.id, enabled)}
             onDelete={async () => {
               const accepted = await requestConfirmation({
@@ -129,8 +132,8 @@ function ScheduledTab(): JSX.Element {
               if (accepted) await remove(j.id);
             }}
             onRunNow={() => void runNow(j.id)}
-            onUpdate={async (name, cron, prompt) => {
-              const job = await update(j.id, { name, cron, prompt });
+            onUpdate={async (name, cron, prompt, context) => {
+              const job = await update(j.id, { name, cron, prompt, context });
               if (job) toast.success(strings.settings.scheduled.updatedToast, job.name);
             }}
           />
@@ -140,17 +143,19 @@ function ScheduledTab(): JSX.Element {
   );
 }
 
-function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate }: {
+function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSession }: {
+  onOpenSession?: () => void;
   job: ScheduledJob; onToggle: (enabled: boolean) => void;
   onDelete: () => void; onRunNow: () => void;
-  onUpdate: (name: string, cron: string, prompt: string) => Promise<void>;
+  onUpdate: (name: string, cron: string, prompt: string, context: ScheduleContext) => Promise<void>;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(job.name);
   const [editCron, setEditCron] = useState(job.cron);
   const [editPrompt, setEditPrompt] = useState(job.prompt);
-  const tasks = useTaskStore((s) => s.tasks);
+  const [editContext, setEditContext] = useState(job.context ?? emptyScheduleContext());
+  const [acknowledged, setAcknowledged] = useState(false);
 
   const startEditing = () => {
     // Reset the draft to the current definition so reopening after a
@@ -158,23 +163,15 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate }: {
     setEditName(job.name);
     setEditCron(job.cron);
     setEditPrompt(job.prompt);
+    setEditContext(job.context ?? emptyScheduleContext());
     setEditing(true);
   };
 
   const handleSave = async () => {
-    await onUpdate(editName.trim(), editCron.trim(), editPrompt.trim());
+    await onUpdate(editName.trim(), editCron.trim(), editPrompt.trim(), editContext);
     setEditing(false);
   };
 
-  const relatedTasks = useMemo(() => {
-    const allTasks = Object.values(tasks);
-    if (allTasks.length === 0) return [];
-    const jobName = job.name.toLowerCase();
-    return allTasks.filter((t) =>
-      (t.message && t.message.toLowerCase().includes(jobName)) ||
-      t.task_id.toLowerCase().includes(job.id.toLowerCase().slice(0, 6))
-    );
-  }, [tasks, job.name, job.id]);
 
   return (
     <li
@@ -203,7 +200,8 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate }: {
           <input
             type="checkbox"
             checked={job.enabled}
-            onChange={(e) => onToggle(e.target.checked)}
+            disabled={job.binding_state === "needs_rebind" || (job.binding_state === "requires_review" && !acknowledged)}
+            onChange={(e) => { if (e.target.checked && acknowledged) void useScheduleStore.getState().enable(job.id, job.active_occurrence_id ?? undefined); else onToggle(e.target.checked); }}
             className="h-3 w-3 accent-accent"
           />
           {job.enabled ? strings.settings.scheduled.enabled : strings.settings.scheduled.disabled}
@@ -218,6 +216,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate }: {
         <IconButton
           data-testid={`settings-job-run-now-${job.id}`}
           onClick={onRunNow}
+          disabled={!job.enabled || job.binding_state !== "ready" || !!job.active_occurrence_id}
           aria-label={strings.settings.scheduled.runNowAria}
         >
           <Play />
@@ -230,6 +229,8 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate }: {
           <Trash2 />
         </IconButton>
       </div>
+      <ScheduleSnapshot job={job} />
+      {job.binding_state === "requires_review" && <label className="px-3 text-xs"><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />已核对 {job.active_occurrence_id} 的副作用，放弃该运行恢复并允许未来任务</label>}
       {editing && (
         <div data-testid={`settings-job-edit-form-${job.id}`} className="border-t border-line px-3 py-2">
           <p className="mb-2 text-[11px] font-medium text-ink-1">
@@ -286,45 +287,21 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate }: {
                 size="sm"
                 variant="subtle"
                 data-testid="settings-job-edit-save"
-                disabled={!editName.trim() || !editCron.trim()}
+                disabled={!editName.trim() || !editCron.trim() || !editPrompt.trim() || !validScheduleContext(editContext)}
                 onClick={() => void handleSave()}
               >
                 {strings.settings.scheduled.save}
               </Button>
             </div>
           </div>
+          <ScheduleContextFields value={editContext} onChange={setEditContext} />
         </div>
       )}
       {expanded && (
         <div data-testid={`settings-job-tasks-${job.id}`} className="border-t border-line px-3 py-2">
-          {relatedTasks.length === 0 ? (
-            <div className="text-[11px] italic text-ink-2">{strings.settings.scheduled.noRuns}</div>
-          ) : (
-            <ul className="space-y-1">
-              {relatedTasks.map((t) => (
-                <li key={t.task_id} className="flex items-center justify-between gap-2 text-[11px]">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <TaskStatusDot status={t.status} />
-                    <span className="truncate text-ink-0">{t.message || t.task_id}</span>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2 text-ink-2">
-                    <span>{Math.round(t.progress * 100)}%</span>
-                    <span>{t.status === "running" ? strings.settings.scheduled.running : formatTime(t.updated_at)}</span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
+          <ScheduleHistory job={job} onOpenSession={onOpenSession} />
         </div>
       )}
     </li>
   );
-}
-
-function TaskStatusDot({ status }: { status: string }): JSX.Element {
-  const colors: Record<string, string> = {
-    running: "bg-accent animate-pulse", done: "bg-status-success",
-    error: "bg-status-error", cancelled: "bg-ink-2",
-  };
-  return <span aria-hidden className={`inline-block h-1.5 w-1.5 rounded-full ${colors[status] ?? "bg-ink-2"}`} />;
 }

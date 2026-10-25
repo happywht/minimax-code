@@ -15,7 +15,7 @@
 | 生产入口已接入 | `agent/skills/`、`hooks/`、`plugins/`、`mcp/` | 技能、Hooks、插件和 MCP 桥接；外部进程权限未统一，现代 HTTP transport 互操作待验 |
 | 生产入口已接入 | `codebase/`、`xai_codebase_graph/`、`memory/` | FTS、符号分析与索引；默认向量为字符哈希，不是语义模型，记忆不能代替可靠任务状态 |
 | 生产入口已接入，实验边界 | `orchestrator/`、`agent/subagent*`、teams/workflows handlers | 子任务生命周期、交接、冲突检测；事后检测不能阻止共享目录的覆盖 |
-| 生产入口已接入，实验边界 | `scheduler/`、`agent/self_evolution/payload.py` | 定时提示词已进入 Native RunService 完整工具循环并关联持久运行；任务结果保留执行/校验证据；调度发生次数的稳定幂等、上下文固定和共享预算仍待完善 |
+| 生产入口已接入，实验边界 | `scheduler/`、`agent/self_evolution/payload.py` | 定时提示词已进入 Native RunService 完整工具循环并关联持久运行；任务结果保留执行/校验证据；本地稳定发生记录、固定上下文与会话隔离已接入；共享预算仍待完善 |
 | 生产入口已接入，实验边界 | `progress/`、`telemetry/`、`preview/`、`mobile/`、`webhooks/` | 有处理器/服务；进度不是验收结论，预览边界需统一，移动与外部通知不属于首版生产保证 |
 | 纯协议/算法辅助 | `plan_mode/`、`compaction/`、`voice/` | 类型、状态机、触发器、模板；模块明确保留 host wiring 为后续工作，不据此宣称只读执行、语义压缩或语音输入完成 |
 | 协议/SDK 辅助，非产品远程主机功能 | `computer_hub_core/`、`computer_hub_sdk/`、`tool_protocol/`、`tool_runtime/`、`tool_types/`、`tools_api/`、`grok_auth/` | 有协议和连接/调度辅助实现；没有已验收的 SSH 主机注册、长期服务和跨主机数据归属闭环 |
@@ -34,7 +34,7 @@
 | 执行入口分散、模型/预算/取消语义不统一 | `agent/core.py`、`ipc/builtins.py`、`orchestrator/` | M1–M2 |
 | WS 内存重放、持久运行恢复不完整 | `http_server.py`、`ipc/handlers_runs.py` | M2 |
 | 文本截取式压缩、哈希向量、快照恢复语义 | `agent/compaction.py`、`codebase/`、`ipc/handlers_checkpoint.py` | M3 |
-| 调度 occurrence 稳定幂等、项目/会话/模型固定与共享每日预算尚不完整 | `scheduler/`、`runs.py`、`budget.py` | M2/M5 |
+| 跨运行共享每日预算尚不完整；本地调度固定上下文/occurrence 已有离线闭环 | `scheduler/`、`runs.py`、`budget.py` | M2/M5 |
 | Codex 和 SSH 产品入口已有局部实现，真实推理/远程长期运行闭环未验收 | `engines/`、`hosts/`、`ipc/handlers_hosts.py` | M4/M5 |
 | MCP HTTP 互操作、办公文件解析及交付物验收缺口 | `mcp/`、前端附件/预览链路 | M6 |
 | 安装、升级、完整备份与持续试用 | `scripts/`、`docs/deployment.md` | M7 |
@@ -62,3 +62,6 @@ payload，提交开始后保留不确定结果及备份。协作上传锁不能�
 
 
 2026-10-25 当前补充：Codex 同 thread 多轮、SQLite 重开、部分历史、审查恢复和审批隔离已通过受控 App Server 离线闭环；resume 已开启，steer 关闭。Native 正常 chat/execute 的配置校验已与 FsBus 解耦，任务/聊天分别呈现执行状态和 version1 校验证据，暂停/取消/失败的部分结果可恢复。定时提示词已调用 Native RunService；稳定 occurrence 幂等、调度上下文固定和跨运行共享每日预算账本尚未完成。以上覆盖前述早期基线描述，仍不代表 M3–M5 整体验收。
+
+
+2026-10-26 本地调度补充：Local/Native prompt 的配置快照、独立项目会话、稳定手动请求键/cron UTC 发生身份、跨修订租约、错过周期合并、软删除及审查恢复已实现。旧任务全部停用待重新绑定；不支持的命令/自演进分派拒绝执行。自动任务禁用全局/插件钩子，权限快照只允许后续收紧。父任务重复取消、子进程超时或退出期间继续持有递归清理，等待真实清理及新注册后代结束后才释放运行资源。当前仅离线受控验证，未验收付费推理、远程持久服务或整阶段 M5；共享每日预算账本仍待完成。

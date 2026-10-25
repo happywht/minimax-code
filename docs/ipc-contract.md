@@ -1506,7 +1506,9 @@ document the migration in this file.
 
 | 方法 | 说明 |
 |------|------|
-| `schedule.create` / `schedule.list` / `schedule.delete` | 定时任务 CRUD（update 见正文） |
+| `schedule.create` / `schedule.list` / `schedule.delete` | 固定上下文提示词任务创建/列表/软删除 |
+| `schedule.update` | expected_revision 比较并交换，保留旧发生记录快照 |
+| `schedule.occurrences` | 按 job_id 查询准确发生记录和执行/校验证据 |
 | `schedule.enable` / `schedule.disable` | 启用/停用 |
 | `schedule.run_now` | 立即触发一次 |
 
@@ -1583,3 +1585,28 @@ UI 依据 `cancel_supported` 禁用动作，不能只改任务账本制造已停
 | `workflow.create` / `workflow.list` / `workflow.update` / `workflow.delete` | 工作流 CRUD |
 | `workflow.enable` / `workflow.disable` | 启用/停用 |
 | `workflow.trigger` | 手动触发一次 |
+
+
+## 固定上下文调度契约（2026-10-26，Schema036）
+
+仅支持 Local / Native 提示词，payload 必须恰为 `{prompt: nonempty_string}`。
+command、self_evolution、use_runservice:false、混合或未知字段在创建、修改、启用、手动触发及实际分派路径拒绝。
+旧任务升级后 disabled/needs_rebind，原 payload 保留供导出/查看/删除；不会自动转成可执行提示词。
+
+schedule.create/update 的 context 输入选择 project_id、provider_id/model（必须一起指定，均省略则在此刻固定当前选择）、reasoning_effort、mode(chat/execute/plan)、budget_tokens、timezone。
+返回的 context v1 固定 canonical workspace+目录身份、local/native、provider ID/协议/endpoint 配置摘要、模型/强度、顺序权限规则及默认策略版本、hooks_policy=disabled、正 token 上限、校验命令及时区。
+密钥不序列化。正预算来自显式值或 MINIMAX_CODE_SCHEDULED_BUDGET_TOKENS / MINIMAX_CODE_RUN_BUDGET_TOKENS；无正上限拒绝。全局模型切换不改变任务，Provider 配置/目录身份漂移及缺失密钥均阻止推理。
+快照权限与当前限制取严格交集；全局后续 allow 不扩大授权，ask/deny 可收紧。未知工具 ask；permission.request 的 approval_policy=explicit_once 禁止前端全局 alwaysAllow 自动通过，同时保留实际 tool 名称供差异预览。自动任务禁用全局/插件钩子。
+
+schedule.update 要求 job_id/expected_revision/name/cron_expr/payload/context，成功 revision+1，重新计算未来 next_run_at。已接单发生记录保持旧快照；未接单旧记录显式 superseded，释放旧租约。
+schedule.run_now 必须提交 job_id、idempotency_key、expected_revision，返回 `{ok:true,occurrence_id,task_id,run_id:null|string,status,created}`，这是持久接单回执，不能视作执行成功。
+同键同 revision 重放先于启停/删除/配置检查；不同 revision 冲突。客户端丢回执后保留原 key+revision。另一个手动意图在同任务租约占用时返回 busy，不积压。
+
+每次发生创建独立项目会话及任务，run 使用 schedule:occurrence_id 稳定键；用户消息、run、发生记录关联和 tasks 表的 run_id 原子提交。
+Cron 身份是 job/revision/持久 UTC scheduled_for；SQLite 原子推进 next_run_at，遗漏多个周期合并一次并记录 coalesced_through，下一 due 严格晚于当前时刻。
+同一任务跨 revision 独占租约，覆盖排队、授权、工具、校验及清理。停用/删除后未接单 work 不启动，正在运行的 work 仍可清理/取消；重新启用从未来开始。
+失败/中断/暂停/需核对暂停后续调度；run.resume 审查恢复使用同一快照和发生租约，子运行终态从权威 run 记录投影。放弃原恢复并启用新发生须提交精确 acknowledge_occurrence_id。
+重启已有运行只恢复为 interrupted/需要核对，不盲目重放外部效果；未接单发生可复用同一身份继续接单。幂等接单不构成外部副作用 exactly-once 保证。
+
+schedule.occurrences 返回不可变 prompt/context/revision/source/时间区间、会话/任务/当前 run_id、status/reason，以及已有任务的 verification、execution_status 和部分 result；软删除后历史仍可查询。
+此范围不支持远程主机、Codex 调度、一般命令调度，也尚未提供跨运行原子每日预算账本。

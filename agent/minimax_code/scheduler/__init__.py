@@ -1,37 +1,9 @@
-"""APScheduler-backed cron scheduler with DB persistence.
+"""Loop-owned Native prompt scheduling with durable SQLite occurrences.
 
-This module is the runtime side of the scheduled jobs system. It owns
-an :class:`apscheduler.schedulers.asyncio.AsyncIOScheduler` instance,
-mirrors the ``scheduled_jobs`` table into APScheduler jobs, and
-translates cron fires into ``tasks``-table rows so the UI / IPC can
-observe them.
-
-Why APScheduler
----------------
-We need cron expressions with second/minute precision, persistence
-across restarts (we re-load from SQLite on start), and an async event
-loop that does not block while the user payload runs. APScheduler's
-``AsyncIOScheduler`` with a thread-pool executor is a good fit:
-``AsyncIOScheduler`` is asyncio-aware, and we use
-``loop.run_in_executor`` to keep user payloads off the event loop.
-
-Wiring
-------
-* :class:`JobScheduler` wraps an :class:`AsyncIOScheduler` and a
-  :class:`~minimax_code.storage.dao.scheduled_jobs.ScheduledJobsDAO`.
-* ``start()`` re-registers every ``enabled=True`` row in
-  ``scheduled_jobs`` so a fresh process picks up where it left off.
-* ``add_job`` / ``remove_job`` / ``enable`` / ``disable`` / ``list_jobs``
-  are the public mutators used by the IPC handlers.
-* ``run_now(job_id)`` triggers an immediate run of the job's payload
-  (used by the ``schedule.run_now`` RPC).
-* Cron parsing is delegated to APScheduler's
-  :class:`~apscheduler.triggers.cron.CronTrigger` so the spec matches
-  what the rest of the agent will see when we surface ``next_run_at``.
-
-The scheduler is created lazily — :func:`get_scheduler` returns the
-process-wide singleton, building it on first use so the IPC handlers
-can register a reference without a startup-order constraint.
+APScheduler wakes the async dispatcher; persisted due cursors and job leases
+control admission. Each occurrence owns its immutable context, session, task,
+RunService run and descendants through terminal cleanup. Legacy payload helper
+functions below are not production dispatch routes.
 """
 
 from __future__ import annotations
@@ -40,7 +12,6 @@ import asyncio
 import logging
 import os
 import threading
-import time
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -48,7 +19,8 @@ from typing import Any
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from ..storage.dao._base import now_iso
+from ..storage.dao._base import dumps_json, now_iso
+from ..storage.dao.schedule_occurrences import ScheduleOccurrencesDAO
 from ..storage.dao.scheduled_jobs import ScheduledJobsDAO
 from ..storage.dao.sessions import SessionsDAO
 from ..storage.dao.tasks import TasksDAO
@@ -61,10 +33,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-#: System-owned session used as the parent for cron-fired task rows.
-#: ``tasks.session_id`` is a non-null FK to ``sessions.id``, so cron
-#: tasks need a real session row — we mint a single "scheduled" one
-#: the first time the scheduler fires and reuse it thereafter.
+#: Legacy helper constants; durable occurrence dispatch creates isolated sessions.
 _SCHEDULED_SESSION_NAME = "scheduled-tasks"
 _SCHEDULED_SESSION_ID_PREFIX = "ses_sched_"
 
@@ -105,15 +74,9 @@ class JobScheduler:
     db:
         An open + migrated :class:`~minimax_code.storage.db.AsyncDatabase`.
         We never close it — caller owns the lifecycle.
-    payload_runner:
-        Optional ``async def runner(job, payload) -> str`` invoked for
-        every fire. The default runner just returns a no-op string,
-        keeping the scheduler testable without an LLM. The IPC layer
-        plugs in the real runner when the runtime is ready.
-    executor:
-        Optional ``concurrent.futures.Executor`` used for sync user
-        payloads so they don't block the event loop. Defaults to the
-        default thread pool.
+    payload_runner, executor:
+        Retained for standalone legacy helper tests. Production occurrences
+        always use the bound Native RunService path on the owning event loop.
     """
 
     def __init__(
@@ -127,14 +90,14 @@ class JobScheduler:
         self._dao = ScheduledJobsDAO(db)
         self._tasks = TasksDAO(db)
         self._sessions = SessionsDAO(db)
-        self._aps: AsyncIOScheduler = AsyncIOScheduler(
-            executors={"default": {"type": "threadpool", "max_workers": 4}}
-            if executor is None
-            else {"default": executor}
-        )
+        self._aps = AsyncIOScheduler(executors={"default": {"type": "asyncio"}})
+        self._occurrences = ScheduleOccurrencesDAO(db)
+        self._occurrence_tasks: dict[str, asyncio.Task] = {}
         self._payload_runner: PayloadFn = payload_runner or _noop_runner
         self._start_lock = asyncio.Lock()
         self._started = False
+        self._stopping = False
+        self._aps_shutdown_issued = False
         # We need a stable mapping APScheduler job id -> our job id so
         # we can look up the row when a fire happens. APScheduler uses
         # arbitrary string keys; we set ours to ``job_<row_id>``.
@@ -158,22 +121,31 @@ class JobScheduler:
         async with self._start_lock:
             if self._started:
                 return
+            self._stopping = False
+            if self._aps_shutdown_issued:
+                await asyncio.sleep(0)
+                self._aps = AsyncIOScheduler(executors={"default": {"type": "asyncio"}})
+                self._aps_shutdown_issued = False
             if not self._aps.running:
                 self._aps.start()
             self._started = True
             # Re-load every enabled job from the DB. We do this AFTER
             # the scheduler has started so the add_job calls have a
             # running backend.
+            await self._reconcile_occurrences(dispatch_pending=True)
             await self._reload_from_db()
+            await self._dispatch_due()
 
     async def stop(self, *, wait: bool = True) -> None:
         """Stop the scheduler. Safe to call multiple times."""
         async with self._start_lock:
-            if not self._started:
-                return
-            if self._aps.running:
+            self._stopping = True
+            if self._aps.running and not self._aps_shutdown_issued:
+                self._aps_shutdown_issued = True
                 self._aps.shutdown(wait=wait)
             self._started = False
+        if wait:
+            await asyncio.gather(*list(self._inflight), return_exceptions=True)
 
     @property
     def started(self) -> bool:
@@ -190,29 +162,48 @@ class JobScheduler:
         cron_expr: str,
         payload: dict[str, Any] | None = None,
         enabled: bool = True,
+        context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create a new scheduled job in the DB and register it with APScheduler.
 
         Returns the persisted dict (with ``id``, ``next_run_at``, …).
         Raises :class:`InvalidCronError` if ``cron_expr`` is malformed.
         """
-        # Validate the cron expression eagerly so the caller fails fast.
-        next_run = _parse_cron(cron_expr)  # raises InvalidCronError
-
-        row = await self._dao.create(
-            name=name,
-            cron_expr=cron_expr,
-            payload=payload,
-            enabled=enabled,
-        )
-        # Persist the computed next_run_at so a UI list shows it
-        # without having to query APScheduler.
-        await self._dao.update_next_run(row["id"], next_run)
-
+        from ..schedule_context import capture_context, validate_payload
+        validate_payload(payload)
+        saved = await capture_context(self._db, context or {})
+        next_run = _next_due(cron_expr, saved["timezone"])
+        row = await self._dao.create(name=name, cron_expr=cron_expr, payload=payload, enabled=False)
+        await self._db.execute("UPDATE scheduled_jobs SET context=?,context_version=1,timezone=?,binding_state='ready',binding_reason=NULL,enabled=?,next_run_at=? WHERE id=?",
+                               (dumps_json(saved), saved["timezone"], int(enabled), next_run, row["id"]))
+        row = await self._dao.get(row["id"])
         if enabled and self._started:
             self._register_with_aps(row)
+        return row
 
-        return await self._dao.get(row["id"]) or row
+    async def update_job(self, job_id, *, expected_revision, name, cron_expr, payload, context):
+        _require_revision(expected_revision)
+        from ..schedule_context import capture_context, validate_payload
+        validate_payload(payload)
+        saved = await capture_context(self._db, context)
+        next_due = _next_due(cron_expr, saved["timezone"])
+        async with self._db.transaction() as conn:
+            cursor = await conn.execute("UPDATE scheduled_jobs SET name=?,cron_expr=?,payload=?,context=?,context_version=1,timezone=?,revision=revision+1,binding_state='ready',binding_reason=NULL,next_run_at=? WHERE id=? AND revision=? AND deleted_at IS NULL",
+                (name, cron_expr, dumps_json(payload), dumps_json(saved), saved["timezone"], next_due, job_id, expected_revision))
+            if cursor.rowcount != 1:
+                raise SchedulerError("Schedule revision conflict; refresh before editing")
+            # A rebind may retire only work that has never been admitted.
+            from ..storage.dao.schedule_occurrences import fetch
+            active = await fetch(conn,"SELECT o.* FROM schedule_occurrences o JOIN scheduled_jobs j ON j.active_occurrence_id=o.id WHERE j.id=?",(job_id,))
+            if active and not active["run_id"]:
+                await conn.execute("UPDATE schedule_occurrences SET status='superseded',reason='Explicit schedule rebind before admission',completed_at=?,updated_at=? WHERE id=?",(now_iso(),now_iso(),active["id"]))
+                await conn.execute("UPDATE tasks SET status='cancelled',completed_at=? WHERE id=?",(now_iso(),active["task_id"]))
+                await conn.execute("UPDATE scheduled_jobs SET active_occurrence_id=NULL WHERE id=?",(job_id,))
+        row = await self._dao.get(job_id)
+        self._unregister_from_aps(job_id)
+        if row["enabled"] and self._started:
+            self._register_with_aps(row)
+        return row
 
     async def remove_job(self, job_id: str) -> bool:
         """Delete a job. Returns ``True`` if a row was removed."""
@@ -220,13 +211,36 @@ class JobScheduler:
         self._unregister_from_aps(job_id)
         return await self._dao.delete(job_id)
 
-    async def enable(self, job_id: str) -> dict[str, Any] | None:
-        row = await self._dao.enable(job_id)
-        if row is not None and self._started and row["enabled"]:
-            # Re-register if it had been disabled (or never registered
-            # because the scheduler started before the row existed).
-            if self._aps.get_job(_aps_id(job_id)) is None:
-                self._register_with_aps(row)
+    async def enable(self, job_id: str, *, acknowledge_occurrence_id=None) -> dict[str, Any] | None:
+        from ..schedule_context import validate_context, validate_payload
+        await self._reconcile_occurrences()
+        row = await self._dao.get(job_id)
+        if row is None or row.get("deleted_at"):
+            return None
+        validate_payload(row.get("payload"))
+        if row.get("binding_state") == "needs_rebind":
+            raise SchedulerError("Legacy schedule requires explicit rebind")
+        await validate_context(self._db, row.get("context") or {})
+        active = await self._occurrences.get(row["active_occurrence_id"]) if row.get("active_occurrence_id") else None
+        if active and active["run_id"]:
+            from ..storage.dao.runs import AgentRunsDAO
+            run = await AgentRunsDAO(self._db).get_run(active["run_id"])
+            from ..runs import get_run_service
+            if run and (run["status"] in {"queued","planning","running","awaiting_approval","waiting_input"}
+                        or (_IPC_SERVER and get_run_service(_IPC_SERVER).get_job(run["id"]))):
+                raise SchedulerError("Active occurrence still owns execution/cleanup")
+            if acknowledge_occurrence_id != active["id"]:
+                raise SchedulerError("Acknowledge the exact prior occurrence after reviewing its effects")
+        async with self._db.transaction() as conn:
+            cursor = await conn.execute("UPDATE scheduled_jobs SET enabled=1,binding_state='ready',binding_reason=NULL,next_run_at=?,active_occurrence_id=? WHERE id=? AND revision=? AND active_occurrence_id IS ?",
+                (_next_due(row["cron_expr"],row["timezone"]), active["id"] if active and not active["run_id"] else None, job_id,row["revision"],row["active_occurrence_id"]))
+            if cursor.rowcount != 1:
+                raise SchedulerError("Schedule changed while enabling; refresh")
+        row = await self._dao.get(job_id)
+        if self._started:
+            self._register_with_aps(row)
+        if active and not active["run_id"]:
+            self._spawn_occurrence(active)
         return row
 
     async def disable(self, job_id: str) -> dict[str, Any] | None:
@@ -235,31 +249,68 @@ class JobScheduler:
 
     async def list_jobs(self) -> list[dict[str, Any]]:
         """Return every job (enabled or not), as stored in the DB."""
+        await self._reconcile_occurrences()
         return await self._dao.list_all()
 
-    async def run_now(self, job_id: str) -> dict[str, Any]:
-        """Trigger an immediate run of ``job_id``'s payload.
+    async def run_now(self, job_id: str, *, idempotency_key: str, expected_revision: int):
+        _require_revision(expected_revision)
+        if not isinstance(idempotency_key,str) or not idempotency_key.strip() or len(idempotency_key)>128:
+            raise SchedulerError("A stable client idempotency_key is required")
+        try:
+            occurrence, created = await self._occurrences.claim(job_id, source="manual", manual_key=idempotency_key, expected_revision=expected_revision, allow_new=not self._stopping)
+        except ValueError as exc:
+            raise SchedulerError(str(exc)) from exc
+        owner = await self._dao.get(job_id)
+        if occurrence["status"] == "pending" and owner and owner["enabled"] and not owner.get("deleted_at") and owner["revision"]==occurrence["revision"]:
+            self._spawn_occurrence(occurrence)
+        return {**{key:occurrence[key] for key in ("id","task_id","run_id","status")},
+                "occurrence_id": occurrence["id"],"created":created,"job_id":job_id,"triggered_at":occurrence["created_at"]}
 
-        The fire runs through the same code path as a real cron tick,
-        so the resulting ``tasks`` row looks identical to the user.
-        We do NOT update ``last_run_at`` here — that's the cron
-        trigger's job. ``run_now`` is an "execute this once" command,
-        not a "fire the schedule" command.
-        """
-        row = await self._dao.get(job_id)
-        if row is None:
-            raise SchedulerError(f"unknown job_id: {job_id!r}")
-        # Schedule the run on the event loop so the IPC reply is
-        # delivered promptly even if the payload is slow.
-        self._spawn_fire(row, source="manual")
-        # We don't have a task id back yet; the row will appear in
-        # ``task.list`` after the payload completes. The IPC handler
-        # just acknowledges the kick.
-        return {
-            "ok": True,
-            "job_id": job_id,
-            "triggered_at": now_iso(),
-        }
+    def _spawn_occurrence(self, occurrence):
+        oid = occurrence["id"]
+        if self._stopping:
+            return
+        if oid in self._occurrence_tasks:
+            return
+        task = asyncio.create_task(self._execute_occurrence(occurrence), name=f"schedule:{oid}")
+        self._occurrence_tasks[oid] = task
+        self._inflight.add(task)
+        def done(t):
+            self._inflight.discard(t)
+            self._occurrence_tasks.pop(oid,None)
+            if not t.cancelled() and t.exception():
+                logger.error("Occurrence %s dispatcher failed",oid,exc_info=t.exception())
+        task.add_done_callback(done)
+
+    async def _reconcile_occurrences(self, *, dispatch_pending=False):
+        from ..runs import get_run_service
+        from ..storage.dao.runs import AgentRunsDAO
+        from ..verification import task_outcome
+        dao = AgentRunsDAO(self._db)
+        for occurrence in await self._occurrences.pending():
+            if occurrence["id"] in self._occurrence_tasks:
+                continue
+            run = await dao.get_run(occurrence["run_id"]) if occurrence["run_id"] else None
+            if run:
+                if _IPC_SERVER and get_run_service(_IPC_SERVER).get_job(run["id"]):
+                    continue
+                receipt = await dao.result_payload(run["id"]) or {}
+                status = task_outcome({**receipt,"run_id":run["id"],"run_status":run["status"],"verification":(run.get("metadata") or {}).get("verification")})
+                if status == "running":
+                    continue
+                await self._occurrences.settle(occurrence["id"],status,expected_run_id=run["id"],reason=run.get("error"),result=receipt.get("text"))
+            elif dispatch_pending and occurrence["status"] == "pending":
+                owner = await self._dao.get(occurrence["job_id"])
+                if owner and owner["enabled"] and not owner.get("deleted_at") and owner["revision"]==occurrence["revision"]:
+                    self._spawn_occurrence(occurrence)
+
+    async def _dispatch_due(self):
+        if self._stopping:
+            return
+        await self._reconcile_occurrences(dispatch_pending=True)
+        for row in await self._dao.due():
+            if not row.get("deleted_at") and row.get("binding_state") == "ready" and not row.get("active_occurrence_id"):
+                self._spawn_fire(row,source="cron")
 
     # ------------------------------------------------------------------
     # Internal: APScheduler plumbing
@@ -291,30 +342,13 @@ class JobScheduler:
         if self._aps.get_job(aps_id) is not None:
             self._aps.remove_job(aps_id)
 
-        def _tick() -> None:
-            # ``AsyncIOScheduler`` runs jobs on the event loop, but
-            # we still want to keep payload execution off-loop. We
-            # dispatch through the same coroutine path used by
-            # ``run_now`` so the bookkeeping (tasks row, last_run_at)
-            # is identical between manual and cron triggers.
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                # No running loop in this thread — fall back to
-                # creating a fresh one. Should not happen in normal
-                # AsyncIOScheduler usage, but be defensive.
-                loop = asyncio.new_event_loop()
-                try:
-                    loop.run_until_complete(self._fire(row, source="cron"))
-                finally:
-                    loop.close()
-                return
-            self._spawn_fire(row, source="cron")
+        async def _tick():
+            await self._dispatch_due()
 
         try:
             self._aps.add_job(
                 _tick,
-                CronTrigger.from_crontab(row["cron_expr"], timezone=_scheduler_timezone()),
+                CronTrigger.from_crontab(row["cron_expr"], timezone=row.get("timezone") or "Asia/Shanghai"),
                 id=aps_id,
                 replace_existing=True,
                 max_instances=1,
@@ -344,7 +378,7 @@ class JobScheduler:
         logger.info("scheduler reloaded %d enabled job(s)", len(rows))
 
     async def _run_prompt_via_runservice(
-        self, payload: dict[str, Any], *, prompt: str, session_id: str, task_id: str | None = None
+        self, payload: dict[str, Any], *, prompt: str, session_id: str, task_id: str | None = None, occurrence=None
     ) -> dict[str, Any]:
         """Run one scheduled prompt through the FULL native agent loop.
 
@@ -355,8 +389,6 @@ class JobScheduler:
         dict matches the payload-runner contract so the task row
         bookkeeping below is unchanged.
         """
-        import uuid
-
         from ..ipc.builtins import handle_agent_send_message
         from ..ipc.server import Context
 
@@ -382,14 +414,15 @@ class JobScheduler:
                 self.last_error = {"code": code, "message": message}
 
             async def emit(self, event: str, data: Any = None, **kwargs: Any) -> None:
-                await server.broadcast(event, data) if hasattr(server, "broadcast") else None
+                await super().emit(event, data, **kwargs)
 
         ctx = _SchedulerCtx()
         params: dict[str, Any] = {
             "session_id": session_id,
             "content": prompt,
-            "idempotency_key": f"sched-{payload.get('job_id') or uuid.uuid4().hex[:8]}-"
-                               f"{int(time.time() // 60)}",  # per-minute window replay guard
+            "idempotency_key": f"schedule:{occurrence['id']}",
+            "mode": occurrence["context"]["mode"],
+            "budget_tokens": occurrence["context"]["budget_tokens"],
         }
         if payload.get("project_id"):
             params["project_id"] = str(payload["project_id"])
@@ -397,7 +430,7 @@ class JobScheduler:
         if isinstance(budget, int) and budget > 0:
             params["budget_tokens"] = budget
         try:
-            await handle_agent_send_message(params, ctx, wait=False)
+            await handle_agent_send_message(params, ctx, wait=False, internal_schedule={"context":occurrence["context"],"occurrence_id":occurrence["id"],"job_id":occurrence["job_id"],"revision":occurrence["revision"]})
         except Exception as exc:  # noqa: BLE001 — scheduler must survive
             logger.exception("runservice prompt fire failed")
             return {"ok": False, "error": f"runservice fire failed: {exc}"}
@@ -424,12 +457,11 @@ class JobScheduler:
                     return {"ok": False, "run_id": accepted["id"], "run_status": "failed",
                             "error": f"Task linkage failed for run {accepted['id']}: {exc}",
                             "text": (await dao.result_payload(accepted["id"]) or {}).get("text", "")}
-                if hasattr(server, "broadcast"):
-                    try:
-                        await server.broadcast("task.progress", {"task_id": task_id, "progress": .1,
-                            "status": "running", "run_id": accepted["id"]})
-                    except Exception:
-                        logger.exception("task linkage notification failed; execution remains owned")
+                try:
+                    await ctx.emit("task.progress", {"task_id": task_id, "progress": .1,
+                        "status": "running", "run_id": accepted["id"]})
+                except Exception:
+                    logger.exception("task linkage notification failed; execution remains owned")
             if job is not None:
                 await asyncio.gather(service.wait(job), return_exceptions=True)
             run = await dao.get_run(accepted["id"])
@@ -449,111 +481,56 @@ class JobScheduler:
 
 
     async def _fire(self, row: dict[str, Any], *, source: str) -> None:
-        """Execute a job's payload, persist a ``tasks`` row, update ``last_run_at``."""
-        job_id = row["id"]
-        payload = row.get("payload") or {}
-        session_id = await self._ensure_scheduled_session()
-        task_id = f"task_{uuid.uuid4().hex[:10]}"
-        started_at = now_iso()
-
-        # Write a "running" task row first so the UI can show progress.
-        try:
-            await self._tasks.create(
-                id=task_id,
-                session_id=session_id,
-                title=f"[{source}] {row['name']}",
-                status="running",
-                progress=10,
-                started_at=started_at,
-            )
-        except Exception:  # pragma: no cover — defensive
-            logger.exception("failed to insert running task row for %s", job_id)
+        if self._stopping:
             return
+        if source != "cron":
+            raise SchedulerError("Manual fires require run_now with a stable client key")
+        due = row.get("next_run_at")
+        if not due:
+            return
+        try:
+            occurrence, created = await self._occurrences.claim(row["id"],source="cron",expected_revision=row["revision"],
+                scheduled_for=due,coalesced_through=now_iso(),next_due=_next_due(row["cron_expr"],row["timezone"]))
+        except ValueError:
+            return
+        if created:
+            self._spawn_occurrence(occurrence)
 
-        # M5 — scheduled prompts run through the RunService: the FULL
-        # agent loop (tools, permissions, budget, durable run rows) not
-        # the single-shot LLM call the payload runner offered. Same
-        # admission semantics as chat: idempotency key per fire, budget
-        # honoured, unattended consents time out denied (never widened).
-        prompt_text = payload.get("prompt") if isinstance(payload, dict) else None
-        if isinstance(prompt_text, str) and prompt_text.strip() \
-                and payload.get("use_runservice", True):
-            result = await self._run_prompt_via_runservice(
-                payload, prompt=prompt_text, session_id=session_id, task_id=task_id)
-        else:
-            # Run the user payload off the event loop so a slow or
-            # CPU-bound callback doesn't stall IPC.
-            loop = asyncio.get_running_loop()
-            try:
-                # v1.2.2: pass the main loop down so the payload coroutine
-                # runs on IT (via run_coroutine_threadsafe), not on a
-                # private loop that breaks main-loop-bound resources
-                # (aiosqlite connections, asyncio.Lock, …).
-                result = await loop.run_in_executor(
-                    None, _run_payload_sync, self._payload_runner, payload, loop
-                )
-            except BaseException as exc:  # sync runner raised
-                logger.exception("payload for job %s raised", job_id)
-                try:
-                    await self._tasks.update_status(
-                        task_id,
-                        status="failed",
-                        progress=100,
-                        error=f"{type(exc).__name__}: {exc}",
-                    )
-                except Exception:  # pragma: no cover — defensive
-                    logger.exception("failed to mark task %s failed", task_id)
-                try:
-                    await self._dao.update_last_run(job_id, now_iso())
-                except Exception:  # pragma: no cover — defensive
-                    logger.exception("failed to update last_run for job %s", job_id)
-                return
-        # either a string or any JSON-serialisable structure.
-        result_text = _stringify_payload_result(result)
-
-        # v1.2.2: each bookkeeping step is individually guarded — one
-        # failed write (e.g. transient SQLITE_BUSY) used to abort the
-        # rest, leaving stale "running" task rows and a missing
-        # last_run_at update.
+    async def _execute_occurrence(self, occurrence):
+        from ..schedule_context import validate_context, validate_payload
         from ..verification import task_outcome
         try:
-            await self._tasks.update_status(
-                task_id,
-                status=task_outcome(result),
-                progress=100,
-                error=str(result["error"]) if isinstance(result, dict) and result.get("error") else None,
-                result=result_text,
-            )
-        except Exception:  # pragma: no cover — defensive
-            logger.exception("failed to complete task %s", task_id)
-        # Publish only after the durable projection and partial result are saved.
-        server = _IPC_SERVER
-        if server is not None and hasattr(server, "broadcast"):
-            try:
-                task = await self._tasks.get(task_id)
-                await server.broadcast("task.progress", {"task_id": task_id, "progress": 1,
-                    "status": task["status"], "run_id": task.get("run_id"), "result": task.get("result"),
-                    "verification": task.get("verification"), "execution_status": task.get("execution_status")})
-            except Exception:
-                logger.exception("task terminal notification failed; durable result remains available")
-
-        # Compute the next run *now* so the UI list is current even if
-        # APScheduler is slow to publish next_fire_time.
-        try:
-            cron = CronTrigger.from_crontab(row["cron_expr"], timezone=_scheduler_timezone())
-            nxt = cron.get_next_fire_time(None, now_iso_dt())
-            next_run_at = _isoformat(nxt) if nxt else None
-        except Exception:  # pragma: no cover — defensive
-            next_run_at = None
-        try:
-            await self._dao.record_run(
-                job_id, last_run_at=now_iso(), next_run_at=next_run_at
-            )
-        except Exception:  # pragma: no cover — defensive
-            logger.exception("failed to record run for job %s", job_id)
-        logger.info(
-            "fired job %s (source=%s) result=%s", job_id, source, result_text
-        )
+            if self._stopping:
+                return
+            owner = await self._dao.get(occurrence["job_id"])
+            current = await self._occurrences.get(occurrence["id"])
+            if (not current or current["status"] not in {"pending","blocked"} or not owner
+                    or not owner["enabled"] or owner.get("deleted_at") or owner["revision"]!=occurrence["revision"]):
+                return
+            validate_payload({"prompt":occurrence["prompt"]})
+            await validate_context(self._db,occurrence["context"])
+            result = await self._run_prompt_via_runservice({"prompt":occurrence["prompt"]},prompt=occurrence["prompt"],
+                session_id=occurrence["session_id"],task_id=occurrence["task_id"],occurrence=occurrence)
+            current = await self._occurrences.get(occurrence["id"])
+            owner = await self._dao.get(occurrence["job_id"])
+            if not current["run_id"] and (current["status"]=="superseded" or not owner["enabled"] or owner.get("deleted_at")):
+                return
+            # Admission/config failure before any model call remains repairable.
+            status = task_outcome(result) if result.get("run_id") else "blocked"
+            await self._occurrences.settle(occurrence["id"],status,expected_run_id=result.get("run_id"),reason=str(result.get("error")) if result.get("error") else None,result=result.get("text") or result.get("output"))
+        except Exception as exc:
+            current = await self._occurrences.get(occurrence["id"])
+            if current and (current["status"] in {"superseded","cancelled"} or current["run_id"] != occurrence.get("run_id")):
+                return
+            logger.exception("Scheduled occurrence blocked")
+            await self._occurrences.settle(occurrence["id"],"blocked",expected_run_id=current["run_id"] if current else None,reason=str(exc))
+        finally:
+            # A completed occurrence releases the DB lease only after RunService
+            # has drained writer/validation/cleanup; then one overdue catch-up.
+            if self._started and not self._stopping:
+                task = asyncio.create_task(self._dispatch_due(), name="schedule-catchup")
+                self._inflight.add(task)
+                task.add_done_callback(self._inflight.discard)
 
     async def _ensure_scheduled_session(self) -> str:
         """Return the system session id used as the parent of cron tasks."""
@@ -730,32 +707,14 @@ _SCHEDULER_LOCK = asyncio.Lock()
 
 
 def _build_default_payload_runner() -> PayloadFn | None:
-    """Build the default payload runner — the self-evolution dispatcher (R309).
-
-    Returns ``None`` on any import or construction failure so
-    :func:`get_scheduler` falls back to the scheduler's built-in
-    ``_noop_runner`` and stays fully functional (fail-open, same posture
-    as the rest of the boot path).
-
-    The dispatcher is an echo for payloads without ``self_evolution:
-    True`` — identical to ``_noop_runner``'s return shape — so wiring it
-    in front of every scheduled job preserves the existing
-    ``schedule.*`` zero-effect contract. Only the opt-in row installed
-    by ``python -m minimax_code.agent.self_evolution --install``
-    actually triggers a trajectory collection.
-
-    The import is deferred (function-local) to avoid a load-time cycle:
-    ``self_evolution.payload`` imports :data:`PayloadFn` from this module
-    at its own load time, so we must not import it at *ours*.
-    """
+    """Legacy standalone utility; never installed in production scheduling."""
     try:
         from ..agent.self_evolution import build_payload_runner
 
         return build_payload_runner(os.getcwd())
     except Exception:
         logger.debug(
-            "self-evolution dispatcher unavailable; scheduler falls "
-            "back to noop runner",
+            "legacy self-evolution helper unavailable",
             exc_info=True,
         )
         return None
@@ -766,9 +725,7 @@ async def get_scheduler(db: AsyncDatabase | None = None) -> JobScheduler:
 
     The first caller passes an open :class:`AsyncDatabase`; subsequent
     callers ignore the argument and return the cached instance. The
-    scheduler is built with the self-evolution dispatcher as its payload
-    runner (R309) — fail-open to the noop runner if that package is
-    unavailable.
+    Production dispatch accepts only fixed-context Native prompt occurrences.
     """
     global _SCHEDULER
     if _SCHEDULER is not None:
@@ -781,7 +738,7 @@ async def get_scheduler(db: AsyncDatabase | None = None) -> JobScheduler:
                 "get_scheduler() called before scheduler was built "
                 "(no AsyncDatabase provided)"
             )
-        sched = JobScheduler(db, payload_runner=_build_default_payload_runner())
+        sched = JobScheduler(db)
         await sched.start()
         _SCHEDULER = sched
         return sched
@@ -801,3 +758,26 @@ __all__ = [
     "get_scheduler",
     "set_scheduler",
 ]
+
+
+def _next_due(cron_expr, timezone, now=None):
+    from datetime import UTC, datetime, timedelta
+    from zoneinfo import ZoneInfo
+    current = now or datetime.now(UTC)
+    try:
+        trigger = CronTrigger.from_crontab(cron_expr,timezone=ZoneInfo(timezone))
+        result = trigger.get_next_fire_time(None,current + timedelta(microseconds=1))
+    except Exception as exc:
+        raise InvalidCronError(f"invalid cron: {exc}") from exc
+    return result.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00","Z") if result else None
+
+
+def _require_revision(value):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise SchedulerError("expected_revision must be a positive integer")
+
+
+async def quiesce_scheduler(*, wait=False):
+    """Shutdown boundary: do not lazily create a scheduler while closing."""
+    if _SCHEDULER is not None:
+        await _SCHEDULER.stop(wait=wait)
