@@ -21,3 +21,10 @@ The offline tests exercise native planning with process and snapshot tripwires,
 real Git baselines for chat and execute, non-Git and missing-Git behavior,
 synthetic environment filtering, a missing workspace, and real local process
 trees for probe timeout and cancellation. No model or remote service is used.
+
+The isolated change passed 116 related tests (one existing AsyncMock transaction
+warning). After integration with Schema037, seven related backend modules passed
+148 tests in 92.49 seconds. Evidence is `.verification/checkpoint-budget-integration.log`;
+the isolated logs are retained under `.verification/planning-checkpoint-b7630a4/`.
+The main-checkout Ruff run required a test import-order correction and then passed.
+This is local offline verification, not full production or remote acceptance.
