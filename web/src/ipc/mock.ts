@@ -188,6 +188,14 @@ export function resetMockMcpServers(): void {
 export function resetMockMemories(): void {
   mockMemories.clear();
 }
+const mockHosts = new Map<string, import("../types/ipc").RemoteHost>();
+
+function requireMockHost(id: string): import("../types/ipc").RemoteHost {
+  const host = mockHosts.get(id);
+  if (!host) throw new Error(`unknown host_id: ${id}`);
+  return host;
+}
+
 function mockHandle(
   method: string,
   params: unknown,
@@ -195,6 +203,57 @@ function mockHandle(
   id: JsonRpcId | null,
 ): unknown {
   switch (method) {
+    case "host.create": {
+      const p = params as import("../types/ipc").HostConfig;
+      if ([...mockHosts.values()].some((host) => host.name === p.name)) {
+        throw new Error(`host name already taken: ${p.name}`);
+      }
+      const now = new Date().toISOString();
+      const host: import("../types/ipc").RemoteHost = {
+        ...p, id: `mock-host-${crypto.randomUUID()}`, port: p.port ?? 22,
+        identity_file: p.identity_file ?? "", enabled: true, agent_version: "",
+        created_at: now, updated_at: now, last_probe_at: null, last_probe_ok: null,
+      };
+      mockHosts.set(host.id, host);
+      return { host };
+    }
+    case "host.list": {
+      const p = params as { enabled?: boolean };
+      return { hosts: [...mockHosts.values()].filter((host) => p?.enabled == null || host.enabled === p.enabled) };
+    }
+    case "host.get": {
+      return { host: requireMockHost((params as { host_id: string }).host_id) };
+    }
+    case "host.update": {
+      const { host_id, ...fields } = params as Partial<import("../types/ipc").HostConfig> & { host_id: string; enabled?: boolean };
+      const host = { ...requireMockHost(host_id), ...fields, updated_at: new Date().toISOString() };
+      mockHosts.set(host_id, host);
+      return { ok: true, host };
+    }
+    case "host.delete": {
+      const p = params as { host_id: string };
+      requireMockHost(p.host_id);
+      mockHosts.delete(p.host_id);
+      return { ok: true, host_id: p.host_id };
+    }
+    case "host.probe": {
+      const host = requireMockHost((params as { host_id: string }).host_id);
+      if (!host.enabled) throw new Error("host is disabled");
+      host.last_probe_at = new Date().toISOString();
+      host.last_probe_ok = false;
+      return { host, probe: { ok: false, timed_out: false, agent_version: "", os: "", python_version: "", error: "SSH is unavailable in mock mode" } };
+    }
+    case "host.exec":
+    case "host.push":
+    case "host.fetch":
+    case "host.transfer_status": {
+      const p = params as { host_id: string; remote_path: string; local_path: string; transfer_id?: string };
+      if (!requireMockHost(p.host_id).enabled) throw new Error("host is disabled");
+      const failure = { ok: false, exit_code: null, stderr: "SSH is unavailable in mock mode" };
+      if (method === "host.exec") return { ...failure, stdout: "", timed_out: false };
+      if (method === "host.fetch") return { ...failure, local_path: p.local_path };
+      return { ...failure, remote_path: p.remote_path, transfer_id: p.transfer_id ?? null, publication_state: "unknown", backup_path: null };
+    }
     case "ping": {
       // If the caller passed a request id, also synthesize a streaming
       // chunk so the UI can verify its event wiring.
@@ -472,8 +531,8 @@ function mockHandle(
             name: "Codex (OpenAI Codex CLI)",
             available: codexAvailable,
             unavailable_reason: codexAvailable ? null : "codex CLI not found on PATH (mock)",
-            capabilities: { streaming: true, resume: true, cancel: true,
-                            approvals: true, usage: true, steer: true },
+            capabilities: { streaming: true, resume: false, cancel: true,
+                            approvals: true, usage: true, steer: false },
             version: codexAvailable ? "mock" : null,
           },
         ],

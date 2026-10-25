@@ -13,9 +13,16 @@ Thin async wrapper over the system ``ssh`` client. Design rules:
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
+import re
 import shlex
+import tempfile
+import uuid
+import zlib
+from contextlib import suppress
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -26,6 +33,10 @@ class SshResult:
     stdout: str
     stderr: str
     timed_out: bool = False
+    transfer_id: str | None = None
+    publication_state: str | None = None
+    backup_path: str | None = None
+    newly_created: bool = False
 
 
 def build_ssh_args(
@@ -92,9 +103,12 @@ async def run_ssh(
     try:
         out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
-        proc.kill()
+        await _stop_transfer_process(proc)
         return SshResult(ok=False, exit_code=None, stdout="", stderr="",
                          timed_out=True)
+    except asyncio.CancelledError:
+        await _stop_transfer_process(proc)
+        raise
     return SshResult(
         ok=proc.returncode == 0,
         exit_code=proc.returncode,
@@ -110,18 +124,103 @@ async def push_file(
     *,
     timeout: float = 300.0,
     runner: Any = None,
+    transfer_id: str | None = None,
 ) -> SshResult:
-    """Upload one file via scp, then verify sha256 on both ends (M5)."""
-    argv = _scp_args(host, str(local_path), f"{_target(host)}:{remote_path}")
-    result = await _run_scp(argv, timeout=timeout, runner=runner)
-    if not result.ok:
-        return result
+    """Stage, verify, then atomically publish a remote upload with a backup."""
+    from ..execution import require_write_access
+
+    require_write_access()
+    target = PurePosixPath(remote_path)
+    if not target.is_absolute() or ".." in target.parts or not target.name:
+        return SshResult(False, None, "", "remote_path must be an absolute file path")
+    remote_path = str(target)
+    local_path = Path(local_path).expanduser().absolute()
     local_sha = _sha256_file(local_path)
-    remote_sha = await remote_sha256(host, remote_path, runner=runner)
-    if remote_sha is None or remote_sha != local_sha:
-        return SshResult(
-            ok=False, exit_code=0, stdout=result.stdout,
-            stderr=f"sha256 mismatch after upload: local={local_sha} remote={remote_sha}")
+    transfer_id = transfer_id if transfer_id is not None else uuid.uuid4().hex
+    if not isinstance(transfer_id, str) or not re.fullmatch(r"[0-9a-f]{32}", transfer_id):
+        return SshResult(False, None, "", "transfer_id must be 32 lowercase hex characters")
+
+    async def action(name):
+        return await upload_action(host, remote_path, transfer_id, name,
+                                   sha256=local_sha, runner=runner)
+
+    prepared = await action("prepare")
+    if not prepared.ok:
+        return prepared
+    if not prepared.newly_created:
+        # A duplicate request may be racing the first caller's SCP. Never
+        # overwrite its payload, recommit it, or abort its owned staging.
+        prepared.ok = prepared.publication_state == "published"
+        if not prepared.ok:
+            prepared.stderr = "transfer already exists; inspect its status or use a new transfer_id"
+        return prepared
+    staged = target.parent / (".minimax-upload-" + transfer_id) / "payload"
+    committing = False
+    try:
+        result = await _run_scp(
+            _scp_args(host, str(local_path), f"{_target(host)}:{staged}", sftp_only=True),
+            timeout=timeout, runner=runner)
+        if not result.ok:
+            result.transfer_id = transfer_id
+            result.publication_state = "not_published"
+            return result
+        committing = True
+        committed = await action("commit")
+        if committed.ok and committed.publication_state == "published":
+            return committed
+        # Never retry a write after losing its reply. Query the journal instead.
+        observed = await action("status")
+        if observed.ok and observed.publication_state == "published":
+            return observed
+        committed.ok = False
+        committed.publication_state = (observed.publication_state if observed.ok else "unknown")
+        if observed.ok and observed.publication_state == "staged":
+            committing = False
+        committed.stderr = committed.stderr or "upload publication not confirmed; inspect transfer journal"
+        return committed
+    finally:
+        if not committing:
+            # Cleanup is limited to this transfer's uncommitted payload. Losing
+            # cleanup connectivity leaves staging, never an overwritten target.
+            with suppress(Exception):
+                await action("abort")
+
+
+async def upload_action(host: Any, remote_path: str, transfer_id: str, action: str, *,
+                        sha256: str | None = None, runner: Any = None) -> SshResult:
+    """Run the standalone journal helper; paths are data, never shell syntax."""
+    from ..execution import require_write_access
+    from . import upload_transaction
+
+    if action not in {"prepare", "commit", "status", "abort"}:
+        raise ValueError("unknown upload action")
+    if action != "status":
+        require_write_access()
+    source = Path(upload_transaction.__file__).read_bytes()
+    packed = base64.b64encode(zlib.compress(source)).decode("ascii")
+    bootstrap = f"import base64,zlib;exec(zlib.decompress(base64.b64decode('{packed}')))"
+    payload = json.dumps({"target": remote_path, "transfer_id": transfer_id,
+                          "action": action, "sha256": sha256})
+    command = shlex.join(["python3", "-c", bootstrap, payload])
+    result = await run_ssh(host, command, timeout=30, runner=runner)
+    result.transfer_id = transfer_id
+    result.publication_state = "unknown"
+    if not result.ok:
+        result.stderr = result.stderr or result.stdout
+        return result
+    try:
+        data = json.loads(result.stdout)
+        if data.get("transfer_id") != transfer_id:
+            raise ValueError("transfer receipt id mismatch")
+        state = data.get("state")
+        if state not in {"staged", "publishing", "published", "aborted"}:
+            raise ValueError("invalid transfer state")
+        result.publication_state = state
+        result.backup_path = data.get("backup_path")
+        result.newly_created = data.get("newly_created") is True
+    except (ValueError, TypeError, AttributeError) as exc:
+        result.ok = False
+        result.stderr = f"invalid upload receipt: {exc}"
     return result
 
 
@@ -133,20 +232,35 @@ async def fetch_file(
     timeout: float = 300.0,
     runner: Any = None,
 ) -> SshResult:
-    """Download one remote file via scp, then verify sha256 on both ends."""
-    argv = _scp_args(host, f"{_target(host)}:{remote_path}", str(local_path))
-    result = await _run_scp(argv, timeout=timeout, runner=runner)
-    if not result.ok:
+    """Verify a staged download before replacing an unchanged destination."""
+    from ..execution import require_write_access
+    from ..file_mutations import atomic_copy_file
+
+    require_write_access()
+    # Resolve the parent, not the destination: following a final symlink would
+    # erase the evidence that this is an unsafe replacement target.
+    local_path = Path(local_path).expanduser().absolute()
+    if local_path.is_symlink() or local_path.parent.resolve() != local_path.parent:
+        return SshResult(False, None, "", "download destination must not be a symbolic link")
+    baseline = _sha256_file(local_path) if local_path.exists() else None
+    with tempfile.TemporaryDirectory(prefix=".minimax-download-", dir=local_path.parent) as tmp:
+        staged = Path(tmp) / "payload"
+        argv = _scp_args(host, f"{_target(host)}:{remote_path}", str(staged))
+        result = await _run_scp(argv, timeout=timeout, runner=runner)
+        if not result.ok:
+            return result
+        if not staged.is_file() or staged.is_symlink():
+            return SshResult(False, None, "", "staged file missing after download")
+        local_sha = _sha256_file(staged)
+        remote_sha = await remote_sha256(host, remote_path, runner=runner)
+        if remote_sha is None or remote_sha != local_sha:
+            return SshResult(False, None, result.stdout,
+                             f"sha256 mismatch after download: local={local_sha} remote={remote_sha}")
+        try:
+            atomic_copy_file(staged, local_path, baseline_sha256=baseline)
+        except OSError as exc:
+            return SshResult(False, None, result.stdout, f"download not published: {exc}")
         return result
-    if not local_path.exists():
-        return SshResult(ok=False, exit_code=0, stdout=result.stdout,
-                         stderr="local file missing after download")
-    local_sha = _sha256_file(local_path)
-    remote_sha = await remote_sha256(host, remote_path, runner=runner)
-    if remote_sha is None or remote_sha != local_sha:
-        return SshResult(ok=False, exit_code=0, stdout=result.stdout,
-                         stderr=f"sha256 mismatch after download: local={local_sha} remote={remote_sha}")
-    return result
 
 
 async def remote_sha256(host: Any, remote_path: str, *, runner: Any = None) -> str | None:
@@ -174,10 +288,14 @@ def _target(host: Any) -> str:
     return f"{username}@{host['hostname']}" if username else str(host["hostname"])
 
 
-def _scp_args(host: Any, source: str, dest: str) -> list[str]:
+def _scp_args(host: Any, source: str, dest: str, *, sftp_only: bool = False) -> list[str]:
     args = ["scp", "-P", str(int(host.get("port") or 22)),
             "-o", "BatchMode=yes",
             "-o", "StrictHostKeyChecking=accept-new"]
+    if sftp_only:
+        # Legacy SCP interprets remote paths through a shell. Force SFTP so
+        # user-supplied parent names stay literal, and never fall back to SCP.
+        args.append("-s")
     if host.get("identity_file"):
         args += ["-i", host["identity_file"]]
     args += [source, dest]
@@ -203,15 +321,26 @@ async def _run_scp(argv: list[str], *, timeout: float,
     try:
         out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
-        proc.kill()
+        await _stop_transfer_process(proc)
         return SshResult(ok=False, exit_code=None, stdout="", stderr="",
                          timed_out=True)
+    except asyncio.CancelledError:
+        await _stop_transfer_process(proc)
+        raise
     return SshResult(
         ok=proc.returncode == 0,
         exit_code=proc.returncode,
         stdout=out_b.decode("utf-8", errors="replace"),
         stderr=err_b.decode("utf-8", errors="replace"),
     )
+
+
+async def _stop_transfer_process(proc: asyncio.subprocess.Process) -> None:
+    """Reap the local SSH/SCP transport; this does not prove remote job exit."""
+    if proc.returncode is None:
+        with suppress(ProcessLookupError):
+            proc.kill()
+    await proc.wait()
 
 
 async def probe_host(host: Any, *, runner: Any = None) -> dict[str, Any]:

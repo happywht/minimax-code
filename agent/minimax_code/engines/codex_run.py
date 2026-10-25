@@ -74,6 +74,7 @@ async def drive_codex_run(
     resume_thread_id: str | None = None,
     codex_cmd: list[str] | None = None,
     approval_gate: CodexApprovalGate | None = None,
+    mode: str = "chat",
 ) -> dict[str, Any]:
     """Drive one Codex turn; returns the reply envelope (receipt).
 
@@ -82,6 +83,13 @@ async def drive_codex_run(
     pushes wire events; exceptions propagate to the caller (the run
     finalizer marks the run failed).
     """
+    from ..workspace_ctx import require_directory
+
+    # Revalidate the admitted directory after any queue wait. Never let the
+    # child process select a different working directory implicitly.
+    workspace = str(require_directory(job.workspace))
+    if mode not in {"chat", "plan", "execute"}:
+        raise ValueError(f"Unsupported Codex execution mode: {mode}")
     budget: BudgetState | None = None
     if getattr(job, "budget_tokens", None) or getattr(job, "daily_budget_limit", None):
         budget = BudgetState(
@@ -115,13 +123,14 @@ async def drive_codex_run(
         task.add_done_callback(background_tasks.discard)
 
     conn = AppServerConnection(
-        cwd=Path(job.workspace) if job.workspace else None,
+        cwd=Path(workspace),
         codex_cmd=codex_cmd,
     )
     await conn.start()
 
     text_parts: list[str] = []
-    usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    usage: dict[str, int] = {}
+    accounted_total = 0
     turn_done: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
     turn_id: str | None = None
     thread_id: str | None = None
@@ -140,7 +149,7 @@ async def drive_codex_run(
             logger.debug("codex chunk emit failed", exc_info=True)
 
     def on_notification(n: dict[str, Any]) -> None:
-        nonlocal turn_id, thread_id, cancelled
+        nonlocal turn_id, thread_id, cancelled, accounted_total
         method = n.get("method", "")
         params = n.get("params") or {}
         if method == "item/agentMessage/delta":
@@ -149,14 +158,23 @@ async def drive_codex_run(
                 text_parts.append(delta)
                 _emit_chunk(delta, False)
         elif method == "thread/tokenUsage/updated":
-            info = (params.get("token_usage") or params.get("usage") or params) or {}
-            total = int(info.get("total_tokens") or info.get("total") or 0)
-            usage["prompt_tokens"] = int(info.get("input_tokens") or info.get("prompt_tokens") or 0)
-            usage["completion_tokens"] = int(info.get("output_tokens") or info.get("completion_tokens") or 0)
-            usage["total_tokens"] = total or (usage["prompt_tokens"] + usage["completion_tokens"])
+            # 0.163.0 reports cumulative thread totals in camelCase. Charge
+            # only the increase; replayed notifications must not spend twice.
+            info = (params.get("tokenUsage") or {}).get("total") or {}
+            values = [info.get(key) for key in ("inputTokens", "outputTokens", "totalTokens")]
+            if not all(type(value) is int and value >= 0 for value in values):
+                if not turn_done.done():
+                    turn_done.set_exception(ValueError("Invalid Codex token usage notification"))
+                return
+            inputs, outputs, total = values
+            if total < accounted_total:
+                return  # delayed older cumulative notification
+            delta = total - accounted_total
+            accounted_total = total
+            usage.update(prompt_tokens=inputs, completion_tokens=outputs, total_tokens=total)
             if budget is not None:
-                budget.record(usage)
-                if budget.would_exceed(0) and turn_id and not turn_done.done():
+                budget.record({"total_tokens": delta})
+                if budget.would_exceed(1) and turn_id and not turn_done.done():
                     logger.warning("codex run %s: budget exhausted; interrupting", job.run_id)
                     spawn_notify(conn.request("turn/interrupt", {
                         "threadId": thread_id, "turnId": turn_id}, timeout=10))
@@ -169,7 +187,7 @@ async def drive_codex_run(
             if tid:
                 thread_id = tid
         elif method == "error":
-            if not turn_done.done():
+            if not params.get("willRetry", False) and not turn_done.done():
                 turn_done.set_exception(RuntimeError(str(params)))
 
     def on_server_request(req: dict[str, Any]) -> Any:
@@ -178,6 +196,13 @@ async def drive_codex_run(
             return {}  # unhandled server requests default-allow nothing
         request_id = f"codex-{req['id']}"
         params = req.get("params") or {}
+        if method == "item/permissions/requestApproval":
+            # Do not translate a boolean consent into an additional permission
+            # profile. Unsupported grants are explicitly empty.
+            return {"permissions": {}, "scope": "turn"}
+        if mode == "plan":
+            # A plan cannot grant an escape from its read-only policy.
+            return {"decision": "decline"} if method.startswith("item/") else {"decision": "denied"}
         fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
         gate._pending[request_id] = fut
         try:
@@ -200,25 +225,35 @@ async def drive_codex_run(
                 allowed = False
             finally:
                 gate._pending.pop(request_id, None)
+            if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:
+                return {"decision": "accept" if allowed else "decline"}
             return {"decision": "approved" if allowed else "denied"}
 
         return _await_decision()
 
-    conn.on_notification = on_notification
+    def receive_notification(n: dict[str, Any]) -> None:
+        try:
+            on_notification(n)
+        except Exception as exc:
+            # A malformed notification must fail the owning run, not kill the
+            # reader task and leave the turn waiting forever.
+            if not turn_done.done():
+                turn_done.set_exception(RuntimeError(f"Invalid Codex notification: {exc}"))
+
+    conn.on_notification = receive_notification
     conn.on_server_request = on_server_request
 
     def _on_server_exited() -> None:
         if not turn_done.done():
             turn_done.set_exception(RuntimeError("codex app-server exited mid-turn"))
     conn.on_exited = _on_server_exited
-    if getattr(job, "cancel_callback", None) is not None:
-        def _on_cancel() -> None:
-            nonlocal cancelled
-            cancelled = True
-            if turn_id and thread_id and not turn_done.done():
-                spawn_notify(conn.request("turn/interrupt", {
-                    "threadId": thread_id, "turnId": turn_id}, timeout=10))
-        job.cancel_callback = _on_cancel
+    def _on_cancel() -> None:
+        nonlocal cancelled
+        cancelled = True
+        if turn_id and thread_id and not turn_done.done():
+            spawn_notify(conn.request("turn/interrupt", {
+                "threadId": thread_id, "turnId": turn_id}, timeout=10))
+    job.cancel_callback = _on_cancel
 
     try:
         init = await conn.initialize()
@@ -227,10 +262,12 @@ async def drive_codex_run(
 
         # Thread lifecycle — resume the stored external session when the
         # caller supplies one (M4: 后续继续使用原会话).
-        cwd_params = {"cwd": job.workspace} if job.workspace else {}
+        cwd_params = {"cwd": workspace, "sandbox": "read-only" if mode == "plan" else "workspace-write",
+                      "approvalPolicy": "never" if mode == "plan" else "on-request",
+                      "approvalsReviewer": "user"}
         if resume_thread_id:
             result = await conn.request("thread/resume", {
-                "thread_id": resume_thread_id, **cwd_params,
+                "threadId": resume_thread_id, **cwd_params,
             }, timeout=60)
         else:
             result = await conn.request("thread/start", cwd_params, timeout=60)
@@ -240,23 +277,53 @@ async def drive_codex_run(
             "threadId": thread_id,
             "input": [{"type": "text", "text": prompt}]
             if isinstance(prompt, str) else prompt,
-            "cwd": job.workspace,
+            "cwd": workspace,
+            "approvalPolicy": cwd_params["approvalPolicy"],
+            "approvalsReviewer": "user",
+            "sandboxPolicy": ({"type": "readOnly", "networkAccess": False} if mode == "plan"
+                              else {"type": "workspaceWrite", "writableRoots": [workspace],
+                                    "networkAccess": False, "excludeTmpdirEnvVar": True,
+                                    "excludeSlashTmp": True}),
         }, timeout=60)
         turn_id = _extract(turn, "turn", "id", "turn_id") or _extract(turn, None, "id")
 
-        await asyncio.wait_for(turn_done, timeout=None)
+        completed = await turn_done
+        terminal = completed.get("turn") or {}
+        status = terminal.get("status")
+        if status not in {"completed", "failed", "interrupted"}:
+            raise RuntimeError(f"Codex returned an unrecognized terminal status: {status!r}")
         _emit_chunk("", True)
 
         if cancelled:
             return _receipt(job, "", usage, cancelled=True, thread_id=thread_id)
-        if budget is not None and budget.would_exceed(0):
+        if status == "failed":
+            receipt = _receipt(job, "".join(text_parts), usage, thread_id=thread_id,
+                               budget=budget.snapshot() if budget else None)
+            receipt["error"] = terminal.get("error") or {"message": "Codex turn failed"}
+            receipt["run_status"] = "failed"
+            return receipt
+        if budget is not None and (not usage or budget.would_exceed(1)):
             return _receipt(job, "".join(text_parts), usage,
                             budget_paused=True, thread_id=thread_id,
                             budget=budget.snapshot())
-        return _receipt(job, "".join(text_parts), usage, thread_id=thread_id,
-                        budget=budget.snapshot() if budget else None)
+        receipt = _receipt(job, "".join(text_parts), usage, thread_id=thread_id,
+                           budget=budget.snapshot() if budget else None)
+        if status == "interrupted":
+            receipt["run_status"] = "interrupted"
+            receipt["error"] = {"message": "Codex turn was interrupted"}
+        return receipt
     finally:
+        job.cancel_callback = None
+        # Deliver queued stream events before the owning run publishes its end.
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
         await conn.close()
+        # Initialization and terminal waits can fail concurrently on EOF.
+        # Retrieve the latter exception even when initialization raised first.
+        if turn_done.done() and not turn_done.cancelled():
+            turn_done.exception()
+        elif not turn_done.done():
+            turn_done.cancel()
 
 
 def _extract(payload: Any, wrapper: str | None, *keys: str) -> Any:
@@ -286,8 +353,8 @@ def _receipt(job: Any, text: str, usage: dict[str, int], *, thread_id: str | Non
         "budget": budget,
         "truncated": False,
         "stub": False,
-        "tokens_in": usage["prompt_tokens"],
-        "tokens_out": usage["completion_tokens"],
+        "tokens_in": usage.get("prompt_tokens"),
+        "tokens_out": usage.get("completion_tokens"),
         "engine": "codex",
         "codex_thread_id": thread_id,
         "verification": None,

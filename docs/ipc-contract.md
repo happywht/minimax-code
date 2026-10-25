@@ -253,8 +253,9 @@ on the next `readline() == ""`.
 | `host.delete` | req/res | M5 — remove the host (its runs are history and survive). |
 | `host.probe` | req/res | M5 — SSH connection diagnosis + version handshake (uname / python3 / codex), outcome persisted (`last_probe_at` / `last_probe_ok` / `agent_version`). |
 | `host.exec` | req/res | M5 — execute one command on the remote host over ssh (BatchMode, bounded timeout); structured `{ok, exit_code, stdout, stderr, timed_out}`. Disabled hosts refuse. |
-| `host.push` | req/res | M5 — scp a local file to the host, then verify sha256 on both ends; a mismatch is a structured failure, not a silent corruption. |
+| `host.push` | req/res | M5 — stage a local file beside the remote destination, verify sha256 and destination identity, retain a verified backup, then atomically replace. Optional pre-recorded `transfer_id` supports later outcome queries; uncertain writes are never retried automatically. |
 | `host.fetch` | req/res | M5 — scp a remote file to the local machine with the same sha256 verification. |
+| `host.transfer_status` | req/res | Query one remote upload journal by `{host_id, remote_path, transfer_id}`; never transfers a payload or repeats publication. Missing journals and transport failures return `ok:false, publication_state:"unknown"`. |
 | `message.list` / `message.update` / `message.delete` | req/res | List messages in a session; update or delete a single message. |
 | `skill.list` / `skill.install` / `skill.uninstall` / `skill.enable` / `skill.disable` / `skill.invoke` | req/res | List, import, remove, configure, and invoke skills. |
 | `scheduler.*`              | req/res   | Reserved.                                          |
@@ -541,8 +542,73 @@ A caller may supply `idempotency_key` (1–128 non-blank characters) with an exp
 with identical input joins the existing task or returns its stored result. Reusing
 that key for different input is invalid; changing global settings does not cause
 re-execution. Keys are scoped to a session and retained with the run. Model engine
-selection on `run.start` currently accepts only `native`. The original reply endpoint
+selection on `run.start` accepts `native` and an installed, supported `codex` engine.
+Codex currently supports one admitted turn; external-session continuation and the
+shared recovery route are not yet integrated, so its capability card disables
+resume and steering. The original reply endpoint
 still waits for completion; transport loss never cancels an admitted request.
+
+Codex receipts may include `run_status: "failed" | "interrupted"` and an `error`
+object. Only a confirmed successful Codex terminal status is stored as completed;
+unknown terminal states fail closed. `tokens_in` and `tokens_out` are nullable:
+missing usage is unknown, not zero. Cumulative Codex usage notifications are charged
+by their increase. Its budget interruption is reactive to engine notifications,
+not a guaranteed pre-inference hard cap; unknown usage with an enabled budget
+pauses the run. This does not yet provide the shared daily budget ledger.
+The admitted mode is preserved: plan requests read-only execution with no approval
+escalation, while chat/execute request workspace-write and human approvals.
+Workspace resolution errors reject admission; queued execution rechecks the directory.
+These protocol policies do not by themselves certify OS sandbox enforcement on a host.
+
+`host.fetch` stages data in the destination directory, validates its checksum, and
+publishes with atomic replacement only if the destination still matches its initial
+fingerprint. Transfer failure, cancellation, checksum mismatch or a changed target
+leaves the destination intact. The local SSH/SCP process is reaped on timeout/cancel;
+this does not guarantee remote command termination.
+
+`host.push` accepts `{host_id, local_path, remote_path, transfer_id?}`. The remote
+parent must exist and resolve without symbolic links; the destination must be a
+regular file or absent. Remote Python 3.11+ runs a standalone helper. SCP writes
+only `.minimax-upload-<id>/payload` beside the destination. Uploads force SFTP
+(`scp -s`) so remote path shell metacharacters remain literal. Unsupported clients
+or unavailable SFTP subsystems fail closed without legacy SCP fallback. After sha256 validation,
+the helper compares the destination's device/inode/size/timestamps and content to
+the initial snapshot, copies and verifies `previous` when replacing a file, fsyncs
+data/journal files, and atomically replaces the destination. POSIX directory fsyncs
+order staging, journal and publication entries. Filesystem/hardware behavior still
+determines power-loss durability; Windows unit tests do not verify POSIX fsync.
+The destination's permission mode is preserved. Private staging/journals/backups
+and lock files are retained for recovery; automatic retention/garbage collection
+is not implemented.
+
+A target-specific advisory lock excludes cooperating upload publishers and detects
+changes made before the final fingerprint check. This is not an atomic compare-and-
+swap against arbitrary noncooperating processes writing between that check and
+rename, and is not an OS security sandbox against hostile local processes.
+
+Push and status results contain `{ok, exit_code, stderr, remote_path, transfer_id,
+publication_state, backup_path}`. `staged` means an existing pending transfer,
+`aborted` means its uncommitted payload was removed, and `published` records confirmed
+publication. `publishing` means the journal cannot confirm whether replacement
+finished; `unknown` means the journal could not be read/validated. `not_published`
+reports a failed payload transport. `backup_path` is supplied only for a verified
+backup. Published history does not guarantee no later user edits.
+
+For response loss/cancellation recovery, the caller must record a fresh lowercase
+32-hex-character `transfer_id` and the host/target before requesting the push.
+The ID is bound to the normalized target and expected content sha256. Reusing an
+existing ID never starts another SCP or commit: an already published matching
+transfer returns its receipt; pending/aborted transfers require status inspection
+or a new ID. Different content/target reuse fails. Losing the commit response
+causes one status query, never a blind write retry. If that query also fails,
+`host.transfer_status` can later resolve the same journal; reconciliation checks
+the renamed staged file's identity as well as its checksum. It never republishes.
+Cancellation during payload transfer attempts to remove only the owned staged
+payload. Cancellation after commit starts retains the journal/backup for querying;
+a lost prepare receipt may also leave its private staging for inspection. Invalid
+status parameters are JSON-RPC `-32602`; unavailable/missing journals return a
+structured unsuccessful transfer result. Mock mode covers all host methods but
+returns explicit SSH-unavailable failures for probes, execution and transfers.
 
 Run states additionally include `queued`, `waiting_input`, `budget_paused` and
 `interrupted`. The first and last are integrated here; input/budget pause owners

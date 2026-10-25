@@ -88,7 +88,9 @@ async def test_engine_status_reports_reason_for_unavailable(server, monkeypatch)
     bad.reply_error.assert_awaited_once()
 
 
-async def test_run_start_codex_admits_and_names_failures(server, monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("terminal_status", ["completed", "failed", "interrupted"])
+async def test_run_start_codex_admits_and_names_failures(server, monkeypatch, tmp_path,
+                                                       terminal_status) -> None:
     """engine=codex admits durably and drives through the App Server.
 
     The driver is pointed at a scripted fake codex; the run completes
@@ -106,9 +108,11 @@ async def test_run_start_codex_admits_and_names_failures(server, monkeypatch, tm
     monkeypatch.setattr(app, "init_runtime", AsyncMock())
     monkeypatch.setattr(app, "get_db", lambda: db)
     monkeypatch.setattr(app, "get_sessions_dao", lambda: sessions)
+    await sessions.create(id="ses_codex", title="Codex test", workspace_path=str(tmp_path))
 
     fake = tmp_path / "fake_codex.py"
-    fake.write_text(FAKE_CODEX, encoding="utf-8")
+    fake.write_text(FAKE_CODEX.replace('"status": "completed"',
+                                     f'"status": "{terminal_status}"'), encoding="utf-8")
     monkeypatch.setenv("MINIMAX_CODE_CODEX_CMD",
                        json.dumps([sys.executable, str(fake)]))
 
@@ -126,12 +130,25 @@ async def test_run_start_codex_admits_and_names_failures(server, monkeypatch, tm
     for _ in range(300):
         await asyncio.sleep(0.02)
         row = await ctx_reply_run(server, run_id)
-        if row["status"] in {"completed", "failed", "cancelled"}:
+        if row["status"] in {"completed", "failed", "cancelled", "interrupted"}:
             break
-    assert row["status"] == "completed", row
+    assert row["status"] == terminal_status, row
     receipt = row["result"]
     assert receipt["engine"] == "codex"
     assert "running tests" in receipt["text"]
+    if terminal_status != "completed":
+        assert row["error"] and receipt["error"]
+
+    # An invalid binding is rejected before admission, not changed to CWD.
+    await sessions.create(id="ses_missing", title="Missing workspace",
+                          workspace_path=str(tmp_path / "removed"))
+    missing = Ctx(server)
+    await server._handlers["run.start"]({
+        "session_id": "ses_missing", "content": "must not run", "engine": "codex",
+        "idempotency_key": "missing"}, missing)
+    missing.reply.assert_not_awaited()
+    assert "Rebind" in str(missing.reply_error.await_args)
+    assert not await db.fetchall("SELECT id FROM agent_runs WHERE session_id = ?", ("ses_missing",))
 
     # A dead codex command names the failure in the run row.
     monkeypatch.setenv("MINIMAX_CODE_CODEX_CMD",
@@ -202,7 +219,7 @@ for raw in sys.stdin:
         print(json.dumps({"jsonrpc": "2.0", "method": "item/agentMessage/delta",
                           "params": {"delta": "running tests"}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "turn/completed",
-                          "params": {"thread_id": "th_1", "turn_id": "turn_1"}}), flush=True)
+                          "params": {"threadId": "th_1", "turn": {"id": "turn_1", "status": "completed", "error": None}}}), flush=True)
         continue
     if rid is not None:
         print(json.dumps({"jsonrpc": "2.0", "id": rid, "result": {}}), flush=True)
@@ -251,8 +268,6 @@ async def test_appserver_async_approval_round_trip(tmp_path) -> None:
     coroutine (it waits on a human), and the RESPONSE must be written
     back to the server when it settles — a broken reply path means the
     real Codex waits 300s and denies every command."""
-
-    fake_lines: list[str] = []
 
     fake_src = """
 import json, sys

@@ -294,7 +294,7 @@ async def _start_codex_run(request: RunStartParams, ctx: Context, *,
             )
             return
 
-    request_payload = {"session_id": session_id, "mode": "chat",
+    request_payload = {"session_id": session_id, "mode": request.mode,
                        "content": request.content, "engine": "codex"}
     title = request.content.strip()[:32]
 
@@ -311,15 +311,20 @@ async def _start_codex_run(request: RunStartParams, ctx: Context, *,
             result = await drive_codex_run(
                 job, emit=emit, prompt=request.content,
                 resume_thread_id=resume_thread_id,
-                approval_gate=approval_gate)
+                approval_gate=approval_gate, mode=request.mode)
             job.result = result
             status = ("cancelled" if result.get("cancelled")
                       else "budget_paused" if result.get("budget_paused")
-                      else "completed")
+                      else result.get("run_status", "completed"))
+            stored = await dao.get_run(job.run_id)
+            metadata = dict((stored or {}).get("metadata") or {})
+            metadata.update(codex_thread_id=result.get("codex_thread_id"), engine="codex")
+            if result.get("budget") is not None:
+                metadata["budget"] = result["budget"]
             await dao.update_run_status(
                 job.run_id, status=status, result=result,
-                metadata={"codex_thread_id": result.get("codex_thread_id"),
-                          "engine": "codex"},
+                error=str(result["error"]) if result.get("error") else None,
+                metadata=metadata,
             )
             await _notify_run(ctx, "run.completed",
                               {"run": await dao.get_run(job.run_id)})
@@ -349,18 +354,14 @@ async def _start_codex_run(request: RunStartParams, ctx: Context, *,
                                       error=reason, result=receipt)
         await _notify_run(ctx, "run.completed", {"run": run})
 
-    # Codex turns execute somewhere real: session project root > env
-    # workspace > process cwd. thread/start rejects null cwd.
+    # Keep the same fail-closed directory resolution as Native.
     from ..workspace_ctx import resolve_root_for_session
 
     try:
         codex_workspace = str(await resolve_root_for_session(session_id))
-    except Exception:
-        # Unresolvable workspace falls back to the process cwd — the
-        # Codex thread still needs a real directory to run in.
-        import os
-
-        codex_workspace = os.getcwd()
+    except Exception as exc:
+        await ctx.reply_error(-32004, f"Cannot resolve Codex workspace: {exc}")
+        return
     run, job, created = await service.admit(
         dao=dao, session_id=session_id, request=request_payload,
         request_key=request.idempotency_key, title=title,
@@ -370,7 +371,7 @@ async def _start_codex_run(request: RunStartParams, ctx: Context, *,
         workspace=codex_workspace, project_id=None,
         operation=operation, finalize=finalize,
         resumed_from_id=None, budget_tokens=run_budget,
-        daily_baseline=daily_baseline)
+        daily_baseline=daily_baseline, daily_budget_limit=daily_limit)
     if created:
         await _notify_run(ctx, "run.created", {"run": run})
     await ctx.reply({"run": run, "created": created})

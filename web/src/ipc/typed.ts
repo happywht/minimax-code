@@ -125,6 +125,19 @@ import type { IPCClient } from "./client";
 export interface TypedIPC {
   ping(): Promise<boolean>;
 
+  // Remote host registry and file transfer. Pre-record transfer_id before push
+  // when recovery after a lost HTTP response or cancellation is required.
+  createHost(params: import("../types/ipc").HostConfig): Promise<{ host: import("../types/ipc").RemoteHost }>;
+  listHosts(params?: { enabled?: boolean }): Promise<{ hosts: import("../types/ipc").RemoteHost[] }>;
+  getHost(hostId: string): Promise<{ host: import("../types/ipc").RemoteHost }>;
+  updateHost(hostId: string, fields: Partial<import("../types/ipc").HostConfig> & { enabled?: boolean }): Promise<{ ok: boolean; host: import("../types/ipc").RemoteHost }>;
+  deleteHost(hostId: string): Promise<{ ok: boolean; host_id: string }>;
+  probeHost(hostId: string): Promise<import("../types/ipc").HostProbeResult>;
+  execHost(params: { host_id: string; command: string; timeout_s?: number }): Promise<import("../types/ipc").HostExecResult>;
+  pushHostFile(params: import("../types/ipc").HostPushParams): Promise<import("../types/ipc").HostTransferResult>;
+  getHostTransferStatus(params: import("../types/ipc").HostTransferStatusParams): Promise<import("../types/ipc").HostTransferResult>;
+  fetchHostFile(params: { host_id: string; remote_path: string; local_path: string }): Promise<{ ok: boolean; exit_code: number | null; stderr: string; local_path: string }>;
+
   // session
   listSessions(opts?: { archived?: boolean; limit?: number; offset?: number; search?: string }): Promise<ListSessionsResult>;
   createSession(opts?: {
@@ -560,6 +573,17 @@ export function backendRuleToFrontend(r: BackendPermissionRule): PermissionRule 
 export function bindTypedIPC(client: IPCClient): TypedIPC {
   return {
     ping: () => client.ping(),
+
+    createHost: (params) => client.request("host.create", params),
+    listHosts: (params) => client.request("host.list", params ?? {}),
+    getHost: (hostId) => client.request("host.get", { host_id: hostId }),
+    updateHost: (hostId, fields) => client.request("host.update", { host_id: hostId, ...fields }),
+    deleteHost: (hostId) => client.request("host.delete", { host_id: hostId }),
+    probeHost: (hostId) => client.request("host.probe", { host_id: hostId }),
+    execHost: (params) => client.request("host.exec", params),
+    pushHostFile: (params) => client.request("host.push", params),
+    getHostTransferStatus: (params) => client.request("host.transfer_status", params),
+    fetchHostFile: (params) => client.request("host.fetch", params),
 
     listSessions: (opts) =>
       client.request<ListSessionsResult>("session.list", opts ?? {}),

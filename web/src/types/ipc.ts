@@ -8,6 +8,74 @@
 
 export type JsonRpcId = string | number | null;
 
+/** SSH credentials are referenced by identity-file path, never embedded. */
+export interface HostConfig {
+  name: string;
+  hostname: string;
+  username: string;
+  port?: number;
+  identity_file?: string;
+}
+
+export interface RemoteHost extends HostConfig {
+  id: string;
+  port: number;
+  identity_file: string;
+  enabled: boolean;
+  agent_version: string;
+  created_at: string;
+  updated_at: string;
+  last_probe_at: string | null;
+  last_probe_ok: boolean | null;
+}
+
+export interface HostPushParams {
+  host_id: string;
+  local_path: string;
+  remote_path: string;
+  /** Pre-record a fresh 32-character lowercase hex ID to query after cancellation. */
+  transfer_id?: string;
+}
+
+export interface HostTransferStatusParams {
+  host_id: string;
+  remote_path: string;
+  transfer_id: string;
+}
+
+export type UploadPublicationState = "staged" | "publishing" | "published" | "aborted" | "unknown" | "not_published";
+
+export interface HostTransferResult {
+  ok: boolean;
+  exit_code: number | null;
+  stderr: string;
+  remote_path: string;
+  transfer_id: string | null;
+  publication_state: UploadPublicationState | null;
+  backup_path: string | null;
+}
+
+export interface HostExecResult {
+  ok: boolean;
+  exit_code: number | null;
+  stdout: string;
+  stderr: string;
+  timed_out: boolean;
+}
+
+export interface HostProbeResult {
+  probe: {
+    ok: boolean;
+    timed_out: boolean;
+    agent_version: string;
+    os: string;
+    python_version: string;
+    codex_present?: boolean;
+    error?: string;
+  };
+  host: RemoteHost;
+}
+
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
   id: JsonRpcId;
@@ -746,6 +814,11 @@ export interface SendMessageResult {
   message_id: string;
   run_id?: string;
   text: string;
+  /** Codex terminal evidence. Missing usage is unknown, not zero. */
+  tokens_in?: number | null;
+  tokens_out?: number | null;
+  run_status?: "failed" | "interrupted";
+  error?: { message: string; [key: string]: unknown };
   /** Cancellation is confirmed after the service-owned task has unwound. */
   cancelled?: boolean;
   /** v1.1.0: the turn ended budget-truncated (no final answer). */

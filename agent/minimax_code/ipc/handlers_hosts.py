@@ -1,20 +1,21 @@
 """JSON-RPC handlers for the ``host.*`` namespace (M5).
 
-Remote Linux run hosts: registration, connection diagnosis and the
-agent version handshake. Execution and file transfer land in the next
-batch; this file owns the configuration + diagnosis surface.
+Remote Linux hosts: configuration, diagnosis/version handshake, execution,
+verified file transfer and queryable upload publication journals.
 """
 
 from __future__ import annotations
 
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
-from ..hosts.ssh import fetch_file, probe_host, push_file, run_ssh
+from pydantic import ValidationError
+
+from ..hosts.ssh import fetch_file, probe_host, push_file, run_ssh, upload_action
 from ..storage.dao.hosts import HostsDAO
 from .handler_utils import HandlerError, check_params
-from .protocol import INTERNAL_ERROR, INVALID_PARAMS
+from .protocol import INTERNAL_ERROR, INVALID_PARAMS, HostPushParams, HostTransferStatusParams
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,13 @@ def _validate_port(port: Any) -> int:
     if not 1 <= port_int <= 65535:
         raise HandlerError(INVALID_PARAMS, "port must be 1..65535")
     return port_int
+
+
+def _upload_target(value: str) -> str:
+    target = PurePosixPath(value)
+    if not target.is_absolute() or ".." in target.parts or not target.name or "\0" in value:
+        raise HandlerError(INVALID_PARAMS, "remote_path must be an absolute file path")
+    return str(target)
 
 
 def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = None) -> None:
@@ -185,7 +193,10 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
     async def handle_host_push(params: Any, ctx: Context) -> None:
         """Upload a local file to the host with sha256 verification (M5)."""
         try:
-            check_params(params, expected_keys={"host_id", "local_path", "remote_path"})
+            try:
+                params = HostPushParams.model_validate(params).model_dump()
+            except ValidationError as exc:
+                raise HandlerError(INVALID_PARAMS, str(exc)) from exc
             dao_obj = await dao_factory()
             host = await dao_obj.get(str(params["host_id"]))
             if host is None:
@@ -197,22 +208,49 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
             if not local_path.is_file():
                 raise HandlerError(INVALID_PARAMS,
                                    f"local_path is not a file: {local_path}")
-            remote_path = str(params["remote_path"]).strip()
-            if not remote_path or remote_path.startswith("-"):
-                raise HandlerError(INVALID_PARAMS, "remote_path must be an absolute path")
+            remote_path = _upload_target(params["remote_path"])
             result = await push_file(host, local_path, remote_path,
-                                     runner=runner)
+                                     runner=runner, transfer_id=params.get("transfer_id"))
             await ctx.reply({
                 "ok": result.ok,
                 "exit_code": result.exit_code,
                 "stderr": result.stderr[-2000:],
                 "remote_path": remote_path,
+                "transfer_id": result.transfer_id,
+                "publication_state": result.publication_state,
+                "backup_path": result.backup_path,
             })
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception:  # pragma: no cover — defensive
             logger.exception("host.push failed")
             await ctx.reply_error(INTERNAL_ERROR, "host.push failed")
+
+    async def handle_host_transfer_status(params: Any, ctx: Context) -> None:
+        """Query a known upload journal without repeating a publication."""
+        try:
+            try:
+                validated = HostTransferStatusParams.model_validate(params)
+            except ValidationError as exc:
+                raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+            host = await _require_host(validated.host_id)
+            if not host.get("enabled"):
+                raise HandlerError(INVALID_PARAMS, "host is disabled")
+            remote_path = _upload_target(validated.remote_path)
+            result = await upload_action(host, remote_path, validated.transfer_id,
+                                         "status", runner=runner)
+            await ctx.reply({
+                "ok": result.ok, "exit_code": result.exit_code,
+                "stderr": result.stderr[-2000:], "remote_path": remote_path,
+                "transfer_id": result.transfer_id,
+                "publication_state": result.publication_state,
+                "backup_path": result.backup_path,
+            })
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception:
+            logger.exception("host.transfer_status failed")
+            await ctx.reply_error(INTERNAL_ERROR, "host.transfer_status failed")
 
     async def handle_host_fetch(params: Any, ctx: Context) -> None:
         """Download a remote file to the local machine with sha256 verification."""
@@ -253,6 +291,7 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
     server.register("host.exec", handle_host_exec)
     server.register("host.push", handle_host_push)
     server.register("host.fetch", handle_host_fetch)
+    server.register("host.transfer_status", handle_host_transfer_status)
 
 
 def _make_dao_factory(dao: Any | None) -> Any:

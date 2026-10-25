@@ -71,6 +71,10 @@ class SendMessageResult(_Base):
     run_id: str | None = None
     cancelled: bool = False
     iterations: int | None = None
+    # Missing engine usage is unknown, never inferred to be zero.
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    run_status: Literal["failed", "interrupted"] | None = None
 
 
 class MessageMetadata(_Base):
@@ -147,6 +151,31 @@ class RunSnapshotResult(_Base):
 
 
 # ---- Error object ---------------------------------------------------------
+
+
+class HostTransferStatusParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    host_id: str = Field(min_length=1)
+    remote_path: str = Field(min_length=1)
+    transfer_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
+class HostPushParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    host_id: str = Field(min_length=1)
+    local_path: str = Field(min_length=1)
+    remote_path: str = Field(min_length=1)
+    transfer_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+
+
+class HostTransferResult(_Base):
+    ok: bool
+    exit_code: int | None
+    stderr: str
+    remote_path: str
+    transfer_id: str | None = None
+    publication_state: Literal["staged", "publishing", "published", "aborted", "unknown", "not_published"] | None = None
+    backup_path: str | None = None
 
 
 class RPCError(_Base):

@@ -11,6 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
+import shlex
+import shutil
+import sys
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -225,13 +230,27 @@ async def test_host_push_fetch_with_sha_verification(host_server, tmp_path) -> N
             # Upload: argv[-2]=local, argv[-1]=remote:dest — mirror the
             # file so the remote-side sha256sum has something to hash.
             if str(local) in argv[-2]:
-                remote_file.write_text(local.read_text(encoding="utf-8"),
-                                       encoding="utf-8")
+                staged_remote = argv[-1].split(":", 1)[1]
+                staged = remote_file.parent / Path(staged_remote).parent.name / "payload"
+                assert staged.parent.is_dir()  # created by the actual remote helper
+                shutil.copyfile(local, staged)
             # Download: argv[-2]=remote:src, argv[-1]=local dest.
             else:
                 Path(argv[-1]).write_text(
                     remote_file.read_text(encoding="utf-8"), encoding="utf-8")
             return 0, b"", b""
+        if argv[-1].startswith("python3 "):
+            # Execute the exact transmitted bootstrap/helper, mapping only the
+            # remote destination into this test's isolated local directory.
+            _, _, bootstrap, request = shlex.split(argv[-1])
+            data = json.loads(request)
+            data["target"] = str(remote_file)
+            process = await asyncio.create_subprocess_exec(
+                sys.executable, "-c", bootstrap, json.dumps(data),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await process.communicate()
+            return process.returncode, out, err
         # ssh sha256sum — return the REAL hash of the mirrored file.
         digest = hashlib.sha256(remote_file.read_bytes()).hexdigest()
         return 0, f"{digest}  /tmp/payload.txt\n".encode(), b""
@@ -245,6 +264,13 @@ async def test_host_push_fetch_with_sha_verification(host_server, tmp_path) -> N
         "remote_path": "/tmp/payload.txt"}, push_ctx)
     push_result = push_ctx.reply.await_args.args[0]
     assert push_result["ok"] is True, push_result
+    assert push_result["publication_state"] == "published"
+
+    status_ctx = host_server.ctx()
+    await srv._handlers["host.transfer_status"]({
+        "host_id": host["id"], "remote_path": "/tmp/payload.txt",
+        "transfer_id": push_result["transfer_id"]}, status_ctx)
+    assert status_ctx.reply.await_args.args[0]["publication_state"] == "published"
 
     # Fetch into a fresh local path.
     download_target = tmp_path / "downloaded.txt"
@@ -267,3 +293,99 @@ async def test_host_push_fetch_with_sha_verification(host_server, tmp_path) -> N
         {"hostname": "h", "username": "u", "port": 22, "identity_file": ""},
         "/tmp/missing.txt", tmp_path / "out.bin", runner=empty_runner)
     assert bad.ok is False
+
+
+async def test_status_rpc_resolves_after_both_initial_receipts_are_lost(host_server, tmp_path):
+    from minimax_code.ipc.protocol import HostTransferResult
+
+    host = await host_server.hosts.create(name="upload", hostname="unused", username="user")
+    local = tmp_path / "source.txt"
+    local.write_bytes(b"incoming")
+    remote = tmp_path / "remote.txt"
+    remote.write_bytes(b"original")
+    transfer_id = uuid.uuid4().hex
+    actions = []
+
+    async def transport(argv):
+        if argv[0] == "scp":
+            staged = tmp_path / (".minimax-upload-" + transfer_id) / "payload"
+            shutil.copyfile(local, staged)
+            return 0, b"", b""
+        _, _, bootstrap, encoded = shlex.split(argv[-1])
+        request = json.loads(encoded)
+        actions.append(request["action"])
+        request["target"] = str(remote)
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", bootstrap, json.dumps(request),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await process.communicate()
+        if request["action"] == "commit" or actions.count("status") == 1:
+            return 255, b"", b"connection lost"
+        return process.returncode, out, err
+
+    host_server.runner_slot["fn"] = transport
+    push_ctx = host_server.ctx()
+    await host_server.server._handlers["host.push"]({
+        "host_id": host["id"], "local_path": str(local), "remote_path": "/remote.txt",
+        "transfer_id": transfer_id}, push_ctx)
+    pushed = HostTransferResult.model_validate(push_ctx.reply.await_args.args[0])
+    assert not pushed.ok and pushed.publication_state == "unknown"
+    assert pushed.transfer_id == transfer_id
+    status_ctx = host_server.ctx()
+    await host_server.server._handlers["host.transfer_status"]({
+        "host_id": host["id"], "remote_path": "/remote.txt",
+        "transfer_id": transfer_id}, status_ctx)
+    status = HostTransferResult.model_validate(status_ctx.reply.await_args.args[0])
+    assert status.ok and status.publication_state == "published"
+    assert Path(status.backup_path).read_bytes() == b"original"
+    assert remote.read_bytes() == b"incoming"
+    assert actions == ["prepare", "commit", "status", "status"]
+
+
+@pytest.mark.parametrize("invalid", [
+    {"transfer_id": "../bad"}, {"transfer_id": 123}, {"remote_path": "relative"},
+    {"remote_path": "/"}, {"remote_path": "/tmp/../target"}, {"unknown": True},
+])
+async def test_transfer_status_invalid_params_are_structured(host_server, invalid):
+    host = await host_server.hosts.create(name="upload", hostname="unused", username="user")
+    ctx = host_server.ctx()
+    await host_server.server._handlers["host.transfer_status"]({
+        "host_id": host["id"], "remote_path": "/remote.txt",
+        "transfer_id": uuid.uuid4().hex, **invalid}, ctx)
+    ctx.reply.assert_not_awaited()
+    assert ctx.reply_error.await_args.args[0] == -32602
+
+
+async def test_transfer_status_unknown_host_is_structured(host_server):
+    ctx = host_server.ctx()
+    await host_server.server._handlers["host.transfer_status"]({
+        "host_id": "ghost", "remote_path": "/remote.txt", "transfer_id": uuid.uuid4().hex}, ctx)
+    assert ctx.reply_error.await_args.args[0] == -32602
+
+
+async def test_transfer_status_unknown_id_never_prepares_or_commits(host_server, tmp_path):
+    host = await host_server.hosts.create(name="upload", hostname="unused", username="user")
+    remote = tmp_path / "unchanged.txt"
+    remote.write_bytes(b"original")
+
+    async def transport(argv):
+        _, _, bootstrap, encoded = shlex.split(argv[-1])
+        request = json.loads(encoded)
+        assert request["action"] == "status"
+        request["target"] = str(remote)
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", bootstrap, json.dumps(request),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await process.communicate()
+        return process.returncode, out, err
+
+    host_server.runner_slot["fn"] = transport
+    ctx = host_server.ctx()
+    await host_server.server._handlers["host.transfer_status"]({
+        "host_id": host["id"], "remote_path": "/remote.txt", "transfer_id": uuid.uuid4().hex}, ctx)
+    result = ctx.reply.await_args.args[0]
+    assert not result["ok"] and result["publication_state"] == "unknown"
+    assert remote.read_bytes() == b"original"
+    assert not list(tmp_path.glob(".minimax-upload-*"))
