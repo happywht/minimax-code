@@ -660,8 +660,12 @@ async def test_actual_sqlite_other_family_zero_liability_is_not_daily_completion
         assert day["known_tokens"] == 15 and day["reserved_tokens"] == day["unknown_attempts"] == 0
         assert raw["budget"]["accounting_resolved"] and raw["budget"]["usage_complete"]
         readback = {"budget": raw["budget"], "day": day, "attempts": await root.dao.attempts(root.family_id)}
-        # Current product day summaries cannot prove completion across families.
-        assert harness.budget_status(raw, 100, readback) == "unknown"
+        assert day["accounting_resolved"] and not day["usage_complete"]
+        assert harness.budget_status(raw, 100, readback) == "incomplete"
+        # Old product summaries without these fields cannot prove completion.
+        legacy_day = {key: value for key, value in day.items()
+                      if key not in {"accounting_resolved", "usage_complete"}}
+        assert harness.budget_status(raw, 100, {**readback, "day": legacy_day}) == "unknown"
     finally:
         await db.close()
 

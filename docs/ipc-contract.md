@@ -1449,6 +1449,7 @@ document the migration in this file.
 | 方法 | 说明 |
 |------|------|
 | `budget.get` | 读取 `{run_id?, day?}` 的预算家族、Asia/Shanghai 日账、家族 attempts、当日 day_blockers（总数及最多 20 项身份/owner run/session/已知下界）与覆盖起点 |
+| `budget.get` 的 `day` | `accounting_resolved` 表示当日无待核对的未知责任，活动请求仍可存在；`usage_complete` 表示指定预留日期的全家族请求均已测得或确证未发送，且无未测得历史责任。两个布尔值与日汇总同事务计算，仅证明当前快照。旧响应缺字段保持未知，不能默认为 true。 |
 | `budget.reconcile` | 核定历史/未知责任；要求明确确认、依据和不少于已知下界的累计责任 |
 
 ### checkpoint.* — 工作区快照

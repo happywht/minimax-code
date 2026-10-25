@@ -21,6 +21,18 @@ Codex 只能根据外部用量通知反应式中断，无法预留引擎内部�
 - budget.get 参数 `{run_id?, day?}`，返回 `{budget, day, attempts, day_blockers, coverage_started_at}`。budget 可为 null，表示旧任务尚无完整家族记录。attempts 仅属当前家族；day_blockers 返回当日未知请求总数及最多 20 项身份/家族/所属 run/session/已知下界，子任务无独立记录时回退根任务。UI 可跳转所属任务逐项核查，日历史核定不能清除其他家族的未知请求。
 - budget.reconcile 参数 `{target: "day"|"family"|"attempt", target_id, liability_tokens, reason, acknowledged: true}`。责任不得小于已知下界。只允许核定 unknown 请求，活动 sent 不可核定；活动根任务也会拒绝。责任核定留下时间、依据和 provenance=reconciled，保持原 usage/known_tokens 不变。
 
+### 全日日账完整性
+
+`day.accounting_resolved` 与 `day.usage_complete` 从指定预留日期的全部家族请求、历史基线
+在同一事务计算，不能仅从 known/reserved/unknown 的数值推断。
+覆盖期内空日或仅 settled/released 的日期完整；reserved/sent（包括零估算）不完整，
+unknown 或未核对历史使责任未解决且用量不完整；reconciled（包括零责任）及已核定历史
+表示责任已解决、实际用量仍未完整测得。活动请求可以 accounting_resolved=true，不能据此认定已经结束。
+
+预算面板分别展示完整、未完整或旧响应的未知，并保留“已知至少”的下界表达。
+完整性只描述当前快照，不能保证随后没有新请求。没有新增数据库结构或改动准入、结算及核定规则。
+旧服务响应缺少字段时，前端和评测器均保留未知；mock 不生成虚假的完整零日账。
+
 037 迁移记录覆盖起点，并把当日已有 assistant 历史或已启动运行视为历史基线不完整。已知历史仅是下界。设置日额度的付费调用在当日基线核对前失败关闭；没有历史的干净日期不会被无条件阻止。调整日额度不能清除未知。旧任务恢复形成 legacy_incomplete 家族，须明确核定历史责任后才可付费继续。
 
 只读查询覆盖起点之前且无已核定日基线的日期时返回历史不完整，不把未跟踪历史认证为零。日/旧家族核定只允许在不完整状态进行一次，不能覆盖原授权依据。
@@ -36,6 +48,16 @@ Codex 只能根据外部用量通知反应式中断，无法预留引擎内部�
 Schema037 暂时拒绝 data.import 对预算表及 sessions/messages/agent_runs/agent_run_steps/run_events/schedule_occurrences/scheduled_jobs/tasks 的 JSON 替换，包括旧版本导出与完整 037 导出。拒绝发生在任何修改之前，避免旧快照静默抹除责任。无关 memory/model 设置部分导入继续支持，037 之前的恢复行为保持。data.export 与 SQLite data.backup 仍包含预算责任。
 
 完整 JSON 灾难恢复兼容性是 **M7 必须完成的后续项**：需要账本合并/恢复围栏与核对流程；本批临时拒绝不是完整恢复能力。SQLite 快照不包括外部附件、凭据或工作区文件，恢复时必须分别核实。
+
+### 日账完整性追加验证（2026-10-26）
+
+本追加批次未改表结构、准入算法或模型调用方式。精确十文件（两共享文件仅日账片段）
+从暂存区导出的独立源码快照中，预算/SDK/Codex/运行预算/评测/IPC 契约 **230 项通过**
+（25.99 秒），预算面板 **8 项通过**，TypeScript、定点 ESLint、Ruff 及差异检查通过。
+证据为 `.verification/budget-day-staged-backend.log`、`budget-day-staged-ui.log`、
+`budget-day-staged-types.log`、`budget-day-eslint.log` 和 `budget-day-ruff.log`。
+这不包含尚未提交的技能执行改动；工作区较早联合检查的文档 token 失败仍保留，
+不将草稿修正与独立快照结果混记。没有付费模型或远程生产验收。
 
 ## 离线验证
 

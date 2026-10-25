@@ -93,6 +93,15 @@ class BudgetsDAO:
         daily_state = {"day": day, "known_tokens": dk + lower, "reserved_tokens": dr + max(0, historical - lower),
                        "unknown_attempts": du, "baseline_incomplete": uncovered or bool(daily and daily["incomplete"]),
                        "historical_lower_bound": lower, "historical_liability": daily["historical_liability"] if daily else None}
+        # Totals alone cannot reveal zero-estimate active requests or zero
+        # authorized liability. Compute completeness from *all* families on
+        # this reservation day in the same transaction as those totals.
+        daily_state["accounting_resolved"] = not daily_state["baseline_incomplete"] and not du
+        daily_state["usage_complete"] = (
+            not daily_state["baseline_incomplete"]
+            and daily_state["historical_liability"] is None
+            and all(row["state"] in {"settled", "released"} for row in rows)
+        )
         if not family:
             return {"family": None, "day": daily_state}
         rows = await _fetchall(conn, "SELECT * FROM budget_attempts WHERE family_id=?", (family_id,))

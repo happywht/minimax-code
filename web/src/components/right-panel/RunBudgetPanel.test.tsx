@@ -73,4 +73,24 @@ describe("durable budget", () => {
     expect(api.setCurrent).toHaveBeenCalledWith("owner-session");
     expect(api.reconcileBudget).not.toHaveBeenCalled();
   });
+
+  it.each([
+    [true, true, "当日用量证据完整（截至当前快照）", false],
+    [false, true, "当日用量证据未完整", true],
+    [false, false, "当日用量证据未完整", true],
+    [undefined, undefined, "当日用量完整性未知", true],
+  ])("separates whole-day measurement from resolved liability: %s/%s", async (measured, resolved, label, lowerBound) => {
+    const response = state("day");
+    response.day = {...response.day, known_tokens:0, reserved_tokens:0, unknown_attempts:0,
+      usage_complete:measured, accounting_resolved:resolved};
+    response.budget!.day = response.day;
+    api.getBudget.mockResolvedValue(response);
+    render(<RunBudgetPanel run={run("day")} />);
+    const status = await screen.findByTestId("daily-budget-completeness");
+    expect(status).toHaveTextContent(label);
+    expect(screen.getByText(/本机 2026-10-26/)).toHaveTextContent(lowerBound ? "已知至少 0" : "已知 0");
+    if (resolved === true) expect(status).toHaveTextContent("无待核对的未知责任；活动请求可能尚未结束");
+    else expect(status).not.toHaveTextContent("无待核对的未知责任");
+    expect(api.reconcileBudget).not.toHaveBeenCalled();
+  });
 });

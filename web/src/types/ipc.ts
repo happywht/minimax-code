@@ -837,6 +837,9 @@ export interface BudgetDay {
   baseline_incomplete: boolean;
   historical_lower_bound: number;
   historical_liability: number | null;
+  // Older services omit these fields; absence is unknown, never complete.
+  accounting_resolved?: boolean;
+  usage_complete?: boolean;
 }
 
 export interface DurableBudget {
