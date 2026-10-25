@@ -11,11 +11,11 @@
 | 生产入口已接入 | `__main__.py`、`http_server.py`、`ipc/`、`app.py` | HTTP/WS 与 stdio 共用注册表；WS 重放环在内存中，不能据此保证进程重启恢复 |
 | 生产入口已接入 | `agent/core.py`、`agent/llm.py`、Provider transports、`agent/tools/` | 对话、流式、工具、多 Provider；多个执行入口仍需统一模型/权限/取消语义 |
 | 生产入口已接入 | `storage/`、`permissions/`、`secrets.py`、`crash/` | 持久化、授权、keyring、崩溃记录；不等同运行事件完整重放、完整数据备份或 OS 沙盒 |
-| 生产入口已接入 | `workspace/`、Git/patch/checkpoint handlers | 项目、worktree、差异、快照；并发 shell 写入和精确撤销边界待完善 |
-| 生产入口已接入 | `agent/skills/`、`hooks/`、`plugins/`、`mcp/` | 技能、Hooks、插件和 MCP 桥接；外部进程权限未统一，现代 HTTP transport 互操作待验 |
+| 生产入口已接入 | `workspace/`、Git/patch/checkpoint handlers | 项目、worktree、差异、快照及独立子任务副本已接入；交接做冲突预检与原子收取，精确撤销及完整编程闭环仍待验收 |
+| 生产入口已接入 | `agent/skills/`、`hooks/`、`plugins/`、`mcp/` | 技能持久接单及共享进程策略已有局部验收；剩余入口审计、插件能力约束和现代 MCP HTTP 互操作待完成 |
 | 生产入口已接入 | `codebase/`、`xai_codebase_graph/`、`memory/` | FTS、符号分析与索引；默认向量为字符哈希，不是语义模型，记忆不能代替可靠任务状态 |
-| 生产入口已接入，实验边界 | `orchestrator/`、`agent/subagent*`、teams/workflows handlers | 子任务生命周期、交接、冲突检测；事后检测不能阻止共享目录的覆盖 |
-| 生产入口已接入，实验边界 | `scheduler/`、`agent/self_evolution/payload.py` | 定时提示词已进入 Native RunService 完整工具循环并关联持久运行；任务结果保留执行/校验证据；本地稳定发生记录、固定上下文与会话隔离已接入；共享预算仍待完善 |
+| 生产入口已接入，实验边界 | `orchestrator/`、`agent/subagent*`、teams/workflows handlers | 默认独立工作副本与交接已接入；技能路径的递归持久记录、清理和预算已验收，公开直接子 Agent、团队等根入口仍在收拢 |
+| 生产入口已接入，实验边界 | `scheduler/`、`agent/self_evolution/payload.py` | 定时提示词已进入 Native RunService；本地发生身份、固定上下文、会话隔离、执行/校验证据与共享家族/日账已接入；远端持久服务和真实自动化尚未验收 |
 | 生产入口已接入，实验边界 | `progress/`、`telemetry/`、`preview/`、`mobile/`、`webhooks/` | 有处理器/服务；进度不是验收结论，预览边界需统一，移动与外部通知不属于首版生产保证 |
 | 纯协议/算法辅助 | `plan_mode/`、`compaction/`、`voice/` | 类型、状态机、触发器、模板；模块明确保留 host wiring 为后续工作，不据此宣称只读执行、语义压缩或语音输入完成 |
 | 协议/SDK 辅助，非产品远程主机功能 | `computer_hub_core/`、`computer_hub_sdk/`、`tool_protocol/`、`tool_runtime/`、`tool_types/`、`tools_api/`、`grok_auth/` | 有协议和连接/调度辅助实现；没有已验收的 SSH 主机注册、长期服务和跨主机数据归属闭环 |
@@ -83,3 +83,8 @@ payload，提交开始后保留不确定结果及备份。协作上传锁不能�
 冻结后端 929 项、前端 838 项和浏览器 4 项通过，范围与证据见
 [技能执行说明](skill-execution.md)。没有付费模型验证；直接子 Agent、团队等其他公开
 根入口和普通 Native 后代生命周期仍待统一，未据此宣称完整生产可用。
+
+2026-10-26 生产启动补充：`c7c0029` 使用预构建前端和已安装 Python，正常启动不再
+隐式构建/安装；缺失工作区或环境时明确拒绝。Windows 启动、真实后代清理、日志排空
+及隔离后端健康/SPA/认证共 14 项通过，详情见 [部署说明](deployment.md)。该批没有
+Linux 实机或冷启动门槛验收，不代表完整 M7 安装、升级和数据恢复完成。
