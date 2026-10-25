@@ -18,6 +18,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from minimax_code import __version__
+from minimax_code.execution import capture_output, spawn_exec
 from minimax_code.model_snapshot import ModelSnapshot
 from minimax_code.runs import RunJob, get_run_service
 
@@ -36,6 +37,23 @@ _SESSIONS: dict[str, dict[str, Any]] = {}
 # ``agent.cancel_subagent`` can signal a running core to abort.
 _ACTIVE_RUNS: dict[str, dict[str, Any]] = {}
 # {key: {"core": AgentCore, "type": "main"|"subagent"}}
+
+_BASELINE_PROBE_TIMEOUT_S = 5.0
+
+
+async def _baseline_git_workspace(workspace: str) -> bool:
+    """Bounded advisory eligibility probe, with normal command permissions.
+
+    The caller skips planning before entering this path. Managed spawn validates
+    the accepted cwd, filters the environment, and owns descendant cleanup;
+    bounded capture also retains cleanup before propagating cancellation.
+    """
+    proc = await spawn_exec(
+        "git", "--no-pager", "-c", "core.fsmonitor=false", "rev-parse", "--git-dir",
+        cwd=workspace, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    await capture_output(proc, timeout=_BASELINE_PROBE_TIMEOUT_S, limit=4096)
+    return proc.returncode == 0
 
 
 def _preview_value(value: Any, *, limit: int = 600) -> str:
@@ -1158,61 +1176,52 @@ async def _handle_agent_send_message(
         return
 
     # M3 — automatic baseline checkpoint. Snapshot the workspace the
-    # moment the run is claimed, before any tool executes, so a later
-    # restore can revert exactly this run's changes. Uses ``git stash
+    # moment a writable run is claimed, before any tool executes. This is
+    # recovery evidence, not an exact per-run undo guarantee. Uses ``git stash
     # create`` (a dangling ref — the working tree is untouched) plus an
     # untracked-file copy; failures are advisory and never block the run.
-    if job.workspace:
+    # Planning must not spawn the Git probe or create snapshot artifacts.
+    if params.get("mode", "chat") != "plan" and job.workspace:
         try:
-            from pathlib import Path as _P
-
             from ..storage.dao.checkpoints import CheckpointDAO
             from ..storage.db import ensure_data_dir
             from ..workspace.checkpoint import CheckpointManager
 
-            ws_root = _P(job.workspace)
-            if ws_root.is_dir():
-                # Only git workspaces get a baseline: without git the
-                # manager would try to copy EVERY untracked file under
-                # the data dir — an unbounded copy on big folders.
-                probe = await asyncio.create_subprocess_exec(
-                    "git", "-C", job.workspace, "rev-parse", "--git-dir",
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
+            # Only Git workspaces get a baseline: copying every untracked
+            # file in an arbitrary directory could be unbounded.
+            if not await _baseline_git_workspace(job.workspace):
+                logger.debug("run baseline skipped: %s is not a git workspace", job.workspace)
+            else:
+                ckpt_root = ensure_data_dir() / "checkpoints"
+                ckpt_root.mkdir(parents=True, exist_ok=True)
+                mgr = CheckpointManager(ckpt_root)
+                ckpt_id = f"ckpt_{uuid.uuid4().hex[:12]}"
+                snapshot = await mgr.create(
+                    cwd=job.workspace,
+                    checkpoint_id=ckpt_id,
+                    session_id=session_id,
+                    label="run-baseline",
+                    message=f"Automatic baseline before run {job.run_id}",
                 )
-                if await probe.wait() != 0:
-                    logger.debug("run baseline skipped: %s is not a git workspace", job.workspace)
-                else:
-                    ckpt_root = ensure_data_dir() / "checkpoints"
-                    ckpt_root.mkdir(parents=True, exist_ok=True)
-                    mgr = CheckpointManager(ckpt_root)
-                    ckpt_id = f"ckpt_{uuid.uuid4().hex[:12]}"
-                    snapshot = await mgr.create(
-                        cwd=job.workspace,
-                        checkpoint_id=ckpt_id,
-                        session_id=session_id,
-                        label="run-baseline",
-                        message=f"Automatic baseline before run {job.run_id}",
-                    )
-                    await CheckpointDAO(db).create(
-                        session_id=session_id,
-                        label="run-baseline",
-                        message=f"Automatic baseline before run {job.run_id}",
-                        git_stash_ref=snapshot.git_stash_ref,
-                        branch=snapshot.branch,
-                        tracked_files=snapshot.tracked_files,
-                        untracked_files=snapshot.untracked_files,
-                        has_untracked_snapshot=snapshot.has_untracked_snapshot,
-                        checkpoint_id=ckpt_id,
-                        created_at=snapshot.created_at,
-                    )
-                    recorder.run_metadata = {**recorder.run_metadata,
-                                             "baseline_checkpoint": ckpt_id}
-                    await runs_dao.update_run_status(
-                        job.run_id, status="running",
-                        metadata={**recorder.run_metadata,
-                                  "model_snapshot": model_snapshot.metadata()},
-                    )
+                await CheckpointDAO(db).create(
+                    session_id=session_id,
+                    label="run-baseline",
+                    message=f"Automatic baseline before run {job.run_id}",
+                    git_stash_ref=snapshot.git_stash_ref,
+                    branch=snapshot.branch,
+                    tracked_files=snapshot.tracked_files,
+                    untracked_files=snapshot.untracked_files,
+                    has_untracked_snapshot=snapshot.has_untracked_snapshot,
+                    checkpoint_id=ckpt_id,
+                    created_at=snapshot.created_at,
+                )
+                recorder.run_metadata = {**recorder.run_metadata,
+                                         "baseline_checkpoint": ckpt_id}
+                await runs_dao.update_run_status(
+                    job.run_id, status="running",
+                    metadata={**recorder.run_metadata,
+                              "model_snapshot": model_snapshot.metadata()},
+                )
         except Exception:
             logger.warning("run baseline checkpoint failed; continuing without it", exc_info=True)
 
