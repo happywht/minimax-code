@@ -152,6 +152,16 @@ async def restore_database(db: Any, envelope: dict[str, Any]) -> dict[str, Any]:
 
     columns_by_table = await _business_table_columns(db)
     envelope_tables = envelope["tables"]
+    protected = {"sessions", "messages", "agent_runs", "agent_run_steps", "run_events",
+                 "schedule_occurrences", "scheduled_jobs", "tasks"}
+    if max(current, default=0) >= 37 and any(
+        name.startswith("budget_") or name in protected for name in envelope_tables
+    ):
+        raise ValueError(
+            "Budget/run history JSON restore is unsupported on Schema037; "
+            "use a reviewed offline SQLite restore and budget reconciliation flow. "
+            "Unrelated settings and memory imports remain supported."
+        )
 
     # FK enforcement must be off for the truncate-and-refill dance (SQLite
     # bulk-load idiom); PRAGMA is a no-op inside a transaction, so toggle it

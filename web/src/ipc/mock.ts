@@ -626,6 +626,10 @@ function mockHandle(
       };
     }
 
+    case "budget.get":
+      throw new Error("模拟模式没有实际预算账本；未知用量不能按零处理。");
+    case "budget.reconcile":
+      throw new Error("模拟模式不支持核对真实预算责任。");
     case "run.events": {
       const p = params as { run_id: string; after_seq?: number; limit?: number };
       if (!p || !mockRuns.has(p.run_id)) throw new Error("unknown run_id");

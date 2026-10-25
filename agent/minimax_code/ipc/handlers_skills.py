@@ -289,6 +289,7 @@ def register_skill_handlers(
                             "tool_calls": result.tool_calls,
                             "cancelled": result.cancelled,
                             "truncated": result.truncated,
+                            "budget_exhausted": bool(getattr(result, "budget_exhausted", False)),
                             "comments": [],
                             "stats": stats,
                         }
@@ -412,6 +413,7 @@ def register_skill_handlers(
                     "tool_calls": result.tool_calls,
                     "cancelled": result.cancelled,
                     "truncated": result.truncated,
+                    "budget_exhausted": result.budget_exhausted,
                 }
             )
         except HandlerError as exc:

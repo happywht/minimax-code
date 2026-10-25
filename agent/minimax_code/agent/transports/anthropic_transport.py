@@ -16,6 +16,7 @@ from typing import Any
 
 import anthropic
 
+from ...budget_ledger import governed_client, governed_request
 from ..reasoning import ReasoningEffort, coerce_effort
 from ..types import LLMError, StreamChunk
 from . import LLMTransport
@@ -248,7 +249,8 @@ async def _anthropic_stream_to_chunks(
     Thinking blocks are counted (but their content is not forwarded
     to the caller — the agent core only tracks the count).
     """
-    input_tokens = 0
+    input_tokens = None
+    cache_read, cache_creation = None, None
     tool_blocks: dict[int, dict[str, str]] = {}  # index → {id, name}
     thinking_count = 0
 
@@ -258,7 +260,12 @@ async def _anthropic_stream_to_chunks(
         if etype == "message_start":
             usage = getattr(event.message, "usage", None)
             if usage:
-                input_tokens = usage.input_tokens or 0
+                raw_input = getattr(usage, "input_tokens", None)
+                cache_read = getattr(usage, "cache_read_input_tokens", None)
+                cache_creation = getattr(usage, "cache_creation_input_tokens", None)
+                input_tokens = (raw_input + (cache_read or 0) + (cache_creation or 0)) if raw_input is not None else None
+                yield StreamChunk(usage={"prompt_tokens": input_tokens, "cached_tokens": cache_read,
+                                         "cache_creation_tokens": cache_creation})
 
         elif etype == "content_block_start":
             block = event.content_block
@@ -329,9 +336,9 @@ async def _anthropic_stream_to_chunks(
                 yield StreamChunk()
 
         elif etype == "message_delta":
-            output_tokens = 0
+            output_tokens = None
             if hasattr(event, "usage") and event.usage:
-                output_tokens = event.usage.output_tokens or 0
+                output_tokens = getattr(event.usage, "output_tokens", None)
 
             stop_reason = "stop"
             if hasattr(event, "delta") and event.delta:
@@ -342,7 +349,9 @@ async def _anthropic_stream_to_chunks(
             usage: dict[str, int] = {
                 "prompt_tokens": input_tokens,
                 "completion_tokens": output_tokens,
-                "total_tokens": input_tokens + output_tokens,
+                "total_tokens": input_tokens + output_tokens if input_tokens is not None and output_tokens is not None else None,
+                "cached_tokens": cache_read,
+                "cache_creation_tokens": cache_creation,
             }
             if thinking_count > 0:
                 usage["thinking_tokens"] = thinking_count
@@ -444,7 +453,7 @@ class AnthropicTransport(LLMTransport):
         a_messages = _convert_messages(remaining)
         a_tools = _convert_tools(tools)
 
-        client = self._ensure_client()
+        client = governed_client(self._ensure_client())
 
         # R57: emit the reasoning-effort token on the wire via the Anthropic
         # ``output_config.effort`` field (the emit seam ``to_messages_api``
@@ -461,8 +470,7 @@ class AnthropicTransport(LLMTransport):
             else None
         )
 
-        try:
-            async with client.messages.stream(
+        kwargs = dict(
                 model=model,
                 system=system_prompt or anthropic.NOT_GIVEN,
                 messages=a_messages,
@@ -489,13 +497,18 @@ class AnthropicTransport(LLMTransport):
                     if _effort_token is not None
                     else anthropic.NOT_GIVEN
                 ),
-            ) as stream:
-                async for chunk in _anthropic_stream_to_chunks(stream):
-                    if chunk.usage and isinstance(
-                        chunk.usage.get("thinking_tokens"), int
-                    ):
-                        self._thinking_count = chunk.usage["thinking_tokens"]
-                    yield chunk
+            )
+        # Omit SDK sentinel objects before serializing the declared request.
+        kwargs = {key: value for key, value in kwargs.items() if value is not anthropic.NOT_GIVEN}
+        try:
+            async with governed_request(kwargs, protocol="anthropic") as attempt:
+                async with client.messages.stream(**kwargs) as stream:
+                    async for chunk in _anthropic_stream_to_chunks(stream):
+                        if attempt is not None:
+                            attempt.observe(chunk)
+                        if chunk.usage and isinstance(chunk.usage.get("thinking_tokens"), int):
+                            self._thinking_count = chunk.usage["thinking_tokens"]
+                        yield chunk
         except anthropic.APIError as exc:
             record_outcome(
                 breaker,

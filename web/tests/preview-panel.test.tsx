@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { PreviewPanel } from "../src/components/panels/PreviewPanel";
 import { usePreviewStore } from "../src/stores/previewStore";
 import { useSessionStore } from "../src/stores";
@@ -101,6 +101,6 @@ describe("PreviewPanel", () => {
     expect(fetch).toHaveBeenCalledWith("http://preview.test/auth/session", expect.objectContaining({
       method: "POST", credentials: "include",
     }));
-    expect(events).toHaveBeenCalledWith("http://preview.test/preview/view/fixture/events");
+    await waitFor(() => expect(events).toHaveBeenCalledWith("http://preview.test/preview/view/fixture/events"));
   });
 });

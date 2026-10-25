@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from ..storage.dao._base import dumps_json, loads_json, now_iso
 from ..storage.dao.runs import _append_event, _fetchone, _hydrate_run
@@ -20,6 +21,43 @@ class CodexConversation:
         self.certainty = "unknown"
         self.recovery_interval = False
         self.bound = False
+        self.budget_handle = None
+        self.attempt_id = None
+
+    async def begin_attempt(self):
+        if self.budget_handle is None:
+            return
+        if self.state.get("usage_certainty") == "uncertain":
+            from ..budget import BudgetExhausted
+            raise BudgetExhausted("Codex thread watermark is uncertain; use a new thread with a reviewed handoff")
+        handle = self.budget_handle
+        self.attempt_id = f"attempt_{uuid4().hex}"
+        try:
+            await handle.dao.reserve(family_id=handle.family_id, run_id=self.job.run_id,
+                provider=self.state.get("modelProvider"), model=self.state.get("model"), purpose="codex_external_turn",
+                estimate=0, daily_limit=handle.daily_limit, reactive=True, attempt_id=self.attempt_id)
+            await handle.dao.sent(self.attempt_id)
+        except BaseException as exc:
+            from ..budget_ledger import owned_cleanup
+            await owned_cleanup(handle.dao.fail_attempt(self.attempt_id, {}, reason=type(exc).__name__))
+            # Failed admission may have created no row at all.
+            if await self.db.fetchone("SELECT id FROM budget_attempts WHERE id=?", (self.attempt_id,)) is None:
+                self.attempt_id = None
+            raise
+
+    async def budget_exceeded(self):
+        if self.budget_handle is None:
+            return False
+        state = await self.budget_handle.snapshot()
+        # The currently running external turn has an unresolved remainder;
+        # its observed watermark still triggers reactive interruption at cap.
+        family = state
+        daily = state["day"]
+        return (family["baseline_incomplete"] or family["unknown_attempts"] > 0
+            or (family["limit_tokens"] is not None and family["known_tokens"] + family["reserved_tokens"] >= family["limit_tokens"])
+            or (self.budget_handle.daily_limit is not None and (daily["baseline_incomplete"]
+                or daily["unknown_attempts"] > 0
+                or daily["known_tokens"] + daily["reserved_tokens"] >= self.budget_handle.daily_limit)))
 
     async def load(self) -> None:
         row = await self.db.fetchone("SELECT * FROM sessions WHERE id=?", (self.job.session_id,))
@@ -112,6 +150,8 @@ class CodexConversation:
                                             or self.usage is None or self.certainty == "uncertain")
         self.state["active_turn_id"] = None
         result = {**self.receipt(status), **(receipt or {})}
+        if self.budget_handle is not None:
+            result["budget"] = await self.budget_handle.snapshot()
         from ..verification import verification_evidence
         result["verification"] = verification_evidence(status=status, engine="codex")
         if error:
@@ -122,8 +162,28 @@ class CodexConversation:
 
     async def _save(self, status: str, *, message: bool = False,
                     result: dict[str, Any] | None = None, error: str | None = None) -> None:
+        try:
+            await self._persist(status, message=message, result=result, error=error)
+        except Exception:
+            if self.attempt_id is not None:
+                self.db._budget_governance_error = "Codex budget/watermark persistence failed"
+            raise
+
+    async def _persist(self, status: str, *, message: bool = False,
+                       result: dict[str, Any] | None = None, error: str | None = None) -> None:
         terminal = status in {"completed", "failed", "cancelled", "interrupted", "budget_paused"}
         async with self.db.transaction() as conn:
+            if self.attempt_id:
+                from ..budget_ledger import normalize_usage
+                normalized = normalize_usage({"prompt_tokens": self.usage.get("inputTokens"),
+                    "completion_tokens": self.usage.get("outputTokens"), "total_tokens": self.usage.get("totalTokens")}) if self.usage else normalize_usage(None)
+                await self.budget_handle.dao.settle_in_transaction(conn, self.attempt_id, normalized,
+                    complete=status == "completed" and self.usage is not None and self.certainty != "uncertain",
+                    in_flight=not terminal and self.certainty != "uncertain",
+                    reason=None if status == "completed" else "external_turn_pending_or_uncertain")
+                if result is not None:
+                    result["budget"] = self.budget_handle.format_snapshot(
+                        await self.budget_handle.dao._snapshot(conn, self.budget_handle.family_id))
             session = await _fetchone(conn, "SELECT engine,engine_thread_id FROM sessions WHERE id=?",
                                       (self.job.session_id,))
             if (not session or session["engine"] != "codex"

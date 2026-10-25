@@ -85,6 +85,7 @@ class SkillInvokeResult:
     tool_calls: list[dict[str, Any]]
     cancelled: bool = False
     truncated: bool = False
+    budget_exhausted: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +277,7 @@ class SkillRuntime:
                 tool_calls=list(outcome.tool_calls),
                 cancelled=outcome.cancelled,
                 truncated=outcome.truncated,
+                budget_exhausted=bool(getattr(outcome, "budget_exhausted", False)),
             )
         finally:
             try:

@@ -1,0 +1,61 @@
+"""Authenticated RPC budget read/reconciliation surface; never invent usage."""
+from __future__ import annotations
+
+from pydantic import ValidationError
+
+from ..budget import daily_budget_limit
+from ..budget_ledger import BudgetHandle
+from ..storage.dao._base import loads_json
+from ..storage.dao.budgets import BudgetsDAO
+from .protocol import INVALID_PARAMS, BudgetGetParams, BudgetReconcileParams
+
+
+def register_budget_handlers(server):
+    async def database():
+        from ..app import get_db
+        db = get_db()
+        if db is None:
+            raise ValueError("Budget storage unavailable")
+        return db
+
+    async def get(params, ctx):
+        try:
+            request = BudgetGetParams.model_validate(params or {})
+            db = await database()
+            dao = BudgetsDAO(db)
+            family_id, budget = None, None
+            if request.run_id:
+                row = await db.fetchone("SELECT metadata FROM agent_runs WHERE id=?", (request.run_id,))
+                if not row:
+                    raise ValueError("Unknown run")
+                metadata = loads_json(row["metadata"]) or {}
+                family_id = metadata.get("budget_family_id")
+                if family_id:
+                    handle = await BudgetHandle.for_run(db, request.run_id, daily_limit=daily_budget_limit(),
+                        enforcement="reactive" if metadata.get("engine") == "codex" else "estimated")
+                    budget = await handle.snapshot()
+            state = await dao.snapshot(family_id, day=request.day)
+            attempts = await dao.attempts(family_id) if family_id else []
+            blockers = await db.fetchall(
+                "SELECT a.id AS attempt_id,a.family_id,a.known_tokens,COALESCE(r.id,root.id) AS run_id,COALESCE(r.session_id,root.session_id) AS session_id "
+                "FROM budget_attempts a JOIN budget_families f ON f.id=a.family_id "
+                "LEFT JOIN agent_runs r ON r.id=a.run_id LEFT JOIN agent_runs root ON root.id=f.root_run_id "
+                "WHERE a.reservation_day=? AND a.state='unknown' ORDER BY a.rowid LIMIT 20", (state["day"]["day"],))
+            coverage = await db.fetchone("SELECT started_at FROM budget_coverage WHERE id=1")
+            await ctx.reply({"budget": budget, "day": state["day"], "attempts": attempts,
+                             "day_blockers": {"total": state["day"]["unknown_attempts"], "items": [dict(row) for row in blockers]},
+                             "coverage_started_at": coverage["started_at"] if coverage else None})
+        except (ValidationError, ValueError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+
+    async def reconcile(params, ctx):
+        try:
+            request = BudgetReconcileParams.model_validate(params)
+            dao = BudgetsDAO(await database())
+            await dao.reconcile(**request.model_dump(exclude={"acknowledged"}))
+            await ctx.reply({"ok": True})
+        except (ValidationError, ValueError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+
+    server.register("budget.get", get)
+    server.register("budget.reconcile", reconcile)

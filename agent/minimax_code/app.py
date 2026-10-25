@@ -216,11 +216,11 @@ async def _maybe_open_db() -> Any:
         # built from the stored model preference + provider config
         # (or fall back to defaults when no DB preference exists).
         _set_subagent_llm(await _rebuild_subagent_llm(db))
-        # R12 — boot-time crash recovery. Fail-open by design: the inner
-        # call already swallows its own errors, and this outer guard is
-        # belt-and-suspenders so a recovery fault never blocks boot.
+        # Diagnostics may boot after recovery faults; paid admission stays
+        # quarantined until durable orphan/attempt recovery has committed.
         # Runs exactly once per boot; snapshots into _RECOVERY_RESULT
         # for the runtime.* IPC handlers.
+        db._budget_governance_error = "startup budget recovery has not completed"
         try:
             await _run_crash_recovery(db)
         except Exception:
@@ -679,6 +679,7 @@ async def _rebuild_subagent_llm(db: Any) -> Any:
         api_key = secrets.get_provider_key(provider_id) or ""
 
         client = MiniMaxClient(
+            require_budget=True,
             protocol=protocol,
             api_key=api_key,
             base_url=base_url,
@@ -798,6 +799,8 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # Run timeline read APIs — lets the frontend replay persisted
     # agent runs instead of relying only on live WebSocket events.
     register_run_handlers(server)
+    from .ipc.handlers_budget import register_budget_handlers
+    register_budget_handlers(server)
     # M4 — engine registry cards (native + Codex) with live
     # availability probes so the UI can disable what is missing.
     from .ipc.handlers_engines import register_engine_handlers
@@ -1302,7 +1305,7 @@ def _set_recovery_result(result: Any) -> None:
 
 
 async def _run_crash_recovery(db: Any) -> None:
-    """Boot-time crash recovery (R12, fail-open).
+    """Boot-time recovery; diagnostics may boot while paid work stays closed.
 
     Orchestrates two independent mechanisms fused from grok-build:
 
@@ -1314,12 +1317,15 @@ async def _run_crash_recovery(db: Any) -> None:
        audit, grok ``RewindMarker`` semantics).
 
     Each can fail independently without blocking the other, and the
-    whole orchestration is fail-open: a recovery fault never blocks
-    boot. The snapshot lands in :data:`_RECOVERY_RESULT` for the
+    orchestration permits diagnostic boot after a fault, but paid budget
+    admission remains quarantined until successful durable recovery.
+    The snapshot lands in :data:`_RECOVERY_RESULT` for the
     ``runtime.recovery_status`` IPC handler, and a WARN telemetry event
     (R11) is emitted when recovery actually did something.
     """
     from pathlib import Path
+
+    db._budget_governance_error = "startup budget recovery has not completed"
 
     try:
         from .runtime.crash_detect import check_previous_crash, crash_report_to_dict
@@ -1352,8 +1358,8 @@ async def _run_crash_recovery(db: Any) -> None:
         recovery = {"recovered": 0, "run_ids": [], "sessions": []}
 
     snapshot = {
-        "available": True,
-        "clean_start": not crashed and int(recovery.get("recovered", 0)) == 0,
+        "available": not bool(getattr(db, "_budget_governance_error", None)),
+        "clean_start": not getattr(db, "_budget_governance_error", None) and not crashed and int(recovery.get("recovered", 0)) == 0,
         "previous_crash": crashed,
         "crash": crash_report_to_dict(report),
         "recovered_runs": int(recovery.get("recovered", 0)),

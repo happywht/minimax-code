@@ -111,6 +111,8 @@ async def test_zhipu_usage_rides_on_finish_chunk() -> None:
         "completion_tokens": 66,
         "total_tokens": 82,
         "thinking_tokens": 61,
+        "reasoning_tokens": 61,
+        "cached_tokens": 0,
     }
 
 
@@ -193,6 +195,7 @@ def test_usage_to_dict_raw_dict_with_reasoning() -> None:
         "completion_tokens": 2,
         "total_tokens": 3,
         "thinking_tokens": 2,
+        "reasoning_tokens": 2,
     }
 
 

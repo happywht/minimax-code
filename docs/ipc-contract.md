@@ -522,8 +522,8 @@ text fallback and the message ID; a run ID exists only if its record was created
 Unavailable iteration/usage counts are omitted. If completion committed before
 cancellation, the successful result remains authoritative. Failure to create the
 run history returns storage error -32004 before model or tool execution.
-Native admission is now durable. Cross-engine/child-task lifecycle coordination
-and persisted approval/budget enforcement are still pending.
+Native admission and shared budget liability accounting are durable. Complete
+cross-engine/child-task recovery and persisted approval enforcement remain pending.
 
 Native requests capture the client, model, reasoning effort and context limit at
 admission, before waiting for the session lease. Child tasks inherit that model
@@ -532,8 +532,8 @@ runtime; a later global selection cannot change it. Run metadata includes
 protocol: string | null, reasoning_effort: string | null, context_window: number}`
 from creation through completion. It contains no credential or endpoint URL; old
 runs may omit it. Missing/disabled providers and empty endpoint configuration reject execution with
--32003 instead of silently changing providers. This does not yet freeze workspace,
-permission rules or budgets. The accepted workspace path and project are also
+-32003 instead of silently changing providers. Permission rules are not yet frozen.
+The accepted workspace path and project are also
 saved; execution validates the captured directory and never follows later rebinding.
 
 
@@ -563,7 +563,8 @@ precisely to a current turn. Decreasing counters preserve the previous watermark
 stop bounded execution as uncertain. History and token summaries retain unknown as null.
 Its budget interruption is reactive to engine notifications,
 not a guaranteed pre-inference hard cap; unknown usage with an enabled budget
-pauses the run. This does not yet provide the shared daily budget ledger.
+pauses the run. Shared family/day liabilities are persisted by Schema037; enforcement
+remains reactive for Codex and estimated for Native, with no billing hard-cap claim.
 The admitted mode is preserved: plan requests read-only execution with no approval
 escalation, while chat/execute request workspace-write and human approvals.
 Workspace resolution errors reject admission; queued execution rechecks the directory.
@@ -1442,6 +1443,13 @@ document the migration in this file.
 | `audit.list` | 分页查询审计条目 |
 | `audit.stats` | 审计统计摘要 |
 | `audit.purge` | 按条件清理审计历史 |
+
+### budget.* — 共享预算账本
+
+| 方法 | 说明 |
+|------|------|
+| `budget.get` | 读取 `{run_id?, day?}` 的预算家族、Asia/Shanghai 日账、家族 attempts、当日 day_blockers（总数及最多 20 项身份/owner run/session/已知下界）与覆盖起点 |
+| `budget.reconcile` | 核定历史/未知责任；要求明确确认、依据和不少于已知下界的累计责任 |
 
 ### checkpoint.* — 工作区快照
 

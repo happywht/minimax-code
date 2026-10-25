@@ -646,34 +646,13 @@ async def handle_agent_send_message(
     if internal_schedule is not None:
         validate_command = internal_schedule["context"]["validate_command"]
 
-    # M2 — resolve the run budget before admission. The daily baseline
-    # (today's spent total) is queried once here; the in-flight run adds
-    # its own usage on top inside the core. A day already over its cap
-    # refuses new work fast, before any model call.
+    # Durable reservations enforce family/day ceilings at each actual send.
     from ..budget import daily_budget_limit, resolve_run_budget
 
     budget_override = params.get("budget_tokens")
     run_budget = internal_schedule["context"]["budget_tokens"] if internal_schedule is not None else resolve_run_budget(budget_override)
     daily_limit = daily_budget_limit()
     daily_baseline = 0
-    if daily_limit is not None:
-        try:
-            row = await db.fetchone(
-                "SELECT COALESCE(SUM(tokens_in + tokens_out), 0) AS n FROM messages "
-                "WHERE date(created_at, 'localtime') = date('now', 'localtime')"
-            )
-            daily_baseline = int(row["n"] or 0) if row else 0
-        except Exception:
-            logger.warning("daily budget baseline query failed; treating as 0", exc_info=True)
-            daily_baseline = 0
-        if daily_baseline >= daily_limit:
-            await ctx.reply_error(
-                LLM_ERROR,
-                f"Daily token budget exhausted ({daily_baseline} spent of {daily_limit}); "
-                "raise MINIMAX_CODE_DAILY_BUDGET_TOKENS or wait for the next day",
-                {"daily_budget": {"limit": daily_limit, "spent": daily_baseline}},
-            )
-            return
 
     try:
         if internal_schedule is not None:
@@ -694,7 +673,9 @@ async def handle_agent_send_message(
                 logger.exception("scheduled model client close failed")
 
     async def execute(job: RunJob) -> None:
+        from ..budget_ledger import BudgetHandle, budget_scope
         from ..schedule_context import ScheduledChildren, scheduled_runtime
+        job.budget_handle = await BudgetHandle.for_run(db, job.run_id, daily_limit=daily_limit)
         children = ScheduledChildren() if internal_schedule is not None else None
         schedule_token = scheduled_runtime.set({"context":internal_schedule["context"],"children":children}) if internal_schedule is not None else None
         try:
@@ -702,7 +683,7 @@ async def handle_agent_send_message(
 
             runtime = SubAgentRuntime(llm=model_snapshot.client,
                                       reasoning_effort=model_snapshot.reasoning_effort)
-            with execution_scope(ExecutionPolicy(read_only=mode == "plan")), subagent_runtime_scope(runtime):
+            with execution_scope(ExecutionPolicy(read_only=mode == "plan")), subagent_runtime_scope(runtime), budget_scope(job.budget_handle):
                 await _handle_agent_send_message(request, _RunContext(ctx, job), job=job,
                                                  model_snapshot=model_snapshot, internal_schedule=internal_schedule)
         finally:
@@ -719,6 +700,8 @@ async def handle_agent_send_message(
 
     async def finalize(job: RunJob, error: BaseException | None) -> None:
         await close_owned_model()
+        # Each governed request retains its own cleanup. Ordinary async
+        # descendants may still be running: only startup may recover a family.
         current = await dao.get_run(job.run_id)
         # A completed receipt is immutable. A preliminary budget pause can
         # still fail or be cancelled before its final evidence is settled.
@@ -737,6 +720,8 @@ async def handle_agent_send_message(
         from ..verification import verification_evidence
         receipt["run_status"] = "cancelled" if cancelled else "failed"
         receipt.update(cancelled=cancelled, budget_paused=False)
+        if getattr(job, "budget_handle", None) is not None:
+            receipt["budget"] = await job.budget_handle.snapshot()
         receipt["verification"] = verification_evidence(status=receipt["run_status"],
             base=(job.result or {}).get("verification"), configured=bool(job.validate_command))
         run = await dao.terminate_run(job.run_id, status="cancelled" if cancelled else "failed",
@@ -1532,7 +1517,7 @@ async def _handle_agent_send_message(
         # M2 — the caller can distinguish a budget pause from a normal
         # completion without decoding the run status enum.
         "budget_paused": bool(getattr(result, "budget_exhausted", False)),
-        "budget": core.budget.snapshot() if core.budget is not None else None,
+        "budget": (await job.budget_handle.snapshot()) if getattr(job, "budget_handle", None) is not None else core.budget.snapshot() if core.budget is not None else None,
         "verification": verification,
         "run_status": execution_status,
         # v1.1.0: block accounting for auto-continue (1 when off) —
@@ -1729,7 +1714,8 @@ async def handle_agent_continue_run(params: Any, ctx: Context) -> None:
     key = "continue:" + hashlib.sha256(run["id"].encode()).hexdigest()
     await handle_agent_send_message(
         {"session_id": session_id, "content": _CONTINUE_PROMPT + f"\n[Continuation of run {run['id']}]",
-         "mode": run.get("mode", "chat"), "idempotency_key": key}, ctx,
+         "mode": run.get("mode", "chat"), "idempotency_key": key,
+         "budget_tokens": (metadata.get("budget") or {}).get("limit_tokens")}, ctx,
         resumed_from_id=run["id"], continuation=True,
         required_model=metadata.get("model_snapshot"), required_workspace=metadata.get("workspace_snapshot"),
     )

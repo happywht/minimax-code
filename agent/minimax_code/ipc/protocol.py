@@ -123,6 +123,21 @@ class RunResumeParams(RunIdParams):
     budget_tokens: int | None = Field(default=None, ge=0)
 
 
+class BudgetGetParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    run_id: str | None = None
+    day: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+class BudgetReconcileParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    target: Literal["day", "family", "attempt"]
+    target_id: str = Field(min_length=1)
+    liability_tokens: int = Field(ge=0)
+    reason: str = Field(min_length=1, max_length=1000)
+    acknowledged: Literal[True]
+
+
 class VerificationEvidence(_Base):
     version: Literal[1] = 1
     verdict: Literal["passed", "failed", "unknown", "not_applicable"] = "unknown"
@@ -214,7 +229,7 @@ class RunEvent(_Base):
     id: str
     run_id: str
     seq: int = Field(ge=1)
-    type: Literal["created", "status", "step_created", "step_updated", "recovered"]
+    type: Literal["created", "status", "step_created", "step_updated", "recovered", "budget"]
     created_at: str
     data: dict[str, Any]
 

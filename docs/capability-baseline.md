@@ -1,6 +1,6 @@
 # 当前能力基线
 
-核对起点：2026-10-22 的 `78962fb`。根 package.json、web/package.json、agent/pyproject.toml 的包版本均为 1.6.0，之后有未发布修复。加入 M2 事件读取接口时为 171 个 RPC、33 个带点号命名空间；至 2026-10-25 上传状态查询批次，当前注册 **188 个 RPC，35 个带点号命名空间，加 3 个无点号方法**。统计来自 `register_app_handlers`；AGENTS 表与 IPC 文档受测试守护。
+核对起点：2026-10-22 的 `78962fb`。根 package.json、web/package.json、agent/pyproject.toml 的包版本均为 1.6.0，之后有未发布修复。至 2026-10-26 共享预算批次，当前注册 **192 个 RPC，36 个带点号命名空间，另有 3 个无点号方法**。统计来自 `register_app_handlers`；AGENTS 表与 IPC 文档受测试守护。
 
 成熟度：**功能覆盖较广的个人开发预览版**。不使用单一完成百分比。以下“生产入口已接入”仅指真实启动路径能够调用，不代表无人值守、真实模型质量或全部边界已验收。
 
@@ -34,7 +34,7 @@
 | 执行入口分散、模型/预算/取消语义不统一 | `agent/core.py`、`ipc/builtins.py`、`orchestrator/` | M1–M2 |
 | WS 内存重放、持久运行恢复不完整 | `http_server.py`、`ipc/handlers_runs.py` | M2 |
 | 文本截取式压缩、哈希向量、快照恢复语义 | `agent/compaction.py`、`codebase/`、`ipc/handlers_checkpoint.py` | M3 |
-| 跨运行共享每日预算尚不完整；本地调度固定上下文/occurrence 已有离线闭环 | `scheduler/`、`runs.py`、`budget.py` | M2/M5 |
+| 共享累计家族/全机日账与未知责任已接入，Native 估算预留、Codex 反应式中断；尚未完成真实任务及远程生产验收 | `budget_ledger.py`、`storage/dao/budgets.py`、`scheduler/` | M2/M5 |
 | Codex 和 SSH 产品入口已有局部实现，真实推理/远程长期运行闭环未验收 | `engines/`、`hosts/`、`ipc/handlers_hosts.py` | M4/M5 |
 | MCP HTTP 互操作、办公文件解析及交付物验收缺口 | `mcp/`、前端附件/预览链路 | M6 |
 | 安装、升级、完整备份与持续试用 | `scripts/`、`docs/deployment.md` | M7 |

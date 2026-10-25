@@ -132,6 +132,8 @@ class AgentRunsDAO:
                 "VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)",
                 (run_id, session_id, mode, title, ts, f"msg_{uuid.uuid4().hex}",
                  dumps_json(metadata), request_key, fingerprint, canonical, resumed_from_id))
+            from .budgets import attach_family
+            await attach_family(conn, run_id, metadata, source_id=resumed_from_id)
             run = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
             if metadata.get("schedule"):
                 binding = metadata["schedule"]
@@ -505,7 +507,11 @@ class AgentRunsDAO:
         Only called at boot, before accepting work.
         """
         ts = now_iso()
+        self._db._budget_governance_error = "startup budget recovery has not completed"
         async with self._db.transaction() as conn:
+            if await _fetchone(conn, "SELECT name FROM sqlite_master WHERE type='table' AND name='budget_attempts'"):
+                from .budgets import BudgetsDAO
+                await BudgetsDAO(self._db).recover_in_transaction(conn)
             async with conn.execute(
                 "SELECT id, session_id, status FROM agent_runs "
                 "WHERE status IN ('queued', 'planning', 'running', 'awaiting_approval', "
@@ -565,6 +571,7 @@ class AgentRunsDAO:
                 run = _hydrate_run(await _fetchone(conn,
                     "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
                 await _append_event(conn, run_id, "recovered", {"run": run, "step": step})
+        self._db._budget_governance_error = None
         run_ids = [row["id"] for row in rows]
         sessions = [row["session_id"] for row in rows]
         return {"recovered": len(run_ids), "run_ids": run_ids, "sessions": sessions}

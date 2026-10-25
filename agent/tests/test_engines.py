@@ -88,7 +88,7 @@ async def test_engine_status_reports_reason_for_unavailable(server, monkeypatch)
     bad.reply_error.assert_awaited_once()
 
 
-@pytest.mark.parametrize("terminal_status", ["completed", "failed", "interrupted"])
+@pytest.mark.parametrize("terminal_status", ["completed", "failed", "interrupted", "missing-usage"])
 async def test_run_start_codex_admits_and_names_failures(server, monkeypatch, tmp_path,
                                                        terminal_status) -> None:
     """engine=codex admits durably and drives through the App Server.
@@ -111,8 +111,11 @@ async def test_run_start_codex_admits_and_names_failures(server, monkeypatch, tm
     await sessions.create(id="ses_codex", title="Codex test", workspace_path=str(tmp_path), engine="codex")
 
     fake = tmp_path / "fake_codex.py"
-    fake.write_text(FAKE_CODEX.replace('"status": "completed"',
-                                     f'"status": "{terminal_status}"'), encoding="utf-8")
+    script = FAKE_CODEX.replace('"status": "completed"',
+                               f'"status": "{"completed" if terminal_status == "missing-usage" else terminal_status}"')
+    if terminal_status != "missing-usage":
+        script = script.replace('if method == "turn/start":', 'if method == "turn/start":\n        print(json.dumps({"method":"thread/tokenUsage/updated","params":{"threadId":"th_1","turnId":"turn_1","tokenUsage":{"total":{"inputTokens":8,"outputTokens":2,"totalTokens":10}}}}),flush=True)')
+    fake.write_text(script, encoding="utf-8")
     monkeypatch.setenv("MINIMAX_CODE_CODEX_CMD",
                        json.dumps([sys.executable, str(fake)]))
 
@@ -130,13 +133,15 @@ async def test_run_start_codex_admits_and_names_failures(server, monkeypatch, tm
     for _ in range(300):
         await asyncio.sleep(0.02)
         row = await ctx_reply_run(server, run_id)
-        if row["status"] in {"completed", "failed", "cancelled", "interrupted"}:
+        if row["status"] in {"completed", "failed", "cancelled", "interrupted", "budget_paused"}:
             break
-    assert row["status"] == terminal_status, row
+    assert row["status"] == ("budget_paused" if terminal_status == "missing-usage" else terminal_status), row
     receipt = row["result"]
     assert receipt["engine"] == "codex"
     assert "running tests" in receipt["text"]
-    if terminal_status != "completed":
+    if terminal_status == "missing-usage":
+        assert receipt["tokens_total"] is None and receipt["budget"]["unknown_attempts"] == 1
+    elif terminal_status != "completed":
         assert row["error"] and receipt["error"]
 
     # An invalid binding is rejected before admission, not changed to CWD.

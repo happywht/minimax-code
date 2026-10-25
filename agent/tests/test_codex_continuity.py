@@ -119,6 +119,18 @@ def requests(state, method):
     return [r for line in path.read_text().splitlines() if (r := json.loads(line)).get("method") == method] if path.exists() else []
 
 
+async def reconcile_interrupted_attempt(state, run):
+    """Workspace review is separate from explicit uncertain-cost authorization."""
+    from minimax_code.storage.dao.budgets import BudgetsDAO
+    dao = BudgetsDAO(state.db)
+    attempts = await dao.attempts(run["metadata"]["budget_family_id"])
+    for attempt in attempts:
+        if attempt["state"] == "unknown":
+            await dao.reconcile(target="attempt", target_id=attempt["id"],
+                liability_tokens=max(attempt["estimated_tokens"], attempt["known_tokens"] or 0),
+                reason="Offline fixture explicitly authorizes interrupted interval liability")
+
+
 async def test_two_turns_reopen_and_restore_history(codex):
     first = await settle(codex, await start(codex))
     assert first["status"] == "completed"
@@ -185,9 +197,14 @@ async def test_partial_survives_eof_and_cancel(codex, ending):
     denied.reply_error.assert_awaited_once()
     unreviewed = await rpc(codex, "run.resume", {"run_id": run_id, "idempotency_key": "recover"})
     unreviewed.reply_error.assert_awaited_once()
-    recovered = await rpc(codex, "run.resume", {"run_id": run_id, "idempotency_key": "recover", "reviewed": True})
+    held = await settle(codex, await rpc(codex, "run.resume", {
+        "run_id": run_id, "idempotency_key": "held", "reviewed": True}))
+    assert held["status"] == "budget_paused"
+    assert len(requests(codex, "turn/start")) == 1
+    await reconcile_interrupted_attempt(codex, run)
+    recovered = await rpc(codex, "run.resume", {"run_id": held["id"], "idempotency_key": "recover", "reviewed": True, "budget_tokens": 10000})
     recovery_run = await settle(codex, recovered)
-    assert recovery_run["resumed_from_id"] == run_id and recovery_run["status"] == "completed"
+    assert recovery_run["resumed_from_id"] == held["id"] and recovery_run["status"] == "completed"
     result = await codex.dao.result_payload(recovery_run["id"])
     assert result["tokens_total"] == 50 and result["usage_certainty"] == "recovery_interval"
 
@@ -227,6 +244,7 @@ async def test_thread_binding_survives_failure_before_turn_and_recovery(codex):
     assert run["status"] == "failed"
     session = await SessionsDAO(codex.db).get("one")
     assert session["engine_thread_id"] == run["metadata"]["codex_thread_id"] == "thread-1"
+    await reconcile_interrupted_attempt(codex, run)
     resumed = await rpc(codex, "run.resume", {"run_id": run["id"], "reviewed": True, "idempotency_key": "r"})
     assert (await settle(codex, resumed))["status"] == "completed"
     assert len(requests(codex, "thread/start")) == 1
@@ -299,12 +317,15 @@ async def test_queued_cancellation_still_has_one_durable_user(codex):
     await settle(codex, active)
 
 
-async def test_unknown_completed_interval_is_not_charged_as_precise_next_turn(codex):
+async def test_missing_usage_pauses_and_reviewed_interval_is_not_precise_new_turn(codex):
     first = await settle(codex, await start(codex, "unknown"))
-    assert first["status"] == "completed"
+    assert first["status"] == "budget_paused"
     session = await SessionsDAO(codex.db).get("one")
     assert session["engine_state"]["uncertain_interval"] is True
-    second = await settle(codex, await start(codex, "next", "next"))
+    denied = await start(codex, "next", "next")
+    denied.reply_error.assert_awaited_once()
+    await reconcile_interrupted_attempt(codex, first)
+    second = await settle(codex, await rpc(codex, "run.resume", {"run_id": first["id"], "idempotency_key": "next", "reviewed": True, "budget_tokens": 1000}))
     result = await codex.dao.result_payload(second["id"])
     assert result["tokens_total"] == 150 and result["usage_certainty"] == "recovery_interval"
 
@@ -317,6 +338,7 @@ async def test_failed_predecessor_does_not_make_queued_successor_another_review_
     assert original["status"] == "failed"
     assert blocked["status"] == "failed" and not blocked.get("started_at")
     cursor = (await codex.dao.events(original["id"]))["next_seq"]
+    await reconcile_interrupted_attempt(codex, original)
     resumed = await rpc(codex, "run.resume", {"run_id": original["id"], "idempotency_key": "recover", "reviewed": True})
     assert (await settle(codex, resumed))["status"] == "completed"
     events = await codex.dao.events(original["id"], after_seq=cursor)
@@ -333,6 +355,7 @@ async def test_active_external_thread_with_empty_turn_list_cannot_start_fresh_tu
     assert len(requests(codex, "turn/start")) == 1
     assert run["metadata"]["codex_thread_id"] == "thread-1"
     (codex.root / "active.flag").unlink()
+    await reconcile_interrupted_attempt(codex, first)
     retry = await rpc(codex, "run.resume", {"run_id": run["id"], "idempotency_key": "retry-child", "reviewed": True})
     assert (await settle(codex, retry))["status"] == "completed"
     assert len(requests(codex, "thread/start")) == 1

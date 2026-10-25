@@ -26,7 +26,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from ..budget import BudgetState
+from ..budget import BudgetExhausted, BudgetState
 from .codex import AppServerConnection
 
 logger = logging.getLogger(__name__)
@@ -102,6 +102,7 @@ async def drive_codex_run(
     usage: dict[str, int] = {}
     watermark = {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
     uncertain = False
+    ledger_exceeded = False
     turn_done: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
     turn_ready = asyncio.Event()
     queue: asyncio.Queue[Any] = asyncio.Queue()
@@ -118,7 +119,7 @@ async def drive_codex_run(
             await conn.request("turn/interrupt", {"threadId": thread_id, "turnId": turn_id}, timeout=10)
 
     async def process(n: dict[str, Any]) -> None:
-        nonlocal uncertain, watermark
+        nonlocal uncertain, watermark, ledger_exceeded
         if "exit_error" in n:
             raise RuntimeError(n["exit_error"])
         method, params = n.get("method", ""), n.get("params") or {}
@@ -149,6 +150,8 @@ async def drive_codex_run(
                              total_tokens=observed.get("totalTokens"))
                 uncertain = not certain
                 budget.used_tokens = int(observed.get("totalTokens") or 0)
+                if conversation.budget_handle is not None:
+                    ledger_exceeded = await conversation.budget_exceeded()
             else:
                 keys = ("inputTokens", "outputTokens", "totalTokens")
                 if not all(type(info.get(k)) is int and info[k] >= 0 for k in keys):
@@ -160,7 +163,7 @@ async def drive_codex_run(
                     usage.update(prompt_tokens=info["inputTokens"], completion_tokens=info["outputTokens"],
                                  total_tokens=info["totalTokens"])
                     budget.used_tokens = info["totalTokens"]
-            if not closing and bounded and (uncertain or budget.would_exceed(1)):
+            if not closing and (ledger_exceeded or (bounded and (uncertain or budget.would_exceed(1)))):
                 spawn_notify(interrupt())
         elif method == "turn/completed":
             if not turn_done.done():
@@ -264,6 +267,7 @@ async def drive_codex_run(
             raise ValueError("Codex returned a missing or mismatched thread ID")
         if conversation:
             await conversation.bind(result)
+            await conversation.begin_attempt()
         turn_requested = True
         turn = await conn.request("turn/start", {
             "threadId": thread_id, "input": [{"type": "text", "text": prompt}], "cwd": workspace,
@@ -288,7 +292,7 @@ async def drive_codex_run(
             raise RuntimeError(f"Codex returned an unrecognized terminal status: {status!r}")
         if cancelled:
             status = "cancelled"
-        elif status != "failed" and bounded and (not usage or uncertain or budget.would_exceed(1)):
+        elif status != "failed" and (ledger_exceeded or (conversation is not None and (not usage or uncertain)) or (bounded and (not usage or uncertain or budget.would_exceed(1)))):
             status = "budget_paused"
         result_receipt = _receipt(job, "".join(text_parts), usage, thread_id=thread_id,
                            cancelled=status == "cancelled", budget_paused=status == "budget_paused",
@@ -297,6 +301,11 @@ async def drive_codex_run(
                               usage_certainty=conversation.certainty if conversation else ("uncertain" if uncertain else "observed" if usage else "unknown"))
         if terminal.get("error") or status in {"failed", "interrupted"}:
             result_receipt["error"] = terminal.get("error") or {"message": f"Codex turn {status}"}
+        return result_receipt
+    except BudgetExhausted as exc:
+        result_receipt = _receipt(job, "".join(text_parts), usage, thread_id=thread_id,
+                                  budget_paused=True, budget=None)
+        result_receipt.update(run_status="budget_paused", budget_pause_reason=str(exc))
         return result_receipt
     except BaseException as exc:
         failure = exc
@@ -336,8 +345,8 @@ async def drive_codex_run(
                 status = ("cancelled" if isinstance(failure, asyncio.CancelledError) or cancelled else
                           "failed" if failure is not None or cleanup_error or event_errors else
                           (result_receipt or {}).get("run_status", "failed"))
-                if status not in {"failed", "cancelled"} and bounded and (
-                        not usage or uncertain or budget.would_exceed(1)):
+                if status not in {"failed", "cancelled"} and (ledger_exceeded or (bounded and (
+                        not usage or uncertain or budget.would_exceed(1)))):
                     status = "budget_paused"
                 final = _receipt(job, "".join(text_parts), usage, thread_id=thread_id,
                                  cancelled=status == "cancelled", budget_paused=status == "budget_paused",

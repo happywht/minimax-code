@@ -94,6 +94,7 @@ class MiniMaxClient:
         max_retries: int = 3,
         mock: bool | None = None,
         client: Any = None,
+        require_budget: bool = False,
     ) -> None:
         env_force_mock = os.environ.get("MINIMAX_CODE_FORCE_MOCK", "").strip().lower() in {
             "1",
@@ -121,6 +122,7 @@ class MiniMaxClient:
         self.default_model = model
         self.timeout = timeout
         self.max_retries = max_retries
+        self.require_budget = require_budget
 
         # Determine effective protocol.
         force_mock = env_force_mock or (mock if mock is not None else not bool(self.api_key))
@@ -214,7 +216,15 @@ class MiniMaxClient:
         """
         if isinstance(error := getattr(self, "configuration_error", None), str) and error:
             raise RuntimeError(error)
-        async for chunk in self._transport.stream_chat(
+        from dataclasses import replace
+
+        from ..budget_ledger import budget_scope, current_handle
+        handle = current_handle()
+        if self.require_budget and not self.mock and handle is None:
+            raise RuntimeError("This paid service route requires a unified run budget; start a Native run instead")
+        request_handle = replace(handle, provider=getattr(self, "provider_id", None) or handle.provider,
+                                 model=model or self.default_model) if handle else None
+        stream = self._transport.stream_chat(
             messages,
             model=model or self.default_model,
             tools=tools,
@@ -222,8 +232,13 @@ class MiniMaxClient:
             temperature=temperature,
             max_tokens=max_tokens,
             reasoning_effort=reasoning_effort,
-        ):
-            yield chunk
+        )
+        with budget_scope(request_handle):
+            try:
+                async for chunk in stream:
+                    yield chunk
+            finally:
+                await stream.aclose()
         # Sync thinking_count + last_reasoning_effort from the transport after
         # the stream completes (mirrors the thinking_count sync pattern).
         self._thinking_count = self._transport.thinking_count

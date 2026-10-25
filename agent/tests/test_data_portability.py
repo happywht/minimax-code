@@ -32,11 +32,16 @@ from minimax_code.storage.db import AsyncDatabase, make_temp_database_path
 
 
 @pytest.fixture
-async def async_db(tmp_path: Path) -> AsyncDatabase:
+async def async_db(tmp_path: Path, request, monkeypatch) -> AsyncDatabase:
     """A migrated async Database backed by a per-test temp file."""
     path = make_temp_database_path(tmp_path)
     db = AsyncDatabase(path)
     await db.connect()
+    if request.cls and request.cls.__name__.startswith("TestPreledger"):
+        import minimax_code.storage.db as module
+        discover = module.discover_migrations
+        monkeypatch.setattr(module, "discover_migrations", lambda applied: [
+            (version, run) for version, run in discover(applied) if version < 37])
     await db.migrate()
     yield db
     await db.close()
@@ -61,6 +66,40 @@ async def _seed(db: AsyncDatabase) -> None:
         "('m2', 's1', 'assistant', 'hi!', '2026-08-01T10:00:05Z', 0, 3), "
         "('m3', 's2', 'user', 'bye', '2026-08-02T10:00:01Z', 1, 0)"
     )
+
+
+class TestBudgetRestoreFence:
+    @pytest.mark.parametrize("source", ["old", "partial", "current"])
+    async def test_accounting_restore_rejected_before_any_mutation(self, async_db, source):
+        envelope = await dump_database(async_db)
+        await async_db.execute("INSERT INTO budget_families(id,root_run_id,created_at) VALUES('live','root','now')")
+        if source == "old":
+            envelope["schema_version"] = 36
+            envelope["tables"] = {"sessions": [], "settings": []}
+        elif source == "partial":
+            envelope["tables"] = {"budget_attempts": []}
+        envelope["counts"] = {name: len(rows) for name, rows in envelope["tables"].items()}
+        before = await dump_database(async_db)
+        with pytest.raises(ValueError, match="unsupported on Schema037"):
+            await restore_database(async_db, envelope)
+        after = await dump_database(async_db)
+        assert before["tables"] == after["tables"]
+
+    async def test_unrelated_partial_import_remains_available(self, async_db):
+        envelope = await dump_database(async_db)
+        envelope["tables"] = {"memories": [{"id": "budget-test", "content": "authorized", "created_at": "now", "updated_at": "now"}]}
+        envelope["counts"] = {"memories": 1}
+        result = await restore_database(async_db, envelope)
+        assert result["imported"] == {"memories": 1}
+        assert (await async_db.fetchone("SELECT content FROM memories WHERE id='budget-test'"))["content"] == "authorized"
+
+    async def test_export_and_sqlite_backup_include_budget_liabilities(self, async_db, tmp_path):
+        await async_db.execute("INSERT INTO budget_families(id,root_run_id,created_at) VALUES('live','root','now')")
+        export = await dump_database(async_db)
+        assert export["tables"]["budget_families"][0]["id"] == "live"
+        backup = await backup_database(async_db, tmp_path / "backup")
+        with sqlite3.connect(backup["path"]) as copy:
+            assert copy.execute("SELECT id FROM budget_families").fetchone()[0] == "live"
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +227,7 @@ class TestRestoreValidation:
             await restore_database(async_db, _bad_envelope(schema_version=9999))
 
 
-class TestRestoreDatabase:
+class TestPreledgerRestoreDatabase:
     async def test_replace_semantics_round_trip(
         self, async_db: AsyncDatabase
     ) -> None:
@@ -263,7 +302,7 @@ class TestRestoreDatabase:
             assert "future_column" not in row
 
 
-class TestDataImportIPC:
+class TestPreledgerDataImportIPC:
     async def test_import_via_rpc(
         self, async_db: AsyncDatabase, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -374,7 +413,7 @@ class TestDataBackupIPC:
 # ---------------------------------------------------------------------------
 
 
-class TestDisasterRecoveryRoundTrip:
+class TestPreledgerDisasterRecoveryRoundTrip:
     """End-to-end: export → wipe → import → the data comes back identical.
 
     Exercises the full RPC path (export and import both via ``IPCClient``)

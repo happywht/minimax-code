@@ -22,7 +22,7 @@ test("bound schedule edits atomically and exposes a blocked credential occurrenc
   await expect(page.getByTestId("settings-job-add")).toBeDisabled();
   await page.getByLabel("调度预算").fill("1000");
   await page.getByTestId("settings-job-add").click();
-  await expect(page.getByText("Bound offline schedule",{exact:true})).toBeVisible();
+  await expect(page.getByTestId(/^settings-job-row-/).getByText("Bound offline schedule",{exact:true})).toBeVisible();
   const jobs = await rpc("schedule.list",{});
   const job = jobs.jobs.find((entry: {name:string}) => entry.name === "Bound offline schedule");
   expect(job.context.hooks_policy).toBe("disabled");

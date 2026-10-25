@@ -543,8 +543,9 @@ class TeamOrchestrator:
                 envelope = await runtime.invoke(
                     handle, session_id=sid, request=request,
                 )
+            incomplete = any(envelope.get(key) for key in ("cancelled", "truncated", "budget_exhausted", "partial"))
             await self._emit_progress(
-                "agent_completed", task_id, team_name,
+                "agent_failed" if incomplete else "agent_completed", task_id, team_name,
                 agent_name=agent_name,
                 progress=(index + 1) / total,
                 agents_total=total,
@@ -552,7 +553,8 @@ class TeamOrchestrator:
             )
             return AgentRunResult(
                 agent_name=agent_name,
-                success=True,
+                success=not incomplete,
+                error="Agent stopped before completion (budget, cancellation, or truncation)" if incomplete else "",
                 text=envelope.get("text", ""),
                 iterations=envelope.get("iterations", 0),
                 tool_calls=envelope.get("tool_calls", []),

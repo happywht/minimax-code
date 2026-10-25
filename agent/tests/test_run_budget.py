@@ -358,16 +358,16 @@ async def test_resume_interrupted_inherits_saved_budget_cap(native, monkeypatch)
     assert 321 in [core.config.run_budget_tokens for core in native.cores]
 
 
-async def test_daily_budget_refuses_admission_before_any_call(native, monkeypatch) -> None:
+async def test_daily_budget_is_attached_at_admission_not_message_sum(native, monkeypatch) -> None:
     monkeypatch.setenv("MINIMAX_CODE_DAILY_BUDGET_TOKENS", "10")
     messages = MessagesDAO(native.db)
     await messages.create(id="m1", session_id="one", role="assistant", content="spent",
                           tokens_in=40, tokens_out=60)
-    ctx = Context(native.server)
-    await builtins.handle_agent_send_message({"session_id": "one", "content": "more"}, ctx)
-    ctx.reply_error.assert_awaited_once()
-    assert "Daily token budget" in str(ctx.reply_error.await_args.args[1])
-    assert await native.dao.list_runs(session_id="one") == []
+    # Historical message sums are not an authoritative spend ledger. Actual
+    # request-boundary tests cover atomic daily refusal before SDK entry.
+    await _send(native, {"session_id": "one", "content": "more"})
+    run = (await native.dao.list_runs(session_id="one"))[0]
+    assert run["metadata"]["budget"]["daily_limit"] == 10
 
 
 async def test_budget_param_flows_into_admission_metadata(native) -> None:

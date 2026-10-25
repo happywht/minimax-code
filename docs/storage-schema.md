@@ -455,3 +455,9 @@ scheduled_jobs 追加 revision/context_version/context/timezone/binding_state/bi
 唯一索引分别约束 cron(job_id,revision,scheduled_for) 与 manual(job_id,manual_key)；任务行 active_occurrence_id 在同一事务中提供跨修订租约。
 发生创建与隔离 session/task 同事务；Native 接单同时保存 run、用户消息、occurrence.run_id 与 task.run_id。终态投影以精确当前 run_id 作 CAS，旧恢复来源不能覆盖已接单子运行。
 任务软删除以保留幂等键和历史；不自动删除发生证据。升级前备份数据库，回退需旧应用及匹配的升级前数据库备份，不提供或宣称已验证逆向迁移。
+
+### Schema037：共享预算家族、尝试及日账
+
+budget_families 保存不可重置的累计上限、旧历史下界与明确授权；budget_attempts 保存每次实际发送的不可变身份、模型/提供方/目的/价格快照、Asia/Shanghai 预留日、估算、nullable 用量、责任及状态。budget_days 记录升级时历史覆盖缺口与核定依据，budget_coverage 记录覆盖起点。
+
+家族和全机日额度在同一写事务检查与预留，结算和 budget RunEvent 在同一事务落盘；Codex 同线程水位也加入该事务。外键和日/家族索引保留结束后的未知责任。Schema037 临时禁止预算及运行依赖的 JSON 替换式恢复，允许无关部分导入；完整灾难恢复兼容性列为 M7 必做后续项。备份/回退与语义详见 [共享预算账本](budget-ledger.md)。

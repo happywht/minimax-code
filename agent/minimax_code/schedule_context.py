@@ -147,6 +147,7 @@ async def resolve_model(db, context: dict) -> ModelSnapshot:
     if not key:
         raise ValueError("Scheduled provider credentials are unavailable")
     client = MiniMaxClient(
+        require_budget=True,
         protocol=provider["protocol"],
         base_url=provider["base_url"],
         api_key=key,

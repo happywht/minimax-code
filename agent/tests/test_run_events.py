@@ -200,11 +200,13 @@ async def test_export_import_roundtrip_and_legacy_import_clear_stale_events(data
     before = await dao.events(run["id"])
     envelope = await dump_database(database)
     await dao.update_run_status(run["id"], status="completed")
-    await restore_database(database, envelope)
-    assert await dao.events(run["id"]) == before
+    with pytest.raises(ValueError, match="unsupported on Schema037"):
+        await restore_database(database, envelope)
+    assert (await dao.get_run(run["id"]))["status"] == "completed"
+    assert (await dao.events(run["id"]))["next_seq"] == before["next_seq"] + 1
     # Partial old exports must not leave events describing pre-import state.
     del envelope["tables"]["run_events"]
     envelope["schema_version"] = 29
-    await restore_database(database, envelope)
-    assert (await dao.snapshot(run["id"]))["cursor"] == 0
-    assert (await dao.get_run(run["id"]))["status"] == "running"
+    with pytest.raises(ValueError, match="unsupported on Schema037"):
+        await restore_database(database, envelope)
+    assert (await dao.get_run(run["id"]))["status"] == "completed"

@@ -71,4 +71,14 @@ test("timeline recovers a completed offline run and survives a page reload", asy
   expect((await readRun()).steps).toEqual(saved.steps);
   await expect.poll(async () => (await readMessages()).map((message: { id: string }) => message.id))
     .toEqual(messages.map((message: { id: string }) => message.id));
+  const budget = await rpc("budget.get", { run_id: runId });
+  expect(budget.budget.enforcement).toBe("estimated");
+  expect(budget.budget.family_id).toBeTruthy();
+  expect(budget.budget.known_tokens).toBe(0); // Mock completion sends no paid request.
+  expect(budget.budget.unknown_attempts).toBe(0);
+  const panel = page.getByTestId("run-budget").first();
+  await expect(panel).toContainText("Native · 请求发送前估算预留");
+  await expect(panel).toContainText("价格/币种未知");
+  await panel.getByRole("button", {name: "刷新额度"}).click();
+  await expect(panel).toContainText("剩余估算");
 });

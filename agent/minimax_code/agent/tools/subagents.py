@@ -540,6 +540,9 @@ async def _drive_run(
             reset_sandbox(sandbox_token)
 
     cancelled = bool(result.get("cancelled", False)) or partial
+    budget_paused = bool(result.get("budget_exhausted", False))
+    partial = partial or budget_paused or bool(result.get("truncated", False))
+    terminal_status = "cancelled" if cancelled else "budget_paused" if budget_paused else "interrupted" if partial else "completed"
     # v1.5.0 — surface what the sandbox holds before the root scope goes
     # away; the main agent merges it with collect_subagent. Fail-open:
     # an I/O hiccup downgrades to an absent key, never a failed run.
@@ -561,6 +564,7 @@ async def _drive_run(
         **result,
         "cancelled": cancelled,
         "partial": partial,
+        "budget_exhausted": budget_paused,
         "reported": reported,
         **({"files_written": files_written} if files_written is not None else {}),
     }
@@ -571,6 +575,7 @@ async def _drive_run(
         "stub": bool(result.get("stub", True)),
         "partial": partial,
         "reported": reported,
+        "budget_exhausted": budget_paused,
         **({"workspace": result["workspace"]} if "workspace" in result else {}),
         # check_subagent / wait_subagent read the outcome from the run
         # row once the task is gone (agent restart, late poll).
@@ -583,7 +588,7 @@ async def _drive_run(
         try:
             await run_dao.update_run_status(
                 run_id,
-                status="cancelled" if cancelled else "completed",
+                status=terminal_status,
                 metadata=completion_metadata,
             )
         except Exception:  # pragma: no cover — defensive
@@ -592,7 +597,7 @@ async def _drive_run(
     await _emit_safe(
         emit,
         emit_event(
-            "cancelled" if cancelled else "completed",
+            "interrupted" if terminal_status == "budget_paused" else terminal_status,
             1.0,
             summary_text[:80] or ("partial result" if partial else "done"),
             text=summary_text or None,
@@ -1019,6 +1024,7 @@ class SpawnSubagentTool(Tool):
             "cancelled": bool(result.get("cancelled", False)),
             "partial": bool(result.get("partial", False)),
             "truncated": bool(result.get("truncated", False)),
+            "budget_exhausted": bool(result.get("budget_exhausted", False)),
             "reported": bool(result.get("reported", False)),
             # v1.5.0 — mirrors the spawn flag; a sandboxed run's files
             # live under .minimax/sandboxes/<run_id>/ until collected.

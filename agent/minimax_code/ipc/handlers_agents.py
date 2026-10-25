@@ -722,7 +722,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 agent_id=name,
                 parent_session_id=parent_session_id,
                 context_message_id=context_message_id,
-                status="completed",
+                status="failed" if any(result.get(key) for key in ("budget_exhausted", "truncated", "cancelled", "partial")) else "completed",
                 progress=1.0,
                 summary="done",
                 text=final_text,
@@ -741,6 +741,8 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                     "context_message_id": context_message_id,
                     "display_name": display_name,
                     "stub": is_stub,
+                    "budget_exhausted": bool(result.get("budget_exhausted", False)),
+                    "partial": bool(result.get("partial", False)),
                     **({"workspace": result["workspace"]} if "workspace" in result else {}),
                 }
             )

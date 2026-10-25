@@ -1,4 +1,4 @@
-import type { ScheduleDefinition, ScheduleOccurrence, ScheduleTriggerResult } from "../types/ipc";
+import type { BudgetStateResult, BudgetReconcileParams, ScheduleDefinition, ScheduleOccurrence, ScheduleTriggerResult } from "../types/ipc";
 /**
  * Typed high-level IPC API — the `TypedIPC` interface and the
  * `bindTypedIPC(client)` factory that maps friendly JS method names to
@@ -227,6 +227,8 @@ export interface TypedIPC {
   getRun(runId: string): Promise<RunGetResult>;
   cancelRun(runId: string): Promise<{ ok: boolean; requested: boolean; run: AgentRun }>;
   resumeRun(runId: string, idempotencyKey: string, reviewed?: boolean, budgetTokens?: number): Promise<RunAdmissionResult>;
+  getBudget(runId?: string, day?: string): Promise<BudgetStateResult>;
+  reconcileBudget(params: BudgetReconcileParams): Promise<{ok: boolean}>;
   getRunSteps(runId: string): Promise<RunStepsResult>;
   getRunEvents(runId: string, opts?: { after_seq?: number; limit?: number }): Promise<RunEventsResult>;
 
@@ -702,6 +704,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     startRun: (params) => client.request<RunAdmissionResult>("run.start", params),
     getRun: (runId) => client.request<RunGetResult>("run.get", { run_id: runId }),
     cancelRun: (runId) => client.request("run.cancel", { run_id: runId }),
+    getBudget: (runId, day) => client.request<BudgetStateResult>("budget.get", { ...(runId ? {run_id: runId} : {}), ...(day ? {day} : {}) }),
+    reconcileBudget: (params) => client.request<{ok: boolean}>("budget.reconcile", params),
     resumeRun: (runId, idempotencyKey, reviewed = false, budgetTokens?: number) =>
       client.request<RunAdmissionResult>("run.resume", {
         run_id: runId,

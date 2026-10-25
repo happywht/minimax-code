@@ -116,14 +116,15 @@ async def _build_llm_client(server: IPCServer) -> MiniMaxClient:
 
             if provider:
                 return MiniMaxClient(
+                    require_budget=True,
                     protocol=provider.get("protocol", "anthropic"),
                     api_key=provider.get("api_key", ""),
                     base_url=provider.get("base_url"),
                     model=model_name or default_model(),  # R51: was "MiniMax-M3" literal
                 )
             if model_name:
-                return MiniMaxClient(model=model_name)
+                return MiniMaxClient(model=model_name, require_budget=True)
     except Exception:
         logger.debug("could not read model prefs; using default client")
 
-    return MiniMaxClient()  # mock mode when no API key
+    return MiniMaxClient(require_budget=True)  # mock mode when no API key

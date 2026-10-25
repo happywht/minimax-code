@@ -54,17 +54,15 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
         raise HandlerError(-32602, "Codex recovery thread or workspace binding differs from the original run")
     budget = resolve_run_budget(request.budget_tokens)
     daily = daily_budget_limit()
-    row = await db.fetchone("SELECT COALESCE(SUM(tokens_in+tokens_out),0) AS n FROM messages "
-                            "WHERE date(created_at)=date('now','localtime')") if daily else None
-    baseline = int(row["n"]) if row else 0
-    if daily is not None and baseline >= daily:
-        raise HandlerError(-32000, "Daily token budget exhausted; persisted accounting is incomplete for unknown external usage")
+    baseline = 0  # The shared ledger reads current daily liabilities atomically.
 
     async def emit(event: str, data: dict[str, Any]) -> None:
         await _notify_run(ctx, event, data)
 
     async def operation(job: Any) -> None:
+        from ..budget_ledger import BudgetHandle
         conversation = CodexConversation(db, job)
+        conversation.budget_handle = await BudgetHandle.for_run(db, job.run_id, daily_limit=daily, enforcement="reactive")
         job.codex_conversation = conversation
         # Re-read after waiting for the previous job, never capture an empty thread ID at admission.
         await conversation.load()

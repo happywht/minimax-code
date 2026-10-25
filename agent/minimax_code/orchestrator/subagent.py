@@ -526,17 +526,18 @@ class SubAgentRuntime:
             run_id = (current_run_id() if not active_child() else None) or f"run_{uuid.uuid4().hex[:12]}"
             child = await prepare_child(current_root() or env_or_cwd_root(), run_id)
         try:
-            if child is None:
-                run_result = await core.run(session_id=session_id, user_message=request)
-            else:
-                with child.scope():
+            from contextlib import nullcontext
+
+            from ..budget_ledger import budget_scope, current_handle
+            inherited = current_handle()
+            with budget_scope(inherited.descendant(child.run_id if child is not None else current_run_id() or inherited.run_id) if inherited else None), child.scope() if child is not None else nullcontext():
                     run_result = await core.run(session_id=session_id, user_message=request)
         except BaseException as exc:
             if child is not None:
                 child.finish("cancelled" if isinstance(exc, asyncio.CancelledError) else "failed")
             raise
         if child is not None:
-            child.finish("cancelled" if run_result.cancelled else "completed")
+            child.finish("cancelled" if run_result.cancelled else "failed" if getattr(run_result, "budget_exhausted", False) or run_result.truncated else "completed")
         return {
             "agent": handle.config.name,
             "request": request,
@@ -544,7 +545,7 @@ class SubAgentRuntime:
             "text": run_result.final_text or "",
             "iterations": run_result.iterations,
             "tool_calls": list(run_result.tool_calls),
-            "verification": {"requires_review": any(not item.success for item in getattr(run_result,"tool_results",[]) or [])},
+            "verification": {"requires_review": bool(getattr(run_result, "budget_exhausted", False) or run_result.truncated or any(not item.success for item in getattr(run_result,"tool_results",[]) or []))},
             "stub": False,
             # v1.4.0 — bubble the run-level facts so callers (team
             # merger, tool envelope, telemetry) can see the real cost
@@ -552,6 +553,8 @@ class SubAgentRuntime:
             "usage": dict(run_result.usage),
             "cancelled": bool(run_result.cancelled),
             "truncated": bool(run_result.truncated),
+            "budget_exhausted": bool(getattr(run_result, "budget_exhausted", False)),
+            "partial": bool(getattr(run_result, "budget_exhausted", False) or run_result.truncated or run_result.cancelled),
             **({"workspace": child.summary(), "files_written": child.record["changes"]}
                if child is not None else {}),
         }

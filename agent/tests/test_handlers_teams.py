@@ -374,6 +374,26 @@ async def test_team_run_get_unknown_task(real_handlers: dict[str, Any]) -> None:
     assert "unknown team run" in ctx.error_value["message"]
 
 
+async def test_paid_team_root_without_governed_run_reports_failure(real_handlers, monkeypatch, tmp_path):
+    from test_budget_transport import client, response
+    calls = []
+    llm = client(lambda request: calls.append(request) or response(), require_budget=True)
+    monkeypatch.setattr("minimax_code.app._SUBAGENT_LLM", llm)
+    monkeypatch.setenv("MINIMAX_CODE_WORKSPACE", str(tmp_path))
+    try:
+        await real_handlers["agent.create"]({"name": "governed", "system_prompt": "work"}, _CapturedReply())
+        await real_handlers["team.create"]({"name": "paid", "agents": ["governed"]}, _CapturedReply())
+        ctx = _CapturedReply()
+        await real_handlers["team.spawn"]({"team_name": "paid", "request": "work"}, ctx)
+        assert ctx.error_value is None
+        assert ctx.reply_value["success"] is False
+        assert "unified run budget" in ctx.reply_value["agents_run"][0]["error"]
+        assert not calls
+        assert not any(data.get("status") == "agent_completed" for _, data in ctx.emitted)
+    finally:
+        await llm.close()
+
+
 # ── Tests: LLM wiring (v1.2.2 regression) ─────────────────────────────────────
 
 

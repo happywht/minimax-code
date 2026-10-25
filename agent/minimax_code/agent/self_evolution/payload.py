@@ -167,7 +167,7 @@ async def _run_prompt(prompt: str) -> dict[str, Any]:
             }
 
     try:
-        async with MiniMaxClient() as client:
+        async with MiniMaxClient(require_budget=True) as client:
             response = await client.chat([{"role": "user", "content": prompt}])
         usage = response.usage or {}
         return {

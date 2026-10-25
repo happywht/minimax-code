@@ -8,7 +8,10 @@ vi.mock("../src/ipc", () => ({
     on: vi.fn(() => vi.fn()),
     onSideCar: vi.fn(() => vi.fn()),
   },
-  typedIPC: {},
+  typedIPC: { getBudget: vi.fn().mockResolvedValue({budget: null, day: {
+    day: "2026-10-26", known_tokens: 0, reserved_tokens: 0, unknown_attempts: 0,
+    baseline_incomplete: false, historical_lower_bound: 0, historical_liability: null,
+  }, attempts: [], coverage_started_at: null}) },
 }));
 
 describe("RunTimelinePanel", () => {

@@ -365,6 +365,7 @@ export interface SkillInvokeResult {
   tool_calls: number;
   cancelled: boolean;
   truncated: boolean;
+  budget_exhausted?: boolean;
   /** Code-review diff route only — severity is free-form; narrow at the call site. */
   comments?: Array<{
     file: string;
@@ -823,9 +824,54 @@ export interface RunEvent {
   id: string;
   run_id: string;
   seq: number;
-  type: "created" | "status" | "step_created" | "step_updated" | "recovered";
+  type: "created" | "status" | "step_created" | "step_updated" | "recovered" | "budget";
   created_at: string;
-  data: { run?: AgentRun; step?: AgentRunStep };
+  data: { run?: AgentRun; step?: AgentRunStep; [key: string]: unknown };
+}
+
+export interface BudgetDay {
+  day: string;
+  known_tokens: number;
+  reserved_tokens: number;
+  unknown_attempts: number;
+  baseline_incomplete: boolean;
+  historical_lower_bound: number;
+  historical_liability: number | null;
+}
+
+export interface DurableBudget {
+  family_id: string;
+  limit_tokens: number | null;
+  known_tokens: number;
+  reserved_tokens: number;
+  unknown_attempts: number;
+  remaining_estimate: number | null;
+  enforcement: "estimated" | "reactive";
+  pause_reason: string | null;
+  baseline_incomplete: boolean;
+  usage_complete: boolean;
+  accounting_resolved?: boolean;
+  daily_limit: number | null;
+  day: BudgetDay;
+  assumptions: string;
+  price: null;
+  currency: null;
+}
+
+export interface BudgetStateResult {
+  budget: DurableBudget | null;
+  day: BudgetDay;
+  attempts: Array<{id: string; state: string; estimated_tokens: number; known_tokens: number | null; liability_tokens: number | null; reason: string | null}>;
+  coverage_started_at: string | null;
+  day_blockers?: {total: number; items: Array<{attempt_id: string; family_id: string; known_tokens: number | null; run_id: string | null; session_id: string | null}>};
+}
+
+export interface BudgetReconcileParams {
+  target: "day" | "family" | "attempt";
+  target_id: string;
+  liability_tokens: number;
+  reason: string;
+  acknowledged: true;
 }
 
 export interface RunEventsResult {
@@ -889,7 +935,7 @@ export interface SendMessageResult {
   /** M2 — the run paused at a call boundary on its token budget. */
   budget_paused?: boolean;
   /** M2 — budget snapshot at the end of the run (null when unbudgeted). */
-  budget?: { limit_tokens: number | null; daily_limit: number | null; used_tokens: number; pauses: number } | null;
+  budget?: DurableBudget | { limit_tokens: number | null; daily_limit: number | null; used_tokens: number; pauses: number } | null;
   /**
    * M2 — acceptance evidence. Failed tool calls mean the verbal "done"
    * is not a verified completion (运行结束 ≠ 验收通过).
@@ -1180,6 +1226,8 @@ export interface SpawnSubagentResult {
   agent_run_id: string;
   agent_id: string;
   workspace?: ChildWorkspaceSummary;
+  budget_exhausted?: boolean;
+  partial?: boolean;
 }
 
 /* ─────────────────────── Git integration (§3-4 of v0.3.0 design) ─────────────────────── */

@@ -14,6 +14,7 @@ from typing import Any
 
 import openai
 
+from ...budget_ledger import governed_client, governed_request
 from ..reasoning import ReasoningEffort, coerce_effort
 from ..types import LLMError, StreamChunk
 from . import LLMTransport
@@ -107,7 +108,7 @@ class OpenAITransport(LLMTransport):
         breaker = resolve_breaker("llm:openai")
         check_or_raise(breaker)
 
-        client = self._ensure_client()
+        client = governed_client(self._ensure_client())
 
         # Build kwargs — omit None values so the SDK uses its defaults.
         # Convert image blocks in user messages to OpenAI vision format.
@@ -139,13 +140,20 @@ class OpenAITransport(LLMTransport):
             kwargs["reasoning_effort"] = _effort_token
 
         try:
-            stream = await client.chat.completions.create(**kwargs)
-            async for chunk in _openai_stream_to_chunks(stream):
-                if chunk.usage and isinstance(
-                    chunk.usage.get("thinking_tokens"), int
-                ):
-                    self._thinking_count = chunk.usage["thinking_tokens"]
-                yield chunk
+            async with governed_request(kwargs, protocol="openai") as attempt:
+                stream = await client.chat.completions.create(**kwargs)
+                try:
+                    async for chunk in _openai_stream_to_chunks(stream):
+                        if attempt is not None:
+                            attempt.observe(chunk)
+                        if chunk.usage and isinstance(chunk.usage.get("thinking_tokens"), int):
+                            self._thinking_count = chunk.usage["thinking_tokens"]
+                        yield chunk
+                finally:
+                    close = getattr(stream, "close", None)
+                    if close is not None:
+                        from ...budget_ledger import owned_cleanup
+                        await owned_cleanup(close())
         except openai.APIError as exc:
             record_outcome(
                 breaker,
@@ -193,9 +201,9 @@ def _usage_to_dict(usage: Any) -> dict[str, int]:
     if not usage:
         return {}
     if isinstance(usage, dict):
-        prompt_tokens = usage.get("prompt_tokens") or 0
-        completion_tokens = usage.get("completion_tokens") or 0
-        total_tokens = usage.get("total_tokens") or 0
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
+        total_tokens = usage.get("total_tokens")
         details = usage.get("completion_tokens_details")
         reasoning = (
             details.get("reasoning_tokens")
@@ -203,9 +211,9 @@ def _usage_to_dict(usage: Any) -> dict[str, int]:
             else None
         )
     else:
-        prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-        completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-        total_tokens = getattr(usage, "total_tokens", 0) or 0
+        prompt_tokens = getattr(usage, "prompt_tokens", None)
+        completion_tokens = getattr(usage, "completion_tokens", None)
+        total_tokens = getattr(usage, "total_tokens", None)
         details = getattr(usage, "completion_tokens_details", None)
         reasoning = getattr(details, "reasoning_tokens", None) if details else None
     data = {
@@ -215,6 +223,11 @@ def _usage_to_dict(usage: Any) -> dict[str, int]:
     }
     if isinstance(reasoning, int) and reasoning > 0:
         data["thinking_tokens"] = reasoning
+        data["reasoning_tokens"] = reasoning
+    prompt_details = usage.get("prompt_tokens_details") if isinstance(usage, dict) else getattr(usage, "prompt_tokens_details", None)
+    cached = prompt_details.get("cached_tokens") if isinstance(prompt_details, dict) else getattr(prompt_details, "cached_tokens", None)
+    if cached is not None:
+        data["cached_tokens"] = cached
     return data
 
 
@@ -296,6 +309,8 @@ async def _openai_stream_to_chunks(
 
         choice = chunk.choices[0]
         delta = choice.delta
+        if getattr(chunk, "usage", None) and not choice.finish_reason:
+            yield StreamChunk(usage=_usage_to_dict(chunk.usage))
 
         # Text content. Reasoning models (Zhipu GLM, DeepSeek-R...) stream
         # their thinking via ``delta.reasoning_content``; we do not surface

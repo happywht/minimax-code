@@ -49,7 +49,7 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
         <>
           <p>继续会创建关联的新运行。请先核对已完成的步骤与文件，避免重复产生修改。</p>
           {codex && <p>Codex 中断或预算暂停可能留下外部副作用；恢复前必须核对，不能视为安全调用边界。</p>}
-          {paused && <label>恢复 token 上限<input aria-label="恢复 token 上限" type="number" min="1" value={budgetTokens} onChange={(event) => { setBudgetTokens(event.target.value); resumeKey.current = null; }} /></label>}
+          {paused && <label>恢复 token 上限（整项任务累计，含历史与子任务）<input aria-label="恢复 token 上限" type="number" min="1" value={budgetTokens} onChange={(event) => { setBudgetTokens(event.target.value); resumeKey.current = null; }} /></label>}
           {requiresReview && (
             <label className="flex items-center gap-2">
               <input type="checkbox" checked={reviewed} onChange={(event) => setReviewed(event.target.checked)} />

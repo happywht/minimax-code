@@ -160,18 +160,14 @@ async def test_continuation_budget_admission_and_receipt_replay(native, monkeypa
 
     source = await native.dao.create_run(session_id="one", status="completed",
         metadata={"truncated": True, "model_snapshot": ModelSnapshot.capture().metadata(),
-                  "workspace_snapshot": str(native.root)})
+                  "workspace_snapshot": str(native.root), "budget": {"limit_tokens": 500}})
     await MessagesDAO(native.db).create(id="spent", session_id="one", role="assistant",
                                        content="prior work", tokens_in=40, tokens_out=60)
     params = {"session_id": "one", "run_id": source["id"]}
     monkeypatch.setenv("MINIMAX_CODE_RUN_BUDGET_TOKENS", "500")
-    monkeypatch.setenv("MINIMAX_CODE_DAILY_BUDGET_TOKENS", "100")
-    denied = Context(native.server)
-    await builtins.handle_agent_continue_run(params, denied)
-    assert "Daily token budget exhausted" in denied.reply_error.call_args.args[1]
-    assert len(await native.dao.list_runs()) == 1 and native.cores == []
-    assert "continued" not in (await native.dao.get_run(source["id"]))["metadata"]
-
+    # Actual governed sends, covered by real SDK tests, enforce the ledger.
+    # This mock core makes no paid send and must not treat message sums as
+    # an authoritative host baseline during continuation admission.
     monkeypatch.setenv("MINIMAX_CODE_DAILY_BUDGET_TOKENS", "1000")
     accepted = Context(native.server)
     task = asyncio.create_task(builtins.handle_agent_continue_run(params, accepted))
@@ -179,14 +175,16 @@ async def test_continuation_budget_admission_and_receipt_replay(native, monkeypa
     core = native.cores[0]
     assert core.config.run_budget_tokens == 500
     assert core.config.daily_budget_tokens == 1000
-    assert core.config.daily_budget_baseline == 100
+    assert core.config.daily_budget_baseline == 0
     native.release.set()
     await asyncio.wait_for(task, 3)
     accepted.reply_error.assert_not_awaited()
     receipt = accepted.reply.call_args.args[0]
     child = await native.dao.get_run(receipt["run_id"])
     assert child["metadata"]["budget"] == {
-        "limit_tokens": 500, "daily_limit": 1000, "daily_baseline": 100}
+        "limit_tokens": 500, "daily_limit": 1000, "daily_baseline": 0}
+    source = await native.dao.get_run(source["id"])
+    assert child["metadata"]["budget_family_id"] == source["metadata"]["budget_family_id"]
 
     # Reading the existing receipt must not recheck today's cap or provider.
     monkeypatch.setenv("MINIMAX_CODE_DAILY_BUDGET_TOKENS", "1")

@@ -16,6 +16,7 @@ import { PermissionPatchPreview } from "../modals/PermissionPatchPreview";
 import { strings } from "../../ui/strings";
 import { Button } from "../../ui";
 import { RunRecoveryActions } from "./RunRecoveryActions";
+import { RunBudgetPanel } from "./RunBudgetPanel";
 import { VerificationBadge } from "../chat/VerificationBadge";
 import type { VerificationEvidence } from "../../types/ipc";
 
@@ -197,6 +198,7 @@ export function RunTimelinePanel({
                 <TimelineStep key={step.id} step={step} />
               ))}
             </ol>
+            <RunBudgetPanel run={run} />
             <RunRecoveryActions run={run} refresh={() => loadForSession(currentSessionId)} />
           </article>
         ))}

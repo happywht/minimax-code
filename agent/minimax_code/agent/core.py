@@ -44,6 +44,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from ..budget import BudgetExhausted
 from ..compaction import IntraCompactionConfig, IntraCompactionMode, should_compact
 from ..hooks import HookManager
 from ..lifecycle import (
@@ -456,7 +457,7 @@ class AgentCore:
         permission_gater: Any | None = None,
         hooks: HookManager | None = None,
     ) -> None:
-        self.llm = llm or MiniMaxClient()
+        self.llm = llm or MiniMaxClient(require_budget=True)
         self.registry = registry or get_default_registry()
         self.config = config or AgentConfig()
         self._history_provider = history_provider
@@ -1038,7 +1039,8 @@ class AgentCore:
                 # break the run or daily limit, pause at this clean
                 # boundary. The projection reuses the last real prompt
                 # usage plus the configured output cap.
-                if self.budget is not None:
+                from ..budget_ledger import current_handle
+                if self.budget is not None and current_handle() is None:
                     from ..budget import projected_call_tokens
 
                     if self.budget.would_exceed(
@@ -1075,6 +1077,14 @@ class AgentCore:
 
                 try:
                     response = await self._call_llm_with_resilience(llm_messages)
+                except BudgetExhausted as exc:
+                    budget_exhausted = True
+                    final_text = f"Paused at the model boundary: {exc}. Review budget accounting before recovery."
+                    snapshot = await current_handle().snapshot() if current_handle() else None
+                    await self._emit_status("budget_paused", {"iteration": iterations, "budget": snapshot})
+                    final_message = {"role": "assistant", "content": final_text, "metadata": {"budget_paused": True, "budget": snapshot}}
+                    await self._emit_chunk(final_text, True, final_message["metadata"])
+                    break
                 except LLMError as exc:
                     await self._emit_status(
                         "error",
@@ -1370,29 +1380,32 @@ class AgentCore:
             # failures on write_file/edit_file).
             max_tokens=self.config.max_output_tokens,
         ).__aiter__()
-        while True:
-            try:
-                if stall and stall > 0:
-                    chunk = await asyncio.wait_for(aiter.__anext__(), timeout=stall)
-                else:
-                    chunk = await aiter.__anext__()
-            except StopAsyncIteration:
-                break
-            except TimeoutError as exc:
-                logger.warning(
-                    "stream stall: no chunk for %.0fs, aborting turn", stall,
-                )
-                timeout_notice = (
-                    "\n\nLLM stream stopped responding. This run was stopped; "
-                    "retry to continue."
-                )
-                await self._emit_chunk(timeout_notice, False, None)
-                raise LLMStreamTimeout(stall) from exc
-            if self.cancelled:
-                break
-            chunks.append(chunk)
-            if chunk.delta:
-                await self._emit_chunk(chunk.delta, False, None)
+        try:
+            while True:
+                try:
+                    if stall and stall > 0:
+                        chunk = await asyncio.wait_for(aiter.__anext__(), timeout=stall)
+                    else:
+                        chunk = await aiter.__anext__()
+                except StopAsyncIteration:
+                    break
+                except TimeoutError as exc:
+                    logger.warning("stream stall: no chunk for %.0fs, aborting turn", stall)
+                    await self._emit_chunk(
+                        "\n\nLLM stream stopped responding. This run was stopped; retry to continue.",
+                        False, None)
+                    raise LLMStreamTimeout(stall) from exc
+                if self.cancelled:
+                    break
+                chunks.append(chunk)
+                if chunk.delta:
+                    await self._emit_chunk(chunk.delta, False, None)
+        finally:
+            # Cooperative cancel/early close must persist unresolved request
+            # liability before the owner releases its run or dispatches tools.
+            close = getattr(aiter, "aclose", None)
+            if close is not None:
+                await close()
         response = _assemble_chunks(chunks, model=self.config.model)
         # Build the per-turn metadata snapshot. Reading
         # ``self.llm.thinking_count`` here is the only way the
