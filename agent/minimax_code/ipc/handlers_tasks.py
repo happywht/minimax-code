@@ -259,7 +259,7 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
                 return
             # Cancellation only makes sense for active tasks; calling
             # cancel on a terminal task is a no-op + a log line.
-            if existing["status"] in ("completed", "failed", "cancelled"):
+            if existing["status"] in ("completed", "failed", "cancelled", "budget_paused", "interrupted", "requires_review"):
                 logger.info(
                     "task.cancel called on terminal task %s (status=%s)",
                     task_id,
@@ -267,8 +267,14 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
                 )
                 await ctx.reply({"ok": True, "task": existing, "noop": True})
                 return
-            updated = await tk.cancel(task_id, emit=ctx.emit)
-            await ctx.reply({"ok": True, "task": updated})
+            if not existing.get("run_id"):
+                raise HandlerError(INVALID_PARAMS, "This task has no cancellable run; cancellation is unavailable")
+            from ..runs import get_run_service
+            requested = get_run_service(ctx.server).cancel_run(existing["run_id"])
+            if not requested:
+                raise HandlerError(INVALID_PARAMS, "Task run is not active in this service; refresh its state")
+            # Terminal status is published by the execution owner after cleanup.
+            await ctx.reply({"ok": True, "task": existing, "requested": True})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception:  # pragma: no cover — defensive

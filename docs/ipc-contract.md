@@ -1537,6 +1537,23 @@ document the migration in this file.
 
 ### task.* — 任务进度
 
+任务行保留 `status`（pending/running/completed/failed/cancelled/budget_paused/interrupted/requires_review），
+并返回可空 `run_id`、`execution_status`、`verification`、`cancel_supported`。关联运行的真实状态优先于旧任务缓存，
+状态筛选与计数使用相同投影。`result` 对暂停、中断、失败和取消也保留已保存的部分文本；completed 仅表示执行结束。
+
+`verification` v1 包含 `version:1`、`verdict:passed|failed|unknown|not_applicable`、`reason`、
+`requires_review`，并保留 `tool_calls`、`failed_tool_calls`、`failures` 与可选 `validation` 命令诊断。
+运行回执、运行 metadata、assistant 消息 metadata 和任务历史共享该证据；消息还保留真实 `status/run_status/partial`。
+无历史证据为 unknown/legacy_unverified。Native chat/execute 正常完成时，运行接单快照中的项目校验命令执行一次，
+不依赖文件事件；exit0 为 passed，非零为 failed，启动失败/超时为 unknown 并要求核对。失败工具调用和已有核对要求不被通过的命令清除。
+未配置命令为 unknown/not_configured，本身不强制核对；plan 为 not_applicable/plan_mode；
+截断和非正常终态跳过校验，使用显式原因。Codex 为 unknown/engine_validation_not_supported，不执行本地校验命令。
+passed 只证明配置的命令通过，不证明全部交付要求通过。
+
+`task.cancel` 仅对本进程可取消的关联运行发出真实 RunService 取消，返回 `{ok:true,requested:true,task}`。
+确认请求时任务仍可显示 running；持久终态在 writer 清理完成后发布。未关联的活动任务拒绝取消，
+UI 依据 `cancel_supported` 禁用动作，不能只改任务账本制造已停止假象。
+
 | 方法 | 说明 |
 |------|------|
 | `task.start` / `task.complete` / `task.cancel` | 任务生命周期 |

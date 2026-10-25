@@ -97,7 +97,6 @@ import type {
   CheckpointDiffResult,
   CheckpointDeleteResult,
   TaskListResult,
-  TaskCancelResult,
   TaskRow,
 } from "../types/ipc";
 import type { IPCClient } from "./client";
@@ -795,14 +794,14 @@ function mockHandle(
               ...run,
               status: "completed" as const,
               completed_at: completedAt,
-              metadata: { ...run.metadata, iterations: 1, memory_count: 0 },
+              metadata: { ...run.metadata, iterations: 1, memory_count: 0, verification: { version: 1, verdict: "unknown", reason: "not_configured", requires_review: false } },
             };
             mockRuns.set(runId, { run: completedRun, steps: [completedStep, finalStep] });
             mockMessages.set(sid, [...(mockMessages.get(sid) ?? []), {
               id: mid, role: "assistant", text: reply, streaming: false, created_at: Date.parse(completedAt),
-              metadata: { run_id: runId, thinking_count: 0, tokens_in: 0, tokens_out: 0 },
+              metadata: { run_id: runId, thinking_count: 0, tokens_in: 0, tokens_out: 0, verification: { version: 1, verdict: "unknown", reason: "not_configured", requires_review: false } },
             }]);
-            mockRunReceipts.set(runId, { session_id: sid, message_id: mid, run_id: runId, text: reply, cancelled: false });
+            mockRunReceipts.set(runId, { session_id: sid, message_id: mid, run_id: runId, run_status: "completed", text: reply, cancelled: false, verification: { version: 1, verdict: "unknown", reason: "not_configured", requires_review: false } });
             recordRunEvent(runId, "step_updated", { step: completedStep });
             recordRunEvent(runId, "step_created", { step: finalStep });
             recordRunEvent(runId, "status", { run: completedRun });
@@ -1984,6 +1983,8 @@ function mockHandle(
           completed_at: new Date(Date.now() - 10_000).toISOString(),
           error: null,
           result: "Indexed 42 files · 128 chunks · FTS + vector shards rebuilt",
+          run_id: null, cancel_supported: false,
+          verification: { version: 1, verdict: "unknown", reason: "legacy_unverified", requires_review: false },
         },
       ];
       let items = entries;
@@ -1993,23 +1994,7 @@ function mockHandle(
     }
 
     case "task.cancel": {
-      const p = params as { task_id: string };
-      return {
-        ok: true,
-        task: {
-          id: p.task_id,
-          session_id: "mock-ses-1",
-          title: "Mock cancelled task",
-          status: "cancelled",
-          progress: 0,
-          created_at: new Date().toISOString(),
-          started_at: null,
-          completed_at: new Date().toISOString(),
-          error: null,
-          result: null,
-        },
-        noop: false,
-      } satisfies TaskCancelResult;
+      throw new Error("Mock task has no cancellable run; cancellation is unavailable");
     }
 
     // ── checkpoint.* mock (v0.11.0) ──────────────────────────────────

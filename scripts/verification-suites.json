@@ -31,6 +31,8 @@
     "tests/test_terminal_handlers.py",
     "tests/test_terminal_hardening.py",
     "tests/test_scheduler_hardening.py",
+    "tests/test_task_outcomes.py",
+    "tests/test_project_validation.py",
     "tests/test_scheduler_command_payload.py",
     "tests/test_workspace_ctx.py",
     "tests/test_workspace_scope_runs.py",

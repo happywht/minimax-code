@@ -15,6 +15,8 @@ const STATUS_LABELS: Record<MessageStatus, string> = {
   failed: strings.chat.messageStatus.failed,
   cancelling: strings.chat.messageStatus.cancelling,
   cancelled: strings.chat.messageStatus.cancelled,
+  budget_paused: "预算暂停",
+  interrupted: "执行中断",
 };
 
 const STATUS_TONES: Record<MessageStatus, BadgeTone> = {
@@ -25,6 +27,8 @@ const STATUS_TONES: Record<MessageStatus, BadgeTone> = {
   failed: "error",
   cancelling: "warning",
   cancelled: "neutral",
+  budget_paused: "warning",
+  interrupted: "warning",
 };
 
 export interface MessageStatusBadgeProps {

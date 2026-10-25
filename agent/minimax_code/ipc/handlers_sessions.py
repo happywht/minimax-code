@@ -658,7 +658,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                     "id": r.get("id", ""),
                     "role": r.get("role", "user"),
                     "text": r.get("content") or "",
-                    "streaming": False,
+                    "streaming": bool(r.get("streaming")),
                     "created_at": r.get("created_at", ""),
                 }
                 if r.get("tool_call_id"):
@@ -670,9 +670,8 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                             msg["tool_args"] = tool_info.get("args")
                 if r.get("metadata"):
                     msg["metadata"] = r["metadata"]
-                    if r["metadata"].get("engine") == "codex":
-                        status = r["metadata"].get("status", "completed")
-                        msg["status"] = status if status in {"completed", "failed", "cancelled"} else "failed"
+                if r.get("status"):
+                    msg["status"] = r["status"]
                 if r.get("tool_calls"):
                     msg["tool_calls"] = r["tool_calls"]
                 messages.append(msg)

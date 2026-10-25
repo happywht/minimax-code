@@ -344,7 +344,7 @@ class JobScheduler:
         logger.info("scheduler reloaded %d enabled job(s)", len(rows))
 
     async def _run_prompt_via_runservice(
-        self, payload: dict[str, Any], *, prompt: str, session_id: str
+        self, payload: dict[str, Any], *, prompt: str, session_id: str, task_id: str | None = None
     ) -> dict[str, Any]:
         """Run one scheduled prompt through the FULL native agent loop.
 
@@ -397,7 +397,7 @@ class JobScheduler:
         if isinstance(budget, int) and budget > 0:
             params["budget_tokens"] = budget
         try:
-            await handle_agent_send_message(params, ctx, wait=True)
+            await handle_agent_send_message(params, ctx, wait=False)
         except Exception as exc:  # noqa: BLE001 — scheduler must survive
             logger.exception("runservice prompt fire failed")
             return {"ok": False, "error": f"runservice fire failed: {exc}"}
@@ -405,7 +405,41 @@ class JobScheduler:
             return {"ok": False, "error": ctx.last_error.get("message", "run failed"),
                     "detail": ctx.last_error}
         result = dict(ctx.last_result)
-        result["ok"] = True
+        if result.get("run"):
+            from ..app import get_db
+            from ..runs import get_run_service
+            from ..storage.dao.runs import AgentRunsDAO
+            accepted = result["run"]
+            dao, service = AgentRunsDAO(get_db()), get_run_service(server)
+            job = await service.job_for_run(accepted["id"])
+            if task_id:
+                try:
+                    await self._tasks.link_run(task_id, accepted["id"])
+                except Exception as exc:
+                    # Admission owns real work. Failed bookkeeping must never
+                    # abandon a writer behind an unlinked task row.
+                    service.cancel_run(accepted["id"])
+                    if job is not None:
+                        await asyncio.gather(service.wait(job), return_exceptions=True)
+                    return {"ok": False, "run_id": accepted["id"], "run_status": "failed",
+                            "error": f"Task linkage failed for run {accepted['id']}: {exc}",
+                            "text": (await dao.result_payload(accepted["id"]) or {}).get("text", "")}
+                if hasattr(server, "broadcast"):
+                    try:
+                        await server.broadcast("task.progress", {"task_id": task_id, "progress": .1,
+                            "status": "running", "run_id": accepted["id"]})
+                    except Exception:
+                        logger.exception("task linkage notification failed; execution remains owned")
+            if job is not None:
+                await asyncio.gather(service.wait(job), return_exceptions=True)
+            run = await dao.get_run(accepted["id"])
+            result = {**(await dao.result_payload(accepted["id"]) or {}),
+                      "run_id": accepted["id"], "run_status": run["status"],
+                      "verification": (run.get("metadata") or {}).get("verification")}
+            if run.get("error"):
+                result["error"] = run["error"]
+        from ..verification import task_outcome
+        result["ok"] = task_outcome(result) == "completed"
         result["output"] = result.get("text", "")
         result["run_id"] = result.get("run_id")
         # The durable run row is the real evidence; the task row keeps a
@@ -445,7 +479,7 @@ class JobScheduler:
         if isinstance(prompt_text, str) and prompt_text.strip() \
                 and payload.get("use_runservice", True):
             result = await self._run_prompt_via_runservice(
-                payload, prompt=prompt_text, session_id=session_id)
+                payload, prompt=prompt_text, session_id=session_id, task_id=task_id)
         else:
             # Run the user payload off the event loop so a slow or
             # CPU-bound callback doesn't stall IPC.
@@ -481,26 +515,27 @@ class JobScheduler:
         # failed write (e.g. transient SQLITE_BUSY) used to abort the
         # rest, leaving stale "running" task rows and a missing
         # last_run_at update.
+        from ..verification import task_outcome
         try:
             await self._tasks.update_status(
                 task_id,
-                status="completed",
+                status=task_outcome(result),
                 progress=100,
-                error=None,
+                error=str(result["error"]) if isinstance(result, dict) and result.get("error") else None,
                 result=result_text,
             )
         except Exception:  # pragma: no cover — defensive
             logger.exception("failed to complete task %s", task_id)
-        # If the payload returned a structured dict with "error" or
-        # "ok=false" we record the error string in the task row too
-        # so the UI can surface the failure reason.
-        if isinstance(result, dict) and result.get("error"):
+        # Publish only after the durable projection and partial result are saved.
+        server = _IPC_SERVER
+        if server is not None and hasattr(server, "broadcast"):
             try:
-                await self._tasks.update_status(
-                    task_id, status="failed", progress=100, error=str(result["error"])
-                )
-            except Exception:  # pragma: no cover — defensive
-                logger.exception("failed to mark task %s failed", task_id)
+                task = await self._tasks.get(task_id)
+                await server.broadcast("task.progress", {"task_id": task_id, "progress": 1,
+                    "status": task["status"], "run_id": task.get("run_id"), "result": task.get("result"),
+                    "verification": task.get("verification"), "execution_status": task.get("execution_status")})
+            except Exception:
+                logger.exception("task terminal notification failed; durable result remains available")
 
         # Compute the next run *now* so the UI list is current even if
         # APScheduler is slow to publish next_fire_time.

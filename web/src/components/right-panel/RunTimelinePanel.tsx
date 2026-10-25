@@ -16,6 +16,8 @@ import { PermissionPatchPreview } from "../modals/PermissionPatchPreview";
 import { strings } from "../../ui/strings";
 import { Button } from "../../ui";
 import { RunRecoveryActions } from "./RunRecoveryActions";
+import { VerificationBadge } from "../chat/VerificationBadge";
+import type { VerificationEvidence } from "../../types/ipc";
 
 export interface RunTimelinePanelProps {
   testId?: string;
@@ -189,6 +191,7 @@ export function RunTimelinePanel({
               </div>
               <RunStatusBadge status={run.status} />
             </div>
+            {!["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(run.status) && <VerificationBadge evidence={run.metadata?.verification as VerificationEvidence | undefined} />}
             <ol className="space-y-1.5">
               {run.steps.map((step) => (
                 <TimelineStep key={step.id} step={step} />

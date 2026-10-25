@@ -250,7 +250,7 @@ async def test_prompt_fire_runs_through_runservice(monkeypatch, tmp_path) -> Non
         captured["wait"] = wait
         await ctx.reply({"session_id": params["session_id"],
                          "message_id": "m1", "run_id": "run_1",
-                         "text": "scheduled work done", "stub": True})
+                         "text": "scheduled work done", "run_status": "completed", "stub": True})
         return None
 
     monkeypatch.setattr(builtins_mod, "handle_agent_send_message", fake_send)
@@ -273,7 +273,7 @@ async def test_prompt_fire_runs_through_runservice(monkeypatch, tmp_path) -> Non
     assert captured["params"]["session_id"] == "ses-sched"
     assert captured["params"]["budget_tokens"] == 5000
     assert captured["params"]["idempotency_key"].startswith("sched-job-9-")
-    assert captured["wait"] is True  # the fire completes with its run
+    assert captured["wait"] is False  # accept first so the task can link before waiting
 
     # A failing turn lands as a structured error for the tasks row.
     async def failing_send(params, ctx, *, wait=True, **kwargs):

@@ -57,3 +57,8 @@ Playwright 自动启动 15173/18765 隔离服务（可用 E2E 专用环境变量
 ## 迁移与回退
 
 M0 不改数据库 schema、RPC 协议或生产执行策略。回退时只撤销本批测试、CI、脚本及文档变更；无需逆向数据库迁移。`.verification/` 可保留作审计记录，不要随回退清除失败证据。后续阶段按 [路线图](production-roadmap.md) 各自记录迁移与恢复方法。
+
+
+## 可信任务结果定向验证
+
+`agent/tests/test_task_outcomes.py` 使用真实 RunService、SQLite 和受控 Native core，验证 shell 写入且无 FsBus 时的 chat/execute 校验、校验故障和取消、持久化失败、真实调度/取消与重开历史、035 已有数据迁移。`web/tests/task-outcomes.test.tsx` 检查任务与聊天的状态/证据、部分输出和取消确认竞态。日志 `.verification/task-outcome-*.log` 属于离线局部回归；底层进程树边界同时复验，不能据此宣称真实模型质量、调度 occurrence 幂等或共享硬预算完成。

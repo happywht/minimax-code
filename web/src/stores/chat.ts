@@ -22,13 +22,19 @@ import {
   type ToolCallData,
   type ToolResultData,
 } from "../types/ipc";
-import type { Message, ContentPart, AgentRun } from "../types/ipc";
+import type { Message, ContentPart, AgentRun, SendMessageResult, MessageStatus } from "../types/ipc";
 import { useSessionStore } from "./sessionStore";
 import { trimArray, MAX_MESSAGES } from "../lib/eviction";
 import { DEFAULT_SESSION_TITLE } from "../lib/defaultTitles";
 import { strings } from "../ui/strings";
 
 export type ChatStatus = "idle" | "sending" | "streaming" | "error" | "cancelling";
+
+function receiptMessageStatus(result: SendMessageResult): MessageStatus {
+  const status = result.run_status;
+  if (status === "cancelled" || status === "failed" || status === "interrupted" || status === "budget_paused") return status;
+  return result.cancelled ? "cancelled" : "completed";
+}
 
 export interface ChatState {
   executionMode: "execute" | "plan";
@@ -289,12 +295,14 @@ export const useChat = create<ChatState>((set, get) => ({
           // counter. We only assign when the field is present
           // so an earlier chunk's metadata isn't clobbered by a
           // later one that omits it.
-          const next = applyAssistantChunk(s.messages, data);
+          const awaitingReceipt = data.done && inFlightRequests.has(data.session_id ?? useSessionStore.getState().currentSessionId ?? "");
+          const next = applyAssistantChunk(s.messages, data).map((m) => awaitingReceipt && m.id === data.message_id
+            ? { ...m, streaming: true, status: "streaming" as const } : m);
           return {
             messages: trimArray(s.status === "cancelling"
               ? next.map((m) => m.id === data.message_id ? { ...m, status: "cancelling" as const } : m)
               : next, MAX_MESSAGES),
-            status: s.status === "cancelling" ? "cancelling" : data.done ? "idle" : "streaming",
+            status: s.status === "cancelling" ? "cancelling" : data.done && !awaitingReceipt ? "idle" : "streaming",
           };
         });
         // Stall watchdog: reset on every chunk, clear on done.
@@ -560,7 +568,8 @@ export const useChat = create<ChatState>((set, get) => ({
           status: "idle",
           messages: s.messages.map((m) =>
             m.id === result.message_id || m.id === pending
-              ? { ...m, streaming: false, status: "cancelled", text: m.text || "Stopped." }
+              ? { ...m, streaming: false, status: "cancelled", text: m.text || result.text || "Stopped.",
+                  metadata: { ...m.metadata, run_id: result.run_id, status: result.run_status, partial: true, verification: result.verification } }
               : m,
           ),
         }));
@@ -581,12 +590,11 @@ export const useChat = create<ChatState>((set, get) => ({
         if (existing) {
           // Already populated via WebSocket chunks — finalise status.
           return {
-            messages: existing.streaming
-              ? s.messages
-              : s.messages.map((m) =>
-                  m.id === result.message_id ? { ...m, status: "completed", streaming: false } : m,
+            messages: s.messages.map((m) =>
+                  m.id === result.message_id ? { ...m, status: receiptMessageStatus(result), streaming: false,
+                    metadata: { ...m.metadata, run_id: result.run_id, status: result.run_status, verification: result.verification } } : m,
                 ),
-            status: existing.streaming ? "streaming" : "idle",
+            status: "idle",
           };
         }
         const pending = pendingAssistantId;
@@ -599,7 +607,8 @@ export const useChat = create<ChatState>((set, get) => ({
                     id: result.message_id,
                     text: result.text || "",
                     streaming: false,
-                    status: "completed",
+                    status: receiptMessageStatus(result),
+                    metadata: { ...m.metadata, run_id: result.run_id, status: result.run_status, verification: result.verification },
                   }
                 : m,
             ), MAX_MESSAGES),
@@ -613,8 +622,9 @@ export const useChat = create<ChatState>((set, get) => ({
             role: "assistant",
             text: result.text || "",
             streaming: false,
-            status: "completed",
+            status: receiptMessageStatus(result),
             created_at: Date.now(),
+            metadata: { run_id: result.run_id, status: result.run_status, verification: result.verification },
           }), MAX_MESSAGES),
           status: "idle",
         };
@@ -733,7 +743,8 @@ export const useChat = create<ChatState>((set, get) => ({
           return {
             messages: s.messages.map((m) =>
               m.id === result.message_id
-                ? { ...m, status: result.cancelled ? "cancelled" : "completed", streaming: false }
+                ? { ...m, status: receiptMessageStatus(result), streaming: false,
+                    metadata: { ...m.metadata, run_id: result.run_id, status: result.run_status, verification: result.verification } }
                 : m,
             ),
             status: "idle",
@@ -745,9 +756,9 @@ export const useChat = create<ChatState>((set, get) => ({
             role: "assistant",
             text: result.text || "",
             streaming: false,
-            status: result.cancelled ? "cancelled" : "completed",
+            status: receiptMessageStatus(result),
             created_at: Date.now(),
-            metadata: { run_id: result.run_id, ...(result.truncated ? { truncated: true } : {}) },
+            metadata: { run_id: result.run_id, status: result.run_status, verification: result.verification, ...(result.truncated ? { truncated: true } : {}) },
           }), MAX_MESSAGES),
           status: "idle",
         };
@@ -982,7 +993,7 @@ export const useChat = create<ChatState>((set, get) => ({
         id: m.id,
         role: m.role,
         text: m.text ?? m.content ?? "",
-        streaming: false,
+        streaming: m.streaming ?? m.status === "streaming",
         status: m.status ?? "completed",
         created_at: m.created_at,
         metadata: m.metadata,

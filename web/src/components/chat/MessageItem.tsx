@@ -38,6 +38,7 @@ import { SourcesPanel } from "./SourcesPanel";
 import { Brain, FastForward } from "lucide-react";
 import { strings } from "../../ui/strings";
 import { Badge, Textarea, Button } from "../../ui";
+import { VerificationBadge } from "./VerificationBadge";
 
 export interface MessageItemProps {
   message: Message;
@@ -224,18 +225,19 @@ export const MessageItem = React.memo(function MessageItem({
             <div className="h-3 w-52 animate-pulse rounded bg-surface-3" />
             <div className="h-3 w-40 animate-pulse rounded bg-surface-3/70" />
           </div>
-        ) : !isFailed || codex ? (
+        ) : (
           <div
             className={`prose prose-sm max-w-none break-words leading-relaxed [&_.katex-display]:my-3 [&_.katex-display]:overflow-x-auto [&_.katex-display]:overflow-y-hidden [&_.katex-display]:py-1 [&_.katex]:text-[1.02em]${theme === "dark" ? " prose-invert" : ""}`}
           >
-            <FileReferenceStrip refs={fileReferences} />
+              <FileReferenceStrip refs={fileReferences} />
             {isUser ? (
               <p className="m-0 whitespace-pre-wrap">{renderText}</p>
             ) : (
               <MarkdownBody text={renderText} />
             )}
           </div>
-        ) : null}
+        )}
+        {isAssistant && !message.streaming && <VerificationBadge evidence={message.metadata?.verification} />}
         {isFailed && !codex && <FailedMessageFooter message={message} />}
         {codex && message.metadata?.partial && <p className="text-xs text-status-warning">未完成输出；请核对工作区后使用运行恢复入口。</p>}
         {codex && isAssistant && message.metadata?.usage_certainty !== "observed" && <p className="text-xs text-ink-2">用量{message.metadata?.usage_certainty === "recovery_interval" ? "包含恢复期间的观测区间，不能精确归属本轮" : "未知或不确定"}</p>}

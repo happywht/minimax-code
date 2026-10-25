@@ -9,10 +9,10 @@
 
 import { create } from "zustand";
 import { ipc, typedIPC } from "../ipc";
-import { StreamEvent, type TaskProgressData, type TaskRow } from "../types/ipc";
+import { StreamEvent, type TaskProgressData, type TaskRow, type VerificationEvidence } from "../types/ipc";
 import { evictOldest, MAX_TASKS } from "../lib/eviction";
 
-export type TaskStatus = "pending" | "running" | "done" | "error" | "cancelled";
+export type TaskStatus = "pending" | "running" | "done" | "error" | "cancelled" | "budget_paused" | "interrupted" | "requires_review";
 
 export interface TaskProgressEntry {
   task_id: string;
@@ -21,6 +21,11 @@ export interface TaskProgressEntry {
   message?: string;
   /** v1.2.0 — the run's persisted result text (LLM reply for prompt payloads). */
   result?: string;
+  run_id?: string | null;
+  execution_status?: string | null;
+  verification?: VerificationEvidence;
+  cancel_supported?: boolean;
+  cancel_pending?: boolean;
   updated_at: number;
 }
 
@@ -45,11 +50,17 @@ function normalizeStatus(status: string): TaskStatus {
     case "running":
       return "running";
     case "completed":
+    case "done":
       return "done";
     case "failed":
+    case "error":
       return "error";
     case "cancelled":
       return "cancelled";
+    case "budget_paused":
+    case "interrupted":
+    case "requires_review":
+      return status;
     default:
       return "pending";
   }
@@ -67,6 +78,10 @@ function entryFromRow(row: TaskRow): TaskProgressEntry {
     progress: Math.max(0, Math.min(1, row.progress / 100)),
     message,
     result: row.result ?? undefined,
+    run_id: row.run_id,
+    execution_status: row.execution_status,
+    verification: row.verification,
+    cancel_supported: row.cancel_supported,
     updated_at,
   };
 }
@@ -98,17 +113,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           status,
           progress: Math.max(0, Math.min(1, data.progress)),
           message: data.message,
+          ...(data.run_id !== undefined ? { run_id: data.run_id, cancel_supported: status === "running" && !!data.run_id } : {}),
+          ...(data.execution_status !== undefined ? { execution_status: data.execution_status } : {}),
+          ...(data.verification ? { verification: data.verification } : {}),
+          ...(data.result != null ? { result: data.result } : {}),
           updated_at: Date.now(),
         },
       };
       return { tasks: evictOldest(updated, MAX_TASKS, (e) => e.updated_at) };
     });
-    // The ``task.progress`` event fires before the scheduler persists the
-    // final row, so a terminal transition cannot carry the result text yet.
-    // Re-hydrate from the ledger once the task settles — refresh() only
-    // merges rows and never emits events, so this cannot loop.
+    // Reconcile terminal events with durable evidence, including older
+    // producers that omit the final result. refresh() emits no events.
     const wasLive = !prev || prev.status === "pending" || prev.status === "running";
-    const terminal = status === "done" || status === "error" || status === "cancelled";
+    const terminal = !["running", "pending"].includes(status);
     if (wasLive && terminal) {
       void get().refresh();
     }
@@ -139,14 +156,14 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   cancel: async (taskId) => {
     try {
-      await typedIPC.cancelTask(taskId);
-      set((s) => ({
+      const reply = await typedIPC.cancelTask(taskId);
+      set((s) => !["pending", "running"].includes(s.tasks[taskId]?.status ?? "running") ? s : ({
         tasks: {
           ...s.tasks,
           [taskId]: {
             ...s.tasks[taskId],
-            status: "cancelled",
-            progress: 1,
+            ...entryFromRow(reply.task),
+            cancel_pending: reply.requested === true,
             updated_at: Date.now(),
           },
         },

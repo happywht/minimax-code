@@ -22,6 +22,7 @@ import { ipc } from "../../ipc";
 import { useTaskStore } from "../../stores";
 import type { SidecarEvent } from "../../types/ipc";
 import { strings } from "../../ui/strings";
+import { VerificationBadge } from "../chat/VerificationBadge";
 
 type SidecarState = "pending" | "ready" | "error";
 
@@ -156,6 +157,7 @@ export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps)
                         type="button"
                         aria-label={strings.rightPanel.progress.cancelTitle}
                         title={strings.rightPanel.progress.cancelTitle}
+                        disabled={!t.cancel_supported || t.cancel_pending}
                         onClick={() => void handleCancel(t.task_id)}
                         className="text-minimax-muted hover:text-status-error"
                         data-testid={`${testId}-cancel-${t.task_id}`}
@@ -191,7 +193,10 @@ export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps)
                     {t.message}
                   </div>
                 )}
-                {t.status === "done" && t.result && (
+                {t.execution_status && <p className="mt-1 text-ink-2">执行状态：{statusLabel(t.execution_status)}</p>}
+                {!["pending", "running"].includes(t.status) && <VerificationBadge evidence={t.verification} />}
+                {t.run_id && <p className="text-[11px] text-ink-2">运行：{t.run_id}</p>}
+                {t.result && (
                   <div
                     data-testid={`task-result-${t.task_id}`}
                     title={t.result}
@@ -272,6 +277,9 @@ function StatusBadge({ status }: { status: string }): JSX.Element {
     error: "bg-red-500/20 text-status-error",
     cancelled: "bg-minimax-border text-minimax-muted",
     pending: "bg-minimax-border text-minimax-muted",
+    budget_paused: "bg-amber-500/20 text-amber-300",
+    interrupted: "bg-amber-500/20 text-amber-300",
+    requires_review: "bg-amber-500/20 text-amber-300",
   };
   return (
     <span
@@ -281,7 +289,14 @@ function StatusBadge({ status }: { status: string }): JSX.Element {
         (map[status] ?? "bg-minimax-border text-minimax-muted")
       }
     >
-      {status}
+      {statusLabel(status)}
     </span>
   );
+}
+
+function statusLabel(status: string): string {
+  return ({ pending: "待执行", queued: "排队中", running: "执行中", planning: "规划中",
+    awaiting_approval: "等待授权", waiting_input: "等待输入", completed: "执行结束", done: "执行结束",
+    failed: "执行失败", error: "执行失败", cancelled: "已取消", budget_paused: "预算暂停",
+    interrupted: "执行中断", requires_review: "需要核对" } as Record<string, string>)[status] ?? "状态未知";
 }

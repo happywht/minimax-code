@@ -280,6 +280,9 @@ class AgentRunsDAO:
             )
             run = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
             if run is not None:
+                verification = (metadata or {}).get("verification") or (result or {}).get("verification")
+                if verification:
+                    await _save_message_verification(conn, run, verification)
                 await _append_event(conn, run_id, "status", {"run": run})
         return run
 
@@ -472,6 +475,10 @@ class AgentRunsDAO:
                 (status, error, ts, dumps_json(result), run_id),
             )
             run = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
+            if (result or {}).get("verification"):
+                run["metadata"] = {**(run.get("metadata") or {}), "verification": result["verification"]}
+                await conn.execute("UPDATE agent_runs SET metadata=? WHERE id=?", (dumps_json(run["metadata"]), run_id))
+                await _save_message_verification(conn, run, result["verification"])
             await _append_event(conn, run_id, "status", {"run": run})
             return run
 
@@ -500,6 +507,17 @@ class AgentRunsDAO:
                     "completed_at = COALESCE(completed_at, ?) WHERE id = ?",
                     (reason, ts, run_id),
                 )
+                from ...verification import verification_evidence
+                interrupted = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id=?", (run_id,)))
+                md = interrupted.get("metadata") or {}
+                receipt = loads_json((await _fetchone(conn, "SELECT result FROM agent_runs WHERE id=?", (run_id,)))["result"])
+                evidence = verification_evidence(status="interrupted", base=md.get("verification"))
+                md["verification"] = evidence
+                if receipt is not None:
+                    receipt.update(verification=evidence, run_status="interrupted", cancelled=False, budget_paused=False)
+                await conn.execute("UPDATE agent_runs SET metadata=?,result=? WHERE id=?",
+                                   (dumps_json(md), dumps_json(receipt), run_id))
+                await _save_message_verification(conn, interrupted, evidence)
                 # An unfinished tool may already have changed files. Keep its
                 # result unknown and visible; closing a spinner is not retrying it.
                 async with conn.execute(
@@ -538,6 +556,17 @@ class AgentRunsDAO:
         run_ids = [row["id"] for row in rows]
         sessions = [row["session_id"] for row in rows]
         return {"recovered": len(run_ids), "run_ids": run_ids, "sessions": sessions}
+
+
+async def _save_message_verification(conn: Any, run: dict[str, Any], evidence: dict[str, Any]) -> None:
+    rows = await _fetchall(conn, "SELECT id,metadata FROM messages WHERE session_id=? AND role='assistant' "
+                          "AND (id=? OR json_extract(metadata,'$.run_id')=?)",
+                          (run["session_id"], run.get("assistant_message_id"), run["id"]))
+    for row in rows:
+        metadata = {**(loads_json(row["metadata"]) or {}), "verification": evidence,
+                    "status": run["status"], "run_status": run["status"],
+                    "partial": run["status"] != "completed" or bool((run.get("metadata") or {}).get("truncated"))}
+        await conn.execute("UPDATE messages SET metadata=? WHERE id=?", (dumps_json(metadata), row["id"]))
 
 
 async def link_run_message(conn: Any, run_id: str, session_id: str, message_id: str, role: str) -> None:

@@ -469,9 +469,9 @@ async def test_task_ipc_cancel_round_trip(
     try:
         tid = await tracker.start_task(seed_session, "to-cancel")
         client = IPCClient()
-        reply = await client.request("task.cancel", {"task_id": tid})
-        assert reply["ok"] is True
-        assert reply["task"]["status"] == "cancelled"
+        with pytest.raises(RuntimeError, match="no cancellable run"):
+            await client.request("task.cancel", {"task_id": tid})
+        assert (await tracker.get(tid))["status"] == "running"
     finally:
         set_progress_tracker(None)
 

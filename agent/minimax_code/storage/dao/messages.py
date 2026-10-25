@@ -222,6 +222,13 @@ def _hydrate(row: Any) -> dict[str, Any] | None:
         return None
     d["tool_calls"] = loads_json(d.get("tool_calls"))
     d["metadata"] = loads_json(d.get("metadata"))
+    if d["role"] == "assistant" and (d.get("metadata") or {}).get("status"):
+        status = d["metadata"]["status"]
+        if status in {"completed", "failed", "cancelled", "budget_paused", "interrupted"}:
+            d["status"] = status
+        elif status in {"queued", "planning", "running", "awaiting_approval", "waiting_input"}:
+            d["status"] = "streaming"
+            d["streaming"] = True
     if (d.get("metadata") or {}).get("engine") == "codex":
         d["tokens_in"] = d["metadata"].get("tokens_in")
         d["tokens_out"] = d["metadata"].get("tokens_out")

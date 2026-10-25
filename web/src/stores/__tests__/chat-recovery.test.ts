@@ -43,6 +43,20 @@ beforeEach(() => {
 afterEach(() => store.getState().reset());
 
 describe("conversation reconciliation from durable runs", () => {
+  it("keeps a Native answer active while its final validation receipt is pending", async () => {
+    const receipt = deferred<SendMessageResult>();
+    api.sendMessage.mockReturnValueOnce(receipt.promise);
+    const sending = store.getState().send("validate work");
+    emit(StreamEvent.MessageChunk, { message_id: "answer", delta: "saved answer", done: true });
+    expect(store.getState().messages.find((message) => message.id === "answer")).toMatchObject({ streaming: true, status: "streaming" });
+    expect(store.getState().status).toBe("streaming");
+    receipt.resolve({ session_id: "s", message_id: "answer", run_id: "r", text: "saved answer", cancelled: false,
+      run_status: "completed", verification: { version: 1, verdict: "passed", reason: "validation_passed", requires_review: false } });
+    await sending;
+    expect(store.getState().messages.find((message) => message.id === "answer")).toMatchObject({ streaming: false, status: "completed",
+      metadata: { verification: { verdict: "passed" } } });
+  });
+
   it("restores an offline final transcript and ignores all late notifications for that run", async () => {
     store.setState({ status: "streaming" });
     await recover();

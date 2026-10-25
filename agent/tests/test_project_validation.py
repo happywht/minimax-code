@@ -221,15 +221,23 @@ async def native(monkeypatch, tmp_path):
                 ensure_fs_bus().emit("modified", [str(tmp_path / "src.py")],
                                      cause="write_file", run_id=rid)
             await release.wait()
-            return SimpleNamespace(final_text="done", iterations=1, usage={},
-                                   truncated=False, cancelled=False, compactions=0,
-                                   budget_exhausted=False, tool_calls=[], tool_results=[])
+            if native.shell_write:
+                from minimax_code.execution import communicate_bounded, spawn_exec
+                proc = await spawn_exec(sys.executable, "-c", "from pathlib import Path; Path('shell.txt').write_text('actual shell write')",
+                                        cwd=str(tmp_path), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                await communicate_bounded(proc, timeout=5)
+            from minimax_code.storage.dao.messages import MessagesDAO
+            await MessagesDAO(db).create(id=rows[0]["assistant_message_id"], session_id=session_id,
+                role="assistant", content="done", run_id=rid, metadata={"run_id": rid})
+            return SimpleNamespace(**{"final_text": "done", "iterations": 1, "usage": {},
+                "truncated": False, "cancelled": False, "compactions": 0,
+                "budget_exhausted": False, "tool_calls": [], "tool_results": [], **native.result_flags})
 
     monkeypatch.setattr(agent, "AgentCore", CoreReal)
     native = SimpleNamespace(db=db, server=server, dao=AgentRunsDAO(db),
                              projects=projects, sessions=sessions,
                              release=release, simulate_write=False,
-                             fired_run_id=None, root=tmp_path)
+                             shell_write=False, result_flags={}, fired_run_id=None, root=tmp_path)
     try:
         yield native
     finally:
@@ -261,14 +269,14 @@ class _ValCtx:
         self.emit = AsyncMock()
 
 
-async def _admit_validated_run(native, validate_command: str):
+async def _admit_validated_run(native, validate_command: str, mode="chat"):
     project = await native.projects.create(
         id="proj_val", name="validated", validate_command=validate_command,
         root_path=str(native.root))
     await native.sessions.create(id="ses_val", title="s", project_id=project["id"])
     ctx = _ValCtx(native.server)
     task = asyncio.create_task(builtins.handle_agent_send_message(
-        {"session_id": "ses_val", "content": "change some code"}, ctx))
+        {"session_id": "ses_val", "content": "change some code", "mode": mode, "idempotency_key": "validated"}, ctx))
     # The stub signals via fired_run_id once inside run(); wait for it.
     for _ in range(1000):
         if native.fired_run_id:
@@ -308,9 +316,9 @@ async def test_failing_validation_forces_review(native) -> None:
     assert run["status"] == "completed"
 
 
-async def test_read_only_run_skips_validation(native) -> None:
+async def test_missing_fs_telemetry_does_not_suppress_validation(native) -> None:
     native.simulate_write = False
     await _admit_validated_run(native, _quoted_ok_command())
     run = (await native.dao.list_runs(session_id="ses_val"))[0]
     receipt = await native.dao.result_payload(run["id"])
-    assert "validation" not in receipt["verification"]
+    assert receipt["verification"]["verdict"] == "passed"

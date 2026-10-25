@@ -424,7 +424,22 @@ hydration expose null, and aggregate totals report incomplete usage. Zero is nev
 as known consumption. Unknown intervals survive completion until later attribution; counter
 resets retain the old watermark and mark uncertainty. This is not a complete shared daily ledger.
 
-## 10. See also
+## 10. Schema 035: task outcomes and verification
+
+The tasks table adds nullable `run_id REFERENCES agent_runs(id) ON DELETE SET NULL`
+and accepts `budget_paused`, `interrupted`, and `requires_review` alongside prior statuses.
+The migration runner rebuilds the populated table with foreign keys disabled before BEGIN,
+preserves prior rows, custom indexes/triggers, checks references before commit and restores enforcement.
+Session deletion still cascades tasks. Back up before upgrading; downgrade requires restoring the matching database.
+
+Linked task reads project authoritative run execution status, result and verification, including after restart;
+status filters/counts use the same projection. Versioned verification is JSON in existing run/message metadata,
+not a replacement for execution status. Final evidence updates and assistant status/partial metadata are
+transactional with the run event. Preliminary answer receipts persist before asynchronous local validation,
+so cancellation or final-settle failure retains known text and records unknown/review evidence.
+Legacy task/message evidence remains unknown rather than inventing a pass.
+
+## 11. See also
 
 * `agent/minimax_code/storage/db.py` — connection wrappers
 * `agent/minimax_code/storage/migrations/001_initial.py` — the initial schema

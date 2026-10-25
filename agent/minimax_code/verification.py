@@ -1,7 +1,7 @@
 """Project validation commands — the M3 acceptance executor (v1.6.2).
 
 A project may declare the command that proves its code is good (e.g.
-``pytest -x -q``). When a run modified files inside the project, the
+``pytest -x -q``). When a write-enabled run completes normally, the
 send-message pipeline executes that command before completing and
 attaches the result to the run's ``verification`` acceptance evidence:
 
@@ -28,6 +28,91 @@ from typing import Any
 from .execution import communicate_bounded, spawn_shell
 
 logger = logging.getLogger(__name__)
+
+
+def verification_evidence(*, status: str = "completed", engine: str = "native",
+                          mode: str = "chat", configured: bool = False,
+                          truncated: bool = False, base: dict[str, Any] | None = None,
+                          validation: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Acceptance truth is separate from execution status; absent proof never passes."""
+    evidence = {"tool_calls": 0, "failed_tool_calls": 0, "failures": [], **(base or {})}
+    evidence.pop("validation", None)
+    if status != "completed":
+        verdict, reason = "unknown", f"execution_{status}"
+    elif truncated:
+        verdict, reason = "unknown", "execution_truncated"
+    elif mode == "plan":
+        verdict, reason = "not_applicable", "plan_mode"
+    elif engine == "codex":
+        verdict, reason = "unknown", "engine_validation_not_supported"
+    elif not configured:
+        verdict, reason = "unknown", "not_configured"
+    elif validation is None:
+        verdict, reason = "unknown", "validation_missing"
+    else:
+        evidence["validation"] = validation
+        if validation.get("timed_out"):
+            verdict, reason = "unknown", "validation_timeout"
+        elif validation.get("exit_code") is None:
+            verdict, reason = "unknown", "validation_spawn_failed"
+        elif validation.get("ok") is True and validation.get("exit_code") == 0:
+            verdict, reason = "passed", "validation_passed"
+        else:
+            verdict, reason = "failed", "validation_failed"
+    if evidence.get("failed_tool_calls") and status == "completed":
+        verdict, reason = "failed", "failed_tool_calls"
+    review = (bool(evidence.get("requires_review")) or bool(evidence.get("failed_tool_calls")) or truncated
+              or status in {"failed", "cancelled", "interrupted", "budget_paused"}
+              or verdict == "failed")
+    # Missing/failed infrastructure for a configured validator requires review.
+    review = review or (configured and verdict == "unknown" and reason.startswith("validation_"))
+    evidence.update(version=1, verdict=verdict, reason=reason, requires_review=review)
+    return evidence
+
+
+async def verify_native_result(*, status: str, mode: str, command: str, workspace: str,
+                               truncated: bool, base: dict[str, Any]) -> dict[str, Any]:
+    validation = None
+    if status == "completed" and mode != "plan" and not truncated and command:
+        try:
+            from .workspace_ctx import require_directory
+            if not workspace:
+                raise ValueError("Validation workspace is missing")
+            root = str(require_directory(workspace))
+            validation = await run_validate_command(command, cwd=root,
+                                                   timeout_s=resolve_validate_timeout())
+        except Exception as exc:
+            logger.exception("validator infrastructure failed")
+            validation = {"command": command, "ok": False, "error": str(exc)}
+    return verification_evidence(status=status, mode=mode, configured=bool(command),
+                                 truncated=truncated, base=base, validation=validation)
+
+
+def task_outcome(result: Any) -> str:
+    """Project a settled receipt without equating 'returned' with 'completed'."""
+    if not isinstance(result, dict):
+        return "completed"
+    status = result.get("run_status")
+    if status in {"budget_paused", "cancelled", "interrupted", "failed"}:
+        return status
+    if status in {"queued", "planning", "running", "awaiting_approval", "waiting_input"}:
+        return "running"
+    if status is None:
+        if result.get("cancelled"):
+            return "cancelled"
+        if result.get("budget_paused"):
+            return "budget_paused"
+    if result.get("error"):
+        return "failed"
+    if result.get("run_id") and status != "completed":
+        return "requires_review"
+    if status == "completed" and (result.get("verification") or {}).get("requires_review"):
+        return "requires_review"
+    if result.get("ok") is False:
+        return "failed"
+    if (result.get("verification") or {}).get("requires_review") or result.get("truncated"):
+        return "requires_review"
+    return "completed"
 
 # Same posture as the scheduler command payload: the ceiling keeps the
 # kill inside the caller's own timeout budget instead of leaking the
@@ -97,9 +182,9 @@ async def run_validate_command(
 def run_touched_files(bus: Any, run_id: str) -> bool:
     """True when the fs-bus recorded any write attributed to this run.
 
-    File tools publish with ``run_id`` in the event attributes (v1.5.1),
-    so a run that only read/searched never triggers the validation
-    command — pure Q&A turns stay cheap.
+    File tools publish with ``run_id`` in the event attributes (v1.5.1).
+    This is advisory telemetry only; validation must not depend on this
+    bounded event buffer retaining a write.
     """
     if bus is None or not run_id:
         return False

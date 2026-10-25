@@ -27,15 +27,16 @@ import logging
 import uuid
 from typing import Any
 
-from ._base import apply_pagination, now_iso, parse_order_by, row_to_dict
+from ._base import apply_pagination, loads_json, now_iso, parse_order_by, row_to_dict
 
 logger = logging.getLogger(__name__)
 
 
 _SORTABLE: tuple[str, ...] = ("created_at", "started_at", "completed_at", "title", "id", "status")
 _VALID_STATUS: frozenset[str] = frozenset(
-    {"pending", "running", "completed", "failed", "cancelled"}
+    {"pending", "running", "completed", "failed", "cancelled", "budget_paused", "interrupted", "requires_review"}
 )
+_TERMINAL = _VALID_STATUS - {"pending", "running"}
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +93,37 @@ class TasksDAO:
 
     async def get(self, task_id: str) -> dict[str, Any] | None:
         row = await self._db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
-        return _hydrate(row)
+        return await self._evidence(_hydrate(row))
+
+    async def _evidence(self, task: dict[str, Any] | None) -> dict[str, Any] | None:
+        if task is None:
+            return None
+        from ...verification import task_outcome
+        run = await self._db.fetchone("SELECT status,metadata,result FROM agent_runs WHERE id=?",
+                                     (task["run_id"],)) if task.get("run_id") else None
+        metadata = loads_json(run["metadata"]) or {} if run else {}
+        receipt = loads_json(run["result"]) or {} if run else {}
+        evidence = metadata.get("verification") or receipt.get("verification") or {}
+        if evidence.get("version") != 1:
+            evidence = {**evidence, "version": 1, "verdict": "unknown", "reason": "legacy_unverified",
+                        "requires_review": bool(evidence.get("requires_review"))}
+        task["verification"] = evidence
+        task["execution_status"] = run["status"] if run else None
+        task["cancel_supported"] = bool(run and run["status"] in {
+            "queued", "planning", "running", "awaiting_approval", "waiting_input"})
+        if run:
+            task["status"] = task_outcome({**receipt, "run_status": run["status"], "verification": evidence})
+            if receipt.get("text"):
+                task["result"] = receipt["text"]
+        return task
+
+    async def link_run(self, task_id: str, run_id: str) -> None:
+        async with self._db.transaction() as conn:
+            cursor = await conn.execute("UPDATE tasks SET run_id=? WHERE id=? AND session_id="
+                                        "(SELECT session_id FROM agent_runs WHERE id=?)",
+                                        (run_id, task_id, run_id))
+            if cursor.rowcount != 1:
+                raise ValueError("Task and run must belong to the same session")
 
     async def list(
         self,
@@ -103,16 +134,29 @@ class TasksDAO:
         offset: int | None = None,
         order_by: str | None = None,
     ) -> list[dict[str, Any]]:
-        where, params = _build_filters(session_id=session_id, status=status)
+        if status is not None and status not in _VALID_STATUS:
+            raise ValueError("invalid task status")
+        # Linked run truth can differ from an interrupted scheduler's cached row.
+        # Apply status and pagination after projection so list/count agree.
+        where, params = _build_filters(session_id=session_id, status=None)
         sql = f"SELECT * FROM tasks {where} ORDER BY {parse_order_by(order_by, _SORTABLE)}"
-        sql, params = apply_pagination(sql, params, limit=limit, offset=offset)
+        if status is None:
+            sql, params = apply_pagination(sql, params, limit=limit, offset=offset)
         rows = await self._db.fetchall(sql, tuple(params))
-        return [_hydrate(r) for r in rows]
+        projected = [await self._evidence(_hydrate(r)) for r in rows]
+        if status is not None:
+            projected = [row for row in projected if row["status"] == status]
+            projected = projected[offset or 0:]
+            if limit is not None:
+                projected = projected[:limit]
+        return projected
 
     async def count(
         self, *, session_id: str | None = None, status: str | None = None
     ) -> int:
-        where, params = _build_filters(session_id=session_id, status=status)
+        if status is not None:
+            return len(await self.list(session_id=session_id, status=status))
+        where, params = _build_filters(session_id=session_id, status=None)
         row = await self._db.fetchone(
             f"SELECT COUNT(*) AS n FROM tasks {where}", tuple(params)
         )
@@ -142,7 +186,7 @@ class TasksDAO:
             # the original start timestamp.
             sets.append("started_at = COALESCE(started_at, ?)")
             params.append(now_iso())
-        if status in ("completed", "failed", "cancelled"):
+        if status in _TERMINAL:
             sets.append("completed_at = ?")
             params.append(now_iso())
         if error is not None:
@@ -289,8 +333,7 @@ class TaskDAO:
 
     async def get(self, task_id: str) -> dict[str, Any] | None:
         """Return the row for ``task_id`` (or ``None`` if missing)."""
-        row = await self._db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
-        return row_to_dict(row)
+        return await TasksDAO(self._db).get(task_id)
 
     async def list(
         self,
@@ -304,22 +347,8 @@ class TaskDAO:
         ``created_at DESC`` so the most recent task is first — the
         order the UI typically renders.
         """
-        clauses: list[str] = []
-        params: list[Any] = []
-        if session_id is not None:
-            clauses.append("session_id = ?")
-            params.append(session_id)
-        if status is not None:
-            if status not in _VALID_STATUS:
-                raise ValueError(
-                    f"status must be one of {sorted(_VALID_STATUS)}, got {status!r}"
-                )
-            clauses.append("status = ?")
-            params.append(status)
-        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        sql = f"SELECT * FROM tasks {where} ORDER BY created_at DESC"
-        rows = await self._db.fetchall(sql, tuple(params))
-        return [row_to_dict(r) for r in rows]
+        return await TasksDAO(self._db).list(session_id=session_id, status=status,
+                                            order_by="created_at DESC")
 
     # ---- update ---------------------------------------------------------
 
@@ -357,7 +386,7 @@ class TaskDAO:
                 # COALESCE keeps the original started_at on re-entry.
                 sets.append("started_at = COALESCE(started_at, ?)")
                 params.append(now_iso())
-            if status in ("completed", "failed", "cancelled"):
+            if status in _TERMINAL:
                 sets.append("completed_at = ?")
                 params.append(now_iso())
         if error is not None:
@@ -384,7 +413,7 @@ class TaskDAO:
         or ``status="cancelled"`` for a user-cancelled one.
         ``completed_at`` is auto-filled.
         """
-        if status not in ("completed", "failed", "cancelled"):
+        if status not in _TERMINAL:
             raise ValueError(
                 f"complete() status must be 'completed', 'failed' or 'cancelled', got {status!r}"
             )

@@ -112,6 +112,8 @@ class CodexConversation:
                                             or self.usage is None or self.certainty == "uncertain")
         self.state["active_turn_id"] = None
         result = {**self.receipt(status), **(receipt or {})}
+        from ..verification import verification_evidence
+        result["verification"] = verification_evidence(status=status, engine="codex")
         if error:
             result["error"] = {"message": error}
         await self._save(status, message=bool(self.turn_id or self.text or self.usage), result=result, error=error)
@@ -135,12 +137,16 @@ class CodexConversation:
                   "workspace_snapshot": self.job.workspace, "codex_settings": {
                       k: self.state[k] for k in ("model", "modelProvider", "reasoningEffort") if k in self.state},
                   "usage_certainty": self.certainty}
+            if result is not None:
+                md["verification"] = result["verification"]
             if message:
                 message_md = {"run_id": self.job.run_id, "engine": "codex",
                               "external_turn_id": self.turn_id, "status": status,
                               "partial": status != "completed", "usage_certainty": self.certainty,
                               "tokens_in": self.usage["inputTokens"] if self.usage else None,
                               "tokens_out": self.usage["outputTokens"] if self.usage else None}
+                if result is not None:
+                    message_md["verification"] = result["verification"]
                 await conn.execute(
                     "INSERT INTO messages(id,session_id,role,content,created_at,tokens_in,tokens_out,metadata) "
                     "VALUES(?,?,'assistant',?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET content=excluded.content, "

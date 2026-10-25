@@ -689,18 +689,25 @@ async def handle_agent_send_message(
 
     async def finalize(job: RunJob, error: BaseException | None) -> None:
         current = await dao.get_run(job.run_id)
-        # budget_paused is a terminal settle too — the run stopped cleanly
-        # at a call boundary and must not be re-terminated as failed here.
-        if current and current["status"] in {"completed", "failed", "cancelled", "interrupted", "budget_paused"}:
+        # A completed receipt is immutable. A preliminary budget pause can
+        # still fail or be cancelled before its final evidence is settled.
+        if current and current["status"] in {"completed", "failed", "cancelled", "interrupted"}:
+            return
+        if current and current["status"] == "budget_paused" and error is None and not job.cancel_requested:
             return
         cancelled = isinstance(error, asyncio.CancelledError) or job.cancel_requested
         if cancelled:
             receipt = {"session_id": session_id, "message_id": job.message_id,
-                       "run_id": job.run_id, "text": "", "cancelled": True}
+                       "run_id": job.run_id, "text": "", **(job.result or {}), "cancelled": True}
             reason = "Cancelled by user or service shutdown"
         else:
             failure = job.error or {"code": -32603, "message": str(error or "Run ended without a confirmed result")}
-            receipt, reason = {"error": failure}, failure["message"]
+            receipt, reason = {**(job.result or {}), "error": failure}, failure["message"]
+        from ..verification import verification_evidence
+        receipt["run_status"] = "cancelled" if cancelled else "failed"
+        receipt.update(cancelled=cancelled, budget_paused=False)
+        receipt["verification"] = verification_evidence(status=receipt["run_status"],
+            base=(job.result or {}).get("verification"), configured=bool(job.validate_command))
         run = await dao.terminate_run(job.run_id, status="cancelled" if cancelled else "failed",
                                       error=reason, result=receipt)
         await _notify_run(ctx, "run.completed", {"run": run})
@@ -1426,37 +1433,18 @@ async def _handle_agent_send_message(
         for call, res in zip(tool_calls_log, tool_results_log, strict=True)
         if not getattr(res, "success", True)
     ]
-    verification = {
+    verification_base = {
         "tool_calls": len(tool_calls_log),
         "failed_tool_calls": len(tool_failures),
         "requires_review": bool(tool_failures) or bool(result.truncated),
         "failures": tool_failures[:5],
     }
 
-    # M3 — automatic acceptance. When the project declares a validate
-    # command and this run actually wrote files, run the command now and
-    # attach the evidence. A failing validation forces review: the
-    # verbal "done" cannot mask a failing project.
-    if job.validate_command and job.workspace:
-        try:
-            from ..app import ensure_fs_bus
-            from ..verification import (
-                resolve_validate_timeout,
-                run_touched_files,
-                run_validate_command,
-            )
-
-            if run_touched_files(ensure_fs_bus(), job.run_id):
-                validation = await run_validate_command(
-                    job.validate_command,
-                    cwd=job.workspace,
-                    timeout_s=resolve_validate_timeout(),
-                )
-                verification["validation"] = validation
-                if not validation.get("ok"):
-                    verification["requires_review"] = True
-        except Exception:
-            logger.exception("automatic validation failed; continuing without evidence")
+    from ..verification import verification_evidence, verify_native_result
+    execution_status = "cancelled" if getattr(result, "cancelled", False) else (
+        "budget_paused" if getattr(result, "budget_exhausted", False) else "completed")
+    verification = verification_evidence(status=execution_status, mode=params.get("mode", "chat"),
+        configured=bool(job.validate_command), truncated=bool(result.truncated), base=verification_base)
     job.result = {
         "session_id": session_id,
         "message_id": current_assistant_message_id,
@@ -1470,6 +1458,7 @@ async def _handle_agent_send_message(
         "budget_paused": bool(getattr(result, "budget_exhausted", False)),
         "budget": core.budget.snapshot() if core.budget is not None else None,
         "verification": verification,
+        "run_status": execution_status,
         # v1.1.0: block accounting for auto-continue (1 when off) —
         # iterations/compactions above are already summed across
         # blocks by _run_with_auto_continue.
@@ -1479,6 +1468,14 @@ async def _handle_agent_send_message(
         "tokens_in": result.usage.get("prompt_tokens", 0),
         "tokens_out": result.usage.get("completion_tokens", 0),
     }
+    # Save the output before waiting for validation. Cancellation/restart must
+    # preserve the answer while leaving configured-but-unfinished proof unknown.
+    current_run = await runs_dao.get_run(job.run_id)
+    await runs_dao.update_run_status(job.run_id, status=current_run["status"], result=job.result,
+        metadata={**(current_run.get("metadata") or {}), "verification": verification})
+    verification = await verify_native_result(status=execution_status, mode=params.get("mode", "chat"),
+        command=job.validate_command, workspace=job.workspace, truncated=bool(result.truncated), base=verification_base)
+    job.result["verification"] = verification
     await recorder.complete(result, blocks=blocks, receipt=job.result, verification=verification)
     await ctx.reply(job.result)
 

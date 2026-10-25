@@ -224,7 +224,9 @@ export type MessageStatus =
   | "completed"
   | "failed"
   | "cancelling"
-  | "cancelled";
+  | "cancelled"
+  | "budget_paused"
+  | "interrupted";
 
 export interface Message {
   id: string;
@@ -266,6 +268,8 @@ export interface SourceAnnotation {
 
 /** Per-turn metadata snapshot for the v0.3.0 thinking_count channel. */
 export interface MessageMetadata {
+  verification?: VerificationEvidence;
+  run_status?: AgentRunStatus;
   engine?: "native" | "codex";
   external_turn_id?: string | null;
   partial?: boolean;
@@ -661,7 +665,11 @@ export interface TaskProgressData {
   task_id: string;
   progress: number; // 0..1
   message?: string;
-  status: "running" | "done" | "error" | "cancelled";
+  status: "running" | "done" | "error" | "cancelled" | "completed" | "failed" | "budget_paused" | "interrupted" | "requires_review";
+  run_id?: string | null;
+  execution_status?: string | null;
+  verification?: VerificationEvidence;
+  result?: string | null;
 }
 
 /** Raw message row returned by `message.list` before UI normalization. */
@@ -671,6 +679,7 @@ export interface PersistedMessage {
   text?: string;
   content?: string;
   status?: MessageStatus;
+  streaming?: boolean;
   created_at: number;
   metadata?: MessageMetadata;
   tool_call_id?: string;
@@ -850,12 +859,7 @@ export interface SendMessageResult {
    * M2 — acceptance evidence. Failed tool calls mean the verbal "done"
    * is not a verified completion (运行结束 ≠ 验收通过).
    */
-  verification?: {
-    tool_calls: number;
-    failed_tool_calls: number;
-    requires_review: boolean;
-    failures: { tool: string; error: string }[];
-  };
+  verification?: VerificationEvidence;
   iterations?: number;
   /** v1.1.0: blocks ran behind this send (auto-continue; 1 when off). */
   blocks?: number;
@@ -1827,11 +1831,27 @@ export interface CheckpointDeleteResult {
 // ---------------------------------------------------------------------------
 
 /** A single persisted task row — matches the `tasks` table. */
+export interface VerificationEvidence {
+  /** Older records without a version/verdict remain unverified. */
+  version?: 1;
+  verdict?: "passed" | "failed" | "unknown" | "not_applicable";
+  reason?: string;
+  requires_review: boolean;
+  tool_calls?: number;
+  failed_tool_calls?: number;
+  failures?: { tool: string; error: string }[];
+  validation?: { command?: string; exit_code?: number | null; ok: boolean; timed_out?: boolean; error?: string; stdout?: string; stderr?: string };
+}
+
 export interface TaskRow {
   id: string;
   session_id: string;
   title: string;
-  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled" | "budget_paused" | "interrupted" | "requires_review";
+  run_id?: string | null;
+  execution_status?: string | null;
+  verification?: VerificationEvidence;
+  cancel_supported?: boolean;
   progress: number;
   created_at: string;
   started_at: string | null;
@@ -1848,6 +1868,7 @@ export interface TaskListResult {
 
 /** Result of `task.cancel`. */
 export interface TaskCancelResult {
+  requested?: boolean;
   ok: true;
   task: TaskRow;
   noop?: boolean;

@@ -71,6 +71,17 @@ class RunResumeParams(RunIdParams):
     budget_tokens: int | None = Field(default=None, ge=0)
 
 
+class VerificationEvidence(_Base):
+    version: Literal[1] = 1
+    verdict: Literal["passed", "failed", "unknown", "not_applicable"] = "unknown"
+    reason: str = "legacy_unverified"
+    requires_review: bool = False
+    tool_calls: int = 0
+    failed_tool_calls: int = 0
+    failures: list[dict[str, str]] = Field(default_factory=list)
+    validation: dict[str, Any] | None = None
+
+
 class SendMessageResult(_Base):
     session_id: str
     message_id: str
@@ -85,17 +96,20 @@ class SendMessageResult(_Base):
     external_turn_id: str | None = None
     usage_certainty: Literal["unknown", "observed", "uncertain", "recovery_interval"] | None = None
     tokens_total: int | None = None
+    verification: VerificationEvidence | None = None
 
 
 class MessageMetadata(_Base):
     """Persisted and streamed metadata; old messages may omit run linkage."""
 
     run_id: str | None = None
+    run_status: str | None = None
     engine: Literal["native", "codex"] | None = None
     external_turn_id: str | None = None
     status: str | None = None
     partial: bool = False
     usage_certainty: str | None = None
+    verification: VerificationEvidence | None = None
     thinking_count: int | None = None
     tokens_in: int | None = None
     tokens_out: int | None = None
