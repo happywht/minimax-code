@@ -28,8 +28,8 @@ def kernel_api():
     return kernel
 
 
-@pytest.mark.parametrize("use_shell", [False, True])
-async def test_service_crash_reaps_launcher_command_and_grandchild(tmp_path, use_shell):
+@pytest.mark.parametrize("launch_kind", ["exec", "shell", "engine"])
+async def test_service_crash_reaps_launcher_command_and_grandchild(tmp_path, launch_kind):
     package_root = Path(__file__).resolve().parents[1]
     marker = tmp_path / "children.json"
     worker = tmp_path / "worker.py"
@@ -40,17 +40,23 @@ async def test_service_crash_reaps_launcher_command_and_grandchild(tmp_path, use
         "pending=marker.with_suffix('.tmp')\n"
         "pending.write_text(json.dumps([os.getpid(),child.pid]))\n"
         "pending.replace(marker)\n"
-        "time.sleep(60)\n", encoding="utf-8",
+        f"heartbeat=Path({str(tmp_path / 'heartbeat')!r})\n"
+        "while True:\n heartbeat.write_text(str(time.monotonic_ns()))\n time.sleep(.025)\n", encoding="utf-8",
     )
     service = tmp_path / "service.py"
     service.write_text(
         "import asyncio,os,sys,json,subprocess\n"
         f"sys.path.insert(0,{str(package_root)!r})\n"
         "from minimax_code.execution import spawn_exec,spawn_shell\n"
+        "from minimax_code.engines.codex import AppServerConnection\n"
         "async def main():\n"
         f"    args=[sys.executable,{str(worker)!r}]\n"
         + ("    child=await spawn_shell(subprocess.list2cmdline(args), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)\n"
-           if use_shell else
+           if launch_kind == "shell" else
+           f"    connection=AppServerConnection(cwd=__import__('pathlib').Path({str(tmp_path)!r}),codex_cmd=args)\n"
+           "    await connection.start()\n"
+           "    child=connection._proc\n"
+           if launch_kind == "engine" else
            "    child=await spawn_exec(*args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)\n")
         + "    print(json.dumps([os.getpid(),child.pid]),flush=True)\n"
         "    await asyncio.Event().wait()\n"
@@ -80,6 +86,11 @@ async def test_service_crash_reaps_launcher_command_and_grandchild(tmp_path, use
         for handle in handles[1:]:
             assert await asyncio.to_thread(kernel.WaitForSingleObject, handle, 5000) == 0
         await asyncio.wait_for(proc.wait(), 5)
+        heartbeat = tmp_path / "heartbeat"
+        assert heartbeat.exists()
+        final = heartbeat.read_text()
+        await asyncio.sleep(.2)
+        assert heartbeat.read_text() == final
     finally:
         # Handles identify only this test's processes even if PIDs get reused.
         for handle in handles:

@@ -133,11 +133,20 @@ def main() -> int:
     try:
         shell = sys.argv[4] == "--shell"
         command = sys.argv[5] if shell else sys.argv[5:]
-        return subprocess.call(command, shell=shell, stdin=sys.stdin, stdout=sys.stdout,
-                               stderr=sys.stderr, creationflags=subprocess.CREATE_NO_WINDOW)
+        process = subprocess.Popen(command, shell=shell, stdin=sys.stdin, stdout=sys.stdout,
+                                   stderr=sys.stderr, creationflags=subprocess.CREATE_NO_WINDOW)
     except OSError as exc:
         print(f"Managed command could not start: {exc}", file=sys.stderr)
         return 127
+    # The command owns duplicated handles now. A waiting host must not keep
+    # stdio pipes open: an app-server closing stdout must expose EOF even when
+    # it stays alive, and a descendant may legitimately retain its own handle.
+    for fd in (0, 1, 2):
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    return process.wait()
 
 
 if __name__ == "__main__":

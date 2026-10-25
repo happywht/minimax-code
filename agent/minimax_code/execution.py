@@ -69,6 +69,11 @@ def require_tool_access(name: str) -> None:
 
 def process_cwd(cwd: str | Path | None) -> str:
     require_write_access()
+    return _validated_process_cwd(cwd)
+
+
+def _validated_process_cwd(cwd: str | Path | None) -> str:
+    """Shared validation; trusted engine startup has its own policy capability."""
     if current_sandbox() is not None:
         raise ExecutionDeniedError(
             "Processes cannot run in a file overlay: it does not isolate shell writes. "
@@ -103,7 +108,7 @@ def process_environment(extra: Mapping[str, str] | None = None) -> dict[str, str
     # Only explicit, trusted configuration belongs here. Agent-supplied tool
     # env goes through the terminal tool's stricter filtering first.
     for key, value in (extra or {}).items():
-        if not isinstance(key, str) or not isinstance(value, str) or "=" in key or "\0" in key + value:
+        if not isinstance(key, str) or not key or not isinstance(value, str) or "=" in key or "\0" in key + value:
             raise ValueError("Invalid child environment entry")
         env[key] = value
     return env
@@ -124,29 +129,59 @@ async def _spawn(factory, *args, **kwargs) -> asyncio.subprocess.Process:
         # Cancellation may arrive after the OS created the process but before
         # asyncio returned its handle. Recover that handle before re-raising.
         try:
-            proc = await starting
+            proc = await _finish_owned(starting)
         except Exception:
             pass
         else:
-            await asyncio.shield(terminate_tree(proc))
+            await _finish_owned(asyncio.create_task(terminate_tree(proc)))
         raise
+
+
+async def _finish_owned(task: asyncio.Task[Any]) -> Any:
+    """Finish a retained cleanup/ownership task despite repeated cancellation.
+
+    Callers handling cancellation re-raise it after this ownership transfer;
+    this helper itself deliberately consumes additional cancellation requests.
+    """
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+    return task.result()
 
 
 async def spawn_exec(*argv: str, cwd: str | Path | None = None,
                      env: Mapping[str, str] | None = None, **kwargs: Any) -> asyncio.subprocess.Process:
     resolved_cwd = process_cwd(cwd)
     child_env = process_environment(env)
+    return await _spawn_managed_exec(*argv, cwd=resolved_cwd, env=child_env, **kwargs)
+
+
+async def _spawn_managed_exec(*argv: str, cwd: str,
+                              env: Mapping[str, str], **kwargs: Any) -> asyncio.subprocess.Process:
+    """Internal primitive. Public tool callers must go through spawn_exec policy.
+
+    Engine adapters validate their own narrow launch capability before calling
+    this primitive; it is never a tool-facing policy override.
+    """
+    if not argv:
+        raise ValueError("A process command is required")
     if sys.platform == "win32":
         from ._windows_process_host import parent_arguments
 
         # Resolve the binary before wrapping to preserve spawn error semantics.
-        binary = shutil.which(argv[0], path=child_env.get("PATH"))
+        binary = shutil.which(argv[0], path=env.get("PATH"))
         if binary is None:
             raise FileNotFoundError(f"command not found: {argv[0]}")
-        argv = (sys.executable, "-I", "-S", str(Path(__file__).with_name("_windows_process_host.py")),
+        # A Windows venv redirector waits with inherited pipes open. The host
+        # is stdlib-only; launch the real interpreter so it can release its
+        # own stdio copies after handing them to the managed command.
+        host_python = getattr(sys, "_base_executable", None) or sys.executable
+        argv = (host_python, "-I", "-S", str(Path(__file__).with_name("_windows_process_host.py")),
                 *parent_arguments(), "--exec", binary, *argv[1:])
     return await _spawn(asyncio.create_subprocess_exec,
-        *argv, cwd=resolved_cwd, env=child_env,
+        *argv, cwd=cwd, env=env,
         **(spawn_options() | kwargs),
     )
 
@@ -157,7 +192,8 @@ async def spawn_shell(command: str, *, cwd: str | Path | None = None,
         from ._windows_process_host import parent_arguments
 
         return await _spawn(asyncio.create_subprocess_exec,
-            sys.executable, "-I", "-S", str(Path(__file__).with_name("_windows_process_host.py")),
+            getattr(sys, "_base_executable", None) or sys.executable,
+            "-I", "-S", str(Path(__file__).with_name("_windows_process_host.py")),
             *parent_arguments(), "--shell", command, cwd=process_cwd(cwd), env=process_environment(env),
             **(spawn_options() | kwargs),
         )

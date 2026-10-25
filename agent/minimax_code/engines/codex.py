@@ -23,12 +23,21 @@ import asyncio
 import itertools
 import json
 import logging
+import os
+import re
 import shutil
-import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from ..execution import (
+    _finish_owned,
+    _spawn_managed_exec,
+    _validated_process_cwd,
+    communicate_bounded,
+    process_environment,
+    terminate_tree,
+)
 from .base import EngineInfo
 
 logger = logging.getLogger(__name__)
@@ -39,8 +48,51 @@ _CAPABILITIES = {"streaming": True, "resume": True, "cancel": True,
                  "approvals": True, "usage": True, "steer": False}
 
 
+def _codex_environment(extra: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Build a child environment from trusted service configuration only.
+
+    Stored CLI login keeps HOME/USERPROFILE and CODEX_HOME. Provider auth,
+    proxy and CA variables require explicit server-side name selection. Never
+    infer credential names from project config, or accept them from tool args.
+    """
+    selected: dict[str, str] = {}
+    raw = os.environ.get("MINIMAX_CODE_CODEX_ENV_VARS", "[]")
+    try:
+        names = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Invalid trusted MINIMAX_CODE_CODEX_ENV_VARS configuration") from exc
+    if (not isinstance(names, list) or len(names) > 64
+            or any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,255}", name)
+                   for name in names)):
+        raise ValueError("Invalid trusted MINIMAX_CODE_CODEX_ENV_VARS configuration")
+    for name in ["CODEX_HOME", *names]:
+        if name in os.environ:
+            selected[name] = os.environ[name]
+    selected.update(extra or {})
+    return process_environment(selected)
+
+
+async def _launch_codex(argv: list[str], *, cwd: Path | None = None,
+                        extra_env: Mapping[str, str] | None = None) -> asyncio.subprocess.Process:
+    """Trusted adapter startup, independent of model-command write permission.
+
+    The per-turn Codex sandbox still governs plan/execute behavior. This
+    internal capability only launches the server-selected engine command.
+    """
+    return await _spawn_managed_exec(
+        *argv, cwd=_validated_process_cwd(cwd), env=_codex_environment(extra_env),
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+
+
 def _probe_codex(timeout_s: float = 5.0) -> EngineInfo:
-    """Return the Codex engine's availability card (blocking probe)."""
+    """Compatibility shim for synchronous callers; production uses async probe."""
+    return asyncio.run(_probe_codex_async(timeout_s))
+
+
+async def _probe_codex_async(timeout_s: float = 5.0) -> EngineInfo:
+    """Probe the pinned CLI through the same owned process boundary."""
     exe = shutil.which("codex")
     if exe is None:
         return EngineInfo(
@@ -50,25 +102,25 @@ def _probe_codex(timeout_s: float = 5.0) -> EngineInfo:
             unavailable_reason="codex CLI not found on PATH — install it (npm i -g @openai/codex) to enable this engine",
             capabilities=dict(_CAPABILITIES),
         )
+    failure_reason = None
     try:
-        proc = subprocess.run(
-            [exe, "--version"],
-            capture_output=True,
-            timeout=timeout_s,
-            check=False,
-        )
-        version = proc.stdout.decode("utf-8", errors="replace").strip() or None
+        proc = await _launch_codex([exe, "--version"])
+        output = await communicate_bounded(proc, timeout=timeout_s, limit=4096)
+        version = output.stdout.decode("utf-8", errors="replace").strip() or None
         expected = SUPPORTED_PROTOCOL_PIN.replace("codex-cli-", "codex-cli ", 1)
         if proc.returncode != 0:
+            failure_reason = "codex --version exited unsuccessfully"
             raise RuntimeError(f"version probe exited with code {proc.returncode}")
         if version != expected:
-            raise RuntimeError(f"unsupported version {version!r}; expected {expected}")
+            failure_reason = f"Unsupported Codex CLI version; expected {expected}"
+            raise RuntimeError(f"unsupported Codex CLI version; expected {expected}")
     except Exception as exc:  # noqa: BLE001 — probe must never raise
         return EngineInfo(
             id="codex",
             name="Codex (OpenAI Codex CLI)",
             available=False,
-            unavailable_reason=f"codex --version failed: {exc}",
+            # Child output and configuration values may contain credentials.
+            unavailable_reason=failure_reason or f"codex --version failed ({type(exc).__name__})",
             capabilities=dict(_CAPABILITIES),
         )
     return EngineInfo(
@@ -78,13 +130,6 @@ def _probe_codex(timeout_s: float = 5.0) -> EngineInfo:
         version=version,
         capabilities=dict(_CAPABILITIES),
     )
-
-
-async def _probe_codex_async(timeout_s: float = 5.0) -> EngineInfo:
-    """Event-loop-safe probe: the blocking version runs in a thread."""
-    import asyncio
-
-    return await asyncio.to_thread(_probe_codex, timeout_s)
 
 
 class AppServerConnection:
@@ -98,15 +143,21 @@ class AppServerConnection:
     """
 
     def __init__(self, *, cwd: Path | None = None,
-                 codex_cmd: list[str] | None = None) -> None:
+                 codex_cmd: list[str] | None = None,
+                 extra_env: Mapping[str, str] | None = None) -> None:
         self._cwd = cwd
         # Full argv so tests can script a fake server (exec semantics:
         # no shell quoting — argv lists only).
         self._codex_cmd = codex_cmd or ["codex", "app-server"]
+        # Trusted embedding/server configuration, never JSON-RPC tool input.
+        self._extra_env = extra_env
         self._proc: asyncio.subprocess.Process | None = None
         self._pending: dict[Any, asyncio.Future[Any]] = {}
         self._ids = itertools.count(1)
         self._reader_task: asyncio.Task[None] | None = None
+        self._exit_task: asyncio.Task[None] | None = None
+        self._start_task: asyncio.Task[None] | None = None
+        self._close_task: asyncio.Task[None] | None = None
         self.on_notification: Callable[[dict[str, Any]], Any] | None = None
         self.on_server_request: Callable[[dict[str, Any]], Any] | None = None
         self.on_exited: Callable[[], None] | None = None
@@ -115,15 +166,45 @@ class AppServerConnection:
         self.closed = False
 
     async def start(self) -> None:
-        self._proc = await asyncio.create_subprocess_exec(
-            *self._codex_cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            cwd=str(self._cwd) if self._cwd else None,
-        )
+        if self.closed:
+            raise RuntimeError("Codex connection is closed")
+        if self._start_task is None:
+            self._start_task = asyncio.create_task(self._start_owned())
+        try:
+            await asyncio.shield(self._start_task)
+        except BaseException:
+            await _finish_owned(self._begin_close())
+            raise
+
+    async def _start_owned(self) -> None:
+        self._proc = await _launch_codex(self._codex_cmd, cwd=self._cwd,
+                                          extra_env=self._extra_env)
+        if self.closed:
+            return  # The retained close task will reap this recovered handle.
         self._reader_task = asyncio.create_task(self._read_loop(),
                                                name="codex-app-server-reader")
+        self._exit_task = asyncio.create_task(self._watch_exit(),
+                                             name="codex-app-server-exit")
+
+    async def _watch_exit(self) -> None:
+        assert self._proc is not None
+        # Process.wait can await inherited pipe EOF after the leader exits.
+        # Observe the transport's exit status independently of those handles.
+        while self._proc.returncode is None:
+            await asyncio.sleep(0.05)
+        self._fail_pending("codex app-server process exited")
+        self._unexpected_exit()
+
+    def _fail_pending(self, reason: str) -> None:
+        for fut in self._pending.values():
+            if not fut.done():
+                fut.set_exception(RuntimeError(reason))
+
+    def _unexpected_exit(self) -> None:
+        if not self.closed:
+            self._begin_close()
+            if self.on_exited is not None:
+                self.on_exited()
 
     async def _read_loop(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
@@ -140,13 +221,10 @@ class AppServerConnection:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            reason = f"Codex protocol failure: {exc}"
+            reason = f"Codex protocol failure ({type(exc).__name__})"
         finally:
-            for fut in self._pending.values():
-                if not fut.done():
-                    fut.set_exception(RuntimeError(reason))
-            if not self.closed and self.on_exited is not None:
-                self.on_exited()
+            self._fail_pending(reason)
+            self._unexpected_exit()
 
     def _dispatch(self, obj: dict[str, Any]) -> None:
         if "id" in obj and ("method" not in obj):
@@ -225,7 +303,24 @@ class AppServerConnection:
         return result
 
     async def close(self) -> None:
+        closing = self._begin_close()
+        try:
+            await asyncio.shield(closing)
+        except asyncio.CancelledError:
+            await _finish_owned(closing)
+            raise
+
+    def _begin_close(self) -> asyncio.Task[None]:
         self.closed = True
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close_owned(), name="codex-app-server-close")
+        return self._close_task
+
+    async def _close_owned(self) -> None:
+        if self._start_task is not None:
+            # A pending OS spawn owns a handle even before it returns. Retain
+            # that task, then reap the handle before releasing the connection.
+            await asyncio.gather(self._start_task, return_exceptions=True)
         pending_tasks = list(self._bg)
         for task in pending_tasks:
             task.cancel()
@@ -234,18 +329,17 @@ class AppServerConnection:
         if self._reader_task is not None:
             self._reader_task.cancel()
             pending_tasks.append(self._reader_task)
+        if self._exit_task is not None:
+            self._exit_task.cancel()
+            pending_tasks.append(self._exit_task)
+        if self._proc is not None:
+            await terminate_tree(self._proc)
         if pending_tasks:
             await asyncio.gather(*pending_tasks, return_exceptions=True)
         for fut in self._pending.values():
             if not fut.done():
                 fut.cancel()
         self._pending.clear()
-        if self._proc is not None:
-            try:
-                await asyncio.wait_for(self._proc.wait(), timeout=5)
-            except TimeoutError:
-                self._proc.kill()
-                await self._proc.wait()
 
 
 class CodexEngine:
@@ -258,11 +352,16 @@ class CodexEngine:
 
     @staticmethod
     async def connect(*, cwd: Path | None = None,
-                      codex_cmd: list[str] | None = None) -> AppServerConnection:
+                      codex_cmd: list[str] | None = None,
+                      extra_env: Mapping[str, str] | None = None) -> AppServerConnection:
         """Spawn an app-server child and complete the initialize handshake."""
-        conn = AppServerConnection(cwd=cwd, codex_cmd=codex_cmd)
-        await conn.start()
-        await conn.initialize()
+        conn = AppServerConnection(cwd=cwd, codex_cmd=codex_cmd, extra_env=extra_env)
+        try:
+            await conn.start()
+            await conn.initialize()
+        except BaseException:
+            await _finish_owned(conn._begin_close())
+            raise
         return conn
 
 

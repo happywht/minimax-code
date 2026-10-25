@@ -151,13 +151,15 @@ async def test_malformed_usage_terminates_instead_of_hanging(replay, payload):
     (0, "codex-cli 0.163.0", True), (2, "codex-cli 0.163.0", False),
     (0, "codex-cli 0.999.0", False),
 ])
-def test_probe_requires_supported_successful_version(monkeypatch, returncode, version, available):
+async def test_probe_requires_supported_successful_version(monkeypatch, returncode, version, available):
     from minimax_code.engines import codex
 
     monkeypatch.setattr(codex.shutil, "which", lambda _: "codex")
-    monkeypatch.setattr(codex.subprocess, "run", lambda *a, **k: SimpleNamespace(
-        returncode=returncode, stdout=version.encode()))
-    info = codex._probe_codex()
+    monkeypatch.setattr(codex, "_launch_codex", AsyncMock(return_value=SimpleNamespace(
+        returncode=returncode)))
+    monkeypatch.setattr(codex, "communicate_bounded", AsyncMock(return_value=SimpleNamespace(
+        stdout=version.encode())))
+    info = await codex._probe_codex_async()
     assert info.available is available
     assert info.capabilities["resume"] and not info.capabilities["steer"]
     if not available:
